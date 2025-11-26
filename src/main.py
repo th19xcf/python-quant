@@ -47,6 +47,9 @@ def main():
             logger.info("数据管理器初始化成功")
         except Exception as db_e:
             logger.warning(f"数据库连接失败，将以离线模式运行: {db_e}")
+            # 离线模式下也初始化数据管理器，不传入db_manager
+            data_manager = DataManager(config, None)
+            logger.info("数据管理器（离线模式）初始化成功")
         
         # 创建Qt应用
         app = QApplication(sys.argv)
@@ -57,7 +60,7 @@ def main():
         ThemeManager.set_dark_theme(app)
         
         # 初始化主窗口
-        main_window = MainWindow(config)
+        main_window = MainWindow(config, data_manager)
         main_window.show()
         
         logger.info("中国股市量化分析系统启动成功")

@@ -39,26 +39,44 @@ class DataManager:
         """
         try:
             # 初始化通达信数据处理器
-            from src.data.tdx_handler import TdxHandler
-            self.tdx_handler = TdxHandler(self.config, self.db_manager)
+            try:
+                from src.data.tdx_handler import TdxHandler
+                self.tdx_handler = TdxHandler(self.config, self.db_manager)
+            except Exception as tdx_e:
+                logger.warning(f"通达信数据处理器初始化失败（离线模式下正常）: {tdx_e}")
+                self.tdx_handler = None
             
             # 初始化AkShare数据处理器
-            from src.data.akshare_handler import AkShareHandler
-            self.akshare_handler = AkShareHandler(self.config, self.db_manager)
+            try:
+                from src.data.akshare_handler import AkShareHandler
+                self.akshare_handler = AkShareHandler(self.config, self.db_manager)
+                logger.info("AkShare数据处理器初始化成功")
+            except Exception as ak_e:
+                logger.exception(f"AkShare数据处理器初始化失败: {ak_e}")
+                self.akshare_handler = None
             
             # 初始化宏观数据处理器
-            from src.data.macro_handler import MacroHandler
-            self.macro_handler = MacroHandler(self.config, self.db_manager)
+            try:
+                from src.data.macro_handler import MacroHandler
+                self.macro_handler = MacroHandler(self.config, self.db_manager)
+            except Exception as macro_e:
+                logger.warning(f"宏观数据处理器初始化失败（离线模式下正常）: {macro_e}")
+                self.macro_handler = None
             
             # 初始化新闻数据处理器
-            from src.data.news_handler import NewsHandler
-            self.news_handler = NewsHandler(self.config, self.db_manager)
+            try:
+                from src.data.news_handler import NewsHandler
+                self.news_handler = NewsHandler(self.config, self.db_manager)
+            except Exception as news_e:
+                logger.warning(f"新闻数据处理器初始化失败（离线模式下正常）: {news_e}")
+                self.news_handler = None
             
-            logger.info("数据处理器初始化成功")
+            logger.info("数据处理器初始化完成")
             
         except Exception as e:
             logger.exception(f"数据处理器初始化失败: {e}")
-            raise
+            # 离线模式下不抛出异常，继续运行
+            logger.info("离线模式下继续运行")
     
     def update_stock_basic(self):
         """
