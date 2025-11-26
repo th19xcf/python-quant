@@ -1,0 +1,61 @@
+[tool.poetry]
+name = "china-stock-quant"
+version = "0.1.0"
+description = "中国股市量化分析系统"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.13"
+# 数据处理
+pandas = "^2.2.3"
+polars = "^0.20.2"
+numpy = "^1.26.4"
+# 数据获取
+akshare = "^1.11.1"
+requests = "^2.32.3"
+aiohttp = "^3.10.5"
+beautifulsoup4 = "^4.12.3"
+# 技术分析
+ta = "^0.10.2"
+# 量化框架
+qlib = "^0.8.1"
+backtrader = "^1.9.78.123"
+# UI框架
+pyside6 = "^6.7.2"
+pyqtgraph = "^0.13.4"
+plotly = "^5.24.1"
+# 数据库
+pymysql = "^1.1.1"
+sqlalchemy = "^2.0.35"
+redis = "^5.0.8"  # 可选
+# NLP
+jieba = "^0.42.1"
+snownlp = "^0.12.3"
+transformers = "^4.44.2"
+# 配置管理
+pydantic = "^2.9.2"
+pydantic-settings = "^2.5.2"
+# 日志管理
+loguru = "^0.7.2"
+# 开发与测试
+pytest = "^8.3.3"
+black = "^24.10.0"
+
+[tool.poetry.dev-dependencies]
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py313']
+include = '\.pyi?$'
+extend-exclude = '''
+/(\.
+    |build
+    |dist
+    |venv
+)/
+'''
