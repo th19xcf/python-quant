@@ -6,7 +6,7 @@ AkShare数据处理器
 """
 
 import akshare as ak
-import pandas as pd
+import polars as pl
 from loguru import logger
 from typing import List, Optional
 from datetime import datetime
@@ -47,24 +47,27 @@ class AkShareHandler:
             logger.info("开始从AkShare获取股票基本信息")
             
             # 使用AkShare获取股票基本信息
-            stock_basic_df = ak.stock_info_a_code_name()
+            stock_basic_pd = ak.stock_info_a_code_name()
             
-            if stock_basic_df.empty:
+            # 转换为Polars DataFrame
+            stock_basic_df = pl.from_pandas(stock_basic_pd)
+            
+            if stock_basic_df.is_empty():
                 logger.warning("从AkShare获取的股票基本信息为空")
                 return
             
-            logger.info(f"从AkShare获取到{len(stock_basic_df)}条股票基本信息")
+            logger.info(f"从AkShare获取到{stock_basic_df.height}条股票基本信息")
             
             # 离线模式下，只获取数据不存储
             if not self.session:
                 logger.info("离线模式下，跳过股票基本信息存储")
-                return stock_basic_df
+                return stock_basic_pd  # 离线模式下返回pandas DataFrame，保持兼容性
             
             # 数据清洗和标准化
             from src.database.models.stock import StockBasic
             
             # 遍历数据，进行清洗和存储
-            for index, row in stock_basic_df.iterrows():
+            for row in stock_basic_df.iter_rows(named=True):
                 try:
                     # 提取股票代码和名称
                     symbol = row['code']
@@ -99,7 +102,7 @@ class AkShareHandler:
             # 提交事务
             self.session.commit()
             logger.info("股票基本信息更新完成")
-            return stock_basic_df
+            return stock_basic_pd  # 返回pandas DataFrame，保持兼容性
             
         except Exception as e:
             if self.session:
@@ -157,7 +160,7 @@ class AkShareHandler:
                     logger.info(f"正在获取{ts_code}的日线数据")
                     
                     # 使用AkShare获取股票日线数据
-                    stock_daily_df = ak.stock_zh_a_hist(
+                    stock_daily_pd = ak.stock_zh_a_hist(
                         symbol=ts_code.split('.')[0],  # AkShare使用数字代码
                         period="daily",
                         start_date=start_date,
@@ -165,15 +168,18 @@ class AkShareHandler:
                         adjust="qfq"  # 前复权
                     )
                     
-                    if stock_daily_df.empty:
+                    # 转换为Polars DataFrame
+                    stock_daily_df = pl.from_pandas(stock_daily_pd)
+                    
+                    if stock_daily_df.is_empty():
                         logger.warning(f"{ts_code}在{start_date}至{end_date}期间没有日线数据")
                         continue
                     
-                    logger.info(f"获取到{ts_code}的{len(stock_daily_df)}条日线数据")
+                    logger.info(f"获取到{ts_code}的{stock_daily_df.height}条日线数据")
                     
                     # 离线模式下，只获取数据不存储
                     if not self.session:
-                        result[ts_code] = stock_daily_df
+                        result[ts_code] = stock_daily_pd
                         logger.info(f"离线模式下，获取{ts_code}的日线数据完成")
                         continue
                     
@@ -181,7 +187,7 @@ class AkShareHandler:
                     from src.database.models.stock import StockDaily
                     
                     # 遍历数据，进行清洗和存储
-                    for index, row in stock_daily_df.iterrows():
+                    for row in stock_daily_df.iter_rows(named=True):
                         try:
                             # 转换日期格式
                             trade_date = datetime.strptime(row['日期'], "%Y-%m-%d").date()
@@ -252,24 +258,27 @@ class AkShareHandler:
             logger.info("开始从AkShare获取指数基本信息")
             
             # 使用AkShare获取指数基本信息
-            index_basic_df = ak.index_stock_info()
+            index_basic_pd = ak.index_stock_info()
             
-            if index_basic_df.empty:
+            # 转换为Polars DataFrame
+            index_basic_df = pl.from_pandas(index_basic_pd)
+            
+            if index_basic_df.is_empty():
                 logger.warning("从AkShare获取的指数基本信息为空")
                 return
             
-            logger.info(f"从AkShare获取到{len(index_basic_df)}条指数基本信息")
+            logger.info(f"从AkShare获取到{index_basic_df.height}条指数基本信息")
             
             # 离线模式下，只获取数据不存储
             if not self.session:
                 logger.info("离线模式下，跳过指数基本信息存储")
-                return index_basic_df
+                return index_basic_pd
             
             # 数据清洗和标准化
             from src.database.models.index import IndexBasic
             
             # 遍历数据，进行清洗和存储
-            for index, row in index_basic_df.iterrows():
+            for row in index_basic_df.iter_rows(named=True):
                 try:
                     # 提取指数代码和名称
                     ts_code = row['代码']
@@ -296,7 +305,7 @@ class AkShareHandler:
             # 提交事务
             self.session.commit()
             logger.info("指数基本信息更新完成")
-            return index_basic_df
+            return index_basic_pd
             
         except Exception as e:
             if self.session:
@@ -317,8 +326,8 @@ class AkShareHandler:
             dict: 指数代码到日线数据的映射（离线模式下）
         """
         try:
-            # 离线模式下的默认指数代码列表
-            default_ts_codes = ["000001", "399001", "399006"]
+            # 离线模式下的默认指数代码列表（使用带前缀的格式）
+            default_ts_codes = ["sh000001", "sz399001", "sz399006"]
             
             # 如果没有指定指数代码，从数据库获取所有指数代码
             if not ts_codes:
@@ -335,15 +344,7 @@ class AkShareHandler:
                 logger.warning("没有需要更新的指数代码")
                 return
             
-            # 如果没有指定日期，默认更新最近30天的数据
-            if not end_date:
-                end_date = datetime.now().strftime("%Y%m%d")
-            if not start_date:
-                # 默认更新最近30天的数据
-                import datetime as dt
-                start_date = (datetime.now() - dt.timedelta(days=30)).strftime("%Y%m%d")
-            
-            logger.info(f"开始更新{len(ts_codes)}个指数的日线数据，时间范围: {start_date} 至 {end_date}")
+            logger.info(f"开始更新{len(ts_codes)}个指数的日线数据")
             
             # 存储结果（离线模式下返回）
             result = {}
@@ -354,22 +355,22 @@ class AkShareHandler:
                     logger.info(f"正在获取{ts_code}的日线数据")
                     
                     # 使用AkShare获取指数日线数据
-                    index_daily_df = ak.index_zh_a_hist(
-                        symbol=ts_code,
-                        period="daily",
-                        start_date=start_date,
-                        end_date=end_date
+                    index_daily_pd = ak.stock_zh_index_daily(
+                        symbol=ts_code
                     )
                     
-                    if index_daily_df.empty:
-                        logger.warning(f"{ts_code}在{start_date}至{end_date}期间没有日线数据")
+                    # 转换为Polars DataFrame
+                    index_daily_df = pl.from_pandas(index_daily_pd)
+                    
+                    if index_daily_df.is_empty():
+                        logger.warning(f"{ts_code}没有日线数据")
                         continue
                     
-                    logger.info(f"获取到{ts_code}的{len(index_daily_df)}条日线数据")
+                    logger.info(f"获取到{ts_code}的{index_daily_df.height}条日线数据")
                     
                     # 离线模式下，只获取数据不存储
                     if not self.session:
-                        result[ts_code] = index_daily_df
+                        result[ts_code] = index_daily_pd
                         logger.info(f"离线模式下，获取{ts_code}的日线数据完成")
                         continue
                     
@@ -377,10 +378,10 @@ class AkShareHandler:
                     from src.database.models.index import IndexDaily
                     
                     # 遍历数据，进行清洗和存储
-                    for index, row in index_daily_df.iterrows():
+                    for row in index_daily_df.iter_rows(named=True):
                         try:
                             # 转换日期格式
-                            trade_date = datetime.strptime(row['日期'], "%Y-%m-%d").date()
+                            trade_date = datetime.strptime(row['date'], "%Y-%m-%d").date()
                             
                             # 查询数据是否已存在
                             daily_data = self.session.query(IndexDaily).filter_by(
@@ -390,29 +391,25 @@ class AkShareHandler:
                             
                             if daily_data:
                                 # 更新现有数据
-                                daily_data.open = row['开盘']
-                                daily_data.high = row['最高']
-                                daily_data.low = row['最低']
-                                daily_data.close = row['收盘']
-                                daily_data.pre_close = row['昨收']
-                                daily_data.change = row['涨跌额']
-                                daily_data.pct_chg = row['涨跌幅']
-                                daily_data.vol = row['成交量']
-                                daily_data.amount = row['成交额']
+                                daily_data.open = row['open']
+                                daily_data.high = row['high']
+                                daily_data.low = row['low']
+                                daily_data.close = row['close']
+                                daily_data.vol = row['volume']
                             else:
                                 # 创建新数据
                                 daily_data = IndexDaily(
                                     ts_code=ts_code,
                                     trade_date=trade_date,
-                                    open=row['开盘'],
-                                    high=row['最高'],
-                                    low=row['最低'],
-                                    close=row['收盘'],
-                                    pre_close=row['昨收'],
-                                    change=row['涨跌额'],
-                                    pct_chg=row['涨跌幅'],
-                                    vol=row['成交量'],
-                                    amount=row['成交额']
+                                    open=row['open'],
+                                    high=row['high'],
+                                    low=row['low'],
+                                    close=row['close'],
+                                    pre_close=0.0,  # stock_zh_index_daily不提供昨收价
+                                    change=0.0,  # stock_zh_index_daily不提供涨跌额
+                                    pct_chg=0.0,  # stock_zh_index_daily不提供涨跌幅
+                                    vol=row['volume'],
+                                    amount=0.0  # stock_zh_index_daily不提供成交额
                                 )
                                 self.session.add(daily_data)
                             

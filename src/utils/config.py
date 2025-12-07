@@ -36,6 +36,14 @@ class DataSettings(BaseSettings):
     tdx_data_path: str = Field(default="", description="通达信数据路径")
     update_interval: int = Field(default=3600, description="数据更新间隔(秒)")
     max_workers: int = Field(default=4, description="数据获取最大工作线程数")
+    
+    # Baostock配置
+    default_stock_codes: list = Field(default=["sh.600000", "sz.000001", "sz.300001"], description="默认股票代码列表")
+    default_index_codes: list = Field(default=["sh.000001", "sz.399001", "sz.399006"], description="默认指数代码列表")
+    supported_frequencies: list = Field(default=["1", "5", "15", "30", "60"], description="支持的分钟线频率")
+    default_days: int = Field(default=30, description="默认数据更新天数")
+    default_minute_days: int = Field(default=3, description="默认分钟线数据下载天数")
+    default_realtime_days: int = Field(default=5, description="默认实时数据替代天数")
 
 
 class LogSettings(BaseSettings):

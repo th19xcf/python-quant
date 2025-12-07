@@ -9,12 +9,12 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QTabWidget, QPushButton, QLineEdit, QLabel, QStatusBar,
-    QMenuBar, QMenu
+    QMenuBar, QMenu, QDialog, QCheckBox, QDateEdit, QComboBox,
+    QProgressBar
 )
 from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QAction, QIcon, QFont
+from PySide6.QtGui import QAction, QIcon, QFont, QColor
 
-import pandas as pd
 from src.utils.logger import logger
 
 
@@ -82,8 +82,8 @@ class MainWindow(QMainWindow):
         # 创建右侧信息栏
         self.create_right_area(center_right_splitter)
         
-        # 设置中间和右侧分割器比例
-        center_right_splitter.setSizes([800, 400])
+        # 设置中间和右侧分割器比例，初始最小化右侧区域
+        center_right_splitter.setSizes([1200, 0])
         
         # 创建状态栏
         self.create_status_bar()
@@ -134,6 +134,7 @@ class MainWindow(QMainWindow):
             ("宏观数据", self.on_macro_data),
             ("财务数据", self.on_financial_data),
             ("技术指标", self.on_technical_indicator),
+            ("盘后数据下载", self.on_download_data),
         ])
         
         # 特色功能菜单
@@ -170,6 +171,7 @@ class MainWindow(QMainWindow):
         创建工具栏
         """
         tool_bar = self.addToolBar("工具栏")
+        tool_bar.setIconSize(QSize(16, 16))
         
         # 添加搜索框
         self.search_edit = QLineEdit()
@@ -199,6 +201,19 @@ class MainWindow(QMainWindow):
         self.tech_btn = QPushButton("技术分析")
         self.tech_btn.clicked.connect(self.on_technical_analysis)
         tool_bar.addWidget(self.tech_btn)
+        
+        # 添加分隔符
+        tool_bar.addSeparator()
+        
+        # 添加刷新按钮
+        refresh_btn = QPushButton("刷新")
+        refresh_btn.clicked.connect(self.on_refresh)
+        tool_bar.addWidget(refresh_btn)
+        
+        # 添加设置按钮
+        settings_btn = QPushButton("设置")
+        settings_btn.clicked.connect(self.on_settings)
+        tool_bar.addWidget(settings_btn)
     
     def create_left_navigation(self, parent):
         """
@@ -292,18 +307,60 @@ class MainWindow(QMainWindow):
         """
         market_layout = QVBoxLayout(self.market_tab)
         
+        # 创建进度条
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)  # 初始隐藏
+        self.progress_bar.setStyleSheet("QProgressBar { height: 5px; background-color: #333; border: none; } QProgressBar::chunk { background-color: #00BFFF; }")
+        market_layout.addWidget(self.progress_bar)
+        
         # 创建股票列表
         self.stock_table = QTableWidget()
-        self.stock_table.setColumnCount(16)
+        self.stock_table.setColumnCount(13)  # 调整为通达信日线数据实际包含的字段
         self.stock_table.setHorizontalHeaderLabels([
-            "代码", "名称", "涨跌幅%", "现价", "涨跌", "买价", "卖价", "总量",
-            "现量", "涨速%", "换手率%", "今开", "最高", "最低", "昨收", "市值"
+            "日期", "代码", "名称", "涨跌幅%", "现价", "涨跌", "总量", "成交额", "今开", "最高", "最低", "昨收", "振幅%"
         ])
         
         # 设置列宽
-        column_widths = [80, 100, 80, 80, 80, 80, 80, 100, 80, 80, 80, 80, 80, 80, 80, 100]
+        column_widths = [100, 80, 100, 80, 80, 80, 100, 120, 80, 80, 80, 80, 80]  # 调整为适合通达信数据的列宽
         for i, width in enumerate(column_widths):
             self.stock_table.setColumnWidth(i, width)
+        
+        # 初始化排序状态跟踪
+        self.column_sort_states = {}  # 保存每列的排序状态：0=未排序，1=升序，2=降序
+        self.current_sorted_column = -1  # 当前排序的列
+        
+        # 连接表头点击信号到自定义槽函数
+        self.stock_table.horizontalHeader().sectionClicked.connect(self.on_header_clicked)
+        
+        # 初始状态禁用默认排序
+        self.stock_table.setSortingEnabled(False)
+        
+        # 设置通达信风格的表格样式
+        self.stock_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #000000;
+                color: #C0C0C0;
+                gridline-color: #333333;
+                font-family: "Microsoft YaHei";
+                font-size: 12px;
+            }
+            QTableWidget::item {
+                padding: 2px;
+            }
+            QHeaderView::section {
+                background-color: #222222;
+                color: #C0C0C0;
+                border: 1px solid #333333;
+                font-weight: bold;
+                padding: 5px;
+            }
+            QTableWidget::item:selected {
+                background-color: #0066CC;
+                color: #FFFFFF;
+            }
+        """)
         
         # 添加示例数据
         self.add_sample_stock_data()
@@ -314,12 +371,16 @@ class MainWindow(QMainWindow):
         """
         添加示例股票数据
         """
+        # 获取当前日期
+        import datetime
+        current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        
         sample_data = [
-            ["999999", "上证指数", "-0.15", "3864.18", "-5.84", "3864.18", "3864.19", "458亿", "1648", "0.03", "0.96", "3867.43", "3879.92", "3861.18", "3870.02", "7010亿"],
-            ["600030", "中信证券", "+0.47", "27.60", "+0.13", "27.60", "27.61", "681695", "8464", "-0.03", "0.56", "27.52", "27.72", "27.44", "27.47", "1325亿"],
-            ["000001", "平安银行", "+1.23", "18.95", "+0.23", "18.95", "18.96", "1234567", "15678", "+0.10", "0.89", "18.75", "19.02", "18.70", "18.72", "2840亿"],
-            ["000858", "五粮液", "-0.89", "178.50", "-1.60", "178.50", "178.51", "345678", "4567", "-0.23", "0.45", "179.80", "180.20", "178.00", "180.10", "7890亿"],
-            ["600519", "贵州茅台", "+0.56", "1890.00", "+10.50", "1890.00", "1890.01", "12345", "1234", "+0.05", "0.08", "1880.00", "1895.00", "1875.00", "1879.50", "23700亿"],
+            [current_date, "999999", "上证指数", "-0.15", "3864.18", "-5.84", "458亿", "8960亿", "3867.43", "3879.92", "3861.18", "3870.02", "0.48"],
+            [current_date, "600030", "中信证券", "+0.47", "27.60", "+0.13", "681695", "1.88亿", "27.52", "27.72", "27.44", "27.47", "1.02"],
+            [current_date, "000001", "平安银行", "+1.23", "18.95", "+0.23", "1234567", "2.34亿", "18.75", "19.02", "18.70", "18.72", "1.71"],
+            [current_date, "000858", "五粮液", "-0.89", "178.50", "-1.60", "345678", "6.18亿", "179.80", "180.20", "178.00", "180.10", "1.22"],
+            [current_date, "600519", "贵州茅台", "+0.56", "1890.00", "+10.50", "12345", "2.33亿", "1880.00", "1895.00", "1875.00", "1879.50", "1.06"],
         ]
         
         self.stock_table.setRowCount(len(sample_data))
@@ -329,15 +390,64 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem(value)
                 
                 # 设置对齐方式
-                if col in [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]:
+                if col in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 
-                # 设置涨跌幅颜色
-                if col == 2:
-                    if value.startswith("+"):
-                        item.setForeground(Qt.red)
+                # 设置通达信风格的颜色
+                if col == 3:  # 涨跌幅%
+                    # 涨跌幅颜色
+                    if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
+                        item.setForeground(QColor(255, 0, 0))  # 红色上涨
                     elif value.startswith("-"):
-                        item.setForeground(Qt.green)
+                        item.setForeground(QColor(0, 255, 0))  # 绿色下跌
+                    else:
+                        item.setForeground(QColor(204, 204, 204))  # 灰色平盘
+                elif col == 5:  # 涨跌
+                    # 涨跌额颜色
+                    if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
+                        item.setForeground(QColor(255, 0, 0))  # 红色上涨
+                    elif value.startswith("-"):
+                        item.setForeground(QColor(0, 255, 0))  # 绿色下跌
+                    else:
+                        item.setForeground(QColor(204, 204, 204))  # 灰色平盘
+                # 获取昨收价用于比较
+                preclose = float(data[11]) if len(data) > 11 and data[11] != "-" else 0.0
+                if col == 4:  # 现价
+                    # 现价与昨收比较
+                    current_price = float(value) if value != "-" else 0.0
+                    if current_price > preclose:
+                        item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                    elif current_price < preclose:
+                        item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                    else:
+                        item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                elif col == 8:  # 今开
+                    # 今开与昨收比较
+                    open_price = float(value) if value != "-" else 0.0
+                    if open_price > preclose:
+                        item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                    elif open_price < preclose:
+                        item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                    else:
+                        item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                elif col == 9:  # 最高
+                    # 最高与昨收比较
+                    high_price = float(value) if value != "-" else 0.0
+                    if high_price > preclose:
+                        item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                    elif high_price < preclose:
+                        item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                    else:
+                        item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                elif col == 10:  # 最低
+                    # 最低与昨收比较
+                    low_price = float(value) if value != "-" else 0.0
+                    if low_price > preclose:
+                        item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                    elif low_price < preclose:
+                        item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                    else:
+                        item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
                 
                 self.stock_table.setItem(row, col, item)
     
@@ -426,56 +536,6 @@ class MainWindow(QMainWindow):
         self.connection_label = QLabel("已连接")
         status_bar.addWidget(self.connection_label)
     
-    def create_tool_bar(self):
-        """
-        创建工具栏
-        """
-        tool_bar = self.addToolBar("工具栏")
-        tool_bar.setIconSize(QSize(16, 16))
-        
-        # 添加搜索框
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("输入股票代码/名称")
-        self.search_edit.setFixedWidth(200)
-        tool_bar.addWidget(self.search_edit)
-        
-        # 添加搜索按钮
-        search_btn = QPushButton("搜索")
-        search_btn.clicked.connect(self.on_search)
-        tool_bar.addWidget(search_btn)
-        
-        # 添加分隔符
-        tool_bar.addSeparator()
-        
-        # 添加自选股按钮
-        self.selected_btn = QPushButton("自选股")
-        self.selected_btn.clicked.connect(self.on_self_selected)
-        tool_bar.addWidget(self.selected_btn)
-        
-        # 添加行情按钮
-        self.market_btn = QPushButton("行情")
-        self.market_btn.clicked.connect(self.on_market)
-        tool_bar.addWidget(self.market_btn)
-        
-        # 添加技术分析按钮
-        self.tech_btn = QPushButton("技术分析")
-        self.tech_btn.clicked.connect(self.on_technical_analysis)
-        tool_bar.addWidget(self.tech_btn)
-        
-        # 添加分隔符
-        tool_bar.addSeparator()
-        
-        # 添加刷新按钮
-        refresh_btn = QPushButton("刷新")
-        refresh_btn.clicked.connect(self.on_refresh)
-        tool_bar.addWidget(refresh_btn)
-        
-        # 添加设置按钮
-        settings_btn = QPushButton("设置")
-        settings_btn.clicked.connect(self.on_settings)
-        tool_bar.addWidget(settings_btn)
-    
-    # 菜单和按钮事件处理
     def on_self_selected(self):
         logger.info("点击了自选股")
     
@@ -484,114 +544,212 @@ class MainWindow(QMainWindow):
     
     def on_index(self):
         """
-        点击了沪深京指数，从AkShare获取指数数据并更新表格
+        点击了沪深京指数，从通达信指数文件获取数据并更新表格
         """
         try:
-            logger.info("开始从AkShare获取沪深京指数数据")
+            logger.info("开始从通达信获取沪深京指数数据")
             
-            # 使用AkShare获取指数实时行情
-            import akshare as ak
-            import requests
-            
-            # 获取主要指数代码列表
-            index_codes = ["000001", "399001", "399006", "000688", "000016", "000300", "000905", "000852"]
-            
-            # 使用历史数据作为替代
-            import datetime as dt
-            end_date = dt.datetime.now().strftime("%Y%m%d")
-            start_date = (dt.datetime.now() - dt.timedelta(days=1)).strftime("%Y%m%d")
+            # 主要指数代码映射
+            index_map = {
+                "sh000001": "上证指数",
+                "sh000016": "上证50",
+                "sh000300": "沪深300",
+                "sh000905": "中证500",
+                "sh000852": "中证1000",
+                "sh000688": "科创板指",
+                "sz399001": "深证成指",
+                "sz399006": "创业板指"
+            }
             
             # 清空现有数据
+            self.stock_table.setSortingEnabled(False)
             self.stock_table.setRowCount(0)
             
-            # 获取每个指数的数据
-            for code in index_codes:
+            # 设置表头 - 确保与数据行匹配
+            headers = ["日期", "代码", "名称", "涨跌幅", "现价", "涨跌额", "总量", "成交额", "开盘价", "最高价", "最低价", "昨收价", "振幅%"]
+            self.stock_table.setColumnCount(len(headers))
+            self.stock_table.setHorizontalHeaderLabels(headers)
+            
+            # 构建通达信指数数据目录路径
+            from pathlib import Path
+            tdx_data_path = Path(r"H:\zxzq\vipdoc")
+            
+            # 获取所有指数文件
+            sh_index_files = list(Path(tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'sh' / 'lday').exists() else []
+            sz_index_files = list(Path(tdx_data_path / 'sz' / 'lday').glob('sz*.day')) if (tdx_data_path / 'sz' / 'lday').exists() else []
+            all_index_files = sh_index_files + sz_index_files
+            
+            logger.info(f"找到{len(all_index_files)}个通达信指数数据文件")
+            
+            import struct
+            from datetime import datetime
+            
+            # 解析指数文件
+            for index_file in all_index_files:
                 try:
-                    # 获取指数历史数据
-                    try:
-                        index_daily = ak.index_zh_a_hist(
-                            symbol=code,
-                            period="daily",
-                            start_date=start_date,
-                            end_date=end_date
-                        )
-                    except requests.exceptions.ConnectionError as conn_e:
-                        logger.warning(f"网络连接失败，无法获取{code}的数据: {conn_e}")
-                        continue
-                    except Exception as e:
-                        logger.exception(f"获取{code}数据失败: {e}")
+                    file_name = index_file.stem
+                    if file_name not in index_map:
                         continue
                     
-                    if index_daily.empty:
-                        logger.warning(f"没有找到{code}的历史数据")
-                        continue
+                    index_name = index_map[file_name]
                     
-                    # 获取最新一条数据
-                    row = index_daily.iloc[0]
-                    
-                    # 指数名称映射
-                    index_name_map = {
-                        "000001": "上证指数",
-                        "399001": "深证成指",
-                        "399006": "创业板指",
-                        "000688": "科创板指",
-                        "000016": "上证50",
-                        "000300": "沪深300",
-                        "000905": "中证500",
-                        "000852": "中证1000"
-                    }
-                    
-                    name = index_name_map.get(code, code)
-                    
-                    # 构建数据行
-                    data_row = [
-                        code,
-                        name,
-                        f"{row['涨跌幅']:.2f}%" if not pd.isna(row['涨跌幅']) else "0.00%",
-                        f"{row['收盘']:.2f}" if not pd.isna(row['收盘']) else "0.00",
-                        f"{row['涨跌额']:.2f}" if not pd.isna(row['涨跌额']) else "0.00",
-                        "-",  # 买一价
-                        "-",  # 卖一价
-                        f"{row['成交量']:,}" if not pd.isna(row['成交量']) else "0",
-                        "-",  # 现量
-                        "-",  # 涨速
-                        "-",  # 换手率
-                        f"{row['开盘']:.2f}" if not pd.isna(row['开盘']) else "0.00",
-                        f"{row['最高']:.2f}" if not pd.isna(row['最高']) else "0.00",
-                        f"{row['最低']:.2f}" if not pd.isna(row['最低']) else "0.00",
-                        f"{row['昨收']:.2f}" if not pd.isna(row['昨收']) else "0.00",
-                        "-"  # 总市值
-                    ]
-                    
-                    # 添加行
-                    row_pos = self.stock_table.rowCount()
-                    self.stock_table.insertRow(row_pos)
-                    
-                    # 设置数据
-                    for col, value in enumerate(data_row):
-                        item = QTableWidgetItem(value)
+                    with open(index_file, 'rb') as f:
+                        # 获取文件大小
+                        f.seek(0, 2)
+                        file_size = f.tell()
                         
-                        # 设置对齐方式
-                        if col in [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]:
-                            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                        # 计算数据条数
+                        record_count = file_size // 32
+                        if record_count == 0:
+                            continue
                         
-                        # 设置涨跌幅颜色
-                        if col == 2:
-                            if value.startswith("+") or (value.replace("%", "").replace(".", "").isdigit() and float(value.replace("%", "")) > 0):
-                                item.setForeground(Qt.red)
-                            elif value.startswith("-"):
-                                item.setForeground(Qt.green)
+                        # 读取最新两条记录，用于计算涨跌幅和涨跌
+                        # 先读取最新一条记录（当天数据）
+                        f.seek((record_count - 1) * 32)
+                        latest_record = f.read(32)
                         
-                        self.stock_table.setItem(row_pos, col, item)
+                        # 如果有至少两条记录，读取前一天的记录（用于计算涨跌）
+                        if record_count >= 2:
+                            f.seek((record_count - 2) * 32)
+                            prev_record = f.read(32)
+                        else:
+                            prev_record = None
+                        
+                        # 解析最新一条记录
+                        date_int = struct.unpack('I', latest_record[0:4])[0]  # 日期，格式：YYYYMMDD
+                        open_val = struct.unpack('I', latest_record[4:8])[0] / 100  # 开盘价，转换为元
+                        high_val = struct.unpack('I', latest_record[8:12])[0] / 100  # 最高价，转换为元
+                        low_val = struct.unpack('I', latest_record[12:16])[0] / 100  # 最低价，转换为元
+                        close_val = struct.unpack('I', latest_record[16:20])[0] / 100  # 收盘价，转换为元
+                        volume = struct.unpack('I', latest_record[20:24])[0]  # 成交量，单位：手
+                        amount = struct.unpack('I', latest_record[24:28])[0] / 100  # 成交额，转换为元
+                        
+                        # 转换日期格式
+                        date_str = str(date_int)
+                        date = datetime.strptime(date_str, '%Y%m%d').date()
+                        
+                        # 计算涨跌额和涨跌幅
+                        if prev_record:
+                            # 解析前一天数据
+                            prev_date_int = struct.unpack('I', prev_record[0:4])[0]  # 前一天日期
+                            prev_close_val = struct.unpack('I', prev_record[16:20])[0] / 100  # 前一天收盘价
+                            
+                            # 计算涨跌额和涨跌幅
+                            preclose = prev_close_val  # 昨收价
+                            change = close_val - preclose  # 涨跌额
+                            pct_chg = (change / preclose) * 100 if preclose != 0 else 0.0  # 涨跌幅
+                        else:
+                            # 只有一条记录，无法计算涨跌额和涨跌幅，设为0
+                            preclose = close_val  # 没有前一天数据，使用收盘价作为昨收价
+                            change = 0.0
+                            pct_chg = 0.0
+                        
+                        # 计算振幅
+                        if preclose > 0:
+                            amplitude = ((high_val - low_val) / preclose) * 100
+                        else:
+                            amplitude = 0.0
+                        
+                        # 构建数据行，适配新的列结构
+                        data_row = [
+                            date.strftime('%Y-%m-%d'),  # 日期
+                            file_name,  # 代码
+                            index_name,  # 名称
+                            f"{pct_chg:.2f}",  # 涨跌幅
+                            f"{close_val:.2f}",  # 现价
+                            f"{change:.2f}",  # 涨跌
+                            f"{volume:,}",  # 总量
+                            f"{amount:,}",  # 成交额
+                            f"{open_val:.2f}",  # 今开
+                            f"{high_val:.2f}",  # 最高
+                            f"{low_val:.2f}",  # 最低
+                            f"{preclose:.2f}",  # 昨收
+                            f"{amplitude:.2f}%"  # 振幅%
+                        ]
+                        
+                        # 添加行
+                        row_pos = self.stock_table.rowCount()
+                        self.stock_table.insertRow(row_pos)
+                        
+                        # 设置数据
+                        for col, value in enumerate(data_row):
+                            item = QTableWidgetItem(value)
+                            
+                            # 设置对齐方式
+                            if col in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
+                                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                            
+                            # 设置通达信风格的颜色
+                            if col == 3:  # 涨跌幅%
+                                # 涨跌幅颜色
+                                if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
+                                    item.setForeground(QColor(255, 0, 0))  # 红色上涨
+                                elif value.startswith("-"):
+                                    item.setForeground(QColor(0, 255, 0))  # 绿色下跌
+                                else:
+                                    item.setForeground(QColor(204, 204, 204))  # 灰色平盘
+                            elif col == 5:  # 涨跌
+                                # 涨跌额颜色
+                                if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
+                                    item.setForeground(QColor(255, 0, 0))  # 红色上涨
+                                elif value.startswith("-"):
+                                    item.setForeground(QColor(0, 255, 0))  # 绿色下跌
+                                else:
+                                    item.setForeground(QColor(204, 204, 204))  # 灰色平盘
+                            # 获取昨收价用于比较
+                            preclose_val = float(data_row[11]) if len(data_row) > 11 and data_row[11] != "-" else 0.0
+                            if col == 4:  # 现价
+                                # 现价与昨收比较
+                                current_price = float(value) if value != "-" else 0.0
+                                if current_price > preclose_val:
+                                    item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                                elif current_price < preclose_val:
+                                    item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                                else:
+                                    item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                            elif col == 8:  # 今开
+                                # 今开与昨收比较
+                                open_price = float(value) if value != "-" else 0.0
+                                if open_price > preclose_val:
+                                    item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                                elif open_price < preclose_val:
+                                    item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                                else:
+                                    item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                            elif col == 9:  # 最高
+                                # 最高与昨收比较
+                                high_price = float(value) if value != "-" else 0.0
+                                if high_price > preclose_val:
+                                    item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                                elif high_price < preclose_val:
+                                    item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                                else:
+                                    item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                            elif col == 10:  # 最低
+                                # 最低与昨收比较
+                                low_price = float(value) if value != "-" else 0.0
+                                if low_price > preclose_val:
+                                    item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                                elif low_price < preclose_val:
+                                    item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                                else:
+                                    item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                            
+                            self.stock_table.setItem(row_pos, col, item)
                     
                 except Exception as e:
-                    logger.exception(f"获取{code}的指数数据失败: {e}")
+                    logger.exception(f"解析指数文件{index_file}失败: {e}")
                     continue
             
+            # 数据添加完成后重新启用排序
+            self.stock_table.setSortingEnabled(True)
+            
             logger.info("沪深京指数数据更新完成")
+            self.statusBar().showMessage(f"成功显示{self.stock_table.rowCount()}个指数的最新交易日数据", 3000)
             
         except Exception as e:
             logger.exception(f"获取沪深京指数数据失败: {e}")
+            self.statusBar().showMessage(f"获取沪深京指数数据失败: {str(e)[:50]}...", 5000)
     
     def on_sector(self):
         logger.info("点击了沪深京板块")
@@ -635,6 +793,9 @@ class MainWindow(QMainWindow):
     def on_technical_indicator(self):
         logger.info("点击了技术指标")
     
+    def on_download_data(self):
+        logger.info("点击了盘后数据下载")
+    
     def on_quant_backtest(self):
         logger.info("点击了量化回测")
     
@@ -668,6 +829,128 @@ class MainWindow(QMainWindow):
     def on_refresh(self):
         logger.info("点击了刷新按钮")
     
+    def on_header_clicked(self, logical_index):
+        """
+        自定义表头点击事件处理，实现点击第3次取消排序的功能
+        
+        Args:
+            logical_index: 点击的列索引
+        """
+        try:
+            # 获取当前列的排序状态，默认为未排序(0)
+            current_state = self.column_sort_states.get(logical_index, 0)
+            
+            # 计算下一个状态：0→1→2→0
+            next_state = (current_state + 1) % 3
+            
+            # 更新排序状态
+            self.column_sort_states[logical_index] = next_state
+            
+            # 应用排序
+            if next_state == 1:
+                # 升序排序
+                # 确保排序功能是启用的
+                self.stock_table.setSortingEnabled(True)
+                # 执行排序
+                self.stock_table.sortItems(logical_index, Qt.AscendingOrder)
+                # 更新当前排序列
+                self.current_sorted_column = logical_index
+            elif next_state == 2:
+                # 降序排序
+                # 确保排序功能是启用的
+                self.stock_table.setSortingEnabled(True)
+                # 执行排序
+                self.stock_table.sortItems(logical_index, Qt.DescendingOrder)
+                # 更新当前排序列
+                self.current_sorted_column = logical_index
+            else:
+                # 取消排序，恢复原始顺序
+                # 直接清空并重新添加数据，保持原始顺序
+                self.stock_table.setSortingEnabled(False)
+                
+                # 保存当前显示的所有数据
+                current_data = []
+                row_count = self.stock_table.rowCount()
+                for row in range(row_count):
+                    row_data = []
+                    for col in range(self.stock_table.columnCount()):
+                        item = self.stock_table.item(row, col)
+                        row_data.append(item.text() if item else "")
+                    current_data.append(row_data)
+                
+                # 清空表格
+                self.stock_table.setRowCount(0)
+                
+                # 重新添加数据，保持原始顺序
+                for row_data in current_data:
+                    row_pos = self.stock_table.rowCount()
+                    self.stock_table.insertRow(row_pos)
+                    for col, value in enumerate(row_data):
+                        item = QTableWidgetItem(value)
+                        # 恢复对齐方式
+                        if col in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
+                            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                        # 恢复颜色编码
+                        if col == 3:  # 涨跌幅%
+                            if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
+                                item.setForeground(QColor(255, 0, 0))
+                            elif value.startswith("-"):
+                                item.setForeground(QColor(0, 255, 0))
+                            else:
+                                item.setForeground(QColor(204, 204, 204))
+                        elif col == 5:  # 涨跌
+                            if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
+                                item.setForeground(QColor(255, 0, 0))
+                            elif value.startswith("-"):
+                                item.setForeground(QColor(0, 255, 0))
+                            else:
+                                item.setForeground(QColor(204, 204, 204))
+                        elif col == 4:  # 现价
+                            preclose = float(row_data[11]) if len(row_data) > 11 and row_data[11] != "-" else 0.0
+                            current_price = float(value) if value != "-" else 0.0
+                            if current_price > preclose:
+                                item.setForeground(QColor(255, 0, 0))
+                            elif current_price < preclose:
+                                item.setForeground(QColor(0, 255, 0))
+                            else:
+                                item.setForeground(QColor(204, 204, 204))
+                        elif col == 8:  # 今开
+                            preclose = float(row_data[11]) if len(row_data) > 11 and row_data[11] != "-" else 0.0
+                            open_price = float(value) if value != "-" else 0.0
+                            if open_price > preclose:
+                                item.setForeground(QColor(255, 0, 0))
+                            elif open_price < preclose:
+                                item.setForeground(QColor(0, 255, 0))
+                            else:
+                                item.setForeground(QColor(204, 204, 204))
+                        elif col == 9:  # 最高
+                            preclose = float(row_data[11]) if len(row_data) > 11 and row_data[11] != "-" else 0.0
+                            high_price = float(value) if value != "-" else 0.0
+                            if high_price > preclose:
+                                item.setForeground(QColor(255, 0, 0))
+                            elif high_price < preclose:
+                                item.setForeground(QColor(0, 255, 0))
+                            else:
+                                item.setForeground(QColor(204, 204, 204))
+                        elif col == 10:  # 最低
+                            preclose = float(row_data[11]) if len(row_data) > 11 and row_data[11] != "-" else 0.0
+                            low_price = float(value) if value != "-" else 0.0
+                            if low_price > preclose:
+                                item.setForeground(QColor(255, 0, 0))
+                            elif low_price < preclose:
+                                item.setForeground(QColor(0, 255, 0))
+                            else:
+                                item.setForeground(QColor(204, 204, 204))
+                        # 设置单元格
+                        self.stock_table.setItem(row_pos, col, item)
+                
+                # 重新启用排序功能，以便下次点击时显示排序指示器
+                self.stock_table.setSortingEnabled(True)
+                # 更新当前排序列为未排序
+                self.current_sorted_column = -1
+        except Exception as e:
+            logger.exception(f"处理表头点击事件失败: {e}")
+    
     def on_nav_item_clicked(self, item, column):
         """
         处理导航项点击事件，显示对应的行情数据
@@ -679,8 +962,661 @@ class MainWindow(QMainWindow):
             # 处理指数相关导航项
             if text in ["上证指数", "深证成指", "创业板指", "科创板指"]:
                 self.show_index_data(text)
+            # 处理沪深京A股导航项
+            elif text == "沪深京A股":
+                self.show_hs_aj_stock_data()
+            # 处理个股分类导航项
+            elif text in ["全部A股", "上证A股", "深证A股", "创业板", "科创板"]:
+                self.show_stock_data_by_type(text)
         except Exception as e:
             logger.exception(f"处理导航项点击事件失败: {e}")
+    
+    def show_stock_data_by_type(self, stock_type):
+        """
+        根据股票类型显示数据，从通达信日线文件读取最新交易日的对应股票数据
+        
+        Args:
+            stock_type: 股票类型，如"全部A股"、"上证A股"、"深证A股"、"创业板"、"科创板"
+        """
+        try:
+            logger.info(f"开始显示{stock_type}数据")
+            
+            # 显示进度条
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            
+            # 更新配置中的通达信数据路径为用户指定的路径
+            import polars as pl
+            from src.data.tdx_handler import TdxHandler
+            
+            # 更新配置中的通达信数据路径
+            self.data_manager.config.data.tdx_data_path = r"H:\zxzq\vipdoc"
+            
+            # 创建通达信数据处理器
+            tdx_handler = TdxHandler(self.data_manager.config, self.data_manager.db_manager)
+            
+            # 更新进度
+            self.progress_bar.setValue(10)
+            
+            # 构建通达信日线数据目录路径
+            from pathlib import Path
+            tdx_data_path = Path(r"H:\zxzq\vipdoc")
+            
+            # 获取所有日线数据文件
+            sh_stock_files = list(Path(tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'sh' / 'lday').exists() else []
+            sz_stock_files = list(Path(tdx_data_path / 'sz' / 'lday').glob('sz*.day')) if (tdx_data_path / 'sz' / 'lday').exists() else []
+            
+            # 根据股票类型过滤文件
+            filtered_files = []
+            if stock_type == "全部A股":
+                # 显示所有A股
+                filtered_files = sh_stock_files + sz_stock_files
+            elif stock_type == "上证A股":
+                # 只显示上证A股（上海市场，代码以6开头）
+                filtered_files = sh_stock_files
+            elif stock_type == "深证A股":
+                # 只显示深证A股（深圳市场，代码以0开头，不含创业板）
+                filtered_files = [f for f in sz_stock_files if f.stem[2:3] == "0"]
+            elif stock_type == "创业板":
+                # 只显示创业板股票（代码以300开头）
+                filtered_files = [f for f in sz_stock_files if f.stem[2:5] == "300"]
+            elif stock_type == "科创板":
+                # 只显示科创板股票（代码以688开头）
+                filtered_files = [f for f in sh_stock_files if f.stem[2:5] == "688"]
+            
+            logger.info(f"找到{len(filtered_files)}个符合条件的通达信股票数据文件")
+            
+            # 更新进度
+            self.progress_bar.setValue(20)
+            
+            if not filtered_files:
+                logger.warning(f"没有找到{stock_type}的通达信股票数据文件")
+                self.statusBar().showMessage(f"没有找到{stock_type}的通达信股票数据文件，请检查路径是否正确", 5000)
+                self.progress_bar.setVisible(False)
+                return
+            
+            # 获取最新交易日
+            latest_date = None
+            all_stock_data = []
+            
+            # 获取股票基本信息映射
+            stock_name_map = self.data_manager.get_stock_basic()
+            
+            # 更新进度
+            self.progress_bar.setValue(30)
+            
+            # 解析所有股票文件，获取最新交易日的数据
+            total_files = len(filtered_files)
+            for i, file_path in enumerate(filtered_files):
+                try:
+                    # 更新进度
+                    progress = 30 + int((i / total_files) * 50)
+                    self.progress_bar.setValue(progress)
+                    
+                    # 解析文件，获取所有数据
+                    logger.info(f"正在解析文件: {file_path}")
+                    
+                    # 直接解析文件，获取所有数据
+                    data = []
+                    with open(file_path, 'rb') as f:
+                        # 获取文件大小
+                        f.seek(0, 2)
+                        file_size = f.tell()
+                        
+                        # 计算数据条数
+                        record_count = file_size // 32
+                        if record_count == 0:
+                            continue
+                        
+                        # 读取最新两条记录，用于计算涨跌幅和涨跌
+                        # 先读取最新一条记录（当天数据）
+                        f.seek((record_count - 1) * 32)
+                        latest_record = f.read(32)
+                        
+                        # 如果有至少两条记录，读取前一天的记录（用于计算涨跌）
+                        if record_count >= 2:
+                            f.seek((record_count - 2) * 32)
+                            prev_record = f.read(32)
+                        else:
+                            prev_record = None
+                        
+                        # 解析最新一条记录
+                        import struct
+                        from datetime import datetime
+                        
+                        # 解析当天数据
+                        date_int = struct.unpack('I', latest_record[0:4])[0]  # 日期，格式：YYYYMMDD
+                        open_val = struct.unpack('I', latest_record[4:8])[0] / 100  # 开盘价，转换为元
+                        high_val = struct.unpack('I', latest_record[8:12])[0] / 100  # 最高价，转换为元
+                        low_val = struct.unpack('I', latest_record[12:16])[0] / 100  # 最低价，转换为元
+                        close_val = struct.unpack('I', latest_record[16:20])[0] / 100  # 收盘价，转换为元
+                        volume = struct.unpack('I', latest_record[20:24])[0]  # 成交量，单位：手
+                        amount = struct.unpack('I', latest_record[24:28])[0] / 100  # 成交额，转换为元
+                        
+                        # 转换日期格式
+                        date_str = str(date_int)
+                        date = datetime.strptime(date_str, '%Y%m%d').date()
+                        
+                        # 更新最新日期
+                        if latest_date is None or date > latest_date:
+                            latest_date = date
+                        
+                        # 提取股票代码
+                        file_name = file_path.stem
+                        if file_name.startswith('sh'):
+                            code = file_name[2:]
+                            market = "SH"
+                            ts_code = f"{code}.{market}"
+                            # 尝试不同的ts_code格式
+                            ts_code_formats = [
+                                f"{code}.{market}",
+                                f"{code}.{market.lower()}",
+                                f"{market}{code}",
+                                f"{market.lower()}{code}"
+                            ]
+                            
+                            # 从stock_basic获取真实股票名称
+                            stock_name = f"{code}（股票）"  # 默认名称
+                            for ts_format in ts_code_formats:
+                                if ts_format in stock_name_map:
+                                    stock_name = stock_name_map[ts_format]
+                                    break
+                        elif file_name.startswith('sz'):
+                            code = file_name[2:]
+                            market = "SZ"
+                            ts_code = f"{code}.{market}"
+                            # 尝试不同的ts_code格式
+                            ts_code_formats = [
+                                f"{code}.{market}",
+                                f"{code}.{market.lower()}",
+                                f"{market}{code}",
+                                f"{market.lower()}{code}"
+                            ]
+                            
+                            # 从stock_basic获取真实股票名称
+                            stock_name = f"{code}（股票）"  # 默认名称
+                            for ts_format in ts_code_formats:
+                                if ts_format in stock_name_map:
+                                    stock_name = stock_name_map[ts_format]
+                                    break
+                        else:
+                            continue
+                        
+                        # 计算涨跌额和涨跌幅
+                        if prev_record:
+                            # 解析前一天数据
+                            prev_date_int = struct.unpack('I', prev_record[0:4])[0]  # 前一天日期
+                            prev_close_val = struct.unpack('I', prev_record[16:20])[0] / 100  # 前一天收盘价
+                            
+                            # 计算涨跌额和涨跌幅
+                            preclose = prev_close_val  # 昨收价
+                            change = close_val - preclose  # 涨跌额
+                            pct_chg = (change / preclose) * 100 if preclose != 0 else 0.0  # 涨跌幅
+                        else:
+                            # 只有一条记录，无法计算涨跌额和涨跌幅，设为0
+                            preclose = close_val  # 没有前一天数据，使用收盘价作为昨收价
+                            change = 0.0
+                            pct_chg = 0.0
+                        
+                        # 添加到数据列表
+                        data.append({
+                            'date': date.strftime('%Y-%m-%d'),
+                            'code': code,
+                            'name': stock_name,
+                            'pct_chg': pct_chg,
+                            'close': close_val,
+                            'change': change,
+                            'open': open_val,
+                            'high': high_val,
+                            'low': low_val,
+                            'volume': volume,
+                            'amount': amount,
+                            'preclose': preclose
+                        })
+                    
+                    # 添加到所有股票数据列表
+                    all_stock_data.extend(data)
+                    
+                except Exception as e:
+                    logger.exception(f"解析文件{file_path}失败: {e}")
+                    continue
+            
+            # 更新进度
+            self.progress_bar.setValue(80)
+            
+            if not all_stock_data:
+                logger.warning(f"没有解析到任何{stock_type}数据")
+                self.statusBar().showMessage(f"没有解析到任何{stock_type}数据，请检查文件格式是否正确", 5000)
+                self.progress_bar.setVisible(False)
+                return
+            
+            # 过滤出最新交易日的数据
+            if latest_date:
+                latest_date_str = latest_date.strftime('%Y-%m-%d')
+                all_stock_data = [item for item in all_stock_data if item['date'] == latest_date_str]
+                logger.info(f"最新交易日: {latest_date_str}，共{len(all_stock_data)}只{stock_type}股票有数据")
+            
+            # 清空现有数据前先关闭排序
+            self.stock_table.setSortingEnabled(False)
+            
+            # 清空现有数据
+            self.stock_table.setRowCount(0)
+            
+            # 更新进度
+            self.progress_bar.setValue(90)
+            
+            # 添加数据到表格
+            for row_data in all_stock_data:
+                # 计算振幅
+                if row_data['preclose'] > 0:
+                    amplitude = ((row_data['high'] - row_data['low']) / row_data['preclose']) * 100
+                else:
+                    amplitude = 0.0
+                
+                # 构建数据行，适配新的列结构
+                data_row = [
+                    row_data['date'],  # 日期
+                    row_data['code'],  # 代码
+                    row_data['name'],  # 名称
+                    f"{row_data['pct_chg']:.2f}",  # 涨跌幅
+                    f"{row_data['close']:.2f}",  # 现价
+                    f"{row_data['change']:.2f}",  # 涨跌
+                    f"{row_data['volume']:,}",  # 总量
+                    f"{row_data['amount']:,}",  # 成交额
+                    f"{row_data['open']:.2f}",  # 今开
+                    f"{row_data['high']:.2f}",  # 最高
+                    f"{row_data['low']:.2f}",  # 最低
+                    f"{row_data['preclose']:.2f}",  # 昨收
+                    f"{amplitude:.2f}%"  # 振幅%
+                ]
+                
+                # 添加行
+                row_pos = self.stock_table.rowCount()
+                self.stock_table.insertRow(row_pos)
+                
+                # 设置数据
+                for col, value in enumerate(data_row):
+                    item = QTableWidgetItem(value)
+                    
+                    # 设置对齐方式
+                    if col in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
+                        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    
+                    # 设置通达信风格的颜色
+                    if col == 3:  # 涨跌幅%
+                        # 涨跌幅颜色
+                        if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
+                            item.setForeground(QColor(255, 0, 0))  # 红色上涨
+                        elif value.startswith("-"):
+                            item.setForeground(QColor(0, 255, 0))  # 绿色下跌
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色平盘
+                    elif col == 5:  # 涨跌
+                        # 涨跌额颜色
+                        if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
+                            item.setForeground(QColor(255, 0, 0))  # 红色上涨
+                        elif value.startswith("-"):
+                            item.setForeground(QColor(0, 255, 0))  # 绿色下跌
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色平盘
+                    # 获取昨收价用于比较
+                    preclose = float(data_row[11]) if len(data_row) > 11 and data_row[11] != "-" else 0.0
+                    if col == 4:  # 现价
+                        # 现价与昨收比较
+                        current_price = float(value) if value != "-" else 0.0
+                        if current_price > preclose:
+                            item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                        elif current_price < preclose:
+                            item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                    elif col == 8:  # 今开
+                        # 今开与昨收比较
+                        open_price = float(value) if value != "-" else 0.0
+                        if open_price > preclose:
+                            item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                        elif open_price < preclose:
+                            item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                    elif col == 9:  # 最高
+                        # 最高与昨收比较
+                        high_price = float(value) if value != "-" else 0.0
+                        if high_price > preclose:
+                            item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                        elif high_price < preclose:
+                            item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                    elif col == 10:  # 最低
+                        # 最低与昨收比较
+                        low_price = float(value) if value != "-" else 0.0
+                        if low_price > preclose:
+                            item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                        elif low_price < preclose:
+                            item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                    
+                    self.stock_table.setItem(row_pos, col, item)
+            
+            # 数据添加完成后重新启用排序
+            self.stock_table.setSortingEnabled(True)
+            
+            # 更新进度
+            self.progress_bar.setValue(100)
+            
+            logger.info(f"{stock_type}数据显示完成")
+            self.statusBar().showMessage(f"成功显示{len(all_stock_data)}只{stock_type}股票的最新交易日数据", 3000)
+            
+            # 隐藏进度条
+            self.progress_bar.setVisible(False)
+            
+        except Exception as e:
+            logger.exception(f"显示{stock_type}数据失败: {e}")
+            self.statusBar().showMessage(f"显示{stock_type}数据失败: {str(e)[:50]}...", 5000)
+            # 隐藏进度条
+            self.progress_bar.setVisible(False)
+    
+    def show_hs_aj_stock_data(self):
+        """
+        显示沪深京A股数据，从通达信日线文件读取最新交易日的全部股票数据
+        """
+        try:
+            logger.info("开始显示沪深京A股数据")
+            
+            # 显示进度条
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            
+            # 更新配置中的通达信数据路径为用户指定的路径
+            import polars as pl
+            from src.data.tdx_handler import TdxHandler
+            
+            # 更新配置中的通达信数据路径
+            self.data_manager.config.data.tdx_data_path = r"H:\zxzq\vipdoc"
+            
+            # 创建通达信数据处理器
+            tdx_handler = TdxHandler(self.data_manager.config, self.data_manager.db_manager)
+            
+            # 更新进度
+            self.progress_bar.setValue(10)
+            
+            # 构建通达信日线数据目录路径
+            from pathlib import Path
+            tdx_data_path = Path(r"H:\zxzq\vipdoc")
+            
+            # 获取所有日线数据文件
+            sh_stock_files = list(Path(tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'sh' / 'lday').exists() else []
+            sz_stock_files = list(Path(tdx_data_path / 'sz' / 'lday').glob('sz*.day')) if (tdx_data_path / 'sz' / 'lday').exists() else []
+            all_stock_files = sh_stock_files + sz_stock_files
+            
+            logger.info(f"找到{len(all_stock_files)}个通达信股票数据文件")
+            
+            # 更新进度
+            self.progress_bar.setValue(20)
+            
+            if not all_stock_files:
+                logger.warning("没有找到通达信股票数据文件")
+                self.statusBar().showMessage("没有找到通达信股票数据文件，请检查路径是否正确", 5000)
+                self.progress_bar.setVisible(False)
+                return
+            
+            # 获取最新交易日
+            latest_date = None
+            all_stock_data = []
+            
+            # 获取股票基本信息映射
+            stock_name_map = self.data_manager.get_stock_basic()
+            
+            # 更新进度
+            self.progress_bar.setValue(30)
+            
+            # 解析所有股票文件，获取最新交易日的数据
+            total_files = len(all_stock_files)
+            for i, file_path in enumerate(all_stock_files):
+                try:
+                    # 更新进度
+                    progress = 30 + int((i / total_files) * 50)
+                    self.progress_bar.setValue(progress)
+                    
+                    # 解析文件，获取所有数据
+                    logger.info(f"正在解析文件: {file_path}")
+                    
+                    # 直接解析文件，获取所有数据
+                    data = []
+                    with open(file_path, 'rb') as f:
+                        # 获取文件大小
+                        f.seek(0, 2)
+                        file_size = f.tell()
+                        
+                        # 计算数据条数
+                        record_count = file_size // 32
+                        if record_count == 0:
+                            continue
+                        
+                        # 读取最新两条记录，用于计算涨跌幅和涨跌
+                        # 先读取最新一条记录（当天数据）
+                        f.seek((record_count - 1) * 32)
+                        latest_record = f.read(32)
+                        
+                        # 如果有至少两条记录，读取前一天的记录（用于计算涨跌）
+                        if record_count >= 2:
+                            f.seek((record_count - 2) * 32)
+                            prev_record = f.read(32)
+                        else:
+                            prev_record = None
+                        
+                        # 解析最新一条记录
+                        import struct
+                        from datetime import datetime
+                        
+                        # 解析当天数据
+                        date_int = struct.unpack('I', latest_record[0:4])[0]  # 日期，格式：YYYYMMDD
+                        open_val = struct.unpack('I', latest_record[4:8])[0] / 100  # 开盘价，转换为元
+                        high_val = struct.unpack('I', latest_record[8:12])[0] / 100  # 最高价，转换为元
+                        low_val = struct.unpack('I', latest_record[12:16])[0] / 100  # 最低价，转换为元
+                        close_val = struct.unpack('I', latest_record[16:20])[0] / 100  # 收盘价，转换为元
+                        volume = struct.unpack('I', latest_record[20:24])[0]  # 成交量，单位：手
+                        amount = struct.unpack('I', latest_record[24:28])[0] / 100  # 成交额，转换为元
+                        
+                        # 转换日期格式
+                        date_str = str(date_int)
+                        date = datetime.strptime(date_str, '%Y%m%d').date()
+                        
+                        # 更新最新日期
+                        if latest_date is None or date > latest_date:
+                            latest_date = date
+                        
+                        # 提取股票代码
+                        file_name = file_path.stem
+                        if file_name.startswith('sh'):
+                            code = file_name[2:]
+                            market = "SH"
+                            ts_code = f"{code}.{market}"
+                            # 从stock_basic获取真实股票名称
+                            stock_name = stock_name_map.get(ts_code, f"{code}（股票）")
+                        elif file_name.startswith('sz'):
+                            code = file_name[2:]
+                            market = "SZ"
+                            ts_code = f"{code}.{market}"
+                            # 从stock_basic获取真实股票名称
+                            stock_name = stock_name_map.get(ts_code, f"{code}（股票）")
+                        else:
+                            continue
+                        
+                        # 计算涨跌额和涨跌幅
+                        if prev_record:
+                            # 解析前一天数据
+                            prev_date_int = struct.unpack('I', prev_record[0:4])[0]  # 前一天日期
+                            prev_close_val = struct.unpack('I', prev_record[16:20])[0] / 100  # 前一天收盘价
+                            
+                            # 计算涨跌额和涨跌幅
+                            preclose = prev_close_val  # 昨收价
+                            change = close_val - preclose  # 涨跌额
+                            pct_chg = (change / preclose) * 100 if preclose != 0 else 0.0  # 涨跌幅
+                        else:
+                            # 只有一条记录，无法计算涨跌额和涨跌幅，设为0
+                            preclose = close_val  # 没有前一天数据，使用收盘价作为昨收价
+                            change = 0.0
+                            pct_chg = 0.0
+                        
+                        # 添加到数据列表
+                        data.append({
+                            'date': date.strftime('%Y-%m-%d'),
+                            'code': code,
+                            'name': stock_name,
+                            'pct_chg': pct_chg,
+                            'close': close_val,
+                            'change': change,
+                            'open': open_val,
+                            'high': high_val,
+                            'low': low_val,
+                            'volume': volume,
+                            'amount': amount,
+                            'preclose': preclose
+                        })
+                    
+                    # 添加到所有股票数据列表
+                    all_stock_data.extend(data)
+                    
+                except Exception as e:
+                    logger.exception(f"解析文件{file_path}失败: {e}")
+                    continue
+            
+            # 更新进度
+            self.progress_bar.setValue(80)
+            
+            if not all_stock_data:
+                logger.warning("没有解析到任何股票数据")
+                self.statusBar().showMessage("没有解析到任何股票数据，请检查文件格式是否正确", 5000)
+                self.progress_bar.setVisible(False)
+                return
+            
+            # 过滤出最新交易日的数据
+            if latest_date:
+                latest_date_str = latest_date.strftime('%Y-%m-%d')
+                all_stock_data = [item for item in all_stock_data if item['date'] == latest_date_str]
+                logger.info(f"最新交易日: {latest_date_str}，共{len(all_stock_data)}只股票有数据")
+            
+            # 清空现有数据
+            self.stock_table.setRowCount(0)
+            
+            # 更新进度
+            self.progress_bar.setValue(90)
+            
+            # 添加数据到表格
+            for row_data in all_stock_data:
+                # 计算振幅
+                if row_data['preclose'] > 0:
+                    amplitude = ((row_data['high'] - row_data['low']) / row_data['preclose']) * 100
+                else:
+                    amplitude = 0.0
+                
+                # 构建数据行，适配新的列结构
+                data_row = [
+                    row_data['date'],  # 日期
+                    row_data['code'],  # 代码
+                    row_data['name'],  # 名称
+                    f"{row_data['pct_chg']:.2f}",  # 涨跌幅
+                    f"{row_data['close']:.2f}",  # 现价
+                    f"{row_data['change']:.2f}",  # 涨跌
+                    f"{row_data['volume']:,}",  # 总量
+                    f"{row_data['amount']:,}",  # 成交额
+                    f"{row_data['open']:.2f}",  # 今开
+                    f"{row_data['high']:.2f}",  # 最高
+                    f"{row_data['low']:.2f}",  # 最低
+                    f"{row_data['preclose']:.2f}",  # 昨收
+                    f"{amplitude:.2f}%"  # 振幅%
+                ]
+                
+                # 添加行
+                row_pos = self.stock_table.rowCount()
+                self.stock_table.insertRow(row_pos)
+                
+                # 设置数据
+                for col, value in enumerate(data_row):
+                    item = QTableWidgetItem(value)
+                    
+                    # 设置对齐方式
+                    if col in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
+                        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    
+                    # 设置通达信风格的颜色
+                    if col == 3:  # 涨跌幅%
+                        # 涨跌幅颜色
+                        if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
+                            item.setForeground(QColor(255, 0, 0))  # 红色上涨
+                        elif value.startswith("-"):
+                            item.setForeground(QColor(0, 255, 0))  # 绿色下跌
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色平盘
+                    elif col == 5:  # 涨跌
+                        # 涨跌额颜色
+                        if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
+                            item.setForeground(QColor(255, 0, 0))  # 红色上涨
+                        elif value.startswith("-"):
+                            item.setForeground(QColor(0, 255, 0))  # 绿色下跌
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色平盘
+                    # 获取昨收价用于比较
+                    preclose_val = float(data_row[11]) if len(data_row) > 11 and data_row[11] != "-" else 0.0
+                    if col == 4:  # 现价
+                        # 现价与昨收比较
+                        current_price = float(value) if value != "-" else 0.0
+                        if current_price > preclose_val:
+                            item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                        elif current_price < preclose_val:
+                            item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                    elif col == 8:  # 今开
+                        # 今开与昨收比较
+                        open_price = float(value) if value != "-" else 0.0
+                        if open_price > preclose_val:
+                            item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                        elif open_price < preclose_val:
+                            item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                    elif col == 9:  # 最高
+                        # 最高与昨收比较
+                        high_price = float(value) if value != "-" else 0.0
+                        if high_price > preclose_val:
+                            item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                        elif high_price < preclose_val:
+                            item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                    elif col == 10:  # 最低
+                        # 最低与昨收比较
+                        low_price = float(value) if value != "-" else 0.0
+                        if low_price > preclose_val:
+                            item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                        elif low_price < preclose_val:
+                            item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                    
+                    self.stock_table.setItem(row_pos, col, item)
+            
+            # 数据添加完成后重新启用排序
+            self.stock_table.setSortingEnabled(True)
+            
+            # 更新进度
+            self.progress_bar.setValue(100)
+            
+            logger.info("沪深京A股数据显示完成")
+            self.statusBar().showMessage(f"成功显示{len(all_stock_data)}只股票的最新交易日数据", 3000)
+            
+            # 隐藏进度条
+            self.progress_bar.setVisible(False)
+            
+        except Exception as e:
+            logger.exception(f"显示沪深京A股数据失败: {e}")
+            self.statusBar().showMessage(f"显示沪深京A股数据失败: {str(e)[:50]}...", 5000)
+            # 隐藏进度条
+            self.progress_bar.setVisible(False)
     
     def show_index_data(self, index_name):
         """
@@ -692,16 +1628,12 @@ class MainWindow(QMainWindow):
         try:
             logger.info(f"开始显示{index_name}的数据")
             
-            # 使用AkShare获取指数数据
-            import akshare as ak
-            import requests
-            
             # 指数代码映射
             index_code_map = {
-                "上证指数": "000001",
-                "深证成指": "399001",
-                "创业板指": "399006",
-                "科创板指": "000688"
+                "上证指数": "sh000001",
+                "深证成指": "sz399001",
+                "创业板指": "sz399006",
+                "科创板指": "sh000688"
             }
             
             if index_name not in index_code_map:
@@ -710,54 +1642,96 @@ class MainWindow(QMainWindow):
             
             index_code = index_code_map[index_name]
             
-            # 获取指数历史日线数据
-            import datetime as dt
-            end_date = dt.datetime.now().strftime("%Y%m%d")
-            start_date = (dt.datetime.now() - dt.timedelta(days=30)).strftime("%Y%m%d")
+            # 构建通达信指数数据目录路径
+            from pathlib import Path
+            tdx_data_path = Path(r"H:\zxzq\vipdoc")
             
-            try:
-                index_daily = ak.index_zh_a_hist(
-                    symbol=index_code,
-                    period="daily",
-                    start_date=start_date,
-                    end_date=end_date
-                )
-            except requests.exceptions.ConnectionError as conn_e:
-                logger.warning(f"网络连接失败，无法获取{index_name}的数据: {conn_e}")
-                return
-            except Exception as e:
-                logger.exception(f"获取{index_name}数据失败: {e}")
-                return
+            # 确定指数文件路径
+            market = "sh" if index_code.startswith("sh") else "sz"
+            index_file = Path(tdx_data_path / market / 'lday' / f"{index_code}.day")
             
-            if index_daily.empty:
-                logger.warning(f"没有找到{index_name}的历史数据")
+            if not index_file.exists():
+                logger.warning(f"未找到{index_name}的通达信指数文件: {index_file}")
+                self.statusBar().showMessage(f"未找到{index_name}的通达信指数文件，请检查路径是否正确", 5000)
                 return
-            
-            logger.info(f"获取到{index_name}的{len(index_daily)}条历史数据")
             
             # 清空现有数据
+            self.stock_table.setSortingEnabled(False)
             self.stock_table.setRowCount(0)
             
-            # 添加指数历史数据
-            for index, row in index_daily.iterrows():
+            import struct
+            from datetime import datetime
+            
+            # 解析指数文件
+            with open(index_file, 'rb') as f:
+                # 获取文件大小
+                f.seek(0, 2)
+                file_size = f.tell()
+                
+                # 计算数据条数
+                record_count = file_size // 32
+                if record_count == 0:
+                    logger.warning(f"{index_name}的指数文件为空")
+                    return
+                
+                # 读取最新30天的数据
+                start_record = max(0, record_count - 30)
+                f.seek(start_record * 32)
+                
+                # 读取所有记录
+                records = []
+                for _ in range(record_count - start_record):
+                    record = f.read(32)
+                    if len(record) != 32:
+                        break
+                    records.append(record)
+            
+            # 解析记录并添加到表格
+            prev_close = None
+            for record in records:
+                # 解析记录
+                date_int = struct.unpack('I', record[0:4])[0]  # 日期，格式：YYYYMMDD
+                open_val = struct.unpack('I', record[4:8])[0] / 100  # 开盘价，转换为元
+                high_val = struct.unpack('I', record[8:12])[0] / 100  # 最高价，转换为元
+                low_val = struct.unpack('I', record[12:16])[0] / 100  # 最低价，转换为元
+                close_val = struct.unpack('I', record[16:20])[0] / 100  # 收盘价，转换为元
+                volume = struct.unpack('I', record[20:24])[0]  # 成交量，单位：手
+                amount = struct.unpack('I', record[24:28])[0] / 100  # 成交额，转换为元
+                
+                # 转换日期格式
+                date_str = str(date_int)
+                date = datetime.strptime(date_str, '%Y%m%d').strftime('%Y-%m-%d')
+                
+                # 计算涨跌额和涨跌幅
+                if prev_close is not None:
+                    change = close_val - prev_close
+                    pct_chg = (change / prev_close) * 100 if prev_close != 0 else 0.0
+                else:
+                    # 第一条记录，无法计算涨跌额和涨跌幅
+                    change = 0.0
+                    pct_chg = 0.0
+                
+                # 计算振幅
+                if prev_close is not None and prev_close > 0:
+                    amplitude = ((high_val - low_val) / prev_close) * 100
+                else:
+                    amplitude = 0.0
+                
                 # 构建数据行
                 data_row = [
+                    date,  # 日期
                     index_code,  # 代码
                     index_name,  # 名称
-                    f"{row['涨跌幅']:.2f}%" if not pd.isna(row['涨跌幅']) else "0.00%",
-                    f"{row['收盘']:.2f}" if not pd.isna(row['收盘']) else "0.00",
-                    f"{row['涨跌额']:.2f}" if not pd.isna(row['涨跌额']) else "0.00",
-                    "-",  # 买一价
-                    "-",  # 卖一价
-                    f"{row['成交量']:,}" if not pd.isna(row['成交量']) else "0",
-                    "-",  # 现量
-                    "-",  # 涨速
-                    "-",  # 换手率
-                    f"{row['开盘']:.2f}" if not pd.isna(row['开盘']) else "0.00",
-                    f"{row['最高']:.2f}" if not pd.isna(row['最高']) else "0.00",
-                    f"{row['最低']:.2f}" if not pd.isna(row['最低']) else "0.00",
-                    f"{row['昨收']:.2f}" if not pd.isna(row['昨收']) else "0.00",
-                    "-"  # 总市值
+                    f"{pct_chg:.2f}",  # 涨跌幅
+                    f"{close_val:.2f}",  # 现价
+                    f"{change:.2f}",  # 涨跌
+                    f"{volume:,}",  # 总量
+                    f"{amount:,}",  # 成交额
+                    f"{open_val:.2f}",  # 今开
+                    f"{high_val:.2f}",  # 最高
+                    f"{low_val:.2f}",  # 最低
+                    f"{prev_close:.2f}" if prev_close is not None else f"{close_val:.2f}",  # 昨收
+                    f"{amplitude:.2f}%"  # 振幅%
                 ]
                 
                 # 添加行
@@ -769,17 +1743,72 @@ class MainWindow(QMainWindow):
                     item = QTableWidgetItem(value)
                     
                     # 设置对齐方式
-                    if col in [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]:
+                    if col in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
                         item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                     
-                    # 设置涨跌幅颜色
-                    if col == 2:
-                        if value.startswith("+") or (value.replace("%", "").replace(".", "").isdigit() and float(value.replace("%", "")) > 0):
-                            item.setForeground(Qt.red)
+                    # 设置通达信风格的颜色
+                    if col == 3:  # 涨跌幅%
+                        # 涨跌幅颜色
+                        if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
+                            item.setForeground(QColor(255, 0, 0))  # 红色上涨
                         elif value.startswith("-"):
-                            item.setForeground(Qt.green)
+                            item.setForeground(QColor(0, 255, 0))  # 绿色下跌
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色平盘
+                    elif col == 5:  # 涨跌
+                        # 涨跌额颜色
+                        if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
+                            item.setForeground(QColor(255, 0, 0))  # 红色上涨
+                        elif value.startswith("-"):
+                            item.setForeground(QColor(0, 255, 0))  # 绿色下跌
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色平盘
+                    # 获取昨收价用于比较
+                    preclose_val = float(data_row[11]) if len(data_row) > 11 and data_row[11] != "-" else 0.0
+                    if col == 4:  # 现价
+                        # 现价与昨收比较
+                        current_price = float(value) if value != "-" else 0.0
+                        if current_price > preclose_val:
+                            item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                        elif current_price < preclose_val:
+                            item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                    elif col == 8:  # 今开
+                        # 今开与昨收比较
+                        open_price = float(value) if value != "-" else 0.0
+                        if open_price > preclose_val:
+                            item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                        elif open_price < preclose_val:
+                            item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                    elif col == 9:  # 最高
+                        # 最高与昨收比较
+                        high_price = float(value) if value != "-" else 0.0
+                        if high_price > preclose_val:
+                            item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                        elif high_price < preclose_val:
+                            item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
+                    elif col == 10:  # 最低
+                        # 最低与昨收比较
+                        low_price = float(value) if value != "-" else 0.0
+                        if low_price > preclose_val:
+                            item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
+                        elif low_price < preclose_val:
+                            item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
+                        else:
+                            item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
                     
                     self.stock_table.setItem(row_pos, col, item)
+                
+                # 更新前收盘价，用于计算下一条记录的涨跌幅
+                prev_close = close_val
+            
+            # 数据添加完成后重新启用排序
+            self.stock_table.setSortingEnabled(True)
             
             logger.info(f"{index_name}数据显示完成")
             
@@ -788,246 +1817,278 @@ class MainWindow(QMainWindow):
     
     def refresh_stock_data(self):
         """
-        从AkShare获取实时股票数据并更新表格
+        从通达信获取股票数据并更新表格
         """
         try:
-            logger.info("开始从AkShare获取实时股票数据")
+            logger.info("开始从通达信获取股票数据")
             
-            # 使用AkShare获取实时股票数据
-            import akshare as ak
-            import requests
-            
-            # 获取沪深京A股实时行情
-            try:
-                realtime_data = ak.stock_zh_a_spot()
-            except requests.exceptions.ConnectionError as conn_e:
-                logger.warning(f"网络连接失败，无法获取实时股票数据: {conn_e}")
-                return
-            except Exception as e:
-                logger.exception(f"获取实时股票数据失败: {e}")
-                return
-            
-            if realtime_data.empty:
-                logger.warning("从AkShare获取的实时股票数据为空")
-                return
-            
-            logger.info(f"从AkShare获取到{len(realtime_data)}条实时股票数据")
-            
-            # 清空现有数据
-            self.stock_table.setRowCount(0)
-            
-            # 添加实时数据
-            for index, row in realtime_data.iterrows():
-                # 只显示部分数据，最多显示100条
-                if index >= 100:
-                    break
-                
-                # 构建数据行
-                data_row = [
-                    row['代码'],
-                    row['名称'],
-                    f"{row['涨跌幅']:.2f}%" if not pd.isna(row['涨跌幅']) else "0.00%",
-                    f"{row['最新价']:.2f}" if not pd.isna(row['最新价']) else "0.00",
-                    f"{row['涨跌额']:.2f}" if not pd.isna(row['涨跌额']) else "0.00",
-                    f"{row['买入']:.2f}" if not pd.isna(row['买入']) else "0.00",
-                    f"{row['卖出']:.2f}" if not pd.isna(row['卖出']) else "0.00",
-                    f"{row['成交量']:,}" if not pd.isna(row['成交量']) else "0",
-                    "-",  # 现量
-                    "-",  # 涨速
-                    "-",  # 换手率
-                    f"{row['今开']:.2f}" if not pd.isna(row['今开']) else "0.00",
-                    f"{row['最高']:.2f}" if not pd.isna(row['最高']) else "0.00",
-                    f"{row['最低']:.2f}" if not pd.isna(row['最低']) else "0.00",
-                    f"{row['昨收']:.2f}" if not pd.isna(row['昨收']) else "0.00",
-                    "-"  # 总市值
-                ]
-                
-                # 添加行
-                row_pos = self.stock_table.rowCount()
-                self.stock_table.insertRow(row_pos)
-                
-                # 设置数据
-                for col, value in enumerate(data_row):
-                    item = QTableWidgetItem(value)
-                    
-                    # 设置对齐方式
-                    if col in [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]:
-                        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                    
-                    # 设置涨跌幅颜色
-                    if col == 2:
-                        if value.startswith("+") or (value.replace("%", "").replace(".", "").isdigit() and float(value.replace("%", "")) > 0):
-                            item.setForeground(Qt.red)
-                        elif value.startswith("-"):
-                            item.setForeground(Qt.green)
-                    
-                    self.stock_table.setItem(row_pos, col, item)
-            
-            logger.info("实时股票数据更新完成")
+            # 默认显示上证指数数据
+            self.on_index()
             
         except Exception as e:
-            logger.exception(f"获取实时股票数据失败: {e}")
+            logger.exception(f"获取股票数据失败: {e}")
+    
+    def show_latest_5days_data(self):
+        """
+        显示最新5个交易日的上证指数和深证成指数据
+        """
+        try:
+            logger.info("开始显示最新5个交易日的上证指数和深证成指数据")
+            
+            # 指数代码映射
+            index_map = {
+                "sh000001": "上证指数",
+                "sz399001": "深证成指"
+            }
+            
+            # 清空现有数据
+            self.stock_table.setSortingEnabled(False)
+            self.stock_table.setRowCount(0)
+            
+            # 设置表头 - 确保与行情窗口字段一致
+            headers = ["日期", "代码", "名称", "涨跌幅", "涨跌额", "最高价", "最低价", "收盘价", "开盘价", "成交量"]
+            self.stock_table.setColumnCount(len(headers))
+            self.stock_table.setHorizontalHeaderLabels(headers)
+            
+            # 构建通达信指数数据目录路径
+            from pathlib import Path
+            tdx_data_path = Path(r"H:\zxzq\vipdoc")
+            
+            import struct
+            from datetime import datetime
+            
+            # 存储所有数据，用于后续排序和显示
+            all_data = []
+            
+            for index_code, index_name in index_map.items():
+                try:
+                    market = "sh" if index_code.startswith("sh") else "sz"
+                    index_file = Path(tdx_data_path / market / 'lday' / f"{index_code}.day")
+                    
+                    if not index_file.exists():
+                        logger.warning(f"未找到{index_name}的通达信指数文件: {index_file}")
+                        continue
+                    
+                    with open(index_file, 'rb') as f:
+                        # 获取文件大小
+                        f.seek(0, 2)
+                        file_size = f.tell()
+                        
+                        # 计算数据条数
+                        record_count = file_size // 32
+                        if record_count == 0:
+                            continue
+                        
+                        # 确定要读取的记录数量（最多5条）
+                        read_count = min(5, record_count)
+                        
+                        # 从最新记录开始读取
+                        for i in range(read_count):
+                            # 计算记录位置
+                            record_pos = (record_count - 1 - i) * 32
+                            f.seek(record_pos)
+                            record = f.read(32)
+                            
+                            # 解析记录
+                            date_int = struct.unpack('I', record[0:4])[0]  # 日期，格式：YYYYMMDD
+                            open_val = struct.unpack('I', record[4:8])[0] / 100  # 开盘价
+                            high_val = struct.unpack('I', record[8:12])[0] / 100  # 最高价
+                            low_val = struct.unpack('I', record[12:16])[0] / 100  # 最低价
+                            close_val = struct.unpack('I', record[16:20])[0] / 100  # 收盘价
+                            volume = struct.unpack('I', record[20:24])[0]  # 成交量
+                            amount = struct.unpack('I', record[24:28])[0] / 100  # 成交额
+                            
+                            # 转换日期格式
+                            date_str = str(date_int)
+                            date = datetime.strptime(date_str, '%Y%m%d').date()
+                            date_display = date.strftime('%Y-%m-%d')
+                            
+                            # 计算涨跌额和涨跌幅
+                            # 获取前一天的收盘价作为昨收
+                            prev_close = 0.0
+                            try:
+                                if i < read_count - 1:
+                                    # 如果不是最后一条记录（最旧的），使用下一条记录的收盘价作为昨收
+                                    prev_pos = record_pos + 32
+                                    f.seek(prev_pos)
+                                    prev_record = f.read(32)
+                                    if len(prev_record) == 32:
+                                        prev_close = struct.unpack('I', prev_record[16:20])[0] / 100
+                                    else:
+                                        prev_close = close_val
+                                elif record_count > read_count:
+                                    # 如果还有更早的记录，使用更早的记录
+                                    prev_pos = (record_count - 1 - read_count) * 32
+                                    f.seek(prev_pos)
+                                    prev_record = f.read(32)
+                                    if len(prev_record) == 32:
+                                        prev_close = struct.unpack('I', prev_record[16:20])[0] / 100
+                                    else:
+                                        prev_close = close_val
+                                else:
+                                    # 没有前一天数据，使用当前收盘价
+                                    prev_close = close_val
+                            except Exception as e:
+                                # 任何错误都使用当前收盘价作为昨收
+                                prev_close = close_val
+                            
+                            # 计算涨跌额和涨跌幅
+                            change = close_val - prev_close
+                            pct_chg = (change / prev_close) * 100 if prev_close != 0 else 0.0
+                            
+                            # 添加到数据列表
+                            all_data.append({
+                                "index_name": index_name,
+                                "date": date,
+                                "date_display": date_display,
+                                "open": open_val,
+                                "high": high_val,
+                                "low": low_val,
+                                "close": close_val,
+                                "change": change,
+                                "pct_chg": pct_chg
+                            })
+                except Exception as e:
+                    logger.exception(f"解析{index_name}文件失败: {e}")
+                    continue
+            
+            # 按日期排序（最新日期在前）
+            all_data.sort(key=lambda x: x["date"], reverse=True)
+            
+            # 添加到表格
+            self.stock_table.setRowCount(len(all_data))
+            
+            for row_idx, data in enumerate(all_data):
+                # 指数名称
+                item = QTableWidgetItem(data["index_name"])
+                item.setTextAlignment(Qt.AlignCenter)
+                self.stock_table.setItem(row_idx, 0, item)
+                
+                # 日期
+                item = QTableWidgetItem(data["date_display"])
+                item.setTextAlignment(Qt.AlignCenter)
+                self.stock_table.setItem(row_idx, 1, item)
+                
+                # 开盘价
+                item = QTableWidgetItem(f"{data['open']:.2f}")
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.stock_table.setItem(row_idx, 2, item)
+                
+                # 最高价
+                item = QTableWidgetItem(f"{data['high']:.2f}")
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.stock_table.setItem(row_idx, 3, item)
+                
+                # 最低价
+                item = QTableWidgetItem(f"{data['low']:.2f}")
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.stock_table.setItem(row_idx, 4, item)
+                
+                # 收盘价
+                item = QTableWidgetItem(f"{data['close']:.2f}")
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.stock_table.setItem(row_idx, 5, item)
+                
+                # 涨跌额
+                item = QTableWidgetItem(f"{data['change']:+.2f}")
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # 设置颜色：上涨红色，下跌绿色
+                if data['change'] > 0:
+                    item.setForeground(QColor(255, 0, 0))
+                elif data['change'] < 0:
+                    item.setForeground(QColor(0, 200, 0))
+                self.stock_table.setItem(row_idx, 6, item)
+                
+                # 涨跌幅
+                item = QTableWidgetItem(f"{data['pct_chg']:+.2f}")
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # 设置颜色：上涨红色，下跌绿色
+                if data['pct_chg'] > 0:
+                    item.setForeground(QColor(255, 0, 0))
+                elif data['pct_chg'] < 0:
+                    item.setForeground(QColor(0, 200, 0))
+                self.stock_table.setItem(row_idx, 7, item)
+            
+            # 调整列宽
+            for col in range(8):
+                self.stock_table.resizeColumnToContents(col)
+            
+            # 启用排序
+            self.stock_table.setSortingEnabled(True)
+            
+            logger.info(f"最新5个交易日的数据显示完成，共显示{len(all_data)}条记录")
+            
+        except Exception as e:
+            logger.exception(f"显示最新5个交易日数据失败: {e}")
     
     def refresh_market_info(self):
         """
-        从AkShare获取市场指数信息并更新状态栏
+        从通达信获取市场指数信息并更新状态栏
         """
         try:
-            logger.info("开始从AkShare获取市场指数信息")
+            logger.info("开始从通达信获取市场指数信息")
             
-            # 使用AkShare获取市场指数实时行情
-            import akshare as ak
-            import requests
+            # 主要指数代码映射
+            index_map = {
+                "sh000001": "上证指数",
+                "sz399001": "深证成指",
+                "sz399006": "创业板指"
+            }
             
-            # 获取主要指数数据
-            try:
-                # 尝试使用正确的方法名获取指数数据
+            # 构建通达信指数数据目录路径
+            from pathlib import Path
+            tdx_data_path = Path(r"H:\zxzq\vipdoc")
+            
+            # 解析主要指数文件，获取最新数据
+            index_info = []
+            import struct
+            from datetime import datetime
+            
+            for index_code, index_name in index_map.items():
                 try:
-                    index_data = ak.index_zh_a_spot()
-                except requests.exceptions.ConnectionError as conn_e:
-                    logger.warning(f"网络连接失败，尝试使用替代方法: {conn_e}")
-                    # 使用历史数据作为替代
-                    import datetime as dt
-                    end_date = dt.datetime.now().strftime("%Y%m%d")
-                    start_date = (dt.datetime.now() - dt.timedelta(days=1)).strftime("%Y%m%d")
+                    market = "sh" if index_code.startswith("sh") else "sz"
+                    index_file = Path(tdx_data_path / market / 'lday' / f"{index_code}.day")
                     
-                    # 获取上证指数
-                    try:
-                        sh_data = ak.index_zh_a_hist(symbol="000001", period="daily", start_date=start_date, end_date=end_date)
-                        sz_data = ak.index_zh_a_hist(symbol="399001", period="daily", start_date=start_date, end_date=end_date)
-                        cy_data = ak.index_zh_a_hist(symbol="399006", period="daily", start_date=start_date, end_date=end_date)
-                    except requests.exceptions.ConnectionError as conn_e2:
-                        logger.warning(f"网络连接失败，无法获取指数历史数据: {conn_e2}")
-                        return
-                    except Exception as e:
-                        logger.exception(f"获取指数历史数据失败: {e}")
-                        return
+                    if not index_file.exists():
+                        continue
                     
-                    # 构建状态栏信息
-                    status_info = []
-                    
-                    # 上证指数
-                    if not sh_data.empty:
-                        sh_row = sh_data.iloc[0]
-                        change_pct = sh_row['涨跌幅']
-                        change_pct_str = f"{change_pct:.2f}%" if not pd.isna(change_pct) else "0.00%"
-                        status_info.append(f"上证指数: {sh_row['收盘']:.2f} {change_pct_str}")
-                    
-                    # 深证成指
-                    if not sz_data.empty:
-                        sz_row = sz_data.iloc[0]
-                        change_pct = sz_row['涨跌幅']
-                        change_pct_str = f"{change_pct:.2f}%" if not pd.isna(change_pct) else "0.00%"
-                        status_info.append(f"深证成指: {sz_row['收盘']:.2f} {change_pct_str}")
-                    
-                    # 创业板指
-                    if not cy_data.empty:
-                        cy_row = cy_data.iloc[0]
-                        change_pct = cy_row['涨跌幅']
-                        change_pct_str = f"{change_pct:.2f}%" if not pd.isna(change_pct) else "0.00%"
-                        status_info.append(f"创业板指: {cy_row['收盘']:.2f} {change_pct_str}")
-                    
-                    # 更新状态栏
-                    if status_info:
-                        self.market_info_label.setText(" | ".join(status_info))
-                    
-                    logger.info("市场指数信息更新完成")
-                    return
-            except AttributeError:
-                # 如果方法不存在，使用替代方法
-                logger.warning("stock_zh_index_spot方法不存在，尝试使用替代方法")
-                # 使用历史数据作为替代
-                import datetime as dt
-                end_date = dt.datetime.now().strftime("%Y%m%d")
-                start_date = (dt.datetime.now() - dt.timedelta(days=1)).strftime("%Y%m%d")
-                
-                # 获取上证指数
-                try:
-                    sh_data = ak.index_zh_a_hist(symbol="000001", period="daily", start_date=start_date, end_date=end_date)
-                    sz_data = ak.index_zh_a_hist(symbol="399001", period="daily", start_date=start_date, end_date=end_date)
-                    cy_data = ak.index_zh_a_hist(symbol="399006", period="daily", start_date=start_date, end_date=end_date)
-                except requests.exceptions.ConnectionError as conn_e:
-                    logger.warning(f"网络连接失败，无法获取指数历史数据: {conn_e}")
-                    return
+                    with open(index_file, 'rb') as f:
+                        # 获取文件大小
+                        f.seek(0, 2)
+                        file_size = f.tell()
+                        
+                        # 计算数据条数
+                        record_count = file_size // 32
+                        if record_count < 2:
+                            continue
+                        
+                        # 读取最新两条记录
+                        f.seek((record_count - 2) * 32)
+                        prev_record = f.read(32)
+                        f.seek((record_count - 1) * 32)
+                        latest_record = f.read(32)
+                        
+                        # 解析记录
+                        latest_close = struct.unpack('I', latest_record[16:20])[0] / 100  # 最新收盘价
+                        prev_close = struct.unpack('I', prev_record[16:20])[0] / 100  # 前一天收盘价
+                        
+                        # 计算涨跌幅
+                        change = latest_close - prev_close
+                        pct_chg = (change / prev_close) * 100 if prev_close != 0 else 0.0
+                        
+                        # 格式化显示
+                        pct_chg_str = f"{pct_chg:+.2f}%" if pct_chg != 0 else "0.00%"
+                        index_info.append(f"{index_name}: {latest_close:.2f} {pct_chg_str}")
                 except Exception as e:
-                    logger.exception(f"获取指数历史数据失败: {e}")
-                    return
-                
-                # 构建状态栏信息
-                status_info = []
-                
-                # 上证指数
-                if not sh_data.empty:
-                    sh_row = sh_data.iloc[0]
-                    change_pct = sh_row['涨跌幅']
-                    change_pct_str = f"{change_pct:.2f}%" if not pd.isna(change_pct) else "0.00%"
-                    status_info.append(f"上证指数: {sh_row['收盘']:.2f} {change_pct_str}")
-                
-                # 深证成指
-                if not sz_data.empty:
-                    sz_row = sz_data.iloc[0]
-                    change_pct = sz_row['涨跌幅']
-                    change_pct_str = f"{change_pct:.2f}%" if not pd.isna(change_pct) else "0.00%"
-                    status_info.append(f"深证成指: {sz_row['收盘']:.2f} {change_pct_str}")
-                
-                # 创业板指
-                if not cy_data.empty:
-                    cy_row = cy_data.iloc[0]
-                    change_pct = cy_row['涨跌幅']
-                    change_pct_str = f"{change_pct:.2f}%" if not pd.isna(change_pct) else "0.00%"
-                    status_info.append(f"创业板指: {cy_row['收盘']:.2f} {change_pct_str}")
-                
-                # 更新状态栏
-                if status_info:
-                    self.market_info_label.setText(" | ".join(status_info))
-                
-                logger.info("市场指数信息更新完成")
-                return
-            
-            if index_data.empty:
-                logger.warning("从AkShare获取的指数数据为空")
-                return
-            
-            # 构建状态栏信息
-            status_info = []
-            
-            # 上证指数
-            sh_data = index_data[index_data['代码'] == '000001']
-            if not sh_data.empty:
-                sh_row = sh_data.iloc[0]
-                change_pct = sh_row['涨跌幅']
-                change_pct_str = f"{change_pct:.2f}%" if not pd.isna(change_pct) else "0.00%"
-                status_info.append(f"上证指数: {sh_row['最新价']:.2f} {change_pct_str}")
-            
-            # 深证成指
-            sz_data = index_data[index_data['代码'] == '399001']
-            if not sz_data.empty:
-                sz_row = sz_data.iloc[0]
-                change_pct = sz_row['涨跌幅']
-                change_pct_str = f"{change_pct:.2f}%" if not pd.isna(change_pct) else "0.00%"
-                status_info.append(f"深证成指: {sz_row['最新价']:.2f} {change_pct_str}")
-            
-            # 创业板指
-            cy_data = index_data[index_data['代码'] == '399006']
-            if not cy_data.empty:
-                cy_row = cy_data.iloc[0]
-                change_pct = cy_row['涨跌幅']
-                change_pct_str = f"{change_pct:.2f}%" if not pd.isna(change_pct) else "0.00%"
-                status_info.append(f"创业板指: {cy_row['最新价']:.2f} {change_pct_str}")
+                    logger.exception(f"解析{index_name}文件失败: {e}")
+                    continue
             
             # 更新状态栏
-            if status_info:
-                self.market_info_label.setText(" | ".join(status_info))
+            if index_info:
+                self.market_info_label.setText(" | ".join(index_info))
             
             logger.info("市场指数信息更新完成")
             
         except Exception as e:
             logger.exception(f"获取市场指数信息失败: {e}")
-    
-    def on_refresh(self):
-        """
-        刷新数据
-        """
-        logger.info("开始刷新数据")
-        self.refresh_stock_data()
-        self.refresh_market_info()
+           

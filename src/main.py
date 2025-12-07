@@ -5,6 +5,7 @@
 中国股市量化分析系统主入口
 """
 
+import argparse
 from loguru import logger
 from pathlib import Path
 
@@ -22,8 +23,20 @@ from PySide6.QtWidgets import QApplication
 from src.ui.main_window import MainWindow
 
 
+def parse_args():
+    """
+    解析命令行参数
+    """
+    parser = argparse.ArgumentParser(description='中国股市量化分析系统')
+    parser.add_argument('--init-db', action='store_true', help='初始化数据库表')
+    parser.add_argument('--update-stock', action='store_true', help='更新股票基本信息')
+    return parser.parse_args()
+
+
 def main():
     """主函数"""
+    # 解析命令行参数
+    args = parse_args()
     try:
         # 初始化配置
         config = Config()
@@ -41,6 +54,14 @@ def main():
             db_manager = DatabaseManager(config)
             db_manager.connect()
             logger.info("数据库连接成功")
+            
+            # 创建数据库表（如果不存在）
+            try:
+                db_manager.create_tables()
+                logger.info("数据库表创建/更新成功")
+            except Exception as table_e:
+                logger.warning(f"创建数据库表时发生错误: {table_e}")
+                # 表创建失败不影响程序启动，继续运行
             
             # 初始化数据管理器
             data_manager = DataManager(config, db_manager)
@@ -73,8 +94,11 @@ def main():
         sys.exit(1)
     finally:
         # 清理资源
-        if 'db_manager' in locals() and db_manager:
-            db_manager.disconnect()
+        try:
+            if 'db_manager' in locals() and db_manager:
+                db_manager.disconnect()
+        except Exception as cleanup_e:
+            logger.warning(f"清理数据库资源时发生错误: {cleanup_e}")
         logger.info("系统已关闭")
 
 

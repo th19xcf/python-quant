@@ -46,14 +46,14 @@ class DataManager:
                 logger.warning(f"通达信数据处理器初始化失败（离线模式下正常）: {tdx_e}")
                 self.tdx_handler = None
             
-            # 初始化AkShare数据处理器
+            # 初始化Baostock数据处理器
             try:
-                from src.data.akshare_handler import AkShareHandler
-                self.akshare_handler = AkShareHandler(self.config, self.db_manager)
-                logger.info("AkShare数据处理器初始化成功")
-            except Exception as ak_e:
-                logger.exception(f"AkShare数据处理器初始化失败: {ak_e}")
-                self.akshare_handler = None
+                from src.data.baostock_handler import BaostockHandler
+                self.baostock_handler = BaostockHandler(self.config, self.db_manager)
+                logger.info("Baostock数据处理器初始化成功")
+            except Exception as e:
+                logger.exception(f"Baostock数据处理器初始化失败: {e}")
+                self.baostock_handler = None
             
             # 初始化宏观数据处理器
             try:
@@ -73,6 +73,13 @@ class DataManager:
             
             logger.info("数据处理器初始化完成")
             
+            # 初始化完成后，自动更新股票基本信息，确保stock_basic表有数据
+            try:
+                self.update_stock_basic()
+                logger.info("自动更新股票基本信息完成")
+            except Exception as update_e:
+                logger.warning(f"自动更新股票基本信息失败: {update_e}")
+            
         except Exception as e:
             logger.exception(f"数据处理器初始化失败: {e}")
             # 离线模式下不抛出异常，继续运行
@@ -83,9 +90,9 @@ class DataManager:
         更新股票基本信息
         """
         try:
-            # 优先从AkShare获取最新数据
-            if self.akshare_handler:
-                self.akshare_handler.update_stock_basic()
+            # 优先从Baostock获取最新数据
+            if self.baostock_handler:
+                self.baostock_handler.update_stock_basic()
             logger.info("股票基本信息更新完成")
             
         except Exception as e:
@@ -102,9 +109,9 @@ class DataManager:
             end_date: 结束日期，格式：YYYYMMDD
         """
         try:
-            # 优先从AkShare获取最新数据
-            if self.akshare_handler:
-                self.akshare_handler.update_stock_daily(ts_codes, start_date, end_date)
+            # 优先从Baostock获取最新数据
+            if self.baostock_handler:
+                self.baostock_handler.update_stock_daily(ts_codes, start_date, end_date)
             logger.info("股票日线数据更新完成")
             
         except Exception as e:
@@ -116,8 +123,8 @@ class DataManager:
         更新指数基本信息
         """
         try:
-            if self.akshare_handler:
-                self.akshare_handler.update_index_basic()
+            if self.baostock_handler:
+                self.baostock_handler.update_index_basic()
             logger.info("指数基本信息更新完成")
             
         except Exception as e:
@@ -134,8 +141,8 @@ class DataManager:
             end_date: 结束日期，格式：YYYYMMDD
         """
         try:
-            if self.akshare_handler:
-                self.akshare_handler.update_index_daily(ts_codes, start_date, end_date)
+            if self.baostock_handler:
+                self.baostock_handler.update_index_daily(ts_codes, start_date, end_date)
             logger.info("指数日线数据更新完成")
             
         except Exception as e:
@@ -187,7 +194,7 @@ class DataManager:
             freq: 周期，daily或minute
             
         Returns:
-            pandas.DataFrame: 股票数据
+            pl.DataFrame: 股票数据
         """
         try:
             # TODO: 实现数据查询逻辑
@@ -208,7 +215,7 @@ class DataManager:
             freq: 周期，daily或minute
             
         Returns:
-            pandas.DataFrame: 指数数据
+            pl.DataFrame: 指数数据
         """
         try:
             # TODO: 实现数据查询逻辑
@@ -217,3 +224,90 @@ class DataManager:
         except Exception as e:
             logger.exception(f"获取指数数据失败: {e}")
             raise
+    
+    def get_stock_basic(self, ts_code: str = None):
+        """
+        获取股票基本信息
+        
+        Args:
+            ts_code: 股票代码，None表示获取所有股票基本信息
+            
+        Returns:
+            dict: 股票代码到名称的映射
+        """
+        try:
+            if not self.db_manager:
+                logger.warning("数据库连接不可用，无法获取股票基本信息")
+                return {}
+            
+            from src.database.models.stock import StockBasic
+            
+            session = self.db_manager.get_session()
+            if not session:
+                return {}
+            
+            try:
+                # 检查stock_basic表是否有数据
+                query = session.query(StockBasic)
+                stock_basics = query.all()
+                
+                # 如果没有数据，插入默认股票信息
+                if not stock_basics:
+                    logger.info("stock_basic表为空，插入默认股票信息")
+                    default_stocks = [
+                        {"ts_code": "600000.SH", "name": "浦发银行"},
+                        {"ts_code": "000001.SZ", "name": "平安银行"},
+                        {"ts_code": "300001.SZ", "name": "特锐德"}
+                    ]
+                    
+                    for stock_info in default_stocks:
+                        # 检查是否已存在
+                        existing_stock = session.query(StockBasic).filter_by(ts_code=stock_info["ts_code"]).first()
+                        if not existing_stock:
+                            new_stock = StockBasic(
+                                ts_code=stock_info["ts_code"],
+                                name=stock_info["name"]
+                            )
+                            session.add(new_stock)
+                    
+                    # 提交事务
+                    session.commit()
+                    # 重新查询数据
+                    stock_basics = session.query(StockBasic).all()
+                
+                # 构建股票代码到名称的映射
+                stock_map = {}
+                for stock in stock_basics:
+                    stock_map[stock.ts_code] = stock.name
+                
+                # 如果指定了ts_code但没有找到，添加到映射中
+                if ts_code and ts_code not in stock_map:
+                    default_map = {
+                        "600000.SH": "浦发银行",
+                        "000001.SZ": "平安银行",
+                        "300001.SZ": "特锐德"
+                    }
+                    if ts_code in default_map:
+                        stock_map[ts_code] = default_map[ts_code]
+                
+                return stock_map
+            except Exception as query_e:
+                # 如果查询失败，可能是表不存在，使用默认映射
+                logger.warning(f"股票基本信息查询失败: {query_e}")
+                # 返回默认映射，使用代码作为名称
+                default_map = {
+                    "600000.SH": "浦发银行",
+                    "000001.SZ": "平安银行",
+                    "300001.SZ": "特锐德"
+                }
+                return default_map
+            
+        except Exception as e:
+            logger.exception(f"获取股票基本信息失败: {e}")
+            # 返回默认映射，使用代码作为名称
+            default_map = {
+                "600000.SH": "浦发银行",
+                "000001.SZ": "平安银行",
+                "300001.SZ": "特锐德"
+            }
+            return default_map

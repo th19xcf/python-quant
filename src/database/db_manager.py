@@ -32,6 +32,9 @@ class DatabaseManager:
     def connect(self):
         """
         连接数据库
+        
+        Returns:
+            sqlalchemy.orm.Session: 数据库会话对象
         """
         try:
             # 创建数据库连接引擎
@@ -57,6 +60,9 @@ class DatabaseManager:
             
             logger.info(f"成功连接到数据库: {db_config.host}:{db_config.port}/{db_config.database}")
             
+            # 返回创建的会话对象
+            return self.session
+            
         except Exception as e:
             logger.exception(f"数据库连接失败: {e}")
             raise
@@ -67,11 +73,19 @@ class DatabaseManager:
         """
         try:
             if self.session:
-                self.session.close()
-                self.Session.remove()
+                try:
+                    self.session.close()
+                    self.Session.remove()
+                except Exception as session_e:
+                    logger.warning(f"关闭数据库会话时发生错误（可能是连接已丢失）: {session_e}")
+                    # 即使会话关闭失败，也要继续释放其他资源
+                    self.session = None
             
             if self.engine:
-                self.engine.dispose()
+                try:
+                    self.engine.dispose()
+                except Exception as engine_e:
+                    logger.warning(f"释放数据库引擎时发生错误: {engine_e}")
             
             logger.info("数据库连接已断开")
             
@@ -83,8 +97,12 @@ class DatabaseManager:
         创建数据库表
         """
         try:
-            # 导入所有模型，确保Base.metadata包含所有表定义
-            from src.database.models import stock, index, macro, news
+            # 导入已存在的模型，确保Base.metadata包含所有表定义
+            try:
+                from src.database.models import stock, index
+                logger.info("成功导入stock和index模型")
+            except ImportError as import_e:
+                logger.warning(f"导入模型时发生错误: {import_e}")
             
             # 创建所有表
             Base.metadata.create_all(self.engine)
