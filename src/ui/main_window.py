@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QTabWidget, QPushButton, QLineEdit, QLabel, QStatusBar,
     QMenuBar, QMenu, QDialog, QCheckBox, QDateEdit, QComboBox,
-    QProgressBar
+    QProgressBar, QAbstractItemView
 )
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QAction, QIcon, QFont, QColor
@@ -326,6 +326,9 @@ class MainWindow(QMainWindow):
         column_widths = [100, 80, 100, 80, 80, 80, 100, 120, 80, 80, 80, 80, 80]  # 调整为适合通达信数据的列宽
         for i, width in enumerate(column_widths):
             self.stock_table.setColumnWidth(i, width)
+        
+        # 设置表格为只读模式
+        self.stock_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         
         # 初始化排序状态跟踪
         self.column_sort_states = {}  # 保存每列的排序状态：0=未排序，1=升序，2=降序
@@ -743,6 +746,9 @@ class MainWindow(QMainWindow):
             
             # 数据添加完成后重新启用排序
             self.stock_table.setSortingEnabled(True)
+            
+            # 设置表格为只读模式
+            self.stock_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
             
             logger.info("沪深京指数数据更新完成")
             self.statusBar().showMessage(f"成功显示{self.stock_table.rowCount()}个指数的最新交易日数据", 3000)
