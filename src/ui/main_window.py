@@ -575,7 +575,7 @@ class MainWindow(QMainWindow):
             
             # 构建通达信指数数据目录路径
             from pathlib import Path
-            tdx_data_path = Path(r"H:\zxzq\vipdoc")
+            tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
             
             # 获取所有指数文件
             sh_index_files = list(Path(tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'sh' / 'lday').exists() else []
@@ -991,12 +991,9 @@ class MainWindow(QMainWindow):
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
             
-            # 更新配置中的通达信数据路径为用户指定的路径
+            # 导入所需模块
             import polars as pl
             from src.data.tdx_handler import TdxHandler
-            
-            # 更新配置中的通达信数据路径
-            self.data_manager.config.data.tdx_data_path = r"H:\zxzq\vipdoc"
             
             # 创建通达信数据处理器
             tdx_handler = TdxHandler(self.data_manager.config, self.data_manager.db_manager)
@@ -1006,7 +1003,7 @@ class MainWindow(QMainWindow):
             
             # 构建通达信日线数据目录路径
             from pathlib import Path
-            tdx_data_path = Path(r"H:\zxzq\vipdoc")
+            tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
             
             # 获取所有日线数据文件
             sh_stock_files = list(Path(tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'sh' / 'lday').exists() else []
@@ -1055,12 +1052,16 @@ class MainWindow(QMainWindow):
             total_files = len(filtered_files)
             for i, file_path in enumerate(filtered_files):
                 try:
-                    # 更新进度
-                    progress = 30 + int((i / total_files) * 50)
-                    self.progress_bar.setValue(progress)
+                    # 批量更新进度，减少UI重绘
+                    update_interval = max(1, total_files // 10)  # 最多更新10次
+                    if i % update_interval == 0:
+                        progress = 30 + int((i / total_files) * 50)
+                        self.progress_bar.setValue(progress)
                     
                     # 解析文件，获取所有数据
-                    logger.info(f"正在解析文件: {file_path}")
+                    # 只在每100个文件记录一次日志，减少IO开销
+                    if i % 100 == 0:
+                        logger.info(f"正在解析文件: {file_path} ({i+1}/{total_files})")
                     
                     # 直接解析文件，获取所有数据
                     data = []
@@ -1339,9 +1340,6 @@ class MainWindow(QMainWindow):
             import polars as pl
             from src.data.tdx_handler import TdxHandler
             
-            # 更新配置中的通达信数据路径
-            self.data_manager.config.data.tdx_data_path = r"H:\zxzq\vipdoc"
-            
             # 创建通达信数据处理器
             tdx_handler = TdxHandler(self.data_manager.config, self.data_manager.db_manager)
             
@@ -1350,7 +1348,7 @@ class MainWindow(QMainWindow):
             
             # 构建通达信日线数据目录路径
             from pathlib import Path
-            tdx_data_path = Path(r"H:\zxzq\vipdoc")
+            tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
             
             # 获取所有日线数据文件
             sh_stock_files = list(Path(tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'sh' / 'lday').exists() else []
@@ -1382,9 +1380,10 @@ class MainWindow(QMainWindow):
             total_files = len(all_stock_files)
             for i, file_path in enumerate(all_stock_files):
                 try:
-                    # 更新进度
-                    progress = 30 + int((i / total_files) * 50)
-                    self.progress_bar.setValue(progress)
+                    # 更新进度，减少UI更新频率
+                    if i % max(1, total_files // 10) == 0:  # 最多更新10次
+                        progress = 30 + int((i / total_files) * 50)
+                        self.progress_bar.setValue(progress)
                     
                     # 解析文件，获取所有数据
                     logger.info(f"正在解析文件: {file_path}")
@@ -1650,7 +1649,7 @@ class MainWindow(QMainWindow):
             
             # 构建通达信指数数据目录路径
             from pathlib import Path
-            tdx_data_path = Path(r"H:\zxzq\vipdoc")
+            tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
             
             # 确定指数文件路径
             market = "sh" if index_code.startswith("sh") else "sz"
