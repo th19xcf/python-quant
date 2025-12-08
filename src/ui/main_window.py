@@ -37,6 +37,15 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("中国股市量化分析系统")
         self.setGeometry(100, 100, 1400, 900)
         
+        # 初始化K线图相关属性
+        self.vline = None
+        self.hline = None
+        self.info_text = None
+        self.info_timer = None
+        self.current_mouse_pos = None
+        self.current_kline_index = -1
+        self.current_kline_data = None
+        
         # 初始化UI组件
         self.init_ui()
         logger.info("主窗口初始化成功")
@@ -1258,12 +1267,231 @@ class MainWindow(QMainWindow):
             y_max = np.max(highs) * 1.01
             self.tech_plot_widget.setYRange(y_min, y_max)
             
+            # 添加十字线
+            self.vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
+            self.hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
+            self.tech_plot_widget.addItem(self.vline, ignoreBounds=True)
+            self.tech_plot_widget.addItem(self.hline, ignoreBounds=True)
+            
+            # 初始隐藏十字线
+            self.vline.hide()
+            self.hline.hide()
+            
+            # 创建信息文本项
+            self.info_text = pg.TextItem(anchor=(1, 1))  # 锚点在右下角
+            self.info_text.setColor(pg.mkColor('w'))
+            self.info_text.setHtml('<div style="background-color: rgba(0, 0, 0, 0.8); padding: 5px; border: 1px solid #666; font-family: monospace;"></div>')
+            self.tech_plot_widget.addItem(self.info_text)
+            self.info_text.hide()
+            
+            # 保存当前K线数据，用于双击显示信息
+            self.current_kline_data = {
+                'dates': dates,
+                'opens': opens,
+                'highs': highs,
+                'lows': lows,
+                'closes': closes,
+                'ohlc_list': ohlc_list
+            }
+            
+            # 连接鼠标事件
+            self.tech_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_double_clicked(event, dates, opens, highs, lows, closes))
+            
+            # 连接鼠标移动事件，实现十字线跟随
+            self.tech_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
+            
+            # 连接鼠标离开视图事件，通过监控鼠标位置实现
+            self.tech_plot_widget.viewport().setMouseTracking(True)
+            
+            # 创建定时器，用于实现停留显示信息框
+            self.info_timer = pg.QtCore.QTimer()
+            self.info_timer.setSingleShot(True)
+            self.info_timer.setInterval(200)  # 200毫秒
+            self.info_timer.timeout.connect(self.show_info_box)
+            
+            # 保存当前鼠标位置和K线索引
+            self.current_mouse_pos = None
+            self.current_kline_index = -1
+            self.current_kline_data = {
+                'dates': dates,
+                'opens': opens,
+                'highs': highs,
+                'lows': lows,
+                'closes': closes
+            }
+            
             logger.info(f"成功绘制{stock_name}({stock_code})的K线图")
             self.statusBar().showMessage(f"成功绘制{stock_name}({stock_code})的K线图", 3000)
             
         except Exception as e:
             logger.exception(f"绘制K线图失败: {e}")
             self.statusBar().showMessage(f"绘制K线图失败: {str(e)[:50]}...", 5000)
+    
+    def on_kline_mouse_moved(self, pos, dates, opens, highs, lows, closes):
+        """
+        处理K线图鼠标移动事件，实现十字线跟随
+        
+        Args:
+            pos: 鼠标位置
+            dates: 日期列表
+            opens: 开盘价列表
+            highs: 最高价列表
+            lows: 最低价列表
+            closes: 收盘价列表
+        """
+        try:
+            # 将场景坐标转换为图表坐标
+            view_box = self.tech_plot_widget.getViewBox()
+            view_pos = view_box.mapSceneToView(pos)
+            x_val = view_pos.x()
+            y_val = view_pos.y()
+            
+            # 找到最接近的K线索引
+            index = int(round(x_val))
+            if 0 <= index < len(dates):
+                # 更新十字线位置
+                self.vline.setValue(index)
+                self.hline.setValue(y_val)
+                self.vline.show()
+                self.hline.show()
+                
+                # 保存当前鼠标位置和K线索引
+                self.current_mouse_pos = pos
+                self.current_kline_index = index
+                
+                # 保存当前K线数据
+                self.current_kline_data = {
+                    'dates': dates,
+                    'opens': opens,
+                    'highs': highs,
+                    'lows': lows,
+                    'closes': closes,
+                    'index': index
+                }
+                
+                # 检查info_timer和info_text是否已经初始化
+                if self.info_timer is not None:
+                    # 启动定时器，200毫秒后显示信息框
+                    self.info_timer.start()
+                
+                if self.info_text is not None:
+                    # 隐藏信息框，等待定时器触发重新显示
+                    self.info_text.hide()
+        except Exception as e:
+            logger.exception(f"处理K线图鼠标移动事件失败: {e}")
+    
+    def show_info_box(self):
+        """
+        显示信息框
+        """
+        try:
+            if self.current_kline_index >= 0 and self.current_kline_data:
+                dates = self.current_kline_data['dates']
+                opens = self.current_kline_data['opens']
+                highs = self.current_kline_data['highs']
+                lows = self.current_kline_data['lows']
+                closes = self.current_kline_data['closes']
+                index = self.current_kline_index
+                
+                # 确保索引在有效范围内
+                if 0 <= index < len(dates):
+                    # 计算前一天的收盘价，用于计算涨跌幅
+                    pre_close = closes[index-1] if index > 0 else closes[index]
+                    
+                    # 计算涨跌幅和涨跌额
+                    change = closes[index] - pre_close
+                    pct_change = (change / pre_close) * 100 if pre_close != 0 else 0
+                    
+                    # 获取星期几，0=周一，1=周二，2=周三，3=周四，4=周五，5=周六，6=周日
+                    weekday = dates[index].weekday()
+                    # 转换为中文星期
+                    weekday_map = {0: '一', 1: '二', 2: '三', 3: '四', 4: '五', 5: '六', 6: '日'}
+                    weekday_str = weekday_map.get(weekday, '')
+                    
+                    # 生成信息文本
+                    info_html = f"""
+                    <div style="background-color: rgba(0, 0, 0, 0.8); padding: 8px; border: 1px solid #666; color: white; font-family: monospace;">
+                    <div style="font-weight: bold;">{dates[index].strftime('%Y-%m-%d')}/{weekday_str}</div>
+                    <div>开盘: {opens[index]:.2f}</div>
+                    <div>最高: {highs[index]:.2f}</div>
+                    <div>最低: {lows[index]:.2f}</div>
+                    <div>收盘: {closes[index]:.2f}</div>
+                    <div>涨跌: {change:.2f}</div>
+                    <div>涨幅: {pct_change:.2f}%</div>
+                    </div>
+                    """
+                    
+                    # 更新信息文本
+                    if self.info_text is not None:
+                        self.info_text.setHtml(info_html)
+                        # 设置信息文本位置，跟随鼠标显示
+                        if self.current_mouse_pos is not None:
+                            # 将场景坐标转换为视图坐标
+                            view_box = self.tech_plot_widget.getViewBox()
+                            view_pos = view_box.mapSceneToView(self.current_mouse_pos)
+                            # 设置信息框位置在鼠标右侧10像素，上方10像素
+                            self.info_text.setPos(view_pos.x() + 10, view_pos.y() - 10)
+                            self.info_text.show()
+        except Exception as e:
+            logger.exception(f"显示信息框失败: {e}")
+    
+    def on_kline_double_clicked(self, event, dates, opens, highs, lows, closes):
+        """
+        处理K线图鼠标双击事件，显示十字线和信息框
+        
+        Args:
+            event: 鼠标事件对象
+            dates: 日期列表
+            opens: 开盘价列表
+            highs: 最高价列表
+            lows: 最低价列表
+            closes: 收盘价列表
+        """
+        try:
+            if event.double():  # 检查是否是双击事件
+                # 获取鼠标点击的位置
+                pos = event.scenePos()
+                # 将场景坐标转换为图表坐标
+                view_box = self.tech_plot_widget.getViewBox()
+                view_pos = view_box.mapSceneToView(pos)
+                x_val = view_pos.x()
+                y_val = view_pos.y()
+                
+                # 找到最接近的K线索引
+                index = int(round(x_val))
+                if 0 <= index < len(dates):
+                    # 更新十字线位置
+                    self.vline.setValue(index)
+                    self.hline.setValue(y_val)
+                    self.vline.show()
+                    self.hline.show()
+                    
+                    # 计算前一天的收盘价，用于计算涨跌幅
+                    pre_close = closes[index-1] if index > 0 else closes[index]
+                    
+                    # 计算涨跌幅和涨跌额
+                    change = closes[index] - pre_close
+                    pct_change = (change / pre_close) * 100 if pre_close != 0 else 0
+                    
+                    # 生成信息文本
+                    info_html = f"""
+                    <div style="background-color: rgba(0, 0, 0, 0.8); padding: 8px; border: 1px solid #666; color: white; font-family: monospace;">
+                    <div style="font-weight: bold;">{dates[index].strftime('%Y-%m-%d')}</div>
+                    <div>开盘: {opens[index]:.2f}</div>
+                    <div>最高: {highs[index]:.2f}</div>
+                    <div>最低: {lows[index]:.2f}</div>
+                    <div>收盘: {closes[index]:.2f}</div>
+                    <div>涨跌: {change:.2f} ({pct_change:.2f}%)</div>
+                    </div>
+                    """
+                    
+                    # 更新信息文本
+                    self.info_text.setHtml(info_html)
+                    # 设置信息文本位置（右上角）
+                    self.info_text.setPos(self.tech_plot_widget.viewRange()[0][1] - 10, self.tech_plot_widget.viewRange()[1][1] - 10)
+                    self.info_text.show()
+        except Exception as e:
+            logger.exception(f"处理K线图双击事件失败: {e}")
     
     def on_nav_item_clicked(self, item, column):
         """
