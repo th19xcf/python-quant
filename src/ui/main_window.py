@@ -467,6 +467,55 @@ class MainWindow(QMainWindow):
         import pyqtgraph as pg
         from PySide6.QtCore import Qt
         
+        # 创建工具栏
+        toolbar = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar.setStyleSheet("background-color: #222222;")
+        
+        # 添加周期按钮
+        self.period_buttons = {
+            '日线': QPushButton('日线'),
+            '周线': QPushButton('周线'),
+            '月线': QPushButton('月线')
+        }
+        
+        # 设置按钮样式
+        button_style = """
+        QPushButton {
+            background-color: #333333;
+            color: #C0C0C0;
+            border: 1px solid #444444;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-family: 'Microsoft YaHei';
+            font-size: 12px;
+        }
+        QPushButton:hover {
+            background-color: #444444;
+        }
+        QPushButton:checked {
+            background-color: #555555;
+            border: 1px solid #666666;
+        }
+        """
+        
+        # 添加按钮到工具栏
+        for name, button in self.period_buttons.items():
+            button.setCheckable(True)
+            button.setStyleSheet(button_style)
+            button.toggled.connect(lambda checked, p=name: self.on_period_changed(p, checked))
+            toolbar_layout.addWidget(button)
+        
+        # 默认选中日线
+        self.period_buttons['日线'].setChecked(True)
+        self.current_period = '日线'
+        
+        # 添加分隔符
+        toolbar_layout.addStretch()
+        
+        # 添加工具栏到布局
+        tech_layout.addWidget(toolbar)
+        
         # 创建pyqtgraph图表
         self.tech_plot_widget = pg.PlotWidget()
         self.tech_plot_widget.setBackground('#000000')
@@ -482,6 +531,25 @@ class MainWindow(QMainWindow):
         self.candle_plot_item = None
         
         tech_layout.addWidget(self.tech_plot_widget)
+    
+    def on_period_changed(self, period, checked):
+        """
+        周期按钮点击事件处理
+        
+        Args:
+            period: 周期类型（日线、周线、月线）
+            checked: 是否被选中
+        """
+        if checked:
+            # 取消其他按钮的选中状态
+            for name, button in self.period_buttons.items():
+                if name != period:
+                    button.setChecked(False)
+            
+            # 更新当前周期
+            self.current_period = period
+            # TODO: 根据周期更新K线图数据
+            print(f"切换到{period}")
     
     def create_finance_tab(self):
         """
@@ -1118,21 +1186,22 @@ class MainWindow(QMainWindow):
                 def generatePicture(self):
                     self.picture = pg.QtGui.QPicture()
                     p = pg.QtGui.QPainter(self.picture)
-                    p.setPen(pg.mkPen('w'))
                     for (t, open_val, high_val, low_val, close_val) in self.data:
                         if close_val >= open_val:
                             # 上涨，红色
-                            brush = pg.mkBrush('r')
+                            color = 'r'
                         else:
                             # 下跌，绿色
-                            brush = pg.mkBrush('g')
+                            color = 'g'
                         
-                        # 绘制实体部分
-                        p.setBrush(brush)
+                        # 绘制实体部分，不显示边框
+                        p.setPen(pg.mkPen(color, width=0))  # 设置宽度为0，不绘制边框
+                        p.setBrush(pg.mkBrush(color))
                         p.drawRect(pg.QtCore.QRectF(t-0.3, open_val, 0.6, close_val-open_val))
                         
-                        # 绘制上下影线
-                        p.setBrush(pg.mkBrush('w'))
+                        # 绘制上下影线，使用与实体相同的颜色
+                        p.setPen(pg.mkPen(color, width=1))  # 使用1像素宽度的线条
+                        p.setBrush(pg.mkBrush(color))
                         p.drawLine(pg.QtCore.QPointF(t, high_val), pg.QtCore.QPointF(t, low_val))
                     p.end()
                 
