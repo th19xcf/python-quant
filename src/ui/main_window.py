@@ -45,6 +45,12 @@ class MainWindow(QMainWindow):
         self.current_mouse_pos = None
         self.current_kline_index = -1
         self.current_kline_data = None
+        self.displayed_bar_count = 100  # 默认显示100个柱体
+        
+        # 保存当前显示的个股信息
+        self.current_stock_data = None
+        self.current_stock_name = ""
+        self.current_stock_code = ""
         
         # 初始化UI组件
         self.init_ui()
@@ -519,8 +525,35 @@ class MainWindow(QMainWindow):
         self.period_buttons['日线'].setChecked(True)
         self.current_period = '日线'
         
+        # 添加显示柱体数量的输入框
+        bar_count_label = QLabel("柱体数:")
+        bar_count_label.setStyleSheet("color: #C0C0C0; font-family: 'Microsoft YaHei'; font-size: 12px;")
+        toolbar_layout.addWidget(bar_count_label)
+        
+        self.bar_count_input = QLineEdit()
+        self.bar_count_input.setText("100")  # 默认显示100个柱体
+        self.bar_count_input.setStyleSheet("""
+        QLineEdit {
+            background-color: #333333;
+            color: #C0C0C0;
+            border: 1px solid #444444;
+            padding: 4px 6px;
+            border-radius: 4px;
+            font-family: 'Microsoft YaHei';
+            font-size: 12px;
+            width: 60px;
+        }
+        QLineEdit:focus {
+            border: 1px solid #666666;
+            background-color: #444444;
+        }
+        """)
+        # 连接输入框事件
+        self.bar_count_input.editingFinished.connect(self.on_bar_count_changed)
+        toolbar_layout.addWidget(self.bar_count_input)
+        
         # 添加分隔符
-        toolbar_layout.addStretch()
+        toolbar_layout.addSpacing(10)
         
         # 添加工具栏到布局
         tech_layout.addWidget(toolbar)
@@ -557,8 +590,45 @@ class MainWindow(QMainWindow):
             
             # 更新当前周期
             self.current_period = period
-            # TODO: 根据周期更新K线图数据
-            print(f"切换到{period}")
+            
+            # 如果是日线，且有当前个股数据，按照柱体数重新绘制K线
+            if period == "日线" and self.current_stock_data is not None:
+                print(f"切换到日线，按照柱体数 {self.displayed_bar_count} 重新绘制K线")
+                # 重新绘制K线图
+                self.plot_k_line(self.current_stock_data, self.current_stock_name, self.current_stock_code)
+            else:
+                # TODO: 其他周期的K线图更新逻辑
+                print(f"切换到{period}")
+    
+    def on_bar_count_changed(self):
+        """
+        显示柱体数量输入框事件处理
+        """
+        try:
+            # 获取输入的数值
+            bar_count_text = self.bar_count_input.text()
+            bar_count = int(bar_count_text)
+            
+            # 验证数值有效性
+            if bar_count > 0:
+                # 更新显示的柱体数量
+                self.displayed_bar_count = bar_count
+                print(f"显示柱体数量更新为: {bar_count}")
+                
+                # 如果当前有显示的个股数据，重新绘制K线图
+                if self.current_stock_data is not None:
+                    print(f"按照新的柱体数 {bar_count} 重新绘制K线图")
+                    self.plot_k_line(self.current_stock_data, self.current_stock_name, self.current_stock_code)
+            else:
+                # 输入无效，恢复默认值
+                self.bar_count_input.setText("100")
+                self.displayed_bar_count = 100
+                print(f"无效的柱体数量，已恢复为默认值: 100")
+        except ValueError:
+            # 输入不是整数，恢复默认值
+            self.bar_count_input.setText("100")
+            self.displayed_bar_count = 100
+            print(f"无效的输入，已恢复为默认值: 100")
     
     def create_finance_tab(self):
         """
@@ -1234,13 +1304,14 @@ class MainWindow(QMainWindow):
             lows = df['low'].to_list()
             closes = df['close'].to_list()
             
-            # 只显示最近100个交易日的数据
-            if len(dates) > 100:
-                dates = dates[-100:]
-                opens = opens[-100:]
-                highs = highs[-100:]
-                lows = lows[-100:]
-                closes = closes[-100:]
+            # 只显示指定数量的柱体
+            bar_count = getattr(self, 'displayed_bar_count', 100)
+            if len(dates) > bar_count:
+                dates = dates[-bar_count:]
+                opens = opens[-bar_count:]
+                highs = highs[-bar_count:]
+                lows = lows[-bar_count:]
+                closes = closes[-bar_count:]
             
             # 创建x轴坐标（使用索引）
             x = np.arange(len(dates))
@@ -1319,6 +1390,11 @@ class MainWindow(QMainWindow):
                 'lows': lows,
                 'closes': closes
             }
+            
+            # 保存当前显示的个股信息
+            self.current_stock_data = df
+            self.current_stock_name = stock_name
+            self.current_stock_code = stock_code
             
             logger.info(f"成功绘制{stock_name}({stock_code})的K线图")
             self.statusBar().showMessage(f"成功绘制{stock_name}({stock_code})的K线图", 3000)
