@@ -1338,6 +1338,10 @@ class MainWindow(QMainWindow):
             y_max = np.max(highs) * 1.01
             self.tech_plot_widget.setYRange(y_min, y_max)
             
+            # 重置图表视图范围，确保所有K线都能正常显示
+            view_box = self.tech_plot_widget.getViewBox()
+            view_box.autoRange()  # 自动调整视图范围，显示所有K线
+            
             # 添加十字线
             self.vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
             self.hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
