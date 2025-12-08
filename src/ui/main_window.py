@@ -337,6 +337,9 @@ class MainWindow(QMainWindow):
         # 连接表头点击信号到自定义槽函数
         self.stock_table.horizontalHeader().sectionClicked.connect(self.on_header_clicked)
         
+        # 连接表格双击信号到自定义槽函数
+        self.stock_table.cellDoubleClicked.connect(self.on_stock_double_clicked)
+        
         # 初始状态禁用默认排序
         self.stock_table.setSortingEnabled(False)
         
@@ -460,11 +463,25 @@ class MainWindow(QMainWindow):
         """
         tech_layout = QVBoxLayout(self.tech_tab)
         
-        # 添加技术分析图表占位符
-        tech_label = QLabel("技术分析图表区域")
-        tech_label.setAlignment(Qt.AlignCenter)
-        tech_label.setStyleSheet("font-size: 16px; color: #666;")
-        tech_layout.addWidget(tech_label)
+        # 导入pyqtgraph
+        import pyqtgraph as pg
+        from PySide6.QtCore import Qt
+        
+        # 创建pyqtgraph图表
+        self.tech_plot_widget = pg.PlotWidget()
+        self.tech_plot_widget.setBackground('#000000')
+        self.tech_plot_widget.setLabel('left', '价格', color='#C0C0C0')
+        self.tech_plot_widget.setLabel('bottom', '日期', color='#C0C0C0')
+        self.tech_plot_widget.getAxis('left').setPen(pg.mkPen('#C0C0C0'))
+        self.tech_plot_widget.getAxis('bottom').setPen(pg.mkPen('#C0C0C0'))
+        self.tech_plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
+        self.tech_plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
+        self.tech_plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        
+        # 保存k线图数据项
+        self.candle_plot_item = None
+        
+        tech_layout.addWidget(self.tech_plot_widget)
     
     def create_finance_tab(self):
         """
@@ -956,6 +973,216 @@ class MainWindow(QMainWindow):
                 self.current_sorted_column = -1
         except Exception as e:
             logger.exception(f"处理表头点击事件失败: {e}")
+    
+    def on_stock_double_clicked(self, row, column):
+        """
+        处理股票表格双击事件，显示该股票的技术分析图表
+        
+        Args:
+            row: 双击的行索引
+            column: 双击的列索引
+        """
+        try:
+            # 获取股票代码和名称
+            code_item = self.stock_table.item(row, 1)
+            name_item = self.stock_table.item(row, 2)
+            if not code_item or not name_item:
+                return
+            
+            code = code_item.text()
+            name = name_item.text()
+            logger.info(f"双击了股票: {name}({code})")
+            
+            # 解析股票代码，确定市场类型
+            if code.startswith('6'):
+                market = 'sh'
+                tdx_code = f'sh{code}'
+                ts_code = f'{code}.SH'
+            else:
+                market = 'sz'
+                tdx_code = f'sz{code}'
+                ts_code = f'{code}.SZ'
+            
+            # 从通达信数据文件读取历史数据
+            from pathlib import Path
+            import struct
+            from datetime import datetime
+            import polars as pl
+            import numpy as np
+            import pyqtgraph as pg
+            
+            # 构建通达信日线数据文件路径
+            tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
+            tdx_file_path = tdx_data_path / market / 'lday' / f'{tdx_code}.day'
+            
+            if not tdx_file_path.exists():
+                logger.warning(f"找不到股票数据文件: {tdx_file_path}")
+                self.statusBar().showMessage(f"找不到股票数据文件: {tdx_file_path}", 5000)
+                return
+            
+            logger.info(f"正在读取股票数据文件: {tdx_file_path}")
+            
+            # 读取并解析通达信日线数据文件
+            data = []
+            with open(tdx_file_path, 'rb') as f:
+                # 获取文件大小
+                f.seek(0, 2)
+                file_size = f.tell()
+                f.seek(0)
+                
+                # 计算数据条数
+                record_count = file_size // 32
+                if record_count == 0:
+                    logger.warning(f"股票数据文件为空: {tdx_file_path}")
+                    self.statusBar().showMessage(f"股票数据文件为空: {tdx_file_path}", 5000)
+                    return
+                
+                # 读取所有记录
+                for i in range(record_count):
+                    record = f.read(32)
+                    if len(record) < 32:
+                        break
+                    
+                    # 解析记录
+                    date_int = struct.unpack('I', record[0:4])[0]  # 日期，格式：YYYYMMDD
+                    open_val = struct.unpack('I', record[4:8])[0] / 100  # 开盘价，转换为元
+                    high_val = struct.unpack('I', record[8:12])[0] / 100  # 最高价，转换为元
+                    low_val = struct.unpack('I', record[12:16])[0] / 100  # 最低价，转换为元
+                    close_val = struct.unpack('I', record[16:20])[0] / 100  # 收盘价，转换为元
+                    volume = struct.unpack('I', record[20:24])[0]  # 成交量，单位：手
+                    amount = struct.unpack('I', record[24:28])[0] / 100  # 成交额，转换为元
+                    
+                    # 转换日期格式
+                    date_str = str(date_int)
+                    date = datetime.strptime(date_str, '%Y%m%d').date()
+                    
+                    # 添加到数据列表
+                    data.append({
+                        'date': date,
+                        'open': open_val,
+                        'high': high_val,
+                        'low': low_val,
+                        'close': close_val,
+                        'volume': volume,
+                        'amount': amount
+                    })
+            
+            # 将数据转换为Polars DataFrame
+            df = pl.DataFrame(data)
+            logger.info(f"读取到{len(df)}条历史数据")
+            
+            # 切换到技术分析标签页
+            self.tab_widget.setCurrentIndex(1)
+            
+            # 绘制K线图
+            self.plot_k_line(df, name, code)
+            
+        except Exception as e:
+            logger.exception(f"处理股票双击事件失败: {e}")
+            self.statusBar().showMessage(f"处理股票双击事件失败: {str(e)[:50]}...", 5000)
+    
+    def plot_k_line(self, df, stock_name, stock_code):
+        """
+        使用pyqtgraph绘制K线图
+        
+        Args:
+            df: 股票历史数据DataFrame
+            stock_name: 股票名称
+            stock_code: 股票代码
+        """
+        try:
+            import pyqtgraph as pg
+            import numpy as np
+            from pyqtgraph import GraphicsObject
+            from pyqtgraph import Point
+            
+            # 自定义K线图项类
+            class CandleStickItem(GraphicsObject):
+                def __init__(self, data):
+                    GraphicsObject.__init__(self)
+                    self.data = data  # data must be a list of tuples (x, open, high, low, close)
+                    self.generatePicture()
+                
+                def generatePicture(self):
+                    self.picture = pg.QtGui.QPicture()
+                    p = pg.QtGui.QPainter(self.picture)
+                    p.setPen(pg.mkPen('w'))
+                    for (t, open_val, high_val, low_val, close_val) in self.data:
+                        if close_val >= open_val:
+                            # 上涨，红色
+                            brush = pg.mkBrush('r')
+                        else:
+                            # 下跌，绿色
+                            brush = pg.mkBrush('g')
+                        
+                        # 绘制实体部分
+                        p.setBrush(brush)
+                        p.drawRect(pg.QtCore.QRectF(t-0.3, open_val, 0.6, close_val-open_val))
+                        
+                        # 绘制上下影线
+                        p.setBrush(pg.mkBrush('w'))
+                        p.drawLine(pg.QtCore.QPointF(t, high_val), pg.QtCore.QPointF(t, low_val))
+                    p.end()
+                
+                def paint(self, p, *args):
+                    p.drawPicture(0, 0, self.picture)
+                
+                def boundingRect(self):
+                    # 边界矩形
+                    return pg.QtCore.QRectF(self.picture.boundingRect())
+            
+            # 清空图表
+            self.tech_plot_widget.clear()
+            
+            # 设置图表标题
+            self.tech_plot_widget.setTitle(f"{stock_name}({stock_code}) K线图", color='#C0C0C0', size='14pt')
+            
+            # 准备K线图数据
+            dates = df['date'].to_list()
+            opens = df['open'].to_list()
+            highs = df['high'].to_list()
+            lows = df['low'].to_list()
+            closes = df['close'].to_list()
+            
+            # 只显示最近100个交易日的数据
+            if len(dates) > 100:
+                dates = dates[-100:]
+                opens = opens[-100:]
+                highs = highs[-100:]
+                lows = lows[-100:]
+                closes = closes[-100:]
+            
+            # 创建x轴坐标（使用索引）
+            x = np.arange(len(dates))
+            
+            # 创建K线图数据
+            # K线图由OHLC数据组成：(x, open, high, low, close)
+            ohlc = np.column_stack((x, opens, highs, lows, closes))
+            
+            # 转换为列表格式，适合自定义CandleStickItem
+            ohlc_list = [tuple(row) for row in ohlc]
+            
+            # 创建K线图项
+            self.candle_plot_item = CandleStickItem(ohlc_list)
+            
+            # 添加K线图到图表
+            self.tech_plot_widget.addItem(self.candle_plot_item)
+            
+            # 设置x轴标签（显示日期）
+            ax = self.tech_plot_widget.getAxis('bottom')
+            ax.setTicks([[(i, dates[i].strftime('%Y-%m-%d')) for i in range(0, len(dates), 10)]])
+            
+            # 设置Y轴范围，留出一定的边距
+            y_min = np.min(lows) * 0.99
+            y_max = np.max(highs) * 1.01
+            self.tech_plot_widget.setYRange(y_min, y_max)
+            
+            logger.info(f"成功绘制{stock_name}({stock_code})的K线图")
+            self.statusBar().showMessage(f"成功绘制{stock_name}({stock_code})的K线图", 3000)
+            
+        except Exception as e:
+            logger.exception(f"绘制K线图失败: {e}")
+            self.statusBar().showMessage(f"绘制K线图失败: {str(e)[:50]}...", 5000)
     
     def on_nav_item_clicked(self, item, column):
         """
