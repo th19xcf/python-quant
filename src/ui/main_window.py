@@ -994,11 +994,23 @@ class MainWindow(QMainWindow):
             logger.info(f"双击了股票: {name}({code})")
             
             # 解析股票代码，确定市场类型
-            if code.startswith('6'):
+            if code.startswith('sh'):
+                # 指数代码，如sh000001
+                market = 'sh'
+                tdx_code = code
+                ts_code = f'{code[2:]}.SH'
+            elif code.startswith('sz'):
+                # 指数代码，如sz399001
+                market = 'sz'
+                tdx_code = code
+                ts_code = f'{code[2:]}.SZ'
+            elif code.startswith('6'):
+                # 上海股票
                 market = 'sh'
                 tdx_code = f'sh{code}'
                 ts_code = f'{code}.SH'
             else:
+                # 深圳股票
                 market = 'sz'
                 tdx_code = f'sz{code}'
                 ts_code = f'{code}.SZ'
