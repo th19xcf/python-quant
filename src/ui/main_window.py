@@ -1351,8 +1351,8 @@ class MainWindow(QMainWindow):
             tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
             
             # 获取所有日线数据文件
-            sh_stock_files = list(Path(tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'sh' / 'lday').exists() else []
-            sz_stock_files = list(Path(tdx_data_path / 'sz' / 'lday').glob('sz*.day')) if (tdx_data_path / 'sz' / 'lday').exists() else []
+            sh_stock_files = list(Path(tdx_data_path / 'vipdoc' / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'vipdoc' / 'sh' / 'lday').exists() else []
+            sz_stock_files = list(Path(tdx_data_path / 'vipdoc' / 'sz' / 'lday').glob('sz*.day')) if (tdx_data_path / 'vipdoc' / 'sz' / 'lday').exists() else []
             all_stock_files = sh_stock_files + sz_stock_files
             
             logger.info(f"找到{len(all_stock_files)}个通达信股票数据文件")
@@ -1647,13 +1647,13 @@ class MainWindow(QMainWindow):
             
             index_code = index_code_map[index_name]
             
-            # 构建通达信指数数据目录路径
+            # 构建通达信日线数据目录路径
             from pathlib import Path
             tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
             
             # 确定指数文件路径
             market = "sh" if index_code.startswith("sh") else "sz"
-            index_file = Path(tdx_data_path / market / 'lday' / f"{index_code}.day")
+            index_file = Path(tdx_data_path / 'vipdoc' / market / 'lday' / f"{index_code}.day")
             
             if not index_file.exists():
                 logger.warning(f"未找到{index_name}的通达信指数文件: {index_file}")
