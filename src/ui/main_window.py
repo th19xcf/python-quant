@@ -1353,7 +1353,7 @@ class MainWindow(QMainWindow):
             self.hline.hide()
             
             # 创建信息文本项
-            self.info_text = pg.TextItem(anchor=(1, 1))  # 锚点在右下角
+            self.info_text = pg.TextItem(anchor=(0, 1))  # 锚点在左下角，确保信息框左下角在指定位置
             self.info_text.setColor(pg.mkColor('w'))
             self.info_text.setHtml('<div style="background-color: rgba(0, 0, 0, 0.8); padding: 5px; border: 1px solid #666; font-family: monospace;"></div>')
             self.tech_plot_widget.addItem(self.info_text)
@@ -1368,9 +1368,6 @@ class MainWindow(QMainWindow):
                 'closes': closes,
                 'ohlc_list': ohlc_list
             }
-            
-            # 连接鼠标事件
-            self.tech_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_double_clicked(event, dates, opens, highs, lows, closes))
             
             # 连接鼠标移动事件，实现十字线跟随
             self.tech_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
@@ -1509,70 +1506,122 @@ class MainWindow(QMainWindow):
                             # 将场景坐标转换为视图坐标
                             view_box = self.tech_plot_widget.getViewBox()
                             view_pos = view_box.mapSceneToView(self.current_mouse_pos)
-                            # 设置信息框位置在鼠标右侧10像素，上方10像素
-                            self.info_text.setPos(view_pos.x() + 10, view_pos.y() - 10)
+                            
+                            # 获取当前视图范围
+                            x_min, x_max = view_box.viewRange()[0]
+                            y_min, y_max = view_box.viewRange()[1]
+                            
+                            # 估计信息框的尺寸（以K线数量为单位）
+                            info_width_kline = 8  # 信息框宽度约占8个K线
+                            info_height_kline = 15  # 信息框高度约占15个K线（7行文本+边距）
+                            
+                            # 使用K线位置作为信息框的基准位置
+                            kline_x = self.current_kline_index
+                            kline_y = lows[index]
+                            
+                            # 获取当前视图范围
+                            x_min, x_max = view_box.viewRange()[0]
+                            y_min, y_max = view_box.viewRange()[1]
+                            
+                            # 定义信息框尺寸和边距
+                            info_box_height = 15  # 信息框高度（7行文本+边距）
+                            info_box_width = 8  # 信息框宽度
+                            margin = 2  # 边距
+                            
+                            # 输出位置日志，用于调试
+                            logger.info(f"=== 悬停信息框位置日志 ===")
+                            logger.info(f"K线位置: (x={kline_x:.2f}, y={kline_y:.2f})")
+                            logger.info(f"视图范围: x_min={x_min:.2f}, x_max={x_max:.2f}, y_min={y_min:.2f}, y_max={y_max:.2f}")
+                            logger.info(f"信息框尺寸: width={info_box_width}, height={info_box_height}")
+                            logger.info(f"边距: margin={margin}")
+                            
+                            # 检测K线是否靠近窗口顶部
+                            # 如果K线位于视图上半部分，信息框显示在下方
+                            # 这样可以确保信息框不会超出顶部边界
+                            # 在pyqtgraph中，y值越大，位置越靠上
+                            view_height = y_max - y_min
+                            view_width = x_max - x_min
+                            
+                            # 计算信息框显示在K线上方时的底部位置
+                            # 信息框显示在上方时，底部对齐K线顶部
+                            info_box_bottom_when_top = kline_y + margin + info_box_height
+                            
+                            # 定义顶部安全距离，考虑工具栏等UI元素的影响
+                            # 当K线距离顶部的距离小于安全距离时，信息框显示在下方
+                            top_safety_distance = info_box_height + margin + 10  # 额外增加10单位安全距离
+                            #is_near_top = (y_max - kline_y) < top_safety_distance
+                            is_near_top = (y_max - kline_y) < view_height * 0.3
+                            # 如果K线位于下30%区域，信息框显示在上方
+                            is_near_bottom = kline_y < y_min + view_height * 0.3
+                            # 如果K线位于左10%区域，信息框显示在右侧
+                            is_near_left = kline_x < x_min + view_width * 0.1
+                            
+                            logger.info(f"是否靠近顶部: is_near_top={is_near_top}")
+                            logger.info(f"是否靠近底部: is_near_bottom={is_near_bottom}")
+                            logger.info(f"是否靠近左侧: is_near_left={is_near_left}")
+                            logger.info(f"K线距离顶部: {y_max - kline_y:.2f}, 所需空间: {info_box_height + margin:.2f}")
+                            logger.info(f"K线距离底部: {kline_y - y_min:.2f}, 所需空间: {info_box_height + margin:.2f}")
+                            
+                            # 根据K线位置智能选择信息框显示位置
+                            # 锚点是(0, 1)，所以pos_x和pos_y定义了信息框的左下角位置
+                            # 在pyqtgraph中，y值越大位置越靠上，y值越小位置越靠下
+                            if is_near_top:
+                                # K线靠近顶部（y值大），信息框显示在K线右下方
+                                # 我们希望信息框显示在K线下方，所以：pos_y = kline_y - info_box_height - margin
+                                logger.info("处理: 信息框显示在K线右下方")
+                                pos_x = kline_x + 0.5  # K线右侧0.5个单位
+                                # 信息框左上角在K线右侧下方，底部对齐K线底部
+                                pos_y = kline_y - info_box_height - margin - 100  # K线下方，信息框顶部对齐K线底部
+                                logger.info(f"初始计算位置: (x={pos_x:.2f}, y={pos_y:.2f}), kline_y={kline_y}")
+                            else:
+                                # K线靠近底部（y值小），信息框显示在K线右上方
+                                # 我们希望信息框显示在K线上方，所以信息框的底部对齐K线顶部
+                                logger.info("处理: 信息框显示在K线右上方")
+                                pos_x = kline_x + 0.5  # K线右侧0.5个单位
+                                # 信息框左上角在K线右侧上方，底部对齐K线顶部
+                                pos_y = kline_y + margin  # K线上方，信息框底部对齐K线顶部
+                                logger.info(f"初始计算位置: (x={pos_x:.2f}, y={pos_y:.2f})")
+                            
+                            # 确保信息框完全在视图范围内
+                            # 水平方向：确保信息框不会超出左右边界
+                            if pos_x < x_min + margin:
+                                logger.info(f"调整左边界: pos_x从{pos_x:.2f}调整到{x_min + margin:.2f}")
+                                pos_x = x_min + margin
+                            if pos_x + info_box_width > x_max - margin:
+                                logger.info(f"调整右边界: pos_x从{pos_x:.2f}调整到{x_max - info_box_width - margin:.2f}")
+                                pos_x = x_max - info_box_width - margin
+                            
+                            # 垂直方向：确保信息框不会超出上下边界
+                            # 在pyqtgraph中，y值越大位置越靠上
+                            # 检查信息框底部是否超出视图底部
+                            if pos_y < y_min + margin:
+                                logger.info(f"调整底边界: pos_y从{pos_y:.2f}调整到{y_min + margin:.2f}")
+                                pos_y = y_min + margin
+                            # 检查信息框顶部是否超出视图顶部
+                            elif pos_y + info_box_height > y_max - margin:
+                                logger.info(f"调整顶边界: pos_y从{pos_y:.2f}调整到{y_max - info_box_height - margin:.2f}")
+                                pos_y = y_max - info_box_height - margin
+                            
+                            # 输出最终位置
+                            logger.info(f"最终信息框位置: (x={pos_x:.2f}, y={pos_y:.2f})")
+                            logger.info(f"最终信息框范围: left={pos_x:.2f}, right={pos_x + info_box_width:.2f}, top={pos_y:.2f}, bottom={pos_y + info_box_height:.2f}")
+                            
+                            # 最终边界检查，确保信息框完全显示
+                            pos_x = max(pos_x, x_min + margin)
+                            pos_x = min(pos_x, x_max - margin - info_box_width)
+                            pos_y = max(pos_y, y_min + margin)
+                            pos_y = min(pos_y, y_max - margin - info_box_height)
+                            
+                            # 输出最终位置
+                            logger.info(f"校正信息框位置: (x={pos_x:.2f}, y={pos_y:.2f})")
+                            logger.info(f"校正信息框范围: left={pos_x:.2f}, right={pos_x + info_box_width:.2f}, top={pos_y:.2f}, bottom={pos_y + info_box_height:.2f}")
+                            logger.info("=== 日志结束 ===")
+                            
+                            self.info_text.setPos(pos_x, pos_y)
                             self.info_text.show()
         except Exception as e:
             logger.exception(f"显示信息框失败: {e}")
-    
-    def on_kline_double_clicked(self, event, dates, opens, highs, lows, closes):
-        """
-        处理K线图鼠标双击事件，显示十字线和信息框
-        
-        Args:
-            event: 鼠标事件对象
-            dates: 日期列表
-            opens: 开盘价列表
-            highs: 最高价列表
-            lows: 最低价列表
-            closes: 收盘价列表
-        """
-        try:
-            if event.double():  # 检查是否是双击事件
-                # 获取鼠标点击的位置
-                pos = event.scenePos()
-                # 将场景坐标转换为图表坐标
-                view_box = self.tech_plot_widget.getViewBox()
-                view_pos = view_box.mapSceneToView(pos)
-                x_val = view_pos.x()
-                y_val = view_pos.y()
-                
-                # 找到最接近的K线索引
-                index = int(round(x_val))
-                if 0 <= index < len(dates):
-                    # 更新十字线位置
-                    self.vline.setValue(index)
-                    self.hline.setValue(y_val)
-                    self.vline.show()
-                    self.hline.show()
-                    
-                    # 计算前一天的收盘价，用于计算涨跌幅
-                    pre_close = closes[index-1] if index > 0 else closes[index]
-                    
-                    # 计算涨跌幅和涨跌额
-                    change = closes[index] - pre_close
-                    pct_change = (change / pre_close) * 100 if pre_close != 0 else 0
-                    
-                    # 生成信息文本
-                    info_html = f"""
-                    <div style="background-color: rgba(0, 0, 0, 0.8); padding: 8px; border: 1px solid #666; color: white; font-family: monospace;">
-                    <div style="font-weight: bold;">{dates[index].strftime('%Y-%m-%d')}</div>
-                    <div>开盘: {opens[index]:.2f}</div>
-                    <div>最高: {highs[index]:.2f}</div>
-                    <div>最低: {lows[index]:.2f}</div>
-                    <div>收盘: {closes[index]:.2f}</div>
-                    <div>涨跌: {change:.2f} ({pct_change:.2f}%)</div>
-                    </div>
-                    """
-                    
-                    # 更新信息文本
-                    self.info_text.setHtml(info_html)
-                    # 设置信息文本位置（右上角）
-                    self.info_text.setPos(self.tech_plot_widget.viewRange()[0][1] - 10, self.tech_plot_widget.viewRange()[1][1] - 10)
-                    self.info_text.show()
-        except Exception as e:
-            logger.exception(f"处理K线图双击事件失败: {e}")
-    
+
     def on_nav_item_clicked(self, item, column):
         """
         处理导航项点击事件，显示对应的行情数据
