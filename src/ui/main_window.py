@@ -46,6 +46,7 @@ class MainWindow(QMainWindow):
         self.current_kline_index = -1
         self.current_kline_data = None
         self.displayed_bar_count = 100  # 默认显示100个柱体
+        self.crosshair_enabled = False  # 十字线和信息框显示状态，False=隐藏，True=显示
         
         # 保存当前显示的个股信息
         self.current_stock_data = None
@@ -1372,6 +1373,9 @@ class MainWindow(QMainWindow):
             # 连接鼠标移动事件，实现十字线跟随
             self.tech_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
             
+            # 连接鼠标双击事件，实现切换十字线和信息框显示状态
+            self.tech_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_double_clicked(event, dates, opens, highs, lows, closes))
+            
             # 连接鼠标离开视图事件，通过监控鼠标位置实现
             self.tech_plot_widget.viewport().setMouseTracking(True)
             
@@ -1506,6 +1510,41 @@ class MainWindow(QMainWindow):
             logger.exception(f"绘制K线图失败: {e}")
             self.statusBar().showMessage(f"绘制K线图失败: {str(e)[:50]}...", 5000)
     
+    def on_kline_double_clicked(self, event, dates, opens, highs, lows, closes):
+        """
+        处理K线图双击事件，切换十字线和信息框显示状态
+        
+        Args:
+            event: 鼠标点击事件
+            dates: 日期列表
+            opens: 开盘价列表
+            highs: 最高价列表
+            lows: 最低价列表
+            closes: 收盘价列表
+        """
+        # 检查是否是双击事件
+        if event.double():  # 检查是否是双击
+            # 切换十字线和信息框显示状态
+            self.crosshair_enabled = not self.crosshair_enabled
+            
+            if self.crosshair_enabled:
+                logger.info("双击K线图，启用十字线和信息框")
+                # 如果当前有K线数据，显示十字线
+                if self.current_kline_index >= 0 and self.current_kline_data:
+                    index = self.current_kline_index
+                    if 0 <= index < len(dates):
+                        self.vline.setValue(index)
+                        self.hline.setValue(self.hline.value())
+                        self.vline.show()
+                        self.hline.show()
+            else:
+                logger.info("双击K线图，禁用十字线和信息框")
+                # 隐藏十字线和信息框
+                self.vline.hide()
+                self.hline.hide()
+                if self.info_text is not None:
+                    self.info_text.hide()
+    
     def on_ma_clicked(self, event):
         """
         处理均线点击事件，在选中的均线上显示白点标注
@@ -1623,12 +1662,6 @@ class MainWindow(QMainWindow):
             # 找到最接近的K线索引
             index = int(round(x_val))
             if 0 <= index < len(dates):
-                # 更新十字线位置
-                self.vline.setValue(index)
-                self.hline.setValue(y_val)
-                self.vline.show()
-                self.hline.show()
-                
                 # 保存当前鼠标位置和K线索引
                 self.current_mouse_pos = pos
                 self.current_kline_index = index
@@ -1643,14 +1676,28 @@ class MainWindow(QMainWindow):
                     'index': index
                 }
                 
-                # 检查info_timer和info_text是否已经初始化
-                if self.info_timer is not None:
-                    # 启动定时器，200毫秒后显示信息框
-                    self.info_timer.start()
-                
-                if self.info_text is not None:
-                    # 隐藏信息框，等待定时器触发重新显示
-                    self.info_text.hide()
+                # 如果十字线功能启用，更新十字线位置和信息框
+                if self.crosshair_enabled:
+                    # 更新十字线位置
+                    self.vline.setValue(index)
+                    self.hline.setValue(y_val)
+                    self.vline.show()
+                    self.hline.show()
+                    
+                    # 检查info_timer和info_text是否已经初始化
+                    if self.info_timer is not None:
+                        # 启动定时器，200毫秒后显示信息框
+                        self.info_timer.start()
+                    
+                    if self.info_text is not None:
+                        # 隐藏信息框，等待定时器触发重新显示
+                        self.info_text.hide()
+                else:
+                    # 十字线功能禁用，隐藏十字线和信息框
+                    self.vline.hide()
+                    self.hline.hide()
+                    if self.info_text is not None:
+                        self.info_text.hide()
         except Exception as e:
             logger.exception(f"处理K线图鼠标移动事件失败: {e}")
     
