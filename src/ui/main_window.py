@@ -1298,6 +1298,34 @@ class MainWindow(QMainWindow):
             # 设置图表标题
             self.tech_plot_widget.setTitle(f"{stock_name}({stock_code}) K线图", color='#C0C0C0', size='14pt')
             
+            # 创建均线值显示标签
+            from PySide6.QtWidgets import QLabel, QHBoxLayout, QWidget
+            
+            # 检查是否已经存在MA标签，如果存在则移除
+            if hasattr(self, 'ma_values_label'):
+                try:
+                    self.ma_values_label.deleteLater()
+                except Exception as e:
+                    logger.warning(f"移除旧MA标签时发生错误: {e}")
+            
+            # 创建标签
+            self.ma_values_label = QLabel("MA5: --  MA10: --  MA20: --  MA60: --")
+            self.ma_values_label.setStyleSheet("font-family: Consolas, monospace; color: white; background-color: rgba(0, 0, 0, 0.5); padding: 5px;")
+            
+            # 获取tech_plot_widget的父部件，将标签添加到合适的位置
+            parent_widget = self.tech_plot_widget.parent()
+            if parent_widget:
+                # 检查是否已经有布局
+                if parent_widget.layout() is None:
+                    layout = QVBoxLayout(parent_widget)
+                    layout.setContentsMargins(0, 0, 0, 0)
+                else:
+                    layout = parent_widget.layout()
+                
+                # 将标签添加到布局的顶部
+                layout.insertWidget(0, self.ma_values_label)
+                logger.info("已添加MA值显示标签")
+            
             # 准备K线图数据
             dates = df['date'].to_list()
             opens = df['open'].to_list()
@@ -1929,6 +1957,9 @@ class MainWindow(QMainWindow):
                     'index': index
                 }
                 
+                # 更新顶部均线值显示
+                self.update_ma_values_display(index, dates, opens, highs, lows, closes)
+                
                 # 如果十字线功能启用，更新十字线位置和信息框
                 if self.crosshair_enabled:
                     # 更新十字线位置
@@ -1953,6 +1984,64 @@ class MainWindow(QMainWindow):
                         self.info_text.hide()
         except Exception as e:
             logger.exception(f"处理K线图鼠标移动事件失败: {e}")
+    
+    def update_ma_values_display(self, index, dates, opens, highs, lows, closes):
+        """
+        更新顶部均线值显示
+        
+        Args:
+            index: 当前K线索引
+            dates: 日期列表
+            opens: 开盘价列表
+            highs: 最高价列表
+            lows: 最低价列表
+            closes: 收盘价列表
+        """
+        try:
+            if not hasattr(self, 'ma_values_label'):
+                return
+            
+            # 确保索引有效
+            if index < 0 or index >= len(dates):
+                return
+            
+            # 获取当前的MA值
+            ma_values = {}
+            
+            # 计算MA5
+            if index >= 4:  # 至少需要5个数据点
+                ma5 = sum(closes[index-4:index+1]) / 5
+                ma_values['MA5'] = f"{ma5:.2f}"
+            else:
+                ma_values['MA5'] = "--"
+            
+            # 计算MA10
+            if index >= 9:  # 至少需要10个数据点
+                ma10 = sum(closes[index-9:index+1]) / 10
+                ma_values['MA10'] = f"{ma10:.2f}"
+            else:
+                ma_values['MA10'] = "--"
+            
+            # 计算MA20
+            if index >= 19:  # 至少需要20个数据点
+                ma20 = sum(closes[index-19:index+1]) / 20
+                ma_values['MA20'] = f"{ma20:.2f}"
+            else:
+                ma_values['MA20'] = "--"
+            
+            # 计算MA60
+            if index >= 59:  # 至少需要60个数据点
+                ma60 = sum(closes[index-59:index+1]) / 60
+                ma_values['MA60'] = f"{ma60:.2f}"
+            else:
+                ma_values['MA60'] = "--"
+            
+            # 更新标签文本
+            ma_text = f"MA5: {ma_values['MA5']}  MA10: {ma_values['MA10']}  MA20: {ma_values['MA20']}  MA60: {ma_values['MA60']}"
+            self.ma_values_label.setText(ma_text)
+            logger.debug(f"更新MA值显示: {ma_text}")
+        except Exception as e:
+            logger.exception(f"更新MA值显示时发生错误: {e}")
     
     def show_info_box(self):
         """
