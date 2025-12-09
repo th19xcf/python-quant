@@ -1373,8 +1373,8 @@ class MainWindow(QMainWindow):
             # 连接鼠标移动事件，实现十字线跟随
             self.tech_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
             
-            # 连接鼠标双击事件，实现切换十字线和信息框显示状态
-            self.tech_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_double_clicked(event, dates, opens, highs, lows, closes))
+            # 连接鼠标点击事件，处理左键和右键点击
+            self.tech_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
             
             # 连接鼠标离开视图事件，通过监控鼠标位置实现
             self.tech_plot_widget.viewport().setMouseTracking(True)
@@ -1384,6 +1384,103 @@ class MainWindow(QMainWindow):
             self.info_timer.setSingleShot(True)
             self.info_timer.setInterval(200)  # 200毫秒
             self.info_timer.timeout.connect(self.show_info_box)
+            
+            # 禁用pyqtgraph的默认右键菜单
+            logger.info("禁用pyqtgraph默认右键菜单")
+            
+            # 方法1: 禁用viewBox的右键菜单
+            if hasattr(self.tech_plot_widget, 'getViewBox'):
+                view_box = self.tech_plot_widget.getViewBox()
+                view_box.setMenuEnabled(False)
+                logger.info("已禁用viewBox的右键菜单")
+            
+            # 方法2: 禁用所有子项的右键菜单
+            for item in self.tech_plot_widget.items():
+                if hasattr(item, 'setMenuEnabled'):
+                    item.setMenuEnabled(False)
+                    logger.info(f"已禁用{item}的右键菜单")
+            
+            # 方法3: 完全替换右键菜单事件处理
+            def custom_context_menu(event):
+                logger.info(f"自定义右键菜单被调用")
+                
+                # 创建自定义菜单
+                menu = QMenu(self.tech_plot_widget)
+                
+                # 如果有选中的均线，添加修改指标参数选项
+                if hasattr(self, 'selected_ma') and self.selected_ma:
+                    modify_action = QAction(f"修改{self.selected_ma}指标参数", self)
+                    modify_action.triggered.connect(lambda: self.on_modify_indicator(self.selected_ma))
+                    menu.addAction(modify_action)
+                else:
+                    # 如果没有选中均线，添加提示信息
+                    no_select_action = QAction("未选中均线，请先点击选中均线", self)
+                    no_select_action.setEnabled(False)  # 禁用选项
+                    menu.addAction(no_select_action)
+                
+                # 在鼠标位置显示菜单，确保使用QPoint类型
+                qpoint = event.globalPos().toPoint()
+                logger.info(f"在位置 {qpoint} 显示自定义菜单")
+                menu.exec(qpoint)
+                
+                # 阻止事件传播，防止显示默认菜单
+                event.accept()
+            
+            # 设置自定义右键菜单
+            self.tech_plot_widget.contextMenuEvent = custom_context_menu
+            logger.info("已设置自定义右键菜单")
+            
+            # 方法4: 连接全局上下文菜单事件
+            self.tech_plot_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.tech_plot_widget.customContextMenuRequested.connect(lambda pos: self.on_custom_context_menu(pos))
+            logger.info("已连接customContextMenuRequested信号")
+            
+            # 方法5: 连接鼠标单击事件，用于取消均线选中状态
+            def on_plot_clicked(event):
+                logger.info(f"图表单击事件被调用，按钮: {event.button()}")
+                
+                # 如果是左键单击
+                if event.button() == Qt.LeftButton:
+                    # 检查点击位置是否在均线上
+                    pos = event.pos()
+                    view_box = self.tech_plot_widget.getViewBox()
+                    view_pos = view_box.mapSceneToView(pos)
+                    x_val = view_pos.x()
+                    y_val = view_pos.y()
+                    index = int(round(x_val))
+                    
+                    # 检测点击位置是否在某个均线上
+                    clicked_ma = None
+                    min_distance = float('inf')
+                    tolerance = 0.02  # 2%的价格容忍度
+                    y_range = self.tech_plot_widget.viewRange()[1]
+                    y_min, y_max = y_range
+                    price_tolerance = (y_max - y_min) * tolerance
+                    
+                    for ma_name, ma_info in self.moving_averages.items():
+                        x_data, y_data = ma_info['data']
+                        if 0 <= index < len(x_data):
+                            ma_value = y_data[index]
+                            distance = abs(y_val - ma_value)
+                            if distance < price_tolerance and distance < min_distance:
+                                min_distance = distance
+                                clicked_ma = ma_name
+                    
+                    # 如果点击位置不在任何均线上，取消选中状态
+                    if not clicked_ma:
+                        logger.info(f"点击位置不在均线上，取消选中状态")
+                        # 清除之前的标注点
+                        for point_item in self.ma_points:
+                            self.tech_plot_widget.removeItem(point_item)
+                        self.ma_points.clear()
+                        
+                        # 重置选中状态
+                        self.selected_ma = None
+                        logger.info(f"已取消均线选中状态")
+            
+            # 连接图表点击事件
+            self.tech_plot_widget.scene().sigMouseClicked.connect(on_plot_clicked)
+            logger.info("已连接图表点击事件，用于取消均线选中状态")
             
             # 计算并绘制技术指标
             try:
@@ -1545,6 +1642,25 @@ class MainWindow(QMainWindow):
                 if self.info_text is not None:
                     self.info_text.hide()
     
+    def on_kline_clicked(self, event, dates, opens, highs, lows, closes):
+        """
+        处理K线图点击事件，区分左键和右键点击
+        
+        Args:
+            event: 鼠标点击事件
+            dates: 日期列表
+            opens: 开盘价列表
+            highs: 最高价列表
+            lows: 最低价列表
+            closes: 收盘价列表
+        """
+        # 检查是否是双击事件
+        if event.double():  # 检查是否是双击
+            self.on_kline_double_clicked(event, dates, opens, highs, lows, closes)
+        else:
+            # 单击事件，调用均线点击处理函数
+            self.on_ma_clicked(event)
+    
     def on_ma_clicked(self, event):
         """
         处理均线点击事件，在选中的均线上显示白点标注
@@ -1619,8 +1735,145 @@ class MainWindow(QMainWindow):
                 
                 # 更新选中的均线
                 self.selected_ma = clicked_ma
+                
+                # 检查是否是右键点击
+                logger.info(f"点击按钮: {event.button()}, Qt.RightButton: {Qt.RightButton}")
+                if event.button() == Qt.RightButton:
+                    logger.info(f"检测到右键点击，创建自定义菜单")
+                    
+                    # 创建右键菜单
+                    menu = QMenu(self)
+                    
+                    # 如果点击了均线，添加修改指标参数选项
+                    if clicked_ma:
+                        modify_action = QAction(f"修改{clicked_ma}指标参数", self)
+                        modify_action.triggered.connect(lambda: self.on_modify_indicator(clicked_ma))
+                        menu.addAction(modify_action)
+                    else:
+                        # 如果没有点击在均线上，添加提示信息
+                        no_select_action = QAction("未选中均线，请先点击选中均线", self)
+                        no_select_action.setEnabled(False)  # 禁用选项
+                        menu.addAction(no_select_action)
+                    
+                    # 使用event的pos方法获取场景位置，然后转换为屏幕位置
+                    scene_pos = event.pos()
+                    logger.info(f"场景位置: {scene_pos}")
+                    
+                    # 获取tech_plot_widget在屏幕上的位置
+                    widget_pos = self.tech_plot_widget.pos()
+                    logger.info(f"部件位置: {widget_pos}")
+                    
+                    # 转换为屏幕坐标，确保是QPoint类型
+                    screen_pos = self.tech_plot_widget.mapToGlobal(scene_pos)
+                    # 将QPointF转换为QPoint类型
+                    qpoint = screen_pos.toPoint()
+                    logger.info(f"屏幕位置: {screen_pos}, QPoint: {qpoint}")
+                    
+                    # 显示菜单
+                    logger.info(f"在QPoint位置 {qpoint} 显示菜单")
+                    menu.exec(qpoint)
+                    logger.info(f"菜单已显示")
+                    
+                    # 阻止事件传播，防止显示默认菜单
+                    event.accept()
         except Exception as e:
             logger.exception(f"处理均线点击事件时发生错误: {e}")
+    
+    def on_custom_context_menu(self, pos):
+        """
+        处理customContextMenuRequested信号，显示自定义右键菜单
+        
+        Args:
+            pos: 鼠标位置，相对于widget的坐标
+        """
+        logger.info(f"customContextMenuRequested信号被调用，位置: {pos}")
+        
+        # 创建自定义菜单
+        menu = QMenu(self.tech_plot_widget)
+        
+        # 如果有选中的均线，添加修改指标参数选项
+        if hasattr(self, 'selected_ma') and self.selected_ma:
+            modify_action = QAction(f"修改{self.selected_ma}指标参数", self)
+            modify_action.triggered.connect(lambda: self.on_modify_indicator(self.selected_ma))
+            menu.addAction(modify_action)
+        else:
+            # 如果没有选中均线，添加提示信息
+            no_select_action = QAction("未选中均线，请先点击选中均线", self)
+            no_select_action.setEnabled(False)  # 禁用选项
+            menu.addAction(no_select_action)
+        
+        # 转换为全局坐标
+        global_pos = self.tech_plot_widget.mapToGlobal(pos)
+        logger.info(f"转换后的全局坐标: {global_pos}")
+        
+        # 显示菜单
+        menu.exec(global_pos)
+        logger.info("自定义菜单已显示")
+    
+    def on_modify_indicator(self, ma_name):
+        """
+        处理修改指标参数的菜单动作，显示修改指标参数的对话框
+        
+        Args:
+            ma_name: 选中的均线名称，如"MA5", "MA10"等
+        """
+        logger.info(f"修改指标参数: {ma_name}")
+        
+        # 创建修改指标参数的对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"修改{ma_name}指标参数")
+        dialog.setGeometry(300, 300, 300, 200)
+        
+        # 创建布局
+        layout = QVBoxLayout(dialog)
+        
+        # 获取当前的窗口参数
+        current_window = int(ma_name.replace("MA", ""))
+        
+        # 创建标签和输入框
+        window_label = QLabel("周期:", dialog)
+        layout.addWidget(window_label)
+        
+        window_input = QLineEdit(dialog)
+        window_input.setText(str(current_window))
+        layout.addWidget(window_input)
+        
+        # 创建按钮布局
+        button_layout = QHBoxLayout()
+        
+        ok_button = QPushButton("确定", dialog)
+        cancel_button = QPushButton("取消", dialog)
+        
+        button_layout.addWidget(ok_button)
+        button_layout.addWidget(cancel_button)
+        
+        layout.addLayout(button_layout)
+        
+        # 连接按钮信号
+        def on_ok():
+            try:
+                # 获取新的窗口参数
+                new_window = int(window_input.text())
+                if new_window <= 0:
+                    raise ValueError("周期必须大于0")
+                
+                # 保存新的参数
+                logger.info(f"修改{ma_name}周期为: {new_window}")
+                
+                # TODO: 实现更新均线的逻辑
+                # 这里需要重新计算均线并更新绘制
+                
+                dialog.accept()
+            except ValueError as e:
+                # 显示错误信息
+                logger.error(f"周期输入错误: {e}")
+                # 可以添加一个错误提示对话框
+        
+        ok_button.clicked.connect(on_ok)
+        cancel_button.clicked.connect(dialog.reject)
+        
+        # 显示对话框
+        dialog.exec()
     
     def keyPressEvent(self, event):
         """
