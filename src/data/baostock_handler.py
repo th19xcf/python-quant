@@ -165,7 +165,7 @@ class BaostockHandler:
             # 离线模式下，只获取数据不存储
             if not self.session:
                 logger.info("离线模式下，跳过股票基本信息存储")
-                return stock_basic_pd  # 离线模式下返回pandas DataFrame，保持兼容性
+                return stock_basic_df  # 离线模式下返回Polars DataFrame
             
             # 数据清洗和标准化
             from src.database.models.stock import StockBasic
@@ -219,7 +219,7 @@ class BaostockHandler:
             # 提交事务
             self.session.commit()
             logger.info("股票基本信息更新完成")
-            return stock_basic_pd  # 返回pandas DataFrame，保持兼容性
+            return stock_basic_df  # 返回Polars DataFrame
             
         except Exception as e:
             if self.session:
@@ -308,8 +308,9 @@ class BaostockHandler:
                     logger.info(f"获取到{ts_code}的{stock_daily_df.height}条日线数据")
                     
                     # 离线模式下，只获取数据不存储
+                    # 离线模式下，只获取数据不存储
                     if not self.session:
-                        result[ts_code] = stock_daily_pd
+                        result[ts_code] = stock_daily_df
                         logger.info(f"离线模式下，获取{ts_code}的日线数据完成")
                         continue
                     
@@ -469,7 +470,7 @@ class BaostockHandler:
             # 离线模式下，只获取数据不存储
             if not self.session:
                 logger.info("离线模式下，跳过指数基本信息存储")
-                return index_basic_df.to_pandas()
+                return index_basic_df
             
             # 数据清洗和标准化
             from src.database.models.index import IndexBasic
@@ -502,7 +503,7 @@ class BaostockHandler:
             # 提交事务
             self.session.commit()
             logger.info("指数基本信息更新完成")
-            return index_basic_df.to_pandas()
+            return index_basic_df
             
         except Exception as e:
             if self.session:
@@ -704,8 +705,11 @@ class BaostockHandler:
                     # 获取数据
                     stock_data_pd = rs.get_data()
                     
-                    if not stock_data_pd.empty:
-                        all_data.append(stock_data_pd)
+                    # 转换为Polars DataFrame
+                    stock_data_df = pl.from_pandas(stock_data_pd)
+                    
+                    if not stock_data_df.is_empty():
+                        all_data.append(stock_data_df)
                     
                 except Exception as e:
                     logger.exception(f"获取{ts_code}的历史数据失败: {e}")
@@ -717,10 +721,8 @@ class BaostockHandler:
             
             # 合并所有数据
             if all_data:
-                # 将所有pandas DataFrame转换为Polars DataFrame
-                all_pl_dfs = [pl.from_pandas(pd_df) for pd_df in all_data]
                 # 合并Polars DataFrames
-                combined_df = pl.concat(all_pl_dfs, how="vertical")
+                combined_df = pl.concat(all_data, how="vertical")
                 # 按日期降序排序，确保最新的数据在前面
                 combined_df = combined_df.sort(by="date", descending=True)
             else:
@@ -776,8 +778,11 @@ class BaostockHandler:
                     # 获取数据
                     index_data_pd = rs.get_data()
                     
-                    if not index_data_pd.empty:
-                        all_data.append(index_data_pd)
+                    # 转换为Polars DataFrame
+                    index_data_df = pl.from_pandas(index_data_pd)
+                    
+                    if not index_data_df.is_empty():
+                        all_data.append(index_data_df)
                     
                 except Exception as e:
                     logger.exception(f"获取{ts_code}的历史指数数据失败: {e}")
@@ -789,10 +794,8 @@ class BaostockHandler:
             
             # 合并所有数据
             if all_data:
-                # 将所有pandas DataFrame转换为Polars DataFrame
-                all_pl_dfs = [pl.from_pandas(pd_df) for pd_df in all_data]
                 # 合并Polars DataFrames
-                combined_df = pl.concat(all_pl_dfs, how="vertical")
+                combined_df = pl.concat(all_data, how="vertical")
                 # 按日期降序排序，确保最新的数据在前面
                 combined_df = combined_df.sort(by="date", descending=True)
             else:

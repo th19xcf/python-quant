@@ -61,7 +61,7 @@ class AkShareHandler:
             # 离线模式下，只获取数据不存储
             if not self.session:
                 logger.info("离线模式下，跳过股票基本信息存储")
-                return stock_basic_pd  # 离线模式下返回pandas DataFrame，保持兼容性
+                return stock_basic_df  # 离线模式下返回Polars DataFrame
             
             # 数据清洗和标准化
             from src.database.models.stock import StockBasic
@@ -102,7 +102,7 @@ class AkShareHandler:
             # 提交事务
             self.session.commit()
             logger.info("股票基本信息更新完成")
-            return stock_basic_pd  # 返回pandas DataFrame，保持兼容性
+            return stock_basic_df  # 返回Polars DataFrame
             
         except Exception as e:
             if self.session:
@@ -179,7 +179,7 @@ class AkShareHandler:
                     
                     # 离线模式下，只获取数据不存储
                     if not self.session:
-                        result[ts_code] = stock_daily_pd
+                        result[ts_code] = stock_daily_df
                         logger.info(f"离线模式下，获取{ts_code}的日线数据完成")
                         continue
                     
@@ -272,7 +272,7 @@ class AkShareHandler:
             # 离线模式下，只获取数据不存储
             if not self.session:
                 logger.info("离线模式下，跳过指数基本信息存储")
-                return index_basic_pd
+                return index_basic_df
             
             # 数据清洗和标准化
             from src.database.models.index import IndexBasic
@@ -305,7 +305,7 @@ class AkShareHandler:
             # 提交事务
             self.session.commit()
             logger.info("指数基本信息更新完成")
-            return index_basic_pd
+            return index_basic_df
             
         except Exception as e:
             if self.session:
@@ -370,7 +370,7 @@ class AkShareHandler:
                     
                     # 离线模式下，只获取数据不存储
                     if not self.session:
-                        result[ts_code] = index_daily_pd
+                        result[ts_code] = index_daily_df
                         logger.info(f"离线模式下，获取{ts_code}的日线数据完成")
                         continue
                     
