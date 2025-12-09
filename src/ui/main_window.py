@@ -1583,6 +1583,24 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.exception(f"处理均线点击事件时发生错误: {e}")
     
+    def keyPressEvent(self, event):
+        """
+        处理键盘事件，实现按ESC键从技术分析窗口返回行情窗口
+        
+        Args:
+            event: 键盘事件
+        """
+        # 检查是否按下了ESC键
+        if event.key() == Qt.Key_Escape:
+            # 检查当前是否在技术分析窗口
+            if self.tab_widget.currentWidget() == self.tech_tab:
+                logger.info("按ESC键，从技术分析窗口返回行情窗口")
+                # 切换到行情窗口
+                self.tab_widget.setCurrentWidget(self.market_tab)
+        
+        # 调用父类方法处理其他键盘事件
+        super().keyPressEvent(event)
+    
     def on_kline_mouse_moved(self, pos, dates, opens, highs, lows, closes):
         """
         处理K线图鼠标移动事件，实现十字线跟随
