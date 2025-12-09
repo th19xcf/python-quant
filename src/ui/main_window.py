@@ -1381,6 +1381,108 @@ class MainWindow(QMainWindow):
             self.info_timer.setInterval(200)  # 200毫秒
             self.info_timer.timeout.connect(self.show_info_box)
             
+            # 计算并绘制技术指标
+            try:
+                import pandas as pd
+                import ta
+                import numpy as np
+                
+                logger.info("开始计算技术指标")
+                
+                # 只取显示数量的数据
+                if hasattr(df, 'tail'):
+                    df_display = df.tail(bar_count)
+                else:
+                    df_display = df
+                
+                # 转换为Pandas DataFrame，确保使用正确的方法
+                df_pd = None
+                if hasattr(df_display, 'to_pandas'):
+                    logger.info(f"检测到Polars DataFrame，开始转换为Pandas DataFrame")
+                    df_pd = df_display.to_pandas()
+                    logger.info(f"Polars DataFrame转换为Pandas DataFrame成功，形状: {df_pd.shape}")
+                elif isinstance(df_display, pd.DataFrame):
+                    logger.info(f"已经是Pandas DataFrame，直接使用")
+                    df_pd = df_display
+                else:
+                    logger.info(f"转换为Pandas DataFrame，类型: {type(df_display).__name__}")
+                    # 尝试直接转换为Pandas DataFrame
+                    df_pd = pd.DataFrame(df_display)
+                    logger.info(f"转换为Pandas DataFrame成功，形状: {df_pd.shape}")
+                
+                # 确保close列存在且为数值类型
+                if 'close' not in df_pd.columns:
+                    logger.error(f"数据中没有close列")
+                    return
+                
+                df_pd['close'] = pd.to_numeric(df_pd['close'], errors='coerce')
+                
+                # 计算移动平均线
+                logger.info("计算5日均线")
+                df_pd['ma5'] = ta.trend.sma_indicator(df_pd['close'], window=5, fillna=True)
+                logger.info("计算10日均线")
+                df_pd['ma10'] = ta.trend.sma_indicator(df_pd['close'], window=10, fillna=True)
+                logger.info("计算20日均线")
+                df_pd['ma20'] = ta.trend.sma_indicator(df_pd['close'], window=20, fillna=True)
+                logger.info("计算60日均线")
+                df_pd['ma60'] = ta.trend.sma_indicator(df_pd['close'], window=60, fillna=True)
+                
+                # 计算MACD指标
+                logger.info("计算MACD指标")
+                df_pd['macd'] = ta.trend.macd(df_pd['close'], fillna=True)
+                df_pd['macd_signal'] = ta.trend.macd_signal(df_pd['close'], fillna=True)
+                df_pd['macd_hist'] = ta.trend.macd_diff(df_pd['close'], fillna=True)
+                
+                # 计算RSI指标
+                logger.info("计算RSI指标")
+                df_pd['rsi14'] = ta.momentum.rsi(df_pd['close'], window=14, fillna=True)
+                
+                # 计算KDJ指标
+                logger.info("计算KDJ指标")
+                df_pd['k'] = ta.momentum.stoch(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
+                df_pd['d'] = ta.momentum.stoch_signal(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
+                df_pd['j'] = 3 * df_pd['k'] - 2 * df_pd['d']
+                
+                # 确保数据索引正确
+                x = np.arange(len(df_pd))
+                
+                # 初始化均线相关属性
+                if not hasattr(self, 'moving_averages'):
+                    self.moving_averages = {}
+                if not hasattr(self, 'selected_ma'):
+                    self.selected_ma = None
+                if not hasattr(self, 'ma_points'):
+                    self.ma_points = []
+                
+                # 清除之前的标注点
+                for point_item in self.ma_points:
+                    self.tech_plot_widget.removeItem(point_item)
+                self.ma_points.clear()
+                
+                # 绘制5日均线（蓝色）
+                ma5_item = self.tech_plot_widget.plot(x, df_pd['ma5'].values, pen=pg.mkPen('b', width=1), name='MA5')
+                self.moving_averages['MA5'] = {'item': ma5_item, 'data': (x, df_pd['ma5'].values), 'color': 'b'}
+                
+                # 绘制10日均线（青色）
+                ma10_item = self.tech_plot_widget.plot(x, df_pd['ma10'].values, pen=pg.mkPen('c', width=1), name='MA10')
+                self.moving_averages['MA10'] = {'item': ma10_item, 'data': (x, df_pd['ma10'].values), 'color': 'c'}
+                
+                # 绘制20日均线（红色）
+                ma20_item = self.tech_plot_widget.plot(x, df_pd['ma20'].values, pen=pg.mkPen('r', width=1), name='MA20')
+                self.moving_averages['MA20'] = {'item': ma20_item, 'data': (x, df_pd['ma20'].values), 'color': 'r'}
+                
+                # 绘制60日均线（绿色）
+                ma60_item = self.tech_plot_widget.plot(x, df_pd['ma60'].values, pen=pg.mkPen('g', width=1), name='MA60')
+                self.moving_averages['MA60'] = {'item': ma60_item, 'data': (x, df_pd['ma60'].values), 'color': 'g'}
+                
+                # 连接点击事件
+                self.tech_plot_widget.scene().sigMouseClicked.connect(self.on_ma_clicked)
+                
+                logger.info("技术指标绘制完成")
+                logger.info(f"计算的指标包括: MA5, MA10, MA20, MA60, MACD, RSI14, KDJ")
+            except Exception as e:
+                logger.exception(f"计算或绘制技术指标时发生错误: {e}")
+            
             # 保存当前鼠标位置和K线索引
             self.current_mouse_pos = None
             self.current_kline_index = -1
@@ -1403,6 +1505,83 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.exception(f"绘制K线图失败: {e}")
             self.statusBar().showMessage(f"绘制K线图失败: {str(e)[:50]}...", 5000)
+    
+    def on_ma_clicked(self, event):
+        """
+        处理均线点击事件，在选中的均线上显示白点标注
+        
+        Args:
+            event: 鼠标点击事件
+        """
+        try:
+            import pyqtgraph as pg
+            import pandas as pd
+            import numpy as np
+            from pyqtgraph import Point
+            
+            # 获取点击位置
+            pos = event.scenePos()
+            view_box = self.tech_plot_widget.getViewBox()
+            view_pos = view_box.mapSceneToView(pos)
+            x_val = view_pos.x()
+            y_val = view_pos.y()
+            
+            # 找到最接近的K线索引
+            index = int(round(x_val))
+            
+            # 检测点击位置是否在某个均线上
+            clicked_ma = None
+            min_distance = float('inf')
+            
+            # 定义点击容忍度（Y轴方向的容忍度）
+            tolerance = 0.02  # 2%的价格容忍度
+            
+            # 获取当前价格范围，用于计算相对容忍度
+            y_range = self.tech_plot_widget.viewRange()[1]
+            y_min, y_max = y_range
+            price_tolerance = (y_max - y_min) * tolerance
+            
+            # 遍历所有均线，检查点击位置是否在均线上
+            for ma_name, ma_info in self.moving_averages.items():
+                x_data, y_data = ma_info['data']
+                if 0 <= index < len(x_data):
+                    # 获取该位置的均线值
+                    ma_value = y_data[index]
+                    
+                    # 计算点击位置与均线的距离
+                    distance = abs(y_val - ma_value)
+                    
+                    # 如果距离小于容忍度，认为点击了该均线
+                    if distance < price_tolerance and distance < min_distance:
+                        min_distance = distance
+                        clicked_ma = ma_name
+            
+            # 如果点击了均线
+            if clicked_ma:
+                logger.info(f"点击了{clicked_ma}")
+                
+                # 清除之前的标注点
+                for point_item in self.ma_points:
+                    self.tech_plot_widget.removeItem(point_item)
+                self.ma_points.clear()
+                
+                # 绘制新的标注点
+                ma_info = self.moving_averages[clicked_ma]
+                x_data, y_data = ma_info['data']
+                
+                # 在均线上每隔几个点绘制一个白点
+                step = max(1, len(x_data) // 20)  # 最多绘制20个点
+                for i in range(0, len(x_data), step):
+                    if not pd.isna(y_data[i]):
+                        # 创建白点标注
+                        point = pg.ScatterPlotItem([x_data[i]], [y_data[i]], size=6, pen=pg.mkPen('w', width=1), brush=pg.mkBrush('w'))
+                        self.tech_plot_widget.addItem(point)
+                        self.ma_points.append(point)
+                
+                # 更新选中的均线
+                self.selected_ma = clicked_ma
+        except Exception as e:
+            logger.exception(f"处理均线点击事件时发生错误: {e}")
     
     def on_kline_mouse_moved(self, pos, dates, opens, highs, lows, closes):
         """
@@ -1528,13 +1707,6 @@ class MainWindow(QMainWindow):
                             info_box_width = 8  # 信息框宽度
                             margin = 2  # 边距
                             
-                            # 输出位置日志，用于调试
-                            logger.info(f"=== 悬停信息框位置日志 ===")
-                            logger.info(f"K线位置: (x={kline_x:.2f}, y={kline_y:.2f})")
-                            logger.info(f"视图范围: x_min={x_min:.2f}, x_max={x_max:.2f}, y_min={y_min:.2f}, y_max={y_max:.2f}")
-                            logger.info(f"信息框尺寸: width={info_box_width}, height={info_box_height}")
-                            logger.info(f"边距: margin={margin}")
-                            
                             # 检测K线是否靠近窗口顶部
                             # 如果K线位于视图上半部分，信息框显示在下方
                             # 这样可以确保信息框不会超出顶部边界
@@ -1556,66 +1728,44 @@ class MainWindow(QMainWindow):
                             # 如果K线位于左10%区域，信息框显示在右侧
                             is_near_left = kline_x < x_min + view_width * 0.1
                             
-                            logger.info(f"是否靠近顶部: is_near_top={is_near_top}")
-                            logger.info(f"是否靠近底部: is_near_bottom={is_near_bottom}")
-                            logger.info(f"是否靠近左侧: is_near_left={is_near_left}")
-                            logger.info(f"K线距离顶部: {y_max - kline_y:.2f}, 所需空间: {info_box_height + margin:.2f}")
-                            logger.info(f"K线距离底部: {kline_y - y_min:.2f}, 所需空间: {info_box_height + margin:.2f}")
-                            
                             # 根据K线位置智能选择信息框显示位置
                             # 锚点是(0, 1)，所以pos_x和pos_y定义了信息框的左下角位置
                             # 在pyqtgraph中，y值越大位置越靠上，y值越小位置越靠下
                             if is_near_top:
                                 # K线靠近顶部（y值大），信息框显示在K线右下方
                                 # 我们希望信息框显示在K线下方，所以：pos_y = kline_y - info_box_height - margin
-                                logger.info("处理: 信息框显示在K线右下方")
                                 pos_x = kline_x + 0.5  # K线右侧0.5个单位
                                 # 信息框左上角在K线右侧下方，底部对齐K线底部
                                 pos_y = kline_y - info_box_height - margin - 100  # K线下方，信息框顶部对齐K线底部
-                                logger.info(f"初始计算位置: (x={pos_x:.2f}, y={pos_y:.2f}), kline_y={kline_y}")
                             else:
                                 # K线靠近底部（y值小），信息框显示在K线右上方
                                 # 我们希望信息框显示在K线上方，所以信息框的底部对齐K线顶部
-                                logger.info("处理: 信息框显示在K线右上方")
                                 pos_x = kline_x + 0.5  # K线右侧0.5个单位
                                 # 信息框左上角在K线右侧上方，底部对齐K线顶部
                                 pos_y = kline_y + margin  # K线上方，信息框底部对齐K线顶部
-                                logger.info(f"初始计算位置: (x={pos_x:.2f}, y={pos_y:.2f})")
                             
                             # 确保信息框完全在视图范围内
                             # 水平方向：确保信息框不会超出左右边界
                             if pos_x < x_min + margin:
-                                logger.info(f"调整左边界: pos_x从{pos_x:.2f}调整到{x_min + margin:.2f}")
                                 pos_x = x_min + margin
                             if pos_x + info_box_width > x_max - margin:
-                                logger.info(f"调整右边界: pos_x从{pos_x:.2f}调整到{x_max - info_box_width - margin:.2f}")
                                 pos_x = x_max - info_box_width - margin
                             
                             # 垂直方向：确保信息框不会超出上下边界
                             # 在pyqtgraph中，y值越大位置越靠上
                             # 检查信息框底部是否超出视图底部
                             if pos_y < y_min + margin:
-                                logger.info(f"调整底边界: pos_y从{pos_y:.2f}调整到{y_min + margin:.2f}")
                                 pos_y = y_min + margin
                             # 检查信息框顶部是否超出视图顶部
                             elif pos_y + info_box_height > y_max - margin:
-                                logger.info(f"调整顶边界: pos_y从{pos_y:.2f}调整到{y_max - info_box_height - margin:.2f}")
                                 pos_y = y_max - info_box_height - margin
                             
                             # 输出最终位置
-                            logger.info(f"最终信息框位置: (x={pos_x:.2f}, y={pos_y:.2f})")
-                            logger.info(f"最终信息框范围: left={pos_x:.2f}, right={pos_x + info_box_width:.2f}, top={pos_y:.2f}, bottom={pos_y + info_box_height:.2f}")
-                            
                             # 最终边界检查，确保信息框完全显示
                             pos_x = max(pos_x, x_min + margin)
                             pos_x = min(pos_x, x_max - margin - info_box_width)
                             pos_y = max(pos_y, y_min + margin)
                             pos_y = min(pos_y, y_max - margin - info_box_height)
-                            
-                            # 输出最终位置
-                            logger.info(f"校正信息框位置: (x={pos_x:.2f}, y={pos_y:.2f})")
-                            logger.info(f"校正信息框范围: left={pos_x:.2f}, right={pos_x + info_box_width:.2f}, top={pos_y:.2f}, bottom={pos_y + info_box_height:.2f}")
-                            logger.info("=== 日志结束 ===")
                             
                             self.info_text.setPos(pos_x, pos_y)
                             self.info_text.show()
