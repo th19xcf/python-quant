@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QTabWidget, QPushButton, QLineEdit, QLabel, QStatusBar,
     QMenuBar, QMenu, QDialog, QCheckBox, QDateEdit, QComboBox,
-    QProgressBar, QAbstractItemView
+    QProgressBar, QAbstractItemView, QToolButton
 )
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QAction, QIcon, QFont, QColor
@@ -488,6 +488,44 @@ class MainWindow(QMainWindow):
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar.setStyleSheet("background-color: #222222;")
         
+        # 添加窗口按钮
+        window_button = QPushButton('窗口 ▾')
+        window_button.setStyleSheet("""
+        QPushButton {
+            background-color: #333333;
+            color: #C0C0C0;
+            border: 1px solid #444444;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-family: 'Microsoft YaHei';
+            font-size: 12px;
+            text-align: center;
+        }
+        QPushButton:hover {
+            background-color: #444444;
+        }
+        QPushButton:checked {
+            background-color: #555555;
+            border: 1px solid #666666;
+        }
+        """)
+        toolbar_layout.addWidget(window_button)
+        
+        # 创建窗口选择菜单
+        window_menu = QMenu(self)
+        self.window_actions = []
+        for i in range(1, 10):  # 最大选择9个窗口
+            action = QAction(f'{i}个窗口', self)
+            action.setCheckable(True)
+            if i == 3:  # 默认选择3个窗口
+                action.setChecked(True)
+            action.triggered.connect(lambda checked, w=i: self.on_window_count_changed(w, checked))
+            window_menu.addAction(action)
+            self.window_actions.append(action)
+        
+        # 连接按钮点击事件，显示菜单
+        window_button.clicked.connect(lambda: window_menu.exec(window_button.mapToGlobal(window_button.rect().bottomLeft())))
+        
         # 添加周期按钮
         self.period_buttons = {
             '日线': QPushButton('日线'),
@@ -521,6 +559,9 @@ class MainWindow(QMainWindow):
             button.setStyleSheet(button_style)
             button.toggled.connect(lambda checked, p=name: self.on_period_changed(p, checked))
             toolbar_layout.addWidget(button)
+        
+        # 保存当前窗口数量
+        self.current_window_count = 3
         
         # 默认选中日线
         self.period_buttons['日线'].setChecked(True)
@@ -636,6 +677,26 @@ class MainWindow(QMainWindow):
             else:
                 # TODO: 其他周期的K线图更新逻辑
                 print(f"切换到{period}")
+    
+    def on_window_count_changed(self, window_count, checked):
+        """
+        窗口数量变化事件处理
+        
+        Args:
+            window_count: 窗口数量
+            checked: 是否被选中
+        """
+        if checked:
+            # 取消其他窗口数量选项的选中状态
+            for action in self.window_actions:
+                if action.text() != f'{window_count}个窗口':
+                    action.setChecked(False)
+            
+            # 更新当前窗口数量
+            self.current_window_count = window_count
+            
+            # TODO: 实现根据窗口数量重新布局图表的逻辑
+            print(f"切换到{window_count}个窗口")
     
     def on_bar_count_changed(self):
         """
@@ -1352,7 +1413,9 @@ class MainWindow(QMainWindow):
             # 创建图表标题标签，放置在左上角
             self.chart_title_label = QLabel()
             self.chart_title_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
-            self.chart_title_label.setText(f"{stock_name}({stock_code}) K线图")
+            # 获取当前周期，如果没有设置则默认为日线
+            current_period = getattr(self, 'current_period', '日线')
+            self.chart_title_label.setText(f"{stock_name}({stock_code}) {current_period}")
             self.chart_title_label.setWordWrap(False)
             
             # 创建MA值显示标签
