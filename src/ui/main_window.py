@@ -559,7 +559,13 @@ class MainWindow(QMainWindow):
         # 添加工具栏到布局
         tech_layout.addWidget(toolbar)
         
-        # 创建pyqtgraph图表
+        # 创建图表容器，用于放置K线图和成交量图
+        chart_container = QWidget()
+        chart_layout = QVBoxLayout(chart_container)
+        chart_layout.setSpacing(0)
+        chart_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 创建K线图
         self.tech_plot_widget = pg.PlotWidget()
         self.tech_plot_widget.setBackground('#000000')
         self.tech_plot_widget.setLabel('left', '价格', color='#C0C0C0')
@@ -570,10 +576,40 @@ class MainWindow(QMainWindow):
         self.tech_plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
         self.tech_plot_widget.showGrid(x=True, y=True, alpha=0.3)
         
+        # 创建成交量图
+        self.volume_plot_widget = pg.PlotWidget()
+        self.volume_plot_widget.setBackground('#000000')
+        self.volume_plot_widget.setLabel('left', '成交量', color='#C0C0C0')
+        self.volume_plot_widget.setLabel('bottom', '', color='#C0C0C0')
+        self.volume_plot_widget.getAxis('left').setPen(pg.mkPen('#C0C0C0'))
+        self.volume_plot_widget.getAxis('bottom').setPen(pg.mkPen('#C0C0C0'))
+        self.volume_plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
+        self.volume_plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
+        self.volume_plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        
+        # 确保两个图的Y轴宽度一致，实现竖轴对齐
+        # 设置Y轴宽度为50像素
+        self.tech_plot_widget.getAxis('left').setWidth(50)
+        self.volume_plot_widget.getAxis('left').setWidth(50)
+        
+        # 设置X轴宽度，确保两个图的X轴对齐
+        self.tech_plot_widget.getAxis('bottom').setHeight(20)
+        self.volume_plot_widget.getAxis('bottom').setHeight(20)
+        
+        # 设置成交量图高度为K线图的1/4
+        self.volume_plot_widget.setFixedHeight(int(self.tech_plot_widget.height() / 4))
+        
+        # 添加图表到容器布局
+        chart_layout.addWidget(self.tech_plot_widget)
+        chart_layout.addWidget(self.volume_plot_widget)
+        
+        # 添加图表容器到主布局
+        tech_layout.addWidget(chart_container)
+        
         # 保存k线图数据项
         self.candle_plot_item = None
-        
-        tech_layout.addWidget(self.tech_plot_widget)
+        self.volume_bar_item = None
+        self.volume_ma_item = None
     
     def on_period_changed(self, period, checked):
         """
@@ -1294,12 +1330,17 @@ class MainWindow(QMainWindow):
             
             # 清空图表
             self.tech_plot_widget.clear()
+            self.volume_plot_widget.clear()
             
-            # 设置图表标题
-            self.tech_plot_widget.setTitle(f"{stock_name}({stock_code}) K线图", color='#C0C0C0', size='14pt')
-            
-            # 创建均线值显示标签
+            # 创建标签，使用HTML格式设置不同颜色
             from PySide6.QtWidgets import QLabel, QHBoxLayout, QWidget
+            
+            # 检查是否已经存在标题标签，如果存在则移除
+            if hasattr(self, 'chart_title_label'):
+                try:
+                    self.chart_title_label.deleteLater()
+                except Exception as e:
+                    logger.warning(f"移除旧标题标签时发生错误: {e}")
             
             # 检查是否已经存在MA标签，如果存在则移除
             if hasattr(self, 'ma_values_label'):
@@ -1308,9 +1349,19 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     logger.warning(f"移除旧MA标签时发生错误: {e}")
             
-            # 创建标签
-            self.ma_values_label = QLabel("MA5: --  MA10: --  MA20: --  MA60: --")
-            self.ma_values_label.setStyleSheet("font-family: Consolas, monospace; color: white; background-color: rgba(0, 0, 0, 0.5); padding: 5px;")
+            # 创建图表标题标签，放置在左上角
+            self.chart_title_label = QLabel()
+            self.chart_title_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
+            self.chart_title_label.setText(f"{stock_name}({stock_code}) K线图")
+            self.chart_title_label.setWordWrap(False)
+            
+            # 创建MA值显示标签
+            self.ma_values_label = QLabel()
+            self.ma_values_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
+            # 使用HTML设置初始文本和颜色
+            self.ma_values_label.setText("<font color='blue'>MA5: --</font>  <font color='cyan'>MA10: --</font>  <font color='red'>MA20: --</font>  <font color='green'>MA60: --</font>")
+            # 确保不换行
+            self.ma_values_label.setWordWrap(False)
             
             # 获取tech_plot_widget的父部件，将标签添加到合适的位置
             parent_widget = self.tech_plot_widget.parent()
@@ -1322,9 +1373,15 @@ class MainWindow(QMainWindow):
                 else:
                     layout = parent_widget.layout()
                 
-                # 将标签添加到布局的顶部
-                layout.insertWidget(0, self.ma_values_label)
-                logger.info("已添加MA值显示标签")
+                # 创建一个水平布局来放置标题和MA标签，让它们在同一行显示
+                title_ma_layout = QHBoxLayout()
+                title_ma_layout.addWidget(self.chart_title_label)
+                title_ma_layout.addWidget(self.ma_values_label)
+                title_ma_layout.addStretch(1)  # 添加伸缩空间，让标签靠左对齐
+                
+                # 将水平布局添加到垂直布局的顶部
+                layout.insertLayout(0, title_ma_layout)
+                logger.info("已添加标题标签和MA值显示标签，在同一行显示")
             
             # 准备K线图数据
             dates = df['date'].to_list()
@@ -1367,19 +1424,28 @@ class MainWindow(QMainWindow):
             y_max = np.max(highs) * 1.01
             self.tech_plot_widget.setYRange(y_min, y_max)
             
-            # 重置图表视图范围，确保所有K线都能正常显示
-            view_box = self.tech_plot_widget.getViewBox()
-            view_box.autoRange()  # 自动调整视图范围，显示所有K线
+            # 设置X轴范围，不使用autoRange，确保与成交量图一致
+            self.tech_plot_widget.setXRange(0, len(dates) - 1)
             
             # 添加十字线
             self.vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
             self.hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
+            self.volume_vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
+            self.volume_hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
+            
+            # 添加十字线到K线图
             self.tech_plot_widget.addItem(self.vline, ignoreBounds=True)
             self.tech_plot_widget.addItem(self.hline, ignoreBounds=True)
+            
+            # 添加十字线到成交量图
+            self.volume_plot_widget.addItem(self.volume_vline, ignoreBounds=True)
+            self.volume_plot_widget.addItem(self.volume_hline, ignoreBounds=True)
             
             # 初始隐藏十字线
             self.vline.hide()
             self.hline.hide()
+            self.volume_vline.hide()
+            self.volume_hline.hide()
             
             # 创建信息文本项
             self.info_text = pg.TextItem(anchor=(0, 1))  # 锚点在左下角，确保信息框左下角在指定位置
@@ -1623,6 +1689,181 @@ class MainWindow(QMainWindow):
                 'closes': closes
             }
             
+            # 绘制成交量柱图和均线
+            try:
+                # 检查数据中是否有成交量数据
+                if 'volume' not in df.columns:
+                    logger.error(f"数据中没有volume列，无法绘制成交量图")
+                    return
+                
+                # 只取显示数量的数据
+                if hasattr(df, 'tail'):
+                    df_display = df.tail(bar_count)
+                else:
+                    df_display = df
+                
+                # 转换为Pandas DataFrame
+                df_pd = None
+                if hasattr(df_display, 'to_pandas'):
+                    df_pd = df_display.to_pandas()
+                elif isinstance(df_display, pd.DataFrame):
+                    df_pd = df_display
+                else:
+                    df_pd = pd.DataFrame(df_display)
+                
+                # 确保volume列存在且为数值类型
+                df_pd['volume'] = pd.to_numeric(df_pd['volume'], errors='coerce')
+                df_pd['close'] = pd.to_numeric(df_pd['close'], errors='coerce')
+                df_pd['open'] = pd.to_numeric(df_pd['open'], errors='coerce')
+                
+                # 计算成交量5日均线和10日均线
+                df_pd['vol_ma5'] = ta.trend.sma_indicator(df_pd['volume'], window=5, fillna=True)
+                df_pd['vol_ma10'] = ta.trend.sma_indicator(df_pd['volume'], window=10, fillna=True)
+                
+                # 准备x轴坐标
+                x = np.arange(len(df_pd))
+                
+                # 创建成交量柱图
+                volume_bars = []
+                for i in range(len(df_pd)):
+                    date = df_pd.iloc[i]['date']
+                    volume = df_pd.iloc[i]['volume']
+                    open_val = df_pd.iloc[i]['open']
+                    close_val = df_pd.iloc[i]['close']
+                    
+                    # 根据涨跌设置颜色，与K线柱体颜色保持一致：上涨红色，下跌绿色
+                    if close_val >= open_val:
+                        color = 'r'  # 上涨，红色
+                    else:
+                        color = 'g'  # 下跌，绿色
+                    
+                    volume_bars.append((i, volume, color))
+                
+                # 绘制成交量柱图
+                for i, volume, color in volume_bars:
+                    # 绘制柱体，使用更宽的柱体，与通达信风格一致
+                    bar_item = pg.BarGraphItem(x=[i], height=[volume], width=0.8, brush=pg.mkBrush(color))
+                    self.volume_plot_widget.addItem(bar_item)
+                
+                # 绘制成交量5日均线（蓝色，与K线图MA5颜色一致）
+                vol_ma5_item = self.volume_plot_widget.plot(x, df_pd['vol_ma5'].values, pen=pg.mkPen('b', width=1), name='VOL_MA5')
+                
+                # 绘制成交量10日均线（青色，与K线图MA10颜色一致）
+                vol_ma10_item = self.volume_plot_widget.plot(x, df_pd['vol_ma10'].values, pen=pg.mkPen('c', width=1), name='VOL_MA10')
+                
+                # 添加成交量数值显示
+                # 获取最新的成交量数据
+                if len(df_pd) > 0:
+                    latest_volume = df_pd.iloc[-1]['volume']
+                    latest_vol_ma5 = df_pd.iloc[-1]['vol_ma5']
+                    latest_vol_ma10 = df_pd.iloc[-1]['vol_ma10']
+                    
+                    # 保存成交量数据和成交量均线数据，用于鼠标移动时更新标题
+                    self.current_volume_data = {
+                        'volume': df_pd['volume'].values.tolist(),
+                        'vol_ma5': df_pd['vol_ma5'].values.tolist(),
+                        'vol_ma10': df_pd['vol_ma10'].values.tolist()
+                    }
+                    
+                    # 检查是否已经存在成交量标签，如果存在则移除
+                    if hasattr(self, 'volume_values_label'):
+                        try:
+                            self.volume_values_label.deleteLater()
+                        except Exception as e:
+                            logger.warning(f"移除旧成交量标签时发生错误: {e}")
+                    
+                    # 创建成交量标签，使用与K线图均线标签相同的样式
+                    from PySide6.QtWidgets import QLabel, QHBoxLayout, QWidget
+                    self.volume_values_label = QLabel()
+                    self.volume_values_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
+                    # 使用HTML设置初始文本和颜色，与K线图均线标签样式一致
+                    self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(latest_volume):,}</font>  <font color='blue'>MA5: {int(latest_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(latest_vol_ma10):,}</font>")
+                    # 确保不换行
+                    self.volume_values_label.setWordWrap(False)
+                    
+                    # 获取volume_plot_widget的父部件，将标签添加到合适的位置
+                    parent_widget = self.volume_plot_widget.parent()
+                    if parent_widget:
+                        # 检查是否已经有布局
+                        if parent_widget.layout() is None:
+                            layout = QVBoxLayout(parent_widget)
+                            layout.setContentsMargins(0, 0, 0, 0)
+                        else:
+                            layout = parent_widget.layout()
+                        
+                        # 将标签添加到布局中，在成交量图上方
+                        # 首先移除可能存在的旧标签，然后添加新标签
+                        try:
+                            layout.removeWidget(self.volume_values_label)
+                        except Exception:
+                            pass
+                        
+                        # 找到成交量图在布局中的位置
+                        for i in range(layout.count()):
+                            if layout.itemAt(i).widget() == self.volume_plot_widget:
+                                # 在成交量图上方插入标签
+                                layout.insertWidget(i, self.volume_values_label)
+                                break
+                        else:
+                            # 如果没有找到成交量图，将标签添加到布局的顶部
+                            layout.insertWidget(0, self.volume_values_label)
+                        
+                        logger.info("已添加成交量值显示标签")
+                
+                # 设置成交量图的x轴与K线图一致，实现柱体对齐
+                self.volume_plot_widget.setXRange(0, len(df_pd) - 1)
+                
+                # 设置成交量图的X轴标签和刻度，与K线图保持一致
+                volume_ax = self.volume_plot_widget.getAxis('bottom')
+                volume_ax.setTicks([[(i, dates[i].strftime('%Y-%m-%d')) for i in range(0, len(dates), 10)]])
+                
+                # 确保两个图的X轴范围和刻度完全一致，实现柱体对齐
+                self.tech_plot_widget.setXRange(0, len(dates) - 1)
+                self.volume_plot_widget.setXRange(0, len(dates) - 1)
+                
+                # 获取成交量数据
+                volume_data = df_pd['volume'].values
+                volume_min = volume_data.min()
+                volume_max = volume_data.max()
+                
+                # 重置对数模式，默认使用线性刻度
+                self.volume_plot_widget.setLogMode(y=False)
+                
+                # 计算成交量的统计信息
+                volume_mean = volume_data.mean()
+                volume_std = volume_data.std()
+                
+                # 计算合理的Y轴范围
+                if volume_max > 0:
+                    # 如果数据差异不大，使用基于均值和标准差的范围
+                    if volume_std / volume_mean < 0.1:  # 标准差小于均值的10%，数据比较集中
+                        # 扩大Y轴范围，显示更多细节
+                        y_min = max(0, volume_mean - volume_std * 2)
+                        y_max = volume_mean + volume_std * 2
+                        self.volume_plot_widget.setYRange(y_min, y_max)
+                    else:
+                        # 数据有一定差异，使用基于最小值和最大值的范围
+                        y_range = volume_max - volume_min
+                        y_min = max(0, volume_min - y_range * 0.1)
+                        y_max = volume_max + y_range * 0.1
+                        self.volume_plot_widget.setYRange(y_min, y_max)
+                else:
+                    # 成交量都是0，使用默认范围
+                    self.volume_plot_widget.setYRange(0, 100)
+                
+                # 禁用科学计数法，使用正常的数值显示
+                y_axis = self.volume_plot_widget.getAxis('left')
+                y_axis.enableAutoSIPrefix(False)
+                y_axis.setStyle(tickTextOffset=20)
+                
+                # 设置X轴范围
+                self.volume_plot_widget.setXRange(0, len(df_pd) - 1)
+                
+                logger.info(f"成功绘制{stock_name}({stock_code})的成交量图")
+                
+            except Exception as e:
+                logger.exception(f"绘制成交量图失败: {e}")
+            
             # 保存当前显示的个股信息
             self.current_stock_data = df
             self.current_stock_name = stock_name
@@ -1658,15 +1899,28 @@ class MainWindow(QMainWindow):
                 if self.current_kline_index >= 0 and self.current_kline_data:
                     index = self.current_kline_index
                     if 0 <= index < len(dates):
+                        # 显示K线图十字线
                         self.vline.setValue(index)
                         self.hline.setValue(self.hline.value())
                         self.vline.show()
                         self.hline.show()
+                        
+                        # 显示成交量图十字线
+                        self.volume_vline.setValue(index)
+                        self.volume_hline.setValue(self.volume_hline.value())
+                        self.volume_vline.show()
+                        self.volume_hline.show()
             else:
                 logger.info("双击K线图，禁用十字线和信息框")
-                # 隐藏十字线和信息框
+                # 隐藏K线图十字线
                 self.vline.hide()
                 self.hline.hide()
+                
+                # 隐藏成交量图十字线
+                self.volume_vline.hide()
+                self.volume_hline.hide()
+                
+                # 隐藏信息框
                 if self.info_text is not None:
                     self.info_text.hide()
     
@@ -1960,28 +2214,55 @@ class MainWindow(QMainWindow):
                 # 更新顶部均线值显示
                 self.update_ma_values_display(index, dates, opens, highs, lows, closes)
                 
-                # 如果十字线功能启用，更新十字线位置和信息框
+                # 更新十字线位置
                 if self.crosshair_enabled:
+                    # 更新K线图十字线
+                    self.vline.setValue(index)
+                    self.hline.setValue(y_val)
+                    
+                    # 更新成交量图十字线
+                    self.volume_vline.setValue(index)
+                    
+                    # 获取成交量图的视图范围
+                    volume_view_box = self.volume_plot_widget.getViewBox()
+                    volume_y_range = volume_view_box.viewRange()[1]
+                    volume_y_min, volume_y_max = volume_y_range
+                    volume_y_val = y_val * (volume_y_max - volume_y_min) / (self.tech_plot_widget.viewRange()[1][1] - self.tech_plot_widget.viewRange()[1][0])
+                    self.volume_hline.setValue(volume_y_val)
+                    
+                    # 更新成交量标签，显示当前位置的成交量、MA5和MA10数值
+                    if hasattr(self, 'current_volume_data') and 0 <= index < len(self.current_volume_data['volume']) and hasattr(self, 'volume_values_label'):
+                        current_volume = self.current_volume_data['volume'][index]
+                        current_vol_ma5 = self.current_volume_data['vol_ma5'][index]
+                        current_vol_ma10 = self.current_volume_data['vol_ma10'][index]
+                        # 更新成交量标签文本，保持与K线图均线标签样式一致
+                        self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='blue'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
+                
+                # 如果十字线功能启用，更新十字线位置和信息框
+            if self.crosshair_enabled:
+                # 检查十字线是否已经初始化
+                if self.vline is not None and self.hline is not None:
                     # 更新十字线位置
                     self.vline.setValue(index)
                     self.hline.setValue(y_val)
                     self.vline.show()
                     self.hline.show()
-                    
-                    # 检查info_timer和info_text是否已经初始化
-                    if self.info_timer is not None:
-                        # 启动定时器，200毫秒后显示信息框
-                        self.info_timer.start()
-                    
-                    if self.info_text is not None:
-                        # 隐藏信息框，等待定时器触发重新显示
-                        self.info_text.hide()
-                else:
-                    # 十字线功能禁用，隐藏十字线和信息框
+                
+                # 检查info_timer和info_text是否已经初始化
+                if self.info_timer is not None:
+                    # 启动定时器，200毫秒后显示信息框
+                    self.info_timer.start()
+                
+                if self.info_text is not None:
+                    # 隐藏信息框，等待定时器触发重新显示
+                    self.info_text.hide()
+            else:
+                # 十字线功能禁用，隐藏十字线和信息框
+                if self.vline is not None and self.hline is not None:
                     self.vline.hide()
                     self.hline.hide()
-                    if self.info_text is not None:
-                        self.info_text.hide()
+                if self.info_text is not None:
+                    self.info_text.hide()
         except Exception as e:
             logger.exception(f"处理K线图鼠标移动事件失败: {e}")
     
@@ -2036,8 +2317,8 @@ class MainWindow(QMainWindow):
             else:
                 ma_values['MA60'] = "--"
             
-            # 更新标签文本
-            ma_text = f"MA5: {ma_values['MA5']}  MA10: {ma_values['MA10']}  MA20: {ma_values['MA20']}  MA60: {ma_values['MA60']}"
+            # 更新标签文本，使用HTML格式设置不同颜色
+            ma_text = f"<font color='blue'>MA5: {ma_values['MA5']}</font>  <font color='cyan'>MA10: {ma_values['MA10']}</font>  <font color='red'>MA20: {ma_values['MA20']}</font>  <font color='green'>MA60: {ma_values['MA60']}</font>"
             self.ma_values_label.setText(ma_text)
             logger.debug(f"更新MA值显示: {ma_text}")
         except Exception as e:
