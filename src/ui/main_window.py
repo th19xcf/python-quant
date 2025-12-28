@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QTabWidget, QPushButton, QLineEdit, QLabel, QStatusBar,
     QMenuBar, QMenu, QDialog, QCheckBox, QDateEdit, QComboBox,
-    QProgressBar, QAbstractItemView, QToolButton
+    QProgressBar, QAbstractItemView, QToolButton, QScrollArea
 )
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QAction, QIcon, QFont, QColor
@@ -647,10 +647,253 @@ class MainWindow(QMainWindow):
         # 添加图表容器到主布局
         tech_layout.addWidget(chart_container)
         
+        # 添加指标选择窗口
+        self.create_indicator_selection()
+        tech_layout.addWidget(self.indicator_widget)
+        
         # 保存k线图数据项
         self.candle_plot_item = None
         self.volume_bar_item = None
         self.volume_ma_item = None
+    
+    def create_indicator_selection(self):
+        """
+        创建指标选择窗口，类似通达信的指标选择栏
+        """
+        # 创建指标选择容器
+        self.indicator_widget = QWidget()
+        self.indicator_widget.setStyleSheet("background-color: #222222;")
+        indicator_layout = QHBoxLayout(self.indicator_widget)
+        indicator_layout.setContentsMargins(5, 3, 5, 3)
+        indicator_layout.setSpacing(2)
+        
+        # 指标列表
+        indicators = [
+            "窗口", "指标A", "MACD", "DMI", "DMA", "FSL", "TRIX", "BRAR", "CR", 
+            "VR", "OBV", "ASI", "EMV", "VOL-TDX", "RSI", "WR", "SAR", "KDJ", 
+            "CCI", "ROC", "MTM", "BOLL", "PSY", "MCST", ">"
+        ]
+        
+        # 创建指标按钮样式
+        indicator_button_style = """
+        QPushButton {
+            background-color: #333333;
+            color: #C0C0C0;
+            border: 1px solid #444444;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-family: 'Microsoft YaHei';
+            font-size: 11px;
+        }
+        QPushButton:hover {
+            background-color: #444444;
+        }
+        QPushButton:checked {
+            background-color: #555555;
+            border: 1px solid #666666;
+            color: #FFFFFF;
+        }
+        """
+        
+        # 创建水平滚动区域
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
+        
+        # 创建滚动内容容器
+        scroll_content = QWidget()
+        scroll_layout = QHBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(2)
+        
+        # 保存指标按钮
+        self.indicator_buttons = {}
+        
+        # 创建指标按钮
+        for indicator in indicators:
+            if indicator == "指标A":
+                # 特殊按钮样式
+                btn = QPushButton(indicator)
+                btn.setCheckable(True)
+                btn.setStyleSheet(indicator_button_style)
+                btn.clicked.connect(lambda checked, ind=indicator: self.on_indicator_clicked(ind, checked))
+                scroll_layout.addWidget(btn)
+                self.indicator_buttons[indicator] = btn
+                
+                # 添加左箭头滚动按钮
+                left_arrow_btn = QPushButton("<")
+                left_arrow_btn.setStyleSheet(indicator_button_style)
+                left_arrow_btn.setFixedWidth(20)
+                left_arrow_btn.clicked.connect(self.on_left_arrow_clicked)
+                scroll_layout.addWidget(left_arrow_btn)
+                self.indicator_buttons["<"] = left_arrow_btn
+                
+                # 添加分隔符
+                separator = QLabel("|")
+                separator.setStyleSheet("color: #666666; font-size: 12px;")
+                scroll_layout.addWidget(separator)
+            elif indicator == "指标B" or indicator == "模板":
+                # 特殊按钮样式
+                btn = QPushButton(indicator)
+                btn.setCheckable(True)
+                btn.setStyleSheet(indicator_button_style)
+                btn.clicked.connect(lambda checked, ind=indicator: self.on_indicator_clicked(ind, checked))
+                scroll_layout.addWidget(btn)
+                self.indicator_buttons[indicator] = btn
+                
+                # 添加分隔符
+                if indicator in ["指标A", "指标B"]:
+                    separator = QLabel("|")
+                    separator.setStyleSheet("color: #666666; font-size: 12px;")
+                    scroll_layout.addWidget(separator)
+            else:
+                # 普通指标按钮
+                btn = QPushButton(indicator)
+                btn.setCheckable(True)
+                btn.setStyleSheet(indicator_button_style)
+                btn.clicked.connect(lambda checked, ind=indicator: self.on_indicator_clicked(ind, checked))
+                scroll_layout.addWidget(btn)
+                self.indicator_buttons[indicator] = btn
+        
+        # 添加指标B和模板按钮
+        scroll_layout.addWidget(QLabel("|"))
+        
+        btn = QPushButton("指标B")
+        btn.setCheckable(True)
+        btn.setStyleSheet(indicator_button_style)
+        btn.clicked.connect(lambda checked: self.on_indicator_clicked("指标B", checked))
+        scroll_layout.addWidget(btn)
+        self.indicator_buttons["指标B"] = btn
+        
+        scroll_layout.addWidget(QLabel("|"))
+        
+        btn = QPushButton("模板")
+        btn.setCheckable(True)
+        btn.setStyleSheet(indicator_button_style)
+        btn.clicked.connect(lambda checked: self.on_indicator_clicked("模板", checked))
+        scroll_layout.addWidget(btn)
+        self.indicator_buttons["模板"] = btn
+        
+        # 设置滚动区域内容
+        scroll_area.setWidget(scroll_content)
+        
+        # 添加滚动区域到主布局
+        indicator_layout.addWidget(scroll_area)
+        
+        # 设置滚动区域高度
+        scroll_area.setMaximumHeight(30)
+        
+        # 添加+、-按钮用于调整柱体数量
+        # 添加分隔符
+        separator = QLabel("|")
+        separator.setStyleSheet("color: #666666; font-size: 12px;")
+        indicator_layout.addWidget(separator)
+        
+        # 添加+按钮
+        plus_btn = QPushButton("+")
+        plus_btn.setStyleSheet(indicator_button_style)
+        plus_btn.setFixedWidth(20)
+        plus_btn.clicked.connect(self.on_plus_btn_clicked)
+        indicator_layout.addWidget(plus_btn)
+        
+        # 添加-按钮
+        minus_btn = QPushButton("-")
+        minus_btn.setStyleSheet(indicator_button_style)
+        minus_btn.setFixedWidth(20)
+        minus_btn.clicked.connect(self.on_minus_btn_clicked)
+        indicator_layout.addWidget(minus_btn)
+    
+    def on_indicator_clicked(self, indicator, checked):
+        """
+        指标按钮点击事件处理
+        
+        Args:
+            indicator: 指标名称
+            checked: 是否被选中
+        """
+        if checked:
+            # 取消其他同类型指标的选中状态
+            if indicator in ["指标A", "指标B"]:
+                # 指标A/B是互斥的
+                for name, button in self.indicator_buttons.items():
+                    if name in ["指标A", "指标B"] and name != indicator:
+                        button.setChecked(False)
+            elif indicator != "模板" and indicator != "窗口":
+                # 普通指标是互斥的
+                for name, button in self.indicator_buttons.items():
+                    if name not in ["指标A", "指标B", "模板", "窗口"] and name != indicator:
+                        button.setChecked(False)
+        
+        logger.info(f"选择了指标: {indicator}, 状态: {'选中' if checked else '取消'}")
+    
+    def on_plus_btn_clicked(self):
+        """
+        点击+按钮，增加1倍的柱体数
+        """
+        try:
+            # 增加1倍柱体数
+            new_count = self.displayed_bar_count * 2
+            
+            # 更新输入框
+            self.bar_count_input.setText(str(new_count))
+            
+            # 更新显示的柱体数量
+            self.displayed_bar_count = new_count
+            
+            logger.info(f"柱体数增加1倍，当前柱体数: {new_count}")
+            
+            # 如果当前有显示的个股数据，重新绘制K线图
+            if self.current_stock_data is not None:
+                self.plot_k_line(self.current_stock_data, self.current_stock_name, self.current_stock_code)
+        except Exception as e:
+            logger.exception(f"增加柱体数失败: {e}")
+    
+    def on_minus_btn_clicked(self):
+        """
+        点击-按钮，减少1倍的柱体数
+        """
+        try:
+            # 减少1倍柱体数，最小为50
+            new_count = max(50, self.displayed_bar_count // 2)
+            
+            # 更新输入框
+            self.bar_count_input.setText(str(new_count))
+            
+            # 更新显示的柱体数量
+            self.displayed_bar_count = new_count
+            
+            logger.info(f"柱体数减少1倍，当前柱体数: {new_count}")
+            
+            # 如果当前有显示的个股数据，重新绘制K线图
+            if self.current_stock_data is not None:
+                self.plot_k_line(self.current_stock_data, self.current_stock_name, self.current_stock_code)
+        except Exception as e:
+            logger.exception(f"减少柱体数失败: {e}")
+    
+    def on_left_arrow_clicked(self):
+        """
+        点击左箭头按钮，指标选择栏向左滚动
+        """
+        try:
+            # 查找指标选择栏的滚动区域
+            scroll_area = None
+            for child in self.indicator_widget.children():
+                if isinstance(child, QScrollArea):
+                    scroll_area = child
+                    break
+            
+            if scroll_area:
+                # 获取当前滚动位置
+                current_pos = scroll_area.horizontalScrollBar().value()
+                # 计算新的滚动位置（向左滚动100像素）
+                new_pos = max(0, current_pos - 100)
+                # 设置新的滚动位置
+                scroll_area.horizontalScrollBar().setValue(new_pos)
+                logger.info(f"指标选择栏向左滚动，当前位置: {new_pos}")
+        except Exception as e:
+            logger.exception(f"指标选择栏向左滚动失败: {e}")
     
     def on_period_changed(self, period, checked):
         """
