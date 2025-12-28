@@ -6,13 +6,13 @@
 """
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QTabWidget, QPushButton, QLineEdit, QLabel, QStatusBar,
     QMenuBar, QMenu, QDialog, QCheckBox, QDateEdit, QComboBox,
     QProgressBar, QAbstractItemView, QToolButton, QScrollArea
 )
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QPoint
 from PySide6.QtGui import QAction, QIcon, QFont, QColor
 
 from src.utils.logger import logger
@@ -52,6 +52,19 @@ class MainWindow(QMainWindow):
         self.current_stock_data = None
         self.current_stock_name = ""
         self.current_stock_code = ""
+        
+        # 初始化窗口菜单
+        self.current_window_count = 3
+        self.window_menu = QMenu(self)
+        self.window_actions = []
+        for i in range(1, 10):  # 最大选择9个窗口
+            action = QAction(f'{i}个窗口', self)
+            action.setCheckable(True)
+            if i == self.current_window_count:  # 使用当前窗口数量作为默认选择
+                action.setChecked(True)
+            action.triggered.connect(lambda checked, w=i: self.on_window_count_changed(w, checked))
+            self.window_menu.addAction(action)
+            self.window_actions.append(action)
         
         # 初始化UI组件
         self.init_ui()
@@ -486,46 +499,8 @@ class MainWindow(QMainWindow):
         # 创建工具栏
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
-        toolbar.setStyleSheet("background-color: #222222;")
-        
-        # 添加窗口按钮
-        window_button = QPushButton('窗口 ▾')
-        window_button.setStyleSheet("""
-        QPushButton {
-            background-color: #333333;
-            color: #C0C0C0;
-            border: 1px solid #444444;
-            padding: 6px 12px;
-            border-radius: 4px;
-            font-family: 'Microsoft YaHei';
-            font-size: 12px;
-            text-align: center;
-        }
-        QPushButton:hover {
-            background-color: #444444;
-        }
-        QPushButton:checked {
-            background-color: #555555;
-            border: 1px solid #666666;
-        }
-        """)
-        toolbar_layout.addWidget(window_button)
-        
-        # 创建窗口选择菜单
-        window_menu = QMenu(self)
-        self.window_actions = []
-        for i in range(1, 10):  # 最大选择9个窗口
-            action = QAction(f'{i}个窗口', self)
-            action.setCheckable(True)
-            if i == 3:  # 默认选择3个窗口
-                action.setChecked(True)
-            action.triggered.connect(lambda checked, w=i: self.on_window_count_changed(w, checked))
-            window_menu.addAction(action)
-            self.window_actions.append(action)
-        
-        # 连接按钮点击事件，显示菜单
-        window_button.clicked.connect(lambda: window_menu.exec(window_button.mapToGlobal(window_button.rect().bottomLeft())))
-        
+        toolbar.setStyleSheet("background-color: #222222;")       
+
         # 添加周期按钮
         self.period_buttons = {
             '日线': QPushButton('日线'),
@@ -713,7 +688,28 @@ class MainWindow(QMainWindow):
         
         # 创建指标按钮
         for indicator in indicators:
-            if indicator == "指标A":
+            if indicator == "窗口":
+                # 特殊处理窗口按钮，使其具有与上方工具栏相同的功能
+                btn = QPushButton(indicator)
+                btn.setStyleSheet(indicator_button_style)
+                
+                # 创建一个新的菜单，与当前按钮关联
+                window_menu = QMenu(self)
+                for i in range(1, 10):  # 最大选择9个窗口
+                    action = QAction(f'{i}个窗口', self)
+                    action.setCheckable(True)
+                    if i == self.current_window_count:  # 使用当前窗口数量作为默认选择
+                        action.setChecked(True)
+                    action.triggered.connect(lambda checked, w=i: self.on_window_count_changed(w, checked))
+                    window_menu.addAction(action)
+                
+                # 使用lambda函数传递当前按钮，避免闭包问题
+                btn.clicked.connect(lambda checked, b=btn, m=window_menu: 
+                                   m.popup(b.mapToGlobal(QPoint(0, -m.sizeHint().height()))))
+                
+                scroll_layout.addWidget(btn)
+                self.indicator_buttons[indicator] = btn
+            elif indicator == "指标A":
                 # 特殊按钮样式
                 btn = QPushButton(indicator)
                 btn.setCheckable(True)
