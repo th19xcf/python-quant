@@ -1730,6 +1730,66 @@ class MainWindow(QMainWindow):
             y_max = np.max(highs) * 1.01
             self.tech_plot_widget.setYRange(y_min, y_max)
             
+            # 计算当前显示区域的最高、最低点及其位置
+            current_high = np.max(highs)
+            current_low = np.min(lows)
+            high_index = np.argmax(highs)
+            low_index = np.argmin(lows)
+            
+            # 清除之前的最高、最低点标注
+            if hasattr(self, 'high_text_item'):
+                self.tech_plot_widget.removeItem(self.high_text_item)
+            if hasattr(self, 'low_text_item'):
+                self.tech_plot_widget.removeItem(self.low_text_item)
+            if hasattr(self, 'high_arrow_item'):
+                self.tech_plot_widget.removeItem(self.high_arrow_item)
+            if hasattr(self, 'low_arrow_item'):
+                self.tech_plot_widget.removeItem(self.low_arrow_item)
+            
+            # 创建最高点标注，加上日期
+            high_date = dates[high_index].strftime('%Y-%m-%d')
+            self.high_text_item = pg.TextItem(f" {high_date} {current_high:.2f} ", color='w')
+            self.high_text_item.setHtml(f'<div style="background-color: rgba(0, 0, 0, 0.8); padding: 3px; border: 1px solid #666; font-family: monospace; font-size: 10px;">{high_date} {current_high:.2f}</div>')
+            self.tech_plot_widget.addItem(self.high_text_item)
+            
+            # 创建最高点箭头 - 简单三角形箭头
+            self.high_arrow_item = pg.ArrowItem(
+                pos=(high_index, current_high), 
+                angle=-45, 
+                brush=pg.mkBrush('w'), 
+                pen=pg.mkPen('w', width=1), 
+                tipAngle=30, 
+                headLen=8, 
+                headWidth=6,
+                tailLen=0,  # 没有尾巴
+                tailWidth=1
+            )
+            self.tech_plot_widget.addItem(self.high_arrow_item)
+            
+            # 创建最低点标注，加上日期
+            low_date = dates[low_index].strftime('%Y-%m-%d')
+            self.low_text_item = pg.TextItem(f" {low_date} {current_low:.2f} ", color='w')
+            self.low_text_item.setHtml(f'<div style="background-color: rgba(0, 0, 0, 0.8); padding: 3px; border: 1px solid #666; font-family: monospace; font-size: 10px;">{low_date} {current_low:.2f}</div>')
+            self.tech_plot_widget.addItem(self.low_text_item)
+            
+            # 创建最低点箭头 - 简单三角形箭头
+            self.low_arrow_item = pg.ArrowItem(
+                pos=(low_index, current_low), 
+                angle=45, 
+                brush=pg.mkBrush('w'), 
+                pen=pg.mkPen('w', width=1), 
+                tipAngle=30, 
+                headLen=8, 
+                headWidth=6,
+                tailLen=0,  # 没有尾巴
+                tailWidth=1
+            )
+            self.tech_plot_widget.addItem(self.low_arrow_item)
+            
+            # 定位标注位置（在对应柱图旁边）
+            self.high_text_item.setPos(high_index + 0.5, current_high + (y_max - y_min) * 0.02)
+            self.low_text_item.setPos(low_index + 0.5, current_low - (y_max - y_min) * 0.02)
+            
             # 设置X轴范围，不使用autoRange，确保与成交量图一致
             self.tech_plot_widget.setXRange(0, len(dates) - 1)
             
