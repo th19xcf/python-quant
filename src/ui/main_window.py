@@ -1421,8 +1421,8 @@ class MainWindow(QMainWindow):
             # 创建MA值显示标签
             self.ma_values_label = QLabel()
             self.ma_values_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
-            # 使用HTML设置初始文本和颜色
-            self.ma_values_label.setText("<font color='blue'>MA5: --</font>  <font color='cyan'>MA10: --</font>  <font color='red'>MA20: --</font>  <font color='green'>MA60: --</font>")
+            # 使用HTML设置初始文本和颜色，添加日期显示
+            self.ma_values_label.setText("<font color='#C0C0C0'>日期: --</font>  <font color='white'>MA5: --</font>  <font color='cyan'>MA10: --</font>  <font color='red'>MA20: --</font>  <font color='#00FF00'>MA60: --</font>")
             # 确保不换行
             self.ma_values_label.setWordWrap(False)
             
@@ -1717,9 +1717,9 @@ class MainWindow(QMainWindow):
                     self.tech_plot_widget.removeItem(point_item)
                 self.ma_points.clear()
                 
-                # 绘制5日均线（蓝色）
-                ma5_item = self.tech_plot_widget.plot(x, df_pd['ma5'].values, pen=pg.mkPen('b', width=1), name='MA5')
-                self.moving_averages['MA5'] = {'item': ma5_item, 'data': (x, df_pd['ma5'].values), 'color': 'b'}
+                # 绘制5日均线（白色）
+                ma5_item = self.tech_plot_widget.plot(x, df_pd['ma5'].values, pen=pg.mkPen('w', width=1), name='MA5')
+                self.moving_averages['MA5'] = {'item': ma5_item, 'data': (x, df_pd['ma5'].values), 'color': 'w'}
                 
                 # 绘制10日均线（青色）
                 ma10_item = self.tech_plot_widget.plot(x, df_pd['ma10'].values, pen=pg.mkPen('c', width=1), name='MA10')
@@ -1750,6 +1750,22 @@ class MainWindow(QMainWindow):
                 'highs': highs,
                 'lows': lows,
                 'closes': closes
+            }
+            
+            # 保存计算好的MA值和颜色，用于鼠标移动时更新显示
+            self.ma_data = {
+                'MA5': df_pd['ma5'].values.tolist(),
+                'MA10': df_pd['ma10'].values.tolist(),
+                'MA20': df_pd['ma20'].values.tolist(),
+                'MA60': df_pd['ma60'].values.tolist()
+            }
+            
+            # 保存MA线的颜色映射，使用与绘制线条一致的颜色值
+            self.ma_colors = {
+                'MA5': 'white',
+                'MA10': 'cyan',
+                'MA20': 'red',
+                'MA60': '#00FF00'  # 使用亮绿色，与pyqtgraph的'g'颜色一致
             }
             
             # 绘制成交量柱图和均线
@@ -1808,8 +1824,8 @@ class MainWindow(QMainWindow):
                     bar_item = pg.BarGraphItem(x=[i], height=[volume], width=0.8, brush=pg.mkBrush(color))
                     self.volume_plot_widget.addItem(bar_item)
                 
-                # 绘制成交量5日均线（蓝色，与K线图MA5颜色一致）
-                vol_ma5_item = self.volume_plot_widget.plot(x, df_pd['vol_ma5'].values, pen=pg.mkPen('b', width=1), name='VOL_MA5')
+                # 绘制成交量5日均线（白色，与K线图MA5颜色一致）
+                vol_ma5_item = self.volume_plot_widget.plot(x, df_pd['vol_ma5'].values, pen=pg.mkPen('w', width=1), name='VOL_MA5')
                 
                 # 绘制成交量10日均线（青色，与K线图MA10颜色一致）
                 vol_ma10_item = self.volume_plot_widget.plot(x, df_pd['vol_ma10'].values, pen=pg.mkPen('c', width=1), name='VOL_MA10')
@@ -1840,7 +1856,7 @@ class MainWindow(QMainWindow):
                     self.volume_values_label = QLabel()
                     self.volume_values_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
                     # 使用HTML设置初始文本和颜色，与K线图均线标签样式一致
-                    self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(latest_volume):,}</font>  <font color='blue'>MA5: {int(latest_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(latest_vol_ma10):,}</font>")
+                    self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(latest_volume):,}</font>  <font color='white'>MA5: {int(latest_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(latest_vol_ma10):,}</font>")
                     # 确保不换行
                     self.volume_values_label.setWordWrap(False)
                     
@@ -2299,7 +2315,7 @@ class MainWindow(QMainWindow):
                         current_vol_ma5 = self.current_volume_data['vol_ma5'][index]
                         current_vol_ma10 = self.current_volume_data['vol_ma10'][index]
                         # 更新成交量标签文本，保持与K线图均线标签样式一致
-                        self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='blue'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
+                        self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
                 
                 # 如果十字线功能启用，更新十字线位置和信息框
             if self.crosshair_enabled:
@@ -2349,39 +2365,65 @@ class MainWindow(QMainWindow):
             if index < 0 or index >= len(dates):
                 return
             
+            # 获取当前日期
+            current_date = dates[index].strftime('%Y-%m-%d')
+            
             # 获取当前的MA值
             ma_values = {}
             
-            # 计算MA5
-            if index >= 4:  # 至少需要5个数据点
-                ma5 = sum(closes[index-4:index+1]) / 5
-                ma_values['MA5'] = f"{ma5:.2f}"
+            # 检查是否有保存的MA数据
+            if hasattr(self, 'ma_data'):
+                # 使用保存的MA值，确保与绘制的MA线一致
+                if 0 <= index < len(self.ma_data['MA5']):
+                    ma5 = self.ma_data['MA5'][index]
+                    if ma5 != '' and ma5 is not None and str(ma5) != 'nan':
+                        ma_values['MA5'] = f"{ma5:.2f}"
+                    else:
+                        ma_values['MA5'] = "--"
+                else:
+                    ma_values['MA5'] = "--"
+                
+                if 0 <= index < len(self.ma_data['MA10']):
+                    ma10 = self.ma_data['MA10'][index]
+                    if ma10 != '' and ma10 is not None and str(ma10) != 'nan':
+                        ma_values['MA10'] = f"{ma10:.2f}"
+                    else:
+                        ma_values['MA10'] = "--"
+                else:
+                    ma_values['MA10'] = "--"
+                
+                if 0 <= index < len(self.ma_data['MA20']):
+                    ma20 = self.ma_data['MA20'][index]
+                    if ma20 != '' and ma20 is not None and str(ma20) != 'nan':
+                        ma_values['MA20'] = f"{ma20:.2f}"
+                    else:
+                        ma_values['MA20'] = "--"
+                else:
+                    ma_values['MA20'] = "--"
+                
+                if 0 <= index < len(self.ma_data['MA60']):
+                    ma60 = self.ma_data['MA60'][index]
+                    if ma60 != '' and ma60 is not None and str(ma60) != 'nan':
+                        ma_values['MA60'] = f"{ma60:.2f}"
+                    else:
+                        ma_values['MA60'] = "--"
+                else:
+                    ma_values['MA60'] = "--"
             else:
+                # 如果没有保存的MA数据，使用默认值
                 ma_values['MA5'] = "--"
-            
-            # 计算MA10
-            if index >= 9:  # 至少需要10个数据点
-                ma10 = sum(closes[index-9:index+1]) / 10
-                ma_values['MA10'] = f"{ma10:.2f}"
-            else:
                 ma_values['MA10'] = "--"
-            
-            # 计算MA20
-            if index >= 19:  # 至少需要20个数据点
-                ma20 = sum(closes[index-19:index+1]) / 20
-                ma_values['MA20'] = f"{ma20:.2f}"
-            else:
                 ma_values['MA20'] = "--"
-            
-            # 计算MA60
-            if index >= 59:  # 至少需要60个数据点
-                ma60 = sum(closes[index-59:index+1]) / 60
-                ma_values['MA60'] = f"{ma60:.2f}"
-            else:
                 ma_values['MA60'] = "--"
             
-            # 更新标签文本，使用HTML格式设置不同颜色
-            ma_text = f"<font color='blue'>MA5: {ma_values['MA5']}</font>  <font color='cyan'>MA10: {ma_values['MA10']}</font>  <font color='red'>MA20: {ma_values['MA20']}</font>  <font color='green'>MA60: {ma_values['MA60']}</font>"
+            # 获取MA线的颜色，默认使用当前设置的颜色
+            ma5_color = self.ma_colors.get('MA5', 'white')
+            ma10_color = self.ma_colors.get('MA10', 'cyan')
+            ma20_color = self.ma_colors.get('MA20', 'red')
+            ma60_color = self.ma_colors.get('MA60', 'green')
+            
+            # 更新标签文本，使用HTML格式设置不同颜色，添加日期显示
+            ma_text = f"<font color='#C0C0C0'>日期: {current_date}</font>  <font color='{ma5_color}'>MA5: {ma_values['MA5']}</font>  <font color='{ma10_color}'>MA10: {ma_values['MA10']}</font>  <font color='{ma20_color}'>MA20: {ma_values['MA20']}</font>  <font color='{ma60_color}'>MA60: {ma_values['MA60']}</font>"
             self.ma_values_label.setText(ma_text)
             logger.debug(f"更新MA值显示: {ma_text}")
         except Exception as e:
