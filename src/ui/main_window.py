@@ -54,7 +54,7 @@ class MainWindow(QMainWindow):
         self.current_stock_code = ""
         
         # 初始化窗口菜单
-        self.current_window_count = 3
+        self.current_window_count = 2
         self.window_menu = QMenu(self)
         self.window_actions = []
         for i in range(1, 10):  # 最大选择9个窗口
@@ -693,18 +693,9 @@ class MainWindow(QMainWindow):
                 btn = QPushButton(indicator)
                 btn.setStyleSheet(indicator_button_style)
                 
-                # 创建一个新的菜单，与当前按钮关联
-                window_menu = QMenu(self)
-                for i in range(1, 10):  # 最大选择9个窗口
-                    action = QAction(f'{i}个窗口', self)
-                    action.setCheckable(True)
-                    if i == self.current_window_count:  # 使用当前窗口数量作为默认选择
-                        action.setChecked(True)
-                    action.triggered.connect(lambda checked, w=i: self.on_window_count_changed(w, checked))
-                    window_menu.addAction(action)
-                
-                # 使用lambda函数传递当前按钮，避免闭包问题
-                btn.clicked.connect(lambda checked, b=btn, m=window_menu: 
+                # 使用已经创建好的顶部菜单，共享相同的actions和状态管理
+                # 这样可以确保单选功能正常工作
+                btn.clicked.connect(lambda checked, b=btn, m=self.window_menu: 
                                    m.popup(b.mapToGlobal(QPoint(0, -m.sizeHint().height()))))
                 
                 scroll_layout.addWidget(btn)
