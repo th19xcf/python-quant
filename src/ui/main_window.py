@@ -535,8 +535,7 @@ class MainWindow(QMainWindow):
             button.toggled.connect(lambda checked, p=name: self.on_period_changed(p, checked))
             toolbar_layout.addWidget(button)
         
-        # 保存当前窗口数量
-        self.current_window_count = 3
+        # 当前窗口数量已在__init__方法中初始化
         
         # 默认选中日线
         self.period_buttons['日线'].setChecked(True)
@@ -615,12 +614,12 @@ class MainWindow(QMainWindow):
         # 设置成交量图高度为K线图的1/4
         self.volume_plot_widget.setFixedHeight(int(self.tech_plot_widget.height() / 4))
         
-        # 添加图表到容器布局
-        chart_layout.addWidget(self.tech_plot_widget)
+        # 添加图表到容器布局，设置拉伸因子确保K线图填充空间
+        chart_layout.addWidget(self.tech_plot_widget, 1)  # 1表示垂直方向拉伸
         chart_layout.addWidget(self.volume_plot_widget)
         
-        # 添加图表容器到主布局
-        tech_layout.addWidget(chart_container)
+        # 添加图表容器到主布局，设置拉伸因子确保图表容器填充空间
+        tech_layout.addWidget(chart_container, 1)  # 1表示垂直方向拉伸
         
         # 添加指标选择窗口
         self.create_indicator_selection()
@@ -913,6 +912,7 @@ class MainWindow(QMainWindow):
         窗口数量变化事件处理
         
         Args:
+        
             window_count: 窗口数量
             checked: 是否被选中
         """
@@ -925,7 +925,36 @@ class MainWindow(QMainWindow):
             # 更新当前窗口数量
             self.current_window_count = window_count
             
-            # TODO: 实现根据窗口数量重新布局图表的逻辑
+            # 实现根据窗口数量重新布局图表的逻辑
+            if hasattr(self, 'tech_plot_widget') and hasattr(self, 'volume_plot_widget'):
+                if window_count == 1:
+                    # 1个窗口模式：只显示K线图，充满整个区域
+                    self.volume_plot_widget.hide()
+                    # 隐藏成交量标签栏
+                    if hasattr(self, 'volume_values_label'):
+                        self.volume_values_label.hide()
+                    # 取消固定高度，让K线图充满整个区域
+                    self.tech_plot_widget.setMinimumHeight(0)
+                    self.tech_plot_widget.setMaximumHeight(16777215)  # 使用Qt的最大值常量
+                    logger.info("切换到1个窗口：只显示K线图，隐藏成交量图和标签栏")
+                else:
+                    # 多个窗口模式：显示K线图和成交量图
+                    self.volume_plot_widget.show()
+                    # 显示成交量标签栏
+                    if hasattr(self, 'volume_values_label'):
+                        self.volume_values_label.show()
+                    try:
+                        # 计算成交量图高度，确保高度为正整数
+                        kline_height = self.tech_plot_widget.height()
+                        if kline_height > 0:
+                            volume_height = max(50, int(kline_height / 4))  # 确保至少有50像素高度
+                            self.volume_plot_widget.setFixedHeight(volume_height)
+                        logger.info(f"切换到{window_count}个窗口：显示K线图和成交量图")
+                    except Exception as e:
+                        logger.error(f"设置成交量图高度时发生错误: {e}")
+                        # 出错时使用默认高度
+                        self.volume_plot_widget.setFixedHeight(100)
+            
             print(f"切换到{window_count}个窗口")
     
     def on_bar_count_changed(self):
