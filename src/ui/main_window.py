@@ -1694,7 +1694,7 @@ class MainWindow(QMainWindow):
             
             # 创建图表标题标签，放置在左上角
             self.chart_title_label = QLabel()
-            self.chart_title_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
+            self.chart_title_label.setStyleSheet("font-family: Consolas, monospace; padding: 5px; color: #C0C0C0; background-color: transparent;")
             # 获取当前周期，如果没有设置则默认为日线
             current_period = getattr(self, 'current_period', '日线')
             self.chart_title_label.setText(f"{stock_name}({stock_code}) {current_period}")
@@ -1702,7 +1702,7 @@ class MainWindow(QMainWindow):
             
             # 创建MA值显示标签
             self.ma_values_label = QLabel()
-            self.ma_values_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
+            self.ma_values_label.setStyleSheet("font-family: Consolas, monospace; padding: 5px; color: #C0C0C0; background-color: transparent;")
             # 使用HTML设置初始文本和颜色，添加日期显示
             self.ma_values_label.setText("<font color='#C0C0C0'>日期: --</font>  <font color='white'>MA5: --</font>  <font color='cyan'>MA10: --</font>  <font color='red'>MA20: --</font>  <font color='#00FF00'>MA60: --</font>")
             # 确保不换行
@@ -1710,23 +1710,34 @@ class MainWindow(QMainWindow):
             
             # 检查是否已经创建了图表容器
             if hasattr(self, 'chart_container') and hasattr(self, 'chart_layout'):
-                # 创建一个水平布局来放置标题和MA标签，让它们在同一行显示
-                title_ma_layout = QHBoxLayout()
-                title_ma_layout.addWidget(self.chart_title_label)
-                title_ma_layout.addWidget(self.ma_values_label)
-                title_ma_layout.addStretch(1)  # 添加伸缩空间，让标签靠左对齐
-                
-                # 检查是否已经存在标题和MA标签的水平布局
-                title_ma_layout_exists = False
+                # 移除旧的标题和MA标签相关组件
                 for i in range(self.chart_layout.count()):
                     item = self.chart_layout.itemAt(i)
                     if isinstance(item, QHBoxLayout):
-                        # 移除旧的标题和MA标签布局
+                        # 移除旧的水平布局
                         self.chart_layout.removeItem(item)
                         break
+                    elif hasattr(self, 'title_ma_container') and item.widget() == self.title_ma_container:
+                        # 移除旧的容器
+                        self.chart_layout.removeWidget(self.title_ma_container)
+                        break
                 
-                # 将新的水平布局添加到垂直布局的顶部
-                self.chart_layout.insertLayout(0, title_ma_layout)
+                # 创建一个统一的背景容器
+                self.title_ma_container = QWidget()
+                self.title_ma_container.setStyleSheet("background-color: #222222;")
+                
+                # 创建水平布局
+                title_ma_layout = QHBoxLayout(self.title_ma_container)
+                title_ma_layout.setSpacing(0)
+                title_ma_layout.setContentsMargins(0, 0, 0, 0)
+                
+                # 添加标签到布局
+                title_ma_layout.addWidget(self.chart_title_label)
+                title_ma_layout.addWidget(self.ma_values_label)
+                title_ma_layout.addStretch(1)
+                
+                # 将容器添加到图表布局顶部
+                self.chart_layout.insertWidget(0, self.title_ma_container)
                 logger.info("已添加标题标签和MA值显示标签，在同一行显示")
             
             # 准备K线图数据
