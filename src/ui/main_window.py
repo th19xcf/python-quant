@@ -575,10 +575,9 @@ class MainWindow(QMainWindow):
         tech_layout.addWidget(toolbar)
         
         # 创建图表容器，用于放置K线图和成交量图
-        chart_container = QWidget()
-        chart_layout = QVBoxLayout(chart_container)
-        chart_layout.setSpacing(0)
-        chart_layout.setContentsMargins(0, 0, 0, 0)
+        # 使用QSplitter实现可调整大小的垂直布局
+        chart_container = QSplitter(Qt.Vertical)
+        chart_container.setStyleSheet("QSplitter::handle:vertical { background-color: #333333; height: 6px; }")
         
         # 创建K线图
         self.tech_plot_widget = pg.PlotWidget()
@@ -611,12 +610,12 @@ class MainWindow(QMainWindow):
         self.tech_plot_widget.getAxis('bottom').setHeight(20)
         self.volume_plot_widget.getAxis('bottom').setHeight(20)
         
-        # 设置成交量图高度为K线图的1/4
-        self.volume_plot_widget.setFixedHeight(int(self.tech_plot_widget.height() / 4))
+        # 添加图表到分割器，不设置固定高度
+        chart_container.addWidget(self.tech_plot_widget)
+        chart_container.addWidget(self.volume_plot_widget)
         
-        # 添加图表到容器布局，设置拉伸因子确保K线图填充空间
-        chart_layout.addWidget(self.tech_plot_widget, 1)  # 1表示垂直方向拉伸
-        chart_layout.addWidget(self.volume_plot_widget)
+        # 设置初始分割比例（K线图占75%，成交量图占25%）
+        chart_container.setSizes([300, 100])
         
         # 添加图表容器到主布局，设置拉伸因子确保图表容器填充空间
         tech_layout.addWidget(chart_container, 1)  # 1表示垂直方向拉伸
