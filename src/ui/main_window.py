@@ -2288,19 +2288,19 @@ class MainWindow(QMainWindow):
                 volume_mean = volume_data.mean()
                 volume_std = volume_data.std()
                 
-                # 计算合理的Y轴范围
+                # 计算合理的Y轴范围，进一步增加顶部空间
                 if volume_max > 0:
                     # 如果数据差异不大，使用基于均值和标准差的范围
                     if volume_std / volume_mean < 0.1:  # 标准差小于均值的10%，数据比较集中
-                        # 扩大Y轴范围，显示更多细节
+                        # 扩大Y轴范围，显示更多细节，特别是顶部留出更多空间
                         y_min = max(0, volume_mean - volume_std * 2)
-                        y_max = volume_mean + volume_std * 2
+                        y_max = volume_mean + volume_std * 3.5  # 进一步增加顶部空间
                         self.volume_plot_widget.setYRange(y_min, y_max)
                     else:
                         # 数据有一定差异，使用基于最小值和最大值的范围
                         y_range = volume_max - volume_min
                         y_min = max(0, volume_min - y_range * 0.1)
-                        y_max = volume_max + y_range * 0.1
+                        y_max = volume_max + y_range * 0.1  # 进一步增加顶部空间，从20%调整为30%
                         self.volume_plot_widget.setYRange(y_min, y_max)
                 else:
                     # 成交量都是0，使用默认范围
