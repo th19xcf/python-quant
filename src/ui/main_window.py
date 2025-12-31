@@ -630,13 +630,20 @@ class MainWindow(QMainWindow):
         self.volume_container_layout = QVBoxLayout(self.volume_container)
         self.volume_container_layout.setSpacing(0)
         self.volume_container_layout.setContentsMargins(0, 0, 0, 0)
+        # 将成交量图添加到容器布局
+        self.volume_container_layout.addWidget(self.volume_plot_widget)
         
         # 添加图表到分割器
         self.chart_splitter.addWidget(self.tech_container)
         self.chart_splitter.addWidget(self.volume_container)
         
-        # 设置初始分割比例（K线图占80%，成交量图占20%）
-        self.chart_splitter.setSizes([3, 1])
+        # 设置分割比例（K线图占66.6%，成交量图占33.3%）
+        # 先使用setStretchFactor设置相对比例
+        self.chart_splitter.setStretchFactor(0, 2)  # 第一个组件（K线图）占2份
+        self.chart_splitter.setStretchFactor(1, 1)  # 第二个组件（成交量图）占1份
+        
+        # 再使用setSizes设置初始尺寸，确保比例正确
+        self.chart_splitter.setSizes([2000, 1000])
         
         # 添加分割器到容器布局
         self.chart_layout.addWidget(self.chart_splitter, 1)  # 1表示垂直方向拉伸
@@ -972,7 +979,11 @@ class MainWindow(QMainWindow):
                     if hasattr(self, 'volume_container'):
                         self.volume_container.show()
                     # 调整分割器比例，让K线图和成交量图都显示
-                    self.chart_splitter.setSizes([4, 1])  # K线图占80%，成交量图占20%
+                    # 先使用setStretchFactor设置相对比例
+                    self.chart_splitter.setStretchFactor(0, 2)  # K线图占66.6%
+                    self.chart_splitter.setStretchFactor(1, 1)  # 成交量图占33.3%
+                    # 再使用setSizes设置初始尺寸，确保比例正确
+                    self.chart_splitter.setSizes([2000, 1000])
                     logger.info(f"切换到{window_count}个窗口：显示K线图和成交量图")
             
             print(f"切换到{window_count}个窗口")
