@@ -575,9 +575,10 @@ class MainWindow(QMainWindow):
         tech_layout.addWidget(toolbar)
         
         # 创建图表容器，用于放置K线图和成交量图
-        # 使用QSplitter实现可调整大小的垂直布局
-        chart_container = QSplitter(Qt.Vertical)
-        chart_container.setStyleSheet("QSplitter::handle:vertical { background-color: #333333; height: 6px; }")
+        chart_container = QWidget()
+        chart_layout = QVBoxLayout(chart_container)
+        chart_layout.setSpacing(0)
+        chart_layout.setContentsMargins(0, 0, 0, 0)
         
         # 创建K线图
         self.tech_plot_widget = pg.PlotWidget()
@@ -610,12 +611,12 @@ class MainWindow(QMainWindow):
         self.tech_plot_widget.getAxis('bottom').setHeight(20)
         self.volume_plot_widget.getAxis('bottom').setHeight(20)
         
-        # 添加图表到分割器，不设置固定高度
-        chart_container.addWidget(self.tech_plot_widget)
-        chart_container.addWidget(self.volume_plot_widget)
+        # 设置成交量图高度为K线图的1/4
+        self.volume_plot_widget.setFixedHeight(int(self.tech_plot_widget.height() / 4))
         
-        # 设置初始分割比例（K线图占75%，成交量图占25%）
-        chart_container.setSizes([300, 100])
+        # 添加图表到容器布局，设置拉伸因子确保K线图填充空间
+        chart_layout.addWidget(self.tech_plot_widget, 1)  # 1表示垂直方向拉伸
+        chart_layout.addWidget(self.volume_plot_widget)
         
         # 添加图表容器到主布局，设置拉伸因子确保图表容器填充空间
         tech_layout.addWidget(chart_container, 1)  # 1表示垂直方向拉伸
@@ -1607,6 +1608,10 @@ class MainWindow(QMainWindow):
         """
         try:
             import pyqtgraph as pg
+            
+            # 修复：在绘制K线图开始时重置十字线状态
+            self.crosshair_enabled = False
+            self.current_kline_index = -1
             import numpy as np
             from pyqtgraph import GraphicsObject
             from pyqtgraph import Point
@@ -1808,6 +1813,22 @@ class MainWindow(QMainWindow):
             # 设置X轴范围，不使用autoRange，确保与成交量图一致
             self.tech_plot_widget.setXRange(0, len(dates) - 1)
             
+            # 移除旧的十字线对象，避免多个十字线对象导致的问题
+            try:
+                # 移除K线图中的旧十字线
+                if hasattr(self, 'vline'):
+                    self.tech_plot_widget.removeItem(self.vline)
+                if hasattr(self, 'hline'):
+                    self.tech_plot_widget.removeItem(self.hline)
+                # 移除成交量图中的旧十字线
+                if hasattr(self, 'volume_vline'):
+                    self.volume_plot_widget.removeItem(self.volume_vline)
+                if hasattr(self, 'volume_hline'):
+                    self.volume_plot_widget.removeItem(self.volume_hline)
+                logger.info("已移除旧的十字线对象")
+            except Exception as e:
+                logger.debug(f"移除旧的十字线对象时发生错误: {e}")
+            
             # 添加十字线
             self.vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
             self.hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
@@ -1821,6 +1842,8 @@ class MainWindow(QMainWindow):
             # 添加十字线到成交量图
             self.volume_plot_widget.addItem(self.volume_vline, ignoreBounds=True)
             self.volume_plot_widget.addItem(self.volume_hline, ignoreBounds=True)
+            
+            logger.info("已添加新的十字线对象")
             
             # 初始隐藏十字线
             self.vline.hide()
@@ -1844,6 +1867,21 @@ class MainWindow(QMainWindow):
                 'closes': closes,
                 'ohlc_list': ohlc_list
             }
+            
+            # 断开之前的所有事件连接，避免多次连接导致的问题
+            try:
+                # 断开鼠标移动事件的所有连接
+                self.tech_plot_widget.scene().sigMouseMoved.disconnect()
+                logger.info("已断开鼠标移动事件的所有连接")
+            except Exception as e:
+                logger.debug(f"断开鼠标移动事件连接时发生错误: {e}")
+            
+            try:
+                # 断开鼠标点击事件的所有连接
+                self.tech_plot_widget.scene().sigMouseClicked.disconnect()
+                logger.info("已断开鼠标点击事件的所有连接")
+            except Exception as e:
+                logger.debug(f"断开鼠标点击事件连接时发生错误: {e}")
             
             # 连接鼠标移动事件，实现十字线跟随
             self.tech_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
@@ -1941,52 +1979,9 @@ class MainWindow(QMainWindow):
             self.tech_plot_widget.customContextMenuRequested.connect(lambda pos: self.on_custom_context_menu(pos))
             logger.info("已连接customContextMenuRequested信号")
             
-            # 方法5: 连接鼠标单击事件，用于取消均线选中状态
-            def on_plot_clicked(event):
-                logger.info(f"图表单击事件被调用，按钮: {event.button()}")
-                
-                # 如果是左键单击
-                if event.button() == Qt.LeftButton:
-                    # 检查点击位置是否在均线上
-                    pos = event.pos()
-                    view_box = self.tech_plot_widget.getViewBox()
-                    view_pos = view_box.mapSceneToView(pos)
-                    x_val = view_pos.x()
-                    y_val = view_pos.y()
-                    index = int(round(x_val))
-                    
-                    # 检测点击位置是否在某个均线上
-                    clicked_ma = None
-                    min_distance = float('inf')
-                    tolerance = 0.02  # 2%的价格容忍度
-                    y_range = self.tech_plot_widget.viewRange()[1]
-                    y_min, y_max = y_range
-                    price_tolerance = (y_max - y_min) * tolerance
-                    
-                    for ma_name, ma_info in self.moving_averages.items():
-                        x_data, y_data = ma_info['data']
-                        if 0 <= index < len(x_data):
-                            ma_value = y_data[index]
-                            distance = abs(y_val - ma_value)
-                            if distance < price_tolerance and distance < min_distance:
-                                min_distance = distance
-                                clicked_ma = ma_name
-                    
-                    # 如果点击位置不在任何均线上，取消选中状态
-                    if not clicked_ma:
-                        logger.info(f"点击位置不在均线上，取消选中状态")
-                        # 清除之前的标注点
-                        for point_item in self.ma_points:
-                            self.tech_plot_widget.removeItem(point_item)
-                        self.ma_points.clear()
-                        
-                        # 重置选中状态
-                        self.selected_ma = None
-                        logger.info(f"已取消均线选中状态")
-            
-            # 连接图表点击事件
-            self.tech_plot_widget.scene().sigMouseClicked.connect(on_plot_clicked)
-            logger.info("已连接图表点击事件，用于取消均线选中状态")
+            # 方法5: 扩展已有的on_kline_clicked方法，添加取消均线选中状态功能
+            # 不再创建新的on_plot_clicked函数，避免覆盖之前的连接
+            logger.info("已使用现有的on_kline_clicked方法处理点击事件，包括取消均线选中状态")
             
             # 计算并绘制技术指标
             try:
@@ -2082,8 +2077,8 @@ class MainWindow(QMainWindow):
                 ma60_item = self.tech_plot_widget.plot(x, df_pd['ma60'].values, pen=pg.mkPen('g', width=1), name='MA60')
                 self.moving_averages['MA60'] = {'item': ma60_item, 'data': (x, df_pd['ma60'].values), 'color': 'g'}
                 
-                # 连接点击事件
-                self.tech_plot_widget.scene().sigMouseClicked.connect(self.on_ma_clicked)
+                # 技术指标绘制完成，不需要重新连接点击事件，因为已经在前面连接了on_kline_clicked
+                # 该方法会处理双击事件并调用on_kline_double_clicked
                 
                 logger.info("技术指标绘制完成")
                 logger.info(f"计算的指标包括: MA5, MA10, MA20, MA60, MACD, RSI14, KDJ")
@@ -2324,20 +2319,31 @@ class MainWindow(QMainWindow):
             if self.crosshair_enabled:
                 logger.info("双击K线图，启用十字线和信息框")
                 # 如果当前有K线数据，显示十字线
-                if self.current_kline_index >= 0 and self.current_kline_data:
-                    index = self.current_kline_index
-                    if 0 <= index < len(dates):
-                        # 显示K线图十字线
-                        self.vline.setValue(index)
-                        self.hline.setValue(self.hline.value())
-                        self.vline.show()
-                        self.hline.show()
-                        
-                        # 显示成交量图十字线
-                        self.volume_vline.setValue(index)
-                        self.volume_hline.setValue(self.volume_hline.value())
-                        self.volume_vline.show()
-                        self.volume_hline.show()
+                if self.current_kline_data:
+                    # 获取当前鼠标位置对应的K线索引
+                    pos = event.pos()
+                    view_box = self.tech_plot_widget.getViewBox()
+                    view_pos = view_box.mapSceneToView(pos)
+                    x_val = view_pos.x()
+                    index = int(round(x_val))
+                    
+                    # 确保索引在有效范围内
+                    index = max(0, min(len(dates) - 1, index))
+                    
+                    # 保存当前索引
+                    self.current_kline_index = index
+                    
+                    # 显示K线图十字线
+                    self.vline.setValue(index)
+                    self.hline.setValue(self.hline.value())
+                    self.vline.show()
+                    self.hline.show()
+                    
+                    # 显示成交量图十字线
+                    self.volume_vline.setValue(index)
+                    self.volume_hline.setValue(self.volume_hline.value())
+                    self.volume_vline.show()
+                    self.volume_hline.show()
             else:
                 logger.info("双击K线图，禁用十字线和信息框")
                 # 隐藏K线图十字线
@@ -2445,6 +2451,17 @@ class MainWindow(QMainWindow):
                 
                 # 更新选中的均线
                 self.selected_ma = clicked_ma
+            else:
+                # 点击位置不在均线上，取消选中状态
+                logger.info(f"点击位置不在均线上，取消选中状态")
+                # 清除之前的标注点
+                for point_item in self.ma_points:
+                    self.tech_plot_widget.removeItem(point_item)
+                self.ma_points.clear()
+                
+                # 重置选中状态
+                self.selected_ma = None
+                logger.info(f"已取消均线选中状态")
                 
                 # 检查是否是右键点击
                 logger.info(f"点击按钮: {event.button()}, Qt.RightButton: {Qt.RightButton}")
@@ -3308,8 +3325,8 @@ class MainWindow(QMainWindow):
             tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
             
             # 获取所有日线数据文件
-            sh_stock_files = list(Path(tdx_data_path / 'vipdoc' / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'vipdoc' / 'sh' / 'lday').exists() else []
-            sz_stock_files = list(Path(tdx_data_path / 'vipdoc' / 'sz' / 'lday').glob('sz*.day')) if (tdx_data_path / 'vipdoc' / 'sz' / 'lday').exists() else []
+            sh_stock_files = list(Path(tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'sh' / 'lday').exists() else []
+            sz_stock_files = list(Path(tdx_data_path / 'sz' / 'lday').glob('sz*.day')) if (tdx_data_path / 'sz' / 'lday').exists() else []
             all_stock_files = sh_stock_files + sz_stock_files
             
             logger.info(f"找到{len(all_stock_files)}个通达信股票数据文件")
@@ -3610,7 +3627,7 @@ class MainWindow(QMainWindow):
             
             # 确定指数文件路径
             market = "sh" if index_code.startswith("sh") else "sz"
-            index_file = Path(tdx_data_path / 'vipdoc' / market / 'lday' / f"{index_code}.day")
+            index_file = Path(tdx_data_path / market / 'lday' / f"{index_code}.day")
             
             if not index_file.exists():
                 logger.warning(f"未找到{index_name}的通达信指数文件: {index_file}")

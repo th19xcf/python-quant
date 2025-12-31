@@ -258,19 +258,19 @@ class TdxHandler:
             logger.info(f"开始导入通达信股票数据，股票代码: {ts_code}")
             
             # 构建通达信日线数据目录路径
-            lday_path = self.tdx_data_path / 'vipdoc' / 'sh' / 'lday'  # 沪市日线数据目录
+            lday_path = self.tdx_data_path / 'sh' / 'lday'  # 沪市日线数据目录
             
             # 检查目录是否存在
             if not lday_path.exists():
                 logger.warning(f"通达信沪市日线数据目录不存在: {lday_path}")
-                lday_path = self.tdx_data_path / 'vipdoc' / 'sz' / 'lday'  # 深市日线数据目录
+                lday_path = self.tdx_data_path / 'sz' / 'lday'  # 深市日线数据目录
                 if not lday_path.exists():
                     logger.error(f"通达信深市日线数据目录不存在: {lday_path}")
                     return
             
             # 获取所有日线数据文件
-            sh_stock_files = list(Path(self.tdx_data_path / 'vipdoc' / 'sh' / 'lday').glob('sh*.day')) if (self.tdx_data_path / 'vipdoc' / 'sh' / 'lday').exists() else []
-            sz_stock_files = list(Path(self.tdx_data_path / 'vipdoc' / 'sz' / 'lday').glob('sz*.day')) if (self.tdx_data_path / 'vipdoc' / 'sz' / 'lday').exists() else []
+            sh_stock_files = list(Path(self.tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (self.tdx_data_path / 'sh' / 'lday').exists() else []
+            sz_stock_files = list(Path(self.tdx_data_path / 'sz' / 'lday').glob('sz*.day')) if (self.tdx_data_path / 'sz' / 'lday').exists() else []
             all_stock_files = sh_stock_files + sz_stock_files
             
             logger.info(f"找到{len(all_stock_files)}个通达信股票数据文件")
@@ -378,7 +378,7 @@ class TdxHandler:
             file_name = f"{market}{code}.day"
             
             # 构建数据文件路径
-            lday_path = self.tdx_data_path / "vipdoc" / market / "lday"
+            lday_path = self.tdx_data_path / market / "lday"
             file_path = lday_path / file_name
             
             logger.info(f"尝试从路径 {file_path} 读取数据")

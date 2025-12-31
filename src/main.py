@@ -82,7 +82,7 @@ def main():
         
         # 初始化主窗口
         main_window = MainWindow(config, data_manager)
-        main_window.show()
+        main_window.showMaximized()
         
         logger.info("中国股市量化分析系统启动成功")
         
