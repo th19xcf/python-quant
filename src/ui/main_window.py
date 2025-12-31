@@ -2938,6 +2938,9 @@ class MainWindow(QMainWindow):
         text = item.text(column)
         logger.info(f"点击了导航项: {text}")
         
+        # 切换到行情标签页
+        self.tab_widget.setCurrentIndex(0)
+        
         try:
             # 处理指数相关导航项
             if text in ["上证指数", "深证成指", "创业板指", "科创板指"]:
