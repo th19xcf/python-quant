@@ -590,7 +590,8 @@ class MainWindow(QMainWindow):
         self.tech_plot_widget = pg.PlotWidget()
         self.tech_plot_widget.setBackground('#000000')
         self.tech_plot_widget.setLabel('left', '价格', color='#C0C0C0')
-        self.tech_plot_widget.setLabel('bottom', '日期', color='#C0C0C0')
+        # 不显示X轴标签
+        self.tech_plot_widget.setLabel('bottom', '')
         self.tech_plot_widget.getAxis('left').setPen(pg.mkPen('#C0C0C0'))
         self.tech_plot_widget.getAxis('bottom').setPen(pg.mkPen('#C0C0C0'))
         self.tech_plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
@@ -1772,7 +1773,7 @@ class MainWindow(QMainWindow):
             # 添加K线图到图表
             self.tech_plot_widget.addItem(self.candle_plot_item)
             
-            # 设置x轴标签（显示日期）
+            # 设置x轴刻度标签（显示日期）
             ax = self.tech_plot_widget.getAxis('bottom')
             ax.setTicks([[(i, dates[i].strftime('%Y-%m-%d')) for i in range(0, len(dates), 10)]])
             
@@ -2267,7 +2268,7 @@ class MainWindow(QMainWindow):
                 # 设置成交量图的x轴与K线图一致，实现柱体对齐
                 self.volume_plot_widget.setXRange(0, len(df_pd) - 1)
                 
-                # 设置成交量图的X轴标签和刻度，与K线图保持一致
+                # 设置成交量图的X轴刻度标签，与K线图保持一致
                 volume_ax = self.volume_plot_widget.getAxis('bottom')
                 volume_ax.setTicks([[(i, dates[i].strftime('%Y-%m-%d')) for i in range(0, len(dates), 10)]])
                 
