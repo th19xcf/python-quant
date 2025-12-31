@@ -618,6 +618,22 @@ class MainWindow(QMainWindow):
         self.tech_plot_widget.getAxis('bottom').setHeight(20)
         self.volume_plot_widget.getAxis('bottom').setHeight(20)
         
+        # 创建KDJ指标图
+        self.kdj_plot_widget = pg.PlotWidget()
+        self.kdj_plot_widget.setBackground('#000000')
+        self.kdj_plot_widget.setLabel('left', 'KDJ', color='#C0C0C0')
+        self.kdj_plot_widget.setLabel('bottom', '', color='#C0C0C0')
+        self.kdj_plot_widget.getAxis('left').setPen(pg.mkPen('#C0C0C0'))
+        self.kdj_plot_widget.getAxis('bottom').setPen(pg.mkPen('#C0C0C0'))
+        self.kdj_plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
+        self.kdj_plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
+        self.kdj_plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        # 设置KDJ指标图的Y轴范围（KDJ通常在0-100之间）
+        self.kdj_plot_widget.setYRange(0, 100)
+        # 确保KDJ图的Y轴宽度与其他图一致
+        self.kdj_plot_widget.getAxis('left').setWidth(50)
+        self.kdj_plot_widget.getAxis('bottom').setHeight(20)
+        
         # 为K线图创建容器，包含K线图
         self.tech_container = QWidget()
         self.tech_container_layout = QVBoxLayout(self.tech_container)
@@ -633,17 +649,27 @@ class MainWindow(QMainWindow):
         # 将成交量图添加到容器布局
         self.volume_container_layout.addWidget(self.volume_plot_widget)
         
+        # 为KDJ指标图创建容器
+        self.kdj_container = QWidget()
+        self.kdj_container_layout = QVBoxLayout(self.kdj_container)
+        self.kdj_container_layout.setSpacing(0)
+        self.kdj_container_layout.setContentsMargins(0, 0, 0, 0)
+        # 将KDJ指标图添加到容器布局
+        self.kdj_container_layout.addWidget(self.kdj_plot_widget)
+        
         # 添加图表到分割器
         self.chart_splitter.addWidget(self.tech_container)
         self.chart_splitter.addWidget(self.volume_container)
+        self.chart_splitter.addWidget(self.kdj_container)
         
-        # 设置分割比例（K线图占66.6%，成交量图占33.3%）
+        # 设置分割比例（K线图占50%，成交量图占25%，KDJ图占25%）
         # 先使用setStretchFactor设置相对比例
         self.chart_splitter.setStretchFactor(0, 2)  # 第一个组件（K线图）占2份
         self.chart_splitter.setStretchFactor(1, 1)  # 第二个组件（成交量图）占1份
+        self.chart_splitter.setStretchFactor(2, 1)  # 第三个组件（KDJ图）占1份
         
         # 再使用setSizes设置初始尺寸，确保比例正确
-        self.chart_splitter.setSizes([2000, 1000])
+        self.chart_splitter.setSizes([2000, 1000, 1000])
         
         # 添加分割器到容器布局
         self.chart_layout.addWidget(self.chart_splitter, 1)  # 1表示垂直方向拉伸
@@ -956,35 +982,61 @@ class MainWindow(QMainWindow):
             self.current_window_count = window_count
             
             # 实现根据窗口数量重新布局图表的逻辑
-            if hasattr(self, 'tech_plot_widget') and hasattr(self, 'volume_plot_widget') and hasattr(self, 'chart_splitter'):
+            if hasattr(self, 'tech_plot_widget') and hasattr(self, 'volume_plot_widget') and hasattr(self, 'kdj_plot_widget') and hasattr(self, 'chart_splitter'):
                 if window_count == 1:
                     # 1个窗口模式：只显示K线图，充满整个区域
                     self.volume_plot_widget.hide()
+                    self.kdj_plot_widget.hide()
                     # 隐藏成交量标签栏
                     if hasattr(self, 'volume_values_label'):
                         self.volume_values_label.hide()
-                    # 隐藏成交量容器
+                    # 隐藏成交量容器和KDJ容器
                     if hasattr(self, 'volume_container'):
                         self.volume_container.hide()
+                    if hasattr(self, 'kdj_container'):
+                        self.kdj_container.hide()
                     # 调整分割器，让K线图充满整个区域
-                    self.chart_splitter.setSizes([1, 0])
-                    logger.info("切换到1个窗口：只显示K线图，隐藏成交量图和标签栏")
-                else:
-                    # 多个窗口模式：显示K线图和成交量图
+                    self.chart_splitter.setSizes([1, 0, 0])
+                    logger.info("切换到1个窗口：只显示K线图，隐藏成交量图、KDJ图和标签栏")
+                elif window_count == 2:
+                    # 2个窗口模式：显示K线图和成交量图，隐藏KDJ图
                     self.volume_plot_widget.show()
+                    self.kdj_plot_widget.hide()
                     # 显示成交量标签栏
                     if hasattr(self, 'volume_values_label'):
                         self.volume_values_label.show()
-                    # 显示成交量容器
+                    # 显示成交量容器，隐藏KDJ容器
                     if hasattr(self, 'volume_container'):
                         self.volume_container.show()
+                    if hasattr(self, 'kdj_container'):
+                        self.kdj_container.hide()
                     # 调整分割器比例，让K线图和成交量图都显示
                     # 先使用setStretchFactor设置相对比例
                     self.chart_splitter.setStretchFactor(0, 2)  # K线图占66.6%
                     self.chart_splitter.setStretchFactor(1, 1)  # 成交量图占33.3%
                     # 再使用setSizes设置初始尺寸，确保比例正确
-                    self.chart_splitter.setSizes([2000, 1000])
-                    logger.info(f"切换到{window_count}个窗口：显示K线图和成交量图")
+                    self.chart_splitter.setSizes([2000, 1000, 0])
+                    logger.info(f"切换到{window_count}个窗口：显示K线图和成交量图，隐藏KDJ图")
+                else:  # window_count == 3
+                    # 3个窗口模式：显示K线图、成交量图和KDJ图
+                    self.volume_plot_widget.show()
+                    self.kdj_plot_widget.show()
+                    # 显示成交量标签栏
+                    if hasattr(self, 'volume_values_label'):
+                        self.volume_values_label.show()
+                    # 显示成交量容器和KDJ容器
+                    if hasattr(self, 'volume_container'):
+                        self.volume_container.show()
+                    if hasattr(self, 'kdj_container'):
+                        self.kdj_container.show()
+                    # 调整分割器比例，让三个图都显示
+                    # 先使用setStretchFactor设置相对比例
+                    self.chart_splitter.setStretchFactor(0, 2)  # K线图占50%
+                    self.chart_splitter.setStretchFactor(1, 1)  # 成交量图占25%
+                    self.chart_splitter.setStretchFactor(2, 1)  # KDJ图占25%
+                    # 再使用setSizes设置初始尺寸，确保比例正确
+                    self.chart_splitter.setSizes([2000, 1000, 1000])
+                    logger.info(f"切换到{window_count}个窗口：显示K线图、成交量图和KDJ图")
             
             print(f"切换到{window_count}个窗口")
     
@@ -1868,6 +1920,11 @@ class MainWindow(QMainWindow):
                     self.volume_plot_widget.removeItem(self.volume_vline)
                 if hasattr(self, 'volume_hline'):
                     self.volume_plot_widget.removeItem(self.volume_hline)
+                # 移除KDJ图中的旧十字线
+                if hasattr(self, 'kdj_vline'):
+                    self.kdj_plot_widget.removeItem(self.kdj_vline)
+                if hasattr(self, 'kdj_hline'):
+                    self.kdj_plot_widget.removeItem(self.kdj_hline)
                 logger.info("已移除旧的十字线对象")
             except Exception as e:
                 logger.debug(f"移除旧的十字线对象时发生错误: {e}")
@@ -1877,6 +1934,9 @@ class MainWindow(QMainWindow):
             self.hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
             self.volume_vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
             self.volume_hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
+            # 为KDJ图添加十字线
+            self.kdj_vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
+            self.kdj_hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
             
             # 添加十字线到K线图
             self.tech_plot_widget.addItem(self.vline, ignoreBounds=True)
@@ -1886,6 +1946,10 @@ class MainWindow(QMainWindow):
             self.volume_plot_widget.addItem(self.volume_vline, ignoreBounds=True)
             self.volume_plot_widget.addItem(self.volume_hline, ignoreBounds=True)
             
+            # 添加十字线到KDJ图
+            self.kdj_plot_widget.addItem(self.kdj_vline, ignoreBounds=True)
+            self.kdj_plot_widget.addItem(self.kdj_hline, ignoreBounds=True)
+            
             logger.info("已添加新的十字线对象")
             
             # 初始隐藏十字线
@@ -1893,6 +1957,9 @@ class MainWindow(QMainWindow):
             self.hline.hide()
             self.volume_vline.hide()
             self.volume_hline.hide()
+            # 初始隐藏KDJ图十字线
+            self.kdj_vline.hide()
+            self.kdj_hline.hide()
             
             # 创建信息文本项
             self.info_text = pg.TextItem(anchor=(0, 1))  # 锚点在左下角，确保信息框左下角在指定位置
@@ -1915,6 +1982,8 @@ class MainWindow(QMainWindow):
             try:
                 # 断开鼠标移动事件的所有连接
                 self.tech_plot_widget.scene().sigMouseMoved.disconnect()
+                self.volume_plot_widget.scene().sigMouseMoved.disconnect()
+                self.kdj_plot_widget.scene().sigMouseMoved.disconnect()
                 logger.info("已断开鼠标移动事件的所有连接")
             except Exception as e:
                 logger.debug(f"断开鼠标移动事件连接时发生错误: {e}")
@@ -1926,10 +1995,10 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.debug(f"断开鼠标点击事件连接时发生错误: {e}")
             
-            # 连接鼠标移动事件，实现十字线跟随
+            # 连接鼠标移动事件，实现十字线跟随和指标值更新
             self.tech_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
-            # 连接成交量图鼠标移动事件，实现指标值更新
             self.volume_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
+            self.kdj_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
             
             # 连接鼠标点击事件，处理左键和右键点击
             self.tech_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
@@ -1958,7 +2027,7 @@ class MainWindow(QMainWindow):
                 volume_view_box.setMenuEnabled(False)
                 logger.info("已禁用成交量图viewBox的右键菜单")
                 
-                # 连接K线图viewBox范围变化事件，将X轴范围同步到成交量图
+                # 连接K线图viewBox范围变化事件，将X轴范围同步到成交量图和KDJ图
                 def on_kline_range_changed(view_range):
                     # 获取新的X轴范围
                     x_min, x_max = view_box.viewRange()[0]
@@ -1966,9 +2035,13 @@ class MainWindow(QMainWindow):
                     # 将X轴范围应用到成交量图
                     volume_view_box.setXRange(x_min, x_max, padding=0)
                     
-                    logger.debug(f"从K线图同步X轴范围到成交量图: {x_min:.2f} - {x_max:.2f}")
+                    # 将X轴范围应用到KDJ图
+                    kdj_view_box = self.kdj_plot_widget.getViewBox()
+                    kdj_view_box.setXRange(x_min, x_max, padding=0)
+                    
+                    logger.debug(f"从K线图同步X轴范围到成交量图和KDJ图: {x_min:.2f} - {x_max:.2f}")
                 
-                # 连接成交量图viewBox范围变化事件，将X轴范围同步到K线图
+                # 连接成交量图viewBox范围变化事件，将X轴范围同步到K线图和KDJ图
                 def on_volume_range_changed(view_range):
                     # 获取新的X轴范围
                     x_min, x_max = volume_view_box.viewRange()[0]
@@ -1976,12 +2049,30 @@ class MainWindow(QMainWindow):
                     # 将X轴范围应用到K线图
                     view_box.setXRange(x_min, x_max, padding=0)
                     
-                    logger.debug(f"从成交量图同步X轴范围到K线图: {x_min:.2f} - {x_max:.2f}")
+                    # 将X轴范围应用到KDJ图
+                    kdj_view_box = self.kdj_plot_widget.getViewBox()
+                    kdj_view_box.setXRange(x_min, x_max, padding=0)
+                    
+                    logger.debug(f"从成交量图同步X轴范围到K线图和KDJ图: {x_min:.2f} - {x_max:.2f}")
                 
-                # 连接两个viewBox的范围变化事件
+                # 连接KDJ图viewBox范围变化事件，将X轴范围同步到K线图和成交量图
+                def on_kdj_range_changed(view_range):
+                    # 获取新的X轴范围
+                    x_min, x_max = self.kdj_plot_widget.getViewBox().viewRange()[0]
+                    
+                    # 将X轴范围应用到K线图
+                    view_box.setXRange(x_min, x_max, padding=0)
+                    
+                    # 将X轴范围应用到成交量图
+                    volume_view_box.setXRange(x_min, x_max, padding=0)
+                    
+                    logger.debug(f"从KDJ图同步X轴范围到K线图和成交量图: {x_min:.2f} - {x_max:.2f}")
+                
+                # 连接三个viewBox的范围变化事件
                 view_box.sigRangeChanged.connect(on_kline_range_changed)
                 volume_view_box.sigRangeChanged.connect(on_volume_range_changed)
-                logger.info("已连接viewBox范围变化事件，确保图表双向同步缩放")
+                self.kdj_plot_widget.getViewBox().sigRangeChanged.connect(on_kdj_range_changed)
+                logger.info("已连接viewBox范围变化事件，确保三个图表双向同步缩放")
             
             # 方法2: 禁用所有子项的右键菜单
             for item in self.tech_plot_widget.items():
@@ -2057,12 +2148,13 @@ class MainWindow(QMainWindow):
                     df_pd = pd.DataFrame(df_display)
                     logger.info(f"转换为Pandas DataFrame成功，形状: {df_pd.shape}")
                 
-                # 确保close列存在且为数值类型
-                if 'close' not in df_pd.columns:
-                    logger.error(f"数据中没有close列")
-                    return
-                
-                df_pd['close'] = pd.to_numeric(df_pd['close'], errors='coerce')
+                # 确保必要的列存在且为数值类型
+                required_columns = ['high', 'low', 'close']
+                for col in required_columns:
+                    if col not in df_pd.columns:
+                        logger.error(f"数据中没有{col}列")
+                        return
+                    df_pd[col] = pd.to_numeric(df_pd[col], errors='coerce')
                 
                 # 计算移动平均线
                 logger.info("计算5日均线")
@@ -2092,6 +2184,76 @@ class MainWindow(QMainWindow):
                 
                 # 确保数据索引正确
                 x = np.arange(len(df_pd))
+                
+                # 绘制KDJ指标
+                logger.info("绘制KDJ指标")
+                # 清除KDJ图之前的内容
+                self.kdj_plot_widget.clear()
+                # 设置KDJ图的样式
+                self.kdj_plot_widget.setBackground('#000000')
+                self.kdj_plot_widget.setLabel('left', 'KDJ', color='#C0C0C0')
+                self.kdj_plot_widget.setLabel('bottom', '', color='#C0C0C0')
+                self.kdj_plot_widget.getAxis('left').setPen(pg.mkPen('#C0C0C0'))
+                self.kdj_plot_widget.getAxis('bottom').setPen(pg.mkPen('#C0C0C0'))
+                self.kdj_plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
+                self.kdj_plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
+                self.kdj_plot_widget.showGrid(x=True, y=True, alpha=0.3)
+                # 设置KDJ指标图的Y轴范围（KDJ通常在0-100之间）
+                self.kdj_plot_widget.setYRange(0, 100)
+                # 绘制K线（白色）
+                self.kdj_plot_widget.plot(x, df_pd['k'].values, pen=pg.mkPen('w', width=1), name='K')
+                # 绘制D线（黄色）
+                self.kdj_plot_widget.plot(x, df_pd['d'].values, pen=pg.mkPen('y', width=1), name='D')
+                # 绘制J线（紫色）
+                self.kdj_plot_widget.plot(x, df_pd['j'].values, pen=pg.mkPen('m', width=1), name='J')
+                # 绘制超买超卖线
+                self.kdj_plot_widget.addItem(pg.InfiniteLine(pos=20, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
+                self.kdj_plot_widget.addItem(pg.InfiniteLine(pos=80, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
+                
+                # 获取最新的KDJ值
+                latest_k = df_pd['k'].iloc[-1]
+                latest_d = df_pd['d'].iloc[-1]
+                latest_j = df_pd['j'].iloc[-1]
+                
+                # 创建KDJ值显示标签
+                if not hasattr(self, 'kdj_values_label'):
+                    # 创建新的标签
+                    self.kdj_values_label = QLabel()
+                    self.kdj_values_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
+                    # 确保不换行
+                    self.kdj_values_label.setWordWrap(False)
+                
+                # 更新标签文本
+                kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
+                self.kdj_values_label.setText(kdj_text)
+                
+                # 检查是否已经创建了KDJ容器和布局
+                if hasattr(self, 'kdj_container') and hasattr(self, 'kdj_container_layout'):
+                    # 首先移除可能存在的旧标签，然后添加新标签
+                    try:
+                        self.kdj_container_layout.removeWidget(self.kdj_values_label)
+                    except Exception:
+                        pass
+                    
+                    # 首先确保KDJ图已经在布局中，如果不在则添加
+                    try:
+                        self.kdj_container_layout.removeWidget(self.kdj_plot_widget)
+                    except Exception:
+                        pass
+                    
+                    # 添加KDJ标签到容器布局顶部
+                    self.kdj_container_layout.addWidget(self.kdj_values_label)
+                    # 添加KDJ图到容器布局
+                    self.kdj_container_layout.addWidget(self.kdj_plot_widget)
+                    
+                    logger.info("已添加KDJ值显示标签")
+                
+                # 保存KDJ数据，用于鼠标移动时更新指标数值
+                self.current_kdj_data = {
+                    'k': df_pd['k'].values.tolist(),
+                    'd': df_pd['d'].values.tolist(),
+                    'j': df_pd['j'].values.tolist()
+                }
                 
                 # 初始化均线相关属性
                 if not hasattr(self, 'moving_averages'):
@@ -2683,7 +2845,7 @@ class MainWindow(QMainWindow):
     
     def on_kline_mouse_moved(self, pos, dates, opens, highs, lows, closes):
         """
-        处理K线图和成交量图鼠标移动事件，实现十字线跟随和指标值更新
+        处理K线图、成交量图和KDJ图鼠标移动事件，实现十字线跟随和指标值更新
         
         Args:
             pos: 鼠标位置
@@ -2694,24 +2856,34 @@ class MainWindow(QMainWindow):
             closes: 收盘价列表
         """
         try:
-            # 获取两个图表的视图框
+            # 获取三个图表的视图框
             tech_view_box = self.tech_plot_widget.getViewBox()
             volume_view_box = self.volume_plot_widget.getViewBox()
+            kdj_view_box = self.kdj_plot_widget.getViewBox()
             
-            # 获取两个图表在场景中的区域
+            # 获取三个图表在场景中的区域
             tech_scene_rect = tech_view_box.viewRect()
             volume_scene_rect = volume_view_box.viewRect()
+            kdj_scene_rect = kdj_view_box.viewRect()
             
-            # 将场景坐标转换为图表坐标，先尝试K线图
-            view_pos = tech_view_box.mapSceneToView(pos)
-            x_val = view_pos.x()
-            y_val = view_pos.y()
+            # 初始化x_val为无效值
+            x_val = -1
             
-            # 检查转换后的X值是否在有效范围内，否则使用成交量图的视图框
-            if x_val < 0 or x_val >= len(dates):
-                view_pos = volume_view_box.mapSceneToView(pos)
-                x_val = view_pos.x()
-                y_val = view_pos.y()
+            # 检查鼠标在哪个图表上，并获取对应的x_val
+            # 检查K线图
+            tech_pos = tech_view_box.mapSceneToView(pos)
+            if 0 <= tech_pos.x() < len(dates):
+                x_val = tech_pos.x()
+            # 检查成交量图
+            else:
+                volume_pos = volume_view_box.mapSceneToView(pos)
+                if 0 <= volume_pos.x() < len(dates):
+                    x_val = volume_pos.x()
+                # 检查KDJ图
+                else:
+                    kdj_pos = kdj_view_box.mapSceneToView(pos)
+                    if 0 <= kdj_pos.x() < len(dates):
+                        x_val = kdj_pos.x()
             
             # 找到最接近的K线索引
             index = int(round(x_val))
@@ -2741,6 +2913,15 @@ class MainWindow(QMainWindow):
                     # 更新成交量标签文本，保持与K线图均线标签样式一致
                     self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
                 
+                # 更新KDJ标签，显示当前位置的K、D、J值
+                if hasattr(self, 'current_kdj_data') and 0 <= index < len(self.current_kdj_data['k']) and hasattr(self, 'kdj_values_label'):
+                    current_k = self.current_kdj_data['k'][index]
+                    current_d = self.current_kdj_data['d'][index]
+                    current_j = self.current_kdj_data['j'][index]
+                    # 更新KDJ标签文本，使用与K线图相同的样式
+                    kdj_text = f"<font color='white'>K: {current_k:.2f}</font>  <font color='yellow'>D: {current_d:.2f}</font>  <font color='magenta'>J: {current_j:.2f}</font>"
+                    self.kdj_values_label.setText(kdj_text)
+                
                 # 更新成交量标签，显示当前位置的成交量、MA5和MA10数值
                 if hasattr(self, 'current_volume_data') and 0 <= index < len(self.current_volume_data['volume']) and hasattr(self, 'volume_values_label'):
                     current_volume = self.current_volume_data['volume'][index]
@@ -2752,15 +2933,14 @@ class MainWindow(QMainWindow):
             # 如果十字线功能启用，更新十字线位置和信息框
             if self.crosshair_enabled and 0 <= index < len(dates):
                 # 检查十字线是否已经初始化
-                if hasattr(self, 'vline') and hasattr(self, 'hline') and hasattr(self, 'volume_vline') and hasattr(self, 'volume_hline'):
+                if hasattr(self, 'vline') and hasattr(self, 'hline') and hasattr(self, 'volume_vline') and hasattr(self, 'volume_hline') and hasattr(self, 'kdj_vline') and hasattr(self, 'kdj_hline'):
                     # 更新K线图十字线
                     self.vline.setValue(index)
                     self.vline.show()
                     
-                    # 只更新K线图的水平线位置，如果鼠标在K线图上
-                    if tech_view_box.mapSceneToView(pos).y() > 0:
-                        self.hline.setValue(y_val)
-                        self.hline.show()
+                    # 更新K线图水平线
+                    self.hline.setValue(tech_view_box.mapSceneToView(pos).y())
+                    self.hline.show()
                     
                     # 更新成交量图十字线
                     self.volume_vline.setValue(index)
@@ -2771,6 +2951,16 @@ class MainWindow(QMainWindow):
                     volume_y_val = volume_pos.y()
                     self.volume_hline.setValue(volume_y_val)
                     self.volume_hline.show()
+                    
+                    # 更新KDJ图十字线
+                    self.kdj_vline.setValue(index)
+                    self.kdj_vline.show()
+                    
+                    # 获取KDJ图的鼠标位置
+                    kdj_pos = kdj_view_box.mapSceneToView(pos)
+                    kdj_y_val = kdj_pos.y()
+                    self.kdj_hline.setValue(kdj_y_val)
+                    self.kdj_hline.show()
                 
                 # 检查info_timer和info_text是否已经初始化
                 if hasattr(self, 'info_timer') and hasattr(self, 'info_text'):
@@ -2778,11 +2968,13 @@ class MainWindow(QMainWindow):
                     self.show_info_box()
             else:
                 # 十字线功能禁用或索引无效，隐藏十字线
-                if hasattr(self, 'vline') and hasattr(self, 'hline') and hasattr(self, 'volume_vline') and hasattr(self, 'volume_hline'):
+                if hasattr(self, 'vline') and hasattr(self, 'hline') and hasattr(self, 'volume_vline') and hasattr(self, 'volume_hline') and hasattr(self, 'kdj_vline') and hasattr(self, 'kdj_hline'):
                     self.vline.hide()
                     self.hline.hide()
                     self.volume_vline.hide()
                     self.volume_hline.hide()
+                    self.kdj_vline.hide()
+                    self.kdj_hline.hide()
                 if hasattr(self, 'info_text'):
                     self.info_text.hide()
         except Exception as e:
