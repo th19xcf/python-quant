@@ -1865,24 +1865,41 @@ class MainWindow(QMainWindow):
             logger.info("禁用pyqtgraph默认右键菜单")
             
             # 方法1: 禁用viewBox的右键菜单
-            if hasattr(self.tech_plot_widget, 'getViewBox'):
+            if hasattr(self.tech_plot_widget, 'getViewBox') and hasattr(self.volume_plot_widget, 'getViewBox'):
+                # 获取K线图viewBox
                 view_box = self.tech_plot_widget.getViewBox()
                 view_box.setMenuEnabled(False)
-                logger.info("已禁用viewBox的右键菜单")
+                logger.info("已禁用K线图viewBox的右键菜单")
                 
-                # 连接viewBox范围变化事件，确保所有图表同步缩放和平移
-                def on_range_changed(view_range):
+                # 获取成交量图viewBox
+                volume_view_box = self.volume_plot_widget.getViewBox()
+                volume_view_box.setMenuEnabled(False)
+                logger.info("已禁用成交量图viewBox的右键菜单")
+                
+                # 连接K线图viewBox范围变化事件，将X轴范围同步到成交量图
+                def on_kline_range_changed(view_range):
                     # 获取新的X轴范围
                     x_min, x_max = view_box.viewRange()[0]
                     
                     # 将X轴范围应用到成交量图
-                    volume_view_box = self.volume_plot_widget.getViewBox()
                     volume_view_box.setXRange(x_min, x_max, padding=0)
                     
-                    logger.debug(f"同步图表X轴范围: {x_min:.2f} - {x_max:.2f}")
+                    logger.debug(f"从K线图同步X轴范围到成交量图: {x_min:.2f} - {x_max:.2f}")
                 
-                view_box.sigRangeChanged.connect(on_range_changed)
-                logger.info("已连接viewBox范围变化事件，确保图表同步缩放")
+                # 连接成交量图viewBox范围变化事件，将X轴范围同步到K线图
+                def on_volume_range_changed(view_range):
+                    # 获取新的X轴范围
+                    x_min, x_max = volume_view_box.viewRange()[0]
+                    
+                    # 将X轴范围应用到K线图
+                    view_box.setXRange(x_min, x_max, padding=0)
+                    
+                    logger.debug(f"从成交量图同步X轴范围到K线图: {x_min:.2f} - {x_max:.2f}")
+                
+                # 连接两个viewBox的范围变化事件
+                view_box.sigRangeChanged.connect(on_kline_range_changed)
+                volume_view_box.sigRangeChanged.connect(on_volume_range_changed)
+                logger.info("已连接viewBox范围变化事件，确保图表双向同步缩放")
             
             # 方法2: 禁用所有子项的右键菜单
             for item in self.tech_plot_widget.items():
