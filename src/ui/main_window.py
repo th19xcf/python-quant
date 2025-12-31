@@ -2626,6 +2626,14 @@ class MainWindow(QMainWindow):
                 # 更新顶部均线值显示
                 self.update_ma_values_display(index, dates, opens, highs, lows, closes)
                 
+                # 更新成交量标签，显示当前位置的成交量、MA5和MA10数值
+                if hasattr(self, 'current_volume_data') and 0 <= index < len(self.current_volume_data['volume']) and hasattr(self, 'volume_values_label'):
+                    current_volume = self.current_volume_data['volume'][index]
+                    current_vol_ma5 = self.current_volume_data['vol_ma5'][index]
+                    current_vol_ma10 = self.current_volume_data['vol_ma10'][index]
+                    # 更新成交量标签文本，保持与K线图均线标签样式一致
+                    self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
+                
                 # 更新十字线位置
                 if self.crosshair_enabled:
                     # 更新K线图十字线
@@ -2641,14 +2649,6 @@ class MainWindow(QMainWindow):
                     volume_y_min, volume_y_max = volume_y_range
                     volume_y_val = y_val * (volume_y_max - volume_y_min) / (self.tech_plot_widget.viewRange()[1][1] - self.tech_plot_widget.viewRange()[1][0])
                     self.volume_hline.setValue(volume_y_val)
-                    
-                    # 更新成交量标签，显示当前位置的成交量、MA5和MA10数值
-                    if hasattr(self, 'current_volume_data') and 0 <= index < len(self.current_volume_data['volume']) and hasattr(self, 'volume_values_label'):
-                        current_volume = self.current_volume_data['volume'][index]
-                        current_vol_ma5 = self.current_volume_data['vol_ma5'][index]
-                        current_vol_ma10 = self.current_volume_data['vol_ma10'][index]
-                        # 更新成交量标签文本，保持与K线图均线标签样式一致
-                        self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
                 
                 # 如果十字线功能启用，更新十字线位置和信息框
             if self.crosshair_enabled:
