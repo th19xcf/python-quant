@@ -2330,20 +2330,36 @@ class MainWindow(QMainWindow):
                     # 确保索引在有效范围内
                     index = max(0, min(len(dates) - 1, index))
                     
-                    # 保存当前索引
+                    # 保存当前索引和鼠标位置
                     self.current_kline_index = index
+                    self.current_mouse_pos = pos
+                    
+                    # 保存当前K线数据
+                    self.current_kline_data = {
+                        'dates': dates,
+                        'opens': opens,
+                        'highs': highs,
+                        'lows': lows,
+                        'closes': closes,
+                        'index': index
+                    }
                     
                     # 显示K线图十字线
                     self.vline.setValue(index)
-                    self.hline.setValue(self.hline.value())
+                    self.hline.setValue(view_pos.y())
                     self.vline.show()
                     self.hline.show()
                     
                     # 显示成交量图十字线
                     self.volume_vline.setValue(index)
-                    self.volume_hline.setValue(self.volume_hline.value())
+                    volume_view_box = self.volume_plot_widget.getViewBox()
+                    volume_y_val = view_pos.y() * (volume_view_box.viewRange()[1][1] - volume_view_box.viewRange()[1][0]) / (view_box.viewRange()[1][1] - view_box.viewRange()[1][0])
+                    self.volume_hline.setValue(volume_y_val)
                     self.volume_vline.show()
                     self.volume_hline.show()
+                    
+                    # 直接显示信息框，不需要等待鼠标移动
+                    self.show_info_box()
             else:
                 logger.info("双击K线图，禁用十字线和信息框")
                 # 隐藏K线图十字线
@@ -2694,13 +2710,9 @@ class MainWindow(QMainWindow):
                     self.hline.show()
                 
                 # 检查info_timer和info_text是否已经初始化
-                if self.info_timer is not None:
-                    # 启动定时器，200毫秒后显示信息框
-                    self.info_timer.start()
-                
-                if self.info_text is not None:
-                    # 隐藏信息框，等待定时器触发重新显示
-                    self.info_text.hide()
+                if self.info_timer is not None and self.info_text is not None:
+                    # 直接显示信息框，不再等待定时器
+                    self.show_info_box()
             else:
                 # 十字线功能禁用，隐藏十字线和信息框
                 if self.vline is not None and self.hline is not None:
@@ -2890,18 +2902,31 @@ class MainWindow(QMainWindow):
                             # 根据K线位置智能选择信息框显示位置
                             # 锚点是(0, 1)，所以pos_x和pos_y定义了信息框的左下角位置
                             # 在pyqtgraph中，y值越大位置越靠上，y值越小位置越靠下
-                            if is_near_top:
-                                # K线靠近顶部（y值大），信息框显示在K线右下方
-                                # 我们希望信息框显示在K线下方，所以：pos_y = kline_y - info_box_height - margin
-                                pos_x = kline_x + 0.5  # K线右侧0.5个单位
-                                # 信息框左上角在K线右侧下方，底部对齐K线底部
-                                pos_y = kline_y - info_box_height - margin - 100  # K线下方，信息框顶部对齐K线底部
-                            else:
-                                # K线靠近底部（y值小），信息框显示在K线右上方
-                                # 我们希望信息框显示在K线上方，所以信息框的底部对齐K线顶部
-                                pos_x = kline_x + 0.5  # K线右侧0.5个单位
-                                # 信息框左上角在K线右侧上方，底部对齐K线顶部
-                                pos_y = kline_y + margin  # K线上方，信息框底部对齐K线顶部
+                            # 根据K线位置智能选择信息框显示位置
+                            # 锚点是(0, 1)，所以pos_x和pos_y定义了信息框的左下角位置
+                            # 在pyqtgraph中，y值越大位置越靠上，y值越小位置越靠下
+                            
+                            # 计算信息框的尺寸（基于视图范围的百分比）
+                            view_height = y_max - y_min
+                            view_width = x_max - x_min
+                            
+                            # 使用实际像素或视图坐标的百分比来确定信息框尺寸
+                            info_box_height = view_height * 0.2  # 信息框高度为视图高度的20%
+                            info_box_width = view_width * 0.25  # 信息框宽度为视图宽度的25%
+                            margin = view_height * 0.02  # 边距为视图高度的2%
+                            
+                            # 计算K线在视图中的相对位置
+                            kline_relative_y = (kline_y - y_min) / view_height
+                            
+                            # 始终将信息框显示在K线右侧
+                            pos_x = kline_x + view_width * 0.01  # K线右侧1%视图宽度
+                            
+                            if kline_relative_y > 0.7:  # K线位于视图上70%
+                                # 信息框显示在K线下方
+                                pos_y = kline_y - info_box_height - margin
+                            else:  # K线位于视图下30%
+                                # 信息框显示在K线上方
+                                pos_y = kline_y + margin
                             
                             # 确保信息框完全在视图范围内
                             # 水平方向：确保信息框不会超出左右边界
