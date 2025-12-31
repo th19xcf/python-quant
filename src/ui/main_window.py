@@ -636,7 +636,7 @@ class MainWindow(QMainWindow):
         self.chart_splitter.addWidget(self.volume_container)
         
         # 设置初始分割比例（K线图占80%，成交量图占20%）
-        self.chart_splitter.setSizes([4, 1])
+        self.chart_splitter.setSizes([3, 1])
         
         # 添加分割器到容器布局
         self.chart_layout.addWidget(self.chart_splitter, 1)  # 1表示垂直方向拉伸
@@ -1917,6 +1917,8 @@ class MainWindow(QMainWindow):
             
             # 连接鼠标移动事件，实现十字线跟随
             self.tech_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
+            # 连接成交量图鼠标移动事件，实现指标值更新
+            self.volume_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
             
             # 连接鼠标点击事件，处理左键和右键点击
             self.tech_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
@@ -2670,7 +2672,7 @@ class MainWindow(QMainWindow):
     
     def on_kline_mouse_moved(self, pos, dates, opens, highs, lows, closes):
         """
-        处理K线图鼠标移动事件，实现十字线跟随
+        处理K线图和成交量图鼠标移动事件，实现十字线跟随和指标值更新
         
         Args:
             pos: 鼠标位置
@@ -2681,11 +2683,24 @@ class MainWindow(QMainWindow):
             closes: 收盘价列表
         """
         try:
-            # 将场景坐标转换为图表坐标
-            view_box = self.tech_plot_widget.getViewBox()
-            view_pos = view_box.mapSceneToView(pos)
+            # 获取两个图表的视图框
+            tech_view_box = self.tech_plot_widget.getViewBox()
+            volume_view_box = self.volume_plot_widget.getViewBox()
+            
+            # 获取两个图表在场景中的区域
+            tech_scene_rect = tech_view_box.viewRect()
+            volume_scene_rect = volume_view_box.viewRect()
+            
+            # 将场景坐标转换为图表坐标，先尝试K线图
+            view_pos = tech_view_box.mapSceneToView(pos)
             x_val = view_pos.x()
             y_val = view_pos.y()
+            
+            # 检查转换后的X值是否在有效范围内，否则使用成交量图的视图框
+            if x_val < 0 or x_val >= len(dates):
+                view_pos = volume_view_box.mapSceneToView(pos)
+                x_val = view_pos.x()
+                y_val = view_pos.y()
             
             # 找到最接近的K线索引
             index = int(round(x_val))
@@ -2715,42 +2730,49 @@ class MainWindow(QMainWindow):
                     # 更新成交量标签文本，保持与K线图均线标签样式一致
                     self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
                 
-                # 更新十字线位置
-                if self.crosshair_enabled:
+                # 更新成交量标签，显示当前位置的成交量、MA5和MA10数值
+                if hasattr(self, 'current_volume_data') and 0 <= index < len(self.current_volume_data['volume']) and hasattr(self, 'volume_values_label'):
+                    current_volume = self.current_volume_data['volume'][index]
+                    current_vol_ma5 = self.current_volume_data['vol_ma5'][index]
+                    current_vol_ma10 = self.current_volume_data['vol_ma10'][index]
+                    # 更新成交量标签文本，保持与K线图均线标签样式一致
+                    self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
+                
+            # 如果十字线功能启用，更新十字线位置和信息框
+            if self.crosshair_enabled and 0 <= index < len(dates):
+                # 检查十字线是否已经初始化
+                if hasattr(self, 'vline') and hasattr(self, 'hline') and hasattr(self, 'volume_vline') and hasattr(self, 'volume_hline'):
                     # 更新K线图十字线
                     self.vline.setValue(index)
-                    self.hline.setValue(y_val)
+                    self.vline.show()
+                    
+                    # 只更新K线图的水平线位置，如果鼠标在K线图上
+                    if tech_view_box.mapSceneToView(pos).y() > 0:
+                        self.hline.setValue(y_val)
+                        self.hline.show()
                     
                     # 更新成交量图十字线
                     self.volume_vline.setValue(index)
+                    self.volume_vline.show()
                     
-                    # 获取成交量图的视图范围
-                    volume_view_box = self.volume_plot_widget.getViewBox()
-                    volume_y_range = volume_view_box.viewRange()[1]
-                    volume_y_min, volume_y_max = volume_y_range
-                    volume_y_val = y_val * (volume_y_max - volume_y_min) / (self.tech_plot_widget.viewRange()[1][1] - self.tech_plot_widget.viewRange()[1][0])
+                    # 获取成交量图的鼠标位置
+                    volume_pos = volume_view_box.mapSceneToView(pos)
+                    volume_y_val = volume_pos.y()
                     self.volume_hline.setValue(volume_y_val)
-                
-                # 如果十字线功能启用，更新十字线位置和信息框
-            if self.crosshair_enabled:
-                # 检查十字线是否已经初始化
-                if self.vline is not None and self.hline is not None:
-                    # 更新十字线位置
-                    self.vline.setValue(index)
-                    self.hline.setValue(y_val)
-                    self.vline.show()
-                    self.hline.show()
+                    self.volume_hline.show()
                 
                 # 检查info_timer和info_text是否已经初始化
-                if self.info_timer is not None and self.info_text is not None:
+                if hasattr(self, 'info_timer') and hasattr(self, 'info_text'):
                     # 直接显示信息框，不再等待定时器
                     self.show_info_box()
             else:
-                # 十字线功能禁用，隐藏十字线和信息框
-                if self.vline is not None and self.hline is not None:
+                # 十字线功能禁用或索引无效，隐藏十字线
+                if hasattr(self, 'vline') and hasattr(self, 'hline') and hasattr(self, 'volume_vline') and hasattr(self, 'volume_hline'):
                     self.vline.hide()
                     self.hline.hide()
-                if self.info_text is not None:
+                    self.volume_vline.hide()
+                    self.volume_hline.hide()
+                if hasattr(self, 'info_text'):
                     self.info_text.hide()
         except Exception as e:
             logger.exception(f"处理K线图鼠标移动事件失败: {e}")
