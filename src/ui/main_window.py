@@ -574,11 +574,17 @@ class MainWindow(QMainWindow):
         # 添加工具栏到布局
         tech_layout.addWidget(toolbar)
         
-        # 创建图表容器，用于放置K线图和成交量图
-        chart_container = QWidget()
-        chart_layout = QVBoxLayout(chart_container)
-        chart_layout.setSpacing(0)
-        chart_layout.setContentsMargins(0, 0, 0, 0)
+        # 创建图表容器，用于放置标签和分割器
+        self.chart_container = QWidget()
+        self.chart_layout = QVBoxLayout(self.chart_container)
+        self.chart_layout.setSpacing(0)
+        self.chart_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 创建垂直分割器，用于放置K线图和成交量图
+        self.chart_splitter = QSplitter(Qt.Vertical)
+        self.chart_splitter.setStyleSheet("QSplitter::handle:vertical { background-color: #444444; height: 2px; border: 0px; }")
+        self.chart_splitter.setHandleWidth(2)
+        self.chart_splitter.setOpaqueResize(True)
         
         # 创建K线图
         self.tech_plot_widget = pg.PlotWidget()
@@ -611,15 +617,31 @@ class MainWindow(QMainWindow):
         self.tech_plot_widget.getAxis('bottom').setHeight(20)
         self.volume_plot_widget.getAxis('bottom').setHeight(20)
         
-        # 设置成交量图高度为K线图的1/4
-        self.volume_plot_widget.setFixedHeight(int(self.tech_plot_widget.height() / 4))
+        # 为K线图创建容器，包含K线图
+        self.tech_container = QWidget()
+        self.tech_container_layout = QVBoxLayout(self.tech_container)
+        self.tech_container_layout.setSpacing(0)
+        self.tech_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.tech_container_layout.addWidget(self.tech_plot_widget)
         
-        # 添加图表到容器布局，设置拉伸因子确保K线图填充空间
-        chart_layout.addWidget(self.tech_plot_widget, 1)  # 1表示垂直方向拉伸
-        chart_layout.addWidget(self.volume_plot_widget)
+        # 为成交量图创建容器，包含成交量标签和成交量图
+        self.volume_container = QWidget()
+        self.volume_container_layout = QVBoxLayout(self.volume_container)
+        self.volume_container_layout.setSpacing(0)
+        self.volume_container_layout.setContentsMargins(0, 0, 0, 0)
         
-        # 添加图表容器到主布局，设置拉伸因子确保图表容器填充空间
-        tech_layout.addWidget(chart_container, 1)  # 1表示垂直方向拉伸
+        # 添加图表到分割器
+        self.chart_splitter.addWidget(self.tech_container)
+        self.chart_splitter.addWidget(self.volume_container)
+        
+        # 设置初始分割比例（K线图占80%，成交量图占20%）
+        self.chart_splitter.setSizes([4, 1])
+        
+        # 添加分割器到容器布局
+        self.chart_layout.addWidget(self.chart_splitter, 1)  # 1表示垂直方向拉伸
+        
+        # 添加容器到主布局
+        tech_layout.addWidget(self.chart_container, 1)  # 1表示垂直方向拉伸
         
         # 添加指标选择窗口
         self.create_indicator_selection()
@@ -926,16 +948,18 @@ class MainWindow(QMainWindow):
             self.current_window_count = window_count
             
             # 实现根据窗口数量重新布局图表的逻辑
-            if hasattr(self, 'tech_plot_widget') and hasattr(self, 'volume_plot_widget'):
+            if hasattr(self, 'tech_plot_widget') and hasattr(self, 'volume_plot_widget') and hasattr(self, 'chart_splitter'):
                 if window_count == 1:
                     # 1个窗口模式：只显示K线图，充满整个区域
                     self.volume_plot_widget.hide()
                     # 隐藏成交量标签栏
                     if hasattr(self, 'volume_values_label'):
                         self.volume_values_label.hide()
-                    # 取消固定高度，让K线图充满整个区域
-                    self.tech_plot_widget.setMinimumHeight(0)
-                    self.tech_plot_widget.setMaximumHeight(16777215)  # 使用Qt的最大值常量
+                    # 隐藏成交量容器
+                    if hasattr(self, 'volume_container'):
+                        self.volume_container.hide()
+                    # 调整分割器，让K线图充满整个区域
+                    self.chart_splitter.setSizes([1, 0])
                     logger.info("切换到1个窗口：只显示K线图，隐藏成交量图和标签栏")
                 else:
                     # 多个窗口模式：显示K线图和成交量图
@@ -943,17 +967,12 @@ class MainWindow(QMainWindow):
                     # 显示成交量标签栏
                     if hasattr(self, 'volume_values_label'):
                         self.volume_values_label.show()
-                    try:
-                        # 计算成交量图高度，确保高度为正整数
-                        kline_height = self.tech_plot_widget.height()
-                        if kline_height > 0:
-                            volume_height = max(50, int(kline_height / 4))  # 确保至少有50像素高度
-                            self.volume_plot_widget.setFixedHeight(volume_height)
-                        logger.info(f"切换到{window_count}个窗口：显示K线图和成交量图")
-                    except Exception as e:
-                        logger.error(f"设置成交量图高度时发生错误: {e}")
-                        # 出错时使用默认高度
-                        self.volume_plot_widget.setFixedHeight(100)
+                    # 显示成交量容器
+                    if hasattr(self, 'volume_container'):
+                        self.volume_container.show()
+                    # 调整分割器比例，让K线图和成交量图都显示
+                    self.chart_splitter.setSizes([4, 1])  # K线图占80%，成交量图占20%
+                    logger.info(f"切换到{window_count}个窗口：显示K线图和成交量图")
             
             print(f"切换到{window_count}个窗口")
     
@@ -1689,24 +1708,25 @@ class MainWindow(QMainWindow):
             # 确保不换行
             self.ma_values_label.setWordWrap(False)
             
-            # 获取tech_plot_widget的父部件，将标签添加到合适的位置
-            parent_widget = self.tech_plot_widget.parent()
-            if parent_widget:
-                # 检查是否已经有布局
-                if parent_widget.layout() is None:
-                    layout = QVBoxLayout(parent_widget)
-                    layout.setContentsMargins(0, 0, 0, 0)
-                else:
-                    layout = parent_widget.layout()
-                
+            # 检查是否已经创建了图表容器
+            if hasattr(self, 'chart_container') and hasattr(self, 'chart_layout'):
                 # 创建一个水平布局来放置标题和MA标签，让它们在同一行显示
                 title_ma_layout = QHBoxLayout()
                 title_ma_layout.addWidget(self.chart_title_label)
                 title_ma_layout.addWidget(self.ma_values_label)
                 title_ma_layout.addStretch(1)  # 添加伸缩空间，让标签靠左对齐
                 
-                # 将水平布局添加到垂直布局的顶部
-                layout.insertLayout(0, title_ma_layout)
+                # 检查是否已经存在标题和MA标签的水平布局
+                title_ma_layout_exists = False
+                for i in range(self.chart_layout.count()):
+                    item = self.chart_layout.itemAt(i)
+                    if isinstance(item, QHBoxLayout):
+                        # 移除旧的标题和MA标签布局
+                        self.chart_layout.removeItem(item)
+                        break
+                
+                # 将新的水平布局添加到垂直布局的顶部
+                self.chart_layout.insertLayout(0, title_ma_layout)
                 logger.info("已添加标题标签和MA值显示标签，在同一行显示")
             
             # 准备K线图数据
@@ -2204,32 +2224,32 @@ class MainWindow(QMainWindow):
                     # 确保不换行
                     self.volume_values_label.setWordWrap(False)
                     
-                    # 获取volume_plot_widget的父部件，将标签添加到合适的位置
-                    parent_widget = self.volume_plot_widget.parent()
-                    if parent_widget:
-                        # 检查是否已经有布局
-                        if parent_widget.layout() is None:
-                            layout = QVBoxLayout(parent_widget)
-                            layout.setContentsMargins(0, 0, 0, 0)
-                        else:
-                            layout = parent_widget.layout()
-                        
-                        # 将标签添加到布局中，在成交量图上方
+                    # 检查是否已经创建了成交量容器和布局
+                    if hasattr(self, 'volume_container') and hasattr(self, 'volume_container_layout'):
                         # 首先移除可能存在的旧标签，然后添加新标签
                         try:
-                            layout.removeWidget(self.volume_values_label)
+                            self.volume_container_layout.removeWidget(self.volume_values_label)
                         except Exception:
                             pass
                         
-                        # 找到成交量图在布局中的位置
-                        for i in range(layout.count()):
-                            if layout.itemAt(i).widget() == self.volume_plot_widget:
-                                # 在成交量图上方插入标签
-                                layout.insertWidget(i, self.volume_values_label)
-                                break
-                        else:
-                            # 如果没有找到成交量图，将标签添加到布局的顶部
-                            layout.insertWidget(0, self.volume_values_label)
+                        # 将成交量图添加到容器布局中
+                        # 首先移除可能存在的旧成交量图，然后添加新的成交量图
+                        try:
+                            self.volume_container_layout.removeWidget(self.volume_plot_widget)
+                        except Exception:
+                            pass
+                        
+                        # 在成交量图上方添加成交量标签
+                        self.volume_container_layout.addWidget(self.volume_values_label)
+                        self.volume_container_layout.addWidget(self.volume_plot_widget)
+                    
+                    # 检查窗口数量，如果是1个窗口模式，隐藏成交量标签
+                    if hasattr(self, 'current_window_count') and self.current_window_count == 1:
+                        self.volume_values_label.hide()
+                        self.volume_plot_widget.hide()
+                    else:
+                        self.volume_values_label.show()
+                        self.volume_plot_widget.show()
                         
                         logger.info("已添加成交量值显示标签")
                 
