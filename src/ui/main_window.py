@@ -628,8 +628,8 @@ class MainWindow(QMainWindow):
         self.kdj_plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
         self.kdj_plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
         self.kdj_plot_widget.showGrid(x=True, y=True, alpha=0.3)
-        # 设置KDJ指标图的Y轴范围（KDJ通常在0-100之间）
-        self.kdj_plot_widget.setYRange(0, 100)
+        # 设置KDJ指标图的Y轴范围，考虑到KDJ可能超出0-100范围，特别是J值
+        self.kdj_plot_widget.setYRange(-50, 150)
         # 确保KDJ图的Y轴宽度与其他图一致
         self.kdj_plot_widget.getAxis('left').setWidth(50)
         self.kdj_plot_widget.getAxis('bottom').setHeight(20)
@@ -2002,6 +2002,10 @@ class MainWindow(QMainWindow):
             
             # 连接鼠标点击事件，处理左键和右键点击
             self.tech_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
+            # 连接成交量图鼠标点击事件
+            self.volume_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
+            # 连接KDJ图鼠标点击事件
+            self.kdj_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
             
             # 连接鼠标离开视图事件，通过监控鼠标位置实现
             self.tech_plot_widget.viewport().setMouseTracking(True)
@@ -2198,8 +2202,8 @@ class MainWindow(QMainWindow):
                 self.kdj_plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
                 self.kdj_plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
                 self.kdj_plot_widget.showGrid(x=True, y=True, alpha=0.3)
-                # 设置KDJ指标图的Y轴范围（KDJ通常在0-100之间）
-                self.kdj_plot_widget.setYRange(0, 100)
+                # 设置KDJ指标图的Y轴范围，考虑到KDJ可能超出0-100范围，特别是J值
+                self.kdj_plot_widget.setYRange(-50, 150)
                 # 绘制K线（白色）
                 self.kdj_plot_widget.plot(x, df_pd['k'].values, pen=pg.mkPen('w', width=1), name='K')
                 # 绘制D线（黄色）
@@ -2209,6 +2213,18 @@ class MainWindow(QMainWindow):
                 # 绘制超买超卖线
                 self.kdj_plot_widget.addItem(pg.InfiniteLine(pos=20, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
                 self.kdj_plot_widget.addItem(pg.InfiniteLine(pos=80, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
+                
+                # 重新添加十字线到KDJ图中
+                if hasattr(self, 'kdj_vline') and hasattr(self, 'kdj_hline'):
+                    self.kdj_plot_widget.addItem(self.kdj_vline, ignoreBounds=True)
+                    self.kdj_plot_widget.addItem(self.kdj_hline, ignoreBounds=True)
+                    # 恢复十字线的显示状态
+                    if self.crosshair_enabled:
+                        self.kdj_vline.show()
+                        self.kdj_hline.show()
+                    else:
+                        self.kdj_vline.hide()
+                        self.kdj_hline.hide()
                 
                 # 获取最新的KDJ值
                 latest_k = df_pd['k'].iloc[-1]
@@ -2560,10 +2576,18 @@ class MainWindow(QMainWindow):
                     # 显示成交量图十字线
                     self.volume_vline.setValue(index)
                     volume_view_box = self.volume_plot_widget.getViewBox()
-                    volume_y_val = view_pos.y() * (volume_view_box.viewRange()[1][1] - volume_view_box.viewRange()[1][0]) / (view_box.viewRange()[1][1] - view_box.viewRange()[1][0])
-                    self.volume_hline.setValue(volume_y_val)
+                    volume_pos = volume_view_box.mapSceneToView(pos)
+                    self.volume_hline.setValue(volume_pos.y())
                     self.volume_vline.show()
                     self.volume_hline.show()
+                    
+                    # 显示KDJ图十字线
+                    self.kdj_vline.setValue(index)
+                    kdj_view_box = self.kdj_plot_widget.getViewBox()
+                    kdj_pos = kdj_view_box.mapSceneToView(pos)
+                    self.kdj_hline.setValue(kdj_pos.y())
+                    self.kdj_vline.show()
+                    self.kdj_hline.show()
                     
                     # 直接显示信息框，不需要等待鼠标移动
                     self.show_info_box()
@@ -2576,6 +2600,10 @@ class MainWindow(QMainWindow):
                 # 隐藏成交量图十字线
                 self.volume_vline.hide()
                 self.volume_hline.hide()
+                
+                # 隐藏KDJ图十字线
+                self.kdj_vline.hide()
+                self.kdj_hline.hide()
                 
                 # 隐藏信息框
                 if self.info_text is not None:
