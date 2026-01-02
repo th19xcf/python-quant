@@ -2428,12 +2428,23 @@ class MainWindow(QMainWindow):
                 'MA60': '#00FF00'  # 使用亮绿色，与pyqtgraph的'g'颜色一致
             }
             
-            # 绘制成交量柱图和均线
+            # 绘制第二个窗口的指标图
             try:
-                # 检查数据中是否有成交量数据
-                if 'volume' not in df.columns:
-                    logger.error(f"数据中没有volume列，无法绘制成交量图")
-                    return
+                # 获取当前窗口指标
+                current_indicator = self.window_indicators[2]
+                logger.info(f"绘制{current_indicator}指标")
+                
+                # 清除第二个窗口之前的内容
+                self.volume_plot_widget.clear()
+                # 设置第二个窗口的样式
+                self.volume_plot_widget.setBackground('#000000')
+                self.volume_plot_widget.setLabel('left', current_indicator, color='#C0C0C0')
+                self.volume_plot_widget.setLabel('bottom', '', color='#C0C0C0')
+                self.volume_plot_widget.getAxis('left').setPen(pg.mkPen('#C0C0C0'))
+                self.volume_plot_widget.getAxis('bottom').setPen(pg.mkPen('#C0C0C0'))
+                self.volume_plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
+                self.volume_plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
+                self.volume_plot_widget.showGrid(x=True, y=True, alpha=0.3)
                 
                 # 只取显示数量的数据
                 if hasattr(df, 'tail'):
@@ -2455,70 +2466,166 @@ class MainWindow(QMainWindow):
                 df_pd['close'] = pd.to_numeric(df_pd['close'], errors='coerce')
                 df_pd['open'] = pd.to_numeric(df_pd['open'], errors='coerce')
                 
-                # 计算成交量5日均线和10日均线
-                df_pd['vol_ma5'] = ta.trend.sma_indicator(df_pd['volume'], window=5, fillna=True)
-                df_pd['vol_ma10'] = ta.trend.sma_indicator(df_pd['volume'], window=10, fillna=True)
-                
                 # 准备x轴坐标
                 x = np.arange(len(df_pd))
                 
-                # 创建成交量柱图
-                volume_bars = []
-                for i in range(len(df_pd)):
-                    date = df_pd.iloc[i]['date']
-                    volume = df_pd.iloc[i]['volume']
-                    open_val = df_pd.iloc[i]['open']
-                    close_val = df_pd.iloc[i]['close']
+                # 根据不同指标绘制不同图表
+                if current_indicator == "VOL":
+                    # 计算成交量5日均线和10日均线
+                    df_pd['vol_ma5'] = ta.trend.sma_indicator(df_pd['volume'], window=5, fillna=True)
+                    df_pd['vol_ma10'] = ta.trend.sma_indicator(df_pd['volume'], window=10, fillna=True)
                     
-                    # 根据涨跌设置颜色，与K线柱体颜色保持一致：上涨红色，下跌绿色
-                    if close_val >= open_val:
-                        color = 'r'  # 上涨，红色
-                    else:
-                        color = 'g'  # 下跌，绿色
+                    # 创建成交量柱图
+                    volume_bars = []
+                    for i in range(len(df_pd)):
+                        date = df_pd.iloc[i]['date']
+                        volume = df_pd.iloc[i]['volume']
+                        open_val = df_pd.iloc[i]['open']
+                        close_val = df_pd.iloc[i]['close']
+                        
+                        # 根据涨跌设置颜色，与K线柱体颜色保持一致：上涨红色，下跌绿色
+                        if close_val >= open_val:
+                            color = 'r'  # 上涨，红色
+                        else:
+                            color = 'g'  # 下跌，绿色
+                        
+                        volume_bars.append((i, volume, color))
                     
-                    volume_bars.append((i, volume, color))
-                
-                # 绘制成交量柱图
-                for i, volume, color in volume_bars:
-                    # 绘制柱体，使用更宽的柱体，与通达信风格一致
-                    bar_item = pg.BarGraphItem(x=[i], height=[volume], width=0.8, brush=pg.mkBrush(color))
-                    self.volume_plot_widget.addItem(bar_item)
-                
-                # 绘制成交量5日均线（白色，与K线图MA5颜色一致）
-                vol_ma5_item = self.volume_plot_widget.plot(x, df_pd['vol_ma5'].values, pen=pg.mkPen('w', width=1), name='VOL_MA5')
-                
-                # 绘制成交量10日均线（青色，与K线图MA10颜色一致）
-                vol_ma10_item = self.volume_plot_widget.plot(x, df_pd['vol_ma10'].values, pen=pg.mkPen('c', width=1), name='VOL_MA10')
-                
-                # 添加成交量数值显示
-                # 获取最新的成交量数据
-                if len(df_pd) > 0:
-                    latest_volume = df_pd.iloc[-1]['volume']
-                    latest_vol_ma5 = df_pd.iloc[-1]['vol_ma5']
-                    latest_vol_ma10 = df_pd.iloc[-1]['vol_ma10']
+                    # 绘制成交量柱图
+                    for i, volume, color in volume_bars:
+                        # 绘制柱体，使用更宽的柱体，与通达信风格一致
+                        bar_item = pg.BarGraphItem(x=[i], height=[volume], width=0.8, brush=pg.mkBrush(color))
+                        self.volume_plot_widget.addItem(bar_item)
+                elif current_indicator == "MACD":
+                    # 绘制MACD指标
+                    macd = ta.trend.macd(df_pd['close'], fillna=True)
+                    macd_signal = ta.trend.macd_signal(df_pd['close'], fillna=True)
+                    macd_hist = ta.trend.macd_diff(df_pd['close'], fillna=True)
                     
-                    # 保存成交量数据和成交量均线数据，用于鼠标移动时更新标题
-                    self.current_volume_data = {
-                        'volume': df_pd['volume'].values.tolist(),
-                        'vol_ma5': df_pd['vol_ma5'].values.tolist(),
-                        'vol_ma10': df_pd['vol_ma10'].values.tolist()
+                    # 设置Y轴范围
+                    y_min = min(macd_hist.min(), macd.min(), macd_signal.min()) * 1.2
+                    y_max = max(macd_hist.max(), macd.max(), macd_signal.max()) * 1.2
+                    self.volume_plot_widget.setYRange(y_min, y_max)
+                    
+                    # 绘制MACD线（蓝色）
+                    self.volume_plot_widget.plot(x, macd.values, pen=pg.mkPen('b', width=1), name='MACD')
+                    # 绘制信号线（红色）
+                    self.volume_plot_widget.plot(x, macd_signal.values, pen=pg.mkPen('r', width=1), name='Signal')
+                    # 绘制柱状图
+                    for i in range(len(x)):
+                        if macd_hist.values[i] >= 0:
+                            color = 'r'  # 上涨为红色
+                        else:
+                            color = 'g'  # 下跌为绿色
+                        self.volume_plot_widget.plot([x[i], x[i]], [0, macd_hist.values[i]], pen=pg.mkPen(color, width=2))
+                    
+                    # 保存MACD数据，用于鼠标移动时更新标题
+                    self.current_macd_data = {
+                        'macd': macd.values.tolist(),
+                        'macd_signal': macd_signal.values.tolist(),
+                        'macd_hist': macd_hist.values.tolist()
                     }
+                elif current_indicator == "RSI":
+                    # 绘制RSI指标
+                    rsi14 = ta.momentum.rsi(df_pd['close'], window=14, fillna=True)
                     
-                    # 检查是否已经存在成交量标签，如果存在则移除
+                    # 设置Y轴范围
+                    self.volume_plot_widget.setYRange(0, 100)
+                    # 绘制RSI线（蓝色）
+                    self.volume_plot_widget.plot(x, rsi14.values, pen=pg.mkPen('b', width=1), name='RSI14')
+                    # 绘制超买超卖线
+                    self.volume_plot_widget.addItem(pg.InfiniteLine(pos=30, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
+                    self.volume_plot_widget.addItem(pg.InfiniteLine(pos=70, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
+                    
+                    # 保存RSI数据，用于鼠标移动时更新标题
+                    self.current_rsi_data = {
+                        'rsi': rsi14.values.tolist()
+                    }
+                elif current_indicator == "KDJ":
+                    # 绘制KDJ指标
+                    k = ta.momentum.stoch(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
+                    d = ta.momentum.stoch_signal(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
+                    j = 3 * k - 2 * d
+                    
+                    # 设置Y轴范围，考虑到KDJ可能超出0-100范围，特别是J值
+                    self.volume_plot_widget.setYRange(-50, 150)
+                    # 绘制K线（白色）
+                    self.volume_plot_widget.plot(x, k.values, pen=pg.mkPen('w', width=1), name='K')
+                    # 绘制D线（黄色）
+                    self.volume_plot_widget.plot(x, d.values, pen=pg.mkPen('y', width=1), name='D')
+                    # 绘制J线（紫色）
+                    self.volume_plot_widget.plot(x, j.values, pen=pg.mkPen('m', width=1), name='J')
+                    # 绘制超买超卖线
+                    self.volume_plot_widget.addItem(pg.InfiniteLine(pos=20, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
+                    self.volume_plot_widget.addItem(pg.InfiniteLine(pos=80, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
+                
+                # 根据不同指标绘制均线
+                if current_indicator == "VOL":
+                    # 绘制成交量5日均线（白色，与K线图MA5颜色一致）
+                    vol_ma5_item = self.volume_plot_widget.plot(x, df_pd['vol_ma5'].values, pen=pg.mkPen('w', width=1), name='VOL_MA5')
+                    
+                    # 绘制成交量10日均线（青色，与K线图MA10颜色一致）
+                    vol_ma10_item = self.volume_plot_widget.plot(x, df_pd['vol_ma10'].values, pen=pg.mkPen('c', width=1), name='VOL_MA10')
+                
+                # 添加数值显示
+                if len(df_pd) > 0:
+                    if current_indicator == "VOL":
+                        # 获取最新的成交量数据
+                        latest_volume = df_pd.iloc[-1]['volume']
+                        latest_vol_ma5 = df_pd.iloc[-1]['vol_ma5']
+                        latest_vol_ma10 = df_pd.iloc[-1]['vol_ma10']
+                        
+                        # 保存成交量数据和成交量均线数据，用于鼠标移动时更新标题
+                        self.current_volume_data = {
+                            'volume': df_pd['volume'].values.tolist(),
+                            'vol_ma5': df_pd['vol_ma5'].values.tolist(),
+                            'vol_ma10': df_pd['vol_ma10'].values.tolist()
+                        }
+                    
+                    # 检查是否已经存在标签，如果存在则移除
                     if hasattr(self, 'volume_values_label'):
                         try:
                             self.volume_values_label.deleteLater()
                         except Exception as e:
-                            logger.warning(f"移除旧成交量标签时发生错误: {e}")
+                            logger.warning(f"移除旧标签时发生错误: {e}")
                     
-                    # 创建成交量标签，使用与K线图均线标签相同的样式
-                    from PySide6.QtWidgets import QLabel, QHBoxLayout, QWidget
+                    # 创建标签，使用与K线图均线标签相同的样式
+                    from PySide6.QtWidgets import QLabel
                     self.volume_values_label = QLabel()
                     self.volume_values_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
-                    # 使用HTML设置初始文本和颜色，与K线图均线标签样式一致
-                    self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(latest_volume):,}</font>  <font color='white'>MA5: {int(latest_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(latest_vol_ma10):,}</font>")
                     # 确保不换行
                     self.volume_values_label.setWordWrap(False)
+                    
+                    # 根据不同指标设置标签文本
+                    if current_indicator == "VOL":
+                        # 使用HTML设置初始文本和颜色，与K线图均线标签样式一致
+                        self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(latest_volume):,}</font>  <font color='white'>MA5: {int(latest_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(latest_vol_ma10):,}</font>")
+                    elif current_indicator == "MACD":
+                        # 添加MACD数值显示
+                        macd = ta.trend.macd(df_pd['close'], fillna=True)
+                        macd_signal = ta.trend.macd_signal(df_pd['close'], fillna=True)
+                        macd_hist = ta.trend.macd_diff(df_pd['close'], fillna=True)
+                        latest_macd = macd.iloc[-1]
+                        latest_macd_signal = macd_signal.iloc[-1]
+                        latest_macd_hist = macd_hist.iloc[-1]
+                        
+                        self.volume_values_label.setText(f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>")
+                    elif current_indicator == "RSI":
+                        # 添加RSI数值显示
+                        rsi14 = ta.momentum.rsi(df_pd['close'], window=14, fillna=True)
+                        latest_rsi = rsi14.iloc[-1]
+                        
+                        self.volume_values_label.setText(f"<font color='blue'>RSI14: {latest_rsi:.2f}</font>")
+                    elif current_indicator == "KDJ":
+                        # 添加KDJ数值显示
+                        k = ta.momentum.stoch(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
+                        d = ta.momentum.stoch_signal(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
+                        j = 3 * k - 2 * d
+                        latest_k = k.iloc[-1]
+                        latest_d = d.iloc[-1]
+                        latest_j = j.iloc[-1]
+                        
+                        self.volume_values_label.setText(f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>")
                     
                     # 检查是否已经创建了成交量容器和布局
                     if hasattr(self, 'volume_container') and hasattr(self, 'volume_container_layout'):
@@ -2560,35 +2667,37 @@ class MainWindow(QMainWindow):
                 self.tech_plot_widget.setXRange(0, len(dates) - 1)
                 self.volume_plot_widget.setXRange(0, len(dates) - 1)
                 
-                # 获取成交量数据
-                volume_data = df_pd['volume'].values
-                volume_min = volume_data.min()
-                volume_max = volume_data.max()
-                
-                # 重置对数模式，默认使用线性刻度
-                self.volume_plot_widget.setLogMode(y=False)
-                
-                # 计算成交量的统计信息
-                volume_mean = volume_data.mean()
-                volume_std = volume_data.std()
-                
-                # 计算合理的Y轴范围，进一步增加顶部空间
-                if volume_max > 0:
-                    # 如果数据差异不大，使用基于均值和标准差的范围
-                    if volume_std / volume_mean < 0.1:  # 标准差小于均值的10%，数据比较集中
-                        # 扩大Y轴范围，显示更多细节，特别是顶部留出更多空间
-                        y_min = max(0, volume_mean - volume_std * 2)
-                        y_max = volume_mean + volume_std * 3.5  # 进一步增加顶部空间
-                        self.volume_plot_widget.setYRange(y_min, y_max)
+                # 仅在当前指标是VOL时设置成交量相关的Y轴范围和样式
+                if current_indicator == "VOL":
+                    # 获取成交量数据
+                    volume_data = df_pd['volume'].values
+                    volume_min = volume_data.min()
+                    volume_max = volume_data.max()
+                    
+                    # 重置对数模式，默认使用线性刻度
+                    self.volume_plot_widget.setLogMode(y=False)
+                    
+                    # 计算成交量的统计信息
+                    volume_mean = volume_data.mean()
+                    volume_std = volume_data.std()
+                    
+                    # 计算合理的Y轴范围，进一步增加顶部空间
+                    if volume_max > 0:
+                        # 如果数据差异不大，使用基于均值和标准差的范围
+                        if volume_std / volume_mean < 0.1:  # 标准差小于均值的10%，数据比较集中
+                            # 扩大Y轴范围，显示更多细节，特别是顶部留出更多空间
+                            y_min = max(0, volume_mean - volume_std * 2)
+                            y_max = volume_mean + volume_std * 3.5  # 进一步增加顶部空间
+                            self.volume_plot_widget.setYRange(y_min, y_max)
+                        else:
+                            # 数据有一定差异，使用基于最小值和最大值的范围
+                            y_range = volume_max - volume_min
+                            y_min = max(0, volume_min - y_range * 0.1)
+                            y_max = volume_max + y_range * 0.1  # 进一步增加顶部空间，从20%调整为30%
+                            self.volume_plot_widget.setYRange(y_min, y_max)
                     else:
-                        # 数据有一定差异，使用基于最小值和最大值的范围
-                        y_range = volume_max - volume_min
-                        y_min = max(0, volume_min - y_range * 0.1)
-                        y_max = volume_max + y_range * 0.1  # 进一步增加顶部空间，从20%调整为30%
-                        self.volume_plot_widget.setYRange(y_min, y_max)
-                else:
-                    # 成交量都是0，使用默认范围
-                    self.volume_plot_widget.setYRange(0, 100)
+                        # 成交量都是0，使用默认范围
+                        self.volume_plot_widget.setYRange(0, 100)
                 
                 # 禁用科学计数法，使用正常的数值显示
                 y_axis = self.volume_plot_widget.getAxis('left')
@@ -2598,10 +2707,10 @@ class MainWindow(QMainWindow):
                 # 设置X轴范围
                 self.volume_plot_widget.setXRange(0, len(df_pd) - 1)
                 
-                logger.info(f"成功绘制{stock_name}({stock_code})的成交量图")
+                logger.info(f"成功绘制{stock_name}({stock_code})的{current_indicator}图")
                 
             except Exception as e:
-                logger.exception(f"绘制成交量图失败: {e}")
+                logger.exception(f"绘制{current_indicator}图失败: {e}")
             
             # 保存当前显示的个股信息
             self.current_stock_data = df
@@ -3029,13 +3138,17 @@ class MainWindow(QMainWindow):
                 # 更新顶部均线值显示
                 self.update_ma_values_display(index, dates, opens, highs, lows, closes)
                 
-                # 更新成交量标签，显示当前位置的成交量、MA5和MA10数值
-                if hasattr(self, 'current_volume_data') and 0 <= index < len(self.current_volume_data['volume']) and hasattr(self, 'volume_values_label'):
-                    current_volume = self.current_volume_data['volume'][index]
-                    current_vol_ma5 = self.current_volume_data['vol_ma5'][index]
-                    current_vol_ma10 = self.current_volume_data['vol_ma10'][index]
-                    # 更新成交量标签文本，保持与K线图均线标签样式一致
-                    self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
+                # 更新第二个窗口标签，根据当前指标类型显示不同内容
+                if hasattr(self, 'volume_values_label'):
+                    # 获取当前窗口指标
+                    current_indicator = self.window_indicators[2]
+                    
+                    if current_indicator == "VOL" and hasattr(self, 'current_volume_data') and 0 <= index < len(self.current_volume_data['volume']):
+                        # 更新成交量标签
+                        current_volume = self.current_volume_data['volume'][index]
+                        current_vol_ma5 = self.current_volume_data['vol_ma5'][index]
+                        current_vol_ma10 = self.current_volume_data['vol_ma10'][index]
+                        self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
                 
                 # 更新KDJ标签，显示当前位置的K、D、J值
                 if hasattr(self, 'current_kdj_data') and 0 <= index < len(self.current_kdj_data['k']) and hasattr(self, 'kdj_values_label'):
@@ -3046,13 +3159,33 @@ class MainWindow(QMainWindow):
                     kdj_text = f"<font color='white'>K: {current_k:.2f}</font>  <font color='yellow'>D: {current_d:.2f}</font>  <font color='magenta'>J: {current_j:.2f}</font>"
                     self.kdj_values_label.setText(kdj_text)
                 
-                # 更新成交量标签，显示当前位置的成交量、MA5和MA10数值
-                if hasattr(self, 'current_volume_data') and 0 <= index < len(self.current_volume_data['volume']) and hasattr(self, 'volume_values_label'):
-                    current_volume = self.current_volume_data['volume'][index]
-                    current_vol_ma5 = self.current_volume_data['vol_ma5'][index]
-                    current_vol_ma10 = self.current_volume_data['vol_ma10'][index]
-                    # 更新成交量标签文本，保持与K线图均线标签样式一致
-                    self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
+                # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
+                if hasattr(self, 'volume_values_label'):
+                    # 获取当前窗口指标
+                    current_indicator = self.window_indicators[2]
+                    
+                    if current_indicator == "VOL" and hasattr(self, 'current_volume_data') and 0 <= index < len(self.current_volume_data['volume']):
+                        # 更新成交量标签
+                        current_volume = self.current_volume_data['volume'][index]
+                        current_vol_ma5 = self.current_volume_data['vol_ma5'][index]
+                        current_vol_ma10 = self.current_volume_data['vol_ma10'][index]
+                        self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
+                    elif current_indicator == "MACD" and hasattr(self, 'current_macd_data') and 0 <= index < len(self.current_macd_data['macd']):
+                        # 更新MACD标签
+                        current_macd = self.current_macd_data['macd'][index]
+                        current_macd_signal = self.current_macd_data['macd_signal'][index]
+                        current_macd_hist = self.current_macd_data['macd_hist'][index]
+                        self.volume_values_label.setText(f"<font color='blue'>MACD: {current_macd:.2f}</font>  <font color='red'>SIGNAL: {current_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {current_macd_hist:.2f}</font>")
+                    elif current_indicator == "RSI" and hasattr(self, 'current_rsi_data') and 0 <= index < len(self.current_rsi_data['rsi']):
+                        # 更新RSI标签
+                        current_rsi = self.current_rsi_data['rsi'][index]
+                        self.volume_values_label.setText(f"<font color='blue'>RSI14: {current_rsi:.2f}</font>")
+                    elif current_indicator == "KDJ" and hasattr(self, 'current_kdj_data') and 0 <= index < len(self.current_kdj_data['k']):
+                        # 更新KDJ标签
+                        current_k = self.current_kdj_data['k'][index]
+                        current_d = self.current_kdj_data['d'][index]
+                        current_j = self.current_kdj_data['j'][index]
+                        self.volume_values_label.setText(f"<font color='white'>K: {current_k:.2f}</font>  <font color='yellow'>D: {current_d:.2f}</font>  <font color='magenta'>J: {current_j:.2f}</font>")
                 
             # 如果十字线功能启用，更新十字线位置和信息框
             if self.crosshair_enabled and 0 <= index < len(dates):
