@@ -66,6 +66,15 @@ class MainWindow(QMainWindow):
             self.window_menu.addAction(action)
             self.window_actions.append(action)
         
+        # 当前选中的窗口（1: K线图, 2: 成交量, 3: KDJ/其他指标）
+        self.current_selected_window = 1
+        # 保存每个窗口当前显示的指标
+        self.window_indicators = {
+            1: "MA",  # K线图默认显示MA指标
+            2: "VOL",  # 成交量图默认显示成交量
+            3: "KDJ"  # 第三个窗口默认显示KDJ指标
+        }
+        
         # 初始化UI组件
         self.init_ui()
         logger.info("主窗口初始化成功")
@@ -640,6 +649,8 @@ class MainWindow(QMainWindow):
         self.tech_container_layout.setSpacing(0)
         self.tech_container_layout.setContentsMargins(0, 0, 0, 0)
         self.tech_container_layout.addWidget(self.tech_plot_widget)
+        # 添加点击事件，用于选中窗口
+        self.tech_container.mousePressEvent = lambda event: self.on_window_clicked(1)
         
         # 为成交量图创建容器，包含成交量标签和成交量图
         self.volume_container = QWidget()
@@ -648,6 +659,8 @@ class MainWindow(QMainWindow):
         self.volume_container_layout.setContentsMargins(0, 0, 0, 0)
         # 将成交量图添加到容器布局
         self.volume_container_layout.addWidget(self.volume_plot_widget)
+        # 添加点击事件，用于选中窗口
+        self.volume_container.mousePressEvent = lambda event: self.on_window_clicked(2)
         
         # 为KDJ指标图创建容器
         self.kdj_container = QWidget()
@@ -656,6 +669,8 @@ class MainWindow(QMainWindow):
         self.kdj_container_layout.setContentsMargins(0, 0, 0, 0)
         # 将KDJ指标图添加到容器布局
         self.kdj_container_layout.addWidget(self.kdj_plot_widget)
+        # 添加点击事件，用于选中窗口
+        self.kdj_container.mousePressEvent = lambda event: self.on_window_clicked(3)
         
         # 添加图表到分割器
         self.chart_splitter.addWidget(self.tech_container)
@@ -850,6 +865,37 @@ class MainWindow(QMainWindow):
         minus_btn.clicked.connect(self.on_minus_btn_clicked)
         indicator_layout.addWidget(minus_btn)
     
+    def on_window_clicked(self, window_num):
+        """
+        窗口点击事件处理
+        
+        Args:
+            window_num: 窗口编号（1: K线图, 2: 成交量, 3: KDJ/其他指标）
+        """
+        if 1 <= window_num <= 3:
+            self.current_selected_window = window_num
+            logger.info(f"选中了窗口: {window_num}")
+            
+            # 更新窗口标题，显示当前选中的窗口
+            for container in [self.tech_container, self.volume_container, self.kdj_container]:
+                container.setStyleSheet("background-color: transparent;")
+            
+            # 如果存在标签栏容器，移除其边框
+            if hasattr(self, 'title_ma_container'):
+                self.title_ma_container.setStyleSheet("background-color: #222222;")
+            
+            # 为选中的窗口添加边框，显示选中状态
+            if window_num == 1:
+                # 为标签栏容器添加左、右、上边框，移除下边框，确保两边有竖线，中间没有竖分割线
+                if hasattr(self, 'title_ma_container'):
+                    self.title_ma_container.setStyleSheet("background-color: #222222; border-top: 1px solid #00BFFF; border-left: 1px solid #00BFFF; border-right: 1px solid #00BFFF; border-bottom: none;")
+                # 为K线图容器添加完整的边框，使其包含整个K线图区域
+                self.tech_container.setStyleSheet("background-color: transparent; border: 1px solid #00BFFF;")
+            elif window_num == 2:
+                self.volume_container.setStyleSheet("background-color: transparent; border: 1px solid #00BFFF;")
+            elif window_num == 3:
+                self.kdj_container.setStyleSheet("background-color: transparent; border: 1px solid #00BFFF;")
+    
     def on_indicator_clicked(self, indicator, checked):
         """
         指标按钮点击事件处理
@@ -870,6 +916,16 @@ class MainWindow(QMainWindow):
                 for name, button in self.indicator_buttons.items():
                     if name not in ["指标A", "指标B", "模板", "窗口"] and name != indicator:
                         button.setChecked(False)
+            
+            # 根据当前选中的窗口设置指标
+            if indicator not in ["指标A", "指标B", "模板", "窗口"]:
+                # 保存当前选中窗口的指标
+                self.window_indicators[self.current_selected_window] = indicator
+                logger.info(f"为窗口 {self.current_selected_window} 设置了指标: {indicator}")
+                
+                # 重新绘制K线图，应用新的指标
+                if self.current_stock_data is not None:
+                    self.plot_k_line(self.current_stock_data, self.current_stock_name, self.current_stock_code)
         
         logger.info(f"选择了指标: {indicator}, 状态: {'选中' if checked else '取消'}")
     
@@ -1761,7 +1817,7 @@ class MainWindow(QMainWindow):
             
             # 创建图表标题标签，放置在左上角
             self.chart_title_label = QLabel()
-            self.chart_title_label.setStyleSheet("font-family: Consolas, monospace; padding: 5px; color: #C0C0C0; background-color: transparent;")
+            self.chart_title_label.setStyleSheet("font-family: Consolas, monospace; padding: 5px; color: #C0C0C0; background-color: transparent; border: none;")
             # 获取当前周期，如果没有设置则默认为日线
             current_period = getattr(self, 'current_period', '日线')
             self.chart_title_label.setText(f"{stock_name}({stock_code}) {current_period}")
@@ -1769,7 +1825,7 @@ class MainWindow(QMainWindow):
             
             # 创建MA值显示标签
             self.ma_values_label = QLabel()
-            self.ma_values_label.setStyleSheet("font-family: Consolas, monospace; padding: 5px; color: #C0C0C0; background-color: transparent;")
+            self.ma_values_label.setStyleSheet("font-family: Consolas, monospace; padding: 5px; color: #C0C0C0; background-color: transparent; border: none;")
             # 使用HTML设置初始文本和颜色，添加日期显示
             self.ma_values_label.setText("<font color='#C0C0C0'>日期: --</font>  <font color='white'>MA5: --</font>  <font color='cyan'>MA10: --</font>  <font color='red'>MA20: --</font>  <font color='#00FF00'>MA60: --</font>")
             # 确保不换行
@@ -2193,29 +2249,63 @@ class MainWindow(QMainWindow):
                 x = np.arange(len(df_pd))
                 
                 # 绘制KDJ指标
-                logger.info("绘制KDJ指标")
+                # 绘制指标
+                current_indicator = self.window_indicators[3]
+                logger.info(f"绘制{current_indicator}指标")
                 # 清除KDJ图之前的内容
                 self.kdj_plot_widget.clear()
                 # 设置KDJ图的样式
                 self.kdj_plot_widget.setBackground('#000000')
-                self.kdj_plot_widget.setLabel('left', 'KDJ', color='#C0C0C0')
+                self.kdj_plot_widget.setLabel('left', current_indicator, color='#C0C0C0')
                 self.kdj_plot_widget.setLabel('bottom', '', color='#C0C0C0')
                 self.kdj_plot_widget.getAxis('left').setPen(pg.mkPen('#C0C0C0'))
                 self.kdj_plot_widget.getAxis('bottom').setPen(pg.mkPen('#C0C0C0'))
                 self.kdj_plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
                 self.kdj_plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
                 self.kdj_plot_widget.showGrid(x=True, y=True, alpha=0.3)
-                # 设置KDJ指标图的Y轴范围，考虑到KDJ可能超出0-100范围，特别是J值
-                self.kdj_plot_widget.setYRange(-50, 150)
-                # 绘制K线（白色）
-                self.kdj_plot_widget.plot(x, df_pd['k'].values, pen=pg.mkPen('w', width=1), name='K')
-                # 绘制D线（黄色）
-                self.kdj_plot_widget.plot(x, df_pd['d'].values, pen=pg.mkPen('y', width=1), name='D')
-                # 绘制J线（紫色）
-                self.kdj_plot_widget.plot(x, df_pd['j'].values, pen=pg.mkPen('m', width=1), name='J')
-                # 绘制超买超卖线
-                self.kdj_plot_widget.addItem(pg.InfiniteLine(pos=20, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
-                self.kdj_plot_widget.addItem(pg.InfiniteLine(pos=80, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
+                if current_indicator == "KDJ":
+                    # 设置KDJ指标图的Y轴范围，考虑到KDJ可能超出0-100范围，特别是J值
+                    self.kdj_plot_widget.setYRange(-50, 150)
+                    # 绘制K线（白色）
+                    self.kdj_plot_widget.plot(x, df_pd['k'].values, pen=pg.mkPen('w', width=1), name='K')
+                    # 绘制D线（黄色）
+                    self.kdj_plot_widget.plot(x, df_pd['d'].values, pen=pg.mkPen('y', width=1), name='D')
+                    # 绘制J线（紫色）
+                    self.kdj_plot_widget.plot(x, df_pd['j'].values, pen=pg.mkPen('m', width=1), name='J')
+                    # 绘制超买超卖线
+                    self.kdj_plot_widget.addItem(pg.InfiniteLine(pos=20, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
+                    self.kdj_plot_widget.addItem(pg.InfiniteLine(pos=80, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
+                elif current_indicator == "RSI":
+                    # 绘制RSI指标
+                    self.kdj_plot_widget.setYRange(0, 100)
+                    # 绘制RSI线（蓝色）
+                    self.kdj_plot_widget.plot(x, df_pd['rsi14'].values, pen=pg.mkPen('b', width=1), name='RSI14')
+                    # 绘制超买超卖线
+                    self.kdj_plot_widget.addItem(pg.InfiniteLine(pos=30, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
+                    self.kdj_plot_widget.addItem(pg.InfiniteLine(pos=70, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
+                elif current_indicator == "MACD":
+                    # 绘制MACD指标
+                    self.kdj_plot_widget.setYRange(min(df_pd['macd_hist'].min(), df_pd['macd'].min(), df_pd['macd_signal'].min()) * 1.2, 
+                                                 max(df_pd['macd_hist'].max(), df_pd['macd'].max(), df_pd['macd_signal'].max()) * 1.2)
+                    # 绘制MACD线（蓝色）
+                    self.kdj_plot_widget.plot(x, df_pd['macd'].values, pen=pg.mkPen('b', width=1), name='MACD')
+                    # 绘制信号线（红色）
+                    self.kdj_plot_widget.plot(x, df_pd['macd_signal'].values, pen=pg.mkPen('r', width=1), name='Signal')
+                    # 绘制柱状图
+                    for i in range(len(x)):
+                        if df_pd['macd_hist'].values[i] >= 0:
+                            color = 'r'  # 上涨为红色
+                        else:
+                            color = 'g'  # 下跌为绿色
+                        self.kdj_plot_widget.plot([x[i], x[i]], [0, df_pd['macd_hist'].values[i]], pen=pg.mkPen(color, width=2))
+                else:
+                    # 默认绘制KDJ指标
+                    self.kdj_plot_widget.setYRange(-50, 150)
+                    self.kdj_plot_widget.plot(x, df_pd['k'].values, pen=pg.mkPen('w', width=1), name='K')
+                    self.kdj_plot_widget.plot(x, df_pd['d'].values, pen=pg.mkPen('y', width=1), name='D')
+                    self.kdj_plot_widget.plot(x, df_pd['j'].values, pen=pg.mkPen('m', width=1), name='J')
+                    self.kdj_plot_widget.addItem(pg.InfiniteLine(pos=20, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
+                    self.kdj_plot_widget.addItem(pg.InfiniteLine(pos=80, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
                 
                 # 重新添加十字线到KDJ图中
                 if hasattr(self, 'kdj_vline') and hasattr(self, 'kdj_hline'):
