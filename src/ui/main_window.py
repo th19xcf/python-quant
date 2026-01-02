@@ -54,7 +54,7 @@ class MainWindow(QMainWindow):
         self.current_stock_code = ""
         
         # 初始化窗口菜单
-        self.current_window_count = 2
+        self.current_window_count = 3
         self.window_menu = QMenu(self)
         self.window_actions = []
         for i in range(1, 10):  # 最大选择9个窗口
@@ -685,6 +685,9 @@ class MainWindow(QMainWindow):
         self.candle_plot_item = None
         self.volume_bar_item = None
         self.volume_ma_item = None
+        
+        # 初始化完成后，设置为3个窗口模式
+        self.on_window_count_changed(3, True)
     
     def create_indicator_selection(self):
         """
