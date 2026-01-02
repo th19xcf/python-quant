@@ -2521,6 +2521,9 @@ class MainWindow(QMainWindow):
             logger.info(f"成功绘制{stock_name}({stock_code})的K线图")
             self.statusBar().showMessage(f"成功绘制{stock_name}({stock_code})的K线图", 3000)
             
+            # 确保窗口数量保持为3个
+            self.on_window_count_changed(3, True)
+            
         except Exception as e:
             logger.exception(f"绘制K线图失败: {e}")
             self.statusBar().showMessage(f"绘制K线图失败: {str(e)[:50]}...", 5000)
