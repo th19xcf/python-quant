@@ -2319,10 +2319,8 @@ class MainWindow(QMainWindow):
                         self.kdj_vline.hide()
                         self.kdj_hline.hide()
                 
-                # 获取最新的KDJ值
-                latest_k = df_pd['k'].iloc[-1]
-                latest_d = df_pd['d'].iloc[-1]
-                latest_j = df_pd['j'].iloc[-1]
+                # 根据当前指标更新标签栏数值
+                current_indicator = self.window_indicators[3]
                 
                 # 创建KDJ值显示标签
                 if not hasattr(self, 'kdj_values_label'):
@@ -2332,9 +2330,37 @@ class MainWindow(QMainWindow):
                     # 确保不换行
                     self.kdj_values_label.setWordWrap(False)
                 
-                # 更新标签文本
-                kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
-                self.kdj_values_label.setText(kdj_text)
+                # 根据当前指标更新标签文本
+                if current_indicator == "KDJ":
+                    # 获取最新的KDJ值
+                    latest_k = df_pd['k'].iloc[-1]
+                    latest_d = df_pd['d'].iloc[-1]
+                    latest_j = df_pd['j'].iloc[-1]
+                    # 更新标签文本
+                    kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
+                    self.kdj_values_label.setText(kdj_text)
+                elif current_indicator == "RSI":
+                    # 获取最新的RSI值
+                    latest_rsi = df_pd['rsi14'].iloc[-1]
+                    # 更新标签文本
+                    rsi_text = f"<font color='blue'>RSI14: {latest_rsi:.2f}</font>"
+                    self.kdj_values_label.setText(rsi_text)
+                elif current_indicator == "MACD":
+                    # 获取最新的MACD值
+                    latest_macd = df_pd['macd'].iloc[-1]
+                    latest_macd_signal = df_pd['macd_signal'].iloc[-1]
+                    latest_macd_hist = df_pd['macd_hist'].iloc[-1]
+                    # 更新标签文本
+                    macd_text = f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>"
+                    self.kdj_values_label.setText(macd_text)
+                else:
+                    # 默认绘制KDJ指标，显示KDJ数值
+                    latest_k = df_pd['k'].iloc[-1]
+                    latest_d = df_pd['d'].iloc[-1]
+                    latest_j = df_pd['j'].iloc[-1]
+                    # 更新标签文本
+                    kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
+                    self.kdj_values_label.setText(kdj_text)
                 
                 # 检查是否已经创建了KDJ容器和布局
                 if hasattr(self, 'kdj_container') and hasattr(self, 'kdj_container_layout'):
@@ -2357,11 +2383,19 @@ class MainWindow(QMainWindow):
                     
                     logger.info("已添加KDJ值显示标签")
                 
-                # 保存KDJ数据，用于鼠标移动时更新指标数值
+                # 保存指标数据，用于鼠标移动时更新指标数值
                 self.current_kdj_data = {
                     'k': df_pd['k'].values.tolist(),
                     'd': df_pd['d'].values.tolist(),
                     'j': df_pd['j'].values.tolist()
+                }
+                self.current_rsi_data = {
+                    'rsi': df_pd['rsi14'].values.tolist()
+                }
+                self.current_macd_data = {
+                    'macd': df_pd['macd'].values.tolist(),
+                    'macd_signal': df_pd['macd_signal'].values.tolist(),
+                    'macd_hist': df_pd['macd_hist'].values.tolist()
                 }
                 
                 # 初始化均线相关属性
@@ -3150,14 +3184,27 @@ class MainWindow(QMainWindow):
                         current_vol_ma10 = self.current_volume_data['vol_ma10'][index]
                         self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
                 
-                # 更新KDJ标签，显示当前位置的K、D、J值
-                if hasattr(self, 'current_kdj_data') and 0 <= index < len(self.current_kdj_data['k']) and hasattr(self, 'kdj_values_label'):
-                    current_k = self.current_kdj_data['k'][index]
-                    current_d = self.current_kdj_data['d'][index]
-                    current_j = self.current_kdj_data['j'][index]
-                    # 更新KDJ标签文本，使用与K线图相同的样式
-                    kdj_text = f"<font color='white'>K: {current_k:.2f}</font>  <font color='yellow'>D: {current_d:.2f}</font>  <font color='magenta'>J: {current_j:.2f}</font>"
-                    self.kdj_values_label.setText(kdj_text)
+                # 更新第3窗口标签，根据当前指标类型显示不同内容
+                if hasattr(self, 'kdj_values_label'):
+                    # 获取当前第3窗口指标
+                    current_indicator = self.window_indicators[3]
+                    
+                    if current_indicator == "KDJ" and hasattr(self, 'current_kdj_data') and 0 <= index < len(self.current_kdj_data['k']):
+                        # 更新KDJ标签
+                        current_k = self.current_kdj_data['k'][index]
+                        current_d = self.current_kdj_data['d'][index]
+                        current_j = self.current_kdj_data['j'][index]
+                        self.kdj_values_label.setText(f"<font color='white'>K: {current_k:.2f}</font>  <font color='yellow'>D: {current_d:.2f}</font>  <font color='magenta'>J: {current_j:.2f}</font>")
+                    elif current_indicator == "RSI" and hasattr(self, 'current_rsi_data') and 0 <= index < len(self.current_rsi_data['rsi']):
+                        # 更新RSI标签
+                        current_rsi = self.current_rsi_data['rsi'][index]
+                        self.kdj_values_label.setText(f"<font color='blue'>RSI14: {current_rsi:.2f}</font>")
+                    elif current_indicator == "MACD" and hasattr(self, 'current_macd_data') and 0 <= index < len(self.current_macd_data['macd']):
+                        # 更新MACD标签
+                        current_macd = self.current_macd_data['macd'][index]
+                        current_macd_signal = self.current_macd_data['macd_signal'][index]
+                        current_macd_hist = self.current_macd_data['macd_hist'][index]
+                        self.kdj_values_label.setText(f"<font color='blue'>MACD: {current_macd:.2f}</font>  <font color='red'>SIGNAL: {current_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {current_macd_hist:.2f}</font>")
                 
                 # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
                 if hasattr(self, 'volume_values_label'):
