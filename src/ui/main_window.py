@@ -1967,108 +1967,6 @@ class MainWindow(QMainWindow):
             # 设置X轴范围，不使用autoRange，确保与成交量图一致
             self.tech_plot_widget.setXRange(0, len(dates) - 1)
             
-            # 移除旧的十字线对象，避免多个十字线对象导致的问题
-            try:
-                # 移除K线图中的旧十字线
-                if hasattr(self, 'vline'):
-                    self.tech_plot_widget.removeItem(self.vline)
-                if hasattr(self, 'hline'):
-                    self.tech_plot_widget.removeItem(self.hline)
-                # 移除成交量图中的旧十字线
-                if hasattr(self, 'volume_vline'):
-                    self.volume_plot_widget.removeItem(self.volume_vline)
-                if hasattr(self, 'volume_hline'):
-                    self.volume_plot_widget.removeItem(self.volume_hline)
-                # 移除KDJ图中的旧十字线
-                if hasattr(self, 'kdj_vline'):
-                    self.kdj_plot_widget.removeItem(self.kdj_vline)
-                if hasattr(self, 'kdj_hline'):
-                    self.kdj_plot_widget.removeItem(self.kdj_hline)
-                logger.info("已移除旧的十字线对象")
-            except Exception as e:
-                logger.debug(f"移除旧的十字线对象时发生错误: {e}")
-            
-            # 添加十字线
-            self.vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
-            self.hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
-            self.volume_vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
-            self.volume_hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
-            # 为KDJ图添加十字线
-            self.kdj_vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
-            self.kdj_hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
-            
-            # 添加十字线到K线图
-            self.tech_plot_widget.addItem(self.vline, ignoreBounds=True)
-            self.tech_plot_widget.addItem(self.hline, ignoreBounds=True)
-            
-            # 添加十字线到成交量图
-            self.volume_plot_widget.addItem(self.volume_vline, ignoreBounds=True)
-            self.volume_plot_widget.addItem(self.volume_hline, ignoreBounds=True)
-            
-            # 添加十字线到KDJ图
-            self.kdj_plot_widget.addItem(self.kdj_vline, ignoreBounds=True)
-            self.kdj_plot_widget.addItem(self.kdj_hline, ignoreBounds=True)
-            
-            logger.info("已添加新的十字线对象")
-            
-            # 初始隐藏十字线
-            self.vline.hide()
-            self.hline.hide()
-            self.volume_vline.hide()
-            self.volume_hline.hide()
-            # 初始隐藏KDJ图十字线
-            self.kdj_vline.hide()
-            self.kdj_hline.hide()
-            
-            # 创建信息文本项
-            self.info_text = pg.TextItem(anchor=(0, 1))  # 锚点在左下角，确保信息框左下角在指定位置
-            self.info_text.setColor(pg.mkColor('w'))
-            self.info_text.setHtml('<div style="background-color: rgba(0, 0, 0, 0.8); padding: 5px; border: 1px solid #666; font-family: monospace;"></div>')
-            self.tech_plot_widget.addItem(self.info_text)
-            self.info_text.hide()
-            
-            # 保存当前K线数据，用于双击显示信息
-            self.current_kline_data = {
-                'dates': dates,
-                'opens': opens,
-                'highs': highs,
-                'lows': lows,
-                'closes': closes,
-                'ohlc_list': ohlc_list
-            }
-            
-            # 断开之前的所有事件连接，避免多次连接导致的问题
-            try:
-                # 断开鼠标移动事件的所有连接
-                self.tech_plot_widget.scene().sigMouseMoved.disconnect()
-                self.volume_plot_widget.scene().sigMouseMoved.disconnect()
-                self.kdj_plot_widget.scene().sigMouseMoved.disconnect()
-                logger.info("已断开鼠标移动事件的所有连接")
-            except Exception as e:
-                logger.debug(f"断开鼠标移动事件连接时发生错误: {e}")
-            
-            try:
-                # 断开鼠标点击事件的所有连接
-                self.tech_plot_widget.scene().sigMouseClicked.disconnect()
-                logger.info("已断开鼠标点击事件的所有连接")
-            except Exception as e:
-                logger.debug(f"断开鼠标点击事件连接时发生错误: {e}")
-            
-            # 连接鼠标移动事件，实现十字线跟随和指标值更新
-            self.tech_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
-            self.volume_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
-            self.kdj_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
-            
-            # 连接鼠标点击事件，处理左键和右键点击
-            self.tech_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
-            # 连接成交量图鼠标点击事件
-            self.volume_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
-            # 连接KDJ图鼠标点击事件
-            self.kdj_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
-            
-            # 连接鼠标离开视图事件，通过监控鼠标位置实现
-            self.tech_plot_widget.viewport().setMouseTracking(True)
-            
             # 创建定时器，用于实现停留显示信息框
             self.info_timer = pg.QtCore.QTimer()
             self.info_timer.setSingleShot(True)
@@ -2750,6 +2648,108 @@ class MainWindow(QMainWindow):
             self.current_stock_data = df
             self.current_stock_name = stock_name
             self.current_stock_code = stock_code
+            
+            # 移除旧的十字线对象，避免多个十字线对象导致的问题
+            try:
+                # 移除K线图中的旧十字线
+                if hasattr(self, 'vline'):
+                    self.tech_plot_widget.removeItem(self.vline)
+                if hasattr(self, 'hline'):
+                    self.tech_plot_widget.removeItem(self.hline)
+                # 移除成交量图中的旧十字线
+                if hasattr(self, 'volume_vline'):
+                    self.volume_plot_widget.removeItem(self.volume_vline)
+                if hasattr(self, 'volume_hline'):
+                    self.volume_plot_widget.removeItem(self.volume_hline)
+                # 移除KDJ图中的旧十字线
+                if hasattr(self, 'kdj_vline'):
+                    self.kdj_plot_widget.removeItem(self.kdj_vline)
+                if hasattr(self, 'kdj_hline'):
+                    self.kdj_plot_widget.removeItem(self.kdj_hline)
+                logger.info("已移除旧的十字线对象")
+            except Exception as e:
+                logger.debug(f"移除旧的十字线对象时发生错误: {e}")
+            
+            # 添加十字线
+            self.vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
+            self.hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
+            self.volume_vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
+            self.volume_hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
+            # 为KDJ图添加十字线
+            self.kdj_vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
+            self.kdj_hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('w', width=1, style=Qt.DotLine))
+            
+            # 添加十字线到K线图
+            self.tech_plot_widget.addItem(self.vline, ignoreBounds=True)
+            self.tech_plot_widget.addItem(self.hline, ignoreBounds=True)
+            
+            # 添加十字线到成交量图
+            self.volume_plot_widget.addItem(self.volume_vline, ignoreBounds=True)
+            self.volume_plot_widget.addItem(self.volume_hline, ignoreBounds=True)
+            
+            # 添加十字线到KDJ图
+            self.kdj_plot_widget.addItem(self.kdj_vline, ignoreBounds=True)
+            self.kdj_plot_widget.addItem(self.kdj_hline, ignoreBounds=True)
+            
+            logger.info("已添加新的十字线对象")
+            
+            # 初始隐藏十字线
+            self.vline.hide()
+            self.hline.hide()
+            self.volume_vline.hide()
+            self.volume_hline.hide()
+            # 初始隐藏KDJ图十字线
+            self.kdj_vline.hide()
+            self.kdj_hline.hide()
+            
+            # 创建信息文本项
+            self.info_text = pg.TextItem(anchor=(0, 1))  # 锚点在左下角，确保信息框左下角在指定位置
+            self.info_text.setColor(pg.mkColor('w'))
+            self.info_text.setHtml('<div style="background-color: rgba(0, 0, 0, 0.8); padding: 5px; border: 1px solid #666; font-family: monospace;"></div>')
+            self.tech_plot_widget.addItem(self.info_text)
+            self.info_text.hide()
+            
+            # 保存当前K线数据，用于双击显示信息
+            self.current_kline_data = {
+                'dates': dates,
+                'opens': opens,
+                'highs': highs,
+                'lows': lows,
+                'closes': closes,
+                'ohlc_list': ohlc_list
+            }
+            
+            # 断开之前的所有事件连接，避免多次连接导致的问题
+            try:
+                # 断开鼠标移动事件的所有连接
+                self.tech_plot_widget.scene().sigMouseMoved.disconnect()
+                self.volume_plot_widget.scene().sigMouseMoved.disconnect()
+                self.kdj_plot_widget.scene().sigMouseMoved.disconnect()
+                logger.info("已断开鼠标移动事件的所有连接")
+            except Exception as e:
+                logger.debug(f"断开鼠标移动事件连接时发生错误: {e}")
+            
+            try:
+                # 断开鼠标点击事件的所有连接
+                self.tech_plot_widget.scene().sigMouseClicked.disconnect()
+                logger.info("已断开鼠标点击事件的所有连接")
+            except Exception as e:
+                logger.debug(f"断开鼠标点击事件连接时发生错误: {e}")
+            
+            # 连接鼠标移动事件，实现十字线跟随和指标值更新
+            self.tech_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
+            self.volume_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
+            self.kdj_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
+            
+            # 连接鼠标点击事件，处理左键和右键点击
+            self.tech_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
+            # 连接成交量图鼠标点击事件
+            self.volume_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
+            # 连接KDJ图鼠标点击事件
+            self.kdj_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
+            
+            # 连接鼠标离开视图事件，通过监控鼠标位置实现
+            self.tech_plot_widget.viewport().setMouseTracking(True)
             
             logger.info(f"成功绘制{stock_name}({stock_code})的K线图")
             self.statusBar().showMessage(f"成功绘制{stock_name}({stock_code})的K线图", 3000)
