@@ -717,8 +717,8 @@ class MainWindow(QMainWindow):
         
         # 指标列表
         indicators = [
-            "窗口", "指标A", "VOL", "MACD", "DMI", "DMA", "FSL", "TRIX", "BRAR", "CR", 
-            "VR", "OBV", "ASI", "EMV", "VOL-TDX", "RSI", "WR", "SAR", "KDJ", 
+            "窗口", "指标A", "<", "VOL", "MACD", "KDJ", "DMI", "DMA", "FSL", "TRIX", "BRAR", "CR", 
+            "VR", "OBV", "ASI", "EMV", "VOL-TDX", "RSI", "WR", "SAR",  
             "CCI", "ROC", "MTM", "BOLL", "PSY", "MCST", ">"]
         
         # 创建指标按钮样式
@@ -2158,6 +2158,54 @@ class MainWindow(QMainWindow):
                 current_indicator = self.window_indicators[3]
                 logger.info(f"绘制{current_indicator}指标")
                 self.draw_indicator(self.kdj_plot_widget, current_indicator, x, df_pd)
+                
+                # 仅在第3窗口显示VOL指标时，进行额外的特殊处理
+                if current_indicator == "VOL":
+                    # 设置成交量图的x轴与K线图一致，实现柱体对齐
+                    self.kdj_plot_widget.setXRange(0, len(df_pd) - 1)
+                    
+                    # 设置成交量图的X轴刻度标签，与K线图保持一致
+                    kdj_ax = self.kdj_plot_widget.getAxis('bottom')
+                    kdj_ax.setTicks([[(i, dates[i].strftime('%Y-%m-%d')) for i in range(0, len(dates), 10)]])
+                    
+                    # 仅在当前指标是VOL时设置成交量相关的Y轴范围和样式
+                    # 获取成交量数据
+                    volume_data = df_pd['volume'].values
+                    volume_min = volume_data.min()
+                    volume_max = volume_data.max()
+                    
+                    # 重置对数模式，默认使用线性刻度
+                    self.kdj_plot_widget.setLogMode(y=False)
+                    
+                    # 计算成交量的统计信息
+                    volume_mean = volume_data.mean()
+                    volume_std = volume_data.std()
+                    
+                    # 计算合理的Y轴范围，进一步增加顶部空间
+                    if volume_max > 0:
+                        # 如果数据差异不大，使用基于均值和标准差的范围
+                        if volume_std / volume_mean < 0.1:  # 标准差小于均值的10%，数据比较集中
+                            # 扩大Y轴范围，显示更多细节，特别是顶部留出更多空间
+                            y_min = max(0, volume_mean - volume_std * 2)
+                            y_max = volume_mean + volume_std * 3.5  # 进一步增加顶部空间
+                            self.kdj_plot_widget.setYRange(y_min, y_max)
+                        else:
+                            # 数据有一定差异，使用基于最小值和最大值的范围
+                            y_range = volume_max - volume_min
+                            y_min = max(0, volume_min - y_range * 0.1)
+                            y_max = volume_max + y_range * 0.1  # 进一步增加顶部空间，从20%调整为30%
+                            self.kdj_plot_widget.setYRange(y_min, y_max)
+                    else:
+                        # 成交量都是0，使用默认范围
+                        self.kdj_plot_widget.setYRange(0, 100)
+                    
+                    # 禁用科学计数法，使用正常的数值显示
+                    y_axis = self.kdj_plot_widget.getAxis('left')
+                    y_axis.enableAutoSIPrefix(False)
+                    y_axis.setStyle(tickTextOffset=20)
+                    
+                    # 设置X轴范围
+                    self.kdj_plot_widget.setXRange(0, len(df_pd) - 1)
                 # 重新添加十字线到KDJ图中
                 if hasattr(self, 'kdj_vline') and hasattr(self, 'kdj_hline'):
                     self.kdj_plot_widget.addItem(self.kdj_vline, ignoreBounds=True)
@@ -2204,6 +2252,14 @@ class MainWindow(QMainWindow):
                     # 更新标签文本
                     macd_text = f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>"
                     self.kdj_values_label.setText(macd_text)
+                elif current_indicator == "VOL":
+                    # 获取最新的成交量值
+                    latest_volume = df_pd['volume'].iloc[-1]
+                    latest_vol_ma5 = df_pd['vol_ma5'].iloc[-1]
+                    latest_vol_ma10 = df_pd['vol_ma10'].iloc[-1]
+                    # 更新标签文本
+                    vol_text = f"<font color='#C0C0C0'>VOLUME: {int(latest_volume):,}</font>  <font color='white'>MA5: {int(latest_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(latest_vol_ma10):,}</font>"
+                    self.kdj_values_label.setText(vol_text)
                 else:
                     # 默认绘制KDJ指标，显示KDJ数值
                     latest_k = df_pd['k'].iloc[-1]
@@ -2248,6 +2304,55 @@ class MainWindow(QMainWindow):
                     'macd_signal': df_pd['macd_signal'].values.tolist(),
                     'macd_hist': df_pd['macd_hist'].values.tolist()
                 }
+                # 保存成交量数据
+                self.current_volume_data = {
+                    'volume': df_pd['volume'].values.tolist(),
+                    'vol_ma5': df_pd['vol_ma5'].values.tolist(),
+                    'vol_ma10': df_pd['vol_ma10'].values.tolist()
+                }
+                
+                # 仅在第3窗口显示VOL指标时，应用与第2窗口相同的绘制逻辑
+                if current_indicator == "VOL":
+                    # 设置X轴刻度标签，与K线图保持一致
+                    kdj_ax = self.kdj_plot_widget.getAxis('bottom')
+                    kdj_ax.setTicks([[(i, dates[i].strftime('%Y-%m-%d')) for i in range(0, len(dates), 10)]])
+                    
+                    # 设置X轴范围，与K线图一致
+                    self.kdj_plot_widget.setXRange(0, len(dates) - 1)
+                    
+                    # 设置Y轴范围，与第2窗口的处理逻辑完全相同
+                    # 确保使用真实的成交量数值，而不是相对比例
+                    volumes = df_pd['volume'].values
+                    if len(volumes) > 0:
+                        # 计算合理的Y轴范围，进一步增加顶部空间
+                        volume_mean = volumes.mean()
+                        volume_std = volumes.std()
+                        if volume_std / volume_mean < 0.1:  # 标准差小于均值的10%，数据比较集中
+                            # 扩大Y轴范围，显示更多细节，特别是顶部留出更多空间
+                            y_min = max(0, volume_mean - volume_std * 2)
+                            y_max = volume_mean + volume_std * 3.5  # 进一步增加顶部空间
+                            self.kdj_plot_widget.setYRange(y_min, y_max)
+                        else:
+                            # 数据有一定差异，使用基于最小值和最大值的范围
+                            y_range = volumes.max() - volumes.min()
+                            y_min = max(0, volumes.min() - y_range * 0.1)
+                            y_max = volumes.max() + y_range * 0.1  # 进一步增加顶部空间，从20%调整为30%
+                            self.kdj_plot_widget.setYRange(y_min, y_max)
+                    else:
+                        # 成交量都是0，使用默认范围
+                        self.kdj_plot_widget.setYRange(0, 100)
+                    
+                    # 禁用科学计数法，使用正常的数值显示
+                    y_axis = self.kdj_plot_widget.getAxis('left')
+                    y_axis.enableAutoSIPrefix(False)
+                    y_axis.setStyle(tickTextOffset=20)
+                    
+                    # 重置缩放比例，确保显示真实数值
+                    y_axis.setScale(1.0)
+                    
+                    # 确保X轴范围和刻度与K线图完全一致，实现柱体对齐
+                    self.tech_plot_widget.setXRange(0, len(dates) - 1)
+                    self.kdj_plot_widget.setXRange(0, len(dates) - 1)
                 
             except Exception as e:
                 logger.exception(f"计算或绘制技术指标时发生错误: {e}")
@@ -4596,9 +4701,25 @@ class MainWindow(QMainWindow):
         """
         # 导入pyqtgraph
         import pyqtgraph as pg
+        import numpy as np
+        
+        # 设置Y轴范围，确保从0开始
+        volumes = df_pd['volume'].values
+        if len(volumes) > 0:
+            y_max = volumes.max() * 1.3  # 顶部留出30%空间
+            plot_widget.setYRange(0, y_max)
+        else:
+            plot_widget.setYRange(0, 100)
+        
+        # 禁用科学计数法，使用正常数值显示
+        y_axis = plot_widget.getAxis('left')
+        y_axis.enableAutoSIPrefix(False)
+        y_axis.setStyle(tickTextOffset=20)  # 设置刻度文本偏移，确保显示完整
+        
+        # 重置对数模式，默认使用线性刻度
+        plot_widget.setLogMode(y=False)
         
         # 绘制成交量柱状图
-        volumes = df_pd['volume'].values
         for i in range(len(x)):
             if i == 0:
                 color = 'r'  # 默认第一个为红色
@@ -4618,6 +4739,44 @@ class MainWindow(QMainWindow):
         # 绘制成交量10日均线（青色，与K线图MA10颜色一致）
         if 'vol_ma10' in df_pd.columns:
             vol_ma10_item = plot_widget.plot(x, df_pd['vol_ma10'].values, pen=pg.mkPen('c', width=1), name='VOL_MA10')
+        
+        # 绘制完成后，计算并强制设置正确的Y轴范围，使用真实的成交量数值
+        if len(volumes) > 0:
+            # 获取所有相关数据的最大值，包括成交量和均线
+            max_value = volumes.max()
+            if 'vol_ma5' in df_pd.columns:
+                max_value = max(max_value, df_pd['vol_ma5'].max())
+            if 'vol_ma10' in df_pd.columns:
+                max_value = max(max_value, df_pd['vol_ma10'].max())
+            
+            y_min = 0  # 成交量不能为负
+            y_max = max_value * 1.3  # 顶部留出30%空间
+            
+            # 强制设置Y轴范围，禁用padding
+            plot_widget.setYRange(y_min, y_max, padding=0)
+            
+            # 直接设置Y轴刻度，确保显示真实的成交量数值
+            y_axis = plot_widget.getAxis('left')
+            y_axis.setScale(1.0)  # 重置缩放比例
+            y_axis.setRange(y_min, y_max)
+            
+            # 设置Y轴刻度的格式，确保显示完整的数值
+            y_axis.setTicks([[(0, '0'), (max_value * 0.5, f'{int(max_value * 0.5):,}'), (max_value, f'{int(max_value):,}')]])
+        else:
+            plot_widget.setYRange(0, 100, padding=0)
+        
+        # 获取ViewBox并禁用自动Y轴范围调整
+        view_box = plot_widget.getViewBox()
+        view_box.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
+        
+        # 再次禁用科学计数法，确保Y轴显示正常数值
+        y_axis = plot_widget.getAxis('left')
+        y_axis.enableAutoSIPrefix(False)
+        y_axis.setStyle(tickTextOffset=20)  # 设置刻度文本偏移，确保显示完整
+        
+        # 确保Y轴显示的是真实的成交量数值，而不是相对比例
+        y_axis.setScale(1.0)  # 重置缩放比例
+        y_axis.setRange(y_min, y_max)  # 重新设置Y轴范围
     
     def draw_k_line_indicator(self, plot_widget, df, dates, opens, highs, lows, closes, df_pd):
         """
@@ -4844,6 +5003,19 @@ class MainWindow(QMainWindow):
         plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
         plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
         plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        
+        # 在绘制指标之前，根据指标名称设置合适的初始Y轴范围
+        if indicator_name == "VOL":
+            # 对于VOL指标，初始Y轴范围从0开始
+            plot_widget.setYRange(0, 1000000000)  # 设置一个较大的初始范围
+            # 重置对数模式，确保使用线性刻度
+            plot_widget.setLogMode(y=False)
+        elif indicator_name == "MACD":
+            # 对于MACD指标，初始Y轴范围适中
+            plot_widget.setYRange(-5, 5)  # 设置一个合适的初始范围
+        elif indicator_name in ["KDJ", "RSI"]:
+            # 对于KDJ和RSI指标，初始Y轴范围在0-100之间
+            plot_widget.setYRange(-50, 150)  # 包含超买超卖区域
         
         # 根据指标名称调用相应的绘制函数
         if indicator_name == "KDJ":
