@@ -2143,6 +2143,11 @@ class MainWindow(QMainWindow):
                 df_pd['d'] = ta.momentum.stoch_signal(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
                 df_pd['j'] = 3 * df_pd['k'] - 2 * df_pd['d']
                 
+                # 计算成交量5日均线和10日均线，只计算一次
+                logger.info("计算成交量5日均线和10日均线")
+                df_pd['vol_ma5'] = ta.trend.sma_indicator(df_pd['volume'], window=5, fillna=True)
+                df_pd['vol_ma10'] = ta.trend.sma_indicator(df_pd['volume'], window=10, fillna=True)
+                
                 # 确保数据索引正确
                 x = np.arange(len(df_pd))
                 
@@ -2257,48 +2262,50 @@ class MainWindow(QMainWindow):
                 current_indicator = self.window_indicators[2]
                 logger.info(f"绘制{current_indicator}指标")
                 
+                # 直接使用之前已经计算好的数据，不需要重复处理
                 # 只取显示数量的数据
-                if hasattr(df, 'tail'):
-                    df_display = df.tail(bar_count)
-                else:
-                    df_display = df
-                
+                # if hasattr(df, 'tail'):
+                #     df_display = df.tail(bar_count)
+                # else:
+                #     df_display = df
+                # 
                 # 转换为Pandas DataFrame
-                df_pd = None
-                if hasattr(df_display, 'to_pandas'):
-                    df_pd = df_display.to_pandas()
-                elif isinstance(df_display, pd.DataFrame):
-                    df_pd = df_display
-                else:
-                    df_pd = pd.DataFrame(df_display)
-                
+                # df_pd = None
+                # if hasattr(df_display, 'to_pandas'):
+                #     df_pd = df_display.to_pandas()
+                # elif isinstance(df_display, pd.DataFrame):
+                #     df_pd = df_display
+                # else:
+                #     df_pd = pd.DataFrame(df_display)
+                # 
                 # 确保volume列存在且为数值类型
-                df_pd['volume'] = pd.to_numeric(df_pd['volume'], errors='coerce')
-                df_pd['close'] = pd.to_numeric(df_pd['close'], errors='coerce')
-                df_pd['open'] = pd.to_numeric(df_pd['open'], errors='coerce')
-                
+                # df_pd['volume'] = pd.to_numeric(df_pd['volume'], errors='coerce')
+                # df_pd['close'] = pd.to_numeric(df_pd['close'], errors='coerce')
+                # df_pd['open'] = pd.to_numeric(df_pd['open'], errors='coerce')
+                # 
                 # 准备x轴坐标
-                x = np.arange(len(df_pd))
+                # x = np.arange(len(df_pd))
                 
+                # 直接使用之前已经计算好的指标数据，不需要重复计算
                 # 计算成交量5日均线和10日均线（无论什么指标，都先计算好）
-                df_pd['vol_ma5'] = ta.trend.sma_indicator(df_pd['volume'], window=5, fillna=True)
-                df_pd['vol_ma10'] = ta.trend.sma_indicator(df_pd['volume'], window=10, fillna=True)
+                # df_pd['vol_ma5'] = ta.trend.sma_indicator(df_pd['volume'], window=5, fillna=True)
+                # df_pd['vol_ma10'] = ta.trend.sma_indicator(df_pd['volume'], window=10, fillna=True)
                 
                 # 计算所有可能的技术指标，确保切换指标时不会出错
-                if 'close' in df_pd.columns:
-                    # 计算MACD指标
-                    df_pd['macd'] = ta.trend.macd(df_pd['close'], fillna=True)
-                    df_pd['macd_signal'] = ta.trend.macd_signal(df_pd['close'], fillna=True)
-                    df_pd['macd_hist'] = ta.trend.macd_diff(df_pd['close'], fillna=True)
-                    
-                    # 计算RSI指标
-                    df_pd['rsi14'] = ta.momentum.rsi(df_pd['close'], window=14, fillna=True)
-                    
-                    # 计算KDJ指标
-                    if 'high' in df_pd.columns and 'low' in df_pd.columns:
-                        df_pd['k'] = ta.momentum.stoch(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
-                        df_pd['d'] = ta.momentum.stoch_signal(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
-                        df_pd['j'] = 3 * df_pd['k'] - 2 * df_pd['d']
+                # if 'close' in df_pd.columns:
+                #     # 计算MACD指标
+                #     df_pd['macd'] = ta.trend.macd(df_pd['close'], fillna=True)
+                #     df_pd['macd_signal'] = ta.trend.macd_signal(df_pd['close'], fillna=True)
+                #     df_pd['macd_hist'] = ta.trend.macd_diff(df_pd['close'], fillna=True)
+                #     
+                #     # 计算RSI指标
+                #     df_pd['rsi14'] = ta.momentum.rsi(df_pd['close'], window=14, fillna=True)
+                #     
+                #     # 计算KDJ指标
+                #     if 'high' in df_pd.columns and 'low' in df_pd.columns:
+                #         df_pd['k'] = ta.momentum.stoch(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
+                #         df_pd['d'] = ta.momentum.stoch_signal(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
+                #         df_pd['j'] = 3 * df_pd['k'] - 2 * df_pd['d']
                 
                 # 绘制指标
                 self.draw_indicator(self.volume_plot_widget, current_indicator, x, df_pd)
