@@ -197,11 +197,67 @@ class DataManager:
             freq: 周期，daily或minute
             
         Returns:
-            pl.DataFrame: 股票数据
+            pd.DataFrame: 股票数据
         """
         try:
-            # TODO: 实现数据查询逻辑
-            pass
+            # 优先从数据库获取数据
+            if self.db_manager and self.db_manager.is_connected():
+                logger.info(f"从数据库获取股票{ts_code}数据")
+                try:
+                    # 尝试从数据库查询数据
+                    from src.database.models.stock import StockDaily
+                    session = self.db_manager.get_session()
+                    if session:
+                        query = session.query(StockDaily).filter(
+                            StockDaily.ts_code == ts_code,
+                            StockDaily.trade_date >= start_date,
+                            StockDaily.trade_date <= end_date
+                        ).order_by(StockDaily.trade_date)
+                        
+                        stock_data = query.all()
+                        if stock_data:
+                            # 转换为DataFrame
+                            import pandas as pd
+                            data_dict = {
+                                'trade_date': [item.trade_date for item in stock_data],
+                                'open': [item.open for item in stock_data],
+                                'high': [item.high for item in stock_data],
+                                'low': [item.low for item in stock_data],
+                                'close': [item.close for item in stock_data],
+                                'volume': [item.vol for item in stock_data],
+                                'amount': [item.amount for item in stock_data],
+                                'pct_chg': [item.pct_chg for item in stock_data]
+                            }
+                            df = pd.DataFrame(data_dict)
+                            # 转换为标准格式
+                            df['date'] = pd.to_datetime(df['trade_date'])
+                            df.set_index('date', inplace=True)
+                            return df
+                except Exception as db_e:
+                    logger.warning(f"从数据库获取股票数据失败: {db_e}")
+            
+            # 数据库获取失败或无数据，尝试从其他数据源获取
+            if self.tdx_handler:
+                logger.info(f"从通达信获取股票{ts_code}数据")
+                try:
+                    # 从通达信获取数据
+                    return self.tdx_handler.get_stock_data(ts_code, start_date, end_date, freq)
+                except Exception as tdx_e:
+                    logger.warning(f"从通达信获取股票数据失败: {tdx_e}")
+            
+            # 通达信获取失败，尝试从AKShare获取
+            if self.akshare_handler:
+                logger.info(f"从AKShare获取股票{ts_code}数据")
+                try:
+                    # 从AKShare获取数据
+                    return self.akshare_handler.get_stock_data(ts_code, start_date, end_date, freq)
+                except Exception as ak_e:
+                    logger.warning(f"从AKShare获取股票数据失败: {ak_e}")
+            
+            # 所有数据源都失败，返回空DataFrame
+            logger.warning(f"无法从任何数据源获取股票{ts_code}数据")
+            import pandas as pd
+            return pd.DataFrame()
             
         except Exception as e:
             logger.exception(f"获取股票数据失败: {e}")
@@ -218,11 +274,66 @@ class DataManager:
             freq: 周期，daily或minute
             
         Returns:
-            pl.DataFrame: 指数数据
+            pd.DataFrame: 指数数据
         """
         try:
-            # TODO: 实现数据查询逻辑
-            pass
+            # 优先从数据库获取数据
+            if self.db_manager and self.db_manager.is_connected():
+                logger.info(f"从数据库获取指数{ts_code}数据")
+                try:
+                    # 尝试从数据库查询数据
+                    from src.database.models.index import IndexDaily
+                    session = self.db_manager.get_session()
+                    if session:
+                        query = session.query(IndexDaily).filter(
+                            IndexDaily.ts_code == ts_code,
+                            IndexDaily.trade_date >= start_date,
+                            IndexDaily.trade_date <= end_date
+                        ).order_by(IndexDaily.trade_date)
+                        
+                        index_data = query.all()
+                        if index_data:
+                            # 转换为DataFrame
+                            import pandas as pd
+                            data_dict = {
+                                'trade_date': [item.trade_date for item in index_data],
+                                'open': [item.open for item in index_data],
+                                'high': [item.high for item in index_data],
+                                'low': [item.low for item in index_data],
+                                'close': [item.close for item in index_data],
+                                'volume': [item.vol for item in index_data],
+                                'amount': [item.amount for item in index_data]
+                            }
+                            df = pd.DataFrame(data_dict)
+                            # 转换为标准格式
+                            df['date'] = pd.to_datetime(df['trade_date'])
+                            df.set_index('date', inplace=True)
+                            return df
+                except Exception as db_e:
+                    logger.warning(f"从数据库获取指数数据失败: {db_e}")
+            
+            # 数据库获取失败或无数据，尝试从其他数据源获取
+            if self.tdx_handler:
+                logger.info(f"从通达信获取指数{ts_code}数据")
+                try:
+                    # 从通达信获取数据
+                    return self.tdx_handler.get_index_data(ts_code, start_date, end_date, freq)
+                except Exception as tdx_e:
+                    logger.warning(f"从通达信获取指数数据失败: {tdx_e}")
+            
+            # 通达信获取失败，尝试从AKShare获取
+            if self.akshare_handler:
+                logger.info(f"从AKShare获取指数{ts_code}数据")
+                try:
+                    # 从AKShare获取数据
+                    return self.akshare_handler.get_index_data(ts_code, start_date, end_date, freq)
+                except Exception as ak_e:
+                    logger.warning(f"从AKShare获取指数数据失败: {ak_e}")
+            
+            # 所有数据源都失败，返回空DataFrame
+            logger.warning(f"无法从任何数据源获取指数{ts_code}数据")
+            import pandas as pd
+            return pd.DataFrame()
             
         except Exception as e:
             logger.exception(f"获取指数数据失败: {e}")

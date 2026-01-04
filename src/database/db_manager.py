@@ -135,3 +135,21 @@ class DatabaseManager:
         if not self.session:
             self.connect()
         return self.session
+    
+    def is_connected(self):
+        """
+        检查数据库连接状态
+        
+        Returns:
+            bool: 如果数据库连接正常返回True，否则返回False
+        """
+        if not self.engine:
+            return False
+        
+        try:
+            # 尝试通过引擎获取连接，测试连接是否有效
+            with self.engine.connect():
+                return True
+        except Exception as e:
+            logger.warning(f"数据库连接检查失败: {e}")
+            return False

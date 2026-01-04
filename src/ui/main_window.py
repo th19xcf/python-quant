@@ -2101,25 +2101,9 @@ class MainWindow(QMainWindow):
                 logger.info("创建TechnicalAnalyzer实例")
                 analyzer = TechnicalAnalyzer(df_display)
                 
-
-                logger.info("计算5/10/20/60日均线")
-                analyzer.calculate_ma([5, 10, 20, 60])
-                
-
-                logger.info("计算MACD指标")
-                analyzer.calculate_macd()
-                
-
-                logger.info("计算RSI指标")
-                analyzer.calculate_rsi(14)
-                
-
-                logger.info("计算KDJ指标")
-                analyzer.calculate_kdj(14)
-                
-
-                logger.info("计算成交量5日均线和10日均线")
-                analyzer.calculate_vol_ma([5, 10])
+                # 一次性计算所有指标，利用并行计算提高效率
+                logger.info("计算所有技术指标")
+                analyzer.calculate_all_indicators(parallel=True)
                 
 
                 df_pd = analyzer.get_data()
