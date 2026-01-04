@@ -717,10 +717,9 @@ class MainWindow(QMainWindow):
         
         # 指标列表
         indicators = [
-            "窗口", "指标A", "MACD", "DMI", "DMA", "FSL", "TRIX", "BRAR", "CR", 
+            "窗口", "指标A", "VOL", "MACD", "DMI", "DMA", "FSL", "TRIX", "BRAR", "CR", 
             "VR", "OBV", "ASI", "EMV", "VOL-TDX", "RSI", "WR", "SAR", "KDJ", 
-            "CCI", "ROC", "MTM", "BOLL", "PSY", "MCST", ">"
-        ]
+            "CCI", "ROC", "MTM", "BOLL", "PSY", "MCST", ">"]
         
         # 创建指标按钮样式
         indicator_button_style = """
