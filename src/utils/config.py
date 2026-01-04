@@ -44,6 +44,10 @@ class DataSettings(BaseSettings):
     default_days: int = Field(default=30, description="默认数据更新天数")
     default_minute_days: int = Field(default=3, description="默认分钟线数据下载天数")
     default_realtime_days: int = Field(default=5, description="默认实时数据替代天数")
+    
+    # 股票基本信息更新配置
+    auto_update_stock_basic: bool = Field(default=False, description="是否在启动时自动更新股票基本信息")
+    stock_basic_update_interval: int = Field(default=7, description="股票基本信息更新间隔（天）")
 
 
 class LogSettings(BaseSettings):

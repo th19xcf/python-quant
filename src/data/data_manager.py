@@ -73,10 +73,13 @@ class DataManager:
             
             logger.info("数据处理器初始化完成")
             
-            # 初始化完成后，自动更新股票基本信息，确保stock_basic表有数据
+            # 初始化完成后，根据配置决定是否自动更新股票基本信息
             try:
-                self.update_stock_basic()
-                logger.info("自动更新股票基本信息完成")
+                if hasattr(self.config.data, 'auto_update_stock_basic') and self.config.data.auto_update_stock_basic:
+                    self.update_stock_basic()
+                    logger.info("自动更新股票基本信息完成")
+                else:
+                    logger.info("跳过自动更新股票基本信息（未开启或配置不允许）")
             except Exception as update_e:
                 logger.warning(f"自动更新股票基本信息失败: {update_e}")
             

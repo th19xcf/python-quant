@@ -40,8 +40,11 @@ class BaostockHandler:
         else:
             logger.info("BaostockHandler在离线模式下初始化")
         
-        # 尝试登录Baostock
-        self._login_baostock()
+        # 根据配置决定是否在初始化时登录Baostock
+        if hasattr(self.config.data, 'auto_login_baostock') and self.config.data.auto_login_baostock:
+            self._login_baostock()
+        else:
+            logger.info("跳过自动登录Baostock（未开启或配置不允许）")
         
         # 从配置文件获取默认配置
         self.default_stock_codes = self.config.data.default_stock_codes
@@ -118,6 +121,20 @@ class BaostockHandler:
             logger.exception(f"Baostock登录异常: {e}")
             self.bs_login = False
     
+    def _ensure_baostock_login(self):
+        """
+        确保Baostock已登录，如果未登录则尝试登录
+        
+        Returns:
+            bool: 登录状态，True表示已登录，False表示登录失败
+        """
+        if self.bs_login:
+            return True
+        
+        logger.info("Baostock未登录，尝试登录...")
+        self._login_baostock()
+        return self.bs_login
+    
     def _logout_baostock(self):
         """
         登出Baostock
@@ -141,8 +158,8 @@ class BaostockHandler:
         更新股票基本信息
         """
         try:
-            if not self.bs_login:
-                logger.warning("Baostock未登录，无法获取股票基本信息")
+            if not self._ensure_baostock_login():
+                logger.warning("Baostock登录失败，无法获取股票基本信息")
                 return
             
             logger.info("开始从Baostock获取股票基本信息")
@@ -243,8 +260,8 @@ class BaostockHandler:
             dict: 股票代码到日线数据的映射（离线模式下）
         """
         try:
-            if not self.bs_login:
-                logger.warning("Baostock未登录，无法获取股票日线数据")
+            if not self._ensure_baostock_login():
+                logger.warning("Baostock登录失败，无法获取股票日线数据")
                 return
             
             # 如果没有指定股票代码，从数据库获取所有股票代码
@@ -436,8 +453,8 @@ class BaostockHandler:
         更新指数基本信息
         """
         try:
-            if not self.bs_login:
-                logger.warning("Baostock未登录，无法获取指数基本信息")
+            if not self._ensure_baostock_login():
+                logger.warning("Baostock登录失败，无法获取指数基本信息")
                 return
             
             logger.info("开始从Baostock获取指数基本信息")
@@ -524,8 +541,8 @@ class BaostockHandler:
             dict: 指数代码到日线数据的映射（离线模式下）
         """
         try:
-            if not self.bs_login:
-                logger.warning("Baostock未登录，无法获取指数日线数据")
+            if not self._ensure_baostock_login():
+                logger.warning("Baostock登录失败，无法获取指数日线数据")
                 return
             
             # 如果没有指定指数代码，从数据库获取所有指数代码
@@ -673,8 +690,8 @@ class BaostockHandler:
             pl.DataFrame: 实时股票数据
         """
         try:
-            if not self.bs_login:
-                logger.warning("Baostock未登录，无法获取实时股票数据")
+            if not self._ensure_baostock_login():
+                logger.warning("Baostock登录失败，无法获取实时股票数据")
                 return pl.DataFrame()
             
             if not ts_codes:
@@ -746,8 +763,8 @@ class BaostockHandler:
             pl.DataFrame: 实时指数数据
         """
         try:
-            if not self.bs_login:
-                logger.warning("Baostock未登录，无法获取实时指数数据")
+            if not self._ensure_baostock_login():
+                logger.warning("Baostock登录失败，无法获取实时指数数据")
                 return pl.DataFrame()
             
             if not ts_codes:
@@ -863,8 +880,8 @@ class BaostockHandler:
             dict: 股票代码到分钟线数据的映射
         """
         try:
-            if not self.bs_login:
-                logger.warning("Baostock未登录，无法获取股票分钟线数据")
+            if not self._ensure_baostock_login():
+                logger.warning("Baostock登录失败，无法获取股票分钟线数据")
                 return
             
             if not ts_codes:
@@ -1005,8 +1022,8 @@ class BaostockHandler:
             dict: 指数代码到分钟线数据的映射
         """
         try:
-            if not self.bs_login:
-                logger.warning("Baostock未登录，无法获取指数分钟线数据")
+            if not self._ensure_baostock_login():
+                logger.warning("Baostock登录失败，无法获取指数分钟线数据")
                 return
             
             if not ts_codes:
