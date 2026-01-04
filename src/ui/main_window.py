@@ -75,6 +75,9 @@ class MainWindow(QMainWindow):
             3: "KDJ"  # 第三个窗口默认显示KDJ指标
         }
         
+        # 创建指标功能菜单
+        self.create_indicator_menu()
+        
         # 初始化UI组件
         self.init_ui()
         logger.info("主窗口初始化成功")
@@ -643,32 +646,36 @@ class MainWindow(QMainWindow):
         self.kdj_plot_widget.getAxis('left').setWidth(50)
         self.kdj_plot_widget.getAxis('bottom').setHeight(20)
         
-        # 为K线图创建容器，包含K线图
+        # 为K线图创建容器，只包含K线图
         self.tech_container = QWidget()
         self.tech_container_layout = QVBoxLayout(self.tech_container)
         self.tech_container_layout.setSpacing(0)
         self.tech_container_layout.setContentsMargins(0, 0, 0, 0)
+        
         self.tech_container_layout.addWidget(self.tech_plot_widget)
+        
         # 添加点击事件，用于选中窗口
         self.tech_container.mousePressEvent = lambda event: self.on_window_clicked(1)
         
-        # 为成交量图创建容器，包含成交量标签和成交量图
+        # 为成交量图创建容器，只包含成交量图
         self.volume_container = QWidget()
         self.volume_container_layout = QVBoxLayout(self.volume_container)
         self.volume_container_layout.setSpacing(0)
         self.volume_container_layout.setContentsMargins(0, 0, 0, 0)
-        # 将成交量图添加到容器布局
+        
         self.volume_container_layout.addWidget(self.volume_plot_widget)
+        
         # 添加点击事件，用于选中窗口
         self.volume_container.mousePressEvent = lambda event: self.on_window_clicked(2)
         
-        # 为KDJ指标图创建容器
+        # 为KDJ指标图创建容器，只包含KDJ指标图
         self.kdj_container = QWidget()
         self.kdj_container_layout = QVBoxLayout(self.kdj_container)
         self.kdj_container_layout.setSpacing(0)
         self.kdj_container_layout.setContentsMargins(0, 0, 0, 0)
-        # 将KDJ指标图添加到容器布局
+        
         self.kdj_container_layout.addWidget(self.kdj_plot_widget)
+        
         # 添加点击事件，用于选中窗口
         self.kdj_container.mousePressEvent = lambda event: self.on_window_clicked(3)
         
@@ -863,6 +870,85 @@ class MainWindow(QMainWindow):
         minus_btn.setFixedWidth(20)
         minus_btn.clicked.connect(self.on_minus_btn_clicked)
         indicator_layout.addWidget(minus_btn)
+    
+    def create_indicator_menu(self):
+        """
+        创建指标功能菜单
+        """
+        # 创建主菜单
+        self.indicator_menu = QMenu()
+        
+        # 选择副图指标
+        submenu = QMenu("选择副图指标", self.indicator_menu)
+        self.indicator_menu.addMenu(submenu)
+        
+        # 指标用法注释
+        action = QAction("指标用法注释", self.indicator_menu)
+        action.triggered.connect(self.on_indicator_usage)
+        self.indicator_menu.addAction(action)
+        
+        # 调整指标参数
+        action = QAction("调整指标参数", self.indicator_menu)
+        action.triggered.connect(self.on_indicator_params)
+        self.indicator_menu.addAction(action)
+        
+        # 修改当前指标公式
+        action = QAction("修改当前指标公式", self.indicator_menu)
+        action.triggered.connect(self.on_indicator_formula)
+        self.indicator_menu.addAction(action)
+    
+    def on_indicator_usage(self):
+        """
+        指标用法注释
+        """
+        logger.info("显示指标用法注释")
+        # 这里可以添加显示指标用法的逻辑
+    
+    def on_indicator_params(self):
+        """
+        调整指标参数
+        """
+        logger.info("调整指标参数")
+        # 这里可以添加调整指标参数的逻辑
+    
+    def on_indicator_formula(self):
+        """
+        修改当前指标公式
+        """
+        logger.info("修改当前指标公式")
+        # 这里可以添加修改指标公式的逻辑
+    
+    def create_indicator_menu_button(self, window_num):
+        """
+        创建功能菜单按钮
+        
+        Args:
+            window_num: 窗口编号
+            
+        Returns:
+            QPushButton: 功能菜单按钮
+        """
+        # 创建功能菜单按钮
+        btn = QPushButton("≡")
+        btn.setStyleSheet("background-color: transparent; color: #C0C0C0; border: none; font-size: 12px; padding: 0 5px; height: 20px;")
+        btn.setFixedSize(20, 20)
+        btn.setToolTip("功能菜单")
+        # 连接点击事件
+        btn.clicked.connect(lambda: self.show_indicator_menu(btn, window_num))
+        
+        return btn
+    
+    def show_indicator_menu(self, btn, window_num):
+        """
+        显示指标功能菜单
+        
+        Args:
+            btn: 触发菜单的按钮
+            window_num: 窗口编号
+        """
+        # 显示菜单
+        self.indicator_menu.exec_(btn.mapToGlobal(btn.rect().bottomLeft()))
+        logger.info(f"显示窗口{window_num}的指标功能菜单")
     
     def on_window_clicked(self, window_num):
         """
@@ -1853,6 +1939,15 @@ class MainWindow(QMainWindow):
                 title_ma_layout.setSpacing(0)
                 title_ma_layout.setContentsMargins(0, 0, 0, 0)
                 
+                # 添加功能菜单按钮到布局最左端
+                self.menu_btn = self.create_indicator_menu_button(self.current_selected_window)
+                title_ma_layout.addWidget(self.menu_btn)
+                
+                # 添加窗口标题标签
+                window_title_label = QLabel("K线")
+                window_title_label.setStyleSheet("background-color: transparent; color: #C0C0C0; font-size: 12px; padding: 0 5px;")
+                title_ma_layout.addWidget(window_title_label)
+                
                 # 添加标签到布局
                 title_ma_layout.addWidget(self.chart_title_label)
                 title_ma_layout.addWidget(self.ma_values_label)
@@ -2185,13 +2280,31 @@ class MainWindow(QMainWindow):
                 # 根据当前指标更新标签栏数值
                 current_indicator = self.window_indicators[3]
                 
+                # 创建标签栏容器
+                from PySide6.QtWidgets import QLabel, QHBoxLayout, QWidget
+                
+                # 检查是否已经存在标签，如果存在则移除
+                if hasattr(self, 'kdj_values_label'):
+                    try:
+                        self.kdj_values_label.deleteLater()
+                    except Exception as e:
+                        logger.warning(f"移除旧KDJ标签时发生错误: {e}")
+                
+                # 创建标签栏容器
+                self.kdj_label_container = QWidget()
+                self.kdj_label_layout = QHBoxLayout(self.kdj_label_container)
+                self.kdj_label_layout.setSpacing(0)
+                self.kdj_label_layout.setContentsMargins(0, 0, 0, 0)
+                
+                # 添加功能菜单按钮到标签栏最左端
+                self.kdj_menu_btn = self.create_indicator_menu_button(3)
+                self.kdj_label_layout.addWidget(self.kdj_menu_btn)
+                
                 # 创建KDJ值显示标签
-                if not hasattr(self, 'kdj_values_label'):
-                    # 创建新的标签
-                    self.kdj_values_label = QLabel()
-                    self.kdj_values_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
-                    # 确保不换行
-                    self.kdj_values_label.setWordWrap(False)
+                self.kdj_values_label = QLabel()
+                self.kdj_values_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
+                # 确保不换行
+                self.kdj_values_label.setWordWrap(False)
                 
                 # 根据当前指标更新标签文本
                 if current_indicator == "KDJ":
@@ -2235,7 +2348,12 @@ class MainWindow(QMainWindow):
                 
                 # 检查是否已经创建了KDJ容器和布局
                 if hasattr(self, 'kdj_container') and hasattr(self, 'kdj_container_layout'):
-                    # 首先移除可能存在的旧标签，然后添加新标签
+                    # 首先移除可能存在的旧标签容器和标签，然后添加新标签
+                    try:
+                        self.kdj_container_layout.removeWidget(self.kdj_label_container)
+                    except Exception:
+                        pass
+                    
                     try:
                         self.kdj_container_layout.removeWidget(self.kdj_values_label)
                     except Exception:
@@ -2247,8 +2365,10 @@ class MainWindow(QMainWindow):
                     except Exception:
                         pass
                     
-                    # 添加KDJ标签到容器布局顶部
-                    self.kdj_container_layout.addWidget(self.kdj_values_label)
+                    # 将标签添加到水平布局中
+                    self.kdj_label_layout.addWidget(self.kdj_values_label)
+                    # 添加KDJ标签栏容器到容器布局顶部
+                    self.kdj_container_layout.addWidget(self.kdj_label_container)
                     # 添加KDJ图到容器布局
                     self.kdj_container_layout.addWidget(self.kdj_plot_widget)
                     
@@ -2400,8 +2520,18 @@ class MainWindow(QMainWindow):
                         except Exception as e:
                             logger.warning(f"移除旧标签时发生错误: {e}")
                     
+                    # 创建标签栏容器
+                    from PySide6.QtWidgets import QLabel, QHBoxLayout, QWidget
+                    self.volume_label_container = QWidget()
+                    self.volume_label_layout = QHBoxLayout(self.volume_label_container)
+                    self.volume_label_layout.setSpacing(0)
+                    self.volume_label_layout.setContentsMargins(0, 0, 0, 0)
+                    
+                    # 添加功能菜单按钮到标签栏最左端
+                    self.volume_menu_btn = self.create_indicator_menu_button(2)
+                    self.volume_label_layout.addWidget(self.volume_menu_btn)
+                    
                     # 创建标签，使用与K线图均线标签相同的样式
-                    from PySide6.QtWidgets import QLabel
                     self.volume_values_label = QLabel()
                     self.volume_values_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
                     # 确保不换行
@@ -2433,7 +2563,12 @@ class MainWindow(QMainWindow):
                     
                     # 检查是否已经创建了成交量容器和布局
                     if hasattr(self, 'volume_container') and hasattr(self, 'volume_container_layout'):
-                        # 首先移除可能存在的旧标签，然后添加新标签
+                        # 首先移除可能存在的旧标签容器和标签，然后添加新标签
+                        try:
+                            self.volume_container_layout.removeWidget(self.volume_label_container)
+                        except Exception:
+                            pass
+                        
                         try:
                             self.volume_container_layout.removeWidget(self.volume_values_label)
                         except Exception:
@@ -2446,8 +2581,10 @@ class MainWindow(QMainWindow):
                         except Exception:
                             pass
                         
-                        # 在成交量图上方添加成交量标签
-                        self.volume_container_layout.addWidget(self.volume_values_label)
+                        # 将标签添加到水平布局中
+                        self.volume_label_layout.addWidget(self.volume_values_label)
+                        # 在成交量图上方添加成交量标签容器
+                        self.volume_container_layout.addWidget(self.volume_label_container)
                         self.volume_container_layout.addWidget(self.volume_plot_widget)
                     
                     # 检查窗口数量，如果是1个窗口模式，隐藏成交量标签
