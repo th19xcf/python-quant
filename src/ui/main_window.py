@@ -2082,10 +2082,13 @@ class MainWindow(QMainWindow):
             # 计算并绘制技术指标
             try:
                 import pandas as pd
-                import ta
                 import numpy as np
+                import ta
                 
                 logger.info("开始计算技术指标")
+                
+                # 使用TechnicalAnalyzer类计算技术指标
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 
                 # 只取显示数量的数据
                 if hasattr(df, 'tail'):
@@ -2094,58 +2097,35 @@ class MainWindow(QMainWindow):
                     df_display = df
                 
                 # 转换为Pandas DataFrame，确保使用正确的方法
-                df_pd = None
-                if hasattr(df_display, 'to_pandas'):
-                    logger.info(f"检测到Polars DataFrame，开始转换为Pandas DataFrame")
-                    df_pd = df_display.to_pandas()
-                    logger.info(f"Polars DataFrame转换为Pandas DataFrame成功，形状: {df_pd.shape}")
-                elif isinstance(df_display, pd.DataFrame):
-                    logger.info(f"已经是Pandas DataFrame，直接使用")
-                    df_pd = df_display
-                else:
-                    logger.info(f"转换为Pandas DataFrame，类型: {type(df_display).__name__}")
-                    # 尝试直接转换为Pandas DataFrame
-                    df_pd = pd.DataFrame(df_display)
-                    logger.info(f"转换为Pandas DataFrame成功，形状: {df_pd.shape}")
+                # 创建TechnicalAnalyzer实例，自动处理数据转换和类型检查
+                logger.info("创建TechnicalAnalyzer实例")
+                analyzer = TechnicalAnalyzer(df_display)
                 
-                # 确保必要的列存在且为数值类型
-                required_columns = ['high', 'low', 'close']
-                for col in required_columns:
-                    if col not in df_pd.columns:
-                        logger.error(f"数据中没有{col}列")
-                        return
-                    df_pd[col] = pd.to_numeric(df_pd[col], errors='coerce')
+
+                logger.info("计算5/10/20/60日均线")
+                analyzer.calculate_ma([5, 10, 20, 60])
                 
-                # 计算移动平均线
-                logger.info("计算5日均线")
-                df_pd['ma5'] = ta.trend.sma_indicator(df_pd['close'], window=5, fillna=True)
-                logger.info("计算10日均线")
-                df_pd['ma10'] = ta.trend.sma_indicator(df_pd['close'], window=10, fillna=True)
-                logger.info("计算20日均线")
-                df_pd['ma20'] = ta.trend.sma_indicator(df_pd['close'], window=20, fillna=True)
-                logger.info("计算60日均线")
-                df_pd['ma60'] = ta.trend.sma_indicator(df_pd['close'], window=60, fillna=True)
-                
-                # 计算MACD指标
+
                 logger.info("计算MACD指标")
-                df_pd['macd'] = ta.trend.macd(df_pd['close'], fillna=True)
-                df_pd['macd_signal'] = ta.trend.macd_signal(df_pd['close'], fillna=True)
-                df_pd['macd_hist'] = ta.trend.macd_diff(df_pd['close'], fillna=True)
+                analyzer.calculate_macd()
                 
-                # 计算RSI指标
+
                 logger.info("计算RSI指标")
-                df_pd['rsi14'] = ta.momentum.rsi(df_pd['close'], window=14, fillna=True)
+                analyzer.calculate_rsi(14)
                 
-                # 计算KDJ指标
+
                 logger.info("计算KDJ指标")
-                df_pd['k'] = ta.momentum.stoch(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
-                df_pd['d'] = ta.momentum.stoch_signal(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
-                df_pd['j'] = 3 * df_pd['k'] - 2 * df_pd['d']
+                analyzer.calculate_kdj(14)
                 
-                # 计算成交量5日均线和10日均线，只计算一次
+
                 logger.info("计算成交量5日均线和10日均线")
-                df_pd['vol_ma5'] = ta.trend.sma_indicator(df_pd['volume'], window=5, fillna=True)
-                df_pd['vol_ma10'] = ta.trend.sma_indicator(df_pd['volume'], window=10, fillna=True)
+                analyzer.calculate_vol_ma([5, 10])
+                
+
+                df_pd = analyzer.get_data()
+                logger.info(f"使用TechnicalAnalyzer计算指标完成，DataFrame形状: {df_pd.shape}")
+                
+                # 确保数据索引正确
                 
                 # 确保数据索引正确
                 x = np.arange(len(df_pd))
@@ -2449,28 +2429,21 @@ class MainWindow(QMainWindow):
                         self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(latest_volume):,}</font>  <font color='white'>MA5: {int(latest_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(latest_vol_ma10):,}</font>")
                     elif current_indicator == "MACD":
                         # 添加MACD数值显示
-                        macd = ta.trend.macd(df_pd['close'], fillna=True)
-                        macd_signal = ta.trend.macd_signal(df_pd['close'], fillna=True)
-                        macd_hist = ta.trend.macd_diff(df_pd['close'], fillna=True)
-                        latest_macd = macd.iloc[-1]
-                        latest_macd_signal = macd_signal.iloc[-1]
-                        latest_macd_hist = macd_hist.iloc[-1]
+                        latest_macd = df_pd['macd'].iloc[-1]
+                        latest_macd_signal = df_pd['macd_signal'].iloc[-1]
+                        latest_macd_hist = df_pd['macd_hist'].iloc[-1]
                         
                         self.volume_values_label.setText(f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>")
                     elif current_indicator == "RSI":
                         # 添加RSI数值显示
-                        rsi14 = ta.momentum.rsi(df_pd['close'], window=14, fillna=True)
-                        latest_rsi = rsi14.iloc[-1]
+                        latest_rsi = df_pd['rsi14'].iloc[-1]
                         
                         self.volume_values_label.setText(f"<font color='blue'>RSI14: {latest_rsi:.2f}</font>")
                     elif current_indicator == "KDJ":
                         # 添加KDJ数值显示
-                        k = ta.momentum.stoch(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
-                        d = ta.momentum.stoch_signal(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
-                        j = 3 * k - 2 * d
-                        latest_k = k.iloc[-1]
-                        latest_d = d.iloc[-1]
-                        latest_j = j.iloc[-1]
+                        latest_k = df_pd['k'].iloc[-1]
+                        latest_d = df_pd['d'].iloc[-1]
+                        latest_j = df_pd['j'].iloc[-1]
                         
                         self.volume_values_label.setText(f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>")
                     
@@ -4605,15 +4578,14 @@ class MainWindow(QMainWindow):
         """
         # 导入pyqtgraph
         import pyqtgraph as pg
-        import ta
-        import pandas as pd
+        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
         
         # 确保KDJ相关列存在
         if 'k' not in df_pd.columns or 'd' not in df_pd.columns or 'j' not in df_pd.columns:
-            # 计算KDJ指标
-            df_pd['k'] = ta.momentum.stoch(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
-            df_pd['d'] = ta.momentum.stoch_signal(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
-            df_pd['j'] = 3 * df_pd['k'] - 2 * df_pd['d']
+            # 使用TechnicalAnalyzer计算KDJ指标
+            analyzer = TechnicalAnalyzer(df_pd)
+            analyzer.calculate_kdj(14)
+            df_pd = analyzer.get_data()
         
         # 设置KDJ指标图的Y轴范围，考虑到KDJ可能超出0-100范围，特别是J值
         plot_widget.setYRange(-50, 150)
@@ -4638,13 +4610,14 @@ class MainWindow(QMainWindow):
         """
         # 导入pyqtgraph
         import pyqtgraph as pg
-        import ta
-        import pandas as pd
+        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
         
         # 确保RSI相关列存在
         if 'rsi14' not in df_pd.columns:
-            # 计算RSI指标
-            df_pd['rsi14'] = ta.momentum.rsi(df_pd['close'], window=14, fillna=True)
+            # 使用TechnicalAnalyzer计算RSI指标
+            analyzer = TechnicalAnalyzer(df_pd)
+            analyzer.calculate_rsi(14)
+            df_pd = analyzer.get_data()
         
         # 绘制RSI指标
         plot_widget.setYRange(0, 100)
@@ -4665,15 +4638,14 @@ class MainWindow(QMainWindow):
         """
         # 导入pyqtgraph
         import pyqtgraph as pg
-        import ta
-        import pandas as pd
+        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
         
         # 确保MACD相关列存在
         if 'macd' not in df_pd.columns or 'macd_signal' not in df_pd.columns or 'macd_hist' not in df_pd.columns:
-            # 计算MACD指标
-            df_pd['macd'] = ta.trend.macd(df_pd['close'], fillna=True)
-            df_pd['macd_signal'] = ta.trend.macd_signal(df_pd['close'], fillna=True)
-            df_pd['macd_hist'] = ta.trend.macd_diff(df_pd['close'], fillna=True)
+            # 使用TechnicalAnalyzer计算MACD指标
+            analyzer = TechnicalAnalyzer(df_pd)
+            analyzer.calculate_macd()
+            df_pd = analyzer.get_data()
         
         # 绘制MACD指标
         plot_widget.setYRange(min(df_pd['macd_hist'].min(), df_pd['macd'].min(), df_pd['macd_signal'].min()) * 1.2, 

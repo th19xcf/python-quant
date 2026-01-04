@@ -49,7 +49,7 @@ class TechnicalAnalyzer:
             pd.DataFrame: 包含移动平均线的DataFrame
         """
         for window in windows:
-            self.df[f'MA{window}'] = ta.trend.sma_indicator(self.df['close'], window=window, fillna=True)
+            self.df[f'ma{window}'] = ta.trend.sma_indicator(self.df['close'], window=window, fillna=True)
         return self.df
     
     def calculate_macd(self, fast_period=12, slow_period=26, signal_period=9):
@@ -94,7 +94,7 @@ class TechnicalAnalyzer:
         Returns:
             pd.DataFrame: 包含RSI指标的DataFrame
         """
-        self.df['rsi'] = ta.momentum.rsi(self.df['close'], window=window, fillna=True)
+        self.df[f'rsi{window}'] = ta.momentum.rsi(self.df['close'], window=window, fillna=True)
         return self.df
     
     def calculate_vol_ma(self, windows=[5, 10]):
@@ -118,4 +118,28 @@ class TechnicalAnalyzer:
         Returns:
             pd.DataFrame: 包含所有指标的数据
         """
+        return self.df
+    
+    def calculate_all_indicators(self):
+        """
+        计算所有支持的技术指标
+        
+        Returns:
+            pd.DataFrame: 包含所有指标的数据
+        """
+        # 计算移动平均线
+        self.calculate_ma([5, 10, 20, 60])
+        
+        # 计算MACD指标
+        self.calculate_macd()
+        
+        # 计算RSI指标
+        self.calculate_rsi(14)
+        
+        # 计算KDJ指标
+        self.calculate_kdj(14)
+        
+        # 计算成交量5日均线和10日均线
+        self.calculate_vol_ma([5, 10])
+        
         return self.df
