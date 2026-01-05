@@ -14,6 +14,10 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QSize, QPoint
 from PySide6.QtGui import QAction, QIcon, QFont, QColor
+import warnings
+
+# 忽略PySide6信号断开警告
+warnings.simplefilter("ignore", RuntimeWarning)
 
 from src.utils.logger import logger
 
@@ -2731,16 +2735,30 @@ class MainWindow(QMainWindow):
             # 断开之前的所有事件连接，避免多次连接导致的问题
             try:
                 # 断开鼠标移动事件的所有连接
-                self.tech_plot_widget.scene().sigMouseMoved.disconnect()
-                self.volume_plot_widget.scene().sigMouseMoved.disconnect()
-                self.kdj_plot_widget.scene().sigMouseMoved.disconnect()
+                # 使用disconnect()不带参数会断开所有连接，但在PyQt/PySide中如果没有连接会警告
+                # 这里使用try-except来捕获可能的警告
+                if hasattr(self.tech_plot_widget.scene().sigMouseMoved, 'disconnect'):
+                    self.tech_plot_widget.scene().sigMouseMoved.disconnect()
+            except Exception:
+                pass
+            
+            try:
+                if hasattr(self.volume_plot_widget.scene().sigMouseMoved, 'disconnect'):
+                    self.volume_plot_widget.scene().sigMouseMoved.disconnect()
+            except Exception:
+                pass
+            
+            try:
+                if hasattr(self.kdj_plot_widget.scene().sigMouseMoved, 'disconnect'):
+                    self.kdj_plot_widget.scene().sigMouseMoved.disconnect()
                 logger.info("已断开鼠标移动事件的所有连接")
             except Exception as e:
                 logger.debug(f"断开鼠标移动事件连接时发生错误: {e}")
             
             try:
                 # 断开鼠标点击事件的所有连接
-                self.tech_plot_widget.scene().sigMouseClicked.disconnect()
+                if hasattr(self.tech_plot_widget.scene().sigMouseClicked, 'disconnect'):
+                    self.tech_plot_widget.scene().sigMouseClicked.disconnect()
                 logger.info("已断开鼠标点击事件的所有连接")
             except Exception as e:
                 logger.debug(f"断开鼠标点击事件连接时发生错误: {e}")
