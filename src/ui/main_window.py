@@ -1073,6 +1073,7 @@ class MainWindow(QMainWindow):
         """
         # 创建功能菜单按钮
         btn = QPushButton("≡")
+        # 设置按钮背景色与第1窗口标签栏一致
         btn.setStyleSheet("background-color: transparent; color: #C0C0C0; border: none; font-size: 12px; padding: 0 5px; height: 20px;")
         btn.setFixedSize(20, 20)
         btn.setToolTip("功能菜单")
@@ -2454,6 +2455,8 @@ class MainWindow(QMainWindow):
                 
                 # 创建标签栏容器
                 self.kdj_label_container = QWidget()
+                # 设置标签栏容器背景色与第1窗口一致
+                self.kdj_label_container.setStyleSheet("background-color: #222222;")
                 self.kdj_label_layout = QHBoxLayout(self.kdj_label_container)
                 self.kdj_label_layout.setSpacing(0)
                 self.kdj_label_layout.setContentsMargins(0, 0, 0, 0)
@@ -2464,7 +2467,8 @@ class MainWindow(QMainWindow):
                 
                 # 创建KDJ值显示标签
                 self.kdj_values_label = QLabel()
-                self.kdj_values_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
+                # 设置标签样式与第1窗口一致
+                self.kdj_values_label.setStyleSheet("font-family: Consolas, monospace; padding: 5px; color: #C0C0C0; background-color: transparent; border: none;")
                 # 确保不换行
                 self.kdj_values_label.setWordWrap(False)
                 
@@ -2704,6 +2708,8 @@ class MainWindow(QMainWindow):
                     # 创建标签栏容器
                     from PySide6.QtWidgets import QLabel, QHBoxLayout, QWidget
                     self.volume_label_container = QWidget()
+                    # 设置标签栏容器背景色与第1窗口一致
+                    self.volume_label_container.setStyleSheet("background-color: #222222;")
                     self.volume_label_layout = QHBoxLayout(self.volume_label_container)
                     self.volume_label_layout.setSpacing(0)
                     self.volume_label_layout.setContentsMargins(0, 0, 0, 0)
@@ -2714,7 +2720,8 @@ class MainWindow(QMainWindow):
                     
                     # 创建标签，使用与K线图均线标签相同的样式
                     self.volume_values_label = QLabel()
-                    self.volume_values_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
+                    # 设置标签样式与第1窗口一致
+                    self.volume_values_label.setStyleSheet("font-family: Consolas, monospace; padding: 5px; color: #C0C0C0; background-color: transparent; border: none;")
                     # 确保不换行
                     self.volume_values_label.setWordWrap(False)
                     
