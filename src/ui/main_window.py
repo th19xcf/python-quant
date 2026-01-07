@@ -20,6 +20,7 @@ import warnings
 warnings.simplefilter("ignore", RuntimeWarning)
 
 from src.utils.logger import logger
+from src.utils.event_bus import EventBus
 
 
 class MainWindow(QMainWindow):
@@ -27,19 +28,24 @@ class MainWindow(QMainWindow):
     主窗口类，参考通达信软件界面设计
     """
     
-    def __init__(self, config, data_manager):
+    def __init__(self, config, data_manager, plugin_manager=None):
         """
         初始化主窗口
         
         Args:
             config: 配置对象
             data_manager: 数据管理器实例
+            plugin_manager: 插件管理器实例
         """
         super().__init__()
         self.config = config
         self.data_manager = data_manager
+        self.plugin_manager = plugin_manager
         self.setWindowTitle("中国股市量化分析系统")
         self.setGeometry(100, 100, 1400, 900)
+        
+        # 订阅事件
+        self._subscribe_events()
         
         # 初始化K线图相关属性
         self.vline = None
@@ -48,9 +54,125 @@ class MainWindow(QMainWindow):
         self.info_timer = None
         self.current_mouse_pos = None
         self.current_kline_index = -1
+        
+        # 初始化其他UI组件
+        self.init_ui()
         self.current_kline_data = None
         self.displayed_bar_count = 100  # 默认显示100个柱体
         self.crosshair_enabled = False  # 十字线和信息框显示状态，False=隐藏，True=显示
+    
+    def _subscribe_events(self):
+        """
+        订阅事件
+        """
+        # 订阅数据更新事件
+        EventBus.subscribe('data_updated', self._handle_data_updated)
+        EventBus.subscribe('data_error', self._handle_data_error)
+        
+        # 订阅技术指标计算完成事件
+        EventBus.subscribe('indicator_calculated', self._handle_indicator_calculated)
+        EventBus.subscribe('indicator_error', self._handle_indicator_error)
+        
+        # 订阅系统事件
+        EventBus.subscribe('system_shutdown', self._handle_system_shutdown)
+        
+        logger.info("主窗口事件订阅完成")
+    
+    def _handle_data_updated(self, sender, data_type, ts_code, message=""):
+        """
+        处理数据更新事件
+        
+        Args:
+            data_type: 数据类型
+            ts_code: 股票代码或指数代码
+            message: 附加消息
+        """
+        logger.info(f"收到数据更新事件: {data_type} - {ts_code} - {message}")
+        
+        # 根据数据类型更新UI
+        if data_type in ['stock_daily', 'index_daily']:
+            # 如果当前显示的是该股票或指数，刷新K线图
+            if hasattr(self, 'current_stock_code') and self.current_stock_code == ts_code:
+                self.refresh_kline_chart()
+        elif data_type == 'stock_basic':
+            # 更新股票列表
+            self.update_stock_list()
+        elif data_type == 'index_basic':
+            # 更新指数列表
+            self.update_index_list()
+    
+    def _handle_data_error(self, sender, data_type, ts_code, message=""):
+        """
+        处理数据错误事件
+        
+        Args:
+            data_type: 数据类型
+            ts_code: 股票代码或指数代码
+            message: 错误消息
+        """
+        logger.error(f"收到数据错误事件: {data_type} - {ts_code} - {message}")
+        # 可以在这里显示错误提示
+    
+    def _handle_indicator_calculated(self, sender, indicator_name, ts_code, result=None):
+        """
+        处理技术指标计算完成事件
+        
+        Args:
+            indicator_name: 指标名称
+            ts_code: 股票代码
+            result: 计算结果
+        """
+        logger.info(f"收到指标计算完成事件: {indicator_name} - {ts_code}")
+        # 更新指标显示
+        if hasattr(self, 'current_stock_code') and self.current_stock_code == ts_code:
+            self.refresh_indicator_charts()
+    
+    def _handle_indicator_error(self, sender, indicator_name, ts_code, error=""):
+        """
+        处理技术指标计算错误事件
+        
+        Args:
+            indicator_name: 指标名称
+            ts_code: 股票代码
+            error: 错误信息
+        """
+        logger.error(f"收到指标计算错误事件: {indicator_name} - {ts_code} - {error}")
+    
+    def _handle_system_shutdown(self, sender):
+        """
+        处理系统关闭事件
+        """
+        logger.info("收到系统关闭事件，准备关闭主窗口")
+        # 可以在这里保存用户设置等
+        self.close()
+    
+    def refresh_kline_chart(self):
+        """
+        刷新K线图
+        """
+        # 实现K线图刷新逻辑
+        logger.info("刷新K线图")
+    
+    def refresh_indicator_charts(self):
+        """
+        刷新指标图表
+        """
+        # 实现指标图表刷新逻辑
+        logger.info("刷新指标图表")
+    
+    def update_stock_list(self):
+        """
+        更新股票列表
+        """
+        # 实现股票列表更新逻辑
+        logger.info("更新股票列表")
+    
+    def update_index_list(self):
+        """
+        更新指数列表
+        """
+        # 实现指数列表更新逻辑
+        logger.info("更新指数列表")
         
         # 保存当前显示的个股信息
         self.current_stock_data = None
@@ -94,6 +216,20 @@ class MainWindow(QMainWindow):
         """
         初始化UI组件
         """
+        # 初始化缺失的属性
+        self.current_stock_data = None
+        self.window_menu = None
+        self.window_actions = []
+        self.current_selected_window = 1
+        # 保存每个窗口当前显示的指标
+        self.window_indicators = {
+            1: "MA",  # K线图默认显示MA指标
+            2: "VOL",  # 成交量图默认显示成交量
+            3: "KDJ"  # 第三个窗口默认显示KDJ指标
+        }
+        # 初始化指标菜单
+        self.create_indicator_menu()
+        
         # 创建菜单栏
         self.create_menu_bar()
         
@@ -197,6 +333,9 @@ class MainWindow(QMainWindow):
             ("关于", self.on_about),
             ("退出", self.on_exit),
         ])
+        
+        # 创建窗口菜单（用于指标选择栏的窗口切换）
+        self.window_menu = QMenu("窗口", self)
     
     def add_menu_actions(self, menu, actions):
         """
@@ -728,7 +867,7 @@ class MainWindow(QMainWindow):
         
         # 指标列表
         indicators = [
-            "窗口", "指标A", "<", "VOL", "MACD", "KDJ", "DMI", "DMA", "FSL", "TRIX", "BRAR", "CR", 
+            "指标A", "<", "VOL", "MACD", "KDJ", "DMI", "DMA", "FSL", "TRIX", "BRAR", "CR", 
             "VR", "OBV", "ASI", "EMV", "VOL-TDX", "RSI", "WR", "SAR",  
             "CCI", "ROC", "MTM", "BOLL", "PSY", "MCST", ">"]
         
