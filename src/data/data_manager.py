@@ -7,6 +7,7 @@
 
 from loguru import logger
 from typing import List, Dict, Any
+from src.utils.event_bus import EventBus
 
 
 class DataManager:
@@ -14,24 +15,31 @@ class DataManager:
     数据管理器，负责统一管理各种数据源的获取、清洗和存储
     """
     
-    def __init__(self, config, db_manager):
+    def __init__(self, config, db_manager, plugin_manager=None):
         """
         初始化数据管理器
         
         Args:
             config: 配置对象
             db_manager: 数据库管理器实例
+            plugin_manager: 插件管理器实例
         """
         self.config = config
         self.db_manager = db_manager
+        self.plugin_manager = plugin_manager
         
         # 初始化各个数据源处理器
         self.tdx_handler = None
         self.akshare_handler = None
         self.macro_handler = None
         self.news_handler = None
+        self.baostock_handler = None
+        
+        # 插件数据源映射
+        self.plugin_datasources = {}
         
         self._init_handlers()
+        self._init_plugin_datasources()
     
     def _init_handlers(self):
         """
@@ -88,6 +96,37 @@ class DataManager:
             # 离线模式下不抛出异常，继续运行
             logger.info("离线模式下继续运行")
     
+    def _init_plugin_datasources(self):
+        """
+        初始化插件数据源
+        """
+        if not self.plugin_manager:
+            return
+        
+        # 获取所有可用的数据源插件
+        datasource_plugins = self.plugin_manager.get_available_datasource_plugins()
+        
+        for plugin_name, plugin in datasource_plugins.items():
+            self.plugin_datasources[plugin_name] = plugin
+            logger.info(f"已注册插件数据源: {plugin_name}")
+    
+    def _publish_data_updated_event(self, data_type, ts_code, status="success", message=""):
+        """
+        发布数据更新事件
+        
+        Args:
+            data_type: 数据类型，如'stock', 'index', 'macro', 'news'
+            ts_code: 股票代码或指数代码
+            status: 更新状态，success或error
+            message: 附加消息
+        """
+        EventBus.publish(
+            'data_updated' if status == 'success' else 'data_error',
+            data_type=data_type,
+            ts_code=ts_code,
+            message=message
+        )
+    
     def update_stock_basic(self):
         """
         更新股票基本信息
@@ -98,8 +137,12 @@ class DataManager:
                 self.baostock_handler.update_stock_basic()
             logger.info("股票基本信息更新完成")
             
+            # 发布数据更新事件
+            self._publish_data_updated_event('stock_basic', 'all')
+            
         except Exception as e:
             logger.exception(f"股票基本信息更新失败: {e}")
+            self._publish_data_updated_event('stock_basic', 'all', status='error', message=str(e))
             raise
     
     def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
@@ -117,8 +160,12 @@ class DataManager:
                 self.baostock_handler.update_stock_daily(ts_codes, start_date, end_date)
             logger.info("股票日线数据更新完成")
             
+            # 发布数据更新事件
+            self._publish_data_updated_event('stock_daily', ts_codes[0] if ts_codes else 'all')
+            
         except Exception as e:
             logger.exception(f"股票日线数据更新失败: {e}")
+            self._publish_data_updated_event('stock_daily', ts_codes[0] if ts_codes else 'all', status='error', message=str(e))
             raise
     
     def update_index_basic(self):
@@ -130,8 +177,12 @@ class DataManager:
                 self.baostock_handler.update_index_basic()
             logger.info("指数基本信息更新完成")
             
+            # 发布数据更新事件
+            self._publish_data_updated_event('index_basic', 'all')
+            
         except Exception as e:
             logger.exception(f"指数基本信息更新失败: {e}")
+            self._publish_data_updated_event('index_basic', 'all', status='error', message=str(e))
             raise
     
     def update_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
@@ -148,8 +199,12 @@ class DataManager:
                 self.baostock_handler.update_index_daily(ts_codes, start_date, end_date)
             logger.info("指数日线数据更新完成")
             
+            # 发布数据更新事件
+            self._publish_data_updated_event('index_daily', ts_codes[0] if ts_codes else 'all')
+            
         except Exception as e:
             logger.exception(f"指数日线数据更新失败: {e}")
+            self._publish_data_updated_event('index_daily', ts_codes[0] if ts_codes else 'all', status='error', message=str(e))
             raise
     
     def update_macro_data(self, indicators: List[str] = None):
@@ -164,8 +219,12 @@ class DataManager:
                 self.macro_handler.update_macro_data(indicators)
             logger.info("宏观经济数据更新完成")
             
+            # 发布数据更新事件
+            self._publish_data_updated_event('macro', indicators[0] if indicators else 'all')
+            
         except Exception as e:
             logger.exception(f"宏观经济数据更新失败: {e}")
+            self._publish_data_updated_event('macro', indicators[0] if indicators else 'all', status='error', message=str(e))
             raise
     
     def update_news_data(self, sources: List[str] = None, start_date: str = None, end_date: str = None):
@@ -182,8 +241,12 @@ class DataManager:
                 self.news_handler.update_news_data(sources, start_date, end_date)
             logger.info("新闻数据更新完成")
             
+            # 发布数据更新事件
+            self._publish_data_updated_event('news', sources[0] if sources else 'all')
+            
         except Exception as e:
             logger.exception(f"新闻数据更新失败: {e}")
+            self._publish_data_updated_event('news', sources[0] if sources else 'all', status='error', message=str(e))
             raise
     
     def get_stock_data(self, ts_code: str, start_date: str, end_date: str, freq: str = "daily"):
@@ -253,6 +316,26 @@ class DataManager:
                     return self.akshare_handler.get_stock_data(ts_code, start_date, end_date, freq)
                 except Exception as ak_e:
                     logger.warning(f"从AKShare获取股票数据失败: {ak_e}")
+            
+            # 尝试从Baostock获取数据
+            if self.baostock_handler:
+                logger.info(f"从Baostock获取股票{ts_code}数据")
+                try:
+                    # 从Baostock获取数据
+                    return self.baostock_handler.get_stock_data(ts_code, start_date, end_date, freq)
+                except Exception as bs_e:
+                    logger.warning(f"从Baostock获取股票数据失败: {bs_e}")
+            
+            # 尝试从插件数据源获取数据
+            for plugin_name, plugin in self.plugin_datasources.items():
+                logger.info(f"从插件数据源{plugin_name}获取股票{ts_code}数据")
+                try:
+                    # 调用插件的get_stock_data方法
+                    result = plugin.get_stock_data(ts_code, start_date, end_date, freq)
+                    if result is not None and not result.empty:
+                        return result
+                except Exception as plugin_e:
+                    logger.warning(f"从插件数据源{plugin_name}获取股票数据失败: {plugin_e}")
             
             # 所有数据源都失败，返回空DataFrame
             logger.warning(f"无法从任何数据源获取股票{ts_code}数据")
@@ -329,6 +412,26 @@ class DataManager:
                     return self.akshare_handler.get_index_data(ts_code, start_date, end_date, freq)
                 except Exception as ak_e:
                     logger.warning(f"从AKShare获取指数数据失败: {ak_e}")
+            
+            # 尝试从Baostock获取数据
+            if self.baostock_handler:
+                logger.info(f"从Baostock获取指数{ts_code}数据")
+                try:
+                    # 从Baostock获取数据
+                    return self.baostock_handler.get_index_data(ts_code, start_date, end_date, freq)
+                except Exception as bs_e:
+                    logger.warning(f"从Baostock获取指数数据失败: {bs_e}")
+            
+            # 尝试从插件数据源获取数据
+            for plugin_name, plugin in self.plugin_datasources.items():
+                logger.info(f"从插件数据源{plugin_name}获取指数{ts_code}数据")
+                try:
+                    # 调用插件的get_index_data方法
+                    result = plugin.get_index_data(ts_code, start_date, end_date, freq)
+                    if result is not None and not result.empty:
+                        return result
+                except Exception as plugin_e:
+                    logger.warning(f"从插件数据源{plugin_name}获取指数数据失败: {plugin_e}")
             
             # 所有数据源都失败，返回空DataFrame
             logger.warning(f"无法从任何数据源获取指数{ts_code}数据")
