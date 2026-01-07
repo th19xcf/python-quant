@@ -34,6 +34,9 @@ transformers>=4.44.2
 pydantic>=2.9.2
 pydantic-settings>=2.5.2
 
+# 事件总线
+blinker>=1.7.0
+
 # 日志管理
 loguru>=0.7.2
 
