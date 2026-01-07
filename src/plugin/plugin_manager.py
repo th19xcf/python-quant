@@ -188,11 +188,8 @@ class PluginManager:
                 # 创建插件实例
                 plugin_instance = plugin_class()
                 
-                # 获取插件配置
-                plugin_config = getattr(self.config, f'plugin_{plugin_name}', {})
-                
-                # 初始化插件
-                if plugin_instance.initialize(plugin_config):
+                # 初始化插件，传递完整的config对象而不是仅插件配置
+                if plugin_instance.initialize(self.config):
                     # 保存插件实例
                     self.plugin_instances[plugin_type][plugin_name] = plugin_instance
                     initialized_count += 1
