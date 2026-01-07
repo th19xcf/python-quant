@@ -2433,6 +2433,25 @@ class MainWindow(QMainWindow):
                     except Exception as e:
                         logger.warning(f"移除旧KDJ标签时发生错误: {e}")
                 
+                # 检查是否已经存在标签栏容器，如果存在则先移除
+                if hasattr(self, 'kdj_label_container'):
+                    try:
+                        # 移除旧的标签栏容器
+                        if hasattr(self, 'kdj_container') and hasattr(self, 'kdj_container_layout'):
+                            self.kdj_container_layout.removeWidget(self.kdj_label_container)
+                        self.kdj_label_container.deleteLater()
+                        delattr(self, 'kdj_label_container')
+                    except Exception as e:
+                        logger.warning(f"移除旧KDJ标签栏容器时发生错误: {e}")
+                
+                # 检查是否已经存在指标数值标签，如果存在则移除
+                if hasattr(self, 'kdj_values_label'):
+                    try:
+                        self.kdj_values_label.deleteLater()
+                        delattr(self, 'kdj_values_label')
+                    except Exception as e:
+                        logger.warning(f"移除旧KDJ数值标签时发生错误: {e}")
+                
                 # 创建标签栏容器
                 self.kdj_label_container = QWidget()
                 self.kdj_label_layout = QHBoxLayout(self.kdj_label_container)
@@ -2662,6 +2681,25 @@ class MainWindow(QMainWindow):
                             self.volume_values_label.deleteLater()
                         except Exception as e:
                             logger.warning(f"移除旧标签时发生错误: {e}")
+                    
+                    # 检查是否已经存在标签栏容器，如果存在则先移除
+                    if hasattr(self, 'volume_label_container'):
+                        try:
+                            # 移除旧的标签栏容器
+                            if hasattr(self, 'volume_container') and hasattr(self, 'volume_container_layout'):
+                                self.volume_container_layout.removeWidget(self.volume_label_container)
+                            self.volume_label_container.deleteLater()
+                            delattr(self, 'volume_label_container')
+                        except Exception as e:
+                            logger.warning(f"移除旧成交量标签栏容器时发生错误: {e}")
+                    
+                    # 检查是否已经存在指标数值标签，如果存在则移除
+                    if hasattr(self, 'volume_values_label'):
+                        try:
+                            self.volume_values_label.deleteLater()
+                            delattr(self, 'volume_values_label')
+                        except Exception as e:
+                            logger.warning(f"移除旧成交量数值标签时发生错误: {e}")
                     
                     # 创建标签栏容器
                     from PySide6.QtWidgets import QLabel, QHBoxLayout, QWidget
