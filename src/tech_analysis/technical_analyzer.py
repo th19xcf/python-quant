@@ -17,12 +17,13 @@ class TechnicalAnalyzer:
     技术分析器类，提供各种技术指标的计算方法
     """
     
-    def __init__(self, data):
+    def __init__(self, data, plugin_manager=None):
         """
         初始化技术分析器
         
         Args:
             data: 股票数据，可以是Polars DataFrame或Pandas DataFrame
+            plugin_manager: 插件管理器实例，用于加载和使用指标插件
         """
         # 转换为Pandas DataFrame以便使用ta库
         self.df = None
@@ -40,13 +41,17 @@ class TechnicalAnalyzer:
                 raise ValueError(f"数据中没有{col}列")
             self.df[col] = pd.to_numeric(self.df[col], errors='coerce')
         
+        # 保存插件管理器实例
+        self.plugin_manager = plugin_manager
+        
         # 添加指标计算状态跟踪
         self.calculated_indicators = {
             'ma': set(),  # 已计算的MA窗口
             'macd': False,
             'rsi': set(),  # 已计算的RSI窗口
             'kdj': set(),  # 已计算的KDJ窗口
-            'vol_ma': set()  # 已计算的成交量MA窗口
+            'vol_ma': set(),  # 已计算的成交量MA窗口
+            'plugin': set()  # 已计算的插件指标
         }
         
         # 添加缓存机制，避免重复计算
@@ -60,6 +65,9 @@ class TechnicalAnalyzer:
             'kdj': self.calculate_kdj,
             'vol_ma': self.calculate_vol_ma
         }
+        
+        # 初始化插件指标映射
+        self._init_plugin_indicator_mapping()
     
     def calculate_macd(self, fast_period=12, slow_period=26, signal_period=9):
         """
@@ -117,12 +125,16 @@ class TechnicalAnalyzer:
         检查特定指标是否已经计算
         
         Args:
-            indicator_type: 指标类型，如'ma', 'macd', 'rsi', 'kdj', 'vol_ma'
+            indicator_type: 指标类型，如'ma', 'macd', 'rsi', 'kdj', 'vol_ma'或插件名称
             window: 对于需要窗口的指标，指定窗口大小
             
         Returns:
             bool: 如果指标已计算返回True，否则返回False
         """
+        # 检查是否为插件指标
+        if self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():
+            return indicator_type in self.calculated_indicators['plugin']
+        
         if indicator_type not in self.calculated_indicators:
             return False
         
@@ -148,10 +160,18 @@ class TechnicalAnalyzer:
                 'macd': False,
                 'rsi': set(),
                 'kdj': set(),
-                'vol_ma': set()
+                'vol_ma': set(),
+                'plugin': set()
             }
             # 重置缓存
             self._calculate_cache = {}
+            # 重置插件指标映射
+            self._init_plugin_indicator_mapping()
+        elif self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():
+            # 重置特定插件指标
+            if indicator_type in self.calculated_indicators['plugin']:
+                self.calculated_indicators['plugin'].remove(indicator_type)
+                # 对于插件指标，目前无法自动确定要删除的列，由插件自行管理
         elif indicator_type in self.calculated_indicators:
             if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma']:
                 if window:
@@ -176,6 +196,10 @@ class TechnicalAnalyzer:
                 for col in ['macd', 'macd_signal', 'macd_hist']:
                     if col in self.df.columns:
                         self.df.drop(col, axis=1, inplace=True)
+            elif indicator_type == 'plugin':
+                # 重置所有插件指标
+                self.calculated_indicators['plugin'].clear()
+                # 对于插件指标，目前无法自动确定要删除的列，由插件自行管理
     
     def get_calculated_indicators(self):
         """
@@ -364,12 +388,82 @@ class TechnicalAnalyzer:
         
         return self.df
     
+    def _init_plugin_indicator_mapping(self):
+        """
+        初始化插件指标映射
+        """
+        if not self.plugin_manager:
+            return
+        
+        # 获取所有可用的指标插件
+        available_indicators = self.plugin_manager.get_available_indicator_plugins()
+        
+        # 为每个指标插件创建对应的计算方法
+        for plugin_name, plugin in available_indicators.items():
+            # 动态添加指标映射
+            self.indicator_mapping[plugin_name] = lambda *args, plugin_name=plugin_name, **kwargs: self.calculate_plugin_indicator(plugin_name, *args, **kwargs)
+    
+    def get_available_plugin_indicators(self):
+        """
+        获取可用的插件指标列表
+        
+        Returns:
+            list: 可用插件指标名称列表
+        """
+        if not self.plugin_manager:
+            return []
+        
+        return list(self.plugin_manager.get_available_indicator_plugins().keys())
+    
+    def calculate_plugin_indicator(self, plugin_name, **kwargs):
+        """
+        计算插件指标
+        
+        Args:
+            plugin_name: 插件名称
+            **kwargs: 传递给插件calculate方法的参数
+            
+        Returns:
+            pd.DataFrame: 包含插件指标的DataFrame
+        """
+        if not self.plugin_manager:
+            raise ValueError("插件管理器未初始化")
+        
+        # 获取指标插件实例
+        indicator_plugins = self.plugin_manager.get_available_indicator_plugins()
+        if plugin_name not in indicator_plugins:
+            raise ValueError(f"指标插件{plugin_name}不存在或未启用")
+        
+        plugin = indicator_plugins[plugin_name]
+        
+        # 检查插件指标是否已经计算
+        if plugin_name in self.calculated_indicators['plugin']:
+            return self.df
+        
+        try:
+            # 调用插件的calculate方法
+            result_df = plugin.calculate(self.df, **kwargs)
+            
+            # 更新DataFrame
+            if result_df is not None and isinstance(result_df, pd.DataFrame):
+                # 将插件计算的指标列合并到主DataFrame
+                for col in result_df.columns:
+                    if col not in self.df.columns:
+                        self.df[col] = result_df[col]
+                
+                # 更新计算状态
+                self.calculated_indicators['plugin'].add(plugin_name)
+        except Exception as e:
+            raise RuntimeError(f"计算插件指标{plugin_name}失败: {str(e)}")
+        
+        return self.df
+    
     def calculate_indicator_parallel(self, indicator_type, *args, **kwargs):
         """
         并行计算特定类型的指标
         
         Args:
-            indicator_type: 指标类型，如'ma', 'macd', 'rsi', 'kdj', 'vol_ma'
+            indicator_type: 指标类型，如'ma', 'macd', 'rsi', 'kdj', 'vol_ma'或插件名称
             *args: 传递给指标计算方法的位置参数
             **kwargs: 传递给指标计算方法的关键字参数
             
@@ -377,6 +471,12 @@ class TechnicalAnalyzer:
             pd.DataFrame: 包含计算指标的DataFrame
         """
         if indicator_type not in self.indicator_mapping:
+            # 检查是否为插件指标
+            if self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():
+                # 设置parallel=True
+                kwargs['parallel'] = True
+                # 调用插件指标计算方法
+                return self.calculate_plugin_indicator(indicator_type, **kwargs)
             raise ValueError(f"不支持的指标类型: {indicator_type}")
         
         # 设置parallel=True
@@ -387,7 +487,7 @@ class TechnicalAnalyzer:
     
     def calculate_all_indicators(self, parallel=False):
         """
-        计算所有支持的技术指标
+        计算所有支持的技术指标，包括内置指标和插件指标
         
         Args:
             parallel: 是否使用并行计算
@@ -398,7 +498,7 @@ class TechnicalAnalyzer:
         if parallel:
             # 并行计算所有指标类型
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                # 提交所有指标计算任务
+                # 提交所有内置指标计算任务
                 futures = {
                     executor.submit(self.calculate_ma, [5, 10, 20, 60], parallel=True): 'ma',
                     executor.submit(self.calculate_macd): 'macd',
@@ -407,7 +507,7 @@ class TechnicalAnalyzer:
                     executor.submit(self.calculate_vol_ma, [5, 10], parallel=True): 'vol_ma'
                 }
                 
-                # 等待所有任务完成
+                # 等待所有内置指标任务完成
                 for future in concurrent.futures.as_completed(futures):
                     indicator_type = futures[future]
                     try:
@@ -415,7 +515,7 @@ class TechnicalAnalyzer:
                     except Exception as e:
                         print(f"计算{indicator_type}指标时发生错误: {e}")
         else:
-            # 串行计算所有指标
+            # 串行计算所有内置指标
             # 计算移动平均线
             ma_windows = [5, 10, 20, 60]
             self.calculate_ma(ma_windows)
@@ -435,5 +535,12 @@ class TechnicalAnalyzer:
             # 计算成交量5日均线和10日均线
             vol_ma_windows = [5, 10]
             self.calculate_vol_ma(vol_ma_windows)
+        
+        # 计算所有插件指标
+        for plugin_name in self.get_available_plugin_indicators():
+            try:
+                self.calculate_plugin_indicator(plugin_name, parallel=parallel)
+            except Exception as e:
+                print(f"计算插件指标{plugin_name}时发生错误: {e}")
         
         return self.df
