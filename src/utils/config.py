@@ -7,7 +7,7 @@
 
 from pydantic_settings import BaseSettings
 from pydantic import Field
-from typing import Optional
+from typing import Optional, Dict, Any
 
 
 class DatabaseSettings(BaseSettings):
@@ -59,12 +59,11 @@ class LogSettings(BaseSettings):
     compression: str = Field(default="zip", description="日志文件压缩格式")
 
 
-class Config(BaseSettings):
-    """主配置类"""
-    database: DatabaseSettings = DatabaseSettings()
-    redis: RedisSettings = RedisSettings()
-    data: DataSettings = DataSettings()
-    log: LogSettings = LogSettings()
+class PluginSettings(BaseSettings):
+    """单个插件配置"""
+    enabled: bool = Field(default=True, description="插件是否启用")
+    version: Optional[str] = Field(default=None, description="插件版本")
+    config: Dict[str, Any] = Field(default_factory=dict, description="插件特定配置")
     
     class Config:
         """Pydantic配置"""
@@ -72,6 +71,41 @@ class Config(BaseSettings):
         env_file_encoding = "utf-8"
         env_nested_delimiter = "__"
         case_sensitive = False
+
+
+class PluginsSettings(BaseSettings):
+    """所有插件配置"""
+    # 使用字典存储各个插件的配置
+    plugins: Dict[str, PluginSettings] = Field(default_factory=dict, description="插件配置字典")
+    
+    class Config:
+        """Pydantic配置"""
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        env_nested_delimiter = "__"
+        case_sensitive = False
+        extra = 'ignore'  # 允许忽略额外的输入
+
+
+class Config(BaseSettings):
+    """主配置类"""
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
+    redis: RedisSettings = Field(default_factory=RedisSettings)
+    data: DataSettings = Field(default_factory=DataSettings)
+    log: LogSettings = Field(default_factory=LogSettings)
+    plugins: PluginsSettings = Field(default_factory=PluginsSettings)
+    
+    class Config:
+        """Pydantic配置"""
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        env_nested_delimiter = "__"
+        case_sensitive = False
+
+
+# 调用 model_rebuild() 来确保所有类型都已完全定义
+PluginsSettings.model_rebuild()
+Config.model_rebuild()
 
 
 # 全局配置实例

@@ -6,7 +6,11 @@
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Type
+from pydantic_settings import BaseSettings
+from pydantic import ValidationError
+from src.utils.event_bus import EventBus
+from src.utils.plugin_config_manager import get_plugin_config_manager
 
 
 class PluginBase(ABC):
@@ -22,6 +26,9 @@ class PluginBase(ABC):
         self.enabled = True
         self.config = {}
         self.plugin_manager = None  # 插件管理器实例，由PluginManager在初始化时设置
+        self._config_model = None  # 插件配置模型类
+        self._default_config = {}  # 插件默认配置
+        self._plugin_config_manager = get_plugin_config_manager()  # 插件配置管理器实例
     
     @abstractmethod
     def get_name(self) -> str:
@@ -119,7 +126,130 @@ class PluginBase(ABC):
         Args:
             config: 新的配置
         """
+        old_config = self.config.copy()
         self.config.update(config)
+        
+        # 发布配置变更事件
+        EventBus.publish('plugin_config_changed', 
+                       plugin_name=self.get_name(),
+                       old_config=old_config,
+                       new_config=self.config)
+        
+    def register_config_model(self, config_model: Type[BaseSettings]) -> None:
+        """
+        注册插件配置模型
+        
+        Args:
+            config_model: 插件配置模型类
+        """
+        self._config_model = config_model
+        
+        # 注册到全局插件配置管理器
+        self._plugin_config_manager.register_plugin_config(self.get_name(), config_model)
+        
+        # 重新加载配置
+        self.reload_config()
+    
+    def set_default_config(self, default_config: Dict[str, Any]) -> None:
+        """
+        设置插件默认配置
+        
+        Args:
+            default_config: 默认配置
+        """
+        self._default_config = default_config
+        
+        # 重新加载配置
+        self.reload_config()
+    
+    def get_default_config(self) -> Dict[str, Any]:
+        """
+        获取插件默认配置
+        
+        Returns:
+            Dict[str, Any]: 默认配置
+        """
+        return self._default_config.copy()
+    
+    def reload_config(self) -> None:
+        """
+        重新加载插件配置
+        """
+        # 使用插件配置管理器创建配置
+        merged_config = self._plugin_config_manager.create_plugin_config(
+            self.get_name(), 
+            self._default_config
+        )
+        
+        # 更新插件配置
+        self.config = merged_config
+        
+        # 发布配置变更事件
+        EventBus.publish('plugin_config_reloaded', 
+                       plugin_name=self.get_name(),
+                       config=self.config)
+    
+    def validate_config(self) -> bool:
+        """
+        验证插件配置
+        
+        Returns:
+            bool: 配置是否有效
+        """
+        if not self._config_model:
+            return True
+        
+        try:
+            self._config_model(**self.config)
+            return True
+        except ValidationError as e:
+            from loguru import logger
+            logger.error(f"插件配置验证失败: {self.get_name()}, 错误: {e}")
+            return False
+    
+    def get_config_value(self, key: str, default: Any = None) -> Any:
+        """
+        获取配置值，支持类型转换
+        
+        Args:
+            key: 配置键
+            default: 默认值
+            
+        Returns:
+            Any: 配置值
+        """
+        return self.config.get(key, default)
+    
+    def get_config_documentation(self) -> Optional[str]:
+        """
+        获取插件配置文档
+        
+        Returns:
+            Optional[str]: 插件配置文档
+        """
+        if not self._config_model:
+            return None
+        
+        return self._plugin_config_manager.get_config_documentation(self.get_name())
+    
+    def get_config_model(self) -> Optional[Type[BaseSettings]]:
+        """
+        获取插件配置模型
+        
+        Returns:
+            Optional[Type[BaseSettings]]: 插件配置模型类
+        """
+        return self._config_model
+    
+    def on_config_changed(self, old_config: Dict[str, Any], new_config: Dict[str, Any]) -> None:
+        """
+        配置变更时的回调方法，插件可以重写此方法
+        
+        Args:
+            old_config: 旧配置
+            new_config: 新配置
+        """
+        pass
 
     # -----------------------------
     # 插件间通信方法

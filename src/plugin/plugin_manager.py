@@ -15,6 +15,8 @@ from loguru import logger
 from src.plugin.plugin_base import PluginBase
 from src.plugin.plugin_registry import PluginRegistry, global_registry
 from src.utils.config import Config
+from src.utils.plugin_config_manager import get_plugin_config_manager
+from src.utils.event_bus import EventBus
 
 
 class PluginManager:
@@ -43,6 +45,13 @@ class PluginManager:
         
         # 插件目录
         self.plugin_dirs = self._get_plugin_dirs()
+        
+        # 初始化插件配置管理器
+        self.plugin_config_manager = get_plugin_config_manager(config)
+        
+        # 订阅配置变更事件
+        EventBus.subscribe('plugin_config_changed', self._on_plugin_config_changed)
+        EventBus.subscribe('plugin_config_reloaded', self._on_plugin_config_reloaded)
     
     def _get_plugin_dirs(self) -> List[str]:
         """
@@ -165,6 +174,32 @@ class PluginManager:
         
         return False
     
+    def _on_plugin_config_changed(self, plugin_name: str, old_config: Dict[str, Any], new_config: Dict[str, Any]):
+        """
+        处理插件配置变更事件
+        
+        Args:
+            plugin_name: 插件名称
+            old_config: 旧配置
+            new_config: 新配置
+        """
+        logger.debug(f"插件配置已变更: {plugin_name}")
+        
+    def _on_plugin_config_reloaded(self, plugin_name: str, config: Dict[str, Any]):
+        """
+        处理插件配置重新加载事件
+        
+        Args:
+            plugin_name: 插件名称
+            config: 新配置
+        """
+        logger.debug(f"插件配置已重新加载: {plugin_name}")
+        
+        # 通知插件配置已变更
+        plugin_instance = self.get_plugin_instance(plugin_name)
+        if plugin_instance:
+            plugin_instance.on_config_changed({}, config)
+    
     def initialize_plugins(self) -> int:
         """
         初始化所有已注册的插件
@@ -191,7 +226,7 @@ class PluginManager:
                 # 设置插件管理器引用
                 plugin_instance.plugin_manager = self
                 
-                # 初始化插件，传递完整的config对象而不是仅插件配置
+                # 初始化插件，传递完整的config对象
                 if plugin_instance.initialize(self.config):
                     # 保存插件实例
                     self.plugin_instances[plugin_type][plugin_name] = plugin_instance
@@ -204,6 +239,91 @@ class PluginManager:
         
         logger.info(f"插件初始化完成，共初始化 {initialized_count} 个插件")
         return initialized_count
+    
+    def update_plugin_config(self, plugin_name: str, config: Dict[str, Any]) -> bool:
+        """
+        更新插件配置
+        
+        Args:
+            plugin_name: 插件名称
+            config: 新的插件配置
+            
+        Returns:
+            bool: 更新是否成功
+        """
+        # 更新到插件配置管理器
+        success = self.plugin_config_manager.update_plugin_config(plugin_name, config)
+        
+        if success:
+            # 通知插件重新加载配置
+            plugin_instance = self.get_plugin_instance(plugin_name)
+            if plugin_instance:
+                plugin_instance.reload_config()
+                logger.info(f"插件配置已更新: {plugin_name}")
+        
+        return success
+    
+    def get_plugin_config(self, plugin_name: str) -> Dict[str, Any]:
+        """
+        获取插件配置
+        
+        Args:
+            plugin_name: 插件名称
+            
+        Returns:
+            Dict[str, Any]: 插件配置
+        """
+        return self.plugin_config_manager.get_plugin_config(plugin_name)
+    
+    def save_plugin_configs(self, file_path: str = "plugins_config.json") -> bool:
+        """
+        保存所有插件配置到文件
+        
+        Args:
+            file_path: 配置文件路径
+            
+        Returns:
+            bool: 保存是否成功
+        """
+        return self.plugin_config_manager.save_plugin_configs(file_path)
+    
+    def load_plugin_configs(self, file_path: str = "plugins_config.json") -> bool:
+        """
+        从文件加载所有插件配置
+        
+        Args:
+            file_path: 配置文件路径
+            
+        Returns:
+            bool: 加载是否成功
+        """
+        success = self.plugin_config_manager.load_plugin_configs(file_path)
+        
+        if success:
+            # 通知所有插件重新加载配置
+            for type_key in self.plugin_instances:
+                for plugin_instance in self.plugin_instances[type_key].values():
+                    plugin_instance.reload_config()
+            
+            logger.info("所有插件配置已从文件加载")
+        
+        return success
+    
+    def validate_all_plugin_configs(self) -> bool:
+        """
+        验证所有插件配置
+        
+        Returns:
+            bool: 所有配置是否都有效
+        """
+        all_valid = True
+        
+        for type_key in self.plugin_instances:
+            for plugin_instance in self.plugin_instances[type_key].values():
+                if not plugin_instance.validate_config():
+                    all_valid = False
+        
+        return all_valid
     
     def get_plugin_instance(self, plugin_name: str, plugin_type: str = None) -> Optional[PluginBase]:
         """
