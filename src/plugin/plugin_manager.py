@@ -188,6 +188,9 @@ class PluginManager:
                 # 创建插件实例
                 plugin_instance = plugin_class()
                 
+                # 设置插件管理器引用
+                plugin_instance.plugin_manager = self
+                
                 # 初始化插件，传递完整的config对象而不是仅插件配置
                 if plugin_instance.initialize(self.config):
                     # 保存插件实例
@@ -381,39 +384,6 @@ class PluginManager:
         
         return plugin_info_list
     
-    def call_plugin_method(self, plugin_name: str, method_name: str, plugin_type: str = None, **kwargs) -> Any:
-        """
-        调用插件方法
-        
-        Args:
-            plugin_name: 插件名称
-            method_name: 方法名称
-            plugin_type: 插件类型，如不指定则在所有类型中查找
-            **kwargs: 方法参数
-            
-        Returns:
-            Any: 方法返回值
-        """
-        plugin_instance = self.get_plugin_instance(plugin_name, plugin_type)
-        if not plugin_instance:
-            logger.error(f"插件实例不存在: {plugin_name}")
-            return None
-        
-        if not plugin_instance.is_enabled():
-            logger.warning(f"插件已禁用，无法调用方法: {plugin_name}")
-            return None
-        
-        try:
-            method = getattr(plugin_instance, method_name)
-            if callable(method):
-                return method(**kwargs)
-            else:
-                logger.error(f"插件 {plugin_name} 中 {method_name} 不是可调用方法")
-        except Exception as e:
-            logger.error(f"调用插件方法失败: {plugin_name}.{method_name}, 错误: {e}")
-        
-        return None
-    
     def get_available_datasource_plugins(self) -> Dict[str, PluginBase]:
         """
         获取可用的数据源插件
@@ -449,3 +419,36 @@ class PluginManager:
             Dict[str, PluginBase]: 可视化插件实例字典
         """
         return {name: plugin for name, plugin in self.plugin_instances['visualization'].items() if plugin.is_enabled()}
+    
+    def call_plugin_method(self, plugin_name: str, method_name: str, plugin_type: str = None, *args, **kwargs) -> Any:
+        """
+        直接调用插件方法
+        
+        Args:
+            plugin_name: 插件名称
+            method_name: 方法名称
+            plugin_type: 插件类型，如不指定则在所有类型中查找
+            *args: 位置参数
+            **kwargs: 关键字参数
+            
+        Returns:
+            Any: 方法返回值
+            
+        Raises:
+            Exception: 调用错误
+        """
+        plugin = self.get_plugin_instance(plugin_name, plugin_type)
+        if not plugin:
+            raise Exception(f"插件{plugin_name}不存在或已禁用")
+        
+        if not hasattr(plugin, method_name):
+            raise Exception(f"插件{plugin_name}没有方法: {method_name}")
+        
+        method = getattr(plugin, method_name)
+        if not callable(method):
+            raise Exception(f"插件{plugin_name}的{method_name}不是可调用方法")
+        
+        try:
+            return method(*args, **kwargs)
+        except Exception as e:
+            raise Exception(f"调用插件{plugin_name}的{method_name}方法失败: {str(e)}") from e

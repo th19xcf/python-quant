@@ -30,6 +30,12 @@ strategy_error = quant_events.signal('strategy_error')  # 策略执行错误
 ui_refresh = quant_events.signal('ui_refresh')  # UI需要刷新
 tab_changed = quant_events.signal('tab_changed')  # 标签页切换
 
+# 插件间通信事件
+plugin_message = quant_events.signal('plugin_message')  # 插件间消息传递
+plugin_request = quant_events.signal('plugin_request')  # 插件间请求-响应
+plugin_response = quant_events.signal('plugin_response')  # 插件间响应
+plugin_event = quant_events.signal('plugin_event')  # 插件自定义事件
+
 
 class EventBus:
     """
