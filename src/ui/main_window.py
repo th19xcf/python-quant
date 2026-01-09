@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QAbstractItemView, QToolButton, QScrollArea
 )
 from PySide6.QtCore import Qt, QSize, QPoint
-from PySide6.QtGui import QAction, QIcon, QFont, QColor
+from PySide6.QtGui import QAction, QActionGroup, QIcon, QFont, QColor
 import warnings
 
 # 忽略PySide6信号断开警告
@@ -183,9 +183,15 @@ class MainWindow(QMainWindow):
         self.current_window_count = 3
         self.window_menu = QMenu(self)
         self.window_actions = []
+        
+        # 创建QActionGroup，确保单选效果
+        self.window_action_group = QActionGroup(self)
+        self.window_action_group.setExclusive(True)
+        
         for i in range(1, 10):  # 最大选择9个窗口
             action = QAction(f'{i}个窗口', self)
             action.setCheckable(True)
+            action.setActionGroup(self.window_action_group)
             if i == self.current_window_count:  # 使用当前窗口数量作为默认选择
                 action.setChecked(True)
             action.triggered.connect(lambda checked, w=i: self.on_window_count_changed(w, checked))
@@ -218,8 +224,26 @@ class MainWindow(QMainWindow):
         """
         # 初始化缺失的属性
         self.current_stock_data = None
-        self.window_menu = None
+        
+        # 初始化窗口菜单
+        self.current_window_count = 3
+        self.window_menu = QMenu(self)
         self.window_actions = []
+        
+        # 创建QActionGroup，确保单选效果
+        self.window_action_group = QActionGroup(self)
+        self.window_action_group.setExclusive(True)
+        
+        for i in range(1, 10):  # 最大选择9个窗口
+            action = QAction(f'{i}个窗口', self)
+            action.setCheckable(True)
+            action.setActionGroup(self.window_action_group)
+            if i == self.current_window_count:  # 使用当前窗口数量作为默认选择
+                action.setChecked(True)
+            action.triggered.connect(lambda checked, w=i: self.on_window_count_changed(w, checked))
+            self.window_menu.addAction(action)
+            self.window_actions.append(action)
+            
         self.current_selected_window = 1
         # 保存每个窗口当前显示的指标
         self.window_indicators = {
@@ -334,8 +358,7 @@ class MainWindow(QMainWindow):
             ("退出", self.on_exit),
         ])
         
-        # 创建窗口菜单（用于指标选择栏的窗口切换）
-        self.window_menu = QMenu("窗口", self)
+        # 窗口菜单已在__init__方法中创建，此处不再重新创建
     
     def add_menu_actions(self, menu, actions):
         """
@@ -867,9 +890,9 @@ class MainWindow(QMainWindow):
         
         # 指标列表
         indicators = [
-            "指标A", "<", "VOL", "MACD", "KDJ", "DMI", "DMA", "FSL", "TRIX", "BRAR", "CR", 
+            "窗口", "指标A", "<", "VOL", "MACD", "KDJ", "DMI", "DMA", "FSL", "TRIX", "BRAR", "CR", 
             "VR", "OBV", "ASI", "EMV", "VOL-TDX", "RSI", "WR", "SAR",  
-            "CCI", "ROC", "MTM", "BOLL", "PSY", "MCST", ">"]
+            "CCI", "ROC", "MTM", "BOLL", "PSY", "MCST", ">" ]
         
         # 创建指标按钮样式
         indicator_button_style = """
@@ -2965,8 +2988,8 @@ class MainWindow(QMainWindow):
             logger.info(f"成功绘制{stock_name}({stock_code})的K线图")
             self.statusBar().showMessage(f"成功绘制{stock_name}({stock_code})的K线图", 3000)
             
-            # 确保窗口数量保持为3个
-            self.on_window_count_changed(3, True)
+            # 使用当前的窗口数量，不强制重置为3个
+            self.on_window_count_changed(self.current_window_count, True)
             
         except Exception as e:
             logger.exception(f"绘制K线图失败: {e}")
