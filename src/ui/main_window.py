@@ -2292,46 +2292,79 @@ class MainWindow(QMainWindow):
             plot_widget: 图表组件
             indicator_name: 指标名称
             x: x轴数据
-            data_df: 包含指标数据的DataFrame
+            data_df: 包含指标数据的DataFrame（支持pandas和Polars）
         """
         import pyqtgraph as pg
         
         logger.info(f"绘制{indicator_name}指标")
         
+        # 辅助函数：获取列的numpy数组，支持pandas和Polars DataFrame
+        def get_col_values(df, col_name):
+            if hasattr(df, 'to_pandas'):
+                # Polars DataFrame
+                return df[col_name].to_numpy()
+            else:
+                # pandas DataFrame
+                return df[col_name].values
+        
+        # 辅助函数：获取所有数值列，支持pandas和Polars DataFrame
+        def get_all_values(df):
+            if hasattr(df, 'to_pandas'):
+                # Polars DataFrame
+                return df.to_numpy()
+            else:
+                # pandas DataFrame
+                return df.values
+        
         # 根据不同指标调用相应的绘制逻辑
         if indicator_name == "KDJ":
             # 绘制KDJ指标
-            self._draw_indicator_curve(plot_widget, x, data_df['k'].values, 'white', 1, 'K')
-            self._draw_indicator_curve(plot_widget, x, data_df['d'].values, 'yellow', 1, 'D')
-            self._draw_indicator_curve(plot_widget, x, data_df['j'].values, 'magenta', 1, 'J')
-            self._setup_indicator_axis(plot_widget, x, np.column_stack((data_df['k'], data_df['d'], data_df['j'])).flatten())
+            k_values = get_col_values(data_df, 'k')
+            d_values = get_col_values(data_df, 'd')
+            j_values = get_col_values(data_df, 'j')
+            
+            self._draw_indicator_curve(plot_widget, x, k_values, 'white', 1, 'K')
+            self._draw_indicator_curve(plot_widget, x, d_values, 'yellow', 1, 'D')
+            self._draw_indicator_curve(plot_widget, x, j_values, 'magenta', 1, 'J')
+            self._setup_indicator_axis(plot_widget, x, np.column_stack((k_values, d_values, j_values)).flatten())
         elif indicator_name == "MACD":
             # 绘制MACD指标
-            self._draw_indicator_curve(plot_widget, x, data_df['macd'].values, 'blue', 1, 'DIF')
-            self._draw_indicator_curve(plot_widget, x, data_df['macd_signal'].values, 'red', 1, 'DEA')
-            self._draw_indicator_histogram(plot_widget, x, data_df['macd_hist'].values, 'r', 'g')
-            self._setup_indicator_axis(plot_widget, x, np.column_stack((data_df['macd'], data_df['macd_signal'], data_df['macd_hist'])).flatten())
+            macd_values = get_col_values(data_df, 'macd')
+            macd_signal_values = get_col_values(data_df, 'macd_signal')
+            macd_hist_values = get_col_values(data_df, 'macd_hist')
+            
+            self._draw_indicator_curve(plot_widget, x, macd_values, 'blue', 1, 'DIF')
+            self._draw_indicator_curve(plot_widget, x, macd_signal_values, 'red', 1, 'DEA')
+            self._draw_indicator_histogram(plot_widget, x, macd_hist_values, 'r', 'g')
+            self._setup_indicator_axis(plot_widget, x, np.column_stack((macd_values, macd_signal_values, macd_hist_values)).flatten())
         elif indicator_name == "RSI":
             # 绘制RSI指标
-            self._draw_indicator_curve(plot_widget, x, data_df['rsi'].values, 'white', 1, 'RSI')
-            self._setup_indicator_axis(plot_widget, x, data_df['rsi'].values)
+            rsi_values = get_col_values(data_df, 'rsi')
+            self._draw_indicator_curve(plot_widget, x, rsi_values, 'white', 1, 'RSI')
+            self._setup_indicator_axis(plot_widget, x, rsi_values)
         elif indicator_name == "VOL":
             # 绘制VOL指标
-            self._draw_indicator_histogram(plot_widget, x, data_df['volume'].values, 'r', 'g')
-            self._setup_indicator_axis(plot_widget, x, data_df['volume'].values)
+            volume_values = get_col_values(data_df, 'volume')
+            self._draw_indicator_histogram(plot_widget, x, volume_values, 'r', 'g')
+            self._setup_indicator_axis(plot_widget, x, volume_values)
         elif indicator_name == "MA":
             # 绘制MA指标
-            self._draw_indicator_curve(plot_widget, x, data_df['ma5'].values, 'white', 1, 'MA5')
-            self._draw_indicator_curve(plot_widget, x, data_df['ma10'].values, 'cyan', 1, 'MA10')
-            self._draw_indicator_curve(plot_widget, x, data_df['ma20'].values, 'red', 1, 'MA20')
-            self._draw_indicator_curve(plot_widget, x, data_df['ma60'].values, '#00FF00', 1, 'MA60')
-            self._setup_indicator_axis(plot_widget, x, np.column_stack((data_df['ma5'], data_df['ma10'], data_df['ma20'], data_df['ma60'])).flatten())
+            ma5_values = get_col_values(data_df, 'ma5')
+            ma10_values = get_col_values(data_df, 'ma10')
+            ma20_values = get_col_values(data_df, 'ma20')
+            ma60_values = get_col_values(data_df, 'ma60')
+            
+            self._draw_indicator_curve(plot_widget, x, ma5_values, 'white', 1, 'MA5')
+            self._draw_indicator_curve(plot_widget, x, ma10_values, 'cyan', 1, 'MA10')
+            self._draw_indicator_curve(plot_widget, x, ma20_values, 'red', 1, 'MA20')
+            self._draw_indicator_curve(plot_widget, x, ma60_values, '#00FF00', 1, 'MA60')
+            self._setup_indicator_axis(plot_widget, x, np.column_stack((ma5_values, ma10_values, ma20_values, ma60_values)).flatten())
         else:
             # 默认情况，尝试绘制所有数值列
             for column in data_df.columns:
                 if column not in ['date', 'open', 'high', 'low', 'close', 'volume']:
-                    self._draw_indicator_curve(plot_widget, x, data_df[column].values, 'white', 1, column)
-            self._setup_indicator_axis(plot_widget, x, data_df.values.flatten())
+                    self._draw_indicator_curve(plot_widget, x, get_col_values(data_df, column), 'white', 1, column)
+            self._setup_indicator_axis(plot_widget, x, get_all_values(data_df).flatten())
     
     def plot_k_line(self, df, stock_name, stock_code):
         """

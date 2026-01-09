@@ -10,6 +10,15 @@ import numpy as np
 import ta
 import concurrent.futures
 from functools import partial
+import polars as pl
+
+from .indicator_calculator import (
+    calculate_ma_polars,
+    calculate_vol_ma_polars,
+    preprocess_data_polars,
+    sample_data_polars,
+    generate_cache_key
+)
 
 
 class TechnicalAnalyzer:
@@ -25,21 +34,29 @@ class TechnicalAnalyzer:
             data: 股票数据，可以是Polars DataFrame或Pandas DataFrame
             plugin_manager: 插件管理器实例，用于加载和使用指标插件
         """
-        # 转换为Pandas DataFrame以便使用ta库
+        # 保存原始Polars DataFrame（如果输入是Polars格式）
+        self.pl_df = None
+        # 仅在必要时转换为Pandas DataFrame以便使用ta库
         self.df = None
-        if hasattr(data, 'to_pandas'):
-            self.df = data.to_pandas()
-        elif isinstance(data, pd.DataFrame):
-            self.df = data
-        else:
-            self.df = pd.DataFrame(data)
         
-        # 确保必要的列存在且为数值类型
-        required_columns = ['open', 'high', 'low', 'close', 'volume']
-        for col in required_columns:
-            if col not in self.df.columns:
-                raise ValueError(f"数据中没有{col}列")
-            self.df[col] = pd.to_numeric(self.df[col], errors='coerce')
+        if hasattr(data, 'to_pandas'):
+            # 输入是Polars DataFrame
+            self.pl_df = data
+            # 暂不转换，按需转换
+            self.df = None
+        elif isinstance(data, pd.DataFrame):
+            # 输入是Pandas DataFrame
+            self.df = data
+            # 转换为Polars以便进行高性能处理
+            self.pl_df = pl.from_pandas(data)
+        else:
+            # 输入是其他格式，转换为Polars
+            self.pl_df = pl.DataFrame(data)
+            # 暂不转换为Pandas
+            self.df = None
+        
+        # 使用Polars进行数据预处理
+        self._preprocess_data_polars()
         
         # 保存插件管理器实例
         self.plugin_manager = plugin_manager
@@ -56,6 +73,8 @@ class TechnicalAnalyzer:
         
         # 添加缓存机制，避免重复计算
         self._calculate_cache = {}
+        # 数据哈希，用于检测数据变化
+        self._data_hash = hash(self.pl_df.to_pandas().values.tobytes())
         
         # 初始化指标映射，便于统一管理
         self.indicator_mapping = {
@@ -69,6 +88,38 @@ class TechnicalAnalyzer:
         # 初始化插件指标映射
         self._init_plugin_indicator_mapping()
     
+    def _preprocess_data_polars(self):
+        """
+        使用Polars进行数据预处理
+        - 检查必要列是否存在
+        - 转换为数值类型
+        - 处理缺失值
+        """
+        self.pl_df = preprocess_data_polars(self.pl_df)
+    
+    def _generate_cache_key(self, indicator_type, *args, **kwargs):
+        """
+        生成唯一的缓存键
+        
+        Args:
+            indicator_type: 指标类型
+            *args: 位置参数
+            **kwargs: 关键字参数
+            
+        Returns:
+            int: 唯一的缓存键
+        """
+        # 使用工具函数生成缓存键
+        return generate_cache_key(self._data_hash, indicator_type, *args, **kwargs)
+    
+    def _ensure_pandas_df(self):
+        """
+        确保pandas DataFrame已初始化，仅在需要时转换
+        """
+        if self.df is None and self.pl_df is not None:
+            # 仅在需要时转换为pandas DataFrame
+            self.df = self.pl_df.to_pandas()
+    
     def calculate_macd(self, fast_period=12, slow_period=26, signal_period=9):
         """
         计算MACD指标
@@ -81,6 +132,9 @@ class TechnicalAnalyzer:
         Returns:
             pd.DataFrame: 包含MACD指标的DataFrame
         """
+        # 确保pandas DataFrame已初始化
+        self._ensure_pandas_df()
+        
         # 检查是否已经计算过MACD指标
         if not self.calculated_indicators['macd']:
             self.df['macd'] = ta.trend.macd(self.df['close'], window_slow=slow_period, window_fast=fast_period, fillna=True)
@@ -101,6 +155,9 @@ class TechnicalAnalyzer:
         Returns:
             pd.DataFrame: 包含KDJ指标的DataFrame
         """
+        # 确保pandas DataFrame已初始化
+        self._ensure_pandas_df()
+        
         # 检查是否已经计算过该窗口的KDJ指标
         if window not in self.calculated_indicators['kdj']:
             self.df['k'] = ta.momentum.stoch(self.df['high'], self.df['low'], self.df['close'], window=window, fillna=True)
@@ -111,14 +168,66 @@ class TechnicalAnalyzer:
         
         return self.df
     
-    def get_data(self):
+    def sample_data(self, target_points=1000, strategy='uniform', return_polars=False):
+        """
+        对数据进行采样，减少数据量，提高图表渲染速度
+        
+        Args:
+            target_points: 目标采样点数
+            strategy: 采样策略，可选值：'uniform'（均匀采样）、'time_weighted'（时间加权采样）
+            return_polars: 是否返回Polars DataFrame
+            
+        Returns:
+            pd.DataFrame或pl.DataFrame: 采样后的数据
+        """
+        # 确保数据已同步
+        current_data = self.get_data(return_polars=True)
+        
+        # 使用工具函数进行采样
+        sampled_data = sample_data_polars(current_data, target_points, strategy)
+        
+        return sampled_data if return_polars else sampled_data.to_pandas()
+    
+    def get_data(self, return_polars=False, sample=False, sample_params=None):
         """
         获取包含所有计算指标的数据
         
+        Args:
+            return_polars: 是否返回Polars DataFrame，默认返回pandas DataFrame
+            sample: 是否对数据进行采样
+            sample_params: 采样参数，字典类型，包含target_points和strategy
+            
         Returns:
-            pd.DataFrame: 包含所有指标的数据
+            pd.DataFrame或pl.DataFrame: 包含所有指标的数据
         """
-        return self.df
+        # 确保数据已同步
+        if return_polars:
+            # 如果已计算了指标，需要将pandas DataFrame转换回Polars
+            if self.df is not None and self.pl_df is not None:
+                # 只转换新添加的指标列
+                new_columns = [col for col in self.df.columns if col not in self.pl_df.columns]
+                if new_columns:
+                    # 将新指标列合并到Polars DataFrame
+                    new_cols_df = pl.from_pandas(self.df[new_columns])
+                    self.pl_df = self.pl_df.hstack(new_cols_df)
+            data = self.pl_df
+        else:
+            # 确保pandas DataFrame已初始化
+            self._ensure_pandas_df()
+            data = self.df
+        
+        # 如果需要采样
+        if sample:
+            sample_params = sample_params or {}
+            target_points = sample_params.get('target_points', 1000)
+            strategy = sample_params.get('strategy', 'uniform')
+            
+            if return_polars:
+                data = self.sample_data(target_points=target_points, strategy=strategy, return_polars=True)
+            else:
+                data = self.sample_data(target_points=target_points, strategy=strategy, return_polars=False)
+        
+        return data
     
     def is_indicator_calculated(self, indicator_type, window=None):
         """
@@ -167,11 +276,17 @@ class TechnicalAnalyzer:
             self._calculate_cache = {}
             # 重置插件指标映射
             self._init_plugin_indicator_mapping()
+            # 重置数据哈希
+            self._data_hash = hash(self.pl_df.to_pandas().values.tobytes())
         elif self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():
             # 重置特定插件指标
             if indicator_type in self.calculated_indicators['plugin']:
                 self.calculated_indicators['plugin'].remove(indicator_type)
                 # 对于插件指标，目前无法自动确定要删除的列，由插件自行管理
+                # 从缓存中删除
+                cache_key = self._generate_cache_key(indicator_type)
+                if cache_key in self._calculate_cache:
+                    del self._calculate_cache[cache_key]
         elif indicator_type in self.calculated_indicators:
             if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma']:
                 if window:
@@ -181,6 +296,10 @@ class TechnicalAnalyzer:
                     column_name = f'{indicator_type}{window}' if indicator_type != 'vol_ma' else f'vol_ma{window}'
                     if column_name in self.df.columns:
                         self.df.drop(column_name, axis=1, inplace=True)
+                    # 从缓存中删除
+                    cache_key = self._generate_cache_key(indicator_type, window)
+                    if cache_key in self._calculate_cache:
+                        del self._calculate_cache[cache_key]
                 else:
                     # 重置该类型的所有窗口
                     windows = list(self.calculated_indicators[indicator_type])
@@ -188,6 +307,10 @@ class TechnicalAnalyzer:
                         column_name = f'{indicator_type}{w}' if indicator_type != 'vol_ma' else f'vol_ma{w}'
                         if column_name in self.df.columns:
                             self.df.drop(column_name, axis=1, inplace=True)
+                        # 从缓存中删除
+                        cache_key = self._generate_cache_key(indicator_type, w)
+                        if cache_key in self._calculate_cache:
+                            del self._calculate_cache[cache_key]
                     self.calculated_indicators[indicator_type].clear()
             elif indicator_type in ['macd']:
                 # 重置MACD指标
@@ -196,10 +319,18 @@ class TechnicalAnalyzer:
                 for col in ['macd', 'macd_signal', 'macd_hist']:
                     if col in self.df.columns:
                         self.df.drop(col, axis=1, inplace=True)
+                # 从缓存中删除
+                cache_key = self._generate_cache_key(indicator_type)
+                if cache_key in self._calculate_cache:
+                    del self._calculate_cache[cache_key]
             elif indicator_type == 'plugin':
                 # 重置所有插件指标
                 self.calculated_indicators['plugin'].clear()
                 # 对于插件指标，目前无法自动确定要删除的列，由插件自行管理
+                # 从缓存中删除所有插件指标
+                for cache_key in list(self._calculate_cache.keys()):
+                    if cache_key.startswith('plugin_'):
+                        del self._calculate_cache[cache_key]
     
     def get_calculated_indicators(self):
         """
@@ -264,33 +395,22 @@ class TechnicalAnalyzer:
         windows_to_calculate = [w for w in windows if w not in self.calculated_indicators['ma']]
         
         if windows_to_calculate:
-            if parallel:
-                # 并行计算MA指标
-                close_data = self.df['close']
-                results = []
-                
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(windows_to_calculate), 8)) as executor:
-                    # 使用partial绑定close_data参数
-                    ma_func = partial(self._calculate_ma_window, close_data=close_data)
-                    # 提交所有任务
-                    futures = {executor.submit(ma_func, window): window for window in windows_to_calculate}
-                    
-                    # 收集结果
-                    for future in concurrent.futures.as_completed(futures):
-                        window, ma_data = future.result()
-                        results.append((window, ma_data))
-                
-                # 将结果合并到DataFrame
-                for window, ma_data in results:
-                    self.df[f'ma{window}'] = ma_data
-                    # 更新计算状态
-                    self.calculated_indicators['ma'].add(window)
-            else:
-                # 串行计算MA指标
-                for window in windows_to_calculate:
-                    self.df[f'ma{window}'] = ta.trend.sma_indicator(self.df['close'], window=window, fillna=True)
-                    # 更新计算状态
-                    self.calculated_indicators['ma'].add(window)
+            # 使用Polars计算移动平均线，利用其内置并行能力
+            self.pl_df = calculate_ma_polars(self.pl_df, windows_to_calculate)
+            
+            # 更新计算状态
+            for window in windows_to_calculate:
+                self.calculated_indicators['ma'].add(window)
+            
+            # 如果pandas DataFrame已初始化，需要同步更新
+            if self.df is not None:
+                # 只转换新添加的MA列
+                new_ma_cols = [f'ma{w}' for w in windows_to_calculate]
+                new_cols_df = self.pl_df.select(new_ma_cols).to_pandas()
+                self.df = pd.concat([self.df, new_cols_df], axis=1)
+        
+        # 确保pandas DataFrame已初始化
+        self._ensure_pandas_df()
         
         return self.df
     
@@ -305,6 +425,9 @@ class TechnicalAnalyzer:
         Returns:
             pd.DataFrame: 包含RSI指标的DataFrame
         """
+        # 确保pandas DataFrame已初始化
+        self._ensure_pandas_df()
+        
         # 确保windows是列表
         if not isinstance(windows, list):
             windows = [windows]
@@ -358,33 +481,22 @@ class TechnicalAnalyzer:
         windows_to_calculate = [w for w in windows if w not in self.calculated_indicators['vol_ma']]
         
         if windows_to_calculate:
-            if parallel:
-                # 并行计算成交量MA指标
-                volume_data = self.df['volume']
-                results = []
-                
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(windows_to_calculate), 8)) as executor:
-                    # 使用partial绑定volume_data参数
-                    vol_ma_func = partial(self._calculate_vol_ma_window, volume_data=volume_data)
-                    # 提交所有任务
-                    futures = {executor.submit(vol_ma_func, window): window for window in windows_to_calculate}
-                    
-                    # 收集结果
-                    for future in concurrent.futures.as_completed(futures):
-                        window, vol_ma_data = future.result()
-                        results.append((window, vol_ma_data))
-                
-                # 将结果合并到DataFrame
-                for window, vol_ma_data in results:
-                    self.df[f'vol_ma{window}'] = vol_ma_data
-                    # 更新计算状态
-                    self.calculated_indicators['vol_ma'].add(window)
-            else:
-                # 串行计算成交量MA指标
-                for window in windows_to_calculate:
-                    self.df[f'vol_ma{window}'] = ta.trend.sma_indicator(self.df['volume'], window=window, fillna=True)
-                    # 更新计算状态
-                    self.calculated_indicators['vol_ma'].add(window)
+            # 使用Polars计算成交量移动平均线，利用其内置并行能力
+            self.pl_df = calculate_vol_ma_polars(self.pl_df, windows_to_calculate)
+            
+            # 更新计算状态
+            for window in windows_to_calculate:
+                self.calculated_indicators['vol_ma'].add(window)
+            
+            # 如果pandas DataFrame已初始化，需要同步更新
+            if self.df is not None:
+                # 只转换新添加的成交量MA列
+                new_vol_ma_cols = [f'vol_ma{w}' for w in windows_to_calculate]
+                new_cols_df = self.pl_df.select(new_vol_ma_cols).to_pandas()
+                self.df = pd.concat([self.df, new_cols_df], axis=1)
+        
+        # 确保pandas DataFrame已初始化
+        self._ensure_pandas_df()
         
         return self.df
     
@@ -429,6 +541,9 @@ class TechnicalAnalyzer:
         if not self.plugin_manager:
             raise ValueError("插件管理器未初始化")
         
+        # 确保pandas DataFrame已初始化
+        self._ensure_pandas_df()
+        
         # 获取指标插件实例
         indicator_plugins = self.plugin_manager.get_available_indicator_plugins()
         if plugin_name not in indicator_plugins:
@@ -470,6 +585,9 @@ class TechnicalAnalyzer:
         Returns:
             pd.DataFrame: 包含计算指标的DataFrame
         """
+        # 确保pandas DataFrame已初始化
+        self._ensure_pandas_df()
+        
         if indicator_type not in self.indicator_mapping:
             # 检查是否为插件指标
             if self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():
@@ -495,6 +613,9 @@ class TechnicalAnalyzer:
         Returns:
             pd.DataFrame: 包含所有指标的数据
         """
+        # 确保pandas DataFrame已初始化
+        self._ensure_pandas_df()
+        
         if parallel:
             # 并行计算所有指标类型
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
