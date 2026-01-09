@@ -15,12 +15,38 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QSize, QPoint
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QFont, QColor
 import warnings
+from functools import wraps
 
 # 忽略PySide6信号断开警告
 warnings.simplefilter("ignore", RuntimeWarning)
 
 from src.utils.logger import logger
 from src.utils.event_bus import EventBus
+
+
+def event_handler(event_type):
+    """
+    事件处理装饰器，统一记录日志和处理事件
+    
+    Args:
+        event_type: 事件类型，用于日志记录
+        
+    Returns:
+        decorator: 装饰器函数
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(self, sender, *args, **kwargs):
+            # 记录事件接收
+            logger.info(f"收到{event_type}事件: {args} {kwargs}")
+            try:
+                # 调用实际的事件处理函数
+                return func(self, sender, *args, **kwargs)
+            except Exception as e:
+                # 记录异常
+                logger.exception(f"处理{event_type}事件时发生错误: {e}")
+        return wrapper
+    return decorator
 
 
 class MainWindow(QMainWindow):
@@ -78,6 +104,7 @@ class MainWindow(QMainWindow):
         
         logger.info("主窗口事件订阅完成")
     
+    @event_handler("数据更新")
     def _handle_data_updated(self, sender, data_type, ts_code, message=""):
         """
         处理数据更新事件
@@ -87,8 +114,6 @@ class MainWindow(QMainWindow):
             ts_code: 股票代码或指数代码
             message: 附加消息
         """
-        logger.info(f"收到数据更新事件: {data_type} - {ts_code} - {message}")
-        
         # 根据数据类型更新UI
         if data_type in ['stock_daily', 'index_daily']:
             # 如果当前显示的是该股票或指数，刷新K线图
@@ -101,6 +126,7 @@ class MainWindow(QMainWindow):
             # 更新指数列表
             self.update_index_list()
     
+    @event_handler("数据错误")
     def _handle_data_error(self, sender, data_type, ts_code, message=""):
         """
         处理数据错误事件
@@ -110,9 +136,9 @@ class MainWindow(QMainWindow):
             ts_code: 股票代码或指数代码
             message: 错误消息
         """
-        logger.error(f"收到数据错误事件: {data_type} - {ts_code} - {message}")
         # 可以在这里显示错误提示
     
+    @event_handler("指标计算完成")
     def _handle_indicator_calculated(self, sender, indicator_name, ts_code, result=None):
         """
         处理技术指标计算完成事件
@@ -122,11 +148,11 @@ class MainWindow(QMainWindow):
             ts_code: 股票代码
             result: 计算结果
         """
-        logger.info(f"收到指标计算完成事件: {indicator_name} - {ts_code}")
         # 更新指标显示
         if hasattr(self, 'current_stock_code') and self.current_stock_code == ts_code:
             self.refresh_indicator_charts()
     
+    @event_handler("指标计算错误")
     def _handle_indicator_error(self, sender, indicator_name, ts_code, error=""):
         """
         处理技术指标计算错误事件
@@ -136,13 +162,13 @@ class MainWindow(QMainWindow):
             ts_code: 股票代码
             error: 错误信息
         """
-        logger.error(f"收到指标计算错误事件: {indicator_name} - {ts_code} - {error}")
+        pass
     
+    @event_handler("系统关闭")
     def _handle_system_shutdown(self, sender):
         """
         处理系统关闭事件
         """
-        logger.info("收到系统关闭事件，准备关闭主窗口")
         # 可以在这里保存用户设置等
         self.close()
     
@@ -877,6 +903,45 @@ class MainWindow(QMainWindow):
         # 初始化完成后，设置为3个窗口模式
         self.on_window_count_changed(3, True)
     
+    def _create_indicator_button(self, indicator_name, style_sheet, checkable=True, fixed_width=None, clicked_handler=None):
+        """
+        创建指标按钮的通用方法
+        
+        Args:
+            indicator_name: 指标名称
+            style_sheet: 按钮样式
+            checkable: 是否可勾选
+            fixed_width: 固定宽度，None表示自适应
+            clicked_handler: 点击事件处理函数
+            
+        Returns:
+            QPushButton: 创建的按钮实例
+        """
+        btn = QPushButton(indicator_name)
+        btn.setStyleSheet(style_sheet)
+        btn.setCheckable(checkable)
+        
+        if fixed_width is not None:
+            btn.setFixedWidth(fixed_width)
+        
+        if clicked_handler is not None:
+            btn.clicked.connect(clicked_handler)
+        else:
+            btn.clicked.connect(lambda checked, ind=indicator_name: self.on_indicator_clicked(ind, checked))
+        
+        return btn
+    
+    def _create_separator(self):
+        """
+        创建分隔符的通用方法
+        
+        Returns:
+            QLabel: 创建的分隔符实例
+        """
+        separator = QLabel("|")
+        separator.setStyleSheet("color: #666666; font-size: 12px;")
+        return separator
+    
     def create_indicator_selection(self):
         """
         创建指标选择窗口，类似通达信的指标选择栏
@@ -935,9 +1000,11 @@ class MainWindow(QMainWindow):
         for indicator in indicators:
             if indicator == "窗口":
                 # 特殊处理窗口按钮，使其具有与上方工具栏相同的功能
-                btn = QPushButton(indicator)
-                btn.setStyleSheet(indicator_button_style)
-                
+                btn = self._create_indicator_button(
+                    indicator, 
+                    indicator_button_style, 
+                    checkable=False
+                )
                 # 使用已经创建好的顶部菜单，共享相同的actions和状态管理
                 # 这样可以确保单选功能正常工作
                 btn.clicked.connect(lambda checked, b=btn, m=self.window_menu: 
@@ -947,25 +1014,23 @@ class MainWindow(QMainWindow):
                 self.indicator_buttons[indicator] = btn
             elif indicator == "指标A":
                 # 特殊按钮样式
-                btn = QPushButton(indicator)
-                btn.setCheckable(True)
-                btn.setStyleSheet(indicator_button_style)
-                btn.clicked.connect(lambda checked, ind=indicator: self.on_indicator_clicked(ind, checked))
+                btn = self._create_indicator_button(indicator, indicator_button_style)
                 scroll_layout.addWidget(btn)
                 self.indicator_buttons[indicator] = btn
                 
                 # 添加左箭头滚动按钮
-                left_arrow_btn = QPushButton("<")
-                left_arrow_btn.setStyleSheet(indicator_button_style)
-                left_arrow_btn.setFixedWidth(20)
-                left_arrow_btn.clicked.connect(self.on_left_arrow_clicked)
+                left_arrow_btn = self._create_indicator_button(
+                    "<", 
+                    indicator_button_style, 
+                    checkable=False,
+                    fixed_width=20,
+                    clicked_handler=self.on_left_arrow_clicked
+                )
                 scroll_layout.addWidget(left_arrow_btn)
                 self.indicator_buttons["<"] = left_arrow_btn
                 
                 # 添加分隔符
-                separator = QLabel("|")
-                separator.setStyleSheet("color: #666666; font-size: 12px;")
-                scroll_layout.addWidget(separator)
+                scroll_layout.addWidget(self._create_separator())
             elif indicator == "指标B" or indicator == "模板":
                 # 特殊按钮样式
                 btn = QPushButton(indicator)
@@ -982,29 +1047,20 @@ class MainWindow(QMainWindow):
                     scroll_layout.addWidget(separator)
             else:
                 # 普通指标按钮
-                btn = QPushButton(indicator)
-                btn.setCheckable(True)
-                btn.setStyleSheet(indicator_button_style)
-                btn.clicked.connect(lambda checked, ind=indicator: self.on_indicator_clicked(ind, checked))
+                btn = self._create_indicator_button(indicator, indicator_button_style)
                 scroll_layout.addWidget(btn)
                 self.indicator_buttons[indicator] = btn
         
         # 添加指标B和模板按钮
-        scroll_layout.addWidget(QLabel("|"))
+        scroll_layout.addWidget(self._create_separator())
         
-        btn = QPushButton("指标B")
-        btn.setCheckable(True)
-        btn.setStyleSheet(indicator_button_style)
-        btn.clicked.connect(lambda checked: self.on_indicator_clicked("指标B", checked))
+        btn = self._create_indicator_button("指标B", indicator_button_style)
         scroll_layout.addWidget(btn)
         self.indicator_buttons["指标B"] = btn
         
-        scroll_layout.addWidget(QLabel("|"))
+        scroll_layout.addWidget(self._create_separator())
         
-        btn = QPushButton("模板")
-        btn.setCheckable(True)
-        btn.setStyleSheet(indicator_button_style)
-        btn.clicked.connect(lambda checked: self.on_indicator_clicked("模板", checked))
+        btn = self._create_indicator_button("模板", indicator_button_style)
         scroll_layout.addWidget(btn)
         self.indicator_buttons["模板"] = btn
         
@@ -1019,22 +1075,26 @@ class MainWindow(QMainWindow):
         
         # 添加+、-按钮用于调整柱体数量
         # 添加分隔符
-        separator = QLabel("|")
-        separator.setStyleSheet("color: #666666; font-size: 12px;")
-        indicator_layout.addWidget(separator)
+        indicator_layout.addWidget(self._create_separator())
         
         # 添加+按钮
-        plus_btn = QPushButton("+")
-        plus_btn.setStyleSheet(indicator_button_style)
-        plus_btn.setFixedWidth(20)
-        plus_btn.clicked.connect(self.on_plus_btn_clicked)
+        plus_btn = self._create_indicator_button(
+            "+", 
+            indicator_button_style, 
+            checkable=False,
+            fixed_width=20,
+            clicked_handler=self.on_plus_btn_clicked
+        )
         indicator_layout.addWidget(plus_btn)
         
         # 添加-按钮
-        minus_btn = QPushButton("-")
-        minus_btn.setStyleSheet(indicator_button_style)
-        minus_btn.setFixedWidth(20)
-        minus_btn.clicked.connect(self.on_minus_btn_clicked)
+        minus_btn = self._create_indicator_button(
+            "-", 
+            indicator_button_style, 
+            checkable=False,
+            fixed_width=20,
+            clicked_handler=self.on_minus_btn_clicked
+        )
         indicator_layout.addWidget(minus_btn)
     
     def create_indicator_menu(self):
@@ -1990,6 +2050,288 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.exception(f"处理股票双击事件失败: {e}")
             self.statusBar().showMessage(f"处理股票双击事件失败: {str(e)[:50]}...", 5000)
+    
+    def _setup_chart_labels(self, stock_name, stock_code):
+        """
+        设置图表标签
+        
+        Args:
+            stock_name: 股票名称
+            stock_code: 股票代码
+        """
+        from PySide6.QtWidgets import QLabel, QHBoxLayout, QWidget
+        
+        # 检查是否已经存在标题标签，如果存在则移除
+        if hasattr(self, 'chart_title_label'):
+            try:
+                self.chart_title_label.deleteLater()
+            except Exception as e:
+                logger.warning(f"移除旧标题标签时发生错误: {e}")
+        
+        # 检查是否已经存在MA标签，如果存在则移除
+        if hasattr(self, 'ma_values_label'):
+            try:
+                self.ma_values_label.deleteLater()
+            except Exception as e:
+                logger.warning(f"移除旧MA标签时发生错误: {e}")
+        
+        # 创建图表标题标签，放置在左上角
+        self.chart_title_label = QLabel()
+        self.chart_title_label.setStyleSheet("font-family: Consolas, monospace; padding: 5px; color: #C0C0C0; background-color: transparent; border: none;")
+        # 获取当前周期，如果没有设置则默认为日线
+        current_period = getattr(self, 'current_period', '日线')
+        self.chart_title_label.setText(f"{stock_name}({stock_code}) {current_period}")
+        self.chart_title_label.setWordWrap(False)
+        
+        # 创建MA值显示标签
+        self.ma_values_label = QLabel()
+        self.ma_values_label.setStyleSheet("font-family: Consolas, monospace; padding: 5px; color: #C0C0C0; background-color: transparent; border: none;")
+        # 使用HTML设置初始文本和颜色，添加日期显示
+        self.ma_values_label.setText("<font color='#C0C0C0'>日期: --</font>  <font color='white'>MA5: --</font>  <font color='cyan'>MA10: --</font>  <font color='red'>MA20: --</font>  <font color='#00FF00'>MA60: --</font>")
+        # 确保不换行
+        self.ma_values_label.setWordWrap(False)
+        
+        # 检查是否已经创建了图表容器
+        if hasattr(self, 'chart_container') and hasattr(self, 'chart_layout'):
+            # 移除旧的标题和MA标签相关组件
+            for i in range(self.chart_layout.count()):
+                item = self.chart_layout.itemAt(i)
+                if isinstance(item, QHBoxLayout):
+                    # 移除旧的水平布局
+                    self.chart_layout.removeItem(item)
+                    break
+                elif hasattr(self, 'title_ma_container') and item.widget() == self.title_ma_container:
+                    # 移除旧的容器
+                    self.chart_layout.removeWidget(self.title_ma_container)
+                    break
+            
+            # 创建一个统一的背景容器
+            self.title_ma_container = QWidget()
+            self.title_ma_container.setStyleSheet("background-color: #222222;")
+            
+            # 创建水平布局
+            title_ma_layout = QHBoxLayout(self.title_ma_container)
+            title_ma_layout.setSpacing(0)
+            title_ma_layout.setContentsMargins(0, 0, 0, 0)
+            
+            # 添加功能菜单按钮到布局最左端
+            self.menu_btn = self.create_indicator_menu_button(self.current_selected_window)
+            title_ma_layout.addWidget(self.menu_btn)
+            
+            # 添加窗口标题标签
+            window_title_label = QLabel("K线")
+            window_title_label.setStyleSheet("background-color: transparent; color: #C0C0C0; font-size: 12px; padding: 0 5px;")
+            title_ma_layout.addWidget(window_title_label)
+            
+            # 添加标签到布局
+            title_ma_layout.addWidget(self.chart_title_label)
+            title_ma_layout.addWidget(self.ma_values_label)
+            title_ma_layout.addStretch(1)
+            
+            # 将容器添加到图表布局顶部
+            self.chart_layout.insertWidget(0, self.title_ma_container)
+            logger.info("已添加标题标签和MA值显示标签，在同一行显示")
+    
+    def _prepare_chart_data(self, df):
+        """
+        准备图表数据
+        
+        Args:
+            df: 股票历史数据DataFrame
+        
+        Returns:
+            tuple: (dates, opens, highs, lows, closes, x, ohlc_list)
+        """
+        import numpy as np
+        
+        # 准备K线图数据
+        dates = df['date'].to_list()
+        opens = df['open'].to_list()
+        highs = df['high'].to_list()
+        lows = df['low'].to_list()
+        closes = df['close'].to_list()
+        
+        # 只显示指定数量的柱体
+        bar_count = getattr(self, 'displayed_bar_count', 100)
+        if len(dates) > bar_count:
+            dates = dates[-bar_count:]
+            opens = opens[-bar_count:]
+            highs = highs[-bar_count:]
+            lows = lows[-bar_count:]
+            closes = closes[-bar_count:]
+        
+        # 创建x轴坐标（使用索引）
+        x = np.arange(len(dates))
+        
+        # 创建K线图数据
+        # K线图由OHLC数据组成：(x, open, high, low, close)
+        ohlc = np.column_stack((x, opens, highs, lows, closes))
+        
+        # 转换为列表格式，适合自定义CandleStickItem
+        ohlc_list = [tuple(row) for row in ohlc]
+        
+        return dates, opens, highs, lows, closes, x, ohlc_list
+    
+    def _setup_chart_axes(self, plot_widget, dates, highs, lows):
+        """
+        设置图表坐标轴
+        
+        Args:
+            plot_widget: 图表组件
+            dates: 日期列表
+            highs: 最高价列表
+            lows: 最低价列表
+        """
+        import numpy as np
+        
+        # 设置x轴刻度标签（显示日期）
+        ax = plot_widget.getAxis('bottom')
+        ax.setTicks([[(i, dates[i].strftime('%Y-%m-%d')) for i in range(0, len(dates), 10)]])
+        
+        # 设置Y轴范围，留出一定的边距
+        y_min = np.min(lows) * 0.99
+        y_max = np.max(highs) * 1.01
+        plot_widget.setYRange(y_min, y_max)
+    
+    def _draw_indicator_curve(self, plot_widget, x, data, color, width=1, name=None):
+        """
+        绘制指标曲线的通用方法
+        
+        Args:
+            plot_widget: 图表组件
+            x: x轴数据
+            data: 指标数据
+            color: 曲线颜色
+            width: 曲线宽度
+            name: 曲线名称
+        """
+        import pyqtgraph as pg
+        plot_widget.plot(x, data, pen=pg.mkPen(color, width=width), name=name)
+    
+    def _draw_indicator_histogram(self, plot_widget, x, data, positive_color='r', negative_color='g'):
+        """
+        绘制指标柱状图的通用方法
+        
+        Args:
+            plot_widget: 图表组件
+            x: x轴数据
+            data: 指标数据
+            positive_color: 正值柱状图颜色
+            negative_color: 负值柱状图颜色
+        """
+        import pyqtgraph as pg
+        for i in range(len(x)):
+            if data[i] >= 0:
+                color = positive_color
+            else:
+                color = negative_color
+            bar_item = pg.BarGraphItem(x=[x[i]], height=[data[i]], width=0.6, brush=color)
+            plot_widget.addItem(bar_item)
+    
+    def _update_indicator_values(self, label_widget, indicator_name, data_df):
+        """
+        更新指标数值显示的通用方法
+        
+        Args:
+            label_widget: 显示指标数值的标签组件
+            indicator_name: 指标名称
+            data_df: 包含指标数据的DataFrame
+        """
+        # 根据不同指标更新数值显示
+        if indicator_name == "KDJ":
+            # KDJ指标数值显示
+            latest_k = data_df['k'].iloc[-1]
+            latest_d = data_df['d'].iloc[-1]
+            latest_j = data_df['j'].iloc[-1]
+            text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
+        elif indicator_name == "MACD":
+            # MACD指标数值显示
+            latest_macd = data_df['macd'].iloc[-1]
+            latest_macd_signal = data_df['macd_signal'].iloc[-1]
+            latest_macd_hist = data_df['macd_hist'].iloc[-1]
+            text = f"<font color='white'>DIF: {latest_macd:.2f}</font>  <font color='yellow'>DEA: {latest_macd_signal:.2f}</font>  <font color='magenta'>MACD: {latest_macd_hist:.2f}</font>"
+        elif indicator_name == "MA":
+            # MA指标数值显示
+            latest_ma5 = data_df['ma5'].iloc[-1]
+            latest_ma10 = data_df['ma10'].iloc[-1]
+            latest_ma20 = data_df['ma20'].iloc[-1]
+            latest_ma60 = data_df['ma60'].iloc[-1]
+            text = f"<font color='white'>MA5: {latest_ma5:.2f}</font>  <font color='cyan'>MA10: {latest_ma10:.2f}</font>  <font color='red'>MA20: {latest_ma20:.2f}</font>  <font color='#00FF00'>MA60: {latest_ma60:.2f}</font>"
+        else:
+            # 默认情况，不显示指标数值
+            text = ""
+        
+        # 更新标签文本
+        if label_widget:
+            label_widget.setText(text)
+    
+    def _setup_indicator_axis(self, plot_widget, x_data, y_data):
+        """
+        设置指标图表坐标轴的通用方法
+        
+        Args:
+            plot_widget: 图表组件
+            x_data: x轴数据
+            y_data: y轴数据
+        """
+        import numpy as np
+        
+        # 设置X轴范围
+        plot_widget.setXRange(0, len(x_data) - 1)
+        
+        # 设置Y轴范围，留出一定的边距
+        y_min = np.min(y_data) * 1.2 if np.min(y_data) < 0 else 0
+        y_max = np.max(y_data) * 1.2
+        plot_widget.setYRange(y_min, y_max)
+    
+    def _draw_technical_indicator(self, plot_widget, indicator_name, x, data_df):
+        """
+        绘制技术指标的通用方法
+        
+        Args:
+            plot_widget: 图表组件
+            indicator_name: 指标名称
+            x: x轴数据
+            data_df: 包含指标数据的DataFrame
+        """
+        import pyqtgraph as pg
+        
+        logger.info(f"绘制{indicator_name}指标")
+        
+        # 根据不同指标调用相应的绘制逻辑
+        if indicator_name == "KDJ":
+            # 绘制KDJ指标
+            self._draw_indicator_curve(plot_widget, x, data_df['k'].values, 'white', 1, 'K')
+            self._draw_indicator_curve(plot_widget, x, data_df['d'].values, 'yellow', 1, 'D')
+            self._draw_indicator_curve(plot_widget, x, data_df['j'].values, 'magenta', 1, 'J')
+            self._setup_indicator_axis(plot_widget, x, np.column_stack((data_df['k'], data_df['d'], data_df['j'])).flatten())
+        elif indicator_name == "MACD":
+            # 绘制MACD指标
+            self._draw_indicator_curve(plot_widget, x, data_df['macd'].values, 'blue', 1, 'DIF')
+            self._draw_indicator_curve(plot_widget, x, data_df['macd_signal'].values, 'red', 1, 'DEA')
+            self._draw_indicator_histogram(plot_widget, x, data_df['macd_hist'].values, 'r', 'g')
+            self._setup_indicator_axis(plot_widget, x, np.column_stack((data_df['macd'], data_df['macd_signal'], data_df['macd_hist'])).flatten())
+        elif indicator_name == "RSI":
+            # 绘制RSI指标
+            self._draw_indicator_curve(plot_widget, x, data_df['rsi'].values, 'white', 1, 'RSI')
+            self._setup_indicator_axis(plot_widget, x, data_df['rsi'].values)
+        elif indicator_name == "VOL":
+            # 绘制VOL指标
+            self._draw_indicator_histogram(plot_widget, x, data_df['volume'].values, 'r', 'g')
+            self._setup_indicator_axis(plot_widget, x, data_df['volume'].values)
+        elif indicator_name == "MA":
+            # 绘制MA指标
+            self._draw_indicator_curve(plot_widget, x, data_df['ma5'].values, 'white', 1, 'MA5')
+            self._draw_indicator_curve(plot_widget, x, data_df['ma10'].values, 'cyan', 1, 'MA10')
+            self._draw_indicator_curve(plot_widget, x, data_df['ma20'].values, 'red', 1, 'MA20')
+            self._draw_indicator_curve(plot_widget, x, data_df['ma60'].values, '#00FF00', 1, 'MA60')
+            self._setup_indicator_axis(plot_widget, x, np.column_stack((data_df['ma5'], data_df['ma10'], data_df['ma20'], data_df['ma60'])).flatten())
+        else:
+            # 默认情况，尝试绘制所有数值列
+            for column in data_df.columns:
+                if column not in ['date', 'open', 'high', 'low', 'close', 'volume']:
+                    self._draw_indicator_curve(plot_widget, x, data_df[column].values, 'white', 1, column)
+            self._setup_indicator_axis(plot_widget, x, data_df.values.flatten())
     
     def plot_k_line(self, df, stock_name, stock_code):
         """
@@ -5322,31 +5664,33 @@ class MainWindow(QMainWindow):
         plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
         plot_widget.showGrid(x=True, y=True, alpha=0.3)
         
-        # 在绘制指标之前，根据指标名称设置合适的初始Y轴范围
-        if indicator_name == "VOL":
-            # 对于VOL指标，初始Y轴范围从0开始
-            plot_widget.setYRange(0, 1000000000)  # 设置一个较大的初始范围
-            # 重置对数模式，确保使用线性刻度
-            plot_widget.setLogMode(y=False)
-        elif indicator_name == "MACD":
-            # 对于MACD指标，初始Y轴范围适中
-            plot_widget.setYRange(-5, 5)  # 设置一个合适的初始范围
-        elif indicator_name in ["KDJ", "RSI"]:
-            # 对于KDJ和RSI指标，初始Y轴范围在0-100之间
-            plot_widget.setYRange(-50, 150)  # 包含超买超卖区域
+        # 使用字典映射替代条件判断，设置初始Y轴范围
+        indicator_y_ranges = {
+            "VOL": (0, 1000000000),  # 成交量指标范围
+            "MACD": (-5, 5),  # MACD指标范围
+            "KDJ": (-50, 150),  # KDJ指标范围
+            "RSI": (-50, 150)  # RSI指标范围
+        }
         
-        # 根据指标名称调用相应的绘制函数
-        if indicator_name == "KDJ":
-            self.draw_kdj_indicator(plot_widget, x, df_pd)
-        elif indicator_name == "RSI":
-            self.draw_rsi_indicator(plot_widget, x, df_pd)
-        elif indicator_name == "MACD":
-            self.draw_macd_indicator(plot_widget, x, df_pd)
-        elif indicator_name == "VOL":
-            self.draw_vol_indicator(plot_widget, x, df_pd)
-        else:
-            # 默认绘制KDJ指标
-            self.draw_kdj_indicator(plot_widget, x, df_pd)
+        if indicator_name in indicator_y_ranges:
+            y_min, y_max = indicator_y_ranges[indicator_name]
+            plot_widget.setYRange(y_min, y_max)
+            
+            # 特殊处理VOL指标的对数模式
+            if indicator_name == "VOL":
+                plot_widget.setLogMode(y=False)
+        
+        # 使用字典映射替代条件判断，调用相应的绘制函数
+        indicator_drawers = {
+            "KDJ": self.draw_kdj_indicator,
+            "RSI": self.draw_rsi_indicator,
+            "MACD": self.draw_macd_indicator,
+            "VOL": self.draw_vol_indicator
+        }
+        
+        # 获取绘制函数，如果没有匹配到，使用默认绘制函数
+        drawer = indicator_drawers.get(indicator_name, self.draw_kdj_indicator)
+        drawer(plot_widget, x, df_pd)
     
     def update_indicator_values_label(self, indicator_name, df_pd):
         """
