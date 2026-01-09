@@ -23,6 +23,14 @@ class PluginRegistry:
             'visualization': {},
             'other': {}
         }
+        # 插件元数据缓存，不立即实例化插件
+        self.plugin_metadata: Dict[str, Dict[str, Dict[str, Any]]] = {
+            'datasource': {},
+            'indicator': {},
+            'strategy': {},
+            'visualization': {},
+            'other': {}
+        }
     
     def register_plugin(self, plugin_class: Type[PluginBase]) -> bool:
         """
@@ -46,8 +54,21 @@ class PluginRegistry:
             if plugin_name in self.registry[plugin_type]:
                 return False
             
+            # 收集插件元数据
+            metadata = {
+                'name': plugin_name,
+                'version': plugin_instance.get_version(),
+                'author': plugin_instance.get_author(),
+                'description': plugin_instance.get_description(),
+                'class': plugin_class,
+                'type': plugin_type,
+                'dependencies': plugin_instance.get_dependencies()
+            }
+            
             # 注册插件
             self.registry[plugin_type][plugin_name] = plugin_class
+            # 缓存插件元数据
+            self.plugin_metadata[plugin_type][plugin_name] = metadata
             return True
         except Exception as e:
             return False
@@ -180,6 +201,13 @@ class PluginRegistry:
             Dict[str, Any] or None: 插件信息或None
         """
         try:
+            # 尝试从元数据缓存中获取
+            for type_key in self.plugin_metadata:
+                for plugin_name, metadata in self.plugin_metadata[type_key].items():
+                    if metadata['class'] == plugin_class:
+                        return metadata
+            
+            # 如果缓存中没有，创建临时实例获取信息
             plugin_instance = plugin_class()
             return {
                 'name': plugin_instance.get_name(),
@@ -187,7 +215,8 @@ class PluginRegistry:
                 'author': plugin_instance.get_author(),
                 'description': plugin_instance.get_description(),
                 'class': plugin_class,
-                'type': self._get_plugin_type(plugin_class)
+                'type': self._get_plugin_type(plugin_class),
+                'dependencies': plugin_instance.get_dependencies()
             }
         except Exception as e:
             return None
@@ -198,6 +227,67 @@ class PluginRegistry:
         """
         for type_key in self.registry:
             self.registry[type_key].clear()
+        # 同时清空元数据缓存
+        for type_key in self.plugin_metadata:
+            self.plugin_metadata[type_key].clear()
+    
+    def get_plugin_metadata(self, plugin_name: str, plugin_type: str = None) -> Dict[str, Any] or None:
+        """
+        获取插件元数据，不实例化插件
+        
+        Args:
+            plugin_name: 插件名称
+            plugin_type: 插件类型，如不指定则在所有类型中查找
+            
+        Returns:
+            Dict[str, Any] or None: 插件元数据或None
+        """
+        if plugin_type:
+            return self.plugin_metadata.get(plugin_type, {}).get(plugin_name)
+        else:
+            # 在所有类型中查找
+            for type_key in self.plugin_metadata:
+                if plugin_name in self.plugin_metadata[type_key]:
+                    return self.plugin_metadata[type_key][plugin_name]
+        return None
+    
+    def get_all_plugin_metadata(self, plugin_type: str = None) -> List[Dict[str, Any]]:
+        """
+        获取所有插件元数据，不实例化插件
+        
+        Args:
+            plugin_type: 插件类型，如不指定则返回所有类型
+            
+        Returns:
+            List[Dict[str, Any]]: 插件元数据列表
+        """
+        metadata_list = []
+        
+        if plugin_type:
+            if plugin_type in self.plugin_metadata:
+                metadata_list.extend(self.plugin_metadata[plugin_type].values())
+        else:
+            # 返回所有类型的插件元数据
+            for type_key in self.plugin_metadata:
+                metadata_list.extend(self.plugin_metadata[type_key].values())
+        
+        return metadata_list
+    
+    def get_plugin_dependencies(self, plugin_name: str, plugin_type: str = None) -> List[Dict[str, str]]:
+        """
+        获取插件依赖，不实例化插件
+        
+        Args:
+            plugin_name: 插件名称
+            plugin_type: 插件类型，如不指定则在所有类型中查找
+            
+        Returns:
+            List[Dict[str, str]]: 插件依赖列表
+        """
+        metadata = self.get_plugin_metadata(plugin_name, plugin_type)
+        if metadata:
+            return metadata.get('dependencies', [])
+        return []
     
     def get_plugin_count(self, plugin_type: str = None) -> int:
         """

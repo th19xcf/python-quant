@@ -49,6 +49,9 @@ class PluginManager:
         # 初始化插件配置管理器
         self.plugin_config_manager = get_plugin_config_manager(config)
         
+        # 插件初始化顺序，由_resolve_plugin_order方法生成
+        self._plugin_initialization_order = []
+        
         # 订阅配置变更事件
         EventBus.subscribe('plugin_config_changed', self._on_plugin_config_changed)
         EventBus.subscribe('plugin_config_reloaded', self._on_plugin_config_reloaded)
@@ -200,45 +203,186 @@ class PluginManager:
         if plugin_instance:
             plugin_instance.on_config_changed({}, config)
     
-    def initialize_plugins(self) -> int:
+    def _build_dependency_graph(self) -> Dict[str, List[str]]:
         """
-        初始化所有已注册的插件
+        构建插件依赖图
         
         Returns:
-            int: 成功初始化的插件数量
+            Dict[str, List[str]]: 依赖图，键为插件名称，值为依赖插件名称列表
         """
-        logger.info("开始初始化插件")
+        dependency_graph = {}
         
-        initialized_count = 0
+        # 获取所有插件元数据
+        all_metadata = self.registry.get_all_plugin_metadata()
         
-        # 获取所有已注册的插件
-        all_plugins = self.registry.get_all_plugins()
+        for plugin_meta in all_metadata:
+            plugin_name = plugin_meta['name']
+            dependencies = plugin_meta.get('dependencies', [])
+            dependency_names = [dep['name'] for dep in dependencies]
+            dependency_graph[plugin_name] = dependency_names
         
-        for plugin_info in all_plugins:
-            plugin_name = plugin_info['name']
-            plugin_type = plugin_info['type']
-            plugin_class = plugin_info['class']
+        return dependency_graph
+    
+    def _topological_sort(self, graph: Dict[str, List[str]]) -> List[str] or None:
+        """
+        拓扑排序，确定插件初始化顺序
+        
+        Args:
+            graph: 依赖图，键为插件名称，值为依赖插件名称列表
             
-            try:
-                # 创建插件实例
-                plugin_instance = plugin_class()
-                
-                # 设置插件管理器引用
-                plugin_instance.plugin_manager = self
-                
-                # 初始化插件，传递完整的config对象
-                if plugin_instance.initialize(self.config):
-                    # 保存插件实例
-                    self.plugin_instances[plugin_type][plugin_name] = plugin_instance
-                    initialized_count += 1
-                    logger.info(f"插件初始化成功: {plugin_name} (类型: {plugin_type})")
-                else:
-                    logger.warning(f"插件初始化失败: {plugin_name} (类型: {plugin_type})")
-            except Exception as e:
-                logger.error(f"插件初始化异常: {plugin_name} (类型: {plugin_type}), 错误: {e}")
+        Returns:
+            List[str] or None: 拓扑排序结果，或None表示存在循环依赖
+        """
+        # 计算每个节点的入度
+        in_degree = {node: 0 for node in graph}
+        for node in graph:
+            for neighbor in graph[node]:
+                if neighbor in in_degree:
+                    in_degree[neighbor] += 1
         
-        logger.info(f"插件初始化完成，共初始化 {initialized_count} 个插件")
-        return initialized_count
+        # 初始化队列，包含所有入度为0的节点
+        queue = [node for node in in_degree if in_degree[node] == 0]
+        result = []
+        
+        # 执行拓扑排序
+        while queue:
+            node = queue.pop(0)
+            result.append(node)
+            
+            # 减少所有邻居节点的入度
+            for neighbor in graph[node]:
+                if neighbor in in_degree:
+                    in_degree[neighbor] -= 1
+                    if in_degree[neighbor] == 0:
+                        queue.append(neighbor)
+        
+        # 检查是否所有节点都被处理
+        if len(result) != len(in_degree):
+            # 存在循环依赖
+            return None
+        
+        return result
+    
+    def _resolve_plugin_order(self) -> List[Dict[str, Any]] or None:
+        """
+        解析插件初始化顺序
+        
+        Returns:
+            List[Dict[str, Any]] or None: 排序后的插件列表，或None表示存在循环依赖
+        """
+        # 构建依赖图
+        dependency_graph = self._build_dependency_graph()
+        
+        # 拓扑排序
+        sorted_plugin_names = self._topological_sort(dependency_graph)
+        if not sorted_plugin_names:
+            logger.error("检测到插件循环依赖，无法确定初始化顺序")
+            return None
+        
+        # 获取所有插件元数据
+        all_metadata = self.registry.get_all_plugin_metadata()
+        plugin_meta_dict = {meta['name']: meta for meta in all_metadata}
+        
+        # 按排序结果组织插件列表
+        sorted_plugins = []
+        for plugin_name in sorted_plugin_names:
+            if plugin_name in plugin_meta_dict:
+                sorted_plugins.append(plugin_meta_dict[plugin_name])
+        
+        return sorted_plugins
+    
+    def initialize_plugins(self) -> int:
+        """
+        初始化插件系统，但不立即实例化所有插件
+        
+        Returns:
+            int: 成功初始化的插件数量（仅返回已解析的插件数量）
+        """
+        logger.info("开始初始化插件系统")
+        
+        # 解析插件初始化顺序，确保依赖关系正确
+        sorted_plugins = self._resolve_plugin_order()
+        if not sorted_plugins:
+            logger.error("无法确定插件初始化顺序，初始化失败")
+            return 0
+        
+        # 存储插件初始化顺序，供后续懒加载使用
+        self._plugin_initialization_order = sorted_plugins
+        
+        logger.info(f"插件系统初始化完成，共解析 {len(sorted_plugins)} 个插件的依赖关系")
+        return len(sorted_plugins)
+    
+    def get_plugin_instance(self, plugin_name: str, plugin_type: str = None, lazy_load: bool = True) -> Optional[PluginBase]:
+        """
+        获取插件实例，支持懒加载和依赖自动加载
+        
+        Args:
+            plugin_name: 插件名称
+            plugin_type: 插件类型，如不指定则在所有类型中查找
+            lazy_load: 是否支持懒加载，默认为True
+            
+        Returns:
+            Optional[PluginBase]: 插件实例或None
+        """
+        # 首先尝试从已实例化的插件中查找
+        if plugin_type:
+            if plugin_name in self.plugin_instances[plugin_type]:
+                return self.plugin_instances[plugin_type][plugin_name]
+        else:
+            # 在所有类型中查找
+            for type_key in self.plugin_instances:
+                if plugin_name in self.plugin_instances[type_key]:
+                    return self.plugin_instances[type_key][plugin_name]
+        
+        # 如果不支持懒加载，直接返回None
+        if not lazy_load:
+            return None
+        
+        # 支持懒加载，尝试创建并初始化插件
+        try:
+            # 获取插件元数据
+            plugin_meta = self.registry.get_plugin_metadata(plugin_name, plugin_type)
+            if not plugin_meta:
+                return None
+            
+            plugin_type = plugin_meta['type']
+            plugin_class = plugin_meta['class']
+            dependencies = plugin_meta.get('dependencies', [])
+            
+            # 首先加载所有依赖插件
+            for dep in dependencies:
+                dep_name = dep['name']
+                dep_version = dep['version']
+                
+                # 递归加载依赖插件
+                dep_instance = self.get_plugin_instance(dep_name, lazy_load=True)
+                if not dep_instance:
+                    logger.error(f"无法加载插件依赖: {dep_name}，插件{plugin_name}加载失败")
+                    return None
+            
+            # 创建插件实例
+            plugin_instance = plugin_class()
+            
+            # 设置插件管理器引用
+            plugin_instance.plugin_manager = self
+            
+            # 设置加载状态
+            plugin_instance.set_load_status('loaded')
+            
+            # 初始化插件
+            if plugin_instance.initialize(self.config):
+                # 更新加载状态
+                plugin_instance.set_load_status('initialized')
+                # 保存插件实例
+                self.plugin_instances[plugin_type][plugin_name] = plugin_instance
+                logger.info(f"懒加载插件成功: {plugin_name} (类型: {plugin_type})")
+                return plugin_instance
+            else:
+                logger.warning(f"懒加载插件初始化失败: {plugin_name} (类型: {plugin_type})")
+                return None
+        except Exception as e:
+            logger.error(f"懒加载插件异常: {plugin_name}, 错误: {e}")
+            return None
     
     def update_plugin_config(self, plugin_name: str, config: Dict[str, Any]) -> bool:
         """
@@ -324,27 +468,6 @@ class PluginManager:
                     all_valid = False
         
         return all_valid
-    
-    def get_plugin_instance(self, plugin_name: str, plugin_type: str = None) -> Optional[PluginBase]:
-        """
-        获取插件实例
-        
-        Args:
-            plugin_name: 插件名称
-            plugin_type: 插件类型，如不指定则在所有类型中查找
-            
-        Returns:
-            Optional[PluginBase]: 插件实例或None
-        """
-        if plugin_type:
-            return self.plugin_instances.get(plugin_type, {}).get(plugin_name)
-        else:
-            # 在所有类型中查找
-            for type_key in self.plugin_instances:
-                if plugin_name in self.plugin_instances[type_key]:
-                    return self.plugin_instances[type_key][plugin_name]
-        
-        return None
     
     def get_plugin_instances_by_type(self, plugin_type: str) -> Dict[str, PluginBase]:
         """
@@ -511,7 +634,19 @@ class PluginManager:
         Returns:
             Dict[str, PluginBase]: 数据源插件实例字典
         """
-        return {name: plugin for name, plugin in self.plugin_instances['datasource'].items() if plugin.is_enabled()}
+        # 先获取所有已实例化的插件
+        available_plugins = {name: plugin for name, plugin in self.plugin_instances['datasource'].items() if plugin.is_enabled()}
+        
+        # 再获取所有已注册但未实例化的插件
+        for plugin_meta in self.registry.get_all_plugin_metadata('datasource'):
+            plugin_name = plugin_meta['name']
+            if plugin_name not in available_plugins:
+                # 懒加载插件
+                plugin_instance = self.get_plugin_instance(plugin_name, 'datasource', lazy_load=True)
+                if plugin_instance and plugin_instance.is_enabled():
+                    available_plugins[plugin_name] = plugin_instance
+        
+        return available_plugins
     
     def get_available_indicator_plugins(self) -> Dict[str, PluginBase]:
         """
@@ -520,7 +655,19 @@ class PluginManager:
         Returns:
             Dict[str, PluginBase]: 技术指标插件实例字典
         """
-        return {name: plugin for name, plugin in self.plugin_instances['indicator'].items() if plugin.is_enabled()}
+        # 先获取所有已实例化的插件
+        available_plugins = {name: plugin for name, plugin in self.plugin_instances['indicator'].items() if plugin.is_enabled()}
+        
+        # 再获取所有已注册但未实例化的插件
+        for plugin_meta in self.registry.get_all_plugin_metadata('indicator'):
+            plugin_name = plugin_meta['name']
+            if plugin_name not in available_plugins:
+                # 懒加载插件
+                plugin_instance = self.get_plugin_instance(plugin_name, 'indicator', lazy_load=True)
+                if plugin_instance and plugin_instance.is_enabled():
+                    available_plugins[plugin_name] = plugin_instance
+        
+        return available_plugins
     
     def get_available_strategy_plugins(self) -> Dict[str, PluginBase]:
         """
@@ -529,7 +676,19 @@ class PluginManager:
         Returns:
             Dict[str, PluginBase]: 策略插件实例字典
         """
-        return {name: plugin for name, plugin in self.plugin_instances['strategy'].items() if plugin.is_enabled()}
+        # 先获取所有已实例化的插件
+        available_plugins = {name: plugin for name, plugin in self.plugin_instances['strategy'].items() if plugin.is_enabled()}
+        
+        # 再获取所有已注册但未实例化的插件
+        for plugin_meta in self.registry.get_all_plugin_metadata('strategy'):
+            plugin_name = plugin_meta['name']
+            if plugin_name not in available_plugins:
+                # 懒加载插件
+                plugin_instance = self.get_plugin_instance(plugin_name, 'strategy', lazy_load=True)
+                if plugin_instance and plugin_instance.is_enabled():
+                    available_plugins[plugin_name] = plugin_instance
+        
+        return available_plugins
     
     def get_available_visualization_plugins(self) -> Dict[str, PluginBase]:
         """
@@ -538,7 +697,19 @@ class PluginManager:
         Returns:
             Dict[str, PluginBase]: 可视化插件实例字典
         """
-        return {name: plugin for name, plugin in self.plugin_instances['visualization'].items() if plugin.is_enabled()}
+        # 先获取所有已实例化的插件
+        available_plugins = {name: plugin for name, plugin in self.plugin_instances['visualization'].items() if plugin.is_enabled()}
+        
+        # 再获取所有已注册但未实例化的插件
+        for plugin_meta in self.registry.get_all_plugin_metadata('visualization'):
+            plugin_name = plugin_meta['name']
+            if plugin_name not in available_plugins:
+                # 懒加载插件
+                plugin_instance = self.get_plugin_instance(plugin_name, 'visualization', lazy_load=True)
+                if plugin_instance and plugin_instance.is_enabled():
+                    available_plugins[plugin_name] = plugin_instance
+        
+        return available_plugins
     
     def call_plugin_method(self, plugin_name: str, method_name: str, plugin_type: str = None, *args, **kwargs) -> Any:
         """

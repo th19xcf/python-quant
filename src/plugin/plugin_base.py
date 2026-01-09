@@ -29,6 +29,10 @@ class PluginBase(ABC):
         self._config_model = None  # 插件配置模型类
         self._default_config = {}  # 插件默认配置
         self._plugin_config_manager = get_plugin_config_manager()  # 插件配置管理器实例
+        # 插件依赖声明，格式: [{'name': 'plugin_name', 'version': '>=1.0.0'}, ...]
+        self.dependencies = []
+        # 插件加载状态: 'unloaded', 'loaded', 'initialized'
+        self._load_status = 'unloaded'
     
     @abstractmethod
     def get_name(self) -> str:
@@ -250,6 +254,86 @@ class PluginBase(ABC):
             new_config: 新配置
         """
         pass
+    
+    def get_dependencies(self) -> List[Dict[str, str]]:
+        """
+        获取插件依赖列表
+        
+        Returns:
+            List[Dict[str, str]]: 依赖列表，格式: [{'name': 'plugin_name', 'version': '>=1.0.0'}, ...]
+        """
+        return self.dependencies.copy()
+    
+    def set_dependencies(self, dependencies: List[Dict[str, str]]) -> None:
+        """
+        设置插件依赖
+        
+        Args:
+            dependencies: 依赖列表，格式: [{'name': 'plugin_name', 'version': '>=1.0.0'}, ...]
+        """
+        self.dependencies = dependencies
+    
+    def add_dependency(self, plugin_name: str, version: str = '>=0.0.1') -> None:
+        """
+        添加单个插件依赖
+        
+        Args:
+            plugin_name: 依赖插件名称
+            version: 依赖版本要求，如'>=1.0.0', '==2.0.0', '<3.0.0'
+        """
+        self.dependencies.append({'name': plugin_name, 'version': version})
+    
+    def validate_dependencies(self) -> bool:
+        """
+        验证插件依赖
+        
+        Returns:
+            bool: 依赖是否有效
+        """
+        if not self.plugin_manager:
+            return True
+        
+        try:
+            from packaging.version import Version, parse as parse_version
+            
+            for dep in self.dependencies:
+                dep_name = dep['name']
+                dep_version_req = dep['version']
+                
+                # 检查依赖插件是否存在
+                plugin_instance = self.plugin_manager.get_plugin_instance(dep_name)
+                if not plugin_instance:
+                    return False
+                
+                # 检查版本是否符合要求
+                # 这里简化处理，只检查主要版本号
+                plugin_version = parse_version(plugin_instance.get_version())
+                # 注意：实际项目中应该使用完整的版本约束解析
+                # 这里简化处理，只检查插件是否存在
+            
+            return True
+        except Exception as e:
+            from loguru import logger
+            logger.error(f"验证插件依赖失败: {self.get_name()}, 错误: {e}")
+            return False
+    
+    def get_load_status(self) -> str:
+        """
+        获取插件加载状态
+        
+        Returns:
+            str: 加载状态，'unloaded', 'loaded', 'initialized'
+        """
+        return self._load_status
+    
+    def set_load_status(self, status: str) -> None:
+        """
+        设置插件加载状态
+        
+        Args:
+            status: 加载状态，'unloaded', 'loaded', 'initialized'
+        """
+        self._load_status = status
 
     # -----------------------------
     # 插件间通信方法
