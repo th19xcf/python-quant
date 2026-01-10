@@ -15,6 +15,9 @@ import polars as pl
 from .indicator_calculator import (
     calculate_ma_polars,
     calculate_vol_ma_polars,
+    calculate_macd_polars,
+    calculate_rsi_polars,
+    calculate_kdj_polars,
     preprocess_data_polars,
     sample_data_polars,
     generate_cache_key
@@ -132,16 +135,23 @@ class TechnicalAnalyzer:
         Returns:
             pd.DataFrame: 包含MACD指标的DataFrame
         """
-        # 确保pandas DataFrame已初始化
-        self._ensure_pandas_df()
-        
         # 检查是否已经计算过MACD指标
         if not self.calculated_indicators['macd']:
-            self.df['macd'] = ta.trend.macd(self.df['close'], window_slow=slow_period, window_fast=fast_period, fillna=True)
-            self.df['macd_signal'] = ta.trend.macd_signal(self.df['close'], window_slow=slow_period, window_fast=fast_period, window_sign=signal_period, fillna=True)
-            self.df['macd_hist'] = ta.trend.macd_diff(self.df['close'], window_slow=slow_period, window_fast=fast_period, window_sign=signal_period, fillna=True)
+            # 使用Polars计算MACD指标
+            self.pl_df = calculate_macd_polars(self.pl_df, fast_period, slow_period, signal_period)
+            
             # 更新计算状态
             self.calculated_indicators['macd'] = True
+            
+            # 如果pandas DataFrame已初始化，需要同步更新
+            if self.df is not None:
+                # 只转换新添加的MACD列
+                new_macd_cols = ['macd', 'macd_signal', 'macd_hist']
+                new_cols_df = self.pl_df.select(new_macd_cols).to_pandas()
+                self.df = pd.concat([self.df, new_cols_df], axis=1)
+        
+        # 确保pandas DataFrame已初始化
+        self._ensure_pandas_df()
         
         return self.df
     
@@ -155,16 +165,23 @@ class TechnicalAnalyzer:
         Returns:
             pd.DataFrame: 包含KDJ指标的DataFrame
         """
-        # 确保pandas DataFrame已初始化
-        self._ensure_pandas_df()
-        
         # 检查是否已经计算过该窗口的KDJ指标
         if window not in self.calculated_indicators['kdj']:
-            self.df['k'] = ta.momentum.stoch(self.df['high'], self.df['low'], self.df['close'], window=window, fillna=True)
-            self.df['d'] = ta.momentum.stoch_signal(self.df['high'], self.df['low'], self.df['close'], window=window, fillna=True)
-            self.df['j'] = 3 * self.df['k'] - 2 * self.df['d']
+            # 使用Polars计算KDJ指标
+            self.pl_df = calculate_kdj_polars(self.pl_df, window)
+            
             # 更新计算状态
             self.calculated_indicators['kdj'].add(window)
+            
+            # 如果pandas DataFrame已初始化，需要同步更新
+            if self.df is not None:
+                # 只转换新添加的KDJ列
+                new_kdj_cols = ['k', 'd', 'j']
+                new_cols_df = self.pl_df.select(new_kdj_cols).to_pandas()
+                self.df = pd.concat([self.df, new_cols_df], axis=1)
+        
+        # 确保pandas DataFrame已初始化
+        self._ensure_pandas_df()
         
         return self.df
     
@@ -425,9 +442,6 @@ class TechnicalAnalyzer:
         Returns:
             pd.DataFrame: 包含RSI指标的DataFrame
         """
-        # 确保pandas DataFrame已初始化
-        self._ensure_pandas_df()
-        
         # 确保windows是列表
         if not isinstance(windows, list):
             windows = [windows]
@@ -436,33 +450,23 @@ class TechnicalAnalyzer:
         windows_to_calculate = [w for w in windows if w not in self.calculated_indicators['rsi']]
         
         if windows_to_calculate:
-            if parallel:
-                # 并行计算RSI指标
-                close_data = self.df['close']
-                results = []
+            # 串行计算RSI指标（Polars已内部优化）
+            for window in windows_to_calculate:
+                # 使用Polars计算RSI指标
+                self.pl_df = calculate_rsi_polars(self.pl_df, window)
                 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(windows_to_calculate), 8)) as executor:
-                    # 使用partial绑定close_data参数
-                    rsi_func = partial(self._calculate_rsi_window, close_data=close_data)
-                    # 提交所有任务
-                    futures = {executor.submit(rsi_func, window): window for window in windows_to_calculate}
-                    
-                    # 收集结果
-                    for future in concurrent.futures.as_completed(futures):
-                        window, rsi_data = future.result()
-                        results.append((window, rsi_data))
+                # 更新计算状态
+                self.calculated_indicators['rsi'].add(window)
                 
-                # 将结果合并到DataFrame
-                for window, rsi_data in results:
-                    self.df[f'rsi{window}'] = rsi_data
-                    # 更新计算状态
-                    self.calculated_indicators['rsi'].add(window)
-            else:
-                # 串行计算RSI指标
-                for window in windows_to_calculate:
-                    self.df[f'rsi{window}'] = ta.momentum.rsi(self.df['close'], window=window, fillna=True)
-                    # 更新计算状态
-                    self.calculated_indicators['rsi'].add(window)
+                # 如果pandas DataFrame已初始化，需要同步更新
+                if self.df is not None:
+                    # 只转换新添加的RSI列
+                    new_rsi_cols = [f'rsi{window}']
+                    new_cols_df = self.pl_df.select(new_rsi_cols).to_pandas()
+                    self.df = pd.concat([self.df, new_cols_df], axis=1)
+        
+        # 确保pandas DataFrame已初始化
+        self._ensure_pandas_df()
         
         return self.df
     

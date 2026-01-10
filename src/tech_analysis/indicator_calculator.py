@@ -115,6 +115,131 @@ def sample_data_polars(df, target_points=1000, strategy='uniform'):
     return sampled_data
 
 
+def calculate_macd_polars(df, fast_period=12, slow_period=26, signal_period=9):
+    """
+    使用Polars计算MACD指标
+    
+    Args:
+        df: Polars DataFrame
+        fast_period: 快速EMA周期
+        slow_period: 慢速EMA周期
+        signal_period: 信号线EMA周期
+        
+    Returns:
+        pl.DataFrame: 包含MACD指标的DataFrame
+    """
+    # 计算快速EMA和慢速EMA
+    df = df.with_columns([
+        pl.col('close').rolling_mean(window_size=fast_period, min_periods=1).alias(f'ema{fast_period}'),
+        pl.col('close').rolling_mean(window_size=slow_period, min_periods=1).alias(f'ema{slow_period}')
+    ])
+    
+    # 计算DIF (MACD线)
+    df = df.with_columns(
+        (pl.col(f'ema{fast_period}') - pl.col(f'ema{slow_period}')).alias('macd')
+    )
+    
+    # 计算DEA (信号线)
+    df = df.with_columns(
+        pl.col('macd').rolling_mean(window_size=signal_period, min_periods=1).alias('macd_signal')
+    )
+    
+    # 计算柱状图 (MACD柱状图)
+    df = df.with_columns(
+        (pl.col('macd') - pl.col('macd_signal')).alias('macd_hist')
+    )
+    
+    # 清理临时列
+    df = df.drop([f'ema{fast_period}', f'ema{slow_period}'])
+    
+    return df
+
+
+def calculate_rsi_polars(df, window=14):
+    """
+    使用Polars计算RSI指标
+    
+    Args:
+        df: Polars DataFrame
+        window: RSI计算窗口
+        
+    Returns:
+        pl.DataFrame: 包含RSI指标的DataFrame
+    """
+    # 计算价格变化
+    df = df.with_columns(
+        pl.col('close').diff().alias('price_change')
+    )
+    
+    # 计算上涨和下跌变化
+    df = df.with_columns([
+        pl.when(pl.col('price_change') > 0).then(pl.col('price_change')).otherwise(0).alias('gain'),
+        pl.when(pl.col('price_change') < 0).then(-pl.col('price_change')).otherwise(0).alias('loss')
+    ])
+    
+    # 计算平均上涨和平均下跌
+    df = df.with_columns([
+        pl.col('gain').rolling_mean(window_size=window, min_periods=1).alias('avg_gain'),
+        pl.col('loss').rolling_mean(window_size=window, min_periods=1).alias('avg_loss')
+    ])
+    
+    # 计算RSI
+    df = df.with_columns(
+        pl.when(pl.col('avg_loss') == 0)
+        .then(100.0)
+        .otherwise(100.0 - (100.0 / (1.0 + (pl.col('avg_gain') / pl.col('avg_loss')))))
+        .alias(f'rsi{window}')
+    )
+    
+    # 清理临时列
+    df = df.drop(['price_change', 'gain', 'loss', 'avg_gain', 'avg_loss'])
+    
+    return df
+
+
+def calculate_kdj_polars(df, window=14):
+    """
+    使用Polars计算KDJ指标
+    
+    Args:
+        df: Polars DataFrame
+        window: KDJ计算窗口
+        
+    Returns:
+        pl.DataFrame: 包含KDJ指标的DataFrame
+    """
+    # 计算最高价的N日最高价
+    df = df.with_columns(
+        pl.col('high').rolling_max(window_size=window, min_periods=1).alias('high_n'),
+        pl.col('low').rolling_min(window_size=window, min_periods=1).alias('low_n')
+    )
+    
+    # 计算RSV (未成熟随机值)
+    df = df.with_columns(
+        ((pl.col('close') - pl.col('low_n')) / (pl.col('high_n') - pl.col('low_n')) * 100).alias('rsv')
+    )
+    
+    # 计算K、D、J值
+    # 使用SMA计算K、D
+    df = df.with_columns(
+        pl.col('rsv').rolling_mean(window_size=3, min_periods=1).alias('k')
+    )
+    
+    df = df.with_columns(
+        pl.col('k').rolling_mean(window_size=3, min_periods=1).alias('d')
+    )
+    
+    # 计算J值
+    df = df.with_columns(
+        (3 * pl.col('k') - 2 * pl.col('d')).alias('j')
+    )
+    
+    # 清理临时列
+    df = df.drop(['high_n', 'low_n', 'rsv'])
+    
+    return df
+
+
 def generate_cache_key(data_hash, indicator_type, *args, **kwargs):
     """
     生成唯一的缓存键
