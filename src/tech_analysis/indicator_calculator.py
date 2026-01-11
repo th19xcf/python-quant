@@ -155,87 +155,114 @@ def calculate_macd_polars(df, fast_period=12, slow_period=26, signal_period=9):
     return df
 
 
-def calculate_rsi_polars(df, window=14):
+def calculate_rsi_polars(df, windows=None):
     """
-    使用Polars计算RSI指标
+    使用Polars批量计算RSI指标
     
     Args:
         df: Polars DataFrame
-        window: RSI计算窗口
+        windows: RSI计算窗口列表，默认为[14]
         
     Returns:
         pl.DataFrame: 包含RSI指标的DataFrame
     """
+    if windows is None:
+        windows = [14]
+    
     # 计算价格变化
-    df = df.with_columns(
-        pl.col('close').diff().alias('price_change')
-    )
+    if 'price_change' not in df.columns:
+        df = df.with_columns(
+            pl.col('close').diff().alias('price_change')
+        )
     
     # 计算上涨和下跌变化
-    df = df.with_columns([
-        pl.when(pl.col('price_change') > 0).then(pl.col('price_change')).otherwise(0).alias('gain'),
-        pl.when(pl.col('price_change') < 0).then(-pl.col('price_change')).otherwise(0).alias('loss')
-    ])
+    if 'gain' not in df.columns or 'loss' not in df.columns:
+        df = df.with_columns([
+            pl.when(pl.col('price_change') > 0).then(pl.col('price_change')).otherwise(0).alias('gain'),
+            pl.when(pl.col('price_change') < 0).then(-pl.col('price_change')).otherwise(0).alias('loss')
+        ])
     
-    # 计算平均上涨和平均下跌
-    df = df.with_columns([
-        pl.col('gain').rolling_mean(window_size=window, min_periods=1).alias('avg_gain'),
-        pl.col('loss').rolling_mean(window_size=window, min_periods=1).alias('avg_loss')
-    ])
-    
-    # 计算RSI
-    df = df.with_columns(
-        pl.when(pl.col('avg_loss') == 0)
-        .then(100.0)
-        .otherwise(100.0 - (100.0 / (1.0 + (pl.col('avg_gain') / pl.col('avg_loss')))))
-        .alias(f'rsi{window}')
-    )
+    # 批量计算不同窗口的RSI
+    for window in windows:
+        # 计算平均上涨和平均下跌
+        df = df.with_columns([
+            pl.col('gain').rolling_mean(window_size=window, min_periods=1).alias(f'avg_gain_{window}'),
+            pl.col('loss').rolling_mean(window_size=window, min_periods=1).alias(f'avg_loss_{window}')
+        ])
+        
+        # 计算RSI
+        df = df.with_columns(
+            pl.when(pl.col(f'avg_loss_{window}') == 0)
+            .then(100.0)
+            .otherwise(100.0 - (100.0 / (1.0 + (pl.col(f'avg_gain_{window}') / pl.col(f'avg_loss_{window}')))))
+            .alias(f'rsi{window}')
+        )
     
     # 清理临时列
-    df = df.drop(['price_change', 'gain', 'loss', 'avg_gain', 'avg_loss'])
+    temp_cols = ['price_change', 'gain', 'loss']
+    for window in windows:
+        temp_cols.extend([f'avg_gain_{window}', f'avg_loss_{window}'])
+    df = df.drop(temp_cols)
     
     return df
 
 
-def calculate_kdj_polars(df, window=14):
+def calculate_kdj_polars(df, windows=None):
     """
-    使用Polars计算KDJ指标
+    使用Polars批量计算KDJ指标
     
     Args:
         df: Polars DataFrame
-        window: KDJ计算窗口
+        windows: KDJ计算窗口列表，默认为[14]
         
     Returns:
         pl.DataFrame: 包含KDJ指标的DataFrame
     """
-    # 计算最高价的N日最高价
-    df = df.with_columns(
-        pl.col('high').rolling_max(window_size=window, min_periods=1).alias('high_n'),
-        pl.col('low').rolling_min(window_size=window, min_periods=1).alias('low_n')
-    )
+    if windows is None:
+        windows = [14]
     
-    # 计算RSV (未成熟随机值)
-    df = df.with_columns(
-        ((pl.col('close') - pl.col('low_n')) / (pl.col('high_n') - pl.col('low_n')) * 100).alias('rsv')
-    )
-    
-    # 计算K、D、J值
-    # 使用SMA计算K、D
-    df = df.with_columns(
-        pl.col('rsv').rolling_mean(window_size=3, min_periods=1).alias('k')
-    )
-    
-    df = df.with_columns(
-        pl.col('k').rolling_mean(window_size=3, min_periods=1).alias('d')
-    )
-    
-    # 计算J值
-    df = df.with_columns(
-        (3 * pl.col('k') - 2 * pl.col('d')).alias('j')
-    )
+    # 批量计算不同窗口的KDJ
+    for window in windows:
+        # 计算最高价的N日最高价和最低价的N日最低价
+        df = df.with_columns([
+            pl.col('high').rolling_max(window_size=window, min_periods=1).alias(f'high_n_{window}'),
+            pl.col('low').rolling_min(window_size=window, min_periods=1).alias(f'low_n_{window}')
+        ])
+        
+        # 计算RSV (未成熟随机值)
+        df = df.with_columns(
+            ((pl.col('close') - pl.col(f'low_n_{window}')) / (pl.col(f'high_n_{window}') - pl.col(f'low_n_{window}')) * 100).alias(f'rsv_{window}')
+        )
+        
+        # 计算K、D、J值
+        # 使用SMA计算K
+        df = df.with_columns(
+            pl.col(f'rsv_{window}').rolling_mean(window_size=3, min_periods=1).alias(f'k_{window}')
+        )
+        
+        # 使用SMA计算D
+        df = df.with_columns(
+            pl.col(f'k_{window}').rolling_mean(window_size=3, min_periods=1).alias(f'd_{window}')
+        )
+        
+        # 计算J值
+        df = df.with_columns(
+            (3 * pl.col(f'k_{window}') - 2 * pl.col(f'd_{window}')).alias(f'j_{window}')
+        )
+        
+        # 如果是第一个窗口或只有一个窗口，使用默认列名
+        if len(windows) == 1 or window == windows[0]:
+            df = df.with_columns([
+                pl.col(f'k_{window}').alias('k'),
+                pl.col(f'd_{window}').alias('d'),
+                pl.col(f'j_{window}').alias('j')
+            ])
     
     # 清理临时列
-    df = df.drop(['high_n', 'low_n', 'rsv'])
+    temp_cols = []
+    for window in windows:
+        temp_cols.extend([f'high_n_{window}', f'low_n_{window}', f'rsv_{window}', f'k_{window}', f'd_{window}', f'j_{window}'])
+    df = df.drop(temp_cols)
     
     return df
 

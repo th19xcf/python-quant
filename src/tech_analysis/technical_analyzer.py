@@ -654,14 +654,14 @@ class TechnicalAnalyzer:
         
         # 批量计算RSI
         if rsi_windows_to_calculate:
+            self.pl_df = calculate_rsi_polars(self.pl_df, rsi_windows_to_calculate)
             for window in rsi_windows_to_calculate:
-                self.pl_df = calculate_rsi_polars(self.pl_df, window)
                 self.calculated_indicators['rsi'].add(window)
         
         # 批量计算KDJ
         if kdj_windows_to_calculate:
+            self.pl_df = calculate_kdj_polars(self.pl_df, kdj_windows_to_calculate)
             for window in kdj_windows_to_calculate:
-                self.pl_df = calculate_kdj_polars(self.pl_df, window)
                 self.calculated_indicators['kdj'].add(window)
         
         # 批量计算VOL_MA
