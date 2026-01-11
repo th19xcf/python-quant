@@ -37,26 +37,22 @@ class TechnicalAnalyzer:
             data: 股票数据，可以是Polars DataFrame或Pandas DataFrame
             plugin_manager: 插件管理器实例，用于加载和使用指标插件
         """
-        # 保存原始Polars DataFrame（如果输入是Polars格式）
+        # 只保存Polars DataFrame作为主要数据结构
         self.pl_df = None
-        # 仅在必要时转换为Pandas DataFrame以便使用ta库
-        self.df = None
+        
+        # 移除冗余的Pandas DataFrame存储，改为按需转换并缓存
+        self._pandas_cache = None
+        self._pandas_cache_hash = None
         
         if hasattr(data, 'to_pandas'):
             # 输入是Polars DataFrame
             self.pl_df = data
-            # 暂不转换，按需转换
-            self.df = None
         elif isinstance(data, pd.DataFrame):
-            # 输入是Pandas DataFrame
-            self.df = data
-            # 转换为Polars以便进行高性能处理
+            # 输入是Pandas DataFrame，转换为Polars后不再保留原始Pandas DataFrame
             self.pl_df = pl.from_pandas(data)
         else:
             # 输入是其他格式，转换为Polars
             self.pl_df = pl.DataFrame(data)
-            # 暂不转换为Pandas
-            self.df = None
         
         # 使用Polars进行数据预处理
         self._preprocess_data_polars()
@@ -76,8 +72,8 @@ class TechnicalAnalyzer:
         
         # 添加缓存机制，避免重复计算
         self._calculate_cache = {}
-        # 数据哈希，用于检测数据变化
-        self._data_hash = hash(self.pl_df.to_pandas().values.tobytes())
+        # 使用Polars原生方法计算数据哈希，避免Pandas转换
+        self._data_hash = self._calculate_polars_data_hash()
         
         # 初始化指标映射，便于统一管理
         self.indicator_mapping = {
@@ -90,6 +86,20 @@ class TechnicalAnalyzer:
         
         # 初始化插件指标映射
         self._init_plugin_indicator_mapping()
+    
+    def _calculate_polars_data_hash(self):
+        """
+        使用Polars原生方法计算数据哈希，避免转换为Pandas
+        
+        Returns:
+            int: 唯一的数据哈希值
+        """
+        # 只选择关键列进行哈希计算
+        key_cols = ['open', 'high', 'low', 'close', 'volume']
+        # 选择关键列并转换为numpy数组，然后计算哈希
+        # 这样可以避免写入文件，直接在内存中计算哈希
+        key_data = self.pl_df.select(key_cols).to_numpy()
+        return hash(key_data.tobytes())
     
     def _preprocess_data_polars(self):
         """
@@ -117,11 +127,16 @@ class TechnicalAnalyzer:
     
     def _ensure_pandas_df(self):
         """
-        确保pandas DataFrame已初始化，仅在需要时转换
+        确保pandas DataFrame已初始化，仅在需要时转换，并缓存结果
+        
+        Returns:
+            pd.DataFrame: 转换后的Pandas DataFrame
         """
-        if self.df is None and self.pl_df is not None:
-            # 仅在需要时转换为pandas DataFrame
-            self.df = self.pl_df.to_pandas()
+        if self._pandas_cache is None or self._data_hash != self._pandas_cache_hash:
+            # 转换为pandas DataFrame并缓存
+            self._pandas_cache = self.pl_df.to_pandas()
+            self._pandas_cache_hash = self._data_hash
+        return self._pandas_cache
     
     def calculate_macd(self, fast_period=12, slow_period=26, signal_period=9):
         """
@@ -143,17 +158,12 @@ class TechnicalAnalyzer:
             # 更新计算状态
             self.calculated_indicators['macd'] = True
             
-            # 如果pandas DataFrame已初始化，需要同步更新
-            if self.df is not None:
-                # 只转换新添加的MACD列
-                new_macd_cols = ['macd', 'macd_signal', 'macd_hist']
-                new_cols_df = self.pl_df.select(new_macd_cols).to_pandas()
-                self.df = pd.concat([self.df, new_cols_df], axis=1)
+            # 清除转换缓存，因为数据已更新
+            self._pandas_cache = None
+            self._pandas_cache_hash = None
         
-        # 确保pandas DataFrame已初始化
-        self._ensure_pandas_df()
-        
-        return self.df
+        # 返回转换后的Pandas DataFrame
+        return self._ensure_pandas_df()
     
     def calculate_kdj(self, window=14):
         """
@@ -173,17 +183,12 @@ class TechnicalAnalyzer:
             # 更新计算状态
             self.calculated_indicators['kdj'].add(window)
             
-            # 如果pandas DataFrame已初始化，需要同步更新
-            if self.df is not None:
-                # 只转换新添加的KDJ列
-                new_kdj_cols = ['k', 'd', 'j']
-                new_cols_df = self.pl_df.select(new_kdj_cols).to_pandas()
-                self.df = pd.concat([self.df, new_cols_df], axis=1)
+            # 清除转换缓存，因为数据已更新
+            self._pandas_cache = None
+            self._pandas_cache_hash = None
         
-        # 确保pandas DataFrame已初始化
-        self._ensure_pandas_df()
-        
-        return self.df
+        # 返回转换后的Pandas DataFrame
+        return self._ensure_pandas_df()
     
     def sample_data(self, target_points=1000, strategy='uniform', return_polars=False):
         """
@@ -219,14 +224,10 @@ class TechnicalAnalyzer:
         """
         # 数据优先使用Polars，只在必要时转换
         if return_polars:
-            # Polars是主要数据存储，确保所有计算都已同步到pl_df
             data = self.pl_df
         else:
-            # 仅在需要pandas DataFrame时进行转换
-            if self.df is None or set(self.df.columns) != set(self.pl_df.columns):
-                # 重新转换整个DataFrame，确保所有列都已同步
-                self.df = self.pl_df.to_pandas()
-            data = self.df
+            # 使用优化的转换方法
+            data = self._ensure_pandas_df()
         
         # 如果需要采样
         if sample:
@@ -268,7 +269,7 @@ class TechnicalAnalyzer:
     
     def reset_calculation(self, indicator_type=None, window=None):
         """
-        重置指标计算状态，可选择重置特定指标或所有指标
+        重置指标计算状态，可选择重置特定指标或所有指标，使用批量操作优化
         
         Args:
             indicator_type: 要重置的指标类型，None表示重置所有指标
@@ -293,20 +294,15 @@ class TechnicalAnalyzer:
             # 重置插件指标映射
             self._init_plugin_indicator_mapping()
             # 重置数据哈希
-            self._data_hash = hash(self.pl_df.to_pandas().values.tobytes())
-            
-            # 重置pandas DataFrame，只保留原始列
-            if self.df is not None:
-                # 保留原始列
-                original_columns = ['open', 'high', 'low', 'close', 'volume']
-                # 过滤出需要保留的列
-                columns_to_keep = [col for col in self.df.columns if col in original_columns]
-                # 重新初始化pandas DataFrame
-                self.df = self.df[columns_to_keep].copy()
+            self._data_hash = self._calculate_polars_data_hash()
             
             # 重置Polars DataFrame，只保留原始列
             original_columns = ['open', 'high', 'low', 'close', 'volume']
             self.pl_df = self.pl_df.select(original_columns)
+            
+            # 清除转换缓存
+            self._pandas_cache = None
+            self._pandas_cache_hash = None
         elif self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():
             # 重置特定插件指标
             if indicator_type in self.calculated_indicators['plugin']:
@@ -316,6 +312,9 @@ class TechnicalAnalyzer:
                 cache_key = self._generate_cache_key(indicator_type)
                 if cache_key in self._calculate_cache:
                     del self._calculate_cache[cache_key]
+                # 清除转换缓存
+                self._pandas_cache = None
+                self._pandas_cache_hash = None
         elif indicator_type in self.calculated_indicators:
             if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma']:
                 if window:
@@ -360,16 +359,13 @@ class TechnicalAnalyzer:
         
         # 统一删除需要删除的列
         if columns_to_drop:
-            # 从pandas DataFrame中删除列
-            if self.df is not None:
-                columns_to_drop_existing = [col for col in columns_to_drop if col in self.df.columns]
-                if columns_to_drop_existing:
-                    self.df = self.df.drop(columns_to_drop_existing, axis=1)
-            
             # 从Polars DataFrame中删除列
             columns_to_drop_existing = [col for col in columns_to_drop if col in self.pl_df.columns]
             if columns_to_drop_existing:
                 self.pl_df = self.pl_df.drop(columns_to_drop_existing)
+                # 清除转换缓存
+                self._pandas_cache = None
+                self._pandas_cache_hash = None
     
     def get_calculated_indicators(self):
         """
@@ -441,17 +437,12 @@ class TechnicalAnalyzer:
             for window in windows_to_calculate:
                 self.calculated_indicators['ma'].add(window)
             
-            # 如果pandas DataFrame已初始化，需要同步更新
-            if self.df is not None:
-                # 只转换新添加的MA列
-                new_ma_cols = [f'ma{w}' for w in windows_to_calculate]
-                new_cols_df = self.pl_df.select(new_ma_cols).to_pandas()
-                self.df = pd.concat([self.df, new_cols_df], axis=1)
+            # 清除转换缓存，因为数据已更新
+            self._pandas_cache = None
+            self._pandas_cache_hash = None
         
-        # 确保pandas DataFrame已初始化
-        self._ensure_pandas_df()
-        
-        return self.df
+        # 返回转换后的Pandas DataFrame
+        return self._ensure_pandas_df()
     
     def calculate_rsi(self, windows=14, parallel=False):
         """
@@ -479,18 +470,13 @@ class TechnicalAnalyzer:
                 
                 # 更新计算状态
                 self.calculated_indicators['rsi'].add(window)
-                
-                # 如果pandas DataFrame已初始化，需要同步更新
-                if self.df is not None:
-                    # 只转换新添加的RSI列
-                    new_rsi_cols = [f'rsi{window}']
-                    new_cols_df = self.pl_df.select(new_rsi_cols).to_pandas()
-                    self.df = pd.concat([self.df, new_cols_df], axis=1)
+            
+            # 清除转换缓存，因为数据已更新
+            self._pandas_cache = None
+            self._pandas_cache_hash = None
         
-        # 确保pandas DataFrame已初始化
-        self._ensure_pandas_df()
-        
-        return self.df
+        # 返回转换后的Pandas DataFrame
+        return self._ensure_pandas_df()
     
     def calculate_vol_ma(self, windows=[5, 10], parallel=False):
         """
@@ -514,17 +500,12 @@ class TechnicalAnalyzer:
             for window in windows_to_calculate:
                 self.calculated_indicators['vol_ma'].add(window)
             
-            # 如果pandas DataFrame已初始化，需要同步更新
-            if self.df is not None:
-                # 只转换新添加的成交量MA列
-                new_vol_ma_cols = [f'vol_ma{w}' for w in windows_to_calculate]
-                new_cols_df = self.pl_df.select(new_vol_ma_cols).to_pandas()
-                self.df = pd.concat([self.df, new_cols_df], axis=1)
+            # 清除转换缓存，因为数据已更新
+            self._pandas_cache = None
+            self._pandas_cache_hash = None
         
-        # 确保pandas DataFrame已初始化
-        self._ensure_pandas_df()
-        
-        return self.df
+        # 返回转换后的Pandas DataFrame
+        return self._ensure_pandas_df()
     
     def _init_plugin_indicator_mapping(self):
         """
@@ -567,9 +548,6 @@ class TechnicalAnalyzer:
         if not self.plugin_manager:
             raise ValueError("插件管理器未初始化")
         
-        # 确保pandas DataFrame已初始化
-        self._ensure_pandas_df()
-        
         # 获取指标插件实例
         indicator_plugins = self.plugin_manager.get_available_indicator_plugins()
         if plugin_name not in indicator_plugins:
@@ -579,25 +557,35 @@ class TechnicalAnalyzer:
         
         # 检查插件指标是否已经计算
         if plugin_name in self.calculated_indicators['plugin']:
-            return self.df
+            return self._ensure_pandas_df()
         
         try:
-            # 调用插件的calculate方法
-            result_df = plugin.calculate(self.df, **kwargs)
+            # 只在必要时转换为Pandas DataFrame
+            df_pd = self._ensure_pandas_df()
             
-            # 更新DataFrame
+            # 调用插件的calculate方法
+            result_df = plugin.calculate(df_pd, **kwargs)
+            
+            # 将结果转换回Polars并合并
             if result_df is not None and isinstance(result_df, pd.DataFrame):
-                # 将插件计算的指标列合并到主DataFrame
-                for col in result_df.columns:
-                    if col not in self.df.columns:
-                        self.df[col] = result_df[col]
+                # 转换为Polars
+                result_pl = pl.from_pandas(result_df)
+                # 合并到主Polars DataFrame，只添加新列
+                new_columns = [col for col in result_pl.columns if col not in self.pl_df.columns]
+                if new_columns:
+                    self.pl_df = self.pl_df.with_columns(
+                        *[result_pl[col].alias(col) for col in new_columns]
+                    )
                 
                 # 更新计算状态
                 self.calculated_indicators['plugin'].add(plugin_name)
+                # 清除转换缓存
+                self._pandas_cache = None
+                self._pandas_cache_hash = None
         except Exception as e:
             raise RuntimeError(f"计算插件指标{plugin_name}失败: {str(e)}")
         
-        return self.df
+        return self._ensure_pandas_df()
     
     def calculate_indicator_parallel(self, indicator_type, *args, **kwargs):
         """
@@ -682,22 +670,9 @@ class TechnicalAnalyzer:
             for window in vol_ma_windows_to_calculate:
                 self.calculated_indicators['vol_ma'].add(window)
         
-        # 3. 仅在必要时同步pandas DataFrame
-        # 如果pandas DataFrame已初始化，需要同步更新
-        if self.df is not None:
-            # 只转换新添加的列
-            pl_columns = set(self.pl_df.columns)
-            pd_columns = set(self.df.columns)
-            new_columns = list(pl_columns - pd_columns)
-            
-            if new_columns:
-                # 将新列从Polars转换为pandas
-                new_cols_df = self.pl_df.select(new_columns).to_pandas()
-                # 合并到pandas DataFrame
-                self.df = pd.concat([self.df, new_cols_df], axis=1)
-        else:
-            # 按需转换为pandas DataFrame
-            self._ensure_pandas_df()
+        # 3. 清除转换缓存，因为数据已更新
+        self._pandas_cache = None
+        self._pandas_cache_hash = None
         
         # 4. 计算所有插件指标
         for plugin_name in self.get_available_plugin_indicators():
@@ -706,4 +681,5 @@ class TechnicalAnalyzer:
             except Exception as e:
                 print(f"计算插件指标{plugin_name}时发生错误: {e}")
         
-        return self.df
+        # 返回转换后的Pandas DataFrame
+        return self._ensure_pandas_df()

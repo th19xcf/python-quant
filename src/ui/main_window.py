@@ -2375,6 +2375,10 @@ class MainWindow(QMainWindow):
             stock_name: 股票名称
             stock_code: 股票代码
         """
+        # 初始化变量，避免UnboundLocalError
+        df_pd = None
+        x = None
+        
         try:
             import pyqtgraph as pg
             
@@ -3010,6 +3014,16 @@ class MainWindow(QMainWindow):
             self.current_kline_index = -1
             # 绘制第二个窗口的指标图
             try:
+                # 检查df_pd是否已经定义，避免UnboundLocalError
+                if df_pd is None:
+                    logger.warning("指标数据未计算，跳过第二个窗口指标绘制")
+                    return
+                    
+                # 确保x变量已经定义
+                if x is None:
+                    x = np.arange(len(df_pd))
+                    logger.info(f"重新计算x轴坐标，长度: {len(x)}")
+                    
                 # 获取当前窗口指标
                 current_indicator = self.window_indicators[2]
                 logger.info(f"绘制{current_indicator}指标")
