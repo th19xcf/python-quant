@@ -52,50 +52,8 @@ class KLineVisualizationPlugin(VisualizationPlugin):
         try:
             import pyqtgraph as pg
             import numpy as np
-            from pyqtgraph import GraphicsObject
             from pyqtgraph import Point
-            
-            # 自定义K线图项类
-            class CandleStickItem(GraphicsObject):
-                def __init__(self, data):
-                    GraphicsObject.__init__(self)
-                    self.data = data  # data must be a list of tuples (x, open, high, low, close)
-                    self.generatePicture()
-                
-                def generatePicture(self):
-                    self.picture = pg.QtGui.QPicture()
-                    p = pg.QtGui.QPainter(self.picture)
-                    for (t, open_val, high_val, low_val, close_val) in self.data:
-                        if close_val >= open_val:
-                            # 上涨，红色
-                            color = 'r'
-                        else:
-                            # 下跌，绿色
-                            color = 'g'
-                        
-                        # 绘制实体部分，不显示边框
-                        p.setPen(pg.mkPen(color, width=0))  # 设置宽度为0，不绘制边框
-                        p.setBrush(pg.mkBrush(color))
-                        p.drawRect(pg.QtCore.QRectF(t-0.3, open_val, 0.6, close_val-open_val))
-                        
-                        # 绘制上下影线，使用与实体相同的颜色
-                        p.setPen(pg.mkPen(color, width=1))  # 使用1像素宽度的线条
-                        p.setBrush(pg.mkBrush(color))
-                        p.drawLine(pg.QtCore.QPointF(t, high_val), pg.QtCore.QPointF(t, low_val))
-                    p.end()
-                
-                def paint(self, p, *args):
-                    p.drawPicture(0, 0, self.picture)
-                
-                def boundingRect(self):
-                    # 计算边界矩形
-                    if not self.data:
-                        return pg.QtCore.QRectF(0, 0, 1, 1)
-                    x_vals = [d[0] for d in self.data]
-                    y_vals = []
-                    for d in self.data:
-                        y_vals.extend([d[1], d[2], d[3], d[4]])
-                    return pg.QtCore.QRectF(min(x_vals), min(y_vals), max(x_vals) - min(x_vals), max(y_vals) - min(y_vals))
+            from src.ui.chart_items import CandleStickItem
             
             # 准备数据
             df = data.copy()

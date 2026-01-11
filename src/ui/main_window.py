@@ -22,6 +22,7 @@ warnings.simplefilter("ignore", RuntimeWarning)
 
 from src.utils.logger import logger
 from src.utils.event_bus import EventBus
+from src.ui.chart_items import CandleStickItem
 
 
 def event_handler(event_type):
@@ -2208,7 +2209,7 @@ class MainWindow(QMainWindow):
         import pyqtgraph as pg
         plot_widget.plot(x, data, pen=pg.mkPen(color, width=width), name=name)
     
-    def _draw_indicator_histogram(self, plot_widget, x, data, positive_color='r', negative_color='g'):
+    def _draw_indicator_histogram(self, plot_widget, x, data, positive_color='r', negative_color='g', width=0.45):
         """
         绘制指标柱状图的通用方法
         
@@ -2218,6 +2219,7 @@ class MainWindow(QMainWindow):
             data: 指标数据
             positive_color: 正值柱状图颜色
             negative_color: 负值柱状图颜色
+            width: 柱状图宽度，默认与K线图柱体宽度保持一致
         """
         import pyqtgraph as pg
         for i in range(len(x)):
@@ -2225,7 +2227,7 @@ class MainWindow(QMainWindow):
                 color = positive_color
             else:
                 color = negative_color
-            bar_item = pg.BarGraphItem(x=[x[i]], height=[data[i]], width=0.6, brush=color)
+            bar_item = pg.BarGraphItem(x=[x[i]], height=[data[i]], width=width, brush=color)
             plot_widget.addItem(bar_item)
     
     def _update_indicator_values(self, label_widget, indicator_name, data_df):
@@ -2335,6 +2337,7 @@ class MainWindow(QMainWindow):
             
             self._draw_indicator_curve(plot_widget, x, macd_values, 'blue', 1, 'DIF')
             self._draw_indicator_curve(plot_widget, x, macd_signal_values, 'red', 1, 'DEA')
+            # MACD柱状图使用默认宽度，与K线图柱体宽度保持一致
             self._draw_indicator_histogram(plot_widget, x, macd_hist_values, 'r', 'g')
             self._setup_indicator_axis(plot_widget, x, np.column_stack((macd_values, macd_signal_values, macd_hist_values)).flatten())
         elif indicator_name == "RSI":
@@ -2345,7 +2348,8 @@ class MainWindow(QMainWindow):
         elif indicator_name == "VOL":
             # 绘制VOL指标
             volume_values = get_col_values(data_df, 'volume')
-            self._draw_indicator_histogram(plot_widget, x, volume_values, 'r', 'g')
+            # 成交量柱状图使用更窄的宽度，确保比K线图柱体窄
+            self._draw_indicator_histogram(plot_widget, x, volume_values, 'r', 'g', width=0.05)
             self._setup_indicator_axis(plot_widget, x, volume_values)
         elif indicator_name == "MA":
             # 绘制MA指标
@@ -2386,44 +2390,10 @@ class MainWindow(QMainWindow):
             self.crosshair_enabled = False
             self.current_kline_index = -1
             import numpy as np
-            from pyqtgraph import GraphicsObject
+
             from pyqtgraph import Point
             
-            # 自定义K线图项类
-            class CandleStickItem(GraphicsObject):
-                def __init__(self, data):
-                    GraphicsObject.__init__(self)
-                    self.data = data  # data must be a list of tuples (x, open, high, low, close)
-                    self.generatePicture()
-                
-                def generatePicture(self):
-                    self.picture = pg.QtGui.QPicture()
-                    p = pg.QtGui.QPainter(self.picture)
-                    for (t, open_val, high_val, low_val, close_val) in self.data:
-                        if close_val >= open_val:
-                            # 上涨，红色
-                            color = 'r'
-                        else:
-                            # 下跌，绿色
-                            color = 'g'
-                        
-                        # 绘制实体部分，不显示边框
-                        p.setPen(pg.mkPen(color, width=0))  # 设置宽度为0，不绘制边框
-                        p.setBrush(pg.mkBrush(color))
-                        p.drawRect(pg.QtCore.QRectF(t-0.3, open_val, 0.6, close_val-open_val))
-                        
-                        # 绘制上下影线，使用与实体相同的颜色
-                        p.setPen(pg.mkPen(color, width=1))  # 使用1像素宽度的线条
-                        p.setBrush(pg.mkBrush(color))
-                        p.drawLine(pg.QtCore.QPointF(t, high_val), pg.QtCore.QPointF(t, low_val))
-                    p.end()
-                
-                def paint(self, p, *args):
-                    p.drawPicture(0, 0, self.picture)
-                
-                def boundingRect(self):
-                    # 边界矩形
-                    return pg.QtCore.QRectF(self.picture.boundingRect())
+            # 使用导入的CandleStickItem类
             
             # 清空图表
             self.tech_plot_widget.clear()
@@ -5502,44 +5472,10 @@ class MainWindow(QMainWindow):
         # 导入pyqtgraph
         import pyqtgraph as pg
         import numpy as np
-        from pyqtgraph import GraphicsObject
+
         from pyqtgraph import Point
         
-        # 自定义K线图项类
-        class CandleStickItem(GraphicsObject):
-            def __init__(self, data):
-                GraphicsObject.__init__(self)
-                self.data = data  # data must be a list of tuples (x, open, high, low, close)
-                self.generatePicture()
-            
-            def generatePicture(self):
-                self.picture = pg.QtGui.QPicture()
-                p = pg.QtGui.QPainter(self.picture)
-                for (t, open_val, high_val, low_val, close_val) in self.data:
-                    if close_val >= open_val:
-                        # 上涨，红色
-                        color = 'r'
-                    else:
-                        # 下跌，绿色
-                        color = 'g'
-                    
-                    # 绘制实体部分，不显示边框
-                    p.setPen(pg.mkPen(color, width=0))  # 设置宽度为0，不绘制边框
-                    p.setBrush(pg.mkBrush(color))
-                    p.drawRect(pg.QtCore.QRectF(t-0.3, open_val, 0.6, close_val-open_val))
-                    
-                    # 绘制上下影线，使用与实体相同的颜色
-                    p.setPen(pg.mkPen(color, width=1))  # 使用1像素宽度的线条
-                    p.setBrush(pg.mkBrush(color))
-                    p.drawLine(pg.QtCore.QPointF(t, high_val), pg.QtCore.QPointF(t, low_val))
-                p.end()
-            
-            def paint(self, p, *args):
-                p.drawPicture(0, 0, self.picture)
-            
-            def boundingRect(self):
-                # 边界矩形
-                return pg.QtCore.QRectF(self.picture.boundingRect())
+        # 使用导入的CandleStickItem类
         
         # 创建x轴坐标（使用索引）
         x = np.arange(len(dates))
