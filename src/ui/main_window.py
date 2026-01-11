@@ -2209,7 +2209,7 @@ class MainWindow(QMainWindow):
         import pyqtgraph as pg
         plot_widget.plot(x, data, pen=pg.mkPen(color, width=width), name=name)
     
-    def _draw_indicator_histogram(self, plot_widget, x, data, positive_color='r', negative_color='g', width=0.45):
+    def _draw_indicator_histogram(self, plot_widget, x, data, positive_color='r', negative_color='g', width=0.35):
         """
         绘制指标柱状图的通用方法
         
@@ -2222,13 +2222,25 @@ class MainWindow(QMainWindow):
             width: 柱状图宽度，默认与K线图柱体宽度保持一致
         """
         import pyqtgraph as pg
-        for i in range(len(x)):
-            if data[i] >= 0:
-                color = positive_color
+        import numpy as np
+        
+        # 创建颜色数组
+        colors = []
+        for val in data:
+            if val >= 0:
+                colors.append(positive_color)
             else:
-                color = negative_color
-            bar_item = pg.BarGraphItem(x=[x[i]], height=[data[i]], width=width, brush=color)
-            plot_widget.addItem(bar_item)
+                colors.append(negative_color)
+        
+        # 使用一个BarGraphItem绘制所有柱状图，而不是为每个数据点创建一个
+        # 这样可以更好地控制宽度和间距
+        bar_item = pg.BarGraphItem(
+            x=np.array(x),
+            height=np.array(data),
+            width=width,
+            brush=colors
+        )
+        plot_widget.addItem(bar_item)
     
     def _update_indicator_values(self, label_widget, indicator_name, data_df):
         """
@@ -2349,7 +2361,7 @@ class MainWindow(QMainWindow):
             # 绘制VOL指标
             volume_values = get_col_values(data_df, 'volume')
             # 成交量柱状图使用更窄的宽度，确保比K线图柱体窄
-            self._draw_indicator_histogram(plot_widget, x, volume_values, 'r', 'g', width=0.05)
+            self._draw_indicator_histogram(plot_widget, x, volume_values, 'r', 'g', width=0.35)
             self._setup_indicator_axis(plot_widget, x, volume_values)
         elif indicator_name == "MA":
             # 绘制MA指标
@@ -5405,8 +5417,8 @@ class MainWindow(QMainWindow):
                     color = 'r'  # 上涨为红色
                 else:
                     color = 'g'  # 下跌为绿色
-            # 使用更宽的柱体，与通达信风格一致
-            bar_item = pg.BarGraphItem(x=[i], height=[volumes[i]], width=0.8, brush=pg.mkBrush(color))
+            # 使用更窄的柱体，比K线图柱体窄
+            bar_item = pg.BarGraphItem(x=[i], height=[volumes[i]], width=0.6, brush=pg.mkBrush(color))
             plot_widget.addItem(bar_item)
         
         # 绘制成交量5日均线（白色，与K线图MA5颜色一致）
