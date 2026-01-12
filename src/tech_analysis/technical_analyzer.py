@@ -5,12 +5,11 @@
 技术分析器，用于计算各种技术指标
 """
 
-import pandas as pd
 import numpy as np
-import ta
 import concurrent.futures
 from functools import partial
 import polars as pl
+import pandas as pd
 
 from .indicator_calculator import (
     calculate_ma_polars,
@@ -40,7 +39,7 @@ class TechnicalAnalyzer:
         # 只保存Polars DataFrame作为主要数据结构
         self.pl_df = None
         
-        # 移除冗余的Pandas DataFrame存储，改为按需转换并缓存
+        # 按需转换并缓存Pandas DataFrame
         self._pandas_cache = None
         self._pandas_cache_hash = None
         
@@ -48,7 +47,7 @@ class TechnicalAnalyzer:
             # 输入是Polars DataFrame
             self.pl_df = data
         elif isinstance(data, pd.DataFrame):
-            # 输入是Pandas DataFrame，转换为Polars后不再保留原始Pandas DataFrame
+            # 输入是Pandas DataFrame，转换为Polars
             self.pl_df = pl.from_pandas(data)
         else:
             # 输入是其他格式，转换为Polars
@@ -72,7 +71,7 @@ class TechnicalAnalyzer:
         
         # 添加缓存机制，避免重复计算
         self._calculate_cache = {}
-        # 使用Polars原生方法计算数据哈希，避免Pandas转换
+        # 使用Polars原生方法计算数据哈希
         self._data_hash = self._calculate_polars_data_hash()
         
         # 初始化指标映射，便于统一管理
@@ -89,7 +88,7 @@ class TechnicalAnalyzer:
     
     def _calculate_polars_data_hash(self):
         """
-        使用Polars原生方法计算数据哈希，避免转换为Pandas
+        使用Polars原生方法计算数据哈希
         
         Returns:
             int: 唯一的数据哈希值
@@ -97,7 +96,6 @@ class TechnicalAnalyzer:
         # 只选择关键列进行哈希计算
         key_cols = ['open', 'high', 'low', 'close', 'volume']
         # 选择关键列并转换为numpy数组，然后计算哈希
-        # 这样可以避免写入文件，直接在内存中计算哈希
         key_data = self.pl_df.select(key_cols).to_numpy()
         return hash(key_data.tobytes())
     
@@ -133,7 +131,6 @@ class TechnicalAnalyzer:
             pd.DataFrame: 转换后的Pandas DataFrame
         """
         if self._pandas_cache is None or self._data_hash != self._pandas_cache_hash:
-            # 转换为pandas DataFrame并缓存
             self._pandas_cache = self.pl_df.to_pandas()
             self._pandas_cache_hash = self._data_hash
         return self._pandas_cache
@@ -202,12 +199,8 @@ class TechnicalAnalyzer:
         Returns:
             pd.DataFrame或pl.DataFrame: 采样后的数据
         """
-        # 确保数据已同步
         current_data = self.get_data(return_polars=True)
-        
-        # 使用工具函数进行采样
         sampled_data = sample_data_polars(current_data, target_points, strategy)
-        
         return sampled_data if return_polars else sampled_data.to_pandas()
     
     def get_data(self, return_polars=False, sample=False, sample_params=None):
@@ -222,23 +215,16 @@ class TechnicalAnalyzer:
         Returns:
             pd.DataFrame或pl.DataFrame: 包含所有指标的数据
         """
-        # 数据优先使用Polars，只在必要时转换
         if return_polars:
             data = self.pl_df
         else:
-            # 使用优化的转换方法
             data = self._ensure_pandas_df()
         
-        # 如果需要采样
         if sample:
             sample_params = sample_params or {}
             target_points = sample_params.get('target_points', 1000)
             strategy = sample_params.get('strategy', 'uniform')
-            
-            if return_polars:
-                data = self.sample_data(target_points=target_points, strategy=strategy, return_polars=True)
-            else:
-                data = self.sample_data(target_points=target_points, strategy=strategy, return_polars=False)
+            data = self.sample_data(target_points=target_points, strategy=strategy, return_polars=return_polars)
         
         return data
     

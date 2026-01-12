@@ -737,15 +737,11 @@ class IndicatorPlugin(PluginBase):
         Returns:
             Any: 包含指标的polars DataFrame
         """
-        # 默认实现：转换为pandas，调用calculate方法，再转换回polars
         import pandas as pd
         import polars as pl
         
-        # 转换为pandas
         df_pd = data.to_pandas()
-        # 调用原有calculate方法
         result_pd = self.calculate(df_pd, **kwargs)
-        # 转换回polars
         return pl.from_pandas(result_pd)
 
 
