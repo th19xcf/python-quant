@@ -2233,12 +2233,13 @@ class MainWindow(QMainWindow):
                 colors.append(negative_color)
         
         # 使用一个BarGraphItem绘制所有柱状图，而不是为每个数据点创建一个
-        # 这样可以更好地控制宽度和间距
+        # 这样可以更好地控制宽度和间距，去掉外框线
         bar_item = pg.BarGraphItem(
             x=np.array(x),
             height=np.array(data),
             width=width,
-            brush=colors
+            brush=colors,
+            pen=None
         )
         plot_widget.addItem(bar_item)
     
@@ -5417,8 +5418,8 @@ class MainWindow(QMainWindow):
                     color = 'r'  # 上涨为红色
                 else:
                     color = 'g'  # 下跌为绿色
-            # 使用更窄的柱体，比K线图柱体窄
-            bar_item = pg.BarGraphItem(x=[i], height=[volumes[i]], width=0.6, brush=pg.mkBrush(color))
+            # 使用更窄的柱体，比K线图柱体窄，去掉外框线
+            bar_item = pg.BarGraphItem(x=[i], height=[volumes[i]], width=0.6, brush=pg.mkBrush(color), pen=None)
             plot_widget.addItem(bar_item)
         
         # 绘制成交量5日均线（白色，与K线图MA5颜色一致）
