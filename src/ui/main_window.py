@@ -2392,7 +2392,7 @@ class MainWindow(QMainWindow):
             stock_code: 股票代码
         """
         # 初始化变量，避免UnboundLocalError
-        df_pd = None
+        df_pl = None
         x = None
         
         try:
@@ -2704,7 +2704,7 @@ class MainWindow(QMainWindow):
             
             # 计算并绘制技术指标
             try:
-                import pandas as pd
+                import polars as pl
                 import numpy as np
                 import ta
                 
@@ -2729,27 +2729,27 @@ class MainWindow(QMainWindow):
                 analyzer.calculate_all_indicators(parallel=True)
                 
 
-                df_pd = analyzer.get_data()
-                logger.info(f"使用TechnicalAnalyzer计算指标完成，DataFrame形状: {df_pd.shape}")
+                df_pl = analyzer.get_data(return_polars=True)
+                logger.info(f"使用TechnicalAnalyzer计算指标完成，DataFrame形状: {df_pl.shape}")
                 
                 # 确保数据索引正确
                 
                 # 确保数据索引正确
-                x = np.arange(len(df_pd))
+                x = np.arange(len(df_pl))
                 
                 # 绘制K线图
                 logger.info("绘制K线图")
-                self.draw_k_line_indicator(self.tech_plot_widget, df, dates, opens, highs, lows, closes, df_pd)
+                self.draw_k_line_indicator(self.tech_plot_widget, df, dates, opens, highs, lows, closes, df_pl)
                 
                 # 绘制KDJ指标
                 current_indicator = self.window_indicators[3]
                 logger.info(f"绘制{current_indicator}指标")
-                self.draw_indicator(self.kdj_plot_widget, current_indicator, x, df_pd)
+                self.draw_indicator(self.kdj_plot_widget, current_indicator, x, df_pl)
                 
                 # 仅在第3窗口显示VOL指标时，进行额外的特殊处理
                 if current_indicator == "VOL":
                     # 设置成交量图的x轴与K线图一致，实现柱体对齐
-                    self.kdj_plot_widget.setXRange(0, len(df_pd) - 1)
+                    self.kdj_plot_widget.setXRange(0, len(df_pl) - 1)
                     
                     # 设置成交量图的X轴刻度标签，与K线图保持一致
                     kdj_ax = self.kdj_plot_widget.getAxis('bottom')
@@ -2757,7 +2757,7 @@ class MainWindow(QMainWindow):
                     
                     # 仅在当前指标是VOL时设置成交量相关的Y轴范围和样式
                     # 获取成交量数据
-                    volume_data = df_pd['volume'].values
+                    volume_data = df_pl['volume'].to_numpy()
                     volume_min = volume_data.min()
                     volume_max = volume_data.max()
                     
@@ -2792,7 +2792,7 @@ class MainWindow(QMainWindow):
                     y_axis.setStyle(tickTextOffset=20)
                     
                     # 设置X轴范围
-                    self.kdj_plot_widget.setXRange(0, len(df_pd) - 1)
+                    self.kdj_plot_widget.setXRange(0, len(df_pl) - 1)
                 # 重新添加十字线到KDJ图中
                 if hasattr(self, 'kdj_vline') and hasattr(self, 'kdj_hline'):
                     self.kdj_plot_widget.addItem(self.kdj_vline, ignoreBounds=True)
@@ -2859,39 +2859,39 @@ class MainWindow(QMainWindow):
                 # 根据当前指标更新标签文本
                 if current_indicator == "KDJ":
                     # 获取最新的KDJ值
-                    latest_k = df_pd['k'].iloc[-1]
-                    latest_d = df_pd['d'].iloc[-1]
-                    latest_j = df_pd['j'].iloc[-1]
+                    latest_k = df_pl['k'].tail(1)[0]
+                    latest_d = df_pl['d'].tail(1)[0]
+                    latest_j = df_pl['j'].tail(1)[0]
                     # 更新标签文本
                     kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
                     self.kdj_values_label.setText(kdj_text)
                 elif current_indicator == "RSI":
                     # 获取最新的RSI值
-                    latest_rsi = df_pd['rsi14'].iloc[-1]
+                    latest_rsi = df_pl['rsi14'].tail(1)[0]
                     # 更新标签文本
                     rsi_text = f"<font color='blue'>RSI14: {latest_rsi:.2f}</font>"
                     self.kdj_values_label.setText(rsi_text)
                 elif current_indicator == "MACD":
                     # 获取最新的MACD值
-                    latest_macd = df_pd['macd'].iloc[-1]
-                    latest_macd_signal = df_pd['macd_signal'].iloc[-1]
-                    latest_macd_hist = df_pd['macd_hist'].iloc[-1]
+                    latest_macd = df_pl['macd'].tail(1)[0]
+                    latest_macd_signal = df_pl['macd_signal'].tail(1)[0]
+                    latest_macd_hist = df_pl['macd_hist'].tail(1)[0]
                     # 更新标签文本
                     macd_text = f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>"
                     self.kdj_values_label.setText(macd_text)
                 elif current_indicator == "VOL":
                     # 获取最新的成交量值
-                    latest_volume = df_pd['volume'].iloc[-1]
-                    latest_vol_ma5 = df_pd['vol_ma5'].iloc[-1]
-                    latest_vol_ma10 = df_pd['vol_ma10'].iloc[-1]
+                    latest_volume = df_pl['volume'].tail(1)[0]
+                    latest_vol_ma5 = df_pl['vol_ma5'].tail(1)[0]
+                    latest_vol_ma10 = df_pl['vol_ma10'].tail(1)[0]
                     # 更新标签文本
                     vol_text = f"<font color='#C0C0C0'>VOLUME: {int(latest_volume):,}</font>  <font color='white'>MA5: {int(latest_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(latest_vol_ma10):,}</font>"
                     self.kdj_values_label.setText(vol_text)
                 else:
                     # 默认绘制KDJ指标，显示KDJ数值
-                    latest_k = df_pd['k'].iloc[-1]
-                    latest_d = df_pd['d'].iloc[-1]
-                    latest_j = df_pd['j'].iloc[-1]
+                    latest_k = df_pl['k'].tail(1)[0]
+                    latest_d = df_pl['d'].tail(1)[0]
+                    latest_j = df_pl['j'].tail(1)[0]
                     # 更新标签文本
                     kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
                     self.kdj_values_label.setText(kdj_text)
@@ -2926,23 +2926,23 @@ class MainWindow(QMainWindow):
                 
                 # 保存指标数据，用于鼠标移动时更新指标数值
                 self.current_kdj_data = {
-                    'k': df_pd['k'].values.tolist(),
-                    'd': df_pd['d'].values.tolist(),
-                    'j': df_pd['j'].values.tolist()
+                    'k': df_pl['k'].to_list(),
+                    'd': df_pl['d'].to_list(),
+                    'j': df_pl['j'].to_list()
                 }
                 self.current_rsi_data = {
-                    'rsi': df_pd['rsi14'].values.tolist()
+                    'rsi': df_pl['rsi14'].to_list()
                 }
                 self.current_macd_data = {
-                    'macd': df_pd['macd'].values.tolist(),
-                    'macd_signal': df_pd['macd_signal'].values.tolist(),
-                    'macd_hist': df_pd['macd_hist'].values.tolist()
+                    'macd': df_pl['macd'].to_list(),
+                    'macd_signal': df_pl['macd_signal'].to_list(),
+                    'macd_hist': df_pl['macd_hist'].to_list()
                 }
                 # 保存成交量数据
                 self.current_volume_data = {
-                    'volume': df_pd['volume'].values.tolist(),
-                    'vol_ma5': df_pd['vol_ma5'].values.tolist(),
-                    'vol_ma10': df_pd['vol_ma10'].values.tolist()
+                    'volume': df_pl['volume'].to_list(),
+                    'vol_ma5': df_pl['vol_ma5'].to_list(),
+                    'vol_ma10': df_pl['vol_ma10'].to_list()
                 }
                 
                 # 仅在第3窗口显示VOL指标时，应用与第2窗口相同的绘制逻辑
@@ -2956,7 +2956,7 @@ class MainWindow(QMainWindow):
                     
                     # 设置Y轴范围，与第2窗口的处理逻辑完全相同
                     # 确保使用真实的成交量数值，而不是相对比例
-                    volumes = df_pd['volume'].values
+                    volumes = df_pl['volume'].to_numpy()
                     if len(volumes) > 0:
                         # 计算合理的Y轴范围，进一步增加顶部空间
                         volume_mean = volumes.mean()
@@ -2996,14 +2996,14 @@ class MainWindow(QMainWindow):
             self.current_kline_index = -1
             # 绘制第二个窗口的指标图
             try:
-                # 检查df_pd是否已经定义，避免UnboundLocalError
-                if df_pd is None:
+                # 检查df_pl是否已经定义，避免UnboundLocalError
+                if df_pl is None:
                     logger.warning("指标数据未计算，跳过第二个窗口指标绘制")
                     return
                     
                 # 确保x变量已经定义
                 if x is None:
-                    x = np.arange(len(df_pd))
+                    x = np.arange(len(df_pl))
                     logger.info(f"重新计算x轴坐标，长度: {len(x)}")
                     
                 # 获取当前窗口指标
@@ -3056,21 +3056,21 @@ class MainWindow(QMainWindow):
                 #         df_pd['j'] = 3 * df_pd['k'] - 2 * df_pd['d']
                 
                 # 绘制指标
-                self.draw_indicator(self.volume_plot_widget, current_indicator, x, df_pd)
+                self.draw_indicator(self.volume_plot_widget, current_indicator, x, df_pl)
 
                 # 添加数值显示
-                if len(df_pd) > 0:
+                if len(df_pl) > 0:
                     if current_indicator == "VOL":
                         # 获取最新的成交量数据
-                        latest_volume = df_pd.iloc[-1]['volume']
-                        latest_vol_ma5 = df_pd.iloc[-1]['vol_ma5']
-                        latest_vol_ma10 = df_pd.iloc[-1]['vol_ma10']
+                        latest_volume = df_pl.tail(1)['volume'][0]
+                        latest_vol_ma5 = df_pl.tail(1)['vol_ma5'][0]
+                        latest_vol_ma10 = df_pl.tail(1)['vol_ma10'][0]
                         
                         # 保存成交量数据和成交量均线数据，用于鼠标移动时更新标题
                         self.current_volume_data = {
-                            'volume': df_pd['volume'].values.tolist(),
-                            'vol_ma5': df_pd['vol_ma5'].values.tolist(),
-                            'vol_ma10': df_pd['vol_ma10'].values.tolist()
+                            'volume': df_pl['volume'].to_list(),
+                            'vol_ma5': df_pl['vol_ma5'].to_list(),
+                            'vol_ma10': df_pl['vol_ma10'].to_list()
                         }
                     
                     # 检查是否已经存在标签，如果存在则移除
@@ -3125,21 +3125,21 @@ class MainWindow(QMainWindow):
                         self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(latest_volume):,}</font>  <font color='white'>MA5: {int(latest_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(latest_vol_ma10):,}</font>")
                     elif current_indicator == "MACD":
                         # 添加MACD数值显示
-                        latest_macd = df_pd['macd'].iloc[-1]
-                        latest_macd_signal = df_pd['macd_signal'].iloc[-1]
-                        latest_macd_hist = df_pd['macd_hist'].iloc[-1]
+                        latest_macd = df_pl['macd'].tail(1)[0]
+                        latest_macd_signal = df_pl['macd_signal'].tail(1)[0]
+                        latest_macd_hist = df_pl['macd_hist'].tail(1)[0]
                         
                         self.volume_values_label.setText(f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>")
                     elif current_indicator == "RSI":
                         # 添加RSI数值显示
-                        latest_rsi = df_pd['rsi14'].iloc[-1]
+                        latest_rsi = df_pl['rsi14'].tail(1)[0]
                         
                         self.volume_values_label.setText(f"<font color='blue'>RSI14: {latest_rsi:.2f}</font>")
                     elif current_indicator == "KDJ":
                         # 添加KDJ数值显示
-                        latest_k = df_pd['k'].iloc[-1]
-                        latest_d = df_pd['d'].iloc[-1]
-                        latest_j = df_pd['j'].iloc[-1]
+                        latest_k = df_pl['k'].tail(1)[0]
+                        latest_d = df_pl['d'].tail(1)[0]
+                        latest_j = df_pl['j'].tail(1)[0]
                         
                         self.volume_values_label.setText(f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>")
                     
@@ -3180,7 +3180,7 @@ class MainWindow(QMainWindow):
                         logger.info("已添加成交量值显示标签")
                 
                 # 设置成交量图的x轴与K线图一致，实现柱体对齐
-                self.volume_plot_widget.setXRange(0, len(df_pd) - 1)
+                self.volume_plot_widget.setXRange(0, len(df_pl) - 1)
                 
                 # 设置成交量图的X轴刻度标签，与K线图保持一致
                 volume_ax = self.volume_plot_widget.getAxis('bottom')
@@ -3193,7 +3193,7 @@ class MainWindow(QMainWindow):
                 # 仅在当前指标是VOL时设置成交量相关的Y轴范围和样式
                 if current_indicator == "VOL":
                     # 获取成交量数据
-                    volume_data = df_pd['volume'].values
+                    volume_data = df_pl['volume'].to_numpy()
                     volume_min = volume_data.min()
                     volume_max = volume_data.max()
                     
@@ -3228,7 +3228,7 @@ class MainWindow(QMainWindow):
                 y_axis.setStyle(tickTextOffset=20)
                 
                 # 设置X轴范围
-                self.volume_plot_widget.setXRange(0, len(df_pd) - 1)
+                self.volume_plot_widget.setXRange(0, len(df_pl) - 1)
                 
                 logger.info(f"成功绘制{stock_name}({stock_code})的{current_indicator}图")
                 
@@ -3481,7 +3481,7 @@ class MainWindow(QMainWindow):
         """
         try:
             import pyqtgraph as pg
-            import pandas as pd
+            import polars as pl
             import numpy as np
             from pyqtgraph import Point
             
@@ -3547,7 +3547,7 @@ class MainWindow(QMainWindow):
                         # 在均线上每隔几个点绘制一个白点
                         step = max(1, len(x_data) // 20)  # 最多绘制20个点
                         for i in range(0, len(x_data), step):
-                            if not pd.isna(y_data[i]):
+                            if not pl.is_null(y_data[i]):
                                 # 创建白点标注
                                 point = pg.ScatterPlotItem([x_data[i]], [y_data[i]], size=6, pen=pg.mkPen('w', width=1), brush=pg.mkBrush('w'))
                                 self.tech_plot_widget.addItem(point)
@@ -5284,116 +5284,116 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.exception(f"获取市场指数信息失败: {e}")
     
-    def draw_kdj_indicator(self, plot_widget, x, df_pd):
+    def draw_kdj_indicator(self, plot_widget, x, df_pl):
         """
         绘制KDJ指标
         
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pd: pandas DataFrame，包含kdj数据
+            df_pl: polars DataFrame，包含kdj数据
         """
         # 导入pyqtgraph
         import pyqtgraph as pg
         from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
         
         # 确保KDJ相关列存在
-        if 'k' not in df_pd.columns or 'd' not in df_pd.columns or 'j' not in df_pd.columns:
+        if 'k' not in df_pl.columns or 'd' not in df_pl.columns or 'j' not in df_pl.columns:
             # 使用TechnicalAnalyzer计算KDJ指标
-            analyzer = TechnicalAnalyzer(df_pd)
+            analyzer = TechnicalAnalyzer(df_pl)
             analyzer.calculate_kdj(14)
-            df_pd = analyzer.get_data()
+            df_pl = analyzer.get_data(return_polars=True)
         
         # 设置KDJ指标图的Y轴范围，考虑到KDJ可能超出0-100范围，特别是J值
         plot_widget.setYRange(-50, 150)
         # 绘制K线（白色）
-        plot_widget.plot(x, df_pd['k'].values, pen=pg.mkPen('w', width=1), name='K')
+        plot_widget.plot(x, df_pl['k'].to_numpy(), pen=pg.mkPen('w', width=1), name='K')
         # 绘制D线（黄色）
-        plot_widget.plot(x, df_pd['d'].values, pen=pg.mkPen('y', width=1), name='D')
+        plot_widget.plot(x, df_pl['d'].to_numpy(), pen=pg.mkPen('y', width=1), name='D')
         # 绘制J线（紫色）
-        plot_widget.plot(x, df_pd['j'].values, pen=pg.mkPen('m', width=1), name='J')
+        plot_widget.plot(x, df_pl['j'].to_numpy(), pen=pg.mkPen('m', width=1), name='J')
         # 绘制超买超卖线
         plot_widget.addItem(pg.InfiniteLine(pos=20, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
         plot_widget.addItem(pg.InfiniteLine(pos=80, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
     
-    def draw_rsi_indicator(self, plot_widget, x, df_pd):
+    def draw_rsi_indicator(self, plot_widget, x, df_pl):
         """
         绘制RSI指标
         
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pd: pandas DataFrame，包含rsi数据
+            df_pl: polars DataFrame，包含rsi数据
         """
         # 导入pyqtgraph
         import pyqtgraph as pg
         from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
         
         # 确保RSI相关列存在
-        if 'rsi14' not in df_pd.columns:
+        if 'rsi14' not in df_pl.columns:
             # 使用TechnicalAnalyzer计算RSI指标
-            analyzer = TechnicalAnalyzer(df_pd)
+            analyzer = TechnicalAnalyzer(df_pl)
             analyzer.calculate_rsi(14)
-            df_pd = analyzer.get_data()
+            df_pl = analyzer.get_data(return_polars=True)
         
         # 绘制RSI指标
         plot_widget.setYRange(0, 100)
         # 绘制RSI线（蓝色）
-        plot_widget.plot(x, df_pd['rsi14'].values, pen=pg.mkPen('b', width=1), name='RSI14')
+        plot_widget.plot(x, df_pl['rsi14'].to_numpy(), pen=pg.mkPen('b', width=1), name='RSI14')
         # 绘制超买超卖线
         plot_widget.addItem(pg.InfiniteLine(pos=30, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
         plot_widget.addItem(pg.InfiniteLine(pos=70, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
     
-    def draw_macd_indicator(self, plot_widget, x, df_pd):
+    def draw_macd_indicator(self, plot_widget, x, df_pl):
         """
         绘制MACD指标
         
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pd: pandas DataFrame，包含macd数据
+            df_pl: polars DataFrame，包含macd数据
         """
         # 导入pyqtgraph
         import pyqtgraph as pg
         from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
         
         # 确保MACD相关列存在
-        if 'macd' not in df_pd.columns or 'macd_signal' not in df_pd.columns or 'macd_hist' not in df_pd.columns:
+        if 'macd' not in df_pl.columns or 'macd_signal' not in df_pl.columns or 'macd_hist' not in df_pl.columns:
             # 使用TechnicalAnalyzer计算MACD指标
-            analyzer = TechnicalAnalyzer(df_pd)
+            analyzer = TechnicalAnalyzer(df_pl)
             analyzer.calculate_macd()
-            df_pd = analyzer.get_data()
+            df_pl = analyzer.get_data(return_polars=True)
         
         # 绘制MACD指标
-        plot_widget.setYRange(min(df_pd['macd_hist'].min(), df_pd['macd'].min(), df_pd['macd_signal'].min()) * 1.2, 
-                             max(df_pd['macd_hist'].max(), df_pd['macd'].max(), df_pd['macd_signal'].max()) * 1.2)
+        plot_widget.setYRange(min(df_pl['macd_hist'].min(), df_pl['macd'].min(), df_pl['macd_signal'].min()) * 1.2, 
+                             max(df_pl['macd_hist'].max(), df_pl['macd'].max(), df_pl['macd_signal'].max()) * 1.2)
         # 绘制MACD线（蓝色）
-        plot_widget.plot(x, df_pd['macd'].values, pen=pg.mkPen('b', width=1), name='MACD')
+        plot_widget.plot(x, df_pl['macd'].to_numpy(), pen=pg.mkPen('b', width=1), name='MACD')
         # 绘制信号线（红色）
-        plot_widget.plot(x, df_pd['macd_signal'].values, pen=pg.mkPen('r', width=1), name='Signal')
+        plot_widget.plot(x, df_pl['macd_signal'].to_numpy(), pen=pg.mkPen('r', width=1), name='Signal')
         # 绘制柱状图
         for i in range(len(x)):
-            if df_pd['macd_hist'].values[i] >= 0:
+            if df_pl['macd_hist'].to_numpy()[i] >= 0:
                 color = 'r'  # 上涨为红色
             else:
                 color = 'g'  # 下跌为绿色
-            plot_widget.plot([x[i], x[i]], [0, df_pd['macd_hist'].values[i]], pen=pg.mkPen(color, width=2))
+            plot_widget.plot([x[i], x[i]], [0, df_pl['macd_hist'].to_numpy()[i]], pen=pg.mkPen(color, width=2))
     
-    def draw_vol_indicator(self, plot_widget, x, df_pd):
+    def draw_vol_indicator(self, plot_widget, x, df_pl):
         """
         绘制VOL指标
         
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pd: pandas DataFrame，包含成交量数据
+            df_pl: polars DataFrame，包含成交量数据
         """
         # 导入pyqtgraph
         import pyqtgraph as pg
         import numpy as np
         
         # 设置Y轴范围，确保从0开始
-        volumes = df_pd['volume'].values
+        volumes = df_pl['volume'].to_numpy()
         if len(volumes) > 0:
             y_max = volumes.max() * 1.3  # 顶部留出30%空间
             plot_widget.setYRange(0, y_max)
@@ -5413,7 +5413,7 @@ class MainWindow(QMainWindow):
             if i == 0:
                 color = 'r'  # 默认第一个为红色
             else:
-                if df_pd['close'].values[i] >= df_pd['close'].values[i-1]:
+                if df_pl['close'].to_numpy()[i] >= df_pl['close'].to_numpy()[i-1]:
                     color = 'r'  # 上涨为红色
                 else:
                     color = 'g'  # 下跌为绿色
@@ -5422,21 +5422,21 @@ class MainWindow(QMainWindow):
             plot_widget.addItem(bar_item)
         
         # 绘制成交量5日均线（白色，与K线图MA5颜色一致）
-        if 'vol_ma5' in df_pd.columns:
-            vol_ma5_item = plot_widget.plot(x, df_pd['vol_ma5'].values, pen=pg.mkPen('w', width=1), name='VOL_MA5')
+        if 'vol_ma5' in df_pl.columns:
+            vol_ma5_item = plot_widget.plot(x, df_pl['vol_ma5'].to_numpy(), pen=pg.mkPen('w', width=1), name='VOL_MA5')
         
         # 绘制成交量10日均线（青色，与K线图MA10颜色一致）
-        if 'vol_ma10' in df_pd.columns:
-            vol_ma10_item = plot_widget.plot(x, df_pd['vol_ma10'].values, pen=pg.mkPen('c', width=1), name='VOL_MA10')
+        if 'vol_ma10' in df_pl.columns:
+            vol_ma10_item = plot_widget.plot(x, df_pl['vol_ma10'].to_numpy(), pen=pg.mkPen('c', width=1), name='VOL_MA10')
         
         # 绘制完成后，计算并强制设置正确的Y轴范围，使用真实的成交量数值
         if len(volumes) > 0:
             # 获取所有相关数据的最大值，包括成交量和均线
             max_value = volumes.max()
-            if 'vol_ma5' in df_pd.columns:
-                max_value = max(max_value, df_pd['vol_ma5'].max())
-            if 'vol_ma10' in df_pd.columns:
-                max_value = max(max_value, df_pd['vol_ma10'].max())
+            if 'vol_ma5' in df_pl.columns:
+                max_value = max(max_value, df_pl['vol_ma5'].max())
+            if 'vol_ma10' in df_pl.columns:
+                max_value = max(max_value, df_pl['vol_ma10'].max())
             
             y_min = 0  # 成交量不能为负
             y_max = max_value * 1.3  # 顶部留出30%空间
@@ -5467,7 +5467,7 @@ class MainWindow(QMainWindow):
         y_axis.setScale(1.0)  # 重置缩放比例
         y_axis.setRange(y_min, y_max)  # 重新设置Y轴范围
     
-    def draw_k_line_indicator(self, plot_widget, df, dates, opens, highs, lows, closes, df_pd):
+    def draw_k_line_indicator(self, plot_widget, df, dates, opens, highs, lows, closes, df_pl):
         """
         绘制K线图
         
@@ -5591,20 +5591,20 @@ class MainWindow(QMainWindow):
         self.ma_points.clear()
         
         # 绘制5日均线（白色）
-        ma5_item = plot_widget.plot(x, df_pd['ma5'].values, pen=pg.mkPen('w', width=1), name='MA5')
-        self.moving_averages['MA5'] = {'item': ma5_item, 'data': (x, df_pd['ma5'].values), 'color': 'w'}
+        ma5_item = plot_widget.plot(x, df_pl['ma5'].to_numpy(), pen=pg.mkPen('w', width=1), name='MA5')
+        self.moving_averages['MA5'] = {'item': ma5_item, 'data': (x, df_pl['ma5'].to_numpy()), 'color': 'w'}
         
         # 绘制10日均线（青色）
-        ma10_item = plot_widget.plot(x, df_pd['ma10'].values, pen=pg.mkPen('c', width=1), name='MA10')
-        self.moving_averages['MA10'] = {'item': ma10_item, 'data': (x, df_pd['ma10'].values), 'color': 'c'}
+        ma10_item = plot_widget.plot(x, df_pl['ma10'].to_numpy(), pen=pg.mkPen('c', width=1), name='MA10')
+        self.moving_averages['MA10'] = {'item': ma10_item, 'data': (x, df_pl['ma10'].to_numpy()), 'color': 'c'}
         
         # 绘制20日均线（红色）
-        ma20_item = plot_widget.plot(x, df_pd['ma20'].values, pen=pg.mkPen('r', width=1), name='MA20')
-        self.moving_averages['MA20'] = {'item': ma20_item, 'data': (x, df_pd['ma20'].values), 'color': 'r'}
+        ma20_item = plot_widget.plot(x, df_pl['ma20'].to_numpy(), pen=pg.mkPen('r', width=1), name='MA20')
+        self.moving_averages['MA20'] = {'item': ma20_item, 'data': (x, df_pl['ma20'].to_numpy()), 'color': 'r'}
         
         # 绘制60日均线（绿色）
-        ma60_item = plot_widget.plot(x, df_pd['ma60'].values, pen=pg.mkPen('g', width=1), name='MA60')
-        self.moving_averages['MA60'] = {'item': ma60_item, 'data': (x, df_pd['ma60'].values), 'color': 'g'}
+        ma60_item = plot_widget.plot(x, df_pl['ma60'].to_numpy(), pen=pg.mkPen('g', width=1), name='MA60')
+        self.moving_averages['MA60'] = {'item': ma60_item, 'data': (x, df_pl['ma60'].to_numpy()), 'color': 'g'}
         
         # 保存当前鼠标位置和K线索引
         self.current_kline_data = {
@@ -5617,10 +5617,10 @@ class MainWindow(QMainWindow):
         
         # 保存计算好的MA值和颜色，用于鼠标移动时更新显示
         self.ma_data = {
-            'MA5': df_pd['ma5'].values.tolist(),
-            'MA10': df_pd['ma10'].values.tolist(),
-            'MA20': df_pd['ma20'].values.tolist(),
-            'MA60': df_pd['ma60'].values.tolist()
+            'MA5': df_pl['ma5'].to_list(),
+            'MA10': df_pl['ma10'].to_list(),
+            'MA20': df_pl['ma20'].to_list(),
+            'MA60': df_pl['ma60'].to_list()
         }
         
         # 保存MA线的颜色映射，使用与绘制线条一致的颜色值
@@ -5634,7 +5634,7 @@ class MainWindow(QMainWindow):
         # 保存K线图数据项
         self.candle_plot_item = candle_plot_item
     
-    def draw_indicator(self, plot_widget, indicator_name, x, df_pd):
+    def draw_indicator(self, plot_widget, indicator_name, x, df_pl):
         """
         根据指标名称绘制相应的指标
         
@@ -5642,7 +5642,7 @@ class MainWindow(QMainWindow):
             plot_widget: 绘图控件
             indicator_name: 指标名称
             x: x轴数据
-            df_pd: pandas DataFrame，包含指标数据
+            df_pl: polars DataFrame，包含指标数据
         """
         # 导入pyqtgraph
         import pyqtgraph as pg
@@ -5685,15 +5685,15 @@ class MainWindow(QMainWindow):
         
         # 获取绘制函数，如果没有匹配到，使用默认绘制函数
         drawer = indicator_drawers.get(indicator_name, self.draw_kdj_indicator)
-        drawer(plot_widget, x, df_pd)
+        drawer(plot_widget, x, df_pl)
     
-    def update_indicator_values_label(self, indicator_name, df_pd):
+    def update_indicator_values_label(self, indicator_name, df_pl):
         """
         更新指标值显示标签
         
         Args:
             indicator_name: 指标名称
-            df_pd: pandas DataFrame，包含指标数据
+            df_pl: polars DataFrame，包含指标数据
         """
         # 创建指标值显示标签
         if not hasattr(self, 'kdj_values_label'):
@@ -5735,24 +5735,24 @@ class MainWindow(QMainWindow):
             kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
             self.kdj_values_label.setText(kdj_text)
     
-    def save_indicator_data(self, df_pd):
+    def save_indicator_data(self, df_pl):
         """
         保存指标数据，用于鼠标移动时更新指标数值
         
         Args:
-            df_pd: pandas DataFrame，包含指标数据
+            df_pl: polars DataFrame，包含指标数据
         """
         self.current_kdj_data = {
-            'k': df_pd['k'].values.tolist(),
-            'd': df_pd['d'].values.tolist(),
-            'j': df_pd['j'].values.tolist()
+            'k': df_pl['k'].to_list(),
+            'd': df_pl['d'].to_list(),
+            'j': df_pl['j'].to_list()
         }
         self.current_rsi_data = {
-            'rsi': df_pd['rsi14'].values.tolist()
+            'rsi': df_pl['rsi14'].to_list()
         }
         self.current_macd_data = {
-            'macd': df_pd['macd'].values.tolist(),
-            'macd_signal': df_pd['macd_signal'].values.tolist(),
-            'macd_hist': df_pd['macd_hist'].values.tolist()
+            'macd': df_pl['macd'].to_list(),
+            'macd_signal': df_pl['macd_signal'].to_list(),
+            'macd_hist': df_pl['macd_hist'].to_list()
         }
            
