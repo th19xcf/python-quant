@@ -130,8 +130,8 @@ def calculate_macd_polars(df, fast_period=12, slow_period=26, signal_period=9):
     """
     # 计算快速EMA和慢速EMA
     df = df.with_columns([
-        pl.col('close').rolling_mean(window_size=fast_period, min_periods=1).alias(f'ema{fast_period}'),
-        pl.col('close').rolling_mean(window_size=slow_period, min_periods=1).alias(f'ema{slow_period}')
+        pl.col('close').ewm_mean(span=fast_period).alias(f'ema{fast_period}'),
+        pl.col('close').ewm_mean(span=slow_period).alias(f'ema{slow_period}')
     ])
     
     # 计算DIF (MACD线)
@@ -141,7 +141,7 @@ def calculate_macd_polars(df, fast_period=12, slow_period=26, signal_period=9):
     
     # 计算DEA (信号线)
     df = df.with_columns(
-        pl.col('macd').rolling_mean(window_size=signal_period, min_periods=1).alias('macd_signal')
+        pl.col('macd').ewm_mean(span=signal_period).alias('macd_signal')
     )
     
     # 计算柱状图 (MACD柱状图)
