@@ -334,6 +334,15 @@ class PluginBase(ABC):
             status: 加载状态，'unloaded', 'loaded', 'initialized'
         """
         self._load_status = status
+    
+    def supports_polars(self) -> bool:
+        """
+        检查插件是否支持polars数据处理
+        
+        Returns:
+            bool: 是否支持polars数据处理
+        """
+        return False
 
     # -----------------------------
     # 插件间通信方法
@@ -716,6 +725,28 @@ class IndicatorPlugin(PluginBase):
             List[str]: 输出列名列表
         """
         pass
+    
+    def calculate_polars(self, data: Any, **kwargs) -> Any:
+        """
+        使用polars计算技术指标
+        
+        Args:
+            data: 股票数据，polars DataFrame
+            **kwargs: 指标参数
+            
+        Returns:
+            Any: 包含指标的polars DataFrame
+        """
+        # 默认实现：转换为pandas，调用calculate方法，再转换回polars
+        import pandas as pd
+        import polars as pl
+        
+        # 转换为pandas
+        df_pd = data.to_pandas()
+        # 调用原有calculate方法
+        result_pd = self.calculate(df_pd, **kwargs)
+        # 转换回polars
+        return pl.from_pandas(result_pd)
 
 
 class StrategyPlugin(PluginBase):

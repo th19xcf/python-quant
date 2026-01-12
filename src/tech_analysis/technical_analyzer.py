@@ -177,8 +177,8 @@ class TechnicalAnalyzer:
         """
         # 检查是否已经计算过该窗口的KDJ指标
         if window not in self.calculated_indicators['kdj']:
-            # 使用Polars计算KDJ指标
-            self.pl_df = calculate_kdj_polars(self.pl_df, window)
+            # 使用Polars计算KDJ指标，注意：calculate_kdj_polars函数期望传入列表，所以将单个window包装成列表
+            self.pl_df = calculate_kdj_polars(self.pl_df, [window])
             
             # 更新计算状态
             self.calculated_indicators['kdj'].add(window)
@@ -465,8 +465,8 @@ class TechnicalAnalyzer:
         if windows_to_calculate:
             # 串行计算RSI指标（Polars已内部优化）
             for window in windows_to_calculate:
-                # 使用Polars计算RSI指标
-                self.pl_df = calculate_rsi_polars(self.pl_df, window)
+                # 使用Polars计算RSI指标，注意：calculate_rsi_polars函数期望传入列表，所以将单个window包装成列表
+                self.pl_df = calculate_rsi_polars(self.pl_df, [window])
                 
                 # 更新计算状态
                 self.calculated_indicators['rsi'].add(window)
@@ -560,28 +560,48 @@ class TechnicalAnalyzer:
             return self._ensure_pandas_df()
         
         try:
-            # 只在必要时转换为Pandas DataFrame
-            df_pd = self._ensure_pandas_df()
-            
-            # 调用插件的calculate方法
-            result_df = plugin.calculate(df_pd, **kwargs)
-            
-            # 将结果转换回Polars并合并
-            if result_df is not None and isinstance(result_df, pd.DataFrame):
-                # 转换为Polars
-                result_pl = pl.from_pandas(result_df)
-                # 合并到主Polars DataFrame，只添加新列
-                new_columns = [col for col in result_pl.columns if col not in self.pl_df.columns]
-                if new_columns:
-                    self.pl_df = self.pl_df.with_columns(
-                        *[result_pl[col].alias(col) for col in new_columns]
-                    )
+            # 检查插件是否支持polars
+            if hasattr(plugin, 'supports_polars') and plugin.supports_polars():
+                # 直接传递polars DataFrame给插件
+                result_pl = plugin.calculate_polars(self.pl_df, **kwargs)
                 
-                # 更新计算状态
-                self.calculated_indicators['plugin'].add(plugin_name)
-                # 清除转换缓存
-                self._pandas_cache = None
-                self._pandas_cache_hash = None
+                # 合并结果到主Polars DataFrame，只添加新列
+                if result_pl is not None and hasattr(result_pl, 'columns'):
+                    new_columns = [col for col in result_pl.columns if col not in self.pl_df.columns]
+                    if new_columns:
+                        self.pl_df = self.pl_df.with_columns(
+                            *[result_pl[col].alias(col) for col in new_columns]
+                        )
+                    
+                    # 更新计算状态
+                    self.calculated_indicators['plugin'].add(plugin_name)
+                    # 清除转换缓存
+                    self._pandas_cache = None
+                    self._pandas_cache_hash = None
+            else:
+                # 旧插件，使用pandas DataFrame
+                # 只在必要时转换为Pandas DataFrame
+                df_pd = self._ensure_pandas_df()
+                
+                # 调用插件的calculate方法
+                result_df = plugin.calculate(df_pd, **kwargs)
+                
+                # 将结果转换回Polars并合并
+                if result_df is not None and isinstance(result_df, pd.DataFrame):
+                    # 转换为Polars
+                    result_pl = pl.from_pandas(result_df)
+                    # 合并到主Polars DataFrame，只添加新列
+                    new_columns = [col for col in result_pl.columns if col not in self.pl_df.columns]
+                    if new_columns:
+                        self.pl_df = self.pl_df.with_columns(
+                            *[result_pl[col].alias(col) for col in new_columns]
+                        )
+                    
+                    # 更新计算状态
+                    self.calculated_indicators['plugin'].add(plugin_name)
+                    # 清除转换缓存
+                    self._pandas_cache = None
+                    self._pandas_cache_hash = None
         except Exception as e:
             raise RuntimeError(f"计算插件指标{plugin_name}失败: {str(e)}")
         
