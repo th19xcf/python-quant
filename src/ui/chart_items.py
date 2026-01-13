@@ -132,8 +132,8 @@ class CandleStickItem(GraphicsObject):
             low_val = self.data[i, 3]
             close_val = self.data[i, 4]
             
-            # 调整K线宽度，让K线实体更明显，同时保持适当的间隙
-            kline_width = 0.5
+            # 增大K线宽度，减小柱体间隙
+            kline_width = 0.9
             
             # 根据涨跌设置颜色，使用更鲜明的颜色
             if self.is_up[i]:
@@ -154,8 +154,8 @@ class CandleStickItem(GraphicsObject):
             # 绘制实体部分 - 使用更精确的位置计算
             p.setBrush(color)  # 填充颜色
             
-            # 确保K线之间有适当的间隙，使用合适的宽度比例
-            actual_width = kline_width * 0.9
+            # 将实际绘制宽度比例设置为1.0，消除柱体间隙
+            actual_width = kline_width * 1.0
             body_rect = QRectF(
                 x - actual_width / 2,  # x坐标，居中显示
                 self.body_bottom[i],  # 底部位置
