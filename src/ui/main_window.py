@@ -3989,7 +3989,7 @@ class MainWindow(QMainWindow):
             # 更新标签文本，使用HTML格式设置不同颜色，添加日期显示
             ma_text = f"<font color='#C0C0C0'>日期: {current_date}</font>  <font color='{ma5_color}'>MA5: {ma_values['MA5']}</font>  <font color='{ma10_color}'>MA10: {ma_values['MA10']}</font>  <font color='{ma20_color}'>MA20: {ma_values['MA20']}</font>  <font color='{ma60_color}'>MA60: {ma_values['MA60']}</font>"
             self.ma_values_label.setText(ma_text)
-            logger.debug(f"更新MA值显示: {ma_text}")
+            #logger.debug(f"更新MA值显示: {ma_text}")
         except Exception as e:
             logger.exception(f"更新MA值显示时发生错误: {e}")
     
@@ -4104,22 +4104,26 @@ class MainWindow(QMainWindow):
                             # 计算K线在视图中的相对位置
                             kline_relative_y = (kline_y - y_min) / view_height
                             
-                            # 始终将信息框显示在K线右侧
-                            pos_x = kline_x + view_width * 0.01  # K线右侧1%视图宽度
+                            # 检查K线是否靠近右侧边界，动态调整信息框显示方向
+                            # 定义一个小的固定偏移量，让信息框靠近K线
+                            kline_offset = 0.1  # 约为半个K线宽度
                             
-                            if kline_relative_y > 0.7:  # K线位于视图上70%
+                            if kline_x > x_max - info_box_width - margin:
+                                # K线在右侧区域，信息框显示在K线左侧
+                                # 让信息框右边缘靠近K线左边缘
+                                #pos_x = kline_x - info_box_width + kline_offset
+                                pos_x = kline_x - 9 + kline_offset
+                            else:
+                                # K线在左侧区域，信息框显示在K线右侧
+                                # 让信息框左边缘靠近K线右边缘
+                                pos_x = kline_x + kline_offset
+                            
+                            if kline_relative_y > 0.6:  # K线位于视图上60%
                                 # 信息框显示在K线下方
-                                pos_y = kline_y - info_box_height - margin
-                            else:  # K线位于视图下30%
+                                pos_y = kline_y - info_box_height - margin - 10  # 调整10单位以避免超出底部边界
+                            else:  # K线位于视图下40%
                                 # 信息框显示在K线上方
-                                pos_y = kline_y + margin
-                            
-                            # 确保信息框完全在视图范围内
-                            # 水平方向：确保信息框不会超出左右边界
-                            if pos_x < x_min + margin:
-                                pos_x = x_min + margin
-                            if pos_x + info_box_width > x_max - margin:
-                                pos_x = x_max - info_box_width - margin
+                                pos_y = kline_y + margin - 20  # 调整20单位以避免超出顶部边界
                             
                             # 垂直方向：确保信息框不会超出上下边界
                             # 在pyqtgraph中，y值越大位置越靠上
@@ -4127,15 +4131,16 @@ class MainWindow(QMainWindow):
                             if pos_y < y_min + margin:
                                 pos_y = y_min + margin
                             # 检查信息框顶部是否超出视图顶部
-                            elif pos_y + info_box_height > y_max - margin:
-                                pos_y = y_max - info_box_height - margin
+                            elif pos_y + info_box_height + 10 > y_max - margin:
+                                pos_y = y_max - info_box_height - margin - 10
                             
                             # 输出最终位置
                             # 最终边界检查，确保信息框完全显示
-                            pos_x = max(pos_x, x_min + margin)
-                            pos_x = min(pos_x, x_max - margin - info_box_width)
-                            pos_y = max(pos_y, y_min + margin)
-                            pos_y = min(pos_y, y_max - margin - info_box_height)
+                            #pos_x = max(pos_x, x_min + margin)
+                            #pos_x = min(pos_x, x_max - margin - info_box_width)
+                            #pos_y = max(pos_y, y_min + margin)
+                            #pos_y = min(pos_y, y_max - margin - info_box_height)
+                            #logger.debug(f"最终位置: pos_x={pos_x:.1f}, pos_y={pos_y:.1f}")
                             
                             self.info_text.setPos(pos_x, pos_y)
                             self.info_text.show()
