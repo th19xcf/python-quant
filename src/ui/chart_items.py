@@ -5,11 +5,12 @@
 图表项模块，包含自定义的图表项实现
 """
 
-import pyqtgraph as pg
 import numpy as np
+import pyqtgraph as pg
+from pyqtgraph import GraphicsObject
 from PySide6.QtCore import QRectF, QPointF, Qt
 from PySide6.QtGui import QPainter, QPicture
-from pyqtgraph import GraphicsObject
+
 from src.utils.logger import logger
 
 

@@ -5,24 +5,27 @@
 中国股市量化分析系统主入口
 """
 
+# 标准库导入
 import argparse
-from loguru import logger
+import sys
 from pathlib import Path
 
-# 添加项目根目录到Python路径
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# 第三方库导入
+from loguru import logger
+from PySide6.QtWidgets import QApplication
 
+# 内部模块导入
 from src.utils.config import Config
 from src.utils.logger import setup_logger
 from src.utils.event_bus import EventBus
 from src.database.db_manager import DatabaseManager
 from src.data.data_manager import DataManager
 from src.plugin.plugin_manager import PluginManager
-
-# UI相关导入
-from PySide6.QtWidgets import QApplication
 from src.ui.main_window import MainWindow
+from src.ui.theme_manager import ThemeManager
+
+# 添加项目根目录到Python路径
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 def parse_args():
@@ -102,7 +105,6 @@ def main():
         app.setApplicationName("中国股市量化分析系统")
         
         # 应用深色主题
-        from src.ui.theme_manager import ThemeManager
         ThemeManager.set_dark_theme(app)
         
         # 初始化主窗口

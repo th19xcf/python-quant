@@ -5,6 +5,10 @@
 主窗口类，参考通达信软件界面设计
 """
 
+import warnings
+from functools import wraps
+import datetime
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
@@ -14,8 +18,6 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QSize, QPoint
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QFont, QColor
-import warnings
-from functools import wraps
 
 # 忽略PySide6信号断开警告
 warnings.simplefilter("ignore", RuntimeWarning)
@@ -572,7 +574,6 @@ class MainWindow(QMainWindow):
         添加示例股票数据
         """
         # 获取当前日期
-        import datetime
         current_date = datetime.datetime.now().strftime("%Y-%m-%d")
         
         sample_data = [

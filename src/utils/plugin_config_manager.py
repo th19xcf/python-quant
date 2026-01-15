@@ -9,10 +9,12 @@
 import os
 import json
 from typing import Dict, Any, Optional, Type, TypeVar
+
 from pydantic_settings import BaseSettings
 from pydantic import ValidationError
 from loguru import logger
-from src.utils.config import Config, PluginSettings
+
+from src.utils.config import Config, PluginSettings, config as default_config
 
 T = TypeVar('T', bound=BaseSettings)
 
@@ -290,7 +292,6 @@ def get_plugin_config_manager(config: Config = None) -> PluginConfigManager:
     
     if global_plugin_config_manager is None:
         if config is None:
-            from src.utils.config import config as default_config
             config = default_config
         global_plugin_config_manager = PluginConfigManager(config)
     

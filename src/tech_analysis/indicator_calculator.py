@@ -7,7 +7,6 @@
 
 import polars as pl
 import numpy as np
-import ta
 
 
 def calculate_ma_polars(df, windows=[5, 10, 20, 60]):

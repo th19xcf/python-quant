@@ -33,6 +33,9 @@ class RSIIndicatorPlugin(IndicatorPlugin):
     def get_description(self) -> str:
         return self.description
     
+    def supports_polars(self) -> bool:
+        return True
+    
     def calculate(self, data, **kwargs):
         """
         计算RSI指标
@@ -67,6 +70,72 @@ class RSIIndicatorPlugin(IndicatorPlugin):
         except Exception as e:
             logger.exception(f"计算RSI指标失败: {e}")
             raise
+    
+    def calculate_polars(self, data, **kwargs):
+        """
+        使用polars计算RSI指标
+        
+        Args:
+            data: 股票数据，polars DataFrame
+            **kwargs: 指标参数，包括windows(RSI窗口列表)
+            
+        Returns:
+            Any: 包含RSI指标的polars DataFrame
+        """
+        try:
+            import polars as pl
+            
+            # 获取参数
+            windows = kwargs.get('windows', [14])
+            if not isinstance(windows, list):
+                windows = [windows]
+            
+            # 计算RSI指标
+            result = data
+            
+            for window in windows:
+                # 计算价格变化
+                result = result.with_columns(
+                    pl.col('close').diff().alias('price_change')
+                )
+                
+                # 计算上涨和下跌
+                result = result.with_columns(
+                    pl.when(pl.col('price_change') > 0)
+                    .then(pl.col('price_change'))
+                    .otherwise(0)
+                    .alias('gain'),
+                    pl.when(pl.col('price_change') < 0)
+                    .then(pl.col('price_change').abs())
+                    .otherwise(0)
+                    .alias('loss')
+                )
+                
+                # 计算平均上涨和平均下跌
+                result = result.with_columns(
+                    pl.col('gain').rolling_mean(window_size=window, min_periods=1).alias('avg_gain'),
+                    pl.col('loss').rolling_mean(window_size=window, min_periods=1).alias('avg_loss')
+                )
+                
+                # 计算RSI
+                result = result.with_columns(
+                    pl.when(pl.col('avg_loss') == 0)
+                    .then(100)
+                    .otherwise(100 - (100 / (1 + pl.col('avg_gain') / pl.col('avg_loss'))))
+                    .alias(f'rsi{window}')
+                )
+            
+            # 删除中间列
+            result = result.drop(['price_change', 'gain', 'loss', 'avg_gain', 'avg_loss'])
+            
+            logger.info(f"成功使用polars计算RSI指标，窗口: {windows}")
+            return result
+        except Exception as e:
+            logger.exception(f"使用polars计算RSI指标失败: {e}")
+            # 回退到pandas实现
+            import pandas as pd
+            df_pd = data.to_pandas()
+            return pl.from_pandas(self.calculate(df_pd, **kwargs))
     
     def get_required_columns(self) -> list:
         """

@@ -5,11 +5,12 @@
 Baostock数据处理器
 """
 
+from datetime import datetime
+from typing import List, Optional
+
 import baostock as bs
 import polars as pl
 from loguru import logger
-from typing import List, Optional
-from datetime import datetime
 
 
 class BaostockHandler:
@@ -80,13 +81,11 @@ class BaostockHandler:
         Returns:
             tuple: (start_date, end_date)
         """
-        import datetime as dt
-        
         if not end_date:
             end_date = datetime.now().strftime("%Y-%m-%d")
         if not start_date:
             # 默认更新最近default_days天的数据
-            start_date = (datetime.now() - dt.timedelta(days=default_days)).strftime("%Y-%m-%d")
+            start_date = (datetime.now() - datetime.timedelta(days=default_days)).strftime("%Y-%m-%d")
         
         return start_date, end_date
     

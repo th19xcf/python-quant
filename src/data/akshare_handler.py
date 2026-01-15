@@ -5,11 +5,12 @@
 AkShare数据处理器
 """
 
+from datetime import datetime
+from typing import List, Optional
+
 import akshare as ak
 import polars as pl
 from loguru import logger
-from typing import List, Optional
-from datetime import datetime
 
 
 class AkShareHandler:
@@ -146,8 +147,7 @@ class AkShareHandler:
                 end_date = datetime.now().strftime("%Y%m%d")
             if not start_date:
                 # 默认更新最近30天的数据
-                import datetime as dt
-                start_date = (datetime.now() - dt.timedelta(days=30)).strftime("%Y%m%d")
+                start_date = (datetime.now() - datetime.timedelta(days=30)).strftime("%Y%m%d")
             
             logger.info(f"开始更新{len(ts_codes)}只股票的日线数据，时间范围: {start_date} 至 {end_date}")
             

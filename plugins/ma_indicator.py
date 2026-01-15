@@ -33,6 +33,9 @@ class MAIndicatorPlugin(IndicatorPlugin):
     def get_description(self) -> str:
         return self.description
     
+    def supports_polars(self) -> bool:
+        return True
+    
     def calculate(self, data, **kwargs):
         """
         计算移动平均线指标
@@ -65,6 +68,39 @@ class MAIndicatorPlugin(IndicatorPlugin):
         except Exception as e:
             logger.exception(f"计算MA指标失败: {e}")
             raise
+    
+    def calculate_polars(self, data, **kwargs):
+        """
+        使用polars计算移动平均线指标
+        
+        Args:
+            data: 股票数据，polars DataFrame
+            **kwargs: 指标参数，包括windows(移动平均窗口列表)
+            
+        Returns:
+            Any: 包含MA指标的polars DataFrame
+        """
+        try:
+            import polars as pl
+            
+            # 获取参数
+            windows = kwargs.get('windows', [5, 10, 20, 60])
+            
+            # 计算MA指标
+            result = data
+            for window in windows:
+                result = result.with_columns(
+                    pl.col('close').rolling_mean(window_size=window, min_periods=1).alias(f'ma{window}')
+                )
+            
+            logger.info(f"成功使用polars计算MA指标，窗口: {windows}")
+            return result
+        except Exception as e:
+            logger.exception(f"使用polars计算MA指标失败: {e}")
+            # 回退到pandas实现
+            import pandas as pd
+            df_pd = data.to_pandas()
+            return pl.from_pandas(self.calculate(df_pd, **kwargs))
     
     def get_required_columns(self) -> list:
         """

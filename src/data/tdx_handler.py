@@ -5,13 +5,16 @@
 通达信数据处理器
 """
 
-from loguru import logger
+import struct
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import threading
-import struct
-from datetime import datetime
+
+import polars as pl
+from loguru import logger
 
 
 class TdxHandler:
@@ -140,7 +143,6 @@ class TdxHandler:
                     })
             
             # 转换为polars DataFrame
-            import polars as pl
             df = pl.DataFrame(data)
             logger.info(f"成功解析通达信日线数据文件: {file_path}，获取{len(df)}条数据")
             return df
@@ -392,7 +394,6 @@ class TdxHandler:
             logger.info(f"开始直接解析文件 {file_path}")
             
             # 添加超时机制，避免程序无响应
-            import time
             start_time = time.time()
             
             data = []

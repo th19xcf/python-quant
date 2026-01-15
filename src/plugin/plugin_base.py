@@ -7,8 +7,17 @@
 
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, Type
+import uuid
+import time
+import threading
+
 from pydantic_settings import BaseSettings
 from pydantic import ValidationError
+from loguru import logger
+from packaging.version import Version, parse as parse_version
+import pandas as pd
+import polars as pl
+
 from src.utils.event_bus import EventBus
 from src.utils.plugin_config_manager import get_plugin_config_manager
 
@@ -207,7 +216,6 @@ class PluginBase(ABC):
             self._config_model(**self.config)
             return True
         except ValidationError as e:
-            from loguru import logger
             logger.error(f"插件配置验证失败: {self.get_name()}, 错误: {e}")
             return False
     
@@ -294,8 +302,6 @@ class PluginBase(ABC):
             return True
         
         try:
-            from packaging.version import Version, parse as parse_version
-            
             for dep in self.dependencies:
                 dep_name = dep['name']
                 dep_version_req = dep['version']
@@ -313,7 +319,6 @@ class PluginBase(ABC):
             
             return True
         except Exception as e:
-            from loguru import logger
             logger.error(f"验证插件依赖失败: {self.get_name()}, 错误: {e}")
             return False
     
@@ -360,10 +365,6 @@ class PluginBase(ABC):
         Returns:
             str: 消息ID
         """
-        from src.utils.event_bus import EventBus
-        import uuid
-        import time
-        
         message_id = str(uuid.uuid4())
         message = {
             'version': '1.0',
@@ -413,11 +414,6 @@ class PluginBase(ABC):
             TimeoutError: 请求超时
             Exception: 请求错误
         """
-        from src.utils.event_bus import EventBus
-        import uuid
-        import time
-        import threading
-        
         request_id = str(uuid.uuid4())
         result = None
         error = None
@@ -481,11 +477,6 @@ class PluginBase(ABC):
         Returns:
             str: 请求ID
         """
-        from src.utils.event_bus import EventBus
-        import uuid
-        import time
-        import threading
-        
         request_id = str(uuid.uuid4())
         
         # 响应处理函数
@@ -538,10 +529,6 @@ class PluginBase(ABC):
         Returns:
             str: 事件ID
         """
-        from src.utils.event_bus import EventBus
-        import uuid
-        import time
-        
         event_id = str(uuid.uuid4())
         event = {
             'version': '1.0',
@@ -570,8 +557,6 @@ class PluginBase(ABC):
         Returns:
             Any: 订阅ID
         """
-        from src.utils.event_bus import EventBus
-        
         # 事件过滤处理
         def event_filter(message):
             if message['event_name'] == event_name:
@@ -591,7 +576,6 @@ class PluginBase(ABC):
         Returns:
             bool: 是否取消成功
         """
-        from src.utils.event_bus import EventBus
         # 注意：由于我们使用了包装函数，这里无法直接取消订阅，需要改进
         # 目前暂时不实现具体逻辑，返回True
         return True
@@ -737,9 +721,6 @@ class IndicatorPlugin(PluginBase):
         Returns:
             Any: 包含指标的polars DataFrame
         """
-        import pandas as pd
-        import polars as pl
-        
         df_pd = data.to_pandas()
         result_pd = self.calculate(df_pd, **kwargs)
         return pl.from_pandas(result_pd)

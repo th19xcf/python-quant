@@ -5,9 +5,9 @@
 股票数据模型
 """
 
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime
-from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
+
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime
 
 from src.database.db_manager import Base
 

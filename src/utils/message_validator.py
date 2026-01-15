@@ -6,9 +6,11 @@
 用于验证插件间通信的消息格式
 """
 
-import jsonschema
-from typing import Dict, Any
 import time
+import uuid
+from typing import Dict, Any
+
+import jsonschema
 
 # 定义消息格式Schema
 MESSAGE_SCHEMA = {
@@ -244,7 +246,6 @@ class MessageValidator:
         Returns:
             str: 消息ID
         """
-        import uuid
         return str(uuid.uuid4())
     
     @staticmethod
