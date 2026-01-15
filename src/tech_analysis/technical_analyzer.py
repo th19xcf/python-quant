@@ -5,9 +5,6 @@
 技术分析器，用于计算各种技术指标
 """
 
-import numpy as np
-import concurrent.futures
-from functools import partial
 import polars as pl
 import pandas as pd
 
@@ -361,45 +358,6 @@ class TechnicalAnalyzer:
             dict: 包含已计算指标类型和窗口的字典
         """
         return self.calculated_indicators.copy()
-    
-    def _calculate_ma_window(self, window, close_data):
-        """
-        计算单个移动平均线窗口，用于并行计算
-        
-        Args:
-            window: 移动平均窗口
-            close_data: 收盘价数据
-            
-        Returns:
-            tuple: (window, ma_data)
-        """
-        return window, ta.trend.sma_indicator(close_data, window=window, fillna=True)
-    
-    def _calculate_rsi_window(self, window, close_data):
-        """
-        计算单个RSI窗口，用于并行计算
-        
-        Args:
-            window: RSI窗口
-            close_data: 收盘价数据
-            
-        Returns:
-            tuple: (window, rsi_data)
-        """
-        return window, ta.momentum.rsi(close_data, window=window, fillna=True)
-    
-    def _calculate_vol_ma_window(self, window, volume_data):
-        """
-        计算单个成交量移动平均线窗口，用于并行计算
-        
-        Args:
-            window: 移动平均窗口
-            volume_data: 成交量数据
-            
-        Returns:
-            tuple: (window, vol_ma_data)
-        """
-        return window, ta.trend.sma_indicator(volume_data, window=window, fillna=True)
     
     def calculate_ma(self, windows=[5, 10, 20, 60], parallel=False):
         """
