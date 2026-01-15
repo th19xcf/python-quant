@@ -87,6 +87,10 @@ class MainWindow(QMainWindow):
         self.current_kline_data = None
         self.displayed_bar_count = 100  # 默认显示100个柱体
         self.crosshair_enabled = False  # 十字线和信息框显示状态，False=隐藏，True=显示
+        
+        # 初始化后获取实时数据
+        self.refresh_stock_data()
+        self.refresh_market_info()
     
     def _subscribe_events(self):
         """
@@ -200,50 +204,6 @@ class MainWindow(QMainWindow):
         """
         # 实现指数列表更新逻辑
         logger.info("更新指数列表")
-        
-        # 保存当前显示的个股信息
-        self.current_stock_data = None
-        self.current_stock_name = ""
-        self.current_stock_code = ""
-        
-        # 初始化窗口菜单
-        self.current_window_count = 3
-        self.window_menu = QMenu(self)
-        self.window_actions = []
-        
-        # 创建QActionGroup，确保单选效果
-        self.window_action_group = QActionGroup(self)
-        self.window_action_group.setExclusive(True)
-        
-        for i in range(1, 10):  # 最大选择9个窗口
-            action = QAction(f'{i}个窗口', self)
-            action.setCheckable(True)
-            action.setActionGroup(self.window_action_group)
-            if i == self.current_window_count:  # 使用当前窗口数量作为默认选择
-                action.setChecked(True)
-            action.triggered.connect(lambda checked, w=i: self.on_window_count_changed(w, checked))
-            self.window_menu.addAction(action)
-            self.window_actions.append(action)
-        
-        # 当前选中的窗口（1: K线图, 2: 成交量, 3: KDJ/其他指标）
-        self.current_selected_window = 1
-        # 保存每个窗口当前显示的指标
-        self.window_indicators = {
-            1: "MA",  # K线图默认显示MA指标
-            2: "VOL",  # 成交量图默认显示成交量
-            3: "KDJ"  # 第三个窗口默认显示KDJ指标
-        }
-        
-        # 创建指标功能菜单
-        self.create_indicator_menu()
-        
-        # 初始化UI组件
-        self.init_ui()
-        logger.info("主窗口初始化成功")
-        
-        # 初始化后获取实时数据
-        self.refresh_stock_data()
-        self.refresh_market_info()
     
     def init_ui(self):
         """

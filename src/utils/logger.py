@@ -26,7 +26,7 @@ def setup_logger(config):
     # 添加文件输出
     logger.add(
         sink=config.log.file_path,
-        level="WARNING",  # 降低日志级别，减少日志输出
+        level=config.log.level,  # 使用配置中的日志级别
         rotation="50 MB",  # 增加日志文件大小限制，减少旋转频率
         retention=config.log.retention,
         compression=config.log.compression,
@@ -40,12 +40,12 @@ def setup_logger(config):
     # 添加控制台输出
     logger.add(
         sink=lambda msg: print(msg, end=""),
-        level="WARNING",  # 降低控制台日志级别
+        level=config.log.level,  # 使用配置中的日志级别
         colorize=True,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}:{function}:{line}</cyan> - <level>{message}</level>"
     )
     
-    logger.warning("日志系统配置完成")
+    logger.info("日志系统配置完成")
 
 
 # 导出logger实例供其他模块使用
