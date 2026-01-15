@@ -11,6 +11,7 @@ import os
 from typing import List, Optional, Any
 import polars as pl
 import pandas as pd
+from loguru import logger
 
 # 内部模块导入
 from .indicator_calculator import (
@@ -657,7 +658,7 @@ class TechnicalAnalyzer:
                 self._pandas_cache_hash = None
         else:
             # 对于不支持多窗口的指标（如MACD）或插件指标，调用常规计算方法
-            return self.calculate_indicator(indicator_type, *args, **kwargs)
+            self.calculate_indicator(indicator_type, *args, **kwargs)
         
         # 返回转换后的Pandas DataFrame
         return self._ensure_pandas_df()
@@ -697,57 +698,63 @@ class TechnicalAnalyzer:
             **kwargs: 传递给指标计算方法的关键字参数，包括parallel和max_workers
                 - parallel: 是否使用并行计算，默认True
                 - max_workers: 最大工作线程数，默认None（使用系统默认值）
-                - batch_size: 批量处理大小，默认None
         
         Returns:
             pd.DataFrame: 包含所有计算指标的DataFrame
         """
+        # 处理指标类型的特殊情况
+        def calculate_wrapper(indicator_type, *args, **kwargs):
+            if indicator_type == 'macd':
+                # MACD不需要windows参数，创建新的kwargs副本并移除windows
+                macd_kwargs = kwargs.copy()
+                if 'windows' in macd_kwargs:
+                    macd_kwargs.pop('windows')
+                self.calculate_indicator(indicator_type, *args, **macd_kwargs)
+            else:
+                self.calculate_indicator(indicator_type, *args, **kwargs)
+        
+        self._parallel_calculate(indicator_types, calculate_wrapper, *args, **kwargs)
+        return self._ensure_pandas_df()
+    
+    def _parallel_calculate(self, items, calculate_func, *args, **kwargs):
+        """
+        并行计算的通用辅助方法
+        
+        Args:
+            items: 要计算的项目列表
+            calculate_func: 计算函数
+            *args: 传递给计算函数的位置参数
+            **kwargs: 传递给计算函数的关键字参数
+                - parallel: 是否使用并行计算，默认True
+                - max_workers: 最大工作线程数，默认None（使用系统默认值）
+        
+        Returns:
+            None
+        """
         parallel = kwargs.pop('parallel', True)
         max_workers = kwargs.pop('max_workers', None)
-        batch_size = kwargs.pop('batch_size', None)
         
-        if not parallel or not isinstance(indicator_types, list):
+        if not parallel or not isinstance(items, list):
             # 串行计算
-            for indicator_type in indicator_types:
-                self.calculate_indicator(indicator_type, *args, **kwargs)
-            return self._ensure_pandas_df()
+            for item in items:
+                calculate_func(item, *args, **kwargs)
+            return
         
-        # 并行计算多个指标
+        # 并行计算
         if max_workers is None:
             max_workers = os.cpu_count() * 2
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_indicator = {}
+            future_to_item = {
+                executor.submit(calculate_func, item, *args, **kwargs): item for item in items
+            }
             
-            for indicator_type in indicator_types:
-                # 根据指标类型传递不同的参数
-                if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma']:
-                    # 这些指标需要windows参数
-                    future_to_indicator[executor.submit(
-                        self.calculate_indicator, indicator_type, *args, **kwargs
-                    )] = indicator_type
-                elif indicator_type == 'macd':
-                    # MACD不需要windows参数，创建新的kwargs副本并移除windows
-                    macd_kwargs = kwargs.copy()
-                    if 'windows' in macd_kwargs:
-                        macd_kwargs.pop('windows')
-                    future_to_indicator[executor.submit(
-                        self.calculate_indicator, indicator_type, *args, **macd_kwargs
-                    )] = indicator_type
-                else:
-                    # 插件指标，尝试使用适当的参数
-                    future_to_indicator[executor.submit(
-                        self.calculate_indicator, indicator_type, *args, **kwargs
-                    )] = indicator_type
-            
-            for future in concurrent.futures.as_completed(future_to_indicator):
-                indicator_type = future_to_indicator[future]
+            for future in concurrent.futures.as_completed(future_to_item):
+                item = future_to_item[future]
                 try:
                     future.result()
                 except Exception as e:
-                    from loguru import logger
-                    logger.error(f"计算指标{indicator_type}失败: {e}")
-        return self._ensure_pandas_df()
+                    logger.error(f"计算项目{item}失败: {e}")
     
     def calculate_plugin_indicators_parallel(self, plugin_names, *args, **kwargs):
         """
@@ -761,36 +768,10 @@ class TechnicalAnalyzer:
         Returns:
             pd.DataFrame: 包含所有计算结果的DataFrame
         """
-        parallel = kwargs.pop('parallel', True)
-        
         if not plugin_names:
             plugin_names = self.get_available_plugin_indicators()
         
-        if not parallel:
-            # 串行计算
-            for plugin_name in plugin_names:
-                self.calculate_plugin_indicator(plugin_name, *args, **kwargs)
-            return self._ensure_pandas_df()
-        
-        max_workers = kwargs.pop('max_workers', None)
-        if max_workers is None:
-            max_workers = os.cpu_count() * 2
-        
-        # 导入logger
-        from loguru import logger
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_plugin = {
-                executor.submit(
-                    self.calculate_plugin_indicator, plugin_name, *args, **kwargs
-                ): plugin_name for plugin_name in plugin_names
-            }
-            for future in concurrent.futures.as_completed(future_to_plugin):
-                plugin_name = future_to_plugin[future]
-                try:
-                    future.result()
-                except Exception as e:
-                    logger.error(f"计算插件{plugin_name}指标失败: {e}")
+        self._parallel_calculate(plugin_names, self.calculate_plugin_indicator, *args, **kwargs)
         return self._ensure_pandas_df()
     
     def calculate_all_indicators(self, parallel=False):
@@ -859,7 +840,7 @@ class TechnicalAnalyzer:
             try:
                 self.calculate_plugin_indicator(plugin_name, parallel=parallel)
             except Exception as e:
-                print(f"计算插件指标{plugin_name}时发生错误: {e}")
+                logger.error(f"计算插件指标{plugin_name}时发生错误: {e}")
         
         # 返回转换后的Pandas DataFrame
         return self._ensure_pandas_df()
