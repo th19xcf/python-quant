@@ -127,23 +127,42 @@ class DataManager:
             message=message
         )
     
+    def _update_data(self, data_type, handler, method_name, event_type, identifier='all', **kwargs):
+        """
+        通用数据更新方法
+        
+        Args:
+            data_type: 数据类型名称（用于日志）
+            handler: 数据处理器
+            method_name: 要调用的方法名
+            event_type: 事件类型
+            identifier: 标识符，默认为'all'
+            **kwargs: 传递给更新方法的参数
+        """
+        try:
+            if handler:
+                method = getattr(handler, method_name)
+                method(**kwargs)
+            logger.info(f"{data_type}更新完成")
+            
+            # 发布数据更新事件
+            self._publish_data_updated_event(event_type, identifier)
+            
+        except Exception as e:
+            logger.exception(f"{data_type}更新失败: {e}")
+            self._publish_data_updated_event(event_type, identifier, status='error', message=str(e))
+            raise
+    
     def update_stock_basic(self):
         """
         更新股票基本信息
         """
-        try:
-            # 优先从Baostock获取最新数据
-            if self.baostock_handler:
-                self.baostock_handler.update_stock_basic()
-            logger.info("股票基本信息更新完成")
-            
-            # 发布数据更新事件
-            self._publish_data_updated_event('stock_basic', 'all')
-            
-        except Exception as e:
-            logger.exception(f"股票基本信息更新失败: {e}")
-            self._publish_data_updated_event('stock_basic', 'all', status='error', message=str(e))
-            raise
+        self._update_data(
+            data_type="股票基本信息",
+            handler=self.baostock_handler,
+            method_name="update_stock_basic",
+            event_type="stock_basic"
+        )
     
     def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
@@ -154,36 +173,27 @@ class DataManager:
             start_date: 开始日期，格式：YYYYMMDD
             end_date: 结束日期，格式：YYYYMMDD
         """
-        try:
-            # 优先从Baostock获取最新数据
-            if self.baostock_handler:
-                self.baostock_handler.update_stock_daily(ts_codes, start_date, end_date)
-            logger.info("股票日线数据更新完成")
-            
-            # 发布数据更新事件
-            self._publish_data_updated_event('stock_daily', ts_codes[0] if ts_codes else 'all')
-            
-        except Exception as e:
-            logger.exception(f"股票日线数据更新失败: {e}")
-            self._publish_data_updated_event('stock_daily', ts_codes[0] if ts_codes else 'all', status='error', message=str(e))
-            raise
+        self._update_data(
+            data_type="股票日线数据",
+            handler=self.baostock_handler,
+            method_name="update_stock_daily",
+            event_type="stock_daily",
+            identifier=ts_codes[0] if ts_codes else 'all',
+            ts_codes=ts_codes,
+            start_date=start_date,
+            end_date=end_date
+        )
     
     def update_index_basic(self):
         """
         更新指数基本信息
         """
-        try:
-            if self.baostock_handler:
-                self.baostock_handler.update_index_basic()
-            logger.info("指数基本信息更新完成")
-            
-            # 发布数据更新事件
-            self._publish_data_updated_event('index_basic', 'all')
-            
-        except Exception as e:
-            logger.exception(f"指数基本信息更新失败: {e}")
-            self._publish_data_updated_event('index_basic', 'all', status='error', message=str(e))
-            raise
+        self._update_data(
+            data_type="指数基本信息",
+            handler=self.baostock_handler,
+            method_name="update_index_basic",
+            event_type="index_basic"
+        )
     
     def update_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
@@ -194,18 +204,16 @@ class DataManager:
             start_date: 开始日期，格式：YYYYMMDD
             end_date: 结束日期，格式：YYYYMMDD
         """
-        try:
-            if self.baostock_handler:
-                self.baostock_handler.update_index_daily(ts_codes, start_date, end_date)
-            logger.info("指数日线数据更新完成")
-            
-            # 发布数据更新事件
-            self._publish_data_updated_event('index_daily', ts_codes[0] if ts_codes else 'all')
-            
-        except Exception as e:
-            logger.exception(f"指数日线数据更新失败: {e}")
-            self._publish_data_updated_event('index_daily', ts_codes[0] if ts_codes else 'all', status='error', message=str(e))
-            raise
+        self._update_data(
+            data_type="指数日线数据",
+            handler=self.baostock_handler,
+            method_name="update_index_daily",
+            event_type="index_daily",
+            identifier=ts_codes[0] if ts_codes else 'all',
+            ts_codes=ts_codes,
+            start_date=start_date,
+            end_date=end_date
+        )
     
     def update_macro_data(self, indicators: List[str] = None):
         """
@@ -214,18 +222,14 @@ class DataManager:
         Args:
             indicators: 宏观经济指标列表，None表示更新所有指标
         """
-        try:
-            if self.macro_handler:
-                self.macro_handler.update_macro_data(indicators)
-            logger.info("宏观经济数据更新完成")
-            
-            # 发布数据更新事件
-            self._publish_data_updated_event('macro', indicators[0] if indicators else 'all')
-            
-        except Exception as e:
-            logger.exception(f"宏观经济数据更新失败: {e}")
-            self._publish_data_updated_event('macro', indicators[0] if indicators else 'all', status='error', message=str(e))
-            raise
+        self._update_data(
+            data_type="宏观经济数据",
+            handler=self.macro_handler,
+            method_name="update_macro_data",
+            event_type="macro",
+            identifier=indicators[0] if indicators else 'all',
+            indicators=indicators
+        )
     
     def update_news_data(self, sources: List[str] = None, start_date: str = None, end_date: str = None):
         """
@@ -236,17 +240,141 @@ class DataManager:
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
         """
-        try:
-            if self.news_handler:
-                self.news_handler.update_news_data(sources, start_date, end_date)
-            logger.info("新闻数据更新完成")
+        self._update_data(
+            data_type="新闻数据",
+            handler=self.news_handler,
+            method_name="update_news_data",
+            event_type="news",
+            identifier=sources[0] if sources else 'all',
+            sources=sources,
+            start_date=start_date,
+            end_date=end_date
+        )
+    
+    def _get_data_from_sources(self, data_type: str, ts_code: str, start_date: str, end_date: str, freq: str = "daily"):
+        """
+        通用数据获取方法
+        
+        Args:
+            data_type: 数据类型，stock或index
+            ts_code: 代码
+            start_date: 开始日期
+            end_date: 结束日期
+            freq: 周期，daily或minute
             
-            # 发布数据更新事件
-            self._publish_data_updated_event('news', sources[0] if sources else 'all')
+        Returns:
+            pd.DataFrame: 数据
+        """
+        try:
+            import pandas as pd
+            
+            # 数据类型映射
+            data_type_map = {
+                'stock': {
+                    'model': 'StockDaily',
+                    'module': 'stock',
+                    'handler_methods': {
+                        'tdx': 'get_stock_data',
+                        'akshare': 'get_stock_data',
+                        'baostock': 'get_stock_data',
+                        'plugin': 'get_stock_data'
+                    }
+                },
+                'index': {
+                    'model': 'IndexDaily',
+                    'module': 'index',
+                    'handler_methods': {
+                        'tdx': 'get_index_data',
+                        'akshare': 'get_index_data',
+                        'baostock': 'get_index_data',
+                        'plugin': 'get_index_data'
+                    }
+                }
+            }
+            
+            if data_type not in data_type_map:
+                raise ValueError(f"不支持的数据类型: {data_type}")
+            
+            type_map = data_type_map[data_type]
+            type_name = "股票" if data_type == "stock" else "指数"
+            
+            # 优先从数据库获取数据
+            if self.db_manager and self.db_manager.is_connected():
+                logger.info(f"从数据库获取{type_name}{ts_code}数据")
+                try:
+                    # 动态导入模型
+                    module_path = f"src.database.models.{type_map['module']}"
+                    module = __import__(module_path, fromlist=[type_map['model']])
+                    model_class = getattr(module, type_map['model'])
+                    
+                    session = self.db_manager.get_session()
+                    if session:
+                        query = session.query(model_class).filter(
+                            getattr(model_class, 'ts_code') == ts_code,
+                            getattr(model_class, 'trade_date') >= start_date,
+                            getattr(model_class, 'trade_date') <= end_date
+                        ).order_by(getattr(model_class, 'trade_date'))
+                        
+                        data = query.all()
+                        if data:
+                            # 转换为DataFrame
+                            data_dict = {
+                                'trade_date': [item.trade_date for item in data],
+                                'open': [item.open for item in data],
+                                'high': [item.high for item in data],
+                                'low': [item.low for item in data],
+                                'close': [item.close for item in data],
+                                'volume': [item.vol for item in data],
+                                'amount': [item.amount for item in data]
+                            }
+                            
+                            # 只有股票数据有pct_chg字段
+                            if hasattr(data[0], 'pct_chg'):
+                                data_dict['pct_chg'] = [item.pct_chg for item in data]
+                            
+                            df = pd.DataFrame(data_dict)
+                            # 转换为标准格式
+                            df['date'] = pd.to_datetime(df['trade_date'])
+                            df.set_index('date', inplace=True)
+                            return df
+                except Exception as db_e:
+                    logger.warning(f"从数据库获取{type_name}数据失败: {db_e}")
+            
+            # 数据库获取失败或无数据，尝试从其他数据源获取
+            data_sources = [
+                ('tdx', self.tdx_handler),
+                ('akshare', self.akshare_handler),
+                ('baostock', self.baostock_handler)
+            ]
+            
+            for source_name, handler in data_sources:
+                if handler:
+                    logger.info(f"从{source_name}获取{type_name}{ts_code}数据")
+                    try:
+                        # 调用相应的数据源方法
+                        method_name = type_map['handler_methods'][source_name]
+                        return getattr(handler, method_name)(ts_code, start_date, end_date, freq)
+                    except Exception as source_e:
+                        logger.warning(f"从{source_name}获取{type_name}数据失败: {source_e}")
+            
+            # 尝试从插件数据源获取数据
+            for plugin_name, plugin in self.plugin_datasources.items():
+                logger.info(f"从插件数据源{plugin_name}获取{type_name}{ts_code}数据")
+                try:
+                    # 调用插件的对应方法
+                    method_name = type_map['handler_methods']['plugin']
+                    result = getattr(plugin, method_name)(ts_code, start_date, end_date, freq)
+                    if result is not None and not result.empty:
+                        return result
+                except Exception as plugin_e:
+                    logger.warning(f"从插件数据源{plugin_name}获取{type_name}数据失败: {plugin_e}")
+            
+            # 所有数据源都失败，返回空DataFrame
+            logger.warning(f"无法从任何数据源获取{type_name}{ts_code}数据")
+            return pd.DataFrame()
             
         except Exception as e:
-            logger.exception(f"新闻数据更新失败: {e}")
-            self._publish_data_updated_event('news', sources[0] if sources else 'all', status='error', message=str(e))
+            logger.exception(f"获取{type_name}数据失败: {e}")
             raise
     
     def get_stock_data(self, ts_code: str, start_date: str, end_date: str, freq: str = "daily"):
@@ -262,89 +390,7 @@ class DataManager:
         Returns:
             pd.DataFrame: 股票数据
         """
-        try:
-            # 优先从数据库获取数据
-            if self.db_manager and self.db_manager.is_connected():
-                logger.info(f"从数据库获取股票{ts_code}数据")
-                try:
-                    # 尝试从数据库查询数据
-                    from src.database.models.stock import StockDaily
-                    session = self.db_manager.get_session()
-                    if session:
-                        query = session.query(StockDaily).filter(
-                            StockDaily.ts_code == ts_code,
-                            StockDaily.trade_date >= start_date,
-                            StockDaily.trade_date <= end_date
-                        ).order_by(StockDaily.trade_date)
-                        
-                        stock_data = query.all()
-                        if stock_data:
-                            # 转换为DataFrame
-                            import pandas as pd
-                            data_dict = {
-                                'trade_date': [item.trade_date for item in stock_data],
-                                'open': [item.open for item in stock_data],
-                                'high': [item.high for item in stock_data],
-                                'low': [item.low for item in stock_data],
-                                'close': [item.close for item in stock_data],
-                                'volume': [item.vol for item in stock_data],
-                                'amount': [item.amount for item in stock_data],
-                                'pct_chg': [item.pct_chg for item in stock_data]
-                            }
-                            df = pd.DataFrame(data_dict)
-                            # 转换为标准格式
-                            df['date'] = pd.to_datetime(df['trade_date'])
-                            df.set_index('date', inplace=True)
-                            return df
-                except Exception as db_e:
-                    logger.warning(f"从数据库获取股票数据失败: {db_e}")
-            
-            # 数据库获取失败或无数据，尝试从其他数据源获取
-            if self.tdx_handler:
-                logger.info(f"从通达信获取股票{ts_code}数据")
-                try:
-                    # 从通达信获取数据
-                    return self.tdx_handler.get_stock_data(ts_code, start_date, end_date, freq)
-                except Exception as tdx_e:
-                    logger.warning(f"从通达信获取股票数据失败: {tdx_e}")
-            
-            # 通达信获取失败，尝试从AKShare获取
-            if self.akshare_handler:
-                logger.info(f"从AKShare获取股票{ts_code}数据")
-                try:
-                    # 从AKShare获取数据
-                    return self.akshare_handler.get_stock_data(ts_code, start_date, end_date, freq)
-                except Exception as ak_e:
-                    logger.warning(f"从AKShare获取股票数据失败: {ak_e}")
-            
-            # 尝试从Baostock获取数据
-            if self.baostock_handler:
-                logger.info(f"从Baostock获取股票{ts_code}数据")
-                try:
-                    # 从Baostock获取数据
-                    return self.baostock_handler.get_stock_data(ts_code, start_date, end_date, freq)
-                except Exception as bs_e:
-                    logger.warning(f"从Baostock获取股票数据失败: {bs_e}")
-            
-            # 尝试从插件数据源获取数据
-            for plugin_name, plugin in self.plugin_datasources.items():
-                logger.info(f"从插件数据源{plugin_name}获取股票{ts_code}数据")
-                try:
-                    # 调用插件的get_stock_data方法
-                    result = plugin.get_stock_data(ts_code, start_date, end_date, freq)
-                    if result is not None and not result.empty:
-                        return result
-                except Exception as plugin_e:
-                    logger.warning(f"从插件数据源{plugin_name}获取股票数据失败: {plugin_e}")
-            
-            # 所有数据源都失败，返回空DataFrame
-            logger.warning(f"无法从任何数据源获取股票{ts_code}数据")
-            import pandas as pd
-            return pd.DataFrame()
-            
-        except Exception as e:
-            logger.exception(f"获取股票数据失败: {e}")
-            raise
+        return self._get_data_from_sources("stock", ts_code, start_date, end_date, freq)
     
     def get_index_data(self, ts_code: str, start_date: str, end_date: str, freq: str = "daily"):
         """
@@ -359,88 +405,7 @@ class DataManager:
         Returns:
             pd.DataFrame: 指数数据
         """
-        try:
-            # 优先从数据库获取数据
-            if self.db_manager and self.db_manager.is_connected():
-                logger.info(f"从数据库获取指数{ts_code}数据")
-                try:
-                    # 尝试从数据库查询数据
-                    from src.database.models.index import IndexDaily
-                    session = self.db_manager.get_session()
-                    if session:
-                        query = session.query(IndexDaily).filter(
-                            IndexDaily.ts_code == ts_code,
-                            IndexDaily.trade_date >= start_date,
-                            IndexDaily.trade_date <= end_date
-                        ).order_by(IndexDaily.trade_date)
-                        
-                        index_data = query.all()
-                        if index_data:
-                            # 转换为DataFrame
-                            import pandas as pd
-                            data_dict = {
-                                'trade_date': [item.trade_date for item in index_data],
-                                'open': [item.open for item in index_data],
-                                'high': [item.high for item in index_data],
-                                'low': [item.low for item in index_data],
-                                'close': [item.close for item in index_data],
-                                'volume': [item.vol for item in index_data],
-                                'amount': [item.amount for item in index_data]
-                            }
-                            df = pd.DataFrame(data_dict)
-                            # 转换为标准格式
-                            df['date'] = pd.to_datetime(df['trade_date'])
-                            df.set_index('date', inplace=True)
-                            return df
-                except Exception as db_e:
-                    logger.warning(f"从数据库获取指数数据失败: {db_e}")
-            
-            # 数据库获取失败或无数据，尝试从其他数据源获取
-            if self.tdx_handler:
-                logger.info(f"从通达信获取指数{ts_code}数据")
-                try:
-                    # 从通达信获取数据
-                    return self.tdx_handler.get_index_data(ts_code, start_date, end_date, freq)
-                except Exception as tdx_e:
-                    logger.warning(f"从通达信获取指数数据失败: {tdx_e}")
-            
-            # 通达信获取失败，尝试从AKShare获取
-            if self.akshare_handler:
-                logger.info(f"从AKShare获取指数{ts_code}数据")
-                try:
-                    # 从AKShare获取数据
-                    return self.akshare_handler.get_index_data(ts_code, start_date, end_date, freq)
-                except Exception as ak_e:
-                    logger.warning(f"从AKShare获取指数数据失败: {ak_e}")
-            
-            # 尝试从Baostock获取数据
-            if self.baostock_handler:
-                logger.info(f"从Baostock获取指数{ts_code}数据")
-                try:
-                    # 从Baostock获取数据
-                    return self.baostock_handler.get_index_data(ts_code, start_date, end_date, freq)
-                except Exception as bs_e:
-                    logger.warning(f"从Baostock获取指数数据失败: {bs_e}")
-            
-            # 尝试从插件数据源获取数据
-            for plugin_name, plugin in self.plugin_datasources.items():
-                logger.info(f"从插件数据源{plugin_name}获取指数{ts_code}数据")
-                try:
-                    # 调用插件的get_index_data方法
-                    result = plugin.get_index_data(ts_code, start_date, end_date, freq)
-                    if result is not None and not result.empty:
-                        return result
-                except Exception as plugin_e:
-                    logger.warning(f"从插件数据源{plugin_name}获取指数数据失败: {plugin_e}")
-            
-            # 所有数据源都失败，返回空DataFrame
-            logger.warning(f"无法从任何数据源获取指数{ts_code}数据")
-            import pandas as pd
-            return pd.DataFrame()
-            
-        except Exception as e:
-            logger.exception(f"获取指数数据失败: {e}")
-            raise
+        return self._get_data_from_sources("index", ts_code, start_date, end_date, freq)
     
     def get_stock_basic(self, ts_code: str = None):
         """
