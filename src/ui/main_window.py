@@ -2234,6 +2234,20 @@ class MainWindow(QMainWindow):
             latest_ma20 = data_df['ma20'].iloc[-1]
             latest_ma60 = data_df['ma60'].iloc[-1]
             text = f"<font color='white'>MA5: {latest_ma5:.2f}</font>  <font color='cyan'>MA10: {latest_ma10:.2f}</font>  <font color='red'>MA20: {latest_ma20:.2f}</font>  <font color='#00FF00'>MA60: {latest_ma60:.2f}</font>"
+        elif indicator_name == "WR":
+            # WR指标数值显示，模拟通达信风格
+            if 'wr1' in data_df.columns and 'wr2' in data_df.columns:
+                # 通达信风格，显示指标名称、参数和WR1/WR2，颜色与图中指标一致（WR1黄色，WR2白色）
+                latest_wr1 = data_df['wr1'].iloc[-1]
+                latest_wr2 = data_df['wr2'].iloc[-1]
+                # 通达信默认参数为WR(10,6)
+                text = f"<font color='white'>WR(10,6) </font><font color='yellow'>WR1: {latest_wr1:.2f}</font> <font color='white'>WR2: {latest_wr2:.2f}</font>"
+            elif 'wr' in data_df.columns:
+                # 兼容旧格式
+                latest_wr = data_df['wr'].iloc[-1]
+                text = f"<font color='white'>WR: {latest_wr:.2f}</font>"
+            else:
+                text = ""
         else:
             # 默认情况，不显示指标数值
             text = ""
@@ -2850,14 +2864,34 @@ class MainWindow(QMainWindow):
                     # 更新标签文本
                     vol_text = f"<font color='#C0C0C0'>VOLUME: {int(latest_volume):,}</font>  <font color='white'>MA5: {int(latest_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(latest_vol_ma10):,}</font>"
                     self.kdj_values_label.setText(vol_text)
+                elif current_indicator == "WR":
+                    # 获取最新的WR值（通达信风格：WR1和WR2）
+                    if 'wr1' in df_pl.columns and 'wr2' in df_pl.columns:
+                        # 通达信风格，显示指标名称、参数和WR1/WR2，颜色与图中指标一致（WR1黄色，WR2白色）
+                        latest_wr1 = df_pl['wr1'].tail(1)[0]
+                        latest_wr2 = df_pl['wr2'].tail(1)[0]
+                        # 通达信默认参数为WR(10,6)
+                        wr_text = f"<font color='white'>WR(10,6) </font><font color='yellow'>WR1: {latest_wr1:.2f}</font> <font color='white'>WR2: {latest_wr2:.2f}</font>"
+                    elif 'wr' in df_pl.columns:
+                        # 兼容旧格式
+                        latest_wr = df_pl['wr'].tail(1)[0]
+                        wr_text = f"<font color='white'>WR: {latest_wr:.2f}</font>"
+                    else:
+                        wr_text = ""
+                    self.kdj_values_label.setText(wr_text)
+                elif current_indicator == "BOLL":
+                    # 获取最新的BOLL值
+                    if 'mb' in df_pl.columns and 'up' in df_pl.columns and 'dn' in df_pl.columns:
+                        latest_mb = df_pl['mb'].tail(1)[0]
+                        latest_up = df_pl['up'].tail(1)[0]
+                        latest_dn = df_pl['dn'].tail(1)[0]
+                        boll_text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='green'>DN: {latest_dn:.2f}</font>"
+                    else:
+                        boll_text = ""
+                    self.kdj_values_label.setText(boll_text)
                 else:
-                    # 默认绘制KDJ指标，显示KDJ数值
-                    latest_k = df_pl['k'].tail(1)[0]
-                    latest_d = df_pl['d'].tail(1)[0]
-                    latest_j = df_pl['j'].tail(1)[0]
-                    # 更新标签文本
-                    kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
-                    self.kdj_values_label.setText(kdj_text)
+                    # 默认情况下不显示数值，避免错误
+                    self.kdj_values_label.setText("")
                 
                 # 检查是否已经创建了KDJ容器和布局
                 if hasattr(self, 'kdj_container') and hasattr(self, 'kdj_container_layout'):
@@ -2900,6 +2934,12 @@ class MainWindow(QMainWindow):
                     'macd': df_pl['macd'].to_list(),
                     'macd_signal': df_pl['macd_signal'].to_list(),
                     'macd_hist': df_pl['macd_hist'].to_list()
+                }
+                # 保存WR指标数据
+                self.current_wr_data = {
+                    'wr1': df_pl['wr1'].to_list() if 'wr1' in df_pl.columns else [],
+                    'wr2': df_pl['wr2'].to_list() if 'wr2' in df_pl.columns else [],
+                    'wr': df_pl['wr'].to_list() if 'wr' in df_pl.columns else []
                 }
                 # 保存成交量数据
                 self.current_volume_data = {
@@ -3785,6 +3825,11 @@ class MainWindow(QMainWindow):
                         current_macd_signal = self.current_macd_data['macd_signal'][index]
                         current_macd_hist = self.current_macd_data['macd_hist'][index]
                         self.kdj_values_label.setText(f"<font color='blue'>MACD: {current_macd:.2f}</font>  <font color='red'>SIGNAL: {current_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {current_macd_hist:.2f}</font>")
+                    elif current_indicator == "WR" and hasattr(self, 'current_wr_data') and 0 <= index < len(self.current_wr_data['wr1']):
+                        # 更新WR标签，颜色与图中指标一致（WR1黄色，WR2白色）
+                        current_wr1 = self.current_wr_data['wr1'][index]
+                        current_wr2 = self.current_wr_data['wr2'][index]
+                        self.kdj_values_label.setText(f"<font color='white'>WR(10,6) </font><font color='yellow'>WR1: {current_wr1:.2f}</font> <font color='white'>WR2: {current_wr2:.2f}</font>")
                 
                 # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
                 if hasattr(self, 'volume_values_label'):
@@ -3813,6 +3858,11 @@ class MainWindow(QMainWindow):
                         current_d = self.current_kdj_data['d'][index]
                         current_j = self.current_kdj_data['j'][index]
                         self.volume_values_label.setText(f"<font color='white'>K: {current_k:.2f}</font>  <font color='yellow'>D: {current_d:.2f}</font>  <font color='magenta'>J: {current_j:.2f}</font>")
+                    elif current_indicator == "WR" and hasattr(self, 'current_wr_data') and 0 <= index < len(self.current_wr_data['wr1']):
+                        # 更新WR标签，颜色与图中指标一致（WR1黄色，WR2白色）
+                        current_wr1 = self.current_wr_data['wr1'][index]
+                        current_wr2 = self.current_wr_data['wr2'][index]
+                        self.volume_values_label.setText(f"<font color='white'>WR(10,6) </font><font color='yellow'>WR1: {current_wr1:.2f}</font> <font color='white'>WR2: {current_wr2:.2f}</font>")
                 
             # 如果十字线功能启用，更新十字线位置和信息框
             if self.crosshair_enabled and 0 <= index < len(dates):
@@ -5448,7 +5498,41 @@ class MainWindow(QMainWindow):
         plot_widget.plot(x, df_pl['up'].to_numpy(), pen=pg.mkPen('r', width=1), name='UP')
         # 绘制下轨线（绿色）
         plot_widget.plot(x, df_pl['dn'].to_numpy(), pen=pg.mkPen('g', width=1), name='DN')
-    
+
+    def draw_wr_indicator(self, plot_widget, x, df_pl):
+        """
+        绘制WR指标（威廉指标）
+        
+        Args:
+            plot_widget: 绘图控件
+            x: x轴数据
+            df_pl: polars DataFrame，包含wr数据
+        """
+        # 导入pyqtgraph
+        import pyqtgraph as pg
+        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+        
+        # 确保WR相关列存在（通达信默认使用WR(10,6)）
+        if 'wr1' not in df_pl.columns or 'wr2' not in df_pl.columns:
+            # 使用TechnicalAnalyzer计算WR指标
+            analyzer = TechnicalAnalyzer(df_pl)
+            analyzer.calculate_wr([10, 6])
+            df_pl = analyzer.get_data(return_polars=True)
+        
+        # 设置WR指标图的Y轴范围（通达信风格：0-100）
+        plot_widget.setYRange(0, 100)
+        
+        # 绘制WR线（通达信风格：黄色和白色）
+        # WR1（10日）使用黄色
+        plot_widget.plot(x, df_pl['wr1'].to_numpy(), pen=pg.mkPen('y', width=1), name='WR1(10)')
+        # WR2（6日）使用白色
+        plot_widget.plot(x, df_pl['wr2'].to_numpy(), pen=pg.mkPen('w', width=1), name='WR2(6)')
+        
+        # 绘制超买超卖线
+        # WR指标：>80为超卖，<20为超买
+        plot_widget.addItem(pg.InfiniteLine(pos=20, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine), name='超买线'))
+        plot_widget.addItem(pg.InfiniteLine(pos=80, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine), name='超卖线'))
+
     def draw_k_line_indicator(self, plot_widget, df, dates, opens, highs, lows, closes, df_pl):
         """
         绘制K线图
@@ -5647,7 +5731,8 @@ class MainWindow(QMainWindow):
             "MACD": (-5, 5),  # MACD指标范围
             "KDJ": (-50, 150),  # KDJ指标范围
             "RSI": (-50, 150),  # RSI指标范围
-            "BOLL": (0, 100)  # BOLL指标范围，实际会根据数据动态调整
+            "BOLL": (0, 100),  # BOLL指标范围，实际会根据数据动态调整
+            "WR": (-50, 150)  # WR指标范围，取值范围0-100
         }
         
         if indicator_name in indicator_y_ranges:
@@ -5664,7 +5749,8 @@ class MainWindow(QMainWindow):
             "RSI": self.draw_rsi_indicator,
             "MACD": self.draw_macd_indicator,
             "VOL": self.draw_vol_indicator,
-            "BOLL": self.draw_boll_indicator
+            "BOLL": self.draw_boll_indicator,
+            "WR": self.draw_wr_indicator
         }
         
         # 获取绘制函数，如果没有匹配到，使用默认绘制函数
@@ -5686,6 +5772,9 @@ class MainWindow(QMainWindow):
             self.kdj_values_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
             # 确保不换行
             self.kdj_values_label.setWordWrap(False)
+        
+        # 将Polars DataFrame转换为pandas DataFrame以便处理
+        df_pd = df_pl.to_pandas() if hasattr(df_pl, 'to_pandas') else df_pl
         
         # 根据当前指标更新标签文本
         if indicator_name == "KDJ":
@@ -5718,6 +5807,18 @@ class MainWindow(QMainWindow):
             # 更新标签文本
             boll_text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='green'>DN: {latest_dn:.2f}</font>"
             self.kdj_values_label.setText(boll_text)
+        elif indicator_name == "WR":
+            # 获取最新的WR值（通达信风格：WR1和WR2）
+            if 'wr1' in df_pd.columns and 'wr2' in df_pd.columns:
+                latest_wr1 = df_pd['wr1'].iloc[-1]
+                latest_wr2 = df_pd['wr2'].iloc[-1]
+                # 更新标签文本，模拟通达信显示风格，颜色与图中指标一致（WR1黄色，WR2白色）
+                wr_text = f"<font color='white'>WR(10,6) </font><font color='yellow'>WR1: {latest_wr1:.2f}</font> <font color='white'>WR2: {latest_wr2:.2f}</font>"
+            else:
+                # 兼容旧格式
+                latest_wr = df_pd['wr'].iloc[-1] if 'wr' in df_pd.columns else 0
+                wr_text = f"<font color='white'>WR: {latest_wr:.2f}</font>"
+            self.kdj_values_label.setText(wr_text)
         else:
             # 默认绘制KDJ指标，显示KDJ数值
             latest_k = df_pd['k'].iloc[-1]

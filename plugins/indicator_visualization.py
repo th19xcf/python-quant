@@ -86,6 +86,8 @@ class IndicatorVisualizationPlugin(VisualizationPlugin):
                 self._render_vol_ma(df, container)
             elif indicator_type == 'boll':
                 self._render_boll(df, container)
+            elif indicator_type == 'wr':
+                self._render_wr(df, container)
             else:
                 logger.warning(f"不支持的指标类型: {indicator_type}")
                 container.setLabel('left', '指标', color='#ffffff', size='10pt')
@@ -361,9 +363,50 @@ class IndicatorVisualizationPlugin(VisualizationPlugin):
         dn = df[dn_col].values
         
         # 绘制BOLL线
-        mb_item = container.plot(x, mb, pen=pg.mkPen('w', width=1), name=f'MB{window}')
-        up_item = container.plot(x, up, pen=pg.mkPen('r', width=1), name=f'UP{window}')
-        dn_item = container.plot(x, dn, pen=pg.mkPen('g', width=1), name=f'DN{window}')
+        mb_item = container.plot(x, mb, pen=pg.mkPen('w', width=1), name='MB')
+        up_item = container.plot(x, up, pen=pg.mkPen('r', width=1), name='UP')
+        dn_item = container.plot(x, dn, pen=pg.mkPen('g', width=1), name='DN')
+    
+    def _render_wr(self, df, container):
+        """
+        渲染WR指标图（威廉指标），模拟通达信WR(10,6)效果
+        
+        Args:
+            df: 包含WR数据的DataFrame
+            container: 渲染容器
+        """
+        # 设置标签
+        container.setLabel('left', 'WR', color='#ffffff', size='10pt')
+        container.setYRange(0, 100)  # 通达信风格：0-100
+        
+        # 准备数据
+        x = np.arange(len(df))
+        
+        # 检查是否包含WR数据（通达信默认使用WR(10,6)）
+        wr1_col = 'wr1'  # 默认使用wr1和wr2列
+        wr2_col = 'wr2'
+        
+        if wr1_col not in df.columns or wr2_col not in df.columns:
+            # 尝试使用带窗口的列名
+            wr1_col = 'wr10'
+            wr2_col = 'wr6'
+            if wr1_col not in df.columns or wr2_col not in df.columns:
+                logger.warning("数据中缺少WR指标")
+                return
+        
+        wr1 = df[wr1_col].values
+        wr2 = df[wr2_col].values
+        
+        # 绘制WR线（通达信风格：黄色和白色）
+        # WR1（10日）使用黄色
+        wr1_item = container.plot(x, wr1, pen=pg.mkPen('y', width=1), name='WR1(10)')
+        # WR2（6日）使用白色
+        wr2_item = container.plot(x, wr2, pen=pg.mkPen('w', width=1), name='WR2(6)')
+        
+        # 绘制超买超卖线
+        # WR指标：>80为超卖，<20为超买
+        container.addItem(pg.InfiniteLine(pos=20, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine), name='超买线'))
+        container.addItem(pg.InfiniteLine(pos=80, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine), name='超卖线'))
     
     def update_data(self, data):
         """

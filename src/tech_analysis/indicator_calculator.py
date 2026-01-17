@@ -353,6 +353,68 @@ def calculate_boll_polars(df, windows=[20], std_dev=2.0):
     return result.collect() if not is_lazy else result
 
 
+def calculate_wr_polars(df, windows=None):
+    """
+    使用Polars计算WR指标（威廉指标），模拟通达信WR(10,6)效果
+    
+    Args:
+        df: Polars DataFrame
+        windows: WR计算窗口列表，默认为[10, 6]
+        
+    Returns:
+        pl.DataFrame: 包含WR指标的DataFrame
+    """
+    if windows is None:
+        windows = [10, 6]  # 通达信默认使用WR10和WR6
+    
+    # 检查是否为LazyFrame，如果不是则转换为LazyFrame
+    is_lazy = isinstance(df, pl.LazyFrame)
+    if not is_lazy:
+        df = df.lazy()
+    
+    # 使用Lazy API计算WR指标
+    result = df
+    for window in windows:
+        # 计算n日内最高价
+        high_expr = pl.col('high').rolling_max(window_size=window, min_periods=1).alias(f'high_n_{window}')
+        # 计算n日内最低价
+        low_expr = pl.col('low').rolling_min(window_size=window, min_periods=1).alias(f'low_n_{window}')
+        # 计算WR值
+        wr_expr = ((high_expr - pl.col('close')) / (high_expr - low_expr) * 100).alias(f'wr{window}')
+        # 添加到结果中
+        result = result.with_columns([high_expr, low_expr, wr_expr])
+    
+    # 准备默认列名定义（兼容旧版本和通达信风格）
+    default_cols = []
+    if len(windows) >= 1:
+        # 旧版本兼容：生成wr列
+        default_cols.extend([
+            pl.col(f'wr{windows[0]}').alias('wr')
+        ])
+        # 通达信风格：生成wr1, wr2列
+        default_cols.extend([
+            pl.col(f'wr{windows[0]}').alias('wr1')
+        ])
+    if len(windows) >= 2:
+        # 通达信风格：生成wr2列
+        default_cols.extend([
+            pl.col(f'wr{windows[1]}').alias('wr2')
+        ])
+    
+    # 添加默认列名
+    if default_cols:
+        result = result.with_columns(*default_cols)
+    
+    # 清理临时列
+    temp_cols = []
+    for window in windows:
+        temp_cols.extend([f'high_n_{window}', f'low_n_{window}'])
+    result = result.drop(temp_cols)
+    
+    # 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
+    return result.collect() if not is_lazy else result
+
+
 def generate_cache_key(data_hash, indicator_type, *args, **kwargs):
     """
     生成唯一的缓存键
