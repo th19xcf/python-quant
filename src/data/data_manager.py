@@ -263,10 +263,10 @@ class DataManager:
             freq: 周期，daily或minute
             
         Returns:
-            pd.DataFrame: 数据
+            pl.DataFrame: 数据
         """
         try:
-            import pandas as pd
+            import polars as pl
             
             # 数据类型映射
             data_type_map = {
@@ -332,10 +332,11 @@ class DataManager:
                             if hasattr(data[0], 'pct_chg'):
                                 data_dict['pct_chg'] = [item.pct_chg for item in data]
                             
-                            df = pd.DataFrame(data_dict)
+                            df = pl.DataFrame(data_dict)
                             # 转换为标准格式
-                            df['date'] = pd.to_datetime(df['trade_date'])
-                            df.set_index('date', inplace=True)
+                            df = df.with_columns(
+                                pl.col('trade_date').str.strptime(pl.Datetime, format='%Y%m%d').alias('date')
+                            )
                             return df
                 except Exception as db_e:
                     logger.warning(f"从数据库获取{type_name}数据失败: {db_e}")
@@ -353,7 +354,16 @@ class DataManager:
                     try:
                         # 调用相应的数据源方法
                         method_name = type_map['handler_methods'][source_name]
-                        return getattr(handler, method_name)(ts_code, start_date, end_date, freq)
+                        result = getattr(handler, method_name)(ts_code, start_date, end_date, freq)
+                        # 如果结果是pandas DataFrame，转换为Polars DataFrame
+                        if hasattr(result, 'to_pandas'):
+                            # 已经是Polars DataFrame
+                            return result
+                        elif hasattr(result, 'to_dict'):
+                            # 是pandas DataFrame，转换为Polars
+                            return pl.from_pandas(result)
+                        else:
+                            return result
                     except Exception as source_e:
                         logger.warning(f"从{source_name}获取{type_name}数据失败: {source_e}")
             
@@ -364,20 +374,29 @@ class DataManager:
                     # 调用插件的对应方法
                     method_name = type_map['handler_methods']['plugin']
                     result = getattr(plugin, method_name)(ts_code, start_date, end_date, freq)
-                    if result is not None and not result.empty:
-                        return result
+                    if result is not None:
+                        # 检查结果类型并转换为Polars DataFrame
+                        if hasattr(result, 'to_pandas'):
+                            # 已经是Polars DataFrame
+                            return result
+                        elif hasattr(result, 'empty') and not result.empty:
+                            # 是pandas DataFrame且非空，转换为Polars
+                            return pl.from_pandas(result)
+                        elif hasattr(result, 'to_dict'):
+                            # 是pandas DataFrame，转换为Polars
+                            return pl.from_pandas(result)
                 except Exception as plugin_e:
                     logger.warning(f"从插件数据源{plugin_name}获取{type_name}数据失败: {plugin_e}")
             
             # 所有数据源都失败，返回空DataFrame
             logger.warning(f"无法从任何数据源获取{type_name}{ts_code}数据")
-            return pd.DataFrame()
+            return pl.DataFrame()
             
         except Exception as e:
             logger.exception(f"获取{type_name}数据失败: {e}")
             raise
     
-    def get_stock_data(self, ts_code: str, start_date: str, end_date: str, freq: str = "daily"):
+    def get_stock_data(self, ts_code: str, start_date: str, end_date: str, freq: str = "daily", return_polars: bool = True):
         """
         获取股票数据
         
@@ -386,13 +405,19 @@ class DataManager:
             start_date: 开始日期
             end_date: 结束日期
             freq: 周期，daily或minute
+            return_polars: 是否返回Polars DataFrame，默认为True
             
         Returns:
-            pd.DataFrame: 股票数据
+            pl.DataFrame or pd.DataFrame: 股票数据
         """
-        return self._get_data_from_sources("stock", ts_code, start_date, end_date, freq)
+        result = self._get_data_from_sources("stock", ts_code, start_date, end_date, freq)
+        if return_polars:
+            return result
+        else:
+            import pandas as pd
+            return result.to_pandas()
     
-    def get_index_data(self, ts_code: str, start_date: str, end_date: str, freq: str = "daily"):
+    def get_index_data(self, ts_code: str, start_date: str, end_date: str, freq: str = "daily", return_polars: bool = True):
         """
         获取指数数据
         
@@ -401,11 +426,17 @@ class DataManager:
             start_date: 开始日期
             end_date: 结束日期
             freq: 周期，daily或minute
+            return_polars: 是否返回Polars DataFrame，默认为True
             
         Returns:
-            pd.DataFrame: 指数数据
+            pl.DataFrame or pd.DataFrame: 指数数据
         """
-        return self._get_data_from_sources("index", ts_code, start_date, end_date, freq)
+        result = self._get_data_from_sources("index", ts_code, start_date, end_date, freq)
+        if return_polars:
+            return result
+        else:
+            import pandas as pd
+            return result.to_pandas()
     
     def get_stock_basic(self, ts_code: str = None):
         """
