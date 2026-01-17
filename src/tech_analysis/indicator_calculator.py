@@ -11,7 +11,7 @@ import numpy as np
 
 def calculate_ma_polars(df, windows=[5, 10, 20, 60]):
     """
-    使用Polars计算移动平均线
+    使用Polars计算移动平均线（Lazy API优化）
     
     Args:
         df: Polars DataFrame
@@ -20,15 +20,24 @@ def calculate_ma_polars(df, windows=[5, 10, 20, 60]):
     Returns:
         pl.DataFrame: 包含移动平均线的DataFrame
     """
-    return df.with_columns(
+    # 检查是否为LazyFrame，如果不是则转换为LazyFrame
+    is_lazy = isinstance(df, pl.LazyFrame)
+    if not is_lazy:
+        df = df.lazy()
+    
+    # 使用Lazy API计算移动平均线
+    result = df.with_columns(
         *[pl.col('close').rolling_mean(window_size=window, min_periods=1).alias(f'ma{window}') 
           for window in windows]
     )
+    
+    # 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
+    return result.collect() if not is_lazy else result
 
 
 def calculate_vol_ma_polars(df, windows=[5, 10]):
     """
-    使用Polars计算成交量移动平均线
+    使用Polars计算成交量移动平均线（Lazy API优化）
     
     Args:
         df: Polars DataFrame
@@ -37,10 +46,19 @@ def calculate_vol_ma_polars(df, windows=[5, 10]):
     Returns:
         pl.DataFrame: 包含成交量移动平均线的DataFrame
     """
-    return df.with_columns(
+    # 检查是否为LazyFrame，如果不是则转换为LazyFrame
+    is_lazy = isinstance(df, pl.LazyFrame)
+    if not is_lazy:
+        df = df.lazy()
+    
+    # 使用Lazy API计算成交量移动平均线
+    result = df.with_columns(
         *[pl.col('volume').rolling_mean(window_size=window, min_periods=1).alias(f'vol_ma{window}') 
           for window in windows]
     )
+    
+    # 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
+    return result.collect() if not is_lazy else result
 
 
 def preprocess_data_polars(df):
@@ -106,7 +124,7 @@ def sample_data_polars(df, target_points=1000, strategy='uniform'):
 
 def calculate_macd_polars(df, fast_period=12, slow_period=26, signal_period=9):
     """
-    使用Polars计算MACD指标
+    使用Polars计算MACD指标（Lazy API优化）
     
     Args:
         df: Polars DataFrame
@@ -117,36 +135,30 @@ def calculate_macd_polars(df, fast_period=12, slow_period=26, signal_period=9):
     Returns:
         pl.DataFrame: 包含MACD指标的DataFrame
     """
-    # 计算快速EMA和慢速EMA
-    df = df.with_columns([
+    # 检查是否为LazyFrame，如果不是则转换为LazyFrame
+    is_lazy = isinstance(df, pl.LazyFrame)
+    if not is_lazy:
+        df = df.lazy()
+    
+    # 使用Lazy API计算MACD指标，合并所有步骤为单个查询
+    result = df.with_columns([
         pl.col('close').ewm_mean(span=fast_period).alias(f'ema{fast_period}'),
         pl.col('close').ewm_mean(span=slow_period).alias(f'ema{slow_period}')
-    ])
-    
-    # 计算DIF (MACD线)
-    df = df.with_columns(
+    ]).with_columns([
         (pl.col(f'ema{fast_period}') - pl.col(f'ema{slow_period}')).alias('macd')
-    )
-    
-    # 计算DEA (信号线)
-    df = df.with_columns(
+    ]).with_columns([
         pl.col('macd').ewm_mean(span=signal_period).alias('macd_signal')
-    )
-    
-    # 计算柱状图 (MACD柱状图)
-    df = df.with_columns(
+    ]).with_columns([
         (pl.col('macd') - pl.col('macd_signal')).alias('macd_hist')
-    )
+    ]).drop([f'ema{fast_period}', f'ema{slow_period}'])
     
-    # 清理临时列
-    df = df.drop([f'ema{fast_period}', f'ema{slow_period}'])
-    
-    return df
+    # 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
+    return result.collect() if not is_lazy else result
 
 
 def calculate_rsi_polars(df, windows=None):
     """
-    使用Polars批量计算RSI指标
+    使用Polars批量计算RSI指标（Lazy API优化）
     
     Args:
         df: Polars DataFrame
@@ -158,51 +170,48 @@ def calculate_rsi_polars(df, windows=None):
     if windows is None:
         windows = [14]
     
-    # 计算价格变化
-    if 'price_change' not in df.columns:
-        df = df.with_columns(
-            pl.col('close').diff().alias('price_change')
-        )
+    # 检查是否为LazyFrame，如果不是则转换为LazyFrame
+    is_lazy = isinstance(df, pl.LazyFrame)
+    if not is_lazy:
+        df = df.lazy()
     
-    # 计算上涨和下跌变化
-    if 'gain' not in df.columns or 'loss' not in df.columns:
-        df = df.with_columns([
-            pl.when(pl.col('price_change') > 0).then(pl.col('price_change')).otherwise(0).alias('gain'),
-            pl.when(pl.col('price_change') < 0).then(-pl.col('price_change')).otherwise(0).alias('loss')
-        ])
+    # 使用Lazy API计算RSI指标，合并所有步骤为单个查询
+    # 1. 计算价格变化
+    # 2. 计算上涨和下跌变化
+    # 3. 批量计算所有窗口的avg_gain和avg_loss
+    # 4. 批量计算所有窗口的RSI
+    # 5. 清理临时列
+    result = df.with_columns(
+        # 计算价格变化
+        pl.col('close').diff().alias('price_change')
+    ).with_columns(
+        # 计算上涨和下跌变化
+        pl.when(pl.col('price_change') > 0).then(pl.col('price_change')).otherwise(0).alias('gain'),
+        pl.when(pl.col('price_change') < 0).then(-pl.col('price_change')).otherwise(0).alias('loss')
+    ).with_columns(
+        # 批量计算所有窗口的avg_gain和avg_loss
+        *[pl.col('gain').rolling_mean(window_size=window, min_periods=1).alias(f'avg_gain_{window}') for window in windows],
+        *[pl.col('loss').rolling_mean(window_size=window, min_periods=1).alias(f'avg_loss_{window}') for window in windows]
+    ).with_columns(
+        # 批量计算所有窗口的RSI
+        *[pl.when(pl.col(f'avg_loss_{window}') == 0)
+          .then(100.0)
+          .otherwise(100.0 - (100.0 / (1.0 + (pl.col(f'avg_gain_{window}') / pl.col(f'avg_loss_{window}')))))
+          .alias(f'rsi{window}') for window in windows]
+    ).drop(
+        # 清理临时列
+        ['price_change', 'gain', 'loss'] + 
+        [f'avg_gain_{window}' for window in windows] + 
+        [f'avg_loss_{window}' for window in windows]
+    )
     
-    # 批量计算所有窗口的avg_gain和avg_loss
-    gain_cols = []
-    loss_cols = []
-    for window in windows:
-        gain_cols.append(pl.col('gain').rolling_mean(window_size=window, min_periods=1).alias(f'avg_gain_{window}'))
-        loss_cols.append(pl.col('loss').rolling_mean(window_size=window, min_periods=1).alias(f'avg_loss_{window}'))
-    
-    df = df.with_columns(*gain_cols, *loss_cols)
-    
-    # 批量计算所有窗口的RSI
-    rsi_cols = []
-    for window in windows:
-        rsi_cols.append(
-            pl.when(pl.col(f'avg_loss_{window}') == 0)
-            .then(100.0)
-            .otherwise(100.0 - (100.0 / (1.0 + (pl.col(f'avg_gain_{window}') / pl.col(f'avg_loss_{window}')))))
-            .alias(f'rsi{window}')
-        )
-    
-    df = df.with_columns(*rsi_cols)
-    
-    # 清理临时列
-    temp_cols = ['price_change', 'gain', 'loss']
-    for window in windows:
-        temp_cols.extend([f'avg_gain_{window}', f'avg_loss_{window}'])
-    
-    return df.drop(temp_cols)
+    # 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
+    return result.collect() if not is_lazy else result
 
 
 def calculate_kdj_polars(df, windows=None):
     """
-    使用Polars批量计算KDJ指标
+    使用Polars批量计算KDJ指标（Lazy API优化）
     
     Args:
         df: Polars DataFrame
@@ -214,16 +223,26 @@ def calculate_kdj_polars(df, windows=None):
     if windows is None:
         windows = [14]
     
-    # 批量计算所有窗口的high_n和low_n
+    # 检查是否为LazyFrame，如果不是则转换为LazyFrame
+    is_lazy = isinstance(df, pl.LazyFrame)
+    if not is_lazy:
+        df = df.lazy()
+    
+    # 使用Lazy API计算KDJ指标，合并所有步骤为单个查询
+    # 1. 批量计算所有窗口的high_n和low_n
+    # 2. 批量计算所有窗口的rsv
+    # 3. 批量计算所有窗口的k、d、j值
+    # 4. 设置默认列名
+    # 5. 清理临时列
+    
+    # 1. 准备列定义
     high_cols = []
     low_cols = []
     for window in windows:
         high_cols.append(pl.col('high').rolling_max(window_size=window, min_periods=1).alias(f'high_n_{window}'))
         low_cols.append(pl.col('low').rolling_min(window_size=window, min_periods=1).alias(f'low_n_{window}'))
     
-    df = df.with_columns(*high_cols, *low_cols)
-    
-    # 批量计算所有窗口的rsv
+    # 2. 准备rsv列定义
     rsv_cols = []
     for window in windows:
         rsv_cols.append(
@@ -231,44 +250,56 @@ def calculate_kdj_polars(df, windows=None):
              (pl.col(f'high_n_{window}') - pl.col(f'low_n_{window}')) * 100).alias(f'rsv_{window}')
         )
     
-    df = df.with_columns(*rsv_cols)
-    
-    # 批量计算所有窗口的k、d、j值
+    # 3. 准备k、d、j列定义
     k_cols = []
     d_cols = []
     j_cols = []
-    
     for window in windows:
         # 计算k值
-        # 注意：使用不带下划线的列名格式，如k14而不是k_14
-        k_col = pl.col(f'rsv_{window}').rolling_mean(window_size=3, min_periods=1).alias(f'k{window}')
-        k_cols.append(k_col)
+        k_expr = pl.col(f'rsv_{window}').rolling_mean(window_size=3, min_periods=1).alias(f'k{window}')
+        k_cols.append(k_expr)
         
         # 计算d值
-        d_col = k_col.rolling_mean(window_size=3, min_periods=1).alias(f'd{window}')
-        d_cols.append(d_col)
+        d_expr = k_expr.rolling_mean(window_size=3, min_periods=1).alias(f'd{window}')
+        d_cols.append(d_expr)
         
         # 计算j值
-        j_col = (3 * k_col - 2 * d_col).alias(f'j{window}')
-        j_cols.append(j_col)
+        j_expr = (3 * k_expr - 2 * d_expr).alias(f'j{window}')
+        j_cols.append(j_expr)
     
-    df = df.with_columns(*k_cols, *d_cols, *j_cols)
-    
-    # 设置默认列名（如果只有一个窗口或第一个窗口）
+    # 4. 准备默认列名定义
+    default_cols = []
     if len(windows) == 1 or windows[0] in windows:
         window = windows[0]
-        df = df.with_columns([
+        default_cols.extend([
             pl.col(f'k{window}').alias('k'),
             pl.col(f'd{window}').alias('d'),
             pl.col(f'j{window}').alias('j')
         ])
     
-    # 清理临时列
+    # 5. 准备临时列列表
     temp_cols = []
     for window in windows:
         temp_cols.extend([f'high_n_{window}', f'low_n_{window}', f'rsv_{window}'])
     
-    return df.drop(temp_cols)
+    # 使用Lazy API执行所有计算
+    result = df.with_columns(
+        *high_cols, *low_cols
+    ).with_columns(
+        *rsv_cols
+    ).with_columns(
+        *k_cols, *d_cols, *j_cols
+    )
+    
+    # 添加默认列名
+    if default_cols:
+        result = result.with_columns(*default_cols)
+    
+    # 清理临时列
+    result = result.drop(temp_cols)
+    
+    # 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
+    return result.collect() if not is_lazy else result
 
 
 def generate_cache_key(data_hash, indicator_type, *args, **kwargs):
