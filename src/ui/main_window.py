@@ -2221,7 +2221,7 @@ class MainWindow(QMainWindow):
             latest_d = data_df['d'].iloc[-1]
             latest_j = data_df['j'].iloc[-1]
             text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
-        elif indicator_name == "MACD":
+        elif current_indicator == "MACD":
             # MACD指标数值显示
             latest_macd = data_df['macd'].iloc[-1]
             latest_macd_signal = data_df['macd_signal'].iloc[-1]
@@ -2234,7 +2234,7 @@ class MainWindow(QMainWindow):
             latest_ma20 = data_df['ma20'].iloc[-1]
             latest_ma60 = data_df['ma60'].iloc[-1]
             text = f"<font color='white'>MA5: {latest_ma5:.2f}</font>  <font color='cyan'>MA10: {latest_ma10:.2f}</font>  <font color='red'>MA20: {latest_ma20:.2f}</font>  <font color='#00FF00'>MA60: {latest_ma60:.2f}</font>"
-        elif indicator_name == "WR":
+        elif current_indicator == "WR":
             # WR指标数值显示，模拟通达信风格
             if 'wr1' in data_df.columns and 'wr2' in data_df.columns:
                 # 通达信风格，显示指标名称、参数和WR1/WR2，颜色与图中指标一致（WR1黄色，WR2白色）
@@ -2246,6 +2246,17 @@ class MainWindow(QMainWindow):
                 # 兼容旧格式
                 latest_wr = data_df['wr'].iloc[-1]
                 text = f"<font color='white'>WR: {latest_wr:.2f}</font>"
+            else:
+                text = ""
+        elif current_indicator == "BOLL":
+            # BOLL指标数值显示，模拟通达信风格
+            if 'mb' in data_df.columns and 'up' in data_df.columns and 'dn' in data_df.columns:
+                # 显示BOLL指标的中轨、上轨和下轨值
+                latest_mb = data_df['mb'].iloc[-1]
+                latest_up = data_df['up'].iloc[-1]
+                latest_dn = data_df['dn'].iloc[-1]
+                # 中轨白色，上轨红色，下轨绿色，与图中指标颜色一致
+                text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='green'>DN: {latest_dn:.2f}</font>"
             else:
                 text = ""
         else:
@@ -2318,7 +2329,7 @@ class MainWindow(QMainWindow):
             self._draw_indicator_curve(plot_widget, x, d_values, 'yellow', 1, 'D')
             self._draw_indicator_curve(plot_widget, x, j_values, 'magenta', 1, 'J')
             self._setup_indicator_axis(plot_widget, x, np.column_stack((k_values, d_values, j_values)).flatten())
-        elif indicator_name == "MACD":
+        elif current_indicator == "MACD":
             # 绘制MACD指标
             macd_values = get_col_values(data_df, 'macd')
             macd_signal_values = get_col_values(data_df, 'macd_signal')
@@ -2329,7 +2340,7 @@ class MainWindow(QMainWindow):
             # MACD柱状图使用默认宽度，与K线图柱体宽度保持一致
             self._draw_indicator_histogram(plot_widget, x, macd_hist_values, 'r', 'g')
             self._setup_indicator_axis(plot_widget, x, np.column_stack((macd_values, macd_signal_values, macd_hist_values)).flatten())
-        elif indicator_name == "RSI":
+        elif current_indicator == "RSI":
             # 绘制RSI指标
             rsi_values = get_col_values(data_df, 'rsi')
             self._draw_indicator_curve(plot_widget, x, rsi_values, 'white', 1, 'RSI')
@@ -2941,11 +2952,17 @@ class MainWindow(QMainWindow):
                     'wr2': df_pl['wr2'].to_list() if 'wr2' in df_pl.columns else [],
                     'wr': df_pl['wr'].to_list() if 'wr' in df_pl.columns else []
                 }
+                # 保存BOLL指标数据
+                self.current_boll_data = {
+                    'mb': df_pl['mb'].to_list() if 'mb' in df_pl.columns else [],
+                    'up': df_pl['up'].to_list() if 'up' in df_pl.columns else [],
+                    'dn': df_pl['dn'].to_list() if 'dn' in df_pl.columns else []
+                }
                 # 保存成交量数据
                 self.current_volume_data = {
-                    'volume': df_pl['volume'].to_list(),
-                    'vol_ma5': df_pl['vol_ma5'].to_list(),
-                    'vol_ma10': df_pl['vol_ma10'].to_list()
+                    'volume': df_pl['volume'].to_list() if 'volume' in df_pl.columns else [],
+                    'vol_ma5': df_pl['vol_ma5'].to_list() if 'vol_ma5' in df_pl.columns else [],
+                    'vol_ma10': df_pl['vol_ma10'].to_list() if 'vol_ma10' in df_pl.columns else []
                 }
                 
                 # 仅在第3窗口显示VOL指标时，应用与第2窗口相同的绘制逻辑
@@ -3830,6 +3847,12 @@ class MainWindow(QMainWindow):
                         current_wr1 = self.current_wr_data['wr1'][index]
                         current_wr2 = self.current_wr_data['wr2'][index]
                         self.kdj_values_label.setText(f"<font color='white'>WR(10,6) </font><font color='yellow'>WR1: {current_wr1:.2f}</font> <font color='white'>WR2: {current_wr2:.2f}</font>")
+                    elif current_indicator == "BOLL" and hasattr(self, 'current_boll_data') and 0 <= index < len(self.current_boll_data['mb']):
+                        # 更新BOLL标签，颜色与图中指标一致（中轨白色，上轨红色，下轨绿色）
+                        current_mb = self.current_boll_data['mb'][index]
+                        current_up = self.current_boll_data['up'][index]
+                        current_dn = self.current_boll_data['dn'][index]
+                        self.kdj_values_label.setText(f"<font color='white'>MB: {current_mb:.2f}</font>  <font color='red'>UP: {current_up:.2f}</font>  <font color='green'>DN: {current_dn:.2f}</font>")
                 
                 # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
                 if hasattr(self, 'volume_values_label'):
@@ -3863,6 +3886,12 @@ class MainWindow(QMainWindow):
                         current_wr1 = self.current_wr_data['wr1'][index]
                         current_wr2 = self.current_wr_data['wr2'][index]
                         self.volume_values_label.setText(f"<font color='white'>WR(10,6) </font><font color='yellow'>WR1: {current_wr1:.2f}</font> <font color='white'>WR2: {current_wr2:.2f}</font>")
+                    elif current_indicator == "BOLL" and hasattr(self, 'current_boll_data') and 0 <= index < len(self.current_boll_data['mb']):
+                        # 更新BOLL标签，颜色与图中指标一致（中轨白色，上轨红色，下轨绿色）
+                        current_mb = self.current_boll_data['mb'][index]
+                        current_up = self.current_boll_data['up'][index]
+                        current_dn = self.current_boll_data['dn'][index]
+                        self.volume_values_label.setText(f"<font color='white'>MB: {current_mb:.2f}</font>  <font color='red'>UP: {current_up:.2f}</font>  <font color='green'>DN: {current_dn:.2f}</font>")
                 
             # 如果十字线功能启用，更新十字线位置和信息框
             if self.crosshair_enabled and 0 <= index < len(dates):
@@ -5756,6 +5785,12 @@ class MainWindow(QMainWindow):
         # 获取绘制函数，如果没有匹配到，使用默认绘制函数
         drawer = indicator_drawers.get(indicator_name, self.draw_kdj_indicator)
         drawer(plot_widget, x, df_pl)
+        
+        # 保存指标数据，用于鼠标移动时更新指标数值
+        self.save_indicator_data(df_pl)
+        
+        # 更新指标数值标签
+        self.update_indicator_values_label(indicator_name, df_pl)
     
     def update_indicator_values_label(self, indicator_name, df_pl):
         """
@@ -5773,11 +5808,17 @@ class MainWindow(QMainWindow):
             # 确保不换行
             self.kdj_values_label.setWordWrap(False)
         
+        # 保存指标数据，用于鼠标移动时更新指标数值
+        self.save_indicator_data(df_pl)
+        
         # 将Polars DataFrame转换为pandas DataFrame以便处理
         df_pd = df_pl.to_pandas() if hasattr(df_pl, 'to_pandas') else df_pl
         
+        # 获取当前第3个窗口的指标
+        current_indicator = self.window_indicators.get(3, "KDJ")
+        
         # 根据当前指标更新标签文本
-        if indicator_name == "KDJ":
+        if current_indicator == "KDJ":
             # 获取最新的KDJ值
             latest_k = df_pd['k'].iloc[-1]
             latest_d = df_pd['d'].iloc[-1]
@@ -5785,13 +5826,13 @@ class MainWindow(QMainWindow):
             # 更新标签文本
             kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
             self.kdj_values_label.setText(kdj_text)
-        elif indicator_name == "RSI":
+        elif current_indicator == "RSI":
             # 获取最新的RSI值
             latest_rsi = df_pd['rsi14'].iloc[-1]
             # 更新标签文本
             rsi_text = f"<font color='blue'>RSI14: {latest_rsi:.2f}</font>"
             self.kdj_values_label.setText(rsi_text)
-        elif indicator_name == "MACD":
+        elif current_indicator == "MACD":
             # 获取最新的MACD值
             latest_macd = df_pd['macd'].iloc[-1]
             latest_macd_signal = df_pd['macd_signal'].iloc[-1]
@@ -5799,7 +5840,7 @@ class MainWindow(QMainWindow):
             # 更新标签文本
             macd_text = f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>"
             self.kdj_values_label.setText(macd_text)
-        elif indicator_name == "BOLL":
+        elif current_indicator == "BOLL":
             # 获取最新的BOLL值
             latest_mb = df_pd['mb'].iloc[-1]
             latest_up = df_pd['up'].iloc[-1]
@@ -5807,7 +5848,7 @@ class MainWindow(QMainWindow):
             # 更新标签文本
             boll_text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='green'>DN: {latest_dn:.2f}</font>"
             self.kdj_values_label.setText(boll_text)
-        elif indicator_name == "WR":
+        elif current_indicator == "WR":
             # 获取最新的WR值（通达信风格：WR1和WR2）
             if 'wr1' in df_pd.columns and 'wr2' in df_pd.columns:
                 latest_wr1 = df_pd['wr1'].iloc[-1]
@@ -5835,17 +5876,42 @@ class MainWindow(QMainWindow):
         Args:
             df_pl: polars DataFrame，包含指标数据
         """
+        # 保存KDJ数据
         self.current_kdj_data = {
-            'k': df_pl['k'].to_list(),
-            'd': df_pl['d'].to_list(),
-            'j': df_pl['j'].to_list()
+            'k': df_pl['k'].to_list() if 'k' in df_pl.columns else [],
+            'd': df_pl['d'].to_list() if 'd' in df_pl.columns else [],
+            'j': df_pl['j'].to_list() if 'j' in df_pl.columns else []
         }
+        
+        # 保存RSI数据
         self.current_rsi_data = {
-            'rsi': df_pl['rsi14'].to_list()
+            'rsi': df_pl['rsi14'].to_list() if 'rsi14' in df_pl.columns else []
         }
+        
+        # 保存MACD数据
         self.current_macd_data = {
-            'macd': df_pl['macd'].to_list(),
-            'macd_signal': df_pl['macd_signal'].to_list(),
-            'macd_hist': df_pl['macd_hist'].to_list()
+            'macd': df_pl['macd'].to_list() if 'macd' in df_pl.columns else [],
+            'macd_signal': df_pl['macd_signal'].to_list() if 'macd_signal' in df_pl.columns else [],
+            'macd_hist': df_pl['macd_hist'].to_list() if 'macd_hist' in df_pl.columns else []
+        }
+        
+        # 保存成交量数据
+        self.current_volume_data = {
+            'volume': df_pl['volume'].to_list(),
+            'vol_ma5': df_pl['vol_ma5'].to_list(),
+            'vol_ma10': df_pl['vol_ma10'].to_list()
+        }
+        
+        # 保存WR数据
+        self.current_wr_data = {
+            'wr1': df_pl['wr1'].to_list() if 'wr1' in df_pl.columns else [],
+            'wr2': df_pl['wr2'].to_list() if 'wr2' in df_pl.columns else []
+        }
+        
+        # 保存BOLL数据
+        self.current_boll_data = {
+            'mb': df_pl['mb'].to_list() if 'mb' in df_pl.columns else [],
+            'up': df_pl['up'].to_list() if 'up' in df_pl.columns else [],
+            'dn': df_pl['dn'].to_list() if 'dn' in df_pl.columns else []
         }
            
