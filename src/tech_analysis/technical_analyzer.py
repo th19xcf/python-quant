@@ -6,7 +6,6 @@
 """
 
 # 第三方库导入
-import concurrent.futures
 import os
 from typing import List, Optional, Any
 import polars as pl
@@ -590,68 +589,23 @@ class TechnicalAnalyzer:
             windows_to_calculate = [w for w in windows if w not in self.calculated_indicators[indicator_type]]
             
             if windows_to_calculate:
-                # 并行计算不同窗口的指标
-                parallel = kwargs.pop('parallel', True)
-                max_workers = kwargs.pop('max_workers', None)
+                # 处理参数，但不再使用线程池
+                kwargs.pop('parallel', True)
+                kwargs.pop('max_workers', None)
                 
-                if parallel and len(windows_to_calculate) > 1:
-                    # 使用ThreadPoolExecutor进行并行计算，避免pickle问题
-                    if max_workers is None:
-                        max_workers = os.cpu_count() * 2
-                    
-                    # 定义指标计算函数映射
-                    indicator_calculators = {
-                        'ma': calculate_ma_polars,
-                        'rsi': calculate_rsi_polars,
-                        'kdj': calculate_kdj_polars,
-                        'vol_ma': calculate_vol_ma_polars
-                    }
-                    
-                    calculator = indicator_calculators[indicator_type]
-                    
-                    # 并行执行计算，每个窗口单独计算
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                        # 为每个窗口创建任务
-                        future_to_window = {}
-                        
-                        for window in windows_to_calculate:
-                            # 创建数据副本
-                            data_copy = self.pl_df.clone()
-                            # 提交任务，使用lambda函数捕获window和data_copy
-                            future_to_window[executor.submit(
-                                calculator, data_copy, [window]
-                            )] = window
-                        
-                        # 收集结果
-                        results = {}
-                        for future in concurrent.futures.as_completed(future_to_window):
-                            window = future_to_window[future]
-                            results[window] = future.result()
-                    
-                    # 合并结果到主DataFrame
-                    for window in windows_to_calculate:
-                        result_df = results[window]
-                        # 获取新增的列
-                        new_columns = [col for col in result_df.columns if col not in self.pl_df.columns]
-                        if new_columns:
-                            self.pl_df = self.pl_df.with_columns(*[result_df[col] for col in new_columns])
-                        
-                        # 更新计算状态
-                        self.calculated_indicators[indicator_type].add(window)
-                else:
-                    # 串行计算或只有一个窗口，直接使用批量计算
-                    if indicator_type == 'ma':
-                        self.pl_df = calculate_ma_polars(self.pl_df, windows_to_calculate)
-                    elif indicator_type == 'rsi':
-                        self.pl_df = calculate_rsi_polars(self.pl_df, windows_to_calculate)
-                    elif indicator_type == 'kdj':
-                        self.pl_df = calculate_kdj_polars(self.pl_df, windows_to_calculate)
-                    elif indicator_type == 'vol_ma':
-                        self.pl_df = calculate_vol_ma_polars(self.pl_df, windows_to_calculate)
-                    
-                    # 更新计算状态
-                    for window in windows_to_calculate:
-                        self.calculated_indicators[indicator_type].add(window)
+                # 直接调用指标计算函数，利用Polars内置并行
+                if indicator_type == 'ma':
+                    self.pl_df = calculate_ma_polars(self.pl_df, windows_to_calculate)
+                elif indicator_type == 'rsi':
+                    self.pl_df = calculate_rsi_polars(self.pl_df, windows_to_calculate)
+                elif indicator_type == 'kdj':
+                    self.pl_df = calculate_kdj_polars(self.pl_df, windows_to_calculate)
+                elif indicator_type == 'vol_ma':
+                    self.pl_df = calculate_vol_ma_polars(self.pl_df, windows_to_calculate)
+                
+                # 更新计算状态
+                for window in windows_to_calculate:
+                    self.calculated_indicators[indicator_type].add(window)
                 
                 # 清除转换缓存，因为数据已更新
                 self._pandas_cache = None
@@ -718,7 +672,7 @@ class TechnicalAnalyzer:
     
     def _parallel_calculate(self, items, calculate_func, *args, **kwargs):
         """
-        并行计算的通用辅助方法
+        并行计算的通用辅助方法，现在改为串行调用，利用Polars内置并行
         
         Args:
             items: 要计算的项目列表
@@ -731,30 +685,16 @@ class TechnicalAnalyzer:
         Returns:
             None
         """
-        parallel = kwargs.pop('parallel', True)
-        max_workers = kwargs.pop('max_workers', None)
+        # 处理参数，但不再使用线程池
+        kwargs.pop('parallel', True)
+        kwargs.pop('max_workers', None)
         
-        if not parallel or not isinstance(items, list):
-            # 串行计算
-            for item in items:
+        # 串行调用计算函数，Polars会在内部处理并行
+        for item in items:
+            try:
                 calculate_func(item, *args, **kwargs)
-            return
-        
-        # 并行计算
-        if max_workers is None:
-            max_workers = os.cpu_count() * 2
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_item = {
-                executor.submit(calculate_func, item, *args, **kwargs): item for item in items
-            }
-            
-            for future in concurrent.futures.as_completed(future_to_item):
-                item = future_to_item[future]
-                try:
-                    future.result()
-                except Exception as e:
-                    logger.error(f"计算项目{item}失败: {e}")
+            except Exception as e:
+                logger.error(f"计算项目{item}失败: {e}")
     
     def calculate_plugin_indicators_parallel(self, plugin_names, *args, **kwargs):
         """
