@@ -302,6 +302,57 @@ def calculate_kdj_polars(df, windows=None):
     return result.collect() if not is_lazy else result
 
 
+def calculate_boll_polars(df, windows=[20], std_dev=2.0):
+    """
+    使用Polars计算Boll指标（布林带）
+    
+    Args:
+        df: Polars DataFrame
+        windows: Boll计算窗口列表，默认为[20]
+        std_dev: 标准差倍数，默认为2.0
+        
+    Returns:
+        pl.DataFrame: 包含Boll指标的DataFrame
+    """
+    if windows is None:
+        windows = [20]
+    
+    # 检查是否为LazyFrame，如果不是则转换为LazyFrame
+    is_lazy = isinstance(df, pl.LazyFrame)
+    if not is_lazy:
+        df = df.lazy()
+    
+    # 使用Lazy API计算Boll指标
+    result = df
+    for window in windows:
+        # 计算移动平均线（中轨线）
+        ma_expr = pl.col('close').rolling_mean(window_size=window, min_periods=1).alias(f'mb{window}')
+        # 计算标准差
+        std_expr = pl.col('close').rolling_std(window_size=window, min_periods=1).alias(f'std{window}')
+        # 计算上轨线和下轨线
+        up_expr = (ma_expr + std_expr * std_dev).alias(f'up{window}')
+        dn_expr = (ma_expr - std_expr * std_dev).alias(f'dn{window}')
+        # 添加到结果中
+        result = result.with_columns([ma_expr, up_expr, dn_expr])
+    
+    # 准备默认列名定义
+    default_cols = []
+    if len(windows) == 1 or windows[0] in windows:
+        window = windows[0]
+        default_cols.extend([
+            pl.col(f'mb{window}').alias('mb'),
+            pl.col(f'up{window}').alias('up'),
+            pl.col(f'dn{window}').alias('dn')
+        ])
+    
+    # 添加默认列名
+    if default_cols:
+        result = result.with_columns(*default_cols)
+    
+    # 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
+    return result.collect() if not is_lazy else result
+
+
 def generate_cache_key(data_hash, indicator_type, *args, **kwargs):
     """
     生成唯一的缓存键

@@ -5415,25 +5415,39 @@ class MainWindow(QMainWindow):
             # 直接设置Y轴刻度，确保显示真实的成交量数值
             y_axis = plot_widget.getAxis('left')
             y_axis.setScale(1.0)  # 重置缩放比例
-            y_axis.setRange(y_min, y_max)
-            
-            # 设置Y轴刻度的格式，确保显示完整的数值
-            y_axis.setTicks([[(0, '0'), (max_value * 0.5, f'{int(max_value * 0.5):,}'), (max_value, f'{int(max_value):,}')]])
-        else:
-            plot_widget.setYRange(0, 100, padding=0)
+
+    def draw_boll_indicator(self, plot_widget, x, df_pl):
+        """
+        绘制BOLL指标
         
-        # 获取ViewBox并禁用自动Y轴范围调整
-        view_box = plot_widget.getViewBox()
-        view_box.enableAutoRange(axis=pg.ViewBox.YAxis, enable=False)
+        Args:
+            plot_widget: 绘图控件
+            x: x轴数据
+            df_pl: polars DataFrame，包含boll数据
+        """
+        # 导入pyqtgraph
+        import pyqtgraph as pg
+        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
         
-        # 再次禁用科学计数法，确保Y轴显示正常数值
-        y_axis = plot_widget.getAxis('left')
-        y_axis.enableAutoSIPrefix(False)
-        y_axis.setStyle(tickTextOffset=20)  # 设置刻度文本偏移，确保显示完整
+        # 确保BOLL相关列存在
+        if 'mb' not in df_pl.columns or 'up' not in df_pl.columns or 'dn' not in df_pl.columns:
+            # 使用TechnicalAnalyzer计算BOLL指标
+            analyzer = TechnicalAnalyzer(df_pl)
+            analyzer.calculate_boll(20)
+            df_pl = analyzer.get_data(return_polars=True)
         
-        # 确保Y轴显示的是真实的成交量数值，而不是相对比例
-        y_axis.setScale(1.0)  # 重置缩放比例
-        y_axis.setRange(y_min, y_max)  # 重新设置Y轴范围
+        # 设置BOLL指标图的Y轴范围，与K线图保持一致
+        y_min = df_pl['dn'].min() * 0.99
+        y_max = df_pl['up'].max() * 1.01
+        plot_widget.setYRange(y_min, y_max)
+        
+        # 绘制BOLL线
+        # 绘制中轨线（白色）
+        plot_widget.plot(x, df_pl['mb'].to_numpy(), pen=pg.mkPen('w', width=1), name='MB')
+        # 绘制上轨线（红色）
+        plot_widget.plot(x, df_pl['up'].to_numpy(), pen=pg.mkPen('r', width=1), name='UP')
+        # 绘制下轨线（绿色）
+        plot_widget.plot(x, df_pl['dn'].to_numpy(), pen=pg.mkPen('g', width=1), name='DN')
     
     def draw_k_line_indicator(self, plot_widget, df, dates, opens, highs, lows, closes, df_pl):
         """
@@ -5632,7 +5646,8 @@ class MainWindow(QMainWindow):
             "VOL": (0, 1000000000),  # 成交量指标范围
             "MACD": (-5, 5),  # MACD指标范围
             "KDJ": (-50, 150),  # KDJ指标范围
-            "RSI": (-50, 150)  # RSI指标范围
+            "RSI": (-50, 150),  # RSI指标范围
+            "BOLL": (0, 100)  # BOLL指标范围，实际会根据数据动态调整
         }
         
         if indicator_name in indicator_y_ranges:
@@ -5648,7 +5663,8 @@ class MainWindow(QMainWindow):
             "KDJ": self.draw_kdj_indicator,
             "RSI": self.draw_rsi_indicator,
             "MACD": self.draw_macd_indicator,
-            "VOL": self.draw_vol_indicator
+            "VOL": self.draw_vol_indicator,
+            "BOLL": self.draw_boll_indicator
         }
         
         # 获取绘制函数，如果没有匹配到，使用默认绘制函数
@@ -5694,6 +5710,14 @@ class MainWindow(QMainWindow):
             # 更新标签文本
             macd_text = f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>"
             self.kdj_values_label.setText(macd_text)
+        elif indicator_name == "BOLL":
+            # 获取最新的BOLL值
+            latest_mb = df_pd['mb'].iloc[-1]
+            latest_up = df_pd['up'].iloc[-1]
+            latest_dn = df_pd['dn'].iloc[-1]
+            # 更新标签文本
+            boll_text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='green'>DN: {latest_dn:.2f}</font>"
+            self.kdj_values_label.setText(boll_text)
         else:
             # 默认绘制KDJ指标，显示KDJ数值
             latest_k = df_pd['k'].iloc[-1]

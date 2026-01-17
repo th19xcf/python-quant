@@ -19,6 +19,7 @@ from .indicator_calculator import (
     calculate_macd_polars,
     calculate_rsi_polars,
     calculate_kdj_polars,
+    calculate_boll_polars,
     preprocess_data_polars,
     sample_data_polars,
     generate_cache_key
@@ -68,6 +69,7 @@ class TechnicalAnalyzer:
             'rsi': set(),  # 已计算的RSI窗口
             'kdj': set(),  # 已计算的KDJ窗口
             'vol_ma': set(),  # 已计算的成交量MA窗口
+            'boll': set(),  # 已计算的Boll窗口
             'plugin': set()  # 已计算的插件指标
         }
         
@@ -82,7 +84,8 @@ class TechnicalAnalyzer:
             'macd': self.calculate_macd,
             'rsi': self.calculate_rsi,
             'kdj': self.calculate_kdj,
-            'vol_ma': self.calculate_vol_ma
+            'vol_ma': self.calculate_vol_ma,
+            'boll': self.calculate_boll
         }
         
         # 初始化插件指标映射
@@ -197,6 +200,40 @@ class TechnicalAnalyzer:
         # 返回转换后的Pandas DataFrame
         return self._ensure_pandas_df()
     
+    def calculate_boll(self, windows=[20], std_dev=2.0, parallel=False):
+        """
+        计算Boll指标（布林带）
+        
+        Args:
+            windows: Boll计算窗口，支持单个窗口或窗口列表
+            std_dev: 标准差倍数，默认为2.0
+            parallel: 是否使用并行计算
+            
+        Returns:
+            pd.DataFrame: 包含Boll指标的DataFrame
+        """
+        # 确保windows是列表
+        if not isinstance(windows, list):
+            windows = [windows]
+        
+        # 只计算尚未计算过的窗口
+        windows_to_calculate = [w for w in windows if w not in self.calculated_indicators['boll']]
+        
+        if windows_to_calculate:
+            # 批量计算Boll指标（Polars已内部优化）
+            self.pl_df = calculate_boll_polars(self.pl_df, windows_to_calculate, std_dev)
+            
+            # 更新计算状态
+            for window in windows_to_calculate:
+                self.calculated_indicators['boll'].add(window)
+            
+            # 清除转换缓存，因为数据已更新
+            self._pandas_cache = None
+            self._pandas_cache_hash = None
+        
+        # 返回转换后的Pandas DataFrame
+        return self._ensure_pandas_df()
+    
     def sample_data(self, target_points=1000, strategy='uniform', return_polars=False):
         """
         对数据进行采样，减少数据量，提高图表渲染速度
@@ -283,6 +320,7 @@ class TechnicalAnalyzer:
                 'rsi': set(),
                 'kdj': set(),
                 'vol_ma': set(),
+                'boll': set(),
                 'plugin': set()
             }
             # 重置缓存
@@ -312,13 +350,20 @@ class TechnicalAnalyzer:
                 self._pandas_cache = None
                 self._pandas_cache_hash = None
         elif indicator_type in self.calculated_indicators:
-            if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma']:
+            if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma', 'boll']:
                 if window:
                     # 重置特定窗口
                     self.calculated_indicators[indicator_type].discard(window)
                     # 准备删除的列名
-                    column_name = f'{indicator_type}{window}' if indicator_type != 'vol_ma' else f'vol_ma{window}'
-                    columns_to_drop.append(column_name)
+                    if indicator_type == 'vol_ma':
+                        column_name = f'vol_ma{window}'
+                        columns_to_drop.append(column_name)
+                    elif indicator_type == 'boll':
+                        # Boll指标需要删除中轨线、上轨线和下轨线
+                        columns_to_drop.extend([f'mb{window}', f'up{window}', f'dn{window}'])
+                    else:
+                        column_name = f'{indicator_type}{window}'
+                        columns_to_drop.append(column_name)
                     # 从缓存中删除
                     cache_key = self._generate_cache_key(indicator_type, window)
                     if cache_key in self._calculate_cache:
@@ -327,14 +372,24 @@ class TechnicalAnalyzer:
                     # 重置该类型的所有窗口
                     windows = list(self.calculated_indicators[indicator_type])
                     for w in windows:
-                        column_name = f'{indicator_type}{w}' if indicator_type != 'vol_ma' else f'vol_ma{w}'
-                        columns_to_drop.append(column_name)
+                        if indicator_type == 'vol_ma':
+                            column_name = f'vol_ma{w}'
+                            columns_to_drop.append(column_name)
+                        elif indicator_type == 'boll':
+                            # Boll指标需要删除中轨线、上轨线和下轨线
+                            columns_to_drop.extend([f'mb{w}', f'up{w}', f'dn{w}'])
+                        else:
+                            column_name = f'{indicator_type}{w}'
+                            columns_to_drop.append(column_name)
                         # 从缓存中删除
                         cache_key = self._generate_cache_key(indicator_type, w)
                         if cache_key in self._calculate_cache:
                             del self._calculate_cache[cache_key]
                     # 清空该类型的所有窗口
                     self.calculated_indicators[indicator_type].clear()
+                    # 对于Boll指标，还需要删除默认列名
+                    if indicator_type == 'boll':
+                        columns_to_drop.extend(['mb', 'up', 'dn'])
             elif indicator_type in ['macd']:
                 # 重置MACD指标
                 self.calculated_indicators[indicator_type] = False

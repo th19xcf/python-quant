@@ -84,6 +84,8 @@ class IndicatorVisualizationPlugin(VisualizationPlugin):
                 self._render_ma(df, container)
             elif indicator_type == 'vol_ma' or indicator_type == 'volume':
                 self._render_vol_ma(df, container)
+            elif indicator_type == 'boll':
+                self._render_boll(df, container)
             else:
                 logger.warning(f"不支持的指标类型: {indicator_type}")
                 container.setLabel('left', '指标', color='#ffffff', size='10pt')
@@ -324,6 +326,44 @@ class IndicatorVisualizationPlugin(VisualizationPlugin):
             List[str]: 支持的数据类型列表
         """
         return ['stock', 'index', 'indicator', 'volume']
+    
+    def _render_boll(self, df, container):
+        """
+        渲染Boll指标图（布林带）
+        
+        Args:
+            df: 包含Boll数据的DataFrame
+            container: 渲染容器
+        """
+        # 设置标签
+        container.setLabel('left', 'BOLL', color='#ffffff', size='10pt')
+        
+        # 准备数据
+        x = np.arange(len(df))
+        
+        # 检查是否包含Boll数据
+        window = 20  # 默认窗口大小
+        mb_col = f'mb{window}'
+        up_col = f'up{window}'
+        dn_col = f'dn{window}'
+        
+        if mb_col not in df.columns or up_col not in df.columns or dn_col not in df.columns:
+            # 尝试使用默认列名
+            mb_col = 'mb'
+            up_col = 'up'
+            dn_col = 'dn'
+            if mb_col not in df.columns or up_col not in df.columns or dn_col not in df.columns:
+                logger.warning("数据中缺少BOLL指标")
+                return
+        
+        mb = df[mb_col].values
+        up = df[up_col].values
+        dn = df[dn_col].values
+        
+        # 绘制BOLL线
+        mb_item = container.plot(x, mb, pen=pg.mkPen('w', width=1), name=f'MB{window}')
+        up_item = container.plot(x, up, pen=pg.mkPen('r', width=1), name=f'UP{window}')
+        dn_item = container.plot(x, dn, pen=pg.mkPen('g', width=1), name=f'DN{window}')
     
     def update_data(self, data):
         """
