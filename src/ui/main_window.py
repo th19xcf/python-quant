@@ -6,6 +6,7 @@
 """
 
 import warnings
+import math
 from functools import wraps
 import datetime
 
@@ -3509,7 +3510,7 @@ class MainWindow(QMainWindow):
                         # 在均线上每隔几个点绘制一个白点
                         step = max(1, len(x_data) // 20)  # 最多绘制20个点
                         for i in range(0, len(x_data), step):
-                            if not pl.is_null(y_data[i]):
+                            if y_data[i] is not None and not (isinstance(y_data[i], (int, float)) and math.isnan(y_data[i])):
                                 # 创建白点标注
                                 point = pg.ScatterPlotItem([x_data[i]], [y_data[i]], size=6, pen=pg.mkPen('w', width=1), brush=pg.mkBrush('w'))
                                 self.tech_plot_widget.addItem(point)
