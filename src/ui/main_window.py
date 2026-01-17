@@ -2847,33 +2847,45 @@ class MainWindow(QMainWindow):
                 # 根据当前指标更新标签文本
                 if current_indicator == "KDJ":
                     # 获取最新的KDJ值
-                    latest_k = df_pl['k'].tail(1)[0]
-                    latest_d = df_pl['d'].tail(1)[0]
-                    latest_j = df_pl['j'].tail(1)[0]
-                    # 更新标签文本
-                    kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
+                    if 'k' in df_pl.columns and 'd' in df_pl.columns and 'j' in df_pl.columns:
+                        latest_k = df_pl['k'].tail(1)[0]
+                        latest_d = df_pl['d'].tail(1)[0]
+                        latest_j = df_pl['j'].tail(1)[0]
+                        # 更新标签文本
+                        kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
+                    else:
+                        kdj_text = f"<font color='white'>KDJ指标数据不可用</font>"
                     self.kdj_values_label.setText(kdj_text)
                 elif current_indicator == "RSI":
                     # 获取最新的RSI值
-                    latest_rsi = df_pl['rsi14'].tail(1)[0]
-                    # 更新标签文本
-                    rsi_text = f"<font color='blue'>RSI14: {latest_rsi:.2f}</font>"
+                    if 'rsi14' in df_pl.columns:
+                        latest_rsi = df_pl['rsi14'].tail(1)[0]
+                        # 更新标签文本
+                        rsi_text = f"<font color='blue'>RSI14: {latest_rsi:.2f}</font>"
+                    else:
+                        rsi_text = f"<font color='white'>RSI指标数据不可用</font>"
                     self.kdj_values_label.setText(rsi_text)
                 elif current_indicator == "MACD":
                     # 获取最新的MACD值
-                    latest_macd = df_pl['macd'].tail(1)[0]
-                    latest_macd_signal = df_pl['macd_signal'].tail(1)[0]
-                    latest_macd_hist = df_pl['macd_hist'].tail(1)[0]
-                    # 更新标签文本
-                    macd_text = f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>"
+                    if 'macd' in df_pl.columns and 'macd_signal' in df_pl.columns and 'macd_hist' in df_pl.columns:
+                        latest_macd = df_pl['macd'].tail(1)[0]
+                        latest_macd_signal = df_pl['macd_signal'].tail(1)[0]
+                        latest_macd_hist = df_pl['macd_hist'].tail(1)[0]
+                        # 更新标签文本
+                        macd_text = f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>"
+                    else:
+                        macd_text = f"<font color='white'>MACD指标数据不可用</font>"
                     self.kdj_values_label.setText(macd_text)
                 elif current_indicator == "VOL":
                     # 获取最新的成交量值
-                    latest_volume = df_pl['volume'].tail(1)[0]
-                    latest_vol_ma5 = df_pl['vol_ma5'].tail(1)[0]
-                    latest_vol_ma10 = df_pl['vol_ma10'].tail(1)[0]
-                    # 更新标签文本
-                    vol_text = f"<font color='#C0C0C0'>VOLUME: {int(latest_volume):,}</font>  <font color='white'>MA5: {int(latest_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(latest_vol_ma10):,}</font>"
+                    if 'volume' in df_pl.columns and 'vol_ma5' in df_pl.columns and 'vol_ma10' in df_pl.columns:
+                        latest_volume = df_pl['volume'].tail(1)[0]
+                        latest_vol_ma5 = df_pl['vol_ma5'].tail(1)[0]
+                        latest_vol_ma10 = df_pl['vol_ma10'].tail(1)[0]
+                        # 更新标签文本
+                        vol_text = f"<font color='#C0C0C0'>VOLUME: {int(latest_volume):,}</font>  <font color='white'>MA5: {int(latest_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(latest_vol_ma10):,}</font>"
+                    else:
+                        vol_text = f"<font color='white'>成交量数据不可用</font>"
                     self.kdj_values_label.setText(vol_text)
                 elif current_indicator == "WR":
                     # 获取最新的WR值（通达信风格：WR1和WR2）
@@ -2934,17 +2946,17 @@ class MainWindow(QMainWindow):
                 
                 # 保存指标数据，用于鼠标移动时更新指标数值
                 self.current_kdj_data = {
-                    'k': df_pl['k'].to_list(),
-                    'd': df_pl['d'].to_list(),
-                    'j': df_pl['j'].to_list()
+                    'k': df_pl['k'].to_list() if 'k' in df_pl.columns else [],
+                    'd': df_pl['d'].to_list() if 'd' in df_pl.columns else [],
+                    'j': df_pl['j'].to_list() if 'j' in df_pl.columns else []
                 }
                 self.current_rsi_data = {
-                    'rsi': df_pl['rsi14'].to_list()
+                    'rsi': df_pl['rsi14'].to_list() if 'rsi14' in df_pl.columns else []
                 }
                 self.current_macd_data = {
-                    'macd': df_pl['macd'].to_list(),
-                    'macd_signal': df_pl['macd_signal'].to_list(),
-                    'macd_hist': df_pl['macd_hist'].to_list()
+                    'macd': df_pl['macd'].to_list() if 'macd' in df_pl.columns else [],
+                    'macd_signal': df_pl['macd_signal'].to_list() if 'macd_signal' in df_pl.columns else [],
+                    'macd_hist': df_pl['macd_hist'].to_list() if 'macd_hist' in df_pl.columns else []
                 }
                 # 保存WR指标数据
                 self.current_wr_data = {
@@ -5808,6 +5820,13 @@ class MainWindow(QMainWindow):
             # 确保不换行
             self.kdj_values_label.setWordWrap(False)
         
+        # 确保BOLL相关列存在
+        if 'mb' not in df_pl.columns or 'up' not in df_pl.columns or 'dn' not in df_pl.columns:
+            from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+            analyzer = TechnicalAnalyzer(df_pl)
+            analyzer.calculate_boll(20)
+            df_pl = analyzer.get_data(return_polars=True)
+        
         # 保存指标数据，用于鼠标移动时更新指标数值
         self.save_indicator_data(df_pl)
         
@@ -5820,33 +5839,45 @@ class MainWindow(QMainWindow):
         # 根据当前指标更新标签文本
         if current_indicator == "KDJ":
             # 获取最新的KDJ值
-            latest_k = df_pd['k'].iloc[-1]
-            latest_d = df_pd['d'].iloc[-1]
-            latest_j = df_pd['j'].iloc[-1]
-            # 更新标签文本
-            kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
+            if 'k' in df_pd.columns and 'd' in df_pd.columns and 'j' in df_pd.columns:
+                latest_k = df_pd['k'].iloc[-1]
+                latest_d = df_pd['d'].iloc[-1]
+                latest_j = df_pd['j'].iloc[-1]
+                # 更新标签文本
+                kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
+            else:
+                kdj_text = f"<font color='white'>KDJ指标数据不可用</font>"
             self.kdj_values_label.setText(kdj_text)
         elif current_indicator == "RSI":
             # 获取最新的RSI值
-            latest_rsi = df_pd['rsi14'].iloc[-1]
-            # 更新标签文本
-            rsi_text = f"<font color='blue'>RSI14: {latest_rsi:.2f}</font>"
+            if 'rsi14' in df_pd.columns:
+                latest_rsi = df_pd['rsi14'].iloc[-1]
+                # 更新标签文本
+                rsi_text = f"<font color='blue'>RSI14: {latest_rsi:.2f}</font>"
+            else:
+                rsi_text = f"<font color='white'>RSI指标数据不可用</font>"
             self.kdj_values_label.setText(rsi_text)
         elif current_indicator == "MACD":
             # 获取最新的MACD值
-            latest_macd = df_pd['macd'].iloc[-1]
-            latest_macd_signal = df_pd['macd_signal'].iloc[-1]
-            latest_macd_hist = df_pd['macd_hist'].iloc[-1]
-            # 更新标签文本
-            macd_text = f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>"
+            if 'macd' in df_pd.columns and 'macd_signal' in df_pd.columns and 'macd_hist' in df_pd.columns:
+                latest_macd = df_pd['macd'].iloc[-1]
+                latest_macd_signal = df_pd['macd_signal'].iloc[-1]
+                latest_macd_hist = df_pd['macd_hist'].iloc[-1]
+                # 更新标签文本
+                macd_text = f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>"
+            else:
+                macd_text = f"<font color='white'>MACD指标数据不可用</font>"
             self.kdj_values_label.setText(macd_text)
         elif current_indicator == "BOLL":
             # 获取最新的BOLL值
-            latest_mb = df_pd['mb'].iloc[-1]
-            latest_up = df_pd['up'].iloc[-1]
-            latest_dn = df_pd['dn'].iloc[-1]
-            # 更新标签文本
-            boll_text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='green'>DN: {latest_dn:.2f}</font>"
+            if 'mb' in df_pd.columns and 'up' in df_pd.columns and 'dn' in df_pd.columns:
+                latest_mb = df_pd['mb'].iloc[-1]
+                latest_up = df_pd['up'].iloc[-1]
+                latest_dn = df_pd['dn'].iloc[-1]
+                # 更新标签文本
+                boll_text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='green'>DN: {latest_dn:.2f}</font>"
+            else:
+                boll_text = f"<font color='white'>BOLL指标数据不可用</font>"
             self.kdj_values_label.setText(boll_text)
         elif current_indicator == "WR":
             # 获取最新的WR值（通达信风格：WR1和WR2）
@@ -5862,11 +5893,14 @@ class MainWindow(QMainWindow):
             self.kdj_values_label.setText(wr_text)
         else:
             # 默认绘制KDJ指标，显示KDJ数值
-            latest_k = df_pd['k'].iloc[-1]
-            latest_d = df_pd['d'].iloc[-1]
-            latest_j = df_pd['j'].iloc[-1]
-            # 更新标签文本
-            kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
+            if 'k' in df_pd.columns and 'd' in df_pd.columns and 'j' in df_pd.columns:
+                latest_k = df_pd['k'].iloc[-1]
+                latest_d = df_pd['d'].iloc[-1]
+                latest_j = df_pd['j'].iloc[-1]
+                # 更新标签文本
+                kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
+            else:
+                kdj_text = f"<font color='white'>指标数据不可用</font>"
             self.kdj_values_label.setText(kdj_text)
     
     def save_indicator_data(self, df_pl):
