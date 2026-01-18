@@ -12,60 +12,46 @@ import numpy as np
 def calculate_ma_polars(df, windows=[5, 10, 20, 60]):
     """
     使用Polars计算移动平均线（Lazy API优化）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
     
     Args:
-        df: Polars DataFrame
+        df: Polars DataFrame或LazyFrame
         windows: 移动平均窗口列表
         
     Returns:
-        pl.DataFrame: 包含移动平均线的DataFrame
+        pl.DataFrame或pl.LazyFrame: 包含移动平均线的DataFrame或LazyFrame
     """
-    # 检查是否为LazyFrame，如果不是则转换为LazyFrame
-    is_lazy = isinstance(df, pl.LazyFrame)
-    if not is_lazy:
-        df = df.lazy()
-    
-    # 使用Lazy API计算移动平均线
-    result = df.with_columns(
+    # 使用Lazy API计算移动平均线，支持链式调用
+    return df.with_columns(
         *[pl.col('close').rolling_mean(window_size=window, min_periods=1).alias(f'ma{window}') 
           for window in windows]
     )
-    
-    # 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
-    return result.collect() if not is_lazy else result
 
 
 def calculate_vol_ma_polars(df, windows=[5, 10]):
     """
     使用Polars计算成交量移动平均线（Lazy API优化）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
     
     Args:
-        df: Polars DataFrame
+        df: Polars DataFrame或LazyFrame
         windows: 移动平均窗口列表
         
     Returns:
-        pl.DataFrame: 包含成交量移动平均线的DataFrame
+        pl.DataFrame或pl.LazyFrame: 包含成交量移动平均线的DataFrame或LazyFrame
     """
-    # 检查是否为LazyFrame，如果不是则转换为LazyFrame
-    is_lazy = isinstance(df, pl.LazyFrame)
-    if not is_lazy:
-        df = df.lazy()
-    
-    # 使用Lazy API计算成交量移动平均线
-    result = df.with_columns(
+    # 使用Lazy API计算成交量移动平均线，支持链式调用
+    return df.with_columns(
         *[pl.col('volume').rolling_mean(window_size=window, min_periods=1).alias(f'vol_ma{window}') 
           for window in windows]
     )
-    
-    # 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
-    return result.collect() if not is_lazy else result
 
 
 def preprocess_data_polars(df):
     """
     使用Polars进行数据预处理
     - 检查必要列是否存在
-    - 转换为数值类型
+    - 转换为高效数值类型（float32替代float64）
     - 处理缺失值
     
     Args:
@@ -80,20 +66,22 @@ def preprocess_data_polars(df):
         if col not in df.columns:
             raise ValueError(f"数据中没有{col}列")
     
-    # 将必要列转换为数值类型
+    # 将必要列转换为高效数值类型（float32替代float64），减少内存使用
     return df.with_columns(
-        pl.col(required_columns).cast(pl.Float64, strict=False).fill_nan(0.0)
+        pl.col(['open', 'high', 'low', 'close']).cast(pl.Float32, strict=False).fill_nan(0.0),
+        pl.col('volume').cast(pl.Float32, strict=False).fill_nan(0.0)
     )
 
 
-def sample_data_polars(df, target_points=1000, strategy='uniform'):
+def sample_data_polars(df, target_points=1000, strategy='adaptive'):
     """
     对Polars数据进行采样，减少数据量，提高图表渲染速度
+    支持多种采样策略，包括均匀采样和自适应采样
     
     Args:
         df: Polars DataFrame
         target_points: 目标采样点数
-        strategy: 采样策略，可选值：'uniform'（均匀采样）
+        strategy: 采样策略，可选值：'uniform'（均匀采样）、'adaptive'（自适应采样）
         
     Returns:
         pl.DataFrame: 采样后的数据
@@ -104,20 +92,60 @@ def sample_data_polars(df, target_points=1000, strategy='uniform'):
         # 数据量已经满足要求，无需采样
         return df
     
-    # 计算采样间隔
-    sample_interval = data_len // target_points
-    
     if strategy == 'uniform':
         # 均匀采样
+        sample_interval = data_len // target_points
         sampled_data = df[::sample_interval]
+    elif strategy == 'adaptive':
+        # 自适应采样：基于数据密度和重要性
+        
+        # 1. 计算数据的变化率
+        df_with_change = df.with_columns(
+            pl.col('close').diff().abs().alias('price_change')
+        )
+        
+        # 2. 计算变化率的分位数，确定重要数据点
+        change_quantile = df_with_change['price_change'].quantile(0.75)
+        
+        # 3. 标记重要数据点（变化率大于分位数的点）
+        important_points = df_with_change.filter(pl.col('price_change') > change_quantile)
+        
+        # 4. 计算需要从非重要数据点中采样的数量
+        important_count = len(important_points)
+        regular_count = target_points - important_count
+        
+        # 5. 如果重要数据点已经足够，直接返回
+        if important_count >= target_points:
+            return important_points.head(target_points)
+        
+        # 6. 从非重要数据点中均匀采样
+        regular_points = df_with_change.filter(pl.col('price_change') <= change_quantile)
+        regular_sample_interval = len(regular_points) // regular_count
+        sampled_regular = regular_points[::regular_sample_interval].head(regular_count)
+        
+        # 7. 合并重要数据点和采样的非重要数据点
+        combined = important_points.vstack(sampled_regular)
+        
+        # 8. 按索引排序
+        sampled_data = combined.sort(by=df.columns[0])
     else:
         raise ValueError(f"不支持的采样策略: {strategy}")
     
     # 确保包含首尾数据点
-    if len(sampled_data) < 2 or len(sampled_data) < len(df):
-        # 添加最后一个数据点
+    if len(sampled_data) > 0:
+        first_point = df.head(1)
         last_point = df.tail(1)
-        sampled_data = sampled_data.vstack(last_point)
+        
+        # 检查是否已包含首尾数据点
+        if sampled_data[0, df.columns[0]] != first_point[0, df.columns[0]]:
+            sampled_data = first_point.vstack(sampled_data)
+        
+        if sampled_data[-1, df.columns[0]] != last_point[0, df.columns[0]]:
+            sampled_data = sampled_data.vstack(last_point)
+    
+    # 确保采样数量不超过目标数量
+    if len(sampled_data) > target_points:
+        sampled_data = sampled_data.head(target_points)
     
     return sampled_data
 
@@ -125,63 +153,48 @@ def sample_data_polars(df, target_points=1000, strategy='uniform'):
 def calculate_macd_polars(df, fast_period=12, slow_period=26, signal_period=9):
     """
     使用Polars计算MACD指标（Lazy API优化）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
     
     Args:
-        df: Polars DataFrame
+        df: Polars DataFrame或LazyFrame
         fast_period: 快速EMA周期
         slow_period: 慢速EMA周期
         signal_period: 信号线EMA周期
         
     Returns:
-        pl.DataFrame: 包含MACD指标的DataFrame
+        pl.DataFrame或pl.LazyFrame: 包含MACD指标的DataFrame或LazyFrame
     """
-    # 检查是否为LazyFrame，如果不是则转换为LazyFrame
-    is_lazy = isinstance(df, pl.LazyFrame)
-    if not is_lazy:
-        df = df.lazy()
-    
-    # 使用Lazy API计算MACD指标，合并所有步骤为单个查询
-    result = df.with_columns([
-        pl.col('close').ewm_mean(span=fast_period).alias(f'ema{fast_period}'),
-        pl.col('close').ewm_mean(span=slow_period).alias(f'ema{slow_period}')
+    # 使用Lazy API计算MACD指标，合并所有步骤为单个查询，支持链式调用
+    return df.with_columns([
+        pl.col('close').ewm_mean(span=fast_period).alias('ema12'),
+        pl.col('close').ewm_mean(span=slow_period).alias('ema26')
     ]).with_columns([
-        (pl.col(f'ema{fast_period}') - pl.col(f'ema{slow_period}')).alias('macd')
+        (pl.col('ema12') - pl.col('ema26')).alias('macd')
     ]).with_columns([
         pl.col('macd').ewm_mean(span=signal_period).alias('macd_signal')
     ]).with_columns([
         (pl.col('macd') - pl.col('macd_signal')).alias('macd_hist')
-    ]).drop([f'ema{fast_period}', f'ema{slow_period}'])
-    
-    # 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
-    return result.collect() if not is_lazy else result
+    ]).drop(['ema12', 'ema26'])
 
 
 def calculate_rsi_polars(df, windows=None):
     """
     使用Polars批量计算RSI指标（Lazy API优化）
+    优化：使用EMA替代普通移动平均线计算平均上涨和下跌幅度
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
     
     Args:
-        df: Polars DataFrame
+        df: Polars DataFrame或LazyFrame
         windows: RSI计算窗口列表，默认为[14]
         
     Returns:
-        pl.DataFrame: 包含RSI指标的DataFrame
+        pl.DataFrame或pl.LazyFrame: 包含RSI指标的DataFrame或LazyFrame
     """
     if windows is None:
         windows = [14]
     
-    # 检查是否为LazyFrame，如果不是则转换为LazyFrame
-    is_lazy = isinstance(df, pl.LazyFrame)
-    if not is_lazy:
-        df = df.lazy()
-    
-    # 使用Lazy API计算RSI指标，合并所有步骤为单个查询
-    # 1. 计算价格变化
-    # 2. 计算上涨和下跌变化
-    # 3. 批量计算所有窗口的avg_gain和avg_loss
-    # 4. 批量计算所有窗口的RSI
-    # 5. 清理临时列
-    result = df.with_columns(
+    # 使用Lazy API计算RSI指标，合并所有步骤为单个查询，支持链式调用
+    return df.with_columns(
         # 计算价格变化
         pl.col('close').diff().alias('price_change')
     ).with_columns(
@@ -189,9 +202,9 @@ def calculate_rsi_polars(df, windows=None):
         pl.when(pl.col('price_change') > 0).then(pl.col('price_change')).otherwise(0).alias('gain'),
         pl.when(pl.col('price_change') < 0).then(-pl.col('price_change')).otherwise(0).alias('loss')
     ).with_columns(
-        # 批量计算所有窗口的avg_gain和avg_loss
-        *[pl.col('gain').rolling_mean(window_size=window, min_periods=1).alias(f'avg_gain_{window}') for window in windows],
-        *[pl.col('loss').rolling_mean(window_size=window, min_periods=1).alias(f'avg_loss_{window}') for window in windows]
+        # 批量计算所有窗口的avg_gain和avg_loss，使用EMA替代普通移动平均线
+        *[pl.col('gain').ewm_mean(span=window).alias(f'avg_gain_{window}') for window in windows],
+        *[pl.col('loss').ewm_mean(span=window).alias(f'avg_loss_{window}') for window in windows]
     ).with_columns(
         # 批量计算所有窗口的RSI
         *[pl.when(pl.col(f'avg_loss_{window}') == 0)
@@ -204,37 +217,24 @@ def calculate_rsi_polars(df, windows=None):
         [f'avg_gain_{window}' for window in windows] + 
         [f'avg_loss_{window}' for window in windows]
     )
-    
-    # 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
-    return result.collect() if not is_lazy else result
 
 
 def calculate_kdj_polars(df, windows=None):
     """
     使用Polars批量计算KDJ指标（Lazy API优化）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
     
     Args:
-        df: Polars DataFrame
+        df: Polars DataFrame或LazyFrame
         windows: KDJ计算窗口列表，默认为[14]
         
     Returns:
-        pl.DataFrame: 包含KDJ指标的DataFrame
+        pl.DataFrame或pl.LazyFrame: 包含KDJ指标的DataFrame或LazyFrame
     """
     if windows is None:
         windows = [14]
     
-    # 检查是否为LazyFrame，如果不是则转换为LazyFrame
-    is_lazy = isinstance(df, pl.LazyFrame)
-    if not is_lazy:
-        df = df.lazy()
-    
     # 使用Lazy API计算KDJ指标，合并所有步骤为单个查询
-    # 1. 批量计算所有窗口的high_n和low_n
-    # 2. 批量计算所有窗口的rsv
-    # 3. 批量计算所有窗口的k、d、j值
-    # 4. 设置默认列名
-    # 5. 清理临时列
-    
     # 1. 准备列定义
     high_cols = []
     low_cols = []
@@ -254,6 +254,7 @@ def calculate_kdj_polars(df, windows=None):
     k_cols = []
     d_cols = []
     j_cols = []
+    default_cols = []
     for window in windows:
         # 计算k值
         k_expr = pl.col(f'rsv_{window}').rolling_mean(window_size=3, min_periods=1).alias(f'k{window}')
@@ -266,18 +267,16 @@ def calculate_kdj_polars(df, windows=None):
         # 计算j值
         j_expr = (3 * k_expr - 2 * d_expr).alias(f'j{window}')
         j_cols.append(j_expr)
+        
+        # 设置默认列名
+        if window == 14:
+            default_cols.extend([
+                pl.col(f'k{window}').alias('k'),
+                pl.col(f'd{window}').alias('d'),
+                pl.col(f'j{window}').alias('j')
+            ])
     
-    # 4. 准备默认列名定义
-    default_cols = []
-    if len(windows) == 1 or windows[0] in windows:
-        window = windows[0]
-        default_cols.extend([
-            pl.col(f'k{window}').alias('k'),
-            pl.col(f'd{window}').alias('d'),
-            pl.col(f'j{window}').alias('j')
-        ])
-    
-    # 5. 准备临时列列表
+    # 4. 准备临时列列表
     temp_cols = []
     for window in windows:
         temp_cols.extend([f'high_n_{window}', f'low_n_{window}', f'rsv_{window}'])
@@ -296,31 +295,24 @@ def calculate_kdj_polars(df, windows=None):
         result = result.with_columns(*default_cols)
     
     # 清理临时列
-    result = result.drop(temp_cols)
-    
-    # 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
-    return result.collect() if not is_lazy else result
+    return result.drop(temp_cols)
 
 
 def calculate_boll_polars(df, windows=[20], std_dev=2.0):
     """
     使用Polars批量计算Boll指标（布林带），优化性能
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
     
     Args:
-        df: Polars DataFrame
+        df: Polars DataFrame或LazyFrame
         windows: Boll计算窗口列表，默认为[20]
         std_dev: 标准差倍数，默认为2.0
         
     Returns:
-        pl.DataFrame: 包含Boll指标的DataFrame
+        pl.DataFrame或pl.LazyFrame: 包含Boll指标的DataFrame或LazyFrame
     """
     if windows is None:
         windows = [20]
-    
-    # 检查是否为LazyFrame，如果不是则转换为LazyFrame
-    is_lazy = isinstance(df, pl.LazyFrame)
-    if not is_lazy:
-        df = df.lazy()
     
     # 批量计算所有窗口的Boll指标，减少数据遍历次数
     # 1. 准备所有计算表达式
@@ -334,12 +326,12 @@ def calculate_boll_polars(df, windows=[20], std_dev=2.0):
         # 添加到表达式列表
         boll_exprs.extend([ma_expr, up_expr, dn_expr])
     
-    # 2. 一次性添加所有计算结果
+    # 2. 一次性添加所有计算结果，支持链式调用
     result = df.with_columns(boll_exprs)
     
     # 3. 准备默认列名定义
     default_cols = []
-    if len(windows) == 1 or windows[0] in windows:
+    if len(windows) >= 1:
         window = windows[0]
         default_cols.extend([
             pl.col(f'mb{window}').alias('mb'),
@@ -349,50 +341,44 @@ def calculate_boll_polars(df, windows=[20], std_dev=2.0):
     
     # 4. 添加默认列名
     if default_cols:
-        result = result.with_columns(*default_cols)
+        result = result.with_columns(default_cols)
     
-    # 5. 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
-    return result.collect() if not is_lazy else result
+    return result
 
 
 def calculate_wr_polars(df, windows=None):
     """
     使用Polars批量计算WR指标（威廉指标），优化性能，模拟通达信WR(10,6)效果
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
     
     Args:
-        df: Polars DataFrame
+        df: Polars DataFrame或LazyFrame
         windows: WR计算窗口列表，默认为[10, 6]
         
     Returns:
-        pl.DataFrame: 包含WR指标的DataFrame
+        pl.DataFrame或pl.LazyFrame: 包含WR指标的DataFrame或LazyFrame
     """
     if windows is None:
         windows = [10, 6]  # 通达信默认使用WR10和WR6
     
-    # 检查是否为LazyFrame，如果不是则转换为LazyFrame
-    is_lazy = isinstance(df, pl.LazyFrame)
-    if not is_lazy:
-        df = df.lazy()
-    
-    # 批量计算WR指标，减少数据遍历次数
-    # 1. 准备所有计算表达式
-    wr_exprs = []
+    # 使用Lazy API计算WR指标，合并所有步骤为单个查询
+    # 1. 准备临时列定义（high_n和low_n）
     temp_cols = []
+    temp_exprs = []
     
     for window in windows:
-        # 计算n日内最高价
-        high_expr = pl.col('high').rolling_max(window_size=window, min_periods=1).alias(f'high_n_{window}')
-        # 计算n日内最低价
-        low_expr = pl.col('low').rolling_min(window_size=window, min_periods=1).alias(f'low_n_{window}')
-        # 计算WR值
-        wr_expr = ((high_expr - pl.col('close')) / (high_expr - low_expr) * 100).alias(f'wr{window}')
-        # 添加到表达式列表
-        wr_exprs.extend([high_expr, low_expr, wr_expr])
-        # 记录临时列名
+        # 计算n日内最高价和最低价
+        temp_exprs.append(pl.col('high').rolling_max(window_size=window, min_periods=1).alias(f'high_n_{window}'))
+        temp_exprs.append(pl.col('low').rolling_min(window_size=window, min_periods=1).alias(f'low_n_{window}'))
         temp_cols.extend([f'high_n_{window}', f'low_n_{window}'])
     
-    # 2. 一次性添加所有计算结果
-    result = df.with_columns(wr_exprs)
+    # 2. 计算WR值
+    wr_exprs = []
+    for window in windows:
+        wr_exprs.append(
+            ((pl.col(f'high_n_{window}') - pl.col('close')) / 
+             (pl.col(f'high_n_{window}') - pl.col(f'low_n_{window}')) * 100).alias(f'wr{window}')
+        )
     
     # 3. 准备默认列名定义（兼容旧版本和通达信风格）
     default_cols = []
@@ -405,15 +391,18 @@ def calculate_wr_polars(df, windows=None):
         # 通达信风格：生成wr2列
         default_cols.append(pl.col(f'wr{windows[1]}').alias('wr2'))
     
-    # 4. 添加默认列名
-    if default_cols:
-        result = result.with_columns(*default_cols)
+    # 4. 执行计算，分步骤进行
+    result = df.with_columns(temp_exprs)
+    result = result.with_columns(wr_exprs)
     
-    # 5. 清理临时列
+    # 5. 添加默认列名
+    if default_cols:
+        result = result.with_columns(default_cols)
+    
+    # 6. 清理临时列
     result = result.drop(temp_cols)
     
-    # 6. 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
-    return result.collect() if not is_lazy else result
+    return result
 
 
 def generate_cache_key(data_hash, indicator_type, *args, **kwargs):
