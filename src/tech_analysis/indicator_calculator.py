@@ -21,9 +21,9 @@ def calculate_ma_polars(df, windows=[5, 10, 20, 60]):
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含移动平均线的DataFrame或LazyFrame
     """
-    # 使用Lazy API计算移动平均线，支持链式调用
+    # 使用Lazy API计算移动平均线，支持链式调用，并确保结果为float32类型
     return df.with_columns(
-        *[pl.col('close').rolling_mean(window_size=window, min_periods=1).alias(f'ma{window}') 
+        *[pl.col('close').rolling_mean(window_size=window, min_periods=1).cast(pl.Float32).alias(f'ma{window}') 
           for window in windows]
     )
 
@@ -40,9 +40,9 @@ def calculate_vol_ma_polars(df, windows=[5, 10]):
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含成交量移动平均线的DataFrame或LazyFrame
     """
-    # 使用Lazy API计算成交量移动平均线，支持链式调用
+    # 使用Lazy API计算成交量移动平均线，支持链式调用，并确保结果为float32类型
     return df.with_columns(
-        *[pl.col('volume').rolling_mean(window_size=window, min_periods=1).alias(f'vol_ma{window}') 
+        *[pl.col('volume').rolling_mean(window_size=window, min_periods=1).cast(pl.Float32).alias(f'vol_ma{window}') 
           for window in windows]
     )
 
@@ -164,16 +164,16 @@ def calculate_macd_polars(df, fast_period=12, slow_period=26, signal_period=9):
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含MACD指标的DataFrame或LazyFrame
     """
-    # 使用Lazy API计算MACD指标，合并所有步骤为单个查询，支持链式调用
+    # 使用Lazy API计算MACD指标，合并所有步骤为单个查询，支持链式调用，并确保结果为float32类型
     return df.with_columns([
         pl.col('close').ewm_mean(span=fast_period).alias('ema12'),
         pl.col('close').ewm_mean(span=slow_period).alias('ema26')
     ]).with_columns([
-        (pl.col('ema12') - pl.col('ema26')).alias('macd')
+        (pl.col('ema12') - pl.col('ema26')).cast(pl.Float32).alias('macd')
     ]).with_columns([
-        pl.col('macd').ewm_mean(span=signal_period).alias('macd_signal')
+        pl.col('macd').ewm_mean(span=signal_period).cast(pl.Float32).alias('macd_signal')
     ]).with_columns([
-        (pl.col('macd') - pl.col('macd_signal')).alias('macd_hist')
+        (pl.col('macd') - pl.col('macd_signal')).cast(pl.Float32).alias('macd_hist')
     ]).drop(['ema12', 'ema26'])
 
 
@@ -193,7 +193,7 @@ def calculate_rsi_polars(df, windows=None):
     if windows is None:
         windows = [14]
     
-    # 使用Lazy API计算RSI指标，合并所有步骤为单个查询，支持链式调用
+    # 使用Lazy API计算RSI指标，合并所有步骤为单个查询，支持链式调用，并确保结果为float32类型
     return df.with_columns(
         # 计算价格变化
         pl.col('close').diff().alias('price_change')
@@ -206,10 +206,11 @@ def calculate_rsi_polars(df, windows=None):
         *[pl.col('gain').ewm_mean(span=window).alias(f'avg_gain_{window}') for window in windows],
         *[pl.col('loss').ewm_mean(span=window).alias(f'avg_loss_{window}') for window in windows]
     ).with_columns(
-        # 批量计算所有窗口的RSI
+        # 批量计算所有窗口的RSI，并确保结果为float32类型
         *[pl.when(pl.col(f'avg_loss_{window}') == 0)
           .then(100.0)
           .otherwise(100.0 - (100.0 / (1.0 + (pl.col(f'avg_gain_{window}') / pl.col(f'avg_loss_{window}')))))
+          .cast(pl.Float32)
           .alias(f'rsi{window}') for window in windows]
     ).drop(
         # 清理临时列
@@ -247,7 +248,7 @@ def calculate_kdj_polars(df, windows=None):
     for window in windows:
         rsv_cols.append(
             ((pl.col('close') - pl.col(f'low_n_{window}')) / 
-             (pl.col(f'high_n_{window}') - pl.col(f'low_n_{window}')) * 100).alias(f'rsv_{window}')
+             (pl.col(f'high_n_{window}') - pl.col(f'low_n_{window}')) * 100).cast(pl.Float32).alias(f'rsv_{window}')
         )
     
     # 3. 准备k、d、j列定义
@@ -257,15 +258,15 @@ def calculate_kdj_polars(df, windows=None):
     default_cols = []
     for window in windows:
         # 计算k值
-        k_expr = pl.col(f'rsv_{window}').rolling_mean(window_size=3, min_periods=1).alias(f'k{window}')
+        k_expr = pl.col(f'rsv_{window}').rolling_mean(window_size=3, min_periods=1).cast(pl.Float32).alias(f'k{window}')
         k_cols.append(k_expr)
         
         # 计算d值
-        d_expr = k_expr.rolling_mean(window_size=3, min_periods=1).alias(f'd{window}')
+        d_expr = k_expr.rolling_mean(window_size=3, min_periods=1).cast(pl.Float32).alias(f'd{window}')
         d_cols.append(d_expr)
         
         # 计算j值
-        j_expr = (3 * k_expr - 2 * d_expr).alias(f'j{window}')
+        j_expr = (3 * k_expr - 2 * d_expr).cast(pl.Float32).alias(f'j{window}')
         j_cols.append(j_expr)
         
         # 设置默认列名
@@ -314,15 +315,15 @@ def calculate_boll_polars(df, windows=[20], std_dev=2.0):
     if windows is None:
         windows = [20]
     
-    # 批量计算所有窗口的Boll指标，减少数据遍历次数
+    # 批量计算所有窗口的Boll指标，减少数据遍历次数，并确保结果为float32类型
     # 1. 准备所有计算表达式
     boll_exprs = []
     for window in windows:
         # 计算移动平均线（中轨线）
-        ma_expr = pl.col('close').rolling_mean(window_size=window, min_periods=1).alias(f'mb{window}')
+        ma_expr = pl.col('close').rolling_mean(window_size=window, min_periods=1).cast(pl.Float32).alias(f'mb{window}')
         # 计算上轨线和下轨线，合并标准差计算到表达式中
-        up_expr = (ma_expr + pl.col('close').rolling_std(window_size=window, min_periods=1) * std_dev).alias(f'up{window}')
-        dn_expr = (ma_expr - pl.col('close').rolling_std(window_size=window, min_periods=1) * std_dev).alias(f'dn{window}')
+        up_expr = (ma_expr + pl.col('close').rolling_std(window_size=window, min_periods=1).cast(pl.Float32) * std_dev).cast(pl.Float32).alias(f'up{window}')
+        dn_expr = (ma_expr - pl.col('close').rolling_std(window_size=window, min_periods=1).cast(pl.Float32) * std_dev).cast(pl.Float32).alias(f'dn{window}')
         # 添加到表达式列表
         boll_exprs.extend([ma_expr, up_expr, dn_expr])
     
@@ -361,7 +362,7 @@ def calculate_wr_polars(df, windows=None):
     if windows is None:
         windows = [10, 6]  # 通达信默认使用WR10和WR6
     
-    # 使用Lazy API计算WR指标，合并所有步骤为单个查询
+    # 使用Lazy API计算WR指标，合并所有步骤为单个查询，并确保结果为float32类型
     # 1. 准备临时列定义（high_n和low_n）
     temp_cols = []
     temp_exprs = []
@@ -377,7 +378,7 @@ def calculate_wr_polars(df, windows=None):
     for window in windows:
         wr_exprs.append(
             ((pl.col(f'high_n_{window}') - pl.col('close')) / 
-             (pl.col(f'high_n_{window}') - pl.col(f'low_n_{window}')) * 100).alias(f'wr{window}')
+             (pl.col(f'high_n_{window}') - pl.col(f'low_n_{window}')) * 100).cast(pl.Float32).alias(f'wr{window}')
         )
     
     # 3. 准备默认列名定义（兼容旧版本和通达信风格）

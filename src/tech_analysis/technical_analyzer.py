@@ -826,7 +826,8 @@ class TechnicalAnalyzer:
             'rsi': {'windows': [14]},
             'kdj': {'windows': [14]},
             'vol_ma': {'windows': [5, 10]},
-            'wr': {'windows': [10, 6]}
+            'wr': {'windows': [10, 6]},
+            'macd': {}
         }
         
         # 2. 使用Lazy API构建多指标批量计算查询
@@ -836,132 +837,41 @@ class TechnicalAnalyzer:
         # 批量计算MA指标
         ma_windows = [w for w in indicator_tasks['ma']['windows'] if w not in self.calculated_indicators['ma']]
         if ma_windows:
-            lazy_df = lazy_df.with_columns(
-                *[pl.col('close').rolling_mean(window_size=window, min_periods=1).alias(f'ma{window}') 
-                  for window in ma_windows]
-            )
+            lazy_df = calculate_ma_polars(lazy_df, ma_windows)
             self.calculated_indicators['ma'].update(ma_windows)
             indicators_updated = True
         
         # 批量计算VOL_MA指标
         vol_ma_windows = [w for w in indicator_tasks['vol_ma']['windows'] if w not in self.calculated_indicators['vol_ma']]
         if vol_ma_windows:
-            lazy_df = lazy_df.with_columns(
-                *[pl.col('volume').rolling_mean(window_size=window, min_periods=1).alias(f'vol_ma{window}') 
-                  for window in vol_ma_windows]
-            )
+            lazy_df = calculate_vol_ma_polars(lazy_df, vol_ma_windows)
             self.calculated_indicators['vol_ma'].update(vol_ma_windows)
             indicators_updated = True
         
         # 计算MACD指标
         if not self.calculated_indicators['macd']:
-            lazy_df = lazy_df.with_columns(
-                pl.col('close').ewm_mean(span=12).alias('ema12'),
-                pl.col('close').ewm_mean(span=26).alias('ema26')
-            ).with_columns(
-                (pl.col('ema12') - pl.col('ema26')).alias('macd')
-            ).with_columns(
-                pl.col('macd').ewm_mean(span=9).alias('macd_signal')
-            ).with_columns(
-                (pl.col('macd') - pl.col('macd_signal')).alias('macd_hist')
-            ).drop(['ema12', 'ema26'])
-            
+            lazy_df = calculate_macd_polars(lazy_df)
             self.calculated_indicators['macd'] = True
             indicators_updated = True
         
         # 批量计算KDJ指标
         kdj_windows = [w for w in indicator_tasks['kdj']['windows'] if w not in self.calculated_indicators['kdj']]
         if kdj_windows:
-            for window in kdj_windows:
-                # 使用Lazy API计算KDJ指标
-                lazy_df = lazy_df.with_columns(
-                    pl.col('high').rolling_max(window_size=window, min_periods=1).alias(f'high_n_{window}'),
-                    pl.col('low').rolling_min(window_size=window, min_periods=1).alias(f'low_n_{window}')
-                )
-                lazy_df = lazy_df.with_columns(
-                    ((pl.col('close') - pl.col(f'low_n_{window}')) / 
-                     (pl.col(f'high_n_{window}') - pl.col(f'low_n_{window}')) * 100).alias(f'rsv_{window}')
-                )
-                lazy_df = lazy_df.with_columns(
-                    pl.col(f'rsv_{window}').rolling_mean(window_size=3, min_periods=1).alias(f'k{window}')
-                )
-                lazy_df = lazy_df.with_columns(
-                    pl.col(f'k{window}').rolling_mean(window_size=3, min_periods=1).alias(f'd{window}')
-                )
-                lazy_df = lazy_df.with_columns(
-                    (3 * pl.col(f'k{window}') - 2 * pl.col(f'd{window}')).alias(f'j{window}')
-                )
-                # 添加默认列名
-                if window == 14:
-                    lazy_df = lazy_df.with_columns(
-                        pl.col(f'k{window}').alias('k'),
-                        pl.col(f'd{window}').alias('d'),
-                        pl.col(f'j{window}').alias('j')
-                    )
-                # 清理临时列
-                lazy_df = lazy_df.drop([f'high_n_{window}', f'low_n_{window}', f'rsv_{window}'])
-            
+            lazy_df = calculate_kdj_polars(lazy_df, kdj_windows)
             self.calculated_indicators['kdj'].update(kdj_windows)
             indicators_updated = True
         
         # 批量计算WR指标
         wr_windows = [w for w in indicator_tasks['wr']['windows'] if w not in self.calculated_indicators['wr']]
         if wr_windows:
-            for window in wr_windows:
-                # 使用Lazy API计算WR指标
-                lazy_df = lazy_df.with_columns(
-                    pl.col('high').rolling_max(window_size=window, min_periods=1).alias(f'high_n_{window}'),
-                    pl.col('low').rolling_min(window_size=window, min_periods=1).alias(f'low_n_{window}')
-                )
-                lazy_df = lazy_df.with_columns(
-                    ((pl.col(f'high_n_{window}') - pl.col('close')) / 
-                     (pl.col(f'high_n_{window}') - pl.col(f'low_n_{window}')) * 100).alias(f'wr{window}')
-                )
-                # 清理临时列
-                lazy_df = lazy_df.drop([f'high_n_{window}', f'low_n_{window}'])
-            
-            # 添加默认列名
-            if 10 in wr_windows:
-                lazy_df = lazy_df.with_columns(
-                    pl.col('wr10').alias('wr'),
-                    pl.col('wr10').alias('wr1')
-                )
-            if 6 in wr_windows:
-                lazy_df = lazy_df.with_columns(
-                    pl.col('wr6').alias('wr2')
-                )
-            
+            lazy_df = calculate_wr_polars(lazy_df, wr_windows)
             self.calculated_indicators['wr'].update(wr_windows)
             indicators_updated = True
         
         # 批量计算RSI指标
         rsi_windows = [w for w in indicator_tasks['rsi']['windows'] if w not in self.calculated_indicators['rsi']]
         if rsi_windows:
-            # 计算RSI指标，分步骤进行
-            lazy_df = lazy_df.with_columns(
-                pl.col('close').diff().alias('price_change')
-            )
-            lazy_df = lazy_df.with_columns(
-                pl.when(pl.col('price_change') > 0).then(pl.col('price_change')).otherwise(0).alias('gain'),
-                pl.when(pl.col('price_change') < 0).then(-pl.col('price_change')).otherwise(0).alias('loss')
-            )
-            for window in rsi_windows:
-                lazy_df = lazy_df.with_columns(
-                    pl.col('gain').ewm_mean(span=window).alias(f'avg_gain_{window}'),
-                    pl.col('loss').ewm_mean(span=window).alias(f'avg_loss_{window}')
-                )
-                lazy_df = lazy_df.with_columns(
-                    pl.when(pl.col(f'avg_loss_{window}') == 0)
-                    .then(100.0)
-                    .otherwise(100.0 - (100.0 / (1.0 + (pl.col(f'avg_gain_{window}') / pl.col(f'avg_loss_{window}')))))
-                    .alias(f'rsi{window}')
-                )
-                # 清理临时列
-                lazy_df = lazy_df.drop([f'avg_gain_{window}', f'avg_loss_{window}'])
-            
-            # 清理RSI的临时列
-            lazy_df = lazy_df.drop(['price_change', 'gain', 'loss'])
-            
+            lazy_df = calculate_rsi_polars(lazy_df, rsi_windows)
             self.calculated_indicators['rsi'].update(rsi_windows)
             indicators_updated = True
         
@@ -982,7 +892,8 @@ class TechnicalAnalyzer:
                     # 直接调用插件计算，不传递parallel参数（由Polars内部处理）
                     self.calculate_plugin_indicator(plugin_name)
                 except Exception as e:
-                    logger.error(f"计算插件指标{plugin_name}时发生错误: {e}")
+                    logger.error("计算插件指标" + plugin_name + "时发生错误: " + str(e))
         
         # 返回转换后的Pandas DataFrame，只有在必要时才转换
         return self._ensure_pandas_df()
+
