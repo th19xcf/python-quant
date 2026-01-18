@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # 内部模块导入
 from src.utils.config import Config
 from src.utils.logger import setup_logger
-from src.utils.event_bus import publish
+from src.utils.event_bus import publish, EventType
 from src.database.db_manager import DatabaseManager
 from src.data.data_manager import DataManager
 from src.plugin.plugin_manager import PluginManager
@@ -112,7 +112,7 @@ def main():
         main_window.showMaximized()
         
         # 发布系统初始化完成事件
-        publish('system_init', app=app, config=config, data_manager=data_manager)
+        publish(EventType.SYSTEM_INIT, app=app, config=config, data_manager=data_manager)
         logger.info("中国股市量化分析系统启动成功")
         
         # 运行主循环
@@ -123,7 +123,7 @@ def main():
         sys.exit(1)
     finally:
         # 发布系统关闭事件
-        publish('system_shutdown')
+        publish(EventType.SYSTEM_SHUTDOWN)
         
         # 清理资源
         try:

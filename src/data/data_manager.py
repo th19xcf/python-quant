@@ -124,7 +124,8 @@ class DataManager(IDataProvider, IDataProcessor):
             status: 更新状态，success或error
             message: 附加消息
         """
-        EventBus.publish(
+        from src.utils.event_bus import publish
+        publish(
             'data_updated' if status == 'success' else 'data_error',
             data_type=data_type,
             ts_code=ts_code,

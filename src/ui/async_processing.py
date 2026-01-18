@@ -12,6 +12,7 @@ import struct
 from datetime import datetime
 from pathlib import Path
 from loguru import logger
+from src.utils.event_bus import publish, EventType
 
 
 class DataReadThread(QThread):
@@ -115,6 +116,15 @@ class DataReadThread(QThread):
             # 发送数据读取完成信号
             self.data_read_completed.emit(df, self.name, self.code)
             
+            # 发布数据读取完成事件到事件总线
+            publish(
+                EventType.DATA_UPDATED,
+                data_type='stock',
+                ts_code=self.code,
+                data=df,
+                name=self.name
+            )
+            
         except Exception as e:
             error_msg = f"处理股票数据失败: {str(e)}"
             logger.exception(error_msg)
@@ -171,6 +181,14 @@ class IndicatorCalculateThread(QThread):
             
             # 发送指标计算完成信号
             self.indicator_calculated.emit(result_df)
+            
+            # 发布指标计算完成事件到事件总线
+            publish(
+                EventType.INDICATOR_CALCULATED,
+                data_type='stock',
+                data=result_df,
+                success=True
+            )
             
         except Exception as e:
             error_msg = f"计算技术指标失败: {str(e)}"

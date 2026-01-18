@@ -143,7 +143,8 @@ class PluginBase(ABC):
         self.config.update(config)
         
         # 发布配置变更事件
-        EventBus.publish('plugin_config_changed', 
+        from src.utils.event_bus import publish
+        publish('plugin_config_changed', 
                        plugin_name=self.get_name(),
                        old_config=old_config,
                        new_config=self.config)
@@ -198,7 +199,8 @@ class PluginBase(ABC):
         self.config = merged_config
         
         # 发布配置变更事件
-        EventBus.publish('plugin_config_reloaded', 
+        from src.utils.event_bus import publish
+        publish('plugin_config_reloaded', 
                        plugin_name=self.get_name(),
                        config=self.config)
     
@@ -380,7 +382,8 @@ class PluginBase(ABC):
             }
         }
         
-        EventBus.publish('plugin_message', message=message)
+        from src.utils.event_bus import publish
+        publish('plugin_message', message=message)
         return message_id
     
     def broadcast_message(self, message_type: str, data: Any, priority: int = 0) -> str:
@@ -428,7 +431,8 @@ class PluginBase(ABC):
                 event.set()
         
         # 订阅响应
-        subscription = EventBus.subscribe('plugin_response', on_response)
+        from src.utils.event_bus import subscribe
+        subscription = subscribe('plugin_response', on_response)
         
         try:
             # 发送请求
@@ -450,7 +454,8 @@ class PluginBase(ABC):
                 }
             }
             
-            EventBus.publish('plugin_request', message=request)
+            from src.utils.event_bus import publish
+            publish('plugin_request', message=request)
             
             # 等待响应
             if not event.wait(timeout):
@@ -462,7 +467,8 @@ class PluginBase(ABC):
             return result
         finally:
             # 取消订阅
-            EventBus.unsubscribe('plugin_response', on_response)
+            from src.utils.event_bus import unsubscribe
+            unsubscribe('plugin_response', on_response)
     
     def send_async_request(self, recipient: str, method: str, params: Dict[str, Any], callback: callable = None) -> str:
         """
@@ -488,11 +494,13 @@ class PluginBase(ABC):
                     threading.Thread(target=callback, args=(result, error)).start()
         
         # 订阅响应
-        subscription = EventBus.subscribe('plugin_response', on_response)
+        from src.utils.event_bus import subscribe
+        subscription = subscribe('plugin_response', on_response)
         
         # 设置自动取消订阅的定时器
         def unsubscribe_timer():
-            EventBus.unsubscribe('plugin_response', on_response)
+            from src.utils.event_bus import unsubscribe
+            unsubscribe('plugin_response', on_response)
         
         threading.Timer(30, unsubscribe_timer).start()
         
@@ -515,7 +523,8 @@ class PluginBase(ABC):
             }
         }
         
-        EventBus.publish('plugin_request', message=request)
+        from src.utils.event_bus import publish
+        publish('plugin_request', message=request)
         return request_id
     
     def publish_event(self, event_name: str, data: Any) -> str:
@@ -542,7 +551,8 @@ class PluginBase(ABC):
             }
         }
         
-        EventBus.publish('plugin_event', message=event)
+        from src.utils.event_bus import publish
+        publish('plugin_event', message=event)
         return event_id
     
     def subscribe_event(self, event_name: str, handler: callable, sender: str = None) -> Any:
@@ -563,7 +573,8 @@ class PluginBase(ABC):
                 if sender is None or message['sender'] == sender:
                     handler(message)
         
-        return EventBus.subscribe('plugin_event', event_filter)
+        from src.utils.event_bus import subscribe
+        return subscribe('plugin_event', event_filter)
     
     def unsubscribe_event(self, event_name: str, handler: callable) -> bool:
         """

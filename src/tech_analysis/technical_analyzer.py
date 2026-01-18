@@ -14,6 +14,7 @@ from loguru import logger
 
 # 内部模块导入
 from src.api.business_api import ITechnicalAnalyzer
+from src.utils.event_bus import publish, subscribe, EventType
 from .indicator_calculator import (
     calculate_ma_polars,
     calculate_vol_ma_polars,
@@ -940,6 +941,15 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 except Exception as e:
                     logger.error(f"计算插件指标{plugin_name}时发生错误: {str(e)}")
         
+        # 5. 发布指标计算完成事件
+        publish(
+            EventType.INDICATOR_CALCULATED,
+            data_type='stock',
+            indicators=indicator_types,
+            calculated_indicators=self.calculated_indicators.copy(),
+            success=True
+        )
+
         # 返回结果，根据参数决定返回类型
         return_polars = params.get('return_polars', False)
         return self.pl_df if return_polars else self._ensure_pandas_df()
