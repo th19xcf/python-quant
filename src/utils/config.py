@@ -6,7 +6,7 @@
 """
 
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, ConfigDict
 from typing import Optional, Dict, Any
 
 
@@ -65,12 +65,12 @@ class PluginSettings(BaseSettings):
     version: Optional[str] = Field(default=None, description="插件版本")
     config: Dict[str, Any] = Field(default_factory=dict, description="插件特定配置")
     
-    class Config:
-        """Pydantic配置"""
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        env_nested_delimiter = "__"
-        case_sensitive = False
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+        case_sensitive=False
+    )
 
 
 class PluginsSettings(BaseSettings):
@@ -78,13 +78,13 @@ class PluginsSettings(BaseSettings):
     # 使用字典存储各个插件的配置
     plugins: Dict[str, PluginSettings] = Field(default_factory=dict, description="插件配置字典")
     
-    class Config:
-        """Pydantic配置"""
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        env_nested_delimiter = "__"
-        case_sensitive = False
-        extra = 'ignore'  # 允许忽略额外的输入
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+        case_sensitive=False,
+        extra='ignore'  # 允许忽略额外的输入
+    )
 
 
 class Config(BaseSettings):
@@ -95,12 +95,12 @@ class Config(BaseSettings):
     log: LogSettings = Field(default_factory=LogSettings)
     plugins: PluginsSettings = Field(default_factory=PluginsSettings)
     
-    class Config:
-        """Pydantic配置"""
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        env_nested_delimiter = "__"
-        case_sensitive = False
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+        case_sensitive=False
+    )
 
 
 # 调用 model_rebuild() 来确保所有类型都已完全定义
