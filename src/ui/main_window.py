@@ -1936,83 +1936,127 @@ class MainWindow(QMainWindow):
                 tdx_code = f'sz{code}'
                 ts_code = f'{code}.SZ'
             
-            # 从通达信数据文件读取历史数据
-            from pathlib import Path
-            import struct
-            from datetime import datetime
-            import polars as pl
-            import numpy as np
-            import pyqtgraph as pg
-            
             # 构建通达信日线数据文件路径
+            from pathlib import Path
             tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
             tdx_file_path = tdx_data_path / market / 'lday' / f'{tdx_code}.day'
             
-            if not tdx_file_path.exists():
-                logger.warning(f"找不到股票数据文件: {tdx_file_path}")
-                self.statusBar().showMessage(f"找不到股票数据文件: {tdx_file_path}", 5000)
-                return
-            
-            logger.info(f"正在读取股票数据文件: {tdx_file_path}")
-            
-            # 读取并解析通达信日线数据文件
-            data = []
-            with open(tdx_file_path, 'rb') as f:
-                # 获取文件大小
-                f.seek(0, 2)
-                file_size = f.tell()
-                f.seek(0)
-                
-                # 计算数据条数
-                record_count = file_size // 32
-                if record_count == 0:
-                    logger.warning(f"股票数据文件为空: {tdx_file_path}")
-                    self.statusBar().showMessage(f"股票数据文件为空: {tdx_file_path}", 5000)
-                    return
-                
-                # 读取所有记录
-                for i in range(record_count):
-                    record = f.read(32)
-                    if len(record) < 32:
-                        break
-                    
-                    # 解析记录
-                    date_int = struct.unpack('I', record[0:4])[0]  # 日期，格式：YYYYMMDD
-                    open_val = struct.unpack('I', record[4:8])[0] / 100  # 开盘价，转换为元
-                    high_val = struct.unpack('I', record[8:12])[0] / 100  # 最高价，转换为元
-                    low_val = struct.unpack('I', record[12:16])[0] / 100  # 最低价，转换为元
-                    close_val = struct.unpack('I', record[16:20])[0] / 100  # 收盘价，转换为元
-                    volume = struct.unpack('I', record[20:24])[0]  # 成交量，单位：手
-                    amount = struct.unpack('I', record[24:28])[0] / 100  # 成交额，转换为元
-                    
-                    # 转换日期格式
-                    date_str = str(date_int)
-                    date = datetime.strptime(date_str, '%Y%m%d').date()
-                    
-                    # 添加到数据列表
-                    data.append({
-                        'date': date,
-                        'open': open_val,
-                        'high': high_val,
-                        'low': low_val,
-                        'close': close_val,
-                        'volume': volume,
-                        'amount': amount
-                    })
-            
-            # 将数据转换为Polars DataFrame
-            df = pl.DataFrame(data)
-            logger.info(f"读取到{len(df)}条历史数据")
+            # 显示加载状态
+            self.statusBar().showMessage(f"正在加载 {name}({code}) 数据...", 0)
             
             # 切换到技术分析标签页
             self.tab_widget.setCurrentIndex(1)
             
-            # 绘制K线图
-            self.plot_k_line(df, name, code)
+            # 创建数据读取线程
+            from src.ui.async_processing import DataReadThread
+            self.data_read_thread = DataReadThread(str(tdx_file_path), name, code)
+            
+            # 连接信号槽
+            self.data_read_thread.data_read_completed.connect(self.on_data_read_completed)
+            self.data_read_thread.data_read_error.connect(self.on_data_read_error)
+            self.data_read_thread.data_read_progress.connect(self.on_data_read_progress)
+            
+            # 启动线程
+            self.data_read_thread.start()
             
         except Exception as e:
             logger.exception(f"处理股票双击事件失败: {e}")
             self.statusBar().showMessage(f"处理股票双击事件失败: {str(e)[:50]}...", 5000)
+    def on_data_read_completed(self, df, name, code):
+        """
+        数据读取完成信号处理
+        
+        Args:
+            df: 读取到的股票数据
+            name: 股票名称
+            code: 股票代码
+        """
+        try:
+            logger.info(f"数据读取完成，开始计算技术指标: {name}({code})")
+            
+            # 更新状态栏
+            self.statusBar().showMessage(f"正在计算 {name}({code}) 技术指标...", 0)
+            
+            # 创建指标计算线程
+            from src.ui.async_processing import IndicatorCalculateThread
+            self.indicator_calculate_thread = IndicatorCalculateThread(df)
+            
+            # 连接信号槽
+            self.indicator_calculate_thread.indicator_calculated.connect(lambda result_df: self.on_indicator_calculated(result_df, name, code))
+            self.indicator_calculate_thread.indicator_calculate_error.connect(self.on_indicator_calculate_error)
+            self.indicator_calculate_thread.indicator_calculate_progress.connect(self.on_indicator_calculate_progress)
+            
+            # 启动线程
+            self.indicator_calculate_thread.start()
+            
+        except Exception as e:
+            logger.exception(f"处理数据读取完成信号失败: {e}")
+            self.statusBar().showMessage(f"处理数据失败: {str(e)[:50]}...", 5000)
+    
+    def on_data_read_error(self, error_msg):
+        """
+        数据读取错误信号处理
+        
+        Args:
+            error_msg: 错误信息
+        """
+        logger.error(f"数据读取错误: {error_msg}")
+        self.statusBar().showMessage(error_msg, 5000)
+    
+    def on_data_read_progress(self, progress, total):
+        """
+        数据读取进度信号处理
+        
+        Args:
+            progress: 当前进度（百分比）
+            total: 总记录数
+        """
+        logger.debug(f"数据读取进度: {progress}%，共{total}条记录")
+    
+    def on_indicator_calculated(self, df, name, code):
+        """
+        指标计算完成信号处理
+        
+        Args:
+            df: 计算了指标的股票数据
+            name: 股票名称
+            code: 股票代码
+        """
+        try:
+            logger.info(f"指标计算完成，开始绘制图表: {name}({code})")
+            
+            # 更新状态栏
+            self.statusBar().showMessage(f"正在绘制 {name}({code}) 图表...", 0)
+            
+            # 绘制K线图
+            self.plot_k_line(df, name, code)
+            
+            # 更新状态栏
+            self.statusBar().showMessage(f"{name}({code}) 图表绘制完成", 5000)
+            
+        except Exception as e:
+            logger.exception(f"处理指标计算完成信号失败: {e}")
+            self.statusBar().showMessage(f"绘制图表失败: {str(e)[:50]}...", 5000)
+    
+    def on_indicator_calculate_error(self, error_msg):
+        """
+        指标计算错误信号处理
+        
+        Args:
+            error_msg: 错误信息
+        """
+        logger.error(f"指标计算错误: {error_msg}")
+        self.statusBar().showMessage(error_msg, 5000)
+    
+    def on_indicator_calculate_progress(self, progress, total):
+        """
+        指标计算进度信号处理
+        
+        Args:
+            progress: 当前进度（百分比）
+            total: 总计算步骤数
+        """
+        logger.debug(f"指标计算进度: {progress}%，共{total}个步骤")
     
     def _setup_chart_labels(self, stock_name, stock_code):
         """
@@ -2690,35 +2734,21 @@ class MainWindow(QMainWindow):
             # 不再创建新的on_plot_clicked函数，避免覆盖之前的连接
             logger.info("已使用现有的on_kline_clicked方法处理点击事件，包括取消均线选中状态")
             
-            # 计算并绘制技术指标
+            # 处理技术指标绘制
             try:
                 import polars as pl
                 import numpy as np
                 import ta
                 
-                logger.info("开始计算技术指标")
-                
-                # 使用TechnicalAnalyzer类计算技术指标
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                logger.info("开始处理技术指标绘制")
                 
                 # 只取显示数量的数据
                 if hasattr(df, 'tail'):
-                    df_display = df.tail(bar_count)
+                    df_pl = df.tail(bar_count)
                 else:
-                    df_display = df
+                    df_pl = df
                 
-                # 转换为Pandas DataFrame，确保使用正确的方法
-                # 创建TechnicalAnalyzer实例，自动处理数据转换和类型检查
-                logger.info("创建TechnicalAnalyzer实例")
-                analyzer = TechnicalAnalyzer(df_display)
-                
-                # 一次性计算所有指标，利用并行计算提高效率
-                logger.info("计算所有技术指标")
-                analyzer.calculate_all_indicators(parallel=True)
-                
-
-                df_pl = analyzer.get_data(return_polars=True)
-                logger.info(f"使用TechnicalAnalyzer计算指标完成，DataFrame形状: {df_pl.shape}")
+                logger.info(f"准备绘制图表，DataFrame形状: {df_pl.shape}")
                 
                 # 确保数据索引正确
                 
