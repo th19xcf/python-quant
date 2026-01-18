@@ -1,6 +1,6 @@
 # 数据处理
 pandas>=2.2.3
-polars>=0.20.2
+polars>=1.36.1
 numpy>=1.26.4
 
 # 数据获取
@@ -8,7 +8,6 @@ akshare>=1.11.1
 requests>=2.32.3
 aiohttp>=3.10.5
 beautifulsoup4>=4.12.3
-baostock>=0.8.9
 
 # 技术分析
 ta>=0.10.2
@@ -34,14 +33,12 @@ transformers>=4.44.2
 # 配置管理
 pydantic>=2.9.2
 pydantic-settings>=2.5.2
-python-dotenv>=1.0.0
+
+# 事件总线
+blinker>=1.7.0
 
 # 日志管理
 loguru>=0.7.2
-
-# 工具依赖
-packaging>=23.0
-pyarrow>=15.0.0
 
 # 开发与测试
 pytest>=8.3.3

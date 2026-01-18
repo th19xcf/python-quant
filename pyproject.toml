@@ -9,7 +9,7 @@ readme = "README.md"
 python = "^3.13"
 # 数据处理
 pandas = "^2.2.3"
-polars = "^0.20.2"
+polars = "^1.36.1"
 numpy = "^1.26.4"
 # 数据获取
 akshare = "^1.11.1"
