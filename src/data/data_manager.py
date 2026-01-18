@@ -6,13 +6,17 @@
 """
 
 from loguru import logger
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Union
+import polars as pl
+import pandas as pd
+from src.api.data_api import IDataProvider, IDataProcessor
 from src.utils.event_bus import EventBus
 
 
-class DataManager:
+class DataManager(IDataProvider, IDataProcessor):
     """
     数据管理器，负责统一管理各种数据源的获取、清洗和存储
+    实现了IDataProvider和IDataProcessor接口
     """
     
     def __init__(self, config, db_manager, plugin_manager=None):
@@ -419,72 +423,76 @@ class DataManager:
             logger.exception(f"获取{type_name}数据失败: {e}")
             raise
     
-    def get_stock_data(self, ts_code: str, start_date: str, end_date: str, freq: str = "daily", return_polars: bool = True):
+    def get_stock_data(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d') -> Union[pl.DataFrame, pd.DataFrame]:
         """
-        获取股票数据
+        获取股票历史数据
         
         Args:
-            ts_code: 股票代码
-            start_date: 开始日期
-            end_date: 结束日期
-            freq: 周期，daily或minute
-            return_polars: 是否返回Polars DataFrame，默认为True
-            
+            stock_code: 股票代码
+            start_date: 开始日期，格式：YYYY-MM-DD
+            end_date: 结束日期，格式：YYYY-MM-DD
+            frequency: 数据频率，默认：1d（日线）
+        
         Returns:
-            pl.DataFrame or pd.DataFrame: 股票数据
+            pl.DataFrame或pd.DataFrame: 股票历史数据
         """
-        result = self._get_data_from_sources("stock", ts_code, start_date, end_date, freq)
-        if return_polars:
-            return result
-        else:
-            import pandas as pd
-            return result.to_pandas()
+        freq_map = {'1d': 'daily', '1m': 'minute'}
+        freq = freq_map.get(frequency, 'daily')
+        result = self._get_data_from_sources("stock", stock_code, start_date, end_date, freq)
+        return result
     
-    def get_index_data(self, ts_code: str, start_date: str, end_date: str, freq: str = "daily", return_polars: bool = True):
+    def get_index_data(self, index_code: str, start_date: str, end_date: str, frequency: str = '1d') -> Union[pl.DataFrame, pd.DataFrame]:
         """
-        获取指数数据
+        获取指数历史数据
         
         Args:
-            ts_code: 指数代码
-            start_date: 开始日期
-            end_date: 结束日期
-            freq: 周期，daily或minute
-            return_polars: 是否返回Polars DataFrame，默认为True
-            
+            index_code: 指数代码
+            start_date: 开始日期，格式：YYYY-MM-DD
+            end_date: 结束日期，格式：YYYY-MM-DD
+            frequency: 数据频率，默认：1d（日线）
+        
         Returns:
-            pl.DataFrame or pd.DataFrame: 指数数据
+            pl.DataFrame或pd.DataFrame: 指数历史数据
         """
-        result = self._get_data_from_sources("index", ts_code, start_date, end_date, freq)
-        if return_polars:
-            return result
-        else:
-            import pandas as pd
-            return result.to_pandas()
+        freq_map = {'1d': 'daily', '1m': 'minute'}
+        freq = freq_map.get(frequency, 'daily')
+        result = self._get_data_from_sources("index", index_code, start_date, end_date, freq)
+        return result
     
-    def get_stock_basic(self, ts_code: str = None):
+    def get_stock_basic(self, exchange: Optional[str] = None) -> Union[pl.DataFrame, pd.DataFrame]:
         """
         获取股票基本信息
         
         Args:
-            ts_code: 股票代码，None表示获取所有股票基本信息
-            
+            exchange: 交易所，可选值：'sh'（上海）、'sz'（深圳）、'bj'（北京）
+        
         Returns:
-            dict: 股票代码到名称的映射
+            pl.DataFrame或pd.DataFrame: 股票基本信息
         """
         try:
             if not self.db_manager:
                 logger.warning("数据库连接不可用，无法获取股票基本信息")
-                return {}
+                return pl.DataFrame()
             
             from src.database.models.stock import StockBasic
             
             session = self.db_manager.get_session()
             if not session:
-                return {}
+                return pl.DataFrame()
             
             try:
                 # 检查stock_basic表是否有数据
                 query = session.query(StockBasic)
+                
+                # 根据交易所筛选
+                if exchange:
+                    if exchange == 'sh':
+                        query = query.filter(StockBasic.ts_code.like('%.SH'))
+                    elif exchange == 'sz':
+                        query = query.filter(StockBasic.ts_code.like('%.SZ'))
+                    elif exchange == 'bj':
+                        query = query.filter(StockBasic.ts_code.like('%.BJ'))
+                
                 stock_basics = query.all()
                 
                 # 如果没有数据，插入默认股票信息
@@ -509,41 +517,183 @@ class DataManager:
                     # 提交事务
                     session.commit()
                     # 重新查询数据
-                    stock_basics = session.query(StockBasic).all()
+                    stock_basics = query.all()
                 
-                # 构建股票代码到名称的映射
-                stock_map = {}
-                for stock in stock_basics:
-                    stock_map[stock.ts_code] = stock.name
-                
-                # 如果指定了ts_code但没有找到，添加到映射中
-                if ts_code and ts_code not in stock_map:
-                    default_map = {
-                        "600000.SH": "浦发银行",
-                        "000001.SZ": "平安银行",
-                        "300001.SZ": "特锐德"
+                # 构建DataFrame
+                if stock_basics:
+                    data = {
+                        'ts_code': [stock.ts_code for stock in stock_basics],
+                        'name': [stock.name for stock in stock_basics]
                     }
-                    if ts_code in default_map:
-                        stock_map[ts_code] = default_map[ts_code]
-                
-                return stock_map
+                    return pl.DataFrame(data)
+                else:
+                    return pl.DataFrame()
             except Exception as query_e:
-                # 如果查询失败，可能是表不存在，使用默认映射
+                # 如果查询失败，可能是表不存在，返回空DataFrame
                 logger.warning(f"股票基本信息查询失败: {query_e}")
-                # 返回默认映射，使用代码作为名称
-                default_map = {
-                    "600000.SH": "浦发银行",
-                    "000001.SZ": "平安银行",
-                    "300001.SZ": "特锐德"
-                }
-                return default_map
+                return pl.DataFrame()
             
         except Exception as e:
             logger.exception(f"获取股票基本信息失败: {e}")
-            # 返回默认映射，使用代码作为名称
-            default_map = {
-                "600000.SH": "浦发银行",
-                "000001.SZ": "平安银行",
-                "300001.SZ": "特锐德"
-            }
-            return default_map
+            return pl.DataFrame()
+    
+    def get_index_basic(self, exchange: Optional[str] = None) -> Union[pl.DataFrame, pd.DataFrame]:
+        """
+        获取指数基本信息
+        
+        Args:
+            exchange: 交易所，可选值：'sh'（上海）、'sz'（深圳）
+        
+        Returns:
+            pl.DataFrame或pd.DataFrame: 指数基本信息
+        """
+        try:
+            if not self.db_manager:
+                logger.warning("数据库连接不可用，无法获取指数基本信息")
+                return pl.DataFrame()
+            
+            from src.database.models.index import IndexBasic
+            
+            session = self.db_manager.get_session()
+            if not session:
+                return pl.DataFrame()
+            
+            try:
+                # 检查index_basic表是否有数据
+                query = session.query(IndexBasic)
+                
+                # 根据交易所筛选
+                if exchange:
+                    if exchange == 'sh':
+                        query = query.filter(IndexBasic.ts_code.like('%.SH'))
+                    elif exchange == 'sz':
+                        query = query.filter(IndexBasic.ts_code.like('%.SZ'))
+                
+                index_basics = query.all()
+                
+                # 构建DataFrame
+                if index_basics:
+                    data = {
+                        'ts_code': [index.ts_code for index in index_basics],
+                        'name': [index.name for index in index_basics]
+                    }
+                    return pl.DataFrame(data)
+                else:
+                    return pl.DataFrame()
+            except Exception as query_e:
+                # 如果查询失败，可能是表不存在，返回空DataFrame
+                logger.warning(f"指数基本信息查询失败: {query_e}")
+                return pl.DataFrame()
+            
+        except Exception as e:
+            logger.exception(f"获取指数基本信息失败: {e}")
+            return pl.DataFrame()
+    
+    def preprocess_data(self, data: Union[pl.DataFrame, pd.DataFrame]) -> Union[pl.DataFrame, pd.DataFrame]:
+        """
+        预处理数据
+        
+        Args:
+            data: 原始数据
+        
+        Returns:
+            pl.DataFrame或pd.DataFrame: 预处理后的数据
+        """
+        if isinstance(data, pd.DataFrame):
+            data = pl.from_pandas(data)
+        
+        # 确保数据包含必要的列
+        required_columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount']
+        
+        if not all(col in data.columns for col in required_columns):
+            logger.warning(f"数据缺少必要列，当前列: {data.columns}")
+            return data
+        
+        # 排序数据
+        if 'date' in data.columns:
+            data = data.sort('date')
+        
+        # 去除重复数据
+        data = data.unique(subset=['date'])
+        
+        return data
+    
+    def sample_data(self, data: Union[pl.DataFrame, pd.DataFrame], target_points: int = 1000, strategy: str = 'adaptive') -> Union[pl.DataFrame, pd.DataFrame]:
+        """
+        采样数据，减少数据量
+        
+        Args:
+            data: 原始数据
+            target_points: 目标采样点数
+            strategy: 采样策略，可选值：'uniform'（均匀采样）、'adaptive'（自适应采样）
+        
+        Returns:
+            pl.DataFrame或pd.DataFrame: 采样后的数据
+        """
+        if isinstance(data, pd.DataFrame):
+            data = pl.from_pandas(data)
+        
+        if len(data) <= target_points:
+            return data
+        
+        if strategy == 'uniform':
+            # 均匀采样
+            step = len(data) // target_points
+            return data[::step]
+        elif strategy == 'adaptive':
+            # 自适应采样 - 这里使用简单的均匀采样作为默认实现
+            # 实际自适应采样可以根据数据波动率进行调整
+            step = len(data) // target_points
+            return data[::step]
+        else:
+            logger.warning(f"不支持的采样策略: {strategy}，使用默认均匀采样")
+            step = len(data) // target_points
+            return data[::step]
+    
+    def convert_data_type(self, data: Union[pl.DataFrame, pd.DataFrame], target_type: str = 'float32') -> Union[pl.DataFrame, pd.DataFrame]:
+        """
+        转换数据类型
+        
+        Args:
+            data: 原始数据
+            target_type: 目标数据类型，默认：float32
+        
+        Returns:
+            pl.DataFrame或pd.DataFrame: 转换后的数据
+        """
+        if isinstance(data, pd.DataFrame):
+            data = pl.from_pandas(data)
+        
+        # 转换数值列的数据类型
+        numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
+        
+        for col in data.columns:
+            if col in numeric_columns:
+                if target_type == 'float32':
+                    data = data.with_columns(pl.col(col).cast(pl.Float32))
+                elif target_type == 'float64':
+                    data = data.with_columns(pl.col(col).cast(pl.Float64))
+        
+        return data
+    
+    def clean_data(self, data: Union[pl.DataFrame, pd.DataFrame]) -> Union[pl.DataFrame, pd.DataFrame]:
+        """
+        清洗数据，处理缺失值、异常值等
+        
+        Args:
+            data: 原始数据
+        
+        Returns:
+            pl.DataFrame或pd.DataFrame: 清洗后的数据
+        """
+        if isinstance(data, pd.DataFrame):
+            data = pl.from_pandas(data)
+        
+        # 去除包含空值的行
+        data = data.drop_nulls()
+        
+        # 去除成交量为0的行
+        if 'volume' in data.columns:
+            data = data.filter(pl.col('volume') > 0)
+        
+        return data

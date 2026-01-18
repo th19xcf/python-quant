@@ -162,7 +162,7 @@ class IndicatorCalculateThread(QThread):
             analyzer = TechnicalAnalyzer(self.df)
             
             # 计算所有技术指标
-            analyzer.calculate_all_indicators(parallel=True)
+            analyzer.calculate_all_indicators(self.df, parallel=True)
             
             # 获取计算结果
             result_df = analyzer.get_data(return_polars=True)

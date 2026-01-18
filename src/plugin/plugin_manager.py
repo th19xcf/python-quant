@@ -16,7 +16,7 @@ from src.plugin.plugin_base import PluginBase
 from src.plugin.plugin_registry import PluginRegistry, global_registry
 from src.utils.config import Config
 from src.utils.plugin_config_manager import get_plugin_config_manager
-from src.utils.event_bus import EventBus
+from src.utils.event_bus import subscribe, unsubscribe, publish
 
 
 class PluginManager:
@@ -53,8 +53,8 @@ class PluginManager:
         self._plugin_initialization_order = []
         
         # 订阅配置变更事件
-        EventBus.subscribe('plugin_config_changed', self._on_plugin_config_changed)
-        EventBus.subscribe('plugin_config_reloaded', self._on_plugin_config_reloaded)
+        subscribe('plugin_config_changed', self._on_plugin_config_changed)
+        subscribe('plugin_config_reloaded', self._on_plugin_config_reloaded)
     
     def _get_plugin_dirs(self) -> List[str]:
         """

@@ -24,8 +24,9 @@ from PySide6.QtGui import QAction, QActionGroup, QIcon, QFont, QColor
 warnings.simplefilter("ignore", RuntimeWarning)
 
 from src.utils.logger import logger
-from src.utils.event_bus import EventBus
+from src.utils.event_bus import subscribe
 from src.ui.chart_items import CandleStickItem
+from src.api.presentation_api import IView, IController
 
 
 def event_handler(event_type):
@@ -53,9 +54,10 @@ def event_handler(event_type):
     return decorator
 
 
-class MainWindow(QMainWindow):
+class MainWindow(QMainWindow, IView, IController):
     """
     主窗口类，参考通达信软件界面设计
+    实现了IView和IController接口
     """
     
     def __init__(self, config, data_manager, plugin_manager=None):
@@ -95,20 +97,141 @@ class MainWindow(QMainWindow):
         self.refresh_stock_data()
         self.refresh_market_info()
     
+    def update_chart(self, data, indicators=None, **params):
+        """
+        更新图表数据
+        
+        Args:
+            data: 图表数据
+            indicators: 指标列表
+            **params: 图表更新参数
+        """
+        logger.info(f"更新图表数据，指标列表: {indicators}")
+        # 这里可以添加图表更新逻辑，目前通过异步处理来更新图表
+        
+    def show_message(self, message, message_type='info', title=None):
+        """
+        显示消息
+        
+        Args:
+            message: 消息内容
+            message_type: 消息类型，可选值：'info'（信息）、'warning'（警告）、'error'（错误）、'success'（成功）
+            title: 消息标题
+        """
+        logger.info(f"显示{message_type}消息: {message}")
+        # 这里可以添加消息显示逻辑，例如使用QMessageBox
+        
+    def update_progress(self, progress, message=None):
+        """
+        更新进度
+        
+        Args:
+            progress: 进度值（0-100）
+            message: 进度消息
+        """
+        logger.info(f"更新进度: {progress}%，消息: {message}")
+        # 这里可以添加进度更新逻辑
+        
+    def clear_progress(self):
+        """
+        清除进度显示"""
+        logger.info("清除进度显示")
+        # 这里可以添加清除进度逻辑
+        
+    def show_loading(self, visible, message=None):
+        """
+        显示或隐藏加载指示器
+        
+        Args:
+            visible: 是否显示加载指示器
+            message: 加载消息
+        """
+        logger.info(f"{ '显示' if visible else '隐藏' }加载指示器，消息: {message}")
+        # 这里可以添加加载指示器显示/隐藏逻辑
+    
+    def on_stock_selected(self, stock_code, **params):
+        """
+        处理股票选择事件
+        
+        Args:
+            stock_code: 选中的股票代码
+            **params: 其他参数
+        """
+        logger.info(f"股票选择事件: {stock_code}")
+        # 这里可以添加股票选择处理逻辑
+        
+    def on_indicator_selected(self, indicator_type, **params):
+        """
+        处理指标选择事件
+        
+        Args:
+            indicator_type: 选中的指标类型
+            **params: 指标参数
+        """
+        logger.info(f"指标选择事件: {indicator_type}")
+        # 这里可以添加指标选择处理逻辑
+    
+    def on_timeframe_changed(self, timeframe):
+        """
+        处理时间周期变化事件
+        
+        Args:
+            timeframe: 新的时间周期
+        """
+        logger.info(f"时间周期变化事件: {timeframe}")
+        # 这里可以添加时间周期变化处理逻辑
+    
+    def on_chart_type_changed(self, chart_type):
+        """
+        处理图表类型变化事件
+        
+        Args:
+            chart_type: 新的图表类型
+        """
+        logger.info(f"图表类型变化事件: {chart_type}")
+        # 这里可以添加图表类型变化处理逻辑
+    
+    def on_signal_clicked(self, signal):
+        """
+        处理信号点击事件
+        
+        Args:
+            signal: 信号数据
+        """
+        logger.info(f"信号点击事件: {signal}")
+        # 这里可以添加信号点击处理逻辑
+    
+    def on_refresh_data(self):
+        """
+        处理刷新数据事件"""
+        logger.info("刷新数据事件")
+        self.refresh_stock_data()
+    
+    def on_backtest_start(self, strategy, **params):
+        """
+        处理回测开始事件
+        
+        Args:
+            strategy: 策略名称
+            **params: 回测参数
+        """
+        logger.info(f"回测开始事件: {strategy}")
+        # 这里可以添加回测开始处理逻辑
+    
     def _subscribe_events(self):
         """
         订阅事件
         """
         # 订阅数据更新事件
-        EventBus.subscribe('data_updated', self._handle_data_updated)
-        EventBus.subscribe('data_error', self._handle_data_error)
+        subscribe('data_updated', self._handle_data_updated)
+        subscribe('data_error', self._handle_data_error)
         
         # 订阅技术指标计算完成事件
-        EventBus.subscribe('indicator_calculated', self._handle_indicator_calculated)
-        EventBus.subscribe('indicator_error', self._handle_indicator_error)
+        subscribe('indicator_calculated', self._handle_indicator_calculated)
+        subscribe('indicator_error', self._handle_indicator_error)
         
         # 订阅系统事件
-        EventBus.subscribe('system_shutdown', self._handle_system_shutdown)
+        subscribe('system_shutdown', self._handle_system_shutdown)
         
         logger.info("主窗口事件订阅完成")
     
