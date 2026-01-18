@@ -180,7 +180,7 @@ def inject(cls: Type[T]) -> Type[T]:
     """
     original_init = cls.__init__
     
-    def __init__(self, **kwargs):
+    def __init__(self, *args, **kwargs):
         # 获取构造函数参数
         import inspect
         sig = inspect.signature(original_init)
@@ -189,23 +189,48 @@ def inject(cls: Type[T]) -> Type[T]:
         # 准备注入的依赖
         injected_kwargs = {}
         
+        # 处理位置参数
+        args_list = list(args)
+        param_keys = list(params.keys())[1:]  # 跳过self
+        
+        # 为位置参数创建映射
+        positional_kwargs = {}
+        for i, key in enumerate(param_keys):
+            if i < len(args_list):
+                positional_kwargs[key] = args_list[i]
+        
         # 检查参数是否需要注入
         for name, param in list(params.items())[1:]:  # 跳过self
+            # 如果参数已经通过位置参数提供，跳过注入
+            if name in positional_kwargs:
+                injected_kwargs[name] = positional_kwargs[name]
+                continue
+                
+            # 如果参数已经通过关键字参数提供，跳过注入
+            if name in kwargs:
+                injected_kwargs[name] = kwargs[name]
+                continue
+            
+            # 尝试注入依赖
             if param.annotation != inspect.Parameter.empty:
                 # 尝试从容器中解析依赖
                 try:
                     injected_kwargs[name] = dependency_injector.resolve(param.annotation)
                 except ValueError:
-                    # 如果容器中没有注册，使用默认值或跳过
+                    # 如果容器中没有注册，使用默认值
                     if param.default != inspect.Parameter.empty:
                         injected_kwargs[name] = param.default
-                    elif name not in kwargs:
-                        raise ValueError(f"无法解析依赖: {param.annotation}")
+                    else:
+                        # 如果没有默认值且不是可选参数，抛出异常
+                        raise ValueError(f"无法解析依赖: {param.annotation}，参数名: {name}")
+            elif param.default != inspect.Parameter.empty:
+                # 如果没有注解但有默认值，使用默认值
+                injected_kwargs[name] = param.default
+            elif name not in kwargs:
+                # 如果没有注解、没有默认值且没有提供值，抛出异常
+                raise ValueError(f"缺少必填参数: {name}")
         
-        # 更新传入的参数
-        injected_kwargs.update(kwargs)
-        
-        # 调用原始构造函数
+        # 调用原始构造函数，只传递关键字参数
         original_init(self, **injected_kwargs)
     
     cls.__init__ = __init__
