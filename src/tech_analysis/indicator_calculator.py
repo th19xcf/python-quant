@@ -279,6 +279,219 @@ def calculate_wr_polars(df, windows=None):
     return calculate_multiple_indicators_polars(df, ['wr'], wr_windows=windows)
 
 
+def calculate_dmi_polars(df, windows=[14]):
+    """
+    使用Polars批量计算DMI指标（趋向指标）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+    
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: DMI计算窗口列表，默认为[14]
+        
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含DMI指标的DataFrame或LazyFrame
+    """
+    if windows is None:
+        windows = [14]  # 通达信默认使用DMI14
+    # 调用批量计算函数，减少代码冗余
+    return calculate_multiple_indicators_polars(df, ['dmi'], dmi_windows=windows)
+
+
+def calculate_cci_polars(df, windows=[14]):
+    """
+    使用Polars批量计算CCI指标（商品通道指标）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+    
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: CCI计算窗口列表，默认为[14]
+        
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含CCI指标的DataFrame或LazyFrame
+    """
+    if windows is None:
+        windows = [14]  # 通达信默认使用CCI14
+    # 调用批量计算函数，减少代码冗余
+    return calculate_multiple_indicators_polars(df, ['cci'], cci_windows=windows)
+
+
+def calculate_roc_polars(df, windows=[12]):
+    """
+    使用Polars批量计算ROC指标（变化率指标）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+    
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: ROC计算窗口列表，默认为[12]
+        
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含ROC指标的DataFrame或LazyFrame
+    """
+    if windows is None:
+        windows = [12]  # 通达信默认使用ROC12
+    # 调用批量计算函数，减少代码冗余
+    return calculate_multiple_indicators_polars(df, ['roc'], roc_windows=windows)
+
+
+def calculate_mtm_polars(df, windows=[12]):
+    """
+    使用Polars批量计算MTM指标（动量指标）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+    
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: MTM计算窗口列表，默认为[12]
+        
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含MTM指标的DataFrame或LazyFrame
+    """
+    if windows is None:
+        windows = [12]  # 通达信默认使用MTM12
+    # 调用批量计算函数，减少代码冗余
+    return calculate_multiple_indicators_polars(df, ['mtm'], mtm_windows=windows)
+
+
+def calculate_obv_polars(df):
+    """
+    使用Polars计算OBV指标（能量潮）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+    
+    Args:
+        df: Polars DataFrame或LazyFrame
+        
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含OBV指标的DataFrame或LazyFrame
+    """
+    # 调用批量计算函数，减少代码冗余
+    return calculate_multiple_indicators_polars(df, ['obv'])
+
+
+def calculate_vr_polars(df, windows=[26]):
+    """
+    使用Polars批量计算VR指标（成交量比率）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+    
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: VR计算窗口列表，默认为[26]
+        
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含VR指标的DataFrame或LazyFrame
+    """
+    if windows is None:
+        windows = [26]  # 通达信默认使用VR26
+    # 调用批量计算函数，减少代码冗余
+    return calculate_multiple_indicators_polars(df, ['vr'], vr_windows=windows)
+
+
+def calculate_psy_polars(df, windows=[12]):
+    """
+    使用Polars批量计算PSY指标（心理线）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+    
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: PSY计算窗口列表，默认为[12]
+        
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含PSY指标的DataFrame或LazyFrame
+    """
+    if windows is None:
+        windows = [12]  # 通达信默认使用PSY12
+    # 调用批量计算函数，减少代码冗余
+    return calculate_multiple_indicators_polars(df, ['psy'], psy_windows=windows)
+
+
+def calculate_trix_polars(df, windows=[12], signal_period=9):
+    """
+    使用Polars批量计算TRIX指标（三重指数平滑）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+    
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: TRIX计算窗口列表，默认为[12]
+        signal_period: TRIX信号线周期，默认为9
+        
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含TRIX指标的DataFrame或LazyFrame
+    """
+    if windows is None:
+        windows = [12]  # 通达信默认使用TRIX12
+    # 调用批量计算函数，减少代码冗余
+    return calculate_multiple_indicators_polars(df, ['trix'], trix_windows=windows, trix_signal_period=signal_period)
+
+
+def calculate_brar_polars(df, windows=[26]):
+    """
+    使用Polars批量计算BRAR指标（情绪指标）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+    
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: BRAR计算窗口列表，默认为[26]
+        
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含BRAR指标的DataFrame或LazyFrame
+    """
+    if windows is None:
+        windows = [26]  # 通达信默认使用BRAR26
+    # 调用批量计算函数，减少代码冗余
+    return calculate_multiple_indicators_polars(df, ['brar'], brar_windows=windows)
+
+
+def calculate_asi_polars(df, signal_period=20):
+    """
+    使用Polars计算ASI指标（振动升降指标）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+    
+    Args:
+        df: Polars DataFrame或LazyFrame
+        signal_period: ASI信号线周期，默认为20
+        
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含ASI指标的DataFrame或LazyFrame
+    """
+    # 调用批量计算函数，减少代码冗余
+    return calculate_multiple_indicators_polars(df, ['asi'], asi_signal_period=signal_period)
+
+
+def calculate_emv_polars(df, windows=[14], constant=100000000):
+    """
+    使用Polars批量计算EMV指标（简易波动指标）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+    
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: EMV计算窗口列表，默认为[14]
+        constant: 常数，用于调整EMV的数值大小，默认为100000000
+        
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含EMV指标的DataFrame或LazyFrame
+    """
+    if windows is None:
+        windows = [14]  # 通达信默认使用EMV14
+    # 调用批量计算函数，减少代码冗余
+    return calculate_multiple_indicators_polars(df, ['emv'], emv_windows=windows, emv_constant=constant)
+
+
+def calculate_mcst_polars(df, windows=[12]):
+    """
+    使用Polars批量计算MCST指标（市场成本）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+    
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: MCST计算窗口列表，默认为[12]
+        
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含MCST指标的DataFrame或LazyFrame
+    """
+    if windows is None:
+        windows = [12]  # 通达信默认使用MCST12
+    # 调用批量计算函数，减少代码冗余
+    return calculate_multiple_indicators_polars(df, ['mcst'], mcst_windows=windows)
+
+
 def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     """
     统一的多指标批量计算函数，将所有指标计算合并到单个查询计划
@@ -294,7 +507,7 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     """
     # 默认计算所有指标
     if indicator_types is None:
-        indicator_types = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'boll', 'macd']
+        indicator_types = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'boll', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']
     
     # 1. 收集所有需要计算的指标和参数
     indicator_params = {
@@ -310,6 +523,28 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
             'fast_period': params.get('fast_period', 12),
             'slow_period': params.get('slow_period', 26),
             'signal_period': params.get('signal_period', 9)
+        },
+        'dmi': {'windows': params.get('dmi_windows', [14])},
+        'cci': {'windows': params.get('cci_windows', [14])},
+        'roc': {'windows': params.get('roc_windows', [12])},
+        'mtm': {'windows': params.get('mtm_windows', [12])},
+        'obv': {},
+        'vr': {'windows': params.get('vr_windows', [26])},
+        'psy': {'windows': params.get('psy_windows', [12])},
+        'trix': {
+            'windows': params.get('trix_windows', [12]),
+            'signal_period': params.get('trix_signal_period', 9)
+        },
+        'brar': {'windows': params.get('brar_windows', [26])},
+        'asi': {
+            'signal_period': params.get('asi_signal_period', 20)
+        },
+        'emv': {
+            'windows': params.get('emv_windows', [14]),
+            'constant': params.get('emv_constant', 100000000)
+        },
+        'mcst': {
+            'windows': params.get('mcst_windows', [12])
         }
     }
     
@@ -481,7 +716,397 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
             (pl.col('macd') - pl.col('macd_signal')).cast(pl.Float32).alias('macd_hist')
         )
     
-    # 步骤9: 清理临时列
+    # 步骤9: 计算DMI指标
+    if 'dmi' in indicator_types:
+        dmi_params = indicator_params['dmi']
+        windows = dmi_params['windows']
+        
+        for window in windows:
+            # 计算真实波幅(TR)
+            lazy_df = lazy_df.with_columns(
+                (pl.max_horizontal(pl.col('high'), pl.col('close').shift(1)) - 
+                 pl.min_horizontal(pl.col('low'), pl.col('close').shift(1))).cast(pl.Float32).alias(f'tr_{window}')
+            )
+            
+            # 计算+DM和-DM
+            lazy_df = lazy_df.with_columns(
+                # +DM（上升动向）
+                pl.when((pl.col('high') > pl.col('high').shift(1)) & 
+                       (pl.col('low') >= pl.col('low').shift(1)) & 
+                       (pl.col('high') - pl.col('high').shift(1) > pl.col('low').shift(1) - pl.col('low')))
+                .then(pl.col('high') - pl.col('high').shift(1))
+                .otherwise(0.0).cast(pl.Float32).alias(f'pdm_{window}'),
+                # -DM（下降动向）
+                pl.when((pl.col('low') < pl.col('low').shift(1)) & 
+                       (pl.col('high') <= pl.col('high').shift(1)) & 
+                       (pl.col('low').shift(1) - pl.col('low') > pl.col('high') - pl.col('high').shift(1)))
+                .then(pl.col('low').shift(1) - pl.col('low'))
+                .otherwise(0.0).cast(pl.Float32).alias(f'ndm_{window}')
+            )
+            
+            # 计算TR、+DM、-DM的N日平滑移动平均
+            lazy_df = lazy_df.with_columns(
+                pl.col(f'tr_{window}').rolling_sum(window_size=window, min_periods=1).cast(pl.Float32).alias(f'tr_sma_{window}'),
+                pl.col(f'pdm_{window}').rolling_sum(window_size=window, min_periods=1).cast(pl.Float32).alias(f'pdm_sma_{window}'),
+                pl.col(f'ndm_{window}').rolling_sum(window_size=window, min_periods=1).cast(pl.Float32).alias(f'ndm_sma_{window}')
+            )
+            
+            # 计算+DI、-DI
+            lazy_df = lazy_df.with_columns(
+                (pl.col(f'pdm_sma_{window}') / pl.col(f'tr_sma_{window}') * 100).cast(pl.Float32).alias(f'pdi_{window}'),
+                (pl.col(f'ndm_sma_{window}') / pl.col(f'tr_sma_{window}') * 100).cast(pl.Float32).alias(f'ndi_{window}')
+            )
+            
+            # 计算DX
+            lazy_df = lazy_df.with_columns(
+                pl.when((pl.col(f'pdi_{window}') + pl.col(f'ndi_{window}')) == 0)
+                .then(0.0)
+                .otherwise(((pl.col(f'pdi_{window}') - pl.col(f'ndi_{window}')).abs() / 
+                           (pl.col(f'pdi_{window}') + pl.col(f'ndi_{window}')) * 100).cast(pl.Float32))
+                .alias(f'dx_{window}')
+            )
+            
+            # 计算ADX
+            adx_expr = pl.col(f'dx_{window}').rolling_mean(window_size=window, min_periods=1).cast(pl.Float32).alias(f'adx_{window}')
+            lazy_df = lazy_df.with_columns(adx_expr)
+            
+            # 计算ADXR
+            adxr_expr = ((pl.col(f'adx_{window}') + pl.col(f'adx_{window}').shift(window)) / 2).cast(pl.Float32).alias(f'adxr_{window}')
+            lazy_df = lazy_df.with_columns(adxr_expr)
+        
+        # 添加默认列名
+        if len(windows) >= 1:
+            window = windows[0]
+            lazy_df = lazy_df.with_columns(
+                pl.col(f'pdi_{window}').alias('pdi'),
+                pl.col(f'ndi_{window}').alias('ndi'),
+                pl.col(f'adx_{window}').alias('adx'),
+                pl.col(f'adxr_{window}').alias('adxr')
+            )
+    
+    # 步骤10: 计算CCI指标
+    if 'cci' in indicator_types:
+        cci_params = indicator_params['cci']
+        windows = cci_params['windows']
+        
+        for window in windows:
+            # 1. 计算典型价格（TP = (H + L + C) / 3）
+            lazy_df = lazy_df.with_columns(
+                ((pl.col('high') + pl.col('low') + pl.col('close')) / 3).cast(pl.Float32).alias(f'tp_{window}')
+            )
+            
+            # 2. 计算典型价格的N日移动平均值（MA_TP）
+            lazy_df = lazy_df.with_columns(
+                pl.col(f'tp_{window}').rolling_mean(window_size=window, min_periods=1).cast(pl.Float32).alias(f'ma_tp_{window}')
+            )
+            
+            # 3. 计算平均绝对偏差（MAD）
+            lazy_df = lazy_df.with_columns(
+                pl.col(f'tp_{window}').rolling_map(
+                    lambda x: x - pl.Series([x.mean()]),
+                    window_size=window,
+                    min_periods=1
+                ).abs().mean().cast(pl.Float32).alias(f'mad_{window}')
+            )
+            
+            # 4. 计算CCI = (TP - MA_TP) / (0.015 * MAD)
+            lazy_df = lazy_df.with_columns(
+                ((pl.col(f'tp_{window}') - pl.col(f'ma_tp_{window}')) / 
+                 (0.015 * pl.col(f'mad_{window}'))).cast(pl.Float32).alias(f'cci{window}')
+            )
+        
+        # 添加默认列名
+        if len(windows) >= 1:
+            window = windows[0]
+            lazy_df = lazy_df.with_columns(
+                pl.col(f'cci{window}').alias('cci')
+            )
+    
+    # 步骤11: 计算ROC指标
+    if 'roc' in indicator_types:
+        roc_params = indicator_params['roc']
+        windows = roc_params['windows']
+        
+        for window in windows:
+            # 计算ROC = ((当前收盘价 - n天前收盘价) / n天前收盘价) * 100
+            lazy_df = lazy_df.with_columns(
+                ((pl.col('close') - pl.col('close').shift(window)) / 
+                 pl.col('close').shift(window) * 100).cast(pl.Float32).alias(f'roc{window}')
+            )
+        
+        # 添加默认列名
+        if len(windows) >= 1:
+            window = windows[0]
+            lazy_df = lazy_df.with_columns(
+                pl.col(f'roc{window}').alias('roc')
+            )
+    
+    # 步骤12: 计算MTM指标
+    if 'mtm' in indicator_types:
+        mtm_params = indicator_params['mtm']
+        windows = mtm_params['windows']
+        
+        for window in windows:
+            # 计算MTM = 当前收盘价 - n天前收盘价
+            lazy_df = lazy_df.with_columns(
+                (pl.col('close') - pl.col('close').shift(window)).cast(pl.Float32).alias(f'mtm{window}')
+            )
+        
+        # 添加默认列名
+        if len(windows) >= 1:
+            window = windows[0]
+            lazy_df = lazy_df.with_columns(
+                pl.col(f'mtm{window}').alias('mtm')
+            )
+    
+    # 步骤13: 计算OBV指标
+    if 'obv' in indicator_types:
+        # 1. 计算价格变化方向
+        lazy_df = lazy_df.with_columns(
+            pl.when(pl.col('close') > pl.col('close').shift(1))
+            .then(pl.col('volume'))
+            .when(pl.col('close') < pl.col('close').shift(1))
+            .then(-pl.col('volume'))
+            .otherwise(0.0).cast(pl.Float32).alias('obv_change')
+        )
+        
+        # 2. 累积计算OBV
+        lazy_df = lazy_df.with_columns(
+            pl.col('obv_change').cum_sum().cast(pl.Float32).alias('obv')
+        )
+    
+    # 步骤14: 计算VR指标
+    if 'vr' in indicator_types:
+        vr_params = indicator_params['vr']
+        windows = vr_params['windows']
+        
+        # 1. 计算价格变化方向和分类成交量
+        lazy_df = lazy_df.with_columns(
+            # 上涨日成交量
+            pl.when(pl.col('close') > pl.col('close').shift(1))
+            .then(pl.col('volume'))
+            .otherwise(0.0).cast(pl.Float32).alias('vr_up_vol'),
+            # 下跌日成交量
+            pl.when(pl.col('close') < pl.col('close').shift(1))
+            .then(pl.col('volume'))
+            .otherwise(0.0).cast(pl.Float32).alias('vr_down_vol'),
+            # 平盘日成交量
+            pl.when(pl.col('close') == pl.col('close').shift(1))
+            .then(pl.col('volume'))
+            .otherwise(0.0).cast(pl.Float32).alias('vr_flat_vol')
+        )
+        
+        # 2. 计算各窗口的VR值
+        for window in windows:
+            # 计算N日上涨、下跌、平盘成交量总和
+            up_sum_expr = pl.col('vr_up_vol').rolling_sum(window_size=window, min_periods=1).cast(pl.Float32).alias(f'vr_up_sum_{window}')
+            down_sum_expr = pl.col('vr_down_vol').rolling_sum(window_size=window, min_periods=1).cast(pl.Float32).alias(f'vr_down_sum_{window}')
+            flat_sum_expr = pl.col('vr_flat_vol').rolling_sum(window_size=window, min_periods=1).cast(pl.Float32).alias(f'vr_flat_sum_{window}')
+            
+            # 添加到DataFrame
+            lazy_df = lazy_df.with_columns([up_sum_expr, down_sum_expr, flat_sum_expr])
+            
+            # 计算VR值 = (上涨总和 + 1/2平盘总和) / (下跌总和 + 1/2平盘总和) * 100
+            vr_expr = ((up_sum_expr + flat_sum_expr / 2) / 
+                      (down_sum_expr + flat_sum_expr / 2 + 0.0001) * 100).cast(pl.Float32).alias(f'vr{window}')
+            
+            lazy_df = lazy_df.with_columns(vr_expr)
+        
+        # 3. 添加默认列名
+        if len(windows) >= 1:
+            window = windows[0]
+            lazy_df = lazy_df.with_columns(
+                pl.col(f'vr{window}').alias('vr')
+            )
+    
+    # 步骤15: 计算PSY指标
+    if 'psy' in indicator_types:
+        psy_params = indicator_params['psy']
+        windows = psy_params['windows']
+        
+        # 1. 计算上涨天数标记（上涨为1，否则为0）
+        lazy_df = lazy_df.with_columns(
+            pl.when(pl.col('close') > pl.col('close').shift(1))
+            .then(1.0)
+            .otherwise(0.0).cast(pl.Float32).alias('psy_up_day')
+        )
+        
+        # 2. 计算各窗口的PSY值（N天内上涨天数百分比）
+        for window in windows:
+            psy_expr = (pl.col('psy_up_day').rolling_sum(window_size=window, min_periods=1) / window * 100).cast(pl.Float32).alias(f'psy{window}')
+            lazy_df = lazy_df.with_columns(psy_expr)
+        
+        # 3. 添加默认列名
+        if len(windows) >= 1:
+            window = windows[0]
+            lazy_df = lazy_df.with_columns(
+                pl.col(f'psy{window}').alias('psy')
+            )
+    
+    # 步骤16: 计算TRIX指标
+    if 'trix' in indicator_types:
+        trix_params = indicator_params['trix']
+        windows = trix_params['windows']
+        signal_period = trix_params['signal_period']
+        
+        for window in windows:
+            # 1. 第一次指数平滑（EMA1）
+            ema1 = pl.col('close').ewm_mean(span=window)
+            # 2. 第二次指数平滑（EMA2）
+            ema2 = ema1.ewm_mean(span=window)
+            # 3. 第三次指数平滑（EMA3）
+            ema3 = ema2.ewm_mean(span=window)
+            # 4. 计算EMA3的变化率（TRIX = (EMA3 - EMA3.shift(1)) / EMA3.shift(1) * 100）
+            trix = ((ema3 - ema3.shift(1)) / ema3.shift(1) * 100).cast(pl.Float32).alias(f'trix{window}')
+            # 5. 计算TRIX的信号线（TRMA = TRIX的signal_period天EMA）
+            trma = trix.ewm_mean(span=signal_period).cast(pl.Float32).alias(f'trma{window}')
+            
+            # 6. 构建表达式列表（只添加最终结果，不添加中间EMA列，避免混乱）
+            lazy_df = lazy_df.with_columns([trix, trma])
+        
+        # 6. 添加默认列名
+        if len(windows) >= 1:
+            window = windows[0]
+            lazy_df = lazy_df.with_columns(
+                pl.col(f'trix{window}').alias('trix'),
+                pl.col(f'trma{window}').alias('trma')
+            )
+    
+    # 步骤17: 计算BRAR指标
+    if 'brar' in indicator_types:
+        brar_params = indicator_params['brar']
+        windows = brar_params['windows']
+
+        # 1. 计算必要的中间变量
+        # 前一日收盘价
+        prev_close = pl.col('close').shift(1).alias('prev_close')
+        # AR的分子：(最高价 - 开盘价)的正值部分
+        ar_up = pl.when((pl.col('high') - pl.col('open')) > 0).then(pl.col('high') - pl.col('open')).otherwise(0.0).alias('ar_up')
+        # AR的分母：(开盘价 - 最低价)的正值部分
+        ar_down = pl.when((pl.col('open') - pl.col('low')) > 0).then(pl.col('open') - pl.col('low')).otherwise(0.0).alias('ar_down')
+        # BR的分子：(最高价 - 前一日收盘价)的正值部分
+        br_up = pl.when((pl.col('high') - prev_close) > 0).then(pl.col('high') - prev_close).otherwise(0.0).alias('br_up')
+        # BR的分母：(前一日收盘价 - 最低价)的正值部分
+        br_down = pl.when((prev_close - pl.col('low')) > 0).then(prev_close - pl.col('low')).otherwise(0.0).alias('br_down')
+
+        # 2. 添加中间变量到DataFrame
+        lazy_df = lazy_df.with_columns([ar_up, ar_down, br_up, br_down])
+
+        # 3. 计算各窗口的AR和BR值
+        for window in windows:
+            # 计算AR = (ar_up的N日和 / ar_down的N日和) * 100
+            ar_expr = ((pl.col('ar_up').rolling_sum(window_size=window, min_periods=1) / (pl.col('ar_down').rolling_sum(window_size=window, min_periods=1) + 0.0001)) * 100).cast(pl.Float32).alias(f'ar{window}')
+            # 计算BR = (br_up的N日和 / br_down的N日和) * 100
+            br_expr = ((pl.col('br_up').rolling_sum(window_size=window, min_periods=1) / (pl.col('br_down').rolling_sum(window_size=window, min_periods=1) + 0.0001)) * 100).cast(pl.Float32).alias(f'br{window}')
+
+            # 添加到DataFrame
+            lazy_df = lazy_df.with_columns([ar_expr, br_expr])
+
+        # 4. 添加默认列名
+        if len(windows) >= 1:
+            window = windows[0]
+            lazy_df = lazy_df.with_columns(
+                pl.col(f'ar{window}').alias('ar'),
+                pl.col(f'br{window}').alias('br')
+            )
+    
+    # 步骤18: 计算ASI指标
+    if 'asi' in indicator_types:
+        asi_params = indicator_params['asi']
+        signal_period = asi_params['signal_period']
+        
+        # 1. 计算前一日的数据
+        prev_high = pl.col('high').shift(1).alias('prev_high')
+        prev_low = pl.col('low').shift(1).alias('prev_low')
+        prev_close = pl.col('close').shift(1).alias('prev_close')
+        
+        # 2. 计算各种价格差
+        # 今日开盘价与前一日收盘价的差
+        open_diff = pl.col('open') - prev_close
+        # 今日最高价与前一日收盘价的差
+        high_diff = pl.col('high') - prev_close
+        # 今日最低价与前一日收盘价的差
+        low_diff = pl.col('low') - prev_close
+        # 今日最高价与今日开盘价的差
+        h_o_diff = pl.col('high') - pl.col('open')
+        # 今日最低价与今日开盘价的差
+        l_o_diff = pl.col('low') - pl.col('open')
+        # 前一日收盘价与前一日开盘价的差
+        prev_c_o_diff = prev_close - pl.col('open').shift(1)
+        
+        # 3. 计算真实波幅（简化计算，避免中间变量）
+        tr = pl.max_horizontal(
+            (pl.col('high').shift(1) - pl.col('close')).abs(),
+            (pl.col('low').shift(1) - pl.col('close')).abs(),
+            (pl.col('high').shift(1) - pl.col('low').shift(1)).abs()
+        )
+
+        # 4. 计算ASI的分子部分
+        asi_numerator = (pl.col('open') - pl.col('close').shift(1)) + 0.5 * (pl.col('open') - pl.col('close')) + 0.25 * (pl.col('close').shift(1) - pl.col('open').shift(1))
+
+        # 5. 计算ASI值（使用Polars条件表达式处理除以零的情况）
+        asi = pl.when(tr != 0).then((asi_numerator / tr * 16).cast(pl.Float32)).otherwise(0.0).cast(pl.Float32).alias('asi')
+
+        # 6. 计算ASI的信号线（ASI_SIG = ASI的signal_period天MA）
+        asi_sig = asi.rolling_mean(window_size=signal_period, min_periods=1).alias('asi_sig')
+
+        # 7. 添加到DataFrame
+        lazy_df = lazy_df.with_columns([asi, asi_sig])
+    
+    # 步骤19: 计算EMV指标
+    if 'emv' in indicator_types:
+        emv_params = indicator_params['emv']
+        windows = emv_params['windows']
+        constant = emv_params['constant']
+
+        # 1. 直接计算EMV基础值，避免中间变量和列名冲突
+        # 距离差值：(最高价 + 最低价)/2 - 前一日(最高价 + 最低价)/2
+        distance_diff = ((pl.col('high') + pl.col('low')) / 2) - ((pl.col('high').shift(1) + pl.col('low').shift(1)) / 2)
+
+        # 2. 计算EMV基础值（直接在表达式中处理除以零的情况）
+        # EMV = (距离差值 / (成交量 / (最高价 - 最低价))) * 常数，当最高价等于最低价时为0
+        emv_base_expr = pl.when(pl.col('high') != pl.col('low')).then((distance_diff / (pl.col('volume') / (pl.col('high') - pl.col('low'))) * constant).cast(pl.Float32)).otherwise(0.0).cast(pl.Float32)
+
+        # 3. 计算各窗口的EMV移动平均线
+        for window in windows:
+            emv_expr = emv_base_expr.rolling_mean(window_size=window, min_periods=1).cast(pl.Float32).alias(f'emv{window}')
+            lazy_df = lazy_df.with_columns(emv_expr)
+
+        # 4. 添加默认列名
+        if len(windows) >= 1:
+            window = windows[0]
+            lazy_df = lazy_df.with_columns(
+                pl.col(f'emv{window}').alias('emv')
+            )
+    
+    # 步骤20: 计算MCST指标
+    if 'mcst' in indicator_types:
+        mcst_params = indicator_params['mcst']
+        windows = mcst_params['windows']
+        
+        # 1. 计算中间值
+        # 价格 * 成交量
+        price_volume = (pl.col('close') * pl.col('volume')).alias('price_volume')
+        # 累积成本：累积(价格 * 成交量)
+        cumulative_cost = price_volume.cum_sum().alias('cumulative_cost')
+        # 累积成交量：累积(成交量)
+        cumulative_volume = pl.col('volume').cum_sum().alias('cumulative_volume')
+        
+        # 2. 添加中间变量到DataFrame
+        lazy_df = lazy_df.with_columns([price_volume, cumulative_cost, cumulative_volume])
+        
+        # 3. 计算MCST（使用Polars条件表达式处理除以零的情况）
+        mcst = pl.when(cumulative_volume != 0).then((cumulative_cost / cumulative_volume).cast(pl.Float32)).otherwise(pl.lit(0.0).cast(pl.Float32)).alias('mcst')
+        
+        # 4. 添加MCST值到DataFrame
+        lazy_df = lazy_df.with_columns(mcst)
+        
+        # 5. 计算各窗口的MCST移动平均线
+        for window in windows:
+            mcst_ma_expr = mcst.rolling_mean(window_size=window, min_periods=1).cast(pl.Float32).alias(f'mcst_ma{window}')
+            lazy_df = lazy_df.with_columns(mcst_ma_expr)
+    
+    # 步骤13: 清理临时列
     temp_cols = []
     # 清理RSI临时列
     if 'rsi' in indicator_types:
@@ -498,6 +1123,59 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     # 清理MACD临时列
     if 'macd' in indicator_types:
         temp_cols.extend(['ema12', 'ema26'])
+    
+    # 清理DMI临时列
+    if 'dmi' in indicator_types:
+        windows = indicator_params['dmi']['windows']
+        for window in windows:
+            temp_cols.extend([f'tr_{window}', f'pdm_{window}', f'ndm_{window}', 
+                           f'tr_sma_{window}', f'pdm_sma_{window}', f'ndm_sma_{window}', 
+                           f'dx_{window}'])
+    
+    # 清理CCI临时列
+    if 'cci' in indicator_types:
+        windows = indicator_params['cci']['windows']
+        for window in windows:
+            temp_cols.extend([f'tp_{window}', f'ma_tp_{window}', f'mad_{window}'])
+    
+    # 清理OBV临时列
+    if 'obv' in indicator_types:
+        temp_cols.append('obv_change')
+    
+    # 清理VR临时列
+    if 'vr' in indicator_types:
+        vr_params = indicator_params['vr']
+        windows = vr_params['windows']
+        temp_cols.extend(['vr_up_vol', 'vr_down_vol', 'vr_flat_vol'])
+        for window in windows:
+            temp_cols.extend([f'vr_up_sum_{window}', f'vr_down_sum_{window}', f'vr_flat_sum_{window}'])
+    
+    # 清理PSY临时列
+    if 'psy' in indicator_types:
+        temp_cols.append('psy_up_day')
+    
+    # 清理TRIX临时列
+    if 'trix' in indicator_types:
+        # TRIX指标不再使用临时列，不需要清理
+        pass
+    
+    # 清理BRAR临时列
+    if 'brar' in indicator_types:
+        temp_cols.extend(['ar_up', 'ar_down', 'br_up', 'br_down'])
+    
+    # 清理ASI临时列
+    if 'asi' in indicator_types:
+        # ASI指标计算已优化，不再使用临时列，无需清理
+        pass
+    
+    # 清理EMV临时列
+    if 'emv' in indicator_types:
+        # EMV指标计算已优化，不再使用临时列，无需清理
+        pass
+    
+    # 清理MCST临时列
+    if 'mcst' in indicator_types:
+        temp_cols.extend(['price_volume', 'cumulative_cost', 'cumulative_volume'])
     
     # 清理共享临时列
     if need_high_low:

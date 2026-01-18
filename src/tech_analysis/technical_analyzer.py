@@ -76,6 +76,18 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             'vol_ma': set(),  # 已计算的成交量MA窗口
             'boll': set(),  # 已计算的Boll窗口
             'wr': set(),  # 已计算的WR窗口
+            'dmi': set(),  # 已计算的DMI窗口
+            'cci': set(),  # 已计算的CCI窗口
+            'roc': set(),  # 已计算的ROC窗口
+            'mtm': set(),  # 已计算的MTM窗口
+            'obv': False,  # 已计算的OBV
+            'vr': set(),  # 已计算的VR窗口
+            'psy': set(),  # 已计算的PSY窗口
+            'trix': set(),  # 已计算的TRIX窗口
+            'brar': set(),  # 已计算的BRAR窗口
+            'asi': set(),  # 已计算的ASI窗口
+            'emv': set(),  # 已计算的EMV窗口
+            'mcst': set(),  # 已计算的MCST窗口
             'plugin': set()  # 已计算的插件指标
         }
         
@@ -92,7 +104,19 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             'kdj': self.calculate_kdj,
             'vol_ma': self.calculate_vol_ma,
             'boll': self.calculate_boll,
-            'wr': self.calculate_wr
+            'wr': self.calculate_wr,
+            'dmi': self.calculate_indicator_parallel,
+            'cci': self.calculate_indicator_parallel,
+            'roc': self.calculate_indicator_parallel,
+            'mtm': self.calculate_indicator_parallel,
+            'obv': self.calculate_indicator_parallel,
+            'vr': self.calculate_indicator_parallel,
+            'psy': self.calculate_indicator_parallel,
+            'trix': self.calculate_indicator_parallel,
+            'brar': self.calculate_indicator_parallel,
+            'asi': self.calculate_indicator_parallel,
+            'emv': self.calculate_indicator_parallel,
+            'mcst': self.calculate_indicator_parallel
         }
         
         # 初始化插件指标映射
@@ -690,7 +714,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             pd.DataFrame: 包含计算指标的DataFrame
         """
         # 检查指标类型是否支持并行计算
-        if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma']:
+        if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma', 'dmi', 'cci', 'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']:
             # 对于支持多窗口的指标，使用并行计算不同窗口
             windows = kwargs.get('windows', [14])
             if not isinstance(windows, list):
@@ -713,6 +737,12 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     self.pl_df = calculate_kdj_polars(self.pl_df, windows_to_calculate)
                 elif indicator_type == 'vol_ma':
                     self.pl_df = calculate_vol_ma_polars(self.pl_df, windows_to_calculate)
+                # 使用批量计算函数处理所有新指标
+                else:
+                    # 使用calculate_multiple_indicators_polars处理所有其他指标
+                    lazy_df = self.pl_df.lazy()
+                    lazy_df = calculate_multiple_indicators_polars(lazy_df, [indicator_type], windows=windows_to_calculate)
+                    self.pl_df = lazy_df.collect()
                 
                 # 更新计算状态
                 for window in windows_to_calculate:
@@ -721,8 +751,20 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 # 清除转换缓存，因为数据已更新
                 self._pandas_cache = None
                 self._pandas_cache_hash = None
+        elif indicator_type in ['macd', 'obv']:
+            # 对于不支持多窗口的指标，直接使用批量计算函数
+            lazy_df = self.pl_df.lazy()
+            lazy_df = calculate_multiple_indicators_polars(lazy_df, [indicator_type])
+            self.pl_df = lazy_df.collect()
+            
+            # 更新计算状态
+            self.calculated_indicators[indicator_type] = True
+            
+            # 清除转换缓存，因为数据已更新
+            self._pandas_cache = None
+            self._pandas_cache_hash = None
         else:
-            # 对于不支持多窗口的指标（如MACD）或插件指标，调用常规计算方法
+            # 对于插件指标，调用常规计算方法
             self.calculate_indicator(indicator_type, *args, **kwargs)
         
         # 返回转换后的Pandas DataFrame
@@ -855,10 +897,10 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         # 1. 确定要计算的指标类型
         if indicator_types is None:
             # 默认计算所有指标
-            indicator_types = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd']
+            indicator_types = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']
         
         # 2. 准备需要计算的内置指标类型
-        builtin_indicators = [ind for ind in indicator_types if ind in ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd']]
+        builtin_indicators = [ind for ind in indicator_types if ind in ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']]
         
         # 3. 使用新的批量计算函数进行内置指标计算
         indicators_updated = False
@@ -882,7 +924,19 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     'kdj': {'param_key': 'kdj_windows', 'default': [14], 'update_type': 'windows'},
                     'vol_ma': {'param_key': 'vol_ma_windows', 'default': [5, 10], 'update_type': 'windows'},
                     'wr': {'param_key': 'wr_windows', 'default': [10, 6], 'update_type': 'windows'},
-                    'macd': {'update_type': 'boolean'}
+                    'macd': {'update_type': 'boolean'},
+                    'dmi': {'param_key': 'windows', 'default': [14], 'update_type': 'windows'},
+                    'cci': {'param_key': 'windows', 'default': [14], 'update_type': 'windows'},
+                    'roc': {'param_key': 'windows', 'default': [12], 'update_type': 'windows'},
+                    'mtm': {'param_key': 'windows', 'default': [12], 'update_type': 'windows'},
+                    'obv': {'update_type': 'boolean'},
+                    'vr': {'param_key': 'windows', 'default': [24], 'update_type': 'windows'},
+                    'psy': {'param_key': 'windows', 'default': [12], 'update_type': 'windows'},
+                    'trix': {'param_key': 'windows', 'default': [12], 'update_type': 'windows'},
+                    'brar': {'param_key': 'windows', 'default': [26], 'update_type': 'windows'},
+                    'asi': {'param_key': 'windows', 'default': [14], 'update_type': 'windows'},
+                    'emv': {'param_key': 'windows', 'default': [14], 'update_type': 'windows'},
+                    'mcst': {'param_key': 'windows', 'default': [12], 'update_type': 'windows'}
                 }
                 
                 for indicator in builtin_indicators:
@@ -942,7 +996,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             List[str]: 支持的技术指标列表
         """
         # 内置指标
-        builtin_indicators = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd']
+        builtin_indicators = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']
         
         # 插件指标
         plugin_indicators = self.get_available_plugin_indicators()

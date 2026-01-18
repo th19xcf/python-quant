@@ -236,7 +236,7 @@ class MainWindow(QMainWindow, IView, IController):
         logger.info("主窗口事件订阅完成")
     
     @event_handler("数据更新")
-    def _handle_data_updated(self, sender, data_type, ts_code, message=""):
+    def _handle_data_updated(self, sender, data_type, ts_code, message="", **kwargs):
         """
         处理数据更新事件
         
@@ -244,6 +244,7 @@ class MainWindow(QMainWindow, IView, IController):
             data_type: 数据类型
             ts_code: 股票代码或指数代码
             message: 附加消息
+            **kwargs: 其他关键字参数，包括data等
         """
         # 根据数据类型更新UI
         if data_type in ['stock_daily', 'index_daily']:
@@ -258,7 +259,7 @@ class MainWindow(QMainWindow, IView, IController):
             self.update_index_list()
     
     @event_handler("数据错误")
-    def _handle_data_error(self, sender, data_type, ts_code, message=""):
+    def _handle_data_error(self, sender, data_type, ts_code, message="", **kwargs):
         """
         处理数据错误事件
         
@@ -266,34 +267,44 @@ class MainWindow(QMainWindow, IView, IController):
             data_type: 数据类型
             ts_code: 股票代码或指数代码
             message: 错误消息
+            **kwargs: 其他关键字参数
         """
         # 可以在这里显示错误提示
     
     @event_handler("指标计算完成")
-    def _handle_indicator_calculated(self, sender, indicator_name, ts_code, result=None):
+    def _handle_indicator_calculated(self, sender, data_type=None, indicators=None, calculated_indicators=None, success=True, error=None, indicator_name=None, ts_code=None, result=None, **kwargs):
         """
         处理技术指标计算完成事件
         
         Args:
-            indicator_name: 指标名称
-            ts_code: 股票代码
-            result: 计算结果
+            data_type: 数据类型
+            indicators: 计算的指标列表
+            calculated_indicators: 已计算的指标状态
+            success: 是否成功
+            error: 错误信息
+            indicator_name: 指标名称（兼容旧版事件）
+            ts_code: 股票代码（兼容旧版事件）
+            result: 计算结果（兼容旧版事件）
+            **kwargs: 其他关键字参数
         """
         # 更新指标显示
-        if hasattr(self, 'current_stock_code') and self.current_stock_code == ts_code:
+        if hasattr(self, 'current_stock_code'):
             self.refresh_indicator_charts()
     
     @event_handler("指标计算错误")
-    def _handle_indicator_error(self, sender, indicator_name, ts_code, error=""):
+    def _handle_indicator_error(self, sender, data_type=None, indicators=None, error="", indicator_name=None, ts_code=None, **kwargs):
         """
         处理技术指标计算错误事件
         
         Args:
-            indicator_name: 指标名称
-            ts_code: 股票代码
-            error: 错误信息
+            data_type: 数据类型
+            indicators: 指标列表
+            error: 错误消息
+            indicator_name: 指标名称（兼容旧版事件）
+            ts_code: 股票代码（兼容旧版事件）
+            **kwargs: 其他关键字参数
         """
-        pass
+        logger.error(f"指标计算错误: {error}")
     
     @event_handler("系统关闭")
     def _handle_system_shutdown(self, sender):
@@ -1132,8 +1143,22 @@ class MainWindow(QMainWindow, IView, IController):
                     separator.setStyleSheet("color: #666666; font-size: 12px;")
                     scroll_layout.addWidget(separator)
             else:
+                # 已实现的指标列表
+                implemented_indicators = ['VOL', 'MACD', 'KDJ', 'DMI', 'CCI', 'ROC', 'MTM', 'OBV', 'VR', 'PSY', 'TRIX', 'BRAR', 'ASI', 'EMV', 'MCST', 'RSI', 'WR', 'BOLL']
+                # 未实现指标的样式（灰色文字）
+                disabled_indicator_style = indicator_button_style + "QPushButton { color: #666666; }"
+                
                 # 普通指标按钮
-                btn = self._create_indicator_button(indicator, indicator_button_style)
+                # 检查指标是否已实现（箭头按钮特殊处理）
+                is_arrow = indicator in ['<', '>']
+                if indicator in implemented_indicators or is_arrow:
+                    # 已实现的指标或箭头按钮，使用默认样式
+                    btn = self._create_indicator_button(indicator, indicator_button_style)
+                else:
+                    # 未实现的指标，使用灰色文字样式
+                    btn = self._create_indicator_button(indicator, disabled_indicator_style, checkable=False)
+                    btn.setDisabled(True)
+                
                 scroll_layout.addWidget(btn)
                 self.indicator_buttons[indicator] = btn
         
@@ -3248,14 +3273,16 @@ class MainWindow(QMainWindow, IView, IController):
                     if current_indicator == "VOL":
                         # 获取最新的成交量数据
                         latest_volume = df_pl.tail(1)['volume'][0]
-                        latest_vol_ma5 = df_pl.tail(1)['vol_ma5'][0]
-                        latest_vol_ma10 = df_pl.tail(1)['vol_ma10'][0]
+                        
+                        # 检查vol_ma5和vol_ma10列是否存在
+                        latest_vol_ma5 = df_pl.tail(1)['vol_ma5'][0] if 'vol_ma5' in df_pl.columns else 0
+                        latest_vol_ma10 = df_pl.tail(1)['vol_ma10'][0] if 'vol_ma10' in df_pl.columns else 0
                         
                         # 保存成交量数据和成交量均线数据，用于鼠标移动时更新标题
                         self.current_volume_data = {
                             'volume': df_pl['volume'].to_list(),
-                            'vol_ma5': df_pl['vol_ma5'].to_list(),
-                            'vol_ma10': df_pl['vol_ma10'].to_list()
+                            'vol_ma5': df_pl['vol_ma5'].to_list() if 'vol_ma5' in df_pl.columns else [],
+                            'vol_ma10': df_pl['vol_ma10'].to_list() if 'vol_ma10' in df_pl.columns else []
                         }
                     
                     # 检查是否已经存在标签，如果存在则移除
@@ -3307,6 +3334,19 @@ class MainWindow(QMainWindow, IView, IController):
                     # 根据不同指标设置标签文本
                     if current_indicator == "VOL":
                         # 使用HTML设置初始文本和颜色，与K线图均线标签样式一致
+                        # 确保vol_ma5和vol_ma10列存在
+                        if 'vol_ma5' not in df_pl.columns or 'vol_ma10' not in df_pl.columns:
+                            # 计算成交量均线
+                            from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                            analyzer = TechnicalAnalyzer(df_pl)
+                            analyzer.calculate_vol_ma([5, 10])
+                            df_pl = analyzer.get_data(return_polars=True)
+                            
+                            # 更新最新值
+                            latest_volume = df_pl.tail(1)['volume'][0]
+                            latest_vol_ma5 = df_pl.tail(1)['vol_ma5'][0]
+                            latest_vol_ma10 = df_pl.tail(1)['vol_ma10'][0]
+                        
                         self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(latest_volume):,}</font>  <font color='white'>MA5: {int(latest_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(latest_vol_ma10):,}</font>")
                     elif current_indicator == "MACD":
                         # 添加MACD数值显示
@@ -3982,8 +4022,11 @@ class MainWindow(QMainWindow, IView, IController):
                     if current_indicator == "VOL" and hasattr(self, 'current_volume_data') and 0 <= index < len(self.current_volume_data['volume']):
                         # 更新成交量标签
                         current_volume = self.current_volume_data['volume'][index]
-                        current_vol_ma5 = self.current_volume_data['vol_ma5'][index]
-                        current_vol_ma10 = self.current_volume_data['vol_ma10'][index]
+                        
+                        # 检查vol_ma5和vol_ma10列表是否足够长
+                        current_vol_ma5 = self.current_volume_data['vol_ma5'][index] if index < len(self.current_volume_data['vol_ma5']) else 0
+                        current_vol_ma10 = self.current_volume_data['vol_ma10'][index] if index < len(self.current_volume_data['vol_ma10']) else 0
+                        
                         self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
                 
                 # 更新第3窗口标签，根据当前指标类型显示不同内容
@@ -4027,8 +4070,11 @@ class MainWindow(QMainWindow, IView, IController):
                     if current_indicator == "VOL" and hasattr(self, 'current_volume_data') and 0 <= index < len(self.current_volume_data['volume']):
                         # 更新成交量标签
                         current_volume = self.current_volume_data['volume'][index]
-                        current_vol_ma5 = self.current_volume_data['vol_ma5'][index]
-                        current_vol_ma10 = self.current_volume_data['vol_ma10'][index]
+                        
+                        # 检查vol_ma5和vol_ma10列表是否足够长
+                        current_vol_ma5 = self.current_volume_data['vol_ma5'][index] if index < len(self.current_volume_data['vol_ma5']) else 0
+                        current_vol_ma10 = self.current_volume_data['vol_ma10'][index] if index < len(self.current_volume_data['vol_ma10']) else 0
+                        
                         self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
                     elif current_indicator == "MACD" and hasattr(self, 'current_macd_data') and 0 <= index < len(self.current_macd_data['macd']):
                         # 更新MACD标签
@@ -5732,6 +5778,32 @@ class MainWindow(QMainWindow, IView, IController):
         plot_widget.addItem(pg.InfiniteLine(pos=20, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine), name='超买线'))
         plot_widget.addItem(pg.InfiniteLine(pos=80, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine), name='超卖线'))
 
+    def draw_dmi_indicator(self, plot_widget, x, df_pl):
+        """
+        绘制DMI指标
+        
+        Args:
+            plot_widget: 绘图控件
+            x: x轴数据
+            df_pl: polars DataFrame，包含dmi数据
+        """
+        # 导入pyqtgraph
+        import pyqtgraph as pg
+        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+        
+        # 确保DMI相关列存在
+        if 'pdi' not in df_pl.columns or 'mdi' not in df_pl.columns or 'adx' not in df_pl.columns:
+            # 使用TechnicalAnalyzer计算DMI指标
+            analyzer = TechnicalAnalyzer(df_pl)
+            analyzer.calculate_indicator_parallel('dmi', windows=[14])
+            df_pl = analyzer.get_data(return_polars=True)
+        
+        # 绘制DMI指标
+        plot_widget.plot(x, df_pl['pdi'].to_numpy(), pen=pg.mkPen(color='#FF0000', width=1), name='+DI')
+        plot_widget.plot(x, df_pl['mdi'].to_numpy(), pen=pg.mkPen(color='#00FF00', width=1), name='-DI')
+        plot_widget.plot(x, df_pl['adx'].to_numpy(), pen=pg.mkPen(color='#FFFF00', width=1), name='ADX')
+        plot_widget.plot(x, df_pl['adxr'].to_numpy(), pen=pg.mkPen(color='#FFFFFF', width=1), name='ADXR')
+    
     def draw_k_line_indicator(self, plot_widget, df, dates, opens, highs, lows, closes, df_pl):
         """
         绘制K线图
@@ -5855,6 +5927,14 @@ class MainWindow(QMainWindow, IView, IController):
             plot_widget.removeItem(point_item)
         self.ma_points.clear()
         
+        # 确保ma5、ma10、ma20和ma60列存在
+        if 'ma5' not in df_pl.columns or 'ma10' not in df_pl.columns or 'ma20' not in df_pl.columns or 'ma60' not in df_pl.columns:
+            # 计算均线指标
+            from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+            analyzer = TechnicalAnalyzer(df_pl)
+            analyzer.calculate_ma([5, 10, 20, 60])
+            df_pl = analyzer.get_data(return_polars=True)
+        
         # 绘制5日均线（白色）
         ma5_item = plot_widget.plot(x, df_pl['ma5'].to_numpy(), pen=pg.mkPen('w', width=1), name='MA5')
         self.moving_averages['MA5'] = {'item': ma5_item, 'data': (x, df_pl['ma5'].to_numpy()), 'color': 'w'}
@@ -5949,11 +6029,12 @@ class MainWindow(QMainWindow, IView, IController):
             "MACD": self.draw_macd_indicator,
             "VOL": self.draw_vol_indicator,
             "BOLL": self.draw_boll_indicator,
-            "WR": self.draw_wr_indicator
+            "WR": self.draw_wr_indicator,
+            "DMI": self.draw_dmi_indicator
         }
         
-        # 获取绘制函数，如果没有匹配到，使用默认绘制函数
-        drawer = indicator_drawers.get(indicator_name, self.draw_kdj_indicator)
+        # 为所有新指标添加默认绘制函数，避免显示错误
+        drawer = indicator_drawers.get(indicator_name, self.draw_dmi_indicator)
         drawer(plot_widget, x, df_pl)
         
         # 保存指标数据，用于鼠标移动时更新指标数值
@@ -6089,9 +6170,9 @@ class MainWindow(QMainWindow, IView, IController):
         
         # 保存成交量数据
         self.current_volume_data = {
-            'volume': df_pl['volume'].to_list(),
-            'vol_ma5': df_pl['vol_ma5'].to_list(),
-            'vol_ma10': df_pl['vol_ma10'].to_list()
+            'volume': df_pl['volume'].to_list() if 'volume' in df_pl.columns else [],
+            'vol_ma5': df_pl['vol_ma5'].to_list() if 'vol_ma5' in df_pl.columns else [],
+            'vol_ma10': df_pl['vol_ma10'].to_list() if 'vol_ma10' in df_pl.columns else []
         }
         
         # 保存WR数据
