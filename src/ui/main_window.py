@@ -2423,7 +2423,7 @@ class MainWindow(QMainWindow, IView, IController):
                 latest_up = data_df['up'].iloc[-1]
                 latest_dn = data_df['dn'].iloc[-1]
                 # 中轨白色，上轨红色，下轨绿色，与图中指标颜色一致
-                text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='green'>DN: {latest_dn:.2f}</font>"
+                text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='#00FF00'>DN: {latest_dn:.2f}</font>"
             else:
                 text = ""
         else:
@@ -3061,7 +3061,7 @@ class MainWindow(QMainWindow, IView, IController):
                         latest_mb = df_pl['mb'].tail(1)[0]
                         latest_up = df_pl['up'].tail(1)[0]
                         latest_dn = df_pl['dn'].tail(1)[0]
-                        boll_text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='green'>DN: {latest_dn:.2f}</font>"
+                        boll_text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='#00FF00'>DN: {latest_dn:.2f}</font>"
                     else:
                         boll_text = ""
                     self.kdj_values_label.setText(boll_text)
@@ -4017,7 +4017,7 @@ class MainWindow(QMainWindow, IView, IController):
                         current_mb = self.current_boll_data['mb'][index]
                         current_up = self.current_boll_data['up'][index]
                         current_dn = self.current_boll_data['dn'][index]
-                        self.kdj_values_label.setText(f"<font color='white'>MB: {current_mb:.2f}</font>  <font color='red'>UP: {current_up:.2f}</font>  <font color='green'>DN: {current_dn:.2f}</font>")
+                        self.kdj_values_label.setText(f"<font color='white'>MB: {current_mb:.2f}</font>  <font color='red'>UP: {current_up:.2f}</font>  <font color='#00FF00'>DN: {current_dn:.2f}</font>")
                 
                 # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
                 if hasattr(self, 'volume_values_label'):
@@ -4056,7 +4056,7 @@ class MainWindow(QMainWindow, IView, IController):
                         current_mb = self.current_boll_data['mb'][index]
                         current_up = self.current_boll_data['up'][index]
                         current_dn = self.current_boll_data['dn'][index]
-                        self.volume_values_label.setText(f"<font color='white'>MB: {current_mb:.2f}</font>  <font color='red'>UP: {current_up:.2f}</font>  <font color='green'>DN: {current_dn:.2f}</font>")
+                        self.volume_values_label.setText(f"<font color='white'>MB: {current_mb:.2f}</font>  <font color='red'>UP: {current_up:.2f}</font>  <font color='#00FF00'>DN: {current_dn:.2f}</font>")
                 
             # 如果十字线功能启用，更新十字线位置和信息框
             if self.crosshair_enabled and 0 <= index < len(dates):
@@ -5695,8 +5695,8 @@ class MainWindow(QMainWindow, IView, IController):
         plot_widget.plot(x, df_pl['mb'].to_numpy(), pen=pg.mkPen('w', width=1), name='MB')
         # 绘制上轨线（红色）
         plot_widget.plot(x, df_pl['up'].to_numpy(), pen=pg.mkPen('r', width=1), name='UP')
-        # 绘制下轨线（绿色）
-        plot_widget.plot(x, df_pl['dn'].to_numpy(), pen=pg.mkPen('g', width=1), name='DN')
+        # 绘制下轨线（绿色，与K线绿色一致）
+        plot_widget.plot(x, df_pl['dn'].to_numpy(), pen=pg.mkPen(pg.mkColor(0, 255, 0), width=1), name='DN')
 
     def draw_wr_indicator(self, plot_widget, x, df_pl):
         """
@@ -5867,9 +5867,9 @@ class MainWindow(QMainWindow, IView, IController):
         ma20_item = plot_widget.plot(x, df_pl['ma20'].to_numpy(), pen=pg.mkPen('r', width=1), name='MA20')
         self.moving_averages['MA20'] = {'item': ma20_item, 'data': (x, df_pl['ma20'].to_numpy()), 'color': 'r'}
         
-        # 绘制60日均线（绿色）
-        ma60_item = plot_widget.plot(x, df_pl['ma60'].to_numpy(), pen=pg.mkPen('g', width=1), name='MA60')
-        self.moving_averages['MA60'] = {'item': ma60_item, 'data': (x, df_pl['ma60'].to_numpy()), 'color': 'g'}
+        # 绘制60日均线（绿色，与K线绿色一致）
+        ma60_item = plot_widget.plot(x, df_pl['ma60'].to_numpy(), pen=pg.mkPen(pg.mkColor(0, 255, 0), width=1), name='MA60')
+        self.moving_averages['MA60'] = {'item': ma60_item, 'data': (x, df_pl['ma60'].to_numpy()), 'color': pg.mkColor(0, 255, 0)}
         
         # 保存当前鼠标位置和K线索引
         self.current_kline_data = {
@@ -6033,7 +6033,7 @@ class MainWindow(QMainWindow, IView, IController):
                 latest_up = df_pd['up'].iloc[-1]
                 latest_dn = df_pd['dn'].iloc[-1]
                 # 更新标签文本
-                boll_text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='green'>DN: {latest_dn:.2f}</font>"
+                boll_text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='#00FF00'>DN: {latest_dn:.2f}</font>"
             else:
                 boll_text = f"<font color='white'>BOLL指标数据不可用</font>"
             self.kdj_values_label.setText(boll_text)

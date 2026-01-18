@@ -365,7 +365,7 @@ class IndicatorVisualizationPlugin(VisualizationPlugin):
         # 绘制BOLL线
         mb_item = container.plot(x, mb, pen=pg.mkPen('w', width=1), name='MB')
         up_item = container.plot(x, up, pen=pg.mkPen('r', width=1), name='UP')
-        dn_item = container.plot(x, dn, pen=pg.mkPen('g', width=1), name='DN')
+        dn_item = container.plot(x, dn, pen=pg.mkPen(pg.mkColor(0, 255, 0), width=1), name='DN')
     
     def _render_wr(self, df, container):
         """
