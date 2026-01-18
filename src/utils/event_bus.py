@@ -309,8 +309,7 @@ class EventBus:
                 monitor(event_type, signal_name, *args, **kwargs)
             except Exception as e:
                 # 忽略监控器执行错误
-                import logging
-                logging.exception(f"事件监控器执行错误: {e}")
+                logger.exception(f"事件监控器执行错误: {e}")
     
     def get_all_signals(self) -> List[str]:
         """

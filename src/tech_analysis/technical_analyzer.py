@@ -229,7 +229,6 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         Args:
             windows: Boll计算窗口，支持单个窗口或窗口列表
             std_dev: 标准差倍数，默认为2.0
-            parallel: 是否使用并行计算
             
         Returns:
             pd.DataFrame: 包含Boll指标的DataFrame
@@ -262,7 +261,6 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         
         Args:
             windows: WR计算窗口，支持单个窗口或窗口列表，默认[10, 6]（通达信风格）
-            parallel: 是否使用并行计算
             
         Returns:
             pd.DataFrame: 包含WR指标的DataFrame
@@ -681,15 +679,12 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
     
     def calculate_indicator_parallel(self, indicator_type, *args, **kwargs):
         """
-        并行计算特定类型的指标
+        计算特定类型的指标，利用Polars内置并行计算能力
         
         Args:
             indicator_type: 指标类型，如'ma', 'macd', 'rsi', 'kdj', 'vol_ma'或插件名称
             *args: 传递给指标计算方法的位置参数
-            **kwargs: 传递给指标计算方法的关键字参数，包括parallel和max_workers等
-            - parallel: 是否使用并行计算，默认True
-            - max_workers: 最大工作线程数，默认None（使用系统默认值）
-            - batch_size: 批量处理大小，默认None
+            **kwargs: 传递给指标计算方法的关键字参数
         
         Returns:
             pd.DataFrame: 包含计算指标的DataFrame
@@ -755,8 +750,21 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 return self.calculate_plugin_indicator(indicator_type, **kwargs)
             raise ValueError(f"不支持的指标类型: {indicator_type}")
         
+        # 生成缓存键，包含数据哈希和所有参数
+        cache_key = self._generate_cache_key(indicator_type, *args, **kwargs)
+        
+        # 检查缓存中是否已经存在计算结果
+        if cache_key in self._calculate_cache:
+            # 直接使用缓存结果
+            return self._ensure_pandas_df()
+        
         # 调用相应的指标计算方法，利用Polars内置并行
-        return self.indicator_mapping[indicator_type](*args, **kwargs)
+        result = self.indicator_mapping[indicator_type](*args, **kwargs)
+        
+        # 将计算结果存入缓存
+        self._calculate_cache[cache_key] = True
+        
+        return result
     
     def calculate_indicators_parallel(self, indicator_types, *args, **kwargs):
         """
@@ -854,44 +862,53 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         
         # 3. 使用新的批量计算函数进行内置指标计算
         indicators_updated = False
+        success = True
+        error_message = ""
+        
         if builtin_indicators:
-            # 使用新的批量计算函数，将所有指标计算合并到单个查询计划
-            lazy_df = self.pl_df.lazy()
-            lazy_df = calculate_multiple_indicators_polars(lazy_df, builtin_indicators, **params)
-            
-            # 执行计算并更新主DataFrame
-            self.pl_df = lazy_df.collect()
-            
-            # 4. 更新计算状态
-            for indicator in builtin_indicators:
-                if indicator == 'ma':
-                    # 更新MA指标计算状态
-                    windows = params.get('windows', [5, 10, 20, 60])
-                    self.calculated_indicators['ma'].update(windows)
-                elif indicator == 'rsi':
-                    # 更新RSI指标计算状态
-                    windows = params.get('rsi_windows', [14])
-                    self.calculated_indicators['rsi'].update(windows)
-                elif indicator == 'kdj':
-                    # 更新KDJ指标计算状态
-                    windows = params.get('kdj_windows', [14])
-                    self.calculated_indicators['kdj'].update(windows)
-                elif indicator == 'vol_ma':
-                    # 更新VOL_MA指标计算状态
-                    windows = params.get('vol_ma_windows', [5, 10])
-                    self.calculated_indicators['vol_ma'].update(windows)
-                elif indicator == 'wr':
-                    # 更新WR指标计算状态
-                    windows = params.get('wr_windows', [10, 6])
-                    self.calculated_indicators['wr'].update(windows)
-                elif indicator == 'macd':
-                    # 更新MACD指标计算状态
-                    self.calculated_indicators['macd'] = True
-            
-            # 5. 清除转换缓存，因为数据已更新
-            self._pandas_cache = None
-            self._pandas_cache_hash = None
-            indicators_updated = True
+            try:
+                # 使用新的批量计算函数，将所有指标计算合并到单个查询计划
+                lazy_df = self.pl_df.lazy()
+                lazy_df = calculate_multiple_indicators_polars(lazy_df, builtin_indicators, **params)
+                
+                # 执行计算并更新主DataFrame
+                self.pl_df = lazy_df.collect()
+                
+                # 4. 更新计算状态
+                # 使用字典映射替代长if-elif链，减少重复代码
+                indicator_update_map = {
+                    'ma': {'param_key': 'windows', 'default': [5, 10, 20, 60], 'update_type': 'windows'},
+                    'rsi': {'param_key': 'rsi_windows', 'default': [14], 'update_type': 'windows'},
+                    'kdj': {'param_key': 'kdj_windows', 'default': [14], 'update_type': 'windows'},
+                    'vol_ma': {'param_key': 'vol_ma_windows', 'default': [5, 10], 'update_type': 'windows'},
+                    'wr': {'param_key': 'wr_windows', 'default': [10, 6], 'update_type': 'windows'},
+                    'macd': {'update_type': 'boolean'}
+                }
+                
+                for indicator in builtin_indicators:
+                    if indicator in indicator_update_map:
+                        update_info = indicator_update_map[indicator]
+                        if update_info['update_type'] == 'windows':
+                            windows = params.get(update_info['param_key'], update_info['default'])
+                            self.calculated_indicators[indicator].update(windows)
+                        elif update_info['update_type'] == 'boolean':
+                            self.calculated_indicators[indicator] = True
+                
+                # 5. 清除转换缓存，因为数据已更新
+                self._pandas_cache = None
+                self._pandas_cache_hash = None
+                indicators_updated = True
+            except Exception as e:
+                success = False
+                error_message = f"计算内置指标失败: {str(e)}"
+                logger.error(error_message)
+                # 发布错误事件
+                publish(
+                    EventType.INDICATOR_ERROR,
+                    data_type='stock',
+                    indicators=builtin_indicators,
+                    error=error_message
+                )
         
         # 6. 计算插件指标
         plugin_indicators = self.get_available_plugin_indicators()
@@ -909,7 +926,8 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             data_type='stock',
             indicators=indicator_types,
             calculated_indicators=self.calculated_indicators.copy(),
-            success=True
+            success=success,
+            error=error_message if not success else None
         )
 
         # 返回结果，根据参数决定返回类型
