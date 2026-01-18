@@ -25,7 +25,11 @@ class NewsHandler:
         """
         self.config = config
         self.db_manager = db_manager
-        self.session = db_manager.get_session()
+        self.session = None
+        
+        # 只有在db_manager不为None时才获取session
+        if self.db_manager is not None:
+            self.session = db_manager.get_session()
     
     def update_news_data(self, sources: List[str] = None, start_date: str = None, end_date: str = None):
         """

@@ -96,16 +96,28 @@ class TechnicalAnalyzer:
     
     def _calculate_polars_data_hash(self):
         """
-        使用Polars原生方法计算数据哈希
+        使用Polars 1.36.1 API计算数据哈希，修复agg方法错误
         
         Returns:
             int: 唯一的数据哈希值
         """
-        # 只选择关键列进行哈希计算
+        # 只计算关键列的摘要，避免转换为numpy数组
+        # 在Polars 1.36.1中，DataFrame没有agg方法，使用select配合聚合函数
         key_cols = ['open', 'high', 'low', 'close', 'volume']
-        # 选择关键列并转换为numpy数组，然后计算哈希
-        key_data = self.pl_df.select(key_cols).to_numpy()
-        return hash(key_data.tobytes())
+        
+        # 计算关键列的统计量：均值、标准差、最小值、最大值、数量
+        # 使用select方法配合聚合函数，这是Polars 1.36.1支持的API
+        stats = self.pl_df.select(
+            [pl.col(col).mean().alias(f'{col}_mean') for col in key_cols] +
+            [pl.col(col).std().alias(f'{col}_std') for col in key_cols] +
+            [pl.col(col).min().alias(f'{col}_min') for col in key_cols] +
+            [pl.col(col).max().alias(f'{col}_max') for col in key_cols] +
+            [pl.col(col).count().alias(f'{col}_count') for col in key_cols]
+        )
+        
+        # 将统计结果转换为字符串进行哈希
+        stats_str = str(stats.to_dicts()[0])
+        return hash(stats_str)
     
     def _preprocess_data_polars(self):
         """
@@ -741,61 +753,38 @@ class TechnicalAnalyzer:
     
     def calculate_indicators_parallel(self, indicator_types, *args, **kwargs):
         """
-        并行计算多个指标类型
+        计算多个指标类型，利用Polars内置并行计算能力
         
         Args:
             indicator_types: 指标类型列表，如['ma', 'macd', 'rsi', 'kdj', 'vol_ma']或插件名称列表
             *args: 传递给指标计算方法的位置参数
-            **kwargs: 传递给指标计算方法的关键字参数，包括parallel和max_workers
-                - parallel: 是否使用并行计算，默认True
-                - max_workers: 最大工作线程数，默认None（使用系统默认值）
+            **kwargs: 传递给指标计算方法的关键字参数
         
         Returns:
             pd.DataFrame: 包含所有计算指标的DataFrame
         """
-        # 处理指标类型的特殊情况
-        def calculate_wrapper(indicator_type, *args, **kwargs):
-            if indicator_type == 'macd':
-                # MACD不需要windows参数，创建新的kwargs副本并移除windows
-                macd_kwargs = kwargs.copy()
-                if 'windows' in macd_kwargs:
-                    macd_kwargs.pop('windows')
-                self.calculate_indicator(indicator_type, *args, **macd_kwargs)
-            else:
-                self.calculate_indicator(indicator_type, *args, **kwargs)
-        
-        self._parallel_calculate(indicator_types, calculate_wrapper, *args, **kwargs)
-        return self._ensure_pandas_df()
-    
-    def _parallel_calculate(self, items, calculate_func, *args, **kwargs):
-        """
-        并行计算的通用辅助方法，现在改为串行调用，利用Polars内置并行
-        
-        Args:
-            items: 要计算的项目列表
-            calculate_func: 计算函数
-            *args: 传递给计算函数的位置参数
-            **kwargs: 传递给计算函数的关键字参数
-                - parallel: 是否使用并行计算，默认True
-                - max_workers: 最大工作线程数，默认None（使用系统默认值）
-        
-        Returns:
-            None
-        """
-        # 处理参数，但不再使用线程池
-        kwargs.pop('parallel', True)
+        # 移除不再需要的并行相关参数
+        kwargs.pop('parallel', None)
         kwargs.pop('max_workers', None)
         
-        # 串行调用计算函数，Polars会在内部处理并行
-        for item in items:
+        # 直接串行调用，利用Polars内部并行计算
+        for indicator_type in indicator_types:
             try:
-                calculate_func(item, *args, **kwargs)
+                if indicator_type == 'macd':
+                    # MACD不需要windows参数，创建新的kwargs副本并移除windows
+                    macd_kwargs = kwargs.copy()
+                    macd_kwargs.pop('windows', None)
+                    self.calculate_indicator(indicator_type, *args, **macd_kwargs)
+                else:
+                    self.calculate_indicator(indicator_type, *args, **kwargs)
             except Exception as e:
-                logger.error(f"计算项目{item}失败: {e}")
+                logger.error(f"计算指标{indicator_type}失败: {e}")
+        
+        return self._ensure_pandas_df()
     
     def calculate_plugin_indicators_parallel(self, plugin_names, *args, **kwargs):
         """
-        并行计算多个插件指标
+        计算多个插件指标，利用Polars内置并行计算能力
         
         Args:
             plugin_names: 插件名称列表
@@ -808,7 +797,13 @@ class TechnicalAnalyzer:
         if not plugin_names:
             plugin_names = self.get_available_plugin_indicators()
         
-        self._parallel_calculate(plugin_names, self.calculate_plugin_indicator, *args, **kwargs)
+        # 直接串行调用，利用Polars内部并行计算
+        for plugin_name in plugin_names:
+            try:
+                self.calculate_plugin_indicator(plugin_name, *args, **kwargs)
+            except Exception as e:
+                logger.error(f"计算插件指标{plugin_name}失败: {e}")
+        
         return self._ensure_pandas_df()
     
     def calculate_all_indicators(self, parallel=False):
@@ -816,78 +811,52 @@ class TechnicalAnalyzer:
         计算所有支持的技术指标，包括内置指标和插件指标
         
         Args:
-            parallel: 是否使用并行计算
+            parallel: 是否使用并行计算（目前已由Polars内部处理）
             
         Returns:
             pd.DataFrame: 包含所有指标的数据
         """
-        # 1. 收集所有需要计算的指标和参数
-        # 移动平均线窗口
-        ma_windows = [5, 10, 20, 60]
-        ma_windows_to_calculate = [w for w in ma_windows if w not in self.calculated_indicators['ma']]
-        
-        # RSI窗口
-        rsi_windows = [14]
-        rsi_windows_to_calculate = [w for w in rsi_windows if w not in self.calculated_indicators['rsi']]
-        
-        # KDJ窗口
-        kdj_windows = [14]
-        kdj_windows_to_calculate = [w for w in kdj_windows if w not in self.calculated_indicators['kdj']]
-        
-        # 成交量MA窗口
-        vol_ma_windows = [5, 10]
-        vol_ma_windows_to_calculate = [w for w in vol_ma_windows if w not in self.calculated_indicators['vol_ma']]
-        
-        # WR窗口，通达信默认使用WR(10,6)
-        wr_windows = [10, 6]
-        wr_windows_to_calculate = [w for w in wr_windows if w not in self.calculated_indicators['wr']]
+        # 1. 收集所有需要计算的指标和参数，优化检查逻辑
+        indicator_tasks = {
+            'ma': {'windows': [5, 10, 20, 60], 'func': calculate_ma_polars},
+            'rsi': {'windows': [14], 'func': calculate_rsi_polars},
+            'kdj': {'windows': [14], 'func': calculate_kdj_polars},
+            'vol_ma': {'windows': [5, 10], 'func': calculate_vol_ma_polars},
+            'wr': {'windows': [10, 6], 'func': calculate_wr_polars}
+        }
         
         # 2. 使用Polars批量计算所有内置指标
-        # 批量计算MA
-        if ma_windows_to_calculate:
-            self.pl_df = calculate_ma_polars(self.pl_df, ma_windows_to_calculate)
-            for window in ma_windows_to_calculate:
-                self.calculated_indicators['ma'].add(window)
+        indicators_updated = False
         
-        # 计算MACD
+        # 批量计算需要窗口的指标
+        for indicator_type, task in indicator_tasks.items():
+            windows_to_calculate = [w for w in task['windows'] if w not in self.calculated_indicators[indicator_type]]
+            if windows_to_calculate:
+                self.pl_df = task['func'](self.pl_df, windows_to_calculate)
+                # 批量更新计算状态
+                self.calculated_indicators[indicator_type].update(windows_to_calculate)
+                indicators_updated = True
+        
+        # 计算MACD（不需要窗口）
         if not self.calculated_indicators['macd']:
             self.pl_df = calculate_macd_polars(self.pl_df)
             self.calculated_indicators['macd'] = True
+            indicators_updated = True
         
-        # 批量计算RSI
-        if rsi_windows_to_calculate:
-            self.pl_df = calculate_rsi_polars(self.pl_df, rsi_windows_to_calculate)
-            for window in rsi_windows_to_calculate:
-                self.calculated_indicators['rsi'].add(window)
-        
-        # 批量计算KDJ
-        if kdj_windows_to_calculate:
-            self.pl_df = calculate_kdj_polars(self.pl_df, kdj_windows_to_calculate)
-            for window in kdj_windows_to_calculate:
-                self.calculated_indicators['kdj'].add(window)
-        
-        # 批量计算VOL_MA
-        if vol_ma_windows_to_calculate:
-            self.pl_df = calculate_vol_ma_polars(self.pl_df, vol_ma_windows_to_calculate)
-            for window in vol_ma_windows_to_calculate:
-                self.calculated_indicators['vol_ma'].add(window)
-        
-        # 批量计算WR
-        if wr_windows_to_calculate:
-            self.pl_df = calculate_wr_polars(self.pl_df, wr_windows_to_calculate)
-            for window in wr_windows_to_calculate:
-                self.calculated_indicators['wr'].add(window)
-        
-        # 3. 清除转换缓存，因为数据已更新
-        self._pandas_cache = None
-        self._pandas_cache_hash = None
+        # 3. 只有在指标更新时才清除缓存
+        if indicators_updated:
+            self._pandas_cache = None
+            self._pandas_cache_hash = None
         
         # 4. 计算所有插件指标
-        for plugin_name in self.get_available_plugin_indicators():
-            try:
-                self.calculate_plugin_indicator(plugin_name, parallel=parallel)
-            except Exception as e:
-                logger.error(f"计算插件指标{plugin_name}时发生错误: {e}")
+        plugin_indicators = self.get_available_plugin_indicators()
+        if plugin_indicators:
+            for plugin_name in plugin_indicators:
+                try:
+                    # 直接调用插件计算，不传递parallel参数（由Polars内部处理）
+                    self.calculate_plugin_indicator(plugin_name)
+                except Exception as e:
+                    logger.error(f"计算插件指标{plugin_name}时发生错误: {e}")
         
-        # 返回转换后的Pandas DataFrame
+        # 返回转换后的Pandas DataFrame，只有在必要时才转换
         return self._ensure_pandas_df()

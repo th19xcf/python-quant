@@ -298,6 +298,36 @@ class DataManager:
             type_map = data_type_map[data_type]
             type_name = "股票" if data_type == "stock" else "指数"
             
+            def process_result(result):
+                """
+                统一处理数据源结果，转换为Polars DataFrame
+                
+                Args:
+                    result: 数据源返回的结果
+                    
+                Returns:
+                    pl.DataFrame: Polars DataFrame格式的数据
+                """
+                if result is None:
+                    return None
+                
+                # 已经是Polars DataFrame
+                if hasattr(result, 'to_pandas'):
+                    return result
+                
+                # 是pandas DataFrame，转换为Polars
+                if hasattr(result, 'to_dict'):
+                    # 检查是否为空DataFrame
+                    if hasattr(result, 'empty') and result.empty:
+                        return None
+                    return pl.from_pandas(result)
+                
+                # 其他类型，尝试直接转换
+                try:
+                    return pl.DataFrame(result)
+                except Exception:
+                    return None
+            
             # 优先从数据库获取数据
             if self.db_manager and self.db_manager.is_connected():
                 logger.info(f"从数据库获取{type_name}{ts_code}数据")
@@ -317,23 +347,25 @@ class DataManager:
                         
                         data = query.all()
                         if data:
-                            # 转换为DataFrame
-                            data_dict = {
-                                'trade_date': [item.trade_date for item in data],
-                                'open': [item.open for item in data],
-                                'high': [item.high for item in data],
-                                'low': [item.low for item in data],
-                                'close': [item.close for item in data],
-                                'volume': [item.vol for item in data],
-                                'amount': [item.amount for item in data]
-                            }
+                            # 提取数据记录，直接构建适合Polars的字典列表
+                            has_pct_chg = hasattr(data[0], 'pct_chg')
                             
-                            # 只有股票数据有pct_chg字段
-                            if hasattr(data[0], 'pct_chg'):
-                                data_dict['pct_chg'] = [item.pct_chg for item in data]
+                            # 使用列表推导式一次性构建数据记录，比for循环更高效
+                            data_records = [{
+                                'trade_date': item.trade_date,
+                                'open': item.open,
+                                'high': item.high,
+                                'low': item.low,
+                                'close': item.close,
+                                'volume': item.vol,
+                                'amount': item.amount,
+                                **({'pct_chg': item.pct_chg} if has_pct_chg else {})
+                            } for item in data]
                             
-                            df = pl.DataFrame(data_dict)
-                            # 转换为标准格式
+                            # 使用pl.from_dicts创建Polars DataFrame，效率更高
+                            df = pl.from_dicts(data_records)
+                            
+                            # 转换为标准格式，使用向量化的str.strptime替代apply，效率更高
                             df = df.with_columns(
                                 pl.col('trade_date').str.strptime(pl.Datetime, format='%Y%m%d').alias('date')
                             )
@@ -348,6 +380,7 @@ class DataManager:
                 ('baostock', self.baostock_handler)
             ]
             
+            # 先尝试内置数据源
             for source_name, handler in data_sources:
                 if handler:
                     logger.info(f"从{source_name}获取{type_name}{ts_code}数据")
@@ -355,15 +388,11 @@ class DataManager:
                         # 调用相应的数据源方法
                         method_name = type_map['handler_methods'][source_name]
                         result = getattr(handler, method_name)(ts_code, start_date, end_date, freq)
-                        # 如果结果是pandas DataFrame，转换为Polars DataFrame
-                        if hasattr(result, 'to_pandas'):
-                            # 已经是Polars DataFrame
-                            return result
-                        elif hasattr(result, 'to_dict'):
-                            # 是pandas DataFrame，转换为Polars
-                            return pl.from_pandas(result)
-                        else:
-                            return result
+                        
+                        # 统一处理结果
+                        processed_result = process_result(result)
+                        if processed_result is not None:
+                            return processed_result
                     except Exception as source_e:
                         logger.warning(f"从{source_name}获取{type_name}数据失败: {source_e}")
             
@@ -374,17 +403,11 @@ class DataManager:
                     # 调用插件的对应方法
                     method_name = type_map['handler_methods']['plugin']
                     result = getattr(plugin, method_name)(ts_code, start_date, end_date, freq)
-                    if result is not None:
-                        # 检查结果类型并转换为Polars DataFrame
-                        if hasattr(result, 'to_pandas'):
-                            # 已经是Polars DataFrame
-                            return result
-                        elif hasattr(result, 'empty') and not result.empty:
-                            # 是pandas DataFrame且非空，转换为Polars
-                            return pl.from_pandas(result)
-                        elif hasattr(result, 'to_dict'):
-                            # 是pandas DataFrame，转换为Polars
-                            return pl.from_pandas(result)
+                    
+                    # 统一处理结果
+                    processed_result = process_result(result)
+                    if processed_result is not None:
+                        return processed_result
                 except Exception as plugin_e:
                     logger.warning(f"从插件数据源{plugin_name}获取{type_name}数据失败: {plugin_e}")
             

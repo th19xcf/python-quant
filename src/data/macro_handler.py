@@ -26,7 +26,11 @@ class MacroHandler:
         """
         self.config = config
         self.db_manager = db_manager
-        self.session = db_manager.get_session()
+        self.session = None
+        
+        # 只有在db_manager不为None时才获取session
+        if self.db_manager is not None:
+            self.session = db_manager.get_session()
     
     def update_macro_data(self, indicators: List[str] = None):
         """

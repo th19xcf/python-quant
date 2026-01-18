@@ -304,7 +304,7 @@ def calculate_kdj_polars(df, windows=None):
 
 def calculate_boll_polars(df, windows=[20], std_dev=2.0):
     """
-    使用Polars计算Boll指标（布林带）
+    使用Polars批量计算Boll指标（布林带），优化性能
     
     Args:
         df: Polars DataFrame
@@ -322,20 +322,22 @@ def calculate_boll_polars(df, windows=[20], std_dev=2.0):
     if not is_lazy:
         df = df.lazy()
     
-    # 使用Lazy API计算Boll指标
-    result = df
+    # 批量计算所有窗口的Boll指标，减少数据遍历次数
+    # 1. 准备所有计算表达式
+    boll_exprs = []
     for window in windows:
         # 计算移动平均线（中轨线）
         ma_expr = pl.col('close').rolling_mean(window_size=window, min_periods=1).alias(f'mb{window}')
-        # 计算标准差
-        std_expr = pl.col('close').rolling_std(window_size=window, min_periods=1).alias(f'std{window}')
-        # 计算上轨线和下轨线
-        up_expr = (ma_expr + std_expr * std_dev).alias(f'up{window}')
-        dn_expr = (ma_expr - std_expr * std_dev).alias(f'dn{window}')
-        # 添加到结果中
-        result = result.with_columns([ma_expr, up_expr, dn_expr])
+        # 计算上轨线和下轨线，合并标准差计算到表达式中
+        up_expr = (ma_expr + pl.col('close').rolling_std(window_size=window, min_periods=1) * std_dev).alias(f'up{window}')
+        dn_expr = (ma_expr - pl.col('close').rolling_std(window_size=window, min_periods=1) * std_dev).alias(f'dn{window}')
+        # 添加到表达式列表
+        boll_exprs.extend([ma_expr, up_expr, dn_expr])
     
-    # 准备默认列名定义
+    # 2. 一次性添加所有计算结果
+    result = df.with_columns(boll_exprs)
+    
+    # 3. 准备默认列名定义
     default_cols = []
     if len(windows) == 1 or windows[0] in windows:
         window = windows[0]
@@ -345,17 +347,17 @@ def calculate_boll_polars(df, windows=[20], std_dev=2.0):
             pl.col(f'dn{window}').alias('dn')
         ])
     
-    # 添加默认列名
+    # 4. 添加默认列名
     if default_cols:
         result = result.with_columns(*default_cols)
     
-    # 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
+    # 5. 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
     return result.collect() if not is_lazy else result
 
 
 def calculate_wr_polars(df, windows=None):
     """
-    使用Polars计算WR指标（威廉指标），模拟通达信WR(10,6)效果
+    使用Polars批量计算WR指标（威廉指标），优化性能，模拟通达信WR(10,6)效果
     
     Args:
         df: Polars DataFrame
@@ -372,8 +374,11 @@ def calculate_wr_polars(df, windows=None):
     if not is_lazy:
         df = df.lazy()
     
-    # 使用Lazy API计算WR指标
-    result = df
+    # 批量计算WR指标，减少数据遍历次数
+    # 1. 准备所有计算表达式
+    wr_exprs = []
+    temp_cols = []
+    
     for window in windows:
         # 计算n日内最高价
         high_expr = pl.col('high').rolling_max(window_size=window, min_periods=1).alias(f'high_n_{window}')
@@ -381,37 +386,33 @@ def calculate_wr_polars(df, windows=None):
         low_expr = pl.col('low').rolling_min(window_size=window, min_periods=1).alias(f'low_n_{window}')
         # 计算WR值
         wr_expr = ((high_expr - pl.col('close')) / (high_expr - low_expr) * 100).alias(f'wr{window}')
-        # 添加到结果中
-        result = result.with_columns([high_expr, low_expr, wr_expr])
+        # 添加到表达式列表
+        wr_exprs.extend([high_expr, low_expr, wr_expr])
+        # 记录临时列名
+        temp_cols.extend([f'high_n_{window}', f'low_n_{window}'])
     
-    # 准备默认列名定义（兼容旧版本和通达信风格）
+    # 2. 一次性添加所有计算结果
+    result = df.with_columns(wr_exprs)
+    
+    # 3. 准备默认列名定义（兼容旧版本和通达信风格）
     default_cols = []
     if len(windows) >= 1:
         # 旧版本兼容：生成wr列
-        default_cols.extend([
-            pl.col(f'wr{windows[0]}').alias('wr')
-        ])
-        # 通达信风格：生成wr1, wr2列
-        default_cols.extend([
-            pl.col(f'wr{windows[0]}').alias('wr1')
-        ])
+        default_cols.append(pl.col(f'wr{windows[0]}').alias('wr'))
+        # 通达信风格：生成wr1列
+        default_cols.append(pl.col(f'wr{windows[0]}').alias('wr1'))
     if len(windows) >= 2:
         # 通达信风格：生成wr2列
-        default_cols.extend([
-            pl.col(f'wr{windows[1]}').alias('wr2')
-        ])
+        default_cols.append(pl.col(f'wr{windows[1]}').alias('wr2'))
     
-    # 添加默认列名
+    # 4. 添加默认列名
     if default_cols:
         result = result.with_columns(*default_cols)
     
-    # 清理临时列
-    temp_cols = []
-    for window in windows:
-        temp_cols.extend([f'high_n_{window}', f'low_n_{window}'])
+    # 5. 清理临时列
     result = result.drop(temp_cols)
     
-    # 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
+    # 6. 如果输入是DataFrame，则返回DataFrame，否则返回LazyFrame
     return result.collect() if not is_lazy else result
 
 
