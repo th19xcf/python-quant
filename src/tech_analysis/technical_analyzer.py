@@ -25,6 +25,7 @@ from .indicator_calculator import (
     calculate_wr_polars,
     preprocess_data_polars,
     sample_data_polars,
+    calculate_multiple_indicators_polars,
     generate_cache_key
 )
 
@@ -843,95 +844,56 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             # 重新计算数据哈希
             self._data_hash = self._calculate_polars_data_hash()
         
-        # 1. 收集所有需要计算的指标和参数
-        indicator_tasks = {
-            'ma': {'windows': params.get('windows', [5, 10, 20, 60])},
-            'rsi': {'windows': params.get('rsi_windows', [14])},
-            'kdj': {'windows': params.get('kdj_windows', [14])},
-            'vol_ma': {'windows': params.get('vol_ma_windows', [5, 10])},
-            'wr': {'windows': params.get('wr_windows', [10, 6])},
-            'macd': {
-                'fast_period': params.get('fast_period', 12),
-                'slow_period': params.get('slow_period', 26),
-                'signal_period': params.get('signal_period', 9)
-            }
-        }
-        
-        # 确定要计算的指标类型
+        # 1. 确定要计算的指标类型
         if indicator_types is None:
             # 默认计算所有指标
-            indicator_types = list(indicator_tasks.keys())
+            indicator_types = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd']
         
-        # 2. 使用Lazy API构建多指标批量计算查询
-        lazy_df = self.pl_df.lazy()
+        # 2. 准备需要计算的内置指标类型
+        builtin_indicators = [ind for ind in indicator_types if ind in ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd']]
+        
+        # 3. 使用新的批量计算函数进行内置指标计算
         indicators_updated = False
-        
-        # 批量计算指标
-        for indicator_type in indicator_types:
-            if indicator_type in indicator_tasks:
-                if indicator_type == 'ma' and 'ma' in indicator_types:
-                    # 批量计算MA指标
-                    ma_windows = [w for w in indicator_tasks['ma']['windows'] if w not in self.calculated_indicators['ma']]
-                    if ma_windows:
-                        lazy_df = calculate_ma_polars(lazy_df, ma_windows)
-                        self.calculated_indicators['ma'].update(ma_windows)
-                        indicators_updated = True
-                
-                elif indicator_type == 'rsi' and 'rsi' in indicator_types:
-                    # 批量计算RSI指标
-                    rsi_windows = [w for w in indicator_tasks['rsi']['windows'] if w not in self.calculated_indicators['rsi']]
-                    if rsi_windows:
-                        lazy_df = calculate_rsi_polars(lazy_df, rsi_windows)
-                        self.calculated_indicators['rsi'].update(rsi_windows)
-                        indicators_updated = True
-                
-                elif indicator_type == 'kdj' and 'kdj' in indicator_types:
-                    # 批量计算KDJ指标
-                    kdj_windows = [w for w in indicator_tasks['kdj']['windows'] if w not in self.calculated_indicators['kdj']]
-                    if kdj_windows:
-                        lazy_df = calculate_kdj_polars(lazy_df, kdj_windows)
-                        self.calculated_indicators['kdj'].update(kdj_windows)
-                        indicators_updated = True
-                
-                elif indicator_type == 'vol_ma' and 'vol_ma' in indicator_types:
-                    # 批量计算VOL_MA指标
-                    vol_ma_windows = [w for w in indicator_tasks['vol_ma']['windows'] if w not in self.calculated_indicators['vol_ma']]
-                    if vol_ma_windows:
-                        lazy_df = calculate_vol_ma_polars(lazy_df, vol_ma_windows)
-                        self.calculated_indicators['vol_ma'].update(vol_ma_windows)
-                        indicators_updated = True
-                
-                elif indicator_type == 'wr' and 'wr' in indicator_types:
-                    # 批量计算WR指标
-                    wr_windows = [w for w in indicator_tasks['wr']['windows'] if w not in self.calculated_indicators['wr']]
-                    if wr_windows:
-                        lazy_df = calculate_wr_polars(lazy_df, wr_windows)
-                        self.calculated_indicators['wr'].update(wr_windows)
-                        indicators_updated = True
-                
-                elif indicator_type == 'macd' and 'macd' in indicator_types:
-                    # 计算MACD指标
-                    if not self.calculated_indicators['macd']:
-                        macd_params = indicator_tasks['macd']
-                        lazy_df = calculate_macd_polars(
-                            lazy_df, 
-                            macd_params['fast_period'], 
-                            macd_params['slow_period'], 
-                            macd_params['signal_period']
-                        )
-                        self.calculated_indicators['macd'] = True
-                        indicators_updated = True
-        
-        # 2.2 执行批量计算
-        if indicators_updated:
+        if builtin_indicators:
+            # 使用新的批量计算函数，将所有指标计算合并到单个查询计划
+            lazy_df = self.pl_df.lazy()
+            lazy_df = calculate_multiple_indicators_polars(lazy_df, builtin_indicators, **params)
+            
             # 执行计算并更新主DataFrame
             self.pl_df = lazy_df.collect()
             
-            # 3. 清除转换缓存，因为数据已更新
+            # 4. 更新计算状态
+            for indicator in builtin_indicators:
+                if indicator == 'ma':
+                    # 更新MA指标计算状态
+                    windows = params.get('windows', [5, 10, 20, 60])
+                    self.calculated_indicators['ma'].update(windows)
+                elif indicator == 'rsi':
+                    # 更新RSI指标计算状态
+                    windows = params.get('rsi_windows', [14])
+                    self.calculated_indicators['rsi'].update(windows)
+                elif indicator == 'kdj':
+                    # 更新KDJ指标计算状态
+                    windows = params.get('kdj_windows', [14])
+                    self.calculated_indicators['kdj'].update(windows)
+                elif indicator == 'vol_ma':
+                    # 更新VOL_MA指标计算状态
+                    windows = params.get('vol_ma_windows', [5, 10])
+                    self.calculated_indicators['vol_ma'].update(windows)
+                elif indicator == 'wr':
+                    # 更新WR指标计算状态
+                    windows = params.get('wr_windows', [10, 6])
+                    self.calculated_indicators['wr'].update(windows)
+                elif indicator == 'macd':
+                    # 更新MACD指标计算状态
+                    self.calculated_indicators['macd'] = True
+            
+            # 5. 清除转换缓存，因为数据已更新
             self._pandas_cache = None
             self._pandas_cache_hash = None
+            indicators_updated = True
         
-        # 4. 计算插件指标
+        # 6. 计算插件指标
         plugin_indicators = self.get_available_plugin_indicators()
         for plugin_name in plugin_indicators:
             if indicator_types is None or plugin_name in indicator_types:
@@ -941,7 +903,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 except Exception as e:
                     logger.error(f"计算插件指标{plugin_name}时发生错误: {str(e)}")
         
-        # 5. 发布指标计算完成事件
+        # 7. 发布指标计算完成事件
         publish(
             EventType.INDICATOR_CALCULATED,
             data_type='stock',

@@ -63,6 +63,13 @@ def main():
         loaded_count = plugin_manager.load_plugins()
         logger.info(f"插件加载完成，共加载 {loaded_count} 个插件")
         
+        # 设置Polars线程池大小，匹配系统CPU核心数
+        import os
+        cpu_count = os.cpu_count() or 4
+        # 在Polars 1.36.1中，线程池大小通过环境变量设置
+        os.environ['POLARS_MAX_THREADS'] = str(cpu_count)
+        logger.info(f"已通过环境变量设置Polars线程池大小为 {cpu_count}")
+        
         # 初始化插件
         initialized_count = plugin_manager.initialize_plugins()
         logger.info(f"插件初始化完成，共初始化 {initialized_count} 个插件")
