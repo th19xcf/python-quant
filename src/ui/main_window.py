@@ -4442,7 +4442,12 @@ class MainWindow(QMainWindow, IView, IController):
             all_stock_data = []
             
             # 获取股票基本信息映射
-            stock_name_map = self.data_manager.get_stock_basic()
+            stock_name_df = self.data_manager.get_stock_basic()
+            # 将DataFrame转换为字典
+            stock_name_map = {}
+            if not stock_name_df.is_empty():
+                # 转换为字典，格式：{ts_code: name}
+                stock_name_map = dict(zip(stock_name_df['ts_code'].to_list(), stock_name_df['name'].to_list()))
             
             # 更新进度
             self.progress_bar.setValue(30)
