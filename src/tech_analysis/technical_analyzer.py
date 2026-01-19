@@ -28,6 +28,7 @@ from .indicator_calculator import (
     calculate_multiple_indicators_polars,
     generate_cache_key
 )
+from .indicator_manager import global_indicator_manager
 
 
 class TechnicalAnalyzer(ITechnicalAnalyzer):
@@ -174,6 +175,69 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         # 组合所有参数生成唯一哈希
         return hash((self._data_hash, indicator_type, args, sorted_kwargs))
     
+    def _clear_pandas_cache(self):
+        """
+        清除Pandas DataFrame缓存
+        """
+        self._pandas_cache = None
+        self._pandas_cache_hash = None
+    
+    def _calculate_window_based_indicator(self, indicator_type, calc_func, windows):
+        """
+        通用窗口指标计算方法
+        
+        Args:
+            indicator_type: 指标类型
+            calc_func: 具体的计算函数
+            windows: 窗口列表
+            
+        Returns:
+            pd.DataFrame: 包含计算结果的DataFrame
+        """
+        # 确保windows是列表
+        if not isinstance(windows, list):
+            windows = [windows]
+        
+        # 只计算尚未计算过的窗口
+        windows_to_calculate = [w for w in windows if w not in self.calculated_indicators[indicator_type]]
+        
+        if windows_to_calculate:
+            # 调用具体的计算函数
+            self.pl_df = calc_func(self.pl_df, windows_to_calculate)
+            
+            # 更新计算状态
+            self.calculated_indicators[indicator_type].update(windows_to_calculate)
+            
+            # 清除转换缓存
+            self._clear_pandas_cache()
+        
+        return self._ensure_pandas_df()
+    
+    def _calculate_simple_indicator(self, indicator_type, calc_func, **kwargs):
+        """
+        通用非窗口指标计算方法
+        
+        Args:
+            indicator_type: 指标类型
+            calc_func: 具体的计算函数
+            **kwargs: 计算参数
+            
+        Returns:
+            pd.DataFrame: 包含计算结果的DataFrame
+        """
+        # 检查是否已经计算过该指标
+        if not self.calculated_indicators[indicator_type]:
+            # 调用具体的计算函数
+            self.pl_df = calc_func(self.pl_df, **kwargs)
+            
+            # 更新计算状态
+            self.calculated_indicators[indicator_type] = True
+            
+            # 清除转换缓存
+            self._clear_pandas_cache()
+        
+        return self._ensure_pandas_df()
+    
     def _ensure_pandas_df(self):
         """
         确保pandas DataFrame已初始化，仅在需要时转换，并缓存结果
@@ -198,55 +262,21 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         Returns:
             pd.DataFrame: 包含MACD指标的DataFrame
         """
-        # 检查是否已经计算过MACD指标
-        if not self.calculated_indicators['macd']:
-            # 使用Polars计算MACD指标
-            self.pl_df = calculate_macd_polars(self.pl_df, fast_period, slow_period, signal_period)
-            
-            # 更新计算状态
-            self.calculated_indicators['macd'] = True
-            
-            # 清除转换缓存，因为数据已更新
-            self._pandas_cache = None
-            self._pandas_cache_hash = None
-        
-        # 返回转换后的Pandas DataFrame
-        return self._ensure_pandas_df()
+        return self._calculate_simple_indicator('macd', calculate_macd_polars, fast_period=fast_period, slow_period=slow_period, signal_period=signal_period)
     
-    def calculate_kdj(self, windows=14, parallel=False):
+    def calculate_kdj(self, windows=14):
         """
         计算KDJ指标
         
         Args:
             windows: KDJ计算窗口，支持单个窗口或窗口列表
-            parallel: 是否使用并行计算
             
         Returns:
             pd.DataFrame: 包含KDJ指标的DataFrame
         """
-        # 确保windows是列表
-        if not isinstance(windows, list):
-            windows = [windows]
-        
-        # 只计算尚未计算过的窗口
-        windows_to_calculate = [w for w in windows if w not in self.calculated_indicators['kdj']]
-        
-        if windows_to_calculate:
-            # 批量计算KDJ指标（Polars已内部优化）
-            self.pl_df = calculate_kdj_polars(self.pl_df, windows_to_calculate)
-            
-            # 更新计算状态
-            for window in windows_to_calculate:
-                self.calculated_indicators['kdj'].add(window)
-            
-            # 清除转换缓存，因为数据已更新
-            self._pandas_cache = None
-            self._pandas_cache_hash = None
-        
-        # 返回转换后的Pandas DataFrame
-        return self._ensure_pandas_df()
+        return self._calculate_window_based_indicator('kdj', calculate_kdj_polars, windows)
     
-    def calculate_boll(self, windows=[20], std_dev=2.0, parallel=False):
+    def calculate_boll(self, windows=[20], std_dev=2.0):
         """
         计算Boll指标（布林带）
         
@@ -265,21 +295,18 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         windows_to_calculate = [w for w in windows if w not in self.calculated_indicators['boll']]
         
         if windows_to_calculate:
-            # 批量计算Boll指标（Polars已内部优化）
+            # 计算Boll指标
             self.pl_df = calculate_boll_polars(self.pl_df, windows_to_calculate, std_dev)
             
             # 更新计算状态
-            for window in windows_to_calculate:
-                self.calculated_indicators['boll'].add(window)
+            self.calculated_indicators['boll'].update(windows_to_calculate)
             
-            # 清除转换缓存，因为数据已更新
-            self._pandas_cache = None
-            self._pandas_cache_hash = None
+            # 清除转换缓存
+            self._clear_pandas_cache()
         
-        # 返回转换后的Pandas DataFrame
         return self._ensure_pandas_df()
     
-    def calculate_wr(self, windows=None, parallel=False):
+    def calculate_wr(self, windows=None):
         """
         计算WR指标（威廉指标）
         
@@ -292,27 +319,8 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         # 通达信默认使用WR10和WR6
         if windows is None:
             windows = [10, 6]
-        # 确保windows是列表
-        elif not isinstance(windows, list):
-            windows = [windows]
         
-        # 只计算尚未计算过的窗口
-        windows_to_calculate = [w for w in windows if w not in self.calculated_indicators['wr']]
-        
-        if windows_to_calculate:
-            # 批量计算WR指标（Polars已内部优化）
-            self.pl_df = calculate_wr_polars(self.pl_df, windows_to_calculate)
-            
-            # 更新计算状态
-            for window in windows_to_calculate:
-                self.calculated_indicators['wr'].add(window)
-            
-            # 清除转换缓存，因为数据已更新
-            self._pandas_cache = None
-            self._pandas_cache_hash = None
-        
-        # 返回转换后的Pandas DataFrame
-        return self._ensure_pandas_df()
+        return self._calculate_window_based_indicator('wr', calculate_wr_polars, windows)
     
     def sample_data(self, target_points=1000, strategy='uniform', return_polars=False):
         """
@@ -370,30 +378,32 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         if self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():
             return indicator_type in self.calculated_indicators['plugin']
         
+        # 检查指标类型是否存在
         if indicator_type not in self.calculated_indicators:
             return False
         
-        if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma']:
-            return window in self.calculated_indicators[indicator_type]
-        elif indicator_type in ['macd']:
-            return self.calculated_indicators[indicator_type]
+        # 获取指标计算状态
+        status = self.calculated_indicators[indicator_type]
         
-        return False
+        # 根据状态类型判断
+        if isinstance(status, set):
+            # 窗口型指标，需要检查窗口是否已计算
+            return window is not None and window in status
+        else:
+            # 非窗口型指标，直接返回状态值
+            return status
     
     def reset_calculation(self, indicator_type=None, window=None):
         """
-        重置指标计算状态，可选择重置特定指标或所有指标，使用批量操作优化
+        重置指标计算状态，可选择重置特定指标或所有指标
         
         Args:
             indicator_type: 要重置的指标类型，None表示重置所有指标
             window: 对于需要窗口的指标，指定要重置的窗口，None表示重置该类型的所有窗口
         """
-        # 先收集需要删除的列，再统一处理，减少对共享数据的修改次数
-        columns_to_drop = []
-        
-        if not indicator_type:
-            # 重置所有指标
-            # 重新初始化计算状态字典，避免直接修改共享数据
+        def _reset_all_indicators():
+            """重置所有指标"""
+            # 重新初始化计算状态字典
             self.calculated_indicators = {
                 'ma': set(),
                 'macd': False,
@@ -401,10 +411,23 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 'kdj': set(),
                 'vol_ma': set(),
                 'boll': set(),
+                'wr': set(),
+                'dmi': set(),
+                'cci': set(),
+                'roc': set(),
+                'mtm': set(),
+                'obv': False,
+                'vr': set(),
+                'psy': set(),
+                'trix': set(),
+                'brar': set(),
+                'asi': set(),
+                'emv': set(),
+                'mcst': set(),
                 'plugin': set()
             }
             # 重置缓存
-            self._calculate_cache = {}
+            self._calculate_cache.clear()
             # 重置插件指标映射
             self._init_plugin_indicator_mapping()
             # 重置数据哈希
@@ -415,91 +438,105 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             self.pl_df = self.pl_df.select(original_columns)
             
             # 清除转换缓存
-            self._pandas_cache = None
-            self._pandas_cache_hash = None
+            self._clear_pandas_cache()
+        
+        def _reset_plugin_indicator(plugin_name):
+            """重置特定插件指标"""
+            if plugin_name in self.calculated_indicators['plugin']:
+                self.calculated_indicators['plugin'].remove(plugin_name)
+                # 从缓存中删除
+                cache_key = self._generate_cache_key(plugin_name)
+                self._calculate_cache.pop(cache_key, None)
+                self._clear_pandas_cache()
+        
+        def _reset_window_based_indicator(ind_type, win):
+            """重置基于窗口的指标"""
+            columns_to_drop = []
+            
+            if win:
+                # 重置特定窗口
+                self.calculated_indicators[ind_type].discard(win)
+                # 准备删除的列名
+                if ind_type == 'vol_ma':
+                    columns_to_drop = [f'vol_ma{win}']
+                elif ind_type == 'boll':
+                    columns_to_drop = [f'mb{win}', f'up{win}', f'dn{win}']
+                else:
+                    columns_to_drop = [f'{ind_type}{win}']
+                # 从缓存中删除
+                cache_key = self._generate_cache_key(ind_type, win)
+                self._calculate_cache.pop(cache_key, None)
+            else:
+                # 重置该类型的所有窗口
+                windows = list(self.calculated_indicators[ind_type])
+                for w in windows:
+                    if ind_type == 'vol_ma':
+                        columns_to_drop.append(f'vol_ma{w}')
+                    elif ind_type == 'boll':
+                        columns_to_drop.extend([f'mb{w}', f'up{w}', f'dn{w}'])
+                    else:
+                        columns_to_drop.append(f'{ind_type}{w}')
+                    # 从缓存中删除
+                    cache_key = self._generate_cache_key(ind_type, w)
+                    self._calculate_cache.pop(cache_key, None)
+                # 清空该类型的所有窗口
+                self.calculated_indicators[ind_type].clear()
+                # 删除默认列名
+                if ind_type == 'boll':
+                    columns_to_drop.extend(['mb', 'up', 'dn'])
+                elif ind_type == 'wr':
+                    columns_to_drop.extend(['wr'])
+            
+            # 统一删除需要删除的列
+            if columns_to_drop:
+                columns_to_drop_existing = [col for col in columns_to_drop if col in self.pl_df.columns]
+                if columns_to_drop_existing:
+                    self.pl_df = self.pl_df.drop(columns_to_drop_existing)
+                    self._clear_pandas_cache()
+        
+        def _reset_simple_indicator(ind_type):
+            """重置简单指标"""
+            self.calculated_indicators[ind_type] = False
+            # 准备删除的列名
+            if ind_type == 'macd':
+                columns_to_drop = ['macd', 'macd_signal', 'macd_hist']
+            elif ind_type == 'obv':
+                columns_to_drop = ['obv']
+            else:
+                columns_to_drop = [ind_type]
+            
+            # 从缓存中删除
+            cache_key = self._generate_cache_key(ind_type)
+            self._calculate_cache.pop(cache_key, None)
+            
+            # 统一删除需要删除的列
+            columns_to_drop_existing = [col for col in columns_to_drop if col in self.pl_df.columns]
+            if columns_to_drop_existing:
+                self.pl_df = self.pl_df.drop(columns_to_drop_existing)
+                self._clear_pandas_cache()
+        
+        # 主逻辑
+        if not indicator_type:
+            # 重置所有指标
+            _reset_all_indicators()
         elif self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():
             # 重置特定插件指标
-            if indicator_type in self.calculated_indicators['plugin']:
-                self.calculated_indicators['plugin'].remove(indicator_type)
-                # 对于插件指标，目前无法自动确定要删除的列，由插件自行管理
-                # 从缓存中删除
-                cache_key = self._generate_cache_key(indicator_type)
-                if cache_key in self._calculate_cache:
-                    del self._calculate_cache[cache_key]
-                # 清除转换缓存
-                self._pandas_cache = None
-                self._pandas_cache_hash = None
+            _reset_plugin_indicator(indicator_type)
         elif indicator_type in self.calculated_indicators:
-            if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma', 'boll', 'wr']:
-                if window:
-                    # 重置特定窗口
-                    self.calculated_indicators[indicator_type].discard(window)
-                    # 准备删除的列名
-                    if indicator_type == 'vol_ma':
-                        column_name = f'vol_ma{window}'
-                        columns_to_drop.append(column_name)
-                    elif indicator_type == 'boll':
-                        # Boll指标需要删除中轨线、上轨线和下轨线
-                        columns_to_drop.extend([f'mb{window}', f'up{window}', f'dn{window}'])
-                    else:
-                        column_name = f'{indicator_type}{window}'
-                        columns_to_drop.append(column_name)
-                    # 从缓存中删除
-                    cache_key = self._generate_cache_key(indicator_type, window)
-                    if cache_key in self._calculate_cache:
-                        del self._calculate_cache[cache_key]
-                else:
-                    # 重置该类型的所有窗口
-                    windows = list(self.calculated_indicators[indicator_type])
-                    for w in windows:
-                        if indicator_type == 'vol_ma':
-                            column_name = f'vol_ma{w}'
-                            columns_to_drop.append(column_name)
-                        elif indicator_type == 'boll':
-                            # Boll指标需要删除中轨线、上轨线和下轨线
-                            columns_to_drop.extend([f'mb{w}', f'up{w}', f'dn{w}'])
-                        else:
-                            column_name = f'{indicator_type}{w}'
-                            columns_to_drop.append(column_name)
-                        # 从缓存中删除
-                        cache_key = self._generate_cache_key(indicator_type, w)
-                        if cache_key in self._calculate_cache:
-                            del self._calculate_cache[cache_key]
-                    # 清空该类型的所有窗口
-                    self.calculated_indicators[indicator_type].clear()
-                    # 对于Boll指标，还需要删除默认列名
-                    if indicator_type == 'boll':
-                        columns_to_drop.extend(['mb', 'up', 'dn'])
-                    # 对于WR指标，还需要删除默认列名
-                    elif indicator_type == 'wr':
-                        columns_to_drop.extend(['wr'])
-            elif indicator_type in ['macd']:
-                # 重置MACD指标
-                self.calculated_indicators[indicator_type] = False
-                # 准备删除的MACD相关列
-                columns_to_drop.extend(['macd', 'macd_signal', 'macd_hist'])
-                # 从缓存中删除
-                cache_key = self._generate_cache_key(indicator_type)
-                if cache_key in self._calculate_cache:
-                    del self._calculate_cache[cache_key]
+            if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma', 'boll', 'wr', 'dmi', 'cci', 'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']:
+                # 重置基于窗口的指标
+                _reset_window_based_indicator(indicator_type, window)
+            elif indicator_type in ['macd', 'obv']:
+                # 重置简单指标
+                _reset_simple_indicator(indicator_type)
             elif indicator_type == 'plugin':
                 # 重置所有插件指标
                 self.calculated_indicators['plugin'].clear()
-                # 对于插件指标，目前无法自动确定要删除的列，由插件自行管理
                 # 从缓存中删除所有插件指标
                 for cache_key in list(self._calculate_cache.keys()):
                     if cache_key.startswith('plugin_'):
                         del self._calculate_cache[cache_key]
-        
-        # 统一删除需要删除的列
-        if columns_to_drop:
-            # 从Polars DataFrame中删除列
-            columns_to_drop_existing = [col for col in columns_to_drop if col in self.pl_df.columns]
-            if columns_to_drop_existing:
-                self.pl_df = self.pl_df.drop(columns_to_drop_existing)
-                # 清除转换缓存
-                self._pandas_cache = None
-                self._pandas_cache_hash = None
+                self._clear_pandas_cache()
     
     def get_calculated_indicators(self):
         """
@@ -510,96 +547,41 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         """
         return self.calculated_indicators.copy()
     
-    def calculate_ma(self, windows=[5, 10, 20, 60], parallel=False):
+    def calculate_ma(self, windows=[5, 10, 20, 60]):
         """
         计算移动平均线
         
         Args:
             windows: 移动平均窗口列表
-            parallel: 是否使用并行计算
             
         Returns:
             pd.DataFrame: 包含移动平均线的DataFrame
         """
-        # 只计算尚未计算过的窗口
-        windows_to_calculate = [w for w in windows if w not in self.calculated_indicators['ma']]
-        
-        if windows_to_calculate:
-            # 使用Polars计算移动平均线，利用其内置并行能力
-            self.pl_df = calculate_ma_polars(self.pl_df, windows_to_calculate)
-            
-            # 更新计算状态
-            for window in windows_to_calculate:
-                self.calculated_indicators['ma'].add(window)
-            
-            # 清除转换缓存，因为数据已更新
-            self._pandas_cache = None
-            self._pandas_cache_hash = None
-        
-        # 返回转换后的Pandas DataFrame
-        return self._ensure_pandas_df()
+        return self._calculate_window_based_indicator('ma', calculate_ma_polars, windows)
     
-    def calculate_rsi(self, windows=14, parallel=False):
+    def calculate_rsi(self, windows=14):
         """
         计算RSI指标
         
         Args:
             windows: RSI计算窗口，支持单个窗口或窗口列表
-            parallel: 是否使用并行计算
             
         Returns:
             pd.DataFrame: 包含RSI指标的DataFrame
         """
-        # 确保windows是列表
-        if not isinstance(windows, list):
-            windows = [windows]
-        
-        # 只计算尚未计算过的窗口
-        windows_to_calculate = [w for w in windows if w not in self.calculated_indicators['rsi']]
-        
-        if windows_to_calculate:
-            # 批量计算RSI指标（Polars已内部优化）
-            self.pl_df = calculate_rsi_polars(self.pl_df, windows_to_calculate)
-            
-            # 更新计算状态
-            for window in windows_to_calculate:
-                self.calculated_indicators['rsi'].add(window)
-            
-            # 清除转换缓存，因为数据已更新
-            self._pandas_cache = None
-            self._pandas_cache_hash = None
-        
-        # 返回转换后的Pandas DataFrame
-        return self._ensure_pandas_df()
+        return self._calculate_window_based_indicator('rsi', calculate_rsi_polars, windows)
     
-    def calculate_vol_ma(self, windows=[5, 10], parallel=False):
+    def calculate_vol_ma(self, windows=[5, 10]):
         """
         计算成交量移动平均线
         
         Args:
             windows: 移动平均窗口列表
-            parallel: 是否使用并行计算
             
         Returns:
             pd.DataFrame: 包含成交量移动平均线的DataFrame
         """
-        # 只计算尚未计算过的窗口
-        windows_to_calculate = [w for w in windows if w not in self.calculated_indicators['vol_ma']]
-        
-        if windows_to_calculate:
-            # 使用Polars计算成交量移动平均线，利用其内置并行能力
-            self.pl_df = calculate_vol_ma_polars(self.pl_df, windows_to_calculate)
-            
-            # 更新计算状态
-            for window in windows_to_calculate:
-                self.calculated_indicators['vol_ma'].add(window)
-            
-            # 清除转换缓存，因为数据已更新
-            self._pandas_cache = None
-            self._pandas_cache_hash = None
-        
-        # 返回转换后的Pandas DataFrame
-        return self._ensure_pandas_df()
+        return self._calculate_window_based_indicator('vol_ma', calculate_vol_ma_polars, windows)
     
     def _init_plugin_indicator_mapping(self):
         """
@@ -612,7 +594,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         available_indicators = self.plugin_manager.get_available_indicator_plugins()
         
         # 为每个指标插件创建对应的计算方法
-        for plugin_name, plugin in available_indicators.items():
+        for plugin_name in available_indicators:
             # 动态添加指标映射
             self.indicator_mapping[plugin_name] = lambda *args, plugin_name=plugin_name, **kwargs: self.calculate_plugin_indicator(plugin_name, *args, **kwargs)
     
@@ -667,11 +649,9 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                             *[result_pl[col].alias(col) for col in new_columns]
                         )
                     
-                    # 更新计算状态
+                    # 更新计算状态和清除缓存
                     self.calculated_indicators['plugin'].add(plugin_name)
-                    # 清除转换缓存
-                    self._pandas_cache = None
-                    self._pandas_cache_hash = None
+                    self._clear_pandas_cache()
             else:
                 # 旧插件，使用pandas DataFrame
                 # 只在必要时转换为Pandas DataFrame
@@ -691,11 +671,9 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                             *[result_pl[col].alias(col) for col in new_columns]
                         )
                     
-                    # 更新计算状态
+                    # 更新计算状态和清除缓存
                     self.calculated_indicators['plugin'].add(plugin_name)
-                    # 清除转换缓存
-                    self._pandas_cache = None
-                    self._pandas_cache_hash = None
+                    self._clear_pandas_cache()
         except Exception as e:
             raise RuntimeError(f"计算插件指标{plugin_name}失败: {str(e)}")
         
@@ -713,9 +691,9 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         Returns:
             pd.DataFrame: 包含计算指标的DataFrame
         """
-        # 检查指标类型是否支持并行计算
+        # 检查指标类型是否支持多窗口计算
         if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma', 'dmi', 'cci', 'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']:
-            # 对于支持多窗口的指标，使用并行计算不同窗口
+            # 对于支持多窗口的指标
             windows = kwargs.get('windows', [14])
             if not isinstance(windows, list):
                 windows = [windows]
@@ -724,10 +702,6 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             windows_to_calculate = [w for w in windows if w not in self.calculated_indicators[indicator_type]]
             
             if windows_to_calculate:
-                # 处理参数，但不再使用线程池
-                kwargs.pop('parallel', True)
-                kwargs.pop('max_workers', None)
-                
                 # 直接调用指标计算函数，利用Polars内置并行
                 if indicator_type == 'ma':
                     self.pl_df = calculate_ma_polars(self.pl_df, windows_to_calculate)
@@ -745,12 +719,10 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     self.pl_df = lazy_df.collect()
                 
                 # 更新计算状态
-                for window in windows_to_calculate:
-                    self.calculated_indicators[indicator_type].add(window)
+                self.calculated_indicators[indicator_type].update(windows_to_calculate)
                 
-                # 清除转换缓存，因为数据已更新
-                self._pandas_cache = None
-                self._pandas_cache_hash = None
+                # 清除转换缓存
+                self._clear_pandas_cache()
         elif indicator_type in ['macd', 'obv']:
             # 对于不支持多窗口的指标，直接使用批量计算函数
             lazy_df = self.pl_df.lazy()
@@ -760,9 +732,8 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             # 更新计算状态
             self.calculated_indicators[indicator_type] = True
             
-            # 清除转换缓存，因为数据已更新
-            self._pandas_cache = None
-            self._pandas_cache_hash = None
+            # 清除转换缓存
+            self._clear_pandas_cache()
         else:
             # 对于插件指标，调用常规计算方法
             self.calculate_indicator(indicator_type, *args, **kwargs)
@@ -782,31 +753,37 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         Returns:
             pd.DataFrame: 包含计算指标的DataFrame
         """
-        # 移除parallel参数，因为Polars会自动处理并行
-        kwargs.pop('parallel', None)
+        # 检查是否为插件指标
+        if self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():
+            # 调用插件指标计算方法
+            return self.calculate_plugin_indicator(indicator_type, **kwargs)
         
-        if indicator_type not in self.indicator_mapping:
-            # 检查是否为插件指标
-            if self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():
-                # 调用插件指标计算方法
-                return self.calculate_plugin_indicator(indicator_type, **kwargs)
-            raise ValueError(f"不支持的指标类型: {indicator_type}")
-        
-        # 生成缓存键，包含数据哈希和所有参数
-        cache_key = self._generate_cache_key(indicator_type, *args, **kwargs)
-        
-        # 检查缓存中是否已经存在计算结果
-        if cache_key in self._calculate_cache:
-            # 直接使用缓存结果
+        # 使用指标管理器计算内置指标
+        try:
+            # 使用指标管理器计算指标
+            result_df = global_indicator_manager.calculate_indicator(
+                self.pl_df, indicator_type, return_polars=True, **kwargs
+            )
+            
+            # 更新内部DataFrame
+            self.pl_df = result_df
+            
+            # 清除转换缓存
+            self._clear_pandas_cache()
+            
+            # 更新计算状态
+            if indicator_type in self.calculated_indicators:
+                if isinstance(self.calculated_indicators[indicator_type], set):
+                    windows = kwargs.get('windows', [14])
+                    if not isinstance(windows, list):
+                        windows = [windows]
+                    self.calculated_indicators[indicator_type].update(windows)
+                else:
+                    self.calculated_indicators[indicator_type] = True
+            
             return self._ensure_pandas_df()
-        
-        # 调用相应的指标计算方法，利用Polars内置并行
-        result = self.indicator_mapping[indicator_type](*args, **kwargs)
-        
-        # 将计算结果存入缓存
-        self._calculate_cache[cache_key] = True
-        
-        return result
+        except ValueError as e:
+            raise ValueError(f"不支持的指标类型: {indicator_type}") from e
     
     def calculate_indicators_parallel(self, indicator_types, *args, **kwargs):
         """
@@ -820,22 +797,49 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         Returns:
             pd.DataFrame: 包含所有计算指标的DataFrame
         """
-        # 移除不再需要的并行相关参数
-        kwargs.pop('parallel', None)
-        kwargs.pop('max_workers', None)
+        # 分离内置指标和插件指标
+        builtin_indicators = []
+        plugin_indicators = []
         
-        # 直接串行调用，利用Polars内部并行计算
         for indicator_type in indicator_types:
+            if self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():
+                plugin_indicators.append(indicator_type)
+            else:
+                builtin_indicators.append(indicator_type)
+        
+        # 批量计算内置指标
+        if builtin_indicators:
             try:
-                if indicator_type == 'macd':
-                    # MACD不需要windows参数，创建新的kwargs副本并移除windows
-                    macd_kwargs = kwargs.copy()
-                    macd_kwargs.pop('windows', None)
-                    self.calculate_indicator(indicator_type, *args, **macd_kwargs)
-                else:
-                    self.calculate_indicator(indicator_type, *args, **kwargs)
+                # 使用指标管理器批量计算内置指标
+                result_df = global_indicator_manager.calculate_indicators(
+                    self.pl_df, builtin_indicators, return_polars=True, **kwargs
+                )
+                
+                # 更新内部DataFrame
+                self.pl_df = result_df
+                
+                # 清除转换缓存
+                self._clear_pandas_cache()
+                
+                # 更新计算状态
+                for indicator_type in builtin_indicators:
+                    if indicator_type in self.calculated_indicators:
+                        if isinstance(self.calculated_indicators[indicator_type], set):
+                            windows = kwargs.get(f'{indicator_type}_windows', kwargs.get('windows', [14]))
+                            if not isinstance(windows, list):
+                                windows = [windows]
+                            self.calculated_indicators[indicator_type].update(windows)
+                        else:
+                            self.calculated_indicators[indicator_type] = True
             except Exception as e:
-                logger.error(f"计算指标{indicator_type}失败: {e}")
+                logger.error(f"计算内置指标失败: {e}")
+        
+        # 计算插件指标
+        for plugin_name in plugin_indicators:
+            try:
+                self.calculate_plugin_indicator(plugin_name, **kwargs)
+            except Exception as e:
+                logger.error(f"计算插件指标{plugin_name}失败: {e}")
         
         return self._ensure_pandas_df()
     
@@ -863,13 +867,13 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         
         return self._ensure_pandas_df()
     
-    def calculate_all_indicators(self, data: Union[pl.DataFrame, pd.DataFrame], indicator_types: Optional[List[str]] = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
+    def calculate_all_indicators(self, data: Optional[Union[pl.DataFrame, pd.DataFrame]] = None, indicator_types: Optional[List[str]] = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
         """
         计算多个技术指标
         使用多指标批量计算框架，充分利用Polars的Lazy API和并行计算能力
         
         Args:
-            data: 股票数据
+            data: 股票数据，None表示使用现有数据
             indicator_types: 指标类型列表，默认计算所有指标
             **params: 指标计算参数
         
