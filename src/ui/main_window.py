@@ -4098,6 +4098,11 @@ class MainWindow(QMainWindow, IView, IController):
                         current_trix = self.current_trix_data['trix'][index]
                         current_trma = self.current_trix_data['trma'][index]
                         self.kdj_values_label.setText(f"<font color='#FFFFFF'>TRIX: {current_trix:.2f}</font>  <font color='#FFFF00'>MATRIX: {current_trma:.2f}</font>")
+                    elif current_indicator == "BRAR" and hasattr(self, 'current_brar_data') and 0 <= index < len(self.current_brar_data['br']):
+                        # 更新BRAR标签，颜色与图中指标一致
+                        current_br = self.current_brar_data['br'][index]
+                        current_ar = self.current_brar_data['ar'][index]
+                        self.kdj_values_label.setText(f"<font color='#FFFF00'>BR: {current_br:.2f}</font>  <font color='#FFFFFF'>AR: {current_ar:.2f}</font>")
                 
                 # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
                 if hasattr(self, 'volume_values_label'):
@@ -5873,6 +5878,36 @@ class MainWindow(QMainWindow, IView, IController):
         # 绘制MATRIX线（黄色）
         plot_widget.plot(x, df_pl['trma'].to_numpy(), pen=pg.mkPen(color='#FFFF00', width=1.0), name='MATRIX')
     
+    def draw_brar_indicator(self, plot_widget, x, df_pl):
+        """
+        绘制BRAR指标
+        
+        Args:
+            plot_widget: 绘图控件
+            x: x轴数据
+            df_pl: polars DataFrame，包含brar数据
+        """
+        # 导入pyqtgraph
+        import pyqtgraph as pg
+        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+        
+        # 确保BRAR相关列存在
+        if 'br' not in df_pl.columns or 'ar' not in df_pl.columns:
+            # 使用TechnicalAnalyzer计算BRAR指标
+            analyzer = TechnicalAnalyzer(df_pl)
+            analyzer.calculate_indicator_parallel('brar', windows=[26])
+            df_pl = analyzer.get_data(return_polars=True)
+        
+        # 绘制BRAR指标，使用通达信配色
+        # 设置Y轴范围，通达信BRAR通常在0-200之间
+        max_val = max(df_pl['br'].max(), df_pl['ar'].max()) * 1.2
+        plot_widget.setYRange(0, max(200, max_val))
+        
+        # 绘制BR线（黄色）
+        plot_widget.plot(x, df_pl['br'].to_numpy(), pen=pg.mkPen(color='#FFFF00', width=1.0), name='BR')
+        # 绘制AR线（白色）
+        plot_widget.plot(x, df_pl['ar'].to_numpy(), pen=pg.mkPen(color='#FFFFFF', width=1.0), name='AR')
+    
     def draw_k_line_indicator(self, plot_widget, df, dates, opens, highs, lows, closes, df_pl):
         """
         绘制K线图
@@ -6101,7 +6136,8 @@ class MainWindow(QMainWindow, IView, IController):
             "BOLL": self.draw_boll_indicator,
             "WR": self.draw_wr_indicator,
             "DMI": self.draw_dmi_indicator,
-            "TRIX": self.draw_trix_indicator
+            "TRIX": self.draw_trix_indicator,
+            "BRAR": self.draw_brar_indicator
         }
         
         # 为所有新指标添加默认绘制函数，避免显示错误
@@ -6224,6 +6260,16 @@ class MainWindow(QMainWindow, IView, IController):
             else:
                 trix_text = f"<font color='white'>TRIX指标数据不可用</font>"
             self.kdj_values_label.setText(trix_text)
+        elif current_indicator == "BRAR":
+            # 获取最新的BRAR值
+            if 'br' in df_pd.columns and 'ar' in df_pd.columns:
+                latest_br = df_pd['br'].iloc[-1]
+                latest_ar = df_pd['ar'].iloc[-1]
+                # 更新标签文本，使用通达信风格
+                brar_text = f"<font color='#FFFF00'>BR: {latest_br:.2f}</font>  <font color='#FFFFFF'>AR: {latest_ar:.2f}</font>"
+            else:
+                brar_text = f"<font color='white'>BRAR指标数据不可用</font>"
+            self.kdj_values_label.setText(brar_text)
         else:
             # 默认绘制KDJ指标，显示KDJ数值
             if 'k' in df_pd.columns and 'd' in df_pd.columns and 'j' in df_pd.columns:
@@ -6294,5 +6340,11 @@ class MainWindow(QMainWindow, IView, IController):
         self.current_trix_data = {
             'trix': df_pl['trix'].to_list() if 'trix' in df_pl.columns else [],
             'trma': df_pl['trma'].to_list() if 'trma' in df_pl.columns else []
+        }
+        
+        # 保存BRAR数据
+        self.current_brar_data = {
+            'br': df_pl['br'].to_list() if 'br' in df_pl.columns else [],
+            'ar': df_pl['ar'].to_list() if 'ar' in df_pl.columns else []
         }
            
