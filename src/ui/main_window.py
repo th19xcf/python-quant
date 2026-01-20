@@ -2414,11 +2414,11 @@ class MainWindow(QMainWindow, IView, IController):
             latest_j = data_df['j'].iloc[-1]
             text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
         elif indicator_name == "MACD":
-            # MACD指标数值显示
+            # MACD指标数值显示，使用通达信风格
             latest_macd = data_df['macd'].iloc[-1]
             latest_macd_signal = data_df['macd_signal'].iloc[-1]
             latest_macd_hist = data_df['macd_hist'].iloc[-1]
-            text = f"<font color='white'>DIF: {latest_macd:.2f}</font>  <font color='yellow'>DEA: {latest_macd_signal:.2f}</font>  <font color='magenta'>MACD: {latest_macd_hist:.2f}</font>"
+            text = f"<font color='white'>MACD(12,26,9) DIF: {latest_macd:.2f} DEA: {latest_macd_signal:.2f} MACD: {latest_macd_hist:.2f}</font>"
         elif indicator_name == "MA":
             # MA指标数值显示
             latest_ma5 = data_df['ma5'].iloc[-1]
@@ -2533,15 +2533,15 @@ class MainWindow(QMainWindow, IView, IController):
             self._draw_indicator_curve(plot_widget, x, j_values, 'magenta', 1, 'J')
             self._setup_indicator_axis(plot_widget, x, np.column_stack((k_values, d_values, j_values)).flatten())
         elif indicator_name == "MACD":
-            # 绘制MACD指标
+            # 绘制MACD指标，使用通达信配色
             macd_values = get_col_values(data_df, 'macd')
             macd_signal_values = get_col_values(data_df, 'macd_signal')
             macd_hist_values = get_col_values(data_df, 'macd_hist')
             
-            self._draw_indicator_curve(plot_widget, x, macd_values, 'blue', 1, 'DIF')
-            self._draw_indicator_curve(plot_widget, x, macd_signal_values, 'red', 1, 'DEA')
-            # MACD柱状图使用默认宽度，与K线图柱体宽度保持一致
-            self._draw_indicator_histogram(plot_widget, x, macd_hist_values, 'r', 'g')
+            self._draw_indicator_curve(plot_widget, x, macd_values, '#FFFFFF', 1, 'DIF')
+            self._draw_indicator_curve(plot_widget, x, macd_signal_values, '#FFFF00', 1, 'DEA')
+            # MACD柱状图使用默认宽度，与K线图柱体宽度保持一致，使用通达信配色
+            self._draw_indicator_histogram(plot_widget, x, macd_hist_values, '#FF0000', '#00FF00')
             self._setup_indicator_axis(plot_widget, x, np.column_stack((macd_values, macd_signal_values, macd_hist_values)).flatten())
         elif indicator_name == "RSI":
             # 绘制RSI指标
@@ -3072,8 +3072,9 @@ class MainWindow(QMainWindow, IView, IController):
                         latest_macd = df_pl['macd'].tail(1)[0]
                         latest_macd_signal = df_pl['macd_signal'].tail(1)[0]
                         latest_macd_hist = df_pl['macd_hist'].tail(1)[0]
-                        # 更新标签文本
-                        macd_text = f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>"
+                        # 更新标签文本，使用通达信风格：DIF白色，DEA黄色，MACD根据正负值变色
+                        macd_hist_color = '#FF0000' if latest_macd_hist >= 0 else '#00FF00'
+                        macd_text = f"<font color='white'>MACD(12,26,9) </font><font color='#FFFFFF'>DIF: {latest_macd:.2f}</font> <font color='#FFFF00'>DEA: {latest_macd_signal:.2f}</font> <font color='{macd_hist_color}'>MACD: {latest_macd_hist:.2f}</font>"
                     else:
                         macd_text = f"<font color='white'>MACD指标数据不可用</font>"
                     self.kdj_values_label.setText(macd_text)
@@ -3377,7 +3378,7 @@ class MainWindow(QMainWindow, IView, IController):
                         latest_macd_signal = df_pl['macd_signal'].tail(1)[0]
                         latest_macd_hist = df_pl['macd_hist'].tail(1)[0]
                         
-                        self.volume_values_label.setText(f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>")
+                        self.volume_values_label.setText(f"<font color='#FFFFFF'>DIF: {latest_macd:.2f}</font>  <font color='#FFFF00'>DEA: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>MACD: {latest_macd_hist:.2f}</font>")
                     elif current_indicator == "RSI":
                         # 添加RSI数值显示
                         latest_rsi = df_pl['rsi14'].tail(1)[0]
@@ -4068,11 +4069,12 @@ class MainWindow(QMainWindow, IView, IController):
                         current_rsi = self.current_rsi_data['rsi'][index]
                         self.kdj_values_label.setText(f"<font color='blue'>RSI14: {current_rsi:.2f}</font>")
                     elif current_indicator == "MACD" and hasattr(self, 'current_macd_data') and 0 <= index < len(self.current_macd_data['macd']):
-                        # 更新MACD标签
+                        # 更新MACD标签，使用通达信风格：DIF白色，DEA黄色，MACD根据正负值变色
                         current_macd = self.current_macd_data['macd'][index]
                         current_macd_signal = self.current_macd_data['macd_signal'][index]
                         current_macd_hist = self.current_macd_data['macd_hist'][index]
-                        self.kdj_values_label.setText(f"<font color='blue'>MACD: {current_macd:.2f}</font>  <font color='red'>SIGNAL: {current_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {current_macd_hist:.2f}</font>")
+                        macd_hist_color = '#FF0000' if current_macd_hist >= 0 else '#00FF00'
+                        self.kdj_values_label.setText(f"<font color='#FFFFFF'>DIF: {current_macd:.2f}</font>  <font color='#FFFF00'>DEA: {current_macd_signal:.2f}</font>  <font color='{macd_hist_color}'>MACD: {current_macd_hist:.2f}</font>")
                     elif current_indicator == "WR" and hasattr(self, 'current_wr_data') and 0 <= index < len(self.current_wr_data['wr1']):
                         # 更新WR标签，颜色与图中指标一致（WR1黄色，WR2白色）
                         current_wr1 = self.current_wr_data['wr1'][index]
@@ -4107,11 +4109,12 @@ class MainWindow(QMainWindow, IView, IController):
                         
                         self.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
                     elif current_indicator == "MACD" and hasattr(self, 'current_macd_data') and 0 <= index < len(self.current_macd_data['macd']):
-                        # 更新MACD标签
+                        # 更新MACD标签，使用通达信风格：DIF白色，DEA黄色，MACD根据正负值变色
                         current_macd = self.current_macd_data['macd'][index]
                         current_macd_signal = self.current_macd_data['macd_signal'][index]
                         current_macd_hist = self.current_macd_data['macd_hist'][index]
-                        self.volume_values_label.setText(f"<font color='blue'>MACD: {current_macd:.2f}</font>  <font color='red'>SIGNAL: {current_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {current_macd_hist:.2f}</font>")
+                        macd_hist_color = '#FF0000' if current_macd_hist >= 0 else '#00FF00'
+                        self.volume_values_label.setText(f"<font color='#FFFFFF'>DIF: {current_macd:.2f}</font>  <font color='#FFFF00'>DEA: {current_macd_signal:.2f}</font>  <font color='{macd_hist_color}'>MACD: {current_macd_hist:.2f}</font>")
                     elif current_indicator == "RSI" and hasattr(self, 'current_rsi_data') and 0 <= index < len(self.current_rsi_data['rsi']):
                         # 更新RSI标签
                         current_rsi = self.current_rsi_data['rsi'][index]
@@ -5657,19 +5660,19 @@ class MainWindow(QMainWindow, IView, IController):
             analyzer.calculate_macd()
             df_pl = analyzer.get_data(return_polars=True)
         
-        # 绘制MACD指标
+        # 绘制MACD指标，使用通达信配色
         plot_widget.setYRange(min(df_pl['macd_hist'].min(), df_pl['macd'].min(), df_pl['macd_signal'].min()) * 1.2, 
                              max(df_pl['macd_hist'].max(), df_pl['macd'].max(), df_pl['macd_signal'].max()) * 1.2)
-        # 绘制MACD线（蓝色）
-        plot_widget.plot(x, df_pl['macd'].to_numpy(), pen=pg.mkPen('b', width=1), name='MACD')
-        # 绘制信号线（红色）
-        plot_widget.plot(x, df_pl['macd_signal'].to_numpy(), pen=pg.mkPen('r', width=1), name='Signal')
+        # 绘制DIF线（白色）
+        plot_widget.plot(x, df_pl['macd'].to_numpy(), pen=pg.mkPen('#FFFFFF', width=1), name='DIF')
+        # 绘制DEA线（黄色）
+        plot_widget.plot(x, df_pl['macd_signal'].to_numpy(), pen=pg.mkPen('#FFFF00', width=1), name='DEA')
         # 绘制柱状图
         for i in range(len(x)):
             if df_pl['macd_hist'].to_numpy()[i] >= 0:
-                color = 'r'  # 上涨为红色
+                color = '#FF0000'  # 上涨为红色
             else:
-                color = 'g'  # 下跌为绿色
+                color = '#00FF00'  # 下跌为绿色
             plot_widget.plot([x[i], x[i]], [0, df_pl['macd_hist'].to_numpy()[i]], pen=pg.mkPen(color, width=2))
     
     def draw_vol_indicator(self, plot_widget, x, df_pl):
@@ -6133,8 +6136,9 @@ class MainWindow(QMainWindow, IView, IController):
                 latest_macd = df_pd['macd'].iloc[-1]
                 latest_macd_signal = df_pd['macd_signal'].iloc[-1]
                 latest_macd_hist = df_pd['macd_hist'].iloc[-1]
-                # 更新标签文本
-                macd_text = f"<font color='blue'>MACD: {latest_macd:.2f}</font>  <font color='red'>SIGNAL: {latest_macd_signal:.2f}</font>  <font color='#C0C0C0'>HIST: {latest_macd_hist:.2f}</font>"
+                # 更新标签文本，使用通达信风格：DIF白色，DEA黄色，MACD根据正负值变色
+                macd_hist_color = '#FF0000' if latest_macd_hist >= 0 else '#00FF00'
+                macd_text = f"<font color='white'>MACD(12,26,9) </font><font color='#FFFFFF'>DIF: {latest_macd:.2f}</font> <font color='#FFFF00'>DEA: {latest_macd_signal:.2f}</font> <font color='{macd_hist_color}'>MACD: {latest_macd_hist:.2f}</font>"
             else:
                 macd_text = f"<font color='white'>MACD指标数据不可用</font>"
             self.kdj_values_label.setText(macd_text)
