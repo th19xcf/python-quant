@@ -555,15 +555,28 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
             if 'windows' in indicator_params[indicator]:
                 all_windows.update(indicator_params[indicator]['windows'])
     
-    # 3. 预计算共享的窗口列（最高价、最低价、收盘价的窗口统计）
+    # 3. 预计算共享的窗口列（最高价、最低价的窗口统计）
     need_high_low = any(indicator in indicator_types for indicator in ['kdj', 'wr', 'boll'])
     
     # 4. 使用Lazy API构建查询，确保所有计算在单个查询计划中执行
     lazy_df = df.lazy()
     
     # 步骤1: 添加共享的窗口列
+    # 只创建实际需要的共享窗口列
     if need_high_low:
-        for window in all_windows:
+        # 收集实际使用的窗口大小
+        used_windows = set()
+        
+        # 检查每个指标实际使用的窗口
+        if 'kdj' in indicator_types:
+            used_windows.update(indicator_params['kdj']['windows'])
+        if 'wr' in indicator_types:
+            used_windows.update(indicator_params['wr']['windows'])
+        if 'boll' in indicator_types:
+            used_windows.update(indicator_params['boll']['windows'])
+        
+        # 只创建实际使用的窗口列
+        for window in used_windows:
             # 预计算最高价和最低价的rolling_max/min
             lazy_df = lazy_df.with_columns(
                 pl.col('high').rolling_max(window_size=window, min_periods=1).alias(f'high_n_{window}'),
@@ -589,33 +602,23 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     # 步骤4: 计算RSI指标
     if 'rsi' in indicator_types:
         windows = indicator_params['rsi']['windows']
+        
         # 计算价格变化
-        lazy_df = lazy_df.with_columns(
-            pl.col('close').diff().alias('price_change')
-        )
+        price_change = pl.col('close').diff()
         
         # 计算上涨和下跌变化
-        lazy_df = lazy_df.with_columns(
-            pl.when(pl.col('price_change') > 0).then(pl.col('price_change')).otherwise(0).alias('gain'),
-            pl.when(pl.col('price_change') < 0).then(-pl.col('price_change')).otherwise(0).alias('loss')
-        )
+        gain = pl.when(price_change > 0).then(price_change).otherwise(0)
+        loss = pl.when(price_change < 0).then(-price_change).otherwise(0)
         
-        # 计算RSI，分解步骤以确保依赖关系正确
+        # 计算RSI，使用表达式别名避免创建中间列
         for window in windows:
-            # 第一步：计算平均上涨和下跌幅度
-            lazy_df = lazy_df.with_columns(
-                pl.col('gain').ewm_mean(span=window).alias(f'avg_gain_{window}'),
-                pl.col('loss').ewm_mean(span=window).alias(f'avg_loss_{window}')
-            )
+            # 直接计算RSI值，不创建中间列
+            avg_gain = gain.ewm_mean(span=window)
+            avg_loss = loss.ewm_mean(span=window)
             
-            # 第二步：计算RSI值
-            lazy_df = lazy_df.with_columns(
-                pl.when(pl.col(f'avg_loss_{window}') == 0)
-                .then(100.0)
-                .otherwise(100.0 - (100.0 / (1.0 + (pl.col(f'avg_gain_{window}') / pl.col(f'avg_loss_{window}')))))
-                .cast(pl.Float32)
-                .alias(f'rsi{window}')
-            )
+            rsi = pl.when(avg_loss == 0).then(100.0).otherwise(100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))).cast(pl.Float32).alias(f'rsi{window}')
+            
+            lazy_df = lazy_df.with_columns(rsi)
     
     # 步骤5: 计算KDJ指标
     if 'kdj' in indicator_types:
@@ -695,84 +698,63 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
         slow_period = macd_params['slow_period']
         signal_period = macd_params['signal_period']
         
-        # 1. 计算EMA12和EMA26
-        lazy_df = lazy_df.with_columns(
-            pl.col('close').ewm_mean(span=fast_period).alias('ema12'),
-            pl.col('close').ewm_mean(span=slow_period).alias('ema26')
-        )
+        # 1. 直接计算EMA值，不创建中间列
+        ema12 = pl.col('close').ewm_mean(span=fast_period)
+        ema26 = pl.col('close').ewm_mean(span=slow_period)
         
         # 2. 计算MACD线
-        lazy_df = lazy_df.with_columns(
-            (pl.col('ema12') - pl.col('ema26')).cast(pl.Float32).alias('macd')
-        )
+        macd_line = (ema12 - ema26).cast(pl.Float32).alias('macd')
         
         # 3. 计算信号线
-        lazy_df = lazy_df.with_columns(
-            pl.col('macd').ewm_mean(span=signal_period).cast(pl.Float32).alias('macd_signal')
-        )
+        macd_signal = macd_line.ewm_mean(span=signal_period).cast(pl.Float32).alias('macd_signal')
         
         # 4. 计算柱状图
-        lazy_df = lazy_df.with_columns(
-            (pl.col('macd') - pl.col('macd_signal')).cast(pl.Float32).alias('macd_hist')
-        )
+        macd_hist = (macd_line - macd_signal).cast(pl.Float32).alias('macd_hist')
+        
+        # 添加所有MACD指标列
+        lazy_df = lazy_df.with_columns([macd_line, macd_signal, macd_hist])
     
     # 步骤9: 计算DMI指标
     if 'dmi' in indicator_types:
         dmi_params = indicator_params['dmi']
         windows = dmi_params['windows']
         
+        # 计算前一天的最高价、最低价、收盘价
+        prev_high = pl.col('high').shift(1)
+        prev_low = pl.col('low').shift(1)
+        prev_close = pl.col('close').shift(1)
+        
+        # 计算真实波幅(TR)
+        tr = pl.max_horizontal(pl.col('high'), prev_close) - pl.min_horizontal(pl.col('low'), prev_close)
+        
+        # 计算+DM和-DM
+        high_diff = pl.col('high') - prev_high
+        low_diff = prev_low - pl.col('low')
+        
+        plus_dm = pl.when((high_diff > low_diff) & (high_diff > 0)).then(high_diff).otherwise(0.0)
+        minus_dm = pl.when((low_diff > high_diff) & (low_diff > 0)).then(low_diff).otherwise(0.0)
+        
         for window in windows:
-            # 计算真实波幅(TR)
-            lazy_df = lazy_df.with_columns(
-                (pl.max_horizontal(pl.col('high'), pl.col('close').shift(1)) - 
-                 pl.min_horizontal(pl.col('low'), pl.col('close').shift(1))).cast(pl.Float32).alias(f'tr_{window}')
-            )
+            # 计算平滑的TR、+DM、-DM
+            tr_sma = tr.rolling_sum(window_size=window, min_periods=1)
+            pdm_sma = plus_dm.rolling_sum(window_size=window, min_periods=1)
+            ndm_sma = minus_dm.rolling_sum(window_size=window, min_periods=1)
             
-            # 计算+DM和-DM
-            lazy_df = lazy_df.with_columns(
-                # +DM（上升动向）
-                pl.when((pl.col('high') > pl.col('high').shift(1)) & 
-                       (pl.col('low') >= pl.col('low').shift(1)) & 
-                       (pl.col('high') - pl.col('high').shift(1) > pl.col('low').shift(1) - pl.col('low')))
-                .then(pl.col('high') - pl.col('high').shift(1))
-                .otherwise(0.0).cast(pl.Float32).alias(f'pdm_{window}'),
-                # -DM（下降动向）
-                pl.when((pl.col('low') < pl.col('low').shift(1)) & 
-                       (pl.col('high') <= pl.col('high').shift(1)) & 
-                       (pl.col('low').shift(1) - pl.col('low') > pl.col('high') - pl.col('high').shift(1)))
-                .then(pl.col('low').shift(1) - pl.col('low'))
-                .otherwise(0.0).cast(pl.Float32).alias(f'ndm_{window}')
-            )
-            
-            # 计算TR、+DM、-DM的N日平滑移动平均
-            lazy_df = lazy_df.with_columns(
-                pl.col(f'tr_{window}').rolling_sum(window_size=window, min_periods=1).cast(pl.Float32).alias(f'tr_sma_{window}'),
-                pl.col(f'pdm_{window}').rolling_sum(window_size=window, min_periods=1).cast(pl.Float32).alias(f'pdm_sma_{window}'),
-                pl.col(f'ndm_{window}').rolling_sum(window_size=window, min_periods=1).cast(pl.Float32).alias(f'ndm_sma_{window}')
-            )
-            
-            # 计算+DI、-DI
-            lazy_df = lazy_df.with_columns(
-                (pl.col(f'pdm_sma_{window}') / pl.col(f'tr_sma_{window}') * 100).cast(pl.Float32).alias(f'pdi_{window}'),
-                (pl.col(f'ndm_sma_{window}') / pl.col(f'tr_sma_{window}') * 100).cast(pl.Float32).alias(f'ndi_{window}')
-            )
+            # 计算+DI和-DI
+            pdi = (pdm_sma / tr_sma * 100).cast(pl.Float32).alias(f'pdi_{window}')
+            ndi = (ndm_sma / tr_sma * 100).cast(pl.Float32).alias(f'ndi_{window}')
             
             # 计算DX
-            lazy_df = lazy_df.with_columns(
-                pl.when((pl.col(f'pdi_{window}') + pl.col(f'ndi_{window}')) == 0)
-                .then(0.0)
-                .otherwise(((pl.col(f'pdi_{window}') - pl.col(f'ndi_{window}')).abs() / 
-                           (pl.col(f'pdi_{window}') + pl.col(f'ndi_{window}')) * 100).cast(pl.Float32))
-                .alias(f'dx_{window}')
-            )
+            dx = pl.when((pdi + ndi) == 0).then(0.0).otherwise(((pdi - ndi).abs() / (pdi + ndi) * 100).cast(pl.Float32)).alias(f'dx_{window}')
             
             # 计算ADX
-            adx_expr = pl.col(f'dx_{window}').rolling_mean(window_size=window, min_periods=1).cast(pl.Float32).alias(f'adx_{window}')
-            lazy_df = lazy_df.with_columns(adx_expr)
+            adx = dx.rolling_mean(window_size=window, min_periods=1).cast(pl.Float32).alias(f'adx_{window}')
             
             # 计算ADXR
-            adxr_expr = ((pl.col(f'adx_{window}') + pl.col(f'adx_{window}').shift(window)) / 2).cast(pl.Float32).alias(f'adxr_{window}')
-            lazy_df = lazy_df.with_columns(adxr_expr)
+            adxr = ((adx + adx.shift(window)) / 2).cast(pl.Float32).alias(f'adxr_{window}')
+            
+            # 添加所有DMI指标列
+            lazy_df = lazy_df.with_columns([pdi, ndi, adx, adxr])
         
         # 添加默认列名
         if len(windows) >= 1:
@@ -789,31 +771,28 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
         cci_params = indicator_params['cci']
         windows = cci_params['windows']
         
+        # 计算典型价格（TP = (H + L + C) / 3）
+        tp = (pl.col('high') + pl.col('low') + pl.col('close')) / 3
+        
         for window in windows:
-            # 1. 计算典型价格（TP = (H + L + C) / 3）
-            lazy_df = lazy_df.with_columns(
-                ((pl.col('high') + pl.col('low') + pl.col('close')) / 3).cast(pl.Float32).alias(f'tp_{window}')
-            )
+            # 计算典型价格的N日移动平均值（MA_TP）
+            ma_tp = tp.rolling_mean(window_size=window, min_periods=1)
             
-            # 2. 计算典型价格的N日移动平均值（MA_TP）
-            lazy_df = lazy_df.with_columns(
-                pl.col(f'tp_{window}').rolling_mean(window_size=window, min_periods=1).cast(pl.Float32).alias(f'ma_tp_{window}')
-            )
+            # 计算平均绝对偏差（MAD）
+            # 优化MAD计算，使用rolling_mean和rolling_std的组合方式
+            tp_series = tp
+            # 计算滚动平均值
+            ma_tp_rolling = tp_series.rolling_mean(window_size=window, min_periods=1)
+            # 计算绝对偏差
+            abs_dev = (tp_series - ma_tp_rolling).abs()
+            # 计算滚动平均绝对偏差
+            mad = abs_dev.rolling_mean(window_size=window, min_periods=1).cast(pl.Float32)
             
-            # 3. 计算平均绝对偏差（MAD）
-            lazy_df = lazy_df.with_columns(
-                pl.col(f'tp_{window}').rolling_map(
-                    lambda x: x - pl.Series([x.mean()]),
-                    window_size=window,
-                    min_periods=1
-                ).abs().mean().cast(pl.Float32).alias(f'mad_{window}')
-            )
+            # 计算CCI = (TP - MA_TP) / (0.015 * MAD)
+            cci = ((tp - ma_tp) / (0.015 * mad)).cast(pl.Float32).alias(f'cci{window}')
             
-            # 4. 计算CCI = (TP - MA_TP) / (0.015 * MAD)
-            lazy_df = lazy_df.with_columns(
-                ((pl.col(f'tp_{window}') - pl.col(f'ma_tp_{window}')) / 
-                 (0.015 * pl.col(f'mad_{window}'))).cast(pl.Float32).alias(f'cci{window}')
-            )
+            # 添加CCI指标列
+            lazy_df = lazy_df.with_columns(cci)
         
         # 添加默认列名
         if len(windows) >= 1:
@@ -862,17 +841,11 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     # 步骤13: 计算OBV指标
     if 'obv' in indicator_types:
         # 1. 计算价格变化方向
-        lazy_df = lazy_df.with_columns(
-            pl.when(pl.col('close') > pl.col('close').shift(1))
-            .then(pl.col('volume'))
-            .when(pl.col('close') < pl.col('close').shift(1))
-            .then(-pl.col('volume'))
-            .otherwise(0.0).cast(pl.Float32).alias('obv_change')
-        )
+        obv_change = pl.when(pl.col('close') > pl.col('close').shift(1)).then(pl.col('volume')).when(pl.col('close') < pl.col('close').shift(1)).then(-pl.col('volume')).otherwise(0.0).cast(pl.Float32)
         
         # 2. 累积计算OBV
         lazy_df = lazy_df.with_columns(
-            pl.col('obv_change').cum_sum().cast(pl.Float32).alias('obv')
+            obv_change.cum_sum().cast(pl.Float32).alias('obv')
         )
     
     # 步骤14: 计算VR指标
@@ -881,36 +854,23 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
         windows = vr_params['windows']
         
         # 1. 计算价格变化方向和分类成交量
-        lazy_df = lazy_df.with_columns(
-            # 上涨日成交量
-            pl.when(pl.col('close') > pl.col('close').shift(1))
-            .then(pl.col('volume'))
-            .otherwise(0.0).cast(pl.Float32).alias('vr_up_vol'),
-            # 下跌日成交量
-            pl.when(pl.col('close') < pl.col('close').shift(1))
-            .then(pl.col('volume'))
-            .otherwise(0.0).cast(pl.Float32).alias('vr_down_vol'),
-            # 平盘日成交量
-            pl.when(pl.col('close') == pl.col('close').shift(1))
-            .then(pl.col('volume'))
-            .otherwise(0.0).cast(pl.Float32).alias('vr_flat_vol')
-        )
+        prev_close = pl.col('close').shift(1)
+        up_vol = pl.when(pl.col('close') > prev_close).then(pl.col('volume')).otherwise(0.0)
+        down_vol = pl.when(pl.col('close') < prev_close).then(pl.col('volume')).otherwise(0.0)
+        flat_vol = pl.when(pl.col('close') == prev_close).then(pl.col('volume')).otherwise(0.0)
         
         # 2. 计算各窗口的VR值
         for window in windows:
             # 计算N日上涨、下跌、平盘成交量总和
-            up_sum_expr = pl.col('vr_up_vol').rolling_sum(window_size=window, min_periods=1).cast(pl.Float32).alias(f'vr_up_sum_{window}')
-            down_sum_expr = pl.col('vr_down_vol').rolling_sum(window_size=window, min_periods=1).cast(pl.Float32).alias(f'vr_down_sum_{window}')
-            flat_sum_expr = pl.col('vr_flat_vol').rolling_sum(window_size=window, min_periods=1).cast(pl.Float32).alias(f'vr_flat_sum_{window}')
-            
-            # 添加到DataFrame
-            lazy_df = lazy_df.with_columns([up_sum_expr, down_sum_expr, flat_sum_expr])
+            up_sum = up_vol.rolling_sum(window_size=window, min_periods=1).cast(pl.Float32)
+            down_sum = down_vol.rolling_sum(window_size=window, min_periods=1).cast(pl.Float32)
+            flat_sum = flat_vol.rolling_sum(window_size=window, min_periods=1).cast(pl.Float32)
             
             # 计算VR值 = (上涨总和 + 1/2平盘总和) / (下跌总和 + 1/2平盘总和) * 100
-            vr_expr = ((up_sum_expr + flat_sum_expr / 2) / 
-                      (down_sum_expr + flat_sum_expr / 2 + 0.0001) * 100).cast(pl.Float32).alias(f'vr{window}')
+            vr = ((up_sum + flat_sum / 2) / 
+                 (down_sum + flat_sum / 2 + 0.0001) * 100).cast(pl.Float32).alias(f'vr{window}')
             
-            lazy_df = lazy_df.with_columns(vr_expr)
+            lazy_df = lazy_df.with_columns(vr)
         
         # 3. 添加默认列名
         if len(windows) >= 1:
@@ -925,15 +885,11 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
         windows = psy_params['windows']
         
         # 1. 计算上涨天数标记（上涨为1，否则为0）
-        lazy_df = lazy_df.with_columns(
-            pl.when(pl.col('close') > pl.col('close').shift(1))
-            .then(1.0)
-            .otherwise(0.0).cast(pl.Float32).alias('psy_up_day')
-        )
+        up_day = pl.when(pl.col('close') > pl.col('close').shift(1)).then(1.0).otherwise(0.0).cast(pl.Float32)
         
         # 2. 计算各窗口的PSY值（N天内上涨天数百分比）
         for window in windows:
-            psy_expr = (pl.col('psy_up_day').rolling_sum(window_size=window, min_periods=1) / window * 100).cast(pl.Float32).alias(f'psy{window}')
+            psy_expr = (up_day.rolling_sum(window_size=window, min_periods=1) / window * 100).cast(pl.Float32).alias(f'psy{window}')
             lazy_df = lazy_df.with_columns(psy_expr)
         
         # 3. 添加默认列名
@@ -1108,51 +1064,16 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     
     # 步骤13: 清理临时列
     temp_cols = []
-    # 清理RSI临时列
-    if 'rsi' in indicator_types:
-        windows = indicator_params['rsi']['windows']
-        temp_cols.extend(['price_change', 'gain', 'loss'])
-        temp_cols.extend([f'avg_gain_{window}' for window in windows])
-        temp_cols.extend([f'avg_loss_{window}' for window in windows])
-    
     # 清理KDJ临时列
     if 'kdj' in indicator_types:
         windows = indicator_params['kdj']['windows']
         temp_cols.extend([f'rsv_{window}' for window in windows])
     
-    # 清理MACD临时列
-    if 'macd' in indicator_types:
-        temp_cols.extend(['ema12', 'ema26'])
+
     
-    # 清理DMI临时列
-    if 'dmi' in indicator_types:
-        windows = indicator_params['dmi']['windows']
-        for window in windows:
-            temp_cols.extend([f'tr_{window}', f'pdm_{window}', f'ndm_{window}', 
-                           f'tr_sma_{window}', f'pdm_sma_{window}', f'ndm_sma_{window}', 
-                           f'dx_{window}'])
+
     
-    # 清理CCI临时列
-    if 'cci' in indicator_types:
-        windows = indicator_params['cci']['windows']
-        for window in windows:
-            temp_cols.extend([f'tp_{window}', f'ma_tp_{window}', f'mad_{window}'])
-    
-    # 清理OBV临时列
-    if 'obv' in indicator_types:
-        temp_cols.append('obv_change')
-    
-    # 清理VR临时列
-    if 'vr' in indicator_types:
-        vr_params = indicator_params['vr']
-        windows = vr_params['windows']
-        temp_cols.extend(['vr_up_vol', 'vr_down_vol', 'vr_flat_vol'])
-        for window in windows:
-            temp_cols.extend([f'vr_up_sum_{window}', f'vr_down_sum_{window}', f'vr_flat_sum_{window}'])
-    
-    # 清理PSY临时列
-    if 'psy' in indicator_types:
-        temp_cols.append('psy_up_day')
+
     
     # 清理TRIX临时列
     if 'trix' in indicator_types:
@@ -1179,8 +1100,17 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     
     # 清理共享临时列
     if need_high_low:
-        temp_cols.extend([f'high_n_{window}' for window in all_windows])
-        temp_cols.extend([f'low_n_{window}' for window in all_windows])
+        # 只清理实际创建的共享窗口列
+        used_windows = set()
+        if 'kdj' in indicator_types:
+            used_windows.update(indicator_params['kdj']['windows'])
+        if 'wr' in indicator_types:
+            used_windows.update(indicator_params['wr']['windows'])
+        if 'boll' in indicator_types:
+            used_windows.update(indicator_params['boll']['windows'])
+        
+        temp_cols.extend([f'high_n_{window}' for window in used_windows])
+        temp_cols.extend([f'low_n_{window}' for window in used_windows])
     
     # 直接删除临时列，无需检查是否存在
     # Polars的drop操作会自动忽略不存在的列，因此无需先检查
