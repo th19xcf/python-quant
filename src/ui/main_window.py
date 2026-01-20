@@ -4093,6 +4093,11 @@ class MainWindow(QMainWindow, IView, IController):
                         current_adx = self.current_dmi_data['adx'][index]
                         current_adxr = self.current_dmi_data['adxr'][index]
                         self.kdj_values_label.setText(f"<font color='#FFFFFF'>PDI: {current_pdi:.2f}</font>  <font color='#FFFF00'>NDI: {current_ndi:.2f}</font>  <font color='#FF00FF'>ADX: {current_adx:.2f}</font>  <font color='#00FF00'>ADXR: {current_adxr:.2f}</font>")
+                    elif current_indicator == "TRIX" and hasattr(self, 'current_trix_data') and 0 <= index < len(self.current_trix_data['trix']):
+                        # 更新TRIX标签，颜色与图中指标一致
+                        current_trix = self.current_trix_data['trix'][index]
+                        current_trma = self.current_trix_data['trma'][index]
+                        self.kdj_values_label.setText(f"<font color='#FFFFFF'>TRIX: {current_trix:.2f}</font>  <font color='#FFFF00'>MATRIX: {current_trma:.2f}</font>")
                 
                 # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
                 if hasattr(self, 'volume_values_label'):
@@ -5837,6 +5842,37 @@ class MainWindow(QMainWindow, IView, IController):
         plot_widget.plot(x, df_pl['adx'].to_numpy(), pen=pg.mkPen(color='#FF00FF', width=1.0), name='ADX')
         plot_widget.plot(x, df_pl['adxr'].to_numpy(), pen=pg.mkPen(color='#00FF00', width=1.0), name='ADXR')
     
+    def draw_trix_indicator(self, plot_widget, x, df_pl):
+        """
+        绘制TRIX指标
+        
+        Args:
+            plot_widget: 绘图控件
+            x: x轴数据
+            df_pl: polars DataFrame，包含trix数据
+        """
+        # 导入pyqtgraph
+        import pyqtgraph as pg
+        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+        
+        # 确保TRIX相关列存在
+        if 'trix' not in df_pl.columns or 'trma' not in df_pl.columns:
+            # 使用TechnicalAnalyzer计算TRIX指标
+            analyzer = TechnicalAnalyzer(df_pl)
+            analyzer.calculate_indicator_parallel('trix', windows=[12], signal_period=9)
+            df_pl = analyzer.get_data(return_polars=True)
+        
+        # 绘制TRIX指标，使用通达信配色
+        # 设置Y轴范围
+        min_val = min(df_pl['trix'].min(), df_pl['trma'].min()) * 1.2
+        max_val = max(df_pl['trix'].max(), df_pl['trma'].max()) * 1.2
+        plot_widget.setYRange(min_val, max_val)
+        
+        # 绘制TRIX线（白色）
+        plot_widget.plot(x, df_pl['trix'].to_numpy(), pen=pg.mkPen(color='#FFFFFF', width=1.0), name='TRIX')
+        # 绘制MATRIX线（黄色）
+        plot_widget.plot(x, df_pl['trma'].to_numpy(), pen=pg.mkPen(color='#FFFF00', width=1.0), name='MATRIX')
+    
     def draw_k_line_indicator(self, plot_widget, df, dates, opens, highs, lows, closes, df_pl):
         """
         绘制K线图
@@ -6064,7 +6100,8 @@ class MainWindow(QMainWindow, IView, IController):
             "VOL": self.draw_vol_indicator,
             "BOLL": self.draw_boll_indicator,
             "WR": self.draw_wr_indicator,
-            "DMI": self.draw_dmi_indicator
+            "DMI": self.draw_dmi_indicator,
+            "TRIX": self.draw_trix_indicator
         }
         
         # 为所有新指标添加默认绘制函数，避免显示错误
@@ -6177,6 +6214,16 @@ class MainWindow(QMainWindow, IView, IController):
             else:
                 dmi_text = f"<font color='white'>DMI指标数据不可用</font>"
             self.kdj_values_label.setText(dmi_text)
+        elif current_indicator == "TRIX":
+            # 获取最新的TRIX值
+            if 'trix' in df_pd.columns and 'trma' in df_pd.columns:
+                latest_trix = df_pd['trix'].iloc[-1]
+                latest_trma = df_pd['trma'].iloc[-1]
+                # 更新标签文本，使用通达信风格
+                trix_text = f"<font color='#FFFFFF'>TRIX: {latest_trix:.2f}</font>  <font color='#FFFF00'>MATRIX: {latest_trma:.2f}</font>"
+            else:
+                trix_text = f"<font color='white'>TRIX指标数据不可用</font>"
+            self.kdj_values_label.setText(trix_text)
         else:
             # 默认绘制KDJ指标，显示KDJ数值
             if 'k' in df_pd.columns and 'd' in df_pd.columns and 'j' in df_pd.columns:
@@ -6241,5 +6288,11 @@ class MainWindow(QMainWindow, IView, IController):
             'ndi': df_pl['ndi'].to_list() if 'ndi' in df_pl.columns else [],
             'adx': df_pl['adx'].to_list() if 'adx' in df_pl.columns else [],
             'adxr': df_pl['adxr'].to_list() if 'adxr' in df_pl.columns else []
+        }
+        
+        # 保存TRIX数据
+        self.current_trix_data = {
+            'trix': df_pl['trix'].to_list() if 'trix' in df_pl.columns else [],
+            'trma': df_pl['trma'].to_list() if 'trma' in df_pl.columns else []
         }
            
