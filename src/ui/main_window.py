@@ -2413,7 +2413,7 @@ class MainWindow(QMainWindow, IView, IController):
             latest_d = data_df['d'].iloc[-1]
             latest_j = data_df['j'].iloc[-1]
             text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
-        elif current_indicator == "MACD":
+        elif indicator_name == "MACD":
             # MACD指标数值显示
             latest_macd = data_df['macd'].iloc[-1]
             latest_macd_signal = data_df['macd_signal'].iloc[-1]
@@ -2426,7 +2426,7 @@ class MainWindow(QMainWindow, IView, IController):
             latest_ma20 = data_df['ma20'].iloc[-1]
             latest_ma60 = data_df['ma60'].iloc[-1]
             text = f"<font color='white'>MA5: {latest_ma5:.2f}</font>  <font color='cyan'>MA10: {latest_ma10:.2f}</font>  <font color='red'>MA20: {latest_ma20:.2f}</font>  <font color='#00FF00'>MA60: {latest_ma60:.2f}</font>"
-        elif current_indicator == "WR":
+        elif indicator_name == "WR":
             # WR指标数值显示，模拟通达信风格
             if 'wr1' in data_df.columns and 'wr2' in data_df.columns:
                 # 通达信风格，显示指标名称、参数和WR1/WR2，颜色与图中指标一致（WR1黄色，WR2白色）
@@ -2440,7 +2440,7 @@ class MainWindow(QMainWindow, IView, IController):
                 text = f"<font color='white'>WR: {latest_wr:.2f}</font>"
             else:
                 text = ""
-        elif current_indicator == "BOLL":
+        elif indicator_name == "BOLL":
             # BOLL指标数值显示，模拟通达信风格
             if 'mb' in data_df.columns and 'up' in data_df.columns and 'dn' in data_df.columns:
                 # 显示BOLL指标的中轨、上轨和下轨值
@@ -2449,6 +2449,17 @@ class MainWindow(QMainWindow, IView, IController):
                 latest_dn = data_df['dn'].iloc[-1]
                 # 中轨白色，上轨红色，下轨绿色，与图中指标颜色一致
                 text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='#00FF00'>DN: {latest_dn:.2f}</font>"
+            else:
+                text = ""
+        elif indicator_name == "DMI":
+            # DMI指标数值显示
+            if 'pdi' in data_df.columns and 'ndi' in data_df.columns and 'adx' in data_df.columns and 'adxr' in data_df.columns:
+                latest_pdi = data_df['pdi'].iloc[-1]
+                latest_ndi = data_df['ndi'].iloc[-1]
+                latest_adx = data_df['adx'].iloc[-1]
+                latest_adxr = data_df['adxr'].iloc[-1]
+                # 显示DMI指标的PDI、NDI、ADX和ADXR值，颜色与图中曲线一致
+                text = f"<font color='#FFFFFF'>PDI: {latest_pdi:.2f}</font>  <font color='#FFFF00'>NDI: {latest_ndi:.2f}</font>  <font color='#FF00FF'>ADX: {latest_adx:.2f}</font>  <font color='#00FF00'>ADXR: {latest_adxr:.2f}</font>"
             else:
                 text = ""
         else:
@@ -2521,7 +2532,7 @@ class MainWindow(QMainWindow, IView, IController):
             self._draw_indicator_curve(plot_widget, x, d_values, 'yellow', 1, 'D')
             self._draw_indicator_curve(plot_widget, x, j_values, 'magenta', 1, 'J')
             self._setup_indicator_axis(plot_widget, x, np.column_stack((k_values, d_values, j_values)).flatten())
-        elif current_indicator == "MACD":
+        elif indicator_name == "MACD":
             # 绘制MACD指标
             macd_values = get_col_values(data_df, 'macd')
             macd_signal_values = get_col_values(data_df, 'macd_signal')
@@ -2532,7 +2543,7 @@ class MainWindow(QMainWindow, IView, IController):
             # MACD柱状图使用默认宽度，与K线图柱体宽度保持一致
             self._draw_indicator_histogram(plot_widget, x, macd_hist_values, 'r', 'g')
             self._setup_indicator_axis(plot_widget, x, np.column_stack((macd_values, macd_signal_values, macd_hist_values)).flatten())
-        elif current_indicator == "RSI":
+        elif indicator_name == "RSI":
             # 绘制RSI指标
             rsi_values = get_col_values(data_df, 'rsi')
             self._draw_indicator_curve(plot_widget, x, rsi_values, 'white', 1, 'RSI')
@@ -2555,6 +2566,18 @@ class MainWindow(QMainWindow, IView, IController):
             self._draw_indicator_curve(plot_widget, x, ma20_values, 'red', 1, 'MA20')
             self._draw_indicator_curve(plot_widget, x, ma60_values, '#00FF00', 1, 'MA60')
             self._setup_indicator_axis(plot_widget, x, np.column_stack((ma5_values, ma10_values, ma20_values, ma60_values)).flatten())
+        elif indicator_name == "DMI":
+            # 绘制DMI指标，使用通达信配色
+            pdi_values = get_col_values(data_df, 'pdi')
+            ndi_values = get_col_values(data_df, 'ndi')
+            adx_values = get_col_values(data_df, 'adx')
+            adxr_values = get_col_values(data_df, 'adxr')
+            
+            self._draw_indicator_curve(plot_widget, x, pdi_values, '#FFFFFF', 1.0, '+DI')
+            self._draw_indicator_curve(plot_widget, x, ndi_values, '#FFFF00', 1.0, '-DI')
+            self._draw_indicator_curve(plot_widget, x, adx_values, '#FF00FF', 1.0, 'ADX')
+            self._draw_indicator_curve(plot_widget, x, adxr_values, '#00FF00', 1.0, 'ADXR')
+            self._setup_indicator_axis(plot_widget, x, np.column_stack((pdi_values, ndi_values, adx_values, adxr_values)).flatten())
         else:
             # 默认情况，尝试绘制所有数值列
             for column in data_df.columns:
@@ -4061,6 +4084,13 @@ class MainWindow(QMainWindow, IView, IController):
                         current_up = self.current_boll_data['up'][index]
                         current_dn = self.current_boll_data['dn'][index]
                         self.kdj_values_label.setText(f"<font color='white'>MB: {current_mb:.2f}</font>  <font color='red'>UP: {current_up:.2f}</font>  <font color='#00FF00'>DN: {current_dn:.2f}</font>")
+                    elif current_indicator == "DMI" and hasattr(self, 'current_dmi_data') and 0 <= index < len(self.current_dmi_data['pdi']):
+                        # 更新DMI标签，颜色与图中指标一致
+                        current_pdi = self.current_dmi_data['pdi'][index]
+                        current_ndi = self.current_dmi_data['ndi'][index]
+                        current_adx = self.current_dmi_data['adx'][index]
+                        current_adxr = self.current_dmi_data['adxr'][index]
+                        self.kdj_values_label.setText(f"<font color='#FFFFFF'>PDI: {current_pdi:.2f}</font>  <font color='#FFFF00'>NDI: {current_ndi:.2f}</font>  <font color='#FF00FF'>ADX: {current_adx:.2f}</font>  <font color='#00FF00'>ADXR: {current_adxr:.2f}</font>")
                 
                 # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
                 if hasattr(self, 'volume_values_label'):
@@ -5792,17 +5822,17 @@ class MainWindow(QMainWindow, IView, IController):
         from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
         
         # 确保DMI相关列存在
-        if 'pdi' not in df_pl.columns or 'mdi' not in df_pl.columns or 'adx' not in df_pl.columns:
+        if 'pdi' not in df_pl.columns or 'ndi' not in df_pl.columns or 'adx' not in df_pl.columns or 'adxr' not in df_pl.columns:
             # 使用TechnicalAnalyzer计算DMI指标
             analyzer = TechnicalAnalyzer(df_pl)
             analyzer.calculate_indicator_parallel('dmi', windows=[14])
             df_pl = analyzer.get_data(return_polars=True)
         
-        # 绘制DMI指标
-        plot_widget.plot(x, df_pl['pdi'].to_numpy(), pen=pg.mkPen(color='#FF0000', width=1), name='+DI')
-        plot_widget.plot(x, df_pl['mdi'].to_numpy(), pen=pg.mkPen(color='#00FF00', width=1), name='-DI')
-        plot_widget.plot(x, df_pl['adx'].to_numpy(), pen=pg.mkPen(color='#FFFF00', width=1), name='ADX')
-        plot_widget.plot(x, df_pl['adxr'].to_numpy(), pen=pg.mkPen(color='#FFFFFF', width=1), name='ADXR')
+        # 绘制DMI指标，使用通达信配色，调整线段宽度使其更亮
+        plot_widget.plot(x, df_pl['pdi'].to_numpy(), pen=pg.mkPen(color='#FFFFFF', width=1.0), name='+DI')
+        plot_widget.plot(x, df_pl['ndi'].to_numpy(), pen=pg.mkPen(color='#FFFF00', width=1.0), name='-DI')
+        plot_widget.plot(x, df_pl['adx'].to_numpy(), pen=pg.mkPen(color='#FF00FF', width=1.0), name='ADX')
+        plot_widget.plot(x, df_pl['adxr'].to_numpy(), pen=pg.mkPen(color='#00FF00', width=1.0), name='ADXR')
     
     def draw_k_line_indicator(self, plot_widget, df, dates, opens, highs, lows, closes, df_pl):
         """
@@ -6011,7 +6041,8 @@ class MainWindow(QMainWindow, IView, IController):
             "KDJ": (-50, 150),  # KDJ指标范围
             "RSI": (-50, 150),  # RSI指标范围
             "BOLL": (0, 100),  # BOLL指标范围，实际会根据数据动态调整
-            "WR": (-50, 150)  # WR指标范围，取值范围0-100
+            "WR": (-50, 150),  # WR指标范围，取值范围0-100
+            "DMI": (0, 100)  # DMI指标范围，取值范围0-100
         }
         
         if indicator_name in indicator_y_ranges:
@@ -6130,6 +6161,18 @@ class MainWindow(QMainWindow, IView, IController):
                 latest_wr = df_pd['wr'].iloc[-1] if 'wr' in df_pd.columns else 0
                 wr_text = f"<font color='white'>WR: {latest_wr:.2f}</font>"
             self.kdj_values_label.setText(wr_text)
+        elif current_indicator == "DMI":
+            # 获取最新的DMI值
+            if 'pdi' in df_pd.columns and 'ndi' in df_pd.columns and 'adx' in df_pd.columns and 'adxr' in df_pd.columns:
+                latest_pdi = df_pd['pdi'].iloc[-1]
+                latest_ndi = df_pd['ndi'].iloc[-1]
+                latest_adx = df_pd['adx'].iloc[-1]
+                latest_adxr = df_pd['adxr'].iloc[-1]
+                # 更新标签文本，与图中指标颜色一致
+                dmi_text = f"<font color='#FFFFFF'>PDI: {latest_pdi:.2f}</font>  <font color='#FFFF00'>NDI: {latest_ndi:.2f}</font>  <font color='#FF00FF'>ADX: {latest_adx:.2f}</font>  <font color='#00FF00'>ADXR: {latest_adxr:.2f}</font>"
+            else:
+                dmi_text = f"<font color='white'>DMI指标数据不可用</font>"
+            self.kdj_values_label.setText(dmi_text)
         else:
             # 默认绘制KDJ指标，显示KDJ数值
             if 'k' in df_pd.columns and 'd' in df_pd.columns and 'j' in df_pd.columns:
@@ -6186,5 +6229,13 @@ class MainWindow(QMainWindow, IView, IController):
             'mb': df_pl['mb'].to_list() if 'mb' in df_pl.columns else [],
             'up': df_pl['up'].to_list() if 'up' in df_pl.columns else [],
             'dn': df_pl['dn'].to_list() if 'dn' in df_pl.columns else []
+        }
+        
+        # 保存DMI数据
+        self.current_dmi_data = {
+            'pdi': df_pl['pdi'].to_list() if 'pdi' in df_pl.columns else [],
+            'ndi': df_pl['ndi'].to_list() if 'ndi' in df_pl.columns else [],
+            'adx': df_pl['adx'].to_list() if 'adx' in df_pl.columns else [],
+            'adxr': df_pl['adxr'].to_list() if 'adxr' in df_pl.columns else []
         }
            
