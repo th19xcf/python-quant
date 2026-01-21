@@ -2933,7 +2933,7 @@ class MainWindow(QMainWindow, IView, IController):
                 # 绘制KDJ指标
                 current_indicator = self.window_indicators[3]
                 logger.info(f"绘制{current_indicator}指标")
-                self.draw_indicator(self.kdj_plot_widget, current_indicator, x, df_pl)
+                df_pl = self.draw_indicator(self.kdj_plot_widget, current_indicator, x, df_pl)
                 
                 # 仅在第3窗口显示VOL指标时，进行额外的特殊处理
                 if current_indicator == "VOL":
@@ -3114,6 +3114,21 @@ class MainWindow(QMainWindow, IView, IController):
                     else:
                         boll_text = ""
                     self.kdj_values_label.setText(boll_text)
+                elif current_indicator == "VR":
+                    # 获取最新的VR值
+                    if 'vr' in df_pl.columns:
+                        latest_vr = df_pl['vr'].tail(1)[0]
+                        # 检查mavr列是否存在，如果不存在则计算
+                        if 'mavr' in df_pl.columns:
+                            latest_mavr = df_pl['mavr'].tail(1)[0]
+                            # 更新标签文本，使用通达信风格：VR: xxx MAVR: xxx
+                            vr_text = f"<font color='#FFFFFF'>VR: {latest_vr:.2f}</font>  <font color='#FFFF00'>MAVR: {latest_mavr:.2f}</font>"
+                        else:
+                            # 如果mavr列不存在，只显示VR值
+                            vr_text = f"<font color='#FFFFFF'>VR: {latest_vr:.2f}</font>"
+                    else:
+                        vr_text = ""
+                    self.kdj_values_label.setText(vr_text)
                 else:
                     # 默认情况下不显示数值，避免错误
                     self.kdj_values_label.setText("")
@@ -3177,6 +3192,11 @@ class MainWindow(QMainWindow, IView, IController):
                     'volume': df_pl['volume'].to_list() if 'volume' in df_pl.columns else [],
                     'vol_ma5': df_pl['vol_ma5'].to_list() if 'vol_ma5' in df_pl.columns else [],
                     'vol_ma10': df_pl['vol_ma10'].to_list() if 'vol_ma10' in df_pl.columns else []
+                }
+                # 保存VR指标数据
+                self.current_vr_data = {
+                    'vr': df_pl['vr'].to_list() if 'vr' in df_pl.columns else [],
+                    'mavr': df_pl['mavr'].to_list() if 'mavr' in df_pl.columns else []
                 }
                 
                 # 仅在第3窗口显示VOL指标时，应用与第2窗口相同的绘制逻辑
@@ -3289,7 +3309,7 @@ class MainWindow(QMainWindow, IView, IController):
                 #         df_pd['d'] = ta.momentum.stoch_signal(df_pd['high'], df_pd['low'], df_pd['close'], window=14, fillna=True)
                 #         df_pd['j'] = 3 * df_pd['k'] - 2 * df_pd['d']
                 
-                # 绘制指标
+                # 绘制指标，并保存返回的包含计算后指标数据的df_pl
                 self.draw_indicator(self.volume_plot_widget, current_indicator, x, df_pl)
 
                 # 添加数值显示
@@ -4103,6 +4123,11 @@ class MainWindow(QMainWindow, IView, IController):
                         current_br = self.current_brar_data['br'][index]
                         current_ar = self.current_brar_data['ar'][index]
                         self.kdj_values_label.setText(f"<font color='#FFFF00'>BR: {current_br:.2f}</font>  <font color='#FFFFFF'>AR: {current_ar:.2f}</font>")
+                    elif current_indicator == "VR" and hasattr(self, 'current_vr_data') and 0 <= index < len(self.current_vr_data['vr']):
+                        # 更新VR标签，颜色与图中指标一致
+                        current_vr = self.current_vr_data['vr'][index]
+                        current_mavr = self.current_vr_data['mavr'][index] if index < len(self.current_vr_data['mavr']) else 0
+                        self.kdj_values_label.setText(f"<font color='#FFFFFF'>VR: {current_vr:.2f}</font>  <font color='#FFFF00'>MAVR: {current_mavr:.2f}</font>")
                 
                 # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
                 if hasattr(self, 'volume_values_label'):
@@ -4146,6 +4171,11 @@ class MainWindow(QMainWindow, IView, IController):
                         current_up = self.current_boll_data['up'][index]
                         current_dn = self.current_boll_data['dn'][index]
                         self.volume_values_label.setText(f"<font color='white'>MB: {current_mb:.2f}</font>  <font color='red'>UP: {current_up:.2f}</font>  <font color='#00FF00'>DN: {current_dn:.2f}</font>")
+                    elif current_indicator == "VR" and hasattr(self, 'current_vr_data') and 0 <= index < len(self.current_vr_data['vr']):
+                        # 更新VR标签，颜色与图中指标一致
+                        current_vr = self.current_vr_data['vr'][index]
+                        current_mavr = self.current_vr_data['mavr'][index] if index < len(self.current_vr_data['mavr']) else 0
+                        self.volume_values_label.setText(f"<font color='#FFFFFF'>VR: {current_vr:.2f}</font>  <font color='#FFFF00'>MAVR: {current_mavr:.2f}</font>")
                 
             # 如果十字线功能启用，更新十字线位置和信息框
             if self.crosshair_enabled and 0 <= index < len(dates):
@@ -5908,6 +5938,53 @@ class MainWindow(QMainWindow, IView, IController):
         # 绘制AR线（白色）
         plot_widget.plot(x, df_pl['ar'].to_numpy(), pen=pg.mkPen(color='#FFFFFF', width=1.0), name='AR')
     
+    def draw_vr_indicator(self, plot_widget, x, df_pl):
+        """
+        绘制VR指标
+        
+        Args:
+            plot_widget: 绘图控件
+            x: x轴数据
+            df_pl: polars DataFrame，包含vr数据
+        """
+        # 导入pyqtgraph
+        import pyqtgraph as pg
+        from PySide6.QtCore import Qt
+        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+        import polars as pl
+        
+        # 确保VR相关列存在
+        if 'vr' not in df_pl.columns:
+            # 使用TechnicalAnalyzer计算VR指标
+            analyzer = TechnicalAnalyzer(df_pl)
+            analyzer.calculate_indicator_parallel('vr', windows=[26])
+            df_pl = analyzer.get_data(return_polars=True)
+        
+        # 计算MAVR（VR的移动平均线），默认使用10日移动平均
+        if 'mavr' not in df_pl.columns:
+            # 使用rolling_mean计算MAVR
+            df_pl = df_pl.with_columns(
+                pl.col('vr').rolling_mean(window_size=10, min_periods=1).alias('mavr')
+            )
+        
+        # 绘制VR指标，使用通达信配色
+        # 设置Y轴范围，VR通常在0-200之间，并添加100参考线
+        max_val = max(df_pl['vr'].max(), df_pl['mavr'].max()) * 1.2
+        plot_widget.setYRange(0, max(200, max_val))
+        
+        # 添加100参考线（通达信风格）
+        plot_widget.addItem(pg.InfiniteLine(pos=100, pen=pg.mkPen(color='#444444', width=1.0, style=Qt.DotLine)))
+        
+        # 绘制VR线（白色）
+        vr_curve = plot_widget.plot(x, df_pl['vr'].to_numpy(), pen=pg.mkPen(color='#FFFFFF', width=1.0), name='VR')
+        logger.info(f"已绘制VR线: {vr_curve}")
+        # 绘制MAVR线（黄色）
+        mavr_curve = plot_widget.plot(x, df_pl['mavr'].to_numpy(), pen=pg.mkPen(color='#FFFF00', width=1.0), name='MAVR')
+        logger.info(f"已绘制MAVR线: {mavr_curve}")
+        
+        # 返回更新后的df_pl，确保指标数值标签能正确获取数据
+        return df_pl
+    
     def draw_k_line_indicator(self, plot_widget, df, dates, opens, highs, lows, closes, df_pl):
         """
         绘制K线图
@@ -6116,7 +6193,8 @@ class MainWindow(QMainWindow, IView, IController):
             "RSI": (-50, 150),  # RSI指标范围
             "BOLL": (0, 100),  # BOLL指标范围，实际会根据数据动态调整
             "WR": (-50, 150),  # WR指标范围，取值范围0-100
-            "DMI": (0, 100)  # DMI指标范围，取值范围0-100
+            "DMI": (0, 100),  # DMI指标范围，取值范围0-100
+            "VR": (0, 200)  # VR指标范围，取值范围0-200
         }
         
         if indicator_name in indicator_y_ranges:
@@ -6137,18 +6215,24 @@ class MainWindow(QMainWindow, IView, IController):
             "WR": self.draw_wr_indicator,
             "DMI": self.draw_dmi_indicator,
             "TRIX": self.draw_trix_indicator,
-            "BRAR": self.draw_brar_indicator
+            "BRAR": self.draw_brar_indicator,
+            "VR": self.draw_vr_indicator
         }
         
         # 为所有新指标添加默认绘制函数，避免显示错误
         drawer = indicator_drawers.get(indicator_name, self.draw_dmi_indicator)
-        drawer(plot_widget, x, df_pl)
+        # 调用绘制函数
+        result = drawer(plot_widget, x, df_pl)
+        # 检查返回值是否为None，如果不是None则使用返回的DataFrame，否则使用原始DataFrame
+        updated_df_pl = result if result is not None else df_pl
         
         # 保存指标数据，用于鼠标移动时更新指标数值
-        self.save_indicator_data(df_pl)
+        self.save_indicator_data(updated_df_pl)
         
         # 更新指标数值标签
-        self.update_indicator_values_label(indicator_name, df_pl)
+        self.update_indicator_values_label(indicator_name, updated_df_pl)
+        
+        return updated_df_pl
     
     def update_indicator_values_label(self, indicator_name, df_pl):
         """
@@ -6166,21 +6250,17 @@ class MainWindow(QMainWindow, IView, IController):
             # 确保不换行
             self.kdj_values_label.setWordWrap(False)
         
-        # 确保BOLL相关列存在
-        if 'mb' not in df_pl.columns or 'up' not in df_pl.columns or 'dn' not in df_pl.columns:
-            from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_boll(20)
-            df_pl = analyzer.get_data(return_polars=True)
+        # 将Polars DataFrame转换为pandas DataFrame以便处理
+        df_pd = df_pl.to_pandas() if hasattr(df_pl, 'to_pandas') else df_pl
         
         # 保存指标数据，用于鼠标移动时更新指标数值
         self.save_indicator_data(df_pl)
         
-        # 将Polars DataFrame转换为pandas DataFrame以便处理
-        df_pd = df_pl.to_pandas() if hasattr(df_pl, 'to_pandas') else df_pl
-        
         # 获取当前第3个窗口的指标
         current_indicator = self.window_indicators.get(3, "KDJ")
+        
+        # 日志记录：当前指标和可用列
+        logger.info(f"当前指标: {current_indicator}, 可用列: {df_pd.columns.tolist()}")
         
         # 根据当前指标更新标签文本
         if current_indicator == "KDJ":
@@ -6250,6 +6330,21 @@ class MainWindow(QMainWindow, IView, IController):
             else:
                 dmi_text = f"<font color='white'>DMI指标数据不可用</font>"
             self.kdj_values_label.setText(dmi_text)
+        elif current_indicator == "VR":
+            # 获取最新的VR值
+            if 'vr' in df_pd.columns:
+                latest_vr = df_pd['vr'].iloc[-1]
+                # 检查mavr列是否存在，如果不存在则计算
+                if 'mavr' in df_pd.columns:
+                    latest_mavr = df_pd['mavr'].iloc[-1]
+                    # 更新标签文本，使用通达信风格：VR: xxx MAVR: xxx
+                    vr_text = f"<font color='#FFFFFF'>VR: {latest_vr:.2f}</font>  <font color='#FFFF00'>MAVR: {latest_mavr:.2f}</font>"
+                else:
+                    # 如果mavr列不存在，只显示VR值
+                    vr_text = f"<font color='#FFFFFF'>VR: {latest_vr:.2f}</font>"
+            else:
+                vr_text = f"<font color='white'>VR指标数据不可用</font>"
+            self.kdj_values_label.setText(vr_text)
         elif current_indicator == "TRIX":
             # 获取最新的TRIX值
             if 'trix' in df_pd.columns and 'trma' in df_pd.columns:
@@ -6346,5 +6441,11 @@ class MainWindow(QMainWindow, IView, IController):
         self.current_brar_data = {
             'br': df_pl['br'].to_list() if 'br' in df_pl.columns else [],
             'ar': df_pl['ar'].to_list() if 'ar' in df_pl.columns else []
+        }
+        
+        # 保存VR数据
+        self.current_vr_data = {
+            'vr': df_pl['vr'].to_list() if 'vr' in df_pl.columns else [],
+            'mavr': df_pl['mavr'].to_list() if 'mavr' in df_pl.columns else []
         }
            
