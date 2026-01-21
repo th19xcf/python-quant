@@ -87,6 +87,18 @@ class MainWindow(QMainWindow, IView, IController):
         self.current_mouse_pos = None
         self.current_kline_index = -1
         
+        # 初始化指标绘制器管理器
+        from .indicator_drawers import IndicatorDrawerManager
+        self.indicator_drawer_manager = IndicatorDrawerManager()
+        
+        # 初始化事件处理器管理器
+        from .event_handlers import EventHandlerManager
+        self.event_handler_manager = EventHandlerManager(self)
+        
+        # 初始化指标标签管理器
+        from .indicator_labels import IndicatorLabelManager
+        self.indicator_label_manager = IndicatorLabelManager(self)
+        
         # 初始化其他UI组件
         self.init_ui()
         self.current_kline_data = None
@@ -2607,6 +2619,7 @@ class MainWindow(QMainWindow, IView, IController):
             import numpy as np
 
             from pyqtgraph import Point
+            from src.ui.chart_items import CandleStickItem
             
             # 使用导入的CandleStickItem类
             
@@ -2928,7 +2941,156 @@ class MainWindow(QMainWindow, IView, IController):
                 
                 # 绘制K线图
                 logger.info("绘制K线图")
-                self.draw_k_line_indicator(self.tech_plot_widget, df, dates, opens, highs, lows, closes, df_pl)
+                # 使用导入的CandleStickItem类绘制K线
+                import pyqtgraph as pg
+                from pyqtgraph import Point
+                from src.ui.chart_items import CandleStickItem
+                
+                # 创建K线图数据
+                ohlc = np.column_stack((x, opens, highs, lows, closes))
+                ohlc_list = [tuple(row) for row in ohlc]
+                
+                # 创建K线图项
+                candle_plot_item = CandleStickItem(ohlc_list)
+                
+                # 添加K线图到图表
+                self.tech_plot_widget.addItem(candle_plot_item)
+                
+                # 设置x轴刻度标签（显示日期）
+                ax = self.tech_plot_widget.getAxis('bottom')
+                ax.setTicks([[(i, dates[i].strftime('%Y-%m-%d')) for i in range(0, len(dates), 10)]])
+                
+                # 设置Y轴范围，留出一定的边距
+                y_min = np.min(lows) * 0.99
+                y_max = np.max(highs) * 1.01
+                self.tech_plot_widget.setYRange(y_min, y_max)
+                
+                # 计算当前显示区域的最高、最低点及其位置
+                current_high = np.max(highs)
+                current_low = np.min(lows)
+                high_index = np.argmax(highs)
+                low_index = np.argmin(lows)
+                
+                # 清除之前的最高、最低点标注
+                if hasattr(self, 'high_text_item'):
+                    self.tech_plot_widget.removeItem(self.high_text_item)
+                if hasattr(self, 'low_text_item'):
+                    self.tech_plot_widget.removeItem(self.low_text_item)
+                if hasattr(self, 'high_arrow_item'):
+                    self.tech_plot_widget.removeItem(self.high_arrow_item)
+                if hasattr(self, 'low_arrow_item'):
+                    self.tech_plot_widget.removeItem(self.low_arrow_item)
+                
+                # 创建最高点标注，加上日期
+                high_date = dates[high_index].strftime('%Y-%m-%d')
+                self.high_text_item = pg.TextItem(f" {high_date} {current_high:.2f} ", color='w')
+                self.high_text_item.setHtml(f'<div style="background-color: rgba(0, 0, 0, 0.8); padding: 3px; border: 1px solid #666; font-family: monospace; font-size: 10px;">{high_date} {current_high:.2f}</div>')
+                self.tech_plot_widget.addItem(self.high_text_item)
+                
+                # 创建最高点箭头 - 简单三角形箭头
+                self.high_arrow_item = pg.ArrowItem(
+                    pos=(high_index, current_high), 
+                    angle=-45, 
+                    brush=pg.mkBrush('w'), 
+                    pen=pg.mkPen('w', width=1), 
+                    tipAngle=30, 
+                    headLen=8, 
+                    headWidth=6,
+                    tailLen=0,  # 没有尾巴
+                    tailWidth=1
+                )
+                self.tech_plot_widget.addItem(self.high_arrow_item)
+                
+                # 创建最低点标注，加上日期
+                low_date = dates[low_index].strftime('%Y-%m-%d')
+                self.low_text_item = pg.TextItem(f" {low_date} {current_low:.2f} ", color='w')
+                self.low_text_item.setHtml(f'<div style="background-color: rgba(0, 0, 0, 0.8); padding: 3px; border: 1px solid #666; font-family: monospace; font-size: 10px;">{low_date} {current_low:.2f}</div>')
+                self.tech_plot_widget.addItem(self.low_text_item)
+                
+                # 创建最低点箭头 - 简单三角形箭头
+                self.low_arrow_item = pg.ArrowItem(
+                    pos=(low_index, current_low), 
+                    angle=45, 
+                    brush=pg.mkBrush('w'), 
+                    pen=pg.mkPen('w', width=1), 
+                    tipAngle=30, 
+                    headLen=8, 
+                    headWidth=6,
+                    tailLen=0,  # 没有尾巴
+                    tailWidth=1
+                )
+                self.tech_plot_widget.addItem(self.low_arrow_item)
+                
+                # 定位标注位置（在对应柱图旁边）
+                self.high_text_item.setPos(high_index + 0.5, current_high + (y_max - y_min) * 0.02)
+                self.low_text_item.setPos(low_index + 0.5, current_low - (y_max - y_min) * 0.02)
+                
+                # 设置X轴范围，不使用autoRange，确保与成交量图一致
+                self.tech_plot_widget.setXRange(0, len(dates) - 1)
+                
+                # 初始化均线相关属性
+                if not hasattr(self, 'moving_averages'):
+                    self.moving_averages = {}
+                if not hasattr(self, 'selected_ma'):
+                    self.selected_ma = None
+                if not hasattr(self, 'ma_points'):
+                    self.ma_points = []
+                
+                # 清除之前的标注点
+                for point_item in self.ma_points:
+                    self.tech_plot_widget.removeItem(point_item)
+                self.ma_points.clear()
+                
+                # 确保ma5、ma10、ma20和ma60列存在
+                if 'ma5' not in df_pl.columns or 'ma10' not in df_pl.columns or 'ma20' not in df_pl.columns or 'ma60' not in df_pl.columns:
+                    # 计算均线指标
+                    from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                    analyzer = TechnicalAnalyzer(df_pl)
+                    analyzer.calculate_ma([5, 10, 20, 60])
+                    df_pl = analyzer.get_data(return_polars=True)
+                
+                # 绘制5日均线（白色）
+                ma5_item = self.tech_plot_widget.plot(x, df_pl['ma5'].to_numpy(), pen=pg.mkPen('w', width=1), name='MA5')
+                self.moving_averages['MA5'] = {'item': ma5_item, 'data': (x, df_pl['ma5'].to_numpy()), 'color': 'w'}
+                
+                # 绘制10日均线（青色）
+                ma10_item = self.tech_plot_widget.plot(x, df_pl['ma10'].to_numpy(), pen=pg.mkPen('c', width=1), name='MA10')
+                self.moving_averages['MA10'] = {'item': ma10_item, 'data': (x, df_pl['ma10'].to_numpy()), 'color': 'c'}
+                
+                # 绘制20日均线（红色）
+                ma20_item = self.tech_plot_widget.plot(x, df_pl['ma20'].to_numpy(), pen=pg.mkPen('r', width=1), name='MA20')
+                self.moving_averages['MA20'] = {'item': ma20_item, 'data': (x, df_pl['ma20'].to_numpy()), 'color': 'r'}
+                
+                # 绘制60日均线（绿色，与K线绿色一致）
+                ma60_item = self.tech_plot_widget.plot(x, df_pl['ma60'].to_numpy(), pen=pg.mkPen(pg.mkColor(0, 255, 0), width=1), name='MA60')
+                self.moving_averages['MA60'] = {'item': ma60_item, 'data': (x, df_pl['ma60'].to_numpy()), 'color': pg.mkColor(0, 255, 0)}
+                
+                # 保存当前鼠标位置和K线索引
+                self.current_kline_data = {
+                    'dates': dates,
+                    'opens': opens,
+                    'highs': highs,
+                    'lows': lows,
+                    'closes': closes
+                }
+                
+                # 保存计算好的MA值和颜色，用于鼠标移动时更新显示
+                self.ma_data = {
+                    'MA5': df_pl['ma5'].to_list(),
+                    'MA10': df_pl['ma10'].to_list(),
+                    'MA20': df_pl['ma20'].to_list(),
+                    'MA60': df_pl['ma60'].to_list()
+                }
+                
+                # 保存MA线的颜色映射，使用与绘制线条一致的颜色值
+                self.ma_colors = {
+                    'MA10': 'cyan',
+                    'MA20': 'red',
+                    'MA60': '#00FF00'  # 使用亮绿色，与pyqtgraph的'g'颜色一致
+                }
+                
+                # 保存K线图数据项
+                self.candle_plot_item = candle_plot_item
                 
                 # 绘制KDJ指标
                 current_indicator = self.window_indicators[3]
@@ -3114,8 +3276,8 @@ class MainWindow(QMainWindow, IView, IController):
                     else:
                         boll_text = ""
                     self.kdj_values_label.setText(boll_text)
-                elif current_indicator == "VR":
-                    # 获取最新的VR值
+
+
                     if 'vr' in df_pl.columns:
                         latest_vr = df_pl['vr'].tail(1)[0]
                         # 检查mavr列是否存在，如果不存在则计算
@@ -3611,16 +3773,19 @@ class MainWindow(QMainWindow, IView, IController):
                 logger.debug(f"断开鼠标点击事件连接时发生错误: {e}")
             
             # 连接鼠标移动事件，实现十字线跟随和指标值更新
-            self.tech_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
-            self.volume_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
-            self.kdj_plot_widget.scene().sigMouseMoved.connect(lambda pos: self.on_kline_mouse_moved(pos, dates, opens, highs, lows, closes))
+            # 使用事件处理器管理器处理鼠标移动事件
+            mouse_handler = self.event_handler_manager.get_mouse_handler()
+            self.tech_plot_widget.scene().sigMouseMoved.connect(lambda pos: mouse_handler.handle_mouse_moved(pos, dates, opens, highs, lows, closes))
+            self.volume_plot_widget.scene().sigMouseMoved.connect(lambda pos: mouse_handler.handle_mouse_moved(pos, dates, opens, highs, lows, closes))
+            self.kdj_plot_widget.scene().sigMouseMoved.connect(lambda pos: mouse_handler.handle_mouse_moved(pos, dates, opens, highs, lows, closes))
             
             # 连接鼠标点击事件，处理左键和右键点击
-            self.tech_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
+            mouse_handler = self.event_handler_manager.get_mouse_handler()
+            self.tech_plot_widget.scene().sigMouseClicked.connect(lambda event: mouse_handler.handle_mouse_clicked(event, dates, opens, highs, lows, closes))
             # 连接成交量图鼠标点击事件
-            self.volume_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
+            self.volume_plot_widget.scene().sigMouseClicked.connect(lambda event: mouse_handler.handle_mouse_clicked(event, dates, opens, highs, lows, closes))
             # 连接KDJ图鼠标点击事件
-            self.kdj_plot_widget.scene().sigMouseClicked.connect(lambda event: self.on_kline_clicked(event, dates, opens, highs, lows, closes))
+            self.kdj_plot_widget.scene().sigMouseClicked.connect(lambda event: mouse_handler.handle_mouse_clicked(event, dates, opens, highs, lows, closes))
             
             # 连接鼠标离开视图事件，通过监控鼠标位置实现
             self.tech_plot_widget.viewport().setMouseTracking(True)
@@ -5619,547 +5784,7 @@ class MainWindow(QMainWindow, IView, IController):
             
         except Exception as e:
             logger.exception(f"获取市场指数信息失败: {e}")
-    
-    def draw_kdj_indicator(self, plot_widget, x, df_pl):
-        """
-        绘制KDJ指标
-        
-        Args:
-            plot_widget: 绘图控件
-            x: x轴数据
-            df_pl: polars DataFrame，包含kdj数据
-        """
-        # 导入pyqtgraph
-        import pyqtgraph as pg
-        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-        
-        # 确保KDJ相关列存在
-        if 'k' not in df_pl.columns or 'd' not in df_pl.columns or 'j' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算KDJ指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_kdj(14)
-            df_pl = analyzer.get_data(return_polars=True)
-        
-        # 设置KDJ指标图的Y轴范围，考虑到KDJ可能超出0-100范围，特别是J值
-        plot_widget.setYRange(-50, 150)
-        # 绘制K线（白色）
-        plot_widget.plot(x, df_pl['k'].to_numpy(), pen=pg.mkPen('w', width=1), name='K')
-        # 绘制D线（黄色）
-        plot_widget.plot(x, df_pl['d'].to_numpy(), pen=pg.mkPen('y', width=1), name='D')
-        # 绘制J线（紫色）
-        plot_widget.plot(x, df_pl['j'].to_numpy(), pen=pg.mkPen('m', width=1), name='J')
-        # 绘制超买超卖线
-        plot_widget.addItem(pg.InfiniteLine(pos=20, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
-        plot_widget.addItem(pg.InfiniteLine(pos=80, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
-    
-    def draw_rsi_indicator(self, plot_widget, x, df_pl):
-        """
-        绘制RSI指标
-        
-        Args:
-            plot_widget: 绘图控件
-            x: x轴数据
-            df_pl: polars DataFrame，包含rsi数据
-        """
-        # 导入pyqtgraph
-        import pyqtgraph as pg
-        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-        
-        # 确保RSI相关列存在
-        if 'rsi14' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算RSI指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_rsi(14)
-            df_pl = analyzer.get_data(return_polars=True)
-        
-        # 绘制RSI指标
-        plot_widget.setYRange(0, 100)
-        # 绘制RSI线（蓝色）
-        plot_widget.plot(x, df_pl['rsi14'].to_numpy(), pen=pg.mkPen('b', width=1), name='RSI14')
-        # 绘制超买超卖线
-        plot_widget.addItem(pg.InfiniteLine(pos=30, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
-        plot_widget.addItem(pg.InfiniteLine(pos=70, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine)))
-    
-    def draw_macd_indicator(self, plot_widget, x, df_pl):
-        """
-        绘制MACD指标
-        
-        Args:
-            plot_widget: 绘图控件
-            x: x轴数据
-            df_pl: polars DataFrame，包含macd数据
-        """
-        # 导入pyqtgraph
-        import pyqtgraph as pg
-        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-        
-        # 确保MACD相关列存在
-        if 'macd' not in df_pl.columns or 'macd_signal' not in df_pl.columns or 'macd_hist' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算MACD指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_macd()
-            df_pl = analyzer.get_data(return_polars=True)
-        
-        # 绘制MACD指标，使用通达信配色
-        plot_widget.setYRange(min(df_pl['macd_hist'].min(), df_pl['macd'].min(), df_pl['macd_signal'].min()) * 1.2, 
-                             max(df_pl['macd_hist'].max(), df_pl['macd'].max(), df_pl['macd_signal'].max()) * 1.2)
-        # 绘制DIF线（白色）
-        plot_widget.plot(x, df_pl['macd'].to_numpy(), pen=pg.mkPen('#FFFFFF', width=1), name='DIF')
-        # 绘制DEA线（黄色）
-        plot_widget.plot(x, df_pl['macd_signal'].to_numpy(), pen=pg.mkPen('#FFFF00', width=1), name='DEA')
-        # 绘制柱状图
-        for i in range(len(x)):
-            if df_pl['macd_hist'].to_numpy()[i] >= 0:
-                color = '#FF0000'  # 上涨为红色
-            else:
-                color = '#00FF00'  # 下跌为绿色
-            plot_widget.plot([x[i], x[i]], [0, df_pl['macd_hist'].to_numpy()[i]], pen=pg.mkPen(color, width=2))
-    
-    def draw_vol_indicator(self, plot_widget, x, df_pl):
-        """
-        绘制VOL指标
-        
-        Args:
-            plot_widget: 绘图控件
-            x: x轴数据
-            df_pl: polars DataFrame，包含成交量数据
-        """
-        # 导入pyqtgraph
-        import pyqtgraph as pg
-        import numpy as np
-        
-        # 设置Y轴范围，确保从0开始
-        volumes = df_pl['volume'].to_numpy()
-        if len(volumes) > 0:
-            y_max = volumes.max() * 1.3  # 顶部留出30%空间
-            plot_widget.setYRange(0, y_max)
-        else:
-            plot_widget.setYRange(0, 100)
-        
-        # 禁用科学计数法，使用正常数值显示
-        y_axis = plot_widget.getAxis('left')
-        y_axis.enableAutoSIPrefix(False)
-        y_axis.setStyle(tickTextOffset=20)  # 设置刻度文本偏移，确保显示完整
-        
-        # 重置对数模式，默认使用线性刻度
-        plot_widget.setLogMode(y=False)
-        
-        # 绘制成交量柱状图
-        for i in range(len(x)):
-            if i == 0:
-                color = 'r'  # 默认第一个为红色
-            else:
-                if df_pl['close'].to_numpy()[i] >= df_pl['close'].to_numpy()[i-1]:
-                    color = 'r'  # 上涨为红色
-                else:
-                    color = 'g'  # 下跌为绿色
-            # 调整柱体宽度，与K线图保持一致，减小柱体间隙，去掉外框线
-            bar_item = pg.BarGraphItem(x=[i], height=[volumes[i]], width=0.9, brush=pg.mkBrush(color), pen=None)
-            plot_widget.addItem(bar_item)
-        
-        # 绘制成交量5日均线（白色，与K线图MA5颜色一致）
-        if 'vol_ma5' in df_pl.columns:
-            vol_ma5_item = plot_widget.plot(x, df_pl['vol_ma5'].to_numpy(), pen=pg.mkPen('w', width=1), name='VOL_MA5')
-        
-        # 绘制成交量10日均线（青色，与K线图MA10颜色一致）
-        if 'vol_ma10' in df_pl.columns:
-            vol_ma10_item = plot_widget.plot(x, df_pl['vol_ma10'].to_numpy(), pen=pg.mkPen('c', width=1), name='VOL_MA10')
-        
-        # 绘制完成后，计算并强制设置正确的Y轴范围，使用真实的成交量数值
-        if len(volumes) > 0:
-            # 获取所有相关数据的最大值，包括成交量和均线
-            max_value = volumes.max()
-            if 'vol_ma5' in df_pl.columns:
-                max_value = max(max_value, df_pl['vol_ma5'].max())
-            if 'vol_ma10' in df_pl.columns:
-                max_value = max(max_value, df_pl['vol_ma10'].max())
-            
-            y_min = 0  # 成交量不能为负
-            y_max = max_value * 1.3  # 顶部留出30%空间
-            
-            # 强制设置Y轴范围，禁用padding
-            plot_widget.setYRange(y_min, y_max, padding=0)
-            
-            # 直接设置Y轴刻度，确保显示真实的成交量数值
-            y_axis = plot_widget.getAxis('left')
-            y_axis.setScale(1.0)  # 重置缩放比例
-
-    def draw_boll_indicator(self, plot_widget, x, df_pl):
-        """
-        绘制BOLL指标
-        
-        Args:
-            plot_widget: 绘图控件
-            x: x轴数据
-            df_pl: polars DataFrame，包含boll数据
-        """
-        # 导入pyqtgraph
-        import pyqtgraph as pg
-        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-        
-        # 确保BOLL相关列存在
-        if 'mb' not in df_pl.columns or 'up' not in df_pl.columns or 'dn' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算BOLL指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_boll(20)
-            df_pl = analyzer.get_data(return_polars=True)
-        
-        # 设置BOLL指标图的Y轴范围，与K线图保持一致
-        y_min = df_pl['dn'].min() * 0.99
-        y_max = df_pl['up'].max() * 1.01
-        plot_widget.setYRange(y_min, y_max)
-        
-        # 绘制BOLL线
-        # 绘制中轨线（白色）
-        plot_widget.plot(x, df_pl['mb'].to_numpy(), pen=pg.mkPen('w', width=1), name='MB')
-        # 绘制上轨线（红色）
-        plot_widget.plot(x, df_pl['up'].to_numpy(), pen=pg.mkPen('r', width=1), name='UP')
-        # 绘制下轨线（绿色，与K线绿色一致）
-        plot_widget.plot(x, df_pl['dn'].to_numpy(), pen=pg.mkPen(pg.mkColor(0, 255, 0), width=1), name='DN')
-
-    def draw_wr_indicator(self, plot_widget, x, df_pl):
-        """
-        绘制WR指标（威廉指标）
-        
-        Args:
-            plot_widget: 绘图控件
-            x: x轴数据
-            df_pl: polars DataFrame，包含wr数据
-        """
-        # 导入pyqtgraph
-        import pyqtgraph as pg
-        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-        
-        # 确保WR相关列存在（通达信默认使用WR(10,6)）
-        if 'wr1' not in df_pl.columns or 'wr2' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算WR指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_wr([10, 6])
-            df_pl = analyzer.get_data(return_polars=True)
-        
-        # 设置WR指标图的Y轴范围（通达信风格：0-100）
-        plot_widget.setYRange(0, 100)
-        
-        # 绘制WR线（通达信风格：黄色和白色）
-        # WR1（10日）使用黄色
-        plot_widget.plot(x, df_pl['wr1'].to_numpy(), pen=pg.mkPen('y', width=1), name='WR1(10)')
-        # WR2（6日）使用白色
-        plot_widget.plot(x, df_pl['wr2'].to_numpy(), pen=pg.mkPen('w', width=1), name='WR2(6)')
-        
-        # 绘制超买超卖线
-        # WR指标：>80为超卖，<20为超买
-        plot_widget.addItem(pg.InfiniteLine(pos=20, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine), name='超买线'))
-        plot_widget.addItem(pg.InfiniteLine(pos=80, pen=pg.mkPen('#444444', style=pg.QtCore.Qt.DashLine), name='超卖线'))
-
-    def draw_dmi_indicator(self, plot_widget, x, df_pl):
-        """
-        绘制DMI指标
-        
-        Args:
-            plot_widget: 绘图控件
-            x: x轴数据
-            df_pl: polars DataFrame，包含dmi数据
-        """
-        # 导入pyqtgraph
-        import pyqtgraph as pg
-        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-        
-        # 确保DMI相关列存在
-        if 'pdi' not in df_pl.columns or 'ndi' not in df_pl.columns or 'adx' not in df_pl.columns or 'adxr' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算DMI指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('dmi', windows=[14])
-            df_pl = analyzer.get_data(return_polars=True)
-        
-        # 绘制DMI指标，使用通达信配色，调整线段宽度使其更亮
-        plot_widget.plot(x, df_pl['pdi'].to_numpy(), pen=pg.mkPen(color='#FFFFFF', width=1.0), name='+DI')
-        plot_widget.plot(x, df_pl['ndi'].to_numpy(), pen=pg.mkPen(color='#FFFF00', width=1.0), name='-DI')
-        plot_widget.plot(x, df_pl['adx'].to_numpy(), pen=pg.mkPen(color='#FF00FF', width=1.0), name='ADX')
-        plot_widget.plot(x, df_pl['adxr'].to_numpy(), pen=pg.mkPen(color='#00FF00', width=1.0), name='ADXR')
-    
-    def draw_trix_indicator(self, plot_widget, x, df_pl):
-        """
-        绘制TRIX指标
-        
-        Args:
-            plot_widget: 绘图控件
-            x: x轴数据
-            df_pl: polars DataFrame，包含trix数据
-        """
-        # 导入pyqtgraph
-        import pyqtgraph as pg
-        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-        
-        # 确保TRIX相关列存在
-        if 'trix' not in df_pl.columns or 'trma' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算TRIX指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('trix', windows=[12], signal_period=9)
-            df_pl = analyzer.get_data(return_polars=True)
-        
-        # 绘制TRIX指标，使用通达信配色
-        # 设置Y轴范围
-        min_val = min(df_pl['trix'].min(), df_pl['trma'].min()) * 1.2
-        max_val = max(df_pl['trix'].max(), df_pl['trma'].max()) * 1.2
-        plot_widget.setYRange(min_val, max_val)
-        
-        # 绘制TRIX线（白色）
-        plot_widget.plot(x, df_pl['trix'].to_numpy(), pen=pg.mkPen(color='#FFFFFF', width=1.0), name='TRIX')
-        # 绘制MATRIX线（黄色）
-        plot_widget.plot(x, df_pl['trma'].to_numpy(), pen=pg.mkPen(color='#FFFF00', width=1.0), name='MATRIX')
-    
-    def draw_brar_indicator(self, plot_widget, x, df_pl):
-        """
-        绘制BRAR指标
-        
-        Args:
-            plot_widget: 绘图控件
-            x: x轴数据
-            df_pl: polars DataFrame，包含brar数据
-        """
-        # 导入pyqtgraph
-        import pyqtgraph as pg
-        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-        
-        # 确保BRAR相关列存在
-        if 'br' not in df_pl.columns or 'ar' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算BRAR指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('brar', windows=[26])
-            df_pl = analyzer.get_data(return_polars=True)
-        
-        # 绘制BRAR指标，使用通达信配色
-        # 设置Y轴范围，通达信BRAR通常在0-200之间
-        max_val = max(df_pl['br'].max(), df_pl['ar'].max()) * 1.2
-        plot_widget.setYRange(0, max(200, max_val))
-        
-        # 绘制BR线（黄色）
-        plot_widget.plot(x, df_pl['br'].to_numpy(), pen=pg.mkPen(color='#FFFF00', width=1.0), name='BR')
-        # 绘制AR线（白色）
-        plot_widget.plot(x, df_pl['ar'].to_numpy(), pen=pg.mkPen(color='#FFFFFF', width=1.0), name='AR')
-    
-    def draw_vr_indicator(self, plot_widget, x, df_pl):
-        """
-        绘制VR指标
-        
-        Args:
-            plot_widget: 绘图控件
-            x: x轴数据
-            df_pl: polars DataFrame，包含vr数据
-        """
-        # 导入pyqtgraph
-        import pyqtgraph as pg
-        from PySide6.QtCore import Qt
-        from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-        import polars as pl
-        
-        # 确保VR相关列存在
-        if 'vr' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算VR指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('vr', windows=[26])
-            df_pl = analyzer.get_data(return_polars=True)
-        
-        # 计算MAVR（VR的移动平均线），默认使用10日移动平均
-        if 'mavr' not in df_pl.columns:
-            # 使用rolling_mean计算MAVR
-            df_pl = df_pl.with_columns(
-                pl.col('vr').rolling_mean(window_size=10, min_periods=1).alias('mavr')
-            )
-        
-        # 绘制VR指标，使用通达信配色
-        # 设置Y轴范围，VR通常在0-200之间，并添加100参考线
-        max_val = max(df_pl['vr'].max(), df_pl['mavr'].max()) * 1.2
-        plot_widget.setYRange(0, max(200, max_val))
-        
-        # 添加100参考线（通达信风格）
-        plot_widget.addItem(pg.InfiniteLine(pos=100, pen=pg.mkPen(color='#444444', width=1.0, style=Qt.DotLine)))
-        
-        # 绘制VR线（白色）
-        vr_curve = plot_widget.plot(x, df_pl['vr'].to_numpy(), pen=pg.mkPen(color='#FFFFFF', width=1.0), name='VR')
-        logger.info(f"已绘制VR线: {vr_curve}")
-        # 绘制MAVR线（黄色）
-        mavr_curve = plot_widget.plot(x, df_pl['mavr'].to_numpy(), pen=pg.mkPen(color='#FFFF00', width=1.0), name='MAVR')
-        logger.info(f"已绘制MAVR线: {mavr_curve}")
-        
-        # 返回更新后的df_pl，确保指标数值标签能正确获取数据
-        return df_pl
-    
-    def draw_k_line_indicator(self, plot_widget, df, dates, opens, highs, lows, closes, df_pl):
-        """
-        绘制K线图
-        
-        Args:
-            plot_widget: 绘图控件
-            df: 原始数据
-            dates: 日期列表
-            opens: 开盘价列表
-            highs: 最高价列表
-            lows: 最低价列表
-            closes: 收盘价列表
-            df_pd: pandas DataFrame，包含均线数据
-        """
-        # 导入pyqtgraph
-        import pyqtgraph as pg
-        import numpy as np
-
-        from pyqtgraph import Point
-        
-        # 使用导入的CandleStickItem类
-        
-        # 创建x轴坐标（使用索引）
-        x = np.arange(len(dates))
-        
-        # 创建K线图数据
-        # K线图由OHLC数据组成：(x, open, high, low, close)
-        ohlc = np.column_stack((x, opens, highs, lows, closes))
-        
-        # 转换为列表格式，适合自定义CandleStickItem
-        ohlc_list = [tuple(row) for row in ohlc]
-        
-        # 创建K线图项
-        candle_plot_item = CandleStickItem(ohlc_list)
-        
-        # 添加K线图到图表
-        plot_widget.addItem(candle_plot_item)
-        
-        # 设置x轴刻度标签（显示日期）
-        ax = plot_widget.getAxis('bottom')
-        ax.setTicks([[(i, dates[i].strftime('%Y-%m-%d')) for i in range(0, len(dates), 10)]])
-        
-        # 设置Y轴范围，留出一定的边距
-        y_min = np.min(lows) * 0.99
-        y_max = np.max(highs) * 1.01
-        plot_widget.setYRange(y_min, y_max)
-        
-        # 计算当前显示区域的最高、最低点及其位置
-        current_high = np.max(highs)
-        current_low = np.min(lows)
-        high_index = np.argmax(highs)
-        low_index = np.argmin(lows)
-        
-        # 清除之前的最高、最低点标注
-        if hasattr(self, 'high_text_item'):
-            plot_widget.removeItem(self.high_text_item)
-        if hasattr(self, 'low_text_item'):
-            plot_widget.removeItem(self.low_text_item)
-        if hasattr(self, 'high_arrow_item'):
-            plot_widget.removeItem(self.high_arrow_item)
-        if hasattr(self, 'low_arrow_item'):
-            plot_widget.removeItem(self.low_arrow_item)
-        
-        # 创建最高点标注，加上日期
-        high_date = dates[high_index].strftime('%Y-%m-%d')
-        self.high_text_item = pg.TextItem(f" {high_date} {current_high:.2f} ", color='w')
-        self.high_text_item.setHtml(f'<div style="background-color: rgba(0, 0, 0, 0.8); padding: 3px; border: 1px solid #666; font-family: monospace; font-size: 10px;">{high_date} {current_high:.2f}</div>')
-        plot_widget.addItem(self.high_text_item)
-        
-        # 创建最高点箭头 - 简单三角形箭头
-        self.high_arrow_item = pg.ArrowItem(
-            pos=(high_index, current_high), 
-            angle=-45, 
-            brush=pg.mkBrush('w'), 
-            pen=pg.mkPen('w', width=1), 
-            tipAngle=30, 
-            headLen=8, 
-            headWidth=6,
-            tailLen=0,  # 没有尾巴
-            tailWidth=1
-        )
-        plot_widget.addItem(self.high_arrow_item)
-        
-        # 创建最低点标注，加上日期
-        low_date = dates[low_index].strftime('%Y-%m-%d')
-        self.low_text_item = pg.TextItem(f" {low_date} {current_low:.2f} ", color='w')
-        self.low_text_item.setHtml(f'<div style="background-color: rgba(0, 0, 0, 0.8); padding: 3px; border: 1px solid #666; font-family: monospace; font-size: 10px;">{low_date} {current_low:.2f}</div>')
-        plot_widget.addItem(self.low_text_item)
-        
-        # 创建最低点箭头 - 简单三角形箭头
-        self.low_arrow_item = pg.ArrowItem(
-            pos=(low_index, current_low), 
-            angle=45, 
-            brush=pg.mkBrush('w'), 
-            pen=pg.mkPen('w', width=1), 
-            tipAngle=30, 
-            headLen=8, 
-            headWidth=6,
-            tailLen=0,  # 没有尾巴
-            tailWidth=1
-        )
-        plot_widget.addItem(self.low_arrow_item)
-        
-        # 定位标注位置（在对应柱图旁边）
-        self.high_text_item.setPos(high_index + 0.5, current_high + (y_max - y_min) * 0.02)
-        self.low_text_item.setPos(low_index + 0.5, current_low - (y_max - y_min) * 0.02)
-        
-        # 设置X轴范围，不使用autoRange，确保与成交量图一致
-        plot_widget.setXRange(0, len(dates) - 1)
-        
-        # 初始化均线相关属性
-        if not hasattr(self, 'moving_averages'):
-            self.moving_averages = {}
-        if not hasattr(self, 'selected_ma'):
-            self.selected_ma = None
-        if not hasattr(self, 'ma_points'):
-            self.ma_points = []
-        
-        # 清除之前的标注点
-        for point_item in self.ma_points:
-            plot_widget.removeItem(point_item)
-        self.ma_points.clear()
-        
-        # 确保ma5、ma10、ma20和ma60列存在
-        if 'ma5' not in df_pl.columns or 'ma10' not in df_pl.columns or 'ma20' not in df_pl.columns or 'ma60' not in df_pl.columns:
-            # 计算均线指标
-            from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_ma([5, 10, 20, 60])
-            df_pl = analyzer.get_data(return_polars=True)
-        
-        # 绘制5日均线（白色）
-        ma5_item = plot_widget.plot(x, df_pl['ma5'].to_numpy(), pen=pg.mkPen('w', width=1), name='MA5')
-        self.moving_averages['MA5'] = {'item': ma5_item, 'data': (x, df_pl['ma5'].to_numpy()), 'color': 'w'}
-        
-        # 绘制10日均线（青色）
-        ma10_item = plot_widget.plot(x, df_pl['ma10'].to_numpy(), pen=pg.mkPen('c', width=1), name='MA10')
-        self.moving_averages['MA10'] = {'item': ma10_item, 'data': (x, df_pl['ma10'].to_numpy()), 'color': 'c'}
-        
-        # 绘制20日均线（红色）
-        ma20_item = plot_widget.plot(x, df_pl['ma20'].to_numpy(), pen=pg.mkPen('r', width=1), name='MA20')
-        self.moving_averages['MA20'] = {'item': ma20_item, 'data': (x, df_pl['ma20'].to_numpy()), 'color': 'r'}
-        
-        # 绘制60日均线（绿色，与K线绿色一致）
-        ma60_item = plot_widget.plot(x, df_pl['ma60'].to_numpy(), pen=pg.mkPen(pg.mkColor(0, 255, 0), width=1), name='MA60')
-        self.moving_averages['MA60'] = {'item': ma60_item, 'data': (x, df_pl['ma60'].to_numpy()), 'color': pg.mkColor(0, 255, 0)}
-        
-        # 保存当前鼠标位置和K线索引
-        self.current_kline_data = {
-            'dates': dates,
-            'opens': opens,
-            'highs': highs,
-            'lows': lows,
-            'closes': closes
-        }
-        
-        # 保存计算好的MA值和颜色，用于鼠标移动时更新显示
-        self.ma_data = {
-            'MA5': df_pl['ma5'].to_list(),
-            'MA10': df_pl['ma10'].to_list(),
-            'MA20': df_pl['ma20'].to_list(),
-            'MA60': df_pl['ma60'].to_list()
-        }
-        
-        # 保存MA线的颜色映射，使用与绘制线条一致的颜色值
-        self.ma_colors = {
-            'MA5': 'white',
-            'MA10': 'cyan',
-            'MA20': 'red',
-            'MA60': '#00FF00'  # 使用亮绿色，与pyqtgraph的'g'颜色一致
-        }
-        
-        # 保存K线图数据项
-        self.candle_plot_item = candle_plot_item
-    
+  
     def draw_indicator(self, plot_widget, indicator_name, x, df_pl):
         """
         根据指标名称绘制相应的指标
@@ -6205,32 +5830,14 @@ class MainWindow(QMainWindow, IView, IController):
             if indicator_name == "VOL":
                 plot_widget.setLogMode(y=False)
         
-        # 使用字典映射替代条件判断，调用相应的绘制函数
-        indicator_drawers = {
-            "KDJ": self.draw_kdj_indicator,
-            "RSI": self.draw_rsi_indicator,
-            "MACD": self.draw_macd_indicator,
-            "VOL": self.draw_vol_indicator,
-            "BOLL": self.draw_boll_indicator,
-            "WR": self.draw_wr_indicator,
-            "DMI": self.draw_dmi_indicator,
-            "TRIX": self.draw_trix_indicator,
-            "BRAR": self.draw_brar_indicator,
-            "VR": self.draw_vr_indicator
-        }
-        
-        # 为所有新指标添加默认绘制函数，避免显示错误
-        drawer = indicator_drawers.get(indicator_name, self.draw_dmi_indicator)
-        # 调用绘制函数
-        result = drawer(plot_widget, x, df_pl)
-        # 检查返回值是否为None，如果不是None则使用返回的DataFrame，否则使用原始DataFrame
-        updated_df_pl = result if result is not None else df_pl
+        # 使用indicator_drawer_manager绘制指标
+        updated_df_pl = self.indicator_drawer_manager.draw_indicator(indicator_name, plot_widget, x, df_pl)
         
         # 保存指标数据，用于鼠标移动时更新指标数值
         self.save_indicator_data(updated_df_pl)
         
         # 更新指标数值标签
-        self.update_indicator_values_label(indicator_name, updated_df_pl)
+        self.indicator_label_manager.update_indicator_values_label(indicator_name, updated_df_pl)
         
         return updated_df_pl
     
