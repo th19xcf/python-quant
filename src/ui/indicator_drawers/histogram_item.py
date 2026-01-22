@@ -37,11 +37,15 @@ class HistogramItem(pg.GraphicsObject):
                 brush = self.brush
             
             p.setBrush(brush)
+            p.setPen(pg.mkPen(None))  # 不绘制边框
             
-            # 绘制柱状图 - pyqtgraph y坐标原点在顶部，向下延伸
-            # 对于成交量图，base总是0，height总是正数
-            # 修复：使用正确的坐标计算，确保柱体从底部向上绘制
-            rect = pg.QtCore.QRectF(x - 0.4, base + height, 0.8, -height)
+            # 正确的坐标计算：根据height的正负值确定柱体方向
+            if height >= 0:
+                # 正柱体：从base向上绘制
+                rect = pg.QtCore.QRectF(x - 0.4, base, 0.8, height)
+            else:
+                # 负柱体：从base向下绘制
+                rect = pg.QtCore.QRectF(x - 0.4, base + height, 0.8, abs(height))
             p.drawRect(rect)
         
         p.end()

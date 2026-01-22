@@ -22,7 +22,7 @@ class MACDDrawer:
         if 'macd' not in df_pl.columns or 'macd_signal' not in df_pl.columns or 'macd_hist' not in df_pl.columns:
             # 使用TechnicalAnalyzer计算MACD指标
             analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('macd', windows=[12], signal_period=9)
+            analyzer.calculate_macd(fast_period=12, slow_period=26, signal_period=9)
             df_pl = analyzer.get_data(return_polars=True)
         
         # 设置Y轴范围
@@ -41,10 +41,12 @@ class MACDDrawer:
         colors = []
         
         # 填充柱状图数据和颜色
+        macd_hist_list = df_pl['macd_hist'].to_list()
         for i in range(len(x)):
-            histogram.append((x[i], 0, df_pl['macd_hist'][i]))
+            hist_value = macd_hist_list[i]
+            histogram.append((x[i], 0, hist_value))
             # 根据macd_hist的正负值设置颜色
-            if df_pl['macd_hist'][i] >= 0:
+            if hist_value >= 0:
                 colors.append(pg.mkBrush('r'))
             else:
                 colors.append(pg.mkBrush('#00FF00'))
