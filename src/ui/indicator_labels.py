@@ -30,7 +30,7 @@ class IndicatorLabelManager:
         df_pd = df_pl.to_pandas() if hasattr(df_pl, 'to_pandas') else df_pl
         
         # 保存指标数据，用于鼠标移动时更新指标数值
-        self.main_window.save_indicator_data(df_pl)
+        self.main_window.chart_manager.save_indicator_data(df_pl)
         
         # 获取当前第3个窗口的指标
         current_indicator = self.main_window.window_indicators.get(3, "KDJ")

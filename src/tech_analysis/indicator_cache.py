@@ -100,7 +100,12 @@ class IndicatorCache:
         
         # 计算数据摘要
         data_sample = data.select(data_cols).head(100)  # 使用前100行进行哈希计算
-        data_str = data_sample.to_csv().encode('utf-8')
+        try:
+            data_str = data_sample.to_pandas().to_csv(index=False).encode('utf-8')
+        except Exception:
+            data_bytes = data_sample.to_numpy().tobytes()
+            cols_bytes = ",".join(data_cols).encode('utf-8')
+            data_str = cols_bytes + b"|" + data_bytes
         data_hash = hashlib.md5(data_str).hexdigest()
         
         # 2. 生成参数字符串

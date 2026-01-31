@@ -43,6 +43,7 @@ class DataReadThread(QThread):
         """
         线程运行函数，实现异步数据读取和解析
         """
+        import time
         try:
             logger.info(f"开始异步读取股票数据文件: {self.file_path}")
             
@@ -56,11 +57,13 @@ class DataReadThread(QThread):
                 self.data_read_error.emit(error_msg)
                 return
             
+            # 添加超时机制，避免程序无响应
+            start_time = time.time()
+            
             with open(tdx_file_path, 'rb') as f:
                 # 获取文件大小
                 f.seek(0, 2)
                 file_size = f.tell()
-                f.seek(0)
                 
                 # 计算数据条数
                 record_count = file_size // 32
@@ -70,10 +73,20 @@ class DataReadThread(QThread):
                     self.data_read_error.emit(error_msg)
                     return
                 
-                # 读取所有记录
-                for i in range(record_count):
+                # 只读取最近100条记录以提高性能
+                max_days = 100
+                start_record = max(0, record_count - max_days)
+                
+                # 跳转到起始记录位置
+                f.seek(start_record * 32)
+                
+                # 读取剩余记录
+                for i in range(start_record, record_count):
+                    # 添加超时检查
+                    if time.time() - start_time > 5:
+                        break
+                    
                     if not self.is_running:
-                        logger.info("数据读取线程被取消")
                         return
                     
                     record = f.read(32)
@@ -106,12 +119,11 @@ class DataReadThread(QThread):
                     
                     # 发送进度信号
                     if i % 100 == 0 or i == record_count - 1:
-                        progress = int((i + 1) / record_count * 100)
-                        self.data_read_progress.emit(progress, record_count)
+                        progress = int((i + 1 - start_record) / (record_count - start_record) * 100)
+                        self.data_read_progress.emit(progress, record_count - start_record)
             
             # 将数据转换为Polars DataFrame
             df = pl.DataFrame(data)
-            logger.info(f"异步读取到{len(df)}条历史数据")
             
             # 发送数据读取完成信号
             self.data_read_completed.emit(df, self.name, self.code)
@@ -163,8 +175,6 @@ class IndicatorCalculateThread(QThread):
         线程运行函数，实现异步指标计算
         """
         try:
-            logger.info(f"开始异步计算技术指标，数据形状: {self.df.shape}")
-            
             # 延迟导入，避免循环导入
             from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
             
@@ -176,8 +186,6 @@ class IndicatorCalculateThread(QThread):
             
             # 获取计算结果
             result_df = analyzer.get_data(return_polars=True)
-            
-            logger.info(f"异步计算指标完成，结果DataFrame形状: {result_df.shape}")
             
             # 发送指标计算完成信号
             self.indicator_calculated.emit(result_df)

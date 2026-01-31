@@ -279,9 +279,9 @@ class DataManager(IDataProvider, IDataProcessor):
                     'model': 'StockDaily',
                     'module': 'stock',
                     'handler_methods': {
-                        'tdx': 'get_stock_data',
+                        'tdx': 'get_kline_data',
                         'akshare': 'get_stock_data',
-                        'baostock': 'get_stock_data',
+                        'baostock': 'download_stock_daily',
                         'plugin': 'get_stock_data'
                     }
                 },
@@ -289,9 +289,9 @@ class DataManager(IDataProvider, IDataProcessor):
                     'model': 'IndexDaily',
                     'module': 'index',
                     'handler_methods': {
-                        'tdx': 'get_index_data',
+                        'tdx': 'get_kline_data',
                         'akshare': 'get_index_data',
-                        'baostock': 'get_index_data',
+                        'baostock': 'download_index_daily',
                         'plugin': 'get_index_data'
                     }
                 }
@@ -322,10 +322,27 @@ class DataManager(IDataProvider, IDataProcessor):
                 
                 # 是pandas DataFrame，转换为Polars
                 if hasattr(result, 'to_dict'):
-                    # 检查是否为空DataFrame
                     if hasattr(result, 'empty') and result.empty:
                         return None
                     return pl.from_pandas(result)
+                
+                # 是dict类型（Baostock离线模式返回），取第一个值
+                if isinstance(result, dict):
+                    if len(result) > 0:
+                        first_value = list(result.values())[0]
+                        if hasattr(first_value, 'to_dict'):
+                            if hasattr(first_value, 'empty') and first_value.empty:
+                                return None
+                            return pl.from_pandas(first_value)
+                        elif isinstance(first_value, list):
+                            return pl.DataFrame(first_value)
+                    return None
+                
+                # 是list类型（TdxHandler返回），转换为Polars
+                if isinstance(result, list):
+                    if len(result) == 0:
+                        return None
+                    return pl.DataFrame(result)
                 
                 # 其他类型，尝试直接转换
                 try:
@@ -392,7 +409,17 @@ class DataManager(IDataProvider, IDataProcessor):
                     try:
                         # 调用相应的数据源方法
                         method_name = type_map['handler_methods'][source_name]
-                        result = getattr(handler, method_name)(ts_code, start_date, end_date, freq)
+                        
+                        # 根据不同的handler调整参数
+                        if source_name == 'tdx':
+                            # TdxHandler.get_kline_data(stock_code, start_date, end_date)
+                            result = getattr(handler, method_name)(ts_code, start_date, end_date)
+                        elif source_name == 'baostock':
+                            # BaostockHandler.download_stock_daily(ts_codes=[ts_code], start_date, end_date)
+                            result = getattr(handler, method_name)(ts_codes=[ts_code], start_date=start_date, end_date=end_date)
+                        else:
+                            # 其他handler使用标准参数
+                            result = getattr(handler, method_name)(ts_code, start_date, end_date, freq)
                         
                         # 统一处理结果
                         processed_result = process_result(result)
