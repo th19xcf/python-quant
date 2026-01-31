@@ -131,10 +131,9 @@ class MainWindowDrawingMixin:
             if df_pl is None:
                 return
             
-            # 截取指定数量的数据（确保不超过数据长度）
-            actual_bar_count = min(bar_count, len(df_pl))
-            # 始终截取数据，确保使用正确的柱体数
-            df_pl = df_pl.tail(actual_bar_count)
+            # 截取指定数量的数据（当柱体数小于数据长度时才截取）
+            if bar_count < len(df_pl):
+                df_pl = df_pl.tail(bar_count)
             
             # 直接使用Polars的to_numpy()方法，避免多次转换
             dates = df_pl['date'].to_numpy()

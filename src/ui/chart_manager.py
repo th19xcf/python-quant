@@ -93,14 +93,15 @@ class ChartManager:
         lows = df['low'].to_list()
         closes = df['close'].to_list()
         
-        # 确保bar_count不超过数据长度
-        bar_count = min(getattr(self.window, 'displayed_bar_count', 100), len(dates))
-        # 截取指定数量的数据
-        dates = dates[-bar_count:]
-        opens = opens[-bar_count:]
-        highs = highs[-bar_count:]
-        lows = lows[-bar_count:]
-        closes = closes[-bar_count:]
+        # 获取柱体数设置
+        bar_count = getattr(self.window, 'displayed_bar_count', 100)
+        # 截取指定数量的数据（当柱体数小于数据长度时才截取）
+        if bar_count < len(dates):
+            dates = dates[-bar_count:]
+            opens = opens[-bar_count:]
+            highs = highs[-bar_count:]
+            lows = lows[-bar_count:]
+            closes = closes[-bar_count:]
 
         x = np.arange(len(dates))
         ohlc = np.column_stack((x, opens, highs, lows, closes))
