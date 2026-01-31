@@ -409,9 +409,10 @@ class TdxHandler:
                     record_count = file_size // 32
                     logger.info(f"文件{file_path}包含{record_count}条交易日数据")
                     
-                    # 只解析最近100条记录
-                    max_days = 100
-                    start_record = max(0, record_count - max_days)
+                    # 读取所有记录，由绘图层根据displayed_bar_count截取显示的数据
+                    # 这样可以支持动态调整柱体数量而无需重新读取数据文件
+                    max_days = None
+                    start_record = 0
                     logger.info(f"只解析最近{max_days}条记录，从第{start_record}条开始")
                     
                     # 跳转到起始记录位置

@@ -125,15 +125,13 @@ class MainWindowDrawingMixin:
             bar_count = getattr(self, 'displayed_bar_count', 100)
             
             # 只取显示数量的数据
-            if hasattr(df, 'tail'):
-                df_pl = df.tail(bar_count)
-            else:
-                df_pl = df
+            df_pl = df
             
             # 修复：确保 df_pl 不为 None
             if df_pl is None:
                 return
             
+            # 截取指定数量的数据
             if len(df_pl) > bar_count:
                 df_pl = df_pl.tail(bar_count)
             

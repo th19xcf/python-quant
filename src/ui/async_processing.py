@@ -73,9 +73,10 @@ class DataReadThread(QThread):
                     self.data_read_error.emit(error_msg)
                     return
                 
-                # 只读取最近100条记录以提高性能
-                max_days = 100
-                start_record = max(0, record_count - max_days)
+                # 读取所有记录，由绘图层根据displayed_bar_count截取显示的数据
+                # 这样可以支持动态调整柱体数量而无需重新读取数据文件
+                max_days = None
+                start_record = 0
                 
                 # 跳转到起始记录位置
                 f.seek(start_record * 32)
