@@ -102,6 +102,7 @@ class MainWindow(MainWindowUiMixin, MainWindowEventMixin, MainWindowDataMixin,
         self.window_indicators = {2: "VOL", 3: "KDJ"} # Default indicators
         self.current_window_count = 3
         self.displayed_bar_count = 100
+        self.adjustment_type = 'qfq'  # 复权类型：qfq=前复权, hfq=后复权, none=不复权
 
         # 初始化后获取实时数据
         if hasattr(self, 'refresh_stock_data'):

@@ -5,6 +5,7 @@ from src.utils.logger import logger
 from pathlib import Path
 import struct
 from datetime import datetime
+import polars as pl
 
 class MainWindowDataMixin:
     """
@@ -28,12 +29,20 @@ class MainWindowDataMixin:
             self.statusBar().showMessage(f"加载 {stock_name}({stock_code}) 数据...", 0)
             QApplication.setOverrideCursor(Qt.WaitCursor)
 
-            # 计算日期范围：默认获取最近90天的数据
+            # 计算日期范围：根据柱体数获取足够的数据（至少获取2年的数据以确保有足够的历史数据）
             end_date = datetime.now().strftime("%Y-%m-%d")
-            start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+            # 获取最近2年的数据（约500个交易日），确保有足够的数据支持柱体数变化
+            start_date = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d")
 
             # 从数据管理器获取股票历史数据
-            df = self.data_manager.get_stock_data(stock_code, start_date, end_date, frequency='1d')
+            adjustment_type = getattr(self, 'adjustment_type', 'qfq')
+            
+            # 根据当前周期确定数据频率
+            period = getattr(self, 'current_period', '日线')
+            freq_map = {'日线': '1d', '周线': '1w', '月线': '1m'}
+            frequency = freq_map.get(period, '1d')
+            
+            df = self.data_manager.get_stock_data(stock_code, start_date, end_date, frequency=frequency, adjustment_type=adjustment_type)
 
             if df is None or df.is_empty():
                 logger.warning(f"未获取到股票数据: {stock_name}({stock_code})")
@@ -41,6 +50,17 @@ class MainWindowDataMixin:
                 return
 
             logger.info(f"成功获取 {len(df)} 条 {stock_name}({stock_code}) 的数据")
+
+            # 保存当前股票数据（用于柱体加减按钮）
+            self.current_stock_data = df
+            self.current_stock_name = stock_name
+            self.current_stock_code = stock_code
+
+            # 重新计算技术指标（确保数据包含所有指标列）
+            df = self._recalculate_indicators_for_period(df)
+
+            # 更新当前股票数据为重新计算后的数据（包含技术指标）
+            self.current_stock_data = df
 
             # 切换到图表标签页
             if hasattr(self, 'tab_widget'):
@@ -510,6 +530,38 @@ class MainWindowDataMixin:
                 self.progress_bar.setVisible(False)
         finally:
             QApplication.restoreOverrideCursor()
+
+    def _recalculate_indicators_for_period(self, df: pl.DataFrame) -> pl.DataFrame:
+        """
+        为周线或月线数据重新计算技术指标
+        
+        Args:
+            df: 周线或月线数据（只有基础OHLCV数据）
+        
+        Returns:
+            pl.DataFrame: 包含技术指标的数据
+        """
+        try:
+            from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+            
+            # 转换为pandas DataFrame以使用TechnicalAnalyzer
+            df_pd = df.to_pandas()
+            
+            # 使用TechnicalAnalyzer计算所有技术指标
+            analyzer = TechnicalAnalyzer(df_pd)
+            
+            # 计算所有技术指标
+            result_pd = analyzer.calculate_all_indicators()
+            
+            # 转换回polars DataFrame
+            result_pl = pl.from_pandas(result_pd)
+            
+            logger.info(f"为{df.height}条数据重新计算了技术指标")
+            return result_pl
+            
+        except Exception as e:
+            logger.exception(f"重新计算技术指标失败: {e}")
+            return df
 
     def _format_color_item(self, item, value):
         try:

@@ -256,7 +256,7 @@ class DataManager(IDataProvider, IDataProcessor):
             end_date=end_date
         )
     
-    def _get_data_from_sources(self, data_type: str, ts_code: str, start_date: str, end_date: str, freq: str = "daily"):
+    def _get_data_from_sources(self, data_type: str, ts_code: str, start_date: str, end_date: str, freq: str = "daily", adjustment_type: str = "qfq"):
         """
         通用数据获取方法
         
@@ -266,6 +266,7 @@ class DataManager(IDataProvider, IDataProcessor):
             start_date: 开始日期
             end_date: 结束日期
             freq: 周期，daily或minute
+            adjustment_type: 复权类型，qfq=前复权, hfq=后复权, none=不复权
             
         Returns:
             pl.DataFrame: 数据
@@ -413,10 +414,14 @@ class DataManager(IDataProvider, IDataProcessor):
                         # 根据不同的handler调整参数
                         if source_name == 'tdx':
                             # TdxHandler.get_kline_data(stock_code, start_date, end_date)
+                            # TDX数据源不支持复权，使用原始数据
                             result = getattr(handler, method_name)(ts_code, start_date, end_date)
                         elif source_name == 'baostock':
-                            # BaostockHandler.download_stock_daily(ts_codes=[ts_code], start_date, end_date)
-                            result = getattr(handler, method_name)(ts_codes=[ts_code], start_date=start_date, end_date=end_date)
+                            # BaostockHandler.download_stock_daily(ts_codes=[ts_code], start_date, end_date, adjustflag)
+                            # 将adjustment_type转换为baostock的adjustflag参数
+                            adjustflag_map = {'qfq': '2', 'hfq': '1', 'none': '3'}
+                            adjustflag = adjustflag_map.get(adjustment_type, '2')
+                            result = getattr(handler, method_name)(ts_codes=[ts_code], start_date=start_date, end_date=end_date, adjustflag=adjustflag)
                         else:
                             # 其他handler使用标准参数
                             result = getattr(handler, method_name)(ts_code, start_date, end_date, freq)
@@ -451,7 +456,7 @@ class DataManager(IDataProvider, IDataProcessor):
             logger.exception(f"获取{type_name}数据失败: {e}")
             raise
     
-    def get_stock_data(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d') -> Union[pl.DataFrame, pd.DataFrame]:
+    def get_stock_data(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq') -> Union[pl.DataFrame, pd.DataFrame]:
         """
         获取股票历史数据
         
@@ -459,15 +464,101 @@ class DataManager(IDataProvider, IDataProcessor):
             stock_code: 股票代码
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
-            frequency: 数据频率，默认：1d（日线）
+            frequency: 数据频率，默认：1d（日线），支持1d/1w/1m（日/周/月线）
+            adjustment_type: 复权类型，qfq=前复权, hfq=后复权, none=不复权
         
         Returns:
             pl.DataFrame或pd.DataFrame: 股票历史数据
         """
-        freq_map = {'1d': 'daily', '1m': 'minute'}
-        freq = freq_map.get(frequency, 'daily')
-        result = self._get_data_from_sources("stock", stock_code, start_date, end_date, freq)
-        return result
+        # 将周线和月线转换为日线获取，然后进行聚合
+        if frequency in ['1w', '1m']:
+            # 获取日线数据
+            freq_map = {'1d': 'daily', '1m': 'minute'}
+            freq = freq_map.get('1d', 'daily')
+            df = self._get_data_from_sources("stock", stock_code, start_date, end_date, freq, adjustment_type)
+            
+            # 将日线数据转换为周线或月线
+            if not df.is_empty():
+                df = self._convert_to_period(df, frequency)
+            
+            return df
+        else:
+            # 日线或分钟线，直接获取
+            freq_map = {'1d': 'daily', '1m': 'minute'}
+            freq = freq_map.get(frequency, 'daily')
+            result = self._get_data_from_sources("stock", stock_code, start_date, end_date, freq, adjustment_type)
+            return result
+    
+    def _convert_to_period(self, df: pl.DataFrame, frequency: str) -> pl.DataFrame:
+        """
+        将日线数据转换为周线或月线数据
+        
+        Args:
+            df: 日线数据
+            frequency: 目标频率，1w=周线，1m=月线
+        
+        Returns:
+            pl.DataFrame: 转换后的数据
+        """
+        if df.is_empty():
+            return df
+        
+        try:
+            # 确保有日期列
+            if 'trade_date' in df.columns:
+                df = df.with_columns(pl.col('trade_date').alias('date'))
+            elif 'date' not in df.columns:
+                logger.error("DataFrame中没有日期列")
+                return df
+            
+            # 转换日期列为datetime类型
+            df = df.with_columns(pl.col('date').str.strptime(pl.Date, "%Y-%m-%d"))
+            
+            # 根据频率确定分组方式
+            if frequency == '1w':
+                # 周线：按周分组
+                df = df.with_columns(
+                    pl.col('date').dt.week().alias('week'),
+                    pl.col('date').dt.year().alias('year')
+                )
+                group_cols = ['year', 'week']
+            elif frequency == '1m':
+                # 月线：按月分组
+                df = df.with_columns(
+                    pl.col('date').dt.month().alias('month'),
+                    pl.col('date').dt.year().alias('year')
+                )
+                group_cols = ['year', 'month']
+            else:
+                return df
+            
+            # 聚合数据
+            result = df.group_by(group_cols).agg([
+                pl.col('date').first().alias('date'),
+                pl.col('open').first().alias('open'),
+                pl.col('high').max().alias('high'),
+                pl.col('low').min().alias('low'),
+                pl.col('close').last().alias('close'),
+                pl.col('vol').sum().alias('vol'),
+                pl.col('amount').sum().alias('amount'),
+                pl.col('pct_chg').sum().alias('pct_chg'),
+                pl.col('change').sum().alias('change')
+            ])
+            
+            # 按日期排序
+            result = result.sort('date')
+            
+            # 将日期转换回字符串格式
+            result = result.with_columns(
+                pl.col('date').dt.strftime("%Y-%m-%d").alias('date')
+            )
+            
+            logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{result.height}条")
+            return result
+            
+        except Exception as e:
+            logger.exception(f"转换数据频率失败: {e}")
+            return df
     
     def get_index_data(self, index_code: str, start_date: str, end_date: str, frequency: str = '1d') -> Union[pl.DataFrame, pd.DataFrame]:
         """

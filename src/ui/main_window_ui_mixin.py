@@ -568,6 +568,14 @@ class MainWindowUiMixin:
         # 添加分隔符
         toolbar_layout.addSpacing(10)
         
+        # 添加复权按钮
+        self.adjustment_btn = QPushButton("前复权")  # 默认显示前复权
+        self.adjustment_btn.setStyleSheet(button_style)
+        self.adjustment_btn.setCheckable(True)
+        self.adjustment_btn.setChecked(True)  # 默认选中前复权
+        self.adjustment_btn.clicked.connect(self.indicator_interaction_manager.on_adjustment_clicked)
+        toolbar_layout.addWidget(self.adjustment_btn)
+        
         # 添加工具栏到布局
         tech_layout.addWidget(toolbar)
         

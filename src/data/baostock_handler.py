@@ -246,7 +246,7 @@ class BaostockHandler:
             logger.exception(f"从Baostock获取股票基本信息失败: {e}")
             raise
     
-    def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, adjustflag: str = "2"):
         """
         更新股票日线数据
         
@@ -254,6 +254,7 @@ class BaostockHandler:
             ts_codes: 股票代码列表，None表示更新所有股票
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
+            adjustflag: 复权类型，"2"=前复权，"1"=后复权，"3"=不复权
         
         Returns:
             dict: 股票代码到日线数据的映射（离线模式下）
@@ -308,7 +309,7 @@ class BaostockHandler:
                         start_date=start_date,
                         end_date=end_date,
                         frequency="d",
-                        adjustflag="2"  # 前复权
+                        adjustflag=adjustflag  # 使用传入的复权参数
                     )
                     
                     # 获取数据

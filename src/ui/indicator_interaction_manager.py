@@ -43,7 +43,12 @@ class IndicatorInteractionManager:
             logger.info(f"柱体数增加1倍，当前柱体数: {new_count}")
 
             if window.current_stock_data is not None:
+                data_len = len(window.current_stock_data)
+                actual_count = min(new_count, data_len)
+                logger.info(f"重新绘制K线图，数据长度: {data_len}, 请求柱体数: {new_count}, 实际显示: {actual_count}")
                 window.plot_k_line(window.current_stock_data, window.current_stock_name, window.current_stock_code)
+            else:
+                logger.warning("current_stock_data 为 None，无法重新绘制K线图")
         except Exception as e:
             logger.exception(f"增加柱体数失败: {e}")
 
@@ -56,7 +61,12 @@ class IndicatorInteractionManager:
             logger.info(f"柱体数减少1倍，当前柱体数: {new_count}")
 
             if window.current_stock_data is not None:
+                data_len = len(window.current_stock_data)
+                actual_count = min(new_count, data_len)
+                logger.info(f"重新绘制K线图，数据长度: {data_len}, 请求柱体数: {new_count}, 实际显示: {actual_count}")
                 window.plot_k_line(window.current_stock_data, window.current_stock_name, window.current_stock_code)
+            else:
+                logger.warning("current_stock_data 为 None，无法重新绘制K线图")
         except Exception as e:
             logger.exception(f"减少柱体数失败: {e}")
 
@@ -80,11 +90,10 @@ class IndicatorInteractionManager:
 
             window.current_period = period
 
-            if period == "日线" and window.current_stock_data is not None:
-                print(f"切换到日线，按照柱体数 {window.displayed_bar_count} 重新绘制K线")
+            # 切换周期时，如果有当前股票数据，重新绘制K线图
+            if window.current_stock_data is not None:
+                print(f"切换到{period}，按照柱体数 {window.displayed_bar_count} 重新绘制K线")
                 window.plot_k_line(window.current_stock_data, window.current_stock_name, window.current_stock_code)
-            else:
-                print(f"切换到{period}")
 
     def on_window_count_changed(self, window_count, checked):
         window = self.window
@@ -158,3 +167,58 @@ class IndicatorInteractionManager:
             window.bar_count_input.setText("100")
             window.displayed_bar_count = 100
             print("无效的输入，已恢复为默认值: 100")
+
+    def on_adjustment_clicked(self, checked):
+        window = self.window
+        try:
+            # 始终显示复权选择菜单，不检查 checked 状态
+            menu = self._create_adjustment_menu()
+            menu.exec_(window.adjustment_btn.mapToGlobal(window.adjustment_btn.rect().bottomLeft()))
+            # 恢复按钮状态
+            window.adjustment_btn.setChecked(True)
+        except Exception as e:
+            logger.exception(f"处理复权按钮点击失败: {e}")
+
+    def _create_adjustment_menu(self):
+        """创建复权选择菜单"""
+        from PySide6.QtWidgets import QMenu
+        from PySide6.QtGui import QAction
+        from PySide6.QtCore import Qt
+        
+        window = self.window
+        menu = QMenu(window)
+        menu.setStyleSheet("QMenu { background-color: #333333; color: #C0C0C0; } QMenu::item { padding: 8px 20px; } QMenu::item:selected { background-color: #555555; }")
+        
+        # 定义复权类型
+        adjustment_types = [
+            ('不复权', 'none'),
+            ('前复权', 'qfq'),
+            ('后复权', 'hfq')
+        ]
+        
+        # 创建菜单项
+        for name, value in adjustment_types:
+            action = QAction(name, menu)
+            action.setCheckable(True)
+            action.setChecked(window.adjustment_type == value)
+            action.triggered.connect(lambda checked, v=value, n=name: self._on_adjustment_type_changed(v, n))
+            menu.addAction(action)
+        
+        return menu
+
+    def _on_adjustment_type_changed(self, value, name):
+        """复权类型改变处理"""
+        window = self.window
+        window.adjustment_type = value
+        logger.info(f"复权类型更改为: {name} ({value})")
+        
+        # 更新按钮文本显示当前复权类型
+        if hasattr(window, 'adjustment_btn'):
+            window.adjustment_btn.setText(name)
+        
+        # 如果有当前股票数据，重新获取数据并绘制
+        if hasattr(window, 'current_stock_code') and hasattr(window, 'current_stock_name'):
+            stock_code = window.current_stock_code
+            stock_name = window.current_stock_name
+            if stock_code and stock_name:
+                window.process_stock_data(stock_code, stock_name)

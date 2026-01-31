@@ -54,10 +54,11 @@ def calculate_kdj(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     """
     for window in windows:
         # 计算RSV值
-        lazy_df = lazy_df.with_columns(
-            to_float32(((pl.col('close') - pl.col(f'low_n_{window}')) / 
-             (pl.col(f'high_n_{window}') - pl.col(f'low_n_{window}')) * 100)).alias(f'rsv_{window}')
-        )
+        rsv_expr = to_float32(
+            ((pl.col('close') - pl.col(f'low_n_{window}')) / 
+             (pl.col(f'high_n_{window}') - pl.col(f'low_n_{window}')) * 100)
+        ).alias(f'rsv_{window}')
+        lazy_df = lazy_df.with_columns(rsv_expr)
         
         # 计算k、d、j值
         k_expr = to_float32(pl.col(f'rsv_{window}').rolling_mean(window_size=3, min_periods=1)).alias(f'k{window}')

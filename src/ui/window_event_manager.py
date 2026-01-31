@@ -41,8 +41,7 @@ class WindowEventManager:
     def handle_indicator_calculated(self, sender, data_type=None, indicators=None, calculated_indicators=None,
                                    success=True, error=None, indicator_name=None, ts_code=None, result=None, **kwargs):
         """处理技术指标计算完成事件"""
-        if hasattr(self.window, 'current_stock_code'):
-            self.window.refresh_indicator_charts()
+        logger.info(f"技术指标计算完成: {indicators}")
 
     def handle_indicator_error(self, sender, data_type=None, indicators=None, error="", indicator_name=None, ts_code=None, **kwargs):
         """处理技术指标计算错误事件"""
