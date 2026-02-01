@@ -9,11 +9,12 @@ import struct
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 import polars as pl
+import pandas as pd
 from loguru import logger
 
 
@@ -335,17 +336,115 @@ class TdxHandler:
             logger.exception(f"导入通达信股票数据失败: {e}")
             raise
     
-    def get_kline_data(self, stock_code: str, start_date: str, end_date: str):
+    def _get_adj_factors(self, ts_code: str, start_date: date, end_date: date) -> pd.DataFrame:
         """
-        获取指定股票在指定日期范围内的K线数据
+        从数据库获取复权因子
+        
+        Args:
+            ts_code: 股票代码
+            start_date: 开始日期
+            end_date: 结束日期
+            
+        Returns:
+            DataFrame包含复权因子
+        """
+        try:
+            from src.database.models.stock import StockAdjFactor
+            
+            session = self._get_thread_safe_session()
+            if not session:
+                logger.warning(f"无法获取数据库会话，无法获取复权因子")
+                return None
+            
+            query = session.query(StockAdjFactor).filter_by(ts_code=ts_code)
+            
+            if start_date:
+                query = query.filter(StockAdjFactor.trade_date >= start_date)
+            if end_date:
+                query = query.filter(StockAdjFactor.trade_date <= end_date)
+            
+            factors = query.order_by(StockAdjFactor.trade_date).all()
+            
+            if not factors:
+                logger.debug(f"{ts_code} 没有找到复权因子数据")
+                return None
+            
+            data = []
+            for f in factors:
+                data.append({
+                    'trade_date': f.trade_date,
+                    'qfq_factor': f.qfq_factor,
+                    'hfq_factor': f.hfq_factor,
+                })
+            
+            return pd.DataFrame(data)
+            
+        except Exception as e:
+            logger.exception(f"获取复权因子失败: {e}")
+            return None
+    
+    def _apply_adj_factor(self, df: pl.DataFrame, factors_df: pd.DataFrame, adj_type: str = 'qfq') -> pl.DataFrame:
+        """
+        应用复权因子计算复权价格
+        
+        Args:
+            df: 原始价格DataFrame
+            factors_df: 复权因子DataFrame
+            adj_type: 复权类型 ('qfq'前复权, 'hfq'后复权)
+            
+        Returns:
+            包含复权价格的DataFrame
+        """
+        try:
+            if factors_df is None or factors_df.empty:
+                # 没有复权因子，返回原始价格并添加默认因子1.0
+                return df.with_columns([
+                    pl.lit(1.0).alias(f'{adj_type}_factor'),
+                    pl.col('open').alias(f'{adj_type}_open'),
+                    pl.col('high').alias(f'{adj_type}_high'),
+                    pl.col('low').alias(f'{adj_type}_low'),
+                    pl.col('close').alias(f'{adj_type}_close'),
+                ])
+            
+            # 将复权因子转换为polars DataFrame
+            factors_pl = pl.from_pandas(factors_df)
+            
+            # 合并数据
+            result_df = df.join(factors_pl, left_on='date', right_on='trade_date', how='left')
+            
+            # 填充缺失的复权因子为1.0
+            factor_col = f'{adj_type}_factor'
+            result_df = result_df.with_columns([
+                pl.col(factor_col).fill_null(1.0)
+            ])
+            
+            # 计算复权价格
+            result_df = result_df.with_columns([
+                (pl.col('open') * pl.col(factor_col)).alias(f'{adj_type}_open'),
+                (pl.col('high') * pl.col(factor_col)).alias(f'{adj_type}_high'),
+                (pl.col('low') * pl.col(factor_col)).alias(f'{adj_type}_low'),
+                (pl.col('close') * pl.col(factor_col)).alias(f'{adj_type}_close'),
+            ])
+            
+            return result_df
+            
+        except Exception as e:
+            logger.exception(f"应用复权因子失败: {e}")
+            return df
+    
+    def get_kline_data(self, stock_code: str, start_date: str, end_date: str, adjust: str = "none"):
+        """
+        获取指定股票在指定日期范围内的K线数据，支持复权
         
         Args:
             stock_code: 股票代码，如"600000"或"sh.600000"
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
+            adjust: 复权类型，"qfq"=前复权，"hfq"=后复权，"none"=不复权（默认）
             
         Returns:
             List[Dict[str, Any]]: K线数据列表，每个元素包含date, open, high, low, close, volume, amount字段
+                                   如果指定了adjust，还会包含 qfq_open/high/low/close 或 hfq_open/high/low/close
         """
         try:
             logger.info(f"开始获取股票 {stock_code} 在 {start_date} 到 {end_date} 期间的K线数据")
@@ -483,8 +582,29 @@ class TdxHandler:
                 logger.warning(f"股票 {stock_code} 在 {start_date} 到 {end_date} 期间没有数据")
                 return None
             
-            logger.info(f"成功获取股票 {stock_code} 在 {start_date} 到 {end_date} 期间的 {len(filtered_data)} 条K线数据")
-            return filtered_data
+            # 转换为polars DataFrame以便进行复权计算
+            df = pl.DataFrame(filtered_data)
+            
+            # 如果需要复权，计算复权价格
+            if adjust in ['qfq', 'hfq']:
+                logger.info(f"计算{adjust}复权价格...")
+                
+                # 构建ts_code
+                ts_code = f"{code}.{market.upper()}"
+                
+                # 获取复权因子
+                factors_df = self._get_adj_factors(ts_code, start_dt, end_dt)
+                
+                # 应用复权因子
+                df = self._apply_adj_factor(df, factors_df, adjust)
+                
+                logger.info(f"复权价格计算完成")
+            
+            # 转换回列表格式
+            result = df.to_dicts()
+            
+            logger.info(f"成功获取股票 {stock_code} 在 {start_date} 到 {end_date} 期间的 {len(result)} 条K线数据")
+            return result
             
         except Exception as e:
             logger.exception(f"获取股票 {stock_code} 的K线数据失败: {e}")

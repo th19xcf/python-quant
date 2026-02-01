@@ -595,7 +595,9 @@ class MainWindowEventMixin:
                     change = closes[index] - pre_close
                     pct_change = (change / pre_close) * 100 if pre_close != 0 else 0
                     
-                    weekday_str = ['一', '二', '三', '四', '五', '六', '日'][dates[index].weekday()]
+                    # 转换 numpy.datetime64 为 pandas Timestamp 以获取 weekday
+                    date_obj = pd.Timestamp(dates[index])
+                    weekday_str = ['一', '二', '三', '四', '五', '六', '日'][date_obj.weekday()]
                     
                     info_html = f"""
                     <div style="background-color: rgba(0, 0, 0, 0.8); padding: 8px; border: 1px solid #666; color: white; font-family: monospace;">

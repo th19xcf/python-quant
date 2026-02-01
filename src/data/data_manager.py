@@ -255,7 +255,84 @@ class DataManager(IDataProvider, IDataProcessor):
             start_date=start_date,
             end_date=end_date
         )
-    
+
+    def update_stock_dividend(self, ts_codes: List[str] = None):
+        """
+        更新股票分红配股数据
+
+        Args:
+            ts_codes: 股票代码列表，None表示更新所有股票
+        """
+        try:
+            # 初始化AkShare处理器（如果尚未初始化）
+            if not self.akshare_handler:
+                from src.data.akshare_handler import AkShareHandler
+                self.akshare_handler = AkShareHandler(self.config, self.db_manager)
+                logger.info("AkShare数据处理器初始化成功")
+
+            self._update_data(
+                data_type="股票分红配股数据",
+                handler=self.akshare_handler,
+                method_name="update_stock_dividend",
+                event_type="stock_dividend",
+                identifier=ts_codes[0] if ts_codes else 'all',
+                ts_codes=ts_codes
+            )
+        except Exception as e:
+            logger.exception(f"更新股票分红配股数据失败: {e}")
+            raise
+
+    def get_stock_dividend(self, ts_code: str) -> pl.DataFrame:
+        """
+        获取股票分红配股数据
+
+        Args:
+            ts_code: 股票代码
+
+        Returns:
+            pl.DataFrame: 分红配股数据
+        """
+        try:
+            if not self.db_manager or not self.db_manager.is_connected():
+                logger.warning("数据库未连接，无法获取分红配股数据")
+                return pl.DataFrame()
+
+            from src.database.models.stock import StockDividend
+
+            session = self.db_manager.get_session()
+            if not session:
+                logger.warning("无法获取数据库会话")
+                return pl.DataFrame()
+
+            # 查询分红配股数据
+            dividends = session.query(StockDividend).filter_by(ts_code=ts_code).all()
+
+            if not dividends:
+                return pl.DataFrame()
+
+            # 转换为Polars DataFrame
+            data = [{
+                'ts_code': d.ts_code,
+                'symbol': d.symbol,
+                'name': d.name,
+                'dividend_year': d.dividend_year,
+                'report_date': d.report_date,
+                'record_date': d.record_date,
+                'ex_date': d.ex_date,
+                'pay_date': d.pay_date,
+                'cash_div': d.cash_div,
+                'share_div': d.share_div,
+                'total_div': d.total_div,
+                'rights_issue_price': d.rights_issue_price,
+                'rights_issue_ratio': d.rights_issue_ratio
+            } for d in dividends]
+
+            return pl.DataFrame(data)
+
+        except Exception as e:
+            logger.exception(f"获取股票分红配股数据失败: {e}")
+            return pl.DataFrame()
+
     def _get_data_from_sources(self, data_type: str, ts_code: str, start_date: str, end_date: str, freq: str = "daily", adjustment_type: str = "qfq"):
         """
         通用数据获取方法
