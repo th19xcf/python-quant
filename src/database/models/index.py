@@ -8,7 +8,7 @@
 from sqlalchemy import Column, Integer, String, Float, Date, DateTime
 from datetime import datetime
 
-from database.db_manager import Base
+from src.database.db_manager import Base
 
 
 class IndexBasic(Base):

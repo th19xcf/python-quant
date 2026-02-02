@@ -9,7 +9,7 @@ from datetime import datetime
 
 from sqlalchemy import Column, Integer, String, Float, Date, DateTime
 
-from database.db_manager import Base
+from src.database.db_manager import Base
 
 
 class StockBasic(Base):
