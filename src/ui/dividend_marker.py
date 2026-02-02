@@ -98,9 +98,13 @@ class DividendMarkerItem(GraphicsObject):
         p = QPainter(self.picture)
         
         # 标记显示在K线图底部区域
-        # 使用Y轴坐标系，标记显示在y_min附近
-        marker_height = self.y_range * 0.03  # 标记高度为Y轴范围的3%
-        marker_y = self.y_min  # 标记底部对齐y_min
+        # 使用固定像素高度，确保标记清晰可见
+        # 将像素高度转换为Y轴坐标高度（假设图表高度约400像素）
+        chart_height_pixels = 400  # 估计的图表像素高度
+        marker_height_pixels = 25  # 标记的像素高度
+        marker_height = self.y_range * (marker_height_pixels / chart_height_pixels)
+        marker_height = max(marker_height, self.y_range * 0.08)  # 至少占Y轴范围的8%
+        marker_y = self.y_min  # 标记底部对齐y_min（K线图最底部）
         
         logger.info(f"开始生成分红标记图片，共{len(self.dividend_data)}条分红数据，有效索引数: {sum(1 for idx in self.dividend_indices if idx >= 0)}, Y范围: {self.y_min:.2f}, 高度: {marker_height:.2f}")
         
@@ -130,18 +134,37 @@ class DividendMarkerItem(GraphicsObject):
             else:
                 continue  # 没有有效的分红数据
             
-            # 绘制标记背景（小方块）
-            p.setBrush(QBrush(color))
-            p.setPen(QPen(color, 1))
+            # 绘制红色美元符号标识
+            marker_width = 0.8  # 标记宽度
             
-            marker_width = 0.6  # 标记宽度
-            rect = QRectF(
-                x - marker_width / 2,
-                marker_y,
-                marker_width,
-                marker_height
-            )
-            p.drawRect(rect)
+            # 定义标记矩形区域
+            marker_rect = QRectF(x - marker_width/2, marker_y, marker_width, marker_height)
+            
+            # 先绘制背景矩形（半透明黑色背景，使标记更明显）
+            if marker_type == 'cash':
+                bg_color = QColor(255, 0, 0, 180)  # 红色半透明背景
+                text_color = QColor(255, 255, 255)  # 白色文字
+                text = "$"
+            elif marker_type == 'share':
+                bg_color = QColor(0, 128, 255, 180)  # 蓝色半透明背景
+                text_color = QColor(255, 255, 255)  # 白色文字
+                text = "S"
+            else:
+                bg_color = QColor(255, 0, 255, 180)  # 紫色半透明背景
+                text_color = QColor(255, 255, 255)  # 白色文字
+                text = "$"
+            
+            # 绘制背景矩形
+            p.setBrush(QBrush(bg_color))
+            p.setPen(QPen(bg_color, 1))
+            p.drawRect(marker_rect)
+            
+            # 绘制文字
+            p.setPen(QPen(text_color, 1))
+            font_size = max(10, min(18, int(marker_height_pixels * 0.7)))
+            font = QFont("Arial", font_size, QFont.Bold)
+            p.setFont(font)
+            p.drawText(marker_rect, Qt.AlignCenter, text)
             
             logger.info(f"绘制分红标记: x={x}, y={marker_y:.2f}, height={marker_height:.2f}, type={marker_type}, cash={cash_div}, share={share_div}")
         
