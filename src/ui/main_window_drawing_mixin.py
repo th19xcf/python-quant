@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt, QPoint, QTimer
 
 from src.utils.logger import logger
 from src.ui.chart_items import CandleStickItem
+from src.ui.dividend_marker import DividendMarkerManager
 from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 
 class MainWindowDrawingMixin:
@@ -174,6 +175,9 @@ class MainWindowDrawingMixin:
             
             # 添加K线图到图表
             self.tech_plot_widget.addItem(self.candle_plot_item)
+            
+            # 加载并显示分红配股标记
+            self._load_and_show_dividend_markers(stock_code, dates)
             
             # 设置x轴刻度标签（显示日期）
             ax = self.tech_plot_widget.getAxis('bottom')
@@ -1495,3 +1499,241 @@ class MainWindowDrawingMixin:
              super().keyPressEvent(event)
         except AttributeError:
              pass
+    
+    def _load_and_show_dividend_markers(self, stock_code, dates):
+        """
+        加载并显示分红配股标记
+        
+        Args:
+            stock_code: 股票代码
+            dates: K线日期列表
+        """
+        try:
+            # 初始化分红标记管理器
+            if not hasattr(self, 'dividend_marker_manager'):
+                self.dividend_marker_manager = DividendMarkerManager(self.tech_plot_widget)
+            else:
+                # 清除旧的分红标记
+                self.dividend_marker_manager.clear_markers()
+            
+            # 从数据管理器获取分红数据
+            if hasattr(self, 'data_manager') and self.data_manager:
+                # 获取日期范围
+                if len(dates) > 0:
+                    # 扩大日期范围，查询所有历史分红数据
+                    start_date = pd.Timestamp(dates[0]).strftime('%Y-%m-%d')
+                    end_date = pd.Timestamp(dates[-1]).strftime('%Y-%m-%d')
+                    
+                    logger.info(f"查询股票{stock_code}的分红数据，K线日期范围: {start_date} 至 {end_date}")
+                    
+                    # 查询分红数据（不限制日期范围，获取所有历史分红）
+                    dividend_data = self._get_stock_dividend_data(stock_code)
+                    
+                    if dividend_data:
+                        logger.info(f"获取到股票{stock_code}的{len(dividend_data)}条分红数据")
+                        # 过滤出在K线日期范围内的分红数据
+                        filtered_dividends = self._filter_dividends_by_dates(dividend_data, dates)
+                        logger.info(f"过滤后在K线日期范围内的分红数据: {len(filtered_dividends)}条")
+                        
+                        if filtered_dividends:
+                            # 设置分红数据并显示标记
+                            self.dividend_marker_manager.set_dividend_data(filtered_dividends, dates)
+                        else:
+                            logger.debug(f"股票{stock_code}在K线日期范围内没有分红数据")
+                    else:
+                        logger.debug(f"股票{stock_code}没有分红数据")
+            
+        except Exception as e:
+            logger.exception(f"加载分红标记失败: {e}")
+    
+    def _get_stock_dividend_data(self, stock_code):
+        """
+        获取股票所有历史分红数据
+        
+        Args:
+            stock_code: 股票代码
+        
+        Returns:
+            list: 分红数据列表
+        """
+        try:
+            # 从数据库查询分红数据
+            from src.database.models.stock import StockDividend
+            
+            # 处理股票代码格式
+            # 支持多种格式：600000.SH, sh600000, 600000
+            if '.' in stock_code:
+                ts_code = stock_code
+            elif stock_code.startswith(('sh', 'sz')):
+                market = 'SH' if stock_code.startswith('sh') else 'SZ'
+                code = stock_code[2:]
+                ts_code = f"{code}.{market}"
+            else:
+                # 默认假设是数字代码，根据代码判断市场
+                if stock_code.startswith('6'):
+                    ts_code = f"{stock_code}.SH"
+                else:
+                    ts_code = f"{stock_code}.SZ"
+            
+            logger.info(f"查询股票{ts_code}的所有历史分红数据")
+            
+            # 查询数据库（获取所有历史分红数据）
+            # 通过data_manager获取数据库会话
+            if hasattr(self, 'data_manager') and self.data_manager:
+                logger.info(f"正在获取数据库会话...")
+                try:
+                    # 尝试从data_manager获取数据库管理器
+                    if hasattr(self.data_manager, 'db_manager'):
+                        db_manager = self.data_manager.db_manager
+                        session = db_manager.get_session()
+                    elif hasattr(self.data_manager, 'get_session'):
+                        session = self.data_manager.get_session()
+                    else:
+                        logger.warning("data_manager没有db_manager或get_session方法")
+                        return []
+                    
+                    if session:
+                        try:
+                            logger.info(f"开始查询数据库，ts_code={ts_code}")
+                            dividends = session.query(StockDividend).filter(
+                                StockDividend.ts_code == ts_code
+                            ).all()
+                            
+                            logger.info(f"从数据库查询到{len(dividends)}条分红数据")
+                            
+                            # 转换为字典列表
+                            result = []
+                            for div in dividends:
+                                result.append({
+                                    'ex_date': div.ex_date,
+                                    'record_date': div.record_date,
+                                    'pay_date': div.pay_date,
+                                    'cash_div': div.cash_div,
+                                    'share_div': div.share_div
+                                })
+                            
+                            logger.info(f"转换后的分红数据数量: {len(result)}")
+                            return result
+                        except Exception as e:
+                            logger.exception(f"查询分红数据时发生异常: {e}")
+                            return []
+                        finally:
+                            session.close()
+                    else:
+                        logger.warning("无法获取数据库会话")
+                except Exception as e:
+                    logger.exception(f"获取数据库会话失败: {e}")
+            else:
+                logger.warning("data_manager不可用")
+            
+            return []
+            
+        except Exception as e:
+            logger.exception(f"获取分红数据失败: {e}")
+            return []
+    
+    def _filter_dividends_by_dates(self, dividend_data, kline_dates):
+        """
+        过滤出在K线日期范围内的分红数据
+        
+        Args:
+            dividend_data: 所有分红数据
+            kline_dates: K线日期列表
+        
+        Returns:
+            list: 在K线日期范围内的分红数据
+        """
+        try:
+            # 获取K线日期范围
+            if len(kline_dates) == 0:
+                return []
+            
+            # 转换K线日期为datetime.date
+            import datetime
+            kline_date_set = set()
+            for d in kline_dates:
+                if hasattr(d, 'date') and callable(getattr(d, 'date')):
+                    kline_date_set.add(d.date())
+                elif hasattr(d, 'strftime'):
+                    # 如果是datetime对象，转换为date
+                    kline_date_set.add(d.date() if hasattr(d, 'date') else d)
+                elif isinstance(d, datetime.date):
+                    kline_date_set.add(d)
+                else:
+                    # 处理numpy.datetime64类型
+                    try:
+                        # 转换为Python datetime，然后转换为date
+                        if hasattr(d, 'astype'):
+                            # numpy.datetime64
+                            dt = d.astype('datetime64[D]').item()
+                            if isinstance(dt, datetime.date):
+                                kline_date_set.add(dt)
+                            elif isinstance(dt, datetime.datetime):
+                                kline_date_set.add(dt.date())
+                        else:
+                            kline_date_set.add(d)
+                    except Exception as e:
+                        logger.warning(f"无法转换日期: {d}, 类型: {type(d)}, 错误: {e}")
+                        kline_date_set.add(d)
+            
+            logger.info(f"K线日期范围: {min(kline_date_set) if kline_date_set else 'None'} 至 {max(kline_date_set) if kline_date_set else 'None'}, 共{len(kline_date_set)}个日期")
+            
+            # 打印前几个K线日期用于调试
+            sample_dates = list(kline_date_set)[:5]
+            logger.info(f"K线日期示例: {sample_dates}, 类型: {type(sample_dates[0]) if sample_dates else 'None'}")
+            
+            # 过滤分红数据
+            filtered = []
+            for div in dividend_data:
+                ex_date = div.get('ex_date')
+                if ex_date:
+                    # 转换除权除息日为datetime.date
+                    if hasattr(ex_date, 'date') and callable(getattr(ex_date, 'date')):
+                        ex_date = ex_date.date()
+                    
+                    logger.debug(f"检查分红日期: {ex_date}, 类型: {type(ex_date)}")
+                    
+                    # 检查是否在K线日期范围内
+                    if ex_date in kline_date_set:
+                        filtered.append(div)
+                        logger.info(f"找到匹配的分红日期: {ex_date}")
+            
+            logger.info(f"过滤后找到 {len(filtered)} 条分红数据")
+            return filtered
+            
+        except Exception as e:
+            logger.exception(f"过滤分红数据失败: {e}")
+            return []
+    
+    def show_dividend_tooltip(self, index, pos):
+        """
+        显示分红信息提示框
+        
+        Args:
+            index: K线索引
+            pos: 鼠标位置
+        """
+        try:
+            if hasattr(self, 'dividend_marker_manager') and self.dividend_marker_manager:
+                if self.dividend_marker_manager.has_dividend_at_index(index):
+                    # 获取K线图的位置
+                    view_box = self.tech_plot_widget.getViewBox()
+                    view_pos = view_box.mapSceneToView(pos)
+                    
+                    # 显示分红提示框
+                    self.dividend_marker_manager.show_tooltip(index, view_pos)
+                else:
+                    # 隐藏分红提示框
+                    self.dividend_marker_manager.hide_tooltip()
+        except Exception as e:
+            logger.debug(f"显示分红提示框失败: {e}")
+    
+    def hide_dividend_tooltip(self):
+        """
+        隐藏分红信息提示框
+        """
+        try:
+            if hasattr(self, 'dividend_marker_manager') and self.dividend_marker_manager:
+                self.dividend_marker_manager.hide_tooltip()
+        except Exception as e:
+            logger.debug(f"隐藏分红提示框失败: {e}")

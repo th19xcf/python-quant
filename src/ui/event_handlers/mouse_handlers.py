@@ -97,6 +97,9 @@ class MouseHandler:
                 # 更新顶部均线值显示
                 self.main_window.update_ma_values_display(index, dates, opens, highs, lows, closes)
                 
+                # 检查是否悬停在分红标记上，显示分红信息
+                self._check_dividend_hover(index, pos)
+                
                 # 更新第二个窗口标签，根据当前指标类型显示不同内容
                 if hasattr(self.main_window, 'volume_values_label'):
                     # 获取当前窗口指标
@@ -238,6 +241,27 @@ class MouseHandler:
                     self.main_window.show_info_box()
         except Exception as e:
             logger.exception(f"处理鼠标移动事件时发生错误: {e}")
+    
+    def _check_dividend_hover(self, index, pos):
+        """
+        检查是否悬停在分红标记上，如果是则显示分红信息提示框
+        
+        Args:
+            index: K线索引
+            pos: 鼠标位置
+        """
+        try:
+            # 检查主窗口是否有分红标记管理器
+            if hasattr(self.main_window, 'dividend_marker_manager') and self.main_window.dividend_marker_manager:
+                # 检查当前索引位置是否有分红数据
+                if self.main_window.dividend_marker_manager.has_dividend_at_index(index):
+                    # 显示分红提示框
+                    self.main_window.show_dividend_tooltip(index, pos)
+                else:
+                    # 隐藏分红提示框
+                    self.main_window.hide_dividend_tooltip()
+        except Exception as e:
+            logger.debug(f"检查分红悬停失败: {e}")
     
     def handle_mouse_clicked(self, event, dates, opens, highs, lows, closes):
         """
