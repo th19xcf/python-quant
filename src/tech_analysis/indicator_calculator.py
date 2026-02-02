@@ -63,6 +63,7 @@ def preprocess_data_polars(df):
     - 检查必要列是否存在
     - 转换为高效数值类型（float32替代float64）
     - 处理缺失值
+    - 保留复权价格字段
     
     Args:
         df: Polars DataFrame
@@ -76,8 +77,10 @@ def preprocess_data_polars(df):
         if col not in df.columns:
             raise ValueError(f"数据中没有{col}列")
     
-    # 确定需要转换的数值列
-    numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
+    # 确定需要转换的数值列（包括原始价格和复权价格）
+    numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount',
+                       'qfq_open', 'qfq_high', 'qfq_low', 'qfq_close',
+                       'hfq_open', 'hfq_high', 'hfq_low', 'hfq_close']
     columns_to_cast = [col for col in numeric_columns if col in df.columns]
     
     if not columns_to_cast:

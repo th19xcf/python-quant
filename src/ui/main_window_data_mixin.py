@@ -29,10 +29,20 @@ class MainWindowDataMixin:
             self.statusBar().showMessage(f"加载 {stock_name}({stock_code}) 数据...", 0)
             QApplication.setOverrideCursor(Qt.WaitCursor)
 
-            # 计算日期范围：根据柱体数获取足够的数据（至少获取2年的数据以确保有足够的历史数据）
+            # 计算日期范围：根据柱体数获取足够的数据
             end_date = datetime.now().strftime("%Y-%m-%d")
-            # 获取最近2年的数据（约500个交易日），确保有足够的数据支持柱体数变化
-            start_date = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d")
+            
+            # 根据柱体数动态计算日期范围
+            # 假设每个交易日约 1.4 天（考虑周末和节假日）
+            bar_count = getattr(self, 'displayed_bar_count', 100)
+            # 计算需要的历史天数：柱体数 * 1.4 + 缓冲 100 天
+            days_needed = int(bar_count * 1.4) + 100
+            # 确保至少获取 2 年的数据
+            days_needed = max(days_needed, 730)
+            # 最多获取 10 年的数据
+            days_needed = min(days_needed, 3650)
+            
+            start_date = (datetime.now() - timedelta(days=days_needed)).strftime("%Y-%m-%d")
 
             # 从数据管理器获取股票历史数据
             adjustment_type = getattr(self, 'adjustment_type', 'qfq')

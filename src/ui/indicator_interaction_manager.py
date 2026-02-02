@@ -90,10 +90,13 @@ class IndicatorInteractionManager:
 
             window.current_period = period
 
-            # 切换周期时，如果有当前股票数据，重新绘制K线图
-            if window.current_stock_data is not None:
-                print(f"切换到{period}，按照柱体数 {window.displayed_bar_count} 重新绘制K线")
-                window.plot_k_line(window.current_stock_data, window.current_stock_name, window.current_stock_code)
+            # 切换周期时，如果有当前股票数据，重新获取数据并绘制
+            if hasattr(window, 'current_stock_code') and hasattr(window, 'current_stock_name'):
+                stock_code = window.current_stock_code
+                stock_name = window.current_stock_name
+                if stock_code and stock_name:
+                    print(f"切换到{period}，按照柱体数 {window.displayed_bar_count} 重新获取数据")
+                    window.process_stock_data(stock_code, stock_name)
 
     def on_window_count_changed(self, window_count, checked):
         window = self.window

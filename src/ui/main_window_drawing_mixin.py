@@ -137,10 +137,27 @@ class MainWindowDrawingMixin:
             
             # 直接使用Polars的to_numpy()方法，避免多次转换
             dates = df_pl['date'].to_numpy()
-            opens = df_pl['open'].to_numpy()
-            highs = df_pl['high'].to_numpy()
-            lows = df_pl['low'].to_numpy()
-            closes = df_pl['close'].to_numpy()
+            
+            # 根据复权类型选择对应的价格字段
+            adjustment_type = getattr(self, 'adjustment_type', 'qfq')
+            if adjustment_type == 'qfq':
+                # 前复权
+                opens = df_pl['qfq_open'].to_numpy() if 'qfq_open' in df_pl.columns else df_pl['open'].to_numpy()
+                highs = df_pl['qfq_high'].to_numpy() if 'qfq_high' in df_pl.columns else df_pl['high'].to_numpy()
+                lows = df_pl['qfq_low'].to_numpy() if 'qfq_low' in df_pl.columns else df_pl['low'].to_numpy()
+                closes = df_pl['qfq_close'].to_numpy() if 'qfq_close' in df_pl.columns else df_pl['close'].to_numpy()
+            elif adjustment_type == 'hfq':
+                # 后复权
+                opens = df_pl['hfq_open'].to_numpy() if 'hfq_open' in df_pl.columns else df_pl['open'].to_numpy()
+                highs = df_pl['hfq_high'].to_numpy() if 'hfq_high' in df_pl.columns else df_pl['high'].to_numpy()
+                lows = df_pl['hfq_low'].to_numpy() if 'hfq_low' in df_pl.columns else df_pl['low'].to_numpy()
+                closes = df_pl['hfq_close'].to_numpy() if 'hfq_close' in df_pl.columns else df_pl['close'].to_numpy()
+            else:
+                # 不复权
+                opens = df_pl['open'].to_numpy()
+                highs = df_pl['high'].to_numpy()
+                lows = df_pl['low'].to_numpy()
+                closes = df_pl['close'].to_numpy()
             
             # 创建x轴坐标（使用索引）
             x = np.arange(len(dates))

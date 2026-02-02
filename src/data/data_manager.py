@@ -450,17 +450,43 @@ class DataManager(IDataProvider, IDataProcessor):
                             # 提取数据记录，直接构建适合Polars的字典列表
                             has_pct_chg = hasattr(data[0], 'pct_chg')
                             
-                            # 使用列表推导式一次性构建数据记录，比for循环更高效
-                            data_records = [{
-                                'trade_date': item.trade_date,
-                                'open': item.open,
-                                'high': item.high,
-                                'low': item.low,
-                                'close': item.close,
-                                'volume': item.vol,
-                                'amount': item.amount,
-                                **({'pct_chg': item.pct_chg} if has_pct_chg else {})
-                            } for item in data]
+                            # 根据复权类型选择对应的价格字段
+                            if adjustment_type == 'qfq':
+                                # 前复权
+                                data_records = [{
+                                    'trade_date': item.trade_date,
+                                    'open': item.qfq_open if hasattr(item, 'qfq_open') and item.qfq_open else item.open,
+                                    'high': item.qfq_high if hasattr(item, 'qfq_high') and item.qfq_high else item.high,
+                                    'low': item.qfq_low if hasattr(item, 'qfq_low') and item.qfq_low else item.low,
+                                    'close': item.qfq_close if hasattr(item, 'qfq_close') and item.qfq_close else item.close,
+                                    'volume': item.vol,
+                                    'amount': item.amount,
+                                    **({'pct_chg': item.pct_chg} if has_pct_chg else {})
+                                } for item in data]
+                            elif adjustment_type == 'hfq':
+                                # 后复权
+                                data_records = [{
+                                    'trade_date': item.trade_date,
+                                    'open': item.hfq_open if hasattr(item, 'hfq_open') and item.hfq_open else item.open,
+                                    'high': item.hfq_high if hasattr(item, 'hfq_high') and item.hfq_high else item.high,
+                                    'low': item.hfq_low if hasattr(item, 'hfq_low') and item.hfq_low else item.low,
+                                    'close': item.hfq_close if hasattr(item, 'hfq_close') and item.hfq_close else item.close,
+                                    'volume': item.vol,
+                                    'amount': item.amount,
+                                    **({'pct_chg': item.pct_chg} if has_pct_chg else {})
+                                } for item in data]
+                            else:
+                                # 不复权
+                                data_records = [{
+                                    'trade_date': item.trade_date,
+                                    'open': item.open,
+                                    'high': item.high,
+                                    'low': item.low,
+                                    'close': item.close,
+                                    'volume': item.vol,
+                                    'amount': item.amount,
+                                    **({'pct_chg': item.pct_chg} if has_pct_chg else {})
+                                } for item in data]
                             
                             # 使用pl.from_dicts创建Polars DataFrame，效率更高
                             df = pl.from_dicts(data_records)
@@ -490,9 +516,9 @@ class DataManager(IDataProvider, IDataProcessor):
                         
                         # 根据不同的handler调整参数
                         if source_name == 'tdx':
-                            # TdxHandler.get_kline_data(stock_code, start_date, end_date)
-                            # TDX数据源不支持复权，使用原始数据
-                            result = getattr(handler, method_name)(ts_code, start_date, end_date)
+                            # TdxHandler.get_kline_data(stock_code, start_date, end_date, adjust)
+                            # TDX数据源支持复权，传递adjustment_type参数
+                            result = getattr(handler, method_name)(ts_code, start_date, end_date, adjust=adjustment_type)
                         elif source_name == 'baostock':
                             # BaostockHandler.download_stock_daily(ts_codes=[ts_code], start_date, end_date, adjustflag)
                             # 将adjustment_type转换为baostock的adjustflag参数
