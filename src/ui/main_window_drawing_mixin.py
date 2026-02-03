@@ -273,41 +273,53 @@ class MainWindowDrawingMixin:
                 def on_kline_range_changed(view_range):
                     # 获取新的X轴范围
                     x_min, x_max = view_box.viewRange()[0]
-                    
+
                     # 将X轴范围应用到成交量图
                     volume_view_box.setXRange(x_min, x_max, padding=0)
-                    
+
                     # 将X轴范围应用到KDJ图
                     kdj_view_box = self.kdj_plot_widget.getViewBox()
                     kdj_view_box.setXRange(x_min, x_max, padding=0)
-                    
+
+                    # 更新分红标记位置
+                    if hasattr(self, 'dividend_marker_manager') and self.dividend_marker_manager:
+                        self.dividend_marker_manager.update_position()
+
                     # logger.debug(f"从K线图同步X轴范围到成交量图和KDJ图: {x_min:.2f} - {x_max:.2f}")
                 
                 # 连接成交量图viewBox范围变化事件，将X轴范围同步到K线图和KDJ图
                 def on_volume_range_changed(view_range):
                     # 获取新的X轴范围
                     x_min, x_max = volume_view_box.viewRange()[0]
-                    
+
                     # 将X轴范围应用到K线图
                     view_box.setXRange(x_min, x_max, padding=0)
-                    
+
                     # 将X轴范围应用到KDJ图
                     kdj_view_box = self.kdj_plot_widget.getViewBox()
                     kdj_view_box.setXRange(x_min, x_max, padding=0)
-                    
+
+                    # 更新分红标记位置
+                    if hasattr(self, 'dividend_marker_manager') and self.dividend_marker_manager:
+                        self.dividend_marker_manager.update_position()
+
                     # logger.debug(f"从成交量图同步X轴范围到K线图和KDJ图: {x_min:.2f} - {x_max:.2f}")
                 
                 # 连接KDJ图viewBox范围变化事件，将X轴范围同步到K线图和成交量图
                 def on_kdj_range_changed(view_range):
                     # 获取新的X轴范围
                     x_min, x_max = self.kdj_plot_widget.getViewBox().viewRange()[0]
-                    
+
                     # 将X轴范围应用到K线图
                     view_box.setXRange(x_min, x_max, padding=0)
-                    
+
                     # 将X轴范围应用到成交量图
                     volume_view_box.setXRange(x_min, x_max, padding=0)
-                    
+
+                    # 更新分红标记位置
+                    if hasattr(self, 'dividend_marker_manager') and self.dividend_marker_manager:
+                        self.dividend_marker_manager.update_position()
+
                     # logger.debug(f"从KDJ图同步X轴范围到K线图和成交量图: {x_min:.2f} - {x_max:.2f}")
                 
                 # 连接三个viewBox的范围变化事件
