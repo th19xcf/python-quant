@@ -7,6 +7,42 @@ class ChartUtils:
     """
     
     @staticmethod
+    def calculate_x_axis_tick_interval(bar_count, min_interval=5, max_labels=10):
+        """
+        根据柱体数量动态计算X轴标签间隔
+        
+        Args:
+            bar_count: 柱体数量
+            min_interval: 最小间隔（柱体数）
+            max_labels: 最大标签数量
+            
+        Returns:
+            int: 计算后的间隔（柱体数）
+        """
+        if bar_count <= 0:
+            return min_interval
+        
+        # 计算理想的间隔，确保标签数量不超过max_labels
+        ideal_interval = max(min_interval, bar_count // max_labels)
+        
+        # 将间隔调整为美观的数字（5, 10, 15, 20, 30, 60等）
+        if ideal_interval <= 5:
+            return 5
+        elif ideal_interval <= 10:
+            return 10
+        elif ideal_interval <= 15:
+            return 15
+        elif ideal_interval <= 20:
+            return 20
+        elif ideal_interval <= 30:
+            return 30
+        elif ideal_interval <= 60:
+            return 60
+        else:
+            # 对于更大的间隔，向上取整到最近的10的倍数
+            return ((ideal_interval + 9) // 10) * 10
+    
+    @staticmethod
     def configure_chart(plot_widget, title=""):
         """
         配置图表的基本样式

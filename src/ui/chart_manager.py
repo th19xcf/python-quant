@@ -6,6 +6,7 @@
 """
 
 from src.utils.logger import logger
+from src.ui.utils.chart_utils import ChartUtils
 
 
 class ChartManager:
@@ -114,7 +115,8 @@ class ChartManager:
         import numpy as np
 
         ax = plot_widget.getAxis('bottom')
-        ax.setTicks([[(i, dates[i].strftime('%Y-%m-%d')) for i in range(0, len(dates), 10)]])
+        tick_interval = ChartUtils.calculate_x_axis_tick_interval(len(dates))
+        ax.setTicks([[(i, dates[i].strftime('%Y-%m-%d')) for i in range(0, len(dates), tick_interval)]])
 
         y_min = np.min(lows) * 0.99
         y_max = np.max(highs) * 1.01

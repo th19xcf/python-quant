@@ -14,6 +14,7 @@ from src.utils.logger import logger
 from src.ui.chart_items import CandleStickItem
 from src.ui.dividend_marker import DividendMarkerManager
 from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+from src.ui.utils.chart_utils import ChartUtils
 
 class MainWindowDrawingMixin:
     """
@@ -181,7 +182,8 @@ class MainWindowDrawingMixin:
             
             # 设置x轴刻度标签（显示日期）
             ax = self.tech_plot_widget.getAxis('bottom')
-            ax.setTicks([[(i, pd.Timestamp(dates[i]).strftime('%Y-%m-%d')) for i in range(0, len(dates), 10)]])
+            tick_interval = ChartUtils.calculate_x_axis_tick_interval(len(dates))
+            ax.setTicks([[(i, pd.Timestamp(dates[i]).strftime('%Y-%m-%d')) for i in range(0, len(dates), tick_interval)]])
             
             # 设置Y轴范围，留出一定的边距
             y_min = np.min(lows) * 0.99
@@ -453,7 +455,8 @@ class MainWindowDrawingMixin:
                     
                     # 设置成交量图的X轴刻度标签，与K线图保持一致
                     kdj_ax = self.kdj_plot_widget.getAxis('bottom')
-                    kdj_ax.setTicks([[(i, pd.Timestamp(dates[i]).strftime('%Y-%m-%d')) for i in range(0, len(dates), 10)]])
+                    tick_interval = ChartUtils.calculate_x_axis_tick_interval(len(dates))
+                    kdj_ax.setTicks([[(i, pd.Timestamp(dates[i]).strftime('%Y-%m-%d')) for i in range(0, len(dates), tick_interval)]])
                     
                     # 仅在当前指标是VOL时设置成交量相关的Y轴范围和样式
                     # 获取成交量数据
@@ -735,7 +738,8 @@ class MainWindowDrawingMixin:
                 if current_indicator == "VOL":
                     # 设置X轴刻度标签，与K线图保持一致
                     kdj_ax = self.kdj_plot_widget.getAxis('bottom')
-                    kdj_ax.setTicks([[(i, pd.Timestamp(dates[i]).strftime('%Y-%m-%d')) for i in range(0, len(dates), 10)]])
+                    tick_interval = ChartUtils.calculate_x_axis_tick_interval(len(dates))
+                    kdj_ax.setTicks([[(i, pd.Timestamp(dates[i]).strftime('%Y-%m-%d')) for i in range(0, len(dates), tick_interval)]])
                     
                     # 设置X轴范围，与K线图一致
                     self.kdj_plot_widget.setXRange(0, len(dates) - 1)
@@ -936,7 +940,8 @@ class MainWindowDrawingMixin:
                 
                 # 设置成交量图的X轴刻度标签，与K线图保持一致
                 volume_ax = self.volume_plot_widget.getAxis('bottom')
-                volume_ax.setTicks([[(i, pd.Timestamp(dates[i]).strftime('%Y-%m-%d')) for i in range(0, len(dates), 10)]])
+                tick_interval = ChartUtils.calculate_x_axis_tick_interval(len(dates))
+                volume_ax.setTicks([[(i, pd.Timestamp(dates[i]).strftime('%Y-%m-%d')) for i in range(0, len(dates), tick_interval)]])
                 
                 # 确保两个图的X轴范围和刻度完全一致，实现柱体对齐
                 self.tech_plot_widget.setXRange(0, len(dates) - 1)
