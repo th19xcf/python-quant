@@ -250,8 +250,8 @@ class MainWindowDrawingMixin:
             self.high_text_item.setPos(high_index + 0.5, current_high + (y_max - y_min) * 0.02)
             self.low_text_item.setPos(low_index + 0.5, current_low - (y_max - y_min) * 0.02)
             
-            # 设置X轴范围，不使用autoRange，确保与成交量图一致
-            self.tech_plot_widget.setXRange(0, len(dates) - 1)
+            # 设置X轴范围，不使用autoRange，确保与成交量图一致，左边留出空间显示第一个标签
+            self.tech_plot_widget.setXRange(-1, len(dates) - 1)
             
             # 创建定时器，用于实现停留显示信息框
             self.info_timer = QTimer()
@@ -451,7 +451,7 @@ class MainWindowDrawingMixin:
                 # 仅在第3窗口显示VOL指标时，进行额外的特殊处理
                 if current_indicator == "VOL":
                     # 设置成交量图的x轴与K线图一致，实现柱体对齐
-                    self.kdj_plot_widget.setXRange(0, len(df_pl) - 1)
+                    self.kdj_plot_widget.setXRange(-1, len(df_pl) - 1)
                     
                     # 设置成交量图的X轴刻度标签，与K线图保持一致
                     kdj_ax = self.kdj_plot_widget.getAxis('bottom')
@@ -495,7 +495,7 @@ class MainWindowDrawingMixin:
                     y_axis.setStyle(tickTextOffset=20)
                     
                     # 设置X轴范围
-                    self.kdj_plot_widget.setXRange(0, len(df_pl) - 1)
+                    self.kdj_plot_widget.setXRange(-1, len(df_pl) - 1)
                 # 重新添加十字线到KDJ图中
                 if hasattr(self, 'kdj_vline') and hasattr(self, 'kdj_hline') and self.kdj_vline is not None and self.kdj_hline is not None:
                     self.kdj_plot_widget.addItem(self.kdj_vline, ignoreBounds=True)
@@ -774,9 +774,9 @@ class MainWindowDrawingMixin:
                     # 重置缩放比例，确保显示真实数值
                     y_axis.setScale(1.0)
                     
-                    # 确保X轴范围和刻度与K线图完全一致，实现柱体对齐
-                    self.tech_plot_widget.setXRange(0, len(dates) - 1)
-                    self.kdj_plot_widget.setXRange(0, len(dates) - 1)
+                    # 确保X轴范围和刻度与K线图完全一致，实现柱体对齐，左边留出空间显示第一个标签
+                    self.tech_plot_widget.setXRange(-1, len(dates) - 1)
+                    self.kdj_plot_widget.setXRange(-1, len(dates) - 1)
                 
             except Exception as e:
                 logger.exception(f"计算或绘制技术指标时发生错误: {e}")
@@ -935,17 +935,17 @@ class MainWindowDrawingMixin:
                         
                         # logger.info("已添加成交量值显示标签")
                 
-                # 设置成交量图的x轴与K线图一致，实现柱体对齐
-                self.volume_plot_widget.setXRange(0, len(df_pl) - 1)
+                # 设置成交量图的x轴与K线图一致，实现柱体对齐，左边留出空间显示第一个标签
+                self.volume_plot_widget.setXRange(-1, len(df_pl) - 1)
                 
                 # 设置成交量图的X轴刻度标签，与K线图保持一致
                 volume_ax = self.volume_plot_widget.getAxis('bottom')
                 tick_interval = ChartUtils.calculate_x_axis_tick_interval(len(dates))
                 volume_ax.setTicks([[(i, pd.Timestamp(dates[i]).strftime('%Y-%m-%d')) for i in range(0, len(dates), tick_interval)]])
                 
-                # 确保两个图的X轴范围和刻度完全一致，实现柱体对齐
-                self.tech_plot_widget.setXRange(0, len(dates) - 1)
-                self.volume_plot_widget.setXRange(0, len(dates) - 1)
+                # 确保两个图的X轴范围和刻度完全一致，实现柱体对齐，左边留出空间显示第一个标签
+                self.tech_plot_widget.setXRange(-1, len(dates) - 1)
+                self.volume_plot_widget.setXRange(-1, len(dates) - 1)
                 
                 # 仅在当前指标是VOL时设置成交量相关的Y轴范围和样式
                 if current_indicator == "VOL":
@@ -985,7 +985,7 @@ class MainWindowDrawingMixin:
                 y_axis.setStyle(tickTextOffset=20)
                 
                 # 设置X轴范围
-                self.volume_plot_widget.setXRange(0, len(df_pl) - 1)
+                self.volume_plot_widget.setXRange(-1, len(df_pl) - 1)
                 
                 # logger.info(f"成功绘制{stock_name}({stock_code})的{current_indicator}图")
                 
