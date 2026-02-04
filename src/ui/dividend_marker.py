@@ -11,6 +11,7 @@ import pyqtgraph as pg
 from pyqtgraph import GraphicsObject
 from PySide6.QtCore import QRectF, QPointF, Qt, QDate
 from PySide6.QtGui import QPainter, QPicture, QColor, QFont, QPen, QBrush
+from datetime import datetime, date
 
 from src.utils.logger import logger
 
@@ -66,8 +67,29 @@ class DividendMarkerItem(GraphicsObject):
                         ex_date = ex_date.date()
 
                     for i, kline_date in enumerate(self.kline_dates):
+                        # 处理不同类型的K线日期
                         if hasattr(kline_date, 'date'):
                             kline_date = kline_date.date()
+                        elif hasattr(kline_date, 'astype'):
+                            # 处理numpy.datetime64类型
+                            try:
+                                dt = kline_date.astype('datetime64[D]').item()
+                                if hasattr(dt, 'date'):
+                                    kline_date = dt.date()
+                                else:
+                                    kline_date = dt
+                            except Exception:
+                                pass
+                        elif isinstance(kline_date, str):
+                            # 处理字符串类型日期
+                            try:
+                                kline_date = datetime.strptime(kline_date, '%Y-%m-%d').date()
+                            except Exception:
+                                pass
+
+                        # 确保ex_date是date类型
+                        if hasattr(ex_date, 'date'):
+                            ex_date = ex_date.date()
 
                         if kline_date == ex_date:
                             indices.append(i)
@@ -93,22 +115,26 @@ class DividendMarkerItem(GraphicsObject):
             if not view_range or len(view_range) < 2:
                 return
 
+            x_min, x_max = view_range[0]
             y_min, y_max = view_range[1]
             y_range = y_max - y_min
 
-            # 计算标记高度（基于Y轴范围的固定比例）
-            # 使用较小的比例，确保标记不会占用太多价格区域
-            marker_height_ratio = 0.025  # 2.5%的Y轴范围
-            marker_height = y_range * marker_height_ratio
+            # 计算标记高度（使用固定最小高度，确保标记始终可见）
+            # 最小高度为3个像素，最大高度不超过Y轴范围的5%
+            min_marker_height = 3.0  # 最小高度3像素
+            max_marker_height = max(3.0, y_range * 0.05)  # 最大高度不超过Y轴范围的5%
+            marker_height = max(min_marker_height, y_range * 0.025)  # 2.5%的Y轴范围，但不低于最小高度
+            marker_height = min(marker_height, max_marker_height)  # 不超过最大高度
 
             # 标记底部紧贴y_min（x轴），向上延伸
+            # 确保标记在视图范围内
             marker_y_bottom = y_min
             marker_y_top = y_min + marker_height
 
             # 标记宽度（基于K线索引）
             marker_width = 0.6
 
-            logger.debug(f"绘制分红标记: Y范围 {y_min:.2f} - {y_max:.2f}, 标记高度: {marker_height:.2f}")
+            logger.debug(f"绘制分红标记: X范围 {x_min:.2f} - {x_max:.2f}, Y范围 {y_min:.2f} - {y_max:.2f}, 标记高度: {marker_height:.2f}")
 
             for i, (div, idx) in enumerate(zip(self.dividend_data, self.dividend_indices)):
                 if idx < 0:
@@ -157,8 +183,8 @@ class DividendMarkerItem(GraphicsObject):
 
                 # 绘制文字
                 p.setPen(QPen(text_color, 1))
-                # 字体大小根据标记高度自适应
-                font_size = max(8, min(12, int(marker_height / y_range * 100)))
+                # 字体大小根据标记高度自适应（确保最小为8，最大为12）
+                font_size = max(8, min(12, int(marker_height)))
                 font = QFont("Microsoft YaHei", font_size, QFont.Bold)
                 p.setFont(font)
                 p.drawText(marker_rect, Qt.AlignCenter, text)

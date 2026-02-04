@@ -225,3 +225,6 @@ class IndicatorInteractionManager:
             stock_name = window.current_stock_name
             if stock_code and stock_name:
                 window.process_stock_data(stock_code, stock_name)
+                # 强制重绘图表
+                if hasattr(window, 'tech_plot_widget') and window.tech_plot_widget:
+                    window.tech_plot_widget.repaint()

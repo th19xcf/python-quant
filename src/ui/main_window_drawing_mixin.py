@@ -1666,7 +1666,6 @@ class MainWindowDrawingMixin:
                 return []
             
             # 转换K线日期为datetime.date
-            import datetime
             kline_date_set = set()
             for d in kline_dates:
                 if hasattr(d, 'date') and callable(getattr(d, 'date')):
@@ -1674,21 +1673,16 @@ class MainWindowDrawingMixin:
                 elif hasattr(d, 'strftime'):
                     # 如果是datetime对象，转换为date
                     kline_date_set.add(d.date() if hasattr(d, 'date') else d)
-                elif isinstance(d, datetime.date):
-                    kline_date_set.add(d)
                 else:
                     # 处理numpy.datetime64类型
                     try:
-                        # 转换为Python datetime，然后转换为date
                         if hasattr(d, 'astype'):
                             # numpy.datetime64
                             dt = d.astype('datetime64[D]').item()
-                            if isinstance(dt, datetime.date):
-                                kline_date_set.add(dt)
-                            elif isinstance(dt, datetime.datetime):
+                            if hasattr(dt, 'date'):
                                 kline_date_set.add(dt.date())
-                        else:
-                            kline_date_set.add(d)
+                            else:
+                                kline_date_set.add(dt)
                     except Exception as e:
                         logger.warning(f"无法转换日期: {d}, 类型: {type(d)}, 错误: {e}")
                         kline_date_set.add(d)
