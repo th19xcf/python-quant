@@ -205,8 +205,8 @@ class AdjFactorCalculator:
         计算复权因子
         
         算法：
-        1. 前复权因子：从后向前累乘，factor = 1 / (1 + 送转比例)
-        2. 后复权因子：从前向后累乘，factor = 1 + 送转比例
+        1. 前复权因子：从后向前累乘，考虑送转股和现金分红
+        2. 后复权因子：从前向后累乘，考虑送转股和现金分红
         """
         result = prices_df.copy()
         result['qfq_factor'] = 1.0
@@ -217,26 +217,65 @@ class AdjFactorCalculator:
             div = dividends_df.iloc[idx]
             ex_date = div['ex_date']
             share_div = div['share_div']
+            cash_div = div['cash_div']
             
-            if pd.isna(ex_date) or share_div <= 0:
+            if pd.isna(ex_date):
                 continue
             
-            factor = 1 / (1 + share_div)
-            mask = result['trade_date'] < ex_date
-            result.loc[mask, 'qfq_factor'] *= factor
+            # 找到除权除息日的前一天收盘价
+            prev_day_mask = result['trade_date'] < ex_date
+            if not prev_day_mask.any():
+                continue
+            
+            prev_day_close = result.loc[prev_day_mask, 'close'].iloc[-1] if not result.loc[prev_day_mask].empty else None
+            if prev_day_close is None:
+                continue
+            
+            # 计算复权因子
+            if share_div > 0 or cash_div > 0:
+                # 考虑送转股和现金分红的复权因子
+                if share_div > 0:
+                    # 送转股复权因子
+                    factor = 1 / (1 + share_div)
+                else:
+                    # 只有现金分红时的复权因子
+                    factor = (prev_day_close - cash_div) / prev_day_close
+                
+                mask = result['trade_date'] < ex_date
+                result.loc[mask, 'qfq_factor'] *= factor
         
         # 计算后复权因子（从前向后）
         for idx in range(len(dividends_df)):
             div = dividends_df.iloc[idx]
             ex_date = div['ex_date']
             share_div = div['share_div']
+            cash_div = div['cash_div']
             
-            if pd.isna(ex_date) or share_div <= 0:
+            if pd.isna(ex_date):
                 continue
             
-            factor = 1 + share_div
-            mask = result['trade_date'] >= ex_date
-            result.loc[mask, 'hfq_factor'] *= factor
+            # 找到除权除息日的前一天收盘价
+            prev_day_mask = result['trade_date'] < ex_date
+            if not prev_day_mask.any():
+                continue
+            
+            prev_day_close = result.loc[prev_day_mask, 'close'].iloc[-1] if not result.loc[prev_day_mask].empty else None
+            if prev_day_close is None:
+                continue
+            
+            # 计算复权因子
+            if share_div > 0 or cash_div > 0:
+                # 考虑送转股和现金分红的复权因子
+                if share_div > 0:
+                    # 送转股复权因子
+                    factor = 1 + share_div
+                else:
+                    # 只有现金分红时的复权因子
+                    # 后复权不需要调整现金分红
+                    factor = 1.0
+                
+                mask = result['trade_date'] >= ex_date
+                result.loc[mask, 'hfq_factor'] *= factor
         
         # 计算复权价格
         result['qfq_open'] = result['open'] * result['qfq_factor']
