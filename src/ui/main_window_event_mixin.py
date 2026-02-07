@@ -118,12 +118,20 @@ class MainWindowEventMixin:
         """
         Application close event handler
         """
-        reply = QMessageBox.question(
-            self, '退出', '确定要退出吗?',
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-        )
-
-        if reply == QMessageBox.Yes:
+        # 创建自定义消息框以使用中文按钮
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle('退出确认')
+        msg_box.setText('确定要退出程序吗？')
+        msg_box.setIcon(QMessageBox.Question)
+        
+        # 添加中文按钮
+        yes_btn = msg_box.addButton('是', QMessageBox.YesRole)
+        no_btn = msg_box.addButton('否', QMessageBox.NoRole)
+        msg_box.setDefaultButton(no_btn)
+        
+        msg_box.exec()
+        
+        if msg_box.clickedButton() == yes_btn:
             # Save window state
             try:
                 # Save window geometry
