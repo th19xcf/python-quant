@@ -318,6 +318,10 @@ class IndicatorRenderer:
             plot_widget.setYRange(min_val, max_val)
             logger.debug(f"MACD Y轴范围: {min_val:.2f} - {max_val:.2f}")
             
+            # 禁用科学计数法
+            y_axis = plot_widget.getAxis('left')
+            y_axis.enableAutoSIPrefix(False)
+            
             # 绘制MACD线（DIF）
             macd_mask = ~np.isnan(macd_data)
             if np.any(macd_mask):
