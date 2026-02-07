@@ -637,6 +637,409 @@ class IndicatorRenderer:
             logger.exception(f"渲染BRAR失败: {e}")
         return df
 
+    def render_dmi(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """
+        渲染DMI指标
+
+        Args:
+            plot_widget: 图表控件
+            df: 数据
+            x: x轴坐标
+        """
+        try:
+            logger.debug(f"渲染DMI，数据列: {df.columns}")
+            if 'pdi' not in df.columns or 'ndi' not in df.columns:
+                logger.warning(f"DMI数据列不存在，尝试计算DMI")
+                # 尝试计算DMI
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_dmi(windows=[14])
+                df = analyzer.get_data(return_polars=True)
+                logger.debug(f"计算DMI后数据列: {df.columns}")
+                if 'pdi' not in df.columns or 'ndi' not in df.columns:
+                    logger.error("计算DMI后数据列仍不存在")
+                    return df
+
+            pdi_data = df['pdi'].to_numpy().astype(np.float64)
+            ndi_data = df['ndi'].to_numpy().astype(np.float64)
+
+            # 设置Y轴范围（DMI范围0-100）
+            plot_widget.setYRange(0, 100)
+
+            # 禁用科学计数法
+            y_axis = plot_widget.getAxis('left')
+            y_axis.enableAutoSIPrefix(False)
+
+            # 绘制PDI线（上升方向线，白色）
+            pdi_mask = ~np.isnan(pdi_data)
+            if np.any(pdi_mask):
+                plot_widget.plot(
+                    x[pdi_mask],
+                    pdi_data[pdi_mask],
+                    pen=pg.mkPen('w', width=1),
+                    name='PDI'
+                )
+
+            # 绘制NDI线（下降方向线，黄色）
+            ndi_mask = ~np.isnan(ndi_data)
+            if np.any(ndi_mask):
+                plot_widget.plot(
+                    x[ndi_mask],
+                    ndi_data[ndi_mask],
+                    pen=pg.mkPen('y', width=1),
+                    name='NDI'
+                )
+
+            # 绘制ADX线（平均趋向指数，红色）
+            if 'adx' in df.columns:
+                adx_data = df['adx'].to_numpy().astype(np.float64)
+                adx_mask = ~np.isnan(adx_data)
+                if np.any(adx_mask):
+                    plot_widget.plot(
+                        x[adx_mask],
+                        adx_data[adx_mask],
+                        pen=pg.mkPen('r', width=1),
+                        name='ADX'
+                    )
+
+            # 绘制ADXR线（平均趋向评估，绿色）
+            if 'adxr' in df.columns:
+                adxr_data = df['adxr'].to_numpy().astype(np.float64)
+                adxr_mask = ~np.isnan(adxr_data)
+                if np.any(adxr_mask):
+                    plot_widget.plot(
+                        x[adxr_mask],
+                        adxr_data[adxr_mask],
+                        pen=pg.mkPen(pg.mkColor(0, 255, 0), width=1),
+                        name='ADXR'
+                    )
+
+            # 添加参考线
+            plot_widget.addLine(y=20, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+            plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+
+        except Exception as e:
+            logger.exception(f"渲染DMI失败: {e}")
+        return df
+
+    def render_trix(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """
+        渲染TRIX指标
+
+        Args:
+            plot_widget: 图表控件
+            df: 数据
+            x: x轴坐标
+        """
+        try:
+            logger.debug(f"渲染TRIX，数据列: {df.columns}")
+            if 'trix' not in df.columns:
+                logger.warning(f"TRIX数据列不存在，尝试计算TRIX")
+                # 尝试计算TRIX
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_trix(windows=[12], signal_period=9)
+                df = analyzer.get_data(return_polars=True)
+                logger.debug(f"计算TRIX后数据列: {df.columns}")
+                if 'trix' not in df.columns:
+                    logger.error("计算TRIX后数据列仍不存在")
+                    return df
+
+            trix_data = df['trix'].to_numpy().astype(np.float64)
+
+            # 设置Y轴范围
+            all_data = trix_data[~np.isnan(trix_data)]
+            if len(all_data) > 0:
+                min_val = np.min(all_data)
+                max_val = np.max(all_data)
+                # 添加边距
+                range_val = max_val - min_val
+                if range_val == 0:
+                    range_val = 1
+                min_val = min_val - range_val * 0.1
+                max_val = max_val + range_val * 0.1
+                plot_widget.setYRange(min_val, max_val)
+                logger.debug(f"TRIX Y轴范围: {min_val:.4f} - {max_val:.4f}")
+
+            # 禁用科学计数法
+            y_axis = plot_widget.getAxis('left')
+            y_axis.enableAutoSIPrefix(False)
+
+            # 绘制TRIX线（白色）
+            trix_mask = ~np.isnan(trix_data)
+            if np.any(trix_mask):
+                plot_widget.plot(
+                    x[trix_mask],
+                    trix_data[trix_mask],
+                    pen=pg.mkPen('w', width=1),
+                    name='TRIX'
+                )
+
+            # 绘制TRMA线（黄色，信号线）
+            if 'trma' in df.columns:
+                trma_data = df['trma'].to_numpy().astype(np.float64)
+                trma_mask = ~np.isnan(trma_data)
+                if np.any(trma_mask):
+                    plot_widget.plot(
+                        x[trma_mask],
+                        trma_data[trma_mask],
+                        pen=pg.mkPen('y', width=1),
+                        name='TRMA'
+                    )
+
+            # 添加零轴
+            plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1))
+
+        except Exception as e:
+            logger.exception(f"渲染TRIX失败: {e}")
+        return df
+
+    def render_obv(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染OBV指标"""
+        try:
+            if 'obv' not in df.columns:
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_obv()
+                df = analyzer.get_data(return_polars=True)
+            if 'obv' in df.columns:
+                obv_data = df['obv'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(obv_data)
+                if np.any(mask):
+                    # 设置Y轴范围
+                    all_data = obv_data[mask]
+                    if len(all_data) > 0:
+                        min_val = np.min(all_data)
+                        max_val = np.max(all_data)
+                        range_val = max_val - min_val
+                        if range_val == 0:
+                            range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                        min_val = min_val - range_val * 0.1
+                        max_val = max_val + range_val * 0.1
+                        plot_widget.setYRange(min_val, max_val)
+                    plot_widget.plot(x[mask], obv_data[mask], pen=pg.mkPen('w', width=1), name='OBV')
+                    y_axis = plot_widget.getAxis('left')
+                    y_axis.enableAutoSIPrefix(False)
+        except Exception as e:
+            logger.exception(f"渲染OBV失败: {e}")
+        return df
+
+    def render_asi(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染ASI指标"""
+        try:
+            if 'asi' not in df.columns:
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_asi(signal_period=20)
+                df = analyzer.get_data(return_polars=True)
+            if 'asi' in df.columns:
+                asi_data = df['asi'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(asi_data)
+                if np.any(mask):
+                    # 设置Y轴范围
+                    all_data = asi_data[mask]
+                    if 'asi_sig' in df.columns:
+                        sig_data = df['asi_sig'].to_numpy().astype(np.float64)
+                        sig_mask = ~np.isnan(sig_data)
+                        if np.any(sig_mask):
+                            all_data = np.concatenate([all_data, sig_data[sig_mask]])
+                    if len(all_data) > 0:
+                        min_val = np.min(all_data)
+                        max_val = np.max(all_data)
+                        range_val = max_val - min_val
+                        if range_val == 0:
+                            range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                        min_val = min_val - range_val * 0.1
+                        max_val = max_val + range_val * 0.1
+                        plot_widget.setYRange(min_val, max_val)
+                    plot_widget.plot(x[mask], asi_data[mask], pen=pg.mkPen('w', width=1), name='ASI')
+                if 'asi_sig' in df.columns:
+                    sig_data = df['asi_sig'].to_numpy().astype(np.float64)
+                    sig_mask = ~np.isnan(sig_data)
+                    if np.any(sig_mask):
+                        plot_widget.plot(x[sig_mask], sig_data[sig_mask], pen=pg.mkPen('y', width=1), name='ASI_SIG')
+                y_axis = plot_widget.getAxis('left')
+                y_axis.enableAutoSIPrefix(False)
+        except Exception as e:
+            logger.exception(f"渲染ASI失败: {e}")
+        return df
+
+    def render_emv(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染EMV指标"""
+        try:
+            if 'emv' not in df.columns:
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_emv(windows=[14])
+                df = analyzer.get_data(return_polars=True)
+            if 'emv' in df.columns:
+                emv_data = df['emv'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(emv_data)
+                if np.any(mask):
+                    # 设置Y轴范围
+                    all_data = emv_data[mask]
+                    if len(all_data) > 0:
+                        min_val = np.min(all_data)
+                        max_val = np.max(all_data)
+                        range_val = max_val - min_val
+                        if range_val == 0:
+                            range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                        min_val = min_val - range_val * 0.1
+                        max_val = max_val + range_val * 0.1
+                        plot_widget.setYRange(min_val, max_val)
+                    plot_widget.plot(x[mask], emv_data[mask], pen=pg.mkPen('w', width=1), name='EMV')
+                y_axis = plot_widget.getAxis('left')
+                y_axis.enableAutoSIPrefix(False)
+                plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1))
+        except Exception as e:
+            logger.exception(f"渲染EMV失败: {e}")
+        return df
+
+    def render_cci(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染CCI指标"""
+        try:
+            if 'cci' not in df.columns:
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_cci(windows=[14])
+                df = analyzer.get_data(return_polars=True)
+            if 'cci' in df.columns:
+                cci_data = df['cci'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(cci_data)
+                if np.any(mask):
+                    plot_widget.plot(x[mask], cci_data[mask], pen=pg.mkPen('w', width=1), name='CCI')
+                plot_widget.setYRange(-200, 200)
+                y_axis = plot_widget.getAxis('left')
+                y_axis.enableAutoSIPrefix(False)
+                plot_widget.addLine(y=100, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+                plot_widget.addLine(y=-100, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+        except Exception as e:
+            logger.exception(f"渲染CCI失败: {e}")
+        return df
+
+    def render_roc(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染ROC指标"""
+        try:
+            if 'roc' not in df.columns:
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_roc(windows=[12])
+                df = analyzer.get_data(return_polars=True)
+            if 'roc' in df.columns:
+                roc_data = df['roc'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(roc_data)
+                if np.any(mask):
+                    # 设置Y轴范围
+                    all_data = roc_data[mask]
+                    if len(all_data) > 0:
+                        min_val = np.min(all_data)
+                        max_val = np.max(all_data)
+                        range_val = max_val - min_val
+                        if range_val == 0:
+                            range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                        min_val = min_val - range_val * 0.1
+                        max_val = max_val + range_val * 0.1
+                        plot_widget.setYRange(min_val, max_val)
+                    plot_widget.plot(x[mask], roc_data[mask], pen=pg.mkPen('w', width=1), name='ROC')
+                y_axis = plot_widget.getAxis('left')
+                y_axis.enableAutoSIPrefix(False)
+                plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1))
+        except Exception as e:
+            logger.exception(f"渲染ROC失败: {e}")
+        return df
+
+    def render_mtm(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染MTM指标"""
+        try:
+            if 'mtm' not in df.columns:
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_mtm(windows=[12])
+                df = analyzer.get_data(return_polars=True)
+            if 'mtm' in df.columns:
+                mtm_data = df['mtm'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(mtm_data)
+                if np.any(mask):
+                    # 设置Y轴范围
+                    all_data = mtm_data[mask]
+                    if len(all_data) > 0:
+                        min_val = np.min(all_data)
+                        max_val = np.max(all_data)
+                        range_val = max_val - min_val
+                        if range_val == 0:
+                            range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                        min_val = min_val - range_val * 0.1
+                        max_val = max_val + range_val * 0.1
+                        plot_widget.setYRange(min_val, max_val)
+                    plot_widget.plot(x[mask], mtm_data[mask], pen=pg.mkPen('w', width=1), name='MTM')
+                y_axis = plot_widget.getAxis('left')
+                y_axis.enableAutoSIPrefix(False)
+                plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1))
+        except Exception as e:
+            logger.exception(f"渲染MTM失败: {e}")
+        return df
+
+    def render_psy(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染PSY指标"""
+        try:
+            if 'psy' not in df.columns:
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_psy(windows=[12])
+                df = analyzer.get_data(return_polars=True)
+            if 'psy' in df.columns:
+                psy_data = df['psy'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(psy_data)
+                if np.any(mask):
+                    plot_widget.plot(x[mask], psy_data[mask], pen=pg.mkPen('w', width=1), name='PSY')
+                plot_widget.setYRange(0, 100)
+                y_axis = plot_widget.getAxis('left')
+                y_axis.enableAutoSIPrefix(False)
+                plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+        except Exception as e:
+            logger.exception(f"渲染PSY失败: {e}")
+        return df
+
+    def render_mcst(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染MCST指标"""
+        try:
+            if 'mcst' not in df.columns:
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_mcst(windows=[12])
+                df = analyzer.get_data(return_polars=True)
+            if 'mcst' in df.columns:
+                mcst_data = df['mcst'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(mcst_data)
+                if np.any(mask):
+                    # 设置Y轴范围
+                    all_data = mcst_data[mask]
+                    if 'mcst_ma' in df.columns:
+                        ma_data = df['mcst_ma'].to_numpy().astype(np.float64)
+                        ma_mask = ~np.isnan(ma_data)
+                        if np.any(ma_mask):
+                            all_data = np.concatenate([all_data, ma_data[ma_mask]])
+                    if len(all_data) > 0:
+                        min_val = np.min(all_data)
+                        max_val = np.max(all_data)
+                        range_val = max_val - min_val
+                        if range_val == 0:
+                            range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                        min_val = min_val - range_val * 0.1
+                        max_val = max_val + range_val * 0.1
+                        plot_widget.setYRange(min_val, max_val)
+                    plot_widget.plot(x[mask], mcst_data[mask], pen=pg.mkPen('w', width=1), name='MCST')
+                if 'mcst_ma' in df.columns:
+                    ma_data = df['mcst_ma'].to_numpy().astype(np.float64)
+                    ma_mask = ~np.isnan(ma_data)
+                    if np.any(ma_mask):
+                        plot_widget.plot(x[ma_mask], ma_data[ma_mask], pen=pg.mkPen('y', width=1), name='MCST_MA')
+                y_axis = plot_widget.getAxis('left')
+                y_axis.enableAutoSIPrefix(False)
+        except Exception as e:
+            logger.exception(f"渲染MCST失败: {e}")
+        return df
+
     def render_indicator(
         self, 
         plot_widget: Any, 
@@ -665,6 +1068,16 @@ class IndicatorRenderer:
             'BOLL': self.render_boll,
             'VR': self.render_vr,
             'BRAR': self.render_brar,
+            'DMI': self.render_dmi,
+            'TRIX': self.render_trix,
+            'OBV': self.render_obv,
+            'ASI': self.render_asi,
+            'EMV': self.render_emv,
+            'CCI': self.render_cci,
+            'ROC': self.render_roc,
+            'MTM': self.render_mtm,
+            'PSY': self.render_psy,
+            'MCST': self.render_mcst,
         }
         
         renderer = renderers.get(indicator_name)

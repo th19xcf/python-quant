@@ -272,8 +272,19 @@ class ChartUIBuilder:
             'WR': self._get_wr_text,
             'BOLL': self._get_boll_text,
             'VR': self._get_vr_text,
+            'BRAR': self._get_brar_text,
+            'DMI': self._get_dmi_text,
+            'TRIX': self._get_trix_text,
+            'OBV': self._get_obv_text,
+            'ASI': self._get_asi_text,
+            'EMV': self._get_emv_text,
+            'CCI': self._get_cci_text,
+            'ROC': self._get_roc_text,
+            'MTM': self._get_mtm_text,
+            'PSY': self._get_psy_text,
+            'MCST': self._get_mcst_text,
         }
-        
+
         generator = text_generators.get(indicator_type)
         if generator:
             return generator(df)
@@ -367,7 +378,111 @@ class ChartUIBuilder:
                 )
             return f"<font color='#FFFFFF'>VR: {latest_vr:.2f}</font>"
         return ""
-    
+
+    def _get_brar_text(self, df: Any) -> str:
+        """获取BRAR标签文本"""
+        if 'ar' in df.columns and 'br' in df.columns:
+            latest_ar = df['ar'].tail(1)[0]
+            latest_br = df['br'].tail(1)[0]
+            return (
+                f"<font color='white'>AR: {latest_ar:.2f}</font>  "
+                f"<font color='yellow'>BR: {latest_br:.2f}</font>"
+            )
+        return "<font color='white'>BRAR指标数据不可用</font>"
+
+    def _get_dmi_text(self, df: Any) -> str:
+        """获取DMI标签文本"""
+        if 'pdi' in df.columns and 'ndi' in df.columns:
+            latest_pdi = df['pdi'].tail(1)[0]
+            latest_ndi = df['ndi'].tail(1)[0]
+            text = (
+                f"<font color='white'>PDI: {latest_pdi:.2f}</font>  "
+                f"<font color='yellow'>NDI: {latest_ndi:.2f}</font>"
+            )
+            if 'adx' in df.columns:
+                latest_adx = df['adx'].tail(1)[0]
+                text += f"  <font color='red'>ADX: {latest_adx:.2f}</font>"
+            if 'adxr' in df.columns:
+                latest_adxr = df['adxr'].tail(1)[0]
+                text += f"  <font color='#00FF00'>ADXR: {latest_adxr:.2f}</font>"
+            return text
+        return "<font color='white'>DMI指标数据不可用</font>"
+
+    def _get_trix_text(self, df: Any) -> str:
+        """获取TRIX标签文本"""
+        if 'trix' in df.columns:
+            latest_trix = df['trix'].tail(1)[0]
+            text = f"<font color='white'>TRIX: {latest_trix:.4f}</font>"
+            if 'trma' in df.columns:
+                latest_trma = df['trma'].tail(1)[0]
+                text += f"  <font color='yellow'>TRMA: {latest_trma:.4f}</font>"
+            return text
+        return "<font color='white'>TRIX指标数据不可用</font>"
+
+    def _get_obv_text(self, df: Any) -> str:
+        """获取OBV标签文本"""
+        if 'obv' in df.columns:
+            latest_obv = df['obv'].tail(1)[0]
+            return f"<font color='white'>OBV: {latest_obv:,.0f}</font>"
+        return "<font color='white'>OBV指标数据不可用</font>"
+
+    def _get_asi_text(self, df: Any) -> str:
+        """获取ASI标签文本"""
+        if 'asi' in df.columns:
+            latest_asi = df['asi'].tail(1)[0]
+            text = f"<font color='white'>ASI: {latest_asi:.2f}</font>"
+            if 'asi_sig' in df.columns:
+                latest_sig = df['asi_sig'].tail(1)[0]
+                text += f"  <font color='yellow'>SIG: {latest_sig:.2f}</font>"
+            return text
+        return "<font color='white'>ASI指标数据不可用</font>"
+
+    def _get_emv_text(self, df: Any) -> str:
+        """获取EMV标签文本"""
+        if 'emv' in df.columns:
+            latest_emv = df['emv'].tail(1)[0]
+            return f"<font color='white'>EMV: {latest_emv:.4f}</font>"
+        return "<font color='white'>EMV指标数据不可用</font>"
+
+    def _get_cci_text(self, df: Any) -> str:
+        """获取CCI标签文本"""
+        if 'cci' in df.columns:
+            latest_cci = df['cci'].tail(1)[0]
+            return f"<font color='white'>CCI: {latest_cci:.2f}</font>"
+        return "<font color='white'>CCI指标数据不可用</font>"
+
+    def _get_roc_text(self, df: Any) -> str:
+        """获取ROC标签文本"""
+        if 'roc' in df.columns:
+            latest_roc = df['roc'].tail(1)[0]
+            return f"<font color='white'>ROC: {latest_roc:.2f}</font>"
+        return "<font color='white'>ROC指标数据不可用</font>"
+
+    def _get_mtm_text(self, df: Any) -> str:
+        """获取MTM标签文本"""
+        if 'mtm' in df.columns:
+            latest_mtm = df['mtm'].tail(1)[0]
+            return f"<font color='white'>MTM: {latest_mtm:.2f}</font>"
+        return "<font color='white'>MTM指标数据不可用</font>"
+
+    def _get_psy_text(self, df: Any) -> str:
+        """获取PSY标签文本"""
+        if 'psy' in df.columns:
+            latest_psy = df['psy'].tail(1)[0]
+            return f"<font color='white'>PSY: {latest_psy:.2f}</font>"
+        return "<font color='white'>PSY指标数据不可用</font>"
+
+    def _get_mcst_text(self, df: Any) -> str:
+        """获取MCST标签文本"""
+        if 'mcst' in df.columns:
+            latest_mcst = df['mcst'].tail(1)[0]
+            text = f"<font color='white'>MCST: {latest_mcst:.2f}</font>"
+            if 'mcst_ma' in df.columns:
+                latest_ma = df['mcst_ma'].tail(1)[0]
+                text += f"  <font color='yellow'>MA: {latest_ma:.2f}</font>"
+            return text
+        return "<font color='white'>MCST指标数据不可用</font>"
+
     def add_label_to_container(self, container: QWidget, label: QLabel, window_index: int):
         """
         将标签栏容器添加到窗口布局
