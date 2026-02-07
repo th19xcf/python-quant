@@ -306,11 +306,15 @@ class IndicatorRenderer:
             # 设置Y轴范围
             if 'macd_hist' in df.columns:
                 hist_data = df['macd_hist'].to_numpy()
-                min_val = min(np.nanmin(macd_data), np.nanmin(signal_data), np.nanmin(hist_data)) * 1.2
-                max_val = max(np.nanmax(macd_data), np.nanmax(signal_data), np.nanmax(hist_data)) * 1.2
+                min_val = min(np.nanmin(macd_data), np.nanmin(signal_data), np.nanmin(hist_data))
+                max_val = max(np.nanmax(macd_data), np.nanmax(signal_data), np.nanmax(hist_data))
             else:
-                min_val = min(np.nanmin(macd_data), np.nanmin(signal_data)) * 1.2
-                max_val = max(np.nanmax(macd_data), np.nanmax(signal_data)) * 1.2
+                min_val = min(np.nanmin(macd_data), np.nanmin(signal_data))
+                max_val = max(np.nanmax(macd_data), np.nanmax(signal_data))
+            # 添加一些边距
+            range_val = max_val - min_val
+            min_val = min_val - range_val * 0.1
+            max_val = max_val + range_val * 0.1
             plot_widget.setYRange(min_val, max_val)
             logger.debug(f"MACD Y轴范围: {min_val:.2f} - {max_val:.2f}")
             
