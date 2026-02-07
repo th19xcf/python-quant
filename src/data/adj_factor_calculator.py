@@ -276,13 +276,8 @@ class AdjFactorCalculator:
                 mask = result['trade_date'] >= ex_date
                 result.loc[mask, 'hfq_factor'] *= factor
 
-        # 后复权因子归一化：以最新交易日因子为1
-        try:
-            latest_hfq_factor = result['hfq_factor'].iloc[-1]
-            if latest_hfq_factor and latest_hfq_factor != 0:
-                result['hfq_factor'] = result['hfq_factor'] / latest_hfq_factor
-        except Exception as e:
-            logger.warning(f"后复权因子归一化失败: {e}")
+        # 注意：后复权因子不进行归一化，保持累积值以反映真实的历史累积价格
+        # 这样茅台等长期上涨的股票后复权价格会显示为几千到几万
         
         # 计算复权价格
         result['qfq_open'] = result['open'] * result['qfq_factor']

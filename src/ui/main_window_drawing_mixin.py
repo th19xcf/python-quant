@@ -165,13 +165,12 @@ class MainWindowDrawingMixin:
         提取价格数据
         
         Args:
-            df: 数据
+            df: 已应用复权的数据
             
         Returns:
             tuple: (dates, opens, highs, lows, closes)
         """
-        adjustment_type = getattr(self, 'adjustment_type', 'qfq')
-        return self._data_preparer.extract_price_data(df, adjustment_type)
+        return self._data_preparer.extract_price_data(df)
     
     def _create_title_section(self, stock_name: str, stock_code: str):
         """

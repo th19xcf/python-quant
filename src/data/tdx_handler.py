@@ -412,8 +412,15 @@ class TdxHandler:
             # 合并数据
             result_df = df.join(factors_pl, left_on='date', right_on='trade_date', how='left')
             
-            # 填充缺失的复权因子为1.0
+            # 填充缺失的复权因子
+            # 使用向前填充（ffill）策略：如果某天没有复权因子，使用最近的有效因子
+            # 这样可以避免新数据因为没有复权因子而显示为原始价格
             factor_col = f'{adj_type}_factor'
+            result_df = result_df.with_columns([
+                pl.col(factor_col).fill_null(strategy='forward').alias(factor_col)
+            ])
+            
+            # 如果还有缺失（说明前面没有有效因子），则填充为1.0
             result_df = result_df.with_columns([
                 pl.col(factor_col).fill_null(1.0)
             ])

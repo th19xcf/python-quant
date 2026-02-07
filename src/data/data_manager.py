@@ -450,31 +450,77 @@ class DataManager(IDataProvider, IDataProcessor):
                             # 提取数据记录，直接构建适合Polars的字典列表
                             has_pct_chg = hasattr(data[0], 'pct_chg')
                             
+                            # 检查是否有复权因子字段
+                            has_qfq_factor = hasattr(data[0], 'qfq_factor')
+                            has_hfq_factor = hasattr(data[0], 'hfq_factor')
+                            
                             # 根据复权类型选择对应的价格字段
                             if adjustment_type == 'qfq':
                                 # 前复权
-                                data_records = [{
-                                    'trade_date': item.trade_date,
-                                    'open': item.qfq_open if hasattr(item, 'qfq_open') and item.qfq_open else item.open,
-                                    'high': item.qfq_high if hasattr(item, 'qfq_high') and item.qfq_high else item.high,
-                                    'low': item.qfq_low if hasattr(item, 'qfq_low') and item.qfq_low else item.low,
-                                    'close': item.qfq_close if hasattr(item, 'qfq_close') and item.qfq_close else item.close,
-                                    'volume': item.vol,
-                                    'amount': item.amount,
-                                    **({'pct_chg': item.pct_chg} if has_pct_chg else {})
-                                } for item in data]
+                                data_records = []
+                                for item in data:
+                                    # 优先使用预计算的复权价格
+                                    if hasattr(item, 'qfq_open') and item.qfq_open:
+                                        open_price = item.qfq_open
+                                        high_price = item.qfq_high
+                                        low_price = item.qfq_low
+                                        close_price = item.qfq_close
+                                    # 其次使用复权因子实时计算
+                                    elif has_qfq_factor and item.qfq_factor and item.qfq_factor != 1.0:
+                                        open_price = item.open * item.qfq_factor
+                                        high_price = item.high * item.qfq_factor
+                                        low_price = item.low * item.qfq_factor
+                                        close_price = item.close * item.qfq_factor
+                                    # 回退到原始价格
+                                    else:
+                                        open_price = item.open
+                                        high_price = item.high
+                                        low_price = item.low
+                                        close_price = item.close
+                                    
+                                    data_records.append({
+                                        'trade_date': item.trade_date,
+                                        'open': open_price,
+                                        'high': high_price,
+                                        'low': low_price,
+                                        'close': close_price,
+                                        'volume': item.vol,
+                                        'amount': item.amount,
+                                        **({'pct_chg': item.pct_chg} if has_pct_chg else {})
+                                    })
                             elif adjustment_type == 'hfq':
                                 # 后复权
-                                data_records = [{
-                                    'trade_date': item.trade_date,
-                                    'open': item.hfq_open if hasattr(item, 'hfq_open') and item.hfq_open else item.open,
-                                    'high': item.hfq_high if hasattr(item, 'hfq_high') and item.hfq_high else item.high,
-                                    'low': item.hfq_low if hasattr(item, 'hfq_low') and item.hfq_low else item.low,
-                                    'close': item.hfq_close if hasattr(item, 'hfq_close') and item.hfq_close else item.close,
-                                    'volume': item.vol,
-                                    'amount': item.amount,
-                                    **({'pct_chg': item.pct_chg} if has_pct_chg else {})
-                                } for item in data]
+                                data_records = []
+                                for item in data:
+                                    # 优先使用预计算的复权价格
+                                    if hasattr(item, 'hfq_open') and item.hfq_open:
+                                        open_price = item.hfq_open
+                                        high_price = item.hfq_high
+                                        low_price = item.hfq_low
+                                        close_price = item.hfq_close
+                                    # 其次使用复权因子实时计算
+                                    elif has_hfq_factor and item.hfq_factor and item.hfq_factor != 1.0:
+                                        open_price = item.open * item.hfq_factor
+                                        high_price = item.high * item.hfq_factor
+                                        low_price = item.low * item.hfq_factor
+                                        close_price = item.close * item.hfq_factor
+                                    # 回退到原始价格
+                                    else:
+                                        open_price = item.open
+                                        high_price = item.high
+                                        low_price = item.low
+                                        close_price = item.close
+                                    
+                                    data_records.append({
+                                        'trade_date': item.trade_date,
+                                        'open': open_price,
+                                        'high': high_price,
+                                        'low': low_price,
+                                        'close': close_price,
+                                        'volume': item.vol,
+                                        'amount': item.amount,
+                                        **({'pct_chg': item.pct_chg} if has_pct_chg else {})
+                                    })
                             else:
                                 # 不复权
                                 data_records = [{
