@@ -353,7 +353,7 @@ class ChartUIBuilder:
                 f"<font color='red'>UP: {latest_up:.2f}</font>  "
                 f"<font color='#00FF00'>DN: {latest_dn:.2f}</font>"
             )
-        return ""
+        return "<font color='white'>BOLL指标数据不可用</font>"
     
     def _get_vr_text(self, df: Any) -> str:
         """获取VR标签文本"""

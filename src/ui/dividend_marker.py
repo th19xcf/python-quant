@@ -144,7 +144,10 @@ class DividendMarkerItem(GraphicsObject):
             # 标记宽度（基于K线索引）
             marker_width = 0.6
 
-            logger.debug(f"绘制分红标记: X范围 {x_min:.2f} - {x_max:.2f}, Y范围 {y_min:.2f} - {y_max:.2f}, 标记高度: {marker_height:.2f}")
+            # 只在首次绘制或调试模式下输出详细日志
+            if not hasattr(self, '_debug_logged'):
+                logger.debug(f"绘制分红标记: X范围 {x_min:.2f} - {x_max:.2f}, Y范围 {y_min:.2f} - {y_max:.2f}, 标记高度: {marker_height:.2f}")
+                self._debug_logged = True
 
             for i, (div, idx) in enumerate(zip(self.dividend_data, self.dividend_indices)):
                 if idx < 0:

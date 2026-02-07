@@ -135,7 +135,6 @@ class IndicatorRenderer:
             # 禁用科学计数法
             y_axis = plot_widget.getAxis('left')
             y_axis.enableAutoSIPrefix(False)
-            y_axis.setStyle(tickTextOffset=20)
             
             # 绘制成交量柱状图
             self._draw_volume_bars(plot_widget, x, volumes, df)
@@ -145,7 +144,8 @@ class IndicatorRenderer:
             
         except Exception as e:
             logger.exception(f"渲染成交量失败: {e}")
-    
+        return df
+
     def _set_volume_y_range(self, plot_widget: Any, volumes: np.ndarray):
         """设置成交量Y轴范围"""
         volume_min = volumes.min()
@@ -228,6 +228,10 @@ class IndicatorRenderer:
             k_mask = ~np.isnan(k_data)
             d_mask = ~np.isnan(d_data)
             
+            # 设置Y轴范围（KDJ标准范围0-100，但允许超出）
+            plot_widget.setYRange(-20, 120)
+            logger.debug(f"KDJ Y轴范围设置: -20 - 120")
+            
             # 绘制K线和D线
             if np.any(k_mask):
                 plot_widget.plot(
@@ -259,10 +263,11 @@ class IndicatorRenderer:
             
             # 添加参考线
             self._add_kdj_reference_lines(plot_widget, x)
-            
+
         except Exception as e:
             logger.exception(f"渲染KDJ失败: {e}")
-    
+        return df
+
     def _add_kdj_reference_lines(self, plot_widget: Any, x: np.ndarray):
         """添加KDJ参考线"""
         # 20线（超卖线）
@@ -282,11 +287,32 @@ class IndicatorRenderer:
             x: x轴坐标
         """
         try:
+            logger.debug(f"渲染MACD，数据列: {df.columns}")
             if 'macd' not in df.columns or 'macd_signal' not in df.columns:
-                return
+                logger.warning(f"MACD数据列不存在，尝试计算MACD")
+                # 尝试计算MACD
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_macd(fast_period=12, slow_period=26, signal_period=9)
+                df = analyzer.get_data(return_polars=True)
+                logger.debug(f"计算MACD后数据列: {df.columns}")
+                if 'macd' not in df.columns or 'macd_signal' not in df.columns:
+                    logger.error("计算MACD后数据列仍不存在")
+                    return
             
             macd_data = df['macd'].to_numpy().astype(np.float64)
             signal_data = df['macd_signal'].to_numpy().astype(np.float64)
+            
+            # 设置Y轴范围
+            if 'macd_hist' in df.columns:
+                hist_data = df['macd_hist'].to_numpy()
+                min_val = min(np.nanmin(macd_data), np.nanmin(signal_data), np.nanmin(hist_data)) * 1.2
+                max_val = max(np.nanmax(macd_data), np.nanmax(signal_data), np.nanmax(hist_data)) * 1.2
+            else:
+                min_val = min(np.nanmin(macd_data), np.nanmin(signal_data)) * 1.2
+                max_val = max(np.nanmax(macd_data), np.nanmax(signal_data)) * 1.2
+            plot_widget.setYRange(min_val, max_val)
+            logger.debug(f"MACD Y轴范围: {min_val:.2f} - {max_val:.2f}")
             
             # 绘制MACD线（DIF）
             macd_mask = ~np.isnan(macd_data)
@@ -297,6 +323,7 @@ class IndicatorRenderer:
                     pen=pg.mkPen('w', width=1), 
                     name='DIF'
                 )
+                logger.debug(f"绘制MACD线，数据点: {np.sum(macd_mask)}")
             
             # 绘制信号线（DEA）
             signal_mask = ~np.isnan(signal_data)
@@ -307,6 +334,7 @@ class IndicatorRenderer:
                     pen=pg.mkPen('y', width=1), 
                     name='DEA'
                 )
+                logger.debug(f"绘制DEA线，数据点: {np.sum(signal_mask)}")
             
             # 绘制柱状图（MACD柱）
             if 'macd_hist' in df.columns:
@@ -314,10 +342,11 @@ class IndicatorRenderer:
             
             # 添加零轴
             plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1))
-            
+
         except Exception as e:
             logger.exception(f"渲染MACD失败: {e}")
-    
+        return df
+
     def _draw_macd_histogram(self, plot_widget: Any, x: np.ndarray, hist_data: np.ndarray):
         """绘制MACD柱状图"""
         for i, val in enumerate(hist_data):
@@ -369,10 +398,11 @@ class IndicatorRenderer:
             
             # 设置Y轴范围
             plot_widget.setYRange(0, 100)
-            
+
         except Exception as e:
             logger.exception(f"渲染RSI失败: {e}")
-    
+        return df
+
     def render_wr(self, plot_widget: Any, df: Any, x: np.ndarray):
         """
         渲染WR指标
@@ -423,10 +453,11 @@ class IndicatorRenderer:
             plot_widget.addLine(y=-20, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
             plot_widget.addLine(y=-50, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
             plot_widget.addLine(y=-80, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
-            
+
         except Exception as e:
             logger.exception(f"渲染WR失败: {e}")
-    
+        return df
+
     def render_boll(self, plot_widget: Any, df: Any, x: np.ndarray):
         """
         渲染BOLL指标
@@ -437,12 +468,29 @@ class IndicatorRenderer:
             x: x轴坐标
         """
         try:
+            logger.debug(f"渲染BOLL，数据列: {df.columns}")
             if 'mb' not in df.columns or 'up' not in df.columns or 'dn' not in df.columns:
-                return
+                logger.warning(f"BOLL数据列不存在，尝试计算BOLL")
+                # 尝试计算BOLL
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_boll(windows=[20], std_dev=2.0)
+                df = analyzer.get_data(return_polars=True)
+                logger.debug(f"计算BOLL后数据列: {df.columns}")
+                if 'mb' not in df.columns or 'up' not in df.columns or 'dn' not in df.columns:
+                    logger.error("计算BOLL后数据列仍不存在")
+                    return
             
             mb_data = df['mb'].to_numpy().astype(np.float64)
             up_data = df['up'].to_numpy().astype(np.float64)
             dn_data = df['dn'].to_numpy().astype(np.float64)
+            
+            # 设置Y轴范围
+            all_data = np.concatenate([mb_data[~np.isnan(mb_data)], up_data[~np.isnan(up_data)], dn_data[~np.isnan(dn_data)]])
+            if len(all_data) > 0:
+                min_val = np.min(all_data) * 0.95
+                max_val = np.max(all_data) * 1.05
+                plot_widget.setYRange(min_val, max_val)
             
             # 绘制中轨
             mb_mask = ~np.isnan(mb_data)
@@ -476,7 +524,8 @@ class IndicatorRenderer:
             
         except Exception as e:
             logger.exception(f"渲染BOLL失败: {e}")
-    
+        return df
+
     def render_vr(self, plot_widget: Any, df: Any, x: np.ndarray):
         """
         渲染VR指标
@@ -507,15 +556,79 @@ class IndicatorRenderer:
                 mavr_mask = ~np.isnan(mavr_data)
                 if np.any(mavr_mask):
                     plot_widget.plot(
-                        x[mavr_mask], 
-                        mavr_data[mavr_mask], 
-                        pen=pg.mkPen('y', width=1), 
+                        x[mavr_mask],
+                        mavr_data[mavr_mask],
+                        pen=pg.mkPen('y', width=1),
                         name='MAVR'
                     )
-            
+
         except Exception as e:
             logger.exception(f"渲染VR失败: {e}")
-    
+        return df
+
+    def render_brar(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """
+        渲染BRAR指标
+
+        Args:
+            plot_widget: 图表控件
+            df: 数据
+            x: x轴坐标
+        """
+        try:
+            logger.debug(f"渲染BRAR，数据列: {df.columns}")
+            if 'ar' not in df.columns or 'br' not in df.columns:
+                logger.warning(f"BRAR数据列不存在，尝试计算BRAR")
+                # 尝试计算BRAR
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_brar(windows=[26])
+                df = analyzer.get_data(return_polars=True)
+                logger.debug(f"计算BRAR后数据列: {df.columns}")
+                if 'ar' not in df.columns or 'br' not in df.columns:
+                    logger.error("计算BRAR后数据列仍不存在")
+                    return df
+
+            ar_data = df['ar'].to_numpy().astype(np.float64)
+            br_data = df['br'].to_numpy().astype(np.float64)
+
+            # 设置Y轴范围（BRAR通常以100为基准，范围可以较大）
+            all_data = np.concatenate([ar_data[~np.isnan(ar_data)], br_data[~np.isnan(br_data)]])
+            if len(all_data) > 0:
+                min_val = max(0, np.min(all_data) * 0.8)  # BRAR通常不小于0
+                max_val = np.max(all_data) * 1.2
+                # 确保范围至少包含100参考线
+                min_val = min(min_val, 80)
+                max_val = max(max_val, 120)
+                plot_widget.setYRange(min_val, max_val)
+
+            # 绘制AR线
+            ar_mask = ~np.isnan(ar_data)
+            if np.any(ar_mask):
+                plot_widget.plot(
+                    x[ar_mask],
+                    ar_data[ar_mask],
+                    pen=pg.mkPen('w', width=1),
+                    name='AR'
+                )
+
+            # 绘制BR线
+            br_mask = ~np.isnan(br_data)
+            if np.any(br_mask):
+                plot_widget.plot(
+                    x[br_mask],
+                    br_data[br_mask],
+                    pen=pg.mkPen('y', width=1),
+                    name='BR'
+                )
+
+            # 添加参考线
+            plot_widget.addLine(y=100, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+
+        except Exception as e:
+            logger.exception(f"渲染BRAR失败: {e}")
+        return df
+
     def render_indicator(
         self, 
         plot_widget: Any, 
@@ -543,14 +656,15 @@ class IndicatorRenderer:
             'WR': self.render_wr,
             'BOLL': self.render_boll,
             'VR': self.render_vr,
+            'BRAR': self.render_brar,
         }
         
         renderer = renderers.get(indicator_name)
         if renderer:
-            renderer(plot_widget, df, x)
+            df = renderer(plot_widget, df, x)
         else:
             logger.warning(f"未知的指标类型: {indicator_name}")
-        
+
         return df
 
 

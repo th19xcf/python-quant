@@ -428,10 +428,23 @@ class MainWindowDrawingMixin:
         else:
             return
         
-        # 渲染指标
-        self._indicator_renderer.render_indicator(plot_widget, indicator_name, x, df_pl)
+        # 清除之前的指标图形
+        plot_widget.clear()
         
-        # 创建标签栏
+        # 设置Y轴标签和样式（与第一窗口保持一致）
+        plot_widget.setLabel('left', indicator_name, color='#C0C0C0')
+        plot_widget.getAxis('left').setPen(pg.mkPen('#C0C0C0'))
+        plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
+        plot_widget.getAxis('left').setWidth(50)  # 与第一窗口保持一致
+        
+        # 渲染指标（可能返回更新后的数据）
+        df_pl = self._indicator_renderer.render_indicator(plot_widget, indicator_name, x, df_pl)
+
+        # 再次设置Y轴宽度和样式（确保在渲染后仍然有效）
+        plot_widget.getAxis('left').setWidth(50)
+        plot_widget.getAxis('left').setStyle(showValues=True)
+
+        # 创建标签栏（使用可能更新后的数据）
         ui_builder = ChartUIBuilder(self)
         container = ui_builder.create_indicator_label_bar(window_index, indicator_name, df_pl)
         
