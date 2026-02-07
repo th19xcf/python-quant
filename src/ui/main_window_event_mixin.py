@@ -260,20 +260,116 @@ class MainWindowEventMixin:
         """
         Handle key press events
         ESC: Return to market tab
+        Other keys: Show stock search dialog at bottom right
         """
-        if event.key() == Qt.Key_Escape:
+        key = event.key()
+        
+        # ESC键：返回行情标签页
+        if key == Qt.Key_Escape:
             if self.tab_widget.currentWidget() == self.tech_tab:
                 logger.info("ESC pressed, returning to market tab")
                 self.tab_widget.setCurrentWidget(self.market_tab)
+            return
+        
+        # 忽略功能键、控制键等特殊按键
+        if key in (Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta,
+                   Qt.Key_F1, Qt.Key_F2, Qt.Key_F3, Qt.Key_F4, Qt.Key_F5,
+                   Qt.Key_F6, Qt.Key_F7, Qt.Key_F8, Qt.Key_F9, Qt.Key_F10,
+                   Qt.Key_F11, Qt.Key_F12, Qt.Key_Tab, Qt.Key_CapsLock,
+                   Qt.Key_NumLock, Qt.Key_ScrollLock, Qt.Key_Pause,
+                   Qt.Key_Insert, Qt.Key_Delete, Qt.Key_Home, Qt.Key_End,
+                   Qt.Key_PageUp, Qt.Key_PageDown, Qt.Key_Left, Qt.Key_Right,
+                   Qt.Key_Up, Qt.Key_Down):
+            try:
+                super().keyPressEvent(event)
+            except AttributeError:
+                pass
+            return
+        
+        # 获取按键字符
+        text = event.text()
+        if not text or not text.isprintable():
+            try:
+                super().keyPressEvent(event)
+            except AttributeError:
+                pass
+            return
+        
+        # 显示股票搜索对话框（右下角）
+        logger.debug(f"Key pressed: {text}, showing search dialog")
+        self._show_global_search_dialog(text)
         
         # Call parent implementation
-        # Note: Since this is a mixin, super() might be tricky if not careful with MRO.
-        # But in Python, super() in a mixin will call the next class in MRO of the instance.
-        # Assuming MainWindow inherits QMainWindow after Mixins, or QMainWindow is in the MRO.
         try:
             super().keyPressEvent(event)
         except AttributeError:
             pass
+    
+    def _show_global_search_dialog(self, initial_text=""):
+        """
+        在右下角显示股票搜索对话框
+        
+        Args:
+            initial_text: 初始搜索文本
+        """
+        try:
+            from src.ui.stock_search_dialog import StockSearchDialog
+            
+            # 获取数据库管理器
+            db_manager = None
+            if hasattr(self, 'data_manager') and self.data_manager:
+                db_manager = self.data_manager.db_manager
+            
+            # 创建搜索对话框
+            dialog = StockSearchDialog(self, db_manager, initial_text)
+            
+            # 设置对话框位置在右下角
+            self._position_dialog_at_bottom_right(dialog)
+            
+            if dialog.exec() == StockSearchDialog.Accepted:
+                selected_stock = dialog.get_selected_stock()
+                if selected_stock:
+                    ts_code = selected_stock['ts_code']
+                    stock_name = selected_stock['name']
+                    logger.info(f"选中股票: {ts_code} - {stock_name}")
+                    
+                    # 加载选中股票的K线图
+                    if hasattr(self, 'action_manager'):
+                        self.action_manager._load_stock_chart(ts_code, stock_name)
+            
+        except Exception as e:
+            logger.exception(f"显示全局搜索对话框失败: {e}")
+    
+    def _position_dialog_at_bottom_right(self, dialog):
+        """
+        设置对话框位置在主窗口右下角
+        
+        Args:
+            dialog: 搜索对话框
+        """
+        try:
+            # 获取主窗口几何信息
+            window_geometry = self.geometry()
+            
+            # 计算右下角位置
+            dialog_width = dialog.width()
+            dialog_height = dialog.height()
+            
+            x = window_geometry.x() + window_geometry.width() - dialog_width - 20
+            y = window_geometry.y() + window_geometry.height() - dialog_height - 20
+            
+            # 确保不超出屏幕
+            screen = self.screen()
+            if screen:
+                screen_geometry = screen.geometry()
+                x = max(0, min(x, screen_geometry.width() - dialog_width))
+                y = max(0, min(y, screen_geometry.height() - dialog_height))
+            
+            # 移动对话框
+            dialog.move_to_position(x, y)
+            
+        except Exception as e:
+            logger.warning(f"设置对话框位置失败: {e}")
 
     def on_kline_double_clicked(self, event, dates, opens, highs, lows, closes):
         """

@@ -204,17 +204,6 @@ class MainWindowUiMixin:
         tool_bar = self.addToolBar("工具栏")
         tool_bar.setIconSize(QSize(16, 16))
         
-        # 添加搜索框
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("输入股票代码/名称")
-        self.search_edit.setFixedWidth(200)
-        tool_bar.addWidget(self.search_edit)
-        
-        # 添加搜索按钮
-        search_btn = QPushButton("搜索")
-        search_btn.clicked.connect(self.action_manager.on_search)
-        tool_bar.addWidget(search_btn)
-        
         # 添加分隔符
         tool_bar.addSeparator()
         

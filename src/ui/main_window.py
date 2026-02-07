@@ -7,7 +7,7 @@ Refactored into Mixins
 """
 
 import warnings
-from PySide6.QtWidgets import QMainWindow
+from PySide6.QtWidgets import QMainWindow, QApplication
 from PySide6.QtCore import Qt
 
 # 忽略PySide6信号断开警告
@@ -79,6 +79,9 @@ class MainWindow(MainWindowUiMixin, MainWindowEventMixin, MainWindowDataMixin,
         # 订阅事件
         self.event_manager.subscribe_events()
         
+        # 安装全局事件过滤器，捕获所有按键事件
+        self._install_global_key_filter()
+        
         # 初始化状态属性
         self.vline = None
         self.hline = None
@@ -124,4 +127,67 @@ class MainWindow(MainWindowUiMixin, MainWindowEventMixin, MainWindowDataMixin,
 
     # IController Interface Implementation (if any specific methods needed)
     pass
+    
+    def _install_global_key_filter(self):
+        """
+        安装全局按键事件过滤器
+        捕获所有按键事件，即使焦点在其他控件上
+        """
+        from PySide6.QtCore import QObject, QEvent
+        from PySide6.QtGui import QKeyEvent
+        
+        class GlobalKeyFilter(QObject):
+            def __init__(self, main_window):
+                super().__init__(main_window)
+                self.main_window = main_window
+                self._search_dialog_open = False
+                
+            def eventFilter(self, obj, event):
+                # 只处理按键事件
+                if event.type() == QEvent.KeyPress:
+                    key_event = QKeyEvent(event)
+                    key = key_event.key()
+                    
+                    # 忽略特殊按键
+                    if key in (Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta,
+                               Qt.Key_F1, Qt.Key_F2, Qt.Key_F3, Qt.Key_F4, Qt.Key_F5,
+                               Qt.Key_F6, Qt.Key_F7, Qt.Key_F8, Qt.Key_F9, Qt.Key_F10,
+                               Qt.Key_F11, Qt.Key_F12, Qt.Key_Tab, Qt.Key_CapsLock,
+                               Qt.Key_NumLock, Qt.Key_ScrollLock, Qt.Key_Pause,
+                               Qt.Key_Insert, Qt.Key_Delete, Qt.Key_Home, Qt.Key_End,
+                               Qt.Key_PageUp, Qt.Key_PageDown, Qt.Key_Left, Qt.Key_Right,
+                               Qt.Key_Up, Qt.Key_Down, Qt.Key_Escape, Qt.Key_Return,
+                               Qt.Key_Enter, Qt.Key_Backspace, Qt.Key_Space):
+                        return False
+                    
+                    # 获取按键字符
+                    text = key_event.text()
+                    if not text or not text.isprintable():
+                        return False
+                    
+                    # 检查是否有搜索对话框已经打开
+                    if self._search_dialog_open:
+                        return False
+                    
+                    # 检查焦点是否在输入框中
+                    from PySide6.QtWidgets import QLineEdit, QTextEdit, QPlainTextEdit
+                    focus_widget = self.main_window.focusWidget()
+                    if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
+                        # 如果焦点在输入框中，不拦截按键
+                        return False
+                    
+                    # 显示搜索对话框
+                    self._search_dialog_open = True
+                    self.main_window._show_global_search_dialog(text)
+                    self._search_dialog_open = False
+                    
+                    # 拦截事件，不传递给其他控件
+                    return True
+                
+                return False
+        
+        # 创建并安装事件过滤器
+        self._key_filter = GlobalKeyFilter(self)
+        QApplication.instance().installEventFilter(self._key_filter)
+        logger.info("全局按键过滤器已安装")
 
