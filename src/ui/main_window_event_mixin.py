@@ -260,6 +260,7 @@ class MainWindowEventMixin:
         """
         Handle key press events
         ESC: Return to market tab
+        Up/Down: Switch to adjacent stock in tech tab
         Other keys: Show stock search dialog at bottom right
         """
         key = event.key()
@@ -271,15 +272,28 @@ class MainWindowEventMixin:
                 self.tab_widget.setCurrentWidget(self.market_tab)
             return
         
-        # 忽略功能键、控制键等特殊按键
+        # 上下箭头键：在技术分析界面切换相邻股票
+        if key in (Qt.Key_Up, Qt.Key_Down):
+            if self.tab_widget.currentWidget() == self.tech_tab:
+                direction = 'prev' if key == Qt.Key_Up else 'next'
+                self._switch_to_adjacent_stock(direction)
+                return
+            else:
+                # 不在技术分析界面，传递给父类处理
+                try:
+                    super().keyPressEvent(event)
+                except AttributeError:
+                    pass
+                return
+        
+        # 忽略其他功能键、控制键等特殊按键
         if key in (Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta,
                    Qt.Key_F1, Qt.Key_F2, Qt.Key_F3, Qt.Key_F4, Qt.Key_F5,
                    Qt.Key_F6, Qt.Key_F7, Qt.Key_F8, Qt.Key_F9, Qt.Key_F10,
                    Qt.Key_F11, Qt.Key_F12, Qt.Key_Tab, Qt.Key_CapsLock,
                    Qt.Key_NumLock, Qt.Key_ScrollLock, Qt.Key_Pause,
                    Qt.Key_Insert, Qt.Key_Delete, Qt.Key_Home, Qt.Key_End,
-                   Qt.Key_PageUp, Qt.Key_PageDown, Qt.Key_Left, Qt.Key_Right,
-                   Qt.Key_Up, Qt.Key_Down):
+                   Qt.Key_PageUp, Qt.Key_PageDown, Qt.Key_Left, Qt.Key_Right):
             try:
                 super().keyPressEvent(event)
             except AttributeError:
@@ -304,6 +318,183 @@ class MainWindowEventMixin:
             super().keyPressEvent(event)
         except AttributeError:
             pass
+    
+    def _switch_to_adjacent_stock(self, direction: str):
+        """
+        切换到相邻的股票
+        
+        Args:
+            direction: 'prev' 上一个 或 'next' 下一个
+        """
+        try:
+            # 获取当前股票代码
+            if not hasattr(self, 'current_stock_code') or not self.current_stock_code:
+                logger.warning("没有当前股票，无法切换")
+                return
+            
+            current_code = self.current_stock_code
+            logger.info(f"切换到{direction}股票，当前: {current_code}")
+            
+            # 获取当前显示的股票列表
+            stock_list = self._get_current_stock_list()
+            if not stock_list:
+                logger.warning("没有可用的股票列表")
+                return
+            
+            # 标准化当前股票代码（确保带后缀）
+            if '.' not in current_code:
+                # 如果没有后缀，添加默认后缀
+                if current_code.startswith('6'):
+                    current_code = f"{current_code}.SH"
+                else:
+                    current_code = f"{current_code}.SZ"
+            
+            # 找到当前股票在列表中的位置
+            try:
+                current_index = stock_list.index(current_code)
+            except ValueError:
+                logger.warning(f"当前股票 {current_code} 不在列表中，尝试模糊匹配")
+                # 尝试模糊匹配（只比较代码部分）
+                current_symbol = current_code.split('.')[0] if '.' in current_code else current_code
+                for i, code in enumerate(stock_list):
+                    symbol = code.split('.')[0] if '.' in code else code
+                    if symbol == current_symbol:
+                        current_index = i
+                        current_code = code  # 使用列表中的完整代码
+                        break
+                else:
+                    logger.warning(f"当前股票 {current_code} 不在列表中")
+                    return
+            
+            # 查找下一个有数据文件的股票
+            target_code = None
+            target_name = None
+            checked_count = 0
+            max_check = min(100, len(stock_list))  # 最多检查100只股票
+            
+            while checked_count < max_check:
+                # 计算目标索引
+                if direction == 'prev':
+                    target_index = current_index - 1
+                    if target_index < 0:
+                        target_index = len(stock_list) - 1  # 循环到末尾
+                else:  # next
+                    target_index = current_index + 1
+                    if target_index >= len(stock_list):
+                        target_index = 0  # 循环到开头
+                
+                # 获取目标股票代码
+                candidate_code = stock_list[target_index]
+                
+                # 检查数据文件是否存在
+                if self._check_stock_data_exists(candidate_code):
+                    target_code = candidate_code
+                    target_name = self._get_stock_name(target_code)
+                    break
+                else:
+                    logger.debug(f"股票 {candidate_code} 没有数据文件，继续查找")
+                    current_index = target_index  # 继续查找下一个
+                    checked_count += 1
+            
+            if target_code is None:
+                logger.warning(f"找不到有数据文件的相邻股票")
+                return
+            
+            logger.info(f"切换到股票: {target_code} - {target_name}")
+            
+            # 加载目标股票K线图
+            if hasattr(self, 'action_manager'):
+                self.action_manager._load_stock_chart(target_code, target_name)
+            else:
+                logger.warning("没有action_manager，无法加载股票")
+                
+        except Exception as e:
+            logger.exception(f"切换股票失败: {e}")
+    
+    def _get_current_stock_list(self):
+        """
+        获取当前显示的股票列表
+        
+        Returns:
+            list: 股票代码列表
+        """
+        try:
+            # 尝试从数据管理器获取股票列表
+            if hasattr(self, 'data_manager') and self.data_manager:
+                # 从数据库获取所有A股
+                session = self.data_manager.db_manager.get_session()
+                if session:
+                    from src.database.models.stock import StockBasic
+                    stocks = session.query(StockBasic).all()
+                    return [stock.ts_code for stock in stocks if stock.ts_code]
+            
+            # 如果没有数据管理器，返回空列表
+            return []
+            
+        except Exception as e:
+            logger.exception(f"获取股票列表失败: {e}")
+            return []
+    
+    def _get_stock_name(self, ts_code: str):
+        """
+        获取股票名称
+        
+        Args:
+            ts_code: 股票代码
+            
+        Returns:
+            str: 股票名称
+        """
+        try:
+            if hasattr(self, 'data_manager') and self.data_manager:
+                session = self.data_manager.db_manager.get_session()
+                if session:
+                    from src.database.models.stock import StockBasic
+                    stock = session.query(StockBasic).filter(StockBasic.ts_code == ts_code).first()
+                    if stock and stock.name:
+                        return stock.name
+            
+            # 默认返回代码
+            return ts_code
+            
+        except Exception as e:
+            logger.exception(f"获取股票名称失败: {e}")
+            return ts_code
+    
+    def _check_stock_data_exists(self, ts_code: str) -> bool:
+        """
+        检查股票数据文件是否存在
+        
+        Args:
+            ts_code: 股票代码 (如: 600519.SH)
+            
+        Returns:
+            bool: 数据文件是否存在
+        """
+        try:
+            # 转换代码格式
+            if ts_code.endswith('.SH'):
+                market = 'sh'
+                tdx_code = f"sh{ts_code[:-3]}"
+            elif ts_code.endswith('.SZ'):
+                market = 'sz'
+                tdx_code = f"sz{ts_code[:-3]}"
+            else:
+                # 假设是纯数字代码
+                market = 'sh' if ts_code.startswith('6') else 'sz'
+                tdx_code = f"{market}{ts_code}"
+            
+            from pathlib import Path
+            if hasattr(self, 'data_manager') and self.data_manager:
+                tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
+                tdx_file_path = tdx_data_path / market / 'lday' / f'{tdx_code}.day'
+                return tdx_file_path.exists()
+            
+            return False
+            
+        except Exception as e:
+            logger.exception(f"检查股票数据文件失败: {e}")
+            return False
     
     def _show_global_search_dialog(self, initial_text=""):
         """

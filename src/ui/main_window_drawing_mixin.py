@@ -144,6 +144,9 @@ class MainWindowDrawingMixin:
         """清空图表"""
         self.tech_plot_widget.clear()
         self.volume_plot_widget.clear()
+        # 清除指标图表（如KDJ）
+        if hasattr(self, 'kdj_plot_widget') and self.kdj_plot_widget:
+            self.kdj_plot_widget.clear()
     
     def _prepare_data(self, df: pl.DataFrame) -> pl.DataFrame:
         """
