@@ -129,6 +129,9 @@ class MainWindowDrawingMixin:
                 self.current_window_count, True
             )
             
+            # 16. 更新标题栏显示最后一个交易日的均线数据
+            self._update_ma_values_display(df_pl, dates)
+            
             logger.info(f"成功绘制 {stock_name}({stock_code}) 的K线图")
             
         except Exception as e:
@@ -147,6 +150,56 @@ class MainWindowDrawingMixin:
         # 清除指标图表（如KDJ）
         if hasattr(self, 'kdj_plot_widget') and self.kdj_plot_widget:
             self.kdj_plot_widget.clear()
+    
+    def _update_ma_values_display(self, df: pl.DataFrame, dates: list):
+        """
+        更新标题栏显示最后一个交易日的均线数据
+        
+        Args:
+            df: 股票数据DataFrame
+            dates: 日期列表
+        """
+        try:
+            if not hasattr(self, 'ma_values_label') or self.ma_values_label is None:
+                return
+            
+            if len(dates) == 0:
+                return
+            
+            # 获取最后一个交易日的数据
+            last_date = dates[-1]
+            
+            # 获取均线数据
+            ma_values = {}
+            ma_columns = {
+                'MA5': ('ma5', 'white'),
+                'MA10': ('ma10', 'cyan'),
+                'MA20': ('ma20', 'red'),
+                'MA60': ('ma60', '#00FF00')
+            }
+            
+            for ma_name, (col_name, color) in ma_columns.items():
+                if col_name in df.columns:
+                    ma_data = df[col_name].to_numpy()
+                    if len(ma_data) > 0 and not np.isnan(ma_data[-1]):
+                        ma_values[ma_name] = f"{ma_data[-1]:.2f}"
+                    else:
+                        ma_values[ma_name] = "--"
+                else:
+                    ma_values[ma_name] = "--"
+            
+            # 更新显示
+            ma_text = (
+                f"<font color='#C0C0C0'>日期: {last_date}</font>  "
+                f"<font color='white'>MA5: {ma_values['MA5']}</font>  "
+                f"<font color='cyan'>MA10: {ma_values['MA10']}</font>  "
+                f"<font color='red'>MA20: {ma_values['MA20']}</font>  "
+                f"<font color='#00FF00'>MA60: {ma_values['MA60']}</font>"
+            )
+            self.ma_values_label.setText(ma_text)
+            
+        except Exception as e:
+            logger.exception(f"更新均线数据显示失败: {e}")
     
     def _prepare_data(self, df: pl.DataFrame) -> pl.DataFrame:
         """
