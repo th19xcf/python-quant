@@ -233,13 +233,11 @@ class AdjFactorCalculator:
             
             # 计算复权因子
             if share_div > 0 or cash_div > 0:
-                # 考虑送转股和现金分红的复权因子
-                if share_div > 0:
-                    # 送转股复权因子
-                    factor = 1 / (1 + share_div)
-                else:
-                    # 只有现金分红时的复权因子
-                    factor = (prev_day_close - cash_div) / prev_day_close
+                # 兼容送转股+现金分红的综合复权因子
+                if prev_day_close <= cash_div:
+                    logger.warning(f"{div['ts_code'] if 'ts_code' in div else ''} {ex_date} 现金分红异常，无法计算前复权因子")
+                    continue
+                factor = (prev_day_close - cash_div) / (prev_day_close * (1 + share_div))
                 
                 mask = result['trade_date'] < ex_date
                 result.loc[mask, 'qfq_factor'] *= factor
@@ -265,17 +263,26 @@ class AdjFactorCalculator:
             
             # 计算复权因子
             if share_div > 0 or cash_div > 0:
-                # 考虑送转股和现金分红的复权因子
-                if share_div > 0:
-                    # 送转股复权因子
-                    factor = 1 + share_div
-                else:
-                    # 只有现金分红时的复权因子
-                    # 后复权不需要调整现金分红
-                    factor = 1.0
+                # 后复权因子为前复权因子的倒数（应用于除权除息日及之后）
+                if prev_day_close <= cash_div:
+                    logger.warning(f"{div['ts_code'] if 'ts_code' in div else ''} {ex_date} 现金分红异常，无法计算后复权因子")
+                    continue
+                qfq_factor = (prev_day_close - cash_div) / (prev_day_close * (1 + share_div))
+                if qfq_factor == 0:
+                    logger.warning(f"{div['ts_code'] if 'ts_code' in div else ''} {ex_date} 前复权因子为0，跳过后复权计算")
+                    continue
+                factor = 1 / qfq_factor
                 
                 mask = result['trade_date'] >= ex_date
                 result.loc[mask, 'hfq_factor'] *= factor
+
+        # 后复权因子归一化：以最新交易日因子为1
+        try:
+            latest_hfq_factor = result['hfq_factor'].iloc[-1]
+            if latest_hfq_factor and latest_hfq_factor != 0:
+                result['hfq_factor'] = result['hfq_factor'] / latest_hfq_factor
+        except Exception as e:
+            logger.warning(f"后复权因子归一化失败: {e}")
         
         # 计算复权价格
         result['qfq_open'] = result['open'] * result['qfq_factor']

@@ -133,15 +133,64 @@ class MainWindowDrawingMixin:
             if df_pl is None:
                 return
             
+            # 根据复权类型选择对应的价格字段
+            adjustment_type = getattr(self, 'adjustment_type', 'qfq')
+            
+            # 根据复权类型选择对应的价格列用于计算MA
+            # 先保存原始的close列
+            if 'close_original' not in df_pl.columns:
+                df_pl = df_pl.with_columns(pl.col('close').alias('close_original'))
+
+            # 后复权显示：按当前窗口首日因子归一化，避免比例过大
+            if adjustment_type == 'hfq' and 'hfq_factor' in df_pl.columns:
+                try:
+                    base_factor_series = df_pl.select(pl.col('hfq_factor').drop_nulls().head(1))
+                    base_factor = base_factor_series.item(0, 0) if base_factor_series.height > 0 else None
+                except Exception:
+                    base_factor = None
+
+                if base_factor and base_factor != 0:
+                    if 'hfq_open' in df_pl.columns:
+                        df_pl = df_pl.with_columns((pl.col('hfq_open') / base_factor).alias('hfq_open_norm'))
+                    if 'hfq_high' in df_pl.columns:
+                        df_pl = df_pl.with_columns((pl.col('hfq_high') / base_factor).alias('hfq_high_norm'))
+                    if 'hfq_low' in df_pl.columns:
+                        df_pl = df_pl.with_columns((pl.col('hfq_low') / base_factor).alias('hfq_low_norm'))
+                    if 'hfq_close' in df_pl.columns:
+                        df_pl = df_pl.with_columns((pl.col('hfq_close') / base_factor).alias('hfq_close_norm'))
+            
+            # 根据复权类型替换close列
+            if adjustment_type == 'qfq' and 'qfq_close' in df_pl.columns:
+                df_pl = df_pl.with_columns(pl.col('qfq_close').alias('close'))
+            elif adjustment_type == 'hfq':
+                if 'hfq_close_norm' in df_pl.columns:
+                    df_pl = df_pl.with_columns(pl.col('hfq_close_norm').alias('close'))
+                elif 'hfq_close' in df_pl.columns:
+                    df_pl = df_pl.with_columns(pl.col('hfq_close').alias('close'))
+            
+            # 计算均线指标（在截取数据之前计算，以确保MA计算准确）
+            # 使用calculate_ma直接计算，避免TechnicalAnalyzer的缓存机制
+            from src.tech_analysis.indicators.trend import calculate_ma
+            df_pl = calculate_ma(df_pl.lazy(), [5, 10, 20, 60]).collect()
+            
+            # 恢复原始的close列
+            if 'close_original' in df_pl.columns:
+                df_pl = df_pl.with_columns(pl.col('close_original').alias('close'))
+                df_pl = df_pl.drop('close_original')
+            
             # 截取指定数量的数据（当柱体数小于数据长度时才截取）
+            # 注意：在计算完MA之后再截取，但要保留足够的历史数据来计算MA
+            # MA60需要60条数据，所以截取时要多取60条，确保MA60计算完整
             if bar_count < len(df_pl):
+                # 多取60条数据，确保MA60计算完整
+                df_pl = df_pl.tail(bar_count + 60)
+                # 然后再取最后bar_count条用于显示
                 df_pl = df_pl.tail(bar_count)
             
             # 直接使用Polars的to_numpy()方法，避免多次转换
             dates = df_pl['date'].to_numpy()
             
             # 根据复权类型选择对应的价格字段
-            adjustment_type = getattr(self, 'adjustment_type', 'qfq')
             if adjustment_type == 'qfq':
                 # 前复权
                 opens = df_pl['qfq_open'].to_numpy() if 'qfq_open' in df_pl.columns else df_pl['open'].to_numpy()
@@ -150,10 +199,16 @@ class MainWindowDrawingMixin:
                 closes = df_pl['qfq_close'].to_numpy() if 'qfq_close' in df_pl.columns else df_pl['close'].to_numpy()
             elif adjustment_type == 'hfq':
                 # 后复权
-                opens = df_pl['hfq_open'].to_numpy() if 'hfq_open' in df_pl.columns else df_pl['open'].to_numpy()
-                highs = df_pl['hfq_high'].to_numpy() if 'hfq_high' in df_pl.columns else df_pl['high'].to_numpy()
-                lows = df_pl['hfq_low'].to_numpy() if 'hfq_low' in df_pl.columns else df_pl['low'].to_numpy()
-                closes = df_pl['hfq_close'].to_numpy() if 'hfq_close' in df_pl.columns else df_pl['close'].to_numpy()
+                if 'hfq_open_norm' in df_pl.columns:
+                    opens = df_pl['hfq_open_norm'].to_numpy()
+                    highs = df_pl['hfq_high_norm'].to_numpy()
+                    lows = df_pl['hfq_low_norm'].to_numpy()
+                    closes = df_pl['hfq_close_norm'].to_numpy()
+                else:
+                    opens = df_pl['hfq_open'].to_numpy() if 'hfq_open' in df_pl.columns else df_pl['open'].to_numpy()
+                    highs = df_pl['hfq_high'].to_numpy() if 'hfq_high' in df_pl.columns else df_pl['high'].to_numpy()
+                    lows = df_pl['hfq_low'].to_numpy() if 'hfq_low' in df_pl.columns else df_pl['low'].to_numpy()
+                    closes = df_pl['hfq_close'].to_numpy() if 'hfq_close' in df_pl.columns else df_pl['close'].to_numpy()
             else:
                 # 不复权
                 opens = df_pl['open'].to_numpy()
@@ -389,32 +444,33 @@ class MainWindowDrawingMixin:
                     self.tech_plot_widget.removeItem(point_item)
                 self.ma_points.clear()
                 
-                # 确保ma5、ma10、ma20和ma60列存在
-                if 'ma5' not in df_pl.columns or 'ma10' not in df_pl.columns or 'ma20' not in df_pl.columns or 'ma60' not in df_pl.columns:
-                    # 计算均线指标
-                    analyzer = TechnicalAnalyzer(df_pl)
-                    analyzer.calculate_ma([5, 10, 20, 60])
-                    df_pl = analyzer.get_data(return_polars=True)
-                
                 # 绘制5日均线（白色）
-                ma5_data = df_pl['ma5'].to_numpy()
-                ma5_item = self.tech_plot_widget.plot(x, ma5_data, pen=pg.mkPen('w', width=1), name='MA5')
-                self.moving_averages['MA5'] = {'item': ma5_item, 'data': (x, ma5_data), 'color': 'w'}
+                ma5_data = df_pl['ma5'].to_numpy().astype(np.float64)
+                # 过滤掉NaN值，只绘制有效的数据点
+                ma5_mask = ~np.isnan(ma5_data)
+                ma5_item = self.tech_plot_widget.plot(x[ma5_mask], ma5_data[ma5_mask], pen=pg.mkPen('w', width=1), name='MA5')
+                self.moving_averages['MA5'] = {'item': ma5_item, 'data': (x[ma5_mask], ma5_data[ma5_mask]), 'color': 'w'}
                 
                 # 绘制10日均线（青色）
-                ma10_data = df_pl['ma10'].to_numpy()
-                ma10_item = self.tech_plot_widget.plot(x, ma10_data, pen=pg.mkPen('c', width=1), name='MA10')
-                self.moving_averages['MA10'] = {'item': ma10_item, 'data': (x, ma10_data), 'color': 'c'}
+                ma10_data = df_pl['ma10'].to_numpy().astype(np.float64)
+                # 过滤掉NaN值，只绘制有效的数据点
+                ma10_mask = ~np.isnan(ma10_data)
+                ma10_item = self.tech_plot_widget.plot(x[ma10_mask], ma10_data[ma10_mask], pen=pg.mkPen('c', width=1), name='MA10')
+                self.moving_averages['MA10'] = {'item': ma10_item, 'data': (x[ma10_mask], ma10_data[ma10_mask]), 'color': 'c'}
                 
                 # 绘制20日均线（红色）
-                ma20_data = df_pl['ma20'].to_numpy()
-                ma20_item = self.tech_plot_widget.plot(x, ma20_data, pen=pg.mkPen('r', width=1), name='MA20')
-                self.moving_averages['MA20'] = {'item': ma20_item, 'data': (x, ma20_data), 'color': 'r'}
+                ma20_data = df_pl['ma20'].to_numpy().astype(np.float64)
+                # 过滤掉NaN值，只绘制有效的数据点
+                ma20_mask = ~np.isnan(ma20_data)
+                ma20_item = self.tech_plot_widget.plot(x[ma20_mask], ma20_data[ma20_mask], pen=pg.mkPen('r', width=1), name='MA20')
+                self.moving_averages['MA20'] = {'item': ma20_item, 'data': (x[ma20_mask], ma20_data[ma20_mask]), 'color': 'r'}
                 
                 # 绘制60日均线（绿色，与K线绿色一致）
-                ma60_data = df_pl['ma60'].to_numpy()
-                ma60_item = self.tech_plot_widget.plot(x, ma60_data, pen=pg.mkPen(pg.mkColor(0, 255, 0), width=1), name='MA60')
-                self.moving_averages['MA60'] = {'item': ma60_item, 'data': (x, ma60_data), 'color': pg.mkColor(0, 255, 0)}
+                ma60_data = df_pl['ma60'].to_numpy().astype(np.float64)
+                # 过滤掉NaN值，只绘制有效的数据点
+                ma60_mask = ~np.isnan(ma60_data)
+                ma60_item = self.tech_plot_widget.plot(x[ma60_mask], ma60_data[ma60_mask], pen=pg.mkPen(pg.mkColor(0, 255, 0), width=1), name='MA60')
+                self.moving_averages['MA60'] = {'item': ma60_item, 'data': (x[ma60_mask], ma60_data[ma60_mask]), 'color': pg.mkColor(0, 255, 0)}
                 
                 # 保存当前鼠标位置和K线索引
                 self.current_kline_data = {
@@ -1115,381 +1171,6 @@ class MainWindowDrawingMixin:
         except Exception as e:
             logger.exception(f"绘制K线图失败: {e}")
             self.statusBar().showMessage(f"绘制K线图失败: {str(e)[:50]}...", 5000)
-
-    def on_custom_context_menu(self, pos):
-        """
-        处理customContextMenuRequested信号，显示自定义右键菜单
-        """
-        # logger.info(f"customContextMenuRequested信号被调用，位置: {pos}")
-        
-        # 创建自定义菜单
-        menu = QMenu(self.tech_plot_widget)
-        
-        # 如果有选中的均线，添加修改指标参数选项
-        if hasattr(self, 'selected_ma') and self.selected_ma:
-            modify_action = QAction(f"修改{self.selected_ma}指标参数", self)
-            modify_action.triggered.connect(lambda: self.on_modify_indicator(self.selected_ma))
-            menu.addAction(modify_action)
-        else:
-            # 如果没有选中均线，添加提示信息
-            no_select_action = QAction("未选中均线，请先点击选中均线", self)
-            no_select_action.setEnabled(False)  # 禁用选项
-            menu.addAction(no_select_action)
-        
-        # 转换为全局坐标
-        global_pos = self.tech_plot_widget.mapToGlobal(pos)
-        
-        # 显示菜单
-        menu.exec(global_pos)
-    
-    def on_modify_indicator(self, ma_name):
-        """
-        处理修改指标参数的菜单动作
-        """
-        logger.info(f"修改指标参数: {ma_name}")
-        
-        # 创建修改指标参数的对话框
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"修改{ma_name}指标参数")
-        dialog.setGeometry(300, 300, 300, 200)
-        
-        # 创建布局
-        layout = QVBoxLayout(dialog)
-        
-        # 获取当前的窗口参数
-        current_window = int(ma_name.replace("MA", ""))
-        
-        # 创建标签和输入框
-        window_label = QLabel("周期:", dialog)
-        layout.addWidget(window_label)
-        
-        window_input = QLineEdit(dialog)
-        window_input.setText(str(current_window))
-        layout.addWidget(window_input)
-        
-        # 创建按钮布局
-        button_layout = QHBoxLayout()
-        
-        ok_button = QPushButton("确定", dialog)
-        cancel_button = QPushButton("取消", dialog)
-        
-        button_layout.addWidget(ok_button)
-        button_layout.addWidget(cancel_button)
-        
-        layout.addLayout(button_layout)
-        
-        # 连接按钮信号
-        def on_ok():
-            try:
-                # 获取新的窗口参数
-                new_window = int(window_input.text())
-                if new_window <= 0:
-                    raise ValueError("周期必须大于0")
-                logger.info(f"修改{ma_name}周期为: {new_window}")
-                dialog.accept()
-            except ValueError as e:
-                logger.error(f"周期输入错误: {e}")
-        
-        ok_button.clicked.connect(on_ok)
-        cancel_button.clicked.connect(dialog.reject)
-        
-        # 显示对话框
-        dialog.exec()
-    
-    def on_ma_clicked(self, event):
-        """
-        处理均线点击事件，在选中的均线上显示白点标注
-        
-        Args:
-            event: 鼠标点击事件
-        """
-        try:
-            # 获取点击位置
-            pos = event.scenePos()
-            view_box = self.tech_plot_widget.getViewBox()
-            view_pos = view_box.mapSceneToView(pos)
-            # x_val = view_pos.x()
-            y_val = view_pos.y()
-            
-            # 找到最接近的K线索引
-            index = int(round(view_pos.x()))
-            
-            # 检测点击位置是否在某个均线上
-            clicked_ma = None
-            min_distance = float('inf')
-            
-            # 定义点击容忍度（Y轴方向的容忍度）
-            tolerance = 0.02  # 2%的价格容忍度
-            
-            # 获取当前价格范围，用于计算相对容忍度
-            y_range = self.tech_plot_widget.viewRange()[1]
-            y_min, y_max = y_range
-            price_tolerance = (y_max - y_min) * tolerance
-            
-            # 确保moving_averages属性存在
-            if hasattr(self, 'moving_averages'):
-                # 遍历所有均线，检查点击位置是否在均线上
-                for ma_name, ma_info in self.moving_averages.items():
-                    x_data, y_data = ma_info['data']
-                    if 0 <= index < len(x_data):
-                        # 获取该位置的均线值
-                        ma_value = y_data[index]
-                        
-                        # 计算点击位置与均线的距离
-                        distance = abs(y_val - ma_value)
-                        
-                        # 如果距离小于容忍度，认为点击了该均线
-                        if distance < price_tolerance and distance < min_distance:
-                            min_distance = distance
-                            clicked_ma = ma_name
-            
-            # 如果点击了均线
-            if clicked_ma:
-                # logger.info(f"点击了{clicked_ma}")
-                
-                # 确保ma_points属性存在
-                if not hasattr(self, 'ma_points'):
-                    self.ma_points = []
-                
-                # 清除之前的标注点
-                for point_item in self.ma_points:
-                    self.tech_plot_widget.removeItem(point_item)
-                self.ma_points.clear()
-                
-                # 确保moving_averages属性存在
-                if hasattr(self, 'moving_averages'):
-                    # 绘制新的标注点
-                    ma_info = self.moving_averages.get(clicked_ma)
-                    if ma_info:
-                        x_data, y_data = ma_info['data']
-                        
-                        # 在均线上每隔几个点绘制一个白点
-                        step = max(1, len(x_data) // 20)  # 最多绘制20个点
-                        for i in range(0, len(x_data), step):
-                            if y_data[i] is not None and not (isinstance(y_data[i], (int, float)) and math.isnan(y_data[i])):
-                                # 创建白点标注
-                                point = pg.ScatterPlotItem([x_data[i]], [y_data[i]], size=6, pen=pg.mkPen('w', width=1), brush=pg.mkBrush('w'))
-                                self.tech_plot_widget.addItem(point)
-                                self.ma_points.append(point)
-                
-                # 更新选中的均线
-                self.selected_ma = clicked_ma
-            else:
-                # 点击位置不在均线上，取消选中状态
-                
-                # 确保ma_points属性存在
-                if hasattr(self, 'ma_points'):
-                    # 清除之前的标注点
-                    for point_item in self.ma_points:
-                        self.tech_plot_widget.removeItem(point_item)
-                    self.ma_points.clear()
-                
-                # 重置选中状态
-                self.selected_ma = None
-                
-                # 检查是否是右键点击
-                if event.button() == Qt.RightButton:
-                    # 创建右键菜单
-                    menu = QMenu(self)
-                    
-                    # 如果点击了均线，添加修改指标参数选项
-                    if clicked_ma:
-                        modify_action = QAction(f"修改{clicked_ma}指标参数", self)
-                        modify_action.triggered.connect(lambda: self.on_modify_indicator(clicked_ma))
-                        menu.addAction(modify_action)
-                    else:
-                        # 如果没有点击在均线上，添加提示信息
-                        no_select_action = QAction("未选中均线，请先点击选中均线", self)
-                        no_select_action.setEnabled(False)  # 禁用选项
-                        menu.addAction(no_select_action)
-                    
-                    # 使用event的pos方法获取场景位置，然后转换为屏幕位置
-                    scene_pos = event.pos()
-                    screen_pos = self.tech_plot_widget.mapToGlobal(scene_pos)
-                    qpoint = screen_pos.toPoint()
-                    menu.exec(qpoint)
-                    
-                    # 阻止事件传播，防止显示默认菜单
-                    event.accept()
-        except Exception as e:
-            logger.exception(f"处理均线点击事件时发生错误: {e}")
-
-    def update_ma_values_display(self, index, dates, opens, highs, lows, closes):
-        """
-        更新顶部均线值显示
-        """
-        try:
-            if not hasattr(self, 'ma_values_label'):
-                return
-            
-            # 确保索引有效
-            if index < 0 or index >= len(dates):
-                return
-            
-            # 获取当前日期
-            current_date = pd.Timestamp(dates[index]).strftime('%Y-%m-%d')
-            
-            # 获取当前的MA值
-            ma_values = {}
-            
-            # 检查是否有保存的MA数据
-            if hasattr(self, 'ma_data'):
-                # 使用保存的MA值，确保与绘制的MA线一致
-                if 0 <= index < len(self.ma_data['MA5']):
-                    ma5 = self.ma_data['MA5'][index]
-                    if ma5 != '' and ma5 is not None and str(ma5) != 'nan':
-                        ma_values['MA5'] = f"{ma5:.2f}"
-                    else:
-                        ma_values['MA5'] = "--"
-                else:
-                    ma_values['MA5'] = "--"
-                
-                if 0 <= index < len(self.ma_data['MA10']):
-                    ma10 = self.ma_data['MA10'][index]
-                    if ma10 != '' and ma10 is not None and str(ma10) != 'nan':
-                        ma_values['MA10'] = f"{ma10:.2f}"
-                    else:
-                        ma_values['MA10'] = "--"
-                else:
-                    ma_values['MA10'] = "--"
-                
-                if 0 <= index < len(self.ma_data['MA20']):
-                    ma20 = self.ma_data['MA20'][index]
-                    if ma20 != '' and ma20 is not None and str(ma20) != 'nan':
-                        ma_values['MA20'] = f"{ma20:.2f}"
-                    else:
-                        ma_values['MA20'] = "--"
-                else:
-                    ma_values['MA20'] = "--"
-                
-                if 0 <= index < len(self.ma_data['MA60']):
-                    ma60 = self.ma_data['MA60'][index]
-                    if ma60 != '' and ma60 is not None and str(ma60) != 'nan':
-                        ma_values['MA60'] = f"{ma60:.2f}"
-                    else:
-                        ma_values['MA60'] = "--"
-                else:
-                    ma_values['MA60'] = "--"
-            else:
-                # 如果没有保存的MA数据，使用默认值
-                ma_values['MA5'] = "--"
-                ma_values['MA10'] = "--"
-                ma_values['MA20'] = "--"
-                ma_values['MA60'] = "--"
-            
-            # 获取MA线的颜色，默认使用当前设置的颜色
-            if hasattr(self, 'ma_colors'):
-                ma5_color = self.ma_colors.get('MA5', 'white')
-                ma10_color = self.ma_colors.get('MA10', 'cyan')
-                ma20_color = self.ma_colors.get('MA20', 'red')
-                ma60_color = self.ma_colors.get('MA60', '#00FF00')
-            else:
-                # 默认颜色设置
-                ma5_color = 'white'
-                ma10_color = 'cyan'
-                ma20_color = 'red'
-                ma60_color = '#00FF00'
-            
-            # 更新标签文本，使用HTML格式设置不同颜色，添加日期显示
-            ma_text = f"<font color='#C0C0C0'>日期: {current_date}</font>  <font color='{ma5_color}'>MA5: {ma_values['MA5']}</font>  <font color='{ma10_color}'>MA10: {ma_values['MA10']}</font>  <font color='{ma20_color}'>MA20: {ma_values['MA20']}</font>  <font color='{ma60_color}'>MA60: {ma_values['MA60']}</font>"
-            self.ma_values_label.setText(ma_text)
-        except Exception as e:
-            logger.exception(f"更新MA值显示时发生错误: {e}")
-
-    def show_info_box(self):
-        """显示信息框"""
-        try:
-            if self.current_kline_index >= 0 and self.current_kline_data:
-                dates = self.current_kline_data['dates']
-                opens = self.current_kline_data['opens']
-                highs = self.current_kline_data['highs']
-                lows = self.current_kline_data['lows']
-                closes = self.current_kline_data['closes']
-                index = self.current_kline_index
-                
-                # 确保索引在有效范围内
-                if 0 <= index < len(dates):
-                    # 计算前一天的收盘价，用于计算涨跌幅
-                    pre_close = closes[index-1] if index > 0 else closes[index]
-                    
-                    # 计算涨跌幅和涨跌额
-                    change = closes[index] - pre_close
-                    pct_change = (change / pre_close) * 100 if pre_close != 0 else 0
-                    
-                    # 获取星期几，0=周一，1=周二，2=周三，3=周四，4=周五，5=周六，6=周日
-                    weekday = dates[index].weekday()
-                    # 转换为中文星期
-                    weekday_map = {0: '一', 1: '二', 2: '三', 3: '四', 4: '五', 5: '六', 6: '日'}
-                    weekday_str = weekday_map.get(weekday, '')
-                    
-                    # 生成信息文本
-                    info_html = f"""
-                    <div style="background-color: rgba(0, 0, 0, 0.8); padding: 8px; border: 1px solid #666; color: white; font-family: monospace;">
-                    <div style="font-weight: bold;">{pd.Timestamp(dates[index]).strftime('%Y-%m-%d')}/{weekday_str}</div>
-                    <div>开盘: {opens[index]:.2f}</div>
-                    <div>最高: {highs[index]:.2f}</div>
-                    <div>最低: {lows[index]:.2f}</div>
-                    <div>收盘: {closes[index]:.2f}</div>
-                    <div>涨跌: {change:.2f}</div>
-                    <div>涨幅: {pct_change:.2f}%</div>
-                    </div>
-                    """
-                    
-                    # 更新信息文本
-                    if self.info_text is not None:
-                        self.info_text.setHtml(info_html)
-                        # 设置信息文本位置，跟随鼠标显示
-                        if self.current_mouse_pos is not None:
-                            # 将场景坐标转换为视图坐标
-                            view_box = self.tech_plot_widget.getViewBox()
-                            
-                            # 获取当前视图范围
-                            x_min, x_max = view_box.viewRange()[0]
-                            y_min, y_max = view_box.viewRange()[1]
-                            
-                            # 使用K线位置作为信息框的基准位置
-                            kline_x = self.current_kline_index
-                            kline_y = lows[index]
-                            
-                            # 计算信息框的尺寸（基于视图范围的百分比）
-                            view_height = y_max - y_min
-                            view_width = x_max - x_min
-                            
-                            # 使用实际像素或视图坐标的百分比来确定信息框尺寸
-                            info_box_height = view_height * 0.2  # 信息框高度为视图高度的20%
-                            info_box_width = view_width * 0.25  # 信息框宽度为视图宽度的25%
-                            margin = view_height * 0.02  # 边距为视图高度的2%
-                            
-                            # 计算K线在视图中的相对位置
-                            kline_relative_y = (kline_y - y_min) / view_height
-                            
-                            # 检查K线是否靠近右侧边界，动态调整信息框显示方向
-                            kline_offset = 0.1  # 约为半个K线宽度
-                            
-                            if kline_x > x_max - info_box_width - margin:
-                                # K线在右侧区域，信息框显示在K线左侧
-                                pos_x = kline_x - 9 + kline_offset
-                            else:
-                                # K线在左侧区域，信息框显示在K线右侧
-                                pos_x = kline_x + kline_offset
-                            
-                            if kline_relative_y > 0.6:  # K线位于视图上60%
-                                # 信息框显示在K线下方
-                                pos_y = kline_y - info_box_height - margin - 10
-                            else:  # K线位于视图下40%
-                                # 信息框显示在K线上方
-                                pos_y = kline_y + margin - 20
-                            
-                            # 垂直方向：确保信息框不会超出上下边界
-                            if pos_y < y_min + margin:
-                                pos_y = y_min + margin
-                            elif pos_y + info_box_height + 10 > y_max - margin:
-                                pos_y = y_max - info_box_height - margin - 10
-                            
-                            self.info_text.setPos(pos_x, pos_y)
-                            self.info_text.show()
-        except Exception as e:
-            logger.exception(f"显示信息框失败: {e}")
 
     def draw_indicator(self, plot_widget, indicator_name, x, df_pl):
         """

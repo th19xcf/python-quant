@@ -119,17 +119,27 @@ class DividendMarkerItem(GraphicsObject):
             y_min, y_max = view_range[1]
             y_range = y_max - y_min
 
-            # 计算标记高度（使用固定最小高度，确保标记始终可见）
-            # 最小高度为3个像素，最大高度不超过Y轴范围的5%
-            min_marker_height = 3.0  # 最小高度3像素
-            max_marker_height = max(3.0, y_range * 0.05)  # 最大高度不超过Y轴范围的5%
-            marker_height = max(min_marker_height, y_range * 0.025)  # 2.5%的Y轴范围，但不低于最小高度
-            marker_height = min(marker_height, max_marker_height)  # 不超过最大高度
+            # 计算标记高度（使用固定像素高度，转换为数据坐标）
+            # 获取图表的像素高度，计算每个像素对应的数据高度
+            plot_rect = self.plot_widget.geometry()
+            pixel_height = plot_rect.height()
+            
+            if pixel_height > 0:
+                # 每个像素对应的数据高度
+                data_per_pixel = y_range / pixel_height
+                # 标记高度为15像素（固定值）
+                marker_height = 15 * data_per_pixel
+            else:
+                # 如果无法获取像素高度，使用Y轴范围的2%
+                marker_height = y_range * 0.02
 
-            # 标记底部紧贴y_min（x轴），向上延伸
-            # 确保标记在视图范围内
-            marker_y_bottom = y_min
-            marker_y_top = y_min + marker_height
+            # 确保标记高度不会太大或太小
+            marker_height = max(marker_height, y_range * 0.01)  # 最小为Y轴范围的1%
+            marker_height = min(marker_height, y_range * 0.05)  # 最大为Y轴范围的5%
+
+            # 标记从y_min（x轴）向下延伸
+            # QRectF的y参数是左上角坐标，高度向下延伸
+            marker_y = y_min  # 标记顶部在y_min（x轴位置）
 
             # 标记宽度（基于K线索引）
             marker_width = 0.6
@@ -159,8 +169,9 @@ class DividendMarkerItem(GraphicsObject):
                 else:
                     continue  # 没有有效的分红数据
 
-                # 定义标记矩形区域（底部紧贴y_min）
-                marker_rect = QRectF(x - marker_width/2, marker_y_bottom, marker_width, marker_height)
+                # 定义标记矩形区域（从y_min向下延伸，高度为marker_height）
+                # 这样标记会显示在x轴下方，不会遮挡K线
+                marker_rect = QRectF(x - marker_width/2, marker_y, marker_width, marker_height)
 
                 # 根据类型设置颜色
                 if marker_type == 'cash':

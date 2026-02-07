@@ -21,8 +21,10 @@ def calculate_ma(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     Returns:
         pl.LazyFrame: 包含移动平均线的LazyFrame
     """
+    # 修改：使用min_periods=window，确保只有窗口满时才计算平均值
+    # 这样可以避免早期的均线值为0或接近0的情况
     return lazy_df.with_columns(
-        *[to_float32(pl.col('close').rolling_mean(window_size=window, min_periods=1)).alias(f'ma{window}')
+        *[to_float32(pl.col('close').rolling_mean(window_size=window, min_periods=window)).alias(f'ma{window}')
           for window in windows]
     )
 
