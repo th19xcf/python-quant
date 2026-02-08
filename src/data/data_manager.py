@@ -477,8 +477,8 @@ class DataManager(IDataProvider, IDataProcessor):
                                         high_price = item.high
                                         low_price = item.low
                                         close_price = item.close
-                                    
-                                    data_records.append({
+
+                                    record = {
                                         'trade_date': item.trade_date,
                                         'open': open_price,
                                         'high': high_price,
@@ -487,7 +487,19 @@ class DataManager(IDataProvider, IDataProcessor):
                                         'volume': item.vol,
                                         'amount': item.amount,
                                         **({'pct_chg': item.pct_chg} if has_pct_chg else {})
-                                    })
+                                    }
+                                    # 同时添加复权价格列，供chart_data_preparer使用
+                                    if hasattr(item, 'qfq_open') and item.qfq_open:
+                                        record['qfq_open'] = item.qfq_open
+                                        record['qfq_high'] = item.qfq_high
+                                        record['qfq_low'] = item.qfq_low
+                                        record['qfq_close'] = item.qfq_close
+                                    else:
+                                        record['qfq_open'] = open_price
+                                        record['qfq_high'] = high_price
+                                        record['qfq_low'] = low_price
+                                        record['qfq_close'] = close_price
+                                    data_records.append(record)
                             elif adjustment_type == 'hfq':
                                 # 后复权
                                 data_records = []
@@ -510,8 +522,8 @@ class DataManager(IDataProvider, IDataProcessor):
                                         high_price = item.high
                                         low_price = item.low
                                         close_price = item.close
-                                    
-                                    data_records.append({
+
+                                    record = {
                                         'trade_date': item.trade_date,
                                         'open': open_price,
                                         'high': high_price,
@@ -520,7 +532,19 @@ class DataManager(IDataProvider, IDataProcessor):
                                         'volume': item.vol,
                                         'amount': item.amount,
                                         **({'pct_chg': item.pct_chg} if has_pct_chg else {})
-                                    })
+                                    }
+                                    # 同时添加复权价格列，供chart_data_preparer使用
+                                    if hasattr(item, 'hfq_open') and item.hfq_open:
+                                        record['hfq_open'] = item.hfq_open
+                                        record['hfq_high'] = item.hfq_high
+                                        record['hfq_low'] = item.hfq_low
+                                        record['hfq_close'] = item.hfq_close
+                                    else:
+                                        record['hfq_open'] = open_price
+                                        record['hfq_high'] = high_price
+                                        record['hfq_low'] = low_price
+                                        record['hfq_close'] = close_price
+                                    data_records.append(record)
                             else:
                                 # 不复权
                                 data_records = [{

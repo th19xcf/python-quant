@@ -5,7 +5,7 @@
 数据库管理模块
 """
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.ext.declarative import declarative_base
 from loguru import logger
@@ -125,16 +125,72 @@ class DatabaseManager:
             logger.exception(f"数据库表删除失败: {e}")
             raise
     
-    def get_session(self):
+    def get_session(self, expire_on_commit=False):
         """
         获取数据库会话
-        
+
+        Args:
+            expire_on_commit: 是否在提交后过期对象，默认为False以提高性能
+
         Returns:
             sqlalchemy.orm.Session: 数据库会话对象
         """
-        if not self.session:
-            self.connect()
-        return self.session
+        try:
+            # 检查现有会话是否有效
+            if self.session:
+                try:
+                    # 测试会话是否仍然有效
+                    self.session.execute(text("SELECT 1"))
+                except Exception as e:
+                    logger.warning(f"现有数据库会话已失效，将创建新会话: {e}")
+                    self._cleanup_session()
+
+            # 如果没有有效会话，创建新会话
+            if not self.session:
+                if not self.engine:
+                    self.connect()
+                else:
+                    # 创建新的会话
+                    self.Session = scoped_session(sessionmaker(
+                        bind=self.engine,
+                        expire_on_commit=expire_on_commit
+                    ))
+                    self.session = self.Session()
+                    logger.debug("创建新的数据库会话")
+
+            return self.session
+
+        except Exception as e:
+            logger.exception(f"获取数据库会话失败: {e}")
+            # 清理无效会话
+            self._cleanup_session()
+            raise
+
+    def _cleanup_session(self):
+        """
+        清理无效的数据库会话
+        """
+        try:
+            if self.session:
+                try:
+                    self.session.close()
+                except Exception as e:
+                    logger.debug(f"关闭会话时出错（可能已失效）: {e}")
+                finally:
+                    self.session = None
+
+            if self.Session:
+                try:
+                    self.Session.remove()
+                except Exception as e:
+                    logger.debug(f"移除会话作用域时出错: {e}")
+                finally:
+                    self.Session = None
+        except Exception as e:
+            logger.warning(f"清理数据库会话时出错: {e}")
+            # 强制重置
+            self.session = None
+            self.Session = None
     
     def is_connected(self):
         """

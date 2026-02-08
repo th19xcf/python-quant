@@ -46,9 +46,36 @@ class TdxHandler:
         
         # 线程本地存储，用于保存每个线程的数据库会话
         self.thread_local = threading.local()
-        
+
         # 离线模式支持
         self.offline_mode = db_manager is None
+
+    def __del__(self):
+        """
+        析构函数，确保线程池正确关闭
+        """
+        self.close()
+
+    def close(self):
+        """
+        关闭处理器，清理资源
+        """
+        try:
+            # 关闭线程池
+            if hasattr(self, 'executor') and self.executor:
+                logger.info("正在关闭TdxHandler线程池...")
+                self.executor.shutdown(wait=True)
+                logger.info("TdxHandler线程池已关闭")
+
+            # 关闭线程本地存储的数据库会话
+            if hasattr(self.thread_local, 'session') and self.thread_local.session:
+                try:
+                    self.thread_local.session.close()
+                    logger.debug(f"线程 {threading.current_thread().name} 的数据库会话已关闭")
+                except Exception as e:
+                    logger.warning(f"关闭线程数据库会话时出错: {e}")
+        except Exception as e:
+            logger.exception(f"关闭TdxHandler时出错: {e}")
         
     def _get_thread_safe_session(self):
         """

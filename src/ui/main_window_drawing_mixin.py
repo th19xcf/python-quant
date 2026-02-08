@@ -57,7 +57,39 @@ class MainWindowDrawingMixin:
         self.current_kline_index = -1
         self.current_kline_data = {}
         self.current_mouse_pos = None
-    
+
+        # 日期格式化缓存
+        self._date_format_cache = {}
+
+    def _format_date(self, date_value):
+        """
+        格式化日期，使用缓存避免重复计算
+
+        Args:
+            date_value: 日期值（可以是字符串、datetime、numpy.datetime64等）
+
+        Returns:
+            str: 格式化后的日期字符串 'YYYY-MM-DD'
+        """
+        # 检查缓存
+        if date_value in self._date_format_cache:
+            return self._date_format_cache[date_value]
+
+        # 格式化日期
+        if isinstance(date_value, str):
+            # 如果已经是字符串，直接返回
+            formatted = date_value[:10] if len(date_value) >= 10 else date_value
+        elif hasattr(date_value, 'strftime'):
+            # datetime 或 pandas Timestamp 对象
+            formatted = date_value.strftime('%Y-%m-%d')
+        else:
+            # numpy.datetime64 或其他类型，转换为字符串
+            formatted = str(date_value)[:10]
+
+        # 缓存结果
+        self._date_format_cache[date_value] = formatted
+        return formatted
+
     def plot_k_line(self, df, stock_name, stock_code):
         """
         绘制K线图（入口方法）
@@ -309,8 +341,9 @@ class MainWindowDrawingMixin:
     
     def _draw_high_point_label(self, dates, highs, high_index, current_high):
         """绘制最高点标注"""
-        high_date = pd.Timestamp(dates[high_index]).strftime('%Y-%m-%d')
-        
+        # 使用原生方法格式化日期，避免 pd.Timestamp 开销
+        high_date = self._format_date(dates[high_index])
+
         self.high_text_item = pg.TextItem(f" {high_date} {current_high:.2f} ", color='w')
         self.high_text_item.setHtml(
             f'<div style="background-color: rgba(0, 0, 0, 0.8); padding: 3px; '
@@ -339,8 +372,9 @@ class MainWindowDrawingMixin:
     
     def _draw_low_point_label(self, dates, lows, low_index, current_low):
         """绘制最低点标注"""
-        low_date = pd.Timestamp(dates[low_index]).strftime('%Y-%m-%d')
-        
+        # 使用原生方法格式化日期，避免 pd.Timestamp 开销
+        low_date = self._format_date(dates[low_index])
+
         self.low_text_item = pg.TextItem(f" {low_date} {current_low:.2f} ", color='w')
         self.low_text_item.setHtml(
             f'<div style="background-color: rgba(0, 0, 0, 0.8); padding: 3px; '
