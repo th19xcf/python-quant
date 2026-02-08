@@ -874,7 +874,8 @@ class MainWindowEventMixin:
 
     def show_info_box(self):
         """
-        Show info box on chart
+        Show info box on chart with smart positioning
+        When crosshair is near the right edge, show info box on the left side
         """
         try:
             if self.current_kline_index >= 0 and self.current_kline_data:
@@ -884,16 +885,16 @@ class MainWindowEventMixin:
                 lows = self.current_kline_data['lows']
                 closes = self.current_kline_data['closes']
                 index = self.current_kline_index
-                
+
                 if 0 <= index < len(dates):
                     pre_close = closes[index-1] if index > 0 else closes[index]
                     change = closes[index] - pre_close
                     pct_change = (change / pre_close) * 100 if pre_close != 0 else 0
-                    
+
                     # 转换 numpy.datetime64 为 pandas Timestamp 以获取 weekday
                     date_obj = pd.Timestamp(dates[index])
                     weekday_str = ['一', '二', '三', '四', '五', '六', '日'][date_obj.weekday()]
-                    
+
                     info_html = f"""
                     <div style="background-color: rgba(0, 0, 0, 0.8); padding: 8px; border: 1px solid #666; color: white; font-family: monospace;">
                     <div style="font-weight: bold;">{pd.Timestamp(dates[index]).strftime('%Y-%m-%d')}/{weekday_str}</div>
@@ -905,17 +906,33 @@ class MainWindowEventMixin:
                     <div>涨幅: {pct_change:.2f}%</div>
                     </div>
                     """
-                    
+
                     if hasattr(self, 'info_text') and self.info_text:
                         self.info_text.setHtml(info_html)
-                        
+
                         if self.current_mouse_pos:
                             view_box = self.tech_plot_widget.getViewBox()
-                            # Simply putting it near mouse for now to save 200 lines of boundary logic
-                            # The original logic is better but massive. 
-                            # We can re-implement the smart positioning later if needed.
                             view_pos = view_box.mapSceneToView(self.current_mouse_pos)
-                            self.info_text.setPos(view_pos.x(), view_pos.y())
+
+                            # 获取视图范围
+                            x_range = view_box.viewRange()[0]
+                            x_min, x_max = x_range[0], x_range[1]
+                            view_width = x_max - x_min
+
+                            # 判断十字线是否靠近右侧（超过70%位置）
+                            threshold = x_min + view_width * 0.7
+
+                            if view_pos.x() > threshold:
+                                # 靠近右侧，信息框显示在十字线左侧
+                                self.info_text.setAnchor((1, 1))
+                                # 向左偏移约0.5%视图宽度，让信息框紧贴十字线
+                                offset = view_width * 0.005
+                                self.info_text.setPos(view_pos.x() - offset, view_pos.y())
+                            else:
+                                # 正常位置，信息框显示在十字线右侧
+                                self.info_text.setAnchor((0, 1))
+                                self.info_text.setPos(view_pos.x(), view_pos.y())
+
                             self.info_text.show()
         except Exception as e:
             logger.exception(f"Error showing info box: {e}")
