@@ -554,17 +554,11 @@ class MainWindowDataMixin:
         try:
             from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
             
-            # 转换为pandas DataFrame以使用TechnicalAnalyzer
-            df_pd = df.to_pandas()
+            # TechnicalAnalyzer 已支持 Polars DataFrame，直接传递
+            analyzer = TechnicalAnalyzer(df)
             
-            # 使用TechnicalAnalyzer计算所有技术指标
-            analyzer = TechnicalAnalyzer(df_pd)
-            
-            # 计算所有技术指标
-            result_pd = analyzer.calculate_all_indicators()
-            
-            # 转换回polars DataFrame
-            result_pl = pl.from_pandas(result_pd)
+            # 计算所有技术指标，直接返回 Polars DataFrame
+            result_pl = analyzer.calculate_all_indicators(return_polars=True)
             
             logger.info(f"为{df.height}条数据重新计算了技术指标")
             return result_pl

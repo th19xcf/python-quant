@@ -332,69 +332,74 @@ class ChartManager:
             window.kdj_values_label.setStyleSheet("font-family: Consolas, monospace; background-color: rgba(0, 0, 0, 0.5); padding: 5px; color: #C0C0C0;")
             window.kdj_values_label.setWordWrap(False)
 
-        df_pd = df_pl.to_pandas() if hasattr(df_pl, 'to_pandas') else df_pl
-
         self.save_indicator_data(df_pl)
 
         current_indicator = window.window_indicators.get(3, "KDJ")
 
+        # 使用 Polars 的 item() 方法获取最后一行数据，避免转换为 pandas
+        def get_latest_value(df, col):
+            """获取列的最后一个值"""
+            if col in df.columns:
+                return df[col].item(-1) if len(df) > 0 else None
+            return None
+
         if current_indicator == "KDJ":
-            if 'k' in df_pd.columns and 'd' in df_pd.columns and 'j' in df_pd.columns:
-                latest_k = df_pd['k'].iloc[-1]
-                latest_d = df_pd['d'].iloc[-1]
-                latest_j = df_pd['j'].iloc[-1]
+            latest_k = get_latest_value(df_pl, 'k')
+            latest_d = get_latest_value(df_pl, 'd')
+            latest_j = get_latest_value(df_pl, 'j')
+            if latest_k is not None and latest_d is not None and latest_j is not None:
                 kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
             else:
                 kdj_text = "<font color='white'>KDJ指标数据不可用</font>"
             window.kdj_values_label.setText(kdj_text)
         elif current_indicator == "RSI":
-            if 'rsi14' in df_pd.columns:
-                latest_rsi = df_pd['rsi14'].iloc[-1]
+            latest_rsi = get_latest_value(df_pl, 'rsi14')
+            if latest_rsi is not None:
                 rsi_text = f"<font color='blue'>RSI14: {latest_rsi:.2f}</font>"
             else:
                 rsi_text = "<font color='white'>RSI指标数据不可用</font>"
             window.kdj_values_label.setText(rsi_text)
         elif current_indicator == "MACD":
-            if 'macd' in df_pd.columns and 'macd_signal' in df_pd.columns and 'macd_hist' in df_pd.columns:
-                latest_macd = df_pd['macd'].iloc[-1]
-                latest_macd_signal = df_pd['macd_signal'].iloc[-1]
-                latest_macd_hist = df_pd['macd_hist'].iloc[-1]
+            latest_macd = get_latest_value(df_pl, 'macd')
+            latest_macd_signal = get_latest_value(df_pl, 'macd_signal')
+            latest_macd_hist = get_latest_value(df_pl, 'macd_hist')
+            if all(v is not None for v in [latest_macd, latest_macd_signal, latest_macd_hist]):
                 macd_hist_color = '#FF0000' if latest_macd_hist >= 0 else '#00FF00'
                 macd_text = f"<font color='white'>MACD(12,26,9) </font><font color='#FFFFFF'>DIF: {latest_macd:.2f}</font> <font color='#FFFF00'>DEA: {latest_macd_signal:.2f}</font> <font color='{macd_hist_color}'>MACD: {latest_macd_hist:.2f}</font>"
             else:
                 macd_text = "<font color='white'>MACD指标数据不可用</font>"
             window.kdj_values_label.setText(macd_text)
         elif current_indicator == "WR":
-            if 'wr1' in df_pd.columns and 'wr2' in df_pd.columns:
-                latest_wr1 = df_pd['wr1'].iloc[-1]
-                latest_wr2 = df_pd['wr2'].iloc[-1]
+            latest_wr1 = get_latest_value(df_pl, 'wr1')
+            latest_wr2 = get_latest_value(df_pl, 'wr2')
+            if latest_wr1 is not None and latest_wr2 is not None:
                 wr_text = f"<font color='white'>WR(10,6) </font><font color='yellow'>WR1: {latest_wr1:.2f}</font> <font color='white'>WR2: {latest_wr2:.2f}</font>"
             else:
                 wr_text = "<font color='white'>WR指标数据不可用</font>"
             window.kdj_values_label.setText(wr_text)
         elif current_indicator == "BOLL":
-            if 'mb' in df_pd.columns and 'up' in df_pd.columns and 'dn' in df_pd.columns:
-                latest_mb = df_pd['mb'].iloc[-1]
-                latest_up = df_pd['up'].iloc[-1]
-                latest_dn = df_pd['dn'].iloc[-1]
+            latest_mb = get_latest_value(df_pl, 'mb')
+            latest_up = get_latest_value(df_pl, 'up')
+            latest_dn = get_latest_value(df_pl, 'dn')
+            if all(v is not None for v in [latest_mb, latest_up, latest_dn]):
                 boll_text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='#00FF00'>DN: {latest_dn:.2f}</font>"
             else:
                 boll_text = "<font color='white'>BOLL指标数据不可用</font>"
             window.kdj_values_label.setText(boll_text)
         elif current_indicator == "DMI":
-            if 'pdi' in df_pd.columns and 'ndi' in df_pd.columns and 'adx' in df_pd.columns and 'adxr' in df_pd.columns:
-                latest_pdi = df_pd['pdi'].iloc[-1]
-                latest_ndi = df_pd['ndi'].iloc[-1]
-                latest_adx = df_pd['adx'].iloc[-1]
-                latest_adxr = df_pd['adxr'].iloc[-1]
+            latest_pdi = get_latest_value(df_pl, 'pdi')
+            latest_ndi = get_latest_value(df_pl, 'ndi')
+            latest_adx = get_latest_value(df_pl, 'adx')
+            latest_adxr = get_latest_value(df_pl, 'adxr')
+            if all(v is not None for v in [latest_pdi, latest_ndi, latest_adx, latest_adxr]):
                 dmi_text = f"<font color='#FFFFFF'>PDI: {latest_pdi:.2f}</font>  <font color='#FFFF00'>NDI: {latest_ndi:.2f}</font>  <font color='#FF00FF'>ADX: {latest_adx:.2f}</font>  <font color='#00FF00'>ADXR: {latest_adxr:.2f}</font>"
             else:
                 dmi_text = "<font color='white'>DMI指标数据不可用</font>"
             window.kdj_values_label.setText(dmi_text)
         elif current_indicator == "TRIX":
-            if 'trix' in df_pd.columns and 'trma' in df_pd.columns:
-                latest_trix = df_pd['trix'].iloc[-1]
-                latest_trma = df_pd['trma'].iloc[-1]
+            latest_trix = get_latest_value(df_pl, 'trix')
+            latest_trma = get_latest_value(df_pl, 'trma')
+            if latest_trix is not None and latest_trma is not None:
                 trix_text = f"<font color='#FFFF00'>TRIX: {latest_trix:.2f}</font>  <font color='#FFFFFF'>TRMA: {latest_trma:.2f}</font>"
             else:
                 trix_text = "<font color='white'>TRIX指标数据不可用</font>"

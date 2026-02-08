@@ -89,7 +89,7 @@ def calculate_brar(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     """
     # 1. 计算必要的中间变量
     # 前一日收盘价
-    prev_close = pl.col('close').shift(1).alias('prev_close')
+    prev_close = pl.col('close').shift(1)
     # AR的分子：(最高价 - 开盘价)的正值部分
     ar_up = pl.when((pl.col('high') - pl.col('open')) > 0).then(pl.col('high') - pl.col('open')).otherwise(0.0).alias('ar_up')
     # AR的分母：(开盘价 - 最低价)的正值部分
@@ -99,7 +99,7 @@ def calculate_brar(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     # BR的分母：(前一日收盘价 - 最低价)的正值部分
     br_down = pl.when((prev_close - pl.col('low')) > 0).then(prev_close - pl.col('low')).otherwise(0.0).alias('br_down')
 
-    # 2. 添加中间变量到DataFrame
+    # 2. 添加中间变量到DataFrame（这些列会被 cleanup_temp_columns 清理）
     lazy_df = lazy_df.with_columns([ar_up, ar_down, br_up, br_down])
 
     # 3. 计算各窗口的AR和BR值

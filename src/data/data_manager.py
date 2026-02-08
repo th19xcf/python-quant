@@ -641,6 +641,7 @@ class DataManager(IDataProvider, IDataProcessor):
     def _convert_to_period(self, df: pl.DataFrame, frequency: str) -> pl.DataFrame:
         """
         将日线数据转换为周线或月线数据
+        使用 Polars Lazy API 优化性能
         
         Args:
             df: 日线数据
@@ -653,27 +654,30 @@ class DataManager(IDataProvider, IDataProcessor):
             return df
         
         try:
+            # 使用 Lazy API 进行数据处理
+            lazy_df = df.lazy()
+            
             # 确保有日期列
             if 'trade_date' in df.columns:
-                df = df.with_columns(pl.col('trade_date').alias('date'))
+                lazy_df = lazy_df.with_columns(pl.col('trade_date').alias('date'))
             elif 'date' not in df.columns:
                 logger.error("DataFrame中没有日期列")
                 return df
             
             # 转换日期列为datetime类型
-            df = df.with_columns(pl.col('date').str.strptime(pl.Date, "%Y-%m-%d"))
+            lazy_df = lazy_df.with_columns(pl.col('date').str.strptime(pl.Date, "%Y-%m-%d"))
             
             # 根据频率确定分组方式
             if frequency == '1w':
                 # 周线：按周分组
-                df = df.with_columns(
+                lazy_df = lazy_df.with_columns(
                     pl.col('date').dt.week().alias('week'),
                     pl.col('date').dt.year().alias('year')
                 )
                 group_cols = ['year', 'week']
             elif frequency == '1m':
                 # 月线：按月分组
-                df = df.with_columns(
+                lazy_df = lazy_df.with_columns(
                     pl.col('date').dt.month().alias('month'),
                     pl.col('date').dt.year().alias('year')
                 )
@@ -682,7 +686,7 @@ class DataManager(IDataProvider, IDataProcessor):
                 return df
             
             # 聚合数据
-            result = df.group_by(group_cols).agg([
+            lazy_df = lazy_df.group_by(group_cols).agg([
                 pl.col('date').first().alias('date'),
                 pl.col('open').first().alias('open'),
                 pl.col('high').max().alias('high'),
@@ -695,12 +699,15 @@ class DataManager(IDataProvider, IDataProcessor):
             ])
             
             # 按日期排序
-            result = result.sort('date')
+            lazy_df = lazy_df.sort('date')
             
             # 将日期转换回字符串格式
-            result = result.with_columns(
+            lazy_df = lazy_df.with_columns(
                 pl.col('date').dt.strftime("%Y-%m-%d").alias('date')
             )
+            
+            # 执行计算
+            result = lazy_df.collect()
             
             logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{result.height}条")
             return result
@@ -857,19 +864,16 @@ class DataManager(IDataProvider, IDataProcessor):
             logger.exception(f"获取指数基本信息失败: {e}")
             return pl.DataFrame()
     
-    def preprocess_data(self, data: Union[pl.DataFrame, pd.DataFrame]) -> Union[pl.DataFrame, pd.DataFrame]:
+    def preprocess_data(self, data: pl.DataFrame) -> pl.DataFrame:
         """
         预处理数据
         
         Args:
-            data: 原始数据
+            data: 原始数据（Polars DataFrame）
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 预处理后的数据
+            pl.DataFrame: 预处理后的数据
         """
-        if isinstance(data, pd.DataFrame):
-            data = pl.from_pandas(data)
-        
         # 确保数据包含必要的列
         required_columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount']
         
@@ -886,21 +890,18 @@ class DataManager(IDataProvider, IDataProcessor):
         
         return data
     
-    def sample_data(self, data: Union[pl.DataFrame, pd.DataFrame], target_points: int = 1000, strategy: str = 'adaptive') -> Union[pl.DataFrame, pd.DataFrame]:
+    def sample_data(self, data: pl.DataFrame, target_points: int = 1000, strategy: str = 'adaptive') -> pl.DataFrame:
         """
         采样数据，减少数据量
         
         Args:
-            data: 原始数据
+            data: 原始数据（Polars DataFrame）
             target_points: 目标采样点数
             strategy: 采样策略，可选值：'uniform'（均匀采样）、'adaptive'（自适应采样）
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 采样后的数据
+            pl.DataFrame: 采样后的数据
         """
-        if isinstance(data, pd.DataFrame):
-            data = pl.from_pandas(data)
-        
         if len(data) <= target_points:
             return data
         
@@ -918,20 +919,17 @@ class DataManager(IDataProvider, IDataProcessor):
             step = len(data) // target_points
             return data[::step]
     
-    def convert_data_type(self, data: Union[pl.DataFrame, pd.DataFrame], target_type: str = 'float32') -> Union[pl.DataFrame, pd.DataFrame]:
+    def convert_data_type(self, data: pl.DataFrame, target_type: str = 'float32') -> pl.DataFrame:
         """
         转换数据类型
         
         Args:
-            data: 原始数据
+            data: 原始数据（Polars DataFrame）
             target_type: 目标数据类型，默认：float32
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 转换后的数据
+            pl.DataFrame: 转换后的数据
         """
-        if isinstance(data, pd.DataFrame):
-            data = pl.from_pandas(data)
-        
         # 转换数值列的数据类型
         numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
         
@@ -944,19 +942,16 @@ class DataManager(IDataProvider, IDataProcessor):
         
         return data
     
-    def clean_data(self, data: Union[pl.DataFrame, pd.DataFrame]) -> Union[pl.DataFrame, pd.DataFrame]:
+    def clean_data(self, data: pl.DataFrame) -> pl.DataFrame:
         """
         清洗数据，处理缺失值、异常值等
         
         Args:
-            data: 原始数据
+            data: 原始数据（Polars DataFrame）
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 清洗后的数据
+            pl.DataFrame: 清洗后的数据
         """
-        if isinstance(data, pd.DataFrame):
-            data = pl.from_pandas(data)
-        
         # 去除包含空值的行
         data = data.drop_nulls()
         
