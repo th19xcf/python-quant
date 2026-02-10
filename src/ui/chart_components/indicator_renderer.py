@@ -1040,6 +1040,152 @@ class IndicatorRenderer:
             logger.exception(f"渲染MCST失败: {e}")
         return df
 
+    def render_dma(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染DMA指标"""
+        try:
+            if 'dma' not in df.columns or 'ama' not in df.columns:
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_indicator_parallel('dma', short_period=10, long_period=50, signal_period=10)
+                df = analyzer.get_data(return_polars=True)
+            if 'dma' in df.columns and 'ama' in df.columns:
+                dma_data = df['dma'].to_numpy().astype(np.float64)
+                ama_data = df['ama'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(dma_data)
+                ama_mask = ~np.isnan(ama_data)
+                if np.any(mask) or np.any(ama_mask):
+                    # 设置Y轴范围
+                    all_data = np.concatenate([dma_data[mask], ama_data[ama_mask]])
+                    if len(all_data) > 0:
+                        min_val = np.min(all_data)
+                        max_val = np.max(all_data)
+                        range_val = max_val - min_val
+                        if range_val == 0:
+                            range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                        min_val = min_val - range_val * 0.1
+                        max_val = max_val + range_val * 0.1
+                        plot_widget.setYRange(min_val, max_val)
+                    # 绘制DMA线（白色）
+                    if np.any(mask):
+                        plot_widget.plot(x[mask], dma_data[mask], pen=pg.mkPen('w', width=1), name='DMA')
+                    # 绘制AMA线（黄色）
+                    if np.any(ama_mask):
+                        plot_widget.plot(x[ama_mask], ama_data[ama_mask], pen=pg.mkPen('y', width=1), name='AMA')
+                    # 绘制零线
+                    plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
+        except Exception as e:
+            logger.exception(f"渲染DMA失败: {e}")
+        return df
+
+    def render_fsl(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染FSL指标"""
+        try:
+            if 'swl' not in df.columns or 'sws' not in df.columns:
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_indicator_parallel('fsl')
+                df = analyzer.get_data(return_polars=True)
+            if 'swl' in df.columns and 'sws' in df.columns:
+                swl_data = df['swl'].to_numpy().astype(np.float64)
+                sws_data = df['sws'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(swl_data)
+                sws_mask = ~np.isnan(sws_data)
+                if np.any(mask) or np.any(sws_mask):
+                    # 设置Y轴范围
+                    all_data = np.concatenate([swl_data[mask], sws_data[sws_mask]])
+                    if len(all_data) > 0:
+                        min_val = np.min(all_data)
+                        max_val = np.max(all_data)
+                        range_val = max_val - min_val
+                        if range_val == 0:
+                            range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                        min_val = min_val - range_val * 0.1
+                        max_val = max_val + range_val * 0.1
+                        plot_widget.setYRange(min_val, max_val)
+                    # 绘制SWL线（白色）
+                    if np.any(mask):
+                        plot_widget.plot(x[mask], swl_data[mask], pen=pg.mkPen('w', width=1), name='SWL')
+                    # 绘制SWS线（黄色）
+                    if np.any(sws_mask):
+                        plot_widget.plot(x[sws_mask], sws_data[sws_mask], pen=pg.mkPen('y', width=1), name='SWS')
+        except Exception as e:
+            logger.exception(f"渲染FSL失败: {e}")
+        return df
+
+    def render_sar(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染SAR指标"""
+        try:
+            if 'sar' not in df.columns:
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_indicator_parallel('sar', af_step=0.02, max_af=0.2)
+                df = analyzer.get_data(return_polars=True)
+            if 'sar' in df.columns:
+                sar_data = df['sar'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(sar_data)
+                if np.any(mask):
+                    # 绘制SAR点（白色圆点）
+                    plot_widget.plot(x[mask], sar_data[mask], pen=None, symbol='o', symbolSize=3, symbolBrush='w', name='SAR')
+        except Exception as e:
+            logger.exception(f"渲染SAR失败: {e}")
+        return df
+
+    def render_vol_tdx(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染VOL-TDX指标"""
+        try:
+            if 'vol_tdx' not in df.columns:
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_indicator_parallel('vol_tdx', ma_period=5)
+                df = analyzer.get_data(return_polars=True)
+            if 'vol_tdx' in df.columns:
+                vol_tdx_data = df['vol_tdx'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(vol_tdx_data)
+                if np.any(mask):
+                    # 根据涨跌决定颜色
+                    close_data = df['close'].to_numpy().astype(np.float64)
+                    prev_close = np.roll(close_data, 1)
+                    prev_close[0] = close_data[0]
+                    colors = ['r' if close_data[i] >= prev_close[i] else 'g' for i in range(len(close_data))]
+                    # 绘制柱状图
+                    for i in range(len(x)):
+                        if mask[i]:
+                            plot_widget.plot([x[i], x[i]], [0, vol_tdx_data[i]], pen=pg.mkPen(colors[i], width=2))
+        except Exception as e:
+            logger.exception(f"渲染VOL-TDX失败: {e}")
+        return df
+
+    def render_cr(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染CR指标"""
+        try:
+            if 'cr' not in df.columns:
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_indicator_parallel('cr', windows=[26])
+                df = analyzer.get_data(return_polars=True)
+            if 'cr' in df.columns:
+                cr_data = df['cr'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(cr_data)
+                if np.any(mask):
+                    # 设置Y轴范围
+                    valid_data = cr_data[mask]
+                    if len(valid_data) > 0:
+                        min_val = np.min(valid_data)
+                        max_val = np.max(valid_data)
+                        range_val = max_val - min_val
+                        if range_val == 0:
+                            range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                        min_val = min_val - range_val * 0.1
+                        max_val = max_val + range_val * 0.1
+                        plot_widget.setYRange(min_val, max_val)
+                    # 绘制CR线（白色）
+                    plot_widget.plot(x[mask], cr_data[mask], pen=pg.mkPen('w', width=1), name='CR')
+                    # 绘制参考线（100）
+                    plot_widget.addLine(y=100, pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
+        except Exception as e:
+            logger.exception(f"渲染CR失败: {e}")
+        return df
+
     def render_indicator(
         self, 
         plot_widget: Any, 
@@ -1078,6 +1224,11 @@ class IndicatorRenderer:
             'MTM': self.render_mtm,
             'PSY': self.render_psy,
             'MCST': self.render_mcst,
+            'DMA': self.render_dma,
+            'FSL': self.render_fsl,
+            'SAR': self.render_sar,
+            'VOL-TDX': self.render_vol_tdx,
+            'CR': self.render_cr,
         }
         
         renderer = renderers.get(indicator_name)

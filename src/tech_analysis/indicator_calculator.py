@@ -497,11 +497,11 @@ def calculate_mcst_polars(df, windows=[12]):
     """
     使用Polars批量计算MCST指标（市场成本）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: MCST计算窗口列表，默认为[12]
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含MCST指标的DataFrame或LazyFrame
     """
@@ -509,6 +509,91 @@ def calculate_mcst_polars(df, windows=[12]):
         windows = [12]  # 通达信默认使用MCST12
     # 调用批量计算函数，减少代码冗余
     return calculate_multiple_indicators_polars(df, ['mcst'], mcst_windows=windows)
+
+
+def calculate_dma_polars(df, short_period=10, long_period=50, signal_period=10):
+    """
+    使用Polars计算DMA指标（平均线差）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+
+    Args:
+        df: Polars DataFrame或LazyFrame
+        short_period: 短期MA周期，默认10
+        long_period: 长期MA周期，默认50
+        signal_period: DMA信号线周期，默认10
+
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含DMA指标的DataFrame或LazyFrame
+    """
+    return calculate_multiple_indicators_polars(df, ['dma'],
+                                               dma_short_period=short_period,
+                                               dma_long_period=long_period,
+                                               dma_signal_period=signal_period)
+
+
+def calculate_fsl_polars(df):
+    """
+    使用Polars计算FSL指标（分水岭指标）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+
+    Args:
+        df: Polars DataFrame或LazyFrame
+
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含FSL指标的DataFrame或LazyFrame
+    """
+    return calculate_multiple_indicators_polars(df, ['fsl'])
+
+
+def calculate_sar_polars(df, af_step=0.02, max_af=0.2):
+    """
+    使用Polars计算SAR指标（抛物线转向指标）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+
+    Args:
+        df: Polars DataFrame或LazyFrame
+        af_step: 加速因子步长，默认0.02
+        max_af: 最大加速因子，默认0.2
+
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含SAR指标的DataFrame或LazyFrame
+    """
+    return calculate_multiple_indicators_polars(df, ['sar'],
+                                               sar_af_step=af_step,
+                                               sar_max_af=max_af)
+
+
+def calculate_vol_tdx_polars(df, ma_period=5):
+    """
+    使用Polars计算VOL-TDX指标（成交量趋势）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+
+    Args:
+        df: Polars DataFrame或LazyFrame
+        ma_period: 移动平均周期，默认5
+
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含VOL-TDX指标的DataFrame或LazyFrame
+    """
+    return calculate_multiple_indicators_polars(df, ['vol_tdx'],
+                                               vol_tdx_ma_period=ma_period)
+
+
+def calculate_cr_polars(df, windows=[26]):
+    """
+    使用Polars计算CR指标（能量指标）
+    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
+
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: CR计算窗口列表，默认为[26]
+
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 包含CR指标的DataFrame或LazyFrame
+    """
+    if windows is None:
+        windows = [26]
+    return calculate_multiple_indicators_polars(df, ['cr'], cr_windows=windows)
 
 
 def calculate_multiple_indicators_polars(df, indicator_types=None, **params):

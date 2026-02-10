@@ -33,6 +33,11 @@ from src.tech_analysis.indicator_calculator import (
     calculate_asi_polars,
     calculate_emv_polars,
     calculate_mcst_polars,
+    calculate_dma_polars,
+    calculate_fsl_polars,
+    calculate_sar_polars,
+    calculate_vol_tdx_polars,
+    calculate_cr_polars,
     calculate_multiple_indicators_polars,
     preprocess_data_polars
 )
@@ -257,7 +262,57 @@ class IndicatorManager:
             description='市场成本',
             category='成本指标'
         )
-        
+
+        # 20. DMA指标
+        register_indicator(
+            name='dma',
+            calculate_func=calculate_dma_polars,
+            dependencies=[],
+            params={'short_period': 10, 'long_period': 50, 'signal_period': 10},
+            description='平均线差',
+            category='趋势指标'
+        )
+
+        # 21. FSL指标
+        register_indicator(
+            name='fsl',
+            calculate_func=calculate_fsl_polars,
+            dependencies=[],
+            params={},
+            description='分水岭指标',
+            category='趋势指标'
+        )
+
+        # 22. SAR指标
+        register_indicator(
+            name='sar',
+            calculate_func=calculate_sar_polars,
+            dependencies=[],
+            params={'af_step': 0.02, 'max_af': 0.2},
+            description='抛物线转向指标',
+            category='趋势指标'
+        )
+
+        # 23. VOL_TDX指标
+        register_indicator(
+            name='vol_tdx',
+            calculate_func=calculate_vol_tdx_polars,
+            dependencies=[],
+            params={'ma_period': 5},
+            description='成交量趋势',
+            category='成交量指标'
+        )
+
+        # 24. CR指标
+        register_indicator(
+            name='cr',
+            calculate_func=calculate_cr_polars,
+            dependencies=[],
+            params={'windows': [26]},
+            description='能量指标',
+            category='能量指标'
+        )
+
         logger.info(f"已注册{len(global_indicator_registry.get_supported_indicators())}个内置指标")
     
     def calculate_indicator(self, data: Union[pl.DataFrame, pd.DataFrame], indicator_type: str, 

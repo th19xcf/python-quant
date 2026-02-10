@@ -10,12 +10,17 @@ from .brar_drawer import BRARDrawer
 from .vol_drawer import VOLDrawer
 from .boll_drawer import BOLLDrawer
 from .wr_drawer import WRDrawer
+from .dma_drawer import DMADrawer
+from .fsl_drawer import FSLDrawer
+from .sar_drawer import SARDrawer
+from .vol_tdx_drawer import VOLTDXDrawer
+from .cr_drawer import CRDrawer
 
 class IndicatorDrawerManager:
     """
     指标绘制器管理器，负责统一管理和调用各个指标绘制器
     """
-    
+
     def __init__(self):
         """
         初始化指标绘制器管理器，创建各个指标绘制器实例
@@ -30,7 +35,12 @@ class IndicatorDrawerManager:
             "BRAR": BRARDrawer(),
             "VOL": VOLDrawer(),
             "BOLL": BOLLDrawer(),
-            "WR": WRDrawer()
+            "WR": WRDrawer(),
+            "DMA": DMADrawer(),
+            "FSL": FSLDrawer(),
+            "SAR": SARDrawer(),
+            "VOL-TDX": VOLTDXDrawer(),
+            "CR": CRDrawer()
         }
     
     def get_drawer(self, indicator_name):

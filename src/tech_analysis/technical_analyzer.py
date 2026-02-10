@@ -117,7 +117,12 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             'brar': self.calculate_indicator_parallel,
             'asi': self.calculate_indicator_parallel,
             'emv': self.calculate_indicator_parallel,
-            'mcst': self.calculate_indicator_parallel
+            'mcst': self.calculate_indicator_parallel,
+            'dma': self.calculate_indicator_parallel,
+            'fsl': self.calculate_indicator_parallel,
+            'sar': self.calculate_indicator_parallel,
+            'vol_tdx': self.calculate_indicator_parallel,
+            'cr': self.calculate_indicator_parallel
         }
         
         # 初始化插件指标映射

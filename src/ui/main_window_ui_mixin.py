@@ -838,10 +838,14 @@ class MainWindowUiMixin:
                     scroll_layout.addWidget(separator)
             else:
                 # 已实现的指标列表
-                implemented_indicators = ['VOL', 'MACD', 'KDJ', 'DMI', 'CCI', 'ROC', 'MTM', 'OBV', 'VR', 'PSY', 'TRIX', 'BRAR', 'ASI', 'EMV', 'MCST', 'RSI', 'WR', 'BOLL']
+                implemented_indicators = [
+                    'VOL', 'MACD', 'KDJ', 'DMI', 'DMA', 'FSL', 'TRIX', 'BRAR', 'CR',
+                    'VR', 'OBV', 'ASI', 'EMV', 'VOL-TDX', 'RSI', 'WR', 'SAR',
+                    'CCI', 'ROC', 'MTM', 'BOLL', 'PSY', 'MCST'
+                ]
                 # 未实现指标的样式（灰色文字）
                 disabled_indicator_style = indicator_button_style + "QPushButton { color: #666666; }"
-                
+
                 # 普通指标按钮
                 # 检查指标是否已实现（箭头按钮特殊处理）
                 is_arrow = indicator in ['<', '>']
