@@ -544,25 +544,26 @@ class MainWindowDataMixin:
     def _recalculate_indicators_for_period(self, df: pl.DataFrame) -> pl.DataFrame:
         """
         为周线或月线数据重新计算技术指标
-        
+
         Args:
             df: 周线或月线数据（只有基础OHLCV数据）
-        
+
         Returns:
             pl.DataFrame: 包含技术指标的数据
         """
         try:
             from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-            
+
             # TechnicalAnalyzer 已支持 Polars DataFrame，直接传递
             analyzer = TechnicalAnalyzer(df)
-            
+
             # 计算所有技术指标，直接返回 Polars DataFrame
-            result_pl = analyzer.calculate_all_indicators(return_polars=True)
-            
+            # 传入数据以确保复权列被保留
+            result_pl = analyzer.calculate_all_indicators(data=df, return_polars=True)
+
             logger.info(f"为{df.height}条数据重新计算了技术指标")
             return result_pl
-            
+
         except Exception as e:
             logger.exception(f"重新计算技术指标失败: {e}")
             return df

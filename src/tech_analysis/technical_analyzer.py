@@ -871,15 +871,21 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         """
         计算多个技术指标
         使用多指标批量计算框架，充分利用Polars的Lazy API和并行计算能力
-        
+
         Args:
             data: 股票数据，None表示使用现有数据
             indicator_types: 指标类型列表，默认计算所有指标
             **params: 指标计算参数
-        
+
         Returns:
             pl.DataFrame或pd.DataFrame: 包含所有计算结果的数据
         """
+        # 保存复权列，避免在指标计算过程中丢失
+        adj_columns = ['qfq_open', 'qfq_high', 'qfq_low', 'qfq_close',
+                       'hfq_open', 'hfq_high', 'hfq_low', 'hfq_close',
+                       'qfq_factor', 'hfq_factor']
+        adj_data = {}
+
         # 如果传入了新数据，更新内部数据
         if data is not None:
             if hasattr(data, 'to_pandas'):
@@ -891,10 +897,15 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             else:
                 # 输入是其他格式，转换为Polars
                 self.pl_df = pl.DataFrame(data)
-            
+
+            # 保存复权列数据
+            for col in adj_columns:
+                if col in self.pl_df.columns:
+                    adj_data[col] = self.pl_df[col]
+
             # 使用Polars进行数据预处理
             self._preprocess_data_polars()
-            
+
             # 重新计算数据哈希
             self._data_hash = self._calculate_polars_data_hash()
         
@@ -978,7 +989,23 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 except Exception as e:
                     logger.error(f"计算插件指标{plugin_name}时发生错误: {str(e)}")
         
-        # 7. 发布指标计算完成事件
+        # 7. 恢复复权列到结果中
+        if adj_data:
+            try:
+                # 构建需要添加的列表达式列表
+                columns_to_add = []
+                for col, values in adj_data.items():
+                    if col not in self.pl_df.columns:
+                        columns_to_add.append(values.alias(col))
+                
+                # 一次性添加所有缺失的复权列
+                if columns_to_add:
+                    self.pl_df = self.pl_df.with_columns(columns_to_add)
+                    logger.debug(f"恢复复权列: {list(adj_data.keys())}")
+            except Exception as e:
+                logger.warning(f"恢复复权列时出错: {e}")
+
+        # 8. 发布指标计算完成事件
         publish(
             EventType.INDICATOR_CALCULATED,
             data_type='stock',
