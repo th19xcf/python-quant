@@ -245,7 +245,7 @@ class MouseHandler:
     def _check_dividend_hover(self, index, pos):
         """
         检查是否悬停在分红标记上，如果是则显示分红信息提示框
-        
+
         Args:
             index: K线索引
             pos: 鼠标位置
@@ -253,6 +253,11 @@ class MouseHandler:
         try:
             # 检查主窗口是否有分红标记管理器
             if hasattr(self.main_window, 'dividend_marker_manager') and self.main_window.dividend_marker_manager:
+                # 如果十字线已启用（显示股票信息框），则不显示股息变动信息，避免重叠
+                if getattr(self.main_window, 'crosshair_enabled', False):
+                    self.main_window.hide_dividend_tooltip()
+                    return
+
                 # 检查当前索引位置是否有分红数据
                 if self.main_window.dividend_marker_manager.has_dividend_at_index(index):
                     # 显示分红提示框
