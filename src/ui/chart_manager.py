@@ -405,18 +405,18 @@ class ChartManager:
                 trix_text = "<font color='white'>TRIX指标数据不可用</font>"
             window.kdj_values_label.setText(trix_text)
         elif current_indicator == "BRAR":
-            if 'br' in df_pd.columns and 'ar' in df_pd.columns:
-                latest_br = df_pd['br'].iloc[-1]
-                latest_ar = df_pd['ar'].iloc[-1]
+            latest_br = get_latest_value(df_pl, 'br')
+            latest_ar = get_latest_value(df_pl, 'ar')
+            if latest_br is not None and latest_ar is not None:
                 brar_text = f"<font color='#FFFF00'>BR: {latest_br:.2f}</font>  <font color='#FFFFFF'>AR: {latest_ar:.2f}</font>"
             else:
                 brar_text = "<font color='white'>BRAR指标数据不可用</font>"
             window.kdj_values_label.setText(brar_text)
         else:
-            if 'k' in df_pd.columns and 'd' in df_pd.columns and 'j' in df_pd.columns:
-                latest_k = df_pd['k'].iloc[-1]
-                latest_d = df_pd['d'].iloc[-1]
-                latest_j = df_pd['j'].iloc[-1]
+            latest_k = get_latest_value(df_pl, 'k')
+            latest_d = get_latest_value(df_pl, 'd')
+            latest_j = get_latest_value(df_pl, 'j')
+            if all(v is not None for v in [latest_k, latest_d, latest_j]):
                 kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
             else:
                 kdj_text = "<font color='white'>指标数据不可用</font>"

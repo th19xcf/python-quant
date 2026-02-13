@@ -10,6 +10,9 @@ import asyncio
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import time
 import threading
+import logging
+
+logger = logging.getLogger(__name__)
 
 # 事件类型常量
 class EventType:
@@ -378,8 +381,6 @@ class EventBus:
 event_bus = EventBus()
 
 # 添加默认的日志监控器，用于记录所有事件活动
-import logging
-logger = logging.getLogger(__name__)
 
 
 def default_event_monitor(event_type: str, signal_name: str, *args, **kwargs):
