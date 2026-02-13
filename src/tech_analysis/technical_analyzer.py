@@ -130,28 +130,35 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
     
     def _calculate_polars_data_hash(self):
         """
-        使用Polars 1.36.1 API计算数据哈希，修复agg方法错误
+        使用轻量级方法计算数据哈希，优化性能
+        
+        通过行数、首尾行数据和关键列的简单统计量生成哈希，
+        避免计算大量统计量和字符串转换开销
         
         Returns:
             int: 唯一的数据哈希值
         """
-        # 只计算关键列的摘要，避免转换为numpy数组
-        # 在Polars 1.36.1中，DataFrame没有agg方法，使用select配合聚合函数
+        df = self.pl_df
+        row_count = df.height
+        
+        if row_count == 0:
+            return 0
+        
         key_cols = ['open', 'high', 'low', 'close', 'volume']
         
-        # 计算关键列的统计量：均值、标准差、最小值、最大值、数量
-        # 使用select方法配合聚合函数，这是Polars 1.36.1支持的API
-        stats = self.pl_df.select(
-            [pl.col(col).mean().alias(f'{col}_mean') for col in key_cols] +
-            [pl.col(col).std().alias(f'{col}_std') for col in key_cols] +
-            [pl.col(col).min().alias(f'{col}_min') for col in key_cols] +
-            [pl.col(col).max().alias(f'{col}_max') for col in key_cols] +
-            [pl.col(col).count().alias(f'{col}_count') for col in key_cols]
-        )
+        hash_components = [row_count]
         
-        # 将统计结果转换为字符串进行哈希
-        stats_str = str(stats.to_dicts()[0])
-        return hash(stats_str)
+        first_row = df.slice(0, 1).select(key_cols)
+        hash_components.append(hash(tuple(first_row.to_numpy().flatten())))
+        
+        last_row = df.slice(-1, 1).select(key_cols)
+        hash_components.append(hash(tuple(last_row.to_numpy().flatten())))
+        
+        for col in key_cols:
+            col_sum = df.select(pl.col(col).sum()).item()
+            hash_components.append(hash(col_sum))
+        
+        return hash(tuple(hash_components))
     
     def _preprocess_data_polars(self):
         """
