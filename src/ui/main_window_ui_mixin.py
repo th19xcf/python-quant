@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QTabWidget, QPushButton, QLineEdit, QLabel, QStatusBar,
     QMenuBar, QMenu, QDialog, QCheckBox, QDateEdit, QComboBox,
-    QProgressBar, QAbstractItemView, QToolButton, QScrollArea
+    QProgressBar, QAbstractItemView, QToolButton, QScrollArea, QSizePolicy
 )
 from PySide6.QtCore import Qt, QSize, QPoint
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QFont, QColor
@@ -683,6 +683,9 @@ class MainWindowUiMixin:
         
         # 添加指标选择窗口
         self.create_indicator_selection()
+        # 设置指标选择栏的尺寸策略，确保显示完整
+        self.indicator_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.indicator_widget.setMinimumHeight(36)  # 确保高度足够显示按钮
         tech_layout.addWidget(self.indicator_widget)
         
         # 保存k线图数据项
@@ -740,14 +743,27 @@ class MainWindowUiMixin:
         self.indicator_widget = QWidget()
         self.indicator_widget.setStyleSheet("background-color: #222222;")
         indicator_layout = QHBoxLayout(self.indicator_widget)
-        indicator_layout.setContentsMargins(5, 3, 5, 3)
+        indicator_layout.setContentsMargins(5, 3, 10, 3)  # 增加右边距，确保按钮显示完整
         indicator_layout.setSpacing(2)
         
-        # 指标列表
+        # 指标列表 - 按类别排列：趋势指标、成交量指标、震荡指标、其他指标
+        # 注意："窗口"、"<"、">" 按钮在滚动区域外部单独添加
+        # "指标A" 在滚动区域内部
         indicators = [
-            "窗口", "指标A", "<", "VOL", "MACD", "KDJ", "DMI", "DMA", "FSL", "TRIX", "BRAR", "CR", 
-            "VR", "OBV", "ASI", "EMV", "VOL-TDX", "RSI", "WR", "SAR",  
-            "CCI", "ROC", "MTM", "BOLL", "PSY", "MCST", ">" ]
+            "指标A",  # 在滚动区域内部
+            "|",  # 分隔符
+            # 趋势指标
+            "MA", "MACD", "BOLL", "SAR", "TRIX", "DMA", "FSL",
+            "|",  # 分隔符
+            # 成交量指标
+            "VOL", "VOL-TDX", "OBV", "VR", "CR", "BRAR", "ASI", "EMV",
+            "|",  # 分隔符
+            # 震荡指标
+            "KDJ", "RSI", "WR", "CCI", "ROC", "MTM", "PSY",
+            "|",  # 分隔符
+            # 其他指标
+            "DMI", "MCST"
+        ]
         
         # 创建指标按钮样式
         indicator_button_style = """
@@ -776,6 +792,8 @@ class MainWindowUiMixin:
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_area.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
+        # 设置滚动区域的尺寸策略，确保给右侧按钮留出空间
+        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.indicator_interaction_manager.set_scroll_area(scroll_area)
         
         # 创建滚动内容容器
@@ -789,38 +807,13 @@ class MainWindowUiMixin:
         
         # 创建指标按钮
         for indicator in indicators:
-            if indicator == "窗口":
-                # 特殊处理窗口按钮，使其具有与上方工具栏相同的功能
-                btn = self._create_indicator_button(
-                    indicator, 
-                    indicator_button_style, 
-                    checkable=False
-                )
-                # 使用已经创建好的顶部菜单，共享相同的actions和状态管理
-                # 这样可以确保单选功能正常工作
-                btn.clicked.connect(lambda checked, b=btn, m=self.window_menu: 
-                                   m.popup(b.mapToGlobal(QPoint(0, -m.sizeHint().height()))))
-                
-                scroll_layout.addWidget(btn)
-                self.indicator_buttons[indicator] = btn
-            elif indicator == "指标A":
-                # 特殊按钮样式
+            if indicator == "指标A":
+                # 指标A按钮（在滚动区域内部）
                 btn = self._create_indicator_button(indicator, indicator_button_style)
                 scroll_layout.addWidget(btn)
                 self.indicator_buttons[indicator] = btn
-                
-                # 添加左箭头滚动按钮
-                left_arrow_btn = self._create_indicator_button(
-                    "<", 
-                    indicator_button_style, 
-                    checkable=False,
-                    fixed_width=20,
-                    clicked_handler=self.indicator_interaction_manager.on_left_arrow_clicked
-                )
-                scroll_layout.addWidget(left_arrow_btn)
-                self.indicator_buttons["<"] = left_arrow_btn
-                
-                # 添加分隔符
+            elif indicator == "|":
+                # 分类分隔符
                 scroll_layout.addWidget(self._create_separator())
             elif indicator == "指标B" or indicator == "模板":
                 # 特殊按钮样式
@@ -830,7 +823,7 @@ class MainWindowUiMixin:
                 btn.clicked.connect(lambda checked, ind=indicator: self.indicator_interaction_manager.on_indicator_clicked(ind, checked))
                 scroll_layout.addWidget(btn)
                 self.indicator_buttons[indicator] = btn
-                
+
                 # 添加分隔符
                 if indicator in ["指标A", "指标B"]:
                     separator = QLabel("|")
@@ -839,7 +832,7 @@ class MainWindowUiMixin:
             else:
                 # 已实现的指标列表
                 implemented_indicators = [
-                    'VOL', 'MACD', 'KDJ', 'DMI', 'DMA', 'FSL', 'TRIX', 'BRAR', 'CR',
+                    'MA', 'VOL', 'MACD', 'KDJ', 'DMI', 'DMA', 'FSL', 'TRIX', 'BRAR', 'CR',
                     'VR', 'OBV', 'ASI', 'EMV', 'VOL-TDX', 'RSI', 'WR', 'SAR',
                     'CCI', 'ROC', 'MTM', 'BOLL', 'PSY', 'MCST'
                 ]
@@ -847,16 +840,14 @@ class MainWindowUiMixin:
                 disabled_indicator_style = indicator_button_style + "QPushButton { color: #666666; }"
 
                 # 普通指标按钮
-                # 检查指标是否已实现（箭头按钮特殊处理）
-                is_arrow = indicator in ['<', '>']
-                if indicator in implemented_indicators or is_arrow:
-                    # 已实现的指标或箭头按钮，使用默认样式
+                if indicator in implemented_indicators:
+                    # 已实现的指标，使用默认样式
                     btn = self._create_indicator_button(indicator, indicator_button_style)
                 else:
                     # 未实现的指标，使用灰色文字样式
                     btn = self._create_indicator_button(indicator, disabled_indicator_style, checkable=False)
                     btn.setDisabled(True)
-                
+
                 scroll_layout.addWidget(btn)
                 self.indicator_buttons[indicator] = btn
         
@@ -875,35 +866,77 @@ class MainWindowUiMixin:
         
         # 设置滚动区域内容
         scroll_area.setWidget(scroll_content)
-        
+
+        # 添加窗口按钮（最左侧，固定不动）
+        window_btn = self._create_indicator_button(
+            "窗口",
+            indicator_button_style,
+            checkable=False
+        )
+        # 使用已经创建好的顶部菜单
+        window_btn.clicked.connect(lambda checked, b=window_btn, m=self.window_menu:
+                                   m.popup(b.mapToGlobal(QPoint(0, -m.sizeHint().height()))))
+        indicator_layout.addWidget(window_btn)
+        self.indicator_buttons["窗口"] = window_btn
+
+        # 添加左箭头滚动按钮（固定在滚动区域左侧外部）
+        left_arrow_btn = self._create_indicator_button(
+            "<",
+            indicator_button_style,
+            checkable=False,
+            fixed_width=24,
+            clicked_handler=self.indicator_interaction_manager.on_left_arrow_clicked
+        )
+        left_arrow_btn.setMinimumWidth(24)
+        indicator_layout.addWidget(left_arrow_btn)
+        self.indicator_buttons["<"] = left_arrow_btn
+
+        # 添加分隔符
+        indicator_layout.addWidget(self._create_separator())
+
         # 添加滚动区域到主布局
         indicator_layout.addWidget(scroll_area)
-        
+
         # 设置滚动区域高度
         scroll_area.setMaximumHeight(30)
-        
+
+        # 添加右箭头滚动按钮（固定在滚动区域右侧外部）
+        right_arrow_btn = self._create_indicator_button(
+            ">",
+            indicator_button_style,
+            checkable=False,
+            fixed_width=24,
+            clicked_handler=self.indicator_interaction_manager.on_right_arrow_clicked
+        )
+        # 确保按钮显示完整
+        right_arrow_btn.setMinimumWidth(24)
+        indicator_layout.addWidget(right_arrow_btn)
+        self.indicator_buttons[">"] = right_arrow_btn
+
         # 添加+、-按钮用于调整柱体数量
         # 添加分隔符
         indicator_layout.addWidget(self._create_separator())
         
         # 添加+按钮
         plus_btn = self._create_indicator_button(
-            "+", 
-            indicator_button_style, 
+            "+",
+            indicator_button_style,
             checkable=False,
-            fixed_width=20,
+            fixed_width=24,
             clicked_handler=self.indicator_interaction_manager.on_plus_btn_clicked
         )
+        plus_btn.setMinimumWidth(24)
         indicator_layout.addWidget(plus_btn)
-        
+
         # 添加-按钮
         minus_btn = self._create_indicator_button(
-            "-", 
-            indicator_button_style, 
+            "-",
+            indicator_button_style,
             checkable=False,
-            fixed_width=20,
+            fixed_width=24,
             clicked_handler=self.indicator_interaction_manager.on_minus_btn_clicked
         )
+        minus_btn.setMinimumWidth(24)
         indicator_layout.addWidget(minus_btn)
     
     def create_indicator_menu(self):

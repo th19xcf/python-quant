@@ -81,6 +81,18 @@ class IndicatorInteractionManager:
         except Exception as e:
             logger.exception(f"指标选择栏向左滚动失败: {e}")
 
+    def on_right_arrow_clicked(self):
+        try:
+            scroll_area = self._scroll_area
+            if scroll_area:
+                current_pos = scroll_area.horizontalScrollBar().value()
+                max_pos = scroll_area.horizontalScrollBar().maximum()
+                new_pos = min(max_pos, current_pos + 100)
+                scroll_area.horizontalScrollBar().setValue(new_pos)
+                logger.info(f"指标选择栏向右滚动，当前位置: {new_pos}")
+        except Exception as e:
+            logger.exception(f"指标选择栏向右滚动失败: {e}")
+
     def on_period_changed(self, period, checked):
         window = self.window
         if checked:
