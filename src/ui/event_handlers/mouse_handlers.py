@@ -168,6 +168,10 @@ class MouseHandler:
                     elif current_indicator == "SAR" and hasattr(self.main_window, 'current_sar_data') and 0 <= index < len(self.main_window.current_sar_data['sar']):
                         current_sar = self.main_window.current_sar_data['sar'][index]
                         self.main_window.kdj_values_label.setText(f"<font color='white'>SAR: {self._format_value(current_sar)}</font>")
+                    elif current_indicator == "FSL" and hasattr(self.main_window, 'current_fsl_data') and 0 <= index < len(self.main_window.current_fsl_data['swl']):
+                        current_swl = self.main_window.current_fsl_data['swl'][index]
+                        current_sws = self.main_window.current_fsl_data['sws'][index] if index < len(self.main_window.current_fsl_data['sws']) else None
+                        self.main_window.kdj_values_label.setText(f"<font color='white'>SWL: {self._format_value(current_swl)}</font>  <font color='yellow'>SWS: {self._format_value(current_sws)}</font>")
                 
                 # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
                 if hasattr(self.main_window, 'volume_values_label'):
@@ -215,6 +219,11 @@ class MouseHandler:
                         # 更新SAR标签
                         current_sar = self.main_window.current_sar_data['sar'][index]
                         self.main_window.volume_values_label.setText(f"<font color='white'>SAR: {self._format_value(current_sar)}</font>")
+                    elif current_indicator == "FSL" and hasattr(self.main_window, 'current_fsl_data') and 0 <= index < len(self.main_window.current_fsl_data['swl']):
+                        # 更新FSL标签
+                        current_swl = self.main_window.current_fsl_data['swl'][index]
+                        current_sws = self.main_window.current_fsl_data['sws'][index] if index < len(self.main_window.current_fsl_data['sws']) else None
+                        self.main_window.volume_values_label.setText(f"<font color='white'>SWL: {self._format_value(current_swl)}</font>  <font color='yellow'>SWS: {self._format_value(current_sws)}</font>")
             
             # 如果十字线功能启用，更新十字线位置和信息框
             if self.main_window.crosshair_enabled and 0 <= index < len(dates):

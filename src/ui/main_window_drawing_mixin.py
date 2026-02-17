@@ -453,14 +453,18 @@ class MainWindowDrawingMixin:
         """
         try:
             # 检查是否有主图叠加指标被选中
+            sar_checked = hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('SAR', {}).isChecked()
+            boll_checked = hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('BOLL', {}).isChecked()
+            logger.debug(f"主图叠加指标状态: SAR={sar_checked}, BOLL={boll_checked}")
+            
             # SAR指标
-            if hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('SAR', {}).isChecked():
-                logger.debug("绘制SAR指标")
+            if sar_checked:
+                logger.debug("在主图绘制SAR指标")
                 df_pl = self._indicator_renderer.render_sar(self.tech_plot_widget, df_pl, x)
             
             # BOLL指标
-            if hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('BOLL', {}).isChecked():
-                logger.debug("绘制BOLL指标")
+            if boll_checked:
+                logger.debug("在主图绘制BOLL指标")
                 df_pl = self._indicator_renderer.render_boll(self.tech_plot_widget, df_pl, x)
                 
         except Exception as e:
@@ -502,6 +506,8 @@ class MainWindowDrawingMixin:
             x: x轴坐标
             dates: 日期数组
         """
+        logger.debug(f"渲染指标窗口，当前设置: window_2={self.window_indicators.get(2)}, window_3={self.window_indicators.get(3)}")
+        
         # 第2窗口指标
         indicator_2 = self.window_indicators[2]
         self._render_indicator_window(2, indicator_2, df_pl, x, dates)
@@ -521,11 +527,7 @@ class MainWindowDrawingMixin:
             x: x轴坐标
             dates: 日期数组
         """
-        # 如果没有指定指标，不渲染
-        if not indicator_name:
-            return
-        
-        # 获取对应的plot widget
+        # 如果没有指定指标，清除窗口但不渲染
         if window_index == 2:
             plot_widget = self.volume_plot_widget
         elif window_index == 3:
@@ -535,6 +537,13 @@ class MainWindowDrawingMixin:
         
         # 清除之前的指标图形
         plot_widget.clear()
+        
+        # 如果没有指定指标，直接返回
+        if not indicator_name:
+            logger.debug(f"窗口 {window_index} 没有指定指标，已清除")
+            return
+        
+        logger.debug(f"渲染窗口 {window_index} 的指标: {indicator_name}")
         
         # 设置Y轴标签和样式（与第一窗口保持一致）
         plot_widget.setLabel('left', indicator_name, color='#C0C0C0')
@@ -548,6 +557,20 @@ class MainWindowDrawingMixin:
         # 再次设置Y轴宽度和样式（确保在渲染后仍然有效）
         plot_widget.getAxis('left').setWidth(50)
         plot_widget.getAxis('left').setStyle(showValues=True)
+        
+        # 对于SAR指标，设置合适的Y轴范围
+        if indicator_name == "SAR" and 'sar' in df_pl.columns:
+            try:
+                sar_data = df_pl['sar'].drop_nulls()
+                if len(sar_data) > 0:
+                    min_val = sar_data.min()
+                    max_val = sar_data.max()
+                    range_val = max_val - min_val
+                    if range_val > 0:
+                        plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)
+                        logger.debug(f"SAR指标Y轴范围: {min_val - range_val * 0.1:.2f} - {max_val + range_val * 0.1:.2f}")
+            except Exception as e:
+                logger.warning(f"设置SAR指标Y轴范围失败: {e}")
 
         # 创建标签栏（使用可能更新后的数据）
         ui_builder = ChartUIBuilder(self)
@@ -570,6 +593,7 @@ class MainWindowDrawingMixin:
         
         # 保存指标数据
         self._save_indicator_data(indicator_name, df_pl)
+        logger.debug(f"窗口 {window_index} 的指标 {indicator_name} 渲染完成")
     
     def _save_indicator_data(self, indicator_name: str, df_pl):
         """
@@ -579,6 +603,24 @@ class MainWindowDrawingMixin:
             indicator_name: 指标名称
             df_pl: 数据
         """
+        # 清除之前可能存在的其他指标数据（避免数据混乱）
+        # 根据当前指标类型，清除不相关的指标数据
+        if indicator_name == "SAR":
+            # SAR指标只保留SAR数据
+            self.current_kdj_data = None
+            self.current_rsi_data = None
+            self.current_macd_data = None
+            self.current_wr_data = None
+            self.current_boll_data = None
+            self.current_dmi_data = None
+            self.current_trix_data = None
+            self.current_brar_data = None
+            self.current_vr_data = None
+            self.current_dma_data = None
+        elif indicator_name in ["KDJ", "RSI", "MACD", "WR", "BOLL", "DMI", "TRIX", "BRAR", "VR", "DMA"]:
+            # 其他副图指标清除SAR数据（避免主图标题栏显示错误的SAR值）
+            self.current_sar_data = None
+        
         # KDJ数据
         if 'k' in df_pl.columns:
             self.current_kdj_data = {
@@ -663,6 +705,13 @@ class MainWindowDrawingMixin:
         if 'sar' in df_pl.columns:
             self.current_sar_data = {
                 'sar': df_pl['sar'].to_list(),
+            }
+        
+        # FSL数据
+        if 'swl' in df_pl.columns:
+            self.current_fsl_data = {
+                'swl': df_pl['swl'].to_list(),
+                'sws': df_pl['sws'].to_list() if 'sws' in df_pl.columns else [],
             }
     
     def _setup_crosshair(self):

@@ -284,6 +284,7 @@ class ChartUIBuilder:
             'PSY': self._get_psy_text,
             'MCST': self._get_mcst_text,
             'SAR': self._get_sar_text,
+            'FSL': self._get_fsl_text,
         }
 
         generator = text_generators.get(indicator_type)
@@ -490,6 +491,17 @@ class ChartUIBuilder:
             latest_sar = df['sar'].tail(1)[0]
             return f"<font color='white'>SAR(0.02,0.2): {latest_sar:.2f}</font>"
         return "<font color='white'>SAR指标数据不可用</font>"
+
+    def _get_fsl_text(self, df: Any) -> str:
+        """获取FSL标签文本"""
+        if 'swl' in df.columns and 'sws' in df.columns:
+            latest_swl = df['swl'].tail(1)[0]
+            latest_sws = df['sws'].tail(1)[0]
+            return (
+                f"<font color='white'>SWL: {latest_swl:.2f}</font>  "
+                f"<font color='yellow'>SWS: {latest_sws:.2f}</font>"
+            )
+        return "<font color='white'>FSL指标数据不可用</font>"
 
     def add_label_to_container(self, container: QWidget, label: QLabel, window_index: int):
         """

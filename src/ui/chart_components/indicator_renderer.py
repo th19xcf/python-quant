@@ -1144,17 +1144,42 @@ class IndicatorRenderer:
     def render_sar(self, plot_widget: Any, df: Any, x: np.ndarray):
         """渲染SAR指标"""
         try:
-            if 'sar' not in df.columns:
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_indicator_parallel('sar', af_step=0.02, max_af=0.2)
-                df = analyzer.get_data(return_polars=True)
+            logger.debug(f"渲染SAR指标，数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
+            logger.debug(f"输入数据行数: {len(df)}, x坐标长度: {len(x)}")
+            
+            # 强制重新计算SAR指标，确保数据正确
+            from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+            analyzer = TechnicalAnalyzer(df)
+            analyzer.calculate_indicator_parallel('sar', af_step=0.02, max_af=0.2)
+            df = analyzer.get_data(return_polars=True)
+            
             if 'sar' in df.columns:
                 sar_data = df['sar'].to_numpy().astype(np.float64)
+                logger.debug(f"SAR数据长度: {len(sar_data)}")
+                
+                # 确保数据长度与x坐标一致
+                if len(sar_data) != len(x):
+                    logger.warning(f"SAR数据长度({len(sar_data)})与x坐标长度({len(x)})不一致，进行调整")
+                    # 如果数据长度不一致，截取或填充
+                    if len(sar_data) > len(x):
+                        sar_data = sar_data[-len(x):]
+                    elif len(sar_data) < len(x):
+                        # 在开头填充nan
+                        padding = np.full(len(x) - len(sar_data), np.nan)
+                        sar_data = np.concatenate([padding, sar_data])
+                
                 mask = ~np.isnan(sar_data)
+                valid_count = np.sum(mask)
+                logger.debug(f"SAR数据有效点数: {valid_count}")
+                
                 if np.any(mask):
                     # 绘制SAR点（白色圆点）
                     plot_widget.plot(x[mask], sar_data[mask], pen=None, symbol='o', symbolSize=3, symbolBrush='w', name='SAR')
+                    logger.debug(f"SAR指标渲染完成，绘制了 {valid_count} 个点")
+                else:
+                    logger.warning("SAR数据全部为空值，无法绘制")
+            else:
+                logger.warning("SAR列不存在，无法渲染")
         except Exception as e:
             logger.exception(f"渲染SAR失败: {e}")
         return df

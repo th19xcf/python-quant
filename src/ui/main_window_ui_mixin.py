@@ -1048,12 +1048,16 @@ class MainWindowUiMixin:
             logger.info(f"{'显示' if checked else '隐藏'}{indicator}指标（主图+副图）")
             # 保存到当前选中的窗口（作为副图指标）
             if checked:
-                self.window_indicators[self.current_selected_window] = indicator
-                logger.info(f"为窗口 {self.current_selected_window} 设置了指标: {indicator}")
+                # 如果当前选中的是主图窗口(1)，则默认使用副图窗口2
+                target_window = self.current_selected_window if self.current_selected_window in [2, 3] else 2
+                self.window_indicators[target_window] = indicator
+                logger.info(f"为窗口 {target_window} 设置了指标: {indicator}")
             else:
-                # 取消选中时，如果当前窗口是该指标，则清除
-                if self.window_indicators.get(self.current_selected_window) == indicator:
-                    self.window_indicators[self.current_selected_window] = None
+                # 取消选中时，清除所有窗口中的该指标
+                for window_id in [2, 3]:
+                    if self.window_indicators.get(window_id) == indicator:
+                        self.window_indicators[window_id] = None
+                        logger.info(f"清除窗口 {window_id} 的指标: {indicator}")
             # 重新绘制K线图
             if hasattr(self, 'current_stock_data') and self.current_stock_data is not None:
                 self.plot_k_line(self.current_stock_data, self.current_stock_name, self.current_stock_code)
@@ -1075,9 +1079,10 @@ class MainWindowUiMixin:
                 
                 # 根据当前选中的窗口设置副图指标
                 if indicator not in ["指标A", "指标B", "模板", "窗口", "MA"]:
-                    # 保存当前选中窗口的指标
-                    self.window_indicators[self.current_selected_window] = indicator
-                    logger.info(f"为窗口 {self.current_selected_window} 设置了指标: {indicator}")
+                    # 如果当前选中的是主图窗口(1)，则默认使用副图窗口2
+                    target_window = self.current_selected_window if self.current_selected_window in [2, 3] else 2
+                    self.window_indicators[target_window] = indicator
+                    logger.info(f"为窗口 {target_window} 设置了指标: {indicator}")
                     
                     # 重新绘制K线图，应用新的指标
                     if hasattr(self, 'current_stock_data') and self.current_stock_data is not None:

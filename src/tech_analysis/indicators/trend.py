@@ -281,6 +281,27 @@ def calculate_dma(lazy_df: pl.LazyFrame, short_period: int = 10, long_period: in
     return lazy_df.with_columns([dma, ama])
 
 
+def calculate_fsl(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
+    """
+    计算FSL指标（分水岭指标）
+    SWL = (最高价 + 最低价 + 收盘价) / 3
+    SWS = (最高价 + 最低价 + 收盘价 + 开盘价) / 4
+    
+    Args:
+        lazy_df: Polars LazyFrame
+        
+    Returns:
+        pl.LazyFrame: 包含FSL指标的LazyFrame
+    """
+    # 计算SWL（分水岭线）
+    swl = to_float32((pl.col('high') + pl.col('low') + pl.col('close')) / 3).alias('swl')
+    
+    # 计算SWS（分水岭线2）
+    sws = to_float32((pl.col('high') + pl.col('low') + pl.col('close') + pl.col('open')) / 4).alias('sws')
+    
+    return lazy_df.with_columns([swl, sws])
+
+
 def calculate_trend_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **params) -> pl.LazyFrame:
     """
     计算所有趋势类指标
@@ -328,5 +349,9 @@ def calculate_trend_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **p
         long_period = params.get('dma_long_period', 50)
         signal_period = params.get('dma_signal_period', 10)
         lazy_df = calculate_dma(lazy_df, short_period, long_period, signal_period)
+    
+    # 计算FSL指标
+    if 'fsl' in indicator_types:
+        lazy_df = calculate_fsl(lazy_df)
 
     return lazy_df
