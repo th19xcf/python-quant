@@ -302,6 +302,56 @@ def calculate_fsl(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
     return lazy_df.with_columns([swl, sws])
 
 
+def calculate_expma(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
+    """
+    计算EXPMA指标（指数平均线）
+    EXPMA = 当日收盘价 × 2 / (N+1) + 昨日EXPMA × (N-1) / (N+1)
+    
+    Args:
+        lazy_df: Polars LazyFrame
+        windows: EXPMA计算窗口列表
+        
+    Returns:
+        pl.LazyFrame: 包含EXPMA指标的LazyFrame
+    """
+    for window in windows:
+        # 使用Polars的ewm_mean计算指数移动平均
+        expma = to_float32(pl.col('close').ewm_mean(span=window)).alias(f'expma{window}')
+        lazy_df = lazy_df.with_columns(expma)
+    
+    # 添加默认列名
+    if len(windows) >= 1:
+        window = windows[0]
+        lazy_df = lazy_df.with_columns(
+            pl.col(f'expma{window}').alias('expma')
+        )
+    
+    return lazy_df
+
+
+def calculate_bbi(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
+    """
+    计算BBI指标（多空指数）
+    BBI = (3日MA + 6日MA + 12日MA + 24日MA) / 4
+    
+    Args:
+        lazy_df: Polars LazyFrame
+        
+    Returns:
+        pl.LazyFrame: 包含BBI指标的LazyFrame
+    """
+    # 计算不同周期的移动平均线
+    ma3 = pl.col('close').rolling_mean(window_size=3, min_periods=3)
+    ma6 = pl.col('close').rolling_mean(window_size=6, min_periods=6)
+    ma12 = pl.col('close').rolling_mean(window_size=12, min_periods=12)
+    ma24 = pl.col('close').rolling_mean(window_size=24, min_periods=24)
+    
+    # 计算BBI
+    bbi = to_float32((ma3 + ma6 + ma12 + ma24) / 4).alias('bbi')
+    
+    return lazy_df.with_columns(bbi)
+
+
 def calculate_trend_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **params) -> pl.LazyFrame:
     """
     计算所有趋势类指标
@@ -353,5 +403,14 @@ def calculate_trend_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **p
     # 计算FSL指标
     if 'fsl' in indicator_types:
         lazy_df = calculate_fsl(lazy_df)
+    
+    # 计算EXPMA指标
+    if 'expma' in indicator_types:
+        windows = params.get('expma_windows', [12, 50])
+        lazy_df = calculate_expma(lazy_df, windows)
+    
+    # 计算BBI指标
+    if 'bbi' in indicator_types:
+        lazy_df = calculate_bbi(lazy_df)
 
     return lazy_df

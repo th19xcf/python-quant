@@ -1262,6 +1262,252 @@ class IndicatorRenderer:
             logger.exception(f"渲染CR失败: {e}")
         return df
 
+    def render_expma(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染EXPMA指标"""
+        try:
+            if 'expma12' not in df.columns or 'expma50' not in df.columns:
+                from src.tech_analysis.indicator_manager import global_indicator_manager
+                import polars as pl
+                # 确保数据是polars DataFrame
+                if hasattr(df, 'to_pandas'):
+                    pl_df = df
+                else:
+                    pl_df = pl.from_pandas(df)
+                df = global_indicator_manager.calculate_indicator(pl_df, 'expma', return_polars=True, windows=[12, 50])
+            if 'expma12' in df.columns and 'expma50' in df.columns:
+                expma12_data = df['expma12'].to_numpy().astype(np.float64)
+                expma50_data = df['expma50'].to_numpy().astype(np.float64)
+                mask12 = ~np.isnan(expma12_data)
+                mask50 = ~np.isnan(expma50_data)
+                # 绘制EXPMA12（黄色）
+                if np.any(mask12):
+                    plot_widget.plot(x[mask12], expma12_data[mask12], pen=pg.mkPen('#FFFF00', width=1.5), name='EXPMA12')
+                # 绘制EXPMA50（紫色）
+                if np.any(mask50):
+                    plot_widget.plot(x[mask50], expma50_data[mask50], pen=pg.mkPen('#FF00FF', width=1.5), name='EXPMA50')
+                # 设置Y轴范围
+                valid_data = []
+                if np.any(mask12):
+                    valid_data.extend(expma12_data[mask12])
+                if np.any(mask50):
+                    valid_data.extend(expma50_data[mask50])
+                if valid_data:
+                    min_val = np.min(valid_data)
+                    max_val = np.max(valid_data)
+                    range_val = max_val - min_val
+                    if range_val == 0:
+                        range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                    plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)
+        except Exception as e:
+            logger.exception(f"渲染EXPMA失败: {e}")
+        return df
+
+    def render_bbi(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染BBI指标"""
+        try:
+            if 'bbi' not in df.columns:
+                from src.tech_analysis.indicator_manager import global_indicator_manager
+                import polars as pl
+                # 确保数据是polars DataFrame
+                if hasattr(df, 'to_pandas'):
+                    pl_df = df
+                else:
+                    pl_df = pl.from_pandas(df)
+                df = global_indicator_manager.calculate_indicator(pl_df, 'bbi', return_polars=True)
+            if 'bbi' in df.columns:
+                bbi_data = df['bbi'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(bbi_data)
+                if np.any(mask):
+                    # 设置Y轴范围
+                    valid_data = bbi_data[mask]
+                    if len(valid_data) > 0:
+                        min_val = np.min(valid_data)
+                        max_val = np.max(valid_data)
+                        range_val = max_val - min_val
+                        if range_val == 0:
+                            range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                        plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)
+                    # 绘制BBI线（橙色）
+                    plot_widget.plot(x[mask], bbi_data[mask], pen=pg.mkPen('#FFA500', width=2), name='BBI')
+        except Exception as e:
+            logger.exception(f"渲染BBI失败: {e}")
+        return df
+
+    def render_hsl(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染HSL（换手率）指标"""
+        try:
+            if 'hsl' not in df.columns:
+                from src.tech_analysis.indicator_manager import global_indicator_manager
+                import polars as pl
+                # 确保数据是polars DataFrame
+                if hasattr(df, 'to_pandas'):
+                    pl_df = df
+                else:
+                    pl_df = pl.from_pandas(df)
+                df = global_indicator_manager.calculate_indicator(pl_df, 'hsl', return_polars=True)
+            if 'hsl' in df.columns:
+                hsl_data = df['hsl'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(hsl_data)
+                if np.any(mask):
+                    # 设置Y轴范围
+                    valid_data = hsl_data[mask]
+                    if len(valid_data) > 0:
+                        max_val = np.max(valid_data)
+                        plot_widget.setYRange(0, max(max_val * 1.1, 20))
+                    # 根据换手率大小设置颜色
+                    for i in range(len(x)):
+                        if mask[i]:
+                            if hsl_data[i] > 10:
+                                color = 'r'  # 高换手率 - 红色
+                            elif hsl_data[i] > 5:
+                                color = '#FFA500'  # 中等换手率 - 橙色
+                            else:
+                                color = '#00BFFF'  # 低换手率 - 蓝色
+                            plot_widget.plot([x[i], x[i]], [0, hsl_data[i]], pen=pg.mkPen(color, width=2))
+                    # 绘制HSL_MA5和HSL_MA10
+                    if 'hsl_ma5' in df.columns:
+                        hsl_ma5 = df['hsl_ma5'].to_numpy().astype(np.float64)
+                        mask_ma5 = ~np.isnan(hsl_ma5)
+                        if np.any(mask_ma5):
+                            plot_widget.plot(x[mask_ma5], hsl_ma5[mask_ma5], pen=pg.mkPen('#FFA500', width=1), name='MA5')
+                    if 'hsl_ma10' in df.columns:
+                        hsl_ma10 = df['hsl_ma10'].to_numpy().astype(np.float64)
+                        mask_ma10 = ~np.isnan(hsl_ma10)
+                        if np.any(mask_ma10):
+                            plot_widget.plot(x[mask_ma10], hsl_ma10[mask_ma10], pen=pg.mkPen('#FF00FF', width=1), name='MA10')
+                    # 添加参考线
+                    plot_widget.addLine(y=5, pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
+                    plot_widget.addLine(y=10, pen=pg.mkPen('#FF0000', width=1, style=pg.QtCore.Qt.DashLine))
+        except Exception as e:
+            logger.exception(f"渲染HSL失败: {e}")
+        return df
+
+    def render_lb(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染LB（量比）指标"""
+        try:
+            if 'lb' not in df.columns:
+                from src.tech_analysis.indicator_manager import global_indicator_manager
+                import polars as pl
+                # 确保数据是polars DataFrame
+                if hasattr(df, 'to_pandas'):
+                    pl_df = df
+                else:
+                    pl_df = pl.from_pandas(df)
+                df = global_indicator_manager.calculate_indicator(pl_df, 'lb', return_polars=True, period=5)
+            if 'lb' in df.columns:
+                lb_data = df['lb'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(lb_data)
+                if np.any(mask):
+                    # 设置Y轴范围
+                    valid_data = lb_data[mask]
+                    if len(valid_data) > 0:
+                        min_val = np.min(valid_data)
+                        max_val = np.max(valid_data)
+                        plot_widget.setYRange(max(0, min_val * 0.8), max(3, max_val * 1.1))
+                    # 根据量比大小设置颜色
+                    for i in range(len(x)):
+                        if mask[i]:
+                            if lb_data[i] > 2:
+                                color = 'r'  # 高量比 - 红色
+                            elif lb_data[i] > 1.5:
+                                color = '#FFA500'  # 较高量比 - 橙色
+                            elif lb_data[i] > 1:
+                                color = '#00FF7F'  # 正常量比 - 绿色
+                            elif lb_data[i] > 0.5:
+                                color = '#00BFFF'  # 较低量比 - 蓝色
+                            else:
+                                color = '#808080'  # 低量比 - 灰色
+                            plot_widget.plot([x[i], x[i]], [0, lb_data[i]], pen=pg.mkPen(color, width=2))
+                    # 添加参考线
+                    plot_widget.addLine(y=1, pen=pg.mkPen('#FFFFFF', width=1.5))
+                    plot_widget.addLine(y=0.5, pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
+                    plot_widget.addLine(y=1.5, pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
+                    plot_widget.addLine(y=2, pen=pg.mkPen('#FF0000', width=1, style=pg.QtCore.Qt.DashLine))
+        except Exception as e:
+            logger.exception(f"渲染LB失败: {e}")
+        return df
+
+    def render_cyc(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染CYC（成本均线）指标"""
+        try:
+            if 'cyc5' not in df.columns or 'cyc13' not in df.columns:
+                from src.tech_analysis.indicator_manager import global_indicator_manager
+                import polars as pl
+                # 确保数据是polars DataFrame
+                if hasattr(df, 'to_pandas'):
+                    pl_df = df
+                else:
+                    pl_df = pl.from_pandas(df)
+                df = global_indicator_manager.calculate_indicator(pl_df, 'cyc', return_polars=True, windows=[5, 13, 34])
+            # 绘制各条成本均线
+            cyc_configs = [
+                ('cyc5', 'CYC5', '#FFFF00'),      # 黄色 - 短期
+                ('cyc13', 'CYC13', '#FFA500'),    # 橙色 - 中期
+                ('cyc34', 'CYC34', '#FF00FF'),    # 紫色 - 长期
+                ('cyc_inf', 'CYC∞', '#00FFFF'),   # 青色 - 无穷
+            ]
+            valid_data = []
+            for col_name, name, color in cyc_configs:
+                if col_name in df.columns:
+                    cyc_data = df[col_name].to_numpy().astype(np.float64)
+                    mask = ~np.isnan(cyc_data)
+                    if np.any(mask):
+                        plot_widget.plot(x[mask], cyc_data[mask], pen=pg.mkPen(color, width=1.5), name=name)
+                        valid_data.extend(cyc_data[mask])
+            # 设置Y轴范围
+            if valid_data:
+                min_val = np.min(valid_data)
+                max_val = np.max(valid_data)
+                range_val = max_val - min_val
+                if range_val == 0:
+                    range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)
+        except Exception as e:
+            logger.exception(f"渲染CYC失败: {e}")
+        return df
+
+    def render_cys(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染CYS（市场盈亏）指标"""
+        try:
+            if 'cys' not in df.columns:
+                from src.tech_analysis.indicator_manager import global_indicator_manager
+                import polars as pl
+                # 确保数据是polars DataFrame
+                if hasattr(df, 'to_pandas'):
+                    pl_df = df
+                else:
+                    pl_df = pl.from_pandas(df)
+                df = global_indicator_manager.calculate_indicator(pl_df, 'cys', return_polars=True, cyc_window=13)
+            if 'cys' in df.columns:
+                cys_data = df['cys'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(cys_data)
+                if np.any(mask):
+                    # 设置Y轴范围
+                    valid_data = cys_data[mask]
+                    if len(valid_data) > 0:
+                        min_val = np.min(valid_data)
+                        max_val = np.max(valid_data)
+                        range_val = max_val - min_val
+                        if range_val == 0:
+                            range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                        plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)
+                    # 根据盈亏设置颜色（红色盈利，绿色亏损）
+                    for i in range(len(x)):
+                        if mask[i]:
+                            color = 'r' if cys_data[i] >= 0 else 'g'
+                            plot_widget.plot([x[i], x[i]], [0, cys_data[i]], pen=pg.mkPen(color, width=2))
+                    # 绘制CYS_MA5
+                    if 'cys_ma5' in df.columns:
+                        cys_ma5 = df['cys_ma5'].to_numpy().astype(np.float64)
+                        mask_ma5 = ~np.isnan(cys_ma5)
+                        if np.any(mask_ma5):
+                            plot_widget.plot(x[mask_ma5], cys_ma5[mask_ma5], pen=pg.mkPen('w', width=1), name='MA5')
+                    # 添加零线
+                    plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1))
+        except Exception as e:
+            logger.exception(f"渲染CYS失败: {e}")
+        return df
+
     def render_indicator(
         self, 
         plot_widget: Any, 
@@ -1305,6 +1551,13 @@ class IndicatorRenderer:
             'SAR': self.render_sar,
             'VOL-TDX': self.render_vol_tdx,
             'CR': self.render_cr,
+            # 新增指标
+            'EXPMA': self.render_expma,
+            'BBI': self.render_bbi,
+            'HSL': self.render_hsl,
+            'LB': self.render_lb,
+            'CYC': self.render_cyc,
+            'CYS': self.render_cys,
         }
         
         renderer = renderers.get(indicator_name)

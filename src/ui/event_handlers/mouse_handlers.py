@@ -114,6 +114,23 @@ class MouseHandler:
                         current_vol_ma10 = self.main_window.current_volume_data['vol_ma10'][index] if index < len(self.main_window.current_volume_data['vol_ma10']) else 0
                         
                         self.main_window.volume_values_label.setText(f"<font color='#C0C0C0'>VOLUME: {int(current_volume):,}</font>  <font color='white'>MA5: {int(current_vol_ma5):,}</font>  <font color='cyan'>MA10: {int(current_vol_ma10):,}</font>")
+                    # 新增指标 - HSL（换手率）
+                    elif current_indicator == "HSL" and hasattr(self.main_window, 'current_hsl_data') and 0 <= index < len(self.main_window.current_hsl_data['hsl']):
+                        current_hsl = self.main_window.current_hsl_data['hsl'][index]
+                        hsl_color = '#FF0000' if current_hsl > 10 else '#FFA500' if current_hsl > 5 else '#00BFFF'
+                        text = f"<font color='{hsl_color}'>HSL: {self._format_value(current_hsl)}%</font>"
+                        if 'hsl_ma5' in self.main_window.current_hsl_data and index < len(self.main_window.current_hsl_data['hsl_ma5']):
+                            current_hsl_ma5 = self.main_window.current_hsl_data['hsl_ma5'][index]
+                            text += f"  <font color='white'>MA5: {self._format_value(current_hsl_ma5)}%</font>"
+                        if 'hsl_ma10' in self.main_window.current_hsl_data and index < len(self.main_window.current_hsl_data['hsl_ma10']):
+                            current_hsl_ma10 = self.main_window.current_hsl_data['hsl_ma10'][index]
+                            text += f"  <font color='cyan'>MA10: {self._format_value(current_hsl_ma10)}%</font>"
+                        self.main_window.volume_values_label.setText(text)
+                    # 新增指标 - LB（量比）
+                    elif current_indicator == "LB" and hasattr(self.main_window, 'current_lb_data') and 0 <= index < len(self.main_window.current_lb_data['lb']):
+                        current_lb = self.main_window.current_lb_data['lb'][index]
+                        lb_color = '#FF0000' if current_lb > 2 else '#FFA500' if current_lb > 1.5 else '#00FF7F' if current_lb > 1 else '#00BFFF'
+                        self.main_window.volume_values_label.setText(f"<font color='{lb_color}'>LB: {self._format_value(current_lb)}</font>")
                 
                 # 更新第3窗口标签，根据当前指标类型显示不同内容
                 if hasattr(self.main_window, 'kdj_values_label'):
@@ -175,6 +192,36 @@ class MouseHandler:
                     elif current_indicator == "CR" and hasattr(self.main_window, 'current_cr_data') and 0 <= index < len(self.main_window.current_cr_data['cr']):
                         current_cr = self.main_window.current_cr_data['cr'][index]
                         self.main_window.kdj_values_label.setText(f"<font color='white'>CR: {self._format_value(current_cr)}</font>")
+                    # 新增指标 - EXPMA
+                    elif current_indicator == "EXPMA" and hasattr(self.main_window, 'current_expma_data') and 0 <= index < len(self.main_window.current_expma_data['expma12']):
+                        current_expma12 = self.main_window.current_expma_data['expma12'][index]
+                        current_expma50 = self.main_window.current_expma_data['expma50'][index] if index < len(self.main_window.current_expma_data['expma50']) else None
+                        self.main_window.kdj_values_label.setText(f"<font color='white'>EXPMA(12,50) </font><font color='#FFFF00'>EXPMA12: {self._format_value(current_expma12)}</font> <font color='#FF00FF'>EXPMA50: {self._format_value(current_expma50)}</font>")
+                    # 新增指标 - BBI
+                    elif current_indicator == "BBI" and hasattr(self.main_window, 'current_bbi_data') and 0 <= index < len(self.main_window.current_bbi_data['bbi']):
+                        current_bbi = self.main_window.current_bbi_data['bbi'][index]
+                        self.main_window.kdj_values_label.setText(f"<font color='white'>BBI(3,6,12,24): {self._format_value(current_bbi)}</font>")
+                    # 新增指标 - CYC（成本均线）
+                    elif current_indicator == "CYC" and hasattr(self.main_window, 'current_cyc_data') and 0 <= index < len(self.main_window.current_cyc_data['cyc5']):
+                        current_cyc5 = self.main_window.current_cyc_data['cyc5'][index]
+                        current_cyc13 = self.main_window.current_cyc_data['cyc13'][index] if index < len(self.main_window.current_cyc_data['cyc13']) else None
+                        text = f"<font color='#FFFF00'>CYC5: {self._format_value(current_cyc5)}</font> <font color='#FFA500'>CYC13: {self._format_value(current_cyc13)}</font>"
+                        if 'cyc34' in self.main_window.current_cyc_data and index < len(self.main_window.current_cyc_data['cyc34']):
+                            current_cyc34 = self.main_window.current_cyc_data['cyc34'][index]
+                            text += f" <font color='#FF00FF'>CYC34: {self._format_value(current_cyc34)}</font>"
+                        if 'cyc_inf' in self.main_window.current_cyc_data and index < len(self.main_window.current_cyc_data['cyc_inf']):
+                            current_cyc_inf = self.main_window.current_cyc_data['cyc_inf'][index]
+                            text += f" <font color='#00FFFF'>CYC∞: {self._format_value(current_cyc_inf)}</font>"
+                        self.main_window.kdj_values_label.setText(text)
+                    # 新增指标 - CYS（市场盈亏）
+                    elif current_indicator == "CYS" and hasattr(self.main_window, 'current_cys_data') and 0 <= index < len(self.main_window.current_cys_data['cys']):
+                        current_cys = self.main_window.current_cys_data['cys'][index]
+                        cys_color = '#FF0000' if current_cys > 0 else '#00FF00'
+                        text = f"<font color='{cys_color}'>CYS: {self._format_value(current_cys)}%</font>"
+                        if 'cys_ma5' in self.main_window.current_cys_data and index < len(self.main_window.current_cys_data['cys_ma5']):
+                            current_cys_ma5 = self.main_window.current_cys_data['cys_ma5'][index]
+                            text += f"  <font color='white'>MA5: {self._format_value(current_cys_ma5)}%</font>"
+                        self.main_window.kdj_values_label.setText(text)
                 
                 # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
                 if hasattr(self.main_window, 'volume_values_label'):
@@ -236,6 +283,23 @@ class MouseHandler:
                         # 更新CR标签
                         current_cr = self.main_window.current_cr_data['cr'][index]
                         self.main_window.volume_values_label.setText(f"<font color='white'>CR: {self._format_value(current_cr)}</font>")
+                    # 新增指标 - HSL（换手率）
+                    elif current_indicator == "HSL" and hasattr(self.main_window, 'current_hsl_data') and 0 <= index < len(self.main_window.current_hsl_data['hsl']):
+                        current_hsl = self.main_window.current_hsl_data['hsl'][index]
+                        hsl_color = '#FF0000' if current_hsl > 10 else '#FFA500' if current_hsl > 5 else '#00BFFF'
+                        text = f"<font color='{hsl_color}'>HSL: {self._format_value(current_hsl)}%</font>"
+                        if 'hsl_ma5' in self.main_window.current_hsl_data and index < len(self.main_window.current_hsl_data['hsl_ma5']):
+                            current_hsl_ma5 = self.main_window.current_hsl_data['hsl_ma5'][index]
+                            text += f"  <font color='white'>MA5: {self._format_value(current_hsl_ma5)}%</font>"
+                        if 'hsl_ma10' in self.main_window.current_hsl_data and index < len(self.main_window.current_hsl_data['hsl_ma10']):
+                            current_hsl_ma10 = self.main_window.current_hsl_data['hsl_ma10'][index]
+                            text += f"  <font color='cyan'>MA10: {self._format_value(current_hsl_ma10)}%</font>"
+                        self.main_window.volume_values_label.setText(text)
+                    # 新增指标 - LB（量比）
+                    elif current_indicator == "LB" and hasattr(self.main_window, 'current_lb_data') and 0 <= index < len(self.main_window.current_lb_data['lb']):
+                        current_lb = self.main_window.current_lb_data['lb'][index]
+                        lb_color = '#FF0000' if current_lb > 2 else '#FFA500' if current_lb > 1.5 else '#00FF7F' if current_lb > 1 else '#00BFFF'
+                        self.main_window.volume_values_label.setText(f"<font color='{lb_color}'>LB: {self._format_value(current_lb)}</font>")
             
             # 如果十字线功能启用，更新十字线位置和信息框
             if self.main_window.crosshair_enabled and 0 <= index < len(dates):

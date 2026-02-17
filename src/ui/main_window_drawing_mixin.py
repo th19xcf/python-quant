@@ -719,6 +719,50 @@ class MainWindowDrawingMixin:
             self.current_cr_data = {
                 'cr': df_pl['cr'].to_list(),
             }
+        
+        # 新增指标数据保存
+        # EXPMA数据
+        if 'expma12' in df_pl.columns:
+            self.current_expma_data = {
+                'expma12': df_pl['expma12'].to_list(),
+                'expma50': df_pl['expma50'].to_list() if 'expma50' in df_pl.columns else [],
+            }
+        
+        # BBI数据
+        if 'bbi' in df_pl.columns:
+            self.current_bbi_data = {
+                'bbi': df_pl['bbi'].to_list(),
+            }
+        
+        # HSL数据
+        if 'hsl' in df_pl.columns:
+            self.current_hsl_data = {
+                'hsl': df_pl['hsl'].to_list(),
+                'hsl_ma5': df_pl['hsl_ma5'].to_list() if 'hsl_ma5' in df_pl.columns else [],
+                'hsl_ma10': df_pl['hsl_ma10'].to_list() if 'hsl_ma10' in df_pl.columns else [],
+            }
+        
+        # LB数据
+        if 'lb' in df_pl.columns:
+            self.current_lb_data = {
+                'lb': df_pl['lb'].to_list(),
+            }
+        
+        # CYC数据
+        if 'cyc5' in df_pl.columns:
+            self.current_cyc_data = {
+                'cyc5': df_pl['cyc5'].to_list(),
+                'cyc13': df_pl['cyc13'].to_list() if 'cyc13' in df_pl.columns else [],
+                'cyc34': df_pl['cyc34'].to_list() if 'cyc34' in df_pl.columns else [],
+                'cyc_inf': df_pl['cyc_inf'].to_list() if 'cyc_inf' in df_pl.columns else [],
+            }
+        
+        # CYS数据
+        if 'cys' in df_pl.columns:
+            self.current_cys_data = {
+                'cys': df_pl['cys'].to_list(),
+                'cys_ma5': df_pl['cys_ma5'].to_list() if 'cys_ma5' in df_pl.columns else [],
+            }
     
     def _setup_crosshair(self):
         """设置十字线"""

@@ -122,7 +122,14 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             'fsl': self.calculate_indicator_parallel,
             'sar': self.calculate_indicator_parallel,
             'vol_tdx': self.calculate_indicator_parallel,
-            'cr': self.calculate_indicator_parallel
+            'cr': self.calculate_indicator_parallel,
+            # 新增指标
+            'expma': self.calculate_indicator_parallel,
+            'bbi': self.calculate_indicator_parallel,
+            'hsl': self.calculate_indicator_parallel,
+            'lb': self.calculate_indicator_parallel,
+            'cyc': self.calculate_indicator_parallel,
+            'cys': self.calculate_indicator_parallel
         }
         
         # 初始化插件指标映射
@@ -704,7 +711,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             pd.DataFrame: 包含计算指标的DataFrame
         """
         # 检查指标类型是否支持多窗口计算
-        if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma', 'dmi', 'cci', 'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']:
+        if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma', 'dmi', 'cci', 'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'expma', 'cyc']:
             # 对于支持多窗口的指标
             windows = kwargs.get('windows', [14])
             if not isinstance(windows, list):

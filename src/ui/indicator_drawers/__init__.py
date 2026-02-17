@@ -15,6 +15,11 @@ from .fsl_drawer import FSLDrawer
 from .sar_drawer import SARDrawer
 from .vol_tdx_drawer import VOLTDXDrawer
 from .cr_drawer import CRDrawer
+from .expma_drawer import ExpmaDrawer
+from .bbi_drawer import BbiDrawer
+from .hsl_drawer import HslDrawer
+from .lb_drawer import LbDrawer
+from .cyc_drawer import CycDrawer
 
 class IndicatorDrawerManager:
     """
@@ -40,7 +45,13 @@ class IndicatorDrawerManager:
             "FSL": FSLDrawer(),
             "SAR": SARDrawer(),
             "VOL-TDX": VOLTDXDrawer(),
-            "CR": CRDrawer()
+            "CR": CRDrawer(),
+            # 新增指标
+            "EXPMA": ExpmaDrawer(),
+            "BBI": BbiDrawer(),
+            "HSL": HslDrawer(),
+            "LB": LbDrawer(),
+            "CYC": CycDrawer()
         }
     
     def get_drawer(self, indicator_name):

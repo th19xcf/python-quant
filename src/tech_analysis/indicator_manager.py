@@ -41,6 +41,9 @@ from src.tech_analysis.indicator_calculator import (
     calculate_multiple_indicators_polars,
     preprocess_data_polars
 )
+from src.tech_analysis.indicators.trend import calculate_expma, calculate_bbi
+from src.tech_analysis.indicators.volume import calculate_hsl, calculate_lb
+from src.tech_analysis.indicators.cost import calculate_cyc, calculate_cys
 
 
 class IndicatorManager:
@@ -311,6 +314,66 @@ class IndicatorManager:
             params={'windows': [26]},
             description='能量指标',
             category='能量指标'
+        )
+
+        # 25. EXPMA指标（指数平均线）
+        register_indicator(
+            name='expma',
+            calculate_func=lambda df, **kwargs: calculate_expma(df.lazy(), kwargs.get('windows', [12, 50])).collect(),
+            dependencies=[],
+            params={'windows': [12, 50]},
+            description='指数平均线',
+            category='趋势指标'
+        )
+
+        # 26. BBI指标（多空指数）
+        register_indicator(
+            name='bbi',
+            calculate_func=lambda df, **kwargs: calculate_bbi(df.lazy()).collect(),
+            dependencies=[],
+            params={},
+            description='多空指数',
+            category='趋势指标'
+        )
+
+        # 27. HSL指标（换手率）
+        register_indicator(
+            name='hsl',
+            calculate_func=lambda df, **kwargs: calculate_hsl(df.lazy(), kwargs.get('float_share', None)).collect(),
+            dependencies=[],
+            params={'float_share': None},
+            description='换手率',
+            category='成交量指标'
+        )
+
+        # 28. LB指标（量比）
+        register_indicator(
+            name='lb',
+            calculate_func=lambda df, **kwargs: calculate_lb(df.lazy(), kwargs.get('period', 5)).collect(),
+            dependencies=[],
+            params={'period': 5},
+            description='量比',
+            category='成交量指标'
+        )
+
+        # 29. CYC指标（成本均线）
+        register_indicator(
+            name='cyc',
+            calculate_func=lambda df, **kwargs: calculate_cyc(df.lazy(), kwargs.get('windows', [5, 13, 34])).collect(),
+            dependencies=[],
+            params={'windows': [5, 13, 34]},
+            description='成本均线',
+            category='成本指标'
+        )
+
+        # 30. CYS指标（市场盈亏）
+        register_indicator(
+            name='cys',
+            calculate_func=lambda df, **kwargs: calculate_cys(df.lazy(), kwargs.get('cyc_window', 13)).collect(),
+            dependencies=[],
+            params={'cyc_window': 13},
+            description='市场盈亏',
+            category='成本指标'
         )
 
         logger.info(f"已注册{len(global_indicator_registry.get_supported_indicators())}个内置指标")

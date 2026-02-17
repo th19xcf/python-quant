@@ -10,11 +10,13 @@ from .trend import calculate_trend_indicators
 from .oscillator import calculate_oscillator_indicators
 from .volume import calculate_volume_indicators
 from .volatility import calculate_volatility_indicators
+from .cost import calculate_cost_indicators
 
 # 导出所有指标计算函数
 __all__ = [
     'calculate_trend_indicators',
     'calculate_oscillator_indicators',
     'calculate_volume_indicators',
-    'calculate_volatility_indicators'
+    'calculate_volatility_indicators',
+    'calculate_cost_indicators'
 ]

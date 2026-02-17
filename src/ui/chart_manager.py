@@ -428,6 +428,68 @@ class ChartManager:
             else:
                 dma_text = "<font color='white'>DMA指标数据不可用</font>"
             window.kdj_values_label.setText(dma_text)
+        elif current_indicator == "EXPMA":
+            latest_expma12 = get_latest_value(df_pl, 'expma12')
+            latest_expma50 = get_latest_value(df_pl, 'expma50')
+            if latest_expma12 is not None and latest_expma50 is not None:
+                expma_text = f"<font color='white'>EXPMA(12,50) </font><font color='#FFFF00'>EXPMA12: {latest_expma12:.2f}</font> <font color='#FF00FF'>EXPMA50: {latest_expma50:.2f}</font>"
+            else:
+                expma_text = "<font color='white'>EXPMA指标数据不可用</font>"
+            window.kdj_values_label.setText(expma_text)
+        elif current_indicator == "BBI":
+            latest_bbi = get_latest_value(df_pl, 'bbi')
+            if latest_bbi is not None:
+                bbi_text = f"<font color='white'>BBI(3,6,12,24): {latest_bbi:.2f}</font>"
+            else:
+                bbi_text = "<font color='white'>BBI指标数据不可用</font>"
+            window.kdj_values_label.setText(bbi_text)
+        elif current_indicator == "HSL":
+            latest_hsl = get_latest_value(df_pl, 'hsl')
+            latest_hsl_ma5 = get_latest_value(df_pl, 'hsl_ma5')
+            latest_hsl_ma10 = get_latest_value(df_pl, 'hsl_ma10')
+            if latest_hsl is not None:
+                hsl_color = '#FF0000' if latest_hsl > 10 else '#FFA500' if latest_hsl > 5 else '#00BFFF'
+                hsl_text = f"<font color='{hsl_color}'>HSL: {latest_hsl:.2f}%</font>"
+                if latest_hsl_ma5 is not None:
+                    hsl_text += f"  <font color='white'>MA5: {latest_hsl_ma5:.2f}%</font>"
+                if latest_hsl_ma10 is not None:
+                    hsl_text += f"  <font color='cyan'>MA10: {latest_hsl_ma10:.2f}%</font>"
+            else:
+                hsl_text = "<font color='white'>HSL指标数据不可用</font>"
+            window.kdj_values_label.setText(hsl_text)
+        elif current_indicator == "LB":
+            latest_lb = get_latest_value(df_pl, 'lb')
+            if latest_lb is not None:
+                lb_color = '#FF0000' if latest_lb > 2 else '#FFA500' if latest_lb > 1.5 else '#00FF7F' if latest_lb > 1 else '#00BFFF'
+                lb_text = f"<font color='{lb_color}'>LB: {latest_lb:.2f}</font>"
+            else:
+                lb_text = "<font color='white'>LB指标数据不可用</font>"
+            window.kdj_values_label.setText(lb_text)
+        elif current_indicator == "CYC":
+            latest_cyc5 = get_latest_value(df_pl, 'cyc5')
+            latest_cyc13 = get_latest_value(df_pl, 'cyc13')
+            latest_cyc34 = get_latest_value(df_pl, 'cyc34')
+            latest_cyc_inf = get_latest_value(df_pl, 'cyc_inf')
+            if latest_cyc5 is not None and latest_cyc13 is not None:
+                cyc_text = f"<font color='#FFFF00'>CYC5: {latest_cyc5:.2f}</font> <font color='#FFA500'>CYC13: {latest_cyc13:.2f}</font>"
+                if latest_cyc34 is not None:
+                    cyc_text += f" <font color='#FF00FF'>CYC34: {latest_cyc34:.2f}</font>"
+                if latest_cyc_inf is not None:
+                    cyc_text += f" <font color='#00FFFF'>CYC∞: {latest_cyc_inf:.2f}</font>"
+            else:
+                cyc_text = "<font color='white'>CYC指标数据不可用</font>"
+            window.kdj_values_label.setText(cyc_text)
+        elif current_indicator == "CYS":
+            latest_cys = get_latest_value(df_pl, 'cys')
+            latest_cys_ma5 = get_latest_value(df_pl, 'cys_ma5')
+            if latest_cys is not None:
+                cys_color = '#FF0000' if latest_cys > 0 else '#00FF00'
+                cys_text = f"<font color='{cys_color}'>CYS: {latest_cys:.2f}%</font>"
+                if latest_cys_ma5 is not None:
+                    cys_text += f"  <font color='white'>MA5: {latest_cys_ma5:.2f}%</font>"
+            else:
+                cys_text = "<font color='white'>CYS指标数据不可用</font>"
+            window.kdj_values_label.setText(cys_text)
         else:
             latest_k = get_latest_value(df_pl, 'k')
             latest_d = get_latest_value(df_pl, 'd')
@@ -500,6 +562,38 @@ class ChartManager:
         window.current_dma_data = {
             'dma': df_pl['dma'].to_list() if 'dma' in df_pl.columns else [],
             'ama': df_pl['ama'].to_list() if 'ama' in df_pl.columns else []
+        }
+
+        # 新增指标数据保存
+        window.current_expma_data = {
+            'expma12': df_pl['expma12'].to_list() if 'expma12' in df_pl.columns else [],
+            'expma50': df_pl['expma50'].to_list() if 'expma50' in df_pl.columns else []
+        }
+
+        window.current_bbi_data = {
+            'bbi': df_pl['bbi'].to_list() if 'bbi' in df_pl.columns else []
+        }
+
+        window.current_hsl_data = {
+            'hsl': df_pl['hsl'].to_list() if 'hsl' in df_pl.columns else [],
+            'hsl_ma5': df_pl['hsl_ma5'].to_list() if 'hsl_ma5' in df_pl.columns else [],
+            'hsl_ma10': df_pl['hsl_ma10'].to_list() if 'hsl_ma10' in df_pl.columns else []
+        }
+
+        window.current_lb_data = {
+            'lb': df_pl['lb'].to_list() if 'lb' in df_pl.columns else []
+        }
+
+        window.current_cyc_data = {
+            'cyc5': df_pl['cyc5'].to_list() if 'cyc5' in df_pl.columns else [],
+            'cyc13': df_pl['cyc13'].to_list() if 'cyc13' in df_pl.columns else [],
+            'cyc34': df_pl['cyc34'].to_list() if 'cyc34' in df_pl.columns else [],
+            'cyc_inf': df_pl['cyc_inf'].to_list() if 'cyc_inf' in df_pl.columns else []
+        }
+
+        window.current_cys_data = {
+            'cys': df_pl['cys'].to_list() if 'cys' in df_pl.columns else [],
+            'cys_ma5': df_pl['cys_ma5'].to_list() if 'cys_ma5' in df_pl.columns else []
         }
 
     def plot_k_line(self, df, stock_name, stock_code):

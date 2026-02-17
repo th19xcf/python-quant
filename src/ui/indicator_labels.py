@@ -61,6 +61,18 @@ class IndicatorLabelManager:
             self._update_brar_label(df_pd)
         elif current_indicator == "DMA":
             self._update_dma_label(df_pd)
+        elif current_indicator == "EXPMA":
+            self._update_expma_label(df_pd)
+        elif current_indicator == "BBI":
+            self._update_bbi_label(df_pd)
+        elif current_indicator == "HSL":
+            self._update_hsl_label(df_pd)
+        elif current_indicator == "LB":
+            self._update_lb_label(df_pd)
+        elif current_indicator == "CYC":
+            self._update_cyc_label(df_pd)
+        elif current_indicator == "CYS":
+            self._update_cys_label(df_pd)
         else:
             self._update_default_label(df_pd)
     
@@ -236,6 +248,110 @@ class IndicatorLabelManager:
         else:
             dma_text = f"<font color='white'>DMA指标数据不可用</font>"
         self.main_window.kdj_values_label.setText(dma_text)
+
+    def _update_expma_label(self, df_pd):
+        """
+        更新EXPMA标签
+
+        Args:
+            df_pd: pandas DataFrame，包含EXPMA数据
+        """
+        if 'expma12' in df_pd.columns and 'expma50' in df_pd.columns:
+            latest_expma12 = df_pd['expma12'].iloc[-1]
+            latest_expma50 = df_pd['expma50'].iloc[-1]
+            expma_text = f"<font color='white'>EXPMA(12,50) </font><font color='#FFFF00'>EXPMA12: {latest_expma12:.2f}</font> <font color='#FF00FF'>EXPMA50: {latest_expma50:.2f}</font>"
+        else:
+            expma_text = f"<font color='white'>EXPMA指标数据不可用</font>"
+        self.main_window.kdj_values_label.setText(expma_text)
+
+    def _update_bbi_label(self, df_pd):
+        """
+        更新BBI标签
+
+        Args:
+            df_pd: pandas DataFrame，包含BBI数据
+        """
+        if 'bbi' in df_pd.columns:
+            latest_bbi = df_pd['bbi'].iloc[-1]
+            bbi_text = f"<font color='white'>BBI(3,6,12,24): {latest_bbi:.2f}</font>"
+        else:
+            bbi_text = f"<font color='white'>BBI指标数据不可用</font>"
+        self.main_window.kdj_values_label.setText(bbi_text)
+
+    def _update_hsl_label(self, df_pd):
+        """
+        更新HSL（换手率）标签
+
+        Args:
+            df_pd: pandas DataFrame，包含HSL数据
+        """
+        if 'hsl' in df_pd.columns:
+            latest_hsl = df_pd['hsl'].iloc[-1]
+            hsl_color = '#FF0000' if latest_hsl > 10 else '#FFA500' if latest_hsl > 5 else '#00BFFF'
+            hsl_text = f"<font color='{hsl_color}'>HSL: {latest_hsl:.2f}%</font>"
+            if 'hsl_ma5' in df_pd.columns:
+                latest_hsl_ma5 = df_pd['hsl_ma5'].iloc[-1]
+                hsl_text += f"  <font color='white'>MA5: {latest_hsl_ma5:.2f}%</font>"
+            if 'hsl_ma10' in df_pd.columns:
+                latest_hsl_ma10 = df_pd['hsl_ma10'].iloc[-1]
+                hsl_text += f"  <font color='cyan'>MA10: {latest_hsl_ma10:.2f}%</font>"
+        else:
+            hsl_text = f"<font color='white'>HSL指标数据不可用</font>"
+        self.main_window.kdj_values_label.setText(hsl_text)
+
+    def _update_lb_label(self, df_pd):
+        """
+        更新LB（量比）标签
+
+        Args:
+            df_pd: pandas DataFrame，包含LB数据
+        """
+        if 'lb' in df_pd.columns:
+            latest_lb = df_pd['lb'].iloc[-1]
+            lb_color = '#FF0000' if latest_lb > 2 else '#FFA500' if latest_lb > 1.5 else '#00FF7F' if latest_lb > 1 else '#00BFFF'
+            lb_text = f"<font color='{lb_color}'>LB: {latest_lb:.2f}</font>"
+        else:
+            lb_text = f"<font color='white'>LB指标数据不可用</font>"
+        self.main_window.kdj_values_label.setText(lb_text)
+
+    def _update_cyc_label(self, df_pd):
+        """
+        更新CYC（成本均线）标签
+
+        Args:
+            df_pd: pandas DataFrame，包含CYC数据
+        """
+        if 'cyc5' in df_pd.columns and 'cyc13' in df_pd.columns:
+            latest_cyc5 = df_pd['cyc5'].iloc[-1]
+            latest_cyc13 = df_pd['cyc13'].iloc[-1]
+            cyc_text = f"<font color='#FFFF00'>CYC5: {latest_cyc5:.2f}</font> <font color='#FFA500'>CYC13: {latest_cyc13:.2f}</font>"
+            if 'cyc34' in df_pd.columns:
+                latest_cyc34 = df_pd['cyc34'].iloc[-1]
+                cyc_text += f" <font color='#FF00FF'>CYC34: {latest_cyc34:.2f}</font>"
+            if 'cyc_inf' in df_pd.columns:
+                latest_cyc_inf = df_pd['cyc_inf'].iloc[-1]
+                cyc_text += f" <font color='#00FFFF'>CYC∞: {latest_cyc_inf:.2f}</font>"
+        else:
+            cyc_text = f"<font color='white'>CYC指标数据不可用</font>"
+        self.main_window.kdj_values_label.setText(cyc_text)
+
+    def _update_cys_label(self, df_pd):
+        """
+        更新CYS（市场盈亏）标签
+
+        Args:
+            df_pd: pandas DataFrame，包含CYS数据
+        """
+        if 'cys' in df_pd.columns:
+            latest_cys = df_pd['cys'].iloc[-1]
+            cys_color = '#FF0000' if latest_cys > 0 else '#00FF00'
+            cys_text = f"<font color='{cys_color}'>CYS: {latest_cys:.2f}%</font>"
+            if 'cys_ma5' in df_pd.columns:
+                latest_cys_ma5 = df_pd['cys_ma5'].iloc[-1]
+                cys_text += f"  <font color='white'>MA5: {latest_cys_ma5:.2f}%</font>"
+        else:
+            cys_text = f"<font color='white'>CYS指标数据不可用</font>"
+        self.main_window.kdj_values_label.setText(cys_text)
 
     def _update_default_label(self, df_pd):
         """

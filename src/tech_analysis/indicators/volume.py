@@ -154,6 +154,57 @@ def calculate_cr(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     return lazy_df
 
 
+def calculate_hsl(lazy_df: pl.LazyFrame, float_share: float = None) -> pl.LazyFrame:
+    """
+    计算HSL指标（换手率）
+    HSL = 成交量 / 流通股本 × 100%
+    
+    Args:
+        lazy_df: Polars LazyFrame
+        float_share: 流通股本（股），如果为None则使用volume列的5日平均作为估算
+        
+    Returns:
+        pl.LazyFrame: 包含HSL指标的LazyFrame
+    """
+    if float_share is not None and float_share > 0:
+        # 使用提供的流通股本计算
+        hsl = to_float32(pl.col('volume') / float_share * 100).alias('hsl')
+    else:
+        # 估算：使用60日平均成交量作为流通股本的参考
+        avg_volume = pl.col('volume').rolling_mean(window_size=60, min_periods=1)
+        hsl = to_float32(pl.when(avg_volume > 0).then(pl.col('volume') / avg_volume * 5).otherwise(0)).alias('hsl')
+    
+    # 先添加HSL列
+    lazy_df = lazy_df.with_columns(hsl)
+    
+    # 计算HSL的5日和10日移动平均
+    hsl_ma5 = to_float32(pl.col('hsl').rolling_mean(window_size=5, min_periods=1)).alias('hsl_ma5')
+    hsl_ma10 = to_float32(pl.col('hsl').rolling_mean(window_size=10, min_periods=1)).alias('hsl_ma10')
+    
+    return lazy_df.with_columns([hsl_ma5, hsl_ma10])
+
+
+def calculate_lb(lazy_df: pl.LazyFrame, period: int = 5) -> pl.LazyFrame:
+    """
+    计算LB指标（量比）
+    LB = 当日成交量 / 过去N日平均成交量
+    
+    Args:
+        lazy_df: Polars LazyFrame
+        period: 计算平均成交量的周期，默认5日
+        
+    Returns:
+        pl.LazyFrame: 包含LB指标的LazyFrame
+    """
+    # 计算过去N日平均成交量（不包含当日）
+    avg_volume = pl.col('volume').shift(1).rolling_mean(window_size=period, min_periods=1)
+    
+    # 计算量比
+    lb = to_float32(pl.when(avg_volume > 0).then(pl.col('volume') / avg_volume).otherwise(1)).alias('lb')
+    
+    return lazy_df.with_columns(lb)
+
+
 def calculate_volume_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **params) -> pl.LazyFrame:
     """
     计算所有成交量类指标
@@ -189,5 +240,15 @@ def calculate_volume_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **
     if 'cr' in indicator_types:
         windows = params.get('cr_windows', [26])
         lazy_df = calculate_cr(lazy_df, windows)
+    
+    # 计算HSL指标（换手率）
+    if 'hsl' in indicator_types:
+        float_share = params.get('float_share', None)
+        lazy_df = calculate_hsl(lazy_df, float_share)
+    
+    # 计算LB指标（量比）
+    if 'lb' in indicator_types:
+        period = params.get('lb_period', 5)
+        lazy_df = calculate_lb(lazy_df, period)
     
     return lazy_df

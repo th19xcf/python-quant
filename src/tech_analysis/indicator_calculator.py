@@ -21,7 +21,8 @@ from .indicators import (
     calculate_trend_indicators,
     calculate_oscillator_indicators,
     calculate_volume_indicators,
-    calculate_volatility_indicators
+    calculate_volatility_indicators,
+    calculate_cost_indicators
 )
 
 
@@ -651,6 +652,9 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     
     # 步骤5: 计算波动率类指标
     lazy_df = calculate_volatility_indicators(lazy_df, indicator_types, **params)
+    
+    # 步骤6: 计算成本类指标
+    lazy_df = calculate_cost_indicators(lazy_df, indicator_types, **params)
     
     # 清理临时列
     lazy_df = cleanup_temp_columns(lazy_df, indicator_types, indicator_params)

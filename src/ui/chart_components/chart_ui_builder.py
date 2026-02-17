@@ -286,6 +286,13 @@ class ChartUIBuilder:
             'SAR': self._get_sar_text,
             'FSL': self._get_fsl_text,
             'CR': self._get_cr_text,
+            # 新增指标
+            'EXPMA': self._get_expma_text,
+            'BBI': self._get_bbi_text,
+            'HSL': self._get_hsl_text,
+            'LB': self._get_lb_text,
+            'CYC': self._get_cyc_text,
+            'CYS': self._get_cys_text,
         }
 
         generator = text_generators.get(indicator_type)
@@ -510,6 +517,75 @@ class ChartUIBuilder:
             latest_cr = df['cr'].tail(1)[0]
             return f"<font color='white'>CR(26): {latest_cr:.2f}</font>"
         return "<font color='white'>CR指标数据不可用</font>"
+
+    def _get_expma_text(self, df: Any) -> str:
+        """获取EXPMA标签文本"""
+        if 'expma12' in df.columns and 'expma50' in df.columns:
+            latest_expma12 = df['expma12'].tail(1)[0]
+            latest_expma50 = df['expma50'].tail(1)[0]
+            return (
+                f"<font color='white'>EXPMA(12,50) </font>"
+                f"<font color='#FFFF00'>EXPMA12: {latest_expma12:.2f}</font> "
+                f"<font color='#FF00FF'>EXPMA50: {latest_expma50:.2f}</font>"
+            )
+        return "<font color='white'>EXPMA指标数据不可用</font>"
+
+    def _get_bbi_text(self, df: Any) -> str:
+        """获取BBI标签文本"""
+        if 'bbi' in df.columns:
+            latest_bbi = df['bbi'].tail(1)[0]
+            return f"<font color='white'>BBI(3,6,12,24): {latest_bbi:.2f}</font>"
+        return "<font color='white'>BBI指标数据不可用</font>"
+
+    def _get_hsl_text(self, df: Any) -> str:
+        """获取HSL（换手率）标签文本"""
+        if 'hsl' in df.columns:
+            latest_hsl = df['hsl'].tail(1)[0]
+            hsl_color = '#FF0000' if latest_hsl > 10 else '#FFA500' if latest_hsl > 5 else '#00BFFF'
+            text = f"<font color='{hsl_color}'>HSL: {latest_hsl:.2f}%</font>"
+            if 'hsl_ma5' in df.columns:
+                latest_hsl_ma5 = df['hsl_ma5'].tail(1)[0]
+                text += f"  <font color='white'>MA5: {latest_hsl_ma5:.2f}%</font>"
+            if 'hsl_ma10' in df.columns:
+                latest_hsl_ma10 = df['hsl_ma10'].tail(1)[0]
+                text += f"  <font color='cyan'>MA10: {latest_hsl_ma10:.2f}%</font>"
+            return text
+        return "<font color='white'>HSL指标数据不可用</font>"
+
+    def _get_lb_text(self, df: Any) -> str:
+        """获取LB（量比）标签文本"""
+        if 'lb' in df.columns:
+            latest_lb = df['lb'].tail(1)[0]
+            lb_color = '#FF0000' if latest_lb > 2 else '#FFA500' if latest_lb > 1.5 else '#00FF7F' if latest_lb > 1 else '#00BFFF'
+            return f"<font color='{lb_color}'>LB: {latest_lb:.2f}</font>"
+        return "<font color='white'>LB指标数据不可用</font>"
+
+    def _get_cyc_text(self, df: Any) -> str:
+        """获取CYC（成本均线）标签文本"""
+        if 'cyc5' in df.columns and 'cyc13' in df.columns:
+            latest_cyc5 = df['cyc5'].tail(1)[0]
+            latest_cyc13 = df['cyc13'].tail(1)[0]
+            text = f"<font color='#FFFF00'>CYC5: {latest_cyc5:.2f}</font> <font color='#FFA500'>CYC13: {latest_cyc13:.2f}</font>"
+            if 'cyc34' in df.columns:
+                latest_cyc34 = df['cyc34'].tail(1)[0]
+                text += f" <font color='#FF00FF'>CYC34: {latest_cyc34:.2f}</font>"
+            if 'cyc_inf' in df.columns:
+                latest_cyc_inf = df['cyc_inf'].tail(1)[0]
+                text += f" <font color='#00FFFF'>CYC∞: {latest_cyc_inf:.2f}</font>"
+            return text
+        return "<font color='white'>CYC指标数据不可用</font>"
+
+    def _get_cys_text(self, df: Any) -> str:
+        """获取CYS（市场盈亏）标签文本"""
+        if 'cys' in df.columns:
+            latest_cys = df['cys'].tail(1)[0]
+            cys_color = '#FF0000' if latest_cys > 0 else '#00FF00'
+            text = f"<font color='{cys_color}'>CYS: {latest_cys:.2f}%</font>"
+            if 'cys_ma5' in df.columns:
+                latest_cys_ma5 = df['cys_ma5'].tail(1)[0]
+                text += f"  <font color='white'>MA5: {latest_cys_ma5:.2f}%</font>"
+            return text
+        return "<font color='white'>CYS指标数据不可用</font>"
 
     def add_label_to_container(self, container: QWidget, label: QLabel, window_index: int):
         """

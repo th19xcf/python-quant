@@ -746,20 +746,23 @@ class MainWindowUiMixin:
         indicator_layout.setContentsMargins(5, 3, 10, 3)  # 增加右边距，确保按钮显示完整
         indicator_layout.setSpacing(2)
         
-        # 指标列表 - 按类别排列：趋势指标、成交量指标、震荡指标、其他指标
+        # 指标列表 - 按类别排列：趋势指标、成交量指标、震荡指标、成本指标、其他指标
         # 注意："窗口"、"<"、">" 按钮在滚动区域外部单独添加
         # "指标A" 在滚动区域内部
         indicators = [
             "指标A",  # 在滚动区域内部
             "|",  # 分隔符
             # 趋势指标
-            "MA", "MACD", "BOLL", "SAR", "TRIX", "DMA", "FSL",
+            "MA", "MACD", "BOLL", "SAR", "TRIX", "DMA", "FSL", "EXPMA", "BBI",
             "|",  # 分隔符
             # 成交量指标
-            "VOL", "VOL-TDX", "OBV", "VR", "CR", "BRAR", "ASI", "EMV",
+            "VOL", "VOL-TDX", "OBV", "VR", "CR", "BRAR", "ASI", "EMV", "HSL", "LB",
             "|",  # 分隔符
             # 震荡指标
             "KDJ", "RSI", "WR", "CCI", "ROC", "MTM", "PSY",
+            "|",  # 分隔符
+            # 成本指标
+            "CYC", "CYS",
             "|",  # 分隔符
             # 其他指标
             "DMI", "MCST"
@@ -834,7 +837,9 @@ class MainWindowUiMixin:
                 implemented_indicators = [
                     'MA', 'VOL', 'MACD', 'KDJ', 'DMI', 'DMA', 'FSL', 'TRIX', 'BRAR', 'CR',
                     'VR', 'OBV', 'ASI', 'EMV', 'VOL-TDX', 'RSI', 'WR', 'SAR',
-                    'CCI', 'ROC', 'MTM', 'BOLL', 'PSY', 'MCST'
+                    'CCI', 'ROC', 'MTM', 'BOLL', 'PSY', 'MCST',
+                    # 新增指标
+                    'EXPMA', 'BBI', 'HSL', 'LB', 'CYC', 'CYS'
                 ]
                 # 未实现指标的样式（灰色文字）
                 disabled_indicator_style = indicator_button_style + "QPushButton { color: #666666; }"
