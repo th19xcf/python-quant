@@ -285,6 +285,7 @@ class ChartUIBuilder:
             'MCST': self._get_mcst_text,
             'SAR': self._get_sar_text,
             'FSL': self._get_fsl_text,
+            'CR': self._get_cr_text,
         }
 
         generator = text_generators.get(indicator_type)
@@ -502,6 +503,13 @@ class ChartUIBuilder:
                 f"<font color='yellow'>SWS: {latest_sws:.2f}</font>"
             )
         return "<font color='white'>FSL指标数据不可用</font>"
+
+    def _get_cr_text(self, df: Any) -> str:
+        """获取CR标签文本"""
+        if 'cr' in df.columns:
+            latest_cr = df['cr'].tail(1)[0]
+            return f"<font color='white'>CR(26): {latest_cr:.2f}</font>"
+        return "<font color='white'>CR指标数据不可用</font>"
 
     def add_label_to_container(self, container: QWidget, label: QLabel, window_index: int):
         """

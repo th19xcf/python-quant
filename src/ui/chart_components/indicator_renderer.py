@@ -568,19 +568,41 @@ class IndicatorRenderer:
             x: x轴坐标
         """
         try:
+            logger.debug(f"渲染VR指标，数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
+            
+            # 如果没有VR数据，先计算
             if 'vr' not in df.columns:
-                return
+                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+                analyzer = TechnicalAnalyzer(df)
+                analyzer.calculate_indicator_parallel('vr', windows=[24])
+                df = analyzer.get_data(return_polars=True)
             
-            vr_data = df['vr'].to_numpy().astype(np.float64)
-            vr_mask = ~np.isnan(vr_data)
-            
-            if np.any(vr_mask):
-                plot_widget.plot(
-                    x[vr_mask], 
-                    vr_data[vr_mask], 
-                    pen=pg.mkPen('w', width=1), 
-                    name='VR'
-                )
+            if 'vr' in df.columns:
+                vr_data = df['vr'].to_numpy().astype(np.float64)
+                vr_mask = ~np.isnan(vr_data)
+                valid_count = np.sum(vr_mask)
+                logger.debug(f"VR数据有效点数: {valid_count}")
+                
+                if np.any(vr_mask):
+                    # 设置Y轴范围
+                    valid_vr = vr_data[vr_mask]
+                    min_val = np.min(valid_vr)
+                    max_val = np.max(valid_vr)
+                    range_val = max_val - min_val
+                    if range_val > 0:
+                        plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)
+                    
+                    plot_widget.plot(
+                        x[vr_mask], 
+                        vr_data[vr_mask], 
+                        pen=pg.mkPen('w', width=1), 
+                        name='VR'
+                    )
+                    logger.debug(f"VR指标渲染完成，绘制了 {valid_count} 个点")
+                else:
+                    logger.warning("VR数据全部为空值，无法绘制")
+            else:
+                logger.warning("VR列不存在，无法渲染")
             
             # 绘制MAVR线
             if 'mavr' in df.columns:

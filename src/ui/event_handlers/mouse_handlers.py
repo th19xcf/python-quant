@@ -172,6 +172,9 @@ class MouseHandler:
                         current_swl = self.main_window.current_fsl_data['swl'][index]
                         current_sws = self.main_window.current_fsl_data['sws'][index] if index < len(self.main_window.current_fsl_data['sws']) else None
                         self.main_window.kdj_values_label.setText(f"<font color='white'>SWL: {self._format_value(current_swl)}</font>  <font color='yellow'>SWS: {self._format_value(current_sws)}</font>")
+                    elif current_indicator == "CR" and hasattr(self.main_window, 'current_cr_data') and 0 <= index < len(self.main_window.current_cr_data['cr']):
+                        current_cr = self.main_window.current_cr_data['cr'][index]
+                        self.main_window.kdj_values_label.setText(f"<font color='white'>CR: {self._format_value(current_cr)}</font>")
                 
                 # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
                 if hasattr(self.main_window, 'volume_values_label'):
@@ -224,6 +227,15 @@ class MouseHandler:
                         current_swl = self.main_window.current_fsl_data['swl'][index]
                         current_sws = self.main_window.current_fsl_data['sws'][index] if index < len(self.main_window.current_fsl_data['sws']) else None
                         self.main_window.volume_values_label.setText(f"<font color='white'>SWL: {self._format_value(current_swl)}</font>  <font color='yellow'>SWS: {self._format_value(current_sws)}</font>")
+                    elif current_indicator == "VR" and hasattr(self.main_window, 'current_vr_data') and 0 <= index < len(self.main_window.current_vr_data['vr']):
+                        # 更新VR标签
+                        current_vr = self.main_window.current_vr_data['vr'][index]
+                        current_mavr = self.main_window.current_vr_data['mavr'][index] if index < len(self.main_window.current_vr_data['mavr']) else 0
+                        self.main_window.volume_values_label.setText(f"<font color='#FFFFFF'>VR: {self._format_value(current_vr)}</font>  <font color='#FFFF00'>MAVR: {self._format_value(current_mavr)}</font>")
+                    elif current_indicator == "CR" and hasattr(self.main_window, 'current_cr_data') and 0 <= index < len(self.main_window.current_cr_data['cr']):
+                        # 更新CR标签
+                        current_cr = self.main_window.current_cr_data['cr'][index]
+                        self.main_window.volume_values_label.setText(f"<font color='white'>CR: {self._format_value(current_cr)}</font>")
             
             # 如果十字线功能启用，更新十字线位置和信息框
             if self.main_window.crosshair_enabled and 0 <= index < len(dates):

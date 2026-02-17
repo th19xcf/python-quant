@@ -713,6 +713,12 @@ class MainWindowDrawingMixin:
                 'swl': df_pl['swl'].to_list(),
                 'sws': df_pl['sws'].to_list() if 'sws' in df_pl.columns else [],
             }
+        
+        # CR数据
+        if 'cr' in df_pl.columns:
+            self.current_cr_data = {
+                'cr': df_pl['cr'].to_list(),
+            }
     
     def _setup_crosshair(self):
         """设置十字线"""

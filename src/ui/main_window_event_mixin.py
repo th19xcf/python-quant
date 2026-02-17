@@ -876,7 +876,7 @@ class MainWindowEventMixin:
         
         # SAR指标
         if hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('SAR', {}).isChecked():
-            if hasattr(self, 'current_sar_data') and 'sar' in self.current_sar_data:
+            if hasattr(self, 'current_sar_data') and self.current_sar_data is not None and 'sar' in self.current_sar_data:
                 sar_list = self.current_sar_data['sar']
                 if 0 <= index < len(sar_list):
                     sar_val = sar_list[index]

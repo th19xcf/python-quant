@@ -115,6 +115,45 @@ def calculate_psy(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     return lazy_df
 
 
+def calculate_cr(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
+    """
+    计算CR指标（能量指标）
+    CR = (N日内上涨日成交量总和 - N日内下跌日成交量总和) / (N日内上涨日成交量总和 + N日内下跌日成交量总和) * 100
+    
+    Args:
+        lazy_df: Polars LazyFrame
+        windows: CR计算窗口列表
+        
+    Returns:
+        pl.LazyFrame: 包含CR指标的LazyFrame
+    """
+    # 1. 计算价格变化方向和分类成交量
+    prev_close = pl.col('close').shift(1)
+    up_vol = pl.when(pl.col('close') > prev_close).then(pl.col('volume')).otherwise(0.0)
+    down_vol = pl.when(pl.col('close') < prev_close).then(pl.col('volume')).otherwise(0.0)
+    
+    # 2. 计算各窗口的CR值
+    for window in windows:
+        # 计算N日上涨、下跌成交量总和
+        up_sum = to_float32(up_vol.rolling_sum(window_size=window, min_periods=1))
+        down_sum = to_float32(down_vol.rolling_sum(window_size=window, min_periods=1))
+        
+        # 计算CR值 = (上涨总和 - 下跌总和) / (上涨总和 + 下跌总和) * 100
+        cr = to_float32((up_sum - down_sum) / 
+             (up_sum + down_sum + 0.0001) * 100).alias(f'cr{window}')
+        
+        lazy_df = lazy_df.with_columns(cr)
+    
+    # 3. 添加默认列名
+    if len(windows) >= 1:
+        window = windows[0]
+        lazy_df = lazy_df.with_columns(
+            pl.col(f'cr{window}').alias('cr')
+        )
+    
+    return lazy_df
+
+
 def calculate_volume_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **params) -> pl.LazyFrame:
     """
     计算所有成交量类指标
@@ -145,5 +184,10 @@ def calculate_volume_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **
     if 'psy' in indicator_types:
         windows = params.get('psy_windows', [12])
         lazy_df = calculate_psy(lazy_df, windows)
+    
+    # 计算CR指标
+    if 'cr' in indicator_types:
+        windows = params.get('cr_windows', [26])
+        lazy_df = calculate_cr(lazy_df, windows)
     
     return lazy_df
