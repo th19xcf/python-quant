@@ -1031,7 +1031,34 @@ class MainWindowUiMixin:
         """
         指标按钮点击事件处理
         """
-        if checked:
+        # 处理MA指标（纯主图指标，控制MA线显示/隐藏）
+        if indicator == "MA":
+            if checked:
+                logger.info("显示主图MA线")
+                self.show_ma_lines = True
+            else:
+                logger.info("隐藏主图MA线")
+                self.show_ma_lines = False
+            # 重新绘制K线图
+            if hasattr(self, 'current_stock_data') and self.current_stock_data is not None:
+                self.plot_k_line(self.current_stock_data, self.current_stock_name, self.current_stock_code)
+        
+        # 处理可在主图和副图同时显示的指标（SAR、BOLL）
+        elif indicator in ["SAR", "BOLL"]:
+            logger.info(f"{'显示' if checked else '隐藏'}{indicator}指标（主图+副图）")
+            # 保存到当前选中的窗口（作为副图指标）
+            if checked:
+                self.window_indicators[self.current_selected_window] = indicator
+                logger.info(f"为窗口 {self.current_selected_window} 设置了指标: {indicator}")
+            else:
+                # 取消选中时，如果当前窗口是该指标，则清除
+                if self.window_indicators.get(self.current_selected_window) == indicator:
+                    self.window_indicators[self.current_selected_window] = None
+            # 重新绘制K线图
+            if hasattr(self, 'current_stock_data') and self.current_stock_data is not None:
+                self.plot_k_line(self.current_stock_data, self.current_stock_name, self.current_stock_code)
+        
+        elif checked:
             # 取消其他同类型指标的选中状态
             if indicator in ["指标A", "指标B"]:
                 # 指标A/B是互斥的
@@ -1039,20 +1066,22 @@ class MainWindowUiMixin:
                     if name in ["指标A", "指标B"] and name != indicator:
                         button.setChecked(False)
             elif indicator != "模板" and indicator != "窗口":
-                # 普通指标是互斥的
+                # 可在主图和副图同时显示的指标
+                dual_display_indicators = ["SAR", "BOLL"]
+                # 普通副图指标是互斥的
                 for name, button in self.indicator_buttons.items():
-                    if name not in ["指标A", "指标B", "模板", "窗口"] and name != indicator:
+                    if name not in ["指标A", "指标B", "模板", "窗口", "MA"] + dual_display_indicators and name != indicator:
                         button.setChecked(False)
-            
-            # 根据当前选中的窗口设置指标
-            if indicator not in ["指标A", "指标B", "模板", "窗口"]:
-                # 保存当前选中窗口的指标
-                self.window_indicators[self.current_selected_window] = indicator
-                logger.info(f"为窗口 {self.current_selected_window} 设置了指标: {indicator}")
                 
-                # 重新绘制K线图，应用新的指标
-                if hasattr(self, 'current_stock_data') and self.current_stock_data is not None:
-                    self.plot_k_line(self.current_stock_data, self.current_stock_name, self.current_stock_code)
+                # 根据当前选中的窗口设置副图指标
+                if indicator not in ["指标A", "指标B", "模板", "窗口", "MA"]:
+                    # 保存当前选中窗口的指标
+                    self.window_indicators[self.current_selected_window] = indicator
+                    logger.info(f"为窗口 {self.current_selected_window} 设置了指标: {indicator}")
+                    
+                    # 重新绘制K线图，应用新的指标
+                    if hasattr(self, 'current_stock_data') and self.current_stock_data is not None:
+                        self.plot_k_line(self.current_stock_data, self.current_stock_name, self.current_stock_code)
         
         logger.info(f"选择了指标: {indicator}, 状态: {'选中' if checked else '取消'}")
     

@@ -3,10 +3,11 @@
 
 """
 趋势类指标计算模块
-包含：MA, MACD, DMI, TRIX等
+包含：MA, MACD, DMI, TRIX, SAR等
 """
 
 import polars as pl
+import numpy as np
 from ..utils import to_float32
 
 
@@ -153,8 +154,131 @@ def calculate_trix(lazy_df: pl.LazyFrame, windows: list, signal_period: int) -> 
             pl.col(f'trix{window}').alias('trix'),
             pl.col(f'trma{window}').alias('trma')
         )
-    
+
     return lazy_df
+
+
+def calculate_sar(lazy_df: pl.LazyFrame, af_step: float = 0.02, max_af: float = 0.2) -> pl.LazyFrame:
+    """
+    计算SAR指标（抛物线转向指标）
+    由于SAR是迭代计算，使用map_batches处理
+
+    Args:
+        lazy_df: Polars LazyFrame
+        af_step: 加速因子步长，默认0.02
+        max_af: 最大加速因子，默认0.2
+
+    Returns:
+        pl.LazyFrame: 包含SAR指标的LazyFrame
+    """
+    def sar_calculation(highs, lows, closes):
+        """计算SAR的numpy实现"""
+        n = len(highs)
+        sar = np.zeros(n)
+        sar.fill(np.nan)
+
+        if n < 2:
+            return sar
+
+        # 初始化
+        ep = highs[0]  # 极点价格
+        af = af_step   # 加速因子
+        long = True    # 当前趋势（True=多头，False=空头）
+
+        # 确定初始趋势
+        if closes[1] > closes[0]:
+            long = True
+            sar[0] = lows[0]
+            ep = highs[0]
+        else:
+            long = False
+            sar[0] = highs[0]
+            ep = lows[0]
+
+        # 迭代计算
+        for i in range(1, n):
+            if long:
+                # 多头趋势
+                sar[i] = sar[i-1] + af * (ep - sar[i-1])
+                # 限制SAR不超过前n周期的最低价
+                if i >= 2:
+                    sar[i] = max(sar[i], lows[i-1], lows[i-2])
+                else:
+                    sar[i] = max(sar[i], lows[i-1])
+
+                # 检查趋势反转
+                if lows[i] < sar[i]:
+                    # 转为空头
+                    long = False
+                    sar[i] = ep
+                    ep = lows[i]
+                    af = af_step
+                elif highs[i] > ep:
+                    # 更新极点
+                    ep = highs[i]
+                    af = min(af + af_step, max_af)
+            else:
+                # 空头趋势
+                sar[i] = sar[i-1] + af * (ep - sar[i-1])
+                # 限制SAR不低于前n周期的最高价
+                if i >= 2:
+                    sar[i] = min(sar[i], highs[i-1], highs[i-2])
+                else:
+                    sar[i] = min(sar[i], highs[i-1])
+
+                # 检查趋势反转
+                if highs[i] > sar[i]:
+                    # 转为多头
+                    long = True
+                    sar[i] = ep
+                    ep = highs[i]
+                    af = af_step
+                elif lows[i] < ep:
+                    # 更新极点
+                    ep = lows[i]
+                    af = min(af + af_step, max_af)
+
+        return sar
+
+    # 使用map_batches进行向量化计算
+    return lazy_df.with_columns(
+        pl.map_batches(
+            ['high', 'low', 'close'],
+            lambda cols: sar_calculation(
+                cols[0].to_numpy(),
+                cols[1].to_numpy(),
+                cols[2].to_numpy()
+            )
+        ).alias('sar')
+    )
+
+
+def calculate_dma(lazy_df: pl.LazyFrame, short_period: int = 10, long_period: int = 50, signal_period: int = 10) -> pl.LazyFrame:
+    """
+    计算DMA指标（平行线差指标）
+    DMA = MA(CLOSE, short_period) - MA(CLOSE, long_period)
+    AMA = MA(DMA, signal_period)
+
+    Args:
+        lazy_df: Polars LazyFrame
+        short_period: 短期均线周期，默认10
+        long_period: 长期均线周期，默认50
+        signal_period: 信号线周期，默认10
+
+    Returns:
+        pl.LazyFrame: 包含DMA和AMA指标的LazyFrame
+    """
+    # 计算短期和长期移动平均
+    short_ma = pl.col('close').rolling_mean(window_size=short_period, min_periods=short_period)
+    long_ma = pl.col('close').rolling_mean(window_size=long_period, min_periods=long_period)
+
+    # 计算DMA
+    dma = to_float32(short_ma - long_ma).alias('dma')
+
+    # 计算AMA（DMA的移动平均）
+    ama = to_float32(dma.rolling_mean(window_size=signal_period, min_periods=signal_period)).alias('ama')
+
+    return lazy_df.with_columns([dma, ama])
 
 
 def calculate_trend_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **params) -> pl.LazyFrame:
@@ -191,5 +315,18 @@ def calculate_trend_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **p
         windows = params.get('trix_windows', [12])
         signal_period = params.get('trix_signal_period', 9)
         lazy_df = calculate_trix(lazy_df, windows, signal_period)
-    
+
+    # 计算SAR指标
+    if 'sar' in indicator_types:
+        af_step = params.get('sar_af_step', 0.02)
+        max_af = params.get('sar_max_af', 0.2)
+        lazy_df = calculate_sar(lazy_df, af_step, max_af)
+
+    # 计算DMA指标
+    if 'dma' in indicator_types:
+        short_period = params.get('dma_short_period', 10)
+        long_period = params.get('dma_long_period', 50)
+        signal_period = params.get('dma_signal_period', 10)
+        lazy_df = calculate_dma(lazy_df, short_period, long_period, signal_period)
+
     return lazy_df

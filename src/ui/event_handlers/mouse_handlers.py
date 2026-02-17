@@ -161,6 +161,10 @@ class MouseHandler:
                         current_vr = self.main_window.current_vr_data['vr'][index]
                         current_mavr = self.main_window.current_vr_data['mavr'][index] if index < len(self.main_window.current_vr_data['mavr']) else 0
                         self.main_window.kdj_values_label.setText(f"<font color='#FFFFFF'>VR: {self._format_value(current_vr)}</font>  <font color='#FFFF00'>MAVR: {self._format_value(current_mavr)}</font>")
+                    elif current_indicator == "DMA" and hasattr(self.main_window, 'current_dma_data') and 0 <= index < len(self.main_window.current_dma_data['dma']):
+                        current_dma = self.main_window.current_dma_data['dma'][index]
+                        current_ama = self.main_window.current_dma_data['ama'][index] if index < len(self.main_window.current_dma_data['ama']) else None
+                        self.main_window.kdj_values_label.setText(f"<font color='white'>DMA(10,50): {self._format_value(current_dma)}</font>  <font color='yellow'>AMA: {self._format_value(current_ama)}</font>")
                 
                 # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
                 if hasattr(self.main_window, 'volume_values_label'):

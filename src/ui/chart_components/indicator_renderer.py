@@ -51,6 +51,17 @@ class IndicatorRenderer:
                 plot_widget.removeItem(point_item)
             self.main_window.ma_points.clear()
             
+            # 检查是否显示MA线
+            if not hasattr(self.main_window, 'show_ma_lines') or not self.main_window.show_ma_lines:
+                logger.debug("MA线显示已关闭，跳过绘制")
+                # 仍然保存MA数据供其他功能使用
+                self._save_ma_data(df)
+                return
+            
+            # 调试：检查数据列
+            logger.debug(f"render_ma_lines - 数据列: {list(df.columns) if hasattr(df, 'columns') else 'N/A'}")
+            logger.debug(f"render_ma_lines - 数据行数: {len(df)}")
+            
             # 定义MA配置
             ma_configs = [
                 ('ma5', 'MA5', 'w', 'white'),
@@ -60,9 +71,22 @@ class IndicatorRenderer:
             ]
             
             # 绘制各条MA线
+            ma_drawn_count = 0
             for col_name, ma_name, pen_color, label_color in ma_configs:
                 if col_name in df.columns:
-                    self._draw_ma_line(plot_widget, df, x, col_name, ma_name, pen_color, label_color)
+                    # 检查MA数据是否有效
+                    ma_data = df[col_name].to_numpy()
+                    valid_count = np.sum(~np.isnan(ma_data))
+                    logger.debug(f"绘制MA线: {ma_name}, 列名: {col_name}, 有效数据点: {valid_count}/{len(ma_data)}")
+                    if valid_count > 0:
+                        self._draw_ma_line(plot_widget, df, x, col_name, ma_name, pen_color, label_color)
+                        ma_drawn_count += 1
+                    else:
+                        logger.warning(f"MA线 {ma_name} 没有有效数据")
+                else:
+                    logger.warning(f"MA列不存在: {col_name}")
+            
+            logger.debug(f"render_ma_lines - 成功绘制 {ma_drawn_count} 条MA线")
             
             # 保存MA数据
             self._save_ma_data(df)
@@ -1043,36 +1067,41 @@ class IndicatorRenderer:
     def render_dma(self, plot_widget: Any, df: Any, x: np.ndarray):
         """渲染DMA指标"""
         try:
+            # DMA指标已经在数据准备阶段计算完成，直接使用
             if 'dma' not in df.columns or 'ama' not in df.columns:
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_indicator_parallel('dma', short_period=10, long_period=50, signal_period=10)
-                df = analyzer.get_data(return_polars=True)
-            if 'dma' in df.columns and 'ama' in df.columns:
-                dma_data = df['dma'].to_numpy().astype(np.float64)
-                ama_data = df['ama'].to_numpy().astype(np.float64)
-                mask = ~np.isnan(dma_data)
-                ama_mask = ~np.isnan(ama_data)
-                if np.any(mask) or np.any(ama_mask):
-                    # 设置Y轴范围
-                    all_data = np.concatenate([dma_data[mask], ama_data[ama_mask]])
-                    if len(all_data) > 0:
-                        min_val = np.min(all_data)
-                        max_val = np.max(all_data)
-                        range_val = max_val - min_val
-                        if range_val == 0:
-                            range_val = abs(max_val) * 0.1 if max_val != 0 else 1
-                        min_val = min_val - range_val * 0.1
-                        max_val = max_val + range_val * 0.1
-                        plot_widget.setYRange(min_val, max_val)
-                    # 绘制DMA线（白色）
-                    if np.any(mask):
-                        plot_widget.plot(x[mask], dma_data[mask], pen=pg.mkPen('w', width=1), name='DMA')
-                    # 绘制AMA线（黄色）
-                    if np.any(ama_mask):
-                        plot_widget.plot(x[ama_mask], ama_data[ama_mask], pen=pg.mkPen('y', width=1), name='AMA')
-                    # 绘制零线
-                    plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
+                logger.warning("DMA数据列不存在，跳过渲染")
+                return df
+
+            dma_data = df['dma'].to_numpy().astype(np.float64)
+            ama_data = df['ama'].to_numpy().astype(np.float64)
+            mask = ~np.isnan(dma_data)
+            ama_mask = ~np.isnan(ama_data)
+
+            if np.any(mask) or np.any(ama_mask):
+                # 设置Y轴范围（使用所有有效数据）
+                all_data = np.concatenate([dma_data[mask], ama_data[ama_mask]])
+                if len(all_data) > 0:
+                    min_val = np.min(all_data)
+                    max_val = np.max(all_data)
+                    range_val = max_val - min_val
+                    if range_val == 0:
+                        range_val = abs(max_val) * 0.1 if max_val != 0 else 1
+                    min_val = min_val - range_val * 0.1
+                    max_val = max_val + range_val * 0.1
+                    plot_widget.setYRange(min_val, max_val)
+
+                # 绘制DMA线（白色）
+                if np.any(mask):
+                    plot_widget.plot(x, dma_data, pen=pg.mkPen('w', width=1), name='DMA')
+                    logger.debug(f"绘制DMA线，数据点: {np.sum(mask)}")
+
+                # 绘制AMA线（黄色）
+                if np.any(ama_mask):
+                    plot_widget.plot(x, ama_data, pen=pg.mkPen('y', width=1), name='AMA')
+                    logger.debug(f"绘制AMA线，数据点: {np.sum(ama_mask)}")
+
+                # 绘制零线
+                plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
         except Exception as e:
             logger.exception(f"渲染DMA失败: {e}")
         return df

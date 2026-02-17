@@ -283,6 +283,7 @@ class ChartUIBuilder:
             'MTM': self._get_mtm_text,
             'PSY': self._get_psy_text,
             'MCST': self._get_mcst_text,
+            'SAR': self._get_sar_text,
         }
 
         generator = text_generators.get(indicator_type)
@@ -482,6 +483,13 @@ class ChartUIBuilder:
                 text += f"  <font color='yellow'>MA: {latest_ma:.2f}</font>"
             return text
         return "<font color='white'>MCST指标数据不可用</font>"
+
+    def _get_sar_text(self, df: Any) -> str:
+        """获取SAR标签文本"""
+        if 'sar' in df.columns:
+            latest_sar = df['sar'].tail(1)[0]
+            return f"<font color='white'>SAR(0.02,0.2): {latest_sar:.2f}</font>"
+        return "<font color='white'>SAR指标数据不可用</font>"
 
     def add_label_to_container(self, container: QWidget, label: QLabel, window_index: int):
         """

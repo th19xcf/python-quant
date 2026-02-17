@@ -32,12 +32,13 @@ class IndicatorLabelManager:
         # 保存指标数据，用于鼠标移动时更新指标数值
         self.main_window.chart_manager.save_indicator_data(df_pl)
         
-        # 获取当前第3个窗口的指标
-        current_indicator = self.main_window.window_indicators.get(3, "KDJ")
+        # 使用传入的indicator_name，而不是从window_indicators获取
+        # 这样可以确保显示的是当前正在绘制的指标
+        current_indicator = indicator_name
         
         # 日志记录：当前指标和可用列
         from src.utils.logger import logger
-        logger.info(f"当前指标: {current_indicator}, 可用列: {df_pd.columns.tolist()}")
+        logger.info(f"更新指标值标签 - 指标: {current_indicator}, 可用列: {df_pd.columns.tolist()}")
         
         # 根据当前指标更新标签文本
         if current_indicator == "KDJ":
@@ -58,6 +59,8 @@ class IndicatorLabelManager:
             self._update_trix_label(df_pd)
         elif current_indicator == "BRAR":
             self._update_brar_label(df_pd)
+        elif current_indicator == "DMA":
+            self._update_dma_label(df_pd)
         else:
             self._update_default_label(df_pd)
     
@@ -205,7 +208,7 @@ class IndicatorLabelManager:
     def _update_brar_label(self, df_pd):
         """
         更新BRAR标签
-        
+
         Args:
             df_pd: pandas DataFrame，包含BRAR数据
         """
@@ -217,7 +220,23 @@ class IndicatorLabelManager:
         else:
             brar_text = f"<font color='white'>BRAR指标数据不可用</font>"
         self.main_window.kdj_values_label.setText(brar_text)
-    
+
+    def _update_dma_label(self, df_pd):
+        """
+        更新DMA标签
+
+        Args:
+            df_pd: pandas DataFrame，包含DMA数据
+        """
+        if 'dma' in df_pd.columns and 'ama' in df_pd.columns:
+            latest_dma = df_pd['dma'].iloc[-1]
+            latest_ama = df_pd['ama'].iloc[-1]
+            # 更新标签文本，使用通达信风格：DMA白色，AMA黄色
+            dma_text = f"<font color='white'>DMA(10,50): {latest_dma:.2f}</font>  <font color='yellow'>AMA: {latest_ama:.2f}</font>"
+        else:
+            dma_text = f"<font color='white'>DMA指标数据不可用</font>"
+        self.main_window.kdj_values_label.setText(dma_text)
+
     def _update_default_label(self, df_pd):
         """
         更新默认标签

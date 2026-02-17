@@ -52,6 +52,9 @@ class ChartDataPreparer:
             # 计算移动平均线
             df_pl = self._calculate_moving_averages(df_pl)
             
+            # 计算DMA指标（需要在截取数据前计算，以确保前部数据也有有效值）
+            df_pl = self._calculate_dma(df_pl)
+            
             # 截取显示数据
             df_pl = self._truncate_data(df_pl, bar_count)
             
@@ -169,9 +172,20 @@ class ChartDataPreparer:
         try:
             from src.tech_analysis.indicators.trend import calculate_ma
             
+            logger.debug(f"计算MA前的数据列: {df.columns}")
+            logger.debug(f"计算MA前的数据行数: {len(df)}")
+            
             # 使用calculate_ma直接计算MA
             # 注意：此时close列已经是复权后的价格，MA计算会基于复权价格
             df = calculate_ma(df.lazy(), [5, 10, 20, 60]).collect()
+            
+            logger.debug(f"计算MA后的数据列: {df.columns}")
+            
+            # 检查MA列是否存在且有有效值
+            for col in ['ma5', 'ma10', 'ma20', 'ma60']:
+                if col in df.columns:
+                    non_null_count = df[col].drop_nulls().count()
+                    logger.debug(f"{col} 非空值数量: {non_null_count}")
             
             return df
             
@@ -179,21 +193,62 @@ class ChartDataPreparer:
             logger.warning(f"计算MA失败: {e}")
             return df
     
+    def _calculate_dma(self, df: pl.DataFrame) -> pl.DataFrame:
+        """
+        计算DMA指标（平均线差指标）
+        DMA = MA(CLOSE, 10) - MA(CLOSE, 50)
+        AMA = MA(DMA, 10)
+        
+        需要在截取数据前计算，以确保显示区域的前部也有有效值
+        
+        Args:
+            df: 数据（已应用复权）
+            
+        Returns:
+            pl.DataFrame: 包含DMA和AMA的数据
+        """
+        try:
+            from src.tech_analysis.indicators.trend import calculate_dma
+            
+            logger.debug(f"计算DMA前的数据行数: {len(df)}")
+            
+            # 使用calculate_dma计算DMA指标
+            df = calculate_dma(df.lazy(), short_period=10, long_period=50, signal_period=10).collect()
+            
+            logger.debug(f"计算DMA后的数据列: {df.columns}")
+            
+            # 检查DMA列是否存在且有有效值
+            if 'dma' in df.columns:
+                non_null_count = df['dma'].drop_nulls().count()
+                logger.debug(f"dma 非空值数量: {non_null_count}")
+            if 'ama' in df.columns:
+                non_null_count = df['ama'].drop_nulls().count()
+                logger.debug(f"ama 非空值数量: {non_null_count}")
+            
+            return df
+            
+        except Exception as e:
+            logger.warning(f"计算DMA失败: {e}")
+            return df
+    
     def _truncate_data(self, df: pl.DataFrame, bar_count: int) -> pl.DataFrame:
         """
         截取显示数据
         
+        由于DMA(10,50)指标需要50+10=60条数据才能计算出有效的AMA值，
+        我们在完整数据集上计算DMA后，再截取显示区域的数据。
+        这样显示区域的前部也会有有效的DMA值。
+        
         Args:
-            df: 完整数据
+            df: 完整数据（已计算所有指标）
             bar_count: 目标显示数量
             
         Returns:
             pl.DataFrame: 截取后的数据
         """
         if bar_count < len(df):
-            # 多取60条数据确保MA60计算完整
-            df = df.tail(bar_count + 60)
-            # 再取最后bar_count条用于显示
+            # 直接截取最后bar_count条数据
+            # 由于DMA已经在完整数据集上计算完成，截取后的数据会有完整的DMA值
             df = df.tail(bar_count)
         
         return df

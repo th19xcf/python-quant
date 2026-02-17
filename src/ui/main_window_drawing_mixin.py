@@ -54,6 +54,9 @@ class MainWindowDrawingMixin:
         self.selected_ma = None
         self.crosshair_enabled = False
         
+        # MA线显示状态（默认显示）
+        self.show_ma_lines = True
+        
         self.current_kline_index = -1
         self.current_kline_data = {}
         self.current_mouse_pos = None
@@ -135,7 +138,10 @@ class MainWindowDrawingMixin:
             x = np.arange(len(dates))
             self._indicator_renderer.render_ma_lines(self.tech_plot_widget, df_pl, x)
             
-            # 8. 绘制高低点标注
+            # 8. 绘制主图叠加指标（如SAR、BOLL等）
+            self._render_overlay_indicators(df_pl, x)
+            
+            # 9. 绘制高低点标注
             self._draw_price_extremes(dates, highs, lows)
             
             # 9. 加载分红标记
@@ -185,7 +191,7 @@ class MainWindowDrawingMixin:
     
     def _update_ma_values_display(self, df: pl.DataFrame, dates: list):
         """
-        更新标题栏显示最后一个交易日的均线数据
+        更新标题栏显示最后一个交易日的均线数据和主图指标
         
         Args:
             df: 股票数据DataFrame
@@ -220,7 +226,7 @@ class MainWindowDrawingMixin:
                 else:
                     ma_values[ma_name] = "--"
             
-            # 更新显示
+            # 构建基础文本（日期和MA值）
             ma_text = (
                 f"<font color='#C0C0C0'>日期: {last_date}</font>  "
                 f"<font color='white'>MA5: {ma_values['MA5']}</font>  "
@@ -228,7 +234,28 @@ class MainWindowDrawingMixin:
                 f"<font color='red'>MA20: {ma_values['MA20']}</font>  "
                 f"<font color='#00FF00'>MA60: {ma_values['MA60']}</font>"
             )
-            self.ma_values_label.setText(ma_text)
+            
+            # 添加主图指标显示（SAR、BOLL等）
+            overlay_text = ""
+            
+            # SAR指标
+            if hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('SAR', {}).isChecked():
+                if 'sar' in df.columns:
+                    sar_data = df['sar'].to_numpy()
+                    if len(sar_data) > 0 and not np.isnan(sar_data[-1]):
+                        overlay_text += f"  <font color='white'>SAR: {sar_data[-1]:.2f}</font>"
+            
+            # BOLL指标
+            if hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('BOLL', {}).isChecked():
+                if 'mb' in df.columns and 'up' in df.columns and 'dn' in df.columns:
+                    mb_data = df['mb'].to_numpy()
+                    up_data = df['up'].to_numpy()
+                    dn_data = df['dn'].to_numpy()
+                    if len(mb_data) > 0 and not np.isnan(mb_data[-1]):
+                        overlay_text += f"  <font color='white'>BOLL: {mb_data[-1]:.2f}/{up_data[-1]:.2f}/{dn_data[-1]:.2f}</font>"
+            
+            # 更新显示
+            self.ma_values_label.setText(ma_text + overlay_text)
             
         except Exception as e:
             logger.exception(f"更新均线数据显示失败: {e}")
@@ -313,9 +340,24 @@ class MainWindowDrawingMixin:
         # 绘制最低点标注
         self._draw_low_point_label(dates, lows, low_index, current_low)
         
-        # 设置Y轴范围
-        y_min = np.min(lows) * 0.99
-        y_max = np.max(highs) * 1.01
+        # 设置Y轴范围（考虑K线价格和MA线）
+        y_min = np.min(lows)
+        y_max = np.max(highs)
+        
+        # 如果有MA数据，也考虑MA线的范围
+        if hasattr(self, 'ma_data') and self.ma_data:
+            for ma_name, ma_values in self.ma_data.items():
+                if len(ma_values) > 0:
+                    valid_ma = ma_values[~np.isnan(ma_values)]
+                    if len(valid_ma) > 0:
+                        y_min = min(y_min, np.min(valid_ma))
+                        y_max = max(y_max, np.max(valid_ma))
+        
+        # 添加边距
+        y_range = y_max - y_min
+        y_min = y_min - y_range * 0.05
+        y_max = y_max + y_range * 0.05
+        
         self.tech_plot_widget.setYRange(y_min, y_max)
         
         # 设置X轴范围
@@ -401,6 +443,31 @@ class MainWindowDrawingMixin:
         y_min, y_max = y_range[0], y_range[1]
         self.low_text_item.setPos(low_index + 0.5, current_low - (y_max - y_min) * 0.02)
     
+    def _render_overlay_indicators(self, df_pl, x):
+        """
+        渲染主图叠加指标（如SAR、BOLL等）
+        
+        Args:
+            df_pl: 数据
+            x: x轴坐标
+        """
+        try:
+            # 检查是否有主图叠加指标被选中
+            # SAR指标
+            if hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('SAR', {}).isChecked():
+                logger.debug("绘制SAR指标")
+                df_pl = self._indicator_renderer.render_sar(self.tech_plot_widget, df_pl, x)
+            
+            # BOLL指标
+            if hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('BOLL', {}).isChecked():
+                logger.debug("绘制BOLL指标")
+                df_pl = self._indicator_renderer.render_boll(self.tech_plot_widget, df_pl, x)
+                
+        except Exception as e:
+            logger.exception(f"渲染主图叠加指标失败: {e}")
+        
+        return df_pl
+    
     def _load_dividend_markers(self, stock_code: str, dates):
         """
         加载分红标记
@@ -454,6 +521,10 @@ class MainWindowDrawingMixin:
             x: x轴坐标
             dates: 日期数组
         """
+        # 如果没有指定指标，不渲染
+        if not indicator_name:
+            return
+        
         # 获取对应的plot widget
         if window_index == 2:
             plot_widget = self.volume_plot_widget
@@ -579,6 +650,13 @@ class MainWindowDrawingMixin:
             self.current_brar_data = {
                 'br': df_pl['br'].to_list(),
                 'ar': df_pl['ar'].to_list() if 'ar' in df_pl.columns else [],
+            }
+
+        # DMA数据
+        if 'dma' in df_pl.columns:
+            self.current_dma_data = {
+                'dma': df_pl['dma'].to_list(),
+                'ama': df_pl['ama'].to_list() if 'ama' in df_pl.columns else [],
             }
     
     def _setup_crosshair(self):

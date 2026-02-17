@@ -193,6 +193,13 @@ class ChartManager:
                 text = f"<font color='#FFFFFF'>PDI: {latest_pdi:.2f}</font>  <font color='#FFFF00'>NDI: {latest_ndi:.2f}</font>  <font color='#FF00FF'>ADX: {latest_adx:.2f}</font>  <font color='#00FF00'>ADXR: {latest_adxr:.2f}</font>"
             else:
                 text = ""
+        elif indicator_name == "DMA":
+            if 'dma' in data_df.columns and 'ama' in data_df.columns:
+                latest_dma = data_df['dma'].iloc[-1]
+                latest_ama = data_df['ama'].iloc[-1]
+                text = f"<font color='white'>DMA(10,50): {latest_dma:.2f}</font>  <font color='yellow'>AMA: {latest_ama:.2f}</font>"
+            else:
+                text = ""
         else:
             text = ""
 
@@ -334,7 +341,8 @@ class ChartManager:
 
         self.save_indicator_data(df_pl)
 
-        current_indicator = window.window_indicators.get(3, "KDJ")
+        # 使用传入的indicator_name，而不是从window_indicators获取
+        current_indicator = indicator_name
 
         # 使用 Polars 的 item() 方法获取最后一行数据，避免转换为 pandas
         def get_latest_value(df, col):
@@ -412,6 +420,14 @@ class ChartManager:
             else:
                 brar_text = "<font color='white'>BRAR指标数据不可用</font>"
             window.kdj_values_label.setText(brar_text)
+        elif current_indicator == "DMA":
+            latest_dma = get_latest_value(df_pl, 'dma')
+            latest_ama = get_latest_value(df_pl, 'ama')
+            if latest_dma is not None and latest_ama is not None:
+                dma_text = f"<font color='white'>DMA(10,50): {latest_dma:.2f}</font>  <font color='yellow'>AMA: {latest_ama:.2f}</font>"
+            else:
+                dma_text = "<font color='white'>DMA指标数据不可用</font>"
+            window.kdj_values_label.setText(dma_text)
         else:
             latest_k = get_latest_value(df_pl, 'k')
             latest_d = get_latest_value(df_pl, 'd')
@@ -479,6 +495,11 @@ class ChartManager:
         window.current_vr_data = {
             'vr': df_pl['vr'].to_list() if 'vr' in df_pl.columns else [],
             'mavr': df_pl['mavr'].to_list() if 'mavr' in df_pl.columns else []
+        }
+
+        window.current_dma_data = {
+            'dma': df_pl['dma'].to_list() if 'dma' in df_pl.columns else [],
+            'ama': df_pl['ama'].to_list() if 'ama' in df_pl.columns else []
         }
 
     def plot_k_line(self, df, stock_name, stock_code):
