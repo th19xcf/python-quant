@@ -658,6 +658,12 @@ class MainWindowDrawingMixin:
                 'dma': df_pl['dma'].to_list(),
                 'ama': df_pl['ama'].to_list() if 'ama' in df_pl.columns else [],
             }
+        
+        # SAR数据
+        if 'sar' in df_pl.columns:
+            self.current_sar_data = {
+                'sar': df_pl['sar'].to_list(),
+            }
     
     def _setup_crosshair(self):
         """设置十字线"""

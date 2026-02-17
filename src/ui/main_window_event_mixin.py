@@ -846,7 +846,7 @@ class MainWindowEventMixin:
 
     def update_ma_values_display(self, index, dates, opens, highs, lows, closes):
         """
-        Update MA values
+        Update MA values and overlay indicator values
         """
         if not hasattr(self, 'ma_values_label'): return
         if index < 0 or index >= len(dates): return
@@ -870,7 +870,33 @@ class MainWindowEventMixin:
         ma60_color = '#00FF00'
         
         ma_text = f"<font color='#C0C0C0'>日期: {current_date}</font>  <font color='{ma5_color}'>MA5: {ma_values['MA5']}</font>  <font color='{ma10_color}'>MA10: {ma_values['MA10']}</font>  <font color='{ma20_color}'>MA20: {ma_values['MA20']}</font>  <font color='{ma60_color}'>MA60: {ma_values['MA60']}</font>"
-        self.ma_values_label.setText(ma_text)
+        
+        # 添加主图叠加指标显示（SAR、BOLL等）
+        overlay_text = ""
+        
+        # SAR指标
+        if hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('SAR', {}).isChecked():
+            if hasattr(self, 'current_sar_data') and 'sar' in self.current_sar_data:
+                sar_list = self.current_sar_data['sar']
+                if 0 <= index < len(sar_list):
+                    sar_val = sar_list[index]
+                    if sar_val is not None and str(sar_val) != 'nan':
+                        overlay_text += f"  <font color='white'>SAR: {sar_val:.2f}</font>"
+        
+        # BOLL指标
+        if hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('BOLL', {}).isChecked():
+            if hasattr(self, 'current_boll_data'):
+                mb_list = self.current_boll_data.get('mb', [])
+                up_list = self.current_boll_data.get('up', [])
+                dn_list = self.current_boll_data.get('dn', [])
+                if 0 <= index < len(mb_list):
+                    mb_val = mb_list[index]
+                    up_val = up_list[index] if index < len(up_list) else None
+                    dn_val = dn_list[index] if index < len(dn_list) else None
+                    if mb_val is not None and str(mb_val) != 'nan':
+                        overlay_text += f"  <font color='white'>BOLL: {mb_val:.2f}/{up_val:.2f}/{dn_val:.2f}</font>"
+        
+        self.ma_values_label.setText(ma_text + overlay_text)
 
     def show_info_box(self):
         """

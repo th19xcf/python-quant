@@ -165,6 +165,9 @@ class MouseHandler:
                         current_dma = self.main_window.current_dma_data['dma'][index]
                         current_ama = self.main_window.current_dma_data['ama'][index] if index < len(self.main_window.current_dma_data['ama']) else None
                         self.main_window.kdj_values_label.setText(f"<font color='white'>DMA(10,50): {self._format_value(current_dma)}</font>  <font color='yellow'>AMA: {self._format_value(current_ama)}</font>")
+                    elif current_indicator == "SAR" and hasattr(self.main_window, 'current_sar_data') and 0 <= index < len(self.main_window.current_sar_data['sar']):
+                        current_sar = self.main_window.current_sar_data['sar'][index]
+                        self.main_window.kdj_values_label.setText(f"<font color='white'>SAR: {self._format_value(current_sar)}</font>")
                 
                 # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
                 if hasattr(self.main_window, 'volume_values_label'):
@@ -208,6 +211,10 @@ class MouseHandler:
                         current_up = self.main_window.current_boll_data['up'][index]
                         current_dn = self.main_window.current_boll_data['dn'][index]
                         self.main_window.volume_values_label.setText(f"<font color='white'>MB: {current_mb:.2f}</font>  <font color='red'>UP: {current_up:.2f}</font>  <font color='#00FF00'>DN: {current_dn:.2f}</font>")
+                    elif current_indicator == "SAR" and hasattr(self.main_window, 'current_sar_data') and 0 <= index < len(self.main_window.current_sar_data['sar']):
+                        # 更新SAR标签
+                        current_sar = self.main_window.current_sar_data['sar'][index]
+                        self.main_window.volume_values_label.setText(f"<font color='white'>SAR: {self._format_value(current_sar)}</font>")
             
             # 如果十字线功能启用，更新十字线位置和信息框
             if self.main_window.crosshair_enabled and 0 <= index < len(dates):
