@@ -71,7 +71,7 @@ class DataSourceFactory:
                     handler = config.handler_class(**merged_params)
                     self._datasources[name] = handler
                     logger.info(f"数据源{name}初始化成功")
-                except Exception as e:
+                except (OSError, RuntimeError) as e:
                     logger.exception(f"数据源{name}初始化失败: {e}")
         
         # 设置默认主数据源（优先级最高的）
@@ -203,7 +203,7 @@ class DataSourceFactory:
                     return True
                 
                 return False
-            except Exception:
+            except (OSError, RuntimeError):
                 return False
         else:
             # 检查所有数据源
@@ -269,7 +269,7 @@ class DataSourceFactory:
             try:
                 if hasattr(datasource, 'supports_data_type') and datasource.supports_data_type(data_type):
                     return datasource
-            except Exception:
+            except (OSError, RuntimeError):
                 continue
         
         # 如果没有找到支持特定数据类型的数据源，返回主数据源
@@ -283,7 +283,7 @@ class DataSourceFactory:
                 if hasattr(datasource, 'close'):
                     datasource.close()
                     logger.info(f"数据源{name}已关闭")
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.exception(f"关闭数据源{name}时发生错误: {e}")
         
         self._datasources.clear()

@@ -693,9 +693,9 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     # 更新计算状态和清除缓存
                     self.calculated_indicators['plugin'].add(plugin_name)
                     self._clear_pandas_cache()
-        except Exception as e:
+        except (ValueError, TypeError, RuntimeError) as e:
             raise RuntimeError(f"计算插件指标{plugin_name}失败: {str(e)}")
-        
+
         return self._ensure_pandas_df()
     
     def calculate_indicator_parallel(self, indicator_type, *args, **kwargs):
@@ -850,14 +850,14 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                             self.calculated_indicators[indicator_type].update(windows)
                         else:
                             self.calculated_indicators[indicator_type] = True
-            except Exception as e:
+            except (ValueError, TypeError, RuntimeError) as e:
                 logger.error(f"计算内置指标失败: {e}")
-        
+
         # 计算插件指标
         for plugin_name in plugin_indicators:
             try:
                 self.calculate_plugin_indicator(plugin_name, **kwargs)
-            except Exception as e:
+            except (ValueError, TypeError, RuntimeError) as e:
                 logger.error(f"计算插件指标{plugin_name}失败: {e}")
         
         return self._ensure_pandas_df()
@@ -881,9 +881,9 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         for plugin_name in plugin_names:
             try:
                 self.calculate_plugin_indicator(plugin_name, *args, **kwargs)
-            except Exception as e:
+            except (ValueError, TypeError, RuntimeError) as e:
                 logger.error(f"计算插件指标{plugin_name}失败: {e}")
-        
+
         return self._ensure_pandas_df()
     
     def calculate_all_indicators(self, data: Optional[Union[pl.DataFrame, pd.DataFrame]] = None, indicator_types: Optional[List[str]] = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
@@ -986,7 +986,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 self._pandas_cache = None
                 self._pandas_cache_hash = None
                 indicators_updated = True
-            except Exception as e:
+            except (ValueError, TypeError, RuntimeError) as e:
                 success = False
                 error_message = f"计算内置指标失败: {str(e)}"
                 logger.error(error_message)
@@ -1005,7 +1005,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 try:
                     # 直接调用插件计算
                     self.calculate_plugin_indicator(plugin_name, **params)
-                except Exception as e:
+                except (ValueError, TypeError, RuntimeError) as e:
                     logger.error(f"计算插件指标{plugin_name}时发生错误: {str(e)}")
         
         # 7. 恢复复权列到结果中
@@ -1021,7 +1021,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 if columns_to_add:
                     self.pl_df = self.pl_df.with_columns(columns_to_add)
                     logger.debug(f"恢复复权列: {list(adj_data.keys())}")
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 logger.warning(f"恢复复权列时出错: {e}")
 
         # 8. 发布指标计算完成事件
@@ -1089,7 +1089,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 # 重置所有计算状态
                 self.reset_calculation()
             return True
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.error(f"清除缓存失败: {str(e)}")
             return False
 

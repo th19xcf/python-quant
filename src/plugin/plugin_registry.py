@@ -70,7 +70,7 @@ class PluginRegistry:
             # 缓存插件元数据
             self.plugin_metadata[plugin_type][plugin_name] = metadata
             return True
-        except Exception as e:
+        except (OSError, RuntimeError, ImportError, TypeError) as e:
             return False
     
     def unregister_plugin(self, plugin_name: str, plugin_type: str = None) -> bool:
@@ -218,7 +218,7 @@ class PluginRegistry:
                 'type': self._get_plugin_type(plugin_class),
                 'dependencies': plugin_instance.get_dependencies()
             }
-        except Exception as e:
+        except (OSError, RuntimeError, ImportError, TypeError) as e:
             return None
     
     def clear(self) -> None:

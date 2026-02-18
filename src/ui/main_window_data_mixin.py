@@ -82,7 +82,7 @@ class MainWindowDataMixin:
 
             self.statusBar().showMessage(f"已加载 {stock_name}({stock_code}) 的K线图", 3000)
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"处理股票数据失败: {e}")
             self.statusBar().showMessage(f"加载失败: {str(e)}", 5000)
         finally:
@@ -178,7 +178,7 @@ class MainWindowDataMixin:
                         
                         self._add_table_row(data_row)
                     
-                except Exception as e:
+                except (OSError, RuntimeError, ValueError) as e:
                     logger.error(f"Error parsing index file {index_file}: {e}")
                     continue
             
@@ -190,7 +190,7 @@ class MainWindowDataMixin:
             if hasattr(self, 'progress_bar'):
                 self.progress_bar.setVisible(False)
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Failed to fetch index data: {e}")
             self.statusBar().showMessage(f"Error: {e}", 5000)
             if hasattr(self, 'progress_bar'):
@@ -398,7 +398,7 @@ class MainWindowDataMixin:
                     # 添加到所有股票数据列表
                     all_stock_data.extend(data)
                     
-                except Exception as e:
+                except (OSError, RuntimeError, ValueError) as e:
                     logger.warning(f"解析文件{file_path}失败: {e}")
                     continue
             
@@ -532,7 +532,7 @@ class MainWindowDataMixin:
             if hasattr(self, 'progress_bar'):
                 self.progress_bar.setVisible(False)
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"显示{stock_type}数据失败: {e}")
             self.statusBar().showMessage(f"显示{stock_type}数据失败: {str(e)[:50]}...", 5000)
             # 隐藏进度条
@@ -564,7 +564,7 @@ class MainWindowDataMixin:
             logger.info(f"为{df.height}条数据重新计算了技术指标")
             return result_pl
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"重新计算技术指标失败: {e}")
             return df
 
@@ -630,7 +630,7 @@ class MainWindowDataMixin:
             
             self.statusBar().showMessage(f"已加载 {index_name} 的K线图", 3000)
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"显示指数数据失败: {e}")
             self.statusBar().showMessage(f"加载失败: {str(e)}", 5000)
         finally:
@@ -659,7 +659,7 @@ class MainWindowDataMixin:
             # Assuming logic is similar to _on_index_impl but for multiple days
             pass 
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Error showing 5 days data: {e}")
 
     def _add_table_row(self, data_row):

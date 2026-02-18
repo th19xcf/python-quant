@@ -63,7 +63,7 @@ class DatabaseManager:
             # 返回创建的会话对象
             return self.session
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"数据库连接失败: {e}")
             raise
     
@@ -76,7 +76,7 @@ class DatabaseManager:
                 try:
                     self.session.close()
                     self.Session.remove()
-                except Exception as session_e:
+                except (OSError, RuntimeError, ValueError) as session_e:
                     logger.warning(f"关闭数据库会话时发生错误（可能是连接已丢失）: {session_e}")
                     # 即使会话关闭失败，也要继续释放其他资源
                     self.session = None
@@ -84,12 +84,12 @@ class DatabaseManager:
             if self.engine:
                 try:
                     self.engine.dispose()
-                except Exception as engine_e:
+                except (OSError, RuntimeError, ValueError) as engine_e:
                     logger.warning(f"释放数据库引擎时发生错误: {engine_e}")
             
             logger.info("数据库连接已断开")
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"数据库断开连接失败: {e}")
     
     def create_tables(self):
@@ -108,7 +108,7 @@ class DatabaseManager:
             Base.metadata.create_all(self.engine)
             logger.info("数据库表创建成功")
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"数据库表创建失败: {e}")
             raise
     
@@ -121,7 +121,7 @@ class DatabaseManager:
             Base.metadata.drop_all(self.engine)
             logger.info("数据库表删除成功")
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"数据库表删除失败: {e}")
             raise
     
@@ -141,7 +141,7 @@ class DatabaseManager:
                 try:
                     # 测试会话是否仍然有效
                     self.session.execute(text("SELECT 1"))
-                except Exception as e:
+                except (OSError, RuntimeError, ValueError) as e:
                     logger.warning(f"现有数据库会话已失效，将创建新会话: {e}")
                     self._cleanup_session()
 
@@ -160,7 +160,7 @@ class DatabaseManager:
 
             return self.session
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取数据库会话失败: {e}")
             # 清理无效会话
             self._cleanup_session()
@@ -174,7 +174,7 @@ class DatabaseManager:
             if self.session:
                 try:
                     self.session.close()
-                except Exception as e:
+                except (OSError, RuntimeError, ValueError) as e:
                     logger.debug(f"关闭会话时出错（可能已失效）: {e}")
                 finally:
                     self.session = None
@@ -182,11 +182,11 @@ class DatabaseManager:
             if self.Session:
                 try:
                     self.Session.remove()
-                except Exception as e:
+                except (OSError, RuntimeError, ValueError) as e:
                     logger.debug(f"移除会话作用域时出错: {e}")
                 finally:
                     self.Session = None
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.warning(f"清理数据库会话时出错: {e}")
             # 强制重置
             self.session = None
@@ -206,6 +206,6 @@ class DatabaseManager:
             # 尝试通过引擎获取连接，测试连接是否有效
             with self.engine.connect():
                 return True
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.warning(f"数据库连接检查失败: {e}")
             return False

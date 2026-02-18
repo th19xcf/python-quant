@@ -58,7 +58,7 @@ class TdxDataSourcePlugin(DataSourcePlugin):
                     db_manager = DatabaseManager(config)
                     db_manager.connect()
                     logger.info("TDX数据源插件数据库连接成功")
-                except Exception as db_e:
+                except (OSError, RuntimeError, ValueError) as db_e:
                     logger.warning(f"TDX数据源插件数据库连接失败，将以离线模式运行: {db_e}")
                     db_manager = None
             
@@ -66,7 +66,7 @@ class TdxDataSourcePlugin(DataSourcePlugin):
             self.tdx_handler = TdxHandler(config, db_manager)
             logger.info("TDX数据源插件初始化成功")
             return True
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"初始化TDX数据源插件失败: {e}")
             return False
     
@@ -94,7 +94,7 @@ class TdxDataSourcePlugin(DataSourcePlugin):
                 # 获取分钟线数据
                 logger.warning(f"TDX数据源插件暂不支持{freq}周期数据")
                 return None
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"TDX数据源插件获取股票数据失败: {e}")
             return None
     
@@ -116,7 +116,7 @@ class TdxDataSourcePlugin(DataSourcePlugin):
             
             # 指数数据也使用get_kline_data方法获取
             return self.get_stock_data(ts_code, start_date, end_date, freq)
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"TDX数据源插件获取指数数据失败: {e}")
             return None
     
@@ -132,6 +132,6 @@ class TdxDataSourcePlugin(DataSourcePlugin):
             # TDX数据源不直接提供股票基本信息更新功能
             logger.warning("TDX数据源插件不支持直接更新股票基本信息")
             return True
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"TDX数据源插件更新股票基本信息失败: {e}")
             return False

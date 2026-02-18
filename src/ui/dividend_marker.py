@@ -78,13 +78,13 @@ class DividendMarkerItem(GraphicsObject):
                                     kline_date = dt.date()
                                 else:
                                     kline_date = dt
-                            except Exception:
+                            except (OSError, RuntimeError, ValueError):
                                 pass
                         elif isinstance(kline_date, str):
                             # 处理字符串类型日期
                             try:
                                 kline_date = datetime.strptime(kline_date, '%Y-%m-%d').date()
-                            except Exception:
+                            except (OSError, RuntimeError, ValueError):
                                 pass
 
                         # 确保ex_date是date类型
@@ -96,7 +96,7 @@ class DividendMarkerItem(GraphicsObject):
                             break
                     else:
                         indices.append(-1)  # 未找到对应日期
-                except Exception as e:
+                except (OSError, RuntimeError, ValueError) as e:
                     logger.warning(f"计算分红索引失败: {e}")
                     indices.append(-1)
             else:
@@ -203,7 +203,7 @@ class DividendMarkerItem(GraphicsObject):
                 p.setFont(font)
                 p.drawText(marker_rect, Qt.AlignCenter, text)
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.warning(f"绘制分红标记失败: {e}")
 
     def boundingRect(self):
@@ -347,7 +347,7 @@ class DividendMarkerManager:
 
             logger.info(f"成功创建分红标记，共{len(dividend_data)}条分红数据")
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"创建分红标记失败: {e}")
 
     def clear_markers(self):
@@ -357,14 +357,14 @@ class DividendMarkerManager:
         if self.marker_item is not None:
             try:
                 self.plot_widget.removeItem(self.marker_item)
-            except Exception as e:
+            except (OSError, RuntimeError, ValueError) as e:
                 logger.debug(f"移除分红标记时发生错误: {e}")
             self.marker_item = None
 
         if self.tooltip_item is not None:
             try:
                 self.plot_widget.removeItem(self.tooltip_item)
-            except Exception as e:
+            except (OSError, RuntimeError, ValueError) as e:
                 logger.debug(f"移除分红提示框时发生错误: {e}")
             self.tooltip_item = None
 
@@ -396,7 +396,7 @@ class DividendMarkerManager:
             self.tooltip_item.setPos(pos.x(), pos.y())
             self.tooltip_item.show()
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"显示分红提示框失败: {e}")
 
     def hide_tooltip(self):
@@ -415,7 +415,7 @@ class DividendMarkerManager:
             try:
                 self.marker_item.update()
                 logger.debug("触发分红标记重绘")
-            except Exception as e:
+            except (OSError, RuntimeError, ValueError) as e:
                 logger.debug(f"更新分红标记位置失败: {e}")
 
     def has_dividend_at_index(self, index):

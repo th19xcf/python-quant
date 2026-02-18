@@ -49,7 +49,7 @@ class IndicatorInteractionManager:
                 window.plot_k_line(window.current_stock_data, window.current_stock_name, window.current_stock_code)
             else:
                 logger.warning("current_stock_data 为 None，无法重新绘制K线图")
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"增加柱体数失败: {e}")
 
     def on_minus_btn_clicked(self):
@@ -67,7 +67,7 @@ class IndicatorInteractionManager:
                 window.plot_k_line(window.current_stock_data, window.current_stock_name, window.current_stock_code)
             else:
                 logger.warning("current_stock_data 为 None，无法重新绘制K线图")
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"减少柱体数失败: {e}")
 
     def on_left_arrow_clicked(self):
@@ -78,7 +78,7 @@ class IndicatorInteractionManager:
                 new_pos = max(0, current_pos - 100)
                 scroll_area.horizontalScrollBar().setValue(new_pos)
                 logger.info(f"指标选择栏向左滚动，当前位置: {new_pos}")
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"指标选择栏向左滚动失败: {e}")
 
     def on_right_arrow_clicked(self):
@@ -90,7 +90,7 @@ class IndicatorInteractionManager:
                 new_pos = min(max_pos, current_pos + 100)
                 scroll_area.horizontalScrollBar().setValue(new_pos)
                 logger.info(f"指标选择栏向右滚动，当前位置: {new_pos}")
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"指标选择栏向右滚动失败: {e}")
 
     def on_period_changed(self, period, checked):
@@ -191,7 +191,7 @@ class IndicatorInteractionManager:
             menu.exec_(window.adjustment_btn.mapToGlobal(window.adjustment_btn.rect().bottomLeft()))
             # 恢复按钮状态
             window.adjustment_btn.setChecked(True)
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"处理复权按钮点击失败: {e}")
 
     def _create_adjustment_menu(self):

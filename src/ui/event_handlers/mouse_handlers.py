@@ -422,7 +422,7 @@ class MouseHandler:
                     
                     # 直接显示信息框，不需要等待鼠标移动
                     self.main_window.show_info_box()
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"处理鼠标移动事件时发生错误: {e}")
     
     def _check_dividend_hover(self, index, pos):
@@ -448,7 +448,7 @@ class MouseHandler:
                 else:
                     # 隐藏分红提示框
                     self.main_window.hide_dividend_tooltip()
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.debug(f"检查分红悬停失败: {e}")
     
     def handle_mouse_clicked(self, event, dates, opens, highs, lows, closes):
@@ -541,5 +541,5 @@ class MouseHandler:
             else:
                 # 单击事件，调用均线点击处理函数
                 self.main_window.on_ma_clicked(event)
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"处理鼠标点击事件时发生错误: {e}")

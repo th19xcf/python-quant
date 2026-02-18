@@ -65,7 +65,7 @@ class MAIndicatorPlugin(IndicatorPlugin):
             
             logger.info(f"成功计算MA指标，窗口: {windows}")
             return df
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.exception(f"计算MA指标失败: {e}")
             raise
     
@@ -95,7 +95,7 @@ class MAIndicatorPlugin(IndicatorPlugin):
             
             logger.info(f"成功使用polars计算MA指标，窗口: {windows}")
             return result
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.exception(f"使用polars计算MA指标失败: {e}")
             # 回退到pandas实现
             import pandas as pd

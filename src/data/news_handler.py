@@ -85,13 +85,13 @@ class NewsHandler:
                     elif source == "ifeng":
                         self._update_ifeng_news(start_date, end_date)
                     
-                except Exception as e:
+                except (ConnectionError, TimeoutError, OSError) as e:
                     logger.exception(f"更新{source}新闻数据失败: {e}")
                     continue
             
             logger.info("新闻数据更新完成")
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新新闻数据失败: {e}")
             raise
     
@@ -108,7 +108,7 @@ class NewsHandler:
             
             # TODO: 实现新浪财经新闻爬取逻辑
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新新浪财经新闻失败: {e}")
             raise
     
@@ -125,7 +125,7 @@ class NewsHandler:
             
             # TODO: 实现东方财富新闻爬取逻辑
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新东方财富新闻失败: {e}")
             raise
     
@@ -142,7 +142,7 @@ class NewsHandler:
             
             # TODO: 实现和讯网新闻爬取逻辑
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新和讯网新闻失败: {e}")
             raise
     
@@ -159,6 +159,6 @@ class NewsHandler:
             
             # TODO: 实现凤凰财经新闻爬取逻辑
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新凤凰财经新闻失败: {e}")
             raise

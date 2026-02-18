@@ -138,7 +138,7 @@ class DataReadThread(QThread):
                 name=self.name
             )
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             error_msg = f"处理股票数据失败: {str(e)}"
             logger.exception(error_msg)
             self.data_read_error.emit(error_msg)
@@ -199,7 +199,7 @@ class IndicatorCalculateThread(QThread):
                 success=True
             )
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             error_msg = f"计算技术指标失败: {str(e)}"
             logger.exception(error_msg)
             self.indicator_calculate_error.emit(error_msg)
@@ -251,7 +251,7 @@ class ChartDataPrepareThread(QThread):
             # 发送图表数据准备完成信号
             self.chart_data_prepared.emit(self.df, dates, opens, highs, lows, closes)
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             error_msg = f"准备图表数据失败: {str(e)}"
             logger.exception(error_msg)
             self.chart_data_prepare_error.emit(error_msg)

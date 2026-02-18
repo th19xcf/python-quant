@@ -61,7 +61,7 @@ class ChartDataPreparer:
             logger.debug(f"数据准备完成，共 {len(df_pl)} 条记录")
             return df_pl
             
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.exception(f"准备K线图数据失败: {e}")
             raise
     
@@ -189,7 +189,7 @@ class ChartDataPreparer:
             
             return df
             
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.warning(f"计算MA失败: {e}")
             return df
     
@@ -227,7 +227,7 @@ class ChartDataPreparer:
             
             return df
             
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.warning(f"计算DMA失败: {e}")
             return df
     

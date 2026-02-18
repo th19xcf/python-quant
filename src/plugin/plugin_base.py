@@ -320,7 +320,7 @@ class PluginBase(ABC):
                 # 这里简化处理，只检查插件是否存在
             
             return True
-        except Exception as e:
+        except (OSError, RuntimeError, ImportError, TypeError) as e:
             logger.error(f"验证插件依赖失败: {self.get_name()}, 错误: {e}")
             return False
     

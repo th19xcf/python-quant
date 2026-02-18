@@ -66,7 +66,7 @@ class KDJIndicatorPlugin(IndicatorPlugin):
             
             logger.info(f"成功计算KDJ指标，窗口: {window}")
             return df
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.exception(f"计算KDJ指标失败: {e}")
             raise
     
@@ -125,7 +125,7 @@ class KDJIndicatorPlugin(IndicatorPlugin):
             
             logger.info(f"成功使用polars计算KDJ指标，窗口: {window}")
             return result
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.exception(f"使用polars计算KDJ指标失败: {e}")
             # 回退到pandas实现
             import pandas as pd

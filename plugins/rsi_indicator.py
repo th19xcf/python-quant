@@ -67,7 +67,7 @@ class RSIIndicatorPlugin(IndicatorPlugin):
             
             logger.info(f"成功计算RSI指标，窗口: {windows}")
             return df
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.exception(f"计算RSI指标失败: {e}")
             raise
     
@@ -130,7 +130,7 @@ class RSIIndicatorPlugin(IndicatorPlugin):
             
             logger.info(f"成功使用polars计算RSI指标，窗口: {windows}")
             return result
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.exception(f"使用polars计算RSI指标失败: {e}")
             # 回退到pandas实现
             import pandas as pd

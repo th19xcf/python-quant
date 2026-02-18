@@ -58,7 +58,7 @@ class BaostockDataSourcePlugin(DataSourcePlugin):
                     db_manager = DatabaseManager(config)
                     db_manager.connect()
                     logger.info("Baostock数据源插件数据库连接成功")
-                except Exception as db_e:
+                except (OSError, RuntimeError, ValueError) as db_e:
                     logger.warning(f"Baostock数据源插件数据库连接失败，将以离线模式运行: {db_e}")
                     db_manager = None
             
@@ -66,7 +66,7 @@ class BaostockDataSourcePlugin(DataSourcePlugin):
             self.baostock_handler = BaostockHandler(config, db_manager)
             logger.info("Baostock数据源插件初始化成功")
             return True
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"初始化Baostock数据源插件失败: {e}")
             return False
     
@@ -114,7 +114,7 @@ class BaostockDataSourcePlugin(DataSourcePlugin):
                 
                 baostock_freq = freq_map.get(freq, "5")
                 return self.baostock_handler.download_stock_minute([baostock_code], start_date, end_date, baostock_freq)
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Baostock数据源插件获取股票数据失败: {e}")
             return None
     
@@ -162,7 +162,7 @@ class BaostockDataSourcePlugin(DataSourcePlugin):
                 
                 baostock_freq = freq_map.get(freq, "5")
                 return self.baostock_handler.download_index_minute([baostock_code], start_date, end_date, baostock_freq)
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Baostock数据源插件获取指数数据失败: {e}")
             return None
     
@@ -178,6 +178,6 @@ class BaostockDataSourcePlugin(DataSourcePlugin):
             self.baostock_handler.update_stock_basic()
             logger.info("Baostock数据源插件更新股票基本信息成功")
             return True
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Baostock数据源插件更新股票基本信息失败: {e}")
             return False

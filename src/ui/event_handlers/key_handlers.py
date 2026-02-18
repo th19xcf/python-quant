@@ -26,5 +26,5 @@ class KeyHandler:
             # if key == pg.QtCore.Qt.Key_Space:
             #     self.main_window.toggle_crosshair()
             pass
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             self.main_window.logger.exception(f"处理键盘事件时发生错误: {e}")

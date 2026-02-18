@@ -58,7 +58,7 @@ class NewsDataSourcePlugin(DataSourcePlugin):
                     db_manager = DatabaseManager(config)
                     db_manager.connect()
                     logger.info("News数据源插件数据库连接成功")
-                except Exception as db_e:
+                except (OSError, RuntimeError, ValueError) as db_e:
                     logger.warning(f"News数据源插件数据库连接失败，将以离线模式运行: {db_e}")
                     return False
             
@@ -66,7 +66,7 @@ class NewsDataSourcePlugin(DataSourcePlugin):
             self.news_handler = NewsHandler(config, db_manager)
             logger.info("News数据源插件初始化成功")
             return True
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"初始化News数据源插件失败: {e}")
             return False
     
@@ -131,6 +131,6 @@ class NewsDataSourcePlugin(DataSourcePlugin):
             else:
                 logger.warning("News数据源插件未初始化，无法更新新闻数据")
                 return False
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"News数据源插件更新新闻数据失败: {e}")
             return False

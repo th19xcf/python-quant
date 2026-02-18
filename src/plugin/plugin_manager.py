@@ -143,7 +143,7 @@ class PluginManager:
                     if self.registry.register_plugin(obj):
                         logger.info(f"成功从文件加载插件: {file_path} -> {obj.__name__}")
                         return True
-        except Exception as e:
+        except (OSError, RuntimeError, ImportError, TypeError) as e:
             logger.error(f"从文件加载插件失败: {file_path}, 错误: {e}")
         
         return False
@@ -172,7 +172,7 @@ class PluginManager:
                     if self.registry.register_plugin(obj):
                         logger.info(f"成功从包加载插件: {package_path} -> {obj.__name__}")
                         return True
-        except Exception as e:
+        except (OSError, RuntimeError, ImportError, TypeError) as e:
             logger.error(f"从包加载插件失败: {package_path}, 错误: {e}")
         
         return False
@@ -380,7 +380,7 @@ class PluginManager:
             else:
                 logger.warning(f"懒加载插件初始化失败: {plugin_name} (类型: {plugin_type})")
                 return None
-        except Exception as e:
+        except (OSError, RuntimeError, ImportError, TypeError) as e:
             logger.error(f"懒加载插件异常: {plugin_name}, 错误: {e}")
             return None
     
@@ -535,7 +535,7 @@ class PluginManager:
                     if plugin_instance.shutdown():
                         shutdown_count += 1
                         logger.info(f"插件关闭成功: {plugin_name} (类型: {type_key})")
-                except Exception as e:
+                except (OSError, RuntimeError, ImportError, TypeError) as e:
                     logger.error(f"插件关闭异常: {plugin_name} (类型: {type_key}), 错误: {e}")
         
         # 清空插件实例
@@ -741,5 +741,5 @@ class PluginManager:
         
         try:
             return method(*args, **kwargs)
-        except Exception as e:
+        except (OSError, RuntimeError, ImportError, TypeError) as e:
             raise Exception(f"调用插件{plugin_name}的{method_name}方法失败: {str(e)}") from e

@@ -41,5 +41,5 @@ class MenuHandler:
             
             # 在鼠标位置显示菜单，确保使用QPoint类型
             menu.exec(self.main_window.tech_plot_widget.mapToGlobal(pos))
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             self.main_window.logger.exception(f"处理自定义右键菜单事件时发生错误: {e}")

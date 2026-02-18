@@ -172,7 +172,7 @@ class MainWindowDrawingMixin:
             
             logger.info(f"成功绘制 {stock_name}({stock_code}) 的K线图")
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"绘制K线图失败: {e}")
             self.statusBar().showMessage(f"绘制K线图失败: {str(e)[:50]}...", 5000)
     
@@ -257,7 +257,7 @@ class MainWindowDrawingMixin:
             # 更新显示
             self.ma_values_label.setText(ma_text + overlay_text)
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"更新均线数据显示失败: {e}")
     
     def _prepare_data(self, df: pl.DataFrame) -> pl.DataFrame:
@@ -378,7 +378,7 @@ class MainWindowDrawingMixin:
                 if item is not None:
                     try:
                         widget.removeItem(item)
-                    except Exception:
+                    except (OSError, RuntimeError, ValueError):
                         pass
     
     def _draw_high_point_label(self, dates, highs, high_index, current_high):
@@ -467,7 +467,7 @@ class MainWindowDrawingMixin:
                 logger.debug("在主图绘制BOLL指标")
                 df_pl = self._indicator_renderer.render_boll(self.tech_plot_widget, df_pl, x)
                 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染主图叠加指标失败: {e}")
         
         return df_pl
@@ -569,7 +569,7 @@ class MainWindowDrawingMixin:
                     if range_val > 0:
                         plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)
                         logger.debug(f"SAR指标Y轴范围: {min_val - range_val * 0.1:.2f} - {max_val + range_val * 0.1:.2f}")
-            except Exception as e:
+            except (OSError, RuntimeError, ValueError) as e:
                 logger.warning(f"设置SAR指标Y轴范围失败: {e}")
 
         # 创建标签栏（使用可能更新后的数据）
@@ -923,7 +923,7 @@ class MainWindowDrawingMixin:
                     if filtered_dividends:
                         self.dividend_marker_manager.set_dividend_data(filtered_dividends, dates)
         
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"加载分红标记失败: {e}")
     
     def _get_stock_dividend_data(self, stock_code):
@@ -963,11 +963,11 @@ class MainWindowDrawingMixin:
                             return result
                         finally:
                             session.close()
-                except Exception as e:
+                except (OSError, RuntimeError, ValueError) as e:
                     logger.exception(f"获取分红数据失败: {e}")
             
             return []
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取分红数据失败: {e}")
             return []
     
@@ -1006,7 +1006,7 @@ class MainWindowDrawingMixin:
                                 kline_date_set.add(dt.date())
                             else:
                                 kline_date_set.add(dt)
-                    except Exception:
+                    except (OSError, RuntimeError, ValueError):
                         kline_date_set.add(d)
             
             # 过滤分红数据
@@ -1021,7 +1021,7 @@ class MainWindowDrawingMixin:
                         filtered.append(div)
             
             return filtered
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"过滤分红数据失败: {e}")
             return []
     
@@ -1035,7 +1035,7 @@ class MainWindowDrawingMixin:
                     self.dividend_marker_manager.show_tooltip(index, view_pos)
                 else:
                     self.dividend_marker_manager.hide_tooltip()
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.debug(f"显示分红提示框失败: {e}")
     
     def hide_dividend_tooltip(self):
@@ -1043,5 +1043,5 @@ class MainWindowDrawingMixin:
         try:
             if hasattr(self, 'dividend_marker_manager') and self.dividend_marker_manager:
                 self.dividend_marker_manager.hide_tooltip()
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.debug(f"隐藏分红提示框失败: {e}")

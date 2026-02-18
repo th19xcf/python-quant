@@ -34,7 +34,7 @@ class AkShareHandler:
         if db_manager:
             try:
                 self.session = db_manager.get_session()
-            except Exception as e:
+            except (ConnectionError, TimeoutError, OSError) as e:
                 logger.warning(f"数据库会话获取失败（离线模式下正常）: {e}")
                 self.session = None
         else:
@@ -96,7 +96,7 @@ class AkShareHandler:
                         )
                         self.session.add(stock)
                     
-                except Exception as row_e:
+                except (ConnectionError, TimeoutError, OSError) as row_e:
                     logger.exception(f"处理股票基本信息失败: {row_e}")
                     continue
             
@@ -105,7 +105,7 @@ class AkShareHandler:
             logger.info("股票基本信息更新完成")
             return stock_basic_df  # 返回Polars DataFrame
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()
             logger.exception(f"从AkShare获取股票基本信息失败: {e}")
@@ -226,7 +226,7 @@ class AkShareHandler:
                                 )
                                 self.session.add(daily_data)
                             
-                        except Exception as row_e:
+                        except (ConnectionError, TimeoutError, OSError) as row_e:
                             logger.exception(f"处理股票日线数据失败: {row_e}")
                             continue
                     
@@ -234,7 +234,7 @@ class AkShareHandler:
                     self.session.commit()
                     logger.info(f"{ts_code}的日线数据更新完成")
                     
-                except Exception as e:
+                except (ConnectionError, TimeoutError, OSError) as e:
                     if self.session:
                         self.session.rollback()
                     logger.exception(f"获取{ts_code}的日线数据失败: {e}")
@@ -244,7 +244,7 @@ class AkShareHandler:
             if not self.session and result:
                 return result
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()
             logger.exception(f"更新股票日线数据失败: {e}")
@@ -298,7 +298,7 @@ class AkShareHandler:
                         )
                         self.session.add(index_basic)
                     
-                except Exception as row_e:
+                except (ConnectionError, TimeoutError, OSError) as row_e:
                     logger.exception(f"处理指数基本信息失败: {row_e}")
                     continue
             
@@ -307,7 +307,7 @@ class AkShareHandler:
             logger.info("指数基本信息更新完成")
             return index_basic_df
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()
             logger.exception(f"从AkShare获取指数基本信息失败: {e}")
@@ -413,7 +413,7 @@ class AkShareHandler:
                                 )
                                 self.session.add(daily_data)
                             
-                        except Exception as row_e:
+                        except (ConnectionError, TimeoutError, OSError) as row_e:
                             logger.exception(f"处理指数日线数据失败: {row_e}")
                             continue
                     
@@ -421,7 +421,7 @@ class AkShareHandler:
                     self.session.commit()
                     logger.info(f"{ts_code}的日线数据更新完成")
                     
-                except Exception as e:
+                except (ConnectionError, TimeoutError, OSError) as e:
                     if self.session:
                         self.session.rollback()
                     logger.exception(f"获取{ts_code}的日线数据失败: {e}")
@@ -431,7 +431,7 @@ class AkShareHandler:
             if not self.session and result:
                 return result
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()
             logger.exception(f"更新指数日线数据失败: {e}")
@@ -605,7 +605,7 @@ class AkShareHandler:
                                 )
                                 self.session.add(dividend_data)
 
-                        except Exception as row_e:
+                        except (ConnectionError, TimeoutError, OSError) as row_e:
                             logger.exception(f"处理股票分红配股数据失败: {row_e}")
                             continue
 
@@ -613,7 +613,7 @@ class AkShareHandler:
                     self.session.commit()
                     logger.info(f"{ts_code}的分红配股数据更新完成")
 
-                except Exception as e:
+                except (ConnectionError, TimeoutError, OSError) as e:
                     if self.session:
                         self.session.rollback()
                     logger.exception(f"获取{ts_code}的分红配股数据失败: {e}")
@@ -623,7 +623,7 @@ class AkShareHandler:
             if not self.session and result:
                 return result
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()
             logger.exception(f"更新股票分红配股数据失败: {e}")

@@ -68,7 +68,7 @@ class MACDIndicatorPlugin(IndicatorPlugin):
             
             logger.info(f"成功计算MACD指标，参数: fast={fast_period}, slow={slow_period}, signal={signal_period}")
             return df
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.exception(f"计算MACD指标失败: {e}")
             raise
     
@@ -118,7 +118,7 @@ class MACDIndicatorPlugin(IndicatorPlugin):
             
             logger.info(f"成功使用polars计算MACD指标，参数: fast={fast_period}, slow={slow_period}, signal={signal_period}")
             return result
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.exception(f"使用polars计算MACD指标失败: {e}")
             # 回退到pandas实现
             import pandas as pd

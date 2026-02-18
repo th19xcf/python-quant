@@ -142,7 +142,7 @@ class ActionManager:
 
             window.data_read_thread.start()
 
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"加载股票图表失败: {e}")
             self.window.statusBar().showMessage(f"加载股票图表失败: {str(e)[:50]}...", 5000)
 
@@ -164,7 +164,7 @@ class ActionManager:
             self.window.indicator_calculate_thread.indicator_calculate_progress.connect(self._on_indicator_calculate_progress)
 
             self.window.indicator_calculate_thread.start()
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"处理数据读取完成信号失败: {e}")
 
     def _on_data_read_error(self, error_msg):
@@ -193,7 +193,7 @@ class ActionManager:
             if hasattr(self.window, 'progress_bar'):
                 self.window.progress_bar.setValue(100)
                 self.window.progress_bar.setVisible(False)
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"处理指标计算完成信号失败: {e}")
             if hasattr(self.window, 'progress_bar'):
                 self.window.progress_bar.setVisible(False)

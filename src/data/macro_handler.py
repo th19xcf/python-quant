@@ -81,13 +81,13 @@ class MacroHandler:
                     elif indicator == "exchange_rate":
                         self._update_exchange_rate_data()
                     
-                except Exception as e:
+                except (ConnectionError, TimeoutError, OSError) as e:
                     logger.exception(f"更新{indicator}数据失败: {e}")
                     continue
             
             logger.info("宏观经济数据更新完成")
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新宏观经济数据失败: {e}")
             raise
     
@@ -100,7 +100,7 @@ class MacroHandler:
             
             # TODO: 实现GDP数据爬取和存储逻辑
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新GDP数据失败: {e}")
             raise
     
@@ -113,7 +113,7 @@ class MacroHandler:
             
             # TODO: 实现CPI数据爬取和存储逻辑
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新CPI数据失败: {e}")
             raise
     
@@ -126,7 +126,7 @@ class MacroHandler:
             
             # TODO: 实现PPI数据爬取和存储逻辑
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新PPI数据失败: {e}")
             raise
     
@@ -139,7 +139,7 @@ class MacroHandler:
             
             # TODO: 实现M2数据爬取和存储逻辑
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新M2数据失败: {e}")
             raise
     
@@ -152,7 +152,7 @@ class MacroHandler:
             
             # TODO: 实现利率数据爬取和存储逻辑
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新利率数据失败: {e}")
             raise
     
@@ -165,6 +165,6 @@ class MacroHandler:
             
             # TODO: 实现汇率数据爬取和存储逻辑
             
-        except Exception as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新汇率数据失败: {e}")
             raise

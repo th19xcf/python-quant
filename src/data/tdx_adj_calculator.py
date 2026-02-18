@@ -82,7 +82,7 @@ class TdxAdjCalculator:
             
             return pd.DataFrame(data)
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取复权因子失败: {e}")
             return None
     
@@ -143,7 +143,7 @@ class TdxAdjCalculator:
             logger.info(f"{ts_code} 复权价格计算完成，共 {len(result_df)} 条记录")
             return result_df
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"计算复权价格失败: {e}")
             return tdx_df
     
@@ -184,7 +184,7 @@ class TdxAdjCalculator:
             
             return result_df
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取复权价格失败: {e}")
             return None
 
@@ -222,7 +222,7 @@ if __name__ == "__main__":
             logger.info(f"\n后复权价格 (最近5天):")
             print(df_hfq.tail(5))
         
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         logger.exception(f"测试失败: {e}")
     finally:
         db_manager.disconnect()

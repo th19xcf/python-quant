@@ -248,7 +248,7 @@ class IndicatorRegistry:
             try:
                 result_df = config.calculate_func(result_df, **indicator_params)
                 logger.debug(f"指标{indicator_name}计算完成")
-            except Exception as e:
+            except (ValueError, TypeError, RuntimeError) as e:
                 logger.error(f"计算指标{indicator_name}失败: {str(e)}")
                 raise e
         

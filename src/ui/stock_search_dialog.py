@@ -153,7 +153,7 @@ class StockSearchDialog(QDialog):
             if len(self.all_stocks) == 0:
                 logger.warning("数据库中没有股票数据，请检查StockBasic表")
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"加载股票列表失败: {e}")
     
     def on_search_text_changed(self, text):
@@ -195,7 +195,7 @@ class StockSearchDialog(QDialog):
             logger.debug(f"搜索 '{search_text}' 找到 {len(filtered_stocks)} 条结果")
             self.update_results(filtered_stocks)
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"搜索股票失败: {e}")
     
     def update_results(self, stocks):

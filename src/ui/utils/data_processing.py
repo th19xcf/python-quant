@@ -22,7 +22,7 @@ class DataProcessor:
         # 如果是其他类型，尝试转换为Polars DataFrame
         try:
             return pl.DataFrame(data)
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             raise ValueError(f"无法将数据转换为Polars DataFrame: {e}")
     
     @staticmethod

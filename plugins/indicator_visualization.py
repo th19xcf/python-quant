@@ -97,7 +97,7 @@ class IndicatorVisualizationPlugin(VisualizationPlugin):
             
             logger.info(f"{indicator_type}指标图绘制完成")
             return container
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.error(f"技术指标图渲染失败: {e}")
             raise
     
@@ -423,6 +423,6 @@ class IndicatorVisualizationPlugin(VisualizationPlugin):
             # 重新渲染图表
             self.render(data, self.chart, indicator_type=self.current_indicator)
             logger.info("技术指标图数据更新成功")
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.error(f"技术指标图数据更新失败: {e}")
             raise

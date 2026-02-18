@@ -110,7 +110,7 @@ class TableInteractionManager:
 
                 window.stock_table.setSortingEnabled(True)
                 window.current_sorted_column = -1
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"处理表头点击事件失败: {e}")
 
     def on_stock_double_clicked(self, row, column):
@@ -172,7 +172,7 @@ class TableInteractionManager:
             window.data_read_thread.data_read_progress.connect(self.on_data_read_progress)
 
             window.data_read_thread.start()
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"处理股票双击事件失败: {e}")
             window.statusBar().showMessage(f"处理股票双击事件失败: {str(e)[:50]}...", 5000)
 
@@ -194,7 +194,7 @@ class TableInteractionManager:
             window.indicator_calculate_thread.indicator_calculate_progress.connect(self.on_indicator_calculate_progress)
 
             window.indicator_calculate_thread.start()
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"处理数据读取完成信号失败: {e}")
             window.statusBar().showMessage(f"处理数据失败: {str(e)[:50]}...", 5000)
             if hasattr(window, 'progress_bar'):
@@ -231,7 +231,7 @@ class TableInteractionManager:
             if hasattr(window, 'progress_bar'):
                 window.progress_bar.setValue(100)
                 window.progress_bar.setVisible(False)
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"处理指标计算完成信号失败: {e}")
             window.statusBar().showMessage(f"绘制图表失败: {str(e)[:50]}...", 5000)
             if hasattr(window, 'progress_bar'):

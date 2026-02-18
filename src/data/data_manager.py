@@ -75,7 +75,7 @@ class DataManager(IDataProvider, IDataProcessor):
         except DataSourceConfigError as e:
             logger.warning(f"通达信配置错误: {e.message}")
             self.tdx_handler = None
-        except Exception as tdx_e:
+        except (OSError, RuntimeError) as tdx_e:
             logger.warning(f"通达信数据处理器初始化失败（离线模式下正常）: {tdx_e}")
             self.tdx_handler = None
         
@@ -93,7 +93,7 @@ class DataManager(IDataProvider, IDataProcessor):
         except DataSourceConfigError as e:
             logger.error(f"Baostock配置错误: {e.message}")
             self.baostock_handler = None
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.error(f"Baostock数据处理器初始化失败: {e}")
             self.baostock_handler = None
         
@@ -108,7 +108,7 @@ class DataManager(IDataProvider, IDataProcessor):
         except ConnectionError as e:
             logger.warning(f"宏观数据源连接失败（离线模式）: {e}")
             self.macro_handler = None
-        except Exception as macro_e:
+        except (OSError, RuntimeError) as macro_e:
             logger.warning(f"宏观数据处理器初始化失败（离线模式下正常）: {macro_e}")
             self.macro_handler = None
         
@@ -123,7 +123,7 @@ class DataManager(IDataProvider, IDataProcessor):
         except ConnectionError as e:
             logger.warning(f"新闻数据源连接失败（离线模式）: {e}")
             self.news_handler = None
-        except Exception as news_e:
+        except (OSError, RuntimeError) as news_e:
             logger.warning(f"新闻数据处理器初始化失败（离线模式下正常）: {news_e}")
             self.news_handler = None
         
@@ -140,7 +140,7 @@ class DataManager(IDataProvider, IDataProcessor):
             logger.warning(f"自动更新股票基本信息失败 - 连接错误: {e.message}")
         except DataValidationError as e:
             logger.warning(f"自动更新股票基本信息失败 - 数据验证错误: {e.message}")
-        except Exception as update_e:
+        except (OSError, RuntimeError) as update_e:
             logger.warning(f"自动更新股票基本信息失败: {update_e}")
     
     def _init_plugin_datasources(self):
@@ -218,7 +218,7 @@ class DataManager(IDataProvider, IDataProcessor):
             logger.error(f"{data_type}更新失败 - 保存错误: {e.message}")
             self._publish_data_updated_event(event_type, identifier, status='error', message=e.message)
             raise
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             error_msg = f"{data_type}更新失败: {str(e)}"
             logger.exception(error_msg)
             self._publish_data_updated_event(event_type, identifier, status='error', message=error_msg)
@@ -351,7 +351,7 @@ class DataManager(IDataProvider, IDataProcessor):
             except DataSourceConfigError as e:
                 logger.error(f"AkShare配置错误: {e.message}")
                 raise
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 error_msg = f"AkShare数据处理器初始化失败: {e}"
                 logger.error(error_msg)
                 raise DataSourceNotAvailableError("akshare", error_msg) from e
@@ -405,7 +405,7 @@ class DataManager(IDataProvider, IDataProcessor):
             # 查询分红配股数据
             try:
                 dividends = session.query(StockDividend).filter_by(ts_code=ts_code).all()
-            except Exception as query_e:
+            except (OSError, RuntimeError) as query_e:
                 logger.error(f"查询分红配股数据失败: {query_e}")
                 return pl.DataFrame()
 
@@ -431,18 +431,18 @@ class DataManager(IDataProvider, IDataProcessor):
                 } for d in dividends]
 
                 return pl.DataFrame(data)
-            except Exception as convert_e:
+            except (ValueError, TypeError) as convert_e:
                 logger.error(f"转换分红配股数据失败: {convert_e}")
                 return pl.DataFrame()
 
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"获取股票分红配股数据失败: {e}")
             return pl.DataFrame()
         finally:
             if session:
                 try:
                     session.close()
-                except Exception:
+                except (OSError, RuntimeError):
                     pass
 
     def _get_data_from_sources(self, data_type: str, ts_code: str, start_date: str, end_date: str, freq: str = "daily", adjustment_type: str = "qfq"):
@@ -537,7 +537,7 @@ class DataManager(IDataProvider, IDataProcessor):
                 # 其他类型，尝试直接转换
                 try:
                     return pl.DataFrame(result)
-                except Exception:
+                except (ValueError, TypeError):
                     return None
             
             # 优先从数据库获取数据
@@ -678,7 +678,7 @@ class DataManager(IDataProvider, IDataProcessor):
                                 pl.col('trade_date').str.strptime(pl.Datetime, format='%Y%m%d').alias('date')
                             )
                             return df
-                except Exception as db_e:
+                except (OSError, RuntimeError, ValueError) as db_e:
                     logger.warning(f"从数据库获取{type_name}数据失败: {db_e}")
             
             # 数据库获取失败或无数据，尝试从其他数据源获取
@@ -715,7 +715,7 @@ class DataManager(IDataProvider, IDataProcessor):
                         processed_result = process_result(result)
                         if processed_result is not None:
                             return processed_result
-                    except Exception as source_e:
+                    except (OSError, RuntimeError, ValueError) as source_e:
                         logger.warning(f"从{source_name}获取{type_name}数据失败: {source_e}")
             
             # 尝试从插件数据源获取数据
@@ -730,14 +730,14 @@ class DataManager(IDataProvider, IDataProcessor):
                     processed_result = process_result(result)
                     if processed_result is not None:
                         return processed_result
-                except Exception as plugin_e:
+                except (OSError, RuntimeError, ValueError) as plugin_e:
                     logger.warning(f"从插件数据源{plugin_name}获取{type_name}数据失败: {plugin_e}")
             
             # 所有数据源都失败，返回空DataFrame
             logger.warning(f"无法从任何数据源获取{type_name}{ts_code}数据")
             return pl.DataFrame()
-            
-        except Exception as e:
+
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取{type_name}数据失败: {e}")
             raise
     
@@ -847,8 +847,8 @@ class DataManager(IDataProvider, IDataProcessor):
             
             logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{result.height}条")
             return result
-            
-        except Exception as e:
+
+        except (ValueError, TypeError) as e:
             logger.exception(f"转换数据频率失败: {e}")
             return df
     
@@ -939,12 +939,12 @@ class DataManager(IDataProvider, IDataProcessor):
                     return pl.DataFrame(data)
                 else:
                     return pl.DataFrame()
-            except Exception as query_e:
+            except (OSError, RuntimeError) as query_e:
                 # 如果查询失败，可能是表不存在，返回空DataFrame
                 logger.warning(f"股票基本信息查询失败: {query_e}")
                 return pl.DataFrame()
-            
-        except Exception as e:
+
+        except (OSError, RuntimeError) as e:
             logger.exception(f"获取股票基本信息失败: {e}")
             return pl.DataFrame()
     
@@ -991,12 +991,12 @@ class DataManager(IDataProvider, IDataProcessor):
                     return pl.DataFrame(data)
                 else:
                     return pl.DataFrame()
-            except Exception as query_e:
+            except (OSError, RuntimeError) as query_e:
                 # 如果查询失败，可能是表不存在，返回空DataFrame
                 logger.warning(f"指数基本信息查询失败: {query_e}")
                 return pl.DataFrame()
-            
-        except Exception as e:
+
+        except (OSError, RuntimeError) as e:
             logger.exception(f"获取指数基本信息失败: {e}")
             return pl.DataFrame()
     

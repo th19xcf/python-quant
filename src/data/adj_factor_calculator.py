@@ -87,7 +87,7 @@ class AdjFactorCalculator:
             logger.info(f"{ts_code} 复权因子计算完成，共 {len(result)} 条记录")
             return result
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"计算 {ts_code} 复权因子失败: {e}")
             return None
     
@@ -171,7 +171,7 @@ class AdjFactorCalculator:
             
             return pd.DataFrame(data)
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"从通达信获取价格数据失败: {e}")
             return None
     
@@ -333,7 +333,7 @@ class AdjFactorCalculator:
             
             logger.info(f"成功保存 {len(df)} 条复权因子记录")
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"保存复权因子失败: {e}")
             self.session.rollback()
     
@@ -364,7 +364,7 @@ class AdjFactorCalculator:
                     self.session.add(record)
             
             self.session.commit()
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             self.session.rollback()
             raise e
     
@@ -400,7 +400,7 @@ class AdjFactorCalculator:
             self.session.commit()
             logger.info(f"成功更新 {len(df)} 条stock_daily记录")
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"更新stock_daily失败: {e}")
             self.session.rollback()
     
@@ -439,7 +439,7 @@ class AdjFactorCalculator:
                 else:
                     failed += 1
                     
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.error(f"处理 {ts_code} 失败: {e}")
                 failed += 1
         

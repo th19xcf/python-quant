@@ -83,7 +83,7 @@ class ChartUIBuilder:
             except AttributeError as e:
                 # 对象或属性不存在
                 logger.debug(f"标题容器属性不存在: {e}")
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 # 其他未预期的错误
                 logger.warning(f"移除旧标题容器时发生未预期错误: {e}")
         
@@ -242,7 +242,7 @@ class ChartUIBuilder:
         if hasattr(self.main_window, 'volume_values_label'):
             try:
                 self.main_window.volume_values_label.deleteLater()
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 logger.warning(f"移除旧成交量标签时发生错误: {e}")
         
         if hasattr(self.main_window, 'volume_label_container'):
@@ -250,7 +250,7 @@ class ChartUIBuilder:
                 if hasattr(self.main_window, 'volume_container') and hasattr(self.main_window, 'volume_container_layout'):
                     self.main_window.volume_container_layout.removeWidget(self.main_window.volume_label_container)
                 self.main_window.volume_label_container.deleteLater()
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 logger.warning(f"移除旧成交量标签栏容器时发生错误: {e}")
     
     def _cleanup_kdj_labels(self):
@@ -258,7 +258,7 @@ class ChartUIBuilder:
         if hasattr(self.main_window, 'kdj_values_label'):
             try:
                 self.main_window.kdj_values_label.deleteLater()
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 logger.warning(f"移除旧KDJ标签时发生错误: {e}")
         
         if hasattr(self.main_window, 'kdj_label_container'):
@@ -266,7 +266,7 @@ class ChartUIBuilder:
                 if hasattr(self.main_window, 'kdj_container') and hasattr(self.main_window, 'kdj_container_layout'):
                     self.main_window.kdj_container_layout.removeWidget(self.main_window.kdj_label_container)
                 self.main_window.kdj_label_container.deleteLater()
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 logger.warning(f"移除旧KDJ标签栏容器时发生错误: {e}")
     
     def _get_indicator_label_text(self, indicator_type: str, df: Any) -> str:
@@ -644,5 +644,5 @@ class ChartUIBuilder:
         if widget:
             try:
                 layout.removeWidget(widget)
-            except Exception:
+            except (ValueError, TypeError):
                 pass

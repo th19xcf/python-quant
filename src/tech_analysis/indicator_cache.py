@@ -112,7 +112,7 @@ class IndicatorCache:
             # 内存不足，使用简化方案
             logger.warning(f"内存不足，使用简化哈希方案: {e}")
             data_str = f"{len(data_sample)}_{hash(tuple(data_cols))}".encode('utf-8')
-        except Exception as e:
+        except (ValueError, TypeError, RuntimeError) as e:
             # 其他未预期的错误
             logger.warning(f"生成数据哈希时发生未预期错误: {e}")
             data_bytes = data_sample.to_numpy().tobytes()

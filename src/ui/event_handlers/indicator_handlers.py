@@ -29,7 +29,7 @@ class IndicatorHandler:
             # 重新绘制K线图，更新指标显示
             if hasattr(self.main_window, 'current_stock_data') and hasattr(self.main_window, 'current_stock_name') and hasattr(self.main_window, 'current_stock_code'):
                 self.main_window.plot_k_line(self.main_window.current_stock_data, self.main_window.current_stock_name, self.main_window.current_stock_code)
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             self.main_window.logger.exception(f"处理指标切换事件时发生错误: {e}")
     
     def handle_indicator_params_changed(self, indicator_name, params):
@@ -49,5 +49,5 @@ class IndicatorHandler:
             # 重新绘制K线图，更新指标显示
             if hasattr(self.main_window, 'current_stock_data') and hasattr(self.main_window, 'current_stock_name') and hasattr(self.main_window, 'current_stock_code'):
                 self.main_window.plot_k_line(self.main_window.current_stock_data, self.main_window.current_stock_name, self.main_window.current_stock_code)
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             self.main_window.logger.exception(f"处理指标参数调整事件时发生错误: {e}")

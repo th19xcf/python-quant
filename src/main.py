@@ -94,14 +94,14 @@ def main():
             try:
                 db_manager.create_tables()
                 logger.info("数据库表创建/更新成功")
-            except Exception as table_e:
+            except (OSError, RuntimeError) as table_e:
                 logger.warning(f"创建数据库表时发生错误: {table_e}")
                 # 表创建失败不影响程序启动，继续运行
             
             # 初始化数据管理器
             data_manager = DataManager(config, db_manager, plugin_manager)
             logger.info("数据管理器初始化成功")
-        except Exception as db_e:
+        except (OSError, RuntimeError) as db_e:
             logger.warning(f"数据库连接失败，将以离线模式运行: {db_e}")
             # 离线模式下也初始化数据管理器，不传入db_manager
             data_manager = DataManager(config, None, plugin_manager)
@@ -124,8 +124,8 @@ def main():
         
         # 运行主循环
         sys.exit(app.exec())
-        
-    except Exception as e:
+
+    except (OSError, RuntimeError) as e:
         logger.exception(f"系统启动失败: {e}")
         sys.exit(1)
     finally:
@@ -136,7 +136,7 @@ def main():
         try:
             if 'db_manager' in locals() and db_manager:
                 db_manager.disconnect()
-        except Exception as cleanup_e:
+        except (OSError, RuntimeError) as cleanup_e:
             logger.warning(f"清理数据库资源时发生错误: {cleanup_e}")
         
         # 关闭插件

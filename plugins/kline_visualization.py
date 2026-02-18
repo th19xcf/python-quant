@@ -94,7 +94,7 @@ class KLineVisualizationPlugin(VisualizationPlugin):
             
             logger.info(f"K线图绘制完成，股票: {kwargs.get('stock_name', 'Unknown')}({kwargs.get('stock_code', 'Unknown')})")
             return container
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.error(f"K线图渲染失败: {e}")
             raise
     
@@ -122,6 +122,6 @@ class KLineVisualizationPlugin(VisualizationPlugin):
             # 重新渲染图表
             self.render(data, self.chart)
             logger.info("K线图数据更新成功")
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.error(f"K线图数据更新失败: {e}")
             raise

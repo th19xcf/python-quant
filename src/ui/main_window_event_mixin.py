@@ -24,7 +24,7 @@ def event_handler(event_type):
             try:
                 # 调用实际的事件处理函数
                 return func(self, sender, *args, **kwargs)
-            except Exception as e:
+            except (OSError, RuntimeError, ValueError) as e:
                 # 记录异常
                 logger.exception(f"处理{event_type}事件时发生错误: {e}")
         return wrapper
@@ -138,7 +138,7 @@ class MainWindowEventMixin:
                 # self.settings.setValue('window_geometry', self.saveGeometry())
                 # self.settings.setValue('window_state', self.saveState())
                 pass
-            except Exception as e:
+            except (OSError, RuntimeError, ValueError) as e:
                 logger.error(f"Error saving window state: {e}")
                 
             event.accept()
@@ -167,7 +167,7 @@ class MainWindowEventMixin:
                 # Update status bar
                 self.statusBar().showMessage(f"Selected: {name}({code})")
                 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.error(f"Error handling stock click: {e}")
 
     def on_stock_double_clicked(self, index):
@@ -195,7 +195,7 @@ class MainWindowEventMixin:
                 if hasattr(self, 'process_stock_data'):
                     self.process_stock_data(code, name)
                 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Error handling stock double click: {e}")
 
     def on_nav_item_clicked(self, item, column):
@@ -228,7 +228,7 @@ class MainWindowEventMixin:
             elif text in ["全部A股", "上证A股", "深证A股", "创业板", "科创板"]:
                 if hasattr(self, 'data_view_manager'):
                     self.data_view_manager.show_stock_data_by_type(text)
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Failed to handle nav item click: {e}")
 
     def on_indicator_changed(self, window_index, indicator_name):
@@ -408,7 +408,7 @@ class MainWindowEventMixin:
             else:
                 logger.warning("没有action_manager，无法加载股票")
                 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"切换股票失败: {e}")
     
     def _get_current_stock_list(self):
@@ -431,7 +431,7 @@ class MainWindowEventMixin:
             # 如果没有数据管理器，返回空列表
             return []
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取股票列表失败: {e}")
             return []
     
@@ -457,7 +457,7 @@ class MainWindowEventMixin:
             # 默认返回代码
             return ts_code
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取股票名称失败: {e}")
             return ts_code
     
@@ -492,7 +492,7 @@ class MainWindowEventMixin:
             
             return False
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"检查股票数据文件失败: {e}")
             return False
     
@@ -528,7 +528,7 @@ class MainWindowEventMixin:
                     if hasattr(self, 'action_manager'):
                         self.action_manager._load_stock_chart(ts_code, stock_name)
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"显示全局搜索对话框失败: {e}")
     
     def _position_dialog_at_bottom_right(self, dialog):
@@ -559,7 +559,7 @@ class MainWindowEventMixin:
             # 移动对话框
             dialog.move_to_position(x, y)
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.warning(f"设置对话框位置失败: {e}")
 
     def on_kline_double_clicked(self, event, dates, opens, highs, lows, closes):
@@ -681,7 +681,7 @@ class MainWindowEventMixin:
                 if event.button() == Qt.RightButton:
                     self._show_custom_context_menu(event)
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Error handling MA click: {e}")
 
     def _show_custom_context_menu(self, event):
@@ -823,7 +823,7 @@ class MainWindowEventMixin:
                 if hasattr(self, 'kdj_hline'): self.kdj_hline.hide()
                 if hasattr(self, 'info_text') and self.info_text: self.info_text.hide()
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Error handling mouse move: {e}")
 
     def _update_volume_label(self, index):
@@ -834,14 +834,14 @@ class MainWindowEventMixin:
             # Ideally delegated to chart_manager or similar
             # For now keep minimal implementation to satisfy variable updates
             pass 
-        except Exception:
+        except (OSError, RuntimeError, ValueError):
             pass
 
     def _update_kdj_label(self, index):
         try:
              # Logic similar to original file
              pass
-        except Exception:
+        except (OSError, RuntimeError, ValueError):
             pass
 
     def update_ma_values_display(self, index, dates, opens, highs, lows, closes):
@@ -960,5 +960,5 @@ class MainWindowEventMixin:
                                 self.info_text.setPos(view_pos.x(), view_pos.y())
 
                             self.info_text.show()
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Error showing info box: {e}")

@@ -72,9 +72,9 @@ class TdxHandler:
                 try:
                     self.thread_local.session.close()
                     logger.debug(f"线程 {threading.current_thread().name} 的数据库会话已关闭")
-                except Exception as e:
+                except (OSError, IOError) as e:
                     logger.warning(f"关闭线程数据库会话时出错: {e}")
-        except Exception as e:
+        except (OSError, IOError) as e:
             logger.exception(f"关闭TdxHandler时出错: {e}")
         
     def _get_thread_safe_session(self):
@@ -89,7 +89,7 @@ class TdxHandler:
                 try:
                     self.thread_local.session = self.db_manager.get_session()
                     logger.debug(f"线程 {threading.current_thread().name} 获取新的数据库会话")
-                except Exception as e:
+                except (OSError, RuntimeError) as e:
                     logger.warning(f"线程 {threading.current_thread().name} 获取数据库会话失败: {e}")
                     self.thread_local.session = None
             else:
@@ -175,7 +175,7 @@ class TdxHandler:
             logger.info(f"成功解析通达信日线数据文件: {file_path}，获取{len(df)}条数据")
             return df
             
-        except Exception as e:
+        except (OSError, IOError) as e:
             logger.exception(f"解析通达信日线数据文件失败: {e}")
             raise
             
@@ -232,7 +232,7 @@ class TdxHandler:
                     # )
                     # session.add(daily_data)
                     pass
-                except Exception as row_e:
+                except (ValueError, TypeError) as row_e:
                     logger.exception(f"线程 {threading.current_thread().name} 处理股票 {ts_code} 的数据行失败: {row_e}")
                     continue
             
@@ -242,11 +242,11 @@ class TdxHandler:
             
             return {"code": ts_code, "success": True, "message": f"成功导入 {len(df)} 条数据"}
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             if 'session' in locals() and session:
                 try:
                     session.rollback()
-                except Exception as rollback_e:
+                except (OSError, RuntimeError) as rollback_e:
                     logger.warning(f"线程 {threading.current_thread().name} 回滚事务失败: {rollback_e}")
             logger.exception(f"线程 {threading.current_thread().name} 处理股票 {ts_code} 失败: {e}")
             return {"code": ts_code, "success": False, "message": str(e)}
@@ -270,7 +270,7 @@ class TdxHandler:
             
             # TODO: 实现通达信分钟线数据文件解析逻辑
             
-        except Exception as e:
+        except (OSError, IOError) as e:
             logger.exception(f"解析通达信{freq}数据文件失败: {e}")
             raise
     
@@ -350,16 +350,16 @@ class TdxHandler:
                         logger.info(f"股票 {ts_code_formatted} 数据导入成功")
                     else:
                         logger.warning(f"股票 {ts_code_formatted} 数据导入失败: {res.get('message', '未知错误')}")
-                except Exception as e:
+                except (OSError, RuntimeError) as e:
                     logger.exception(f"处理股票 {ts_code_formatted} 的结果时发生异常: {e}")
-            
+
             logger.info(f"所有股票数据导入完成，成功 {sum(1 for res in futures.values() if res['success'])} 只，失败 {sum(1 for res in futures.values() if not res['success'])} 只")
-            
+
             # 离线模式下返回结果
             if self.offline_mode:
                 return result
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"导入通达信股票数据失败: {e}")
             raise
     
@@ -406,7 +406,7 @@ class TdxHandler:
             
             return pd.DataFrame(data)
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取复权因子失败: {e}")
             return None
     
@@ -462,7 +462,7 @@ class TdxHandler:
             
             return result_df
             
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.exception(f"应用复权因子失败: {e}")
             return df
     
@@ -594,7 +594,7 @@ class TdxHandler:
                             'volume': volume,
                             'amount': amount
                         })
-            except Exception as file_e:
+            except (OSError, IOError) as file_e:
                 logger.exception(f"文件操作失败: {file_e}")
                 return None
             
@@ -640,6 +640,6 @@ class TdxHandler:
             logger.info(f"成功获取股票 {stock_code} 在 {start_date} 到 {end_date} 期间的 {len(result)} 条K线数据")
             return result
             
-        except Exception as e:
+        except (OSError, IOError, ValueError) as e:
             logger.exception(f"获取股票 {stock_code} 的K线数据失败: {e}")
             return None

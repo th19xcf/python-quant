@@ -34,13 +34,13 @@ class ChartManager:
         if hasattr(window, 'chart_title_label'):
             try:
                 window.chart_title_label.deleteLater()
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.warning(f"移除旧标题标签时发生错误: {e}")
 
         if hasattr(window, 'ma_values_label'):
             try:
                 window.ma_values_label.deleteLater()
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.warning(f"移除旧MA标签时发生错误: {e}")
 
         window.chart_title_label = QLabel()
@@ -291,7 +291,7 @@ class ChartManager:
 
         try:
             plot_widget.clear()
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.warning(f"Error clearing plot widget: {e}")
 
         plot_widget.setBackground('#000000')

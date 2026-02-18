@@ -91,7 +91,7 @@ class IndicatorRenderer:
             # 保存MA数据
             self._save_ma_data(df)
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染MA线失败: {e}")
     
     def _draw_ma_line(
@@ -166,7 +166,7 @@ class IndicatorRenderer:
             # 绘制成交量MA线
             self._draw_volume_ma_lines(plot_widget, x, df)
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染成交量失败: {e}")
         return df
 
@@ -288,7 +288,7 @@ class IndicatorRenderer:
             # 添加参考线
             self._add_kdj_reference_lines(plot_widget, x)
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染KDJ失败: {e}")
         return df
 
@@ -375,7 +375,7 @@ class IndicatorRenderer:
             # 添加零轴
             plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1))
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染MACD失败: {e}")
         return df
 
@@ -431,7 +431,7 @@ class IndicatorRenderer:
             # 设置Y轴范围
             plot_widget.setYRange(0, 100)
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染RSI失败: {e}")
         return df
 
@@ -486,7 +486,7 @@ class IndicatorRenderer:
             plot_widget.addLine(y=-50, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
             plot_widget.addLine(y=-80, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染WR失败: {e}")
         return df
 
@@ -554,7 +554,7 @@ class IndicatorRenderer:
                     name='DN'
                 )
             
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染BOLL失败: {e}")
         return df
 
@@ -616,7 +616,7 @@ class IndicatorRenderer:
                         name='MAVR'
                     )
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染VR失败: {e}")
         return df
 
@@ -679,7 +679,7 @@ class IndicatorRenderer:
             # 添加参考线
             plot_widget.addLine(y=100, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染BRAR失败: {e}")
         return df
 
@@ -764,7 +764,7 @@ class IndicatorRenderer:
             plot_widget.addLine(y=20, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
             plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染DMI失败: {e}")
         return df
 
@@ -836,7 +836,7 @@ class IndicatorRenderer:
             # 添加零轴
             plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1))
 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染TRIX失败: {e}")
         return df
 
@@ -866,7 +866,7 @@ class IndicatorRenderer:
                     plot_widget.plot(x[mask], obv_data[mask], pen=pg.mkPen('w', width=1), name='OBV')
                     y_axis = plot_widget.getAxis('left')
                     y_axis.enableAutoSIPrefix(False)
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染OBV失败: {e}")
         return df
 
@@ -906,7 +906,7 @@ class IndicatorRenderer:
                         plot_widget.plot(x[sig_mask], sig_data[sig_mask], pen=pg.mkPen('y', width=1), name='ASI_SIG')
                 y_axis = plot_widget.getAxis('left')
                 y_axis.enableAutoSIPrefix(False)
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染ASI失败: {e}")
         return df
 
@@ -937,7 +937,7 @@ class IndicatorRenderer:
                 y_axis = plot_widget.getAxis('left')
                 y_axis.enableAutoSIPrefix(False)
                 plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1))
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染EMV失败: {e}")
         return df
 
@@ -959,7 +959,7 @@ class IndicatorRenderer:
                 y_axis.enableAutoSIPrefix(False)
                 plot_widget.addLine(y=100, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
                 plot_widget.addLine(y=-100, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染CCI失败: {e}")
         return df
 
@@ -990,7 +990,7 @@ class IndicatorRenderer:
                 y_axis = plot_widget.getAxis('left')
                 y_axis.enableAutoSIPrefix(False)
                 plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1))
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染ROC失败: {e}")
         return df
 
@@ -1021,7 +1021,7 @@ class IndicatorRenderer:
                 y_axis = plot_widget.getAxis('left')
                 y_axis.enableAutoSIPrefix(False)
                 plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1))
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染MTM失败: {e}")
         return df
 
@@ -1042,7 +1042,7 @@ class IndicatorRenderer:
                 y_axis = plot_widget.getAxis('left')
                 y_axis.enableAutoSIPrefix(False)
                 plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染PSY失败: {e}")
         return df
 
@@ -1082,7 +1082,7 @@ class IndicatorRenderer:
                         plot_widget.plot(x[ma_mask], ma_data[ma_mask], pen=pg.mkPen('y', width=1), name='MCST_MA')
                 y_axis = plot_widget.getAxis('left')
                 y_axis.enableAutoSIPrefix(False)
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染MCST失败: {e}")
         return df
 
@@ -1124,7 +1124,7 @@ class IndicatorRenderer:
 
                 # 绘制零线
                 plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染DMA失败: {e}")
         return df
 
@@ -1159,7 +1159,7 @@ class IndicatorRenderer:
                     # 绘制SWS线（黄色）
                     if np.any(sws_mask):
                         plot_widget.plot(x[sws_mask], sws_data[sws_mask], pen=pg.mkPen('y', width=1), name='SWS')
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染FSL失败: {e}")
         return df
 
@@ -1202,7 +1202,7 @@ class IndicatorRenderer:
                     logger.warning("SAR数据全部为空值，无法绘制")
             else:
                 logger.warning("SAR列不存在，无法渲染")
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染SAR失败: {e}")
         return df
 
@@ -1227,7 +1227,7 @@ class IndicatorRenderer:
                     for i in range(len(x)):
                         if mask[i]:
                             plot_widget.plot([x[i], x[i]], [0, vol_tdx_data[i]], pen=pg.mkPen(colors[i], width=2))
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染VOL-TDX失败: {e}")
         return df
 
@@ -1258,7 +1258,7 @@ class IndicatorRenderer:
                     plot_widget.plot(x[mask], cr_data[mask], pen=pg.mkPen('w', width=1), name='CR')
                     # 绘制参考线（100）
                     plot_widget.addLine(y=100, pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染CR失败: {e}")
         return df
 
@@ -1298,7 +1298,7 @@ class IndicatorRenderer:
                     if range_val == 0:
                         range_val = abs(max_val) * 0.1 if max_val != 0 else 1
                     plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染EXPMA失败: {e}")
         return df
 
@@ -1329,7 +1329,7 @@ class IndicatorRenderer:
                         plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)
                     # 绘制BBI线（橙色）
                     plot_widget.plot(x[mask], bbi_data[mask], pen=pg.mkPen('#FFA500', width=2), name='BBI')
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染BBI失败: {e}")
         return df
 
@@ -1378,7 +1378,7 @@ class IndicatorRenderer:
                     # 添加参考线
                     plot_widget.addLine(y=5, pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
                     plot_widget.addLine(y=10, pen=pg.mkPen('#FF0000', width=1, style=pg.QtCore.Qt.DashLine))
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染HSL失败: {e}")
         return df
 
@@ -1423,7 +1423,7 @@ class IndicatorRenderer:
                     plot_widget.addLine(y=0.5, pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
                     plot_widget.addLine(y=1.5, pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
                     plot_widget.addLine(y=2, pen=pg.mkPen('#FF0000', width=1, style=pg.QtCore.Qt.DashLine))
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染LB失败: {e}")
         return df
 
@@ -1462,7 +1462,7 @@ class IndicatorRenderer:
                 if range_val == 0:
                     range_val = abs(max_val) * 0.1 if max_val != 0 else 1
                 plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染CYC失败: {e}")
         return df
 
@@ -1504,7 +1504,7 @@ class IndicatorRenderer:
                             plot_widget.plot(x[mask_ma5], cys_ma5[mask_ma5], pen=pg.mkPen('w', width=1), name='MA5')
                     # 添加零线
                     plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1))
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染CYS失败: {e}")
         return df
 

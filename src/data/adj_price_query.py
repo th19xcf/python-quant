@@ -84,7 +84,7 @@ class AdjPriceQuery:
                 logger.error(f"不支持的复权类型: {adj_type}")
                 return None
                 
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"获取 {ts_code} 价格数据失败: {e}")
             return None
     

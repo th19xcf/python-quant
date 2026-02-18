@@ -56,7 +56,7 @@ class ChartEventBinder:
             
             logger.debug("图表事件绑定完成")
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"绑定图表事件失败: {e}")
     
     def _bind_mouse_move_events(self, dates, opens, highs, lows, closes):
@@ -86,7 +86,7 @@ class ChartEventBinder:
             # 启用鼠标跟踪
             self.main_window.tech_plot_widget.viewport().setMouseTracking(True)
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"绑定鼠标移动事件失败: {e}")
     
     def _bind_mouse_click_events(self, dates, opens, highs, lows, closes):
@@ -110,7 +110,7 @@ class ChartEventBinder:
                 lambda event: mouse_handler.handle_mouse_clicked(event, dates, opens, highs, lows, closes)
             )
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"绑定鼠标点击事件失败: {e}")
     
     def _disconnect_mouse_events(self):
@@ -125,13 +125,13 @@ class ChartEventBinder:
             try:
                 if hasattr(widget.scene(), 'sigMouseMoved') and hasattr(widget.scene().sigMouseMoved, 'disconnect'):
                     widget.scene().sigMouseMoved.disconnect()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
             
             try:
                 if hasattr(widget.scene(), 'sigMouseClicked') and hasattr(widget.scene().sigMouseClicked, 'disconnect'):
                     widget.scene().sigMouseClicked.disconnect()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
     
     def _bind_range_sync_events(self):
@@ -155,7 +155,7 @@ class ChartEventBinder:
                     volume_view_box.setXRange(x_min, x_max, padding=0)
                     kdj_view_box.setXRange(x_min, x_max, padding=0)
                     self._update_dividend_markers()
-                except Exception as e:
+                except (OSError, RuntimeError) as e:
                     logger.debug(f"同步范围失败: {e}")
             
             def sync_from_volume(view_range):
@@ -165,7 +165,7 @@ class ChartEventBinder:
                     tech_view_box.setXRange(x_min, x_max, padding=0)
                     kdj_view_box.setXRange(x_min, x_max, padding=0)
                     self._update_dividend_markers()
-                except Exception as e:
+                except (OSError, RuntimeError) as e:
                     logger.debug(f"同步范围失败: {e}")
             
             def sync_from_kdj(view_range):
@@ -175,7 +175,7 @@ class ChartEventBinder:
                     tech_view_box.setXRange(x_min, x_max, padding=0)
                     volume_view_box.setXRange(x_min, x_max, padding=0)
                     self._update_dividend_markers()
-                except Exception as e:
+                except (OSError, RuntimeError) as e:
                     logger.debug(f"同步范围失败: {e}")
             
             # 连接信号
@@ -183,7 +183,7 @@ class ChartEventBinder:
             volume_view_box.sigRangeChanged.connect(sync_from_volume)
             kdj_view_box.sigRangeChanged.connect(sync_from_kdj)
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"绑定范围同步事件失败: {e}")
     
     def _update_dividend_markers(self):
@@ -191,7 +191,7 @@ class ChartEventBinder:
         try:
             if hasattr(self.main_window, 'dividend_marker_manager') and self.main_window.dividend_marker_manager:
                 self.main_window.dividend_marker_manager.update_position()
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.debug(f"更新分红标记位置失败: {e}")
     
     def _setup_context_menu(self):
@@ -203,7 +203,7 @@ class ChartEventBinder:
             # 设置自定义右键菜单
             self._setup_custom_context_menu()
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"设置右键菜单失败: {e}")
     
     def _disable_default_context_menu(self):
@@ -256,7 +256,7 @@ class ChartEventBinder:
                 # 阻止事件传播
                 event.accept()
                 
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.debug(f"显示右键菜单失败: {e}")
         
         # 设置自定义右键菜单
@@ -277,7 +277,7 @@ class ChartEventBinder:
             
             self.main_window.info_timer = timer
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"设置信息框定时器失败: {e}")
     
     def setup_crosshair(self):
@@ -317,7 +317,7 @@ class ChartEventBinder:
             
             return vline, hline, volume_vline, volume_hline, kdj_vline, kdj_hline
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"设置十字线失败: {e}")
             return None, None, None, None, None, None
     
@@ -338,7 +338,7 @@ class ChartEventBinder:
                     line = getattr(self.main_window, attr_name)
                     if line is not None:
                         widget.removeItem(line)
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 logger.debug(f"移除旧十字线失败: {e}")
     
     def setup_info_text(self):
@@ -360,7 +360,7 @@ class ChartEventBinder:
             
             return info_text
             
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             logger.exception(f"设置信息文本项失败: {e}")
             return None
 

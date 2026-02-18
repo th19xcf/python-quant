@@ -58,7 +58,7 @@ class MacroDataSourcePlugin(DataSourcePlugin):
                     db_manager = DatabaseManager(config)
                     db_manager.connect()
                     logger.info("Macro数据源插件数据库连接成功")
-                except Exception as db_e:
+                except (OSError, RuntimeError, ValueError) as db_e:
                     logger.warning(f"Macro数据源插件数据库连接失败，将以离线模式运行: {db_e}")
                     return False
             
@@ -66,7 +66,7 @@ class MacroDataSourcePlugin(DataSourcePlugin):
             self.macro_handler = MacroHandler(config, db_manager)
             logger.info("Macro数据源插件初始化成功")
             return True
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"初始化Macro数据源插件失败: {e}")
             return False
     
@@ -129,6 +129,6 @@ class MacroDataSourcePlugin(DataSourcePlugin):
             else:
                 logger.warning("Macro数据源插件未初始化，无法更新宏观经济数据")
                 return False
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Macro数据源插件更新宏观经济数据失败: {e}")
             return False
