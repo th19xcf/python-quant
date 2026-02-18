@@ -102,7 +102,19 @@ class IndicatorCache:
         data_sample = data.select(data_cols).head(100)  # 使用前100行进行哈希计算
         try:
             data_str = data_sample.to_pandas().to_csv(index=False).encode('utf-8')
-        except Exception:
+        except (ImportError, AttributeError) as e:
+            # pandas未安装或方法不存在
+            logger.debug(f"使用pandas转换失败，使用numpy: {e}")
+            data_bytes = data_sample.to_numpy().tobytes()
+            cols_bytes = ",".join(data_cols).encode('utf-8')
+            data_str = cols_bytes + b"|" + data_bytes
+        except MemoryError as e:
+            # 内存不足，使用简化方案
+            logger.warning(f"内存不足，使用简化哈希方案: {e}")
+            data_str = f"{len(data_sample)}_{hash(tuple(data_cols))}".encode('utf-8')
+        except Exception as e:
+            # 其他未预期的错误
+            logger.warning(f"生成数据哈希时发生未预期错误: {e}")
             data_bytes = data_sample.to_numpy().tobytes()
             cols_bytes = ",".join(data_cols).encode('utf-8')
             data_str = cols_bytes + b"|" + data_bytes

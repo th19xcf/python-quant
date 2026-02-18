@@ -11,6 +11,15 @@ import polars as pl
 import pandas as pd
 from src.api.data_api import IDataProvider, IDataProcessor
 from src.utils.event_bus import EventBus
+from src.utils.exceptions import (
+    DataSourceConnectionError,
+    DataSourceNotAvailableError,
+    DataSourceConfigError,
+    DataValidationError,
+    DataNotFoundError,
+    DataSaveError,
+    QuantException
+)
 
 
 class DataManager(IDataProvider, IDataProcessor):
@@ -49,56 +58,90 @@ class DataManager(IDataProvider, IDataProcessor):
         """
         初始化各个数据源处理器
         """
+        # 初始化通达信数据处理器
         try:
-            # 初始化通达信数据处理器
-            try:
-                from src.data.tdx_handler import TdxHandler
-                self.tdx_handler = TdxHandler(self.config, self.db_manager)
-            except Exception as tdx_e:
-                logger.warning(f"通达信数据处理器初始化失败（离线模式下正常）: {tdx_e}")
-                self.tdx_handler = None
-            
-            # 初始化Baostock数据处理器
-            try:
-                from src.data.baostock_handler import BaostockHandler
-                self.baostock_handler = BaostockHandler(self.config, self.db_manager)
-                logger.info("Baostock数据处理器初始化成功")
-            except Exception as e:
-                logger.exception(f"Baostock数据处理器初始化失败: {e}")
-                self.baostock_handler = None
-            
-            # 初始化宏观数据处理器
-            try:
-                from src.data.macro_handler import MacroHandler
-                self.macro_handler = MacroHandler(self.config, self.db_manager)
-            except Exception as macro_e:
-                logger.warning(f"宏观数据处理器初始化失败（离线模式下正常）: {macro_e}")
-                self.macro_handler = None
-            
-            # 初始化新闻数据处理器
-            try:
-                from src.data.news_handler import NewsHandler
-                self.news_handler = NewsHandler(self.config, self.db_manager)
-            except Exception as news_e:
-                logger.warning(f"新闻数据处理器初始化失败（离线模式下正常）: {news_e}")
-                self.news_handler = None
-            
-            logger.info("数据处理器初始化完成")
-            
-            # 初始化完成后，根据配置决定是否自动更新股票基本信息
-            try:
-                if hasattr(self.config.data, 'auto_update_stock_basic') and self.config.data.auto_update_stock_basic:
-                    self.update_stock_basic()
-                    logger.info("自动更新股票基本信息完成")
-                else:
-                    logger.info("跳过自动更新股票基本信息（未开启或配置不允许）")
-            except Exception as update_e:
-                logger.warning(f"自动更新股票基本信息失败: {update_e}")
-            
+            from src.data.tdx_handler import TdxHandler
+            self.tdx_handler = TdxHandler(self.config, self.db_manager)
+            logger.info("通达信数据处理器初始化成功")
+        except ImportError as e:
+            logger.info(f"通达信模块未安装: {e}")
+            self.tdx_handler = None
+        except FileNotFoundError as e:
+            logger.info(f"通达信数据文件不存在（离线模式）: {e}")
+            self.tdx_handler = None
+        except PermissionError as e:
+            logger.warning(f"通达信数据文件访问权限不足: {e}")
+            self.tdx_handler = None
+        except DataSourceConfigError as e:
+            logger.warning(f"通达信配置错误: {e.message}")
+            self.tdx_handler = None
+        except Exception as tdx_e:
+            logger.warning(f"通达信数据处理器初始化失败（离线模式下正常）: {tdx_e}")
+            self.tdx_handler = None
+        
+        # 初始化Baostock数据处理器
+        try:
+            from src.data.baostock_handler import BaostockHandler
+            self.baostock_handler = BaostockHandler(self.config, self.db_manager)
+            logger.info("Baostock数据处理器初始化成功")
+        except ImportError as e:
+            logger.warning(f"Baostock模块未安装: {e}")
+            self.baostock_handler = None
+        except ConnectionError as e:
+            logger.error(f"Baostock服务器连接失败: {e}")
+            self.baostock_handler = None
+        except DataSourceConfigError as e:
+            logger.error(f"Baostock配置错误: {e.message}")
+            self.baostock_handler = None
         except Exception as e:
-            logger.exception(f"数据处理器初始化失败: {e}")
-            # 离线模式下不抛出异常，继续运行
-            logger.info("离线模式下继续运行")
+            logger.error(f"Baostock数据处理器初始化失败: {e}")
+            self.baostock_handler = None
+        
+        # 初始化宏观数据处理器
+        try:
+            from src.data.macro_handler import MacroHandler
+            self.macro_handler = MacroHandler(self.config, self.db_manager)
+            logger.info("宏观数据处理器初始化成功")
+        except ImportError as e:
+            logger.info(f"宏观数据模块未安装: {e}")
+            self.macro_handler = None
+        except ConnectionError as e:
+            logger.warning(f"宏观数据源连接失败（离线模式）: {e}")
+            self.macro_handler = None
+        except Exception as macro_e:
+            logger.warning(f"宏观数据处理器初始化失败（离线模式下正常）: {macro_e}")
+            self.macro_handler = None
+        
+        # 初始化新闻数据处理器
+        try:
+            from src.data.news_handler import NewsHandler
+            self.news_handler = NewsHandler(self.config, self.db_manager)
+            logger.info("新闻数据处理器初始化成功")
+        except ImportError as e:
+            logger.info(f"新闻数据模块未安装: {e}")
+            self.news_handler = None
+        except ConnectionError as e:
+            logger.warning(f"新闻数据源连接失败（离线模式）: {e}")
+            self.news_handler = None
+        except Exception as news_e:
+            logger.warning(f"新闻数据处理器初始化失败（离线模式下正常）: {news_e}")
+            self.news_handler = None
+        
+        logger.info("数据处理器初始化完成")
+        
+        # 初始化完成后，根据配置决定是否自动更新股票基本信息
+        try:
+            if hasattr(self.config.data, 'auto_update_stock_basic') and self.config.data.auto_update_stock_basic:
+                self.update_stock_basic()
+                logger.info("自动更新股票基本信息完成")
+            else:
+                logger.info("跳过自动更新股票基本信息（未开启或配置不允许）")
+        except DataSourceConnectionError as e:
+            logger.warning(f"自动更新股票基本信息失败 - 连接错误: {e.message}")
+        except DataValidationError as e:
+            logger.warning(f"自动更新股票基本信息失败 - 数据验证错误: {e.message}")
+        except Exception as update_e:
+            logger.warning(f"自动更新股票基本信息失败: {update_e}")
     
     def _init_plugin_datasources(self):
         """
@@ -143,20 +186,43 @@ class DataManager(IDataProvider, IDataProcessor):
             event_type: 事件类型
             identifier: 标识符，默认为'all'
             **kwargs: 传递给更新方法的参数
+            
+        Raises:
+            DataSourceNotAvailableError: 数据源不可用
+            DataValidationError: 数据验证失败
+            DataSaveError: 数据保存失败
         """
+        if not handler:
+            error_msg = f"{data_type}处理器未初始化"
+            logger.warning(error_msg)
+            self._publish_data_updated_event(event_type, identifier, status='error', message=error_msg)
+            raise DataSourceNotAvailableError("unknown", error_msg)
+        
         try:
-            if handler:
-                method = getattr(handler, method_name)
-                method(**kwargs)
+            method = getattr(handler, method_name)
+            method(**kwargs)
             logger.info(f"{data_type}更新完成")
             
             # 发布数据更新事件
             self._publish_data_updated_event(event_type, identifier)
             
-        except Exception as e:
-            logger.exception(f"{data_type}更新失败: {e}")
-            self._publish_data_updated_event(event_type, identifier, status='error', message=str(e))
+        except DataSourceConnectionError as e:
+            logger.error(f"{data_type}更新失败 - 连接错误: {e.message}")
+            self._publish_data_updated_event(event_type, identifier, status='error', message=e.message)
             raise
+        except DataValidationError as e:
+            logger.error(f"{data_type}更新失败 - 数据验证错误: {e.message}")
+            self._publish_data_updated_event(event_type, identifier, status='error', message=e.message)
+            raise
+        except DataSaveError as e:
+            logger.error(f"{data_type}更新失败 - 保存错误: {e.message}")
+            self._publish_data_updated_event(event_type, identifier, status='error', message=e.message)
+            raise
+        except Exception as e:
+            error_msg = f"{data_type}更新失败: {str(e)}"
+            logger.exception(error_msg)
+            self._publish_data_updated_event(event_type, identifier, status='error', message=error_msg)
+            raise DataSaveError(error_msg) from e
     
     def update_stock_basic(self):
         """
@@ -262,25 +328,42 @@ class DataManager(IDataProvider, IDataProcessor):
 
         Args:
             ts_codes: 股票代码列表，None表示更新所有股票
+            
+        Raises:
+            DataSourceConnectionError: 数据源连接失败
+            DataValidationError: 数据验证失败
+            DataSaveError: 数据保存失败
         """
-        try:
-            # 初始化AkShare处理器（如果尚未初始化）
-            if not self.akshare_handler:
+        # 初始化AkShare处理器（如果尚未初始化）
+        if not self.akshare_handler:
+            try:
                 from src.data.akshare_handler import AkShareHandler
                 self.akshare_handler = AkShareHandler(self.config, self.db_manager)
                 logger.info("AkShare数据处理器初始化成功")
+            except ImportError as e:
+                error_msg = f"AkShare模块未安装: {e}"
+                logger.error(error_msg)
+                raise DataSourceNotAvailableError("akshare", error_msg) from e
+            except ConnectionError as e:
+                error_msg = f"AkShare服务器连接失败: {e}"
+                logger.error(error_msg)
+                raise DataSourceConnectionError("akshare", error_msg) from e
+            except DataSourceConfigError as e:
+                logger.error(f"AkShare配置错误: {e.message}")
+                raise
+            except Exception as e:
+                error_msg = f"AkShare数据处理器初始化失败: {e}"
+                logger.error(error_msg)
+                raise DataSourceNotAvailableError("akshare", error_msg) from e
 
-            self._update_data(
-                data_type="股票分红配股数据",
-                handler=self.akshare_handler,
-                method_name="update_stock_dividend",
-                event_type="stock_dividend",
-                identifier=ts_codes[0] if ts_codes else 'all',
-                ts_codes=ts_codes
-            )
-        except Exception as e:
-            logger.exception(f"更新股票分红配股数据失败: {e}")
-            raise
+        self._update_data(
+            data_type="股票分红配股数据",
+            handler=self.akshare_handler,
+            method_name="update_stock_dividend",
+            event_type="stock_dividend",
+            identifier=ts_codes[0] if ts_codes else 'all',
+            ts_codes=ts_codes
+        )
 
     def get_stock_dividend(self, ts_code: str) -> pl.DataFrame:
         """
@@ -292,46 +375,75 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             pl.DataFrame: 分红配股数据
         """
+        # 参数验证
+        if not ts_code:
+            logger.warning("股票代码不能为空")
+            return pl.DataFrame()
+        
+        # 检查数据库连接
+        if not self.db_manager:
+            logger.warning("数据库管理器未初始化，无法获取分红配股数据")
+            return pl.DataFrame()
+        
+        if not self.db_manager.is_connected():
+            logger.warning("数据库未连接，无法获取分红配股数据")
+            return pl.DataFrame()
+
         try:
-            if not self.db_manager or not self.db_manager.is_connected():
-                logger.warning("数据库未连接，无法获取分红配股数据")
-                return pl.DataFrame()
-
             from src.database.models.stock import StockDividend
+        except ImportError as e:
+            logger.error(f"无法导入StockDividend模型: {e}")
+            return pl.DataFrame()
 
+        session = None
+        try:
             session = self.db_manager.get_session()
             if not session:
                 logger.warning("无法获取数据库会话")
                 return pl.DataFrame()
 
             # 查询分红配股数据
-            dividends = session.query(StockDividend).filter_by(ts_code=ts_code).all()
+            try:
+                dividends = session.query(StockDividend).filter_by(ts_code=ts_code).all()
+            except Exception as query_e:
+                logger.error(f"查询分红配股数据失败: {query_e}")
+                return pl.DataFrame()
 
             if not dividends:
                 return pl.DataFrame()
 
             # 转换为Polars DataFrame
-            data = [{
-                'ts_code': d.ts_code,
-                'symbol': d.symbol,
-                'name': d.name,
-                'dividend_year': d.dividend_year,
-                'report_date': d.report_date,
-                'record_date': d.record_date,
-                'ex_date': d.ex_date,
-                'pay_date': d.pay_date,
-                'cash_div': d.cash_div,
-                'share_div': d.share_div,
-                'total_div': d.total_div,
-                'rights_issue_price': d.rights_issue_price,
-                'rights_issue_ratio': d.rights_issue_ratio
-            } for d in dividends]
+            try:
+                data = [{
+                    'ts_code': d.ts_code,
+                    'symbol': d.symbol,
+                    'name': d.name,
+                    'dividend_year': d.dividend_year,
+                    'report_date': d.report_date,
+                    'record_date': d.record_date,
+                    'ex_date': d.ex_date,
+                    'pay_date': d.pay_date,
+                    'cash_div': d.cash_div,
+                    'share_div': d.share_div,
+                    'total_div': d.total_div,
+                    'rights_issue_price': d.rights_issue_price,
+                    'rights_issue_ratio': d.rights_issue_ratio
+                } for d in dividends]
 
-            return pl.DataFrame(data)
+                return pl.DataFrame(data)
+            except Exception as convert_e:
+                logger.error(f"转换分红配股数据失败: {convert_e}")
+                return pl.DataFrame()
 
         except Exception as e:
             logger.exception(f"获取股票分红配股数据失败: {e}")
             return pl.DataFrame()
+        finally:
+            if session:
+                try:
+                    session.close()
+                except Exception:
+                    pass
 
     def _get_data_from_sources(self, data_type: str, ts_code: str, start_date: str, end_date: str, freq: str = "daily", adjustment_type: str = "qfq"):
         """

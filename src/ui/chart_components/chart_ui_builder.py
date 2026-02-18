@@ -77,8 +77,15 @@ class ChartUIBuilder:
                     self.main_window.chart_layout.removeWidget(self.main_window.title_ma_container)
                 # 删除容器及其所有子组件
                 self.main_window.title_ma_container.deleteLater()
+            except RuntimeError as e:
+                # C++对象已被删除 - 正常的生命周期问题
+                logger.debug(f"标题容器已被删除，无需清理: {e}")
+            except AttributeError as e:
+                # 对象或属性不存在
+                logger.debug(f"标题容器属性不存在: {e}")
             except Exception as e:
-                logger.warning(f"移除旧标题容器时发生错误: {e}")
+                # 其他未预期的错误
+                logger.warning(f"移除旧标题容器时发生未预期错误: {e}")
         
         # 清理引用
         self.main_window.title_ma_container = None
