@@ -192,6 +192,9 @@ class MouseHandler:
                     elif current_indicator == "CR" and hasattr(self.main_window, 'current_cr_data') and 0 <= index < len(self.main_window.current_cr_data['cr']):
                         current_cr = self.main_window.current_cr_data['cr'][index]
                         self.main_window.kdj_values_label.setText(f"<font color='white'>CR: {self._format_value(current_cr)}</font>")
+                    elif current_indicator == "OBV" and hasattr(self.main_window, 'current_obv_data') and 0 <= index < len(self.main_window.current_obv_data['obv']):
+                        current_obv = self.main_window.current_obv_data['obv'][index]
+                        self.main_window.kdj_values_label.setText(f"<font color='white'>OBV: {self._format_value(current_obv)}</font>")
                     # 新增指标 - EXPMA
                     elif current_indicator == "EXPMA" and hasattr(self.main_window, 'current_expma_data') and 0 <= index < len(self.main_window.current_expma_data['expma12']):
                         current_expma12 = self.main_window.current_expma_data['expma12'][index]
@@ -222,6 +225,46 @@ class MouseHandler:
                             current_cys_ma5 = self.main_window.current_cys_data['cys_ma5'][index]
                             text += f"  <font color='white'>MA5: {self._format_value(current_cys_ma5)}%</font>"
                         self.main_window.kdj_values_label.setText(text)
+                    elif current_indicator == "ASI" and hasattr(self.main_window, 'current_asi_data') and 0 <= index < len(self.main_window.current_asi_data['asi']):
+                        current_asi = self.main_window.current_asi_data['asi'][index]
+                        text = f"<font color='white'>ASI: {self._format_value(current_asi)}</font>"
+                        if 'asi_sig' in self.main_window.current_asi_data and index < len(self.main_window.current_asi_data['asi_sig']):
+                            current_sig = self.main_window.current_asi_data['asi_sig'][index]
+                            text += f"  <font color='yellow'>SIG: {self._format_value(current_sig)}</font>"
+                        self.main_window.kdj_values_label.setText(text)
+                    elif current_indicator == "EMV" and hasattr(self.main_window, 'current_emv_data') and 0 <= index < len(self.main_window.current_emv_data['emv']):
+                        current_emv = self.main_window.current_emv_data['emv'][index]
+                        self.main_window.kdj_values_label.setText(f"<font color='white'>EMV: {self._format_value(current_emv)}</font>")
+                    elif current_indicator == "CCI" and hasattr(self.main_window, 'current_cci_data') and 0 <= index < len(self.main_window.current_cci_data['cci']):
+                        current_cci = self.main_window.current_cci_data['cci'][index]
+                        self.main_window.kdj_values_label.setText(f"<font color='white'>CCI: {self._format_value(current_cci)}</font>")
+                    elif current_indicator == "ROC" and hasattr(self.main_window, 'current_roc_data') and 0 <= index < len(self.main_window.current_roc_data['roc']):
+                        current_roc = self.main_window.current_roc_data['roc'][index]
+                        self.main_window.kdj_values_label.setText(f"<font color='white'>ROC: {self._format_value(current_roc)}</font>")
+                    elif current_indicator == "MTM" and hasattr(self.main_window, 'current_mtm_data') and 0 <= index < len(self.main_window.current_mtm_data['mtm']):
+                        current_mtm = self.main_window.current_mtm_data['mtm'][index]
+                        self.main_window.kdj_values_label.setText(f"<font color='white'>MTM: {self._format_value(current_mtm)}</font>")
+                    elif current_indicator == "PSY" and hasattr(self.main_window, 'current_psy_data') and 0 <= index < len(self.main_window.current_psy_data['psy']):
+                        current_psy = self.main_window.current_psy_data['psy'][index]
+                        self.main_window.kdj_values_label.setText(f"<font color='white'>PSY: {self._format_value(current_psy)}</font>")
+                    elif current_indicator == "MCST" and hasattr(self.main_window, 'current_mcst_data') and 0 <= index < len(self.main_window.current_mcst_data['mcst']):
+                        current_mcst = self.main_window.current_mcst_data['mcst'][index]
+                        self.main_window.kdj_values_label.setText(f"<font color='white'>MCST: {self._format_value(current_mcst)}</font>")
+                    elif current_indicator == "HSL" and hasattr(self.main_window, 'current_hsl_data') and 0 <= index < len(self.main_window.current_hsl_data['hsl']):
+                        current_hsl = self.main_window.current_hsl_data['hsl'][index]
+                        hsl_color = '#FF0000' if current_hsl > 10 else '#FFA500' if current_hsl > 5 else '#00BFFF'
+                        text = f"<font color='{hsl_color}'>HSL: {self._format_value(current_hsl)}%</font>"
+                        if 'hsl_ma5' in self.main_window.current_hsl_data and index < len(self.main_window.current_hsl_data['hsl_ma5']):
+                            current_hsl_ma5 = self.main_window.current_hsl_data['hsl_ma5'][index]
+                            text += f"  <font color='white'>MA5: {self._format_value(current_hsl_ma5)}%</font>"
+                        if 'hsl_ma10' in self.main_window.current_hsl_data and index < len(self.main_window.current_hsl_data['hsl_ma10']):
+                            current_hsl_ma10 = self.main_window.current_hsl_data['hsl_ma10'][index]
+                            text += f"  <font color='cyan'>MA10: {self._format_value(current_hsl_ma10)}%</font>"
+                        self.main_window.kdj_values_label.setText(text)
+                    elif current_indicator == "LB" and hasattr(self.main_window, 'current_lb_data') and 0 <= index < len(self.main_window.current_lb_data['lb']):
+                        current_lb = self.main_window.current_lb_data['lb'][index]
+                        lb_color = '#FF0000' if current_lb > 2 else '#FFA500' if current_lb > 1.5 else '#00FF7F' if current_lb > 1 else '#00BFFF'
+                        self.main_window.kdj_values_label.setText(f"<font color='{lb_color}'>LB: {self._format_value(current_lb)}</font>")
                 
                 # 更新第二个窗口标签（重复检查，确保所有情况下都正确显示）
                 if hasattr(self.main_window, 'volume_values_label'):
@@ -283,6 +326,10 @@ class MouseHandler:
                         # 更新CR标签
                         current_cr = self.main_window.current_cr_data['cr'][index]
                         self.main_window.volume_values_label.setText(f"<font color='white'>CR: {self._format_value(current_cr)}</font>")
+                    elif current_indicator == "OBV" and hasattr(self.main_window, 'current_obv_data') and 0 <= index < len(self.main_window.current_obv_data['obv']):
+                        # 更新OBV标签
+                        current_obv = self.main_window.current_obv_data['obv'][index]
+                        self.main_window.volume_values_label.setText(f"<font color='white'>OBV: {self._format_value(current_obv)}</font>")
                     # 新增指标 - HSL（换手率）
                     elif current_indicator == "HSL" and hasattr(self.main_window, 'current_hsl_data') and 0 <= index < len(self.main_window.current_hsl_data['hsl']):
                         current_hsl = self.main_window.current_hsl_data['hsl'][index]
@@ -300,6 +347,46 @@ class MouseHandler:
                         current_lb = self.main_window.current_lb_data['lb'][index]
                         lb_color = '#FF0000' if current_lb > 2 else '#FFA500' if current_lb > 1.5 else '#00FF7F' if current_lb > 1 else '#00BFFF'
                         self.main_window.volume_values_label.setText(f"<font color='{lb_color}'>LB: {self._format_value(current_lb)}</font>")
+                    elif current_indicator == "ASI" and hasattr(self.main_window, 'current_asi_data') and 0 <= index < len(self.main_window.current_asi_data['asi']):
+                        current_asi = self.main_window.current_asi_data['asi'][index]
+                        text = f"<font color='white'>ASI: {self._format_value(current_asi)}</font>"
+                        if 'asi_sig' in self.main_window.current_asi_data and index < len(self.main_window.current_asi_data['asi_sig']):
+                            current_sig = self.main_window.current_asi_data['asi_sig'][index]
+                            text += f"  <font color='yellow'>SIG: {self._format_value(current_sig)}</font>"
+                        self.main_window.volume_values_label.setText(text)
+                    elif current_indicator == "EMV" and hasattr(self.main_window, 'current_emv_data') and 0 <= index < len(self.main_window.current_emv_data['emv']):
+                        current_emv = self.main_window.current_emv_data['emv'][index]
+                        self.main_window.volume_values_label.setText(f"<font color='white'>EMV: {self._format_value(current_emv)}</font>")
+                    elif current_indicator == "CCI" and hasattr(self.main_window, 'current_cci_data') and 0 <= index < len(self.main_window.current_cci_data['cci']):
+                        current_cci = self.main_window.current_cci_data['cci'][index]
+                        self.main_window.volume_values_label.setText(f"<font color='white'>CCI: {self._format_value(current_cci)}</font>")
+                    elif current_indicator == "ROC" and hasattr(self.main_window, 'current_roc_data') and 0 <= index < len(self.main_window.current_roc_data['roc']):
+                        current_roc = self.main_window.current_roc_data['roc'][index]
+                        self.main_window.volume_values_label.setText(f"<font color='white'>ROC: {self._format_value(current_roc)}</font>")
+                    elif current_indicator == "MTM" and hasattr(self.main_window, 'current_mtm_data') and 0 <= index < len(self.main_window.current_mtm_data['mtm']):
+                        current_mtm = self.main_window.current_mtm_data['mtm'][index]
+                        self.main_window.volume_values_label.setText(f"<font color='white'>MTM: {self._format_value(current_mtm)}</font>")
+                    elif current_indicator == "PSY" and hasattr(self.main_window, 'current_psy_data') and 0 <= index < len(self.main_window.current_psy_data['psy']):
+                        current_psy = self.main_window.current_psy_data['psy'][index]
+                        self.main_window.volume_values_label.setText(f"<font color='white'>PSY: {self._format_value(current_psy)}</font>")
+                    elif current_indicator == "MCST" and hasattr(self.main_window, 'current_mcst_data') and 0 <= index < len(self.main_window.current_mcst_data['mcst']):
+                        current_mcst = self.main_window.current_mcst_data['mcst'][index]
+                        self.main_window.volume_values_label.setText(f"<font color='white'>MCST: {self._format_value(current_mcst)}</font>")
+                    elif current_indicator == "LB" and hasattr(self.main_window, 'current_lb_data') and 0 <= index < len(self.main_window.current_lb_data['lb']):
+                        current_lb = self.main_window.current_lb_data['lb'][index]
+                        lb_color = '#FF0000' if current_lb > 2 else '#FFA500' if current_lb > 1.5 else '#00FF7F' if current_lb > 1 else '#00BFFF'
+                        self.main_window.volume_values_label.setText(f"<font color='{lb_color}'>LB: {self._format_value(current_lb)}</font>")
+                    elif current_indicator == "HSL" and hasattr(self.main_window, 'current_hsl_data') and 0 <= index < len(self.main_window.current_hsl_data['hsl']):
+                        current_hsl = self.main_window.current_hsl_data['hsl'][index]
+                        hsl_color = '#FF0000' if current_hsl > 10 else '#FFA500' if current_hsl > 5 else '#00BFFF'
+                        text = f"<font color='{hsl_color}'>HSL: {self._format_value(current_hsl)}%</font>"
+                        if 'hsl_ma5' in self.main_window.current_hsl_data and index < len(self.main_window.current_hsl_data['hsl_ma5']):
+                            current_hsl_ma5 = self.main_window.current_hsl_data['hsl_ma5'][index]
+                            text += f"  <font color='white'>MA5: {self._format_value(current_hsl_ma5)}%</font>"
+                        if 'hsl_ma10' in self.main_window.current_hsl_data and index < len(self.main_window.current_hsl_data['hsl_ma10']):
+                            current_hsl_ma10 = self.main_window.current_hsl_data['hsl_ma10'][index]
+                            text += f"  <font color='cyan'>MA10: {self._format_value(current_hsl_ma10)}%</font>"
+                        self.main_window.volume_values_label.setText(text)
             
             # 如果十字线功能启用，更新十字线位置和信息框
             if self.main_window.crosshair_enabled and 0 <= index < len(dates):

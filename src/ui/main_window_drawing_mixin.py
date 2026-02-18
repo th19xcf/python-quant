@@ -720,6 +720,12 @@ class MainWindowDrawingMixin:
                 'cr': df_pl['cr'].to_list(),
             }
         
+        # OBV数据
+        if 'obv' in df_pl.columns:
+            self.current_obv_data = {
+                'obv': df_pl['obv'].to_list(),
+            }
+        
         # 新增指标数据保存
         # EXPMA数据
         if 'expma12' in df_pl.columns:
@@ -762,6 +768,49 @@ class MainWindowDrawingMixin:
             self.current_cys_data = {
                 'cys': df_pl['cys'].to_list(),
                 'cys_ma5': df_pl['cys_ma5'].to_list() if 'cys_ma5' in df_pl.columns else [],
+            }
+        
+        # ASI数据
+        if 'asi' in df_pl.columns:
+            self.current_asi_data = {
+                'asi': df_pl['asi'].to_list(),
+                'asi_sig': df_pl['asi_sig'].to_list() if 'asi_sig' in df_pl.columns else [],
+            }
+        
+        # EMV数据
+        if 'emv' in df_pl.columns:
+            self.current_emv_data = {
+                'emv': df_pl['emv'].to_list(),
+            }
+        
+        # CCI数据
+        if 'cci' in df_pl.columns:
+            self.current_cci_data = {
+                'cci': df_pl['cci'].to_list(),
+            }
+        
+        # ROC数据
+        if 'roc' in df_pl.columns:
+            self.current_roc_data = {
+                'roc': df_pl['roc'].to_list(),
+            }
+        
+        # MTM数据
+        if 'mtm' in df_pl.columns:
+            self.current_mtm_data = {
+                'mtm': df_pl['mtm'].to_list(),
+            }
+        
+        # PSY数据
+        if 'psy' in df_pl.columns:
+            self.current_psy_data = {
+                'psy': df_pl['psy'].to_list(),
+            }
+        
+        # MCST数据
+        if 'mcst' in df_pl.columns:
+            self.current_mcst_data = {
+                'mcst': df_pl['mcst'].to_list(),
             }
     
     def _setup_crosshair(self):

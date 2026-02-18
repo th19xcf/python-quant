@@ -61,6 +61,8 @@ class IndicatorLabelManager:
             self._update_brar_label(df_pd)
         elif current_indicator == "DMA":
             self._update_dma_label(df_pd)
+        elif current_indicator == "OBV":
+            self._update_obv_label(df_pd)
         elif current_indicator == "EXPMA":
             self._update_expma_label(df_pd)
         elif current_indicator == "BBI":
@@ -248,6 +250,20 @@ class IndicatorLabelManager:
         else:
             dma_text = f"<font color='white'>DMA指标数据不可用</font>"
         self.main_window.kdj_values_label.setText(dma_text)
+
+    def _update_obv_label(self, df_pd):
+        """
+        更新OBV标签
+
+        Args:
+            df_pd: pandas DataFrame，包含OBV数据
+        """
+        if 'obv' in df_pd.columns:
+            latest_obv = df_pd['obv'].iloc[-1]
+            obv_text = f"<font color='white'>OBV: {latest_obv:,.0f}</font>"
+        else:
+            obv_text = f"<font color='white'>OBV指标数据不可用</font>"
+        self.main_window.kdj_values_label.setText(obv_text)
 
     def _update_expma_label(self, df_pd):
         """

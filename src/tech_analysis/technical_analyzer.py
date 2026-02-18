@@ -711,7 +711,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             pd.DataFrame: 包含计算指标的DataFrame
         """
         # 检查指标类型是否支持多窗口计算
-        if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma', 'dmi', 'cci', 'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'expma', 'cyc']:
+        if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma', 'dmi', 'cci', 'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'expma', 'cyc', 'hsl', 'lb']:
             # 对于支持多窗口的指标
             windows = kwargs.get('windows', [14])
             if not isinstance(windows, list):

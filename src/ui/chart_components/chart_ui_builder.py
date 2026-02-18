@@ -286,6 +286,7 @@ class ChartUIBuilder:
             'SAR': self._get_sar_text,
             'FSL': self._get_fsl_text,
             'CR': self._get_cr_text,
+            'DMA': self._get_dma_text,
             # 新增指标
             'EXPMA': self._get_expma_text,
             'BBI': self._get_bbi_text,
@@ -435,6 +436,14 @@ class ChartUIBuilder:
             latest_obv = df['obv'].tail(1)[0]
             return f"<font color='white'>OBV: {latest_obv:,.0f}</font>"
         return "<font color='white'>OBV指标数据不可用</font>"
+
+    def _get_dma_text(self, df: Any) -> str:
+        """获取DMA标签文本"""
+        if 'dma' in df.columns and 'ama' in df.columns:
+            latest_dma = df['dma'].tail(1)[0]
+            latest_ama = df['ama'].tail(1)[0]
+            return f"<font color='white'>DMA(10,50): {latest_dma:.2f}</font>  <font color='yellow'>AMA: {latest_ama:.2f}</font>"
+        return "<font color='white'>DMA指标数据不可用</font>"
 
     def _get_asi_text(self, df: Any) -> str:
         """获取ASI标签文本"""
