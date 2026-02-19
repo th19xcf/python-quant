@@ -890,7 +890,7 @@ class MainWindowEventMixin:
         
         # BOLL指标
         if hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('BOLL', {}).isChecked():
-            if hasattr(self, 'current_boll_data'):
+            if hasattr(self, 'current_boll_data') and self.current_boll_data is not None:
                 mb_list = self.current_boll_data.get('mb', [])
                 up_list = self.current_boll_data.get('up', [])
                 dn_list = self.current_boll_data.get('dn', [])
