@@ -1,9 +1,9 @@
 import pyqtgraph as pg
-from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 
 class BRARDrawer:
     """
-    BRAR指标绘制器，负责绘制BRAR指标
+    BRAR指标绘制器，仅负责绘制，不计算指标
+    指标计算应在数据准备阶段完成
     """
     
     def draw(self, plot_widget, x, df_pl):
@@ -13,17 +13,23 @@ class BRARDrawer:
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pl: polars DataFrame，包含brar数据
+            df_pl: polars DataFrame，必须已包含brar相关列
         
         Returns:
-            更新后的df_pl，包含brar数据
+            df_pl: 输入的数据（不做修改）
+            
+        Raises:
+            ValueError: 如果数据缺少必要的BRAR列
         """
-        # 确保BRAR相关列存在
-        if 'br' not in df_pl.columns or 'ar' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算BRAR指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('brar', windows=[26])
-            df_pl = analyzer.get_data(return_polars=True)
+        # 检查BRAR相关列是否存在
+        required_columns = ['br', 'ar']
+        missing_columns = [col for col in required_columns if col not in df_pl.columns]
+        
+        if missing_columns:
+            raise ValueError(
+                f"BRAR绘制失败：数据缺少必要的列 {missing_columns}。"
+                f"请确保在调用绘制前已通过IndicatorManager计算BRAR指标。"
+            )
         
         # 绘制BRAR指标，使用通达信配色
         # 设置Y轴范围，通达信BRAR通常在0-200之间

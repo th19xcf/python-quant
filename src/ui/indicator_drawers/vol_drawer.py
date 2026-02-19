@@ -1,10 +1,10 @@
 import pyqtgraph as pg
 import numpy as np
-from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 
 class VOLDrawer:
     """
-    VOL指标绘制器，负责绘制VOL指标
+    VOL指标绘制器，仅负责绘制，不计算指标
+    指标计算应在数据准备阶段完成
     """
     
     def draw(self, plot_widget, x, df_pl):
@@ -14,21 +14,33 @@ class VOLDrawer:
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pl: polars DataFrame，包含volume数据
+            df_pl: polars DataFrame，必须已包含volume和vol_ma相关列
         
         Returns:
-            更新后的df_pl，包含volume数据
+            df_pl: 输入的数据（不做修改）
+            
+        Raises:
+            ValueError: 如果数据缺少必要的列
         """
-        # 确保volume列存在且为数值类型
-        if 'volume' not in df_pl.columns:
-            return df_pl
+        # 检查必要列是否存在
+        required_columns = ['volume', 'close', 'open']
+        missing_columns = [col for col in required_columns if col not in df_pl.columns]
         
-        # 确保vol_ma5和vol_ma10列存在
-        if 'vol_ma5' not in df_pl.columns or 'vol_ma10' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算成交量均线
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_vol_ma([5, 10])
-            df_pl = analyzer.get_data(return_polars=True)
+        if missing_columns:
+            raise ValueError(
+                f"VOL绘制失败：数据缺少必要的列 {missing_columns}。"
+                f"请确保数据包含volume、close、open列。"
+            )
+        
+        # 检查成交量均线列是否存在
+        vol_ma_columns = ['vol_ma5', 'vol_ma10']
+        missing_ma_columns = [col for col in vol_ma_columns if col not in df_pl.columns]
+        
+        if missing_ma_columns:
+            raise ValueError(
+                f"VOL绘制失败：数据缺少成交量均线列 {missing_ma_columns}。"
+                f"请确保在调用绘制前已通过IndicatorManager计算vol_ma指标。"
+            )
         
         # 提取当前显示范围内的数据（只取x对应的部分）
         volume_data_full = df_pl['volume'].to_numpy()
@@ -59,9 +71,6 @@ class VOLDrawer:
             plot_widget.setYRange(0, 100)
         
         # 绘制成交量柱状图
-        # 使用 pyqtgraph 的 BarGraphItem，正确配置参数
-        
-        # 确保 BarGraphItem 支持颜色列表
         # 修复：将颜色列表转换为 QBrush 对象列表
         brush_list = []
         for i in range(len(x)):

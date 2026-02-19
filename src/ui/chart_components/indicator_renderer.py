@@ -1508,6 +1508,92 @@ class IndicatorRenderer:
             logger.exception(f"渲染CYS失败: {e}")
         return df
 
+    def render_abi(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染ABI（绝对广量指标）"""
+        try:
+            if 'abi10' not in df.columns:
+                from src.tech_analysis.indicator_manager import global_indicator_manager
+                import polars as pl
+                if hasattr(df, 'to_pandas'):
+                    pl_df = df
+                else:
+                    pl_df = pl.from_pandas(df)
+                df = global_indicator_manager.calculate_indicator(pl_df, 'abi', return_polars=True, period=10)
+            if 'abi10' in df.columns:
+                abi_data = df['abi10'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(abi_data)
+                if np.any(mask):
+                    plot_widget.plot(x[mask], abi_data[mask], pen=pg.mkPen('#00FF00', width=1.5), name='ABI')
+                plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.DashLine))
+                plot_widget.setYRange(0, 100)
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"渲染ABI失败: {e}")
+        return df
+
+    def render_adl(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染ADL（腾落指标）"""
+        try:
+            if 'adl' not in df.columns:
+                from src.tech_analysis.indicator_manager import global_indicator_manager
+                import polars as pl
+                if hasattr(df, 'to_pandas'):
+                    pl_df = df
+                else:
+                    pl_df = pl.from_pandas(df)
+                df = global_indicator_manager.calculate_indicator(pl_df, 'adl', return_polars=True)
+            if 'adl' in df.columns:
+                adl_data = df['adl'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(adl_data)
+                if np.any(mask):
+                    plot_widget.plot(x[mask], adl_data[mask], pen=pg.mkPen('#00FFFF', width=1.5), name='ADL')
+                plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1, style=Qt.DashLine))
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"渲染ADL失败: {e}")
+        return df
+
+    def render_adr(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染ADR（涨跌比率）"""
+        try:
+            if 'adr10' not in df.columns:
+                from src.tech_analysis.indicator_manager import global_indicator_manager
+                import polars as pl
+                if hasattr(df, 'to_pandas'):
+                    pl_df = df
+                else:
+                    pl_df = pl.from_pandas(df)
+                df = global_indicator_manager.calculate_indicator(pl_df, 'adr', return_polars=True, period=10)
+            if 'adr10' in df.columns:
+                adr_data = df['adr10'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(adr_data)
+                if np.any(mask):
+                    plot_widget.plot(x[mask], adr_data[mask], pen=pg.mkPen('#FF00FF', width=1.5), name='ADR')
+                plot_widget.addLine(y=100, pen=pg.mkPen('#666666', width=1, style=Qt.DashLine))
+                plot_widget.setYRange(0, 200)
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"渲染ADR失败: {e}")
+        return df
+
+    def render_obos(self, plot_widget: Any, df: Any, x: np.ndarray):
+        """渲染OBOS（超买超卖指标）"""
+        try:
+            if 'obos10' not in df.columns:
+                from src.tech_analysis.indicator_manager import global_indicator_manager
+                import polars as pl
+                if hasattr(df, 'to_pandas'):
+                    pl_df = df
+                else:
+                    pl_df = pl.from_pandas(df)
+                df = global_indicator_manager.calculate_indicator(pl_df, 'obos', return_polars=True, period=10)
+            if 'obos10' in df.columns:
+                obos_data = df['obos10'].to_numpy().astype(np.float64)
+                mask = ~np.isnan(obos_data)
+                if np.any(mask):
+                    plot_widget.plot(x[mask], obos_data[mask], pen=pg.mkPen('#FFFF00', width=1.5), name='OBOS')
+                plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1, style=Qt.DashLine))
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"渲染OBOS失败: {e}")
+        return df
+
     def render_indicator(
         self, 
         plot_widget: Any, 
@@ -1558,6 +1644,11 @@ class IndicatorRenderer:
             'LB': self.render_lb,
             'CYC': self.render_cyc,
             'CYS': self.render_cys,
+            # 大势型指标
+            'ABI': self.render_abi,
+            'ADL': self.render_adl,
+            'ADR': self.render_adr,
+            'OBOS': self.render_obos,
         }
         
         renderer = renderers.get(indicator_name)

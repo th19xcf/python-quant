@@ -1,9 +1,9 @@
 import pyqtgraph as pg
-from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 
 class KDJDrawer:
     """
-    KDJ指标绘制器，负责绘制KDJ指标
+    KDJ指标绘制器，仅负责绘制，不计算指标
+    指标计算应在数据准备阶段完成
     """
     
     def draw(self, plot_widget, x, df_pl):
@@ -13,17 +13,23 @@ class KDJDrawer:
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pl: polars DataFrame，包含kdj数据
+            df_pl: polars DataFrame，必须已包含kdj相关列
         
         Returns:
-            更新后的df_pl，包含kdj数据
+            df_pl: 输入的数据（不做修改）
+            
+        Raises:
+            ValueError: 如果数据缺少必要的KDJ列
         """
-        # 确保KDJ相关列存在
-        if 'k' not in df_pl.columns or 'd' not in df_pl.columns or 'j' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算KDJ指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('kdj', windows=[9])
-            df_pl = analyzer.get_data(return_polars=True)
+        # 检查KDJ相关列是否存在
+        required_columns = ['k', 'd', 'j']
+        missing_columns = [col for col in required_columns if col not in df_pl.columns]
+        
+        if missing_columns:
+            raise ValueError(
+                f"KDJ绘制失败：数据缺少必要的列 {missing_columns}。"
+                f"请确保在调用绘制前已通过IndicatorManager计算KDJ指标。"
+            )
         
         # 设置Y轴范围，KDJ指标范围一般是0-100
         plot_widget.setYRange(-50, 150)

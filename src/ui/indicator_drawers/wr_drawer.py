@@ -1,9 +1,9 @@
 import pyqtgraph as pg
-from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 
 class WRDrawer:
     """
-    WR指标绘制器，负责绘制WR指标
+    WR指标绘制器，仅负责绘制，不计算指标
+    指标计算应在数据准备阶段完成
     """
     
     def draw(self, plot_widget, x, df_pl):
@@ -13,17 +13,23 @@ class WRDrawer:
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pl: polars DataFrame，包含wr数据
+            df_pl: polars DataFrame，必须已包含wr相关列
         
         Returns:
-            更新后的df_pl，包含wr数据
+            df_pl: 输入的数据（不做修改）
+            
+        Raises:
+            ValueError: 如果数据缺少必要的WR列
         """
-        # 确保WR相关列存在（通达信默认使用WR(10,6)）
-        if 'wr1' not in df_pl.columns or 'wr2' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算WR指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_wr([10, 6])
-            df_pl = analyzer.get_data(return_polars=True)
+        # 检查WR相关列是否存在（通达信默认使用WR(10,6)）
+        required_columns = ['wr1', 'wr2']
+        missing_columns = [col for col in required_columns if col not in df_pl.columns]
+        
+        if missing_columns:
+            raise ValueError(
+                f"WR绘制失败：数据缺少必要的列 {missing_columns}。"
+                f"请确保在调用绘制前已通过IndicatorManager计算WR指标（窗口：[10, 6]）。"
+            )
         
         # 设置WR指标图的Y轴范围（通达信风格：0-100）
         plot_widget.setYRange(0, 100)

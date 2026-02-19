@@ -2,24 +2,27 @@
 # -*- coding: utf-8 -*-
 
 """
-MACD指标插件，封装MACD计算功能
+MACD指标插件
+通过IndicatorManager调用核心计算模块，避免重复实现
 """
 
 from loguru import logger
 from src.plugin.plugin_base import IndicatorPlugin
+from src.tech_analysis.indicator_manager import global_indicator_manager
 
 
 class MACDIndicatorPlugin(IndicatorPlugin):
     """
-    MACD指标插件，封装MACD计算功能
+    MACD指标插件
+    委托给IndicatorManager进行实际计算，避免重复代码
     """
     
     def __init__(self):
         super().__init__()
         self.name = "MACDIndicator"
-        self.version = "0.1.0"
+        self.version = "0.2.0"
         self.author = "Quant System"
-        self.description = "MACD指标插件，用于计算MACD、信号线和柱状图"
+        self.description = "MACD指标插件，通过IndicatorManager统一计算"
     
     def get_name(self) -> str:
         return self.name
@@ -39,42 +42,36 @@ class MACDIndicatorPlugin(IndicatorPlugin):
     def calculate(self, data, **kwargs):
         """
         计算MACD指标
+        委托给IndicatorManager统一计算
         
         Args:
             data: 股票数据，通常为DataFrame
             **kwargs: 指标参数，包括fast_period, slow_period, signal_period
             
         Returns:
-            Any: 包含MACD指标的数据，通常为DataFrame
+            Any: 包含MACD指标的数据
         """
         try:
-            import pandas as pd
-            import ta
-            
-            # 确保数据为DataFrame类型
-            df = data.copy()
-            if not isinstance(df, pd.DataFrame):
-                df = pd.DataFrame(df)
-            
-            # 获取参数
+            # 使用IndicatorManager统一计算
             fast_period = kwargs.get('fast_period', 12)
             slow_period = kwargs.get('slow_period', 26)
             signal_period = kwargs.get('signal_period', 9)
             
-            # 计算MACD指标
-            df['macd'] = ta.trend.macd(df['close'], window_slow=slow_period, window_fast=fast_period, fillna=True)
-            df['macd_signal'] = ta.trend.macd_signal(df['close'], window_slow=slow_period, window_fast=fast_period, window_sign=signal_period, fillna=True)
-            df['macd_hist'] = ta.trend.macd_diff(df['close'], window_slow=slow_period, window_fast=fast_period, window_sign=signal_period, fillna=True)
+            result_df = global_indicator_manager.calculate_indicator(
+                data, 'macd', return_polars=False,
+                fast_period=fast_period, slow_period=slow_period, signal_period=signal_period
+            )
             
-            logger.info(f"成功计算MACD指标，参数: fast={fast_period}, slow={slow_period}, signal={signal_period}")
-            return df
-        except (ValueError, TypeError) as e:
-            logger.exception(f"计算MACD指标失败: {e}")
+            logger.debug(f"MACD指标插件通过IndicatorManager计算完成")
+            return result_df
+        except Exception as e:
+            logger.exception(f"MACD指标插件计算失败: {e}")
             raise
     
     def calculate_polars(self, data, **kwargs):
         """
         使用polars计算MACD指标
+        委托给IndicatorManager统一计算
         
         Args:
             data: 股票数据，polars DataFrame
@@ -84,46 +81,21 @@ class MACDIndicatorPlugin(IndicatorPlugin):
             Any: 包含MACD指标的polars DataFrame
         """
         try:
-            import polars as pl
-            
-            # 获取参数
+            # 使用IndicatorManager统一计算
             fast_period = kwargs.get('fast_period', 12)
             slow_period = kwargs.get('slow_period', 26)
             signal_period = kwargs.get('signal_period', 9)
             
-            # 计算MACD指标
-            # 计算快速EMA
-            result = data.with_columns(
-                pl.col('close').ewm_mean(alpha=2/(fast_period+1), adjust=False, min_periods=1).alias('ema_fast'),
-                pl.col('close').ewm_mean(alpha=2/(slow_period+1), adjust=False, min_periods=1).alias('ema_slow')
+            result_df = global_indicator_manager.calculate_indicator(
+                data, 'macd', return_polars=True,
+                fast_period=fast_period, slow_period=slow_period, signal_period=signal_period
             )
             
-            # 计算MACD线
-            result = result.with_columns(
-                (pl.col('ema_fast') - pl.col('ema_slow')).alias('macd')
-            )
-            
-            # 计算信号线
-            result = result.with_columns(
-                pl.col('macd').ewm_mean(alpha=2/(signal_period+1), adjust=False, min_periods=1).alias('macd_signal')
-            )
-            
-            # 计算柱状图
-            result = result.with_columns(
-                (pl.col('macd') - pl.col('macd_signal')).alias('macd_hist')
-            )
-            
-            # 删除中间列
-            result = result.drop(['ema_fast', 'ema_slow'])
-            
-            logger.info(f"成功使用polars计算MACD指标，参数: fast={fast_period}, slow={slow_period}, signal={signal_period}")
-            return result
-        except (ValueError, TypeError) as e:
-            logger.exception(f"使用polars计算MACD指标失败: {e}")
-            # 回退到pandas实现
-            import pandas as pd
-            df_pd = data.to_pandas()
-            return pl.from_pandas(self.calculate(df_pd, **kwargs))
+            logger.debug(f"MACD指标插件通过IndicatorManager计算完成")
+            return result_df
+        except Exception as e:
+            logger.exception(f"MACD指标插件Polars计算失败: {e}")
+            raise
     
     def get_required_columns(self) -> list:
         """

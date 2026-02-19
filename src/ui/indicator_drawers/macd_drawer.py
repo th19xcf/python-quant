@@ -1,9 +1,9 @@
 import pyqtgraph as pg
-from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 
 class MACDDrawer:
     """
-    MACD指标绘制器，负责绘制MACD指标
+    MACD指标绘制器，仅负责绘制，不计算指标
+    指标计算应在数据准备阶段完成
     """
     
     def draw(self, plot_widget, x, df_pl):
@@ -13,17 +13,23 @@ class MACDDrawer:
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pl: polars DataFrame，包含macd数据
+            df_pl: polars DataFrame，必须已包含macd相关列
         
         Returns:
-            更新后的df_pl，包含macd数据
+            df_pl: 输入的数据（不做修改）
+            
+        Raises:
+            ValueError: 如果数据缺少必要的MACD列
         """
-        # 确保MACD相关列存在
-        if 'macd' not in df_pl.columns or 'macd_signal' not in df_pl.columns or 'macd_hist' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算MACD指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_macd(fast_period=12, slow_period=26, signal_period=9)
-            df_pl = analyzer.get_data(return_polars=True)
+        # 检查MACD相关列是否存在
+        required_columns = ['macd', 'macd_signal', 'macd_hist']
+        missing_columns = [col for col in required_columns if col not in df_pl.columns]
+        
+        if missing_columns:
+            raise ValueError(
+                f"MACD绘制失败：数据缺少必要的列 {missing_columns}。"
+                f"请确保在调用绘制前已通过IndicatorManager计算MACD指标。"
+            )
         
         # 设置Y轴范围
         min_val = min(df_pl['macd'].min(), df_pl['macd_signal'].min(), df_pl['macd_hist'].min()) * 1.2
@@ -36,11 +42,9 @@ class MACDDrawer:
         plot_widget.plot(x, df_pl['macd_signal'].to_numpy(), pen=pg.mkPen(color='#FFFF00', width=1.0), name='DEA')
         
         # 绘制柱状图
-        # 先创建一个空的柱状图数据数组
         histogram = []
         colors = []
         
-        # 填充柱状图数据和颜色
         macd_hist_list = df_pl['macd_hist'].to_list()
         for i in range(len(x)):
             hist_value = macd_hist_list[i]

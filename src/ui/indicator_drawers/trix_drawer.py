@@ -1,9 +1,9 @@
 import pyqtgraph as pg
-from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 
 class TRIXDrawer:
     """
-    TRIX指标绘制器，负责绘制TRIX指标
+    TRIX指标绘制器，仅负责绘制，不计算指标
+    指标计算应在数据准备阶段完成
     """
     
     def draw(self, plot_widget, x, df_pl):
@@ -13,17 +13,23 @@ class TRIXDrawer:
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pl: polars DataFrame，包含trix数据
+            df_pl: polars DataFrame，必须已包含trix相关列
         
         Returns:
-            更新后的df_pl，包含trix数据
+            df_pl: 输入的数据（不做修改）
+            
+        Raises:
+            ValueError: 如果数据缺少必要的TRIX列
         """
-        # 确保TRIX相关列存在
-        if 'trix' not in df_pl.columns or 'trma' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算TRIX指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('trix', windows=[12], signal_period=9)
-            df_pl = analyzer.get_data(return_polars=True)
+        # 检查TRIX相关列是否存在
+        required_columns = ['trix', 'trma']
+        missing_columns = [col for col in required_columns if col not in df_pl.columns]
+        
+        if missing_columns:
+            raise ValueError(
+                f"TRIX绘制失败：数据缺少必要的列 {missing_columns}。"
+                f"请确保在调用绘制前已通过IndicatorManager计算TRIX指标。"
+            )
         
         # 绘制TRIX指标，使用通达信配色
         # 设置Y轴范围
