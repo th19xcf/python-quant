@@ -44,6 +44,12 @@ from src.tech_analysis.indicator_calculator import (
 from src.tech_analysis.indicators.trend import calculate_expma, calculate_bbi
 from src.tech_analysis.indicators.volume import calculate_hsl, calculate_lb
 from src.tech_analysis.indicators.cost import calculate_cyc, calculate_cys
+from src.tech_analysis.indicators.market_breadth import (
+    calculate_abi,
+    calculate_adl,
+    calculate_adr,
+    calculate_obos
+)
 
 
 class IndicatorManager:
@@ -374,6 +380,46 @@ class IndicatorManager:
             params={'cyc_window': 13},
             description='市场盈亏',
             category='成本指标'
+        )
+
+        # 31. ABI指标（绝对广量）
+        register_indicator(
+            name='abi',
+            calculate_func=lambda df, **kwargs: calculate_abi(df.lazy(), kwargs.get('period', 10)).collect(),
+            dependencies=[],
+            params={'period': 10},
+            description='绝对广量指标',
+            category='大势型'
+        )
+
+        # 32. ADL指标（腾落指标）
+        register_indicator(
+            name='adl',
+            calculate_func=lambda df, **kwargs: calculate_adl(df.lazy()).collect(),
+            dependencies=[],
+            params={},
+            description='腾落指标',
+            category='大势型'
+        )
+
+        # 33. ADR指标（涨跌比率）
+        register_indicator(
+            name='adr',
+            calculate_func=lambda df, **kwargs: calculate_adr(df.lazy(), kwargs.get('period', 10)).collect(),
+            dependencies=[],
+            params={'period': 10},
+            description='涨跌比率',
+            category='大势型'
+        )
+
+        # 34. OBOS指标（超买超卖）
+        register_indicator(
+            name='obos',
+            calculate_func=lambda df, **kwargs: calculate_obos(df.lazy(), kwargs.get('period', 10)).collect(),
+            dependencies=[],
+            params={'period': 10},
+            description='超买超卖指标',
+            category='大势型'
         )
 
         logger.info(f"已注册{len(global_indicator_registry.get_supported_indicators())}个内置指标")

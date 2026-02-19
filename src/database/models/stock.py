@@ -209,3 +209,42 @@ class StockAdjFactor(Base):
 
     def __repr__(self):
         return f"<StockAdjFactor(ts_code='{self.ts_code}', trade_date='{self.trade_date}', qfq={self.qfq_factor}, hfq={self.hfq_factor})>"
+
+
+class MarketBreadth(Base):
+    """
+    市场涨跌家数表
+    存储每日A股市场的上涨、下跌、平盘家数
+    """
+    __tablename__ = "market_breadth"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False, unique=True, comment="交易日期")
+
+    # 涨跌家数统计
+    up_count = Column(Integer, default=0, comment="上涨家数")
+    down_count = Column(Integer, default=0, comment="下跌家数")
+    flat_count = Column(Integer, default=0, comment="平盘家数")
+    total_count = Column(Integer, default=0, comment="总成交股票数")
+
+    # 计算指标
+    up_rate = Column(Float, default=0.0, comment="上涨占比(%)")
+    down_rate = Column(Float, default=0.0, comment="下跌占比(%)")
+
+    # 市场类型
+    market_type = Column(String(10), default="A股", comment="市场类型: A股/创业板/科创板")
+
+    created_at = Column(DateTime, default=datetime.now, comment="创建时间")
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
+
+    __table_args__ = (
+        {
+            "comment": "市场涨跌家数表",
+            "mysql_charset": "utf8mb4",
+            "mysql_collate": "utf8mb4_general_ci",
+            "extend_existing": True
+        }
+    )
+
+    def __repr__(self):
+        return f"<MarketBreadth(trade_date='{self.trade_date}', up={self.up_count}, down={self.down_count})>"

@@ -764,6 +764,9 @@ class MainWindowUiMixin:
             # 成本指标
             "CYC", "CYS",
             "|",  # 分隔符
+            # 大势型指标
+            "ABI", "ADL", "ADR", "OBOS",
+            "|",  # 分隔符
             # 其他指标
             "DMI", "MCST"
         ]
@@ -839,7 +842,9 @@ class MainWindowUiMixin:
                     'VR', 'OBV', 'ASI', 'EMV', 'VOL-TDX', 'RSI', 'WR', 'SAR',
                     'CCI', 'ROC', 'MTM', 'BOLL', 'PSY', 'MCST',
                     # 新增指标
-                    'EXPMA', 'BBI', 'HSL', 'LB', 'CYC', 'CYS'
+                    'EXPMA', 'BBI', 'HSL', 'LB', 'CYC', 'CYS',
+                    # 大势型指标
+                    'ABI', 'ADL', 'ADR', 'OBOS'
                 ]
                 # 未实现指标的样式（灰色文字）
                 disabled_indicator_style = indicator_button_style + "QPushButton { color: #666666; }"

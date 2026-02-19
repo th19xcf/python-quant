@@ -22,7 +22,8 @@ from .indicators import (
     calculate_oscillator_indicators,
     calculate_volume_indicators,
     calculate_volatility_indicators,
-    calculate_cost_indicators
+    calculate_cost_indicators,
+    calculate_market_breadth_indicators
 )
 
 
@@ -612,7 +613,7 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     """
     # 默认计算所有指标
     if indicator_types is None:
-        indicator_types = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'boll', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']
+        indicator_types = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'boll', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'abi', 'adl', 'adr', 'obos']
     
     # 1. 收集所有需要计算的指标和参数
     indicator_params = get_indicator_params(**params)
@@ -655,6 +656,9 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     
     # 步骤6: 计算成本类指标
     lazy_df = calculate_cost_indicators(lazy_df, indicator_types, **params)
+
+    # 步骤7: 计算大势型指标
+    lazy_df = calculate_market_breadth_indicators(lazy_df, indicator_types, **params)
     
     # 清理临时列
     lazy_df = cleanup_temp_columns(lazy_df, indicator_types, indicator_params)

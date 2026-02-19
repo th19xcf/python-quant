@@ -110,6 +110,98 @@ class AkShareHandler:
                 self.session.rollback()
             logger.exception(f"从AkShare获取股票基本信息失败: {e}")
             raise
+
+    def update_market_breadth(self, trade_date: str = None):
+        """
+        更新市场涨跌家数数据
+
+        Args:
+            trade_date: 交易日期，格式YYYYMMDD，默认获取最新数据
+        """
+        try:
+            logger.info("开始获取市场涨跌家数数据")
+
+            # 使用AkShare获取A股实时行情数据
+            df = ak.stock_zh_a_spot_em()
+
+            if df is None or df.empty:
+                logger.warning("获取市场涨跌家数数据为空")
+                return None
+
+            # 统计涨跌家数
+            up_count = len(df[df['涨跌幅'] > 0])
+            down_count = len(df[df['涨跌幅'] < 0])
+            flat_count = len(df[df['涨跌幅'] == 0])
+            total_count = len(df)
+
+            # 计算涨跌比例
+            up_rate = (up_count / total_count * 100) if total_count > 0 else 0
+            down_rate = (down_count / total_count * 100) if total_count > 0 else 0
+
+            logger.info(f"市场涨跌家数: 上涨={up_count}, 下跌={down_count}, 平盘={flat_count}, 总计={total_count}")
+
+            # 转换日期格式
+            from datetime import datetime
+            if trade_date:
+                trade_date_obj = datetime.strptime(trade_date, "%Y%m%d").date()
+            else:
+                trade_date_obj = datetime.now().date()
+
+            # 离线模式下返回结果
+            if not self.session:
+                return {
+                    'trade_date': trade_date_obj,
+                    'up_count': up_count,
+                    'down_count': down_count,
+                    'flat_count': flat_count,
+                    'total_count': total_count,
+                    'up_rate': up_rate,
+                    'down_rate': down_rate
+                }
+
+            # 存储到数据库
+            from src.database.models.stock import MarketBreadth
+
+            # 查询是否已存在
+            existing = self.session.query(MarketBreadth).filter_by(trade_date=trade_date_obj).first()
+
+            if existing:
+                existing.up_count = up_count
+                existing.down_count = down_count
+                existing.flat_count = flat_count
+                existing.total_count = total_count
+                existing.up_rate = up_rate
+                existing.down_rate = down_rate
+                logger.info(f"更新市场涨跌家数数据: {trade_date_obj}")
+            else:
+                market_breadth = MarketBreadth(
+                    trade_date=trade_date_obj,
+                    up_count=up_count,
+                    down_count=down_count,
+                    flat_count=flat_count,
+                    total_count=total_count,
+                    up_rate=up_rate,
+                    down_rate=down_rate
+                )
+                self.session.add(market_breadth)
+                logger.info(f"新增市场涨跌家数数据: {trade_date_obj}")
+
+            self.session.commit()
+            return {
+                'trade_date': trade_date_obj,
+                'up_count': up_count,
+                'down_count': down_count,
+                'flat_count': flat_count,
+                'total_count': total_count,
+                'up_rate': up_rate,
+                'down_rate': down_rate
+            }
+
+        except (ConnectionError, TimeoutError, OSError) as e:
+            if self.session:
+                self.session.rollback()
+            logger.exception(f"获取市场涨跌家数数据失败: {e}")
+            raise
     
     def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """

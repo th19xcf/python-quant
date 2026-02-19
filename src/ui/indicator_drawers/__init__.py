@@ -20,6 +20,7 @@ from .bbi_drawer import BbiDrawer
 from .hsl_drawer import HslDrawer
 from .lb_drawer import LbDrawer
 from .cyc_drawer import CycDrawer
+from .market_breadth_drawer import ABIDrawer, ADLDrawer, ADRDrawer, OBOSDrawer
 
 class IndicatorDrawerManager:
     """
@@ -51,7 +52,12 @@ class IndicatorDrawerManager:
             "BBI": BbiDrawer(),
             "HSL": HslDrawer(),
             "LB": LbDrawer(),
-            "CYC": CycDrawer()
+            "CYC": CycDrawer(),
+            # 大势型指标
+            "ABI": ABIDrawer(),
+            "ADL": ADLDrawer(),
+            "ADR": ADRDrawer(),
+            "OBOS": OBOSDrawer()
         }
     
     def get_drawer(self, indicator_name):

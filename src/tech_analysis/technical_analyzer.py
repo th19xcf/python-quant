@@ -129,7 +129,12 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             'hsl': self.calculate_indicator_parallel,
             'lb': self.calculate_indicator_parallel,
             'cyc': self.calculate_indicator_parallel,
-            'cys': self.calculate_indicator_parallel
+            'cys': self.calculate_indicator_parallel,
+            # 大势型指标
+            'abi': self.calculate_indicator_parallel,
+            'adl': self.calculate_indicator_parallel,
+            'adr': self.calculate_indicator_parallel,
+            'obos': self.calculate_indicator_parallel
         }
         
         # 初始化插件指标映射
@@ -934,7 +939,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             indicator_types = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']
         
         # 2. 准备需要计算的内置指标类型
-        builtin_indicators = [ind for ind in indicator_types if ind in ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']]
+        builtin_indicators = [ind for ind in indicator_types if ind in ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'abi', 'adl', 'adr', 'obos']]
         
         # 3. 使用新的批量计算函数进行内置指标计算
         indicators_updated = False
@@ -1046,7 +1051,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             List[str]: 支持的技术指标列表
         """
         # 内置指标
-        builtin_indicators = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']
+        builtin_indicators = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'abi', 'adl', 'adr', 'obos']
         
         # 插件指标
         plugin_indicators = self.get_available_plugin_indicators()

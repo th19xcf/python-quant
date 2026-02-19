@@ -80,7 +80,7 @@ def add_default_column_names(lazy_df: pl.LazyFrame, indicator: str, window: int,
     Returns:
         pl.LazyFrame: 添加了默认列名的LazyFrame
     """
-    if indicator not in ['ma', 'rsi', 'kdj', 'wr', 'boll', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']:
+    if indicator not in ['ma', 'rsi', 'kdj', 'wr', 'boll', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'abi', 'adl', 'adr', 'obos']:
         return lazy_df
     
     aliases = []
