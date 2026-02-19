@@ -55,6 +55,9 @@ class ChartDataPreparer:
             # 计算DMA指标（需要在截取数据前计算，以确保前部数据也有有效值）
             df_pl = self._calculate_dma(df_pl)
             
+            # 计算BBI指标（需要在截取数据前计算，BBI需要24日数据）
+            df_pl = self._calculate_bbi(df_pl)
+            
             # 截取显示数据
             df_pl = self._truncate_data(df_pl, bar_count)
             
@@ -231,13 +234,49 @@ class ChartDataPreparer:
             logger.warning(f"计算DMA失败: {e}")
             return df
     
+    def _calculate_bbi(self, df: pl.DataFrame) -> pl.DataFrame:
+        """
+        计算BBI指标（多空指数）
+        BBI = (3日MA + 6日MA + 12日MA + 24日MA) / 4
+        
+        由于BBI需要24日数据才能计算出有效值，
+        需要在截取数据前计算，以确保显示区域的前部也有有效值
+        
+        Args:
+            df: 数据（已应用复权）
+            
+        Returns:
+            pl.DataFrame: 包含BBI的数据
+        """
+        try:
+            from src.tech_analysis.indicators.trend import calculate_bbi
+            
+            logger.debug(f"计算BBI前的数据行数: {len(df)}")
+            
+            # 使用calculate_bbi计算BBI指标
+            df = calculate_bbi(df.lazy()).collect()
+            
+            logger.debug(f"计算BBI后的数据列: {df.columns}")
+            
+            # 检查BBI列是否存在且有有效值
+            if 'bbi' in df.columns:
+                non_null_count = df['bbi'].drop_nulls().count()
+                logger.debug(f"bbi 非空值数量: {non_null_count}")
+            
+            return df
+            
+        except (ValueError, TypeError) as e:
+            logger.warning(f"计算BBI失败: {e}")
+            return df
+    
     def _truncate_data(self, df: pl.DataFrame, bar_count: int) -> pl.DataFrame:
         """
         截取显示数据
         
         由于DMA(10,50)指标需要50+10=60条数据才能计算出有效的AMA值，
-        我们在完整数据集上计算DMA后，再截取显示区域的数据。
-        这样显示区域的前部也会有有效的DMA值。
+        BBI指标需要24日数据才能计算出有效值，
+        我们在完整数据集上计算这些指标后，再截取显示区域的数据。
+        这样显示区域的前部也会有有效的指标值。
         
         Args:
             df: 完整数据（已计算所有指标）
@@ -248,7 +287,7 @@ class ChartDataPreparer:
         """
         if bar_count < len(df):
             # 直接截取最后bar_count条数据
-            # 由于DMA已经在完整数据集上计算完成，截取后的数据会有完整的DMA值
+            # 由于指标已经在完整数据集上计算完成，截取后的数据会有完整的指标值
             df = df.tail(bar_count)
         
         return df
