@@ -1,9 +1,9 @@
 import pyqtgraph as pg
-from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 
 class VOLTDXDrawer:
     """
-    VOL-TDX指标绘制器，负责绘制VOL-TDX指标（成交量趋势）
+    VOL-TDX指标绘制器，仅负责绘制，不计算指标
+    指标计算应在数据准备阶段完成
     """
 
     def draw(self, plot_widget, x, df_pl):
@@ -13,17 +13,25 @@ class VOLTDXDrawer:
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pl: polars DataFrame，包含vol_tdx数据
+            df_pl: polars DataFrame，必须已包含vol_tdx相关列
 
         Returns:
-            更新后的df_pl，包含vol_tdx数据
+            df_pl: 输入的数据（不做修改）
+            
+        Raises:
+            ValueError: 如果数据缺少必要的VOL_TDX列
         """
-        # 确保VOL-TDX相关列存在
+        # 检查VOL-TDX相关列是否存在
         if 'vol_tdx' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算VOL-TDX指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('vol_tdx', ma_period=5)
-            df_pl = analyzer.get_data(return_polars=True)
+            raise ValueError(
+                f"VOL-TDX绘制失败：数据缺少'vol_tdx'列。"
+                f"请确保在调用绘制前已通过IndicatorManager计算VOL_TDX指标。"
+            )
+        
+        if 'close' not in df_pl.columns:
+            raise ValueError(
+                f"VOL-TDX绘制失败：数据缺少'close'列。"
+            )
 
         # 绘制VOL-TDX柱状图（红色/绿色）
         vol_tdx_values = df_pl['vol_tdx'].to_numpy()

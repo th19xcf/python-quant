@@ -1,10 +1,10 @@
 import pyqtgraph as pg
-from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 
 
 class ABIDrawer:
     """
-    ABI指标绘制器，负责绘制绝对广量指标
+    ABI指标绘制器，仅负责绘制，不计算指标
+    指标计算应在数据准备阶段完成
     """
 
     def draw(self, plot_widget, x, df_pl, period=10):
@@ -14,18 +14,22 @@ class ABIDrawer:
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pl: polars DataFrame，包含abi数据
+            df_pl: polars DataFrame，必须已包含abi相关列
             period: 计算周期
 
         Returns:
-            更新后的df_pl，包含abi数据
+            df_pl: 输入的数据（不做修改）
+            
+        Raises:
+            ValueError: 如果数据缺少必要的ABI列
         """
         column_name = f'abi{period}'
 
         if column_name not in df_pl.columns:
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('abi', period=period)
-            df_pl = analyzer.get_data(return_polars=True)
+            raise ValueError(
+                f"ABI绘制失败：数据缺少'{column_name}'列。"
+                f"请确保在调用绘制前已通过IndicatorManager计算ABI指标（period={period}）。"
+            )
 
         plot_widget.setYRange(0, 100)
 
@@ -38,7 +42,8 @@ class ABIDrawer:
 
 class ADLDrawer:
     """
-    ADL指标绘制器，负责绘制腾落指标
+    ADL指标绘制器，仅负责绘制，不计算指标
+    指标计算应在数据准备阶段完成
     """
 
     def draw(self, plot_widget, x, df_pl):
@@ -48,15 +53,19 @@ class ADLDrawer:
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pl: polars DataFrame，包含adl数据
+            df_pl: polars DataFrame，必须已包含adl相关列
 
         Returns:
-            更新后的df_pl，包含adl数据
+            df_pl: 输入的数据（不做修改）
+            
+        Raises:
+            ValueError: 如果数据缺少必要的ADL列
         """
         if 'adl' not in df_pl.columns:
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('adl')
-            df_pl = analyzer.get_data(return_polars=True)
+            raise ValueError(
+                f"ADL绘制失败：数据缺少'adl'列。"
+                f"请确保在调用绘制前已通过IndicatorManager计算ADL指标。"
+            )
 
         adl_data = df_pl['adl'].to_numpy()
         plot_widget.setYRange(adl_data.min() * 1.1, adl_data.max() * 1.1)
@@ -70,7 +79,8 @@ class ADLDrawer:
 
 class ADRDrawer:
     """
-    ADR指标绘制器，负责绘制涨跌比率
+    ADR指标绘制器，仅负责绘制，不计算指标
+    指标计算应在数据准备阶段完成
     """
 
     def draw(self, plot_widget, x, df_pl, period=10):
@@ -80,18 +90,22 @@ class ADRDrawer:
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pl: polars DataFrame，包含adr数据
+            df_pl: polars DataFrame，必须已包含adr相关列
             period: 计算周期
 
         Returns:
-            更新后的df_pl，包含adr数据
+            df_pl: 输入的数据（不做修改）
+            
+        Raises:
+            ValueError: 如果数据缺少必要的ADR列
         """
         column_name = f'adr{period}'
 
         if column_name not in df_pl.columns:
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('adr', period=period)
-            df_pl = analyzer.get_data(return_polars=True)
+            raise ValueError(
+                f"ADR绘制失败：数据缺少'{column_name}'列。"
+                f"请确保在调用绘制前已通过IndicatorManager计算ADR指标（period={period}）。"
+            )
 
         plot_widget.setYRange(0, 200)
 
@@ -104,7 +118,8 @@ class ADRDrawer:
 
 class OBOSDrawer:
     """
-    OBOS指标绘制器，负责绘制超买超卖指标
+    OBOS指标绘制器，仅负责绘制，不计算指标
+    指标计算应在数据准备阶段完成
     """
 
     def draw(self, plot_widget, x, df_pl, period=10):
@@ -114,18 +129,22 @@ class OBOSDrawer:
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pl: polars DataFrame，包含obos数据
+            df_pl: polars DataFrame，必须已包含obos相关列
             period: 计算周期
 
         Returns:
-            更新后的df_pl，包含obos数据
+            df_pl: 输入的数据（不做修改）
+            
+        Raises:
+            ValueError: 如果数据缺少必要的OBOS列
         """
         column_name = f'obos{period}'
 
         if column_name not in df_pl.columns:
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('obos', period=period)
-            df_pl = analyzer.get_data(return_polars=True)
+            raise ValueError(
+                f"OBOS绘制失败：数据缺少'{column_name}'列。"
+                f"请确保在调用绘制前已通过IndicatorManager计算OBOS指标（period={period}）。"
+            )
 
         obos_data = df_pl[column_name].to_numpy()
         plot_widget.setYRange(obos_data.min() * 1.1, obos_data.max() * 1.1)

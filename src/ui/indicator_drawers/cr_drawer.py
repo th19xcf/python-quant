@@ -1,9 +1,9 @@
 import pyqtgraph as pg
-from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 
 class CRDrawer:
     """
-    CR指标绘制器，负责绘制CR指标（能量指标）
+    CR指标绘制器，仅负责绘制，不计算指标
+    指标计算应在数据准备阶段完成
     """
 
     def draw(self, plot_widget, x, df_pl):
@@ -13,17 +13,20 @@ class CRDrawer:
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pl: polars DataFrame，包含cr数据
+            df_pl: polars DataFrame，必须已包含cr相关列
 
         Returns:
-            更新后的df_pl，包含cr数据
+            df_pl: 输入的数据（不做修改）
+            
+        Raises:
+            ValueError: 如果数据缺少必要的CR列
         """
-        # 确保CR相关列存在
+        # 检查CR相关列是否存在
         if 'cr' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算CR指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('cr', windows=[26])
-            df_pl = analyzer.get_data(return_polars=True)
+            raise ValueError(
+                f"CR绘制失败：数据缺少'cr'列。"
+                f"请确保在调用绘制前已通过IndicatorManager计算CR指标。"
+            )
 
         # 设置Y轴范围，CR指标一般在0-300之间
         plot_widget.setYRange(0, 300)

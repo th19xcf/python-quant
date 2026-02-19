@@ -1,9 +1,9 @@
 import pyqtgraph as pg
-from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 
 class DMADrawer:
     """
-    DMA指标绘制器，负责绘制DMA指标（平均线差）
+    DMA指标绘制器，仅负责绘制，不计算指标
+    指标计算应在数据准备阶段完成
     """
 
     def draw(self, plot_widget, x, df_pl):
@@ -13,17 +13,23 @@ class DMADrawer:
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pl: polars DataFrame，包含dma数据
+            df_pl: polars DataFrame，必须已包含dma相关列
 
         Returns:
-            更新后的df_pl，包含dma数据
+            df_pl: 输入的数据（不做修改）
+            
+        Raises:
+            ValueError: 如果数据缺少必要的DMA列
         """
-        # 确保DMA相关列存在
-        if 'dma' not in df_pl.columns or 'ama' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算DMA指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('dma', short_period=10, long_period=50, signal_period=10)
-            df_pl = analyzer.get_data(return_polars=True)
+        # 检查DMA相关列是否存在
+        required_columns = ['dma', 'ama']
+        missing_columns = [col for col in required_columns if col not in df_pl.columns]
+        
+        if missing_columns:
+            raise ValueError(
+                f"DMA绘制失败：数据缺少必要的列 {missing_columns}。"
+                f"请确保在调用绘制前已通过IndicatorManager计算DMA指标。"
+            )
 
         # 绘制DMA线（白色）
         plot_widget.plot(x, df_pl['dma'].to_numpy(), pen=pg.mkPen(color='#FFFFFF', width=1.0), name='DMA')

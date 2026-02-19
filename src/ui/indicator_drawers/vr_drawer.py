@@ -1,11 +1,10 @@
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
-from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-import polars as pl
 
 class VRDrawer:
     """
-    VR指标绘制器，负责绘制VR指标
+    VR指标绘制器，仅负责绘制，不计算指标
+    指标计算应在数据准备阶段完成
     """
     
     def draw(self, plot_widget, x, df_pl):
@@ -15,23 +14,22 @@ class VRDrawer:
         Args:
             plot_widget: 绘图控件
             x: x轴数据
-            df_pl: polars DataFrame，包含vr数据
+            df_pl: polars DataFrame，必须已包含vr和mavr相关列
         
         Returns:
-            更新后的df_pl，包含vr数据
+            df_pl: 输入的数据（不做修改）
+            
+        Raises:
+            ValueError: 如果数据缺少必要的VR列
         """
-        # 确保VR相关列存在
-        if 'vr' not in df_pl.columns:
-            # 使用TechnicalAnalyzer计算VR指标
-            analyzer = TechnicalAnalyzer(df_pl)
-            analyzer.calculate_indicator_parallel('vr', windows=[26])
-            df_pl = analyzer.get_data(return_polars=True)
+        # 检查VR相关列是否存在
+        required_columns = ['vr', 'mavr']
+        missing_columns = [col for col in required_columns if col not in df_pl.columns]
         
-        # 计算MAVR（VR的移动平均线），默认使用10日移动平均
-        if 'mavr' not in df_pl.columns:
-            # 使用rolling_mean计算MAVR
-            df_pl = df_pl.with_columns(
-                pl.col('vr').rolling_mean(window_size=10, min_periods=1).alias('mavr')
+        if missing_columns:
+            raise ValueError(
+                f"VR绘制失败：数据缺少必要的列 {missing_columns}。"
+                f"请确保在调用绘制前已通过IndicatorManager计算VR指标（包含MAVR）。"
             )
         
         # 绘制VR指标，使用通达信配色
