@@ -3,7 +3,7 @@ from PySide6.QtWidgets import QMenu, QMessageBox, QDialog, QVBoxLayout, QLabel, 
 from PySide6.QtGui import QAction
 import pyqtgraph as pg
 from functools import wraps
-import pandas as pd
+from datetime import datetime
 from src.utils.logger import logger
 
 def event_handler(event_type):
@@ -851,7 +851,12 @@ class MainWindowEventMixin:
         if not hasattr(self, 'ma_values_label'): return
         if index < 0 or index >= len(dates): return
         
-        current_date = pd.Timestamp(dates[index]).strftime('%Y-%m-%d')
+        # 将日期转换为字符串格式
+        date_val = dates[index]
+        if hasattr(date_val, 'strftime'):
+            current_date = date_val.strftime('%Y-%m-%d')
+        else:
+            current_date = str(date_val)[:10]
         ma_values = {}
         
         if hasattr(self, 'ma_data'):
@@ -917,13 +922,19 @@ class MainWindowEventMixin:
                     change = closes[index] - pre_close
                     pct_change = (change / pre_close) * 100 if pre_close != 0 else 0
 
-                    # 转换 numpy.datetime64 为 pandas Timestamp 以获取 weekday
-                    date_obj = pd.Timestamp(dates[index])
-                    weekday_str = ['一', '二', '三', '四', '五', '六', '日'][date_obj.weekday()]
+                    # 获取日期和星期
+                    date_val = dates[index]
+                    if hasattr(date_val, 'strftime'):
+                        date_str = date_val.strftime('%Y-%m-%d')
+                        weekday = date_val.weekday()
+                    else:
+                        date_str = str(date_val)[:10]
+                        weekday = 0  # 默认周一
+                    weekday_str = ['一', '二', '三', '四', '五', '六', '日'][weekday]
 
                     info_html = f"""
                     <div style="background-color: rgba(0, 0, 0, 0.8); padding: 8px; border: 1px solid #666; color: white; font-family: monospace;">
-                    <div style="font-weight: bold;">{pd.Timestamp(dates[index]).strftime('%Y-%m-%d')}/{weekday_str}</div>
+                    <div style="font-weight: bold;">{date_str}/{weekday_str}</div>
                     <div>开盘: {opens[index]:.2f}</div>
                     <div>最高: {highs[index]:.2f}</div>
                     <div>最低: {lows[index]:.2f}</div>

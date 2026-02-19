@@ -6,9 +6,8 @@
 """
 
 from loguru import logger
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional
 import polars as pl
-import pandas as pd
 from src.api.data_api import IDataProvider, IDataProcessor
 from src.utils.event_bus import EventBus
 from src.utils.exceptions import (
@@ -741,7 +740,7 @@ class DataManager(IDataProvider, IDataProcessor):
             logger.exception(f"获取{type_name}数据失败: {e}")
             raise
     
-    def get_stock_data(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq') -> Union[pl.DataFrame, pd.DataFrame]:
+    def get_stock_data(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq') -> pl.DataFrame:
         """
         获取股票历史数据
         
@@ -753,7 +752,7 @@ class DataManager(IDataProvider, IDataProcessor):
             adjustment_type: 复权类型，qfq=前复权, hfq=后复权, none=不复权
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 股票历史数据
+            pl.DataFrame: 股票历史数据
         """
         # 将周线和月线转换为日线获取，然后进行聚合
         if frequency in ['1w', '1m']:
@@ -852,7 +851,7 @@ class DataManager(IDataProvider, IDataProcessor):
             logger.exception(f"转换数据频率失败: {e}")
             return df
     
-    def get_index_data(self, index_code: str, start_date: str, end_date: str, frequency: str = '1d') -> Union[pl.DataFrame, pd.DataFrame]:
+    def get_index_data(self, index_code: str, start_date: str, end_date: str, frequency: str = '1d') -> pl.DataFrame:
         """
         获取指数历史数据
         
@@ -863,14 +862,14 @@ class DataManager(IDataProvider, IDataProcessor):
             frequency: 数据频率，默认：1d（日线）
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 指数历史数据
+            pl.DataFrame: 指数历史数据
         """
         freq_map = {'1d': 'daily', '1m': 'minute'}
         freq = freq_map.get(frequency, 'daily')
         result = self._get_data_from_sources("index", index_code, start_date, end_date, freq)
         return result
     
-    def get_stock_basic(self, exchange: Optional[str] = None) -> Union[pl.DataFrame, pd.DataFrame]:
+    def get_stock_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
         """
         获取股票基本信息
         
@@ -878,7 +877,7 @@ class DataManager(IDataProvider, IDataProcessor):
             exchange: 交易所，可选值：'sh'（上海）、'sz'（深圳）、'bj'（北京）
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 股票基本信息
+            pl.DataFrame: 股票基本信息
         """
         try:
             if not self.db_manager:
@@ -948,7 +947,7 @@ class DataManager(IDataProvider, IDataProcessor):
             logger.exception(f"获取股票基本信息失败: {e}")
             return pl.DataFrame()
     
-    def get_index_basic(self, exchange: Optional[str] = None) -> Union[pl.DataFrame, pd.DataFrame]:
+    def get_index_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
         """
         获取指数基本信息
         
@@ -956,7 +955,7 @@ class DataManager(IDataProvider, IDataProcessor):
             exchange: 交易所，可选值：'sh'（上海）、'sz'（深圳）
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 指数基本信息
+            pl.DataFrame: 指数基本信息
         """
         try:
             if not self.db_manager:

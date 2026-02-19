@@ -3,21 +3,21 @@
 
 """
 表现层接口定义
+统一使用Polars DataFrame作为数据格式
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 import polars as pl
-import pandas as pd
 
 
 class IView:
     """视图接口，定义视图更新和消息显示方法"""
     
-    def update_chart(self, data: Union[pl.DataFrame, pd.DataFrame], indicators: Optional[List[str]] = None, **params):
+    def update_chart(self, data: pl.DataFrame, indicators: Optional[List[str]] = None, **params):
         """更新图表数据
         
         Args:
-            data: 图表数据
+            data: 图表数据（Polars DataFrame）
             indicators: 指标列表
             **params: 图表更新参数
         """
@@ -118,30 +118,30 @@ class IController:
 class IChartComponent:
     """图表组件接口，定义图表绘制和交互方法"""
     
-    def draw_kline(self, data: Union[pl.DataFrame, pd.DataFrame], **params):
+    def draw_kline(self, data: pl.DataFrame, **params):
         """绘制K线图
         
         Args:
-            data: K线数据
+            data: K线数据（Polars DataFrame）
             **params: 绘图参数
         """
         pass
     
-    def draw_indicator(self, data: Union[pl.DataFrame, pd.DataFrame], indicator_type: str, **params):
+    def draw_indicator(self, data: pl.DataFrame, indicator_type: str, **params):
         """绘制技术指标
         
         Args:
-            data: 指标数据
+            data: 指标数据（Polars DataFrame）
             indicator_type: 指标类型
             **params: 绘图参数
         """
         pass
     
-    def draw_signal(self, data: Union[pl.DataFrame, pd.DataFrame], **params):
+    def draw_signal(self, data: pl.DataFrame, **params):
         """绘制买卖信号
         
         Args:
-            data: 信号数据
+            data: 信号数据（Polars DataFrame）
             **params: 绘图参数
         """
         pass

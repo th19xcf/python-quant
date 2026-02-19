@@ -3,17 +3,17 @@
 
 """
 数据访问层接口定义
+统一使用Polars DataFrame作为数据格式
 """
 
 from typing import Any, Dict, List, Optional, Union
 import polars as pl
-import pandas as pd
 
 
 class IDataProvider:
     """数据提供者接口，定义数据获取方法"""
     
-    def get_stock_data(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d') -> Union[pl.DataFrame, pd.DataFrame]:
+    def get_stock_data(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d') -> pl.DataFrame:
         """获取股票历史数据
         
         Args:
@@ -23,11 +23,11 @@ class IDataProvider:
             frequency: 数据频率，默认：1d（日线）
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 股票历史数据
+            pl.DataFrame: 股票历史数据
         """
         pass
     
-    def get_index_data(self, index_code: str, start_date: str, end_date: str, frequency: str = '1d') -> Union[pl.DataFrame, pd.DataFrame]:
+    def get_index_data(self, index_code: str, start_date: str, end_date: str, frequency: str = '1d') -> pl.DataFrame:
         """获取指数历史数据
         
         Args:
@@ -37,29 +37,29 @@ class IDataProvider:
             frequency: 数据频率，默认：1d（日线）
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 指数历史数据
+            pl.DataFrame: 指数历史数据
         """
         pass
     
-    def get_stock_basic(self, exchange: Optional[str] = None) -> Union[pl.DataFrame, pd.DataFrame]:
+    def get_stock_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
         """获取股票基本信息
         
         Args:
             exchange: 交易所，可选值：'sh'（上海）、'sz'（深圳）、'bj'（北京）
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 股票基本信息
+            pl.DataFrame: 股票基本信息
         """
         pass
     
-    def get_index_basic(self, exchange: Optional[str] = None) -> Union[pl.DataFrame, pd.DataFrame]:
+    def get_index_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
         """获取指数基本信息
         
         Args:
             exchange: 交易所，可选值：'sh'（上海）、'sz'（深圳）
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 指数基本信息
+            pl.DataFrame: 指数基本信息
         """
         pass
     
@@ -83,12 +83,12 @@ class IDataProvider:
 class IDataStorage:
     """数据存储接口，定义数据存储方法"""
     
-    def save_stock_data(self, stock_code: str, data: Union[pl.DataFrame, pd.DataFrame], frequency: str = '1d') -> bool:
+    def save_stock_data(self, stock_code: str, data: pl.DataFrame, frequency: str = '1d') -> bool:
         """保存股票数据
         
         Args:
             stock_code: 股票代码
-            data: 股票数据
+            data: 股票数据（Polars DataFrame）
             frequency: 数据频率，默认：1d（日线）
         
         Returns:
@@ -96,12 +96,12 @@ class IDataStorage:
         """
         pass
     
-    def save_index_data(self, index_code: str, data: Union[pl.DataFrame, pd.DataFrame], frequency: str = '1d') -> bool:
+    def save_index_data(self, index_code: str, data: pl.DataFrame, frequency: str = '1d') -> bool:
         """保存指数数据
         
         Args:
             index_code: 指数代码
-            data: 指数数据
+            data: 指数数据（Polars DataFrame）
             frequency: 数据频率，默认：1d（日线）
         
         Returns:
@@ -109,22 +109,22 @@ class IDataStorage:
         """
         pass
     
-    def save_stock_basic(self, data: Union[pl.DataFrame, pd.DataFrame]) -> bool:
+    def save_stock_basic(self, data: pl.DataFrame) -> bool:
         """保存股票基本信息
         
         Args:
-            data: 股票基本信息
+            data: 股票基本信息（Polars DataFrame）
         
         Returns:
             bool: 保存是否成功
         """
         pass
     
-    def save_index_basic(self, data: Union[pl.DataFrame, pd.DataFrame]) -> bool:
+    def save_index_basic(self, data: pl.DataFrame) -> bool:
         """保存指数基本信息
         
         Args:
-            data: 指数基本信息
+            data: 指数基本信息（Polars DataFrame）
         
         Returns:
             bool: 保存是否成功
@@ -163,50 +163,50 @@ class IDataStorage:
 class IDataProcessor:
     """数据处理器接口，定义数据处理方法"""
     
-    def preprocess_data(self, data: Union[pl.DataFrame, pd.DataFrame]) -> Union[pl.DataFrame, pd.DataFrame]:
+    def preprocess_data(self, data: pl.DataFrame) -> pl.DataFrame:
         """预处理数据
         
         Args:
-            data: 原始数据
+            data: 原始数据（Polars DataFrame）
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 预处理后的数据
+            pl.DataFrame: 预处理后的数据
         """
         pass
     
-    def sample_data(self, data: Union[pl.DataFrame, pd.DataFrame], target_points: int = 1000, strategy: str = 'adaptive') -> Union[pl.DataFrame, pd.DataFrame]:
+    def sample_data(self, data: pl.DataFrame, target_points: int = 1000, strategy: str = 'adaptive') -> pl.DataFrame:
         """采样数据，减少数据量
         
         Args:
-            data: 原始数据
+            data: 原始数据（Polars DataFrame）
             target_points: 目标采样点数
             strategy: 采样策略，可选值：'uniform'（均匀采样）、'adaptive'（自适应采样）
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 采样后的数据
+            pl.DataFrame: 采样后的数据
         """
         pass
     
-    def convert_data_type(self, data: Union[pl.DataFrame, pd.DataFrame], target_type: str = 'float32') -> Union[pl.DataFrame, pd.DataFrame]:
+    def convert_data_type(self, data: pl.DataFrame, target_type: str = 'float32') -> pl.DataFrame:
         """转换数据类型
         
         Args:
-            data: 原始数据
+            data: 原始数据（Polars DataFrame）
             target_type: 目标数据类型，默认：float32
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 转换后的数据
+            pl.DataFrame: 转换后的数据
         """
         pass
     
-    def clean_data(self, data: Union[pl.DataFrame, pd.DataFrame]) -> Union[pl.DataFrame, pd.DataFrame]:
+    def clean_data(self, data: pl.DataFrame) -> pl.DataFrame:
         """清洗数据，处理缺失值、异常值等
         
         Args:
-            data: 原始数据
+            data: 原始数据（Polars DataFrame）
         
         Returns:
-            pl.DataFrame或pd.DataFrame: 清洗后的数据
+            pl.DataFrame: 清洗后的数据
         """
         pass
 

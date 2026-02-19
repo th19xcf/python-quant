@@ -3,12 +3,12 @@
 
 """
 数据传输对象(DTO)定义，用于各层之间的数据传输
+统一使用Polars DataFrame作为数据格式
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 import polars as pl
-import pandas as pd
 
 
 @dataclass
@@ -16,7 +16,7 @@ class StockDataDTO:
     """股票数据传输对象"""
     stock_code: str
     frequency: str
-    data: Union[pl.DataFrame, pd.DataFrame]
+    data: pl.DataFrame
     metadata: Dict[str, Any] = field(default_factory=dict)
     start_date: Optional[str] = None
     end_date: Optional[str] = None
@@ -36,7 +36,7 @@ class IndexDataDTO:
     """指数数据传输对象"""
     index_code: str
     frequency: str
-    data: Union[pl.DataFrame, pd.DataFrame]
+    data: pl.DataFrame
     metadata: Dict[str, Any] = field(default_factory=dict)
     start_date: Optional[str] = None
     end_date: Optional[str] = None
@@ -56,7 +56,7 @@ class IndicatorResultDTO:
     """指标结果传输对象"""
     indicator_type: str
     params: Dict[str, Any] = field(default_factory=dict)
-    data: Optional[Union[pl.DataFrame, pd.DataFrame]] = None
+    data: Optional[pl.DataFrame] = None
     values: Optional[Dict[str, Any]] = None
     signal: Optional[Dict[str, Any]] = None
     calculate_time: Optional[float] = None
@@ -95,8 +95,8 @@ class BacktestResultDTO:
     sharpe_ratio: float
     win_rate: float
     trade_count: int
-    backtest_data: Optional[Union[pl.DataFrame, pd.DataFrame]] = None
-    equity_curve: Optional[Union[pl.DataFrame, pd.DataFrame]] = None
+    backtest_data: Optional[pl.DataFrame] = None
+    equity_curve: Optional[pl.DataFrame] = None
     params: Dict[str, Any] = field(default_factory=dict)
     start_date: Optional[str] = None
     end_date: Optional[str] = None
@@ -116,7 +116,7 @@ class BacktestResultDTO:
 class FactorResultDTO:
     """因子计算结果传输对象"""
     factor_name: str
-    factor_data: Union[pl.DataFrame, pd.DataFrame]
+    factor_data: pl.DataFrame
     params: Dict[str, Any] = field(default_factory=dict)
     calculate_time: Optional[float] = None
     source: Optional[str] = None

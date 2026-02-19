@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 import polars as pl
-import pandas as pd
 from loguru import logger
 
 
@@ -363,7 +362,7 @@ class TdxHandler:
             logger.exception(f"导入通达信股票数据失败: {e}")
             raise
     
-    def _get_adj_factors(self, ts_code: str, start_date: date, end_date: date) -> pd.DataFrame:
+    def _get_adj_factors(self, ts_code: str, start_date: date, end_date: date) -> pl.DataFrame:
         """
         从数据库获取复权因子
         
@@ -373,7 +372,7 @@ class TdxHandler:
             end_date: 结束日期
             
         Returns:
-            DataFrame包含复权因子
+            Polars DataFrame包含复权因子
         """
         try:
             from src.database.models.stock import StockAdjFactor
@@ -396,34 +395,33 @@ class TdxHandler:
                 logger.debug(f"{ts_code} 没有找到复权因子数据")
                 return None
             
-            data = []
-            for f in factors:
-                data.append({
-                    'trade_date': f.trade_date,
-                    'qfq_factor': f.qfq_factor,
-                    'hfq_factor': f.hfq_factor,
-                })
+            # 直接使用Polars构建DataFrame
+            data = {
+                'trade_date': [f.trade_date for f in factors],
+                'qfq_factor': [f.qfq_factor for f in factors],
+                'hfq_factor': [f.hfq_factor for f in factors],
+            }
             
-            return pd.DataFrame(data)
+            return pl.DataFrame(data)
             
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取复权因子失败: {e}")
             return None
     
-    def _apply_adj_factor(self, df: pl.DataFrame, factors_df: pd.DataFrame, adj_type: str = 'qfq') -> pl.DataFrame:
+    def _apply_adj_factor(self, df: pl.DataFrame, factors_df: pl.DataFrame, adj_type: str = 'qfq') -> pl.DataFrame:
         """
         应用复权因子计算复权价格
         
         Args:
             df: 原始价格DataFrame
-            factors_df: 复权因子DataFrame
+            factors_df: 复权因子DataFrame (Polars)
             adj_type: 复权类型 ('qfq'前复权, 'hfq'后复权)
             
         Returns:
             包含复权价格的DataFrame
         """
         try:
-            if factors_df is None or factors_df.empty:
+            if factors_df is None or factors_df.is_empty():
                 # 没有复权因子，返回原始价格并添加默认因子1.0
                 return df.with_columns([
                     pl.lit(1.0).alias(f'{adj_type}_factor'),
@@ -433,8 +431,8 @@ class TdxHandler:
                     pl.col('close').alias(f'{adj_type}_close'),
                 ])
             
-            # 将复权因子转换为polars DataFrame
-            factors_pl = pl.from_pandas(factors_df)
+            # 直接使用Polars DataFrame
+            factors_pl = factors_df
             
             # 合并数据
             result_df = df.join(factors_pl, left_on='date', right_on='trade_date', how='left')

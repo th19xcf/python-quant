@@ -4,13 +4,14 @@
 """
 复权因子计算和存储模块
 用于计算股票的前复权和后复权因子，并存储到数据库
+统一使用Polars DataFrame
 """
 
 import os
 import sys
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict
-import pandas as pd
+import polars as pl
 import numpy as np
 from loguru import logger
 
@@ -51,7 +52,7 @@ class AdjFactorCalculator:
     def calculate_adj_factors(self, ts_code: str, 
                              start_date: Optional[datetime] = None,
                              end_date: Optional[datetime] = None,
-                             use_tdx: bool = True) -> pd.DataFrame:
+                             use_tdx: bool = True) -> pl.DataFrame:
         """
         计算单只股票的复权因子
         
@@ -62,12 +63,12 @@ class AdjFactorCalculator:
             use_tdx: 是否使用通达信数据（默认True）
             
         Returns:
-            DataFrame包含复权因子和复权价格
+            pl.DataFrame: 包含复权因子和复权价格
         """
         try:
             # 获取分红数据
             dividends = self._get_dividends(ts_code)
-            if dividends is None or dividends.empty:
+            if dividends is None or dividends.is_empty():
                 logger.warning(f"{ts_code} 没有分红数据，复权因子设为1.0")
                 return self._create_default_factors(ts_code, start_date, end_date, use_tdx)
             
@@ -77,7 +78,7 @@ class AdjFactorCalculator:
             else:
                 prices = self._get_prices_from_db(ts_code, start_date, end_date)
             
-            if prices is None or prices.empty:
+            if prices is None or prices.is_empty():
                 logger.warning(f"{ts_code} 没有价格数据")
                 return None
             
@@ -91,25 +92,24 @@ class AdjFactorCalculator:
             logger.exception(f"计算 {ts_code} 复权因子失败: {e}")
             return None
     
-    def _get_dividends(self, ts_code: str) -> pd.DataFrame:
+    def _get_dividends(self, ts_code: str) -> pl.DataFrame:
         """获取分红数据"""
         dividends = self.session.query(StockDividend).filter_by(ts_code=ts_code).order_by(StockDividend.ex_date).all()
         
         if not dividends:
             return None
         
-        data = []
-        for d in dividends:
-            data.append({
-                'ts_code': d.ts_code,
-                'ex_date': d.ex_date,
-                'cash_div': d.cash_div or 0,
-                'share_div': d.share_div or 0,
-            })
+        # 使用Polars直接构建DataFrame
+        data = {
+            'ts_code': [d.ts_code for d in dividends],
+            'ex_date': [d.ex_date for d in dividends],
+            'cash_div': [d.cash_div or 0 for d in dividends],
+            'share_div': [d.share_div or 0 for d in dividends],
+        }
         
-        return pd.DataFrame(data)
+        return pl.DataFrame(data)
     
-    def _get_prices_from_db(self, ts_code: str, start_date: Optional[datetime], end_date: Optional[datetime]) -> pd.DataFrame:
+    def _get_prices_from_db(self, ts_code: str, start_date: Optional[datetime], end_date: Optional[datetime]) -> pl.DataFrame:
         """从数据库获取价格数据"""
         query = self.session.query(StockDaily).filter_by(ts_code=ts_code)
         
@@ -123,20 +123,19 @@ class AdjFactorCalculator:
         if not prices:
             return None
         
-        data = []
-        for p in prices:
-            data.append({
-                'ts_code': p.ts_code,
-                'trade_date': p.trade_date,
-                'open': p.open,
-                'high': p.high,
-                'low': p.low,
-                'close': p.close,
-            })
+        # 使用Polars直接构建DataFrame
+        data = {
+            'ts_code': [p.ts_code for p in prices],
+            'trade_date': [p.trade_date for p in prices],
+            'open': [p.open for p in prices],
+            'high': [p.high for p in prices],
+            'low': [p.low for p in prices],
+            'close': [p.close for p in prices],
+        }
         
-        return pd.DataFrame(data)
+        return pl.DataFrame(data)
     
-    def _get_prices_from_tdx(self, ts_code: str, start_date: Optional[datetime], end_date: Optional[datetime]) -> pd.DataFrame:
+    def _get_prices_from_tdx(self, ts_code: str, start_date: Optional[datetime], end_date: Optional[datetime]) -> pl.DataFrame:
         """从通达信获取价格数据"""
         if not self.tdx_handler:
             logger.warning("通达信处理器未初始化")
@@ -157,25 +156,23 @@ class AdjFactorCalculator:
                 logger.warning(f"{ts_code} 从通达信获取数据失败")
                 return None
             
-            # 转换为DataFrame
-            data = []
-            for item in data_list:
-                data.append({
-                    'ts_code': ts_code,
-                    'trade_date': item['date'],
-                    'open': item['open'],
-                    'high': item['high'],
-                    'low': item['low'],
-                    'close': item['close'],
-                })
+            # 使用Polars直接构建DataFrame
+            data = {
+                'ts_code': [ts_code] * len(data_list),
+                'trade_date': [item['date'] for item in data_list],
+                'open': [item['open'] for item in data_list],
+                'high': [item['high'] for item in data_list],
+                'low': [item['low'] for item in data_list],
+                'close': [item['close'] for item in data_list],
+            }
             
-            return pd.DataFrame(data)
+            return pl.DataFrame(data)
             
         except (OSError, RuntimeError) as e:
             logger.exception(f"从通达信获取价格数据失败: {e}")
             return None
     
-    def _create_default_factors(self, ts_code: str, start_date: datetime, end_date: datetime, use_tdx: bool = True) -> pd.DataFrame:
+    def _create_default_factors(self, ts_code: str, start_date: datetime, end_date: datetime, use_tdx: bool = True) -> pl.DataFrame:
         """创建默认复权因子（全部为1.0）"""
         # 获取价格数据
         if use_tdx and self.tdx_handler:
@@ -183,24 +180,26 @@ class AdjFactorCalculator:
         else:
             prices_df = self._get_prices_from_db(ts_code, start_date, end_date)
         
-        if prices_df is None or prices_df.empty:
+        if prices_df is None or prices_df.is_empty():
             return None
         
         # 添加默认复权因子
-        prices_df['qfq_factor'] = 1.0
-        prices_df['hfq_factor'] = 1.0
-        prices_df['qfq_open'] = prices_df['open']
-        prices_df['qfq_high'] = prices_df['high']
-        prices_df['qfq_low'] = prices_df['low']
-        prices_df['qfq_close'] = prices_df['close']
-        prices_df['hfq_open'] = prices_df['open']
-        prices_df['hfq_high'] = prices_df['high']
-        prices_df['hfq_low'] = prices_df['low']
-        prices_df['hfq_close'] = prices_df['close']
+        result = prices_df.with_columns([
+            pl.lit(1.0).alias('qfq_factor'),
+            pl.lit(1.0).alias('hfq_factor'),
+            pl.col('open').alias('qfq_open'),
+            pl.col('high').alias('qfq_high'),
+            pl.col('low').alias('qfq_low'),
+            pl.col('close').alias('qfq_close'),
+            pl.col('open').alias('hfq_open'),
+            pl.col('high').alias('hfq_high'),
+            pl.col('low').alias('hfq_low'),
+            pl.col('close').alias('hfq_close'),
+        ])
         
-        return prices_df
+        return result
     
-    def _calculate_factors(self, prices_df: pd.DataFrame, dividends_df: pd.DataFrame) -> pd.DataFrame:
+    def _calculate_factors(self, prices_df: pl.DataFrame, dividends_df: pl.DataFrame) -> pl.DataFrame:
         """
         计算复权因子
         
@@ -208,105 +207,114 @@ class AdjFactorCalculator:
         1. 前复权因子：从后向前累乘，考虑送转股和现金分红
         2. 后复权因子：从前向后累乘，考虑送转股和现金分红
         """
-        result = prices_df.copy()
-        result['qfq_factor'] = 1.0
-        result['hfq_factor'] = 1.0
+        # 初始化复权因子
+        result = prices_df.with_columns([
+            pl.lit(1.0).alias('qfq_factor'),
+            pl.lit(1.0).alias('hfq_factor'),
+        ])
+        
+        # 将Polars DataFrame转换为字典列表以便处理
+        prices_list = result.to_dicts()
+        dividends_list = dividends_df.to_dicts()
         
         # 计算前复权因子（从后向前）
-        for idx in range(len(dividends_df) - 1, -1, -1):
-            div = dividends_df.iloc[idx]
+        for idx in range(len(dividends_list) - 1, -1, -1):
+            div = dividends_list[idx]
             ex_date = div['ex_date']
             share_div = div['share_div']
             cash_div = div['cash_div']
             
-            if pd.isna(ex_date):
+            if ex_date is None:
                 continue
             
             # 找到除权除息日的前一天收盘价
-            prev_day_mask = result['trade_date'] < ex_date
-            if not prev_day_mask.any():
+            prev_day_prices = [p for p in prices_list if p['trade_date'] < ex_date]
+            if not prev_day_prices:
                 continue
             
-            prev_day_close = result.loc[prev_day_mask, 'close'].iloc[-1] if not result.loc[prev_day_mask].empty else None
+            prev_day_close = prev_day_prices[-1]['close']
             if prev_day_close is None:
                 continue
             
             # 计算复权因子
             if share_div > 0 or cash_div > 0:
-                # 兼容送转股+现金分红的综合复权因子
                 if prev_day_close <= cash_div:
-                    logger.warning(f"{div['ts_code'] if 'ts_code' in div else ''} {ex_date} 现金分红异常，无法计算前复权因子")
+                    logger.warning(f"{div.get('ts_code', '')} {ex_date} 现金分红异常，无法计算前复权因子")
                     continue
                 factor = (prev_day_close - cash_div) / (prev_day_close * (1 + share_div))
                 
-                mask = result['trade_date'] < ex_date
-                result.loc[mask, 'qfq_factor'] *= factor
+                # 应用复权因子
+                for p in prices_list:
+                    if p['trade_date'] < ex_date:
+                        p['qfq_factor'] *= factor
         
         # 计算后复权因子（从前向后）
-        for idx in range(len(dividends_df)):
-            div = dividends_df.iloc[idx]
+        for idx in range(len(dividends_list)):
+            div = dividends_list[idx]
             ex_date = div['ex_date']
             share_div = div['share_div']
             cash_div = div['cash_div']
             
-            if pd.isna(ex_date):
+            if ex_date is None:
                 continue
             
             # 找到除权除息日的前一天收盘价
-            prev_day_mask = result['trade_date'] < ex_date
-            if not prev_day_mask.any():
+            prev_day_prices = [p for p in prices_list if p['trade_date'] < ex_date]
+            if not prev_day_prices:
                 continue
             
-            prev_day_close = result.loc[prev_day_mask, 'close'].iloc[-1] if not result.loc[prev_day_mask].empty else None
+            prev_day_close = prev_day_prices[-1]['close']
             if prev_day_close is None:
                 continue
             
             # 计算复权因子
             if share_div > 0 or cash_div > 0:
-                # 后复权因子为前复权因子的倒数（应用于除权除息日及之后）
                 if prev_day_close <= cash_div:
-                    logger.warning(f"{div['ts_code'] if 'ts_code' in div else ''} {ex_date} 现金分红异常，无法计算后复权因子")
+                    logger.warning(f"{div.get('ts_code', '')} {ex_date} 现金分红异常，无法计算后复权因子")
                     continue
                 qfq_factor = (prev_day_close - cash_div) / (prev_day_close * (1 + share_div))
                 if qfq_factor == 0:
-                    logger.warning(f"{div['ts_code'] if 'ts_code' in div else ''} {ex_date} 前复权因子为0，跳过后复权计算")
+                    logger.warning(f"{div.get('ts_code', '')} {ex_date} 前复权因子为0，跳过后复权计算")
                     continue
                 factor = 1 / qfq_factor
                 
-                mask = result['trade_date'] >= ex_date
-                result.loc[mask, 'hfq_factor'] *= factor
-
-        # 注意：后复权因子不进行归一化，保持累积值以反映真实的历史累积价格
-        # 这样茅台等长期上涨的股票后复权价格会显示为几千到几万
+                # 应用复权因子
+                for p in prices_list:
+                    if p['trade_date'] >= ex_date:
+                        p['hfq_factor'] *= factor
+        
+        # 转换回Polars DataFrame
+        result = pl.DataFrame(prices_list)
         
         # 计算复权价格
-        result['qfq_open'] = result['open'] * result['qfq_factor']
-        result['qfq_high'] = result['high'] * result['qfq_factor']
-        result['qfq_low'] = result['low'] * result['qfq_factor']
-        result['qfq_close'] = result['close'] * result['qfq_factor']
-        
-        result['hfq_open'] = result['open'] * result['hfq_factor']
-        result['hfq_high'] = result['high'] * result['hfq_factor']
-        result['hfq_low'] = result['low'] * result['hfq_factor']
-        result['hfq_close'] = result['close'] * result['hfq_factor']
+        result = result.with_columns([
+            (pl.col('open') * pl.col('qfq_factor')).alias('qfq_open'),
+            (pl.col('high') * pl.col('qfq_factor')).alias('qfq_high'),
+            (pl.col('low') * pl.col('qfq_factor')).alias('qfq_low'),
+            (pl.col('close') * pl.col('qfq_factor')).alias('qfq_close'),
+            (pl.col('open') * pl.col('hfq_factor')).alias('hfq_open'),
+            (pl.col('high') * pl.col('hfq_factor')).alias('hfq_high'),
+            (pl.col('low') * pl.col('hfq_factor')).alias('hfq_low'),
+            (pl.col('close') * pl.col('hfq_factor')).alias('hfq_close'),
+        ])
         
         return result
     
-    def save_adj_factors(self, df: pd.DataFrame, batch_size: int = 1000):
+    def save_adj_factors(self, df: pl.DataFrame, batch_size: int = 1000):
         """
         保存复权因子到数据库
         
         Args:
-            df: 包含复权因子的DataFrame
+            df: 包含复权因子的Polars DataFrame
             batch_size: 批量插入大小
         """
-        if df is None or df.empty:
+        if df is None or df.is_empty():
             logger.warning("没有数据需要保存")
             return
         
         try:
             records = []
-            for _, row in df.iterrows():
+            for row in df.to_dicts():
                 record = StockAdjFactor(
                     ts_code=row['ts_code'],
                     trade_date=row['trade_date'],
@@ -368,18 +376,18 @@ class AdjFactorCalculator:
             self.session.rollback()
             raise e
     
-    def update_stock_daily_adj(self, df: pd.DataFrame):
+    def update_stock_daily_adj(self, df: pl.DataFrame):
         """
         更新stock_daily表的复权价格和因子
         
         Args:
-            df: 包含复权因子的DataFrame
+            df: 包含复权因子的Polars DataFrame
         """
-        if df is None or df.empty:
+        if df is None or df.is_empty():
             return
         
         try:
-            for _, row in df.iterrows():
+            for row in df.to_dicts():
                 daily = self.session.query(StockDaily).filter_by(
                     ts_code=row['ts_code'],
                     trade_date=row['trade_date']
@@ -462,7 +470,7 @@ if __name__ == "__main__":
     
     if result is not None:
         print(f"\n{ts_code} 复权因子计算结果:")
-        print(result[['trade_date', 'close', 'qfq_factor', 'hfq_factor', 'qfq_close', 'hfq_close']].tail(10))
+        print(result.select(['trade_date', 'close', 'qfq_factor', 'hfq_factor', 'qfq_close', 'hfq_close']).tail(10))
         
         # 保存到数据库
         calculator.save_adj_factors(result)

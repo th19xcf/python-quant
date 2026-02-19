@@ -9,7 +9,6 @@
 import pyqtgraph as pg
 import polars as pl
 import numpy as np
-import pandas as pd
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel
 
@@ -493,7 +492,7 @@ class MainWindowDrawingMixin:
         ax = self.tech_plot_widget.getAxis('bottom')
         tick_interval = ChartUtils.calculate_x_axis_tick_interval(len(dates))
         ax.setTicks([[
-            (i, pd.Timestamp(dates[i]).strftime('%Y-%m-%d'))
+            (i, self._format_date(dates[i]))
             for i in range(0, len(dates), tick_interval)
         ]])
     
@@ -584,7 +583,7 @@ class MainWindowDrawingMixin:
             ax = plot_widget.getAxis('bottom')
             tick_interval = ChartUtils.calculate_x_axis_tick_interval(len(dates))
             ax.setTicks([[
-                (i, pd.Timestamp(dates[i]).strftime('%Y-%m-%d'))
+                (i, self._format_date(dates[i]))
                 for i in range(0, len(dates), tick_interval)
             ]])
             
