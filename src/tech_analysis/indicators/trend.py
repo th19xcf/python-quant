@@ -341,6 +341,7 @@ def calculate_bbi(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
         pl.LazyFrame: 包含BBI指标的LazyFrame
     """
     # 计算不同周期的移动平均线
+    # 保持min_periods等于window_size，确保数据足够时才计算，保证指标准确性
     ma3 = pl.col('close').rolling_mean(window_size=3, min_periods=3)
     ma6 = pl.col('close').rolling_mean(window_size=6, min_periods=6)
     ma12 = pl.col('close').rolling_mean(window_size=12, min_periods=12)
