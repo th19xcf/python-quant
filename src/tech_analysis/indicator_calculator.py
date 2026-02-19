@@ -17,6 +17,7 @@ from .utils import (
     to_float32,
     calculate_mad
 )
+from ..utils.memory_optimizer import MemoryOptimizer
 from .indicators import (
     calculate_trend_indicators,
     calculate_oscillator_indicators,
@@ -667,7 +668,9 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     if isinstance(df, pl.LazyFrame):
         return lazy_df
     else:
-        return lazy_df.collect()
+        result = lazy_df.collect()
+        # 内存优化：确保指标结果使用Float32
+        return MemoryOptimizer.optimize_dataframe(result)
 
 
 def generate_cache_key(data_hash, indicator_type, *args, **kwargs):

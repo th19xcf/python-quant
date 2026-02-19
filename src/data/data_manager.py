@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional
 import polars as pl
 from src.api.data_api import IDataProvider, IDataProcessor
 from src.utils.event_bus import EventBus
+from src.utils.memory_optimizer import MemoryOptimizer
 from src.utils.exceptions import (
     DataSourceConnectionError,
     DataSourceNotAvailableError,
@@ -429,7 +430,9 @@ class DataManager(IDataProvider, IDataProcessor):
                     'rights_issue_ratio': d.rights_issue_ratio
                 } for d in dividends]
 
-                return pl.DataFrame(data)
+                df = pl.DataFrame(data)
+                # 内存优化：转换数据类型
+                return MemoryOptimizer.optimize_dataframe(df)
             except (ValueError, TypeError) as convert_e:
                 logger.error(f"转换分红配股数据失败: {convert_e}")
                 return pl.DataFrame()
@@ -676,7 +679,9 @@ class DataManager(IDataProvider, IDataProcessor):
                             df = df.with_columns(
                                 pl.col('trade_date').str.strptime(pl.Datetime, format='%Y%m%d').alias('date')
                             )
-                            return df
+                            
+                            # 内存优化：转换数据类型
+                            return MemoryOptimizer.optimize_dataframe(df)
                 except (OSError, RuntimeError, ValueError) as db_e:
                     logger.warning(f"从数据库获取{type_name}数据失败: {db_e}")
             
@@ -844,6 +849,9 @@ class DataManager(IDataProvider, IDataProcessor):
             # 执行计算
             result = lazy_df.collect()
             
+            # 内存优化：转换数据类型
+            result = MemoryOptimizer.optimize_dataframe(result)
+            
             logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{result.height}条")
             return result
 
@@ -935,7 +943,9 @@ class DataManager(IDataProvider, IDataProcessor):
                         'ts_code': [stock.ts_code for stock in stock_basics],
                         'name': [stock.name for stock in stock_basics]
                     }
-                    return pl.DataFrame(data)
+                    df = pl.DataFrame(data)
+                    # 内存优化：字符串列不需要优化
+                    return df
                 else:
                     return pl.DataFrame()
             except (OSError, RuntimeError) as query_e:
@@ -987,7 +997,9 @@ class DataManager(IDataProvider, IDataProcessor):
                         'ts_code': [index.ts_code for index in index_basics],
                         'name': [index.name for index in index_basics]
                     }
-                    return pl.DataFrame(data)
+                    df = pl.DataFrame(data)
+                    # 内存优化：字符串列不需要优化
+                    return df
                 else:
                     return pl.DataFrame()
             except (OSError, RuntimeError) as query_e:

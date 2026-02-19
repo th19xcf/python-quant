@@ -23,6 +23,7 @@ sys.path.insert(0, project_root)
 
 from database.db_manager import DatabaseManager
 from database.models.stock import StockDaily, StockDividend, StockAdjFactor
+from src.utils.memory_optimizer import MemoryOptimizer
 
 
 class AdjFactorCalculator:
@@ -196,8 +197,9 @@ class AdjFactorCalculator:
             pl.col('low').alias('hfq_low'),
             pl.col('close').alias('hfq_close'),
         ])
-        
-        return result
+
+        # 内存优化：转换数据类型
+        return MemoryOptimizer.optimize_dataframe(result)
     
     def _calculate_factors(self, prices_df: pl.DataFrame, dividends_df: pl.DataFrame) -> pl.DataFrame:
         """
@@ -298,8 +300,9 @@ class AdjFactorCalculator:
             (pl.col('close') * pl.col('hfq_factor')).alias('hfq_close'),
         ])
         
-        return result
-    
+        # 内存优化：转换数据类型
+        return MemoryOptimizer.optimize_dataframe(result)
+
     def save_adj_factors(self, df: pl.DataFrame, batch_size: int = 1000):
         """
         保存复权因子到数据库
