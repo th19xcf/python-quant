@@ -312,6 +312,28 @@ class MouseHandler:
                         # 更新SAR标签
                         current_sar = self.main_window.current_sar_data['sar'][index]
                         self.main_window.volume_values_label.setText(f"<font color='white'>SAR: {self._format_value(current_sar)}</font>")
+                    elif current_indicator == "TRIX" and hasattr(self.main_window, 'current_trix_data') and 0 <= index < len(self.main_window.current_trix_data['trix']):
+                        # 更新TRIX标签
+                        current_trix = self.main_window.current_trix_data['trix'][index]
+                        current_trma = self.main_window.current_trix_data['trma'][index] if index < len(self.main_window.current_trix_data['trma']) else None
+                        self.main_window.volume_values_label.setText(f"<font color='#FFFFFF'>TRIX: {self._format_value(current_trix)}</font>  <font color='#FFFF00'>MATRIX: {self._format_value(current_trma)}</font>")
+                    elif current_indicator == "DMI" and hasattr(self.main_window, 'current_dmi_data') and 0 <= index < len(self.main_window.current_dmi_data['pdi']):
+                        # 更新DMI标签
+                        current_pdi = self.main_window.current_dmi_data['pdi'][index]
+                        current_ndi = self.main_window.current_dmi_data['ndi'][index] if index < len(self.main_window.current_dmi_data['ndi']) else None
+                        current_adx = self.main_window.current_dmi_data['adx'][index] if index < len(self.main_window.current_dmi_data['adx']) else None
+                        current_adxr = self.main_window.current_dmi_data['adxr'][index] if index < len(self.main_window.current_dmi_data['adxr']) else None
+                        self.main_window.volume_values_label.setText(f"<font color='#FFFFFF'>PDI: {self._format_value(current_pdi)}</font>  <font color='#FFFF00'>NDI: {self._format_value(current_ndi)}</font>  <font color='#FF00FF'>ADX: {self._format_value(current_adx)}</font>  <font color='#00FF00'>ADXR: {self._format_value(current_adxr)}</font>")
+                    elif current_indicator == "DMA" and hasattr(self.main_window, 'current_dma_data') and 0 <= index < len(self.main_window.current_dma_data['dma']):
+                        # 更新DMA标签
+                        current_dma = self.main_window.current_dma_data['dma'][index]
+                        current_ama = self.main_window.current_dma_data['ama'][index] if index < len(self.main_window.current_dma_data['ama']) else None
+                        self.main_window.volume_values_label.setText(f"<font color='white'>DMA(10,50): {self._format_value(current_dma)}</font>  <font color='yellow'>AMA: {self._format_value(current_ama)}</font>")
+                    elif current_indicator == "BRAR" and hasattr(self.main_window, 'current_brar_data') and 0 <= index < len(self.main_window.current_brar_data['br']):
+                        # 更新BRAR标签
+                        current_br = self.main_window.current_brar_data['br'][index]
+                        current_ar = self.main_window.current_brar_data['ar'][index] if index < len(self.main_window.current_brar_data['ar']) else None
+                        self.main_window.volume_values_label.setText(f"<font color='#FFFF00'>BR: {self._format_value(current_br)}</font>  <font color='#FFFFFF'>AR: {self._format_value(current_ar)}</font>")
                     elif current_indicator == "FSL" and hasattr(self.main_window, 'current_fsl_data') and 0 <= index < len(self.main_window.current_fsl_data['swl']):
                         # 更新FSL标签
                         current_swl = self.main_window.current_fsl_data['swl'][index]
