@@ -501,99 +501,108 @@ class ChartManager:
             window.kdj_values_label.setText(kdj_text)
 
     def save_indicator_data(self, df_pl):
-        """保存指标数据，用于鼠标移动时更新指标数值"""
+        """保存指标数据，用于鼠标移动时更新指标数值 - 优化版本
+        使用numpy数组替代Python列表，减少内存占用
+        """
+        import numpy as np
         window = self.window
 
+        # 辅助函数：安全地获取列数据为numpy数组
+        def get_col_array(col_name):
+            if col_name in df_pl.columns:
+                return df_pl[col_name].to_numpy()
+            return np.array([])
+
         window.current_kdj_data = {
-            'k': df_pl['k'].to_list() if 'k' in df_pl.columns else [],
-            'd': df_pl['d'].to_list() if 'd' in df_pl.columns else [],
-            'j': df_pl['j'].to_list() if 'j' in df_pl.columns else []
+            'k': get_col_array('k'),
+            'd': get_col_array('d'),
+            'j': get_col_array('j')
         }
 
         window.current_rsi_data = {
-            'rsi': df_pl['rsi14'].to_list() if 'rsi14' in df_pl.columns else []
+            'rsi': get_col_array('rsi14')
         }
 
         window.current_macd_data = {
-            'macd': df_pl['macd'].to_list() if 'macd' in df_pl.columns else [],
-            'macd_signal': df_pl['macd_signal'].to_list() if 'macd_signal' in df_pl.columns else [],
-            'macd_hist': df_pl['macd_hist'].to_list() if 'macd_hist' in df_pl.columns else []
+            'macd': get_col_array('macd'),
+            'macd_signal': get_col_array('macd_signal'),
+            'macd_hist': get_col_array('macd_hist')
         }
 
         window.current_volume_data = {
-            'volume': df_pl['volume'].to_list() if 'volume' in df_pl.columns else [],
-            'vol_ma5': df_pl['vol_ma5'].to_list() if 'vol_ma5' in df_pl.columns else [],
-            'vol_ma10': df_pl['vol_ma10'].to_list() if 'vol_ma10' in df_pl.columns else []
+            'volume': get_col_array('volume'),
+            'vol_ma5': get_col_array('vol_ma5'),
+            'vol_ma10': get_col_array('vol_ma10')
         }
 
         window.current_wr_data = {
-            'wr1': df_pl['wr1'].to_list() if 'wr1' in df_pl.columns else [],
-            'wr2': df_pl['wr2'].to_list() if 'wr2' in df_pl.columns else []
+            'wr1': get_col_array('wr1'),
+            'wr2': get_col_array('wr2')
         }
 
         window.current_boll_data = {
-            'mb': df_pl['mb'].to_list() if 'mb' in df_pl.columns else [],
-            'up': df_pl['up'].to_list() if 'up' in df_pl.columns else [],
-            'dn': df_pl['dn'].to_list() if 'dn' in df_pl.columns else []
+            'mb': get_col_array('mb'),
+            'up': get_col_array('up'),
+            'dn': get_col_array('dn')
         }
 
         window.current_dmi_data = {
-            'pdi': df_pl['pdi'].to_list() if 'pdi' in df_pl.columns else [],
-            'ndi': df_pl['ndi'].to_list() if 'ndi' in df_pl.columns else [],
-            'adx': df_pl['adx'].to_list() if 'adx' in df_pl.columns else [],
-            'adxr': df_pl['adxr'].to_list() if 'adxr' in df_pl.columns else []
+            'pdi': get_col_array('pdi'),
+            'ndi': get_col_array('ndi'),
+            'adx': get_col_array('adx'),
+            'adxr': get_col_array('adxr')
         }
 
         window.current_trix_data = {
-            'trix': df_pl['trix'].to_list() if 'trix' in df_pl.columns else [],
-            'trma': df_pl['trma'].to_list() if 'trma' in df_pl.columns else []
+            'trix': get_col_array('trix'),
+            'trma': get_col_array('trma')
         }
 
         window.current_brar_data = {
-            'br': df_pl['br'].to_list() if 'br' in df_pl.columns else [],
-            'ar': df_pl['ar'].to_list() if 'ar' in df_pl.columns else []
+            'br': get_col_array('br'),
+            'ar': get_col_array('ar')
         }
 
         window.current_vr_data = {
-            'vr': df_pl['vr'].to_list() if 'vr' in df_pl.columns else [],
-            'mavr': df_pl['mavr'].to_list() if 'mavr' in df_pl.columns else []
+            'vr': get_col_array('vr'),
+            'mavr': get_col_array('mavr')
         }
 
         window.current_dma_data = {
-            'dma': df_pl['dma'].to_list() if 'dma' in df_pl.columns else [],
-            'ama': df_pl['ama'].to_list() if 'ama' in df_pl.columns else []
+            'dma': get_col_array('dma'),
+            'ama': get_col_array('ama')
         }
 
         # 新增指标数据保存
         window.current_expma_data = {
-            'expma12': df_pl['expma12'].to_list() if 'expma12' in df_pl.columns else [],
-            'expma50': df_pl['expma50'].to_list() if 'expma50' in df_pl.columns else []
+            'expma12': get_col_array('expma12'),
+            'expma50': get_col_array('expma50')
         }
 
         window.current_bbi_data = {
-            'bbi': df_pl['bbi'].to_list() if 'bbi' in df_pl.columns else []
+            'bbi': get_col_array('bbi')
         }
 
         window.current_hsl_data = {
-            'hsl': df_pl['hsl'].to_list() if 'hsl' in df_pl.columns else [],
-            'hsl_ma5': df_pl['hsl_ma5'].to_list() if 'hsl_ma5' in df_pl.columns else [],
-            'hsl_ma10': df_pl['hsl_ma10'].to_list() if 'hsl_ma10' in df_pl.columns else []
+            'hsl': get_col_array('hsl'),
+            'hsl_ma5': get_col_array('hsl_ma5'),
+            'hsl_ma10': get_col_array('hsl_ma10')
         }
 
         window.current_lb_data = {
-            'lb': df_pl['lb'].to_list() if 'lb' in df_pl.columns else []
+            'lb': get_col_array('lb')
         }
 
         window.current_cyc_data = {
-            'cyc5': df_pl['cyc5'].to_list() if 'cyc5' in df_pl.columns else [],
-            'cyc13': df_pl['cyc13'].to_list() if 'cyc13' in df_pl.columns else [],
-            'cyc34': df_pl['cyc34'].to_list() if 'cyc34' in df_pl.columns else [],
-            'cyc_inf': df_pl['cyc_inf'].to_list() if 'cyc_inf' in df_pl.columns else []
+            'cyc5': get_col_array('cyc5'),
+            'cyc13': get_col_array('cyc13'),
+            'cyc34': get_col_array('cyc34'),
+            'cyc_inf': get_col_array('cyc_inf')
         }
 
         window.current_cys_data = {
-            'cys': df_pl['cys'].to_list() if 'cys' in df_pl.columns else [],
-            'cys_ma5': df_pl['cys_ma5'].to_list() if 'cys_ma5' in df_pl.columns else []
+            'cys': get_col_array('cys'),
+            'cys_ma5': get_col_array('cys_ma5')
         }
 
     def plot_k_line(self, df, stock_name, stock_code):

@@ -80,7 +80,8 @@ class IndicatorCache:
     
     def _generate_cache_key(self, data: pl.DataFrame, indicator_type: str, **params) -> str:
         """
-        生成唯一的缓存键
+        生成唯一的缓存键 - 优化版本
+        使用Polars原生哈希方法，避免转换为pandas和CSV
         
         Args:
             data: 输入数据
@@ -98,35 +99,38 @@ class IndicatorCache:
         if not data_cols:
             raise ValueError("数据中没有核心列，无法生成缓存键")
         
-        # 计算数据摘要
-        data_sample = data.select(data_cols).head(100)  # 使用前100行进行哈希计算
+        # 计算数据摘要 - 使用Polars原生哈希方法（更快）
+        # 只采样前50行和后50行，减少计算量
+        sample_size = min(50, len(data) // 2)
+        head_sample = data.select(data_cols).head(sample_size)
+        tail_sample = data.select(data_cols).tail(sample_size)
+        
         try:
-            data_str = data_sample.to_pandas().to_csv(index=False).encode('utf-8')
-        except (ImportError, AttributeError) as e:
-            # pandas未安装或方法不存在
-            logger.debug(f"使用pandas转换失败，使用numpy: {e}")
-            data_bytes = data_sample.to_numpy().tobytes()
-            cols_bytes = ",".join(data_cols).encode('utf-8')
-            data_str = cols_bytes + b"|" + data_bytes
-        except MemoryError as e:
-            # 内存不足，使用简化方案
-            logger.warning(f"内存不足，使用简化哈希方案: {e}")
-            data_str = f"{len(data_sample)}_{hash(tuple(data_cols))}".encode('utf-8')
-        except (ValueError, TypeError, RuntimeError) as e:
-            # 其他未预期的错误
-            logger.warning(f"生成数据哈希时发生未预期错误: {e}")
-            data_bytes = data_sample.to_numpy().tobytes()
-            cols_bytes = ",".join(data_cols).encode('utf-8')
-            data_str = cols_bytes + b"|" + data_bytes
-        data_hash = hashlib.md5(data_str).hexdigest()
+            # 使用Polars内置的哈希方法（比to_csv快10倍以上）
+            head_hash = head_sample.hash_rows(seed=42).sum()
+            tail_hash = tail_sample.hash_rows(seed=42).sum()
+            row_count = len(data)
+            data_hash = hashlib.md5(f"{head_hash}_{tail_hash}_{row_count}".encode()).hexdigest()
+        except Exception as e:
+            # 降级方案：使用numpy
+            logger.debug(f"Polars哈希失败，使用numpy: {e}")
+            try:
+                head_bytes = head_sample.to_numpy().tobytes()
+                tail_bytes = tail_sample.to_numpy().tobytes()
+                data_hash = hashlib.md5(head_bytes + tail_bytes).hexdigest()
+            except Exception as e2:
+                # 最终降级方案
+                logger.warning(f"numpy哈希也失败，使用简化方案: {e2}")
+                data_hash = hashlib.md5(f"{len(data)}_{hash(tuple(data_cols))}".encode()).hexdigest()
         
         # 2. 生成参数字符串
         # 对参数进行排序，确保相同参数不同顺序生成相同的键
         sorted_params = sorted(params.items(), key=lambda x: x[0])
         params_str = "".join([f"{k}={v}" for k, v in sorted_params])
+        params_hash = hashlib.md5(params_str.encode('utf-8')).hexdigest()
         
         # 3. 组合生成最终缓存键
-        cache_key = f"{indicator_type}_{data_hash}_{hashlib.md5(params_str.encode('utf-8')).hexdigest()}"
+        cache_key = f"{indicator_type}_{data_hash}_{params_hash}"
         return cache_key
     
     def get(self, data: pl.DataFrame, indicator_type: str, **params) -> Optional[pl.DataFrame]:
