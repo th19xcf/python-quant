@@ -473,10 +473,10 @@ class TdxHandler:
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
             adjust: 复权类型，"qfq"=前复权，"hfq"=后复权，"none"=不复权（默认）
-            
+        
         Returns:
-            List[Dict[str, Any]]: K线数据列表，每个元素包含date, open, high, low, close, volume, amount字段
-                                   如果指定了adjust，还会包含 qfq_open/high/low/close 或 hfq_open/high/low/close
+            pl.LazyFrame: K线数据的LazyFrame，包含date, open, high, low, close, volume, amount字段
+                           如果指定了adjust，还会包含 qfq_open/high/low/close 或 hfq_open/high/low/close
         """
         try:
             logger.info(f"开始获取股票 {stock_code} 在 {start_date} 到 {end_date} 期间的K线数据")
@@ -496,10 +496,10 @@ class TdxHandler:
                         code = market_part
                     else:
                         logger.warning(f"无效的股票代码格式: {stock_code}")
-                        return None
+                        return pl.LazyFrame({})
                 else:
                     logger.warning(f"无效的股票代码格式: {stock_code}")
-                    return None
+                    return pl.LazyFrame({})
             else:
                 # 纯数字格式，如600000
                 market = "sh" if stock_code.startswith("6") else "sz"
@@ -519,7 +519,7 @@ class TdxHandler:
             # 检查文件是否存在
             if not file_path.exists():
                 logger.warning(f"股票 {stock_code} 的通达信数据文件不存在: {file_path}")
-                return None
+                return pl.LazyFrame({})
             
             # 先尝试直接解析数据，不使用pandas
             logger.info(f"开始直接解析文件 {file_path}")
@@ -594,28 +594,24 @@ class TdxHandler:
                         })
             except (OSError, IOError) as file_e:
                 logger.exception(f"文件操作失败: {file_e}")
-                return None
+                return pl.LazyFrame({})
             
             logger.info(f"成功解析{len(data)}条数据")
+            
+            # 转换为polars DataFrame
+            df = pl.DataFrame(data)
+            
+            # 转换为LazyFrame
+            lazy_df = df.lazy()
             
             # 转换start_date和end_date为date对象
             start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
             end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
             
-            # 过滤日期范围内的数据
-            filtered_data = [
-                item for item in data 
-                if start_dt <= item['date'] <= end_dt
-            ]
-            
-            logger.info(f"过滤后的数据条数: {len(filtered_data)}")
-            
-            if not filtered_data:
-                logger.warning(f"股票 {stock_code} 在 {start_date} 到 {end_date} 期间没有数据")
-                return None
-            
-            # 转换为polars DataFrame以便进行复权计算
-            df = pl.DataFrame(filtered_data)
+            # 使用Lazy API过滤日期范围内的数据
+            lazy_df = lazy_df.filter(
+                (pl.col('date') >= start_dt) & (pl.col('date') <= end_dt)
+            )
             
             # 如果需要复权，计算复权价格
             if adjust in ['qfq', 'hfq']:
@@ -627,17 +623,32 @@ class TdxHandler:
                 # 获取复权因子
                 factors_df = self._get_adj_factors(ts_code, start_dt, end_dt)
                 
-                # 应用复权因子
-                df = self._apply_adj_factor(df, factors_df, adjust)
+                if factors_df is not None and not factors_df.is_empty():
+                    # 转换复权因子为LazyFrame
+                    factors_lazy = factors_df.lazy()
+                    
+                    # 使用Lazy API进行复权计算
+                    lazy_df = lazy_df.join(factors_lazy, left_on='date', right_on='trade_date', how='left')
+                    
+                    # 填充缺失的复权因子
+                    factor_col = f'{adjust}_factor'
+                    lazy_df = lazy_df.with_columns([
+                        pl.col(factor_col).fill_null(strategy='forward').fill_null(1.0).alias(factor_col)
+                    ])
+                    
+                    # 计算复权价格
+                    lazy_df = lazy_df.with_columns([
+                        (pl.col('open') * pl.col(factor_col)).alias(f'{adjust}_open'),
+                        (pl.col('high') * pl.col(factor_col)).alias(f'{adjust}_high'),
+                        (pl.col('low') * pl.col(factor_col)).alias(f'{adjust}_low'),
+                        (pl.col('close') * pl.col(factor_col)).alias(f'{adjust}_close'),
+                    ])
                 
                 logger.info(f"复权价格计算完成")
             
-            # 转换回列表格式
-            result = df.to_dicts()
-            
-            logger.info(f"成功获取股票 {stock_code} 在 {start_date} 到 {end_date} 期间的 {len(result)} 条K线数据")
-            return result
+            logger.info(f"成功获取股票 {stock_code} 的K线数据，返回LazyFrame")
+            return lazy_df
             
         except (OSError, IOError, ValueError) as e:
             logger.exception(f"获取股票 {stock_code} 的K线数据失败: {e}")
-            return None
+            return pl.LazyFrame({})

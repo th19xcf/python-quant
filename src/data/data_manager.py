@@ -508,6 +508,10 @@ class DataManager(IDataProvider, IDataProcessor):
                 if result is None:
                     return None
                 
+                # 已经是Polars LazyFrame，执行并返回DataFrame
+                if hasattr(result, 'collect'):
+                    return result.collect()
+                
                 # 已经是Polars DataFrame
                 if hasattr(result, 'to_pandas'):
                     return result
@@ -530,7 +534,7 @@ class DataManager(IDataProvider, IDataProcessor):
                             return pl.DataFrame(first_value)
                     return None
                 
-                # 是list类型（TdxHandler返回），转换为Polars
+                # 是list类型，转换为Polars
                 if isinstance(result, list):
                     if len(result) == 0:
                         return None
@@ -766,6 +770,16 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             pl.DataFrame: 股票历史数据
         """
+        from src.utils.lazy_optimizer import lazy_pipeline, lazy_exec
+        
+        # 构建惰性计算流水线
+        steps = [
+            {
+                'type': 'filter',
+                'condition': (pl.col('trade_date') >= start_date) & (pl.col('trade_date') <= end_date)
+            }
+        ]
+        
         # 将周线和月线转换为日线获取，然后进行聚合
         if frequency in ['1w', '1m']:
             # 获取日线数据
@@ -775,9 +789,64 @@ class DataManager(IDataProvider, IDataProcessor):
             
             # 将日线数据转换为周线或月线
             if not df.is_empty():
-                df = self._convert_to_period(df, frequency)
-            
-            return df
+                # 使用惰性计算优化转换过程
+                lazy_df = df.lazy()
+                
+                # 确保有日期列
+                if 'trade_date' in df.columns:
+                    lazy_df = lazy_df.with_columns(pl.col('trade_date').alias('date'))
+                elif 'date' not in df.columns:
+                    logger.error("DataFrame中没有日期列")
+                    return df
+                
+                # 转换日期列为datetime类型
+                lazy_df = lazy_df.with_columns(pl.col('date').str.strptime(pl.Date, "%Y-%m-%d"))
+                
+                # 根据频率确定分组方式
+                if frequency == '1w':
+                    # 周线：按周分组
+                    lazy_df = lazy_df.with_columns(
+                        pl.col('date').dt.week().alias('week'),
+                        pl.col('date').dt.year().alias('year')
+                    )
+                    group_cols = ['year', 'week']
+                elif frequency == '1m':
+                    # 月线：按月分组
+                    lazy_df = lazy_df.with_columns(
+                        pl.col('date').dt.month().alias('month'),
+                        pl.col('date').dt.year().alias('year')
+                    )
+                    group_cols = ['year', 'month']
+                else:
+                    return df
+                
+                # 聚合数据
+                lazy_df = lazy_df.group_by(group_cols).agg([
+                    pl.col('date').first().alias('date'),
+                    pl.col('open').first().alias('open'),
+                    pl.col('high').max().alias('high'),
+                    pl.col('low').min().alias('low'),
+                    pl.col('close').last().alias('close'),
+                    pl.col('vol').sum().alias('vol'),
+                    pl.col('amount').sum().alias('amount'),
+                    pl.col('pct_chg').sum().alias('pct_chg'),
+                    pl.col('change').sum().alias('change')
+                ])
+                
+                # 按日期排序
+                lazy_df = lazy_df.sort('date')
+                
+                # 将日期转换回字符串格式
+                lazy_df = lazy_df.with_columns(
+                    pl.col('date').dt.strftime("%Y-%m-%d").alias('date')
+                )
+                
+                # 执行优化的惰性计算
+                result = lazy_exec(lazy_df)
+                logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{result.height}条")
+                return result
+            else:
+                return df
         else:
             # 日线或分钟线，直接获取
             freq_map = {'1d': 'daily', '1m': 'minute'}
@@ -788,7 +857,7 @@ class DataManager(IDataProvider, IDataProcessor):
     def _convert_to_period(self, df: pl.DataFrame, frequency: str) -> pl.DataFrame:
         """
         将日线数据转换为周线或月线数据
-        使用 Polars Lazy API 优化性能
+        使用 Polars Lazy API 深度优化性能
         
         Args:
             df: 日线数据
@@ -801,6 +870,8 @@ class DataManager(IDataProvider, IDataProcessor):
             return df
         
         try:
+            from src.utils.lazy_optimizer import lazy_exec
+            
             # 使用 Lazy API 进行数据处理
             lazy_df = df.lazy()
             
@@ -853,11 +924,8 @@ class DataManager(IDataProvider, IDataProcessor):
                 pl.col('date').dt.strftime("%Y-%m-%d").alias('date')
             )
             
-            # 执行计算
-            result = lazy_df.collect()
-            
-            # 内存优化：转换数据类型
-            result = MemoryOptimizer.optimize_dataframe(result)
+            # 执行优化的惰性计算
+            result = lazy_exec(lazy_df)
             
             logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{result.height}条")
             return result
@@ -1018,15 +1086,15 @@ class DataManager(IDataProvider, IDataProcessor):
             logger.exception(f"获取指数基本信息失败: {e}")
             return pl.DataFrame()
     
-    def preprocess_data(self, data: pl.DataFrame) -> pl.DataFrame:
+    def preprocess_data(self, data: Union[pl.DataFrame, pl.LazyFrame]) -> Union[pl.DataFrame, pl.LazyFrame]:
         """
         预处理数据
         
         Args:
-            data: 原始数据（Polars DataFrame）
+            data: 原始数据（Polars DataFrame或LazyFrame）
         
         Returns:
-            pl.DataFrame: 预处理后的数据
+            Union[pl.DataFrame, pl.LazyFrame]: 预处理后的数据
         """
         # 确保数据包含必要的列
         required_columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount']
@@ -1044,45 +1112,53 @@ class DataManager(IDataProvider, IDataProcessor):
         
         return data
     
-    def sample_data(self, data: pl.DataFrame, target_points: int = 1000, strategy: str = 'adaptive') -> pl.DataFrame:
+    def sample_data(self, data: Union[pl.DataFrame, pl.LazyFrame], target_points: int = 1000, strategy: str = 'adaptive') -> Union[pl.DataFrame, pl.LazyFrame]:
         """
         采样数据，减少数据量
         
         Args:
-            data: 原始数据（Polars DataFrame）
+            data: 原始数据（Polars DataFrame或LazyFrame）
             target_points: 目标采样点数
             strategy: 采样策略，可选值：'uniform'（均匀采样）、'adaptive'（自适应采样）
         
         Returns:
-            pl.DataFrame: 采样后的数据
+            Union[pl.DataFrame, pl.LazyFrame]: 采样后的数据
         """
-        if len(data) <= target_points:
-            return data
+        # 检查是否为LazyFrame
+        is_lazy = isinstance(data, pl.LazyFrame)
         
-        if strategy == 'uniform':
-            # 均匀采样
-            step = len(data) // target_points
-            return data[::step]
-        elif strategy == 'adaptive':
-            # 自适应采样 - 这里使用简单的均匀采样作为默认实现
-            # 实际自适应采样可以根据数据波动率进行调整
-            step = len(data) // target_points
-            return data[::step]
+        if is_lazy:
+            # 对于LazyFrame，使用nth_sample进行均匀采样
+            return data.nth_sample(target_points)
         else:
-            logger.warning(f"不支持的采样策略: {strategy}，使用默认均匀采样")
-            step = len(data) // target_points
-            return data[::step]
+            # 对于DataFrame
+            if len(data) <= target_points:
+                return data
+            
+            if strategy == 'uniform':
+                # 均匀采样
+                step = len(data) // target_points
+                return data[::step]
+            elif strategy == 'adaptive':
+                # 自适应采样 - 这里使用简单的均匀采样作为默认实现
+                # 实际自适应采样可以根据数据波动率进行调整
+                step = len(data) // target_points
+                return data[::step]
+            else:
+                logger.warning(f"不支持的采样策略: {strategy}，使用默认均匀采样")
+                step = len(data) // target_points
+                return data[::step]
     
-    def convert_data_type(self, data: pl.DataFrame, target_type: str = 'float32') -> pl.DataFrame:
+    def convert_data_type(self, data: Union[pl.DataFrame, pl.LazyFrame], target_type: str = 'float32') -> Union[pl.DataFrame, pl.LazyFrame]:
         """
         转换数据类型
         
         Args:
-            data: 原始数据（Polars DataFrame）
+            data: 原始数据（Polars DataFrame或LazyFrame）
             target_type: 目标数据类型，默认：float32
         
         Returns:
-            pl.DataFrame: 转换后的数据
+            Union[pl.DataFrame, pl.LazyFrame]: 转换后的数据
         """
         # 转换数值列的数据类型
         numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
@@ -1096,15 +1172,15 @@ class DataManager(IDataProvider, IDataProcessor):
         
         return data
     
-    def clean_data(self, data: pl.DataFrame) -> pl.DataFrame:
+    def clean_data(self, data: Union[pl.DataFrame, pl.LazyFrame]) -> Union[pl.DataFrame, pl.LazyFrame]:
         """
         清洗数据，处理缺失值、异常值等
         
         Args:
-            data: 原始数据（Polars DataFrame）
+            data: 原始数据（Polars DataFrame或LazyFrame）
         
         Returns:
-            pl.DataFrame: 清洗后的数据
+            Union[pl.DataFrame, pl.LazyFrame]: 清洗后的数据
         """
         # 去除包含空值的行
         data = data.drop_nulls()

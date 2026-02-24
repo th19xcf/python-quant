@@ -611,6 +611,8 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含所有计算指标的DataFrame或LazyFrame
     """
+    from src.utils.lazy_optimizer import optimize_lazy_frame, execute_optimized_pipeline
+    
     # 默认计算所有指标
     if indicator_types is None:
         indicator_types = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'boll', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'abi', 'adl', 'adr', 'obos']
@@ -663,15 +665,17 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     # 清理临时列
     lazy_df = cleanup_temp_columns(lazy_df, indicator_types, indicator_params)
     
+    # 优化查询计划
+    lazy_df = optimize_lazy_frame(lazy_df)
+    
     # 执行计算
     if isinstance(df, pl.LazyFrame):
         return lazy_df
     else:
-            result = lazy_df.collect()
-            # 内存优化：确保指标结果使用Float32，并启用稀疏数据优化
-            optimized_result = MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
-            MemoryOptimizer.print_memory_stats(optimized_result, f"指标计算结果优化后")
-            return optimized_result
+        # 执行优化的惰性计算
+        result = execute_optimized_pipeline(lazy_df)
+        MemoryOptimizer.print_memory_stats(result, f"指标计算结果优化后")
+        return result
 
 
 def generate_cache_key(data_hash, indicator_type, *args, **kwargs):

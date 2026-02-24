@@ -44,25 +44,33 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         初始化技术分析器
         
         Args:
-            data: 股票数据，可以是Polars DataFrame或Pandas DataFrame
+            data: 股票数据，可以是Polars DataFrame、LazyFrame或Pandas DataFrame
             plugin_manager: 插件管理器实例，用于加载和使用指标插件
         """
-        # 只保存Polars DataFrame作为主要数据结构
+        # 保存Polars DataFrame或LazyFrame作为主要数据结构
         self.pl_df = None
+        self.is_lazy = False
         
         # 按需转换并缓存Pandas DataFrame
         self._pandas_cache = None
         self._pandas_cache_hash = None
         
-        if hasattr(data, 'to_pandas'):
+        if hasattr(data, 'collect'):
+            # 输入是Polars LazyFrame
+            self.pl_df = data
+            self.is_lazy = True
+        elif hasattr(data, 'to_pandas'):
             # 输入是Polars DataFrame
             self.pl_df = data
+            self.is_lazy = False
         elif isinstance(data, pd.DataFrame):
             # 输入是Pandas DataFrame，转换为Polars
             self.pl_df = pl.from_pandas(data)
+            self.is_lazy = False
         else:
             # 输入是其他格式，转换为Polars
             self.pl_df = pl.DataFrame(data)
+            self.is_lazy = False
         
         # 使用Polars进行数据预处理
         self._preprocess_data_polars()
@@ -153,26 +161,35 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             int: 唯一的数据哈希值
         """
         df = self.pl_df
-        row_count = df.height
         
-        if row_count == 0:
-            return 0
-        
-        key_cols = ['open', 'high', 'low', 'close', 'volume']
-        
-        hash_components = [row_count]
-        
-        first_row = df.slice(0, 1).select(key_cols)
-        hash_components.append(hash(tuple(first_row.to_numpy().flatten())))
-        
-        last_row = df.slice(-1, 1).select(key_cols)
-        hash_components.append(hash(tuple(last_row.to_numpy().flatten())))
-        
-        for col in key_cols:
-            col_sum = df.select(pl.col(col).sum()).item()
-            hash_components.append(hash(col_sum))
-        
-        return hash(tuple(hash_components))
+        if self.is_lazy:
+            # 对于LazyFrame，使用列名和数据类型生成哈希
+            # 这是一个简化的实现，实际应用中可能需要更复杂的哈希生成方法
+            schema = df.schema
+            hash_components = [str(schema)]
+            return hash(tuple(hash_components))
+        else:
+            # 对于DataFrame，使用原始方法
+            row_count = df.height
+            
+            if row_count == 0:
+                return 0
+            
+            key_cols = ['open', 'high', 'low', 'close', 'volume']
+            
+            hash_components = [row_count]
+            
+            first_row = df.slice(0, 1).select(key_cols)
+            hash_components.append(hash(tuple(first_row.to_numpy().flatten())))
+            
+            last_row = df.slice(-1, 1).select(key_cols)
+            hash_components.append(hash(tuple(last_row.to_numpy().flatten())))
+            
+            for col in key_cols:
+                col_sum = df.select(pl.col(col).sum()).item()
+                hash_components.append(hash(col_sum))
+            
+            return hash(tuple(hash_components))
     
     def _preprocess_data_polars(self):
         """
@@ -181,7 +198,13 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         - 转换为数值类型
         - 处理缺失值
         """
-        self.pl_df = preprocess_data_polars(self.pl_df)
+        if self.is_lazy:
+            # 对于LazyFrame，我们不检查列是否存在，避免触发计算
+            # 列检查会在实际执行时由Polars自动处理
+            pass
+        else:
+            # 对于DataFrame，使用常规预处理
+            self.pl_df = preprocess_data_polars(self.pl_df)
     
     def _generate_cache_key(self, indicator_type, *args, **kwargs):
         """
@@ -240,17 +263,28 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             if cached_result is not None:
                 # 缓存命中，使用缓存结果
                 logger.info(f"{indicator_type}缓存命中，避免重复计算")
-                # 合并缓存结果到主DataFrame
-                self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
+                # 合并缓存结果到主DataFrame或LazyFrame
+                if self.is_lazy:
+                    self.pl_df = self.pl_df.join(cached_result.lazy(), on=['date'], how='left')
+                else:
+                    self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
             else:
                 # 缓存未命中，执行计算
                 # 调用具体的计算函数
                 self.pl_df = calc_func(self.pl_df, windows_to_calculate)
                 
+                # 检查返回类型，更新is_lazy状态
+                if hasattr(self.pl_df, 'collect'):
+                    self.is_lazy = True
+                else:
+                    self.is_lazy = False
+                
                 # 将计算结果存入缓存
                 try:
                     params = {'windows': windows_to_calculate}
-                    global_indicator_cache.set(self.pl_df, self.pl_df, indicator_type, **params)
+                    # 如果是LazyFrame，先执行计算再缓存
+                    cache_data = self.pl_df.collect() if self.is_lazy else self.pl_df
+                    global_indicator_cache.set(cache_data, cache_data, indicator_type, **params)
                     logger.debug(f"{indicator_type}计算结果已缓存")
                 except Exception as e:
                     logger.debug(f"缓存{indicator_type}结果失败: {e}")
@@ -287,16 +321,27 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             if cached_result is not None:
                 # 缓存命中，使用缓存结果
                 logger.info(f"{indicator_type}缓存命中，避免重复计算")
-                # 合并缓存结果到主DataFrame
-                self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
+                # 合并缓存结果到主DataFrame或LazyFrame
+                if self.is_lazy:
+                    self.pl_df = self.pl_df.join(cached_result.lazy(), on=['date'], how='left')
+                else:
+                    self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
             else:
                 # 缓存未命中，执行计算
                 # 调用具体的计算函数
                 self.pl_df = calc_func(self.pl_df, **kwargs)
                 
+                # 检查返回类型，更新is_lazy状态
+                if hasattr(self.pl_df, 'collect'):
+                    self.is_lazy = True
+                else:
+                    self.is_lazy = False
+                
                 # 将计算结果存入缓存
                 try:
-                    global_indicator_cache.set(self.pl_df, self.pl_df, indicator_type, **kwargs)
+                    # 如果是LazyFrame，先执行计算再缓存
+                    cache_data = self.pl_df.collect() if self.is_lazy else self.pl_df
+                    global_indicator_cache.set(cache_data, cache_data, indicator_type, **kwargs)
                     logger.debug(f"{indicator_type}计算结果已缓存")
                 except Exception as e:
                     logger.debug(f"缓存{indicator_type}结果失败: {e}")
@@ -317,6 +362,10 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             pd.DataFrame: 转换后的Pandas DataFrame
         """
         if self._pandas_cache is None or self._data_hash != self._pandas_cache_hash:
+            # 如果是LazyFrame，先执行计算
+            if self.is_lazy:
+                self.pl_df = self.pl_df.collect()
+                self.is_lazy = False
             self._pandas_cache = self.pl_df.to_pandas()
             self._pandas_cache_hash = self._data_hash
         return self._pandas_cache
@@ -419,11 +468,20 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             sample_params: 采样参数，字典类型，包含target_points和strategy
             
         Returns:
-            pd.DataFrame或pl.DataFrame: 包含所有指标的数据
+            pd.DataFrame、pl.DataFrame或pl.LazyFrame: 包含所有指标的数据
         """
         if return_polars:
-            data = self.pl_df
+            if self.is_lazy:
+                # 保持惰性计算
+                data = self.pl_df
+            else:
+                data = self.pl_df
         else:
+            # 对于非Polars返回，需要执行惰性计算
+            if self.is_lazy:
+                # 执行惰性计算
+                self.pl_df = self.pl_df.collect()
+                self.is_lazy = False
             data = self._ensure_pandas_df()
         
         if sample:
