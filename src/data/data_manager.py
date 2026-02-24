@@ -681,7 +681,10 @@ class DataManager(IDataProvider, IDataProcessor):
                             )
                             
                             # 内存优化：转换数据类型
-                            return MemoryOptimizer.optimize_dataframe(df)
+                            optimized_df = MemoryOptimizer.optimize_dataframe(df, enable_sparse=True)
+                            # 打印内存优化效果
+                            MemoryOptimizer.print_memory_stats(optimized_df, f"{type_name}{ts_code} 优化后")
+                            return optimized_df
                 except (OSError, RuntimeError, ValueError) as db_e:
                     logger.warning(f"从数据库获取{type_name}数据失败: {db_e}")
             
@@ -718,7 +721,9 @@ class DataManager(IDataProvider, IDataProcessor):
                         # 统一处理结果
                         processed_result = process_result(result)
                         if processed_result is not None:
-                            return processed_result
+                            # 内存优化
+                            optimized_result = MemoryOptimizer.optimize_dataframe(processed_result, enable_sparse=True)
+                            return optimized_result
                     except (OSError, RuntimeError, ValueError) as source_e:
                         logger.warning(f"从{source_name}获取{type_name}数据失败: {source_e}")
             
@@ -733,7 +738,9 @@ class DataManager(IDataProvider, IDataProcessor):
                     # 统一处理结果
                     processed_result = process_result(result)
                     if processed_result is not None:
-                        return processed_result
+                        # 内存优化
+                        optimized_result = MemoryOptimizer.optimize_dataframe(processed_result, enable_sparse=True)
+                        return optimized_result
                 except (OSError, RuntimeError, ValueError) as plugin_e:
                     logger.warning(f"从插件数据源{plugin_name}获取{type_name}数据失败: {plugin_e}")
             

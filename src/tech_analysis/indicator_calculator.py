@@ -80,20 +80,19 @@ def preprocess_data_polars(df):
         if col not in df.columns:
             raise ValueError(f"数据中没有{col}列")
     
-    # 确定需要转换的数值列（包括原始价格和复权价格）
-    numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount',
-                       'qfq_open', 'qfq_high', 'qfq_low', 'qfq_close',
-                       'hfq_open', 'hfq_high', 'hfq_low', 'hfq_close']
-    columns_to_cast = [col for col in numeric_columns if col in df.columns]
+    # 直接使用MemoryOptimizer进行全面的内存优化
+    optimized_df = MemoryOptimizer.optimize_dataframe(df, enable_sparse=True)
     
-    if not columns_to_cast:
-        return df
+    # 处理缺失值
+    # 只填充数值列的缺失值
+    numeric_cols = [col for col in optimized_df.columns if optimized_df[col].dtype in [pl.Float32, pl.Int32, pl.Int16, pl.Int8]]
+    if numeric_cols:
+        optimized_df = optimized_df.with_columns(
+            [pl.col(col).fill_nan(0.0) for col in numeric_cols]
+        )
     
-    # 将数值列转换为高效数值类型（float32替代float64），减少内存使用
-    # 仅转换存在的列，避免不必要的转换
-    return df.with_columns(
-        [pl.col(col).cast(pl.Float32, strict=False).fill_nan(0.0) for col in columns_to_cast]
-    )
+    MemoryOptimizer.print_memory_stats(optimized_df, "预处理后数据")
+    return optimized_df
 
 
 def sample_data_polars(df, target_points=1000, strategy='adaptive'):
@@ -668,9 +667,11 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     if isinstance(df, pl.LazyFrame):
         return lazy_df
     else:
-        result = lazy_df.collect()
-        # 内存优化：确保指标结果使用Float32
-        return MemoryOptimizer.optimize_dataframe(result)
+            result = lazy_df.collect()
+            # 内存优化：确保指标结果使用Float32，并启用稀疏数据优化
+            optimized_result = MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
+            MemoryOptimizer.print_memory_stats(optimized_result, f"指标计算结果优化后")
+            return optimized_result
 
 
 def generate_cache_key(data_hash, indicator_type, *args, **kwargs):
