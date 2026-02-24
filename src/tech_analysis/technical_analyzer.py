@@ -29,6 +29,8 @@ from .indicator_calculator import (
     generate_cache_key
 )
 from .indicator_manager import global_indicator_manager
+from .indicator_cache import global_indicator_cache
+from .incremental_calculator import global_incremental_calculator
 
 
 class TechnicalAnalyzer(ITechnicalAnalyzer):
@@ -89,7 +91,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             'asi': set(),  # 已计算的ASI窗口
             'emv': set(),  # 已计算的EMV窗口
             'mcst': set(),  # 已计算的MCST窗口
-            'plugin': set()  # 已计算的插件指标
+            'plugin': {}  # 已计算的插件指标，键为插件名称，值为已计算参数的集合
         }
         
         # 添加缓存机制，避免重复计算
@@ -226,8 +228,32 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         windows_to_calculate = [w for w in windows if w not in self.calculated_indicators[indicator_type]]
         
         if windows_to_calculate:
-            # 调用具体的计算函数
-            self.pl_df = calc_func(self.pl_df, windows_to_calculate)
+            # 尝试从全局缓存获取结果
+            cached_result = None
+            try:
+                # 生成缓存键
+                params = {'windows': windows_to_calculate}
+                cached_result = global_indicator_cache.get(self.pl_df, indicator_type, **params)
+            except Exception as e:
+                logger.debug(f"从缓存获取{indicator_type}失败: {e}")
+            
+            if cached_result is not None:
+                # 缓存命中，使用缓存结果
+                logger.info(f"{indicator_type}缓存命中，避免重复计算")
+                # 合并缓存结果到主DataFrame
+                self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
+            else:
+                # 缓存未命中，执行计算
+                # 调用具体的计算函数
+                self.pl_df = calc_func(self.pl_df, windows_to_calculate)
+                
+                # 将计算结果存入缓存
+                try:
+                    params = {'windows': windows_to_calculate}
+                    global_indicator_cache.set(self.pl_df, self.pl_df, indicator_type, **params)
+                    logger.debug(f"{indicator_type}计算结果已缓存")
+                except Exception as e:
+                    logger.debug(f"缓存{indicator_type}结果失败: {e}")
             
             # 更新计算状态
             self.calculated_indicators[indicator_type].update(windows_to_calculate)
@@ -251,8 +277,29 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         """
         # 检查是否已经计算过该指标
         if not self.calculated_indicators[indicator_type]:
-            # 调用具体的计算函数
-            self.pl_df = calc_func(self.pl_df, **kwargs)
+            # 尝试从全局缓存获取结果
+            cached_result = None
+            try:
+                cached_result = global_indicator_cache.get(self.pl_df, indicator_type, **kwargs)
+            except Exception as e:
+                logger.debug(f"从缓存获取{indicator_type}失败: {e}")
+            
+            if cached_result is not None:
+                # 缓存命中，使用缓存结果
+                logger.info(f"{indicator_type}缓存命中，避免重复计算")
+                # 合并缓存结果到主DataFrame
+                self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
+            else:
+                # 缓存未命中，执行计算
+                # 调用具体的计算函数
+                self.pl_df = calc_func(self.pl_df, **kwargs)
+                
+                # 将计算结果存入缓存
+                try:
+                    global_indicator_cache.set(self.pl_df, self.pl_df, indicator_type, **kwargs)
+                    logger.debug(f"{indicator_type}计算结果已缓存")
+                except Exception as e:
+                    logger.debug(f"缓存{indicator_type}结果失败: {e}")
             
             # 更新计算状态
             self.calculated_indicators[indicator_type] = True
@@ -400,7 +447,20 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         """
         # 检查是否为插件指标
         if self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():
-            return indicator_type in self.calculated_indicators['plugin']
+            # 生成参数哈希，处理不可哈希类型
+            def make_hashable(obj):
+                if isinstance(obj, list):
+                    return tuple(obj)
+                elif isinstance(obj, dict):
+                    return tuple(sorted((k, make_hashable(v)) for k, v in obj.items()))
+                elif isinstance(obj, set):
+                    return frozenset(obj)
+                return obj
+            
+            # 生成参数哈希
+            hashable_kwargs = {k: make_hashable(v) for k, v in kwargs.items()}
+            params_hash = hash(tuple(sorted(hashable_kwargs.items())))
+            return indicator_type in self.calculated_indicators['plugin'] and params_hash in self.calculated_indicators['plugin'][indicator_type]
         
         # 检查指标类型是否存在
         if indicator_type not in self.calculated_indicators:
@@ -448,7 +508,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 'asi': set(),
                 'emv': set(),
                 'mcst': set(),
-                'plugin': set()
+                'plugin': {}
             }
             # 重置缓存
             self._calculate_cache.clear()
@@ -467,10 +527,10 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         def _reset_plugin_indicator(plugin_name):
             """重置特定插件指标"""
             if plugin_name in self.calculated_indicators['plugin']:
-                self.calculated_indicators['plugin'].remove(plugin_name)
+                del self.calculated_indicators['plugin'][plugin_name]
                 # 从缓存中删除
-                cache_key = self._generate_cache_key(plugin_name)
-                self._calculate_cache.pop(cache_key, None)
+                # 注意：这里无法直接删除全局缓存中的条目，因为缓存键包含数据哈希
+                # 但我们可以清除本地计算缓存
                 self._clear_pandas_cache()
         
         def _reset_window_based_indicator(ind_type, win):
@@ -571,6 +631,77 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         """
         return self.calculated_indicators.copy()
     
+    def invalidate_plugin_cache(self, plugin_name: Optional[str] = None):
+        """
+        使插件指标缓存失效
+        
+        Args:
+            plugin_name: 可选，指定要失效的插件名称，None表示失效所有插件指标
+        """
+        try:
+            if plugin_name:
+                # 使指定插件的缓存失效
+                global_indicator_cache.clear(plugin_name)
+                logger.info(f"插件{plugin_name}的缓存已失效")
+            else:
+                # 使所有插件指标的缓存失效
+                # 这里我们需要获取所有插件名称并逐个清除
+                if self.plugin_manager:
+                    plugin_names = self.plugin_manager.get_available_indicator_plugins().keys()
+                    for name in plugin_names:
+                        global_indicator_cache.clear(name)
+                    logger.info(f"所有插件指标的缓存已失效")
+        except Exception as e:
+            logger.error(f"使插件缓存失效失败: {e}")
+    
+    def get_plugin_cache_stats(self, plugin_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        获取插件指标的缓存统计信息
+        
+        Args:
+            plugin_name: 可选，指定要查看的插件名称，None表示查看所有插件指标
+        
+        Returns:
+            Dict[str, Any]: 缓存统计信息
+        """
+        try:
+            cache_info = global_indicator_cache.get_cache_info()
+            
+            # 过滤出插件指标的缓存条目
+            plugin_entries = []
+            for entry in cache_info['entries']:
+                key = entry['key']
+                # 检查是否是插件指标缓存
+                if self.plugin_manager:
+                    plugin_names = self.plugin_manager.get_available_indicator_plugins().keys()
+                    for p_name in plugin_names:
+                        if key.startswith(f"{p_name}_"):
+                            if plugin_name is None or p_name == plugin_name:
+                                plugin_entries.append(entry)
+                            break
+            
+            # 计算插件指标的缓存统计
+            plugin_stats = {
+                'total_entries': len(plugin_entries),
+                'total_hits': sum(entry['hit_count'] for entry in plugin_entries),
+                'total_size': sum(entry['size'] for entry in plugin_entries),
+                'entries': plugin_entries
+            }
+            
+            return plugin_stats
+        except Exception as e:
+            logger.error(f"获取插件缓存统计失败: {e}")
+            return {'error': str(e)}
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        获取所有指标的缓存统计信息
+        
+        Returns:
+            Dict[str, Any]: 详细的缓存统计信息
+        """
+        return global_indicator_cache.get_cache_info()
+    
     def calculate_ma(self, windows=[5, 10, 20, 60]):
         """
         计算移动平均线
@@ -656,8 +787,86 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         plugin = indicator_plugins[plugin_name]
         
         # 检查插件指标是否已经计算
-        if plugin_name in self.calculated_indicators['plugin']:
+        # 生成参数哈希，处理不可哈希类型
+        def make_hashable(obj):
+            if isinstance(obj, list):
+                return tuple(obj)
+            elif isinstance(obj, dict):
+                return tuple(sorted((k, make_hashable(v)) for k, v in obj.items()))
+            elif isinstance(obj, set):
+                return frozenset(obj)
+            return obj
+        
+        # 生成参数哈希
+        hashable_kwargs = {k: make_hashable(v) for k, v in kwargs.items()}
+        params_hash = hash(tuple(sorted(hashable_kwargs.items())))
+        
+        if plugin_name in self.calculated_indicators['plugin'] and params_hash in self.calculated_indicators['plugin'][plugin_name]:
             return self._ensure_pandas_df()
+        
+        # 尝试从全局缓存获取结果
+        cached_result = None
+        try:
+            cached_result = global_indicator_cache.get(self.pl_df, plugin_name, **kwargs)
+        except Exception as e:
+            logger.debug(f"从缓存获取{plugin_name}失败: {e}")
+        
+        if cached_result is not None:
+                # 缓存命中，使用缓存结果
+                logger.info(f"插件指标{plugin_name}缓存命中，避免重复计算")
+                # 合并缓存结果到主DataFrame
+                new_columns = [col for col in cached_result.columns if col not in self.pl_df.columns]
+                if new_columns:
+                    self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
+                
+                # 更新计算状态和清除缓存
+                if plugin_name not in self.calculated_indicators['plugin']:
+                    self.calculated_indicators['plugin'][plugin_name] = set()
+                self.calculated_indicators['plugin'][plugin_name].add(params_hash)
+                self._clear_pandas_cache()
+                return self._ensure_pandas_df()
+        
+        # 检查是否可以使用增量计算
+        incremental_data = kwargs.get('incremental_data', None)
+        if incremental_data is not None:
+            # 检查插件是否支持增量计算
+            if hasattr(plugin, 'supports_incremental') and plugin.supports_incremental():
+                try:
+                    # 使用增量计算
+                    logger.info(f"使用增量计算插件指标{plugin_name}")
+                    if hasattr(plugin, 'incremental_calculate'):
+                        # 调用插件的增量计算方法
+                        result_df = plugin.incremental_calculate(self.pl_df, incremental_data, **kwargs)
+                    else:
+                        # 尝试使用通用增量计算（仅适用于简单指标）
+                        # 注意：这是一个降级方案，可能不适用于所有插件
+                        logger.warning(f"插件{plugin_name}支持增量计算但未实现incremental_calculate方法")
+                        # 回退到全量计算
+                        raise NotImplementedError("插件未实现incremental_calculate方法")
+                    
+                    # 合并增量计算结果
+                    self.pl_df = self.pl_df.vstack(result_df)
+                    
+                    # 将计算结果存入缓存
+                    try:
+                        # 只缓存新增的列
+                        new_columns = [col for col in result_df.columns if col not in ['date', 'open', 'high', 'low', 'close', 'volume']]
+                        if new_columns:
+                            cache_result = result_df.select(['date'] + new_columns)
+                            global_indicator_cache.set(self.pl_df, cache_result, plugin_name, **kwargs)
+                            logger.debug(f"插件指标{plugin_name}增量计算结果已缓存")
+                    except Exception as e:
+                        logger.debug(f"缓存插件指标{plugin_name}增量计算结果失败: {e}")
+                    
+                    # 更新计算状态和清除缓存
+                    if plugin_name not in self.calculated_indicators['plugin']:
+                        self.calculated_indicators['plugin'][plugin_name] = set()
+                    self.calculated_indicators['plugin'][plugin_name].add(params_hash)
+                    self._clear_pandas_cache()
+                    
+                    return self._ensure_pandas_df()
+                except Exception as e:
+                    logger.warning(f"增量计算插件指标{plugin_name}失败，使用常规计算: {e}")
         
         try:
             # 检查插件是否支持polars
@@ -673,8 +882,19 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                             *[result_pl[col].alias(col) for col in new_columns]
                         )
                     
+                    # 将计算结果存入缓存（只缓存新增的列，减少缓存大小）
+                    try:
+                        # 只缓存新增的列，减少缓存大小
+                        cache_result = result_pl.select(['date'] + new_columns)
+                        global_indicator_cache.set(self.pl_df, cache_result, plugin_name, **kwargs)
+                        logger.debug(f"插件指标{plugin_name}计算结果已缓存")
+                    except Exception as e:
+                        logger.debug(f"缓存插件指标{plugin_name}结果失败: {e}")
+                    
                     # 更新计算状态和清除缓存
-                    self.calculated_indicators['plugin'].add(plugin_name)
+                    if plugin_name not in self.calculated_indicators['plugin']:
+                        self.calculated_indicators['plugin'][plugin_name] = set()
+                    self.calculated_indicators['plugin'][plugin_name].add(params_hash)
                     self._clear_pandas_cache()
             else:
                 # 旧插件，使用pandas DataFrame
@@ -695,8 +915,19 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                             *[result_pl[col].alias(col) for col in new_columns]
                         )
                     
+                    # 将计算结果存入缓存（只缓存新增的列，减少缓存大小）
+                    try:
+                        # 只缓存新增的列，减少缓存大小
+                        cache_result = result_pl.select(['date'] + new_columns)
+                        global_indicator_cache.set(self.pl_df, cache_result, plugin_name, **kwargs)
+                        logger.debug(f"插件指标{plugin_name}计算结果已缓存")
+                    except Exception as e:
+                        logger.debug(f"缓存插件指标{plugin_name}结果失败: {e}")
+                    
                     # 更新计算状态和清除缓存
-                    self.calculated_indicators['plugin'].add(plugin_name)
+                    if plugin_name not in self.calculated_indicators['plugin']:
+                        self.calculated_indicators['plugin'][plugin_name] = set()
+                    self.calculated_indicators['plugin'][plugin_name].add(params_hash)
                     self._clear_pandas_cache()
         except (ValueError, TypeError, RuntimeError) as e:
             raise RuntimeError(f"计算插件指标{plugin_name}失败: {str(e)}")
@@ -782,7 +1013,72 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             # 调用插件指标计算方法
             return self.calculate_plugin_indicator(indicator_type, **kwargs)
         
-        # 使用指标管理器计算内置指标
+        # 尝试从全局缓存获取结果
+        cached_result = None
+        try:
+            cached_result = global_indicator_cache.get(self.pl_df, indicator_type, **kwargs)
+        except Exception as e:
+            logger.debug(f"从缓存获取{indicator_type}失败: {e}")
+        
+        if cached_result is not None:
+            # 缓存命中，使用缓存结果
+            logger.info(f"{indicator_type}缓存命中，避免重复计算")
+            # 合并缓存结果到主DataFrame
+            self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
+            
+            # 更新计算状态
+            if indicator_type in self.calculated_indicators:
+                if isinstance(self.calculated_indicators[indicator_type], set):
+                    windows = kwargs.get('windows', [14])
+                    if not isinstance(windows, list):
+                        windows = [windows]
+                    self.calculated_indicators[indicator_type].update(windows)
+                else:
+                    self.calculated_indicators[indicator_type] = True
+            
+            # 清除转换缓存
+            self._clear_pandas_cache()
+            
+            return self._ensure_pandas_df()
+        
+        # 检查是否可以使用增量计算
+        incremental_data = kwargs.get('incremental_data', None)
+        if incremental_data is not None and global_incremental_calculator.is_supported(indicator_type):
+            try:
+                # 使用增量计算
+                logger.info(f"使用增量计算{indicator_type}")
+                result_df = global_incremental_calculator.incremental_calculate(
+                    indicator_type, self.pl_df, incremental_data, **kwargs
+                )
+                
+                # 合并增量计算结果
+                self.pl_df = self.pl_df.vstack(result_df)
+                
+                # 将计算结果存入缓存
+                try:
+                    global_indicator_cache.set(self.pl_df, self.pl_df, indicator_type, **kwargs)
+                    logger.debug(f"{indicator_type}增量计算结果已缓存")
+                except Exception as e:
+                    logger.debug(f"缓存{indicator_type}增量计算结果失败: {e}")
+                
+                # 清除转换缓存
+                self._clear_pandas_cache()
+                
+                # 更新计算状态
+                if indicator_type in self.calculated_indicators:
+                    if isinstance(self.calculated_indicators[indicator_type], set):
+                        windows = kwargs.get('windows', [14])
+                        if not isinstance(windows, list):
+                            windows = [windows]
+                        self.calculated_indicators[indicator_type].update(windows)
+                    else:
+                        self.calculated_indicators[indicator_type] = True
+                
+                return self._ensure_pandas_df()
+            except Exception as e:
+                logger.warning(f"增量计算{indicator_type}失败，使用常规计算: {e}")
+        
+        # 缓存未命中且无法增量计算，使用指标管理器计算内置指标
         try:
             # 使用指标管理器计算指标
             result_df = global_indicator_manager.calculate_indicator(
@@ -791,6 +1087,13 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             
             # 更新内部DataFrame
             self.pl_df = result_df
+            
+            # 将计算结果存入缓存
+            try:
+                global_indicator_cache.set(self.pl_df, self.pl_df, indicator_type, **kwargs)
+                logger.debug(f"{indicator_type}计算结果已缓存")
+            except Exception as e:
+                logger.debug(f"缓存{indicator_type}结果失败: {e}")
             
             # 清除转换缓存
             self._clear_pandas_cache()
@@ -811,7 +1114,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
     
     def calculate_indicators_parallel(self, indicator_types, *args, **kwargs):
         """
-        计算多个指标类型，利用Polars内置并行计算能力
+        计算多个指标类型，利用多线程并行计算能力
         
         Args:
             indicator_types: 指标类型列表，如['ma', 'macd', 'rsi', 'kdj', 'vol_ma']或插件名称列表
@@ -831,22 +1134,61 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             else:
                 builtin_indicators.append(indicator_type)
         
-        # 批量计算内置指标
-        if builtin_indicators:
+        # 分离已缓存和未缓存的指标
+        cached_indicators = []
+        uncached_indicators = []
+        
+        for indicator_type in builtin_indicators:
+            try:
+                cached_result = global_indicator_cache.get(self.pl_df, indicator_type, **kwargs)
+                if cached_result is not None:
+                    cached_indicators.append(indicator_type)
+                    # 合并缓存结果到主DataFrame
+                    self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
+                    logger.info(f"{indicator_type}缓存命中，避免重复计算")
+                else:
+                    uncached_indicators.append(indicator_type)
+            except Exception as e:
+                logger.debug(f"检查{indicator_type}缓存失败: {e}")
+                uncached_indicators.append(indicator_type)
+        
+        # 更新已缓存指标的计算状态
+        for indicator_type in cached_indicators:
+            if indicator_type in self.calculated_indicators:
+                if isinstance(self.calculated_indicators[indicator_type], set):
+                    windows = kwargs.get(f'{indicator_type}_windows', kwargs.get('windows', [14]))
+                    if not isinstance(windows, list):
+                        windows = [windows]
+                    self.calculated_indicators[indicator_type].update(windows)
+                else:
+                    self.calculated_indicators[indicator_type] = True
+        
+        # 批量计算未缓存的内置指标
+        if uncached_indicators:
             try:
                 # 使用指标管理器批量计算内置指标
                 result_df = global_indicator_manager.calculate_indicators(
-                    self.pl_df, builtin_indicators, return_polars=True, **kwargs
+                    self.pl_df, uncached_indicators, return_polars=True, **kwargs
                 )
                 
                 # 更新内部DataFrame
                 self.pl_df = result_df
                 
-                # 清除转换缓存
-                self._clear_pandas_cache()
+                # 将计算结果存入缓存
+                for indicator_type in uncached_indicators:
+                    try:
+                        indicator_kwargs = {k: v for k, v in kwargs.items() if not k.endswith('_windows')}
+                        if f'{indicator_type}_windows' in kwargs:
+                            indicator_kwargs['windows'] = kwargs[f'{indicator_type}_windows']
+                        elif 'windows' in kwargs:
+                            indicator_kwargs['windows'] = kwargs['windows']
+                        global_indicator_cache.set(self.pl_df, self.pl_df, indicator_type, **indicator_kwargs)
+                        logger.debug(f"{indicator_type}计算结果已缓存")
+                    except Exception as e:
+                        logger.debug(f"缓存{indicator_type}结果失败: {e}")
                 
                 # 更新计算状态
-                for indicator_type in builtin_indicators:
+                for indicator_type in uncached_indicators:
                     if indicator_type in self.calculated_indicators:
                         if isinstance(self.calculated_indicators[indicator_type], set):
                             windows = kwargs.get(f'{indicator_type}_windows', kwargs.get('windows', [14]))
@@ -858,18 +1200,60 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             except (ValueError, TypeError, RuntimeError) as e:
                 logger.error(f"计算内置指标失败: {e}")
 
-        # 计算插件指标
-        for plugin_name in plugin_indicators:
-            try:
-                self.calculate_plugin_indicator(plugin_name, **kwargs)
-            except (ValueError, TypeError, RuntimeError) as e:
-                logger.error(f"计算插件指标{plugin_name}失败: {e}")
-        
+        # 并行计算插件指标
+        if plugin_indicators:
+            # 导入必要的模块
+            import concurrent.futures
+            import os
+            
+            # 根据CPU核心数确定并行度
+            cpu_count = os.cpu_count() or 4
+            max_workers = min(cpu_count, len(plugin_indicators))
+            
+            # 过滤掉已经计算过的插件指标
+            plugins_to_calculate = []
+            for plugin_name in plugin_indicators:
+                # 生成参数哈希
+                params_hash = hash(tuple(sorted(kwargs.items())))
+                if plugin_name not in self.calculated_indicators['plugin'] or params_hash not in self.calculated_indicators['plugin'][plugin_name]:
+                    plugins_to_calculate.append(plugin_name)
+            
+            if plugins_to_calculate:
+                # 使用线程池并行计算插件指标
+                results = []
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    # 提交所有插件指标计算任务
+                    future_to_plugin = {}
+                    for plugin_name in plugins_to_calculate:
+                        future = executor.submit(
+                            self.calculate_plugin_indicator, 
+                            plugin_name, 
+                            **kwargs
+                        )
+                        future_to_plugin[future] = plugin_name
+                    
+                    # 收集计算结果
+                    for future in concurrent.futures.as_completed(future_to_plugin):
+                        plugin_name = future_to_plugin[future]
+                        try:
+                            future.result()
+                            results.append(plugin_name)
+                        except Exception as e:
+                            logger.error(f"计算插件指标{plugin_name}失败: {e}")
+                
+                logger.info(f"并行计算完成，成功计算{len(results)}个插件指标")
+            else:
+                logger.info("所有插件指标已计算，无需重复计算")
+
+        # 清除转换缓存
+        self._clear_pandas_cache()
+
         return self._ensure_pandas_df()
     
     def calculate_plugin_indicators_parallel(self, plugin_names, *args, **kwargs):
         """
-        计算多个插件指标，利用Polars内置并行计算能力
+        计算多个插件指标，利用多线程并行计算能力
         
         Args:
             plugin_names: 插件名称列表
@@ -882,13 +1266,55 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         if not plugin_names:
             plugin_names = self.get_available_plugin_indicators()
         
-        # 直接串行调用，利用Polars内部并行计算
+        # 检查是否有可用的插件指标
+        if not plugin_names:
+            return self._ensure_pandas_df()
+        
+        # 导入必要的模块
+        import concurrent.futures
+        import os
+        
+        # 根据CPU核心数确定并行度
+        cpu_count = os.cpu_count() or 4
+        max_workers = min(cpu_count, len(plugin_names))
+        
+        # 过滤掉已经计算过的插件指标
+        plugins_to_calculate = []
         for plugin_name in plugin_names:
-            try:
-                self.calculate_plugin_indicator(plugin_name, *args, **kwargs)
-            except (ValueError, TypeError, RuntimeError) as e:
-                logger.error(f"计算插件指标{plugin_name}失败: {e}")
-
+            # 生成参数哈希
+            params_hash = hash(tuple(sorted(kwargs.items())))
+            if plugin_name not in self.calculated_indicators['plugin'] or params_hash not in self.calculated_indicators['plugin'][plugin_name]:
+                plugins_to_calculate.append(plugin_name)
+        
+        if plugins_to_calculate:
+            # 使用线程池并行计算插件指标
+            results = []
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 提交所有插件指标计算任务
+                future_to_plugin = {}
+                for plugin_name in plugins_to_calculate:
+                    future = executor.submit(
+                        self.calculate_plugin_indicator, 
+                        plugin_name, 
+                        *args, 
+                        **kwargs
+                    )
+                    future_to_plugin[future] = plugin_name
+                
+                # 收集计算结果
+                for future in concurrent.futures.as_completed(future_to_plugin):
+                    plugin_name = future_to_plugin[future]
+                    try:
+                        future.result()
+                        results.append(plugin_name)
+                    except Exception as e:
+                        logger.error(f"计算插件指标{plugin_name}失败: {e}")
+            
+            logger.info(f"并行计算完成，成功计算{len(results)}个插件指标")
+        else:
+            logger.info("所有插件指标已计算，无需重复计算")
+        
         return self._ensure_pandas_df()
     
     def calculate_all_indicators(self, data: Optional[Union[pl.DataFrame, pd.DataFrame]] = None, indicator_types: Optional[List[str]] = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
@@ -932,6 +1358,14 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
 
             # 重新计算数据哈希
             self._data_hash = self._calculate_polars_data_hash()
+            
+            # 使相关缓存失效
+            try:
+                # 使所有指标缓存失效
+                global_indicator_cache.invalidate(self.pl_df)
+                logger.debug("数据更新，所有指标缓存已失效")
+            except Exception as e:
+                logger.debug(f"缓存失效失败: {e}")
         
         # 1. 确定要计算的指标类型
         if indicator_types is None:
