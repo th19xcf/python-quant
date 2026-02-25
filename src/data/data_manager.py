@@ -481,6 +481,7 @@ class DataManager(IDataProvider, IDataProcessor):
         """
         try:
             import polars as pl
+            import time
             from concurrent.futures import ThreadPoolExecutor, as_completed
             import concurrent.futures
             
@@ -578,6 +579,9 @@ class DataManager(IDataProvider, IDataProcessor):
                 Returns:
                     tuple: (成功标志, 数据或错误信息)
                 """
+                start_time = time.time()
+                success = False
+                
                 try:
                     logger.info(f"线程获取: 从{source_name}获取{type_name}{ts_code}数据")
                     result = getattr(handler, method_name)(**kwargs)
@@ -585,12 +589,18 @@ class DataManager(IDataProvider, IDataProcessor):
                     if processed_result is not None:
                         # 内存优化
                         optimized_result = MemoryOptimizer.optimize_dataframe(processed_result, enable_sparse=True)
+                        success = True
                         return True, optimized_result
                     else:
                         return False, f"{source_name}返回空数据"
                 except (OSError, RuntimeError, ValueError) as e:
                     logger.warning(f"从{source_name}获取{type_name}数据失败: {e}")
                     return False, str(e)
+                finally:
+                    # 记录监控数据
+                    response_time = time.time() - start_time
+                    from src.utils.monitoring import global_monitoring_system
+                    global_monitoring_system.record_data_source_request(source_name, response_time, success)
             
             # 优先从数据库获取数据
             if self.db_manager and self.db_manager.is_connected():
@@ -756,8 +766,17 @@ class DataManager(IDataProvider, IDataProcessor):
             
             if self.baostock_handler:
                 method_name = type_map['handler_methods']['baostock']
+                # 转换股票代码格式：600000.SH -> sh.600000
+                if '.' in ts_code:
+                    parts = ts_code.split('.')
+                    if len(parts) == 2:
+                        baostock_code = f"{parts[1].lower()}.{parts[0]}"
+                    else:
+                        baostock_code = ts_code
+                else:
+                    baostock_code = ts_code
                 data_sources.append(('baostock', self.baostock_handler, method_name, {
-                    'ts_codes': [ts_code], 'start_date': start_date, 'end_date': end_date
+                    'ts_codes': [baostock_code], 'start_date': start_date, 'end_date': end_date
                 }))
             
             # 插件数据源

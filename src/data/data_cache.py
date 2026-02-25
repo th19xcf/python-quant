@@ -90,7 +90,7 @@ class DataCache:
             **params: 其他参数，如frequency、adjustment_type等
         
         Returns:
-            str: 唯一的缓存键
+            str: 唯一的缓存键，格式为 "data_type:code:hash"
         """
         # 组合所有参数生成缓存键
         key_parts = [
@@ -106,7 +106,9 @@ class DataCache:
         
         # 生成哈希键
         key_str = "_".join(key_parts)
-        cache_key = hashlib.md5(key_str.encode()).hexdigest()
+        hash_part = hashlib.md5(key_str.encode()).hexdigest()
+        # 保留数据类型和代码信息，便于后续失效操作
+        cache_key = f"{data_type}:{code}:{hash_part}"
         return cache_key
     
     def get(self, data_type: str, code: str, start_date: str, end_date: str, **params) -> Optional[pl.DataFrame]:
@@ -209,16 +211,22 @@ class DataCache:
             keys_to_remove = []
             for key in self._cache.keys():
                 # 从缓存键中提取数据类型信息
-                # 由于缓存键是哈希值，我们需要通过其他方式识别
-                # 这里我们遍历所有缓存条目，检查其元数据
-                # 注意：这种方式效率较低，后续可以考虑优化
-                pass
+                # 缓存键格式: data_type:code:hash
+                parts = key.split(':', 1)
+                if len(parts) > 0:
+                    cache_data_type = parts[0]
+                    if cache_data_type == data_type:
+                        keys_to_remove.append(key)
             
-            # 简化处理：清除所有缓存
-            evicted = len(self._cache)
-            self._cache.clear()
-            self._evictions += evicted
-            logger.info(f"清除所有{evicted}个数据缓存条目")
+            # 清除相关缓存
+            removed_count = 0
+            for key in keys_to_remove:
+                if key in self._cache:
+                    del self._cache[key]
+                    removed_count += 1
+            
+            self._evictions += removed_count
+            logger.info(f"清除{data_type}类型的{removed_count}个数据缓存条目")
         else:
             # 清除所有缓存
             evicted = len(self._cache)
@@ -237,14 +245,14 @@ class DataCache:
         # 遍历所有缓存条目，找到与指定数据类型和代码相关的缓存
         keys_to_remove = []
         for key in self._cache.keys():
-            # 生成临时缓存键，用于匹配
-            # 我们需要检查所有可能的日期范围和参数组合
-            # 由于缓存键是哈希值，我们需要通过其他方式识别
-            # 这里我们使用一种启发式方法：重新生成可能的缓存键
-            # 注意：这种方法可能会有遗漏，后续可以考虑使用更结构化的缓存键
-            # 为了简化实现，我们这里清除所有该数据类型的缓存
-            # 这是一个保守的策略，但确保不会遗漏
-            keys_to_remove.append(key)
+            # 从缓存键中提取数据类型和代码信息
+            # 缓存键格式: data_type:code:hash
+            parts = key.split(':', 2)
+            if len(parts) >= 2:
+                cache_data_type = parts[0]
+                cache_code = parts[1]
+                if cache_data_type == data_type and cache_code == code:
+                    keys_to_remove.append(key)
         
         # 清除相关缓存
         removed_count = 0
@@ -266,7 +274,13 @@ class DataCache:
         # 遍历所有缓存条目，找到与指定数据类型相关的缓存
         keys_to_remove = []
         for key in self._cache.keys():
-            keys_to_remove.append(key)
+            # 从缓存键中提取数据类型信息
+            # 缓存键格式: data_type:code:hash
+            parts = key.split(':', 1)
+            if len(parts) > 0:
+                cache_data_type = parts[0]
+                if cache_data_type == data_type:
+                    keys_to_remove.append(key)
         
         # 清除相关缓存
         removed_count = 0
