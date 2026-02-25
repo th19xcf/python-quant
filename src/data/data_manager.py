@@ -22,6 +22,9 @@ from src.utils.exceptions import (
 )
 from src.data.data_cache import global_data_cache
 
+# 异步数据管理器（延迟导入）
+AsyncDataManager = None
+
 
 class DataManager(IDataProvider, IDataProcessor):
     """
@@ -52,8 +55,15 @@ class DataManager(IDataProvider, IDataProcessor):
         # 插件数据源映射
         self.plugin_datasources = {}
         
+        # 异步数据管理器
+        self.async_data_manager = None
+        
+        # 数据源优先级缓存（基于历史响应时间）
+        self.source_priorities = {}
+        
         self._init_handlers()
         self._init_plugin_datasources()
+        self._init_async_manager()
     
     def _init_handlers(self):
         """
@@ -157,6 +167,24 @@ class DataManager(IDataProvider, IDataProcessor):
         for plugin_name, plugin in datasource_plugins.items():
             self.plugin_datasources[plugin_name] = plugin
             logger.info(f"已注册插件数据源: {plugin_name}")
+    
+    def _init_async_manager(self):
+        """
+        初始化异步数据管理器
+        """
+        try:
+            global AsyncDataManager
+            if AsyncDataManager is None:
+                from src.data.async_data_manager import AsyncDataManager
+            
+            self.async_data_manager = AsyncDataManager(self)
+            logger.info("异步数据管理器初始化成功")
+        except ImportError as e:
+            logger.info(f"异步数据管理器初始化失败（可选功能）: {e}")
+            self.async_data_manager = None
+        except (OSError, RuntimeError) as e:
+            logger.warning(f"异步数据管理器初始化失败: {e}")
+            self.async_data_manager = None
     
     def _publish_data_updated_event(self, data_type, ts_code, status="success", message=""):
         """
@@ -464,6 +492,95 @@ class DataManager(IDataProvider, IDataProcessor):
                 except (OSError, RuntimeError):
                     pass
 
+    def _init_handlers(self):
+        """
+        初始化各个数据源处理器
+        """
+        # 初始化通达信数据处理器
+        try:
+            from src.data.tdx_handler import TdxHandler
+            self.tdx_handler = TdxHandler(self.config, self.db_manager)
+            logger.info("通达信数据处理器初始化成功")
+        except ImportError as e:
+            logger.info(f"通达信模块未安装: {e}")
+            self.tdx_handler = None
+        except FileNotFoundError as e:
+            logger.info(f"通达信数据文件不存在（离线模式）: {e}")
+            self.tdx_handler = None
+        except PermissionError as e:
+            logger.warning(f"通达信数据文件访问权限不足: {e}")
+            self.tdx_handler = None
+        except DataSourceConfigError as e:
+            logger.warning(f"通达信配置错误: {e.message}")
+            self.tdx_handler = None
+        except (OSError, RuntimeError) as tdx_e:
+            logger.warning(f"通达信数据处理器初始化失败（离线模式下正常）: {tdx_e}")
+            self.tdx_handler = None
+        
+        # 初始化Baostock数据处理器
+        try:
+            from src.data.baostock_handler import BaostockHandler
+            self.baostock_handler = BaostockHandler(self.config, self.db_manager)
+            logger.info("Baostock数据处理器初始化成功")
+        except ImportError as e:
+            logger.warning(f"Baostock模块未安装: {e}")
+            self.baostock_handler = None
+        except ConnectionError as e:
+            logger.error(f"Baostock服务器连接失败: {e}")
+            self.baostock_handler = None
+        except DataSourceConfigError as e:
+            logger.error(f"Baostock配置错误: {e.message}")
+            self.baostock_handler = None
+        except (OSError, RuntimeError) as e:
+            logger.error(f"Baostock数据处理器初始化失败: {e}")
+            self.baostock_handler = None
+        
+        # 初始化宏观数据处理器
+        try:
+            from src.data.macro_handler import MacroHandler
+            self.macro_handler = MacroHandler(self.config, self.db_manager)
+            logger.info("宏观数据处理器初始化成功")
+        except ImportError as e:
+            logger.info(f"宏观数据模块未安装: {e}")
+            self.macro_handler = None
+        except ConnectionError as e:
+            logger.warning(f"宏观数据源连接失败（离线模式）: {e}")
+            self.macro_handler = None
+        except (OSError, RuntimeError) as macro_e:
+            logger.warning(f"宏观数据处理器初始化失败（离线模式下正常）: {macro_e}")
+            self.macro_handler = None
+        
+        # 初始化新闻数据处理器
+        try:
+            from src.data.news_handler import NewsHandler
+            self.news_handler = NewsHandler(self.config, self.db_manager)
+            logger.info("新闻数据处理器初始化成功")
+        except ImportError as e:
+            logger.info(f"新闻数据模块未安装: {e}")
+            self.news_handler = None
+        except ConnectionError as e:
+            logger.warning(f"新闻数据源连接失败（离线模式）: {e}")
+            self.news_handler = None
+        except (OSError, RuntimeError) as news_e:
+            logger.warning(f"新闻数据处理器初始化失败（离线模式下正常）: {news_e}")
+            self.news_handler = None
+        
+        logger.info("数据处理器初始化完成")
+        
+        # 初始化完成后，根据配置决定是否自动更新股票基本信息
+        try:
+            if hasattr(self.config.data, 'auto_update_stock_basic') and self.config.data.auto_update_stock_basic:
+                self.update_stock_basic()
+                logger.info("自动更新股票基本信息完成")
+            else:
+                logger.info("跳过自动更新股票基本信息（未开启或配置不允许）")
+        except DataSourceConnectionError as e:
+            logger.warning(f"自动更新股票基本信息失败 - 连接错误: {e.message}")
+        except DataValidationError as e:
+            logger.warning(f"自动更新股票基本信息失败 - 数据验证错误: {e.message}")
+        except (OSError, RuntimeError) as update_e:
+            logger.warning(f"自动更新股票基本信息失败: {update_e}")
+    
     def _get_data_from_sources(self, data_type: str, ts_code: str, start_date: str, end_date: str, freq: str = "daily", adjustment_type: str = "qfq"):
         """
         通用数据获取方法
@@ -601,6 +718,14 @@ class DataManager(IDataProvider, IDataProcessor):
                     response_time = time.time() - start_time
                     from src.utils.monitoring import global_monitoring_system
                     global_monitoring_system.record_data_source_request(source_name, response_time, success)
+                    
+                    # 更新数据源优先级
+                    if source_name not in self.source_priorities:
+                        self.source_priorities[source_name] = []
+                    self.source_priorities[source_name].append(response_time)
+                    # 只保留最近10次的响应时间
+                    if len(self.source_priorities[source_name]) > 10:
+                        self.source_priorities[source_name] = self.source_priorities[source_name][-10:]
             
             # 优先从数据库获取数据
             if self.db_manager and self.db_manager.is_connected():
@@ -785,6 +910,18 @@ class DataManager(IDataProvider, IDataProcessor):
                 data_sources.append((f'plugin_{plugin_name}', plugin, method_name, {
                     'ts_code': ts_code, 'start_date': start_date, 'end_date': end_date, 'freq': freq
                 }))
+            
+            # 根据历史响应时间排序数据源（优先级）
+            def get_source_priority(source_name):
+                """
+                获取数据源优先级（响应时间越短优先级越高）
+                """
+                if source_name not in self.source_priorities or not self.source_priorities[source_name]:
+                    return 9999  # 默认优先级
+                return sum(self.source_priorities[source_name]) / len(self.source_priorities[source_name])
+            
+            # 按优先级排序数据源
+            data_sources.sort(key=lambda x: get_source_priority(x[0]))
             
             if not data_sources:
                 logger.warning(f"没有可用的数据源来获取{type_name}{ts_code}数据")
@@ -1046,6 +1183,68 @@ class DataManager(IDataProvider, IDataProcessor):
             logger.info(f"指数数据缓存已更新: {index_code} {start_date} to {end_date}")
         
         return result
+    
+    async def get_stock_data_async(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq') -> pl.DataFrame:
+        """
+        异步获取股票历史数据
+        
+        Args:
+            stock_code: 股票代码
+            start_date: 开始日期，格式：YYYY-MM-DD
+            end_date: 结束日期，格式：YYYY-MM-DD
+            frequency: 数据频率，默认：1d（日线），支持1d/1w/1m（日/周/月线）
+            adjustment_type: 复权类型，qfq=前复权, hfq=后复权, none=不复权
+        
+        Returns:
+            pl.DataFrame: 股票历史数据
+        """
+        if self.async_data_manager:
+            return await self.async_data_manager.get_stock_data_async(stock_code, start_date, end_date, frequency, adjustment_type)
+        else:
+            # 回退到同步方法
+            return self.get_stock_data(stock_code, start_date, end_date, frequency, adjustment_type)
+    
+    async def get_index_data_async(self, index_code: str, start_date: str, end_date: str, frequency: str = '1d') -> pl.DataFrame:
+        """
+        异步获取指数历史数据
+        
+        Args:
+            index_code: 指数代码
+            start_date: 开始日期，格式：YYYY-MM-DD
+            end_date: 结束日期，格式：YYYY-MM-DD
+            frequency: 数据频率，默认：1d（日线）
+        
+        Returns:
+            pl.DataFrame: 指数历史数据
+        """
+        if self.async_data_manager:
+            return await self.async_data_manager.get_index_data_async(index_code, start_date, end_date, frequency)
+        else:
+            # 回退到同步方法
+            return self.get_index_data(index_code, start_date, end_date, frequency)
+    
+    async def get_multiple_stocks_data_async(self, stock_codes: List[str], start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq') -> Dict[str, pl.DataFrame]:
+        """
+        异步并行获取多只股票数据
+        
+        Args:
+            stock_codes: 股票代码列表
+            start_date: 开始日期，格式：YYYY-MM-DD
+            end_date: 结束日期，格式：YYYY-MM-DD
+            frequency: 数据频率，默认：1d（日线）
+            adjustment_type: 复权类型，qfq=前复权, hfq=后复权, none=不复权
+        
+        Returns:
+            Dict[str, pl.DataFrame]: 股票代码到数据的映射
+        """
+        if self.async_data_manager:
+            return await self.async_data_manager.get_multiple_stocks_data_async(stock_codes, start_date, end_date, frequency, adjustment_type)
+        else:
+            # 回退到同步方法（串行获取）
+            result = {}
+            for stock_code in stock_codes:
+                result[stock_code] = self.get_stock_data(stock_code, start_date, end_date, frequency, adjustment_type)
+            return result
     
     def get_stock_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
         """
