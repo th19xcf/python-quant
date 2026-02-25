@@ -6,7 +6,7 @@
 """
 
 from loguru import logger
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 import polars as pl
 from src.api.data_api import IDataProvider, IDataProcessor
 from src.utils.event_bus import EventBus
@@ -20,6 +20,7 @@ from src.utils.exceptions import (
     DataSaveError,
     QuantException
 )
+from src.data.data_cache import global_data_cache
 
 
 class DataManager(IDataProvider, IDataProcessor):
@@ -254,6 +255,14 @@ class DataManager(IDataProvider, IDataProcessor):
             start_date=start_date,
             end_date=end_date
         )
+        
+        # 数据更新后，使相关缓存失效
+        if ts_codes:
+            for ts_code in ts_codes:
+                global_data_cache.invalidate('stock', ts_code)
+        else:
+            # 如果更新所有股票，使所有股票缓存失效
+            global_data_cache.invalidate_by_type('stock')
     
     def update_index_basic(self):
         """
@@ -285,6 +294,14 @@ class DataManager(IDataProvider, IDataProcessor):
             start_date=start_date,
             end_date=end_date
         )
+        
+        # 数据更新后，使相关缓存失效
+        if ts_codes:
+            for ts_code in ts_codes:
+                global_data_cache.invalidate('index', ts_code)
+        else:
+            # 如果更新所有指数，使所有指数缓存失效
+            global_data_cache.invalidate_by_type('index')
     
     def update_macro_data(self, indicators: List[str] = None):
         """
@@ -770,6 +787,13 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             pl.DataFrame: 股票历史数据
         """
+        # 尝试从缓存获取数据
+        cached_data = global_data_cache.get('stock', stock_code, start_date, end_date, 
+                                         frequency=frequency, adjustment_type=adjustment_type)
+        if cached_data is not None:
+            logger.info(f"从缓存获取股票数据: {stock_code} {start_date} to {end_date}")
+            return cached_data
+        
         from src.utils.lazy_optimizer import lazy_pipeline, lazy_exec
         
         # 构建惰性计算流水线
@@ -844,15 +868,21 @@ class DataManager(IDataProvider, IDataProcessor):
                 # 执行优化的惰性计算
                 result = lazy_exec(lazy_df)
                 logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{result.height}条")
-                return result
             else:
-                return df
+                result = df
         else:
             # 日线或分钟线，直接获取
             freq_map = {'1d': 'daily', '1m': 'minute'}
             freq = freq_map.get(frequency, 'daily')
             result = self._get_data_from_sources("stock", stock_code, start_date, end_date, freq, adjustment_type)
-            return result
+        
+        # 将结果存入缓存
+        if not result.is_empty():
+            global_data_cache.set(result, 'stock', stock_code, start_date, end_date, 
+                                frequency=frequency, adjustment_type=adjustment_type)
+            logger.info(f"股票数据缓存已更新: {stock_code} {start_date} to {end_date}")
+        
+        return result
     
     def _convert_to_period(self, df: pl.DataFrame, frequency: str) -> pl.DataFrame:
         """
@@ -947,9 +977,23 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             pl.DataFrame: 指数历史数据
         """
+        # 尝试从缓存获取数据
+        cached_data = global_data_cache.get('index', index_code, start_date, end_date, 
+                                         frequency=frequency)
+        if cached_data is not None:
+            logger.info(f"从缓存获取指数数据: {index_code} {start_date} to {end_date}")
+            return cached_data
+        
         freq_map = {'1d': 'daily', '1m': 'minute'}
         freq = freq_map.get(frequency, 'daily')
         result = self._get_data_from_sources("index", index_code, start_date, end_date, freq)
+        
+        # 将结果存入缓存
+        if not result.is_empty():
+            global_data_cache.set(result, 'index', index_code, start_date, end_date, 
+                                frequency=frequency)
+            logger.info(f"指数数据缓存已更新: {index_code} {start_date} to {end_date}")
+        
         return result
     
     def get_stock_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:

@@ -26,6 +26,7 @@ from src.data.data_manager import DataManager
 from src.plugin.plugin_manager import PluginManager
 from src.ui.main_window import MainWindow
 from src.ui.theme_manager import ThemeManager
+from src.utils.cache_monitor import log_cache_stats
 
 
 def parse_args():
@@ -122,6 +123,9 @@ def main():
         publish(EventType.SYSTEM_INIT, app=app, config=config, data_manager=data_manager)
         logger.info("中国股市量化分析系统启动成功")
         
+        # 记录初始缓存统计
+        log_cache_stats()
+        
         # 运行主循环
         sys.exit(app.exec())
 
@@ -131,6 +135,9 @@ def main():
     finally:
         # 发布系统关闭事件
         publish(EventType.SYSTEM_SHUTDOWN)
+        
+        # 记录系统关闭前的缓存统计
+        log_cache_stats()
         
         # 清理资源
         try:
