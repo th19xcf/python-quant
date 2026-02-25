@@ -481,6 +481,8 @@ class DataManager(IDataProvider, IDataProcessor):
         """
         try:
             import polars as pl
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            import concurrent.futures
             
             # 数据类型映射
             data_type_map = {
@@ -562,6 +564,33 @@ class DataManager(IDataProvider, IDataProcessor):
                     return pl.DataFrame(result)
                 except (ValueError, TypeError):
                     return None
+            
+            def fetch_from_source(source_name, handler, method_name, **kwargs):
+                """
+                从单个数据源获取数据
+                
+                Args:
+                    source_name: 数据源名称
+                    handler: 数据处理器
+                    method_name: 方法名
+                    **kwargs: 方法参数
+                    
+                Returns:
+                    tuple: (成功标志, 数据或错误信息)
+                """
+                try:
+                    logger.info(f"线程获取: 从{source_name}获取{type_name}{ts_code}数据")
+                    result = getattr(handler, method_name)(**kwargs)
+                    processed_result = process_result(result)
+                    if processed_result is not None:
+                        # 内存优化
+                        optimized_result = MemoryOptimizer.optimize_dataframe(processed_result, enable_sparse=True)
+                        return True, optimized_result
+                    else:
+                        return False, f"{source_name}返回空数据"
+                except (OSError, RuntimeError, ValueError) as e:
+                    logger.warning(f"从{source_name}获取{type_name}数据失败: {e}")
+                    return False, str(e)
             
             # 优先从数据库获取数据
             if self.db_manager and self.db_manager.is_connected():
@@ -709,61 +738,64 @@ class DataManager(IDataProvider, IDataProcessor):
                 except (OSError, RuntimeError, ValueError) as db_e:
                     logger.warning(f"从数据库获取{type_name}数据失败: {db_e}")
             
-            # 数据库获取失败或无数据，尝试从其他数据源获取
-            data_sources = [
-                ('tdx', self.tdx_handler),
-                ('akshare', self.akshare_handler),
-                ('baostock', self.baostock_handler)
-            ]
+            # 数据库获取失败或无数据，并行尝试从其他数据源获取
+            data_sources = []
             
-            # 先尝试内置数据源
-            for source_name, handler in data_sources:
-                if handler:
-                    logger.info(f"从{source_name}获取{type_name}{ts_code}数据")
-                    try:
-                        # 调用相应的数据源方法
-                        method_name = type_map['handler_methods'][source_name]
-                        
-                        # 根据不同的handler调整参数
-                        if source_name == 'tdx':
-                            # TdxHandler.get_kline_data(stock_code, start_date, end_date, adjust)
-                            # TDX数据源支持复权，传递adjustment_type参数
-                            result = getattr(handler, method_name)(ts_code, start_date, end_date, adjust=adjustment_type)
-                        elif source_name == 'baostock':
-                            # BaostockHandler.download_stock_daily(ts_codes=[ts_code], start_date, end_date, adjustflag)
-                            # 将adjustment_type转换为baostock的adjustflag参数
-                            adjustflag_map = {'qfq': '2', 'hfq': '1', 'none': '3'}
-                            adjustflag = adjustflag_map.get(adjustment_type, '2')
-                            result = getattr(handler, method_name)(ts_codes=[ts_code], start_date=start_date, end_date=end_date, adjustflag=adjustflag)
-                        else:
-                            # 其他handler使用标准参数
-                            result = getattr(handler, method_name)(ts_code, start_date, end_date, freq)
-                        
-                        # 统一处理结果
-                        processed_result = process_result(result)
-                        if processed_result is not None:
-                            # 内存优化
-                            optimized_result = MemoryOptimizer.optimize_dataframe(processed_result, enable_sparse=True)
-                            return optimized_result
-                    except (OSError, RuntimeError, ValueError) as source_e:
-                        logger.warning(f"从{source_name}获取{type_name}数据失败: {source_e}")
+            # 内置数据源
+            if self.tdx_handler:
+                method_name = type_map['handler_methods']['tdx']
+                data_sources.append(('tdx', self.tdx_handler, method_name, {
+                    'stock_code': ts_code, 'start_date': start_date, 'end_date': end_date, 'adjust': adjustment_type
+                }))
             
-            # 尝试从插件数据源获取数据
+            if self.akshare_handler:
+                method_name = type_map['handler_methods']['akshare']
+                data_sources.append(('akshare', self.akshare_handler, method_name, {
+                    'ts_code': ts_code, 'start_date': start_date, 'end_date': end_date, 'freq': freq
+                }))
+            
+            if self.baostock_handler:
+                method_name = type_map['handler_methods']['baostock']
+                data_sources.append(('baostock', self.baostock_handler, method_name, {
+                    'ts_codes': [ts_code], 'start_date': start_date, 'end_date': end_date
+                }))
+            
+            # 插件数据源
             for plugin_name, plugin in self.plugin_datasources.items():
-                logger.info(f"从插件数据源{plugin_name}获取{type_name}{ts_code}数据")
-                try:
-                    # 调用插件的对应方法
-                    method_name = type_map['handler_methods']['plugin']
-                    result = getattr(plugin, method_name)(ts_code, start_date, end_date, freq)
-                    
-                    # 统一处理结果
-                    processed_result = process_result(result)
-                    if processed_result is not None:
-                        # 内存优化
-                        optimized_result = MemoryOptimizer.optimize_dataframe(processed_result, enable_sparse=True)
-                        return optimized_result
-                except (OSError, RuntimeError, ValueError) as plugin_e:
-                    logger.warning(f"从插件数据源{plugin_name}获取{type_name}数据失败: {plugin_e}")
+                method_name = type_map['handler_methods']['plugin']
+                data_sources.append((f'plugin_{plugin_name}', plugin, method_name, {
+                    'ts_code': ts_code, 'start_date': start_date, 'end_date': end_date, 'freq': freq
+                }))
+            
+            if not data_sources:
+                logger.warning(f"没有可用的数据源来获取{type_name}{ts_code}数据")
+                return pl.DataFrame()
+            
+            # 使用线程池并行获取数据
+            logger.info(f"并行从{len(data_sources)}个数据源获取{type_name}{ts_code}数据")
+            
+            # 限制线程池大小，避免创建过多线程
+            max_workers = min(len(data_sources), 5)  # 最多5个并行线程
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 提交所有任务
+                futures = {}
+                for source_name, handler, method_name, kwargs in data_sources:
+                    future = executor.submit(fetch_from_source, source_name, handler, method_name, **kwargs)
+                    futures[future] = source_name
+                
+                # 等待第一个成功的结果
+                for future in as_completed(futures, timeout=30):  # 30秒超时
+                    source_name = futures[future]
+                    try:
+                        success, result = future.result()
+                        if success:
+                            logger.info(f"从{source_name}成功获取{type_name}{ts_code}数据，返回结果")
+                            return result
+                    except concurrent.futures.TimeoutError:
+                        logger.warning(f"从{source_name}获取数据超时")
+                    except Exception as e:
+                        logger.warning(f"处理{source_name}结果时出错: {e}")
             
             # 所有数据源都失败，返回空DataFrame
             logger.warning(f"无法从任何数据源获取{type_name}{ts_code}数据")
