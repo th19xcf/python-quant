@@ -512,7 +512,10 @@ class AsyncDataManager:
                 # 执行优化的惰性计算
                 from src.utils.lazy_optimizer import lazy_exec
                 result = lazy_exec(lazy_df)
-                logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{result.height}条")
+                # 内存优化：转换数据类型
+                optimized_result = MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
+                logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{optimized_result.height}条")
+                result = optimized_result
             else:
                 result = df
         else:

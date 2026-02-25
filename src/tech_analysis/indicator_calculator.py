@@ -734,8 +734,10 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
         
         # 执行计算
         result = execute_optimized_pipeline(lazy_df)
-        MemoryOptimizer.print_memory_stats(result, f"指标计算结果优化后")
-        return result
+        # 内存优化：转换数据类型
+        optimized_result = MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
+        MemoryOptimizer.print_memory_stats(optimized_result, f"指标计算结果优化后")
+        return optimized_result
 
 
 def generate_cache_key(data_hash, indicator_type, *args, **kwargs):

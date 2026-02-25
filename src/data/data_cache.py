@@ -78,6 +78,19 @@ class DataCache:
         self._misses = 0
         self._evictions = 0
     
+    def set_max_size(self, max_size: int):
+        """
+        设置缓存最大条目数
+        
+        Args:
+            max_size: 缓存最大条目数
+        """
+        self._max_size = max_size
+        # 如果当前缓存大小超过新的最大大小，执行LRU淘汰
+        while len(self._cache) > self._max_size:
+            self._evict_lru()
+        logger.info(f"缓存最大大小已设置为: {self._max_size}")
+    
     def _generate_cache_key(self, data_type: str, code: str, start_date: str, end_date: str, **params) -> str:
         """
         生成唯一的数据缓存键
@@ -174,8 +187,12 @@ class DataCache:
         ttl = params.get('ttl', self._default_ttl)
         expire_time = time.time() + ttl if ttl is not None else None
         
+        # 内存优化：转换数据类型
+        from src.utils.memory_optimizer import MemoryOptimizer
+        optimized_data = MemoryOptimizer.optimize_dataframe(data, enable_sparse=True)
+        
         # 创建缓存条目
-        entry = CacheEntry(data, expire_time)
+        entry = CacheEntry(optimized_data, expire_time)
         
         # 添加到缓存
         self._cache[cache_key] = entry

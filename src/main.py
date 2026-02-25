@@ -28,6 +28,7 @@ from src.ui.main_window import MainWindow
 from src.ui.theme_manager import ThemeManager
 from src.utils.cache_monitor import log_cache_stats
 from src.utils.exception_handler import setup_global_exception_handler
+from src.utils.memory_manager import global_memory_manager
 
 
 def parse_args():
@@ -128,6 +129,14 @@ def main():
         publish(EventType.SYSTEM_INIT, app=app, config=config, data_manager=data_manager)
         logger.info("中国股市量化分析系统启动成功")
         
+        # 启动内存监控
+        global_memory_manager.start_monitoring()
+        logger.info("内存监控已启动")
+        
+        # 记录初始内存使用情况
+        memory_usage = global_memory_manager.get_memory_usage()
+        logger.info(f"初始内存使用: {memory_usage['process_rss_mb']:.2f} MB ({memory_usage['process_percent']:.1f}%)")
+        
         # 记录初始缓存统计
         log_cache_stats()
         
@@ -138,6 +147,15 @@ def main():
         logger.exception(f"系统启动失败: {e}")
         sys.exit(1)
     finally:
+        # 停止内存监控
+        try:
+            global_memory_manager.stop_monitoring()
+            # 记录最终内存使用情况
+            memory_usage = global_memory_manager.get_memory_usage()
+            logger.info(f"最终内存使用: {memory_usage['process_rss_mb']:.2f} MB ({memory_usage['process_percent']:.1f}%)")
+        except Exception as e:
+            logger.warning(f"停止内存监控时发生错误: {e}")
+        
         # 发布系统关闭事件
         publish(EventType.SYSTEM_SHUTDOWN)
         
