@@ -27,6 +27,7 @@ from src.plugin.plugin_manager import PluginManager
 from src.ui.main_window import MainWindow
 from src.ui.theme_manager import ThemeManager
 from src.utils.cache_monitor import log_cache_stats
+from src.utils.exception_handler import setup_global_exception_handler
 
 
 def parse_args():
@@ -48,6 +49,10 @@ def main():
     plugin_manager = None
     
     try:
+        # 设置全局异常处理器
+        setup_global_exception_handler()
+        logger.info("全局异常处理器初始化成功")
+        
         # 初始化配置
         config = Config()
         logger.info("配置加载成功")

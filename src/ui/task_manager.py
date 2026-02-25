@@ -52,12 +52,15 @@ class TaskRunner(QRunnable):
         """
         运行任务
         """
+        import time
+        start_time = time.time()
+        
         try:
             # 发送任务开始信号
             self.signals.started.emit(self.task_id, self.task_name)
             
-            # 执行任务
-            result = self.func(*self.args, **self.kwargs, task_id=self.task_id, signals=self.signals)
+            # 执行任务，添加超时检查
+            result = self._run_with_timeout()
             
             # 发送任务完成信号
             self.signals.completed.emit(self.task_id, result)
@@ -68,7 +71,36 @@ class TaskRunner(QRunnable):
             self.signals.error.emit(self.task_id, error_msg)
         finally:
             # 发送任务结束信号
+            elapsed_time = time.time() - start_time
+            logger.info(f"任务完成: {self.task_name} (ID: {self.task_id})，耗时: {elapsed_time:.2f}秒")
             self.signals.finished.emit(self.task_id)
+    
+    def _run_with_timeout(self, timeout_seconds=60):
+        """
+        带超时的任务执行
+        
+        Args:
+            timeout_seconds: 超时时间（秒），默认60秒
+            
+        Returns:
+            任务执行结果
+            
+        Raises:
+            TimeoutError: 任务执行超时
+        """
+        import threading
+        import concurrent.futures
+        
+        # 使用线程池执行任务，支持超时
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(self.func, *self.args, **self.kwargs, task_id=self.task_id, signals=self.signals)
+            try:
+                # 等待任务完成，超时后抛出异常
+                return future.result(timeout=timeout_seconds)
+            except concurrent.futures.TimeoutError:
+                # 任务超时
+                self.is_cancelled = True
+                raise TimeoutError(f"任务执行超时: {self.task_name} (ID: {self.task_id})，超过 {timeout_seconds} 秒")
     
     def cancel(self):
         """
@@ -96,6 +128,14 @@ class TaskManager(QObject):
         self.thread_pool = QThreadPool()
         self.thread_pool.setMaxThreadCount(8)  # 设置最大线程数
         self.tasks: Dict[str, TaskRunner] = {}
+        # 任务统计信息
+        self.task_stats = {
+            'total': 0,
+            'completed': 0,
+            'failed': 0,
+            'cancelled': 0,
+            'running': 0
+        }
         logger.info(f"任务管理器初始化完成，最大线程数: {self.thread_pool.maxThreadCount()}")
     
     def create_task(self, task_name: str, func: Callable, args: tuple = (), kwargs: dict = {}) -> str:
@@ -123,6 +163,10 @@ class TaskManager(QObject):
         
         # 添加到任务列表
         self.tasks[task_id] = runner
+        
+        # 更新任务统计
+        self.task_stats['total'] += 1
+        self.task_stats['running'] += 1
         
         # 启动任务
         self.thread_pool.start(runner)
@@ -208,12 +252,14 @@ class TaskManager(QObject):
         """
         任务完成回调
         """
+        self.task_stats['completed'] += 1
         self.task_completed.emit(task_id, result)
     
     def _on_task_error(self, task_id: str, error_message: str):
         """
         任务错误回调
         """
+        self.task_stats['failed'] += 1
         self.task_error.emit(task_id, error_message)
     
     def _on_task_finished(self, task_id: str):
@@ -221,8 +267,38 @@ class TaskManager(QObject):
         任务结束回调
         """
         if task_id in self.tasks:
+            runner = self.tasks[task_id]
+            if runner.is_cancelled:
+                self.task_stats['cancelled'] += 1
             del self.tasks[task_id]
+        
+        # 确保running计数不为负数
+        if self.task_stats['running'] > 0:
+            self.task_stats['running'] -= 1
+        
         self.task_finished.emit(task_id)
+    
+    def get_task_stats(self) -> Dict[str, int]:
+        """
+        获取任务统计信息
+        
+        Returns:
+            dict: 任务统计信息
+        """
+        return self.task_stats
+    
+    def reset_task_stats(self):
+        """
+        重置任务统计信息
+        """
+        self.task_stats = {
+            'total': 0,
+            'completed': 0,
+            'failed': 0,
+            'cancelled': 0,
+            'running': 0
+        }
+        logger.info("任务统计信息已重置")
 
 
 # 创建全局任务管理器实例

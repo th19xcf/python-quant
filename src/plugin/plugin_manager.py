@@ -713,7 +713,7 @@ class PluginManager:
     
     def call_plugin_method(self, plugin_name: str, method_name: str, plugin_type: str = None, *args, **kwargs) -> Any:
         """
-        直接调用插件方法
+        直接调用插件方法，带异常隔离
         
         Args:
             plugin_name: 插件名称
@@ -723,23 +723,31 @@ class PluginManager:
             **kwargs: 关键字参数
             
         Returns:
-            Any: 方法返回值
-            
-        Raises:
-            Exception: 调用错误
+            Any: 方法返回值，如插件调用失败返回None
         """
-        plugin = self.get_plugin_instance(plugin_name, plugin_type)
-        if not plugin:
-            raise Exception(f"插件{plugin_name}不存在或已禁用")
-        
-        if not hasattr(plugin, method_name):
-            raise Exception(f"插件{plugin_name}没有方法: {method_name}")
-        
-        method = getattr(plugin, method_name)
-        if not callable(method):
-            raise Exception(f"插件{plugin_name}的{method_name}不是可调用方法")
-        
         try:
-            return method(*args, **kwargs)
-        except (OSError, RuntimeError, ImportError, TypeError) as e:
-            raise Exception(f"调用插件{plugin_name}的{method_name}方法失败: {str(e)}") from e
+            plugin = self.get_plugin_instance(plugin_name, plugin_type)
+            if not plugin:
+                logger.warning(f"插件{plugin_name}不存在或已禁用")
+                return None
+            
+            if not hasattr(plugin, method_name):
+                logger.warning(f"插件{plugin_name}没有方法: {method_name}")
+                return None
+            
+            method = getattr(plugin, method_name)
+            if not callable(method):
+                logger.warning(f"插件{plugin_name}的{method_name}不是可调用方法")
+                return None
+            
+            # 执行插件方法，捕获所有异常
+            try:
+                return method(*args, **kwargs)
+            except Exception as e:
+                logger.exception(f"调用插件{plugin_name}的{method_name}方法失败: {str(e)}")
+                # 不抛出异常，确保其他插件不受影响
+                return None
+        except Exception as e:
+            logger.exception(f"调用插件{plugin_name}时发生错误: {str(e)}")
+            # 不抛出异常，确保系统稳定运行
+            return None
