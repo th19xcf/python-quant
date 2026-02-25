@@ -104,7 +104,14 @@ class ChartDataPreparer:
             ])
             logger.debug("应用前复权价格")
         else:
-            logger.warning("缺少前复权价格列，使用原始价格")
+            # 没有前复权价格列，使用原始价格并添加qfq_列以便后续处理
+            df = df.with_columns([
+                pl.col('open').alias('qfq_open'),
+                pl.col('high').alias('qfq_high'),
+                pl.col('low').alias('qfq_low'),
+                pl.col('close').alias('qfq_close')
+            ])
+            logger.debug("使用原始价格并添加qfq_列")
         
         return df
     
@@ -136,12 +143,18 @@ class ChartDataPreparer:
                 ])
                 logger.debug("应用后复权价格")
             else:
-                # 如果hfq_列不存在，但hfq_factor存在，说明数据可能已经是后复权价格
-                # 或者数据来自data_manager，已经处理过后复权
+                # 如果hfq_列不存在，使用原始价格并添加hfq_列以便后续处理
+                df = df.with_columns([
+                    pl.col('open').alias('hfq_open'),
+                    pl.col('high').alias('hfq_high'),
+                    pl.col('low').alias('hfq_low'),
+                    pl.col('close').alias('hfq_close')
+                ])
+                # 如果hfq_factor存在，说明数据可能已经是后复权价格
                 if 'hfq_factor' in df.columns:
-                    logger.debug("使用已处理的后复权价格（open/high/low/close列）")
+                    logger.debug("使用已处理的后复权价格并添加hfq_列")
                 else:
-                    logger.warning("缺少后复权数据，使用原始价格")
+                    logger.debug("使用原始价格并添加hfq_列")
         
         return df
     
