@@ -491,8 +491,46 @@ class IndicatorManager:
         if unsupported_indicators:
             raise ValueError(f"不支持的指标类型: {', '.join(unsupported_indicators)}")
         
-        # 使用优化的批量计算函数
-        result_df = calculate_multiple_indicators_polars(pl_data, indicator_types, **params)
+        # 检查是否启用缓存
+        if self._cache_enabled:
+            # 尝试从缓存获取每个指标的结果
+            cached_results = []
+            uncached_indicators = []
+            
+            for indicator_type in indicator_types:
+                cached_result = global_indicator_cache.get(pl_data, indicator_type, **params)
+                if cached_result is not None:
+                    cached_results.append((indicator_type, cached_result))
+                    logger.debug(f"从缓存获取指标{indicator_type}计算结果")
+                else:
+                    uncached_indicators.append(indicator_type)
+            
+            # 如果所有指标都在缓存中，直接合并结果
+            if not uncached_indicators:
+                # 合并缓存结果
+                result_df = pl_data
+                for _, cached_df in cached_results:
+                    result_df = result_df.join(cached_df, on=result_df.columns[0], how='left')
+                return self._to_result_format(result_df, return_polars)
+            
+            # 对未缓存的指标进行批量计算
+            if uncached_indicators:
+                result_df = calculate_multiple_indicators_polars(pl_data, uncached_indicators, **params)
+                
+                # 保存到缓存
+                for indicator_type in uncached_indicators:
+                    # 提取该指标的结果
+                    indicator_cols = [col for col in result_df.columns if col.startswith(indicator_type) or col in ['dma', 'ama', 'fsl', 'sar', 'obv']]
+                    if indicator_cols:
+                        indicator_result = result_df.select([result_df.columns[0]] + indicator_cols)
+                        global_indicator_cache.set(pl_data, indicator_result, indicator_type, **params)
+                
+                # 合并缓存结果和新计算结果
+                for indicator_type, cached_df in cached_results:
+                    result_df = result_df.join(cached_df, on=result_df.columns[0], how='left')
+        else:
+            # 缓存禁用，直接计算所有指标
+            result_df = calculate_multiple_indicators_polars(pl_data, indicator_types, **params)
         
         return self._to_result_format(result_df, return_polars)
     
