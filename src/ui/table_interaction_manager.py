@@ -147,6 +147,11 @@ class TableInteractionManager:
                 market = 'sz'
                 tdx_code = f'sz{code[:-3]}'
                 ts_code = code
+            elif code == '999999':
+                # 上证指数特殊处理
+                market = 'sh'
+                tdx_code = 'sh000001'
+                ts_code = '000001.SH'
             else:
                 market = 'sz'
                 tdx_code = f'sz{code}'

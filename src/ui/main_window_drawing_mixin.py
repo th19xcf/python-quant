@@ -558,7 +558,7 @@ class MainWindowDrawingMixin:
         plot_widget.getAxis('left').setStyle(showValues=True)
         
         # 对于SAR指标，设置合适的Y轴范围
-        if indicator_name == "SAR" and 'sar' in df_pl.columns:
+        if indicator_name == "SAR" and df_pl is not None and 'sar' in df_pl.columns:
             try:
                 sar_data = df_pl['sar'].drop_nulls()
                 if len(sar_data) > 0:
