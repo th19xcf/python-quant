@@ -140,8 +140,42 @@ class MainWindowEventMixin:
                 pass
             except (OSError, RuntimeError, ValueError) as e:
                 logger.error(f"Error saving window state: {e}")
+            
+            # 关闭任务管理器，确保所有后台线程被正确终止
+            try:
+                from src.ui.task_manager import global_task_manager
+                global_task_manager.shutdown()
+                logger.info("任务管理器已关闭")
+            except Exception as e:
+                logger.error(f"关闭任务管理器时出错: {e}")
+            
+            # 停止内存监控
+            try:
+                from src.utils.memory_manager import global_memory_manager
+                global_memory_manager.stop_monitoring()
+                logger.info("内存监控已停止")
+            except Exception as e:
+                logger.error(f"停止内存监控时出错: {e}")
+            
+            # 停止系统监控
+            try:
+                from src.utils.monitoring import global_monitoring_system
+                global_monitoring_system.stop()
+                logger.info("系统监控已停止")
+            except Exception as e:
+                logger.error(f"停止系统监控时出错: {e}")
+            
+            # 调用父类的关闭方法
+            try:
+                super().closeEvent(event)
+            except Exception:
+                pass
                 
             event.accept()
+            
+            # 强制退出应用程序，确保所有线程都被终止
+            from PySide6.QtWidgets import QApplication
+            QApplication.quit()
         else:
             event.ignore()
 
