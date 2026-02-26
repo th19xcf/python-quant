@@ -135,36 +135,44 @@ class DatabaseManager:
         Returns:
             sqlalchemy.orm.Session: 数据库会话对象
         """
-        try:
-            # 检查现有会话是否有效
-            if self.session:
-                try:
-                    # 测试会话是否仍然有效
-                    self.session.execute(text("SELECT 1"))
-                except (OSError, RuntimeError, ValueError) as e:
-                    logger.warning(f"现有数据库会话已失效，将创建新会话: {e}")
-                    self._cleanup_session()
+        retry_count = 3
+        for i in range(retry_count):
+            try:
+                # 检查现有会话是否有效
+                if self.session:
+                    try:
+                        # 测试会话是否仍然有效
+                        self.session.execute(text("SELECT 1"))
+                    except Exception as e:
+                        logger.warning(f"现有数据库会话已失效，将创建新会话: {e}")
+                        self._cleanup_session()
 
-            # 如果没有有效会话，创建新会话
-            if not self.session:
-                if not self.engine:
-                    self.connect()
-                else:
-                    # 创建新的会话
-                    self.Session = scoped_session(sessionmaker(
-                        bind=self.engine,
-                        expire_on_commit=expire_on_commit
-                    ))
-                    self.session = self.Session()
-                    logger.debug("创建新的数据库会话")
+                # 如果没有有效会话，创建新会话
+                if not self.session:
+                    if not self.engine:
+                        self.connect()
+                    else:
+                        # 创建新的会话
+                        self.Session = scoped_session(sessionmaker(
+                            bind=self.engine,
+                            expire_on_commit=expire_on_commit
+                        ))
+                        self.session = self.Session()
+                        logger.debug("创建新的数据库会话")
 
-            return self.session
+                return self.session
 
-        except (OSError, RuntimeError, ValueError) as e:
-            logger.exception(f"获取数据库会话失败: {e}")
-            # 清理无效会话
-            self._cleanup_session()
-            raise
+            except Exception as e:
+                logger.warning(f"获取数据库会话失败 (尝试 {i+1}/{retry_count}): {e}")
+                # 清理无效会话
+                self._cleanup_session()
+                # 如果是最后一次尝试，抛出异常
+                if i == retry_count - 1:
+                    logger.exception(f"获取数据库会话失败: {e}")
+                    raise
+                # 等待一段时间后重试
+                import time
+                time.sleep(1)
 
     def _cleanup_session(self):
         """

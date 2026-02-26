@@ -180,6 +180,13 @@ class TableInteractionManager:
         """数据读取完成"""
         window = self.window
         try:
+            # 检查DataFrame是否为空
+            if df.is_empty():
+                window.statusBar().showMessage(f"{name}({code}) 没有数据", 5000)
+                if hasattr(window, 'progress_bar'):
+                    window.progress_bar.setVisible(False)
+                return
+            
             window.statusBar().showMessage(f"正在计算 {name}({code}) 技术指标...", 0)
             
             # 更新进度条到50%

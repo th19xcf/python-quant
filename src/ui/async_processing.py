@@ -56,7 +56,9 @@ class DataReadThread(QThread):
             if not tdx_file_path.exists():
                 error_msg = f"找不到股票数据文件: {tdx_file_path}"
                 logger.warning(error_msg)
-                self.data_read_error.emit(error_msg)
+                # 文件不存在时返回空DataFrame，与tdx_handler处理方式一致
+                df = pl.DataFrame()
+                self.data_read_completed.emit(df, self.name, self.code)
                 return
             
             # 添加超时机制，避免程序无响应

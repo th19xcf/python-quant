@@ -312,8 +312,17 @@ class BaostockHandler:
                         adjustflag=adjustflag  # 使用传入的复权参数
                     )
                     
+                    # 检查rs是否为None
+                    if rs is None:
+                        logger.warning(f"Baostock API返回None，无法获取{ts_code}的日线数据")
+                        continue
+                    
                     # 获取数据
-                    stock_daily_pd = rs.get_data()
+                    try:
+                        stock_daily_pd = rs.get_data()
+                    except Exception as e:
+                        logger.warning(f"获取{ts_code}数据失败: {e}")
+                        continue
                     
                     # 转换为Polars DataFrame
                     stock_daily_df = pl.from_pandas(stock_daily_pd)
@@ -583,8 +592,17 @@ class BaostockHandler:
                         adjustflag="3"  # 不复权
                     )
                     
+                    # 检查rs是否为None
+                    if rs is None:
+                        logger.warning(f"Baostock API返回None，无法获取{ts_code}的日线数据")
+                        continue
+                    
                     # 获取数据
-                    index_daily_pd = rs.get_data()
+                    try:
+                        index_daily_pd = rs.get_data()
+                    except Exception as e:
+                        logger.warning(f"获取{ts_code}数据失败: {e}")
+                        continue
                     
                     # 转换为Polars DataFrame
                     index_daily_df = pl.from_pandas(index_daily_pd)
@@ -917,8 +935,17 @@ class BaostockHandler:
                         adjustflag="2"  # 前复权
                     )
                     
+                    # 检查rs是否为None
+                    if rs is None:
+                        logger.warning(f"Baostock API返回None，无法获取{ts_code}的{frequency}分钟线数据")
+                        continue
+                    
                     # 获取数据
-                    stock_minute_pd = rs.get_data()
+                    try:
+                        stock_minute_pd = rs.get_data()
+                    except Exception as e:
+                        logger.warning(f"获取{ts_code}的{frequency}分钟线数据失败: {e}")
+                        continue
                     
                     # 转换为Polars DataFrame
                     stock_minute_df = pl.from_pandas(stock_minute_pd)
