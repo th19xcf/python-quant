@@ -37,6 +37,11 @@ class IndicatorRenderer:
             x: x轴坐标
         """
         try:
+            # 检查df是否为None
+            if df is None:
+                logger.warning("render_ma_lines: df is None, skipping")
+                return
+            
             # 初始化MA相关属性
             if not hasattr(self.main_window, 'moving_averages'):
                 self.main_window.moving_averages = {}
@@ -72,7 +77,7 @@ class IndicatorRenderer:
             # 绘制各条MA线
             ma_drawn_count = 0
             for col_name, ma_name, pen_color, label_color in ma_configs:
-                if col_name in df.columns:
+                if hasattr(df, 'columns') and col_name in df.columns:
                     # 检查MA数据是否有效
                     ma_data = df[col_name].to_numpy()
                     valid_count = np.sum(~np.isnan(ma_data))
@@ -122,11 +127,15 @@ class IndicatorRenderer:
     
     def _save_ma_data(self, df: Any):
         """保存MA数据供后续使用"""
+        if df is None:
+            logger.warning("_save_ma_data: df is None, skipping")
+            return
+        
         self.main_window.ma_data = {
-            'MA5': df['ma5'].to_numpy() if 'ma5' in df.columns else np.array([]),
-            'MA10': df['ma10'].to_numpy() if 'ma10' in df.columns else np.array([]),
-            'MA20': df['ma20'].to_numpy() if 'ma20' in df.columns else np.array([]),
-            'MA60': df['ma60'].to_numpy() if 'ma60' in df.columns else np.array([]),
+            'MA5': df['ma5'].to_numpy() if hasattr(df, 'columns') and 'ma5' in df.columns else np.array([]),
+            'MA10': df['ma10'].to_numpy() if hasattr(df, 'columns') and 'ma10' in df.columns else np.array([]),
+            'MA20': df['ma20'].to_numpy() if hasattr(df, 'columns') and 'ma20' in df.columns else np.array([]),
+            'MA60': df['ma60'].to_numpy() if hasattr(df, 'columns') and 'ma60' in df.columns else np.array([]),
         }
         
         self.main_window.ma_colors = {
@@ -145,12 +154,17 @@ class IndicatorRenderer:
             x: x轴坐标
         """
         try:
-            if 'volume' not in df.columns:
-                return
+            # 检查df是否为None
+            if df is None:
+                logger.warning("render_volume: df is None, skipping")
+                return df
+            
+            if not hasattr(df, 'columns') or 'volume' not in df.columns:
+                return df
             
             volumes = df['volume'].to_numpy()
             if len(volumes) == 0:
-                return
+                return df
             
             # 计算Y轴范围
             self._set_volume_y_range(plot_widget, volumes)
@@ -241,8 +255,13 @@ class IndicatorRenderer:
             x: x轴坐标
         """
         try:
-            if 'k' not in df.columns or 'd' not in df.columns:
-                return
+            # 检查df是否为None
+            if df is None:
+                logger.warning("render_kdj: df is None, skipping")
+                return df
+            
+            if not hasattr(df, 'columns') or 'k' not in df.columns or 'd' not in df.columns:
+                return df
             
             k_data = df['k'].to_numpy().astype(np.float64)
             d_data = df['d'].to_numpy().astype(np.float64)
@@ -273,7 +292,7 @@ class IndicatorRenderer:
                 )
             
             # 绘制J线（如果存在）
-            if 'j' in df.columns:
+            if hasattr(df, 'columns') and 'j' in df.columns:
                 j_data = df['j'].to_numpy().astype(np.float64)
                 j_mask = ~np.isnan(j_data)
                 if np.any(j_mask):
@@ -310,24 +329,29 @@ class IndicatorRenderer:
             x: x轴坐标
         """
         try:
-            logger.debug(f"渲染MACD，数据列: {df.columns}")
-            if 'macd' not in df.columns or 'macd_signal' not in df.columns:
+            # 检查df是否为None
+            if df is None:
+                logger.warning("render_macd: df is None, skipping")
+                return df
+            
+            logger.debug(f"渲染MACD，数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
+            if not hasattr(df, 'columns') or 'macd' not in df.columns or 'macd_signal' not in df.columns:
                 logger.warning(f"MACD数据列不存在，尝试计算MACD")
                 # 尝试计算MACD
                 from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_macd(fast_period=12, slow_period=26, signal_period=9)
                 df = analyzer.get_data(return_polars=True)
-                logger.debug(f"计算MACD后数据列: {df.columns}")
-                if 'macd' not in df.columns or 'macd_signal' not in df.columns:
+                logger.debug(f"计算MACD后数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
+                if not hasattr(df, 'columns') or 'macd' not in df.columns or 'macd_signal' not in df.columns:
                     logger.error("计算MACD后数据列仍不存在")
-                    return
+                    return df
             
             macd_data = df['macd'].to_numpy().astype(np.float64)
             signal_data = df['macd_signal'].to_numpy().astype(np.float64)
             
             # 设置Y轴范围
-            if 'macd_hist' in df.columns:
+            if hasattr(df, 'columns') and 'macd_hist' in df.columns:
                 hist_data = df['macd_hist'].to_numpy()
                 min_val = min(np.nanmin(macd_data), np.nanmin(signal_data), np.nanmin(hist_data))
                 max_val = max(np.nanmax(macd_data), np.nanmax(signal_data), np.nanmax(hist_data))
@@ -368,7 +392,7 @@ class IndicatorRenderer:
                 logger.debug(f"绘制DEA线，数据点: {np.sum(signal_mask)}")
             
             # 绘制柱状图（MACD柱）
-            if 'macd_hist' in df.columns:
+            if hasattr(df, 'columns') and 'macd_hist' in df.columns:
                 self._draw_macd_histogram(plot_widget, x, df['macd_hist'].to_numpy())
             
             # 添加零轴
@@ -408,8 +432,13 @@ class IndicatorRenderer:
             x: x轴坐标
         """
         try:
-            if 'rsi14' not in df.columns:
-                return
+            # 检查df是否为None
+            if df is None:
+                logger.warning("render_rsi: df is None, skipping")
+                return df
+            
+            if not hasattr(df, 'columns') or 'rsi14' not in df.columns:
+                return df
             
             rsi_data = df['rsi14'].to_numpy().astype(np.float64)
             rsi_mask = ~np.isnan(rsi_data)
@@ -444,8 +473,13 @@ class IndicatorRenderer:
             x: x轴坐标
         """
         try:
+            # 检查df是否为None
+            if df is None:
+                logger.warning("render_wr: df is None, skipping")
+                return df
+            
             # 优先使用wr1和wr2（通达信风格）
-            if 'wr1' in df.columns and 'wr2' in df.columns:
+            if hasattr(df, 'columns') and 'wr1' in df.columns and 'wr2' in df.columns:
                 wr1_data = df['wr1'].to_numpy().astype(np.float64)
                 wr2_data = df['wr2'].to_numpy().astype(np.float64)
                 
@@ -467,7 +501,7 @@ class IndicatorRenderer:
                         pen=pg.mkPen('w', width=1), 
                         name='WR2'
                     )
-            elif 'wr' in df.columns:
+            elif hasattr(df, 'columns') and 'wr' in df.columns:
                 # 兼容旧格式
                 wr_data = df['wr'].to_numpy().astype(np.float64)
                 wr_mask = ~np.isnan(wr_data)
@@ -499,18 +533,23 @@ class IndicatorRenderer:
             x: x轴坐标
         """
         try:
-            logger.debug(f"渲染BOLL，数据列: {df.columns}")
-            if 'mb' not in df.columns or 'up' not in df.columns or 'dn' not in df.columns:
+            # 检查df是否为None
+            if df is None:
+                logger.warning("render_boll: df is None, skipping")
+                return df
+            
+            logger.debug(f"渲染BOLL，数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
+            if not hasattr(df, 'columns') or 'mb' not in df.columns or 'up' not in df.columns or 'dn' not in df.columns:
                 logger.warning(f"BOLL数据列不存在，尝试计算BOLL")
                 # 尝试计算BOLL
                 from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_boll(windows=[20], std_dev=2.0)
                 df = analyzer.get_data(return_polars=True)
-                logger.debug(f"计算BOLL后数据列: {df.columns}")
-                if 'mb' not in df.columns or 'up' not in df.columns or 'dn' not in df.columns:
+                logger.debug(f"计算BOLL后数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
+                if not hasattr(df, 'columns') or 'mb' not in df.columns or 'up' not in df.columns or 'dn' not in df.columns:
                     logger.error("计算BOLL后数据列仍不存在")
-                    return
+                    return df
             
             mb_data = df['mb'].to_numpy().astype(np.float64)
             up_data = df['up'].to_numpy().astype(np.float64)
@@ -1612,6 +1651,11 @@ class IndicatorRenderer:
         Returns:
             Any: 处理后的数据
         """
+        # 检查df是否为None
+        if df is None:
+            logger.warning(f"render_indicator: df is None, skipping indicator {indicator_name}")
+            return df
+        
         renderers = {
             'VOL': self.render_volume,
             'KDJ': self.render_kdj,
