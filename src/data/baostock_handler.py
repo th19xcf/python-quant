@@ -109,21 +109,41 @@ class BaostockHandler:
         登录Baostock
         """
         try:
+            # 设置登录超时
+            import socket
+            # 设置全局超时为30秒
+            socket.setdefaulttimeout(30)
+            
+            logger.info("正在连接Baostock服务器...")
             lg = bs.login()
+            
+            if lg is None:
+                logger.warning("Baostock API返回None")
+                self.bs_login = False
+                return
+            
             if lg.error_code == '0':
                 logger.info("Baostock登录成功")
                 self.bs_login = True
             else:
                 logger.warning(f"Baostock登录失败: {lg.error_msg}")
                 self.bs_login = False
-        except (ConnectionError, TimeoutError, OSError) as e:
+        except (ConnectionError, TimeoutError, OSError, socket.timeout) as e:
             logger.exception(f"Baostock登录异常: {e}")
             self.bs_login = False
+        except Exception as e:
+            # 捕获其他所有异常
+            logger.exception(f"Baostock登录发生未知异常: {e}")
+            self.bs_login = False
     
-    def _ensure_baostock_login(self):
+    def _ensure_baostock_login(self, max_retries=3, retry_delay=2):
         """
         确保Baostock已登录，如果未登录则尝试登录
         
+        Args:
+            max_retries: 最大重试次数
+            retry_delay: 重试间隔（秒）
+            
         Returns:
             bool: 登录状态，True表示已登录，False表示登录失败
         """
@@ -131,8 +151,23 @@ class BaostockHandler:
             return True
         
         logger.info("Baostock未登录，尝试登录...")
-        self._login_baostock()
-        return self.bs_login
+        
+        # 添加重试机制
+        for attempt in range(max_retries):
+            logger.info(f"尝试登录Baostock (尝试 {attempt + 1}/{max_retries})")
+            self._login_baostock()
+            if self.bs_login:
+                logger.info("Baostock登录成功")
+                return True
+            
+            # 如果不是最后一次尝试，等待后重试
+            if attempt < max_retries - 1:
+                import time
+                logger.info(f"登录失败，{retry_delay}秒后重试...")
+                time.sleep(retry_delay)
+        
+        logger.warning("Baostock登录失败，已达到最大重试次数")
+        return False
     
     def _logout_baostock(self):
         """

@@ -114,6 +114,7 @@ class MainWindowDataMixin:
         def _on_index_task(task_id=None, signals=None):
             """后台任务函数"""
             try:
+                # 基础指数映射
                 index_map = {
                     "sh000001": "上证指数", "sh000016": "上证50", "sh000300": "沪深300",
                     "sh000905": "中证500", "sh000852": "中证1000", "sh000688": "科创板指",
@@ -122,14 +123,22 @@ class MainWindowDataMixin:
                 
                 tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
                 
-                sh_index_files = list((tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'sh' / 'lday').exists() else []
-                sz_index_files = list((tdx_data_path / 'sz' / 'lday').glob('sz*.day')) if (tdx_data_path / 'sz' / 'lday').exists() else []
-                all_index_files = sh_index_files + sz_index_files
+                # 只获取沪市指数文件（指数代码通常以000开头）
+                all_sh_files = list((tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'sh' / 'lday').exists() else []
                 
-                total_files = len(all_index_files)
+                # 过滤出真正的指数文件（代码以000开头）
+                sh_index_files = []
+                for f in all_sh_files:
+                    code = f.stem[2:]  # 去掉'sh'前缀
+                    # 指数代码通常以000开头（如000001上证指数）
+                    # 排除股票代码（600、601、603、605、688等开头）
+                    if code.startswith('000'):
+                        sh_index_files.append(f)
+                
+                total_files = len(sh_index_files)
                 index_data = []
                 
-                for idx, index_file in enumerate(all_index_files):
+                for idx, index_file in enumerate(sh_index_files):
                     try:
                         # 发送进度信号
                         if signals:
@@ -137,9 +146,14 @@ class MainWindowDataMixin:
                             signals.progress.emit(task_id, progress, total_files)
                         
                         file_name = index_file.stem
-                        if file_name not in index_map: continue
                         
-                        index_name = index_map[file_name]
+                        # 获取指数名称，如果不在映射中，使用默认名称
+                        if file_name in index_map:
+                            index_name = index_map[file_name]
+                        else:
+                            # 提取指数代码
+                            index_code = file_name[2:]
+                            index_name = f"沪市指数{index_code}"
                         
                         with open(index_file, 'rb') as f:
                             f.seek(0, 2)
@@ -197,8 +211,8 @@ class MainWindowDataMixin:
                 return {"success": False, "message": f"获取指数数据失败: {str(e)}"}
 
         # 启动后台任务
-        logger.info("启动获取指数数据任务")
-        self.statusBar().showMessage("加载指数数据...", 0)
+        logger.info("启动获取沪市指数数据任务")
+        self.statusBar().showMessage("加载沪市指数数据...", 0)
         
         # 显示进度条
         if hasattr(self, 'progress_bar'):
@@ -207,7 +221,7 @@ class MainWindowDataMixin:
         
         # 创建任务
         task_id = global_task_manager.create_task(
-            "获取指数数据",
+            "获取沪市指数数据",
             _on_index_task
         )
         
@@ -231,7 +245,7 @@ class MainWindowDataMixin:
                 
                 self.stock_table.setSortingEnabled(True)
                 self.stock_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-                self.statusBar().showMessage(f"Loaded {self.stock_table.rowCount()} indices", 3000)
+                self.statusBar().showMessage(f"已加载 {self.stock_table.rowCount()} 个沪市指数", 3000)
             else:
                 self.statusBar().showMessage(result["message"], 5000)
             
