@@ -442,10 +442,10 @@ class MainWindowDataMixin:
                 if not all_stock_data:
                     return {"success": False, "message": f"没有解析到任何{stock_type}数据，请检查文件格式是否正确"}
                 
-                # 过滤出最新交易日的数据
+                # 不再过滤出最新交易日的数据，保留所有股票的最新可用数据
+                # 这样可以确保显示所有股票，而不是只显示最新交易日有数据的股票
                 if latest_date:
                     latest_date_str = latest_date.strftime('%Y-%m-%d')
-                    all_stock_data = [item for item in all_stock_data if item['date'] == latest_date_str]
                     logger.info(f"最新交易日: {latest_date_str}，共{len(all_stock_data)}只{stock_type}股票有数据")
                 
                 # 发送进度信号
