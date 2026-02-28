@@ -114,12 +114,76 @@ class MainWindowDataMixin:
         def _on_index_task(task_id=None, signals=None):
             """后台任务函数"""
             try:
-                # 基础指数映射
-                index_map = {
-                    "sh000001": "上证指数", "sh000016": "上证50", "sh000300": "沪深300",
-                    "sh000905": "中证500", "sh000852": "中证1000", "sh000688": "科创板指",
-                    "sz399001": "深证成指", "sz399006": "创业板指"
-                }
+                # 从数据库获取指数基本信息
+                index_name_map = {}
+                try:
+                    index_basic_df = self.data_manager.get_index_basic(exchange='sh')
+                    if not index_basic_df.is_empty():
+                        # 转换ts_code格式：000001.SH -> sh000001
+                        for row in index_basic_df.iter_rows(named=True):
+                            ts_code = row['ts_code']  # 如：000001.SH
+                            name = row['name']
+                            if ts_code.endswith('.SH'):
+                                file_name = 'sh' + ts_code[:-3]  # sh000001
+                            elif ts_code.endswith('.SZ'):
+                                file_name = 'sz' + ts_code[:-3]  # sz399001
+                            else:
+                                continue
+                            index_name_map[file_name] = name
+                        logger.info(f"从数据库加载了 {len(index_name_map)} 个指数名称")
+                except Exception as e:
+                    logger.warning(f"从数据库获取指数名称失败: {e}")
+                
+                # 如果数据库中没有数据，使用硬编码的映射作为备用
+                if not index_name_map:
+                    logger.info("使用硬编码的指数名称映射")
+                    index_name_map = {
+                        # 核心指数
+                        "sh000001": "上证指数",
+                        "sh000002": "上证A股",
+                        "sh000003": "上证B股",
+                        "sh000016": "上证50",
+                        "sh000010": "上证180",
+                        "sh000009": "上证380",
+                        "sh000017": "新综指",
+                        # 规模指数
+                        "sh000015": "上证红利",
+                        "sh000043": "超大盘",
+                        "sh000044": "上证中盘",
+                        "sh000510": "上证小盘",
+                        "sh000159": "上证市值百强",
+                        # 跨市场指数
+                        "sh000300": "沪深300",
+                        "sh000903": "中证100",
+                        "sh000904": "中证200",
+                        "sh000905": "中证500",
+                        "sh000906": "中证800",
+                        "sh000852": "中证1000",
+                        # 科创板指数
+                        "sh000688": "科创50",
+                        # 行业指数
+                        "sh000122": "上证行业",
+                        "sh000680": "上证能源",
+                        "sh000682": "上证原材料",
+                        "sh000683": "上证工业",
+                        "sh000685": "上证可选消费",
+                        "sh000687": "上证医药卫生",
+                        "sh000689": "上证主要消费",
+                        "sh000690": "上证金融地产",
+                        "sh000698": "上证信息技术",
+                        "sh000699": "上证电信业务",
+                        # 全指行业指数
+                        "sh000986": "上证全指能源",
+                        "sh000987": "上证全指原材料",
+                        "sh000989": "上证全指消费",
+                        "sh000991": "上证全指医药",
+                        "sh000992": "上证全指金融",
+                        "sh000993": "上证全指信息",
+                        # 风格主题指数
+                        "sh000847": "上证中盘风格",
+                        "sh000888": "上证高端装备",
+                        "sh000019": "上证治理",
+                    }
                 
                 tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
                 
@@ -147,9 +211,9 @@ class MainWindowDataMixin:
                         
                         file_name = index_file.stem
                         
-                        # 获取指数名称，如果不在映射中，使用默认名称
-                        if file_name in index_map:
-                            index_name = index_map[file_name]
+                        # 获取指数名称，优先从数据库获取，如果不在映射中，使用默认名称
+                        if file_name in index_name_map:
+                            index_name = index_name_map[file_name]
                         else:
                             # 提取指数代码
                             index_code = file_name[2:]
