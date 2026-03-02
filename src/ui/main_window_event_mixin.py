@@ -254,8 +254,12 @@ class MainWindowEventMixin:
             if text == "上证指数":
                 # 点击上证指数时显示所有沪市指数
                 if hasattr(self, 'data_view_manager'):
-                    self.data_view_manager.show_index_overview()
-            elif text in ["深证成指", "创业板指", "科创板指"]:
+                    self.data_view_manager.show_sh_index_overview()
+            elif text == "深证成指":
+                # 点击深证成指时显示所有深市指数
+                if hasattr(self, 'data_view_manager'):
+                    self.data_view_manager.show_sz_index_overview()
+            elif text in ["创业板指", "科创板指"]:
                 # 其他指数显示各自的K线图
                 if hasattr(self, 'data_view_manager'):
                     self.data_view_manager.show_index_data(text)

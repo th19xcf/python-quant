@@ -47,3 +47,13 @@ class DataViewManager:
         """显示沪深京指数总览"""
         logger.info("显示沪深京指数总览")
         return self.window._on_index_impl()
+
+    def show_sh_index_overview(self):
+        """显示沪市指数总览"""
+        logger.info("显示沪市指数总览")
+        return self.window._on_sh_index_impl()
+
+    def show_sz_index_overview(self):
+        """显示深市指数总览"""
+        logger.info("显示深市指数总览")
+        return self.window._on_sz_index_impl()
