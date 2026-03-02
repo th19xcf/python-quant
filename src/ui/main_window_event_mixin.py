@@ -364,114 +364,183 @@ class MainWindowEventMixin:
     
     def _switch_to_adjacent_stock(self, direction: str):
         """
-        切换到相邻的股票
+        切换到相邻的股票或指数
         
         Args:
             direction: 'prev' 上一个 或 'next' 下一个
         """
         try:
-            # 获取当前股票代码
+            # 获取当前代码
             if not hasattr(self, 'current_stock_code') or not self.current_stock_code:
-                logger.warning("没有当前股票，无法切换")
+                logger.warning("没有当前股票/指数，无法切换")
                 return
             
             current_code = self.current_stock_code
-            logger.info(f"切换到{direction}股票，当前: {current_code}")
+            logger.info(f"切换到{direction}，当前: {current_code}")
             
-            # 获取当前显示的股票列表
-            stock_list = self._get_current_stock_list()
-            if not stock_list:
-                logger.warning("没有可用的股票列表")
+            # 判断当前是股票还是指数
+            is_index = self._is_index_code(current_code)
+            
+            # 获取当前显示的列表
+            if is_index:
+                item_list = self._get_current_index_list()
+                item_type = "指数"
+            else:
+                item_list = self._get_current_stock_list()
+                item_type = "股票"
+            
+            if not item_list:
+                logger.warning(f"没有可用的{item_type}列表")
                 return
             
-            # 标准化当前股票代码（确保带后缀）
+            # 标准化当前代码（确保带后缀）
             if '.' not in current_code:
                 # 如果没有后缀，添加默认后缀
-                if current_code.startswith('6'):
+                if current_code.startswith('sh'):
+                    # 沪市代码，如 sh000016
+                    symbol = current_code[2:]
+                    current_code = f"{symbol}.SH"
+                elif current_code.startswith('sz'):
+                    # 深市代码，如 sz399001
+                    symbol = current_code[2:]
+                    current_code = f"{symbol}.SZ"
+                elif current_code.startswith('6') or current_code.startswith('000'):
                     current_code = f"{current_code}.SH"
                 else:
                     current_code = f"{current_code}.SZ"
             
-            # 找到当前股票在列表中的位置
+            # 找到当前代码在列表中的位置
             try:
-                current_index = stock_list.index(current_code)
+                current_index = item_list.index(current_code)
             except ValueError:
-                logger.warning(f"当前股票 {current_code} 不在列表中，尝试模糊匹配")
+                logger.warning(f"当前{item_type} {current_code} 不在列表中，尝试模糊匹配")
                 # 尝试模糊匹配（只比较代码部分）
                 current_symbol = current_code.split('.')[0] if '.' in current_code else current_code
-                for i, code in enumerate(stock_list):
+                for i, code in enumerate(item_list):
                     symbol = code.split('.')[0] if '.' in code else code
                     if symbol == current_symbol:
                         current_index = i
                         current_code = code  # 使用列表中的完整代码
                         break
                 else:
-                    logger.warning(f"当前股票 {current_code} 不在列表中")
+                    logger.warning(f"当前{item_type} {current_code} 不在列表中")
                     return
             
-            # 查找下一个有数据文件的股票
+            # 查找下一个有数据文件的项
             target_code = None
             target_name = None
             checked_count = 0
-            max_check = min(100, len(stock_list))  # 最多检查100只股票
+            max_check = min(100, len(item_list))  # 最多检查100只
             
             while checked_count < max_check:
                 # 计算目标索引
                 if direction == 'prev':
                     target_index = current_index - 1
                     if target_index < 0:
-                        target_index = len(stock_list) - 1  # 循环到末尾
+                        target_index = len(item_list) - 1  # 循环到末尾
                 else:  # next
                     target_index = current_index + 1
-                    if target_index >= len(stock_list):
+                    if target_index >= len(item_list):
                         target_index = 0  # 循环到开头
                 
-                # 获取目标股票代码
-                candidate_code = stock_list[target_index]
+                # 获取目标代码
+                candidate_code = item_list[target_index]
                 
                 # 检查数据文件是否存在
-                if self._check_stock_data_exists(candidate_code):
-                    target_code = candidate_code
-                    target_name = self._get_stock_name(target_code)
-                    break
+                if is_index:
+                    if self._check_index_data_exists(candidate_code):
+                        target_code = candidate_code
+                        target_name = self._get_index_name(target_code)
+                        break
                 else:
-                    logger.debug(f"股票 {candidate_code} 没有数据文件，继续查找")
-                    current_index = target_index  # 继续查找下一个
-                    checked_count += 1
+                    if self._check_stock_data_exists(candidate_code):
+                        target_code = candidate_code
+                        target_name = self._get_stock_name(target_code)
+                        break
+                
+                logger.debug(f"{item_type} {candidate_code} 没有数据文件，继续查找")
+                current_index = target_index  # 继续查找下一个
+                checked_count += 1
             
             if target_code is None:
-                logger.warning(f"找不到有数据文件的相邻股票")
+                logger.warning(f"找不到有数据文件的相邻{item_type}")
                 return
             
-            logger.info(f"切换到股票: {target_code} - {target_name}")
+            logger.info(f"切换到{item_type}: {target_code} - {target_name}")
             
-            # 加载目标股票K线图
+            # 加载目标K线图（指数和股票使用相同的方法）
             if hasattr(self, 'action_manager'):
                 self.action_manager._load_stock_chart(target_code, target_name)
             else:
-                logger.warning("没有action_manager，无法加载股票")
+                logger.warning(f"没有action_manager，无法加载{item_type}")
                 
         except (OSError, RuntimeError, ValueError) as e:
-            logger.exception(f"切换股票失败: {e}")
-    
+            logger.exception(f"切换失败: {e}")
+
+    def _on_prev_stock_clicked(self):
+        """
+        点击"上一只"按钮时切换到列表中的上一只股票
+        """
+        logger.info("点击上一只按钮")
+        self._switch_to_adjacent_stock('prev')
+
+    def _on_next_stock_clicked(self):
+        """
+        点击"下一只"按钮时切换到列表中的下一只股票
+        """
+        logger.info("点击下一只按钮")
+        self._switch_to_adjacent_stock('next')
+
     def _get_current_stock_list(self):
         """
         获取当前显示的股票列表
+        从行情窗口的表格中获取当前显示的股票代码列表
         
         Returns:
             list: 股票代码列表
         """
         try:
-            # 尝试从数据管理器获取股票列表
+            # 优先从当前显示的表格中获取股票列表
+            if hasattr(self, 'stock_table') and self.stock_table:
+                stock_list = []
+                row_count = self.stock_table.rowCount()
+                
+                for row in range(row_count):
+                    # 获取代码列的值（通常是第1列）
+                    code_item = self.stock_table.item(row, 1)  # 代码列
+                    if code_item:
+                        code = code_item.text()
+                        # 转换代码格式
+                        if code.startswith('sh') or code.startswith('sz'):
+                            # 已经是完整格式，如 sh000001
+                            market = 'SH' if code.startswith('sh') else 'SZ'
+                            symbol = code[2:]
+                            ts_code = f"{symbol}.{market}"
+                        elif code.isdigit():
+                            # 纯数字代码，如 000014
+                            if code.startswith('6'):
+                                ts_code = f"{code}.SH"
+                            else:
+                                ts_code = f"{code}.SZ"
+                        else:
+                            # 已经是ts_code格式
+                            ts_code = code
+                        
+                        stock_list.append(ts_code)
+                
+                if stock_list:
+                    logger.info(f"从表格中获取到 {len(stock_list)} 只股票")
+                    return stock_list
+            
+            # 如果表格中没有数据，尝试从数据管理器获取
             if hasattr(self, 'data_manager') and self.data_manager:
-                # 从数据库获取所有A股
                 session = self.data_manager.db_manager.get_session()
                 if session:
                     from src.database.models.stock import StockBasic
                     stocks = session.query(StockBasic).all()
                     return [stock.ts_code for stock in stocks if stock.ts_code]
             
-            # 如果没有数据管理器，返回空列表
+            # 如果没有数据，返回空列表
             return []
             
         except (OSError, RuntimeError, ValueError) as e:
@@ -538,7 +607,147 @@ class MainWindowEventMixin:
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"检查股票数据文件失败: {e}")
             return False
-    
+
+    def _is_index_code(self, code: str) -> bool:
+        """
+        判断代码是否为指数代码
+        
+        Args:
+            code: 股票/指数代码
+            
+        Returns:
+            bool: 是否为指数
+        """
+        # 提取数字部分
+        symbol = code.split('.')[0] if '.' in code else code
+        # 沪市指数以000开头，深市指数以399开头
+        return symbol.startswith('000') or symbol.startswith('399')
+
+    def _get_current_index_list(self):
+        """
+        获取当前显示的指数列表
+        从行情窗口的表格中获取当前显示的指数代码列表
+        
+        Returns:
+            list: 指数代码列表
+        """
+        try:
+            # 从当前显示的表格中获取指数列表
+            if hasattr(self, 'stock_table') and self.stock_table:
+                index_list = []
+                row_count = self.stock_table.rowCount()
+                
+                for row in range(row_count):
+                    # 获取代码列的值（通常是第1列）
+                    code_item = self.stock_table.item(row, 1)  # 代码列
+                    if code_item:
+                        code = code_item.text()
+                        # 只保留指数代码
+                        if code.startswith('sh000') or code.startswith('sz399'):
+                            market = 'SH' if code.startswith('sh') else 'SZ'
+                            symbol = code[2:]
+                            ts_code = f"{symbol}.{market}"
+                            index_list.append(ts_code)
+                        elif code.isdigit() and (code.startswith('000') or code.startswith('399')):
+                            if code.startswith('000'):
+                                ts_code = f"{code}.SH"
+                            else:
+                                ts_code = f"{code}.SZ"
+                            index_list.append(ts_code)
+                
+                if index_list:
+                    logger.info(f"从表格中获取到 {len(index_list)} 个指数")
+                    return index_list
+            
+            # 如果表格中没有数据，返回空列表
+            return []
+            
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"获取指数列表失败: {e}")
+            return []
+
+    def _get_index_name(self, ts_code: str):
+        """
+        获取指数名称
+        
+        Args:
+            ts_code: 指数代码
+            
+        Returns:
+            str: 指数名称
+        """
+        try:
+            # 从硬编码映射中获取名称
+            index_name_map = {
+                "000001.SH": "上证指数", "000002.SH": "上证A股", "000003.SH": "上证B股",
+                "000016.SH": "上证50", "000010.SH": "上证180", "000009.SH": "上证380",
+                "000688.SH": "科创50", "000300.SH": "沪深300",
+                "399001.SZ": "深证成指", "399002.SZ": "深成指R", "399003.SZ": "深证100",
+                "399005.SZ": "中小板指", "399006.SZ": "创业板指",
+                "399007.SZ": "深证200", "399008.SZ": "深证700", "399009.SZ": "深证1000",
+            }
+            
+            if ts_code in index_name_map:
+                return index_name_map[ts_code]
+            
+            # 尝试从表格中获取名称
+            if hasattr(self, 'stock_table') and self.stock_table:
+                row_count = self.stock_table.rowCount()
+                for row in range(row_count):
+                    code_item = self.stock_table.item(row, 1)
+                    name_item = self.stock_table.item(row, 2)
+                    if code_item and name_item:
+                        code = code_item.text()
+                        symbol = ts_code.split('.')[0]
+                        if code == symbol or code == f"sh{symbol}" or code == f"sz{symbol}":
+                            return name_item.text()
+            
+            # 默认返回代码
+            return ts_code
+            
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"获取指数名称失败: {e}")
+            return ts_code
+
+    def _check_index_data_exists(self, ts_code: str) -> bool:
+        """
+        检查指数数据文件是否存在
+        
+        Args:
+            ts_code: 指数代码 (如: 000001.SH)
+            
+        Returns:
+            bool: 数据文件是否存在
+        """
+        try:
+            # 转换代码格式
+            if ts_code.endswith('.SH'):
+                market = 'sh'
+                tdx_code = f"sh{ts_code[:-3]}"
+            elif ts_code.endswith('.SZ'):
+                market = 'sz'
+                tdx_code = f"sz{ts_code[:-3]}"
+            else:
+                # 假设是纯数字代码
+                if ts_code.startswith('000'):
+                    market = 'sh'
+                    tdx_code = f"sh{ts_code}"
+                else:
+                    market = 'sz'
+                    tdx_code = f"sz{ts_code}"
+            
+            from pathlib import Path
+            if hasattr(self, 'data_manager') and self.data_manager:
+                tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
+                tdx_file_path = tdx_data_path / market / 'lday' / f'{tdx_code}.day'
+                return tdx_file_path.exists()
+            
+            return False
+            
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"检查指数数据文件失败: {e}")
+            return False
+
     def _show_global_search_dialog(self, initial_text=""):
         """
         在右下角显示股票搜索对话框

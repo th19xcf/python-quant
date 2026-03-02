@@ -565,6 +565,22 @@ class MainWindowUiMixin:
         self.adjustment_btn.clicked.connect(self.indicator_interaction_manager.on_adjustment_clicked)
         toolbar_layout.addWidget(self.adjustment_btn)
         
+        # 添加分隔符
+        toolbar_layout.addSpacing(10)
+        
+        # 添加上下箭头按钮用于切换相邻股票
+        self.prev_stock_btn = QPushButton("▲ 上一只")
+        self.prev_stock_btn.setStyleSheet(button_style)
+        self.prev_stock_btn.setToolTip("切换到列表中的上一只股票")
+        self.prev_stock_btn.clicked.connect(self._on_prev_stock_clicked)
+        toolbar_layout.addWidget(self.prev_stock_btn)
+        
+        self.next_stock_btn = QPushButton("▼ 下一只")
+        self.next_stock_btn.setStyleSheet(button_style)
+        self.next_stock_btn.setToolTip("切换到列表中的下一只股票")
+        self.next_stock_btn.clicked.connect(self._on_next_stock_clicked)
+        toolbar_layout.addWidget(self.next_stock_btn)
+        
         # 添加工具栏到布局
         tech_layout.addWidget(toolbar)
         
