@@ -251,12 +251,12 @@ class MainWindowEventMixin:
         
         try:
             # Handle index items
-            if text == "上证指数":
-                # 点击上证指数时显示所有沪市指数
+            if text == "沪市指数":
+                # 点击沪市指数时显示所有沪市指数
                 if hasattr(self, 'data_view_manager'):
                     self.data_view_manager.show_sh_index_overview()
-            elif text == "深证成指":
-                # 点击深证成指时显示所有深市指数
+            elif text == "深市指数":
+                # 点击深市指数时显示所有深市指数
                 if hasattr(self, 'data_view_manager'):
                     self.data_view_manager.show_sz_index_overview()
             elif text in ["创业板指", "科创板指"]:
