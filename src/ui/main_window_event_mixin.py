@@ -329,6 +329,24 @@ class MainWindowEventMixin:
                     pass
                 return
         
+        # 左右箭头键：在技术分析界面实现放大缩小功能
+        if key in (Qt.Key_Left, Qt.Key_Right):
+            if self.tab_widget.currentWidget() == self.tech_tab:
+                if key == Qt.Key_Left:
+                    # 左箭头：放大（增加柱体数）
+                    self._on_zoom_in()
+                else:
+                    # 右箭头：缩小（减少柱体数）
+                    self._on_zoom_out()
+                return
+            else:
+                # 不在技术分析界面，传递给父类处理
+                try:
+                    super().keyPressEvent(event)
+                except AttributeError:
+                    pass
+                return
+        
         # 忽略其他功能键、控制键等特殊按键
         if key in (Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta,
                    Qt.Key_F1, Qt.Key_F2, Qt.Key_F3, Qt.Key_F4, Qt.Key_F5,
@@ -336,7 +354,7 @@ class MainWindowEventMixin:
                    Qt.Key_F11, Qt.Key_F12, Qt.Key_Tab, Qt.Key_CapsLock,
                    Qt.Key_NumLock, Qt.Key_ScrollLock, Qt.Key_Pause,
                    Qt.Key_Insert, Qt.Key_Delete, Qt.Key_Home, Qt.Key_End,
-                   Qt.Key_PageUp, Qt.Key_PageDown, Qt.Key_Left, Qt.Key_Right):
+                   Qt.Key_PageUp, Qt.Key_PageDown):
             try:
                 super().keyPressEvent(event)
             except AttributeError:
@@ -747,6 +765,34 @@ class MainWindowEventMixin:
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"检查指数数据文件失败: {e}")
             return False
+
+    def _on_zoom_in(self):
+        """
+        放大K线图（增加柱体数）
+        对应工具栏的 + 按钮功能
+        """
+        try:
+            if hasattr(self, 'indicator_interaction_manager') and self.indicator_interaction_manager:
+                self.indicator_interaction_manager.on_plus_btn_clicked()
+                logger.info("放大K线图（增加柱体数）")
+            else:
+                logger.warning("没有indicator_interaction_manager，无法放大")
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"放大K线图失败: {e}")
+
+    def _on_zoom_out(self):
+        """
+        缩小K线图（减少柱体数）
+        对应工具栏的 - 按钮功能
+        """
+        try:
+            if hasattr(self, 'indicator_interaction_manager') and self.indicator_interaction_manager:
+                self.indicator_interaction_manager.on_minus_btn_clicked()
+                logger.info("缩小K线图（减少柱体数）")
+            else:
+                logger.warning("没有indicator_interaction_manager，无法缩小")
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"缩小K线图失败: {e}")
 
     def _show_global_search_dialog(self, initial_text=""):
         """
