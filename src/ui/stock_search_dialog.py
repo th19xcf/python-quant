@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeyEvent
 from loguru import logger
+from pypinyin import lazy_pinyin, Style
 
 
 class StockSearchDialog(QDialog):
@@ -75,19 +76,21 @@ class StockSearchDialog(QDialog):
         layout.addLayout(search_layout)
         
         # 提示标签
-        self.tip_label = QLabel("请输入股票代码或名称，支持模糊搜索")
+        self.tip_label = QLabel("请输入股票代码、名称或拼音首字母，支持模糊搜索")
         self.tip_label.setStyleSheet("color: gray; font-size: 12px;")
         layout.addWidget(self.tip_label)
         
         # 搜索结果表格
         self.result_table = QTableWidget()
-        self.result_table.setColumnCount(4)
-        self.result_table.setHorizontalHeaderLabels(["代码", "名称", "市场", "行业"])
+        self.result_table.setColumnCount(5)
+        self.result_table.setHorizontalHeaderLabels(["代码", "名称", "拼音首字母", "市场", "行业"])
         self.result_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.result_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
         self.result_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.result_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
         self.result_table.setColumnWidth(0, 100)
         self.result_table.setColumnWidth(1, 120)
+        self.result_table.setColumnWidth(2, 100)
         self.result_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.result_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.result_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -139,10 +142,15 @@ class StockSearchDialog(QDialog):
             
             self.all_stocks = []
             for stock in stocks:
+                name = stock.name or ''
+                # 计算拼音首字母
+                pinyin_first_letters = ''.join([p[0].upper() for p in lazy_pinyin(name, style=Style.FIRST_LETTER)])
+                
                 self.all_stocks.append({
                     'ts_code': stock.ts_code or '',
                     'symbol': stock.symbol or '',
-                    'name': stock.name or '',
+                    'name': name,
+                    'pinyin_first_letters': pinyin_first_letters,
                     'market': stock.market or '-',
                     'industry': stock.industry or '-'
                 })
@@ -183,10 +191,12 @@ class StockSearchDialog(QDialog):
                 ts_code = stock['ts_code'].upper() if stock['ts_code'] else ''
                 symbol = stock['symbol'].upper() if stock['symbol'] else ''
                 name = stock['name'] if stock['name'] else ''
+                pinyin_first_letters = stock['pinyin_first_letters'] if stock['pinyin_first_letters'] else ''
                 
                 if (search_text_upper in ts_code or 
                     search_text_upper in symbol or
-                    search_text in name):  # 名称保持原样匹配
+                    search_text in name or
+                    search_text_upper in pinyin_first_letters):  # 支持拼音首字母搜索
                     filtered_stocks.append(stock)
             
             # 限制结果数量
@@ -212,13 +222,17 @@ class StockSearchDialog(QDialog):
             name_item = QTableWidgetItem(stock['name'])
             self.result_table.setItem(i, 1, name_item)
             
+            # 拼音首字母
+            pinyin_item = QTableWidgetItem(stock['pinyin_first_letters'])
+            self.result_table.setItem(i, 2, pinyin_item)
+            
             # 市场
             market_item = QTableWidgetItem(stock['market'])
-            self.result_table.setItem(i, 2, market_item)
+            self.result_table.setItem(i, 3, market_item)
             
             # 行业
             industry_item = QTableWidgetItem(stock['industry'])
-            self.result_table.setItem(i, 3, industry_item)
+            self.result_table.setItem(i, 4, industry_item)
         
         # 更新提示
         if stocks:

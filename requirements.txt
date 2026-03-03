@@ -30,6 +30,9 @@ blinker>=1.7.0
 # 日志管理
 loguru>=0.7.2
 
+# 拼音处理
+pypinyin>=0.49.0
+
 # 开发与测试
 pytest>=8.3.3
 black>=24.10.0
