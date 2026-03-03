@@ -430,7 +430,7 @@ class MainWindowEventMixin:
                     # 京市代码，如 bj899001
                     symbol = current_code[2:]
                     current_code = f"{symbol}.BJ"
-                elif current_code.startswith('6') or current_code.startswith('000'):
+                elif current_code.startswith('6'):
                     current_code = f"{current_code}.SH"
                 elif current_code.startswith('8') or current_code.startswith('4'):
                     # 京市股票代码（北交所）
@@ -455,45 +455,22 @@ class MainWindowEventMixin:
                     logger.warning(f"当前{item_type} {current_code} 不在列表中")
                     return
             
-            # 查找下一个有数据文件的项
-            target_code = None
-            target_name = None
-            checked_count = 0
-            max_check = min(100, len(item_list))  # 最多检查100只
+            # 按照列表顺序查找下一个项（不跳过任何项）
+            if direction == 'prev':
+                target_index = current_index - 1
+                if target_index < 0:
+                    target_index = len(item_list) - 1  # 循环到末尾
+            else:  # next
+                target_index = current_index + 1
+                if target_index >= len(item_list):
+                    target_index = 0  # 循环到开头
             
-            while checked_count < max_check:
-                # 计算目标索引
-                if direction == 'prev':
-                    target_index = current_index - 1
-                    if target_index < 0:
-                        target_index = len(item_list) - 1  # 循环到末尾
-                else:  # next
-                    target_index = current_index + 1
-                    if target_index >= len(item_list):
-                        target_index = 0  # 循环到开头
-                
-                # 获取目标代码
-                candidate_code = item_list[target_index]
-                
-                # 检查数据文件是否存在
-                if is_index:
-                    if self._check_index_data_exists(candidate_code):
-                        target_code = candidate_code
-                        target_name = self._get_index_name(target_code)
-                        break
-                else:
-                    if self._check_stock_data_exists(candidate_code):
-                        target_code = candidate_code
-                        target_name = self._get_stock_name(target_code)
-                        break
-                
-                logger.debug(f"{item_type} {candidate_code} 没有数据文件，继续查找")
-                current_index = target_index  # 继续查找下一个
-                checked_count += 1
-            
-            if target_code is None:
-                logger.warning(f"找不到有数据文件的相邻{item_type}")
-                return
+            # 获取目标代码和名称
+            target_code = item_list[target_index]
+            if is_index:
+                target_name = self._get_index_name(target_code)
+            else:
+                target_name = self._get_stock_name(target_code)
             
             logger.info(f"切换到{item_type}: {target_code} - {target_name}")
             
@@ -677,10 +654,25 @@ class MainWindowEventMixin:
         Returns:
             bool: 是否为指数
         """
-        # 提取数字部分
-        symbol = code.split('.')[0] if '.' in code else code
-        # 沪市指数以000开头，深市指数以399开头，京市指数以899开头
-        return symbol.startswith('000') or symbol.startswith('399') or symbol.startswith('899')
+        # 检查不同格式的指数代码
+        if '.' in code:
+            # 格式：数字.SH/SZ/BJ
+            symbol, market = code.split('.')
+            return (symbol.startswith('000') and market == 'SH') or \
+                   (symbol.startswith('399') and market == 'SZ') or \
+                   (symbol.startswith('899') and market == 'BJ')
+        else:
+            # 格式：sh/sz/bj+数字
+            if code.startswith('sh'):
+                return code[2:].startswith('000')
+            elif code.startswith('sz'):
+                return code[2:].startswith('399')
+            elif code.startswith('bj'):
+                return code[2:].startswith('899')
+            else:
+                # 纯数字格式，根据数字开头和市场判断
+                # 注意：纯数字格式无法准确判断，这里保守处理
+                return False
 
     def _get_current_index_list(self):
         """

@@ -88,15 +88,20 @@ class MainWindowDataMixin:
         # 连接任务信号
         def on_task_completed(task_id, result):
             if result["success"]:
-                # 切换到图表标签页
-                if hasattr(self, 'tab_widget'):
-                    self.tab_widget.setCurrentIndex(1)
+                # 检查是否有必要的键（股票数据）
+                if "data" in result and "stock_name" in result and "stock_code" in result:
+                    # 切换到图表标签页
+                    if hasattr(self, 'tab_widget'):
+                        self.tab_widget.setCurrentIndex(1)
 
-                # 绘制K线图
-                if hasattr(self, 'plot_k_line'):
-                    self.plot_k_line(result["data"], result["stock_name"], result["stock_code"])
+                    # 绘制K线图
+                    if hasattr(self, 'plot_k_line'):
+                        self.plot_k_line(result["data"], result["stock_name"], result["stock_code"])
 
-                self.statusBar().showMessage(f"已加载 {result['stock_name']}({result['stock_code']}) 的K线图", 3000)
+                    self.statusBar().showMessage(f"已加载 {result['stock_name']}({result['stock_code']}) 的K线图", 3000)
+                else:
+                    # 不是股票数据，不处理
+                    pass
             else:
                 self.statusBar().showMessage(result["message"], 5000)
         
@@ -1668,15 +1673,20 @@ class MainWindowDataMixin:
                 pass
             
             if result["success"]:
-                # 切换到图表标签页
-                if hasattr(self, 'tab_widget'):
-                    self.tab_widget.setCurrentIndex(1)
-                
-                # 绘制K线图
-                if hasattr(self, 'plot_k_line'):
-                    self.plot_k_line(result["data"], result["index_name"], result["index_code"])
-                
-                self.statusBar().showMessage(f"已加载 {result['index_name']} 的K线图", 3000)
+                # 检查是否有data键（指数数据）
+                if "data" in result and "index_name" in result and "index_code" in result:
+                    # 切换到图表标签页
+                    if hasattr(self, 'tab_widget'):
+                        self.tab_widget.setCurrentIndex(1)
+                    
+                    # 绘制K线图
+                    if hasattr(self, 'plot_k_line'):
+                        self.plot_k_line(result["data"], result["index_name"], result["index_code"])
+                    
+                    self.statusBar().showMessage(f"已加载 {result['index_name']} 的K线图", 3000)
+                else:
+                    # 不是指数数据，不处理
+                    pass
             else:
                 self.statusBar().showMessage(result["message"], 5000)
         
