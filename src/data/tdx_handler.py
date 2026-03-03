@@ -365,6 +365,7 @@ class TdxHandler:
     def _get_adj_factors(self, ts_code: str, start_date: date, end_date: date) -> pl.DataFrame:
         """
         从数据库获取复权因子
+        如果没有预计算的复权因子，则根据分红数据实时计算
         
         Args:
             ts_code: 股票代码
@@ -382,6 +383,7 @@ class TdxHandler:
                 logger.warning(f"无法获取数据库会话，无法获取复权因子")
                 return None
             
+            # 首先尝试获取预计算的复权因子
             query = session.query(StockAdjFactor).filter_by(ts_code=ts_code)
             
             if start_date:
@@ -391,21 +393,195 @@ class TdxHandler:
             
             factors = query.order_by(StockAdjFactor.trade_date).all()
             
-            if not factors:
-                logger.debug(f"{ts_code} 没有找到复权因子数据")
-                return None
+            if factors:
+                # 使用预计算的复权因子
+                logger.debug(f"{ts_code} 使用预计算的复权因子数据")
+                data = {
+                    'trade_date': [f.trade_date for f in factors],
+                    'qfq_factor': [f.qfq_factor for f in factors],
+                    'hfq_factor': [f.hfq_factor for f in factors],
+                }
+                return pl.DataFrame(data)
             
-            # 直接使用Polars构建DataFrame
-            data = {
-                'trade_date': [f.trade_date for f in factors],
-                'qfq_factor': [f.qfq_factor for f in factors],
-                'hfq_factor': [f.hfq_factor for f in factors],
-            }
-            
-            return pl.DataFrame(data)
+            # 如果没有预计算的复权因子，根据分红数据实时计算
+            logger.info(f"{ts_code} 没有预计算的复权因子，根据分红数据实时计算")
+            return self._calculate_adj_factors_from_dividends(ts_code, start_date, end_date)
             
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取复权因子失败: {e}")
+            return None
+    
+    def _calculate_adj_factors_from_dividends(self, ts_code: str, start_date: date, end_date: date) -> pl.DataFrame:
+        """
+        根据分红数据实时计算复权因子
+        
+        Args:
+            ts_code: 股票代码
+            start_date: 开始日期
+            end_date: 结束日期
+            
+        Returns:
+            Polars DataFrame包含复权因子
+        """
+        try:
+            from src.database.models.stock import StockDividend
+            
+            session = self._get_thread_safe_session()
+            if not session:
+                return None
+            
+            # 获取分红数据（获取所有历史分红数据，不限制日期范围）
+            query = session.query(StockDividend).filter_by(ts_code=ts_code)
+            query = query.filter(StockDividend.ex_date != None)
+            
+            # 注意：这里不限制日期范围，因为复权因子计算需要所有历史分红数据
+            # 即使当前显示的K线范围内没有分红，历史分红也会影响当前价格的复权计算
+            
+            dividends = query.order_by(StockDividend.ex_date).all()
+            
+            if not dividends:
+                logger.debug(f"{ts_code} 没有找到分红数据")
+                return None
+            
+            logger.info(f"{ts_code} 找到 {len(dividends)} 条分红记录，开始计算复权因子")
+            
+            # 打印第一条和最后一条分红记录用于调试
+            if dividends:
+                first_div = dividends[0]
+                last_div = dividends[-1]
+                logger.info(f"第一条分红: 日期={first_div.ex_date}, 现金={first_div.cash_div}, 送转={first_div.share_div}")
+                logger.info(f"最后一条分红: 日期={last_div.ex_date}, 现金={last_div.cash_div}, 送转={last_div.share_div}")
+            
+            # 获取价格数据用于计算复权因子
+            symbol = ts_code.split('.')[0]
+            market = 'sh' if ts_code.endswith('.SH') else 'sz'
+            file_name = f"{market}{symbol}.day"
+            file_path = self.tdx_data_path / market / "lday" / file_name
+            
+            if not file_path.exists():
+                logger.warning(f"价格数据文件不存在: {file_path}")
+                return None
+            
+            # 读取价格数据
+            prices = []
+            with open(file_path, 'rb') as f:
+                f.seek(0, 2)
+                file_size = f.tell()
+                record_count = file_size // 32
+                f.seek(0)
+                
+                for i in range(record_count):
+                    record = f.read(32)
+                    if len(record) < 32:
+                        break
+                    
+                    date_int = struct.unpack('I', record[0:4])[0]
+                    close_val = struct.unpack('I', record[16:20])[0] / 100
+                    
+                    date_obj = datetime.strptime(str(date_int), '%Y%m%d').date()
+                    prices.append({'trade_date': date_obj, 'close': close_val})
+            
+            if not prices:
+                return None
+            
+            # 按日期排序
+            prices.sort(key=lambda x: x['trade_date'])
+            
+            # 计算复权因子
+            # 前复权因子：从后向前累乘
+            # 后复权因子：从前向后累乘
+            
+            # 初始化所有日期的因子为1.0
+            factors_dict = {p['trade_date']: {'qfq_factor': 1.0, 'hfq_factor': 1.0} for p in prices}
+            
+            # 计算前复权因子（从后向前）
+            for div in reversed(dividends):
+                ex_date = div.ex_date
+                cash_div = div.cash_div or 0
+                share_div = div.share_div or 0
+                
+                if cash_div == 0 and share_div == 0:
+                    continue
+                
+                # 找到除权除息日前一天的收盘价
+                prev_prices = [p for p in prices if p['trade_date'] < ex_date]
+                if not prev_prices:
+                    continue
+                
+                prev_close = prev_prices[-1]['close']
+                if prev_close <= 0:
+                    continue
+                
+                # 计算复权因子
+                # 前复权因子 = (前收盘价 - 每股现金分红) / (前收盘价 * (1 + 每股送转股))
+                if prev_close <= cash_div:
+                    logger.warning(f"{ts_code} {ex_date} 现金分红异常，跳过")
+                    continue
+                
+                factor = (prev_close - cash_div) / (prev_close * (1 + share_div))
+                if factor <= 0:
+                    continue
+                
+                # 应用到所有早于除权除息日的日期
+                for p in prices:
+                    if p['trade_date'] < ex_date:
+                        factors_dict[p['trade_date']]['qfq_factor'] *= factor
+            
+            # 计算后复权因子（从前向后）
+            for div in dividends:
+                ex_date = div.ex_date
+                cash_div = div.cash_div or 0
+                share_div = div.share_div or 0
+                
+                if cash_div == 0 and share_div == 0:
+                    continue
+                
+                # 找到除权除息日前一天的收盘价
+                prev_prices = [p for p in prices if p['trade_date'] < ex_date]
+                if not prev_prices:
+                    continue
+                
+                prev_close = prev_prices[-1]['close']
+                if prev_close <= 0:
+                    continue
+                
+                # 计算复权因子
+                if prev_close <= cash_div:
+                    continue
+                
+                qfq_factor = (prev_close - cash_div) / (prev_close * (1 + share_div))
+                if qfq_factor <= 0:
+                    continue
+                
+                hfq_factor = 1 / qfq_factor
+                
+                # 应用到所有晚于或等于除权除息日的日期
+                for p in prices:
+                    if p['trade_date'] >= ex_date:
+                        factors_dict[p['trade_date']]['hfq_factor'] *= hfq_factor
+            
+            # 转换为DataFrame
+            data = {
+                'trade_date': list(factors_dict.keys()),
+                'qfq_factor': [f['qfq_factor'] for f in factors_dict.values()],
+                'hfq_factor': [f['hfq_factor'] for f in factors_dict.values()],
+            }
+            
+            df = pl.DataFrame(data)
+            
+            # 打印复权因子统计信息用于调试
+            if len(df) > 0:
+                min_qfq = df['qfq_factor'].min()
+                max_qfq = df['qfq_factor'].max()
+                min_hfq = df['hfq_factor'].min()
+                max_hfq = df['hfq_factor'].max()
+                logger.info(f"{ts_code} 复权因子统计: 前复权=[{min_qfq:.6f}, {max_qfq:.6f}], 后复权=[{min_hfq:.6f}, {max_hfq:.6f}]")
+            
+            logger.info(f"{ts_code} 复权因子计算完成，共 {len(df)} 条记录")
+            return df
+            
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"根据分红数据计算复权因子失败: {e}")
             return None
     
     def _apply_adj_factor(self, df: pl.DataFrame, factors_df: pl.DataFrame, adj_type: str = 'qfq') -> pl.DataFrame:
@@ -613,38 +789,46 @@ class TdxHandler:
                 (pl.col('date') >= start_dt) & (pl.col('date') <= end_dt)
             )
             
-            # 如果需要复权，计算复权价格
-            if adjust in ['qfq', 'hfq']:
-                logger.info(f"计算{adjust}复权价格...")
+            # 计算复权价格（无论是否需要复权，都计算所有复权类型）
+            logger.info(f"计算复权价格...")
+            
+            # 构建ts_code
+            ts_code = f"{code}.{market.upper()}"
+            
+            # 获取复权因子（使用完整日期范围，因为复权因子计算需要所有历史数据）
+            # 传入None作为日期范围，让_get_adj_factors获取所有历史数据
+            factors_df = self._get_adj_factors(ts_code, None, None)
+            
+            if factors_df is not None and not factors_df.is_empty():
+                # 转换复权因子为LazyFrame
+                factors_lazy = factors_df.lazy()
                 
-                # 构建ts_code
-                ts_code = f"{code}.{market.upper()}"
+                # 使用Lazy API进行复权计算
+                lazy_df = lazy_df.join(factors_lazy, left_on='date', right_on='trade_date', how='left')
                 
-                # 获取复权因子
-                factors_df = self._get_adj_factors(ts_code, start_dt, end_dt)
-                
-                if factors_df is not None and not factors_df.is_empty():
-                    # 转换复权因子为LazyFrame
-                    factors_lazy = factors_df.lazy()
-                    
-                    # 使用Lazy API进行复权计算
-                    lazy_df = lazy_df.join(factors_lazy, left_on='date', right_on='trade_date', how='left')
-                    
-                    # 填充缺失的复权因子
-                    factor_col = f'{adjust}_factor'
+                # 填充缺失的复权因子
+                for adj_type in ['qfq', 'hfq']:
+                    factor_col = f'{adj_type}_factor'
                     lazy_df = lazy_df.with_columns([
                         pl.col(factor_col).fill_null(strategy='forward').fill_null(1.0).alias(factor_col)
                     ])
-                    
-                    # 计算复权价格
+                
+                # 计算所有复权类型的价格
+                for adj_type in ['qfq', 'hfq']:
+                    factor_col = f'{adj_type}_factor'
                     lazy_df = lazy_df.with_columns([
-                        (pl.col('open') * pl.col(factor_col)).alias(f'{adjust}_open'),
-                        (pl.col('high') * pl.col(factor_col)).alias(f'{adjust}_high'),
-                        (pl.col('low') * pl.col(factor_col)).alias(f'{adjust}_low'),
-                        (pl.col('close') * pl.col(factor_col)).alias(f'{adjust}_close'),
+                        (pl.col('open') * pl.col(factor_col)).alias(f'{adj_type}_open'),
+                        (pl.col('high') * pl.col(factor_col)).alias(f'{adj_type}_high'),
+                        (pl.col('low') * pl.col(factor_col)).alias(f'{adj_type}_low'),
+                        (pl.col('close') * pl.col(factor_col)).alias(f'{adj_type}_close'),
                     ])
                 
-                logger.info(f"复权价格计算完成")
+                # 添加调试日志
+                logger.info(f"{ts_code} 复权价格计算完成，复权因子已应用到价格数据")
+            else:
+                logger.warning(f"{ts_code} 没有获取到复权因子，使用原始价格")
+            
+            logger.info(f"复权价格计算完成")
             
             logger.info(f"成功获取股票 {stock_code} 的K线数据，返回LazyFrame")
             return lazy_df

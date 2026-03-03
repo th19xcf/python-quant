@@ -104,55 +104,9 @@ class ActionManager:
         """
         try:
             window = self.window
-
-            # 转换代码格式
-            if ts_code.endswith('.SH'):
-                market = 'sh'
-                tdx_code = f"sh{ts_code[:-3]}"
-            elif ts_code.endswith('.SZ'):
-                market = 'sz'
-                tdx_code = f"sz{ts_code[:-3]}"
-            elif ts_code.endswith('.BJ'):
-                # 京市指数（北交所）
-                market = 'bj'
-                tdx_code = f"bj{ts_code[:-3]}"
-            else:
-                # 假设是纯数字代码，根据开头判断市场
-                if ts_code.startswith('6'):
-                    market = 'sh'
-                    ts_code = f"{ts_code}.SH"
-                elif ts_code.startswith('8') or ts_code.startswith('4'):
-                    # 京市股票以8或4开头
-                    market = 'bj'
-                    ts_code = f"{ts_code}.BJ"
-                else:
-                    market = 'sz'
-                    ts_code = f"{ts_code}.SZ"
-                tdx_code = f"{market}{ts_code[:-3]}"
-
-            from pathlib import Path
-            tdx_data_path = Path(window.data_manager.config.data.tdx_data_path)
-            tdx_file_path = tdx_data_path / market / 'lday' / f'{tdx_code}.day'
-
-            window.statusBar().showMessage(f"正在加载 {stock_name}({ts_code}) 数据...", 0)
-            window.tab_widget.setCurrentIndex(1)
-
-            # 显示进度条
-            if hasattr(window, 'progress_bar'):
-                window.progress_bar.setVisible(True)
-                window.progress_bar.setValue(0)
-
-            from src.ui.async_processing import DataReadThread
-            window.data_read_thread = DataReadThread(str(tdx_file_path), stock_name, ts_code)
-
-            # 连接信号
-            window.data_read_thread.data_read_completed.connect(
-                lambda df: self._on_data_read_completed(df, stock_name, ts_code)
-            )
-            window.data_read_thread.data_read_error.connect(self._on_data_read_error)
-            window.data_read_thread.data_read_progress.connect(self._on_data_read_progress)
-
-            window.data_read_thread.start()
+            
+            # 使用 process_stock_data 方法加载数据，确保应用正确的复权类型
+            window.process_stock_data(ts_code, stock_name)
 
         except (OSError, RuntimeError) as e:
             logger.exception(f"加载股票图表失败: {e}")
