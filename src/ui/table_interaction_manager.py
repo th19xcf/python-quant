@@ -135,6 +135,11 @@ class TableInteractionManager:
                 market = 'sz'
                 tdx_code = code
                 ts_code = f'{code[2:]}.SZ'
+            elif code.startswith('bj'):
+                # 京市指数（北交所）
+                market = 'bj'
+                tdx_code = code
+                ts_code = f'{code[2:]}.BJ'
             elif code.startswith('6'):
                 market = 'sh'
                 tdx_code = f'sh{code}'

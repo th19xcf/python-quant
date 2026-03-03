@@ -112,11 +112,23 @@ class ActionManager:
             elif ts_code.endswith('.SZ'):
                 market = 'sz'
                 tdx_code = f"sz{ts_code[:-3]}"
+            elif ts_code.endswith('.BJ'):
+                # 京市指数（北交所）
+                market = 'bj'
+                tdx_code = f"bj{ts_code[:-3]}"
             else:
-                # 假设是纯数字代码
-                market = 'sh' if ts_code.startswith('6') else 'sz'
-                tdx_code = f"{market}{ts_code}"
-                ts_code = f"{ts_code}.{'SH' if market == 'sh' else 'SZ'}"
+                # 假设是纯数字代码，根据开头判断市场
+                if ts_code.startswith('6'):
+                    market = 'sh'
+                    ts_code = f"{ts_code}.SH"
+                elif ts_code.startswith('8') or ts_code.startswith('4'):
+                    # 京市股票以8或4开头
+                    market = 'bj'
+                    ts_code = f"{ts_code}.BJ"
+                else:
+                    market = 'sz'
+                    ts_code = f"{ts_code}.SZ"
+                tdx_code = f"{market}{ts_code[:-3]}"
 
             from pathlib import Path
             tdx_data_path = Path(window.data_manager.config.data.tdx_data_path)

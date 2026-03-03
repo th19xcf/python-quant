@@ -252,7 +252,7 @@ class MainWindowUiMixin:
         # 添加导航项
         self.add_nav_item(self.nav_tree, "自选股", ["我的自选", "自定义板块1", "自定义板块2"])
         self.add_nav_item(self.nav_tree, "全景图", ["大盘指数", "行业板块", "概念板块"])
-        self.add_nav_item(self.nav_tree, "沪深京指数", ["沪市指数", "深市指数", "创业板指", "科创板指"])
+        self.add_nav_item(self.nav_tree, "沪深京指数", ["沪市指数", "深市指数", "京市指数", "创业板指", "科创板指"])
         self.add_nav_item(self.nav_tree, "沪深京板块", ["行业板块", "概念板块", "地域板块"])
         self.add_nav_item(self.nav_tree, "沪深京个股", ["全部A股", "上证A股", "深证A股", "创业板", "科创板"])
         self.add_nav_item(self.nav_tree, "热点主题", ["热门概念", "资金流入", "涨跌幅榜"])

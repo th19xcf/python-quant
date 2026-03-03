@@ -57,3 +57,8 @@ class DataViewManager:
         """显示深市指数总览"""
         logger.info("显示深市指数总览")
         return self.window._on_sz_index_impl()
+
+    def show_bj_index_overview(self):
+        """显示京市指数总览"""
+        logger.info("显示京市指数总览")
+        return self.window._on_bj_index_impl()

@@ -259,6 +259,10 @@ class MainWindowEventMixin:
                 # 点击深市指数时显示所有深市指数
                 if hasattr(self, 'data_view_manager'):
                     self.data_view_manager.show_sz_index_overview()
+            elif text == "京市指数":
+                # 点击京市指数时显示所有京市指数
+                if hasattr(self, 'data_view_manager'):
+                    self.data_view_manager.show_bj_index_overview()
             elif text in ["创业板指", "科创板指"]:
                 # 其他指数显示各自的K线图
                 if hasattr(self, 'data_view_manager'):
@@ -422,8 +426,15 @@ class MainWindowEventMixin:
                     # 深市代码，如 sz399001
                     symbol = current_code[2:]
                     current_code = f"{symbol}.SZ"
+                elif current_code.startswith('bj'):
+                    # 京市代码，如 bj899001
+                    symbol = current_code[2:]
+                    current_code = f"{symbol}.BJ"
                 elif current_code.startswith('6') or current_code.startswith('000'):
                     current_code = f"{current_code}.SH"
+                elif current_code.startswith('8') or current_code.startswith('4'):
+                    # 京市股票代码（北交所）
+                    current_code = f"{current_code}.BJ"
                 else:
                     current_code = f"{current_code}.SZ"
             
@@ -529,15 +540,23 @@ class MainWindowEventMixin:
                     if code_item:
                         code = code_item.text()
                         # 转换代码格式
-                        if code.startswith('sh') or code.startswith('sz'):
-                            # 已经是完整格式，如 sh000001
-                            market = 'SH' if code.startswith('sh') else 'SZ'
+                        if code.startswith('sh') or code.startswith('sz') or code.startswith('bj'):
+                            # 已经是完整格式，如 sh000001, bj899001
+                            if code.startswith('sh'):
+                                market = 'SH'
+                            elif code.startswith('sz'):
+                                market = 'SZ'
+                            else:
+                                market = 'BJ'
                             symbol = code[2:]
                             ts_code = f"{symbol}.{market}"
                         elif code.isdigit():
-                            # 纯数字代码，如 000014
+                            # 纯数字代码，如 000014, 899001
                             if code.startswith('6'):
                                 ts_code = f"{code}.SH"
+                            elif code.startswith('8') or code.startswith('4'):
+                                # 京市股票代码（北交所）
+                                ts_code = f"{code}.BJ"
                             else:
                                 ts_code = f"{code}.SZ"
                         else:
@@ -576,6 +595,20 @@ class MainWindowEventMixin:
             str: 股票名称
         """
         try:
+            # 尝试从表格中获取名称
+            if hasattr(self, 'stock_table') and self.stock_table:
+                row_count = self.stock_table.rowCount()
+                for row in range(row_count):
+                    code_item = self.stock_table.item(row, 1)
+                    name_item = self.stock_table.item(row, 2)
+                    if code_item and name_item:
+                        code = code_item.text()
+                        symbol = ts_code.split('.')[0]
+                        # 匹配各种格式：纯数字、sh/sz/bj前缀
+                        if code == symbol or code == f"sh{symbol}" or code == f"sz{symbol}" or code == f"bj{symbol}":
+                            return name_item.text()
+            
+            # 从数据库查询
             if hasattr(self, 'data_manager') and self.data_manager:
                 session = self.data_manager.db_manager.get_session()
                 if session:
@@ -596,7 +629,7 @@ class MainWindowEventMixin:
         检查股票数据文件是否存在
         
         Args:
-            ts_code: 股票代码 (如: 600519.SH)
+            ts_code: 股票代码 (如: 600519.SH, 835305.BJ)
             
         Returns:
             bool: 数据文件是否存在
@@ -609,9 +642,17 @@ class MainWindowEventMixin:
             elif ts_code.endswith('.SZ'):
                 market = 'sz'
                 tdx_code = f"sz{ts_code[:-3]}"
+            elif ts_code.endswith('.BJ'):
+                market = 'bj'
+                tdx_code = f"bj{ts_code[:-3]}"
             else:
                 # 假设是纯数字代码
-                market = 'sh' if ts_code.startswith('6') else 'sz'
+                if ts_code.startswith('6'):
+                    market = 'sh'
+                elif ts_code.startswith('8') or ts_code.startswith('4'):
+                    market = 'bj'
+                else:
+                    market = 'sz'
                 tdx_code = f"{market}{ts_code}"
             
             from pathlib import Path
@@ -638,8 +679,8 @@ class MainWindowEventMixin:
         """
         # 提取数字部分
         symbol = code.split('.')[0] if '.' in code else code
-        # 沪市指数以000开头，深市指数以399开头
-        return symbol.startswith('000') or symbol.startswith('399')
+        # 沪市指数以000开头，深市指数以399开头，京市指数以899开头
+        return symbol.startswith('000') or symbol.startswith('399') or symbol.startswith('899')
 
     def _get_current_index_list(self):
         """
@@ -660,15 +701,22 @@ class MainWindowEventMixin:
                     code_item = self.stock_table.item(row, 1)  # 代码列
                     if code_item:
                         code = code_item.text()
-                        # 只保留指数代码
-                        if code.startswith('sh000') or code.startswith('sz399'):
-                            market = 'SH' if code.startswith('sh') else 'SZ'
+                        # 只保留指数代码（沪市000、深市399、京市899）
+                        if code.startswith('sh000') or code.startswith('sz399') or code.startswith('bj899'):
+                            if code.startswith('sh'):
+                                market = 'SH'
+                            elif code.startswith('sz'):
+                                market = 'SZ'
+                            else:
+                                market = 'BJ'
                             symbol = code[2:]
                             ts_code = f"{symbol}.{market}"
                             index_list.append(ts_code)
-                        elif code.isdigit() and (code.startswith('000') or code.startswith('399')):
+                        elif code.isdigit() and (code.startswith('000') or code.startswith('399') or code.startswith('899')):
                             if code.startswith('000'):
                                 ts_code = f"{code}.SH"
+                            elif code.startswith('899'):
+                                ts_code = f"{code}.BJ"
                             else:
                                 ts_code = f"{code}.SZ"
                             index_list.append(ts_code)
@@ -703,6 +751,7 @@ class MainWindowEventMixin:
                 "399001.SZ": "深证成指", "399002.SZ": "深成指R", "399003.SZ": "深证100",
                 "399005.SZ": "中小板指", "399006.SZ": "创业板指",
                 "399007.SZ": "深证200", "399008.SZ": "深证700", "399009.SZ": "深证1000",
+                "899001.BJ": "北证50", "899050.BJ": "北证创新",
             }
             
             if ts_code in index_name_map:
@@ -717,7 +766,7 @@ class MainWindowEventMixin:
                     if code_item and name_item:
                         code = code_item.text()
                         symbol = ts_code.split('.')[0]
-                        if code == symbol or code == f"sh{symbol}" or code == f"sz{symbol}":
+                        if code == symbol or code == f"sh{symbol}" or code == f"sz{symbol}" or code == f"bj{symbol}":
                             return name_item.text()
             
             # 默认返回代码
@@ -732,7 +781,7 @@ class MainWindowEventMixin:
         检查指数数据文件是否存在
         
         Args:
-            ts_code: 指数代码 (如: 000001.SH)
+            ts_code: 指数代码 (如: 000001.SH, 899001.BJ)
             
         Returns:
             bool: 数据文件是否存在
@@ -745,11 +794,17 @@ class MainWindowEventMixin:
             elif ts_code.endswith('.SZ'):
                 market = 'sz'
                 tdx_code = f"sz{ts_code[:-3]}"
+            elif ts_code.endswith('.BJ'):
+                market = 'bj'
+                tdx_code = f"bj{ts_code[:-3]}"
             else:
                 # 假设是纯数字代码
                 if ts_code.startswith('000'):
                     market = 'sh'
                     tdx_code = f"sh{ts_code}"
+                elif ts_code.startswith('899'):
+                    market = 'bj'
+                    tdx_code = f"bj{ts_code}"
                 else:
                     market = 'sz'
                     tdx_code = f"sz{ts_code}"
