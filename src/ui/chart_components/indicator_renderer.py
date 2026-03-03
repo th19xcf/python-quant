@@ -160,11 +160,21 @@ class IndicatorRenderer:
                 return df
             
             if not hasattr(df, 'columns') or 'volume' not in df.columns:
+                logger.warning(f"render_volume: volume column not found, columns: {df.columns if hasattr(df, 'columns') else 'N/A'}")
                 return df
             
             volumes = df['volume'].to_numpy()
             if len(volumes) == 0:
+                logger.warning("render_volume: volumes array is empty")
                 return df
+            
+            # 打印成交量数据的统计信息
+            logger.debug(f"render_volume: volumes shape: {volumes.shape}")
+            logger.debug(f"render_volume: volumes min: {volumes.min()}")
+            logger.debug(f"render_volume: volumes max: {volumes.max()}")
+            logger.debug(f"render_volume: volumes mean: {volumes.mean()}")
+            logger.debug(f"render_volume: volumes std: {volumes.std()}")
+            logger.debug(f"render_volume: volumes sample: {volumes[:5]}")
             
             # 计算Y轴范围
             self._set_volume_y_range(plot_widget, volumes)
@@ -185,46 +195,70 @@ class IndicatorRenderer:
 
     def _set_volume_y_range(self, plot_widget: Any, volumes: np.ndarray):
         """设置成交量Y轴范围"""
+        if len(volumes) == 0:
+            plot_widget.setYRange(0, 100)
+            return
+        
+        # 打印成交量数据的统计信息
+        logger.debug(f"_set_volume_y_range: volumes shape: {volumes.shape}")
+        logger.debug(f"_set_volume_y_range: volumes min: {volumes.min()}")
+        logger.debug(f"_set_volume_y_range: volumes max: {volumes.max()}")
+        logger.debug(f"_set_volume_y_range: volumes mean: {volumes.mean()}")
+        
+        # 计算成交量数据的范围
         volume_min = volumes.min()
         volume_max = volumes.max()
+        volume_range = volume_max - volume_min
         
-        if volume_max > 0:
-            volume_mean = volumes.mean()
-            volume_std = volumes.std()
+        logger.debug(f"_set_volume_y_range: volume_range: {volume_range}")
+        
+        if volume_range > 0:
+            # 使用实际的最小值和最大值，但是缩小范围以增强视觉差异
+            # 这样可以让柱体之间的差异更加明显
+            y_min = max(0, volume_min - volume_range * 0.1)  # 底部留10%空间
+            y_max = volume_max + volume_range * 0.1  # 顶部留10%空间
             
-            if volume_std / volume_mean < 0.1:
-                # 数据比较集中
-                y_min = max(0, volume_mean - volume_std * 2)
-                y_max = volume_mean + volume_std * 3.5
-            else:
-                # 数据有一定差异
-                y_range = volume_max - volume_min
-                y_min = max(0, volume_min - y_range * 0.1)
-                y_max = volume_max + y_range * 0.1
+            logger.debug(f"_set_volume_y_range: y_min: {y_min}, y_max: {y_max}")
             
             plot_widget.setYRange(y_min, y_max)
         else:
-            plot_widget.setYRange(0, 100)
+            # 所有成交量值相同，使用默认范围
+            plot_widget.setYRange(0, volume_max * 1.2)
+
     
     def _draw_volume_bars(self, plot_widget: Any, x: np.ndarray, volumes: np.ndarray, df: Any):
         """绘制成交量柱状图"""
         closes = df['close'].to_numpy() if 'close' in df.columns else None
         opens = df['open'].to_numpy() if 'open' in df.columns else None
         
-        for i, vol in enumerate(volumes):
+        # 确保只绘制与x数组长度匹配的柱体
+        max_count = min(len(x), len(volumes))
+        
+        logger.debug(f"_draw_volume_bars: x shape: {x.shape}")
+        logger.debug(f"_draw_volume_bars: volumes shape: {volumes.shape}")
+        logger.debug(f"_draw_volume_bars: max_count: {max_count}")
+        logger.debug(f"_draw_volume_bars: volumes sample: {volumes[:5]}")
+        
+        for i in range(max_count):
             # 确定颜色：根据涨跌
             if closes is not None and opens is not None and i < len(closes) and i < len(opens):
                 color = '#FF0000' if closes[i] >= opens[i] else '#00FF00'
             else:
                 color = '#C0C0C0'
             
+            # 打印每个柱体的高度
+            if i < 5:  # 只打印前5个柱体的高度
+                logger.debug(f"_draw_volume_bars: i: {i}, volume: {volumes[i]}, color: {color}")
+            
+            # 为每个柱体创建一个单独的 BarGraphItem
             bar = pg.BarGraphItem(
                 x=[x[i]], 
-                height=[vol], 
+                height=[volumes[i]], 
                 width=0.8, 
                 brush=color,
                 pen=None
             )
+            
             plot_widget.addItem(bar)
     
     def _draw_volume_ma_lines(self, plot_widget: Any, x: np.ndarray, df: Any):
@@ -237,8 +271,14 @@ class IndicatorRenderer:
         for col_name, color in ma_configs:
             if col_name in df.columns:
                 ma_data = df[col_name].to_numpy().astype(np.float64)
+                # 确保只绘制与x数组长度匹配的数据
+                if len(ma_data) > len(x):
+                    ma_data = ma_data[-len(x):]
                 ma_mask = ~np.isnan(ma_data)
                 if np.any(ma_mask):
+                    # 确保mask与x长度匹配
+                    if len(ma_mask) > len(x):
+                        ma_mask = ma_mask[-len(x):]
                     plot_widget.plot(
                         x[ma_mask], 
                         ma_data[ma_mask], 
