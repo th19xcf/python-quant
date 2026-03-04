@@ -614,125 +614,67 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
         pl.DataFrame或pl.LazyFrame: 包含所有计算指标的DataFrame或LazyFrame
     """
     from src.utils.lazy_optimizer import optimize_lazy_frame, execute_optimized_pipeline
-    from src.tech_analysis.indicator_cache import global_indicator_cache
     
-    # 检查是否为LazyFrame，如果是则直接计算
-    if isinstance(df, pl.LazyFrame):
-        # 对于LazyFrame，直接计算，不使用缓存
-        # 默认计算所有指标
-        if indicator_types is None:
-            indicator_types = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'boll', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'abi', 'adl', 'adr', 'obos']
+    # 默认计算所有指标
+    if indicator_types is None:
+        indicator_types = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'boll', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'abi', 'adl', 'adr', 'obos']
+    
+    # 1. 收集所有需要计算的指标和参数
+    indicator_params = get_indicator_params(**params)
+    
+    # 2. 收集所有需要的窗口大小
+    all_windows = collect_used_windows(indicator_types, indicator_params)
+    
+    # 3. 预计算共享的窗口列（最高价、最低价的窗口统计）
+    need_high_low = any(indicator in indicator_types for indicator in ['kdj', 'wr', 'boll'])
+    
+    # 4. 使用Lazy API构建查询，确保所有计算在单个查询计划中执行
+    lazy_df = df.lazy()
+    
+    # 步骤1: 添加共享的窗口列
+    # 只创建实际需要的共享窗口列
+    if need_high_low:
+        # 收集实际使用的窗口大小
+        indicator_windows = collect_indicator_windows(indicator_types, indicator_params)
+        used_windows = merge_used_windows(indicator_windows)
         
-        # 1. 收集所有需要计算的指标和参数
-        indicator_params = get_indicator_params(**params)
-        
-        # 2. 收集所有需要的窗口大小
-        all_windows = collect_used_windows(indicator_types, indicator_params)
-        
-        # 3. 预计算共享的窗口列（最高价、最低价的窗口统计）
-        need_high_low = any(indicator in indicator_types for indicator in ['kdj', 'wr', 'boll'])
-        
-        # 4. 使用Lazy API构建查询，确保所有计算在单个查询计划中执行
-        lazy_df = df.lazy()
-        
-        # 步骤1: 添加共享的窗口列
-        # 只创建实际需要的共享窗口列
-        if need_high_low:
-            # 收集实际使用的窗口大小
-            indicator_windows = collect_indicator_windows(indicator_types, indicator_params)
-            used_windows = merge_used_windows(indicator_windows)
-            
-            # 只创建实际使用的窗口列
-            for window in used_windows:
-                # 预计算最高价和最低价的rolling_max/min
-                lazy_df = lazy_df.with_columns(
-                    pl.col('high').rolling_max(window_size=window, min_periods=1).alias(f'high_n_{window}'),
-                    pl.col('low').rolling_min(window_size=window, min_periods=window).alias(f'low_n_{window}')
-                )
-        
-        # 步骤2: 计算趋势类指标
-        lazy_df = calculate_trend_indicators(lazy_df, indicator_types, **params)
-        
-        # 步骤3: 计算震荡类指标
-        lazy_df = calculate_oscillator_indicators(lazy_df, indicator_types, **params)
-        
-        # 步骤4: 计算成交量类指标
-        lazy_df = calculate_volume_indicators(lazy_df, indicator_types, **params)
-        
-        # 步骤5: 计算波动率类指标
-        lazy_df = calculate_volatility_indicators(lazy_df, indicator_types, **params)
-        
-        # 步骤6: 计算成本类指标
-        lazy_df = calculate_cost_indicators(lazy_df, indicator_types, **params)
+        # 只创建实际使用的窗口列
+        for window in used_windows:
+            # 预计算最高价和最低价的rolling_max/min
+            lazy_df = lazy_df.with_columns(
+                pl.col('high').rolling_max(window_size=window, min_periods=1).alias(f'high_n_{window}'),
+                pl.col('low').rolling_min(window_size=window, min_periods=window).alias(f'low_n_{window}')
+            )
+    
+    # 步骤2: 计算趋势类指标
+    lazy_df = calculate_trend_indicators(lazy_df, indicator_types, **params)
+    
+    # 步骤3: 计算震荡类指标
+    lazy_df = calculate_oscillator_indicators(lazy_df, indicator_types, **params)
+    
+    # 步骤4: 计算成交量类指标
+    lazy_df = calculate_volume_indicators(lazy_df, indicator_types, **params)
+    
+    # 步骤5: 计算波动率类指标
+    lazy_df = calculate_volatility_indicators(lazy_df, indicator_types, **params)
+    
+    # 步骤6: 计算成本类指标
+    lazy_df = calculate_cost_indicators(lazy_df, indicator_types, **params)
 
-        # 步骤7: 计算大势型指标
-        lazy_df = calculate_market_breadth_indicators(lazy_df, indicator_types, **params)
-        
-        # 清理临时列
-        lazy_df = cleanup_temp_columns(lazy_df, indicator_types, indicator_params)
-        
-        # 优化查询计划
-        lazy_df = optimize_lazy_frame(lazy_df)
-        
+    # 步骤7: 计算大势型指标
+    lazy_df = calculate_market_breadth_indicators(lazy_df, indicator_types, **params)
+    
+    # 清理临时列
+    lazy_df = cleanup_temp_columns(lazy_df, indicator_types, indicator_params)
+    
+    # 优化查询计划，充分利用Polars的并行计算能力
+    lazy_df = optimize_lazy_frame(lazy_df)
+    
+    # 检查输入类型并返回相应的结果
+    if isinstance(df, pl.LazyFrame):
         return lazy_df
     else:
-        # 对于DataFrame，使用缓存
-        # 默认计算所有指标
-        if indicator_types is None:
-            indicator_types = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'boll', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'abi', 'adl', 'adr', 'obos']
-        
-        # 1. 收集所有需要计算的指标和参数
-        indicator_params = get_indicator_params(**params)
-        
-        # 2. 收集所有需要的窗口大小
-        all_windows = collect_used_windows(indicator_types, indicator_params)
-        
-        # 3. 预计算共享的窗口列（最高价、最低价的窗口统计）
-        need_high_low = any(indicator in indicator_types for indicator in ['kdj', 'wr', 'boll'])
-        
-        # 4. 使用Lazy API构建查询，确保所有计算在单个查询计划中执行
-        lazy_df = df.lazy()
-        
-        # 步骤1: 添加共享的窗口列
-        # 只创建实际需要的共享窗口列
-        if need_high_low:
-            # 收集实际使用的窗口大小
-            indicator_windows = collect_indicator_windows(indicator_types, indicator_params)
-            used_windows = merge_used_windows(indicator_windows)
-            
-            # 只创建实际使用的窗口列
-            for window in used_windows:
-                # 预计算最高价和最低价的rolling_max/min
-                lazy_df = lazy_df.with_columns(
-                    pl.col('high').rolling_max(window_size=window, min_periods=1).alias(f'high_n_{window}'),
-                    pl.col('low').rolling_min(window_size=window, min_periods=window).alias(f'low_n_{window}')
-                )
-        
-        # 步骤2: 计算趋势类指标
-        lazy_df = calculate_trend_indicators(lazy_df, indicator_types, **params)
-        
-        # 步骤3: 计算震荡类指标
-        lazy_df = calculate_oscillator_indicators(lazy_df, indicator_types, **params)
-        
-        # 步骤4: 计算成交量类指标
-        lazy_df = calculate_volume_indicators(lazy_df, indicator_types, **params)
-        
-        # 步骤5: 计算波动率类指标
-        lazy_df = calculate_volatility_indicators(lazy_df, indicator_types, **params)
-        
-        # 步骤6: 计算成本类指标
-        lazy_df = calculate_cost_indicators(lazy_df, indicator_types, **params)
-
-        # 步骤7: 计算大势型指标
-        lazy_df = calculate_market_breadth_indicators(lazy_df, indicator_types, **params)
-        
-        # 清理临时列
-        lazy_df = cleanup_temp_columns(lazy_df, indicator_types, indicator_params)
-        
-        # 优化查询计划
-        lazy_df = optimize_lazy_frame(lazy_df)
-        
-        # 执行计算
+        # 对于DataFrame，执行计算并优化内存使用
         result = execute_optimized_pipeline(lazy_df)
         # 内存优化：转换数据类型
         optimized_result = MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)

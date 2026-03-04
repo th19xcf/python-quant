@@ -1001,64 +1001,81 @@ class DataManager(IDataProvider, IDataProcessor):
             
             # 将日线数据转换为周线或月线
             if not df.is_empty():
-                # 使用惰性计算优化转换过程
-                lazy_df = df.lazy()
-                
-                # 确保有日期列
-                if 'trade_date' in df.columns:
-                    lazy_df = lazy_df.with_columns(pl.col('trade_date').alias('date'))
-                elif 'date' not in df.columns:
-                    logger.error("DataFrame中没有日期列")
-                    return df
-                
-                # 转换日期列为datetime类型
-                lazy_df = lazy_df.with_columns(pl.col('date').str.strptime(pl.Date, "%Y-%m-%d"))
-                
-                # 根据频率确定分组方式
-                if frequency == '1w':
-                    # 周线：按周分组
-                    lazy_df = lazy_df.with_columns(
-                        pl.col('date').dt.week().alias('week'),
-                        pl.col('date').dt.year().alias('year')
-                    )
-                    group_cols = ['year', 'week']
-                elif frequency == '1m':
-                    # 月线：按月分组
-                    lazy_df = lazy_df.with_columns(
-                        pl.col('date').dt.month().alias('month'),
-                        pl.col('date').dt.year().alias('year')
-                    )
-                    group_cols = ['year', 'month']
-                else:
-                    return df
-                
-                # 聚合数据
-                lazy_df = lazy_df.group_by(group_cols).agg([
-                    pl.col('date').first().alias('date'),
-                    pl.col('open').first().alias('open'),
-                    pl.col('high').max().alias('high'),
-                    pl.col('low').min().alias('low'),
-                    pl.col('close').last().alias('close'),
-                    pl.col('vol').sum().alias('vol'),
-                    pl.col('amount').sum().alias('amount'),
-                    pl.col('pct_chg').sum().alias('pct_chg'),
-                    pl.col('change').sum().alias('change')
-                ])
-                
-                # 按日期排序
-                lazy_df = lazy_df.sort('date')
-                
-                # 将日期转换回字符串格式
-                lazy_df = lazy_df.with_columns(
-                    pl.col('date').dt.strftime("%Y-%m-%d").alias('date')
-                )
-                
-                # 执行优化的惰性计算
-                result = lazy_exec(lazy_df)
-                # 内存优化：转换数据类型
-                optimized_result = MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
-                logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{optimized_result.height}条")
-                result = optimized_result
+                try:
+                    # 使用惰性计算优化转换过程
+                    lazy_df = df.lazy()
+                    
+                    # 确保有日期列
+                    if 'trade_date' in df.columns:
+                        lazy_df = lazy_df.with_columns(pl.col('trade_date').alias('date'))
+                    elif 'date' not in df.columns:
+                        logger.error("DataFrame中没有日期列")
+                        result = df
+                    else:
+                        # 检查date列的类型，如果是字符串类型，转换为日期类型
+                        if str(lazy_df.schema['date']) == 'String':
+                            lazy_df = lazy_df.with_columns(pl.col('date').str.strptime(pl.Date, "%Y-%m-%d"))
+                        elif str(lazy_df.schema['date']) == 'Datetime':
+                            lazy_df = lazy_df.with_columns(pl.col('date').dt.date().alias('date'))
+                        
+                        # 根据频率确定分组方式
+                        if frequency == '1w':
+                            # 周线：按周分组
+                            lazy_df = lazy_df.with_columns(
+                                pl.col('date').dt.week().alias('week'),
+                                pl.col('date').dt.year().alias('year')
+                            )
+                            group_cols = ['year', 'week']
+                        elif frequency == '1m':
+                            # 月线：按月分组
+                            lazy_df = lazy_df.with_columns(
+                                pl.col('date').dt.month().alias('month'),
+                                pl.col('date').dt.year().alias('year')
+                            )
+                            group_cols = ['year', 'month']
+                        else:
+                            result = df
+                        
+                        # 聚合数据
+                        # 只聚合存在的列
+                        agg_columns = [
+                            pl.col('date').first().alias('date'),
+                            pl.col('open').first().alias('open'),
+                            pl.col('high').max().alias('high'),
+                            pl.col('low').min().alias('low'),
+                            pl.col('close').last().alias('close'),
+                            pl.col('vol').sum().alias('vol'),
+                            pl.col('amount').sum().alias('amount')
+                        ]
+                        
+                        # 检查是否存在pct_chg列
+                        if 'pct_chg' in df.columns:
+                            agg_columns.append(pl.col('pct_chg').sum().alias('pct_chg'))
+                        
+                        # 检查是否存在change列
+                        if 'change' in df.columns:
+                            agg_columns.append(pl.col('change').sum().alias('change'))
+                        
+                        lazy_df = lazy_df.group_by(group_cols).agg(agg_columns)
+                        
+                        # 按日期排序
+                        lazy_df = lazy_df.sort('date')
+                        
+                        # 将日期转换回字符串格式
+                        lazy_df = lazy_df.with_columns(
+                            pl.col('date').dt.strftime("%Y-%m-%d").alias('date')
+                        )
+                        
+                        # 执行优化的惰性计算
+                        result = lazy_exec(lazy_df)
+                        # 内存优化：转换数据类型
+                        optimized_result = MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
+                        logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{optimized_result.height}条")
+                        result = optimized_result
+                except Exception as e:
+                    logger.error(f"转换日线数据为{frequency}数据失败: {e}")
+                    # 如果转换失败，返回原始日线数据
+                    result = df
             else:
                 result = df
         else:

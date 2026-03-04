@@ -255,16 +255,46 @@ class IndicatorCache:
             logger.warning("数据中没有核心列，无法生成缓存键前缀")
             return
         
-        # 计算数据哈希
-        data_sample = data.select(data_cols).head(100)
-        data_str = data_sample.to_csv().encode('utf-8')
-        data_hash = hashlib.md5(data_str).hexdigest()
+        # 计算数据哈希 - 使用更高效的方法
+        try:
+            # 只采样前50行和后50行，减少计算量
+            sample_size = min(50, len(data) // 2)
+            head_sample = data.select(data_cols).head(sample_size)
+            tail_sample = data.select(data_cols).tail(sample_size)
+            
+            # 使用Polars内置的哈希方法（更快）
+            head_hash = head_sample.hash_rows(seed=42).sum()
+            tail_hash = tail_sample.hash_rows(seed=42).sum()
+            row_count = len(data)
+            data_hash = hashlib.md5(f"{head_hash}_{tail_hash}_{row_count}".encode()).hexdigest()
+        except Exception as e:
+            # 降级方案：使用numpy
+            logger.debug(f"Polars哈希失败，使用numpy: {e}")
+            try:
+                data_sample = data.select(data_cols).head(100)
+                data_bytes = data_sample.to_numpy().tobytes()
+                data_hash = hashlib.md5(data_bytes).hexdigest()
+            except Exception as e2:
+                # 最终降级方案
+                logger.warning(f"numpy哈希也失败，使用简化方案: {e2}")
+                data_hash = hashlib.md5(f"{len(data)}_{hash(tuple(data_cols))}".encode()).hexdigest()
         
         # 生成缓存键前缀
         if indicator_type:
             prefix = f"{indicator_type}_{data_hash}_"
         else:
-            prefix = f"_data_hash_"
+            # 生成包含数据哈希的前缀
+            keys_to_remove = []
+            for key in self._cache.keys():
+                if f"_{data_hash}_" in key:
+                    keys_to_remove.append(key)
+            
+            for key in keys_to_remove:
+                del self._cache[key]
+            
+            self._evictions += len(keys_to_remove)
+            logger.info(f"使{len(keys_to_remove)}个缓存条目失效")
+            return
         
         # 清除相关缓存
         keys_to_remove = [key for key in self._cache.keys() 

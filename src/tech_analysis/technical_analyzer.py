@@ -51,10 +51,6 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         self.pl_df = None
         self.is_lazy = False
         
-        # 按需转换并缓存Pandas DataFrame
-        self._pandas_cache = None
-        self._pandas_cache_hash = None
-        
         if hasattr(data, 'collect'):
             # 输入是Polars LazyFrame
             self.pl_df = data
@@ -164,12 +160,11 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         
         if self.is_lazy:
             # 对于LazyFrame，使用列名和数据类型生成哈希
-            # 这是一个简化的实现，实际应用中可能需要更复杂的哈希生成方法
             schema = df.schema
             hash_components = [str(schema)]
             return hash(tuple(hash_components))
         else:
-            # 对于DataFrame，使用原始方法
+            # 对于DataFrame，使用更高效的哈希生成方法
             row_count = df.height
             
             if row_count == 0:
@@ -177,17 +172,23 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             
             key_cols = ['open', 'high', 'low', 'close', 'volume']
             
+            # 只使用行数和首尾行数据，减少计算开销
             hash_components = [row_count]
             
-            first_row = df.slice(0, 1).select(key_cols)
-            hash_components.append(hash(tuple(first_row.to_numpy().flatten())))
+            # 只获取必要的列，减少内存使用
+            key_df = df.select(key_cols)
             
-            last_row = df.slice(-1, 1).select(key_cols)
-            hash_components.append(hash(tuple(last_row.to_numpy().flatten())))
+            # 获取首行数据
+            first_row = key_df.slice(0, 1)
+            if not first_row.is_empty():
+                first_values = tuple(first_row.row(0))
+                hash_components.append(hash(first_values))
             
-            for col in key_cols:
-                col_sum = df.select(pl.col(col).sum()).item()
-                hash_components.append(hash(col_sum))
+            # 获取末行数据
+            last_row = key_df.slice(-1, 1)
+            if not last_row.is_empty():
+                last_values = tuple(last_row.row(0))
+                hash_components.append(hash(last_values))
             
             return hash(tuple(hash_components))
     
@@ -224,13 +225,6 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         # 组合所有参数生成唯一哈希
         return hash((self._data_hash, indicator_type, args, sorted_kwargs))
     
-    def _clear_pandas_cache(self):
-        """
-        清除Pandas DataFrame缓存
-        """
-        self._pandas_cache = None
-        self._pandas_cache_hash = None
-    
     def _calculate_window_based_indicator(self, indicator_type, calc_func, windows):
         """
         通用窗口指标计算方法
@@ -241,7 +235,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             windows: 窗口列表
             
         Returns:
-            pd.DataFrame: 包含计算结果的DataFrame
+            pl.DataFrame: 包含计算结果的Polars DataFrame
         """
         # 确保windows是列表
         if not isinstance(windows, list):
@@ -291,11 +285,12 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             
             # 更新计算状态
             self.calculated_indicators[indicator_type].update(windows_to_calculate)
-            
-            # 清除转换缓存
-            self._clear_pandas_cache()
         
-        return self._ensure_pandas_df()
+        # 执行惰性计算并返回Polars DataFrame
+        if self.is_lazy:
+            self.pl_df = self.pl_df.collect()
+            self.is_lazy = False
+        return self.pl_df
     
     def _calculate_simple_indicator(self, indicator_type, calc_func, **kwargs):
         """
@@ -307,7 +302,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             **kwargs: 计算参数
             
         Returns:
-            pd.DataFrame: 包含计算结果的DataFrame
+            pl.DataFrame: 包含计算结果的Polars DataFrame
         """
         # 检查是否已经计算过该指标
         if not self.calculated_indicators[indicator_type]:
@@ -348,27 +343,14 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             
             # 更新计算状态
             self.calculated_indicators[indicator_type] = True
-            
-            # 清除转换缓存
-            self._clear_pandas_cache()
         
-        return self._ensure_pandas_df()
+        # 执行惰性计算并返回Polars DataFrame
+        if self.is_lazy:
+            self.pl_df = self.pl_df.collect()
+            self.is_lazy = False
+        return self.pl_df
     
-    def _ensure_pandas_df(self):
-        """
-        确保pandas DataFrame已初始化，仅在需要时转换，并缓存结果
-        
-        Returns:
-            pd.DataFrame: 转换后的Pandas DataFrame
-        """
-        if self._pandas_cache is None or self._data_hash != self._pandas_cache_hash:
-            # 如果是LazyFrame，先执行计算
-            if self.is_lazy:
-                self.pl_df = self.pl_df.collect()
-                self.is_lazy = False
-            self._pandas_cache = self.pl_df.to_pandas()
-            self._pandas_cache_hash = self._data_hash
-        return self._pandas_cache
+
     
     def calculate_macd(self, fast_period=12, slow_period=26, signal_period=9):
         """
@@ -405,7 +387,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             std_dev: 标准差倍数，默认为2.0
             
         Returns:
-            pd.DataFrame: 包含Boll指标的DataFrame
+            pl.DataFrame: 包含Boll指标的Polars DataFrame
         """
         # 确保windows是列表
         if not isinstance(windows, list):
@@ -420,11 +402,12 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             
             # 更新计算状态
             self.calculated_indicators['boll'].update(windows_to_calculate)
-            
-            # 清除转换缓存
-            self._clear_pandas_cache()
         
-        return self._ensure_pandas_df()
+        # 执行惰性计算并返回Polars DataFrame
+        if self.is_lazy:
+            self.pl_df = self.pl_df.collect()
+            self.is_lazy = False
+        return self.pl_df
     
     def calculate_wr(self, windows=None):
         """
@@ -442,7 +425,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         
         return self._calculate_window_based_indicator('wr', calculate_wr_polars, windows)
     
-    def sample_data(self, target_points=1000, strategy='uniform', return_polars=False):
+    def sample_data(self, target_points=1000, strategy='uniform', return_polars=True):
         """
         对数据进行采样，减少数据量，提高图表渲染速度
         
@@ -452,37 +435,33 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             return_polars: 是否返回Polars DataFrame
             
         Returns:
-            pd.DataFrame或pl.DataFrame: 采样后的数据
+            pl.DataFrame或pd.DataFrame: 采样后的数据
         """
         current_data = self.get_data(return_polars=True)
         sampled_data = sample_data_polars(current_data, target_points, strategy)
         return sampled_data if return_polars else sampled_data.to_pandas()
     
-    def get_data(self, return_polars=False, sample=False, sample_params=None):
+    def get_data(self, return_polars=True, sample=False, sample_params=None):
         """
         获取包含所有计算指标的数据
         
         Args:
-            return_polars: 是否返回Polars DataFrame，默认返回pandas DataFrame
+            return_polars: 是否返回Polars DataFrame，默认返回Polars DataFrame
             sample: 是否对数据进行采样
             sample_params: 采样参数，字典类型，包含target_points和strategy
             
         Returns:
-            pd.DataFrame、pl.DataFrame或pl.LazyFrame: 包含所有指标的数据
+            pl.DataFrame或pd.DataFrame: 包含所有指标的数据
         """
+        # 执行惰性计算
+        if self.is_lazy:
+            self.pl_df = self.pl_df.collect()
+            self.is_lazy = False
+        
         if return_polars:
-            if self.is_lazy:
-                # 保持惰性计算
-                data = self.pl_df
-            else:
-                data = self.pl_df
+            data = self.pl_df
         else:
-            # 对于非Polars返回，需要执行惰性计算
-            if self.is_lazy:
-                # 执行惰性计算
-                self.pl_df = self.pl_df.collect()
-                self.is_lazy = False
-            data = self._ensure_pandas_df()
+            data = self.pl_df.to_pandas()
         
         if sample:
             sample_params = sample_params or {}
@@ -503,23 +482,6 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         Returns:
             bool: 如果指标已计算返回True，否则返回False
         """
-        # 检查是否为插件指标
-        if self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():
-            # 生成参数哈希，处理不可哈希类型
-            def make_hashable(obj):
-                if isinstance(obj, list):
-                    return tuple(obj)
-                elif isinstance(obj, dict):
-                    return tuple(sorted((k, make_hashable(v)) for k, v in obj.items()))
-                elif isinstance(obj, set):
-                    return frozenset(obj)
-                return obj
-            
-            # 生成参数哈希
-            hashable_kwargs = {k: make_hashable(v) for k, v in kwargs.items()}
-            params_hash = hash(tuple(sorted(hashable_kwargs.items())))
-            return indicator_type in self.calculated_indicators['plugin'] and params_hash in self.calculated_indicators['plugin'][indicator_type]
-        
         # 检查指标类型是否存在
         if indicator_type not in self.calculated_indicators:
             return False
@@ -579,8 +541,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             original_columns = ['open', 'high', 'low', 'close', 'volume']
             self.pl_df = self.pl_df.select(original_columns)
             
-            # 清除转换缓存
-            self._clear_pandas_cache()
+
         
         def _reset_plugin_indicator(plugin_name):
             """重置特定插件指标"""
@@ -589,7 +550,6 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 # 从缓存中删除
                 # 注意：这里无法直接删除全局缓存中的条目，因为缓存键包含数据哈希
                 # 但我们可以清除本地计算缓存
-                self._clear_pandas_cache()
         
         def _reset_window_based_indicator(ind_type, win):
             """重置基于窗口的指标"""
@@ -634,7 +594,6 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 columns_to_drop_existing = [col for col in columns_to_drop if col in self.pl_df.columns]
                 if columns_to_drop_existing:
                     self.pl_df = self.pl_df.drop(columns_to_drop_existing)
-                    self._clear_pandas_cache()
         
         def _reset_simple_indicator(ind_type):
             """重置简单指标"""
@@ -655,7 +614,6 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             columns_to_drop_existing = [col for col in columns_to_drop if col in self.pl_df.columns]
             if columns_to_drop_existing:
                 self.pl_df = self.pl_df.drop(columns_to_drop_existing)
-                self._clear_pandas_cache()
         
         # 主逻辑
         if not indicator_type:
@@ -678,7 +636,6 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 for cache_key in list(self._calculate_cache.keys()):
                     if cache_key.startswith('plugin_'):
                         del self._calculate_cache[cache_key]
-                self._clear_pandas_cache()
     
     def get_calculated_indicators(self):
         """
@@ -860,7 +817,11 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         params_hash = hash(tuple(sorted(hashable_kwargs.items())))
         
         if plugin_name in self.calculated_indicators['plugin'] and params_hash in self.calculated_indicators['plugin'][plugin_name]:
-            return self._ensure_pandas_df()
+            # 返回Polars DataFrame
+            if self.is_lazy:
+                self.pl_df = self.pl_df.collect()
+                self.is_lazy = False
+            return self.pl_df
         
         # 尝试从全局缓存获取结果
         cached_result = None
@@ -877,12 +838,16 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 if new_columns:
                     self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
                 
-                # 更新计算状态和清除缓存
+                # 更新计算状态
                 if plugin_name not in self.calculated_indicators['plugin']:
                     self.calculated_indicators['plugin'][plugin_name] = set()
                 self.calculated_indicators['plugin'][plugin_name].add(params_hash)
-                self._clear_pandas_cache()
-                return self._ensure_pandas_df()
+                
+                # 返回Polars DataFrame
+                if self.is_lazy:
+                    self.pl_df = self.pl_df.collect()
+                    self.is_lazy = False
+                return self.pl_df
         
         # 检查是否可以使用增量计算
         incremental_data = kwargs.get('incremental_data', None)
@@ -916,13 +881,16 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     except Exception as e:
                         logger.debug(f"缓存插件指标{plugin_name}增量计算结果失败: {e}")
                     
-                    # 更新计算状态和清除缓存
+                    # 更新计算状态
                     if plugin_name not in self.calculated_indicators['plugin']:
                         self.calculated_indicators['plugin'][plugin_name] = set()
                     self.calculated_indicators['plugin'][plugin_name].add(params_hash)
-                    self._clear_pandas_cache()
                     
-                    return self._ensure_pandas_df()
+                    # 返回Polars DataFrame
+                    if self.is_lazy:
+                        self.pl_df = self.pl_df.collect()
+                        self.is_lazy = False
+                    return self.pl_df
                 except Exception as e:
                     logger.warning(f"增量计算插件指标{plugin_name}失败，使用常规计算: {e}")
         
@@ -949,15 +917,14 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     except Exception as e:
                         logger.debug(f"缓存插件指标{plugin_name}结果失败: {e}")
                     
-                    # 更新计算状态和清除缓存
+                    # 更新计算状态
                     if plugin_name not in self.calculated_indicators['plugin']:
                         self.calculated_indicators['plugin'][plugin_name] = set()
                     self.calculated_indicators['plugin'][plugin_name].add(params_hash)
-                    self._clear_pandas_cache()
             else:
                 # 旧插件，使用pandas DataFrame
                 # 只在必要时转换为Pandas DataFrame
-                df_pd = self._ensure_pandas_df()
+                df_pd = self.pl_df.to_pandas()
                 
                 # 调用插件的calculate方法
                 result_df = plugin.calculate(df_pd, **kwargs)
@@ -982,15 +949,18 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     except Exception as e:
                         logger.debug(f"缓存插件指标{plugin_name}结果失败: {e}")
                     
-                    # 更新计算状态和清除缓存
+                    # 更新计算状态
                     if plugin_name not in self.calculated_indicators['plugin']:
                         self.calculated_indicators['plugin'][plugin_name] = set()
                     self.calculated_indicators['plugin'][plugin_name].add(params_hash)
-                    self._clear_pandas_cache()
         except (ValueError, TypeError, RuntimeError) as e:
             raise RuntimeError(f"计算插件指标{plugin_name}失败: {str(e)}")
 
-        return self._ensure_pandas_df()
+        # 返回Polars DataFrame
+        if self.is_lazy:
+            self.pl_df = self.pl_df.collect()
+            self.is_lazy = False
+        return self.pl_df
     
     def calculate_indicator_parallel(self, indicator_type, *args, **kwargs):
         """
@@ -1033,9 +1003,6 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 
                 # 更新计算状态
                 self.calculated_indicators[indicator_type].update(windows_to_calculate)
-                
-                # 清除转换缓存
-                self._clear_pandas_cache()
         elif indicator_type in ['macd', 'obv']:
             # 对于不支持多窗口的指标，直接使用批量计算函数
             lazy_df = self.pl_df.lazy()
@@ -1045,14 +1012,16 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             # 更新计算状态
             self.calculated_indicators[indicator_type] = True
             
-            # 清除转换缓存
-            self._clear_pandas_cache()
+
         else:
             # 对于插件指标，调用常规计算方法
             self.calculate_indicator(indicator_type, *args, **kwargs)
         
-        # 返回转换后的Pandas DataFrame
-        return self._ensure_pandas_df()
+        # 返回Polars DataFrame
+        if self.is_lazy:
+            self.pl_df = self.pl_df.collect()
+            self.is_lazy = False
+        return self.pl_df
     
     def calculate_indicator(self, indicator_type, *args, **kwargs):
         """
@@ -1094,10 +1063,13 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 else:
                     self.calculated_indicators[indicator_type] = True
             
-            # 清除转换缓存
-            self._clear_pandas_cache()
+
             
-            return self._ensure_pandas_df()
+            # 返回Polars DataFrame
+            if self.is_lazy:
+                self.pl_df = self.pl_df.collect()
+                self.is_lazy = False
+            return self.pl_df
         
         # 检查是否可以使用增量计算
         incremental_data = kwargs.get('incremental_data', None)
@@ -1119,9 +1091,6 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 except Exception as e:
                     logger.debug(f"缓存{indicator_type}增量计算结果失败: {e}")
                 
-                # 清除转换缓存
-                self._clear_pandas_cache()
-                
                 # 更新计算状态
                 if indicator_type in self.calculated_indicators:
                     if isinstance(self.calculated_indicators[indicator_type], set):
@@ -1132,7 +1101,11 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     else:
                         self.calculated_indicators[indicator_type] = True
                 
-                return self._ensure_pandas_df()
+                # 返回Polars DataFrame
+                if self.is_lazy:
+                    self.pl_df = self.pl_df.collect()
+                    self.is_lazy = False
+                return self.pl_df
             except Exception as e:
                 logger.warning(f"增量计算{indicator_type}失败，使用常规计算: {e}")
         
@@ -1153,8 +1126,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             except Exception as e:
                 logger.debug(f"缓存{indicator_type}结果失败: {e}")
             
-            # 清除转换缓存
-            self._clear_pandas_cache()
+
             
             # 更新计算状态
             if indicator_type in self.calculated_indicators:
@@ -1166,7 +1138,11 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 else:
                     self.calculated_indicators[indicator_type] = True
             
-            return self._ensure_pandas_df()
+            # 返回Polars DataFrame
+            if self.is_lazy:
+                self.pl_df = self.pl_df.collect()
+                self.is_lazy = False
+            return self.pl_df
         except ValueError as e:
             raise ValueError(f"不支持的指标类型: {indicator_type}") from e
     
@@ -1304,10 +1280,13 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             else:
                 logger.info("所有插件指标已计算，无需重复计算")
 
-        # 清除转换缓存
-        self._clear_pandas_cache()
 
-        return self._ensure_pandas_df()
+
+        # 返回Polars DataFrame
+        if self.is_lazy:
+            self.pl_df = self.pl_df.collect()
+            self.is_lazy = False
+        return self.pl_df
     
     def calculate_plugin_indicators_parallel(self, plugin_names, *args, **kwargs):
         """
@@ -1326,7 +1305,11 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         
         # 检查是否有可用的插件指标
         if not plugin_names:
-            return self._ensure_pandas_df()
+            # 返回Polars DataFrame
+            if self.is_lazy:
+                self.pl_df = self.pl_df.collect()
+                self.is_lazy = False
+            return self.pl_df
         
         # 导入必要的模块
         import concurrent.futures
@@ -1373,7 +1356,11 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         else:
             logger.info("所有插件指标已计算，无需重复计算")
         
-        return self._ensure_pandas_df()
+        # 返回Polars DataFrame
+        if self.is_lazy:
+            self.pl_df = self.pl_df.collect()
+            self.is_lazy = False
+        return self.pl_df
     
     def calculate_all_indicators(self, data: Optional[Union[pl.DataFrame, pd.DataFrame]] = None, indicator_types: Optional[List[str]] = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
         """
@@ -1533,7 +1520,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
 
         # 返回结果，根据参数决定返回类型
         return_polars = params.get('return_polars', False)
-        return self.pl_df if return_polars else self._ensure_pandas_df()
+        return self.pl_df if return_polars else self.pl_df.to_pandas()
     
     def get_supported_indicators(self) -> List[str]:
         """
