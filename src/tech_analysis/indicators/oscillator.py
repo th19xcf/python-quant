@@ -8,6 +8,11 @@
 
 import polars as pl
 from ..utils import to_float32, calculate_mad
+from ..common_calculations import (
+    calculate_price_change,
+    calculate_gain_loss,
+    add_default_columns
+)
 
 
 def calculate_rsi(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
@@ -22,22 +27,22 @@ def calculate_rsi(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
         pl.LazyFrame: 包含RSI指标的LazyFrame
     """
     # 计算价格变化
-    price_change = pl.col('close').diff()
-    
+    lazy_df = calculate_price_change(lazy_df)
     # 计算上涨和下跌变化
-    gain = pl.when(price_change > 0).then(price_change).otherwise(0)
-    loss = pl.when(price_change < 0).then(-price_change).otherwise(0)
+    lazy_df = calculate_gain_loss(lazy_df)
     
     # 计算RSI，使用表达式别名避免创建中间列
     for window in windows:
         # 直接计算RSI值，不创建中间列
-        avg_gain = gain.ewm_mean(span=window)
-        avg_loss = loss.ewm_mean(span=window)
+        avg_gain = pl.col('gain').ewm_mean(span=window)
+        avg_loss = pl.col('loss').ewm_mean(span=window)
         
         rsi = to_float32(pl.when(avg_loss == 0).then(100.0).otherwise(100.0 - (100.0 / (1.0 + (avg_gain / avg_loss))))).alias(f'rsi{window}')
         
         lazy_df = lazy_df.with_columns(rsi)
     
+    # 添加默认列名
+    lazy_df = add_default_columns(lazy_df, 'rsi', windows)
     return lazy_df
 
 
@@ -106,12 +111,7 @@ def calculate_cci(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
         lazy_df = lazy_df.with_columns(cci)
     
     # 添加默认列名
-    if len(windows) >= 1:
-        window = windows[0]
-        lazy_df = lazy_df.with_columns(
-            pl.col(f'cci{window}').alias('cci')
-        )
-    
+    lazy_df = add_default_columns(lazy_df, 'cci', windows)
     return lazy_df
 
 
@@ -134,12 +134,7 @@ def calculate_roc(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
         )
     
     # 添加默认列名
-    if len(windows) >= 1:
-        window = windows[0]
-        lazy_df = lazy_df.with_columns(
-            pl.col(f'roc{window}').alias('roc')
-        )
-    
+    lazy_df = add_default_columns(lazy_df, 'roc', windows)
     return lazy_df
 
 
@@ -161,12 +156,7 @@ def calculate_mtm(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
         )
     
     # 添加默认列名
-    if len(windows) >= 1:
-        window = windows[0]
-        lazy_df = lazy_df.with_columns(
-            pl.col(f'mtm{window}').alias('mtm')
-        )
-    
+    lazy_df = add_default_columns(lazy_df, 'mtm', windows)
     return lazy_df
 
 

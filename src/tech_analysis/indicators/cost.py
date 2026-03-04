@@ -8,6 +8,9 @@
 
 import polars as pl
 from ..utils import to_float32
+from ..common_calculations import (
+    add_default_columns
+)
 
 
 def calculate_cyc(lazy_df: pl.LazyFrame, windows: list = None) -> pl.LazyFrame:
@@ -60,12 +63,7 @@ def calculate_cyc(lazy_df: pl.LazyFrame, windows: list = None) -> pl.LazyFrame:
     lazy_df = lazy_df.with_columns(cyc_inf)
     
     # 添加默认列名
-    if len(windows) >= 1:
-        window = windows[0]
-        lazy_df = lazy_df.with_columns(
-            pl.col(f'cyc{window}').alias('cyc')
-        )
-    
+    lazy_df = add_default_columns(lazy_df, 'cyc', windows)
     return lazy_df
 
 

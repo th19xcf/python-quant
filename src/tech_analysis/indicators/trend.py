@@ -9,6 +9,10 @@
 import polars as pl
 import numpy as np
 from ..utils import to_float32
+from ..common_calculations import (
+    calculate_moving_average,
+    add_default_columns
+)
 
 
 def calculate_ma(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
@@ -22,12 +26,11 @@ def calculate_ma(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     Returns:
         pl.LazyFrame: 包含移动平均线的LazyFrame
     """
-    # 使用min_periods=1，确保即使数据不足窗口大小也能计算移动平均值
-    # 这样可以避免MA线完全没有数据的情况
-    return lazy_df.with_columns(
-        *[to_float32(pl.col('close').rolling_mean(window_size=window, min_periods=1)).alias(f'ma{window}')
-          for window in windows]
-    )
+    # 使用通用移动平均计算函数
+    lazy_df = calculate_moving_average(lazy_df, 'close', windows)
+    # 添加默认列名
+    lazy_df = add_default_columns(lazy_df, 'ma', windows)
+    return lazy_df
 
 
 def calculate_macd(lazy_df: pl.LazyFrame, fast_period: int, slow_period: int, signal_period: int) -> pl.LazyFrame:

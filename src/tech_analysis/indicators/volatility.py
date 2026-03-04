@@ -8,6 +8,9 @@
 
 import polars as pl
 from ..utils import to_float32
+from ..common_calculations import (
+    add_default_columns
+)
 
 
 def calculate_boll(lazy_df: pl.LazyFrame, windows: list, std_dev: float) -> pl.LazyFrame:
@@ -63,11 +66,7 @@ def calculate_wr(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
         )
     
     # 添加默认列名
-    if len(windows) >= 1:
-        lazy_df = lazy_df.with_columns(
-            pl.col(f'wr{windows[0]}').alias('wr'),
-            pl.col(f'wr{windows[0]}').alias('wr1')
-        )
+    lazy_df = add_default_columns(lazy_df, 'wr', windows)
     if len(windows) >= 2:
         lazy_df = lazy_df.with_columns(
             pl.col(f'wr{windows[1]}').alias('wr2')

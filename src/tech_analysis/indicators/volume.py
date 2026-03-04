@@ -8,6 +8,10 @@
 
 import polars as pl
 from ..utils import to_float32
+from ..common_calculations import (
+    calculate_moving_average,
+    add_default_columns
+)
 
 
 def calculate_vol_ma(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
@@ -21,10 +25,11 @@ def calculate_vol_ma(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     Returns:
         pl.LazyFrame: 包含成交量移动平均线的LazyFrame
     """
-    return lazy_df.with_columns(
-        *[to_float32(pl.col('volume').rolling_mean(window_size=window, min_periods=1)).alias(f'vol_ma{window}')
-          for window in windows]
-    )
+    # 使用通用移动平均计算函数
+    lazy_df = calculate_moving_average(lazy_df, 'volume', windows, 'vol_')
+    # 添加默认列名
+    lazy_df = add_default_columns(lazy_df, 'vol_ma', windows)
+    return lazy_df
 
 
 def calculate_obv(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
@@ -77,12 +82,7 @@ def calculate_vr(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
         lazy_df = lazy_df.with_columns(vr)
     
     # 3. 添加默认列名
-    if len(windows) >= 1:
-        window = windows[0]
-        lazy_df = lazy_df.with_columns(
-            pl.col(f'vr{window}').alias('vr')
-        )
-    
+    lazy_df = add_default_columns(lazy_df, 'vr', windows)
     return lazy_df
 
 
@@ -106,12 +106,7 @@ def calculate_psy(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
         lazy_df = lazy_df.with_columns(psy_expr)
     
     # 3. 添加默认列名
-    if len(windows) >= 1:
-        window = windows[0]
-        lazy_df = lazy_df.with_columns(
-            pl.col(f'psy{window}').alias('psy')
-        )
-    
+    lazy_df = add_default_columns(lazy_df, 'psy', windows)
     return lazy_df
 
 
@@ -145,12 +140,7 @@ def calculate_cr(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
         lazy_df = lazy_df.with_columns(cr)
     
     # 3. 添加默认列名
-    if len(windows) >= 1:
-        window = windows[0]
-        lazy_df = lazy_df.with_columns(
-            pl.col(f'cr{window}').alias('cr')
-        )
-    
+    lazy_df = add_default_columns(lazy_df, 'cr', windows)
     return lazy_df
 
 
