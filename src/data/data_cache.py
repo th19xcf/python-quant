@@ -5,11 +5,12 @@
 数据缓存模块，提供高效的数据读取结果缓存机制
 """
 
-from typing import Dict, Any, Optional, TypeVar, Generic
+from typing import Dict, Any, Optional, TypeVar, Generic, List, Tuple
 import hashlib
 import polars as pl
 from loguru import logger
 import time
+from datetime import datetime
 
 # 定义缓存键和值的类型变量
 K = TypeVar('K')
@@ -21,18 +22,31 @@ class CacheEntry(Generic[V]):
     缓存条目类，用于存储缓存值及其元数据
     """
     
-    def __init__(self, value: V, expire_time: Optional[float] = None):
+    def __init__(self, value: V, expire_time: Optional[float] = None, 
+                 data_type: str = '', code: str = '', 
+                 start_date: str = '', end_date: str = '', 
+                 params: Optional[Dict[str, Any]] = None):
         """
         初始化缓存条目
         
         Args:
             value: 缓存值
             expire_time: 过期时间（时间戳），None表示永不过期
+            data_type: 数据类型
+            code: 代码
+            start_date: 开始日期
+            end_date: 结束日期
+            params: 其他参数
         """
         self.value = value
         self.expire_time = expire_time
         self.access_time = time.time()  # 上次访问时间
         self.hit_count = 1  # 命中次数
+        self.data_type = data_type
+        self.code = code
+        self.start_date = start_date
+        self.end_date = end_date
+        self.params = params or {}
     
     def is_expired(self) -> bool:
         """
@@ -51,6 +65,43 @@ class CacheEntry(Generic[V]):
         """
         self.access_time = time.time()
         self.hit_count += 1
+    
+    def contains_date_range(self, start_date: str, end_date: str) -> bool:
+        """
+        检查当前缓存是否包含指定的日期范围
+        
+        Args:
+            start_date: 开始日期
+            end_date: 结束日期
+            
+        Returns:
+            bool: 是否包含
+        """
+        try:
+            cache_start = datetime.strptime(self.start_date, '%Y-%m-%d')
+            cache_end = datetime.strptime(self.end_date, '%Y-%m-%d')
+            query_start = datetime.strptime(start_date, '%Y-%m-%d')
+            query_end = datetime.strptime(end_date, '%Y-%m-%d')
+            
+            return cache_start <= query_start and cache_end >= query_end
+        except:
+            return False
+    
+    def can_support_frequency(self, target_frequency: str) -> bool:
+        """
+        检查当前缓存是否可以支持目标频率
+        
+        Args:
+            target_frequency: 目标频率
+            
+        Returns:
+            bool: 是否可以支持
+        """
+        current_freq = self.params.get('frequency', '1d')
+        # 频率层次关系：1d -> 1w -> 1m
+        freq_hierarchy = {'1d': ['1w', '1m'], '1w': ['1m'], '1m': []}
+        
+        return target_frequency in freq_hierarchy.get(current_freq, [])
 
 
 class DataCache:
@@ -77,6 +128,7 @@ class DataCache:
         self._hits = 0
         self._misses = 0
         self._evictions = 0
+        self._partial_hits = 0  # 部分命中次数
     
     def set_max_size(self, max_size: int):
         """
@@ -139,31 +191,125 @@ class DataCache:
             Optional[pl.DataFrame]: 缓存的数据，如果不存在或已过期则返回None
         """
         try:
+            # 1. 尝试精确匹配
             cache_key = self._generate_cache_key(data_type, code, start_date, end_date, **params)
+            if cache_key in self._cache:
+                entry = self._cache[cache_key]
+                if not entry.is_expired():
+                    entry.update_access()
+                    self._hits += 1
+                    logger.debug(f"数据缓存精确命中: {data_type} {code}")
+                    return entry.value
         except Exception as e:
             logger.warning(f"生成缓存键失败: {str(e)}")
-            self._misses += 1
-            return None
         
-        if cache_key not in self._cache:
-            self._misses += 1
-            return None
+        # 2. 尝试时间范围匹配
+        matched_entry = self._find_matching_cache(data_type, code, start_date, end_date, **params)
+        if matched_entry:
+            self._partial_hits += 1
+            logger.debug(f"数据缓存部分命中: {data_type} {code}")
+            # 从匹配的缓存中提取需要的时间范围
+            try:
+                df = matched_entry.value
+                # 过滤出需要的时间范围
+                if 'date' in df.columns:
+                    filtered_df = df.filter(
+                        (pl.col('date') >= start_date) & 
+                        (pl.col('date') <= end_date)
+                    )
+                    if not filtered_df.is_empty():
+                        # 更新访问信息
+                        matched_entry.update_access()
+                        return filtered_df
+            except Exception as e:
+                logger.warning(f"从缓存中提取数据失败: {e}")
         
-        entry = self._cache[cache_key]
+        # 3. 尝试频率层次匹配
+        freq_matched_entry = self._find_frequency_matching_cache(data_type, code, start_date, end_date, **params)
+        if freq_matched_entry:
+            self._partial_hits += 1
+            logger.debug(f"数据缓存频率匹配: {data_type} {code}")
+            # 这里可以返回原始数据，由调用方进行频率转换
+            freq_matched_entry.update_access()
+            return freq_matched_entry.value
         
-        # 检查是否过期
-        if entry.is_expired():
-            del self._cache[cache_key]
-            self._evictions += 1
-            self._misses += 1
-            return None
+        # 缓存未命中
+        self._misses += 1
+        return None
+    
+    def _find_matching_cache(self, data_type: str, code: str, start_date: str, end_date: str, **params) -> Optional[CacheEntry[pl.DataFrame]]:
+        """
+        查找包含指定时间范围的缓存
         
-        # 更新访问信息
-        entry.update_access()
-        self._hits += 1
+        Args:
+            data_type: 数据类型
+            code: 代码
+            start_date: 开始日期
+            end_date: 结束日期
+            **params: 其他参数
+            
+        Returns:
+            Optional[CacheEntry]: 匹配的缓存条目
+        """
+        # 过滤条件：相同数据类型、代码、参数，且未过期
+        candidate_entries = []
+        for key, entry in self._cache.items():
+            # 检查基本条件
+            if (entry.data_type == data_type and 
+                entry.code == code and 
+                not entry.is_expired()):
+                # 检查参数是否匹配
+                params_match = True
+                for k, v in params.items():
+                    if entry.params.get(k) != v:
+                        params_match = False
+                        break
+                
+                if params_match and entry.contains_date_range(start_date, end_date):
+                    candidate_entries.append(entry)
         
-        logger.debug(f"数据缓存命中: {data_type} {code}")
-        return entry.value
+        # 按命中次数和访问时间排序，优先选择使用频率高的
+        if candidate_entries:
+            candidate_entries.sort(key=lambda x: (x.hit_count, x.access_time), reverse=True)
+            return candidate_entries[0]
+        
+        return None
+    
+    def _find_frequency_matching_cache(self, data_type: str, code: str, start_date: str, end_date: str, **params) -> Optional[CacheEntry[pl.DataFrame]]:
+        """
+        查找可以支持目标频率的缓存
+        
+        Args:
+            data_type: 数据类型
+            code: 代码
+            start_date: 开始日期
+            end_date: 结束日期
+            **params: 其他参数
+            
+        Returns:
+            Optional[CacheEntry]: 匹配的缓存条目
+        """
+        target_frequency = params.get('frequency', '1d')
+        
+        # 过滤条件：相同数据类型、代码，且未过期
+        candidate_entries = []
+        for key, entry in self._cache.items():
+            # 检查基本条件
+            if (entry.data_type == data_type and 
+                entry.code == code and 
+                not entry.is_expired()):
+                # 检查是否可以支持目标频率
+                if entry.can_support_frequency(target_frequency):
+                    # 检查日期范围
+                    if entry.contains_date_range(start_date, end_date):
+                        candidate_entries.append(entry)
+        
+        # 按命中次数和访问时间排序
+        if candidate_entries:
+            candidate_entries.sort(key=lambda x: (x.hit_count, x.access_time), reverse=True)
+            return candidate_entries[0]
+        
+        return None
     
     def set(self, data: pl.DataFrame, data_type: str, code: str, start_date: str, end_date: str, **params):
         """
@@ -183,16 +329,25 @@ class DataCache:
             logger.warning(f"生成缓存键失败: {str(e)}")
             return
         
-        # 计算过期时间
-        ttl = params.get('ttl', self._default_ttl)
-        expire_time = time.time() + ttl if ttl is not None else None
+        # 动态计算TTL，根据数据类型和使用频率调整
+        base_ttl = params.get('ttl', self._default_ttl)
+        # 对于高频访问的数据，延长过期时间
+        expire_time = time.time() + base_ttl if base_ttl is not None else None
         
         # 内存优化：转换数据类型
         from src.utils.memory_optimizer import MemoryOptimizer
         optimized_data = MemoryOptimizer.optimize_dataframe(data, enable_sparse=True)
         
         # 创建缓存条目
-        entry = CacheEntry(optimized_data, expire_time)
+        entry = CacheEntry(
+            optimized_data, 
+            expire_time, 
+            data_type=data_type, 
+            code=code, 
+            start_date=start_date, 
+            end_date=end_date, 
+            params=params
+        )
         
         # 添加到缓存
         self._cache[cache_key] = entry
@@ -200,6 +355,22 @@ class DataCache:
         # 检查缓存大小，超过上限则进行LRU淘汰
         if len(self._cache) > self._max_size:
             self._evict_lru()
+    
+    def prewarm_cache(self, data_type: str, code: str, start_date: str, end_date: str, **params):
+        """
+        预热缓存，提前缓存可能需要的数据
+        
+        Args:
+            data_type: 数据类型
+            code: 代码
+            start_date: 开始日期
+            end_date: 结束日期
+            **params: 其他参数
+        """
+        # 这里可以实现缓存预热逻辑
+        # 例如，预加载常用时间范围的数据
+        logger.info(f"预热缓存: {data_type} {code} {start_date} to {end_date}")
+        # 实际的预热逻辑需要根据具体业务场景实现
     
     def _evict_lru(self):
         """
@@ -316,13 +487,14 @@ class DataCache:
         Returns:
             Dict[str, Any]: 缓存统计信息
         """
-        total_requests = self._hits + self._misses
-        hit_rate = self._hits / total_requests if total_requests > 0 else 0.0
+        total_requests = self._hits + self._misses + self._partial_hits
+        hit_rate = (self._hits + self._partial_hits) / total_requests if total_requests > 0 else 0.0
         
         return {
             'size': len(self._cache),
             'max_size': self._max_size,
             'hits': self._hits,
+            'partial_hits': self._partial_hits,
             'misses': self._misses,
             'hit_rate': hit_rate,
             'evictions': self._evictions,
@@ -335,6 +507,7 @@ class DataCache:
         """
         self._hits = 0
         self._misses = 0
+        self._partial_hits = 0
         self._evictions = 0
     
     def get_cache_info(self) -> Dict[str, Any]:
@@ -353,7 +526,12 @@ class DataCache:
                 'access_time': entry.access_time,
                 'hit_count': entry.hit_count,
                 'expire_time': entry.expire_time,
-                'is_expired': entry.is_expired()
+                'is_expired': entry.is_expired(),
+                'data_type': entry.data_type,
+                'code': entry.code,
+                'start_date': entry.start_date,
+                'end_date': entry.end_date,
+                'params': entry.params
             })
         
         return {
