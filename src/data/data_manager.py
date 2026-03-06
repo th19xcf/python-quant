@@ -20,6 +20,7 @@ from src.utils.exceptions import (
     DataSaveError,
     QuantException
 )
+from src.utils.exception_handler import handle_exception_with_retry, handle_error_gracefully
 from src.data.data_cache import global_data_cache
 
 # 异步数据管理器（延迟导入）
@@ -961,6 +962,7 @@ class DataManager(IDataProvider, IDataProcessor):
             logger.exception(f"获取{type_name}数据失败: {e}")
             raise
     
+    @handle_exception_with_retry(max_retries=3, retry_delay=1.0)
     def get_stock_data(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq') -> pl.DataFrame:
         """
         获取股票历史数据
@@ -1172,6 +1174,7 @@ class DataManager(IDataProvider, IDataProcessor):
             logger.exception(f"转换数据频率失败: {e}")
             return df
     
+    @handle_exception_with_retry(max_retries=3, retry_delay=1.0)
     def get_index_data(self, index_code: str, start_date: str, end_date: str, frequency: str = '1d') -> pl.DataFrame:
         """
         获取指数历史数据
