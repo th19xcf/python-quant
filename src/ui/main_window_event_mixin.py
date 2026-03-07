@@ -1274,7 +1274,13 @@ class MainWindowEventMixin:
                         weekday = date_val.weekday()
                     else:
                         date_str = str(date_val)[:10]
-                        weekday = 0  # 默认周一
+                        # 尝试从字符串日期计算星期几
+                        try:
+                            from datetime import datetime
+                            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                            weekday = date_obj.weekday()
+                        except:
+                            weekday = 0  # 默认周一
                     weekday_str = ['一', '二', '三', '四', '五', '六', '日'][weekday]
 
                     info_html = f"""
