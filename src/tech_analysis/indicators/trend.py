@@ -271,15 +271,15 @@ def calculate_dma(lazy_df: pl.LazyFrame, short_period: int = 10, long_period: in
     Returns:
         pl.LazyFrame: 包含DMA和AMA指标的LazyFrame
     """
-    # 计算短期和长期移动平均
-    short_ma = pl.col('close').rolling_mean(window_size=short_period, min_periods=short_period)
-    long_ma = pl.col('close').rolling_mean(window_size=long_period, min_periods=long_period)
+    # 计算短期和长期移动平均，min_periods=1确保从第一个数据点开始计算
+    short_ma = pl.col('close').rolling_mean(window_size=short_period, min_periods=1)
+    long_ma = pl.col('close').rolling_mean(window_size=long_period, min_periods=1)
 
     # 计算DMA
     dma = to_float32(short_ma - long_ma).alias('dma')
 
-    # 计算AMA（DMA的移动平均）
-    ama = to_float32(dma.rolling_mean(window_size=signal_period, min_periods=signal_period)).alias('ama')
+    # 计算AMA（DMA的移动平均），min_periods=1确保从第一个数据点开始计算
+    ama = to_float32(dma.rolling_mean(window_size=signal_period, min_periods=1)).alias('ama')
 
     return lazy_df.with_columns([dma, ama])
 
@@ -343,12 +343,11 @@ def calculate_bbi(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
     Returns:
         pl.LazyFrame: 包含BBI指标的LazyFrame
     """
-    # 计算不同周期的移动平均线
-    # 保持min_periods等于window_size，确保数据足够时才计算，保证指标准确性
-    ma3 = pl.col('close').rolling_mean(window_size=3, min_periods=3)
-    ma6 = pl.col('close').rolling_mean(window_size=6, min_periods=6)
-    ma12 = pl.col('close').rolling_mean(window_size=12, min_periods=12)
-    ma24 = pl.col('close').rolling_mean(window_size=24, min_periods=24)
+    # 计算不同周期的移动平均线，min_periods=1确保从第一个数据点开始计算
+    ma3 = pl.col('close').rolling_mean(window_size=3, min_periods=1)
+    ma6 = pl.col('close').rolling_mean(window_size=6, min_periods=1)
+    ma12 = pl.col('close').rolling_mean(window_size=12, min_periods=1)
+    ma24 = pl.col('close').rolling_mean(window_size=24, min_periods=1)
     
     # 计算BBI
     bbi = to_float32((ma3 + ma6 + ma12 + ma24) / 4).alias('bbi')

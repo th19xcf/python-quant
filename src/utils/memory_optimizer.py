@@ -87,16 +87,11 @@ class MemoryOptimizer:
                     
             elif col in cls.COLUMN_TYPE_MAP['volume_cols']:
                 if dtype == pl.Float64:
-                    type_casts.append(pl.col(col).cast(pl.Float32))
+                    # 保持Float64类型，避免精度损失
+                    type_casts.append(pl.col(col).cast(pl.Float64))
                 elif dtype == pl.Int64:
-                    # 检查数据范围，尝试使用更小的整数类型
-                    max_val = df[col].max()
-                    if max_val < 2**8:
-                        type_casts.append(pl.col(col).cast(pl.Int8))
-                    elif max_val < 2**16:
-                        type_casts.append(pl.col(col).cast(pl.Int16))
-                    else:
-                        type_casts.append(pl.col(col).cast(pl.Int32))
+                    # 成交量可能很大，保持Int64类型避免溢出
+                    type_casts.append(pl.col(col).cast(pl.Int64))
                     
             elif col in cls.COLUMN_TYPE_MAP['pct_cols']:
                 if dtype in [pl.Float64, pl.Decimal]:

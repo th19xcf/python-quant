@@ -56,8 +56,8 @@ class VOLDrawer:
         vol_ma5_data = df_pl['vol_ma5'].to_numpy()[-len(x):] if len(df_pl['vol_ma5']) > len(x) else df_pl['vol_ma5'].to_numpy()
         vol_ma10_data = df_pl['vol_ma10'].to_numpy()[-len(x):] if len(df_pl['vol_ma10']) > len(x) else df_pl['vol_ma10'].to_numpy()
         
-        # 设置成交量图的Y轴范围 - 使用当前显示数据的最大值
-        volume_max = volume_data.max() if len(volume_data) > 0 else 100
+        # 设置成交量图的Y轴范围 - 使用完整数据的最大值
+        volume_max = volume_data_full.max() if len(volume_data_full) > 0 else 100
         
         # 计算合理的Y轴范围，确保成交量柱体完整显示
         if volume_max > 0:

@@ -640,10 +640,10 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
         
         # 只创建实际使用的窗口列
         for window in used_windows:
-            # 预计算最高价和最低价的rolling_max/min
+            # 预计算最高价和最低价的rolling_max/min，min_periods=1确保从第一个数据点开始计算
             lazy_df = lazy_df.with_columns(
                 pl.col('high').rolling_max(window_size=window, min_periods=1).alias(f'high_n_{window}'),
-                pl.col('low').rolling_min(window_size=window, min_periods=window).alias(f'low_n_{window}')
+                pl.col('low').rolling_min(window_size=window, min_periods=1).alias(f'low_n_{window}')
             )
     
     # 步骤2: 计算趋势类指标
