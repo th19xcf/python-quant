@@ -31,6 +31,7 @@ from .indicator_calculator import (
 from .indicator_manager import global_indicator_manager
 from .indicator_cache import global_indicator_cache
 from .incremental_calculator import global_incremental_calculator
+from .gpu_acceleration import calculate_with_gpu, is_gpu_available
 from src.utils.exceptions import (
     IndicatorCalculationError,
     IndicatorNotFoundError,
@@ -1069,13 +1070,58 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 else:
                     self.calculated_indicators[indicator_type] = True
             
-
-            
             # 返回Polars DataFrame
             if self.is_lazy:
                 self.pl_df = self.pl_df.collect()
                 self.is_lazy = False
             return self.pl_df
+        
+        # 检查是否可以使用GPU加速计算
+        if is_gpu_available():
+            try:
+                # 准备GPU计算所需的数据
+                df = self.pl_df.collect() if self.is_lazy else self.pl_df
+                data = {
+                    'close': df['close'].to_numpy(),
+                    'high': df['high'].to_numpy() if 'high' in df.columns else None,
+                    'low': df['low'].to_numpy() if 'low' in df.columns else None
+                }
+                
+                # 使用GPU加速计算
+                logger.info(f"使用GPU加速计算{indicator_type}")
+                gpu_result = calculate_with_gpu(indicator_type, data, **kwargs)
+                
+                if gpu_result:
+                    # GPU计算成功，将结果合并到DataFrame
+                    for col_name, values in gpu_result.items():
+                        self.pl_df = self.pl_df.with_columns(
+                            pl.Series(col_name, values).alias(col_name)
+                        )
+                    
+                    # 将计算结果存入缓存
+                    try:
+                        global_indicator_cache.set(self.pl_df, self.pl_df, indicator_type, **kwargs)
+                        logger.debug(f"{indicator_type}GPU计算结果已缓存")
+                    except Exception as e:
+                        logger.debug(f"缓存{indicator_type}GPU计算结果失败: {e}")
+                    
+                    # 更新计算状态
+                    if indicator_type in self.calculated_indicators:
+                        if isinstance(self.calculated_indicators[indicator_type], set):
+                            windows = kwargs.get('windows', [14])
+                            if not isinstance(windows, list):
+                                windows = [windows]
+                            self.calculated_indicators[indicator_type].update(windows)
+                        else:
+                            self.calculated_indicators[indicator_type] = True
+                    
+                    # 返回Polars DataFrame
+                    if self.is_lazy:
+                        self.pl_df = self.pl_df.collect()
+                        self.is_lazy = False
+                    return self.pl_df
+            except Exception as e:
+                logger.warning(f"GPU计算{indicator_type}失败，使用常规计算: {e}")
         
         # 检查是否可以使用增量计算
         incremental_data = kwargs.get('incremental_data', None)
@@ -1088,6 +1134,14 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 )
                 
                 # 合并增量计算结果
+                # 确保列数匹配
+                if result_df.columns != self.pl_df.columns:
+                    # 调整列顺序和缺失列
+                    for col in self.pl_df.columns:
+                        if col not in result_df.columns:
+                            result_df = result_df.with_columns(pl.Series([None] * len(result_df)).alias(col))
+                    # 按照历史数据的列顺序重新排列
+                    result_df = result_df.select(self.pl_df.columns)
                 self.pl_df = self.pl_df.vstack(result_df)
                 
                 # 将计算结果存入缓存
@@ -1115,11 +1169,14 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             except Exception as e:
                 logger.warning(f"增量计算{indicator_type}失败，使用常规计算: {e}")
         
-        # 缓存未命中且无法增量计算，使用指标管理器计算内置指标
+        # 缓存未命中且无法GPU/增量计算，使用指标管理器计算内置指标
         try:
+            # 移除incremental_data参数，因为指标计算函数不支持
+            kwargs_copy = kwargs.copy()
+            kwargs_copy.pop('incremental_data', None)
             # 使用指标管理器计算指标
             result_df = global_indicator_manager.calculate_indicator(
-                self.pl_df, indicator_type, return_polars=True, **kwargs
+                self.pl_df, indicator_type, return_polars=True, **kwargs_copy
             )
             
             # 更新内部DataFrame
@@ -1131,8 +1188,6 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 logger.debug(f"{indicator_type}计算结果已缓存")
             except Exception as e:
                 logger.debug(f"缓存{indicator_type}结果失败: {e}")
-            
-
             
             # 更新计算状态
             if indicator_type in self.calculated_indicators:
