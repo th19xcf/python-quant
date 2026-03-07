@@ -10,7 +10,6 @@ from typing import List, Dict, Any, Optional, Union
 import polars as pl
 from src.api.data_api import IDataProvider, IDataProcessor
 from src.utils.event_bus import EventBus
-from src.utils.memory_optimizer import MemoryOptimizer
 from src.utils.exceptions import (
     DataSourceConnectionError,
     DataSourceNotAvailableError,
@@ -22,6 +21,8 @@ from src.utils.exceptions import (
 )
 from src.utils.exception_handler import handle_exception_with_retry, handle_error_gracefully
 from src.data.data_cache import global_data_cache
+from src.data.managers import DataFetcher, DataUpdater, DataProcessor
+from src.utils.memory_optimizer import MemoryOptimizer
 
 # 异步数据管理器（延迟导入）
 AsyncDataManager = None
@@ -46,21 +47,16 @@ class DataManager(IDataProvider, IDataProcessor):
         self.db_manager = db_manager
         self.plugin_manager = plugin_manager
         
-        # 初始化各个数据源处理器
-        self.tdx_handler = None
-        self.akshare_handler = None
-        self.macro_handler = None
-        self.news_handler = None
-        self.baostock_handler = None
+        # 初始化各个模块
+        self.data_fetcher = DataFetcher(config, db_manager)
+        self.data_updater = DataUpdater(config, db_manager)
+        self.data_processor = DataProcessor(config)
         
         # 插件数据源映射
         self.plugin_datasources = {}
         
         # 异步数据管理器
         self.async_data_manager = None
-        
-        # 数据源优先级缓存（基于历史响应时间）
-        self.source_priorities = {}
         
         self._init_handlers()
         self._init_plugin_datasources()
@@ -73,71 +69,57 @@ class DataManager(IDataProvider, IDataProcessor):
         # 初始化通达信数据处理器
         try:
             from src.data.tdx_handler import TdxHandler
-            self.tdx_handler = TdxHandler(self.config, self.db_manager)
-            logger.info("通达信数据处理器初始化成功")
+            tdx_handler = TdxHandler(self.config, self.db_manager)
+            self.data_fetcher.register_source(tdx_handler)
+            self.data_updater.register_source(tdx_handler)
         except ImportError as e:
             logger.info(f"通达信模块未安装: {e}")
-            self.tdx_handler = None
-        except FileNotFoundError as e:
-            logger.info(f"通达信数据文件不存在（离线模式）: {e}")
-            self.tdx_handler = None
-        except PermissionError as e:
-            logger.warning(f"通达信数据文件访问权限不足: {e}")
-            self.tdx_handler = None
-        except DataSourceConfigError as e:
-            logger.warning(f"通达信配置错误: {e.message}")
-            self.tdx_handler = None
-        except (OSError, RuntimeError) as tdx_e:
-            logger.warning(f"通达信数据处理器初始化失败（离线模式下正常）: {tdx_e}")
-            self.tdx_handler = None
+        except Exception as e:
+            logger.warning(f"通达信数据处理器初始化失败: {e}")
         
         # 初始化Baostock数据处理器
         try:
             from src.data.baostock_handler import BaostockHandler
-            self.baostock_handler = BaostockHandler(self.config, self.db_manager)
-            logger.info("Baostock数据处理器初始化成功")
+            baostock_handler = BaostockHandler(self.config, self.db_manager)
+            self.data_fetcher.register_source(baostock_handler)
+            self.data_updater.register_source(baostock_handler)
         except ImportError as e:
             logger.warning(f"Baostock模块未安装: {e}")
-            self.baostock_handler = None
-        except ConnectionError as e:
-            logger.error(f"Baostock服务器连接失败: {e}")
-            self.baostock_handler = None
-        except DataSourceConfigError as e:
-            logger.error(f"Baostock配置错误: {e.message}")
-            self.baostock_handler = None
-        except (OSError, RuntimeError) as e:
-            logger.error(f"Baostock数据处理器初始化失败: {e}")
-            self.baostock_handler = None
+        except Exception as e:
+            logger.warning(f"Baostock数据处理器初始化失败: {e}")
+        
+        # 初始化AkShare数据处理器
+        try:
+            from src.data.akshare_handler import AkShareHandler
+            akshare_handler = AkShareHandler(self.config, self.db_manager)
+            self.data_fetcher.register_source(akshare_handler)
+            self.data_updater.register_source(akshare_handler)
+        except ImportError as e:
+            logger.info(f"AkShare模块未安装: {e}")
+        except Exception as e:
+            logger.warning(f"AkShare数据处理器初始化失败: {e}")
         
         # 初始化宏观数据处理器
         try:
             from src.data.macro_handler import MacroHandler
-            self.macro_handler = MacroHandler(self.config, self.db_manager)
-            logger.info("宏观数据处理器初始化成功")
+            macro_handler = MacroHandler(self.config, self.db_manager)
+            self.data_fetcher.register_source(macro_handler)
+            self.data_updater.register_source(macro_handler)
         except ImportError as e:
             logger.info(f"宏观数据模块未安装: {e}")
-            self.macro_handler = None
-        except ConnectionError as e:
-            logger.warning(f"宏观数据源连接失败（离线模式）: {e}")
-            self.macro_handler = None
-        except (OSError, RuntimeError) as macro_e:
-            logger.warning(f"宏观数据处理器初始化失败（离线模式下正常）: {macro_e}")
-            self.macro_handler = None
+        except Exception as e:
+            logger.warning(f"宏观数据处理器初始化失败: {e}")
         
         # 初始化新闻数据处理器
         try:
             from src.data.news_handler import NewsHandler
-            self.news_handler = NewsHandler(self.config, self.db_manager)
-            logger.info("新闻数据处理器初始化成功")
+            news_handler = NewsHandler(self.config, self.db_manager)
+            self.data_fetcher.register_source(news_handler)
+            self.data_updater.register_source(news_handler)
         except ImportError as e:
             logger.info(f"新闻数据模块未安装: {e}")
-            self.news_handler = None
-        except ConnectionError as e:
-            logger.warning(f"新闻数据源连接失败（离线模式）: {e}")
-            self.news_handler = None
-        except (OSError, RuntimeError) as news_e:
-            logger.warning(f"新闻数据处理器初始化失败（离线模式下正常）: {news_e}")
-            self.news_handler = None
+        except Exception as e:
+            logger.warning(f"新闻数据处理器初始化失败: {e}")
         
         logger.info("数据处理器初始化完成")
         
@@ -167,6 +149,9 @@ class DataManager(IDataProvider, IDataProcessor):
         
         for plugin_name, plugin in datasource_plugins.items():
             self.plugin_datasources[plugin_name] = plugin
+            # 注册到数据获取和更新模块
+            self.data_fetcher.register_source(plugin)
+            self.data_updater.register_source(plugin)
             logger.info(f"已注册插件数据源: {plugin_name}")
     
     def _init_async_manager(self):
@@ -258,12 +243,10 @@ class DataManager(IDataProvider, IDataProcessor):
         """
         更新股票基本信息
         """
-        self._update_data(
-            data_type="股票基本信息",
-            handler=self.baostock_handler,
-            method_name="update_stock_basic",
-            event_type="stock_basic"
-        )
+        success = self.data_updater.update_stock_basic()
+        if success:
+            # 使股票基本信息缓存失效
+            global_data_cache.invalidate_by_type('stock_basic')
     
     def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
@@ -274,35 +257,25 @@ class DataManager(IDataProvider, IDataProcessor):
             start_date: 开始日期，格式：YYYYMMDD
             end_date: 结束日期，格式：YYYYMMDD
         """
-        self._update_data(
-            data_type="股票日线数据",
-            handler=self.baostock_handler,
-            method_name="update_stock_daily",
-            event_type="stock_daily",
-            identifier=ts_codes[0] if ts_codes else 'all',
-            ts_codes=ts_codes,
-            start_date=start_date,
-            end_date=end_date
-        )
+        success = self.data_updater.update_stock_daily(ts_codes, start_date, end_date)
         
         # 数据更新后，使相关缓存失效
-        if ts_codes:
-            for ts_code in ts_codes:
-                global_data_cache.invalidate('stock', ts_code)
-        else:
-            # 如果更新所有股票，使所有股票缓存失效
-            global_data_cache.invalidate_by_type('stock')
+        if success:
+            if ts_codes:
+                for ts_code in ts_codes:
+                    global_data_cache.invalidate('stock', ts_code)
+            else:
+                # 如果更新所有股票，使所有股票缓存失效
+                global_data_cache.invalidate_by_type('stock')
     
     def update_index_basic(self):
         """
         更新指数基本信息
         """
-        self._update_data(
-            data_type="指数基本信息",
-            handler=self.baostock_handler,
-            method_name="update_index_basic",
-            event_type="index_basic"
-        )
+        success = self.data_updater.update_index_basic()
+        if success:
+            # 使指数基本信息缓存失效
+            global_data_cache.invalidate_by_type('index_basic')
     
     def update_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
@@ -313,24 +286,16 @@ class DataManager(IDataProvider, IDataProcessor):
             start_date: 开始日期，格式：YYYYMMDD
             end_date: 结束日期，格式：YYYYMMDD
         """
-        self._update_data(
-            data_type="指数日线数据",
-            handler=self.baostock_handler,
-            method_name="update_index_daily",
-            event_type="index_daily",
-            identifier=ts_codes[0] if ts_codes else 'all',
-            ts_codes=ts_codes,
-            start_date=start_date,
-            end_date=end_date
-        )
+        success = self.data_updater.update_index_daily(ts_codes, start_date, end_date)
         
         # 数据更新后，使相关缓存失效
-        if ts_codes:
-            for ts_code in ts_codes:
-                global_data_cache.invalidate('index', ts_code)
-        else:
-            # 如果更新所有指数，使所有指数缓存失效
-            global_data_cache.invalidate_by_type('index')
+        if success:
+            if ts_codes:
+                for ts_code in ts_codes:
+                    global_data_cache.invalidate('index', ts_code)
+            else:
+                # 如果更新所有指数，使所有指数缓存失效
+                global_data_cache.invalidate_by_type('index')
     
     def update_macro_data(self, indicators: List[str] = None):
         """
@@ -339,14 +304,7 @@ class DataManager(IDataProvider, IDataProcessor):
         Args:
             indicators: 宏观经济指标列表，None表示更新所有指标
         """
-        self._update_data(
-            data_type="宏观经济数据",
-            handler=self.macro_handler,
-            method_name="update_macro_data",
-            event_type="macro",
-            identifier=indicators[0] if indicators else 'all',
-            indicators=indicators
-        )
+        self.data_updater.update_macro_data(indicators)
     
     def update_news_data(self, sources: List[str] = None, start_date: str = None, end_date: str = None):
         """
@@ -357,16 +315,7 @@ class DataManager(IDataProvider, IDataProcessor):
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
         """
-        self._update_data(
-            data_type="新闻数据",
-            handler=self.news_handler,
-            method_name="update_news_data",
-            event_type="news",
-            identifier=sources[0] if sources else 'all',
-            sources=sources,
-            start_date=start_date,
-            end_date=end_date
-        )
+        self.data_updater.update_news_data(sources, start_date, end_date)
 
     def update_stock_dividend(self, ts_codes: List[str] = None):
         """
@@ -380,36 +329,14 @@ class DataManager(IDataProvider, IDataProcessor):
             DataValidationError: 数据验证失败
             DataSaveError: 数据保存失败
         """
-        # 初始化AkShare处理器（如果尚未初始化）
-        if not self.akshare_handler:
-            try:
-                from src.data.akshare_handler import AkShareHandler
-                self.akshare_handler = AkShareHandler(self.config, self.db_manager)
-                logger.info("AkShare数据处理器初始化成功")
-            except ImportError as e:
-                error_msg = f"AkShare模块未安装: {e}"
-                logger.error(error_msg)
-                raise DataSourceNotAvailableError("akshare", error_msg) from e
-            except ConnectionError as e:
-                error_msg = f"AkShare服务器连接失败: {e}"
-                logger.error(error_msg)
-                raise DataSourceConnectionError("akshare", error_msg) from e
-            except DataSourceConfigError as e:
-                logger.error(f"AkShare配置错误: {e.message}")
-                raise
-            except (OSError, RuntimeError) as e:
-                error_msg = f"AkShare数据处理器初始化失败: {e}"
-                logger.error(error_msg)
-                raise DataSourceNotAvailableError("akshare", error_msg) from e
-
-        self._update_data(
-            data_type="股票分红配股数据",
-            handler=self.akshare_handler,
-            method_name="update_stock_dividend",
-            event_type="stock_dividend",
-            identifier=ts_codes[0] if ts_codes else 'all',
-            ts_codes=ts_codes
-        )
+        success = self.data_updater.update_stock_dividend(ts_codes)
+        if success:
+            # 使分红配股数据缓存失效
+            if ts_codes:
+                for ts_code in ts_codes:
+                    global_data_cache.invalidate('stock_dividend', ts_code)
+            else:
+                global_data_cache.invalidate_by_type('stock_dividend')
 
     def get_stock_dividend(self, ts_code: str) -> pl.DataFrame:
         """
@@ -492,95 +419,6 @@ class DataManager(IDataProvider, IDataProcessor):
                     session.close()
                 except (OSError, RuntimeError):
                     pass
-
-    def _init_handlers(self):
-        """
-        初始化各个数据源处理器
-        """
-        # 初始化通达信数据处理器
-        try:
-            from src.data.tdx_handler import TdxHandler
-            self.tdx_handler = TdxHandler(self.config, self.db_manager)
-            logger.info("通达信数据处理器初始化成功")
-        except ImportError as e:
-            logger.info(f"通达信模块未安装: {e}")
-            self.tdx_handler = None
-        except FileNotFoundError as e:
-            logger.info(f"通达信数据文件不存在（离线模式）: {e}")
-            self.tdx_handler = None
-        except PermissionError as e:
-            logger.warning(f"通达信数据文件访问权限不足: {e}")
-            self.tdx_handler = None
-        except DataSourceConfigError as e:
-            logger.warning(f"通达信配置错误: {e.message}")
-            self.tdx_handler = None
-        except (OSError, RuntimeError) as tdx_e:
-            logger.warning(f"通达信数据处理器初始化失败（离线模式下正常）: {tdx_e}")
-            self.tdx_handler = None
-        
-        # 初始化Baostock数据处理器
-        try:
-            from src.data.baostock_handler import BaostockHandler
-            self.baostock_handler = BaostockHandler(self.config, self.db_manager)
-            logger.info("Baostock数据处理器初始化成功")
-        except ImportError as e:
-            logger.warning(f"Baostock模块未安装: {e}")
-            self.baostock_handler = None
-        except ConnectionError as e:
-            logger.error(f"Baostock服务器连接失败: {e}")
-            self.baostock_handler = None
-        except DataSourceConfigError as e:
-            logger.error(f"Baostock配置错误: {e.message}")
-            self.baostock_handler = None
-        except (OSError, RuntimeError) as e:
-            logger.error(f"Baostock数据处理器初始化失败: {e}")
-            self.baostock_handler = None
-        
-        # 初始化宏观数据处理器
-        try:
-            from src.data.macro_handler import MacroHandler
-            self.macro_handler = MacroHandler(self.config, self.db_manager)
-            logger.info("宏观数据处理器初始化成功")
-        except ImportError as e:
-            logger.info(f"宏观数据模块未安装: {e}")
-            self.macro_handler = None
-        except ConnectionError as e:
-            logger.warning(f"宏观数据源连接失败（离线模式）: {e}")
-            self.macro_handler = None
-        except (OSError, RuntimeError) as macro_e:
-            logger.warning(f"宏观数据处理器初始化失败（离线模式下正常）: {macro_e}")
-            self.macro_handler = None
-        
-        # 初始化新闻数据处理器
-        try:
-            from src.data.news_handler import NewsHandler
-            self.news_handler = NewsHandler(self.config, self.db_manager)
-            logger.info("新闻数据处理器初始化成功")
-        except ImportError as e:
-            logger.info(f"新闻数据模块未安装: {e}")
-            self.news_handler = None
-        except ConnectionError as e:
-            logger.warning(f"新闻数据源连接失败（离线模式）: {e}")
-            self.news_handler = None
-        except (OSError, RuntimeError) as news_e:
-            logger.warning(f"新闻数据处理器初始化失败（离线模式下正常）: {news_e}")
-            self.news_handler = None
-        
-        logger.info("数据处理器初始化完成")
-        
-        # 初始化完成后，根据配置决定是否自动更新股票基本信息
-        try:
-            if hasattr(self.config.data, 'auto_update_stock_basic') and self.config.data.auto_update_stock_basic:
-                self.update_stock_basic()
-                logger.info("自动更新股票基本信息完成")
-            else:
-                logger.info("跳过自动更新股票基本信息（未开启或配置不允许）")
-        except DataSourceConnectionError as e:
-            logger.warning(f"自动更新股票基本信息失败 - 连接错误: {e.message}")
-        except DataValidationError as e:
-            logger.warning(f"自动更新股票基本信息失败 - 数据验证错误: {e.message}")
-        except (OSError, RuntimeError) as update_e:
-            logger.warning(f"自动更新股票基本信息失败: {update_e}")
     
     def _get_data_from_sources(self, data_type: str, ts_code: str, start_date: str, end_date: str, freq: str = "daily", adjustment_type: str = "qfq"):
         """
@@ -877,33 +715,7 @@ class DataManager(IDataProvider, IDataProcessor):
             # 数据库获取失败或无数据，并行尝试从其他数据源获取
             data_sources = []
             
-            # 内置数据源
-            if self.tdx_handler:
-                method_name = type_map['handler_methods']['tdx']
-                data_sources.append(('tdx', self.tdx_handler, method_name, {
-                    'stock_code': ts_code, 'start_date': start_date, 'end_date': end_date, 'adjust': adjustment_type
-                }))
-            
-            if self.akshare_handler:
-                method_name = type_map['handler_methods']['akshare']
-                data_sources.append(('akshare', self.akshare_handler, method_name, {
-                    'ts_code': ts_code, 'start_date': start_date, 'end_date': end_date, 'freq': freq
-                }))
-            
-            if self.baostock_handler:
-                method_name = type_map['handler_methods']['baostock']
-                # 转换股票代码格式：600000.SH -> sh.600000
-                if '.' in ts_code:
-                    parts = ts_code.split('.')
-                    if len(parts) == 2:
-                        baostock_code = f"{parts[1].lower()}.{parts[0]}"
-                    else:
-                        baostock_code = ts_code
-                else:
-                    baostock_code = ts_code
-                data_sources.append(('baostock', self.baostock_handler, method_name, {
-                    'ts_codes': [baostock_code], 'start_date': start_date, 'end_date': end_date
-                }))
+            # 数据源已通过data_fetcher和data_updater管理，不再直接引用
             
             # 插件数据源
             for plugin_name, plugin in self.plugin_datasources.items():
@@ -912,51 +724,13 @@ class DataManager(IDataProvider, IDataProcessor):
                     'ts_code': ts_code, 'start_date': start_date, 'end_date': end_date, 'freq': freq
                 }))
             
-            # 根据历史响应时间排序数据源（优先级）
-            def get_source_priority(source_name):
-                """
-                获取数据源优先级（响应时间越短优先级越高）
-                """
-                if source_name not in self.source_priorities or not self.source_priorities[source_name]:
-                    return 9999  # 默认优先级
-                return sum(self.source_priorities[source_name]) / len(self.source_priorities[source_name])
+            # 直接使用data_fetcher获取数据
+            if data_type == 'stock':
+                result = self.data_fetcher.get_stock_data(ts_code, start_date, end_date, freq, adjustment_type)
+            else:
+                result = self.data_fetcher.get_index_data(ts_code, start_date, end_date, freq)
             
-            # 按优先级排序数据源
-            data_sources.sort(key=lambda x: get_source_priority(x[0]))
-            
-            if not data_sources:
-                logger.warning(f"没有可用的数据源来获取{type_name}{ts_code}数据")
-                return pl.DataFrame()
-            
-            # 使用线程池并行获取数据
-            logger.info(f"并行从{len(data_sources)}个数据源获取{type_name}{ts_code}数据")
-            
-            # 限制线程池大小，避免创建过多线程
-            max_workers = min(len(data_sources), 5)  # 最多5个并行线程
-            
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # 提交所有任务
-                futures = {}
-                for source_name, handler, method_name, kwargs in data_sources:
-                    future = executor.submit(fetch_from_source, source_name, handler, method_name, **kwargs)
-                    futures[future] = source_name
-                
-                # 等待第一个成功的结果
-                for future in as_completed(futures, timeout=30):  # 30秒超时
-                    source_name = futures[future]
-                    try:
-                        success, result = future.result()
-                        if success:
-                            logger.info(f"从{source_name}成功获取{type_name}{ts_code}数据，返回结果")
-                            return result
-                    except concurrent.futures.TimeoutError:
-                        logger.warning(f"从{source_name}获取数据超时")
-                    except Exception as e:
-                        logger.warning(f"处理{source_name}结果时出错: {e}")
-            
-            # 所有数据源都失败，返回空DataFrame
-            logger.warning(f"无法从任何数据源获取{type_name}{ts_code}数据")
-            return pl.DataFrame()
+            return result
 
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取{type_name}数据失败: {e}")
@@ -984,107 +758,13 @@ class DataManager(IDataProvider, IDataProcessor):
             logger.info(f"从缓存获取股票数据: {stock_code} {start_date} to {end_date}")
             return cached_data
         
-        from src.utils.lazy_optimizer import lazy_pipeline, lazy_exec
-        
-        # 构建惰性计算流水线
-        steps = [
-            {
-                'type': 'filter',
-                'condition': (pl.col('trade_date') >= start_date) & (pl.col('trade_date') <= end_date)
-            }
-        ]
-        
-        # 将周线和月线转换为日线获取，然后进行聚合
-        if frequency in ['1w', '1m']:
-            # 获取日线数据
-            freq_map = {'1d': 'daily', '1m': 'minute'}
-            freq = freq_map.get('1d', 'daily')
-            df = self._get_data_from_sources("stock", stock_code, start_date, end_date, freq, adjustment_type)
-            
-            # 将日线数据转换为周线或月线
-            if not df.is_empty():
-                try:
-                    # 使用惰性计算优化转换过程
-                    lazy_df = df.lazy()
-                    
-                    # 确保有日期列
-                    if 'trade_date' in df.columns:
-                        lazy_df = lazy_df.with_columns(pl.col('trade_date').alias('date'))
-                    elif 'date' not in df.columns:
-                        logger.error("DataFrame中没有日期列")
-                        result = df
-                    else:
-                        # 检查date列的类型，如果是字符串类型，转换为日期类型
-                        if str(lazy_df.schema['date']) == 'String':
-                            lazy_df = lazy_df.with_columns(pl.col('date').str.strptime(pl.Date, "%Y-%m-%d"))
-                        elif str(lazy_df.schema['date']) == 'Datetime':
-                            lazy_df = lazy_df.with_columns(pl.col('date').dt.date().alias('date'))
-                        
-                        # 根据频率确定分组方式
-                        if frequency == '1w':
-                            # 周线：按周分组
-                            lazy_df = lazy_df.with_columns(
-                                pl.col('date').dt.week().alias('week'),
-                                pl.col('date').dt.year().alias('year')
-                            )
-                            group_cols = ['year', 'week']
-                        elif frequency == '1m':
-                            # 月线：按月分组
-                            lazy_df = lazy_df.with_columns(
-                                pl.col('date').dt.month().alias('month'),
-                                pl.col('date').dt.year().alias('year')
-                            )
-                            group_cols = ['year', 'month']
-                        else:
-                            result = df
-                        
-                        # 聚合数据
-                        # 只聚合存在的列
-                        agg_columns = [
-                            pl.col('date').first().alias('date'),
-                            pl.col('open').first().alias('open'),
-                            pl.col('high').max().alias('high'),
-                            pl.col('low').min().alias('low'),
-                            pl.col('close').last().alias('close'),
-                            pl.col('vol').sum().alias('vol'),
-                            pl.col('amount').sum().alias('amount')
-                        ]
-                        
-                        # 检查是否存在pct_chg列
-                        if 'pct_chg' in df.columns:
-                            agg_columns.append(pl.col('pct_chg').sum().alias('pct_chg'))
-                        
-                        # 检查是否存在change列
-                        if 'change' in df.columns:
-                            agg_columns.append(pl.col('change').sum().alias('change'))
-                        
-                        lazy_df = lazy_df.group_by(group_cols).agg(agg_columns)
-                        
-                        # 按日期排序
-                        lazy_df = lazy_df.sort('date')
-                        
-                        # 将日期转换回字符串格式
-                        lazy_df = lazy_df.with_columns(
-                            pl.col('date').dt.strftime("%Y-%m-%d").alias('date')
-                        )
-                        
-                        # 执行优化的惰性计算
-                        result = lazy_exec(lazy_df)
-                        # 内存优化：转换数据类型
-                        optimized_result = MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
-                        logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{optimized_result.height}条")
-                        result = optimized_result
-                except Exception as e:
-                    logger.error(f"转换日线数据为{frequency}数据失败: {e}")
-                    # 如果转换失败，返回原始日线数据
-                    result = df
-            else:
-                result = df
+        # 日线或分钟线，直接获取
+        if frequency in ['1d', '1m']:
+            result = self.data_fetcher.get_stock_data(stock_code, start_date, end_date, frequency, adjustment_type)
         else:
-            # 日线或分钟线，直接获取
-            freq_map = {'1d': 'daily', '1m': 'minute'}
-            freq = freq_map.get(frequency, 'daily')
-            result = self._get_data_from_sources("stock", stock_code, start_date, end_date, freq, adjustment_type)
+            # 周线或月线，先获取日线数据，再转换
+            df = self.data_fetcher.get_stock_data(stock_code, start_date, end_date, '1d', adjustment_type)
+            result = self.data_processor.convert_frequency(df, frequency)
         
         # 将结果存入缓存
         if not result.is_empty():
@@ -1195,9 +875,13 @@ class DataManager(IDataProvider, IDataProcessor):
             logger.info(f"从缓存获取指数数据: {index_code} {start_date} to {end_date}")
             return cached_data
         
-        freq_map = {'1d': 'daily', '1m': 'minute'}
-        freq = freq_map.get(frequency, 'daily')
-        result = self._get_data_from_sources("index", index_code, start_date, end_date, freq)
+        # 日线或分钟线，直接获取
+        if frequency in ['1d', '1m']:
+            result = self.data_fetcher.get_index_data(index_code, start_date, end_date, frequency)
+        else:
+            # 周线或月线，先获取日线数据，再转换
+            df = self.data_fetcher.get_index_data(index_code, start_date, end_date, '1d')
+            result = self.data_processor.convert_frequency(df, frequency)
         
         # 将结果存入缓存
         if not result.is_empty():
@@ -1413,21 +1097,7 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             Union[pl.DataFrame, pl.LazyFrame]: 预处理后的数据
         """
-        # 确保数据包含必要的列
-        required_columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount']
-        
-        if not all(col in data.columns for col in required_columns):
-            logger.warning(f"数据缺少必要列，当前列: {data.columns}")
-            return data
-        
-        # 排序数据
-        if 'date' in data.columns:
-            data = data.sort('date')
-        
-        # 去除重复数据
-        data = data.unique(subset=['date'])
-        
-        return data
+        return self.data_processor.preprocess_data(data)
     
     def sample_data(self, data: Union[pl.DataFrame, pl.LazyFrame], target_points: int = 1000, strategy: str = 'adaptive') -> Union[pl.DataFrame, pl.LazyFrame]:
         """
@@ -1441,30 +1111,7 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             Union[pl.DataFrame, pl.LazyFrame]: 采样后的数据
         """
-        # 检查是否为LazyFrame
-        is_lazy = isinstance(data, pl.LazyFrame)
-        
-        if is_lazy:
-            # 对于LazyFrame，使用nth_sample进行均匀采样
-            return data.nth_sample(target_points)
-        else:
-            # 对于DataFrame
-            if len(data) <= target_points:
-                return data
-            
-            if strategy == 'uniform':
-                # 均匀采样
-                step = len(data) // target_points
-                return data[::step]
-            elif strategy == 'adaptive':
-                # 自适应采样 - 这里使用简单的均匀采样作为默认实现
-                # 实际自适应采样可以根据数据波动率进行调整
-                step = len(data) // target_points
-                return data[::step]
-            else:
-                logger.warning(f"不支持的采样策略: {strategy}，使用默认均匀采样")
-                step = len(data) // target_points
-                return data[::step]
+        return self.data_processor.sample_data(data, target_points, strategy)
     
     def convert_data_type(self, data: Union[pl.DataFrame, pl.LazyFrame], target_type: str = 'float32') -> Union[pl.DataFrame, pl.LazyFrame]:
         """
@@ -1477,17 +1124,7 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             Union[pl.DataFrame, pl.LazyFrame]: 转换后的数据
         """
-        # 转换数值列的数据类型
-        numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
-        
-        for col in data.columns:
-            if col in numeric_columns:
-                if target_type == 'float32':
-                    data = data.with_columns(pl.col(col).cast(pl.Float32))
-                elif target_type == 'float64':
-                    data = data.with_columns(pl.col(col).cast(pl.Float64))
-        
-        return data
+        return self.data_processor.convert_data_type(data, target_type)
     
     def clean_data(self, data: Union[pl.DataFrame, pl.LazyFrame]) -> Union[pl.DataFrame, pl.LazyFrame]:
         """
@@ -1499,11 +1136,4 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             Union[pl.DataFrame, pl.LazyFrame]: 清洗后的数据
         """
-        # 去除包含空值的行
-        data = data.drop_nulls()
-        
-        # 去除成交量为0的行
-        if 'volume' in data.columns:
-            data = data.filter(pl.col('volume') > 0)
-        
-        return data
+        return self.data_processor.clean_data(data)

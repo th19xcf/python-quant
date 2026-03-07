@@ -41,13 +41,6 @@ class AsyncDataManager:
         self.db_manager = data_manager.db_manager
         self.plugin_manager = data_manager.plugin_manager
         
-        # 数据源处理器
-        self.tdx_handler = data_manager.tdx_handler
-        self.akshare_handler = data_manager.akshare_handler
-        self.baostock_handler = data_manager.baostock_handler
-        self.macro_handler = data_manager.macro_handler
-        self.news_handler = data_manager.news_handler
-        
         # 插件数据源
         self.plugin_datasources = data_manager.plugin_datasources
         
@@ -336,92 +329,25 @@ class AsyncDataManager:
                 except (OSError, RuntimeError, ValueError) as db_e:
                     logger.warning(f"从数据库获取{type_name}数据失败: {db_e}")
             
-            # 数据库获取失败或无数据，并行尝试从其他数据源获取
-            data_sources = []
-            
-            # 内置数据源
-            if self.tdx_handler:
-                method_name = type_map['handler_methods']['tdx']
-                data_sources.append(('tdx', self.tdx_handler, method_name, {
-                    'stock_code': ts_code, 'start_date': start_date, 'end_date': end_date, 'adjust': adjustment_type
-                }))
-            
-            if self.akshare_handler:
-                method_name = type_map['handler_methods']['akshare']
-                data_sources.append(('akshare', self.akshare_handler, method_name, {
-                    'ts_code': ts_code, 'start_date': start_date, 'end_date': end_date, 'freq': freq
-                }))
-            
-            if self.baostock_handler:
-                method_name = type_map['handler_methods']['baostock']
-                # 转换股票代码格式：600000.SH -> sh.600000
-                if '.' in ts_code:
-                    parts = ts_code.split('.')
-                    if len(parts) == 2:
-                        baostock_code = f"{parts[1].lower()}.{parts[0]}"
-                    else:
-                        baostock_code = ts_code
+            # 直接调用data_manager的方法获取数据
+            def fetch_data_sync():
+                if data_type == 'stock':
+                    # 转换频率格式
+                    freq_map = {'daily': '1d', 'minute': '1m'}
+                    frequency = freq_map.get(freq, '1d')
+                    return self.data_manager.get_stock_data(ts_code, start_date, end_date, frequency, adjustment_type)
                 else:
-                    baostock_code = ts_code
-                data_sources.append(('baostock', self.baostock_handler, method_name, {
-                    'ts_codes': [baostock_code], 'start_date': start_date, 'end_date': end_date
-                }))
+                    freq_map = {'daily': '1d', 'minute': '1m'}
+                    frequency = freq_map.get(freq, '1d')
+                    return self.data_manager.get_index_data(ts_code, start_date, end_date, frequency)
             
-            # 插件数据源
-            for plugin_name, plugin in self.plugin_datasources.items():
-                method_name = type_map['handler_methods']['plugin']
-                data_sources.append((f'plugin_{plugin_name}', plugin, method_name, {
-                    'ts_code': ts_code, 'start_date': start_date, 'end_date': end_date, 'freq': freq
-                }))
-            
-            if not data_sources:
-                logger.warning(f"没有可用的数据源来获取{type_name}{ts_code}数据")
-                return pl.DataFrame()
-            
-            # 根据历史响应时间排序数据源（优先级）
-            def get_source_priority(source_name):
-                """
-                获取数据源优先级（响应时间越短优先级越高）
-                """
-                if source_name not in self.source_priorities or not self.source_priorities[source_name]:
-                    return 9999  # 默认优先级
-                return sum(self.source_priorities[source_name]) / len(self.source_priorities[source_name])
-            
-            # 按优先级排序数据源
-            data_sources.sort(key=lambda x: get_source_priority(x[0]))
-            
-            logger.info(f"异步从{len(data_sources)}个数据源获取{type_name}{ts_code}数据（已按响应时间排序）")
-            
-            # 并行获取数据
-            tasks = []
-            for source_name, handler, method_name, kwargs in data_sources:
-                task = asyncio.create_task(fetch_from_source_async(source_name, handler, method_name, **kwargs))
-                tasks.append(task)
-            
-            # 等待任何一个成功的结果
-            done, pending = await asyncio.wait(
-                tasks,
-                return_when=asyncio.FIRST_COMPLETED,
-                timeout=30  # 30秒超时
+            # 在线程池中执行同步方法
+            result = await asyncio.get_event_loop().run_in_executor(
+                self.executor, 
+                fetch_data_sync
             )
             
-            # 取消未完成的任务
-            for task in pending:
-                task.cancel()
-            
-            # 检查完成的任务
-            for task in done:
-                try:
-                    success, result = await task
-                    if success:
-                        logger.info(f"从{data_sources[tasks.index(task)][0]}成功获取{type_name}{ts_code}数据，返回结果")
-                        return result
-                except Exception as e:
-                    logger.warning(f"处理数据源结果时出错: {e}")
-            
-            # 所有数据源都失败，返回空DataFrame
-            logger.warning(f"无法从任何数据源获取{type_name}{ts_code}数据")
-            return pl.DataFrame()
+            return result
 
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取{type_name}数据失败: {e}")
