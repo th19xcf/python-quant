@@ -169,9 +169,15 @@ class MainWindowUiMixin:
         # 特色功能菜单
         feature_menu = menu_bar.addMenu("特色功能")
         self.add_menu_actions(feature_menu, [
-            ("量化回测", self.action_manager.on_quant_backtest),
-            ("股票推荐", self.action_manager.on_stock_recommendation),
             ("自动交易", self.action_manager.on_auto_trade),
+        ])
+        
+        # 量化分析菜单
+        quant_menu = menu_bar.addMenu("量化分析")
+        self.add_menu_actions(quant_menu, [
+            ("策略回测", self.action_manager.on_strategy_backtest),
+            ("股票推荐", self.action_manager.on_stock_recommendation),
+            ("因子分析", self.action_manager.on_factor_analysis),
         ])
         
         # 系统菜单
