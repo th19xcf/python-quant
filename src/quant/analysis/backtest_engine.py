@@ -269,8 +269,8 @@ class BacktestEngine:
         """
         # 计算RSI
         delta = data['close'].diff()
-        gain = delta.apply(lambda x: x if x > 0 else 0)
-        loss = delta.apply(lambda x: -x if x < 0 else 0)
+        gain = delta.map_elements(lambda x: x if x > 0 else 0.0)
+        loss = delta.map_elements(lambda x: -x if x < 0 else 0.0)
         
         avg_gain = gain.rolling_mean(window_size=rsi_period)
         avg_loss = loss.rolling_mean(window_size=rsi_period)
