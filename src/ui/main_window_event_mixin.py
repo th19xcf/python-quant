@@ -1,6 +1,6 @@
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QMenu, QMessageBox, QDialog, QVBoxLayout, QLabel, QLineEdit, QHBoxLayout, QPushButton
-from PySide6.QtGui import QAction
+from PySide6.QtWidgets import QMenu, QMessageBox, QDialog, QVBoxLayout, QLabel, QLineEdit, QHBoxLayout, QPushButton, QTableWidgetItem
+from PySide6.QtGui import QAction, QColor
 import pyqtgraph as pg
 from functools import wraps
 from datetime import datetime
@@ -275,6 +275,13 @@ class MainWindowEventMixin:
             elif text in ["全部A股", "上证A股", "深证A股", "创业板", "科创板"]:
                 if hasattr(self, 'data_view_manager'):
                     self.data_view_manager.show_stock_data_by_type(text)
+            # Handle fund items
+            elif text == "开放式基金":
+                # 显示ETF基金数据
+                self._show_etf_funds()
+            elif text == "封闭式基金":
+                # 显示封闭式基金数据
+                self._show_closed_funds()
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Failed to handle nav item click: {e}")
 
@@ -529,12 +536,17 @@ class MainWindowEventMixin:
                             ts_code = f"{symbol}.{market}"
                         elif code.isdigit():
                             # 纯数字代码，如 000014, 899001
-                            if code.startswith('6'):
+                            if code.startswith('6') or code.startswith('51'):
+                                # 沪市股票（6开头）和沪市ETF（51开头）
                                 ts_code = f"{code}.SH"
                             elif code.startswith('8') or code.startswith('4'):
                                 # 京市股票代码（北交所）
                                 ts_code = f"{code}.BJ"
+                            elif code.startswith('15'):
+                                # 深市ETF（15开头）
+                                ts_code = f"{code}.SZ"
                             else:
+                                # 其他代码默认为深市
                                 ts_code = f"{code}.SZ"
                         else:
                             # 已经是ts_code格式
@@ -812,6 +824,359 @@ class MainWindowEventMixin:
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"检查指数数据文件失败: {e}")
             return False
+    
+    def _show_etf_funds(self):
+        """
+        显示ETF基金数据
+        """
+        logger.info("显示ETF基金数据")
+        
+        try:
+            # 切换到行情标签页
+            self.tab_widget.setCurrentIndex(0)
+            
+            # 清空表格
+            self.stock_table.setRowCount(0)
+            
+            # 获取ETF基金数据
+            etf_funds = self._get_etf_funds()
+            
+            # 设置表格行数
+            self.stock_table.setRowCount(len(etf_funds))
+            
+            # 填充表格数据
+            for row, fund in enumerate(etf_funds):
+                # 日期
+                date_item = QTableWidgetItem(fund.get('date', ''))
+                self.stock_table.setItem(row, 0, date_item)
+                
+                # 代码
+                code_item = QTableWidgetItem(fund.get('code', ''))
+                self.stock_table.setItem(row, 1, code_item)
+                
+                # 名称
+                name_item = QTableWidgetItem(fund.get('name', ''))
+                self.stock_table.setItem(row, 2, name_item)
+                
+                # 涨跌幅%
+                change_pct_item = QTableWidgetItem(fund.get('change_pct', ''))
+                change_pct_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # 设置颜色
+                change_pct = fund.get('change_pct', '')
+                if change_pct.startswith('+') or (change_pct.replace('.', '').isdigit() and float(change_pct) > 0):
+                    change_pct_item.setForeground(QColor(255, 0, 0))
+                elif change_pct.startswith('-'):
+                    change_pct_item.setForeground(QColor(0, 255, 0))
+                else:
+                    change_pct_item.setForeground(QColor(204, 204, 204))
+                self.stock_table.setItem(row, 3, change_pct_item)
+                
+                # 现价
+                price_item = QTableWidgetItem(fund.get('price', ''))
+                price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # 设置颜色
+                price = fund.get('price', '0')
+                preclose = fund.get('preclose', '0')
+                try:
+                    if float(price) > float(preclose):
+                        price_item.setForeground(QColor(255, 0, 0))
+                    elif float(price) < float(preclose):
+                        price_item.setForeground(QColor(0, 255, 0))
+                    else:
+                        price_item.setForeground(QColor(204, 204, 204))
+                except:
+                    pass
+                self.stock_table.setItem(row, 4, price_item)
+                
+                # 涨跌
+                change_item = QTableWidgetItem(fund.get('change', ''))
+                change_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # 设置颜色
+                change = fund.get('change', '')
+                if change.startswith('+') or (change.replace('.', '').isdigit() and float(change) > 0):
+                    change_item.setForeground(QColor(255, 0, 0))
+                elif change.startswith('-'):
+                    change_item.setForeground(QColor(0, 255, 0))
+                else:
+                    change_item.setForeground(QColor(204, 204, 204))
+                self.stock_table.setItem(row, 5, change_item)
+                
+                # 总量
+                volume_item = QTableWidgetItem(fund.get('volume', ''))
+                volume_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.stock_table.setItem(row, 6, volume_item)
+                
+                # 成交额
+                amount_item = QTableWidgetItem(fund.get('amount', ''))
+                amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.stock_table.setItem(row, 7, amount_item)
+                
+                # 今开
+                open_item = QTableWidgetItem(fund.get('open', ''))
+                open_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # 设置颜色
+                open_price = fund.get('open', '0')
+                preclose = fund.get('preclose', '0')
+                try:
+                    if float(open_price) > float(preclose):
+                        open_item.setForeground(QColor(255, 0, 0))
+                    elif float(open_price) < float(preclose):
+                        open_item.setForeground(QColor(0, 255, 0))
+                    else:
+                        open_item.setForeground(QColor(204, 204, 204))
+                except:
+                    pass
+                self.stock_table.setItem(row, 8, open_item)
+                
+                # 最高
+                high_item = QTableWidgetItem(fund.get('high', ''))
+                high_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # 设置颜色
+                high_price = fund.get('high', '0')
+                preclose = fund.get('preclose', '0')
+                try:
+                    if float(high_price) > float(preclose):
+                        high_item.setForeground(QColor(255, 0, 0))
+                    elif float(high_price) < float(preclose):
+                        high_item.setForeground(QColor(0, 255, 0))
+                    else:
+                        high_item.setForeground(QColor(204, 204, 204))
+                except:
+                    pass
+                self.stock_table.setItem(row, 9, high_item)
+                
+                # 最低
+                low_item = QTableWidgetItem(fund.get('low', ''))
+                low_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # 设置颜色
+                low_price = fund.get('low', '0')
+                preclose = fund.get('preclose', '0')
+                try:
+                    if float(low_price) > float(preclose):
+                        low_item.setForeground(QColor(255, 0, 0))
+                    elif float(low_price) < float(preclose):
+                        low_item.setForeground(QColor(0, 255, 0))
+                    else:
+                        low_item.setForeground(QColor(204, 204, 204))
+                except:
+                    pass
+                self.stock_table.setItem(row, 10, low_item)
+                
+                # 昨收
+                preclose_item = QTableWidgetItem(fund.get('preclose', ''))
+                preclose_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.stock_table.setItem(row, 11, preclose_item)
+                
+                # 振幅%
+                amplitude_item = QTableWidgetItem(fund.get('amplitude', ''))
+                amplitude_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.stock_table.setItem(row, 12, amplitude_item)
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"显示ETF基金数据失败: {e}")
+    
+    def _show_closed_funds(self):
+        """
+        显示封闭式基金数据
+        """
+        logger.info("显示封闭式基金数据")
+        
+        try:
+            # 切换到行情标签页
+            self.tab_widget.setCurrentIndex(0)
+            
+            # 清空表格
+            self.stock_table.setRowCount(0)
+            
+            # 获取封闭式基金数据
+            closed_funds = self._get_closed_funds()
+            
+            # 设置表格行数
+            self.stock_table.setRowCount(len(closed_funds))
+            
+            # 填充表格数据
+            for row, fund in enumerate(closed_funds):
+                # 日期
+                date_item = QTableWidgetItem(fund.get('date', ''))
+                self.stock_table.setItem(row, 0, date_item)
+                
+                # 代码
+                code_item = QTableWidgetItem(fund.get('code', ''))
+                self.stock_table.setItem(row, 1, code_item)
+                
+                # 名称
+                name_item = QTableWidgetItem(fund.get('name', ''))
+                self.stock_table.setItem(row, 2, name_item)
+                
+                # 涨跌幅%
+                change_pct_item = QTableWidgetItem(fund.get('change_pct', ''))
+                change_pct_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # 设置颜色
+                change_pct = fund.get('change_pct', '')
+                if change_pct.startswith('+') or (change_pct.replace('.', '').isdigit() and float(change_pct) > 0):
+                    change_pct_item.setForeground(QColor(255, 0, 0))
+                elif change_pct.startswith('-'):
+                    change_pct_item.setForeground(QColor(0, 255, 0))
+                else:
+                    change_pct_item.setForeground(QColor(204, 204, 204))
+                self.stock_table.setItem(row, 3, change_pct_item)
+                
+                # 现价
+                price_item = QTableWidgetItem(fund.get('price', ''))
+                price_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # 设置颜色
+                price = fund.get('price', '0')
+                preclose = fund.get('preclose', '0')
+                try:
+                    if float(price) > float(preclose):
+                        price_item.setForeground(QColor(255, 0, 0))
+                    elif float(price) < float(preclose):
+                        price_item.setForeground(QColor(0, 255, 0))
+                    else:
+                        price_item.setForeground(QColor(204, 204, 204))
+                except:
+                    pass
+                self.stock_table.setItem(row, 4, price_item)
+                
+                # 涨跌
+                change_item = QTableWidgetItem(fund.get('change', ''))
+                change_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # 设置颜色
+                change = fund.get('change', '')
+                if change.startswith('+') or (change.replace('.', '').isdigit() and float(change) > 0):
+                    change_item.setForeground(QColor(255, 0, 0))
+                elif change.startswith('-'):
+                    change_item.setForeground(QColor(0, 255, 0))
+                else:
+                    change_item.setForeground(QColor(204, 204, 204))
+                self.stock_table.setItem(row, 5, change_item)
+                
+                # 总量
+                volume_item = QTableWidgetItem(fund.get('volume', ''))
+                volume_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.stock_table.setItem(row, 6, volume_item)
+                
+                # 成交额
+                amount_item = QTableWidgetItem(fund.get('amount', ''))
+                amount_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.stock_table.setItem(row, 7, amount_item)
+                
+                # 今开
+                open_item = QTableWidgetItem(fund.get('open', ''))
+                open_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # 设置颜色
+                open_price = fund.get('open', '0')
+                preclose = fund.get('preclose', '0')
+                try:
+                    if float(open_price) > float(preclose):
+                        open_item.setForeground(QColor(255, 0, 0))
+                    elif float(open_price) < float(preclose):
+                        open_item.setForeground(QColor(0, 255, 0))
+                    else:
+                        open_item.setForeground(QColor(204, 204, 204))
+                except:
+                    pass
+                self.stock_table.setItem(row, 8, open_item)
+                
+                # 最高
+                high_item = QTableWidgetItem(fund.get('high', ''))
+                high_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # 设置颜色
+                high_price = fund.get('high', '0')
+                preclose = fund.get('preclose', '0')
+                try:
+                    if float(high_price) > float(preclose):
+                        high_item.setForeground(QColor(255, 0, 0))
+                    elif float(high_price) < float(preclose):
+                        high_item.setForeground(QColor(0, 255, 0))
+                    else:
+                        high_item.setForeground(QColor(204, 204, 204))
+                except:
+                    pass
+                self.stock_table.setItem(row, 9, high_item)
+                
+                # 最低
+                low_item = QTableWidgetItem(fund.get('low', ''))
+                low_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                # 设置颜色
+                low_price = fund.get('low', '0')
+                preclose = fund.get('preclose', '0')
+                try:
+                    if float(low_price) > float(preclose):
+                        low_item.setForeground(QColor(255, 0, 0))
+                    elif float(low_price) < float(preclose):
+                        low_item.setForeground(QColor(0, 255, 0))
+                    else:
+                        low_item.setForeground(QColor(204, 204, 204))
+                except:
+                    pass
+                self.stock_table.setItem(row, 10, low_item)
+                
+                # 昨收
+                preclose_item = QTableWidgetItem(fund.get('preclose', ''))
+                preclose_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.stock_table.setItem(row, 11, preclose_item)
+                
+                # 振幅%
+                amplitude_item = QTableWidgetItem(fund.get('amplitude', ''))
+                amplitude_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.stock_table.setItem(row, 12, amplitude_item)
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"显示封闭式基金数据失败: {e}")
+    
+    def _get_etf_funds(self):
+        """
+        获取ETF基金数据
+        
+        Returns:
+            list: ETF基金数据列表
+        """
+        try:
+            # 模拟ETF基金数据
+            # 实际应用中，应该从数据库或通达信数据文件中获取
+            import datetime
+            current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+            
+            etf_funds = [
+                {"date": current_date, "code": "510050", "name": "上证50ETF", "change_pct": "+0.25", "price": "3.15", "change": "+0.01", "volume": "12345678", "amount": "3.89亿", "open": "3.14", "high": "3.16", "low": "3.13", "preclose": "3.14", "amplitude": "0.96"},
+                {"date": current_date, "code": "510300", "name": "沪深300ETF", "change_pct": "-0.12", "price": "4.20", "change": "-0.01", "volume": "9876543", "amount": "4.15亿", "open": "4.21", "high": "4.22", "low": "4.19", "preclose": "4.21", "amplitude": "0.71"},
+                {"date": current_date, "code": "159919", "name": "创业板ETF", "change_pct": "+0.58", "price": "2.15", "change": "+0.01", "volume": "5678901", "amount": "1.22亿", "open": "2.14", "high": "2.16", "low": "2.13", "preclose": "2.14", "amplitude": "1.40"},
+                {"date": current_date, "code": "510500", "name": "中证500ETF", "change_pct": "+0.33", "price": "6.18", "change": "+0.02", "volume": "3456789", "amount": "2.14亿", "open": "6.16", "high": "6.19", "low": "6.15", "preclose": "6.16", "amplitude": "0.65"},
+                {"date": current_date, "code": "512880", "name": "证券ETF", "change_pct": "-0.87", "price": "0.82", "change": "-0.01", "volume": "8765432", "amount": "7.19亿", "open": "0.83", "high": "0.83", "low": "0.82", "preclose": "0.83", "amplitude": "1.20"},
+                {"date": current_date, "code": "512480", "name": "半导体ETF", "change_pct": "+1.25", "price": "1.25", "change": "+0.02", "volume": "6543210", "amount": "8.18亿", "open": "1.23", "high": "1.26", "low": "1.23", "preclose": "1.23", "amplitude": "2.44"},
+                {"date": current_date, "code": "512000", "name": "银行ETF", "change_pct": "-0.24", "price": "1.25", "change": "-0.00", "volume": "2345678", "amount": "2.93亿", "open": "1.25", "high": "1.25", "low": "1.24", "preclose": "1.25", "amplitude": "0.80"},
+                {"date": current_date, "code": "516160", "name": "新能源ETF", "change_pct": "+0.75", "price": "2.02", "change": "+0.01", "volume": "4567890", "amount": "9.23亿", "open": "2.01", "high": "2.03", "low": "2.00", "preclose": "2.01", "amplitude": "1.49"},
+                {"date": current_date, "code": "515030", "name": "碳中和ETF", "change_pct": "+0.45", "price": "1.12", "change": "+0.01", "volume": "1234567", "amount": "1.38亿", "open": "1.11", "high": "1.12", "low": "1.11", "preclose": "1.11", "amplitude": "0.90"},
+                {"date": current_date, "code": "513100", "name": "纳指ETF", "change_pct": "+1.20", "price": "1.55", "change": "+0.02", "volume": "3456789", "amount": "5.36亿", "open": "1.53", "high": "1.56", "low": "1.53", "preclose": "1.53", "amplitude": "1.96"},
+            ]
+            
+            return etf_funds
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"获取ETF基金数据失败: {e}")
+            return []
+    
+    def _get_closed_funds(self):
+        """
+        获取封闭式基金数据
+        
+        Returns:
+            list: 封闭式基金数据列表
+        """
+        try:
+            # 模拟封闭式基金数据
+            # 实际应用中，应该从数据库或通达信数据文件中获取
+            import datetime
+            current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+            
+            closed_funds = [
+                {"date": current_date, "code": "500018", "name": "基金兴和", "change_pct": "+0.50", "price": "1.20", "change": "+0.01", "volume": "123456", "amount": "148万", "open": "1.19", "high": "1.20", "low": "1.19", "preclose": "1.19", "amplitude": "0.84"},
+                {"date": current_date, "code": "500025", "name": "基金汉盛", "change_pct": "-0.33", "price": "1.50", "change": "-0.01", "volume": "98765", "amount": "148万", "open": "1.51", "high": "1.51", "low": "1.50", "preclose": "1.51", "amplitude": "0.66"},
+                {"date": current_date, "code": "500038", "name": "基金通乾", "change_pct": "+0.25", "price": "1.20", "change": "-0.00", "volume": "56789", "amount": "68万", "open": "1.20", "high": "1.20", "low": "1.20", "preclose": "1.20", "amplitude": "0.00"},
+            ]
+            
+            return closed_funds
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"获取封闭式基金数据失败: {e}")
+            return []
 
     def _on_zoom_in(self):
         """

@@ -140,10 +140,16 @@ class TableInteractionManager:
                 market = 'bj'
                 tdx_code = code
                 ts_code = f'{code[2:]}.BJ'
-            elif code.startswith('6'):
+            elif code.startswith('6') or code.startswith('51'):
+                # 沪市股票（6开头）和沪市ETF（51开头）
                 market = 'sh'
                 tdx_code = f'sh{code}'
                 ts_code = f'{code}.SH'
+            elif code.startswith('15'):
+                # 深市ETF（15开头）
+                market = 'sz'
+                tdx_code = f'sz{code}'
+                ts_code = f'{code}.SZ'
             elif code.endswith('.SH'):
                 market = 'sh'
                 tdx_code = f'sh{code[:-3]}'
@@ -158,6 +164,7 @@ class TableInteractionManager:
                 tdx_code = 'sh000001'
                 ts_code = '000001.SH'
             else:
+                # 其他代码默认为深市
                 market = 'sz'
                 tdx_code = f'sz{code}'
                 ts_code = f'{code}.SZ'
