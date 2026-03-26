@@ -1131,28 +1131,248 @@ class MainWindowEventMixin:
             list: ETF基金数据列表
         """
         try:
-            # 模拟ETF基金数据
-            # 实际应用中，应该从数据库或通达信数据文件中获取
             import datetime
             current_date = datetime.datetime.now().strftime("%Y-%m-%d")
             
-            etf_funds = [
-                {"date": current_date, "code": "510050", "name": "上证50ETF", "change_pct": "+0.25", "price": "3.15", "change": "+0.01", "volume": "12345678", "amount": "3.89亿", "open": "3.14", "high": "3.16", "low": "3.13", "preclose": "3.14", "amplitude": "0.96"},
-                {"date": current_date, "code": "510300", "name": "沪深300ETF", "change_pct": "-0.12", "price": "4.20", "change": "-0.01", "volume": "9876543", "amount": "4.15亿", "open": "4.21", "high": "4.22", "low": "4.19", "preclose": "4.21", "amplitude": "0.71"},
-                {"date": current_date, "code": "159919", "name": "创业板ETF", "change_pct": "+0.58", "price": "2.15", "change": "+0.01", "volume": "5678901", "amount": "1.22亿", "open": "2.14", "high": "2.16", "low": "2.13", "preclose": "2.14", "amplitude": "1.40"},
-                {"date": current_date, "code": "510500", "name": "中证500ETF", "change_pct": "+0.33", "price": "6.18", "change": "+0.02", "volume": "3456789", "amount": "2.14亿", "open": "6.16", "high": "6.19", "low": "6.15", "preclose": "6.16", "amplitude": "0.65"},
-                {"date": current_date, "code": "512880", "name": "证券ETF", "change_pct": "-0.87", "price": "0.82", "change": "-0.01", "volume": "8765432", "amount": "7.19亿", "open": "0.83", "high": "0.83", "low": "0.82", "preclose": "0.83", "amplitude": "1.20"},
-                {"date": current_date, "code": "512480", "name": "半导体ETF", "change_pct": "+1.25", "price": "1.25", "change": "+0.02", "volume": "6543210", "amount": "8.18亿", "open": "1.23", "high": "1.26", "low": "1.23", "preclose": "1.23", "amplitude": "2.44"},
-                {"date": current_date, "code": "512000", "name": "银行ETF", "change_pct": "-0.24", "price": "1.25", "change": "-0.00", "volume": "2345678", "amount": "2.93亿", "open": "1.25", "high": "1.25", "low": "1.24", "preclose": "1.25", "amplitude": "0.80"},
-                {"date": current_date, "code": "516160", "name": "新能源ETF", "change_pct": "+0.75", "price": "2.02", "change": "+0.01", "volume": "4567890", "amount": "9.23亿", "open": "2.01", "high": "2.03", "low": "2.00", "preclose": "2.01", "amplitude": "1.49"},
-                {"date": current_date, "code": "515030", "name": "碳中和ETF", "change_pct": "+0.45", "price": "1.12", "change": "+0.01", "volume": "1234567", "amount": "1.38亿", "open": "1.11", "high": "1.12", "low": "1.11", "preclose": "1.11", "amplitude": "0.90"},
-                {"date": current_date, "code": "513100", "name": "纳指ETF", "change_pct": "+1.20", "price": "1.55", "change": "+0.02", "volume": "3456789", "amount": "5.36亿", "open": "1.53", "high": "1.56", "low": "1.53", "preclose": "1.53", "amplitude": "1.96"},
-            ]
+            # 尝试从数据库获取ETF基金列表
+            etf_funds = []
+            
+            # 检查是否有数据管理器
+            if hasattr(self, 'data_manager') and self.data_manager:
+                # 获取股票基本信息
+                stock_basic = self.data_manager.get_stock_basic()
+                
+                if not stock_basic.is_empty():
+                    # 筛选ETF基金（通常ETF代码以51或15开头）
+                    etf_codes = []
+                    for row in stock_basic.iter_rows():
+                        ts_code = row[0]
+                        name = row[1]
+                        # 提取代码部分（去除市场后缀）
+                        code = ts_code.split('.')[0]
+                        # 筛选ETF基金（51开头的沪市ETF，15开头的深市ETF）
+                        if code.startswith('51') or code.startswith('15'):
+                            etf_codes.append((code, name))
+                    
+                    # 为每个ETF基金获取真实交易数据
+                    added_codes = set()
+                    for code, name in etf_codes:
+                        # 检查是否已经添加过相同代码的ETF基金
+                        if code in added_codes:
+                            continue
+                        # 尝试从通达信数据文件获取真实数据
+                        real_data = self._get_real_etf_data(code, name)
+                        if real_data:
+                            etf_funds.append(real_data)
+                            added_codes.add(code)
+            
+            # 如果从数据库获取失败或没有数据，使用默认ETF基金列表
+            if not etf_funds:
+                logger.info("从数据库获取ETF基金失败，使用默认列表")
+                default_etfs = [
+                    {"code": "510050", "name": "上证50ETF"},
+                    {"code": "510300", "name": "沪深300ETF"},
+                    {"code": "159919", "name": "创业板ETF"},
+                    {"code": "510500", "name": "中证500ETF"},
+                    {"code": "512880", "name": "证券ETF"},
+                    {"code": "512480", "name": "半导体ETF"},
+                    {"code": "512000", "name": "银行ETF"},
+                    {"code": "516160", "name": "新能源ETF"},
+                    {"code": "515030", "name": "碳中和ETF"},
+                    {"code": "513100", "name": "纳指ETF"},
+                    {"code": "510880", "name": "红利ETF"},
+                    {"code": "512660", "name": "军工ETF"},
+                    {"code": "512760", "name": "券商ETF"},
+                    {"code": "512200", "name": "房地产ETF"},
+                    {"code": "512980", "name": "银行ETF"},
+                    {"code": "512170", "name": "医疗ETF"},
+                    {"code": "512580", "name": "环保ETF"},
+                    {"code": "512690", "name": "酒ETF"},
+                    {"code": "512800", "name": "银行ETF"},
+                    {"code": "512100", "name": "医药ETF"},
+                    {"code": "512010", "name": "医药ETF"},
+                    {"code": "512900", "name": "酒ETF"},
+                    {"code": "512710", "name": "军工ETF"},
+                    {"code": "512680", "name": "证券ETF"},
+                    {"code": "512070", "name": "军工ETF"},
+                    {"code": "512300", "name": "传媒ETF"},
+                    {"code": "512400", "name": "有色ETF"},
+                    {"code": "512500", "name": "煤炭ETF"},
+                    {"code": "512600", "name": "钢铁ETF"},
+                    {"code": "512700", "name": "有色ETF"},
+                    {"code": "517520", "name": "黄金股ETF"},
+                    {"code": "159562", "name": "中证金矿ETF"},
+                    {"code": "518880", "name": "黄金ETF"},
+                    {"code": "518660", "name": "黄金ETF"},
+                    {"code": "159915", "name": "创业板ETF"},
+                    {"code": "159949", "name": "创业板50ETF"},
+                    {"code": "159928", "name": "消费ETF"},
+                    {"code": "159938", "name": "医药ETF"},
+                    {"code": "159941", "name": "纳指ETF"},
+                    {"code": "159942", "name": "标普500ETF"},
+                    {"code": "159952", "name": "创业板ETF"},
+                    {"code": "159954", "name": "信息技术ETF"},
+                    {"code": "159956", "name": "军工ETF"},
+                    {"code": "159960", "name": "新能源ETF"},
+                    {"code": "159967", "name": "新材料ETF"},
+                    {"code": "159968", "name": "芯片ETF"},
+                    {"code": "159970", "name": "农业ETF"},
+                    {"code": "159971", "name": "通信ETF"},
+                    {"code": "159972", "name": "消费ETF"},
+                    {"code": "159973", "name": "传媒ETF"},
+                    {"code": "159975", "name": "生物医药ETF"},
+                    {"code": "159976", "name": "家电ETF"},
+                    {"code": "159977", "name": "食品饮料ETF"},
+                    {"code": "159978", "name": "银行ETF"},
+                    {"code": "159979", "name": "证券ETF"},
+                    {"code": "159980", "name": "银行ETF"},
+                    {"code": "159981", "name": "芯片ETF"},
+                    {"code": "159982", "name": "创新药ETF"},
+                    {"code": "159983", "name": "新能源车ETF"},
+                    {"code": "159984", "name": "半导体ETF"},
+                    {"code": "159985", "name": "银行ETF"},
+                    {"code": "159986", "name": "银行ETF"},
+                    {"code": "159987", "name": "银行ETF"},
+                    {"code": "159988", "name": "银行ETF"},
+                    {"code": "159989", "name": "银行ETF"},
+                    {"code": "159990", "name": "银行ETF"},
+                    {"code": "159991", "name": "银行ETF"},
+                    {"code": "159992", "name": "银行ETF"},
+                    {"code": "159993", "name": "银行ETF"},
+                    {"code": "159994", "name": "银行ETF"},
+                    {"code": "159995", "name": "银行ETF"},
+                    {"code": "159996", "name": "银行ETF"},
+                    {"code": "159997", "name": "银行ETF"},
+                    {"code": "159998", "name": "银行ETF"},
+                    {"code": "159999", "name": "银行ETF"},
+                ]
+                
+                added_codes = set()
+                for etf in default_etfs:
+                    # 检查是否已经添加过相同代码的ETF基金
+                    if etf["code"] in added_codes:
+                        continue
+                    # 尝试从通达信数据文件获取真实数据
+                    real_data = self._get_real_etf_data(etf["code"], etf["name"])
+                    if real_data:
+                        etf_funds.append(real_data)
+                        added_codes.add(etf["code"])
             
             return etf_funds
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取ETF基金数据失败: {e}")
             return []
+    
+    def _get_real_etf_data(self, code, name):
+        """
+        从通达信数据文件获取ETF基金的真实交易数据
+        
+        Args:
+            code: ETF基金代码
+            name: ETF基金名称
+            
+        Returns:
+            dict: ETF基金交易数据，如果无法获取则返回None
+        """
+        try:
+            import datetime
+            current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+            
+            # 确定ETF基金的市场
+            if code.startswith('51'):
+                market = 'sh'
+            elif code.startswith('15'):
+                market = 'sz'
+            else:
+                # 默认为深市
+                market = 'sz'
+            
+            # 构建通达信数据文件路径
+            if hasattr(self, 'data_manager') and self.data_manager and hasattr(self.data_manager.config, 'data'):
+                tdx_data_path = self.data_manager.config.data.tdx_data_path
+                from pathlib import Path
+                file_name = f"{market}{code}.day"
+                file_path = Path(tdx_data_path) / market / "lday" / file_name
+                
+                # 检查文件是否存在
+                if file_path.exists():
+                    logger.info(f"从通达信数据文件获取ETF基金 {name}({code}) 的交易数据")
+                    
+                    # 解析通达信数据文件
+                    import struct
+                    data = []
+                    with open(file_path, 'rb') as f:
+                        # 获取文件大小
+                        f.seek(0, 2)
+                        file_size = f.tell()
+                        
+                        # 计算数据条数
+                        record_count = file_size // 32
+                        
+                        if record_count > 0:
+                            # 读取最后一条记录（最新数据）
+                            f.seek((record_count - 1) * 32)
+                            record = f.read(32)
+                            
+                            if len(record) == 32:
+                                # 解析字段
+                                date_int = struct.unpack('I', record[0:4])[0]  # 日期，格式：YYYYMMDD
+                                open_val = struct.unpack('I', record[4:8])[0] / 100  # 开盘价，转换为元
+                                high_val = struct.unpack('I', record[8:12])[0] / 100  # 最高价，转换为元
+                                low_val = struct.unpack('I', record[12:16])[0] / 100  # 最低价，转换为元
+                                close_val = struct.unpack('I', record[16:20])[0] / 100  # 收盘价，转换为元
+                                volume = struct.unpack('I', record[20:24])[0]  # 成交量，单位：手
+                                amount = struct.unpack('I', record[24:28])[0] / 100  # 成交额，单位：元
+                                
+                                # 转换日期格式
+                                date_str = str(date_int)
+                                date = datetime.datetime.strptime(date_str, '%Y%m%d').strftime('%Y-%m-%d')
+                                
+                                # 计算涨跌幅
+                                if record_count >= 2:
+                                    # 读取倒数第二条记录（前一天数据）
+                                    f.seek((record_count - 2) * 32)
+                                    prev_record = f.read(32)
+                                    if len(prev_record) == 32:
+                                        prev_close = struct.unpack('I', prev_record[16:20])[0] / 100
+                                        change = close_val - prev_close
+                                        change_pct = (change / prev_close) * 100 if prev_close > 0 else 0
+                                    else:
+                                        change = 0
+                                        change_pct = 0
+                                else:
+                                    change = 0
+                                    change_pct = 0
+                                
+                                # 计算振幅
+                                preclose = close_val - change
+                                amplitude = ((high_val - low_val) / preclose) * 100 if preclose > 0 else 0
+                                
+                                # 格式化数据
+                                change_str = f"+{change:.2f}" if change >= 0 else f"{change:.2f}"
+                                change_pct_str = f"+{change_pct:.2f}%" if change_pct >= 0 else f"{change_pct:.2f}%"
+                                volume_str = f"{volume:,}"
+                                amount_str = f"{round(amount / 100000000, 2)}亿"
+                                
+                                return {
+                                    "date": date,
+                                    "code": code,
+                                    "name": name,
+                                    "change_pct": change_pct_str,
+                                    "price": f"{close_val:.2f}",
+                                    "change": change_str,
+                                    "volume": volume_str,
+                                    "amount": amount_str,
+                                    "open": f"{open_val:.2f}",
+                                    "high": f"{high_val:.2f}",
+                                    "low": f"{low_val:.2f}",
+                                    "preclose": f"{preclose:.2f}",
+                                    "amplitude": f"{amplitude:.2f}%"
+                                }
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.warning(f"获取ETF基金 {name}({code}) 的真实交易数据失败: {e}")
+        
+        return None
     
     def _get_closed_funds(self):
         """

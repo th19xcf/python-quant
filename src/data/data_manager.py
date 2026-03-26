@@ -268,6 +268,35 @@ class DataManager(IDataProvider, IDataProcessor):
                 # 如果更新所有股票，使所有股票缓存失效
                 global_data_cache.invalidate_by_type('stock')
     
+    def update_fund_basic(self):
+        """
+        更新基金基本信息
+        """
+        success = self.data_updater.update_fund_basic()
+        if success:
+            # 使基金基本信息缓存失效
+            global_data_cache.invalidate_by_type('fund_basic')
+    
+    def update_fund_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+        """
+        更新基金日线数据
+        
+        Args:
+            ts_codes: 基金代码列表，None表示更新所有基金
+            start_date: 开始日期，格式：YYYYMMDD
+            end_date: 结束日期，格式：YYYYMMDD
+        """
+        success = self.data_updater.update_fund_daily(ts_codes, start_date, end_date)
+        
+        # 数据更新后，使相关缓存失效
+        if success:
+            if ts_codes:
+                for ts_code in ts_codes:
+                    global_data_cache.invalidate('fund', ts_code)
+            else:
+                # 如果更新所有基金，使所有基金缓存失效
+                global_data_cache.invalidate_by_type('fund')
+    
     def update_index_basic(self):
         """
         更新指数基本信息
@@ -461,6 +490,16 @@ class DataManager(IDataProvider, IDataProcessor):
                         'akshare': 'get_index_data',
                         'baostock': 'download_index_daily',
                         'plugin': 'get_index_data'
+                    }
+                },
+                'fund': {
+                    'model': 'FundDaily',
+                    'module': 'fund',
+                    'handler_methods': {
+                        'tdx': 'get_kline_data',
+                        'akshare': 'get_fund_data',
+                        'baostock': 'download_fund_daily',
+                        'plugin': 'get_fund_data'
                     }
                 }
             }
@@ -1007,6 +1046,87 @@ class DataManager(IDataProvider, IDataProcessor):
 
         except (OSError, RuntimeError) as e:
             logger.exception(f"获取指数基本信息失败: {e}")
+            return pl.DataFrame()
+    
+    def get_fund_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
+        """
+        获取基金基本信息
+        
+        Args:
+            exchange: 交易所，可选值：'sh'（上海）、'sz'（深圳）
+        
+        Returns:
+            pl.DataFrame: 基金基本信息
+        """
+        try:
+            if not self.db_manager:
+                logger.warning("数据库连接不可用，无法获取基金基本信息")
+                return pl.DataFrame()
+            
+            from src.database.models.fund import FundBasic
+            
+            session = self.db_manager.get_session()
+            if not session:
+                return pl.DataFrame()
+            
+            try:
+                # 检查fund_basic表是否有数据
+                query = session.query(FundBasic)
+                
+                # 根据交易所筛选
+                if exchange:
+                    if exchange == 'sh':
+                        query = query.filter(FundBasic.ts_code.like('%.SH'))
+                    elif exchange == 'sz':
+                        query = query.filter(FundBasic.ts_code.like('%.SZ'))
+                
+                fund_basics = query.all()
+                
+                # 如果没有数据，插入默认基金信息
+                if not fund_basics:
+                    logger.info("fund_basic表为空，插入默认基金信息")
+                    default_funds = [
+                        {"ts_code": "510050.SH", "name": "上证50ETF"},
+                        {"ts_code": "510300.SH", "name": "沪深300ETF"},
+                        {"ts_code": "159919.SZ", "name": "创业板ETF"},
+                        {"ts_code": "510500.SH", "name": "中证500ETF"},
+                        {"ts_code": "517520.SH", "name": "黄金股ETF"},
+                        {"ts_code": "159562.SZ", "name": "中证金矿ETF"}
+                    ]
+                    
+                    for fund_info in default_funds:
+                        # 检查是否已存在
+                        existing_fund = session.query(FundBasic).filter_by(ts_code=fund_info["ts_code"]).first()
+                        if not existing_fund:
+                            new_fund = FundBasic(
+                                ts_code=fund_info["ts_code"],
+                                name=fund_info["name"]
+                            )
+                            session.add(new_fund)
+                    
+                    # 提交事务
+                    session.commit()
+                    # 重新查询数据
+                    fund_basics = query.all()
+                
+                # 构建DataFrame
+                if fund_basics:
+                    data = {
+                        'ts_code': [fund.ts_code for fund in fund_basics],
+                        'name': [fund.name for fund in fund_basics]
+                    }
+                    df = pl.DataFrame(data)
+                    # 内存优化：字符串列不需要优化
+                    return df
+                else:
+                    return pl.DataFrame()
+            except (OSError, RuntimeError) as query_e:
+                # 如果查询失败，可能是表不存在，返回空DataFrame
+                logger.warning(f"基金基本信息查询失败: {query_e}")
+                return pl.DataFrame()
+
+        except (OSError, RuntimeError) as e:
+            logger.exception(f"获取基金基本信息失败: {e}")
             return pl.DataFrame()
     
     def preprocess_data(self, data: Union[pl.DataFrame, pl.LazyFrame]) -> Union[pl.DataFrame, pl.LazyFrame]:

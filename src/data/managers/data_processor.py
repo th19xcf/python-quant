@@ -114,12 +114,14 @@ class DataProcessor:
         
         return data
     
-    def clean_data(self, data: Union[pl.DataFrame, pl.LazyFrame]) -> Union[pl.DataFrame, pl.LazyFrame]:
+    def clean_data(self, data: Union[pl.DataFrame, pl.LazyFrame], remove_outliers: bool = True, outlier_method: str = 'iqr') -> Union[pl.DataFrame, pl.LazyFrame]:
         """
         清洗数据，处理缺失值、异常值等
         
         Args:
             data: 原始数据（Polars DataFrame或LazyFrame）
+            remove_outliers: 是否移除异常值
+            outlier_method: 异常值检测方法，可选值：'iqr'（四分位距）、'zscore'（Z分数）
             
         Returns:
             Union[pl.DataFrame, pl.LazyFrame]: 清洗后的数据
@@ -130,6 +132,113 @@ class DataProcessor:
         # 去除成交量为0的行
         if 'volume' in data.columns:
             data = data.filter(pl.col('volume') > 0)
+        
+        # 处理异常值
+        if remove_outliers:
+            data = self._detect_and_remove_outliers(data, method=outlier_method)
+        
+        return data
+    
+    def _detect_and_remove_outliers(self, data: Union[pl.DataFrame, pl.LazyFrame], method: str = 'iqr', threshold: float = 3.0) -> Union[pl.DataFrame, pl.LazyFrame]:
+        """
+        检测并移除异常值
+        
+        Args:
+            data: 原始数据（Polars DataFrame或LazyFrame）
+            method: 异常值检测方法，可选值：'iqr'（四分位距）、'zscore'（Z分数）
+            threshold: 异常值阈值
+            
+        Returns:
+            Union[pl.DataFrame, pl.LazyFrame]: 移除异常值后的数据
+        """
+        numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
+        
+        # 只处理存在的数值列
+        columns_to_process = [col for col in numeric_columns if col in data.columns]
+        
+        if not columns_to_process:
+            return data
+        
+        if method == 'iqr':
+            # 使用四分位距方法检测异常值
+            for col in columns_to_process:
+                q1 = data.select(pl.col(col).quantile(0.25)).to_numpy()[0][0]
+                q3 = data.select(pl.col(col).quantile(0.75)).to_numpy()[0][0]
+                iqr = q3 - q1
+                lower_bound = q1 - threshold * iqr
+                upper_bound = q3 + threshold * iqr
+                data = data.filter((pl.col(col) >= lower_bound) & (pl.col(col) <= upper_bound))
+        
+        elif method == 'zscore':
+            # 使用Z分数方法检测异常值
+            for col in columns_to_process:
+                mean = data.select(pl.col(col).mean()).to_numpy()[0][0]
+                std = data.select(pl.col(col).std()).to_numpy()[0][0]
+                if std > 0:
+                    data = data.filter((pl.col(col) - mean).abs() <= threshold * std)
+        
+        return data
+    
+    def check_data_quality(self, data: pl.DataFrame) -> Dict[str, Any]:
+        """
+        检查数据质量
+        
+        Args:
+            data: 原始数据
+            
+        Returns:
+            Dict[str, Any]: 数据质量报告
+        """
+        quality_report = {
+            'total_rows': len(data),
+            'null_values': {},
+            'zero_volume_rows': 0
+        }
+        
+        # 检查空值
+        for col in data.columns:
+            try:
+                null_count = data.select(pl.col(col).is_null().sum()).to_numpy()[0][0]
+                quality_report['null_values'][col] = null_count
+            except Exception as e:
+                logger.warning(f"检查{col}列空值时出错: {e}")
+                quality_report['null_values'][col] = 0
+        
+        # 检查成交量为0的行
+        if 'volume' in data.columns:
+            try:
+                zero_volume_count = data.filter(pl.col('volume') == 0).height
+                quality_report['zero_volume_rows'] = zero_volume_count
+            except Exception as e:
+                logger.warning(f"检查成交量为0的行时出错: {e}")
+                quality_report['zero_volume_rows'] = 0
+        
+        return quality_report
+    
+    def fill_missing_values(self, data: Union[pl.DataFrame, pl.LazyFrame], method: str = 'forward') -> Union[pl.DataFrame, pl.LazyFrame]:
+        """
+        填充缺失值
+        
+        Args:
+            data: 原始数据（Polars DataFrame或LazyFrame）
+            method: 填充方法，可选值：'forward'（前向填充）、'backward'（后向填充）、'mean'（均值填充）
+            
+        Returns:
+            Union[pl.DataFrame, pl.LazyFrame]: 填充后的数据
+        """
+        numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
+        
+        # 只处理存在的数值列
+        columns_to_process = [col for col in numeric_columns if col in data.columns]
+        
+        for col in columns_to_process:
+            if method == 'forward':
+                data = data.with_columns(pl.col(col).fill_null(strategy='forward'))
+            elif method == 'backward':
+                data = data.with_columns(pl.col(col).fill_null(strategy='backward'))
+            elif method == 'mean':
+                mean_value = data.select(pl.col(col).mean()).to_numpy()[0][0]
+                data = data.with_columns(pl.col(col).fill_null(mean_value))
         
         return data
     

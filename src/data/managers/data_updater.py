@@ -87,6 +87,55 @@ class DataUpdater:
         logger.error("所有数据源更新股票日线数据失败")
         return False
     
+    def update_fund_basic(self):
+        """
+        更新基金基本信息
+        
+        Returns:
+            bool: 更新是否成功
+        """
+        for source in self.sources:
+            try:
+                logger.info(f"使用{source.name}更新基金基本信息")
+                source.update_fund_basic()
+                # 发布数据更新事件
+                publish('data_updated', data_type='fund_basic', ts_code='all', message='基金基本信息更新完成')
+                return True
+            except Exception as e:
+                logger.warning(f"{source.name}更新基金基本信息失败: {e}")
+                continue
+        
+        logger.error("所有数据源更新基金基本信息失败")
+        return False
+    
+    def update_fund_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+        """
+        更新基金日线数据
+        
+        Args:
+            ts_codes: 基金代码列表
+            start_date: 开始日期
+            end_date: 结束日期
+            
+        Returns:
+            bool: 更新是否成功
+        """
+        for source in self.sources:
+            try:
+                logger.info(f"使用{source.name}更新基金日线数据")
+                source.update_fund_daily(ts_codes, start_date, end_date)
+                # 发布数据更新事件
+                publish('data_updated', data_type='fund_daily', 
+                        ts_code=ts_codes[0] if ts_codes else 'all', 
+                        message='基金日线数据更新完成')
+                return True
+            except Exception as e:
+                logger.warning(f"{source.name}更新基金日线数据失败: {e}")
+                continue
+        
+        logger.error("所有数据源更新基金日线数据失败")
+        return False
+    
     def update_index_basic(self):
         """
         更新指数基本信息
