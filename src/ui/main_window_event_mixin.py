@@ -1382,16 +1382,58 @@ class MainWindowEventMixin:
             list: 封闭式基金数据列表
         """
         try:
-            # 模拟封闭式基金数据
-            # 实际应用中，应该从数据库或通达信数据文件中获取
             import datetime
             current_date = datetime.datetime.now().strftime("%Y-%m-%d")
             
-            closed_funds = [
-                {"date": current_date, "code": "500018", "name": "基金兴和", "change_pct": "+0.50", "price": "1.20", "change": "+0.01", "volume": "123456", "amount": "148万", "open": "1.19", "high": "1.20", "low": "1.19", "preclose": "1.19", "amplitude": "0.84"},
-                {"date": current_date, "code": "500025", "name": "基金汉盛", "change_pct": "-0.33", "price": "1.50", "change": "-0.01", "volume": "98765", "amount": "148万", "open": "1.51", "high": "1.51", "low": "1.50", "preclose": "1.51", "amplitude": "0.66"},
-                {"date": current_date, "code": "500038", "name": "基金通乾", "change_pct": "+0.25", "price": "1.20", "change": "-0.00", "volume": "56789", "amount": "68万", "open": "1.20", "high": "1.20", "low": "1.20", "preclose": "1.20", "amplitude": "0.00"},
-            ]
+            # 尝试从数据库获取封闭式基金列表
+            closed_funds = []
+            
+            # 检查是否有数据管理器
+            if hasattr(self, 'data_manager') and self.data_manager:
+                # 获取封闭式基金基本信息
+                closed_fund_basic = self.data_manager.get_closed_fund_basic()
+                
+                if not closed_fund_basic.is_empty():
+                    # 筛选封闭式基金
+                    closed_fund_codes = []
+                    for row in closed_fund_basic.iter_rows():
+                        ts_code = row[0]
+                        name = row[1]
+                        # 提取代码部分（去除市场后缀）
+                        code = ts_code.split('.')[0]
+                        closed_fund_codes.append((code, name))
+                    
+                    # 为每个封闭式基金获取真实交易数据
+                    added_codes = set()
+                    for code, name in closed_fund_codes:
+                        # 检查是否已经添加过相同代码的封闭式基金
+                        if code in added_codes:
+                            continue
+                        # 尝试从通达信数据文件获取真实数据
+                        real_data = self._get_real_etf_data(code, name)
+                        if real_data:
+                            closed_funds.append(real_data)
+                            added_codes.add(code)
+            
+            # 如果从数据库获取失败或没有数据，使用默认封闭式基金列表
+            if not closed_funds:
+                logger.info("从数据库获取封闭式基金失败，使用默认列表")
+                default_closed_funds = [
+                    {"code": "500018", "name": "基金兴和"},
+                    {"code": "500025", "name": "基金汉盛"},
+                    {"code": "500038", "name": "基金通乾"}
+                ]
+                
+                added_codes = set()
+                for fund in default_closed_funds:
+                    # 检查是否已经添加过相同代码的封闭式基金
+                    if fund["code"] in added_codes:
+                        continue
+                    # 尝试从通达信数据文件获取真实数据
+                    real_data = self._get_real_etf_data(fund["code"], fund["name"])
+                    if real_data:
+                        closed_funds.append(real_data)
+                        added_codes.add(fund["code"])
             
             return closed_funds
         except (OSError, RuntimeError, ValueError) as e:

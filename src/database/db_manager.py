@@ -99,8 +99,8 @@ class DatabaseManager:
         try:
             # 导入已存在的模型，确保Base.metadata包含所有表定义
             try:
-                from src.database.models import stock, index
-                logger.info("成功导入stock和index模型")
+                from src.database.models import stock, index, fund
+                logger.info("成功导入stock、index和fund模型")
             except ImportError as import_e:
                 logger.warning(f"导入模型时发生错误: {import_e}")
             

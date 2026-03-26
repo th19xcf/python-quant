@@ -297,6 +297,35 @@ class DataManager(IDataProvider, IDataProcessor):
                 # 如果更新所有基金，使所有基金缓存失效
                 global_data_cache.invalidate_by_type('fund')
     
+    def update_closed_fund_basic(self):
+        """
+        更新封闭式基金基本信息
+        """
+        success = self.data_updater.update_closed_fund_basic()
+        if success:
+            # 使封闭式基金基本信息缓存失效
+            global_data_cache.invalidate_by_type('closed_fund_basic')
+    
+    def update_closed_fund_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+        """
+        更新封闭式基金日线数据
+        
+        Args:
+            ts_codes: 封闭式基金代码列表，None表示更新所有封闭式基金
+            start_date: 开始日期，格式：YYYYMMDD
+            end_date: 结束日期，格式：YYYYMMDD
+        """
+        success = self.data_updater.update_closed_fund_daily(ts_codes, start_date, end_date)
+        
+        # 数据更新后，使相关缓存失效
+        if success:
+            if ts_codes:
+                for ts_code in ts_codes:
+                    global_data_cache.invalidate('closed_fund', ts_code)
+            else:
+                # 如果更新所有封闭式基金，使所有封闭式基金缓存失效
+                global_data_cache.invalidate_by_type('closed_fund')
+    
     def update_index_basic(self):
         """
         更新指数基本信息
@@ -500,6 +529,16 @@ class DataManager(IDataProvider, IDataProcessor):
                         'akshare': 'get_fund_data',
                         'baostock': 'download_fund_daily',
                         'plugin': 'get_fund_data'
+                    }
+                },
+                'closed_fund': {
+                    'model': 'ClosedFundDaily',
+                    'module': 'fund',
+                    'handler_methods': {
+                        'tdx': 'get_kline_data',
+                        'akshare': 'get_closed_fund_data',
+                        'baostock': 'download_closed_fund_daily',
+                        'plugin': 'get_closed_fund_data'
                     }
                 }
             }
@@ -924,6 +963,7 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             pl.DataFrame: 股票基本信息
         """
+        session = None
         try:
             if not self.db_manager:
                 logger.warning("数据库连接不可用，无法获取股票基本信息")
@@ -993,6 +1033,13 @@ class DataManager(IDataProvider, IDataProcessor):
         except (OSError, RuntimeError) as e:
             logger.exception(f"获取股票基本信息失败: {e}")
             return pl.DataFrame()
+        finally:
+            # 确保会话被关闭
+            if session and self.db_manager:
+                try:
+                    self.db_manager._cleanup_session()
+                except Exception as cleanup_e:
+                    logger.debug(f"清理会话时出错: {cleanup_e}")
     
     def get_index_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
         """
@@ -1004,6 +1051,7 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             pl.DataFrame: 指数基本信息
         """
+        session = None
         try:
             if not self.db_manager:
                 logger.warning("数据库连接不可用，无法获取指数基本信息")
@@ -1047,6 +1095,13 @@ class DataManager(IDataProvider, IDataProcessor):
         except (OSError, RuntimeError) as e:
             logger.exception(f"获取指数基本信息失败: {e}")
             return pl.DataFrame()
+        finally:
+            # 确保会话被关闭
+            if session and self.db_manager:
+                try:
+                    self.db_manager._cleanup_session()
+                except Exception as cleanup_e:
+                    logger.debug(f"清理会话时出错: {cleanup_e}")
     
     def get_fund_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
         """
@@ -1058,6 +1113,7 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             pl.DataFrame: 基金基本信息
         """
+        session = None
         try:
             if not self.db_manager:
                 logger.warning("数据库连接不可用，无法获取基金基本信息")
@@ -1120,14 +1176,107 @@ class DataManager(IDataProvider, IDataProcessor):
                     return df
                 else:
                     return pl.DataFrame()
-            except (OSError, RuntimeError) as query_e:
+            except Exception as query_e:
                 # 如果查询失败，可能是表不存在，返回空DataFrame
                 logger.warning(f"基金基本信息查询失败: {query_e}")
                 return pl.DataFrame()
 
-        except (OSError, RuntimeError) as e:
+        except Exception as e:
             logger.exception(f"获取基金基本信息失败: {e}")
             return pl.DataFrame()
+        finally:
+            # 确保会话被关闭
+            if session and self.db_manager:
+                try:
+                    self.db_manager._cleanup_session()
+                except Exception as cleanup_e:
+                    logger.debug(f"清理会话时出错: {cleanup_e}")
+    
+    def get_closed_fund_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
+        """
+        获取封闭式基金基本信息
+        
+        Args:
+            exchange: 交易所，可选值：'sh'（上海）、'sz'（深圳）
+        
+        Returns:
+            pl.DataFrame: 封闭式基金基本信息
+        """
+        session = None
+        try:
+            if not self.db_manager:
+                logger.warning("数据库连接不可用，无法获取封闭式基金基本信息")
+                return pl.DataFrame()
+            
+            from src.database.models.fund import ClosedFundBasic
+            
+            session = self.db_manager.get_session()
+            if not session:
+                return pl.DataFrame()
+            
+            try:
+                # 检查closed_fund_basic表是否有数据
+                query = session.query(ClosedFundBasic)
+                
+                # 根据交易所筛选
+                if exchange:
+                    if exchange == 'sh':
+                        query = query.filter(ClosedFundBasic.ts_code.like('%.SH'))
+                    elif exchange == 'sz':
+                        query = query.filter(ClosedFundBasic.ts_code.like('%.SZ'))
+                
+                closed_fund_basics = query.all()
+                
+                # 如果没有数据，插入默认封闭式基金信息
+                if not closed_fund_basics:
+                    logger.info("closed_fund_basic表为空，插入默认封闭式基金信息")
+                    default_closed_funds = [
+                        {"ts_code": "500018.SH", "name": "基金兴和"},
+                        {"ts_code": "500025.SH", "name": "基金汉盛"},
+                        {"ts_code": "500038.SH", "name": "基金通乾"}
+                    ]
+                    
+                    for fund_info in default_closed_funds:
+                        # 检查是否已存在
+                        existing_fund = session.query(ClosedFundBasic).filter_by(ts_code=fund_info["ts_code"]).first()
+                        if not existing_fund:
+                            new_fund = ClosedFundBasic(
+                                ts_code=fund_info["ts_code"],
+                                name=fund_info["name"]
+                            )
+                            session.add(new_fund)
+                    
+                    # 提交事务
+                    session.commit()
+                    # 重新查询数据
+                    closed_fund_basics = query.all()
+                
+                # 构建DataFrame
+                if closed_fund_basics:
+                    data = {
+                        'ts_code': [fund.ts_code for fund in closed_fund_basics],
+                        'name': [fund.name for fund in closed_fund_basics]
+                    }
+                    df = pl.DataFrame(data)
+                    # 内存优化：字符串列不需要优化
+                    return df
+                else:
+                    return pl.DataFrame()
+            except Exception as query_e:
+                # 如果查询失败，可能是表不存在，返回空DataFrame
+                logger.warning(f"封闭式基金基本信息查询失败: {query_e}")
+                return pl.DataFrame()
+
+        except Exception as e:
+            logger.exception(f"获取封闭式基金基本信息失败: {e}")
+            return pl.DataFrame()
+        finally:
+            # 确保会话被关闭
+            if session and self.db_manager:
+                try:
+                    self.db_manager._cleanup_session()
+                except Exception as cleanup_e:
+                    logger.debug(f"清理会话时出错: {cleanup_e}")
     
     def preprocess_data(self, data: Union[pl.DataFrame, pl.LazyFrame]) -> Union[pl.DataFrame, pl.LazyFrame]:
         """

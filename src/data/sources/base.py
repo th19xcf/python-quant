@@ -271,3 +271,56 @@ class DataSourceBase(ABC):
         """
         logger.info(f"{self.name} 不支持获取基金基本信息")
         return None
+    
+    def update_closed_fund_basic(self):
+        """
+        更新封闭式基金基本信息
+        
+        子类可以重写此方法
+        """
+        logger.info(f"{self.name} 不支持更新封闭式基金基本信息")
+    
+    def update_closed_fund_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+        """
+        更新封闭式基金日线数据
+        
+        子类可以重写此方法
+        
+        Args:
+            ts_codes: 封闭式基金代码列表
+            start_date: 开始日期
+            end_date: 结束日期
+        """
+        logger.info(f"{self.name} 不支持更新封闭式基金日线数据")
+    
+    def get_closed_fund_data(self, ts_code: str, start_date: str, end_date: str, freq: str = 'daily', adjustment_type: str = 'qfq') -> Union[pl.DataFrame, None]:
+        """
+        获取封闭式基金数据
+        
+        Args:
+            ts_code: 封闭式基金代码
+            start_date: 开始日期
+            end_date: 结束日期
+            freq: 频率，daily或minute
+            adjustment_type: 复权类型
+            
+        Returns:
+            pl.DataFrame: 封闭式基金数据
+        """
+        logger.info(f"{self.name} 不支持获取封闭式基金数据")
+        return None
+    
+    def get_closed_fund_basic(self, exchange: Optional[str] = None) -> Union[pl.DataFrame, None]:
+        """
+        获取封闭式基金基本信息
+        
+        子类可以重写此方法
+        
+        Args:
+            exchange: 交易所
+            
+        Returns:
+            pl.DataFrame: 封闭式基金基本信息
+        """
+        logger.info(f"{self.name} 不支持获取封闭式基金基本信息")
+        return None
