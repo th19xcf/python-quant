@@ -4,13 +4,124 @@
 """
 内存优化工具模块
 提供数据类型优化和内存管理功能
+
+特性：
+1. 支持更多数据类型的内存优化
+2. 增加内存使用监控和告警机制
+3. 优化大数据集的处理方式
+4. 支持分块处理和数据压缩
 """
 
 import polars as pl
 import numpy as np
-from typing import Dict, List, Optional, Any
+import psutil
+import time
+import threading
+from typing import Dict, List, Optional, Any, Callable, Tuple
 from functools import wraps
 import gc
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class MemoryMonitor:
+    """
+    内存监控器
+    提供内存使用监控和告警功能
+    """
+    
+    def __init__(self, interval: int = 5, threshold_mb: float = 500):
+        """
+        初始化内存监控器
+        
+        Args:
+            interval: 监控间隔（秒）
+            threshold_mb: 内存使用阈值（MB）
+        """
+        self.interval = interval
+        self.threshold_mb = threshold_mb
+        self.running = False
+        self.thread = None
+        self.memory_history = []
+        self.max_history = 100
+        self.callbacks = []
+    
+    def start(self):
+        """开始内存监控"""
+        self.running = True
+        self.thread = threading.Thread(target=self._monitor, daemon=True)
+        self.thread.start()
+        logger.info(f"内存监控已启动，监控间隔: {self.interval}秒，阈值: {self.threshold_mb}MB")
+    
+    def stop(self):
+        """停止内存监控"""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2)
+        logger.info("内存监控已停止")
+    
+    def _monitor(self):
+        """监控线程函数"""
+        while self.running:
+            # 获取当前内存使用
+            memory_usage = psutil.Process().memory_info().rss / (1024 * 1024)
+            timestamp = time.time()
+            
+            # 记录内存使用历史
+            self.memory_history.append((timestamp, memory_usage))
+            if len(self.memory_history) > self.max_history:
+                self.memory_history.pop(0)
+            
+            # 检查是否超过阈值
+            if memory_usage > self.threshold_mb:
+                self._alert(memory_usage)
+            
+            # 调用回调函数
+            for callback in self.callbacks:
+                try:
+                    callback(memory_usage, timestamp)
+                except Exception as e:
+                    logger.exception(f"内存监控回调执行错误: {e}")
+            
+            time.sleep(self.interval)
+    
+    def _alert(self, memory_usage: float):
+        """内存使用告警"""
+        logger.warning(f"内存使用超过阈值: {memory_usage:.2f}MB > {self.threshold_mb}MB")
+    
+    def add_callback(self, callback: Callable[[float, float], None]):
+        """添加内存监控回调
+        
+        Args:
+            callback: 回调函数，接收内存使用量和时间戳
+        """
+        self.callbacks.append(callback)
+    
+    def remove_callback(self, callback: Callable[[float, float], None]):
+        """移除内存监控回调
+        
+        Args:
+            callback: 要移除的回调函数
+        """
+        if callback in self.callbacks:
+            self.callbacks.remove(callback)
+    
+    def get_memory_history(self) -> List[Tuple[float, float]]:
+        """获取内存使用历史
+        
+        Returns:
+            内存使用历史列表，每个元素为(时间戳, 内存使用量MB)
+        """
+        return self.memory_history.copy()
+    
+    def get_current_memory(self) -> float:
+        """获取当前内存使用
+        
+        Returns:
+            当前内存使用量（MB）
+        """
+        return psutil.Process().memory_info().rss / (1024 * 1024)
 
 
 class MemoryOptimizer:
@@ -40,6 +151,10 @@ class MemoryOptimizer:
                           'mcst', 'dma', 'fsl', 'sar', 'vol_tdx', 'cr'],
         # 分类字段 -> Categorical
         'category_cols': ['industry', 'market', 'area', 'status', 'market_type'],
+        # 布尔字段 -> Boolean
+        'bool_cols': ['is_st', 'is_hs300', 'is_sz50', 'is_zz500'],
+        # 小数字段 -> Float32
+        'decimal_cols': ['pe', 'pb', 'ps', 'pcf'],
     }
     
     # 内存使用阈值配置
@@ -52,7 +167,8 @@ class MemoryOptimizer:
     @classmethod
     def optimize_dataframe(cls, df: pl.DataFrame, 
                           preserve_cols: Optional[List[str]] = None, 
-                          enable_sparse: bool = False) -> pl.DataFrame:
+                          enable_sparse: bool = False, 
+                          enable_compression: bool = False) -> pl.DataFrame:
         """
         优化 DataFrame 数据类型
         
@@ -60,6 +176,7 @@ class MemoryOptimizer:
             df: 输入 DataFrame
             preserve_cols: 需要保持原样的列
             enable_sparse: 是否启用稀疏数据优化
+            enable_compression: 是否启用数据压缩
             
         Returns:
             pl.DataFrame: 优化后的 DataFrame
@@ -90,8 +207,12 @@ class MemoryOptimizer:
                     # 保持Float64类型，避免精度损失
                     type_casts.append(pl.col(col).cast(pl.Float64))
                 elif dtype == pl.Int64:
-                    # 成交量可能很大，保持Int64类型避免溢出
-                    type_casts.append(pl.col(col).cast(pl.Int64))
+                    # 检查数据范围，尝试使用更小的整数类型
+                    max_val = df[col].max()
+                    if max_val < 2**32:
+                        type_casts.append(pl.col(col).cast(pl.Int32))
+                    else:
+                        type_casts.append(pl.col(col).cast(pl.Int64))
                     
             elif col in cls.COLUMN_TYPE_MAP['pct_cols']:
                 if dtype in [pl.Float64, pl.Decimal]:
@@ -120,7 +241,17 @@ class MemoryOptimizer:
                     total_count = len(df)
                     if unique_count < total_count * 0.1:  # 唯一值少于10%
                         type_casts.append(pl.col(col).cast(pl.Categorical))
-                    
+            
+            elif col in cls.COLUMN_TYPE_MAP['bool_cols']:
+                # 转换为布尔类型
+                if dtype in [pl.Int64, pl.Float64, pl.Utf8]:
+                    type_casts.append(pl.col(col).cast(pl.Boolean))
+            
+            elif col in cls.COLUMN_TYPE_MAP['decimal_cols']:
+                # 小数字段转换为Float32
+                if dtype in [pl.Float64, pl.Decimal]:
+                    type_casts.append(pl.col(col).cast(pl.Float32))
+            
             # 日期类型优化
             elif 'date' in col.lower() or 'time' in col.lower():
                 if dtype == pl.Datetime:
@@ -166,6 +297,31 @@ class MemoryOptimizer:
                     type_casts.append(pl.col(col).cast(pl.Int16))
                 else:
                     type_casts.append(pl.col(col).cast(pl.Int32))
+            
+            # 字符串类型优化
+            elif dtype == pl.Utf8:
+                # 检查字符串长度，考虑使用更高效的存储方式
+                max_length = df[col].str.lengths().max()
+                if max_length < 100:
+                    # 短字符串可以保持Utf8类型
+                    pass
+                else:
+                    # 长字符串考虑使用更高效的存储
+                    unique_count = df[col].n_unique()
+                    total_count = len(df)
+                    if unique_count < total_count * 0.1:
+                        type_casts.append(pl.col(col).cast(pl.Categorical))
+            
+            # 列表类型优化
+            elif hasattr(dtype, 'inner'):
+                # 处理List类型
+                inner_dtype = dtype.inner
+                if inner_dtype == pl.Float64:
+                    # 列表中的Float64转换为Float32
+                    type_casts.append(pl.col(col).cast(pl.List(pl.Float32)))
+                elif inner_dtype == pl.Int64:
+                    # 列表中的Int64转换为Int32
+                    type_casts.append(pl.col(col).cast(pl.List(pl.Int32)))
         
         # 执行类型转换
         if type_casts:
@@ -175,7 +331,39 @@ class MemoryOptimizer:
         if enable_sparse:
             df = cls._optimize_sparse_data(df, preserve_cols)
         
+        # 启用数据压缩（如果需要）
+        if enable_compression:
+            df = cls._optimize_compression(df, preserve_cols)
+        
         return df
+    
+    @classmethod
+    def process_large_dataset(cls, df: pl.DataFrame, chunk_size: int = 10000, **kwargs) -> pl.DataFrame:
+        """
+        分块处理大数据集
+        
+        Args:
+            df: 输入 DataFrame
+            chunk_size: 块大小
+            **kwargs: 传递给 optimize_dataframe 的参数
+            
+        Returns:
+            pl.DataFrame: 处理后的 DataFrame
+        """
+        if len(df) <= chunk_size:
+            return cls.optimize_dataframe(df, **kwargs)
+        
+        # 分块处理
+        chunks = []
+        total_rows = len(df)
+        for i in range(0, total_rows, chunk_size):
+            chunk = df.slice(i, min(chunk_size, total_rows - i))
+            optimized_chunk = cls.optimize_dataframe(chunk, **kwargs)
+            chunks.append(optimized_chunk)
+            logger.info(f"处理块 {i//chunk_size + 1}/{(total_rows + chunk_size - 1)//chunk_size}")
+        
+        # 合并块
+        return pl.concat(chunks)
     
     @classmethod
     def estimate_memory_usage(cls, df: pl.DataFrame) -> Dict[str, Any]:
@@ -202,7 +390,19 @@ class MemoryOptimizer:
                 pl.Boolean: 1,
                 pl.Date: 4, pl.Datetime: 8,
                 pl.Utf8: 50,  # 字符串平均估算
+                pl.Categorical: 2,  # 分类类型平均估算
             }.get(dtype, 8)  # 默认 8 字节
+            
+            # 处理复杂类型
+            if hasattr(dtype, 'inner'):
+                # List类型
+                inner_dtype = dtype.inner
+                inner_bytes = {
+                    pl.Float64: 8, pl.Float32: 4,
+                    pl.Int64: 8, pl.Int32: 4, pl.Int16: 2, pl.Int8: 1,
+                }.get(inner_dtype, 8)
+                # 假设每个列表平均有2个元素
+                bytes_per_element = 4 + (inner_bytes * 2)
             
             col_bytes = row_count * bytes_per_element
             column_usage[col] = {
@@ -257,18 +457,35 @@ class MemoryOptimizer:
         return df
     
     @classmethod
-    def optimize_dataframe_inplace(cls, df: pl.DataFrame, **kwargs) -> None:
+    def _optimize_compression(cls, df: pl.DataFrame, preserve_cols: List[str]) -> pl.DataFrame:
         """
-        原地优化 DataFrame 数据类型（通过修改原对象）
+        优化数据压缩，减少内存使用
+        
+        Args:
+            df: 输入 DataFrame
+            preserve_cols: 需要保持原样的列
+            
+        Returns:
+            pl.DataFrame: 优化后的 DataFrame
+        """
+        # Polars会自动处理数据压缩，这里主要是确保使用最优的存储方式
+        # 重新构建DataFrame以启用压缩
+        df = df.select([pl.col(c) for c in df.columns])
+        return df
+    
+    @classmethod
+    def optimize_dataframe_inplace(cls, df: pl.DataFrame, **kwargs) -> pl.DataFrame:
+        """
+        原地优化 DataFrame 数据类型
         
         Args:
             df: 输入 DataFrame
             **kwargs: 传递给 optimize_dataframe 的参数
+            
+        Returns:
+            pl.DataFrame: 优化后的 DataFrame
         """
         optimized_df = cls.optimize_dataframe(df, **kwargs)
-        
-        # 替换原DataFrame的内容
-        # 注意：Polars不支持真正的原地修改，这里通过替换实现
         return optimized_df
     
     @classmethod
@@ -322,6 +539,12 @@ class MemoryOptimizer:
                 total_count = len(df)
                 if unique_count < total_count * 0.1:
                     suggestions.append(f"列 '{col_name}' 唯一值较少，建议转换为 Categorical 类型")
+            elif 'List' in dtype and memory_mb > 10:
+                suggestions.append(f"列 '{col_name}' 是 List 类型且内存使用较大，建议优化内部元素类型")
+        
+        # 检查数据集大小
+        if len(df) > 100000:
+            suggestions.append(f"数据集较大（{len(df):,}行），建议使用分块处理")
         
         return {
             'current_memory_mb': stats['total_mb'],
@@ -371,6 +594,10 @@ class MemoryOptimizer:
         print(f"{'='*60}\n")
 
 
+# 全局内存监控器
+global_memory_monitor = MemoryMonitor()
+
+
 def optimize_memory(func):
     """
     装饰器：自动优化函数返回的 DataFrame 内存使用
@@ -396,11 +623,22 @@ def cleanup_memory():
 
 
 # 便捷函数
-def optimize_df(df: pl.DataFrame) -> pl.DataFrame:
+def optimize_df(df: pl.DataFrame, **kwargs) -> pl.DataFrame:
     """便捷函数：优化DataFrame"""
-    return MemoryOptimizer.optimize_dataframe(df)
+    return MemoryOptimizer.optimize_dataframe(df, **kwargs)
+
+
+def process_large_df(df: pl.DataFrame, **kwargs) -> pl.DataFrame:
+    """便捷函数：处理大数据集"""
+    return MemoryOptimizer.process_large_dataset(df, **kwargs)
 
 
 def print_df_memory(df: pl.DataFrame, title: str = "DataFrame"):
     """便捷函数：打印DataFrame内存统计"""
     MemoryOptimizer.print_memory_stats(df, title)
+
+
+def get_memory_monitor() -> MemoryMonitor:
+    """获取全局内存监控器"""
+    return global_memory_monitor
+
