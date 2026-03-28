@@ -3,6 +3,8 @@
 
 """
 数据获取与管理模块
+
+注意：此模块已被重构，建议使用 DataService 代替
 """
 
 from loguru import logger
@@ -22,6 +24,7 @@ from src.utils.exceptions import (
 from src.utils.exception_handler import handle_exception_with_retry, handle_error_gracefully
 from src.data.data_cache import global_data_cache
 from src.data.managers import DataFetcher, DataUpdater, DataProcessor
+from src.data.services.data_service import DataService
 from src.utils.memory_optimizer import MemoryOptimizer
 
 # 异步数据管理器（延迟导入）
@@ -32,6 +35,8 @@ class DataManager(IDataProvider, IDataProcessor):
     """
     数据管理器，负责统一管理各种数据源的获取、清洗和存储
     实现了IDataProvider和IDataProcessor接口
+    
+    注意：此类已被重构为使用DataService，建议直接使用DataService
     """
     
     def __init__(self, config, db_manager, plugin_manager=None):
@@ -47,7 +52,10 @@ class DataManager(IDataProvider, IDataProcessor):
         self.db_manager = db_manager
         self.plugin_manager = plugin_manager
         
-        # 初始化各个模块
+        # 使用新的DataService
+        self.data_service = DataService(config, db_manager, plugin_manager)
+        
+        # 为了保持向后兼容性，保留旧的组件
         self.data_fetcher = DataFetcher(config, db_manager)
         self.data_updater = DataUpdater(config, db_manager)
         self.data_processor = DataProcessor(config)
@@ -61,6 +69,8 @@ class DataManager(IDataProvider, IDataProcessor):
         self._init_handlers()
         self._init_plugin_datasources()
         self._init_async_manager()
+        
+        logger.info("DataManager 已初始化，建议使用 DataService 代替")
     
     def _init_handlers(self):
         """
@@ -243,10 +253,7 @@ class DataManager(IDataProvider, IDataProcessor):
         """
         更新股票基本信息
         """
-        success = self.data_updater.update_stock_basic()
-        if success:
-            # 使股票基本信息缓存失效
-            global_data_cache.invalidate_by_type('stock_basic')
+        return self.data_service.update_stock_basic()
     
     def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
@@ -257,25 +264,13 @@ class DataManager(IDataProvider, IDataProcessor):
             start_date: 开始日期，格式：YYYYMMDD
             end_date: 结束日期，格式：YYYYMMDD
         """
-        success = self.data_updater.update_stock_daily(ts_codes, start_date, end_date)
-        
-        # 数据更新后，使相关缓存失效
-        if success:
-            if ts_codes:
-                for ts_code in ts_codes:
-                    global_data_cache.invalidate('stock', ts_code)
-            else:
-                # 如果更新所有股票，使所有股票缓存失效
-                global_data_cache.invalidate_by_type('stock')
+        return self.data_service.update_stock_daily(ts_codes, start_date, end_date)
     
     def update_fund_basic(self):
         """
         更新基金基本信息
         """
-        success = self.data_updater.update_fund_basic()
-        if success:
-            # 使基金基本信息缓存失效
-            global_data_cache.invalidate_by_type('fund_basic')
+        return self.data_service.update_fund_basic()
     
     def update_fund_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
@@ -286,25 +281,13 @@ class DataManager(IDataProvider, IDataProcessor):
             start_date: 开始日期，格式：YYYYMMDD
             end_date: 结束日期，格式：YYYYMMDD
         """
-        success = self.data_updater.update_fund_daily(ts_codes, start_date, end_date)
-        
-        # 数据更新后，使相关缓存失效
-        if success:
-            if ts_codes:
-                for ts_code in ts_codes:
-                    global_data_cache.invalidate('fund', ts_code)
-            else:
-                # 如果更新所有基金，使所有基金缓存失效
-                global_data_cache.invalidate_by_type('fund')
+        return self.data_service.update_fund_daily(ts_codes, start_date, end_date)
     
     def update_closed_fund_basic(self):
         """
         更新封闭式基金基本信息
         """
-        success = self.data_updater.update_closed_fund_basic()
-        if success:
-            # 使封闭式基金基本信息缓存失效
-            global_data_cache.invalidate_by_type('closed_fund_basic')
+        return self.data_service.update_closed_fund_basic()
     
     def update_closed_fund_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
@@ -315,25 +298,13 @@ class DataManager(IDataProvider, IDataProcessor):
             start_date: 开始日期，格式：YYYYMMDD
             end_date: 结束日期，格式：YYYYMMDD
         """
-        success = self.data_updater.update_closed_fund_daily(ts_codes, start_date, end_date)
-        
-        # 数据更新后，使相关缓存失效
-        if success:
-            if ts_codes:
-                for ts_code in ts_codes:
-                    global_data_cache.invalidate('closed_fund', ts_code)
-            else:
-                # 如果更新所有封闭式基金，使所有封闭式基金缓存失效
-                global_data_cache.invalidate_by_type('closed_fund')
+        return self.data_service.update_closed_fund_daily(ts_codes, start_date, end_date)
     
     def update_index_basic(self):
         """
         更新指数基本信息
         """
-        success = self.data_updater.update_index_basic()
-        if success:
-            # 使指数基本信息缓存失效
-            global_data_cache.invalidate_by_type('index_basic')
+        return self.data_service.update_index_basic()
     
     def update_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
@@ -344,16 +315,7 @@ class DataManager(IDataProvider, IDataProcessor):
             start_date: 开始日期，格式：YYYYMMDD
             end_date: 结束日期，格式：YYYYMMDD
         """
-        success = self.data_updater.update_index_daily(ts_codes, start_date, end_date)
-        
-        # 数据更新后，使相关缓存失效
-        if success:
-            if ts_codes:
-                for ts_code in ts_codes:
-                    global_data_cache.invalidate('index', ts_code)
-            else:
-                # 如果更新所有指数，使所有指数缓存失效
-                global_data_cache.invalidate_by_type('index')
+        return self.data_service.update_index_daily(ts_codes, start_date, end_date)
     
     def update_macro_data(self, indicators: List[str] = None):
         """
@@ -362,7 +324,7 @@ class DataManager(IDataProvider, IDataProcessor):
         Args:
             indicators: 宏观经济指标列表，None表示更新所有指标
         """
-        self.data_updater.update_macro_data(indicators)
+        return self.data_service.update_macro_data(indicators)
     
     def update_news_data(self, sources: List[str] = None, start_date: str = None, end_date: str = None):
         """
@@ -373,7 +335,7 @@ class DataManager(IDataProvider, IDataProcessor):
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
         """
-        self.data_updater.update_news_data(sources, start_date, end_date)
+        return self.data_service.update_news_data(sources, start_date, end_date)
 
     def update_stock_dividend(self, ts_codes: List[str] = None):
         """
@@ -387,14 +349,7 @@ class DataManager(IDataProvider, IDataProcessor):
             DataValidationError: 数据验证失败
             DataSaveError: 数据保存失败
         """
-        success = self.data_updater.update_stock_dividend(ts_codes)
-        if success:
-            # 使分红配股数据缓存失效
-            if ts_codes:
-                for ts_code in ts_codes:
-                    global_data_cache.invalidate('stock_dividend', ts_code)
-            else:
-                global_data_cache.invalidate_by_type('stock_dividend')
+        return self.data_service.update_stock_dividend(ts_codes)
 
     def get_stock_dividend(self, ts_code: str) -> pl.DataFrame:
         """
@@ -829,28 +784,8 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             pl.DataFrame: 股票历史数据
         """
-        # 尝试从缓存获取数据
-        cached_data = global_data_cache.get('stock', stock_code, start_date, end_date, 
-                                         frequency=frequency, adjustment_type=adjustment_type)
-        if cached_data is not None:
-            logger.info(f"从缓存获取股票数据: {stock_code} {start_date} to {end_date}")
-            return cached_data
-        
-        # 日线或分钟线，直接获取
-        if frequency in ['1d', '1m']:
-            result = self.data_fetcher.get_stock_data(stock_code, start_date, end_date, frequency, adjustment_type)
-        else:
-            # 周线或月线，先获取日线数据，再转换
-            df = self.data_fetcher.get_stock_data(stock_code, start_date, end_date, '1d', adjustment_type)
-            result = self.data_processor.convert_frequency(df, frequency)
-        
-        # 将结果存入缓存
-        if not result.is_empty():
-            global_data_cache.set(result, 'stock', stock_code, start_date, end_date, 
-                                frequency=frequency, adjustment_type=adjustment_type)
-            logger.info(f"股票数据缓存已更新: {stock_code} {start_date} to {end_date}")
-        
-        return result
+        # 使用新的DataService
+        return self.data_service.get_stock_data(stock_code, start_date, end_date, frequency, adjustment_type)
     
 
     
@@ -868,28 +803,8 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             pl.DataFrame: 指数历史数据
         """
-        # 尝试从缓存获取数据
-        cached_data = global_data_cache.get('index', index_code, start_date, end_date, 
-                                         frequency=frequency)
-        if cached_data is not None:
-            logger.info(f"从缓存获取指数数据: {index_code} {start_date} to {end_date}")
-            return cached_data
-        
-        # 日线或分钟线，直接获取
-        if frequency in ['1d', '1m']:
-            result = self.data_fetcher.get_index_data(index_code, start_date, end_date, frequency)
-        else:
-            # 周线或月线，先获取日线数据，再转换
-            df = self.data_fetcher.get_index_data(index_code, start_date, end_date, '1d')
-            result = self.data_processor.convert_frequency(df, frequency)
-        
-        # 将结果存入缓存
-        if not result.is_empty():
-            global_data_cache.set(result, 'index', index_code, start_date, end_date, 
-                                frequency=frequency)
-            logger.info(f"指数数据缓存已更新: {index_code} {start_date} to {end_date}")
-        
-        return result
+        # 使用新的DataService
+        return self.data_service.get_index_data(index_code, start_date, end_date, frequency)
     
     async def get_stock_data_async(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq') -> pl.DataFrame:
         """
