@@ -3,14 +3,21 @@
 
 """
 事件总线模块，基于blinker实现事件驱动架构
+
+特性：
+1. 简化的事件发布和订阅机制
+2. 增强的事件监控和调试功能
+3. 线程安全的设计
+4. 事件历史记录和统计
+5. 支持异步事件发布
 """
 
 from blinker import Namespace
-import asyncio
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import time
 import threading
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -50,35 +57,27 @@ class EventType:
 # 定义全局事件命名空间
 quant_events = Namespace()
 
-# 系统事件
-system_init = quant_events.signal(EventType.SYSTEM_INIT)
-system_shutdown = quant_events.signal(EventType.SYSTEM_SHUTDOWN)
-
-# 数据相关事件
-data_updated = quant_events.signal(EventType.DATA_UPDATED)
-data_error = quant_events.signal(EventType.DATA_ERROR)
-data_read_progress = quant_events.signal(EventType.DATA_READ_PROGRESS)
-
-# 技术分析相关事件
-indicator_calculated = quant_events.signal(EventType.INDICATOR_CALCULATED)
-indicator_error = quant_events.signal(EventType.INDICATOR_ERROR)
-indicator_progress = quant_events.signal(EventType.INDICATOR_PROGRESS)
-
-# 策略相关事件
-strategy_signal = quant_events.signal(EventType.STRATEGY_SIGNAL)
-strategy_error = quant_events.signal(EventType.STRATEGY_ERROR)
-strategy_backtest_completed = quant_events.signal(EventType.STRATEGY_BACKTEST_COMPLETED)
-
-# UI相关事件
-ui_refresh = quant_events.signal(EventType.UI_REFRESH)
-tab_changed = quant_events.signal(EventType.TAB_CHANGED)
-window_count_changed = quant_events.signal(EventType.WINDOW_COUNT_CHANGED)
-
-# 插件间通信事件
-plugin_message = quant_events.signal(EventType.PLUGIN_MESSAGE)
-plugin_request = quant_events.signal(EventType.PLUGIN_REQUEST)
-plugin_response = quant_events.signal(EventType.PLUGIN_RESPONSE)
-plugin_event = quant_events.signal(EventType.PLUGIN_EVENT)
+# 为每个事件类型创建信号对象
+EVENT_SIGNALS = {
+    EventType.SYSTEM_INIT: quant_events.signal(EventType.SYSTEM_INIT),
+    EventType.SYSTEM_SHUTDOWN: quant_events.signal(EventType.SYSTEM_SHUTDOWN),
+    EventType.DATA_UPDATED: quant_events.signal(EventType.DATA_UPDATED),
+    EventType.DATA_ERROR: quant_events.signal(EventType.DATA_ERROR),
+    EventType.DATA_READ_PROGRESS: quant_events.signal(EventType.DATA_READ_PROGRESS),
+    EventType.INDICATOR_CALCULATED: quant_events.signal(EventType.INDICATOR_CALCULATED),
+    EventType.INDICATOR_ERROR: quant_events.signal(EventType.INDICATOR_ERROR),
+    EventType.INDICATOR_PROGRESS: quant_events.signal(EventType.INDICATOR_PROGRESS),
+    EventType.STRATEGY_SIGNAL: quant_events.signal(EventType.STRATEGY_SIGNAL),
+    EventType.STRATEGY_ERROR: quant_events.signal(EventType.STRATEGY_ERROR),
+    EventType.STRATEGY_BACKTEST_COMPLETED: quant_events.signal(EventType.STRATEGY_BACKTEST_COMPLETED),
+    EventType.UI_REFRESH: quant_events.signal(EventType.UI_REFRESH),
+    EventType.TAB_CHANGED: quant_events.signal(EventType.TAB_CHANGED),
+    EventType.WINDOW_COUNT_CHANGED: quant_events.signal(EventType.WINDOW_COUNT_CHANGED),
+    EventType.PLUGIN_MESSAGE: quant_events.signal(EventType.PLUGIN_MESSAGE),
+    EventType.PLUGIN_REQUEST: quant_events.signal(EventType.PLUGIN_REQUEST),
+    EventType.PLUGIN_RESPONSE: quant_events.signal(EventType.PLUGIN_RESPONSE),
+    EventType.PLUGIN_EVENT: quant_events.signal(EventType.PLUGIN_EVENT)
+}
 
 
 class EventBus:
@@ -86,21 +85,28 @@ class EventBus:
     事件总线管理类，提供事件发布和订阅的封装
     """
     
-    def __init__(self):
-        """初始化事件总线"""
+    def __init__(self, history_max_size: int = 1000):
+        """初始化事件总线
+        
+        Args:
+            history_max_size: 事件历史记录最大数量
+        """
         self._events = quant_events
         self._subscribers: Dict[str, List[Tuple[Callable, bool, int, Optional[Callable]]]] = {}
         self._event_history: List[Dict[str, Any]] = []
-        self._history_max_size = 1000  # 事件历史记录最大数量
+        self._history_max_size = history_max_size
         self._event_monitors: List[Callable] = []
         self._lock = threading.RLock()  # 线程锁，确保线程安全
         
-        # 添加事件统计功能
+        # 事件统计
         self._event_stats: Dict[str, Dict[str, int]] = {
-            'publish_count': {},  # 事件发布次数统计
-            'subscribe_count': {},  # 事件订阅次数统计
-            'unsubscribe_count': {}  # 事件取消订阅次数统计
+            'publish_count': {},
+            'subscribe_count': {},
+            'unsubscribe_count': {}
         }
+        
+        # 线程池
+        self._executor = ThreadPoolExecutor(max_workers=4)
     
     def subscribe(self, signal_name: str, subscriber: Callable, weak: bool = True, priority: int = 0, filter_func: Optional[Callable] = None):
         """
@@ -116,8 +122,17 @@ class EventBus:
         Returns:
             blinker.base.SignalConnection: 连接对象
         """
+        # 获取信号对象
         signal = self._events.signal(signal_name)
-        connection = signal.connect(subscriber, weak=weak)
+        
+        # 创建过滤包装器
+        if filter_func:
+            def filtered_subscriber(**kwargs):
+                if filter_func(**kwargs):
+                    return subscriber(**kwargs)
+            connection = signal.connect(filtered_subscriber, weak=weak)
+        else:
+            connection = signal.connect(subscriber, weak=weak)
         
         # 保存订阅信息
         with self._lock:
@@ -127,12 +142,10 @@ class EventBus:
             # 按优先级排序
             self._subscribers[signal_name].sort(key=lambda x: x[2], reverse=True)
             
-            # 更新订阅统计
-            if signal_name not in self._event_stats['subscribe_count']:
-                self._event_stats['subscribe_count'][signal_name] = 0
-            self._event_stats['subscribe_count'][signal_name] += 1
+            # 更新统计
+            self._event_stats['subscribe_count'][signal_name] = self._event_stats['subscribe_count'].get(signal_name, 0) + 1
         
-        # 通知事件监控器
+        # 通知监控器
         self._notify_monitors('subscribe', signal_name, subscriber)
         
         return connection
@@ -157,12 +170,10 @@ class EventBus:
                 if not self._subscribers[signal_name]:
                     del self._subscribers[signal_name]
             
-            # 更新取消订阅统计
-            if signal_name not in self._event_stats['unsubscribe_count']:
-                self._event_stats['unsubscribe_count'][signal_name] = 0
-            self._event_stats['unsubscribe_count'][signal_name] += 1
+            # 更新统计
+            self._event_stats['unsubscribe_count'][signal_name] = self._event_stats['unsubscribe_count'].get(signal_name, 0) + 1
         
-        # 通知事件监控器
+        # 通知监控器
         self._notify_monitors('unsubscribe', signal_name, subscriber)
     
     def publish(self, signal_name: str, **kwargs):
@@ -180,18 +191,17 @@ class EventBus:
             'kwargs': kwargs,
             'thread_id': threading.get_ident()
         }
+        
         with self._lock:
             self._event_history.append(event)
             # 限制历史记录数量
             if len(self._event_history) > self._history_max_size:
                 self._event_history.pop(0)
             
-            # 更新发布统计
-            if signal_name not in self._event_stats['publish_count']:
-                self._event_stats['publish_count'][signal_name] = 0
-            self._event_stats['publish_count'][signal_name] += 1
+            # 更新统计
+            self._event_stats['publish_count'][signal_name] = self._event_stats['publish_count'].get(signal_name, 0) + 1
         
-        # 通知事件监控器
+        # 通知监控器
         self._notify_monitors('publish', signal_name, **kwargs)
         
         # 发布事件
@@ -210,9 +220,7 @@ class EventBus:
             self.publish(signal_name, **kwargs)
         
         # 使用线程池执行异步发布
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            executor.submit(_async_publish)
+        self._executor.submit(_async_publish)
     
     def get_signal(self, signal_name: str):
         """
@@ -237,7 +245,7 @@ class EventBus:
             List[Tuple[Callable, bool, int, Optional[Callable]]]: 订阅者列表
         """
         with self._lock:
-            return self._subscribers.get(signal_name, [])
+            return self._subscribers.get(signal_name, []).copy()
     
     def get_event_history(self, limit: int = 100) -> List[Dict[str, Any]]:
         """
@@ -331,9 +339,9 @@ class EventBus:
             Dict[str, Dict[str, int]]: 事件统计信息，包含发布、订阅和取消订阅的统计
         """
         with self._lock:
-            return self._event_stats.copy()
+            return {k: v.copy() for k, v in self._event_stats.items()}
     
-    def clear_event_stats(self) -> None:
+    def clear_event_stats(self):
         """
         清除事件统计信息
         """
@@ -358,55 +366,100 @@ class EventBus:
                 'total_unsubscribe': sum(self._event_stats['unsubscribe_count'].values())
             }
     
-    def filter_events(self, signal_name: str, filter_func: Callable) -> Callable:
+    def shutdown(self):
         """
-        创建事件过滤装饰器
+        关闭事件总线，清理资源
+        """
+        # 关闭线程池
+        self._executor.shutdown(wait=True)
         
-        Args:
-            signal_name: 事件名称
-            filter_func: 事件过滤函数
+        # 清除历史记录和统计
+        self.clear_event_history()
+        self.clear_event_stats()
+    
+    def debug_info(self) -> Dict[str, Any]:
+        """
+        获取事件总线的调试信息
         
         Returns:
-            Callable: 装饰器函数
+            Dict[str, Any]: 调试信息
         """
-        def decorator(func: Callable) -> Callable:
-            def wrapper(**kwargs):
-                if filter_func(**kwargs):
-                    return func(**kwargs)
-            return wrapper
-        return decorator
+        with self._lock:
+            return {
+                'signals': self.get_all_signals(),
+                'subscribers': {k: len(v) for k, v in self._subscribers.items()},
+                'event_history_size': len(self._event_history),
+                'history_max_size': self._history_max_size,
+                'monitors_count': len(self._event_monitors),
+                'stats': self.get_event_stat_summary()
+            }
 
 
 # 创建全局事件总线实例
 event_bus = EventBus()
 
-# 添加默认的日志监控器，用于记录所有事件活动
 
-
-def default_event_monitor(event_type: str, signal_name: str, *args, **kwargs):
-    """
-    默认事件监控器，用于记录所有事件活动
+class EventMonitor:
+    """事件监控器类"""
     
-    Args:
-        event_type: 事件类型，如'subscribe'、'unsubscribe'、'publish'
-        signal_name: 信号名称
-        *args: 位置参数
-        **kwargs: 关键字参数
-    """
-    if event_type == 'publish':
-        # 记录事件发布
-        logger.debug(f"Event published: {signal_name}, Thread: {threading.get_ident()}, Args: {args}, Kwargs: {kwargs}")
-    elif event_type == 'subscribe':
-        # 记录事件订阅
-        subscriber = args[0] if args else None
-        logger.debug(f"Event subscribed: {signal_name}, Subscriber: {subscriber.__name__ if hasattr(subscriber, '__name__') else str(subscriber)}")
-    elif event_type == 'unsubscribe':
-        # 记录事件取消订阅
-        subscriber = args[0] if args else None
-        logger.debug(f"Event unsubscribed: {signal_name}, Subscriber: {subscriber.__name__ if hasattr(subscriber, '__name__') else str(subscriber)}")
+    @staticmethod
+    def debug_monitor(event_type: str, signal_name: str, *args, **kwargs):
+        """
+        调试监控器，详细记录事件活动
+        
+        Args:
+            event_type: 事件类型
+            signal_name: 信号名称
+            *args: 位置参数
+            **kwargs: 关键字参数
+        """
+        if event_type == 'publish':
+            # 记录事件发布
+            logger.debug(f"[EVENT] Published: {signal_name} | Thread: {threading.get_ident()} | Kwargs: {kwargs}")
+        elif event_type == 'subscribe':
+            # 记录事件订阅
+            subscriber = args[0] if args else None
+            subscriber_name = subscriber.__name__ if hasattr(subscriber, '__name__') else str(subscriber)
+            logger.debug(f"[EVENT] Subscribed: {signal_name} | Subscriber: {subscriber_name}")
+        elif event_type == 'unsubscribe':
+            # 记录事件取消订阅
+            subscriber = args[0] if args else None
+            subscriber_name = subscriber.__name__ if hasattr(subscriber, '__name__') else str(subscriber)
+            logger.debug(f"[EVENT] Unsubscribed: {signal_name} | Subscriber: {subscriber_name}")
+    
+    @staticmethod
+    def info_monitor(event_type: str, signal_name: str, *args, **kwargs):
+        """
+        信息监控器，记录重要事件活动
+        
+        Args:
+            event_type: 事件类型
+            signal_name: 信号名称
+            *args: 位置参数
+            **kwargs: 关键字参数
+        """
+        if event_type == 'publish':
+            # 只记录发布事件
+            logger.info(f"[EVENT] {signal_name}")
+    
+    @staticmethod
+    def error_monitor(event_type: str, signal_name: str, *args, **kwargs):
+        """
+        错误监控器，记录错误事件
+        
+        Args:
+            event_type: 事件类型
+            signal_name: 信号名称
+            *args: 位置参数
+            **kwargs: 关键字参数
+        """
+        if event_type == 'publish' and 'error' in signal_name:
+            # 记录错误事件
+            logger.error(f"[EVENT ERROR] {signal_name} | Details: {kwargs}")
+
 
 # 添加默认监控器
-event_bus.add_monitor(default_event_monitor)
+event_bus.add_monitor(EventMonitor.debug_monitor)
 
 # 事件总线便捷函数
 def subscribe(signal_name: str, subscriber: Callable, weak: bool = True, priority: int = 0, filter_func: Optional[Callable] = None):
@@ -432,3 +485,13 @@ def publish_async(signal_name: str, **kwargs):
 def get_signal(signal_name: str):
     """便捷获取信号函数"""
     return event_bus.get_signal(signal_name)
+
+
+def get_event_bus() -> EventBus:
+    """获取事件总线实例"""
+    return event_bus
+
+
+def shutdown_event_bus():
+    """关闭事件总线"""
+    event_bus.shutdown()

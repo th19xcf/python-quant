@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # 内部模块导入
 from src.utils.config import get_config, config_manager
 from src.utils.logger import setup_logger
-from src.utils.event_bus import publish, EventType
+from src.utils.event_bus import publish, EventType, shutdown_event_bus
 from src.database.db_manager import DatabaseManager
 from src.data.data_manager import DataManager
 from src.plugin.plugin_manager import PluginManager
@@ -180,6 +180,10 @@ def main():
         # 停止配置热加载
         config_manager.stop_watching()
         logger.info("配置热加载功能已停止")
+        
+        # 关闭事件总线
+        shutdown_event_bus()
+        logger.info("事件总线已关闭")
         
         logger.info("系统已关闭")
 
