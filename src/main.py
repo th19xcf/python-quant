@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QApplication
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # 内部模块导入
-from src.utils.config import Config
+from src.utils.config import get_config, config_manager
 from src.utils.logger import setup_logger
 from src.utils.event_bus import publish, EventType
 from src.database.db_manager import DatabaseManager
@@ -55,8 +55,12 @@ def main():
         logger.info("全局异常处理器初始化成功")
         
         # 初始化配置
-        config = Config()
+        config = get_config()
         logger.info("配置加载成功")
+        
+        # 启动配置热加载
+        config_manager.start_watching(interval=5)
+        logger.info("配置热加载功能已启动")
         
         # 初始化日志
         setup_logger(config)
@@ -172,6 +176,10 @@ def main():
         # 关闭插件
         if plugin_manager:
             plugin_manager.shutdown_plugins()
+        
+        # 停止配置热加载
+        config_manager.stop_watching()
+        logger.info("配置热加载功能已停止")
         
         logger.info("系统已关闭")
 
