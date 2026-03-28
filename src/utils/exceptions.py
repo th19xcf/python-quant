@@ -34,7 +34,8 @@ class QuantException(Exception):
             "message": self.message,
             "details": self.details,
             "exception_type": self.__class__.__name__,
-            "timestamp": self.timestamp
+            "timestamp": self.timestamp,
+            "severity": get_error_severity(self)
         }
         
         if self.cause:
@@ -66,6 +67,24 @@ class QuantException(Exception):
             bool: 是否可以重试
         """
         return False
+    
+    def get_severity(self) -> str:
+        """
+        获取异常严重程度
+        
+        Returns:
+            str: 严重程度 (CRITICAL, ERROR, WARNING, INFO)
+        """
+        return get_error_severity(self)
+    
+    def __str__(self) -> str:
+        """
+        字符串表示
+        
+        Returns:
+            str: 异常的字符串表示
+        """
+        return f"{self.__class__.__name__} [{self.error_code}]: {self.message}"
 
 
 # =============================================================================
@@ -440,6 +459,85 @@ class PluginInitError(PluginException):
 
 
 # =============================================================================
+# 错误码管理
+# =============================================================================
+
+class ErrorCodeManager:
+    """错误码管理器
+    
+    统一管理所有错误码，确保错误码的唯一性和分类性
+    """
+    
+    # 错误码定义
+    ERROR_CODES = {
+        # 基础错误
+        "UNKNOWN_ERROR": "未知错误",
+        
+        # 数据源错误 (1000-1999)
+        "DATASOURCE_ERROR": "数据源错误",
+        "DATASOURCE_CONNECTION_ERROR": "数据源连接错误",
+        "DATASOURCE_TIMEOUT_ERROR": "数据源请求超时",
+        "DATASOURCE_CONFIG_ERROR": "数据源配置错误",
+        "DATASOURCE_NOT_AVAILABLE": "数据源不可用",
+        
+        # 数据错误 (2000-2999)
+        "DATA_ERROR": "数据错误",
+        "DATA_VALIDATION_ERROR": "数据验证错误",
+        "DATA_NOT_FOUND": "数据不存在",
+        "DATA_INTEGRITY_ERROR": "数据完整性错误",
+        "DATA_SAVE_ERROR": "数据保存错误",
+        
+        # 计算错误 (3000-3999)
+        "CALCULATION_ERROR": "计算错误",
+        "INDICATOR_CALCULATION_ERROR": "指标计算错误",
+        "INDICATOR_NOT_FOUND": "指标不存在",
+        "INSUFFICIENT_DATA_ERROR": "数据不足无法计算",
+        
+        # UI错误 (4000-4999)
+        "UI_ERROR": "UI错误",
+        "COMPONENT_NOT_FOUND": "UI组件不存在",
+        "RENDER_ERROR": "渲染错误",
+        
+        # 配置错误 (5000-5999)
+        "CONFIG_ERROR": "配置错误",
+        "CONFIG_NOT_FOUND": "配置文件不存在",
+        "CONFIG_VALIDATION_ERROR": "配置验证错误",
+        
+        # 插件错误 (6000-6999)
+        "PLUGIN_ERROR": "插件错误",
+        "PLUGIN_NOT_FOUND": "插件不存在",
+        "PLUGIN_LOAD_ERROR": "插件加载错误",
+        "PLUGIN_INIT_ERROR": "插件初始化错误",
+    }
+    
+    @classmethod
+    def get_error_message(cls, error_code: str) -> str:
+        """
+        获取错误码对应的错误信息
+        
+        Args:
+            error_code: 错误码
+            
+        Returns:
+            str: 错误信息
+        """
+        return cls.ERROR_CODES.get(error_code, "未知错误")
+    
+    @classmethod
+    def is_valid_error_code(cls, error_code: str) -> bool:
+        """
+        检查错误码是否有效
+        
+        Args:
+            error_code: 错误码
+            
+        Returns:
+            bool: 是否有效
+        """
+        return error_code in cls.ERROR_CODES
+
+
+# =============================================================================
 # 工具函数
 # =============================================================================
 
@@ -497,3 +595,29 @@ def format_exception_for_user(exception: Exception) -> str:
     # 对于非业务异常，返回通用错误信息
     error_type = type(exception).__name__
     return f"操作失败 ({error_type}): {str(exception)}"
+
+
+def get_error_code_category(error_code: str) -> str:
+    """
+    获取错误码分类
+    
+    Args:
+        error_code: 错误码
+        
+    Returns:
+        str: 错误分类
+    """
+    categories = {
+        "DATASOURCE_": "数据源",
+        "DATA_": "数据",
+        "CALCULATION_": "计算",
+        "UI_": "UI",
+        "CONFIG_": "配置",
+        "PLUGIN_": "插件",
+    }
+    
+    for prefix, category in categories.items():
+        if error_code.startswith(prefix):
+            return category
+    
+    return "其他"
