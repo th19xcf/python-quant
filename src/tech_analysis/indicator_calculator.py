@@ -682,6 +682,111 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
         return optimized_result
 
 
+def calculate_indicators_parallel(data, indicator_types, max_workers=None, **params):
+    """
+    并行计算多个技术指标
+    
+    Args:
+        data: 输入数据（Polars DataFrame或pandas DataFrame）
+        indicator_types: 指标类型列表
+        max_workers: 最大工作线程数，None表示使用所有可用核心
+        **params: 指标计算参数
+        
+    Returns:
+        pl.DataFrame: 包含所有计算指标的DataFrame
+    """
+    import concurrent.futures
+    import time
+    from loguru import logger
+    
+    # 转换为Polars DataFrame
+    if not isinstance(data, pl.DataFrame):
+        data = pl.from_pandas(data)
+    
+    # 预处理数据
+    data = preprocess_data_polars(data)
+    
+    # 计算指标分组，将相关指标放在一起计算以提高缓存利用率
+    indicator_groups = {
+        'trend': ['ma', 'macd', 'dma', 'fsl', 'sar', 'trix', 'emv', 'mcst', 'expma', 'bbi'],
+        'oscillator': ['rsi', 'kdj', 'wr', 'cci', 'roc', 'mtm', 'psy'],
+        'volume': ['vol_ma', 'obv', 'vr', 'hsl', 'lb'],
+        'volatility': ['boll'],
+        'cost': ['cyc', 'cys'],
+        'market_breadth': ['abi', 'adl', 'adr', 'obos'],
+        'other': ['dmi', 'brar', 'asi', 'cr', 'vol_tdx']
+    }
+    
+    # 分配指标到不同组
+    grouped_indicators = {}
+    for indicator in indicator_types:
+        assigned = False
+        for group, group_indicators in indicator_groups.items():
+            if indicator in group_indicators:
+                if group not in grouped_indicators:
+                    grouped_indicators[group] = []
+                grouped_indicators[group].append(indicator)
+                assigned = True
+                break
+        if not assigned:
+            if 'other' not in grouped_indicators:
+                grouped_indicators['other'] = []
+            grouped_indicators['other'].append(indicator)
+    
+    # 并行计算不同组的指标
+    results = {}
+    start_time = time.time()
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 提交所有计算任务
+        future_to_group = {}
+        for group, group_indicators in grouped_indicators.items():
+            if group_indicators:
+                future = executor.submit(
+                    calculate_multiple_indicators_polars,
+                    data,
+                    group_indicators,
+                    **params
+                )
+                future_to_group[future] = group
+        
+        # 收集计算结果
+        for future in concurrent.futures.as_completed(future_to_group):
+            group = future_to_group[future]
+            try:
+                result = future.result()
+                results[group] = result
+                logger.info(f"完成指标组{group}的计算，包含{len(grouped_indicators[group])}个指标")
+            except Exception as e:
+                logger.error(f"计算指标组{group}时出错: {e}")
+    
+    # 合并所有结果
+    if not results:
+        return data
+    
+    # 从第一个结果开始，逐步合并
+    merged_result = data
+    for group, result in results.items():
+        # 只合并新的列（排除时间列和已存在的列）
+        new_columns = [col for col in result.columns if col not in merged_result.columns and col != result.columns[0]]
+        if new_columns:
+            # 直接合并，不添加suffix，因为已经排除了已存在的列
+            merged_result = merged_result.join(
+                result.select([result.columns[0]] + new_columns),
+                on=result.columns[0],
+                how='left'
+            )
+    
+    # 内存优化
+    optimized_result = MemoryOptimizer.optimize_dataframe(merged_result, enable_sparse=True)
+    
+    total_time = time.time() - start_time
+    logger.info(f"并行计算完成，总耗时: {total_time:.2f}秒")
+    MemoryOptimizer.print_memory_stats(optimized_result, "并行计算结果优化后")
+    
+    return optimized_result
+
+
 def generate_cache_key(data_hash, indicator_type, *args, **kwargs):
     """
     生成唯一的缓存键

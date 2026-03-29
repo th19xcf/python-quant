@@ -466,7 +466,7 @@ class IndicatorManager:
         return self._to_result_format(result_df, return_polars)
     
     def calculate_indicators(self, data: Union[pl.DataFrame, pd.DataFrame], indicator_types: List[str], 
-                           return_polars: bool = False, **params) -> Union[pl.DataFrame, pd.DataFrame]:
+                           return_polars: bool = False, parallel: bool = False, max_workers: int = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
         """
         批量计算多个指标
         
@@ -474,6 +474,8 @@ class IndicatorManager:
             data: 输入数据
             indicator_types: 指标类型列表
             return_polars: 是否返回Polars DataFrame
+            parallel: 是否使用并行计算
+            max_workers: 并行计算的最大工作线程数，None表示使用所有可用核心
             **params: 指标计算参数
         
         Returns:
@@ -510,12 +512,25 @@ class IndicatorManager:
                 # 合并缓存结果
                 result_df = pl_data
                 for _, cached_df in cached_results:
-                    result_df = result_df.join(cached_df, on=result_df.columns[0], how='left')
+                    # 只合并新的列（排除时间列和已存在的列）
+                    new_columns = [col for col in cached_df.columns if col not in result_df.columns and col != cached_df.columns[0]]
+                    if new_columns:
+                        result_df = result_df.join(
+                            cached_df.select([cached_df.columns[0]] + new_columns),
+                            on=result_df.columns[0],
+                            how='left'
+                        )
                 return self._to_result_format(result_df, return_polars)
             
-            # 对未缓存的指标进行批量计算
+            # 对未缓存的指标进行计算
             if uncached_indicators:
-                result_df = calculate_multiple_indicators_polars(pl_data, uncached_indicators, **params)
+                if parallel and len(uncached_indicators) > 1:
+                    # 使用并行计算
+                    from src.tech_analysis.indicator_calculator import calculate_indicators_parallel
+                    result_df = calculate_indicators_parallel(pl_data, uncached_indicators, max_workers, **params)
+                else:
+                    # 使用串行计算
+                    result_df = calculate_multiple_indicators_polars(pl_data, uncached_indicators, **params)
                 
                 # 保存到缓存
                 for indicator_type in uncached_indicators:
@@ -527,21 +542,37 @@ class IndicatorManager:
                 
                 # 合并缓存结果和新计算结果
                 for indicator_type, cached_df in cached_results:
-                    result_df = result_df.join(cached_df, on=result_df.columns[0], how='left')
+                    # 只合并新的列（排除时间列和已存在的列）
+                    new_columns = [col for col in cached_df.columns if col not in result_df.columns and col != cached_df.columns[0]]
+                    if new_columns:
+                        # 确保不会重复添加列
+                        result_df = result_df.join(
+                            cached_df.select([cached_df.columns[0]] + new_columns),
+                            on=result_df.columns[0],
+                            how='left'
+                        )
         else:
             # 缓存禁用，直接计算所有指标
-            result_df = calculate_multiple_indicators_polars(pl_data, indicator_types, **params)
+            if parallel and len(indicator_types) > 1:
+                # 使用并行计算
+                from src.tech_analysis.indicator_calculator import calculate_indicators_parallel
+                result_df = calculate_indicators_parallel(pl_data, indicator_types, max_workers, **params)
+            else:
+                # 使用串行计算
+                result_df = calculate_multiple_indicators_polars(pl_data, indicator_types, **params)
         
         return self._to_result_format(result_df, return_polars)
     
     def calculate_all_indicators(self, data: Union[pl.DataFrame, pd.DataFrame], 
-                               return_polars: bool = False, **params) -> Union[pl.DataFrame, pd.DataFrame]:
+                               return_polars: bool = False, parallel: bool = False, max_workers: int = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
         """
         计算所有支持的指标
         
         Args:
             data: 输入数据
             return_polars: 是否返回Polars DataFrame
+            parallel: 是否使用并行计算
+            max_workers: 并行计算的最大工作线程数，None表示使用所有可用核心
             **params: 指标计算参数
         
         Returns:
@@ -551,7 +582,7 @@ class IndicatorManager:
         all_indicators = global_indicator_registry.get_supported_indicators()
         
         # 使用批量计算
-        return self.calculate_indicators(data, all_indicators, return_polars, **params)
+        return self.calculate_indicators(data, all_indicators, return_polars, parallel, max_workers, **params)
     
     def get_supported_indicators(self) -> Dict[str, Any]:
         """

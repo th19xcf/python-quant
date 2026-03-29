@@ -490,7 +490,7 @@ class AsyncDataManager:
         
         return result
     
-    async def get_multiple_stocks_data_async(self, stock_codes: List[str], start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq') -> Dict[str, pl.DataFrame]:
+    async def get_multiple_stocks_data_async(self, stock_codes: List[str], start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq', batch_size: int = 10, timeout: int = 30) -> Dict[str, pl.DataFrame]:
         """
         异步并行获取多只股票数据
         
@@ -500,27 +500,65 @@ class AsyncDataManager:
             end_date: 结束日期，格式：YYYY-MM-DD
             frequency: 数据频率，默认：1d（日线）
             adjustment_type: 复权类型，qfq=前复权, hfq=后复权, none=不复权
+            batch_size: 批量处理大小，默认10
+            timeout: 每个任务的超时时间（秒），默认30
         
         Returns:
             Dict[str, pl.DataFrame]: 股票代码到数据的映射
         """
-        tasks = {}
-        for stock_code in stock_codes:
-            task = self.get_stock_data_async(stock_code, start_date, end_date, frequency, adjustment_type)
-            tasks[stock_code] = task
+        import concurrent.futures
         
-        # 并行执行所有任务
-        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
-        
-        # 处理结果
         stock_data = {}
-        for i, stock_code in enumerate(tasks.keys()):
-            result = results[i]
-            if isinstance(result, Exception):
-                logger.error(f"获取{stock_code}数据失败: {result}")
-                stock_data[stock_code] = pl.DataFrame()
-            else:
+        total_stocks = len(stock_codes)
+        processed_stocks = 0
+        
+        logger.info(f"开始并行获取{total_stocks}只股票数据，批量大小: {batch_size}")
+        start_time = time.time()
+        
+        # 分批次处理
+        for i in range(0, total_stocks, batch_size):
+            batch_codes = stock_codes[i:i+batch_size]
+            batch_size_current = len(batch_codes)
+            logger.info(f"处理批次 {i//batch_size + 1}/{(total_stocks + batch_size - 1)//batch_size}，包含{batch_size_current}只股票")
+            
+            # 创建批量任务
+            tasks = {}
+            for stock_code in batch_codes:
+                # 创建带超时的任务
+                async def fetch_with_timeout(code):
+                    try:
+                        return await asyncio.wait_for(
+                            self.get_stock_data_async(code, start_date, end_date, frequency, adjustment_type),
+                            timeout=timeout
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(f"获取{code}数据超时")
+                        return pl.DataFrame()
+                    except Exception as e:
+                        logger.error(f"获取{code}数据失败: {e}")
+                        return pl.DataFrame()
+                
+                task = fetch_with_timeout(stock_code)
+                tasks[stock_code] = task
+            
+            # 并行执行当前批次的任务
+            results = await asyncio.gather(*tasks.values())
+            
+            # 处理结果
+            for j, stock_code in enumerate(tasks.keys()):
+                result = results[j]
                 stock_data[stock_code] = result
+                processed_stocks += 1
+                
+                # 打印进度
+                if processed_stocks % 5 == 0 or processed_stocks == total_stocks:
+                    progress = (processed_stocks / total_stocks) * 100
+                    elapsed_time = time.time() - start_time
+                    remaining_time = (elapsed_time / processed_stocks) * (total_stocks - processed_stocks)
+                    logger.info(f"进度: {processed_stocks}/{total_stocks} ({progress:.1f}%)，耗时: {elapsed_time:.2f}秒，预计剩余: {remaining_time:.2f}秒")
+        
+        total_time = time.time() - start_time
+        logger.info(f"并行获取{total_stocks}只股票数据完成，总耗时: {total_time:.2f}秒")
         
         return stock_data
     

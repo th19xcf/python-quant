@@ -7,7 +7,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Index
 
 from src.database.db_manager import Base
 
@@ -87,7 +87,11 @@ class StockDaily(Base):
             "mysql_charset": "utf8mb4",
             "mysql_collate": "utf8mb4_general_ci",
             "extend_existing": True
-        }
+        },
+        # 添加ts_code和trade_date的组合索引，优化按股票代码和日期范围查询
+        Index('idx_stock_daily_ts_code_trade_date', 'ts_code', 'trade_date'),
+        # 添加trade_date的索引，优化按日期范围查询所有股票
+        Index('idx_stock_daily_trade_date', 'trade_date')
     )
     
     def __repr__(self):
@@ -119,7 +123,11 @@ class StockMinute(Base):
             "mysql_charset": "utf8mb4",
             "mysql_collate": "utf8mb4_general_ci",
             "extend_existing": True
-        }
+        },
+        # 添加ts_code、freq和trade_time的组合索引，优化按股票代码、周期和时间范围查询
+        Index('idx_stock_minute_ts_code_freq_trade_time', 'ts_code', 'freq', 'trade_time'),
+        # 添加trade_time的索引，优化按时间范围查询所有股票
+        Index('idx_stock_minute_trade_time', 'trade_time')
     )
     
     def __repr__(self):
@@ -162,7 +170,11 @@ class StockDividend(Base):
             "mysql_charset": "utf8mb4",
             "mysql_collate": "utf8mb4_general_ci",
             "extend_existing": True
-        }
+        },
+        # 添加ts_code的索引，优化按股票代码查询
+        Index('idx_stock_dividend_ts_code', 'ts_code'),
+        # 添加dividend_year的索引，优化按年度查询
+        Index('idx_stock_dividend_dividend_year', 'dividend_year')
     )
 
     def __repr__(self):
@@ -204,7 +216,11 @@ class StockAdjFactor(Base):
             "mysql_charset": "utf8mb4",
             "mysql_collate": "utf8mb4_general_ci",
             "extend_existing": True
-        }
+        },
+        # 添加ts_code和trade_date的组合索引，优化按股票代码和日期范围查询
+        Index('idx_stock_adj_factor_ts_code_trade_date', 'ts_code', 'trade_date'),
+        # 添加trade_date的索引，优化按日期范围查询所有股票
+        Index('idx_stock_adj_factor_trade_date', 'trade_date')
     )
 
     def __repr__(self):

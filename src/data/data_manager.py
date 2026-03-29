@@ -610,12 +610,14 @@ class DataManager(IDataProvider, IDataProcessor):
                     
                     session = self.db_manager.get_session()
                     if session:
+                        # 构建查询，确保使用索引
                         query = session.query(model_class).filter(
                             getattr(model_class, 'ts_code') == ts_code,
                             getattr(model_class, 'trade_date') >= start_date,
                             getattr(model_class, 'trade_date') <= end_date
                         ).order_by(getattr(model_class, 'trade_date'))
                         
+                        # 执行查询并获取数据
                         data = query.all()
                         if data:
                             # 提取数据记录，直接构建适合Polars的字典列表
@@ -845,7 +847,7 @@ class DataManager(IDataProvider, IDataProcessor):
             # 回退到同步方法
             return self.get_index_data(index_code, start_date, end_date, frequency)
     
-    async def get_multiple_stocks_data_async(self, stock_codes: List[str], start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq') -> Dict[str, pl.DataFrame]:
+    async def get_multiple_stocks_data_async(self, stock_codes: List[str], start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq', batch_size: int = 10, timeout: int = 30) -> Dict[str, pl.DataFrame]:
         """
         异步并行获取多只股票数据
         
@@ -855,17 +857,37 @@ class DataManager(IDataProvider, IDataProcessor):
             end_date: 结束日期，格式：YYYY-MM-DD
             frequency: 数据频率，默认：1d（日线）
             adjustment_type: 复权类型，qfq=前复权, hfq=后复权, none=不复权
+            batch_size: 批量处理大小，默认10
+            timeout: 每个任务的超时时间（秒），默认30
         
         Returns:
             Dict[str, pl.DataFrame]: 股票代码到数据的映射
         """
         if self.async_data_manager:
-            return await self.async_data_manager.get_multiple_stocks_data_async(stock_codes, start_date, end_date, frequency, adjustment_type)
+            return await self.async_data_manager.get_multiple_stocks_data_async(stock_codes, start_date, end_date, frequency, adjustment_type, batch_size, timeout)
         else:
             # 回退到同步方法（串行获取）
             result = {}
+            total_stocks = len(stock_codes)
+            processed_stocks = 0
+            start_time = time.time()
+            
+            logger.info(f"开始串行获取{total_stocks}只股票数据")
+            
             for stock_code in stock_codes:
                 result[stock_code] = self.get_stock_data(stock_code, start_date, end_date, frequency, adjustment_type)
+                processed_stocks += 1
+                
+                # 打印进度
+                if processed_stocks % 5 == 0 or processed_stocks == total_stocks:
+                    progress = (processed_stocks / total_stocks) * 100
+                    elapsed_time = time.time() - start_time
+                    remaining_time = (elapsed_time / processed_stocks) * (total_stocks - processed_stocks)
+                    logger.info(f"进度: {processed_stocks}/{total_stocks} ({progress:.1f}%)，耗时: {elapsed_time:.2f}秒，预计剩余: {remaining_time:.2f}秒")
+            
+            total_time = time.time() - start_time
+            logger.info(f"串行获取{total_stocks}只股票数据完成，总耗时: {total_time:.2f}秒")
+            
             return result
     
     def get_stock_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:

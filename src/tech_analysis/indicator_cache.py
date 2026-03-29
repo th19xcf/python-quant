@@ -59,24 +59,30 @@ class IndicatorCache:
     支持自动过期、LRU淘汰、命中率统计等功能
     """
     
-    def __init__(self, max_size: int = 1000, default_ttl: int = 3600):
+    def __init__(self, max_size: int = 1000, default_ttl: int = 3600, dynamic_size: bool = True):
         """
         初始化指标缓存
         
         Args:
             max_size: 缓存最大条目数
             default_ttl: 默认过期时间（秒），0表示永不过期
+            dynamic_size: 是否启用动态缓存大小调整
         """
         # 缓存存储
         self._cache: Dict[str, CacheEntry[pl.DataFrame]] = {}
         # 缓存配置
         self._max_size = max_size
         self._default_ttl = default_ttl if default_ttl > 0 else None
+        self._dynamic_size = dynamic_size
+        self._min_size = max(100, max_size // 2)  # 最小缓存大小
+        self._max_size_limit = max_size * 2  # 最大缓存大小限制
         
         # 缓存统计
         self._hits = 0
         self._misses = 0
         self._evictions = 0
+        self._last_size_adjustment = time.time()
+        self._size_adjustment_interval = 3600  # 缓存大小调整间隔（秒）
     
     def _generate_cache_key(self, data: pl.DataFrame, indicator_type: str, **params) -> str:
         """
@@ -154,6 +160,8 @@ class IndicatorCache:
         
         if cache_key not in self._cache:
             self._misses += 1
+            # 尝试调整缓存大小
+            self._adjust_cache_size()
             return None
         
         entry = self._cache[cache_key]
@@ -163,6 +171,8 @@ class IndicatorCache:
             del self._cache[cache_key]
             self._evictions += 1
             self._misses += 1
+            # 尝试调整缓存大小
+            self._adjust_cache_size()
             return None
         
         # 更新访问信息
@@ -170,6 +180,8 @@ class IndicatorCache:
         self._hits += 1
         
         logger.debug(f"缓存命中: {indicator_type}")
+        # 尝试调整缓存大小
+        self._adjust_cache_size()
         return entry.value
     
     def set(self, data: pl.DataFrame, result: pl.DataFrame, indicator_type: str, **params):
@@ -201,6 +213,9 @@ class IndicatorCache:
         # 检查缓存大小，超过上限则进行LRU淘汰
         if len(self._cache) > self._max_size:
             self._evict_lru()
+        
+        # 尝试调整缓存大小
+        self._adjust_cache_size()
     
     def _evict_lru(self):
         """
@@ -209,13 +224,81 @@ class IndicatorCache:
         if not self._cache:
             return
         
-        # 找到最少使用的条目（按访问时间排序）
+        # 找到最少使用的条目（按访问时间和命中次数排序）
+        # 优先淘汰访问时间早且命中次数少的条目
         lru_key = min(self._cache.keys(), 
-                     key=lambda k: self._cache[k].access_time)
+                     key=lambda k: (self._cache[k].access_time, -self._cache[k].hit_count))
         
         del self._cache[lru_key]
         self._evictions += 1
         logger.debug(f"LRU淘汰缓存: {lru_key}")
+    
+    def _adjust_cache_size(self):
+        """
+        动态调整缓存大小
+        根据命中率和缓存使用情况自动调整缓存大小
+        """
+        if not self._dynamic_size:
+            return
+        
+        current_time = time.time()
+        if current_time - self._last_size_adjustment < self._size_adjustment_interval:
+            return
+        
+        self._last_size_adjustment = current_time
+        
+        total_requests = self._hits + self._misses
+        if total_requests < 100:  # 数据不足，不调整
+            return
+        
+        hit_rate = self._hits / total_requests
+        current_size = len(self._cache)
+        
+        # 根据命中率调整缓存大小
+        if hit_rate > 0.7 and current_size < self._max_size_limit:
+            # 命中率高，增加缓存大小
+            new_max_size = min(int(self._max_size * 1.2), self._max_size_limit)
+            if new_max_size > self._max_size:
+                self._max_size = new_max_size
+                logger.info(f"缓存命中率高({hit_rate:.2f})，增加缓存最大大小到{new_max_size}")
+        elif hit_rate < 0.3 and current_size > self._min_size:
+            # 命中率低，减少缓存大小
+            new_max_size = max(int(self._max_size * 0.8), self._min_size)
+            if new_max_size < self._max_size:
+                self._max_size = new_max_size
+                logger.info(f"缓存命中率低({hit_rate:.2f})，减少缓存最大大小到{new_max_size}")
+                # 立即执行一次LRU淘汰，确保缓存大小不超过新的限制
+                while len(self._cache) > self._max_size:
+                    self._evict_lru()
+    
+    def warmup_cache(self, data: pl.DataFrame, indicator_types: List[str], **params):
+        """
+        缓存预热
+        预先计算并缓存指定的指标
+        
+        Args:
+            data: 输入数据
+            indicator_types: 指标类型列表
+            **params: 指标计算参数
+        """
+        from src.tech_analysis.indicator_calculator import calculate_multiple_indicators_polars
+        
+        logger.info(f"开始缓存预热，计算{len(indicator_types)}个指标")
+        start_time = time.time()
+        
+        # 批量计算所有指标
+        result_df = calculate_multiple_indicators_polars(data, indicator_types, **params)
+        
+        # 将计算结果保存到缓存
+        for indicator_type in indicator_types:
+            # 提取该指标的结果
+            indicator_cols = [col for col in result_df.columns if col.startswith(indicator_type) or col in ['dma', 'ama', 'fsl', 'sar', 'obv']]
+            if indicator_cols:
+                indicator_result = result_df.select([result_df.columns[0]] + indicator_cols)
+                self.set(data, indicator_result, indicator_type, **params)
+        
+        total_time = time.time() - start_time
+        logger.info(f"缓存预热完成，耗时{total_time:.2f}秒，缓存了{len(indicator_types)}个指标")
     
     def clear(self, indicator_type: Optional[str] = None):
         """
@@ -319,11 +402,15 @@ class IndicatorCache:
         return {
             'size': len(self._cache),
             'max_size': self._max_size,
+            'min_size': self._min_size,
+            'max_size_limit': self._max_size_limit,
+            'dynamic_size': self._dynamic_size,
             'hits': self._hits,
             'misses': self._misses,
             'hit_rate': hit_rate,
             'evictions': self._evictions,
-            'total_requests': total_requests
+            'total_requests': total_requests,
+            'last_size_adjustment': self._last_size_adjustment
         }
     
     def reset_stats(self):
@@ -357,14 +444,18 @@ class IndicatorCache:
             'stats': self.get_stats(),
             'config': {
                 'max_size': self._max_size,
-                'default_ttl': self._default_ttl
+                'min_size': self._min_size,
+                'max_size_limit': self._max_size_limit,
+                'dynamic_size': self._dynamic_size,
+                'default_ttl': self._default_ttl,
+                'size_adjustment_interval': self._size_adjustment_interval
             },
             'entries': entries_info
         }
 
 
 # 创建全局缓存实例
-global_indicator_cache = IndicatorCache(max_size=1000, default_ttl=3600)
+global_indicator_cache = IndicatorCache(max_size=1000, default_ttl=3600, dynamic_size=True)
 
 
 def cached_calculation(cache: Optional[IndicatorCache] = None, ttl: Optional[int] = None):
