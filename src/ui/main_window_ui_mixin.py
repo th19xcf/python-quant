@@ -196,10 +196,73 @@ class MainWindowUiMixin:
         
         Args:
             menu: 菜单对象
-            actions: 动作列表，每个动作是一个元组(名称, 回调函数)
+            actions: 动作列表，每个动作是一个元组(名称, 回调函数, 图标名称)
         """
-        for name, callback in actions:
-            action = QAction(name, self)
+        from PySide6.QtGui import QIcon
+        
+        # 图标映射字典
+        icon_map = {
+            # 行情菜单图标
+            "自选股": "📋",
+            "全景图": "🌐",
+            "沪深京指数": "📊",
+            "沪深京板块": "🏢",
+            "沪深京个股": "📈",
+            
+            # 交易菜单图标
+            "传统交易": "💱",
+            "条件单": "🎯",
+            "新股申购": "📝",
+            
+            # 发现菜单图标
+            "热点主题": "🔥",
+            "资金流向": "💹",
+            "研报中心": "📄",
+            
+            # 资讯菜单图标
+            "财经新闻": "📰",
+            "公司公告": "📢",
+            "行业资讯": "📊",
+            
+            # 数据菜单图标
+            "宏观数据": "📈",
+            "财务数据": "💰",
+            "技术指标": "📊",
+            "盘后数据下载": "💾",
+            
+            # 特色功能菜单图标
+            "自动交易": "🤖",
+            
+            # 量化分析菜单图标
+            "策略回测": "📊",
+            "股票推荐": "⭐",
+            "因子分析": "🔍",
+            
+            # 系统菜单图标
+            "设置": "⚙️",
+            "关于": "ℹ️",
+            "退出": "🚪"
+        }
+        
+        for item in actions:
+            if len(item) == 2:
+                name, callback = item
+                icon_name = None
+            elif len(item) == 3:
+                name, callback, icon_name = item
+            else:
+                continue
+            
+            if icon_name or name in icon_map:
+                icon_char = icon_map.get(name, icon_name)
+                if icon_char:
+                    # 使用Unicode图标
+                    action = QAction(f"{icon_char} {name}", self)
+                else:
+                    action = QAction(name, self)
+            else:
+                action = QAction(name, self)
+            
             action.triggered.connect(callback)
             menu.addAction(action)
     
@@ -214,17 +277,17 @@ class MainWindowUiMixin:
         tool_bar.addSeparator()
         
         # 添加自选股按钮
-        self.selected_btn = QPushButton("自选股")
+        self.selected_btn = QPushButton("📋 自选股")
         self.selected_btn.clicked.connect(self.action_manager.on_self_selected)
         tool_bar.addWidget(self.selected_btn)
         
         # 添加行情按钮
-        self.market_btn = QPushButton("行情")
+        self.market_btn = QPushButton("📊 行情")
         self.market_btn.clicked.connect(self.action_manager.on_market)
         tool_bar.addWidget(self.market_btn)
         
         # 添加技术分析按钮
-        self.tech_btn = QPushButton("技术分析")
+        self.tech_btn = QPushButton("📈 技术分析")
         self.tech_btn.clicked.connect(self.action_manager.on_technical_analysis)
         tool_bar.addWidget(self.tech_btn)
         
@@ -232,12 +295,12 @@ class MainWindowUiMixin:
         tool_bar.addSeparator()
         
         # 添加刷新按钮
-        refresh_btn = QPushButton("刷新")
+        refresh_btn = QPushButton("🔄 刷新")
         refresh_btn.clicked.connect(self.action_manager.on_refresh)
         tool_bar.addWidget(refresh_btn)
         
         # 添加设置按钮
-        settings_btn = QPushButton("设置")
+        settings_btn = QPushButton("⚙️ 设置")
         settings_btn.clicked.connect(self.action_manager.on_settings)
         tool_bar.addWidget(settings_btn)
     
@@ -495,9 +558,9 @@ class MainWindowUiMixin:
 
         # 添加周期按钮
         self.period_buttons = {
-            '日线': QPushButton('日线'),
-            '周线': QPushButton('周线'),
-            '月线': QPushButton('月线')
+            '日线': QPushButton('📅 日线'),
+            '周线': QPushButton('📆 周线'),
+            '月线': QPushButton('📈 月线')
         }
         
         # 设置按钮样式
@@ -564,7 +627,7 @@ class MainWindowUiMixin:
         toolbar_layout.addSpacing(10)
         
         # 添加复权按钮
-        self.adjustment_btn = QPushButton("前复权")  # 默认显示前复权
+        self.adjustment_btn = QPushButton("📊 前复权")  # 默认显示前复权
         self.adjustment_btn.setStyleSheet(button_style)
         self.adjustment_btn.setCheckable(True)
         self.adjustment_btn.setChecked(True)  # 默认选中前复权
@@ -575,13 +638,13 @@ class MainWindowUiMixin:
         toolbar_layout.addSpacing(10)
         
         # 添加上下箭头按钮用于切换相邻股票
-        self.prev_stock_btn = QPushButton("▲ 上一只")
+        self.prev_stock_btn = QPushButton("⬆️ 上一只")
         self.prev_stock_btn.setStyleSheet(button_style)
         self.prev_stock_btn.setToolTip("切换到列表中的上一只股票")
         self.prev_stock_btn.clicked.connect(self._on_prev_stock_clicked)
         toolbar_layout.addWidget(self.prev_stock_btn)
         
-        self.next_stock_btn = QPushButton("▼ 下一只")
+        self.next_stock_btn = QPushButton("⬇️ 下一只")
         self.next_stock_btn.setStyleSheet(button_style)
         self.next_stock_btn.setToolTip("切换到列表中的下一只股票")
         self.next_stock_btn.clicked.connect(self._on_next_stock_clicked)
