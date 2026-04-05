@@ -256,6 +256,8 @@ class DataFetcher:
         Returns:
             pl.DataFrame: 数据
         """
+        import inspect
+        
         available_sources = self.get_available_sources()
         if not available_sources:
             logger.warning(f"没有可用的数据源来获取{data_type}数据")
@@ -279,13 +281,28 @@ class DataFetcher:
                 if data_type == 'stock':
                     # 检查是否有get_stock_data方法
                     if hasattr(source, 'get_stock_data'):
+                        # 检查方法是否接受adjustment_type参数
+                        method = getattr(source, 'get_stock_data')
+                        sig = inspect.signature(method)
+                        params = sig.parameters
+                        
+                        # 构建参数
+                        kwargs = {
+                            'ts_code': code, 
+                            'start_date': start_date, 
+                            'end_date': end_date, 
+                            'freq': 'daily' if frequency == '1d' else 'minute'
+                        }
+                        
+                        # 只有当方法接受adjustment_type参数时才传递
+                        if 'adjustment_type' in params:
+                            kwargs['adjustment_type'] = adjustment_type
+                        
                         # 插件数据源
                         future = executor.submit(
                             self._fetch_from_source,
                             source, 'get_stock_data',
-                            ts_code=code, start_date=start_date, end_date=end_date, 
-                            freq='daily' if frequency == '1d' else 'minute',
-                            adjustment_type=adjustment_type
+                            **kwargs
                         )
                     elif hasattr(source, 'get_kline_data'):
                         # 传统TdxHandler
