@@ -80,7 +80,7 @@ def add_default_column_names(lazy_df: pl.LazyFrame, indicator: str, window: int,
     Returns:
         pl.LazyFrame: 添加了默认列名的LazyFrame
     """
-    if indicator not in ['ma', 'rsi', 'kdj', 'wr', 'boll', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'abi', 'adl', 'adr', 'obos']:
+    if indicator not in ['ma', 'rsi', 'kdj', 'wr', 'boll', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'cr', 'abi', 'adl', 'adr', 'obos']:
         return lazy_df
     
     aliases = []
@@ -106,7 +106,7 @@ def add_default_column_names(lazy_df: pl.LazyFrame, indicator: str, window: int,
                 aliases.append(pl.col(col).alias('up'))
             elif col == columns[2]:
                 aliases.append(pl.col(col).alias('dn'))
-        elif indicator in ['dmi', 'cci', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']:
+        elif indicator in ['dmi', 'cci', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'cr']:
             # 直接使用指标名作为默认列名
             aliases.append(pl.col(col).alias(col.split('_')[0] if '_' in col else col))
     

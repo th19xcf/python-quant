@@ -189,7 +189,7 @@ def add_default_columns(lazy_df: pl.LazyFrame, indicator_type: str, windows: lis
     """
     if len(windows) >= 1:
         window = windows[0]
-        if indicator_type in ['ma', 'vol_ma', 'rsi', 'kdj', 'wr', 'dmi', 'cci', 'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'emv', 'mcst', 'cyc']:
+        if indicator_type in ['ma', 'vol_ma', 'rsi', 'kdj', 'wr', 'dmi', 'cci', 'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'emv', 'mcst', 'cyc', 'cr']:
             lazy_df = lazy_df.with_columns(
                 pl.col(f'{indicator_type}{window}').alias(indicator_type)
             )
