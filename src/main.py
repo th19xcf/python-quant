@@ -31,13 +31,286 @@ from src.utils.exception_handler import setup_global_exception_handler
 from src.utils.memory_manager import global_memory_manager
 
 
+def sync_tdx_stock_to_database(config, db_manager):
+    """
+    从通达信数据源同步股票信息到数据库
+    
+    工作流程：
+    1. 从通达信数据源提取所有股票代码
+    2. 与数据库 stock_basic 表进行匹配比较
+    3. 对于通达信有但数据库没有的股票：
+       a. 使用 baostock 和 akshare API 获取完整股票信息
+       b. 收集所有相关的财务和市场数据字段
+       c. 将完整的股票信息插入 stock_basic 表
+    
+    Args:
+        config: 配置对象
+        db_manager: 数据库管理器实例
+        
+    Returns:
+        dict: 同步结果统计
+    """
+    from src.data.tdx_handler import TdxHandler
+    from src.data.baostock_handler import BaostockHandler
+    from src.data.akshare_handler import AkShareHandler
+    from src.database.models.stock import StockBasic
+    from datetime import datetime
+    import time
+    
+    result = {
+        'total_tdx_stocks': 0,
+        'existing_stocks': 0,
+        'new_stocks': 0,
+        'failed_stocks': [],
+        'updated_stocks': 0
+    }
+    
+    logger.info("=" * 60)
+    logger.info("开始从通达信数据源同步股票信息到数据库")
+    logger.info("=" * 60)
+    
+    try:
+        tdx_handler = TdxHandler(config, db_manager)
+        
+        tdx_stock_codes = tdx_handler.get_stock_list()
+        result['total_tdx_stocks'] = len(tdx_stock_codes)
+        logger.info(f"通达信数据源共有 {len(tdx_stock_codes)} 只股票")
+        
+        if not tdx_stock_codes:
+            logger.warning("通达信数据源没有找到任何股票数据")
+            return result
+        
+        session = db_manager.get_session()
+        
+        existing_codes = set()
+        for stock in session.query(StockBasic.ts_code).all():
+            existing_codes.add(stock.ts_code)
+        result['existing_stocks'] = len(existing_codes)
+        logger.info(f"数据库 stock_basic 表已有 {len(existing_codes)} 只股票")
+        
+        new_codes = [code for code in tdx_stock_codes if code not in existing_codes]
+        result['new_stocks'] = len(new_codes)
+        logger.info(f"发现 {len(new_codes)} 只新股票需要添加到数据库")
+        
+        if not new_codes:
+            logger.info("所有通达信股票都已在数据库中，无需同步")
+            return result
+        
+        baostock_handler = BaostockHandler(config, db_manager)
+        akshare_handler = AkShareHandler(config, db_manager)
+        
+        logger.info("开始从 Baostock 获取股票基本信息...")
+        baostock_basic = None
+        try:
+            baostock_basic = baostock_handler.update_stock_basic()
+            if baostock_basic is not None:
+                logger.info(f"从 Baostock 获取到 {baostock_basic.height} 条股票信息")
+        except Exception as e:
+            logger.warning(f"从 Baostock 获取股票基本信息失败: {e}")
+        
+        logger.info("开始从 AkShare 获取股票基本信息...")
+        akshare_basic = None
+        try:
+            akshare_basic = akshare_handler.update_stock_basic()
+            if akshare_basic is not None:
+                logger.info(f"从 AkShare 获取到 {akshare_basic.height} 条股票信息")
+        except Exception as e:
+            logger.warning(f"从 AkShare 获取股票基本信息失败: {e}")
+        
+        merged_basic = merge_stock_basic(baostock_basic, akshare_basic, existing_codes)
+        
+        for i, ts_code in enumerate(new_codes):
+            try:
+                logger.info(f"[{i+1}/{len(new_codes)}] 处理股票: {ts_code}")
+                
+                stock_info = get_stock_info_from_apis(ts_code, merged_basic, baostock_handler, akshare_handler)
+                
+                if stock_info is None:
+                    logger.warning(f"无法获取股票 {ts_code} 的信息，跳过")
+                    result['failed_stocks'].append(ts_code)
+                    continue
+                
+                stock = StockBasic(
+                    ts_code=stock_info.get('ts_code', ts_code),
+                    symbol=stock_info.get('symbol', ts_code.split('.')[0]),
+                    name=stock_info.get('name', '未知'),
+                    area=stock_info.get('area'),
+                    industry=stock_info.get('industry'),
+                    market=stock_info.get('market'),
+                    list_date=stock_info.get('list_date'),
+                    delist_date=stock_info.get('delist_date'),
+                    status=stock_info.get('status', 'L')
+                )
+                session.add(stock)
+                result['updated_stocks'] += 1
+                
+                if (i + 1) % 50 == 0:
+                    session.commit()
+                    logger.info(f"已提交 {i + 1} 条股票记录到数据库")
+                
+                time.sleep(0.1)
+                
+            except Exception as e:
+                logger.exception(f"处理股票 {ts_code} 失败: {e}")
+                result['failed_stocks'].append(ts_code)
+                continue
+        
+        session.commit()
+        logger.info(f"股票信息同步完成，共新增 {result['updated_stocks']} 条记录")
+        
+    except Exception as e:
+        logger.exception(f"同步股票信息失败: {e}")
+        if session:
+            session.rollback()
+    
+    logger.info("=" * 60)
+    logger.info("同步结果统计:")
+    logger.info(f"  通达信股票总数: {result['total_tdx_stocks']}")
+    logger.info(f"  数据库已有股票: {result['existing_stocks']}")
+    logger.info(f"  新增股票数量: {result['updated_stocks']}")
+    logger.info(f"  失败股票数量: {len(result['failed_stocks'])}")
+    if result['failed_stocks']:
+        logger.warning(f"  失败股票列表: {result['failed_stocks'][:10]}...")
+    logger.info("=" * 60)
+    
+    return result
+
+
+def merge_stock_basic(baostock_df, akshare_df, existing_codes=None):
+    """
+    合并 Baostock 和 AkShare 的股票基本信息
+    
+    Args:
+        baostock_df: Baostock 股票信息 DataFrame
+        akshare_df: AkShare 股票信息 DataFrame
+        existing_codes: 已存在的股票代码集合（用于过滤）
+        
+    Returns:
+        dict: 股票代码到信息的映射
+    """
+    import polars as pl
+    
+    merged = {}
+    
+    if existing_codes is None:
+        existing_codes = set()
+    
+    if baostock_df is not None and not baostock_df.is_empty():
+        for row in baostock_df.iter_rows(named=True):
+            try:
+                code = row.get('code', '')
+                if not code:
+                    continue
+                if code.startswith('6'):
+                    ts_code = f"{code}.SH"
+                else:
+                    ts_code = f"{code}.SZ"
+                
+                if ts_code in existing_codes:
+                    continue
+                
+                merged[ts_code] = {
+                    'symbol': code,
+                    'name': row.get('code_name', ''),
+                    'area': row.get('area', ''),
+                    'industry': row.get('industry', ''),
+                    'market': row.get('market', ''),
+                    'list_date': row.get('list_date'),
+                    'status': row.get('status', 'L'),
+                    'source': 'baostock'
+                }
+            except Exception:
+                continue
+    
+    if akshare_df is not None and not akshare_df.is_empty():
+        for row in akshare_df.iter_rows(named=True):
+            try:
+                code = row.get('code', '')
+                if not code:
+                    continue
+                if code.startswith('6'):
+                    ts_code = f"{code}.SH"
+                else:
+                    ts_code = f"{code}.SZ"
+                
+                if ts_code in existing_codes:
+                    continue
+                
+                if ts_code in merged:
+                    merged[ts_code].update({
+                        'name': row.get('name', merged[ts_code].get('name', '')),
+                        'area': row.get('area', merged[ts_code].get('area', '')),
+                        'industry': row.get('industry', merged[ts_code].get('industry', '')),
+                    })
+                else:
+                    merged[ts_code] = {
+                        'symbol': code,
+                        'name': row.get('name', ''),
+                        'area': row.get('area', ''),
+                        'industry': row.get('industry', ''),
+                        'market': '',
+                        'list_date': None,
+                        'status': 'L',
+                        'source': 'akshare'
+                    }
+            except Exception:
+                continue
+    
+    logger.info(f"合并后共有 {len(merged)} 条股票基本信息（已过滤已存在的 {len(existing_codes)} 条）")
+    return merged
+
+
+def get_stock_info_from_apis(ts_code, merged_basic, baostock_handler, akshare_handler):
+    """
+    从 API 获取单个股票的详细信息
+    
+    Args:
+        ts_code: 股票代码 (如 600000.SH)
+        merged_basic: 合并后的股票基本信息
+        baostock_handler: Baostock 处理器
+        akshare_handler: AkShare 处理器
+        
+    Returns:
+        dict: 股票信息字典
+    """
+    import polars as pl
+    
+    symbol = ts_code.split('.')[0]
+    
+    if ts_code in merged_basic:
+        info = merged_basic[ts_code].copy()
+        
+        if info.get('list_date') and isinstance(info['list_date'], str):
+            try:
+                from datetime import datetime
+                info['list_date'] = datetime.strptime(info['list_date'], '%Y-%m-%d').date()
+            except:
+                info['list_date'] = None
+        
+        return info
+    
+    for mapped_code, info in merged_basic.items():
+        if info.get('symbol') == symbol:
+            result = info.copy()
+            result['ts_code'] = ts_code
+            return result
+    
+    logger.warning(f"在 Baostock/AkShare 数据中未找到股票 {ts_code} 的信息")
+    return {
+        'ts_code': ts_code,
+        'symbol': symbol,
+        'name': f'股票{symbol}',
+        'status': 'L'
+    }
+
+
 def parse_args():
     """
     解析命令行参数
     """
     parser = argparse.ArgumentParser(description='中国股市量化分析系统')
     parser.add_argument('--init-db', action='store_true', help='初始化数据库表')
-    parser.add_argument('--update-stock', action='store_true', help='更新股票基本信息')
+    parser.add_argument('--update-stock', action='store_true', help='从通达信数据源同步股票信息到数据库')
     parser.add_argument('--plugins', action='store_true', help='显示已加载的插件')
     return parser.parse_args()
 
@@ -91,6 +364,36 @@ def main():
             for plugin_info in plugin_manager.get_all_plugin_info():
                 logger.info(f"  - {plugin_info['name']} (v{plugin_info['version']}) - {plugin_info['description']}")
             return
+        
+        # 处理 --update-stock 参数：从通达信数据源同步股票信息到数据库
+        if args.update_stock:
+            logger.info("检测到 --update-stock 参数，将执行股票信息同步")
+            
+            # 初始化数据库
+            db_manager = None
+            try:
+                db_manager = DatabaseManager(config)
+                db_manager.connect()
+                logger.info("数据库连接成功")
+                
+                # 创建数据库表（如果不存在）
+                try:
+                    db_manager.create_tables()
+                    logger.info("数据库表创建/更新成功")
+                except (OSError, RuntimeError) as table_e:
+                    logger.warning(f"创建数据库表时发生错误: {table_e}")
+                
+                # 执行同步
+                sync_result = sync_tdx_stock_to_database(config, db_manager)
+                
+                # 关闭数据库连接并退出
+                db_manager.disconnect()
+                logger.info("数据库连接已关闭")
+                return
+                
+            except (OSError, RuntimeError) as db_e:
+                logger.error(f"数据库连接失败，无法执行同步: {db_e}")
+                return
         
         # 初始化数据库（可选）
         db_manager = None

@@ -96,6 +96,44 @@ class TdxHandler:
                 self.thread_local.session = None
         return self.thread_local.session
     
+    def get_stock_list(self) -> List[str]:
+        """
+        从通达信数据源获取所有股票代码列表
+        
+        Returns:
+            List[str]: 股票代码列表 (格式: 600000.SH, 000001.SZ 等)
+        """
+        stock_codes = []
+        
+        try:
+            if not self.tdx_data_path.exists():
+                logger.warning(f"通达信数据路径不存在: {self.tdx_data_path}")
+                return stock_codes
+            
+            sh_lday = self.tdx_data_path / 'sh' / 'lday'
+            sz_lday = self.tdx_data_path / 'sz' / 'lday'
+            
+            if sh_lday.exists():
+                sh_files = list(sh_lday.glob('sh*.day'))
+                for f in sh_files:
+                    code = f.stem[2:]
+                    stock_codes.append(f"{code}.SH")
+                logger.info(f"从沪市通达信数据中找到 {len(sh_files)} 个股票文件")
+            
+            if sz_lday.exists():
+                sz_files = list(sz_lday.glob('sz*.day'))
+                for f in sz_files:
+                    code = f.stem[2:]
+                    stock_codes.append(f"{code}.SZ")
+                logger.info(f"从深市通达信数据中找到 {len(sz_files)} 个股票文件")
+            
+            logger.info(f"通达信股票代码列表获取完成，共 {len(stock_codes)} 只股票")
+            
+        except Exception as e:
+            logger.exception(f"获取通达信股票代码列表失败: {e}")
+        
+        return stock_codes
+    
     def parse_day_file(self, file_path: Path, max_days: int = None):
         """
         解析通达信日线数据文件
