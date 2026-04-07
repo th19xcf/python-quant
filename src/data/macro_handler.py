@@ -26,6 +26,7 @@ class MacroHandler:
         """
         self.config = config
         self.db_manager = db_manager
+        self.name = "MacroHandler"
         self.session = None
         
         # 只有在db_manager不为None时才获取session

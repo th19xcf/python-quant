@@ -32,6 +32,7 @@ class TdxHandler:
         """
         self.config = config
         self.db_manager = db_manager
+        self.name = "TdxHandler"
         self.tdx_data_path = Path(config.data.tdx_data_path)
         
         # 检查通达信数据路径是否存在

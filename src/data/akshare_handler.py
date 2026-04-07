@@ -28,6 +28,7 @@ class AkShareHandler:
         """
         self.config = config
         self.db_manager = db_manager
+        self.name = "AkShareHandler"
         self.session = None
         
         # 离线模式支持

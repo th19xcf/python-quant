@@ -28,6 +28,7 @@ class BaostockHandler:
         """
         self.config = config
         self.db_manager = db_manager
+        self.name = "BaostockHandler"
         self.session = None
         self.bs_login = False
         

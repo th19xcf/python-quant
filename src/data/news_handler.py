@@ -25,6 +25,7 @@ class NewsHandler:
         """
         self.config = config
         self.db_manager = db_manager
+        self.name = "NewsHandler"
         self.session = None
         
         # 只有在db_manager不为None时才获取session
