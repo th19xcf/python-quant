@@ -248,6 +248,12 @@ class StockSearchDialog(QDialog):
     
     def clear_results(self):
         """清空搜索结果"""
+        # 手动释放QTableWidgetItem对象
+        for row in range(self.result_table.rowCount()):
+            for col in range(self.result_table.columnCount()):
+                item = self.result_table.takeItem(row, col)
+                if item:
+                    del item
         self.result_table.setRowCount(0)
         self.tip_label.setText("请输入股票代码或名称，支持模糊搜索")
         self.tip_label.setStyleSheet("color: gray; font-size: 12px;")

@@ -211,6 +211,12 @@ class StockRecommendationDialog(QDialog):
         except Exception as e:
             logger.error(f"生成推荐失败: {e}")
             # 清空表格并显示错误信息
+            # 手动释放QTableWidgetItem对象
+            for row in range(self.result_table.rowCount()):
+                for col in range(self.result_table.columnCount()):
+                    item = self.result_table.takeItem(row, col)
+                    if item:
+                        del item
             self.result_table.setRowCount(1)
             self.result_table.setItem(0, 0, QTableWidgetItem("错误"))
             self.result_table.setItem(0, 1, QTableWidgetItem(str(e)))
@@ -222,6 +228,13 @@ class StockRecommendationDialog(QDialog):
         """
         显示推荐结果
         """
+        # 手动释放QTableWidgetItem对象
+        for row in range(self.result_table.rowCount()):
+            for col in range(self.result_table.columnCount()):
+                item = self.result_table.takeItem(row, col)
+                if item:
+                    del item
+        
         if not recommendations:
             self.result_table.setRowCount(1)
             self.result_table.setItem(0, 0, QTableWidgetItem("无推荐结果"))
