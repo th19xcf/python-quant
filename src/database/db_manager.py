@@ -200,6 +200,15 @@ class DatabaseManager:
             self.session = None
             self.Session = None
     
+    def cleanup(self):
+        """
+        清理所有数据库资源
+        """
+        try:
+            self.disconnect()
+        except Exception as e:
+            logger.warning(f"清理数据库资源时出错: {e}")
+    
     def is_connected(self):
         """
         检查数据库连接状态

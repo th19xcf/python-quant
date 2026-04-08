@@ -386,9 +386,9 @@ def main():
                 # 执行同步
                 sync_result = sync_tdx_stock_to_database(config, db_manager)
                 
-                # 关闭数据库连接并退出
-                db_manager.disconnect()
-                logger.info("数据库连接已关闭")
+                # 清理数据库资源并退出
+                db_manager.cleanup()
+                logger.info("数据库资源已清理")
                 return
                 
             except (OSError, RuntimeError) as db_e:
@@ -472,7 +472,7 @@ def main():
         # 清理资源
         try:
             if 'db_manager' in locals() and db_manager:
-                db_manager.disconnect()
+                db_manager.cleanup()
         except (OSError, RuntimeError) as cleanup_e:
             logger.warning(f"清理数据库资源时发生错误: {cleanup_e}")
         

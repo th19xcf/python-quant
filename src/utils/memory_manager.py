@@ -11,6 +11,7 @@ import os
 import gc
 import time
 import tracemalloc
+import linecache
 from loguru import logger
 from typing import Dict, Any, Optional, Callable, List, Tuple
 import threading
@@ -300,10 +301,17 @@ class MemoryManager:
         except Exception as e:
             logger.error(f"清空缓存失败: {str(e)}")
         
-        # 3. 减少线程池大小
+        # 3. 清理linecache
+        try:
+            linecache.clearcache()
+            logger.info("已清空linecache缓存")
+        except Exception as e:
+            logger.error(f"清空linecache失败: {str(e)}")
+        
+        # 4. 减少线程池大小
         # 注意：这里需要根据实际情况调整
         
-        # 4. 记录内存使用情况
+        # 5. 记录内存使用情况
         self._log_memory_crisis()
     
     def _take_relief_measures(self):
@@ -323,7 +331,14 @@ class MemoryManager:
         except Exception as e:
             logger.error(f"清理过期缓存失败: {str(e)}")
         
-        # 3. 优化缓存大小
+        # 3. 清理linecache
+        try:
+            linecache.clearcache()
+            logger.info("已清空linecache缓存")
+        except Exception as e:
+            logger.error(f"清空linecache失败: {str(e)}")
+        
+        # 4. 优化缓存大小
         self.optimize_cache()
     
     def _take_preventive_measures(self):
