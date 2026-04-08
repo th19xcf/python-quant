@@ -163,6 +163,11 @@ class TableInteractionManager:
                 market = 'sh'
                 tdx_code = 'sh000001'
                 ts_code = '000001.SH'
+            elif code.startswith('88'):
+                # 沪市行业指数（88开头）
+                market = 'sh'
+                tdx_code = f'sh{code}'
+                ts_code = f'{code}.SH'
             else:
                 # 其他代码默认为深市
                 market = 'sz'
