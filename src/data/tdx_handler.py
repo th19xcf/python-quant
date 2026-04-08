@@ -113,21 +113,63 @@ class TdxHandler:
             sh_lday = self.tdx_data_path / 'sh' / 'lday'
             sz_lday = self.tdx_data_path / 'sz' / 'lday'
             
+            def is_valid_stock_code(code):
+                """验证股票代码是否有效"""
+                if len(code) != 6:
+                    return False
+                if not code.isdigit():
+                    return False
+                # 沪市指数：000001-000999
+                if code.startswith('000'):
+                    return True
+                # 沪市股票：600000-603999, 688000-688999
+                elif code.startswith('6'):
+                    num = int(code)
+                    return (600000 <= num <= 603999) or (688000 <= num <= 688999)
+                # 深市指数：399001-399999
+                elif code.startswith('399'):
+                    return True
+                # 深市股票：000000-002999, 300000-300999
+                elif code.startswith('0') or code.startswith('3'):
+                    num = int(code)
+                    return (0 <= num <= 2999) or (300000 <= num <= 300999)
+                # 北交所：800000-899999（原新三板精选层）
+                elif code.startswith('8'):
+                    num = int(code)
+                    return 800000 <= num <= 899999
+                # 北交所新股：920000-920999
+                elif code.startswith('92'):
+                    num = int(code)
+                    return 920000 <= num <= 920999
+                return False
+            
             if sh_lday.exists():
                 sh_files = list(sh_lday.glob('sh*.day'))
                 for f in sh_files:
                     code = f.stem[2:]
-                    stock_codes.append(f"{code}.SH")
-                logger.info(f"从沪市通达信数据中找到 {len(sh_files)} 个股票文件")
+                    if is_valid_stock_code(code):
+                        stock_codes.append(f"{code}.SH")
+                logger.info(f"从沪市通达信数据中找到 {len([c for c in stock_codes if c.endswith('.SH')])} 个有效股票文件")
             
             if sz_lday.exists():
                 sz_files = list(sz_lday.glob('sz*.day'))
                 for f in sz_files:
                     code = f.stem[2:]
-                    stock_codes.append(f"{code}.SZ")
-                logger.info(f"从深市通达信数据中找到 {len(sz_files)} 个股票文件")
+                    if is_valid_stock_code(code):
+                        stock_codes.append(f"{code}.SZ")
+                logger.info(f"从深市通达信数据中找到 {len([c for c in stock_codes if c.endswith('.SZ')])} 个有效股票文件")
             
-            logger.info(f"通达信股票代码列表获取完成，共 {len(stock_codes)} 只股票")
+            # 北市（科创板）
+            bj_lday = self.tdx_data_path / 'bj' / 'lday'
+            if bj_lday.exists():
+                bj_files = list(bj_lday.glob('bj*.day'))
+                for f in bj_files:
+                    code = f.stem[2:]
+                    if is_valid_stock_code(code):
+                        stock_codes.append(f"{code}.BJ")
+                logger.info(f"从北市通达信数据中找到 {len([c for c in stock_codes if c.endswith('.BJ')])} 个有效股票文件")
+            
+            logger.info(f"通达信股票代码列表获取完成，共 {len(stock_codes)} 只有效股票")
             
         except Exception as e:
             logger.exception(f"获取通达信股票代码列表失败: {e}")
