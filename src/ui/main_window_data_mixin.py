@@ -641,7 +641,12 @@ class MainWindowDataMixin:
                     # 清空现有数据前先关闭排序
                     self.stock_table.setSortingEnabled(False)
                     
-                    # 清空现有数据
+                    # 清空现有数据，手动释放QTableWidgetItem对象
+                    for row in range(self.stock_table.rowCount()):
+                        for col in range(self.stock_table.columnCount()):
+                            item = self.stock_table.takeItem(row, col)
+                            if item:
+                                del item
                     self.stock_table.setRowCount(0)
                     
                     # 添加数据到表格
