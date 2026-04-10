@@ -201,16 +201,34 @@ def merge_stock_basic(baostock_df, akshare_df, existing_codes=None):
                 code = row.get('code', '')
                 if not code:
                     continue
-                if code.startswith('6'):
-                    ts_code = f"{code}.SH"
+                
+                # 处理 Baostock 格式的代码（如 sh.600000, sz.000001）
+                if '.' in code:
+                    parts = code.split('.')
+                    if len(parts) == 2:
+                        exchange, symbol = parts
+                        if exchange == 'sh':
+                            ts_code = f"{symbol}.SH"
+                        elif exchange == 'sz':
+                            ts_code = f"{symbol}.SZ"
+                        else:
+                            continue
+                    else:
+                        continue
                 else:
-                    ts_code = f"{code}.SZ"
+                    # 处理普通格式的代码
+                    if code.startswith('6'):
+                        ts_code = f"{code}.SH"
+                        symbol = code
+                    else:
+                        ts_code = f"{code}.SZ"
+                        symbol = code
                 
                 if ts_code in existing_codes:
                     continue
                 
                 merged[ts_code] = {
-                    'symbol': code,
+                    'symbol': symbol,
                     'name': row.get('code_name', ''),
                     'area': row.get('area', ''),
                     'industry': row.get('industry', ''),
@@ -296,12 +314,21 @@ def get_stock_info_from_apis(ts_code, merged_basic, baostock_handler, akshare_ha
             return result
     
     logger.warning(f"在 Baostock/AkShare 数据中未找到股票 {ts_code} 的信息")
-    return {
-        'ts_code': ts_code,
-        'symbol': symbol,
-        'name': f'股票{symbol}',
-        'status': 'L'
-    }
+    if symbol.startswith('880'):
+        # 880开头的股票是行业指数，使用更有意义的名称
+        return {
+            'ts_code': ts_code,
+            'symbol': symbol,
+            'name': f'行业指数{symbol}',
+            'status': 'L'
+        }
+    else:
+        return {
+            'ts_code': ts_code,
+            'symbol': symbol,
+            'name': f'股票{symbol}',
+            'status': 'L'
+        }
 
 
 def parse_args():

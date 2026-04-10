@@ -214,6 +214,11 @@ class BaostockHandler:
             
             logger.info(f"从Baostock获取到{stock_basic_df.height}条股票基本信息")
             
+            # 打印前几行数据，了解数据结构
+            logger.debug(f"Baostock返回的数据结构: {stock_basic_df.columns}")
+            if stock_basic_df.height > 0:
+                logger.debug(f"前5行数据: {stock_basic_df.head(5)}")
+            
             # 离线模式下，只获取数据不存储
             if not self.session:
                 logger.info("离线模式下，跳过股票基本信息存储")
@@ -229,7 +234,13 @@ class BaostockHandler:
             for symbol in default_stocks:
                 try:
                     # 从Baostock数据中查找对应的股票信息
-                    stock_row = stock_basic_df.filter(pl.col('code') == symbol)
+                    # 尝试匹配Baostock格式的代码（如 sh.600000, sz.000001）
+                    if symbol.startswith('6'):
+                        baostock_code = f"sh.{symbol}"
+                    else:
+                        baostock_code = f"sz.{symbol}"
+                    stock_row = stock_basic_df.filter(pl.col('code') == baostock_code)
+                    
                     if stock_row.is_empty():
                         logger.warning(f"未找到股票{symbol}的基本信息")
                         continue
