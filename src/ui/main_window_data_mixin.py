@@ -484,6 +484,9 @@ class MainWindowDataMixin:
                             file_name = file_path.stem
                             if file_name.startswith('sh'):
                                 code = file_name[2:]
+                                # 忽略 B 股：900 开头（沪市 B 股）
+                                if code.startswith('900'):
+                                    continue
                                 market = "SH"
                                 ts_code = f"{code}.{market}"
                                 # 尝试不同的ts_code格式
@@ -502,6 +505,9 @@ class MainWindowDataMixin:
                                         break
                             elif file_name.startswith('sz'):
                                 code = file_name[2:]
+                                # 忽略 B 股：200 开头（深市 B 股）
+                                if code.startswith('200'):
+                                    continue
                                 market = "SZ"
                                 ts_code = f"{code}.{market}"
                                 # 尝试不同的ts_code格式
