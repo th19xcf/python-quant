@@ -119,6 +119,9 @@ class TdxHandler:
                     return False
                 if not code.isdigit():
                     return False
+                # 忽略 B 股：900 开头（沪市 B 股）、200 开头（深市 B 股）
+                if code.startswith('900') or code.startswith('200'):
+                    return False
                 # 沪市指数：000001-000999
                 if code.startswith('000'):
                     return True
