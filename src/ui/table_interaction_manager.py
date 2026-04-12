@@ -168,6 +168,11 @@ class TableInteractionManager:
                 market = 'sh'
                 tdx_code = f'sh{code}'
                 ts_code = f'{code}.SH'
+            elif code.startswith('92') and len(code) == 6:
+                # 京市个股（北交所，92开头）
+                market = 'bj'
+                tdx_code = f'bj{code}'
+                ts_code = f'{code}.BJ'
             else:
                 # 其他代码默认为深市
                 market = 'sz'

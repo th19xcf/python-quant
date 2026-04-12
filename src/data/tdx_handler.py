@@ -390,7 +390,8 @@ class TdxHandler:
             # 获取所有日线数据文件
             sh_stock_files = list(Path(self.tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (self.tdx_data_path / 'sh' / 'lday').exists() else []
             sz_stock_files = list(Path(self.tdx_data_path / 'sz' / 'lday').glob('sz*.day')) if (self.tdx_data_path / 'sz' / 'lday').exists() else []
-            all_stock_files = sh_stock_files + sz_stock_files
+            bj_stock_files = list(Path(self.tdx_data_path / 'bj' / 'lday').glob('bj*.day')) if (self.tdx_data_path / 'bj' / 'lday').exists() else []
+            all_stock_files = sh_stock_files + sz_stock_files + bj_stock_files
             
             logger.info(f"找到{len(all_stock_files)}个通达信股票数据文件")
             
@@ -403,6 +404,8 @@ class TdxHandler:
                     ts_code_formatted = f"{file_name[2:]}.SH"
                 elif file_name.startswith('sz'):
                     ts_code_formatted = f"{file_name[2:]}.SZ"
+                elif file_name.startswith('bj'):
+                    ts_code_formatted = f"{file_name[2:]}.BJ"
                 else:
                     continue
                 
@@ -544,7 +547,12 @@ class TdxHandler:
             
             # 获取价格数据用于计算复权因子
             symbol = ts_code.split('.')[0]
-            market = 'sh' if ts_code.endswith('.SH') else 'sz'
+            if ts_code.endswith('.SH'):
+                market = 'sh'
+            elif ts_code.endswith('.BJ'):
+                market = 'bj'
+            else:
+                market = 'sz'
             file_name = f"{market}{symbol}.day"
             file_path = self.tdx_data_path / market / "lday" / file_name
             
@@ -753,13 +761,18 @@ class TdxHandler:
                 if stock_code.count('.') == 1:
                     market_part, code_part = stock_code.split('.')
                     # 处理sh.600000格式
-                    if market_part in ['sh', 'sz']:
+                    if market_part in ['sh', 'sz', 'bj']:
                         market = market_part
                         code = code_part
                     # 处理600000.SH格式
-                    elif code_part in ['SH', 'SZ']:
-                        market = code_part.lower()
-                        code = market_part
+                    elif code_part in ['SH', 'SZ', 'BJ']:
+                        # 特殊处理920开头的股票，即使后缀是.SZ，也识别为京市股票
+                        if market_part.startswith('92') and len(market_part) == 6:
+                            market = 'bj'
+                            code = market_part
+                        else:
+                            market = code_part.lower()
+                            code = market_part
                     else:
                         logger.warning(f"无效的股票代码格式: {stock_code}")
                         return pl.LazyFrame({})
@@ -768,7 +781,13 @@ class TdxHandler:
                     return pl.LazyFrame({})
             else:
                 # 纯数字格式，如600000
-                market = "sh" if stock_code.startswith("6") else "sz"
+                if stock_code.startswith("6"):
+                    market = "sh"
+                elif stock_code.startswith("92") and len(stock_code) == 6:
+                    # 京市个股（北交所，92开头）
+                    market = "bj"
+                else:
+                    market = "sz"
                 code = stock_code
             
             logger.info(f"解析后的股票代码: {code}，市场: {market}")
@@ -916,7 +935,18 @@ class TdxHandler:
                 # 添加调试日志
                 logger.info(f"{ts_code} 复权价格计算完成，复权因子已应用到价格数据")
             else:
-                logger.warning(f"{ts_code} 没有获取到复权因子，使用原始价格")
+                logger.warning(f"{ts_code} 没有获取到复权因子，使用原始价格并添加默认复权因子")
+                # 添加默认复权因子（值为1.0），保证数据结构一致性
+                for adj_type in ['qfq', 'hfq']:
+                    factor_col = f'{adj_type}_factor'
+                    price_col = f'{adj_type}_'
+                    lazy_df = lazy_df.with_columns([
+                        pl.lit(1.0).alias(factor_col),
+                        pl.col('open').alias(f'{price_col}open'),
+                        pl.col('high').alias(f'{price_col}high'),
+                        pl.col('low').alias(f'{price_col}low'),
+                        pl.col('close').alias(f'{price_col}close'),
+                    ])
             
             logger.info(f"复权价格计算完成")
             

@@ -273,7 +273,7 @@ class MainWindowEventMixin:
                 if hasattr(self, 'data_view_manager'):
                     self.data_view_manager.show_stock_data_by_type("全部A股")
             # Handle stock categories
-            elif text in ["全部A股", "上证A股", "深证A股", "创业板", "科创板"]:
+            elif text in ["全部A股", "上证A股", "深证A股", "京市个股", "创业板", "科创板"]:
                 if hasattr(self, 'data_view_manager'):
                     self.data_view_manager.show_stock_data_by_type(text)
             # Handle fund items
@@ -440,8 +440,8 @@ class MainWindowEventMixin:
                     current_code = f"{symbol}.BJ"
                 elif current_code.startswith('6'):
                     current_code = f"{current_code}.SH"
-                elif current_code.startswith('8') or current_code.startswith('4'):
-                    # 京市股票代码（北交所）
+                elif current_code.startswith('8') or current_code.startswith('4') or current_code.startswith('92'):
+                    # 京市股票代码（北交所，8、4、92开头）
                     current_code = f"{current_code}.BJ"
                 else:
                     current_code = f"{current_code}.SZ"
@@ -540,8 +540,8 @@ class MainWindowEventMixin:
                             if code.startswith('6') or code.startswith('51'):
                                 # 沪市股票（6开头）和沪市ETF（51开头）
                                 ts_code = f"{code}.SH"
-                            elif code.startswith('8') or code.startswith('4'):
-                                # 京市股票代码（北交所）
+                            elif code.startswith('8') or code.startswith('4') or code.startswith('92'):
+                                # 京市股票代码（北交所，8、4、92开头）
                                 ts_code = f"{code}.BJ"
                             elif code.startswith('15'):
                                 # 深市ETF（15开头）

@@ -408,7 +408,7 @@ class MainWindowDataMixin:
                     filtered_files = [f for f in sz_stock_files if f.stem[2:5] == "300"]
                 elif stock_type == "科创板":
                     filtered_files = [f for f in sh_stock_files if f.stem[2:5] == "688"]
-                elif stock_type == "北交所":
+                elif stock_type == "北交所" or stock_type == "京市个股":
                     filtered_files = bj_stock_files
                 
                 logger.info(f"找到{len(filtered_files)}个符合条件的通达信股票数据文件")

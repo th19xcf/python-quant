@@ -323,7 +323,7 @@ class MainWindowUiMixin:
         self.add_nav_item(self.nav_tree, "全景图", ["大盘指数", "行业板块", "概念板块"])
         self.add_nav_item(self.nav_tree, "沪深京指数", ["沪市指数", "深市指数", "京市指数", "创业板指", "科创板指"])
         self.add_nav_item(self.nav_tree, "沪深京板块", ["行业板块", "概念板块", "地域板块"])
-        self.add_nav_item(self.nav_tree, "沪深京个股", ["全部A股", "上证A股", "深证A股", "创业板", "科创板"])
+        self.add_nav_item(self.nav_tree, "沪深京个股", ["全部A股", "上证A股", "深证A股", "京市个股", "创业板", "科创板"])
         self.add_nav_item(self.nav_tree, "热点主题", ["热门概念", "资金流入", "涨跌幅榜"])
         self.add_nav_item(self.nav_tree, "新股", ["新股申购", "新股上市", "次新股"])
         self.add_nav_item(self.nav_tree, "港股", ["港股通", "恒生指数"])
