@@ -1075,33 +1075,6 @@ class DataManager(IDataProvider, IDataProcessor):
                 
                 fund_basics = query.all()
                 
-                # 如果没有数据，插入默认基金信息
-                if not fund_basics:
-                    logger.info("fund_basic表为空，插入默认基金信息")
-                    default_funds = [
-                        {"ts_code": "510050.SH", "name": "上证50ETF"},
-                        {"ts_code": "510300.SH", "name": "沪深300ETF"},
-                        {"ts_code": "159919.SZ", "name": "创业板ETF"},
-                        {"ts_code": "510500.SH", "name": "中证500ETF"},
-                        {"ts_code": "517520.SH", "name": "黄金股ETF"},
-                        {"ts_code": "159562.SZ", "name": "中证金矿ETF"}
-                    ]
-                    
-                    for fund_info in default_funds:
-                        # 检查是否已存在
-                        existing_fund = session.query(FundBasic).filter_by(ts_code=fund_info["ts_code"]).first()
-                        if not existing_fund:
-                            new_fund = FundBasic(
-                                ts_code=fund_info["ts_code"],
-                                name=fund_info["name"]
-                            )
-                            session.add(new_fund)
-                    
-                    # 提交事务
-                    session.commit()
-                    # 重新查询数据
-                    fund_basics = query.all()
-                
                 # 构建DataFrame
                 if fund_basics:
                     data = {
