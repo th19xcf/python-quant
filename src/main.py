@@ -140,10 +140,13 @@ def sync_tdx_stock_to_database(config, db_manager):
                 name = stock_info.get('name', '未知')
                 if len(name) > 45:
                     name = name[:45]
+                symbol = stock_info.get('symbol', ts_code.split('.')[0])
+                if len(symbol) > 9:
+                    symbol = symbol[:9]
                 stock = StockBasic(
                     ts_code=ts_code,
-                    symbol=stock_info.get('symbol', ts_code.split('.')[0]),
-                    name=stock_info.get('name', '未知'),
+                    symbol=symbol,
+                    name=name,
                     area=stock_info.get('area'),
                     industry=stock_info.get('industry'),
                     market=stock_info.get('market'),

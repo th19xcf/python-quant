@@ -393,19 +393,23 @@ class MainWindowDataMixin:
                 # 获取所有日线数据文件
                 sh_stock_files = list(Path(tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'sh' / 'lday').exists() else []
                 sz_stock_files = list(Path(tdx_data_path / 'sz' / 'lday').glob('sz*.day')) if (tdx_data_path / 'sz' / 'lday').exists() else []
+                bj_stock_files = list(Path(tdx_data_path / 'bj' / 'lday').glob('bj*.day')) if (tdx_data_path / 'bj' / 'lday').exists() else []
                 
                 # 根据股票类型过滤文件
                 filtered_files = []
                 if stock_type == "全部A股":
-                    filtered_files = sh_stock_files + sz_stock_files
+                    filtered_files = sh_stock_files + sz_stock_files + bj_stock_files
                 elif stock_type == "上证A股":
                     filtered_files = sh_stock_files
                 elif stock_type == "深证A股":
-                    filtered_files = [f for f in sz_stock_files if f.stem[2:3] == "0"]
+                    # 包括深市的 ETF（159 开头）
+                    filtered_files = [f for f in sz_stock_files if f.stem[2:3] == "0" or f.stem[2:4] == "15"]
                 elif stock_type == "创业板":
                     filtered_files = [f for f in sz_stock_files if f.stem[2:5] == "300"]
                 elif stock_type == "科创板":
                     filtered_files = [f for f in sh_stock_files if f.stem[2:5] == "688"]
+                elif stock_type == "北交所":
+                    filtered_files = bj_stock_files
                 
                 logger.info(f"找到{len(filtered_files)}个符合条件的通达信股票数据文件")
                 
@@ -509,6 +513,24 @@ class MainWindowDataMixin:
                                 if code.startswith('200'):
                                     continue
                                 market = "SZ"
+                                ts_code = f"{code}.{market}"
+                                # 尝试不同的ts_code格式
+                                ts_code_formats = [
+                                    f"{code}.{market}",
+                                    f"{code}.{market.lower()}",
+                                    f"{market}{code}",
+                                    f"{market.lower()}{code}"
+                                ]
+                                
+                                # 从stock_basic获取真实股票名称
+                                stock_name = f"{code}（股票）"
+                                for ts_format in ts_code_formats:
+                                    if ts_format in stock_name_map:
+                                        stock_name = stock_name_map[ts_format]
+                                        break
+                            elif file_name.startswith('bj'):
+                                code = file_name[2:]
+                                market = "BJ"
                                 ts_code = f"{code}.{market}"
                                 # 尝试不同的ts_code格式
                                 ts_code_formats = [
