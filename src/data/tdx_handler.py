@@ -112,6 +112,7 @@ class TdxHandler:
             
             sh_lday = self.tdx_data_path / 'sh' / 'lday'
             sz_lday = self.tdx_data_path / 'sz' / 'lday'
+            bj_lday = self.tdx_data_path / 'bj' / 'lday'
             
             def is_valid_stock_code(code):
                 """验证股票代码是否有效"""
@@ -163,7 +164,6 @@ class TdxHandler:
                 logger.info(f"从深市通达信数据中找到 {len([c for c in stock_codes if c.endswith('.SZ')])} 个有效股票文件")
             
             # 北市（科创板）
-            bj_lday = self.tdx_data_path / 'bj' / 'lday'
             if bj_lday.exists():
                 bj_files = list(bj_lday.glob('bj*.day'))
                 for f in bj_files:

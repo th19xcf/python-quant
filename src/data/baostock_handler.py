@@ -248,12 +248,22 @@ class BaostockHandler:
                     # 获取第一条匹配的记录
                     row = stock_row.row(named=True)
                     name = row['code_name']
+                    baostock_code = row['code']  # 格式如 sh.600000, sz.000001, bj.920181
                     
-                    # 构建完整的ts_code（例如：600000.SH）
-                    if symbol.startswith('6'):
-                        ts_code = f"{symbol}.SH"  # 沪市
+                    # 直接使用 Baostock 返回的市场标识构建 ts_code
+                    if baostock_code.startswith('sh.'):
+                        ts_code = f"{baostock_code[3:]}.SH"
+                    elif baostock_code.startswith('sz.'):
+                        ts_code = f"{baostock_code[3:]}.SZ"
+                    elif baostock_code.startswith('bj.'):
+                        ts_code = f"{baostock_code[3:]}.BJ"
                     else:
-                        ts_code = f"{symbol}.SZ"  # 深市
+                        # 兜底策略：根据代码前缀判断
+                        symbol = baostock_code.split('.')[-1] if '.' in baostock_code else baostock_code
+                        if symbol.startswith('6'):
+                            ts_code = f"{symbol}.SH"
+                        else:
+                            ts_code = f"{symbol}.SZ"
                     
                     # 截断过长的股票名称（数据库字段限制20个字符）
                     if len(name) > 20:
@@ -464,16 +474,29 @@ class BaostockHandler:
                         else:
                             # 如果股票基本信息不存在，创建一个
                             logger.warning(f"股票{ts_code}的基本信息不存在，将创建一条新记录")
-                            # 提取股票代码和名称（从Baostock返回的数据中获取）
+                            # 提取股票代码（格式如 sh.600000, sz.000001, bj.920181）
                             first_row = stock_daily_df.row(named=True)
-                            symbol = first_row['code']
+                            baostock_code = first_row['code']  # 格式如 sh.600000, sz.000001, bj.920181
                             # 由于Baostock不提供股票名称，使用代码作为名称
-                            name = symbol
-                            # 构建完整的ts_code
-                            if symbol.startswith('6'):
+                            name = baostock_code
+                            
+                            # 直接使用 Baostock 返回的市场标识构建 ts_code
+                            if baostock_code.startswith('sh.'):
+                                symbol = baostock_code[3:]
                                 full_ts_code = f"{symbol}.SH"
-                            else:
+                            elif baostock_code.startswith('sz.'):
+                                symbol = baostock_code[3:]
                                 full_ts_code = f"{symbol}.SZ"
+                            elif baostock_code.startswith('bj.'):
+                                symbol = baostock_code[3:]
+                                full_ts_code = f"{symbol}.BJ"
+                            else:
+                                # 兜底策略：根据代码前缀判断
+                                symbol = baostock_code.split('.')[-1] if '.' in baostock_code else baostock_code
+                                if symbol.startswith('6'):
+                                    full_ts_code = f"{symbol}.SH"
+                                else:
+                                    full_ts_code = f"{symbol}.SZ"
                             # 创建新股票基本信息
                             new_stock = StockBasic(
                                 ts_code=full_ts_code,

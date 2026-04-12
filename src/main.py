@@ -117,11 +117,16 @@ def sync_tdx_stock_to_database(config, db_manager):
         except Exception as e:
             logger.warning(f"从 AkShare 获取股票基本信息失败: {e}")
         
-        merged_basic = merge_stock_basic(baostock_basic, akshare_basic, existing_codes)
+        merged_basic = merge_stock_basic(baostock_basic, akshare_basic, existing_codes, tdx_stock_codes)
         
         for i, ts_code in enumerate(new_codes):
             try:
                 logger.info(f"[{i+1}/{len(new_codes)}] 处理股票: {ts_code}")
+                
+                # 再次检查股票是否已经存在，避免重复插入
+                if ts_code in existing_codes:
+                    logger.info(f"股票 {ts_code} 已存在，跳过")
+                    continue
                 
                 stock_info = get_stock_info_from_apis(ts_code, merged_basic, baostock_handler, akshare_handler)
                 
@@ -130,8 +135,9 @@ def sync_tdx_stock_to_database(config, db_manager):
                     result['failed_stocks'].append(ts_code)
                     continue
                 
+                # 确保使用原始的 ts_code，避免 StockInfo 中的 ts_code 与原始 ts_code 不一致
                 stock = StockBasic(
-                    ts_code=stock_info.get('ts_code', ts_code),
+                    ts_code=ts_code,
                     symbol=stock_info.get('symbol', ts_code.split('.')[0]),
                     name=stock_info.get('name', '未知'),
                     area=stock_info.get('area'),
@@ -143,10 +149,15 @@ def sync_tdx_stock_to_database(config, db_manager):
                 )
                 session.add(stock)
                 result['updated_stocks'] += 1
+                existing_codes.add(ts_code)  # 将已处理的股票添加到 existing_codes 中
                 
                 if (i + 1) % 50 == 0:
-                    session.commit()
-                    logger.info(f"已提交 {i + 1} 条股票记录到数据库")
+                    try:
+                        session.commit()
+                        logger.info(f"已提交 {i + 1} 条股票记录到数据库")
+                    except Exception as commit_e:
+                        logger.exception(f"提交数据库时失败: {commit_e}")
+                        session.rollback()
                 
                 time.sleep(0.1)
                 
@@ -155,7 +166,11 @@ def sync_tdx_stock_to_database(config, db_manager):
                 result['failed_stocks'].append(ts_code)
                 continue
         
-        session.commit()
+        try:
+            session.commit()
+        except Exception as commit_e:
+            logger.exception(f"最终提交数据库时失败: {commit_e}")
+            session.rollback()
         logger.info(f"股票信息同步完成，共新增 {result['updated_stocks']} 条记录")
         
     except Exception as e:
@@ -176,7 +191,7 @@ def sync_tdx_stock_to_database(config, db_manager):
     return result
 
 
-def merge_stock_basic(baostock_df, akshare_df, existing_codes=None):
+def merge_stock_basic(baostock_df, akshare_df, existing_codes=None, tdx_stock_codes=None):
     """
     合并 Baostock 和 AkShare 的股票基本信息
     
@@ -184,6 +199,7 @@ def merge_stock_basic(baostock_df, akshare_df, existing_codes=None):
         baostock_df: Baostock 股票信息 DataFrame
         akshare_df: AkShare 股票信息 DataFrame
         existing_codes: 已存在的股票代码集合（用于过滤）
+        tdx_stock_codes: 通达信股票代码列表，包含市场信息（如 600000.SH、000001.SZ、920181.BJ）
         
     Returns:
         dict: 股票代码到信息的映射
@@ -195,6 +211,14 @@ def merge_stock_basic(baostock_df, akshare_df, existing_codes=None):
     if existing_codes is None:
         existing_codes = set()
     
+    # 从通达信股票代码中提取市场信息
+    tdx_market_map = {}
+    if tdx_stock_codes:
+        for ts_code in tdx_stock_codes:
+            if '.' in ts_code:
+                symbol, market = ts_code.split('.')
+                tdx_market_map[symbol] = market
+    
     if baostock_df is not None and not baostock_df.is_empty():
         for row in baostock_df.iter_rows(named=True):
             try:
@@ -202,7 +226,7 @@ def merge_stock_basic(baostock_df, akshare_df, existing_codes=None):
                 if not code:
                     continue
                 
-                # 处理 Baostock 格式的代码（如 sh.600000, sz.000001）
+                # 处理 Baostock 格式的代码（如 sh.600000, sz.000001, bj.830000）
                 if '.' in code:
                     parts = code.split('.')
                     if len(parts) == 2:
@@ -211,18 +235,36 @@ def merge_stock_basic(baostock_df, akshare_df, existing_codes=None):
                             ts_code = f"{symbol}.SH"
                         elif exchange == 'sz':
                             ts_code = f"{symbol}.SZ"
+                        elif exchange == 'bj':
+                            ts_code = f"{symbol}.BJ"
                         else:
                             continue
                     else:
                         continue
                 else:
-                    # 处理普通格式的代码
-                    if code.startswith('6'):
-                        ts_code = f"{code}.SH"
-                        symbol = code
+                    symbol = code
+                    # 优先使用通达信数据中的市场信息
+                    if code in tdx_market_map:
+                        market = tdx_market_map[code]
+                        ts_code = f"{code}.{market}"
                     else:
-                        ts_code = f"{code}.SZ"
-                        symbol = code
+                        # 处理普通格式的代码
+                        if code.startswith('6'):
+                            ts_code = f"{code}.SH"
+                        elif code.startswith('8') and len(code) == 6:
+                            num = int(code)
+                            if 800000 <= num <= 899999:
+                                ts_code = f"{code}.BJ"
+                            else:
+                                ts_code = f"{code}.SZ"
+                        elif code.startswith('92') and len(code) == 6:
+                            num = int(code)
+                            if 920000 <= num <= 920999:
+                                ts_code = f"{code}.BJ"
+                            else:
+                                ts_code = f"{code}.SZ"
+                        else:
+                            ts_code = f"{code}.SZ"
                 
                 if ts_code in existing_codes:
                     continue
@@ -246,10 +288,50 @@ def merge_stock_basic(baostock_df, akshare_df, existing_codes=None):
                 code = row.get('code', '')
                 if not code:
                     continue
-                if code.startswith('6'):
-                    ts_code = f"{code}.SH"
+                
+                # 处理类似 Baostock 格式的代码（如 sh.600000, sz.000001, bj.830000）
+                if '.' in code:
+                    parts = code.split('.')
+                    if len(parts) == 2:
+                        exchange, symbol = parts
+                        if exchange == 'sh':
+                            ts_code = f"{symbol}.SH"
+                        elif exchange == 'sz':
+                            ts_code = f"{symbol}.SZ"
+                        elif exchange == 'bj':
+                            ts_code = f"{symbol}.BJ"
+                        else:
+                            continue
+                    else:
+                        continue
                 else:
-                    ts_code = f"{code}.SZ"
+                    symbol = code
+                    # 优先使用通达信数据中的市场信息
+                    if code in tdx_market_map:
+                        market = tdx_market_map[code]
+                        ts_code = f"{code}.{market}"
+                    else:
+                        # 北交所股票：800000-899999 和 920000-920999
+                        if code.startswith('8') and len(code) == 6:
+                            num = int(code)
+                            if 800000 <= num <= 899999:
+                                ts_code = f"{code}.BJ"
+                            elif code.startswith('6'):
+                                ts_code = f"{code}.SH"
+                            else:
+                                ts_code = f"{code}.SZ"
+                        elif code.startswith('92') and len(code) == 6:
+                            num = int(code)
+                            if 920000 <= num <= 920999:
+                                ts_code = f"{code}.BJ"
+                            elif code.startswith('6'):
+                                ts_code = f"{code}.SH"
+                            else:
+                                ts_code = f"{code}.SZ"
+                        elif code.startswith('6'):
+                            ts_code = f"{code}.SH"
+                        else:
+                            ts_code = f"{code}.SZ"
                 
                 if ts_code in existing_codes:
                     continue
@@ -262,7 +344,7 @@ def merge_stock_basic(baostock_df, akshare_df, existing_codes=None):
                     })
                 else:
                     merged[ts_code] = {
-                        'symbol': code,
+                        'symbol': symbol,
                         'name': row.get('name', ''),
                         'area': row.get('area', ''),
                         'industry': row.get('industry', ''),
@@ -298,6 +380,9 @@ def get_stock_info_from_apis(ts_code, merged_basic, baostock_handler, akshare_ha
     if ts_code in merged_basic:
         info = merged_basic[ts_code].copy()
         
+        # 确保返回的ts_code与输入的ts_code一致
+        info['ts_code'] = ts_code
+        
         if info.get('list_date') and isinstance(info['list_date'], str):
             try:
                 from datetime import datetime
@@ -310,6 +395,7 @@ def get_stock_info_from_apis(ts_code, merged_basic, baostock_handler, akshare_ha
     for mapped_code, info in merged_basic.items():
         if info.get('symbol') == symbol:
             result = info.copy()
+            # 确保返回的ts_code与输入的ts_code一致
             result['ts_code'] = ts_code
             return result
     
@@ -320,6 +406,22 @@ def get_stock_info_from_apis(ts_code, merged_basic, baostock_handler, akshare_ha
             'ts_code': ts_code,
             'symbol': symbol,
             'name': f'行业指数{symbol}',
+            'status': 'L'
+        }
+    elif symbol.startswith('92') and len(symbol) == 6:
+        # 920开头的股票是北交所新股
+        return {
+            'ts_code': ts_code,
+            'symbol': symbol,
+            'name': f'北交所新股{symbol}',
+            'status': 'L'
+        }
+    elif symbol.startswith('8') and len(symbol) == 6:
+        # 8开头的股票是北交所股票
+        return {
+            'ts_code': ts_code,
+            'symbol': symbol,
+            'name': f'北交所股票{symbol}',
             'status': 'L'
         }
     else:

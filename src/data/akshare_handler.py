@@ -76,10 +76,24 @@ class AkShareHandler:
                     name = row['name']
                     
                     # 构建完整的ts_code（例如：600000.SH）
-                    if symbol.startswith('6'):
-                        ts_code = f"{symbol}.SH"  # 沪市
+                    # 北交所新股：920000-920999
+                    if symbol.startswith('92') and len(symbol) == 6:
+                        num = int(symbol)
+                        if 920000 <= num <= 920999:
+                            ts_code = f"{symbol}.BJ"
+                        else:
+                            ts_code = f"{symbol}.SZ"
+                    # 北交所股票：800000-899999
+                    elif symbol.startswith('8') and len(symbol) == 6:
+                        num = int(symbol)
+                        if 800000 <= num <= 899999:
+                            ts_code = f"{symbol}.BJ"
+                        else:
+                            ts_code = f"{symbol}.SZ"
+                    elif symbol.startswith('6'):
+                        ts_code = f"{symbol}.SH"
                     else:
-                        ts_code = f"{symbol}.SZ"  # 深市
+                        ts_code = f"{symbol}.SZ"
                     
                     # 查询股票是否已存在
                     stock = self.session.query(StockBasic).filter_by(ts_code=ts_code).first()
