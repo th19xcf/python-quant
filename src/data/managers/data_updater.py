@@ -300,6 +300,11 @@ class DataUpdater:
         """
         for source in self.sources:
             try:
+                # 检查数据源是否有 update_stock_dividend 方法
+                if not hasattr(source, 'update_stock_dividend'):
+                    logger.info(f"{source.name} 不支持更新股票分红配股数据，跳过")
+                    continue
+                
                 logger.info(f"使用{source.name}更新股票分红配股数据")
                 source.update_stock_dividend(ts_codes)
                 # 发布数据更新事件

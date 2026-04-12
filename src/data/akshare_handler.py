@@ -587,12 +587,25 @@ class AkShareHandler:
 
                     # 使用AkShare获取股票分红数据
                     # 接口: stock_fhps_detail_em - 获取历史分红数据(东方财富)
-                    dividend_pd = ak.stock_fhps_detail_em(symbol=symbol)
+                    try:
+                        dividend_pd = ak.stock_fhps_detail_em(symbol=symbol)
+                    except TypeError as e:
+                        logger.warning(f"{ts_code}的分红配股数据获取失败，发生类型错误: {e}")
+                        continue
+                    except Exception as e:
+                        logger.warning(f"{ts_code}的分红配股数据获取失败: {e}")
+                        continue
+
+                    # 检查dividend_pd是否为None
+                    if dividend_pd is None:
+                        logger.warning(f"{ts_code}的分红配股数据获取失败，返回None")
+                        continue
 
                     # 转换为Polars DataFrame
                     dividend_df = pl.from_pandas(dividend_pd)
 
-                    if dividend_df.is_empty():
+                    # 检查dividend_df是否为None或为空
+                    if dividend_df is None or dividend_df.is_empty():
                         logger.warning(f"{ts_code}没有分红配股数据")
                         continue
 
@@ -614,6 +627,11 @@ class AkShareHandler:
                     # 遍历数据，进行清洗和存储
                     for row in dividend_df.iter_rows(named=True):
                         try:
+                            # 检查row是否为None
+                            if row is None:
+                                logger.warning(f"处理{ts_code}的分红配股数据时，row为None，跳过")
+                                continue
+
                             # 转换日期格式 - 新接口字段映射
                             # 报告期作为分红年度
                             dividend_year = None
@@ -621,7 +639,7 @@ class AkShareHandler:
                                 report_date_val = row['报告期']
                                 if isinstance(report_date_val, str):
                                     dividend_year = report_date_val[:4]  # 提取年份
-                                else:
+                                elif report_date_val is not None:
                                     dividend_year = str(report_date_val.year)
 
                             # 业绩披露日期作为公告日期
@@ -632,7 +650,7 @@ class AkShareHandler:
                                     report_date = datetime.strptime(report_date_val, "%Y-%m-%d").date()
                                 elif isinstance(report_date_val, datetime):
                                     report_date = report_date_val.date()
-                                else:
+                                elif report_date_val is not None:
                                     report_date = report_date_val  # 已经是date类型
 
                             # 股权登记日
@@ -643,7 +661,7 @@ class AkShareHandler:
                                     record_date = datetime.strptime(record_date_val, "%Y-%m-%d").date()
                                 elif isinstance(record_date_val, datetime):
                                     record_date = record_date_val.date()
-                                else:
+                                elif record_date_val is not None:
                                     record_date = record_date_val  # 已经是date类型
 
                             # 除权除息日
@@ -654,7 +672,7 @@ class AkShareHandler:
                                     ex_date = datetime.strptime(ex_date_val, "%Y-%m-%d").date()
                                 elif isinstance(ex_date_val, datetime):
                                     ex_date = ex_date_val.date()
-                                else:
+                                elif ex_date_val is not None:
                                     ex_date = ex_date_val  # 已经是date类型
 
                             # 派息日（使用除权除息日作为派息日）
@@ -712,18 +730,34 @@ class AkShareHandler:
                                 )
                                 self.session.add(dividend_data)
 
+                        except TypeError as row_e:
+                            logger.exception(f"处理{ts_code}的分红配股数据时发生类型错误: {row_e}")
+                            continue
                         except (ConnectionError, TimeoutError, OSError) as row_e:
                             logger.exception(f"处理股票分红配股数据失败: {row_e}")
+                            continue
+                        except Exception as row_e:
+                            logger.exception(f"处理{ts_code}的分红配股数据时发生未知错误: {row_e}")
                             continue
 
                     # 每只股票提交一次事务
                     self.session.commit()
                     logger.info(f"{ts_code}的分红配股数据更新完成")
 
+                except TypeError as e:
+                    if self.session:
+                        self.session.rollback()
+                    logger.exception(f"获取{ts_code}的分红配股数据时发生类型错误: {e}")
+                    continue
                 except (ConnectionError, TimeoutError, OSError) as e:
                     if self.session:
                         self.session.rollback()
                     logger.exception(f"获取{ts_code}的分红配股数据失败: {e}")
+                    continue
+                except Exception as e:
+                    if self.session:
+                        self.session.rollback()
+                    logger.exception(f"获取{ts_code}的分红配股数据时发生未知错误: {e}")
                     continue
             
             # 离线模式下返回结果

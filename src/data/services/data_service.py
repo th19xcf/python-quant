@@ -42,8 +42,72 @@ class DataService:
         # 插件数据源映射
         self.plugin_datasources = {}
         
+        # 初始化内置数据源
+        self._init_builtin_datasources()
+        
         # 初始化插件数据源
         self._init_plugin_datasources()
+    
+    def _init_builtin_datasources(self):
+        """
+        初始化内置数据源
+        """
+        # 初始化通达信数据处理器
+        try:
+            from src.data.tdx_handler import TdxHandler
+            tdx_handler = TdxHandler(self.config, self.db_manager)
+            self.data_provider.register_source(tdx_handler)
+            self.data_updater.register_source(tdx_handler)
+        except ImportError as e:
+            logger.info(f"通达信模块未安装: {e}")
+        except Exception as e:
+            logger.warning(f"通达信数据处理器初始化失败: {e}")
+        
+        # 初始化Baostock数据处理器
+        try:
+            from src.data.baostock_handler import BaostockHandler
+            baostock_handler = BaostockHandler(self.config, self.db_manager)
+            self.data_provider.register_source(baostock_handler)
+            self.data_updater.register_source(baostock_handler)
+        except ImportError as e:
+            logger.warning(f"Baostock模块未安装: {e}")
+        except Exception as e:
+            logger.warning(f"Baostock数据处理器初始化失败: {e}")
+        
+        # 初始化AkShare数据处理器
+        try:
+            from src.data.akshare_handler import AkShareHandler
+            akshare_handler = AkShareHandler(self.config, self.db_manager)
+            self.data_provider.register_source(akshare_handler)
+            self.data_updater.register_source(akshare_handler)
+        except ImportError as e:
+            logger.info(f"AkShare模块未安装: {e}")
+        except Exception as e:
+            logger.warning(f"AkShare数据处理器初始化失败: {e}")
+        
+        # 初始化宏观数据处理器
+        try:
+            from src.data.macro_handler import MacroHandler
+            macro_handler = MacroHandler(self.config, self.db_manager)
+            self.data_provider.register_source(macro_handler)
+            self.data_updater.register_source(macro_handler)
+        except ImportError as e:
+            logger.info(f"宏观数据模块未安装: {e}")
+        except Exception as e:
+            logger.warning(f"宏观数据处理器初始化失败: {e}")
+        
+        # 初始化新闻数据处理器
+        try:
+            from src.data.news_handler import NewsHandler
+            news_handler = NewsHandler(self.config, self.db_manager)
+            self.data_provider.register_source(news_handler)
+            self.data_updater.register_source(news_handler)
+        except ImportError as e:
+            logger.info(f"新闻数据模块未安装: {e}")
+        except Exception as e:
+            logger.warning(f"新闻数据处理器初始化失败: {e}")
+        
+        logger.info("内置数据源初始化完成")
     
     def _init_plugin_datasources(self):
         """
