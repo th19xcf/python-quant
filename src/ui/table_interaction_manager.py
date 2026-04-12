@@ -182,9 +182,9 @@ class TableInteractionManager:
             window.tab_widget.setCurrentIndex(1)
             
             # 显示进度条
-            if hasattr(window, 'progress_bar'):
-                window.progress_bar.setVisible(True)
-                window.progress_bar.setValue(0)
+            if hasattr(window, 'market_progress_bar'):
+                window.market_progress_bar.setVisible(True)
+                window.market_progress_bar.setValue(0)
 
             from src.ui.async_processing import DataReadThread
             window.data_read_thread = DataReadThread(str(tdx_file_path), name, code)
@@ -205,15 +205,15 @@ class TableInteractionManager:
             # 检查DataFrame是否为空
             if df.is_empty():
                 window.statusBar().showMessage(f"{name}({code}) 没有数据", 5000)
-                if hasattr(window, 'progress_bar'):
-                    window.progress_bar.setVisible(False)
+                if hasattr(window, 'market_progress_bar'):
+                    window.market_progress_bar.setVisible(False)
                 return
             
             window.statusBar().showMessage(f"正在计算 {name}({code}) 技术指标...", 0)
             
             # 更新进度条到50%
-            if hasattr(window, 'progress_bar'):
-                window.progress_bar.setValue(50)
+            if hasattr(window, 'market_progress_bar'):
+                window.market_progress_bar.setValue(50)
 
             from src.ui.async_processing import IndicatorCalculateThread
             window.indicator_calculate_thread = IndicatorCalculateThread(df)
@@ -226,22 +226,22 @@ class TableInteractionManager:
         except (OSError, RuntimeError) as e:
             logger.exception(f"处理数据读取完成信号失败: {e}")
             window.statusBar().showMessage(f"处理数据失败: {str(e)[:50]}...", 5000)
-            if hasattr(window, 'progress_bar'):
-                window.progress_bar.setVisible(False)
+            if hasattr(window, 'market_progress_bar'):
+                window.market_progress_bar.setVisible(False)
 
     def on_data_read_error(self, error_msg):
         """数据读取错误"""
         self.window.statusBar().showMessage(error_msg, 5000)
         logger.error(f"数据读取错误: {error_msg}")
-        if hasattr(self.window, 'progress_bar'):
-            self.window.progress_bar.setVisible(False)
+        if hasattr(self.window, 'market_progress_bar'):
+            self.window.market_progress_bar.setVisible(False)
 
     def on_data_read_progress(self, progress, total):
         """数据读取进度"""
         logger.debug(f"数据读取进度: {progress}%，共{total}条记录")
         window = self.window
-        if hasattr(window, 'progress_bar'):
-            window.progress_bar.setValue(progress // 2)  # 数据读取占50%
+        if hasattr(window, 'market_progress_bar'):
+            window.market_progress_bar.setValue(progress // 2)  # 数据读取占50%
 
     def on_indicator_calculated(self, df, name, code):
         """指标计算完成"""
@@ -250,21 +250,21 @@ class TableInteractionManager:
             window.statusBar().showMessage(f"正在绘制 {name}({code}) 图表...", 0)
             
             # 更新进度条到90%
-            if hasattr(window, 'progress_bar'):
-                window.progress_bar.setValue(90)
+            if hasattr(window, 'market_progress_bar'):
+                window.market_progress_bar.setValue(90)
 
             window.plot_k_line(df, name, code)
             window.statusBar().showMessage(f"{name}({code}) 图表绘制完成", 5000)
             
             # 更新进度条到100%并隐藏
-            if hasattr(window, 'progress_bar'):
-                window.progress_bar.setValue(100)
-                window.progress_bar.setVisible(False)
+            if hasattr(window, 'market_progress_bar'):
+                window.market_progress_bar.setValue(100)
+                window.market_progress_bar.setVisible(False)
         except (OSError, RuntimeError) as e:
             logger.exception(f"处理指标计算完成信号失败: {e}")
             window.statusBar().showMessage(f"绘制图表失败: {str(e)[:50]}...", 5000)
-            if hasattr(window, 'progress_bar'):
-                window.progress_bar.setVisible(False)
+            if hasattr(window, 'market_progress_bar'):
+                window.market_progress_bar.setVisible(False)
 
     def on_indicator_calculate_error(self, error_msg):
         """指标计算错误"""

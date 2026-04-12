@@ -311,8 +311,8 @@ class MainWindowDataMixin:
         
         # 显示进度条
         if hasattr(self, 'progress_bar'):
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
+            self.market_progress_bar.setVisible(True)
+            self.market_progress_bar.setValue(0)
         
         # 创建任务
         task_id = global_task_manager.create_task(
@@ -323,7 +323,7 @@ class MainWindowDataMixin:
         # 连接任务信号
         def on_task_progress(task_id, current, total):
             if hasattr(self, 'progress_bar'):
-                self.progress_bar.setValue(current)
+                self.market_progress_bar.setValue(current)
         
         def on_task_completed(task_id, result):
             # 断开信号连接，避免影响其他任务
@@ -354,7 +354,7 @@ class MainWindowDataMixin:
             
             # 隐藏进度条
             if hasattr(self, 'progress_bar'):
-                self.progress_bar.setVisible(False)
+                self.market_progress_bar.setVisible(False)
         
         def on_task_error(task_id, error_message):
             # 断开信号连接，避免影响其他任务
@@ -367,7 +367,7 @@ class MainWindowDataMixin:
             
             self.statusBar().showMessage(f"Error: {error_message}", 5000)
             if hasattr(self, 'progress_bar'):
-                self.progress_bar.setVisible(False)
+                self.market_progress_bar.setVisible(False)
         
         # 连接信号
         global_task_manager.task_progress.connect(on_task_progress)
@@ -647,8 +647,8 @@ class MainWindowDataMixin:
         
         # 显示进度条
         if hasattr(self, 'progress_bar'):
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
+            self.market_progress_bar.setVisible(True)
+            self.market_progress_bar.setValue(0)
         
         # 创建任务
         task_id = global_task_manager.create_task(
@@ -660,7 +660,7 @@ class MainWindowDataMixin:
         # 连接任务信号
         def on_task_progress(task_id, current, total):
             if hasattr(self, 'progress_bar'):
-                self.progress_bar.setValue(current)
+                self.market_progress_bar.setValue(current)
         
         def on_task_completed(task_id, result):
             if result["success"]:
@@ -756,7 +756,7 @@ class MainWindowDataMixin:
             
             # 隐藏进度条
             if hasattr(self, 'progress_bar'):
-                self.progress_bar.setVisible(False)
+                self.market_progress_bar.setVisible(False)
             
             # 断开信号连接，避免影响其他任务
             try:
@@ -769,7 +769,7 @@ class MainWindowDataMixin:
         def on_task_error(task_id, error_message):
             self.statusBar().showMessage(f"显示{stock_type}数据失败: {error_message}", 5000)
             if hasattr(self, 'progress_bar'):
-                self.progress_bar.setVisible(False)
+                self.market_progress_bar.setVisible(False)
             
             # 断开信号连接，避免影响其他任务
             try:

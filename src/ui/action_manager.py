@@ -138,8 +138,8 @@ class ActionManager:
         try:
             self.window.statusBar().showMessage(f"正在计算 {name}({code}) 技术指标...", 0)
 
-            if hasattr(self.window, 'progress_bar'):
-                self.window.progress_bar.setValue(50)
+            if hasattr(self.window, 'market_progress_bar'):
+                self.window.market_progress_bar.setValue(50)
 
             from src.ui.async_processing import IndicatorCalculateThread
             self.window.indicator_calculate_thread = IndicatorCalculateThread(df)
@@ -158,32 +158,32 @@ class ActionManager:
         """数据读取错误"""
         self.window.statusBar().showMessage(error_msg, 5000)
         logger.error(f"数据读取错误: {error_msg}")
-        if hasattr(self.window, 'progress_bar'):
-            self.window.progress_bar.setVisible(False)
+        if hasattr(self.window, 'market_progress_bar'):
+            self.window.market_progress_bar.setVisible(False)
 
     def _on_data_read_progress(self, progress, total):
         """数据读取进度"""
-        if hasattr(self.window, 'progress_bar'):
-            self.window.progress_bar.setValue(progress // 2)
+        if hasattr(self.window, 'market_progress_bar'):
+            self.window.market_progress_bar.setValue(progress // 2)
 
     def _on_indicator_calculated(self, df, name, code):
         """指标计算完成"""
         try:
             self.window.statusBar().showMessage(f"正在绘制 {name}({code}) 图表...", 0)
 
-            if hasattr(self.window, 'progress_bar'):
-                self.window.progress_bar.setValue(90)
+            if hasattr(self.window, 'market_progress_bar'):
+                self.window.market_progress_bar.setValue(90)
 
             self.window.plot_k_line(df, name, code)
             self.window.statusBar().showMessage(f"{name}({code}) 图表绘制完成", 5000)
 
-            if hasattr(self.window, 'progress_bar'):
-                self.window.progress_bar.setValue(100)
-                self.window.progress_bar.setVisible(False)
+            if hasattr(self.window, 'market_progress_bar'):
+                self.window.market_progress_bar.setValue(100)
+                self.window.market_progress_bar.setVisible(False)
         except (OSError, RuntimeError) as e:
             logger.exception(f"处理指标计算完成信号失败: {e}")
-            if hasattr(self.window, 'progress_bar'):
-                self.window.progress_bar.setVisible(False)
+            if hasattr(self.window, 'market_progress_bar'):
+                self.window.market_progress_bar.setVisible(False)
 
     def _on_indicator_calculate_error(self, error_msg):
         """指标计算错误"""
@@ -192,5 +192,5 @@ class ActionManager:
 
     def _on_indicator_calculate_progress(self, progress, total):
         """指标计算进度"""
-        if hasattr(self.window, 'progress_bar'):
-            self.window.progress_bar.setValue(50 + progress // 2)
+        if hasattr(self.window, 'market_progress_bar'):
+            self.window.market_progress_bar.setValue(50 + progress // 2)

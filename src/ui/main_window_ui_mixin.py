@@ -397,12 +397,14 @@ class MainWindowUiMixin:
         market_layout = QVBoxLayout(self.market_tab)
         
         # 创建进度条
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setVisible(False)  # 初始隐藏
-        self.progress_bar.setStyleSheet("QProgressBar { height: 5px; background-color: #333; border: none; } QProgressBar::chunk { background-color: #00BFFF; }")
-        market_layout.addWidget(self.progress_bar)
+        self.market_progress_bar = QProgressBar()
+        self.market_progress_bar.setRange(0, 100)
+        self.market_progress_bar.setValue(0)
+        self.market_progress_bar.setVisible(False)  # 初始隐藏
+        self.market_progress_bar.setStyleSheet("QProgressBar { height: 8px; background-color: #222; border: 1px solid #444; border-radius: 4px; text-align: left; text-indent: 10px; } QProgressBar::chunk { background-color: #00BFFF; border-radius: 0; margin: 0; }")
+        market_layout.addWidget(self.market_progress_bar)
+        # 设置进度条的大小策略，确保它在水平方向上拉伸
+        self.market_progress_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         
         # 创建股票列表
         self.stock_table = QTableWidget()
@@ -1258,3 +1260,16 @@ class MainWindowUiMixin:
         # 添加连接状态
         self.connection_label = QLabel("已连接")
         status_bar.addWidget(self.connection_label)
+        
+        # 添加分隔符（使用QLabel作为分隔符）
+        separator3 = QLabel(" | ")
+        status_bar.addWidget(separator3)
+        
+        # 添加进度条
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMaximumWidth(200)
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)  # 初始隐藏
+        status_bar.addWidget(self.progress_bar)
