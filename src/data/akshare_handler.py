@@ -100,14 +100,14 @@ class AkShareHandler:
                     
                     if stock:
                         # 更新现有股票信息
-                        stock.name = name
-                        stock.symbol = symbol
+                        stock.name = name[:45] if len(name) > 45 else name
+                        stock.symbol = symbol[:9] if len(symbol) > 9 else symbol
                     else:
                         # 创建新股票信息
                         stock = StockBasic(
                             ts_code=ts_code,
-                            symbol=symbol,
-                            name=name
+                            symbol=symbol[:9] if len(symbol) > 9 else symbol,
+                            name=name[:45] if len(name) > 45 else name
                         )
                         self.session.add(stock)
                     
@@ -735,3 +735,114 @@ class AkShareHandler:
                 self.session.rollback()
             logger.exception(f"更新股票分红配股数据失败: {e}")
             raise
+
+    def update_etf_basic(self, max_retries=3):
+        """
+        更新 ETF 基本信息
+        使用 AkShare 的 fund_etf_spot_em() 获取 ETF 列表和名称
+
+        Args:
+            max_retries: 最大重试次数，默认3次
+        """
+        import time
+
+        etf_spot_pd = None
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"开始从 AkShare 获取 ETF 基本信息 (尝试 {attempt + 1}/{max_retries})")
+
+                # 使用 AkShare 获取 ETF 实时行情
+                etf_spot_pd = ak.fund_etf_spot_em()
+                break  # 成功获取数据，跳出重试循环
+
+            except Exception as e:
+                last_error = e
+                logger.warning(f"从 AkShare 获取 ETF 信息失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # 指数退避: 1, 2, 4 秒
+                    logger.info(f"等待 {wait_time} 秒后重试...")
+                    time.sleep(wait_time)
+                continue
+
+        if etf_spot_pd is None:
+            logger.error(f"从 AkShare 获取 ETF 基本信息失败，已重试 {max_retries} 次: {last_error}")
+            return None
+
+        if etf_spot_pd.empty:
+            logger.warning("从 AkShare 获取的 ETF 信息为空")
+            return None
+
+        logger.info(f"从 AkShare 获取到 {len(etf_spot_pd)} 条 ETF 信息")
+
+        # 转换为 Polars DataFrame
+        etf_df = pl.from_pandas(etf_spot_pd)
+
+        if etf_df.is_empty():
+            logger.warning("ETF DataFrame 为空")
+            return None
+
+        logger.info(f"ETF DataFrame 列名: {etf_df.columns}")
+
+        # 离线模式下，只获取数据不存储
+        if not self.session:
+            logger.info("离线模式下，跳过 ETF 基本信息存储")
+            return etf_df
+
+        # 数据清洗和标准化
+        from src.database.models.stock import StockBasic
+
+        # 遍历数据，进行清洗和存储
+        updated_count = 0
+        for row in etf_df.iter_rows(named=True):
+            try:
+                # 提取 ETF 代码和名称
+                # AkShare ETF 实时行情字段：基金代码, 基金简称, 最新价, 涨跌幅, 成交量, 成交额, 最新份额, 更新时间
+                symbol = str(row.get('基金代码', ''))
+                name = row.get('基金简称', '')
+
+                if not symbol:
+                    continue
+
+                # 判断 ETF 所属市场
+                # 上海 ETF：510xxx, 511xxx, 512xxx, 513xxx, 515xxx, 588xxx
+                # 深圳 ETF：159xxx, 150xxx, 160xxx
+                if symbol.startswith('51') or symbol.startswith('58'):
+                    ts_code = f"{symbol}.SH"
+                elif symbol.startswith('15') or symbol.startswith('16'):
+                    ts_code = f"{symbol}.SZ"
+                else:
+                    # 未知市场，默认跳过
+                    logger.warning(f"无法判断 ETF {symbol} 的市场，跳过")
+                    continue
+
+                # 查询 ETF 是否已存在
+                stock = self.session.query(StockBasic).filter_by(ts_code=ts_code).first()
+
+                if stock:
+                    # 更新现有 ETF 名称
+                    if stock.name != name:
+                        logger.info(f"更新 ETF 名称: {ts_code} - {stock.name} -> {name}")
+                        stock.name = name
+                        updated_count += 1
+                else:
+                    # 创建新 ETF 信息
+                    logger.info(f"新增 ETF: {ts_code} - {name}")
+                    stock = StockBasic(
+                        ts_code=ts_code,
+                        symbol=symbol[:9] if len(symbol) > 9 else symbol,
+                        name=name[:45] if len(name) > 45 else name,
+                        status='L'
+                    )
+                    self.session.add(stock)
+                    updated_count += 1
+
+            except Exception as row_e:
+                logger.exception(f"处理 ETF 基本信息失败: {row_e}")
+                continue
+
+        # 提交事务
+        self.session.commit()
+        logger.info(f"ETF 基本信息更新完成，共更新 {updated_count} 条记录")
+        return etf_df

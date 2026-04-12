@@ -145,6 +145,12 @@ class TdxHandler:
                 elif code.startswith('92'):
                     num = int(code)
                     return 920000 <= num <= 920999
+                # 上海 ETF：510xxx, 511xxx, 512xxx, 513xxx, 515xxx, 588xxx
+                elif code.startswith('51') or code.startswith('58'):
+                    return True
+                # 深圳 ETF：150xxx, 151xxx, 152xxx, 153xxx, 159xxx, 160xxx, 161xxx
+                elif code.startswith('15') or code.startswith('16'):
+                    return True
                 return False
             
             if sh_lday.exists():

@@ -136,6 +136,10 @@ def sync_tdx_stock_to_database(config, db_manager):
                     continue
                 
                 # 确保使用原始的 ts_code，避免 StockInfo 中的 ts_code 与原始 ts_code 不一致
+                # 截断过长的字段以防止数据库错误
+                name = stock_info.get('name', '未知')
+                if len(name) > 45:
+                    name = name[:45]
                 stock = StockBasic(
                     ts_code=ts_code,
                     symbol=stock_info.get('symbol', ts_code.split('.')[0]),
@@ -306,32 +310,35 @@ def merge_stock_basic(baostock_df, akshare_df, existing_codes=None, tdx_stock_co
                         continue
                 else:
                     symbol = code
-                    # 优先使用通达信数据中的市场信息
-                    if code in tdx_market_map:
-                        market = tdx_market_map[code]
-                        ts_code = f"{code}.{market}"
-                    else:
-                        # 北交所股票：800000-899999 和 920000-920999
-                        if code.startswith('8') and len(code) == 6:
-                            num = int(code)
-                            if 800000 <= num <= 899999:
-                                ts_code = f"{code}.BJ"
-                            elif code.startswith('6'):
-                                ts_code = f"{code}.SH"
-                            else:
-                                ts_code = f"{code}.SZ"
-                        elif code.startswith('92') and len(code) == 6:
-                            num = int(code)
-                            if 920000 <= num <= 920999:
-                                ts_code = f"{code}.BJ"
-                            elif code.startswith('6'):
-                                ts_code = f"{code}.SH"
-                            else:
-                                ts_code = f"{code}.SZ"
-                        elif code.startswith('6'):
-                            ts_code = f"{code}.SH"
+                    # 北交所新股：920000-920999
+                    if code.startswith('92') and len(code) == 6:
+                        num = int(code)
+                        if 920000 <= num <= 920999:
+                            ts_code = f"{code}.BJ"
                         else:
                             ts_code = f"{code}.SZ"
+                    # 北交所股票：800000-899999
+                    elif code.startswith('8') and len(code) == 6:
+                        num = int(code)
+                        if 800000 <= num <= 899999:
+                            ts_code = f"{code}.BJ"
+                        else:
+                            ts_code = f"{code}.SZ"
+                    # 上海 ETF：510xxx, 511xxx, 512xxx, 513xxx, 515xxx, 588xxx
+                    elif code.startswith('51') or code.startswith('58'):
+                        ts_code = f"{code}.SH"
+                    # 深圳 ETF：150xxx, 151xxx, 152xxx, 153xxx, 159xxx, 160xxx, 161xxx
+                    elif code.startswith('15') or code.startswith('16'):
+                        ts_code = f"{code}.SZ"
+                    # 优先使用通达信数据中的市场信息
+                    elif code in tdx_market_map:
+                        market = tdx_market_map[code]
+                        ts_code = f"{code}.{market}"
+                    # 处理普通格式的代码
+                    elif code.startswith('6'):
+                        ts_code = f"{code}.SH"
+                    else:
+                        ts_code = f"{code}.SZ"
                 
                 if ts_code in existing_codes:
                     continue
@@ -424,6 +431,22 @@ def get_stock_info_from_apis(ts_code, merged_basic, baostock_handler, akshare_ha
             'name': f'北交所股票{symbol}',
             'status': 'L'
         }
+    elif symbol.startswith('51') or symbol.startswith('58'):
+        # 上海 ETF
+        return {
+            'ts_code': ts_code,
+            'symbol': symbol,
+            'name': f'ETF{symbol}',
+            'status': 'L'
+        }
+    elif symbol.startswith('15') or symbol.startswith('16'):
+        # 深圳 ETF
+        return {
+            'ts_code': ts_code,
+            'symbol': symbol,
+            'name': f'ETF{symbol}',
+            'status': 'L'
+        }
     else:
         return {
             'ts_code': ts_code,
@@ -514,6 +537,17 @@ def main():
                 
                 # 执行同步
                 sync_result = sync_tdx_stock_to_database(config, db_manager)
+                
+                # 更新 ETF 基本信息
+                from src.data.akshare_handler import AkShareHandler
+                akshare_handler = AkShareHandler(config, db_manager)
+                logger.info("开始更新 ETF 基本信息...")
+                try:
+                    etf_result = akshare_handler.update_etf_basic()
+                    if etf_result is not None:
+                        logger.info(f"ETF 基本信息更新完成")
+                except Exception as etf_e:
+                    logger.warning(f"更新 ETF 基本信息失败: {etf_e}")
                 
                 # 清理数据库资源并退出
                 db_manager.cleanup()
