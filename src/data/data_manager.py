@@ -74,78 +74,30 @@ class DataManager(IDataProvider, IDataProcessor):
     
     def _init_handlers(self):
         """
-        初始化各个数据源处理器
++        初始化各个数据源处理器
+
+        注意：为了避免重复初始化，handler的初始化现在由DataService统一管理。
+        这里只进行必要的配置和注册操作。
         """
-        # 初始化通达信数据处理器
-        try:
-            from src.data.tdx_handler import TdxHandler
-            tdx_handler = TdxHandler(self.config, self.db_manager)
-            self.data_fetcher.register_source(tdx_handler)
-            self.data_updater.register_source(tdx_handler)
-        except ImportError as e:
-            logger.info(f"通达信模块未安装: {e}")
-        except Exception as e:
-            logger.warning(f"通达信数据处理器初始化失败: {e}")
-        
-        # 初始化Baostock数据处理器
-        try:
-            from src.data.baostock_handler import BaostockHandler
-            baostock_handler = BaostockHandler(self.config, self.db_manager)
-            self.data_fetcher.register_source(baostock_handler)
-            self.data_updater.register_source(baostock_handler)
-        except ImportError as e:
-            logger.warning(f"Baostock模块未安装: {e}")
-        except Exception as e:
-            logger.warning(f"Baostock数据处理器初始化失败: {e}")
-        
-        # 初始化AkShare数据处理器
-        try:
-            from src.data.akshare_handler import AkShareHandler
-            akshare_handler = AkShareHandler(self.config, self.db_manager)
-            self.data_fetcher.register_source(akshare_handler)
-            self.data_updater.register_source(akshare_handler)
-        except ImportError as e:
-            logger.info(f"AkShare模块未安装: {e}")
-        except Exception as e:
-            logger.warning(f"AkShare数据处理器初始化失败: {e}")
-        
-        # 初始化宏观数据处理器
-        try:
-            from src.data.macro_handler import MacroHandler
-            macro_handler = MacroHandler(self.config, self.db_manager)
-            self.data_fetcher.register_source(macro_handler)
-            self.data_updater.register_source(macro_handler)
-        except ImportError as e:
-            logger.info(f"宏观数据模块未安装: {e}")
-        except Exception as e:
-            logger.warning(f"宏观数据处理器初始化失败: {e}")
-        
-        # 初始化新闻数据处理器
-        try:
-            from src.data.news_handler import NewsHandler
-            news_handler = NewsHandler(self.config, self.db_manager)
-            self.data_fetcher.register_source(news_handler)
-            self.data_updater.register_source(news_handler)
-        except ImportError as e:
-            logger.info(f"新闻数据模块未安装: {e}")
-        except Exception as e:
-            logger.warning(f"新闻数据处理器初始化失败: {e}")
-        
-        logger.info("数据处理器初始化完成")
-        
-        # 初始化完成后，根据配置决定是否自动更新股票基本信息
-        try:
-            if hasattr(self.config.data, 'auto_update_stock_basic') and self.config.data.auto_update_stock_basic:
-                self.update_stock_basic()
-                logger.info("自动更新股票基本信息完成")
-            else:
-                logger.info("跳过自动更新股票基本信息（未开启或配置不允许）")
-        except DataSourceConnectionError as e:
-            logger.warning(f"自动更新股票基本信息失败 - 连接错误: {e.message}")
-        except DataValidationError as e:
-            logger.warning(f"自动更新股票基本信息失败 - 数据验证错误: {e.message}")
-        except (OSError, RuntimeError) as update_e:
-            logger.warning(f"自动更新股票基本信息失败: {update_e}")
+        from src.data.services.data_provider import DataProvider
+        from src.data.services.data_updater import DataUpdaterService
+
+        if isinstance(self.data_service.data_provider, DataProvider):
+            provider = self.data_service.data_provider
+            fetcher_sources = provider.data_fetcher.get_sources()
+            for source in fetcher_sources:
+                if source not in self.data_fetcher.sources:
+                    self.data_fetcher.register_source(source)
+
+        if isinstance(self.data_service.data_updater, DataUpdaterService):
+            updater = self.data_service.data_updater
+            for source in updater.data_updater.sources:
+                if source not in self.data_updater._sources:
+                    self.data_updater.register_source(source)
+
+        logger.info("数据处理器初始化完成（复用DataService中的handler）")
+
+        self._init_async_manager()
     
     def _init_plugin_datasources(self):
         """
