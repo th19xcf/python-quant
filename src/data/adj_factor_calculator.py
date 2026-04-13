@@ -351,15 +351,24 @@ class AdjFactorCalculator:
     def _batch_insert(self, records: List[StockAdjFactor]):
         """批量插入记录"""
         try:
+            existing_records_map = {}
+            if records:
+                ts_codes = [r.ts_code for r in records]
+                trade_dates = [r.trade_date for r in records]
+
+                existing_records = self.session.query(StockAdjFactor).filter(
+                    StockAdjFactor.ts_code.in_(ts_codes),
+                    StockAdjFactor.trade_date.in_(trade_dates)
+                ).all()
+
+                for rec in existing_records:
+                    existing_records_map[(rec.ts_code, rec.trade_date)] = rec
+
+            records_to_add = []
             for record in records:
-                # 检查是否已存在
-                existing = self.session.query(StockAdjFactor).filter_by(
-                    ts_code=record.ts_code,
-                    trade_date=record.trade_date
-                ).first()
-                
-                if existing:
-                    # 更新现有记录
+                key = (record.ts_code, record.trade_date)
+                if key in existing_records_map:
+                    existing = existing_records_map[key]
                     existing.qfq_factor = record.qfq_factor
                     existing.hfq_factor = record.hfq_factor
                     existing.qfq_open = record.qfq_open
@@ -371,9 +380,11 @@ class AdjFactorCalculator:
                     existing.hfq_low = record.hfq_low
                     existing.hfq_close = record.hfq_close
                 else:
-                    # 插入新记录
-                    self.session.add(record)
-            
+                    records_to_add.append(record)
+
+            if records_to_add:
+                self.session.add_all(records_to_add)
+
             self.session.commit()
         except (OSError, RuntimeError) as e:
             self.session.rollback()

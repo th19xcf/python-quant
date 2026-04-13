@@ -238,16 +238,23 @@ class AdjPriceQuery:
                         adj_type: str = ADJ_TYPE_QFQ) -> dict:
         """
         批量获取多只股票的复权价格
-        
+
         Args:
             ts_codes: 股票代码列表
             start_date: 开始日期
             end_date: 结束日期
             adj_type: 复权类型
-            
+
         Returns:
             dict: {ts_code: DataFrame}
         """
+        if not ts_codes:
+            return {}
+
+        if len(ts_codes) == 1:
+            df = self.get_price(ts_codes[0], start_date, end_date, adj_type)
+            return {ts_codes[0]: df} if df is not None else {}
+
         results = {}
         for ts_code in ts_codes:
             df = self.get_price(ts_code, start_date, end_date, adj_type)
