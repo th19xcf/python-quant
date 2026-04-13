@@ -214,121 +214,89 @@ class IncrementalCalculator:
         
         return result
     
-    def incremental_calculate_rsi(self, 
-                                existing_data: pl.DataFrame, 
-                                new_data: pl.DataFrame, 
-                                windows: List[int] = None, 
+    def incremental_calculate_rsi(self,
+                                existing_data: pl.DataFrame,
+                                new_data: pl.DataFrame,
+                                windows: List[int] = None,
                                 **kwargs) -> pl.DataFrame:
         """
         增量计算RSI指标
-        
+
         Args:
             existing_data: 已有的数据
             new_data: 新增的数据
             windows: RSI计算窗口列表
-            
+
         Returns:
             pl.DataFrame: 包含新增RSI值的数据
         """
         if windows is None:
             windows = [14]
-        
-        # 合并数据用于计算
-        combined_data = existing_data.vstack(new_data).select(['date', 'close'])
-        
-        # 计算价格变化
-        price_change = combined_data.with_columns(
-            pl.col('close').diff().alias('change')
-        )['change']
-        
-        # 计算上涨和下跌
-        up_change = price_change.map_elements(lambda x: x if x > 0 else 0, return_dtype=pl.Float32)
-        down_change = price_change.map_elements(lambda x: abs(x) if x < 0 else 0, return_dtype=pl.Float32)
-        
-        # 计算每个窗口的RSI
+
+        combined_data = existing_data.vstack(new_data)
+
         result = new_data.clone()
-        
+
         for window in windows:
-            # 计算平均上涨和下跌
-            avg_up = up_change.ewm_mean(span=window)
-            avg_down = down_change.ewm_mean(span=window)
-            
-            # 计算RSI
+            price_change = combined_data['close'].diff()
+
+            avg_gain_expr = pl.when(price_change > 0).then(price_change).otherwise(0.0).ewm_mean(span=window)
+            avg_loss_expr = pl.when(price_change < 0).then(-price_change).otherwise(0.0).ewm_mean(span=window)
+
             rsi_col = f'rsi{window}'
-            rsi_values = pl.when(avg_down == 0).then(100.0).otherwise(
-                100.0 - (100.0 / (1.0 + avg_up / avg_down))
+            rsi_expr = pl.when(avg_loss_expr == 0).then(100.0).otherwise(
+                100.0 - (100.0 / (1.0 + avg_gain_expr / (avg_loss_expr + 1e-10)))
             )
-            
-            # 提取新增数据对应的RSI值
+
+            rsi_values = combined_data.with_columns(rsi_expr.alias(rsi_col))[rsi_col]
             new_rsi_values = rsi_values.tail(len(new_data))
             result = result.with_columns(new_rsi_values.alias(rsi_col))
-        
+
         return result
     
-    def incremental_calculate_kdj(self, 
-                                existing_data: pl.DataFrame, 
-                                new_data: pl.DataFrame, 
-                                windows: List[int] = None, 
+    def incremental_calculate_kdj(self,
+                                existing_data: pl.DataFrame,
+                                new_data: pl.DataFrame,
+                                windows: List[int] = None,
                                 **kwargs) -> pl.DataFrame:
         """
         增量计算KDJ指标
-        
+
         Args:
             existing_data: 已有的数据
             new_data: 新增的数据
             windows: KDJ计算窗口列表
-            
+
         Returns:
             pl.DataFrame: 包含新增KDJ值的数据
         """
         if windows is None:
             windows = [14]
-        
-        # 合并数据用于计算
-        combined_data = existing_data.vstack(new_data).select(['date', 'high', 'low', 'close'])
-        
+
+        combined_data = existing_data.vstack(new_data)
+
         result = new_data.clone()
-        
+
         for window in windows:
-            # 计算RSV
-            highest_high = combined_data.with_columns(
-                pl.col('high').rolling_max(window_size=window, min_periods=window).alias('highest_high')
-            )['highest_high']
-            
-            lowest_low = combined_data.with_columns(
-                pl.col('low').rolling_min(window_size=window, min_periods=window).alias('lowest_low')
-            )['lowest_low']
-            
-            rsv = (combined_data['close'] - lowest_low) / (highest_high - lowest_low) * 100
-            
-            # 计算K、D、J值
+            highest_high = combined_data['high'].rolling_max(window_size=window, min_periods=window)
+            lowest_low = combined_data['low'].rolling_min(window_size=window, min_periods=window)
+
+            rsv_expr = ((combined_data['close'] - lowest_low) / (highest_high - lowest_low + 1e-10) * 100).alias('rsv')
+
             k_col = f'k{window}'
             d_col = f'd{window}'
             j_col = f'j{window}'
-            
-            # 初始K值
-            k_values = pl.Series([50.0] * len(combined_data))
-            d_values = pl.Series([50.0] * len(combined_data))
-            
-            # 迭代计算K、D值
-            for i in range(window, len(combined_data)):
-                k_values[i] = 2/3 * k_values[i-1] + 1/3 * rsv[i]
-                d_values[i] = 2/3 * d_values[i-1] + 1/3 * k_values[i]
-            
-            # 计算J值
-            j_values = 3 * k_values - 2 * d_values
-            
-            # 提取新增数据对应的KDJ值
-            new_k_values = k_values.tail(len(new_data))
-            new_d_values = d_values.tail(len(new_data))
-            new_j_values = j_values.tail(len(new_data))
-            
+
+            k_expr = rsv_expr.rolling_mean(window_size=3, min_periods=1)
+            d_expr = k_expr.rolling_mean(window_size=3, min_periods=1)
+            j_expr = 3 * k_expr - 2 * d_expr
+
             result = result.with_columns(
-                new_k_values.alias(k_col),
-                new_d_values.alias(d_col),
-                new_j_values.alias(j_col)
+                k_expr.tail(len(new_data)).alias(k_col),
+                d_expr.tail(len(new_data)).alias(d_col),
+                j_expr.tail(len(new_data)).alias(j_col)
             )
-        
+
         return result
     
     def incremental_calculate_boll(self, 
@@ -429,41 +397,33 @@ class IncrementalCalculator:
         
         return result
     
-    def incremental_calculate_obv(self, 
-                                existing_data: pl.DataFrame, 
-                                new_data: pl.DataFrame, 
+    def incremental_calculate_obv(self,
+                                existing_data: pl.DataFrame,
+                                new_data: pl.DataFrame,
                                 **kwargs) -> pl.DataFrame:
         """
         增量计算OBV指标
-        
+
         Args:
             existing_data: 已有的数据
             new_data: 新增的数据
-            
+
         Returns:
             pl.DataFrame: 包含新增OBV值的数据
         """
-        # 合并数据用于计算
-        combined_data = existing_data.vstack(new_data).select(['date', 'close', 'volume'])
-        
-        # 计算价格变化
-        price_change = combined_data['close'].diff()
-        
-        # 计算OBV
-        obv_values = pl.Series([0.0] * len(combined_data))
-        
-        for i in range(1, len(combined_data)):
-            if price_change[i] > 0:
-                obv_values[i] = obv_values[i-1] + combined_data['volume'][i]
-            elif price_change[i] < 0:
-                obv_values[i] = obv_values[i-1] - combined_data['volume'][i]
-            else:
-                obv_values[i] = obv_values[i-1]
-        
-        # 提取新增数据对应的OBV值
+        combined_data = existing_data.vstack(new_data)
+
+        price_change = combined_data['close'].diff().fill_null(0)
+
+        obv_expr = (
+            pl.when(price_change > 0).then(combined_data['volume'])
+            .when(price_change < 0).then(-combined_data['volume'])
+            .otherwise(0)
+        ).cumsum()
+
         result = new_data.clone()
-        result = result.with_columns(obv_values.tail(len(new_data)).alias('obv'))
-        
+        result = result.with_columns(obv_expr.tail(len(new_data)).alias('obv'))
+
         return result
     
     def incremental_calculate_expma(self, 
@@ -503,72 +463,61 @@ class IncrementalCalculator:
         
         return result
     
-    def incremental_calculate_dmi(self, 
-                                 existing_data: pl.DataFrame, 
-                                 new_data: pl.DataFrame, 
-                                 windows: List[int] = None, 
+    def incremental_calculate_dmi(self,
+                                 existing_data: pl.DataFrame,
+                                 new_data: pl.DataFrame,
+                                 windows: List[int] = None,
                                  **kwargs) -> pl.DataFrame:
         """
         增量计算DMI指标
-        
+
         Args:
             existing_data: 已有的数据
             new_data: 新增的数据
             windows: DMI计算窗口列表
-            
+
         Returns:
             pl.DataFrame: 包含新增DMI值的数据
         """
         if windows is None:
             windows = [14]
-        
-        # 合并数据用于计算
-        combined_data = existing_data.vstack(new_data).select(['date', 'high', 'low', 'close'])
-        
+
+        combined_data = existing_data.vstack(new_data)
+
         result = new_data.clone()
-        
+
         for window in windows:
-            # 计算前一天的最高价、最低价、收盘价
-            prev_high = combined_data['high'].shift(1)
-            prev_low = combined_data['low'].shift(1)
-            prev_close = combined_data['close'].shift(1)
-            
-            # 计算真实波幅(TR)
-            tr = pl.max_horizontal(combined_data['high'], prev_close) - pl.min_horizontal(combined_data['low'], prev_close)
-            
-            # 计算+DM和-DM
+            prev_high = combined_data['high'].shift(1).fill_null(0)
+            prev_low = combined_data['low'].shift(1).fill_null(0)
+
+            tr = pl.max_horizontal(combined_data['high'], combined_data['close'].shift(1)) - pl.min_horizontal(combined_data['low'], combined_data['close'].shift(1))
+
             high_diff = combined_data['high'] - prev_high
             low_diff = prev_low - combined_data['low']
-            
+
             plus_dm = pl.when((high_diff > low_diff) & (high_diff > 0)).then(high_diff).otherwise(0.0)
             minus_dm = pl.when((low_diff > high_diff) & (low_diff > 0)).then(low_diff).otherwise(0.0)
-            
-            # 计算平滑的TR、+DM、-DM
+
             tr_sma = tr.rolling_sum(window_size=window, min_periods=1)
             pdm_sma = plus_dm.rolling_sum(window_size=window, min_periods=1)
             ndm_sma = minus_dm.rolling_sum(window_size=window, min_periods=1)
-            
-            # 计算+DI和-DI
-            pdi = (pdm_sma / tr_sma * 100).alias(f'pdi_{window}')
-            ndi = (ndm_sma / tr_sma * 100).alias(f'ndi_{window}')
-            
-            # 计算DX
-            dx = pl.when((pdi + ndi) == 0).then(0.0).otherwise((pdi - ndi).abs() / (pdi + ndi) * 100).alias(f'dx_{window}')
-            
-            # 计算ADX
+
+            pdi = (pdm_sma / (tr_sma + 1e-10) * 100).alias(f'pdi_{window}')
+            ndi = (ndm_sma / (tr_sma + 1e-10) * 100).alias(f'ndi_{window}')
+
+            dx = pl.when((pdi + ndi) == 0).then(0.0).otherwise((pdi - ndi).abs() / (pdi + ndi + 1e-10) * 100).alias(f'dx_{window}')
+
             adx = dx.rolling_mean(window_size=window, min_periods=1).alias(f'adx_{window}')
-            
-            # 计算ADXR
+
             adxr = ((adx + adx.shift(window)) / 2).alias(f'adxr_{window}')
-            
-            # 提取新增数据对应的值
+
             result = result.with_columns(
                 pdi.tail(len(new_data)).alias(f'pdi_{window}'),
                 ndi.tail(len(new_data)).alias(f'ndi_{window}'),
                 adx.tail(len(new_data)).alias(f'adx_{window}'),
                 adxr.tail(len(new_data)).alias(f'adxr_{window}')
             )
-        
+
         return result
     
     def incremental_calculate_trix(self, 
