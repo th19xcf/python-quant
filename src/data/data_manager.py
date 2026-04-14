@@ -91,8 +91,9 @@ class DataManager(IDataProvider, IDataProcessor):
 
         if isinstance(self.data_service.data_updater, DataUpdaterService):
             updater = self.data_service.data_updater
-            for source in updater.data_updater.sources:
-                if source not in self.data_updater._sources:
+            updater_sources = getattr(updater.data_updater, 'sources', [])
+            for source in updater_sources:
+                if source not in self.data_updater.sources:
                     self.data_updater.register_source(source)
 
         logger.info("数据处理器初始化完成（复用DataService中的handler）")
