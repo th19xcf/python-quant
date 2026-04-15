@@ -40,10 +40,11 @@ def _fetch_external_stock_basic(baostock_handler, akshare_handler):
         akshare_handler: AkShare处理器
 
     Returns:
-        tuple: (baostock_basic, akshare_basic)
+        tuple: (baostock_basic, akshare_basic, baostock_industry_map)
     """
     baostock_basic = None
     akshare_basic = None
+    baostock_industry_map = {}
 
     logger.info("开始从 Baostock 获取股票基本信息...")
     try:
@@ -53,6 +54,13 @@ def _fetch_external_stock_basic(baostock_handler, akshare_handler):
     except Exception as e:
         logger.warning(f"从 Baostock 获取股票基本信息失败: {e}")
 
+    try:
+        baostock_industry_map = _fetch_baostock_industry_map(baostock_handler)
+        if baostock_industry_map:
+            logger.info(f"从 Baostock 行业接口获取到 {len(baostock_industry_map)} 条行业映射")
+    except Exception as e:
+        logger.warning(f"从 Baostock 获取行业映射失败: {e}")
+
     logger.info("开始从 AkShare 获取股票基本信息...")
     try:
         akshare_basic = akshare_handler.update_stock_basic()
@@ -61,7 +69,94 @@ def _fetch_external_stock_basic(baostock_handler, akshare_handler):
     except Exception as e:
         logger.warning(f"从 AkShare 获取股票基本信息失败: {e}")
 
-    return baostock_basic, akshare_basic
+    return baostock_basic, akshare_basic, baostock_industry_map
+
+
+def _fetch_baostock_industry_map(baostock_handler):
+    """从 Baostock 获取股票行业映射（ts_code -> industry）。"""
+    import baostock as bs
+    import polars as pl
+
+    industry_map = {}
+    if not baostock_handler or not baostock_handler._ensure_baostock_login():
+        return industry_map
+
+    rs = bs.query_stock_industry()
+    industry_pd = rs.get_data()
+    industry_df = pl.from_pandas(industry_pd)
+    if industry_df.is_empty():
+        return industry_map
+
+    for row in industry_df.iter_rows(named=True):
+        ts_code = _parse_baostock_code(row.get('code', ''), {})
+        if not ts_code:
+            continue
+        if _is_index_ts_code(ts_code) or _is_fund_ts_code(ts_code):
+            continue
+        industry = str(row.get('industry', '') or '').strip()
+        if industry:
+            industry_map[ts_code] = industry
+
+    return industry_map
+
+
+def _fetch_akshare_industry_map(tdx_stock_codes):
+    """从 AkShare 行业板块成分获取行业映射（ts_code -> industry）。"""
+    import akshare as ak
+    import polars as pl
+
+    industry_map = {}
+    tdx_market_map = _build_tdx_market_map(tdx_stock_codes)
+
+    try:
+        board_pd = ak.stock_board_industry_name_em()
+        board_df = pl.from_pandas(board_pd)
+        if board_df.is_empty():
+            logger.warning("AkShare 行业板块列表为空")
+            return industry_map
+
+        board_names = []
+        for row in board_df.iter_rows(named=True):
+            name = row.get('板块名称') or row.get('名称') or row.get('name')
+            if name:
+                board_names.append(str(name).strip())
+
+        logger.info(f"AkShare 行业板块数量: {len(board_names)}")
+
+        for i, board_name in enumerate(board_names):
+            if not board_name:
+                continue
+            try:
+                cons_pd = ak.stock_board_industry_cons_em(symbol=board_name)
+                cons_df = pl.from_pandas(cons_pd)
+                if cons_df.is_empty():
+                    continue
+
+                for row in cons_df.iter_rows(named=True):
+                    raw_code = row.get('代码') or row.get('code') or row.get('symbol')
+                    if not raw_code:
+                        continue
+                    ts_code = _parse_akshare_code(str(raw_code).strip(), tdx_market_map)
+                    if not ts_code:
+                        continue
+                    if _is_index_ts_code(ts_code) or _is_fund_ts_code(ts_code):
+                        continue
+                    if ts_code not in industry_map:
+                        industry_map[ts_code] = board_name
+
+                if (i + 1) % 20 == 0:
+                    logger.info(
+                        f"AkShare行业映射进度: {i + 1}/{len(board_names)}，"
+                        f"当前映射 {len(industry_map)} 只股票"
+                    )
+            except Exception as board_e:
+                logger.warning(f"获取行业板块 {board_name} 成分失败: {board_e}")
+                continue
+
+    except Exception as e:
+        logger.warning(f"从 AkShare 获取行业映射失败: {e}")
+
+    return industry_map
 
 
 def _create_stock_basic_from_info(ts_code, stock_info):
@@ -74,7 +169,7 @@ def _create_stock_basic_from_info(ts_code, stock_info):
     Returns:
         StockBasic: 数据库模型对象
     """
-    from src.database.models.stock import StockBasic
+    from src.database.models.stock import StockBasic, StockDaily
 
     name = stock_info.get('name', '未知')
     name = name[:45] if len(name) > 45 else name
@@ -171,7 +266,8 @@ def _finalize_database_commit(session, result):
         "股票信息同步完成，"
         f"新增 {result['inserted_stocks']} 条，"
         f"更新 {result['updated_stocks']} 条，"
-        f"回填字段 {result['filled_blank_fields']} 个"
+        f"回填字段 {result.get('filled_blank_fields', 0)} 个，"
+        f"刷新字段 {result.get('refreshed_fields', 0)} 个"
     )
 
 
@@ -187,7 +283,8 @@ def _log_sync_result(result):
     logger.info(f"  数据库已有股票: {result['existing_stocks']}")
     logger.info(f"  新增股票数量: {result['inserted_stocks']}")
     logger.info(f"  更新股票数量: {result['updated_stocks']}")
-    logger.info(f"  回填空白字段数量: {result['filled_blank_fields']}")
+    logger.info(f"  回填空白字段数量: {result.get('filled_blank_fields', 0)}")
+    logger.info(f"  刷新已有字段数量: {result.get('refreshed_fields', 0)}")
     logger.info(f"  清理非股票记录数量: {result['deleted_non_stock_rows']}")
     logger.info(f"  失败股票数量: {len(result['failed_stocks'])}")
     if result['failed_stocks']:
@@ -228,6 +325,78 @@ def _infer_stock_market_from_ts_code(ts_code):
             return '中小板'
         return '主板'
     return ''
+
+
+def _normalize_text_value(value, max_len=None):
+    """标准化文本字段值。"""
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    if max_len is not None:
+        return text[:max_len]
+    return text
+
+
+def _normalize_date_value(value):
+    """标准化日期字段值，支持 date/datetime/常见字符串格式。"""
+    from datetime import date, datetime
+
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value.date()
+
+    if isinstance(value, date):
+        return value
+
+    text = str(value).strip()
+    if not text or text in {'0000-00-00', 'None', 'nan', 'NaT'}:
+        return None
+
+    for fmt in ('%Y-%m-%d', '%Y/%m/%d', '%Y%m%d'):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+
+    return None
+
+
+def _update_stock_text_field(row, field_name, source_value, result, max_len=None):
+    """更新股票文本字段；空值视为回填，非空且变化视为刷新。"""
+    new_value = _normalize_text_value(source_value, max_len)
+    if not new_value:
+        return False
+
+    current_value = _normalize_text_value(getattr(row, field_name, None), max_len)
+    if current_value == new_value:
+        return False
+
+    setattr(row, field_name, new_value)
+    if current_value:
+        result['refreshed_fields'] += 1
+    else:
+        result['filled_blank_fields'] += 1
+    return True
+
+
+def _update_stock_date_field(row, field_name, source_value, result):
+    """更新股票日期字段；空值视为回填，非空且变化视为刷新。"""
+    new_value = _normalize_date_value(source_value)
+    if new_value is None:
+        return False
+
+    current_value = _normalize_date_value(getattr(row, field_name, None))
+    if current_value == new_value:
+        return False
+
+    setattr(row, field_name, new_value)
+    if current_value is None:
+        result['filled_blank_fields'] += 1
+    else:
+        result['refreshed_fields'] += 1
+    return True
 
 
 @dataclass
@@ -279,6 +448,7 @@ def sync_tdx_stock_to_database(config, db_manager):
         'inserted_stocks': 0,
         'updated_stocks': 0,
         'filled_blank_fields': 0,
+        'refreshed_fields': 0,
     }
 
     logger.info("=" * 60)
@@ -329,12 +499,62 @@ def sync_tdx_stock_to_database(config, db_manager):
         baostock_handler = BaostockHandler(config, db_manager)
         akshare_handler = AkShareHandler(config, db_manager)
 
-        baostock_basic, akshare_basic = _fetch_external_stock_basic(
+        baostock_basic, akshare_basic, baostock_industry_map = _fetch_external_stock_basic(
             baostock_handler, akshare_handler
         )
 
         # 构建全量映射（不排除existing），用于新增与存量回填两阶段。
         merged_basic = merge_stock_basic(baostock_basic, akshare_basic, set(), tdx_stock_codes)
+
+        # 行业字段优先采用 Baostock 行业映射（覆盖空值或占位值）
+        if baostock_industry_map:
+            for ts_code, industry in baostock_industry_map.items():
+                if ts_code not in merged_basic:
+                    symbol = ts_code.split('.')[0] if '.' in ts_code else ts_code
+                    merged_basic[ts_code] = {
+                        'symbol': symbol,
+                        'name': '',
+                        'area': '',
+                        'industry': industry,
+                        'market': '',
+                        'list_date': None,
+                        'status': 'L',
+                        'source': 'baostock_industry'
+                    }
+                else:
+                    existing_industry = str(merged_basic[ts_code].get('industry', '') or '').strip()
+                    if (not existing_industry) or existing_industry in {'未知', '--', 'N/A'}:
+                        merged_basic[ts_code]['industry'] = industry
+
+        # 若行业字段仍缺失较多，使用 AkShare 行业板块成分兜底
+        missing_industry_count = 0
+        for ts_code in tdx_stock_codes:
+            industry_text = str(merged_basic.get(ts_code, {}).get('industry', '') or '').strip()
+            if not industry_text:
+                missing_industry_count += 1
+
+        if missing_industry_count > 0:
+            logger.info(f"仍有 {missing_industry_count} 只股票缺少行业字段，尝试 AkShare 行业成分兜底")
+            akshare_industry_map = _fetch_akshare_industry_map(tdx_stock_codes)
+            if akshare_industry_map:
+                for ts_code, industry in akshare_industry_map.items():
+                    if ts_code not in merged_basic:
+                        symbol = ts_code.split('.')[0] if '.' in ts_code else ts_code
+                        merged_basic[ts_code] = {
+                            'symbol': symbol,
+                            'name': '',
+                            'area': '',
+                            'industry': industry,
+                            'market': '',
+                            'list_date': None,
+                            'status': 'L',
+                            'source': 'akshare_industry'
+                        }
+                    else:
+                        existing_industry = str(merged_basic[ts_code].get('industry', '') or '').strip()
+                        if not existing_industry:
+                            merged_basic[ts_code]['industry'] = industry
+                logger.info(f"AkShare 行业兜底完成，补充映射 {len(akshare_industry_map)} 只股票")
 
         if new_codes:
             ctx = StockBatchContext(
@@ -345,19 +565,14 @@ def sync_tdx_stock_to_database(config, db_manager):
         else:
             logger.info("所有通达信股票都已存在，跳过新增阶段，继续执行存量回填")
 
-        # 第二阶段：回填 stock_basic 存量空白信息（不覆盖已有值）
+        # 第二阶段：回填并刷新 stock_basic 存量信息
         all_stocks = session.query(StockBasic).all()
-        tdx_code_set = set(tdx_stock_codes)
         for row in all_stocks:
             try:
-                if row.ts_code not in tdx_code_set:
-                    continue
                 if _is_index_ts_code(row.ts_code) or _is_fund_ts_code(row.ts_code, row.name, row.market):
                     continue
 
-                source_info = merged_basic.get(row.ts_code)
-                if not source_info:
-                    continue
+                source_info = merged_basic.get(row.ts_code) or {}
 
                 changed = False
                 source_name = str(source_info.get('name', '') or '').strip()
@@ -365,44 +580,68 @@ def sync_tdx_stock_to_database(config, db_manager):
                 source_industry = str(source_info.get('industry', '') or '').strip()
                 source_market = str(source_info.get('market', '') or '').strip()
                 source_list_date = source_info.get('list_date')
-                source_status = _normalize_stock_status(source_info.get('status'))
+                source_delist_date = source_info.get('delist_date')
 
-                if (not row.name or str(row.name).startswith('股票')) and source_name:
-                    row.name = source_name[:50]
-                    changed = True
-                    result['filled_blank_fields'] += 1
-                if not row.area and source_area:
-                    row.area = source_area[:20]
-                    changed = True
-                    result['filled_blank_fields'] += 1
-                if not row.industry and source_industry:
-                    row.industry = source_industry[:50]
-                    changed = True
-                    result['filled_blank_fields'] += 1
-                if not row.market and source_market:
-                    row.market = source_market[:20]
-                    changed = True
-                    result['filled_blank_fields'] += 1
-                if not row.market:
-                    inferred_market = _infer_stock_market_from_ts_code(row.ts_code)
-                    if inferred_market:
-                        row.market = inferred_market[:20]
+                raw_status = str(source_info.get('status', '') or '').strip()
+                source_status = _normalize_stock_status(raw_status) if raw_status else ''
+
+                # 名称保守更新：空值、占位名时更新为外部值
+                current_name = str(row.name or '').strip()
+                if source_name and (
+                    (not current_name)
+                    or current_name.startswith('股票')
+                    or current_name in {'未知', '--', 'N/A'}
+                ):
+                    if _update_stock_text_field(row, 'name', source_name, result, max_len=50):
                         changed = True
-                        result['filled_blank_fields'] += 1
-                if not row.list_date and source_list_date:
-                    row.list_date = source_list_date
+
+                # area / industry / market 允许外部源刷新已有值
+                if _update_stock_text_field(row, 'area', source_area, result, max_len=20):
                     changed = True
-                    result['filled_blank_fields'] += 1
+                if _update_stock_text_field(row, 'industry', source_industry, result, max_len=50):
+                    changed = True
+                if _update_stock_text_field(row, 'market', source_market, result, max_len=20):
+                    changed = True
+
+                inferred_market = _infer_stock_market_from_ts_code(row.ts_code)
+                if inferred_market and not source_market:
+                    if _update_stock_text_field(row, 'market', inferred_market, result, max_len=20):
+                        changed = True
+
+                if _update_stock_date_field(row, 'list_date', source_list_date, result):
+                    changed = True
+
                 if not row.list_date:
                     first_trade_date, _ = _extract_tdx_first_last_trade_date(config, row.ts_code)
-                    if first_trade_date:
-                        row.list_date = first_trade_date
+                    if _update_stock_date_field(row, 'list_date', first_trade_date, result):
                         changed = True
-                        result['filled_blank_fields'] += 1
-                if not row.status:
+
+                # 兜底：若仍缺少上市日期，尝试用 stock_daily 最早交易日回填
+                if not row.list_date:
+                    try:
+                        from sqlalchemy import func
+
+                        earliest_trade_date = (
+                            session.query(func.min(StockDaily.trade_date))
+                            .filter(StockDaily.ts_code == row.ts_code)
+                            .scalar()
+                        )
+                        if _update_stock_date_field(row, 'list_date', earliest_trade_date, result):
+                            changed = True
+                    except Exception as trade_date_e:
+                        logger.debug(f"从 stock_daily 回填上市日期失败 {row.ts_code}: {trade_date_e}")
+
+                if _update_stock_date_field(row, 'delist_date', source_delist_date, result):
+                    changed = True
+
+                if not row.status and source_status:
                     row.status = source_status
                     changed = True
                     result['filled_blank_fields'] += 1
+                elif source_status and row.status != source_status:
+                    row.status = source_status
+                    changed = True
+                    result['refreshed_fields'] += 1
 
                 if changed:
                     result['updated_stocks'] += 1
@@ -509,6 +748,18 @@ def _parse_akshare_code(code, tdx_market_map):
 
     if code.startswith('6'):
         return f"{code}.SH"
+    elif code.startswith('92') and len(code) == 6:
+        num = int(code)
+        if 920000 <= num <= 920999:
+            return f"{code}.BJ"
+        return f"{code}.SZ"
+    elif code.startswith('8') and len(code) == 6:
+        num = int(code)
+        if 800000 <= num <= 899999:
+            return f"{code}.BJ"
+        return f"{code}.SZ"
+    elif code.startswith('4') and len(code) == 6:
+        return f"{code}.BJ"
     elif code.startswith('9'):
         return f"{code}.BJ"
     elif len(code) == 6:
@@ -529,14 +780,43 @@ def _build_stock_info(ts_code, symbol, row, source):
     Returns:
         dict: 股票信息字典
     """
+    name = (
+        row.get('code_name')
+        or row.get('name')
+        or row.get('名称')
+        or ''
+    )
+    area = (
+        row.get('area')
+        or row.get('region')
+        or row.get('地域')
+        or row.get('地区')
+        or ''
+    )
+    industry = (
+        row.get('industry')
+        or row.get('所属行业')
+        or row.get('行业')
+        or ''
+    )
+    market = (
+        row.get('market')
+        or row.get('市场')
+        or ''
+    )
+    list_date = row.get('list_date') or row.get('ipoDate') or row.get('上市日期')
+    delist_date = row.get('delist_date') or row.get('outDate') or row.get('退市日期')
+    status = row.get('status') or row.get('上市状态') or 'L'
+
     return {
         'symbol': symbol,
-        'name': row.get('code_name', ''),
-        'area': row.get('area', ''),
-        'industry': row.get('industry', ''),
-        'market': row.get('market', ''),
-        'list_date': row.get('list_date'),
-        'status': row.get('status', 'L'),
+        'name': name,
+        'area': area,
+        'industry': industry,
+        'market': market,
+        'list_date': list_date,
+        'delist_date': delist_date,
+        'status': status,
         'source': source
     }
 
@@ -573,27 +853,34 @@ def merge_stock_basic(baostock_df, akshare_df, existing_codes=None, tdx_stock_co
 
     if akshare_df is not None and not akshare_df.is_empty():
         for row in akshare_df.iter_rows(named=True):
-            code = row.get('code', '')
+            code = row.get('code') or row.get('代码') or row.get('symbol') or ''
             ts_code = _parse_akshare_code(code, tdx_market_map)
 
             if ts_code is None or ts_code in existing_codes:
                 continue
 
             if ts_code in merged:
+                merged_info = _build_stock_info(ts_code, code, row, 'akshare')
                 merged[ts_code].update({
-                    'name': row.get('name', merged[ts_code].get('name', '')),
-                    'area': row.get('area', merged[ts_code].get('area', '')),
-                    'industry': row.get('industry', merged[ts_code].get('industry', '')),
+                    'name': merged_info.get('name', merged[ts_code].get('name', '')),
+                    'area': merged_info.get('area', merged[ts_code].get('area', '')),
+                    'industry': merged_info.get('industry', merged[ts_code].get('industry', '')),
+                    'market': merged_info.get('market', merged[ts_code].get('market', '')),
+                    'list_date': merged_info.get('list_date', merged[ts_code].get('list_date')),
+                    'delist_date': merged_info.get('delist_date', merged[ts_code].get('delist_date')),
+                    'status': merged_info.get('status', merged[ts_code].get('status', 'L')),
                 })
             else:
+                merged_info = _build_stock_info(ts_code, code, row, 'akshare')
                 merged[ts_code] = {
                     'symbol': code,
-                    'name': row.get('name', ''),
-                    'area': row.get('area', ''),
-                    'industry': row.get('industry', ''),
-                    'market': '',
-                    'list_date': None,
-                    'status': 'L',
+                    'name': merged_info.get('name', ''),
+                    'area': merged_info.get('area', ''),
+                    'industry': merged_info.get('industry', ''),
+                    'market': merged_info.get('market', ''),
+                    'list_date': merged_info.get('list_date'),
+                    'delist_date': merged_info.get('delist_date'),
+                    'status': merged_info.get('status', 'L'),
                     'source': 'akshare'
                 }
 
@@ -698,7 +985,7 @@ def _is_index_ts_code(ts_code):
     symbol, market = ts_code.split('.', 1)
     market = market.upper()
     if market == 'SH':
-        return symbol.startswith('000')
+        return symbol.startswith('000') or symbol.startswith('880')
     if market == 'SZ':
         return symbol.startswith('399')
     if market == 'BJ':
