@@ -39,6 +39,11 @@ class DataViewManager:
         logger.info(f"显示指数数据: {index_name}")
         return self.window._show_index_data_impl(index_name)
 
+    def show_index_data_by_category(self, category_name):
+        """按分类显示指数基础信息"""
+        logger.info(f"按分类显示指数数据: {category_name}")
+        return self.window._show_index_data_by_category_impl(category_name)
+
     def handle_nav_item_clicked(self, item, column):
         """处理导航点击"""
         return self.window._on_nav_item_clicked_impl(item, column)

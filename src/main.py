@@ -18,17 +18,17 @@ from PySide6.QtWidgets import QApplication
 # 添加项目根目录到Python路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# 内部模块导入
-from src.utils.config import get_config, config_manager
-from src.utils.logger import setup_logger
-from src.utils.event_bus import publish, EventType, shutdown_event_bus
-from src.database.db_manager import DatabaseManager
 from src.data.data_manager import DataManager
+from src.database.db_manager import DatabaseManager
 from src.plugin.plugin_manager import PluginManager
 from src.ui.main_window import MainWindow
 from src.ui.theme_manager import ThemeManager
 from src.utils.cache_monitor import log_cache_stats
+# 内部模块导入
+from src.utils.config import config_manager, get_config
+from src.utils.event_bus import EventType, publish, shutdown_event_bus
 from src.utils.exception_handler import setup_global_exception_handler
+from src.utils.logger import setup_logger
 from src.utils.memory_manager import global_memory_manager
 
 
@@ -114,6 +114,7 @@ def _process_single_stock_batch(ctx):
         ctx: 股票批处理上下文
     """
     import time
+
     from src.database.models.stock import StockBasic
 
     for i, ts_code in enumerate(ctx.new_codes):
@@ -221,9 +222,9 @@ def sync_tdx_stock_to_database(config, db_manager):
     Returns:
         dict: 同步结果统计
     """
-    from src.data.tdx_handler import TdxHandler
-    from src.data.baostock_handler import BaostockHandler
     from src.data.akshare_handler import AkShareHandler
+    from src.data.baostock_handler import BaostockHandler
+    from src.data.tdx_handler import TdxHandler
     from src.database.models.stock import StockBasic
 
     result = {
@@ -560,6 +561,449 @@ def get_stock_info_from_apis(ts_code, merged_basic, baostock_handler, akshare_ha
         }
 
 
+def _is_index_ts_code(ts_code):
+    """判断 ts_code 是否为指数代码。"""
+    if not ts_code or '.' not in ts_code:
+        return False
+
+    symbol, market = ts_code.split('.', 1)
+    market = market.upper()
+    if market == 'SH':
+        return symbol.startswith('000')
+    if market == 'SZ':
+        return symbol.startswith('399')
+    if market == 'BJ':
+        return symbol.startswith('884') or symbol.startswith('899')
+    return False
+
+
+def _normalize_baostock_index_code(code):
+    """将 Baostock 指数代码标准化为 000001.SH 格式。"""
+    if not code:
+        return None
+
+    code = str(code).strip()
+    if '.' in code:
+        part1, part2 = code.split('.', 1)
+        part1 = part1.lower()
+        part2 = part2.strip()
+        if part1 in {'sh', 'sz', 'bj'} and part2.isdigit() and len(part2) == 6:
+            return f"{part2}.{part1.upper()}"
+
+    if '.' in code:
+        symbol, market = code.split('.', 1)
+        market = market.upper()
+        if symbol.isdigit() and len(symbol) == 6 and market in {'SH', 'SZ', 'BJ'}:
+            return f"{symbol}.{market}"
+
+    return None
+
+
+def _normalize_akshare_index_code(code):
+    """将 AkShare 指数代码标准化为 000001.SH 格式。"""
+    if code is None:
+        return None
+
+    code = str(code).strip()
+    if not code:
+        return None
+
+    if '.' in code:
+        symbol, market = code.split('.', 1)
+        market = market.upper()
+        if symbol.isdigit() and len(symbol) == 6 and market in {'SH', 'SZ', 'BJ'}:
+            return f"{symbol}.{market}"
+        return None
+
+    if not code.isdigit() or len(code) != 6:
+        return None
+
+    if code.startswith('000'):
+        return f"{code}.SH"
+    if code.startswith('399'):
+        return f"{code}.SZ"
+    if code.startswith('884') or code.startswith('899'):
+        return f"{code}.BJ"
+    return None
+
+
+def _normalize_index_ts_code(code):
+    """统一规范指数代码格式为 000001.SH。"""
+    return _normalize_baostock_index_code(code) or _normalize_akshare_index_code(code)
+
+
+FORCED_INDEX_NAME_MAP = {
+    '899050.BJ': '北证50',
+    '899601.BJ': '北证专精特新',
+}
+
+
+def _parse_index_date(value):
+    """解析指数日期字段，返回 date 或 None。"""
+    from datetime import datetime
+
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text or text in {'None', 'nan', 'NaT', '0000-00-00'}:
+        return None
+
+    for fmt in ('%Y-%m-%d', '%Y/%m/%d', '%Y%m%d'):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _infer_index_meta(ts_code, index_name):
+    """根据代码和名称推断指数元信息。"""
+    market = ts_code.split('.')[-1].upper() if ts_code and '.' in ts_code else ''
+    if market == 'SH':
+        publisher = '上交所'
+    elif market == 'SZ':
+        publisher = '深交所'
+    elif market == 'BJ':
+        publisher = '北交所'
+    else:
+        publisher = '交易所'
+
+    name = (index_name or '').strip()
+    if '行业' in name:
+        index_type = '行业指数'
+        category = '行业'
+    elif '主题' in name:
+        index_type = '主题指数'
+        category = '主题'
+    elif '红利' in name:
+        index_type = '策略指数'
+        category = '红利'
+    elif '创业板' in name:
+        index_type = '板块指数'
+        category = '创业板'
+    elif '科创' in name:
+        index_type = '板块指数'
+        category = '科创板'
+    elif '北证' in name:
+        index_type = '板块指数'
+        category = '北交所'
+    elif '中证' in name or '沪深' in name or '上证' in name or '深证' in name:
+        index_type = '综合指数'
+        category = '宽基'
+    else:
+        index_type = '综合指数'
+        category = '通用'
+
+    return {
+        'publisher': publisher,
+        'index_type': index_type,
+        'category': category,
+        'weight_rule': '市值加权',
+    }
+
+
+def _collect_external_index_name_map(config):
+    """收集外部数据源的指数信息映射。"""
+    import baostock as bs
+    import polars as pl
+
+    from src.data.akshare_handler import AkShareHandler
+    from src.data.baostock_handler import BaostockHandler
+
+    baostock_handler = BaostockHandler(config, None)
+    akshare_handler = AkShareHandler(config, None)
+
+    merged_info_map = {}
+
+    def _get_or_create(ts_code):
+        if ts_code not in merged_info_map:
+            merged_info_map[ts_code] = {
+                'name': '',
+                'list_date': None,
+                'base_date': None,
+            }
+        return merged_info_map[ts_code]
+
+    logger.info("开始从 Baostock 获取指数基本信息...")
+    try:
+        if baostock_handler._ensure_baostock_login():
+            rs = bs.query_stock_basic(code_name="")
+            baostock_pd = rs.get_data()
+            baostock_df = pl.from_pandas(baostock_pd)
+            if not baostock_df.is_empty():
+                for row in baostock_df.iter_rows(named=True):
+                    ts_code = _normalize_baostock_index_code(row.get('code'))
+                    name = (row.get('code_name') or '').strip()
+                    if ts_code and name and _is_index_ts_code(ts_code):
+                        item = _get_or_create(ts_code)
+                        item['name'] = name
+
+                        ipo_date = _parse_index_date(row.get('ipoDate'))
+                        if ipo_date and (item['list_date'] is None or ipo_date < item['list_date']):
+                            item['list_date'] = ipo_date
+                        if ipo_date and (item['base_date'] is None or ipo_date < item['base_date']):
+                            item['base_date'] = ipo_date
+            logger.info(f"Baostock指数信息映射数量: {len(merged_info_map)}")
+    except Exception as e:
+        logger.warning(f"从 Baostock 获取指数基本信息失败: {e}")
+
+    logger.info("开始从 AkShare 获取指数基本信息...")
+    try:
+        akshare_df = akshare_handler.update_index_basic()
+        if akshare_df is not None and not akshare_df.is_empty():
+            ak_count = 0
+            for row in akshare_df.iter_rows(named=True):
+                raw_code = row.get('代码', row.get('index_code'))
+                raw_name = row.get('名称', row.get('display_name'))
+                ts_code = _normalize_akshare_index_code(raw_code)
+                name = (raw_name or '').strip() if raw_name is not None else ''
+                if ts_code and name and _is_index_ts_code(ts_code):
+                    item = _get_or_create(ts_code)
+                    if not item['name']:
+                        item['name'] = name
+
+                    publish_date = _parse_index_date(row.get('publish_date', row.get('发布日期')))
+                    if publish_date and (item['list_date'] is None or publish_date < item['list_date']):
+                        item['list_date'] = publish_date
+                    if publish_date and (item['base_date'] is None or publish_date < item['base_date']):
+                        item['base_date'] = publish_date
+                    ak_count += 1
+            logger.info(f"AkShare可用指数名称映射数量: {ak_count}")
+    except Exception as e:
+        logger.warning(f"从 AkShare 获取指数基本信息失败: {e}")
+    finally:
+        try:
+            baostock_handler._logout_baostock()
+        except Exception:
+            pass
+
+    return merged_info_map
+
+
+def sync_tdx_index_to_database(config, db_manager):
+    """以通达信指数代码为基准同步 index_basic。"""
+    from src.data.tdx_handler import TdxHandler
+    from src.database.models.index import IndexBasic
+
+    result = {
+        'total_tdx_indexes': 0,
+        'updated_indexes': 0,
+        'inserted_indexes': 0,
+        'deleted_indexes': 0,
+        'unchanged_indexes': 0,
+        'fallback_named_indexes': 0,
+        'filled_blank_fields': 0,
+        'failed_indexes': []
+    }
+
+    logger.info("=" * 60)
+    logger.info("开始以通达信指数代码为基准同步 index_basic")
+    logger.info("=" * 60)
+
+    session = None
+    try:
+        tdx_handler = TdxHandler(config, db_manager)
+        tdx_codes = tdx_handler.get_stock_list()
+        tdx_index_codes = sorted({code for code in tdx_codes if _is_index_ts_code(code)})
+        tdx_index_code_set = set(tdx_index_codes)
+        result['total_tdx_indexes'] = len(tdx_index_codes)
+        logger.info(f"通达信指数代码数量: {len(tdx_index_codes)}")
+
+        if not tdx_index_codes:
+            logger.warning("通达信未发现指数代码，跳过同步")
+            return result
+
+        external_info_map = _collect_external_index_name_map(config)
+        logger.info(f"外部数据源可用指数信息映射总数: {len(external_info_map)}")
+
+        session = db_manager.get_session()
+
+        for i, ts_code in enumerate(tdx_index_codes):
+            try:
+                existing = session.query(IndexBasic).filter(IndexBasic.ts_code == ts_code).first()
+                source_info = external_info_map.get(ts_code, {})
+                source_name = FORCED_INDEX_NAME_MAP.get(ts_code, str(source_info.get('name', '') or '').strip())
+                if not source_name:
+                    source_name = f"指数{ts_code.split('.')[0]}"
+                    result['fallback_named_indexes'] += 1
+
+                market = ts_code.split('.')[-1]
+                source_list_date = source_info.get('list_date')
+                source_base_date = source_info.get('base_date')
+                inferred = _infer_index_meta(ts_code, source_name)
+                default_desc = f"{source_name}({ts_code})，通达信基准，Baostock/AkShare补全"
+
+                if existing:
+                    changed = False
+                    if existing.name != source_name:
+                        existing.name = source_name
+                        changed = True
+                    if existing.market != market:
+                        existing.market = market
+                        changed = True
+
+                    # 仅回填空白列，避免覆盖人工维护数据
+                    if not existing.publisher and inferred['publisher']:
+                        existing.publisher = inferred['publisher']
+                        changed = True
+                        result['filled_blank_fields'] += 1
+                    if not existing.index_type and inferred['index_type']:
+                        existing.index_type = inferred['index_type']
+                        changed = True
+                        result['filled_blank_fields'] += 1
+                    if not existing.category and inferred['category']:
+                        existing.category = inferred['category']
+                        changed = True
+                        result['filled_blank_fields'] += 1
+                    if not existing.weight_rule and inferred['weight_rule']:
+                        existing.weight_rule = inferred['weight_rule']
+                        changed = True
+                        result['filled_blank_fields'] += 1
+                    if not existing.list_date and source_list_date:
+                        existing.list_date = source_list_date
+                        changed = True
+                        result['filled_blank_fields'] += 1
+                    if not existing.base_date and source_base_date:
+                        existing.base_date = source_base_date
+                        changed = True
+                        result['filled_blank_fields'] += 1
+                    if not existing.desc:
+                        existing.desc = default_desc
+                        changed = True
+                        result['filled_blank_fields'] += 1
+
+                    if changed:
+                        result['updated_indexes'] += 1
+                    else:
+                        result['unchanged_indexes'] += 1
+                else:
+                    new_index = IndexBasic(
+                        ts_code=ts_code,
+                        name=source_name,
+                        market=market,
+                        publisher=inferred['publisher'],
+                        index_type=inferred['index_type'],
+                        category=inferred['category'],
+                        list_date=source_list_date,
+                        base_date=source_base_date,
+                        weight_rule=inferred['weight_rule'],
+                        desc=default_desc,
+                    )
+                    session.add(new_index)
+                    result['inserted_indexes'] += 1
+
+                if (i + 1) % 100 == 0:
+                    session.commit()
+                    logger.info(f"已处理 {i + 1}/{len(tdx_index_codes)} 个指数")
+
+            except Exception as row_e:
+                logger.exception(f"处理指数 {ts_code} 失败: {row_e}")
+                result['failed_indexes'].append(ts_code)
+
+        # 第二阶段：对 index_basic 存量数据执行空白字段回填（不覆盖已有值）
+        all_index_rows = session.query(IndexBasic).all()
+        for row in all_index_rows:
+            try:
+                changed = False
+
+                normalized_code = _normalize_index_ts_code(row.ts_code) or row.ts_code
+                source_info = external_info_map.get(normalized_code, {})
+                forced_name = FORCED_INDEX_NAME_MAP.get(normalized_code, '')
+
+                if not row.name:
+                    source_name = forced_name or str(source_info.get('name', '') or '').strip()
+                    if not source_name and normalized_code and '.' in normalized_code:
+                        source_name = f"指数{normalized_code.split('.')[0]}"
+                    if source_name:
+                        row.name = source_name
+                        changed = True
+                        result['filled_blank_fields'] += 1
+
+                normalized_name = row.name or str(source_info.get('name', '') or '').strip()
+                inferred = _infer_index_meta(normalized_code, normalized_name)
+
+                if not row.market and normalized_code and '.' in normalized_code:
+                    row.market = normalized_code.split('.')[-1]
+                    changed = True
+                    result['filled_blank_fields'] += 1
+                if not row.publisher and inferred['publisher']:
+                    row.publisher = inferred['publisher']
+                    changed = True
+                    result['filled_blank_fields'] += 1
+                if not row.index_type and inferred['index_type']:
+                    row.index_type = inferred['index_type']
+                    changed = True
+                    result['filled_blank_fields'] += 1
+                if not row.category and inferred['category']:
+                    row.category = inferred['category']
+                    changed = True
+                    result['filled_blank_fields'] += 1
+                if not row.weight_rule and inferred['weight_rule']:
+                    row.weight_rule = inferred['weight_rule']
+                    changed = True
+                    result['filled_blank_fields'] += 1
+
+                source_list_date = source_info.get('list_date')
+                source_base_date = source_info.get('base_date')
+                if not row.list_date and source_list_date:
+                    row.list_date = source_list_date
+                    changed = True
+                    result['filled_blank_fields'] += 1
+                if not row.base_date and source_base_date:
+                    row.base_date = source_base_date
+                    changed = True
+                    result['filled_blank_fields'] += 1
+                if not row.desc:
+                    safe_name = normalized_name or f"指数{normalized_code.split('.')[0]}" if normalized_code and '.' in normalized_code else '指数'
+                    row.desc = f"{safe_name}({normalized_code})，通达信基准，Baostock/AkShare补全"
+                    changed = True
+                    result['filled_blank_fields'] += 1
+
+                if changed and row.ts_code not in tdx_index_codes:
+                    result['updated_indexes'] += 1
+
+            except Exception as backfill_e:
+                logger.exception(f"回填指数 {row.ts_code} 空白字段失败: {backfill_e}")
+                result['failed_indexes'].append(row.ts_code)
+
+        # 第三阶段：删除不在通达信指数代码白名单中的历史记录
+        stale_rows = []
+        for row in all_index_rows:
+            normalized_code = _normalize_index_ts_code(row.ts_code)
+            if not normalized_code or normalized_code not in tdx_index_code_set:
+                stale_rows.append(row)
+
+        for stale_row in stale_rows:
+            session.delete(stale_row)
+        result['deleted_indexes'] = len(stale_rows)
+        if stale_rows:
+            logger.info(f"已删除 {len(stale_rows)} 条不在通达信指数代码中的 index_basic 记录")
+
+        session.commit()
+
+    except Exception as e:
+        logger.exception(f"同步指数信息失败: {e}")
+        if session:
+            session.rollback()
+    finally:
+        logger.info("=" * 60)
+        logger.info("指数同步结果统计:")
+        logger.info(f"  通达信指数总数: {result['total_tdx_indexes']}")
+        logger.info(f"  新增指数数量: {result['inserted_indexes']}")
+        logger.info(f"  删除指数数量: {result['deleted_indexes']}")
+        logger.info(f"  更新指数数量: {result['updated_indexes']}")
+        logger.info(f"  未变化数量: {result['unchanged_indexes']}")
+        logger.info(f"  回退命名数量: {result['fallback_named_indexes']}")
+        logger.info(f"  回填空白字段数量: {result['filled_blank_fields']}")
+        logger.info(f"  失败数量: {len(result['failed_indexes'])}")
+        if result['failed_indexes']:
+            logger.warning(f"  失败列表(前10): {result['failed_indexes'][:10]}")
+        logger.info("=" * 60)
+
+    return result
+
+
 def parse_args():
     """
     解析命令行参数
@@ -567,6 +1011,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='中国股市量化分析系统')
     parser.add_argument('--init-db', action='store_true', help='初始化数据库表')
     parser.add_argument('--update-stock', action='store_true', help='从通达信数据源同步股票信息到数据库')
+    parser.add_argument('--update-index', action='store_true', help='以通达信指数代码为基准更新 index_basic（Baostock/AkShare 补全）')
     parser.add_argument('--plugins', action='store_true', help='显示已加载的插件')
     return parser.parse_args()
 
@@ -662,6 +1107,32 @@ def _handle_update_stock_arg(config):
         return True
 
 
+def _handle_update_index_arg(config):
+    """处理指数更新参数。"""
+    logger.info("检测到 --update-index 参数，将执行指数信息同步")
+
+    db_manager = None
+    try:
+        db_manager = DatabaseManager(config)
+        db_manager.connect()
+        logger.info("数据库连接成功")
+
+        try:
+            db_manager.create_tables()
+            logger.info("数据库表创建/更新成功")
+        except (OSError, RuntimeError) as table_e:
+            logger.warning(f"创建数据库表时发生错误: {table_e}")
+
+        sync_tdx_index_to_database(config, db_manager)
+        db_manager.cleanup()
+        logger.info("数据库资源已清理")
+        return True
+
+    except (OSError, RuntimeError) as db_e:
+        logger.error(f"数据库连接失败，无法执行指数同步: {db_e}")
+        return True
+
+
 def _initialize_data_manager(config, plugin_manager):
     """初始化数据管理器
 
@@ -748,6 +1219,10 @@ def main():
 
         if args.update_stock:
             _handle_update_stock_arg(config)
+            return
+
+        if args.update_index:
+            _handle_update_index_arg(config)
             return
 
         data_manager = _initialize_data_manager(config, plugin_manager)

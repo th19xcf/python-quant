@@ -17,6 +17,35 @@ class MainWindowDataMixin:
     Handles data loading and display in tables
     """
 
+    def _clear_market_table_display(self):
+        """清空行情表格，避免旧菜单数据残留。"""
+        if not hasattr(self, 'stock_table') or self.stock_table is None:
+            return
+
+        self.stock_table.setSortingEnabled(False)
+        self.stock_table.clearContents()
+        self.stock_table.setRowCount(0)
+
+    def _clear_kline_display(self):
+        """清空K线显示区域，避免旧图表残留。"""
+        try:
+            if hasattr(self, '_clear_plots'):
+                self._clear_plots()
+        except Exception as e:
+            logger.debug(f"清空K线图表失败: {e}")
+
+        self.current_kline_data = {}
+        self.current_kline_index = -1
+        self.current_stock_data = None
+        self.current_stock_name = ''
+        self.current_stock_code = ''
+
+        if hasattr(self, 'ma_values_label') and self.ma_values_label is not None:
+            self.ma_values_label.setText('')
+
+        if hasattr(self, 'chart_title_label') and self.chart_title_label is not None:
+            self.chart_title_label.setText('暂无数据')
+
     def process_stock_data(self, stock_code, stock_name):
         """
         处理股票数据并显示K线图
@@ -106,9 +135,11 @@ class MainWindowDataMixin:
                     # 不是股票数据，不处理
                     pass
             else:
+                self._clear_kline_display()
                 self.statusBar().showMessage(result["message"], 5000)
         
         def on_task_error(task_id, error_message):
+            self._clear_kline_display()
             self.statusBar().showMessage(f"加载失败: {error_message}", 5000)
         
         # 连接信号
@@ -122,36 +153,154 @@ class MainWindowDataMixin:
         Returns:
             dict: 指数名称映射，格式：{file_name: index_name}
         """
+        # 读取缓存，避免每次切页都触发数据库会话创建/销毁
+        cache_ttl_seconds = 300
+        now_ts = datetime.now().timestamp()
+        cached_at = getattr(self, '_index_name_map_cache_time', 0)
+        if now_ts - cached_at <= cache_ttl_seconds:
+            cached_map = getattr(self, '_index_name_map_cache', None)
+            if isinstance(cached_map, dict):
+                return cached_map
+
         index_name_map = {}
+        index_ts_code_map = {}
+        normalized_index_ts_code_map = {}
+        previous_index_name_map = getattr(self, '_index_name_map_cache', {})
+        previous_index_ts_code_map = getattr(self, '_index_ts_code_map_cache', {})
+        previous_normalized_index_ts_code_map = getattr(self, '_normalized_index_ts_code_map_cache', {})
+
         try:
             if hasattr(self, 'data_manager') and self.data_manager and self.data_manager.db_manager:
-                # 获取沪市指数
-                index_basic_df_sh = self.data_manager.get_index_basic(exchange='sh')
-                if not index_basic_df_sh.is_empty():
-                    for row in index_basic_df_sh.iter_rows(named=True):
-                        ts_code = row['ts_code']
-                        name = row['name']
-                        if ts_code.endswith('.SH'):
-                            file_name = 'sh' + ts_code[:-3]
-                            index_name_map[file_name] = name
-                
-                # 获取深市指数
-                index_basic_df_sz = self.data_manager.get_index_basic(exchange='sz')
-                if not index_basic_df_sz.is_empty():
-                    for row in index_basic_df_sz.iter_rows(named=True):
-                        ts_code = row['ts_code']
-                        name = row['name']
-                        if ts_code.endswith('.SZ'):
-                            file_name = 'sz' + ts_code[:-3]
-                            index_name_map[file_name] = name
-                
-                logger.info(f"从数据库加载了 {len(index_name_map)} 个指数名称")
+                from sqlalchemy import text
+
+                session = self.data_manager.db_manager.get_session()
+                if session:
+                    sql = text(
+                        """
+                        SELECT ts_code, name
+                                                FROM index_basic
+                        WHERE name IS NOT NULL
+                          AND (
+                            ts_code LIKE '000%.SH'
+                            OR ts_code LIKE '399%.SZ'
+                            OR ts_code LIKE '899%.BJ'
+                            OR ts_code LIKE '884%.BJ'
+                          )
+                        """
+                    )
+
+                    result = session.execute(sql)
+                    for row in result:
+                        ts_code = row[0]
+                        name = row[1]
+                        if not ts_code or not name:
+                            continue
+
+                        symbol = ts_code.split('.')[0]
+                        market_suffix = ts_code.split('.')[-1].upper() if '.' in ts_code else ''
+
+                        if market_suffix == 'SH' and symbol.startswith('000'):
+                            index_name_map[f"sh{symbol}"] = name
+                        elif market_suffix == 'SZ' and symbol.startswith('399'):
+                            index_name_map[f"sz{symbol}"] = name
+                        elif market_suffix == 'BJ' and (symbol.startswith('899') or symbol.startswith('884')):
+                            index_name_map[f"bj{symbol}"] = name
+                        else:
+                            continue
+
+                        index_ts_code_map[name] = ts_code
+                        normalized_name = self._normalize_index_name(name)
+                        if normalized_name and normalized_name not in normalized_index_ts_code_map:
+                            normalized_index_ts_code_map[normalized_name] = ts_code
+
+                    try:
+                        result.close()
+                    except Exception:
+                        pass
+
+                logger.info(f"从数据表加载了 {len(index_name_map)} 个指数名称")
         except Exception as e:
             logger.warning(f"从数据库获取指数名称失败: {e}")
-        
+            if not index_name_map and isinstance(previous_index_name_map, dict) and previous_index_name_map:
+                index_name_map = previous_index_name_map
+                index_ts_code_map = previous_index_ts_code_map if isinstance(previous_index_ts_code_map, dict) else {}
+                normalized_index_ts_code_map = previous_normalized_index_ts_code_map if isinstance(previous_normalized_index_ts_code_map, dict) else {}
+                logger.info(f"数据库查询失败，回退使用缓存中的 {len(index_name_map)} 个指数名称")
+
+        # 更新缓存，失败时也缓存空结果以降低异常风暴
+        self._index_name_map_cache = index_name_map
+        self._index_ts_code_map_cache = index_ts_code_map
+        self._normalized_index_ts_code_map_cache = normalized_index_ts_code_map
+        self._index_name_map_cache_time = now_ts
         return index_name_map
 
-    def _get_index_data_from_tdx(self, market_filter=None):
+    def _normalize_index_name(self, name):
+        """
+        标准化指数名称，提升导航名称与表内名称的匹配成功率。
+        """
+        if not name:
+            return ""
+
+        normalized = str(name).strip().replace(" ", "")
+        replacements = [
+            "（", "）", "(", ")", "-", "_", ".", "·",
+            "成份", "成分", "指数", "指"
+        ]
+        for token in replacements:
+            normalized = normalized.replace(token, "")
+        return normalized
+
+    def _get_index_ts_code_from_db(self, index_name_or_code):
+        """
+        根据指数名称或代码，从数据表解析标准 ts_code。
+
+        Args:
+            index_name_or_code: 指数名称、纯数字代码或 ts_code
+
+        Returns:
+            str: 标准 ts_code，例如 399006.SZ；如果无法解析则返回原值
+        """
+        if not index_name_or_code:
+            return index_name_or_code
+
+        if '.' in index_name_or_code:
+            code_part, market_part = index_name_or_code.split('.', 1)
+            if market_part.upper() in {'SH', 'SZ', 'BJ'}:
+                return f"{code_part}.{market_part.upper()}"
+
+        self._get_index_name_map_from_db()
+        index_ts_code_map = getattr(self, '_index_ts_code_map_cache', {})
+        normalized_index_ts_code_map = getattr(self, '_normalized_index_ts_code_map_cache', {})
+        if index_name_or_code in index_ts_code_map:
+            return index_ts_code_map[index_name_or_code]
+
+        normalized_input = self._normalize_index_name(index_name_or_code)
+        if normalized_input in normalized_index_ts_code_map:
+            return normalized_index_ts_code_map[normalized_input]
+
+        # 名称不完全一致时，尝试模糊匹配（如“科创板指”匹配“上证科创板50成份指数”）
+        candidate_codes = []
+        for normalized_name, ts_code in normalized_index_ts_code_map.items():
+            if not normalized_name:
+                continue
+            if normalized_input in normalized_name or normalized_name in normalized_input:
+                candidate_codes.append((normalized_name, ts_code))
+
+        if candidate_codes:
+            candidate_codes.sort(key=lambda x: len(x[0]))
+            return candidate_codes[0][1]
+
+        if index_name_or_code.isdigit() and len(index_name_or_code) == 6:
+            if index_name_or_code.startswith('000'):
+                return f"{index_name_or_code}.SH"
+            if index_name_or_code.startswith('399'):
+                return f"{index_name_or_code}.SZ"
+            if index_name_or_code.startswith('899') or index_name_or_code.startswith('884'):
+                return f"{index_name_or_code}.BJ"
+
+        return index_name_or_code
+
+    def _get_index_data_from_tdx(self, market_filter=None, category_filter=None):
         """
         从通达信数据文件获取指数数据
         
@@ -164,6 +313,77 @@ class MainWindowDataMixin:
         # 从数据库获取指数名称
         db_index_name_map = self._get_index_name_map_from_db()
         index_name_map = db_index_name_map if db_index_name_map else {}
+
+        allowed_index_files = None
+        if category_filter:
+            allowed_index_files = set()
+            try:
+                if hasattr(self, 'data_manager') and self.data_manager and self.data_manager.db_manager:
+                    from sqlalchemy import text
+
+                    session = self.data_manager.db_manager.get_session()
+                    if session:
+                        sql = text(
+                            """
+                            SELECT ts_code
+                            FROM index_basic
+                            WHERE category = :category_name
+                            """
+                        )
+                        result = session.execute(sql, {"category_name": category_filter})
+                        for row in result:
+                            ts_code = row[0]
+                            if not ts_code or '.' not in ts_code:
+                                continue
+                            symbol, market_suffix = ts_code.split('.', 1)
+                            market_suffix = market_suffix.upper()
+                            if market_suffix == 'SH':
+                                allowed_index_files.add(f"sh{symbol}")
+                            elif market_suffix == 'SZ':
+                                allowed_index_files.add(f"sz{symbol}")
+                            elif market_suffix == 'BJ':
+                                allowed_index_files.add(f"bj{symbol}")
+                        try:
+                            result.close()
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.warning(f"按分类过滤指数时查询数据库失败: {e}")
+                allowed_index_files = set()
+
+        excluded_index_files = set()
+        # 在“沪市指数/深市指数”总览中排除创业板/科创板类型指数，避免与分类导航重复。
+        if category_filter is None and market_filter in {'sh', 'sz'}:
+            try:
+                if hasattr(self, 'data_manager') and self.data_manager and self.data_manager.db_manager:
+                    from sqlalchemy import text
+
+                    session = self.data_manager.db_manager.get_session()
+                    if session:
+                        sql = text(
+                            """
+                            SELECT ts_code
+                            FROM index_basic
+                            WHERE category IN ('创业板', '科创板')
+                            """
+                        )
+                        result = session.execute(sql)
+                        for row in result:
+                            ts_code = row[0]
+                            if not ts_code or '.' not in ts_code:
+                                continue
+                            symbol, market_suffix = ts_code.split('.', 1)
+                            market_suffix = market_suffix.upper()
+                            if market_suffix == 'SH':
+                                excluded_index_files.add(f"sh{symbol}")
+                            elif market_suffix == 'SZ':
+                                excluded_index_files.add(f"sz{symbol}")
+                        try:
+                            result.close()
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.warning(f"构建创业板/科创板排除列表失败: {e}")
         
         tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
         all_index_files = []
@@ -198,20 +418,19 @@ class MainWindowDataMixin:
         for index_file in all_index_files:
             try:
                 file_name = index_file.stem
+                if allowed_index_files is not None and file_name not in allowed_index_files:
+                    continue
+
+                if file_name in excluded_index_files:
+                    continue
+
                 market = file_name[:2]
                 
                 # 获取指数名称
                 if file_name in index_name_map:
                     index_name = index_name_map[file_name]
                 else:
-                    index_code = file_name[2:]
-                    if market == "sh":
-                        market_name = "沪市"
-                    elif market == "sz":
-                        market_name = "深市"
-                    else:
-                        market_name = "京市"
-                    index_name = f"{market_name}指数{index_code}"
+                    index_name = file_name[2:]
                 
                 with open(index_file, 'rb') as f:
                     f.seek(0, 2)
@@ -291,7 +510,7 @@ class MainWindowDataMixin:
         """
         self._load_index_data(market='bj', title='京市指数')
 
-    def _load_index_data(self, market='all', title='指数'):
+    def _load_index_data(self, market='all', title='指数', category_filter=None):
         """
         加载指数数据并显示在表格中
         
@@ -302,7 +521,10 @@ class MainWindowDataMixin:
         def _load_index_task(task_id=None, signals=None):
             """后台任务函数"""
             try:
-                index_data = self._get_index_data_from_tdx(market_filter=market if market != 'all' else None)
+                index_data = self._get_index_data_from_tdx(
+                    market_filter=market if market != 'all' else None,
+                    category_filter=category_filter,
+                )
                 return {"success": True, "index_data": index_data, "title": title}
             except (OSError, RuntimeError, ValueError) as e:
                 logger.exception(f"Failed to fetch index data: {e}")
@@ -354,6 +576,7 @@ class MainWindowDataMixin:
                 self.stock_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
                 self.statusBar().showMessage(f"已加载 {self.stock_table.rowCount()} 个{result['title']}", 3000)
             else:
+                self._clear_market_table_display()
                 self.statusBar().showMessage(result["message"], 5000)
             
             # 隐藏进度条
@@ -369,6 +592,7 @@ class MainWindowDataMixin:
             except Exception:
                 pass
             
+            self._clear_market_table_display()
             self.statusBar().showMessage(f"Error: {error_message}", 5000)
             if hasattr(self, 'progress_bar'):
                 self.market_progress_bar.setVisible(False)
@@ -423,7 +647,7 @@ class MainWindowDataMixin:
                 
                 # 获取最新交易日
                 latest_date = None
-                all_stock_data = []
+                table_rows = []
                 
                 # 获取股票基本信息映射
                 stock_name_df = self.data_manager.get_stock_basic()
@@ -448,8 +672,6 @@ class MainWindowDataMixin:
                         if i % 100 == 0:
                             logger.info(f"正在解析文件: {file_path} ({i+1}/{total_files})")
                         
-                        # 直接解析文件，获取所有数据
-                        data = []
                         with open(file_path, 'rb') as f:
                             # 获取文件大小
                             f.seek(0, 2)
@@ -570,24 +792,26 @@ class MainWindowDataMixin:
                                 change = 0.0
                                 pct_chg = 0.0
                             
-                            # 添加到数据列表
-                            data.append({
-                                'date': date.strftime('%Y-%m-%d'),
-                                'code': code,
-                                'name': stock_name,
-                                'pct_chg': pct_chg,
-                                'close': close_val,
-                                'change': change,
-                                'open': open_val,
-                                'high': high_val,
-                                'low': low_val,
-                                'volume': volume,
-                                'amount': amount,
-                                'preclose': preclose
-                            })
-                        
-                        # 添加到所有股票数据列表
-                        all_stock_data.extend(data)
+                            if preclose > 0:
+                                amplitude = ((high_val - low_val) / preclose) * 100
+                            else:
+                                amplitude = 0.0
+
+                            table_rows.append((
+                                date.strftime('%Y-%m-%d'),
+                                code,
+                                stock_name,
+                                f"{pct_chg:.2f}",
+                                f"{close_val:.2f}",
+                                f"{change:.2f}",
+                                f"{volume:,}",
+                                f"{amount:,}",
+                                f"{open_val:.2f}",
+                                f"{high_val:.2f}",
+                                f"{low_val:.2f}",
+                                f"{preclose:.2f}",
+                                f"{amplitude:.2f}%"
+                            ))
                         
                     except (OSError, RuntimeError, ValueError) as e:
                         logger.warning(f"解析文件{file_path}失败: {e}")
@@ -597,51 +821,24 @@ class MainWindowDataMixin:
                 if signals:
                     signals.progress.emit(task_id, 80, 100)
                 
-                if not all_stock_data:
+                if not table_rows:
                     return {"success": False, "message": f"没有解析到任何{stock_type}数据，请检查文件格式是否正确"}
                 
                 # 不再过滤出最新交易日的数据，保留所有股票的最新可用数据
                 # 这样可以确保显示所有股票，而不是只显示最新交易日有数据的股票
                 if latest_date:
                     latest_date_str = latest_date.strftime('%Y-%m-%d')
-                    logger.info(f"最新交易日: {latest_date_str}，共{len(all_stock_data)}只{stock_type}股票有数据")
+                    logger.info(f"最新交易日: {latest_date_str}，共{len(table_rows)}只{stock_type}股票有数据")
                 
                 # 发送进度信号
                 if signals:
                     signals.progress.emit(task_id, 90, 100)
                 
-                # 构建表格数据
-                table_data = []
-                for row_data in all_stock_data:
-                    # 计算振幅
-                    if row_data['preclose'] > 0:
-                        amplitude = ((row_data['high'] - row_data['low']) / row_data['preclose']) * 100
-                    else:
-                        amplitude = 0.0
-                    
-                    # 构建数据行，适配新的列结构
-                    data_row = [
-                        row_data['date'],  # 日期
-                        row_data['code'],  # 代码
-                        row_data['name'],  # 名称
-                        f"{row_data['pct_chg']:.2f}",  # 涨跌幅
-                        f"{row_data['close']:.2f}",  # 现价
-                        f"{row_data['change']:.2f}",  # 涨跌
-                        f"{row_data['volume']:,}",  # 总量
-                        f"{row_data['amount']:,}",  # 成交额
-                        f"{row_data['open']:.2f}",  # 今开
-                        f"{row_data['high']:.2f}",  # 最高
-                        f"{row_data['low']:.2f}",  # 最低
-                        f"{row_data['preclose']:.2f}",  # 昨收
-                        f"{amplitude:.2f}%"  # 振幅%
-                    ]
-                    table_data.append(data_row)
-                
                 # 发送进度信号
                 if signals:
                     signals.progress.emit(task_id, 100, 100)
                 
-                return {"success": True, "table_data": table_data, "stock_count": len(all_stock_data), "stock_type": stock_type}
+                return {"success": True, "table_data": table_rows, "stock_count": len(table_rows), "stock_type": stock_type}
             except (OSError, RuntimeError, ValueError) as e:
                 logger.exception(f"显示{stock_type}数据失败: {e}")
                 return {"success": False, "message": f"显示{stock_type}数据失败: {str(e)[:50]}..."}
@@ -758,6 +955,7 @@ class MainWindowDataMixin:
                     # 指数数据或其他类型的数据，不处理表格显示
                     pass
             else:
+                self._clear_market_table_display()
                 self.statusBar().showMessage(result["message"], 5000)
             
             # 隐藏进度条
@@ -773,6 +971,7 @@ class MainWindowDataMixin:
                 pass
         
         def on_task_error(task_id, error_message):
+            self._clear_market_table_display()
             self.statusBar().showMessage(f"显示{stock_type}数据失败: {error_message}", 5000)
             if hasattr(self, 'progress_bar'):
                 self.market_progress_bar.setVisible(False)
@@ -833,13 +1032,17 @@ class MainWindowDataMixin:
     def _show_hs_aj_stock_data_impl(self):
         self._show_stock_data_by_type_impl("全部A股")
 
+    def _show_index_data_by_category_impl(self, category_name):
+        """按 index_basic.category 展示指数行情，样式与其他指数页保持一致。"""
+        self._load_index_data(market='all', title=f"{category_name}指数", category_filter=category_name)
+
     def _show_index_data_impl(self, index_name):
         def _show_index_data_task(index_name, task_id=None, signals=None):
             """后台任务函数"""
             try:
-                # 直接使用指数名称作为代码（实际系统会从API获取正确的指数代码）
-                # 这里简化处理，假设指数名称就是指数代码
-                index_code = index_name
+                index_code = self._get_index_ts_code_from_db(index_name)
+                if index_code == index_name:
+                    logger.warning(f"未能从数据表解析指数代码，将使用原始值: {index_name}")
                 
                 # 从数据管理器获取指数历史数据
                 from datetime import datetime, timedelta
@@ -870,7 +1073,10 @@ class MainWindowDataMixin:
         )
         
         # 连接任务信号
-        def on_task_completed(task_id, result):
+        def on_task_completed(completed_task_id, result):
+            if completed_task_id != task_id:
+                return
+
             # 断开信号连接，避免影响其他任务
             try:
                 global_task_manager.task_completed.disconnect(on_task_completed)
@@ -894,9 +1100,13 @@ class MainWindowDataMixin:
                     # 不是指数数据，不处理
                     pass
             else:
+                self._clear_kline_display()
                 self.statusBar().showMessage(result["message"], 5000)
         
-        def on_task_error(task_id, error_message):
+        def on_task_error(error_task_id, error_message):
+            if error_task_id != task_id:
+                return
+
             # 断开信号连接，避免影响其他任务
             try:
                 global_task_manager.task_completed.disconnect(on_task_completed)
@@ -904,6 +1114,7 @@ class MainWindowDataMixin:
             except Exception:
                 pass
             
+            self._clear_kline_display()
             self.statusBar().showMessage(f"加载失败: {error_message}", 5000)
         
         # 连接信号
@@ -919,7 +1130,6 @@ class MainWindowDataMixin:
         """
         try:
             logger.info("Showing latest 5 days index data")
-            index_map = {"sh000001": "上证指数", "sz399001": "深证成指"}
             
             self.stock_table.setSortingEnabled(False)
             self.stock_table.setRowCount(0)
