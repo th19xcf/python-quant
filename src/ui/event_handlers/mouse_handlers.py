@@ -150,7 +150,12 @@ class MouseHandler:
                         current_macd_signal = self.main_window.current_macd_data['macd_signal'][index]
                         current_macd_hist = self.main_window.current_macd_data['macd_hist'][index]
                         macd_hist_color = '#FF0000' if current_macd_hist >= 0 else '#00FF00'
-                        self.main_window.kdj_values_label.setText(f"<font color='#FFFFFF'>DIF: {self._format_value(current_macd)}</font>  <font color='#FFFF00'>DEA: {self._format_value(current_macd_signal)}</font>  <font color='{macd_hist_color}'>MACD: {self._format_value(current_macd_hist)}</font>")
+                        self.main_window.kdj_values_label.setText(
+                            f"<font color='white'>MACD(12,26,9) </font>"
+                            f"<font color='#FFFFFF'>DIF: {self._format_value(current_macd)}</font>  "
+                            f"<font color='#FFFF00'>DEA: {self._format_value(current_macd_signal)}</font>  "
+                            f"<font color='{macd_hist_color}'>MACD: {self._format_value(current_macd_hist)}</font>"
+                        )
                     elif current_indicator == "WR" and hasattr(self.main_window, 'current_wr_data') and 0 <= index < len(self.main_window.current_wr_data['wr1']):
                         current_wr1 = self.main_window.current_wr_data['wr1'][index]
                         current_wr2 = self.main_window.current_wr_data['wr2'][index]
