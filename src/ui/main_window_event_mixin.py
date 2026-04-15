@@ -4,7 +4,9 @@ from functools import wraps
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor
-from PySide6.QtWidgets import (QApplication, QDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QTableWidgetItem, QVBoxLayout)
+from PySide6.QtWidgets import (QApplication, QDialog, QHBoxLayout, QLabel,
+                               QLineEdit, QMenu, QMessageBox, QPushButton,
+                               QTableWidgetItem, QVBoxLayout)
 
 from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
@@ -249,6 +251,18 @@ class MainWindowEventMixin:
         """
         text = item.text(column)
         logger.info(f"Clicked nav item: {text}")
+
+        market_view_items = {
+            "沪市指数", "深市指数", "京市指数", "创业板指", "科创板指",
+            "沪深京个股", "沪深京A股", "全部A股", "上证A股", "深证A股",
+            "京市个股", "创业板", "科创板", "开放式基金", "封闭式基金"
+        }
+
+        if text in market_view_items:
+            previous_market_view = getattr(self, 'current_market_view', None)
+            if previous_market_view != text and hasattr(self, 'table_interaction_manager'):
+                self.table_interaction_manager.reset_sort_state()
+            self.current_market_view = text
         
         # Switch to market tab
         self.tab_widget.setCurrentIndex(0)
@@ -1077,8 +1091,9 @@ class MainWindowEventMixin:
                             amplitude_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                             self.stock_table.setItem(row, 12, amplitude_item)
                         
-                        # 重新启用排序
-                        self.stock_table.setSortingEnabled(True)
+                        # 仅在当前页面已有有效排序时恢复排序
+                        if hasattr(self, 'table_interaction_manager'):
+                            self.table_interaction_manager.restore_sort_state()
                         
                         # 更新状态栏
                         self.statusBar().showMessage(f"成功加载 {len(etf_funds)} 只ETF基金数据", 3000)
@@ -1116,8 +1131,8 @@ class MainWindowEventMixin:
             logger.exception(f"显示ETF基金数据失败: {e}")
             self.statusBar().showMessage(f"显示ETF基金数据失败: {str(e)}", 3000)
             
-            # 重新启用排序
-            self.stock_table.setSortingEnabled(True)
+            if hasattr(self, 'table_interaction_manager'):
+                self.table_interaction_manager.restore_sort_state()
 
     def _show_closed_funds(self):
         """
@@ -1796,8 +1811,9 @@ class MainWindowEventMixin:
                         # 更新状态栏
                         self.statusBar().showMessage(f"成功加载 {len(closed_funds)} 只封闭式基金数据", 3000)
 
-                        # 数据填充完成后再开启排序
-                        self.stock_table.setSortingEnabled(True)
+                        # 仅在当前页面已有有效排序时恢复排序
+                        if hasattr(self, 'table_interaction_manager'):
+                            self.table_interaction_manager.restore_sort_state()
                     else:
                         # 显示错误消息
                         error_message = result.get("message", "加载封闭式基金数据失败")

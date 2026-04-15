@@ -1,12 +1,15 @@
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QTableWidgetItem, QAbstractItemView, QApplication
-from PySide6.QtGui import QColor
-from src.utils.logger import logger
-from pathlib import Path
 import struct
 from datetime import datetime
+from pathlib import Path
+
 import polars as pl
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QTableWidgetItem
+
 from src.ui.task_manager import global_task_manager
+from src.utils.logger import logger
+
 
 class MainWindowDataMixin:
     """
@@ -346,7 +349,8 @@ class MainWindowDataMixin:
                 for data_row in result["index_data"]:
                     self._add_table_row(data_row)
                 
-                self.stock_table.setSortingEnabled(True)
+                if hasattr(self, 'table_interaction_manager'):
+                    self.table_interaction_manager.restore_sort_state()
                 self.stock_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
                 self.statusBar().showMessage(f"已加载 {self.stock_table.rowCount()} 个{result['title']}", 3000)
             else:
@@ -382,11 +386,12 @@ class MainWindowDataMixin:
         def _show_stock_data_by_type_task(stock_type, task_id=None, signals=None):
             """后台任务函数"""
             try:
-                import polars as pl
-                from pathlib import Path
                 import struct
                 from datetime import datetime
-                
+                from pathlib import Path
+
+                import polars as pl
+
                 # 构建通达信日线数据目录路径
                 tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
                 
@@ -743,8 +748,9 @@ class MainWindowDataMixin:
                             
                             self.stock_table.setItem(row_pos, col, item)
                     
-                    # 数据添加完成后重新启用排序
-                    self.stock_table.setSortingEnabled(True)
+                    # 仅在当前页面已有有效排序时恢复排序
+                    if hasattr(self, 'table_interaction_manager'):
+                        self.table_interaction_manager.restore_sort_state()
                     
                     logger.info(f"{result['stock_type']}数据显示完成")
                     self.statusBar().showMessage(f"成功显示{result['stock_count']}只{result['stock_type']}股票的最新交易日数据", 3000)

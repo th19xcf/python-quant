@@ -14,6 +14,50 @@ class TableInteractionManager:
     def __init__(self, window):
         self.window = window
 
+    def reset_sort_state(self):
+        """重置表格排序状态，避免页面之间继承排序设置"""
+        window = self.window
+        try:
+            from PySide6.QtCore import Qt
+
+            window.stock_table.setSortingEnabled(False)
+            window.column_sort_states = {}
+            window.current_sorted_column = -1
+
+            header = window.stock_table.horizontalHeader()
+            header.setSortIndicatorShown(False)
+            header.setSortIndicator(-1, Qt.AscendingOrder)
+        except (OSError, RuntimeError) as e:
+            logger.exception(f"重置表格排序状态失败: {e}")
+
+    def restore_sort_state(self):
+        """按当前页面的排序状态恢复排序；若无有效排序则保持关闭。"""
+        window = self.window
+        try:
+            from PySide6.QtCore import Qt
+
+            column = window.current_sorted_column
+            if column is None or column < 0:
+                self.reset_sort_state()
+                return
+
+            sort_state = window.column_sort_states.get(column, 0)
+            if sort_state == 1:
+                order = Qt.AscendingOrder
+            elif sort_state == 2:
+                order = Qt.DescendingOrder
+            else:
+                self.reset_sort_state()
+                return
+
+            header = window.stock_table.horizontalHeader()
+            header.setSortIndicatorShown(True)
+            header.setSortIndicator(column, order)
+            window.stock_table.setSortingEnabled(True)
+            window.stock_table.sortItems(column, order)
+        except (OSError, RuntimeError) as e:
+            logger.exception(f"恢复表格排序状态失败: {e}")
+
     def on_header_clicked(self, logical_index):
         """处理表头点击事件"""
         logger.debug(f"表头点击: {logical_index}")
@@ -24,19 +68,25 @@ class TableInteractionManager:
             window.column_sort_states[logical_index] = next_state
 
             from PySide6.QtCore import Qt
-            from PySide6.QtWidgets import QTableWidgetItem
             from PySide6.QtGui import QColor
+            from PySide6.QtWidgets import QTableWidgetItem
 
             if next_state == 1:
+                window.stock_table.horizontalHeader().setSortIndicatorShown(True)
+                window.stock_table.horizontalHeader().setSortIndicator(logical_index, Qt.AscendingOrder)
                 window.stock_table.setSortingEnabled(True)
                 window.stock_table.sortItems(logical_index, Qt.AscendingOrder)
                 window.current_sorted_column = logical_index
             elif next_state == 2:
+                window.stock_table.horizontalHeader().setSortIndicatorShown(True)
+                window.stock_table.horizontalHeader().setSortIndicator(logical_index, Qt.DescendingOrder)
                 window.stock_table.setSortingEnabled(True)
                 window.stock_table.sortItems(logical_index, Qt.DescendingOrder)
                 window.current_sorted_column = logical_index
             else:
                 window.stock_table.setSortingEnabled(False)
+                window.stock_table.horizontalHeader().setSortIndicatorShown(False)
+                window.stock_table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
 
                 current_data = []
                 row_count = window.stock_table.rowCount()
@@ -107,8 +157,6 @@ class TableInteractionManager:
                             else:
                                 item.setForeground(QColor(204, 204, 204))
                         window.stock_table.setItem(row_pos, col, item)
-
-                window.stock_table.setSortingEnabled(True)
                 window.current_sorted_column = -1
         except (OSError, RuntimeError) as e:
             logger.exception(f"处理表头点击事件失败: {e}")
