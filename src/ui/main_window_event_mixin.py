@@ -873,34 +873,31 @@ class MainWindowEventMixin:
                     
                     # 检查是否有数据管理器
                     if hasattr(self, 'data_manager') and self.data_manager:
-                        # 获取股票基本信息
-                        stock_basic = self.data_manager.get_stock_basic()
-                        
-                        if not stock_basic.is_empty():
-                            # 筛选ETF基金（通常ETF代码以51或15开头）
+                        fund_basic = self.data_manager.get_fund_basic()
+
+                        if not fund_basic.is_empty():
+                            # 筛选ETF基金：SH(51/52/56/58) + SZ(159)
                             etf_codes = []
-                            for row in stock_basic.iter_rows(named=True):
-                                ts_code = row.get('ts_code', '')
+                            for row in fund_basic.iter_rows(named=True):
+                                ts_code = str(row.get('ts_code', '') or '').strip().upper()
+                                if not ts_code or not self._is_etf_fund_ts_code(ts_code):
+                                    continue
+
                                 name = row.get('name', '')
-                                # 提取代码部分（去除市场后缀）
-                                if ts_code:
-                                    code = ts_code.split('.')[0]
-                                    # 筛选ETF基金（51开头的沪市ETF，15开头的深市ETF）
-                                    if code.startswith('51') or code.startswith('15'):
-                                        # 名称统一来自数据表，缺失时仅回退为代码
-                                        if not name:
-                                            name = code
-                                        etf_codes.append((code, name))
+                                code = ts_code.split('.')[0]
+                                if not name:
+                                    name = code
+                                etf_codes.append((code, name, ts_code))
                             
                             # 为每个ETF基金获取真实交易数据
                             added_codes = set()
                             total = len(etf_codes)
-                            for i, (code, name) in enumerate(etf_codes):
+                            for i, (code, name, ts_code) in enumerate(etf_codes):
                                 # 检查是否已经添加过相同代码的ETF基金
                                 if code in added_codes:
                                     continue
                                 # 尝试从通达信数据文件获取真实数据
-                                real_data = self._get_real_etf_data(code, name)
+                                real_data = self._get_real_etf_data(code, name, ts_code)
                                 if real_data:
                                     etf_funds.append(real_data)
                                     added_codes.add(code)
@@ -1176,34 +1173,35 @@ class MainWindowEventMixin:
                     
                     # 检查是否有数据管理器
                     if hasattr(self, 'data_manager') and self.data_manager:
-                        # 获取股票基本信息
-                        stock_basic = self.data_manager.get_stock_basic()
-                        
-                        if not stock_basic.is_empty():
-                            # 筛选封闭式基金（通常代码以15开头的深市封闭式基金）
-                            fund_codes = []
-                            for row in stock_basic.iter_rows(named=True):
-                                ts_code = row.get('ts_code', '')
+                        fund_codes = []
+
+                        # 优先读 closed_fund_basic；为空时回退到 fund_basic 按代码规则筛选
+                        closed_fund_basic = self.data_manager.get_closed_fund_basic()
+                        source_df = closed_fund_basic
+                        if source_df.is_empty():
+                            source_df = self.data_manager.get_fund_basic()
+
+                        if not source_df.is_empty():
+                            for row in source_df.iter_rows(named=True):
+                                ts_code = str(row.get('ts_code', '') or '').strip().upper()
+                                if not ts_code or not self._is_closed_fund_ts_code(ts_code):
+                                    continue
+
                                 name = row.get('name', '')
-                                # 提取代码部分（去除市场后缀）
-                                if ts_code:
-                                    code = ts_code.split('.')[0]
-                                    # 筛选封闭式基金（15开头，排除159开头ETF）
-                                    if code.startswith('15') and not code.startswith('159'):
-                                        # 名称统一来自数据表，缺失时仅回退为代码
-                                        if not name:
-                                            name = code
-                                        fund_codes.append((code, name))
+                                code = ts_code.split('.')[0]
+                                if not name:
+                                    name = code
+                                fund_codes.append((code, name, ts_code))
                             
                             # 为每个封闭式基金获取真实交易数据
                             added_codes = set()
                             total = len(fund_codes)
-                            for i, (code, name) in enumerate(fund_codes):
+                            for i, (code, name, ts_code) in enumerate(fund_codes):
                                 # 检查是否已经添加过相同代码的基金
                                 if code in added_codes:
                                     continue
                                 # 尝试从通达信数据文件获取真实数据
-                                real_data = self._get_real_etf_data(code, name)
+                                real_data = self._get_real_etf_data(code, name, ts_code)
                                 if real_data:
                                     closed_funds.append(real_data)
                                     added_codes.add(code)
@@ -1455,33 +1453,29 @@ class MainWindowEventMixin:
             
             # 检查是否有数据管理器
             if hasattr(self, 'data_manager') and self.data_manager:
-                # 获取股票基本信息
-                stock_basic = self.data_manager.get_stock_basic()
-                
-                if not stock_basic.is_empty():
-                    # 筛选ETF基金（通常ETF代码以51或15开头）
+                fund_basic = self.data_manager.get_fund_basic()
+
+                if not fund_basic.is_empty():
                     etf_codes = []
-                    for row in stock_basic.iter_rows(named=True):
-                        ts_code = row.get('ts_code', '')
+                    for row in fund_basic.iter_rows(named=True):
+                        ts_code = str(row.get('ts_code', '') or '').strip().upper()
+                        if not ts_code or not self._is_etf_fund_ts_code(ts_code):
+                            continue
+
                         name = row.get('name', '')
-                        # 提取代码部分（去除市场后缀）
-                        if ts_code:
-                            code = ts_code.split('.')[0]
-                            # 筛选ETF基金（51开头的沪市ETF，15开头的深市ETF）
-                            if code.startswith('51') or code.startswith('15'):
-                                # 名称统一来自数据表，缺失时仅回退为代码
-                                if not name:
-                                    name = code
-                                etf_codes.append((code, name))
+                        code = ts_code.split('.')[0]
+                        if not name:
+                            name = code
+                        etf_codes.append((code, name, ts_code))
                     
                     # 为每个ETF基金获取真实交易数据
                     added_codes = set()
-                    for code, name in etf_codes:
+                    for code, name, ts_code in etf_codes:
                         # 检查是否已经添加过相同代码的ETF基金
                         if code in added_codes:
                             continue
                         # 尝试从通达信数据文件获取真实数据
-                        real_data = self._get_real_etf_data(code, name)
+                        real_data = self._get_real_etf_data(code, name, ts_code)
                         if real_data:
                             etf_funds.append(real_data)
                             added_codes.add(code)
@@ -1517,7 +1511,7 @@ class MainWindowEventMixin:
             logger.exception(f"获取ETF基金数据失败: {e}")
             return []
     
-    def _get_real_etf_data(self, code, name):
+    def _get_real_etf_data(self, code, name, ts_code=None):
         """
         从通达信数据文件获取ETF基金的真实交易数据
         
@@ -1532,14 +1526,22 @@ class MainWindowEventMixin:
             import datetime
             current_date = datetime.datetime.now().strftime("%Y-%m-%d")
             
-            # 确定ETF基金的市场
-            if code.startswith('51'):
-                market = 'sh'
-            elif code.startswith('15'):
-                market = 'sz'
-            else:
-                # 默认为深市
-                market = 'sz'
+            # 优先使用 ts_code 的交易所后缀，避免 50/16/18 等代码误判市场
+            market = None
+            if ts_code and '.' in ts_code:
+                suffix = ts_code.split('.')[-1].upper()
+                if suffix in {'SH', 'SZ', 'BJ'}:
+                    market = suffix.lower()
+
+            if not market:
+                if code.startswith('5'):
+                    market = 'sh'
+                elif code.startswith('1') or code.startswith('0') or code.startswith('3'):
+                    market = 'sz'
+                elif code.startswith('8') or code.startswith('9'):
+                    market = 'bj'
+                else:
+                    market = 'sz'
             
             # 构建通达信数据文件路径
             if hasattr(self, 'data_manager') and self.data_manager and hasattr(self.data_manager.config, 'data'):
@@ -1627,6 +1629,33 @@ class MainWindowEventMixin:
             logger.warning(f"获取ETF基金 {name}({code}) 的真实交易数据失败: {e}")
         
         return None
+
+    def _is_etf_fund_ts_code(self, ts_code: str) -> bool:
+        """判断是否ETF基金代码。"""
+        if not ts_code or '.' not in ts_code:
+            return False
+
+        symbol, market = ts_code.split('.', 1)
+        market = market.upper()
+        if market == 'SH' and symbol.startswith(('51', '52', '56', '58')):
+            return True
+        if market == 'SZ' and symbol.startswith('159'):
+            return True
+        return False
+
+    def _is_closed_fund_ts_code(self, ts_code: str) -> bool:
+        """判断是否封闭式基金代码。"""
+        if not ts_code or '.' not in ts_code:
+            return False
+
+        symbol, market = ts_code.split('.', 1)
+        market = market.upper()
+
+        # 传统封闭式基金主要为沪市 500xxx，排除 ETF 段
+        if market == 'SH' and symbol.startswith('50') and not symbol.startswith(('51', '52', '56', '58')):
+            return True
+
+        return False
     
     def _get_closed_funds(self):
         """
@@ -1646,8 +1675,10 @@ class MainWindowEventMixin:
             if hasattr(self, 'data_manager') and self.data_manager:
                 # 获取封闭式基金基本信息
                 try:
-                    # 尝试使用 get_fund_basic 方法（因为没有 get_closed_fund_basic 方法）
-                    closed_fund_basic = self.data_manager.get_fund_basic()
+                    # 优先使用 closed_fund_basic，空表时回退到 fund_basic 规则筛选
+                    closed_fund_basic = self.data_manager.get_closed_fund_basic()
+                    if closed_fund_basic.is_empty():
+                        closed_fund_basic = self.data_manager.get_fund_basic()
                     
                     if not closed_fund_basic.is_empty():
                         # 筛选封闭式基金（排除 159 开头的 ETF）
@@ -1655,26 +1686,23 @@ class MainWindowEventMixin:
                         for row in closed_fund_basic.iter_rows(named=True):
                             ts_code = row.get('ts_code', '')
                             name = row.get('name', '')
-                            # 提取代码部分（去除市场后缀）
-                            if ts_code:
+                            if ts_code and self._is_closed_fund_ts_code(ts_code):
                                 code = ts_code.split('.')[0]
-                                # 排除 159 开头的 ETF
-                                if not code.startswith('159'):
-                                    closed_fund_codes.append((code, name))
+                                closed_fund_codes.append((code, name, ts_code))
                         
                         # 为每个封闭式基金获取真实交易数据
                         added_codes = set()
-                        for code, name in closed_fund_codes:
+                        for code, name, ts_code in closed_fund_codes:
                             # 检查是否已经添加过相同代码的封闭式基金
                             if code in added_codes:
                                 continue
                             # 尝试从通达信数据文件获取真实数据
-                            real_data = self._get_real_etf_data(code, name)
+                            real_data = self._get_real_etf_data(code, name, ts_code)
                             if real_data:
                                 closed_funds.append(real_data)
                                 added_codes.add(code)
                 except AttributeError:
-                    logger.info("data_manager 没有 get_closed_fund_basic 方法")
+                    logger.info("data_manager 缺少基金基础数据接口")
             
             if not closed_funds:
                 logger.info("未从数据表读取到封闭式基金名称或行情数据")

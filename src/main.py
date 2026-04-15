@@ -136,7 +136,7 @@ def _process_single_stock_batch(ctx):
 
             stock = _create_stock_basic_from_info(ts_code, stock_info)
             ctx.session.add(stock)
-            ctx.result['updated_stocks'] += 1
+            ctx.result['inserted_stocks'] += 1
             ctx.existing_codes.add(ts_code)
 
             if (i + 1) % 50 == 0:
@@ -167,7 +167,12 @@ def _finalize_database_commit(session, result):
     except Exception as commit_e:
         logger.exception(f"最终提交数据库时失败: {commit_e}")
         session.rollback()
-    logger.info(f"股票信息同步完成，共新增 {result['updated_stocks']} 条记录")
+    logger.info(
+        "股票信息同步完成，"
+        f"新增 {result['inserted_stocks']} 条，"
+        f"更新 {result['updated_stocks']} 条，"
+        f"回填字段 {result['filled_blank_fields']} 个"
+    )
 
 
 def _log_sync_result(result):
@@ -180,11 +185,49 @@ def _log_sync_result(result):
     logger.info("同步结果统计:")
     logger.info(f"  通达信股票总数: {result['total_tdx_stocks']}")
     logger.info(f"  数据库已有股票: {result['existing_stocks']}")
-    logger.info(f"  新增股票数量: {result['updated_stocks']}")
+    logger.info(f"  新增股票数量: {result['inserted_stocks']}")
+    logger.info(f"  更新股票数量: {result['updated_stocks']}")
+    logger.info(f"  回填空白字段数量: {result['filled_blank_fields']}")
+    logger.info(f"  清理非股票记录数量: {result['deleted_non_stock_rows']}")
     logger.info(f"  失败股票数量: {len(result['failed_stocks'])}")
     if result['failed_stocks']:
         logger.warning(f"  失败股票列表: {result['failed_stocks'][:10]}...")
     logger.info("=" * 60)
+
+
+def _normalize_stock_status(status):
+    """将外部状态值归一化到 L/D/P。"""
+    raw = str(status or '').strip().upper()
+    if raw in {'L', '1', 'LISTED'}:
+        return 'L'
+    if raw in {'D', '0', 'DELIST', 'DELISTED'}:
+        return 'D'
+    if raw in {'P', 'SUSPEND', 'PAUSE'}:
+        return 'P'
+    return 'L'
+
+
+def _infer_stock_market_from_ts_code(ts_code):
+    """根据 ts_code 推断市场板块。"""
+    if not ts_code or '.' not in ts_code:
+        return ''
+
+    symbol, market = ts_code.split('.', 1)
+    market = market.upper()
+
+    if market == 'BJ':
+        return '北交所'
+    if market == 'SH':
+        if symbol.startswith('688'):
+            return '科创板'
+        return '主板'
+    if market == 'SZ':
+        if symbol.startswith('300'):
+            return '创业板'
+        if symbol.startswith('002'):
+            return '中小板'
+        return '主板'
+    return ''
 
 
 @dataclass
@@ -231,8 +274,11 @@ def sync_tdx_stock_to_database(config, db_manager):
         'total_tdx_stocks': 0,
         'existing_stocks': 0,
         'new_stocks': 0,
+        'deleted_non_stock_rows': 0,
         'failed_stocks': [],
-        'updated_stocks': 0
+        'inserted_stocks': 0,
+        'updated_stocks': 0,
+        'filled_blank_fields': 0,
     }
 
     logger.info("=" * 60)
@@ -243,9 +289,16 @@ def sync_tdx_stock_to_database(config, db_manager):
     try:
         tdx_handler = TdxHandler(config, db_manager)
 
-        tdx_stock_codes = tdx_handler.get_stock_list()
+        raw_tdx_codes = tdx_handler.get_stock_list()
+        tdx_stock_codes = [
+            code for code in raw_tdx_codes
+            if (not _is_index_ts_code(code)) and (not _is_fund_ts_code(code))
+        ]
         result['total_tdx_stocks'] = len(tdx_stock_codes)
-        logger.info(f"通达信数据源共有 {len(tdx_stock_codes)} 只股票")
+        logger.info(
+            f"通达信原始代码数: {len(raw_tdx_codes)}，"
+            f"过滤基金/指数后个股数: {len(tdx_stock_codes)}"
+        )
 
         if not tdx_stock_codes:
             logger.warning("通达信数据源没有找到任何股票数据")
@@ -253,19 +306,25 @@ def sync_tdx_stock_to_database(config, db_manager):
 
         session = db_manager.get_session()
 
-        existing_codes = set()
-        for stock in session.query(StockBasic.ts_code).all():
-            existing_codes.add(stock.ts_code)
+        all_existing_rows = session.query(StockBasic).all()
+        non_stock_rows = [
+            row for row in all_existing_rows
+            if _is_index_ts_code(row.ts_code) or _is_fund_ts_code(row.ts_code, row.name, row.market)
+        ]
+        for row in non_stock_rows:
+            session.delete(row)
+        result['deleted_non_stock_rows'] = len(non_stock_rows)
+        if non_stock_rows:
+            logger.info(f"已从 stock_basic 清理 {len(non_stock_rows)} 条基金/指数记录")
+
+        non_stock_code_set = {row.ts_code for row in non_stock_rows}
+        existing_codes = {row.ts_code for row in all_existing_rows if row.ts_code not in non_stock_code_set}
         result['existing_stocks'] = len(existing_codes)
         logger.info(f"数据库 stock_basic 表已有 {len(existing_codes)} 只股票")
 
         new_codes = [code for code in tdx_stock_codes if code not in existing_codes]
         result['new_stocks'] = len(new_codes)
         logger.info(f"发现 {len(new_codes)} 只新股票需要添加到数据库")
-
-        if not new_codes:
-            logger.info("所有通达信股票都已在数据库中，无需同步")
-            return result
 
         baostock_handler = BaostockHandler(config, db_manager)
         akshare_handler = AkShareHandler(config, db_manager)
@@ -274,13 +333,83 @@ def sync_tdx_stock_to_database(config, db_manager):
             baostock_handler, akshare_handler
         )
 
-        merged_basic = merge_stock_basic(baostock_basic, akshare_basic, existing_codes, tdx_stock_codes)
+        # 构建全量映射（不排除existing），用于新增与存量回填两阶段。
+        merged_basic = merge_stock_basic(baostock_basic, akshare_basic, set(), tdx_stock_codes)
 
-        ctx = StockBatchContext(
-            new_codes, merged_basic, existing_codes, session,
-            baostock_handler, akshare_handler, result
-        )
-        _process_single_stock_batch(ctx)
+        if new_codes:
+            ctx = StockBatchContext(
+                new_codes, merged_basic, existing_codes, session,
+                baostock_handler, akshare_handler, result
+            )
+            _process_single_stock_batch(ctx)
+        else:
+            logger.info("所有通达信股票都已存在，跳过新增阶段，继续执行存量回填")
+
+        # 第二阶段：回填 stock_basic 存量空白信息（不覆盖已有值）
+        all_stocks = session.query(StockBasic).all()
+        tdx_code_set = set(tdx_stock_codes)
+        for row in all_stocks:
+            try:
+                if row.ts_code not in tdx_code_set:
+                    continue
+                if _is_index_ts_code(row.ts_code) or _is_fund_ts_code(row.ts_code, row.name, row.market):
+                    continue
+
+                source_info = merged_basic.get(row.ts_code)
+                if not source_info:
+                    continue
+
+                changed = False
+                source_name = str(source_info.get('name', '') or '').strip()
+                source_area = str(source_info.get('area', '') or '').strip()
+                source_industry = str(source_info.get('industry', '') or '').strip()
+                source_market = str(source_info.get('market', '') or '').strip()
+                source_list_date = source_info.get('list_date')
+                source_status = _normalize_stock_status(source_info.get('status'))
+
+                if (not row.name or str(row.name).startswith('股票')) and source_name:
+                    row.name = source_name[:50]
+                    changed = True
+                    result['filled_blank_fields'] += 1
+                if not row.area and source_area:
+                    row.area = source_area[:20]
+                    changed = True
+                    result['filled_blank_fields'] += 1
+                if not row.industry and source_industry:
+                    row.industry = source_industry[:50]
+                    changed = True
+                    result['filled_blank_fields'] += 1
+                if not row.market and source_market:
+                    row.market = source_market[:20]
+                    changed = True
+                    result['filled_blank_fields'] += 1
+                if not row.market:
+                    inferred_market = _infer_stock_market_from_ts_code(row.ts_code)
+                    if inferred_market:
+                        row.market = inferred_market[:20]
+                        changed = True
+                        result['filled_blank_fields'] += 1
+                if not row.list_date and source_list_date:
+                    row.list_date = source_list_date
+                    changed = True
+                    result['filled_blank_fields'] += 1
+                if not row.list_date:
+                    first_trade_date, _ = _extract_tdx_first_last_trade_date(config, row.ts_code)
+                    if first_trade_date:
+                        row.list_date = first_trade_date
+                        changed = True
+                        result['filled_blank_fields'] += 1
+                if not row.status:
+                    row.status = source_status
+                    changed = True
+                    result['filled_blank_fields'] += 1
+
+                if changed:
+                    result['updated_stocks'] += 1
+
+            except Exception as backfill_e:
+                logger.exception(f"回填股票 {row.ts_code} 信息失败: {backfill_e}")
+                result['failed_stocks'].append(row.ts_code)
 
         _finalize_database_commit(session, result)
 
@@ -1012,6 +1141,7 @@ def parse_args():
     parser.add_argument('--init-db', action='store_true', help='初始化数据库表')
     parser.add_argument('--update-stock', action='store_true', help='从通达信数据源同步股票信息到数据库')
     parser.add_argument('--update-index', action='store_true', help='以通达信指数代码为基准更新 index_basic（Baostock/AkShare 补全）')
+    parser.add_argument('--update-fund', action='store_true', help='将 stock_basic 中基金迁移到 fund_basic 并补全信息')
     parser.add_argument('--plugins', action='store_true', help='显示已加载的插件')
     return parser.parse_args()
 
@@ -1133,6 +1263,32 @@ def _handle_update_index_arg(config):
         return True
 
 
+def _handle_update_fund_arg(config):
+    """处理基金迁移参数。"""
+    logger.info("检测到 --update-fund 参数，将执行基金迁移和补全")
+
+    db_manager = None
+    try:
+        db_manager = DatabaseManager(config)
+        db_manager.connect()
+        logger.info("数据库连接成功")
+
+        try:
+            db_manager.create_tables()
+            logger.info("数据库表创建/更新成功")
+        except (OSError, RuntimeError) as table_e:
+            logger.warning(f"创建数据库表时发生错误: {table_e}")
+
+        sync_stock_fund_to_fund_basic(config, db_manager)
+        db_manager.cleanup()
+        logger.info("数据库资源已清理")
+        return True
+
+    except (OSError, RuntimeError) as db_e:
+        logger.error(f"数据库连接失败，无法执行基金迁移: {db_e}")
+        return True
+
+
 def _initialize_data_manager(config, plugin_manager):
     """初始化数据管理器
 
@@ -1225,6 +1381,10 @@ def main():
             _handle_update_index_arg(config)
             return
 
+        if args.update_fund:
+            _handle_update_fund_arg(config)
+            return
+
         data_manager = _initialize_data_manager(config, plugin_manager)
 
         app = QApplication(sys.argv)
@@ -1253,6 +1413,292 @@ def main():
         sys.exit(1)
     finally:
         _cleanup_system(plugin_manager, db_manager)
+
+
+def _is_fund_ts_code(ts_code, name=None, market=None):
+    """判断是否为基金代码。"""
+    if not ts_code or '.' not in ts_code:
+        return False
+
+    symbol, suffix = ts_code.split('.', 1)
+    suffix = suffix.upper()
+    mkt = (market or '').strip()
+    nm = (name or '').strip()
+
+    if suffix == 'SH' and symbol.startswith(('50', '51', '52', '56', '58')):
+        return True
+    if suffix == 'SZ' and symbol.startswith(('15', '16', '18')):
+        return True
+
+    if '基金' in mkt:
+        return True
+    if any(token in nm.upper() for token in ('ETF', 'LOF')) or ('基金' in nm):
+        return True
+
+    return False
+
+
+def _infer_fund_type(symbol, name):
+    """推断基金类型。"""
+    nm = (name or '').upper()
+    if 'ETF' in nm:
+        return 'ETF'
+    if 'LOF' in nm or symbol.startswith(('16', '18')):
+        return 'LOF'
+    return '基金'
+
+
+def _parse_tdx_day_to_date(day_value):
+    """将通达信 YYYYMMDD 整数转换为 date。"""
+    from datetime import datetime
+
+    try:
+        text = str(int(day_value))
+        if len(text) != 8:
+            return None
+        return datetime.strptime(text, '%Y%m%d').date()
+    except Exception:
+        return None
+
+
+def _get_tdx_day_file_path(config, ts_code):
+    """根据 ts_code 生成通达信日线文件路径。"""
+    if not ts_code or '.' not in ts_code:
+        return None
+
+    symbol, market = ts_code.split('.', 1)
+    market = market.upper()
+    if market not in {'SH', 'SZ', 'BJ'}:
+        return None
+
+    market_prefix = market.lower()
+    return Path(config.data.tdx_data_path) / market_prefix / 'lday' / f"{market_prefix}{symbol}.day"
+
+
+def _extract_tdx_first_last_trade_date(config, ts_code):
+    """读取通达信日线文件首末交易日。"""
+    import struct
+
+    day_file = _get_tdx_day_file_path(config, ts_code)
+    if not day_file or not day_file.exists():
+        return None, None
+
+    try:
+        with open(day_file, 'rb') as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size < 32:
+                return None, None
+
+            f.seek(0)
+            first_record = f.read(32)
+            first_raw = struct.unpack('I', first_record[0:4])[0]
+
+            f.seek(size - 32)
+            last_record = f.read(32)
+            last_raw = struct.unpack('I', last_record[0:4])[0]
+
+        return _parse_tdx_day_to_date(first_raw), _parse_tdx_day_to_date(last_raw)
+    except Exception:
+        return None, None
+
+
+def sync_stock_fund_to_fund_basic(config, db_manager):
+    """将 stock_basic 中基金记录迁移到 fund_basic，并补全信息。"""
+    from src.data.akshare_handler import AkShareHandler
+    from src.database.models.fund import FundBasic
+    from src.database.models.stock import StockBasic
+
+    result = {
+        'stock_fund_candidates': 0,
+        'inserted_funds': 0,
+        'updated_funds': 0,
+        'deleted_from_stock_basic': 0,
+        'akshare_enriched': 0,
+        'list_date_filled': 0,
+        'delist_date_filled': 0,
+        'failed': 0,
+    }
+
+    logger.info("=" * 60)
+    logger.info("开始执行基金迁移: stock_basic -> fund_basic")
+    logger.info("=" * 60)
+
+    session = None
+    try:
+        session = db_manager.get_session()
+
+        all_stocks = session.query(StockBasic).all()
+        fund_stocks = [
+            row for row in all_stocks
+            if _is_fund_ts_code(row.ts_code, row.name, row.market)
+        ]
+        result['stock_fund_candidates'] = len(fund_stocks)
+        logger.info(f"识别到 {len(fund_stocks)} 条基金候选记录")
+
+        existing_fund_map = {f.ts_code: f for f in session.query(FundBasic).all()}
+
+        for stock in fund_stocks:
+            try:
+                fund = existing_fund_map.get(stock.ts_code)
+                symbol = (stock.symbol or stock.ts_code.split('.')[0])[:9]
+                name = (stock.name or symbol)[:20]
+                inferred_type = _infer_fund_type(symbol, name)
+                inferred_market = stock.ts_code.split('.')[-1]
+
+                if fund:
+                    changed = False
+                    if not fund.symbol and symbol:
+                        fund.symbol = symbol
+                        changed = True
+                    if (not fund.name or fund.name.startswith('股票')) and name:
+                        fund.name = name
+                        changed = True
+                    if not fund.fund_type:
+                        fund.fund_type = inferred_type
+                        changed = True
+                    if not fund.market:
+                        fund.market = inferred_market
+                        changed = True
+                    if not fund.list_date and stock.list_date:
+                        fund.list_date = stock.list_date
+                        changed = True
+                    if not fund.delist_date and stock.delist_date:
+                        fund.delist_date = stock.delist_date
+                        changed = True
+                    if not fund.status:
+                        fund.status = stock.status or 'L'
+                        changed = True
+                    if changed:
+                        result['updated_funds'] += 1
+                else:
+                    fund = FundBasic(
+                        ts_code=stock.ts_code,
+                        symbol=symbol,
+                        name=name,
+                        fund_type=inferred_type,
+                        market=inferred_market,
+                        list_date=stock.list_date,
+                        delist_date=stock.delist_date,
+                        status=stock.status or 'L',
+                    )
+                    session.add(fund)
+                    existing_fund_map[stock.ts_code] = fund
+                    result['inserted_funds'] += 1
+
+            except Exception as row_e:
+                logger.exception(f"迁移基金记录失败 {stock.ts_code}: {row_e}")
+                result['failed'] += 1
+
+        # 使用 AkShare ETF 列表补全名称/类型（离线模式只取数不落库）
+        try:
+            akshare_handler = AkShareHandler(config, None)
+            etf_df = akshare_handler.update_etf_basic()
+            if etf_df is not None and not etf_df.is_empty():
+                for row in etf_df.iter_rows(named=True):
+                    symbol = str(row.get('基金代码', '')).strip()
+                    name = str(row.get('基金简称', '')).strip()
+                    if not symbol:
+                        continue
+
+                    if symbol.startswith('51') or symbol.startswith('58'):
+                        ts_code = f"{symbol}.SH"
+                    elif symbol.startswith('15') or symbol.startswith('16'):
+                        ts_code = f"{symbol}.SZ"
+                    else:
+                        continue
+
+                    fund = existing_fund_map.get(ts_code)
+                    if not fund:
+                        fund = FundBasic(
+                            ts_code=ts_code,
+                            symbol=symbol[:9],
+                            name=(name or symbol)[:20],
+                            fund_type='ETF',
+                            market=ts_code.split('.')[-1],
+                            status='L',
+                        )
+                        session.add(fund)
+                        existing_fund_map[ts_code] = fund
+                        result['inserted_funds'] += 1
+                        result['akshare_enriched'] += 1
+                    else:
+                        changed = False
+                        if name and ((not fund.name) or fund.name.startswith('股票')):
+                            fund.name = name[:20]
+                            changed = True
+                        if not fund.fund_type:
+                            fund.fund_type = 'ETF'
+                            changed = True
+                        if changed:
+                            result['updated_funds'] += 1
+                            result['akshare_enriched'] += 1
+        except Exception as e:
+            logger.warning(f"使用 AkShare 补全基金信息失败: {e}")
+
+        # 使用通达信日线数据补全日期信息：
+        # list_date <- 首个交易日；delist_date 仅对退市状态补最后交易日。
+        tdx_date_cache = {}
+        all_funds = session.query(FundBasic).all()
+        for fund in all_funds:
+            try:
+                status = str(fund.status or '').strip().upper()
+                is_delisted = status in {'D', '0', 'DELIST', 'DELISTED'}
+
+                need_list_date = fund.list_date is None
+                need_delist_date = fund.delist_date is None and is_delisted
+                if not need_list_date and not need_delist_date:
+                    continue
+
+                if fund.ts_code not in tdx_date_cache:
+                    tdx_date_cache[fund.ts_code] = _extract_tdx_first_last_trade_date(config, fund.ts_code)
+
+                first_trade_date, last_trade_date = tdx_date_cache[fund.ts_code]
+                changed = False
+
+                if need_list_date and first_trade_date:
+                    fund.list_date = first_trade_date
+                    result['list_date_filled'] += 1
+                    changed = True
+
+                if need_delist_date and last_trade_date:
+                    fund.delist_date = last_trade_date
+                    result['delist_date_filled'] += 1
+                    changed = True
+
+                if changed:
+                    result['updated_funds'] += 1
+
+            except Exception as date_fill_e:
+                logger.exception(f"回填基金日期失败 {fund.ts_code}: {date_fill_e}")
+                result['failed'] += 1
+
+        # 从 stock_basic 删除已迁移基金，完成“移动”语义
+        for stock in fund_stocks:
+            session.delete(stock)
+        result['deleted_from_stock_basic'] = len(fund_stocks)
+
+        session.commit()
+
+    except Exception as e:
+        logger.exception(f"基金迁移失败: {e}")
+        if session:
+            session.rollback()
+        result['failed'] += 1
+    finally:
+        logger.info("=" * 60)
+        logger.info("基金迁移结果统计:")
+        logger.info(f"  stock_basic 基金候选: {result['stock_fund_candidates']}")
+        logger.info(f"  fund_basic 新增: {result['inserted_funds']}")
+        logger.info(f"  fund_basic 更新: {result['updated_funds']}")
+        logger.info(f"  AkShare 补全: {result['akshare_enriched']}")
+        logger.info(f"  list_date 回填: {result['list_date_filled']}")
+        logger.info(f"  delist_date 回填: {result['delist_date_filled']}")
+        logger.info(f"  stock_basic 删除: {result['deleted_from_stock_basic']}")
+        logger.info(f"  失败数: {result['failed']}")
+        logger.info("=" * 60)
+
+    return result
 
 
 if __name__ == "__main__":
