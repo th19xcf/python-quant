@@ -1,11 +1,14 @@
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QMenu, QMessageBox, QDialog, QVBoxLayout, QLabel, QLineEdit, QHBoxLayout, QPushButton, QTableWidgetItem, QApplication
-from PySide6.QtGui import QAction, QColor
-import pyqtgraph as pg
-from functools import wraps
 from datetime import datetime
-from src.utils.logger import logger
+from functools import wraps
+
+import pyqtgraph as pg
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction, QColor
+from PySide6.QtWidgets import (QApplication, QDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QTableWidgetItem, QVBoxLayout)
+
 from src.ui.task_manager import global_task_manager
+from src.utils.logger import logger
+
 
 def event_handler(event_type):
     """
@@ -826,7 +829,7 @@ class MainWindowEventMixin:
             
             # 清空表格
             self.stock_table.setRowCount(0)
-            
+
             # 重置表格排序状态
             self.stock_table.setSortingEnabled(False)
             
@@ -923,7 +926,7 @@ class MainWindowEventMixin:
                     return {"success": False, "message": f"加载ETF基金数据失败: {str(e)}"}
             
             # 启动后台任务
-            task_id = global_task_manager.create_task(
+            current_task_id = global_task_manager.create_task(
                 "加载ETF基金数据",
                 _load_etf_funds_task,
                 ()
@@ -931,12 +934,17 @@ class MainWindowEventMixin:
             
             # 连接任务信号
             def on_task_completed(task_id, result):
+                if task_id != current_task_id:
+                    return
                 try:
                     # 隐藏进度条
                     self.market_progress_bar.setVisible(False)
                     
                     if result["success"]:
                         etf_funds = result.get("etf_funds", [])
+
+                        # 先关闭排序再填充，避免按代码排序时写入行被移动导致列错位
+                        self.stock_table.setSortingEnabled(False)
                         
                         # 设置表格行数
                         self.stock_table.setRowCount(len(etf_funds))
@@ -1085,9 +1093,16 @@ class MainWindowEventMixin:
                 finally:
                     # 确保进度条隐藏
                     self.market_progress_bar.setVisible(False)
+                    try:
+                        global_task_manager.task_completed.disconnect(on_task_completed)
+                        global_task_manager.task_progress.disconnect(on_task_progress)
+                    except Exception:
+                        pass
             
             # 连接任务信号
             def on_task_progress(task_id, current, total):
+                if task_id != current_task_id:
+                    return
                 """处理任务进度更新"""
                 try:
                     # 更新进度条
@@ -1116,6 +1131,9 @@ class MainWindowEventMixin:
             
             # 清空表格
             self.stock_table.setRowCount(0)
+
+            # 重置表格排序状态
+            self.stock_table.setSortingEnabled(False)
             
             # 显示状态栏消息和进度条
             self.statusBar().showMessage("加载封闭式基金数据...", 0)
@@ -1150,8 +1168,8 @@ class MainWindowEventMixin:
                                 # 提取代码部分（去除市场后缀）
                                 if ts_code:
                                     code = ts_code.split('.')[0]
-                                    # 筛选封闭式基金（15开头的深市封闭式基金）
-                                    if code.startswith('15'):
+                                    # 筛选封闭式基金（15开头，排除159开头ETF）
+                                    if code.startswith('15') and not code.startswith('159'):
                                         # 如果名称为空，使用默认名称
                                         if not name:
                                             name = f'基金{code}'
@@ -1624,7 +1642,7 @@ class MainWindowEventMixin:
                     return {"success": False, "message": f"加载封闭式基金数据失败: {str(e)}"}
             
             # 启动后台任务
-            task_id = global_task_manager.create_task(
+            current_task_id = global_task_manager.create_task(
                 "加载封闭式基金数据",
                 _load_closed_funds_task,
                 ()
@@ -1632,12 +1650,17 @@ class MainWindowEventMixin:
             
             # 连接任务信号
             def on_task_completed(task_id, result):
+                if task_id != current_task_id:
+                    return
                 try:
                     # 隐藏进度条
                     self.market_progress_bar.setVisible(False)
                     
                     if result["success"]:
                         closed_funds = result.get("closed_funds", [])
+
+                        # 先关闭排序再填充，避免按代码排序时写入行被移动导致列错位
+                        self.stock_table.setSortingEnabled(False)
                         
                         # 设置表格行数
                         self.stock_table.setRowCount(len(closed_funds))
@@ -1772,6 +1795,9 @@ class MainWindowEventMixin:
                         
                         # 更新状态栏
                         self.statusBar().showMessage(f"成功加载 {len(closed_funds)} 只封闭式基金数据", 3000)
+
+                        # 数据填充完成后再开启排序
+                        self.stock_table.setSortingEnabled(True)
                     else:
                         # 显示错误消息
                         error_message = result.get("message", "加载封闭式基金数据失败")
@@ -1783,9 +1809,16 @@ class MainWindowEventMixin:
                 finally:
                     # 确保进度条隐藏
                     self.market_progress_bar.setVisible(False)
+                    try:
+                        global_task_manager.task_completed.disconnect(on_task_completed)
+                        global_task_manager.task_progress.disconnect(on_task_progress)
+                    except Exception:
+                        pass
             
             # 连接任务信号
             def on_task_progress(task_id, current, total):
+                if task_id != current_task_id:
+                    return
                 """处理任务进度更新"""
                 try:
                     # 更新进度条
@@ -2099,7 +2132,7 @@ class MainWindowEventMixin:
         """
         try:
             from src.ui.stock_search_dialog import StockSearchDialog
-            
+
             # 获取数据库管理器
             db_manager = None
             if hasattr(self, 'data_manager') and self.data_manager:
