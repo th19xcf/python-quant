@@ -633,8 +633,8 @@ class MainWindowDataMixin:
                 elif stock_type == "上证A股":
                     filtered_files = sh_stock_files
                 elif stock_type == "深证A股":
-                    # 包括深市的 ETF（159 开头）
-                    filtered_files = [f for f in sz_stock_files if f.stem[2:3] == "0" or f.stem[2:4] == "15"]
+                    # 仅显示深证个股，指数/基金在后续通过 stock_basic 过滤
+                    filtered_files = sz_stock_files
                 elif stock_type == "创业板":
                     filtered_files = [f for f in sz_stock_files if f.stem[2:5] == "300"]
                 elif stock_type == "科创板":
@@ -658,6 +658,12 @@ class MainWindowDataMixin:
                 if not stock_name_df.is_empty():
                     # 转换为字典，格式：{ts_code: name}
                     stock_name_map = dict(zip(stock_name_df['ts_code'].to_list(), stock_name_df['name'].to_list()))
+
+                def _resolve_stock_name(ts_code_candidates):
+                    for ts_format in ts_code_candidates:
+                        if ts_format in stock_name_map:
+                            return stock_name_map[ts_format]
+                    return None
                 
                 # 解析所有股票文件，获取最新交易日的数据
                 total_files = len(filtered_files)
@@ -729,13 +735,11 @@ class MainWindowDataMixin:
                                     f"{market}{code}",
                                     f"{market.lower()}{code}"
                                 ]
-                                
-                                # 从stock_basic获取真实股票名称
-                                stock_name = f"{code}（股票）"
-                                for ts_format in ts_code_formats:
-                                    if ts_format in stock_name_map:
-                                        stock_name = stock_name_map[ts_format]
-                                        break
+
+                                # 严格仅展示 stock_basic 已登记的个股（过滤指数/基金）
+                                stock_name = _resolve_stock_name(ts_code_formats)
+                                if not stock_name:
+                                    continue
                             elif file_name.startswith('sz'):
                                 code = file_name[2:]
                                 # 忽略 B 股：200 开头（深市 B 股）
@@ -750,13 +754,11 @@ class MainWindowDataMixin:
                                     f"{market}{code}",
                                     f"{market.lower()}{code}"
                                 ]
-                                
-                                # 从stock_basic获取真实股票名称
-                                stock_name = f"{code}（股票）"
-                                for ts_format in ts_code_formats:
-                                    if ts_format in stock_name_map:
-                                        stock_name = stock_name_map[ts_format]
-                                        break
+
+                                # 严格仅展示 stock_basic 已登记的个股（过滤指数/基金）
+                                stock_name = _resolve_stock_name(ts_code_formats)
+                                if not stock_name:
+                                    continue
                             elif file_name.startswith('bj'):
                                 code = file_name[2:]
                                 market = "BJ"
@@ -768,13 +770,11 @@ class MainWindowDataMixin:
                                     f"{market}{code}",
                                     f"{market.lower()}{code}"
                                 ]
-                                
-                                # 从stock_basic获取真实股票名称
-                                stock_name = f"{code}（股票）"
-                                for ts_format in ts_code_formats:
-                                    if ts_format in stock_name_map:
-                                        stock_name = stock_name_map[ts_format]
-                                        break
+
+                                # 严格仅展示 stock_basic 已登记的个股（过滤指数/基金）
+                                stock_name = _resolve_stock_name(ts_code_formats)
+                                if not stock_name:
+                                    continue
                             else:
                                 continue
                             

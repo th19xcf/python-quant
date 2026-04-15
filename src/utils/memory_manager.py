@@ -51,6 +51,7 @@ class MemoryManager:
         self.auto_optimization_enabled = True  # 自动优化开关
         self.memory_usage_patterns = []  # 内存使用模式
         self.data_structure_memory = {}  # 数据结构内存使用
+        self.linecache_trim_threshold = 5000  # 超过该条目数时清理 linecache
         
         # 启动tracemalloc
         try:
@@ -215,6 +216,9 @@ class MemoryManager:
         拍摄内存快照
         """
         try:
+            # 先裁剪 linecache，减少 stdlib 缓存对快照结果的干扰
+            self._trim_linecache_cache()
+
             snapshot = tracemalloc.take_snapshot()
             self.memory_snapshots.append({
                 'timestamp': time.time(),
@@ -252,13 +256,41 @@ class MemoryManager:
                 
                 # 检测增长的内存使用
                 growing_stats = [stat for stat in stats if stat.size_diff > 1024 * 1024]  # 只关注增长超过1MB的
+
+                # 过滤标准库 linecache 噪音，避免误报“内存泄漏”
+                leak_candidates = []
+                filtered_noise = []
+                for stat in growing_stats:
+                    trace_text = str(stat.traceback).lower()
+                    if 'linecache.py' in trace_text:
+                        filtered_noise.append(stat)
+                        continue
+                    leak_candidates.append(stat)
+
+                if filtered_noise:
+                    logger.info(
+                        f"检测到 {len(filtered_noise)} 条 linecache 缓存增长，"
+                        "已按缓存噪音忽略"
+                    )
                 
-                if growing_stats:
+                if leak_candidates:
                     logger.warning("检测到可能的内存泄漏:")
-                    for stat in growing_stats[:5]:
+                    for stat in leak_candidates[:5]:
                         logger.warning(f"  {stat}")
         except Exception as e:
             logger.error(f"分析内存快照失败: {e}")
+
+    def _trim_linecache_cache(self):
+        """
+        清理 linecache 缓存，降低快照分析噪音。
+        """
+        try:
+            cache_size = len(linecache.cache)
+            if cache_size >= self.linecache_trim_threshold:
+                linecache.clearcache()
+                logger.debug(f"linecache 缓存已清理，原条目数: {cache_size}")
+        except Exception as e:
+            logger.debug(f"裁剪 linecache 缓存失败: {e}")
     
     def _check_memory_and_act(self, memory_info: Dict[str, Any]):
         """
