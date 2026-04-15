@@ -425,12 +425,14 @@ class MainWindowDataMixin:
                     continue
 
                 market = file_name[:2]
+                symbol = file_name[2:]
+                display_ts_code = f"{symbol}.{market.upper()}"
                 
                 # 获取指数名称
                 if file_name in index_name_map:
                     index_name = index_name_map[file_name]
                 else:
-                    index_name = file_name[2:]
+                    index_name = symbol
                 
                 with open(index_file, 'rb') as f:
                     f.seek(0, 2)
@@ -471,7 +473,7 @@ class MainWindowDataMixin:
                     amplitude = ((high_val - low_val) / preclose) * 100 if preclose > 0 else 0.0
                     
                     data_row = [
-                        date.strftime('%Y-%m-%d'), file_name, index_name,
+                        date.strftime('%Y-%m-%d'), display_ts_code, index_name,
                         f"{pct_chg:.2f}", f"{close_val:.2f}", f"{change:.2f}",
                         f"{volume:,}", f"{amount:,}", f"{open_val:.2f}",
                         f"{high_val:.2f}", f"{low_val:.2f}", f"{preclose:.2f}", f"{amplitude:.2f}%"
@@ -799,7 +801,7 @@ class MainWindowDataMixin:
 
                             table_rows.append((
                                 date.strftime('%Y-%m-%d'),
-                                code,
+                                ts_code,
                                 stock_name,
                                 f"{pct_chg:.2f}",
                                 f"{close_val:.2f}",
