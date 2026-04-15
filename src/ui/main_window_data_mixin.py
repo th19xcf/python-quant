@@ -1154,6 +1154,17 @@ class MainWindowDataMixin:
         """
         row_pos = self.stock_table.rowCount()
         self.stock_table.insertRow(row_pos)
+
+        def _to_float(text):
+            try:
+                if text is None:
+                    return 0.0
+                cleaned = str(text).replace(',', '').replace('%', '').strip()
+                return float(cleaned) if cleaned and cleaned != '-' else 0.0
+            except Exception:
+                return 0.0
+
+        preclose = _to_float(data_row[11]) if len(data_row) > 11 else 0.0
         
         for col, value in enumerate(data_row):
             item = QTableWidgetItem(value)
@@ -1164,9 +1175,17 @@ class MainWindowDataMixin:
             
             # Colors
             if col == 3 or col == 5: # pct_chg or change
-                if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
+                if str(value).startswith("+") or _to_float(value) > 0:
                     item.setForeground(QColor(255, 0, 0))
-                elif value.startswith("-"):
+                elif str(value).startswith("-"):
+                    item.setForeground(QColor(0, 255, 0))
+                else:
+                    item.setForeground(QColor(204, 204, 204))
+            elif col in [4, 8, 9, 10]:  # 现价/开盘价/最高价/最低价
+                current_val = _to_float(value)
+                if current_val > preclose:
+                    item.setForeground(QColor(255, 0, 0))
+                elif current_val < preclose:
                     item.setForeground(QColor(0, 255, 0))
                 else:
                     item.setForeground(QColor(204, 204, 204))
