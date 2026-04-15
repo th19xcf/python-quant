@@ -291,7 +291,12 @@ class MouseHandler:
                         current_macd_signal = self.main_window.current_macd_data['macd_signal'][index]
                         current_macd_hist = self.main_window.current_macd_data['macd_hist'][index]
                         macd_hist_color = '#FF0000' if current_macd_hist >= 0 else '#00FF00'
-                        self.main_window.volume_values_label.setText(f"<font color='#FFFFFF'>DIF: {current_macd:.2f}</font>  <font color='#FFFF00'>DEA: {current_macd_signal:.2f}</font>  <font color='{macd_hist_color}'>MACD: {current_macd_hist:.2f}</font>")
+                        self.main_window.volume_values_label.setText(
+                            f"<font color='white'>MACD(12,26,9) </font>"
+                            f"<font color='#FFFFFF'>DIF: {current_macd:.2f}</font>  "
+                            f"<font color='#FFFF00'>DEA: {current_macd_signal:.2f}</font>  "
+                            f"<font color='{macd_hist_color}'>MACD: {current_macd_hist:.2f}</font>"
+                        )
                     elif current_indicator == "RSI" and hasattr(self.main_window, 'current_rsi_data') and 0 <= index < len(self.main_window.current_rsi_data['rsi']):
                         # 更新RSI标签
                         current_rsi = self.main_window.current_rsi_data['rsi'][index]
