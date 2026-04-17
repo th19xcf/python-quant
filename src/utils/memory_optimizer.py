@@ -12,15 +12,16 @@
 4. 支持分块处理和数据压缩
 """
 
-import polars as pl
-import numpy as np
-import psutil
-import time
-import threading
-from typing import Dict, List, Optional, Any, Callable, Tuple
-from functools import wraps
 import gc
 import logging
+import threading
+import time
+from functools import wraps
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import numpy as np
+import polars as pl
+import psutil
 
 logger = logging.getLogger(__name__)
 
@@ -301,7 +302,14 @@ class MemoryOptimizer:
             # 字符串类型优化
             elif dtype == pl.Utf8:
                 # 检查字符串长度，考虑使用更高效的存储方式
-                max_length = df[col].str.lengths().max()
+                string_series = df[col].drop_nulls()
+                if string_series.len() == 0:
+                    max_length = 0
+                else:
+                    max_length = string_series.map_elements(
+                        lambda x: len(x),
+                        return_dtype=pl.Int32,
+                    ).max() or 0
                 if max_length < 100:
                     # 短字符串可以保持Utf8类型
                     pass
