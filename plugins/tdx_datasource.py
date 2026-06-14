@@ -20,6 +20,7 @@ class TdxDataSourcePlugin(DataSourcePlugin):
         self.version = "0.1.0"
         self.author = "Quant System"
         self.description = "通达信数据源插件，用于获取通达信数据文件中的股票数据"
+        self.is_local = True  # 本地文件源，优先于远程源
         self.tdx_handler = None
     
     def get_name(self) -> str:
