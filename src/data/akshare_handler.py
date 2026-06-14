@@ -67,7 +67,7 @@ class AkShareHandler:
             
             # 数据清洗和标准化
             from src.database.models.stock import StockBasic
-            
+
             # 遍历数据，进行清洗和存储
             for row in stock_basic_df.iter_rows(named=True):
                 try:
@@ -292,7 +292,7 @@ class AkShareHandler:
                     
                     # 数据清洗和标准化
                     from src.database.models.stock import StockDaily
-                    
+
                     # 遍历数据，进行清洗和存储
                     for row in stock_daily_df.iter_rows(named=True):
                         try:
@@ -383,7 +383,7 @@ class AkShareHandler:
             
             # 数据清洗和标准化
             from src.database.models.index import IndexBasic
-            
+
             # 遍历数据，进行清洗和存储
             for row in index_basic_df.iter_rows(named=True):
                 try:
@@ -483,7 +483,7 @@ class AkShareHandler:
                     
                     # 数据清洗和标准化
                     from src.database.models.index import IndexDaily
-                    
+
                     # 遍历数据，进行清洗和存储
                     for row in index_daily_df.iter_rows(named=True):
                         try:
@@ -618,7 +618,42 @@ class AkShareHandler:
                         continue
 
                     # 数据清洗和标准化
-                    from src.database.models.stock import StockDividend, StockBasic
+                    from src.database.models.stock import (StockBasic,
+                                                           StockDividend)
+
+                    def _parse_date(value):
+                        if value is None:
+                            return None
+                        if isinstance(value, datetime):
+                            return value.date()
+                        text = str(value).strip()
+                        if not text or text in {'NaT', 'None', 'nan'}:
+                            return None
+                        try:
+                            return datetime.strptime(text, "%Y-%m-%d").date()
+                        except Exception:
+                            return None
+
+                    def _parse_float(value, default=0.0):
+                        if value is None:
+                            return default
+                        if isinstance(value, (int, float)):
+                            return float(value)
+                        text = str(value).strip().replace(',', '')
+                        if not text or text in {'None', 'nan', 'NaN', '--'}:
+                            return default
+                        for suffix in ['元', '股', '%']:
+                            text = text.replace(suffix, '')
+                        try:
+                            return float(text)
+                        except Exception:
+                            return default
+
+                    def _pick(row_dict, keys, default=0.0):
+                        for key in keys:
+                            if key in row_dict and row_dict.get(key) not in (None, '', 'NaT'):
+                                return _parse_float(row_dict.get(key), default)
+                        return default
 
                     # 获取股票名称
                     stock_basic = self.session.query(StockBasic).filter_by(ts_code=ts_code).first()
@@ -632,7 +667,6 @@ class AkShareHandler:
                                 logger.warning(f"处理{ts_code}的分红配股数据时，row为None，跳过")
                                 continue
 
-                            # 转换日期格式 - 新接口字段映射
                             # 报告期作为分红年度
                             dividend_year = None
                             if '报告期' in row and row['报告期']:
@@ -642,67 +676,41 @@ class AkShareHandler:
                                 elif report_date_val is not None:
                                     dividend_year = str(report_date_val.year)
 
-                            # 业绩披露日期作为公告日期
-                            report_date = None
-                            if '业绩披露日期' in row and row['业绩披露日期']:
-                                report_date_val = row['业绩披露日期']
-                                if isinstance(report_date_val, str):
-                                    report_date = datetime.strptime(report_date_val, "%Y-%m-%d").date()
-                                elif isinstance(report_date_val, datetime):
-                                    report_date = report_date_val.date()
-                                elif report_date_val is not None:
-                                    report_date = report_date_val  # 已经是date类型
-
-                            # 股权登记日
-                            record_date = None
-                            if '股权登记日' in row and row['股权登记日']:
-                                record_date_val = row['股权登记日']
-                                if isinstance(record_date_val, str) and record_date_val != 'NaT':
-                                    record_date = datetime.strptime(record_date_val, "%Y-%m-%d").date()
-                                elif isinstance(record_date_val, datetime):
-                                    record_date = record_date_val.date()
-                                elif record_date_val is not None:
-                                    record_date = record_date_val  # 已经是date类型
-
-                            # 除权除息日
-                            ex_date = None
-                            if '除权除息日' in row and row['除权除息日']:
-                                ex_date_val = row['除权除息日']
-                                if isinstance(ex_date_val, str) and ex_date_val != 'NaT':
-                                    ex_date = datetime.strptime(ex_date_val, "%Y-%m-%d").date()
-                                elif isinstance(ex_date_val, datetime):
-                                    ex_date = ex_date_val.date()
-                                elif ex_date_val is not None:
-                                    ex_date = ex_date_val  # 已经是date类型
+                            report_date = _parse_date(row.get('业绩披露日期') or row.get('公告日期'))
+                            record_date = _parse_date(row.get('股权登记日'))
+                            ex_date = _parse_date(row.get('除权除息日') or row.get('除权日'))
 
                             # 派息日（使用除权除息日作为派息日）
                             pay_date = ex_date
 
-                            # 提取分红方案数据 - 新接口字段
-                            # 现金分红-现金分红比例: 10派X元，需要转换为每股派现
-                            cash_div_ratio = row.get('现金分红-现金分红比例', 0)
-                            cash_div = float(cash_div_ratio) / 10 if cash_div_ratio else 0  # 转换为每股派现
+                            # 现金分红（10派X -> 每股X/10）
+                            cash_div_ratio = _pick(row, ['现金分红-现金分红比例', '每10股派息(税前)', '每10股派息'])
+                            cash_div = cash_div_ratio / 10.0 if cash_div_ratio else 0.0
 
-                            # 送转股份-送转总比例: 10送转X股，需要转换为每股送转
-                            share_div_ratio = row.get('送转股份-送转总比例', 0)
-                            share_div = float(share_div_ratio) / 10 if share_div_ratio else 0  # 转换为每股送转
+                            # 送转比例（10送转X -> 每股X/10）
+                            share_div_ratio = _pick(row, ['送转股份-送转总比例', '每10股送转', '每10股送股', '每10股转增'])
+                            share_div = share_div_ratio / 10.0 if share_div_ratio else 0.0
 
-                            # 送转股份-送股比例
-                            gift_share_ratio = row.get('送转股份-送股比例', 0)
-                            gift_share = float(gift_share_ratio) / 10 if gift_share_ratio else 0
+                            # 配股信息（10配X -> 每股X/10）
+                            rights_issue_price = _pick(row, ['配股价格', '配股价'])
+                            rights_issue_ratio_raw = _pick(row, ['配股比例', '每10股配股比例', '10配股'])
+                            rights_issue_ratio = rights_issue_ratio_raw / 10.0 if rights_issue_ratio_raw else 0.0
 
-                            # 送转股份-转股比例
-                            transfer_share_ratio = row.get('送转股份-转股比例', 0)
-                            transfer_share = float(transfer_share_ratio) / 10 if transfer_share_ratio else 0
+                            # 总派现金额（单位存在差异，仅在字段存在时保存）
+                            total_div = _pick(row, ['总派现金额(含税)', '派现总额', '分红总额'], default=0.0)
 
-                            # 总派现金额（从描述中提取或使用每股收益和总股本计算）
-                            total_div = 0
-
-                            # 查询数据是否已存在（根据股票代码和分红年度）
-                            dividend_data = self.session.query(StockDividend).filter_by(
-                                ts_code=ts_code,
-                                dividend_year=dividend_year
-                            ).first()
+                            # 优先按 ts_code + ex_date 去重，缺失 ex_date 再回退到 ts_code + dividend_year
+                            dividend_data = None
+                            if ex_date:
+                                dividend_data = self.session.query(StockDividend).filter_by(
+                                    ts_code=ts_code,
+                                    ex_date=ex_date
+                                ).first()
+                            if dividend_data is None and dividend_year:
+                                dividend_data = self.session.query(StockDividend).filter_by(
+                                    ts_code=ts_code,
+                                    dividend_year=dividend_year
+                                ).order_by(StockDividend.updated_at.desc(), StockDividend.id.desc()).first()
 
                             if dividend_data:
                                 # 更新现有数据
@@ -713,6 +721,8 @@ class AkShareHandler:
                                 dividend_data.cash_div = cash_div
                                 dividend_data.share_div = share_div
                                 dividend_data.total_div = total_div
+                                dividend_data.rights_issue_price = rights_issue_price if rights_issue_price > 0 else None
+                                dividend_data.rights_issue_ratio = rights_issue_ratio if rights_issue_ratio > 0 else None
                             else:
                                 # 创建新数据
                                 dividend_data = StockDividend(
@@ -726,7 +736,9 @@ class AkShareHandler:
                                     pay_date=pay_date,
                                     cash_div=cash_div,
                                     share_div=share_div,
-                                    total_div=total_div
+                                    total_div=total_div,
+                                    rights_issue_price=rights_issue_price if rights_issue_price > 0 else None,
+                                    rights_issue_ratio=rights_issue_ratio if rights_issue_ratio > 0 else None,
                                 )
                                 self.session.add(dividend_data)
 

@@ -9,12 +9,14 @@ import struct
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, date
+from datetime import date, datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 import polars as pl
 from loguru import logger
+
+from src.data.adj_factor_utils import calculate_qfq_event_factor
 
 
 class TdxHandler:
@@ -597,8 +599,10 @@ class TdxHandler:
                 ex_date = div.ex_date
                 cash_div = div.cash_div or 0
                 share_div = div.share_div or 0
+                rights_issue_price = div.rights_issue_price or 0
+                rights_issue_ratio = div.rights_issue_ratio or 0
                 
-                if cash_div == 0 and share_div == 0:
+                if cash_div == 0 and share_div == 0 and rights_issue_ratio == 0:
                     continue
                 
                 # 找到除权除息日前一天的收盘价
@@ -610,14 +614,15 @@ class TdxHandler:
                 if prev_close <= 0:
                     continue
                 
-                # 计算复权因子
-                # 前复权因子 = (前收盘价 - 每股现金分红) / (前收盘价 * (1 + 每股送转股))
-                if prev_close <= cash_div:
-                    logger.warning(f"{ts_code} {ex_date} 现金分红异常，跳过")
-                    continue
-                
-                factor = (prev_close - cash_div) / (prev_close * (1 + share_div))
-                if factor <= 0:
+                factor = calculate_qfq_event_factor(
+                    prev_close=prev_close,
+                    cash_div=cash_div,
+                    share_div=share_div,
+                    rights_issue_price=rights_issue_price,
+                    rights_issue_ratio=rights_issue_ratio,
+                )
+                if factor is None:
+                    logger.warning(f"{ts_code} {ex_date} 复权事件参数异常，跳过")
                     continue
                 
                 # 应用到所有早于除权除息日的日期
@@ -630,8 +635,10 @@ class TdxHandler:
                 ex_date = div.ex_date
                 cash_div = div.cash_div or 0
                 share_div = div.share_div or 0
+                rights_issue_price = div.rights_issue_price or 0
+                rights_issue_ratio = div.rights_issue_ratio or 0
                 
-                if cash_div == 0 and share_div == 0:
+                if cash_div == 0 and share_div == 0 and rights_issue_ratio == 0:
                     continue
                 
                 # 找到除权除息日前一天的收盘价
@@ -643,12 +650,14 @@ class TdxHandler:
                 if prev_close <= 0:
                     continue
                 
-                # 计算复权因子
-                if prev_close <= cash_div:
-                    continue
-                
-                qfq_factor = (prev_close - cash_div) / (prev_close * (1 + share_div))
-                if qfq_factor <= 0:
+                qfq_factor = calculate_qfq_event_factor(
+                    prev_close=prev_close,
+                    cash_div=cash_div,
+                    share_div=share_div,
+                    rights_issue_price=rights_issue_price,
+                    rights_issue_ratio=rights_issue_ratio,
+                )
+                if qfq_factor is None:
                     continue
                 
                 hfq_factor = 1 / qfq_factor

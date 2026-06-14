@@ -106,6 +106,11 @@ class MainWindow(MainWindowUiMixin, MainWindowEventMixin, MainWindowDataMixin,
         self.current_window_count = 3
         self.displayed_bar_count = 100
         self.adjustment_type = 'qfq'  # 复权类型：qfq=前复权, hfq=后复权, none=不复权
+        
+        # 页面类型和排序状态管理
+        self.current_page_type = "全部A股"  # 默认页面类型
+        self.page_sort_states = {}  # 存储每个页面的排序状态
+        self.page_sorted_columns = {}  # 存储每个页面的当前排序列
 
         # 初始化后获取实时数据
         if hasattr(self, 'refresh_stock_data'):
