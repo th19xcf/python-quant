@@ -13,7 +13,9 @@ from PySide6.QtCore import Qt, QDate
 from PySide6.QtGui import QFont, QColor
 
 from src.utils.logger import logger
-from src.quant.analysis.stock_recommender import StockRecommender
+from src.recommendation.stock_recommender import StockRecommender
+import polars as pl
+import numpy as np
 
 
 class StockRecommendationDialog(QDialog):
@@ -184,23 +186,43 @@ class StockRecommendationDialog(QDialog):
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
             
+            # 生成模拟股票数据（演示用，实际应从 DataManager 获取）
+            np.random.seed(42)
+            stock_codes = [f'{600000 + i:06d}.SH' for i in range(50)]
+            all_data = []
+            for code in stock_codes:
+                n = 30
+                dates = pl.date_range(
+                    start=pl.date(2024, 1, 1),
+                    end=pl.date(2024, 1, 30),
+                    interval="1d",
+                    eager=True
+                )
+                close = 100 * np.cumprod(1 + np.random.normal(0.001, 0.02, n))
+                volume = np.random.randint(1000000, 5000000, n).astype('int64')
+                df = pl.DataFrame({
+                    'stock_code': [code] * n,
+                    'date': dates,
+                    'close': close,
+                    'volume': volume,
+                    'stock_name': [f'股票{code}'] * n,
+                    'industry': ['科技'] * n
+                })
+                all_data.append(df)
+            stocks_data = pl.concat(all_data)
+            
             # 创建推荐引擎
             recommender = StockRecommender()
             
             # 生成推荐
-            recommendations = recommender.generate_recommendations(
-                algorithm=algorithm,
-                stock_count=stock_count,
-                period=period,
-                industry=industry,
-                weights={
-                    'momentum': momentum_weight,
-                    'value': value_weight,
-                    'growth': growth_weight,
-                    'quality': quality_weight,
-                    'volatility': volatility_weight
-                }
-            )
+            recommendations = recommender.recommend_stocks(stocks_data, top_n=stock_count)
+            
+            # 适配展示字段（旧字段名 → 新字段名）
+            for rec in recommendations:
+                rec.setdefault('code', rec.get('stock_code', ''))
+                rec.setdefault('name', rec.get('stock_name', ''))
+                rec.setdefault('expected_return', rec.get('score', 0) * 100)
+                rec.setdefault('risk', rec.get('risk_level', '中'))
             
             # 显示结果
             self.display_result(recommendations)

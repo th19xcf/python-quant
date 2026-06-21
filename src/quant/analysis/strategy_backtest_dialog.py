@@ -12,7 +12,12 @@ from PySide6.QtCore import Qt, QDate
 from PySide6.QtGui import QFont
 
 from src.utils.logger import logger
-from src.quant.analysis.backtest_engine import BacktestEngine
+from src.backtest.engine.backtest_engine import BacktestEngine
+from src.backtest.strategies.trend_following_strategy import TrendFollowingStrategy
+from src.backtest.strategies.mean_reversion_strategy import MeanReversionStrategy
+from src.backtest.strategies.multi_factor_strategy import MultiFactorStrategy
+import polars as pl
+import numpy as np
 
 
 class StrategyBacktestDialog(QDialog):
@@ -154,22 +159,62 @@ class StrategyBacktestDialog(QDialog):
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
             
+            # 生成模拟股票数据（演示用，实际应从 DataManager 获取）
+            np.random.seed(42)
+            date_range = pl.date_range(
+                start=pl.lit(start_date).str.to_date(),
+                end=pl.lit(end_date).str.to_date(),
+                interval="1d",
+                eager=True
+            )
+            n = len(date_range)
+            close = 100 * np.cumprod(1 + np.random.normal(0.001, 0.02, n))
+            data = pl.DataFrame({
+                'date': date_range,
+                'open': close * (1 + np.random.normal(0, 0.01, n)),
+                'high': close * (1 + np.abs(np.random.normal(0, 0.015, n))),
+                'low': close * (1 - np.abs(np.random.normal(0, 0.015, n))),
+                'close': close,
+                'volume': np.random.randint(1000000, 5000000, n)
+            })
+            
+            # 根据策略类型实例化策略
+            strategy_map = {
+                "趋势跟踪策略": TrendFollowingStrategy,
+                "均值回归策略": MeanReversionStrategy,
+                "多因子策略": MultiFactorStrategy
+            }
+            strategy_cls = strategy_map.get(strategy_type, TrendFollowingStrategy)
+            strategy = strategy_cls()
+            # 设置策略参数
+            if strategy_type == "趋势跟踪策略":
+                strategy.params['short_window'] = short_ma
+                strategy.params['long_window'] = long_ma
+            elif strategy_type == "均值回归策略":
+                strategy.params['rsi_period'] = rsi_period
+                strategy.params['overbought'] = rsi_overbought
+                strategy.params['oversold'] = rsi_oversold
+            
             # 创建回测引擎
-            engine = BacktestEngine()
+            engine = BacktestEngine(data)
+            engine.set_strategy(strategy)
             
             # 运行回测
-            result = engine.run_backtest(
-                strategy_type=strategy_type,
-                stock_code=stock_code,
-                start_date=start_date,
-                end_date=end_date,
-                initial_capital=initial_capital,
-                short_ma=short_ma,
-                long_ma=long_ma,
-                rsi_period=rsi_period,
-                rsi_overbought=rsi_overbought,
-                rsi_oversold=rsi_oversold
-            )
+            result = engine.run_backtest(initial_capital=initial_capital)
+            
+            # 补充展示用字段
+            if result:
+                result['strategy_type'] = strategy_type
+                result['stock_code'] = stock_code
+                result['start_date'] = start_date
+                result['end_date'] = end_date
+                performance = result.get('performance', {})
+                result.setdefault('annual_return', performance.get('annual_return', 0))
+                result.setdefault('sharpe_ratio', performance.get('sharpe_ratio', 0))
+                result.setdefault('max_drawdown', performance.get('max_drawdown', 0))
+                result.setdefault('trade_count', len(result.get('trades', [])) // 2)
+                result.setdefault('win_rate', performance.get('winning_rate', 0))
+                result.setdefault('final_capital', result.get('final_equity', 0))
             
             # 显示结果
             self.display_result(result)
