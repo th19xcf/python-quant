@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QAbstractItemView, QApplication, QTableWidgetItem
 
 from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
+from src.utils.exceptions import DataException
 
 
 class MainWindowDataMixin:
@@ -31,7 +32,7 @@ class MainWindowDataMixin:
         try:
             if hasattr(self, '_clear_plots'):
                 self._clear_plots()
-        except Exception as e:
+        except (AttributeError, TypeError) as e:
             logger.debug(f"清空K线图表失败: {e}")
 
         self.current_kline_data = {}
@@ -119,6 +120,7 @@ class MainWindowDataMixin:
         
         # 连接任务信号
         def on_task_completed(task_id, result):
+            logger.info(f"[切换] 回调触发: {result.get('stock_code')} success={result.get('success')}")
             if result["success"]:
                 # 检查是否有必要的键（股票数据）
                 if "data" in result and "stock_name" in result and "stock_code" in result:
@@ -128,6 +130,7 @@ class MainWindowDataMixin:
 
                     # 绘制K线图
                     if hasattr(self, 'plot_k_line'):
+                        logger.info(f"[切换] 调用 plot_k_line: {result['stock_name']}({result['stock_code']})")
                         self.plot_k_line(result["data"], result["stock_name"], result["stock_code"])
 
                     self.statusBar().showMessage(f"已加载 {result['stock_name']}({result['stock_code']}) 的K线图", 3000)
@@ -141,7 +144,25 @@ class MainWindowDataMixin:
         def on_task_error(task_id, error_message):
             self._clear_kline_display()
             self.statusBar().showMessage(f"加载失败: {error_message}", 5000)
-        
+
+        # 断开上一次的回调（避免信号累积导致同一信号触发多个回调）
+        prev_completed = getattr(self, '_stock_data_completed_handler', None)
+        if prev_completed is not None:
+            try:
+                global_task_manager.task_completed.disconnect(prev_completed)
+            except (RuntimeError, TypeError):
+                pass
+        prev_error = getattr(self, '_stock_data_error_handler', None)
+        if prev_error is not None:
+            try:
+                global_task_manager.task_error.disconnect(prev_error)
+            except (RuntimeError, TypeError):
+                pass
+
+        # 保存本次回调引用，便于下次断开
+        self._stock_data_completed_handler = on_task_completed
+        self._stock_data_error_handler = on_task_error
+
         # 连接信号
         global_task_manager.task_completed.connect(on_task_completed)
         global_task_manager.task_error.connect(on_task_error)
@@ -219,7 +240,7 @@ class MainWindowDataMixin:
                         pass
 
                 logger.info(f"从数据表加载了 {len(index_name_map)} 个指数名称")
-        except Exception as e:
+        except DataException as e:
             logger.warning(f"从数据库获取指数名称失败: {e}")
             if not index_name_map and isinstance(previous_index_name_map, dict) and previous_index_name_map:
                 index_name_map = previous_index_name_map
@@ -347,7 +368,7 @@ class MainWindowDataMixin:
                             result.close()
                         except Exception:
                             pass
-            except Exception as e:
+            except DataException as e:
                 logger.warning(f"按分类过滤指数时查询数据库失败: {e}")
                 allowed_index_files = set()
 
@@ -382,7 +403,7 @@ class MainWindowDataMixin:
                             result.close()
                         except Exception:
                             pass
-            except Exception as e:
+            except DataException as e:
                 logger.warning(f"构建创业板/科创板排除列表失败: {e}")
         
         tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
@@ -558,7 +579,7 @@ class MainWindowDataMixin:
                 global_task_manager.task_progress.disconnect(on_task_progress)
                 global_task_manager.task_completed.disconnect(on_task_completed)
                 global_task_manager.task_error.disconnect(on_task_error)
-            except Exception:
+            except RuntimeError:
                 pass
             
             if result["success"]:
@@ -591,7 +612,7 @@ class MainWindowDataMixin:
                 global_task_manager.task_progress.disconnect(on_task_progress)
                 global_task_manager.task_completed.disconnect(on_task_completed)
                 global_task_manager.task_error.disconnect(on_task_error)
-            except Exception:
+            except RuntimeError:
                 pass
             
             self._clear_market_table_display()
@@ -969,7 +990,7 @@ class MainWindowDataMixin:
                 global_task_manager.task_progress.disconnect(on_task_progress)
                 global_task_manager.task_completed.disconnect(on_task_completed)
                 global_task_manager.task_error.disconnect(on_task_error)
-            except Exception:
+            except RuntimeError:
                 pass
         
         def on_task_error(task_id, error_message):
@@ -983,7 +1004,7 @@ class MainWindowDataMixin:
                 global_task_manager.task_progress.disconnect(on_task_progress)
                 global_task_manager.task_completed.disconnect(on_task_completed)
                 global_task_manager.task_error.disconnect(on_task_error)
-            except Exception:
+            except RuntimeError:
                 pass
         
         # 连接信号
@@ -1083,7 +1104,7 @@ class MainWindowDataMixin:
             try:
                 global_task_manager.task_completed.disconnect(on_task_completed)
                 global_task_manager.task_error.disconnect(on_task_error)
-            except Exception:
+            except RuntimeError:
                 pass
             
             if result["success"]:
@@ -1113,7 +1134,7 @@ class MainWindowDataMixin:
             try:
                 global_task_manager.task_completed.disconnect(on_task_completed)
                 global_task_manager.task_error.disconnect(on_task_error)
-            except Exception:
+            except RuntimeError:
                 pass
             
             self._clear_kline_display()
@@ -1161,7 +1182,7 @@ class MainWindowDataMixin:
                     return 0.0
                 cleaned = str(text).replace(',', '').replace('%', '').strip()
                 return float(cleaned) if cleaned and cleaned != '-' else 0.0
-            except Exception:
+            except (ValueError, TypeError):
                 return 0.0
 
         preclose = _to_float(data_row[11]) if len(data_row) > 11 else 0.0

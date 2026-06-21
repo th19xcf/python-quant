@@ -258,7 +258,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 # 生成缓存键
                 params = {'windows': windows_to_calculate}
                 cached_result = global_indicator_cache.get(self.pl_df, indicator_type, **params)
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 logger.debug(f"从缓存获取{indicator_type}失败: {e}")
             
             if cached_result is not None:
@@ -287,7 +287,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     cache_data = self.pl_df.collect() if self.is_lazy else self.pl_df
                     global_indicator_cache.set(cache_data, cache_data, indicator_type, **params)
                     logger.debug(f"{indicator_type}计算结果已缓存")
-                except Exception as e:
+                except (ValueError, TypeError) as e:
                     logger.debug(f"缓存{indicator_type}结果失败: {e}")
             
             # 更新计算状态
@@ -317,7 +317,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             cached_result = None
             try:
                 cached_result = global_indicator_cache.get(self.pl_df, indicator_type, **kwargs)
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 logger.debug(f"从缓存获取{indicator_type}失败: {e}")
             
             if cached_result is not None:
@@ -345,7 +345,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     cache_data = self.pl_df.collect() if self.is_lazy else self.pl_df
                     global_indicator_cache.set(cache_data, cache_data, indicator_type, **kwargs)
                     logger.debug(f"{indicator_type}计算结果已缓存")
-                except Exception as e:
+                except (ValueError, TypeError) as e:
                     logger.debug(f"缓存{indicator_type}结果失败: {e}")
             
             # 更新计算状态
@@ -673,8 +673,8 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     for name in plugin_names:
                         global_indicator_cache.clear(name)
                     logger.info(f"所有插件指标的缓存已失效")
-        except Exception as e:
-            logger.error(f"使插件缓存失效失败: {e}")
+        except (ValueError, TypeError) as e:
+            logger.debug(f"失败: {e}")
     
     def get_plugin_cache_stats(self, plugin_name: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -711,8 +711,8 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             }
             
             return plugin_stats
-        except Exception as e:
-            logger.error(f"获取插件缓存统计失败: {e}")
+        except (ValueError, TypeError) as e:
+            logger.debug(f"失败: {e}")
             return {'error': str(e)}
     
     def get_cache_stats(self) -> Dict[str, Any]:
@@ -834,8 +834,8 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         cached_result = None
         try:
             cached_result = global_indicator_cache.get(self.pl_df, plugin_name, **kwargs)
-        except Exception as e:
-            logger.debug(f"从缓存获取{plugin_name}失败: {e}")
+        except (ValueError, TypeError) as e:
+            logger.debug(f"{plugin_name}失败: {e}")
         
         if cached_result is not None:
                 # 缓存命中，使用缓存结果
@@ -885,8 +885,8 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                             cache_result = result_df.select(['date'] + new_columns)
                             global_indicator_cache.set(self.pl_df, cache_result, plugin_name, **kwargs)
                             logger.debug(f"插件指标{plugin_name}增量计算结果已缓存")
-                    except Exception as e:
-                        logger.debug(f"缓存插件指标{plugin_name}增量计算结果失败: {e}")
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"插件指标{plugin_name}增量计算结果失败: {e}")
                     
                     # 更新计算状态
                     if plugin_name not in self.calculated_indicators['plugin']:
@@ -898,8 +898,9 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                         self.pl_df = self.pl_df.collect()
                         self.is_lazy = False
                     return self.pl_df
-                except Exception as e:
-                    logger.warning(f"增量计算插件指标{plugin_name}失败，使用常规计算: {e}")
+                except (RuntimeError, ValueError) as e:
+                    logger.warning(f"插件指标{plugin_name}失败，使用常规计算: {e}")
+
         
         try:
             # 检查插件是否支持polars
@@ -921,8 +922,8 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                         cache_result = result_pl.select(['date'] + new_columns)
                         global_indicator_cache.set(self.pl_df, cache_result, plugin_name, **kwargs)
                         logger.debug(f"插件指标{plugin_name}计算结果已缓存")
-                    except Exception as e:
-                        logger.debug(f"缓存插件指标{plugin_name}结果失败: {e}")
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"插件指标{plugin_name}结果失败: {e}")
                     
                     # 更新计算状态
                     if plugin_name not in self.calculated_indicators['plugin']:
@@ -953,8 +954,8 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                         cache_result = result_pl.select(['date'] + new_columns)
                         global_indicator_cache.set(self.pl_df, cache_result, plugin_name, **kwargs)
                         logger.debug(f"插件指标{plugin_name}计算结果已缓存")
-                    except Exception as e:
-                        logger.debug(f"缓存插件指标{plugin_name}结果失败: {e}")
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"插件指标{plugin_name}结果失败: {e}")
                     
                     # 更新计算状态
                     if plugin_name not in self.calculated_indicators['plugin']:
@@ -1051,8 +1052,8 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         cached_result = None
         try:
             cached_result = global_indicator_cache.get(self.pl_df, indicator_type, **kwargs)
-        except Exception as e:
-            logger.debug(f"从缓存获取{indicator_type}失败: {e}")
+        except (ValueError, TypeError) as e:
+            logger.debug(f"{indicator_type}失败: {e}")
         
         if cached_result is not None:
             # 缓存命中，使用缓存结果
@@ -1102,8 +1103,9 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     try:
                         global_indicator_cache.set(self.pl_df, self.pl_df, indicator_type, **kwargs)
                         logger.debug(f"{indicator_type}GPU计算结果已缓存")
-                    except Exception as e:
-                        logger.debug(f"缓存{indicator_type}GPU计算结果失败: {e}")
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"{indicator_type}GPU计算结果失败: {e}")
+
                     
                     # 更新计算状态
                     if indicator_type in self.calculated_indicators:
@@ -1120,8 +1122,9 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                         self.pl_df = self.pl_df.collect()
                         self.is_lazy = False
                     return self.pl_df
-            except Exception as e:
-                logger.warning(f"GPU计算{indicator_type}失败，使用常规计算: {e}")
+            except (RuntimeError, ValueError) as e:
+                logger.warning(f"{indicator_type}失败，使用常规计算: {e}")
+
         
         # 检查是否可以使用增量计算
         incremental_data = kwargs.get('incremental_data', None)
@@ -1148,8 +1151,8 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 try:
                     global_indicator_cache.set(self.pl_df, self.pl_df, indicator_type, **kwargs)
                     logger.debug(f"{indicator_type}增量计算结果已缓存")
-                except Exception as e:
-                    logger.debug(f"缓存{indicator_type}增量计算结果失败: {e}")
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"{indicator_type}增量计算结果失败: {e}")
                 
                 # 更新计算状态
                 if indicator_type in self.calculated_indicators:
@@ -1166,8 +1169,9 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     self.pl_df = self.pl_df.collect()
                     self.is_lazy = False
                 return self.pl_df
-            except Exception as e:
-                logger.warning(f"增量计算{indicator_type}失败，使用常规计算: {e}")
+            except (RuntimeError, ValueError) as e:
+                logger.warning(f"{indicator_type}失败，使用常规计算: {e}")
+
         
         # 缓存未命中且无法GPU/增量计算，使用指标管理器计算内置指标
         try:
@@ -1186,8 +1190,8 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             try:
                 global_indicator_cache.set(self.pl_df, self.pl_df, indicator_type, **kwargs)
                 logger.debug(f"{indicator_type}计算结果已缓存")
-            except Exception as e:
-                logger.debug(f"缓存{indicator_type}结果失败: {e}")
+            except (ValueError, TypeError) as e:
+                logger.debug(f"{indicator_type}结果失败: {e}")
             
             # 更新计算状态
             if indicator_type in self.calculated_indicators:
@@ -1243,7 +1247,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     logger.info(f"{indicator_type}缓存命中，避免重复计算")
                 else:
                     uncached_indicators.append(indicator_type)
-            except Exception as e:
+            except (ValueError, TypeError) as e:
                 logger.debug(f"检查{indicator_type}缓存失败: {e}")
                 uncached_indicators.append(indicator_type)
         
@@ -1279,7 +1283,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                             indicator_kwargs['windows'] = kwargs['windows']
                         global_indicator_cache.set(self.pl_df, self.pl_df, indicator_type, **indicator_kwargs)
                         logger.debug(f"{indicator_type}计算结果已缓存")
-                    except Exception as e:
+                    except (ValueError, TypeError) as e:
                         logger.debug(f"缓存{indicator_type}结果失败: {e}")
                 
                 # 更新计算状态
@@ -1470,8 +1474,9 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 # 使所有指标缓存失效
                 global_indicator_cache.invalidate(self.pl_df)
                 logger.debug("数据更新，所有指标缓存已失效")
-            except Exception as e:
-                logger.debug(f"缓存失效失败: {e}")
+            except (ValueError, TypeError) as e:
+                logger.error(f"失效失败: {e}")
+
         
         # 1. 确定要计算的指标类型
         if indicator_types is None:

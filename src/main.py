@@ -28,6 +28,7 @@ from src.utils.cache_monitor import log_cache_stats
 from src.utils.config import config_manager, get_config
 from src.utils.event_bus import EventType, publish, shutdown_event_bus
 from src.utils.exception_handler import setup_global_exception_handler
+from src.utils.exceptions import DataSourceException, DataSaveError
 from src.utils.logger import setup_logger
 from src.utils.memory_manager import global_memory_manager
 
@@ -51,14 +52,14 @@ def _fetch_external_stock_basic(baostock_handler, akshare_handler):
         baostock_basic = baostock_handler.update_stock_basic()
         if baostock_basic is not None:
             logger.info(f"从 Baostock 获取到 {baostock_basic.height} 条股票信息")
-    except Exception as e:
+    except DataSourceException as e:
         logger.warning(f"从 Baostock 获取股票基本信息失败: {e}")
 
     try:
         baostock_industry_map = _fetch_baostock_industry_map(baostock_handler)
         if baostock_industry_map:
             logger.info(f"从 Baostock 行业接口获取到 {len(baostock_industry_map)} 条行业映射")
-    except Exception as e:
+    except (DataSourceException, Exception) as e:
         logger.warning(f"从 Baostock 获取行业映射失败: {e}")
 
     logger.info("开始从 AkShare 获取股票基本信息...")
@@ -66,7 +67,7 @@ def _fetch_external_stock_basic(baostock_handler, akshare_handler):
         akshare_basic = akshare_handler.update_stock_basic()
         if akshare_basic is not None:
             logger.info(f"从 AkShare 获取到 {akshare_basic.height} 条股票信息")
-    except Exception as e:
+    except DataSourceException as e:
         logger.warning(f"从 AkShare 获取股票基本信息失败: {e}")
 
     return baostock_basic, akshare_basic, baostock_industry_map
@@ -149,11 +150,11 @@ def _fetch_akshare_industry_map(tdx_stock_codes):
                         f"AkShare行业映射进度: {i + 1}/{len(board_names)}，"
                         f"当前映射 {len(industry_map)} 只股票"
                     )
-            except Exception as board_e:
+            except DataSourceException as board_e:
                 logger.warning(f"获取行业板块 {board_name} 成分失败: {board_e}")
                 continue
 
-    except Exception as e:
+    except DataSourceException as e:
         logger.warning(f"从 AkShare 获取行业映射失败: {e}")
 
     return industry_map
@@ -238,13 +239,13 @@ def _process_single_stock_batch(ctx):
                 try:
                     ctx.session.commit()
                     logger.info(f"已提交 {i + 1} 条股票记录到数据库")
-                except Exception as commit_e:
+                except (DataSaveError, Exception) as commit_e:
                     logger.exception(f"提交数据库时失败: {commit_e}")
                     ctx.session.rollback()
 
             time.sleep(0.1)
 
-        except Exception as e:
+        except (Exception,) as e:
             logger.exception(f"处理股票 {ts_code} 失败: {e}")
             ctx.result['failed_stocks'].append(ts_code)
             continue
@@ -259,7 +260,7 @@ def _finalize_database_commit(session, result):
     """
     try:
         session.commit()
-    except Exception as commit_e:
+    except (DataSaveError, Exception) as commit_e:
         logger.exception(f"最终提交数据库时失败: {commit_e}")
         session.rollback()
     logger.info(
@@ -628,7 +629,7 @@ def sync_tdx_stock_to_database(config, db_manager):
                         )
                         if _update_stock_date_field(row, 'list_date', earliest_trade_date, result):
                             changed = True
-                    except Exception as trade_date_e:
+                    except (DataSaveError, Exception) as trade_date_e:
                         logger.debug(f"从 stock_daily 回填上市日期失败 {row.ts_code}: {trade_date_e}")
 
                 if _update_stock_date_field(row, 'delist_date', source_delist_date, result):
@@ -646,13 +647,13 @@ def sync_tdx_stock_to_database(config, db_manager):
                 if changed:
                     result['updated_stocks'] += 1
 
-            except Exception as backfill_e:
+            except (DataSaveError, Exception) as backfill_e:
                 logger.exception(f"回填股票 {row.ts_code} 信息失败: {backfill_e}")
                 result['failed_stocks'].append(row.ts_code)
 
         _finalize_database_commit(session, result)
 
-    except Exception as e:
+    except (DataSaveError, DataSourceException) as e:
         logger.exception(f"同步股票信息失败: {e}")
         if session:
             session.rollback()
@@ -1161,7 +1162,7 @@ def _collect_external_index_name_map(config):
                         if ipo_date and (item['base_date'] is None or ipo_date < item['base_date']):
                             item['base_date'] = ipo_date
             logger.info(f"Baostock指数信息映射数量: {len(merged_info_map)}")
-    except Exception as e:
+    except DataSourceException as e:
         logger.warning(f"从 Baostock 获取指数基本信息失败: {e}")
 
     logger.info("开始从 AkShare 获取指数基本信息...")
@@ -1186,7 +1187,7 @@ def _collect_external_index_name_map(config):
                         item['base_date'] = publish_date
                     ak_count += 1
             logger.info(f"AkShare可用指数名称映射数量: {ak_count}")
-    except Exception as e:
+    except DataSourceException as e:
         logger.warning(f"从 AkShare 获取指数基本信息失败: {e}")
     finally:
         try:
@@ -1313,7 +1314,7 @@ def sync_tdx_index_to_database(config, db_manager):
                     session.commit()
                     logger.info(f"已处理 {i + 1}/{len(tdx_index_codes)} 个指数")
 
-            except Exception as row_e:
+            except (DataSaveError, Exception) as row_e:
                 logger.exception(f"处理指数 {ts_code} 失败: {row_e}")
                 result['failed_indexes'].append(ts_code)
 
@@ -1379,7 +1380,7 @@ def sync_tdx_index_to_database(config, db_manager):
                 if changed and row.ts_code not in tdx_index_codes:
                     result['updated_indexes'] += 1
 
-            except Exception as backfill_e:
+            except (DataSaveError, Exception) as backfill_e:
                 logger.exception(f"回填指数 {row.ts_code} 空白字段失败: {backfill_e}")
                 result['failed_indexes'].append(row.ts_code)
 
@@ -1398,7 +1399,7 @@ def sync_tdx_index_to_database(config, db_manager):
 
         session.commit()
 
-    except Exception as e:
+    except (DataSaveError, DataSourceException) as e:
         logger.exception(f"同步指数信息失败: {e}")
         if session:
             session.rollback()
@@ -1512,7 +1513,7 @@ def _handle_update_stock_arg(config):
             etf_result = akshare_handler.update_etf_basic()
             if etf_result is not None:
                 logger.info(f"ETF 基本信息更新完成")
-        except Exception as etf_e:
+        except DataSourceException as etf_e:
             logger.warning(f"更新 ETF 基本信息失败: {etf_e}")
 
         db_manager.cleanup()
@@ -1744,7 +1745,7 @@ def _parse_tdx_day_to_date(day_value):
         if len(text) != 8:
             return None
         return datetime.strptime(text, '%Y%m%d').date()
-    except Exception:
+    except (ValueError, TypeError):
         return None
 
 
@@ -1786,7 +1787,7 @@ def _extract_tdx_first_last_trade_date(config, ts_code):
             last_raw = struct.unpack('I', last_record[0:4])[0]
 
         return _parse_tdx_day_to_date(first_raw), _parse_tdx_day_to_date(last_raw)
-    except Exception:
+    except (OSError, ValueError):
         return None, None
 
 
@@ -1873,7 +1874,7 @@ def sync_stock_fund_to_fund_basic(config, db_manager):
                     existing_fund_map[stock.ts_code] = fund
                     result['inserted_funds'] += 1
 
-            except Exception as row_e:
+            except (DataSaveError, Exception) as row_e:
                 logger.exception(f"迁移基金记录失败 {stock.ts_code}: {row_e}")
                 result['failed'] += 1
 
@@ -1920,7 +1921,7 @@ def sync_stock_fund_to_fund_basic(config, db_manager):
                         if changed:
                             result['updated_funds'] += 1
                             result['akshare_enriched'] += 1
-        except Exception as e:
+        except DataSourceException as e:
             logger.warning(f"使用 AkShare 补全基金信息失败: {e}")
 
         # 使用通达信日线数据补全日期信息：
@@ -1967,7 +1968,7 @@ def sync_stock_fund_to_fund_basic(config, db_manager):
 
         session.commit()
 
-    except Exception as e:
+    except (DataSaveError, DataSourceException) as e:
         logger.exception(f"基金迁移失败: {e}")
         if session:
             session.rollback()
