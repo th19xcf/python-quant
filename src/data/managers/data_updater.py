@@ -10,8 +10,6 @@
 from typing import List, Dict, Any, Optional
 from loguru import logger
 
-from src.utils.event_bus import publish
-
 
 class DataUpdater:
     """
@@ -49,8 +47,6 @@ class DataUpdater:
             try:
                 logger.info(f"使用{source.name}更新股票基本信息")
                 source.update_stock_basic()
-                # 发布数据更新事件
-                publish('data_updated', data_type='stock_basic', ts_code='all', message='股票基本信息更新完成')
                 return True
             except Exception as e:
                 logger.warning(f"{source.name}更新股票基本信息失败: {e}")
@@ -75,10 +71,6 @@ class DataUpdater:
             try:
                 logger.info(f"使用{source.name}更新股票日线数据")
                 source.update_stock_daily(ts_codes, start_date, end_date)
-                # 发布数据更新事件
-                publish('data_updated', data_type='stock_daily', 
-                        ts_code=ts_codes[0] if ts_codes else 'all', 
-                        message='股票日线数据更新完成')
                 return True
             except Exception as e:
                 logger.warning(f"{source.name}更新股票日线数据失败: {e}")
@@ -98,8 +90,6 @@ class DataUpdater:
             try:
                 logger.info(f"使用{source.name}更新基金基本信息")
                 source.update_fund_basic()
-                # 发布数据更新事件
-                publish('data_updated', data_type='fund_basic', ts_code='all', message='基金基本信息更新完成')
                 return True
             except Exception as e:
                 logger.warning(f"{source.name}更新基金基本信息失败: {e}")
@@ -124,10 +114,6 @@ class DataUpdater:
             try:
                 logger.info(f"使用{source.name}更新基金日线数据")
                 source.update_fund_daily(ts_codes, start_date, end_date)
-                # 发布数据更新事件
-                publish('data_updated', data_type='fund_daily', 
-                        ts_code=ts_codes[0] if ts_codes else 'all', 
-                        message='基金日线数据更新完成')
                 return True
             except Exception as e:
                 logger.warning(f"{source.name}更新基金日线数据失败: {e}")
@@ -147,8 +133,6 @@ class DataUpdater:
             try:
                 logger.info(f"使用{source.name}更新封闭式基金基本信息")
                 source.update_closed_fund_basic()
-                # 发布数据更新事件
-                publish('data_updated', data_type='closed_fund_basic', ts_code='all', message='封闭式基金基本信息更新完成')
                 return True
             except Exception as e:
                 logger.warning(f"{source.name}更新封闭式基金基本信息失败: {e}")
@@ -173,10 +157,6 @@ class DataUpdater:
             try:
                 logger.info(f"使用{source.name}更新封闭式基金日线数据")
                 source.update_closed_fund_daily(ts_codes, start_date, end_date)
-                # 发布数据更新事件
-                publish('data_updated', data_type='closed_fund_daily', 
-                        ts_code=ts_codes[0] if ts_codes else 'all', 
-                        message='封闭式基金日线数据更新完成')
                 return True
             except Exception as e:
                 logger.warning(f"{source.name}更新封闭式基金日线数据失败: {e}")
@@ -196,8 +176,6 @@ class DataUpdater:
             try:
                 logger.info(f"使用{source.name}更新指数基本信息")
                 source.update_index_basic()
-                # 发布数据更新事件
-                publish('data_updated', data_type='index_basic', ts_code='all', message='指数基本信息更新完成')
                 return True
             except Exception as e:
                 logger.warning(f"{source.name}更新指数基本信息失败: {e}")
@@ -222,10 +200,6 @@ class DataUpdater:
             try:
                 logger.info(f"使用{source.name}更新指数日线数据")
                 source.update_index_daily(ts_codes, start_date, end_date)
-                # 发布数据更新事件
-                publish('data_updated', data_type='index_daily', 
-                        ts_code=ts_codes[0] if ts_codes else 'all', 
-                        message='指数日线数据更新完成')
                 return True
             except Exception as e:
                 logger.warning(f"{source.name}更新指数日线数据失败: {e}")
@@ -248,10 +222,6 @@ class DataUpdater:
             try:
                 logger.info(f"使用{source.name}更新宏观经济数据")
                 source.update_macro_data(indicators)
-                # 发布数据更新事件
-                publish('data_updated', data_type='macro', 
-                        ts_code=indicators[0] if indicators else 'all', 
-                        message='宏观经济数据更新完成')
                 return True
             except Exception as e:
                 logger.warning(f"{source.name}更新宏观经济数据失败: {e}")
@@ -276,10 +246,6 @@ class DataUpdater:
             try:
                 logger.info(f"使用{source.name}更新新闻数据")
                 source.update_news_data(sources, start_date, end_date)
-                # 发布数据更新事件
-                publish('data_updated', data_type='news', 
-                        ts_code=sources[0] if sources else 'all', 
-                        message='新闻数据更新完成')
                 return True
             except Exception as e:
                 logger.warning(f"{source.name}更新新闻数据失败: {e}")
@@ -307,10 +273,6 @@ class DataUpdater:
                 
                 logger.info(f"使用{source.name}更新股票分红配股数据")
                 source.update_stock_dividend(ts_codes)
-                # 发布数据更新事件
-                publish('data_updated', data_type='stock_dividend', 
-                        ts_code=ts_codes[0] if ts_codes else 'all', 
-                        message='股票分红配股数据更新完成')
                 return True
             except Exception as e:
                 logger.warning(f"{source.name}更新股票分红配股数据失败: {e}")
