@@ -7,28 +7,20 @@
 注意：此模块已被重构，建议使用 DataService 代替
 """
 
+import time
 from loguru import logger
 from typing import List, Dict, Any, Optional, Union
 import polars as pl
 from src.api.data_api import IDataProvider, IDataProcessor
-from src.utils.event_bus import EventBus
 from src.utils.exceptions import (
     DataSourceConnectionError,
     DataSourceNotAvailableError,
-    DataSourceConfigError,
     DataValidationError,
-    DataNotFoundError,
     DataSaveError,
-    QuantException
 )
-from src.utils.exception_handler import handle_exception_with_retry, handle_error_gracefully
-from src.data.data_cache import global_data_cache
-from src.data.managers import DataFetcher, DataUpdater, DataProcessor
+from src.utils.exception_handler import handle_exception_with_retry
 from src.data.services.data_service import DataService
 from src.utils.memory_optimizer import MemoryOptimizer
-
-# 异步数据管理器（延迟导入）
-AsyncDataManager = None
 
 
 class DataManager(IDataProvider, IDataProcessor):
@@ -55,50 +47,16 @@ class DataManager(IDataProvider, IDataProcessor):
         # 使用新的DataService
         self.data_service = DataService(config, db_manager, plugin_manager)
         
-        # 为了保持向后兼容性，保留旧的组件
-        self.data_fetcher = DataFetcher(config, db_manager)
-        self.data_updater = DataUpdater(config, db_manager)
-        self.data_processor = DataProcessor(config)
-        
         # 插件数据源映射
         self.plugin_datasources = {}
         
         # 异步数据管理器
         self.async_data_manager = None
         
-        self._init_handlers()
         self._init_plugin_datasources()
         self._init_async_manager()
         
         logger.info("DataManager 已初始化，建议使用 DataService 代替")
-    
-    def _init_handlers(self):
-        """
-+        初始化各个数据源处理器
-
-        注意：为了避免重复初始化，handler的初始化现在由DataService统一管理。
-        这里只进行必要的配置和注册操作。
-        """
-        from src.data.services.data_provider import DataProvider
-        from src.data.services.data_updater import DataUpdaterService
-
-        if isinstance(self.data_service.data_provider, DataProvider):
-            provider = self.data_service.data_provider
-            fetcher_sources = provider.data_fetcher.get_sources()
-            for source in fetcher_sources:
-                if source not in self.data_fetcher.sources:
-                    self.data_fetcher.register_source(source)
-
-        if isinstance(self.data_service.data_updater, DataUpdaterService):
-            updater = self.data_service.data_updater
-            updater_sources = getattr(updater.data_updater, 'sources', [])
-            for source in updater_sources:
-                if source not in self.data_updater.sources:
-                    self.data_updater.register_source(source)
-
-        logger.info("数据处理器初始化完成（复用DataService中的handler）")
-
-        self._init_async_manager()
     
     def _init_plugin_datasources(self):
         """
@@ -107,14 +65,10 @@ class DataManager(IDataProvider, IDataProcessor):
         if not self.plugin_manager:
             return
         
-        # 获取所有可用的数据源插件
         datasource_plugins = self.plugin_manager.get_available_datasource_plugins()
         
         for plugin_name, plugin in datasource_plugins.items():
             self.plugin_datasources[plugin_name] = plugin
-            # 注册到数据获取和更新模块
-            self.data_fetcher.register_source(plugin)
-            self.data_updater.register_source(plugin)
             logger.info(f"已注册插件数据源: {plugin_name}")
     
     def _init_async_manager(self):
@@ -122,10 +76,7 @@ class DataManager(IDataProvider, IDataProcessor):
         初始化异步数据管理器
         """
         try:
-            global AsyncDataManager
-            if AsyncDataManager is None:
-                from src.data.async_data_manager import AsyncDataManager
-            
+            from src.data.async_data_manager import AsyncDataManager
             self.async_data_manager = AsyncDataManager(self)
             logger.info("异步数据管理器初始化成功")
         except ImportError as e:
@@ -134,73 +85,6 @@ class DataManager(IDataProvider, IDataProcessor):
         except (OSError, RuntimeError) as e:
             logger.warning(f"异步数据管理器初始化失败: {e}")
             self.async_data_manager = None
-    
-    def _publish_data_updated_event(self, data_type, ts_code, status="success", message=""):
-        """
-        发布数据更新事件
-        
-        Args:
-            data_type: 数据类型，如'stock', 'index', 'macro', 'news'
-            ts_code: 股票代码或指数代码
-            status: 更新状态，success或error
-            message: 附加消息
-        """
-        from src.utils.event_bus import publish
-        publish(
-            'data_updated' if status == 'success' else 'data_error',
-            data_type=data_type,
-            ts_code=ts_code,
-            message=message
-        )
-    
-    def _update_data(self, data_type, handler, method_name, event_type, identifier='all', **kwargs):
-        """
-        通用数据更新方法
-        
-        Args:
-            data_type: 数据类型名称（用于日志）
-            handler: 数据处理器
-            method_name: 要调用的方法名
-            event_type: 事件类型
-            identifier: 标识符，默认为'all'
-            **kwargs: 传递给更新方法的参数
-            
-        Raises:
-            DataSourceNotAvailableError: 数据源不可用
-            DataValidationError: 数据验证失败
-            DataSaveError: 数据保存失败
-        """
-        if not handler:
-            error_msg = f"{data_type}处理器未初始化"
-            logger.warning(error_msg)
-            self._publish_data_updated_event(event_type, identifier, status='error', message=error_msg)
-            raise DataSourceNotAvailableError("unknown", error_msg)
-        
-        try:
-            method = getattr(handler, method_name)
-            method(**kwargs)
-            logger.info(f"{data_type}更新完成")
-            
-            # 发布数据更新事件
-            self._publish_data_updated_event(event_type, identifier)
-            
-        except DataSourceConnectionError as e:
-            logger.error(f"{data_type}更新失败 - 连接错误: {e.message}")
-            self._publish_data_updated_event(event_type, identifier, status='error', message=e.message)
-            raise
-        except DataValidationError as e:
-            logger.error(f"{data_type}更新失败 - 数据验证错误: {e.message}")
-            self._publish_data_updated_event(event_type, identifier, status='error', message=e.message)
-            raise
-        except DataSaveError as e:
-            logger.error(f"{data_type}更新失败 - 保存错误: {e.message}")
-            self._publish_data_updated_event(event_type, identifier, status='error', message=e.message)
-            raise
-        except (OSError, RuntimeError, ValueError) as e:
-            error_msg = f"{data_type}更新失败: {str(e)}"
-            logger.exception(error_msg)
-            self._publish_data_updated_event(event_type, identifier, status='error', message=error_msg)
-            raise DataSaveError(error_msg) from e
     
     def update_stock_basic(self):
         """
@@ -505,6 +389,77 @@ class DataManager(IDataProvider, IDataProcessor):
             
             return result
     
+    def _get_basic_data(self, model_class, model_name, exchange: Optional[str] = None, defaults: List[dict] = None, supports_bj: bool = False) -> pl.DataFrame:
+        """
+        通用的获取基础信息方法
+        
+        Args:
+            model_class: ORM模型类
+            model_name: 模型名称（用于日志）
+            exchange: 交易所，可选值：'sh'（上海）、'sz'（深圳）、'bj'（北京）
+            defaults: 默认数据列表，为空时不插入默认数据
+            supports_bj: 是否支持北京交易所
+        
+        Returns:
+            pl.DataFrame: 基础信息数据
+        """
+        if not self.db_manager:
+            logger.warning(f"数据库连接不可用，无法获取{model_name}基本信息")
+            return pl.DataFrame()
+        
+        session = None
+        try:
+            session = self.db_manager.get_session()
+            if not session:
+                return pl.DataFrame()
+            
+            query = session.query(model_class)
+            
+            if exchange:
+                if exchange == 'sh':
+                    query = query.filter(model_class.ts_code.like('%.SH'))
+                elif exchange == 'sz':
+                    query = query.filter(model_class.ts_code.like('%.SZ'))
+                elif exchange == 'bj' and supports_bj:
+                    query = query.filter(model_class.ts_code.like('%.BJ'))
+            
+            results = query.all()
+            
+            if not results and defaults:
+                logger.info(f"{model_name}表为空，插入默认数据")
+                for item_info in defaults:
+                    existing = session.query(model_class).filter_by(ts_code=item_info["ts_code"]).first()
+                    if not existing:
+                        new_item = model_class(
+                            ts_code=item_info["ts_code"],
+                            name=item_info["name"]
+                        )
+                        session.add(new_item)
+                session.commit()
+                results = query.all()
+            
+            if results:
+                data = {
+                    'ts_code': [item.ts_code for item in results],
+                    'name': [item.name for item in results]
+                }
+                return pl.DataFrame(data)
+            
+            return pl.DataFrame()
+            
+        except (OSError, RuntimeError) as query_e:
+            logger.warning(f"{model_name}查询失败: {query_e}")
+            return pl.DataFrame()
+        except Exception as e:
+            logger.exception(f"获取{model_name}失败: {e}")
+            return pl.DataFrame()
+        finally:
+            if session and self.db_manager:
+                try:
+                    self.db_manager._cleanup_session()
+                except Exception as cleanup_e:
+                    logger.debug(f"清理会话时出错: {cleanup_e}")
+    
     def get_stock_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
         """
         获取股票基本信息
@@ -515,83 +470,13 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             pl.DataFrame: 股票基本信息
         """
-        session = None
-        try:
-            if not self.db_manager:
-                logger.warning("数据库连接不可用，无法获取股票基本信息")
-                return pl.DataFrame()
-            
-            from src.database.models.stock import StockBasic
-            
-            session = self.db_manager.get_session()
-            if not session:
-                return pl.DataFrame()
-            
-            try:
-                # 检查stock_basic表是否有数据
-                query = session.query(StockBasic)
-                
-                # 根据交易所筛选
-                if exchange:
-                    if exchange == 'sh':
-                        query = query.filter(StockBasic.ts_code.like('%.SH'))
-                    elif exchange == 'sz':
-                        query = query.filter(StockBasic.ts_code.like('%.SZ'))
-                    elif exchange == 'bj':
-                        query = query.filter(StockBasic.ts_code.like('%.BJ'))
-                
-                stock_basics = query.all()
-                
-                # 如果没有数据，插入默认股票信息
-                if not stock_basics:
-                    logger.info("stock_basic表为空，插入默认股票信息")
-                    default_stocks = [
-                        {"ts_code": "600000.SH", "name": "浦发银行"},
-                        {"ts_code": "000001.SZ", "name": "平安银行"},
-                        {"ts_code": "300001.SZ", "name": "特锐德"}
-                    ]
-                    
-                    for stock_info in default_stocks:
-                        # 检查是否已存在
-                        existing_stock = session.query(StockBasic).filter_by(ts_code=stock_info["ts_code"]).first()
-                        if not existing_stock:
-                            new_stock = StockBasic(
-                                ts_code=stock_info["ts_code"],
-                                name=stock_info["name"]
-                            )
-                            session.add(new_stock)
-                    
-                    # 提交事务
-                    session.commit()
-                    # 重新查询数据
-                    stock_basics = query.all()
-                
-                # 构建DataFrame
-                if stock_basics:
-                    data = {
-                        'ts_code': [stock.ts_code for stock in stock_basics],
-                        'name': [stock.name for stock in stock_basics]
-                    }
-                    df = pl.DataFrame(data)
-                    # 内存优化：字符串列不需要优化
-                    return df
-                else:
-                    return pl.DataFrame()
-            except (OSError, RuntimeError) as query_e:
-                # 如果查询失败，可能是表不存在，返回空DataFrame
-                logger.warning(f"股票基本信息查询失败: {query_e}")
-                return pl.DataFrame()
-
-        except (OSError, RuntimeError) as e:
-            logger.exception(f"获取股票基本信息失败: {e}")
-            return pl.DataFrame()
-        finally:
-            # 确保会话被关闭
-            if session and self.db_manager:
-                try:
-                    self.db_manager._cleanup_session()
-                except Exception as cleanup_e:
-                    logger.debug(f"清理会话时出错: {cleanup_e}")
+        from src.database.models.stock import StockBasic
+        defaults = [
+            {"ts_code": "600000.SH", "name": "浦发银行"},
+            {"ts_code": "000001.SZ", "name": "平安银行"},
+            {"ts_code": "300001.SZ", "name": "特锐德"}
+        ]
+        return self._get_basic_data(StockBasic, "股票", exchange, defaults, supports_bj=True)
     
     def get_index_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
         """
@@ -603,57 +488,8 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             pl.DataFrame: 指数基本信息
         """
-        session = None
-        try:
-            if not self.db_manager:
-                logger.warning("数据库连接不可用，无法获取指数基本信息")
-                return pl.DataFrame()
-            
-            from src.database.models.index import IndexBasic
-            
-            session = self.db_manager.get_session()
-            if not session:
-                return pl.DataFrame()
-            
-            try:
-                # 检查index_basic表是否有数据
-                query = session.query(IndexBasic)
-                
-                # 根据交易所筛选
-                if exchange:
-                    if exchange == 'sh':
-                        query = query.filter(IndexBasic.ts_code.like('%.SH'))
-                    elif exchange == 'sz':
-                        query = query.filter(IndexBasic.ts_code.like('%.SZ'))
-                
-                index_basics = query.all()
-                
-                # 构建DataFrame
-                if index_basics:
-                    data = {
-                        'ts_code': [index.ts_code for index in index_basics],
-                        'name': [index.name for index in index_basics]
-                    }
-                    df = pl.DataFrame(data)
-                    # 内存优化：字符串列不需要优化
-                    return df
-                else:
-                    return pl.DataFrame()
-            except (OSError, RuntimeError) as query_e:
-                # 如果查询失败，可能是表不存在，返回空DataFrame
-                logger.warning(f"指数基本信息查询失败: {query_e}")
-                return pl.DataFrame()
-
-        except (OSError, RuntimeError) as e:
-            logger.exception(f"获取指数基本信息失败: {e}")
-            return pl.DataFrame()
-        finally:
-            # 确保会话被关闭
-            if session and self.db_manager:
-                try:
-                    self.db_manager._cleanup_session()
-                except Exception as cleanup_e:
-                    logger.debug(f"清理会话时出错: {cleanup_e}")
+        from src.database.models.index import IndexBasic
+        return self._get_basic_data(IndexBasic, "指数", exchange)
     
     def get_fund_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
         """
@@ -665,57 +501,8 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             pl.DataFrame: 基金基本信息
         """
-        session = None
-        try:
-            if not self.db_manager:
-                logger.warning("数据库连接不可用，无法获取基金基本信息")
-                return pl.DataFrame()
-            
-            from src.database.models.fund import FundBasic
-            
-            session = self.db_manager.get_session()
-            if not session:
-                return pl.DataFrame()
-            
-            try:
-                # 检查fund_basic表是否有数据
-                query = session.query(FundBasic)
-                
-                # 根据交易所筛选
-                if exchange:
-                    if exchange == 'sh':
-                        query = query.filter(FundBasic.ts_code.like('%.SH'))
-                    elif exchange == 'sz':
-                        query = query.filter(FundBasic.ts_code.like('%.SZ'))
-                
-                fund_basics = query.all()
-                
-                # 构建DataFrame
-                if fund_basics:
-                    data = {
-                        'ts_code': [fund.ts_code for fund in fund_basics],
-                        'name': [fund.name for fund in fund_basics]
-                    }
-                    df = pl.DataFrame(data)
-                    # 内存优化：字符串列不需要优化
-                    return df
-                else:
-                    return pl.DataFrame()
-            except Exception as query_e:
-                # 如果查询失败，可能是表不存在，返回空DataFrame
-                logger.warning(f"基金基本信息查询失败: {query_e}")
-                return pl.DataFrame()
-
-        except Exception as e:
-            logger.exception(f"获取基金基本信息失败: {e}")
-            return pl.DataFrame()
-        finally:
-            # 确保会话被关闭
-            if session and self.db_manager:
-                try:
-                    self.db_manager._cleanup_session()
-                except Exception as cleanup_e:
-                    logger.debug(f"清理会话时出错: {cleanup_e}")
+        from src.database.models.fund import FundBasic
+        return self._get_basic_data(FundBasic, "基金", exchange)
     
     def get_closed_fund_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
         """
@@ -727,81 +514,13 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             pl.DataFrame: 封闭式基金基本信息
         """
-        session = None
-        try:
-            if not self.db_manager:
-                logger.warning("数据库连接不可用，无法获取封闭式基金基本信息")
-                return pl.DataFrame()
-            
-            from src.database.models.fund import ClosedFundBasic
-            
-            session = self.db_manager.get_session()
-            if not session:
-                return pl.DataFrame()
-            
-            try:
-                # 检查closed_fund_basic表是否有数据
-                query = session.query(ClosedFundBasic)
-                
-                # 根据交易所筛选
-                if exchange:
-                    if exchange == 'sh':
-                        query = query.filter(ClosedFundBasic.ts_code.like('%.SH'))
-                    elif exchange == 'sz':
-                        query = query.filter(ClosedFundBasic.ts_code.like('%.SZ'))
-                
-                closed_fund_basics = query.all()
-                
-                # 如果没有数据，插入默认封闭式基金信息
-                if not closed_fund_basics:
-                    logger.info("closed_fund_basic表为空，插入默认封闭式基金信息")
-                    default_closed_funds = [
-                        {"ts_code": "500018.SH", "name": "基金兴和"},
-                        {"ts_code": "500025.SH", "name": "基金汉盛"},
-                        {"ts_code": "500038.SH", "name": "基金通乾"}
-                    ]
-                    
-                    for fund_info in default_closed_funds:
-                        # 检查是否已存在
-                        existing_fund = session.query(ClosedFundBasic).filter_by(ts_code=fund_info["ts_code"]).first()
-                        if not existing_fund:
-                            new_fund = ClosedFundBasic(
-                                ts_code=fund_info["ts_code"],
-                                name=fund_info["name"]
-                            )
-                            session.add(new_fund)
-                    
-                    # 提交事务
-                    session.commit()
-                    # 重新查询数据
-                    closed_fund_basics = query.all()
-                
-                # 构建DataFrame
-                if closed_fund_basics:
-                    data = {
-                        'ts_code': [fund.ts_code for fund in closed_fund_basics],
-                        'name': [fund.name for fund in closed_fund_basics]
-                    }
-                    df = pl.DataFrame(data)
-                    # 内存优化：字符串列不需要优化
-                    return df
-                else:
-                    return pl.DataFrame()
-            except Exception as query_e:
-                # 如果查询失败，可能是表不存在，返回空DataFrame
-                logger.warning(f"封闭式基金基本信息查询失败: {query_e}")
-                return pl.DataFrame()
-
-        except Exception as e:
-            logger.exception(f"获取封闭式基金基本信息失败: {e}")
-            return pl.DataFrame()
-        finally:
-            # 确保会话被关闭
-            if session and self.db_manager:
-                try:
-                    self.db_manager._cleanup_session()
-                except Exception as cleanup_e:
-                    logger.debug(f"清理会话时出错: {cleanup_e}")
+        from src.database.models.fund import ClosedFundBasic
+        defaults = [
+            {"ts_code": "500018.SH", "name": "基金兴和"},
+            {"ts_code": "500025.SH", "name": "基金汉盛"},
+            {"ts_code": "500038.SH", "name": "基金通乾"}
+        ]
+        return self._get_basic_data(ClosedFundBasic, "封闭式基金", exchange, defaults)
     
     def preprocess_data(self, data: Union[pl.DataFrame, pl.LazyFrame]) -> Union[pl.DataFrame, pl.LazyFrame]:
         """
@@ -813,7 +532,9 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             Union[pl.DataFrame, pl.LazyFrame]: 预处理后的数据
         """
-        return self.data_processor.preprocess_data(data)
+        from src.data.managers.data_processor import DataProcessor
+        processor = DataProcessor(self.config)
+        return processor.preprocess_data(data)
     
     def sample_data(self, data: Union[pl.DataFrame, pl.LazyFrame], target_points: int = 1000, strategy: str = 'adaptive') -> Union[pl.DataFrame, pl.LazyFrame]:
         """
@@ -827,7 +548,9 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             Union[pl.DataFrame, pl.LazyFrame]: 采样后的数据
         """
-        return self.data_processor.sample_data(data, target_points, strategy)
+        from src.data.managers.data_processor import DataProcessor
+        processor = DataProcessor(self.config)
+        return processor.sample_data(data, target_points, strategy)
     
     def convert_data_type(self, data: Union[pl.DataFrame, pl.LazyFrame], target_type: str = 'float32') -> Union[pl.DataFrame, pl.LazyFrame]:
         """
@@ -840,7 +563,9 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             Union[pl.DataFrame, pl.LazyFrame]: 转换后的数据
         """
-        return self.data_processor.convert_data_type(data, target_type)
+        from src.data.managers.data_processor import DataProcessor
+        processor = DataProcessor(self.config)
+        return processor.convert_data_type(data, target_type)
     
     def clean_data(self, data: Union[pl.DataFrame, pl.LazyFrame]) -> Union[pl.DataFrame, pl.LazyFrame]:
         """
@@ -852,4 +577,6 @@ class DataManager(IDataProvider, IDataProcessor):
         Returns:
             Union[pl.DataFrame, pl.LazyFrame]: 清洗后的数据
         """
-        return self.data_processor.clean_data(data)
+        from src.data.managers.data_processor import DataProcessor
+        processor = DataProcessor(self.config)
+        return processor.clean_data(data)

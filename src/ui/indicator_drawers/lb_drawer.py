@@ -8,8 +8,10 @@ LB（量比）指标绘制器
 import pyqtgraph as pg
 from .histogram_item import HistogramItem
 
+from .base_drawer import BaseIndicatorDrawer
 
-class LbDrawer:
+
+class LbDrawer(BaseIndicatorDrawer):
     """LB量比指标绘制器"""
 
     @staticmethod
@@ -25,26 +27,24 @@ class LbDrawer:
         if data is None or data.empty:
             return
 
-        # 获取颜色配置
         colors = kwargs.get('colors', {
-            'lb': (0, 255, 127),  # 春绿色
+            'lb': (0, 255, 127),
         })
 
-        # 绘制LB柱状图
         if 'lb' in data.columns:
             lb_values = data['lb'].values
             brushes = []
             for val in lb_values:
-                if val > 2:  # 高量比
-                    brushes.append(pg.mkBrush((255, 0, 0, 180)))  # 红色
-                elif val > 1.5:  # 较高量比
-                    brushes.append(pg.mkBrush((255, 165, 0, 180)))  # 橙色
-                elif val > 1:  # 正常量比
-                    brushes.append(pg.mkBrush((0, 255, 127, 180)))  # 绿色
-                elif val > 0.5:  # 较低量比
-                    brushes.append(pg.mkBrush((0, 191, 255, 180)))  # 蓝色
-                else:  # 低量比
-                    brushes.append(pg.mkBrush((128, 128, 128, 180)))  # 灰色
+                if val > 2:
+                    brushes.append(pg.mkBrush((255, 0, 0, 180)))
+                elif val > 1.5:
+                    brushes.append(pg.mkBrush((255, 165, 0, 180)))
+                elif val > 1:
+                    brushes.append(pg.mkBrush((0, 255, 127, 180)))
+                elif val > 0.5:
+                    brushes.append(pg.mkBrush((0, 191, 255, 180)))
+                else:
+                    brushes.append(pg.mkBrush((128, 128, 128, 180)))
 
             bar_item = HistogramItem(
                 x=data.index,
@@ -54,8 +54,7 @@ class LbDrawer:
             )
             view.addItem(bar_item)
 
-        # 添加参考线
-        view.addLine(y=1, pen=pg.mkPen((255, 255, 255, 150), width=1.5))  # 基准线
+        view.addLine(y=1, pen=pg.mkPen((255, 255, 255, 150), width=1.5))
         view.addLine(y=0.5, pen=pg.mkPen((128, 128, 128, 100), width=1, style=pg.QtCore.Qt.DashLine))
         view.addLine(y=1.5, pen=pg.mkPen((128, 128, 128, 100), width=1, style=pg.QtCore.Qt.DashLine))
         view.addLine(y=2, pen=pg.mkPen((255, 0, 0, 100), width=1, style=pg.QtCore.Qt.DashLine))
@@ -78,7 +77,6 @@ class LbDrawer:
         min_val = data['lb'].min()
         max_val = data['lb'].max()
 
-        # 限制显示范围，但保留一定边距
         lower_limit = max(0, min_val * 0.8)
         upper_limit = max(3, max_val * 1.1)
 
@@ -102,7 +100,6 @@ class LbDrawer:
 
         value = data.iloc[index]['lb']
 
-        # 根据量比值给出解读
         interpretation = ""
         if value > 2:
             interpretation = "(放量)"

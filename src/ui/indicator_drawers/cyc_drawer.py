@@ -7,8 +7,10 @@ CYC（成本均线）指标绘制器
 
 import pyqtgraph as pg
 
+from .base_drawer import BaseIndicatorDrawer
 
-class CycDrawer:
+
+class CycDrawer(BaseIndicatorDrawer):
     """CYC成本均线指标绘制器"""
 
     @staticmethod
@@ -24,35 +26,29 @@ class CycDrawer:
         if data is None or data.empty:
             return
 
-        # 获取颜色配置
         colors = kwargs.get('colors', {
-            'cyc5': (255, 255, 0),     # 黄色 - 短期
-            'cyc13': (255, 165, 0),    # 橙色 - 中期
-            'cyc34': (255, 0, 255),    # 紫色 - 长期
-            'cyc_inf': (0, 255, 255),  # 青色 - 无穷
+            'cyc5': (255, 255, 0),
+            'cyc13': (255, 165, 0),
+            'cyc34': (255, 0, 255),
+            'cyc_inf': (0, 255, 255),
         })
 
-        # 绘制CYC5（短期成本均线）
         if 'cyc5' in data.columns:
             pen = pg.mkPen(color=colors.get('cyc5', (255, 255, 0)), width=1.5)
             view.plot(data.index, data['cyc5'], pen=pen, name='CYC5')
 
-        # 绘制CYC13（中期成本均线）
         if 'cyc13' in data.columns:
             pen = pg.mkPen(color=colors.get('cyc13', (255, 165, 0)), width=1.5)
             view.plot(data.index, data['cyc13'], pen=pen, name='CYC13')
 
-        # 绘制CYC34（长期成本均线）
         if 'cyc34' in data.columns:
             pen = pg.mkPen(color=colors.get('cyc34', (255, 0, 255)), width=1.5)
             view.plot(data.index, data['cyc34'], pen=pen, name='CYC34')
 
-        # 绘制CYC无穷（无穷成本均线）
         if 'cyc_inf' in data.columns:
             pen = pg.mkPen(color=colors.get('cyc_inf', (0, 255, 255)), width=2)
             view.plot(data.index, data['cyc_inf'], pen=pen, name='CYC∞')
 
-        # 绘制默认CYC
         if 'cyc' in data.columns:
             pen = pg.mkPen(color=colors.get('cyc', (255, 165, 0)), width=1.5)
             view.plot(data.index, data['cyc'], pen=pen, name='CYC')
@@ -100,7 +96,6 @@ class CycDrawer:
 
         info_parts = ["CYC:"]
 
-        # 优先显示常用周期
         if 'cyc5' in data.columns:
             value = data.iloc[index]['cyc5']
             info_parts.append(f"5={value:.2f}")
@@ -117,7 +112,6 @@ class CycDrawer:
             value = data.iloc[index]['cyc_inf']
             info_parts.append(f"∞={value:.2f}")
 
-        # 显示默认CYC
         if 'cyc' in data.columns and 'cyc13' not in data.columns:
             value = data.iloc[index]['cyc']
             info_parts.append(f"{value:.2f}")

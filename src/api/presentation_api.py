@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
@@ -21,7 +21,7 @@ class IView:
             indicators: 指标列表
             **params: 图表更新参数
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def show_message(self, message: str, message_type: str = 'info', title: Optional[str] = None):
         """显示消息
@@ -31,7 +31,7 @@ class IView:
             message_type: 消息类型，可选值：'info'（信息）、'warning'（警告）、'error'（错误）、'success'（成功）
             title: 消息标题
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def update_progress(self, progress: int, message: Optional[str] = None):
         """更新进度
@@ -40,11 +40,11 @@ class IView:
             progress: 进度值（0-100）
             message: 进度消息
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def clear_progress(self):
         """清除进度显示"""
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def show_loading(self, visible: bool, message: Optional[str] = None):
         """显示或隐藏加载指示器
@@ -53,7 +53,7 @@ class IView:
             visible: 是否显示加载指示器
             message: 加载消息
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
 
 
 class IController:
@@ -66,7 +66,7 @@ class IController:
             stock_code: 选中的股票代码
             **params: 其他参数
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def on_indicator_selected(self, indicator_type: str, **params):
         """处理指标选择事件
@@ -75,7 +75,7 @@ class IController:
             indicator_type: 选中的指标类型
             **params: 指标参数
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def on_timeframe_changed(self, timeframe: str):
         """处理时间周期变化事件
@@ -83,7 +83,7 @@ class IController:
         Args:
             timeframe: 新的时间周期
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def on_chart_type_changed(self, chart_type: str):
         """处理图表类型变化事件
@@ -91,7 +91,7 @@ class IController:
         Args:
             chart_type: 新的图表类型
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def on_signal_clicked(self, signal: Dict[str, Any]):
         """处理信号点击事件
@@ -99,11 +99,11 @@ class IController:
         Args:
             signal: 信号数据
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def on_refresh_data(self):
         """处理刷新数据事件"""
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def on_backtest_start(self, strategy: str, **params):
         """处理回测开始事件
@@ -112,7 +112,7 @@ class IController:
             strategy: 策略名称
             **params: 回测参数
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
 
 
 class IChartComponent:
@@ -125,7 +125,7 @@ class IChartComponent:
             data: K线数据（Polars DataFrame）
             **params: 绘图参数
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def draw_indicator(self, data: pl.DataFrame, indicator_type: str, **params):
         """绘制技术指标
@@ -135,7 +135,7 @@ class IChartComponent:
             indicator_type: 指标类型
             **params: 绘图参数
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def draw_signal(self, data: pl.DataFrame, **params):
         """绘制买卖信号
@@ -144,7 +144,7 @@ class IChartComponent:
             data: 信号数据（Polars DataFrame）
             **params: 绘图参数
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def set_chart_theme(self, theme: str):
         """设置图表主题
@@ -152,7 +152,7 @@ class IChartComponent:
         Args:
             theme: 主题名称，如：'dark'（深色主题）、'light'（浅色主题）
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def enable_crosshair(self, enable: bool):
         """启用或禁用十字光标
@@ -160,7 +160,7 @@ class IChartComponent:
         Args:
             enable: 是否启用十字光标
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def enable_zoom(self, enable: bool):
         """启用或禁用缩放功能
@@ -168,12 +168,12 @@ class IChartComponent:
         Args:
             enable: 是否启用缩放功能
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def reset_view(self):
         """重置视图
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def save_chart(self, file_path: str, file_format: str = 'png'):
         """保存图表到文件
@@ -182,4 +182,6 @@ class IChartComponent:
             file_path: 文件路径
             file_format: 文件格式，默认：png
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
+
+

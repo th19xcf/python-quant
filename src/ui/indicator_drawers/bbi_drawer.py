@@ -7,8 +7,10 @@ BBI指标绘制器
 
 import pyqtgraph as pg
 
+from .base_drawer import BaseIndicatorDrawer
 
-class BbiDrawer:
+
+class BbiDrawer(BaseIndicatorDrawer):
     """BBI指标绘制器"""
 
     @staticmethod
@@ -24,12 +26,10 @@ class BbiDrawer:
         if data is None or data.empty:
             return
 
-        # 获取颜色配置
         colors = kwargs.get('colors', {
-            'bbi': (255, 165, 0),    # 橙色
+            'bbi': (255, 165, 0),
         })
 
-        # 绘制BBI线
         if 'bbi' in data.columns:
             pen = pg.mkPen(color=colors.get('bbi', (255, 165, 0)), width=2)
             view.plot(data.index, data['bbi'], pen=pen, name='BBI')

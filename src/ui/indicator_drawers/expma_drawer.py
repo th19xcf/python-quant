@@ -6,10 +6,11 @@ EXPMA指标绘制器
 """
 
 import pyqtgraph as pg
-from .histogram_item import HistogramItem
+
+from .base_drawer import BaseIndicatorDrawer
 
 
-class ExpmaDrawer:
+class ExpmaDrawer(BaseIndicatorDrawer):
     """EXPMA指标绘制器"""
 
     @staticmethod
@@ -25,29 +26,24 @@ class ExpmaDrawer:
         if data is None or data.empty:
             return
 
-        # 获取颜色配置
         colors = kwargs.get('colors', {
-            'expma12': (255, 255, 0),    # 黄色
-            'expma50': (255, 0, 255),    # 紫色
+            'expma12': (255, 255, 0),
+            'expma50': (255, 0, 255),
         })
 
-        # 绘制EXPMA12
         if 'expma12' in data.columns:
             pen = pg.mkPen(color=colors.get('expma12', (255, 255, 0)), width=1.5)
             view.plot(data.index, data['expma12'], pen=pen, name='EXPMA12')
 
-        # 绘制EXPMA50
         if 'expma50' in data.columns:
             pen = pg.mkPen(color=colors.get('expma50', (255, 0, 255)), width=1.5)
             view.plot(data.index, data['expma50'], pen=pen, name='EXPMA50')
 
-        # 绘制其他周期的EXPMA
         for col in data.columns:
             if col.startswith('expma') and col not in ['expma12', 'expma50', 'expma']:
                 pen = pg.mkPen(color=(128, 128, 128), width=1)
                 view.plot(data.index, data[col], pen=pen, name=col.upper())
 
-        # 绘制默认EXPMA
         if 'expma' in data.columns and 'expma12' not in data.columns:
             pen = pg.mkPen(color=colors.get('expma', (255, 255, 0)), width=1.5)
             view.plot(data.index, data['expma'], pen=pen, name='EXPMA')
@@ -95,7 +91,6 @@ class ExpmaDrawer:
 
         info_parts = ["EXPMA:"]
 
-        # 优先显示EXPMA12和EXPMA50
         if 'expma12' in data.columns:
             value = data.iloc[index]['expma12']
             info_parts.append(f"12={value:.2f}")
@@ -104,7 +99,6 @@ class ExpmaDrawer:
             value = data.iloc[index]['expma50']
             info_parts.append(f"50={value:.2f}")
 
-        # 显示默认EXPMA
         if 'expma' in data.columns and 'expma12' not in data.columns:
             value = data.iloc[index]['expma']
             info_parts.append(f"{value:.2f}")

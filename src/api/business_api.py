@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
@@ -24,7 +24,7 @@ class ITechnicalAnalyzer:
         Returns:
             pl.DataFrame: 包含计算结果的数据
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def calculate_all_indicators(self, data: pl.DataFrame, indicator_types: Optional[List[str]] = None, **params) -> pl.DataFrame:
         """计算多个技术指标
@@ -37,7 +37,7 @@ class ITechnicalAnalyzer:
         Returns:
             pl.DataFrame: 包含所有计算结果的数据
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def get_supported_indicators(self) -> List[str]:
         """获取支持的技术指标列表
@@ -45,7 +45,7 @@ class ITechnicalAnalyzer:
         Returns:
             List[str]: 支持的技术指标列表
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def is_indicator_supported(self, indicator_type: str) -> bool:
         """检查是否支持指定的技术指标
@@ -56,7 +56,7 @@ class ITechnicalAnalyzer:
         Returns:
             bool: 是否支持
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def clear_calculation_cache(self, indicator_type: Optional[str] = None) -> bool:
         """清除指标计算缓存
@@ -67,7 +67,7 @@ class ITechnicalAnalyzer:
         Returns:
             bool: 清除是否成功
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
 
 
 class IStrategyAnalyzer:
@@ -84,7 +84,7 @@ class IStrategyAnalyzer:
         Returns:
             Dict[str, Any]: 回测结果，包含收益率、最大回撤等指标
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def evaluate_performance(self, backtest_results: Dict[str, Any]) -> Dict[str, Any]:
         """评估策略绩效
@@ -95,7 +95,7 @@ class IStrategyAnalyzer:
         Returns:
             Dict[str, Any]: 绩效评估结果
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def optimize_parameters(self, data: pl.DataFrame, strategy: Any, param_space: Dict[str, List[Any]]) -> Dict[str, Any]:
         """优化策略参数
@@ -108,7 +108,7 @@ class IStrategyAnalyzer:
         Returns:
             Dict[str, Any]: 优化结果，包含最优参数和对应的绩效指标
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def get_supported_strategies(self) -> List[str]:
         """获取支持的策略列表
@@ -116,7 +116,7 @@ class IStrategyAnalyzer:
         Returns:
             List[str]: 支持的策略列表
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
 
 
 class ISignalGenerator:
@@ -133,7 +133,7 @@ class ISignalGenerator:
         Returns:
             pl.DataFrame: 包含信号的数据
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def get_signal_rules(self) -> List[Dict[str, Any]]:
         """获取信号生成规则
@@ -141,7 +141,7 @@ class ISignalGenerator:
         Returns:
             List[Dict[str, Any]]: 信号生成规则列表
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def validate_signals(self, signals_data: pl.DataFrame) -> Dict[str, Any]:
         """验证信号有效性
@@ -152,7 +152,7 @@ class ISignalGenerator:
         Returns:
             Dict[str, Any]: 验证结果
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
 
 
 class IFactorAnalyzer:
@@ -169,7 +169,7 @@ class IFactorAnalyzer:
         Returns:
             pl.DataFrame: 包含因子值的数据
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def evaluate_factor(self, factor_data: pl.DataFrame) -> Dict[str, Any]:
         """评估因子有效性
@@ -180,7 +180,7 @@ class IFactorAnalyzer:
         Returns:
             Dict[str, Any]: 因子评估结果
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
     
     def get_supported_factors(self) -> List[str]:
         """获取支持的因子列表
@@ -188,4 +188,5 @@ class IFactorAnalyzer:
         Returns:
             List[str]: 支持的因子列表
         """
-        pass
+        raise NotImplementedError("子类必须实现此方法")
+

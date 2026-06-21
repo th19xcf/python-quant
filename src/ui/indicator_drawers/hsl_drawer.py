@@ -8,8 +8,10 @@ HSL（换手率）指标绘制器
 import pyqtgraph as pg
 from .histogram_item import HistogramItem
 
+from .base_drawer import BaseIndicatorDrawer
 
-class HslDrawer:
+
+class HslDrawer(BaseIndicatorDrawer):
     """HSL换手率指标绘制器"""
 
     @staticmethod
@@ -25,25 +27,22 @@ class HslDrawer:
         if data is None or data.empty:
             return
 
-        # 获取颜色配置
         colors = kwargs.get('colors', {
-            'hsl': (0, 191, 255),      # 深天蓝
-            'hsl_ma5': (255, 165, 0),  # 橙色
-            'hsl_ma10': (255, 0, 255), # 紫色
+            'hsl': (0, 191, 255),
+            'hsl_ma5': (255, 165, 0),
+            'hsl_ma10': (255, 0, 255),
         })
 
-        # 绘制HSL柱状图
         if 'hsl' in data.columns:
-            # 根据换手率大小设置颜色
             hsl_values = data['hsl'].values
             brushes = []
             for val in hsl_values:
-                if val > 10:  # 高换手率
-                    brushes.append(pg.mkBrush((255, 0, 0, 180)))  # 红色
-                elif val > 5:  # 中等换手率
-                    brushes.append(pg.mkBrush((255, 165, 0, 180)))  # 橙色
-                else:  # 低换手率
-                    brushes.append(pg.mkBrush((0, 191, 255, 180)))  # 蓝色
+                if val > 10:
+                    brushes.append(pg.mkBrush((255, 0, 0, 180)))
+                elif val > 5:
+                    brushes.append(pg.mkBrush((255, 165, 0, 180)))
+                else:
+                    brushes.append(pg.mkBrush((0, 191, 255, 180)))
 
             bar_item = HistogramItem(
                 x=data.index,
@@ -53,17 +52,14 @@ class HslDrawer:
             )
             view.addItem(bar_item)
 
-        # 绘制HSL的5日移动平均
         if 'hsl_ma5' in data.columns:
             pen = pg.mkPen(color=colors.get('hsl_ma5', (255, 165, 0)), width=1.5)
             view.plot(data.index, data['hsl_ma5'], pen=pen, name='HSL_MA5')
 
-        # 绘制HSL的10日移动平均
         if 'hsl_ma10' in data.columns:
             pen = pg.mkPen(color=colors.get('hsl_ma10', (255, 0, 255)), width=1.5)
             view.plot(data.index, data['hsl_ma10'], pen=pen, name='HSL_MA10')
 
-        # 添加参考线
         view.addLine(y=5, pen=pg.mkPen((128, 128, 128, 100), width=1, style=pg.QtCore.Qt.DashLine))
         view.addLine(y=10, pen=pg.mkPen((255, 0, 0, 100), width=1, style=pg.QtCore.Qt.DashLine))
 
@@ -83,7 +79,6 @@ class HslDrawer:
             return 0, 20
 
         max_val = data['hsl'].max()
-        # 确保最小范围到20，如果实际值更大则扩展
         upper_limit = max(20, max_val * 1.1)
 
         return 0, upper_limit
