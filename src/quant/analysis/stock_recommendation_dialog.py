@@ -13,9 +13,11 @@ from PySide6.QtCore import Qt, QDate
 from PySide6.QtGui import QFont, QColor
 
 from src.utils.logger import logger
+from src.utils.config import get_config
+from src.database.db_manager import DatabaseManager
+from src.data.data_manager import DataManager
 from src.recommendation.stock_recommender import StockRecommender
 import polars as pl
-import numpy as np
 
 
 class StockRecommendationDialog(QDialog):
@@ -176,52 +178,85 @@ class StockRecommendationDialog(QDialog):
             industry = self.industry_combo.currentText()
             
             # 获取因子权重
-            momentum_weight = float(self.momentum_weight_edit.text())
-            value_weight = float(self.value_weight_edit.text())
-            growth_weight = float(self.growth_weight_edit.text())
-            quality_weight = float(self.quality_weight_edit.text())
-            volatility_weight = float(self.volatility_weight_edit.text())
+            weights = {
+                'momentum': float(self.momentum_weight_edit.text()),
+                'value': float(self.value_weight_edit.text()),
+                'growth': float(self.growth_weight_edit.text()),
+                'quality': float(self.quality_weight_edit.text()),
+                'volatility': float(self.volatility_weight_edit.text())
+            }
             
             # 显示进度条
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
             
-            # 生成模拟股票数据（演示用，实际应从 DataManager 获取）
-            np.random.seed(42)
-            stock_codes = [f'{600000 + i:06d}.SH' for i in range(50)]
-            all_data = []
-            for code in stock_codes:
-                n = 30
-                dates = pl.date_range(
-                    start=pl.date(2024, 1, 1),
-                    end=pl.date(2024, 1, 30),
-                    interval="1d",
-                    eager=True
-                )
-                close = 100 * np.cumprod(1 + np.random.normal(0.001, 0.02, n))
-                volume = np.random.randint(1000000, 5000000, n).astype('int64')
-                df = pl.DataFrame({
-                    'stock_code': [code] * n,
-                    'date': dates,
-                    'close': close,
-                    'volume': volume,
-                    'stock_name': [f'股票{code}'] * n,
-                    'industry': ['科技'] * n
-                })
-                all_data.append(df)
-            stocks_data = pl.concat(all_data)
+            # 从DataManager获取真实股票数据
+            config = get_config()
+            db_manager = DatabaseManager(config)
+            data_manager = DataManager(config, db_manager)
+            
+            self.progress_bar.setValue(10)
+            
+            # 获取股票基本信息
+            stock_basic = data_manager.get_stock_basic()
+            if stock_basic.is_empty():
+                self.result_table.setRowCount(1)
+                self.result_table.setItem(0, 0, QTableWidgetItem("无法获取股票列表"))
+                return
+            
+            stock_codes = stock_basic['ts_code'].to_list()[:stock_count * 3]
+            
+            self.progress_bar.setValue(20)
+            
+            # 获取多只股票的日线数据
+            stocks_data_list = []
+            for i, stock_code in enumerate(stock_codes):
+                try:
+                    df = data_manager.get_stock_data(stock_code, "2024-01-01", "2024-12-31")
+                    if not df.is_empty() and len(df) >= 20:
+                        stock_info = stock_basic.filter(pl.col('ts_code') == stock_code)
+                        stock_name = stock_info['name'].to_list()[0] if not stock_info.is_empty() else f'股票{stock_code}'
+                        industry_name = stock_info.get_column('industry').to_list()[0] if 'industry' in stock_info.columns else '未知'
+                        df = df.with_columns([
+                            pl.lit(stock_code).alias('stock_code'),
+                            pl.lit(stock_name).alias('stock_name'),
+                            pl.lit(industry_name).alias('industry')
+                        ])
+                        stocks_data_list.append(df)
+                except Exception as e:
+                    logger.warning(f"获取股票 {stock_code} 数据失败: {e}")
+                
+                progress = 20 + int((i + 1) / len(stock_codes) * 40)
+                self.progress_bar.setValue(progress)
+            
+            if not stocks_data_list:
+                self.result_table.setRowCount(1)
+                self.result_table.setItem(0, 0, QTableWidgetItem("无法获取任何股票数据"))
+                return
+            
+            stocks_data = pl.concat(stocks_data_list)
+            
+            self.progress_bar.setValue(70)
             
             # 创建推荐引擎
             recommender = StockRecommender()
             
-            # 生成推荐
-            recommendations = recommender.recommend_stocks(stocks_data, top_n=stock_count)
+            # 生成推荐（适配新接口）
+            recommendations = recommender.recommend_stocks(
+                stocks_data, 
+                top_n=stock_count,
+                algorithm=algorithm,
+                industry=industry,
+                weights=weights
+            )
             
-            # 适配展示字段（旧字段名 → 新字段名）
+            self.progress_bar.setValue(90)
+            
+            # 适配展示字段
             for rec in recommendations:
                 rec.setdefault('code', rec.get('stock_code', ''))
                 rec.setdefault('name', rec.get('stock_name', ''))
-                rec.setdefault('expected_return', rec.get('score', 0) * 100)
+                rec.setdefault('expected_return', rec.get('expected_return', rec.get('score', 0) * 100))
                 rec.setdefault('risk', rec.get('risk_level', '中'))
             
             # 显示结果

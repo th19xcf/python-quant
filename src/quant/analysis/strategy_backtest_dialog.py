@@ -12,12 +12,14 @@ from PySide6.QtCore import Qt, QDate
 from PySide6.QtGui import QFont
 
 from src.utils.logger import logger
+from src.utils.config import get_config
+from src.database.db_manager import DatabaseManager
+from src.data.data_manager import DataManager
 from src.backtest.engine.backtest_engine import BacktestEngine
 from src.backtest.strategies.trend_following_strategy import TrendFollowingStrategy
 from src.backtest.strategies.mean_reversion_strategy import MeanReversionStrategy
 from src.backtest.strategies.multi_factor_strategy import MultiFactorStrategy
 import polars as pl
-import numpy as np
 
 
 class StrategyBacktestDialog(QDialog):
@@ -159,24 +161,20 @@ class StrategyBacktestDialog(QDialog):
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
             
-            # 生成模拟股票数据（演示用，实际应从 DataManager 获取）
-            np.random.seed(42)
-            date_range = pl.date_range(
-                start=pl.lit(start_date).str.to_date(),
-                end=pl.lit(end_date).str.to_date(),
-                interval="1d",
-                eager=True
-            )
-            n = len(date_range)
-            close = 100 * np.cumprod(1 + np.random.normal(0.001, 0.02, n))
-            data = pl.DataFrame({
-                'date': date_range,
-                'open': close * (1 + np.random.normal(0, 0.01, n)),
-                'high': close * (1 + np.abs(np.random.normal(0, 0.015, n))),
-                'low': close * (1 - np.abs(np.random.normal(0, 0.015, n))),
-                'close': close,
-                'volume': np.random.randint(1000000, 5000000, n)
-            })
+            # 从DataManager获取真实股票数据
+            config = get_config()
+            db_manager = DatabaseManager(config)
+            data_manager = DataManager(config, db_manager)
+            
+            self.progress_bar.setValue(20)
+            
+            data = data_manager.get_stock_data(stock_code, start_date, end_date)
+            
+            if data.is_empty():
+                self.result_text.setText(f"无法获取股票 {stock_code} 的数据，请检查股票代码和日期范围")
+                return
+            
+            self.progress_bar.setValue(50)
             
             # 根据策略类型实例化策略
             strategy_map = {
