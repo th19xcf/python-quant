@@ -73,6 +73,39 @@ class BaseBacktestEngine:
         """
         self.strategy = strategy
 
+    @staticmethod
+    def _is_tradable(index: int, direction: str, close_prices, high_prices, low_prices, volumes, limit_pct: float = 0.1) -> bool:
+        """
+        检查指定交易日是否可交易（A股交易制度校验）
+
+        Args:
+            index: 交易日索引
+            direction: 交易方向，'buy'或'sell'
+            close_prices: 收盘价序列
+            high_prices: 最高价序列（可为None）
+            low_prices: 最低价序列（可为None）
+            volumes: 成交量序列（可为None）
+            limit_pct: 涨跌停幅度阈值
+
+        Returns:
+            bool: 是否可交易。停牌（成交量为0）不可交易；
+                  一字涨停（high==low且涨幅达限）不可买入；
+                  一字跌停（high==low且跌幅达限）不可卖出
+        """
+        # 停牌日（成交量为0）不可交易
+        if volumes is not None and volumes[index] is not None and volumes[index] <= 0:
+            return False
+        # 一字涨跌停板不可交易
+        if high_prices is not None and low_prices is not None and index > 0:
+            prev_close = close_prices[index - 1]
+            if prev_close and prev_close > 0 and high_prices[index] == low_prices[index]:
+                pct = close_prices[index] / prev_close - 1
+                if direction == 'buy' and pct >= limit_pct - 0.005:
+                    return False
+                if direction == 'sell' and pct <= -(limit_pct - 0.005):
+                    return False
+        return True
+
     def set_cost_model(self, cost_model: CostModel) -> None:
         """
         设置成本模型

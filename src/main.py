@@ -1236,9 +1236,15 @@ def sync_tdx_index_to_database(config, db_manager):
 
         session = db_manager.get_session()
 
+        # 批量加载现有指数记录，避免循环内逐行 SELECT（N+1）
+        existing_index_map = {
+            row.ts_code: row
+            for row in session.query(IndexBasic).filter(IndexBasic.ts_code.in_(tdx_index_codes)).all()
+        }
+
         for i, ts_code in enumerate(tdx_index_codes):
             try:
-                existing = session.query(IndexBasic).filter(IndexBasic.ts_code == ts_code).first()
+                existing = existing_index_map.get(ts_code)
                 source_info = external_info_map.get(ts_code, {})
                 source_name = FORCED_INDEX_NAME_MAP.get(ts_code, str(source_info.get('name', '') or '').strip())
                 if not source_name:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
+r"""
 配置管理模块
 
 该模块负责管理系统的所有配置项，包括：
@@ -298,7 +298,7 @@ config = get_config()
 
 
 # 配置文档
-CONFIG_DOCUMENTATION = """
+CONFIG_DOCUMENTATION = r"""
 # 配置文档
 
 ## 配置文件格式

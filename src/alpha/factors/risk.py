@@ -8,28 +8,30 @@
 import polars as pl
 import numpy as np
 
+_SQRT_252 = np.sqrt(252)
+
 
 class RiskFactors:
     """
     风险因子计算类
     """
-    
+
     def __init__(self, data):
         """
         初始化风险因子计算类
-        
+
         Args:
             data: Polars DataFrame，包含价格数据
         """
         self.data = data
-    
+
     def calculate(self, **params) -> pl.DataFrame:
         """
         计算风险因子
-        
+
         Args:
             **params: 计算参数
-            
+
         Returns:
             pl.DataFrame: 包含计算结果的DataFrame
         """
@@ -38,100 +40,113 @@ class RiskFactors:
         self._calculate_max_drawdown()
         self._calculate_sharpe_ratio()
         self._calculate_downside_risk()
-        
+
         return self.data
-    
+
+    def _returns_expr(self) -> pl.Expr:
+        """
+        收益率表达式，首行为0与原实现一致
+        """
+        close = pl.col('close')
+        prev_close = close.shift(1)
+        return (
+            pl.when(prev_close.is_not_null())
+            .then((close - prev_close) / prev_close)
+            .otherwise(0.0)
+        )
+
     def _calculate_beta(self):
         """
         计算Beta系数
         """
-        close = self.data['close'].to_numpy()
-        
-        # 计算收益率
-        returns = np.zeros_like(close)
-        for i in range(1, len(close)):
-            returns[i] = (close[i] - close[i-1]) / close[i-1]
-        
+        cdt = self.data['close'].dtype
+        returns = self._returns_expr()
+
         # 计算市场收益率（这里使用自身作为市场代理）
-        market_returns = returns.copy()
-        
+        # 与原实现一致：np.cov 默认 ddof=1，np.var 默认 ddof=0
+        cov = pl.rolling_cov(returns, returns, window_size=20, ddof=1).shift(1)
+        var = returns.rolling_var(20, ddof=0).shift(1)
+
         # 计算Beta系数
-        beta = np.zeros_like(close)
-        for i in range(20, len(close)):
-            cov = np.cov(returns[i-20:i], market_returns[i-20:i])[0, 1]
-            var = np.var(market_returns[i-20:i])
-            if var > 0:
-                beta[i] = cov / var
-        
+        beta = (
+            pl.when(var > 0)
+            .then(cov / var)
+            .otherwise(0.0)
+        )
+
         # 添加到DataFrame
         self.data = self.data.with_columns(
-            pl.Series('beta', beta)
+            beta.cast(cdt, strict=False).alias('beta')
         )
-    
+
     def _calculate_max_drawdown(self):
         """
         计算最大回撤
         """
-        close = self.data['close'].to_numpy()
-        
-        max_drawdown = np.zeros_like(close)
-        for i in range(20, len(close)):
-            window = close[i-20:i]
-            peak = np.max(window)
-            trough = np.min(window)
-            if peak > 0:
-                max_drawdown[i] = (trough - peak) / peak
-        
+        cdt = self.data['close'].dtype
+        close = pl.col('close')
+
+        # 前20日窗口（不含当日）的最高/最低价
+        peak = close.rolling_max(20).shift(1)
+        trough = close.rolling_min(20).shift(1)
+        max_drawdown = (
+            pl.when(peak > 0)
+            .then((trough - peak) / peak)
+            .otherwise(0.0)
+        )
+
         # 添加到DataFrame
         self.data = self.data.with_columns(
-            pl.Series('max_drawdown_20', max_drawdown)
+            max_drawdown.cast(cdt, strict=False).alias('max_drawdown_20')
         )
-    
+
     def _calculate_sharpe_ratio(self):
         """
         计算夏普比率
         """
-        close = self.data['close'].to_numpy()
-        
-        # 计算收益率
-        returns = np.zeros_like(close)
-        for i in range(1, len(close)):
-            returns[i] = (close[i] - close[i-1]) / close[i-1]
-        
-        # 计算夏普比率（假设无风险利率为0）
-        sharpe_ratio = np.zeros_like(close)
-        for i in range(20, len(close)):
-            window_returns = returns[i-20:i]
-            mean_return = np.mean(window_returns)
-            std_return = np.std(window_returns)
-            if std_return > 0:
-                sharpe_ratio[i] = mean_return / std_return * np.sqrt(252)
-        
+        cdt = self.data['close'].dtype
+        returns = self._returns_expr()
+
+        # 计算夏普比率（假设无风险利率为0；ddof=0与np.std一致）
+        mean_return = returns.rolling_mean(20).shift(1)
+        std_return = returns.rolling_std(20, ddof=0).shift(1)
+        sharpe_ratio = (
+            pl.when(std_return > 0)
+            .then(mean_return / std_return * _SQRT_252)
+            .otherwise(0.0)
+        )
+
         # 添加到DataFrame
         self.data = self.data.with_columns(
-            pl.Series('sharpe_ratio_20', sharpe_ratio)
+            sharpe_ratio.cast(cdt, strict=False).alias('sharpe_ratio_20')
         )
-    
+
     def _calculate_downside_risk(self):
         """
         计算下行风险
         """
-        close = self.data['close'].to_numpy()
-        
-        # 计算收益率
-        returns = np.zeros_like(close)
-        for i in range(1, len(close)):
-            returns[i] = (close[i] - close[i-1]) / close[i-1]
-        
-        # 计算下行风险
-        downside_risk = np.zeros_like(close)
-        for i in range(20, len(close)):
-            window_returns = returns[i-20:i]
-            negative_returns = window_returns[window_returns < 0]
-            if len(negative_returns) > 0:
-                downside_risk[i] = np.std(negative_returns) * np.sqrt(252)
-        
+        cdt = self.data['close'].dtype
+        returns = self._returns_expr()
+
+        # 前20日窗口（不含当日）内负收益率的标准差（ddof=0与np.std一致）
+        neg_count = (returns < 0).cast(pl.Float64).rolling_sum(20).shift(1)
+        neg_sum = (
+            pl.when(returns < 0).then(returns).otherwise(0.0)
+            .rolling_sum(20).shift(1)
+        )
+        neg_sq_sum = (
+            pl.when(returns < 0).then(returns * returns).otherwise(0.0)
+            .rolling_sum(20).shift(1)
+        )
+        neg_mean = neg_sum / neg_count
+        neg_var = (neg_sq_sum / neg_count - neg_mean * neg_mean).clip(lower_bound=0.0)
+        downside_risk = (
+            pl.when(neg_count > 0)
+            .then(neg_var.sqrt() * _SQRT_252)
+            .otherwise(0.0)
+        )
+
         # 添加到DataFrame
         self.data = self.data.with_columns(
-            pl.Series('downside_risk_20', downside_risk)
+            downside_risk.cast(cdt, strict=False).alias('downside_risk_20')
         )

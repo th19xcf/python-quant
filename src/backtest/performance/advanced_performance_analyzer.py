@@ -100,7 +100,7 @@ class AdvancedPerformanceAnalyzer:
             information_ratio = 0
         
         # 计算交易相关指标
-        trade_count = len(trades) // 2  # 每笔完整交易包含买入和卖出
+        trade_count = len(self._pair_trades(trades))  # 完整买卖对数量
         avg_holding_period = self._calculate_average_holding_period(trades, dates)
         turnover_rate = self._calculate_turnover_rate(trades, initial_equity)
         
@@ -334,6 +334,35 @@ class AdvancedPerformanceAnalyzer:
         annual_downside_risk = downside_std * np.sqrt(252) * 100
         return annual_downside_risk
     
+    @staticmethod
+    def _pair_trades(trades: List[Dict[str, Any]]) -> List[tuple]:
+        """
+        将交易记录按股票分组并依序配对买卖，返回(buy, sell)对列表
+        
+        组合回测中多只股票的交易记录交错存储，不能简单按列表下标两两配对
+        """
+        from collections import defaultdict
+        grouped = defaultdict(list)
+        for t in trades:
+            grouped[t.get('stock_code', '_default')].append(t)
+        
+        pairs = []
+        for stock_trades in grouped.values():
+            open_buys = []
+            for t in stock_trades:
+                if t.get('signal') == 'buy':
+                    open_buys.append(t)
+                elif t.get('signal') == 'sell' and open_buys:
+                    pairs.append((open_buys.pop(0), t))
+        return pairs
+    
+    @staticmethod
+    def _pair_profit(buy_trade: Dict[str, Any], sell_trade: Dict[str, Any]) -> float:
+        """计算单笔配对交易的净盈亏（扣除已知成本）"""
+        profit = (sell_trade['price'] - buy_trade['price']) * buy_trade['shares']
+        profit -= buy_trade.get('cost', 0) + sell_trade.get('cost', 0)
+        return profit
+    
     def _calculate_winning_rate(self, trades: List[Dict[str, Any]]) -> float:
         """
         计算胜率
@@ -344,18 +373,12 @@ class AdvancedPerformanceAnalyzer:
         Returns:
             float: 胜率（百分比）
         """
-        if not trades:
+        pairs = self._pair_trades(trades)
+        if not pairs:
             return 0
         
-        winning_trades = 0
-        for i in range(0, len(trades), 2):
-            if i + 1 < len(trades):
-                buy_trade = trades[i]
-                sell_trade = trades[i+1]
-                if sell_trade['price'] > buy_trade['price']:
-                    winning_trades += 1
-        
-        return (winning_trades / (len(trades) // 2)) * 100 if len(trades) >= 2 else 0
+        winning_trades = sum(1 for buy, sell in pairs if self._pair_profit(buy, sell) > 0)
+        return (winning_trades / len(pairs)) * 100
     
     def _calculate_average_profit_loss(self, trades: List[Dict[str, Any]]) -> float:
         """
@@ -367,21 +390,19 @@ class AdvancedPerformanceAnalyzer:
         Returns:
             float: 平均盈亏比
         """
-        if not trades:
+        pairs = self._pair_trades(trades)
+        if not pairs:
             return 0
         
         profits = []
         losses = []
         
-        for i in range(0, len(trades), 2):
-            if i + 1 < len(trades):
-                buy_trade = trades[i]
-                sell_trade = trades[i+1]
-                profit = (sell_trade['price'] - buy_trade['price']) * buy_trade['shares']
-                if profit > 0:
-                    profits.append(profit)
-                else:
-                    losses.append(abs(profit))
+        for buy_trade, sell_trade in pairs:
+            profit = self._pair_profit(buy_trade, sell_trade)
+            if profit > 0:
+                profits.append(profit)
+            else:
+                losses.append(abs(profit))
         
         avg_profit = np.mean(profits) if profits else 0
         avg_loss = np.mean(losses) if losses else 1
@@ -398,21 +419,19 @@ class AdvancedPerformanceAnalyzer:
         Returns:
             float: 盈利因子
         """
-        if not trades:
+        pairs = self._pair_trades(trades)
+        if not pairs:
             return 0
         
         total_profit = 0
         total_loss = 0
         
-        for i in range(0, len(trades), 2):
-            if i + 1 < len(trades):
-                buy_trade = trades[i]
-                sell_trade = trades[i+1]
-                profit = (sell_trade['price'] - buy_trade['price']) * buy_trade['shares']
-                if profit > 0:
-                    total_profit += profit
-                else:
-                    total_loss += abs(profit)
+        for buy_trade, sell_trade in pairs:
+            profit = self._pair_profit(buy_trade, sell_trade)
+            if profit > 0:
+                total_profit += profit
+            else:
+                total_loss += abs(profit)
         
         return total_profit / total_loss if total_loss > 0 else 0
     
@@ -426,20 +445,12 @@ class AdvancedPerformanceAnalyzer:
         Returns:
             float: 期望值
         """
-        if not trades:
+        pairs = self._pair_trades(trades)
+        if not pairs:
             return 0
         
-        total_profit = 0
-        trade_count = len(trades) // 2
-        
-        for i in range(0, len(trades), 2):
-            if i + 1 < len(trades):
-                buy_trade = trades[i]
-                sell_trade = trades[i+1]
-                profit = (sell_trade['price'] - buy_trade['price']) * buy_trade['shares']
-                total_profit += profit
-        
-        return total_profit / trade_count if trade_count > 0 else 0
+        total_profit = sum(self._pair_profit(buy, sell) for buy, sell in pairs)
+        return total_profit / len(pairs)
     
     def _calculate_alpha_beta(self, returns: List[float], benchmark_returns: List[float]) -> tuple:
         """
@@ -513,21 +524,17 @@ class AdvancedPerformanceAnalyzer:
         Returns:
             float: 平均持有周期（天）
         """
-        if not trades or len(trades) < 2:
+        if not trades:
             return 0
         
         holding_periods = []
         
-        for i in range(0, len(trades), 2):
-            if i + 1 < len(trades):
-                buy_date = trades[i]['date']
-                sell_date = trades[i+1]['date']
-                # 计算持有天数
-                try:
-                    holding_days = (sell_date - buy_date).days
-                    holding_periods.append(holding_days)
-                except:
-                    pass
+        for buy_trade, sell_trade in self._pair_trades(trades):
+            try:
+                holding_days = (sell_trade['date'] - buy_trade['date']).days
+                holding_periods.append(holding_days)
+            except (TypeError, AttributeError):
+                pass
         
         return np.mean(holding_periods) if holding_periods else 0
     

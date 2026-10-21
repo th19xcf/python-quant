@@ -9,13 +9,12 @@
 ## 技术栈
 
 - **基础环境**：Windows 10/11、Python 3.13+, 虚拟环境配置
-- **数据源**：通达信数据文件、AkShare API、网络爬虫、财经新闻API
-- **量化框架**：QLib、Valuecell、backtrader
+- **数据源**：通达信数据文件、AkShare API、Baostock、财经新闻API
+- **回测框架**：自研回测引擎（src/backtest，含成本模型与绩效分析）
 - **UI框架**：PySide6、pyqtgraph、plotly
-- **数据库**：MySQL 9.0+、Redis（可选）
+- **数据库**：MySQL（pymysql + SQLAlchemy）、Redis（可选，预留配置）
 - **数据处理**：Polars、pandas、numpy
 - **技术分析**：ta
-- **自然语言处理**：jieba、snownlp、transformers
 
 ## 核心功能
 
@@ -44,8 +43,7 @@
 - 市场情绪指数构建
 
 ### 5. 量化分析
-- 多框架集成（QLib、Valuecell）
-- 策略回测引擎
+- 自研策略回测引擎（遵循A股T+1、整手、涨跌停制度）
 - 绩效评估指标
 - 风险分析
 
@@ -65,16 +63,19 @@
 
 ```
 src/
-├── data/                # 数据获取与管理模块
-├── tech_analysis/       # 技术分析模块
-├── macro_analysis/      # 宏观经济分析模块
-├── sentiment_analysis/  # 情绪分析模块
-├── quant_analysis/      # 量化分析模块
-├── stock_recommendation/ # 股票推荐模块
+├── data/                # 数据获取与管理（通达信/AkShare/Baostock、复权因子）
+├── tech_analysis/       # 技术指标与公式系统
+├── alpha/               # Alpha因子（计算、评估、优化）
+├── strategy/            # 策略信号与分析
+├── backtest/            # 自研回测引擎、成本模型、绩效分析
+├── quant/               # 量化分析界面与报告
+├── recommendation/      # 股票推荐
+├── business/            # 业务规则引擎
+├── api/                 # 数据与业务API层
+├── plugin/              # 数据源插件系统
 ├── database/            # 数据库模块
-├── ui/                  # UI界面模块
-├── auto_trading/        # 自动交易模块
-└── utils/               # 工具类模块
+├── ui/                  # PySide6界面
+└── utils/               # 配置、日志、事件总线等工具
 ```
 
 ## 安装与使用
@@ -87,22 +88,26 @@ src/
    python -m venv venv
    venv\Scripts\activate
    ```
-3. 安装依赖：
+3. 安装依赖（依赖清单以 pyproject.toml 为准）：
    ```
-   # 使用pip
-   pip install -r requirements.txt
-   
-   # 或使用poetry
+   # 使用poetry（推荐）
    poetry install
+   
+   # 或按 pyproject.toml 中的依赖列表用 pip 安装
    ```
 
 ### 配置
 
-1. 复制配置文件模板并修改：
+1. 在项目根目录创建 `.env` 文件（模板见 [src/utils/config.py](src/utils/config.py) 模块文档中的"示例配置文件"），配置项使用双下划线分层：
    ```
-   cp config.example.toml config.toml
+   DATABASE__HOST=localhost
+   DATABASE__PORT=3306
+   DATABASE__USERNAME=root
+   DATABASE__PASSWORD=
+   DATABASE__DATABASE=stock_quant
+   DATA__TDX_DATA_PATH=D:\TDX\vipdoc
    ```
-2. 配置数据库连接、API密钥等信息
+2. 按需配置数据库连接、通达信数据路径等信息
 
 ### 运行
 
@@ -149,9 +154,8 @@ pytest
 - 数据查询与筛选界面
 
 ### 第五阶段：量化分析集成（2-3周）
-- QLib框架集成
-- Valuecell框架集成
-- 策略回测引擎实现
+- 自研策略回测引擎实现与完善
+- 绩效评估与风险分析
 
 ### 第六阶段：股票推荐功能实现（2-3周）
 - 多因子选股模型

@@ -9,27 +9,59 @@ import polars as pl
 import numpy as np
 
 
+def _seeded_ema_expr(col_name: str, period: int) -> pl.Expr:
+    """
+    与原 calculate_ema 逐位等价的EMA表达式：
+    以第 period-1 个位置的前 period 个值的均值作为种子，之后按
+    ema[i] = (values[i] - ema[i-1]) * multiplier + ema[i-1] 递推，
+    multiplier = 2 / (period + 1)，种子位置之前为 0。
+    """
+    multiplier = 2.0 / (period + 1)
+    idx = pl.int_range(pl.len())
+    seeded = (
+        pl.when(idx > period - 1).then(pl.col(col_name))
+        .when(idx == period - 1).then(pl.col(col_name).rolling_mean(period))
+        .otherwise(None)
+    )
+    return seeded.ewm_mean(alpha=multiplier, adjust=False, min_samples=1).fill_null(0.0)
+
+
+def _seeded_kdj_expr(value_expr: pl.Expr, seed_index: int, seed_value: float) -> pl.Expr:
+    """
+    与原KDJ递推等价的表达式：
+    第 seed_index 个位置取 seed_value，之后按
+    out[i] = out[i-1] * 2/3 + value[i] * 1/3 递推，种子位置之前为 0。
+    """
+    idx = pl.int_range(pl.len())
+    seeded = (
+        pl.when(idx > seed_index).then(value_expr)
+        .when(idx == seed_index).then(seed_value)
+        .otherwise(None)
+    )
+    return seeded.ewm_mean(alpha=1.0 / 3.0, adjust=False, min_samples=1).fill_null(0.0)
+
+
 class PriceMomentumFactors:
     """
     价格动量因子计算类
     """
-    
+
     def __init__(self, data):
         """
         初始化价格动量因子计算类
-        
+
         Args:
             data: Polars DataFrame，包含价格数据
         """
         self.data = data
-    
+
     def calculate(self, **params) -> pl.DataFrame:
         """
         计算价格动量因子
-        
+
         Args:
             **params: 计算参数
-            
+
         Returns:
             pl.DataFrame: 包含计算结果的DataFrame
         """
@@ -38,151 +70,107 @@ class PriceMomentumFactors:
         self._calculate_rsi_momentum()
         self._calculate_macd_momentum()
         self._calculate_stochastic_momentum()
-        
+
         return self.data
-    
+
     def _calculate_momentum(self):
         """
         计算动量因子
         """
-        close = self.data['close'].to_numpy()
-        
+        cdt = self.data['close'].dtype
+        close = pl.col('close')
+
         # 短期动量（1个月）
-        momentum_1m = np.zeros_like(close)
-        for i in range(20, len(close)):
-            momentum_1m[i] = (close[i] - close[i-20]) / close[i-20]
-        
+        momentum_1m = (close - close.shift(20)) / close.shift(20)
         # 中期动量（3个月）
-        momentum_3m = np.zeros_like(close)
-        for i in range(60, len(close)):
-            momentum_3m[i] = (close[i] - close[i-60]) / close[i-60]
-        
+        momentum_3m = (close - close.shift(60)) / close.shift(60)
         # 长期动量（6个月）
-        momentum_6m = np.zeros_like(close)
-        for i in range(120, len(close)):
-            momentum_6m[i] = (close[i] - close[i-120]) / close[i-120]
-        
+        momentum_6m = (close - close.shift(120)) / close.shift(120)
         # 动量反转（12个月）
-        momentum_12m = np.zeros_like(close)
-        for i in range(240, len(close)):
-            momentum_12m[i] = (close[i] - close[i-240]) / close[i-240]
-        
+        momentum_12m = (close - close.shift(240)) / close.shift(240)
+
         # 添加到DataFrame
-        self.data = self.data.with_columns(
-            pl.Series('momentum_1m', momentum_1m),
-            pl.Series('momentum_3m', momentum_3m),
-            pl.Series('momentum_6m', momentum_6m),
-            pl.Series('momentum_12m', momentum_12m)
-        )
-    
+        self.data = self.data.with_columns([
+            momentum_1m.fill_null(0.0).cast(cdt, strict=False).alias('momentum_1m'),
+            momentum_3m.fill_null(0.0).cast(cdt, strict=False).alias('momentum_3m'),
+            momentum_6m.fill_null(0.0).cast(cdt, strict=False).alias('momentum_6m'),
+            momentum_12m.fill_null(0.0).cast(cdt, strict=False).alias('momentum_12m')
+        ])
+
     def _calculate_rsi_momentum(self):
         """
         计算RSI动量因子
         """
-        close = self.data['close'].to_numpy()
-        
-        # 计算RSI
-        delta = np.diff(close)
-        gain = np.where(delta > 0, delta, 0)
-        loss = np.where(delta < 0, -delta, 0)
-        
-        # 14日RSI
-        rsi_14 = np.zeros_like(close)
-        for i in range(14, len(close)):
-            avg_gain = np.mean(gain[i-14:i])
-            avg_loss = np.mean(loss[i-14:i])
-            if avg_loss == 0:
-                rsi_14[i] = 100
-            else:
-                rs = avg_gain / avg_loss
-                rsi_14[i] = 100 - (100 / (1 + rs))
-        
-        # 21日RSI
-        rsi_21 = np.zeros_like(close)
-        for i in range(21, len(close)):
-            avg_gain = np.mean(gain[i-21:i])
-            avg_loss = np.mean(loss[i-21:i])
-            if avg_loss == 0:
-                rsi_21[i] = 100
-            else:
-                rs = avg_gain / avg_loss
-                rsi_21[i] = 100 - (100 / (1 + rs))
-        
+        cdt = self.data['close'].dtype
+        delta = pl.col('close').diff()
+        gain = delta.clip(lower_bound=0.0)
+        loss = (-delta).clip(lower_bound=0.0)
+
+        def rsi_expr(period: int) -> pl.Expr:
+            avg_gain = gain.rolling_mean(period)
+            avg_loss = loss.rolling_mean(period)
+            rs = avg_gain / avg_loss
+            return (
+                pl.when(avg_loss == 0)
+                .then(100.0)
+                .otherwise(100.0 - (100.0 / (1.0 + rs)))
+                .fill_null(0.0)
+            )
+
         # 添加到DataFrame
-        self.data = self.data.with_columns(
-            pl.Series('rsi_14', rsi_14),
-            pl.Series('rsi_21', rsi_21)
-        )
-    
+        self.data = self.data.with_columns([
+            rsi_expr(14).cast(cdt, strict=False).alias('rsi_14'),
+            rsi_expr(21).cast(cdt, strict=False).alias('rsi_21')
+        ])
+
     def _calculate_macd_momentum(self):
         """
         计算MACD动量因子
         """
-        close = self.data['close'].to_numpy()
-        
-        # 计算EMA
-        def calculate_ema(values, period):
-            ema = np.zeros_like(values)
-            ema[period-1] = np.mean(values[:period])
-            multiplier = 2 / (period + 1)
-            for i in range(period, len(values)):
-                ema[i] = (values[i] - ema[i-1]) * multiplier + ema[i-1]
-            return ema
-        
+        cdt = self.data['close'].dtype
+
+        # 计算EMA（与原 calculate_ema 等价：SMA种子 + 递推）
+        self.data = self.data.with_columns([
+            _seeded_ema_expr('close', 12).cast(cdt, strict=False).alias('_ema12'),
+            _seeded_ema_expr('close', 26).cast(cdt, strict=False).alias('_ema26')
+        ])
+
         # 计算MACD
-        ema12 = calculate_ema(close, 12)
-        ema26 = calculate_ema(close, 26)
-        macd = ema12 - ema26
-        signal = calculate_ema(macd, 9)
-        histogram = macd - signal
-        
-        # 添加到DataFrame
         self.data = self.data.with_columns(
-            pl.Series('macd', macd),
-            pl.Series('macd_signal', signal),
-            pl.Series('macd_hist', histogram)
+            (pl.col('_ema12') - pl.col('_ema26')).cast(cdt, strict=False).alias('macd')
         )
-    
+        self.data = self.data.with_columns(
+            _seeded_ema_expr('macd', 9).cast(cdt, strict=False).alias('macd_signal')
+        )
+        self.data = self.data.with_columns(
+            (pl.col('macd') - pl.col('macd_signal')).cast(cdt, strict=False).alias('macd_hist')
+        )
+        self.data = self.data.drop('_ema12', '_ema26')
+
     def _calculate_stochastic_momentum(self):
         """
         计算随机动量因子
         """
-        high = self.data['high'].to_numpy()
-        low = self.data['low'].to_numpy()
-        close = self.data['close'].to_numpy()
-        
-        # 计算KDJ指标
-        k = np.zeros_like(close)
-        d = np.zeros_like(close)
-        j = np.zeros_like(close)
-        
-        for i in range(14, len(close)):
-            # 计算RSV
-            highest = np.max(high[i-14:i])
-            lowest = np.min(low[i-14:i])
-            if highest == lowest:
-                rsv = 0
-            else:
-                rsv = (close[i] - lowest) / (highest - lowest) * 100
-            
-            # 计算K
-            if i == 14:
-                k[i] = 50
-            else:
-                k[i] = k[i-1] * 2/3 + rsv * 1/3
-            
-            # 计算D
-            if i == 14:
-                d[i] = 50
-            else:
-                d[i] = d[i-1] * 2/3 + k[i] * 1/3
-            
-            # 计算J
-            j[i] = 3 * k[i] - 2 * d[i]
-        
-        # 添加到DataFrame
+        cdt = self.data['close'].dtype
+
+        # 计算RSV（前14日窗口，不含当日；最高价等于最低价时为0）
+        highest = pl.col('high').rolling_max(14).shift(1)
+        lowest = pl.col('low').rolling_min(14).shift(1)
+        rsv = (
+            pl.when(highest == lowest)
+            .then(0.0)
+            .otherwise((pl.col('close') - lowest) / (highest - lowest) * 100.0)
+        )
+
+        # 计算K（i==14时取50，之后 k = k*2/3 + rsv*1/3）
         self.data = self.data.with_columns(
-            pl.Series('kdj_k', k),
-            pl.Series('kdj_d', d),
-            pl.Series('kdj_j', j)
+            _seeded_kdj_expr(rsv, 14, 50.0).cast(cdt, strict=False).alias('kdj_k')
+        )
+        # 计算D（i==14时取50，之后 d = d*2/3 + k*1/3）
+        self.data = self.data.with_columns(
+            _seeded_kdj_expr(pl.col('kdj_k'), 14, 50.0).cast(cdt, strict=False).alias('kdj_d')
+        )
+        # 计算J
+        self.data = self.data.with_columns(
+            (3.0 * pl.col('kdj_k') - 2.0 * pl.col('kdj_d')).cast(cdt, strict=False).alias('kdj_j')
         )

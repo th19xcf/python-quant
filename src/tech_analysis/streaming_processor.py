@@ -59,7 +59,9 @@ class StreamingProcessor:
         else:
             # 有历史数据，使用增量计算
             result = self._calculate_incremental(new_data)
-            self.history_data = self.history_data.vstack(result)
+            # 增量结果与历史数据的 dtype 可能不一致（Float32/Float64），
+            # 且个别指标列可能缺失，用 diagonal_relaxed 对齐合并
+            self.history_data = pl.concat([self.history_data, result], how="diagonal_relaxed")
         
         return result
     
@@ -157,7 +159,7 @@ class StreamingProcessor:
                     logger.info(f"使用完整计算{indicator}")
                     from .indicator_manager import global_indicator_manager
                     # 合并历史数据和新数据进行计算
-                    combined_data = self.history_data.vstack(result)
+                    combined_data = pl.concat([self.history_data, result], how="diagonal_relaxed")
                     full_result = global_indicator_manager.calculate_indicator(
                         combined_data, indicator, return_polars=True, **self.indicator_params
                     )

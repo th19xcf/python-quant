@@ -51,12 +51,19 @@ class OptimizedBacktestEngine(BaseBacktestEngine):
         
         return self.strategy.generate_signal(data, index)
     
-    def run_backtest(self, initial_capital: float = 1000000.0, **params) -> Dict[str, Any]:
+    def run_backtest(self, initial_capital: float = 1000000.0, lot_size: int = 100, limit_pct: float = 0.1, **params) -> Dict[str, Any]:
         """
         运行回测
         
+        交易规则（遵循A股制度）：
+        1. t日信号延迟到t+1日以开盘价成交（避免收盘价未来函数）
+        2. 买入股数按lot_size（默认100股）整数倍取整，买入时即扣除买方成本
+        3. 一字涨停日不可买入、一字跌停日不可卖出、停牌日（成交量为0）不可交易
+        
         Args:
             initial_capital: 初始资金
+            lot_size: 最小交易单位（股），A股买入为100股整数倍
+            limit_pct: 涨跌停幅度阈值，用于识别一字板
             **params: 回测参数
             
         Returns:
@@ -71,11 +78,15 @@ class OptimizedBacktestEngine(BaseBacktestEngine):
         
         current_capital = initial_capital
         position = 0
-        current_price = 0
+        pending_signal = None
         
         data = self.pl_df.to_dict(as_series=False)
         dates = data['date']
         close_prices = data['close']
+        open_prices = data.get('open', close_prices)
+        high_prices = data.get('high')
+        low_prices = data.get('low')
+        volumes = data.get('volume')
         
         data_tuples = []
         columns = ['open', 'high', 'low', 'close', 'volume']
@@ -84,42 +95,56 @@ class OptimizedBacktestEngine(BaseBacktestEngine):
             data_tuples.append(data_tuple)
         
         for i in range(len(dates)):
+            # 1. 执行前一交易日生成的信号（以今日开盘价成交，订单当日有效）
+            if pending_signal == 'buy' and position == 0:
+                if self._is_tradable(i, 'buy', close_prices, high_prices, low_prices, volumes, limit_pct):
+                    exec_price = open_prices[i]
+                    # 预留买入成本后按整手取整
+                    cost_rate = self.cost_model.get_buy_cost_rate()
+                    affordable = current_capital / (exec_price * (1 + cost_rate))
+                    shares = int(affordable // lot_size) * lot_size
+                    if shares > 0:
+                        buy_cost = self.cost_model.calculate_buy_cost(shares, exec_price)
+                        total_pay = shares * exec_price + buy_cost
+                        if total_pay <= current_capital:
+                            position = shares
+                            current_capital -= total_pay
+                            self.trades.append({
+                                'date': dates[i],
+                                'signal': 'buy',
+                                'price': exec_price,
+                                'shares': shares,
+                                'capital': current_capital,
+                                'position': position,
+                                'cost': buy_cost
+                            })
+                pending_signal = None
+            elif pending_signal == 'sell' and position > 0:
+                if self._is_tradable(i, 'sell', close_prices, high_prices, low_prices, volumes, limit_pct):
+                    sell_price = open_prices[i]
+                    sell_cost = self.cost_model.calculate_sell_cost(position, sell_price)
+                    current_capital = position * sell_price - sell_cost
+                    
+                    self.trades.append({
+                        'date': dates[i],
+                        'signal': 'sell',
+                        'price': sell_price,
+                        'shares': position,
+                        'capital': current_capital,
+                        'position': 0,
+                        'cost': sell_cost
+                    })
+                    position = 0
+                pending_signal = None
+            
+            # 2. 基于当日数据生成信号，延迟到次日执行
             signal = self._get_signal(data_tuples[i], i)
+            if signal in ('buy', 'sell'):
+                pending_signal = signal
             
-            if signal == 'buy' and position == 0:
-                current_price = close_prices[i]
-                shares = current_capital / current_price
-                position = shares
-                current_capital = 0
-                
-                self.trades.append({
-                    'date': dates[i],
-                    'signal': 'buy',
-                    'price': current_price,
-                    'shares': shares,
-                    'capital': current_capital,
-                    'position': position
-                })
-            elif signal == 'sell' and position > 0:
-                sell_price = close_prices[i]
-                current_capital = position * sell_price
-                cost = self.cost_model.calculate_cost(position, current_price, sell_price)
-                current_capital -= cost
-                
-                self.trades.append({
-                    'date': dates[i],
-                    'signal': 'sell',
-                    'price': sell_price,
-                    'shares': position,
-                    'capital': current_capital,
-                    'position': 0,
-                    'cost': cost
-                })
-                
-                position = 0
-            
+            # 3. 按收盘价对持仓盯市
             if position > 0:
-                current_equity = position * close_prices[i]
+                current_equity = current_capital + position * close_prices[i]
             else:
                 current_equity = current_capital
             
@@ -158,30 +183,62 @@ class OptimizedBacktestEngine(BaseBacktestEngine):
         Returns:
             List[Dict[str, Any]]: 回测结果列表
         """
+        import os
+        import pickle
+
+        from src.backtest.engine._parallel_worker import run_backtest_worker
+
         results = []
-        
+
+        # 检查策略、数据、成本模型是否可 pickle，决定能否使用多进程
+        try:
+            pickle.dumps((self.strategy, self.pl_df, self.cost_model))
+            use_process_pool = True
+        except (pickle.PicklingError, TypeError, AttributeError) as exc:
+            logger.warning(f"策略/数据/成本模型不可 pickle（{exc}），回退到 ThreadPoolExecutor 并行回测")
+            use_process_pool = False
+
+        if use_process_pool:
+            # 纯 Python 回测循环受 GIL 限制，线程无法并行 CPU 计算，改用进程池利用多核
+            workers = max(1, min(max_workers, len(param_combinations), os.cpu_count() or 1))
+            with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+                future_to_param = {
+                    executor.submit(run_backtest_worker, OptimizedBacktestEngine, self.strategy,
+                                    self.pl_df, self.cost_model, params, initial_capital): params
+                    for params in param_combinations
+                }
+
+                for future in concurrent.futures.as_completed(future_to_param):
+                    try:
+                        result = future.result()
+                        results.append(result)
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        logger.error(f"参数组合 {future_to_param[future]} 回测失败: {exc}")
+
+            return results
+
         def run_single_backtest(params):
             strategy_copy = self.strategy.__class__()
             strategy_copy.set_params(params)
-            
+
             engine_copy = OptimizedBacktestEngine(self.pl_df)
             engine_copy.set_strategy(strategy_copy)
             engine_copy.set_cost_model(self.cost_model)
-            
+
             result = engine_copy.run_backtest(initial_capital)
             result['params'] = params
             return result
-        
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_param = {executor.submit(run_single_backtest, params): params for params in param_combinations}
-            
+
             for future in concurrent.futures.as_completed(future_to_param):
                 try:
                     result = future.result()
                     results.append(result)
                 except (OSError, RuntimeError, ValueError) as exc:
                     logger.error(f"参数组合 {future_to_param[future]} 回测失败: {exc}")
-        
+
         return results
     
     def optimize_strategy(self, param_ranges: Dict[str, List[float]], initial_capital: float = 1000000.0, objective: str = 'total_return', max_workers: int = 4) -> Dict[str, Any]:

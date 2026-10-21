@@ -38,6 +38,21 @@ class IncrementalCalculator:
             'bbi': self.incremental_calculate_bbi,
         }
     
+    @staticmethod
+    def _combine(existing_data: pl.DataFrame, new_data: pl.DataFrame, columns: List[str]) -> pl.DataFrame:
+        """
+        合并历史数据与新增数据
+
+        历史数据可能包含已计算的指标列（列数多于新数据），且两侧 dtype 可能
+        不一致（如 Float32 vs Float64），直接 vstack 会抛 ShapeError/SchemaError。
+        这里先按需要的列对齐，再用 vertical_relaxed 合并（自动提升为公共超类型）。
+        """
+        cols = [c for c in columns if c in existing_data.columns and c in new_data.columns]
+        return pl.concat(
+            [existing_data.select(cols), new_data.select(cols)],
+            how="vertical_relaxed"
+        )
+
     def is_supported(self, indicator_type: str) -> bool:
         """
         检查指标是否支持增量计算
@@ -98,7 +113,7 @@ class IncrementalCalculator:
             windows = [5, 10, 20, 60]
         
         # 合并数据用于计算
-        combined_data = existing_data.vstack(new_data).select(['date', 'close'])
+        combined_data = self._combine(existing_data, new_data, ['date', 'close'])
         
         # 计算每个窗口的移动平均
         result = new_data.clone()
@@ -145,7 +160,7 @@ class IncrementalCalculator:
             windows = [5, 10]
         
         # 合并数据用于计算
-        combined_data = existing_data.vstack(new_data).select(['date', 'volume'])
+        combined_data = self._combine(existing_data, new_data, ['date', 'volume'])
         
         # 计算每个窗口的移动平均
         result = new_data.clone()
@@ -184,7 +199,7 @@ class IncrementalCalculator:
             pl.DataFrame: 包含新增MACD值的数据
         """
         # 合并数据用于计算
-        combined_data = existing_data.vstack(new_data).select(['date', 'close'])
+        combined_data = self._combine(existing_data, new_data, ['date', 'close'])
         
         # 计算EMA12、EMA26
         ema12 = combined_data.with_columns(
@@ -233,7 +248,7 @@ class IncrementalCalculator:
         if windows is None:
             windows = [14]
 
-        combined_data = existing_data.vstack(new_data)
+        combined_data = self._combine(existing_data, new_data, ['close'])
 
         result = new_data.clone()
 
@@ -273,7 +288,7 @@ class IncrementalCalculator:
         if windows is None:
             windows = [14]
 
-        combined_data = existing_data.vstack(new_data)
+        combined_data = self._combine(existing_data, new_data, ['high', 'low', 'close'])
 
         result = new_data.clone()
 
@@ -321,7 +336,7 @@ class IncrementalCalculator:
             windows = [20]
         
         # 合并数据用于计算
-        combined_data = existing_data.vstack(new_data).select(['date', 'close'])
+        combined_data = self._combine(existing_data, new_data, ['date', 'close'])
         
         result = new_data.clone()
         
@@ -373,7 +388,7 @@ class IncrementalCalculator:
             windows = [10, 6]
         
         # 合并数据用于计算
-        combined_data = existing_data.vstack(new_data).select(['date', 'high', 'low', 'close'])
+        combined_data = self._combine(existing_data, new_data, ['date', 'high', 'low', 'close'])
         
         result = new_data.clone()
         
@@ -411,7 +426,7 @@ class IncrementalCalculator:
         Returns:
             pl.DataFrame: 包含新增OBV值的数据
         """
-        combined_data = existing_data.vstack(new_data)
+        combined_data = self._combine(existing_data, new_data, ['close', 'volume'])
 
         price_change = combined_data['close'].diff().fill_null(0)
 
@@ -446,7 +461,7 @@ class IncrementalCalculator:
             windows = [12, 50]
         
         # 合并数据用于计算
-        combined_data = existing_data.vstack(new_data).select(['date', 'close'])
+        combined_data = self._combine(existing_data, new_data, ['date', 'close'])
         
         result = new_data.clone()
         
@@ -482,7 +497,7 @@ class IncrementalCalculator:
         if windows is None:
             windows = [14]
 
-        combined_data = existing_data.vstack(new_data)
+        combined_data = self._combine(existing_data, new_data, ['high', 'low', 'close'])
 
         result = new_data.clone()
 
@@ -542,7 +557,7 @@ class IncrementalCalculator:
             windows = [12]
         
         # 合并数据用于计算
-        combined_data = existing_data.vstack(new_data).select(['date', 'close'])
+        combined_data = self._combine(existing_data, new_data, ['date', 'close'])
         
         result = new_data.clone()
         
@@ -585,7 +600,7 @@ class IncrementalCalculator:
             pl.DataFrame: 包含新增SAR值的数据
         """
         # 合并数据用于计算
-        combined_data = existing_data.vstack(new_data).select(['date', 'high', 'low', 'close'])
+        combined_data = self._combine(existing_data, new_data, ['date', 'high', 'low', 'close'])
         
         n = len(combined_data)
         sar_values = pl.Series([0.0] * n)
@@ -680,7 +695,7 @@ class IncrementalCalculator:
             pl.DataFrame: 包含新增DMA值的数据
         """
         # 合并数据用于计算
-        combined_data = existing_data.vstack(new_data).select(['date', 'close'])
+        combined_data = self._combine(existing_data, new_data, ['date', 'close'])
         
         # 计算短期和长期移动平均
         short_ma = combined_data['close'].rolling_mean(window_size=short_period, min_periods=short_period)
@@ -739,7 +754,7 @@ class IncrementalCalculator:
             pl.DataFrame: 包含新增BBI值的数据
         """
         # 合并数据用于计算
-        combined_data = existing_data.vstack(new_data).select(['date', 'close'])
+        combined_data = self._combine(existing_data, new_data, ['date', 'close'])
         
         # 计算不同周期的移动平均线
         ma3 = combined_data['close'].rolling_mean(window_size=3, min_periods=3)

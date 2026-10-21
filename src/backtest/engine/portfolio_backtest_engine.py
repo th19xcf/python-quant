@@ -44,13 +44,20 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
         """
         self.strategies[stock_code] = strategy
     
-    def run_backtest(self, initial_capital: float = 1000000.0, allocation_strategy: str = 'equal', **params) -> Dict[str, Any]:
+    def run_backtest(self, initial_capital: float = 1000000.0, allocation_strategy: str = 'equal', lot_size: int = 100, limit_pct: float = 0.1, **params) -> Dict[str, Any]:
         """
         运行组合回测
+        
+        交易规则（遵循A股制度）：
+        1. t日信号延迟到该股票下一交易日以开盘价成交（避免收盘价未来函数）
+        2. 买入股数按lot_size（默认100股）整数倍取整，买入时即扣除买方成本
+        3. 一字涨停日不可买入、一字跌停日不可卖出、停牌日（无数据或成交量为0）不可交易
         
         Args:
             initial_capital: 初始资金
             allocation_strategy: 资金分配策略，可选值：'equal'（等权分配）、'value'（价值权重）
+            lot_size: 最小交易单位（股），A股买入为100股整数倍
+            limit_pct: 涨跌停幅度阈值，用于识别一字板
             **params: 回测参数
             
         Returns:
@@ -64,12 +71,16 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
         self.equity_curve = []
         self.positions = {stock: 0 for stock in self.data_dict.keys()}
         
-        current_capital = initial_capital
         stock_capitals = {}
-        
         stock_count = len(self.data_dict)
         for stock in self.data_dict.keys():
             stock_capitals[stock] = initial_capital / stock_count
+        
+        # 每只股票独立的待执行信号、K线索引与最新收盘价缓存
+        pending_signals = {stock: None for stock in self.data_dict.keys()}
+        bar_indices = {stock: 0 for stock in self.data_dict.keys()}
+        last_close = {stock: None for stock in self.data_dict.keys()}
+        prev_close = {stock: None for stock in self.data_dict.keys()}
         
         all_dates = set()
         for stock, data in self.data_dict.items():
@@ -84,62 +95,88 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             for stock_code, data in self.data_dict.items():
                 stock_data = data.filter(pl.col('date') == date)
                 if stock_data.is_empty():
+                    # 停牌（无数据）：保留挂单，持仓沿用最近收盘价估值
                     continue
                 
                 current_data = stock_data.to_dict(as_series=False)
                 current_data = {k: v[0] for k, v in current_data.items()}
                 
-                strategy = self.strategies.get(stock_code)
-                if strategy:
-                    signal = strategy.generate_signal(current_data, 0)
-                    
-                    if signal == 'buy' and self.positions[stock_code] == 0:
-                        current_price = current_data['close']
-                        shares = stock_capitals[stock_code] / current_price
-                        self.positions[stock_code] = shares
-                        stock_capitals[stock_code] = 0
-                        
-                        trade = {
-                            'date': date,
-                            'stock_code': stock_code,
-                            'signal': 'buy',
-                            'price': current_price,
-                            'shares': shares,
-                            'capital': stock_capitals[stock_code],
-                            'position': self.positions[stock_code]
-                        }
-                        daily_trades.append(trade)
-                    elif signal == 'sell' and self.positions[stock_code] > 0:
-                        sell_price = current_data['close']
-                        stock_capitals[stock_code] = self.positions[stock_code] * sell_price
-                        cost = self.cost_model.calculate_cost(self.positions[stock_code], current_data['close'], sell_price)
-                        stock_capitals[stock_code] -= cost
-                        
-                        trade = {
+                open_price = current_data.get('open', current_data['close'])
+                close_price = current_data['close']
+                high_price = current_data.get('high')
+                low_price = current_data.get('low')
+                volume = current_data.get('volume')
+                
+                suspended = volume is not None and volume <= 0
+                one_way_limit = False
+                pc = prev_close[stock_code]
+                if pc and pc > 0 and high_price is not None and low_price is not None and high_price == low_price:
+                    pct = close_price / pc - 1
+                    if pct >= limit_pct - 0.005:
+                        one_way_limit = 'up'
+                    elif pct <= -(limit_pct - 0.005):
+                        one_way_limit = 'down'
+                
+                # 1. 执行该股票的挂单（以今日开盘价成交，订单当日有效）
+                pending = pending_signals[stock_code]
+                if pending == 'buy' and self.positions[stock_code] == 0:
+                    if not suspended and one_way_limit != 'up':
+                        cost_rate = self.cost_model.get_buy_cost_rate()
+                        affordable = stock_capitals[stock_code] / (open_price * (1 + cost_rate))
+                        shares = int(affordable // lot_size) * lot_size
+                        if shares > 0:
+                            buy_cost = self.cost_model.calculate_buy_cost(shares, open_price)
+                            total_pay = shares * open_price + buy_cost
+                            if total_pay <= stock_capitals[stock_code]:
+                                self.positions[stock_code] = shares
+                                stock_capitals[stock_code] -= total_pay
+                                daily_trades.append({
+                                    'date': date,
+                                    'stock_code': stock_code,
+                                    'signal': 'buy',
+                                    'price': open_price,
+                                    'shares': shares,
+                                    'capital': stock_capitals[stock_code],
+                                    'position': shares,
+                                    'cost': buy_cost
+                                })
+                    pending_signals[stock_code] = None
+                elif pending == 'sell' and self.positions[stock_code] > 0:
+                    if not suspended and one_way_limit != 'down':
+                        sell_cost = self.cost_model.calculate_sell_cost(self.positions[stock_code], open_price)
+                        stock_capitals[stock_code] = self.positions[stock_code] * open_price - sell_cost
+                        daily_trades.append({
                             'date': date,
                             'stock_code': stock_code,
                             'signal': 'sell',
-                            'price': sell_price,
+                            'price': open_price,
                             'shares': self.positions[stock_code],
                             'capital': stock_capitals[stock_code],
                             'position': 0,
-                            'cost': cost
-                        }
-                        daily_trades.append(trade)
-                        
+                            'cost': sell_cost
+                        })
                         self.positions[stock_code] = 0
+                    pending_signals[stock_code] = None
+                
+                # 2. 基于当日数据生成信号，延迟到下一交易日执行
+                strategy = self.strategies.get(stock_code)
+                if strategy:
+                    signal = strategy.generate_signal(current_data, bar_indices[stock_code])
+                    if signal in ('buy', 'sell'):
+                        pending_signals[stock_code] = signal
+                
+                bar_indices[stock_code] += 1
+                prev_close[stock_code] = close_price
+                if not suspended:
+                    last_close[stock_code] = close_price
             
             self.trades.extend(daily_trades)
             
-            current_equity = current_capital
+            # 3. 组合权益 = 各股票现金 + 持仓按最近收盘价估值
+            current_equity = sum(stock_capitals.values())
             for stock_code, position in self.positions.items():
-                if position > 0:
-                    stock_data = self.data_dict[stock_code].filter(pl.col('date') == date)
-                    if not stock_data.is_empty():
-                        close_price = stock_data['close'][0]
-                        current_equity += position * close_price
-            
-            current_equity += sum(stock_capitals.values())
+                if position > 0 and last_close[stock_code] is not None:
+                    current_equity += position * last_close[stock_code]
             
             self.equity_curve.append({
                 'date': date,

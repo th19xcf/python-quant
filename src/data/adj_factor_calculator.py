@@ -10,10 +10,9 @@
 import os
 import sys
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-
-import numpy as np
+from typing import List, Optional, Dict
 import polars as pl
+import numpy as np
 from loguru import logger
 
 # 添加项目路径
@@ -23,8 +22,7 @@ sys.path.insert(0, src_path)
 sys.path.insert(0, project_root)
 
 from database.db_manager import DatabaseManager
-from database.models.stock import StockAdjFactor, StockDaily, StockDividend
-from src.data.adj_factor_utils import calculate_qfq_event_factor
+from database.models.stock import StockDaily, StockDividend, StockAdjFactor
 from src.utils.memory_optimizer import MemoryOptimizer
 
 
@@ -103,14 +101,14 @@ class AdjFactorCalculator:
             return None
         
         # 使用Polars直接构建DataFrame
-        return pl.DataFrame({
-            'ts_code': pl.Series('ts_code', [d.ts_code for d in dividends], dtype=pl.Utf8, strict=False),
-            'ex_date': pl.Series('ex_date', [d.ex_date for d in dividends], dtype=pl.Date, strict=False),
-            'cash_div': pl.Series('cash_div', [d.cash_div or 0.0 for d in dividends], dtype=pl.Float64, strict=False),
-            'share_div': pl.Series('share_div', [d.share_div or 0.0 for d in dividends], dtype=pl.Float64, strict=False),
-            'rights_issue_price': pl.Series('rights_issue_price', [d.rights_issue_price or 0.0 for d in dividends], dtype=pl.Float64, strict=False),
-            'rights_issue_ratio': pl.Series('rights_issue_ratio', [d.rights_issue_ratio or 0.0 for d in dividends], dtype=pl.Float64, strict=False),
-        })
+        data = {
+            'ts_code': [d.ts_code for d in dividends],
+            'ex_date': [d.ex_date for d in dividends],
+            'cash_div': [d.cash_div or 0 for d in dividends],
+            'share_div': [d.share_div or 0 for d in dividends],
+        }
+        
+        return pl.DataFrame(data)
     
     def _get_prices_from_db(self, ts_code: str, start_date: Optional[datetime], end_date: Optional[datetime]) -> pl.DataFrame:
         """从数据库获取价格数据"""
@@ -149,34 +147,27 @@ class AdjFactorCalculator:
             start_str = start_date.strftime('%Y-%m-%d') if start_date else '1990-01-01'
             end_str = end_date.strftime('%Y-%m-%d') if end_date else datetime.now().strftime('%Y-%m-%d')
             
-            # 从通达信获取数据（统一使用不复权原始价格）
-            tdx_data = self.tdx_handler.get_kline_data(ts_code, start_str, end_str, adjust='none')
-
-            if tdx_data is None:
+            # 获取股票代码（不带后缀）
+            symbol = ts_code.split('.')[0]
+            
+            # 从通达信获取数据
+            data_list = self.tdx_handler.get_kline_data(symbol, start_str, end_str)
+            
+            if not data_list:
                 logger.warning(f"{ts_code} 从通达信获取数据失败")
                 return None
-
-            if hasattr(tdx_data, 'collect'):
-                tdx_df = tdx_data.collect()
-            elif isinstance(tdx_data, pl.DataFrame):
-                tdx_df = tdx_data
-            else:
-                tdx_df = pl.DataFrame(tdx_data)
-
-            if tdx_df.is_empty():
-                logger.warning(f"{ts_code} 从通达信获取数据为空")
-                return None
-
-            required_cols = ['date', 'open', 'high', 'low', 'close']
-            missing_cols = [col for col in required_cols if col not in tdx_df.columns]
-            if missing_cols:
-                logger.warning(f"{ts_code} 通达信数据缺失必要字段: {missing_cols}")
-                return None
-
-            return tdx_df.select(required_cols).with_columns([
-                pl.lit(ts_code).alias('ts_code'),
-                pl.col('date').alias('trade_date')
-            ]).select(['ts_code', 'trade_date', 'open', 'high', 'low', 'close'])
+            
+            # 使用Polars直接构建DataFrame
+            data = {
+                'ts_code': [ts_code] * len(data_list),
+                'trade_date': [item['date'] for item in data_list],
+                'open': [item['open'] for item in data_list],
+                'high': [item['high'] for item in data_list],
+                'low': [item['low'] for item in data_list],
+                'close': [item['close'] for item in data_list],
+            }
+            
+            return pl.DataFrame(data)
             
         except (OSError, RuntimeError) as e:
             logger.exception(f"从通达信获取价格数据失败: {e}")
@@ -234,8 +225,6 @@ class AdjFactorCalculator:
             ex_date = div['ex_date']
             share_div = div['share_div']
             cash_div = div['cash_div']
-            rights_issue_price = div.get('rights_issue_price', 0)
-            rights_issue_ratio = div.get('rights_issue_ratio', 0)
             
             if ex_date is None:
                 continue
@@ -249,21 +238,17 @@ class AdjFactorCalculator:
             if prev_day_close is None:
                 continue
             
-            factor = calculate_qfq_event_factor(
-                prev_close=prev_day_close,
-                cash_div=cash_div,
-                share_div=share_div,
-                rights_issue_price=rights_issue_price,
-                rights_issue_ratio=rights_issue_ratio,
-            )
-            if factor is None:
-                logger.warning(f"{div.get('ts_code', '')} {ex_date} 复权事件参数异常，无法计算前复权因子")
-                continue
-
-            # 应用复权因子
-            for p in prices_list:
-                if p['trade_date'] < ex_date:
-                    p['qfq_factor'] *= factor
+            # 计算复权因子
+            if share_div > 0 or cash_div > 0:
+                if prev_day_close <= cash_div:
+                    logger.warning(f"{div.get('ts_code', '')} {ex_date} 现金分红异常，无法计算前复权因子")
+                    continue
+                factor = (prev_day_close - cash_div) / (prev_day_close * (1 + share_div))
+                
+                # 应用复权因子
+                for p in prices_list:
+                    if p['trade_date'] < ex_date:
+                        p['qfq_factor'] *= factor
         
         # 计算后复权因子（从前向后）
         for idx in range(len(dividends_list)):
@@ -271,8 +256,6 @@ class AdjFactorCalculator:
             ex_date = div['ex_date']
             share_div = div['share_div']
             cash_div = div['cash_div']
-            rights_issue_price = div.get('rights_issue_price', 0)
-            rights_issue_ratio = div.get('rights_issue_ratio', 0)
             
             if ex_date is None:
                 continue
@@ -286,23 +269,21 @@ class AdjFactorCalculator:
             if prev_day_close is None:
                 continue
             
-            qfq_factor = calculate_qfq_event_factor(
-                prev_close=prev_day_close,
-                cash_div=cash_div,
-                share_div=share_div,
-                rights_issue_price=rights_issue_price,
-                rights_issue_ratio=rights_issue_ratio,
-            )
-            if qfq_factor is None:
-                logger.warning(f"{div.get('ts_code', '')} {ex_date} 复权事件参数异常，无法计算后复权因子")
-                continue
-
-            factor = 1 / qfq_factor
-
-            # 应用复权因子
-            for p in prices_list:
-                if p['trade_date'] >= ex_date:
-                    p['hfq_factor'] *= factor
+            # 计算复权因子
+            if share_div > 0 or cash_div > 0:
+                if prev_day_close <= cash_div:
+                    logger.warning(f"{div.get('ts_code', '')} {ex_date} 现金分红异常，无法计算后复权因子")
+                    continue
+                qfq_factor = (prev_day_close - cash_div) / (prev_day_close * (1 + share_div))
+                if qfq_factor == 0:
+                    logger.warning(f"{div.get('ts_code', '')} {ex_date} 前复权因子为0，跳过后复权计算")
+                    continue
+                factor = 1 / qfq_factor
+                
+                # 应用复权因子
+                for p in prices_list:
+                    if p['trade_date'] >= ex_date:
+                        p['hfq_factor'] *= factor
         
         # 转换回Polars DataFrame
         result = pl.DataFrame(prices_list)
@@ -420,26 +401,30 @@ class AdjFactorCalculator:
             return
         
         try:
-            for row in df.to_dicts():
-                daily = self.session.query(StockDaily).filter_by(
-                    ts_code=row['ts_code'],
-                    trade_date=row['trade_date']
-                ).first()
-                
+            rows = df.to_dicts()
+
+            # 批量加载现有记录，避免逐行 SELECT（N+1）
+            ts_codes = list({row['ts_code'] for row in rows})
+            trade_dates = list({row['trade_date'] for row in rows})
+            existing_records = self.session.query(StockDaily).filter(
+                StockDaily.ts_code.in_(ts_codes),
+                StockDaily.trade_date.in_(trade_dates)
+            ).all()
+            existing_map = {(rec.ts_code, rec.trade_date): rec for rec in existing_records}
+
+            fields = ('qfq_factor', 'hfq_factor',
+                      'qfq_open', 'qfq_high', 'qfq_low', 'qfq_close',
+                      'hfq_open', 'hfq_high', 'hfq_low', 'hfq_close')
+            updated = 0
+            for row in rows:
+                daily = existing_map.get((row['ts_code'], row['trade_date']))
                 if daily:
-                    daily.qfq_factor = row['qfq_factor']
-                    daily.hfq_factor = row['hfq_factor']
-                    daily.qfq_open = row.get('qfq_open')
-                    daily.qfq_high = row.get('qfq_high')
-                    daily.qfq_low = row.get('qfq_low')
-                    daily.qfq_close = row.get('qfq_close')
-                    daily.hfq_open = row.get('hfq_open')
-                    daily.hfq_high = row.get('hfq_high')
-                    daily.hfq_low = row.get('hfq_low')
-                    daily.hfq_close = row.get('hfq_close')
-            
+                    for field in fields:
+                        setattr(daily, field, row.get(field))
+                    updated += 1
+
             self.session.commit()
-            logger.info(f"成功更新 {len(df)} 条stock_daily记录")
+            logger.info(f"成功更新 {updated} 条stock_daily记录")
             
         except (OSError, RuntimeError) as e:
             logger.exception(f"更新stock_daily失败: {e}")

@@ -151,8 +151,8 @@ class AdvancedCostModel:
         buy_regulatory_fee = buy_amount * regulatory_fee
         sell_regulatory_fee = sell_amount * regulatory_fee
         
-        # 计算滑点成本
-        slippage_cost = shares * (sell_price - buy_price) * slippage
+        # 计算滑点成本（双边均按成交金额收取，与盈亏无关）
+        slippage_cost = shares * (buy_price + sell_price) * slippage
         
         # 计算总成本
         total_cost = (

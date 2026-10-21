@@ -69,7 +69,7 @@ class PerformanceAnalyzer:
             'volatility': volatility,
             'winning_rate': winning_rate,
             'average_profit_loss': average_profit_loss,
-            'trades_count': len(trades) // 2  # 每笔完整交易包含买入和卖出
+            'trades_count': len(self._pair_trades(trades))  # 完整买卖对数量
         }
     
     def _calculate_sharpe_ratio(self, returns: List[float], risk_free_rate: float = 0) -> float:
@@ -121,6 +121,35 @@ class PerformanceAnalyzer:
         
         return max_drawdown
     
+    @staticmethod
+    def _pair_trades(trades: List[Dict[str, Any]]) -> List[tuple]:
+        """
+        将交易记录按股票分组并依序配对买卖，返回(buy, sell)对列表
+        
+        组合回测中多只股票的交易记录交错存储，不能简单按列表下标两两配对
+        """
+        from collections import defaultdict
+        grouped = defaultdict(list)
+        for t in trades:
+            grouped[t.get('stock_code', '_default')].append(t)
+        
+        pairs = []
+        for stock_trades in grouped.values():
+            open_buys = []
+            for t in stock_trades:
+                if t.get('signal') == 'buy':
+                    open_buys.append(t)
+                elif t.get('signal') == 'sell' and open_buys:
+                    pairs.append((open_buys.pop(0), t))
+        return pairs
+    
+    @staticmethod
+    def _pair_profit(buy_trade: Dict[str, Any], sell_trade: Dict[str, Any]) -> float:
+        """计算单笔配对交易的净盈亏（扣除已知成本）"""
+        profit = (sell_trade['price'] - buy_trade['price']) * buy_trade['shares']
+        profit -= buy_trade.get('cost', 0) + sell_trade.get('cost', 0)
+        return profit
+    
     def _calculate_winning_rate(self, trades: List[Dict[str, Any]]) -> float:
         """
         计算胜率
@@ -131,18 +160,12 @@ class PerformanceAnalyzer:
         Returns:
             float: 胜率（百分比）
         """
-        if not trades:
+        pairs = self._pair_trades(trades)
+        if not pairs:
             return 0
         
-        winning_trades = 0
-        for i in range(0, len(trades), 2):
-            if i + 1 < len(trades):
-                buy_trade = trades[i]
-                sell_trade = trades[i+1]
-                if sell_trade['price'] > buy_trade['price']:
-                    winning_trades += 1
-        
-        return (winning_trades / (len(trades) // 2)) * 100 if len(trades) >= 2 else 0
+        winning_trades = sum(1 for buy, sell in pairs if self._pair_profit(buy, sell) > 0)
+        return (winning_trades / len(pairs)) * 100
     
     def _calculate_average_profit_loss(self, trades: List[Dict[str, Any]]) -> float:
         """
@@ -154,21 +177,19 @@ class PerformanceAnalyzer:
         Returns:
             float: 平均盈亏比
         """
-        if not trades:
+        pairs = self._pair_trades(trades)
+        if not pairs:
             return 0
         
         profits = []
         losses = []
         
-        for i in range(0, len(trades), 2):
-            if i + 1 < len(trades):
-                buy_trade = trades[i]
-                sell_trade = trades[i+1]
-                profit = (sell_trade['price'] - buy_trade['price']) * buy_trade['shares']
-                if profit > 0:
-                    profits.append(profit)
-                else:
-                    losses.append(abs(profit))
+        for buy_trade, sell_trade in pairs:
+            profit = self._pair_profit(buy_trade, sell_trade)
+            if profit > 0:
+                profits.append(profit)
+            else:
+                losses.append(abs(profit))
         
         avg_profit = np.mean(profits) if profits else 0
         avg_loss = np.mean(losses) if losses else 1
