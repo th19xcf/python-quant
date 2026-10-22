@@ -35,6 +35,7 @@ class BaseBacktestEngine:
         self.backtest_results = {}
         self.trades = []
         self.equity_curve = []
+        self.ts_code = ''
 
     @staticmethod
     def convert_to_polars(data: DataFrameType) -> pl.DataFrame:
@@ -74,7 +75,43 @@ class BaseBacktestEngine:
         self.strategy = strategy
 
     @staticmethod
-    def _is_tradable(index: int, direction: str, close_prices, high_prices, low_prices, volumes, limit_pct: float = 0.1) -> bool:
+    def _get_limit_pct(ts_code: str = '', is_st: bool = False) -> float:
+        """
+        按证券代码与 ST 状态推导涨跌停幅度阈值。
+
+        Args:
+            ts_code: 股票代码，形如 '000001.SZ' 或 '300001.SZ'
+            is_st: 是否 ST/*ST 股票（可由数据源或行情表 name 字段判定）
+
+        Returns:
+            float: 涨跌停幅度（如 0.10 表示 10%）
+
+        规则（按上交所/深交所现行制度）：
+            ST / *ST                 → 5%
+            创业板 300xx / 301xx     → 20%
+            科创板 68xxx / 688xxx    → 20%
+            北交所 8/4/9 开头代码   → 30%
+            主板默认                 → 10%
+        """
+        if is_st:
+            return 0.05
+
+        code = (ts_code or '').split('.')[0]
+        if not code:
+            return 0.10  # 无代码信息时回退主板默认
+
+        if code.startswith(('300', '301')):
+            return 0.20  # 创业板
+        if code.startswith(('68', '688')):
+            return 0.20  # 科创板
+        if code.startswith(('4', '8', '9')) and len(code) == 6:
+            return 0.30  # 北交所
+
+        return 0.10  # 主板/中小板等默认
+
+    @staticmethod
+    def _is_tradable(index: int, direction: str, close_prices, high_prices, low_prices, volumes,
+                     limit_pct: float = 0.1, ts_code: str = '', is_st: bool = False) -> bool:
         """
         检查指定交易日是否可交易（A股交易制度校验）
 
@@ -85,13 +122,17 @@ class BaseBacktestEngine:
             high_prices: 最高价序列（可为None）
             low_prices: 最低价序列（可为None）
             volumes: 成交量序列（可为None）
-            limit_pct: 涨跌停幅度阈值
+            limit_pct: 涨跌停幅度阈值（若传入 ts_code 则会被覆盖）
+            ts_code: 股票代码，用于自适应涨跌停幅度
+            is_st: 是否 ST/*ST 股票
 
         Returns:
             bool: 是否可交易。停牌（成交量为0）不可交易；
                   一字涨停（high==low且涨幅达限）不可买入；
                   一字跌停（high==low且跌幅达限）不可卖出
         """
+        effective_limit = BaseBacktestEngine._get_limit_pct(ts_code, is_st) if ts_code else limit_pct
+
         # 停牌日（成交量为0）不可交易
         if volumes is not None and volumes[index] is not None and volumes[index] <= 0:
             return False
@@ -100,9 +141,9 @@ class BaseBacktestEngine:
             prev_close = close_prices[index - 1]
             if prev_close and prev_close > 0 and high_prices[index] == low_prices[index]:
                 pct = close_prices[index] / prev_close - 1
-                if direction == 'buy' and pct >= limit_pct - 0.005:
+                if direction == 'buy' and pct >= effective_limit - 0.005:
                     return False
-                if direction == 'sell' and pct <= -(limit_pct - 0.005):
+                if direction == 'sell' and pct <= -(effective_limit - 0.005):
                     return False
         return True
 

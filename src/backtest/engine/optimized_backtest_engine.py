@@ -31,28 +31,32 @@ class OptimizedBacktestEngine(BaseBacktestEngine):
         if 'date' in self.pl_df.columns:
             self.pl_df = self.pl_df.sort('date')
 
-    def run_backtest(self, initial_capital: float = 1000000.0, lot_size: int = 100, limit_pct: float = 0.1, **params) -> Dict[str, Any]:
+    def run_backtest(self, initial_capital: float = 1000000.0, lot_size: int = 100, limit_pct: float = 0.1,
+                     ts_code: str = '', **params) -> Dict[str, Any]:
         """
         运行回测
-        
+
         交易规则（遵循A股制度）：
         1. t日信号延迟到t+1日以开盘价成交（避免收盘价未来函数）
         2. 买入股数按lot_size（默认100股）整数倍取整，买入时即扣除买方成本
         3. 一字涨停日不可买入、一字跌停日不可卖出、停牌日（成交量为0）不可交易
-        
+        4. 涨跌停幅度按 ts_code 自动推导（创业板/科创板 20%、ST 5%、北交所 30%）
+
         Args:
             initial_capital: 初始资金
             lot_size: 最小交易单位（股），A股买入为100股整数倍
             limit_pct: 涨跌停幅度阈值，用于识别一字板
+            ts_code: 股票代码，用于自适应涨跌停幅度
             **params: 回测参数
-            
+
         Returns:
             Dict[str, Any]: 回测结果
         """
         if not self.strategy:
             logger.error("未设置策略")
             return {}
-        
+
+        self.ts_code = ts_code or self.ts_code
         self.trades = []
         self.equity_curve = []
 
@@ -74,7 +78,8 @@ class OptimizedBacktestEngine(BaseBacktestEngine):
         for i in range(len(dates)):
             # 1. 执行前一交易日生成的信号（以今日开盘价成交，订单当日有效）
             if pending_signal == 'buy' and position == 0:
-                if self._is_tradable(i, 'buy', close_prices, high_prices, low_prices, volumes, limit_pct):
+                if self._is_tradable(i, 'buy', close_prices, high_prices, low_prices, volumes,
+                                     limit_pct, ts_code=self.ts_code):
                     exec_price = open_prices[i]
                     # 预留买入成本后按整手取整
                     cost_rate = self.cost_model.get_buy_cost_rate()
@@ -97,7 +102,8 @@ class OptimizedBacktestEngine(BaseBacktestEngine):
                             })
                 pending_signal = None
             elif pending_signal == 'sell' and position > 0:
-                if self._is_tradable(i, 'sell', close_prices, high_prices, low_prices, volumes, limit_pct):
+                if self._is_tradable(i, 'sell', close_prices, high_prices, low_prices, volumes,
+                                     limit_pct, ts_code=self.ts_code):
                     sell_price = open_prices[i]
                     sell_cost = self.cost_model.calculate_sell_cost(position, sell_price)
                     # 卖出所得应叠加到剩余现金，不能覆盖买入后剩余的现金

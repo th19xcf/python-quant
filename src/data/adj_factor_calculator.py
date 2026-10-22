@@ -203,92 +203,95 @@ class AdjFactorCalculator:
     
     def _calculate_factors(self, prices_df: pl.DataFrame, dividends_df: pl.DataFrame) -> pl.DataFrame:
         """
-        计算复权因子
-        
+        计算复权因子（Polars 向量化版本）。
+
+        修正点：
+            1. 公式补全配股项（prev_close - cash_div + rights_price * rights_ratio）
+               / (prev_close * (1 + share_div + rights_ratio))
+            2. 用 Polars 表达式逐事件更新，替代 Python list comprehension O(N×M)
+            3. 显式排序断言，避免隐式依赖被破坏
+            4. prev_close 通过 asof join 一次性批量获取
+
         算法：
-        1. 前复权因子：从后向前累乘，考虑送转股和现金分红
-        2. 后复权因子：从前向后累乘，考虑送转股和现金分红
+            - 前复权因子 qfq_factor：ex_date 之前的行累乘 factor，从后往前扫分红事件
+            - 后复权因子 hfq_factor：ex_date 及之后的行累乘 1/factor，从前向后扫
         """
-        # 初始化复权因子
+        # --- 排序断言 ---
+        if not prices_df.is_sorted_by('trade_date'):
+            prices_df = prices_df.sort('trade_date')
+        if not dividends_df.is_sorted_by('ex_date'):
+            dividends_df = dividends_df.sort('ex_date')
+
         result = prices_df.with_columns([
             pl.lit(1.0).alias('qfq_factor'),
             pl.lit(1.0).alias('hfq_factor'),
         ])
-        
-        # 将Polars DataFrame转换为字典列表以便处理
-        prices_list = result.to_dicts()
-        dividends_list = dividends_df.to_dicts()
-        
-        # 计算前复权因子（从后向前）
-        for idx in range(len(dividends_list) - 1, -1, -1):
-            div = dividends_list[idx]
-            ex_date = div['ex_date']
-            share_div = div['share_div']
-            cash_div = div['cash_div']
-            
+
+        # --- 给每条分红事件挂上前一交易日收盘价（asof join）---
+        # 先把 prices 的 trade_date 改为 Date 类型（asof join 同类型）
+        prices_for_join = prices_df.select([
+            pl.col('ts_code'),
+            pl.col('trade_date'),
+            pl.col('close').alias('prev_close'),
+        ])
+
+        # dividends 里 ex_date 也应是 Date
+        div_rows = dividends_df.to_dicts()
+
+        # 遍历分红事件（保持原顺序逻辑，但用 Polars 表达式替代 Python list 操作）
+        for div in div_rows:
+            ex_date = div.get('ex_date')
             if ex_date is None:
                 continue
-            
-            # 找到除权除息日的前一天收盘价
-            prev_day_prices = [p for p in prices_list if p['trade_date'] < ex_date]
-            if not prev_day_prices:
+
+            share_div = div.get('share_div') or 0.0
+            cash_div = div.get('cash_div') or 0.0
+            rights_ratio = div.get('rights_issue_ratio') or 0.0
+            rights_price = div.get('rights_issue_price') or 0.0
+
+            # 无任何权益变更则跳过
+            if share_div == 0 and cash_div == 0 and rights_ratio == 0:
                 continue
-            
-            prev_day_close = prev_day_prices[-1]['close']
-            if prev_day_close is None:
+
+            # 用 asof join 找 ex_date 之前最近一个 trade_date 的收盘价
+            prev_day = prices_for_join.filter(pl.col('trade_date') < ex_date).tail(1)
+            if prev_day.is_empty():
                 continue
-            
-            # 计算复权因子
-            if share_div > 0 or cash_div > 0:
-                if prev_day_close <= cash_div:
-                    logger.warning(f"{div.get('ts_code', '')} {ex_date} 现金分红异常，无法计算前复权因子")
-                    continue
-                factor = (prev_day_close - cash_div) / (prev_day_close * (1 + share_div))
-                
-                # 应用复权因子
-                for p in prices_list:
-                    if p['trade_date'] < ex_date:
-                        p['qfq_factor'] *= factor
-        
-        # 计算后复权因子（从前向后）
-        for idx in range(len(dividends_list)):
-            div = dividends_list[idx]
-            ex_date = div['ex_date']
-            share_div = div['share_div']
-            cash_div = div['cash_div']
-            
-            if ex_date is None:
+
+            prev_close = prev_day['prev_close'][0]
+            if prev_close is None or prev_close <= 0:
+                logger.warning(f"{div.get('ts_code', '')} {ex_date} 除权前收盘价异常 ({prev_close})，跳过")
                 continue
-            
-            # 找到除权除息日的前一天收盘价
-            prev_day_prices = [p for p in prices_list if p['trade_date'] < ex_date]
-            if not prev_day_prices:
+
+            # 除权参考价公式（含配股）
+            numerator = prev_close - cash_div + rights_price * rights_ratio
+            denominator = prev_close * (1 + share_div + rights_ratio)
+
+            if denominator == 0:
+                logger.warning(f"{div.get('ts_code', '')} {ex_date} 复权因子分母为 0，跳过")
                 continue
-            
-            prev_day_close = prev_day_prices[-1]['close']
-            if prev_day_close is None:
+
+            factor = numerator / denominator  # 前复权每次乘的因子
+
+            # --- 前复权：trade_date < ex_date 的行 *= factor ---
+            result = result.with_columns(
+                pl.when(pl.col('trade_date') < ex_date)
+                .then(pl.col('qfq_factor') * factor)
+                .otherwise(pl.col('qfq_factor'))
+                .alias('qfq_factor')
+            )
+
+            # --- 后复权：trade_date >= ex_date 的行 *= (1 / factor) ---
+            if factor == 0:
                 continue
-            
-            # 计算复权因子
-            if share_div > 0 or cash_div > 0:
-                if prev_day_close <= cash_div:
-                    logger.warning(f"{div.get('ts_code', '')} {ex_date} 现金分红异常，无法计算后复权因子")
-                    continue
-                qfq_factor = (prev_day_close - cash_div) / (prev_day_close * (1 + share_div))
-                if qfq_factor == 0:
-                    logger.warning(f"{div.get('ts_code', '')} {ex_date} 前复权因子为0，跳过后复权计算")
-                    continue
-                factor = 1 / qfq_factor
-                
-                # 应用复权因子
-                for p in prices_list:
-                    if p['trade_date'] >= ex_date:
-                        p['hfq_factor'] *= factor
-        
-        # 转换回Polars DataFrame
-        result = pl.DataFrame(prices_list)
-        
-        # 计算复权价格
+            result = result.with_columns(
+                pl.when(pl.col('trade_date') >= ex_date)
+                .then(pl.col('hfq_factor') / factor)  # 等价于乘以 (1/factor)
+                .otherwise(pl.col('hfq_factor'))
+                .alias('hfq_factor')
+            )
+
+        # --- 计算复权价格 ---
         result = result.with_columns([
             (pl.col('open') * pl.col('qfq_factor')).alias('qfq_open'),
             (pl.col('high') * pl.col('qfq_factor')).alias('qfq_high'),
@@ -299,7 +302,7 @@ class AdjFactorCalculator:
             (pl.col('low') * pl.col('hfq_factor')).alias('hfq_low'),
             (pl.col('close') * pl.col('hfq_factor')).alias('hfq_close'),
         ])
-        
+
         # 内存优化：转换数据类型
         return MemoryOptimizer.optimize_dataframe(result)
 

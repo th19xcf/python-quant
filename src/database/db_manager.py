@@ -125,6 +125,38 @@ class DatabaseManager:
             logger.exception(f"数据库表删除失败: {e}")
             raise
     
+    def list_stock_codes(self, include_delisted: bool = False, include_suspended: bool = True) -> list:
+        """
+        获取股票代码列表。
+
+        Args:
+            include_delisted: 是否包含退市股（status='D'）。
+                False 时只返回上市/暂停上市股票，避免全市场扫描时的幸存者偏差。
+                注意：数据源（TDX / BaoStock / AKShare）是否返回退市股数据取决于
+                其本身的覆盖范围，本开关仅控制查询侧过滤。
+            include_suspended: 是否包含暂停上市股（status='P'）。
+
+        Returns:
+            list[str]: ts_code 列表，如 ['000001.SZ', '600000.SH', ...]
+        """
+        from src.database.models.stock import StockBasic
+
+        session = self.get_session()
+        try:
+            q = session.query(StockBasic.ts_code).filter(
+                StockBasic.ts_code.isnot(None),
+            )
+            if not include_delisted:
+                q = q.filter(StockBasic.status != 'D')
+            if not include_suspended:
+                q = q.filter(StockBasic.status != 'P')
+
+            rows = q.all()
+            return [r[0] for r in rows]
+        except (OSError, RuntimeError) as e:
+            logger.exception(f"查询股票代码列表失败: {e}")
+            return []
+    
     def get_session(self, expire_on_commit=False):
         """
         获取数据库会话

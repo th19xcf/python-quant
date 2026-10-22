@@ -110,11 +110,13 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
                 suspended = volume is not None and volume <= 0
                 one_way_limit = False
                 pc = prev_close[stock_code]
+                # 每只股票按自身代码推导涨跌停幅度（创业板 20%、科创板 20%、主板 10% 等）
+                stock_limit_pct = self._get_limit_pct(stock_code)
                 if pc and pc > 0 and high_price is not None and low_price is not None and high_price == low_price:
                     pct = close_price / pc - 1
-                    if pct >= limit_pct - 0.005:
+                    if pct >= stock_limit_pct - 0.005:
                         one_way_limit = 'up'
-                    elif pct <= -(limit_pct - 0.005):
+                    elif pct <= -(stock_limit_pct - 0.005):
                         one_way_limit = 'down'
                 
                 # 1. 执行该股票的挂单（以今日开盘价成交，订单当日有效）
