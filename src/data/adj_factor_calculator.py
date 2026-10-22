@@ -213,8 +213,15 @@ class AdjFactorCalculator:
             4. prev_close 通过 asof join 一次性批量获取
 
         算法：
-            - 前复权因子 qfq_factor：ex_date 之前的行累乘 factor，从后往前扫分红事件
-            - 后复权因子 hfq_factor：ex_date 及之后的行累乘 1/factor，从前向后扫
+            - 前复权因子 qfq_factor：按 ex_date 升序从前向后扫分红事件，
+              每次 event 把 trade_date < ex_date 的所有行累乘 factor；
+              最新段（最后一次 ex_date 之后）不动，作为"不动的锚"。
+            - 后复权因子 hfq_factor：同一次升序扫描，每次 event 把
+              trade_date >= ex_date 的所有行累乘 1/factor；
+              最早段（第一次 ex_date 之前）不动，作为"不动的锚"。
+            注：注释历史版本写"从后往前扫前复权 / 从前向后扫后复权"，
+            实际代码统一升序扫描——方向差异在过滤条件（< / >=）上，
+            不是在遍历顺序上。
         """
         # --- 排序断言 ---
         if not prices_df.is_sorted_by('trade_date'):

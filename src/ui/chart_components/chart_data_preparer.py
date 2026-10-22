@@ -39,10 +39,13 @@ class ChartDataPreparer:
         """
         准备K线图数据
         
+        复权统一在 DataFetcher._apply_adjustment 出口处理：open/high/low/close
+        列已经是请求的复权类型（qfq 或 hfq 或 none），此处不再二次应用。
+        
         Args:
-            df: 原始股票数据
+            df: 数据（DataFetcher 出口已含复权后的 open/high/low/close + qfq_*/hfq_* 完整套列）
             bar_count: 显示的柱体数量
-            adjustment_type: 复权类型 ('qfq', 'hfq', 'none')
+            adjustment_type: 复权类型（仅保留签名用于调试；实际复权在 DataFetcher 已完成）
             
         Returns:
             pl.DataFrame: 处理后的数据
@@ -50,11 +53,9 @@ class ChartDataPreparer:
         try:
             df_pl = df
             
-            # 对于后复权，先进行归一化（使用完整数据的最早因子作为基准）
-            if adjustment_type == 'hfq' and 'hfq_factor' in df_pl.columns:
-                df_pl = self._normalize_hfq_data(df_pl)
-            
-            # 应用复权计算
+            # 应用复权（此处为历史兜底保留：DataFetcher 出口已处理过，
+            # 正常情况下是原地赋值空操作。若 DataFetcher 未来改动或
+            # 某些调用方绕过 DataFetcher 直接给原始数据，这里会兜底）
             df_pl = self._apply_adjustment(df_pl, adjustment_type)
             
             # 计算移动平均线
@@ -78,110 +79,24 @@ class ChartDataPreparer:
     
     def _apply_adjustment(self, df: pl.DataFrame, adjustment_type: str) -> pl.DataFrame:
         """
-        应用复权计算，统一处理所有价格列（open/high/low/close）
-        
-        Args:
-            df: 原始数据
-            adjustment_type: 复权类型 ('qfq', 'hfq', 'none')
-            
-        Returns:
-            pl.DataFrame: 复权后的数据
+        历史兜底：将 qfq_*/hfq_* 列写入 open/high/low/close
+
+        正常情况下 DataFetcher._apply_adjustment 出口已经把 open/high/low/close
+        写成请求的复权类型，此处的 df 已是正确状态——本方法相当于原地赋值空操作。
+
+        保留原因：少数调用方可能绕过 DataFetcher 直接给原始行情（不含复权列），
+        此时 qfq_*/hfq_* 可能缺失；本方法按 adjustment_type 做最后一次机会的兜底。
         """
-        if adjustment_type == 'qfq':
-            # 前复权：使用 qfq_ 前缀的列替换所有价格列
-            df = self._apply_qfq_adjustment(df)
-        elif adjustment_type == 'hfq':
-            # 后复权：先归一化，然后使用归一化后的列替换所有价格列
-            df = self._apply_hfq_adjustment(df)
-        # 'none' 或其他情况保持原始价格不变
-        
-        return df
-    
-    def _apply_qfq_adjustment(self, df: pl.DataFrame) -> pl.DataFrame:
-        """应用前复权调整"""
-        # 检查是否有前复权价格列
-        has_qfq_cols = all(col in df.columns for col in ['qfq_open', 'qfq_high', 'qfq_low', 'qfq_close'])
-        
-        if has_qfq_cols:
-            # 使用复权价格列替换原始价格列
-            df = df.with_columns([
-                pl.col('qfq_open').alias('open'),
-                pl.col('qfq_high').alias('high'),
-                pl.col('qfq_low').alias('low'),
-                pl.col('qfq_close').alias('close')
-            ])
-            logger.debug("应用前复权价格")
-        else:
-            # 没有前复权价格列，使用原始价格并添加qfq_列以便后续处理
-            df = df.with_columns([
-                pl.col('open').alias('qfq_open'),
-                pl.col('high').alias('qfq_high'),
-                pl.col('low').alias('qfq_low'),
-                pl.col('close').alias('qfq_close')
-            ])
-            logger.debug("使用原始价格并添加qfq_列")
-        
-        return df
-    
-    def _apply_hfq_adjustment(self, df: pl.DataFrame) -> pl.DataFrame:
-        """应用后复权调整"""
-        # 注意：归一化处理已经在 prepare_kline_data 中完成
-        
-        # 检查是否有归一化后的列
-        has_norm_cols = all(col in df.columns for col in ['hfq_open_norm', 'hfq_high_norm', 'hfq_low_norm', 'hfq_close_norm'])
-        
-        if has_norm_cols:
-            # 使用归一化后的复权价格列
-            df = df.with_columns([
-                pl.col('hfq_open_norm').alias('open'),
-                pl.col('hfq_high_norm').alias('high'),
-                pl.col('hfq_low_norm').alias('low'),
-                pl.col('hfq_close_norm').alias('close')
-            ])
-            logger.debug("应用归一化后复权价格")
-        else:
-            # 检查是否有原始后复权价格列（hfq_前缀）
-            has_hfq_cols = all(col in df.columns for col in ['hfq_open', 'hfq_high', 'hfq_low', 'hfq_close'])
-            if has_hfq_cols:
-                df = df.with_columns([
-                    pl.col('hfq_open').alias('open'),
-                    pl.col('hfq_high').alias('high'),
-                    pl.col('hfq_low').alias('low'),
-                    pl.col('hfq_close').alias('close')
-                ])
-                logger.debug("应用后复权价格")
-            else:
-                # 如果hfq_列不存在，使用原始价格并添加hfq_列以便后续处理
-                df = df.with_columns([
-                    pl.col('open').alias('hfq_open'),
-                    pl.col('high').alias('hfq_high'),
-                    pl.col('low').alias('hfq_low'),
-                    pl.col('close').alias('hfq_close')
-                ])
-                # 如果hfq_factor存在，说明数据可能已经是后复权价格
-                if 'hfq_factor' in df.columns:
-                    logger.debug("使用已处理的后复权价格并添加hfq_列")
-                else:
-                    logger.debug("使用原始价格并添加hfq_列")
-        
-        return df
-    
-    def _normalize_hfq_data(self, df: pl.DataFrame) -> pl.DataFrame:
-        """处理后复权数据
-        
-        后复权数据不再进行归一化，保持累积值以反映真实的历史累积价格。
-        这样茅台等长期上涨的股票后复权价格会显示为几千到几万。
-        """
-        # 后复权数据保持原样，不进行归一化
-        # 直接复制 hfq_ 列到 norm 列，保持兼容性
-        hfq_cols = ['hfq_open', 'hfq_high', 'hfq_low', 'hfq_close']
-        norm_cols = ['hfq_open_norm', 'hfq_high_norm', 'hfq_low_norm', 'hfq_close_norm']
-        
-        for hfq_col, norm_col in zip(hfq_cols, norm_cols):
-            if hfq_col in df.columns:
-                df = df.with_columns(pl.col(hfq_col).alias(norm_col))
-        
-        return df
+        prefix = {'qfq': 'qfq_', 'hfq': 'hfq_'}.get(adjustment_type)
+        if prefix is None:
+            return df
+
+        price_cols = [col for col in ('open', 'high', 'low', 'close') if f'{prefix}{col}' in df.columns]
+        if not price_cols:
+            return df
+
+        exprs = [pl.col(f'{prefix}{col}').alias(col) for col in price_cols]
+        return df.with_columns(exprs)
     
     def _calculate_moving_averages(self, df: pl.DataFrame) -> pl.DataFrame:
         """
