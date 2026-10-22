@@ -16,10 +16,15 @@ from typing import List, Optional, Dict, Any
 import polars as pl
 from loguru import logger
 
+from src.data.sources.base import DataSourceBase
 
-class TdxHandler:
+
+class TdxHandler(DataSourceBase):
     """
     通达信数据处理器，负责解析通达信数据文件并存储到数据库
+
+    继承 DataSourceBase 获得统一接口。DataFetcher 硬编码调用
+    get_kline_data。提供 close() 方法（基类没有，Handler 自己实现）。
     """
     
     def __init__(self, config, db_manager):

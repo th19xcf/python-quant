@@ -10,10 +10,15 @@ from typing import List, Optional
 import requests
 from bs4 import BeautifulSoup
 
+from src.data.sources.base import DataSourceBase
 
-class MacroHandler:
+
+class MacroHandler(DataSourceBase):
     """
     宏观经济数据处理器，负责爬取宏观经济数据并存储到数据库
+
+    继承 DataSourceBase 获得统一接口。DataFetcher 硬编码调用
+    无（当前未注册到 DataFetcher 故障转移路径）。
     """
     
     def __init__(self, config, db_manager):

@@ -9,10 +9,15 @@ from loguru import logger
 from typing import List, Optional
 from datetime import datetime
 
+from src.data.sources.base import DataSourceBase
 
-class NewsHandler:
+
+class NewsHandler(DataSourceBase):
     """
     新闻数据处理器，负责获取财经新闻数据并存储到数据库
+
+    继承 DataSourceBase 获得统一接口。DataFetcher 硬编码调用
+    无（当前未注册到 DataFetcher 故障转移路径）。
     """
     
     def __init__(self, config, db_manager):

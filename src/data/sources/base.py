@@ -46,56 +46,36 @@ class DataSourceBase(ABC):
             self.available = False
             logger.warning(f"{self.name} 初始化失败: {e}")
     
-    @abstractmethod
-    def _initialize(self):
-        """
-        具体的初始化实现
-        
-        子类必须实现此方法
-        """
-        pass
-    
     def is_available(self) -> bool:
-        """
-        检查数据源是否可用
-        
-        Returns:
-            bool: 数据源是否可用
-        """
+        """检查数据源是否可用（默认返回 self.available，子类可覆盖）"""
         return self.available
-    
-    @abstractmethod
-    def get_stock_data(self, ts_code: str, start_date: str, end_date: str, freq: str = 'daily', adjustment_type: str = 'qfq') -> Union[pl.DataFrame, None]:
-        """
-        获取股票数据
-        
-        Args:
-            ts_code: 股票代码
-            start_date: 开始日期
-            end_date: 结束日期
-            freq: 频率，daily或minute
-            adjustment_type: 复权类型
-            
-        Returns:
-            pl.DataFrame: 股票数据
-        """
-        pass
-    
-    @abstractmethod
-    def get_index_data(self, ts_code: str, start_date: str, end_date: str, freq: str = 'daily') -> Union[pl.DataFrame, None]:
-        """
-        获取指数数据
-        
-        Args:
-            ts_code: 指数代码
-            start_date: 开始日期
-            end_date: 结束日期
-            freq: 频率，daily或minute
-            
-        Returns:
-            pl.DataFrame: 指数数据
-        """
-        pass
+
+    # ------------------------------------------------------------------
+    # 以下三个方法历史上是 @abstractmethod，现已降级为普通方法。
+    # 原因：DataFetcher._get_data_from_sources 内部按 handler 名硬编码调用
+    # 对应方法（tdx→get_kline_data, baostock→download_stock_daily），
+    # 不走 DataSourceBase 标准接口；强制 abstractmethod 会阻碍 handler 继承。
+    # 默认抛 NotImplementedError，子类可选覆盖。
+    # ------------------------------------------------------------------
+
+    def _initialize(self):
+        """具体的初始化实现。建议子类覆盖（handler 若在 __init__ 里自行初始化，可不覆盖）。"""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} 必须实现 _initialize() 或覆盖 initialize()")
+
+    def get_stock_data(self, ts_code: str, start_date: str, end_date: str,
+                       freq: str = 'daily', adjustment_type: str = 'qfq'):
+        """获取股票数据（标准接口，子类可选覆盖）"""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} 未实现 get_stock_data()，"
+            f"DataFetcher 会按 handler 名调用对应方法"
+            f"（如 get_kline_data / download_stock_daily）")
+
+    def get_index_data(self, ts_code: str, start_date: str, end_date: str,
+                       freq: str = 'daily'):
+        """获取指数数据（标准接口，子类可选覆盖）"""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} 未实现 get_index_data()")
     
     def update_stock_basic(self):
         """

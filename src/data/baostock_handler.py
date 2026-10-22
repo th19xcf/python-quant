@@ -12,10 +12,15 @@ import baostock as bs
 import polars as pl
 from loguru import logger
 
+from src.data.sources.base import DataSourceBase
 
-class BaostockHandler:
+
+class BaostockHandler(DataSourceBase):
     """
     Baostock数据处理器，负责从Baostock获取数据并存储到数据库
+
+    继承 DataSourceBase 获得统一接口。DataFetcher 硬编码调用
+    download_stock_daily / download_index_daily 等方法。
     """
     
     def __init__(self, config, db_manager):

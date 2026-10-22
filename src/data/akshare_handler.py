@@ -12,10 +12,16 @@ import akshare as ak
 import polars as pl
 from loguru import logger
 
+from src.data.sources.base import DataSourceBase
 
-class AkShareHandler:
+
+class AkShareHandler(DataSourceBase):
     """
     AkShare数据处理器，负责从AkShare获取数据并存储到数据库
+
+    继承 DataSourceBase 获得统一接口（is_available / 15+ update_* 默认 stubs）。
+    实际数据获取由 DataFetcher._get_data_from_sources 按 handler 名硬编码
+    调用对应方法（get_stock_data / get_index_data）。
     """
     
     def __init__(self, config, db_manager):
