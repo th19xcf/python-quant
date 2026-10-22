@@ -3,7 +3,23 @@
 
 """
 趋势类指标计算模块
-包含：MA, MACD, DMI, TRIX, SAR等
+包含：MA, MACD, DMI, TRIX, SAR, DMA, BBI, EXPMA, TRMA, ADX 等
+
+# 指标计算分层说明（2026-10 梳理）
+主入口：indicator_calculator.py —— TechnicalAnalyzer.calculate_indicator()
+       → IndicatorRegistry.calculate_indicators() → 本文件 + oscillator/volume/...
+  Polars LazyFrame 风格（df.lazy() → collect()），与 indicator_calculator.py
+  的 Polars DataFrame 风格（df.with_columns(expr)）并行，同一公式两端实现。
+  两者都走 Polars 内置 ewm_mean / rolling_mean / wm_mean 表达式，口径一致。
+
+绕开注册中心的调用点（需注意）：
+  chart_data_preparer.py 局部 import 本文件的 calculate_ma / calculate_dma /
+  calculate_bbi，不走 IndicatorRegistry，因此拿不到 global_indicator_cache。
+  这些调用量小（每张图渲染一次）、参数硬编码，暂不调整。
+  后续可把 DMA / BBI 也补进 indicator_calculator.py 注册中心。
+
+本文件保留 indicator_calculator.py 未覆盖的小众指标：
+  EXPMA / TRMA / TRIX / DMA / BBI / ADX 等
 """
 
 import polars as pl
