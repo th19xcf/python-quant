@@ -12,8 +12,6 @@ import polars as pl
 from loguru import logger
 from concurrent.futures import ThreadPoolExecutor
 
-from src.data.managers.data_fetcher import DataFetcher
-
 from src.utils.exceptions import (
     DataSourceConnectionError,
     DataSourceNotAvailableError,
@@ -187,150 +185,10 @@ class AsyncDataManager:
                     if len(self.source_priorities[source_name]) > 10:
                         self.source_priorities[source_name] = self.source_priorities[source_name][-10:]
             
-            # 优先从数据库获取数据
-            if self.db_manager and self.db_manager.is_connected():
-                logger.info(f"从数据库获取{type_name}{ts_code}数据")
-                try:
-                    # 动态导入模型
-                    module_path = f"src.database.models.{type_map['module']}"
-                    module = __import__(module_path, fromlist=[type_map['model']])
-                    model_class = getattr(module, type_map['model'])
-                    
-                    session = self.db_manager.get_session()
-                    if session:
-                        start_bound = DataFetcher._parse_date_bound(start_date)
-                        end_bound = DataFetcher._parse_date_bound(end_date)
-                        query = session.query(model_class).filter(
-                            getattr(model_class, 'ts_code') == ts_code,
-                            getattr(model_class, 'trade_date') >= (start_bound or start_date),
-                            getattr(model_class, 'trade_date') <= (end_bound or end_date)
-                        ).order_by(getattr(model_class, 'trade_date'))
-                        
-                        data = query.all()
-                        if data:
-                            # 提取数据记录，直接构建适合Polars的字典列表
-                            has_pct_chg = hasattr(data[0], 'pct_chg')
-                            
-                            # 检查是否有复权因子字段
-                            has_qfq_factor = hasattr(data[0], 'qfq_factor')
-                            has_hfq_factor = hasattr(data[0], 'hfq_factor')
-                            
-                            # 根据复权类型选择对应的价格字段
-                            if adjustment_type == 'qfq':
-                                # 前复权
-                                data_records = []
-                                for item in data:
-                                    # 优先使用预计算的复权价格
-                                    if hasattr(item, 'qfq_open') and item.qfq_open:
-                                        open_price = item.qfq_open
-                                        high_price = item.qfq_high
-                                        low_price = item.qfq_low
-                                        close_price = item.qfq_close
-                                    # 其次使用复权因子实时计算
-                                    elif has_qfq_factor and item.qfq_factor and item.qfq_factor != 1.0:
-                                        open_price = item.open * item.qfq_factor
-                                        high_price = item.high * item.qfq_factor
-                                        low_price = item.low * item.qfq_factor
-                                        close_price = item.close * item.qfq_factor
-                                    # 回退到原始价格
-                                    else:
-                                        open_price = item.open
-                                        high_price = item.high
-                                        low_price = item.low
-                                        close_price = item.close
-
-                                    record = {
-                                        'trade_date': item.trade_date,
-                                        'open': open_price,
-                                        'high': high_price,
-                                        'low': low_price,
-                                        'close': close_price,
-                                        'volume': item.vol,
-                                        'amount': item.amount,
-                                        **({'pct_chg': item.pct_chg} if has_pct_chg else {})
-                                    }
-                                    # 同时添加复权价格列，供chart_data_preparer使用
-                                    if hasattr(item, 'qfq_open') and item.qfq_open:
-                                        record['qfq_open'] = item.qfq_open
-                                        record['qfq_high'] = item.qfq_high
-                                        record['qfq_low'] = item.qfq_low
-                                        record['qfq_close'] = item.qfq_close
-                                    else:
-                                        record['qfq_open'] = open_price
-                                        record['qfq_high'] = high_price
-                                        record['qfq_low'] = low_price
-                                        record['qfq_close'] = close_price
-                                    data_records.append(record)
-                            elif adjustment_type == 'hfq':
-                                # 后复权
-                                data_records = []
-                                for item in data:
-                                    # 优先使用预计算的复权价格
-                                    if hasattr(item, 'hfq_open') and item.hfq_open:
-                                        open_price = item.hfq_open
-                                        high_price = item.hfq_high
-                                        low_price = item.hfq_low
-                                        close_price = item.hfq_close
-                                    # 其次使用复权因子实时计算
-                                    elif has_hfq_factor and item.hfq_factor and item.hfq_factor != 1.0:
-                                        open_price = item.open * item.hfq_factor
-                                        high_price = item.high * item.hfq_factor
-                                        low_price = item.low * item.hfq_factor
-                                        close_price = item.close * item.hfq_factor
-                                    # 回退到原始价格
-                                    else:
-                                        open_price = item.open
-                                        high_price = item.high
-                                        low_price = item.low
-                                        close_price = item.close
-
-                                    record = {
-                                        'trade_date': item.trade_date,
-                                        'open': open_price,
-                                        'high': high_price,
-                                        'low': low_price,
-                                        'close': close_price,
-                                        'volume': item.vol,
-                                        'amount': item.amount,
-                                        **({'pct_chg': item.pct_chg} if has_pct_chg else {})
-                                    }
-                                    # 同时添加复权价格列，供chart_data_preparer使用
-                                    if hasattr(item, 'hfq_open') and item.hfq_open:
-                                        record['hfq_open'] = item.hfq_open
-                                        record['hfq_high'] = item.hfq_high
-                                        record['hfq_low'] = item.hfq_low
-                                        record['hfq_close'] = item.hfq_close
-                                    else:
-                                        record['hfq_open'] = open_price
-                                        record['hfq_high'] = high_price
-                                        record['hfq_low'] = low_price
-                                        record['hfq_close'] = close_price
-                                    data_records.append(record)
-                            else:
-                                # 不复权
-                                data_records = [{
-                                    'trade_date': item.trade_date,
-                                    'open': item.open,
-                                    'high': item.high,
-                                    'low': item.low,
-                                    'close': item.close,
-                                    'volume': item.vol,
-                                    'amount': item.amount,
-                                    **({'pct_chg': item.pct_chg} if has_pct_chg else {})
-                                } for item in data]
-                            
-                            # 使用pl.from_dicts创建Polars DataFrame，效率更高
-                            df = pl.from_dicts(data_records)
-                            
-                            # 转换日期格式：兼容 Date/Datetime/YYYYMMDD 字符串
-                            df = DataFetcher._normalize_trade_date(df)
-                            
-                            # 内存优化：转换数据类型
-                            optimized_df = MemoryOptimizer.optimize_dataframe(df, enable_sparse=True)
-                            return optimized_df
-                except (OSError, RuntimeError, ValueError) as db_e:
-                    logger.warning(f"从数据库获取{type_name}数据失败: {db_e}")
-            
+            # 数据获取统一委托给 data_manager，后者走 DataFetcher 单一路径：
+            # DataFetcher._get_data_from_database + _apply_adjustment（含双复权列 + 因子回退）
+            # + 数据源故障转移。AsyncDataManager 不再自己做 DB 查询和复权，
+            # 避免与 DataFetcher 的 _apply_adjustment 形成行为漂移。
             # 直接调用data_manager的方法获取数据
             def fetch_data_sync():
                 if data_type == 'stock':

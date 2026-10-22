@@ -2,9 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-数据获取与管理模块
+数据获取与管理模块（兼容层）
 
-注意：此模块已被重构，建议使用 DataService 代替
+DataManager 是面向外部调用者的统一入口壳，内部全部委托给 DataService。
+DataService 在 services/data_service.py 中，直接持有 DataFetcher /
+DataUpdater / global_data_cache，无中间包装层。
+
+注：2026-10 重构删除了 services/data_provider.py / data_cache_service.py /
+data_updater.py 三层薄包装，统一到 DataService 单一路径。
 """
 
 import time
@@ -27,8 +32,11 @@ class DataManager(IDataProvider, IDataProcessor):
     """
     数据管理器，负责统一管理各种数据源的获取、清洗和存储
     实现了IDataProvider和IDataProcessor接口
-    
-    注意：此类已被重构为使用DataService，建议直接使用DataService
+
+    此壳保留是为了兼容 main.py / 三个 dialog 等外部调用者。
+    所有 update_* / get_stock_data / get_index_data / 缓存管理
+    方法均透传到 self.data_service；独有方法（async、get_basic、
+    get_stock_dividend、preprocess_data）在此直接实现。
     """
     
     def __init__(self, config, db_manager, plugin_manager=None):
@@ -56,7 +64,7 @@ class DataManager(IDataProvider, IDataProcessor):
         self._init_plugin_datasources()
         self._init_async_manager()
         
-        logger.info("DataManager 已初始化，建议使用 DataService 代替")
+        logger.info("DataManager 已初始化（兼容层，内部委托 DataService）")
     
     def _init_plugin_datasources(self):
         """
