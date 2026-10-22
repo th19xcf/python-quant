@@ -13,6 +13,7 @@ import mmap
 from datetime import datetime
 from pathlib import Path
 from loguru import logger
+from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 from src.utils.event_bus import publish, EventType
 
 
@@ -189,7 +190,6 @@ class IndicatorCalculateThread(QThread):
         """
         try:
             # 延迟导入，避免循环导入
-            from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
             
             # 创建TechnicalAnalyzer实例
             analyzer = TechnicalAnalyzer(self.df)

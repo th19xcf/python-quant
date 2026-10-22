@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QTableWidgetItem
 
+from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
 from src.utils.exceptions import DataException
@@ -1023,8 +1024,6 @@ class MainWindowDataMixin:
             pl.DataFrame: 包含技术指标的数据
         """
         try:
-            from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-
             # TechnicalAnalyzer 已支持 Polars DataFrame，直接传递
             analyzer = TechnicalAnalyzer(df)
 

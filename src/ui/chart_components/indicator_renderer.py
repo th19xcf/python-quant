@@ -10,6 +10,8 @@ import pyqtgraph as pg
 import numpy as np
 from typing import Any, Dict, Tuple, Optional
 from loguru import logger
+from src.tech_analysis.indicator_manager import global_indicator_manager
+from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 
 
 class IndicatorRenderer:
@@ -378,7 +380,6 @@ class IndicatorRenderer:
             if not hasattr(df, 'columns') or 'macd' not in df.columns or 'macd_signal' not in df.columns:
                 logger.warning(f"MACD数据列不存在，尝试计算MACD")
                 # 尝试计算MACD
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_macd(fast_period=12, slow_period=26, signal_period=9)
                 df = analyzer.get_data(return_polars=True)
@@ -582,7 +583,6 @@ class IndicatorRenderer:
             if not hasattr(df, 'columns') or 'mb' not in df.columns or 'up' not in df.columns or 'dn' not in df.columns:
                 logger.warning(f"BOLL数据列不存在，尝试计算BOLL")
                 # 尝试计算BOLL
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_boll(windows=[20], std_dev=2.0)
                 df = analyzer.get_data(return_polars=True)
@@ -650,7 +650,6 @@ class IndicatorRenderer:
             
             # 如果没有VR数据，先计算
             if 'vr' not in df.columns:
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_indicator_parallel('vr', windows=[24])
                 df = analyzer.get_data(return_polars=True)
@@ -712,7 +711,6 @@ class IndicatorRenderer:
             if 'ar' not in df.columns or 'br' not in df.columns:
                 logger.warning(f"BRAR数据列不存在，尝试计算BRAR")
                 # 尝试计算BRAR
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_brar(windows=[26])
                 df = analyzer.get_data(return_polars=True)
@@ -775,7 +773,6 @@ class IndicatorRenderer:
             if 'pdi' not in df.columns or 'ndi' not in df.columns:
                 logger.warning(f"DMI数据列不存在，尝试计算DMI")
                 # 尝试计算DMI
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_dmi(windows=[14])
                 df = analyzer.get_data(return_polars=True)
@@ -860,7 +857,6 @@ class IndicatorRenderer:
             if 'trix' not in df.columns:
                 logger.warning(f"TRIX数据列不存在，尝试计算TRIX")
                 # 尝试计算TRIX
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_trix(windows=[12], signal_period=9)
                 df = analyzer.get_data(return_polars=True)
@@ -922,7 +918,6 @@ class IndicatorRenderer:
         """渲染OBV指标"""
         try:
             if 'obv' not in df.columns:
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_obv()
                 df = analyzer.get_data(return_polars=True)
@@ -952,7 +947,6 @@ class IndicatorRenderer:
         """渲染ASI指标"""
         try:
             if 'asi' not in df.columns:
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_asi(signal_period=20)
                 df = analyzer.get_data(return_polars=True)
@@ -992,7 +986,6 @@ class IndicatorRenderer:
         """渲染EMV指标"""
         try:
             if 'emv' not in df.columns:
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_emv(windows=[14])
                 df = analyzer.get_data(return_polars=True)
@@ -1023,7 +1016,6 @@ class IndicatorRenderer:
         """渲染CCI指标"""
         try:
             if 'cci' not in df.columns:
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_cci(windows=[14])
                 df = analyzer.get_data(return_polars=True)
@@ -1045,7 +1037,6 @@ class IndicatorRenderer:
         """渲染ROC指标"""
         try:
             if 'roc' not in df.columns:
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_roc(windows=[12])
                 df = analyzer.get_data(return_polars=True)
@@ -1076,7 +1067,6 @@ class IndicatorRenderer:
         """渲染MTM指标"""
         try:
             if 'mtm' not in df.columns:
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_mtm(windows=[12])
                 df = analyzer.get_data(return_polars=True)
@@ -1107,7 +1097,6 @@ class IndicatorRenderer:
         """渲染PSY指标"""
         try:
             if 'psy' not in df.columns:
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_psy(windows=[12])
                 df = analyzer.get_data(return_polars=True)
@@ -1128,7 +1117,6 @@ class IndicatorRenderer:
         """渲染MCST指标"""
         try:
             if 'mcst' not in df.columns:
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_mcst(windows=[12])
                 df = analyzer.get_data(return_polars=True)
@@ -1210,7 +1198,6 @@ class IndicatorRenderer:
         """渲染FSL指标"""
         try:
             if 'swl' not in df.columns or 'sws' not in df.columns:
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_indicator_parallel('fsl')
                 df = analyzer.get_data(return_polars=True)
@@ -1248,7 +1235,6 @@ class IndicatorRenderer:
             logger.debug(f"输入数据行数: {len(df)}, x坐标长度: {len(x)}")
             
             # 强制重新计算SAR指标，确保数据正确
-            from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
             analyzer = TechnicalAnalyzer(df)
             analyzer.calculate_indicator_parallel('sar', af_step=0.02, max_af=0.2)
             df = analyzer.get_data(return_polars=True)
@@ -1288,7 +1274,6 @@ class IndicatorRenderer:
         """渲染VOL-TDX指标"""
         try:
             if 'vol_tdx' not in df.columns:
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_indicator_parallel('vol_tdx', ma_period=5)
                 df = analyzer.get_data(return_polars=True)
@@ -1313,7 +1298,6 @@ class IndicatorRenderer:
         """渲染CR指标"""
         try:
             if 'cr' not in df.columns:
-                from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
                 analyzer = TechnicalAnalyzer(df)
                 analyzer.calculate_indicator_parallel('cr', windows=[26])
                 df = analyzer.get_data(return_polars=True)
@@ -1344,7 +1328,6 @@ class IndicatorRenderer:
         """渲染EXPMA指标"""
         try:
             if 'expma12' not in df.columns or 'expma50' not in df.columns:
-                from src.tech_analysis.indicator_manager import global_indicator_manager
                 import polars as pl
                 # 确保数据是polars DataFrame
                 if hasattr(df, 'to_pandas'):
@@ -1384,7 +1367,6 @@ class IndicatorRenderer:
         """渲染BBI指标"""
         try:
             if 'bbi' not in df.columns:
-                from src.tech_analysis.indicator_manager import global_indicator_manager
                 import polars as pl
                 # 确保数据是polars DataFrame
                 if hasattr(df, 'to_pandas'):
@@ -1415,7 +1397,6 @@ class IndicatorRenderer:
         """渲染HSL（换手率）指标"""
         try:
             if 'hsl' not in df.columns:
-                from src.tech_analysis.indicator_manager import global_indicator_manager
                 import polars as pl
                 # 确保数据是polars DataFrame
                 if hasattr(df, 'to_pandas'):
@@ -1464,7 +1445,6 @@ class IndicatorRenderer:
         """渲染LB（量比）指标"""
         try:
             if 'lb' not in df.columns:
-                from src.tech_analysis.indicator_manager import global_indicator_manager
                 import polars as pl
                 # 确保数据是polars DataFrame
                 if hasattr(df, 'to_pandas'):
@@ -1509,7 +1489,6 @@ class IndicatorRenderer:
         """渲染CYC（成本均线）指标"""
         try:
             if 'cyc5' not in df.columns or 'cyc13' not in df.columns:
-                from src.tech_analysis.indicator_manager import global_indicator_manager
                 import polars as pl
                 # 确保数据是polars DataFrame
                 if hasattr(df, 'to_pandas'):
@@ -1548,7 +1527,6 @@ class IndicatorRenderer:
         """渲染CYS（市场盈亏）指标"""
         try:
             if 'cys' not in df.columns:
-                from src.tech_analysis.indicator_manager import global_indicator_manager
                 import polars as pl
                 # 确保数据是polars DataFrame
                 if hasattr(df, 'to_pandas'):
@@ -1590,7 +1568,6 @@ class IndicatorRenderer:
         """渲染ABI（绝对广量指标）"""
         try:
             if 'abi10' not in df.columns:
-                from src.tech_analysis.indicator_manager import global_indicator_manager
                 import polars as pl
                 if hasattr(df, 'to_pandas'):
                     pl_df = df
@@ -1612,7 +1589,6 @@ class IndicatorRenderer:
         """渲染ADL（腾落指标）"""
         try:
             if 'adl' not in df.columns:
-                from src.tech_analysis.indicator_manager import global_indicator_manager
                 import polars as pl
                 if hasattr(df, 'to_pandas'):
                     pl_df = df
@@ -1633,7 +1609,6 @@ class IndicatorRenderer:
         """渲染ADR（涨跌比率）"""
         try:
             if 'adr10' not in df.columns:
-                from src.tech_analysis.indicator_manager import global_indicator_manager
                 import polars as pl
                 if hasattr(df, 'to_pandas'):
                     pl_df = df
@@ -1655,7 +1630,6 @@ class IndicatorRenderer:
         """渲染OBOS（超买超卖指标）"""
         try:
             if 'obos10' not in df.columns:
-                from src.tech_analysis.indicator_manager import global_indicator_manager
                 import polars as pl
                 if hasattr(df, 'to_pandas'):
                     pl_df = df

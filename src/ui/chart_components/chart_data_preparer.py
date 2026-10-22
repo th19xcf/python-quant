@@ -11,6 +11,14 @@ import numpy as np
 from typing import Optional, Tuple, Any
 from loguru import logger
 
+# 指标计算工具（绕开 IndicatorRegistry 直接用 LazyFrame 版本，原因见 trends.py 头部说明：
+# DMA/BBI 未注册进 indicator_calculator，indicators/trend.py 是唯一实现）
+from src.tech_analysis.indicators.trend import (
+    calculate_ma as _calculate_ma_lazy,
+    calculate_dma as _calculate_dma_lazy,
+    calculate_bbi as _calculate_bbi_lazy,
+)
+
 
 class ChartDataPreparer:
     """
@@ -186,14 +194,10 @@ class ChartDataPreparer:
             pl.DataFrame: 包含MA的数据
         """
         try:
-            from src.tech_analysis.indicators.trend import calculate_ma
-            
             logger.debug(f"计算MA前的数据列: {df.columns}")
             logger.debug(f"计算MA前的数据行数: {len(df)}")
-            
-            # 使用calculate_ma直接计算MA
             # 注意：此时close列已经是复权后的价格，MA计算会基于复权价格
-            df = calculate_ma(df.lazy(), [5, 10, 20, 60]).collect()
+            df = _calculate_ma_lazy(df.lazy(), [5, 10, 20, 60]).collect()
             
             logger.debug(f"计算MA后的数据列: {df.columns}")
             
@@ -224,12 +228,8 @@ class ChartDataPreparer:
             pl.DataFrame: 包含DMA和AMA的数据
         """
         try:
-            from src.tech_analysis.indicators.trend import calculate_dma
-            
             logger.debug(f"计算DMA前的数据行数: {len(df)}")
-            
-            # 使用calculate_dma计算DMA指标
-            df = calculate_dma(df.lazy(), short_period=10, long_period=50, signal_period=10).collect()
+            df = _calculate_dma_lazy(df.lazy(), short_period=10, long_period=50, signal_period=10).collect()
             
             logger.debug(f"计算DMA后的数据列: {df.columns}")
             
@@ -262,12 +262,8 @@ class ChartDataPreparer:
             pl.DataFrame: 包含BBI的数据
         """
         try:
-            from src.tech_analysis.indicators.trend import calculate_bbi
-            
             logger.debug(f"计算BBI前的数据行数: {len(df)}")
-            
-            # 使用calculate_bbi计算BBI指标
-            df = calculate_bbi(df.lazy()).collect()
+            df = _calculate_bbi_lazy(df.lazy()).collect()
             
             logger.debug(f"计算BBI后的数据列: {df.columns}")
             
