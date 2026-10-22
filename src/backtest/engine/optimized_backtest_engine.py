@@ -9,7 +9,6 @@ from typing import Dict, Any, List
 import polars as pl
 from loguru import logger
 import concurrent.futures
-from functools import lru_cache
 
 from src.backtest.engine.base_engine import BaseBacktestEngine
 
@@ -32,25 +31,6 @@ class OptimizedBacktestEngine(BaseBacktestEngine):
         if 'date' in self.pl_df.columns:
             self.pl_df = self.pl_df.sort('date')
 
-    @lru_cache(maxsize=1000)
-    def _get_signal(self, data_tuple, index):
-        """
-        缓存策略信号生成结果
-        
-        Args:
-            data_tuple: 数据元组，用于缓存键
-            index: 数据索引
-            
-        Returns:
-            str: 交易信号
-        """
-        data = {}
-        columns = ['open', 'high', 'low', 'close', 'volume']
-        for i, value in enumerate(data_tuple):
-            data[columns[i]] = value
-        
-        return self.strategy.generate_signal(data, index)
-    
     def run_backtest(self, initial_capital: float = 1000000.0, lot_size: int = 100, limit_pct: float = 0.1, **params) -> Dict[str, Any]:
         """
         运行回测
@@ -75,7 +55,10 @@ class OptimizedBacktestEngine(BaseBacktestEngine):
         
         self.trades = []
         self.equity_curve = []
-        
+
+        # 指标预计算：向量化算好策略依赖的列，避免每根 K 线重复计算
+        self.pl_df = self._precompute_indicators(self.pl_df, self.strategy)
+
         current_capital = initial_capital
         position = 0
         pending_signal = None
@@ -87,13 +70,7 @@ class OptimizedBacktestEngine(BaseBacktestEngine):
         high_prices = data.get('high')
         low_prices = data.get('low')
         volumes = data.get('volume')
-        
-        data_tuples = []
-        columns = ['open', 'high', 'low', 'close', 'volume']
-        for i in range(len(dates)):
-            data_tuple = tuple(data[col][i] for col in columns if col in data)
-            data_tuples.append(data_tuple)
-        
+
         for i in range(len(dates)):
             # 1. 执行前一交易日生成的信号（以今日开盘价成交，订单当日有效）
             if pending_signal == 'buy' and position == 0:
@@ -123,8 +100,9 @@ class OptimizedBacktestEngine(BaseBacktestEngine):
                 if self._is_tradable(i, 'sell', close_prices, high_prices, low_prices, volumes, limit_pct):
                     sell_price = open_prices[i]
                     sell_cost = self.cost_model.calculate_sell_cost(position, sell_price)
-                    current_capital = position * sell_price - sell_cost
-                    
+                    # 卖出所得应叠加到剩余现金，不能覆盖买入后剩余的现金
+                    current_capital += position * sell_price - sell_cost
+
                     self.trades.append({
                         'date': dates[i],
                         'signal': 'sell',
@@ -136,9 +114,13 @@ class OptimizedBacktestEngine(BaseBacktestEngine):
                     })
                     position = 0
                 pending_signal = None
-            
+
             # 2. 基于当日数据生成信号，延迟到次日执行
-            signal = self._get_signal(data_tuples[i], i)
+            current_data = {}
+            for col in data:
+                current_data[col] = data[col][i]
+
+            signal = self.strategy.generate_signal(current_data, i)
             if signal in ('buy', 'sell'):
                 pending_signal = signal
             
