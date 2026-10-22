@@ -8,7 +8,10 @@
 import polars as pl
 import numpy as np
 
+from src.alpha.factors.factor_registry import register_factor
 
+
+@register_factor('volume')
 class VolumeFactors:
     """
     成交量因子计算类

@@ -8,10 +8,13 @@
 import polars as pl
 import numpy as np
 
+from src.alpha.factors.factor_registry import register_factor
+
 _SQRT_252 = np.sqrt(252)
 _GK_COEF = 2 * np.log(2) - 1
 
 
+@register_factor('volatility')
 class VolatilityFactors:
     """
     波动率因子计算类

@@ -11,11 +11,13 @@ import pandas as pd
 import numpy as np
 from loguru import logger
 
-from src.alpha.factors.price_momentum import PriceMomentumFactors
-from src.alpha.factors.volatility import VolatilityFactors
-from src.alpha.factors.volume import VolumeFactors
-from src.alpha.factors.technical import TechnicalFactors
-from src.alpha.factors.risk import RiskFactors
+# 保留这些 import：触发 @register_factor 装饰器注册到 FACTOR_REGISTRY
+from src.alpha.factors.price_momentum import PriceMomentumFactors  # noqa: F401
+from src.alpha.factors.volatility import VolatilityFactors          # noqa: F401
+from src.alpha.factors.volume import VolumeFactors                  # noqa: F401
+from src.alpha.factors.technical import TechnicalFactors            # noqa: F401
+from src.alpha.factors.risk import RiskFactors                      # noqa: F401
+from src.alpha.factors.factor_registry import FACTOR_REGISTRY
 
 # FactorEvaluator 可能依赖 scipy，缺失时允许降级
 try:
@@ -28,8 +30,13 @@ except Exception as _exc:  # pragma: no cover - 仅在 scipy 缺失时触发
 class AlphaCalculator:
     """
     Alpha因子计算器类，提供各种Alpha因子的计算功能
+
+    因子扩展方式：
+      1. 新建 src/alpha/factors/xxx.py，定义因子类并加 @register_factor('xxx')
+      2. 在顶部 import 该文件（触发装饰器注册）
+      3. 调用 calculate_factors(['xxx']) 即可，无需改本文件代码
     """
-    
+
     def __init__(self, data):
         if isinstance(data, pd.DataFrame):
             self.pl_df = pl.from_pandas(data)
@@ -37,36 +44,27 @@ class AlphaCalculator:
             self.pl_df = data
         else:
             self.pl_df = pl.DataFrame(data)
-        
-        self.price_momentum = PriceMomentumFactors(self.pl_df)
-        self.volatility = VolatilityFactors(self.pl_df)
-        self.volume = VolumeFactors(self.pl_df)
-        self.technical = TechnicalFactors(self.pl_df)
-        self.risk = RiskFactors(self.pl_df)
-        
+
         self.evaluator = FactorEvaluator() if FactorEvaluator is not None else None
         self.factor_results = {}
-    
+
     def calculate_factors(self, factor_types: List[str], **params) -> pl.DataFrame:
         """
         计算指定类型的因子，并把因子列合并回返回 DataFrame
+
+        因子分发走 FACTOR_REGISTRY（装饰器注册），不再硬编码 if/elif。
         """
         for factor_type in factor_types:
             try:
-                if factor_type == 'price_momentum':
-                    result = self.price_momentum.calculate(**params)
-                elif factor_type == 'volatility':
-                    result = self.volatility.calculate(**params)
-                elif factor_type == 'volume':
-                    result = self.volume.calculate(**params)
-                elif factor_type == 'technical':
-                    result = self.technical.calculate(**params)
-                elif factor_type == 'risk':
-                    result = self.risk.calculate(**params)
-                else:
-                    logger.warning(f"不支持的因子类型: {factor_type}")
+                try:
+                    factor_cls = FACTOR_REGISTRY[factor_type]
+                except KeyError:
+                    available = ', '.join(FACTOR_REGISTRY.names()) or '(空)'
+                    logger.warning(
+                        f"未注册的因子类型: {factor_type}，可用: {available}")
                     continue
 
+                result = factor_cls(self.pl_df).calculate(**params)
                 self.factor_results[factor_type] = result
                 logger.info(f"成功计算因子: {factor_type}")
             except Exception as e:

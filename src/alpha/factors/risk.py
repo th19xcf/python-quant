@@ -8,9 +8,12 @@
 import polars as pl
 import numpy as np
 
+from src.alpha.factors.factor_registry import register_factor
+
 _SQRT_252 = np.sqrt(252)
 
 
+@register_factor('risk')
 class RiskFactors:
     """
     风险因子计算类

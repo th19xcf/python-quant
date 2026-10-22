@@ -8,6 +8,8 @@
 import polars as pl
 import numpy as np
 
+from src.alpha.factors.factor_registry import register_factor
+
 
 def _seeded_kdj_expr(value_expr: pl.Expr, seed_index: int, seed_value: float) -> pl.Expr:
     """
@@ -24,6 +26,7 @@ def _seeded_kdj_expr(value_expr: pl.Expr, seed_index: int, seed_value: float) ->
     return seeded.ewm_mean(alpha=1.0 / 3.0, adjust=False, min_samples=1).fill_null(0.0)
 
 
+@register_factor('technical')
 class TechnicalFactors:
     """
     技术指标因子计算类
