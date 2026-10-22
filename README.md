@@ -1,187 +1,177 @@
 # 中国股市量化分析系统
 
-基于Windows平台的Python量化分析系统，专注于中国股市的多维度分析与智能决策支持。
+基于 Windows 平台的 Python 量化分析系统，专注于 A 股技术分析、回测引擎、多因子选股与可视化。
 
-## 项目定位
+**技术栈**：Python 3.13+ / PySide6 / Polars / SQLAlchemy + MySQL / Loguru / Poetry
 
-整合多种数据源，提供强大的技术分析、宏观经济分析和情绪分析能力，结合主流量化框架，为投资者提供可视化的分析工具和自动化交易解决方案。
+---
 
-## 技术栈
+## Quickstart（10 行命令跑通第一次回测）
 
-- **基础环境**：Windows 10/11、Python 3.13+, 虚拟环境配置
-- **数据源**：通达信数据文件、AkShare API、网络爬虫、财经新闻API
-- **量化框架**：QLib、Valuecell、backtrader
-- **UI框架**：PySide6、pyqtgraph、plotly
-- **数据库**：MySQL 9.0+、Redis（可选）
-- **数据处理**：Polars、pandas、numpy
-- **技术分析**：ta
-- **自然语言处理**：jieba、snownlp、transformers
+```bash
+# 1. 克隆并进入项目
+git clone <your-repo> && cd quant
 
-## 核心功能
+# 2. 安装依赖（Poetry，或 pip install -e .）
+poetry install
 
-### 1. 数据获取与管理
-- 通达信数据文件解析与导入
-- AkShare API数据获取与更新
-- 宏观经济数据爬取
-- 财经新闻与社交媒体数据爬取
-- 数据清洗、标准化与存储
+# 3. 配置数据库与通达信路径
+cp .env.example .env            # 已被 .gitignore 保护
+# 编辑 .env，至少填 DATABASE__USERNAME / DATABASE__PASSWORD / DATABASE__DATABASE
 
-### 2. 技术分析
-- 内置常用技术指标（MA、MACD、KDJ、RSI等）
-- 自定义公式系统
-- 技术指标可视化
-- 指标信号生成
+# 4. 启动桌面 UI（行情图 + 策略回测对话框）
+poetry run python -m src.main
+```
 
-### 3. 宏观经济分析
-- 宏观经济数据可视化
-- 经济指标与股市相关性分析
-- 宏观经济周期判断
-- 政策影响分析
+UI 中打开「策略回测」对话框 → 选股票代码 / 日期范围 / 策略类型 → 运行。
+回测内部使用**后复权价**，涨跌停幅度按板块自动推导（创业板/科创板 20%、ST 5%、北交所 30%、主板 10%）。
 
-### 4. 情绪分析
-- 财经新闻情感分析
-- 社交媒体情绪监测
-- 市场情绪指数构建
+### 无数据库的回测（单文件自包含）
 
-### 5. 量化分析
-- 多框架集成（QLib、Valuecell）
-- 策略回测引擎
-- 绩效评估指标
-- 风险分析
+```bash
+poetry run python -c "
+import polars as pl
+from src.backtest.engine.backtest_engine import BacktestEngine
+from src.backtest.strategies.trend_following_strategy import TrendFollowingStrategy
 
-### 6. 股票推荐
-- 多因子选股模型
-- 技术面选股
-- 基本面选股
-- 买卖时点信号生成
+df = pl.DataFrame({'date': pl.date_range(pl.date(2023,1,1), pl.date(2023,8,1), '1d', eager=True),
+                   'open': pl.Series([100.0]*215, dtype=pl.Float64),
+                   'high': pl.Series([101.0]*215, dtype=pl.Float64),
+                   'low':  pl.Series([99.0]*215, dtype=pl.Float64),
+                   'close': pl.Series([100.0]*215, dtype=pl.Float64),
+                   'volume': pl.Series([100000]*215)})
+engine = BacktestEngine(df); engine.set_strategy(TrendFollowingStrategy(5, 20))
+result = engine.run_backtest(initial_capital=100000, ts_code='000001.SZ')
+print(result['total_return'], '% | trades:', len(result['trades']))
+"
+```
 
-### 7. 自动交易（后期）
-- 券商API对接
-- 交易信号执行
-- 仓位管理
-- 风险控制
+---
 
 ## 项目结构
 
 ```
-src/
-├── data/                # 数据获取与管理模块
-├── tech_analysis/       # 技术分析模块
-├── macro_analysis/      # 宏观经济分析模块
-├── sentiment_analysis/  # 情绪分析模块
-├── quant_analysis/      # 量化分析模块
-├── stock_recommendation/ # 股票推荐模块
-├── database/            # 数据库模块
-├── ui/                  # UI界面模块
-├── auto_trading/        # 自动交易模块
-└── utils/               # 工具类模块
+quant/
+├── .env.example                 # 配置模板（密码占位，复制为 .env）
+├── .gitignore
+├── pyproject.toml               # Poetry 依赖
+├── README.md                    # 本文件
+│
+├── plugins/                     # 插件：数据源 + 指标（独立 .py 文件即插件）
+│   ├── tdx_datasource.py        # 通达信本地文件
+│   ├── baostock_datasource.py   # BaoStock 在线
+│   └── akshare_datasource.py    # AkShare 在线
+│
+├── tools/                       # 运维脚本：通达信精度校准、复权因子重算
+├── scripts/                     # 一次性数据修复 / 抽样查询脚本
+├── docs/                        # 架构文档 + 校准指南
+│   ├── architecture.md          # 模块依赖与数据流
+│   └── tdx_calibration_guide.md
+│
+└── src/
+    ├── main.py                  # 入口：启动 PySide6 主窗口 / 或仅跑数据初始化
+    │
+    ├── api/                     # 应用层 API（业务 API / 数据 API / DTO）
+    ├── business/                # 业务规则引擎
+    │
+    ├── data/                    # 数据获取与管理
+    │   ├── managers/data_fetcher.py   # 多数据源故障转移（TDX → BaoStock → AkShare）
+    │   ├── async_data_manager.py      # 数据更新任务调度
+    │   ├── adj_factor_calculator.py   # 复权因子计算（Polars 向量化 + 配股公式）
+    │   └── sources/                   # 数据源抽象基类
+    │
+    ├── database/                # SQLAlchemy 模型 + 会话管理
+    │   ├── db_manager.py       # connect / disconnect / list_stock_codes
+    │   └── models/             # stock_daily / stock_basic / stock_dividend / ...
+    │
+    ├── backtest/                # 回测引擎
+    │   ├── engine/             # backtest_engine / optimized / portfolio + base_engine
+    │   ├── strategies/         # TrendFollowing / MeanReversion / MultiFactor（无状态）
+    │   ├── costs/              # A 股成本模型（佣金 / 印花税 0.05% / 过户费 / 滑点）
+    │   ├── performance/        # 绩效分析（Sharpe / Drawdown / ...）
+    │   └── visualization/      # 回测结果 PySide6 可视化
+    │
+    ├── quant/analysis/         # 上层分析对话框：策略回测 / 因子分析 / 推荐
+    ├── alpha/                  # Alpha 因子计算器（price_momentum / risk / technical / ...）
+    ├── strategy/               # 信号生成 + 策略分析（上层辅助）
+    ├── tech_analysis/          # 技术指标计算与注册（MA / MACD / RSI / KDJ / 布林 / ...）
+    ├── ui/                     # PySide6 主窗口 + mixin（chart / event / ui / data）
+    └── utils/                  # config（pydantic_settings）/ logger / memory / event_bus / ...
 ```
 
-## 安装与使用
+---
 
-### 环境准备
+## 8 阶段路线图的真实落地状态
 
-1. 安装Python 3.13+（推荐使用Anaconda）
-2. 创建虚拟环境：
-   ```
-   python -m venv venv
-   venv\Scripts\activate
-   ```
-3. 安装依赖：
-   ```
-   # 使用pip
-   pip install -r requirements.txt
-   
-   # 或使用poetry
-   poetry install
-   ```
+README 旧版宣称 8 阶段，代码现状已完成/部分完成/待补齐，用对照表表示：
 
-### 配置
+| # | 阶段（原 README） | 现状 | 落地位置 |
+|---|---|---|---|
+| 1 | 基础框架搭建 | ✅ 已完成 | pydantic_settings Config、SQLAlchemy 模型、Polars 全量接管 Pandas |
+| 2 | 数据获取功能 | ✅ 已完成 | DataFetcher 多数据源故障转移、DB 双复权列（qfq/hfq）、adj_factor_calculator 含配股公式 |
+| 3 | 技术分析 | ✅ 已完成 | tech_analysis/ 20+ 指标（Trend/Oscillator/Volatility/Volume/MarketBreadth），指标插件化注册 |
+| 4 | UI 界面开发 | ✅ 已完成 | main_window + 4 个 mixin、pyqtgraph 图表、策略回测对话框 |
+| 5 | 量化分析集成 | ⚠️ 部分完成 | **已有**：BacktestEngine（单股）+ PortfolioBacktestEngine（多股组合）；**缺失**：QLib / Valuecell 未集成（独立 repo 体量，按 P2 规划排期） |
+| 6 | 股票推荐 | ⚠️ 部分完成 | **已有**：多因子选股 UI + AlphaCalculator 因子回写；**缺失**：策略化回测 / Walk-Forward |
+| 7 | 宏观经济与情绪分析 | ❌ 未开始 | 原规划目录不存在（macro_analysis/ sentiment_analysis/），未来按数据源覆盖进度排期 |
+| 8 | 自动交易 | ❌ 未开始 | auto_trading/ 目录不存在；需券商 API 对接前置，暂不考虑 |
 
-1. 复制配置文件模板并修改：
-   ```
-   cp config.example.toml config.toml
-   ```
-2. 配置数据库连接、API密钥等信息
+---
 
-### 运行
+## 设计要点
 
-```
-python -m src.main
-```
+### 回测引擎三版本定位
 
-## 开发与测试
+| 类 | 用途 | 调用入口 |
+|---|---|---|
+| `BacktestEngine` | 单股回测（生产路径） | `strategy_backtest_dialog.py` |
+| `OptimizedBacktestEngine` | 历史副本（已与 BacktestEngine 对齐） | 无引用，保留做参考 |
+| `PortfolioBacktestEngine` | 多股组合回测（资金分配 + 个股独立信号） | 无引用，独立语义，暂不合并 |
 
-### 代码规范
+三者共享 `BaseBacktestEngine` 的 `_is_tradable`（自适应涨跌停）、`_precompute_indicators`（Polars 向量化 MA/MACD/RSI/ATR）、`_generate_param_combinations`（参数优化）。
 
-- 遵循PEP 8编码规范
-- 使用black进行代码格式化
+### 策略无状态约定
 
-### 测试
+所有 `BaseStrategy` 子类**不得**持有 per-bar 累积的 list / dict（见 P0-1 修复）。引擎先在 `run_backtest` 开头一次性向量化预计算全部指标列，策略 `generate_signal(data, index)` 只读当前 bar 的 dict。
+
+### 成本模型（A 股现行规则）
 
 ```
-pytest
+buy_cost  =  max(佣金最低5元, 成交额 × 0.03%)           + 过户费 0.001% × 成交额 + 滑点 0.02% × 成交额
+sell_cost =  max(佣金最低5元, 成交额 × 0.03%) + 印花税 0.05% × 成交额 + 过户费 0.001% × 成交额 + 滑点 0.02% × 成交额
 ```
 
-## 项目规划
+### 数据复权
 
-### 第一阶段：基础框架搭建（1-2周）
-- 项目结构设计
-- 数据库设计与初始化
-- 核心模块骨架搭建
-- 基础配置管理
+回测内部统一使用后复权价（`adjustment_type='hfq'`），消除分红送转对收益率计算的干扰。DB 在 stock_daily 表中同时存储 `qfq_*` 和 `hfq_*` 两套列，data_fetcher 按请求类型写入 `open/high/low/close`。
 
-### 第二阶段：数据获取功能实现（2-3周）
-- 通达信数据文件解析与导入
-- AkShare API数据获取
-- 数据清洗与标准化
-- 数据存储与管理
+### 幸存者偏差
 
-### 第三阶段：技术分析功能实现（3-4周）
-- 常用技术指标实现
-- 自定义公式系统设计与实现
-- 技术指标可视化
+数据源侧：Baostock / AKShare 自带退市股覆盖；TDX 本地行情文件不含退市股。
+代码侧：`DatabaseManager.list_stock_codes(include_delisted=False)` 可过滤退市股（默认 True 时全部返回）。
+**注意**：TDX 本地模式下，即便 `include_delisted=True`，也会因源文件缺失拿不到退市股数据——需切换到在线数据源才能彻底消除偏差。
 
-### 第四阶段：UI界面开发（3-4周）
-- 主界面布局设计
-- 行情图表实现
-- 技术指标叠加功能
-- 数据查询与筛选界面
+---
 
-### 第五阶段：量化分析集成（2-3周）
-- QLib框架集成
-- Valuecell框架集成
-- 策略回测引擎实现
+## 配置
 
-### 第六阶段：股票推荐功能实现（2-3周）
-- 多因子选股模型
-- 买卖时点信号生成
-- 推荐结果可视化
+系统使用 `pydantic_settings BaseSettings`，默认读取项目根目录 `.env`（已被 .gitignore 保护）。字段定义见 [config.py](src/utils/config.py)。
 
-### 第七阶段：宏观经济与情绪分析（2-3周）
-- 宏观经济数据爬取与分析
-- 情绪分析模块实现
-- 综合分析仪表盘
+```bash
+cp .env.example .env
+# 编辑 .env 填入 MySQL 账号密码 + 通达信数据路径
+```
 
-### 第八阶段：自动交易模块（3-4周，后期）
-- 券商API对接
-- 模拟交易功能
-- 实盘交易功能
+---
 
-## 风险评估与应对策略
+## 开发约定
 
-- **数据风险**：多数据源备份策略，数据清洗与校验机制
-- **技术风险**：优化算法与数据库查询，定期更新依赖
-- **市场风险**：灵活的系统设计，持续的策略优化与监控
+- 依赖管理：Poetry（`poetry add xxx` / `poetry install`）
+- 提交路径：项目目录 `e:\code\python\quant` 为 Git 仓库；每次提交前先同步备份目录 `E:\git\python-quant`（保持相同相对路径）
+- 测试：pytest（P2 规划中）；当前以 `python -m compileall -q src` 做基本语法校验
+- 格式化/类型检查：ruff + mypy（P2 规划中）
 
-## 后续规划
-
-- 支持更多数据源
-- 优化算法性能
-- 增加更多量化模型
-- 支持更多券商API
-- 移动端应用开发
-- 云服务部署支持
+---
 
 ## 许可证
 
