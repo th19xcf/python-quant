@@ -26,6 +26,33 @@ poetry run python -m src.main
 UI 中打开「策略回测」对话框 → 选股票代码 / 日期范围 / 策略类型 → 运行。
 回测内部使用**后复权价**，涨跌停幅度按板块自动推导（创业板/科创板 20%、ST 5%、北交所 30%、主板 10%）。
 
+### 数据源前置条件（四选其一或组合）
+
+项目内置三套数据源，按 `DataFetcher.register_source` 注册顺序故障转移：
+
+| 数据源 | 类型 | 启动条件 | 依赖 |
+|---|---|---|---|
+| **通达信本地**（TdxHandler） | 本地文件 | `.env.DATA__TDX_DIR` 指向通达信 VIPDOC 目录 | Windows 上需已安装通达信客户端，默认 `C:\new_tdx\vipdoc` |
+| **BaoStock** | 网络 API | `pip install baostock`（pyproject.toml 已声明） | 国内网络，无需额外配置 |
+| **AkShare** | 网络 API | `pip install akshare`（pyproject.toml 已声明） | 国内网络，无需额外配置 |
+
+推荐开发期把通达信 VIPDOC 准备好（2GB 左右，官网下载），BaoStock/AkShare 作为故障转移兜底。
+
+### 数据库配置
+
+`.env.example` 有模板，必填项：
+
+```
+DATABASE__HOST=localhost
+DATABASE__PORT=3306
+DATABASE__USERNAME=<your-user>
+DATABASE__PASSWORD=<your-password>   # .env 已被 .gitignore 保护
+DATABASE__DATABASE=quant_db
+```
+
+当前代码默认只支持 **MySQL 8.0**（SQLAlchemy 方言 `mysql+pymysql`），其他数据库未测试。首次启动系统会尝试建表。
+无数据库也能跑（单文件自包含回测见下），但缺少实时行情 + 因子分析。
+
 ### 无数据库的回测（单文件自包含）
 
 ```bash

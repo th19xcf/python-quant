@@ -161,3 +161,40 @@ def _get_limit_pct(ts_code, is_st=False):
 ```
 
 三个引擎均已对齐。向后兼容：未传 ts_code 时回退 `limit_pct=0.1`。
+
+---
+
+## 核心公式与口径说明
+
+所有指标、因子、复权计算统一用 Polars 表达式（`pl.col().ewm_mean() / rolling_mean() / when.then.otherwise`），**不复刻通达信/同花顺/MetaTrader 的分支实现**。
+
+| 指标/因子 | 口径 | 公式 / 表达式 | 备注 |
+|---|---|---|---|
+| **MA** | `rolling_mean(window_size=N)` | `close.rolling_mean(N)` | Polars 内置实现 |
+| **EMA** | Wilder `alpha = 2/(N+1)` | `close.ewm_mean(span=N)` | Polars 默认，通达信/同花顺一致 |
+| **MACD** | EMA(12) - EMA(26), Signal = EMA(9) | 同上 | 种子：Polars 第一个有效值；通达信用前 26 行 SMA 作种子——**两者在种子附近最多差 1 根 bar**，之后一致 |
+| **RSI** | Wilder 平滑 (非简单平均) | `delta=close.diff(); gain=pl.when(delta>0).then(delta).otherwise(0); avg_gain=gain.ewm_mean(alpha=1/14, adjust=False)` | Polars `ewm_mean(alpha, adjust=False)` 即 Wilder 递推 |
+| **KDJ** | M=3 (通达信口径) | `rsv=(close-LN9)/(HN9-LN9)*100; K=2/3 K_prev + 1/3 rsv` | 种子用 SMA(KDJ_period)，见 `technical.py._seeded_kdj_expr` |
+| **ATR** | Wilder 14 日 | `TR = max(H-L, \|H-C\|, \|L-C\|)`；`ATR = TR.rolling_mean(14)` | 引擎 `_precompute_indicators` 一次性算好 |
+| **后复权价** | `price × cum_prod(复权因子)` | 复权因子在分红 ex_date 前：`(prev_close - 现金分红) / (prev_close × (1 + 送转比例) + 配股比例 × 配股价)` | 上一轮 A1-2 已补配股项，公式统一 |
+| **前复权价** | `price × cum_prod(1/复权因子)` | 与后复权互逆 | 同上，只方向相反 |
+
+**回测引擎向量化预计算（只算一次，不复刻策略实现）**：
+
+```python
+# 引擎 run_backtest 开头
+self.pl_df = self._precompute_indicators(self.pl_df, self.strategy)
+# → 自动在 DF 上生成 ma_{short_window} / ma_{long_window} / macd / macd_signal / rsi / atr
+```
+
+策略的 `generate_signal(data, index)` 现在是 O(1) dict lookup（读第 index 行的 ma/macd/rsi 值），不再自己维护 Python list。
+
+### 与通达信口径的微小差异（可接受）
+
+| 项 | 我们 | 通达信 | 影响 |
+|---|---|---|---|
+| **MACD 种子** | Polars 第一个有效值 | 前 26 行 SMA 作种子 | 种子附近最多差 1 bar，20 日线级别几乎不可见 |
+| **KDJ M 参数** | 通达信用 3 | 同花顺/东方财富用 2 | 我们按通达信口径 M=3；需同花顺口径自行调参 |
+| **MA 空值填充** | Polars 默认前 N-1 行为 null | 通达信用 0 或 NaN 继续算 | 引擎 `_is_tradable` 和持仓都有 `position > 0` 保护，null 不会穿透 |
+| **ATR / RSI** | Wilder 平滑 | 通达信一致 | 一致，无差异 |
+| **复权因子公式** | 补了配股项 | 通达信只覆盖送转+现金分红 | 我们**更完整**（配股除权日通达信跳空被我们修正） |
