@@ -204,6 +204,12 @@ class StockRecommendationDialog(QDialog):
                 self.result_table.setItem(0, 0, QTableWidgetItem("无法获取股票列表"))
                 return
             
+            # 注意：这里直接取 get_stock_basic 返回的前 N*3 只股票；
+            # 若数据库未过滤 status='D' 退市股，可能出现幸存者偏差（退市/ST 被踢出评分样本，
+            # 回测历史收益会系统性偏高）。彻底修复需：
+            # ① DatabaseManager 层加 WHERE status='L'；或
+            # ② 调用 DatabaseManager.list_stock_codes(include_delisted=False) 显式排除
+            # 当前作为已知遗留留待后续处理。
             stock_codes = stock_basic['ts_code'].to_list()[:stock_count * 3]
             
             self.progress_bar.setValue(20)
