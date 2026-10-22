@@ -123,7 +123,10 @@ class MainWindowDrawingMixin:
             df_pl = self._prepare_data(df)
             if df_pl is None:
                 return
-            
+
+            # 3.5 渲染前一次性批量补齐所选指标的缺失列（单查询计划，避免渲染时逐指标计算）
+            df_pl = self._ensure_indicators(df_pl)
+
             # 4. 提取价格数据
             dates, opens, highs, lows, closes = self._extract_prices(df_pl)
             
@@ -274,6 +277,39 @@ class MainWindowDrawingMixin:
         
         return self._data_preparer.prepare_kline_data(df, bar_count, adjustment_type)
     
+    def _ensure_indicators(self, df_pl):
+        """
+        渲染前一次性批量补齐所选指标的缺失列
+
+        汇总副图窗口指标与主图叠加指标（SAR/BOLL）的勾选状态，
+        通过单个 Polars 查询计划算齐，避免渲染过程中逐指标
+        重复构造分析器和 Pandas↔Polars 往返转换。
+
+        Args:
+            df_pl: Polars DataFrame
+
+        Returns:
+            pl.DataFrame: 补齐指标列后的数据（失败时返回原数据）
+        """
+        try:
+            from src.ui.chart_components.indicator_renderer import ensure_indicator_columns
+
+            names = []
+            if hasattr(self, 'window_indicators') and self.window_indicators:
+                for window_index in (2, 3):
+                    name = self.window_indicators.get(window_index)
+                    if name:
+                        names.append(name)
+            if hasattr(self, 'indicator_buttons') and self.indicator_buttons:
+                for name in ('SAR', 'BOLL'):
+                    btn = self.indicator_buttons.get(name)
+                    if btn is not None and btn.isChecked():
+                        names.append(name)
+            return ensure_indicator_columns(df_pl, names)
+        except Exception as e:
+            logger.warning(f"批量补齐指标列失败，按原数据继续渲染: {e}")
+            return df_pl
+
     def _extract_prices(self, df: pl.DataFrame) -> tuple:
         """
         提取价格数据

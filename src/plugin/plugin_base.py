@@ -724,16 +724,38 @@ class IndicatorPlugin(PluginBase):
     def calculate_polars(self, data: Any, **kwargs) -> Any:
         """
         使用polars计算技术指标
-        
+
+        默认实现：按 get_required_columns() 声明裁剪输入列后再转 pandas，
+        输出仅回转 get_output_columns() 声明的列（+date），避免全量列
+        在 Polars↔Pandas 之间往返转换。插件未声明所需列时回退为全量转换。
+
         Args:
             data: 股票数据，polars DataFrame
             **kwargs: 指标参数
-            
+
         Returns:
             Any: 包含指标的polars DataFrame
         """
-        df_pd = data.to_pandas()
+        source = data
+        try:
+            required = self.get_required_columns()
+        except Exception:
+            required = None
+        if required:
+            base = ['date', 'open', 'high', 'low', 'close', 'volume']
+            cols = [c for c in dict.fromkeys(base + list(required)) if c in data.columns]
+            if cols:
+                source = data.select(cols)
+        df_pd = source.to_pandas()
         result_pd = self.calculate(df_pd, **kwargs)
+        try:
+            output_cols = self.get_output_columns()
+        except Exception:
+            output_cols = None
+        if output_cols and isinstance(result_pd, pd.DataFrame):
+            keep = [c for c in ['date'] + list(output_cols) if c in result_pd.columns]
+            if keep:
+                result_pd = result_pd[keep]
         return pl.from_pandas(result_pd)
 
 

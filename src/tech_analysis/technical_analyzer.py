@@ -786,7 +786,68 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             return []
         
         return list(self.plugin_manager.get_available_indicator_plugins().keys())
-    
+
+    def _plugin_required_columns(self, plugin):
+        """
+        计算遗留pandas插件所需的输入列集合（基列 + 插件声明列）。
+        插件未实现 get_required_columns 或声明为空时回退为全部列，保证兼容。
+
+        Returns:
+            list: 存在于当前数据中的列名列表
+        """
+        try:
+            required = plugin.get_required_columns()
+        except Exception:
+            required = None
+        if not required:
+            return self.pl_df.columns
+        base = ['date', 'open', 'high', 'low', 'close', 'volume']
+        cols = [c for c in dict.fromkeys(base + list(required)) if c in self.pl_df.columns]
+        return cols or self.pl_df.columns
+
+    def _build_shared_legacy_source(self, plugin_names):
+        """
+        为批量遗留pandas插件构建一份裁剪后的共享Polars源帧。
+        仅当批次中存在遗留插件且所有遗留插件都成功声明所需列时返回裁剪帧，
+        否则返回None（各插件回退为按自身声明单独裁剪）。
+
+        Returns:
+            pl.DataFrame or None
+        """
+        if not self.plugin_manager:
+            return None
+        try:
+            indicator_plugins = self.plugin_manager.get_available_indicator_plugins()
+        except Exception:
+            return None
+        union_cols = []
+        legacy_found = False
+        for name in plugin_names:
+            plugin = indicator_plugins.get(name)
+            if plugin is None:
+                return None
+            if hasattr(plugin, 'supports_polars') and plugin.supports_polars():
+                continue
+            legacy_found = True
+            try:
+                required = plugin.get_required_columns()
+            except Exception:
+                return None
+            if not required:
+                return None
+            union_cols.extend(required)
+        if not legacy_found:
+            return None
+        base = ['date', 'open', 'high', 'low', 'close', 'volume']
+        cols = [c for c in dict.fromkeys(base + union_cols) if c in self.pl_df.columns]
+        if not cols or len(cols) >= len(self.pl_df.columns):
+            return None
+        try:
+            return self.pl_df.select(cols)
+        except Exception as e:
+            logger.debug(f"构建遗留插件共享源帧失败，回退逐插件裁剪: {e}")
+            return None
+
     def calculate_plugin_indicator(self, plugin_name, **kwargs):
         """
         计算插件指标
@@ -801,6 +862,9 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
         if not self.plugin_manager:
             raise ValueError("插件管理器未初始化")
         
+        # 内部参数：批量入口共享的裁剪后源帧（不进入参数哈希与插件调用）
+        shared_source_df = kwargs.pop('_source_df', None)
+
         # 获取指标插件实例
         indicator_plugins = self.plugin_manager.get_available_indicator_plugins()
         if plugin_name not in indicator_plugins:
@@ -931,14 +995,27 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                     self.calculated_indicators['plugin'][plugin_name].add(params_hash)
             else:
                 # 旧插件，使用pandas DataFrame
-                # 只在必要时转换为Pandas DataFrame
-                df_pd = self.pl_df.to_pandas()
-                
+                # 优先使用批量入口共享的裁剪后源帧；否则按插件声明的所需列裁剪，
+                # 避免对全量列（含已计算指标列）做 to_pandas 全量转换
+                if shared_source_df is not None:
+                    df_pd = shared_source_df.to_pandas()
+                else:
+                    df_pd = self.pl_df.select(self._plugin_required_columns(plugin)).to_pandas()
+
                 # 调用插件的calculate方法
                 result_df = plugin.calculate(df_pd, **kwargs)
-                
+
                 # 将结果转换回Polars并合并
                 if result_df is not None and isinstance(result_df, pd.DataFrame):
+                    # 仅回转插件声明的输出列（+date），避免输入列重复转回Polars
+                    try:
+                        output_cols = plugin.get_output_columns()
+                    except Exception:
+                        output_cols = None
+                    if output_cols:
+                        keep = [c for c in ['date'] + list(output_cols) if c in result_df.columns]
+                        if keep:
+                            result_df = result_df[keep]
                     # 转换为Polars
                     result_pl = pl.from_pandas(result_df)
                     # 合并到主Polars DataFrame，只添加新列
@@ -1393,18 +1470,26 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
                 plugins_to_calculate.append(plugin_name)
         
         if plugins_to_calculate:
+            # 为遗留pandas插件预建一份裁剪后的共享Polars源帧（Polars DataFrame 不可变，
+            # 线程间共享读取安全）；各线程仅对该小子集做 to_pandas，
+            # 避免每个插件都对全量列重复转换。任一插件未声明所需列则放弃共享。
+            shared_source_df = self._build_shared_legacy_source(plugins_to_calculate)
+
             # 使用线程池并行计算插件指标
             results = []
-            
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 # 提交所有插件指标计算任务
                 future_to_plugin = {}
                 for plugin_name in plugins_to_calculate:
+                    submit_kwargs = dict(kwargs)
+                    if shared_source_df is not None:
+                        submit_kwargs['_source_df'] = shared_source_df
                     future = executor.submit(
-                        self.calculate_plugin_indicator, 
-                        plugin_name, 
-                        *args, 
-                        **kwargs
+                        self.calculate_plugin_indicator,
+                        plugin_name,
+                        *args,
+                        **submit_kwargs
                     )
                     future_to_plugin[future] = plugin_name
                 
@@ -1584,8 +1669,8 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             error=error_message if not success else None
         )
 
-        # 返回结果，根据参数决定返回类型
-        return_polars = params.get('return_polars', False)
+        # 返回结果，根据参数决定返回类型（默认返回Polars，避免全量to_pandas转换开销）
+        return_polars = params.get('return_polars', True)
         return self.pl_df if return_polars else self.pl_df.to_pandas()
     
     def get_supported_indicators(self) -> List[str]:

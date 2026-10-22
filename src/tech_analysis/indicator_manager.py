@@ -424,15 +424,15 @@ class IndicatorManager:
 
         logger.info(f"已注册{len(global_indicator_registry.get_supported_indicators())}个内置指标")
     
-    def calculate_indicator(self, data: Union[pl.DataFrame, pd.DataFrame], indicator_type: str, 
-                          return_polars: bool = False, **params) -> Union[pl.DataFrame, pd.DataFrame]:
+    def calculate_indicator(self, data: Union[pl.DataFrame, pd.DataFrame], indicator_type: str,
+                          return_polars: bool = True, **params) -> Union[pl.DataFrame, pd.DataFrame]:
         """
         计算单个指标
-        
+
         Args:
             data: 输入数据
             indicator_type: 指标类型
-            return_polars: 是否返回Polars DataFrame
+            return_polars: 是否返回Polars DataFrame（默认True，避免不必要的格式转换开销）
             **params: 指标计算参数
         
         Returns:
@@ -465,15 +465,15 @@ class IndicatorManager:
         
         return self._to_result_format(result_df, return_polars)
     
-    def calculate_indicators(self, data: Union[pl.DataFrame, pd.DataFrame], indicator_types: List[str], 
-                           return_polars: bool = False, parallel: bool = False, max_workers: int = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
+    def calculate_indicators(self, data: Union[pl.DataFrame, pd.DataFrame], indicator_types: List[str],
+                           return_polars: bool = True, parallel: bool = False, max_workers: int = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
         """
         批量计算多个指标
-        
+
         Args:
             data: 输入数据
             indicator_types: 指标类型列表
-            return_polars: 是否返回Polars DataFrame
+            return_polars: 是否返回Polars DataFrame（默认True，避免不必要的格式转换开销）
             parallel: 是否使用并行计算
             max_workers: 并行计算的最大工作线程数，None表示使用所有可用核心
             **params: 指标计算参数
@@ -563,14 +563,14 @@ class IndicatorManager:
         
         return self._to_result_format(result_df, return_polars)
     
-    def calculate_all_indicators(self, data: Union[pl.DataFrame, pd.DataFrame], 
-                               return_polars: bool = False, parallel: bool = False, max_workers: int = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
+    def calculate_all_indicators(self, data: Union[pl.DataFrame, pd.DataFrame],
+                               return_polars: bool = True, parallel: bool = False, max_workers: int = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
         """
         计算所有支持的指标
-        
+
         Args:
             data: 输入数据
-            return_polars: 是否返回Polars DataFrame
+            return_polars: 是否返回Polars DataFrame（默认True，避免不必要的格式转换开销）
             parallel: 是否使用并行计算
             max_workers: 并行计算的最大工作线程数，None表示使用所有可用核心
             **params: 指标计算参数

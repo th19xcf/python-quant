@@ -69,10 +69,10 @@ def preprocess_data_polars(df):
     - 转换为高效数值类型（float32替代float64）
     - 处理缺失值
     - 保留复权价格字段
-    
+
     Args:
         df: Polars DataFrame
-        
+
     Returns:
         pl.DataFrame: 预处理后的数据
     """
@@ -81,10 +81,16 @@ def preprocess_data_polars(df):
     for col in core_columns:
         if col not in df.columns:
             raise ValueError(f"数据中没有{col}列")
-    
+
+    # 快速路径：数据已处于优化状态（无待转换列且Float32列无NaN）时，
+    # 跳过 MemoryOptimizer 全量优化与 fill_nan，避免重复预处理开销。
+    # 校验条件从严：任一列不满足稳定条件即走完整预处理，宁多算不错过。
+    if _is_already_preprocessed(df):
+        return df
+
     # 直接使用MemoryOptimizer进行全面的内存优化
     optimized_df = MemoryOptimizer.optimize_dataframe(df, enable_sparse=True)
-    
+
     # 处理缺失值
     # 只填充数值列的缺失值
     numeric_cols = [col for col in optimized_df.columns if optimized_df[col].dtype in [pl.Float32, pl.Int32, pl.Int16, pl.Int8]]
@@ -92,9 +98,56 @@ def preprocess_data_polars(df):
         optimized_df = optimized_df.with_columns(
             [pl.col(col).fill_nan(0.0) for col in numeric_cols]
         )
-    
+
     MemoryOptimizer.print_memory_stats(optimized_df, "预处理后数据")
     return optimized_df
+
+
+# 预处理稳定 dtype 集合（与 MemoryOptimizer.optimize_dataframe 的优化目标一致）
+_PREPROCESS_STABLE_DTYPES = frozenset([
+    pl.Float32, pl.Int32, pl.Int16, pl.Int8, pl.Date, pl.Boolean, pl.Categorical
+])
+
+# 价格/成交量列按设计保留 Float64，不会被 optimize_dataframe 降精度
+_PREPROCESS_STABLE_FLOAT64_COLS = frozenset(
+    MemoryOptimizer.COLUMN_TYPE_MAP['price_cols'] + MemoryOptimizer.COLUMN_TYPE_MAP['volume_cols']
+)
+
+
+def _is_already_preprocessed(df):
+    """
+    判断数据是否已处于预处理后的稳定状态（幂等校验）
+
+    条件从严：全部列为稳定 dtype（Float64 仅限价格/成交量列），
+    且 Float32 列无 NaN（fill_nan 的目标列）。
+
+    Args:
+        df: Polars DataFrame
+
+    Returns:
+        bool: True 表示可安全跳过完整预处理
+    """
+    float32_cols = []
+    for col in df.columns:
+        dtype = df[col].dtype
+        if dtype in _PREPROCESS_STABLE_DTYPES:
+            if dtype == pl.Float32:
+                float32_cols.append(col)
+            continue
+        if dtype == pl.Float64 and col in _PREPROCESS_STABLE_FLOAT64_COLS:
+            continue
+        # 其余 dtype（Int64/UInt*/Utf8/Decimal/Datetime/Null/其他列的Float64等）
+        # 均可能被 optimize_dataframe 转换，不可跳过
+        return False
+
+    # Float32 列存在 NaN 时仍需走完整路径执行 fill_nan
+    if float32_cols:
+        nan_total = df.select(
+            pl.sum_horizontal(pl.col(c).is_nan().sum() for c in float32_cols).alias('_nan_total')
+        ).item()
+        if nan_total and nan_total > 0:
+            return False
+    return True
 
 
 def sample_data_polars(df, target_points=1000, strategy='adaptive'):

@@ -10,8 +10,85 @@ import pyqtgraph as pg
 import numpy as np
 from typing import Any, Dict, Tuple, Optional
 from loguru import logger
-from src.tech_analysis.indicator_manager import global_indicator_manager
-from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+
+
+# UI指标名 → (指标类型, 期望输出列)
+# 全部使用 calculate_multiple_indicators_polars 的默认参数，与原 render_* 兜底路径的
+# 有效参数一致（MACD 12/26/9、BOLL [20]/2.0、EXPMA [12,50]、CYC [5,13,34]、
+# CYS cyc_window=13、LB period=5、ABI/ADR/OBOS period=10 等均为框架默认值）。
+# 注意：'VOL' 直接绘制 volume 列无需计算；'VOL-TDX' 在批量计算框架中无实现，保持现状跳过。
+INDICATOR_CALC_MAP = {
+    'KDJ': ('kdj', ['k', 'd']),
+    'MACD': ('macd', ['macd', 'macd_signal']),
+    'RSI': ('rsi', ['rsi14']),
+    'WR': ('wr', ['wr1', 'wr2']),
+    'BOLL': ('boll', ['mb', 'up', 'dn']),
+    'VR': ('vr', ['vr']),
+    'BRAR': ('brar', ['ar', 'br']),
+    'DMI': ('dmi', ['pdi', 'ndi']),
+    'TRIX': ('trix', ['trix']),
+    'OBV': ('obv', ['obv']),
+    'ASI': ('asi', ['asi']),
+    'EMV': ('emv', ['emv']),
+    'CCI': ('cci', ['cci']),
+    'ROC': ('roc', ['roc']),
+    'MTM': ('mtm', ['mtm']),
+    'PSY': ('psy', ['psy']),
+    'MCST': ('mcst', ['mcst']),
+    'DMA': ('dma', ['dma', 'ama']),
+    'FSL': ('fsl', ['swl', 'sws']),
+    'SAR': ('sar', ['sar']),
+    'CR': ('cr', ['cr']),
+    'EXPMA': ('expma', ['expma12', 'expma50']),
+    'BBI': ('bbi', ['bbi']),
+    'HSL': ('hsl', ['hsl']),
+    'LB': ('lb', ['lb']),
+    'CYC': ('cyc', ['cyc5', 'cyc13']),
+    'CYS': ('cys', ['cys']),
+    'ABI': ('abi', ['abi10']),
+    'ADL': ('adl', ['adl']),
+    'ADR': ('adr', ['adr10']),
+    'OBOS': ('obos', ['obos10']),
+}
+
+
+def ensure_indicator_columns(df: Any, indicator_names: Any) -> Any:
+    """
+    渲染前一次性批量补齐所选指标的缺失列（单个 Polars 查询计划）。
+
+    只计算缺失列对应的指标类型，避免逐指标重复构造分析器、重复预处理
+    以及 Pandas↔Polars 往返转换。
+
+    Args:
+        df: Polars DataFrame
+        indicator_names: UI 指标名称列表（如 ['MACD', 'KDJ', 'SAR']）
+
+    Returns:
+        pl.DataFrame: 补齐指标列后的数据（无缺失时原样返回）
+    """
+    if df is None or not hasattr(df, 'columns'):
+        return df
+
+    missing_types = []
+    for name in indicator_names:
+        if not name:
+            continue
+        entry = INDICATOR_CALC_MAP.get(str(name).upper())
+        if entry is None:
+            continue
+        indicator_type, expected_cols = entry
+        if indicator_type in missing_types:
+            continue
+        if any(col not in df.columns for col in expected_cols):
+            missing_types.append(indicator_type)
+
+    if not missing_types:
+        return df
+
+    from src.tech_analysis.indicator_calculator import calculate_multiple_indicators_polars
+    logger.info(f"渲染前批量补齐指标列: {missing_types}")
+    result = calculate_multiple_indicators_polars(df.lazy(), missing_types)
+    return result.collect() if hasattr(result, 'collect') else result
 
 
 class IndicatorRenderer:
@@ -378,15 +455,8 @@ class IndicatorRenderer:
             
             logger.debug(f"渲染MACD，数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
             if not hasattr(df, 'columns') or 'macd' not in df.columns or 'macd_signal' not in df.columns:
-                logger.warning(f"MACD数据列不存在，尝试计算MACD")
-                # 尝试计算MACD
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_macd(fast_period=12, slow_period=26, signal_period=9)
-                df = analyzer.get_data(return_polars=True)
-                logger.debug(f"计算MACD后数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
-                if not hasattr(df, 'columns') or 'macd' not in df.columns or 'macd_signal' not in df.columns:
-                    logger.error("计算MACD后数据列仍不存在")
-                    return df
+                logger.warning("MACD数据列不存在，跳过渲染（应由渲染前批量计算提供）")
+                return df
             
             macd_data = df['macd'].to_numpy().astype(np.float64)
             signal_data = df['macd_signal'].to_numpy().astype(np.float64)
@@ -581,15 +651,8 @@ class IndicatorRenderer:
             
             logger.debug(f"渲染BOLL，数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
             if not hasattr(df, 'columns') or 'mb' not in df.columns or 'up' not in df.columns or 'dn' not in df.columns:
-                logger.warning(f"BOLL数据列不存在，尝试计算BOLL")
-                # 尝试计算BOLL
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_boll(windows=[20], std_dev=2.0)
-                df = analyzer.get_data(return_polars=True)
-                logger.debug(f"计算BOLL后数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
-                if not hasattr(df, 'columns') or 'mb' not in df.columns or 'up' not in df.columns or 'dn' not in df.columns:
-                    logger.error("计算BOLL后数据列仍不存在")
-                    return df
+                logger.warning("BOLL数据列不存在，跳过渲染（应由渲染前批量计算提供）")
+                return df
             
             mb_data = df['mb'].to_numpy().astype(np.float64)
             up_data = df['up'].to_numpy().astype(np.float64)
@@ -648,11 +711,9 @@ class IndicatorRenderer:
         try:
             logger.debug(f"渲染VR指标，数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
             
-            # 如果没有VR数据，先计算
+            # 如果没有VR数据，跳过渲染（应由渲染前批量计算提供）
             if 'vr' not in df.columns:
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_indicator_parallel('vr', windows=[24])
-                df = analyzer.get_data(return_polars=True)
+                logger.warning("VR数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             
             if 'vr' in df.columns:
                 vr_data = df['vr'].to_numpy().astype(np.float64)
@@ -709,15 +770,8 @@ class IndicatorRenderer:
         try:
             logger.debug(f"渲染BRAR，数据列: {df.columns}")
             if 'ar' not in df.columns or 'br' not in df.columns:
-                logger.warning(f"BRAR数据列不存在，尝试计算BRAR")
-                # 尝试计算BRAR
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_brar(windows=[26])
-                df = analyzer.get_data(return_polars=True)
-                logger.debug(f"计算BRAR后数据列: {df.columns}")
-                if 'ar' not in df.columns or 'br' not in df.columns:
-                    logger.error("计算BRAR后数据列仍不存在")
-                    return df
+                logger.warning("BRAR数据列不存在，跳过渲染（应由渲染前批量计算提供）")
+                return df
 
             ar_data = df['ar'].to_numpy().astype(np.float64)
             br_data = df['br'].to_numpy().astype(np.float64)
@@ -771,15 +825,8 @@ class IndicatorRenderer:
         try:
             logger.debug(f"渲染DMI，数据列: {df.columns}")
             if 'pdi' not in df.columns or 'ndi' not in df.columns:
-                logger.warning(f"DMI数据列不存在，尝试计算DMI")
-                # 尝试计算DMI
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_dmi(windows=[14])
-                df = analyzer.get_data(return_polars=True)
-                logger.debug(f"计算DMI后数据列: {df.columns}")
-                if 'pdi' not in df.columns or 'ndi' not in df.columns:
-                    logger.error("计算DMI后数据列仍不存在")
-                    return df
+                logger.warning("DMI数据列不存在，跳过渲染（应由渲染前批量计算提供）")
+                return df
 
             pdi_data = df['pdi'].to_numpy().astype(np.float64)
             ndi_data = df['ndi'].to_numpy().astype(np.float64)
@@ -855,15 +902,8 @@ class IndicatorRenderer:
         try:
             logger.debug(f"渲染TRIX，数据列: {df.columns}")
             if 'trix' not in df.columns:
-                logger.warning(f"TRIX数据列不存在，尝试计算TRIX")
-                # 尝试计算TRIX
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_trix(windows=[12], signal_period=9)
-                df = analyzer.get_data(return_polars=True)
-                logger.debug(f"计算TRIX后数据列: {df.columns}")
-                if 'trix' not in df.columns:
-                    logger.error("计算TRIX后数据列仍不存在")
-                    return df
+                logger.warning("TRIX数据列不存在，跳过渲染（应由渲染前批量计算提供）")
+                return df
 
             trix_data = df['trix'].to_numpy().astype(np.float64)
 
@@ -918,9 +958,7 @@ class IndicatorRenderer:
         """渲染OBV指标"""
         try:
             if 'obv' not in df.columns:
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_obv()
-                df = analyzer.get_data(return_polars=True)
+                logger.warning("OBV数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'obv' in df.columns:
                 obv_data = df['obv'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(obv_data)
@@ -947,9 +985,7 @@ class IndicatorRenderer:
         """渲染ASI指标"""
         try:
             if 'asi' not in df.columns:
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_asi(signal_period=20)
-                df = analyzer.get_data(return_polars=True)
+                logger.warning("ASI数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'asi' in df.columns:
                 asi_data = df['asi'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(asi_data)
@@ -986,9 +1022,7 @@ class IndicatorRenderer:
         """渲染EMV指标"""
         try:
             if 'emv' not in df.columns:
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_emv(windows=[14])
-                df = analyzer.get_data(return_polars=True)
+                logger.warning("EMV数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'emv' in df.columns:
                 emv_data = df['emv'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(emv_data)
@@ -1016,9 +1050,7 @@ class IndicatorRenderer:
         """渲染CCI指标"""
         try:
             if 'cci' not in df.columns:
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_cci(windows=[14])
-                df = analyzer.get_data(return_polars=True)
+                logger.warning("CCI数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'cci' in df.columns:
                 cci_data = df['cci'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(cci_data)
@@ -1037,9 +1069,7 @@ class IndicatorRenderer:
         """渲染ROC指标"""
         try:
             if 'roc' not in df.columns:
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_roc(windows=[12])
-                df = analyzer.get_data(return_polars=True)
+                logger.warning("ROC数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'roc' in df.columns:
                 roc_data = df['roc'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(roc_data)
@@ -1067,9 +1097,7 @@ class IndicatorRenderer:
         """渲染MTM指标"""
         try:
             if 'mtm' not in df.columns:
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_mtm(windows=[12])
-                df = analyzer.get_data(return_polars=True)
+                logger.warning("MTM数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'mtm' in df.columns:
                 mtm_data = df['mtm'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(mtm_data)
@@ -1097,9 +1125,7 @@ class IndicatorRenderer:
         """渲染PSY指标"""
         try:
             if 'psy' not in df.columns:
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_psy(windows=[12])
-                df = analyzer.get_data(return_polars=True)
+                logger.warning("PSY数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'psy' in df.columns:
                 psy_data = df['psy'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(psy_data)
@@ -1117,9 +1143,7 @@ class IndicatorRenderer:
         """渲染MCST指标"""
         try:
             if 'mcst' not in df.columns:
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_mcst(windows=[12])
-                df = analyzer.get_data(return_polars=True)
+                logger.warning("MCST数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'mcst' in df.columns:
                 mcst_data = df['mcst'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(mcst_data)
@@ -1198,9 +1222,7 @@ class IndicatorRenderer:
         """渲染FSL指标"""
         try:
             if 'swl' not in df.columns or 'sws' not in df.columns:
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_indicator_parallel('fsl')
-                df = analyzer.get_data(return_polars=True)
+                logger.warning("FSL数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'swl' in df.columns and 'sws' in df.columns:
                 swl_data = df['swl'].to_numpy().astype(np.float64)
                 sws_data = df['sws'].to_numpy().astype(np.float64)
@@ -1233,12 +1255,7 @@ class IndicatorRenderer:
         try:
             logger.debug(f"渲染SAR指标，数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
             logger.debug(f"输入数据行数: {len(df)}, x坐标长度: {len(x)}")
-            
-            # 强制重新计算SAR指标，确保数据正确
-            analyzer = TechnicalAnalyzer(df)
-            analyzer.calculate_indicator_parallel('sar', af_step=0.02, max_af=0.2)
-            df = analyzer.get_data(return_polars=True)
-            
+
             if 'sar' in df.columns:
                 sar_data = df['sar'].to_numpy().astype(np.float64)
                 logger.debug(f"SAR数据长度: {len(sar_data)}")
@@ -1274,9 +1291,7 @@ class IndicatorRenderer:
         """渲染VOL-TDX指标"""
         try:
             if 'vol_tdx' not in df.columns:
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_indicator_parallel('vol_tdx', ma_period=5)
-                df = analyzer.get_data(return_polars=True)
+                logger.warning("VOL-TDX数据列不存在，跳过渲染")
             if 'vol_tdx' in df.columns:
                 vol_tdx_data = df['vol_tdx'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(vol_tdx_data)
@@ -1298,9 +1313,7 @@ class IndicatorRenderer:
         """渲染CR指标"""
         try:
             if 'cr' not in df.columns:
-                analyzer = TechnicalAnalyzer(df)
-                analyzer.calculate_indicator_parallel('cr', windows=[26])
-                df = analyzer.get_data(return_polars=True)
+                logger.warning("CR数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'cr' in df.columns:
                 cr_data = df['cr'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(cr_data)
@@ -1328,13 +1341,7 @@ class IndicatorRenderer:
         """渲染EXPMA指标"""
         try:
             if 'expma12' not in df.columns or 'expma50' not in df.columns:
-                import polars as pl
-                # 确保数据是polars DataFrame
-                if hasattr(df, 'to_pandas'):
-                    pl_df = df
-                else:
-                    pl_df = pl.from_pandas(df)
-                df = global_indicator_manager.calculate_indicator(pl_df, 'expma', return_polars=True, windows=[12, 50])
+                logger.warning("EXPMA数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'expma12' in df.columns and 'expma50' in df.columns:
                 expma12_data = df['expma12'].to_numpy().astype(np.float64)
                 expma50_data = df['expma50'].to_numpy().astype(np.float64)
@@ -1367,13 +1374,7 @@ class IndicatorRenderer:
         """渲染BBI指标"""
         try:
             if 'bbi' not in df.columns:
-                import polars as pl
-                # 确保数据是polars DataFrame
-                if hasattr(df, 'to_pandas'):
-                    pl_df = df
-                else:
-                    pl_df = pl.from_pandas(df)
-                df = global_indicator_manager.calculate_indicator(pl_df, 'bbi', return_polars=True)
+                logger.warning("BBI数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'bbi' in df.columns:
                 bbi_data = df['bbi'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(bbi_data)
@@ -1397,13 +1398,7 @@ class IndicatorRenderer:
         """渲染HSL（换手率）指标"""
         try:
             if 'hsl' not in df.columns:
-                import polars as pl
-                # 确保数据是polars DataFrame
-                if hasattr(df, 'to_pandas'):
-                    pl_df = df
-                else:
-                    pl_df = pl.from_pandas(df)
-                df = global_indicator_manager.calculate_indicator(pl_df, 'hsl', return_polars=True)
+                logger.warning("HSL数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'hsl' in df.columns:
                 hsl_data = df['hsl'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(hsl_data)
@@ -1445,13 +1440,7 @@ class IndicatorRenderer:
         """渲染LB（量比）指标"""
         try:
             if 'lb' not in df.columns:
-                import polars as pl
-                # 确保数据是polars DataFrame
-                if hasattr(df, 'to_pandas'):
-                    pl_df = df
-                else:
-                    pl_df = pl.from_pandas(df)
-                df = global_indicator_manager.calculate_indicator(pl_df, 'lb', return_polars=True, period=5)
+                logger.warning("LB数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'lb' in df.columns:
                 lb_data = df['lb'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(lb_data)
@@ -1489,13 +1478,7 @@ class IndicatorRenderer:
         """渲染CYC（成本均线）指标"""
         try:
             if 'cyc5' not in df.columns or 'cyc13' not in df.columns:
-                import polars as pl
-                # 确保数据是polars DataFrame
-                if hasattr(df, 'to_pandas'):
-                    pl_df = df
-                else:
-                    pl_df = pl.from_pandas(df)
-                df = global_indicator_manager.calculate_indicator(pl_df, 'cyc', return_polars=True, windows=[5, 13, 34])
+                logger.warning("CYC数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             # 绘制各条成本均线
             cyc_configs = [
                 ('cyc5', 'CYC5', '#FFFF00'),      # 黄色 - 短期
@@ -1527,13 +1510,7 @@ class IndicatorRenderer:
         """渲染CYS（市场盈亏）指标"""
         try:
             if 'cys' not in df.columns:
-                import polars as pl
-                # 确保数据是polars DataFrame
-                if hasattr(df, 'to_pandas'):
-                    pl_df = df
-                else:
-                    pl_df = pl.from_pandas(df)
-                df = global_indicator_manager.calculate_indicator(pl_df, 'cys', return_polars=True, cyc_window=13)
+                logger.warning("CYS数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'cys' in df.columns:
                 cys_data = df['cys'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(cys_data)
@@ -1568,12 +1545,7 @@ class IndicatorRenderer:
         """渲染ABI（绝对广量指标）"""
         try:
             if 'abi10' not in df.columns:
-                import polars as pl
-                if hasattr(df, 'to_pandas'):
-                    pl_df = df
-                else:
-                    pl_df = pl.from_pandas(df)
-                df = global_indicator_manager.calculate_indicator(pl_df, 'abi', return_polars=True, period=10)
+                logger.warning("ABI数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'abi10' in df.columns:
                 abi_data = df['abi10'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(abi_data)
@@ -1589,12 +1561,7 @@ class IndicatorRenderer:
         """渲染ADL（腾落指标）"""
         try:
             if 'adl' not in df.columns:
-                import polars as pl
-                if hasattr(df, 'to_pandas'):
-                    pl_df = df
-                else:
-                    pl_df = pl.from_pandas(df)
-                df = global_indicator_manager.calculate_indicator(pl_df, 'adl', return_polars=True)
+                logger.warning("ADL数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'adl' in df.columns:
                 adl_data = df['adl'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(adl_data)
@@ -1609,12 +1576,7 @@ class IndicatorRenderer:
         """渲染ADR（涨跌比率）"""
         try:
             if 'adr10' not in df.columns:
-                import polars as pl
-                if hasattr(df, 'to_pandas'):
-                    pl_df = df
-                else:
-                    pl_df = pl.from_pandas(df)
-                df = global_indicator_manager.calculate_indicator(pl_df, 'adr', return_polars=True, period=10)
+                logger.warning("ADR数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'adr10' in df.columns:
                 adr_data = df['adr10'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(adr_data)
@@ -1630,12 +1592,7 @@ class IndicatorRenderer:
         """渲染OBOS（超买超卖指标）"""
         try:
             if 'obos10' not in df.columns:
-                import polars as pl
-                if hasattr(df, 'to_pandas'):
-                    pl_df = df
-                else:
-                    pl_df = pl.from_pandas(df)
-                df = global_indicator_manager.calculate_indicator(pl_df, 'obos', return_polars=True, period=10)
+                logger.warning("OBOS数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'obos10' in df.columns:
                 obos_data = df['obos10'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(obos_data)
