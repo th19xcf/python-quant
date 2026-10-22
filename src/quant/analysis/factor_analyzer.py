@@ -6,10 +6,12 @@
 """
 
 import polars as pl
-import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from src.utils.logger import logger
+from src.utils.config import get_config
+from src.database.db_manager import DatabaseManager
+from src.data.data_manager import DataManager
 
 
 class FactorAnalyzer:
@@ -19,9 +21,17 @@ class FactorAnalyzer:
     
     def __init__(self):
         """
-        初始化因子分析器
+        初始化因子分析器，按需创建数据管理器（延迟初始化避免纯计算场景报错）
         """
-        pass
+        self._data_manager = None
+
+    @property
+    def data_manager(self) -> DataManager:
+        if self._data_manager is None:
+            config = get_config()
+            db_manager = DatabaseManager(config)
+            self._data_manager = DataManager(config, db_manager)
+        return self._data_manager
     
     def run_analysis(self, stock_code, start_date, end_date, factors, analysis_type, window):
         """
@@ -39,9 +49,14 @@ class FactorAnalyzer:
             dict: 分析结果
         """
         try:
-            # 生成模拟数据
-            data = self._generate_sample_data(stock_code, start_date, end_date)
-            
+            # 从数据库/数据源获取真实行情，使用后复权消除分红送转干扰
+            data = self.data_manager.get_stock_data(
+                stock_code, start_date, end_date, adjustment_type='hfq'
+            )
+
+            if data.is_empty():
+                raise ValueError(f'股票 {stock_code} 在 {start_date}~{end_date} 无可用行情数据')
+
             # 计算因子
             data = self._calculate_factors(data, factors)
             
@@ -70,59 +85,6 @@ class FactorAnalyzer:
             logger.error(f"分析失败: {e}")
             raise
     
-    def _generate_sample_data(self, stock_code, start_date, end_date):
-        """
-        生成模拟数据
-        
-        Args:
-            stock_code: 股票代码
-            start_date: 开始日期
-            end_date: 结束日期
-            
-        Returns:
-            pl.DataFrame: 模拟数据
-        """
-        # 解析日期
-        start = datetime.strptime(start_date, "%Y-%m-%d")
-        end = datetime.strptime(end_date, "%Y-%m-%d")
-        
-        # 生成日期序列
-        dates = []
-        current = start
-        while current <= end:
-            dates.append(current)
-            current += timedelta(days=1)
-        
-        # 过滤掉非交易日（简单模拟，只保留周一到周五）
-        trading_dates = [d for d in dates if d.weekday() < 5]
-        
-        # 生成价格数据
-        np.random.seed(42)  # 固定种子以确保结果可复现
-        base_price = 100.0
-        prices = []
-        price = base_price
-        
-        for _ in trading_dates:
-            # 添加一些随机波动
-            change = np.random.normal(0, 1)
-            price = max(1, price + change)
-            prices.append(price)
-        
-        # 生成成交量数据
-        volumes = np.random.randint(100000, 1000000, size=len(trading_dates))
-        
-        # 创建DataFrame
-        data = pl.DataFrame({
-            'date': trading_dates,
-            'open': [p * (1 + np.random.normal(0, 0.01)) for p in prices],
-            'high': [p * (1 + np.random.normal(0, 0.02)) for p in prices],
-            'low': [p * (1 - np.random.normal(0, 0.02)) for p in prices],
-            'close': prices,
-            'volume': volumes
-        })
-        
-        return data
-    
     def _calculate_factors(self, data, factors):
         """
         计算因子
@@ -149,10 +111,10 @@ class FactorAnalyzer:
             ])
         
         if 'RSI' in factors:
-            # 计算RSI
-            delta = data['close'].diff()
-            gain = delta.apply(lambda x: x if x > 0 else 0)
-            loss = delta.apply(lambda x: -x if x < 0 else 0)
+            # 计算RSI：用Polars表达式替代已移除的Series.apply
+            delta = pl.col('close').diff()
+            gain = pl.when(delta > 0).then(delta).otherwise(0.0)
+            loss = pl.when(delta < 0).then(-delta).otherwise(0.0)
             avg_gain = gain.rolling_mean(window_size=14)
             avg_loss = loss.rolling_mean(window_size=14)
             rs = avg_gain / (avg_loss + 1e-10)
@@ -219,25 +181,14 @@ class FactorAnalyzer:
             cci = (typical_price - ma) / (0.015 * mean_dev)
             data = data.with_columns([cci.alias('cci')])
         
-        if 'PE' in factors:
-            # 模拟市盈率
-            pe = np.random.normal(15, 5, size=len(data))
-            data = data.with_columns([pl.Series('pe', pe)])
-        
-        if 'PB' in factors:
-            # 模拟市净率
-            pb = np.random.normal(2, 0.5, size=len(data))
-            data = data.with_columns([pl.Series('pb', pb)])
-        
-        if 'ROE' in factors:
-            # 模拟净资产收益率
-            roe = np.random.normal(10, 3, size=len(data))
-            data = data.with_columns([pl.Series('roe', roe)])
-        
-        if 'EPS' in factors:
-            # 模拟每股收益
-            eps = np.random.normal(1, 0.3, size=len(data))
-            data = data.with_columns([pl.Series('eps', eps)])
+        # 基本面因子：暂未接入真实数据源，跳过计算并在日志中提示
+        fundamental_factors = ['PE', 'PB', 'ROE', 'EPS']
+        missing = [f for f in fundamental_factors if f in factors]
+        if missing:
+            logger.warning(
+                f"基本面因子 {missing} 暂未接入真实数据源，已跳过。"
+                f"后续可对接 Tushare/BaoStock 基本面接口。"
+            )
         
         if 'MOM1M' in factors:
             # 1个月动量
@@ -295,7 +246,7 @@ class FactorAnalyzer:
             ])
             
             # 计算每层的平均收益率
-            quantile_returns = data.groupby(f'{factor_col}_quantile').agg([
+            quantile_returns = data.group_by(f'{factor_col}_quantile').agg([
                 pl.col('return').mean().alias('avg_return')
             ]).sort(f'{factor_col}_quantile')
             
@@ -381,7 +332,7 @@ class FactorAnalyzer:
                 pl.col('factor_combination').qcut(5).alias('factor_quantile')
             ])
             
-            quantile_returns = data.groupby('factor_quantile').agg([
+            quantile_returns = data.group_by('factor_quantile').agg([
                 pl.col('return').mean().alias('avg_return')
             ]).sort('factor_quantile')
             

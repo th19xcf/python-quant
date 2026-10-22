@@ -3,6 +3,12 @@
 
 """
 交易成本模型，用于计算交易成本
+
+默认参数对齐 A 股现行规则（2023-08-28 起印花税降为 0.05%）：
+- 佣金双边 0.03%，单笔最低 5 元
+- 印花税卖出侧 0.05%
+- 过户费双边 0.001%（沪市）/ 深市并入监管费整体约 0.0025%，统一近似为 0.001%
+- 滑点 0.02% 双边，可按流动性覆盖
 """
 
 from typing import Dict, Any
@@ -13,104 +19,71 @@ class CostModel:
     交易成本模型类，提供交易成本计算功能
     """
     
-    def __init__(self):
+    def __init__(self, overrides: Dict[str, Any] = None):
         """
         初始化成本模型
+        
+        Args:
+            overrides: 自定义参数，会覆盖默认值。可选键：
+                       commission_rate / min_commission / stamp_tax_rate /
+                       transfer_fee_rate / slippage
         """
-        # 默认参数
         self.params = {
-            'commission_rate': 0.0003,  # 佣金费率
-            'min_commission': 5.0,  # 最低佣金
-            'slippage': 0.0001,  # 滑点
-            'tax_rate': 0.001  # 印花税税率
+            'commission_rate': 0.0003,       # 佣金费率（双边）
+            'min_commission': 5.0,           # 单笔最低佣金
+            'stamp_tax_rate': 0.0005,        # 印花税（仅卖出，2023-08-28 起为 0.05%）
+            'transfer_fee_rate': 0.00001,    # 过户费（双边，近似）
+            'slippage': 0.0002,              # 滑点（双边）
         }
+        if overrides:
+            self.params.update(overrides)
     
     def set_params(self, params: Dict[str, Any]):
         """
         设置成本模型参数
-        
-        Args:
-            params: 成本模型参数
         """
         self.params.update(params)
     
-    def calculate_cost(self, shares: float, buy_price: float, sell_price: float) -> float:
-        """
-        计算交易成本
-        
-        Args:
-            shares: 交易股数
-            buy_price: 买入价格
-            sell_price: 卖出价格
-            
-        Returns:
-            float: 交易成本
-        """
-        commission_rate = self.params.get('commission_rate', 0.0003)
-        min_commission = self.params.get('min_commission', 5.0)
-        slippage = self.params.get('slippage', 0.0001)
-        tax_rate = self.params.get('tax_rate', 0.001)
-        
-        # 计算佣金
-        buy_amount = shares * buy_price
-        sell_amount = shares * sell_price
-        
-        buy_commission = max(buy_amount * commission_rate, min_commission)
-        sell_commission = max(sell_amount * commission_rate, min_commission)
-        
-        # 计算印花税（仅卖出时收取）
-        stamp_tax = sell_amount * tax_rate
-        
-        # 计算滑点成本（双边均按成交金额收取，与盈亏无关）
-        slippage_cost = shares * (buy_price + sell_price) * slippage
-        
-        # 总交易成本
-        total_cost = buy_commission + sell_commission + stamp_tax + slippage_cost
-        
-        return total_cost
-    
     def calculate_buy_cost(self, shares: float, price: float) -> float:
         """
-        计算买入侧成本（佣金 + 滑点）
-        
-        Args:
-            shares: 买入股数
-            price: 买入价格
-            
-        Returns:
-            float: 买入成本
+        买入侧成本（佣金 + 过户费 + 滑点），不含印花税
         """
-        commission_rate = self.params.get('commission_rate', 0.0003)
-        min_commission = self.params.get('min_commission', 5.0)
-        slippage = self.params.get('slippage', 0.0001)
-        
+        commission_rate = self.params['commission_rate']
+        min_commission = self.params['min_commission']
+        transfer_fee = self.params['transfer_fee_rate']
+        slippage = self.params['slippage']
+
         amount = shares * price
         commission = max(amount * commission_rate, min_commission)
-        
-        return commission + amount * slippage
+        transfer = amount * transfer_fee
+        slip = amount * slippage
+
+        return commission + transfer + slip
     
     def calculate_sell_cost(self, shares: float, price: float) -> float:
         """
-        计算卖出侧成本（佣金 + 印花税 + 滑点）
-        
-        Args:
-            shares: 卖出股数
-            price: 卖出价格
-            
-        Returns:
-            float: 卖出成本
+        卖出侧成本（佣金 + 印花税 + 过户费 + 滑点）
         """
-        commission_rate = self.params.get('commission_rate', 0.0003)
-        min_commission = self.params.get('min_commission', 5.0)
-        slippage = self.params.get('slippage', 0.0001)
-        tax_rate = self.params.get('tax_rate', 0.001)
-        
+        commission_rate = self.params['commission_rate']
+        min_commission = self.params['min_commission']
+        stamp_tax = self.params['stamp_tax_rate']
+        transfer_fee = self.params['transfer_fee_rate']
+        slippage = self.params['slippage']
+
         amount = shares * price
         commission = max(amount * commission_rate, min_commission)
-        stamp_tax = amount * tax_rate
-        
-        return commission + stamp_tax + amount * slippage
+        tax = amount * stamp_tax
+        transfer = amount * transfer_fee
+        slip = amount * slippage
+
+        return commission + tax + transfer + slip
     
+    def calculate_cost(self, shares: float, buy_price: float, sell_price: float) -> float:
+        """
+        一轮完整买卖的总交易成本
+        """
+        return self.calculate_buy_cost(shares, buy_price) + self.calculate_sell_cost(shares, sell_price)
+
     def get_buy_cost_rate(self) -> float:
         """估算买入侧成本费率（用于计算可负担股数）"""
-        return self.params.get('commission_rate', 0.0003) + self.params.get('slippage', 0.0001)
+        return self.params['commission_rate'] + self.params['transfer_fee_rate'] + self.params['slippage']

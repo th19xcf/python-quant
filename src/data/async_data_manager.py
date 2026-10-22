@@ -12,6 +12,8 @@ import polars as pl
 from loguru import logger
 from concurrent.futures import ThreadPoolExecutor
 
+from src.data.managers.data_fetcher import DataFetcher
+
 from src.utils.exceptions import (
     DataSourceConnectionError,
     DataSourceNotAvailableError,
@@ -196,10 +198,12 @@ class AsyncDataManager:
                     
                     session = self.db_manager.get_session()
                     if session:
+                        start_bound = DataFetcher._parse_date_bound(start_date)
+                        end_bound = DataFetcher._parse_date_bound(end_date)
                         query = session.query(model_class).filter(
                             getattr(model_class, 'ts_code') == ts_code,
-                            getattr(model_class, 'trade_date') >= start_date,
-                            getattr(model_class, 'trade_date') <= end_date
+                            getattr(model_class, 'trade_date') >= (start_bound or start_date),
+                            getattr(model_class, 'trade_date') <= (end_bound or end_date)
                         ).order_by(getattr(model_class, 'trade_date'))
                         
                         data = query.all()
@@ -318,10 +322,8 @@ class AsyncDataManager:
                             # 使用pl.from_dicts创建Polars DataFrame，效率更高
                             df = pl.from_dicts(data_records)
                             
-                            # 转换为标准格式，使用向量化的str.strptime替代apply，效率更高
-                            df = df.with_columns(
-                                pl.col('trade_date').str.strptime(pl.Datetime, format='%Y%m%d').alias('date')
-                            )
+                            # 转换日期格式：兼容 Date/Datetime/YYYYMMDD 字符串
+                            df = DataFetcher._normalize_trade_date(df)
                             
                             # 内存优化：转换数据类型
                             optimized_df = MemoryOptimizer.optimize_dataframe(df, enable_sparse=True)
@@ -387,14 +389,22 @@ class AsyncDataManager:
                 lazy_df = df.lazy()
                 
                 # 确保有日期列
-                if 'trade_date' in df.columns:
+                if 'trade_date' in df.columns and 'date' not in df.columns:
                     lazy_df = lazy_df.with_columns(pl.col('trade_date').alias('date'))
                 elif 'date' not in df.columns:
                     logger.error("DataFrame中没有日期列")
                     return df
                 
-                # 转换日期列为datetime类型
-                lazy_df = lazy_df.with_columns(pl.col('date').str.strptime(pl.Date, "%Y-%m-%d"))
+                # 统一日期列为 Date，兼容 Date/Datetime/字符串
+                if df.schema['date'] == pl.Utf8:
+                    lazy_df = lazy_df.with_columns(
+                        pl.coalesce([
+                            pl.col('date').str.strptime(pl.Date, "%Y-%m-%d", strict=False),
+                            pl.col('date').str.strptime(pl.Date, "%Y%m%d", strict=False),
+                        ]).alias('date')
+                    )
+                else:
+                    lazy_df = lazy_df.with_columns(pl.col('date').cast(pl.Date))
                 
                 # 根据频率确定分组方式
                 if frequency == '1w':

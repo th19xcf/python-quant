@@ -16,7 +16,13 @@ from src.alpha.factors.volatility import VolatilityFactors
 from src.alpha.factors.volume import VolumeFactors
 from src.alpha.factors.technical import TechnicalFactors
 from src.alpha.factors.risk import RiskFactors
-from src.alpha.evaluation.factor_evaluator import FactorEvaluator
+
+# FactorEvaluator 可能依赖 scipy，缺失时允许降级
+try:
+    from src.alpha.evaluation.factor_evaluator import FactorEvaluator
+except Exception as _exc:  # pragma: no cover - 仅在 scipy 缺失时触发
+    logger.warning(f"FactorEvaluator 加载失败（可能是 scipy 未安装），评估相关方法将跳过：{_exc}")
+    FactorEvaluator = None
 
 
 class AlphaCalculator:
@@ -25,13 +31,6 @@ class AlphaCalculator:
     """
     
     def __init__(self, data):
-        """
-        初始化Alpha因子计算器
-        
-        Args:
-            data: 股票数据，可以是Polars DataFrame、LazyFrame或Pandas DataFrame
-        """
-        # 转换为Polars DataFrame
         if isinstance(data, pd.DataFrame):
             self.pl_df = pl.from_pandas(data)
         elif hasattr(data, 'to_pandas'):
@@ -39,56 +38,53 @@ class AlphaCalculator:
         else:
             self.pl_df = pl.DataFrame(data)
         
-        # 初始化各种因子计算类
         self.price_momentum = PriceMomentumFactors(self.pl_df)
         self.volatility = VolatilityFactors(self.pl_df)
         self.volume = VolumeFactors(self.pl_df)
         self.technical = TechnicalFactors(self.pl_df)
         self.risk = RiskFactors(self.pl_df)
         
-        # 初始化因子评估器
-        self.evaluator = FactorEvaluator()
-        
-        # 存储计算结果
+        self.evaluator = FactorEvaluator() if FactorEvaluator is not None else None
         self.factor_results = {}
     
     def calculate_factors(self, factor_types: List[str], **params) -> pl.DataFrame:
         """
-        计算指定类型的因子
-        
-        Args:
-            factor_types: 因子类型列表
-            **params: 因子计算参数
-            
-        Returns:
-            pl.DataFrame: 包含计算结果的Polars DataFrame
+        计算指定类型的因子，并把因子列合并回返回 DataFrame
         """
         for factor_type in factor_types:
             try:
                 if factor_type == 'price_momentum':
-                    # 价格动量因子
                     result = self.price_momentum.calculate(**params)
                 elif factor_type == 'volatility':
-                    # 波动率因子
                     result = self.volatility.calculate(**params)
                 elif factor_type == 'volume':
-                    # 成交量因子
                     result = self.volume.calculate(**params)
                 elif factor_type == 'technical':
-                    # 技术指标因子
                     result = self.technical.calculate(**params)
                 elif factor_type == 'risk':
-                    # 风险因子
                     result = self.risk.calculate(**params)
                 else:
                     logger.warning(f"不支持的因子类型: {factor_type}")
                     continue
-                
+
                 self.factor_results[factor_type] = result
                 logger.info(f"成功计算因子: {factor_type}")
             except Exception as e:
                 logger.error(f"计算因子 {factor_type} 失败: {e}")
-        
+
+        # 把各因子类返回的列合并回主表，保证返回值包含所有因子
+        if self.factor_results:
+            merged = self.pl_df
+            for factor_type, factor_df in self.factor_results.items():
+                if factor_df is None:
+                    continue
+                # 因子类可能返回新 DataFrame 或在内部把列加到 self.pl_df
+                if isinstance(factor_df, pl.DataFrame):
+                    new_cols = [c for c in factor_df.columns if c not in merged.columns]
+                    if new_cols:
+                        merged = merged.with_columns([factor_df[c] for c in new_cols])
+            self.pl_df = merged
+
         return self.pl_df
     
     def evaluate_factors(self, factor_names: List[str], target_returns: Optional[pl.Series] = None) -> Dict[str, Any]:

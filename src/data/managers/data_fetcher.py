@@ -10,6 +10,7 @@
 from typing import List, Dict, Any, Optional, Union
 import polars as pl
 import time
+from datetime import date, datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import concurrent.futures
 from loguru import logger
@@ -127,6 +128,8 @@ class DataFetcher:
         # 从数据库获取
         db_data = self._get_data_from_database('stock', stock_code, start_date, end_date, frequency, adjustment_type)
         if not db_data.is_empty():
+            # 统一在数据出口应用复权，保证下游拿到的 close 即为所请求的复权价
+            db_data = self._apply_adjustment(db_data, adjustment_type)
             # 存入缓存
             global_data_cache.set(db_data, 'stock', stock_code, start_date, end_date, 
                                 frequency=frequency, adjustment_type=adjustment_type)
@@ -137,6 +140,7 @@ class DataFetcher:
         
         # 存入缓存
         if not data.is_empty():
+            data = self._apply_adjustment(data, adjustment_type)
             global_data_cache.set(data, 'stock', stock_code, start_date, end_date, 
                                 frequency=frequency, adjustment_type=adjustment_type)
         
@@ -180,6 +184,65 @@ class DataFetcher:
         
         return data
     
+    @staticmethod
+    def _parse_date_bound(value: Union[str, date, datetime, None]) -> Optional[date]:
+        """将日期字符串/对象统一转换为 date，供数据库查询使用"""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        for fmt in ('%Y-%m-%d', '%Y%m%d'):
+            try:
+                return datetime.strptime(str(value), fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
+    def _normalize_trade_date(df: pl.DataFrame) -> pl.DataFrame:
+        """将数据库的 trade_date 统一转换为 date 列，兼容 Date/Datetime/字符串"""
+        if 'trade_date' not in df.columns:
+            return df
+
+        dtype = df.schema['trade_date']
+        if dtype == pl.Date:
+            # 统一为 Datetime，保持与原有返回结构一致
+            return df.with_columns(pl.col('trade_date').cast(pl.Datetime).alias('date'))
+        if isinstance(dtype, pl.Datetime):
+            return df.with_columns(pl.col('trade_date').alias('date'))
+
+        return df.with_columns(
+            pl.col('trade_date').cast(pl.Utf8)
+            .str.strptime(pl.Datetime, format='%Y%m%d', strict=False)
+            .alias('date')
+        )
+
+    @staticmethod
+    def _apply_adjustment(df: pl.DataFrame, adjustment_type: str) -> pl.DataFrame:
+        """在数据出口应用复权价，使 open/high/low/close 即为请求的复权类型"""
+        prefix = {'qfq': 'qfq_', 'hfq': 'hfq_'}.get(adjustment_type)
+        if prefix is None:
+            return df
+
+        price_cols = [
+            col for col in ('open', 'high', 'low', 'close')
+            if f'{prefix}{col}' in df.columns
+        ]
+        if not price_cols:
+            logger.debug(f"数据未提供 {prefix} 复权列，保持原始价格")
+            return df
+
+        # 复权列为空时回退到原始价格，避免把有效行情覆盖成 null；
+        # 同时回写复权列，保证图表层再次应用复权时不会重新引入 null
+        exprs = []
+        for col in price_cols:
+            adjusted = pl.coalesce([pl.col(f'{prefix}{col}'), pl.col(col)])
+            exprs.append(adjusted.alias(col))
+            exprs.append(adjusted.alias(f'{prefix}{col}'))
+        return df.with_columns(exprs)
+
     def _get_data_from_database(self, data_type: str, code: str, start_date: str, end_date: str, frequency: str, adjustment_type: str = 'qfq') -> pl.DataFrame:
         """
         从数据库获取数据
@@ -208,17 +271,25 @@ class DataFetcher:
             if not session:
                 return pl.DataFrame()
             
+            start_bound = self._parse_date_bound(start_date)
+            end_bound = self._parse_date_bound(end_date)
+
             query = session.query(model_class).filter(
                 getattr(model_class, 'ts_code') == code,
-                getattr(model_class, 'trade_date') >= start_date.replace('-', ''),
-                getattr(model_class, 'trade_date') <= end_date.replace('-', '')
+                getattr(model_class, 'trade_date') >= (start_bound or start_date),
+                getattr(model_class, 'trade_date') <= (end_bound or end_date)
             ).order_by(getattr(model_class, 'trade_date'))
             
             data = query.all()
             if not data:
                 return pl.DataFrame()
             
-            # 构建数据记录
+            # 检查复权字段可用性（不依赖 adjustment_type，一次拉齐减少二次查询）
+            has_qfq = hasattr(data[0], 'qfq_open') and hasattr(data[0], 'qfq_close')
+            has_hfq = hasattr(data[0], 'hfq_open') and hasattr(data[0], 'hfq_close')
+            has_qfq_factor = hasattr(data[0], 'qfq_factor')
+            has_hfq_factor = hasattr(data[0], 'hfq_factor')
+
             data_records = []
             for item in data:
                 record = {
@@ -228,31 +299,40 @@ class DataFetcher:
                     'low': item.low,
                     'close': item.close,
                     'volume': item.vol,
-                    'amount': item.amount
+                    'amount': item.amount,
                 }
-                
-                # 添加复权价格
-                if adjustment_type == 'qfq' and hasattr(item, 'qfq_close'):
-                    record['qfq_open'] = item.qfq_open
-                    record['qfq_high'] = item.qfq_high
-                    record['qfq_low'] = item.qfq_low
-                    record['qfq_close'] = item.qfq_close
-                elif adjustment_type == 'hfq' and hasattr(item, 'hfq_close'):
-                    record['hfq_open'] = item.hfq_open
-                    record['hfq_high'] = item.hfq_high
-                    record['hfq_low'] = item.hfq_low
-                    record['hfq_close'] = item.hfq_close
-                
+                # 同时带上 qfq / hfq 两套复权价：优先 DB 预计算列，其次用因子实时算
+                if has_qfq:
+                    record['qfq_open'] = getattr(item, 'qfq_open', None)
+                    record['qfq_high'] = getattr(item, 'qfq_high', None)
+                    record['qfq_low'] = getattr(item, 'qfq_low', None)
+                    record['qfq_close'] = getattr(item, 'qfq_close', None)
+                elif has_qfq_factor and getattr(item, 'qfq_factor', None) not in (None, 1.0):
+                    qfq = item.qfq_factor
+                    record['qfq_open'] = item.open * qfq
+                    record['qfq_high'] = item.high * qfq
+                    record['qfq_low'] = item.low * qfq
+                    record['qfq_close'] = item.close * qfq
+
+                if has_hfq:
+                    record['hfq_open'] = getattr(item, 'hfq_open', None)
+                    record['hfq_high'] = getattr(item, 'hfq_high', None)
+                    record['hfq_low'] = getattr(item, 'hfq_low', None)
+                    record['hfq_close'] = getattr(item, 'hfq_close', None)
+                elif has_hfq_factor and getattr(item, 'hfq_factor', None) not in (None, 1.0):
+                    hfq = item.hfq_factor
+                    record['hfq_open'] = item.open * hfq
+                    record['hfq_high'] = item.high * hfq
+                    record['hfq_low'] = item.low * hfq
+                    record['hfq_close'] = item.close * hfq
+
                 data_records.append(record)
             
             # 创建DataFrame
             df = pl.from_dicts(data_records)
             
-            # 转换日期格式
-            if 'trade_date' in df.columns:
-                df = df.with_columns(
-                    pl.col('trade_date').str.strptime(pl.Datetime, format='%Y%m%d').alias('date')
-                )
+            # 转换日期格式：trade_date 为 Date/Datetime 时直接派生，字符串时按 YYYYMMDD 解析
+            df = self._normalize_trade_date(df)
             
             # 内存优化
             optimized_df = MemoryOptimizer.optimize_dataframe(df, enable_sparse=True)

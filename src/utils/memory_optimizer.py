@@ -200,8 +200,11 @@ class MemoryOptimizer:
             
             # 根据列名映射类型
             if col in cls.COLUMN_TYPE_MAP['price_cols']:
-                if dtype in [pl.Float64, pl.Decimal]:
-                    type_casts.append(pl.col(col).cast(pl.Float32))
+                # 价格列必须保留 Float64，否则累计收益、涨跌停比较、
+                # 复权因子连乘会出现可观测精度误差（量化场景不能降精度）
+                if dtype == pl.Decimal:
+                    type_casts.append(pl.col(col).cast(pl.Float64))
+                # Float64/Float32 都不动，保持原值
                     
             elif col in cls.COLUMN_TYPE_MAP['volume_cols']:
                 if dtype == pl.Float64:

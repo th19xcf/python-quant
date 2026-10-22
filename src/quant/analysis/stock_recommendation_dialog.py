@@ -212,7 +212,8 @@ class StockRecommendationDialog(QDialog):
             stocks_data_list = []
             for i, stock_code in enumerate(stock_codes):
                 try:
-                    df = data_manager.get_stock_data(stock_code, "2024-01-01", "2024-12-31")
+                    # 推荐场景同样使用后复权价，保证收益率计算正确
+                    df = data_manager.get_stock_data(stock_code, "2024-01-01", "2024-12-31", adjustment_type='hfq')
                     if not df.is_empty() and len(df) >= 20:
                         stock_info = stock_basic.filter(pl.col('ts_code') == stock_code)
                         stock_name = stock_info['name'].to_list()[0] if not stock_info.is_empty() else f'股票{stock_code}'

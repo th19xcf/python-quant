@@ -168,7 +168,8 @@ class StrategyBacktestDialog(QDialog):
             
             self.progress_bar.setValue(20)
             
-            data = data_manager.get_stock_data(stock_code, start_date, end_date)
+            # 回测必须使用后复权价，消除分红送转对收益计算的干扰
+            data = data_manager.get_stock_data(stock_code, start_date, end_date, adjustment_type='hfq')
             
             if data.is_empty():
                 self.result_text.setText(f"无法获取股票 {stock_code} 的数据，请检查股票代码和日期范围")

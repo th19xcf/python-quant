@@ -35,15 +35,6 @@ class BacktestEngine(BaseBacktestEngine):
         1. t日信号延迟到t+1日以开盘价成交（避免收盘价未来函数）
         2. 买入股数按lot_size（默认100股）整数倍取整，买入时即扣除买方成本
         3. 一字涨停日不可买入、一字跌停日不可卖出、停牌日（成交量为0）不可交易
-        
-        Args:
-            initial_capital: 初始资金
-            lot_size: 最小交易单位（股），A股买入为100股整数倍
-            limit_pct: 涨跌停幅度阈值，用于识别一字板
-            **params: 回测参数
-            
-        Returns:
-            Dict[str, Any]: 回测结果
         """
         if not self.strategy:
             logger.error("未设置策略")
@@ -51,6 +42,9 @@ class BacktestEngine(BaseBacktestEngine):
         
         self.trades = []
         self.equity_curve = []
+        
+        # 指标预计算：根据策略参数一次性向量化算好，避免每根K线在策略里 O(n²) 循环
+        self.pl_df = self._precompute_indicators(self.pl_df, self.strategy)
         
         current_capital = initial_capital
         position = 0
@@ -93,7 +87,8 @@ class BacktestEngine(BaseBacktestEngine):
                 if self._is_tradable(i, 'sell', close_prices, high_prices, low_prices, volumes, limit_pct):
                     sell_price = open_prices[i]
                     sell_cost = self.cost_model.calculate_sell_cost(position, sell_price)
-                    current_capital = position * sell_price - sell_cost
+                    # 卖出所得应叠加到剩余现金，不能覆盖买入后剩余的现金
+                    current_capital += position * sell_price - sell_cost
                     
                     self.trades.append({
                         'date': dates[i],

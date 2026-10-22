@@ -137,6 +137,69 @@ class BaseBacktestEngine:
 
         return self.visualizer.visualize_backtest(self.backtest_results)
 
+    # ------------------------------------------------------------------
+    # 指标预计算：根据策略参数一次性向量化算好，避免策略内 O(n²) 循环
+    # ------------------------------------------------------------------
+
+    def _precompute_indicators(self, df: pl.DataFrame, strategy: BaseStrategy) -> pl.DataFrame:
+        """
+        向量化预计算策略会用到的指标列，结果写入 DataFrame 供策略按列名读取
+
+        约定策略直接读以下列（如存在）：
+            ma_{short_window}, ma_{long_window}     趋势跟踪 / 多因子 MA
+            macd, macd_signal, macd_hist            多因子 / MACD 策略
+            rsi                                     均值回归 / 多因子
+            rsi_{period}                            通用 RSI
+        """
+        close = pl.col('close')
+        high = pl.col('high')
+        low = pl.col('low')
+
+        short_w = int(strategy.params.get('short_window', 10))
+        long_w = int(strategy.params.get('long_window', 20))
+        rsi_w = int(strategy.params.get('rsi_period', 14))
+
+        exprs = []
+
+        # 移动平均线（多策略共用）
+        exprs.append(close.rolling_mean(window_size=short_w).alias(f'ma_{short_w}'))
+        exprs.append(close.rolling_mean(window_size=long_w).alias(f'ma_{long_w}'))
+
+        # EMA / MACD
+        ema12 = close.ewm_mean(span=12)
+        ema26 = close.ewm_mean(span=26)
+        macd = ema12 - ema26
+        signal = macd.ewm_mean(span=9)
+        exprs.extend([
+            macd.alias('macd'),
+            signal.alias('macd_signal'),
+            (macd - signal).alias('macd_hist'),
+        ])
+
+        # RSI（支持自定义 period）
+        delta = close.diff()
+        gain = pl.when(delta > 0).then(delta).otherwise(0.0)
+        loss = pl.when(delta < 0).then(-delta).otherwise(0.0)
+        avg_gain = gain.rolling_mean(window_size=rsi_w)
+        avg_loss = loss.rolling_mean(window_size=rsi_w)
+        rs = avg_gain / (avg_loss + 1e-10)
+        rsi_expr = 100 - (100 / (1 + rs))
+        exprs.extend([
+            rsi_expr.alias('rsi'),
+            rsi_expr.alias(f'rsi_{rsi_w}'),
+        ])
+
+        # ATR（多因子可能用到）
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pl.max_horizontal([tr1, tr2, tr3])
+        exprs.append(tr.rolling_mean(window_size=14).alias('atr'))
+
+        if not exprs:
+            return df
+        return df.with_columns(exprs)
+
     def _generate_param_combinations(self, param_ranges: Dict[str, List[float]]) -> List[Dict[str, float]]:
         """
         生成参数组合
