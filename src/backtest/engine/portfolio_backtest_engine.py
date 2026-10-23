@@ -11,6 +11,7 @@ from loguru import logger
 
 from src.backtest.engine.base_engine import BaseBacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
+from src.risk import RiskEngine, Order as RiskOrder, Portfolio as RiskPortfolio
 
 
 class PortfolioBacktestEngine(BaseBacktestEngine):
@@ -43,8 +44,10 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             strategy: 策略对象
         """
         self.strategies[stock_code] = strategy
-    
-    def run_backtest(self, initial_capital: float = 1000000.0, allocation_strategy: str = 'equal', lot_size: int = 100, limit_pct: float = 0.1, **params) -> Dict[str, Any]:
+
+    def run_backtest(self, initial_capital: float = 1000000.0, allocation_strategy: str = 'equal', lot_size: int = 100, limit_pct: float = 0.1,
+                     industry_map: Dict[str, str] = None,
+                     **params) -> Dict[str, Any]:
         """
         运行组合回测
         
@@ -52,24 +55,22 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
         1. t日信号延迟到该股票下一交易日以开盘价成交（避免收盘价未来函数）
         2. 买入股数按lot_size（默认100股）整数倍取整，买入时即扣除买方成本
         3. 一字涨停日不可买入、一字跌停日不可卖出、停牌日（无数据或成交量为0）不可交易
-        
-        Args:
-            initial_capital: 初始资金
-            allocation_strategy: 资金分配策略，可选值：'equal'（等权分配）、'value'（价值权重）
-            lot_size: 最小交易单位（股），A股买入为100股整数倍
-            limit_pct: 涨跌停幅度阈值，用于识别一字板
-            **params: 回测参数
-            
-        Returns:
-            Dict[str, Any]: 回测结果
+
+        风控层（可选）：
+        - 设置 self.risk_engine 后，每笔 buy/sell 先过 gate()
+        - 被拒的单子记进 self.rejected_orders，包含规则名和原因
         """
         if not self.strategies:
             logger.error("未设置策略")
             return {}
-        
+
         self.trades = []
+        self.rejected_orders = []
         self.equity_curve = []
         self.positions = {stock: 0 for stock in self.data_dict.keys()}
+
+        # 行业映射（风控 MaxIndustryWeight 用）
+        industry_map = industry_map or {}
         
         stock_capitals = {}
         stock_count = len(self.data_dict)
@@ -118,6 +119,26 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
                         one_way_limit = 'up'
                     elif pct <= -(stock_limit_pct - 0.005):
                         one_way_limit = 'down'
+
+                # ========== 构造当前组合状态（给风控用） ==========
+                def _build_portfolio_for_gate() -> RiskPortfolio:
+                    # 现金 = 所有股票 capital 之和（PortfolioBacktestEngine 等权分配模型下）
+                    total_cash = sum(stock_capitals.values())
+                    # last_prices 所有持仓股票都用其 last_close（有数据的）或当前 close_price
+                    lp = {}
+                    for sc in self.positions:
+                        if self.positions[sc] > 0:
+                            lp[sc] = last_close.get(sc) or close_price if sc == stock_code else last_close.get(sc, 0.0)
+                            # 当前股票用 open_price（执行价）作为估值参考
+                            if sc == stock_code:
+                                lp[sc] = open_price
+                    return RiskPortfolio(
+                        positions={sc: self.positions[sc] for sc in self.positions if self.positions[sc] > 0},
+                        last_prices={k: v for k, v in lp.items() if v > 0},
+                        cash=total_cash,
+                        industry_map={sc: industry_map.get(sc, '') for sc in self.data_dict.keys()},
+                        equity_curve=list(self.equity_curve),
+                    )
                 
                 # 1. 执行该股票的挂单（以今日开盘价成交，订单当日有效）
                 pending = pending_signals[stock_code]
@@ -130,6 +151,26 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
                             buy_cost = self.cost_model.calculate_buy_cost(shares, open_price)
                             total_pay = shares * open_price + buy_cost
                             if total_pay <= stock_capitals[stock_code]:
+                                # --- 风控闸门 ---
+                                if self.risk_engine is not None:
+                                    risk_order = RiskOrder(
+                                        ts_code=stock_code, side='buy', qty=shares,
+                                        price=open_price, industry=industry_map.get(stock_code, ''),
+                                        trade_date=date,
+                                    )
+                                    rp = _build_portfolio_for_gate()
+                                    gate = self.risk_engine.gate([risk_order], rp)
+                                    if gate.rejected:
+                                        self.rejected_orders.append({
+                                            'date': date, 'side': 'buy',
+                                            'ts_code': stock_code, 'qty': shares,
+                                            'price': open_price,
+                                            'rule': gate.rejected[0][1],
+                                            'reason': gate.rejected[0][2],
+                                        })
+                                        pending_signals[stock_code] = None
+                                        continue
+                                # --- 风控通过，执行下单 ---
                                 self.positions[stock_code] = shares
                                 stock_capitals[stock_code] -= total_pay
                                 daily_trades.append({
@@ -146,6 +187,27 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
                 elif pending == 'sell' and self.positions[stock_code] > 0:
                     if not suspended and one_way_limit != 'down':
                         sell_cost = self.cost_model.calculate_sell_cost(self.positions[stock_code], open_price)
+
+                        # --- 风控闸门 ---
+                        if self.risk_engine is not None:
+                            risk_order = RiskOrder(
+                                ts_code=stock_code, side='sell', qty=self.positions[stock_code],
+                                price=open_price, industry=industry_map.get(stock_code, ''),
+                                trade_date=date,
+                            )
+                            rp = _build_portfolio_for_gate()
+                            gate = self.risk_engine.gate([risk_order], rp)
+                            if gate.rejected:
+                                self.rejected_orders.append({
+                                    'date': date, 'side': 'sell',
+                                    'ts_code': stock_code, 'qty': self.positions[stock_code],
+                                    'price': open_price,
+                                    'rule': gate.rejected[0][1],
+                                    'reason': gate.rejected[0][2],
+                                })
+                                pending_signals[stock_code] = None
+                                continue
+
                         stock_capitals[stock_code] = self.positions[stock_code] * open_price - sell_cost
                         daily_trades.append({
                             'date': date,
@@ -189,6 +251,18 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
         total_return = (final_equity - initial_capital) / initial_capital * 100
         
         performance = self.performance_analyzer.analyze(self.equity_curve, self.trades)
+
+        # 风控 summary
+        risk_summary = None
+        if self.risk_engine is not None:
+            risk_summary = {
+                'rules': [r.name for r in self.risk_engine.rules],
+                'total_rejected': len(self.rejected_orders),
+                'reject_detail': [
+                    f"[{r['date']}] {r['side']} {r['ts_code']} qty={r['qty']} → {r['rule']}: {r['reason']}"
+                    for r in self.rejected_orders
+                ],
+            }
         
         self.backtest_results = {
             'initial_capital': initial_capital,
@@ -197,8 +271,12 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             'trades': self.trades,
             'equity_curve': self.equity_curve,
             'performance': performance,
-            'strategy_names': {stock: strategy.name for stock, strategy in self.strategies.items()}
+            'strategy_names': {stock: strategy.name for stock, strategy in self.strategies.items()},
+            # 风控层
+            'risk_summary': risk_summary,
+            'rejected_orders': self.rejected_orders,
         }
         
-        logger.info(f"组合回测完成: 总收益率 = {total_return:.2f}%")
+        logger.info(f"组合回测完成: 总收益率 = {total_return:.2f}%"
+                    + (f" | 风控拒单 {len(self.rejected_orders)} 笔" if risk_summary else ""))
         return self.backtest_results

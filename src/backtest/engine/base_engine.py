@@ -5,7 +5,7 @@
 回测引擎基类，提供数据转换和通用组件初始化的统一逻辑
 """
 
-from typing import Any, Union, Dict, List
+from typing import Any, Union, Dict, List, Optional
 import polars as pl
 import pandas as pd
 import itertools
@@ -15,6 +15,7 @@ from src.backtest.costs.cost_model import CostModel
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.backtest.visualization.backtest_visualizer import BacktestVisualizer
 from src.backtest.strategies.base_strategy import BaseStrategy
+from src.risk import RiskEngine, Order as RiskOrder, Portfolio as RiskPortfolio, GateResult
 
 
 DataFrameType = Union[pl.DataFrame, pl.LazyFrame, pd.DataFrame, Any]
@@ -36,6 +37,10 @@ class BaseBacktestEngine:
         self.trades = []
         self.equity_curve = []
         self.ts_code = ''
+
+        # 风控层：None 表示不启用（所有订单直接过）；设置后 gate() 拦截
+        self.risk_engine: Optional[RiskEngine] = None
+        self.rejected_orders: List[Dict[str, Any]] = []   # 风控拒单日志
 
     @staticmethod
     def convert_to_polars(data: DataFrameType) -> pl.DataFrame:

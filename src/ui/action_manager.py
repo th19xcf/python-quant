@@ -47,21 +47,21 @@ class ActionManager:
     def on_strategy_backtest(self):
         logger.info("点击了策略回测")
         # 导入策略回测对话框
-        from src.quant.analysis.strategy_backtest_dialog import StrategyBacktestDialog
+        from src.ui.dialogs.strategy_backtest_dialog import StrategyBacktestDialog
         dialog = StrategyBacktestDialog(self.window)
         dialog.exec_()
 
     def on_stock_recommendation(self):
         logger.info("点击了股票推荐")
         # 导入股票推荐对话框
-        from src.quant.analysis.stock_recommendation_dialog import StockRecommendationDialog
+        from src.ui.dialogs.stock_recommendation_dialog import StockRecommendationDialog
         dialog = StockRecommendationDialog(self.window)
         dialog.exec_()
 
     def on_factor_analysis(self):
         logger.info("点击了因子分析")
         # 导入因子分析对话框
-        from src.quant.analysis.factor_analysis_dialog import FactorAnalysisDialog
+        from src.ui.dialogs.factor_analysis_dialog import FactorAnalysisDialog
         dialog = FactorAnalysisDialog(self.window)
         dialog.exec_()
 
