@@ -213,7 +213,7 @@ class AsyncDataManager:
             logger.exception(f"获取{type_name}数据失败: {e}")
             raise
     
-    async def get_stock_data_async(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq') -> pl.DataFrame:
+    async def get_stock_data_async(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'hfq') -> pl.DataFrame:
         """
         异步获取股票历史数据
         
@@ -358,7 +358,7 @@ class AsyncDataManager:
         
         return result
     
-    async def get_multiple_stocks_data_async(self, stock_codes: List[str], start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq', batch_size: int = 10, timeout: int = 30) -> Dict[str, pl.DataFrame]:
+    async def get_multiple_stocks_data_async(self, stock_codes: List[str], start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'hfq', batch_size: int = 10, timeout: int = 30) -> Dict[str, pl.DataFrame]:
         """
         异步并行获取多只股票数据
         

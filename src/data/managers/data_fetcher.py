@@ -104,46 +104,52 @@ class DataFetcher:
                 available_sources.append(source)
         return available_sources
     
-    def get_stock_data(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq') -> pl.DataFrame:
+    def get_stock_data(self, stock_code: str, start_date: str, end_date: str,
+                       frequency: str = '1d', adjustment_type: str = 'hfq',
+                       as_of: Optional[date] = None) -> pl.DataFrame:
         """
         获取股票数据
-        
+
         Args:
             stock_code: 股票代码
             start_date: 开始日期
             end_date: 结束日期
             frequency: 数据频率
-            adjustment_type: 复权类型
-            
+            adjustment_type: 复权类型（回测默认 hfq 即后复权，PIT 安全）
+            as_of: 观察基准日。仅 qfq 场景使用——截断 ex_date > as_of 的
+                   除权事件，保证观察者在 as_of 时点看到的
+                   [start, as_of] 段前复权价与今天完全一致。
+                   hfq 天然 PIT 安全，不需要 as_of。
+
         Returns:
             pl.DataFrame: 股票数据
         """
         # 尝试从缓存获取
-        cached_data = global_data_cache.get('stock', stock_code, start_date, end_date, 
-                                         frequency=frequency, adjustment_type=adjustment_type)
+        cache_extra = {'as_of': str(as_of) if as_of else None}
+        cached_data = global_data_cache.get('stock', stock_code, start_date, end_date,
+                                         frequency=frequency, adjustment_type=adjustment_type,
+                                         **cache_extra)
         if cached_data is not None:
             logger.info(f"从缓存获取股票数据: {stock_code} {start_date} to {end_date}")
             return cached_data
-        
-        # 从数据库获取
-        db_data = self._get_data_from_database('stock', stock_code, start_date, end_date, frequency, adjustment_type)
+
+        # 从数据库获取（_get_data_from_database 内部处理 as_of 截断）
+        db_data = self._get_data_from_database('stock', stock_code, start_date, end_date,
+                                                frequency, adjustment_type, as_of)
         if not db_data.is_empty():
-            # 统一在数据出口应用复权，保证下游拿到的 close 即为所请求的复权价
-            db_data = self._apply_adjustment(db_data, adjustment_type)
-            # 存入缓存
-            global_data_cache.set(db_data, 'stock', stock_code, start_date, end_date, 
+            db_data = self._apply_adjustment(db_data, adjustment_type, as_of)
+            global_data_cache.set(db_data, 'stock', stock_code, start_date, end_date,
                                 frequency=frequency, adjustment_type=adjustment_type)
             return db_data
-        
-        # 从数据源获取
+
+        # 从数据源获取（数据源一般不支持 as_of，直接传 None）
         data = self._get_data_from_sources('stock', stock_code, start_date, end_date, frequency, adjustment_type)
-        
-        # 存入缓存
+
         if not data.is_empty():
-            data = self._apply_adjustment(data, adjustment_type)
-            global_data_cache.set(data, 'stock', stock_code, start_date, end_date, 
+            data = self._apply_adjustment(data, adjustment_type, as_of=None)
+            global_data_cache.set(data, 'stock', stock_code, start_date, end_date,
                                 frequency=frequency, adjustment_type=adjustment_type)
-        
+
         return data
     
     def get_index_data(self, index_code: str, start_date: str, end_date: str, frequency: str = '1d') -> pl.DataFrame:
@@ -220,57 +226,87 @@ class DataFetcher:
         )
 
     @staticmethod
-    def _apply_adjustment(df: pl.DataFrame, adjustment_type: str) -> pl.DataFrame:
-        """在数据出口应用复权价，使 open/high/low/close 即为请求的复权类型"""
+    def _apply_adjustment(df: pl.DataFrame, adjustment_type: str,
+                          as_of: Optional[date] = None) -> pl.DataFrame:
+        """
+        在数据出口应用复权价，使 open/high/low/close 即为请求的复权类型。
+
+        优先用因子列（qfq_factor / hfq_factor）实时算，避免依赖 DB 预计算的
+        qfq_open/hfq_open 等冗余列（前复权价落库是未来函数反模式）。
+        当因子列不存在时，回退到预计算列（兼容旧数据）。
+
+        Args:
+            df: 含原始 open/high/low/close +（可选）qfq_factor/hfq_factor 的 DataFrame
+            adjustment_type: 'none' | 'qfq' | 'hfq'
+            as_of: 观察基准日，仅 qfq 场景使用——截断 ex_date > as_of 的
+                   除权事件，保证 [start, as_of] 段的前复权价与"今天"
+                   观察到的同段价格一致（PIT 安全校验）。
+                   hfq 本身 PIT 安全，不需要 as_of。
+        """
         prefix = {'qfq': 'qfq_', 'hfq': 'hfq_'}.get(adjustment_type)
         if prefix is None:
             return df
 
-        price_cols = [
-            col for col in ('open', 'high', 'low', 'close')
-            if f'{prefix}{col}' in df.columns
-        ]
-        if not price_cols:
+        factor_col = f'{prefix}factor'   # qfq_factor / hfq_factor
+        price_cols = ['open', 'high', 'low', 'close']
+
+        if factor_col in df.columns:
+            # === 优先用因子列实时算（正确路径）===
+            factor_expr = pl.col(factor_col)
+
+            # as_of 截断（仅 qfq 场景，hfq 永远不需要）
+            # _get_data_from_database 已在 as_of 非空时把 df 里的 qfq_factor
+            # 预截断到 as_of 时点，这里只需要直接用
+            exprs = []
+            for col in price_cols:
+                adjusted = (pl.col(col) * factor_expr).alias(col)
+                exprs.append(adjusted)
+            return df.with_columns(exprs)
+
+        # === 回退：DB 预计算列（兼容旧数据）===
+        precomp_cols = [f'{prefix}{c}' for c in price_cols if f'{prefix}{c}' in df.columns]
+        if not precomp_cols:
             logger.debug(f"数据未提供 {prefix} 复权列，保持原始价格")
             return df
 
-        # 复权列为空时回退到原始价格，避免把有效行情覆盖成 null；
-        # 同时回写复权列，保证图表层再次应用复权时不会重新引入 null
         exprs = []
         for col in price_cols:
-            adjusted = pl.coalesce([pl.col(f'{prefix}{col}'), pl.col(col)])
+            precomp = f'{prefix}{col}'
+            adjusted = pl.coalesce([pl.col(precomp), pl.col(col)])
             exprs.append(adjusted.alias(col))
-            exprs.append(adjusted.alias(f'{prefix}{col}'))
         return df.with_columns(exprs)
 
-    def _get_data_from_database(self, data_type: str, code: str, start_date: str, end_date: str, frequency: str, adjustment_type: str = 'qfq') -> pl.DataFrame:
+    def _get_data_from_database(self, data_type: str, code: str,
+                                 start_date: str, end_date: str,
+                                 frequency: str,
+                                 adjustment_type: str = 'hfq',
+                                 as_of: Optional[date] = None) -> pl.DataFrame:
         """
-        从数据库获取数据
-        
-        Args:
-            data_type: 数据类型
-            code: 代码
-            start_date: 开始日期
-            end_date: 结束日期
-            frequency: 数据频率
-            adjustment_type: 复权类型
-            
+        从数据库获取原始行情 + 复权因子，as_of 时截断 qfq_factor。
+
+        DB 返回的 qfq_factor 是全量因子（含所有已知除权事件）。
+        当 as_of 非空且 adjustment_type='qfq' 时，把 as_of 之后的除权
+        事件从 qfq_factor 中回滚——保证观察者在 as_of 时点看到的
+        [start, as_of] 段前复权价，与今天看到的同段价格完全一致。
+        hfq_factor 永远不需要 as_of（后复权只影响 ex_date 之后的行，
+        历史行天然 PIT 安全）。
+
         Returns:
-            pl.DataFrame: 数据
+            pl.DataFrame: 含原始 open/high/low/close + qfq_factor/hfq_factor
+                          （as_of 截断后的 qfq_factor）
         """
         if not self.db_manager or not self.db_manager.is_connected():
             return pl.DataFrame()
-        
+
         try:
-            # 动态导入模型
             module_path = f"src.database.models.{data_type}"
             module = __import__(module_path, fromlist=[f"{data_type.capitalize()}Daily"])
             model_class = getattr(module, f"{data_type.capitalize()}Daily")
-            
+
             session = self.db_manager.get_session()
             if not session:
                 return pl.DataFrame()
-            
+
             start_bound = self._parse_date_bound(start_date)
             end_bound = self._parse_date_bound(end_date)
 
@@ -279,16 +315,32 @@ class DataFetcher:
                 getattr(model_class, 'trade_date') >= (start_bound or start_date),
                 getattr(model_class, 'trade_date') <= (end_bound or end_date)
             ).order_by(getattr(model_class, 'trade_date'))
-            
+
             data = query.all()
             if not data:
                 return pl.DataFrame()
-            
-            # 检查复权字段可用性（不依赖 adjustment_type，一次拉齐减少二次查询）
-            has_qfq = hasattr(data[0], 'qfq_open') and hasattr(data[0], 'qfq_close')
-            has_hfq = hasattr(data[0], 'hfq_open') and hasattr(data[0], 'hfq_close')
+
             has_qfq_factor = hasattr(data[0], 'qfq_factor')
             has_hfq_factor = hasattr(data[0], 'hfq_factor')
+
+            # --- as_of 截断：查除权事件 ---
+            # qfq_factor 回滚公式：截断后 = 原 qfq_factor / ∏{ex_date > max(trade_date, as_of)} event_factor
+            # （ex_date > as_of 的事件是观察者还不知道的，应从因子中移除）
+            rollback_factors: list = []   # [(event_factor, ex_date), ...]
+            if as_of is not None and adjustment_type == 'qfq':
+                try:
+                    from src.database.models.stock import StockDividend
+                    from sqlalchemy import select
+                    stmt = select(StockDividend).where(
+                        StockDividend.ts_code == code,
+                        StockDividend.ex_date > as_of
+                    ).order_by(StockDividend.ex_date)
+                    for div in session.execute(stmt).scalars().all():
+                        factor = self._dividend_event_factor(div)
+                        if factor is not None and factor != 1.0:
+                            rollback_factors.append((factor, div.ex_date))
+                except Exception as e:
+                    logger.debug(f"as_of 截断时查除权事件失败（不影响主流程）: {e}")
 
             data_records = []
             for item in data:
@@ -301,46 +353,58 @@ class DataFetcher:
                     'volume': item.vol,
                     'amount': item.amount,
                 }
-                # 同时带上 qfq / hfq 两套复权价：优先 DB 预计算列，其次用因子实时算
-                if has_qfq:
-                    record['qfq_open'] = getattr(item, 'qfq_open', None)
-                    record['qfq_high'] = getattr(item, 'qfq_high', None)
-                    record['qfq_low'] = getattr(item, 'qfq_low', None)
-                    record['qfq_close'] = getattr(item, 'qfq_close', None)
-                elif has_qfq_factor and getattr(item, 'qfq_factor', None) not in (None, 1.0):
-                    qfq = item.qfq_factor
-                    record['qfq_open'] = item.open * qfq
-                    record['qfq_high'] = item.high * qfq
-                    record['qfq_low'] = item.low * qfq
-                    record['qfq_close'] = item.close * qfq
 
-                if has_hfq:
-                    record['hfq_open'] = getattr(item, 'hfq_open', None)
-                    record['hfq_high'] = getattr(item, 'hfq_high', None)
-                    record['hfq_low'] = getattr(item, 'hfq_low', None)
-                    record['hfq_close'] = getattr(item, 'hfq_close', None)
-                elif has_hfq_factor and getattr(item, 'hfq_factor', None) not in (None, 1.0):
-                    hfq = item.hfq_factor
-                    record['hfq_open'] = item.open * hfq
-                    record['hfq_high'] = item.high * hfq
-                    record['hfq_low'] = item.low * hfq
-                    record['hfq_close'] = item.close * hfq
+                # --- 始终带 factor 列 ---
+                if has_qfq_factor:
+                    raw_qfq = getattr(item, 'qfq_factor', 1.0) or 1.0
+                    # as_of 截断：除以所有 ex_date > max(trade_date, as_of) 的事件 factor
+                    if rollback_factors:
+                        td = item.trade_date
+                        for evt_factor, evt_ex_date in rollback_factors:
+                            if evt_ex_date is not None and evt_ex_date > td:
+                                # 该事件影响 trade_date 行，且观察者还不知道它
+                                raw_qfq /= evt_factor
+                    record['qfq_factor'] = raw_qfq
+
+                if has_hfq_factor:
+                    record['hfq_factor'] = getattr(item, 'hfq_factor', 1.0) or 1.0
 
                 data_records.append(record)
-            
-            # 创建DataFrame
+
             df = pl.from_dicts(data_records)
-            
-            # 转换日期格式：trade_date 为 Date/Datetime 时直接派生，字符串时按 YYYYMMDD 解析
             df = self._normalize_trade_date(df)
-            
-            # 内存优化
             optimized_df = MemoryOptimizer.optimize_dataframe(df, enable_sparse=True)
             return optimized_df
-            
+
         except Exception as e:
             logger.warning(f"从数据库获取{data_type}数据失败: {e}")
             return pl.DataFrame()
+
+    @staticmethod
+    def _dividend_event_factor(dividend) -> Optional[float]:
+        """
+        从除权除息事件对象计算单次事件的复权因子（参考 adj_factor_calculator._calculate_factors）。
+
+        返回值 = numerator / denominator，前复权每次乘这个值。
+        """
+        share_div = getattr(dividend, 'share_div', None) or 0.0
+        cash_div = getattr(dividend, 'cash_div', None) or 0.0
+        rights_ratio = getattr(dividend, 'rights_issue_ratio', None) or 0.0
+        rights_price = getattr(dividend, 'rights_issue_price', None) or 0.0
+        prev_close = getattr(dividend, 'prev_close', None)
+
+        if prev_close is None or prev_close == 0:
+            return None
+
+        numerator = prev_close - cash_div + rights_price * rights_ratio
+        denominator = prev_close * (1 + share_div + rights_ratio)
+
+        if denominator == 0:
+            return None
+        factor = numerator / denominator
+        if factor <= 0 or factor > 10:
+            return None
+        return factor
     
     def _get_data_from_sources(self, data_type: str, code: str, start_date: str, end_date: str, frequency: str, adjustment_type: str = 'qfq') -> pl.DataFrame:
         """

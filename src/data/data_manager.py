@@ -279,7 +279,7 @@ class DataManager(IDataProvider, IDataProcessor):
                     pass
     
     @handle_exception_with_retry(max_retries=3, retry_delay=1.0)
-    def get_stock_data(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq') -> pl.DataFrame:
+    def get_stock_data(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'hfq', as_of=None) -> pl.DataFrame:
         """
         获取股票历史数据
         
@@ -289,12 +289,13 @@ class DataManager(IDataProvider, IDataProcessor):
             end_date: 结束日期，格式：YYYY-MM-DD
             frequency: 数据频率，默认：1d（日线），支持1d/1w/1m（日/周/月线）
             adjustment_type: 复权类型，qfq=前复权, hfq=后复权, none=不复权
+            as_of: 观察基准日，仅 qfq 场景用于 PIT 截断
         
         Returns:
             pl.DataFrame: 股票历史数据
         """
         # 使用新的DataService
-        return self.data_service.get_stock_data(stock_code, start_date, end_date, frequency, adjustment_type)
+        return self.data_service.get_stock_data(stock_code, start_date, end_date, frequency, adjustment_type, as_of)
     
 
     

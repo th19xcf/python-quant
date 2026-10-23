@@ -88,9 +88,10 @@ class DataService:
     # ------------------------------------------------------------------
 
     def get_stock_data(self, stock_code: str, start_date: str, end_date: str,
-                      frequency: str = '1d', adjustment_type: str = 'qfq') -> pl.DataFrame:
+                      frequency: str = '1d', adjustment_type: str = 'hfq',
+                      as_of=None) -> pl.DataFrame:
         return self.data_fetcher.get_stock_data(
-            stock_code, start_date, end_date, frequency, adjustment_type
+            stock_code, start_date, end_date, frequency, adjustment_type, as_of
         )
 
     def get_index_data(self, index_code: str, start_date: str, end_date: str,
