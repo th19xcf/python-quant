@@ -2,24 +2,31 @@
 # -*- coding: utf-8 -*-
 
 """
-增量计算模块，提供技术指标的增量计算功能
+增量计算模块，提供技术指标的增量计算功能。
+
+统一复用 indicator_calculator.calculate_multiple_indicators_polars 的
+单一公式实现，incremental 层只做三件事：
+  1. _combine(existing, new, OHLCV)  — 合并历史与新增数据
+  2. calculate_multiple_indicators_polars  — 在完整 combined 上算指标
+  3. tail(len(new)) + 列裁剪  — 只提取新增数据对应的指标列返回
+
+这样消除了 incremental 与 indicators/ 之间可能的口径分叉
+（如 WR 正负号、OBV cumsum 方法名、to_float32 精度丢失等）。
 """
 
 import polars as pl
 from typing import List, Dict, Any, Optional
 from loguru import logger
+from src.tech_analysis.indicator_calculator import calculate_multiple_indicators_polars
+
+# 基础 OHLCV 列集合（所有指标计算都能访问）
+_BASE_COLS = ['date', 'open', 'high', 'low', 'close', 'volume']
 
 
 class IncrementalCalculator:
-    """
-    增量计算类，提供技术指标的增量计算功能
-    """
-    
+    """增量计算类，提供技术指标的增量计算功能"""
+
     def __init__(self):
-        """
-        初始化增量计算器
-        """
-        # 支持增量计算的指标类型
         self.supported_indicators = {
             'ma': self.incremental_calculate_ma,
             'vol_ma': self.incremental_calculate_vol_ma,
@@ -37,740 +44,169 @@ class IncrementalCalculator:
             'fsl': self.incremental_calculate_fsl,
             'bbi': self.incremental_calculate_bbi,
         }
-    
-    @staticmethod
-    def _combine(existing_data: pl.DataFrame, new_data: pl.DataFrame, columns: List[str]) -> pl.DataFrame:
-        """
-        合并历史数据与新增数据
 
-        历史数据可能包含已计算的指标列（列数多于新数据），且两侧 dtype 可能
-        不一致（如 Float32 vs Float64），直接 vstack 会抛 ShapeError/SchemaError。
-        这里先按需要的列对齐，再用 vertical_relaxed 合并（自动提升为公共超类型）。
+    # ------------------------------------------------------------------
+    # 通用辅助
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _combine(existing_data: pl.DataFrame, new_data: pl.DataFrame,
+                 columns: List[str]) -> pl.DataFrame:
         """
-        cols = [c for c in columns if c in existing_data.columns and c in new_data.columns]
+        合并历史数据与新增数据。两侧 dtype 可能不一致（Float32 vs Float64），
+        先按需要的列对齐，再用 vertical_relaxed 合并（自动提升为公共超类型）。
+        """
+        cols = [c for c in columns
+                if c in existing_data.columns and c in new_data.columns]
         return pl.concat(
             [existing_data.select(cols), new_data.select(cols)],
             how="vertical_relaxed"
         )
 
     def is_supported(self, indicator_type: str) -> bool:
-        """
-        检查指标是否支持增量计算
-        
-        Args:
-            indicator_type: 指标类型
-            
-        Returns:
-            bool: 是否支持增量计算
-        """
         return indicator_type in self.supported_indicators
-    
-    def incremental_calculate(self, 
-                             indicator_type: str, 
-                             existing_data: pl.DataFrame, 
-                             new_data: pl.DataFrame, 
-                             **kwargs) -> pl.DataFrame:
-        """
-        增量计算指标
-        
-        Args:
-            indicator_type: 指标类型
-            existing_data: 已有的数据（包含历史指标值）
-            new_data: 新增的数据（不包含指标值）
-            **kwargs: 指标计算参数
-            
-        Returns:
-            pl.DataFrame: 包含新增指标值的数据
-        """
+
+    def incremental_calculate(self,
+                              indicator_type: str,
+                              existing_data: pl.DataFrame,
+                              new_data: pl.DataFrame,
+                              **kwargs) -> pl.DataFrame:
         if not self.is_supported(indicator_type):
             raise ValueError(f"指标{indicator_type}不支持增量计算")
-        
         try:
-            # 调用对应的增量计算方法
-            calculate_func = self.supported_indicators[indicator_type]
-            return calculate_func(existing_data, new_data, **kwargs)
+            return self.supported_indicators[indicator_type](
+                existing_data, new_data, **kwargs)
         except Exception as e:
             logger.error(f"增量计算{indicator_type}失败: {e}")
             raise
-    
-    def incremental_calculate_ma(self, 
-                                existing_data: pl.DataFrame, 
-                                new_data: pl.DataFrame, 
-                                windows: List[int] = None, 
-                                **kwargs) -> pl.DataFrame:
+
+    def _reuse(self, indicator_type: str,
+               existing: pl.DataFrame, new: pl.DataFrame,
+               calc_kwargs: Dict[str, Any]) -> pl.DataFrame:
         """
-        增量计算移动平均线
-        
+        复用 calculate_multiple_indicators_polars 完成增量指标计算的通用逻辑。
+
         Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
-            windows: 移动平均窗口列表
-            
+            indicator_type: 指标类型名（如 'ma', 'sar'）
+            existing: 历史数据（含指标列）
+            new: 新增数据（不含指标列）
+            calc_kwargs: 传给 calculate_multiple_indicators_polars 的 kwargs
+                         （参数名已按 indicator_calculator 约定加前缀，如 ma_windows）
         Returns:
-            pl.DataFrame: 包含新增MA值的数据
+            pl.DataFrame: 仅含 new 行数 + 新增指标列的 DataFrame
         """
+        combined = self._combine(existing, new, _BASE_COLS)
+        full_result = calculate_multiple_indicators_polars(
+            combined, [indicator_type], **calc_kwargs)
+        tail_result = full_result.tail(len(new))
+        new_cols = [c for c in tail_result.columns if c not in combined.columns]
+        result = new.clone()
+        for c in new_cols:
+            result = result.with_columns(tail_result[c].alias(c))
+        return result
+
+    # ------------------------------------------------------------------
+    # 15 个指标的轻量封装
+    # ------------------------------------------------------------------
+
+    def incremental_calculate_ma(self, existing, new,
+                                 windows: List[int] = None, **_):
         if windows is None:
             windows = [5, 10, 20, 60]
-        
-        # 合并数据用于计算
-        combined_data = self._combine(existing_data, new_data, ['date', 'close'])
-        
-        # 计算每个窗口的移动平均
-        result = new_data.clone()
-        
-        for window in windows:
-            # 计算完整的移动平均
-            ma_col = f'ma{window}'
-            ma_values = combined_data.with_columns(
-                pl.col('close').rolling_mean(window_size=window, min_samples=window).alias(ma_col)
-            )[ma_col]
-            
-            # 提取新增数据对应的MA值
-            new_ma_values = ma_values.tail(len(new_data))
-            result = result.with_columns(new_ma_values.alias(ma_col))
-        
-        # 确保结果包含所有必要的列
-        for col in existing_data.columns:
-            if col not in result.columns:
-                if col in new_data.columns:
-                    result = result.with_columns(new_data[col])
-                else:
-                    # 对于历史数据中存在但新数据中不存在的列，填充空值
-                    result = result.with_columns(pl.Series([None] * len(result)).alias(col))
-        
-        return result
-    
-    def incremental_calculate_vol_ma(self, 
-                                   existing_data: pl.DataFrame, 
-                                   new_data: pl.DataFrame, 
-                                   windows: List[int] = None, 
-                                   **kwargs) -> pl.DataFrame:
-        """
-        增量计算成交量移动平均线
-        
-        Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
-            windows: 移动平均窗口列表
-            
-        Returns:
-            pl.DataFrame: 包含新增VOL_MA值的数据
-        """
+        return self._reuse('ma', existing, new, {'ma_windows': windows})
+
+    def incremental_calculate_vol_ma(self, existing, new,
+                                      windows: List[int] = None, **_):
         if windows is None:
             windows = [5, 10]
-        
-        # 合并数据用于计算
-        combined_data = self._combine(existing_data, new_data, ['date', 'volume'])
-        
-        # 计算每个窗口的移动平均
-        result = new_data.clone()
-        
-        for window in windows:
-            # 计算完整的移动平均
-            vol_ma_col = f'vol_ma{window}'
-            vol_ma_values = combined_data.with_columns(
-                pl.col('volume').rolling_mean(window_size=window, min_samples=window).alias(vol_ma_col)
-            )[vol_ma_col]
-            
-            # 提取新增数据对应的VOL_MA值
-            new_vol_ma_values = vol_ma_values.tail(len(new_data))
-            result = result.with_columns(new_vol_ma_values.alias(vol_ma_col))
-        
-        return result
-    
-    def incremental_calculate_macd(self, 
-                                 existing_data: pl.DataFrame, 
-                                 new_data: pl.DataFrame, 
-                                 fast_period: int = 12, 
-                                 slow_period: int = 26, 
-                                 signal_period: int = 9, 
-                                 **kwargs) -> pl.DataFrame:
-        """
-        增量计算MACD指标
-        
-        Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
-            fast_period: 快速EMA周期
-            slow_period: 慢速EMA周期
-            signal_period: 信号线EMA周期
-            
-        Returns:
-            pl.DataFrame: 包含新增MACD值的数据
-        """
-        # 合并数据用于计算
-        combined_data = self._combine(existing_data, new_data, ['date', 'close'])
-        
-        # 计算EMA12、EMA26
-        ema12 = combined_data.with_columns(
-            pl.col('close').ewm_mean(span=fast_period).alias('ema12')
-        )['ema12']
-        
-        ema26 = combined_data.with_columns(
-            pl.col('close').ewm_mean(span=slow_period).alias('ema26')
-        )['ema26']
-        
-        # 计算MACD线
-        macd_line = ema12 - ema26
-        
-        # 计算信号线
-        macd_signal = macd_line.ewm_mean(span=signal_period)
-        
-        # 计算柱状图
-        macd_hist = macd_line - macd_signal
-        
-        # 提取新增数据对应的MACD值
-        result = new_data.clone()
-        result = result.with_columns(
-            macd_line.tail(len(new_data)).alias('macd'),
-            macd_signal.tail(len(new_data)).alias('macd_signal'),
-            macd_hist.tail(len(new_data)).alias('macd_hist')
-        )
-        
-        return result
-    
-    def incremental_calculate_rsi(self,
-                                existing_data: pl.DataFrame,
-                                new_data: pl.DataFrame,
-                                windows: List[int] = None,
-                                **kwargs) -> pl.DataFrame:
-        """
-        增量计算RSI指标
+        return self._reuse('vol_ma', existing, new, {'vol_ma_windows': windows})
 
-        Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
-            windows: RSI计算窗口列表
+    def incremental_calculate_macd(self, existing, new,
+                                    fast_period=12, slow_period=26,
+                                    signal_period=9, **_):
+        return self._reuse('macd', existing, new, {
+            'fast_period': fast_period,
+            'slow_period': slow_period,
+            'signal_period': signal_period,
+        })
 
-        Returns:
-            pl.DataFrame: 包含新增RSI值的数据
-        """
+    def incremental_calculate_rsi(self, existing, new,
+                                   windows: List[int] = None, **_):
         if windows is None:
             windows = [14]
+        return self._reuse('rsi', existing, new, {'rsi_windows': windows})
 
-        combined_data = self._combine(existing_data, new_data, ['close'])
-
-        result = new_data.clone()
-
-        for window in windows:
-            price_change = combined_data['close'].diff()
-
-            avg_gain_expr = pl.when(price_change > 0).then(price_change).otherwise(0.0).ewm_mean(span=window)
-            avg_loss_expr = pl.when(price_change < 0).then(-price_change).otherwise(0.0).ewm_mean(span=window)
-
-            rsi_col = f'rsi{window}'
-            rsi_expr = pl.when(avg_loss_expr == 0).then(100.0).otherwise(
-                100.0 - (100.0 / (1.0 + avg_gain_expr / (avg_loss_expr + 1e-10)))
-            )
-
-            rsi_values = combined_data.with_columns(rsi_expr.alias(rsi_col))[rsi_col]
-            new_rsi_values = rsi_values.tail(len(new_data))
-            result = result.with_columns(new_rsi_values.alias(rsi_col))
-
-        return result
-    
-    def incremental_calculate_kdj(self,
-                                existing_data: pl.DataFrame,
-                                new_data: pl.DataFrame,
-                                windows: List[int] = None,
-                                **kwargs) -> pl.DataFrame:
-        """
-        增量计算KDJ指标
-
-        Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
-            windows: KDJ计算窗口列表
-
-        Returns:
-            pl.DataFrame: 包含新增KDJ值的数据
-        """
+    def incremental_calculate_kdj(self, existing, new,
+                                   windows: List[int] = None, **_):
         if windows is None:
             windows = [14]
+        return self._reuse('kdj', existing, new, {'kdj_windows': windows})
 
-        combined_data = self._combine(existing_data, new_data, ['high', 'low', 'close'])
-
-        result = new_data.clone()
-
-        for window in windows:
-            highest_high = combined_data['high'].rolling_max(window_size=window, min_samples=window)
-            lowest_low = combined_data['low'].rolling_min(window_size=window, min_samples=window)
-
-            rsv_expr = ((combined_data['close'] - lowest_low) / (highest_high - lowest_low + 1e-10) * 100).alias('rsv')
-
-            k_col = f'k{window}'
-            d_col = f'd{window}'
-            j_col = f'j{window}'
-
-            k_expr = rsv_expr.rolling_mean(window_size=3, min_samples=1)
-            d_expr = k_expr.rolling_mean(window_size=3, min_samples=1)
-            j_expr = 3 * k_expr - 2 * d_expr
-
-            result = result.with_columns(
-                k_expr.tail(len(new_data)).alias(k_col),
-                d_expr.tail(len(new_data)).alias(d_col),
-                j_expr.tail(len(new_data)).alias(j_col)
-            )
-
-        return result
-    
-    def incremental_calculate_boll(self, 
-                                 existing_data: pl.DataFrame, 
-                                 new_data: pl.DataFrame, 
-                                 windows: List[int] = None, 
-                                 std_dev: float = 2.0, 
-                                 **kwargs) -> pl.DataFrame:
-        """
-        增量计算布林带指标
-        
-        Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
-            windows: Boll计算窗口列表
-            std_dev: 标准差倍数
-            
-        Returns:
-            pl.DataFrame: 包含新增Boll值的数据
-        """
+    def incremental_calculate_boll(self, existing, new,
+                                   windows: List[int] = None,
+                                   std_dev: float = 2.0, **_):
         if windows is None:
             windows = [20]
-        
-        # 合并数据用于计算
-        combined_data = self._combine(existing_data, new_data, ['date', 'close'])
-        
-        result = new_data.clone()
-        
-        for window in windows:
-            # 计算中轨（移动平均）
-            mb_col = f'mb{window}'
-            up_col = f'up{window}'
-            dn_col = f'dn{window}'
-            
-            mb_values = combined_data.with_columns(
-                pl.col('close').rolling_mean(window_size=window, min_samples=window).alias(mb_col)
-            )[mb_col]
-            
-            # 计算标准差
-            std_values = combined_data.with_columns(
-                pl.col('close').rolling_std(window_size=window, min_samples=window).alias('std')
-            )['std']
-            
-            # 计算上轨和下轨
-            up_values = mb_values + std_dev * std_values
-            dn_values = mb_values - std_dev * std_values
-            
-            # 提取新增数据对应的Boll值
-            result = result.with_columns(
-                mb_values.tail(len(new_data)).alias(mb_col),
-                up_values.tail(len(new_data)).alias(up_col),
-                dn_values.tail(len(new_data)).alias(dn_col)
-            )
-        
-        return result
-    
-    def incremental_calculate_wr(self, 
-                               existing_data: pl.DataFrame, 
-                               new_data: pl.DataFrame, 
-                               windows: List[int] = None, 
-                               **kwargs) -> pl.DataFrame:
-        """
-        增量计算威廉指标
-        
-        Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
-            windows: WR计算窗口列表
-            
-        Returns:
-            pl.DataFrame: 包含新增WR值的数据
-        """
+        return self._reuse('boll', existing, new, {
+            'boll_windows': windows,
+            'boll_std_dev': std_dev,
+        })
+
+    def incremental_calculate_wr(self, existing, new,
+                                 windows: List[int] = None, **_):
         if windows is None:
             windows = [10, 6]
-        
-        # 合并数据用于计算
-        combined_data = self._combine(existing_data, new_data, ['date', 'high', 'low', 'close'])
-        
-        result = new_data.clone()
-        
-        for window in windows:
-            # 计算最高价和最低价
-            highest_high = combined_data.with_columns(
-                pl.col('high').rolling_max(window_size=window, min_samples=window).alias('highest_high')
-            )['highest_high']
-            
-            lowest_low = combined_data.with_columns(
-                pl.col('low').rolling_min(window_size=window, min_samples=window).alias('lowest_low')
-            )['lowest_low']
-            
-            # 计算WR
-            wr_col = f'wr{window}'
-            wr_values = (highest_high - combined_data['close']) / (highest_high - lowest_low) * -100
-            
-            # 提取新增数据对应的WR值
-            new_wr_values = wr_values.tail(len(new_data))
-            result = result.with_columns(new_wr_values.alias(wr_col))
-        
-        return result
-    
-    def incremental_calculate_obv(self,
-                                existing_data: pl.DataFrame,
-                                new_data: pl.DataFrame,
-                                **kwargs) -> pl.DataFrame:
-        """
-        增量计算OBV指标
+        return self._reuse('wr', existing, new, {'wr_windows': windows})
 
-        Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
+    def incremental_calculate_obv(self, existing, new, **_):
+        return self._reuse('obv', existing, new, {})
 
-        Returns:
-            pl.DataFrame: 包含新增OBV值的数据
-        """
-        combined_data = self._combine(existing_data, new_data, ['close', 'volume'])
-
-        price_change = combined_data['close'].diff().fill_null(0)
-
-        obv_expr = (
-            pl.when(price_change > 0).then(combined_data['volume'])
-            .when(price_change < 0).then(-combined_data['volume'])
-            .otherwise(0)
-        ).cumsum()
-
-        result = new_data.clone()
-        result = result.with_columns(obv_expr.tail(len(new_data)).alias('obv'))
-
-        return result
-    
-    def incremental_calculate_expma(self, 
-                                  existing_data: pl.DataFrame, 
-                                  new_data: pl.DataFrame, 
-                                  windows: List[int] = None, 
-                                  **kwargs) -> pl.DataFrame:
-        """
-        增量计算EXPMA指标
-        
-        Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
-            windows: EXPMA计算窗口列表
-            
-        Returns:
-            pl.DataFrame: 包含新增EXPMA值的数据
-        """
+    def incremental_calculate_expma(self, existing, new,
+                                     windows: List[int] = None, **_):
         if windows is None:
             windows = [12, 50]
-        
-        # 合并数据用于计算
-        combined_data = self._combine(existing_data, new_data, ['date', 'close'])
-        
-        result = new_data.clone()
-        
-        for window in windows:
-            # 计算EXPMA
-            expma_col = f'expma{window}'
-            expma_values = combined_data.with_columns(
-                pl.col('close').ewm_mean(span=window).alias(expma_col)
-            )[expma_col]
-            
-            # 提取新增数据对应的EXPMA值
-            new_expma_values = expma_values.tail(len(new_data))
-            result = result.with_columns(new_expma_values.alias(expma_col))
-        
-        return result
-    
-    def incremental_calculate_dmi(self,
-                                 existing_data: pl.DataFrame,
-                                 new_data: pl.DataFrame,
-                                 windows: List[int] = None,
-                                 **kwargs) -> pl.DataFrame:
-        """
-        增量计算DMI指标
+        return self._reuse('expma', existing, new,
+                            {'expma_windows': windows})
 
-        Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
-            windows: DMI计算窗口列表
-
-        Returns:
-            pl.DataFrame: 包含新增DMI值的数据
-        """
+    def incremental_calculate_dmi(self, existing, new,
+                                  windows: List[int] = None, **_):
         if windows is None:
             windows = [14]
+        return self._reuse('dmi', existing, new, {'dmi_windows': windows})
 
-        combined_data = self._combine(existing_data, new_data, ['high', 'low', 'close'])
-
-        result = new_data.clone()
-
-        for window in windows:
-            prev_high = combined_data['high'].shift(1).fill_null(0)
-            prev_low = combined_data['low'].shift(1).fill_null(0)
-
-            tr = pl.max_horizontal(combined_data['high'], combined_data['close'].shift(1)) - pl.min_horizontal(combined_data['low'], combined_data['close'].shift(1))
-
-            high_diff = combined_data['high'] - prev_high
-            low_diff = prev_low - combined_data['low']
-
-            plus_dm = pl.when((high_diff > low_diff) & (high_diff > 0)).then(high_diff).otherwise(0.0)
-            minus_dm = pl.when((low_diff > high_diff) & (low_diff > 0)).then(low_diff).otherwise(0.0)
-
-            tr_sma = tr.rolling_sum(window_size=window, min_samples=1)
-            pdm_sma = plus_dm.rolling_sum(window_size=window, min_samples=1)
-            ndm_sma = minus_dm.rolling_sum(window_size=window, min_samples=1)
-
-            pdi = (pdm_sma / (tr_sma + 1e-10) * 100).alias(f'pdi_{window}')
-            ndi = (ndm_sma / (tr_sma + 1e-10) * 100).alias(f'ndi_{window}')
-
-            dx = pl.when((pdi + ndi) == 0).then(0.0).otherwise((pdi - ndi).abs() / (pdi + ndi + 1e-10) * 100).alias(f'dx_{window}')
-
-            adx = dx.rolling_mean(window_size=window, min_samples=1).alias(f'adx_{window}')
-
-            adxr = ((adx + adx.shift(window)) / 2).alias(f'adxr_{window}')
-
-            result = result.with_columns(
-                pdi.tail(len(new_data)).alias(f'pdi_{window}'),
-                ndi.tail(len(new_data)).alias(f'ndi_{window}'),
-                adx.tail(len(new_data)).alias(f'adx_{window}'),
-                adxr.tail(len(new_data)).alias(f'adxr_{window}')
-            )
-
-        return result
-    
-    def incremental_calculate_trix(self, 
-                                  existing_data: pl.DataFrame, 
-                                  new_data: pl.DataFrame, 
-                                  windows: List[int] = None, 
-                                  signal_period: int = 9, 
-                                  **kwargs) -> pl.DataFrame:
-        """
-        增量计算TRIX指标
-        
-        Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
-            windows: TRIX计算窗口列表
-            signal_period: TRIX信号线周期
-            
-        Returns:
-            pl.DataFrame: 包含新增TRIX值的数据
-        """
+    def incremental_calculate_trix(self, existing, new,
+                                    windows: List[int] = None,
+                                    signal_period: int = 9, **_):
         if windows is None:
             windows = [12]
-        
-        # 合并数据用于计算
-        combined_data = self._combine(existing_data, new_data, ['date', 'close'])
-        
-        result = new_data.clone()
-        
-        for window in windows:
-            # 计算三次指数平滑
-            ema1 = combined_data['close'].ewm_mean(span=window)
-            ema2 = ema1.ewm_mean(span=window)
-            ema3 = ema2.ewm_mean(span=window)
-            
-            # 计算TRIX
-            trix = ((ema3 - ema3.shift(1)) / ema3.shift(1) * 100).alias(f'trix{window}')
-            
-            # 计算TRMA
-            trma = trix.ewm_mean(span=signal_period).alias(f'trma{window}')
-            
-            # 提取新增数据对应的值
-            result = result.with_columns(
-                trix.tail(len(new_data)).alias(f'trix{window}'),
-                trma.tail(len(new_data)).alias(f'trma{window}')
-            )
-        
-        return result
-    
-    def incremental_calculate_sar(self, 
-                                existing_data: pl.DataFrame, 
-                                new_data: pl.DataFrame, 
-                                af_step: float = 0.02, 
-                                max_af: float = 0.2, 
-                                **kwargs) -> pl.DataFrame:
-        """
-        增量计算SAR指标
-        
-        Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
-            af_step: 加速因子步长
-            max_af: 最大加速因子
-            
-        Returns:
-            pl.DataFrame: 包含新增SAR值的数据
-        """
-        # 合并数据用于计算
-        combined_data = self._combine(existing_data, new_data, ['date', 'high', 'low', 'close'])
-        
-        n = len(combined_data)
-        sar_values = pl.Series([0.0] * n)
-        
-        if n < 2:
-            result = new_data.clone()
-            result = result.with_columns(pl.Series('sar', [None] * len(new_data)).alias('sar'))
-            return result
-        
-        # 初始化
-        ep = combined_data['high'][0]
-        af = af_step
-        long = True
-        
-        # 确定初始趋势
-        if combined_data['close'][1] > combined_data['close'][0]:
-            long = True
-            sar_values[0] = combined_data['low'][0]
-            ep = combined_data['high'][0]
-        else:
-            long = False
-            sar_values[0] = combined_data['high'][0]
-            ep = combined_data['low'][0]
-        
-        # 迭代计算
-        for i in range(1, n):
-            if long:
-                # 多头趋势
-                sar_values[i] = sar_values[i-1] + af * (ep - sar_values[i-1])
-                # 限制SAR不超过前n周期的最低价
-                if i >= 2:
-                    sar_values[i] = max(sar_values[i], combined_data['low'][i-1], combined_data['low'][i-2])
-                else:
-                    sar_values[i] = max(sar_values[i], combined_data['low'][i-1])
-                
-                # 检查趋势反转
-                if combined_data['low'][i] < sar_values[i]:
-                    # 转为空头
-                    long = False
-                    sar_values[i] = ep
-                    ep = combined_data['low'][i]
-                    af = af_step
-                elif combined_data['high'][i] > ep:
-                    # 更新极点
-                    ep = combined_data['high'][i]
-                    af = min(af + af_step, max_af)
-            else:
-                # 空头趋势
-                sar_values[i] = sar_values[i-1] + af * (ep - sar_values[i-1])
-                # 限制SAR不低于前n周期的最高价
-                if i >= 2:
-                    sar_values[i] = min(sar_values[i], combined_data['high'][i-1], combined_data['high'][i-2])
-                else:
-                    sar_values[i] = min(sar_values[i], combined_data['high'][i-1])
-                
-                # 检查趋势反转
-                if combined_data['high'][i] > sar_values[i]:
-                    # 转为多头
-                    long = True
-                    sar_values[i] = ep
-                    ep = combined_data['high'][i]
-                    af = af_step
-                elif combined_data['low'][i] < ep:
-                    # 更新极点
-                    ep = combined_data['low'][i]
-                    af = min(af + af_step, max_af)
-        
-        # 提取新增数据对应的SAR值
-        result = new_data.clone()
-        result = result.with_columns(sar_values.tail(len(new_data)).alias('sar'))
-        
-        return result
-    
-    def incremental_calculate_dma(self, 
-                                existing_data: pl.DataFrame, 
-                                new_data: pl.DataFrame, 
-                                short_period: int = 10, 
-                                long_period: int = 50, 
-                                signal_period: int = 10, 
-                                **kwargs) -> pl.DataFrame:
-        """
-        增量计算DMA指标
-        
-        Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
-            short_period: 短期均线周期
-            long_period: 长期均线周期
-            signal_period: 信号线周期
-            
-        Returns:
-            pl.DataFrame: 包含新增DMA值的数据
-        """
-        # 合并数据用于计算
-        combined_data = self._combine(existing_data, new_data, ['date', 'close'])
-        
-        # 计算短期和长期移动平均
-        short_ma = combined_data['close'].rolling_mean(window_size=short_period, min_samples=short_period)
-        long_ma = combined_data['close'].rolling_mean(window_size=long_period, min_samples=long_period)
-        
-        # 计算DMA
-        dma = (short_ma - long_ma).alias('dma')
-        
-        # 计算AMA
-        ama = dma.rolling_mean(window_size=signal_period, min_samples=signal_period).alias('ama')
-        
-        # 提取新增数据对应的值
-        result = new_data.clone()
-        result = result.with_columns(
-            dma.tail(len(new_data)).alias('dma'),
-            ama.tail(len(new_data)).alias('ama')
-        )
-        
-        return result
-    
-    def incremental_calculate_fsl(self, 
-                                existing_data: pl.DataFrame, 
-                                new_data: pl.DataFrame, 
-                                **kwargs) -> pl.DataFrame:
-        """
-        增量计算FSL指标
-        
-        Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
-            
-        Returns:
-            pl.DataFrame: 包含新增FSL值的数据
-        """
-        # 直接计算FSL，不需要历史数据
-        result = new_data.clone()
-        result = result.with_columns(
-            ((result['high'] + result['low'] + result['close']) / 3).alias('swl'),
-            ((result['high'] + result['low'] + result['close'] + result['open']) / 4).alias('sws')
-        )
-        
-        return result
-    
-    def incremental_calculate_bbi(self, 
-                                existing_data: pl.DataFrame, 
-                                new_data: pl.DataFrame, 
-                                **kwargs) -> pl.DataFrame:
-        """
-        增量计算BBI指标
-        
-        Args:
-            existing_data: 已有的数据
-            new_data: 新增的数据
-            
-        Returns:
-            pl.DataFrame: 包含新增BBI值的数据
-        """
-        # 合并数据用于计算
-        combined_data = self._combine(existing_data, new_data, ['date', 'close'])
-        
-        # 计算不同周期的移动平均线
-        ma3 = combined_data['close'].rolling_mean(window_size=3, min_samples=3)
-        ma6 = combined_data['close'].rolling_mean(window_size=6, min_samples=6)
-        ma12 = combined_data['close'].rolling_mean(window_size=12, min_samples=12)
-        ma24 = combined_data['close'].rolling_mean(window_size=24, min_samples=24)
-        
-        # 计算BBI
-        bbi = ((ma3 + ma6 + ma12 + ma24) / 4).alias('bbi')
-        
-        # 提取新增数据对应的值
-        result = new_data.clone()
-        result = result.with_columns(bbi.tail(len(new_data)).alias('bbi'))
-        
-        return result
+        return self._reuse('trix', existing, new, {
+            'trix_windows': windows,
+            'trix_signal_period': signal_period,
+        })
+
+    def incremental_calculate_sar(self, existing, new,
+                                    af_step: float = 0.02,
+                                    max_af: float = 0.2, **_):
+        return self._reuse('sar', existing, new, {
+            'sar_af_step': af_step,
+            'sar_max_af': max_af,
+        })
+
+    def incremental_calculate_dma(self, existing, new,
+                                    short_period=10, long_period=50,
+                                    signal_period=10, **_):
+        return self._reuse('dma', existing, new, {
+            'dma_short_period': short_period,
+            'dma_long_period': long_period,
+            'dma_signal_period': signal_period,
+        })
+
+    def incremental_calculate_fsl(self, existing, new, **_):
+        return self._reuse('fsl', existing, new, {})
+
+    def incremental_calculate_bbi(self, existing, new, **_):
+        return self._reuse('bbi', existing, new, {})
 
 
-# 创建全局增量计算器实例
+# 全局增量计算器实例
 global_incremental_calculator = IncrementalCalculator()
