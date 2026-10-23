@@ -231,9 +231,9 @@ class DataFetcher:
         """
         在数据出口应用复权价，使 open/high/low/close 即为请求的复权类型。
 
-        优先用因子列（qfq_factor / hfq_factor）实时算，避免依赖 DB 预计算的
-        qfq_open/hfq_open 等冗余列（前复权价落库是未来函数反模式）。
-        当因子列不存在时，回退到预计算列（兼容旧数据）。
+        统一走因子列（qfq_factor / hfq_factor）实时算——DB 层预计算的
+        qfq_open/hfq_open 等 8 列已整体废弃删除。
+        因子列不存在时保持原始价格。
 
         Args:
             df: 含原始 open/high/low/close +（可选）qfq_factor/hfq_factor 的 DataFrame
@@ -250,30 +250,16 @@ class DataFetcher:
         factor_col = f'{prefix}factor'   # qfq_factor / hfq_factor
         price_cols = ['open', 'high', 'low', 'close']
 
-        if factor_col in df.columns:
-            # === 优先用因子列实时算（正确路径）===
-            factor_expr = pl.col(factor_col)
-
-            # as_of 截断（仅 qfq 场景，hfq 永远不需要）
-            # _get_data_from_database 已在 as_of 非空时把 df 里的 qfq_factor
-            # 预截断到 as_of 时点，这里只需要直接用
-            exprs = []
-            for col in price_cols:
-                adjusted = (pl.col(col) * factor_expr).alias(col)
-                exprs.append(adjusted)
-            return df.with_columns(exprs)
-
-        # === 回退：DB 预计算列（兼容旧数据）===
-        precomp_cols = [f'{prefix}{c}' for c in price_cols if f'{prefix}{c}' in df.columns]
-        if not precomp_cols:
-            logger.debug(f"数据未提供 {prefix} 复权列，保持原始价格")
+        if factor_col not in df.columns:
+            logger.debug(f"数据未提供 {factor_col} 列，保持原始价格")
             return df
 
+        # === 用因子列实时算复权价 ===
+        factor_expr = pl.col(factor_col)
         exprs = []
         for col in price_cols:
-            precomp = f'{prefix}{col}'
-            adjusted = pl.coalesce([pl.col(precomp), pl.col(col)])
-            exprs.append(adjusted.alias(col))
+            adjusted = (pl.col(col) * factor_expr).alias(col)
+            exprs.append(adjusted)
         return df.with_columns(exprs)
 
     def _get_data_from_database(self, data_type: str, code: str,

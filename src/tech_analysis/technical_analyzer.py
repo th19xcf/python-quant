@@ -1526,9 +1526,7 @@ class TechnicalAnalyzer(ITechnicalAnalyzer):
             pl.DataFrame或pd.DataFrame: 包含所有计算结果的数据
         """
         # 保存复权列，避免在指标计算过程中丢失
-        adj_columns = ['qfq_open', 'qfq_high', 'qfq_low', 'qfq_close',
-                       'hfq_open', 'hfq_high', 'hfq_low', 'hfq_close',
-                       'qfq_factor', 'hfq_factor']
+        adj_columns = ['qfq_factor', 'hfq_factor']
         adj_data = {}
 
         # 如果传入了新数据，更新内部数据

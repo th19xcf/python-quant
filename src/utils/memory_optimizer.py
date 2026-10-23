@@ -135,8 +135,6 @@ class MemoryOptimizer:
     COLUMN_TYPE_MAP = {
         # 价格字段 -> Float32
         'price_cols': ['open', 'high', 'low', 'close', 
-                      'qfq_open', 'qfq_high', 'qfq_low', 'qfq_close',
-                      'hfq_open', 'hfq_high', 'hfq_low', 'hfq_close',
                       'pre_close'],
         # 成交量字段 -> Float32 (或 Int32)
         'volume_cols': ['volume', 'vol', 'amount'],

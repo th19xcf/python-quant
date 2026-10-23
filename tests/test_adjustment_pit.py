@@ -194,29 +194,6 @@ class TestApplyAdjustment:
         result = DataFetcher._apply_adjustment(df, 'hfq')
         assert np.allclose(result['close'].to_numpy(), close.to_numpy() * 1.1)
 
-    def test_apply_fallback_to_precomp(self):
-        """没有 factor 列时回退到预计算列"""
-        n = 5
-        close = pl.Series('close', [100.0 + i for i in range(n)])
-        qfq_close = pl.Series('qfq_close', [90.0 + i * 0.9 for i in range(n)])
-        qfq_open = pl.Series('qfq_open', [89.0 + i * 0.9 for i in range(n)])
-        qfq_high = pl.Series('qfq_high', [92.0 + i * 0.9 for i in range(n)])
-        qfq_low = pl.Series('qfq_low', [88.0 + i * 0.9 for i in range(n)])
-
-        df = pl.DataFrame({
-            'open': close.to_numpy() - 1.0,
-            'high': close.to_numpy() + 2.0,
-            'low': close.to_numpy() - 2.0,
-            'close': close,
-            'qfq_open': qfq_open,
-            'qfq_high': qfq_high,
-            'qfq_low': qfq_low,
-            'qfq_close': qfq_close,
-        })
-
-        result = DataFetcher._apply_adjustment(df, 'qfq')
-        assert np.allclose(result['close'].to_numpy(), qfq_close.to_numpy())
-
     def test_apply_none_keeps_raw(self):
         """adjustment_type='none' 时保持原始价格"""
         n = 5

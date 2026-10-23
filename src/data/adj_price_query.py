@@ -21,7 +21,7 @@ sys.path.insert(0, src_path)
 sys.path.insert(0, project_root)
 
 from database.db_manager import DatabaseManager
-from database.models.stock import StockDaily, StockAdjFactor
+from database.models.stock import StockDaily
 
 
 class AdjPriceQuery:
@@ -118,78 +118,28 @@ class AdjPriceQuery:
         return pd.DataFrame(data)
     
     def _get_qfq_price(self, ts_code: str, start_date: date, end_date: date) -> pd.DataFrame:
-        """获取前复权价格"""
-        # 首先尝试从stock_adj_factor表查询
-        df = self._get_from_adj_factor(ts_code, start_date, end_date, adj_type='qfq')
-        if df is not None:
-            return df
-        
-        # 如果stock_adj_factor表中没有，尝试从stock_daily表查询
+        """获取前复权价格（因子实时算）"""
         df = self._get_from_stock_daily(ts_code, start_date, end_date, adj_type='qfq')
         if df is not None:
             return df
-        
-        # 如果都没有，返回原始价格并记录警告
-        logger.warning(f"{ts_code} 没有找到前复权数据，返回原始价格")
+        logger.warning(f"{ts_code} 没有找到前复权因子数据，返回原始价格")
         return self._get_raw_price(ts_code, start_date, end_date)
     
     def _get_hfq_price(self, ts_code: str, start_date: date, end_date: date) -> pd.DataFrame:
-        """获取后复权价格"""
-        # 首先尝试从stock_adj_factor表查询
-        df = self._get_from_adj_factor(ts_code, start_date, end_date, adj_type='hfq')
-        if df is not None:
-            return df
-        
-        # 如果stock_adj_factor表中没有，尝试从stock_daily表查询
+        """获取后复权价格（因子实时算）"""
         df = self._get_from_stock_daily(ts_code, start_date, end_date, adj_type='hfq')
         if df is not None:
             return df
-        
-        # 如果都没有，返回原始价格并记录警告
-        logger.warning(f"{ts_code} 没有找到后复权数据，返回原始价格")
+        logger.warning(f"{ts_code} 没有找到后复权因子数据，返回原始价格")
         return self._get_raw_price(ts_code, start_date, end_date)
     
-    def _get_from_adj_factor(self, ts_code: str, start_date: date, end_date: date, adj_type: str) -> pd.DataFrame:
-        """从stock_adj_factor表查询复权数据"""
-        query = self.session.query(StockAdjFactor).filter_by(ts_code=ts_code)
-        
-        if start_date:
-            query = query.filter(StockAdjFactor.trade_date >= start_date)
-        if end_date:
-            query = query.filter(StockAdjFactor.trade_date <= end_date)
-        
-        factors = query.order_by(StockAdjFactor.trade_date).all()
-        
-        if not factors:
-            return None
-        
-        data = []
-        for f in factors:
-            if adj_type == 'qfq':
-                data.append({
-                    'ts_code': f.ts_code,
-                    'trade_date': f.trade_date,
-                    'open': f.qfq_open,
-                    'high': f.qfq_high,
-                    'low': f.qfq_low,
-                    'close': f.qfq_close,
-                    'factor': f.qfq_factor,
-                })
-            else:  # hfq
-                data.append({
-                    'ts_code': f.ts_code,
-                    'trade_date': f.trade_date,
-                    'open': f.hfq_open,
-                    'high': f.hfq_high,
-                    'low': f.hfq_low,
-                    'close': f.hfq_close,
-                    'factor': f.hfq_factor,
-                })
-        
-        return pd.DataFrame(data)
-    
     def _get_from_stock_daily(self, ts_code: str, start_date: date, end_date: date, adj_type: str) -> pd.DataFrame:
-        """从stock_daily表查询复权数据"""
+        """
+        从stock_daily表查原始价 + 复权因子，实时相乘得到复权价。
+
+        StockDaily 表现在只存原始 OHLC + qfq_factor/hfq_factor，
+        预计算的 qfq_open 等 8 列已废弃删除。
+        """
         query = self.session.query(StockDaily).filter_by(ts_code=ts_code)
         
         if start_date:
@@ -202,33 +152,20 @@ class AdjPriceQuery:
         if not prices:
             return None
         
-        # 检查是否有复权数据
-        has_adj_data = any(getattr(p, f'{adj_type}_close') is not None for p in prices)
-        if not has_adj_data:
-            return None
+        factor_attr = f'{adj_type}_factor'   # qfq_factor / hfq_factor
         
         data = []
         for p in prices:
-            if adj_type == 'qfq':
-                data.append({
-                    'ts_code': p.ts_code,
-                    'trade_date': p.trade_date,
-                    'open': p.qfq_open,
-                    'high': p.qfq_high,
-                    'low': p.qfq_low,
-                    'close': p.qfq_close,
-                    'factor': p.qfq_factor,
-                })
-            else:  # hfq
-                data.append({
-                    'ts_code': p.ts_code,
-                    'trade_date': p.trade_date,
-                    'open': p.hfq_open,
-                    'high': p.hfq_high,
-                    'low': p.hfq_low,
-                    'close': p.hfq_close,
-                    'factor': p.hfq_factor,
-                })
+            factor = getattr(p, factor_attr) or 1.0
+            data.append({
+                'ts_code': p.ts_code,
+                'trade_date': p.trade_date,
+                'open': (p.open or 0) * factor,
+                'high': (p.high or 0) * factor,
+                'low': (p.low or 0) * factor,
+                'close': (p.close or 0) * factor,
+                'factor': factor,
+            })
         
         return pd.DataFrame(data)
     

@@ -188,14 +188,6 @@ class AdjFactorCalculator:
         result = prices_df.with_columns([
             pl.lit(1.0).alias('qfq_factor'),
             pl.lit(1.0).alias('hfq_factor'),
-            pl.col('open').alias('qfq_open'),
-            pl.col('high').alias('qfq_high'),
-            pl.col('low').alias('qfq_low'),
-            pl.col('close').alias('qfq_close'),
-            pl.col('open').alias('hfq_open'),
-            pl.col('high').alias('hfq_high'),
-            pl.col('low').alias('hfq_low'),
-            pl.col('close').alias('hfq_close'),
         ])
 
         # 内存优化：转换数据类型
@@ -299,18 +291,7 @@ class AdjFactorCalculator:
                 .alias('hfq_factor')
             )
 
-        # --- 计算复权价格 ---
-        result = result.with_columns([
-            (pl.col('open') * pl.col('qfq_factor')).alias('qfq_open'),
-            (pl.col('high') * pl.col('qfq_factor')).alias('qfq_high'),
-            (pl.col('low') * pl.col('qfq_factor')).alias('qfq_low'),
-            (pl.col('close') * pl.col('qfq_factor')).alias('qfq_close'),
-            (pl.col('open') * pl.col('hfq_factor')).alias('hfq_open'),
-            (pl.col('high') * pl.col('hfq_factor')).alias('hfq_high'),
-            (pl.col('low') * pl.col('hfq_factor')).alias('hfq_low'),
-            (pl.col('close') * pl.col('hfq_factor')).alias('hfq_close'),
-        ])
-
+        # --- 计算完成，仅返回因子（复权价按需实时算） ---
         # 内存优化：转换数据类型
         return MemoryOptimizer.optimize_dataframe(result)
 
@@ -334,14 +315,6 @@ class AdjFactorCalculator:
                     trade_date=row['trade_date'],
                     qfq_factor=row['qfq_factor'],
                     hfq_factor=row['hfq_factor'],
-                    qfq_open=row.get('qfq_open'),
-                    qfq_high=row.get('qfq_high'),
-                    qfq_low=row.get('qfq_low'),
-                    qfq_close=row.get('qfq_close'),
-                    hfq_open=row.get('hfq_open'),
-                    hfq_high=row.get('hfq_high'),
-                    hfq_low=row.get('hfq_low'),
-                    hfq_close=row.get('hfq_close'),
                 )
                 records.append(record)
                 
@@ -382,14 +355,6 @@ class AdjFactorCalculator:
                     existing = existing_records_map[key]
                     existing.qfq_factor = record.qfq_factor
                     existing.hfq_factor = record.hfq_factor
-                    existing.qfq_open = record.qfq_open
-                    existing.qfq_high = record.qfq_high
-                    existing.qfq_low = record.qfq_low
-                    existing.qfq_close = record.qfq_close
-                    existing.hfq_open = record.hfq_open
-                    existing.hfq_high = record.hfq_high
-                    existing.hfq_low = record.hfq_low
-                    existing.hfq_close = record.hfq_close
                 else:
                     records_to_add.append(record)
 
@@ -423,9 +388,7 @@ class AdjFactorCalculator:
             ).all()
             existing_map = {(rec.ts_code, rec.trade_date): rec for rec in existing_records}
 
-            fields = ('qfq_factor', 'hfq_factor',
-                      'qfq_open', 'qfq_high', 'qfq_low', 'qfq_close',
-                      'hfq_open', 'hfq_high', 'hfq_low', 'hfq_close')
+            fields = ('qfq_factor', 'hfq_factor')
             updated = 0
             for row in rows:
                 daily = existing_map.get((row['ts_code'], row['trade_date']))
@@ -499,7 +462,7 @@ if __name__ == "__main__":
     
     if result is not None:
         print(f"\n{ts_code} 复权因子计算结果:")
-        print(result.select(['trade_date', 'close', 'qfq_factor', 'hfq_factor', 'qfq_close', 'hfq_close']).tail(10))
+        print(result.select(['trade_date', 'close', 'qfq_factor', 'hfq_factor']).tail(10))
         
         # 保存到数据库
         calculator.save_adj_factors(result)

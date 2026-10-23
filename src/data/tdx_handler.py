@@ -756,7 +756,8 @@ class TdxHandler(DataSourceBase):
         
         Returns:
             pl.LazyFrame: K线数据的LazyFrame，包含date, open, high, low, close, volume, amount字段
-                           如果指定了adjust，还会包含 qfq_open/high/low/close 或 hfq_open/high/low/close
+                           如果指定了adjust，还会包含复权因子（qfq_factor/hfq_factor），
+                           复权价由调用方实时计算
         """
         try:
             logger.info(f"开始获取股票 {stock_code} 在 {start_date} 到 {end_date} 期间的K线数据")

@@ -67,17 +67,6 @@ class StockDaily(Base):
     qfq_factor = Column(Float, default=1.0, comment="前复权因子")
     hfq_factor = Column(Float, default=1.0, comment="后复权因子")
     
-    # 复权价格（可选，预计算存储）
-    qfq_open = Column(Float, comment="前复权开盘价")
-    qfq_high = Column(Float, comment="前复权最高价")
-    qfq_low = Column(Float, comment="前复权最低价")
-    qfq_close = Column(Float, comment="前复权收盘价")
-    
-    hfq_open = Column(Float, comment="后复权开盘价")
-    hfq_high = Column(Float, comment="后复权最高价")
-    hfq_low = Column(Float, comment="后复权最低价")
-    hfq_close = Column(Float, comment="后复权收盘价")
-    
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
     
@@ -196,17 +185,6 @@ class StockAdjFactor(Base):
     qfq_factor = Column(Float, default=1.0, comment="前复权因子")
     hfq_factor = Column(Float, default=1.0, comment="后复权因子")
     
-    # 复权价格（可选，如果需要在数据库中存储）
-    qfq_open = Column(Float, comment="前复权开盘价")
-    qfq_high = Column(Float, comment="前复权最高价")
-    qfq_low = Column(Float, comment="前复权最低价")
-    qfq_close = Column(Float, comment="前复权收盘价")
-    
-    hfq_open = Column(Float, comment="后复权开盘价")
-    hfq_high = Column(Float, comment="后复权最高价")
-    hfq_low = Column(Float, comment="后复权最低价")
-    hfq_close = Column(Float, comment="后复权收盘价")
-
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
 
