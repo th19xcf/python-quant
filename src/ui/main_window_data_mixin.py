@@ -1047,8 +1047,8 @@ class MainWindowDataMixin:
                 item.setForeground(QColor(0, 255, 0))
             else:
                 item.setForeground(QColor(200, 200, 200))
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"设置涨跌单元格颜色失败: {e}", exc_info=True)
 
 
     def _show_hs_aj_stock_data_impl(self):

@@ -1005,8 +1005,8 @@ class MainWindowEventMixin:
                                     price_item.setForeground(QColor(0, 255, 0))
                                 else:
                                     price_item.setForeground(QColor(204, 204, 204))
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"设置价格单元格颜色失败: {e}", exc_info=True)
                             self.stock_table.setItem(row, 4, price_item)
                             
                             # 涨跌
@@ -1045,8 +1045,8 @@ class MainWindowEventMixin:
                                     open_item.setForeground(QColor(0, 255, 0))
                                 else:
                                     open_item.setForeground(QColor(204, 204, 204))
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"设置开盘价单元格颜色失败: {e}", exc_info=True)
                             self.stock_table.setItem(row, 8, open_item)
                             
                             # 最高
@@ -1062,8 +1062,8 @@ class MainWindowEventMixin:
                                     high_item.setForeground(QColor(0, 255, 0))
                                 else:
                                     high_item.setForeground(QColor(204, 204, 204))
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"设置最高价单元格颜色失败: {e}", exc_info=True)
                             self.stock_table.setItem(row, 9, high_item)
                             
                             # 最低
@@ -1079,8 +1079,8 @@ class MainWindowEventMixin:
                                     low_item.setForeground(QColor(0, 255, 0))
                                 else:
                                     low_item.setForeground(QColor(204, 204, 204))
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"设置最低价单元格颜色失败: {e}", exc_info=True)
                             self.stock_table.setItem(row, 10, low_item)
                             
                             # 昨收
@@ -1124,8 +1124,8 @@ class MainWindowEventMixin:
                 try:
                     # 更新进度条
                     self.market_progress_bar.setValue(int((current / total) * 100))
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"更新市场进度条失败: {e}", exc_info=True)
             
             global_task_manager.task_completed.connect(on_task_completed)
             global_task_manager.task_progress.connect(on_task_progress)
@@ -1309,8 +1309,8 @@ class MainWindowEventMixin:
                                     price_item.setForeground(QColor(0, 255, 0))
                                 else:
                                     price_item.setForeground(QColor(204, 204, 204))
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"设置价格单元格颜色失败: {e}", exc_info=True)
                             self.stock_table.setItem(row, 4, price_item)
                             
                             # 涨跌
@@ -1349,8 +1349,8 @@ class MainWindowEventMixin:
                                     open_item.setForeground(QColor(0, 255, 0))
                                 else:
                                     open_item.setForeground(QColor(204, 204, 204))
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"设置开盘价单元格颜色失败: {e}", exc_info=True)
                             self.stock_table.setItem(row, 8, open_item)
                             
                             # 最高
@@ -1366,8 +1366,8 @@ class MainWindowEventMixin:
                                     high_item.setForeground(QColor(0, 255, 0))
                                 else:
                                     high_item.setForeground(QColor(204, 204, 204))
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"设置最高价单元格颜色失败: {e}", exc_info=True)
                             self.stock_table.setItem(row, 9, high_item)
                             
                             # 最低
@@ -1383,8 +1383,8 @@ class MainWindowEventMixin:
                                     low_item.setForeground(QColor(0, 255, 0))
                                 else:
                                     low_item.setForeground(QColor(204, 204, 204))
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"设置最低价单元格颜色失败: {e}", exc_info=True)
                             self.stock_table.setItem(row, 10, low_item)
                             
                             # 昨收
@@ -1428,8 +1428,8 @@ class MainWindowEventMixin:
                 try:
                     # 更新进度条
                     self.market_progress_bar.setValue(int((current / total) * 100))
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"更新市场进度条失败: {e}", exc_info=True)
             
             global_task_manager.task_completed.connect(on_task_completed)
             global_task_manager.task_progress.connect(on_task_progress)
@@ -2178,7 +2178,8 @@ class MainWindowEventMixin:
                             from datetime import datetime
                             date_obj = datetime.strptime(date_str, '%Y-%m-%d')
                             weekday = date_obj.weekday()
-                        except:
+                        except Exception as e:
+                            logger.warning(f"日期解析失败，使用默认周一: {e}", exc_info=True)
                             weekday = 0  # 默认周一
                     weekday_str = ['一', '二', '三', '四', '五', '六', '日'][weekday]
 

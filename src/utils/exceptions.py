@@ -259,6 +259,23 @@ class DataSaveError(DataException):
         )
 
 
+class AdjustmentError(DataException):
+    """复权计算错误
+    
+    当前复权因子缺失、复权类型不支持或复权计算失败时抛出。
+    """
+    
+    def __init__(self, symbol: str = None, adjustment_type: str = None, message: str = None, cause: Exception = None):
+        self.symbol = symbol
+        self.adjustment_type = adjustment_type
+        super().__init__(
+            message=message or f"复权计算失败" + (f" [{symbol}]" if symbol else "") + (f" ({adjustment_type})" if adjustment_type else ""),
+            error_code="ADJUSTMENT_ERROR",
+            details={"symbol": symbol, "adjustment_type": adjustment_type},
+            cause=cause
+        )
+
+
 # =============================================================================
 # 计算异常
 # =============================================================================
@@ -459,6 +476,48 @@ class PluginInitError(PluginException):
 
 
 # =============================================================================
+# 交易异常
+# =============================================================================
+
+class TradingException(QuantException):
+    """交易异常基类"""
+    
+    def __init__(self, message: str, error_code: str = None, details: Dict[str, Any] = None, cause: Exception = None):
+        super().__init__(
+            message=message,
+            error_code=error_code or "TRADING_ERROR",
+            details=details,
+            cause=cause
+        )
+
+
+class OrderRejectedError(TradingException):
+    """订单被拒绝
+    
+    当风控规则不通过、资金不足、持仓不足、涨跌停/停牌等原因导致订单无法成交时抛出。
+    不可重试——需人工或策略层调整后重新提交。
+    """
+    
+    def __init__(self, symbol: str = None, reason: str = None, order_side: str = None, details: Dict[str, Any] = None, cause: Exception = None):
+        self.symbol = symbol
+        self.reason = reason
+        self.order_side = order_side
+        merged_details = {"symbol": symbol, "reason": reason, "order_side": order_side}
+        if details:
+            merged_details.update(details)
+        super().__init__(
+            message=f"订单被拒绝" + (f" [{symbol}]" if symbol else "") + (f": {reason}" if reason else ""),
+            error_code="ORDER_REJECTED",
+            details=merged_details,
+            cause=cause
+        )
+    
+    def is_retryable(self) -> bool:
+        """订单拒绝不可自动重试，需策略层调整后重新提交"""
+        return False
+
+
+# =============================================================================
 # 错误码管理
 # =============================================================================
 
@@ -486,6 +545,7 @@ class ErrorCodeManager:
         "DATA_NOT_FOUND": "数据不存在",
         "DATA_INTEGRITY_ERROR": "数据完整性错误",
         "DATA_SAVE_ERROR": "数据保存错误",
+        "ADJUSTMENT_ERROR": "复权计算错误",
         
         # 计算错误 (3000-3999)
         "CALCULATION_ERROR": "计算错误",
@@ -508,6 +568,10 @@ class ErrorCodeManager:
         "PLUGIN_NOT_FOUND": "插件不存在",
         "PLUGIN_LOAD_ERROR": "插件加载错误",
         "PLUGIN_INIT_ERROR": "插件初始化错误",
+        
+        # 交易错误 (7000-7999)
+        "TRADING_ERROR": "交易错误",
+        "ORDER_REJECTED": "订单被拒绝",
     }
     
     @classmethod
@@ -614,6 +678,7 @@ def get_error_code_category(error_code: str) -> str:
         "UI_": "UI",
         "CONFIG_": "配置",
         "PLUGIN_": "插件",
+        "TRADING_": "交易",
     }
     
     for prefix, category in categories.items():

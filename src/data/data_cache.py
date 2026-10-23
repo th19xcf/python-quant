@@ -84,7 +84,8 @@ class CacheEntry(Generic[V]):
             query_end = datetime.strptime(end_date, '%Y-%m-%d')
             
             return cache_start <= query_start and cache_end >= query_end
-        except:
+        except Exception as e:
+            logger.debug(f"缓存日期范围比较失败，视为不命中: {e}", exc_info=True)
             return False
     
     def can_support_frequency(self, target_frequency: str) -> bool:

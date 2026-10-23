@@ -13,17 +13,16 @@
 """
 
 import gc
-import logging
 import threading
 import time
 from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from src.utils.logger import logger
+
 import numpy as np
 import polars as pl
 import psutil
-
-logger = logging.getLogger(__name__)
 
 
 class MemoryMonitor:
@@ -269,21 +268,23 @@ class MemoryOptimizer:
                             type_casts.append(
                                 pl.col(col).str.strptime(pl.Date, '%Y-%m-%d', strict=False)
                             )
-                        except:
+                        except Exception as e:
+                            logger.debug(f"日期格式 %Y-%m-%d 解析失败，尝试下一种: {e}", exc_info=True)
                             # 如果失败，尝试其他格式
                             try:
                                 type_casts.append(
                                     pl.col(col).str.strptime(pl.Date, '%Y%m%d', strict=False)
                                 )
-                            except:
+                            except Exception as e2:
+                                logger.debug(f"日期格式 %Y%m%d 解析失败，尝试下一种: {e2}", exc_info=True)
                                 try:
                                     type_casts.append(
                                         pl.col(col).str.strptime(pl.Date, '%Y/%m/%d', strict=False)
                                     )
-                                except:
-                                    pass
-                    except:
-                        pass
+                                except Exception as e3:
+                                    logger.debug(f"日期格式 %Y/%m/%d 解析失败，保留原类型: {e3}", exc_info=True)
+                    except Exception as e:
+                        logger.debug(f"日期列类型优化失败，保留原类型: {e}", exc_info=True)
             
             # 通用类型优化
             elif dtype == pl.Float64:

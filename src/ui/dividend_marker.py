@@ -217,8 +217,8 @@ class DividendMarkerItem(GraphicsObject):
                 x_min, x_max = view_range[0]
                 y_min, y_max = view_range[1]
                 return QRectF(x_min, y_min, x_max - x_min, y_max - y_min)
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"获取视图范围失败，使用默认值: {e}", exc_info=True)
         return QRectF(0, 0, 1000, 1000)
 
     def get_dividend_at_index(self, index):

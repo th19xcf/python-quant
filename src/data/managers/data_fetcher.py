@@ -130,7 +130,9 @@ class DataFetcher:
                                          frequency=frequency, adjustment_type=adjustment_type,
                                          **cache_extra)
         if cached_data is not None:
-            logger.info(f"从缓存获取股票数据: {stock_code} {start_date} to {end_date}")
+            logger.info(f"从缓存获取股票数据: {stock_code} {start_date} to {end_date}",
+                        **{"symbol": stock_code, "start": start_date, "end": end_date,
+                               "frequency": frequency, "adjustment": adjustment_type, "source": "cache"})
             return cached_data
 
         # 从数据库获取（_get_data_from_database 内部处理 as_of 截断）
@@ -169,7 +171,9 @@ class DataFetcher:
         cached_data = global_data_cache.get('index', index_code, start_date, end_date, 
                                          frequency=frequency)
         if cached_data is not None:
-            logger.info(f"从缓存获取指数数据: {index_code} {start_date} to {end_date}")
+            logger.info(f"从缓存获取指数数据: {index_code} {start_date} to {end_date}",
+                        **{"symbol": index_code, "start": start_date, "end": end_date,
+                               "frequency": frequency, "source": "cache"})
             return cached_data
         
         # 从数据库获取
@@ -432,19 +436,22 @@ class DataFetcher:
                 )
                 if data is not None and not data.is_empty():
                     source_name = getattr(src, 'name', src.__class__.__name__)
-                    logger.info(f"本地源 {source_name} 命中{type_name}{code}")
+                    logger.info(f"本地源 {source_name} 命中{type_name}{code}",
+                                **{"symbol": code, "source": source_name, "data_type": data_type})
                     return data
 
         # 2. 远程并行（每源 10s 超时，命中即取消）
         if remote_sources:
             remote_sources.sort(key=lambda s: self._get_source_priority(getattr(s, 'name', s.__class__.__name__)))
-            logger.info(f"并行从{len(remote_sources)}个远程源获取{type_name}{code}数据")
+            logger.info(f"并行从{len(remote_sources)}个远程源获取{type_name}{code}数据",
+                        **{"symbol": code, "data_type": data_type, "remote_sources": len(remote_sources)})
             return self._try_remote_sources_parallel(
                 remote_sources, data_type, code, start_date, end_date, frequency, adjustment_type,
                 per_source_timeout=10,
             )
 
-        logger.warning(f"无法从任何数据源获取{type_name}{code}数据")
+        logger.warning(f"无法从任何数据源获取{type_name}{code}数据",
+                       **{"symbol": code, "data_type": data_type})
         return pl.DataFrame()
 
     def _get_candidate_sources(self, data_type: str) -> List:
@@ -478,15 +485,18 @@ class DataFetcher:
         try:
             success, result = future.result(timeout=timeout)
             if success and result is not None and not result.is_empty():
-                logger.info(f"从{source_name}成功获取数据")
+                logger.info(f"从{source_name}成功获取数据",
+                            **{"symbol": code, "source": source_name, "rows": result.height})
                 return result
             return None
         except concurrent.futures.TimeoutError:
-            logger.warning(f"从{source_name}获取数据超时（{timeout}s）")
+            logger.warning(f"从{source_name}获取数据超时（{timeout}s）",
+                           **{"symbol": code, "source": source_name, "timeout": timeout})
             future.cancel()
             return None
         except Exception as e:
-            logger.warning(f"从{source_name}获取数据失败: {e}")
+            logger.warning(f"从{source_name}获取数据失败: {e}",
+                           **{"symbol": code, "source": source_name, "error": str(e)})
             return None
 
     def _try_remote_sources_parallel(self, sources, data_type, code, start_date, end_date,
@@ -516,15 +526,19 @@ class DataFetcher:
                         for f in futures:
                             if f is not future and not f.done():
                                 f.cancel()
-                        logger.info(f"从{source_name}成功获取{type_name}{code}数据")
+                        logger.info(f"从{source_name}成功获取{type_name}{code}数据",
+                                    **{"symbol": code, "source": source_name, "data_type": data_type, "rows": result.height})
                         return result
                 except concurrent.futures.TimeoutError:
-                    logger.warning(f"从{source_name}获取数据超时")
+                    logger.warning(f"从{source_name}获取数据超时",
+                                   **{"symbol": code, "source": source_name})
                 except Exception as e:
-                    logger.warning(f"处理{source_name}结果时出错: {e}")
+                    logger.warning(f"处理{source_name}结果时出错: {e}",
+                                   **{"symbol": code, "source": source_name, "error": str(e)})
         except concurrent.futures.TimeoutError:
             # 所有源在 (per_source_timeout + 5) 秒内都没有完成
-            logger.warning(f"远程源全部超时（>{per_source_timeout + 5}s）")
+            logger.warning(f"远程源全部超时（>{per_source_timeout + 5}s）",
+                           **{"symbol": code, "data_type": data_type, "timeout": per_source_timeout + 5})
         finally:
             # 确保取消所有未完成的 future
             for f in futures:
