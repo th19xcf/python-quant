@@ -70,7 +70,7 @@ class BacktestEngine(BaseBacktestEngine):
             # 1. 执行前一交易日生成的信号（以今日开盘价成交，订单当日有效）
             if pending_signal == 'buy' and position == 0:
                 if self._is_tradable(i, 'buy', close_prices, high_prices, low_prices, volumes,
-                                     limit_pct, ts_code=self.ts_code):
+                                     open_prices=open_prices, limit_pct=limit_pct, ts_code=self.ts_code):
                     exec_price = open_prices[i]
                     # 预留买入成本后按整手取整
                     cost_rate = self.cost_model.get_buy_cost_rate()
@@ -120,7 +120,7 @@ class BacktestEngine(BaseBacktestEngine):
                 pending_signal = None
             elif pending_signal == 'sell' and position > 0:
                 if self._is_tradable(i, 'sell', close_prices, high_prices, low_prices, volumes,
-                                     limit_pct, ts_code=self.ts_code):
+                                     open_prices=open_prices, limit_pct=limit_pct, ts_code=self.ts_code):
                     sell_price = open_prices[i]
                     sell_cost = self.cost_model.calculate_sell_cost(position, sell_price)
 

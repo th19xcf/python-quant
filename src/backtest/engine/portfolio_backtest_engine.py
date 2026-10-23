@@ -113,11 +113,13 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
                 pc = prev_close[stock_code]
                 # 每只股票按自身代码推导涨跌停幅度（创业板 20%、科创板 20%、主板 10% 等）
                 stock_limit_pct = self._get_limit_pct(stock_code)
-                if pc and pc > 0 and high_price is not None and low_price is not None and high_price == low_price:
-                    pct = close_price / pc - 1
-                    if pct >= stock_limit_pct - 0.005:
+                # 以开盘价成交时，若开盘即涨跌停则无法成交
+                # （覆盖一字板 + 开盘封板后盘中打开两种情形）
+                if pc and pc > 0 and open_price is not None:
+                    open_pct = open_price / pc - 1
+                    if open_pct >= stock_limit_pct - 0.005:
                         one_way_limit = 'up'
-                    elif pct <= -(stock_limit_pct - 0.005):
+                    elif open_pct <= -(stock_limit_pct - 0.005):
                         one_way_limit = 'down'
 
                 # ========== 构造当前组合状态（给风控用） ==========
