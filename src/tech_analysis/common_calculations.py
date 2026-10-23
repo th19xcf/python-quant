@@ -39,7 +39,7 @@ def calculate_moving_average(lazy_df: pl.LazyFrame, column: str, windows: list, 
     """
     for window in windows:
         lazy_df = lazy_df.with_columns(
-            to_float32(pl.col(column).rolling_mean(window_size=window, min_periods=1)).alias(f'{prefix}ma{window}')
+            to_float32(pl.col(column).rolling_mean(window_size=window, min_samples=1)).alias(f'{prefix}ma{window}')
         )
     return lazy_df
 
@@ -79,7 +79,7 @@ def calculate_rolling_max(lazy_df: pl.LazyFrame, column: str, windows: list, pre
     """
     for window in windows:
         lazy_df = lazy_df.with_columns(
-            pl.col(column).rolling_max(window_size=window, min_periods=1).alias(f'{prefix}max_{window}')
+            pl.col(column).rolling_max(window_size=window, min_samples=1).alias(f'{prefix}max_{window}')
         )
     return lazy_df
 
@@ -99,7 +99,7 @@ def calculate_rolling_min(lazy_df: pl.LazyFrame, column: str, windows: list, pre
     """
     for window in windows:
         lazy_df = lazy_df.with_columns(
-            pl.col(column).rolling_min(window_size=window, min_periods=1).alias(f'{prefix}min_{window}')
+            pl.col(column).rolling_min(window_size=window, min_samples=1).alias(f'{prefix}min_{window}')
         )
     return lazy_df
 
@@ -119,7 +119,7 @@ def calculate_rolling_std(lazy_df: pl.LazyFrame, column: str, windows: list, pre
     """
     for window in windows:
         lazy_df = lazy_df.with_columns(
-            to_float32(pl.col(column).rolling_std(window_size=window, min_periods=1)).alias(f'{prefix}std_{window}')
+            to_float32(pl.col(column).rolling_std(window_size=window, min_samples=1)).alias(f'{prefix}std_{window}')
         )
     return lazy_df
 
@@ -139,7 +139,7 @@ def calculate_rolling_sum(lazy_df: pl.LazyFrame, column: str, windows: list, pre
     """
     for window in windows:
         lazy_df = lazy_df.with_columns(
-            to_float32(pl.col(column).rolling_sum(window_size=window, min_periods=1)).alias(f'{prefix}sum_{window}')
+            to_float32(pl.col(column).rolling_sum(window_size=window, min_samples=1)).alias(f'{prefix}sum_{window}')
         )
     return lazy_df
 

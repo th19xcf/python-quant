@@ -28,10 +28,10 @@ def calculate_boll(lazy_df: pl.LazyFrame, windows: list, std_dev: float) -> pl.L
     # 批量计算所有窗口的Boll指标
     for window in windows:
         # 计算移动平均线（中轨线）
-        mb_expr = to_float32(pl.col('close').rolling_mean(window_size=window, min_periods=1)).alias(f'mb{window}')
+        mb_expr = to_float32(pl.col('close').rolling_mean(window_size=window, min_samples=1)).alias(f'mb{window}')
         # 计算上轨线和下轨线
-        up_expr = to_float32(mb_expr + to_float32(pl.col('close').rolling_std(window_size=window, min_periods=1)) * std_dev).alias(f'up{window}')
-        dn_expr = to_float32(mb_expr - to_float32(pl.col('close').rolling_std(window_size=window, min_periods=1)) * std_dev).alias(f'dn{window}')
+        up_expr = to_float32(mb_expr + to_float32(pl.col('close').rolling_std(window_size=window, min_samples=1)) * std_dev).alias(f'up{window}')
+        dn_expr = to_float32(mb_expr - to_float32(pl.col('close').rolling_std(window_size=window, min_samples=1)) * std_dev).alias(f'dn{window}')
         
         # 添加到DataFrame
         lazy_df = lazy_df.with_columns([mb_expr, up_expr, dn_expr])
@@ -104,9 +104,9 @@ def calculate_brar(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     # 3. 计算各窗口的AR和BR值
     for window in windows:
         # 计算AR = (ar_up的N日和 / ar_down的N日和) * 100
-        ar_expr = to_float32((pl.col('ar_up').rolling_sum(window_size=window, min_periods=1) / (pl.col('ar_down').rolling_sum(window_size=window, min_periods=1) + 0.0001)) * 100).alias(f'ar{window}')
+        ar_expr = to_float32((pl.col('ar_up').rolling_sum(window_size=window, min_samples=1) / (pl.col('ar_down').rolling_sum(window_size=window, min_samples=1) + 0.0001)) * 100).alias(f'ar{window}')
         # 计算BR = (br_up的N日和 / br_down的N日和) * 100
-        br_expr = to_float32((pl.col('br_up').rolling_sum(window_size=window, min_periods=1) / (pl.col('br_down').rolling_sum(window_size=window, min_periods=1) + 0.0001)) * 100).alias(f'br{window}')
+        br_expr = to_float32((pl.col('br_up').rolling_sum(window_size=window, min_samples=1) / (pl.col('br_down').rolling_sum(window_size=window, min_samples=1) + 0.0001)) * 100).alias(f'br{window}')
 
         # 添加到DataFrame
         lazy_df = lazy_df.with_columns([ar_expr, br_expr])
@@ -166,7 +166,7 @@ def calculate_asi(lazy_df: pl.LazyFrame, signal_period: int) -> pl.LazyFrame:
     asi = to_float32(pl.when(tr != 0).then((asi_numerator / tr * 16)).otherwise(0.0)).alias('asi')
 
     # 6. 计算ASI的信号线（ASI_SIG = ASI的signal_period天MA）
-    asi_sig = asi.rolling_mean(window_size=signal_period, min_periods=1).alias('asi_sig')
+    asi_sig = asi.rolling_mean(window_size=signal_period, min_samples=1).alias('asi_sig')
 
     # 7. 添加到DataFrame
     return lazy_df.with_columns([asi, asi_sig])
@@ -194,7 +194,7 @@ def calculate_emv(lazy_df: pl.LazyFrame, windows: list, constant: float) -> pl.L
 
     # 3. 计算各窗口的EMV移动平均线
     for window in windows:
-        emv_expr = to_float32(emv_base_expr.rolling_mean(window_size=window, min_periods=1)).alias(f'emv{window}')
+        emv_expr = to_float32(emv_base_expr.rolling_mean(window_size=window, min_samples=1)).alias(f'emv{window}')
         lazy_df = lazy_df.with_columns(emv_expr)
 
     # 4. 添加默认列名
@@ -237,7 +237,7 @@ def calculate_mcst(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     
     # 5. 计算各窗口的MCST移动平均线
     for window in windows:
-        mcst_ma_expr = to_float32(mcst.rolling_mean(window_size=window, min_periods=1)).alias(f'mcst_ma{window}')
+        mcst_ma_expr = to_float32(mcst.rolling_mean(window_size=window, min_samples=1)).alias(f'mcst_ma{window}')
         lazy_df = lazy_df.with_columns(mcst_ma_expr)
     
     return lazy_df

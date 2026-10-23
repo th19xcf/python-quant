@@ -224,9 +224,10 @@ class AdjFactorCalculator:
             不是在遍历顺序上。
         """
         # --- 排序断言 ---
-        if not prices_df.is_sorted_by('trade_date'):
+        # polars 2.0 移除了 DataFrame.is_sorted_by，改用列的 Series.is_sorted()
+        if not prices_df['trade_date'].is_sorted():
             prices_df = prices_df.sort('trade_date')
-        if not dividends_df.is_sorted_by('ex_date'):
+        if not dividends_df['ex_date'].is_sorted():
             dividends_df = dividends_df.sort('ex_date')
 
         result = prices_df.with_columns([

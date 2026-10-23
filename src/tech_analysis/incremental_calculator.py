@@ -122,7 +122,7 @@ class IncrementalCalculator:
             # 计算完整的移动平均
             ma_col = f'ma{window}'
             ma_values = combined_data.with_columns(
-                pl.col('close').rolling_mean(window_size=window, min_periods=window).alias(ma_col)
+                pl.col('close').rolling_mean(window_size=window, min_samples=window).alias(ma_col)
             )[ma_col]
             
             # 提取新增数据对应的MA值
@@ -169,7 +169,7 @@ class IncrementalCalculator:
             # 计算完整的移动平均
             vol_ma_col = f'vol_ma{window}'
             vol_ma_values = combined_data.with_columns(
-                pl.col('volume').rolling_mean(window_size=window, min_periods=window).alias(vol_ma_col)
+                pl.col('volume').rolling_mean(window_size=window, min_samples=window).alias(vol_ma_col)
             )[vol_ma_col]
             
             # 提取新增数据对应的VOL_MA值
@@ -293,8 +293,8 @@ class IncrementalCalculator:
         result = new_data.clone()
 
         for window in windows:
-            highest_high = combined_data['high'].rolling_max(window_size=window, min_periods=window)
-            lowest_low = combined_data['low'].rolling_min(window_size=window, min_periods=window)
+            highest_high = combined_data['high'].rolling_max(window_size=window, min_samples=window)
+            lowest_low = combined_data['low'].rolling_min(window_size=window, min_samples=window)
 
             rsv_expr = ((combined_data['close'] - lowest_low) / (highest_high - lowest_low + 1e-10) * 100).alias('rsv')
 
@@ -302,8 +302,8 @@ class IncrementalCalculator:
             d_col = f'd{window}'
             j_col = f'j{window}'
 
-            k_expr = rsv_expr.rolling_mean(window_size=3, min_periods=1)
-            d_expr = k_expr.rolling_mean(window_size=3, min_periods=1)
+            k_expr = rsv_expr.rolling_mean(window_size=3, min_samples=1)
+            d_expr = k_expr.rolling_mean(window_size=3, min_samples=1)
             j_expr = 3 * k_expr - 2 * d_expr
 
             result = result.with_columns(
@@ -347,12 +347,12 @@ class IncrementalCalculator:
             dn_col = f'dn{window}'
             
             mb_values = combined_data.with_columns(
-                pl.col('close').rolling_mean(window_size=window, min_periods=window).alias(mb_col)
+                pl.col('close').rolling_mean(window_size=window, min_samples=window).alias(mb_col)
             )[mb_col]
             
             # 计算标准差
             std_values = combined_data.with_columns(
-                pl.col('close').rolling_std(window_size=window, min_periods=window).alias('std')
+                pl.col('close').rolling_std(window_size=window, min_samples=window).alias('std')
             )['std']
             
             # 计算上轨和下轨
@@ -395,11 +395,11 @@ class IncrementalCalculator:
         for window in windows:
             # 计算最高价和最低价
             highest_high = combined_data.with_columns(
-                pl.col('high').rolling_max(window_size=window, min_periods=window).alias('highest_high')
+                pl.col('high').rolling_max(window_size=window, min_samples=window).alias('highest_high')
             )['highest_high']
             
             lowest_low = combined_data.with_columns(
-                pl.col('low').rolling_min(window_size=window, min_periods=window).alias('lowest_low')
+                pl.col('low').rolling_min(window_size=window, min_samples=window).alias('lowest_low')
             )['lowest_low']
             
             # 计算WR
@@ -513,16 +513,16 @@ class IncrementalCalculator:
             plus_dm = pl.when((high_diff > low_diff) & (high_diff > 0)).then(high_diff).otherwise(0.0)
             minus_dm = pl.when((low_diff > high_diff) & (low_diff > 0)).then(low_diff).otherwise(0.0)
 
-            tr_sma = tr.rolling_sum(window_size=window, min_periods=1)
-            pdm_sma = plus_dm.rolling_sum(window_size=window, min_periods=1)
-            ndm_sma = minus_dm.rolling_sum(window_size=window, min_periods=1)
+            tr_sma = tr.rolling_sum(window_size=window, min_samples=1)
+            pdm_sma = plus_dm.rolling_sum(window_size=window, min_samples=1)
+            ndm_sma = minus_dm.rolling_sum(window_size=window, min_samples=1)
 
             pdi = (pdm_sma / (tr_sma + 1e-10) * 100).alias(f'pdi_{window}')
             ndi = (ndm_sma / (tr_sma + 1e-10) * 100).alias(f'ndi_{window}')
 
             dx = pl.when((pdi + ndi) == 0).then(0.0).otherwise((pdi - ndi).abs() / (pdi + ndi + 1e-10) * 100).alias(f'dx_{window}')
 
-            adx = dx.rolling_mean(window_size=window, min_periods=1).alias(f'adx_{window}')
+            adx = dx.rolling_mean(window_size=window, min_samples=1).alias(f'adx_{window}')
 
             adxr = ((adx + adx.shift(window)) / 2).alias(f'adxr_{window}')
 
@@ -698,14 +698,14 @@ class IncrementalCalculator:
         combined_data = self._combine(existing_data, new_data, ['date', 'close'])
         
         # 计算短期和长期移动平均
-        short_ma = combined_data['close'].rolling_mean(window_size=short_period, min_periods=short_period)
-        long_ma = combined_data['close'].rolling_mean(window_size=long_period, min_periods=long_period)
+        short_ma = combined_data['close'].rolling_mean(window_size=short_period, min_samples=short_period)
+        long_ma = combined_data['close'].rolling_mean(window_size=long_period, min_samples=long_period)
         
         # 计算DMA
         dma = (short_ma - long_ma).alias('dma')
         
         # 计算AMA
-        ama = dma.rolling_mean(window_size=signal_period, min_periods=signal_period).alias('ama')
+        ama = dma.rolling_mean(window_size=signal_period, min_samples=signal_period).alias('ama')
         
         # 提取新增数据对应的值
         result = new_data.clone()
@@ -757,10 +757,10 @@ class IncrementalCalculator:
         combined_data = self._combine(existing_data, new_data, ['date', 'close'])
         
         # 计算不同周期的移动平均线
-        ma3 = combined_data['close'].rolling_mean(window_size=3, min_periods=3)
-        ma6 = combined_data['close'].rolling_mean(window_size=6, min_periods=6)
-        ma12 = combined_data['close'].rolling_mean(window_size=12, min_periods=12)
-        ma24 = combined_data['close'].rolling_mean(window_size=24, min_periods=24)
+        ma3 = combined_data['close'].rolling_mean(window_size=3, min_samples=3)
+        ma6 = combined_data['close'].rolling_mean(window_size=6, min_samples=6)
+        ma12 = combined_data['close'].rolling_mean(window_size=12, min_samples=12)
+        ma24 = combined_data['close'].rolling_mean(window_size=24, min_samples=24)
         
         # 计算BBI
         bbi = ((ma3 + ma6 + ma12 + ma24) / 4).alias('bbi')

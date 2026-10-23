@@ -128,8 +128,8 @@ def calculate_adr(lazy_df: pl.LazyFrame, period: int = 10) -> pl.LazyFrame:
     """
     lazy_df = _ensure_market_breadth_columns(lazy_df)
 
-    avg_up = pl.col('up_count').rolling_mean(window_size=period, min_periods=period)
-    avg_down = pl.col('down_count').rolling_mean(window_size=period, min_periods=period)
+    avg_up = pl.col('up_count').rolling_mean(window_size=period, min_samples=period)
+    avg_down = pl.col('down_count').rolling_mean(window_size=period, min_samples=period)
 
     adr_value = (avg_up / avg_down * 100).fill_nan(0).replace(float('inf'), 0)
 
@@ -154,8 +154,8 @@ def calculate_obos(lazy_df: pl.LazyFrame, period: int = 10) -> pl.LazyFrame:
     """
     lazy_df = _ensure_market_breadth_columns(lazy_df)
 
-    avg_up = pl.col('up_count').rolling_mean(window_size=period, min_periods=period)
-    avg_down = pl.col('down_count').rolling_mean(window_size=period, min_periods=period)
+    avg_up = pl.col('up_count').rolling_mean(window_size=period, min_samples=period)
+    avg_down = pl.col('down_count').rolling_mean(window_size=period, min_samples=period)
 
     obos_value = avg_up - avg_down
 

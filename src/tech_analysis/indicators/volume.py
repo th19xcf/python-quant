@@ -71,9 +71,9 @@ def calculate_vr(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     # 2. 计算各窗口的VR值
     for window in windows:
         # 计算N日上涨、下跌、平盘成交量总和
-        up_sum = to_float32(up_vol.rolling_sum(window_size=window, min_periods=1))
-        down_sum = to_float32(down_vol.rolling_sum(window_size=window, min_periods=1))
-        flat_sum = to_float32(flat_vol.rolling_sum(window_size=window, min_periods=1))
+        up_sum = to_float32(up_vol.rolling_sum(window_size=window, min_samples=1))
+        down_sum = to_float32(down_vol.rolling_sum(window_size=window, min_samples=1))
+        flat_sum = to_float32(flat_vol.rolling_sum(window_size=window, min_samples=1))
         
         # 计算VR值 = (上涨总和 + 1/2平盘总和) / (下跌总和 + 1/2平盘总和) * 100
         vr = to_float32((up_sum + flat_sum / 2) / 
@@ -102,7 +102,7 @@ def calculate_psy(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     
     # 2. 计算各窗口的PSY值（N天内上涨天数百分比）
     for window in windows:
-        psy_expr = to_float32(up_day.rolling_sum(window_size=window, min_periods=1) / window * 100).alias(f'psy{window}')
+        psy_expr = to_float32(up_day.rolling_sum(window_size=window, min_samples=1) / window * 100).alias(f'psy{window}')
         lazy_df = lazy_df.with_columns(psy_expr)
     
     # 3. 添加默认列名
@@ -130,8 +130,8 @@ def calculate_cr(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     # 2. 计算各窗口的CR值
     for window in windows:
         # 计算N日上涨、下跌成交量总和
-        up_sum = to_float32(up_vol.rolling_sum(window_size=window, min_periods=1))
-        down_sum = to_float32(down_vol.rolling_sum(window_size=window, min_periods=1))
+        up_sum = to_float32(up_vol.rolling_sum(window_size=window, min_samples=1))
+        down_sum = to_float32(down_vol.rolling_sum(window_size=window, min_samples=1))
         
         # 计算CR值 = (上涨总和 - 下跌总和) / (上涨总和 + 下跌总和) * 100
         cr = to_float32((up_sum - down_sum) / 
@@ -161,15 +161,15 @@ def calculate_hsl(lazy_df: pl.LazyFrame, float_share: float = None) -> pl.LazyFr
         hsl = to_float32(pl.col('volume') / float_share * 100).alias('hsl')
     else:
         # 估算：使用60日平均成交量作为流通股本的参考
-        avg_volume = pl.col('volume').rolling_mean(window_size=60, min_periods=1)
+        avg_volume = pl.col('volume').rolling_mean(window_size=60, min_samples=1)
         hsl = to_float32(pl.when(avg_volume > 0).then(pl.col('volume') / avg_volume * 5).otherwise(0)).alias('hsl')
     
     # 先添加HSL列
     lazy_df = lazy_df.with_columns(hsl)
     
     # 计算HSL的5日和10日移动平均
-    hsl_ma5 = to_float32(pl.col('hsl').rolling_mean(window_size=5, min_periods=1)).alias('hsl_ma5')
-    hsl_ma10 = to_float32(pl.col('hsl').rolling_mean(window_size=10, min_periods=1)).alias('hsl_ma10')
+    hsl_ma5 = to_float32(pl.col('hsl').rolling_mean(window_size=5, min_samples=1)).alias('hsl_ma5')
+    hsl_ma10 = to_float32(pl.col('hsl').rolling_mean(window_size=10, min_samples=1)).alias('hsl_ma10')
     
     return lazy_df.with_columns([hsl_ma5, hsl_ma10])
 
@@ -187,7 +187,7 @@ def calculate_lb(lazy_df: pl.LazyFrame, period: int = 5) -> pl.LazyFrame:
         pl.LazyFrame: 包含LB指标的LazyFrame
     """
     # 计算过去N日平均成交量（不包含当日）
-    avg_volume = pl.col('volume').shift(1).rolling_mean(window_size=period, min_periods=1)
+    avg_volume = pl.col('volume').shift(1).rolling_mean(window_size=period, min_samples=1)
     
     # 计算量比
     lb = to_float32(pl.when(avg_volume > 0).then(pl.col('volume') / avg_volume).otherwise(1)).alias('lb')

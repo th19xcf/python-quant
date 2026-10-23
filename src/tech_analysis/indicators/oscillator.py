@@ -66,8 +66,8 @@ def calculate_kdj(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
         lazy_df = lazy_df.with_columns(rsv_expr)
         
         # 计算k、d、j值
-        k_expr = to_float32(pl.col(f'rsv_{window}').rolling_mean(window_size=3, min_periods=1)).alias(f'k{window}')
-        d_expr = to_float32(k_expr.rolling_mean(window_size=3, min_periods=1)).alias(f'd{window}')
+        k_expr = to_float32(pl.col(f'rsv_{window}').rolling_mean(window_size=3, min_samples=1)).alias(f'k{window}')
+        d_expr = to_float32(k_expr.rolling_mean(window_size=3, min_samples=1)).alias(f'd{window}')
         j_expr = to_float32(3 * k_expr - 2 * d_expr).alias(f'j{window}')
         
         lazy_df = lazy_df.with_columns([k_expr, d_expr, j_expr])
@@ -99,7 +99,7 @@ def calculate_cci(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     
     for window in windows:
         # 计算典型价格的N日移动平均值（MA_TP）
-        ma_tp = tp.rolling_mean(window_size=window, min_periods=1)
+        ma_tp = tp.rolling_mean(window_size=window, min_samples=1)
         
         # 计算平均绝对偏差（MAD）
         mad = calculate_mad(tp, window)

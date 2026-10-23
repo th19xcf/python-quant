@@ -106,9 +106,9 @@ def calculate_dmi(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     
     for window in windows:
         # 计算平滑的TR、+DM、-DM
-        tr_sma = tr.rolling_sum(window_size=window, min_periods=1)
-        pdm_sma = plus_dm.rolling_sum(window_size=window, min_periods=1)
-        ndm_sma = minus_dm.rolling_sum(window_size=window, min_periods=1)
+        tr_sma = tr.rolling_sum(window_size=window, min_samples=1)
+        pdm_sma = plus_dm.rolling_sum(window_size=window, min_samples=1)
+        ndm_sma = minus_dm.rolling_sum(window_size=window, min_samples=1)
         
         # 计算+DI和-DI
         pdi = to_float32(pdm_sma / tr_sma * 100).alias(f'pdi_{window}')
@@ -118,7 +118,7 @@ def calculate_dmi(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
         dx = to_float32(pl.when((pdi + ndi) == 0).then(0.0).otherwise((pdi - ndi).abs() / (pdi + ndi) * 100)).alias(f'dx_{window}')
         
         # 计算ADX
-        adx = to_float32(dx.rolling_mean(window_size=window, min_periods=1)).alias(f'adx_{window}')
+        adx = to_float32(dx.rolling_mean(window_size=window, min_samples=1)).alias(f'adx_{window}')
         
         # 计算ADXR
         adxr = to_float32((adx + adx.shift(window)) / 2).alias(f'adxr_{window}')
@@ -287,15 +287,15 @@ def calculate_dma(lazy_df: pl.LazyFrame, short_period: int = 10, long_period: in
     Returns:
         pl.LazyFrame: 包含DMA和AMA指标的LazyFrame
     """
-    # 计算短期和长期移动平均，min_periods=1确保从第一个数据点开始计算
-    short_ma = pl.col('close').rolling_mean(window_size=short_period, min_periods=1)
-    long_ma = pl.col('close').rolling_mean(window_size=long_period, min_periods=1)
+    # 计算短期和长期移动平均，min_samples=1确保从第一个数据点开始计算
+    short_ma = pl.col('close').rolling_mean(window_size=short_period, min_samples=1)
+    long_ma = pl.col('close').rolling_mean(window_size=long_period, min_samples=1)
 
     # 计算DMA
     dma = to_float32(short_ma - long_ma).alias('dma')
 
-    # 计算AMA（DMA的移动平均），min_periods=1确保从第一个数据点开始计算
-    ama = to_float32(dma.rolling_mean(window_size=signal_period, min_periods=1)).alias('ama')
+    # 计算AMA（DMA的移动平均），min_samples=1确保从第一个数据点开始计算
+    ama = to_float32(dma.rolling_mean(window_size=signal_period, min_samples=1)).alias('ama')
 
     return lazy_df.with_columns([dma, ama])
 
@@ -359,11 +359,11 @@ def calculate_bbi(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
     Returns:
         pl.LazyFrame: 包含BBI指标的LazyFrame
     """
-    # 计算不同周期的移动平均线，min_periods=1确保从第一个数据点开始计算
-    ma3 = pl.col('close').rolling_mean(window_size=3, min_periods=1)
-    ma6 = pl.col('close').rolling_mean(window_size=6, min_periods=1)
-    ma12 = pl.col('close').rolling_mean(window_size=12, min_periods=1)
-    ma24 = pl.col('close').rolling_mean(window_size=24, min_periods=1)
+    # 计算不同周期的移动平均线，min_samples=1确保从第一个数据点开始计算
+    ma3 = pl.col('close').rolling_mean(window_size=3, min_samples=1)
+    ma6 = pl.col('close').rolling_mean(window_size=6, min_samples=1)
+    ma12 = pl.col('close').rolling_mean(window_size=12, min_samples=1)
+    ma24 = pl.col('close').rolling_mean(window_size=24, min_samples=1)
     
     # 计算BBI
     bbi = to_float32((ma3 + ma6 + ma12 + ma24) / 4).alias('bbi')

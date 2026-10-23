@@ -169,9 +169,9 @@ class LazyOptimizer:
         for window_size in window_sizes:
             # 示例：创建最高价和最低价的滚动窗口
             result = result.with_columns(
-                pl.col('high').rolling_max(window_size=window_size, min_periods=1).alias(f'high_roll_{window_size}'),
-                pl.col('low').rolling_min(window_size=window_size, min_periods=1).alias(f'low_roll_{window_size}'),
-                pl.col('close').rolling_mean(window_size=window_size, min_periods=1).alias(f'close_roll_{window_size}')
+                pl.col('high').rolling_max(window_size=window_size, min_samples=1).alias(f'high_roll_{window_size}'),
+                pl.col('low').rolling_min(window_size=window_size, min_samples=1).alias(f'low_roll_{window_size}'),
+                pl.col('close').rolling_mean(window_size=window_size, min_samples=1).alias(f'close_roll_{window_size}')
             )
         
         return result

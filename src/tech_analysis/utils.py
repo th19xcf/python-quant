@@ -241,8 +241,8 @@ def calculate_mad(tp_series: pl.Expr, window: int) -> pl.Expr:
         pl.Expr: MAD计算表达式
     """
     # 计算滚动平均值
-    ma_tp_rolling = tp_series.rolling_mean(window_size=window, min_periods=1)
+    ma_tp_rolling = tp_series.rolling_mean(window_size=window, min_samples=1)
     # 计算绝对偏差
     abs_dev = (tp_series - ma_tp_rolling).abs()
     # 计算滚动平均绝对偏差
-    return abs_dev.rolling_mean(window_size=window, min_periods=1).cast(pl.Float32)
+    return abs_dev.rolling_mean(window_size=window, min_samples=1).cast(pl.Float32)

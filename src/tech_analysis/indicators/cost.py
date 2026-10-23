@@ -39,8 +39,8 @@ def calculate_cyc(lazy_df: pl.LazyFrame, windows: list = None) -> pl.LazyFrame:
     
     for window in windows:
         # 计算N日累计成本和累计成交量
-        cumulative_cost = cost.rolling_sum(window_size=window, min_periods=1)
-        cumulative_volume = pl.col('volume').rolling_sum(window_size=window, min_periods=1)
+        cumulative_cost = cost.rolling_sum(window_size=window, min_samples=1)
+        cumulative_volume = pl.col('volume').rolling_sum(window_size=window, min_samples=1)
         
         # 计算成本均线
         cyc = to_float32(
@@ -86,8 +86,8 @@ def calculate_cys(lazy_df: pl.LazyFrame, cyc_window: int = 13) -> pl.LazyFrame:
     typical_price = (pl.col('high') + pl.col('low') + pl.col('close')) / 3
     cost = typical_price * pl.col('volume')
     
-    cumulative_cost = cost.rolling_sum(window_size=cyc_window, min_periods=1)
-    cumulative_volume = pl.col('volume').rolling_sum(window_size=cyc_window, min_periods=1)
+    cumulative_cost = cost.rolling_sum(window_size=cyc_window, min_samples=1)
+    cumulative_volume = pl.col('volume').rolling_sum(window_size=cyc_window, min_samples=1)
     
     cyc = pl.when(cumulative_volume > 0).then(cumulative_cost / cumulative_volume).otherwise(pl.col('close'))
     
@@ -102,7 +102,7 @@ def calculate_cys(lazy_df: pl.LazyFrame, cyc_window: int = 13) -> pl.LazyFrame:
     lazy_df = lazy_df.with_columns(cys)
     
     # 计算CYS的5日移动平均
-    cys_ma5 = to_float32(pl.col('cys').rolling_mean(window_size=5, min_periods=1)).alias('cys_ma5')
+    cys_ma5 = to_float32(pl.col('cys').rolling_mean(window_size=5, min_samples=1)).alias('cys_ma5')
     
     return lazy_df.with_columns(cys_ma5)
 
