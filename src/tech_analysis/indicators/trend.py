@@ -24,11 +24,91 @@
 
 import polars as pl
 import numpy as np
+from numba import njit
+
 from ..utils import to_float32
 from ..common_calculations import (
     calculate_moving_average,
     add_default_columns
 )
+
+
+@njit(cache=True)
+def _sar_core(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
+              af_step: float, max_af: float) -> np.ndarray:
+    """Numba JIT 编译的 SAR 核心迭代。
+
+    SAR 是状态机式递推（依赖前一根 SAR / EP / AF / 趋势方向），
+    无法向量化，用 njit 可把 Python 层循环降到接近 C 速度。
+    """
+    n = len(highs)
+    sar = np.empty(n, dtype=np.float64)
+    for k in range(n):
+        sar[k] = np.nan
+
+    if n < 2:
+        return sar
+
+    ep = highs[0]
+    af = af_step
+    long_trend = True
+
+    if closes[1] > closes[0]:
+        long_trend = True
+        sar[0] = lows[0]
+        ep = highs[0]
+    else:
+        long_trend = False
+        sar[0] = highs[0]
+        ep = lows[0]
+
+    for i in range(1, n):
+        if long_trend:
+            sar[i] = sar[i - 1] + af * (ep - sar[i - 1])
+            if i >= 2:
+                limit = lows[i - 1]
+                if lows[i - 2] > limit:
+                    limit = lows[i - 2]
+                if sar[i] < limit:
+                    sar[i] = limit
+            else:
+                if sar[i] < lows[i - 1]:
+                    sar[i] = lows[i - 1]
+
+            if lows[i] < sar[i]:
+                long_trend = False
+                sar[i] = ep
+                ep = lows[i]
+                af = af_step
+            elif highs[i] > ep:
+                ep = highs[i]
+                af += af_step
+                if af > max_af:
+                    af = max_af
+        else:
+            sar[i] = sar[i - 1] + af * (ep - sar[i - 1])
+            if i >= 2:
+                limit = highs[i - 1]
+                if highs[i - 2] < limit:
+                    limit = highs[i - 2]
+                if sar[i] > limit:
+                    sar[i] = limit
+            else:
+                if sar[i] > highs[i - 1]:
+                    sar[i] = highs[i - 1]
+
+            if highs[i] > sar[i]:
+                long_trend = True
+                sar[i] = ep
+                ep = highs[i]
+                af = af_step
+            elif lows[i] < ep:
+                ep = lows[i]
+                af += af_step
+                if af > max_af:
+                    af = max_af
+
+    return sar
 
 
 def calculate_ma(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
@@ -191,73 +271,14 @@ def calculate_sar(lazy_df: pl.LazyFrame, af_step: float = 0.02, max_af: float = 
         pl.LazyFrame: 包含SAR指标的LazyFrame
     """
     def sar_calculation(highs, lows, closes):
-        """计算SAR的numpy实现"""
-        n = len(highs)
-        sar = np.zeros(n)
-        sar.fill(np.nan)
-
-        if n < 2:
-            return sar
-
-        # 初始化
-        ep = highs[0]  # 极点价格
-        af = af_step   # 加速因子
-        long = True    # 当前趋势（True=多头，False=空头）
-
-        # 确定初始趋势
-        if closes[1] > closes[0]:
-            long = True
-            sar[0] = lows[0]
-            ep = highs[0]
-        else:
-            long = False
-            sar[0] = highs[0]
-            ep = lows[0]
-
-        # 迭代计算
-        for i in range(1, n):
-            if long:
-                # 多头趋势
-                sar[i] = sar[i-1] + af * (ep - sar[i-1])
-                # 限制SAR不超过前n周期的最低价
-                if i >= 2:
-                    sar[i] = max(sar[i], lows[i-1], lows[i-2])
-                else:
-                    sar[i] = max(sar[i], lows[i-1])
-
-                # 检查趋势反转
-                if lows[i] < sar[i]:
-                    # 转为空头
-                    long = False
-                    sar[i] = ep
-                    ep = lows[i]
-                    af = af_step
-                elif highs[i] > ep:
-                    # 更新极点
-                    ep = highs[i]
-                    af = min(af + af_step, max_af)
-            else:
-                # 空头趋势
-                sar[i] = sar[i-1] + af * (ep - sar[i-1])
-                # 限制SAR不低于前n周期的最高价
-                if i >= 2:
-                    sar[i] = min(sar[i], highs[i-1], highs[i-2])
-                else:
-                    sar[i] = min(sar[i], highs[i-1])
-
-                # 检查趋势反转
-                if highs[i] > sar[i]:
-                    # 转为多头
-                    long = True
-                    sar[i] = ep
-                    ep = highs[i]
-                    af = af_step
-                elif lows[i] < ep:
-                    # 更新极点
-                    ep = lows[i]
-                    af = min(af + af_step, max_af)
-
-        return sar
+        """委托给 Numba JIT 编译的 _sar_core 执行。"""
+        return _sar_core(
+            np.ascontiguousarray(highs, dtype=np.float64),
+            np.ascontiguousarray(lows, dtype=np.float64),
+            np.ascontiguousarray(closes, dtype=np.float64),
+            af_step,
+            max_af,
+        )
 
     # 使用map_batches进行向量化计算
     return lazy_df.with_columns(
