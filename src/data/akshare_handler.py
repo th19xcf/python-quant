@@ -788,6 +788,100 @@ class AkShareHandler(DataSourceBase):
             logger.exception(f"更新股票分红配股数据失败: {e}")
             raise
 
+    # ------------------------------------------------------------------
+    # 标准 DataSource 接口（统一列名/单位/复权口径，供 DataFetcher 调用）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_date_str(date_str: str) -> str:
+        """将 YYYYMMDD 或 YYYY-MM-DD 统一为 YYYYMMDD（akshare 接口要求）"""
+        return str(date_str).replace('-', '')
+
+    def get_stock_data(self, ts_code: str, start_date: str, end_date: str,
+                       freq: str = 'daily', adjustment_type: str = 'qfq'):
+        """
+        标准接口：获取股票日线数据，返回统一格式（原始价 + 复权因子）。
+
+        akshare 的复权在 API 侧完成，无独立复权因子接口。
+        这里获取不复权原始价(adjust="")，复权因子由 _normalize_kline 补齐 1.0，
+        复权计算交由 DataFetcher._apply_adjustment 统一处理。
+
+        Returns:
+            pl.DataFrame: 归一化后的K线数据
+        """
+        try:
+            symbol = ts_code.split('.')[0]
+            sd = self._normalize_date_str(start_date) if start_date else None
+            ed = self._normalize_date_str(end_date) if end_date else None
+
+            # 获取不复权原始价格
+            raw = ak.stock_zh_a_hist(
+                symbol=symbol, period="daily",
+                start_date=sd, end_date=ed, adjust=""
+            )
+            if raw is None or raw.empty:
+                return pl.DataFrame()
+
+            df = pl.from_pandas(raw)
+
+            # 中文列名映射
+            column_map = {
+                'date': '日期', 'open': '开盘', 'high': '最高', 'low': '最低',
+                'close': '收盘', 'pre_close': '昨收', 'change': '涨跌额',
+                'pct_chg': '涨跌幅', 'volume': '成交量', 'amount': '成交额',
+            }
+            # akshare 成交量单位为"手"
+            return self._normalize_kline(
+                df, column_map=column_map, ts_code=ts_code,
+                volume_unit='hand', date_format='%Y-%m-%d', include_factors=True,
+            )
+
+        except Exception as e:
+            logger.warning(f"akshare get_stock_data({ts_code}) 失败: {e}")
+            return pl.DataFrame()
+
+    def get_index_data(self, ts_code: str, start_date: str, end_date: str,
+                       freq: str = 'daily'):
+        """
+        标准接口：获取指数日线数据，返回统一格式。
+
+        Returns:
+            pl.DataFrame: 归一化后的指数K线数据
+        """
+        try:
+            symbol = ts_code.split('.')[0]
+            sd = self._normalize_date_str(start_date) if start_date else None
+            ed = self._normalize_date_str(end_date) if end_date else None
+
+            raw = ak.stock_zh_index_daily_em(
+                symbol=ts_code, start_date=sd, end_date=ed
+            )
+            if raw is None or raw.empty:
+                return pl.DataFrame()
+
+            df = pl.from_pandas(raw)
+
+            # 指数接口列名可能为中文或英文，做兼容映射
+            column_map = {
+                'date': 'date', 'open': 'open', 'high': 'high', 'low': 'low',
+                'close': 'close', 'volume': 'volume', 'amount': 'amount',
+            }
+            # 若为中文列名则覆盖映射
+            cn_map = {'date': '日期', 'open': '开盘', 'high': '最高',
+                      'low': '最低', 'close': '收盘', 'volume': '成交量',
+                      'amount': '成交额'}
+            if '日期' in df.columns:
+                column_map = cn_map
+
+            return self._normalize_kline(
+                df, column_map=column_map, ts_code=ts_code,
+                volume_unit='hand', date_format='%Y-%m-%d', include_factors=True,
+            )
+
+        except Exception as e:
+            logger.warning(f"akshare get_index_data({ts_code}) 失败: {e}")
+            return pl.DataFrame()
+
     def update_etf_basic(self, max_retries=3):
         """
         更新 ETF 基本信息

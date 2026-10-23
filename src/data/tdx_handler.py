@@ -963,3 +963,95 @@ class TdxHandler(DataSourceBase):
         except (OSError, IOError, ValueError) as e:
             logger.exception(f"获取股票 {stock_code} 的K线数据失败: {e}")
             return pl.LazyFrame({})
+
+    # ------------------------------------------------------------------
+    # 标准 DataSource 接口（统一列名/单位/复权口径，供 DataFetcher 调用）
+    # ------------------------------------------------------------------
+
+    def get_stock_data(self, ts_code: str, start_date: str, end_date: str,
+                       freq: str = 'daily', adjustment_type: str = 'qfq'):
+        """
+        标准接口：获取股票日线数据，返回统一格式（原始价 + 复权因子）。
+
+        复用 get_kline_data() 的本地文件解析 + 复权因子计算，
+        补齐 pre_close/change/pct_chg 衍生列后归一化。
+
+        Returns:
+            pl.DataFrame: 归一化后的K线数据
+        """
+        try:
+            # get_kline_data 返回 LazyFrame，含 date/open/high/low/close/volume/amount
+            # 以及 qfq_factor/hfq_factor 列
+            lazy_df = self.get_kline_data(ts_code, start_date, end_date, adjust='none')
+            if lazy_df is None:
+                return pl.DataFrame()
+
+            df = lazy_df.collect()
+            if df.is_empty():
+                return pl.DataFrame()
+
+            # 补齐衍生列：pre_close / change / pct_chg
+            df = df.with_columns([
+                pl.col('close').shift(1).alias('pre_close'),
+            ])
+            df = df.with_columns([
+                (pl.col('close') - pl.col('pre_close')).alias('change'),
+                ((pl.col('close') / pl.col('pre_close') - 1) * 100).alias('pct_chg'),
+            ])
+
+            # tdx 列名已为标准名，成交量单位为"手"
+            column_map = {
+                'date': 'date', 'open': 'open', 'high': 'high', 'low': 'low',
+                'close': 'close', 'pre_close': 'pre_close', 'volume': 'volume',
+                'amount': 'amount', 'pct_chg': 'pct_chg', 'change': 'change',
+                'qfq_factor': 'qfq_factor', 'hfq_factor': 'hfq_factor',
+            }
+            return self._normalize_kline(
+                df, column_map=column_map, ts_code=ts_code,
+                volume_unit='hand', date_format=None, include_factors=True,
+            )
+
+        except Exception as e:
+            logger.warning(f"tdx get_stock_data({ts_code}) 失败: {e}")
+            return pl.DataFrame()
+
+    def get_index_data(self, ts_code: str, start_date: str, end_date: str,
+                       freq: str = 'daily'):
+        """
+        标准接口：获取指数日线数据，返回统一格式。
+
+        指数无复权因子，复用 get_kline_data 解析本地文件。
+
+        Returns:
+            pl.DataFrame: 归一化后的指数K线数据
+        """
+        try:
+            lazy_df = self.get_kline_data(ts_code, start_date, end_date, adjust='none')
+            if lazy_df is None:
+                return pl.DataFrame()
+
+            df = lazy_df.collect()
+            if df.is_empty():
+                return pl.DataFrame()
+
+            df = df.with_columns([
+                pl.col('close').shift(1).alias('pre_close'),
+            ])
+            df = df.with_columns([
+                (pl.col('close') - pl.col('pre_close')).alias('change'),
+                ((pl.col('close') / pl.col('pre_close') - 1) * 100).alias('pct_chg'),
+            ])
+
+            column_map = {
+                'date': 'date', 'open': 'open', 'high': 'high', 'low': 'low',
+                'close': 'close', 'pre_close': 'pre_close', 'volume': 'volume',
+                'amount': 'amount', 'pct_chg': 'pct_chg', 'change': 'change',
+            }
+            return self._normalize_kline(
+                df, column_map=column_map, ts_code=ts_code,
+                volume_unit='hand', date_format=None, include_factors=True,
+            )
+
+        except Exception as e:
+            logger.warning(f"tdx get_index_data({ts_code}) 失败: {e}")
+            return pl.DataFrame()

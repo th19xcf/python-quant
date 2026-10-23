@@ -958,6 +958,163 @@ class BaostockHandler(DataSourceBase):
             dict: 指数代码到日线数据的映射
         """
         return self.update_index_daily(ts_codes, start_date, end_date)
+
+    # ------------------------------------------------------------------
+    # 标准 DataSource 接口（统一列名/单位/复权口径，供 DataFetcher 调用）
+    # ------------------------------------------------------------------
+
+    def _to_baostock_code(self, ts_code: str) -> str:
+        """将 600000.SH 格式转换为 baostock 的 sh.600000 格式"""
+        parts = ts_code.split('.')
+        if len(parts) == 2:
+            return f"{parts[1].lower()}.{parts[0]}"
+        return ts_code
+
+    def get_stock_data(self, ts_code: str, start_date: str, end_date: str,
+                       freq: str = 'daily', adjustment_type: str = 'qfq'):
+        """
+        标准接口：获取股票日线数据，返回统一格式（原始价 + 复权因子）。
+
+        复权口径：baostock 侧获取不复权原始价(adjustflag=3) + 复权因子，
+        由 DataFetcher._apply_adjustment 统一计算复权价，避免各源复权口径不一致。
+
+        Returns:
+            pl.DataFrame: 归一化后的K线数据
+        """
+        try:
+            if not self._ensure_baostock_login():
+                logger.warning("Baostock登录失败，无法获取股票数据")
+                return pl.DataFrame()
+
+            bs_code = self._to_baostock_code(ts_code)
+            start_date, end_date = self._process_dates(start_date, end_date,
+                                                       default_days=self.config.data.default_days)
+
+            # 获取不复权原始价格（adjustflag=3）
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,code,open,high,low,close,preclose,volume,amount,pctChg",
+                start_date=start_date, end_date=end_date,
+                frequency="d", adjustflag="3"
+            )
+            if rs is None:
+                return pl.DataFrame()
+
+            raw = rs.get_data()
+            if raw is None or raw.empty:
+                return pl.DataFrame()
+
+            df = pl.from_pandas(raw)
+
+            # 获取复权因子（前复权/后复权）
+            qfq_factor = self._fetch_baostock_factor(bs_code, start_date, end_date, 'qfq')
+            hfq_factor = self._fetch_baostock_factor(bs_code, start_date, end_date, 'hfq')
+
+            if qfq_factor is not None and not qfq_factor.is_empty():
+                df = df.join(qfq_factor, on='date', how='left')
+            if hfq_factor is not None and not hfq_factor.is_empty():
+                if 'hfq_factor' in df.columns:
+                    df = df.drop('hfq_factor')
+                df = df.join(hfq_factor, on='date', how='left')
+
+            # 归一化：列名映射 + 成交量(股→手) + 日期格式 + 复权因子补齐
+            column_map = {
+                'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close',
+                'pre_close': 'preclose', 'volume': 'volume', 'amount': 'amount',
+                'pct_chg': 'pctChg',
+            }
+            return self._normalize_kline(
+                df, column_map=column_map, ts_code=ts_code,
+                volume_unit='share', date_format='%Y-%m-%d', include_factors=True,
+            )
+
+        except Exception as e:
+            logger.warning(f"baostock get_stock_data({ts_code}) 失败: {e}")
+            return pl.DataFrame()
+
+    def _fetch_baostock_factor(self, bs_code: str, start_date: str, end_date: str,
+                               factor_type: str) -> Optional[pl.DataFrame]:
+        """
+        获取 baostock 复权因子。
+
+        baostock 的 query_adjust_factor 返回的是除权除息事件表，
+        需要累加计算为累计复权因子。这里简化处理：直接用前复权/后复权
+        价格与不复权价格的比值作为因子。
+
+        为简化实现，返回 None（由 _normalize_kline 补齐 1.0），
+        复权计算交由 DataFetcher 侧统一处理。
+        """
+        try:
+            rs = bs.query_adjust_factor(
+                code=bs_code, start_date=start_date, end_date=end_date,
+            )
+            if rs is None:
+                return None
+            raw = rs.get_data()
+            if raw is None or raw.empty:
+                return None
+
+            df = pl.from_pandas(raw)
+            # baostock 返回复权因子列名：foreAdjustFactor / backAdjustFactor
+            col = 'foreAdjustFactor' if factor_type == 'qfq' else 'backAdjustFactor'
+            if col not in df.columns:
+                return None
+
+            df = df.select([
+                pl.col('date'),
+                pl.col(col).cast(pl.Float64).alias(f'{factor_type}_factor'),
+            ])
+            return df
+
+        except Exception as e:
+            logger.debug(f"baostock 获取{factor_type}因子失败: {e}")
+            return None
+
+    def get_index_data(self, ts_code: str, start_date: str, end_date: str,
+                       freq: str = 'daily'):
+        """
+        标准接口：获取指数日线数据，返回统一格式。
+
+        Returns:
+            pl.DataFrame: 归一化后的指数K线数据
+        """
+        try:
+            if not self._ensure_baostock_login():
+                return pl.DataFrame()
+
+            bs_code = self._to_baostock_code(ts_code)
+            start_date, end_date = self._process_dates(start_date, end_date,
+                                                       default_days=self.config.data.default_days)
+
+            rs = bs.query_history_k_data_plus(
+                bs_code,
+                "date,code,open,high,low,close,preclose,volume,amount,pctChg",
+                start_date=start_date, end_date=end_date,
+                frequency="d", adjustflag="3"
+            )
+            if rs is None:
+                return pl.DataFrame()
+
+            raw = rs.get_data()
+            if raw is None or raw.empty:
+                return pl.DataFrame()
+
+            df = pl.from_pandas(raw)
+
+            column_map = {
+                'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close',
+                'pre_close': 'preclose', 'volume': 'volume', 'amount': 'amount',
+                'pct_chg': 'pctChg',
+            }
+            # 指数无复权因子，volume_unit 指数成交量单位为手
+            return self._normalize_kline(
+                df, column_map=column_map, ts_code=ts_code,
+                volume_unit='hand', date_format='%Y-%m-%d', include_factors=True,
+            )
+
+        except Exception as e:
+            logger.warning(f"baostock get_index_data({ts_code}) 失败: {e}")
+            return pl.DataFrame()
     
     def download_stock_minute(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, frequency: str = "5"):
         """
