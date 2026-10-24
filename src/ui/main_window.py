@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt
 # 忽略PySide6信号断开警告
 warnings.simplefilter("ignore", RuntimeWarning)
 
+from src.data.services.dividend_service import DividendService
 from src.data.services.index_service import IndexService
 from src.ui.fund_section import FundSection
 from src.utils.logger import logger
@@ -31,11 +32,17 @@ from src.ui.main_window_chart_interaction_mixin import \
     MainWindowChartInteractionMixin
 from src.ui.main_window_event_mixin import MainWindowEventMixin
 from src.ui.main_window_navigation_mixin import MainWindowNavigationMixin
+from src.ui.main_window_candlestick_mixin import MainWindowCandlestickMixin
+from src.ui.main_window_indicator_window_mixin import \
+    MainWindowIndicatorWindowMixin
+from src.ui.main_window_dividend_mixin import MainWindowDividendMixin
 from src.ui.main_window_data_mixin import MainWindowDataMixin
 from src.ui.main_window_drawing_mixin import MainWindowDrawingMixin
 
 class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
-                 MainWindowUiMixin, MainWindowEventMixin, MainWindowDataMixin,
+                 MainWindowCandlestickMixin, MainWindowIndicatorWindowMixin,
+                 MainWindowDividendMixin, MainWindowUiMixin,
+                 MainWindowEventMixin, MainWindowDataMixin,
                  MainWindowDrawingMixin, QMainWindow, IView, IController):
     """
     主窗口类，参考通达信软件界面设计
@@ -59,6 +66,7 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
             tdx_data_path=getattr(getattr(config, 'data', None), 'tdx_data_path', None),
             db_manager=getattr(data_manager, 'db_manager', None),
         )
+        self.dividend_service = DividendService(data_manager)
         self.fund_section = FundSection(self)
         
         self.setWindowTitle("中国股市量化分析系统")
