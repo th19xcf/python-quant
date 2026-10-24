@@ -326,7 +326,7 @@ class FundSection:
                 "change_pct": change_pct_str,
                 "price": f"{quote.close:.2f}",
                 "change": change_str,
-                "volume": f"{quote.volume:,}",
+                "volume": f"{quote.volume:,.0f}",
                 "amount": f"{round(quote.amount / 100000000, 2)}亿",
                 "open": f"{quote.open:.2f}",
                 "high": f"{quote.high:.2f}",

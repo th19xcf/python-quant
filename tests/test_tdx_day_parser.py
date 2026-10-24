@@ -10,13 +10,19 @@ from src.data.tdx_day_parser import (build_day_file_path, parse_day_file,
 
 
 def _write_day_file(path, records):
-    """按 32 字节定长格式写入测试记录。"""
+    """
+    按 32 字节定长格式写入测试记录。
+
+    字段布局与真实 .day 一致：@20 为 float32 成交额（元），
+    @24 为 uint32 成交量（股）。records 中的 volume 以「手」给出，
+    amount 以「元」给出。
+    """
     with open(path, "wb") as f:
         for day, open_, high, low, close, volume, amount in records:
             f.write(struct.pack(
-                "<IIIIIIII",
+                "<IIIIIfII",
                 int(day), int(open_ * 100), int(high * 100), int(low * 100),
-                int(close * 100), volume, int(amount * 100), 0,
+                int(close * 100), float(amount), int(volume * 100), 0,
             ))
 
 
@@ -71,6 +77,26 @@ def test_parse_day_file_respects_max_days(tmp_path):
     assert df.height == 1
     assert df["date"][0] == date(2024, 1, 3)
     assert df["close"][0] == 11.0
+
+
+def test_volume_amount_layout_matches_real_files(tmp_path):
+    """
+    锁定真实 .day 字段布局：@20 为 float32 成交额（元），
+    @24 为 uint32 成交量（股）。两者比值应约等于当日均价。
+    """
+    price = 9.66
+    shares = 46_256_248
+    amount = price * shares
+    path = tmp_path / "sh600000.day"
+    with open(path, "wb") as f:
+        f.write(struct.pack("<IIIIIfII", 20261021, 972, 976, 961, 966,
+                            amount, shares, 0))
+
+    df = parse_day_file(path)
+
+    assert df["volume"][0] == pytest.approx(shares / 100)   # 股 → 手
+    assert df["amount"][0] == pytest.approx(amount, rel=1e-6)
+    assert df["amount"][0] / (df["volume"][0] * 100) == pytest.approx(price, rel=1e-6)
 
 
 def test_parse_day_file_empty_file(tmp_path):

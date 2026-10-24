@@ -11,14 +11,19 @@ from src.data.tdx_handler import TdxHandler
 
 
 def _write_day_file(path, records):
-    """按 32 字节定长格式写入记录：(date, open, high, low, close, volume, amount)。"""
+    """
+    按 32 字节定长格式写入记录：(date, open, high, low, close, volume, amount)。
+
+    字段布局与真实 .day 一致：@20 为 float32 成交额（元），
+    @24 为 uint32 成交量（股），volume 参数以「手」给出。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         for day, open_, high, low, close, volume, amount in records:
             f.write(struct.pack(
-                "<IIIIIIII",
+                "<IIIIIfII",
                 int(day), int(open_ * 100), int(high * 100), int(low * 100),
-                int(close * 100), volume, int(amount * 100), 0,
+                int(close * 100), float(amount), int(volume * 100), 0,
             ))
 
 
@@ -93,8 +98,8 @@ def test_ex_dividend_pre_close_uses_factor_ratio(tmp_path, day_file, monkeypatch
     assert row["change"] == pytest.approx(10.5 - 10.0 / 0.9)
 
 
-def test_amount_keeps_raw_convention_in_kline_path(tmp_path, day_file):
-    """get_kline_data 的成交额保留原始字段值（amount_scale=1.0）。"""
+def test_kline_path_uses_hand_and_yuan(tmp_path, day_file):
+    """get_kline_data 输出成交量单位为手、成交额单位为元。"""
     handler = _handler(tmp_path)
     try:
         df = handler.get_kline_data(
@@ -102,8 +107,9 @@ def test_amount_keeps_raw_convention_in_kline_path(tmp_path, day_file):
     finally:
         handler.close()
 
-    # 文件写入时 amount*100，原始字段为 1000*100=100000
-    assert df.sort("date")["amount"][0] == pytest.approx(100000.0)
+    first = df.sort("date").row(0, named=True)
+    assert first["volume"] == pytest.approx(100.0)   # 手
+    assert first["amount"] == pytest.approx(1000.0)  # 元
 
 
 def test_missing_file_returns_empty(tmp_path):

@@ -739,10 +739,10 @@ class TdxHandler(DataSourceBase):
                 logger.warning(f"股票 {stock_code} 的通达信数据文件不存在: {file_path}")
                 return pl.LazyFrame({})
             
-            # 复用统一的 .day 解析器；成交额沿用本路径的原始值约定（amount_scale=1.0）
+            # 复用统一的 .day 解析器（成交额元、成交量手）
             logger.info(f"开始解析文件 {file_path}")
             try:
-                data = read_recent_records(file_path, amount_scale=1.0)
+                data = read_recent_records(file_path)
             except (OSError, IOError) as file_e:
                 logger.exception(f"文件操作失败: {file_e}")
                 return pl.LazyFrame({})

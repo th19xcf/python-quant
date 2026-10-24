@@ -42,10 +42,11 @@ def _write_day_file(path, close, preclose):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         for day, price in (("20240102", preclose), ("20240103", close)):
+            # 真实布局：@20 为 float32 成交额（元），@24 为 uint32 成交量（股）
             f.write(struct.pack(
-                "<IIIIIIII",
+                "<IIIIIfII",
                 int(day), int(price * 100), int(price * 100), int(price * 100),
-                int(price * 100), 100, 100000000, 0,
+                int(price * 100), 1000000.0, 100 * 100, 0,
             ))
 
 

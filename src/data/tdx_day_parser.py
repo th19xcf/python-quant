@@ -66,34 +66,40 @@ def build_day_file_path(tdx_data_path, market: str, code: str) -> Path:
     return Path(tdx_data_path) / market / 'lday' / f'{market}{code}.day'
 
 
-# 成交额字段的历史折算约定：展示层（UI/行情快照）与部分存量数据按 1/100 折算，
-# tdx_handler.get_kline_data 的入库路径则沿用原始值。两种约定并存，
-# 待用真实 .day 文件校验单位后统一；调用方通过 amount_scale 显式选择。
-DEFAULT_AMOUNT_SCALE = 0.01
+def _decode_record(record: bytes) -> Dict:
+    """
+    解析单条 32 字节日线记录。
 
+    字段布局（经真实 .day 文件校验）：
+        0-4   date     uint32   YYYYMMDD
+        4-8   open     uint32   价格 × 100
+        8-12  high     uint32   价格 × 100
+        12-16 low      uint32   价格 × 100
+        16-20 close    uint32   价格 × 100
+        20-24 amount   float32  成交额（元）
+        24-28 volume   uint32   成交量（股）
+        28-32 reserved
 
-def _decode_record(record: bytes, amount_scale: float = DEFAULT_AMOUNT_SCALE) -> Dict:
-    """解析单条 32 字节日线记录。"""
+    输出统一为：成交额（元）、成交量（手，即股 / 100）。
+    """
     return {
         'date': datetime.strptime(str(struct.unpack('<I', record[0:4])[0]), '%Y%m%d').date(),
         'open': struct.unpack('<I', record[4:8])[0] / 100,
         'high': struct.unpack('<I', record[8:12])[0] / 100,
         'low': struct.unpack('<I', record[12:16])[0] / 100,
         'close': struct.unpack('<I', record[16:20])[0] / 100,
-        'volume': struct.unpack('<I', record[20:24])[0],
-        'amount': struct.unpack('<I', record[24:28])[0] * amount_scale,
+        'volume': struct.unpack('<I', record[24:28])[0] / 100,
+        'amount': struct.unpack('<f', record[20:24])[0],
     }
 
 
-def read_recent_records(file_path, count: Optional[int] = None,
-                        amount_scale: float = DEFAULT_AMOUNT_SCALE) -> List[Dict]:
+def read_recent_records(file_path, count: Optional[int] = None) -> List[Dict]:
     """
     读取文件末尾的若干条日线记录。
 
     Args:
         file_path: .day 文件路径
         count: 读取最近 count 条；None 表示全部
-        amount_scale: 成交额字段折算系数（1.0 表示保留原始值）
 
     Returns:
         list: 按时间升序排列的记录字典列表
@@ -109,7 +115,7 @@ def read_recent_records(file_path, count: Optional[int] = None,
         content = f.read()
 
     return [
-        _decode_record(content[i * RECORD_SIZE:(i + 1) * RECORD_SIZE], amount_scale)
+        _decode_record(content[i * RECORD_SIZE:(i + 1) * RECORD_SIZE])
         for i in range(len(content) // RECORD_SIZE)
     ]
 
@@ -123,7 +129,7 @@ def parse_day_file(file_path, max_days: Optional[int] = None) -> pl.DataFrame:
         max_days: 只解析最近 max_days 条记录，None 表示全部
 
     Returns:
-        polars.DataFrame: date/open/high/low/close/volume/amount
+        polars.DataFrame: date/open/high/low/close/volume（手）/amount（元）
     """
     records = read_recent_records(file_path, max_days)
     return pl.DataFrame(records) if records else pl.DataFrame()
