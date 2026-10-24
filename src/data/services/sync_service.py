@@ -18,6 +18,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from src.utils.code_converter import MARKET_BJ, MARKET_SH, MARKET_SZ, to_ts_code
 from src.utils.exceptions import DataSourceException, DataSaveError
 
 
@@ -64,83 +65,12 @@ def _is_fund_ts_code(ts_code, name=None, market=None):
     return False
 
 
-def _build_tdx_market_map(tdx_stock_codes):
-    """从通达信股票代码中提取市场信息（symbol -> market）。"""
-    tdx_market_map = {}
-    if tdx_stock_codes:
-        for ts_code in tdx_stock_codes:
-            if '.' in ts_code:
-                symbol, market = ts_code.split('.')
-                tdx_market_map[symbol] = market
-    return tdx_market_map
-
-
-def _parse_baostock_code(code, tdx_market_map):
-    """解析 Baostock 格式的股票代码为 600000.SH 格式。"""
-    if not code:
+def _to_ts_code_or_none(code):
+    """将外部数据源代码统一转换为标准 ts_code，非法格式返回 None。"""
+    try:
+        return to_ts_code(str(code).strip())
+    except (TypeError, ValueError):
         return None
-
-    if '.' in code:
-        parts = code.split('.')
-        if len(parts) == 2:
-            exchange, symbol = parts
-            if exchange == 'sh':
-                return f"{symbol}.SH"
-            elif exchange == 'sz':
-                return f"{symbol}.SZ"
-            elif exchange == 'bj':
-                return f"{symbol}.BJ"
-        return None
-
-    if code in tdx_market_map:
-        market = tdx_market_map[code]
-        return f"{code}.{market}"
-
-    if code.startswith('6'):
-        return f"{code}.SH"
-    elif code.startswith('8') and len(code) == 6:
-        num = int(code)
-        if 800000 <= num <= 899999:
-            return f"{code}.BJ"
-        return f"{code}.SZ"
-    elif code.startswith('92') and len(code) == 6:
-        num = int(code)
-        if 920000 <= num <= 920999:
-            return f"{code}.BJ"
-        return f"{code}.SZ"
-
-    return f"{code}.SZ"
-
-
-def _parse_akshare_code(code, tdx_market_map):
-    """解析 AkShare 格式的股票代码为 600000.SH 格式。"""
-    if not code:
-        return None
-
-    if code in tdx_market_map:
-        market = tdx_market_map[code]
-        return f"{code}.{market}"
-
-    if code.startswith('6'):
-        return f"{code}.SH"
-    elif code.startswith('92') and len(code) == 6:
-        num = int(code)
-        if 920000 <= num <= 920999:
-            return f"{code}.BJ"
-        return f"{code}.SZ"
-    elif code.startswith('8') and len(code) == 6:
-        num = int(code)
-        if 800000 <= num <= 899999:
-            return f"{code}.BJ"
-        return f"{code}.SZ"
-    elif code.startswith('4') and len(code) == 6:
-        return f"{code}.BJ"
-    elif code.startswith('9'):
-        return f"{code}.BJ"
-    elif len(code) == 6:
-        return f"{code}.SZ"
-
-    return None
 
 
 # ======================================================================
@@ -195,7 +125,7 @@ def _fetch_baostock_industry_map(baostock_handler):
         return industry_map
 
     for row in industry_df.iter_rows(named=True):
-        ts_code = _parse_baostock_code(row.get('code', ''), {})
+        ts_code = _to_ts_code_or_none(row.get('code'))
         if not ts_code:
             continue
         if _is_index_ts_code(ts_code) or _is_fund_ts_code(ts_code):
@@ -207,13 +137,12 @@ def _fetch_baostock_industry_map(baostock_handler):
     return industry_map
 
 
-def _fetch_akshare_industry_map(tdx_stock_codes):
+def _fetch_akshare_industry_map():
     """从 AkShare 行业板块成分获取行业映射（ts_code -> industry）。"""
     import akshare as ak
     import polars as pl
 
     industry_map = {}
-    tdx_market_map = _build_tdx_market_map(tdx_stock_codes)
 
     try:
         board_pd = ak.stock_board_industry_name_em()
@@ -243,7 +172,7 @@ def _fetch_akshare_industry_map(tdx_stock_codes):
                     raw_code = row.get('代码') or row.get('code') or row.get('symbol')
                     if not raw_code:
                         continue
-                    ts_code = _parse_akshare_code(str(raw_code).strip(), tdx_market_map)
+                    ts_code = _to_ts_code_or_none(raw_code)
                     if not ts_code:
                         continue
                     if _is_index_ts_code(ts_code) or _is_fund_ts_code(ts_code):
@@ -542,19 +471,17 @@ def _build_stock_info(ts_code, symbol, row, source):
     }
 
 
-def merge_stock_basic(baostock_df, akshare_df, existing_codes=None, tdx_stock_codes=None):
+def merge_stock_basic(baostock_df, akshare_df, existing_codes=None):
     """合并 Baostock 和 AkShare 的股票基本信息。"""
     merged = {}
 
     if existing_codes is None:
         existing_codes = set()
 
-    tdx_market_map = _build_tdx_market_map(tdx_stock_codes)
-
     if baostock_df is not None and not baostock_df.is_empty():
         for row in baostock_df.iter_rows(named=True):
             code = row.get('code', '')
-            ts_code = _parse_baostock_code(code, tdx_market_map)
+            ts_code = _to_ts_code_or_none(code)
 
             if ts_code is None or ts_code in existing_codes:
                 continue
@@ -564,7 +491,7 @@ def merge_stock_basic(baostock_df, akshare_df, existing_codes=None, tdx_stock_co
     if akshare_df is not None and not akshare_df.is_empty():
         for row in akshare_df.iter_rows(named=True):
             code = row.get('code') or row.get('代码') or row.get('symbol') or ''
-            ts_code = _parse_akshare_code(code, tdx_market_map)
+            ts_code = _to_ts_code_or_none(code)
 
             if ts_code is None or ts_code in existing_codes:
                 continue
@@ -715,7 +642,7 @@ def sync_tdx_stock_to_database(config, db_manager):
             baostock_handler, akshare_handler
         )
 
-        merged_basic = merge_stock_basic(baostock_basic, akshare_basic, set(), tdx_stock_codes)
+        merged_basic = merge_stock_basic(baostock_basic, akshare_basic, set())
 
         # 行业字段优先采用 Baostock 行业映射
         if baostock_industry_map:
@@ -738,7 +665,7 @@ def sync_tdx_stock_to_database(config, db_manager):
         )
         if missing_industry_count > 0:
             logger.info(f"仍有 {missing_industry_count} 只股票缺少行业字段，尝试 AkShare 行业成分兜底")
-            akshare_industry_map = _fetch_akshare_industry_map(tdx_stock_codes)
+            akshare_industry_map = _fetch_akshare_industry_map()
             if akshare_industry_map:
                 for ts_code, industry in akshare_industry_map.items():
                     if ts_code not in merged_basic:
@@ -864,59 +791,33 @@ FORCED_INDEX_NAME_MAP = {
 }
 
 
-def _normalize_baostock_index_code(code):
-    """将 Baostock 指数代码标准化为 000001.SH 格式。"""
-    if not code:
-        return None
+def _normalize_index_ts_code(code):
+    """
+    统一规范 Baostock / AkShare 指数代码格式为 000001.SH。
 
-    code = str(code).strip()
-    if '.' in code:
-        part1, part2 = code.split('.', 1)
-        part1 = part1.lower()
-        part2 = part2.strip()
-        if part1 in {'sh', 'sz', 'bj'} and part2.isdigit() and len(part2) == 6:
-            return f"{part2}.{part1.upper()}"
-
-    if '.' in code:
-        symbol, market = code.split('.', 1)
-        market = market.upper()
-        if symbol.isdigit() and len(symbol) == 6 and market in {'SH', 'SZ', 'BJ'}:
-            return f"{symbol}.{market}"
-
-    return None
-
-
-def _normalize_akshare_index_code(code):
-    """将 AkShare 指数代码标准化为 000001.SH 格式。"""
+    显式带市场标识（sh.000001 / 000001.SH）时委托统一代码转换工具；
+    纯数字代码不能用个股规则推断市场（000001 是上证指数而非平安银行），
+    因此按指数前缀规则处理：000 -> SH、399 -> SZ、884/899 -> BJ。
+    """
     if code is None:
         return None
 
-    code = str(code).strip()
-    if not code:
+    text = str(code).strip()
+    if not text:
         return None
 
-    if '.' in code:
-        symbol, market = code.split('.', 1)
-        market = market.upper()
-        if symbol.isdigit() and len(symbol) == 6 and market in {'SH', 'SZ', 'BJ'}:
-            return f"{symbol}.{market}"
-        return None
+    if '.' in text:
+        return _to_ts_code_or_none(text)
 
-    if not code.isdigit() or len(code) != 6:
+    if not text.isdigit() or len(text) != 6:
         return None
-
-    if code.startswith('000'):
-        return f"{code}.SH"
-    if code.startswith('399'):
-        return f"{code}.SZ"
-    if code.startswith('884') or code.startswith('899'):
-        return f"{code}.BJ"
+    if text.startswith('000'):
+        return f"{text}.{MARKET_SH}"
+    if text.startswith('399'):
+        return f"{text}.{MARKET_SZ}"
+    if text.startswith(('884', '899')):
+        return f"{text}.{MARKET_BJ}"
     return None
-
-
-def _normalize_index_ts_code(code):
-    """统一规范指数代码格式为 000001.SH。"""
-    return _normalize_baostock_index_code(code) or _normalize_akshare_index_code(code)
 
 
 def _parse_index_date(value):
@@ -1002,7 +903,7 @@ def _collect_external_index_name_map(config):
             baostock_df = pl.from_pandas(baostock_pd)
             if not baostock_df.is_empty():
                 for row in baostock_df.iter_rows(named=True):
-                    ts_code = _normalize_baostock_index_code(row.get('code'))
+                    ts_code = _normalize_index_ts_code(row.get('code'))
                     name = (row.get('code_name') or '').strip()
                     if ts_code and name and _is_index_ts_code(ts_code):
                         item = _get_or_create(ts_code)
@@ -1024,7 +925,7 @@ def _collect_external_index_name_map(config):
             for row in akshare_df.iter_rows(named=True):
                 raw_code = row.get('代码', row.get('index_code'))
                 raw_name = row.get('名称', row.get('display_name'))
-                ts_code = _normalize_akshare_index_code(raw_code)
+                ts_code = _normalize_index_ts_code(raw_code)
                 name = (raw_name or '').strip() if raw_name is not None else ''
                 if ts_code and name and _is_index_ts_code(ts_code):
                     item = _get_or_create(ts_code)
