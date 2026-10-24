@@ -515,6 +515,102 @@ class AkShareHandler(DataSourceBase):
             logger.exception(f"更新指数日线数据失败: {e}")
             raise
 
+    def _save_dividend_rows(self, ts_code: str, rows: List[dict]):
+        """
+        分红配股数据入库（双键去重）
+
+        匹配顺序：
+            1. 有除权除息日：按 ts_code + ex_date 匹配
+            2. 未命中且有报告期年度：匹配同年度 ex_date 为空的占位记录并回填 ex_date
+            3. 无除权除息日：匹配同年度已有记录，避免同一年度重复插入
+            4. 仍未命中：新增记录
+
+        一次性预加载该股票全部已有记录，避免原实现逐行查询；
+        更新时不会用缺失的 ex_date 覆盖已有日期。
+
+        Args:
+            ts_code: 标准股票代码
+            rows: 已清洗的分红行字典列表
+
+        Returns:
+            Tuple[int, int]: (新增条数, 更新条数)
+        """
+        if not rows:
+            return 0, 0
+
+        from src.database.models.stock import StockDividend
+
+        existing = self.session.query(StockDividend).filter_by(ts_code=ts_code).all()
+        by_ex_date = {d.ex_date: d for d in existing if d.ex_date}
+
+        # 同年度可能有多条，占位记录（ex_date 为空）取 id 最大的一条
+        placeholders = {}
+        # 同年度全部记录（含已有 ex_date 的），仅在本次缺 ex_date 时用于去重
+        by_year = {}
+        for item in existing:
+            if not item.dividend_year:
+                continue
+            current = by_year.get(item.dividend_year)
+            if current is None or (item.id or 0) > (current.id or 0):
+                by_year[item.dividend_year] = item
+            if not item.ex_date:
+                current = placeholders.get(item.dividend_year)
+                if current is None or (item.id or 0) > (current.id or 0):
+                    placeholders[item.dividend_year] = item
+
+        inserted = 0
+        updated = 0
+
+        for row in rows:
+            target = None
+            if row['ex_date']:
+                target = by_ex_date.get(row['ex_date'])
+                if target is None and row['dividend_year']:
+                    # 用实施公告的 ex_date 回填早前的占位记录
+                    target = placeholders.get(row['dividend_year'])
+            elif row['dividend_year']:
+                target = by_year.get(row['dividend_year'])
+
+            values = {
+                'report_date': row['report_date'],
+                'record_date': row['record_date'],
+                'pay_date': row['pay_date'],
+                'cash_div': row['cash_div'],
+                'share_div': row['share_div'],
+                'total_div': row['total_div'],
+                'rights_issue_price': row['rights_issue_price'],
+                'rights_issue_ratio': row['rights_issue_ratio'],
+            }
+            if row['ex_date']:
+                # 仅在本次确实带除权除息日时写入，避免缺失值覆盖已有日期
+                values['ex_date'] = row['ex_date']
+
+            if target is None:
+                target = StockDividend(
+                    ts_code=ts_code,
+                    symbol=row['symbol'],
+                    name=row['name'],
+                    dividend_year=row['dividend_year'],
+                    **values,
+                )
+                self.session.add(target)
+                inserted += 1
+            else:
+                for field, value in values.items():
+                    setattr(target, field, value)
+                updated += 1
+
+            # 同步索引，保证同一批内后续行能命中刚新增或刚回填的记录
+            if target.ex_date:
+                by_ex_date[target.ex_date] = target
+                if placeholders.get(target.dividend_year) is target:
+                    # 占位记录已回填 ex_date，不再作为占位参与后续回合
+                    placeholders.pop(target.dividend_year)
+            if target.dividend_year:
+                by_year[target.dividend_year] = target
+
+        return inserted, updated
+
     def update_stock_dividend(self, ts_codes: List[str] = None):
         """
         更新股票分红配股数据
@@ -589,8 +685,7 @@ class AkShareHandler(DataSourceBase):
                         continue
 
                     # 数据清洗和标准化
-                    from src.database.models.stock import (StockBasic,
-                                                           StockDividend)
+                    from src.database.models.stock import StockBasic
 
                     def _parse_date(value):
                         if value is None:
@@ -631,6 +726,7 @@ class AkShareHandler(DataSourceBase):
                     stock_name = stock_basic.name if stock_basic else ""
 
                     # 遍历数据，进行清洗和存储
+                    dividend_rows = []
                     for row in dividend_df.iter_rows(named=True):
                         try:
                             # 检查row是否为None
@@ -670,48 +766,20 @@ class AkShareHandler(DataSourceBase):
                             # 总派现金额（单位存在差异，仅在字段存在时保存）
                             total_div = _pick(row, ['总派现金额(含税)', '派现总额', '分红总额'], default=0.0)
 
-                            # 优先按 ts_code + ex_date 去重，缺失 ex_date 再回退到 ts_code + dividend_year
-                            dividend_data = None
-                            if ex_date:
-                                dividend_data = self.session.query(StockDividend).filter_by(
-                                    ts_code=ts_code,
-                                    ex_date=ex_date
-                                ).first()
-                            if dividend_data is None and dividend_year:
-                                dividend_data = self.session.query(StockDividend).filter_by(
-                                    ts_code=ts_code,
-                                    dividend_year=dividend_year
-                                ).order_by(StockDividend.updated_at.desc(), StockDividend.id.desc()).first()
-
-                            if dividend_data:
-                                # 更新现有数据
-                                dividend_data.report_date = report_date
-                                dividend_data.record_date = record_date
-                                dividend_data.ex_date = ex_date
-                                dividend_data.pay_date = pay_date
-                                dividend_data.cash_div = cash_div
-                                dividend_data.share_div = share_div
-                                dividend_data.total_div = total_div
-                                dividend_data.rights_issue_price = rights_issue_price if rights_issue_price > 0 else None
-                                dividend_data.rights_issue_ratio = rights_issue_ratio if rights_issue_ratio > 0 else None
-                            else:
-                                # 创建新数据
-                                dividend_data = StockDividend(
-                                    ts_code=ts_code,
-                                    symbol=symbol,
-                                    name=stock_name,
-                                    dividend_year=dividend_year,
-                                    report_date=report_date,
-                                    record_date=record_date,
-                                    ex_date=ex_date,
-                                    pay_date=pay_date,
-                                    cash_div=cash_div,
-                                    share_div=share_div,
-                                    total_div=total_div,
-                                    rights_issue_price=rights_issue_price if rights_issue_price > 0 else None,
-                                    rights_issue_ratio=rights_issue_ratio if rights_issue_ratio > 0 else None,
-                                )
-                                self.session.add(dividend_data)
+                            dividend_rows.append({
+                                'symbol': symbol,
+                                'name': stock_name,
+                                'dividend_year': dividend_year,
+                                'report_date': report_date,
+                                'record_date': record_date,
+                                'ex_date': ex_date,
+                                'pay_date': pay_date,
+                                'cash_div': cash_div,
+                                'share_div': share_div,
+                                'total_div': total_div,
+                                'rights_issue_price': rights_issue_price if rights_issue_price > 0 else None,
+                                'rights_issue_ratio': rights_issue_ratio if rights_issue_ratio > 0 else None,
+                            })
 
                         except TypeError as row_e:
                             logger.exception(f"处理{ts_code}的分红配股数据时发生类型错误: {row_e}")
@@ -723,9 +791,12 @@ class AkShareHandler(DataSourceBase):
                             logger.exception(f"处理{ts_code}的分红配股数据时发生未知错误: {row_e}")
                             continue
 
+                    # 双键去重后批量写入
+                    inserted, updated = self._save_dividend_rows(ts_code, dividend_rows)
+
                     # 每只股票提交一次事务
                     self.session.commit()
-                    logger.info(f"{ts_code}的分红配股数据更新完成")
+                    logger.info(f"{ts_code}的分红配股数据更新完成（新增{inserted}条，更新{updated}条）")
 
                 except TypeError as e:
                     if self.session:

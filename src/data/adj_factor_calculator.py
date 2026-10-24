@@ -7,22 +7,15 @@
 统一使用Polars DataFrame
 """
 
-import os
-import sys
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict
+
 import polars as pl
 import numpy as np
 from loguru import logger
 
-# 添加项目路径
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-src_path = os.path.join(project_root, 'src')
-sys.path.insert(0, src_path)
-sys.path.insert(0, project_root)
-
-from database.db_manager import DatabaseManager
-from database.models.stock import StockDaily, StockDividend, StockAdjFactor
+from src.database.db_manager import DatabaseManager
+from src.database.models.stock import StockDaily, StockDividend, StockAdjFactor
 from src.utils.memory_optimizer import MemoryOptimizer
 
 
