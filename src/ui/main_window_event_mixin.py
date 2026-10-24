@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QHBoxLayout, QLabel,
 
 from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
+from src.data.tdx_day_parser import build_day_file_path, read_latest_quote, resolve_market
 
 
 def event_handler(event_type):
@@ -583,11 +584,7 @@ class MainWindowEventMixin:
             
             # 如果表格中没有数据，尝试从数据管理器获取
             if hasattr(self, 'data_manager') and self.data_manager:
-                session = self.data_manager.db_manager.get_session()
-                if session:
-                    from src.database.models.stock import StockBasic
-                    stocks = session.query(StockBasic).all()
-                    return [stock.ts_code for stock in stocks if stock.ts_code]
+                return self.data_manager.list_stock_ts_codes()
             
             # 如果没有数据，返回空列表
             return []
@@ -622,12 +619,9 @@ class MainWindowEventMixin:
             
             # 从数据库查询
             if hasattr(self, 'data_manager') and self.data_manager:
-                session = self.data_manager.db_manager.get_session()
-                if session:
-                    from src.database.models.stock import StockBasic
-                    stock = session.query(StockBasic).filter(StockBasic.ts_code == ts_code).first()
-                    if stock and stock.name:
-                        return stock.name
+                name = self.data_manager.get_stock_name(ts_code)
+                if name:
+                    return name
             
             # 默认返回代码
             return ts_code
@@ -1523,111 +1517,40 @@ class MainWindowEventMixin:
             dict: ETF基金交易数据，如果无法获取则返回None
         """
         try:
-            import datetime
-            current_date = datetime.datetime.now().strftime("%Y-%m-%d")
-            
-            # 优先使用 ts_code 的交易所后缀，避免 50/16/18 等代码误判市场
-            market = None
-            if ts_code and '.' in ts_code:
-                suffix = ts_code.split('.')[-1].upper()
-                if suffix in {'SH', 'SZ', 'BJ'}:
-                    market = suffix.lower()
+            if not (hasattr(self, 'data_manager') and self.data_manager and hasattr(self.data_manager.config, 'data')):
+                return None
 
-            if not market:
-                if code.startswith('5'):
-                    market = 'sh'
-                elif code.startswith('1') or code.startswith('0') or code.startswith('3'):
-                    market = 'sz'
-                elif code.startswith('8') or code.startswith('9'):
-                    market = 'bj'
-                else:
-                    market = 'sz'
-            
-            # 构建通达信数据文件路径
-            if hasattr(self, 'data_manager') and self.data_manager and hasattr(self.data_manager.config, 'data'):
-                tdx_data_path = self.data_manager.config.data.tdx_data_path
-                from pathlib import Path
-                file_name = f"{market}{code}.day"
-                file_path = Path(tdx_data_path) / market / "lday" / file_name
-                
-                # 检查文件是否存在
-                if file_path.exists():
-                    logger.info(f"从通达信数据文件获取ETF基金 {name}({code}) 的交易数据")
-                    
-                    # 解析通达信数据文件
-                    import struct
-                    data = []
-                    with open(file_path, 'rb') as f:
-                        # 获取文件大小
-                        f.seek(0, 2)
-                        file_size = f.tell()
-                        
-                        # 计算数据条数
-                        record_count = file_size // 32
-                        
-                        if record_count > 0:
-                            # 读取最后一条记录（最新数据）
-                            f.seek((record_count - 1) * 32)
-                            record = f.read(32)
-                            
-                            if len(record) == 32:
-                                # 解析字段
-                                date_int = struct.unpack('I', record[0:4])[0]  # 日期，格式：YYYYMMDD
-                                open_val = struct.unpack('I', record[4:8])[0] / 100  # 开盘价，转换为元
-                                high_val = struct.unpack('I', record[8:12])[0] / 100  # 最高价，转换为元
-                                low_val = struct.unpack('I', record[12:16])[0] / 100  # 最低价，转换为元
-                                close_val = struct.unpack('I', record[16:20])[0] / 100  # 收盘价，转换为元
-                                volume = struct.unpack('I', record[20:24])[0]  # 成交量，单位：手
-                                amount = struct.unpack('I', record[24:28])[0] / 100  # 成交额，单位：元
-                                
-                                # 转换日期格式
-                                date_str = str(date_int)
-                                date = datetime.datetime.strptime(date_str, '%Y%m%d').strftime('%Y-%m-%d')
-                                
-                                # 计算涨跌幅
-                                if record_count >= 2:
-                                    # 读取倒数第二条记录（前一天数据）
-                                    f.seek((record_count - 2) * 32)
-                                    prev_record = f.read(32)
-                                    if len(prev_record) == 32:
-                                        prev_close = struct.unpack('I', prev_record[16:20])[0] / 100
-                                        change = close_val - prev_close
-                                        change_pct = (change / prev_close) * 100 if prev_close > 0 else 0
-                                    else:
-                                        change = 0
-                                        change_pct = 0
-                                else:
-                                    change = 0
-                                    change_pct = 0
-                                
-                                # 计算振幅
-                                preclose = close_val - change
-                                amplitude = ((high_val - low_val) / preclose) * 100 if preclose > 0 else 0
-                                
-                                # 格式化数据
-                                change_str = f"+{change:.2f}" if change >= 0 else f"{change:.2f}"
-                                change_pct_str = f"+{change_pct:.2f}%" if change_pct >= 0 else f"{change_pct:.2f}%"
-                                volume_str = f"{volume:,}"
-                                amount_str = f"{round(amount / 100000000, 2)}亿"
-                                
-                                return {
-                                    "date": date,
-                                    "code": code,
-                                    "name": name,
-                                    "change_pct": change_pct_str,
-                                    "price": f"{close_val:.2f}",
-                                    "change": change_str,
-                                    "volume": volume_str,
-                                    "amount": amount_str,
-                                    "open": f"{open_val:.2f}",
-                                    "high": f"{high_val:.2f}",
-                                    "low": f"{low_val:.2f}",
-                                    "preclose": f"{preclose:.2f}",
-                                    "amplitude": f"{amplitude:.2f}%"
-                                }
+            market = resolve_market(code, ts_code)
+            file_path = build_day_file_path(self.data_manager.config.data.tdx_data_path, market, code)
+            if not file_path.exists():
+                return None
+
+            logger.info(f"从通达信数据文件获取ETF基金 {name}({code}) 的交易数据")
+            quote = read_latest_quote(file_path)
+            if quote is None:
+                return None
+
+            change_str = f"+{quote.change:.2f}" if quote.change >= 0 else f"{quote.change:.2f}"
+            change_pct_str = f"+{quote.pct_chg:.2f}%" if quote.pct_chg >= 0 else f"{quote.pct_chg:.2f}%"
+
+            return {
+                "date": quote.date,
+                "code": code,
+                "name": name,
+                "change_pct": change_pct_str,
+                "price": f"{quote.close:.2f}",
+                "change": change_str,
+                "volume": f"{quote.volume:,}",
+                "amount": f"{round(quote.amount / 100000000, 2)}亿",
+                "open": f"{quote.open:.2f}",
+                "high": f"{quote.high:.2f}",
+                "low": f"{quote.low:.2f}",
+                "preclose": f"{quote.preclose:.2f}",
+                "amplitude": f"{quote.amplitude:.2f}%"
+            }
         except (OSError, RuntimeError, ValueError) as e:
             logger.warning(f"获取ETF基金 {name}({code}) 的真实交易数据失败: {e}")
-        
+
         return None
 
     def _is_etf_fund_ts_code(self, ts_code: str) -> bool:

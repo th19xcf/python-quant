@@ -27,9 +27,6 @@ FORBIDDEN_ROOTS = ('src.database', 'src.tech_analysis')
 # 冻结白名单：(相对 src/ui 的文件路径, 被禁止的模块)，仅允许减少
 FROZEN_WHITELIST = frozenset({
     ('async_processing.py', 'src.tech_analysis.technical_analyzer'),
-    ('main_window_data_mixin.py', 'src.tech_analysis.technical_analyzer'),
-    ('main_window_drawing_mixin.py', 'src.database.models.stock'),
-    ('main_window_event_mixin.py', 'src.database.models.stock'),
     ('stock_search_dialog.py', 'src.database.models.stock'),
     ('chart_components/chart_data_preparer.py', 'src.tech_analysis.indicators.trend'),
     ('chart_components/indicator_renderer.py', 'src.tech_analysis.indicator_calculator'),

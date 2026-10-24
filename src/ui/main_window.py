@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt
 # 忽略PySide6信号断开警告
 warnings.simplefilter("ignore", RuntimeWarning)
 
+from src.data.services.index_service import IndexService
 from src.utils.logger import logger
 from src.ui.ui_manager import UIManager
 from src.ui.window_event_manager import WindowEventManager
@@ -49,6 +50,10 @@ class MainWindow(MainWindowUiMixin, MainWindowEventMixin, MainWindowDataMixin,
         self.config = config
         self.data_manager = data_manager
         self.plugin_manager = plugin_manager
+        self.index_service = IndexService(
+            tdx_data_path=getattr(getattr(config, 'data', None), 'tdx_data_path', None),
+            db_manager=getattr(data_manager, 'db_manager', None),
+        )
         
         self.setWindowTitle("中国股市量化分析系统")
         self.setGeometry(100, 100, 1400, 900)
@@ -111,12 +116,6 @@ class MainWindow(MainWindowUiMixin, MainWindowEventMixin, MainWindowDataMixin,
         self.current_page_type = "全部A股"  # 默认页面类型
         self.page_sort_states = {}  # 存储每个页面的排序状态
         self.page_sorted_columns = {}  # 存储每个页面的当前排序列
-
-        # 初始化后获取实时数据
-        if hasattr(self, 'refresh_stock_data'):
-            self.refresh_stock_data()
-        if hasattr(self, 'refresh_market_info'):
-            self.refresh_market_info()
 
         logger.info("MainWindow initialized successfully (Refactored)")
 

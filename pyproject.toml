@@ -36,11 +36,12 @@ loguru = "^0.7.3"
 pypinyin = "^0.55.0"
 # 科学计算（FactorEvaluator 依赖）
 scipy = "^1.18.1"
-# 开发与测试
-pytest = "^9.1.1"
-black = "^26.10.1"
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
+# 测试
+pytest = "^9.1.1"
+# 代码格式化
+black = "^26.10.1"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

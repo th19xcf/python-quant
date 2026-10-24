@@ -9,7 +9,6 @@
 import pyqtgraph as pg
 import polars as pl
 import numpy as np
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel
 
 from src.utils.logger import logger
@@ -918,26 +917,6 @@ class MainWindowDrawingMixin:
         """
         return self.chart_manager.draw_indicator(plot_widget, indicator_name, x, df_pl)
     
-    def keyPressEvent(self, event):
-        """
-        处理键盘事件
-        
-        Args:
-            event: 键盘事件
-        """
-        # 检查是否按下了ESC键
-        if event.key() == Qt.Key_Escape:
-            # 检查当前是否在技术分析窗口
-            if self.tab_widget.currentWidget() == self.tech_tab:
-                # 切换到行情窗口
-                self.tab_widget.setCurrentWidget(self.market_tab)
-        
-        # 调用父类方法处理其他键盘事件
-        try:
-            super().keyPressEvent(event)
-        except AttributeError:
-            pass
-    
     # ===== 分红标记相关方法（保持原有逻辑） =====
     
     def _load_and_show_dividend_markers(self, stock_code, dates):
@@ -964,48 +943,21 @@ class MainWindowDrawingMixin:
     def _get_stock_dividend_data(self, stock_code):
         """获取股票分红数据"""
         try:
-            from src.database.models.stock import StockDividend
-            
-            # 处理股票代码格式
             ts_code = self._format_stock_code(stock_code)
-            
-            # 查询数据库
-            if hasattr(self, 'data_manager') and self.data_manager:
-                try:
-                    if hasattr(self.data_manager, 'db_manager'):
-                        db_manager = self.data_manager.db_manager
-                        session = db_manager.get_session()
-                    elif hasattr(self.data_manager, 'get_session'):
-                        session = self.data_manager.get_session()
-                    else:
-                        return []
-                    
-                    if session:
-                        try:
-                            dividends = session.query(StockDividend).filter(
-                                StockDividend.ts_code == ts_code
-                            ).all()
-                            
-                            result = []
-                            for div in dividends:
-                                result.append({
-                                    'ex_date': div.ex_date,
-                                    'record_date': div.record_date,
-                                    'pay_date': div.pay_date,
-                                    'cash_div': div.cash_div,
-                                    'share_div': div.share_div
-                                })
-                            return result
-                        finally:
-                            session.close()
-                except (OSError, RuntimeError, ValueError) as e:
-                    logger.exception(f"获取分红数据失败: {e}")
-            
-            return []
+            if not (hasattr(self, 'data_manager') and self.data_manager):
+                return []
+
+            df = self.data_manager.get_stock_dividend(ts_code)
+            if df is None or df.is_empty():
+                return []
+
+            columns = ['ex_date', 'record_date', 'pay_date', 'cash_div', 'share_div']
+            available = [column for column in columns if column in df.columns]
+            return df.select(available).to_dicts()
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取分红数据失败: {e}")
             return []
-    
+
     def _format_stock_code(self, stock_code: str) -> str:
         """格式化股票代码"""
         if '.' in stock_code:

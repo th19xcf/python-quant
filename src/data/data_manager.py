@@ -486,7 +486,73 @@ class DataManager(IDataProvider, IDataProcessor):
             {"ts_code": "300001.SZ", "name": "特锐德"}
         ]
         return self._get_basic_data(StockBasic, "股票", exchange, defaults, supports_bj=True)
-    
+
+    def list_stock_ts_codes(self) -> List[str]:
+        """
+        获取 stock_basic 中登记的全部股票代码（不回填默认数据）。
+
+        Returns:
+            list: ts_code 列表；数据库不可用时返回空列表
+        """
+        if not self.db_manager:
+            return []
+
+        session = None
+        try:
+            from src.database.models.stock import StockBasic
+
+            session = self.db_manager.get_session()
+            if not session:
+                return []
+            return [stock.ts_code for stock in session.query(StockBasic).all() if stock.ts_code]
+        except ImportError as e:
+            logger.error(f"无法导入StockBasic模型: {e}")
+            return []
+        except (OSError, RuntimeError) as e:
+            logger.warning(f"查询股票代码列表失败: {e}")
+            return []
+        finally:
+            if session and self.db_manager:
+                try:
+                    self.db_manager._cleanup_session()
+                except Exception as cleanup_e:
+                    logger.debug(f"清理会话时出错: {cleanup_e}")
+
+    def get_stock_name(self, ts_code: str) -> Optional[str]:
+        """
+        按 ts_code 查询股票名称（不回填默认数据）。
+
+        Args:
+            ts_code: 标准股票代码，如 600519.SH
+
+        Returns:
+            str: 股票名称；未登记或数据库不可用时返回 None
+        """
+        if not ts_code or not self.db_manager:
+            return None
+
+        session = None
+        try:
+            from src.database.models.stock import StockBasic
+
+            session = self.db_manager.get_session()
+            if not session:
+                return None
+            stock = session.query(StockBasic).filter(StockBasic.ts_code == ts_code).first()
+            return stock.name if stock and stock.name else None
+        except ImportError as e:
+            logger.error(f"无法导入StockBasic模型: {e}")
+            return None
+        except (OSError, RuntimeError) as e:
+            logger.warning(f"查询股票名称失败: {e}")
+            return None
+        finally:
+            if session and self.db_manager:
+                try:
+                    self.db_manager._cleanup_session()
+                except Exception as cleanup_e:
+                    logger.debug(f"清理会话时出错: {cleanup_e}")
+
     def get_index_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
         """
         获取指数基本信息

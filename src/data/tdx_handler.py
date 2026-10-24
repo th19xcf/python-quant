@@ -17,6 +17,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.sources.base import DataSourceBase
+from src.data.tdx_day_parser import parse_day_file as parse_tdx_day_file
 
 
 class TdxHandler(DataSourceBase):
@@ -204,72 +205,9 @@ class TdxHandler(DataSourceBase):
         """
         try:
             logger.info(f"开始解析通达信日线数据文件: {file_path}，max_days: {max_days}")
-            
-            # 通达信日线数据文件格式：每个交易日数据占32字节
-            # 字段顺序：日期(4字节)、开盘价(4字节)、最高价(4字节)、最低价(4字节)、收盘价(4字节)、成交量(4字节)、成交额(4字节)
-            # 价格单位：元，成交量单位：手，成交额单位：元
-            
-            data = []
-            with open(file_path, 'rb') as f:
-                # 获取文件大小
-                f.seek(0, 2)
-                file_size = f.tell()
-                
-                # 计算数据条数
-                record_count = file_size // 32
-                logger.info(f"文件{file_path}包含{record_count}条交易日数据")
-                
-                # 如果指定了max_days，只解析最近的max_days条记录
-                if max_days is not None and max_days > 0:
-                    start_record = max(0, record_count - max_days)
-                    logger.info(f"只解析最近{max_days}条记录，从第{start_record}条开始")
-                    # 跳转到起始记录位置
-                    f.seek(start_record * 32)
-                else:
-                    # 从头开始解析
-                    f.seek(0)
-                
-                # 读取剩余数据
-                file_content = f.read()
-                
-                # 计算需要解析的记录数
-                parse_count = len(file_content) // 32
-                logger.info(f"需要解析{parse_count}条记录")
-                
-                # 解析每条记录
-                for i in range(parse_count):
-                    # 提取32字节数据
-                    record = file_content[i*32:(i+1)*32]
-                    
-                    # 解析字段
-                    date_int = struct.unpack('I', record[0:4])[0]  # 日期，格式：YYYYMMDD
-                    open_val = struct.unpack('I', record[4:8])[0] / 100  # 开盘价，转换为元
-                    high_val = struct.unpack('I', record[8:12])[0] / 100  # 最高价，转换为元
-                    low_val = struct.unpack('I', record[12:16])[0] / 100  # 最低价，转换为元
-                    close_val = struct.unpack('I', record[16:20])[0] / 100  # 收盘价，转换为元
-                    volume = struct.unpack('I', record[20:24])[0]  # 成交量，单位：手
-                    amount = struct.unpack('I', record[24:28])[0]  # 成交额，单位：元
-                    
-                    # 转换日期格式
-                    date_str = str(date_int)
-                    date = datetime.strptime(date_str, '%Y%m%d').date()
-                    
-                    # 添加到数据列表
-                    data.append({
-                        'date': date,
-                        'open': open_val,
-                        'high': high_val,
-                        'low': low_val,
-                        'close': close_val,
-                        'volume': volume,
-                        'amount': amount
-                    })
-            
-            # 转换为polars DataFrame
-            df = pl.DataFrame(data)
+            df = parse_tdx_day_file(file_path, max_days)
             logger.info(f"成功解析通达信日线数据文件: {file_path}，获取{len(df)}条数据")
             return df
-            
         except (OSError, IOError) as e:
             logger.exception(f"解析通达信日线数据文件失败: {e}")
             raise

@@ -7,7 +7,6 @@
 
 import warnings
 import math
-import datetime
 from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
@@ -18,7 +17,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QAbstractItemView, QToolButton, QScrollArea, QSizePolicy
 )
 from PySide6.QtCore import Qt, QSize, QPoint
-from PySide6.QtGui import QAction, QActionGroup, QIcon, QFont, QColor
+from PySide6.QtGui import QAction, QActionGroup, QIcon, QFont
 
 import pyqtgraph as pg
 
@@ -456,92 +455,8 @@ class MainWindowUiMixin:
             }
         """)
         
-        # 添加示例数据
-        self.add_sample_stock_data()
         
         market_layout.addWidget(self.stock_table)
-    
-    def add_sample_stock_data(self):
-        """
-        添加示例股票数据
-        """
-        # 获取当前日期
-        current_date = datetime.datetime.now().strftime("%Y-%m-%d")
-        
-        sample_data = [
-            [current_date, "999999", "上证指数", "-0.15", "3864.18", "-5.84", "458亿", "8960亿", "3867.43", "3879.92", "3861.18", "3870.02", "0.48"],
-            [current_date, "600030", "中信证券", "+0.47", "27.60", "+0.13", "681695", "1.88亿", "27.52", "27.72", "27.44", "27.47", "1.02"],
-            [current_date, "000001", "平安银行", "+1.23", "18.95", "+0.23", "1234567", "2.34亿", "18.75", "19.02", "18.70", "18.72", "1.71"],
-            [current_date, "000858", "五粮液", "-0.89", "178.50", "-1.60", "345678", "6.18亿", "179.80", "180.20", "178.00", "180.10", "1.22"],
-            [current_date, "600519", "贵州茅台", "+0.56", "1890.00", "+10.50", "12345", "2.33亿", "1880.00", "1895.00", "1875.00", "1879.50", "1.06"],
-        ]
-        
-        self.stock_table.setRowCount(len(sample_data))
-        
-        for row, data in enumerate(sample_data):
-            for col, value in enumerate(data):
-                item = QTableWidgetItem(value)
-                
-                # 设置对齐方式
-                if col in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
-                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                
-                # 设置通达信风格的颜色
-                if col == 3:  # 涨跌幅%
-                    # 涨跌幅颜色
-                    if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
-                        item.setForeground(QColor(255, 0, 0))  # 红色上涨
-                    elif value.startswith("-"):
-                        item.setForeground(QColor(0, 255, 0))  # 绿色下跌
-                    else:
-                        item.setForeground(QColor(204, 204, 204))  # 灰色平盘
-                elif col == 5:  # 涨跌
-                    # 涨跌额颜色
-                    if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
-                        item.setForeground(QColor(255, 0, 0))  # 红色上涨
-                    elif value.startswith("-"):
-                        item.setForeground(QColor(0, 255, 0))  # 绿色下跌
-                    else:
-                        item.setForeground(QColor(204, 204, 204))  # 灰色平盘
-                # 获取昨收价用于比较
-                preclose = float(data[11]) if len(data) > 11 and data[11] != "-" else 0.0
-                if col == 4:  # 现价
-                    current_price = float(value) if value != "-" else 0.0
-                    if current_price > preclose:
-                        item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
-                    elif current_price < preclose:
-                        item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
-                    else:
-                        item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
-                elif col == 8:  # 今开
-                    # 今开与昨收比较
-                    open_price = float(value) if value != "-" else 0.0
-                    if open_price > preclose:
-                        item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
-                    elif open_price < preclose:
-                        item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
-                    else:
-                        item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
-                elif col == 9:  # 最高
-                    # 最高与昨收比较
-                    high_price = float(value) if value != "-" else 0.0
-                    if high_price > preclose:
-                        item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
-                    elif high_price < preclose:
-                        item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
-                    else:
-                        item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
-                elif col == 10:  # 最低
-                    # 最低与昨收比较
-                    low_price = float(value) if value != "-" else 0.0
-                    if low_price > preclose:
-                        item.setForeground(QColor(255, 0, 0))  # 红色高于昨收
-                    elif low_price < preclose:
-                        item.setForeground(QColor(0, 255, 0))  # 绿色低于昨收
-                    else:
-                        item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
-                
-                self.stock_table.setItem(row, col, item)
     
     def create_tech_tab(self):
         """

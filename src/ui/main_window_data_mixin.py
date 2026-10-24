@@ -1,4 +1,3 @@
-import struct
 from datetime import datetime
 from pathlib import Path
 
@@ -7,10 +6,10 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QTableWidgetItem
 
-from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+from src.data.services.indicator_service import calculate_indicators_for_period
+from src.data.tdx_day_parser import read_latest_quote
 from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
-from src.utils.exceptions import DataException
 
 
 class MainWindowDataMixin:
@@ -168,159 +167,6 @@ class MainWindowDataMixin:
         global_task_manager.task_completed.connect(on_task_completed)
         global_task_manager.task_error.connect(on_task_error)
 
-    def _get_index_name_map_from_db(self):
-        """
-        从数据库获取指数名称映射
-        
-        Returns:
-            dict: 指数名称映射，格式：{file_name: index_name}
-        """
-        # 读取缓存，避免每次切页都触发数据库会话创建/销毁
-        cache_ttl_seconds = 300
-        now_ts = datetime.now().timestamp()
-        cached_at = getattr(self, '_index_name_map_cache_time', 0)
-        if now_ts - cached_at <= cache_ttl_seconds:
-            cached_map = getattr(self, '_index_name_map_cache', None)
-            if isinstance(cached_map, dict):
-                return cached_map
-
-        index_name_map = {}
-        index_ts_code_map = {}
-        normalized_index_ts_code_map = {}
-        previous_index_name_map = getattr(self, '_index_name_map_cache', {})
-        previous_index_ts_code_map = getattr(self, '_index_ts_code_map_cache', {})
-        previous_normalized_index_ts_code_map = getattr(self, '_normalized_index_ts_code_map_cache', {})
-
-        try:
-            if hasattr(self, 'data_manager') and self.data_manager and self.data_manager.db_manager:
-                from sqlalchemy import text
-
-                session = self.data_manager.db_manager.get_session()
-                if session:
-                    sql = text(
-                        """
-                        SELECT ts_code, name
-                                                FROM index_basic
-                        WHERE name IS NOT NULL
-                          AND (
-                            ts_code LIKE '000%.SH'
-                            OR ts_code LIKE '399%.SZ'
-                            OR ts_code LIKE '899%.BJ'
-                            OR ts_code LIKE '884%.BJ'
-                          )
-                        """
-                    )
-
-                    result = session.execute(sql)
-                    for row in result:
-                        ts_code = row[0]
-                        name = row[1]
-                        if not ts_code or not name:
-                            continue
-
-                        symbol = ts_code.split('.')[0]
-                        market_suffix = ts_code.split('.')[-1].upper() if '.' in ts_code else ''
-
-                        if market_suffix == 'SH' and symbol.startswith('000'):
-                            index_name_map[f"sh{symbol}"] = name
-                        elif market_suffix == 'SZ' and symbol.startswith('399'):
-                            index_name_map[f"sz{symbol}"] = name
-                        elif market_suffix == 'BJ' and (symbol.startswith('899') or symbol.startswith('884')):
-                            index_name_map[f"bj{symbol}"] = name
-                        else:
-                            continue
-
-                        index_ts_code_map[name] = ts_code
-                        normalized_name = self._normalize_index_name(name)
-                        if normalized_name and normalized_name not in normalized_index_ts_code_map:
-                            normalized_index_ts_code_map[normalized_name] = ts_code
-
-                    try:
-                        result.close()
-                    except Exception:
-                        pass
-
-                logger.info(f"从数据表加载了 {len(index_name_map)} 个指数名称")
-        except DataException as e:
-            logger.warning(f"从数据库获取指数名称失败: {e}")
-            if not index_name_map and isinstance(previous_index_name_map, dict) and previous_index_name_map:
-                index_name_map = previous_index_name_map
-                index_ts_code_map = previous_index_ts_code_map if isinstance(previous_index_ts_code_map, dict) else {}
-                normalized_index_ts_code_map = previous_normalized_index_ts_code_map if isinstance(previous_normalized_index_ts_code_map, dict) else {}
-                logger.info(f"数据库查询失败，回退使用缓存中的 {len(index_name_map)} 个指数名称")
-
-        # 更新缓存，失败时也缓存空结果以降低异常风暴
-        self._index_name_map_cache = index_name_map
-        self._index_ts_code_map_cache = index_ts_code_map
-        self._normalized_index_ts_code_map_cache = normalized_index_ts_code_map
-        self._index_name_map_cache_time = now_ts
-        return index_name_map
-
-    def _normalize_index_name(self, name):
-        """
-        标准化指数名称，提升导航名称与表内名称的匹配成功率。
-        """
-        if not name:
-            return ""
-
-        normalized = str(name).strip().replace(" ", "")
-        replacements = [
-            "（", "）", "(", ")", "-", "_", ".", "·",
-            "成份", "成分", "指数", "指"
-        ]
-        for token in replacements:
-            normalized = normalized.replace(token, "")
-        return normalized
-
-    def _get_index_ts_code_from_db(self, index_name_or_code):
-        """
-        根据指数名称或代码，从数据表解析标准 ts_code。
-
-        Args:
-            index_name_or_code: 指数名称、纯数字代码或 ts_code
-
-        Returns:
-            str: 标准 ts_code，例如 399006.SZ；如果无法解析则返回原值
-        """
-        if not index_name_or_code:
-            return index_name_or_code
-
-        if '.' in index_name_or_code:
-            code_part, market_part = index_name_or_code.split('.', 1)
-            if market_part.upper() in {'SH', 'SZ', 'BJ'}:
-                return f"{code_part}.{market_part.upper()}"
-
-        self._get_index_name_map_from_db()
-        index_ts_code_map = getattr(self, '_index_ts_code_map_cache', {})
-        normalized_index_ts_code_map = getattr(self, '_normalized_index_ts_code_map_cache', {})
-        if index_name_or_code in index_ts_code_map:
-            return index_ts_code_map[index_name_or_code]
-
-        normalized_input = self._normalize_index_name(index_name_or_code)
-        if normalized_input in normalized_index_ts_code_map:
-            return normalized_index_ts_code_map[normalized_input]
-
-        # 名称不完全一致时，尝试模糊匹配（如“科创板指”匹配“上证科创板50成份指数”）
-        candidate_codes = []
-        for normalized_name, ts_code in normalized_index_ts_code_map.items():
-            if not normalized_name:
-                continue
-            if normalized_input in normalized_name or normalized_name in normalized_input:
-                candidate_codes.append((normalized_name, ts_code))
-
-        if candidate_codes:
-            candidate_codes.sort(key=lambda x: len(x[0]))
-            return candidate_codes[0][1]
-
-        if index_name_or_code.isdigit() and len(index_name_or_code) == 6:
-            if index_name_or_code.startswith('000'):
-                return f"{index_name_or_code}.SH"
-            if index_name_or_code.startswith('399'):
-                return f"{index_name_or_code}.SZ"
-            if index_name_or_code.startswith('899') or index_name_or_code.startswith('884'):
-                return f"{index_name_or_code}.BJ"
-
-        return index_name_or_code
 
     def _get_index_data_from_tdx(self, market_filter=None, category_filter=None):
         """
@@ -332,181 +178,15 @@ class MainWindowDataMixin:
         Returns:
             list: 指数数据列表
         """
-        # 从数据库获取指数名称
-        db_index_name_map = self._get_index_name_map_from_db()
-        index_name_map = db_index_name_map if db_index_name_map else {}
-
-        allowed_index_files = None
-        if category_filter:
-            allowed_index_files = set()
-            try:
-                if hasattr(self, 'data_manager') and self.data_manager and self.data_manager.db_manager:
-                    from sqlalchemy import text
-
-                    session = self.data_manager.db_manager.get_session()
-                    if session:
-                        sql = text(
-                            """
-                            SELECT ts_code
-                            FROM index_basic
-                            WHERE category = :category_name
-                            """
-                        )
-                        result = session.execute(sql, {"category_name": category_filter})
-                        for row in result:
-                            ts_code = row[0]
-                            if not ts_code or '.' not in ts_code:
-                                continue
-                            symbol, market_suffix = ts_code.split('.', 1)
-                            market_suffix = market_suffix.upper()
-                            if market_suffix == 'SH':
-                                allowed_index_files.add(f"sh{symbol}")
-                            elif market_suffix == 'SZ':
-                                allowed_index_files.add(f"sz{symbol}")
-                            elif market_suffix == 'BJ':
-                                allowed_index_files.add(f"bj{symbol}")
-                        try:
-                            result.close()
-                        except Exception:
-                            pass
-            except DataException as e:
-                logger.warning(f"按分类过滤指数时查询数据库失败: {e}")
-                allowed_index_files = set()
-
-        excluded_index_files = set()
-        # 在“沪市指数/深市指数”总览中排除创业板/科创板类型指数，避免与分类导航重复。
-        if category_filter is None and market_filter in {'sh', 'sz'}:
-            try:
-                if hasattr(self, 'data_manager') and self.data_manager and self.data_manager.db_manager:
-                    from sqlalchemy import text
-
-                    session = self.data_manager.db_manager.get_session()
-                    if session:
-                        sql = text(
-                            """
-                            SELECT ts_code
-                            FROM index_basic
-                            WHERE category IN ('创业板', '科创板')
-                            """
-                        )
-                        result = session.execute(sql)
-                        for row in result:
-                            ts_code = row[0]
-                            if not ts_code or '.' not in ts_code:
-                                continue
-                            symbol, market_suffix = ts_code.split('.', 1)
-                            market_suffix = market_suffix.upper()
-                            if market_suffix == 'SH':
-                                excluded_index_files.add(f"sh{symbol}")
-                            elif market_suffix == 'SZ':
-                                excluded_index_files.add(f"sz{symbol}")
-                        try:
-                            result.close()
-                        except Exception:
-                            pass
-            except DataException as e:
-                logger.warning(f"构建创业板/科创板排除列表失败: {e}")
-        
-        tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
-        all_index_files = []
-        
-        # 获取沪市指数文件
-        if market_filter is None or market_filter == 'sh':
-            all_sh_files = list((tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'sh' / 'lday').exists() else []
-            for f in all_sh_files:
-                code = f.stem[2:]
-                if code.startswith('000'):
-                    all_index_files.append(f)
-        
-        # 获取深市指数文件
-        if market_filter is None or market_filter == 'sz':
-            all_sz_files = list((tdx_data_path / 'sz' / 'lday').glob('sz*.day')) if (tdx_data_path / 'sz' / 'lday').exists() else []
-            for f in all_sz_files:
-                code = f.stem[2:]
-                if code.startswith('399'):
-                    all_index_files.append(f)
-        
-        # 获取京市指数文件（北交所）
-        if market_filter is None or market_filter == 'bj':
-            all_bj_files = list((tdx_data_path / 'bj' / 'lday').glob('bj*.day')) if (tdx_data_path / 'bj' / 'lday').exists() else []
-            for f in all_bj_files:
-                code = f.stem[2:]
-                # 京市指数以899开头
-                if code.startswith('899'):
-                    all_index_files.append(f)
-        
         index_data = []
-        
-        for index_file in all_index_files:
-            try:
-                file_name = index_file.stem
-                if allowed_index_files is not None and file_name not in allowed_index_files:
-                    continue
-
-                if file_name in excluded_index_files:
-                    continue
-
-                market = file_name[:2]
-                symbol = file_name[2:]
-                display_ts_code = f"{symbol}.{market.upper()}"
-                
-                # 获取指数名称
-                if file_name in index_name_map:
-                    index_name = index_name_map[file_name]
-                else:
-                    index_name = symbol
-                
-                with open(index_file, 'rb') as f:
-                    f.seek(0, 2)
-                    file_size = f.tell()
-                    record_count = file_size // 32
-                    if record_count == 0:
-                        continue
-                    
-                    f.seek((record_count - 1) * 32)
-                    latest_record = f.read(32)
-                    
-                    if record_count >= 2:
-                        f.seek((record_count - 2) * 32)
-                        prev_record = f.read(32)
-                    else:
-                        prev_record = None
-                    
-                    date_int = struct.unpack('I', latest_record[0:4])[0]
-                    open_val = struct.unpack('I', latest_record[4:8])[0] / 100
-                    high_val = struct.unpack('I', latest_record[8:12])[0] / 100
-                    low_val = struct.unpack('I', latest_record[12:16])[0] / 100
-                    close_val = struct.unpack('I', latest_record[16:20])[0] / 100
-                    volume = struct.unpack('I', latest_record[20:24])[0]
-                    amount = struct.unpack('I', latest_record[24:28])[0] / 100
-                    
-                    date = datetime.strptime(str(date_int), '%Y%m%d').date()
-                    
-                    if prev_record:
-                        prev_close_val = struct.unpack('I', prev_record[16:20])[0] / 100
-                        preclose = prev_close_val
-                        change = close_val - preclose
-                        pct_chg = (change / preclose) * 100 if preclose != 0 else 0.0
-                    else:
-                        preclose = close_val
-                        change = 0.0
-                        pct_chg = 0.0
-                    
-                    amplitude = ((high_val - low_val) / preclose) * 100 if preclose > 0 else 0.0
-                    
-                    data_row = [
-                        date.strftime('%Y-%m-%d'), display_ts_code, index_name,
-                        f"{pct_chg:.2f}", f"{close_val:.2f}", f"{change:.2f}",
-                        f"{volume:,}", f"{amount:,}", f"{open_val:.2f}",
-                        f"{high_val:.2f}", f"{low_val:.2f}", f"{preclose:.2f}", f"{amplitude:.2f}%"
-                    ]
-                    
-                    index_data.append(data_row)
-            
-            except (OSError, RuntimeError, ValueError) as e:
-                logger.error(f"Error parsing index file {index_file}: {e}")
-                continue
-        
+        for quote in self.index_service.list_index_quotes(market_filter, category_filter):
+            index_data.append([
+                quote['date'], quote['ts_code'], quote['name'],
+                f"{quote['pct_chg']:.2f}", f"{quote['close']:.2f}", f"{quote['change']:.2f}",
+                f"{quote['volume']:,}", f"{quote['amount']:,}", f"{quote['open']:.2f}",
+                f"{quote['high']:.2f}", f"{quote['low']:.2f}", f"{quote['preclose']:.2f}",
+                f"{quote['amplitude']:.2f}%"
+            ])
         return index_data
 
     def _on_index_impl(self):
@@ -634,7 +314,6 @@ class MainWindowDataMixin:
         def _show_stock_data_by_type_task(stock_type, task_id=None, signals=None):
             """后台任务函数"""
             try:
-                import struct
                 from datetime import datetime
                 from pathlib import Path
 
@@ -702,140 +381,63 @@ class MainWindowDataMixin:
                         if i % 100 == 0:
                             logger.info(f"正在解析文件: {file_path} ({i+1}/{total_files})")
                         
-                        with open(file_path, 'rb') as f:
-                            # 获取文件大小
-                            f.seek(0, 2)
-                            file_size = f.tell()
-                            
-                            # 计算数据条数
-                            record_count = file_size // 32
-                            if record_count == 0:
+                        quote = read_latest_quote(file_path)
+                        if quote is None:
+                            continue
+
+                        date = datetime.strptime(quote.date, '%Y-%m-%d').date()
+
+                        if latest_date is None or date > latest_date:
+                            latest_date = date
+
+                        file_name = file_path.stem
+                        if file_name.startswith('sh'):
+                            code = file_name[2:]
+                            # 忽略 B 股：900 开头（沪市 B 股）
+                            if code.startswith('900'):
                                 continue
-                            
-                            # 读取最新两条记录，用于计算涨跌幅和涨跌额
-                            # 先读取最新一条记录（当天数据）
-                            f.seek((record_count - 1) * 32)
-                            latest_record = f.read(32)
-                            
-                            # 如果有至少两条记录，读取前一天的记录（用于计算涨跌额）
-                            if record_count >= 2:
-                                f.seek((record_count - 2) * 32)
-                                prev_record = f.read(32)
-                            else:
-                                prev_record = None
-                            
-                            # 解析最新一条记录
-                            date_int = struct.unpack('I', latest_record[0:4])[0]
-                            open_val = struct.unpack('I', latest_record[4:8])[0] / 100
-                            high_val = struct.unpack('I', latest_record[8:12])[0] / 100
-                            low_val = struct.unpack('I', latest_record[12:16])[0] / 100
-                            close_val = struct.unpack('I', latest_record[16:20])[0] / 100
-                            volume = struct.unpack('I', latest_record[20:24])[0]
-                            amount = struct.unpack('I', latest_record[24:28])[0] / 100
-                            
-                            # 转换日期格式
-                            date_str = str(date_int)
-                            date = datetime.strptime(date_str, '%Y%m%d').date()
-                            
-                            # 更新最新日期
-                            if latest_date is None or date > latest_date:
-                                latest_date = date
-                            
-                            # 提取股票代码
-                            file_name = file_path.stem
-                            if file_name.startswith('sh'):
-                                code = file_name[2:]
-                                # 忽略 B 股：900 开头（沪市 B 股）
-                                if code.startswith('900'):
-                                    continue
-                                market = "SH"
-                                ts_code = f"{code}.{market}"
-                                # 尝试不同的ts_code格式
-                                ts_code_formats = [
-                                    f"{code}.{market}",
-                                    f"{code}.{market.lower()}",
-                                    f"{market}{code}",
-                                    f"{market.lower()}{code}"
-                                ]
-
-                                # 严格仅展示 stock_basic 已登记的个股（过滤指数/基金）
-                                stock_name = _resolve_stock_name(ts_code_formats)
-                                if not stock_name:
-                                    continue
-                            elif file_name.startswith('sz'):
-                                code = file_name[2:]
-                                # 忽略 B 股：200 开头（深市 B 股）
-                                if code.startswith('200'):
-                                    continue
-                                market = "SZ"
-                                ts_code = f"{code}.{market}"
-                                # 尝试不同的ts_code格式
-                                ts_code_formats = [
-                                    f"{code}.{market}",
-                                    f"{code}.{market.lower()}",
-                                    f"{market}{code}",
-                                    f"{market.lower()}{code}"
-                                ]
-
-                                # 严格仅展示 stock_basic 已登记的个股（过滤指数/基金）
-                                stock_name = _resolve_stock_name(ts_code_formats)
-                                if not stock_name:
-                                    continue
-                            elif file_name.startswith('bj'):
-                                code = file_name[2:]
-                                market = "BJ"
-                                ts_code = f"{code}.{market}"
-                                # 尝试不同的ts_code格式
-                                ts_code_formats = [
-                                    f"{code}.{market}",
-                                    f"{code}.{market.lower()}",
-                                    f"{market}{code}",
-                                    f"{market.lower()}{code}"
-                                ]
-
-                                # 严格仅展示 stock_basic 已登记的个股（过滤指数/基金）
-                                stock_name = _resolve_stock_name(ts_code_formats)
-                                if not stock_name:
-                                    continue
-                            else:
+                            market = "SH"
+                        elif file_name.startswith('sz'):
+                            code = file_name[2:]
+                            # 忽略 B 股：200 开头（深市 B 股）
+                            if code.startswith('200'):
                                 continue
-                            
-                            # 计算涨跌额和涨跌幅
-                            if prev_record:
-                                # 解析前一天数据
-                                prev_date_int = struct.unpack('I', prev_record[0:4])[0]
-                                prev_close_val = struct.unpack('I', prev_record[16:20])[0] / 100
-                                
-                                # 计算涨跌额和涨跌幅
-                                preclose = prev_close_val
-                                change = close_val - preclose
-                                pct_chg = (change / preclose) * 100 if preclose != 0 else 0.0
-                            else:
-                                # 只有一条记录，无法计算涨跌额和涨跌幅，设为0
-                                preclose = close_val
-                                change = 0.0
-                                pct_chg = 0.0
-                            
-                            if preclose > 0:
-                                amplitude = ((high_val - low_val) / preclose) * 100
-                            else:
-                                amplitude = 0.0
+                            market = "SZ"
+                        elif file_name.startswith('bj'):
+                            code = file_name[2:]
+                            market = "BJ"
+                        else:
+                            continue
 
-                            table_rows.append((
-                                date.strftime('%Y-%m-%d'),
-                                ts_code,
-                                stock_name,
-                                f"{pct_chg:.2f}",
-                                f"{close_val:.2f}",
-                                f"{change:.2f}",
-                                f"{volume:,}",
-                                f"{amount:,}",
-                                f"{open_val:.2f}",
-                                f"{high_val:.2f}",
-                                f"{low_val:.2f}",
-                                f"{preclose:.2f}",
-                                f"{amplitude:.2f}%"
-                            ))
+                        ts_code = f"{code}.{market}"
+                        # 尝试不同的ts_code格式
+                        ts_code_formats = [
+                            f"{code}.{market}",
+                            f"{code}.{market.lower()}",
+                            f"{market}{code}",
+                            f"{market.lower()}{code}"
+                        ]
+
+                        # 严格仅展示 stock_basic 已登记的个股（过滤指数/基金）
+                        stock_name = _resolve_stock_name(ts_code_formats)
+                        if not stock_name:
+                            continue
+
+                        table_rows.append((
+                            quote.date,
+                            ts_code,
+                            stock_name,
+                            f"{quote.pct_chg:.2f}",
+                            f"{quote.close:.2f}",
+                            f"{quote.change:.2f}",
+                            f"{quote.volume:,}",
+                            f"{quote.amount:,}",
+                            f"{quote.open:.2f}",
+                            f"{quote.high:.2f}",
+                            f"{quote.low:.2f}",
+                            f"{quote.preclose:.2f}",
+                            f"{quote.amplitude:.2f}%"
+                        ))
                         
                     except (OSError, RuntimeError, ValueError) as e:
                         logger.warning(f"解析文件{file_path}失败: {e}")
@@ -1024,13 +626,7 @@ class MainWindowDataMixin:
             pl.DataFrame: 包含技术指标的数据
         """
         try:
-            # TechnicalAnalyzer 已支持 Polars DataFrame，直接传递
-            analyzer = TechnicalAnalyzer(df)
-
-            # 计算所有技术指标，直接返回 Polars DataFrame
-            # 传入数据以确保复权列被保留
-            result_pl = analyzer.calculate_all_indicators(data=df, return_polars=True)
-
+            result_pl = calculate_indicators_for_period(df)
             logger.info(f"为{df.height}条数据重新计算了技术指标")
             return result_pl
 
@@ -1062,7 +658,7 @@ class MainWindowDataMixin:
         def _show_index_data_task(index_name, task_id=None, signals=None):
             """后台任务函数"""
             try:
-                index_code = self._get_index_ts_code_from_db(index_name)
+                index_code = self.index_service.resolve_ts_code(index_name)
                 if index_code == index_name:
                     logger.warning(f"未能从数据表解析指数代码，将使用原始值: {index_name}")
                 
