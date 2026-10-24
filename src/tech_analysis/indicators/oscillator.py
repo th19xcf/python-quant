@@ -9,7 +9,7 @@
 import polars as pl
 from ..utils import to_float32, calculate_mad
 from ..common_calculations import add_default_columns
-from .formulas import rsi_expr
+from .formulas import rsi_expr, kdj_exprs
 
 
 def calculate_rsi(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
@@ -45,17 +45,15 @@ def calculate_kdj(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
         pl.LazyFrame: 包含KDJ指标的LazyFrame
     """
     for window in windows:
-        # 计算RSV值
-        rsv_expr = to_float32(
-            ((pl.col('close') - pl.col(f'low_n_{window}')) / 
-             (pl.col(f'high_n_{window}') - pl.col(f'low_n_{window}')) * 100)
-        ).alias(f'rsv_{window}')
-        lazy_df = lazy_df.with_columns(rsv_expr)
-        
-        # 计算k、d、j值
-        k_expr = to_float32(pl.col(f'rsv_{window}').rolling_mean(window_size=3, min_samples=1)).alias(f'k{window}')
-        d_expr = to_float32(k_expr.rolling_mean(window_size=3, min_samples=1)).alias(f'd{window}')
-        j_expr = to_float32(3 * k_expr - 2 * d_expr).alias(f'j{window}')
+        # 计算RSV、K、D、J（通达信口径，公式统一见 formulas.kdj_exprs）
+        kdj = kdj_exprs('high', 'low', 'close', window=window)
+        lazy_df = lazy_df.with_columns(
+            to_float32(kdj['rsv']).alias(f'rsv_{window}')
+        )
+
+        k_expr = to_float32(kdj['k']).alias(f'k{window}')
+        d_expr = to_float32(kdj['d']).alias(f'd{window}')
+        j_expr = to_float32(kdj['j']).alias(f'j{window}')
         
         lazy_df = lazy_df.with_columns([k_expr, d_expr, j_expr])
         

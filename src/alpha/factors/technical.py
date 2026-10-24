@@ -9,22 +9,7 @@ import polars as pl
 import numpy as np
 
 from src.alpha.factors.factor_registry import register_factor
-from src.tech_analysis.indicators.formulas import rsi_expr as shared_rsi_expr
-
-
-def _seeded_kdj_expr(value_expr: pl.Expr, seed_index: int, seed_value: float) -> pl.Expr:
-    """
-    与原KDJ递推等价的表达式：
-    第 seed_index 个位置取 seed_value，之后按
-    out[i] = out[i-1] * 2/3 + value[i] * 1/3 递推，种子位置之前为 0。
-    """
-    idx = pl.int_range(pl.len())
-    seeded = (
-        pl.when(idx > seed_index).then(value_expr)
-        .when(idx == seed_index).then(seed_value)
-        .otherwise(None)
-    )
-    return seeded.ewm_mean(alpha=1.0 / 3.0, adjust=False, min_samples=1).fill_null(0.0)
+from src.tech_analysis.indicators.formulas import kdj_exprs, rsi_expr as shared_rsi_expr
 
 
 @register_factor('technical')
@@ -150,31 +135,18 @@ class TechnicalFactors:
 
     def _calculate_stochastic_oscillator(self):
         """
-        计算随机振荡器因子
+        计算随机振荡器因子（通达信 KDJ 口径，与图表同源）
         """
         cdt = self.data['close'].dtype
 
-        # 计算RSV（前14日窗口，不含当日；最高价等于最低价时为0）
-        highest = pl.col('high').rolling_max(14).shift(1)
-        lowest = pl.col('low').rolling_min(14).shift(1)
-        rsv = (
-            pl.when(highest == lowest)
-            .then(0.0)
-            .otherwise((pl.col('close') - lowest) / (highest - lowest) * 100.0)
-        )
+        kdj = kdj_exprs('high', 'low', 'close', window=14)
+        self.data = self.data.with_columns([
+            kdj['k'].cast(cdt, strict=False).alias('kdj_k'),
+            kdj['d'].cast(cdt, strict=False).alias('kdj_d'),
+            kdj['j'].cast(cdt, strict=False).alias('kdj_j'),
+        ])
 
-        # 计算K、D（i==14时取50，之后按 *2/3 + 输入*1/3 递推）
-        self.data = self.data.with_columns(
-            _seeded_kdj_expr(rsv, 14, 50.0).cast(cdt, strict=False).alias('kdj_k')
-        )
-        self.data = self.data.with_columns(
-            _seeded_kdj_expr(pl.col('kdj_k'), 14, 50.0).cast(cdt, strict=False).alias('kdj_d')
-        )
-        self.data = self.data.with_columns(
-            (3.0 * pl.col('kdj_k') - 2.0 * pl.col('kdj_d')).cast(cdt, strict=False).alias('kdj_j')
-        )
-
-        # 计算KDJ交叉信号（金叉1，死叉-1；i<15 时K/D为0或相等，条件天然不成立）
+        # 计算KDJ交叉信号（金叉1，死叉-1）
         k = pl.col('kdj_k')
         d = pl.col('kdj_d')
         kdj_crossover = (

@@ -174,7 +174,7 @@ def _get_limit_pct(ts_code, is_st=False):
 | **EMA** | Wilder `alpha = 2/(N+1)` | `close.ewm_mean(span=N)` | Polars 默认，通达信/同花顺一致 |
 | **MACD** | EMA(12) - EMA(26), Signal = EMA(9) | 同上 | 种子：Polars 第一个有效值；通达信用前 26 行 SMA 作种子——**两者在种子附近最多差 1 根 bar**，之后一致 |
 | **RSI** | Wilder 平滑 (非简单平均) | `delta=close.diff(); gain=pl.when(delta>0).then(delta).otherwise(0); avg_gain=gain.ewm_mean(alpha=1/14, adjust=False)` | Polars `ewm_mean(alpha, adjust=False)` 即 Wilder 递推 |
-| **KDJ** | M=3 (通达信口径) | `rsv=(close-LN9)/(HN9-LN9)*100; K=2/3 K_prev + 1/3 rsv` | 种子用 SMA(KDJ_period)，见 `technical.py._seeded_kdj_expr` |
+| **KDJ** | RSV 含当日 `HHV/LLV(14)`；K/D 为 SMA(X,3,1) 递推 | `rsv=(close-LN14)/(HN14-LN14)*100; K=2/3 K_prev + 1/3 rsv; D=2/3 D_prev + 1/3 K; J=3K-2D` | 唯一实现见 `formulas.kdj_exprs`，种子取首个 RSV；图表与 Alpha 因子层同源 |
 | **ATR** | Wilder 14 日 | `TR = max(H-L, \|H-C\|, \|L-C\|)`；`ATR = TR.rolling_mean(14)` | 引擎 `_precompute_indicators` 一次性算好 |
 | **后复权价** | `price × cum_prod(复权因子)` | 复权因子在分红 ex_date 前：`(prev_close - 现金分红) / (prev_close × (1 + 送转比例) + 配股比例 × 配股价)` | 上一轮 A1-2 已补配股项，公式统一 |
 | **前复权价** | `price × cum_prod(1/复权因子)` | 与后复权互逆 | 同上，只方向相反 |

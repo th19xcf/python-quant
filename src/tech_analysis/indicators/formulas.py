@@ -17,6 +17,8 @@
     - MACD：DIF = EMA(fast) - EMA(slow)，DEA = EMA(DIF, signal)，柱 = DIF - DEA
     - ATR：TR = max(high - low, |high - prev_close|, |low - prev_close|)，
       再做 Wilder 平滑
+    - KDJ：RSV 含当日高低点，K/D 为通达信 SMA(X, M1, 1) 递推（α = 1/M1），
+      即 K(t) = (RSV(t) + (M1 - 1) * K(t-1)) / M1，首值取 RSV
 """
 
 import polars as pl
@@ -155,10 +157,51 @@ def atr_expr(
     return wilder_expr(tr, period)
 
 
+def kdj_exprs(
+    high_col: str = 'high',
+    low_col: str = 'low',
+    close_col: str = 'close',
+    window: int = 14,
+    m1: int = 3,
+) -> dict:
+    """
+    KDJ 四线表达式（通达信口径）。
+
+    RSV 含当日：RSV = (close - LLV(low, N)) / (HHV(high, N) - LLV(low, N)) * 100，
+    最高价等于最低价时取 0；
+    K = SMA(RSV, M1, 1)，即 K(t) = (RSV(t) + (M1 - 1) * K(t-1)) / M1，首值取 RSV；
+    D = SMA(K, M1, 1)；J = 3K - 2D。
+
+    Args:
+        high_col: 最高价列名
+        low_col: 最低价列名
+        close_col: 收盘价列名
+        window: RSV 周期
+        m1: K/D 平滑周期（通达信固定为 3）
+
+    Returns:
+        dict: {'rsv': RSV, 'k': K, 'd': D, 'j': J} 表达式
+    """
+    highest = pl.col(high_col).rolling_max(window_size=window, min_samples=1)
+    lowest = pl.col(low_col).rolling_min(window_size=window, min_samples=1)
+    rsv = (
+        pl.when(highest == lowest)
+        .then(0.0)
+        .otherwise((pl.col(close_col) - lowest) / (highest - lowest) * 100.0)
+    )
+
+    # SMA(X, M1, 1) 等价于 alpha = 1/M1、adjust=False 的指数平滑，首值取 X
+    alpha = 1.0 / m1
+    k = rsv.ewm_mean(alpha=alpha, adjust=False, min_samples=1)
+    d = k.ewm_mean(alpha=alpha, adjust=False, min_samples=1)
+    return {'rsv': rsv, 'k': k, 'd': d, 'j': 3.0 * k - 2.0 * d}
+
+
 __all__ = [
     'ema_expr',
     'wilder_expr',
     'rsi_expr',
     'macd_exprs',
     'atr_expr',
+    'kdj_exprs',
 ]

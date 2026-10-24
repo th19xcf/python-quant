@@ -34,32 +34,33 @@ def get_market_breadth_from_db(start_date: str = None, end_date: str = None):
         from src.database.models.stock import MarketBreadth
         from sqlalchemy import select
 
-        query = select(MarketBreadth)
+        query = select(
+            MarketBreadth.trade_date,
+            MarketBreadth.up_count,
+            MarketBreadth.down_count,
+            MarketBreadth.flat_count,
+            MarketBreadth.total_count,
+        )
         if start_date:
             query = query.where(MarketBreadth.trade_date >= start_date)
         if end_date:
             query = query.where(MarketBreadth.trade_date <= end_date)
         query = query.order_by(MarketBreadth.trade_date)
 
-        result = session.execute(query)
-        rows = result.fetchall()
+        rows = session.execute(query).all()
 
         if not rows:
             logger.warning("数据库中没有市场涨跌家数数据")
+            session.close()
             return None
 
-        data = []
-        for row in rows:
-            data.append({
-                'trade_date': row[1],
-                'up_count': row[2],
-                'down_count': row[3],
-                'flat_count': row[4],
-                'total_count': row[5]
-            })
-
+        df = pl.DataFrame(
+            rows,
+            schema=['trade_date', 'up_count', 'down_count', 'flat_count', 'total_count'],
+            orient='row',
+        )
         session.close()
-        return pl.DataFrame(data)
+        return df
 
     except Exception as e:
         logger.warning(f"从数据库获取市场涨跌家数数据失败: {e}")

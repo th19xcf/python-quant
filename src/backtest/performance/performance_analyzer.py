@@ -41,11 +41,13 @@ class PerformanceAnalyzer:
         days = len(equities)
         annual_return = (pow((final_equity / initial_equity), 252 / days) - 1) * 100
         
-        # 计算收益率序列
-        returns = []
-        for i in range(1, len(equities)):
-            daily_return = (equities[i] - equities[i-1]) / equities[i-1]
-            returns.append(daily_return)
+        # 计算收益率序列（向量化：r_t = (e_t - e_{t-1}) / e_{t-1}）
+        equity_array = np.asarray(equities, dtype=float)
+        prev_equity = equity_array[:-1]
+        returns = np.divide(
+            equity_array[1:] - prev_equity, prev_equity,
+            out=np.zeros_like(prev_equity), where=prev_equity != 0,
+        ).tolist()
         
         # 计算风险指标
         if returns:

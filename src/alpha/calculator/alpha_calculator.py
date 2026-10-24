@@ -27,6 +27,15 @@ except Exception as _exc:  # pragma: no cover - 仅在 scipy 缺失时触发
     FactorEvaluator = None
 
 
+def _next_period_returns(close: np.ndarray) -> pl.Series:
+    """向量化计算下一期收益率序列（长度为 len(close) - 1）。"""
+    prev = close[:-1]
+    nxt = close[1:]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        values = (nxt - prev) / prev
+    return pl.Series('returns', values)
+
+
 class AlphaCalculator:
     """
     Alpha因子计算器类，提供各种Alpha因子的计算功能
@@ -98,11 +107,7 @@ class AlphaCalculator:
         """
         if target_returns is None:
             # 计算下一期收益率作为目标
-            close = self.pl_df['close'].to_numpy()
-            returns = np.zeros_like(close)
-            for i in range(len(close) - 1):
-                returns[i] = (close[i+1] - close[i]) / close[i]
-            target_returns = pl.Series('returns', returns[:-1])
+            target_returns = _next_period_returns(self.pl_df['close'].to_numpy())
             # 截取数据以匹配目标收益率
             data = self.pl_df.slice(0, len(target_returns))
         else:
@@ -175,11 +180,7 @@ class AlphaCalculator:
         """
         if target_returns is None:
             # 计算下一期收益率作为目标
-            close = self.pl_df['close'].to_numpy()
-            returns = np.zeros_like(close)
-            for i in range(len(close) - 1):
-                returns[i] = (close[i+1] - close[i]) / close[i]
-            target_returns = pl.Series('returns', returns[:-1])
+            target_returns = _next_period_returns(self.pl_df['close'].to_numpy())
             # 截取数据以匹配目标收益率
             data = self.pl_df.slice(0, len(target_returns))
         else:

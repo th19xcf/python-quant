@@ -141,3 +141,69 @@ def test_alpha_macd_uses_shared_formula():
             atol=1e-6,
             name=f'alpha_{col}',
         )
+
+
+def test_kdj_matches_tdx_recursive_sma():
+    """图表 KDJ 的 K/D 应为通达信 SMA(X,3,1) 递推（α=1/3），而非 3 周期简单均值"""
+    df = _make_ohlcv()
+    result = calculate_multiple_indicators_polars(df, ['kdj'], kdj_windows=[14])
+
+    close = df['close'].to_numpy()
+    high = df['high'].to_numpy()
+    low = df['low'].to_numpy()
+
+    # 参考实现：RSV 含当日（与图表 high_n_14 / low_n_14 一致）
+    rsv = []
+    for i in range(len(close)):
+        hh = high[max(0, i - 13):i + 1].max()
+        ll = low[max(0, i - 13):i + 1].min()
+        rsv.append(0.0 if hh == ll else (close[i] - ll) / (hh - ll) * 100.0)
+
+    # K(t) = (RSV(t) + 2*K(t-1)) / 3，首值取 RSV 本身；D 为 K 的同参数递推
+    k_ref, d_ref = [], []
+    for i, value in enumerate(rsv):
+        k_value = value if i == 0 else (value + 2 * k_ref[-1]) / 3.0
+        d_value = k_value if i == 0 else (k_value + 2 * d_ref[-1]) / 3.0
+        k_ref.append(k_value)
+        d_ref.append(d_value)
+    j_ref = [3 * k - 2 * d for k, d in zip(k_ref, d_ref)]
+
+    for col, ref in (('k', k_ref), ('d', d_ref), ('j', j_ref)):
+        _assert_close(
+            result[col].to_numpy(),
+            np.array(ref),
+            rtol=1e-4,
+            atol=1e-3,
+            name=f'kdj_{col}',
+        )
+
+
+def test_alpha_kdj_matches_chart():
+    """Alpha 因子层的 KDJ 与图表同源（RSV 含当日 + SMA(3,1) 递推）"""
+    from src.alpha.factors.price_momentum import PriceMomentumFactors
+    from src.alpha.factors.technical import TechnicalFactors
+
+    df = _make_ohlcv()
+    chart = calculate_multiple_indicators_polars(df, ['kdj'], kdj_windows=[14])
+
+    price_momentum = PriceMomentumFactors(df)
+    price_momentum._calculate_stochastic_momentum()
+
+    technical = TechnicalFactors(df)
+    technical._calculate_stochastic_oscillator()
+
+    for factor_col, chart_col in (('kdj_k', 'k'), ('kdj_d', 'd'), ('kdj_j', 'j')):
+        _assert_close(
+            price_momentum.data[factor_col].to_numpy(),
+            chart[chart_col].to_numpy(),
+            rtol=1e-4,
+            atol=1e-3,
+            name=f'price_momentum_{factor_col}',
+        )
+        _assert_close(
+            technical.data[factor_col].to_numpy(),
+            chart[chart_col].to_numpy(),
+            rtol=1e-4,
+            atol=1e-3,
+            name=f'technical_{factor_col}',
+        )
