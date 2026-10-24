@@ -26,6 +26,52 @@ from database.models.stock import StockDaily, StockDividend, StockAdjFactor
 from src.utils.memory_optimizer import MemoryOptimizer
 
 
+def calc_dividend_event_factor(prev_close, cash_div, share_div,
+                               rights_ratio=0.0, rights_price=0.0) -> Optional[float]:
+    """
+    计算单次除权除息事件的前复权因子（所有复权计算的唯一公式收口点）。
+
+    公式（含配股）：
+        factor = (prev_close - cash_div + rights_price * rights_ratio)
+                 / (prev_close * (1 + share_div + rights_ratio))
+
+    前复权：ex_date 之前的所有行累乘 factor；
+    后复权：ex_date 及之后的所有行累乘 1/factor。
+
+    Args:
+        prev_close: 除权除息日前一交易日收盘价
+        cash_div: 每股现金分红
+        share_div: 每股送转股比例
+        rights_ratio: 配股比例
+        rights_price: 配股价
+
+    Returns:
+        float: 事件因子；输入非法（价格缺失/分母为0/因子越界）时返回 None
+    """
+    if prev_close is None or prev_close <= 0:
+        return None
+
+    cash_div = cash_div or 0.0
+    share_div = share_div or 0.0
+    rights_ratio = rights_ratio or 0.0
+    rights_price = rights_price or 0.0
+
+    # 无任何权益变更
+    if cash_div == 0 and share_div == 0 and rights_ratio == 0:
+        return None
+
+    numerator = prev_close - cash_div + rights_price * rights_ratio
+    denominator = prev_close * (1 + share_div + rights_ratio)
+
+    if denominator == 0:
+        return None
+
+    factor = numerator / denominator
+    if factor <= 0 or factor > 10:
+        return None
+    return factor
+
+
 class AdjFactorCalculator:
     """
     复权因子计算器
@@ -84,7 +130,7 @@ class AdjFactorCalculator:
                 return None
             
             # 计算复权因子
-            result = self._calculate_factors(prices, dividends)
+            result = self.calculate_factors(prices, dividends)
             
             logger.info(f"{ts_code} 复权因子计算完成，共 {len(result)} 条记录")
             return result
@@ -106,6 +152,8 @@ class AdjFactorCalculator:
             'ex_date': [d.ex_date for d in dividends],
             'cash_div': [d.cash_div or 0 for d in dividends],
             'share_div': [d.share_div or 0 for d in dividends],
+            'rights_issue_ratio': [d.rights_issue_ratio or 0 for d in dividends],
+            'rights_issue_price': [d.rights_issue_price or 0 for d in dividends],
         }
         
         return pl.DataFrame(data)
@@ -193,16 +241,12 @@ class AdjFactorCalculator:
         # 内存优化：转换数据类型
         return MemoryOptimizer.optimize_dataframe(result)
     
-    def _calculate_factors(self, prices_df: pl.DataFrame, dividends_df: pl.DataFrame) -> pl.DataFrame:
+    @staticmethod
+    def calculate_factors(prices_df: pl.DataFrame, dividends_df: pl.DataFrame) -> pl.DataFrame:
         """
-        计算复权因子（Polars 向量化版本）。
+        计算复权因子（Polars 向量化版本，静态方法，供各处复用）。
 
-        修正点：
-            1. 公式补全配股项（prev_close - cash_div + rights_price * rights_ratio）
-               / (prev_close * (1 + share_div + rights_ratio))
-            2. 用 Polars 表达式逐事件更新，替代 Python list comprehension O(N×M)
-            3. 显式排序断言，避免隐式依赖被破坏
-            4. prev_close 通过 asof join 一次性批量获取
+        单次事件公式统一走模块级 calc_dividend_event_factor()。
 
         算法：
             - 前复权因子 qfq_factor：按 ex_date 升序从前向后扫分红事件，
@@ -211,9 +255,6 @@ class AdjFactorCalculator:
             - 后复权因子 hfq_factor：同一次升序扫描，每次 event 把
               trade_date >= ex_date 的所有行累乘 1/factor；
               最早段（第一次 ex_date 之前）不动，作为"不动的锚"。
-            注：注释历史版本写"从后往前扫前复权 / 从前向后扫后复权"，
-            实际代码统一升序扫描——方向差异在过滤条件（< / >=）上，
-            不是在遍历顺序上。
         """
         # --- 排序断言 ---
         # polars 2.0 移除了 DataFrame.is_sorted_by，改用列的 Series.is_sorted()
@@ -244,34 +285,23 @@ class AdjFactorCalculator:
             if ex_date is None:
                 continue
 
-            share_div = div.get('share_div') or 0.0
-            cash_div = div.get('cash_div') or 0.0
-            rights_ratio = div.get('rights_issue_ratio') or 0.0
-            rights_price = div.get('rights_issue_price') or 0.0
-
-            # 无任何权益变更则跳过
-            if share_div == 0 and cash_div == 0 and rights_ratio == 0:
-                continue
-
             # 用 asof join 找 ex_date 之前最近一个 trade_date 的收盘价
             prev_day = prices_for_join.filter(pl.col('trade_date') < ex_date).tail(1)
             if prev_day.is_empty():
                 continue
 
             prev_close = prev_day['prev_close'][0]
-            if prev_close is None or prev_close <= 0:
-                logger.warning(f"{div.get('ts_code', '')} {ex_date} 除权前收盘价异常 ({prev_close})，跳过")
+
+            # 统一事件因子公式（含配股）
+            factor = calc_dividend_event_factor(
+                prev_close,
+                div.get('cash_div'),
+                div.get('share_div'),
+                div.get('rights_issue_ratio'),
+                div.get('rights_issue_price'),
+            )
+            if factor is None:
                 continue
-
-            # 除权参考价公式（含配股）
-            numerator = prev_close - cash_div + rights_price * rights_ratio
-            denominator = prev_close * (1 + share_div + rights_ratio)
-
-            if denominator == 0:
-                logger.warning(f"{div.get('ts_code', '')} {ex_date} 复权因子分母为 0，跳过")
-                continue
-
-            factor = numerator / denominator  # 前复权每次乘的因子
 
             # --- 前复权：trade_date < ex_date 的行 *= factor ---
             result = result.with_columns(
@@ -282,8 +312,6 @@ class AdjFactorCalculator:
             )
 
             # --- 后复权：trade_date >= ex_date 的行 *= (1 / factor) ---
-            if factor == 0:
-                continue
             result = result.with_columns(
                 pl.when(pl.col('trade_date') >= ex_date)
                 .then(pl.col('hfq_factor') / factor)  # 等价于乘以 (1/factor)

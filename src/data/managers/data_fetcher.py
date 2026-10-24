@@ -373,28 +373,22 @@ class DataFetcher:
     @staticmethod
     def _dividend_event_factor(dividend) -> Optional[float]:
         """
-        从除权除息事件对象计算单次事件的复权因子（参考 adj_factor_calculator._calculate_factors）。
+        从除权除息事件对象计算单次事件的复权因子。
+
+        公式统一收口到 adj_factor_calculator.calc_dividend_event_factor，
+        此处仅做 ORM 对象字段适配。
 
         返回值 = numerator / denominator，前复权每次乘这个值。
         """
-        share_div = getattr(dividend, 'share_div', None) or 0.0
-        cash_div = getattr(dividend, 'cash_div', None) or 0.0
-        rights_ratio = getattr(dividend, 'rights_issue_ratio', None) or 0.0
-        rights_price = getattr(dividend, 'rights_issue_price', None) or 0.0
-        prev_close = getattr(dividend, 'prev_close', None)
+        from src.data.adj_factor_calculator import calc_dividend_event_factor
 
-        if prev_close is None or prev_close == 0:
-            return None
-
-        numerator = prev_close - cash_div + rights_price * rights_ratio
-        denominator = prev_close * (1 + share_div + rights_ratio)
-
-        if denominator == 0:
-            return None
-        factor = numerator / denominator
-        if factor <= 0 or factor > 10:
-            return None
-        return factor
+        return calc_dividend_event_factor(
+            prev_close=getattr(dividend, 'prev_close', None),
+            cash_div=getattr(dividend, 'cash_div', None),
+            share_div=getattr(dividend, 'share_div', None),
+            rights_ratio=getattr(dividend, 'rights_issue_ratio', None),
+            rights_price=getattr(dividend, 'rights_issue_price', None),
+        )
     
     def _get_data_from_sources(self, data_type: str, code: str, start_date: str, end_date: str, frequency: str, adjustment_type: str = 'qfq') -> pl.DataFrame:
         """

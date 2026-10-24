@@ -17,6 +17,9 @@ from loguru import logger
 from src.data.sources.base import DataSourceBase
 from src.data.tdx_day_parser import parse_day_file as parse_tdx_day_file
 from src.data.tdx_day_parser import read_recent_records
+from src.utils.code_converter import (
+    parse_code, to_symbol, to_tdx_market, to_ts_code,
+)
 
 
 class TdxHandler(DataSourceBase):
@@ -345,14 +348,9 @@ class TdxHandler(DataSourceBase):
             for file_path in all_stock_files:
                 # 提取股票代码，文件名格式：sh600000.day -> 600000.SH
                 file_name = file_path.stem
-                if file_name.startswith('sh'):
-                    ts_code_formatted = f"{file_name[2:]}.SH"
-                elif file_name.startswith('sz'):
-                    ts_code_formatted = f"{file_name[2:]}.SZ"
-                elif file_name.startswith('bj'):
-                    ts_code_formatted = f"{file_name[2:]}.BJ"
-                else:
+                if file_name[:2].lower() not in ('sh', 'sz', 'bj'):
                     continue
+                ts_code_formatted = to_ts_code(file_name)
                 
                 # 如果指定了股票代码，只处理指定的股票
                 if ts_code and ts_code_formatted != ts_code:
@@ -491,13 +489,8 @@ class TdxHandler(DataSourceBase):
                 logger.info(f"最后一条分红: 日期={last_div.ex_date}, 现金={last_div.cash_div}, 送转={last_div.share_div}")
             
             # 获取价格数据用于计算复权因子
-            symbol = ts_code.split('.')[0]
-            if ts_code.endswith('.SH'):
-                market = 'sh'
-            elif ts_code.endswith('.BJ'):
-                market = 'bj'
-            else:
-                market = 'sz'
+            symbol = to_symbol(ts_code)
+            market = to_tdx_market(ts_code)
             file_name = f"{market}{symbol}.day"
             file_path = self.tdx_data_path / market / "lday" / file_name
             
@@ -516,89 +509,31 @@ class TdxHandler(DataSourceBase):
 
             # 按日期排序
             prices.sort(key=lambda x: x['trade_date'])
-            
-            # 计算复权因子
-            # 前复权因子：从后向前累乘
-            # 后复权因子：从前向后累乘
-            
-            # 初始化所有日期的因子为1.0
-            factors_dict = {p['trade_date']: {'qfq_factor': 1.0, 'hfq_factor': 1.0} for p in prices}
-            
-            # 计算前复权因子（从后向前）
-            for div in reversed(dividends):
-                ex_date = div.ex_date
-                cash_div = div.cash_div or 0
-                share_div = div.share_div or 0
-                
-                if cash_div == 0 and share_div == 0:
-                    continue
-                
-                # 找到除权除息日前一天的收盘价
-                prev_prices = [p for p in prices if p['trade_date'] < ex_date]
-                if not prev_prices:
-                    continue
-                
-                prev_close = prev_prices[-1]['close']
-                if prev_close <= 0:
-                    continue
-                
-                # 计算复权因子
-                # 前复权因子 = (前收盘价 - 每股现金分红) / (前收盘价 * (1 + 每股送转股))
-                if prev_close <= cash_div:
-                    logger.warning(f"{ts_code} {ex_date} 现金分红异常，跳过")
-                    continue
-                
-                factor = (prev_close - cash_div) / (prev_close * (1 + share_div))
-                if factor <= 0:
-                    continue
-                
-                # 应用到所有早于除权除息日的日期
-                for p in prices:
-                    if p['trade_date'] < ex_date:
-                        factors_dict[p['trade_date']]['qfq_factor'] *= factor
-            
-            # 计算后复权因子（从前向后）
-            for div in dividends:
-                ex_date = div.ex_date
-                cash_div = div.cash_div or 0
-                share_div = div.share_div or 0
-                
-                if cash_div == 0 and share_div == 0:
-                    continue
-                
-                # 找到除权除息日前一天的收盘价
-                prev_prices = [p for p in prices if p['trade_date'] < ex_date]
-                if not prev_prices:
-                    continue
-                
-                prev_close = prev_prices[-1]['close']
-                if prev_close <= 0:
-                    continue
-                
-                # 计算复权因子
-                if prev_close <= cash_div:
-                    continue
-                
-                qfq_factor = (prev_close - cash_div) / (prev_close * (1 + share_div))
-                if qfq_factor <= 0:
-                    continue
-                
-                hfq_factor = 1 / qfq_factor
-                
-                # 应用到所有晚于或等于除权除息日的日期
-                for p in prices:
-                    if p['trade_date'] >= ex_date:
-                        factors_dict[p['trade_date']]['hfq_factor'] *= hfq_factor
-            
-            # 转换为DataFrame
-            data = {
-                'trade_date': list(factors_dict.keys()),
-                'qfq_factor': [f['qfq_factor'] for f in factors_dict.values()],
-                'hfq_factor': [f['hfq_factor'] for f in factors_dict.values()],
-            }
-            
-            df = pl.DataFrame(data)
-            
+
+            # 复权因子计算统一收口到 AdjFactorCalculator.calculate_factors
+            # （向量化实现 + 含配股的统一公式），此处仅做数据适配
+            from src.data.adj_factor_calculator import AdjFactorCalculator
+
+            prices_df = pl.DataFrame({
+                'ts_code': [ts_code] * len(prices),
+                'trade_date': [p['trade_date'] for p in prices],
+                'close': [p['close'] for p in prices],
+            })
+            dividends_df = pl.DataFrame({
+                'ts_code': [d.ts_code for d in dividends],
+                'ex_date': [d.ex_date for d in dividends],
+                'cash_div': [d.cash_div or 0 for d in dividends],
+                'share_div': [d.share_div or 0 for d in dividends],
+                'rights_issue_ratio': [d.rights_issue_ratio or 0 for d in dividends],
+                'rights_issue_price': [d.rights_issue_price or 0 for d in dividends],
+            })
+
+            result = AdjFactorCalculator.calculate_factors(prices_df, dividends_df)
+            if result is None or result.is_empty():
+                return None
+
+            df = result.select(['trade_date', 'qfq_factor', 'hfq_factor'])
+
             # 打印复权因子统计信息用于调试
             if len(df) > 0:
                 min_qfq = df['qfq_factor'].min()
@@ -606,69 +541,13 @@ class TdxHandler(DataSourceBase):
                 min_hfq = df['hfq_factor'].min()
                 max_hfq = df['hfq_factor'].max()
                 logger.info(f"{ts_code} 复权因子统计: 前复权=[{min_qfq:.6f}, {max_qfq:.6f}], 后复权=[{min_hfq:.6f}, {max_hfq:.6f}]")
-            
+
             logger.info(f"{ts_code} 复权因子计算完成，共 {len(df)} 条记录")
             return df
             
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"根据分红数据计算复权因子失败: {e}")
             return None
-    
-    def _apply_adj_factor(self, df: pl.DataFrame, factors_df: pl.DataFrame, adj_type: str = 'qfq') -> pl.DataFrame:
-        """
-        应用复权因子计算复权价格
-        
-        Args:
-            df: 原始价格DataFrame
-            factors_df: 复权因子DataFrame (Polars)
-            adj_type: 复权类型 ('qfq'前复权, 'hfq'后复权)
-            
-        Returns:
-            包含复权价格的DataFrame
-        """
-        try:
-            if factors_df is None or factors_df.is_empty():
-                # 没有复权因子，返回原始价格并添加默认因子1.0
-                return df.with_columns([
-                    pl.lit(1.0).alias(f'{adj_type}_factor'),
-                    pl.col('open').alias(f'{adj_type}_open'),
-                    pl.col('high').alias(f'{adj_type}_high'),
-                    pl.col('low').alias(f'{adj_type}_low'),
-                    pl.col('close').alias(f'{adj_type}_close'),
-                ])
-            
-            # 直接使用Polars DataFrame
-            factors_pl = factors_df
-            
-            # 合并数据
-            result_df = df.join(factors_pl, left_on='date', right_on='trade_date', how='left')
-            
-            # 填充缺失的复权因子
-            # 使用向前填充（ffill）策略：如果某天没有复权因子，使用最近的有效因子
-            # 这样可以避免新数据因为没有复权因子而显示为原始价格
-            factor_col = f'{adj_type}_factor'
-            result_df = result_df.with_columns([
-                pl.col(factor_col).fill_null(strategy='forward').alias(factor_col)
-            ])
-            
-            # 如果还有缺失（说明前面没有有效因子），则填充为1.0
-            result_df = result_df.with_columns([
-                pl.col(factor_col).fill_null(1.0)
-            ])
-            
-            # 计算复权价格
-            result_df = result_df.with_columns([
-                (pl.col('open') * pl.col(factor_col)).alias(f'{adj_type}_open'),
-                (pl.col('high') * pl.col(factor_col)).alias(f'{adj_type}_high'),
-                (pl.col('low') * pl.col(factor_col)).alias(f'{adj_type}_low'),
-                (pl.col('close') * pl.col(factor_col)).alias(f'{adj_type}_close'),
-            ])
-            
-            return result_df
-            
-        except (ValueError, TypeError) as e:
-            logger.exception(f"应用复权因子失败: {e}")
-            return df
     
     def get_kline_data(self, stock_code: str, start_date: str, end_date: str, adjust: str = "none"):
         """
@@ -687,42 +566,15 @@ class TdxHandler(DataSourceBase):
         """
         try:
             logger.info(f"开始获取股票 {stock_code} 在 {start_date} 到 {end_date} 期间的K线数据")
-            
-            # 处理不同格式的股票代码
-            if '.' in stock_code:
-                # 格式如sh.600000或600000.SH
-                if stock_code.count('.') == 1:
-                    market_part, code_part = stock_code.split('.')
-                    # 处理sh.600000格式
-                    if market_part in ['sh', 'sz', 'bj']:
-                        market = market_part
-                        code = code_part
-                    # 处理600000.SH格式
-                    elif code_part in ['SH', 'SZ', 'BJ']:
-                        # 特殊处理920开头的股票，即使后缀是.SZ，也识别为京市股票
-                        if market_part.startswith('92') and len(market_part) == 6:
-                            market = 'bj'
-                            code = market_part
-                        else:
-                            market = code_part.lower()
-                            code = market_part
-                    else:
-                        logger.warning(f"无效的股票代码格式: {stock_code}")
-                        return pl.LazyFrame({})
-                else:
-                    logger.warning(f"无效的股票代码格式: {stock_code}")
-                    return pl.LazyFrame({})
-            else:
-                # 纯数字格式，如600000
-                if stock_code.startswith("6"):
-                    market = "sh"
-                elif stock_code.startswith("92") and len(stock_code) == 6:
-                    # 京市个股（北交所，92开头）
-                    market = "bj"
-                else:
-                    market = "sz"
-                code = stock_code
-            
+
+            # 统一代码解析（支持 600000.SH / sh.600000 / sh600000 / 600000）
+            try:
+                code, market_upper = parse_code(stock_code)
+                market = market_upper.lower()
+            except ValueError:
+                logger.warning(f"无效的股票代码格式: {stock_code}")
+                return pl.LazyFrame({})
+
             logger.info(f"解析后的股票代码: {code}，市场: {market}")
             
             # 构建通达信数据文件名

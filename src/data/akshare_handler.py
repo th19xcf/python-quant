@@ -13,6 +13,9 @@ import polars as pl
 from loguru import logger
 
 from src.data.sources.base import DataSourceBase
+from src.utils.code_converter import to_symbol, to_ts_code
+from src.utils.exception_handler import handle_exception_with_retry
+from src.utils.exceptions import DataSourceConnectionError
 
 
 class AkShareHandler(DataSourceBase):
@@ -82,26 +85,9 @@ class AkShareHandler(DataSourceBase):
                     # 提取股票代码和名称
                     symbol = row['code']
                     name = row['name']
-                    
-                    # 构建完整的ts_code（例如：600000.SH）
-                    # 北交所新股：920000-920999
-                    if symbol.startswith('92') and len(symbol) == 6:
-                        num = int(symbol)
-                        if 920000 <= num <= 920999:
-                            ts_code = f"{symbol}.BJ"
-                        else:
-                            ts_code = f"{symbol}.SZ"
-                    # 北交所股票：800000-899999
-                    elif symbol.startswith('8') and len(symbol) == 6:
-                        num = int(symbol)
-                        if 800000 <= num <= 899999:
-                            ts_code = f"{symbol}.BJ"
-                        else:
-                            ts_code = f"{symbol}.SZ"
-                    elif symbol.startswith('6'):
-                        ts_code = f"{symbol}.SH"
-                    else:
-                        ts_code = f"{symbol}.SZ"
+
+                    # 构建完整的ts_code（统一市场推断，含北交所 4/8/92 开头）
+                    ts_code = to_ts_code(symbol)
                     
                     # 查询股票是否已存在
                     stock = self.session.query(StockBasic).filter_by(ts_code=ts_code).first()
@@ -276,11 +262,11 @@ class AkShareHandler(DataSourceBase):
                     
                     # 使用AkShare获取股票日线数据
                     stock_daily_pd = ak.stock_zh_a_hist(
-                        symbol=ts_code.split('.')[0],  # AkShare使用数字代码
+                        symbol=to_symbol(ts_code),  # AkShare使用数字代码
                         period="daily",
                         start_date=start_date,
                         end_date=end_date,
-                        adjust="qfq"  # 前复权
+                        adjust=""  # 不复权：写库统一存原始价，复权由查询侧 DataFetcher 按因子计算
                     )
                     
                     # 转换为Polars DataFrame
@@ -591,7 +577,7 @@ class AkShareHandler(DataSourceBase):
                 try:
                     logger.info(f"正在获取{ts_code}的分红配股数据")
 
-                    symbol = ts_code.split('.')[0]
+                    symbol = to_symbol(ts_code)
 
                     # 使用AkShare获取股票分红数据
                     # 接口: stock_fhps_detail_em - 获取历史分红数据(东方财富)
@@ -812,7 +798,7 @@ class AkShareHandler(DataSourceBase):
             pl.DataFrame: 归一化后的K线数据
         """
         try:
-            symbol = ts_code.split('.')[0]
+            symbol = to_symbol(ts_code)
             sd = self._normalize_date_str(start_date) if start_date else None
             ed = self._normalize_date_str(end_date) if end_date else None
 
@@ -861,7 +847,6 @@ class AkShareHandler(DataSourceBase):
             pl.DataFrame: 归一化后的指数K线数据
         """
         try:
-            symbol = ts_code.split('.')[0]
             sd = self._normalize_date_str(start_date) if start_date else None
             ed = self._normalize_date_str(end_date) if end_date else None
 
@@ -894,41 +879,32 @@ class AkShareHandler(DataSourceBase):
             logger.warning(f"akshare get_index_data({ts_code}) 失败: {e}")
             return pl.DataFrame()
 
-    def update_etf_basic(self, max_retries=3):
+    @handle_exception_with_retry(max_retries=3, retry_delay=2)
+    def _fetch_etf_spot(self):
+        """
+        获取 ETF 实时行情（带统一重试装饰器）。
+
+        网络类异常包装为 DataSourceConnectionError（可重试），
+        重试 3 次后仍失败则抛出，由调用方捕获处理。
+        """
+        try:
+            return ak.fund_etf_spot_em()
+        except (ConnectionError, TimeoutError, OSError) as e:
+            raise DataSourceConnectionError(
+                source="akshare", message=f"获取 ETF 实时行情失败: {e}", cause=e) from e
+
+    def update_etf_basic(self):
         """
         更新 ETF 基本信息
         使用 AkShare 的 fund_etf_spot_em() 获取 ETF 列表和名称
-
-        Args:
-            max_retries: 最大重试次数，默认3次
         """
-        import time
-
-        etf_spot_pd = None
-        last_error = None
-
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"开始从 AkShare 获取 ETF 基本信息 (尝试 {attempt + 1}/{max_retries})")
-
-                # 使用 AkShare 获取 ETF 实时行情
-                etf_spot_pd = ak.fund_etf_spot_em()
-                break  # 成功获取数据，跳出重试循环
-
-            except Exception as e:
-                last_error = e
-                logger.warning(f"从 AkShare 获取 ETF 信息失败 (尝试 {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt  # 指数退避: 1, 2, 4 秒
-                    logger.info(f"等待 {wait_time} 秒后重试...")
-                    time.sleep(wait_time)
-                continue
-
-        if etf_spot_pd is None:
-            logger.error(f"从 AkShare 获取 ETF 基本信息失败，已重试 {max_retries} 次: {last_error}")
+        try:
+            etf_spot_pd = self._fetch_etf_spot()
+        except Exception as e:
+            logger.error(f"从 AkShare 获取 ETF 基本信息失败，重试后仍失败: {e}")
             return None
 
-        if etf_spot_pd.empty:
+        if etf_spot_pd is None or etf_spot_pd.empty:
             logger.warning("从 AkShare 获取的 ETF 信息为空")
             return None
 
@@ -963,15 +939,10 @@ class AkShareHandler(DataSourceBase):
                 if not symbol:
                     continue
 
-                # 判断 ETF 所属市场
-                # 上海 ETF：510xxx, 511xxx, 512xxx, 513xxx, 515xxx, 588xxx
-                # 深圳 ETF：159xxx, 150xxx, 160xxx
-                if symbol.startswith('51') or symbol.startswith('58'):
-                    ts_code = f"{symbol}.SH"
-                elif symbol.startswith('15') or symbol.startswith('16'):
-                    ts_code = f"{symbol}.SZ"
-                else:
-                    # 未知市场，默认跳过
+                # 判断 ETF 所属市场（统一市场推断：51/58 -> SH，15/16 -> SZ）
+                try:
+                    ts_code = to_ts_code(symbol)
+                except ValueError:
                     logger.warning(f"无法判断 ETF {symbol} 的市场，跳过")
                     continue
 

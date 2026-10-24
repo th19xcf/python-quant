@@ -13,6 +13,9 @@ import polars as pl
 from loguru import logger
 
 from src.data.sources.base import DataSourceBase
+from src.utils.code_converter import to_baostock_code, to_symbol, to_ts_code
+from src.utils.exception_handler import handle_exception_with_retry
+from src.utils.exceptions import DataSourceConnectionError
 
 
 class BaostockHandler(DataSourceBase):
@@ -144,38 +147,36 @@ class BaostockHandler(DataSourceBase):
             logger.exception(f"Baostock登录发生未知异常: {e}")
             self.bs_login = False
     
+    @handle_exception_with_retry(max_retries=3, retry_delay=2)
+    def _login_with_retry(self):
+        """登录Baostock（带统一重试装饰器），登录失败抛出可重试异常"""
+        self._login_baostock()
+        if not self.bs_login:
+            raise DataSourceConnectionError(
+                source="baostock", message="登录失败")
+
     def _ensure_baostock_login(self, max_retries=3, retry_delay=2):
         """
         确保Baostock已登录，如果未登录则尝试登录
-        
+
         Args:
-            max_retries: 最大重试次数
-            retry_delay: 重试间隔（秒）
-            
+            max_retries: 最大重试次数（保留兼容参数，实际由装饰器固定为3次）
+            retry_delay: 重试间隔（秒）（保留兼容参数，实际由装饰器固定为2秒）
+
         Returns:
             bool: 登录状态，True表示已登录，False表示登录失败
         """
         if self.bs_login:
             return True
-        
+
         logger.info("Baostock未登录，尝试登录...")
-        
-        # 添加重试机制
-        for attempt in range(max_retries):
-            logger.info(f"尝试登录Baostock (尝试 {attempt + 1}/{max_retries})")
-            self._login_baostock()
-            if self.bs_login:
-                logger.info("Baostock登录成功")
-                return True
-            
-            # 如果不是最后一次尝试，等待后重试
-            if attempt < max_retries - 1:
-                import time
-                logger.info(f"登录失败，{retry_delay}秒后重试...")
-                time.sleep(retry_delay)
-        
-        logger.warning("Baostock登录失败，已达到最大重试次数")
-        return False
+        try:
+            self._login_with_retry()
+            logger.info("Baostock登录成功")
+            return True
+        except Exception as e:
+            logger.warning(f"Baostock登录失败，已达到最大重试次数: {e}")
+            return False
     
     def _logout_baostock(self):
         """
@@ -240,37 +241,22 @@ class BaostockHandler(DataSourceBase):
             # 遍历默认股票，进行清洗和存储
             for symbol in default_stocks:
                 try:
-                    # 从Baostock数据中查找对应的股票信息
-                    # 尝试匹配Baostock格式的代码（如 sh.600000, sz.000001）
-                    if symbol.startswith('6'):
-                        baostock_code = f"sh.{symbol}"
-                    else:
-                        baostock_code = f"sz.{symbol}"
+                    # 从Baostock数据中查找对应的股票信息（统一代码转换工具）
+                    baostock_code = to_baostock_code(symbol)
                     stock_row = stock_basic_df.filter(pl.col('code') == baostock_code)
-                    
+
                     if stock_row.is_empty():
                         logger.warning(f"未找到股票{symbol}的基本信息")
                         continue
-                    
+
                     # 获取第一条匹配的记录
                     row = stock_row.row(named=True)
                     name = row['code_name']
                     baostock_code = row['code']  # 格式如 sh.600000, sz.000001, bj.920181
-                    
-                    # 直接使用 Baostock 返回的市场标识构建 ts_code
-                    if baostock_code.startswith('sh.'):
-                        ts_code = f"{baostock_code[3:]}.SH"
-                    elif baostock_code.startswith('sz.'):
-                        ts_code = f"{baostock_code[3:]}.SZ"
-                    elif baostock_code.startswith('bj.'):
-                        ts_code = f"{baostock_code[3:]}.BJ"
-                    else:
-                        # 兜底策略：根据代码前缀判断
-                        symbol = baostock_code.split('.')[-1] if '.' in baostock_code else baostock_code
-                        if symbol.startswith('6'):
-                            ts_code = f"{symbol}.SH"
-                        else:
-                            ts_code = f"{symbol}.SZ"
+
+                    # 统一转换：baostock 格式 -> 标准 ts_code
+                    ts_code = to_ts_code(baostock_code)
+                    symbol = to_symbol(baostock_code)
                     
                     # 截断过长的股票名称（数据库字段限制20个字符）
                     if len(name) > 20:
@@ -310,16 +296,19 @@ class BaostockHandler(DataSourceBase):
             logger.exception(f"从Baostock获取股票基本信息失败: {e}")
             raise
     
-    def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, adjustflag: str = "2"):
+    def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, adjustflag: str = "3"):
         """
         更新股票日线数据
-        
+
         Args:
             ts_codes: 股票代码列表，None表示更新所有股票
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
-            adjustflag: 复权类型，"2"=前复权，"1"=后复权，"3"=不复权
-        
+            adjustflag: 复权类型，"2"=前复权，"1"=后复权，"3"=不复权。
+                默认 "3"（不复权）：写库统一存原始价，复权因子由
+                AdjFactorCalculator 单独写入，查询侧由 DataFetcher 统一复权，
+                避免前复权价入库后被二次复权。
+
         Returns:
             dict: 股票代码到日线数据的映射（离线模式下）
         """
@@ -333,14 +322,8 @@ class BaostockHandler(DataSourceBase):
                 if self.session:
                     from src.database.models.stock import StockBasic
                     stock_basics = self.session.query(StockBasic.ts_code).all()
-                    # 转换为Baostock格式（从600000.SH转换为sh.600000）
-                    ts_codes = []
-                    for sb in stock_basics:
-                        # 转换格式：600000.SH -> sh.600000
-                        parts = sb.ts_code.split('.')
-                        if len(parts) == 2:
-                            baostock_code = f"{parts[1].lower()}.{parts[0]}"
-                            ts_codes.append(baostock_code)
+                    # 保持标准 ts_code 格式（600000.SH），查询时再转换为 baostock 格式
+                    ts_codes = [sb.ts_code for sb in stock_basics]
                 else:
                     # 离线模式下使用默认股票代码
                     ts_codes = self._get_default_codes('stock')
@@ -362,13 +345,14 @@ class BaostockHandler(DataSourceBase):
             for ts_code in ts_codes:
                 try:
                     logger.info(f"正在获取{ts_code}的日线数据")
-                    
-                    # 提取基础代码（去掉.SH/.SZ后缀）
-                    base_code = ts_code.split('.')[0]
-                    
+
+                    # 统一转换：写库用标准 ts_code，API 查询用 baostock 格式
+                    std_code = to_ts_code(ts_code)
+                    bs_code = to_baostock_code(ts_code)
+
                     # 使用Baostock获取股票日线数据
                     rs = bs.query_history_k_data_plus(
-                        base_code,
+                        bs_code,
                         "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST",
                         start_date=start_date,
                         end_date=end_date,
@@ -398,10 +382,9 @@ class BaostockHandler(DataSourceBase):
                     logger.info(f"获取到{ts_code}的{stock_daily_df.height}条日线数据")
                     
                     # 离线模式下，只获取数据不存储
-                    # 离线模式下，只获取数据不存储
                     if not self.session:
-                        result[ts_code] = stock_daily_df
-                        logger.info(f"离线模式下，获取{ts_code}的日线数据完成")
+                        result[std_code] = stock_daily_df
+                        logger.info(f"离线模式下，获取{std_code}的日线数据完成")
                         continue
                     
                     # 数据清洗和标准化
@@ -420,9 +403,9 @@ class BaostockHandler(DataSourceBase):
                             if earliest_date is None or trade_date < earliest_date:
                                 earliest_date = trade_date
                             
-                            # 查询数据是否已存在
+                            # 查询数据是否已存在（写库统一用标准 ts_code）
                             daily_data = self.session.query(StockDaily).filter_by(
-                                ts_code=ts_code,
+                                ts_code=std_code,
                                 trade_date=trade_date
                             ).first()
                             
@@ -451,7 +434,7 @@ class BaostockHandler(DataSourceBase):
                             else:
                                 # 创建新数据
                                 daily_data = StockDaily(
-                                    ts_code=ts_code,
+                                    ts_code=std_code,
                                     trade_date=trade_date,
                                     open=open_val,
                                     high=high_val,
@@ -472,47 +455,24 @@ class BaostockHandler(DataSourceBase):
                     # 更新股票的上市日期为最早交易日期
                     if earliest_date:
                         # 查询股票基本信息
-                        stock_basic = self.session.query(StockBasic).filter_by(ts_code=ts_code).first()
+                        stock_basic = self.session.query(StockBasic).filter_by(ts_code=std_code).first()
                         if stock_basic:
                             # 如果还没有上市日期，或者找到更早的日期，则更新
                             if not stock_basic.list_date or earliest_date < stock_basic.list_date:
                                 stock_basic.list_date = earliest_date
-                                logger.info(f"更新股票{ts_code}的上市日期为: {earliest_date}")
+                                logger.info(f"更新股票{std_code}的上市日期为: {earliest_date}")
                         else:
                             # 如果股票基本信息不存在，创建一个
-                            logger.warning(f"股票{ts_code}的基本信息不存在，将创建一条新记录")
-                            # 提取股票代码（格式如 sh.600000, sz.000001, bj.920181）
-                            first_row = stock_daily_df.row(named=True)
-                            baostock_code = first_row['code']  # 格式如 sh.600000, sz.000001, bj.920181
+                            logger.warning(f"股票{std_code}的基本信息不存在，将创建一条新记录")
                             # 由于Baostock不提供股票名称，使用代码作为名称
-                            name = baostock_code
-                            
-                            # 直接使用 Baostock 返回的市场标识构建 ts_code
-                            if baostock_code.startswith('sh.'):
-                                symbol = baostock_code[3:]
-                                full_ts_code = f"{symbol}.SH"
-                            elif baostock_code.startswith('sz.'):
-                                symbol = baostock_code[3:]
-                                full_ts_code = f"{symbol}.SZ"
-                            elif baostock_code.startswith('bj.'):
-                                symbol = baostock_code[3:]
-                                full_ts_code = f"{symbol}.BJ"
-                            else:
-                                # 兜底策略：根据代码前缀判断
-                                symbol = baostock_code.split('.')[-1] if '.' in baostock_code else baostock_code
-                                if symbol.startswith('6'):
-                                    full_ts_code = f"{symbol}.SH"
-                                else:
-                                    full_ts_code = f"{symbol}.SZ"
-                            # 创建新股票基本信息
                             new_stock = StockBasic(
-                                ts_code=full_ts_code,
-                                symbol=symbol,
-                                name=name,
+                                ts_code=std_code,
+                                symbol=to_symbol(std_code),
+                                name=std_code,
                                 list_date=earliest_date
                             )
                             self.session.add(new_stock)
-                            logger.info(f"创建股票{full_ts_code}的基本信息，上市日期为: {earliest_date}")
+                            logger.info(f"创建股票{std_code}的基本信息，上市日期为: {earliest_date}")
                     
                     # 每只股票提交一次事务
                     self.session.commit()
@@ -966,11 +926,8 @@ class BaostockHandler(DataSourceBase):
     # ------------------------------------------------------------------
 
     def _to_baostock_code(self, ts_code: str) -> str:
-        """将 600000.SH 格式转换为 baostock 的 sh.600000 格式"""
-        parts = ts_code.split('.')
-        if len(parts) == 2:
-            return f"{parts[1].lower()}.{parts[0]}"
-        return ts_code
+        """将标准 ts_code 转换为 baostock 格式（委托统一转换工具）"""
+        return to_baostock_code(ts_code)
 
     def get_stock_data(self, ts_code: str, start_date: str, end_date: str,
                        freq: str = 'daily', adjustment_type: str = 'qfq'):
