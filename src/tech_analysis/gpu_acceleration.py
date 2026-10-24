@@ -9,7 +9,11 @@ GPU加速计算模块
 import os
 import sys
 import numpy as np
+import pandas as pd
+from numba import njit
 from typing import List, Dict, Any, Optional
+
+from .indicators.trend import _sar_core
 
 # 尝试导入CuPy，如果不可用则使用NumPy作为备选
 try:
@@ -29,6 +33,25 @@ try:
 except ImportError:
     print("OpenCL不可用")
     OPENCL_AVAILABLE = False
+
+
+@njit(cache=True)
+def _wilder_sma_core(data: np.ndarray, window: int) -> np.ndarray:
+    """Wilder 平滑（RSI 用）的 Numba JIT 核心。
+
+    带种子递推（种子 = 前 window 项均值），无法用 Pandas 向量化精确表达，
+    与 trend.py 的 _sar_core 一样走 njit 加速。
+    语义与原逐元素循环完全一致：索引 < window-1 段为 0。
+    """
+    n = data.shape[0]
+    result = np.zeros(n, dtype=np.float64)
+    seed = 0.0
+    for i in range(window):
+        seed += data[i]
+    result[window - 1] = seed / window
+    for i in range(window, n):
+        result[i] = (result[i - 1] * (window - 1) + data[i]) / window
+    return result
 
 
 class GPUAccelerator:
@@ -145,25 +168,19 @@ class GPUAccelerator:
         Returns:
             Dict[str, np.ndarray]: MACD指标结果
         """
-        gpu_data = self.to_gpu(data)
-        
-        # 计算EMA
-        def ema(data, period):
-            alpha = 2.0 / (period + 1)
-            result = cp.zeros_like(data)
-            result[0] = data[0]
-            for i in range(1, len(data)):
-                result[i] = alpha * data[i] + (1 - alpha) * result[i-1]
-            return result
-        
-        ema12 = ema(gpu_data, fast_period)
-        ema26 = ema(gpu_data, slow_period)
+        # EMA 是顺序递推指标，逐元素写 GPU 数组反而每元素触发一次 kernel，GPU 无收益；
+        # 改用 pandas ewm 在 CPU 侧向量化计算，语义与原循环完全一致：
+        # y[0]=x[0], y[i]=alpha*x[i]+(1-alpha)*y[i-1], alpha=2/(period+1)
+        ema12 = self.to_gpu(pd.Series(data).ewm(span=fast_period, adjust=False).mean().to_numpy())
+        ema26 = self.to_gpu(pd.Series(data).ewm(span=slow_period, adjust=False).mean().to_numpy())
         
         # 计算MACD线
         macd_line = ema12 - ema26
         
-        # 计算信号线
-        macd_signal = ema(macd_line, signal_period)
+        # 计算信号线（同为递推EMA，走 CPU ewm）
+        macd_signal = self.to_gpu(
+            pd.Series(self.to_cpu(macd_line)).ewm(span=signal_period, adjust=False).mean().to_numpy()
+        )
         
         # 计算柱状图
         macd_hist = macd_line - macd_signal
@@ -195,16 +212,9 @@ class GPUAccelerator:
         gain = cp.where(delta > 0, delta, 0)
         loss = cp.where(delta < 0, -delta, 0)
         
-        # 计算平均上涨和下跌
-        def sma(data, window):
-            result = cp.zeros_like(data)
-            result[window-1] = cp.mean(data[:window])
-            for i in range(window, len(data)):
-                result[i] = (result[i-1] * (window-1) + data[i]) / window
-            return result
-        
-        avg_gain = sma(gain, window)
-        avg_loss = sma(loss, window)
+        # 计算平均上涨和下跌（Wilder 带种子递推，无法向量化 → Numba JIT，语义与原循环一致）
+        avg_gain = self.to_gpu(_wilder_sma_core(np.ascontiguousarray(self.to_cpu(gain), dtype=np.float64), window))
+        avg_loss = self.to_gpu(_wilder_sma_core(np.ascontiguousarray(self.to_cpu(loss), dtype=np.float64), window))
         
         # 计算RSI
         rs = avg_gain / (avg_loss + 1e-10)  # 避免除零
@@ -229,72 +239,13 @@ class GPUAccelerator:
         Returns:
             np.ndarray: SAR指标结果
         """
-        n = len(close)
-        sar = np.zeros(n)
-        sar.fill(np.nan)
-        
-        if n < 2:
-            return sar
-        
-        # 初始化
-        ep = high[0]  # 极点价格
-        af = af_step   # 加速因子
-        long = True    # 当前趋势（True=多头，False=空头）
-        
-        # 确定初始趋势
-        if close[1] > close[0]:
-            long = True
-            sar[0] = low[0]
-            ep = high[0]
-        else:
-            long = False
-            sar[0] = high[0]
-            ep = low[0]
-        
-        # 迭代计算
-        for i in range(1, n):
-            if long:
-                # 多头趋势
-                sar[i] = sar[i-1] + af * (ep - sar[i-1])
-                # 限制SAR不超过前n周期的最低价
-                if i >= 2:
-                    sar[i] = max(sar[i], low[i-1], low[i-2])
-                else:
-                    sar[i] = max(sar[i], low[i-1])
-                
-                # 检查趋势反转
-                if low[i] < sar[i]:
-                    # 转为空头
-                    long = False
-                    sar[i] = ep
-                    ep = low[i]
-                    af = af_step
-                elif high[i] > ep:
-                    # 更新极点
-                    ep = high[i]
-                    af = min(af + af_step, max_af)
-            else:
-                # 空头趋势
-                sar[i] = sar[i-1] + af * (ep - sar[i-1])
-                # 限制SAR不低于前n周期的最高价
-                if i >= 2:
-                    sar[i] = min(sar[i], high[i-1], high[i-2])
-                else:
-                    sar[i] = min(sar[i], high[i-1])
-                
-                # 检查趋势反转
-                if high[i] > sar[i]:
-                    # 转为多头
-                    long = True
-                    sar[i] = ep
-                    ep = high[i]
-                    af = af_step
-                elif low[i] < ep:
-                    # 更新极点
-                    ep = low[i]
-                    af = min(af + af_step, max_af)
-        
-        return sar
+        # SAR 是状态机式顺序递推（依赖前一根 SAR/EP/AF/趋势方向），GPU 无收益；
+        # 直接复用 indicators/trend.py 中 Numba JIT 的 _sar_core
+        # （种子、限幅、反转、EP/AF 更新规则与本方法原逐行实现完全一致）
+        highs = np.ascontiguousarray(high, dtype=np.float64)
+        lows = np.ascontiguousarray(low, dtype=np.float64)
+        closes = np.ascontiguousarray(close, dtype=np.float64)
+        return _sar_core(highs, lows, closes, af_step, max_af)
 
 
 # 创建全局GPU加速器实例

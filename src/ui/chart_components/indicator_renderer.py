@@ -306,39 +306,32 @@ class IndicatorRenderer:
 
     
     def _draw_volume_bars(self, plot_widget: Any, x: np.ndarray, volumes: np.ndarray, df: Any):
-        """绘制成交量柱状图"""
+        """绘制成交量柱状图（单 BarGraphItem + brushes 数组批量绘制）"""
         closes = df['close'].to_numpy() if 'close' in df.columns else None
         opens = df['open'].to_numpy() if 'open' in df.columns else None
-        
+
         # 确保只绘制与x数组长度匹配的柱体
         max_count = min(len(x), len(volumes))
-        
+
         logger.debug(f"_draw_volume_bars: x shape: {x.shape}")
         logger.debug(f"_draw_volume_bars: volumes shape: {volumes.shape}")
         logger.debug(f"_draw_volume_bars: max_count: {max_count}")
         logger.debug(f"_draw_volume_bars: volumes sample: {volumes[:5]}")
-        
-        for i in range(max_count):
-            # 确定颜色：根据涨跌
-            if closes is not None and opens is not None and i < len(closes) and i < len(opens):
-                color = '#FF0000' if closes[i] >= opens[i] else '#00FF00'
-            else:
-                color = '#C0C0C0'
-            
-            # 打印每个柱体的高度
-            if i < 5:  # 只打印前5个柱体的高度
-                logger.debug(f"_draw_volume_bars: i: {i}, volume: {volumes[i]}, color: {color}")
-            
-            # 为每个柱体创建一个单独的 BarGraphItem
-            bar = pg.BarGraphItem(
-                x=[x[i]], 
-                height=[volumes[i]], 
-                width=0.8, 
-                brush=color,
-                pen=None
-            )
-            
-            plot_widget.addItem(bar)
+
+        # 向量化生成每根柱体颜色：红涨绿跌，无开收盘数据时灰色
+        brushes = np.full(max_count, '#C0C0C0', dtype=object)
+        if closes is not None and opens is not None:
+            n = min(max_count, len(closes), len(opens))
+            brushes[:n] = np.where(closes[:n] >= opens[:n], '#FF0000', '#00FF00')
+
+        bar = pg.BarGraphItem(
+            x=x[:max_count],
+            height=volumes[:max_count],
+            width=0.8,
+            brushes=list(brushes),
+            pen=None
+        )
+        plot_widget.addItem(bar)
     
     def _draw_volume_ma_lines(self, plot_widget: Any, x: np.ndarray, df: Any):
         """绘制成交量MA线"""
@@ -514,25 +507,46 @@ class IndicatorRenderer:
         return df
 
     def _draw_macd_histogram(self, plot_widget: Any, x: np.ndarray, hist_data: np.ndarray):
-        """绘制MACD柱状图"""
-        for i, val in enumerate(hist_data):
-            if not np.isnan(val):
-                # 正值红色，负值绿色
-                color = '#FF0000' if val >= 0 else '#00FF00'
-                bar = pg.BarGraphItem(
-                    x=[x[i]], 
-                    height=[abs(val)], 
-                    width=0.8, 
-                    brush=color,
-                    pen=None
-                )
-                # 设置柱状图位置
-                if val >= 0:
-                    bar.setOpts(x0=x[i]-0.4, y0=0, x1=x[i]+0.4, y1=val)
-                else:
-                    bar.setOpts(x0=x[i]-0.4, y0=val, x1=x[i]+0.4, y1=0)
-                plot_widget.addItem(bar)
-    
+        """绘制MACD柱状图（单 BarGraphItem + brushes 数组批量绘制）"""
+        mask = ~np.isnan(hist_data)
+        if not np.any(mask):
+            return
+        xv = x[mask]
+        hv = hist_data[mask]
+        # 正值红色，负值绿色；y0/y1 直接给出柱体上下沿，等价于原逐柱 setOpts
+        y0 = np.minimum(hv, 0.0)
+        y1 = np.maximum(hv, 0.0)
+        brushes = np.where(hv >= 0, '#FF0000', '#00FF00')
+        bar = pg.BarGraphItem(
+            x0=xv - 0.4, x1=xv + 0.4,
+            y0=y0, y1=y1,
+            brushes=list(brushes),
+            pen=None
+        )
+        plot_widget.addItem(bar)
+
+    def _draw_colored_vertical_lines(self, plot_widget: Any, x: np.ndarray, heights: np.ndarray,
+                                     colors: np.ndarray, width: int = 2):
+        """批量绘制按颜色分组的竖线（每根从 0 画到 heights[i]）。
+
+        逐根 plot() 会产生 O(N) 个 PlotDataItem；改为按颜色分组后，每组用
+        NaN 分隔的单个 PlotCurveItem(connect='finite') 一次绘制，
+        scene item 数从 O(K线数) 降为 O(颜色数)。
+        """
+        for color in np.unique(colors):
+            idx = colors == color
+            m = int(idx.sum())
+            xs = np.empty(m * 3)
+            ys = np.empty(m * 3)
+            xs[0::3] = x[idx]
+            xs[1::3] = x[idx]
+            xs[2::3] = np.nan
+            ys[0::3] = 0.0
+            ys[1::3] = heights[idx]
+            ys[2::3] = np.nan
+            curve = pg.PlotCurveItem(xs, ys, pen=pg.mkPen(str(color), width=width), connect='finite')
+            plot_widget.addItem(curve)
+
     def render_rsi(self, plot_widget: Any, df: Any, x: np.ndarray):
         """
         渲染RSI指标
@@ -1296,15 +1310,13 @@ class IndicatorRenderer:
                 vol_tdx_data = df['vol_tdx'].to_numpy().astype(np.float64)
                 mask = ~np.isnan(vol_tdx_data)
                 if np.any(mask):
-                    # 根据涨跌决定颜色
+                    # 根据涨跌决定颜色（向量化）
                     close_data = df['close'].to_numpy().astype(np.float64)
                     prev_close = np.roll(close_data, 1)
                     prev_close[0] = close_data[0]
-                    colors = ['r' if close_data[i] >= prev_close[i] else 'g' for i in range(len(close_data))]
-                    # 绘制柱状图
-                    for i in range(len(x)):
-                        if mask[i]:
-                            plot_widget.plot([x[i], x[i]], [0, vol_tdx_data[i]], pen=pg.mkPen(colors[i], width=2))
+                    colors = np.where(close_data >= prev_close, 'r', 'g')
+                    # 批量绘制柱状竖线（按颜色分组的 PlotCurveItem）
+                    self._draw_colored_vertical_lines(plot_widget, x[mask], vol_tdx_data[mask], colors[mask])
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染VOL-TDX失败: {e}")
         return df
@@ -1408,16 +1420,13 @@ class IndicatorRenderer:
                     if len(valid_data) > 0:
                         max_val = np.max(valid_data)
                         plot_widget.setYRange(0, max(max_val * 1.1, 20))
-                    # 根据换手率大小设置颜色
-                    for i in range(len(x)):
-                        if mask[i]:
-                            if hsl_data[i] > 10:
-                                color = 'r'  # 高换手率 - 红色
-                            elif hsl_data[i] > 5:
-                                color = '#FFA500'  # 中等换手率 - 橙色
-                            else:
-                                color = '#00BFFF'  # 低换手率 - 蓝色
-                            plot_widget.plot([x[i], x[i]], [0, hsl_data[i]], pen=pg.mkPen(color, width=2))
+                    # 根据换手率大小设置颜色（向量化）并批量绘制竖线
+                    colors = np.select(
+                        [hsl_data > 10, hsl_data > 5],
+                        ['r', '#FFA500'],
+                        default='#00BFFF'
+                    )
+                    self._draw_colored_vertical_lines(plot_widget, x[mask], hsl_data[mask], colors[mask])
                     # 绘制HSL_MA5和HSL_MA10
                     if 'hsl_ma5' in df.columns:
                         hsl_ma5 = df['hsl_ma5'].to_numpy().astype(np.float64)
@@ -1451,20 +1460,13 @@ class IndicatorRenderer:
                         min_val = np.min(valid_data)
                         max_val = np.max(valid_data)
                         plot_widget.setYRange(max(0, min_val * 0.8), max(3, max_val * 1.1))
-                    # 根据量比大小设置颜色
-                    for i in range(len(x)):
-                        if mask[i]:
-                            if lb_data[i] > 2:
-                                color = 'r'  # 高量比 - 红色
-                            elif lb_data[i] > 1.5:
-                                color = '#FFA500'  # 较高量比 - 橙色
-                            elif lb_data[i] > 1:
-                                color = '#00FF7F'  # 正常量比 - 绿色
-                            elif lb_data[i] > 0.5:
-                                color = '#00BFFF'  # 较低量比 - 蓝色
-                            else:
-                                color = '#808080'  # 低量比 - 灰色
-                            plot_widget.plot([x[i], x[i]], [0, lb_data[i]], pen=pg.mkPen(color, width=2))
+                    # 根据量比大小设置颜色（向量化）并批量绘制竖线
+                    colors = np.select(
+                        [lb_data > 2, lb_data > 1.5, lb_data > 1, lb_data > 0.5],
+                        ['r', '#FFA500', '#00FF7F', '#00BFFF'],
+                        default='#808080'
+                    )
+                    self._draw_colored_vertical_lines(plot_widget, x[mask], lb_data[mask], colors[mask])
                     # 添加参考线
                     plot_widget.addLine(y=1, pen=pg.mkPen('#FFFFFF', width=1.5))
                     plot_widget.addLine(y=0.5, pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
@@ -1524,11 +1526,9 @@ class IndicatorRenderer:
                         if range_val == 0:
                             range_val = abs(max_val) * 0.1 if max_val != 0 else 1
                         plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)
-                    # 根据盈亏设置颜色（红色盈利，绿色亏损）
-                    for i in range(len(x)):
-                        if mask[i]:
-                            color = 'r' if cys_data[i] >= 0 else 'g'
-                            plot_widget.plot([x[i], x[i]], [0, cys_data[i]], pen=pg.mkPen(color, width=2))
+                    # 根据盈亏设置颜色（红色盈利，绿色亏损，向量化）并批量绘制竖线
+                    colors = np.where(cys_data >= 0, 'r', 'g')
+                    self._draw_colored_vertical_lines(plot_widget, x[mask], cys_data[mask], colors[mask])
                     # 绘制CYS_MA5
                     if 'cys_ma5' in df.columns:
                         cys_ma5 = df['cys_ma5'].to_numpy().astype(np.float64)
