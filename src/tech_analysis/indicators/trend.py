@@ -31,6 +31,7 @@ from ..common_calculations import (
     calculate_moving_average,
     add_default_columns
 )
+from .formulas import ema_expr, macd_exprs
 
 
 @njit(cache=True)
@@ -142,19 +143,13 @@ def calculate_macd(lazy_df: pl.LazyFrame, fast_period: int, slow_period: int, si
     Returns:
         pl.LazyFrame: 包含MACD指标的LazyFrame
     """
-    # 直接计算EMA值，不创建中间列
-    ema12 = pl.col('close').ewm_mean(span=fast_period)
-    ema26 = pl.col('close').ewm_mean(span=slow_period)
-    
-    # 计算MACD线
-    macd_line = to_float32(ema12 - ema26).alias('macd')
-    
-    # 计算信号线
-    macd_signal = to_float32(macd_line.ewm_mean(span=signal_period)).alias('macd_signal')
-    
-    # 计算柱状图
-    macd_hist = to_float32(macd_line - macd_signal).alias('macd_hist')
-    
+    # 统一走共享公式层（标准 EMA 口径），不创建中间列
+    exprs = macd_exprs('close', fast_period, slow_period, signal_period)
+
+    macd_line = to_float32(exprs['macd']).alias('macd')
+    macd_signal = to_float32(exprs['signal']).alias('macd_signal')
+    macd_hist = to_float32(exprs['hist']).alias('macd_hist')
+
     return lazy_df.with_columns([macd_line, macd_signal, macd_hist])
 
 
@@ -233,15 +228,16 @@ def calculate_trix(lazy_df: pl.LazyFrame, windows: list, signal_period: int) -> 
     """
     for window in windows:
         # 1. 第一次指数平滑（EMA1）
-        ema1 = pl.col('close').ewm_mean(span=window)
+        ema1 = ema_expr(pl.col('close'), window)
         # 2. 第二次指数平滑（EMA2）
-        ema2 = ema1.ewm_mean(span=window)
+        ema2 = ema_expr(ema1, window)
         # 3. 第三次指数平滑（EMA3）
-        ema3 = ema2.ewm_mean(span=window)
+        ema3 = ema_expr(ema2, window)
         # 4. 计算EMA3的变化率（TRIX = (EMA3 - EMA3.shift(1)) / EMA3.shift(1) * 100）
-        trix = to_float32((ema3 - ema3.shift(1)) / ema3.shift(1) * 100).alias(f'trix{window}')
+        trix_value = (ema3 - ema3.shift(1)) / ema3.shift(1) * 100
+        trix = to_float32(trix_value).alias(f'trix{window}')
         # 5. 计算TRIX的信号线（TRMA = TRIX的signal_period天EMA）
-        trma = to_float32(trix.ewm_mean(span=signal_period)).alias(f'trma{window}')
+        trma = to_float32(ema_expr(trix_value, signal_period)).alias(f'trma{window}')
         
         # 6. 构建表达式列表（只添加最终结果，不添加中间EMA列，避免混乱）
         lazy_df = lazy_df.with_columns([trix, trma])
@@ -355,8 +351,8 @@ def calculate_expma(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
         pl.LazyFrame: 包含EXPMA指标的LazyFrame
     """
     for window in windows:
-        # 使用Polars的ewm_mean计算指数移动平均
-        expma = to_float32(pl.col('close').ewm_mean(span=window)).alias(f'expma{window}')
+        # 统一走共享公式层的标准 EMA 口径
+        expma = to_float32(ema_expr(pl.col('close'), window)).alias(f'expma{window}')
         lazy_df = lazy_df.with_columns(expma)
     
     # 添加默认列名

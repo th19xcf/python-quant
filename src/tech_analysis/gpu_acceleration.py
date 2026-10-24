@@ -9,11 +9,11 @@ GPU加速计算模块
 import os
 import sys
 import numpy as np
-import pandas as pd
-from numba import njit
+import polars as pl
 from typing import List, Dict, Any, Optional
 
 from .indicators.trend import _sar_core
+from .indicators.formulas import macd_exprs, rsi_expr
 
 # 尝试导入CuPy，如果不可用则使用NumPy作为备选
 try:
@@ -33,25 +33,6 @@ try:
 except ImportError:
     print("OpenCL不可用")
     OPENCL_AVAILABLE = False
-
-
-@njit(cache=True)
-def _wilder_sma_core(data: np.ndarray, window: int) -> np.ndarray:
-    """Wilder 平滑（RSI 用）的 Numba JIT 核心。
-
-    带种子递推（种子 = 前 window 项均值），无法用 Pandas 向量化精确表达，
-    与 trend.py 的 _sar_core 一样走 njit 加速。
-    语义与原逐元素循环完全一致：索引 < window-1 段为 0。
-    """
-    n = data.shape[0]
-    result = np.zeros(n, dtype=np.float64)
-    seed = 0.0
-    for i in range(window):
-        seed += data[i]
-    result[window - 1] = seed / window
-    for i in range(window, n):
-        result[i] = (result[i - 1] * (window - 1) + data[i]) / window
-    return result
 
 
 class GPUAccelerator:
@@ -168,27 +149,19 @@ class GPUAccelerator:
         Returns:
             Dict[str, np.ndarray]: MACD指标结果
         """
-        # EMA 是顺序递推指标，逐元素写 GPU 数组反而每元素触发一次 kernel，GPU 无收益；
-        # 改用 pandas ewm 在 CPU 侧向量化计算，语义与原循环完全一致：
-        # y[0]=x[0], y[i]=alpha*x[i]+(1-alpha)*y[i-1], alpha=2/(period+1)
-        ema12 = self.to_gpu(pd.Series(data).ewm(span=fast_period, adjust=False).mean().to_numpy())
-        ema26 = self.to_gpu(pd.Series(data).ewm(span=slow_period, adjust=False).mean().to_numpy())
-        
-        # 计算MACD线
-        macd_line = ema12 - ema26
-        
-        # 计算信号线（同为递推EMA，走 CPU ewm）
-        macd_signal = self.to_gpu(
-            pd.Series(self.to_cpu(macd_line)).ewm(span=signal_period, adjust=False).mean().to_numpy()
-        )
-        
-        # 计算柱状图
-        macd_hist = macd_line - macd_signal
-        
+        # EMA / MACD 统一走共享公式层：先把 numpy 转为 Polars，
+        # 用标准 EMA 口径一次性算出三线，再转回 numpy
+        exprs = macd_exprs('close', fast_period, slow_period, signal_period)
+        result = pl.DataFrame({'close': np.asarray(data, dtype=np.float64)}).with_columns([
+            exprs['macd'].alias('macd'),
+            exprs['signal'].alias('macd_signal'),
+            exprs['hist'].alias('macd_hist'),
+        ])
+
         return {
-            'macd': self.to_cpu(macd_line),
-            'macd_signal': self.to_cpu(macd_signal),
-            'macd_hist': self.to_cpu(macd_hist)
+            'macd': self.to_cpu(result['macd'].to_numpy()),
+            'macd_signal': self.to_cpu(result['macd_signal'].to_numpy()),
+            'macd_hist': self.to_cpu(result['macd_hist'].to_numpy()),
         }
     
     def calculate_rsi_gpu(self, data: np.ndarray, window: int) -> np.ndarray:
@@ -202,28 +175,14 @@ class GPUAccelerator:
         Returns:
             np.ndarray: RSI指标结果
         """
-        gpu_data = self.to_gpu(data)
-        
-        # 计算价格变化
-        delta = cp.diff(gpu_data)
-        delta = cp.concatenate([cp.array([0]), delta])
-        
-        # 计算上涨和下跌
-        gain = cp.where(delta > 0, delta, 0)
-        loss = cp.where(delta < 0, -delta, 0)
-        
-        # 计算平均上涨和下跌（Wilder 带种子递推，无法向量化 → Numba JIT，语义与原循环一致）
-        avg_gain = self.to_gpu(_wilder_sma_core(np.ascontiguousarray(self.to_cpu(gain), dtype=np.float64), window))
-        avg_loss = self.to_gpu(_wilder_sma_core(np.ascontiguousarray(self.to_cpu(loss), dtype=np.float64), window))
-        
-        # 计算RSI
-        rs = avg_gain / (avg_loss + 1e-10)  # 避免除零
-        rsi = 100 - (100 / (1 + rs))
-        
-        # 补全前面的NaN值
-        rsi[:window-1] = np.nan
-        
-        return self.to_cpu(rsi)
+        # RSI 统一走共享公式层：Polars 计算时种子行之前自然是 null，
+        # to_numpy 后转为 nan，与原「前 window-1 个无效」语义一致
+        result = (
+            pl.DataFrame({'close': np.asarray(data, dtype=np.float64)})
+            .with_columns(rsi_expr('close', window).alias('rsi'))['rsi']
+            .to_numpy()
+        )
+        return self.to_cpu(result)
     
     def calculate_sar_gpu(self, high: np.ndarray, low: np.ndarray, close: np.ndarray, af_step: float = 0.02, max_af: float = 0.2) -> np.ndarray:
         """

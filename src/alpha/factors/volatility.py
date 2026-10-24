@@ -9,6 +9,7 @@ import polars as pl
 import numpy as np
 
 from src.alpha.factors.factor_registry import register_factor
+from src.tech_analysis.indicators.formulas import atr_expr
 
 _SQRT_252 = np.sqrt(252)
 _GK_COEF = 2 * np.log(2) - 1
@@ -52,25 +53,12 @@ class VolatilityFactors:
         计算平均真实波幅(ATR)
         """
         cdt = self.data['close'].dtype
-        high = pl.col('high')
-        low = pl.col('low')
-        prev_close = pl.col('close').shift(1)
 
-        # 计算真实波幅(TR)，首行为0与原实现一致
-        tr = (
-            pl.when(prev_close.is_not_null())
-            .then(pl.max_horizontal(
-                high - low,
-                (high - prev_close).abs(),
-                (low - prev_close).abs()
-            ))
-            .otherwise(0.0)
-        )
-
-        # 计算ATR（前N日均值，不含当日）
+        # ATR 统一走共享公式层（Wilder 标准口径），
+        # shift(1) 保留「不使用当日数据」的防未来函数语义
         self.data = self.data.with_columns([
-            tr.rolling_mean(14).shift(1).fill_null(0.0).cast(cdt, strict=False).alias('atr_14'),
-            tr.rolling_mean(21).shift(1).fill_null(0.0).cast(cdt, strict=False).alias('atr_21')
+            atr_expr('high', 'low', 'close', 14).shift(1).fill_null(0.0).cast(cdt, strict=False).alias('atr_14'),
+            atr_expr('high', 'low', 'close', 21).shift(1).fill_null(0.0).cast(cdt, strict=False).alias('atr_21')
         ])
 
     def _calculate_historical_volatility(self):

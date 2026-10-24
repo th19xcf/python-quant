@@ -8,11 +8,8 @@
 
 import polars as pl
 from ..utils import to_float32, calculate_mad
-from ..common_calculations import (
-    calculate_price_change,
-    calculate_gain_loss,
-    add_default_columns
-)
+from ..common_calculations import add_default_columns
+from .formulas import rsi_expr
 
 
 def calculate_rsi(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
@@ -26,19 +23,9 @@ def calculate_rsi(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     Returns:
         pl.LazyFrame: 包含RSI指标的LazyFrame
     """
-    # 计算价格变化
-    lazy_df = calculate_price_change(lazy_df)
-    # 计算上涨和下跌变化
-    lazy_df = calculate_gain_loss(lazy_df)
-    
-    # 计算RSI，使用表达式别名避免创建中间列
+    # 统一走共享公式层（Wilder 标准口径），窗口之外自动为 null
     for window in windows:
-        # 直接计算RSI值，不创建中间列
-        avg_gain = pl.col('gain').ewm_mean(span=window)
-        avg_loss = pl.col('loss').ewm_mean(span=window)
-        
-        rsi = to_float32(pl.when(avg_loss == 0).then(100.0).otherwise(100.0 - (100.0 / (1.0 + (avg_gain / avg_loss))))).alias(f'rsi{window}')
-        
+        rsi = to_float32(rsi_expr('close', window)).alias(f'rsi{window}')
         lazy_df = lazy_df.with_columns(rsi)
     
     # 添加默认列名

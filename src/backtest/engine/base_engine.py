@@ -16,6 +16,7 @@ from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.backtest.visualization.backtest_visualizer import BacktestVisualizer
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.risk import RiskEngine, Order as RiskOrder, Portfolio as RiskPortfolio, GateResult
+from src.tech_analysis.indicators.formulas import atr_expr, macd_exprs, rsi_expr
 
 
 DataFrameType = Union[pl.DataFrame, pl.LazyFrame, pd.DataFrame, Any]
@@ -210,8 +211,6 @@ class BaseBacktestEngine:
             rsi_{period}                            通用 RSI
         """
         close = pl.col('close')
-        high = pl.col('high')
-        low = pl.col('low')
 
         short_w = int(strategy.params.get('short_window', 10))
         long_w = int(strategy.params.get('long_window', 20))
@@ -219,40 +218,27 @@ class BaseBacktestEngine:
 
         exprs = []
 
-        # 移动平均线（多策略共用）
-        exprs.append(close.rolling_mean(window_size=short_w).alias(f'ma_{short_w}'))
-        exprs.append(close.rolling_mean(window_size=long_w).alias(f'ma_{long_w}'))
+        # 移动平均线（多策略共用），min_samples=1 与权威实现口径一致
+        exprs.append(close.rolling_mean(window_size=short_w, min_samples=1).alias(f'ma_{short_w}'))
+        exprs.append(close.rolling_mean(window_size=long_w, min_samples=1).alias(f'ma_{long_w}'))
 
-        # EMA / MACD
-        ema12 = close.ewm_mean(span=12)
-        ema26 = close.ewm_mean(span=26)
-        macd = ema12 - ema26
-        signal = macd.ewm_mean(span=9)
+        # EMA / MACD：统一走共享公式层（标准 EMA 口径）
+        macd_dict = macd_exprs('close', 12, 26, 9)
         exprs.extend([
-            macd.alias('macd'),
-            signal.alias('macd_signal'),
-            (macd - signal).alias('macd_hist'),
+            macd_dict['macd'].alias('macd'),
+            macd_dict['signal'].alias('macd_signal'),
+            macd_dict['hist'].alias('macd_hist'),
         ])
 
-        # RSI（支持自定义 period）
-        delta = close.diff()
-        gain = pl.when(delta > 0).then(delta).otherwise(0.0)
-        loss = pl.when(delta < 0).then(-delta).otherwise(0.0)
-        avg_gain = gain.rolling_mean(window_size=rsi_w)
-        avg_loss = loss.rolling_mean(window_size=rsi_w)
-        rs = avg_gain / (avg_loss + 1e-10)
-        rsi_expr = 100 - (100 / (1 + rs))
+        # RSI（支持自定义 period）：统一走共享公式层（Wilder 标准口径）
+        rsi = rsi_expr('close', rsi_w)
         exprs.extend([
-            rsi_expr.alias('rsi'),
-            rsi_expr.alias(f'rsi_{rsi_w}'),
+            rsi.alias('rsi'),
+            rsi.alias(f'rsi_{rsi_w}'),
         ])
 
-        # ATR（多因子可能用到）
-        tr1 = high - low
-        tr2 = (high - close.shift(1)).abs()
-        tr3 = (low - close.shift(1)).abs()
-        tr = pl.max_horizontal([tr1, tr2, tr3])
-        exprs.append(tr.rolling_mean(window_size=14).alias('atr'))
+        # ATR（多因子可能用到）：统一走共享公式层
+        exprs.append(atr_expr('high', 'low', 'close', 14).alias('atr'))
 
         if not exprs:
             return df

@@ -9,6 +9,7 @@ import polars as pl
 import numpy as np
 
 from src.alpha.factors.factor_registry import register_factor
+from src.tech_analysis.indicators.formulas import rsi_expr as shared_rsi_expr
 
 
 def _seeded_kdj_expr(value_expr: pl.Expr, seed_index: int, seed_value: float) -> pl.Expr:
@@ -133,19 +134,9 @@ class TechnicalFactors:
         计算相对强弱因子
         """
         cdt = self.data['close'].dtype
-        delta = pl.col('close').diff()
-        gain = delta.clip(lower_bound=0.0)
-        loss = (-delta).clip(lower_bound=0.0)
 
-        # 计算RSI（前14日均值，不含当日）
-        avg_gain = gain.rolling_mean(14)
-        avg_loss = loss.rolling_mean(14)
-        rs = avg_gain / avg_loss
-        rsi_raw = (
-            pl.when(avg_loss == 0)
-            .then(100.0)
-            .otherwise(100.0 - (100.0 / (1.0 + rs)))
-        )
+        # 计算RSI（共享公式层，Wilder 标准口径；前 13 行为 null，随后 fill_null 补 0）
+        rsi_raw = shared_rsi_expr('close', 14)
 
         # 计算RSI动量（i>=28 处为 rsi_14[i] - rsi_14[i-14]，之前为0；
         # rsi_raw 在 i<14 处为 null，相减后仍为 null，fill_null(0) 与原实现一致）

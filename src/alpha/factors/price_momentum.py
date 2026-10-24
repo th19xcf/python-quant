@@ -9,23 +9,10 @@ import polars as pl
 import numpy as np
 
 from src.alpha.factors.factor_registry import register_factor
-
-
-def _seeded_ema_expr(col_name: str, period: int) -> pl.Expr:
-    """
-    与原 calculate_ema 逐位等价的EMA表达式：
-    以第 period-1 个位置的前 period 个值的均值作为种子，之后按
-    ema[i] = (values[i] - ema[i-1]) * multiplier + ema[i-1] 递推，
-    multiplier = 2 / (period + 1)，种子位置之前为 0。
-    """
-    multiplier = 2.0 / (period + 1)
-    idx = pl.int_range(pl.len())
-    seeded = (
-        pl.when(idx > period - 1).then(pl.col(col_name))
-        .when(idx == period - 1).then(pl.col(col_name).rolling_mean(period))
-        .otherwise(None)
-    )
-    return seeded.ewm_mean(alpha=multiplier, adjust=False, min_samples=1).fill_null(0.0)
+from src.tech_analysis.indicators.formulas import (
+    macd_exprs,
+    rsi_expr as shared_rsi_expr,
+)
 
 
 def _seeded_kdj_expr(value_expr: pl.Expr, seed_index: int, seed_value: float) -> pl.Expr:
@@ -105,25 +92,12 @@ class PriceMomentumFactors:
         计算RSI动量因子
         """
         cdt = self.data['close'].dtype
-        delta = pl.col('close').diff()
-        gain = delta.clip(lower_bound=0.0)
-        loss = (-delta).clip(lower_bound=0.0)
 
-        def rsi_expr(period: int) -> pl.Expr:
-            avg_gain = gain.rolling_mean(period)
-            avg_loss = loss.rolling_mean(period)
-            rs = avg_gain / avg_loss
-            return (
-                pl.when(avg_loss == 0)
-                .then(100.0)
-                .otherwise(100.0 - (100.0 / (1.0 + rs)))
-                .fill_null(0.0)
-            )
-
+        # RSI 统一走共享公式层（Wilder 标准口径）
         # 添加到DataFrame
         self.data = self.data.with_columns([
-            rsi_expr(14).cast(cdt, strict=False).alias('rsi_14'),
-            rsi_expr(21).cast(cdt, strict=False).alias('rsi_21')
+            shared_rsi_expr('close', 14).fill_null(0.0).cast(cdt, strict=False).alias('rsi_14'),
+            shared_rsi_expr('close', 21).fill_null(0.0).cast(cdt, strict=False).alias('rsi_21')
         ])
 
     def _calculate_macd_momentum(self):
@@ -132,23 +106,13 @@ class PriceMomentumFactors:
         """
         cdt = self.data['close'].dtype
 
-        # 计算EMA（与原 calculate_ema 等价：SMA种子 + 递推）
+        # MACD 统一走共享公式层（标准 EMA 口径）
+        exprs = macd_exprs('close', 12, 26, 9)
         self.data = self.data.with_columns([
-            _seeded_ema_expr('close', 12).cast(cdt, strict=False).alias('_ema12'),
-            _seeded_ema_expr('close', 26).cast(cdt, strict=False).alias('_ema26')
+            exprs['macd'].fill_null(0.0).cast(cdt, strict=False).alias('macd'),
+            exprs['signal'].fill_null(0.0).cast(cdt, strict=False).alias('macd_signal'),
+            exprs['hist'].fill_null(0.0).cast(cdt, strict=False).alias('macd_hist'),
         ])
-
-        # 计算MACD
-        self.data = self.data.with_columns(
-            (pl.col('_ema12') - pl.col('_ema26')).cast(cdt, strict=False).alias('macd')
-        )
-        self.data = self.data.with_columns(
-            _seeded_ema_expr('macd', 9).cast(cdt, strict=False).alias('macd_signal')
-        )
-        self.data = self.data.with_columns(
-            (pl.col('macd') - pl.col('macd_signal')).cast(cdt, strict=False).alias('macd_hist')
-        )
-        self.data = self.data.drop('_ema12', '_ema26')
 
     def _calculate_stochastic_momentum(self):
         """
