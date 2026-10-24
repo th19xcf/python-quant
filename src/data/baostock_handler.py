@@ -19,8 +19,9 @@ class BaostockHandler(DataSourceBase):
     """
     Baostock数据处理器，负责从Baostock获取数据并存储到数据库
 
-    继承 DataSourceBase 获得统一接口。DataFetcher 硬编码调用
-    download_stock_daily / download_index_daily 等方法。
+    继承 DataSourceBase 获得统一接口；DataFetcher 通过标准接口
+    get_stock_data / get_index_data 调度，download_stock_daily 等
+    方法供内部与批量同步使用。
     """
     
     def __init__(self, config, db_manager):
@@ -34,6 +35,7 @@ class BaostockHandler(DataSourceBase):
         self.config = config
         self.db_manager = db_manager
         self.name = "BaostockHandler"
+        self.available = True
         self.session = None
         self.bs_login = False
         

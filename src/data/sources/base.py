@@ -18,6 +18,9 @@ KLINE_STANDARD_COLUMNS = [
     'volume', 'amount', 'pct_chg', 'change', 'qfq_factor', 'hfq_factor',
 ]
 
+# 每个数据源必须实现的契约方法（DataFetcher 依赖它们做多源调度）
+REQUIRED_SOURCE_METHODS = ('get_stock_data', 'get_index_data')
+
 
 class DataSourceBase(ABC):
     """
@@ -54,7 +57,18 @@ class DataSourceBase(ABC):
     
     def is_available(self) -> bool:
         """检查数据源是否可用（默认返回 self.available，子类可覆盖）"""
-        return self.available
+        return getattr(self, 'available', True)
+
+    @classmethod
+    def missing_contract_methods(cls) -> List[str]:
+        """
+        检查本类是否覆盖了全部契约方法。
+
+        Returns:
+            List[str]: 未覆盖的方法名；空列表表示契约完整
+        """
+        return [name for name in REQUIRED_SOURCE_METHODS
+                if getattr(cls, name) is getattr(DataSourceBase, name)]
 
     # ------------------------------------------------------------------
     # 统一数据归一化收口点
@@ -165,31 +179,36 @@ class DataSourceBase(ABC):
         return df
 
     # ------------------------------------------------------------------
-    # 以下三个方法历史上是 @abstractmethod，现已降级为普通方法。
-    # 原因：DataFetcher._get_data_from_sources 内部按 handler 名硬编码调用
-    # 对应方法（tdx→get_kline_data, baostock→download_stock_daily），
-    # 不走 DataSourceBase 标准接口；强制 abstractmethod 会阻碍 handler 继承。
-    # 默认抛 NotImplementedError，子类可选覆盖。
+    # 标准接口契约
+    #
+    # DataFetcher 通过 hasattr + 签名探测按标准接口调用数据源
+    # （见 managers/data_fetcher.py::_get_data_from_sources），不再按
+    # handler 名硬编码方法。因此 get_stock_data / get_index_data 是
+    # 每个数据源必须覆盖的契约方法，未覆盖时调用会抛 NotImplementedError。
+    #
+    # 这里保留普通方法而非 @abstractmethod：历史 handler 在 __init__ 中
+    # 自行完成初始化，不调用基类 __init__，也不实现 _initialize()；
+    # 强制抽象会让它们无法实例化。契约由 validate_contract() 与
+    # tests/test_data_source_contract.py 共同保证。
     # ------------------------------------------------------------------
 
     def _initialize(self):
-        """具体的初始化实现。建议子类覆盖（handler 若在 __init__ 里自行初始化，可不覆盖）。"""
+        """具体初始化实现。在 __init__ 中自行初始化的 handler 可不实现。"""
         raise NotImplementedError(
-            f"{self.__class__.__name__} 必须实现 _initialize() 或覆盖 initialize()")
+            f"{self.__class__.__name__} 未实现 _initialize()；"
+            "若在 __init__ 中自行初始化，请显式覆盖 initialize() 或直接设置 available")
 
     def get_stock_data(self, ts_code: str, start_date: str, end_date: str,
                        freq: str = 'daily', adjustment_type: str = 'qfq'):
-        """获取股票数据（标准接口，子类可选覆盖）"""
+        """获取股票数据（标准接口，子类必须覆盖）"""
         raise NotImplementedError(
-            f"{self.__class__.__name__} 未实现 get_stock_data()，"
-            f"DataFetcher 会按 handler 名调用对应方法"
-            f"（如 get_kline_data / download_stock_daily）")
+            f"{self.__class__.__name__} 未实现标准接口 get_stock_data()")
 
     def get_index_data(self, ts_code: str, start_date: str, end_date: str,
                        freq: str = 'daily'):
-        """获取指数数据（标准接口，子类可选覆盖）"""
+        """获取指数数据（标准接口，子类必须覆盖）"""
         raise NotImplementedError(
-            f"{self.__class__.__name__} 未实现 get_index_data()")
+            f"{self.__class__.__name__} 未实现标准接口 get_index_data()")
     
     def update_stock_basic(self):
         """

@@ -5,11 +5,9 @@
 通达信数据处理器
 """
 
-import struct
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
@@ -18,14 +16,16 @@ from loguru import logger
 
 from src.data.sources.base import DataSourceBase
 from src.data.tdx_day_parser import parse_day_file as parse_tdx_day_file
+from src.data.tdx_day_parser import read_recent_records
 
 
 class TdxHandler(DataSourceBase):
     """
     通达信数据处理器，负责解析通达信数据文件并存储到数据库
 
-    继承 DataSourceBase 获得统一接口。DataFetcher 硬编码调用
-    get_kline_data。提供 close() 方法（基类没有，Handler 自己实现）。
+    继承 DataSourceBase 获得统一接口；DataFetcher 通过标准接口
+    get_stock_data / get_index_data 调度。get_kline_data 为本地文件级
+    底层方法，仍供内部与增量同步使用。提供 close() 方法（基类没有）。
     """
     
     def __init__(self, config, db_manager):
@@ -41,9 +41,10 @@ class TdxHandler(DataSourceBase):
         self.name = "TdxHandler"
         self.is_local = True  # 本地文件源，优先于远程源
         self.tdx_data_path = Path(config.data.tdx_data_path)
-        
-        # 检查通达信数据路径是否存在
-        if not self.tdx_data_path.exists():
+
+        # 检查通达信数据路径是否存在；路径缺失时标记为不可用
+        self.available = self.tdx_data_path.exists()
+        if not self.available:
             logger.warning(f"通达信数据路径不存在: {self.tdx_data_path}")
         
         # 初始化线程池，使用配置中的最大工作线程数
@@ -504,28 +505,15 @@ class TdxHandler(DataSourceBase):
                 logger.warning(f"价格数据文件不存在: {file_path}")
                 return None
             
-            # 读取价格数据
-            prices = []
-            with open(file_path, 'rb') as f:
-                f.seek(0, 2)
-                file_size = f.tell()
-                record_count = file_size // 32
-                f.seek(0)
-                
-                for i in range(record_count):
-                    record = f.read(32)
-                    if len(record) < 32:
-                        break
-                    
-                    date_int = struct.unpack('I', record[0:4])[0]
-                    close_val = struct.unpack('I', record[16:20])[0] / 100
-                    
-                    date_obj = datetime.strptime(str(date_int), '%Y%m%d').date()
-                    prices.append({'trade_date': date_obj, 'close': close_val})
-            
+            # 读取价格数据（复用统一的 .day 解析器，只需日期与收盘价）
+            prices = [
+                {'trade_date': r['date'], 'close': r['close']}
+                for r in read_recent_records(file_path)
+            ]
+
             if not prices:
                 return None
-            
+
             # 按日期排序
             prices.sort(key=lambda x: x['trade_date'])
             
@@ -751,82 +739,17 @@ class TdxHandler(DataSourceBase):
                 logger.warning(f"股票 {stock_code} 的通达信数据文件不存在: {file_path}")
                 return pl.LazyFrame({})
             
-            # 先尝试直接解析数据，不使用pandas
-            logger.info(f"开始直接解析文件 {file_path}")
-            
-            # 添加超时机制，避免程序无响应
-            start_time = time.time()
-            
-            data = []
+            # 复用统一的 .day 解析器；成交额沿用本路径的原始值约定（amount_scale=1.0）
+            logger.info(f"开始解析文件 {file_path}")
             try:
-                with open(file_path, 'rb') as f:
-                    # 获取文件大小
-                    logger.info(f"正在获取文件大小")
-                    f.seek(0, 2)
-                    file_size = f.tell()
-                    logger.info(f"文件大小: {file_size} 字节")
-                    
-                    # 计算数据条数
-                    record_count = file_size // 32
-                    logger.info(f"文件{file_path}包含{record_count}条交易日数据")
-                    
-                    # 读取所有记录，由绘图层根据displayed_bar_count截取显示的数据
-                    # 这样可以支持动态调整柱体数量而无需重新读取数据文件
-                    max_days = None
-                    start_record = 0
-                    logger.info(f"只解析最近{max_days}条记录，从第{start_record}条开始")
-                    
-                    # 跳转到起始记录位置
-                    f.seek(start_record * 32)
-                    logger.info(f"已跳转到起始记录位置")
-                    
-                    # 读取剩余数据
-                    logger.info(f"开始读取文件内容")
-                    file_content = f.read()
-                    logger.info(f"文件内容读取完成，大小: {len(file_content)} 字节")
-                    
-                    # 计算需要解析的记录数
-                    parse_count = len(file_content) // 32
-                    logger.info(f"需要解析{parse_count}条记录")
-                    
-                    # 解析每条记录
-                    for i in range(parse_count):
-                        # 添加超时检查
-                        if time.time() - start_time > 5:  # 超过5秒就退出
-                            logger.warning(f"解析数据超时，已处理{i}条记录")
-                            break
-                        
-                        # 提取32字节数据
-                        record = file_content[i*32:(i+1)*32]
-                        
-                        # 解析字段
-                        date_int = struct.unpack('I', record[0:4])[0]  # 日期，格式：YYYYMMDD
-                        open_val = struct.unpack('I', record[4:8])[0] / 100  # 开盘价，转换为元
-                        high_val = struct.unpack('I', record[8:12])[0] / 100  # 最高价，转换为元
-                        low_val = struct.unpack('I', record[12:16])[0] / 100  # 最低价，转换为元
-                        close_val = struct.unpack('I', record[16:20])[0] / 100  # 收盘价，转换为元
-                        volume = struct.unpack('I', record[20:24])[0]  # 成交量，单位：手
-                        amount = struct.unpack('I', record[24:28])[0]  # 成交额，单位：元
-                        
-                        # 转换日期格式
-                        date_str = str(date_int)
-                        date = datetime.strptime(date_str, '%Y%m%d').date()
-                        
-                        # 添加到数据列表
-                        data.append({
-                            'date': date,
-                            'open': open_val,
-                            'high': high_val,
-                            'low': low_val,
-                            'close': close_val,
-                            'volume': volume,
-                            'amount': amount
-                        })
+                data = read_recent_records(file_path, amount_scale=1.0)
             except (OSError, IOError) as file_e:
                 logger.exception(f"文件操作失败: {file_e}")
                 return pl.LazyFrame({})
-            
+
             logger.info(f"成功解析{len(data)}条数据")
+            if not data:
+                return pl.LazyFrame({})
             
             # 转换为polars DataFrame
             df = pl.DataFrame(data)
@@ -918,9 +841,14 @@ class TdxHandler(DataSourceBase):
             pl.DataFrame: 归一化后的K线数据
         """
         try:
+            # 多取一段前置数据，保证区间首根K线能拿到真实的昨收
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d').date()
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d').date()
+            fetch_start = (start_dt - timedelta(days=30)).strftime('%Y-%m-%d')
+
             # get_kline_data 返回 LazyFrame，含 date/open/high/low/close/volume/amount
             # 以及 qfq_factor/hfq_factor 列
-            lazy_df = self.get_kline_data(ts_code, start_date, end_date, adjust='none')
+            lazy_df = self.get_kline_data(ts_code, fetch_start, end_date, adjust='none')
             if lazy_df is None:
                 return pl.DataFrame()
 
@@ -928,14 +856,29 @@ class TdxHandler(DataSourceBase):
             if df.is_empty():
                 return pl.DataFrame()
 
-            # 补齐衍生列：pre_close / change / pct_chg
-            df = df.with_columns([
-                pl.col('close').shift(1).alias('pre_close'),
-            ])
+            df = df.sort('date')
+
+            # 昨收按交易所口径推导：除权日需用复权因子比值还原除权参考价
+            #   pre_close_t = close_{t-1} * qfq_factor_{t-1} / qfq_factor_t
+            # 非除权日因子相同，退化为前一日收盘价
+            prev_close = pl.col('close').shift(1)
+            if 'qfq_factor' in df.columns:
+                pre_close_expr = prev_close * (
+                    pl.col('qfq_factor').shift(1) / pl.col('qfq_factor'))
+            else:
+                pre_close_expr = prev_close
+
+            df = df.with_columns(pre_close_expr.alias('pre_close'))
             df = df.with_columns([
                 (pl.col('close') - pl.col('pre_close')).alias('change'),
-                ((pl.col('close') / pl.col('pre_close') - 1) * 100).alias('pct_chg'),
+                pl.when(pl.col('pre_close').is_not_null() & (pl.col('pre_close') != 0))
+                .then((pl.col('close') / pl.col('pre_close') - 1) * 100)
+                .otherwise(None).alias('pct_chg'),
             ])
+
+            # 丢弃为补齐昨收而多取的前置数据
+            df = df.filter(
+                (pl.col('date') >= start_dt) & (pl.col('date') <= end_dt))
 
             # tdx 列名已为标准名，成交量单位为"手"
             column_map = {
@@ -964,7 +907,11 @@ class TdxHandler(DataSourceBase):
             pl.DataFrame: 归一化后的指数K线数据
         """
         try:
-            lazy_df = self.get_kline_data(ts_code, start_date, end_date, adjust='none')
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d').date()
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d').date()
+            fetch_start = (start_dt - timedelta(days=30)).strftime('%Y-%m-%d')
+
+            lazy_df = self.get_kline_data(ts_code, fetch_start, end_date, adjust='none')
             if lazy_df is None:
                 return pl.DataFrame()
 
@@ -972,13 +919,20 @@ class TdxHandler(DataSourceBase):
             if df.is_empty():
                 return pl.DataFrame()
 
+            df = df.sort('date')
+
+            # 指数无除权，昨收即前一日收盘；多取的前置数据用于补齐区间首行
             df = df.with_columns([
                 pl.col('close').shift(1).alias('pre_close'),
             ])
             df = df.with_columns([
                 (pl.col('close') - pl.col('pre_close')).alias('change'),
-                ((pl.col('close') / pl.col('pre_close') - 1) * 100).alias('pct_chg'),
+                pl.when(pl.col('pre_close').is_not_null() & (pl.col('pre_close') != 0))
+                .then((pl.col('close') / pl.col('pre_close') - 1) * 100)
+                .otherwise(None).alias('pct_chg'),
             ])
+            df = df.filter(
+                (pl.col('date') >= start_dt) & (pl.col('date') <= end_dt))
 
             column_map = {
                 'date': 'date', 'open': 'open', 'high': 'high', 'low': 'low',

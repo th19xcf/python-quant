@@ -35,6 +35,8 @@ class AkShareHandler(DataSourceBase):
         self.config = config
         self.db_manager = db_manager
         self.name = "AkShareHandler"
+        self.available = True
+        self._factor_warning_logged = False
         self.session = None
         
         # 离线模式支持
@@ -831,10 +833,20 @@ class AkShareHandler(DataSourceBase):
                 'pct_chg': '涨跌幅', 'volume': '成交量', 'amount': '成交额',
             }
             # akshare 成交量单位为"手"
-            return self._normalize_kline(
+            normalized = self._normalize_kline(
                 df, column_map=column_map, ts_code=ts_code,
                 volume_unit='hand', date_format='%Y-%m-%d', include_factors=True,
             )
+
+            # akshare 无复权因子接口，normalize 只能补 1.0；
+            # 此时复权请求不会生效，显式告警避免上游误以为拿到的是复权价
+            if adjustment_type in ('qfq', 'hfq') and not self._factor_warning_logged:
+                self._factor_warning_logged = True
+                logger.warning(
+                    "akshare 数据源无真实复权因子（qfq/hfq_factor 均为 1.0），"
+                    f"adjustment_type={adjustment_type} 请求将返回未复权价；"
+                    "如需复权请改用 baostock 或 tdx 数据源")
+            return normalized
 
         except Exception as e:
             logger.warning(f"akshare get_stock_data({ts_code}) 失败: {e}")
