@@ -389,68 +389,49 @@ class BaostockHandler(DataSourceBase):
                     
                     # 数据清洗和标准化
                     from src.database.models.stock import StockDaily, StockBasic
-                    
+                    from src.database.upsert import upsert_rows
+
                     # 初始化最早交易日期
                     earliest_date = None
-                    
-                    # 遍历数据，进行清洗和存储
+                    daily_rows = []
+
+                    # 遍历数据，转换为待写入行（不合格行跳过）
                     for row in stock_daily_df.iter_rows(named=True):
                         try:
                             # 转换日期格式
                             trade_date = datetime.strptime(row['date'], "%Y-%m-%d").date()
-                            
+
                             # 更新最早交易日期
                             if earliest_date is None or trade_date < earliest_date:
                                 earliest_date = trade_date
-                            
-                            # 查询数据是否已存在（写库统一用标准 ts_code）
-                            daily_data = self.session.query(StockDaily).filter_by(
-                                ts_code=std_code,
-                                trade_date=trade_date
-                            ).first()
-                            
+
                             # 转换数值类型
-                            open_val = float(row['open']) if row['open'] else 0.0
-                            high_val = float(row['high']) if row['high'] else 0.0
-                            low_val = float(row['low']) if row['low'] else 0.0
                             close_val = float(row['close']) if row['close'] else 0.0
                             pre_close_val = float(row['preclose']) if row['preclose'] else 0.0
-                            change_val = close_val - pre_close_val
-                            pct_chg_val = float(row['pctChg']) if row['pctChg'] else 0.0
-                            vol_val = float(row['volume']) if row['volume'] else 0.0
-                            amount_val = float(row['amount']) if row['amount'] else 0.0
-                            
-                            if daily_data:
-                                # 更新现有数据
-                                daily_data.open = open_val
-                                daily_data.high = high_val
-                                daily_data.low = low_val
-                                daily_data.close = close_val
-                                daily_data.pre_close = pre_close_val
-                                daily_data.change = change_val
-                                daily_data.pct_chg = pct_chg_val
-                                daily_data.vol = vol_val
-                                daily_data.amount = amount_val
-                            else:
-                                # 创建新数据
-                                daily_data = StockDaily(
-                                    ts_code=std_code,
-                                    trade_date=trade_date,
-                                    open=open_val,
-                                    high=high_val,
-                                    low=low_val,
-                                    close=close_val,
-                                    pre_close=pre_close_val,
-                                    change=change_val,
-                                    pct_chg=pct_chg_val,
-                                    vol=vol_val,
-                                    amount=amount_val
-                                )
-                                self.session.add(daily_data)
-                            
+                            daily_rows.append({
+                                'ts_code': std_code,
+                                'trade_date': trade_date,
+                                'open': float(row['open']) if row['open'] else 0.0,
+                                'high': float(row['high']) if row['high'] else 0.0,
+                                'low': float(row['low']) if row['low'] else 0.0,
+                                'close': close_val,
+                                'pre_close': pre_close_val,
+                                'change': close_val - pre_close_val,
+                                'pct_chg': float(row['pctChg']) if row['pctChg'] else 0.0,
+                                'vol': float(row['volume']) if row['volume'] else 0.0,
+                                'amount': float(row['amount']) if row['amount'] else 0.0,
+                            })
                         except (ConnectionError, TimeoutError, OSError) as row_e:
                             logger.exception(f"处理股票日线数据失败: {row_e}")
                             continue
+
+                    # 批量查重后写入（已存在则更新，不存在则新增）
+                    upsert_rows(
+                        self.session, StockDaily, daily_rows,
+                        key_fields=('ts_code', 'trade_date'),
+                        value_fields=('open', 'high', 'low', 'close', 'pre_close',
+                                      'change', 'pct_chg', 'vol', 'amount'),
+                    )
                     
                     # 更新股票的上市日期为最早交易日期
                     if earliest_date:
@@ -658,61 +639,42 @@ class BaostockHandler(DataSourceBase):
                     
                     # 数据清洗和标准化
                     from src.database.models.index import IndexDaily
-                    
-                    # 遍历数据，进行清洗和存储
+                    from src.database.upsert import upsert_rows
+
+                    # 遍历数据，转换为待写入行（不合格行跳过）
+                    daily_rows = []
                     for row in index_daily_df.iter_rows(named=True):
                         try:
                             # 转换日期格式
                             trade_date = datetime.strptime(row['date'], "%Y-%m-%d").date()
-                            
+
                             # 转换数值类型
-                            open_val = float(row['open']) if row['open'] else 0.0
-                            high_val = float(row['high']) if row['high'] else 0.0
-                            low_val = float(row['low']) if row['low'] else 0.0
                             close_val = float(row['close']) if row['close'] else 0.0
                             pre_close_val = float(row['preclose']) if row['preclose'] else 0.0
-                            change_val = close_val - pre_close_val
-                            pct_chg_val = float(row['pctChg']) if row['pctChg'] else 0.0
-                            vol_val = float(row['volume']) if row['volume'] else 0.0
-                            amount_val = float(row['amount']) if row['amount'] else 0.0
-                            
-                            # 查询数据是否已存在
-                            daily_data = self.session.query(IndexDaily).filter_by(
-                                ts_code=ts_code,
-                                trade_date=trade_date
-                            ).first()
-                            
-                            if daily_data:
-                                # 更新现有数据
-                                daily_data.open = open_val
-                                daily_data.high = high_val
-                                daily_data.low = low_val
-                                daily_data.close = close_val
-                                daily_data.pre_close = pre_close_val
-                                daily_data.change = change_val
-                                daily_data.pct_chg = pct_chg_val
-                                daily_data.vol = vol_val
-                                daily_data.amount = amount_val
-                            else:
-                                # 创建新数据
-                                daily_data = IndexDaily(
-                                    ts_code=ts_code,
-                                    trade_date=trade_date,
-                                    open=open_val,
-                                    high=high_val,
-                                    low=low_val,
-                                    close=close_val,
-                                    pre_close=pre_close_val,
-                                    change=change_val,
-                                    pct_chg=pct_chg_val,
-                                    vol=vol_val,
-                                    amount=amount_val
-                                )
-                                self.session.add(daily_data)
-                            
+                            daily_rows.append({
+                                'ts_code': ts_code,
+                                'trade_date': trade_date,
+                                'open': float(row['open']) if row['open'] else 0.0,
+                                'high': float(row['high']) if row['high'] else 0.0,
+                                'low': float(row['low']) if row['low'] else 0.0,
+                                'close': close_val,
+                                'pre_close': pre_close_val,
+                                'change': close_val - pre_close_val,
+                                'pct_chg': float(row['pctChg']) if row['pctChg'] else 0.0,
+                                'vol': float(row['volume']) if row['volume'] else 0.0,
+                                'amount': float(row['amount']) if row['amount'] else 0.0,
+                            })
                         except (ConnectionError, TimeoutError, OSError) as row_e:
                             logger.exception(f"处理指数日线数据失败: {row_e}")
                             continue
+
+                    # 批量查重后写入（已存在则更新，不存在则新增）
+                    upsert_rows(
+                        self.session, IndexDaily, daily_rows,
+                        key_fields=('ts_code', 'trade_date'),
+                        value_fields=('open', 'high', 'low', 'close', 'pre_close',
+                                      'change', 'pct_chg', 'vol', 'amount'),
+                    )
                     
                     # 每个指数提交一次事务
                     self.session.commit()
@@ -734,164 +696,78 @@ class BaostockHandler(DataSourceBase):
             logger.exception(f"更新指数日线数据失败: {e}")
             raise
     
+    def _get_realtime_data(self, ts_codes: List[str], code_type: str, noun: str,
+                           default_days: int, adjustflag: str):
+        """
+        通用实现：以最近若干日历史数据代替实时数据（股票/指数共用）
+
+        Args:
+            ts_codes: 代码列表，None 表示使用默认代码
+            code_type: 默认代码类型（stock/index）
+            noun: 日志中的中文名词（股票/指数）
+            default_days: 未指定日期时回溯的天数
+            adjustflag: 复权标志（2 前复权 / 3 不复权）
+
+        Returns:
+            pl.DataFrame: 按日期降序排列的行情数据
+        """
+        try:
+            if not self._ensure_baostock_login():
+                logger.warning(f"Baostock登录失败，无法获取实时{noun}数据")
+                return pl.DataFrame()
+
+            if not ts_codes:
+                ts_codes = self._get_default_codes(code_type)
+
+            logger.info(f"开始从Baostock获取{len(ts_codes)}个{noun}的历史数据作为实时数据替代")
+
+            # 获取最近若干天数据，确保能取到
+            start_date, end_date = self._process_dates(None, None, default_days=default_days)
+
+            all_data = []
+
+            for ts_code in ts_codes:
+                try:
+                    rs = bs.query_history_k_data_plus(
+                        ts_code,
+                        "date,code,open,high,low,close,preclose,volume,amount,pctChg",
+                        start_date=start_date,
+                        end_date=end_date,
+                        frequency="d",
+                        adjustflag=adjustflag
+                    )
+
+                    data_df = pl.from_pandas(rs.get_data())
+
+                    if not data_df.is_empty():
+                        all_data.append(data_df)
+
+                except (ConnectionError, TimeoutError, OSError) as e:
+                    logger.exception(f"获取{ts_code}的历史{noun}数据失败: {e}")
+                    continue
+
+            if not all_data:
+                logger.warning(f"从Baostock获取的实时{noun}数据为空")
+                return pl.DataFrame()
+
+            # 合并所有数据并按日期降序，确保最新数据在前
+            combined_df = pl.concat(all_data, how="vertical").sort(by="date", descending=True)
+
+            logger.info(f"从Baostock获取到{combined_df.height}条{noun}实时数据")
+            return combined_df
+
+        except (ConnectionError, TimeoutError, OSError) as e:
+            logger.exception(f"获取实时{noun}数据失败: {e}")
+            return pl.DataFrame()
+
     def get_realtime_stock_data(self, ts_codes: List[str] = None):
-        """
-        获取实时股票数据
-        
-        Args:
-            ts_codes: 股票代码列表，None表示获取默认股票
-        
-        Returns:
-            pl.DataFrame: 实时股票数据
-        """
-        try:
-            if not self._ensure_baostock_login():
-                logger.warning("Baostock登录失败，无法获取实时股票数据")
-                return pl.DataFrame()
-            
-            if not ts_codes:
-                ts_codes = self._get_default_codes('stock')
-            
-            logger.info(f"开始从Baostock获取{len(ts_codes)}只股票的历史数据作为实时数据替代")
-            
-            # 直接使用历史数据作为替代
-            
-            # 获取最近5天的数据，确保能获取到数据
-            start_date, end_date = self._process_dates(None, None, default_days=self.config.data.default_realtime_days)
-            
-            # 存储结果
-            all_data = []
-            
-            for ts_code in ts_codes:
-                try:
-                    # 使用Baostock获取最近一个交易日的数据
-                    rs = bs.query_history_k_data_plus(
-                        ts_code,
-                        "date,code,open,high,low,close,preclose,volume,amount,pctChg",
-                        start_date=start_date,
-                        end_date=end_date,
-                        frequency="d",
-                        adjustflag="2"  # 前复权
-                    )
-                    
-                    # 获取数据
-                    stock_data_pd = rs.get_data()
-                    
-                    # 转换为Polars DataFrame
-                    stock_data_df = pl.from_pandas(stock_data_pd)
-                    
-                    if not stock_data_df.is_empty():
-                        all_data.append(stock_data_df)
-                    
-                except (ConnectionError, TimeoutError, OSError) as e:
-                    logger.exception(f"获取{ts_code}的历史数据失败: {e}")
-                    continue
-            
-            if not all_data:
-                logger.warning("从Baostock获取的实时股票数据为空")
-                return pl.DataFrame()
-            
-            # 合并所有数据
-            if all_data:
-                # 合并Polars DataFrames
-                combined_df = pl.concat(all_data, how="vertical")
-                # 按日期降序排序，确保最新的数据在前面
-                combined_df = combined_df.sort(by="date", descending=True)
-            else:
-                combined_df = pl.DataFrame()
-            
-            logger.info(f"从Baostock获取到{combined_df.height}条股票实时数据")
-            return combined_df
-            
-        except (ConnectionError, TimeoutError, OSError) as e:
-            logger.exception(f"获取实时股票数据失败: {e}")
-            return pl.DataFrame()
-    
+        """获取实时股票数据（以最近历史数据替代）。"""
+        return self._get_realtime_data(
+            ts_codes, 'stock', '股票', self.config.data.default_realtime_days, "2")
+
     def get_realtime_index_data(self, ts_codes: List[str] = None):
-        """
-        获取实时指数数据
-        
-        Args:
-            ts_codes: 指数代码列表，None表示获取默认指数
-        
-        Returns:
-            pl.DataFrame: 实时指数数据
-        """
-        try:
-            if not self._ensure_baostock_login():
-                logger.warning("Baostock登录失败，无法获取实时指数数据")
-                return pl.DataFrame()
-            
-            if not ts_codes:
-                ts_codes = self._get_default_codes('index')
-            
-            logger.info(f"开始从Baostock获取{len(ts_codes)}个指数的历史数据作为实时数据替代")
-            
-            # 直接使用历史数据作为替代
-            
-            # 获取最近5天的数据，确保能获取到数据
-            start_date, end_date = self._process_dates(None, None, default_days=5)
-            
-            # 存储结果
-            all_data = []
-            
-            for ts_code in ts_codes:
-                try:
-                    # 使用Baostock获取最近一个交易日的数据
-                    rs = bs.query_history_k_data_plus(
-                        ts_code,
-                        "date,code,open,high,low,close,preclose,volume,amount,pctChg",
-                        start_date=start_date,
-                        end_date=end_date,
-                        frequency="d",
-                        adjustflag="3"  # 不复权
-                    )
-                    
-                    # 获取数据
-                    index_data_pd = rs.get_data()
-                    
-                    # 转换为Polars DataFrame
-                    index_data_df = pl.from_pandas(index_data_pd)
-                    
-                    if not index_data_df.is_empty():
-                        all_data.append(index_data_df)
-                    
-                except (ConnectionError, TimeoutError, OSError) as e:
-                    logger.exception(f"获取{ts_code}的历史指数数据失败: {e}")
-                    continue
-            
-            if not all_data:
-                logger.warning("从Baostock获取的实时指数数据为空")
-                return pl.DataFrame()
-            
-            # 合并所有数据
-            if all_data:
-                # 合并Polars DataFrames
-                combined_df = pl.concat(all_data, how="vertical")
-                # 按日期降序排序，确保最新的数据在前面
-                combined_df = combined_df.sort(by="date", descending=True)
-            else:
-                combined_df = pl.DataFrame()
-            
-            logger.info(f"从Baostock获取到{combined_df.height}条指数实时数据")
-            
-            # 输出所有上证指数的数据，以便分析
-            logger.info("所有上证指数数据:")
-            for row in combined_df.iter_rows(named=True):
-                if row['code'] == 'sh.000001':
-                    logger.info(f"日期={row['date']}, 代码={row['code']}, 收盘={row['close']}, 涨跌幅={row['pctChg']}%")
-            
-            # 输出最新的上证指数数据
-            for row in combined_df.iter_rows(named=True):
-                if row['code'] == 'sh.000001':
-                    logger.info(f"最新上证指数数据: 日期={row['date']}, 代码={row['code']}, 收盘={row['close']}, 涨跌幅={row['pctChg']}%")
-                    break
-            
-            return combined_df
-            
-        except (ConnectionError, TimeoutError, OSError) as e:
-            logger.exception(f"获取实时指数数据失败: {e}")
-            return pl.DataFrame()
+        """获取实时指数数据（以最近历史数据替代）。"""
+        return self._get_realtime_data(ts_codes, 'index', '指数', 5, "3")
     
     def download_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
@@ -1075,295 +951,145 @@ class BaostockHandler(DataSourceBase):
             logger.warning(f"baostock get_index_data({ts_code}) 失败: {e}")
             return pl.DataFrame()
     
-    def download_stock_minute(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, frequency: str = "5"):
+    def _download_minute(self, model, code_type: str, noun: str, default_days: int,
+                         ts_codes: List[str], start_date: str, end_date: str,
+                         frequency: str):
         """
-        下载股票分钟线数据
-        
+        通用实现：分钟线下载并入库（股票/指数共用）
+
+        写库统一存原始价（adjustflag=3），复权由查询侧按因子统一处理。
+
         Args:
-            ts_codes: 股票代码列表，None表示下载默认股票
+            model: 目标 ORM 模型（StockMinute / IndexMinute）
+            code_type: 默认代码类型（stock/index）
+            noun: 日志中的中文名词（股票/指数）
+            default_days: 未指定日期时回溯的天数
+            ts_codes: 代码列表，None 表示使用默认代码
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
             frequency: 分钟线频率，支持1、5、15、30、60分钟
-        
+
         Returns:
-            dict: 股票代码到分钟线数据的映射
+            dict: 离线模式下返回 代码 -> DataFrame 的映射，在线模式返回 None
         """
         try:
             if not self._ensure_baostock_login():
-                logger.warning("Baostock登录失败，无法获取股票分钟线数据")
+                logger.warning(f"Baostock登录失败，无法获取{noun}分钟线数据")
                 return
-            
+
             if not ts_codes:
-                ts_codes = self._get_default_codes('stock')
-            
+                ts_codes = self._get_default_codes(code_type)
+
             if not ts_codes:
-                logger.warning("没有需要下载的股票代码")
+                logger.warning(f"没有需要下载的{noun}代码")
                 return
-            
+
             # 验证分钟线频率
             frequency = self._validate_frequency(frequency)
-            
+
             # 处理日期参数
-            start_date, end_date = self._process_dates(start_date, end_date, default_days=self.config.data.default_minute_days)
-            
-            logger.info(f"开始下载{len(ts_codes)}只股票的{frequency}分钟线数据，时间范围: {start_date} 至 {end_date}")
-            
-            # 存储结果
+            start_date, end_date = self._process_dates(start_date, end_date, default_days=default_days)
+
+            logger.info(f"开始下载{len(ts_codes)}个{noun}的{frequency}分钟线数据，时间范围: {start_date} 至 {end_date}")
+
             result = {}
-            
-            # 遍历股票代码，获取分钟线数据
+
             for ts_code in ts_codes:
                 try:
                     logger.info(f"正在下载{ts_code}的{frequency}分钟线数据")
-                    
-                    # 使用Baostock获取股票分钟线数据
+
                     rs = bs.query_history_k_data_plus(
                         ts_code,
                         "date,time,code,open,high,low,close,volume,amount",
                         start_date=start_date,
                         end_date=end_date,
                         frequency=frequency,
-                        adjustflag="2"  # 前复权
+                        adjustflag="3"  # 不复权，写库存原始价
                     )
-                    
-                    # 检查rs是否为None
+
                     if rs is None:
                         logger.warning(f"Baostock API返回None，无法获取{ts_code}的{frequency}分钟线数据")
                         continue
-                    
-                    # 获取数据
+
                     try:
-                        stock_minute_pd = rs.get_data()
+                        minute_pd = rs.get_data()
                     except Exception as e:
                         logger.warning(f"获取{ts_code}的{frequency}分钟线数据失败: {e}")
                         continue
-                    
-                    # 转换为Polars DataFrame
-                    stock_minute_df = pl.from_pandas(stock_minute_pd)
-                    
-                    if stock_minute_df.is_empty():
+
+                    minute_df = pl.from_pandas(minute_pd)
+
+                    if minute_df.is_empty():
                         logger.warning(f"{ts_code}在{start_date}至{end_date}期间没有{frequency}分钟线数据")
                         continue
-                    
-                    logger.info(f"获取到{ts_code}的{stock_minute_df.height}条{frequency}分钟线数据")
-                    
+
+                    logger.info(f"获取到{ts_code}的{minute_df.height}条{frequency}分钟线数据")
+
                     # 离线模式下，只获取数据不存储
                     if not self.session:
-                        result[ts_code] = stock_minute_pd
+                        result[ts_code] = minute_pd
                         logger.info(f"离线模式下，获取{ts_code}的{frequency}分钟线数据完成")
                         continue
-                    
-                    # 数据清洗和标准化
-                    from src.database.models.stock import StockMinute
-                    
-                    # 遍历数据，进行清洗和存储
-                    for row in stock_minute_df.iter_rows(named=True):
+
+                    from src.database.upsert import upsert_rows
+
+                    # 遍历数据，转换为待写入行（不合格行跳过）
+                    minute_rows = []
+                    for row in minute_df.iter_rows(named=True):
                         try:
-                            # 转换日期时间格式
-                            trade_date = datetime.strptime(row['date'], "%Y-%m-%d").date()
-                            trade_time = row['time']
-                            
-                            # 查询数据是否已存在
-                            minute_data = self.session.query(StockMinute).filter_by(
-                                ts_code=ts_code,
-                                trade_date=trade_date,
-                                trade_time=trade_time
-                            ).first()
-                            
-                            # 转换数值类型
-                            open_val = float(row['open']) if row['open'] else 0.0
-                            high_val = float(row['high']) if row['high'] else 0.0
-                            low_val = float(row['low']) if row['low'] else 0.0
-                            close_val = float(row['close']) if row['close'] else 0.0
-                            vol_val = float(row['volume']) if row['volume'] else 0.0
-                            amount_val = float(row['amount']) if row['amount'] else 0.0
-                            
-                            if minute_data:
-                                # 更新现有数据
-                                minute_data.open = open_val
-                                minute_data.high = high_val
-                                minute_data.low = low_val
-                                minute_data.close = close_val
-                                minute_data.vol = vol_val
-                                minute_data.amount = amount_val
-                            else:
-                                # 创建新数据
-                                minute_data = StockMinute(
-                                    ts_code=ts_code,
-                                    trade_date=trade_date,
-                                    trade_time=trade_time,
-                                    open=open_val,
-                                    high=high_val,
-                                    low=low_val,
-                                    close=close_val,
-                                    vol=vol_val,
-                                    amount=amount_val,
-                                    frequency=frequency
-                                )
-                                self.session.add(minute_data)
-                            
+                            minute_rows.append({
+                                'ts_code': ts_code,
+                                'trade_date': datetime.strptime(row['date'], "%Y-%m-%d").date(),
+                                'trade_time': row['time'],
+                                'open': float(row['open']) if row['open'] else 0.0,
+                                'high': float(row['high']) if row['high'] else 0.0,
+                                'low': float(row['low']) if row['low'] else 0.0,
+                                'close': float(row['close']) if row['close'] else 0.0,
+                                'vol': float(row['volume']) if row['volume'] else 0.0,
+                                'amount': float(row['amount']) if row['amount'] else 0.0,
+                            })
                         except (ConnectionError, TimeoutError, OSError) as row_e:
-                            logger.exception(f"处理股票分钟线数据失败: {row_e}")
+                            logger.exception(f"处理{noun}分钟线数据失败: {row_e}")
                             continue
-                    
-                    # 每只股票提交一次事务
-                    self.session.commit()
-                    logger.info(f"{ts_code}的{frequency}分钟线数据下载完成")
-                    
-                except (ConnectionError, TimeoutError, OSError) as e:
-                    if self.session:
-                        self.session.rollback()
-                    logger.exception(f"下载{ts_code}的{frequency}分钟线数据失败: {e}")
-                    continue
-            
-            # 离线模式下返回结果
-            if not self.session and result:
-                return result
-            
-        except (ConnectionError, TimeoutError, OSError) as e:
-            if self.session:
-                self.session.rollback()
-            logger.exception(f"下载股票分钟线数据失败: {e}")
-            raise
-    
-    def download_index_minute(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, frequency: str = "5"):
-        """
-        下载指数分钟线数据
-        
-        Args:
-            ts_codes: 指数代码列表，None表示下载默认指数
-            start_date: 开始日期，格式：YYYY-MM-DD
-            end_date: 结束日期，格式：YYYY-MM-DD
-            frequency: 分钟线频率，支持1、5、15、30、60分钟
-        
-        Returns:
-            dict: 指数代码到分钟线数据的映射
-        """
-        try:
-            if not self._ensure_baostock_login():
-                logger.warning("Baostock登录失败，无法获取指数分钟线数据")
-                return
-            
-            if not ts_codes:
-                ts_codes = self._get_default_codes('index')
-            
-            if not ts_codes:
-                logger.warning("没有需要下载的指数代码")
-                return
-            
-            # 验证分钟线频率
-            frequency = self._validate_frequency(frequency)
-            
-            # 处理日期参数
-            start_date, end_date = self._process_dates(start_date, end_date, default_days=3)
-            
-            logger.info(f"开始下载{len(ts_codes)}个指数的{frequency}分钟线数据，时间范围: {start_date} 至 {end_date}")
-            
-            # 存储结果
-            result = {}
-            
-            # 遍历指数代码，获取分钟线数据
-            for ts_code in ts_codes:
-                try:
-                    logger.info(f"正在下载{ts_code}的{frequency}分钟线数据")
-                    
-                    # 使用Baostock获取指数分钟线数据
-                    rs = bs.query_history_k_data_plus(
-                        ts_code,
-                        "date,time,code,open,high,low,close,volume,amount",
-                        start_date=start_date,
-                        end_date=end_date,
-                        frequency=frequency,
-                        adjustflag="3"  # 不复权
+
+                    # 批量查重后写入（已存在则更新，不存在则新增）
+                    upsert_rows(
+                        self.session, model, minute_rows,
+                        key_fields=('ts_code', 'trade_date', 'trade_time'),
+                        value_fields=('open', 'high', 'low', 'close', 'vol', 'amount'),
+                        create_defaults={'frequency': frequency},
                     )
-                    
-                    # 获取数据
-                    index_minute_pd = rs.get_data()
-                    
-                    # 转换为Polars DataFrame
-                    index_minute_df = pl.from_pandas(index_minute_pd)
-                    
-                    if index_minute_df.is_empty():
-                        logger.warning(f"{ts_code}在{start_date}至{end_date}期间没有{frequency}分钟线数据")
-                        continue
-                    
-                    logger.info(f"获取到{ts_code}的{index_minute_df.height}条{frequency}分钟线数据")
-                    
-                    # 离线模式下，只获取数据不存储
-                    if not self.session:
-                        result[ts_code] = index_minute_pd
-                        logger.info(f"离线模式下，获取{ts_code}的{frequency}分钟线数据完成")
-                        continue
-                    
-                    # 数据清洗和标准化
-                    from src.database.models.index import IndexMinute
-                    
-                    # 遍历数据，进行清洗和存储
-                    for row in index_minute_df.iter_rows(named=True):
-                        try:
-                            # 转换日期时间格式
-                            trade_date = datetime.strptime(row['date'], "%Y-%m-%d").date()
-                            trade_time = row['time']
-                            
-                            # 查询数据是否已存在
-                            minute_data = self.session.query(IndexMinute).filter_by(
-                                ts_code=ts_code,
-                                trade_date=trade_date,
-                                trade_time=trade_time
-                            ).first()
-                            
-                            # 转换数值类型
-                            open_val = float(row['open']) if row['open'] else 0.0
-                            high_val = float(row['high']) if row['high'] else 0.0
-                            low_val = float(row['low']) if row['low'] else 0.0
-                            close_val = float(row['close']) if row['close'] else 0.0
-                            vol_val = float(row['volume']) if row['volume'] else 0.0
-                            amount_val = float(row['amount']) if row['amount'] else 0.0
-                            
-                            if minute_data:
-                                # 更新现有数据
-                                minute_data.open = open_val
-                                minute_data.high = high_val
-                                minute_data.low = low_val
-                                minute_data.close = close_val
-                                minute_data.vol = vol_val
-                                minute_data.amount = amount_val
-                            else:
-                                # 创建新数据
-                                minute_data = IndexMinute(
-                                    ts_code=ts_code,
-                                    trade_date=trade_date,
-                                    trade_time=trade_time,
-                                    open=open_val,
-                                    high=high_val,
-                                    low=low_val,
-                                    close=close_val,
-                                    vol=vol_val,
-                                    amount=amount_val,
-                                    frequency=frequency
-                                )
-                                self.session.add(minute_data)
-                            
-                        except (ConnectionError, TimeoutError, OSError) as row_e:
-                            logger.exception(f"处理指数分钟线数据失败: {row_e}")
-                            continue
-                    
-                    # 每个指数提交一次事务
+
+                    # 每个标的提交一次事务
                     self.session.commit()
                     logger.info(f"{ts_code}的{frequency}分钟线数据下载完成")
-                    
+
                 except (ConnectionError, TimeoutError, OSError) as e:
                     if self.session:
                         self.session.rollback()
                     logger.exception(f"下载{ts_code}的{frequency}分钟线数据失败: {e}")
                     continue
-            
+
             # 离线模式下返回结果
             if not self.session and result:
                 return result
-            
+
         except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()
-            logger.exception(f"下载指数分钟线数据失败: {e}")
+            logger.exception(f"下载{noun}分钟线数据失败: {e}")
             raise
+
+    def download_stock_minute(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, frequency: str = "5"):
+        """下载股票分钟线数据并入库（写库存原始价）。"""
+        from src.database.models.stock import StockMinute
+        return self._download_minute(
+            StockMinute, 'stock', '股票', self.config.data.default_minute_days,
+            ts_codes, start_date, end_date, frequency)
+
+    def download_index_minute(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, frequency: str = "5"):
+        """下载指数分钟线数据并入库（写库存原始价）。"""
+        from src.database.models.index import IndexMinute
+        return self._download_minute(
+            IndexMinute, 'index', '指数', 3,
+            ts_codes, start_date, end_date, frequency)

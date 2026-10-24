@@ -286,50 +286,36 @@ class AkShareHandler(DataSourceBase):
                     
                     # 数据清洗和标准化
                     from src.database.models.stock import StockDaily
+                    from src.database.upsert import upsert_rows
 
-                    # 遍历数据，进行清洗和存储
+                    # 遍历数据，转换为待写入行（不合格行跳过）
+                    daily_rows = []
                     for row in stock_daily_df.iter_rows(named=True):
                         try:
-                            # 转换日期格式
-                            trade_date = datetime.strptime(row['日期'], "%Y-%m-%d").date()
-                            
-                            # 查询数据是否已存在
-                            daily_data = self.session.query(StockDaily).filter_by(
-                                ts_code=ts_code,
-                                trade_date=trade_date
-                            ).first()
-                            
-                            if daily_data:
-                                # 更新现有数据
-                                daily_data.open = row['开盘']
-                                daily_data.high = row['最高']
-                                daily_data.low = row['最低']
-                                daily_data.close = row['收盘']
-                                daily_data.pre_close = row['昨收']
-                                daily_data.change = row['涨跌额']
-                                daily_data.pct_chg = row['涨跌幅']
-                                daily_data.vol = row['成交量']
-                                daily_data.amount = row['成交额']
-                            else:
-                                # 创建新数据
-                                daily_data = StockDaily(
-                                    ts_code=ts_code,
-                                    trade_date=trade_date,
-                                    open=row['开盘'],
-                                    high=row['最高'],
-                                    low=row['最低'],
-                                    close=row['收盘'],
-                                    pre_close=row['昨收'],
-                                    change=row['涨跌额'],
-                                    pct_chg=row['涨跌幅'],
-                                    vol=row['成交量'],
-                                    amount=row['成交额']
-                                )
-                                self.session.add(daily_data)
-                            
+                            daily_rows.append({
+                                'ts_code': ts_code,
+                                'trade_date': datetime.strptime(row['日期'], "%Y-%m-%d").date(),
+                                'open': row['开盘'],
+                                'high': row['最高'],
+                                'low': row['最低'],
+                                'close': row['收盘'],
+                                'pre_close': row['昨收'],
+                                'change': row['涨跌额'],
+                                'pct_chg': row['涨跌幅'],
+                                'vol': row['成交量'],
+                                'amount': row['成交额'],
+                            })
                         except (ConnectionError, TimeoutError, OSError) as row_e:
                             logger.exception(f"处理股票日线数据失败: {row_e}")
                             continue
+
+                    # 批量查重后写入（已存在则更新，不存在则新增）
+                    upsert_rows(
+                        self.session, StockDaily, daily_rows,
+                        key_fields=('ts_code', 'trade_date'),
+                        value_fields=('open', 'high', 'low', 'close', 'pre_close',
+                                      'change', 'pct_chg', 'vol', 'amount'),
+                    )
                     
                     # 每只股票提交一次事务
                     self.session.commit()
@@ -477,46 +463,37 @@ class AkShareHandler(DataSourceBase):
                     
                     # 数据清洗和标准化
                     from src.database.models.index import IndexDaily
+                    from src.database.upsert import upsert_rows
 
-                    # 遍历数据，进行清洗和存储
+                    # 遍历数据，转换为待写入行（不合格行跳过）
+                    daily_rows = []
                     for row in index_daily_df.iter_rows(named=True):
                         try:
-                            # 转换日期格式
-                            trade_date = datetime.strptime(row['date'], "%Y-%m-%d").date()
-                            
-                            # 查询数据是否已存在
-                            daily_data = self.session.query(IndexDaily).filter_by(
-                                ts_code=ts_code,
-                                trade_date=trade_date
-                            ).first()
-                            
-                            if daily_data:
-                                # 更新现有数据
-                                daily_data.open = row['open']
-                                daily_data.high = row['high']
-                                daily_data.low = row['low']
-                                daily_data.close = row['close']
-                                daily_data.vol = row['volume']
-                            else:
-                                # 创建新数据
-                                daily_data = IndexDaily(
-                                    ts_code=ts_code,
-                                    trade_date=trade_date,
-                                    open=row['open'],
-                                    high=row['high'],
-                                    low=row['low'],
-                                    close=row['close'],
-                                    pre_close=0.0,  # stock_zh_index_daily不提供昨收价
-                                    change=0.0,  # stock_zh_index_daily不提供涨跌额
-                                    pct_chg=0.0,  # stock_zh_index_daily不提供涨跌幅
-                                    vol=row['volume'],
-                                    amount=0.0  # stock_zh_index_daily不提供成交额
-                                )
-                                self.session.add(daily_data)
-                            
+                            daily_rows.append({
+                                'ts_code': ts_code,
+                                'trade_date': datetime.strptime(row['date'], "%Y-%m-%d").date(),
+                                'open': row['open'],
+                                'high': row['high'],
+                                'low': row['low'],
+                                'close': row['close'],
+                                'vol': row['volume'],
+                            })
                         except (ConnectionError, TimeoutError, OSError) as row_e:
                             logger.exception(f"处理指数日线数据失败: {row_e}")
                             continue
+
+                    # 批量查重后写入（已存在则更新，不存在则新增）
+                    upsert_rows(
+                        self.session, IndexDaily, daily_rows,
+                        key_fields=('ts_code', 'trade_date'),
+                        value_fields=('open', 'high', 'low', 'close', 'vol'),
+                        create_defaults={
+                            'pre_close': 0.0,  # stock_zh_index_daily 不提供昨收价
+                            'change': 0.0,  # 不提供涨跌额
+                            'pct_chg': 0.0,  # 不提供涨跌幅
+                            'amount': 0.0,  # 不提供成交额
+                        },
+                    )
                     
                     # 每个指数提交一次事务
                     self.session.commit()
