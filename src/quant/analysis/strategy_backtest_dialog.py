@@ -19,6 +19,7 @@ from src.backtest.engine.backtest_engine import BacktestEngine
 from src.backtest.strategies.trend_following_strategy import TrendFollowingStrategy
 from src.backtest.strategies.mean_reversion_strategy import MeanReversionStrategy
 from src.backtest.strategies.multi_factor_strategy import MultiFactorStrategy
+from src.ui.task_manager import global_task_manager
 import polars as pl
 
 
@@ -32,7 +33,8 @@ class StrategyBacktestDialog(QDialog):
         self.setWindowTitle("策略回测")
         self.setGeometry(100, 100, 800, 600)
         self.setModal(True)
-        
+        self._current_task_id = None
+
         self.init_ui()
         
     def init_ui(self):
@@ -140,93 +142,101 @@ class StrategyBacktestDialog(QDialog):
         
     def run_backtest(self):
         """
-        运行策略回测
+        运行策略回测（主线程入口：仅读取参数 + 派发后台任务）
         """
+        # 在主线程读取 UI 参数
         try:
-            # 获取参数
             strategy_type = self.strategy_combo.currentText()
-            stock_code = self.stock_code_edit.text()
+            stock_code = self.stock_code_edit.text().strip()
             start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
             end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
             initial_capital = float(self.initial_capital_edit.text())
-            
-            # 获取策略参数
             short_ma = int(self.short_ma_edit.text())
             long_ma = int(self.long_ma_edit.text())
             rsi_period = int(self.rsi_period_edit.text())
             rsi_overbought = float(self.rsi_overbought_edit.text())
             rsi_oversold = float(self.rsi_oversold_edit.text())
-            
-            # 显示进度条
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
-            
-            # 从DataManager获取真实股票数据
-            config = get_config()
-            db_manager = DatabaseManager(config)
-            data_manager = DataManager(config, db_manager)
-            
-            self.progress_bar.setValue(20)
-            
-            # 回测必须使用后复权价，消除分红送转对收益计算的干扰
-            data = data_manager.get_stock_data(stock_code, start_date, end_date, adjustment_type='hfq')
-            
-            if data.is_empty():
-                self.result_text.setText(f"无法获取股票 {stock_code} 的数据，请检查股票代码和日期范围")
-                return
-            
-            self.progress_bar.setValue(50)
-            
-            # 根据策略类型实例化策略
-            strategy_map = {
-                "趋势跟踪策略": TrendFollowingStrategy,
-                "均值回归策略": MeanReversionStrategy,
-                "多因子策略": MultiFactorStrategy
-            }
-            strategy_cls = strategy_map.get(strategy_type, TrendFollowingStrategy)
-            strategy = strategy_cls()
-            # 设置策略参数
-            if strategy_type == "趋势跟踪策略":
-                strategy.params['short_window'] = short_ma
-                strategy.params['long_window'] = long_ma
-            elif strategy_type == "均值回归策略":
-                strategy.params['rsi_period'] = rsi_period
-                strategy.params['overbought'] = rsi_overbought
-                strategy.params['oversold'] = rsi_oversold
-            
-            # 创建回测引擎
-            engine = BacktestEngine(data)
-            engine.set_strategy(strategy)
-            
-            # 运行回测
-            result = engine.run_backtest(initial_capital=initial_capital)
-            
-            # 补充展示用字段
-            if result:
-                result['strategy_type'] = strategy_type
-                result['stock_code'] = stock_code
-                result['start_date'] = start_date
-                result['end_date'] = end_date
-                performance = result.get('performance', {})
-                result.setdefault('annual_return', performance.get('annual_return', 0))
-                result.setdefault('sharpe_ratio', performance.get('sharpe_ratio', 0))
-                result.setdefault('max_drawdown', performance.get('max_drawdown', 0))
-                result.setdefault('trade_count', len(result.get('trades', [])) // 2)
-                result.setdefault('win_rate', performance.get('winning_rate', 0))
-                result.setdefault('final_capital', result.get('final_equity', 0))
-            
-            # 显示结果
-            self.display_result(result)
-            
-            # 启用导出按钮
+        except (ValueError, TypeError) as e:
+            self.result_text.setText(f"参数错误: {e}")
+            return
+
+        params = {
+            'strategy_type': strategy_type,
+            'stock_code': stock_code,
+            'start_date': start_date,
+            'end_date': end_date,
+            'initial_capital': initial_capital,
+            'short_ma': short_ma,
+            'long_ma': long_ma,
+            'rsi_period': rsi_period,
+            'rsi_overbought': rsi_overbought,
+            'rsi_oversold': rsi_oversold,
+        }
+
+        # 显示进度条，禁用运行按钮防止重复触发
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.run_button.setEnabled(False)
+        self.export_button.setEnabled(False)
+
+        # 派发后台任务（数据拉取 + 回测执行）
+        task_id = global_task_manager.create_task(
+            f"策略回测: {strategy_type}({stock_code})",
+            _run_backtest_task,
+            (params,),
+        )
+        self._current_task_id = task_id
+
+        # 用 bound method 连接信号：dialog 销毁时 Qt 自动断开
+        global_task_manager.task_progress.connect(self._on_backtest_progress)
+        global_task_manager.task_completed.connect(self._on_backtest_completed)
+        global_task_manager.task_error.connect(self._on_backtest_error)
+
+    def _disconnect_task_signals(self):
+        """断开当前 dialog 与全局任务信号的连接。"""
+        for sig, slot in (
+            (global_task_manager.task_progress, self._on_backtest_progress),
+            (global_task_manager.task_completed, self._on_backtest_completed),
+            (global_task_manager.task_error, self._on_backtest_error),
+        ):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+
+    def _reset_running_state(self):
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setValue(0)
+        self.run_button.setEnabled(True)
+        self._current_task_id = None
+
+    def _on_backtest_progress(self, task_id, current, total):
+        if task_id != self._current_task_id:
+            return
+        self.progress_bar.setValue(current)
+
+    def _on_backtest_completed(self, task_id, payload):
+        if task_id != self._current_task_id:
+            return
+        self._disconnect_task_signals()
+        self._reset_running_state()
+
+        if not isinstance(payload, dict):
+            self.result_text.setText("回测失败: 无效返回")
+            return
+
+        if payload.get("success"):
+            self.display_result(payload.get("result"))
             self.export_button.setEnabled(True)
-            
-        except Exception as e:
-            logger.error(f"回测失败: {e}")
-            self.result_text.setText(f"回测失败: {str(e)}")
-        finally:
-            self.progress_bar.setVisible(False)
-            self.progress_bar.setValue(0)
+        else:
+            self.result_text.setText(payload.get("message", "回测失败"))
+
+    def _on_backtest_error(self, task_id, error_message):
+        if task_id != self._current_task_id:
+            return
+        self._disconnect_task_signals()
+        self._reset_running_state()
+        self.result_text.setText(f"回测失败: {error_message}")
     
     def display_result(self, result):
         """
@@ -260,12 +270,89 @@ class StrategyBacktestDialog(QDialog):
         try:
             # 这里可以实现报告导出逻辑
             from src.quant.reports.report_generator import ReportGenerator
-            
+
             # 获取回测结果（这里需要从result_text中解析，实际应该从回测引擎获取）
             report_generator = ReportGenerator()
             report_generator.generate_backtest_report({})
-            
+
             self.result_text.append("\n报告导出成功！")
         except Exception as e:
             logger.error(f"导出报告失败: {e}")
             self.result_text.append(f"\n导出报告失败: {str(e)}")
+
+
+def _run_backtest_task(params, task_id=None, signals=None):
+    """后台任务：拉取数据并运行回测。
+
+    在 QThreadPool 工作线程中执行，禁止操作任何 UI 控件；
+    进度通过 signals.progress 上报，结果通过返回值交给主线程回调展示。
+    """
+    def _emit(p):
+        if signals is not None:
+            signals.progress.emit(task_id, int(p), 100)
+
+    try:
+        _emit(5)
+        config = get_config()
+        db_manager = DatabaseManager(config)
+        data_manager = DataManager(config, db_manager)
+        _emit(15)
+
+        # 回测必须使用后复权价，消除分红送转对收益计算的干扰
+        data = data_manager.get_stock_data(
+            params['stock_code'],
+            params['start_date'],
+            params['end_date'],
+            adjustment_type='hfq',
+        )
+
+        if data is None or data.is_empty():
+            return {
+                "success": False,
+                "message": f"无法获取股票 {params['stock_code']} 的数据，请检查股票代码和日期范围",
+            }
+
+        _emit(40)
+
+        # 根据策略类型实例化策略
+        strategy_map = {
+            "趋势跟踪策略": TrendFollowingStrategy,
+            "均值回归策略": MeanReversionStrategy,
+            "多因子策略": MultiFactorStrategy,
+        }
+        strategy_cls = strategy_map.get(params['strategy_type'], TrendFollowingStrategy)
+        strategy = strategy_cls()
+        if params['strategy_type'] == "趋势跟踪策略":
+            strategy.params['short_window'] = params['short_ma']
+            strategy.params['long_window'] = params['long_ma']
+        elif params['strategy_type'] == "均值回归策略":
+            strategy.params['rsi_period'] = params['rsi_period']
+            strategy.params['overbought'] = params['rsi_overbought']
+            strategy.params['oversold'] = params['rsi_oversold']
+
+        engine = BacktestEngine(data)
+        engine.set_strategy(strategy)
+
+        _emit(50)
+        result = engine.run_backtest(initial_capital=params['initial_capital'])
+        _emit(90)
+
+        # 补充展示用字段
+        if result:
+            result['strategy_type'] = params['strategy_type']
+            result['stock_code'] = params['stock_code']
+            result['start_date'] = params['start_date']
+            result['end_date'] = params['end_date']
+            performance = result.get('performance', {})
+            result.setdefault('annual_return', performance.get('annual_return', 0))
+            result.setdefault('sharpe_ratio', performance.get('sharpe_ratio', 0))
+            result.setdefault('max_drawdown', performance.get('max_drawdown', 0))
+            result.setdefault('trade_count', len(result.get('trades', [])) // 2)
+            result.setdefault('win_rate', performance.get('winning_rate', 0))
+            result.setdefault('final_capital', result.get('final_equity', 0))
+
+        _emit(100)
+        return {"success": True, "result": result}
+    except Exception as e:
+        logger.exception(f"回测失败: {e}")
+        return {"success": False, "message": f"回测失败: {str(e)}"}

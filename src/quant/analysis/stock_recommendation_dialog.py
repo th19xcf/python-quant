@@ -17,6 +17,7 @@ from src.utils.config import get_config
 from src.database.db_manager import DatabaseManager
 from src.data.data_manager import DataManager
 from src.recommendation.stock_recommender import StockRecommender
+from src.ui.task_manager import global_task_manager
 import polars as pl
 
 
@@ -30,7 +31,8 @@ class StockRecommendationDialog(QDialog):
         self.setWindowTitle("股票推荐")
         self.setGeometry(100, 100, 900, 600)
         self.setModal(True)
-        
+        self._current_task_id = None
+
         self.init_ui()
         
     def init_ui(self):
@@ -168,125 +170,104 @@ class StockRecommendationDialog(QDialog):
         
     def generate_recommendation(self):
         """
-        生成股票推荐
+        生成股票推荐（主线程入口：仅读取参数 + 派发后台任务）
         """
+        # 在主线程读取 UI 参数
         try:
-            # 获取参数
             algorithm = self.algorithm_combo.currentText()
             stock_count = int(self.stock_count_edit.text())
             period = self.period_combo.currentText()
             industry = self.industry_combo.currentText()
-            
-            # 获取因子权重
             weights = {
                 'momentum': float(self.momentum_weight_edit.text()),
                 'value': float(self.value_weight_edit.text()),
                 'growth': float(self.growth_weight_edit.text()),
                 'quality': float(self.quality_weight_edit.text()),
-                'volatility': float(self.volatility_weight_edit.text())
+                'volatility': float(self.volatility_weight_edit.text()),
             }
-            
-            # 显示进度条
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(0)
-            
-            # 从DataManager获取真实股票数据
-            config = get_config()
-            db_manager = DatabaseManager(config)
-            data_manager = DataManager(config, db_manager)
-            
-            self.progress_bar.setValue(10)
-            
-            # 获取股票基本信息
-            stock_basic = data_manager.get_stock_basic()
-            if stock_basic.is_empty():
-                self.result_table.setRowCount(1)
-                self.result_table.setItem(0, 0, QTableWidgetItem("无法获取股票列表"))
-                return
-            
-            # 注意：这里直接取 get_stock_basic 返回的前 N*3 只股票；
-            # 若数据库未过滤 status='D' 退市股，可能出现幸存者偏差（退市/ST 被踢出评分样本，
-            # 回测历史收益会系统性偏高）。彻底修复需：
-            # ① DatabaseManager 层加 WHERE status='L'；或
-            # ② 调用 DatabaseManager.list_stock_codes(include_delisted=False) 显式排除
-            # 当前作为已知遗留留待后续处理。
-            stock_codes = stock_basic['ts_code'].to_list()[:stock_count * 3]
-            
-            self.progress_bar.setValue(20)
-            
-            # 获取多只股票的日线数据
-            stocks_data_list = []
-            for i, stock_code in enumerate(stock_codes):
-                try:
-                    # 推荐场景同样使用后复权价，保证收益率计算正确
-                    df = data_manager.get_stock_data(stock_code, "2024-01-01", "2024-12-31", adjustment_type='hfq')
-                    if not df.is_empty() and len(df) >= 20:
-                        stock_info = stock_basic.filter(pl.col('ts_code') == stock_code)
-                        stock_name = stock_info['name'].to_list()[0] if not stock_info.is_empty() else f'股票{stock_code}'
-                        industry_name = stock_info.get_column('industry').to_list()[0] if 'industry' in stock_info.columns else '未知'
-                        df = df.with_columns([
-                            pl.lit(stock_code).alias('stock_code'),
-                            pl.lit(stock_name).alias('stock_name'),
-                            pl.lit(industry_name).alias('industry')
-                        ])
-                        stocks_data_list.append(df)
-                except Exception as e:
-                    logger.warning(f"获取股票 {stock_code} 数据失败: {e}")
-                
-                progress = 20 + int((i + 1) / len(stock_codes) * 40)
-                self.progress_bar.setValue(progress)
-            
-            if not stocks_data_list:
-                self.result_table.setRowCount(1)
-                self.result_table.setItem(0, 0, QTableWidgetItem("无法获取任何股票数据"))
-                return
-            
-            stocks_data = pl.concat(stocks_data_list)
-            
-            self.progress_bar.setValue(70)
-            
-            # 创建推荐引擎
-            recommender = StockRecommender()
-            
-            # 生成推荐（适配新接口）
-            recommendations = recommender.recommend_stocks(
-                stocks_data, 
-                top_n=stock_count,
-                algorithm=algorithm,
-                industry=industry,
-                weights=weights
-            )
-            
-            self.progress_bar.setValue(90)
-            
-            # 适配展示字段
-            for rec in recommendations:
-                rec.setdefault('code', rec.get('stock_code', ''))
-                rec.setdefault('name', rec.get('stock_name', ''))
-                rec.setdefault('expected_return', rec.get('expected_return', rec.get('score', 0) * 100))
-                rec.setdefault('risk', rec.get('risk_level', '中'))
-            
-            # 显示结果
-            self.display_result(recommendations)
-            
-            # 启用导出按钮
+        except (ValueError, TypeError) as e:
+            self._show_error_message(f"参数错误: {e}")
+            return
+
+        params = {
+            'algorithm': algorithm,
+            'stock_count': stock_count,
+            'period': period,
+            'industry': industry,
+            'weights': weights,
+        }
+
+        # 显示进度条，禁用运行按钮防止重复触发
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.run_button.setEnabled(False)
+        self.export_button.setEnabled(False)
+
+        # 派发后台任务
+        task_id = global_task_manager.create_task(
+            f"生成股票推荐: {algorithm}",
+            _run_recommendation_task,
+            (params,),
+        )
+        self._current_task_id = task_id
+
+        # 用 bound method 连接信号：dialog 销毁时 Qt 自动断开
+        global_task_manager.task_progress.connect(self._on_recommend_progress)
+        global_task_manager.task_completed.connect(self._on_recommend_completed)
+        global_task_manager.task_error.connect(self._on_recommend_error)
+
+    def _disconnect_task_signals(self):
+        """断开当前 dialog 与全局任务信号的连接。"""
+        for sig, slot in (
+            (global_task_manager.task_progress, self._on_recommend_progress),
+            (global_task_manager.task_completed, self._on_recommend_completed),
+            (global_task_manager.task_error, self._on_recommend_error),
+        ):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+
+    def _reset_running_state(self):
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setValue(0)
+        self.run_button.setEnabled(True)
+        self._current_task_id = None
+
+    def _show_error_message(self, message):
+        """在结果表格中显示一行错误信息。"""
+        self.result_table.setRowCount(0)
+        self.result_table.setRowCount(1)
+        self.result_table.setItem(0, 0, QTableWidgetItem("错误"))
+        self.result_table.setItem(0, 1, QTableWidgetItem(str(message)))
+
+    def _on_recommend_progress(self, task_id, current, total):
+        if task_id != self._current_task_id:
+            return
+        self.progress_bar.setValue(current)
+
+    def _on_recommend_completed(self, task_id, payload):
+        if task_id != self._current_task_id:
+            return
+        self._disconnect_task_signals()
+        self._reset_running_state()
+
+        if not isinstance(payload, dict):
+            self._show_error_message("无效返回")
+            return
+
+        if payload.get("success"):
+            self.display_result(payload.get("recommendations") or [])
             self.export_button.setEnabled(True)
-            
-        except Exception as e:
-            logger.error(f"生成推荐失败: {e}")
-            # 清空表格并显示错误信息
-            # 手动释放QTableWidgetItem对象
-            for row in range(self.result_table.rowCount()):
-                for col in range(self.result_table.columnCount()):
-                    item = self.result_table.takeItem(row, col)
-                    if item:
-                        del item
-            self.result_table.setRowCount(1)
-            self.result_table.setItem(0, 0, QTableWidgetItem("错误"))
-            self.result_table.setItem(0, 1, QTableWidgetItem(str(e)))
-        finally:
-            self.progress_bar.setVisible(False)
-            self.progress_bar.setValue(0)
+        else:
+            self._show_error_message(payload.get("message", "生成推荐失败"))
+
+    def _on_recommend_error(self, task_id, error_message):
+        if task_id != self._current_task_id:
+            return
+        self._disconnect_task_signals()
+        self._reset_running_state()
+        self._show_error_message(error_message)
     
     def display_result(self, recommendations):
         """
@@ -345,11 +326,11 @@ class StockRecommendationDialog(QDialog):
         try:
             # 这里可以实现报告导出逻辑
             from src.quant.reports.report_generator import ReportGenerator
-            
+
             # 获取推荐结果（这里需要从表格中解析，实际应该从推荐引擎获取）
             report_generator = ReportGenerator()
             report_generator.generate_recommendation_report({})
-            
+
             # 显示导出成功信息
             self.result_table.setRowCount(self.result_table.rowCount() + 1)
             self.result_table.setItem(self.result_table.rowCount() - 1, 0, QTableWidgetItem("报告导出成功！"))
@@ -358,3 +339,103 @@ class StockRecommendationDialog(QDialog):
             # 显示错误信息
             self.result_table.setRowCount(self.result_table.rowCount() + 1)
             self.result_table.setItem(self.result_table.rowCount() - 1, 0, QTableWidgetItem(f"导出报告失败: {str(e)}"))
+
+
+def _run_recommendation_task(params, task_id=None, signals=None):
+    """后台任务：批量拉取股票数据并生成推荐。
+
+    在 QThreadPool 工作线程中执行，禁止操作任何 UI 控件；
+    进度通过 signals.progress 上报，结果通过返回值交给主线程回调展示。
+    """
+    def _emit(p):
+        if signals is not None:
+            signals.progress.emit(task_id, int(p), 100)
+
+    try:
+        _emit(5)
+        config = get_config()
+        db_manager = DatabaseManager(config)
+        data_manager = DataManager(config, db_manager)
+
+        _emit(10)
+
+        stock_basic = data_manager.get_stock_basic()
+        if stock_basic is None or stock_basic.is_empty():
+            return {"success": False, "message": "无法获取股票列表"}
+
+        # 注意：这里直接取 get_stock_basic 返回的前 N*3 只股票；
+        # 若数据库未过滤 status='D' 退市股，可能出现幸存者偏差（退市/ST 被踢出评分样本，
+        # 回测历史收益会系统性偏高）。彻底修复需：
+        # ① DatabaseManager 层加 WHERE status='L'；或
+        # ② 调用 DatabaseManager.list_stock_codes(include_delisted=False) 显式排除
+        # 当前作为已知遗留留待后续处理。
+        stock_count = params['stock_count']
+        stock_codes = stock_basic['ts_code'].to_list()[:stock_count * 3]
+
+        _emit(20)
+
+        stocks_data_list = []
+        total = len(stock_codes)
+        for i, stock_code in enumerate(stock_codes):
+            try:
+                # 推荐场景同样使用后复权价，保证收益率计算正确
+                df = data_manager.get_stock_data(
+                    stock_code, "2024-01-01", "2024-12-31", adjustment_type='hfq'
+                )
+                if not df.is_empty() and len(df) >= 20:
+                    stock_info = stock_basic.filter(pl.col('ts_code') == stock_code)
+                    stock_name = (
+                        stock_info['name'].to_list()[0]
+                        if not stock_info.is_empty()
+                        else f'股票{stock_code}'
+                    )
+                    industry_name = (
+                        stock_info.get_column('industry').to_list()[0]
+                        if 'industry' in stock_info.columns
+                        else '未知'
+                    )
+                    df = df.with_columns([
+                        pl.lit(stock_code).alias('stock_code'),
+                        pl.lit(stock_name).alias('stock_name'),
+                        pl.lit(industry_name).alias('industry'),
+                    ])
+                    stocks_data_list.append(df)
+            except Exception as e:
+                logger.warning(f"获取股票 {stock_code} 数据失败: {e}")
+
+            if total > 0:
+                _emit(20 + (i + 1) / total * 40)
+
+        if not stocks_data_list:
+            return {"success": False, "message": "无法获取任何股票数据"}
+
+        stocks_data = pl.concat(stocks_data_list)
+
+        _emit(70)
+
+        recommender = StockRecommender()
+        recommendations = recommender.recommend_stocks(
+            stocks_data,
+            top_n=stock_count,
+            algorithm=params['algorithm'],
+            industry=params['industry'],
+            weights=params['weights'],
+        )
+
+        _emit(90)
+
+        # 适配展示字段
+        for rec in recommendations:
+            rec.setdefault('code', rec.get('stock_code', ''))
+            rec.setdefault('name', rec.get('stock_name', ''))
+            rec.setdefault(
+                'expected_return',
+                rec.get('expected_return', rec.get('score', 0) * 100),
+            )
+            rec.setdefault('risk', rec.get('risk_level', '中'))
+
+        _emit(100)
+        return {"success": True, "recommendations": recommendations}
+    except Exception as e:
+        logger.exception(f"生成推荐失败: {e}")
+        return {"success": False, "message": f"生成推荐失败: {str(e)}"}
