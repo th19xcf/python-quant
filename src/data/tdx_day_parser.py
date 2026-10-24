@@ -8,15 +8,27 @@
 避免同一套 32 字节定长记录解析逻辑在多处重复。
 """
 
-import struct
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
+import numpy as np
+import pandas as pd
 import polars as pl
 
 RECORD_SIZE = 32
+
+# 32 字节定长记录的 numpy 结构化布局（与真实 .day 文件逐字段一致）
+_DAY_DTYPE = np.dtype([
+    ('date', '<u4'),      # YYYYMMDD
+    ('open', '<u4'),      # 价格 × 100
+    ('high', '<u4'),      # 价格 × 100
+    ('low', '<u4'),       # 价格 × 100
+    ('close', '<u4'),     # 价格 × 100
+    ('amount', '<f4'),    # 成交额（元）
+    ('volume', '<u4'),    # 成交量（个股/基金=股，指数=手）
+    ('reserved', '<u4'),
+])
 
 
 def is_index_file(file_path) -> bool:
@@ -82,31 +94,35 @@ def build_day_file_path(tdx_data_path, market: str, code: str) -> Path:
     return Path(tdx_data_path) / market / 'lday' / f'{market}{code}.day'
 
 
-def _decode_record(record: bytes, volume_in_hand: bool = False) -> Dict:
-    """
-    解析单条 32 字节日线记录。
+def _load_content(path: Path, count: Optional[int]) -> bytes:
+    """定位并读入末尾 count 条记录的原始字节（count=None 表示全部）。"""
+    record_count = path.stat().st_size // RECORD_SIZE
+    start = 0 if count is None else max(0, record_count - count)
+    with open(path, 'rb') as f:
+        f.seek(start * RECORD_SIZE)
+        return f.read()
 
-    字段布局（经真实 .day 文件校验）：
-        0-4   date     uint32   YYYYMMDD
-        4-8   open     uint32   价格 × 100
-        8-12  high     uint32   价格 × 100
-        12-16 low      uint32   价格 × 100
-        16-20 close    uint32   价格 × 100
-        20-24 amount   float32  成交额（元）
-        24-28 volume   uint32   成交量（个股=股，指数=手）
-        28-32 reserved
 
-    输出统一为：成交额（元）、成交量（手）。
+def _decode_records(content: bytes, volume_in_hand: bool) -> Dict[str, Any]:
     """
-    raw_volume = struct.unpack('<I', record[24:28])[0]
+    向量化解码整段 32 字节定长记录。
+
+    与旧版逐记录 struct.unpack + strptime 的输出语义完全一致：
+    日期为 datetime.date、价格除以 100、成交额为 float32 原值宽化到 float64、
+    成交量个股/基金除以 100（股→手）、指数原样（手）。
+    """
+    arr = np.frombuffer(content, dtype=_DAY_DTYPE)
+    # pd.to_datetime 定格式走 C 层解析，校验规则与 strptime 一致
+    dates = pd.to_datetime(arr['date'].astype(str), format='%Y%m%d').date
+    volume = arr['volume'].astype(np.int64) if volume_in_hand else arr['volume'] / 100.0
     return {
-        'date': datetime.strptime(str(struct.unpack('<I', record[0:4])[0]), '%Y%m%d').date(),
-        'open': struct.unpack('<I', record[4:8])[0] / 100,
-        'high': struct.unpack('<I', record[8:12])[0] / 100,
-        'low': struct.unpack('<I', record[12:16])[0] / 100,
-        'close': struct.unpack('<I', record[16:20])[0] / 100,
-        'volume': raw_volume if volume_in_hand else raw_volume / 100,
-        'amount': struct.unpack('<f', record[20:24])[0],
+        'date': dates,
+        'open': arr['open'] / 100.0,
+        'high': arr['high'] / 100.0,
+        'low': arr['low'] / 100.0,
+        'close': arr['close'] / 100.0,
+        'volume': volume,
+        'amount': arr['amount'].astype(np.float64),
     }
 
 
@@ -132,15 +148,10 @@ def read_recent_records(file_path, count: Optional[int] = None,
     if volume_in_hand is None:
         volume_in_hand = is_index_file(path)
 
-    start = 0 if count is None else max(0, record_count - count)
-    with open(path, 'rb') as f:
-        f.seek(start * RECORD_SIZE)
-        content = f.read()
-
-    return [
-        _decode_record(content[i * RECORD_SIZE:(i + 1) * RECORD_SIZE], volume_in_hand)
-        for i in range(len(content) // RECORD_SIZE)
-    ]
+    content = _load_content(path, count)
+    cols = _decode_records(content, volume_in_hand)
+    keys = tuple(cols.keys())
+    return [dict(zip(keys, row)) for row in zip(*(cols[k] for k in keys))]
 
 
 def parse_day_file(file_path, max_days: Optional[int] = None) -> pl.DataFrame:
@@ -154,8 +165,22 @@ def parse_day_file(file_path, max_days: Optional[int] = None) -> pl.DataFrame:
     Returns:
         polars.DataFrame: date/open/high/low/close/volume（手）/amount（元）
     """
-    records = read_recent_records(file_path, max_days)
-    return pl.DataFrame(records) if records else pl.DataFrame()
+    path = Path(file_path)
+    record_count = path.stat().st_size // RECORD_SIZE
+    if record_count == 0:
+        return pl.DataFrame()
+
+    # 批量解析：numpy frombuffer 一次解码，直接按列构建 DataFrame，避免逐记录建字典
+    cols = _decode_records(_load_content(path, max_days), is_index_file(path))
+    return pl.DataFrame({
+        'date': cols['date'].tolist(),
+        'open': cols['open'],
+        'high': cols['high'],
+        'low': cols['low'],
+        'close': cols['close'],
+        'volume': cols['volume'],
+        'amount': cols['amount'],
+    })
 
 
 def read_latest_quote(file_path) -> Optional[QuoteSnapshot]:
