@@ -12,6 +12,9 @@ from src.utils.logger import logger
 from src.utils.config import get_config
 from src.database.db_manager import DatabaseManager
 from src.data.data_manager import DataManager
+from src.tech_analysis.indicators.formulas import (
+    atr_expr, kdj_exprs, macd_exprs, rsi_expr,
+)
 
 
 class FactorAnalyzer:
@@ -33,7 +36,8 @@ class FactorAnalyzer:
             self._data_manager = DataManager(config, db_manager)
         return self._data_manager
     
-    def run_analysis(self, stock_code, start_date, end_date, factors, analysis_type, window):
+    def run_analysis(self, stock_code, start_date, end_date, factors, analysis_type, window,
+                     kdj_window=14):
         """
         运行因子分析
         
@@ -44,6 +48,7 @@ class FactorAnalyzer:
             factors: 因子列表
             analysis_type: 分析类型
             window: 滚动窗口
+            kdj_window: KDJ 的 RSV 周期（默认 14，与图表一致）
             
         Returns:
             dict: 分析结果
@@ -58,7 +63,7 @@ class FactorAnalyzer:
                 raise ValueError(f'股票 {stock_code} 在 {start_date}~{end_date} 无可用行情数据')
 
             # 计算因子
-            data = self._calculate_factors(data, factors)
+            data = self._calculate_factors(data, factors, kdj_window=kdj_window)
             
             # 根据分析类型运行分析
             if analysis_type == "因子有效性检验":
@@ -85,41 +90,31 @@ class FactorAnalyzer:
             logger.error(f"分析失败: {e}")
             raise
     
-    def _calculate_factors(self, data, factors):
+    def _calculate_factors(self, data, factors, kdj_window=14):
         """
         计算因子
         
         Args:
             data: 股票数据
             factors: 因子列表
+            kdj_window: KDJ 的 RSV 周期（默认 14，与图表一致）
             
         Returns:
             pl.DataFrame: 包含因子的数据
         """
         # 计算各种因子
         if 'MACD' in factors:
-            # 计算MACD
-            ema12 = data['close'].ewm_mean(span=12)
-            ema26 = data['close'].ewm_mean(span=26)
-            macd = ema12 - ema26
-            signal = macd.ewm_mean(span=9)
-            histogram = macd - signal
+            # MACD 走共享公式层（标准 EMA 口径）
+            macd = macd_exprs('close', 12, 26, 9)
             data = data.with_columns([
-                macd.alias('macd'),
-                signal.alias('macd_signal'),
-                histogram.alias('macd_hist')
+                macd['macd'].alias('macd'),
+                macd['signal'].alias('macd_signal'),
+                macd['hist'].alias('macd_hist')
             ])
         
         if 'RSI' in factors:
-            # 计算RSI：用Polars表达式替代已移除的Series.apply
-            delta = pl.col('close').diff()
-            gain = pl.when(delta > 0).then(delta).otherwise(0.0)
-            loss = pl.when(delta < 0).then(-delta).otherwise(0.0)
-            avg_gain = gain.rolling_mean(window_size=14)
-            avg_loss = loss.rolling_mean(window_size=14)
-            rs = avg_gain / (avg_loss + 1e-10)
-            rsi = 100 - (100 / (1 + rs))
-            data = data.with_columns([rsi.alias('rsi')])
+            # RSI 走共享公式层（Wilder 标准口径）
+            data = data.with_columns([rsi_expr('close', 14).alias('rsi')])
         
         if 'BOLL' in factors:
             # 计算布林带
@@ -134,17 +129,12 @@ class FactorAnalyzer:
             ])
         
         if 'KDJ' in factors:
-            # 计算KDJ
-            low = data['low'].rolling_min(window_size=9)
-            high = data['high'].rolling_max(window_size=9)
-            rsv = (data['close'] - low) / (high - low + 1e-10) * 100
-            k = rsv.ewm_mean(span=3)
-            d = k.ewm_mean(span=3)
-            j = 3 * k - 2 * d
+            # KDJ 走共享公式层（RSV 含当日 + SMA(3,1) 递推），周期可配置
+            kdj = kdj_exprs('high', 'low', 'close', window=kdj_window)
             data = data.with_columns([
-                k.alias('kdj_k'),
-                d.alias('kdj_d'),
-                j.alias('kdj_j')
+                kdj['k'].alias('kdj_k'),
+                kdj['d'].alias('kdj_d'),
+                kdj['j'].alias('kdj_j')
             ])
         
         if 'MA' in factors:
@@ -157,14 +147,8 @@ class FactorAnalyzer:
             ])
         
         if 'ATR' in factors:
-            # 计算ATR
-            tr1 = data['high'] - data['low']
-            tr2 = abs(data['high'] - data['close'].shift(1))
-            tr3 = abs(data['low'] - data['close'].shift(1))
-            # 使用Polars的max方法计算最大值
-            tr = pl.max_horizontal([tr1, tr2, tr3])
-            atr = tr.rolling_mean(window_size=14)
-            data = data.with_columns([atr.alias('atr')])
+            # ATR 走共享公式层（TR 三值取最大后 Wilder 平滑）
+            data = data.with_columns([atr_expr('high', 'low', 'close', 14).alias('atr')])
         
         if 'WR' in factors:
             # 计算威廉指标

@@ -145,6 +145,11 @@ class FactorAnalysisDialog(QDialog):
         self.window_edit = QLineEdit("20")
         analysis_layout.addWidget(self.window_edit, 1, 1)
         
+        # KDJ 周期
+        analysis_layout.addWidget(QLabel("KDJ周期:"), 2, 0)
+        self.kdj_window_edit = QLineEdit("14")
+        analysis_layout.addWidget(self.kdj_window_edit, 2, 1)
+        
         analysis_group.setLayout(analysis_layout)
         main_layout.addWidget(analysis_group)
         
@@ -193,6 +198,7 @@ class FactorAnalysisDialog(QDialog):
             end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
             analysis_type = self.analysis_combo.currentText()
             window = int(self.window_edit.text())
+            kdj_window = int(self.kdj_window_edit.text())
             
             # 获取选中的因子
             selected_factors = []
@@ -224,7 +230,8 @@ class FactorAnalysisDialog(QDialog):
                 end_date=end_date,
                 factors=selected_factors,
                 analysis_type=analysis_type,
-                window=window
+                window=window,
+                kdj_window=kdj_window
             )
             
             # 显示结果

@@ -15,7 +15,9 @@ import polars as pl
 from src.backtest.engine.backtest_engine import BacktestEngine
 from src.tech_analysis.gpu_acceleration import GPUAccelerator
 from src.tech_analysis.indicator_calculator import calculate_multiple_indicators_polars
-from src.tech_analysis.indicators.formulas import macd_exprs, rsi_expr
+from src.tech_analysis.indicators.formulas import (
+    atr_expr, kdj_exprs, macd_exprs, rsi_expr,
+)
 from src.alpha.factors.price_momentum import PriceMomentumFactors
 
 
@@ -207,3 +209,62 @@ def test_alpha_kdj_matches_chart():
             atol=1e-3,
             name=f'technical_{factor_col}',
         )
+
+
+def test_factor_analyzer_uses_shared_formulas():
+    """因子分析器的 MACD/RSI/KDJ/ATR 应直接复用共享公式层"""
+    from src.quant.analysis.factor_analyzer import FactorAnalyzer
+
+    df = _make_ohlcv()
+    result = FactorAnalyzer()._calculate_factors(
+        df, ['MACD', 'RSI', 'KDJ', 'ATR']
+    )
+
+    macd = macd_exprs('close', 12, 26, 9)
+    kdj = kdj_exprs('high', 'low', 'close', window=14)
+    expected = df.with_columns([
+        macd['macd'].alias('macd'),
+        macd['signal'].alias('macd_signal'),
+        macd['hist'].alias('macd_hist'),
+        rsi_expr('close', 14).alias('rsi'),
+        kdj['k'].alias('kdj_k'),
+        kdj['d'].alias('kdj_d'),
+        kdj['j'].alias('kdj_j'),
+        atr_expr('high', 'low', 'close', 14).alias('atr'),
+    ])
+
+    # 早期行存在 null（Wilder 种子未就位），用哨兵值参与比较
+    for col in ('macd', 'macd_signal', 'macd_hist', 'rsi', 'kdj_k', 'kdj_d', 'kdj_j', 'atr'):
+        _assert_close(
+            result[col].fill_null(-999.0).to_numpy(),
+            expected[col].fill_null(-999.0).to_numpy(),
+            rtol=1e-4,
+            atol=1e-6,
+            name=f'factor_analyzer_{col}',
+        )
+
+
+def test_factor_analyzer_kdj_window_is_configurable():
+    """因子分析器的 KDJ 周期应可通过 kdj_window 调整"""
+    from src.quant.analysis.factor_analyzer import FactorAnalyzer
+
+    df = _make_ohlcv()
+    analyzer = FactorAnalyzer()
+
+    default = analyzer._calculate_factors(df, ['KDJ'])
+    custom = analyzer._calculate_factors(df, ['KDJ'], kdj_window=9)
+
+    expected = df.with_columns(
+        kdj_exprs('high', 'low', 'close', window=9)['k'].alias('kdj_k')
+    )
+
+    _assert_close(
+        custom['kdj_k'].to_numpy(),
+        expected['kdj_k'].to_numpy(),
+        rtol=1e-4,
+        atol=1e-6,
+        name='factor_analyzer_kdj_window_9',
+    )
+    assert not np.allclose(
+        default['kdj_k'].to_numpy(), custom['kdj_k'].to_numpy()
+    ), '周期不同时 KDJ 取值应不同'
