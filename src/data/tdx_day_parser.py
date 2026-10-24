@@ -19,6 +19,22 @@ import polars as pl
 RECORD_SIZE = 32
 
 
+def is_index_file(file_path) -> bool:
+    """
+    按文件名判断是否为指数 .day 文件。
+
+    通达信指数代码规则：sh000xxx（上证系列）、sz399xxx（深证系列）。
+    指数记录的成交量字段单位为「手」，个股/基金为「股」，
+    两者共用 lday 目录与 32 字节布局，必须区分处理。
+    """
+    name = Path(file_path).stem.lower()
+    if name.startswith('sh'):
+        return name[2:].startswith('000')
+    if name.startswith('sz'):
+        return name[2:].startswith('399')
+    return False
+
+
 @dataclass(frozen=True)
 class QuoteSnapshot:
     """最新一根日线行情快照（价格为元，成交量为手，成交额为元）。"""
@@ -66,7 +82,7 @@ def build_day_file_path(tdx_data_path, market: str, code: str) -> Path:
     return Path(tdx_data_path) / market / 'lday' / f'{market}{code}.day'
 
 
-def _decode_record(record: bytes) -> Dict:
+def _decode_record(record: bytes, volume_in_hand: bool = False) -> Dict:
     """
     解析单条 32 字节日线记录。
 
@@ -77,29 +93,33 @@ def _decode_record(record: bytes) -> Dict:
         12-16 low      uint32   价格 × 100
         16-20 close    uint32   价格 × 100
         20-24 amount   float32  成交额（元）
-        24-28 volume   uint32   成交量（股）
+        24-28 volume   uint32   成交量（个股=股，指数=手）
         28-32 reserved
 
-    输出统一为：成交额（元）、成交量（手，即股 / 100）。
+    输出统一为：成交额（元）、成交量（手）。
     """
+    raw_volume = struct.unpack('<I', record[24:28])[0]
     return {
         'date': datetime.strptime(str(struct.unpack('<I', record[0:4])[0]), '%Y%m%d').date(),
         'open': struct.unpack('<I', record[4:8])[0] / 100,
         'high': struct.unpack('<I', record[8:12])[0] / 100,
         'low': struct.unpack('<I', record[12:16])[0] / 100,
         'close': struct.unpack('<I', record[16:20])[0] / 100,
-        'volume': struct.unpack('<I', record[24:28])[0] / 100,
+        'volume': raw_volume if volume_in_hand else raw_volume / 100,
         'amount': struct.unpack('<f', record[20:24])[0],
     }
 
 
-def read_recent_records(file_path, count: Optional[int] = None) -> List[Dict]:
+def read_recent_records(file_path, count: Optional[int] = None,
+                        volume_in_hand: Optional[bool] = None) -> List[Dict]:
     """
     读取文件末尾的若干条日线记录。
 
     Args:
         file_path: .day 文件路径
         count: 读取最近 count 条；None 表示全部
+        volume_in_hand: 成交量字段是否以手为单位；
+            None 时按文件名自动判断（sh000*/sz399* 指数为手，其余为股）
 
     Returns:
         list: 按时间升序排列的记录字典列表
@@ -109,13 +129,16 @@ def read_recent_records(file_path, count: Optional[int] = None) -> List[Dict]:
     if record_count == 0:
         return []
 
+    if volume_in_hand is None:
+        volume_in_hand = is_index_file(path)
+
     start = 0 if count is None else max(0, record_count - count)
     with open(path, 'rb') as f:
         f.seek(start * RECORD_SIZE)
         content = f.read()
 
     return [
-        _decode_record(content[i * RECORD_SIZE:(i + 1) * RECORD_SIZE])
+        _decode_record(content[i * RECORD_SIZE:(i + 1) * RECORD_SIZE], volume_in_hand)
         for i in range(len(content) // RECORD_SIZE)
     ]
 
