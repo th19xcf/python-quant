@@ -117,5 +117,20 @@ def test_scanner_detects_violations():
     assert not any(m.startswith('src.api') or m.startswith('src.utils') for m in modules)
 
 
+def test_ui_has_no_tdx_binary_parser_copy():
+    """
+    UI 层不得保留 TDX 二进制解析副本
+
+    历史上 src/ui/async_processing.py 用逐记录 struct.unpack + mmap 重写了一遍
+    .day 解析，既比 src.data.tdx_day_parser 的 np.frombuffer 慢数倍，又把
+    volume/amount 字段读反。解析必须唯一收口到 tdx_day_parser。
+    """
+    src = UI_ROOT.joinpath('async_processing.py').read_text(encoding='utf-8-sig')
+    assert 'struct.unpack(' not in src, 'async_processing.py 不应再逐记录 unpack'
+    assert 'mmap' not in src, 'async_processing.py 不应再自行做内存映射解析'
+    assert 'from src.data.tdx_day_parser import' in src, \
+        'async_processing.py 应委托给 src.data.tdx_day_parser'
+
+
 if __name__ == '__main__':
     raise SystemExit(pytest.main([__file__, '-q']))
