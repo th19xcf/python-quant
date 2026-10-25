@@ -347,7 +347,8 @@ class EventBacktestRunner:
                          high: Optional[float], low: Optional[float],
                          close: Optional[float], volume: Optional[float]) -> None:
         """执行该标的的挂单（订单当日有效，不可成交则作废）。"""
-        side = pending.get(code)
+        # 进入撮合即消费挂单：无论成交、被规则拦截还是价格缺失提前返回，都不会残留到下一交易日
+        side = pending.pop(code, None)
         if side is None:
             return
 
@@ -411,8 +412,6 @@ class EventBacktestRunner:
                         'position': 0,
                         'cost': sell_cost,
                     })
-
-        pending[code] = None
 
     @staticmethod
     def _ensure_sorted(df: pl.DataFrame) -> pl.DataFrame:

@@ -164,6 +164,33 @@ def test_limit_up_blocks_buy_and_limit_down_blocks_sell():
     assert down_result['trades'][0]['signal'] == 'buy'
 
 
+def test_pending_order_expires_after_one_day():
+    """
+    挂单当日有效：进入撮合即消费，不可成交或价格缺失时必须作废，不得残留到次日。
+
+    回归：曾因 `exec_price is None` 提前 return 绕过清理，导致挂单在下一个交易日才成交。
+    """
+    # 价格缺失（open/close 为 null，成交量正常）：t=0 的买入信号在 t=1 作废，t=2 不得补成交
+    missing_price = pl.DataFrame({
+        'date': pd.date_range('2023-01-02', periods=4, freq='B'),
+        'open': [100.0, None, 100.0, 100.0],
+        'high': [101.0, None, 101.0, 101.0],
+        'low': [99.0, None, 99.0, 99.0],
+        'close': [100.0, None, 100.0, 100.0],
+        'volume': [1_000_000.0] * 4,
+    })
+    engine = BacktestEngine(missing_price)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    assert engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')['trades'] == []
+
+    # 持仓中再次触发 buy：该挂单当日作废，不得在卖出后幽灵成交
+    data = _make_df(opens=[100.0] * 8, closes=[100.0] * 8)
+    engine = BacktestEngine(data)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy', 2: 'buy', 4: 'sell'}))
+    trades = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')['trades']
+    assert [t['signal'] for t in trades] == ['buy', 'sell']
+
+
 def test_suspension_blocks_trading():
     """成交量为 0 的停牌日不可交易。"""
     df = _make_df(
