@@ -50,7 +50,7 @@ class AsyncDataManager:
         # 线程池用于执行同步操作
         self.executor = ThreadPoolExecutor(max_workers=10)
     
-    async def _get_data_from_sources_async(self, data_type: str, ts_code: str, start_date: str, end_date: str, freq: str = "daily", adjustment_type: str = "qfq"):
+    async def _get_data_from_sources_async(self, data_type: str, ts_code: str, start_date: str, end_date: str, freq: str = "daily", adjustment_type: str = "hfq"):
         """
         异步通用数据获取方法
         

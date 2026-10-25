@@ -6,7 +6,7 @@ Baostock数据处理器
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import baostock as bs
 import polars as pl
@@ -841,9 +841,9 @@ class BaostockHandler(DataSourceBase):
 
             df = pl.from_pandas(raw)
 
-            # 获取复权因子（前复权/后复权）
-            qfq_factor = self._fetch_baostock_factor(bs_code, start_date, end_date, 'qfq')
-            hfq_factor = self._fetch_baostock_factor(bs_code, start_date, end_date, 'hfq')
+            # 获取逐日累计复权因子（前复权/后复权）
+            qfq_factor, hfq_factor = self._fetch_baostock_factors(
+                bs_code, start_date, end_date, df)
 
             if qfq_factor is not None and not qfq_factor.is_empty():
                 df = df.join(qfq_factor, on='date', how='left')
@@ -867,43 +867,63 @@ class BaostockHandler(DataSourceBase):
             logger.warning(f"baostock get_stock_data({ts_code}) 失败: {e}")
             return pl.DataFrame()
 
-    def _fetch_baostock_factor(self, bs_code: str, start_date: str, end_date: str,
-                               factor_type: str) -> Optional[pl.DataFrame]:
+    def _fetch_baostock_factors(self, bs_code: str, start_date: str, end_date: str,
+                                raw_df: pl.DataFrame
+                                ) -> Tuple[Optional[pl.DataFrame], Optional[pl.DataFrame]]:
         """
-        获取 baostock 复权因子。
+        获取逐日累计复权因子（qfq_factor, hfq_factor）。
 
-        baostock 的 query_adjust_factor 返回的是除权除息事件表，
-        需要累加计算为累计复权因子。这里简化处理：直接用前复权/后复权
-        价格与不复权价格的比值作为因子。
+        原实现把 query_adjust_factor 的"除权事件表"直接 left join 到日线，
+        只有除权日当天能匹配到因子，其余交易日缺失并被 _normalize_kline
+        补齐为 1.0。这样"原始价 × 因子"只在除权日跳变、平日保持原始价，
+        价格序列断裂。
 
-        为简化实现，返回 None（由 _normalize_kline 补齐 1.0），
-        复权计算交由 DataFetcher 侧统一处理。
+        改为用后复权价 / 原始价逐日求累计因子：
+            hfq_factor_t = close_hfq_t / close_raw_t = F_t
+            qfq_factor_t = F_t / F_T   （T 为本区间最后一根）
+
+        baostock 的 adjustflag=1（后复权）以上市日为锚，F_t 与查询区间无关，
+        可直接落库；qfq 以区间末为锚，仅用于展示，读侧由 as_of 截断。
         """
-        try:
-            rs = bs.query_adjust_factor(
-                code=bs_code, start_date=start_date, end_date=end_date,
-            )
-            if rs is None:
-                return None
-            raw = rs.get_data()
-            if raw is None or raw.empty:
-                return None
+        rs = bs.query_history_k_data_plus(
+            bs_code, "date,close", start_date=start_date, end_date=end_date,
+            frequency="d", adjustflag="1",
+        )
+        if rs is None:
+            return None, None
+        hfq_raw = rs.get_data()
+        if hfq_raw is None or hfq_raw.empty:
+            return None, None
 
-            df = pl.from_pandas(raw)
-            # baostock 返回复权因子列名：foreAdjustFactor / backAdjustFactor
-            col = 'foreAdjustFactor' if factor_type == 'qfq' else 'backAdjustFactor'
-            if col not in df.columns:
-                return None
+        hfq_df = pl.from_pandas(hfq_raw).select([
+            pl.col('date'),
+            pl.col('close').cast(pl.Float64).alias('close_hfq'),
+        ])
+        return self._compute_daily_factors(raw_df, hfq_df)
 
-            df = df.select([
-                pl.col('date'),
-                pl.col(col).cast(pl.Float64).alias(f'{factor_type}_factor'),
-            ])
-            return df
+    @staticmethod
+    def _compute_daily_factors(raw_df: pl.DataFrame, hfq_df: pl.DataFrame
+                               ) -> Tuple[Optional[pl.DataFrame], Optional[pl.DataFrame]]:
+        """纯计算：由原始价与后复权价求每日 qfq_factor / hfq_factor。"""
+        raw = raw_df.select([
+            pl.col('date'),
+            pl.col('close').cast(pl.Float64).alias('close_raw'),
+        ])
+        joined = (raw.join(hfq_df, on='date', how='inner')
+                     .filter((pl.col('close_raw') > 0)
+                             & pl.col('close_hfq').is_not_null())
+                     .sort('date'))
+        if joined.is_empty():
+            return None, None
 
-        except Exception as e:
-            logger.debug(f"baostock 获取{factor_type}因子失败: {e}")
-            return None
+        factor = joined['close_hfq'] / joined['close_raw']
+        anchor = factor[-1]  # 区间末锚点，与 baostock 前复权口径一致
+        if anchor is None or anchor <= 0:
+            return None, None
+
+        hfq_factor = pl.DataFrame({'date': joined['date'], 'hfq_factor': factor})
+        qfq_factor = pl.DataFrame({'date': joined['date'], 'qfq_factor': factor / anchor})
+        return qfq_factor, hfq_factor
 
     def get_index_data(self, ts_code: str, start_date: str, end_date: str,
                        freq: str = 'daily'):

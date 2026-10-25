@@ -316,7 +316,7 @@ class DataManager(IDataProvider, IDataProcessor):
         # 使用新的DataService
         return self.data_service.get_index_data(index_code, start_date, end_date, frequency)
     
-    async def get_stock_data_async(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq') -> pl.DataFrame:
+    async def get_stock_data_async(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'hfq') -> pl.DataFrame:
         """
         异步获取股票历史数据
         
@@ -355,7 +355,7 @@ class DataManager(IDataProvider, IDataProcessor):
             # 回退到同步方法
             return self.get_index_data(index_code, start_date, end_date, frequency)
     
-    async def get_multiple_stocks_data_async(self, stock_codes: List[str], start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'qfq', batch_size: int = 10, timeout: int = 30) -> Dict[str, pl.DataFrame]:
+    async def get_multiple_stocks_data_async(self, stock_codes: List[str], start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'hfq', batch_size: int = 10, timeout: int = 30) -> Dict[str, pl.DataFrame]:
         """
         异步并行获取多只股票数据
         

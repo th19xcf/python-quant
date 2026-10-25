@@ -19,7 +19,7 @@ class IDataProvider:
         start_date: str,
         end_date: str,
         frequency: str = '1d',
-        adjustment_type: str = 'qfq',
+        adjustment_type: str = 'hfq',
     ) -> pl.DataFrame:
         """获取股票历史数据
 
@@ -28,7 +28,8 @@ class IDataProvider:
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
             frequency: 数据频率，默认：1d（日线）
-            adjustment_type: 复权类型，默认：qfq（前复权）；可选：qfq/hfq/none
+            adjustment_type: 复权类型，默认：hfq（后复权，PIT 安全，供计算使用）；
+                            展示场景请显式传 qfq；可选：qfq/hfq/none
 
         Returns:
             pl.DataFrame: 股票历史数据

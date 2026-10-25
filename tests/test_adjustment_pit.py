@@ -205,3 +205,69 @@ class TestApplyAdjustment:
 
         result = DataFetcher._apply_adjustment(df, 'none')
         assert result['close'].to_list() == close.to_list()
+
+
+class TestBaostockDailyFactors:
+    """
+    baostock 逐日累计因子：不得出现"只有除权日有因子、其余日补齐 1.0"的空洞
+
+    历史上 _fetch_baostock_factor 把除权事件表 left join 到日线，导致
+    原始价 × 因子 只在除权日跳变，价格序列断裂。
+    """
+
+    DATES = ['2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05']
+
+    def _frames(self):
+        # 2024-01-04 除权（10送10）：后复权价 = 原始价 × F，F 在除权后翻倍
+        raw = pl.DataFrame({'date': self.DATES, 'close': [10.0, 10.2, 5.1, 5.3]})
+        hfq = pl.DataFrame({'date': self.DATES,
+                            'close_hfq': [10.0, 10.2, 10.2, 10.6]})
+        return raw, hfq
+
+    @staticmethod
+    def _compute(raw, hfq):
+        from src.data.baostock_handler import BaostockHandler
+        return BaostockHandler._compute_daily_factors(raw, hfq)
+
+    def test_factor_covers_every_trading_day(self):
+        """每个交易日都必须有因子，不能只在除权日有值"""
+        qfq, hfq_factor = self._compute(*self._frames())
+        assert qfq.height == len(self.DATES)
+        assert hfq_factor.height == len(self.DATES)
+        assert qfq['date'].to_list() == self.DATES
+
+    def test_hfq_factor_is_cumulative_monotonic(self):
+        """后复权因子从 1.0 起单调不减，除权后翻倍"""
+        _, hfq_factor = self._compute(*self._frames())
+        f = hfq_factor['hfq_factor'].to_list()
+        assert f[0] == pytest.approx(1.0)
+        assert all(b >= a - 1e-12 for a, b in zip(f, f[1:]))
+        assert f[2:] == pytest.approx([2.0, 2.0])
+
+    def test_qfq_factor_anchored_at_last_bar(self):
+        """前复权因子以区间末为锚（末行 = 1.0），并等于 hfq/hfq_T"""
+        qfq, hfq_factor = self._compute(*self._frames())
+        q = qfq['qfq_factor'].to_list()
+        f = hfq_factor['hfq_factor'].to_list()
+        assert q[-1] == pytest.approx(1.0)
+        assert q == pytest.approx([v / f[-1] for v in f])
+
+    def test_adjusted_price_reconstructs_hfq(self):
+        """原始价 × hfq_factor 必须还原后复权价（关系自洽）"""
+        raw, hfq = self._frames()
+        _, hfq_factor = self._compute(raw, hfq)
+        rebuilt = (raw['close'] * hfq_factor['hfq_factor']).to_list()
+        assert rebuilt == pytest.approx(hfq['close_hfq'].to_list())
+
+    def test_empty_or_disjoint_input_returns_none(self):
+        schema = {'date': pl.Utf8, 'close': pl.Float64}
+        empty_raw = pl.DataFrame({'date': [], 'close': []}, schema=schema)
+        empty_hfq = pl.DataFrame({'date': [], 'close_hfq': []},
+                                 schema={'date': pl.Utf8, 'close_hfq': pl.Float64})
+        assert self._compute(empty_raw, empty_hfq) == (None, None)
+
+        raw, _ = self._frames()
+        disjoint = pl.DataFrame({'date': ['2030-01-01'], 'close_hfq': [1.0]},
+                                schema={'date': pl.Utf8, 'close_hfq': pl.Float64})
+        assert self._compute(raw, disjoint) == (None, None)
+
