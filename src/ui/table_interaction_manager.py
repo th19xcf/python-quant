@@ -240,7 +240,7 @@ class TableInteractionManager:
                 window.market_progress_bar.setValue(0)
 
             from src.ui.async_processing import DataReadThread
-            window.data_read_thread = DataReadThread(str(tdx_file_path), name, code)
+            window.data_read_thread = DataReadThread(str(tdx_file_path), name, code, window.data_manager)
 
             window.data_read_thread.data_read_completed.connect(self.on_data_read_completed)
             window.data_read_thread.data_read_error.connect(self.on_data_read_error)

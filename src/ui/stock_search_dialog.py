@@ -27,17 +27,17 @@ class StockSearchDialog(QDialog):
     4. 回车键确认选择
     """
     
-    def __init__(self, parent=None, db_manager=None, initial_text=""):
+    def __init__(self, parent=None, data_manager=None, initial_text=""):
         """
         初始化搜索对话框
-        
+
         Args:
             parent: 父窗口
-            db_manager: 数据库管理器
+            data_manager: 数据管理器，股票基础信息统一经其获取
             initial_text: 初始搜索文本
         """
         super().__init__(parent)
-        self.db_manager = db_manager
+        self.data_manager = data_manager
         self.selected_stock = None
         self.all_stocks = []  # 缓存所有股票列表
         self.initial_text = initial_text
@@ -125,43 +125,34 @@ class StockSearchDialog(QDialog):
     def load_all_stocks(self):
         """预加载所有股票列表到内存"""
         try:
-            if not self.db_manager:
-                logger.warning("数据库管理器未初始化")
+            if not self.data_manager:
+                logger.warning("数据管理器未初始化")
                 return
-                
-            session = self.db_manager.get_session()
-            if not session:
-                logger.warning("无法获取数据库会话")
-                return
-            
-            # 从StockBasic表获取所有股票
-            from src.database.models.stock import StockBasic
-            
-            # 先尝试查询所有股票，不限制状态
-            stocks = session.query(StockBasic).all()
-            
+
+            stocks = self.data_manager.list_stock_records()
+
             self.all_stocks = []
             for stock in stocks:
-                name = stock.name or ''
+                name = stock['name']
                 # 计算拼音首字母
                 pinyin_first_letters = ''.join([p[0].upper() for p in lazy_pinyin(name, style=Style.FIRST_LETTER)])
-                
+
                 self.all_stocks.append({
-                    'ts_code': stock.ts_code or '',
-                    'symbol': stock.symbol or '',
+                    'ts_code': stock['ts_code'],
+                    'symbol': stock['symbol'],
                     'name': name,
                     'pinyin_first_letters': pinyin_first_letters,
-                    'market': stock.market or '-',
-                    'industry': stock.industry or '-'
+                    'market': stock['market'] or '-',
+                    'industry': stock['industry'] or '-'
                 })
-            
+
             logger.info(f"预加载了 {len(self.all_stocks)} 只股票")
-            
+
             # 如果没有数据，记录警告
             if len(self.all_stocks) == 0:
                 logger.warning("数据库中没有股票数据，请检查StockBasic表")
-            
-        except (OSError, RuntimeError) as e:
+
+        except (OSError, RuntimeError, KeyError) as e:
             logger.exception(f"加载股票列表失败: {e}")
     
     def on_search_text_changed(self, text):

@@ -7,7 +7,6 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QTableWidgetItem
 
 from src.data.services.indicator_service import calculate_indicators_for_period
-from src.data.tdx_day_parser import read_latest_quote
 from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
 
@@ -381,7 +380,7 @@ class MainWindowDataMixin:
                         if i % 100 == 0:
                             logger.info(f"正在解析文件: {file_path} ({i+1}/{total_files})")
                         
-                        quote = read_latest_quote(file_path)
+                        quote = self.data_manager.read_local_quote_file(file_path)
                         if quote is None:
                             continue
 

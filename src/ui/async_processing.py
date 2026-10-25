@@ -10,7 +10,6 @@ from PySide6.QtWidgets import QApplication
 import polars as pl
 from pathlib import Path
 from loguru import logger
-from src.data.tdx_day_parser import parse_day_file
 from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
 from src.utils.event_bus import publish, EventType
 
@@ -24,7 +23,7 @@ class DataReadThread(QThread):
     data_read_error = Signal(str)  # 数据读取错误信号
     data_read_progress = Signal(int, int)  # 数据读取进度信号
 
-    def __init__(self, file_path, name, code):
+    def __init__(self, file_path, name, code, data_manager):
         """
         初始化数据读取线程
 
@@ -32,21 +31,24 @@ class DataReadThread(QThread):
             file_path: 数据文件路径
             name: 股票名称
             code: 股票代码
+            data_manager: 数据管理器，解析统一经其 load_tdx_day_file 委托底层
         """
         super().__init__()
         self.file_path = file_path
         self.name = name
         self.code = code
+        self.data_manager = data_manager
         self.is_running = True
 
     def run(self):
         """
         线程运行函数，实现异步数据读取和解析
 
-        解析统一委托给 src.data.tdx_day_parser 的 np.frombuffer 向量化实现，
-        UI 层不再保留逐记录 struct.unpack 的副本：该副本既慢，又把
-        volume/amount 两个字段读反了（offset 20 实为 float32 成交额，
-        offset 24 才是 uint32 成交量）。
+        解析统一委托给 DataManager.load_tdx_day_file（内部为
+        src.data.tdx_day_parser 的 np.frombuffer 向量化实现），UI 层不再
+        保留逐记录 struct.unpack 的副本：该副本既慢，又把 volume/amount
+        两个字段读反了（offset 20 实为 float32 成交额，offset 24 才是
+        uint32 成交量）。
         """
         try:
             logger.info(f"开始异步读取股票数据文件: {self.file_path}")
@@ -60,7 +62,7 @@ class DataReadThread(QThread):
                 self.data_read_completed.emit(df, self.name, self.code)
                 return
 
-            df = parse_day_file(tdx_file_path)
+            df = self.data_manager.load_tdx_day_file(tdx_file_path)
             if df.is_empty():
                 error_msg = f"股票数据文件为空: {tdx_file_path}"
                 logger.warning(error_msg)

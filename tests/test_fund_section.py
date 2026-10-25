@@ -1,6 +1,7 @@
 """FundSection 基金板块单元测试。"""
 
 import struct
+from types import SimpleNamespace
 
 from src.ui.fund_section import (FundSection, _default_fund_data,
                                  is_closed_fund_ts_code, is_etf_fund_ts_code)
@@ -50,15 +51,20 @@ def _write_day_file(path, close, preclose):
             ))
 
 
-def test_get_real_fund_data_from_tdx(tmp_path):
-    from types import SimpleNamespace
+def _fake_data_manager(tdx_data_path):
+    """构造仅暴露本地行情读取能力的 DataManager 替身。"""
+    from src.data.data_manager import DataManager
 
-    _write_day_file(tmp_path / "sh" / "lday" / "sh510300.day", 4.2, 4.0)
-    window = SimpleNamespace(
-        data_manager=SimpleNamespace(
-            config=SimpleNamespace(data=SimpleNamespace(tdx_data_path=str(tmp_path)))
-        )
+    manager = SimpleNamespace(config=SimpleNamespace(data=SimpleNamespace(tdx_data_path=tdx_data_path)))
+    manager.get_latest_local_quote = lambda code, ts_code=None: DataManager.get_latest_local_quote(
+        manager, code, ts_code
     )
+    return manager
+
+
+def test_get_real_fund_data_from_tdx(tmp_path):
+    _write_day_file(tmp_path / "sh" / "lday" / "sh510300.day", 4.2, 4.0)
+    window = SimpleNamespace(data_manager=_fake_data_manager(str(tmp_path)))
     section = FundSection(window)
 
     data = section.get_real_fund_data("510300", "沪深300ETF", "510300.SH")
@@ -74,13 +80,7 @@ def test_get_real_fund_data_from_tdx(tmp_path):
 
 
 def test_get_real_fund_data_missing_file(tmp_path):
-    from types import SimpleNamespace
-
-    window = SimpleNamespace(
-        data_manager=SimpleNamespace(
-            config=SimpleNamespace(data=SimpleNamespace(tdx_data_path=str(tmp_path)))
-        )
-    )
+    window = SimpleNamespace(data_manager=_fake_data_manager(str(tmp_path)))
     section = FundSection(window)
 
     assert section.get_real_fund_data("510300", "沪深300ETF") is None

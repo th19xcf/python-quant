@@ -15,7 +15,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QTableWidgetItem
 
-from src.data.tdx_day_parser import build_day_file_path, read_latest_quote, resolve_market
 from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
 
@@ -303,16 +302,11 @@ class FundSection:
         """
         try:
             data_manager = getattr(self._w, 'data_manager', None)
-            if not (data_manager and hasattr(data_manager.config, 'data')):
-                return None
-
-            market = resolve_market(code, ts_code)
-            file_path = build_day_file_path(data_manager.config.data.tdx_data_path, market, code)
-            if not file_path.exists():
+            if not data_manager:
                 return None
 
             logger.info(f"从通达信数据文件获取基金 {name}({code}) 的交易数据")
-            quote = read_latest_quote(file_path)
+            quote = data_manager.get_latest_local_quote(code, ts_code)
             if quote is None:
                 return None
 

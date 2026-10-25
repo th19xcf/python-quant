@@ -5,7 +5,8 @@
 架构守卫：禁止 src/ui/** 新增对业务/数据层的 import
 
 规则：
-- 禁止 src/ui/ 下任何 .py 文件 import src.database.* 或 src.tech_analysis.*
+- 禁止 src/ui/ 下任何 .py 文件 import src.database.*、src.tech_analysis.*
+  或 src.data.tdx_day_parser.*（TDX 解析统一经 DataManager 转达）
 - 现有违规列入 FROZEN_WHITELIST 冻结，只减不增：
   - 出现白名单之外的新违规 → 测试失败
   - 白名单中的违规被消除 → 测试失败并提示收紧白名单（防止回潮）
@@ -22,12 +23,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 UI_ROOT = REPO_ROOT / 'src' / 'ui'
 
 # 被禁止的 import 根模块
-FORBIDDEN_ROOTS = ('src.database', 'src.tech_analysis')
+FORBIDDEN_ROOTS = ('src.database', 'src.tech_analysis', 'src.data.tdx_day_parser')
 
 # 冻结白名单：(相对 src/ui 的文件路径, 被禁止的模块)，仅允许减少
 FROZEN_WHITELIST = frozenset({
     ('async_processing.py', 'src.tech_analysis.technical_analyzer'),
-    ('stock_search_dialog.py', 'src.database.models.stock'),
     ('chart_components/chart_data_preparer.py', 'src.tech_analysis.indicators.trend'),
     ('chart_components/indicator_renderer.py', 'src.tech_analysis.indicator_calculator'),
 })
@@ -80,7 +80,7 @@ def _collect_ui_violations() -> set:
 
 
 def test_no_new_ui_business_imports():
-    """src/ui/** 不得新增对 src.database / src.tech_analysis 的 import"""
+    """src/ui/** 不得新增对 src.database / src.tech_analysis / src.data.tdx_day_parser 的 import"""
     current = _collect_ui_violations()
 
     new_violations = current - FROZEN_WHITELIST
@@ -123,13 +123,80 @@ def test_ui_has_no_tdx_binary_parser_copy():
 
     历史上 src/ui/async_processing.py 用逐记录 struct.unpack + mmap 重写了一遍
     .day 解析，既比 src.data.tdx_day_parser 的 np.frombuffer 慢数倍，又把
-    volume/amount 字段读反。解析必须唯一收口到 tdx_day_parser。
+    volume/amount 字段读反。解析必须唯一收口到 tdx_day_parser，且 UI 只经
+    DataManager.load_tdx_day_file 间接触达，不直接 import 解析器。
     """
     src = UI_ROOT.joinpath('async_processing.py').read_text(encoding='utf-8-sig')
     assert 'struct.unpack(' not in src, 'async_processing.py 不应再逐记录 unpack'
     assert 'mmap' not in src, 'async_processing.py 不应再自行做内存映射解析'
-    assert 'from src.data.tdx_day_parser import' in src, \
-        'async_processing.py 应委托给 src.data.tdx_day_parser'
+    assert 'from src.data.tdx_day_parser import' not in src, \
+        'async_processing.py 必须经 DataManager 委托，不得直接 import 解析器'
+    assert 'load_tdx_day_file' in src, \
+        'async_processing.py 应通过 DataManager.load_tdx_day_file 委托解析'
+
+
+STRATEGY_ROOT = REPO_ROOT / 'src' / 'backtest' / 'strategies'
+
+
+def find_non_vectorized_signal_patterns(source: str, rel_path: str) -> list:
+    """
+    解析策略源码 AST，找出逐 Bar 回调里重算历史窗口的写法。
+
+    逐 Bar 调用的方法（generate_signal 及其辅助方法）只允许读取引擎预计算
+    好的 row 列；一旦出现切片、rolling_* 或循环，回测就会从 O(N) 退化为 O(N^2)。
+
+    Returns:
+        list: (rel_path, 方法名, 违规形态, 行号)
+    """
+    tree = ast.parse(source)
+    violations = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name in ('__init__', 'set_params'):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, (ast.For, ast.While)):
+                violations.append((rel_path, node.name, 'loop', inner.lineno))
+            elif isinstance(inner, ast.Subscript) and isinstance(inner.slice, ast.Slice):
+                violations.append((rel_path, node.name, 'slice', inner.lineno))
+            elif isinstance(inner, ast.Attribute) and inner.attr.startswith('rolling'):
+                violations.append((rel_path, node.name, inner.attr, inner.lineno))
+    return violations
+
+
+def test_strategy_signals_are_vectorized():
+    """
+    策略逐 Bar 回调不得基于历史窗口重算，指标必须来自引擎预计算列
+
+    回归：若策略在 generate_signal 内切片/rolling，N 根 K 线会退化为 O(N^2)。
+    指标预计算由 BaseBacktestEngine._precompute_indicators 在回测循环前完成。
+    """
+    violations = []
+    for py_file in sorted(STRATEGY_ROOT.glob('*.py')):
+        rel_path = py_file.relative_to(REPO_ROOT).as_posix()
+        violations.extend(
+            find_non_vectorized_signal_patterns(py_file.read_text(encoding='utf-8-sig'), rel_path)
+        )
+
+    assert not violations, (
+        '策略逐 Bar 回调中检测到历史窗口重算（违反 O(N) 守卫）：\n'
+        + '\n'.join(f'  {f}:{ln} {name} 使用 {kind}' for f, name, kind, ln in violations)
+        + '\n请改为读取引擎预计算列，或在 _precompute_indicators 中新增向量化表达式。'
+    )
+
+    # 自测：扫描器必须能识别切片 / rolling / 循环三种退化形态
+    bad_source = (
+        'class Bad:\n'
+        '    def generate_signal(self, data, index):\n'
+        '        window = data["close"][:index]\n'
+        '        ma = data["close"].rolling_mean(5)\n'
+        '        for x in window:\n'
+        '            pass\n'
+        '        return "hold"\n'
+    )
+    kinds = {kind for _, _, kind, _ in find_non_vectorized_signal_patterns(bad_source, 'bad.py')}
+    assert {'loop', 'slice', 'rolling_mean'} <= kinds
 
 
 if __name__ == '__main__':

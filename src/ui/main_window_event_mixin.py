@@ -184,13 +184,8 @@ class MainWindowEventMixin:
         try:
             from src.ui.stock_search_dialog import StockSearchDialog
 
-            # 获取数据库管理器
-            db_manager = None
-            if hasattr(self, 'data_manager') and self.data_manager:
-                db_manager = self.data_manager.db_manager
-            
-            # 创建搜索对话框
-            dialog = StockSearchDialog(self, db_manager, initial_text)
+            # 创建搜索对话框（股票基础信息统一由 DataManager 提供）
+            dialog = StockSearchDialog(self, getattr(self, 'data_manager', None), initial_text)
             
             # 设置对话框位置在右下角
             self._position_dialog_at_bottom_right(dialog)

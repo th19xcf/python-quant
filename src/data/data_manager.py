@@ -553,6 +553,75 @@ class DataManager(IDataProvider, IDataProcessor):
                 except Exception as cleanup_e:
                     logger.debug(f"清理会话时出错: {cleanup_e}")
 
+    def list_stock_records(self) -> List[Dict[str, Any]]:
+        """
+        获取 stock_basic 的全部记录（供 UI 股票搜索使用）。
+
+        Returns:
+            list: [{ts_code, symbol, name, market, industry}, ...]；数据库不可用时返回空列表
+        """
+        if not self.db_manager:
+            return []
+
+        session = None
+        try:
+            from src.database.models.stock import StockBasic
+
+            session = self.db_manager.get_session()
+            if not session:
+                return []
+            return [
+                {
+                    'ts_code': stock.ts_code or '',
+                    'symbol': stock.symbol or '',
+                    'name': stock.name or '',
+                    'market': stock.market or '',
+                    'industry': stock.industry or '',
+                }
+                for stock in session.query(StockBasic).all()
+            ]
+        except ImportError as e:
+            logger.error(f"无法导入StockBasic模型: {e}")
+            return []
+        except (OSError, RuntimeError) as e:
+            logger.warning(f"查询股票列表失败: {e}")
+            return []
+        finally:
+            if session and self.db_manager:
+                try:
+                    self.db_manager._cleanup_session()
+                except Exception as cleanup_e:
+                    logger.debug(f"清理会话时出错: {cleanup_e}")
+
+    # ------------------------------------------------------------------
+    # 本地通达信日线文件：UI 层的唯一入口（禁止 UI 直接 import tdx_day_parser）
+    # ------------------------------------------------------------------
+
+    def get_latest_local_quote(self, code: str, ts_code: Optional[str] = None):
+        """按证券代码读取本地通达信日线文件的最新一根 K 线快照。"""
+        from src.data.tdx_day_parser import build_day_file_path, read_latest_quote, resolve_market
+
+        if not getattr(self.config, 'data', None):
+            return None
+
+        market = resolve_market(code, ts_code)
+        file_path = build_day_file_path(self.config.data.tdx_data_path, market, code)
+        if not file_path.exists():
+            return None
+        return read_latest_quote(file_path)
+
+    def read_local_quote_file(self, file_path):
+        """读取指定通达信 .day 文件的最新一根 K 线快照。"""
+        from src.data.tdx_day_parser import read_latest_quote
+
+        return read_latest_quote(file_path)
+
+    def load_tdx_day_file(self, file_path, max_days: Optional[int] = None) -> pl.DataFrame:
+        """解析指定通达信 .day 文件为 DataFrame。"""
+        from src.data.tdx_day_parser import parse_day_file
+
+        return parse_day_file(file_path, max_days)
+
     def get_index_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
         """
         获取指数基本信息
