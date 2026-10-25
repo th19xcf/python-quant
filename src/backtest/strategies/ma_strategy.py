@@ -49,7 +49,7 @@ class MAStrategy(BaseStrategy):
         short_ma = data.get(f'ma_{short_w}')
         long_ma = data.get(f'ma_{long_w}')
 
-        # 预计算列在前 long_window 根为 None，此时不交易
+        # 预计算列窗口未满的前 long_window-1 根为 None，此时不交易
         if short_ma is None or long_ma is None:
             return 'hold'
 

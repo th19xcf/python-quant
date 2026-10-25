@@ -192,9 +192,10 @@ class BaseBacktestEngine:
 
         exprs = []
 
-        # 移动平均线（多策略共用），min_samples=1 与权威实现口径一致
-        exprs.append(close.rolling_mean(window_size=short_w, min_samples=1).alias(f'ma_{short_w}'))
-        exprs.append(close.rolling_mean(window_size=long_w, min_samples=1).alias(f'ma_{long_w}'))
+        # 移动平均线（多策略共用），min_samples=window 使窗口未满的前 window-1 根
+        # 为 null，策略读到 None 即 hold，避免 ma_20 = close[0] 之类的暖机污染值产生虚假信号
+        exprs.append(close.rolling_mean(window_size=short_w, min_samples=short_w).alias(f'ma_{short_w}'))
+        exprs.append(close.rolling_mean(window_size=long_w, min_samples=long_w).alias(f'ma_{long_w}'))
 
         # EMA / MACD：统一走共享公式层（标准 EMA 口径）
         macd_dict = macd_exprs('close', 12, 26, 9)

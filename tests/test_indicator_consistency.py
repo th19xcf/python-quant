@@ -109,6 +109,43 @@ def test_gpu_path_matches_shared_formulas():
     _assert_close(rsi_result, expected_rsi, rtol=1e-6, atol=1e-9, name='gpu_rsi')
 
 
+def test_ma_precompute_warmup_rows_are_null():
+    """MA 预计算列在窗口未满时必须为 null（暖机保护），窗口满后非 null。
+
+    回归：曾用 min_samples=1，ma_20 在第 0 根就输出 close[0]，
+    策略把窗口未满的污染值当合法信号，暖机期内产生虚假成交。
+    """
+    df = _make_ohlcv(60)
+    engine = BacktestEngine.__new__(BacktestEngine)
+    strategy = _FakeStrategy({'short_window': 10, 'long_window': 20, 'rsi_period': 14})
+    precomputed = engine._precompute_indicators(df, strategy)
+
+    ma10, ma20 = precomputed['ma_10'], precomputed['ma_20']
+    assert ma10[:9].is_null().all() and ma10[9:].is_not_null().all()
+    assert ma20[:19].is_null().all() and ma20[19:].is_not_null().all()
+
+
+def test_macd_strategy_warmup_guard():
+    """MACD 策略在 慢线+信号线 暖机根数内必须一律 hold（MACD 从第 0 根即有值）"""
+    from src.backtest.strategies.macd_strategy import MACDStrategy
+
+    strategy = MACDStrategy()
+    data = {'macd': 1.0, 'macd_signal': -1.0}  # 明显多头排列
+    for i in range(35):
+        assert strategy.generate_signal(data, i) == 'hold', f'暖机期第 {i} 根不应发信号'
+    assert strategy.generate_signal(data, 35) == 'buy'
+
+
+def test_multi_factor_warmup_guard():
+    """多因子策略在暖机期内必须一律 hold，即便因子方向明确"""
+    from src.backtest.strategies.multi_factor_strategy import MultiFactorStrategy
+
+    strategy = MultiFactorStrategy()
+    data = {'macd': 1.0, 'macd_signal': -1.0}  # ma/rsi 缺失按 None 处理
+    assert strategy.generate_signal(data, 34) == 'hold'
+    assert strategy.generate_signal(data, 35) == 'buy'
+
+
 def test_rsi_seed_and_value_range():
     """RSI 前 13 行为 null，种子在索引 13；值域 0~100"""
     df = _make_ohlcv()

@@ -45,10 +45,14 @@ class MACDStrategy(BaseStrategy):
         Returns:
             str: 交易信号，'buy'、'sell'或'hold'
         """
+        # MACD 按通达信口径从第 0 根就有值（EMA 种子 y0=x0），慢线+信号线根数内
+        # 的差离值未稳定，属暖机噪声，不交易（与引擎预计算的固定 12/26/9 参数对齐）
+        if index < 26 + 9:
+            return 'hold'
+
         macd = data.get('macd')
         signal = data.get('macd_signal')
 
-        # 预计算列在 warmup 期为 None，此时不交易
         if macd is None or signal is None:
             return 'hold'
 

@@ -61,7 +61,22 @@ class MultiFactorStrategy(BaseStrategy):
             return -1
         return 0
 
+    def _warmup_bars(self) -> int:
+        """暖机根数：窗口未满的指标值是噪声，暖机期内不交易。
+
+        MA 列由引擎以 min_samples=window 预计算（窗口内为 null，因子已判 None 自保），
+        RSI 为 Wilder 种子口径（前 period-1 根为 null），
+        MACD 按通达信口径从第 0 根有值，需按 慢线+信号线 根数暖机。
+        """
+        return max(
+            int(self.params.get('long_window', 20)),
+            int(self.params.get('rsi_period', 14)),
+            26 + 9,
+        )
+
     def generate_signal(self, data: Dict[str, Any], index: int) -> str:
+        if index < self._warmup_bars():
+            return 'hold'
         factor_values = {}
         factors = self.params['factors']
         if 'ma' in factors:
