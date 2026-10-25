@@ -10,7 +10,10 @@
     rsi                                   （RSI 因子）
 
 generate_signal 按权重聚合三个因子的二元贡献（1 / 0 / -1），
-加权得分 > 0.3 买入，< -0.3 卖出。
+加权得分超过阈值（默认 0.5）买入、低于负阈值卖出。
+默认权重 {ma:0.3, macd:0.4, rsi:0.3} 下，单因子最大贡献 0.4、
+两因子最小共振和 0.6，阈值取 0.5 落在二者之间，
+保证至少两个因子同向共振才触发交易（MACD 一票不能独决）。
 """
 
 from typing import Dict, Any, List
@@ -18,12 +21,14 @@ from src.backtest.strategies.base_strategy import BaseStrategy
 
 
 class MultiFactorStrategy(BaseStrategy):
-    """结合 MA / MACD / RSI 的等权（或自定义权重）综合因子策略"""
+    """结合 MA / MACD / RSI 的综合因子策略（默认需至少两因子共振）"""
 
-    def __init__(self, factors: List[str] = None, weights: Dict[str, float] = None):
+    def __init__(self, factors: List[str] = None, weights: Dict[str, float] = None,
+                 threshold: float = 0.5):
         super().__init__(name="多因子策略")
         self.params['factors'] = factors or ['ma', 'macd', 'rsi']
         self.params['weights'] = weights or {'ma': 0.3, 'macd': 0.4, 'rsi': 0.3}
+        self.params['threshold'] = threshold
 
     def _ma_factor(self, data: Dict[str, Any]) -> float:
         short_w = self.params.get('short_window', 10)
@@ -92,8 +97,9 @@ class MultiFactorStrategy(BaseStrategy):
             for f in factor_values
         )
 
-        if score > 0.3:
+        threshold = self.params['threshold']
+        if score > threshold:
             return 'buy'
-        if score < -0.3:
+        if score < -threshold:
             return 'sell'
         return 'hold'

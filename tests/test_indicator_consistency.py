@@ -141,9 +141,27 @@ def test_multi_factor_warmup_guard():
     from src.backtest.strategies.multi_factor_strategy import MultiFactorStrategy
 
     strategy = MultiFactorStrategy()
-    data = {'macd': 1.0, 'macd_signal': -1.0}  # ma/rsi 缺失按 None 处理
+    # MA + MACD 双因子共振（得分 0.7 > 阈值 0.5）
+    data = {'ma_10': 11.0, 'ma_20': 10.0, 'macd': 1.0, 'macd_signal': -1.0}
     assert strategy.generate_signal(data, 34) == 'hold'
     assert strategy.generate_signal(data, 35) == 'buy'
+
+
+def test_multi_factor_requires_two_factor_resonance():
+    """默认阈值 0.5 落在单因子最大值 0.4 与两因子最小和 0.6 之间：
+    MACD 单因子（0.4）不得独决买入，MA+RSI 共振（0.6）可以。"""
+    from src.backtest.strategies.multi_factor_strategy import MultiFactorStrategy
+
+    strategy = MultiFactorStrategy()
+    macd_only = {'macd': 1.0, 'macd_signal': -1.0}
+    assert strategy.generate_signal(macd_only, 100) == 'hold'
+
+    ma_rsi = {'ma_10': 11.0, 'ma_20': 10.0, 'rsi': 20.0}  # MA 多头 + RSI 超卖
+    assert strategy.generate_signal(ma_rsi, 100) == 'buy'
+
+    # 阈值可配：降低到 0.3 时 MACD 单因子即可买入（兼容旧行为）
+    legacy = MultiFactorStrategy(threshold=0.3)
+    assert legacy.generate_signal(macd_only, 100) == 'buy'
 
 
 def test_rsi_seed_and_value_range():
