@@ -84,10 +84,9 @@ quant/
 ├── pyproject.toml               # Poetry 依赖
 ├── README.md                    # 本文件
 │
-├── plugins/                     # 插件：数据源 + 指标（独立 .py 文件即插件）
-│   ├── tdx_datasource.py        # 通达信本地文件
-│   ├── baostock_datasource.py   # BaoStock 在线
-│   └── akshare_datasource.py    # AkShare 在线
+├── plugins/                     # 插件：指标 / 可视化（数据源统一在 src/data 内置注册）
+│   ├── indicator_visualization.py
+│   └── kline_visualization.py
 │
 ├── tools/                       # 运维脚本：通达信精度校准、复权因子重算
 ├── scripts/                     # 一次性数据修复 / 抽样查询脚本

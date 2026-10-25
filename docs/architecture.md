@@ -32,10 +32,10 @@ graph TD
         AC2[alpha_calculator.py + factors/]
     end
 
-    subgraph "数据源插件"
-        TDX[plugins/tdx_datasource.py]
-        BS[plugins/baostock_datasource.py]
-        AK[plugins/akshare_datasource.py]
+    subgraph "数据源（src/data 内置注册）"
+        TDX[tdx_handler.py]
+        BS[baostock_handler.py]
+        AK[akshare_handler.py]
     end
 
     subgraph "基础设施"
