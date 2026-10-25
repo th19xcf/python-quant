@@ -202,3 +202,35 @@ def test_suspension_blocks_trading():
     engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
     result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
     assert result['trades'] == []
+
+
+def test_expired_orders_are_audited():
+    """挂单作废必须留痕：已持仓买 / 无持仓卖 / 资金不足 / 涨跌停均记入 expired_orders。
+
+    回归：作废路径原先依赖巧合的控制流静默吞单，不进 trades / rejected_orders，
+    无任何可审计痕迹。
+    """
+    # 已持仓再买 + 卖出后再卖
+    data = _make_df(opens=[100.0] * 8, closes=[100.0] * 8)
+    engine = BacktestEngine(data)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy', 2: 'buy', 4: 'sell', 5: 'sell'}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+    reasons = [o['reason'] for o in result['expired_orders']]
+    assert [t['signal'] for t in result['trades']] == ['buy', 'sell']
+    assert reasons == ['already_holding', 'no_position']
+
+    # 资金不足：本金连一手都买不起
+    data = _make_df(opens=[100.0] * 4, closes=[100.0] * 4)
+    engine = BacktestEngine(data)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result = engine.run_backtest(initial_capital=5_000.0, ts_code='600000.SH')
+    assert result['trades'] == []
+    assert [o['reason'] for o in result['expired_orders']] == ['insufficient_cash']
+
+    # 涨停不可买
+    up_df = _make_df(opens=[100.0, 110.0, 110.0], closes=[100.0, 110.0, 110.0])
+    engine = BacktestEngine(up_df)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+    assert result['trades'] == []
+    assert [o['reason'] for o in result['expired_orders']] == ['not_tradable']

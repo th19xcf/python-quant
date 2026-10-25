@@ -261,13 +261,14 @@ class EventBacktestRunner:
 
         trades: List[Dict[str, Any]] = []
         rejected_orders: List[Dict[str, Any]] = []
+        expired_orders: List[Dict[str, Any]] = []
         equity_curve: List[Dict[str, Any]] = []
 
         for date in sorted_dates:
             for code in codes:
                 pos = date_positions[code].get(date)
                 if pos is None:
-                    # 停牌（无数据）：挂单保留到该标的下一个交易日
+                    # 停牌（无数据行）：挂单顺延至该标的下一个交易日，不视为作废
                     continue
 
                 row = prepared[code].row(pos, named=True)
@@ -280,7 +281,8 @@ class EventBacktestRunner:
                 self._execute_pending(
                     code=code, date=date, pending=pending, book=book, gate=gate,
                     rules=rules, cost_model=self.cost_model, trades=trades,
-                    rejected_orders=rejected_orders, equity_curve=equity_curve,
+                    rejected_orders=rejected_orders, expired_orders=expired_orders,
+                    equity_curve=equity_curve,
                     lot_size=lot_size,
                     prev_close=prev_close[code], open_price=open_price,
                     high=high, low=low, close=close_price, volume=volume,
@@ -324,6 +326,7 @@ class EventBacktestRunner:
             'performance': performance,
             'risk_summary': risk_summary,
             'rejected_orders': rejected_orders,
+            'expired_orders': expired_orders,
         }
         if result_meta:
             result.update(result_meta)
@@ -331,6 +334,7 @@ class EventBacktestRunner:
         logger.info(
             f"回测完成: 总收益率 = {total_return:.2f}%"
             + (f" | 风控拒单 {len(rejected_orders)} 笔" if risk_summary else "")
+            + (f" | 挂单作废 {len(expired_orders)} 笔" if expired_orders else "")
         )
         return result
 
@@ -342,76 +346,106 @@ class EventBacktestRunner:
                          book: AccountBook, gate: RiskGate, rules: ExecutionRules,
                          cost_model: CostModel, trades: List[Dict[str, Any]],
                          rejected_orders: List[Dict[str, Any]],
+                         expired_orders: List[Dict[str, Any]],
                          equity_curve: List[Dict[str, Any]], lot_size: int,
                          prev_close: Optional[float], open_price: Optional[float],
                          high: Optional[float], low: Optional[float],
                          close: Optional[float], volume: Optional[float]) -> None:
-        """执行该标的的挂单（订单当日有效，不可成交则作废）。"""
-        # 进入撮合即消费挂单：无论成交、被规则拦截还是价格缺失提前返回，都不会残留到下一交易日
+        """执行该标的的挂单。
+
+        订单生命周期语义（显式状态机，杜绝静默丢单）：
+            - 标的停牌无数据行时不进入本函数，挂单顺延至下一交易日；
+            - 进入本函数即消费挂单，当日有效：成交进 trades、被风控拦截进
+              rejected_orders、其余不可成交情形一律作废并记入 expired_orders
+              （already_holding / no_position / not_tradable / price_missing /
+              insufficient_cash），不会残留到下一交易日。
+        """
         side = pending.pop(code, None)
         if side is None:
             return
 
-        if side == 'buy' and book.positions.get(code, 0) == 0:
-            if rules.is_tradable('buy', prev_close=prev_close, open_price=open_price,
-                                 high=high, low=low, close=close, volume=volume, ts_code=code):
-                exec_price = open_price if open_price is not None else close
-                if exec_price is None:
-                    return
-                available = book.cash.get(code, 0.0)
-                cost_rate = cost_model.get_buy_cost_rate()
-                affordable = available / (exec_price * (1 + cost_rate))
-                shares = int(affordable // lot_size) * lot_size
-                if shares > 0:
-                    buy_cost = cost_model.calculate_buy_cost(shares, exec_price)
-                    total_pay = shares * exec_price + buy_cost
-                    if total_pay <= available:
-                        rejection = gate.check(
-                            ts_code=code, side='buy', qty=shares, price=exec_price,
-                            trade_date=date, book=book, equity_curve=equity_curve,
-                        )
-                        if rejection is not None:
-                            rejected_orders.append(rejection)
-                        else:
-                            book.buy(code, exec_price, shares, buy_cost)
-                            trades.append({
-                                'date': date,
-                                'stock_code': code,
-                                'signal': 'buy',
-                                'price': exec_price,
-                                'shares': shares,
-                                'capital': book.cash[code],
-                                'position': book.positions[code],
-                                'cost': buy_cost,
-                            })
+        position = book.positions.get(code, 0)
 
-        elif side == 'sell' and book.positions.get(code, 0) > 0:
-            if rules.is_tradable('sell', prev_close=prev_close, open_price=open_price,
-                                 high=high, low=low, close=close, volume=volume, ts_code=code):
-                exec_price = open_price if open_price is not None else close
-                if exec_price is None:
-                    return
-                shares = book.positions[code]
-                sell_cost = cost_model.calculate_sell_cost(shares, exec_price)
+        def _expire(reason: str, qty: int = 0) -> None:
+            expired_orders.append({
+                'date': date, 'side': side, 'ts_code': code,
+                'reason': reason, 'qty': qty,
+            })
 
-                rejection = gate.check(
-                    ts_code=code, side='sell', qty=shares, price=exec_price,
-                    trade_date=date, book=book, equity_curve=equity_curve,
-                )
-                if rejection is not None:
-                    rejected_orders.append(rejection)
-                else:
-                    book.sell(code, exec_price, shares, sell_cost)
-                    trades.append({
-                        'date': date,
-                        'stock_code': code,
-                        'signal': 'sell',
-                        'price': exec_price,
-                        'shares': shares,
-                        'capital': book.cash[code],
-                        'position': 0,
-                        'cost': sell_cost,
-                    })
+        # 持仓前置条件不满足：已持仓的买入、无持仓的卖出
+        if side == 'buy' and position > 0:
+            _expire('already_holding')
+            return
+        if side == 'sell' and position == 0:
+            _expire('no_position')
+            return
+
+        # 涨跌停 / 停牌（零成交量）当日不可按该方向成交
+        if not rules.is_tradable(side, prev_close=prev_close, open_price=open_price,
+                                 high=high, low=low, close=close, volume=volume,
+                                 ts_code=code):
+            _expire('not_tradable')
+            return
+
+        exec_price = open_price if open_price is not None else close
+        if exec_price is None:
+            _expire('price_missing')
+            return
+
+        if side == 'buy':
+            available = book.cash.get(code, 0.0)
+            cost_rate = cost_model.get_buy_cost_rate()
+            affordable = available / (exec_price * (1 + cost_rate))
+            shares = int(affordable // lot_size) * lot_size
+            if shares == 0:
+                _expire('insufficient_cash')
+                return
+            buy_cost = cost_model.calculate_buy_cost(shares, exec_price)
+            total_pay = shares * exec_price + buy_cost
+            if total_pay > available:
+                _expire('insufficient_cash', qty=shares)
+                return
+            rejection = gate.check(
+                ts_code=code, side='buy', qty=shares, price=exec_price,
+                trade_date=date, book=book, equity_curve=equity_curve,
+            )
+            if rejection is not None:
+                rejected_orders.append(rejection)
+                return
+            book.buy(code, exec_price, shares, buy_cost)
+            trades.append({
+                'date': date,
+                'stock_code': code,
+                'signal': 'buy',
+                'price': exec_price,
+                'shares': shares,
+                'capital': book.cash[code],
+                'position': book.positions[code],
+                'cost': buy_cost,
+            })
+            return
+
+        # side == 'sell'（持仓前置条件已在上方校验）
+        shares = book.positions[code]
+        sell_cost = cost_model.calculate_sell_cost(shares, exec_price)
+        rejection = gate.check(
+            ts_code=code, side='sell', qty=shares, price=exec_price,
+            trade_date=date, book=book, equity_curve=equity_curve,
+        )
+        if rejection is not None:
+            rejected_orders.append(rejection)
+            return
+        book.sell(code, exec_price, shares, sell_cost)
+        trades.append({
+            'date': date,
+            'stock_code': code,
+            'signal': 'sell',
+            'price': exec_price,
+            'shares': shares,
+            'capital': book.cash[code],
+            'position': 0,
+            'cost': sell_cost,
+        })
 
     @staticmethod
     def _ensure_sorted(df: pl.DataFrame) -> pl.DataFrame:
