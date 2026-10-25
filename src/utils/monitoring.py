@@ -142,9 +142,9 @@ class DataSourceMonitor:
             self.success_rates.clear()
 
 
-class CacheMonitor:
+class CacheStatsRegistry:
     """
-    缓存监控器，记录缓存使用情况
+    缓存统计登记表，记录各命名缓存的命中/淘汰指标（与 src.utils.cache_monitor.CacheMonitor 职责不同）
     """
     
     def __init__(self):
@@ -368,7 +368,7 @@ class MonitoringSystem:
         初始化监控系统
         """
         self.data_source_monitor = DataSourceMonitor()
-        self.cache_monitor = CacheMonitor()
+        self.cache_monitor = CacheStatsRegistry()
         self.system_monitor = SystemMonitor()
     
     def start(self):

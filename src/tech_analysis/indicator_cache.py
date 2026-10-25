@@ -16,7 +16,7 @@ K = TypeVar('K')
 V = TypeVar('V')
 
 
-class CacheEntry(Generic[V]):
+class IndicatorCacheEntry(Generic[V]):
     """
     缓存条目类，用于存储缓存值及其元数据
     """
@@ -69,7 +69,7 @@ class IndicatorCache:
             dynamic_size: 是否启用动态缓存大小调整
         """
         # 缓存存储
-        self._cache: Dict[str, CacheEntry[pl.DataFrame]] = {}
+        self._cache: Dict[str, IndicatorCacheEntry[pl.DataFrame]] = {}
         # 缓存配置
         self._max_size = max_size
         self._default_ttl = default_ttl if default_ttl > 0 else None
@@ -205,7 +205,7 @@ class IndicatorCache:
         expire_time = time.time() + ttl if ttl is not None else None
         
         # 创建缓存条目
-        entry = CacheEntry(result, expire_time)
+        entry = IndicatorCacheEntry(result, expire_time)
         
         # 添加到缓存
         self._cache[cache_key] = entry

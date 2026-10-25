@@ -17,7 +17,7 @@ K = TypeVar('K')
 V = TypeVar('V')
 
 
-class CacheEntry(Generic[V]):
+class DataCacheEntry(Generic[V]):
     """
     缓存条目类，用于存储缓存值及其元数据
     """
@@ -120,7 +120,7 @@ class DataCache:
             default_ttl: 默认过期时间（秒），0表示永不过期
         """
         # 缓存存储
-        self._cache: Dict[str, CacheEntry[pl.DataFrame]] = {}
+        self._cache: Dict[str, DataCacheEntry[pl.DataFrame]] = {}
         # 缓存配置
         self._max_size = max_size
         self._default_ttl = default_ttl if default_ttl > 0 else None
@@ -238,7 +238,7 @@ class DataCache:
         self._misses += 1
         return None
     
-    def _find_matching_cache(self, data_type: str, code: str, start_date: str, end_date: str, **params) -> Optional[CacheEntry[pl.DataFrame]]:
+    def _find_matching_cache(self, data_type: str, code: str, start_date: str, end_date: str, **params) -> Optional[DataCacheEntry[pl.DataFrame]]:
         """
         查找包含指定时间范围的缓存
         
@@ -250,7 +250,7 @@ class DataCache:
             **params: 其他参数
             
         Returns:
-            Optional[CacheEntry]: 匹配的缓存条目
+            Optional[DataCacheEntry]: 匹配的缓存条目
         """
         # 过滤条件：相同数据类型、代码、参数，且未过期
         candidate_entries = []
@@ -276,7 +276,7 @@ class DataCache:
         
         return None
     
-    def _find_frequency_matching_cache(self, data_type: str, code: str, start_date: str, end_date: str, **params) -> Optional[CacheEntry[pl.DataFrame]]:
+    def _find_frequency_matching_cache(self, data_type: str, code: str, start_date: str, end_date: str, **params) -> Optional[DataCacheEntry[pl.DataFrame]]:
         """
         查找可以支持目标频率的缓存
         
@@ -288,7 +288,7 @@ class DataCache:
             **params: 其他参数
             
         Returns:
-            Optional[CacheEntry]: 匹配的缓存条目
+            Optional[DataCacheEntry]: 匹配的缓存条目
         """
         target_frequency = params.get('frequency', '1d')
         
@@ -340,7 +340,7 @@ class DataCache:
         optimized_data = MemoryOptimizer.optimize_dataframe(data, enable_sparse=True)
         
         # 创建缓存条目
-        entry = CacheEntry(
+        entry = DataCacheEntry(
             optimized_data, 
             expire_time, 
             data_type=data_type, 
