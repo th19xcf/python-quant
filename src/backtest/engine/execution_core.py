@@ -397,13 +397,18 @@ class EventBacktestRunner:
             cost_rate = cost_model.get_buy_cost_rate()
             affordable = available / (exec_price * (1 + cost_rate))
             shares = int(affordable // lot_size) * lot_size
+            # 费率估算不含 min_commission 下限，小单实际成本可能超估算：
+            # 按实际成本逐手回退，而不是整笔静默作废
+            buy_cost = 0.0
+            total_pay = 0.0
+            while shares > 0:
+                buy_cost = cost_model.calculate_buy_cost(shares, exec_price)
+                total_pay = shares * exec_price + buy_cost
+                if total_pay <= available:
+                    break
+                shares -= lot_size
             if shares == 0:
                 _expire('insufficient_cash')
-                return
-            buy_cost = cost_model.calculate_buy_cost(shares, exec_price)
-            total_pay = shares * exec_price + buy_cost
-            if total_pay > available:
-                _expire('insufficient_cash', qty=shares)
                 return
             rejection = gate.check(
                 ts_code=code, side='buy', qty=shares, price=exec_price,

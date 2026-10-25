@@ -234,3 +234,22 @@ def test_expired_orders_are_audited():
     result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
     assert result['trades'] == []
     assert [o['reason'] for o in result['expired_orders']] == ['not_tradable']
+
+
+def test_small_order_steps_down_one_lot_instead_of_expiring():
+    """min_commission 下限使小单实际成本超费率估算时，应回退一手成交而非整笔作废。
+
+    回归：估算用 get_buy_cost_rate() 不含 min_commission=5.0 下限，
+    现金接近满仓的小单曾只做一次 total_pay <= available 检查就被吞掉。
+    """
+    # 价格 10 元/股、现金 10006：费率估算 10006/10.0051≈1000.09→1000 股，
+    # 实际成本 max(10000*0.0003,5)+0.1+2.0=7.1 → 总价 10007.1 > 10006 超估算，
+    # 回退一手后 900 股：9000 + max(2.7,5)+0.09+1.8 = 9006.89 ≤ 10006 成交
+    data = _make_df(opens=[10.0] * 4, closes=[10.0] * 4)
+    engine = BacktestEngine(data)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result = engine.run_backtest(initial_capital=10_006.0, ts_code='600000.SH')
+
+    assert result['expired_orders'] == []
+    assert len(result['trades']) == 1
+    assert result['trades'][0]['shares'] == 900
