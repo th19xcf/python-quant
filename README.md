@@ -193,10 +193,13 @@ cp .env.example .env
 
 ## 开发约定
 
-- 依赖管理：Poetry（`poetry add xxx` / `poetry install`）
+- 依赖管理：Poetry；运行时直接依赖固定为 `==` 版本，`poetry install --with dev` 安装测试与静态检查工具
 - 提交路径：项目目录 `e:\code\python\quant` 为 Git 仓库；每次提交前先同步备份目录 `E:\git\python-quant`（保持相同相对路径）
-- 测试：pytest（`tests/` 下 227 个用例，`venv\Scripts\python.exe -m pytest tests -q`）
-- 格式化/类型检查：ruff + mypy（P2 规划中）
+- 测试：pytest（`tests/` 下 228 个用例，`venv\Scripts\python.exe -m pytest tests -q`）
+- 质量门禁（本地与 CI 一致）：
+  - `ruff check src`（语法错误、无效比较、未定义名称）
+  - `mypy`（当前只检查统一执行内核 `execution_core.py`）
+  - `pytest --cov=src --cov-fail-under=39`（当前覆盖率 40%）
 
 ---
 

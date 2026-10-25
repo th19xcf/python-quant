@@ -142,74 +142,74 @@ class ReportGenerator:
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>策略回测报告</title>
             <style>
-                body {
+                body {{
                     font-family: 'Microsoft YaHei', Arial, sans-serif;
                     background-color: #f5f5f5;
                     margin: 0;
                     padding: 20px;
-                }
-                .container {
+                }}
+                .container {{
                     max-width: 1200px;
                     margin: 0 auto;
                     background-color: white;
                     padding: 30px;
                     box-shadow: 0 0 10px rgba(0,0,0,0.1);
-                }
-                h1 {
+                }}
+                h1 {{
                     color: #333;
                     text-align: center;
                     border-bottom: 2px solid #0066cc;
                     padding-bottom: 10px;
-                }
-                h2 {
+                }}
+                h2 {{
                     color: #555;
                     margin-top: 30px;
                     border-left: 4px solid #0066cc;
                     padding-left: 10px;
-                }
-                .info-table {
+                }}
+                .info-table {{
                     width: 100%;
                     border-collapse: collapse;
                     margin: 20px 0;
-                }
-                .info-table th, .info-table td {
+                }}
+                .info-table th, .info-table td {{
                     border: 1px solid #ddd;
                     padding: 10px;
                     text-align: left;
-                }
-                .info-table th {
+                }}
+                .info-table th {{
                     background-color: #f2f2f2;
                     font-weight: bold;
-                }
-                .metrics {
+                }}
+                .metrics {{
                     display: grid;
                     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
                     gap: 20px;
                     margin: 20px 0;
-                }
-                .metric-card {
+                }}
+                .metric-card {{
                     background-color: #f9f9f9;
                     padding: 20px;
                     border-radius: 5px;
                     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                }
-                .metric-card h3 {
+                }}
+                .metric-card h3 {{
                     margin-top: 0;
                     color: #333;
-                }
-                .metric-value {
+                }}
+                .metric-value {{
                     font-size: 24px;
                     font-weight: bold;
                     color: #0066cc;
-                }
-                .footer {
+                }}
+                .footer {{
                     margin-top: 40px;
                     text-align: center;
                     color: #666;
                     font-size: 14px;
                     border-top: 1px solid #ddd;
                     padding-top: 20px;
-                }
+                }}
             </style>
         </head>
         <body>
@@ -314,56 +314,56 @@ class ReportGenerator:
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>股票推荐报告</title>
             <style>
-                body {
+                body {{
                     font-family: 'Microsoft YaHei', Arial, sans-serif;
                     background-color: #f5f5f5;
                     margin: 0;
                     padding: 20px;
-                }
-                .container {
+                }}
+                .container {{
                     max-width: 1200px;
                     margin: 0 auto;
                     background-color: white;
                     padding: 30px;
                     box-shadow: 0 0 10px rgba(0,0,0,0.1);
-                }
-                h1 {
+                }}
+                h1 {{
                     color: #333;
                     text-align: center;
                     border-bottom: 2px solid #0066cc;
                     padding-bottom: 10px;
-                }
-                h2 {
+                }}
+                h2 {{
                     color: #555;
                     margin-top: 30px;
                     border-left: 4px solid #0066cc;
                     padding-left: 10px;
-                }
-                .stock-table {
+                }}
+                .stock-table {{
                     width: 100%;
                     border-collapse: collapse;
                     margin: 20px 0;
-                }
-                .stock-table th, .stock-table td {
+                }}
+                .stock-table th, .stock-table td {{
                     border: 1px solid #ddd;
                     padding: 10px;
                     text-align: left;
-                }
-                .stock-table th {
+                }}
+                .stock-table th {{
                     background-color: #f2f2f2;
                     font-weight: bold;
-                }
-                .stock-table tr:hover {
+                }}
+                .stock-table tr:hover {{
                     background-color: #f5f5f5;
-                }
-                .footer {
+                }}
+                .footer {{
                     margin-top: 40px;
                     text-align: center;
                     color: #666;
                     font-size: 14px;
                     border-top: 1px solid #ddd;
                     padding-top: 20px;
-                }
+                }}
             </style>
         </head>
         <body>
@@ -428,67 +428,67 @@ class ReportGenerator:
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>因子分析报告</title>
             <style>
-                body {
+                body {{
                     font-family: 'Microsoft YaHei', Arial, sans-serif;
                     background-color: #f5f5f5;
                     margin: 0;
                     padding: 20px;
-                }
-                .container {
+                }}
+                .container {{
                     max-width: 1200px;
                     margin: 0 auto;
                     background-color: white;
                     padding: 30px;
                     box-shadow: 0 0 10px rgba(0,0,0,0.1);
-                }
-                h1 {
+                }}
+                h1 {{
                     color: #333;
                     text-align: center;
                     border-bottom: 2px solid #0066cc;
                     padding-bottom: 10px;
-                }
-                h2 {
+                }}
+                h2 {{
                     color: #555;
                     margin-top: 30px;
                     border-left: 4px solid #0066cc;
                     padding-left: 10px;
-                }
-                .info-table {
+                }}
+                .info-table {{
                     width: 100%;
                     border-collapse: collapse;
                     margin: 20px 0;
-                }
-                .info-table th, .info-table td {
+                }}
+                .info-table th, .info-table td {{
                     border: 1px solid #ddd;
                     padding: 10px;
                     text-align: left;
-                }
-                .info-table th {
+                }}
+                .info-table th {{
                     background-color: #f2f2f2;
                     font-weight: bold;
-                }
-                .factor-table {
+                }}
+                .factor-table {{
                     width: 100%;
                     border-collapse: collapse;
                     margin: 20px 0;
-                }
-                .factor-table th, .factor-table td {
+                }}
+                .factor-table th, .factor-table td {{
                     border: 1px solid #ddd;
                     padding: 10px;
                     text-align: left;
-                }
-                .factor-table th {
+                }}
+                .factor-table th {{
                     background-color: #f2f2f2;
                     font-weight: bold;
-                }
-                .footer {
+                }}
+                .footer {{
                     margin-top: 40px;
                     text-align: center;
                     color: #666;
                     font-size: 14px;
                     border-top: 1px solid #ddd;
                     padding-top: 20px;
-                }
+                }}
             </style>
         </head>
         <body>

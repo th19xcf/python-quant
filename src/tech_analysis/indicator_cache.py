@@ -5,7 +5,7 @@
 指标缓存模块，提供高效的指标计算结果缓存机制
 """
 
-from typing import Dict, Any, Optional, TypeVar, Generic
+from typing import Dict, Any, Optional, TypeVar, Generic, List
 import hashlib
 import polars as pl
 from loguru import logger

@@ -241,7 +241,7 @@ class EventBacktestRunner:
 
         # 一次性建立 date -> 行号索引，主循环只做字典查找
         date_positions: Dict[str, Dict[Any, int]] = {}
-        all_dates = set()
+        all_dates: set = set()
         for code, df in prepared.items():
             positions: Dict[Any, int] = {}
             for i, d in enumerate(df['date'].to_list()):
@@ -355,6 +355,8 @@ class EventBacktestRunner:
             if rules.is_tradable('buy', prev_close=prev_close, open_price=open_price,
                                  high=high, low=low, close=close, volume=volume, ts_code=code):
                 exec_price = open_price if open_price is not None else close
+                if exec_price is None:
+                    return
                 available = book.cash.get(code, 0.0)
                 cost_rate = cost_model.get_buy_cost_rate()
                 affordable = available / (exec_price * (1 + cost_rate))
@@ -386,6 +388,8 @@ class EventBacktestRunner:
             if rules.is_tradable('sell', prev_close=prev_close, open_price=open_price,
                                  high=high, low=low, close=close, volume=volume, ts_code=code):
                 exec_price = open_price if open_price is not None else close
+                if exec_price is None:
+                    return
                 shares = book.positions[code]
                 sell_cost = cost_model.calculate_sell_cost(shares, exec_price)
 

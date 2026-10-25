@@ -19,7 +19,7 @@ class CostModel:
     交易成本模型类，提供交易成本计算功能
     """
     
-    def __init__(self, overrides: Dict[str, Any] = None):
+    def __init__(self, overrides: Dict[str, Any] | None = None):
         """
         初始化成本模型
         

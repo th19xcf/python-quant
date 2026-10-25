@@ -111,7 +111,7 @@ class PerformanceAnalyzer:
         if not equities:
             return 0
         
-        max_drawdown = 0
+        max_drawdown = 0.0
         peak = equities[0]
         
         for equity in equities:
