@@ -14,11 +14,12 @@ from typing import Any, Dict
 
 
 def run_backtest_worker(engine_cls, strategy, data, cost_model,
-                        params: Dict[str, Any], initial_capital: float) -> Dict[str, Any]:
+                        params: Dict[str, Any], initial_capital: float,
+                        risk_engine=None) -> Dict[str, Any]:
     """
     在子进程中执行单次回测。
 
-    只接收可 pickle 的普通参数（策略对象、Polars DataFrame、成本模型、标量配置），
+    只接收可 pickle 的普通参数（策略对象、Polars DataFrame、成本模型、风控引擎、标量配置），
     在子进程内新建引擎实例执行回测，避免传递持有不可 pickle 资源的引擎实例。
 
     Args:
@@ -28,6 +29,7 @@ def run_backtest_worker(engine_cls, strategy, data, cost_model,
         cost_model: 成本模型对象
         params: 本次回测使用的参数字典
         initial_capital: 初始资金
+        risk_engine: 风控引擎（None 表示不启用）
 
     Returns:
         Dict[str, Any]: 回测结果（附带 params）
@@ -38,6 +40,7 @@ def run_backtest_worker(engine_cls, strategy, data, cost_model,
     engine = engine_cls(data)
     engine.set_strategy(strategy_copy)
     engine.set_cost_model(cost_model)
+    engine.risk_engine = risk_engine
 
     result = engine.run_backtest(initial_capital)
     result['params'] = params

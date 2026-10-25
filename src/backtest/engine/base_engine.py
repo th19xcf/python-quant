@@ -12,10 +12,11 @@ import itertools
 from loguru import logger
 
 from src.backtest.costs.cost_model import CostModel
+from src.backtest.engine.execution_core import ExecutionRules
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.backtest.visualization.backtest_visualizer import BacktestVisualizer
 from src.backtest.strategies.base_strategy import BaseStrategy
-from src.risk import RiskEngine, Order as RiskOrder, Portfolio as RiskPortfolio, GateResult
+from src.risk import RiskEngine
 from src.tech_analysis.indicators.formulas import atr_expr, macd_exprs, rsi_expr
 
 
@@ -99,21 +100,7 @@ class BaseBacktestEngine:
             北交所 8/4/9 开头代码   → 30%
             主板默认                 → 10%
         """
-        if is_st:
-            return 0.05
-
-        code = (ts_code or '').split('.')[0]
-        if not code:
-            return 0.10  # 无代码信息时回退主板默认
-
-        if code.startswith(('300', '301')):
-            return 0.20  # 创业板
-        if code.startswith(('68', '688')):
-            return 0.20  # 科创板
-        if code.startswith(('4', '8', '9')) and len(code) == 6:
-            return 0.30  # 北交所
-
-        return 0.10  # 主板/中小板等默认
+        return ExecutionRules.resolve_limit_pct(ts_code, is_st, default=0.10)
 
     @staticmethod
     def _is_tradable(index: int, direction: str, close_prices, high_prices, low_prices, volumes,
@@ -138,32 +125,19 @@ class BaseBacktestEngine:
                   开盘价触及涨停（含一字涨停、开盘封板后打开）不可买入；
                   开盘价触及跌停（含一字跌停、开盘封板后打开）不可卖出
         """
-        effective_limit = BaseBacktestEngine._get_limit_pct(ts_code, is_st) if ts_code else limit_pct
-
-        # 停牌日（成交量为0）不可交易
-        if volumes is not None and volumes[index] is not None and volumes[index] <= 0:
-            return False
-
-        # 以开盘价作为成交价时，若开盘即涨跌停则无法成交
-        # （覆盖一字板 + 开盘封板后盘中打开两种情形）
-        if open_prices is not None and index > 0:
-            prev_close = close_prices[index - 1]
-            if prev_close and prev_close > 0:
-                open_pct = open_prices[index] / prev_close - 1
-                if direction == 'buy' and open_pct >= effective_limit - 0.005:
-                    return False
-                if direction == 'sell' and open_pct <= -(effective_limit - 0.005):
-                    return False
-        # 兜底：无开盘价时退化为一字板判断
-        elif high_prices is not None and low_prices is not None and index > 0:
-            prev_close = close_prices[index - 1]
-            if prev_close and prev_close > 0 and high_prices[index] == low_prices[index]:
-                pct = close_prices[index] / prev_close - 1
-                if direction == 'buy' and pct >= effective_limit - 0.005:
-                    return False
-                if direction == 'sell' and pct <= -(effective_limit - 0.005):
-                    return False
-        return True
+        rules = ExecutionRules(limit_pct=limit_pct)
+        prev_close = close_prices[index - 1] if index > 0 else None
+        return rules.is_tradable(
+            direction,
+            prev_close=prev_close,
+            open_price=open_prices[index] if open_prices is not None else None,
+            high=high_prices[index] if high_prices is not None else None,
+            low=low_prices[index] if low_prices is not None else None,
+            close=close_prices[index],
+            volume=volumes[index] if volumes is not None else None,
+            ts_code=ts_code,
+            is_st=is_st,
+        )
 
     def set_cost_model(self, cost_model: CostModel) -> None:
         """
