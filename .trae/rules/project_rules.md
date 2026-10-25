@@ -65,7 +65,8 @@
 ### 注意事项
 - **Commit message 必须原样输出**：从 `git log -1 --format="%B"` 取，不做任何二次格式化（不要加"标题""正文"标签，不要改缩进）
 - **不要伪造输出**：所有数值、哈希、文件状态都必须来自 `git` 和 `robocopy` 的真实输出
-- **备份方式**：`robocopy <src_dir> <backup_dir> /MIR /R:1 /W:1`；backup 目标固定 `E:\git\python-quant\`；exit code=1 是 robocopy 正常复制成功，exit code>=8 是失败
+- **备份方式**：`robocopy <src_dir> <backup_dir> /MIR /R:1 /W:1 /XD __pycache__ /XF *.pyc *.nbc *.nbi`；backup 目标固定 `E:\git\python-quant\`；exit code=1 是 robocopy 正常复制成功，exit code>=8 是失败
+- **禁止将编译产物同步进备份**：`/XD __pycache__` 排除 Python 字节码与 Numba 缓存目录，`/XF *.pyc *.nbc *.nbi` 排除散落的编译产物；这些文件是机器相关的运行缓存，纳入备份会造成跨版本污染与体积膨胀
 
 ## 备份同步规则
 
