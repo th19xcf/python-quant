@@ -3,8 +3,17 @@
 
 """
 Alpha因子计算器，用于计算各种Alpha因子
+
+横截面（多标的）计算统一走模块级入口 calculate_factors_cross_sectional：
+按标的列物理分区 → 进程池分块并行 → 行序还原。因子类与指标公式层不做任何
+分组感知改造——每个分区就是因子类设计所针对、且被现有测试覆盖的单标的
+时间序列，正确性由构造保证，避免 .over() 给公式层引入双行为模式。
 """
 
+import math
+import os
+import time
+from concurrent.futures import ProcessPoolExecutor
 from typing import List, Dict, Optional, Any
 import polars as pl
 import pandas as pd
@@ -217,8 +226,116 @@ class AlphaCalculator:
     def get_factor_results(self) -> Dict[str, Any]:
         """
         获取因子计算结果
-        
+
         Returns:
             Dict[str, Any]: 因子计算结果
         """
         return self.factor_results
+
+
+_ROW_IDX_COL = '__cs_row_idx'
+
+
+def _compute_partitions(partitions: List[pl.DataFrame],
+                        factor_types: List[str],
+                        params: Dict[str, Any]) -> Optional[pl.DataFrame]:
+    """
+    对若干单标的分区依次计算因子并纵向合并。
+
+    模块级函数，供 ProcessPoolExecutor pickle 调用；子进程通过 import 本模块
+    完成因子注册，与主进程同一代码路径。
+
+    Args:
+        partitions: 单标的分区列表（每个分区恰好一只标的）
+        factor_types: 因子类型列表
+        params: 透传给因子类 calculate() 的参数
+
+    Returns:
+        合并后的 DataFrame；空输入返回 None
+    """
+    results = []
+    for part in partitions:
+        results.append(AlphaCalculator(part).calculate_factors(factor_types, **params))
+    if not results:
+        return None
+    if len(results) == 1:
+        return results[0]
+    # vertical_relaxed：分区间列数/类型可能存在细微差异，按列名对齐
+    return pl.concat(results, how='vertical_relaxed')
+
+
+def calculate_factors_cross_sectional(data,
+                                      factor_types: List[str],
+                                      code_col: str = 'ts_code',
+                                      n_workers: Optional[int] = None,
+                                      chunks_per_worker: int = 4,
+                                      **params) -> pl.DataFrame:
+    """
+    横截面（多标的）因子计算统一入口。
+
+    实现方式：按 code_col 物理分区为单标的序列 → 分块派发到进程池 →
+    合并并按输入行序还原。每个分区走与单标的完全相同的因子计算路径，
+    因此横截面结果与逐标的循环调用 AlphaCalculator 完全一致。
+
+    输入数据需保证同一标的内部按时间升序（与单标的路径同一前置条件）。
+
+    Args:
+        data: Polars/pandas DataFrame，必须包含 code_col 列
+        factor_types: 按需计算的因子类型子集（注册表中的名字）
+        code_col: 标的代码列名，默认 'ts_code'（与数据库口径一致）
+        n_workers: 进程池大小；1 为进程内串行。
+            None 时自适应：总行数 ≥ 20 万用满 CPU 核数（不超过分区数），
+            否则串行——Windows spawn 固定开销约 1.5s，小规模并行反而更慢
+        chunks_per_worker: 每 worker 的 chunk 数，用于摊薄进程派发与 pickle 开销
+        **params: 透传给因子类 calculate() 的参数
+
+    Returns:
+        pl.DataFrame: 附加上因子列的完整数据，行序与输入一致
+
+    Raises:
+        ValueError: 输入缺少 code_col 列
+    """
+    if isinstance(data, pd.DataFrame):
+        df = pl.from_pandas(data)
+    else:
+        df = data
+    if not factor_types or df.is_empty():
+        return df
+    if code_col not in df.columns:
+        raise ValueError(
+            f"横截面计算缺少标的代码列 '{code_col}'，可用列: {df.columns}")
+
+    t0 = time.perf_counter()
+    # 记录原始行序，最终还原（允许输入乱序/非连续）
+    df = df.with_row_index(_ROW_IDX_COL)
+    partitions = df.partition_by(code_col, maintain_order=True)
+
+    workers = n_workers
+    if workers is None:
+        # 自适应：spawn 固定开销约 1.5s，仅在大批量时启用进程池
+        workers = (os.cpu_count() or 1) if df.height >= 200_000 else 1
+    workers = max(1, min(workers, len(partitions)))
+
+    if workers == 1:
+        merged = _compute_partitions(partitions, factor_types, params)
+    else:
+        # 连续切块：chunk 数 = workers × chunks_per_worker，且不超过分区数
+        n_chunks = min(len(partitions), workers * max(1, chunks_per_worker))
+        chunk_size = math.ceil(len(partitions) / n_chunks)
+        chunks = [partitions[i:i + chunk_size]
+                  for i in range(0, len(partitions), chunk_size)]
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            parts = list(pool.map(_compute_partitions,
+                                  chunks,
+                                  [factor_types] * len(chunks),
+                                  [params] * len(chunks)))
+        parts = [p for p in parts if p is not None]
+        merged = (parts[0] if len(parts) == 1
+                  else pl.concat(parts, how='vertical_relaxed'))
+
+    result = (merged.sort(_ROW_IDX_COL).drop(_ROW_IDX_COL)
+              if merged is not None else df.drop(_ROW_IDX_COL))
+    logger.info(
+        f"横截面因子计算完成: {len(partitions)} 标的 × {len(factor_types)} 类因子，"
+        f"workers={workers}，耗时 {time.perf_counter() - t0:.2f}s")
+    return result
