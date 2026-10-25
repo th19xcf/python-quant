@@ -253,3 +253,54 @@ def test_small_order_steps_down_one_lot_instead_of_expiring():
     assert result['expired_orders'] == []
     assert len(result['trades']) == 1
     assert result['trades'][0]['shares'] == 900
+
+
+def test_limit_check_uses_raw_prices_on_ex_dividend_day():
+    """除权日涨跌停判定必须用原始价：hfq 复权比值失真不得误放行。
+
+    d2 为除权日：原始开盘 9.0 / 原始前收 10.0 = 一字跌停（-10%，不可卖）；
+    hfq 因子 1.05 使复权开盘 9.45 / 复权前收 10.0 = -5.5%（看似可交易）。
+    若误用复权价判定，卖出会被放行；正确行为是 not_tradable 作废。
+    """
+    days = 3
+    dates = pd.date_range('2023-01-02', periods=days, freq='B')
+    df = pl.DataFrame({
+        'date': dates,
+        'open': [10.0, 10.0, 9.45],
+        'high': [10.0, 10.0, 9.45],
+        'low': [10.0, 10.0, 9.45],
+        'close': [10.0, 10.0, 9.45],
+        'volume': [1_000_000.0] * days,
+        'raw_open': [10.0, 10.0, 9.0],
+        'raw_close': [10.0, 10.0, 9.0],
+    })
+    engine = BacktestEngine(df)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy', 1: 'sell'}))
+    result = engine.run_backtest(initial_capital=100_000.0, ts_code='600000.SH')
+
+    sells = [t for t in result['trades'] if t['signal'] == 'sell']
+    assert not sells, '除权日一字跌停（按原始价判定）不得放行卖出'
+    assert any(o['reason'] == 'not_tradable' for o in result['expired_orders'])
+
+
+def test_limit_check_uses_raw_prices_blocks_buy_on_ex_dividend_limit_up():
+    """除权日原始价涨停（+10%）不可买入，即使复权比值仅 +4.8% 看似可买。"""
+    days = 3
+    dates = pd.date_range('2023-01-02', periods=days, freq='B')
+    df = pl.DataFrame({
+        'date': dates,
+        'open': [10.0, 10.0, 10.48],
+        'high': [10.0, 10.0, 10.48],
+        'low': [10.0, 10.0, 10.48],
+        'close': [10.0, 10.0, 10.48],
+        'volume': [1_000_000.0] * days,
+        'raw_open': [10.0, 10.0, 11.0],
+        'raw_close': [10.0, 10.0, 11.0],
+    })
+    engine = BacktestEngine(df)
+    engine.set_strategy(_IndexSignalStrategy({1: 'buy'}))
+    result = engine.run_backtest(initial_capital=100_000.0, ts_code='600000.SH')
+
+    buys = [t for t in result['trades'] if t['signal'] == 'buy']
+    assert not buys, '除权日一字涨停（按原始价判定）不得放行买入'
+    assert any(o['reason'] == 'not_tradable' for o in result['expired_orders'])

@@ -84,6 +84,7 @@ graph TD
 └──────────────────────────┬─────────────────────────────────────────────────┘
                            │  Polars DataFrame 含 date/open/high/low/close/volume
                            │                    + qfq_*/hfq_* 双列
+                           │                    + raw_open/raw_close（hfq 时保留原始价）
                            ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
 │ BacktestEngine / PortfolioBacktestEngine（同一内核的参数化封装）           │
@@ -91,6 +92,8 @@ graph TD
 │      ma_{short}, ma_{long}, macd, macd_signal, macd_hist, rsi, atr        │
 │   ② EventBacktestRunner 事件循环:                                         │
 │      ├─ ExecutionRules — 涨跌停幅度 + 停牌/开盘触板不可成交               │
+│      │    （携带 raw_* 列时用原始价判定：交易所规则定义在原始价上，        │
+│      │     除权日复权比值会失真）                                         │
 │      ├─ strategy.generate_signal(current_data, index) → O(1) dict lookup  │
 │      ├─ pending_signal 延迟 T+1 开盘成交                                   │
 │      ├─ AccountBook — 整手取整、买入即时扣费、卖出资金累加               │

@@ -227,6 +227,14 @@ class EventBacktestRunner:
         结果固定包含：initial_capital / final_equity / total_return / trades /
         equity_curve / performance / risk_summary / rejected_orders。
         result_meta 里的键会合并进结果（如 strategy_name / strategy_names）。
+
+        universe 价格口径（双价格列契约）：
+            - open/high/low/close 为指标与收益计算用价（DataFetcher hfq 出口
+              即为后复权价）；
+            - 若携带 raw_open / raw_close（hfq 出口自动保留的原始价），
+              涨跌停判定一律使用原始价——交易所规则定义在原始价上，除权日
+              因子跳变会使复权比值失真；两列必须成对出现；
+            - 无 raw_* 列时视为原始价输入（如 TDX 本地数据），直接用主列判定。
         """
         if not universe:
             logger.error("回测数据为空")
@@ -238,6 +246,10 @@ class EventBacktestRunner:
             return {}
 
         prepared = {code: self._ensure_sorted(universe[code]) for code in codes}
+
+        for code, df in prepared.items():
+            if ('raw_open' in df.columns) != ('raw_close' in df.columns):
+                raise ValueError(f"{code} 的 raw_open / raw_close 必须成对出现")
 
         # 一次性建立 date -> 行号索引，主循环只做字典查找
         date_positions: Dict[str, Dict[Any, int]] = {}
@@ -258,6 +270,7 @@ class EventBacktestRunner:
         pending: Dict[str, Optional[str]] = {code: None for code in codes}
         bar_index: Dict[str, int] = {code: 0 for code in codes}
         prev_close: Dict[str, Optional[float]] = {code: None for code in codes}
+        prev_raw_close: Dict[str, Optional[float]] = {code: None for code in codes}
 
         trades: List[Dict[str, Any]] = []
         rejected_orders: List[Dict[str, Any]] = []
@@ -277,6 +290,8 @@ class EventBacktestRunner:
                 high = row.get('high')
                 low = row.get('low')
                 volume = row.get('volume')
+                raw_open = row.get('raw_open')
+                raw_close = row.get('raw_close')
 
                 self._execute_pending(
                     code=code, date=date, pending=pending, book=book, gate=gate,
@@ -286,6 +301,8 @@ class EventBacktestRunner:
                     lot_size=lot_size,
                     prev_close=prev_close[code], open_price=open_price,
                     high=high, low=low, close=close_price, volume=volume,
+                    open_raw=raw_open, prev_close_raw=prev_raw_close[code],
+                    close_raw=raw_close,
                 )
 
                 # 策略基于当日数据生成信号，延迟到该标的下一个交易日执行
@@ -297,6 +314,7 @@ class EventBacktestRunner:
 
                 bar_index[code] += 1
                 prev_close[code] = close_price
+                prev_raw_close[code] = raw_close if raw_close is not None else close_price
                 book.mark(code, close_price)
 
             equity_curve.append({'date': date, 'equity': book.total_equity()})
@@ -350,7 +368,10 @@ class EventBacktestRunner:
                          equity_curve: List[Dict[str, Any]], lot_size: int,
                          prev_close: Optional[float], open_price: Optional[float],
                          high: Optional[float], low: Optional[float],
-                         close: Optional[float], volume: Optional[float]) -> None:
+                         close: Optional[float], volume: Optional[float],
+                         open_raw: Optional[float] = None,
+                         prev_close_raw: Optional[float] = None,
+                         close_raw: Optional[float] = None) -> None:
         """执行该标的的挂单。
 
         订单生命周期语义（显式状态机，杜绝静默丢单）：
@@ -380,9 +401,15 @@ class EventBacktestRunner:
             _expire('no_position')
             return
 
-        # 涨跌停 / 停牌（零成交量）当日不可按该方向成交
-        if not rules.is_tradable(side, prev_close=prev_close, open_price=open_price,
-                                 high=high, low=low, close=close, volume=volume,
+        # 涨跌停 / 停牌（零成交量）当日不可按该方向成交。
+        # 交易所规则定义在原始价上：数据携带 raw_* 列（hfq 复权输入）时
+        # 必须用原始价判定，除权日因子跳变会让复权比值失真（误触发/误放行）；
+        # high == low 的一字板等式判断在线性缩放下不变，可直接透传。
+        check_open = open_raw if open_raw is not None else open_price
+        check_prev = prev_close_raw if prev_close_raw is not None else prev_close
+        check_close = close_raw if close_raw is not None else close
+        if not rules.is_tradable(side, prev_close=check_prev, open_price=check_open,
+                                 high=high, low=low, close=check_close, volume=volume,
                                  ts_code=code):
             _expire('not_tradable')
             return

@@ -264,7 +264,18 @@ class DataFetcher:
         for col in price_cols:
             adjusted = (pl.col(col) * factor_expr).alias(col)
             exprs.append(adjusted)
-        return df.with_columns(exprs)
+        result = df.with_columns(exprs)
+
+        # hfq 是回测/计算口径：涨跌停等交易所规则定义在原始价上，除权日
+        # 因子跳变会让"复权价 / 前收复权价"的比值失真（误触发/误放行）。
+        # 保留 raw_open / raw_close 双价格列：撮合内核用原始价判定涨跌停，
+        # 指标与收益仍在复权空间计算。
+        if adjustment_type == 'hfq':
+            result = result.with_columns([
+                df['open'].alias('raw_open'),
+                df['close'].alias('raw_close'),
+            ])
+        return result
 
     def _get_data_from_database(self, data_type: str, code: str,
                                  start_date: str, end_date: str,
