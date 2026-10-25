@@ -53,25 +53,20 @@ DATABASE__DATABASE=quant_db
 当前代码默认只支持 **MySQL 8.0**（SQLAlchemy 方言 `mysql+pymysql`），其他数据库未测试。首次启动系统会尝试建表。
 无数据库也能跑（单文件自包含回测见下），但缺少实时行情 + 因子分析。
 
-### 无数据库的回测（单文件自包含）
+### 端到端 Quickstart（一条命令跑通「取数 → 因子 → 回测 → 报告」）
 
 ```bash
-poetry run python -c "
-import polars as pl
-from src.backtest.engine.backtest_engine import BacktestEngine
-from src.backtest.strategies.trend_following_strategy import TrendFollowingStrategy
-
-df = pl.DataFrame({'date': pl.date_range(pl.date(2023,1,1), pl.date(2023,8,1), '1d', eager=True),
-                   'open': pl.Series([100.0]*215, dtype=pl.Float64),
-                   'high': pl.Series([101.0]*215, dtype=pl.Float64),
-                   'low':  pl.Series([99.0]*215, dtype=pl.Float64),
-                   'close': pl.Series([100.0]*215, dtype=pl.Float64),
-                   'volume': pl.Series([100000]*215)})
-engine = BacktestEngine(df); engine.set_strategy(TrendFollowingStrategy(5, 20))
-result = engine.run_backtest(initial_capital=100000, ts_code='000001.SZ')
-print(result['total_return'], '% | trades:', len(result['trades']))
-"
+python examples/quickstart.py                                            # 合成数据，零配置
+python examples/quickstart.py --bars 1200                                # 加长样本
+python examples/quickstart.py --real 600000.SH --start 2023-01-01 --end 2024-12-31   # 真实数据源
 ```
+
+流程：合成/取数 → `calculate_factors_cross_sectional` 计算动量因子 → 按因子截面排名选前 2 只
+→ `run_backtest` 组合回测（MA 择时）→ 报告落到 `examples/output/`（`report.json` /
+`trades.csv` / `equity_curve.csv`）。
+
+脚本默认不读 `.env`、不连数据库，克隆后即可运行；带 `--verbose` 可打开框架日志。
+关键不变量断言失败时返回非 0，可直接当作冒烟测试接入 CI——这也是回归验证的最短路径。
 
 ---
 
@@ -90,6 +85,8 @@ quant/
 │
 ├── tools/                       # 运维脚本：通达信精度校准、复权因子重算
 ├── scripts/                     # 一次性数据修复 / 抽样查询脚本
+├── examples/
+│   └── quickstart.py            # 端到端样例：取数 → 因子 → 回测 → 报告
 ├── docs/                        # 架构文档 + 校准指南
 │   ├── architecture.md          # 模块依赖与数据流
 │   └── tdx_calibration_guide.md
