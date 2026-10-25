@@ -6,7 +6,6 @@
 """
 
 from typing import Dict, Any
-import polars as pl
 from loguru import logger
 
 from src.backtest.engine.base_engine import BaseBacktestEngine
@@ -83,24 +82,39 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
         last_close = {stock: None for stock in self.data_dict.keys()}
         prev_close = {stock: None for stock in self.data_dict.keys()}
         
+        # 指标预计算：每只标的只算一次（策略读取 ma_* / macd / rsi 等预计算列，
+        # 若缺失则 generate_signal 恒返回 hold，回测会静默空跑）
+        prepared_data = {}
+        for stock_code, data in self.data_dict.items():
+            strategy = self.strategies.get(stock_code)
+            prepared_data[stock_code] = (
+                self._precompute_indicators(data, strategy) if strategy else data
+            )
+
+        # 一次性建立 date -> 行号索引，避免主循环内对每只标的重复做全表 filter 扫描
+        date_positions = {}
         all_dates = set()
-        for stock, data in self.data_dict.items():
-            dates = data['date'].to_list()
-            all_dates.update(dates)
+        for stock_code, data in prepared_data.items():
+            positions = {}
+            for i, d in enumerate(data['date'].to_list()):
+                # 与原先 filter(...).to_dict()[0] 取首行的口径保持一致
+                if d not in positions:
+                    positions[d] = i
+            date_positions[stock_code] = positions
+            all_dates.update(positions)
         
         sorted_dates = sorted(all_dates)
         
         for date in sorted_dates:
             daily_trades = []
             
-            for stock_code, data in self.data_dict.items():
-                stock_data = data.filter(pl.col('date') == date)
-                if stock_data.is_empty():
+            for stock_code in prepared_data:
+                pos = date_positions[stock_code].get(date)
+                if pos is None:
                     # 停牌（无数据）：保留挂单，持仓沿用最近收盘价估值
                     continue
                 
-                current_data = stock_data.to_dict(as_series=False)
-                current_data = {k: v[0] for k, v in current_data.items()}
+                current_data = prepared_data[stock_code].row(pos, named=True)
                 
                 open_price = current_data.get('open', current_data['close'])
                 close_price = current_data['close']
