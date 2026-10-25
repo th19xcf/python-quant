@@ -8,8 +8,9 @@
 graph TD
     subgraph "UI 层（PySide6）"
         MW[main_window.py]
-        BD[strategy_backtest_dialog.py]
+        BD[ui/dialogs/strategy_backtest_dialog.py]
         FAD[factor_analysis_dialog.py]
+        IR[indicator_renderer.py + renderers/]
     end
 
     subgraph "业务应用层"
@@ -23,12 +24,13 @@ graph TD
         AC[adj_factor_calculator.py — Polars 向量化]
         DE[db_manager.py — SQLAlchemy]
 
-        BE[BacktestEngine — 单股回测]
-        PE[PortfolioBacktestEngine — 多股组合]
+        BE[BacktestEngine — 单股回测封装]
+        PE[PortfolioBacktestEngine — 多股组合封装]
+        EC[execution_core.py — 统一撮合内核]
         OB[BaseBacktestEngine — 共享工具]
         SM[BaseStrategy — TrendFollowing / MeanRev / MultiFactor]
 
-        TE[technical_analyzer.py + indicators/]
+        TE[technical_analyzer.py + analyzer/ + indicators/]
         AC2[alpha_calculator.py + factors/]
     end
 
@@ -45,12 +47,11 @@ graph TD
         LOG[utils/logger.py — Loguru]
     end
 
-    MW --> BD & FAD
+    MW --> BD & FAD & IR
     BD --> BE & PE
     FAD --> AC2 & TE
-    BE --> OB & SM
-    BE --> TE   %% 使用 _precompute_indicators 预计算指标列
-    PE --> OB & SM
+    BE --> EC & OB & SM & TE   %% 使用 _precompute_indicators 预计算指标列
+    PE --> EC & OB & SM
 
     DM --> DF
     DM --> DE
@@ -85,17 +86,17 @@ graph TD
                            │                    + qfq_*/hfq_* 双列
                            ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
-│ BacktestEngine.run_backtest(initial_capital, lot_size, ts_code)           │
-│   ① ts_code → _get_limit_pct() 自适应涨跌停阈值                          │
-│   ② _precompute_indicators() → Polars 向量化一次算好:                     │
+│ BacktestEngine / PortfolioBacktestEngine（同一内核的参数化封装）           │
+│   ① _precompute_indicators() → Polars 向量化一次算好:                     │
 │      ma_{short}, ma_{long}, macd, macd_signal, macd_hist, rsi, atr        │
-│   ③ bar-by-bar 撮合循环:                                                  │
-│      ├─ _is_tradable() — 停牌过滤 + 一字涨跌停识别                       │
-│      ├─ CostModel.calculate_buy/sell_cost() — A 股现行规则                │
+│   ② EventBacktestRunner 事件循环:                                         │
+│      ├─ ExecutionRules — 涨跌停幅度 + 停牌/开盘触板不可成交               │
 │      ├─ strategy.generate_signal(current_data, index) → O(1) dict lookup  │
-│      ├─ pending_signal 延迟 T+1 执行                                       │
+│      ├─ pending_signal 延迟 T+1 开盘成交                                   │
+│      ├─ AccountBook — 整手取整、买入即时扣费、卖出资金累加               │
+│      ├─ RiskGate — 可选风控闸门，拒单写入 rejected_orders                  │
 │      └─ equity_curve 按收盘价盯市                                          │
-│   ④ PerformanceAnalyzer 算 Sharpe / Drawdown / WinningRate                │
+│   ③ PerformanceAnalyzer 算 Sharpe / Drawdown / WinningRate                │
 └──────────────────────────┬─────────────────────────────────────────────────┘
                            │ backtest_results dict
                            ▼
@@ -120,17 +121,20 @@ graph TD
 `qfq_*` 和 `hfq_*` 两套列，data_fetcher 按请求类型写入主列，
 下游拿到的 `open/high/low/close` 即为所请求的复权价。
 
-### 三引擎为何不合并
+### 单一执行内核（已收口）
 
-| 引擎 | 独特之处 | 合并难度 |
-|---|---|---|
-| BacktestEngine | 单股撮合，生产路径 | — |
-| OptimizedBacktestEngine | 历史副本（lru_cache + 卖出记账 bug 均已修） | 低，仅保留 |
-| PortfolioBacktestEngine | 按交易日并集循环、多股独立信号、独立 capital | 高，与单股撮合语义不同 |
+撮合、T+1、整手、费用、权益估值与风控只有一个实现：`src/backtest/engine/execution_core.py`。
 
-当前策略：三者共享基类工具（_is_tradable / _precompute_indicators / _select_best_params），
-业务撮合循环各自维护。未来若需统一，可把撮合骨架抽成模板方法，
-但当前成本收益比不划算。
+| 组件 | 职责 |
+|---|---|
+| `ExecutionRules` | 涨跌停幅度推导 + 停牌/开盘触板不可成交判定 |
+| `AccountBook` | 现金与持仓记账、整手取整、买入即时扣费、卖出资金累加、收盘盯市 |
+| `RiskGate` | 唯一的风控闸门，拒单写入 `rejected_orders` |
+| `EventBacktestRunner` | 唯一事件循环：T 日信号 → T+1 开盘成交、逐日盯市、结果组装 |
+
+`BacktestEngine` 与 `PortfolioBacktestEngine` 只是同一内核的参数化封装（单标的/多标的、资金分配方式），
+不再各自维护撮合分支；`OptimizedBacktestEngine` 已删除。结果字典键保持
+`trades / final_equity / total_return / equity_curve / performance / risk_summary / rejected_orders`。
 
 ### 为什么 _calculate_factors 用事件逐行更新而不是全因子公式
 
@@ -160,13 +164,13 @@ def _get_limit_pct(ts_code, is_st=False):
     return 0.10                    # 主板默认
 ```
 
-三个引擎均已对齐。向后兼容：未传 ts_code 时回退 `limit_pct=0.1`。
+两条回测路径共用同一判定。向后兼容：未传 ts_code 时回退 `limit_pct=0.1`。
 
 ---
 
 ## 核心公式与口径说明
 
-所有指标、因子、复权计算统一用 Polars 表达式（`pl.col().ewm_mean() / rolling_mean() / when.then.otherwise`），**不复刻通达信/同花顺/MetaTrader 的分支实现**。
+所有指标、因子、复权计算统一用 Polars 表达式（`pl.col().ewm_mean() / rolling_mean() / when.then.otherwise`），**不复刻通达信/同花顺/MetaTrader 的分支实现**。指标公式的唯一实现在 `src/tech_analysis/indicators/formulas.py`，`indicator_calculator.py` 只负责编排；图表渲染层不实现公式，只读取预计算列。
 
 | 指标/因子 | 口径 | 公式 / 表达式 | 备注 |
 |---|---|---|---|

@@ -111,7 +111,7 @@ quant/
     │   └── models/             # stock_daily / stock_basic / stock_dividend / ...
     │
     ├── backtest/                # 回测引擎
-    │   ├── engine/             # backtest_engine / optimized / portfolio + base_engine
+    │   ├── engine/             # execution_core（统一内核）+ backtest_engine / portfolio + base_engine
     │   ├── strategies/         # TrendFollowing / MeanReversion / MultiFactor（无状态）
     │   ├── costs/              # A 股成本模型（佣金 / 印花税 0.05% / 过户费 / 滑点）
     │   ├── performance/        # 绩效分析（Sharpe / Drawdown / ...）
@@ -146,15 +146,16 @@ README 旧版宣称 8 阶段，代码现状已完成/部分完成/待补齐，�
 
 ## 设计要点
 
-### 回测引擎三版本定位
+### 回测引擎定位
 
 | 类 | 用途 | 调用入口 |
 |---|---|---|
-| `BacktestEngine` | 单股回测（生产路径） | `strategy_backtest_dialog.py` |
-| `OptimizedBacktestEngine` | 历史副本（已与 BacktestEngine 对齐） | 无引用，保留做参考 |
-| `PortfolioBacktestEngine` | 多股组合回测（资金分配 + 个股独立信号） | 无引用，独立语义，暂不合并 |
+| `BacktestEngine` | 单股回测（生产路径） | `src/ui/dialogs/strategy_backtest_dialog.py` → `run_backtest` 用例 |
+| `PortfolioBacktestEngine` | 多股组合回测（等权分配 + 个股独立信号） | 组合回测用例 |
 
-三者共享 `BaseBacktestEngine` 的 `_is_tradable`（自适应涨跌停）、`_precompute_indicators`（Polars 向量化 MA/MACD/RSI/ATR）、`_generate_param_combinations`（参数优化）。
+两者都是 `src/backtest/engine/execution_core.py` 的参数化封装：撮合、T+1、整手、费用、权益估值与风控只有这一份实现。
+共享 `BaseBacktestEngine` 的 `_precompute_indicators`（Polars 向量化 MA/MACD/RSI/ATR）与 `_generate_param_combinations`（参数优化）。
+`OptimizedBacktestEngine` 已删除。
 
 ### 策略无状态约定
 
@@ -194,7 +195,7 @@ cp .env.example .env
 
 - 依赖管理：Poetry（`poetry add xxx` / `poetry install`）
 - 提交路径：项目目录 `e:\code\python\quant` 为 Git 仓库；每次提交前先同步备份目录 `E:\git\python-quant`（保持相同相对路径）
-- 测试：pytest（P2 规划中）；当前以 `python -m compileall -q src` 做基本语法校验
+- 测试：pytest（`tests/` 下 227 个用例，`venv\Scripts\python.exe -m pytest tests -q`）
 - 格式化/类型检查：ruff + mypy（P2 规划中）
 
 ---
