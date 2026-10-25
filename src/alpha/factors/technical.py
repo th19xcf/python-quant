@@ -9,23 +9,25 @@ import polars as pl
 import numpy as np
 
 from src.alpha.factors.factor_registry import register_factor
+from src.alpha.factors.partition import PartitionAware
 from src.tech_analysis.indicators.formulas import kdj_exprs, rsi_expr as shared_rsi_expr
 
 
 @register_factor('technical')
-class TechnicalFactors:
+class TechnicalFactors(PartitionAware):
     """
     技术指标因子计算类
     """
 
-    def __init__(self, data):
+    def __init__(self, data, partition_by=None):
         """
         初始化技术指标因子计算类
 
         Args:
             data: Polars DataFrame，包含价格数据
+            partition_by: 标的代码列名；传 None 时为单标的序列
         """
-        self.data = data
+        super().__init__(data, partition_by)
 
     def calculate(self, **params) -> pl.DataFrame:
         """
@@ -62,11 +64,11 @@ class TechnicalFactors:
 
         # 添加到DataFrame
         self.data = self.data.with_columns([
-            ma20.fill_null(0.0).cast(cdt, strict=False).alias('bollinger_ma20'),
-            upper_band.fill_null(0.0).cast(cdt, strict=False).alias('bollinger_upper'),
-            lower_band.fill_null(0.0).cast(cdt, strict=False).alias('bollinger_lower'),
-            bollinger_width.fill_null(0.0).cast(cdt, strict=False).alias('bollinger_width'),
-            bollinger_position.fill_null(0.0).cast(cdt, strict=False).alias('bollinger_position')
+            self._p(ma20).fill_null(0.0).cast(cdt, strict=False).alias('bollinger_ma20'),
+            self._p(upper_band).fill_null(0.0).cast(cdt, strict=False).alias('bollinger_upper'),
+            self._p(lower_band).fill_null(0.0).cast(cdt, strict=False).alias('bollinger_lower'),
+            self._p(bollinger_width).fill_null(0.0).cast(cdt, strict=False).alias('bollinger_width'),
+            self._p(bollinger_position).fill_null(0.0).cast(cdt, strict=False).alias('bollinger_position')
         ])
 
     def _calculate_moving_average_crossovers(self):
@@ -86,10 +88,10 @@ class TechnicalFactors:
             )
 
         self.data = self.data.with_columns([
-            ma(5).cast(cdt, strict=False).alias('ma5'),
-            ma(10).cast(cdt, strict=False).alias('ma10'),
-            ma(20).cast(cdt, strict=False).alias('ma20'),
-            ma(60).cast(cdt, strict=False).alias('ma60')
+            self._p(ma(5)).cast(cdt, strict=False).alias('ma5'),
+            self._p(ma(10)).cast(cdt, strict=False).alias('ma10'),
+            self._p(ma(20)).cast(cdt, strict=False).alias('ma20'),
+            self._p(ma(60)).cast(cdt, strict=False).alias('ma60')
         ])
 
         # 计算移动平均线交叉信号（金叉1，死叉-1；i<60 时各均线为0，条件天然不成立）
@@ -110,8 +112,8 @@ class TechnicalFactors:
 
         # 添加到DataFrame
         self.data = self.data.with_columns([
-            ma_crossover_5_20.cast(cdt, strict=False).alias('ma_crossover_5_20'),
-            ma_crossover_10_60.cast(cdt, strict=False).alias('ma_crossover_10_60')
+            self._p(ma_crossover_5_20).cast(cdt, strict=False).alias('ma_crossover_5_20'),
+            self._p(ma_crossover_10_60).cast(cdt, strict=False).alias('ma_crossover_10_60')
         ])
 
     def _calculate_relative_strength(self):
@@ -129,8 +131,8 @@ class TechnicalFactors:
 
         # 添加到DataFrame
         self.data = self.data.with_columns([
-            rsi_raw.fill_null(0.0).cast(cdt, strict=False).alias('rsi_14'),
-            rsi_momentum.cast(cdt, strict=False).alias('rsi_momentum')
+            self._p(rsi_raw).fill_null(0.0).cast(cdt, strict=False).alias('rsi_14'),
+            self._p(rsi_momentum).cast(cdt, strict=False).alias('rsi_momentum')
         ])
 
     def _calculate_stochastic_oscillator(self):
@@ -141,9 +143,9 @@ class TechnicalFactors:
 
         kdj = kdj_exprs('high', 'low', 'close', window=14)
         self.data = self.data.with_columns([
-            kdj['k'].cast(cdt, strict=False).alias('kdj_k'),
-            kdj['d'].cast(cdt, strict=False).alias('kdj_d'),
-            kdj['j'].cast(cdt, strict=False).alias('kdj_j'),
+            self._p(kdj['k']).cast(cdt, strict=False).alias('kdj_k'),
+            self._p(kdj['d']).cast(cdt, strict=False).alias('kdj_d'),
+            self._p(kdj['j']).cast(cdt, strict=False).alias('kdj_j'),
         ])
 
         # 计算KDJ交叉信号（金叉1，死叉-1）
@@ -157,5 +159,5 @@ class TechnicalFactors:
 
         # 添加到DataFrame
         self.data = self.data.with_columns(
-            kdj_crossover.cast(cdt, strict=False).alias('kdj_crossover')
+            self._p(kdj_crossover).cast(cdt, strict=False).alias('kdj_crossover')
         )

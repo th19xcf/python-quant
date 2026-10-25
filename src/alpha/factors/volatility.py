@@ -9,6 +9,7 @@ import polars as pl
 import numpy as np
 
 from src.alpha.factors.factor_registry import register_factor
+from src.alpha.factors.partition import PartitionAware
 from src.tech_analysis.indicators.formulas import atr_expr
 
 _SQRT_252 = np.sqrt(252)
@@ -16,19 +17,20 @@ _GK_COEF = 2 * np.log(2) - 1
 
 
 @register_factor('volatility')
-class VolatilityFactors:
+class VolatilityFactors(PartitionAware):
     """
     波动率因子计算类
     """
 
-    def __init__(self, data):
+    def __init__(self, data, partition_by=None):
         """
         初始化波动率因子计算类
 
         Args:
             data: Polars DataFrame，包含价格数据
+            partition_by: 标的代码列名；传 None 时为单标的序列
         """
-        self.data = data
+        super().__init__(data, partition_by)
 
     def calculate(self, **params) -> pl.DataFrame:
         """
@@ -57,8 +59,8 @@ class VolatilityFactors:
         # ATR 统一走共享公式层（Wilder 标准口径），
         # shift(1) 保留「不使用当日数据」的防未来函数语义
         self.data = self.data.with_columns([
-            atr_expr('high', 'low', 'close', 14).shift(1).fill_null(0.0).cast(cdt, strict=False).alias('atr_14'),
-            atr_expr('high', 'low', 'close', 21).shift(1).fill_null(0.0).cast(cdt, strict=False).alias('atr_21')
+            self._p(atr_expr('high', 'low', 'close', 14).shift(1)).fill_null(0.0).cast(cdt, strict=False).alias('atr_14'),
+            self._p(atr_expr('high', 'low', 'close', 21).shift(1)).fill_null(0.0).cast(cdt, strict=False).alias('atr_21')
         ])
 
     def _calculate_historical_volatility(self):
@@ -82,8 +84,8 @@ class VolatilityFactors:
 
         # 添加到DataFrame
         self.data = self.data.with_columns([
-            volatility_20.fill_null(0.0).cast(cdt, strict=False).alias('volatility_20'),
-            volatility_60.fill_null(0.0).cast(cdt, strict=False).alias('volatility_60')
+            self._p(volatility_20).fill_null(0.0).cast(cdt, strict=False).alias('volatility_20'),
+            self._p(volatility_60).fill_null(0.0).cast(cdt, strict=False).alias('volatility_60')
         ])
 
     def _calculate_garman_klass_volatility(self):
@@ -100,14 +102,14 @@ class VolatilityFactors:
         gk_volatility = pl.when(idx >= 1).then(gk_raw).otherwise(0.0)
 
         self.data = self.data.with_columns(
-            gk_volatility.alias('_gk_volatility')
+            self._p(gk_volatility).alias('_gk_volatility')
         )
 
         # 计算20日和60日移动平均（前N日均值，不含当日）
         gk = pl.col('_gk_volatility')
         self.data = self.data.with_columns([
-            (gk.rolling_mean(20).shift(1) * _SQRT_252).fill_null(0.0).cast(cdt, strict=False).alias('gk_volatility_20'),
-            (gk.rolling_mean(60).shift(1) * _SQRT_252).fill_null(0.0).cast(cdt, strict=False).alias('gk_volatility_60')
+            self._p(gk.rolling_mean(20).shift(1) * _SQRT_252).fill_null(0.0).cast(cdt, strict=False).alias('gk_volatility_20'),
+            self._p(gk.rolling_mean(60).shift(1) * _SQRT_252).fill_null(0.0).cast(cdt, strict=False).alias('gk_volatility_60')
         ])
         self.data = self.data.drop('_gk_volatility')
 
@@ -137,5 +139,5 @@ class VolatilityFactors:
 
         # 添加到DataFrame
         self.data = self.data.with_columns(
-            volatility_trend.cast(cdt, strict=False).alias('volatility_trend')
+            self._p(volatility_trend).cast(cdt, strict=False).alias('volatility_trend')
         )

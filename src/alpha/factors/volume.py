@@ -9,22 +9,24 @@ import polars as pl
 import numpy as np
 
 from src.alpha.factors.factor_registry import register_factor
+from src.alpha.factors.partition import PartitionAware
 
 
 @register_factor('volume')
-class VolumeFactors:
+class VolumeFactors(PartitionAware):
     """
     成交量因子计算类
     """
 
-    def __init__(self, data):
+    def __init__(self, data, partition_by=None):
         """
         初始化成交量因子计算类
 
         Args:
             data: Polars DataFrame，包含价格和成交量数据
+            partition_by: 标的代码列名；传 None 时为单标的序列
         """
-        self.data = data
+        super().__init__(data, partition_by)
 
     def calculate(self, **params) -> pl.DataFrame:
         """
@@ -59,14 +61,14 @@ class VolumeFactors:
             .otherwise(0.0)
         )
         self.data = self.data.with_columns(
-            volume_change.cast(vdt, strict=False).alias('volume_change')
+            self._p(volume_change).cast(vdt, strict=False).alias('volume_change')
         )
 
         # 计算5日和20日平均成交量变化率（前N日均值，不含当日）
         vc = pl.col('volume_change')
         self.data = self.data.with_columns([
-            vc.rolling_mean(5).shift(1).fill_null(0.0).cast(vdt, strict=False).alias('volume_change_5'),
-            vc.rolling_mean(20).shift(1).fill_null(0.0).cast(vdt, strict=False).alias('volume_change_20')
+            self._p(vc.rolling_mean(5).shift(1)).fill_null(0.0).cast(vdt, strict=False).alias('volume_change_5'),
+            self._p(vc.rolling_mean(20).shift(1)).fill_null(0.0).cast(vdt, strict=False).alias('volume_change_20')
         ])
 
     def _calculate_volume_momentum(self):
@@ -82,8 +84,8 @@ class VolumeFactors:
 
         # 添加到DataFrame
         self.data = self.data.with_columns([
-            volume_momentum_10.fill_null(0.0).cast(vdt, strict=False).alias('volume_momentum_10'),
-            volume_momentum_20.fill_null(0.0).cast(vdt, strict=False).alias('volume_momentum_20')
+            self._p(volume_momentum_10).fill_null(0.0).cast(vdt, strict=False).alias('volume_momentum_10'),
+            self._p(volume_momentum_20).fill_null(0.0).cast(vdt, strict=False).alias('volume_momentum_20')
         ])
 
     def _calculate_on_balance_volume(self):
@@ -105,9 +107,9 @@ class VolumeFactors:
 
         # 计算OBV的10日和20日移动平均（前N日均值，不含当日）
         self.data = self.data.with_columns([
-            obv.cast(vdt, strict=False).alias('obv'),
-            obv.rolling_mean(10).shift(1).fill_null(0.0).cast(vdt, strict=False).alias('obv_ma10'),
-            obv.rolling_mean(20).shift(1).fill_null(0.0).cast(vdt, strict=False).alias('obv_ma20')
+            self._p(obv).cast(vdt, strict=False).alias('obv'),
+            self._p(obv.rolling_mean(10).shift(1)).fill_null(0.0).cast(vdt, strict=False).alias('obv_ma10'),
+            self._p(obv.rolling_mean(20).shift(1)).fill_null(0.0).cast(vdt, strict=False).alias('obv_ma20')
         ])
 
     def _calculate_volume_price_relationship(self):
@@ -148,6 +150,6 @@ class VolumeFactors:
 
         # 添加到DataFrame
         self.data = self.data.with_columns([
-            volume_price_correlation.cast(vdt, strict=False).alias('volume_price_correlation'),
-            volume_weighted_price.cast(cdt, strict=False).alias('volume_weighted_price')
+            self._p(volume_price_correlation).cast(vdt, strict=False).alias('volume_price_correlation'),
+            self._p(volume_weighted_price).cast(cdt, strict=False).alias('volume_weighted_price')
         ])

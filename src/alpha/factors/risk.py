@@ -9,24 +9,26 @@ import polars as pl
 import numpy as np
 
 from src.alpha.factors.factor_registry import register_factor
+from src.alpha.factors.partition import PartitionAware
 
 _SQRT_252 = np.sqrt(252)
 
 
 @register_factor('risk')
-class RiskFactors:
+class RiskFactors(PartitionAware):
     """
     风险因子计算类
     """
 
-    def __init__(self, data):
+    def __init__(self, data, partition_by=None):
         """
         初始化风险因子计算类
 
         Args:
             data: Polars DataFrame，包含价格数据
+            partition_by: 标的代码列名；传 None 时为单标的序列
         """
-        self.data = data
+        super().__init__(data, partition_by)
 
     def calculate(self, **params) -> pl.DataFrame:
         """
@@ -79,7 +81,7 @@ class RiskFactors:
 
         # 添加到DataFrame
         self.data = self.data.with_columns(
-            beta.cast(cdt, strict=False).alias('beta')
+            self._p(beta).cast(cdt, strict=False).alias('beta')
         )
 
     def _calculate_max_drawdown(self):
@@ -100,7 +102,7 @@ class RiskFactors:
 
         # 添加到DataFrame
         self.data = self.data.with_columns(
-            max_drawdown.cast(cdt, strict=False).alias('max_drawdown_20')
+            self._p(max_drawdown).cast(cdt, strict=False).alias('max_drawdown_20')
         )
 
     def _calculate_sharpe_ratio(self):
@@ -121,7 +123,7 @@ class RiskFactors:
 
         # 添加到DataFrame
         self.data = self.data.with_columns(
-            sharpe_ratio.cast(cdt, strict=False).alias('sharpe_ratio_20')
+            self._p(sharpe_ratio).cast(cdt, strict=False).alias('sharpe_ratio_20')
         )
 
     def _calculate_downside_risk(self):
@@ -151,5 +153,5 @@ class RiskFactors:
 
         # 添加到DataFrame
         self.data = self.data.with_columns(
-            downside_risk.cast(cdt, strict=False).alias('downside_risk_20')
+            self._p(downside_risk).cast(cdt, strict=False).alias('downside_risk_20')
         )
