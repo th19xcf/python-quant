@@ -124,6 +124,3 @@ config.ini
 
 # Trae IDE 历史规划文档（与当前实现脱节，保留 rules/ 开发规则）
 .trae/documents/
-
-# Quickstart 运行产物
-examples/output/

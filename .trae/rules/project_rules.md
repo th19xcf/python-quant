@@ -65,8 +65,26 @@
 ### 注意事项
 - **Commit message 必须原样输出**：从 `git log -1 --format="%B"` 取，不做任何二次格式化（不要加"标题""正文"标签，不要改缩进）
 - **不要伪造输出**：所有数值、哈希、文件状态都必须来自 `git` 和 `robocopy` 的真实输出
-- **备份方式**：`robocopy <src_dir> <backup_dir> /MIR /R:1 /W:1 /XD __pycache__ /XF *.pyc *.nbc *.nbi`；backup 目标固定 `E:\git\python-quant\`；exit code=1 是 robocopy 正常复制成功，exit code>=8 是失败
-- **禁止将编译产物同步进备份**：`/XD __pycache__` 排除 Python 字节码与 Numba 缓存目录，`/XF *.pyc *.nbc *.nbi` 排除散落的编译产物；这些文件是机器相关的运行缓存，纳入备份会造成跨版本污染与体积膨胀
+- **备份方式**：robocopy + git ls-files 双重保障，命令为：
+  ```powershell
+  $src="E:\code\python\quant"; $dst="E:\git\python-quant"
+  # 1. robocopy 镜像（排除 .gitignore 中高频目录/文件，减少后续清理量）
+  robocopy $src $dst /MIR /R:1 /W:1 `
+    /XD .git .trae __pycache__ .pytest_cache venv env .venv build dist .eggs logs .ipynb_checkpoints .idea .vscode node_modules > $null
+  # 2. 清理 untracked/ignored：PowerShell Remove-Item 无法删除 robocopy 带只读属性的文件 → 先 attrib -R
+  $tracked = git -C $src ls-files
+  Get-ChildItem $dst -Recurse -File | ForEach-Object {
+      $rel = $_.FullName.Substring($dst.Length+1).Replace('\','/')
+      if ($rel -notin $tracked) { attrib -R $_.FullName 2>$null; Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+  }
+  # 3. 清理空目录（从最深往上删）
+  Get-ChildItem $dst -Recurse -Directory | Sort-Object { $_.FullName.Length } -Descending | Where-Object {
+      (Get-ChildItem $_.FullName -File -Recurse | Measure-Object).Count -eq 0
+  } | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+  ```
+  backup 目标固定 `E:\git\python-quant\`；robocopy exit code ≤ 7 均为正常
+- **核心原则：备份目录与 git 仓库保持完全一致**。任何未被 git 追踪的文件（untracked 文件、`.gitignore` 中的文件、手动创建的临时文件、虚拟环境 venv/、编译缓存 __pycache__/ 等）都**绝对不能**进入备份目录
+- **robocopy /MIR 不看 .gitignore**：必须靠 `/XD` 显式排除 + `git ls-files` 反向清理，两步缺一不可；`attrib -R` 是为了解除 robocopy 复制文件的只读属性让 PowerShell 能删掉
 
 ## 备份同步规则
 
