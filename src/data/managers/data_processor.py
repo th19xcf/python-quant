@@ -4,6 +4,9 @@
 数据处理模块
 
 负责数据预处理、清洗、采样等操作
+
+注意：异常值删除会破坏时间序列连续性，回测场景请谨慎使用 remove_outliers=True。
+      fill_missing_values 的 backward 和 mean 原实现存在前视偏差，已改为安全版本。
 """
 
 from typing import Any, Dict, Union
@@ -13,6 +16,9 @@ from loguru import logger
 
 from src.utils.memory_optimizer import MemoryOptimizer
 
+# 可安全处理异常值检测的 OHLCV 列名
+_OhlcvCols = ('open', 'high', 'low', 'close', 'volume', 'amount')
+
 
 class DataProcessor:
     """
@@ -20,328 +26,224 @@ class DataProcessor:
     """
 
     def __init__(self, config):
-        """
-        初始化数据处理器
-
-        Args:
-            config: 配置对象
-        """
         self.config = config
 
+    # ------------------------------------------------------------------
+    # 通用预处理
+    # ------------------------------------------------------------------
     def preprocess_data(self, data: Union[pl.DataFrame, pl.LazyFrame]) -> Union[pl.DataFrame, pl.LazyFrame]:
-        """
-        预处理数据
-
-        Args:
-            data: 原始数据（Polars DataFrame或LazyFrame）
-
-        Returns:
-            Union[pl.DataFrame, pl.LazyFrame]: 预处理后的数据
-        """
-        # 确保数据包含必要的列
         required_columns = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount']
-
         if not all(col in data.columns for col in required_columns):
             logger.warning(f"数据缺少必要列，当前列: {data.columns}")
             return data
-
-        # 排序数据
         if 'date' in data.columns:
             data = data.sort('date')
-
-        # 去除重复数据
         data = data.unique(subset=['date'])
-
         return data
 
-    def sample_data(self, data: Union[pl.DataFrame, pl.LazyFrame], target_points: int = 1000, strategy: str = 'adaptive') -> Union[pl.DataFrame, pl.LazyFrame]:
-        """
-        采样数据，减少数据量
-
-        Args:
-            data: 原始数据（Polars DataFrame或LazyFrame）
-            target_points: 目标采样点数
-            strategy: 采样策略，可选值：'uniform'（均匀采样）、'adaptive'（自适应采样）
-
-        Returns:
-            Union[pl.DataFrame, pl.LazyFrame]: 采样后的数据
-        """
-        # 检查是否为LazyFrame
+    def sample_data(self, data: Union[pl.DataFrame, pl.LazyFrame],
+                    target_points: int = 1000, strategy: str = 'adaptive') -> Union[pl.DataFrame, pl.LazyFrame]:
         is_lazy = isinstance(data, pl.LazyFrame)
-
         if is_lazy:
-            # 对于LazyFrame，使用nth_sample进行均匀采样
             return data.nth_sample(target_points)
-        else:
-            # 对于DataFrame
-            if len(data) <= target_points:
-                return data
+        if len(data) <= target_points:
+            return data
+        step = max(1, len(data) // target_points)
+        if strategy == 'uniform':
+            return data[::step]
+        # adaptive / 其他都走简单均匀采样（真实自适应按波动率调整，此处默认）
+        return data[::step]
 
-            if strategy == 'uniform':
-                # 均匀采样
-                step = len(data) // target_points
-                return data[::step]
-            elif strategy == 'adaptive':
-                # 自适应采样 - 这里使用简单的均匀采样作为默认实现
-                # 实际自适应采样可以根据数据波动率进行调整
-                step = len(data) // target_points
-                return data[::step]
-            else:
-                logger.warning(f"不支持的采样策略: {strategy}，使用默认均匀采样")
-                step = len(data) // target_points
-                return data[::step]
-
-    def convert_data_type(self, data: Union[pl.DataFrame, pl.LazyFrame], target_type: str = 'float32') -> Union[pl.DataFrame, pl.LazyFrame]:
-        """
-        转换数据类型
-
-        Args:
-            data: 原始数据（Polars DataFrame或LazyFrame）
-            target_type: 目标数据类型，默认：float32
-
-        Returns:
-            Union[pl.DataFrame, pl.LazyFrame]: 转换后的数据
-        """
-        # 转换数值列的数据类型
+    def convert_data_type(self, data: Union[pl.DataFrame, pl.LazyFrame],
+                          target_type: str = 'float32') -> Union[pl.DataFrame, pl.LazyFrame]:
         numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
-
-        for col in data.columns:
-            if col in numeric_columns:
-                if target_type == 'float32':
-                    data = data.with_columns(pl.col(col).cast(pl.Float32))
-                elif target_type == 'float64':
-                    data = data.with_columns(pl.col(col).cast(pl.Float64))
-
+        dtype = pl.Float32 if target_type == 'float32' else pl.Float64
+        exprs = [pl.col(c).cast(dtype) for c in numeric_columns if c in data.columns]
+        if exprs:
+            data = data.with_columns(exprs)
         return data
 
-    def clean_data(self, data: Union[pl.DataFrame, pl.LazyFrame], remove_outliers: bool = True, outlier_method: str = 'iqr') -> Union[pl.DataFrame, pl.LazyFrame]:
-        """
-        清洗数据，处理缺失值、异常值等
-
-        Args:
-            data: 原始数据（Polars DataFrame或LazyFrame）
-            remove_outliers: 是否移除异常值
-            outlier_method: 异常值检测方法，可选值：'iqr'（四分位距）、'zscore'（Z分数）
-
-        Returns:
-            Union[pl.DataFrame, pl.LazyFrame]: 清洗后的数据
-        """
-        # 去除包含空值的行
+    # ------------------------------------------------------------------
+    # 数据清洗：缺失值 + 异常值
+    # ------------------------------------------------------------------
+    def clean_data(self, data: Union[pl.DataFrame, pl.LazyFrame],
+                   remove_outliers: bool = True, outlier_method: str = 'iqr') -> Union[pl.DataFrame, pl.LazyFrame]:
         data = data.drop_nulls()
-
-        # 去除成交量为0的行
         if 'volume' in data.columns:
             data = data.filter(pl.col('volume') > 0)
-
-        # 处理异常值
         if remove_outliers:
+            # 注意：异常值删除会整行剔除，破坏时间序列连续性，
+            # 且对跨多年的价格做 IQR 会把正常高低点当作异常。
+            # 若用于回测，请改用标记（is_outlier 列）或缩尾。
             data = self._detect_and_remove_outliers(data, method=outlier_method)
-
         return data
 
-    def _detect_and_remove_outliers(self, data: Union[pl.DataFrame, pl.LazyFrame], method: str = 'iqr', threshold: float = 3.0) -> Union[pl.DataFrame, pl.LazyFrame]:
+    def _detect_and_remove_outliers(self, data: Union[pl.DataFrame, pl.LazyFrame],
+                                    method: str = 'iqr', threshold: float = 3.0) -> Union[pl.DataFrame, pl.LazyFrame]:
+        """检测并移除异常值，纯 Polars 表达式实现，DataFrame/LazyFrame 通用。
+
+        修复：
+          - 原实现逐列 to_numpy()[0][0]：LazyFrame 没有 to_numpy 必然崩溃；
+          - 原 IQR 后一列基于前一列过滤后的数据计算分位数，结果依赖列顺序；
+          - 原 zscore 中 std 为 None（全空列）时 `std > 0` 抛 TypeError。
+        现在各列统计量基于原始数据独立计算，一次 filter 完成，Lazy/DataFrame 都能跑。
         """
-        检测并移除异常值
-
-        Args:
-            data: 原始数据（Polars DataFrame或LazyFrame）
-            method: 异常值检测方法，可选值：'iqr'（四分位距）、'zscore'（Z分数）
-            threshold: 异常值阈值
-
-        Returns:
-            Union[pl.DataFrame, pl.LazyFrame]: 移除异常值后的数据
-        """
-        numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
-
-        # 只处理存在的数值列
-        columns_to_process = [col for col in numeric_columns if col in data.columns]
-
-        if not columns_to_process:
+        cols = [c for c in _OhlcvCols if c in data.columns]
+        if not cols:
             return data
 
-        if method == 'iqr':
-            # 使用四分位距方法检测异常值
-            for col in columns_to_process:
-                q1 = data.select(pl.col(col).quantile(0.25)).to_numpy()[0][0]
-                q3 = data.select(pl.col(col).quantile(0.75)).to_numpy()[0][0]
+        conds: list[pl.Expr] = []
+        for c in cols:
+            x = pl.col(c)
+            if method == 'iqr':
+                q1, q3 = x.quantile(0.25), x.quantile(0.75)
                 iqr = q3 - q1
-                lower_bound = q1 - threshold * iqr
-                upper_bound = q3 + threshold * iqr
-                data = data.filter((pl.col(col) >= lower_bound) & (pl.col(col) <= upper_bound))
+                conds.append(x.is_between(q1 - threshold * iqr, q3 + threshold * iqr))
+            elif method == 'zscore':
+                std = x.std()
+                mean = x.mean()
+                # std 为 0 或 null 时不过滤该列（全常数列 / 全空列）
+                conds.append(
+                    pl.when(std.fill_null(0) > 0)
+                    .then((x - mean).abs() <= threshold * std)
+                    .otherwise(True)
+                )
+            else:
+                logger.warning(f"不支持的异常值检测方法: {method}，跳过列 {c}")
 
-        elif method == 'zscore':
-            # 使用Z分数方法检测异常值
-            for col in columns_to_process:
-                mean = data.select(pl.col(col).mean()).to_numpy()[0][0]
-                std = data.select(pl.col(col).std()).to_numpy()[0][0]
-                if std > 0:
-                    data = data.filter((pl.col(col) - mean).abs() <= threshold * std)
-
+        if conds:
+            data = data.filter(pl.all_horizontal(conds))
         return data
 
+    # ------------------------------------------------------------------
+    # 缺失值填充（全部为纯 Polars expr，Lazy/DataFrame 通用）
+    # ------------------------------------------------------------------
+    def fill_missing_values(self, data: Union[pl.DataFrame, pl.LazyFrame],
+                            method: str = 'forward') -> Union[pl.DataFrame, pl.LazyFrame]:
+        """填充缺失值。
+
+        修复：
+          - backward：原实现 `fill_null(strategy='backward')` 用未来值填过去，回测会引入前视偏差。
+            改为 forward，即历史可用值。
+          - mean：原实现 `data.select(...).to_numpy()[0][0]` 取的是**全样本**均值，
+            在回测中同样用到了未来数据。改为滚动累积均值，只包含截至当前行的已知数据。
+          - forward：Polars 原生 expr，本身安全。
+        """
+        cols = [c for c in _OhlcvCols if c in data.columns]
+        if not cols:
+            return data
+
+        if method == 'forward':
+            exprs = [pl.col(c).fill_null(strategy='forward') for c in cols]
+        elif method == 'backward':
+            # 警告后降级为 forward，避免前视偏差
+            logger.warning(
+                "fill_missing_values(method='backward') 会使用未来数据，在回测中引入前视偏差，"
+                "已自动降级为 forward。如需真正后向填充，请自行确认时序隔离。"
+            )
+            exprs = [pl.col(c).fill_null(strategy='forward') for c in cols]
+        elif method == 'mean':
+            # 滚动累积均值（只包含历史数据），不引入前视
+            exprs = [
+                pl.col(c).fill_null(
+                    pl.col(c).cum_sum() / pl.col(c).is_not_null().cum_sum().clip_min(1)
+                )
+                for c in cols
+            ]
+        else:
+            logger.warning(f"不支持的填充方法: {method}，保持原样")
+            return data
+
+        return data.with_columns(exprs)
+
+    # ------------------------------------------------------------------
+    # 数据质量检查（辅助）
+    # ------------------------------------------------------------------
     def check_data_quality(self, data: pl.DataFrame) -> Dict[str, Any]:
-        """
-        检查数据质量
+        """检查数据质量（仅接受 DataFrame，LazyFrame 需先 .collect()）"""
+        if isinstance(data, pl.LazyFrame):
+            logger.warning("check_data_quality 收到 LazyFrame，自动 collect()")
+            data = data.collect()
 
-        Args:
-            data: 原始数据
-
-        Returns:
-            Dict[str, Any]: 数据质量报告
-        """
-        quality_report = {
-            'total_rows': len(data),
+        report: Dict[str, Any] = {
+            'total_rows': data.height,
             'null_values': {},
-            'zero_volume_rows': 0
+            'zero_volume_rows': 0,
         }
 
-        # 检查空值
-        for col in data.columns:
-            try:
-                null_count = data.select(pl.col(col).is_null().sum()).to_numpy()[0][0]
-                quality_report['null_values'][col] = null_count
-            except Exception as e:
-                logger.warning(f"检查{col}列空值时出错: {e}")
-                quality_report['null_values'][col] = 0
+        # 一次 select 算完所有列的 null_count（不再循环 to_numpy）
+        null_exprs = [pl.col(c).is_null().sum().alias(c) for c in data.columns]
+        null_row = data.select(null_exprs).to_dicts()[0]
+        report['null_values'] = null_row
 
-        # 检查成交量为0的行
         if 'volume' in data.columns:
-            try:
-                zero_volume_count = data.filter(pl.col('volume') == 0).height
-                quality_report['zero_volume_rows'] = zero_volume_count
-            except Exception as e:
-                logger.warning(f"检查成交量为0的行时出错: {e}")
-                quality_report['zero_volume_rows'] = 0
+            report['zero_volume_rows'] = data.filter(pl.col('volume') == 0).height
 
-        return quality_report
+        return report
 
-    def fill_missing_values(self, data: Union[pl.DataFrame, pl.LazyFrame], method: str = 'forward') -> Union[pl.DataFrame, pl.LazyFrame]:
-        """
-        填充缺失值
-
-        Args:
-            data: 原始数据（Polars DataFrame或LazyFrame）
-            method: 填充方法，可选值：'forward'（前向填充）、'backward'（后向填充）、'mean'（均值填充）
-
-        Returns:
-            Union[pl.DataFrame, pl.LazyFrame]: 填充后的数据
-        """
-        numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount']
-
-        # 只处理存在的数值列
-        columns_to_process = [col for col in numeric_columns if col in data.columns]
-
-        for col in columns_to_process:
-            if method == 'forward':
-                data = data.with_columns(pl.col(col).fill_null(strategy='forward'))
-            elif method == 'backward':
-                data = data.with_columns(pl.col(col).fill_null(strategy='backward'))
-            elif method == 'mean':
-                mean_value = data.select(pl.col(col).mean()).to_numpy()[0][0]
-                data = data.with_columns(pl.col(col).fill_null(mean_value))
-
-        return data
-
+    # ------------------------------------------------------------------
+    # 频率转换
+    # ------------------------------------------------------------------
     def convert_frequency(self, df: pl.DataFrame, frequency: str) -> pl.DataFrame:
-        """
-        将日线数据转换为周线或月线数据
-
-        Args:
-            df: 日线数据
-            frequency: 目标频率，1w=周线，1m=月线
-
-        Returns:
-            pl.DataFrame: 转换后的数据
-        """
         if df.is_empty():
             return df
-
         try:
-            # 使用 Lazy API 进行数据处理
             lazy_df = df.lazy()
-
-            # 确保有日期列
             if 'trade_date' in df.columns:
                 lazy_df = lazy_df.with_columns(pl.col('trade_date').alias('date'))
             elif 'date' not in df.columns:
                 logger.error("DataFrame中没有日期列")
                 return df
 
-            # 转换日期列为datetime类型
-            if str(lazy_df.schema['date']) == 'String':
+            schema_d = lazy_df.collect_schema()
+            date_type = schema_d['date']
+            if date_type == pl.String:
                 lazy_df = lazy_df.with_columns(pl.col('date').str.strptime(pl.Date, "%Y-%m-%d"))
-            elif str(lazy_df.schema['date']) == 'Datetime':
-                lazy_df = lazy_df.with_columns(pl.col('date').dt.date().alias('date'))
+            elif date_type == pl.Datetime:
+                lazy_df = lazy_df.with_columns(pl.col('date').dt.date())
 
-            # 根据频率确定分组方式
             if frequency == '1w':
-                # 周线：按周分组
                 lazy_df = lazy_df.with_columns(
                     pl.col('date').dt.week().alias('week'),
-                    pl.col('date').dt.year().alias('year')
+                    pl.col('date').dt.year().alias('year'),
                 )
                 group_cols = ['year', 'week']
             elif frequency == '1m':
-                # 月线：按月分组
                 lazy_df = lazy_df.with_columns(
                     pl.col('date').dt.month().alias('month'),
-                    pl.col('date').dt.year().alias('year')
+                    pl.col('date').dt.year().alias('year'),
                 )
                 group_cols = ['year', 'month']
             else:
                 return df
 
-            # 聚合数据
-            agg_columns = [
-                pl.col('date').first().alias('date'),
-                pl.col('open').first().alias('open'),
-                pl.col('high').max().alias('high'),
-                pl.col('low').min().alias('low'),
-                pl.col('close').last().alias('close'),
-                pl.col('volume').sum().alias('volume'),
-                pl.col('amount').sum().alias('amount')
+            agg = [
+                pl.col('date').first(),
+                pl.col('open').first(),
+                pl.col('high').max(),
+                pl.col('low').min(),
+                pl.col('close').last(),
+                pl.col('volume').sum(),
+                pl.col('amount').sum(),
             ]
+            for extra in ('pct_chg', 'change'):
+                if extra in df.columns:
+                    agg.append(pl.col(extra).sum())
 
-            # 检查是否存在pct_chg列
-            if 'pct_chg' in df.columns:
-                agg_columns.append(pl.col('pct_chg').sum().alias('pct_chg'))
-
-            # 检查是否存在change列
-            if 'change' in df.columns:
-                agg_columns.append(pl.col('change').sum().alias('change'))
-
-            lazy_df = lazy_df.group_by(group_cols).agg(agg_columns)
-
-            # 按日期排序
-            lazy_df = lazy_df.sort('date')
-
-            # 将日期转换回字符串格式
-            lazy_df = lazy_df.with_columns(
-                pl.col('date').dt.strftime("%Y-%m-%d").alias('date')
+            result = (
+                lazy_df
+                .group_by(group_cols)
+                .agg(agg)
+                .sort('date')
+                .with_columns(pl.col('date').dt.strftime("%Y-%m-%d"))
+                .collect()
             )
-
-            # 执行计算
-            result = lazy_df.collect()
-
-            # 内存优化
-            optimized_result = MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
-            logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{optimized_result.height}条")
-            return optimized_result
-
+            optimized = MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
+            logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{optimized.height}条")
+            return optimized
         except (ValueError, TypeError) as e:
             logger.exception(f"转换数据频率失败: {e}")
             return df
 
     def optimize_memory(self, data: pl.DataFrame, enable_sparse: bool = True) -> pl.DataFrame:
-        """
-        优化数据内存使用
-
-        Args:
-            data: 原始数据
-            enable_sparse: 是否启用稀疏存储
-
-        Returns:
-            pl.DataFrame: 优化后的数据
-        """
-        optimized_data = MemoryOptimizer.optimize_dataframe(data, enable_sparse=enable_sparse)
-        return optimized_data
+        return MemoryOptimizer.optimize_dataframe(data, enable_sparse=enable_sparse)

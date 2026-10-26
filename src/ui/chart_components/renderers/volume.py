@@ -10,6 +10,8 @@ import numpy as np
 import pyqtgraph as pg
 from loguru import logger
 
+from ._arrays import as_f64
+
 
 class VolumeRenderMixin:
     """成交量类指标渲染"""
@@ -132,7 +134,7 @@ class VolumeRenderMixin:
 
         for col_name, color in ma_configs:
             if col_name in df.columns:
-                ma_data = df[col_name].to_numpy().astype(np.float64)
+                ma_data = as_f64(df[col_name])
                 # 确保只绘制与x数组长度匹配的数据
                 if len(ma_data) > len(x):
                     ma_data = ma_data[-len(x):]
@@ -164,7 +166,7 @@ class VolumeRenderMixin:
                 logger.warning("VR数据列不存在，跳过渲染（应由渲染前批量计算提供）")
 
             if 'vr' in df.columns:
-                vr_data = df['vr'].to_numpy().astype(np.float64)
+                vr_data = as_f64(df['vr'])
                 vr_mask = ~np.isnan(vr_data)
                 valid_count = np.sum(vr_mask)
                 logger.debug(f"VR数据有效点数: {valid_count}")
@@ -192,7 +194,7 @@ class VolumeRenderMixin:
 
             # 绘制MAVR线
             if 'mavr' in df.columns:
-                mavr_data = df['mavr'].to_numpy().astype(np.float64)
+                mavr_data = as_f64(df['mavr'])
                 mavr_mask = ~np.isnan(mavr_data)
                 if np.any(mavr_mask):
                     plot_widget.plot(
@@ -212,7 +214,7 @@ class VolumeRenderMixin:
             if 'obv' not in df.columns:
                 logger.warning("OBV数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'obv' in df.columns:
-                obv_data = df['obv'].to_numpy().astype(np.float64)
+                obv_data = as_f64(df['obv'])
                 mask = ~np.isnan(obv_data)
                 if np.any(mask):
                     # 设置Y轴范围
@@ -239,13 +241,13 @@ class VolumeRenderMixin:
             if 'asi' not in df.columns:
                 logger.warning("ASI数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'asi' in df.columns:
-                asi_data = df['asi'].to_numpy().astype(np.float64)
+                asi_data = as_f64(df['asi'])
                 mask = ~np.isnan(asi_data)
                 if np.any(mask):
                     # 设置Y轴范围
                     all_data = asi_data[mask]
                     if 'asi_sig' in df.columns:
-                        sig_data = df['asi_sig'].to_numpy().astype(np.float64)
+                        sig_data = as_f64(df['asi_sig'])
                         sig_mask = ~np.isnan(sig_data)
                         if np.any(sig_mask):
                             all_data = np.concatenate([all_data, sig_data[sig_mask]])
@@ -260,7 +262,7 @@ class VolumeRenderMixin:
                         plot_widget.setYRange(min_val, max_val)
                     plot_widget.plot(x[mask], asi_data[mask], pen=pg.mkPen('w', width=1), name='ASI')
                 if 'asi_sig' in df.columns:
-                    sig_data = df['asi_sig'].to_numpy().astype(np.float64)
+                    sig_data = as_f64(df['asi_sig'])
                     sig_mask = ~np.isnan(sig_data)
                     if np.any(sig_mask):
                         plot_widget.plot(x[sig_mask], sig_data[sig_mask], pen=pg.mkPen('y', width=1), name='ASI_SIG')
@@ -276,7 +278,7 @@ class VolumeRenderMixin:
             if 'emv' not in df.columns:
                 logger.warning("EMV数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'emv' in df.columns:
-                emv_data = df['emv'].to_numpy().astype(np.float64)
+                emv_data = as_f64(df['emv'])
                 mask = ~np.isnan(emv_data)
                 if np.any(mask):
                     # 设置Y轴范围
@@ -304,13 +306,13 @@ class VolumeRenderMixin:
             if 'mcst' not in df.columns:
                 logger.warning("MCST数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'mcst' in df.columns:
-                mcst_data = df['mcst'].to_numpy().astype(np.float64)
+                mcst_data = as_f64(df['mcst'])
                 mask = ~np.isnan(mcst_data)
                 if np.any(mask):
                     # 设置Y轴范围
                     all_data = mcst_data[mask]
                     if 'mcst_ma' in df.columns:
-                        ma_data = df['mcst_ma'].to_numpy().astype(np.float64)
+                        ma_data = as_f64(df['mcst_ma'])
                         ma_mask = ~np.isnan(ma_data)
                         if np.any(ma_mask):
                             all_data = np.concatenate([all_data, ma_data[ma_mask]])
@@ -325,7 +327,7 @@ class VolumeRenderMixin:
                         plot_widget.setYRange(min_val, max_val)
                     plot_widget.plot(x[mask], mcst_data[mask], pen=pg.mkPen('w', width=1), name='MCST')
                 if 'mcst_ma' in df.columns:
-                    ma_data = df['mcst_ma'].to_numpy().astype(np.float64)
+                    ma_data = as_f64(df['mcst_ma'])
                     ma_mask = ~np.isnan(ma_data)
                     if np.any(ma_mask):
                         plot_widget.plot(x[ma_mask], ma_data[ma_mask], pen=pg.mkPen('y', width=1), name='MCST_MA')
@@ -341,11 +343,11 @@ class VolumeRenderMixin:
             if 'vol_tdx' not in df.columns:
                 logger.warning("VOL-TDX数据列不存在，跳过渲染")
             if 'vol_tdx' in df.columns:
-                vol_tdx_data = df['vol_tdx'].to_numpy().astype(np.float64)
+                vol_tdx_data = as_f64(df['vol_tdx'])
                 mask = ~np.isnan(vol_tdx_data)
                 if np.any(mask):
                     # 根据涨跌决定颜色（向量化）
-                    close_data = df['close'].to_numpy().astype(np.float64)
+                    close_data = as_f64(df['close'])
                     prev_close = np.roll(close_data, 1)
                     prev_close[0] = close_data[0]
                     colors = np.where(close_data >= prev_close, 'r', 'g')
@@ -361,7 +363,7 @@ class VolumeRenderMixin:
             if 'lb' not in df.columns:
                 logger.warning("LB数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'lb' in df.columns:
-                lb_data = df['lb'].to_numpy().astype(np.float64)
+                lb_data = as_f64(df['lb'])
                 mask = ~np.isnan(lb_data)
                 if np.any(mask):
                     # 设置Y轴范围
@@ -392,7 +394,7 @@ class VolumeRenderMixin:
             if 'cys' not in df.columns:
                 logger.warning("CYS数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'cys' in df.columns:
-                cys_data = df['cys'].to_numpy().astype(np.float64)
+                cys_data = as_f64(df['cys'])
                 mask = ~np.isnan(cys_data)
                 if np.any(mask):
                     # 设置Y轴范围
@@ -409,7 +411,7 @@ class VolumeRenderMixin:
                     self._draw_colored_vertical_lines(plot_widget, x[mask], cys_data[mask], colors[mask])
                     # 绘制CYS_MA5
                     if 'cys_ma5' in df.columns:
-                        cys_ma5 = df['cys_ma5'].to_numpy().astype(np.float64)
+                        cys_ma5 = as_f64(df['cys_ma5'])
                         mask_ma5 = ~np.isnan(cys_ma5)
                         if np.any(mask_ma5):
                             plot_widget.plot(x[mask_ma5], cys_ma5[mask_ma5], pen=pg.mkPen('w', width=1), name='MA5')

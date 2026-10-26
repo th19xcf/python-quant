@@ -11,6 +11,8 @@ import pyqtgraph as pg
 from loguru import logger
 from PySide6.QtCore import Qt
 
+from ._arrays import as_f64
+
 
 class OscillatorRenderMixin:
     """震荡类指标渲染"""
@@ -33,8 +35,8 @@ class OscillatorRenderMixin:
             if not hasattr(df, 'columns') or 'k' not in df.columns or 'd' not in df.columns:
                 return df
 
-            k_data = df['k'].to_numpy().astype(np.float64)
-            d_data = df['d'].to_numpy().astype(np.float64)
+            k_data = as_f64(df['k'])
+            d_data = as_f64(df['d'])
 
             # 过滤NaN值
             k_mask = ~np.isnan(k_data)
@@ -63,7 +65,7 @@ class OscillatorRenderMixin:
 
             # 绘制J线（如果存在）
             if hasattr(df, 'columns') and 'j' in df.columns:
-                j_data = df['j'].to_numpy().astype(np.float64)
+                j_data = as_f64(df['j'])
                 j_mask = ~np.isnan(j_data)
                 if np.any(j_mask):
                     plot_widget.plot(
@@ -109,8 +111,8 @@ class OscillatorRenderMixin:
                 logger.warning("MACD数据列不存在，跳过渲染（应由渲染前批量计算提供）")
                 return df
 
-            macd_data = df['macd'].to_numpy().astype(np.float64)
-            signal_data = df['macd_signal'].to_numpy().astype(np.float64)
+            macd_data = as_f64(df['macd'])
+            signal_data = as_f64(df['macd_signal'])
 
             # 设置Y轴范围
             if hasattr(df, 'columns') and 'macd_hist' in df.columns:
@@ -201,7 +203,7 @@ class OscillatorRenderMixin:
             if not hasattr(df, 'columns') or 'rsi14' not in df.columns:
                 return df
 
-            rsi_data = df['rsi14'].to_numpy().astype(np.float64)
+            rsi_data = as_f64(df['rsi14'])
             rsi_mask = ~np.isnan(rsi_data)
 
             if np.any(rsi_mask):
@@ -241,8 +243,8 @@ class OscillatorRenderMixin:
 
             # 优先使用wr1和wr2（通达信风格）
             if hasattr(df, 'columns') and 'wr1' in df.columns and 'wr2' in df.columns:
-                wr1_data = df['wr1'].to_numpy().astype(np.float64)
-                wr2_data = df['wr2'].to_numpy().astype(np.float64)
+                wr1_data = as_f64(df['wr1'])
+                wr2_data = as_f64(df['wr2'])
 
                 wr1_mask = ~np.isnan(wr1_data)
                 wr2_mask = ~np.isnan(wr2_data)
@@ -264,7 +266,7 @@ class OscillatorRenderMixin:
                     )
             elif hasattr(df, 'columns') and 'wr' in df.columns:
                 # 兼容旧格式
-                wr_data = df['wr'].to_numpy().astype(np.float64)
+                wr_data = as_f64(df['wr'])
                 wr_mask = ~np.isnan(wr_data)
 
                 if np.any(wr_mask):
@@ -299,8 +301,8 @@ class OscillatorRenderMixin:
                 logger.warning("BRAR数据列不存在，跳过渲染（应由渲染前批量计算提供）")
                 return df
 
-            ar_data = df['ar'].to_numpy().astype(np.float64)
-            br_data = df['br'].to_numpy().astype(np.float64)
+            ar_data = as_f64(df['ar'])
+            br_data = as_f64(df['br'])
 
             # 设置Y轴范围（BRAR通常以100为基准，范围可以较大）
             all_data = np.concatenate([ar_data[~np.isnan(ar_data)], br_data[~np.isnan(br_data)]])
@@ -354,7 +356,7 @@ class OscillatorRenderMixin:
                 logger.warning("TRIX数据列不存在，跳过渲染（应由渲染前批量计算提供）")
                 return df
 
-            trix_data = df['trix'].to_numpy().astype(np.float64)
+            trix_data = as_f64(df['trix'])
 
             # 设置Y轴范围
             all_data = trix_data[~np.isnan(trix_data)]
@@ -386,7 +388,7 @@ class OscillatorRenderMixin:
 
             # 绘制TRMA线（黄色，信号线）
             if 'trma' in df.columns:
-                trma_data = df['trma'].to_numpy().astype(np.float64)
+                trma_data = as_f64(df['trma'])
                 trma_mask = ~np.isnan(trma_data)
                 if np.any(trma_mask):
                     plot_widget.plot(
@@ -409,7 +411,7 @@ class OscillatorRenderMixin:
             if 'cci' not in df.columns:
                 logger.warning("CCI数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'cci' in df.columns:
-                cci_data = df['cci'].to_numpy().astype(np.float64)
+                cci_data = as_f64(df['cci'])
                 mask = ~np.isnan(cci_data)
                 if np.any(mask):
                     plot_widget.plot(x[mask], cci_data[mask], pen=pg.mkPen('w', width=1), name='CCI')
@@ -428,7 +430,7 @@ class OscillatorRenderMixin:
             if 'roc' not in df.columns:
                 logger.warning("ROC数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'roc' in df.columns:
-                roc_data = df['roc'].to_numpy().astype(np.float64)
+                roc_data = as_f64(df['roc'])
                 mask = ~np.isnan(roc_data)
                 if np.any(mask):
                     # 设置Y轴范围
@@ -456,7 +458,7 @@ class OscillatorRenderMixin:
             if 'mtm' not in df.columns:
                 logger.warning("MTM数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'mtm' in df.columns:
-                mtm_data = df['mtm'].to_numpy().astype(np.float64)
+                mtm_data = as_f64(df['mtm'])
                 mask = ~np.isnan(mtm_data)
                 if np.any(mask):
                     # 设置Y轴范围
@@ -484,7 +486,7 @@ class OscillatorRenderMixin:
             if 'psy' not in df.columns:
                 logger.warning("PSY数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'psy' in df.columns:
-                psy_data = df['psy'].to_numpy().astype(np.float64)
+                psy_data = as_f64(df['psy'])
                 mask = ~np.isnan(psy_data)
                 if np.any(mask):
                     plot_widget.plot(x[mask], psy_data[mask], pen=pg.mkPen('w', width=1), name='PSY')
@@ -502,8 +504,8 @@ class OscillatorRenderMixin:
             if 'swl' not in df.columns or 'sws' not in df.columns:
                 logger.warning("FSL数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'swl' in df.columns and 'sws' in df.columns:
-                swl_data = df['swl'].to_numpy().astype(np.float64)
-                sws_data = df['sws'].to_numpy().astype(np.float64)
+                swl_data = as_f64(df['swl'])
+                sws_data = as_f64(df['sws'])
                 mask = ~np.isnan(swl_data)
                 sws_mask = ~np.isnan(sws_data)
                 if np.any(mask) or np.any(sws_mask):
@@ -534,7 +536,7 @@ class OscillatorRenderMixin:
             if 'cr' not in df.columns:
                 logger.warning("CR数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'cr' in df.columns:
-                cr_data = df['cr'].to_numpy().astype(np.float64)
+                cr_data = as_f64(df['cr'])
                 mask = ~np.isnan(cr_data)
                 if np.any(mask):
                     # 设置Y轴范围
@@ -562,7 +564,7 @@ class OscillatorRenderMixin:
             if 'hsl' not in df.columns:
                 logger.warning("HSL数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'hsl' in df.columns:
-                hsl_data = df['hsl'].to_numpy().astype(np.float64)
+                hsl_data = as_f64(df['hsl'])
                 mask = ~np.isnan(hsl_data)
                 if np.any(mask):
                     # 设置Y轴范围
@@ -579,12 +581,12 @@ class OscillatorRenderMixin:
                     self._draw_colored_vertical_lines(plot_widget, x[mask], hsl_data[mask], colors[mask])
                     # 绘制HSL_MA5和HSL_MA10
                     if 'hsl_ma5' in df.columns:
-                        hsl_ma5 = df['hsl_ma5'].to_numpy().astype(np.float64)
+                        hsl_ma5 = as_f64(df['hsl_ma5'])
                         mask_ma5 = ~np.isnan(hsl_ma5)
                         if np.any(mask_ma5):
                             plot_widget.plot(x[mask_ma5], hsl_ma5[mask_ma5], pen=pg.mkPen('#FFA500', width=1), name='MA5')
                     if 'hsl_ma10' in df.columns:
-                        hsl_ma10 = df['hsl_ma10'].to_numpy().astype(np.float64)
+                        hsl_ma10 = as_f64(df['hsl_ma10'])
                         mask_ma10 = ~np.isnan(hsl_ma10)
                         if np.any(mask_ma10):
                             plot_widget.plot(x[mask_ma10], hsl_ma10[mask_ma10], pen=pg.mkPen('#FF00FF', width=1), name='MA10')
@@ -601,7 +603,7 @@ class OscillatorRenderMixin:
             if 'abi10' not in df.columns:
                 logger.warning("ABI数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'abi10' in df.columns:
-                abi_data = df['abi10'].to_numpy().astype(np.float64)
+                abi_data = as_f64(df['abi10'])
                 mask = ~np.isnan(abi_data)
                 if np.any(mask):
                     plot_widget.plot(x[mask], abi_data[mask], pen=pg.mkPen('#00FF00', width=1.5), name='ABI')
@@ -617,7 +619,7 @@ class OscillatorRenderMixin:
             if 'adl' not in df.columns:
                 logger.warning("ADL数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'adl' in df.columns:
-                adl_data = df['adl'].to_numpy().astype(np.float64)
+                adl_data = as_f64(df['adl'])
                 mask = ~np.isnan(adl_data)
                 if np.any(mask):
                     plot_widget.plot(x[mask], adl_data[mask], pen=pg.mkPen('#00FFFF', width=1.5), name='ADL')
@@ -632,7 +634,7 @@ class OscillatorRenderMixin:
             if 'adr10' not in df.columns:
                 logger.warning("ADR数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'adr10' in df.columns:
-                adr_data = df['adr10'].to_numpy().astype(np.float64)
+                adr_data = as_f64(df['adr10'])
                 mask = ~np.isnan(adr_data)
                 if np.any(mask):
                     plot_widget.plot(x[mask], adr_data[mask], pen=pg.mkPen('#FF00FF', width=1.5), name='ADR')
@@ -648,7 +650,7 @@ class OscillatorRenderMixin:
             if 'obos10' not in df.columns:
                 logger.warning("OBOS数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'obos10' in df.columns:
-                obos_data = df['obos10'].to_numpy().astype(np.float64)
+                obos_data = as_f64(df['obos10'])
                 mask = ~np.isnan(obos_data)
                 if np.any(mask):
                     plot_widget.plot(x[mask], obos_data[mask], pen=pg.mkPen('#FFFF00', width=1.5), name='OBOS')

@@ -11,6 +11,8 @@ import pyqtgraph as pg
 from loguru import logger
 from PySide6.QtCore import Qt
 
+from ._arrays import as_f64
+
 
 class TrendRenderMixin:
     """趋势类指标渲染"""
@@ -97,7 +99,7 @@ class TrendRenderMixin:
         label_color: str
     ):
         """绘制单条MA线"""
-        ma_data = df[col_name].to_numpy().astype(np.float64)
+        ma_data = as_f64(df[col_name])
         ma_mask = ~np.isnan(ma_data)
 
         if np.any(ma_mask):
@@ -152,9 +154,9 @@ class TrendRenderMixin:
                 logger.warning("BOLL数据列不存在，跳过渲染（应由渲染前批量计算提供）")
                 return df
 
-            mb_data = df['mb'].to_numpy().astype(np.float64)
-            up_data = df['up'].to_numpy().astype(np.float64)
-            dn_data = df['dn'].to_numpy().astype(np.float64)
+            mb_data = as_f64(df['mb'])
+            up_data = as_f64(df['up'])
+            dn_data = as_f64(df['dn'])
 
             # 设置Y轴范围
             all_data = np.concatenate([mb_data[~np.isnan(mb_data)], up_data[~np.isnan(up_data)], dn_data[~np.isnan(dn_data)]])
@@ -212,8 +214,8 @@ class TrendRenderMixin:
                 logger.warning("DMI数据列不存在，跳过渲染（应由渲染前批量计算提供）")
                 return df
 
-            pdi_data = df['pdi'].to_numpy().astype(np.float64)
-            ndi_data = df['ndi'].to_numpy().astype(np.float64)
+            pdi_data = as_f64(df['pdi'])
+            ndi_data = as_f64(df['ndi'])
 
             # 设置Y轴范围（DMI范围0-100）
             plot_widget.setYRange(0, 100)
@@ -244,7 +246,7 @@ class TrendRenderMixin:
 
             # 绘制ADX线（平均趋向指数，红色）
             if 'adx' in df.columns:
-                adx_data = df['adx'].to_numpy().astype(np.float64)
+                adx_data = as_f64(df['adx'])
                 adx_mask = ~np.isnan(adx_data)
                 if np.any(adx_mask):
                     plot_widget.plot(
@@ -256,7 +258,7 @@ class TrendRenderMixin:
 
             # 绘制ADXR线（平均趋向评估，绿色）
             if 'adxr' in df.columns:
-                adxr_data = df['adxr'].to_numpy().astype(np.float64)
+                adxr_data = as_f64(df['adxr'])
                 adxr_mask = ~np.isnan(adxr_data)
                 if np.any(adxr_mask):
                     plot_widget.plot(
@@ -282,8 +284,8 @@ class TrendRenderMixin:
                 logger.warning("DMA数据列不存在，跳过渲染")
                 return df
 
-            dma_data = df['dma'].to_numpy().astype(np.float64)
-            ama_data = df['ama'].to_numpy().astype(np.float64)
+            dma_data = as_f64(df['dma'])
+            ama_data = as_f64(df['ama'])
             mask = ~np.isnan(dma_data)
             ama_mask = ~np.isnan(ama_data)
 
@@ -323,7 +325,7 @@ class TrendRenderMixin:
             logger.debug(f"输入数据行数: {len(df)}, x坐标长度: {len(x)}")
 
             if 'sar' in df.columns:
-                sar_data = df['sar'].to_numpy().astype(np.float64)
+                sar_data = as_f64(df['sar'])
                 logger.debug(f"SAR数据长度: {len(sar_data)}")
 
                 # 确保数据长度与x坐标一致
@@ -359,8 +361,8 @@ class TrendRenderMixin:
             if 'expma12' not in df.columns or 'expma50' not in df.columns:
                 logger.warning("EXPMA数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'expma12' in df.columns and 'expma50' in df.columns:
-                expma12_data = df['expma12'].to_numpy().astype(np.float64)
-                expma50_data = df['expma50'].to_numpy().astype(np.float64)
+                expma12_data = as_f64(df['expma12'])
+                expma50_data = as_f64(df['expma50'])
                 mask12 = ~np.isnan(expma12_data)
                 mask50 = ~np.isnan(expma50_data)
                 # 绘制EXPMA12（黄色）
@@ -392,7 +394,7 @@ class TrendRenderMixin:
             if 'bbi' not in df.columns:
                 logger.warning("BBI数据列不存在，跳过渲染（应由渲染前批量计算提供）")
             if 'bbi' in df.columns:
-                bbi_data = df['bbi'].to_numpy().astype(np.float64)
+                bbi_data = as_f64(df['bbi'])
                 mask = ~np.isnan(bbi_data)
                 if np.any(mask):
                     # 设置Y轴范围
@@ -425,7 +427,7 @@ class TrendRenderMixin:
             valid_data = []
             for col_name, name, color in cyc_configs:
                 if col_name in df.columns:
-                    cyc_data = df[col_name].to_numpy().astype(np.float64)
+                    cyc_data = as_f64(df[col_name])
                     mask = ~np.isnan(cyc_data)
                     if np.any(mask):
                         plot_widget.plot(x[mask], cyc_data[mask], pen=pg.mkPen(color, width=1.5), name=name)
