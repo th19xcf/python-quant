@@ -1,37 +1,45 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 主窗口UI混入类，负责界面构建
 """
 
-import warnings
-import math
 from typing import TYPE_CHECKING
 
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
-    QTabWidget, QPushButton, QLineEdit, QLabel, QStatusBar,
-    QMenuBar, QMenu, QDialog, QCheckBox, QDateEdit, QComboBox,
-    QProgressBar, QAbstractItemView, QToolButton, QScrollArea, QSizePolicy
-)
-from PySide6.QtCore import Qt, QSize, QPoint
-from PySide6.QtGui import QAction, QActionGroup, QIcon, QFont
-
 import pyqtgraph as pg
+from PySide6.QtCore import QPoint, QSize, Qt
+from PySide6.QtGui import QAction, QActionGroup
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSplitter,
+    QStatusBar,
+    QTableWidget,
+    QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from src.utils.logger import logger
 
 if TYPE_CHECKING:
-    from src.ui.main_window import MainWindow
+    pass
 
 class MainWindowUiMixin:
     """
     主窗口UI混入类
     包含所有UI创建相关的逻辑
     """
-    
+
     def init_ui(self):
         """
         初始化UI组件（委托给UI管理器）
@@ -47,16 +55,16 @@ class MainWindowUiMixin:
         """
         # 初始化缺失的属性
         self.current_stock_data = None
-        
+
         # 初始化窗口菜单
         self.current_window_count = 3
         self.window_menu = QMenu(self)
         self.window_actions = []
-        
+
         # 创建QActionGroup，确保单选效果
         self.window_action_group = QActionGroup(self)
         self.window_action_group.setExclusive(True)
-        
+
         for i in range(1, 10):  # 最大选择9个窗口
             action = QAction(f'{i}个窗口', self)
             action.setCheckable(True)
@@ -66,7 +74,7 @@ class MainWindowUiMixin:
             action.triggered.connect(lambda checked, w=i: self.indicator_interaction_manager.on_window_count_changed(w, checked))
             self.window_menu.addAction(action)
             self.window_actions.append(action)
-            
+
         self.current_selected_window = 1
         # 保存每个窗口当前显示的指标
         self.window_indicators = {
@@ -76,52 +84,52 @@ class MainWindowUiMixin:
         }
         # 初始化指标菜单
         self.create_indicator_menu()
-        
+
         # 创建菜单栏
         self.create_menu_bar()
-        
+
         # 创建工具栏
         self.create_tool_bar()
-        
+
         # 创建中央部件
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
+
         # 创建主布局
         main_layout = QVBoxLayout(central_widget)
-        
+
         # 创建主分割器（左右布局）
         main_splitter = QSplitter(Qt.Horizontal)
         main_layout.addWidget(main_splitter)
-        
+
         # 创建左侧导航栏
         self.create_left_navigation(main_splitter)
-        
+
         # 创建中间和右侧的分割器
         center_right_splitter = QSplitter(Qt.Horizontal)
         main_splitter.addWidget(center_right_splitter)
-        
+
         # 设置分割器比例
         main_splitter.setSizes([200, 1200])
-        
+
         # 创建中间主区域
         self.create_center_area(center_right_splitter)
-        
+
         # 创建右侧信息栏
         self.create_right_area(center_right_splitter)
-        
+
         # 设置中间和右侧分割器比例，初始最小化右侧区域
         center_right_splitter.setSizes([1200, 0])
-        
+
         # 创建状态栏
         self.create_status_bar()
-    
+
     def create_menu_bar(self):
         """
         创建菜单栏
         """
         menu_bar = self.menuBar()
-        
+
         # 行情菜单
         market_menu = menu_bar.addMenu("行情")
         self.add_menu_actions(market_menu, [
@@ -131,7 +139,7 @@ class MainWindowUiMixin:
             ("沪深京板块", self.action_manager.on_sector),
             ("沪深京个股", self.action_manager.on_stock),
         ])
-        
+
         # 交易菜单
         trade_menu = menu_bar.addMenu("交易")
         self.add_menu_actions(trade_menu, [
@@ -139,7 +147,7 @@ class MainWindowUiMixin:
             ("条件单", self.action_manager.on_conditional_order),
             ("新股申购", self.action_manager.on_new_stock_subscribe),
         ])
-        
+
         # 发现菜单
         discovery_menu = menu_bar.addMenu("发现")
         self.add_menu_actions(discovery_menu, [
@@ -147,7 +155,7 @@ class MainWindowUiMixin:
             ("资金流向", self.action_manager.on_capital_flow),
             ("研报中心", self.action_manager.on_research_report),
         ])
-        
+
         # 资讯菜单
         info_menu = menu_bar.addMenu("资讯")
         self.add_menu_actions(info_menu, [
@@ -155,7 +163,7 @@ class MainWindowUiMixin:
             ("公司公告", self.action_manager.on_company_announcement),
             ("行业资讯", self.action_manager.on_industry_info),
         ])
-        
+
         # 数据菜单
         data_menu = menu_bar.addMenu("数据")
         self.add_menu_actions(data_menu, [
@@ -164,13 +172,13 @@ class MainWindowUiMixin:
             ("技术指标", self.action_manager.on_technical_indicator),
             ("盘后数据下载", self.action_manager.on_download_data),
         ])
-        
+
         # 特色功能菜单
         feature_menu = menu_bar.addMenu("特色功能")
         self.add_menu_actions(feature_menu, [
             ("自动交易", self.action_manager.on_auto_trade),
         ])
-        
+
         # 量化分析菜单
         quant_menu = menu_bar.addMenu("量化分析")
         self.add_menu_actions(quant_menu, [
@@ -178,7 +186,7 @@ class MainWindowUiMixin:
             ("股票推荐", self.action_manager.on_stock_recommendation),
             ("因子分析", self.action_manager.on_factor_analysis),
         ])
-        
+
         # 系统菜单
         system_menu = menu_bar.addMenu("系统")
         self.add_menu_actions(system_menu, [
@@ -186,19 +194,18 @@ class MainWindowUiMixin:
             ("关于", self.action_manager.on_about),
             ("退出", self.action_manager.on_exit),
         ])
-        
+
         # 窗口菜单已在__init__方法中创建，此处不再重新创建
-    
+
     def add_menu_actions(self, menu, actions):
         """
         向菜单添加动作
-        
+
         Args:
             menu: 菜单对象
             actions: 动作列表，每个动作是一个元组(名称, 回调函数, 图标名称)
         """
-        from PySide6.QtGui import QIcon
-        
+
         # 图标映射字典
         icon_map = {
             # 行情菜单图标
@@ -207,42 +214,42 @@ class MainWindowUiMixin:
             "沪深京指数": "📊",
             "沪深京板块": "🏢",
             "沪深京个股": "📈",
-            
+
             # 交易菜单图标
             "传统交易": "💱",
             "条件单": "🎯",
             "新股申购": "📝",
-            
+
             # 发现菜单图标
             "热点主题": "🔥",
             "资金流向": "💹",
             "研报中心": "📄",
-            
+
             # 资讯菜单图标
             "财经新闻": "📰",
             "公司公告": "📢",
             "行业资讯": "📊",
-            
+
             # 数据菜单图标
             "宏观数据": "📈",
             "财务数据": "💰",
             "技术指标": "📊",
             "盘后数据下载": "💾",
-            
+
             # 特色功能菜单图标
             "自动交易": "🤖",
-            
+
             # 量化分析菜单图标
             "策略回测": "📊",
             "股票推荐": "⭐",
             "因子分析": "🔍",
-            
+
             # 系统菜单图标
             "设置": "⚙️",
             "关于": "ℹ️",
             "退出": "🚪"
         }
-        
+
         for item in actions:
             if len(item) == 2:
                 name, callback = item
@@ -251,7 +258,7 @@ class MainWindowUiMixin:
                 name, callback, icon_name = item
             else:
                 continue
-            
+
             if icon_name or name in icon_map:
                 icon_char = icon_map.get(name, icon_name)
                 if icon_char:
@@ -261,62 +268,62 @@ class MainWindowUiMixin:
                     action = QAction(name, self)
             else:
                 action = QAction(name, self)
-            
+
             action.triggered.connect(callback)
             menu.addAction(action)
-    
+
     def create_tool_bar(self):
         """
         创建工具栏
         """
         tool_bar = self.addToolBar("工具栏")
         tool_bar.setIconSize(QSize(16, 16))
-        
+
         # 添加分隔符
         tool_bar.addSeparator()
-        
+
         # 添加自选股按钮
         self.selected_btn = QPushButton("📋 自选股")
         self.selected_btn.clicked.connect(self.action_manager.on_self_selected)
         tool_bar.addWidget(self.selected_btn)
-        
+
         # 添加行情按钮
         self.market_btn = QPushButton("📊 行情")
         self.market_btn.clicked.connect(self.action_manager.on_market)
         tool_bar.addWidget(self.market_btn)
-        
+
         # 添加技术分析按钮
         self.tech_btn = QPushButton("📈 技术分析")
         self.tech_btn.clicked.connect(self.action_manager.on_technical_analysis)
         tool_bar.addWidget(self.tech_btn)
-        
+
         # 添加分隔符
         tool_bar.addSeparator()
-        
+
         # 添加刷新按钮
         refresh_btn = QPushButton("🔄 刷新")
         refresh_btn.clicked.connect(self.action_manager.on_refresh)
         tool_bar.addWidget(refresh_btn)
-        
+
         # 添加设置按钮
         settings_btn = QPushButton("⚙️ 设置")
         settings_btn.clicked.connect(self.action_manager.on_settings)
         tool_bar.addWidget(settings_btn)
-    
+
     def create_left_navigation(self, parent):
         """
         创建左侧导航栏
-        
+
         Args:
             parent: 父部件
         """
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
-        
+
         # 创建导航树
         self.nav_tree = QTreeWidget()
         self.nav_tree.setHeaderHidden(True)
-        
+
         # 添加导航项
         self.add_nav_item(self.nav_tree, "自选股", ["我的自选", "自定义板块1", "自定义板块2"])
         self.add_nav_item(self.nav_tree, "全景图", ["大盘指数", "行业板块", "概念板块"])
@@ -331,17 +338,17 @@ class MainWindowUiMixin:
         self.add_nav_item(self.nav_tree, "债券", ["国债", "企业债", "可转债"])
         self.add_nav_item(self.nav_tree, "新三板", ["精选层", "创新层", "基础层"])
         self.add_nav_item(self.nav_tree, "发现", ["研报中心", "财务分析", "估值分析"])
-        
+
         # 连接导航项点击信号
         self.nav_tree.itemClicked.connect(self.data_view_manager.handle_nav_item_clicked)
-        
+
         left_layout.addWidget(self.nav_tree)
         parent.addWidget(left_widget)
-    
+
     def add_nav_item(self, parent, title, children):
         """
         添加导航项
-        
+
         Args:
             parent: 父部件
             title: 导航项标题
@@ -349,52 +356,52 @@ class MainWindowUiMixin:
         """
         item = QTreeWidgetItem(parent)
         item.setText(0, title)
-        
+
         for child in children:
             child_item = QTreeWidgetItem(item)
             child_item.setText(0, child)
-        
+
         # 展开第一项
         if title == "自选股":
             item.setExpanded(True)
-    
+
     def create_center_area(self, parent):
         """
         创建中间主区域
-        
+
         Args:
             parent: 父部件
         """
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
-        
+
         # 创建标签页
         self.tab_widget = QTabWidget()
         center_layout.addWidget(self.tab_widget)
-        
+
         # 添加行情标签页
         self.market_tab = QWidget()
         self.tab_widget.addTab(self.market_tab, "行情")
         self.create_market_tab()
-        
+
         # 添加技术分析标签页
         self.tech_tab = QWidget()
         self.tab_widget.addTab(self.tech_tab, "技术分析")
         self.create_tech_tab()
-        
+
         # 添加财务分析标签页
         self.finance_tab = QWidget()
         self.tab_widget.addTab(self.finance_tab, "财务分析")
         self.create_finance_tab()
-        
+
         parent.addWidget(center_widget)
-    
+
     def create_market_tab(self):
         """
         创建行情标签页
         """
         market_layout = QVBoxLayout(self.market_tab)
-        
+
         # 创建进度条
         self.market_progress_bar = QProgressBar()
         self.market_progress_bar.setRange(0, 100)
@@ -404,32 +411,32 @@ class MainWindowUiMixin:
         market_layout.addWidget(self.market_progress_bar)
         # 设置进度条的大小策略，确保它在水平方向上拉伸
         self.market_progress_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        
+
         # 创建股票列表
         self.stock_table = QTableWidget()
         self.stock_table.setColumnCount(13)  # 调整为通达信日线数据实际包含的字段
         self.stock_table.setHorizontalHeaderLabels([
             "日期", "代码", "名称", "涨跌幅%", "现价", "涨跌", "总量", "成交额", "今开", "最高", "最低", "昨收", "振幅%"
         ])
-        
+
         # 设置列宽
         column_widths = [100, 80, 100, 80, 80, 80, 100, 120, 80, 80, 80, 80, 80]  # 调整为适合通达信数据的列宽
         for i, width in enumerate(column_widths):
             self.stock_table.setColumnWidth(i, width)
-        
+
         # 设置表格为只读模式
         self.stock_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        
+
         # 初始化排序状态跟踪
         self.column_sort_states = {}  # 保存每列的排序状态：0=未排序，1=升序，2=降序
         self.current_sorted_column = -1  # 当前排序的列
 
         self.stock_table.horizontalHeader().sectionClicked.connect(self.table_interaction_manager.on_header_clicked)
         self.stock_table.cellDoubleClicked.connect(self.table_interaction_manager.on_stock_double_clicked)
-        
+
         # 初始状态禁用默认排序
         self.stock_table.setSortingEnabled(False)
-        
+
         # 设置通达信风格的表格样式
         self.stock_table.setStyleSheet("""
             QTableWidget {
@@ -454,24 +461,23 @@ class MainWindowUiMixin:
                 color: #FFFFFF;
             }
         """)
-        
-        
+
+
         market_layout.addWidget(self.stock_table)
-    
+
     def create_tech_tab(self):
         """
         创建技术分析标签页
         """
         tech_layout = QVBoxLayout(self.tech_tab)
-        
+
         # 导入pyqtgraph
-        import pyqtgraph as pg
         from PySide6.QtCore import Qt
-        
+
         # 创建工具栏
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
-        toolbar.setStyleSheet("background-color: #222222;")       
+        toolbar.setStyleSheet("background-color: #222222;")
 
         # 添加周期按钮
         self.period_buttons = {
@@ -479,7 +485,7 @@ class MainWindowUiMixin:
             '周线': QPushButton('📆 周线'),
             '月线': QPushButton('📈 月线')
         }
-        
+
         # 设置按钮样式
         button_style = """
         QPushButton {
@@ -499,25 +505,25 @@ class MainWindowUiMixin:
             border: 1px solid #666666;
         }
         """
-        
+
         # 添加按钮到工具栏
         for name, button in self.period_buttons.items():
             button.setCheckable(True)
             button.setStyleSheet(button_style)
             button.toggled.connect(lambda checked, p=name: self.indicator_interaction_manager.on_period_changed(p, checked))
             toolbar_layout.addWidget(button)
-        
+
         # 当前窗口数量已在__init__方法中初始化
-        
+
         # 默认选中日线
         self.period_buttons['日线'].setChecked(True)
         self.current_period = '日线'
-        
+
         # 添加显示柱体数量的输入框
         bar_count_label = QLabel("柱体数:")
         bar_count_label.setStyleSheet("color: #C0C0C0; font-family: 'Microsoft YaHei'; font-size: 12px;")
         toolbar_layout.addWidget(bar_count_label)
-        
+
         self.bar_count_input = QLineEdit()
         self.bar_count_input.setText("100")  # 默认显示100个柱体
         self.bar_count_input.setStyleSheet("""
@@ -539,10 +545,10 @@ class MainWindowUiMixin:
         # 连接输入框事件
         self.bar_count_input.editingFinished.connect(self.indicator_interaction_manager.on_bar_count_changed)
         toolbar_layout.addWidget(self.bar_count_input)
-        
+
         # 添加分隔符
         toolbar_layout.addSpacing(10)
-        
+
         # 添加复权按钮
         self.adjustment_btn = QPushButton("📊 前复权")  # 默认显示前复权
         self.adjustment_btn.setStyleSheet(button_style)
@@ -550,38 +556,38 @@ class MainWindowUiMixin:
         self.adjustment_btn.setChecked(True)  # 默认选中前复权
         self.adjustment_btn.clicked.connect(self.indicator_interaction_manager.on_adjustment_clicked)
         toolbar_layout.addWidget(self.adjustment_btn)
-        
+
         # 添加分隔符
         toolbar_layout.addSpacing(10)
-        
+
         # 添加上下箭头按钮用于切换相邻股票
         self.prev_stock_btn = QPushButton("⬆️ 上一只")
         self.prev_stock_btn.setStyleSheet(button_style)
         self.prev_stock_btn.setToolTip("切换到列表中的上一只股票")
         self.prev_stock_btn.clicked.connect(self._on_prev_stock_clicked)
         toolbar_layout.addWidget(self.prev_stock_btn)
-        
+
         self.next_stock_btn = QPushButton("⬇️ 下一只")
         self.next_stock_btn.setStyleSheet(button_style)
         self.next_stock_btn.setToolTip("切换到列表中的下一只股票")
         self.next_stock_btn.clicked.connect(self._on_next_stock_clicked)
         toolbar_layout.addWidget(self.next_stock_btn)
-        
+
         # 添加工具栏到布局
         tech_layout.addWidget(toolbar)
-        
+
         # 创建图表容器，用于放置标签和分割器
         self.chart_container = QWidget()
         self.chart_layout = QVBoxLayout(self.chart_container)
         self.chart_layout.setSpacing(0)
         self.chart_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         # 创建垂直分割器，用于放置K线图和成交量图
         self.chart_splitter = QSplitter(Qt.Vertical)
         self.chart_splitter.setStyleSheet("QSplitter::handle:vertical { background-color: #444444; height: 2px; border: 0px; }")
         self.chart_splitter.setHandleWidth(2)
         self.chart_splitter.setOpaqueResize(True)
-        
+
         # 创建K线图
         self.tech_plot_widget = pg.PlotWidget()
         self.tech_plot_widget.setBackground('#000000')
@@ -593,7 +599,7 @@ class MainWindowUiMixin:
         self.tech_plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
         self.tech_plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
         self.tech_plot_widget.showGrid(x=True, y=True, alpha=0.3)
-        
+
         # 创建成交量图
         self.volume_plot_widget = pg.PlotWidget()
         self.volume_plot_widget.setBackground('#000000')
@@ -604,16 +610,16 @@ class MainWindowUiMixin:
         self.volume_plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
         self.volume_plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
         self.volume_plot_widget.showGrid(x=True, y=True, alpha=0.3)
-        
+
         # 确保两个图的Y轴宽度一致，实现竖轴对齐
         # 设置Y轴宽度为50像素
         self.tech_plot_widget.getAxis('left').setWidth(50)
         self.volume_plot_widget.getAxis('left').setWidth(50)
-        
+
         # 设置X轴宽度，确保两个图的X轴对齐
         self.tech_plot_widget.getAxis('bottom').setHeight(20)
         self.volume_plot_widget.getAxis('bottom').setHeight(20)
-        
+
         # 创建KDJ指标图
         self.kdj_plot_widget = pg.PlotWidget()
         self.kdj_plot_widget.setBackground('#000000')
@@ -629,114 +635,114 @@ class MainWindowUiMixin:
         # 确保KDJ图的Y轴宽度与其他图一致
         self.kdj_plot_widget.getAxis('left').setWidth(50)
         self.kdj_plot_widget.getAxis('bottom').setHeight(20)
-        
+
         # 为K线图创建容器，只包含K线图
         self.tech_container = QWidget()
         self.tech_container_layout = QVBoxLayout(self.tech_container)
         self.tech_container_layout.setSpacing(0)
         self.tech_container_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         self.tech_container_layout.addWidget(self.tech_plot_widget)
-        
+
         # 添加点击事件，用于选中窗口
         self.tech_container.mousePressEvent = lambda event: self.indicator_interaction_manager.on_window_clicked(1)
-        
+
         # 为成交量图创建容器，只包含成交量图
         self.volume_container = QWidget()
         self.volume_container_layout = QVBoxLayout(self.volume_container)
         self.volume_container_layout.setSpacing(0)
         self.volume_container_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         self.volume_container_layout.addWidget(self.volume_plot_widget)
-        
+
         # 添加点击事件，用于选中窗口
         self.volume_container.mousePressEvent = lambda event: self.indicator_interaction_manager.on_window_clicked(2)
-        
+
         # 为KDJ指标图创建容器，只包含KDJ指标图
         self.kdj_container = QWidget()
         self.kdj_container_layout = QVBoxLayout(self.kdj_container)
         self.kdj_container_layout.setSpacing(0)
         self.kdj_container_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         self.kdj_container_layout.addWidget(self.kdj_plot_widget)
-        
+
         # 添加点击事件，用于选中窗口
         self.kdj_container.mousePressEvent = lambda event: self.indicator_interaction_manager.on_window_clicked(3)
-        
+
         # 添加图表到分割器
         self.chart_splitter.addWidget(self.tech_container)
         self.chart_splitter.addWidget(self.volume_container)
         self.chart_splitter.addWidget(self.kdj_container)
-        
+
         # 设置分割比例（K线图占50%，成交量图占25%，KDJ图占25%）
         # 先使用setStretchFactor设置相对比例
         self.chart_splitter.setStretchFactor(0, 2)  # 第一个组件（K线图）占2份
         self.chart_splitter.setStretchFactor(1, 1)  # 第二个组件（成交量图）占1份
         self.chart_splitter.setStretchFactor(2, 1)  # 第三个组件（KDJ图）占1份
-        
+
         # 再使用setSizes设置初始尺寸，确保比例正确
         self.chart_splitter.setSizes([2000, 1000, 1000])
-        
+
         # 添加分割器到容器布局
         self.chart_layout.addWidget(self.chart_splitter, 1)  # 1表示垂直方向拉伸
-        
+
         # 添加容器到主布局
         tech_layout.addWidget(self.chart_container, 1)  # 1表示垂直方向拉伸
-        
+
         # 添加指标选择窗口
         self.create_indicator_selection()
         # 设置指标选择栏的尺寸策略，确保显示完整
         self.indicator_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.indicator_widget.setMinimumHeight(36)  # 确保高度足够显示按钮
         tech_layout.addWidget(self.indicator_widget)
-        
+
         # 保存k线图数据项
         self.candle_plot_item = None
         self.volume_bar_item = None
         self.volume_ma_item = None
-        
+
         # 初始化完成后，设置为3个窗口模式
         self.indicator_interaction_manager.on_window_count_changed(3, True)
-    
+
     def _create_indicator_button(self, indicator_name, style_sheet, checkable=True, fixed_width=None, clicked_handler=None):
         """
         创建指标按钮的通用方法
-        
+
         Args:
             indicator_name: 指标名称
             style_sheet: 按钮样式
             checkable: 是否可勾选
             fixed_width: 固定宽度，None表示自适应
             clicked_handler: 点击事件处理函数
-            
+
         Returns:
             QPushButton: 创建的按钮实例
         """
         btn = QPushButton(indicator_name)
         btn.setStyleSheet(style_sheet)
         btn.setCheckable(checkable)
-        
+
         if fixed_width is not None:
             btn.setFixedWidth(fixed_width)
-        
+
         if clicked_handler is not None:
             btn.clicked.connect(clicked_handler)
         else:
             btn.clicked.connect(lambda checked, ind=indicator_name: self.indicator_interaction_manager.on_indicator_clicked(ind, checked))
-        
+
         return btn
-    
+
     def _create_separator(self):
         """
         创建分隔符的通用方法
-        
+
         Returns:
             QLabel: 创建的分隔符实例
         """
         separator = QLabel("|")
         separator.setStyleSheet("color: #666666; font-size: 12px;")
         return separator
-    
+
     def create_indicator_selection(self):
         """
         创建指标选择窗口，类似通达信的指标选择栏
@@ -747,7 +753,7 @@ class MainWindowUiMixin:
         indicator_layout = QHBoxLayout(self.indicator_widget)
         indicator_layout.setContentsMargins(5, 3, 10, 3)  # 增加右边距，确保按钮显示完整
         indicator_layout.setSpacing(2)
-        
+
         # 指标列表 - 按类别排列：趋势指标、成交量指标、震荡指标、成本指标、其他指标
         # 注意："窗口"、"<"、">" 按钮在滚动区域外部单独添加
         # "指标A" 在滚动区域内部
@@ -772,7 +778,7 @@ class MainWindowUiMixin:
             # 其他指标
             "DMI", "MCST"
         ]
-        
+
         # 创建指标按钮样式
         indicator_button_style = """
         QPushButton {
@@ -793,7 +799,7 @@ class MainWindowUiMixin:
             color: #FFFFFF;
         }
         """
-        
+
         # 创建水平滚动区域
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
@@ -803,16 +809,16 @@ class MainWindowUiMixin:
         # 设置滚动区域的尺寸策略，确保给右侧按钮留出空间
         scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.indicator_interaction_manager.set_scroll_area(scroll_area)
-        
+
         # 创建滚动内容容器
         scroll_content = QWidget()
         scroll_layout = QHBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(0, 0, 0, 0)
         scroll_layout.setSpacing(2)
-        
+
         # 保存指标按钮
         self.indicator_buttons = {}
-        
+
         # 创建指标按钮
         for indicator in indicators:
             if indicator == "指标A":
@@ -862,20 +868,20 @@ class MainWindowUiMixin:
 
                 scroll_layout.addWidget(btn)
                 self.indicator_buttons[indicator] = btn
-        
+
         # 添加指标B和模板按钮
         scroll_layout.addWidget(self._create_separator())
-        
+
         btn = self._create_indicator_button("指标B", indicator_button_style)
         scroll_layout.addWidget(btn)
         self.indicator_buttons["指标B"] = btn
-        
+
         scroll_layout.addWidget(self._create_separator())
-        
+
         btn = self._create_indicator_button("模板", indicator_button_style)
         scroll_layout.addWidget(btn)
         self.indicator_buttons["模板"] = btn
-        
+
         # 设置滚动区域内容
         scroll_area.setWidget(scroll_content)
 
@@ -928,7 +934,7 @@ class MainWindowUiMixin:
         # 添加+、-按钮用于调整柱体数量
         # 添加分隔符
         indicator_layout.addWidget(self._create_separator())
-        
+
         # 添加+按钮
         plus_btn = self._create_indicator_button(
             "+",
@@ -950,40 +956,40 @@ class MainWindowUiMixin:
         )
         minus_btn.setMinimumWidth(24)
         indicator_layout.addWidget(minus_btn)
-    
+
     def create_indicator_menu(self):
         """
         创建指标功能菜单
         """
         # 创建主菜单
         self.indicator_menu = QMenu()
-        
+
         # 选择副图指标
         submenu = QMenu("选择副图指标", self.indicator_menu)
         self.indicator_menu.addMenu(submenu)
-        
+
         # 指标用法注释
         action = QAction("指标用法注释", self.indicator_menu)
         action.triggered.connect(self.indicator_interaction_manager.on_indicator_usage)
         self.indicator_menu.addAction(action)
-        
+
         # 调整指标参数
         action = QAction("调整指标参数", self.indicator_menu)
         action.triggered.connect(self.indicator_interaction_manager.on_indicator_params)
         self.indicator_menu.addAction(action)
-        
+
         # 修改当前指标公式
         action = QAction("修改当前指标公式", self.indicator_menu)
         action.triggered.connect(self.indicator_interaction_manager.on_indicator_formula)
         self.indicator_menu.addAction(action)
-    
+
     def create_indicator_menu_button(self, window_num):
         """
         创建功能菜单按钮
-        
+
         Args:
             window_num: 窗口编号
-            
+
         Returns:
             QPushButton: 功能菜单按钮
         """
@@ -995,13 +1001,13 @@ class MainWindowUiMixin:
         btn.setToolTip("功能菜单")
         # 连接点击事件
         btn.clicked.connect(lambda: self.show_indicator_menu(btn, window_num))
-        
+
         return btn
-    
+
     def show_indicator_menu(self, btn, window_num):
         """
         显示指标功能菜单
-        
+
         Args:
             btn: 触发菜单的按钮
             window_num: 窗口编号
@@ -1017,15 +1023,15 @@ class MainWindowUiMixin:
         if 1 <= window_num <= 3:
             self.current_selected_window = window_num
             logger.info(f"选中了窗口: {window_num}")
-            
+
             # 更新窗口标题，显示当前选中的窗口
             for container in [self.tech_container, self.volume_container, self.kdj_container]:
                 container.setStyleSheet("background-color: transparent;")
-            
+
             # 如果存在标签栏容器，移除其边框
             if hasattr(self, 'title_ma_container'):
                 self.title_ma_container.setStyleSheet("background-color: #222222;")
-            
+
             # 为选中的窗口添加边框，显示选中状态
             if window_num == 1:
                 # 为标签栏容器添加左、右、上边框，移除下边框，确保两边有竖线，中间没有竖分割线
@@ -1037,7 +1043,7 @@ class MainWindowUiMixin:
                 self.volume_container.setStyleSheet("background-color: transparent; border: 1px solid #00BFFF;")
             elif window_num == 3:
                 self.kdj_container.setStyleSheet("background-color: transparent; border: 1px solid #00BFFF;")
-    
+
 
     def _on_indicator_clicked_impl(self, indicator, checked):
         """
@@ -1054,7 +1060,7 @@ class MainWindowUiMixin:
             # 重新绘制K线图
             if hasattr(self, 'current_stock_data') and self.current_stock_data is not None:
                 self.plot_k_line(self.current_stock_data, self.current_stock_name, self.current_stock_code)
-        
+
         # 处理可在主图和副图同时显示的指标（SAR、BOLL）
         elif indicator in ["SAR", "BOLL"]:
             logger.info(f"{'显示' if checked else '隐藏'}{indicator}指标（主图+副图）")
@@ -1073,7 +1079,7 @@ class MainWindowUiMixin:
             # 重新绘制K线图
             if hasattr(self, 'current_stock_data') and self.current_stock_data is not None:
                 self.plot_k_line(self.current_stock_data, self.current_stock_name, self.current_stock_code)
-        
+
         elif checked:
             # 取消其他同类型指标的选中状态
             if indicator in ["指标A", "指标B"]:
@@ -1088,98 +1094,98 @@ class MainWindowUiMixin:
                 for name, button in self.indicator_buttons.items():
                     if name not in ["指标A", "指标B", "模板", "窗口", "MA"] + dual_display_indicators and name != indicator:
                         button.setChecked(False)
-                
+
                 # 根据当前选中的窗口设置副图指标
                 if indicator not in ["指标A", "指标B", "模板", "窗口", "MA"]:
                     # 如果当前选中的是主图窗口(1)，则默认使用副图窗口2
                     target_window = self.current_selected_window if self.current_selected_window in [2, 3] else 2
                     self.window_indicators[target_window] = indicator
                     logger.info(f"为窗口 {target_window} 设置了指标: {indicator}")
-                    
+
                     # 重新绘制K线图，应用新的指标
                     if hasattr(self, 'current_stock_data') and self.current_stock_data is not None:
                         self.plot_k_line(self.current_stock_data, self.current_stock_name, self.current_stock_code)
-        
+
         logger.info(f"选择了指标: {indicator}, 状态: {'选中' if checked else '取消'}")
-    
-    
+
+
     def create_finance_tab(self):
         """
         创建财务分析标签页
         """
         finance_layout = QVBoxLayout(self.finance_tab)
-        
+
         # 添加财务分析占位符
         finance_label = QLabel("财务分析区域")
         finance_label.setAlignment(Qt.AlignCenter)
         finance_label.setStyleSheet("font-size: 16px; color: #666;")
         finance_layout.addWidget(finance_label)
-    
+
     def create_right_area(self, parent):
         """
         创建右侧信息栏
-        
+
         Args:
             parent: 父部件
         """
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
-        
+
         # 创建K线图区域
         kline_widget = QWidget()
         kline_layout = QVBoxLayout(kline_widget)
-        
+
         kline_label = QLabel("K线图区域")
         kline_label.setAlignment(Qt.AlignCenter)
         kline_label.setStyleSheet("font-size: 16px; color: #666; background-color: #f0f0f0;")
         kline_layout.addWidget(kline_label)
-        
+
         right_layout.addWidget(kline_widget)
-        
+
         # 创建成交量图区域
         volume_widget = QWidget()
         volume_layout = QVBoxLayout(volume_widget)
-        
+
         volume_label = QLabel("成交量图区域")
         volume_label.setAlignment(Qt.AlignCenter)
         volume_label.setStyleSheet("font-size: 16px; color: #666; background-color: #f5f5f5;")
         volume_layout.addWidget(volume_label)
-        
+
         right_layout.addWidget(volume_widget)
-        
+
         parent.addWidget(right_widget)
-    
+
     def create_status_bar(self):
         """
         创建状态栏
         """
         status_bar = QStatusBar()
         self.setStatusBar(status_bar)
-        
+
         # 添加状态栏信息
         self.market_info_label = QLabel("上证指数: 3864.18 -0.15% | 深证成指: 12087.13 +0.22% | 创业板指: 2911.00 -0.54%")
         status_bar.addWidget(self.market_info_label)
-        
+
         # 添加分隔符（使用QLabel作为分隔符）
         separator1 = QLabel(" | ")
         status_bar.addWidget(separator1)
-        
+
         # 添加时间信息
         self.time_label = QLabel("16:45:00")
         status_bar.addWidget(self.time_label)
-        
+
         # 添加分隔符（使用QLabel作为分隔符）
         separator2 = QLabel(" | ")
         status_bar.addWidget(separator2)
-        
+
         # 添加连接状态
         self.connection_label = QLabel("已连接")
         status_bar.addWidget(self.connection_label)
-        
+
         # 添加分隔符（使用QLabel作为分隔符）
         separator3 = QLabel(" | ")
         status_bar.addWidget(separator3)
-        
+
         # 添加进度条
         self.progress_bar = QProgressBar()
         self.progress_bar.setMaximumWidth(200)

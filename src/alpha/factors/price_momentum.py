@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 价格动量因子计算模块
 """
 
 import polars as pl
-import numpy as np
 
 from src.alpha.factors.factor_registry import register_factor
 from src.alpha.factors.partition import PartitionAware
 from src.tech_analysis.indicators.formulas import (
     kdj_exprs,
     macd_exprs,
+)
+from src.tech_analysis.indicators.formulas import (
     rsi_expr as shared_rsi_expr,
 )
 

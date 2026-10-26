@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 架构守卫：禁止 src/ui/** 新增对业务/数据层的 import

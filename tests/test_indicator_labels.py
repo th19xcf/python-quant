@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 
 """IndicatorLabelManager 与共享指标展示表的一致性测试（无需 GUI 环境）"""
 

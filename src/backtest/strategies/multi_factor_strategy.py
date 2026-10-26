@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 多因子策略：结合向量化预计算的技术指标生成信号
@@ -16,7 +15,8 @@ generate_signal 按权重聚合三个因子的二元贡献（1 / 0 / -1），
 保证至少两个因子同向共振才触发交易（MACD 一票不能独决）。
 """
 
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+
 from src.backtest.strategies.base_strategy import BaseStrategy
 
 

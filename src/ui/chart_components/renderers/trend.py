@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 趋势类指标渲染 Mixin
 """
 
-import pyqtgraph as pg
-import numpy as np
 from typing import Any
-from PySide6.QtCore import Qt
+
+import numpy as np
+import pyqtgraph as pg
 from loguru import logger
+from PySide6.QtCore import Qt
 
 
 class TrendRenderMixin:
@@ -18,7 +18,7 @@ class TrendRenderMixin:
     def render_ma_lines(self, plot_widget: Any, df: Any, x: np.ndarray):
         """
         渲染移动平均线
-        
+
         Args:
             plot_widget: 图表控件
             df: 数据
@@ -29,7 +29,7 @@ class TrendRenderMixin:
             if df is None:
                 logger.warning("render_ma_lines: df is None, skipping")
                 return
-            
+
             # 初始化MA相关属性
             if not hasattr(self.main_window, 'moving_averages'):
                 self.main_window.moving_averages = {}
@@ -37,23 +37,23 @@ class TrendRenderMixin:
                 self.main_window.selected_ma = None
             if not hasattr(self.main_window, 'ma_points'):
                 self.main_window.ma_points = []
-            
+
             # 清除之前的标注点
             for point_item in self.main_window.ma_points:
                 plot_widget.removeItem(point_item)
             self.main_window.ma_points.clear()
-            
+
             # 检查是否显示MA线
             if not hasattr(self.main_window, 'show_ma_lines') or not self.main_window.show_ma_lines:
                 logger.debug("MA线显示已关闭，跳过绘制")
                 # 仍然保存MA数据供其他功能使用
                 self._save_ma_data(df)
                 return
-            
+
             # 调试：检查数据列
             logger.debug(f"render_ma_lines - 数据列: {list(df.columns) if hasattr(df, 'columns') else 'N/A'}")
             logger.debug(f"render_ma_lines - 数据行数: {len(df)}")
-            
+
             # 定义MA配置
             ma_configs = [
                 ('ma5', 'MA5', 'w', 'white'),
@@ -61,7 +61,7 @@ class TrendRenderMixin:
                 ('ma20', 'MA20', 'r', 'red'),
                 ('ma60', 'MA60', pg.mkColor(0, 255, 0), '#00FF00'),
             ]
-            
+
             # 绘制各条MA线
             ma_drawn_count = 0
             for col_name, ma_name, pen_color, label_color in ma_configs:
@@ -77,34 +77,34 @@ class TrendRenderMixin:
                         logger.warning(f"MA线 {ma_name} 没有有效数据")
                 else:
                     logger.warning(f"MA列不存在: {col_name}")
-            
+
             logger.debug(f"render_ma_lines - 成功绘制 {ma_drawn_count} 条MA线")
-            
+
             # 保存MA数据
             self._save_ma_data(df)
-            
+
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染MA线失败: {e}")
 
     def _draw_ma_line(
-        self, 
-        plot_widget: Any, 
-        df: Any, 
+        self,
+        plot_widget: Any,
+        df: Any,
         x: np.ndarray,
-        col_name: str, 
-        ma_name: str, 
+        col_name: str,
+        ma_name: str,
         pen_color: Any,
         label_color: str
     ):
         """绘制单条MA线"""
         ma_data = df[col_name].to_numpy().astype(np.float64)
         ma_mask = ~np.isnan(ma_data)
-        
+
         if np.any(ma_mask):
             ma_item = plot_widget.plot(
-                x[ma_mask], 
-                ma_data[ma_mask], 
-                pen=pg.mkPen(pen_color, width=1), 
+                x[ma_mask],
+                ma_data[ma_mask],
+                pen=pg.mkPen(pen_color, width=1),
                 name=ma_name
             )
             self.main_window.moving_averages[ma_name] = {
@@ -118,14 +118,14 @@ class TrendRenderMixin:
         if df is None:
             logger.warning("_save_ma_data: df is None, skipping")
             return
-        
+
         self.main_window.ma_data = {
             'MA5': df['ma5'].to_numpy() if hasattr(df, 'columns') and 'ma5' in df.columns else np.array([]),
             'MA10': df['ma10'].to_numpy() if hasattr(df, 'columns') and 'ma10' in df.columns else np.array([]),
             'MA20': df['ma20'].to_numpy() if hasattr(df, 'columns') and 'ma20' in df.columns else np.array([]),
             'MA60': df['ma60'].to_numpy() if hasattr(df, 'columns') and 'ma60' in df.columns else np.array([]),
         }
-        
+
         self.main_window.ma_colors = {
             'MA10': 'cyan',
             'MA20': 'red',
@@ -135,7 +135,7 @@ class TrendRenderMixin:
     def render_boll(self, plot_widget: Any, df: Any, x: np.ndarray):
         """
         渲染BOLL指标
-        
+
         Args:
             plot_widget: 图表控件
             df: 数据
@@ -146,53 +146,53 @@ class TrendRenderMixin:
             if df is None:
                 logger.warning("render_boll: df is None, skipping")
                 return df
-            
+
             logger.debug(f"渲染BOLL，数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
             if not hasattr(df, 'columns') or 'mb' not in df.columns or 'up' not in df.columns or 'dn' not in df.columns:
                 logger.warning("BOLL数据列不存在，跳过渲染（应由渲染前批量计算提供）")
                 return df
-            
+
             mb_data = df['mb'].to_numpy().astype(np.float64)
             up_data = df['up'].to_numpy().astype(np.float64)
             dn_data = df['dn'].to_numpy().astype(np.float64)
-            
+
             # 设置Y轴范围
             all_data = np.concatenate([mb_data[~np.isnan(mb_data)], up_data[~np.isnan(up_data)], dn_data[~np.isnan(dn_data)]])
             if len(all_data) > 0:
                 min_val = np.min(all_data) * 0.95
                 max_val = np.max(all_data) * 1.05
                 plot_widget.setYRange(min_val, max_val)
-            
+
             # 绘制中轨
             mb_mask = ~np.isnan(mb_data)
             if np.any(mb_mask):
                 plot_widget.plot(
-                    x[mb_mask], 
-                    mb_data[mb_mask], 
-                    pen=pg.mkPen('w', width=1), 
+                    x[mb_mask],
+                    mb_data[mb_mask],
+                    pen=pg.mkPen('w', width=1),
                     name='MB'
                 )
-            
+
             # 绘制上轨
             up_mask = ~np.isnan(up_data)
             if np.any(up_mask):
                 plot_widget.plot(
-                    x[up_mask], 
-                    up_data[up_mask], 
-                    pen=pg.mkPen('r', width=1), 
+                    x[up_mask],
+                    up_data[up_mask],
+                    pen=pg.mkPen('r', width=1),
                     name='UP'
                 )
-            
+
             # 绘制下轨
             dn_mask = ~np.isnan(dn_data)
             if np.any(dn_mask):
                 plot_widget.plot(
-                    x[dn_mask], 
-                    dn_data[dn_mask], 
-                    pen=pg.mkPen(pg.mkColor(0, 255, 0), width=1), 
+                    x[dn_mask],
+                    dn_data[dn_mask],
+                    pen=pg.mkPen(pg.mkColor(0, 255, 0), width=1),
                     name='DN'
                 )
-            
+
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染BOLL失败: {e}")
         return df
@@ -325,7 +325,7 @@ class TrendRenderMixin:
             if 'sar' in df.columns:
                 sar_data = df['sar'].to_numpy().astype(np.float64)
                 logger.debug(f"SAR数据长度: {len(sar_data)}")
-                
+
                 # 确保数据长度与x坐标一致
                 if len(sar_data) != len(x):
                     logger.warning(f"SAR数据长度({len(sar_data)})与x坐标长度({len(x)})不一致，进行调整")
@@ -336,11 +336,11 @@ class TrendRenderMixin:
                         # 在开头填充nan
                         padding = np.full(len(x) - len(sar_data), np.nan)
                         sar_data = np.concatenate([padding, sar_data])
-                
+
                 mask = ~np.isnan(sar_data)
                 valid_count = np.sum(mask)
                 logger.debug(f"SAR数据有效点数: {valid_count}")
-                
+
                 if np.any(mask):
                     # 绘制SAR点（白色圆点）
                     plot_widget.plot(x[mask], sar_data[mask], pen=None, symbol='o', symbolSize=3, symbolBrush='w', name='SAR')

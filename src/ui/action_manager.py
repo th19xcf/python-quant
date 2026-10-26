@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 动作/菜单处理管理器
@@ -37,9 +36,6 @@ class ActionManager:
 
     def on_quant_backtest(self):
         logger.info("点击了量化回测")
-
-    def on_stock_recommendation(self):
-        logger.info("点击了股票推荐")
 
     def on_auto_trade(self):
         logger.info("点击了自动交易")
@@ -125,7 +121,7 @@ class ActionManager:
         """
         try:
             window = self.window
-            
+
             # 使用 process_stock_data 方法加载数据，确保应用正确的复权类型
             window.process_stock_data(ts_code, stock_name)
 

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 多进程回测 worker：供 ProcessPoolExecutor 在子进程中调用的模块级函数。

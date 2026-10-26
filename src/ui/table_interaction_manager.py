@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 表格交互管理器
@@ -106,14 +105,7 @@ class TableInteractionManager:
                         item = QTableWidgetItem(value)
                         if col in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
                             item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                        if col == 3:
-                            if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
-                                item.setForeground(QColor(255, 0, 0))
-                            elif value.startswith("-"):
-                                item.setForeground(QColor(0, 255, 0))
-                            else:
-                                item.setForeground(QColor(204, 204, 204))
-                        elif col == 5:
+                        if col == 3 or col == 5:
                             if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
                                 item.setForeground(QColor(255, 0, 0))
                             elif value.startswith("-"):
@@ -178,54 +170,46 @@ class TableInteractionManager:
             if code.startswith('sh'):
                 market = 'sh'
                 tdx_code = code
-                ts_code = f'{code[2:]}.SH'
+                f'{code[2:]}.SH'
             elif code.startswith('sz'):
                 market = 'sz'
                 tdx_code = code
-                ts_code = f'{code[2:]}.SZ'
+                f'{code[2:]}.SZ'
             elif code.startswith('bj'):
                 # 京市指数（北交所）
                 market = 'bj'
                 tdx_code = code
-                ts_code = f'{code[2:]}.BJ'
+                f'{code[2:]}.BJ'
             elif code.startswith('6') or code.startswith('51'):
                 # 沪市股票（6开头）和沪市ETF（51开头）
                 market = 'sh'
                 tdx_code = f'sh{code}'
-                ts_code = f'{code}.SH'
             elif code.startswith('15'):
                 # 深市ETF（15开头）
                 market = 'sz'
                 tdx_code = f'sz{code}'
-                ts_code = f'{code}.SZ'
             elif code.endswith('.SH'):
                 market = 'sh'
                 tdx_code = f'sh{code[:-3]}'
-                ts_code = code
             elif code.endswith('.SZ'):
                 market = 'sz'
                 tdx_code = f'sz{code[:-3]}'
-                ts_code = code
             elif code == '999999':
                 # 上证指数特殊处理
                 market = 'sh'
                 tdx_code = 'sh000001'
-                ts_code = '000001.SH'
             elif code.startswith('88'):
                 # 沪市行业指数（88开头）
                 market = 'sh'
                 tdx_code = f'sh{code}'
-                ts_code = f'{code}.SH'
             elif code.startswith('92') and len(code) == 6:
                 # 京市个股（北交所，92开头）
                 market = 'bj'
                 tdx_code = f'bj{code}'
-                ts_code = f'{code}.BJ'
             else:
                 # 其他代码默认为深市
                 market = 'sz'
                 tdx_code = f'sz{code}'
-                ts_code = f'{code}.SZ'
 
             from pathlib import Path
             tdx_data_path = Path(window.data_manager.config.data.tdx_data_path)
@@ -233,7 +217,7 @@ class TableInteractionManager:
 
             window.statusBar().showMessage(f"正在加载 {name}({code}) 数据...", 0)
             window.tab_widget.setCurrentIndex(1)
-            
+
             # 显示进度条
             if hasattr(window, 'market_progress_bar'):
                 window.market_progress_bar.setVisible(True)
@@ -261,9 +245,9 @@ class TableInteractionManager:
                 if hasattr(window, 'market_progress_bar'):
                     window.market_progress_bar.setVisible(False)
                 return
-            
+
             window.statusBar().showMessage(f"正在计算 {name}({code}) 技术指标...", 0)
-            
+
             # 更新进度条到50%
             if hasattr(window, 'market_progress_bar'):
                 window.market_progress_bar.setValue(50)
@@ -301,14 +285,14 @@ class TableInteractionManager:
         window = self.window
         try:
             window.statusBar().showMessage(f"正在绘制 {name}({code}) 图表...", 0)
-            
+
             # 更新进度条到90%
             if hasattr(window, 'market_progress_bar'):
                 window.market_progress_bar.setValue(90)
 
             window.plot_k_line(df, name, code)
             window.statusBar().showMessage(f"{name}({code}) 图表绘制完成", 5000)
-            
+
             # 更新进度条到100%并隐藏
             if hasattr(window, 'market_progress_bar'):
                 window.market_progress_bar.setValue(100)

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 AkShare数据处理器
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List
 
 import akshare as ak
 import polars as pl
@@ -26,11 +25,11 @@ class AkShareHandler(DataSourceBase):
     实际数据获取由 DataFetcher._get_data_from_sources 按 handler 名硬编码
     调用对应方法（get_stock_data / get_index_data）。
     """
-    
+
     def __init__(self, config, db_manager):
         """
         初始化AkShare数据处理器
-        
+
         Args:
             config: 配置对象
             db_manager: 数据库管理器实例
@@ -41,7 +40,7 @@ class AkShareHandler(DataSourceBase):
         self.available = True
         self._factor_warning_logged = False
         self.session = None
-        
+
         # 离线模式支持
         if db_manager:
             try:
@@ -51,31 +50,31 @@ class AkShareHandler(DataSourceBase):
                 self.session = None
         else:
             logger.info("AkShareHandler在离线模式下初始化")
-    
+
     def update_stock_basic(self):
         """
         更新股票基本信息
         """
         try:
             logger.info("开始从AkShare获取股票基本信息")
-            
+
             # 使用AkShare获取股票基本信息
             stock_basic_pd = ak.stock_info_a_code_name()
-            
+
             # 转换为Polars DataFrame
             stock_basic_df = pl.from_pandas(stock_basic_pd)
-            
+
             if stock_basic_df.is_empty():
                 logger.warning("从AkShare获取的股票基本信息为空")
                 return
-            
+
             logger.info(f"从AkShare获取到{stock_basic_df.height}条股票基本信息")
-            
+
             # 离线模式下，只获取数据不存储
             if not self.session:
                 logger.info("离线模式下，跳过股票基本信息存储")
                 return stock_basic_df  # 离线模式下返回Polars DataFrame
-            
+
             # 数据清洗和标准化
             from src.database.models.stock import StockBasic
 
@@ -88,10 +87,10 @@ class AkShareHandler(DataSourceBase):
 
                     # 构建完整的ts_code（统一市场推断，含北交所 4/8/92 开头）
                     ts_code = to_ts_code(symbol)
-                    
+
                     # 查询股票是否已存在
                     stock = self.session.query(StockBasic).filter_by(ts_code=ts_code).first()
-                    
+
                     if stock:
                         # 更新现有股票信息
                         stock.name = name[:45] if len(name) > 45 else name
@@ -104,16 +103,16 @@ class AkShareHandler(DataSourceBase):
                             name=name[:45] if len(name) > 45 else name
                         )
                         self.session.add(stock)
-                    
+
                 except (ConnectionError, TimeoutError, OSError) as row_e:
                     logger.exception(f"处理股票基本信息失败: {row_e}")
                     continue
-            
+
             # 提交事务
             self.session.commit()
             logger.info("股票基本信息更新完成")
             return stock_basic_df  # 返回Polars DataFrame
-            
+
         except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()
@@ -211,23 +210,23 @@ class AkShareHandler(DataSourceBase):
                 self.session.rollback()
             logger.exception(f"获取市场涨跌家数数据失败: {e}")
             raise
-    
+
     def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
         更新股票日线数据
-        
+
         Args:
             ts_codes: 股票代码列表，None表示更新所有股票
             start_date: 开始日期，格式：YYYYMMDD
             end_date: 结束日期，格式：YYYYMMDD
-        
+
         Returns:
             dict: 股票代码到日线数据的映射（离线模式下）
         """
         try:
             # 离线模式下的默认股票代码列表
             default_ts_codes = ["600000.SH", "000001.SZ", "300001.SZ"]
-            
+
             # 如果没有指定股票代码，从数据库获取所有股票代码
             if not ts_codes:
                 if self.session:
@@ -238,28 +237,28 @@ class AkShareHandler(DataSourceBase):
                     # 离线模式下使用默认股票代码
                     ts_codes = default_ts_codes
                     logger.info(f"离线模式下，使用默认股票代码列表: {ts_codes}")
-            
+
             if not ts_codes:
                 logger.warning("没有需要更新的股票代码")
                 return
-            
+
             # 如果没有指定日期，默认更新最近30天的数据
             if not end_date:
                 end_date = datetime.now().strftime("%Y%m%d")
             if not start_date:
                 # 默认更新最近30天的数据
                 start_date = (datetime.now() - datetime.timedelta(days=30)).strftime("%Y%m%d")
-            
+
             logger.info(f"开始更新{len(ts_codes)}只股票的日线数据，时间范围: {start_date} 至 {end_date}")
-            
+
             # 存储结果（离线模式下返回）
             result = {}
-            
+
             # 遍历股票代码，获取日线数据
             for ts_code in ts_codes:
                 try:
                     logger.info(f"正在获取{ts_code}的日线数据")
-                    
+
                     # 使用AkShare获取股票日线数据
                     stock_daily_pd = ak.stock_zh_a_hist(
                         symbol=to_symbol(ts_code),  # AkShare使用数字代码
@@ -268,22 +267,22 @@ class AkShareHandler(DataSourceBase):
                         end_date=end_date,
                         adjust=""  # 不复权：写库统一存原始价，复权由查询侧 DataFetcher 按因子计算
                     )
-                    
+
                     # 转换为Polars DataFrame
                     stock_daily_df = pl.from_pandas(stock_daily_pd)
-                    
+
                     if stock_daily_df.is_empty():
                         logger.warning(f"{ts_code}在{start_date}至{end_date}期间没有日线数据")
                         continue
-                    
+
                     logger.info(f"获取到{ts_code}的{stock_daily_df.height}条日线数据")
-                    
+
                     # 离线模式下，只获取数据不存储
                     if not self.session:
                         result[ts_code] = stock_daily_df
                         logger.info(f"离线模式下，获取{ts_code}的日线数据完成")
                         continue
-                    
+
                     # 数据清洗和标准化
                     from src.database.models.stock import StockDaily
                     from src.database.upsert import upsert_rows
@@ -316,51 +315,51 @@ class AkShareHandler(DataSourceBase):
                         value_fields=('open', 'high', 'low', 'close', 'pre_close',
                                       'change', 'pct_chg', 'vol', 'amount'),
                     )
-                    
+
                     # 每只股票提交一次事务
                     self.session.commit()
                     logger.info(f"{ts_code}的日线数据更新完成")
-                    
+
                 except (ConnectionError, TimeoutError, OSError) as e:
                     if self.session:
                         self.session.rollback()
                     logger.exception(f"获取{ts_code}的日线数据失败: {e}")
                     continue
-            
+
             # 离线模式下返回结果
             if not self.session and result:
                 return result
-            
+
         except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()
             logger.exception(f"更新股票日线数据失败: {e}")
             raise
-    
+
     def update_index_basic(self):
         """
         更新指数基本信息
         """
         try:
             logger.info("开始从AkShare获取指数基本信息")
-            
+
             # 使用AkShare获取指数基本信息
             index_basic_pd = ak.index_stock_info()
-            
+
             # 转换为Polars DataFrame
             index_basic_df = pl.from_pandas(index_basic_pd)
-            
+
             if index_basic_df.is_empty():
                 logger.warning("从AkShare获取的指数基本信息为空")
                 return
-            
+
             logger.info(f"从AkShare获取到{index_basic_df.height}条指数基本信息")
-            
+
             # 离线模式下，只获取数据不存储
             if not self.session:
                 logger.info("离线模式下，跳过指数基本信息存储")
                 return index_basic_df
-            
+
             # 数据清洗和标准化
             from src.database.models.index import IndexBasic
 
@@ -370,10 +369,10 @@ class AkShareHandler(DataSourceBase):
                     # 提取指数代码和名称
                     ts_code = row['代码']
                     name = row['名称']
-                    
+
                     # 查询指数是否已存在
                     index_basic = self.session.query(IndexBasic).filter_by(ts_code=ts_code).first()
-                    
+
                     if index_basic:
                         # 更新现有指数信息
                         index_basic.name = name
@@ -384,38 +383,38 @@ class AkShareHandler(DataSourceBase):
                             name=name
                         )
                         self.session.add(index_basic)
-                    
+
                 except (ConnectionError, TimeoutError, OSError) as row_e:
                     logger.exception(f"处理指数基本信息失败: {row_e}")
                     continue
-            
+
             # 提交事务
             self.session.commit()
             logger.info("指数基本信息更新完成")
             return index_basic_df
-            
+
         except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()
             logger.exception(f"从AkShare获取指数基本信息失败: {e}")
             raise
-    
+
     def update_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
         更新指数日线数据
-        
+
         Args:
             ts_codes: 指数代码列表，None表示更新所有指数
             start_date: 开始日期，格式：YYYYMMDD
             end_date: 结束日期，格式：YYYYMMDD
-        
+
         Returns:
             dict: 指数代码到日线数据的映射（离线模式下）
         """
         try:
             # 离线模式下的默认指数代码列表（使用带前缀的格式）
             default_ts_codes = ["sh000001", "sz399001", "sz399006"]
-            
+
             # 如果没有指定指数代码，从数据库获取所有指数代码
             if not ts_codes:
                 if self.session:
@@ -426,41 +425,41 @@ class AkShareHandler(DataSourceBase):
                     # 离线模式下使用默认指数代码
                     ts_codes = default_ts_codes
                     logger.info(f"离线模式下，使用默认指数代码列表: {ts_codes}")
-            
+
             if not ts_codes:
                 logger.warning("没有需要更新的指数代码")
                 return
-            
+
             logger.info(f"开始更新{len(ts_codes)}个指数的日线数据")
-            
+
             # 存储结果（离线模式下返回）
             result = {}
-            
+
             # 遍历指数代码，获取日线数据
             for ts_code in ts_codes:
                 try:
                     logger.info(f"正在获取{ts_code}的日线数据")
-                    
+
                     # 使用AkShare获取指数日线数据
                     index_daily_pd = ak.stock_zh_index_daily(
                         symbol=ts_code
                     )
-                    
+
                     # 转换为Polars DataFrame
                     index_daily_df = pl.from_pandas(index_daily_pd)
-                    
+
                     if index_daily_df.is_empty():
                         logger.warning(f"{ts_code}没有日线数据")
                         continue
-                    
+
                     logger.info(f"获取到{ts_code}的{index_daily_df.height}条日线数据")
-                    
+
                     # 离线模式下，只获取数据不存储
                     if not self.session:
                         result[ts_code] = index_daily_df
                         logger.info(f"离线模式下，获取{ts_code}的日线数据完成")
                         continue
-                    
+
                     # 数据清洗和标准化
                     from src.database.models.index import IndexDaily
                     from src.database.upsert import upsert_rows
@@ -494,21 +493,21 @@ class AkShareHandler(DataSourceBase):
                             'amount': 0.0,  # 不提供成交额
                         },
                     )
-                    
+
                     # 每个指数提交一次事务
                     self.session.commit()
                     logger.info(f"{ts_code}的日线数据更新完成")
-                    
+
                 except (ConnectionError, TimeoutError, OSError) as e:
                     if self.session:
                         self.session.rollback()
                     logger.exception(f"获取{ts_code}的日线数据失败: {e}")
                     continue
-            
+
             # 离线模式下返回结果
             if not self.session and result:
                 return result
-            
+
         except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()
@@ -614,17 +613,17 @@ class AkShareHandler(DataSourceBase):
     def update_stock_dividend(self, ts_codes: List[str] = None):
         """
         更新股票分红配股数据
-        
+
         Args:
             ts_codes: 股票代码列表，None表示更新所有股票
-        
+
         Returns:
             dict: 股票代码到分红数据的映射（离线模式下）
         """
         try:
             # 离线模式下的默认股票代码列表
             default_ts_codes = ["600000.SH", "000001.SZ", "300001.SZ"]
-            
+
             # 如果没有指定股票代码，从数据库获取所有股票代码
             if not ts_codes:
                 if self.session:
@@ -635,16 +634,16 @@ class AkShareHandler(DataSourceBase):
                     # 离线模式下使用默认股票代码
                     ts_codes = default_ts_codes
                     logger.info(f"离线模式下，使用默认股票代码列表: {ts_codes}")
-            
+
             if not ts_codes:
                 logger.warning("没有需要更新的股票代码")
                 return
-            
+
             logger.info(f"开始更新{len(ts_codes)}只股票的分红配股数据")
-            
+
             # 存储结果（离线模式下返回）
             result = {}
-            
+
             # 遍历股票代码，获取分红配股数据
             for ts_code in ts_codes:
                 try:
@@ -813,11 +812,11 @@ class AkShareHandler(DataSourceBase):
                         self.session.rollback()
                     logger.exception(f"获取{ts_code}的分红配股数据时发生未知错误: {e}")
                     continue
-            
+
             # 离线模式下返回结果
             if not self.session and result:
                 return result
-            
+
         except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()

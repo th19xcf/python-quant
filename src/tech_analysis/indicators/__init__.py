@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 技术指标计算模块目录
 """
 
 # 从各个子模块导入指标计算函数
-from .trend import calculate_trend_indicators
-from .oscillator import calculate_oscillator_indicators
-from .volume import calculate_volume_indicators
-from .volatility import calculate_volatility_indicators
 from .cost import calculate_cost_indicators
 from .market_breadth import calculate_market_breadth_indicators
+from .oscillator import calculate_oscillator_indicators
+from .trend import calculate_trend_indicators
+from .volatility import calculate_volatility_indicators
+from .volume import calculate_volume_indicators
 
 # 导出所有指标计算函数
 __all__ = [

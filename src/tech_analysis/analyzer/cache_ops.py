@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 指标计算状态与缓存操作 Mixin
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from loguru import logger
 
@@ -14,16 +13,16 @@ from ..indicator_cache import global_indicator_cache
 
 class IndicatorCacheMixin:
     """指标计算状态与缓存操作混入类"""
-    
+
     def _generate_cache_key(self, indicator_type, *args, **kwargs):
         """
         生成唯一的缓存键，基于数据哈希和指标参数
-        
+
         Args:
             indicator_type: 指标类型
             *args: 位置参数
             **kwargs: 关键字参数
-            
+
         Returns:
             int: 唯一的缓存键
         """
@@ -36,21 +35,21 @@ class IndicatorCacheMixin:
     def is_indicator_calculated(self, indicator_type, window=None):
         """
         检查特定指标是否已经计算
-        
+
         Args:
             indicator_type: 指标类型，如'ma', 'macd', 'rsi', 'kdj', 'vol_ma'或插件名称
             window: 对于需要窗口的指标，指定窗口大小
-            
+
         Returns:
             bool: 如果指标已计算返回True，否则返回False
         """
         # 检查指标类型是否存在
         if indicator_type not in self.calculated_indicators:
             return False
-        
+
         # 获取指标计算状态
         status = self.calculated_indicators[indicator_type]
-        
+
         # 根据状态类型判断
         if isinstance(status, set):
             # 窗口型指标，需要检查窗口是否已计算
@@ -62,7 +61,7 @@ class IndicatorCacheMixin:
     def reset_calculation(self, indicator_type=None, window=None):
         """
         重置指标计算状态，可选择重置特定指标或所有指标
-        
+
         Args:
             indicator_type: 要重置的指标类型，None表示重置所有指标
             window: 对于需要窗口的指标，指定要重置的窗口，None表示重置该类型的所有窗口
@@ -98,13 +97,13 @@ class IndicatorCacheMixin:
             self._init_plugin_indicator_mapping()
             # 重置数据哈希
             self._data_hash = self._calculate_polars_data_hash()
-            
+
             # 重置Polars DataFrame，只保留原始列
             original_columns = ['open', 'high', 'low', 'close', 'volume']
             self.pl_df = self.pl_df.select(original_columns)
-            
 
-        
+
+
         def _reset_plugin_indicator(plugin_name):
             """重置特定插件指标"""
             if plugin_name in self.calculated_indicators['plugin']:
@@ -112,11 +111,11 @@ class IndicatorCacheMixin:
                 # 从缓存中删除
                 # 注意：这里无法直接删除全局缓存中的条目，因为缓存键包含数据哈希
                 # 但我们可以清除本地计算缓存
-        
+
         def _reset_window_based_indicator(ind_type, win):
             """重置基于窗口的指标"""
             columns_to_drop = []
-            
+
             if win:
                 # 重置特定窗口
                 self.calculated_indicators[ind_type].discard(win)
@@ -150,13 +149,13 @@ class IndicatorCacheMixin:
                     columns_to_drop.extend(['mb', 'up', 'dn'])
                 elif ind_type == 'wr':
                     columns_to_drop.extend(['wr'])
-            
+
             # 统一删除需要删除的列
             if columns_to_drop:
                 columns_to_drop_existing = [col for col in columns_to_drop if col in self.pl_df.columns]
                 if columns_to_drop_existing:
                     self.pl_df = self.pl_df.drop(columns_to_drop_existing)
-        
+
         def _reset_simple_indicator(ind_type):
             """重置简单指标"""
             self.calculated_indicators[ind_type] = False
@@ -167,16 +166,16 @@ class IndicatorCacheMixin:
                 columns_to_drop = ['obv']
             else:
                 columns_to_drop = [ind_type]
-            
+
             # 从缓存中删除
             cache_key = self._generate_cache_key(ind_type)
             self._calculate_cache.pop(cache_key, None)
-            
+
             # 统一删除需要删除的列
             columns_to_drop_existing = [col for col in columns_to_drop if col in self.pl_df.columns]
             if columns_to_drop_existing:
                 self.pl_df = self.pl_df.drop(columns_to_drop_existing)
-        
+
         # 主逻辑
         if not indicator_type:
             # 重置所有指标
@@ -202,7 +201,7 @@ class IndicatorCacheMixin:
     def get_calculated_indicators(self):
         """
         获取已计算的指标信息
-        
+
         Returns:
             dict: 包含已计算指标类型和窗口的字典
         """
@@ -211,19 +210,19 @@ class IndicatorCacheMixin:
     def get_cache_stats(self) -> Dict[str, Any]:
         """
         获取所有指标的缓存统计信息
-        
+
         Returns:
             Dict[str, Any]: 详细的缓存统计信息
         """
         return global_indicator_cache.get_cache_info()
 
-    def clear_calculation_cache(self, indicator_type: Optional[str] = None) -> bool:
+    def clear_calculation_cache(self, indicator_type: str | None = None) -> bool:
         """
         清除指标计算缓存
-        
+
         Args:
             indicator_type: 指标类型，None表示清除所有指标缓存
-        
+
         Returns:
             bool: 清除是否成功
         """

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 数据视图管理器，负责行情数据刷新与展示逻辑

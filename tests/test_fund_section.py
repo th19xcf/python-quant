@@ -3,8 +3,12 @@
 import struct
 from types import SimpleNamespace
 
-from src.ui.fund_section import (FundSection, _default_fund_data,
-                                 is_closed_fund_ts_code, is_etf_fund_ts_code)
+from src.ui.fund_section import (
+    FundSection,
+    _default_fund_data,
+    is_closed_fund_ts_code,
+    is_etf_fund_ts_code,
+)
 
 
 def test_is_etf_fund_ts_code():

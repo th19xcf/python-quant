@@ -6,11 +6,13 @@
 """
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import time
-import polars as pl
 from unittest.mock import MagicMock
+
+import polars as pl
 
 from src.data.managers.data_fetcher import DataFetcher
 

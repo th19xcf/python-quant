@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 除权除息数据服务
@@ -35,7 +34,7 @@ _SKIP = object()  # 无法识别的日期值：丢弃（与原实现一致）
 
 def _to_date(value):
     """按原实现规则转换 K 线日期值；无法识别时返回 _SKIP。"""
-    if hasattr(value, 'date') and callable(getattr(value, 'date')):
+    if hasattr(value, 'date') and callable(value.date):
         return value.date()
     if hasattr(value, 'strftime'):
         return value
@@ -63,7 +62,7 @@ def filter_dividends_by_dates(dividend_data, kline_dates):
     for div in dividend_data:
         ex_date = div.get('ex_date')
         if ex_date:
-            if hasattr(ex_date, 'date') and callable(getattr(ex_date, 'date')):
+            if hasattr(ex_date, 'date') and callable(ex_date.date):
                 ex_date = ex_date.date()
             if ex_date in kline_date_set:
                 filtered.append(div)

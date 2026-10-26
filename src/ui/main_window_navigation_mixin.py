@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 主窗口导航 Mixin：股票/指数点击、导航树联动、键盘与按钮切换标的。
 """
+
+import contextlib
 
 from PySide6.QtCore import Qt
 
@@ -17,22 +18,22 @@ class MainWindowNavigationMixin:
         """
         # Get data for the clicked row
         row = index.row()
-        
+
         try:
             # Get stock code and name
             # Assuming code is in column 1 and name in column 2 (0-indexed)
             code_item = self.stock_table.item(row, 1)
             name_item = self.stock_table.item(row, 2)
-            
+
             if code_item and name_item:
                 code = code_item.text()
                 name = name_item.text()
-                
+
                 # logger.info(f"Selected stock: {name}({code})")
-                
+
                 # Update status bar
                 self.statusBar().showMessage(f"Selected: {name}({code})")
-                
+
         except (OSError, RuntimeError, ValueError) as e:
             logger.error(f"Error handling stock click: {e}")
 
@@ -41,26 +42,26 @@ class MainWindowNavigationMixin:
         Double click on stock list item
         """
         row = index.row()
-        
+
         try:
             # Get stock code and name
             code_item = self.stock_table.item(row, 1)
             name_item = self.stock_table.item(row, 2)
-            
+
             if code_item and name_item:
                 code = code_item.text()
                 name = name_item.text()
-                
+
                 logger.info(f"Double clicked stock: {name}({code})")
-                
+
                 # Switch to chart tab
                 self.tab_widget.setCurrentIndex(1)
-                
+
                 # Process stock data and draw chart
                 # This calls the method in MainWindow (or DataMixin/DrawingMixin)
                 if hasattr(self, 'process_stock_data'):
                     self.process_stock_data(code, name)
-                
+
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Error handling stock double click: {e}")
 
@@ -89,10 +90,10 @@ class MainWindowNavigationMixin:
             if previous_market_view != text and hasattr(self, 'table_interaction_manager'):
                 self.table_interaction_manager.reset_sort_state()
             self.current_market_view = text
-        
+
         # Switch to market tab
         self.tab_widget.setCurrentIndex(0)
-        
+
         try:
             # Handle index items
             if text == "沪深京指数":
@@ -142,14 +143,14 @@ class MainWindowNavigationMixin:
         Other keys: Show stock search dialog at bottom right
         """
         key = event.key()
-        
+
         # ESC键：返回行情标签页
         if key == Qt.Key_Escape:
             if self.tab_widget.currentWidget() == self.tech_tab:
                 logger.info("ESC pressed, returning to market tab")
                 self.tab_widget.setCurrentWidget(self.market_tab)
             return
-        
+
         # 上下箭头键：在技术分析界面切换相邻股票
         if key in (Qt.Key_Up, Qt.Key_Down):
             if self.tab_widget.currentWidget() == self.tech_tab:
@@ -158,12 +159,10 @@ class MainWindowNavigationMixin:
                 return
             else:
                 # 不在技术分析界面，传递给父类处理
-                try:
+                with contextlib.suppress(AttributeError):
                     super().keyPressEvent(event)
-                except AttributeError:
-                    pass
                 return
-        
+
         # 左右箭头键：在技术分析界面实现放大缩小功能
         if key in (Qt.Key_Left, Qt.Key_Right):
             if self.tab_widget.currentWidget() == self.tech_tab:
@@ -176,12 +175,10 @@ class MainWindowNavigationMixin:
                 return
             else:
                 # 不在技术分析界面，传递给父类处理
-                try:
+                with contextlib.suppress(AttributeError):
                     super().keyPressEvent(event)
-                except AttributeError:
-                    pass
                 return
-        
+
         # 忽略其他功能键、控制键等特殊按键
         if key in (Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta,
                    Qt.Key_F1, Qt.Key_F2, Qt.Key_F3, Qt.Key_F4, Qt.Key_F5,
@@ -190,35 +187,29 @@ class MainWindowNavigationMixin:
                    Qt.Key_NumLock, Qt.Key_ScrollLock, Qt.Key_Pause,
                    Qt.Key_Insert, Qt.Key_Delete, Qt.Key_Home, Qt.Key_End,
                    Qt.Key_PageUp, Qt.Key_PageDown):
-            try:
+            with contextlib.suppress(AttributeError):
                 super().keyPressEvent(event)
-            except AttributeError:
-                pass
             return
-        
+
         # 获取按键字符
         text = event.text()
         if not text or not text.isprintable():
-            try:
+            with contextlib.suppress(AttributeError):
                 super().keyPressEvent(event)
-            except AttributeError:
-                pass
             return
-        
+
         # 显示股票搜索对话框（右下角）
         logger.debug(f"Key pressed: {text}, showing search dialog")
         self._show_global_search_dialog(text)
-        
+
         # Call parent implementation
-        try:
+        with contextlib.suppress(AttributeError):
             super().keyPressEvent(event)
-        except AttributeError:
-            pass
-    
+
     def _switch_to_adjacent_stock(self, direction: str):
         """
         切换到相邻的股票或指数
-        
+
         Args:
             direction: 'prev' 上一个 或 'next' 下一个
         """
@@ -227,13 +218,13 @@ class MainWindowNavigationMixin:
             if not hasattr(self, 'current_stock_code') or not self.current_stock_code:
                 logger.warning("没有当前股票/指数，无法切换")
                 return
-            
+
             current_code = self.current_stock_code
             logger.info(f"切换到{direction}，当前: {current_code}")
-            
+
             # 判断当前是股票还是指数
             is_index = self._is_index_code(current_code)
-            
+
             # 获取当前显示的列表
             if is_index:
                 item_list = self._get_current_index_list()
@@ -241,11 +232,11 @@ class MainWindowNavigationMixin:
             else:
                 item_list = self._get_current_stock_list()
                 item_type = "股票"
-            
+
             if not item_list:
                 logger.warning(f"没有可用的{item_type}列表")
                 return
-            
+
             # 标准化当前代码（确保带后缀）
             if '.' not in current_code:
                 # 如果没有后缀，添加默认后缀
@@ -268,7 +259,7 @@ class MainWindowNavigationMixin:
                     current_code = f"{current_code}.BJ"
                 else:
                     current_code = f"{current_code}.SZ"
-            
+
             # 找到当前代码在列表中的位置
             try:
                 current_index = item_list.index(current_code)
@@ -285,7 +276,7 @@ class MainWindowNavigationMixin:
                 else:
                     logger.warning(f"当前{item_type} {current_code} 不在列表中")
                     return
-            
+
             # 按照列表顺序查找下一个项（不跳过任何项）
             if direction == 'prev':
                 target_index = current_index - 1
@@ -295,22 +286,22 @@ class MainWindowNavigationMixin:
                 target_index = current_index + 1
                 if target_index >= len(item_list):
                     target_index = 0  # 循环到开头
-            
+
             # 获取目标代码和名称
             target_code = item_list[target_index]
             if is_index:
                 target_name = self._get_index_name(target_code)
             else:
                 target_name = self._get_stock_name(target_code)
-            
+
             logger.info(f"切换到{item_type}: {target_code} - {target_name}")
-            
+
             # 加载目标K线图（指数和股票使用相同的方法）
             if hasattr(self, 'action_manager'):
                 self.action_manager._load_stock_chart(target_code, target_name)
             else:
                 logger.warning(f"没有action_manager，无法加载{item_type}")
-                
+
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"切换失败: {e}")
 
@@ -332,7 +323,7 @@ class MainWindowNavigationMixin:
         """
         获取当前显示的股票列表
         从行情窗口的表格中获取当前显示的股票代码列表
-        
+
         Returns:
             list: 股票代码列表
         """
@@ -341,7 +332,7 @@ class MainWindowNavigationMixin:
             if hasattr(self, 'stock_table') and self.stock_table:
                 stock_list = []
                 row_count = self.stock_table.rowCount()
-                
+
                 for row in range(row_count):
                     # 获取代码列的值（通常是第1列）
                     code_item = self.stock_table.item(row, 1)  # 代码列
@@ -375,31 +366,31 @@ class MainWindowNavigationMixin:
                         else:
                             # 已经是ts_code格式
                             ts_code = code
-                        
+
                         stock_list.append(ts_code)
-                
+
                 if stock_list:
                     logger.info(f"从表格中获取到 {len(stock_list)} 只股票")
                     return stock_list
-            
+
             # 如果表格中没有数据，尝试从数据管理器获取
             if hasattr(self, 'data_manager') and self.data_manager:
                 return self.data_manager.list_stock_ts_codes()
-            
+
             # 如果没有数据，返回空列表
             return []
-            
+
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取股票列表失败: {e}")
             return []
-    
+
     def _get_stock_name(self, ts_code: str):
         """
         获取股票名称
-        
+
         Args:
             ts_code: 股票代码
-            
+
         Returns:
             str: 股票名称
         """
@@ -416,27 +407,27 @@ class MainWindowNavigationMixin:
                         # 匹配各种格式：纯数字、sh/sz/bj前缀
                         if code == symbol or code == f"sh{symbol}" or code == f"sz{symbol}" or code == f"bj{symbol}":
                             return name_item.text()
-            
+
             # 从数据库查询
             if hasattr(self, 'data_manager') and self.data_manager:
                 name = self.data_manager.get_stock_name(ts_code)
                 if name:
                     return name
-            
+
             # 默认返回代码
             return ts_code
-            
+
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取股票名称失败: {e}")
             return ts_code
-    
+
     def _check_stock_data_exists(self, ts_code: str) -> bool:
         """
         检查股票数据文件是否存在
-        
+
         Args:
             ts_code: 股票代码 (如: 600519.SH, 835305.BJ)
-            
+
         Returns:
             bool: 数据文件是否存在
         """
@@ -460,15 +451,15 @@ class MainWindowNavigationMixin:
                 else:
                     market = 'sz'
                 tdx_code = f"{market}{ts_code}"
-            
+
             from pathlib import Path
             if hasattr(self, 'data_manager') and self.data_manager:
                 tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
                 tdx_file_path = tdx_data_path / market / 'lday' / f'{tdx_code}.day'
                 return tdx_file_path.exists()
-            
+
             return False
-            
+
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"检查股票数据文件失败: {e}")
             return False
@@ -476,10 +467,10 @@ class MainWindowNavigationMixin:
     def _is_index_code(self, code: str) -> bool:
         """
         判断代码是否为指数代码
-        
+
         Args:
             code: 股票/指数代码
-            
+
         Returns:
             bool: 是否为指数
         """
@@ -507,7 +498,7 @@ class MainWindowNavigationMixin:
         """
         获取当前显示的指数列表
         从行情窗口的表格中获取当前显示的指数代码列表
-        
+
         Returns:
             list: 指数代码列表
         """
@@ -516,7 +507,7 @@ class MainWindowNavigationMixin:
             if hasattr(self, 'stock_table') and self.stock_table:
                 index_list = []
                 row_count = self.stock_table.rowCount()
-                
+
                 for row in range(row_count):
                     # 获取代码列的值（通常是第1列）
                     code_item = self.stock_table.item(row, 1)  # 代码列
@@ -541,14 +532,14 @@ class MainWindowNavigationMixin:
                             else:
                                 ts_code = f"{code}.SZ"
                             index_list.append(ts_code)
-                
+
                 if index_list:
                     logger.info(f"从表格中获取到 {len(index_list)} 个指数")
                     return index_list
-            
+
             # 如果表格中没有数据，返回空列表
             return []
-            
+
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取指数列表失败: {e}")
             return []
@@ -556,16 +547,16 @@ class MainWindowNavigationMixin:
     def _get_index_name(self, ts_code: str):
         """
         获取指数名称
-        
+
         Args:
             ts_code: 指数代码
-            
+
         Returns:
             str: 指数名称
         """
         try:
             # 直接从表格中获取名称，不再使用硬编码映射
-            
+
             # 尝试从表格中获取名称
             if hasattr(self, 'stock_table') and self.stock_table:
                 row_count = self.stock_table.rowCount()
@@ -577,10 +568,10 @@ class MainWindowNavigationMixin:
                         symbol = ts_code.split('.')[0]
                         if code == symbol or code == f"sh{symbol}" or code == f"sz{symbol}" or code == f"bj{symbol}":
                             return name_item.text()
-            
+
             # 默认返回代码
             return ts_code
-            
+
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取指数名称失败: {e}")
             return ts_code
@@ -588,10 +579,10 @@ class MainWindowNavigationMixin:
     def _check_index_data_exists(self, ts_code: str) -> bool:
         """
         检查指数数据文件是否存在
-        
+
         Args:
             ts_code: 指数代码 (如: 000001.SH, 899001.BJ)
-            
+
         Returns:
             bool: 数据文件是否存在
         """
@@ -617,15 +608,15 @@ class MainWindowNavigationMixin:
                 else:
                     market = 'sz'
                     tdx_code = f"sz{ts_code}"
-            
+
             from pathlib import Path
             if hasattr(self, 'data_manager') and self.data_manager:
                 tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
                 tdx_file_path = tdx_data_path / market / 'lday' / f'{tdx_code}.day'
                 return tdx_file_path.exists()
-            
+
             return False
-            
+
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"检查指数数据文件失败: {e}")
             return False

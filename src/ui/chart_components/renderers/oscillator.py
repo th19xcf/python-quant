@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 震荡类指标渲染 Mixin
 """
 
-import pyqtgraph as pg
-import numpy as np
 from typing import Any
-from PySide6.QtCore import Qt
+
+import numpy as np
+import pyqtgraph as pg
 from loguru import logger
+from PySide6.QtCore import Qt
 
 
 class OscillatorRenderMixin:
@@ -18,7 +18,7 @@ class OscillatorRenderMixin:
     def render_kdj(self, plot_widget: Any, df: Any, x: np.ndarray):
         """
         渲染KDJ指标
-        
+
         Args:
             plot_widget: 图表控件
             df: 数据
@@ -29,50 +29,50 @@ class OscillatorRenderMixin:
             if df is None:
                 logger.warning("render_kdj: df is None, skipping")
                 return df
-            
+
             if not hasattr(df, 'columns') or 'k' not in df.columns or 'd' not in df.columns:
                 return df
-            
+
             k_data = df['k'].to_numpy().astype(np.float64)
             d_data = df['d'].to_numpy().astype(np.float64)
-            
+
             # 过滤NaN值
             k_mask = ~np.isnan(k_data)
             d_mask = ~np.isnan(d_data)
-            
+
             # 设置Y轴范围（KDJ标准范围0-100，但允许超出）
             plot_widget.setYRange(-20, 120)
-            logger.debug(f"KDJ Y轴范围设置: -20 - 120")
-            
+            logger.debug("KDJ Y轴范围设置: -20 - 120")
+
             # 绘制K线和D线
             if np.any(k_mask):
                 plot_widget.plot(
-                    x[k_mask], 
-                    k_data[k_mask], 
-                    pen=pg.mkPen('w', width=1), 
+                    x[k_mask],
+                    k_data[k_mask],
+                    pen=pg.mkPen('w', width=1),
                     name='K'
                 )
-            
+
             if np.any(d_mask):
                 plot_widget.plot(
-                    x[d_mask], 
-                    d_data[d_mask], 
-                    pen=pg.mkPen('y', width=1), 
+                    x[d_mask],
+                    d_data[d_mask],
+                    pen=pg.mkPen('y', width=1),
                     name='D'
                 )
-            
+
             # 绘制J线（如果存在）
             if hasattr(df, 'columns') and 'j' in df.columns:
                 j_data = df['j'].to_numpy().astype(np.float64)
                 j_mask = ~np.isnan(j_data)
                 if np.any(j_mask):
                     plot_widget.plot(
-                        x[j_mask], 
-                        j_data[j_mask], 
-                        pen=pg.mkPen('m', width=1), 
+                        x[j_mask],
+                        j_data[j_mask],
+                        pen=pg.mkPen('m', width=1),
                         name='J'
                     )
-            
+
             # 添加参考线
             self._add_kdj_reference_lines(plot_widget, x)
 
@@ -92,7 +92,7 @@ class OscillatorRenderMixin:
     def render_macd(self, plot_widget: Any, df: Any, x: np.ndarray):
         """
         渲染MACD指标
-        
+
         Args:
             plot_widget: 图表控件
             df: 数据
@@ -103,15 +103,15 @@ class OscillatorRenderMixin:
             if df is None:
                 logger.warning("render_macd: df is None, skipping")
                 return df
-            
+
             logger.debug(f"渲染MACD，数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
             if not hasattr(df, 'columns') or 'macd' not in df.columns or 'macd_signal' not in df.columns:
                 logger.warning("MACD数据列不存在，跳过渲染（应由渲染前批量计算提供）")
                 return df
-            
+
             macd_data = df['macd'].to_numpy().astype(np.float64)
             signal_data = df['macd_signal'].to_numpy().astype(np.float64)
-            
+
             # 设置Y轴范围
             if hasattr(df, 'columns') and 'macd_hist' in df.columns:
                 hist_data = df['macd_hist'].to_numpy()
@@ -126,37 +126,37 @@ class OscillatorRenderMixin:
             max_val = max_val + range_val * 0.1
             plot_widget.setYRange(min_val, max_val)
             logger.debug(f"MACD Y轴范围: {min_val:.2f} - {max_val:.2f}")
-            
+
             # 禁用科学计数法
             y_axis = plot_widget.getAxis('left')
             y_axis.enableAutoSIPrefix(False)
-            
+
             # 绘制MACD线（DIF）
             macd_mask = ~np.isnan(macd_data)
             if np.any(macd_mask):
                 plot_widget.plot(
-                    x[macd_mask], 
-                    macd_data[macd_mask], 
-                    pen=pg.mkPen('w', width=1), 
+                    x[macd_mask],
+                    macd_data[macd_mask],
+                    pen=pg.mkPen('w', width=1),
                     name='DIF'
                 )
                 logger.debug(f"绘制MACD线，数据点: {np.sum(macd_mask)}")
-            
+
             # 绘制信号线（DEA）
             signal_mask = ~np.isnan(signal_data)
             if np.any(signal_mask):
                 plot_widget.plot(
-                    x[signal_mask], 
-                    signal_data[signal_mask], 
-                    pen=pg.mkPen('y', width=1), 
+                    x[signal_mask],
+                    signal_data[signal_mask],
+                    pen=pg.mkPen('y', width=1),
                     name='DEA'
                 )
                 logger.debug(f"绘制DEA线，数据点: {np.sum(signal_mask)}")
-            
+
             # 绘制柱状图（MACD柱）
             if hasattr(df, 'columns') and 'macd_hist' in df.columns:
                 self._draw_macd_histogram(plot_widget, x, df['macd_hist'].to_numpy())
-            
+
             # 添加零轴
             plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1))
 
@@ -186,7 +186,7 @@ class OscillatorRenderMixin:
     def render_rsi(self, plot_widget: Any, df: Any, x: np.ndarray):
         """
         渲染RSI指标
-        
+
         Args:
             plot_widget: 图表控件
             df: 数据
@@ -197,26 +197,26 @@ class OscillatorRenderMixin:
             if df is None:
                 logger.warning("render_rsi: df is None, skipping")
                 return df
-            
+
             if not hasattr(df, 'columns') or 'rsi14' not in df.columns:
                 return df
-            
+
             rsi_data = df['rsi14'].to_numpy().astype(np.float64)
             rsi_mask = ~np.isnan(rsi_data)
-            
+
             if np.any(rsi_mask):
                 plot_widget.plot(
-                    x[rsi_mask], 
-                    rsi_data[rsi_mask], 
-                    pen=pg.mkPen('b', width=1), 
+                    x[rsi_mask],
+                    rsi_data[rsi_mask],
+                    pen=pg.mkPen('b', width=1),
                     name='RSI14'
                 )
-            
+
             # 添加参考线
             plot_widget.addLine(y=20, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
             plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
             plot_widget.addLine(y=80, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
-            
+
             # 设置Y轴范围
             plot_widget.setYRange(0, 100)
 
@@ -227,7 +227,7 @@ class OscillatorRenderMixin:
     def render_wr(self, plot_widget: Any, df: Any, x: np.ndarray):
         """
         渲染WR指标
-        
+
         Args:
             plot_widget: 图表控件
             df: 数据
@@ -238,43 +238,43 @@ class OscillatorRenderMixin:
             if df is None:
                 logger.warning("render_wr: df is None, skipping")
                 return df
-            
+
             # 优先使用wr1和wr2（通达信风格）
             if hasattr(df, 'columns') and 'wr1' in df.columns and 'wr2' in df.columns:
                 wr1_data = df['wr1'].to_numpy().astype(np.float64)
                 wr2_data = df['wr2'].to_numpy().astype(np.float64)
-                
+
                 wr1_mask = ~np.isnan(wr1_data)
                 wr2_mask = ~np.isnan(wr2_data)
-                
+
                 if np.any(wr1_mask):
                     plot_widget.plot(
-                        x[wr1_mask], 
-                        wr1_data[wr1_mask], 
-                        pen=pg.mkPen('y', width=1), 
+                        x[wr1_mask],
+                        wr1_data[wr1_mask],
+                        pen=pg.mkPen('y', width=1),
                         name='WR1'
                     )
-                
+
                 if np.any(wr2_mask):
                     plot_widget.plot(
-                        x[wr2_mask], 
-                        wr2_data[wr2_mask], 
-                        pen=pg.mkPen('w', width=1), 
+                        x[wr2_mask],
+                        wr2_data[wr2_mask],
+                        pen=pg.mkPen('w', width=1),
                         name='WR2'
                     )
             elif hasattr(df, 'columns') and 'wr' in df.columns:
                 # 兼容旧格式
                 wr_data = df['wr'].to_numpy().astype(np.float64)
                 wr_mask = ~np.isnan(wr_data)
-                
+
                 if np.any(wr_mask):
                     plot_widget.plot(
-                        x[wr_mask], 
-                        wr_data[wr_mask], 
-                        pen=pg.mkPen('w', width=1), 
+                        x[wr_mask],
+                        wr_data[wr_mask],
+                        pen=pg.mkPen('w', width=1),
                         name='WR'
                     )
-            
+
             # 添加参考线
             plot_widget.addLine(y=-20, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
             plot_widget.addLine(y=-50, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))

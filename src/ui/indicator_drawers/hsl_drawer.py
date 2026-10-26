@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 HSL（换手率）指标绘制器
 """
 
 import pyqtgraph as pg
-from .histogram_item import HistogramItem
 
 from .base_drawer import BaseIndicatorDrawer
+from .histogram_item import HistogramItem
 
 
 class HslDrawer(BaseIndicatorDrawer):

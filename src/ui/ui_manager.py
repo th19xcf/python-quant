@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 UI管理器，负责主窗口UI初始化的编排
@@ -16,7 +15,7 @@ if TYPE_CHECKING:
 class UIManager:
     """主窗口UI管理器"""
 
-    def __init__(self, window: "MainWindow"):
+    def __init__(self, window: MainWindow):
         self.window = window
 
     def init_ui(self):

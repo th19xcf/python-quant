@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 Pandas↔Polars 转换开销治理的回归测试
@@ -18,10 +17,10 @@ import pandas as pd
 import polars as pl
 import pytest
 
+from src.plugin.plugin_base import IndicatorPlugin
 from src.tech_analysis.indicator_calculator import preprocess_data_polars
 from src.tech_analysis.indicator_manager import IndicatorManager
 from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-from src.plugin.plugin_base import IndicatorPlugin
 
 
 def _make_ohlcv(rows=80, extra_cols=False):

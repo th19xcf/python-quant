@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 回测执行内核 —— 撮合、T+1、整手、风控、成本、权益估值的唯一实现。
@@ -21,14 +20,16 @@ A 股交易语义只允许在本模块修改，禁止在具体引擎里再写一
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import polars as pl
 from loguru import logger
 
 from src.backtest.costs.cost_model import CostModel
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
-from src.risk import Order as RiskOrder, Portfolio as RiskPortfolio, RiskEngine
+from src.risk import Order as RiskOrder
+from src.risk import Portfolio as RiskPortfolio
+from src.risk import RiskEngine
 
 
 class ExecutionRules:
@@ -69,9 +70,9 @@ class ExecutionRules:
         """有代码时按代码自适应，无代码时回退调用方传入的 limit_pct。"""
         return self.resolve_limit_pct(ts_code, is_st, self.limit_pct) if ts_code else self.limit_pct
 
-    def is_tradable(self, side: str, *, prev_close: Optional[float], open_price: Optional[float],
-                    high: Optional[float], low: Optional[float], close: Optional[float],
-                    volume: Optional[float], ts_code: str = '', is_st: bool = False) -> bool:
+    def is_tradable(self, side: str, *, prev_close: float | None, open_price: float | None,
+                    high: float | None, low: float | None, close: float | None,
+                    volume: float | None, ts_code: str = '', is_st: bool = False) -> bool:
         """
         指定交易方向在某一天是否可成交。
 
@@ -93,9 +94,7 @@ class ExecutionRules:
             open_pct = open_price / prev_close - 1
             if side == 'buy' and open_pct >= limit - self.LIMIT_TOLERANCE:
                 return False
-            if side == 'sell' and open_pct <= -(limit - self.LIMIT_TOLERANCE):
-                return False
-            return True
+            return not (side == 'sell' and open_pct <= -(limit - self.LIMIT_TOLERANCE))
 
         if high is not None and low is not None and high == low and close is not None:
             pct = close / prev_close - 1
@@ -115,19 +114,19 @@ class AccountBook:
     """
 
     def __init__(self, initial_capital: float, codes: List[str],
-                 industry_map: Optional[Dict[str, str]] = None):
+                 industry_map: Dict[str, str] | None = None):
         self.codes = list(codes)
         self.industry_map = dict(industry_map or {})
         per_code = initial_capital / len(self.codes) if self.codes else 0.0
-        self.cash: Dict[str, float] = {code: per_code for code in self.codes}
-        self.positions: Dict[str, int] = {code: 0 for code in self.codes}
+        self.cash: Dict[str, float] = dict.fromkeys(self.codes, per_code)
+        self.positions: Dict[str, int] = dict.fromkeys(self.codes, 0)
         self.last_prices: Dict[str, float] = {}
 
     @property
     def total_cash(self) -> float:
         return sum(self.cash.values())
 
-    def mark(self, code: str, price: Optional[float]) -> None:
+    def mark(self, code: str, price: float | None) -> None:
         """更新盯市价（收盘后调用）。"""
         if price is not None and price > 0:
             self.last_prices[code] = float(price)
@@ -164,13 +163,13 @@ class AccountBook:
 class RiskGate:
     """风控闸门：唯一的 RiskOrder 构造与 gate() 调用入口。"""
 
-    def __init__(self, risk_engine: Optional[RiskEngine], industry_map: Optional[Dict[str, str]] = None):
+    def __init__(self, risk_engine: RiskEngine | None, industry_map: Dict[str, str] | None = None):
         self.risk_engine = risk_engine
         self.industry_map = dict(industry_map or {})
 
     def check(self, *, ts_code: str, side: str, qty: int, price: float,
               trade_date: Any, book: AccountBook,
-              equity_curve: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+              equity_curve: List[Dict[str, Any]]) -> Dict[str, Any] | None:
         """
         审查一笔候选订单。
 
@@ -212,15 +211,15 @@ class EventBacktestRunner:
     """
 
     def __init__(self, cost_model: CostModel, performance_analyzer: PerformanceAnalyzer,
-                 risk_engine: Optional[RiskEngine] = None):
+                 risk_engine: RiskEngine | None = None):
         self.cost_model = cost_model
         self.performance_analyzer = performance_analyzer
         self.risk_engine = risk_engine
 
     def run(self, universe: Dict[str, pl.DataFrame], strategies: Dict[str, Any],
             initial_capital: float = 1_000_000.0, lot_size: int = 100,
-            limit_pct: float = 0.10, industry_map: Optional[Dict[str, str]] = None,
-            result_meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+            limit_pct: float = 0.10, industry_map: Dict[str, str] | None = None,
+            result_meta: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """
         执行回测并返回结果字典。
 
@@ -267,10 +266,10 @@ class EventBacktestRunner:
         book = AccountBook(initial_capital, codes, industry_map)
         gate = RiskGate(self.risk_engine, industry_map)
 
-        pending: Dict[str, Optional[str]] = {code: None for code in codes}
-        bar_index: Dict[str, int] = {code: 0 for code in codes}
-        prev_close: Dict[str, Optional[float]] = {code: None for code in codes}
-        prev_raw_close: Dict[str, Optional[float]] = {code: None for code in codes}
+        pending: Dict[str, str | None] = dict.fromkeys(codes)
+        bar_index: Dict[str, int] = dict.fromkeys(codes, 0)
+        prev_close: Dict[str, float | None] = dict.fromkeys(codes)
+        prev_raw_close: Dict[str, float | None] = dict.fromkeys(codes)
 
         trades: List[Dict[str, Any]] = []
         rejected_orders: List[Dict[str, Any]] = []
@@ -360,18 +359,18 @@ class EventBacktestRunner:
     # 撮合
     # ------------------------------------------------------------------
 
-    def _execute_pending(self, *, code: str, date: Any, pending: Dict[str, Optional[str]],
+    def _execute_pending(self, *, code: str, date: Any, pending: Dict[str, str | None],
                          book: AccountBook, gate: RiskGate, rules: ExecutionRules,
                          cost_model: CostModel, trades: List[Dict[str, Any]],
                          rejected_orders: List[Dict[str, Any]],
                          expired_orders: List[Dict[str, Any]],
                          equity_curve: List[Dict[str, Any]], lot_size: int,
-                         prev_close: Optional[float], open_price: Optional[float],
-                         high: Optional[float], low: Optional[float],
-                         close: Optional[float], volume: Optional[float],
-                         open_raw: Optional[float] = None,
-                         prev_close_raw: Optional[float] = None,
-                         close_raw: Optional[float] = None) -> None:
+                         prev_close: float | None, open_price: float | None,
+                         high: float | None, low: float | None,
+                         close: float | None, volume: float | None,
+                         open_raw: float | None = None,
+                         prev_close_raw: float | None = None,
+                         close_raw: float | None = None) -> None:
         """执行该标的的挂单。
 
         订单生命周期语义（显式状态机，杜绝静默丢单）：

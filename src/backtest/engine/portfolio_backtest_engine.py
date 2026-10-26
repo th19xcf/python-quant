@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 组合回测引擎，撮合逻辑全部委托给 execution_core 统一内核
 """
 
-from typing import Dict, Any
+from typing import Any, Dict
+
 from loguru import logger
 
 from src.backtest.engine.base_engine import BaseBacktestEngine
@@ -104,7 +104,7 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
         self.trades = result.get('trades', [])
         self.equity_curve = result.get('equity_curve', [])
         self.rejected_orders = result.get('rejected_orders', [])
-        self.positions = {stock: 0 for stock in self.data_dict}
+        self.positions = dict.fromkeys(self.data_dict, 0)
         for trade in self.trades:
             self.positions[trade['stock_code']] = trade['position']
 

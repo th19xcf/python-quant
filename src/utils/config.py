@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 r"""
 配置管理模块
@@ -18,13 +17,13 @@ r"""
 4. 详细的配置文档
 """
 
-import os
-import time
 import threading
+import time
 from pathlib import Path
+from typing import Any, Dict, List, Set
+
+from pydantic import ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings
-from pydantic import Field, ConfigDict, field_validator, model_validator
-from typing import Optional, Dict, Any, List, Set
 
 
 class DatabaseSettings(BaseSettings):
@@ -37,7 +36,7 @@ class DatabaseSettings(BaseSettings):
     charset: str = Field(default="utf8mb4", description="数据库字符集")
     pool_size: int = Field(default=10, description="连接池大小")
     pool_recycle: int = Field(default=3600, description="连接池回收时间")
-    
+
     @field_validator('port')
     @classmethod
     def validate_port(cls, v: int) -> int:
@@ -45,7 +44,7 @@ class DatabaseSettings(BaseSettings):
         if v < 1 or v > 65535:
             raise ValueError('端口号必须在1-65535之间')
         return v
-    
+
     @field_validator('pool_size')
     @classmethod
     def validate_pool_size(cls, v: int) -> int:
@@ -59,10 +58,10 @@ class RedisSettings(BaseSettings):
     """Redis配置"""
     host: str = Field(default="localhost", description="Redis主机")
     port: int = Field(default=6379, description="Redis端口")
-    password: Optional[str] = Field(default=None, description="Redis密码")
+    password: str | None = Field(default=None, description="Redis密码")
     db: int = Field(default=0, description="Redis数据库")
     decode_responses: bool = Field(default=True, description="是否解码响应")
-    
+
     @field_validator('port')
     @classmethod
     def validate_port(cls, v: int) -> int:
@@ -70,7 +69,7 @@ class RedisSettings(BaseSettings):
         if v < 1 or v > 65535:
             raise ValueError('端口号必须在1-65535之间')
         return v
-    
+
     @field_validator('db')
     @classmethod
     def validate_db(cls, v: int) -> int:
@@ -85,7 +84,7 @@ class DataSettings(BaseSettings):
     tdx_data_path: str = Field(default="", description="通达信数据路径")
     update_interval: int = Field(default=3600, description="数据更新间隔(秒)")
     max_workers: int = Field(default=4, description="数据获取最大工作线程数")
-    
+
     # Baostock配置
     default_stock_codes: List[str] = Field(default=["sh.600000", "sz.000001", "sz.300001"], description="默认股票代码列表")
     default_index_codes: List[str] = Field(default=["sh.000001", "sz.399001", "sz.399006"], description="默认指数代码列表")
@@ -93,11 +92,11 @@ class DataSettings(BaseSettings):
     default_days: int = Field(default=30, description="默认数据更新天数")
     default_minute_days: int = Field(default=3, description="默认分钟线数据下载天数")
     default_realtime_days: int = Field(default=5, description="默认实时数据替代天数")
-    
+
     # 股票基本信息更新配置
     auto_update_stock_basic: bool = Field(default=False, description="是否在启动时自动更新股票基本信息")
     stock_basic_update_interval: int = Field(default=7, description="股票基本信息更新间隔（天）")
-    
+
     @field_validator('update_interval')
     @classmethod
     def validate_update_interval(cls, v: int) -> int:
@@ -105,7 +104,7 @@ class DataSettings(BaseSettings):
         if v < 60:
             raise ValueError('更新间隔必须大于等于60秒')
         return v
-    
+
     @field_validator('max_workers')
     @classmethod
     def validate_max_workers(cls, v: int) -> int:
@@ -113,7 +112,7 @@ class DataSettings(BaseSettings):
         if v < 1:
             raise ValueError('最大工作线程数必须大于0')
         return v
-    
+
     @field_validator('default_days', 'default_minute_days', 'default_realtime_days')
     @classmethod
     def validate_days(cls, v: int) -> int:
@@ -121,7 +120,7 @@ class DataSettings(BaseSettings):
         if v < 1:
             raise ValueError('天数必须大于0')
         return v
-    
+
     @field_validator('stock_basic_update_interval')
     @classmethod
     def validate_stock_basic_update_interval(cls, v: int) -> int:
@@ -138,7 +137,7 @@ class LogSettings(BaseSettings):
     rotation: str = Field(default="10 MB", description="日志文件轮换大小")
     retention: str = Field(default="30 days", description="日志文件保留时间")
     compression: str = Field(default="zip", description="日志文件压缩格式")
-    
+
     @field_validator('level')
     @classmethod
     def validate_level(cls, v: str) -> str:
@@ -147,7 +146,7 @@ class LogSettings(BaseSettings):
         if v.upper() not in valid_levels:
             raise ValueError(f'日志级别必须是以下之一: {valid_levels}')
         return v.upper()
-    
+
     @field_validator('file_path')
     @classmethod
     def validate_file_path(cls, v: str) -> str:
@@ -162,9 +161,9 @@ class LogSettings(BaseSettings):
 class PluginSettings(BaseSettings):
     """单个插件配置"""
     enabled: bool = Field(default=True, description="插件是否启用")
-    version: Optional[str] = Field(default=None, description="插件版本")
+    version: str | None = Field(default=None, description="插件版本")
     config: Dict[str, Any] = Field(default_factory=dict, description="插件特定配置")
-    
+
     model_config = ConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -177,7 +176,7 @@ class PluginsSettings(BaseSettings):
     """所有插件配置"""
     # 使用字典存储各个插件的配置
     plugins: Dict[str, PluginSettings] = Field(default_factory=dict, description="插件配置字典")
-    
+
     model_config = ConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -194,7 +193,7 @@ class Config(BaseSettings):
     data: DataSettings = Field(default_factory=DataSettings)
     log: LogSettings = Field(default_factory=LogSettings)
     plugins: PluginsSettings = Field(default_factory=PluginsSettings)
-    
+
     model_config = ConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -205,22 +204,22 @@ class Config(BaseSettings):
 
 class ConfigManager:
     """配置管理器，支持配置热加载"""
-    
+
     def __init__(self):
         """初始化配置管理器"""
         self._config: Config = Config()
         self._last_modified: float = self._get_env_file_mtime()
         self._lock = threading.RLock()
-        self._watch_thread: Optional[threading.Thread] = None
+        self._watch_thread: threading.Thread | None = None
         self._running = False
-    
+
     def _get_env_file_mtime(self) -> float:
         """获取.env文件的修改时间"""
         env_file = Path(".env")
         if env_file.exists():
             return env_file.stat().st_mtime
         return 0
-    
+
     def get_config(self) -> Config:
         """获取配置实例，支持热加载"""
         with self._lock:
@@ -231,26 +230,26 @@ class ConfigManager:
                 self._config = Config()
                 self._last_modified = current_mtime
             return self._config
-    
+
     def start_watching(self, interval: int = 5):
         """开始监控配置文件变化
-        
+
         Args:
             interval: 监控间隔（秒）
         """
         self._running = True
         self._watch_thread = threading.Thread(target=self._watch_config, args=(interval,), daemon=True)
         self._watch_thread.start()
-    
+
     def stop_watching(self):
         """停止监控配置文件变化"""
         self._running = False
         if self._watch_thread:
             self._watch_thread.join(timeout=2)
-    
+
     def _watch_config(self, interval: int):
         """监控配置文件变化的线程函数
-        
+
         Args:
             interval: 监控间隔（秒）
         """
@@ -264,13 +263,13 @@ class ConfigManager:
                         new_config = Config()
                         self._config = new_config
                         self._last_modified = current_mtime
-                        print(f"配置文件已更新，热加载成功")
+                        print("配置文件已更新，热加载成功")
                     except Exception as e:
                         print(f"配置文件更新失败: {e}")
-    
+
     def reload(self) -> Config:
         """手动重新加载配置
-        
+
         Returns:
             重新加载后的配置实例
         """

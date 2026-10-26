@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 Alpha因子计算器，用于计算各种Alpha因子
@@ -11,19 +10,21 @@ Alpha因子计算器，用于计算各种Alpha因子
 """
 
 import time
-from typing import List, Dict, Optional, Any
-import polars as pl
-import pandas as pd
+from typing import Any, Dict, List
+
 import numpy as np
+import pandas as pd
+import polars as pl
 from loguru import logger
+
+from src.alpha.factors.factor_registry import FACTOR_REGISTRY
 
 # 保留这些 import：触发 @register_factor 装饰器注册到 FACTOR_REGISTRY
 from src.alpha.factors.price_momentum import PriceMomentumFactors  # noqa: F401
-from src.alpha.factors.volatility import VolatilityFactors          # noqa: F401
-from src.alpha.factors.volume import VolumeFactors                  # noqa: F401
-from src.alpha.factors.technical import TechnicalFactors            # noqa: F401
-from src.alpha.factors.risk import RiskFactors                      # noqa: F401
-from src.alpha.factors.factor_registry import FACTOR_REGISTRY
+from src.alpha.factors.risk import RiskFactors  # noqa: F401
+from src.alpha.factors.technical import TechnicalFactors  # noqa: F401
+from src.alpha.factors.volatility import VolatilityFactors  # noqa: F401
+from src.alpha.factors.volume import VolumeFactors  # noqa: F401
 
 # FactorEvaluator 可能依赖 scipy，缺失时允许降级
 try:
@@ -52,7 +53,7 @@ class AlphaCalculator:
       3. 调用 calculate_factors(['xxx']) 即可，无需改本文件代码
     """
 
-    def __init__(self, data, partition_by: Optional[str] = None):
+    def __init__(self, data, partition_by: str | None = None):
         if isinstance(data, pd.DataFrame):
             self.pl_df = pl.from_pandas(data)
         elif hasattr(data, 'to_pandas'):
@@ -102,15 +103,15 @@ class AlphaCalculator:
             self.pl_df = merged
 
         return self.pl_df
-    
-    def evaluate_factors(self, factor_names: List[str], target_returns: Optional[pl.Series] = None) -> Dict[str, Any]:
+
+    def evaluate_factors(self, factor_names: List[str], target_returns: pl.Series | None = None) -> Dict[str, Any]:
         """
         评估因子有效性
-        
+
         Args:
             factor_names: 因子名称列表
             target_returns: 目标收益率序列
-            
+
         Returns:
             Dict[str, Any]: 评估结果
         """
@@ -121,15 +122,15 @@ class AlphaCalculator:
             data = self.pl_df.slice(0, len(target_returns))
         else:
             data = self.pl_df
-        
+
         evaluation_results = {}
-        
+
         for factor_name in factor_names:
             if factor_name in data.columns:
                 factor_values = data[factor_name]
                 ic = self.evaluator.calculate_ic(factor_values, target_returns)
                 rank_ic = self.evaluator.calculate_rank_ic(factor_values, target_returns)
-                
+
                 evaluation_results[factor_name] = {
                     'ic': ic,
                     'rank_ic': rank_ic
@@ -137,53 +138,53 @@ class AlphaCalculator:
                 logger.info(f"因子 {factor_name} 评估完成: IC={ic:.4f}, Rank IC={rank_ic:.4f}")
             else:
                 logger.warning(f"因子 {factor_name} 不存在")
-        
+
         return evaluation_results
-    
+
     def analyze_factor_correlation(self, factor_names: List[str]) -> Dict[str, Any]:
         """
         分析因子相关性
-        
+
         Args:
             factor_names: 因子名称列表
-            
+
         Returns:
             Dict[str, Any]: 相关性分析结果
         """
         # 提取因子数据
         factor_data = []
         valid_factors = []
-        
+
         for factor_name in factor_names:
             if factor_name in self.pl_df.columns:
                 factor_data.append(self.pl_df[factor_name].to_numpy())
                 valid_factors.append(factor_name)
             else:
                 logger.warning(f"因子 {factor_name} 不存在")
-        
+
         if not valid_factors:
             return {}
-        
+
         # 计算相关性矩阵
         correlation_matrix = np.corrcoef(factor_data)
-        
+
         # 构建相关性字典
         correlation_dict = {}
         for i, factor1 in enumerate(valid_factors):
             correlation_dict[factor1] = {}
             for j, factor2 in enumerate(valid_factors):
                 correlation_dict[factor1][factor2] = correlation_matrix[i, j]
-        
+
         return correlation_dict
-    
-    def optimize_factor_weights(self, factor_names: List[str], target_returns: Optional[pl.Series] = None) -> Dict[str, float]:
+
+    def optimize_factor_weights(self, factor_names: List[str], target_returns: pl.Series | None = None) -> Dict[str, float]:
         """
         优化因子权重
-        
+
         Args:
             factor_names: 因子名称列表
             target_returns: 目标收益率序列
-            
+
         Returns:
             Dict[str, float]: 优化后的因子权重
         """
@@ -194,35 +195,35 @@ class AlphaCalculator:
             data = self.pl_df.slice(0, len(target_returns))
         else:
             data = self.pl_df
-        
+
         # 提取因子数据
         factor_data = []
         valid_factors = []
-        
+
         for factor_name in factor_names:
             if factor_name in data.columns:
                 factor_data.append(data[factor_name].to_numpy())
                 valid_factors.append(factor_name)
             else:
                 logger.warning(f"因子 {factor_name} 不存在")
-        
+
         if not valid_factors:
             return {}
-        
+
         # 计算因子与目标收益率的相关性
         correlations = []
         for factor_values in factor_data:
             corr = np.corrcoef(factor_values, target_returns.to_numpy())[0, 1]
             correlations.append(abs(corr))
-        
+
         # 基于相关性计算权重
         total_corr = sum(correlations)
         weights = {}
         for i, factor_name in enumerate(valid_factors):
             weights[factor_name] = correlations[i] / total_corr if total_corr > 0 else 1.0 / len(valid_factors)
-        
+
         return weights
-    
+
     def get_factor_results(self) -> Dict[str, Any]:
         """
         获取因子计算结果
@@ -258,10 +259,7 @@ def calculate_factors_cross_sectional(data,
     Raises:
         ValueError: 输入缺少 code_col 列
     """
-    if isinstance(data, pd.DataFrame):
-        df = pl.from_pandas(data)
-    else:
-        df = data
+    df = pl.from_pandas(data) if isinstance(data, pd.DataFrame) else data
     if not factor_types or df.is_empty():
         return df
     if code_col not in df.columns:

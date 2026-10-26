@@ -3,8 +3,13 @@
 import pytest
 
 from src.utils.code_converter import (
-    infer_market, parse_code, to_baostock_code, to_symbol,
-    to_tdx_file_stem, to_tdx_market, to_ts_code,
+    infer_market,
+    parse_code,
+    to_baostock_code,
+    to_symbol,
+    to_tdx_file_stem,
+    to_tdx_market,
+    to_ts_code,
 )
 
 

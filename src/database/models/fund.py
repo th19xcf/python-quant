@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 基金数据模型
@@ -7,7 +6,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime
+from sqlalchemy import Column, Date, DateTime, Float, Integer, String
 
 from src.database.db_manager import Base
 
@@ -17,7 +16,7 @@ class FundBasic(Base):
     基金基本信息表
     """
     __tablename__ = "fund_basic"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts_code = Column(String(20), unique=True, nullable=False, comment="基金代码")
     symbol = Column(String(10), comment="基金代码(数字)")
@@ -29,7 +28,7 @@ class FundBasic(Base):
     status = Column(String(10), comment="上市状态: L上市 D退市")
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
-    
+
     __table_args__ = (
         {
             "comment": "基金基本信息表",
@@ -48,7 +47,7 @@ class FundDaily(Base):
     基金日线行情表
     """
     __tablename__ = "fund_daily"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts_code = Column(String(20), nullable=False, comment="基金代码")
     trade_date = Column(Date, nullable=False, comment="交易日期")
@@ -61,10 +60,10 @@ class FundDaily(Base):
     pct_chg = Column(Float, comment="涨跌幅(%)")
     vol = Column(Float, comment="成交量(手)")
     amount = Column(Float, comment="成交额(千元)")
-    
+
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
-    
+
     __table_args__ = (
         {
             "comment": "基金日线行情表",
@@ -73,7 +72,7 @@ class FundDaily(Base):
             "extend_existing": True
         }
     )
-    
+
     def __repr__(self):
         return f"<FundDaily(ts_code='{self.ts_code}', trade_date='{self.trade_date}', close={self.close})>"
 
@@ -83,7 +82,7 @@ class ClosedFundBasic(Base):
     封闭式基金基本信息表
     """
     __tablename__ = "closed_fund_basic"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts_code = Column(String(20), unique=True, nullable=False, comment="基金代码")
     symbol = Column(String(10), comment="基金代码(数字)")
@@ -95,7 +94,7 @@ class ClosedFundBasic(Base):
     status = Column(String(10), comment="上市状态: L上市 D退市")
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
-    
+
     __table_args__ = (
         {
             "comment": "封闭式基金基本信息表",
@@ -114,7 +113,7 @@ class ClosedFundDaily(Base):
     封闭式基金日线行情表
     """
     __tablename__ = "closed_fund_daily"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts_code = Column(String(20), nullable=False, comment="基金代码")
     trade_date = Column(Date, nullable=False, comment="交易日期")
@@ -127,10 +126,10 @@ class ClosedFundDaily(Base):
     pct_chg = Column(Float, comment="涨跌幅(%)")
     vol = Column(Float, comment="成交量(手)")
     amount = Column(Float, comment="成交额(千元)")
-    
+
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
-    
+
     __table_args__ = (
         {
             "comment": "封闭式基金日线行情表",
@@ -139,6 +138,6 @@ class ClosedFundDaily(Base):
             "extend_existing": True
         }
     )
-    
+
     def __repr__(self):
         return f"<ClosedFundDaily(ts_code='{self.ts_code}', trade_date='{self.trade_date}', close={self.close})>"

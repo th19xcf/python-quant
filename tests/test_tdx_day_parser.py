@@ -5,9 +5,13 @@ from datetime import date
 
 import pytest
 
-from src.data.tdx_day_parser import (build_day_file_path, is_index_file,
-                                     parse_day_file, read_latest_quote,
-                                     resolve_market)
+from src.data.tdx_day_parser import (
+    build_day_file_path,
+    is_index_file,
+    parse_day_file,
+    read_latest_quote,
+    resolve_market,
+)
 
 
 def _write_day_file(path, records):

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 横截面算子：截面排序、去极值、中性化、截面 IC
@@ -14,9 +13,11 @@
     ic = cross_sectional_ic(df, 'momentum_1m_win_neu_cs_rank', 'fwd_ret_5')
 """
 
-import polars as pl
+from collections.abc import Iterable
+from typing import Any, Dict, List, Union
+
 import pandas as pd
-from typing import Iterable, List, Optional, Dict, Any, Union
+import polars as pl
 
 RANK_SUFFIX = '_cs_rank'
 WINSOR_SUFFIX = '_win'
@@ -106,8 +107,8 @@ def winsorize(data,
 def neutralize(data,
                factor_cols: Iterable[str],
                by: str = 'date',
-               industry_col: Optional[str] = None,
-               exposure_col: Optional[str] = None,
+               industry_col: str | None = None,
+               exposure_col: str | None = None,
                suffix: str = NEUTRAL_SUFFIX) -> pl.DataFrame:
     """
     面板中性化

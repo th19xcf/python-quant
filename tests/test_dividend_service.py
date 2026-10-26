@@ -4,9 +4,11 @@ import datetime
 
 import polars as pl
 
-from src.data.services.dividend_service import (DividendService,
-                                                filter_dividends_by_dates,
-                                                format_stock_code)
+from src.data.services.dividend_service import (
+    DividendService,
+    filter_dividends_by_dates,
+    format_stock_code,
+)
 
 
 def test_format_stock_code():

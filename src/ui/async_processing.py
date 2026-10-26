@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 异步处理模块，负责数据读取、指标计算和图表数据准备的异步处理
 """
 
-from PySide6.QtCore import QThread, Signal
-from PySide6.QtWidgets import QApplication
-import polars as pl
 from pathlib import Path
+
+import polars as pl
 from loguru import logger
+from PySide6.QtCore import QThread, Signal
+
 from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-from src.utils.event_bus import publish, EventType
+from src.utils.event_bus import EventType, publish
 
 
 class DataReadThread(QThread):

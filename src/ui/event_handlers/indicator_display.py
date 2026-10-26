@@ -7,7 +7,8 @@
 本模块只依赖标准库与 typing，可在无 GUI 环境下单独测试。
 """
 
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 NumberFormatter = Callable[[Any], str]
 Renderer = Callable[[Mapping, int, NumberFormatter], str]

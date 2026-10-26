@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 Alpha 因子注册中心
@@ -24,9 +23,9 @@ AlphaCalculator.calculate_factors(factor_types=['price_momentum'])
 """
 
 from __future__ import annotations
-from typing import Callable, Dict, Type
 
-import polars as pl
+from collections.abc import Callable
+from typing import Dict, Type
 
 
 class _FactorRegistry:

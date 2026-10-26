@@ -1,4 +1,3 @@
-import pyqtgraph as pg
 
 from .base_drawer import BaseIndicatorDrawer
 
@@ -8,9 +7,9 @@ class ABIDrawer(BaseIndicatorDrawer):
     ABI指标绘制器，仅负责绘制，不计算指标
     指标计算应在数据准备阶段完成
     """
-    
+
     y_range = (0, 100)
-    
+
     def draw(self, plot_widget, x, df_pl, period=10):
         """
         绘制ABI指标
@@ -23,7 +22,7 @@ class ABIDrawer(BaseIndicatorDrawer):
 
         Returns:
             df_pl: 输入的数据（不做修改）
-            
+
         Raises:
             ValueError: 如果数据缺少必要的ABI列
         """
@@ -47,13 +46,13 @@ class ADLDrawer(BaseIndicatorDrawer):
     ADL指标绘制器，仅负责绘制，不计算指标
     指标计算应在数据准备阶段完成
     """
-    
+
     required_columns = ['adl']
-    
+
     def _setup_y_range(self, plot_widget, df_pl):
         adl_data = df_pl['adl'].to_numpy()
         plot_widget.setYRange(adl_data.min() * 1.1, adl_data.max() * 1.1)
-    
+
     def draw_indicator(self, plot_widget, x, df_pl):
         """
         绘制ADL指标
@@ -72,9 +71,9 @@ class ADRDrawer(BaseIndicatorDrawer):
     ADR指标绘制器，仅负责绘制，不计算指标
     指标计算应在数据准备阶段完成
     """
-    
+
     y_range = (0, 200)
-    
+
     def draw(self, plot_widget, x, df_pl, period=10):
         """
         绘制ADR指标
@@ -87,7 +86,7 @@ class ADRDrawer(BaseIndicatorDrawer):
 
         Returns:
             df_pl: 输入的数据（不做修改）
-            
+
         Raises:
             ValueError: 如果数据缺少必要的ADR列
         """
@@ -111,7 +110,7 @@ class OBOSDrawer(BaseIndicatorDrawer):
     OBOS指标绘制器，仅负责绘制，不计算指标
     指标计算应在数据准备阶段完成
     """
-    
+
     def draw(self, plot_widget, x, df_pl, period=10):
         """
         绘制OBOS指标
@@ -124,7 +123,7 @@ class OBOSDrawer(BaseIndicatorDrawer):
 
         Returns:
             df_pl: 输入的数据（不做修改）
-            
+
         Raises:
             ValueError: 如果数据缺少必要的OBOS列
         """

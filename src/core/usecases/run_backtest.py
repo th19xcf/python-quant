@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 run_backtest —— 回测唯一用例入口。
@@ -27,9 +26,9 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Optional, Union, List, Dict, Any
+from typing import Any, Dict, Union
+
 import polars as pl
-from loguru import logger
 
 from src.backtest.engine.backtest_engine import BacktestEngine
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
@@ -38,17 +37,17 @@ from src.risk import RiskEngine
 
 
 def run_backtest(
-    ts_code: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    data: Optional[Union[pl.DataFrame, Dict[str, pl.DataFrame]]] = None,
-    strategy: Optional[BaseStrategy] = None,
-    strategies: Optional[Dict[str, BaseStrategy]] = None,
-    risk_engine: Optional[RiskEngine] = None,
+    ts_code: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    data: Union[pl.DataFrame, Dict[str, pl.DataFrame]] | None = None,
+    strategy: BaseStrategy | None = None,
+    strategies: Dict[str, BaseStrategy] | None = None,
+    risk_engine: RiskEngine | None = None,
     initial_capital: float = 1_000_000.0,
     lot_size: int = 100,
     industry: str = '',
-    industry_map: Optional[Dict[str, str]] = None,
+    industry_map: Dict[str, str] | None = None,
     **kwargs,
 ) -> Dict[str, Any]:
     """
@@ -80,9 +79,9 @@ def run_backtest(
     # ---- 数据准备 ----
     if data is None and ts_code:
         # 按需 import 避免循环依赖
-        from src.utils.config import Config
-        from src.database.db_manager import DatabaseManager
         from src.data.managers.data_fetcher import DataFetcher
+        from src.database.db_manager import DatabaseManager
+        from src.utils.config import Config
 
         config = Config()
         db = DatabaseManager(config)

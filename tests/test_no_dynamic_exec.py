@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 
 """
 禁止 src/ 内使用 eval / exec / compile 执行动态代码。

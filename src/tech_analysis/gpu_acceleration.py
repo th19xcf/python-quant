@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 GPU加速计算模块
 使用CuPy实现CUDA加速，支持OpenCL作为备选
 """
 
-import os
-import sys
+from typing import Any, Dict, List
+
 import numpy as np
 import polars as pl
-from typing import List, Dict, Any, Optional
 
-from .indicators.trend import _sar_core
 from .indicators.formulas import macd_exprs, rsi_expr
+from .indicators.trend import _sar_core
 
 # 尝试导入CuPy，如果不可用则使用NumPy作为备选
 try:
@@ -39,7 +37,7 @@ class GPUAccelerator:
     """
     GPU加速器类，提供GPU加速计算功能
     """
-    
+
     def __init__(self):
         """
         初始化GPU加速器
@@ -48,10 +46,10 @@ class GPUAccelerator:
         self.opencl_available = OPENCL_AVAILABLE
         self._opencl_context = None
         self._opencl_queue = None
-        
+
         if self.opencl_available:
             self._init_opencl()
-    
+
     def _init_opencl(self):
         """
         初始化OpenCL环境
@@ -74,58 +72,58 @@ class GPUAccelerator:
         except Exception as e:
             print(f"OpenCL初始化失败: {e}")
             self.opencl_available = False
-    
+
     def is_gpu_available(self) -> bool:
         """
         检查GPU是否可用
-        
+
         Returns:
             bool: GPU是否可用
         """
         return self.gpu_available
-    
+
     def to_gpu(self, data: np.ndarray) -> Any:
         """
         将数据转移到GPU
-        
+
         Args:
             data: NumPy数组
-            
+
         Returns:
             Any: GPU上的数据
         """
         if self.gpu_available:
             return cp.asarray(data)
         return data
-    
+
     def to_cpu(self, data: Any) -> np.ndarray:
         """
         将数据从GPU转移到CPU
-        
+
         Args:
             data: GPU上的数据
-            
+
         Returns:
             np.ndarray: NumPy数组
         """
         if self.gpu_available and isinstance(data, cp.ndarray):
             return cp.asnumpy(data)
         return data
-    
+
     def calculate_ma_gpu(self, data: np.ndarray, windows: List[int]) -> Dict[str, np.ndarray]:
         """
         GPU加速计算移动平均线
-        
+
         Args:
             data: 收盘价数据
             windows: 移动平均窗口列表
-            
+
         Returns:
             Dict[str, np.ndarray]: 各窗口的移动平均线结果
         """
         result = {}
         gpu_data = self.to_gpu(data)
-        
+
         for window in windows:
             # 使用卷积计算移动平均
             kernel = self.to_gpu(np.ones(window) / window)
@@ -133,19 +131,19 @@ class GPUAccelerator:
             # 补全前面的NaN值
             ma = cp.concatenate([cp.full(window-1, np.nan), ma])
             result[f'ma{window}'] = self.to_cpu(ma)
-        
+
         return result
-    
+
     def calculate_macd_gpu(self, data: np.ndarray, fast_period: int, slow_period: int, signal_period: int) -> Dict[str, np.ndarray]:
         """
         GPU加速计算MACD指标
-        
+
         Args:
             data: 收盘价数据
             fast_period: 快速EMA周期
             slow_period: 慢速EMA周期
             signal_period: 信号线EMA周期
-            
+
         Returns:
             Dict[str, np.ndarray]: MACD指标结果
         """
@@ -163,15 +161,15 @@ class GPUAccelerator:
             'macd_signal': self.to_cpu(result['macd_signal'].to_numpy()),
             'macd_hist': self.to_cpu(result['macd_hist'].to_numpy()),
         }
-    
+
     def calculate_rsi_gpu(self, data: np.ndarray, window: int) -> np.ndarray:
         """
         GPU加速计算RSI指标
-        
+
         Args:
             data: 收盘价数据
             window: RSI计算窗口
-            
+
         Returns:
             np.ndarray: RSI指标结果
         """
@@ -183,18 +181,18 @@ class GPUAccelerator:
             .to_numpy()
         )
         return self.to_cpu(result)
-    
+
     def calculate_sar_gpu(self, high: np.ndarray, low: np.ndarray, close: np.ndarray, af_step: float = 0.02, max_af: float = 0.2) -> np.ndarray:
         """
         GPU加速计算SAR指标
-        
+
         Args:
             high: 最高价数据
             low: 最低价数据
             close: 收盘价数据
             af_step: 加速因子步长
             max_af: 最大加速因子
-            
+
         Returns:
             np.ndarray: SAR指标结果
         """
@@ -214,7 +212,7 @@ global_gpu_accelerator = GPUAccelerator()
 def is_gpu_available() -> bool:
     """
     检查GPU是否可用
-    
+
     Returns:
         bool: GPU是否可用
     """
@@ -224,24 +222,24 @@ def is_gpu_available() -> bool:
 def calculate_with_gpu(indicator_type: str, data: Dict[str, np.ndarray], **kwargs) -> Dict[str, np.ndarray]:
     """
     使用GPU加速计算指标
-    
+
     Args:
         indicator_type: 指标类型
         data: 输入数据
         **kwargs: 计算参数
-        
+
     Returns:
         Dict[str, np.ndarray]: 计算结果
     """
     if not global_gpu_accelerator.is_gpu_available():
         return None
-    
+
     if indicator_type == 'ma':
         close = data.get('close')
         if close is not None:
             windows = kwargs.get('windows', [5, 10, 20, 60])
             return global_gpu_accelerator.calculate_ma_gpu(close, windows)
-    
+
     elif indicator_type == 'macd':
         close = data.get('close')
         if close is not None:
@@ -249,14 +247,14 @@ def calculate_with_gpu(indicator_type: str, data: Dict[str, np.ndarray], **kwarg
             slow_period = kwargs.get('slow_period', 26)
             signal_period = kwargs.get('signal_period', 9)
             return global_gpu_accelerator.calculate_macd_gpu(close, fast_period, slow_period, signal_period)
-    
+
     elif indicator_type == 'rsi':
         close = data.get('close')
         if close is not None:
             window = kwargs.get('window', 14)
             result = global_gpu_accelerator.calculate_rsi_gpu(close, window)
             return {'rsi': result}
-    
+
     elif indicator_type == 'sar':
         high = data.get('high')
         low = data.get('low')
@@ -266,5 +264,5 @@ def calculate_with_gpu(indicator_type: str, data: Dict[str, np.ndarray], **kwarg
             max_af = kwargs.get('max_af', 0.2)
             result = global_gpu_accelerator.calculate_sar_gpu(high, low, close, af_step, max_af)
             return {'sar': result}
-    
+
     return None

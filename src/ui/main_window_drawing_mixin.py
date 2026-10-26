@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 主窗口绘图逻辑混入类（重构后）
@@ -8,12 +7,12 @@
 
 import polars as pl
 
-from src.utils.logger import logger
 from src.ui.chart_components import (
     ChartDataPreparer,
+    ChartEventBinder,
     IndicatorRenderer,
-    ChartEventBinder
 )
+from src.utils.logger import logger
 
 
 class MainWindowDrawingMixin:
@@ -21,12 +20,12 @@ class MainWindowDrawingMixin:
         """初始化绘图Mixin"""
         # 调用父类初始化（支持多重继承）
         super().__init__(*args, **kwargs)
-        
+
         # 初始化各组件
         self._data_preparer = ChartDataPreparer()
         self._indicator_renderer = IndicatorRenderer(self)
         self._event_binder = ChartEventBinder(self)
-        
+
         # 初始化状态属性
         self.vline = None
         self.hline = None
@@ -34,15 +33,15 @@ class MainWindowDrawingMixin:
         self.volume_hline = None
         self.kdj_vline = None
         self.kdj_hline = None
-        
+
         self.ma_points = []
         self.moving_averages = {}
         self.selected_ma = None
         self.crosshair_enabled = False
-        
+
         # MA线显示状态（默认显示）
         self.show_ma_lines = True
-        
+
         self.current_kline_index = -1
         self.current_kline_data = {}
         self.current_mouse_pos = None
@@ -83,7 +82,7 @@ class MainWindowDrawingMixin:
         """重置绘图状态"""
         self.crosshair_enabled = False
         self.current_kline_index = -1
-    
+
     def _clear_plots(self):
         """清空图表"""
         self.tech_plot_widget.clear()
@@ -91,22 +90,22 @@ class MainWindowDrawingMixin:
         # 清除指标图表（如KDJ）
         if hasattr(self, 'kdj_plot_widget') and self.kdj_plot_widget:
             self.kdj_plot_widget.clear()
-    
+
     def _prepare_data(self, df: pl.DataFrame) -> pl.DataFrame:
         """
         准备K线图数据
-        
+
         Args:
             df: 原始数据
-            
+
         Returns:
             pl.DataFrame: 处理后的数据
         """
         bar_count = getattr(self, 'displayed_bar_count', 100)
         adjustment_type = getattr(self, 'adjustment_type', 'qfq')
-        
+
         return self._data_preparer.prepare_kline_data(df, bar_count, adjustment_type)
-    
+
     def _ensure_indicators(self, df_pl):
         """
         渲染前一次性批量补齐所选指标的缺失列
@@ -122,7 +121,9 @@ class MainWindowDrawingMixin:
             pl.DataFrame: 补齐指标列后的数据（失败时返回原数据）
         """
         try:
-            from src.ui.chart_components.indicator_renderer import ensure_indicator_columns
+            from src.ui.chart_components.indicator_renderer import (
+                ensure_indicator_columns,
+            )
 
             names = []
             if hasattr(self, 'window_indicators') and self.window_indicators:
@@ -143,28 +144,28 @@ class MainWindowDrawingMixin:
     def _extract_prices(self, df: pl.DataFrame) -> tuple:
         """
         提取价格数据
-        
+
         Args:
             df: 已应用复权的数据
-            
+
         Returns:
             tuple: (dates, opens, highs, lows, closes)
         """
         return self._data_preparer.extract_price_data(df)
-    
+
     def _setup_crosshair(self):
         """设置十字线"""
         (self.vline, self.hline,
          self.volume_vline, self.volume_hline,
          self.kdj_vline, self.kdj_hline) = self._event_binder.setup_crosshair()
-        
+
         # 设置信息文本项
         self.info_text = self._event_binder.setup_info_text()
-    
+
     def _bind_events(self, dates, opens, highs, lows, closes):
         """
         绑定事件
-        
+
         Args:
             dates: 日期数组
             opens: 开盘价数组
@@ -173,11 +174,11 @@ class MainWindowDrawingMixin:
             closes: 收盘价数组
         """
         self._event_binder.bind_all_events(dates, opens, highs, lows, closes)
-    
+
     def _save_current_data(self, df, stock_name, stock_code, dates, opens, highs, lows, closes):
         """
         保存当前数据
-        
+
         Args:
             df: 完整数据
             stock_name: 股票名称
@@ -191,10 +192,10 @@ class MainWindowDrawingMixin:
         self.current_stock_data = df
         self.current_stock_name = stock_name
         self.current_stock_code = stock_code
-        
+
         # 创建OHLC列表
         ohlc_list = self._data_preparer.create_ohlc_data(opens, highs, lows, closes)
-        
+
         self.current_kline_data = {
             'dates': dates,
             'opens': opens,
@@ -203,6 +204,6 @@ class MainWindowDrawingMixin:
             'closes': closes,
             'ohlc_list': ohlc_list
         }
-        
+
         self.current_mouse_pos = None
         self.current_kline_index = -1

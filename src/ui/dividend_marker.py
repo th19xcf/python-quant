@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 分红配股标记模块
 在K线图下方显示分红配股标记，支持鼠标悬停显示详细信息
 """
 
-import numpy as np
+import contextlib
+from datetime import datetime
+
 import pyqtgraph as pg
 from pyqtgraph import GraphicsObject
-from PySide6.QtCore import QRectF, QPointF, Qt, QDate
-from PySide6.QtGui import QPainter, QPicture, QColor, QFont, QPen, QBrush
-from datetime import datetime, date
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QBrush, QColor, QFont, QPen
 
 from src.utils.logger import logger
 
@@ -74,18 +74,13 @@ class DividendMarkerItem(GraphicsObject):
                             # 处理numpy.datetime64类型
                             try:
                                 dt = kline_date.astype('datetime64[D]').item()
-                                if hasattr(dt, 'date'):
-                                    kline_date = dt.date()
-                                else:
-                                    kline_date = dt
+                                kline_date = dt.date() if hasattr(dt, 'date') else dt
                             except (OSError, RuntimeError, ValueError):
                                 pass
                         elif isinstance(kline_date, str):
                             # 处理字符串类型日期
-                            try:
+                            with contextlib.suppress(OSError, RuntimeError, ValueError):
                                 kline_date = datetime.strptime(kline_date, '%Y-%m-%d').date()
-                            except (OSError, RuntimeError, ValueError):
-                                pass
 
                         # 确保ex_date是date类型
                         if hasattr(ex_date, 'date'):
@@ -123,7 +118,7 @@ class DividendMarkerItem(GraphicsObject):
             # 获取图表的像素高度，计算每个像素对应的数据高度
             plot_rect = self.plot_widget.geometry()
             pixel_height = plot_rect.height()
-            
+
             if pixel_height > 0:
                 # 每个像素对应的数据高度
                 data_per_pixel = y_range / pixel_height
@@ -149,7 +144,7 @@ class DividendMarkerItem(GraphicsObject):
                 logger.debug(f"绘制分红标记: X范围 {x_min:.2f} - {x_max:.2f}, Y范围 {y_min:.2f} - {y_max:.2f}, 标记高度: {marker_height:.2f}")
                 self._debug_logged = True
 
-            for i, (div, idx) in enumerate(zip(self.dividend_data, self.dividend_indices)):
+            for _i, (div, idx) in enumerate(zip(self.dividend_data, self.dividend_indices, strict=False)):
                 if idx < 0:
                     continue  # 跳过未找到对应日期的分红数据
 

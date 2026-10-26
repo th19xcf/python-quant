@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 
 """akshare 分红数据双键去重逻辑单元测试（sqlite 内存库）"""
 

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 大势型指标计算模块
@@ -7,10 +6,11 @@
 用于分析整体市场走势
 """
 
-import polars as pl
-import numpy as np
 from datetime import datetime, timedelta
+
+import polars as pl
 from loguru import logger
+
 from ..utils import to_float32
 
 
@@ -31,8 +31,9 @@ def get_market_breadth_from_db(start_date: str = None, end_date: str = None):
         db_manager = DatabaseManager()
         session = db_manager.get_session()
 
-        from src.database.models.stock import MarketBreadth
         from sqlalchemy import select
+
+        from src.database.models.stock import MarketBreadth
 
         query = select(
             MarketBreadth.trade_date,

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 Baostock数据处理器
 """
 
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import baostock as bs
 import polars as pl
@@ -26,11 +25,11 @@ class BaostockHandler(DataSourceBase):
     get_stock_data / get_index_data 调度，download_stock_daily 等
     方法供内部与批量同步使用。
     """
-    
+
     def __init__(self, config, db_manager):
         """
         初始化Baostock数据处理器
-        
+
         Args:
             config: 配置对象
             db_manager: 数据库管理器实例
@@ -41,7 +40,7 @@ class BaostockHandler(DataSourceBase):
         self.available = True
         self.session = None
         self.bs_login = False
-        
+
         # 离线模式支持
         if db_manager:
             try:
@@ -51,25 +50,25 @@ class BaostockHandler(DataSourceBase):
                 self.session = None
         else:
             logger.info("BaostockHandler在离线模式下初始化")
-        
+
         # 根据配置决定是否在初始化时登录Baostock
         if hasattr(self.config.data, 'auto_login_baostock') and self.config.data.auto_login_baostock:
             self._login_baostock()
         else:
             logger.info("跳过自动登录Baostock（未开启或配置不允许）")
-        
+
         # 从配置文件获取默认配置
         self.default_stock_codes = self.config.data.default_stock_codes
         self.default_index_codes = self.config.data.default_index_codes
         self.supported_frequencies = self.config.data.supported_frequencies
-        
+
     def _get_default_codes(self, code_type: str):
         """
         获取默认代码列表
-        
+
         Args:
             code_type: 代码类型，'stock'或'index'
-        
+
         Returns:
             list: 默认代码列表
         """
@@ -79,16 +78,16 @@ class BaostockHandler(DataSourceBase):
             return self.default_index_codes
         else:
             return []
-    
+
     def _process_dates(self, start_date: str, end_date: str, default_days: int = 30):
         """
         处理日期参数，设置默认值
-        
+
         Args:
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
             default_days: 默认天数
-        
+
         Returns:
             tuple: (start_date, end_date)
         """
@@ -97,16 +96,16 @@ class BaostockHandler(DataSourceBase):
         if not start_date:
             # 默认更新最近default_days天的数据
             start_date = (datetime.now() - datetime.timedelta(days=default_days)).strftime("%Y-%m-%d")
-        
+
         return start_date, end_date
-    
+
     def _validate_frequency(self, frequency: str):
         """
         验证分钟线频率
-        
+
         Args:
             frequency: 分钟线频率
-        
+
         Returns:
             str: 验证后的分钟线频率
         """
@@ -114,7 +113,7 @@ class BaostockHandler(DataSourceBase):
             logger.warning(f"不支持的分钟线频率: {frequency}，使用默认频率5分钟")
             return "5"
         return frequency
-    
+
     def _login_baostock(self):
         """
         登录Baostock
@@ -124,29 +123,29 @@ class BaostockHandler(DataSourceBase):
             import socket
             # 设置全局超时为30秒
             socket.setdefaulttimeout(30)
-            
+
             logger.info("正在连接Baostock服务器...")
             lg = bs.login()
-            
+
             if lg is None:
                 logger.warning("Baostock API返回None")
                 self.bs_login = False
                 return
-            
+
             if lg.error_code == '0':
                 logger.info("Baostock登录成功")
                 self.bs_login = True
             else:
                 logger.warning(f"Baostock登录失败: {lg.error_msg}")
                 self.bs_login = False
-        except (ConnectionError, TimeoutError, OSError, socket.timeout) as e:
+        except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"Baostock登录异常: {e}")
             self.bs_login = False
         except Exception as e:
             # 捕获其他所有异常
             logger.exception(f"Baostock登录发生未知异常: {e}")
             self.bs_login = False
-    
+
     @handle_exception_with_retry(max_retries=3, retry_delay=2)
     def _login_with_retry(self):
         """登录Baostock（带统一重试装饰器），登录失败抛出可重试异常"""
@@ -177,7 +176,7 @@ class BaostockHandler(DataSourceBase):
         except Exception as e:
             logger.warning(f"Baostock登录失败，已达到最大重试次数: {e}")
             return False
-    
+
     def _logout_baostock(self):
         """
         登出Baostock
@@ -189,13 +188,13 @@ class BaostockHandler(DataSourceBase):
                 self.bs_login = False
             except (ConnectionError, TimeoutError, OSError) as e:
                 logger.exception(f"Baostock登出异常: {e}")
-    
+
     def __del__(self):
         """
         析构函数，确保登出Baostock
         """
         self._logout_baostock()
-    
+
     def update_stock_basic(self):
         """
         更新股票基本信息
@@ -204,40 +203,40 @@ class BaostockHandler(DataSourceBase):
             if not self._ensure_baostock_login():
                 logger.warning("Baostock登录失败，无法获取股票基本信息")
                 return
-            
+
             logger.info("开始从Baostock获取股票基本信息")
-            
+
             # 使用Baostock获取股票基本信息，移除不支持的fields参数
             rs = bs.query_stock_basic(code_name="")
-            
+
             # 转换为DataFrame
             stock_basic_pd = rs.get_data()
-            
+
             # 转换为Polars DataFrame
             stock_basic_df = pl.from_pandas(stock_basic_pd)
-            
+
             if stock_basic_df.is_empty():
                 logger.warning("从Baostock获取的股票基本信息为空")
                 return
-            
+
             logger.info(f"从Baostock获取到{stock_basic_df.height}条股票基本信息")
-            
+
             # 打印前几行数据，了解数据结构
             logger.debug(f"Baostock返回的数据结构: {stock_basic_df.columns}")
             if stock_basic_df.height > 0:
                 logger.debug(f"前5行数据: {stock_basic_df.head(5)}")
-            
+
             # 离线模式下，只获取数据不存储
             if not self.session:
                 logger.info("离线模式下，跳过股票基本信息存储")
                 return stock_basic_df  # 离线模式下返回Polars DataFrame
-            
+
             # 数据清洗和标准化
             from src.database.models.stock import StockBasic
-            
+
             # 为了避免事务问题，只更新默认股票
             default_stocks = ["600000", "000001", "300001"]
-            
+
             # 遍历默认股票，进行清洗和存储
             for symbol in default_stocks:
                 try:
@@ -257,14 +256,14 @@ class BaostockHandler(DataSourceBase):
                     # 统一转换：baostock 格式 -> 标准 ts_code
                     ts_code = to_ts_code(baostock_code)
                     symbol = to_symbol(baostock_code)
-                    
+
                     # 截断过长的股票名称（数据库字段限制20个字符）
                     if len(name) > 20:
                         name = name[:20]  # 截断到20个字符
-                    
+
                     # 查询股票是否已存在
                     stock = self.session.query(StockBasic).filter_by(ts_code=ts_code).first()
-                    
+
                     if stock:
                         # 更新现有股票信息
                         stock.name = name
@@ -277,16 +276,16 @@ class BaostockHandler(DataSourceBase):
                             name=name
                         )
                         self.session.add(stock)
-                    
+
                 except (ConnectionError, TimeoutError, OSError) as row_e:
                     logger.exception(f"处理股票{symbol}基本信息失败: {row_e}")
                     continue
-            
+
             # 提交事务
             self.session.commit()
             logger.info("股票基本信息更新完成")
             return stock_basic_df  # 返回Polars DataFrame
-            
+
         except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 try:
@@ -295,7 +294,7 @@ class BaostockHandler(DataSourceBase):
                     logger.warning(f"回滚事务失败: {rollback_e}")
             logger.exception(f"从Baostock获取股票基本信息失败: {e}")
             raise
-    
+
     def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, adjustflag: str = "3"):
         """
         更新股票日线数据
@@ -316,7 +315,7 @@ class BaostockHandler(DataSourceBase):
             if not self._ensure_baostock_login():
                 logger.warning("Baostock登录失败，无法获取股票日线数据")
                 return
-            
+
             # 如果没有指定股票代码，从数据库获取所有股票代码
             if not ts_codes:
                 if self.session:
@@ -328,19 +327,19 @@ class BaostockHandler(DataSourceBase):
                     # 离线模式下使用默认股票代码
                     ts_codes = self._get_default_codes('stock')
                     logger.info(f"离线模式下，使用默认股票代码列表: {ts_codes}")
-            
+
             if not ts_codes:
                 logger.warning("没有需要更新的股票代码")
                 return
-            
+
             # 处理日期参数
             start_date, end_date = self._process_dates(start_date, end_date, default_days=self.config.data.default_days)
-            
+
             logger.info(f"开始更新{len(ts_codes)}只股票的日线数据，时间范围: {start_date} 至 {end_date}")
-            
+
             # 存储结果（离线模式下返回）
             result = {}
-            
+
             # 遍历股票代码，获取日线数据
             for ts_code in ts_codes:
                 try:
@@ -359,36 +358,36 @@ class BaostockHandler(DataSourceBase):
                         frequency="d",
                         adjustflag=adjustflag  # 使用传入的复权参数
                     )
-                    
+
                     # 检查rs是否为None
                     if rs is None:
                         logger.warning(f"Baostock API返回None，无法获取{ts_code}的日线数据")
                         continue
-                    
+
                     # 获取数据
                     try:
                         stock_daily_pd = rs.get_data()
                     except Exception as e:
                         logger.warning(f"获取{ts_code}数据失败: {e}")
                         continue
-                    
+
                     # 转换为Polars DataFrame
                     stock_daily_df = pl.from_pandas(stock_daily_pd)
-                    
+
                     if stock_daily_df.is_empty():
                         logger.warning(f"{ts_code}在{start_date}至{end_date}期间没有日线数据")
                         continue
-                    
+
                     logger.info(f"获取到{ts_code}的{stock_daily_df.height}条日线数据")
-                    
+
                     # 离线模式下，只获取数据不存储
                     if not self.session:
                         result[std_code] = stock_daily_df
                         logger.info(f"离线模式下，获取{std_code}的日线数据完成")
                         continue
-                    
+
                     # 数据清洗和标准化
-                    from src.database.models.stock import StockDaily, StockBasic
+                    from src.database.models.stock import StockBasic, StockDaily
                     from src.database.upsert import upsert_rows
 
                     # 初始化最早交易日期
@@ -432,7 +431,7 @@ class BaostockHandler(DataSourceBase):
                         value_fields=('open', 'high', 'low', 'close', 'pre_close',
                                       'change', 'pct_chg', 'vol', 'amount'),
                     )
-                    
+
                     # 更新股票的上市日期为最早交易日期
                     if earliest_date:
                         # 查询股票基本信息
@@ -454,27 +453,27 @@ class BaostockHandler(DataSourceBase):
                             )
                             self.session.add(new_stock)
                             logger.info(f"创建股票{std_code}的基本信息，上市日期为: {earliest_date}")
-                    
+
                     # 每只股票提交一次事务
                     self.session.commit()
                     logger.info(f"{ts_code}的日线数据更新完成")
-                    
+
                 except (ConnectionError, TimeoutError, OSError) as e:
                     if self.session:
                         self.session.rollback()
                     logger.exception(f"获取{ts_code}的日线数据失败: {e}")
                     continue
-            
+
             # 离线模式下返回结果
             if not self.session and result:
                 return result
-            
+
         except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()
             logger.exception(f"更新股票日线数据失败: {e}")
             raise
-    
+
     def update_index_basic(self):
         """
         更新指数基本信息
@@ -483,52 +482,52 @@ class BaostockHandler(DataSourceBase):
             if not self._ensure_baostock_login():
                 logger.warning("Baostock登录失败，无法获取指数基本信息")
                 return
-            
+
             logger.info("开始从Baostock获取指数基本信息")
-            
+
             # 使用Baostock获取所有股票和指数的基本信息
             rs = bs.query_stock_basic(code_name="", fields="code,code_name,ipoDate,outDate,type,status")
-            
+
             # 获取数据
             stock_basic_pd = rs.get_data()
-            
+
             # 转换为Polars DataFrame
             stock_basic_df = pl.from_pandas(stock_basic_pd)
-            
+
             if stock_basic_df.is_empty():
                 logger.warning("从Baostock获取的基本信息为空")
                 return
-            
+
             # 过滤出指数数据（指数代码以sh.000或sz.399开头）
             index_basic_df = stock_basic_df.filter(
-                (pl.col('code').str.starts_with('sh.000')) | 
+                (pl.col('code').str.starts_with('sh.000')) |
                 (pl.col('code').str.starts_with('sz.399'))
             )
-            
+
             if index_basic_df.is_empty():
                 logger.warning("从Baostock获取的指数基本信息为空")
                 return
-            
+
             logger.info(f"从Baostock获取到{index_basic_df.height}条指数基本信息")
-            
+
             # 离线模式下，只获取数据不存储
             if not self.session:
                 logger.info("离线模式下，跳过指数基本信息存储")
                 return index_basic_df
-            
+
             # 数据清洗和标准化
             from src.database.models.index import IndexBasic
-            
+
             # 遍历数据，进行清洗和存储
             for row in index_basic_df.iter_rows(named=True):
                 try:
                     # 提取指数代码和名称
                     ts_code = row['code']
                     name = row['code_name']
-                    
+
                     # 查询指数是否已存在
                     index_basic = self.session.query(IndexBasic).filter_by(ts_code=ts_code).first()
-                    
+
                     if index_basic:
                         # 更新现有指数信息
                         index_basic.name = name
@@ -539,31 +538,31 @@ class BaostockHandler(DataSourceBase):
                             name=name
                         )
                         self.session.add(index_basic)
-                    
+
                 except (ConnectionError, TimeoutError, OSError) as row_e:
                     logger.exception(f"处理指数基本信息失败: {row_e}")
                     continue
-            
+
             # 提交事务
             self.session.commit()
             logger.info("指数基本信息更新完成")
             return index_basic_df
-            
+
         except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()
             logger.exception(f"从Baostock获取指数基本信息失败: {e}")
             raise
-    
+
     def update_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
         更新指数日线数据
-        
+
         Args:
             ts_codes: 指数代码列表，None表示更新所有指数
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
-        
+
         Returns:
             dict: 指数代码到日线数据的映射（离线模式下）
         """
@@ -571,7 +570,7 @@ class BaostockHandler(DataSourceBase):
             if not self._ensure_baostock_login():
                 logger.warning("Baostock登录失败，无法获取指数日线数据")
                 return
-            
+
             # 如果没有指定指数代码，从数据库获取所有指数代码
             if not ts_codes:
                 if self.session:
@@ -582,24 +581,24 @@ class BaostockHandler(DataSourceBase):
                     # 离线模式下使用默认指数代码
                     ts_codes = self._get_default_codes('index')
                     logger.info(f"离线模式下，使用默认指数代码列表: {ts_codes}")
-            
+
             if not ts_codes:
                 logger.warning("没有需要更新的指数代码")
                 return
-            
+
             # 处理日期参数
             start_date, end_date = self._process_dates(start_date, end_date, default_days=30)
-            
+
             logger.info(f"开始更新{len(ts_codes)}个指数的日线数据，时间范围: {start_date} 至 {end_date}")
-            
+
             # 存储结果（离线模式下返回）
             result = {}
-            
+
             # 遍历指数代码，获取日线数据
             for ts_code in ts_codes:
                 try:
                     logger.info(f"正在获取{ts_code}的日线数据")
-                    
+
                     # 使用Baostock获取指数日线数据
                     rs = bs.query_history_k_data_plus(
                         ts_code,
@@ -609,34 +608,34 @@ class BaostockHandler(DataSourceBase):
                         frequency="d",
                         adjustflag="3"  # 不复权
                     )
-                    
+
                     # 检查rs是否为None
                     if rs is None:
                         logger.warning(f"Baostock API返回None，无法获取{ts_code}的日线数据")
                         continue
-                    
+
                     # 获取数据
                     try:
                         index_daily_pd = rs.get_data()
                     except Exception as e:
                         logger.warning(f"获取{ts_code}数据失败: {e}")
                         continue
-                    
+
                     # 转换为Polars DataFrame
                     index_daily_df = pl.from_pandas(index_daily_pd)
-                    
+
                     if index_daily_df.is_empty():
                         logger.warning(f"{ts_code}在{start_date}至{end_date}期间没有日线数据")
                         continue
-                    
+
                     logger.info(f"获取到{ts_code}的{index_daily_df.height}条日线数据")
-                    
+
                     # 离线模式下，只获取数据不存储
                     if not self.session:
                         result[ts_code] = index_daily_pd
                         logger.info(f"离线模式下，获取{ts_code}的日线数据完成")
                         continue
-                    
+
                     # 数据清洗和标准化
                     from src.database.models.index import IndexDaily
                     from src.database.upsert import upsert_rows
@@ -675,27 +674,27 @@ class BaostockHandler(DataSourceBase):
                         value_fields=('open', 'high', 'low', 'close', 'pre_close',
                                       'change', 'pct_chg', 'vol', 'amount'),
                     )
-                    
+
                     # 每个指数提交一次事务
                     self.session.commit()
                     logger.info(f"{ts_code}的日线数据更新完成")
-                    
+
                 except (ConnectionError, TimeoutError, OSError) as e:
                     if self.session:
                         self.session.rollback()
                     logger.exception(f"获取{ts_code}的日线数据失败: {e}")
                     continue
-            
+
             # 离线模式下返回结果
             if not self.session and result:
                 return result
-            
+
         except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()
             logger.exception(f"更新指数日线数据失败: {e}")
             raise
-    
+
     def _get_realtime_data(self, ts_codes: List[str], code_type: str, noun: str,
                            default_days: int, adjustflag: str):
         """
@@ -768,30 +767,30 @@ class BaostockHandler(DataSourceBase):
     def get_realtime_index_data(self, ts_codes: List[str] = None):
         """获取实时指数数据（以最近历史数据替代）。"""
         return self._get_realtime_data(ts_codes, 'index', '指数', 5, "3")
-    
+
     def download_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
         下载股票日线数据
-        
+
         Args:
             ts_codes: 股票代码列表，None表示下载所有股票
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
-        
+
         Returns:
             dict: 股票代码到日线数据的映射
         """
         return self.update_stock_daily(ts_codes, start_date, end_date)
-    
+
     def download_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
         下载指数日线数据
-        
+
         Args:
             ts_codes: 指数代码列表，None表示下载所有指数
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
-        
+
         Returns:
             dict: 指数代码到日线数据的映射
         """
@@ -869,7 +868,7 @@ class BaostockHandler(DataSourceBase):
 
     def _fetch_baostock_factors(self, bs_code: str, start_date: str, end_date: str,
                                 raw_df: pl.DataFrame
-                                ) -> Tuple[Optional[pl.DataFrame], Optional[pl.DataFrame]]:
+                                ) -> Tuple[pl.DataFrame | None, pl.DataFrame | None]:
         """
         获取逐日累计复权因子（qfq_factor, hfq_factor）。
 
@@ -903,7 +902,7 @@ class BaostockHandler(DataSourceBase):
 
     @staticmethod
     def _compute_daily_factors(raw_df: pl.DataFrame, hfq_df: pl.DataFrame
-                               ) -> Tuple[Optional[pl.DataFrame], Optional[pl.DataFrame]]:
+                               ) -> Tuple[pl.DataFrame | None, pl.DataFrame | None]:
         """纯计算：由原始价与后复权价求每日 qfq_factor / hfq_factor。"""
         raw = raw_df.select([
             pl.col('date'),
@@ -970,7 +969,7 @@ class BaostockHandler(DataSourceBase):
         except Exception as e:
             logger.warning(f"baostock get_index_data({ts_code}) 失败: {e}")
             return pl.DataFrame()
-    
+
     def _download_minute(self, model, code_type: str, noun: str, default_days: int,
                          ts_codes: List[str], start_date: str, end_date: str,
                          frequency: str):

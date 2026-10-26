@@ -1,89 +1,98 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 股票推荐对话框（UI 层只调 usecases，不直接碰 DatabaseManager）
 """
 
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, 
-                             QLabel, QLineEdit, QComboBox, QDateEdit, 
-                             QPushButton, QTableWidget, QTableWidgetItem, 
-                             QProgressBar, QGridLayout, QHeaderView)
-from PySide6.QtCore import Qt, QDate
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QProgressBar,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+)
 
-from src.utils.logger import logger
 from src.core.usecases import screen_stocks
+from src.utils.logger import logger
 
 
 class StockRecommendationDialog(QDialog):
     """股票推荐对话框"""
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("股票推荐")
         self.setGeometry(100, 100, 900, 600)
         self.setModal(True)
-        
+
         self.init_ui()
-        
+
     def init_ui(self):
         main_layout = QVBoxLayout(self)
-        
+
         basic_group = QGroupBox("推荐设置")
         basic_layout = QGridLayout()
-        
+
         basic_layout.addWidget(QLabel("推荐算法:"), 0, 0)
         self.algorithm_combo = QComboBox()
         self.algorithm_combo.addItems(["多因子选股", "行业轮动", "动量策略"])
         basic_layout.addWidget(self.algorithm_combo, 0, 1)
-        
+
         basic_layout.addWidget(QLabel("推荐股票数量:"), 1, 0)
         self.stock_count_edit = QLineEdit("10")
         basic_layout.addWidget(self.stock_count_edit, 1, 1)
-        
+
         basic_layout.addWidget(QLabel("分析周期:"), 2, 0)
         self.period_combo = QComboBox()
         self.period_combo.addItems(["1个月", "3个月", "6个月", "12个月"])
         basic_layout.addWidget(self.period_combo, 2, 1)
-        
+
         basic_layout.addWidget(QLabel("行业过滤:"), 3, 0)
         self.industry_combo = QComboBox()
         self.industry_combo.addItems(["全部行业", "金融", "科技", "消费", "医药", "能源"])
         basic_layout.addWidget(self.industry_combo, 3, 1)
-        
+
         basic_group.setLayout(basic_layout)
         main_layout.addWidget(basic_group)
-        
+
         factor_group = QGroupBox("因子权重设置")
         factor_layout = QGridLayout()
-        
+
         factor_layout.addWidget(QLabel("动量因子:"), 0, 0)
         self.momentum_weight_edit = QLineEdit("0.2")
         factor_layout.addWidget(self.momentum_weight_edit, 0, 1)
-        
+
         factor_layout.addWidget(QLabel("价值因子:"), 1, 0)
         self.value_weight_edit = QLineEdit("0.2")
         factor_layout.addWidget(self.value_weight_edit, 1, 1)
-        
+
         factor_layout.addWidget(QLabel("成长因子:"), 2, 0)
         self.growth_weight_edit = QLineEdit("0.2")
         factor_layout.addWidget(self.growth_weight_edit, 2, 1)
-        
+
         factor_layout.addWidget(QLabel("质量因子:"), 3, 0)
         self.quality_weight_edit = QLineEdit("0.2")
         factor_layout.addWidget(self.quality_weight_edit, 3, 1)
-        
+
         factor_layout.addWidget(QLabel("波动率因子:"), 4, 0)
         self.volatility_weight_edit = QLineEdit("0.2")
         factor_layout.addWidget(self.volatility_weight_edit, 4, 1)
-        
+
         factor_group.setLayout(factor_layout)
         main_layout.addWidget(factor_group)
-        
+
         result_group = QGroupBox("推荐结果")
         result_layout = QVBoxLayout()
-        
+
         self.result_table = QTableWidget()
         self.result_table.setColumnCount(6)
         self.result_table.setHorizontalHeaderLabels(["排名", "股票代码", "股票名称", "综合评分", "预期收益", "风险评级"])
@@ -105,29 +114,29 @@ class StockRecommendationDialog(QDialog):
             QTableWidget::item:selected { background-color: #0066CC; color: #FFFFFF; }
         """)
         result_layout.addWidget(self.result_table)
-        
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         result_layout.addWidget(self.progress_bar)
-        
+
         result_group.setLayout(result_layout)
         main_layout.addWidget(result_group, 1)
-        
+
         button_layout = QHBoxLayout()
         self.run_button = QPushButton("生成推荐")
         self.run_button.clicked.connect(self.generate_recommendation)
         button_layout.addWidget(self.run_button)
-        
+
         self.export_button = QPushButton("导出报告")
         self.export_button.clicked.connect(self.export_report)
         self.export_button.setEnabled(False)
         button_layout.addWidget(self.export_button)
-        
+
         self.close_button = QPushButton("关闭")
         self.close_button.clicked.connect(self.close)
         button_layout.addWidget(self.close_button)
         main_layout.addLayout(button_layout)
-        
+
     def generate_recommendation(self):
         """生成股票推荐（走 usecases 层）"""
         try:
@@ -135,7 +144,7 @@ class StockRecommendationDialog(QDialog):
             stock_count = int(self.stock_count_edit.text())
             period = self.period_combo.currentText()
             industry = self.industry_combo.currentText()
-            
+
             weights = {
                 'momentum': float(self.momentum_weight_edit.text()),
                 'value': float(self.value_weight_edit.text()),
@@ -143,7 +152,7 @@ class StockRecommendationDialog(QDialog):
                 'quality': float(self.quality_weight_edit.text()),
                 'volatility': float(self.volatility_weight_edit.text())
             }
-            
+
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(10)
 
@@ -157,7 +166,7 @@ class StockRecommendationDialog(QDialog):
             )
 
             self.progress_bar.setValue(80)
-            
+
             if not recommendations:
                 self.result_table.setRowCount(1)
                 self.result_table.setItem(0, 0, QTableWidgetItem("无推荐结果"))
@@ -169,10 +178,10 @@ class StockRecommendationDialog(QDialog):
                 rec.setdefault('name', rec.get('stock_name', ''))
                 rec.setdefault('expected_return', rec.get('expected_return', rec.get('score', 0) * 100))
                 rec.setdefault('risk', rec.get('risk_level', '中'))
-            
+
             self.display_result(recommendations)
             self.export_button.setEnabled(True)
-            
+
         except Exception as e:
             logger.error(f"生成推荐失败: {e}")
             self.result_table.setRowCount(1)
@@ -181,21 +190,21 @@ class StockRecommendationDialog(QDialog):
         finally:
             self.progress_bar.setVisible(False)
             self.progress_bar.setValue(0)
-    
+
     def display_result(self, recommendations):
         for row in range(self.result_table.rowCount()):
             for col in range(self.result_table.columnCount()):
                 item = self.result_table.takeItem(row, col)
                 if item:
                     del item
-        
+
         if not recommendations:
             self.result_table.setRowCount(1)
             self.result_table.setItem(0, 0, QTableWidgetItem("无推荐结果"))
             return
-        
+
         self.result_table.setRowCount(len(recommendations))
-        
+
         for i, stock in enumerate(recommendations):
             self.result_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
             self.result_table.setItem(i, 1, QTableWidgetItem(stock.get('code', '')))
@@ -218,7 +227,7 @@ class StockRecommendationDialog(QDialog):
             else:
                 risk_item.setForeground(QColor(255, 0, 0))
             self.result_table.setItem(i, 5, risk_item)
-    
+
     def export_report(self):
         try:
             from src.quant.reports.report_generator import ReportGenerator

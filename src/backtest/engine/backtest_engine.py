@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 回测引擎（单票），撮合逻辑全部委托给 execution_core 统一内核
 """
 
-from typing import Dict, Any, List
-import polars as pl
+from typing import Any, Dict, List
+
 from loguru import logger
 
 from src.backtest.engine.base_engine import BaseBacktestEngine

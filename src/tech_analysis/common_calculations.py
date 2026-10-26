@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 通用计算模块，提供指标计算中常用的通用函数
 """
 
 import polars as pl
+
 from .utils import to_float32
 
 
 def calculate_price_change(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
     """
     计算价格变化
-    
+
     Args:
         lazy_df: Polars LazyFrame
-        
+
     Returns:
         pl.LazyFrame: 包含价格变化的LazyFrame
     """
@@ -27,13 +27,13 @@ def calculate_price_change(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
 def calculate_moving_average(lazy_df: pl.LazyFrame, column: str, windows: list, prefix: str = '') -> pl.LazyFrame:
     """
     计算移动平均线
-    
+
     Args:
         lazy_df: Polars LazyFrame
         column: 要计算移动平均的列名
         windows: 移动平均窗口列表
         prefix: 指标前缀
-        
+
     Returns:
         pl.LazyFrame: 包含移动平均线的LazyFrame
     """
@@ -47,13 +47,13 @@ def calculate_moving_average(lazy_df: pl.LazyFrame, column: str, windows: list, 
 def calculate_ewm(lazy_df: pl.LazyFrame, column: str, spans: list, prefix: str = '') -> pl.LazyFrame:
     """
     计算指数加权移动平均
-    
+
     Args:
         lazy_df: Polars LazyFrame
         column: 要计算EWM的列名
         spans: EWM周期列表
         prefix: 指标前缀
-        
+
     Returns:
         pl.LazyFrame: 包含EWM的LazyFrame
     """
@@ -67,13 +67,13 @@ def calculate_ewm(lazy_df: pl.LazyFrame, column: str, spans: list, prefix: str =
 def calculate_rolling_max(lazy_df: pl.LazyFrame, column: str, windows: list, prefix: str = '') -> pl.LazyFrame:
     """
     计算滚动最大值
-    
+
     Args:
         lazy_df: Polars LazyFrame
         column: 要计算滚动最大值的列名
         windows: 窗口列表
         prefix: 指标前缀
-        
+
     Returns:
         pl.LazyFrame: 包含滚动最大值的LazyFrame
     """
@@ -87,13 +87,13 @@ def calculate_rolling_max(lazy_df: pl.LazyFrame, column: str, windows: list, pre
 def calculate_rolling_min(lazy_df: pl.LazyFrame, column: str, windows: list, prefix: str = '') -> pl.LazyFrame:
     """
     计算滚动最小值
-    
+
     Args:
         lazy_df: Polars LazyFrame
         column: 要计算滚动最小值的列名
         windows: 窗口列表
         prefix: 指标前缀
-        
+
     Returns:
         pl.LazyFrame: 包含滚动最小值的LazyFrame
     """
@@ -107,13 +107,13 @@ def calculate_rolling_min(lazy_df: pl.LazyFrame, column: str, windows: list, pre
 def calculate_rolling_std(lazy_df: pl.LazyFrame, column: str, windows: list, prefix: str = '') -> pl.LazyFrame:
     """
     计算滚动标准差
-    
+
     Args:
         lazy_df: Polars LazyFrame
         column: 要计算滚动标准差的列名
         windows: 窗口列表
         prefix: 指标前缀
-        
+
     Returns:
         pl.LazyFrame: 包含滚动标准差的LazyFrame
     """
@@ -127,13 +127,13 @@ def calculate_rolling_std(lazy_df: pl.LazyFrame, column: str, windows: list, pre
 def calculate_rolling_sum(lazy_df: pl.LazyFrame, column: str, windows: list, prefix: str = '') -> pl.LazyFrame:
     """
     计算滚动总和
-    
+
     Args:
         lazy_df: Polars LazyFrame
         column: 要计算滚动总和的列名
         windows: 窗口列表
         prefix: 指标前缀
-        
+
     Returns:
         pl.LazyFrame: 包含滚动总和的LazyFrame
     """
@@ -147,10 +147,10 @@ def calculate_rolling_sum(lazy_df: pl.LazyFrame, column: str, windows: list, pre
 def calculate_typical_price(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
     """
     计算典型价格 (H + L + C) / 3
-    
+
     Args:
         lazy_df: Polars LazyFrame
-        
+
     Returns:
         pl.LazyFrame: 包含典型价格的LazyFrame
     """
@@ -162,10 +162,10 @@ def calculate_typical_price(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
 def calculate_gain_loss(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
     """
     计算上涨和下跌变化
-    
+
     Args:
         lazy_df: Polars LazyFrame
-        
+
     Returns:
         pl.LazyFrame: 包含上涨和下跌变化的LazyFrame
     """
@@ -178,12 +178,12 @@ def calculate_gain_loss(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
 def add_default_columns(lazy_df: pl.LazyFrame, indicator_type: str, windows: list) -> pl.LazyFrame:
     """
     添加默认列名
-    
+
     Args:
         lazy_df: Polars LazyFrame
         indicator_type: 指标类型
         windows: 窗口列表
-        
+
     Returns:
         pl.LazyFrame: 包含默认列名的LazyFrame
     """

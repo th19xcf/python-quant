@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 
 """ORM 批量 upsert 工具单元测试（sqlite 内存库，模型无关）"""
 

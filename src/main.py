@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 中国股市量化分析系统主入口
@@ -30,6 +29,7 @@ from src.plugin.plugin_manager import PluginManager
 from src.ui.main_window import MainWindow
 from src.ui.theme_manager import ThemeManager
 from src.utils.cache_monitor import log_cache_stats
+
 # 内部模块导入
 from src.utils.config import config_manager, get_config
 from src.utils.event_bus import EventType, publish, shutdown_event_bus
@@ -122,7 +122,7 @@ def _handle_update_stock_arg(config):
         except (OSError, RuntimeError) as table_e:
             logger.warning(f"创建数据库表时发生错误: {table_e}")
 
-        sync_result = sync_tdx_stock_to_database(config, db_manager)
+        sync_tdx_stock_to_database(config, db_manager)
 
         from src.data.akshare_handler import AkShareHandler
         akshare_handler = AkShareHandler(config, db_manager)
@@ -130,7 +130,7 @@ def _handle_update_stock_arg(config):
         try:
             etf_result = akshare_handler.update_etf_basic()
             if etf_result is not None:
-                logger.info(f"ETF 基本信息更新完成")
+                logger.info("ETF 基本信息更新完成")
         except DataSourceException as etf_e:
             logger.warning(f"更新 ETF 基本信息失败: {etf_e}")
 

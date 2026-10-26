@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 指标公式共享层 —— 全项目指标公式唯一收口点

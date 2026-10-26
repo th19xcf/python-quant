@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 回测结果分析和可视化模块
 """
 
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from datetime import datetime
 
 from src.utils.logger import logger
 
@@ -17,20 +16,20 @@ class BacktestAnalyzer:
     """
     回测结果分析器
     """
-    
+
     def __init__(self):
         """
         初始化回测结果分析器
         """
         pass
-    
+
     def analyze_result(self, backtest_result):
         """
         分析回测结果
-        
+
         Args:
             backtest_result: 回测结果字典
-            
+
         Returns:
             dict: 分析结果
         """
@@ -55,20 +54,20 @@ class BacktestAnalyzer:
                 'value_at_risk': self._calculate_value_at_risk(backtest_result),
                 'conditional_value_at_risk': self._calculate_conditional_value_at_risk(backtest_result)
             }
-            
+
             # 合并原始结果和分析结果
             result = {**backtest_result, **analysis}
-            
+
             return result
-            
+
         except Exception as e:
             logger.error(f"分析回测结果失败: {e}")
             raise
-    
+
     def visualize_result(self, backtest_result, equity_curve=None):
         """
         可视化回测结果
-        
+
         Args:
             backtest_result: 回测结果字典
             equity_curve: 权益曲线数据
@@ -76,7 +75,7 @@ class BacktestAnalyzer:
         try:
             # 创建图表
             fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-            
+
             # 1. 回测指标概览
             metrics = [
                 ('总收益率', backtest_result['total_return'], '%'),
@@ -86,7 +85,7 @@ class BacktestAnalyzer:
                 ('交易次数', backtest_result['trade_count'], ''),
                 ('胜率', backtest_result['win_rate'], '%')
             ]
-            
+
             ax1 = axes[0, 0]
             ax1.axis('tight')
             ax1.axis('off')
@@ -96,7 +95,7 @@ class BacktestAnalyzer:
             table.set_fontsize(10)
             table.scale(1, 1.5)
             ax1.set_title('回测指标概览')
-            
+
             # 2. 权益曲线
             ax2 = axes[0, 1]
             if equity_curve is not None:
@@ -109,7 +108,7 @@ class BacktestAnalyzer:
             else:
                 ax2.text(0.5, 0.5, '权益曲线数据不可用', ha='center', va='center')
                 ax2.axis('off')
-            
+
             # 3. 月度收益率
             ax3 = axes[1, 0]
             # 模拟月度收益率数据
@@ -120,7 +119,7 @@ class BacktestAnalyzer:
             ax3.set_xlabel('月份')
             ax3.set_ylabel('收益率 (%)')
             ax3.grid(True)
-            
+
             # 4. 回撤曲线
             ax4 = axes[1, 1]
             if equity_curve is not None:
@@ -134,33 +133,33 @@ class BacktestAnalyzer:
             else:
                 ax4.text(0.5, 0.5, '回撤曲线数据不可用', ha='center', va='center')
                 ax4.axis('off')
-            
+
             # 调整布局
             plt.tight_layout()
             plt.suptitle(f"{backtest_result['strategy_type']} - {backtest_result['stock_code']}", fontsize=14, y=1.02)
-            
+
             # 显示图表
             plt.show()
-            
+
         except Exception as e:
             logger.error(f"可视化回测结果失败: {e}")
             raise
-    
+
     def generate_report(self, backtest_result, equity_curve=None):
         """
         生成回测报告
-        
+
         Args:
             backtest_result: 回测结果字典
             equity_curve: 权益曲线数据
-            
+
         Returns:
             str: 回测报告
         """
         try:
             # 分析结果
             analysis_result = self.analyze_result(backtest_result)
-            
+
             # 生成报告
             report = f"""
 # 回测报告
@@ -202,115 +201,115 @@ class BacktestAnalyzer:
 ## 分析总结
 {self._generate_summary(analysis_result)}
             """
-            
+
             return report
-            
+
         except Exception as e:
             logger.error(f"生成回测报告失败: {e}")
             raise
-    
+
     def _calculate_profit_factor(self, result):
         """计算盈利因子"""
         return 1.2  # 模拟值
-    
+
     def _calculate_expectancy(self, result):
         """计算预期收益"""
         return 0.02  # 模拟值
-    
+
     def _calculate_risk_reward_ratio(self, result):
         """计算风险回报比"""
         return 1.5  # 模拟值
-    
+
     def _calculate_calmar_ratio(self, result):
         """计算卡马比率"""
         if result['max_drawdown'] > 0:
             return result['annual_return'] / result['max_drawdown']
         return 0
-    
+
     def _calculate_sortino_ratio(self, result):
         """计算索提诺比率"""
         return result['sharpe_ratio'] * 0.9  # 模拟值
-    
+
     def _calculate_alpha(self, result):
         """计算Alpha"""
         return 0.01  # 模拟值
-    
+
     def _calculate_beta(self, result):
         """计算Beta"""
         return 0.9  # 模拟值
-    
+
     def _calculate_information_ratio(self, result):
         """计算信息比率"""
         return 0.5  # 模拟值
-    
+
     def _calculate_win_loss_ratio(self, result):
         """计算盈亏比"""
         return 1.3  # 模拟值
-    
+
     def _calculate_average_trade_return(self, result):
         """计算平均交易收益率"""
         if result['trade_count'] > 0:
             return result['total_return'] / result['trade_count']
         return 0
-    
+
     def _calculate_max_consecutive_wins(self, result):
         """计算最大连续盈利次数"""
         return 3  # 模拟值
-    
+
     def _calculate_max_consecutive_losses(self, result):
         """计算最大连续亏损次数"""
         return 2  # 模拟值
-    
+
     def _calculate_drawdown_duration(self, result):
         """计算回撤持续时间"""
         return 30  # 模拟值
-    
+
     def _calculate_recovery_factor(self, result):
         """计算恢复因子"""
         if result['max_drawdown'] > 0:
             return result['total_return'] / result['max_drawdown']
         return 0
-    
+
     def _calculate_ulcer_index(self, result):
         """计算ulcer指数"""
         return 0.1  # 模拟值
-    
+
     def _calculate_value_at_risk(self, result):
         """计算风险价值"""
         return 5.0  # 模拟值
-    
+
     def _calculate_conditional_value_at_risk(self, result):
         """计算条件风险价值"""
         return 7.0  # 模拟值
-    
+
     def _calculate_drawdowns(self, equity_curve):
         """计算回撤"""
         peaks = np.maximum.accumulate(equity_curve)
         drawdowns = (equity_curve - peaks) / peaks
         return drawdowns
-    
+
     def _generate_summary(self, result):
         """生成分析总结"""
         summary = []
-        
+
         if result['total_return'] > 0:
             summary.append("策略整体表现为盈利。")
         else:
             summary.append("策略整体表现为亏损。")
-        
+
         if result['win_rate'] > 50:
             summary.append("胜率高于50%，表明策略具有一定的预测能力。")
         else:
             summary.append("胜率低于50%，需要进一步优化策略。")
-        
+
         if result['max_drawdown'] < 20:
             summary.append("最大回撤控制在合理范围内。")
         else:
             summary.append("最大回撤较大，需要注意风险控制。")
-        
+
         if result['sharpe_ratio'] > 1:
             summary.append("夏普比率大于1，风险调整后收益表现良好。")
         else:
             summary.append("夏普比率小于1，风险调整后收益表现一般。")
-        
+
         return ' '.join(summary)

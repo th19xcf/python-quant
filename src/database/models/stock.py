@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 股票数据模型
@@ -7,7 +6,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Index
+from sqlalchemy import Column, Date, DateTime, Float, Index, Integer, String
 
 from src.database.db_manager import Base
 
@@ -17,7 +16,7 @@ class StockBasic(Base):
     股票基本信息表
     """
     __tablename__ = "stock_basic"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts_code = Column(String(20), unique=True, nullable=False, comment="股票代码")
     symbol = Column(String(10), comment="股票代码(数字)")
@@ -30,7 +29,7 @@ class StockBasic(Base):
     status = Column(String(10), comment="上市状态: L上市 D退市 P暂停上市")
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
-    
+
     __table_args__ = (
         {
             "comment": "股票基本信息表",
@@ -49,7 +48,7 @@ class StockDaily(Base):
     股票日线行情表
     """
     __tablename__ = "stock_daily"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts_code = Column(String(20), nullable=False, comment="股票代码")
     trade_date = Column(Date, nullable=False, comment="交易日期")
@@ -62,14 +61,14 @@ class StockDaily(Base):
     pct_chg = Column(Float, comment="涨跌幅(%)")
     vol = Column(Float, comment="成交量(手)")
     amount = Column(Float, comment="成交额(千元)")
-    
+
     # 复权因子（用于实时计算复权价格）
     qfq_factor = Column(Float, default=1.0, comment="前复权因子")
     hfq_factor = Column(Float, default=1.0, comment="后复权因子")
-    
+
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
-    
+
     __table_args__ = (
         # 添加ts_code和trade_date的组合索引，优化按股票代码和日期范围查询
         Index('idx_stock_daily_ts_code_trade_date', 'ts_code', 'trade_date'),
@@ -82,7 +81,7 @@ class StockDaily(Base):
             "extend_existing": True
         }
     )
-    
+
     def __repr__(self):
         return f"<StockDaily(ts_code='{self.ts_code}', trade_date='{self.trade_date}', close={self.close})>"
 
@@ -92,7 +91,7 @@ class StockMinute(Base):
     股票分钟线行情表
     """
     __tablename__ = "stock_minute"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts_code = Column(String(20), nullable=False, comment="股票代码")
     trade_time = Column(DateTime, nullable=False, comment="交易时间")
@@ -105,7 +104,7 @@ class StockMinute(Base):
     freq = Column(String(10), nullable=False, comment="周期: 1min, 5min, 15min, 30min, 60min")
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
-    
+
     __table_args__ = (
         # 添加ts_code、freq和trade_time的组合索引，优化按股票代码、周期和时间范围查询
         Index('idx_stock_minute_ts_code_freq_trade_time', 'ts_code', 'freq', 'trade_time'),
@@ -118,7 +117,7 @@ class StockMinute(Base):
             "extend_existing": True
         }
     )
-    
+
     def __repr__(self):
         return f"<StockMinute(ts_code='{self.ts_code}', trade_time='{self.trade_time}', freq='{self.freq}')>"
 
@@ -180,11 +179,11 @@ class StockAdjFactor(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts_code = Column(String(20), nullable=False, comment="股票代码")
     trade_date = Column(Date, nullable=False, comment="交易日期")
-    
+
     # 复权因子
     qfq_factor = Column(Float, default=1.0, comment="前复权因子")
     hfq_factor = Column(Float, default=1.0, comment="后复权因子")
-    
+
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
 

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 复权因子 PIT（Point-In-Time）安全测试。
@@ -17,9 +16,11 @@
 """
 
 import datetime
+
 import numpy as np
 import polars as pl
 import pytest
+
 from src.data.managers.data_fetcher import DataFetcher
 
 
@@ -43,8 +44,8 @@ class TestHFQPITSafety:
         历史行的 hfq_factor 永远不变——这就是 PIT 安全。
         """
         n = 300
-        dates = _make_dates(n)
-        close = _make_linear_prices(n)
+        _make_dates(n)
+        _make_linear_prices(n)
 
         # 构造含两次除权事件的全量 hfq_factor：
         #   事件 A：ex_date=day 100，factor=0.9（10送10，后复权乘 1/0.9≈1.111）
@@ -241,7 +242,7 @@ class TestBaostockDailyFactors:
         _, hfq_factor = self._compute(*self._frames())
         f = hfq_factor['hfq_factor'].to_list()
         assert f[0] == pytest.approx(1.0)
-        assert all(b >= a - 1e-12 for a, b in zip(f, f[1:]))
+        assert all(b >= a - 1e-12 for a, b in zip(f, f[1:], strict=False))
         assert f[2:] == pytest.approx([2.0, 2.0])
 
     def test_qfq_factor_anchored_at_last_bar(self):

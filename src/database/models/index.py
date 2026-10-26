@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 指数数据模型
 """
 
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime
 from datetime import datetime
+
+from sqlalchemy import Column, Date, DateTime, Float, Integer, String
 
 from src.database.db_manager import Base
 
@@ -16,7 +16,7 @@ class IndexBasic(Base):
     指数基本信息表
     """
     __tablename__ = "index_basic"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts_code = Column(String(20), unique=True, nullable=False, comment="指数代码")
     name = Column(String(20), comment="指数名称")
@@ -31,7 +31,7 @@ class IndexBasic(Base):
     desc = Column(String(200), comment="描述")
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
-    
+
     def __repr__(self):
         return f"<IndexBasic(ts_code='{self.ts_code}', name='{self.name}')>"
 
@@ -41,7 +41,7 @@ class IndexDaily(Base):
     指数日线行情表
     """
     __tablename__ = "index_daily"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts_code = Column(String(20), nullable=False, comment="指数代码")
     trade_date = Column(Date, nullable=False, comment="交易日期")
@@ -56,7 +56,7 @@ class IndexDaily(Base):
     amount = Column(Float, comment="成交额(千元)")
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
-    
+
     __table_args__ = (
         {
             "comment": "指数日线行情表",
@@ -65,6 +65,6 @@ class IndexDaily(Base):
             "extend_existing": True
         }
     )
-    
+
     def __repr__(self):
         return f"<IndexDaily(ts_code='{self.ts_code}', trade_date='{self.trade_date}', close={self.close})>"

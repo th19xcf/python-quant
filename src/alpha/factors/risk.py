@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 风险因子计算模块
 """
 
-import polars as pl
 import numpy as np
+import polars as pl
 
 from src.alpha.factors.factor_registry import register_factor
 from src.alpha.factors.partition import PartitionAware

@@ -5,8 +5,11 @@ import inspect
 
 import pytest
 
-from src.data.sources.base import (DataSourceBase, KLINE_STANDARD_COLUMNS,
-                                   REQUIRED_SOURCE_METHODS)
+from src.data.sources.base import (
+    KLINE_STANDARD_COLUMNS,
+    REQUIRED_SOURCE_METHODS,
+    DataSourceBase,
+)
 
 # 需要纳入契约检查的数据源模块
 _SOURCE_MODULES = [

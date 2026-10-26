@@ -13,15 +13,15 @@
 """
 
 from src.risk.rules import (
+    GateResult,
+    MaxDrawdownCircuit,
+    MaxIndustryWeight,
+    MaxPositionWeight,
     Order,
     Portfolio,
+    RiskEngine,
     Rule,
     RuleResult,
-    GateResult,
-    MaxPositionWeight,
-    MaxIndustryWeight,
-    MaxDrawdownCircuit,
-    RiskEngine,
 )
 
 __all__ = [

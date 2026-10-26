@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 交易成本模型，用于计算交易成本
@@ -11,18 +10,18 @@
 - 滑点 0.02% 双边，可按流动性覆盖
 """
 
-from typing import Dict, Any
+from typing import Any, Dict
 
 
 class CostModel:
     """
     交易成本模型类，提供交易成本计算功能
     """
-    
+
     def __init__(self, overrides: Dict[str, Any] | None = None):
         """
         初始化成本模型
-        
+
         Args:
             overrides: 自定义参数，会覆盖默认值。可选键：
                        commission_rate / min_commission / stamp_tax_rate /
@@ -37,13 +36,13 @@ class CostModel:
         }
         if overrides:
             self.params.update(overrides)
-    
+
     def set_params(self, params: Dict[str, Any]):
         """
         设置成本模型参数
         """
         self.params.update(params)
-    
+
     def calculate_buy_cost(self, shares: float, price: float) -> float:
         """
         买入侧成本（佣金 + 过户费 + 滑点），不含印花税
@@ -59,7 +58,7 @@ class CostModel:
         slip = amount * slippage
 
         return commission + transfer + slip
-    
+
     def calculate_sell_cost(self, shares: float, price: float) -> float:
         """
         卖出侧成本（佣金 + 印花税 + 过户费 + 滑点）
@@ -77,7 +76,7 @@ class CostModel:
         slip = amount * slippage
 
         return commission + tax + transfer + slip
-    
+
     def calculate_cost(self, shares: float, buy_price: float, sell_price: float) -> float:
         """
         一轮完整买卖的总交易成本

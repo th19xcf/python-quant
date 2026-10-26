@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 测试周线成交量数据
 """
 
+import polars as pl
+
 from src.data.managers.data_processor import DataProcessor
 from src.tech_analysis.indicators.volume import calculate_vol_ma
-import polars as pl
-import numpy as np
 
 # 创建测试数据 - 模拟不同成交量的日线数据
 df = pl.DataFrame({
@@ -61,7 +60,7 @@ expected_volumes = [
     sum(df['volume'][10:15])  # 第三周
 ]
 
-print(f"\n验证结果:")
+print("\n验证结果:")
 print(f"预期成交量: {expected_volumes}")
 print(f"实际成交量: {weekly_df['volume'].to_list()}")
 print(f"是否正确: {expected_volumes == weekly_df['volume'].to_list()}")

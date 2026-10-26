@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 插件指标计算 Mixin
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-import polars as pl
 import pandas as pd
+import polars as pl
 from loguru import logger
 
 from ..indicator_cache import global_indicator_cache
@@ -16,17 +15,17 @@ from ..indicator_cache import global_indicator_cache
 
 class PluginIndicatorMixin:
     """插件指标计算混入类"""
-    
+
     def _init_plugin_indicator_mapping(self):
         """
         初始化插件指标映射
         """
         if not self.plugin_manager:
             return
-        
+
         # 获取所有可用的指标插件
         available_indicators = self.plugin_manager.get_available_indicator_plugins()
-        
+
         # 为每个指标插件创建对应的计算方法
         for plugin_name in available_indicators:
             # 动态添加指标映射
@@ -35,13 +34,13 @@ class PluginIndicatorMixin:
     def get_available_plugin_indicators(self):
         """
         获取可用的插件指标列表
-        
+
         Returns:
             list: 可用插件指标名称列表
         """
         if not self.plugin_manager:
             return []
-        
+
         return list(self.plugin_manager.get_available_indicator_plugins().keys())
 
     def _plugin_required_columns(self, plugin):
@@ -108,17 +107,17 @@ class PluginIndicatorMixin:
     def calculate_plugin_indicator(self, plugin_name, **kwargs):
         """
         计算插件指标
-        
+
         Args:
             plugin_name: 插件名称
             **kwargs: 传递给插件calculate方法的参数
-            
+
         Returns:
             pd.DataFrame: 包含插件指标的DataFrame
         """
         if not self.plugin_manager:
             raise ValueError("插件管理器未初始化")
-        
+
         # 内部参数：批量入口共享的裁剪后源帧（不进入参数哈希与插件调用）
         shared_source_df = kwargs.pop('_source_df', None)
 
@@ -126,9 +125,9 @@ class PluginIndicatorMixin:
         indicator_plugins = self.plugin_manager.get_available_indicator_plugins()
         if plugin_name not in indicator_plugins:
             raise ValueError(f"指标插件{plugin_name}不存在或未启用")
-        
+
         plugin = indicator_plugins[plugin_name]
-        
+
         # 检查插件指标是否已经计算
         # 生成参数哈希，处理不可哈希类型
         def make_hashable(obj):
@@ -139,25 +138,25 @@ class PluginIndicatorMixin:
             elif isinstance(obj, set):
                 return frozenset(obj)
             return obj
-        
+
         # 生成参数哈希
         hashable_kwargs = {k: make_hashable(v) for k, v in kwargs.items()}
         params_hash = hash(tuple(sorted(hashable_kwargs.items())))
-        
+
         if plugin_name in self.calculated_indicators['plugin'] and params_hash in self.calculated_indicators['plugin'][plugin_name]:
             # 返回Polars DataFrame
             if self.is_lazy:
                 self.pl_df = self.pl_df.collect()
                 self.is_lazy = False
             return self.pl_df
-        
+
         # 尝试从全局缓存获取结果
         cached_result = None
         try:
             cached_result = global_indicator_cache.get(self.pl_df, plugin_name, **kwargs)
         except (ValueError, TypeError) as e:
             logger.debug(f"{plugin_name}失败: {e}")
-        
+
         if cached_result is not None:
                 # 缓存命中，使用缓存结果
                 logger.info(f"插件指标{plugin_name}缓存命中，避免重复计算")
@@ -165,20 +164,20 @@ class PluginIndicatorMixin:
                 new_columns = [col for col in cached_result.columns if col not in self.pl_df.columns]
                 if new_columns:
                     self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
-                
+
                 # 更新计算状态
                 if plugin_name not in self.calculated_indicators['plugin']:
                     self.calculated_indicators['plugin'][plugin_name] = set()
                 self.calculated_indicators['plugin'][plugin_name].add(params_hash)
-                
+
                 # 返回Polars DataFrame
                 if self.is_lazy:
                     self.pl_df = self.pl_df.collect()
                     self.is_lazy = False
                 return self.pl_df
-        
+
         # 检查是否可以使用增量计算
-        incremental_data = kwargs.get('incremental_data', None)
+        incremental_data = kwargs.get('incremental_data')
         if incremental_data is not None:
             # 检查插件是否支持增量计算
             if hasattr(plugin, 'supports_incremental') and plugin.supports_incremental():
@@ -194,10 +193,10 @@ class PluginIndicatorMixin:
                         logger.warning(f"插件{plugin_name}支持增量计算但未实现incremental_calculate方法")
                         # 回退到全量计算
                         raise NotImplementedError("插件未实现incremental_calculate方法")
-                    
+
                     # 合并增量计算结果
                     self.pl_df = self.pl_df.vstack(result_df)
-                    
+
                     # 将计算结果存入缓存
                     try:
                         # 只缓存新增的列
@@ -208,12 +207,12 @@ class PluginIndicatorMixin:
                             logger.debug(f"插件指标{plugin_name}增量计算结果已缓存")
                     except (ValueError, TypeError) as e:
                         logger.debug(f"插件指标{plugin_name}增量计算结果失败: {e}")
-                    
+
                     # 更新计算状态
                     if plugin_name not in self.calculated_indicators['plugin']:
                         self.calculated_indicators['plugin'][plugin_name] = set()
                     self.calculated_indicators['plugin'][plugin_name].add(params_hash)
-                    
+
                     # 返回Polars DataFrame
                     if self.is_lazy:
                         self.pl_df = self.pl_df.collect()
@@ -222,13 +221,13 @@ class PluginIndicatorMixin:
                 except (RuntimeError, ValueError) as e:
                     logger.warning(f"插件指标{plugin_name}失败，使用常规计算: {e}")
 
-        
+
         try:
             # 检查插件是否支持polars
             if hasattr(plugin, 'supports_polars') and plugin.supports_polars():
                 # 直接传递polars DataFrame给插件
                 result_pl = plugin.calculate_polars(self.pl_df, **kwargs)
-                
+
                 # 合并结果到主Polars DataFrame，只添加新列
                 if result_pl is not None and hasattr(result_pl, 'columns'):
                     new_columns = [col for col in result_pl.columns if col not in self.pl_df.columns]
@@ -236,7 +235,7 @@ class PluginIndicatorMixin:
                         self.pl_df = self.pl_df.with_columns(
                             *[result_pl[col].alias(col) for col in new_columns]
                         )
-                    
+
                     # 将计算结果存入缓存（只缓存新增的列，减少缓存大小）
                     try:
                         # 只缓存新增的列，减少缓存大小
@@ -245,7 +244,7 @@ class PluginIndicatorMixin:
                         logger.debug(f"插件指标{plugin_name}计算结果已缓存")
                     except (ValueError, TypeError) as e:
                         logger.debug(f"插件指标{plugin_name}结果失败: {e}")
-                    
+
                     # 更新计算状态
                     if plugin_name not in self.calculated_indicators['plugin']:
                         self.calculated_indicators['plugin'][plugin_name] = set()
@@ -281,7 +280,7 @@ class PluginIndicatorMixin:
                         self.pl_df = self.pl_df.with_columns(
                             *[result_pl[col].alias(col) for col in new_columns]
                         )
-                    
+
                     # 将计算结果存入缓存（只缓存新增的列，减少缓存大小）
                     try:
                         # 只缓存新增的列，减少缓存大小
@@ -290,13 +289,13 @@ class PluginIndicatorMixin:
                         logger.debug(f"插件指标{plugin_name}计算结果已缓存")
                     except (ValueError, TypeError) as e:
                         logger.debug(f"插件指标{plugin_name}结果失败: {e}")
-                    
+
                     # 更新计算状态
                     if plugin_name not in self.calculated_indicators['plugin']:
                         self.calculated_indicators['plugin'][plugin_name] = set()
                     self.calculated_indicators['plugin'][plugin_name].add(params_hash)
         except (ValueError, TypeError, RuntimeError) as e:
-            raise RuntimeError(f"计算插件指标{plugin_name}失败: {str(e)}")
+            raise RuntimeError(f"计算插件指标{plugin_name}失败: {str(e)}") from e
 
         # 返回Polars DataFrame
         if self.is_lazy:
@@ -307,18 +306,18 @@ class PluginIndicatorMixin:
     def calculate_plugin_indicators_parallel(self, plugin_names, *args, **kwargs):
         """
         计算多个插件指标，利用多线程并行计算能力
-        
+
         Args:
             plugin_names: 插件名称列表
             *args: 传递给插件计算方法的位置参数
             **kwargs: 传递给插件计算方法的关键字参数
-        
+
         Returns:
             pd.DataFrame: 包含所有计算结果的DataFrame
         """
         if not plugin_names:
             plugin_names = self.get_available_plugin_indicators()
-        
+
         # 检查是否有可用的插件指标
         if not plugin_names:
             # 返回Polars DataFrame
@@ -326,15 +325,15 @@ class PluginIndicatorMixin:
                 self.pl_df = self.pl_df.collect()
                 self.is_lazy = False
             return self.pl_df
-        
+
         # 导入必要的模块
         import concurrent.futures
         import os
-        
+
         # 根据CPU核心数确定并行度
         cpu_count = os.cpu_count() or 4
         max_workers = min(cpu_count, len(plugin_names))
-        
+
         # 过滤掉已经计算过的插件指标
         plugins_to_calculate = []
         for plugin_name in plugin_names:
@@ -342,7 +341,7 @@ class PluginIndicatorMixin:
             params_hash = hash(tuple(sorted(kwargs.items())))
             if plugin_name not in self.calculated_indicators['plugin'] or params_hash not in self.calculated_indicators['plugin'][plugin_name]:
                 plugins_to_calculate.append(plugin_name)
-        
+
         if plugins_to_calculate:
             # 为遗留pandas插件预建一份裁剪后的共享Polars源帧（Polars DataFrame 不可变，
             # 线程间共享读取安全）；各线程仅对该小子集做 to_pandas，
@@ -366,7 +365,7 @@ class PluginIndicatorMixin:
                         **submit_kwargs
                     )
                     future_to_plugin[future] = plugin_name
-                
+
                 # 收集计算结果
                 for future in concurrent.futures.as_completed(future_to_plugin):
                     plugin_name = future_to_plugin[future]
@@ -375,21 +374,21 @@ class PluginIndicatorMixin:
                         results.append(plugin_name)
                     except Exception as e:
                         logger.error(f"计算插件指标{plugin_name}失败: {e}")
-            
+
             logger.info(f"并行计算完成，成功计算{len(results)}个插件指标")
         else:
             logger.info("所有插件指标已计算，无需重复计算")
-        
+
         # 返回Polars DataFrame
         if self.is_lazy:
             self.pl_df = self.pl_df.collect()
             self.is_lazy = False
         return self.pl_df
 
-    def invalidate_plugin_cache(self, plugin_name: Optional[str] = None):
+    def invalidate_plugin_cache(self, plugin_name: str | None = None):
         """
         使插件指标缓存失效
-        
+
         Args:
             plugin_name: 可选，指定要失效的插件名称，None表示失效所有插件指标
         """
@@ -405,23 +404,23 @@ class PluginIndicatorMixin:
                     plugin_names = self.plugin_manager.get_available_indicator_plugins().keys()
                     for name in plugin_names:
                         global_indicator_cache.clear(name)
-                    logger.info(f"所有插件指标的缓存已失效")
+                    logger.info("所有插件指标的缓存已失效")
         except (ValueError, TypeError) as e:
             logger.debug(f"失败: {e}")
 
-    def get_plugin_cache_stats(self, plugin_name: Optional[str] = None) -> Dict[str, Any]:
+    def get_plugin_cache_stats(self, plugin_name: str | None = None) -> Dict[str, Any]:
         """
         获取插件指标的缓存统计信息
-        
+
         Args:
             plugin_name: 可选，指定要查看的插件名称，None表示查看所有插件指标
-        
+
         Returns:
             Dict[str, Any]: 缓存统计信息
         """
         try:
             cache_info = global_indicator_cache.get_cache_info()
-            
+
             # 过滤出插件指标的缓存条目
             plugin_entries = []
             for entry in cache_info['entries']:
@@ -434,7 +433,7 @@ class PluginIndicatorMixin:
                             if plugin_name is None or p_name == plugin_name:
                                 plugin_entries.append(entry)
                             break
-            
+
             # 计算插件指标的缓存统计
             plugin_stats = {
                 'total_entries': len(plugin_entries),
@@ -442,7 +441,7 @@ class PluginIndicatorMixin:
                 'total_size': sum(entry['size'] for entry in plugin_entries),
                 'entries': plugin_entries
             }
-            
+
             return plugin_stats
         except (ValueError, TypeError) as e:
             logger.debug(f"失败: {e}")

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 通达信 .day 日线文件解析（纯函数实现）
@@ -10,7 +9,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -64,7 +63,7 @@ class QuoteSnapshot:
     amplitude: float
 
 
-def resolve_market(code: str, ts_code: Optional[str] = None) -> str:
+def resolve_market(code: str, ts_code: str | None = None) -> str:
     """
     推断通达信市场目录（sh/sz/bj）。
 
@@ -94,7 +93,7 @@ def build_day_file_path(tdx_data_path, market: str, code: str) -> Path:
     return Path(tdx_data_path) / market / 'lday' / f'{market}{code}.day'
 
 
-def _load_content(path: Path, count: Optional[int]) -> bytes:
+def _load_content(path: Path, count: int | None) -> bytes:
     """定位并读入末尾 count 条记录的原始字节（count=None 表示全部）。"""
     record_count = path.stat().st_size // RECORD_SIZE
     start = 0 if count is None else max(0, record_count - count)
@@ -126,8 +125,8 @@ def _decode_records(content: bytes, volume_in_hand: bool) -> Dict[str, Any]:
     }
 
 
-def read_recent_records(file_path, count: Optional[int] = None,
-                        volume_in_hand: Optional[bool] = None) -> List[Dict]:
+def read_recent_records(file_path, count: int | None = None,
+                        volume_in_hand: bool | None = None) -> List[Dict]:
     """
     读取文件末尾的若干条日线记录。
 
@@ -151,10 +150,10 @@ def read_recent_records(file_path, count: Optional[int] = None,
     content = _load_content(path, count)
     cols = _decode_records(content, volume_in_hand)
     keys = tuple(cols.keys())
-    return [dict(zip(keys, row)) for row in zip(*(cols[k] for k in keys))]
+    return [dict(zip(keys, row, strict=False)) for row in zip(*(cols[k] for k in keys), strict=False)]
 
 
-def parse_day_file(file_path, max_days: Optional[int] = None) -> pl.DataFrame:
+def parse_day_file(file_path, max_days: int | None = None) -> pl.DataFrame:
     """
     解析通达信日线数据文件。
 
@@ -183,7 +182,7 @@ def parse_day_file(file_path, max_days: Optional[int] = None) -> pl.DataFrame:
     })
 
 
-def read_latest_quote(file_path) -> Optional[QuoteSnapshot]:
+def read_latest_quote(file_path) -> QuoteSnapshot | None:
     """
     读取最新一根日线行情，并基于前一根收盘价计算涨跌/振幅。
 

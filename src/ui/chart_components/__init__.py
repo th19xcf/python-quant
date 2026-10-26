@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 图表组件模块
@@ -7,9 +6,9 @@
 """
 
 from .chart_data_preparer import ChartDataPreparer
+from .chart_event_binder import ChartEventBinder
 from .chart_ui_builder import ChartUIBuilder
 from .indicator_renderer import IndicatorRenderer
-from .chart_event_binder import ChartEventBinder
 
 __all__ = [
     'ChartDataPreparer',

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 数据服务
@@ -16,13 +15,14 @@ DataService 是真正干活的核心，持有 DataFetcher / DataUpdater + global
         └─ _get_data_from_sources → TDX / BaoStock / AkShare 故障转移
 """
 
-from typing import List, Dict, Optional
+from typing import Dict, List
+
 import polars as pl
 from loguru import logger
 
+from src.data.data_cache import global_data_cache
 from src.data.managers.data_fetcher import DataFetcher
 from src.data.managers.data_updater import DataUpdater
-from src.data.data_cache import global_data_cache
 from src.utils.event_bus import publish
 
 

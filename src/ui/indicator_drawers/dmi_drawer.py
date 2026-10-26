@@ -1,4 +1,3 @@
-import pyqtgraph as pg
 
 from .base_drawer import BaseIndicatorDrawer
 
@@ -8,13 +7,13 @@ class DMIDrawer(BaseIndicatorDrawer):
     DMI指标绘制器，仅负责绘制，不计算指标
     指标计算应在数据准备阶段完成
     """
-    
+
     required_columns = ['pdi', 'ndi', 'adx', 'adxr']
-    
+
     def draw_indicator(self, plot_widget, x, df_pl):
         """
         绘制DMI指标
-        
+
         Args:
             plot_widget: 绘图控件
             x: x轴数据

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 ORM 批量 upsert 工具（收口点）
@@ -15,7 +14,8 @@ ORM 批量 upsert 工具（收口点）
 无法解析的行由调用方在构造 dict 前跳过，保持原有的容错语义。
 """
 
-from typing import Dict, Iterable, Sequence, Tuple
+from collections.abc import Iterable, Sequence
+from typing import Dict, Tuple
 
 from sqlalchemy import and_, or_
 

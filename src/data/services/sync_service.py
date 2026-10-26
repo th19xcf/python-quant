@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 数据同步服务模块
@@ -13,14 +12,14 @@ main.py 仅保留应用组装与启动，数据同步的领域逻辑收敛于此
     - sync_stock_fund_to_fund_basic(config, db_manager)
 """
 
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
 
 from src.utils.code_converter import MARKET_BJ, MARKET_SH, MARKET_SZ, to_ts_code
-from src.utils.exceptions import DataSourceException, DataSaveError
-
+from src.utils.exceptions import DataSaveError, DataSourceException
 
 # ======================================================================
 # 通用代码判定与归一化
@@ -59,10 +58,7 @@ def _is_fund_ts_code(ts_code, name=None, market=None):
 
     if '基金' in mkt:
         return True
-    if any(token in nm.upper() for token in ('ETF', 'LOF')) or ('基金' in nm):
-        return True
-
-    return False
+    return bool(any(token in nm.upper() for token in ('ETF', 'LOF')) or '基金' in nm)
 
 
 def _to_ts_code_or_none(code):
@@ -266,7 +262,7 @@ def _process_single_stock_batch(ctx):
 
             time.sleep(0.1)
 
-        except (Exception,) as e:
+        except Exception as e:
             logger.exception(f"处理股票 {ts_code} 失败: {e}")
             ctx.result['failed_stocks'].append(ts_code)
             continue
@@ -542,7 +538,7 @@ def get_stock_info_from_apis(ts_code, merged_basic, baostock_handler, akshare_ha
 
         return info
 
-    for mapped_code, info in merged_basic.items():
+    for _mapped_code, info in merged_basic.items():
         if info.get('symbol') == symbol:
             result = info.copy()
             result['ts_code'] = ts_code
@@ -555,9 +551,7 @@ def get_stock_info_from_apis(ts_code, merged_basic, baostock_handler, akshare_ha
         return {'ts_code': ts_code, 'symbol': symbol, 'name': f'北交所新股{symbol}', 'status': 'L'}
     elif symbol.startswith('8') and len(symbol) == 6:
         return {'ts_code': ts_code, 'symbol': symbol, 'name': f'北交所股票{symbol}', 'status': 'L'}
-    elif symbol.startswith('51') or symbol.startswith('58'):
-        return {'ts_code': ts_code, 'symbol': symbol, 'name': f'ETF{symbol}', 'status': 'L'}
-    elif symbol.startswith('15') or symbol.startswith('16'):
+    elif symbol.startswith('51') or symbol.startswith('58') or symbol.startswith('15') or symbol.startswith('16'):
         return {'ts_code': ts_code, 'symbol': symbol, 'name': f'ETF{symbol}', 'status': 'L'}
     else:
         return {'ts_code': ts_code, 'symbol': symbol, 'name': f'股票{symbol}', 'status': 'L'}
@@ -941,10 +935,8 @@ def _collect_external_index_name_map(config):
     except DataSourceException as e:
         logger.warning(f"从 AkShare 获取指数基本信息失败: {e}")
     finally:
-        try:
+        with contextlib.suppress(Exception):
             baostock_handler._logout_baostock()
-        except Exception:
-            pass
 
     return merged_info_map
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 成交量类指标渲染 Mixin
 """
 
-import pyqtgraph as pg
-import numpy as np
 from typing import Any
+
+import numpy as np
+import pyqtgraph as pg
 from loguru import logger
 
 
@@ -17,7 +17,7 @@ class VolumeRenderMixin:
     def render_volume(self, plot_widget: Any, df: Any, x: np.ndarray):
         """
         渲染成交量指标
-        
+
         Args:
             plot_widget: 图表控件
             df: 数据
@@ -28,16 +28,16 @@ class VolumeRenderMixin:
             if df is None:
                 logger.warning("render_volume: df is None, skipping")
                 return df
-            
+
             if not hasattr(df, 'columns') or 'volume' not in df.columns:
                 logger.warning(f"render_volume: volume column not found, columns: {df.columns if hasattr(df, 'columns') else 'N/A'}")
                 return df
-            
+
             volumes = df['volume'].to_numpy()
             if len(volumes) == 0:
                 logger.warning("render_volume: volumes array is empty")
                 return df
-            
+
             # 打印成交量数据的统计信息
             logger.debug(f"render_volume: volumes shape: {volumes.shape}")
             logger.debug(f"render_volume: volumes min: {volumes.min()}")
@@ -45,20 +45,20 @@ class VolumeRenderMixin:
             logger.debug(f"render_volume: volumes mean: {volumes.mean()}")
             logger.debug(f"render_volume: volumes std: {volumes.std()}")
             logger.debug(f"render_volume: volumes sample: {volumes[:5]}")
-            
+
             # 计算Y轴范围
             self._set_volume_y_range(plot_widget, volumes)
-            
+
             # 禁用科学计数法
             y_axis = plot_widget.getAxis('left')
             y_axis.enableAutoSIPrefix(False)
-            
+
             # 绘制成交量柱状图
             self._draw_volume_bars(plot_widget, x, volumes, df)
-            
+
             # 绘制成交量MA线
             self._draw_volume_ma_lines(plot_widget, x, df)
-            
+
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染成交量失败: {e}")
         return df
@@ -68,28 +68,28 @@ class VolumeRenderMixin:
         if len(volumes) == 0:
             plot_widget.setYRange(0, 100)
             return
-        
+
         # 打印成交量数据的统计信息
         logger.debug(f"_set_volume_y_range: volumes shape: {volumes.shape}")
         logger.debug(f"_set_volume_y_range: volumes min: {volumes.min()}")
         logger.debug(f"_set_volume_y_range: volumes max: {volumes.max()}")
         logger.debug(f"_set_volume_y_range: volumes mean: {volumes.mean()}")
-        
+
         # 计算成交量数据的范围
         volume_min = volumes.min()
         volume_max = volumes.max()
         volume_range = volume_max - volume_min
-        
+
         logger.debug(f"_set_volume_y_range: volume_range: {volume_range}")
-        
+
         if volume_range > 0:
             # 使用实际的最小值和最大值，但是缩小范围以增强视觉差异
             # 这样可以让柱体之间的差异更加明显
             y_min = max(0, volume_min - volume_range * 0.1)  # 底部留10%空间
             y_max = volume_max + volume_range * 0.1  # 顶部留10%空间
-            
+
             logger.debug(f"_set_volume_y_range: y_min: {y_min}, y_max: {y_max}")
-            
+
             plot_widget.setYRange(y_min, y_max)
         else:
             # 所有成交量值相同，使用默认范围
@@ -129,7 +129,7 @@ class VolumeRenderMixin:
             ('vol_ma5', 'white'),
             ('vol_ma10', 'cyan'),
         ]
-        
+
         for col_name, color in ma_configs:
             if col_name in df.columns:
                 ma_data = df[col_name].to_numpy().astype(np.float64)
@@ -142,15 +142,15 @@ class VolumeRenderMixin:
                     if len(ma_mask) > len(x):
                         ma_mask = ma_mask[-len(x):]
                     plot_widget.plot(
-                        x[ma_mask], 
-                        ma_data[ma_mask], 
+                        x[ma_mask],
+                        ma_data[ma_mask],
                         pen=pg.mkPen(color, width=1)
                     )
 
     def render_vr(self, plot_widget: Any, df: Any, x: np.ndarray):
         """
         渲染VR指标
-        
+
         Args:
             plot_widget: 图表控件
             df: 数据
@@ -158,17 +158,17 @@ class VolumeRenderMixin:
         """
         try:
             logger.debug(f"渲染VR指标，数据列: {df.columns if hasattr(df, 'columns') else 'N/A'}")
-            
+
             # 如果没有VR数据，跳过渲染（应由渲染前批量计算提供）
             if 'vr' not in df.columns:
                 logger.warning("VR数据列不存在，跳过渲染（应由渲染前批量计算提供）")
-            
+
             if 'vr' in df.columns:
                 vr_data = df['vr'].to_numpy().astype(np.float64)
                 vr_mask = ~np.isnan(vr_data)
                 valid_count = np.sum(vr_mask)
                 logger.debug(f"VR数据有效点数: {valid_count}")
-                
+
                 if np.any(vr_mask):
                     # 设置Y轴范围
                     valid_vr = vr_data[vr_mask]
@@ -177,11 +177,11 @@ class VolumeRenderMixin:
                     range_val = max_val - min_val
                     if range_val > 0:
                         plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)
-                    
+
                     plot_widget.plot(
-                        x[vr_mask], 
-                        vr_data[vr_mask], 
-                        pen=pg.mkPen('w', width=1), 
+                        x[vr_mask],
+                        vr_data[vr_mask],
+                        pen=pg.mkPen('w', width=1),
                         name='VR'
                     )
                     logger.debug(f"VR指标渲染完成，绘制了 {valid_count} 个点")
@@ -189,7 +189,7 @@ class VolumeRenderMixin:
                     logger.warning("VR数据全部为空值，无法绘制")
             else:
                 logger.warning("VR列不存在，无法渲染")
-            
+
             # 绘制MAVR线
             if 'mavr' in df.columns:
                 mavr_data = df['mavr'].to_numpy().astype(np.float64)

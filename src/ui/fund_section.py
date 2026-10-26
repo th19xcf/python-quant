@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 基金板块（ETF / 封闭式基金）
@@ -35,9 +34,7 @@ def is_etf_fund_ts_code(ts_code: str) -> bool:
     market = market.upper()
     if market == 'SH' and symbol.startswith(('51', '52', '56', '58')):
         return True
-    if market == 'SZ' and symbol.startswith('159'):
-        return True
-    return False
+    return bool(market == 'SZ' and symbol.startswith('159'))
 
 
 def is_closed_fund_ts_code(ts_code: str) -> bool:

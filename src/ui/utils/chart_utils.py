@@ -1,30 +1,31 @@
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
 
+
 class ChartUtils:
     """
     图表工具类，包含图表配置和辅助函数
     """
-    
+
     @staticmethod
     def calculate_x_axis_tick_interval(bar_count, min_interval=5, max_labels=10):
         """
         根据柱体数量动态计算X轴标签间隔
-        
+
         Args:
             bar_count: 柱体数量
             min_interval: 最小间隔（柱体数）
             max_labels: 最大标签数量
-            
+
         Returns:
             int: 计算后的间隔（柱体数）
         """
         if bar_count <= 0:
             return min_interval
-        
+
         # 计算理想的间隔，确保标签数量不超过max_labels
         ideal_interval = max(min_interval, bar_count // max_labels)
-        
+
         # 将间隔调整为美观的数字（5, 10, 15, 20, 30, 60等）
         if ideal_interval <= 5:
             return 5
@@ -41,12 +42,12 @@ class ChartUtils:
         else:
             # 对于更大的间隔，向上取整到最近的10的倍数
             return ((ideal_interval + 9) // 10) * 10
-    
+
     @staticmethod
     def configure_chart(plot_widget, title=""):
         """
         配置图表的基本样式
-        
+
         Args:
             plot_widget: 要配置的图表
             title: 图表标题
@@ -54,21 +55,21 @@ class ChartUtils:
         # 设置坐标轴标签
         plot_widget.setLabel('left', title, color='#C0C0C0')
         plot_widget.setLabel('bottom', '', color='#C0C0C0')
-        
+
         # 设置坐标轴样式
         plot_widget.getAxis('left').setPen(pg.mkPen('#C0C0C0'))
         plot_widget.getAxis('bottom').setPen(pg.mkPen('#C0C0C0'))
         plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
         plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
-        
+
         # 显示网格
         plot_widget.showGrid(x=True, y=True, alpha=0.3)
-    
+
     @staticmethod
     def set_y_range(plot_widget, indicator_name, df_pl):
         """
         设置Y轴范围
-        
+
         Args:
             plot_widget: 图表控件
             indicator_name: 指标名称
@@ -85,20 +86,20 @@ class ChartUtils:
             "DMI": (0, 100),  # DMI指标范围，取值范围0-100
             "VR": (0, 200)  # VR指标范围，取值范围0-200
         }
-        
+
         if indicator_name in indicator_y_ranges:
             y_min, y_max = indicator_y_ranges[indicator_name]
             plot_widget.setYRange(y_min, y_max)
-            
+
             # 特殊处理VOL指标的对数模式
             if indicator_name == "VOL":
                 plot_widget.setLogMode(y=False)
-    
+
     @staticmethod
     def add_horizontal_line(plot_widget, pos, color='#444444', style=Qt.DashLine, width=1.0, name=""):
         """
         添加水平线
-        
+
         Args:
             plot_widget: 图表控件
             pos: 水平线位置
@@ -106,19 +107,19 @@ class ChartUtils:
             style: 线条样式
             width: 线条宽度
             name: 线条名称
-        
+
         Returns:
             添加的水平线实例
         """
         line = pg.InfiniteLine(pos=pos, pen=pg.mkPen(color, width=width, style=style), name=name)
         plot_widget.addItem(line)
         return line
-    
+
     @staticmethod
     def configure_axes(plot_widget):
         """
         配置坐标轴，禁用科学计数法，设置样式
-        
+
         Args:
             plot_widget: 图表控件
         """
@@ -126,24 +127,24 @@ class ChartUtils:
         y_axis = plot_widget.getAxis('left')
         y_axis.enableAutoSIPrefix(False)
         y_axis.setStyle(tickTextOffset=20)
-        
+
         # 重置缩放比例，确保显示真实数值
         y_axis.setScale(1.0)
-    
+
     @staticmethod
     def sync_x_axis(plot_widgets):
         """
         同步多个图表的X轴范围
-        
+
         Args:
             plot_widgets: 图表控件列表
         """
         if not plot_widgets:
             return
-        
+
         # 获取第一个图表的X轴范围
         x_range = plot_widgets[0].getViewBox().viewRange()[0]
-        
+
         # 将X轴范围应用到其他图表
         for widget in plot_widgets[1:]:
             widget.setXRange(x_range[0], x_range[1], padding=0)

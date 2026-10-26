@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 指标缓存模块，提供高效的指标计算结果缓存机制
 """
 
-from typing import Dict, Any, Optional, TypeVar, Generic, List
 import hashlib
+import time
+from typing import Any, Dict, List, TypeVar
+
 import polars as pl
 from loguru import logger
-import time
 
 # 定义缓存键和值的类型变量
 K = TypeVar('K')
 V = TypeVar('V')
 
 
-class IndicatorCacheEntry(Generic[V]):
+class IndicatorCacheEntry[V]:
     """
     缓存条目类，用于存储缓存值及其元数据
     """
-    
-    def __init__(self, value: V, expire_time: Optional[float] = None):
+
+    def __init__(self, value: V, expire_time: float | None = None):
         """
         初始化缓存条目
-        
+
         Args:
             value: 缓存值
             expire_time: 过期时间（时间戳），None表示永不过期
@@ -33,18 +33,18 @@ class IndicatorCacheEntry(Generic[V]):
         self.expire_time = expire_time
         self.access_time = time.time()  # 上次访问时间
         self.hit_count = 1  # 命中次数
-    
+
     def is_expired(self) -> bool:
         """
         检查缓存是否过期
-        
+
         Returns:
             bool: 是否过期
         """
         if self.expire_time is None:
             return False
         return time.time() > self.expire_time
-    
+
     def update_access(self):
         """
         更新访问信息
@@ -58,11 +58,11 @@ class IndicatorCache:
     指标缓存类，提供高效的指标计算结果缓存机制
     支持自动过期、LRU淘汰、命中率统计等功能
     """
-    
+
     def __init__(self, max_size: int = 1000, default_ttl: int = 3600, dynamic_size: bool = True):
         """
         初始化指标缓存
-        
+
         Args:
             max_size: 缓存最大条目数
             default_ttl: 默认过期时间（秒），0表示永不过期
@@ -76,24 +76,24 @@ class IndicatorCache:
         self._dynamic_size = dynamic_size
         self._min_size = max(100, max_size // 2)  # 最小缓存大小
         self._max_size_limit = max_size * 2  # 最大缓存大小限制
-        
+
         # 缓存统计
         self._hits = 0
         self._misses = 0
         self._evictions = 0
         self._last_size_adjustment = time.time()
         self._size_adjustment_interval = 3600  # 缓存大小调整间隔（秒）
-    
+
     def _generate_cache_key(self, data: pl.DataFrame, indicator_type: str, **params) -> str:
         """
         生成唯一的缓存键 - 优化版本
         使用Polars原生哈希方法，避免转换为pandas和CSV
-        
+
         Args:
             data: 输入数据
             indicator_type: 指标类型
             **params: 指标计算参数
-        
+
         Returns:
             str: 唯一的缓存键
         """
@@ -101,16 +101,16 @@ class IndicatorCache:
         # 只使用核心列进行哈希计算，提高效率
         core_cols = ['open', 'high', 'low', 'close', 'volume']
         data_cols = [col for col in core_cols if col in data.columns]
-        
+
         if not data_cols:
             raise ValueError("数据中没有核心列，无法生成缓存键")
-        
+
         # 计算数据摘要 - 使用Polars原生哈希方法（更快）
         # 只采样前50行和后50行，减少计算量
         sample_size = min(50, len(data) // 2)
         head_sample = data.select(data_cols).head(sample_size)
         tail_sample = data.select(data_cols).tail(sample_size)
-        
+
         try:
             # 使用Polars内置的哈希方法（比to_csv快10倍以上）
             head_hash = head_sample.hash_rows(seed=42).sum()
@@ -128,26 +128,26 @@ class IndicatorCache:
                 # 最终降级方案
                 logger.warning(f"numpy哈希也失败，使用简化方案: {e2}")
                 data_hash = hashlib.md5(f"{len(data)}_{hash(tuple(data_cols))}".encode()).hexdigest()
-        
+
         # 2. 生成参数字符串
         # 对参数进行排序，确保相同参数不同顺序生成相同的键
         sorted_params = sorted(params.items(), key=lambda x: x[0])
         params_str = "".join([f"{k}={v}" for k, v in sorted_params])
         params_hash = hashlib.md5(params_str.encode('utf-8')).hexdigest()
-        
+
         # 3. 组合生成最终缓存键
         cache_key = f"{indicator_type}_{data_hash}_{params_hash}"
         return cache_key
-    
-    def get(self, data: pl.DataFrame, indicator_type: str, **params) -> Optional[pl.DataFrame]:
+
+    def get(self, data: pl.DataFrame, indicator_type: str, **params) -> pl.DataFrame | None:
         """
         获取缓存的指标计算结果
-        
+
         Args:
             data: 输入数据
             indicator_type: 指标类型
             **params: 指标计算参数
-        
+
         Returns:
             Optional[pl.DataFrame]: 缓存的计算结果，如果不存在或已过期则返回None
         """
@@ -157,15 +157,15 @@ class IndicatorCache:
             logger.warning(f"生成缓存键失败: {str(e)}")
             self._misses += 1
             return None
-        
+
         if cache_key not in self._cache:
             self._misses += 1
             # 尝试调整缓存大小
             self._adjust_cache_size()
             return None
-        
+
         entry = self._cache[cache_key]
-        
+
         # 检查是否过期
         if entry.is_expired():
             del self._cache[cache_key]
@@ -174,20 +174,20 @@ class IndicatorCache:
             # 尝试调整缓存大小
             self._adjust_cache_size()
             return None
-        
+
         # 更新访问信息
         entry.update_access()
         self._hits += 1
-        
+
         logger.debug(f"缓存命中: {indicator_type}")
         # 尝试调整缓存大小
         self._adjust_cache_size()
         return entry.value
-    
+
     def set(self, data: pl.DataFrame, result: pl.DataFrame, indicator_type: str, **params):
         """
         设置指标计算结果到缓存
-        
+
         Args:
             data: 输入数据
             result: 计算结果
@@ -199,40 +199,40 @@ class IndicatorCache:
         except ValueError as e:
             logger.warning(f"生成缓存键失败: {str(e)}")
             return
-        
+
         # 计算过期时间
         ttl = params.get('ttl', self._default_ttl)
         expire_time = time.time() + ttl if ttl is not None else None
-        
+
         # 创建缓存条目
         entry = IndicatorCacheEntry(result, expire_time)
-        
+
         # 添加到缓存
         self._cache[cache_key] = entry
-        
+
         # 检查缓存大小，超过上限则进行LRU淘汰
         if len(self._cache) > self._max_size:
             self._evict_lru()
-        
+
         # 尝试调整缓存大小
         self._adjust_cache_size()
-    
+
     def _evict_lru(self):
         """
         执行LRU淘汰策略，移除最少使用的缓存条目
         """
         if not self._cache:
             return
-        
+
         # 找到最少使用的条目（按访问时间和命中次数排序）
         # 优先淘汰访问时间早且命中次数少的条目
-        lru_key = min(self._cache.keys(), 
+        lru_key = min(self._cache.keys(),
                      key=lambda k: (self._cache[k].access_time, -self._cache[k].hit_count))
-        
+
         del self._cache[lru_key]
         self._evictions += 1
         logger.debug(f"LRU淘汰缓存: {lru_key}")
-    
+
     def _adjust_cache_size(self):
         """
         动态调整缓存大小
@@ -240,20 +240,20 @@ class IndicatorCache:
         """
         if not self._dynamic_size:
             return
-        
+
         current_time = time.time()
         if current_time - self._last_size_adjustment < self._size_adjustment_interval:
             return
-        
+
         self._last_size_adjustment = current_time
-        
+
         total_requests = self._hits + self._misses
         if total_requests < 100:  # 数据不足，不调整
             return
-        
+
         hit_rate = self._hits / total_requests
         current_size = len(self._cache)
-        
+
         # 根据命中率调整缓存大小
         if hit_rate > 0.7 and current_size < self._max_size_limit:
             # 命中率高，增加缓存大小
@@ -270,25 +270,27 @@ class IndicatorCache:
                 # 立即执行一次LRU淘汰，确保缓存大小不超过新的限制
                 while len(self._cache) > self._max_size:
                     self._evict_lru()
-    
+
     def warmup_cache(self, data: pl.DataFrame, indicator_types: List[str], **params):
         """
         缓存预热
         预先计算并缓存指定的指标
-        
+
         Args:
             data: 输入数据
             indicator_types: 指标类型列表
             **params: 指标计算参数
         """
-        from src.tech_analysis.indicator_calculator import calculate_multiple_indicators_polars
-        
+        from src.tech_analysis.indicator_calculator import (
+            calculate_multiple_indicators_polars,
+        )
+
         logger.info(f"开始缓存预热，计算{len(indicator_types)}个指标")
         start_time = time.time()
-        
+
         # 批量计算所有指标
         result_df = calculate_multiple_indicators_polars(data, indicator_types, **params)
-        
+
         # 将计算结果保存到缓存
         for indicator_type in indicator_types:
             # 提取该指标的结果
@@ -296,20 +298,20 @@ class IndicatorCache:
             if indicator_cols:
                 indicator_result = result_df.select([result_df.columns[0]] + indicator_cols)
                 self.set(data, indicator_result, indicator_type, **params)
-        
+
         total_time = time.time() - start_time
         logger.info(f"缓存预热完成，耗时{total_time:.2f}秒，缓存了{len(indicator_types)}个指标")
-    
-    def clear(self, indicator_type: Optional[str] = None):
+
+    def clear(self, indicator_type: str | None = None):
         """
         清除缓存
-        
+
         Args:
             indicator_type: 可选，指定要清除的指标类型，None表示清除所有
         """
         if indicator_type:
             # 清除指定指标类型的缓存
-            keys_to_remove = [key for key in self._cache.keys() 
+            keys_to_remove = [key for key in self._cache
                              if key.startswith(f"{indicator_type}_")]
             for key in keys_to_remove:
                 del self._cache[key]
@@ -321,11 +323,11 @@ class IndicatorCache:
             self._cache.clear()
             self._evictions += evicted
             logger.info(f"清除所有{evicted}个缓存条目")
-    
-    def invalidate(self, data: pl.DataFrame, indicator_type: Optional[str] = None):
+
+    def invalidate(self, data: pl.DataFrame, indicator_type: str | None = None):
         """
         使相关缓存失效
-        
+
         Args:
             data: 输入数据
             indicator_type: 可选，指定要失效的指标类型，None表示失效所有相关指标
@@ -333,18 +335,18 @@ class IndicatorCache:
         # 生成数据哈希前缀
         core_cols = ['open', 'high', 'low', 'close', 'volume']
         data_cols = [col for col in core_cols if col in data.columns]
-        
+
         if not data_cols:
             logger.warning("数据中没有核心列，无法生成缓存键前缀")
             return
-        
+
         # 计算数据哈希 - 使用更高效的方法
         try:
             # 只采样前50行和后50行，减少计算量
             sample_size = min(50, len(data) // 2)
             head_sample = data.select(data_cols).head(sample_size)
             tail_sample = data.select(data_cols).tail(sample_size)
-            
+
             # 使用Polars内置的哈希方法（更快）
             head_hash = head_sample.hash_rows(seed=42).sum()
             tail_hash = tail_sample.hash_rows(seed=42).sum()
@@ -361,44 +363,44 @@ class IndicatorCache:
                 # 最终降级方案
                 logger.warning(f"numpy哈希也失败，使用简化方案: {e2}")
                 data_hash = hashlib.md5(f"{len(data)}_{hash(tuple(data_cols))}".encode()).hexdigest()
-        
+
         # 生成缓存键前缀
         if indicator_type:
             prefix = f"{indicator_type}_{data_hash}_"
         else:
             # 生成包含数据哈希的前缀
             keys_to_remove = []
-            for key in self._cache.keys():
+            for key in self._cache:
                 if f"_{data_hash}_" in key:
                     keys_to_remove.append(key)
-            
+
             for key in keys_to_remove:
                 del self._cache[key]
-            
+
             self._evictions += len(keys_to_remove)
             logger.info(f"使{len(keys_to_remove)}个缓存条目失效")
             return
-        
+
         # 清除相关缓存
-        keys_to_remove = [key for key in self._cache.keys() 
+        keys_to_remove = [key for key in self._cache
                          if prefix in key]
-        
+
         for key in keys_to_remove:
             del self._cache[key]
-        
+
         self._evictions += len(keys_to_remove)
         logger.info(f"使{len(keys_to_remove)}个缓存条目失效")
-    
+
     def get_stats(self) -> Dict[str, Any]:
         """
         获取缓存统计信息
-        
+
         Returns:
             Dict[str, Any]: 缓存统计信息
         """
         total_requests = self._hits + self._misses
         hit_rate = self._hits / total_requests if total_requests > 0 else 0.0
-        
+
         return {
             'size': len(self._cache),
             'max_size': self._max_size,
@@ -412,7 +414,7 @@ class IndicatorCache:
             'total_requests': total_requests,
             'last_size_adjustment': self._last_size_adjustment
         }
-    
+
     def reset_stats(self):
         """
         重置缓存统计信息
@@ -420,11 +422,11 @@ class IndicatorCache:
         self._hits = 0
         self._misses = 0
         self._evictions = 0
-    
+
     def get_cache_info(self) -> Dict[str, Any]:
         """
         获取详细的缓存信息
-        
+
         Returns:
             Dict[str, Any]: 详细的缓存信息
         """
@@ -439,7 +441,7 @@ class IndicatorCache:
                 'expire_time': entry.expire_time,
                 'is_expired': entry.is_expired()
             })
-        
+
         return {
             'stats': self.get_stats(),
             'config': {
@@ -458,40 +460,40 @@ class IndicatorCache:
 global_indicator_cache = IndicatorCache(max_size=1000, default_ttl=3600, dynamic_size=True)
 
 
-def cached_calculation(cache: Optional[IndicatorCache] = None, ttl: Optional[int] = None):
+def cached_calculation(cache: IndicatorCache | None = None, ttl: int | None = None):
     """
     缓存装饰器，用于缓存指标计算结果
-    
+
     Args:
         cache: 缓存实例，None表示使用全局缓存
         ttl: 缓存过期时间（秒），None表示使用缓存默认值
-    
+
     Returns:
         Callable: 装饰后的函数
     """
     cache_instance = cache or global_indicator_cache
-    
+
     def decorator(func):
         def wrapper(data: pl.DataFrame, **params):
             # 获取指标类型（从函数名或参数中获取）
             indicator_type = params.get('indicator_type', func.__name__)
-            
+
             # 尝试从缓存获取结果
             cache_result = cache_instance.get(data, indicator_type, **params)
             if cache_result is not None:
                 return cache_result
-            
+
             # 执行计算
             result = func(data, **params)
-            
+
             # 设置缓存
             cache_params = params.copy()
             if ttl is not None:
                 cache_params['ttl'] = ttl
             cache_instance.set(data, result, indicator_type, **cache_params)
-            
+
             return result
-        
+
         return wrapper
-    
+
     return decorator

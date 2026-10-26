@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 风控模块单元测试
 覆盖：Order / Portfolio / 3 条 Rule / RiskEngine.gate() 组合场景
 """
 
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import pytest
-from src.risk import (
-    Order, Portfolio, RiskEngine,
-    MaxPositionWeight, MaxIndustryWeight, MaxDrawdownCircuit,
-)
 
+from src.risk import (
+    MaxDrawdownCircuit,
+    MaxIndustryWeight,
+    MaxPositionWeight,
+    Order,
+    Portfolio,
+    RiskEngine,
+)
 
 # ======================================================================
 # Fixtures

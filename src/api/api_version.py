@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 API版本控制模块，用于管理API的版本和路由
 """
 
-from typing import Any, Callable, Dict, List, Optional, Union
+from collections.abc import Callable
+from typing import Any, Dict, List, Union
 
 
 class APIVersion:
     """API版本信息"""
-    
+
     def __init__(self, major: int, minor: int, patch: int = 0):
         """初始化API版本
-        
+
         Args:
             major: 主版本号
             minor: 次版本号
@@ -22,34 +22,34 @@ class APIVersion:
         self.major = major
         self.minor = minor
         self.patch = patch
-    
+
     def __str__(self) -> str:
         """返回版本字符串
-        
+
         Returns:
             str: 版本字符串，格式：major.minor.patch
         """
         return f"{self.major}.{self.minor}.{self.patch}"
-    
+
     def __eq__(self, other: Any) -> bool:
         """比较版本是否相等
-        
+
         Args:
             other: 另一个版本对象
-        
+
         Returns:
             bool: 是否相等
         """
         if not isinstance(other, APIVersion):
             return False
         return self.major == other.major and self.minor == other.minor and self.patch == other.patch
-    
+
     def __lt__(self, other: Any) -> bool:
         """比较版本是否小于另一个版本
-        
+
         Args:
             other: 另一个版本对象
-        
+
         Returns:
             bool: 是否小于
         """
@@ -63,47 +63,47 @@ class APIVersion:
             elif self.minor == other.minor:
                 return self.patch < other.patch
         return False
-    
+
     def __le__(self, other: Any) -> bool:
         """比较版本是否小于等于另一个版本
-        
+
         Args:
             other: 另一个版本对象
-        
+
         Returns:
             bool: 是否小于等于
         """
         return self < other or self == other
-    
+
     def __gt__(self, other: Any) -> bool:
         """比较版本是否大于另一个版本
-        
+
         Args:
             other: 另一个版本对象
-        
+
         Returns:
             bool: 是否大于
         """
         return not self <= other
-    
+
     def __ge__(self, other: Any) -> bool:
         """比较版本是否大于等于另一个版本
-        
+
         Args:
             other: 另一个版本对象
-        
+
         Returns:
             bool: 是否大于等于
         """
         return not self < other
-    
+
     @classmethod
-    def from_string(cls, version_str: str) -> 'APIVersion':
+    def from_string(cls, version_str: str) -> APIVersion:
         """从字符串创建API版本
-        
+
         Args:
             version_str: 版本字符串，格式：major.minor.patch
-        
+
         Returns:
             APIVersion: API版本对象
         """
@@ -116,15 +116,15 @@ class APIVersion:
 
 class APIRouter:
     """API路由器，用于管理API路由和版本"""
-    
+
     def __init__(self):
         """初始化API路由器"""
         self._routes: Dict[str, Dict[str, Any]] = {}
         self._version_routes: Dict[str, Dict[str, Any]] = {}
-    
+
     def register_route(self, path: str, handler: Callable, methods: List[str] = None, **kwargs):
         """注册API路由
-        
+
         Args:
             path: 路由路径
             handler: 路由处理函数
@@ -133,16 +133,16 @@ class APIRouter:
         """
         if methods is None:
             methods = ['GET']
-        
+
         self._routes[path] = {
             'handler': handler,
             'methods': methods,
             'kwargs': kwargs
         }
-    
+
     def register_versioned_route(self, version: Union[str, APIVersion], path: str, handler: Callable, methods: List[str] = None, **kwargs):
         """注册带版本的API路由
-        
+
         Args:
             version: API版本
             path: 路由路径
@@ -152,63 +152,57 @@ class APIRouter:
         """
         if methods is None:
             methods = ['GET']
-        
-        if isinstance(version, APIVersion):
-            version_str = str(version)
-        else:
-            version_str = version
-        
+
+        version_str = str(version) if isinstance(version, APIVersion) else version
+
         if version_str not in self._version_routes:
             self._version_routes[version_str] = {}
-        
+
         self._version_routes[version_str][path] = {
             'handler': handler,
             'methods': methods,
             'kwargs': kwargs
         }
-    
-    def get_route(self, path: str) -> Optional[Dict[str, Any]]:
+
+    def get_route(self, path: str) -> Dict[str, Any] | None:
         """获取路由信息
-        
+
         Args:
             path: 路由路径
-        
+
         Returns:
             Optional[Dict[str, Any]]: 路由信息，如果不存在则返回None
         """
         return self._routes.get(path)
-    
-    def get_versioned_route(self, version: Union[str, APIVersion], path: str) -> Optional[Dict[str, Any]]:
+
+    def get_versioned_route(self, version: Union[str, APIVersion], path: str) -> Dict[str, Any] | None:
         """获取带版本的路由信息
-        
+
         Args:
             version: API版本
             path: 路由路径
-        
+
         Returns:
             Optional[Dict[str, Any]]: 路由信息，如果不存在则返回None
         """
-        if isinstance(version, APIVersion):
-            version_str = str(version)
-        else:
-            version_str = version
-        
+        version_str = str(version) if isinstance(version, APIVersion) else version
+
         if version_str not in self._version_routes:
             return None
-        
+
         return self._version_routes[version_str].get(path)
-    
+
     def get_all_routes(self) -> Dict[str, Dict[str, Any]]:
         """获取所有路由信息
-        
+
         Returns:
             Dict[str, Dict[str, Any]]: 所有路由信息
         """
         return self._routes.copy()
-    
+
     def get_all_versioned_routes(self) -> Dict[str, Dict[str, Dict[str, Any]]]:
         """获取所有带版本的路由信息
-        
+
         Returns:
             Dict[str, Dict[str, Dict[str, Any]]]: 所有带版本的路由信息
         """
@@ -217,11 +211,11 @@ class APIRouter:
 
 class APIRequest:
     """API请求对象"""
-    
-    def __init__(self, path: str, method: str = 'GET', headers: Optional[Dict[str, str]] = None, 
-                 params: Optional[Dict[str, Any]] = None, body: Optional[Any] = None):
+
+    def __init__(self, path: str, method: str = 'GET', headers: Dict[str, str] | None = None,
+                 params: Dict[str, Any] | None = None, body: Any | None = None):
         """初始化API请求
-        
+
         Args:
             path: 请求路径
             method: HTTP方法，默认：GET
@@ -235,11 +229,11 @@ class APIRequest:
         self.params = params or {}
         self.body = body
         self._version = None
-    
+
     @property
-    def version(self) -> Optional[APIVersion]:
+    def version(self) -> APIVersion | None:
         """获取API版本
-        
+
         Returns:
             Optional[APIVersion]: API版本
         """
@@ -249,11 +243,11 @@ class APIRequest:
             if version_header:
                 self._version = APIVersion.from_string(version_header)
         return self._version
-    
+
     @version.setter
     def version(self, version: Union[str, APIVersion]):
         """设置API版本
-        
+
         Args:
             version: API版本
         """
@@ -265,11 +259,11 @@ class APIRequest:
 
 class APIResponse:
     """API响应对象"""
-    
-    def __init__(self, status_code: int = 200, data: Optional[Any] = None, 
-                 headers: Optional[Dict[str, str]] = None, error: Optional[Dict[str, Any]] = None):
+
+    def __init__(self, status_code: int = 200, data: Any | None = None,
+                 headers: Dict[str, str] | None = None, error: Dict[str, Any] | None = None):
         """初始化API响应
-        
+
         Args:
             status_code: HTTP状态码，默认：200
             data: 响应数据
@@ -280,10 +274,10 @@ class APIResponse:
         self.data = data
         self.headers = headers or {}
         self.error = error
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式
-        
+
         Returns:
             Dict[str, Any]: 响应字典
         """
@@ -296,32 +290,32 @@ class APIResponse:
         if self.error is not None:
             response['error'] = self.error
         return response
-    
+
     @classmethod
-    def success(cls, data: Any, status_code: int = 200, headers: Optional[Dict[str, str]] = None) -> 'APIResponse':
+    def success(cls, data: Any, status_code: int = 200, headers: Dict[str, str] | None = None) -> APIResponse:
         """创建成功响应
-        
+
         Args:
             data: 响应数据
             status_code: HTTP状态码，默认：200
             headers: 响应头
-        
+
         Returns:
             APIResponse: 成功响应对象
         """
         return cls(status_code=status_code, data=data, headers=headers)
-    
+
     @classmethod
-    def error(cls, error_msg: str, status_code: int = 400, error_code: Optional[str] = None, 
-              headers: Optional[Dict[str, str]] = None) -> 'APIResponse':
+    def error(cls, error_msg: str, status_code: int = 400, error_code: str | None = None,
+              headers: Dict[str, str] | None = None) -> APIResponse:
         """创建错误响应
-        
+
         Args:
             error_msg: 错误信息
             status_code: HTTP状态码，默认：400
             error_code: 错误代码
             headers: 响应头
-        
+
         Returns:
             APIResponse: 错误响应对象
         """

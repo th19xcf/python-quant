@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 移动平均线策略
@@ -10,8 +9,9 @@ ma_{short_window} 与 ma_{long_window} 列，不再用实例 list 累积价格�
 prev_ma_* 列，留待后续扩展。
 """
 
+from typing import Any, Dict
+
 from src.backtest.strategies.base_strategy import BaseStrategy
-from typing import Dict, Any
 
 
 class MAStrategy(BaseStrategy):

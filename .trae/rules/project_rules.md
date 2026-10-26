@@ -64,27 +64,29 @@
 
 ### 注意事项
 - **Commit message 必须原样输出**：从 `git log -1 --format="%B"` 取，不做任何二次格式化（不要加"标题""正文"标签，不要改缩进）
-- **不要伪造输出**：所有数值、哈希、文件状态都必须来自 `git` 和 `robocopy` 的真实输出
-- **备份方式**：robocopy + git ls-files 双重保障，命令为：
+- **不要伪造输出**：所有数值、哈希、文件状态都必须来自 `git` 的真实输出
+- **备份方式**：Python 脚本精确复制 git 追踪文件（唯一可靠方案），命令为：
   ```powershell
-  $src="E:\code\python\quant"; $dst="E:\git\python-quant"
-  # 1. robocopy 镜像（排除 .gitignore 中高频目录/文件，减少后续清理量）
-  robocopy $src $dst /MIR /R:1 /W:1 `
-    /XD .git .trae __pycache__ .pytest_cache venv env .venv build dist .eggs logs .ipynb_checkpoints .idea .vscode node_modules > $null
-  # 2. 清理 untracked/ignored：PowerShell Remove-Item 无法删除 robocopy 带只读属性的文件 → 先 attrib -R
-  $tracked = git -C $src ls-files
-  Get-ChildItem $dst -Recurse -File | ForEach-Object {
-      $rel = $_.FullName.Substring($dst.Length+1).Replace('\','/')
-      if ($rel -notin $tracked) { attrib -R $_.FullName 2>$null; Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
-  }
-  # 3. 清理空目录（从最深往上删）
-  Get-ChildItem $dst -Recurse -Directory | Sort-Object { $_.FullName.Length } -Descending | Where-Object {
-      (Get-ChildItem $_.FullName -File -Recurse | Measure-Object).Count -eq 0
-  } | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+  python -c "
+import subprocess, shutil, os, stat
+src=r'E:\code\python\quant'; dst=r'E:\git\python-quant'
+def on_err(f,p,e):
+    try: os.chmod(p, stat.S_IWRITE); f(p)
+    except: pass
+shutil.rmtree(dst, onerror=on_err, ignore_errors=True)
+os.makedirs(dst, exist_ok=True)
+r=subprocess.run(['git','-C',src,'ls-files','-z'],capture_output=True)
+tracked=[x.decode('utf-8') for x in r.stdout.split(b'\x00') if x]
+for rel in tracked:
+    s=os.path.join(src,rel); d=os.path.join(dst,rel)
+    if os.path.isfile(s):
+        os.makedirs(os.path.dirname(d),exist_ok=True)
+        shutil.copy2(s,d)
+"
   ```
-  backup 目标固定 `E:\git\python-quant\`；robocopy exit code ≤ 7 均为正常
+  backup 目标固定 `E:\git\python-quant\`
 - **核心原则：备份目录与 git 仓库保持完全一致**。任何未被 git 追踪的文件（untracked 文件、`.gitignore` 中的文件、手动创建的临时文件、虚拟环境 venv/、编译缓存 __pycache__/ 等）都**绝对不能**进入备份目录
-- **robocopy /MIR 不看 .gitignore**：必须靠 `/XD` 显式排除 + `git ls-files` 反向清理，两步缺一不可；`attrib -R` 是为了解除 robocopy 复制文件的只读属性让 PowerShell 能删掉
+- **为什么不用 robocopy**：robocopy `/MIR` 不看 `.gitignore`，`/XD` 对非 ASCII 路径下嵌套目录排除不可靠，且 PowerShell `Remove-Item` / `.NET File.Delete` 都删不掉 robocopy 复制的只读/系统属性文件；Python `shutil.rmtree` + `onerror` 钩子能强制清除任何残留，`git ls-files -z` 用 null 分隔完美处理 Unicode 路径
 
 ## 备份同步规则
 

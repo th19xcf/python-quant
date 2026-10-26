@@ -1,64 +1,62 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 指标计算工具模块，提供各种技术指标的计算方法
 """
 
 import polars as pl
-import numpy as np
-from .utils import (
-    collect_used_windows,
-    collect_indicator_windows,
-    merge_used_windows,
-    add_default_column_names,
-    get_indicator_params,
-    cleanup_temp_columns,
-    to_float32,
-    calculate_mad
-)
+
 from ..utils.memory_optimizer import MemoryOptimizer
 from .indicators import (
-    calculate_trend_indicators,
-    calculate_oscillator_indicators,
-    calculate_volume_indicators,
-    calculate_volatility_indicators,
     calculate_cost_indicators,
-    calculate_market_breadth_indicators
+    calculate_market_breadth_indicators,
+    calculate_oscillator_indicators,
+    calculate_trend_indicators,
+    calculate_volatility_indicators,
+    calculate_volume_indicators,
+)
+from .utils import (
+    cleanup_temp_columns,
+    collect_indicator_windows,
+    collect_used_windows,
+    get_indicator_params,
+    merge_used_windows,
 )
 
 
-from src.tech_analysis.indicator_cache import cached_calculation
-
-def calculate_ma_polars(df, windows=[5, 10, 20, 60]):
+def calculate_ma_polars(df, windows=None):
     """
     使用Polars计算移动平均线（Lazy API优化）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: 移动平均窗口列表
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含移动平均线的DataFrame或LazyFrame
     """
     # 调用批量计算函数，减少代码冗余
+    if windows is None:
+        windows = [5, 10, 20, 60]
     return calculate_multiple_indicators_polars(df, ['ma'], windows=windows)
 
 
-def calculate_vol_ma_polars(df, windows=[5, 10]):
+def calculate_vol_ma_polars(df, windows=None):
     """
     使用Polars计算成交量移动平均线（Lazy API优化）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: 移动平均窗口列表
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含成交量移动平均线的DataFrame或LazyFrame
     """
     # 调用批量计算函数，减少代码冗余
+    if windows is None:
+        windows = [5, 10]
     return calculate_multiple_indicators_polars(df, ['vol_ma'], vol_ma_windows=windows)
 
 
@@ -154,18 +152,18 @@ def sample_data_polars(df, target_points=1000, strategy='adaptive'):
     """
     对Polars数据进行采样，减少数据量，提高图表渲染速度
     支持多种采样策略，包括均匀采样和自适应采样
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         target_points: 目标采样点数
         strategy: 采样策略，可选值：'uniform'（均匀采样）、'adaptive'（自适应采样）
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 采样后的数据
     """
     # 检查是否为LazyFrame
     is_lazy = isinstance(df, pl.LazyFrame)
-    
+
     # 1. 快速路径：如果目标点数大于等于数据行数，直接返回
     if is_lazy:
         # 对于LazyFrame，我们只能在必要时才执行计算
@@ -176,7 +174,7 @@ def sample_data_polars(df, target_points=1000, strategy='adaptive'):
         data_len = len(df)
         if data_len <= target_points:
             return df
-    
+
     if strategy == 'uniform':
         if is_lazy:
             # 对于LazyFrame，使用nth_sample进行均匀采样，这是更高效的方式
@@ -199,29 +197,29 @@ def sample_data_polars(df, target_points=1000, strategy='adaptive'):
             data_len = len(df)
             if data_len <= target_points:
                 return df
-            
+
             # 计算价格变化
             df_with_change = df.with_columns(
                 pl.col('close').diff().abs().alias('price_change')
             )
-            
+
             # 计算变化率的分位数
             change_quantile = df_with_change['price_change'].quantile(0.75)
-            
+
             # 标记重要数据点
             important_points = df_with_change.filter(pl.col('price_change') > change_quantile)
             important_count = len(important_points)
-            
+
             if important_count >= target_points:
                 return important_points.head(target_points)
-            
+
             # 计算需要从非重要数据点中采样的数量
             regular_count = target_points - important_count
-            
+
             # 从非重要数据点中采样
             regular_points = df_with_change.filter(pl.col('price_change') <= change_quantile)
             regular_len = len(regular_points)
-            
+
             if regular_len <= regular_count:
                 # 非重要数据点不足，直接合并
                 combined = important_points.vstack(regular_points)
@@ -232,29 +230,29 @@ def sample_data_polars(df, target_points=1000, strategy='adaptive'):
                     sample_interval = 1
                 sampled_regular = regular_points.nth(range(0, regular_len, sample_interval)).head(regular_count)
                 combined = important_points.vstack(sampled_regular)
-            
+
             # 按时间排序
             sampled_data = combined.sort(by=df.columns[0])
-            
+
             # 确保包含首尾数据点
             first_point = df.head(1)
             last_point = df.tail(1)
-            
+
             # 检查并添加首尾数据点
             if not sampled_data.filter(pl.col(df.columns[0]) == first_point[0, df.columns[0]]).is_empty():
                 first_point = None
             if not sampled_data.filter(pl.col(df.columns[0]) == last_point[0, df.columns[0]]).is_empty():
                 last_point = None
-            
+
             if first_point is not None:
                 sampled_data = first_point.vstack(sampled_data)
             if last_point is not None:
                 sampled_data = sampled_data.vstack(last_point)
-            
+
             # 确保采样数量不超过目标数量
             if len(sampled_data) > target_points:
                 sampled_data = sampled_data.head(target_points)
-            
+
             return sampled_data
     else:
         raise ValueError(f"不支持的采样策略: {strategy}")
@@ -264,20 +262,20 @@ def calculate_macd_polars(df, fast_period=12, slow_period=26, signal_period=9):
     """
     使用Polars计算MACD指标（Lazy API优化）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         fast_period: 快速EMA周期
         slow_period: 慢速EMA周期
         signal_period: 信号线EMA周期
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含MACD指标的DataFrame或LazyFrame
     """
     # 调用批量计算函数，减少代码冗余
-    return calculate_multiple_indicators_polars(df, ['macd'], 
-                                              fast_period=fast_period, 
-                                              slow_period=slow_period, 
+    return calculate_multiple_indicators_polars(df, ['macd'],
+                                              fast_period=fast_period,
+                                              slow_period=slow_period,
                                               signal_period=signal_period)
 
 
@@ -286,11 +284,11 @@ def calculate_rsi_polars(df, windows=None):
     使用Polars批量计算RSI指标（Lazy API优化）
     优化：使用EMA替代普通移动平均线计算平均上涨和下跌幅度
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: RSI计算窗口列表，默认为[14]
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含RSI指标的DataFrame或LazyFrame
     """
@@ -304,11 +302,11 @@ def calculate_kdj_polars(df, windows=None):
     """
     使用Polars批量计算KDJ指标（Lazy API优化）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: KDJ计算窗口列表，默认为[14]
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含KDJ指标的DataFrame或LazyFrame
     """
@@ -318,19 +316,21 @@ def calculate_kdj_polars(df, windows=None):
     return calculate_multiple_indicators_polars(df, ['kdj'], kdj_windows=windows)
 
 
-def calculate_boll_polars(df, windows=[20], std_dev=2.0):
+def calculate_boll_polars(df, windows=None, std_dev=2.0):
     """
     使用Polars批量计算Boll指标（布林带），优化性能
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: Boll计算窗口列表，默认为[20]
         std_dev: 标准差倍数，默认为2.0
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含Boll指标的DataFrame或LazyFrame
     """
+    if windows is None:
+        windows = [20]
     if windows is None:
         windows = [20]
     # 调用批量计算函数，减少代码冗余，使用与其他指标一致的参数命名
@@ -341,11 +341,11 @@ def calculate_wr_polars(df, windows=None):
     """
     使用Polars批量计算WR指标（威廉指标），优化性能，模拟通达信WR(10,6)效果
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: WR计算窗口列表，默认为[10, 6]
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含WR指标的DataFrame或LazyFrame
     """
@@ -355,72 +355,80 @@ def calculate_wr_polars(df, windows=None):
     return calculate_multiple_indicators_polars(df, ['wr'], wr_windows=windows)
 
 
-def calculate_dmi_polars(df, windows=[14]):
+def calculate_dmi_polars(df, windows=None):
     """
     使用Polars批量计算DMI指标（趋向指标）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: DMI计算窗口列表，默认为[14]
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含DMI指标的DataFrame或LazyFrame
     """
+    if windows is None:
+        windows = [14]
     if windows is None:
         windows = [14]  # 通达信默认使用DMI14
     # 调用批量计算函数，减少代码冗余
     return calculate_multiple_indicators_polars(df, ['dmi'], dmi_windows=windows)
 
 
-def calculate_cci_polars(df, windows=[14]):
+def calculate_cci_polars(df, windows=None):
     """
     使用Polars批量计算CCI指标（商品通道指标）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: CCI计算窗口列表，默认为[14]
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含CCI指标的DataFrame或LazyFrame
     """
+    if windows is None:
+        windows = [14]
     if windows is None:
         windows = [14]  # 通达信默认使用CCI14
     # 调用批量计算函数，减少代码冗余
     return calculate_multiple_indicators_polars(df, ['cci'], cci_windows=windows)
 
 
-def calculate_roc_polars(df, windows=[12]):
+def calculate_roc_polars(df, windows=None):
     """
     使用Polars批量计算ROC指标（变化率指标）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: ROC计算窗口列表，默认为[12]
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含ROC指标的DataFrame或LazyFrame
     """
+    if windows is None:
+        windows = [12]
     if windows is None:
         windows = [12]  # 通达信默认使用ROC12
     # 调用批量计算函数，减少代码冗余
     return calculate_multiple_indicators_polars(df, ['roc'], roc_windows=windows)
 
 
-def calculate_mtm_polars(df, windows=[12]):
+def calculate_mtm_polars(df, windows=None):
     """
     使用Polars批量计算MTM指标（动量指标）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: MTM计算窗口列表，默认为[12]
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含MTM指标的DataFrame或LazyFrame
     """
+    if windows is None:
+        windows = [12]
     if windows is None:
         windows = [12]  # 通达信默认使用MTM12
     # 调用批量计算函数，减少代码冗余
@@ -431,10 +439,10 @@ def calculate_obv_polars(df):
     """
     使用Polars计算OBV指标（能量潮）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含OBV指标的DataFrame或LazyFrame
     """
@@ -442,73 +450,81 @@ def calculate_obv_polars(df):
     return calculate_multiple_indicators_polars(df, ['obv'])
 
 
-def calculate_vr_polars(df, windows=[26]):
+def calculate_vr_polars(df, windows=None):
     """
     使用Polars批量计算VR指标（成交量比率）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: VR计算窗口列表，默认为[26]
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含VR指标的DataFrame或LazyFrame
     """
+    if windows is None:
+        windows = [26]
     if windows is None:
         windows = [26]  # 通达信默认使用VR26
     # 调用批量计算函数，减少代码冗余
     return calculate_multiple_indicators_polars(df, ['vr'], vr_windows=windows)
 
 
-def calculate_psy_polars(df, windows=[12]):
+def calculate_psy_polars(df, windows=None):
     """
     使用Polars批量计算PSY指标（心理线）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: PSY计算窗口列表，默认为[12]
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含PSY指标的DataFrame或LazyFrame
     """
+    if windows is None:
+        windows = [12]
     if windows is None:
         windows = [12]  # 通达信默认使用PSY12
     # 调用批量计算函数，减少代码冗余
     return calculate_multiple_indicators_polars(df, ['psy'], psy_windows=windows)
 
 
-def calculate_trix_polars(df, windows=[12], signal_period=9):
+def calculate_trix_polars(df, windows=None, signal_period=9):
     """
     使用Polars批量计算TRIX指标（三重指数平滑）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: TRIX计算窗口列表，默认为[12]
         signal_period: TRIX信号线周期，默认为9
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含TRIX指标的DataFrame或LazyFrame
     """
+    if windows is None:
+        windows = [12]
     if windows is None:
         windows = [12]  # 通达信默认使用TRIX12
     # 调用批量计算函数，减少代码冗余
     return calculate_multiple_indicators_polars(df, ['trix'], trix_windows=windows, trix_signal_period=signal_period)
 
 
-def calculate_brar_polars(df, windows=[26]):
+def calculate_brar_polars(df, windows=None):
     """
     使用Polars批量计算BRAR指标（情绪指标）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: BRAR计算窗口列表，默认为[26]
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含BRAR指标的DataFrame或LazyFrame
     """
+    if windows is None:
+        windows = [26]
     if windows is None:
         windows = [26]  # 通达信默认使用BRAR26
     # 调用批量计算函数，减少代码冗余
@@ -519,11 +535,11 @@ def calculate_asi_polars(df, signal_period=20):
     """
     使用Polars计算ASI指标（振动升降指标）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         signal_period: ASI信号线周期，默认为20
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含ASI指标的DataFrame或LazyFrame
     """
@@ -531,26 +547,28 @@ def calculate_asi_polars(df, signal_period=20):
     return calculate_multiple_indicators_polars(df, ['asi'], asi_signal_period=signal_period)
 
 
-def calculate_emv_polars(df, windows=[14], constant=100000000):
+def calculate_emv_polars(df, windows=None, constant=100000000):
     """
     使用Polars批量计算EMV指标（简易波动指标）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         windows: EMV计算窗口列表，默认为[14]
         constant: 常数，用于调整EMV的数值大小，默认为100000000
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含EMV指标的DataFrame或LazyFrame
     """
+    if windows is None:
+        windows = [14]
     if windows is None:
         windows = [14]  # 通达信默认使用EMV14
     # 调用批量计算函数，减少代码冗余
     return calculate_multiple_indicators_polars(df, ['emv'], emv_windows=windows, emv_constant=constant)
 
 
-def calculate_mcst_polars(df, windows=[12]):
+def calculate_mcst_polars(df, windows=None):
     """
     使用Polars批量计算MCST指标（市场成本）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
@@ -562,6 +580,8 @@ def calculate_mcst_polars(df, windows=[12]):
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含MCST指标的DataFrame或LazyFrame
     """
+    if windows is None:
+        windows = [12]
     if windows is None:
         windows = [12]  # 通达信默认使用MCST12
     # 调用批量计算函数，减少代码冗余
@@ -636,7 +656,7 @@ def calculate_vol_tdx_polars(df, ma_period=5):
                                                vol_tdx_ma_period=ma_period)
 
 
-def calculate_cr_polars(df, windows=[26]):
+def calculate_cr_polars(df, windows=None):
     """
     使用Polars计算CR指标（能量指标）
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
@@ -650,6 +670,8 @@ def calculate_cr_polars(df, windows=[26]):
     """
     if windows is None:
         windows = [26]
+    if windows is None:
+        windows = [26]
     return calculate_multiple_indicators_polars(df, ['cr'], cr_windows=windows)
 
 
@@ -657,40 +679,40 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     """
     统一的多指标批量计算函数，将所有指标计算合并到单个查询计划
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-    
+
     Args:
         df: Polars DataFrame或LazyFrame
         indicator_types: 指标类型列表，默认计算所有指标
         **params: 指标计算参数
-        
+
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含所有计算指标的DataFrame或LazyFrame
     """
-    from src.utils.lazy_optimizer import optimize_lazy_frame, execute_optimized_pipeline
-    
+    from src.utils.lazy_optimizer import execute_optimized_pipeline, optimize_lazy_frame
+
     # 默认计算所有指标
     if indicator_types is None:
         indicator_types = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'boll', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'abi', 'adl', 'adr', 'obos']
-    
+
     # 1. 收集所有需要计算的指标和参数
     indicator_params = get_indicator_params(**params)
-    
+
     # 2. 收集所有需要的窗口大小
-    all_windows = collect_used_windows(indicator_types, indicator_params)
-    
+    collect_used_windows(indicator_types, indicator_params)
+
     # 3. 预计算共享的窗口列（最高价、最低价的窗口统计）
     need_high_low = any(indicator in indicator_types for indicator in ['kdj', 'wr', 'boll'])
-    
+
     # 4. 使用Lazy API构建查询，确保所有计算在单个查询计划中执行
     lazy_df = df.lazy()
-    
+
     # 步骤1: 添加共享的窗口列
     # 只创建实际需要的共享窗口列
     if need_high_low:
         # 收集实际使用的窗口大小
         indicator_windows = collect_indicator_windows(indicator_types, indicator_params)
         used_windows = merge_used_windows(indicator_windows)
-        
+
         # 只创建实际使用的窗口列
         for window in used_windows:
             # 预计算最高价和最低价的rolling_max/min，min_samples=1确保从第一个数据点开始计算
@@ -698,31 +720,31 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
                 pl.col('high').rolling_max(window_size=window, min_samples=1).alias(f'high_n_{window}'),
                 pl.col('low').rolling_min(window_size=window, min_samples=1).alias(f'low_n_{window}')
             )
-    
+
     # 步骤2: 计算趋势类指标
     lazy_df = calculate_trend_indicators(lazy_df, indicator_types, **params)
-    
+
     # 步骤3: 计算震荡类指标
     lazy_df = calculate_oscillator_indicators(lazy_df, indicator_types, **params)
-    
+
     # 步骤4: 计算成交量类指标
     lazy_df = calculate_volume_indicators(lazy_df, indicator_types, **params)
-    
+
     # 步骤5: 计算波动率类指标
     lazy_df = calculate_volatility_indicators(lazy_df, indicator_types, **params)
-    
+
     # 步骤6: 计算成本类指标
     lazy_df = calculate_cost_indicators(lazy_df, indicator_types, **params)
 
     # 步骤7: 计算大势型指标
     lazy_df = calculate_market_breadth_indicators(lazy_df, indicator_types, **params)
-    
+
     # 清理临时列
     lazy_df = cleanup_temp_columns(lazy_df, indicator_types, indicator_params)
-    
+
     # 优化查询计划，充分利用Polars的并行计算能力
     lazy_df = optimize_lazy_frame(lazy_df)
-    
+
     # 检查输入类型并返回相应的结果
     if isinstance(df, pl.LazyFrame):
         return lazy_df
@@ -731,34 +753,35 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
         result = execute_optimized_pipeline(lazy_df)
         # 内存优化：转换数据类型
         optimized_result = MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
-        MemoryOptimizer.print_memory_stats(optimized_result, f"指标计算结果优化后")
+        MemoryOptimizer.print_memory_stats(optimized_result, "指标计算结果优化后")
         return optimized_result
 
 
 def calculate_indicators_parallel(data, indicator_types, max_workers=None, **params):
     """
     并行计算多个技术指标
-    
+
     Args:
         data: 输入数据（Polars DataFrame或pandas DataFrame）
         indicator_types: 指标类型列表
         max_workers: 最大工作线程数，None表示使用所有可用核心
         **params: 指标计算参数
-        
+
     Returns:
         pl.DataFrame: 包含所有计算指标的DataFrame
     """
     import concurrent.futures
     import time
+
     from loguru import logger
-    
+
     # 转换为Polars DataFrame
     if not isinstance(data, pl.DataFrame):
         data = pl.from_pandas(data)
-    
+
     # 预处理数据
     data = preprocess_data_polars(data)
-    
+
     # 计算指标分组，将相关指标放在一起计算以提高缓存利用率
     indicator_groups = {
         'trend': ['ma', 'macd', 'dma', 'fsl', 'sar', 'trix', 'emv', 'mcst', 'expma', 'bbi'],
@@ -769,7 +792,7 @@ def calculate_indicators_parallel(data, indicator_types, max_workers=None, **par
         'market_breadth': ['abi', 'adl', 'adr', 'obos'],
         'other': ['dmi', 'brar', 'asi', 'cr', 'vol_tdx']
     }
-    
+
     # 分配指标到不同组
     grouped_indicators = {}
     for indicator in indicator_types:
@@ -785,11 +808,11 @@ def calculate_indicators_parallel(data, indicator_types, max_workers=None, **par
             if 'other' not in grouped_indicators:
                 grouped_indicators['other'] = []
             grouped_indicators['other'].append(indicator)
-    
+
     # 并行计算不同组的指标
     results = {}
     start_time = time.time()
-    
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         # 提交所有计算任务
         future_to_group = {}
@@ -802,7 +825,7 @@ def calculate_indicators_parallel(data, indicator_types, max_workers=None, **par
                     **params
                 )
                 future_to_group[future] = group
-        
+
         # 收集计算结果
         for future in concurrent.futures.as_completed(future_to_group):
             group = future_to_group[future]
@@ -812,11 +835,11 @@ def calculate_indicators_parallel(data, indicator_types, max_workers=None, **par
                 logger.info(f"完成指标组{group}的计算，包含{len(grouped_indicators[group])}个指标")
             except Exception as e:
                 logger.error(f"计算指标组{group}时出错: {e}")
-    
+
     # 合并所有结果
     if not results:
         return data
-    
+
     # 从第一个结果开始，逐步合并
     merged_result = data
     for group, result in results.items():
@@ -829,27 +852,27 @@ def calculate_indicators_parallel(data, indicator_types, max_workers=None, **par
                 on=result.columns[0],
                 how='left'
             )
-    
+
     # 内存优化
     optimized_result = MemoryOptimizer.optimize_dataframe(merged_result, enable_sparse=True)
-    
+
     total_time = time.time() - start_time
     logger.info(f"并行计算完成，总耗时: {total_time:.2f}秒")
     MemoryOptimizer.print_memory_stats(optimized_result, "并行计算结果优化后")
-    
+
     return optimized_result
 
 
 def generate_cache_key(data_hash, indicator_type, *args, **kwargs):
     """
     生成唯一的缓存键
-    
+
     Args:
         data_hash: 数据哈希值
         indicator_type: 指标类型
         *args: 位置参数
         **kwargs: 关键字参数
-        
+
     Returns:
         int: 唯一的缓存键
     """

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 指标交互管理器
@@ -196,21 +195,20 @@ class IndicatorInteractionManager:
 
     def _create_adjustment_menu(self):
         """创建复权选择菜单"""
-        from PySide6.QtWidgets import QMenu
         from PySide6.QtGui import QAction
-        from PySide6.QtCore import Qt
-        
+        from PySide6.QtWidgets import QMenu
+
         window = self.window
         menu = QMenu(window)
         menu.setStyleSheet("QMenu { background-color: #333333; color: #C0C0C0; } QMenu::item { padding: 8px 20px; } QMenu::item:selected { background-color: #555555; }")
-        
+
         # 定义复权类型
         adjustment_types = [
             ('不复权', 'none'),
             ('前复权', 'qfq'),
             ('后复权', 'hfq')
         ]
-        
+
         # 创建菜单项
         for name, value in adjustment_types:
             action = QAction(name, menu)
@@ -218,7 +216,7 @@ class IndicatorInteractionManager:
             action.setChecked(window.adjustment_type == value)
             action.triggered.connect(lambda checked, v=value, n=name: self._on_adjustment_type_changed(v, n))
             menu.addAction(action)
-        
+
         return menu
 
     def _on_adjustment_type_changed(self, value, name):
@@ -226,11 +224,11 @@ class IndicatorInteractionManager:
         window = self.window
         window.adjustment_type = value
         logger.info(f"复权类型更改为: {name} ({value})")
-        
+
         # 更新按钮文本显示当前复权类型
         if hasattr(window, 'adjustment_btn'):
             window.adjustment_btn.setText(name)
-        
+
         # 如果有当前股票数据，重新获取数据并绘制
         if hasattr(window, 'current_stock_code') and hasattr(window, 'current_stock_name'):
             stock_code = window.current_stock_code

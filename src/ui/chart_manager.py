@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 图表管理器，封装图表刷新相关逻辑
 """
 
-from src.utils.logger import logger
 from src.ui.utils.chart_utils import ChartUtils
+from src.utils.logger import logger
 
 
 class ChartManager:
@@ -27,7 +26,7 @@ class ChartManager:
         """
         设置图表标签
         """
-        from PySide6.QtWidgets import QLabel, QHBoxLayout, QWidget
+        from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
         window = self.window
 
@@ -93,7 +92,7 @@ class ChartManager:
         highs = df['high'].to_list()
         lows = df['low'].to_list()
         closes = df['close'].to_list()
-        
+
         # 获取柱体数设置
         bar_count = getattr(self.window, 'displayed_bar_count', 100)
         # 截取指定数量的数据（当柱体数小于数据长度时才截取）
@@ -129,8 +128,8 @@ class ChartManager:
 
     def _draw_indicator_histogram(self, plot_widget, x, data, positive_color='r', negative_color='g', width=0.35):
         """绘制指标柱状图的通用方法"""
-        import pyqtgraph as pg
         import numpy as np
+        import pyqtgraph as pg
 
         colors = []
         for val in data:
@@ -218,7 +217,6 @@ class ChartManager:
 
     def _draw_technical_indicator(self, plot_widget, indicator_name, x, data_df):
         """绘制技术指标的通用方法"""
-        import pyqtgraph as pg
         import numpy as np
 
         def get_col_values(df, col_name):

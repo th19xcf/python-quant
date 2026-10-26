@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 指标公式一致性测试
@@ -12,13 +11,16 @@
 import numpy as np
 import polars as pl
 
+from src.alpha.factors.price_momentum import PriceMomentumFactors
 from src.backtest.engine.backtest_engine import BacktestEngine
 from src.tech_analysis.gpu_acceleration import GPUAccelerator
 from src.tech_analysis.indicator_calculator import calculate_multiple_indicators_polars
 from src.tech_analysis.indicators.formulas import (
-    atr_expr, kdj_exprs, macd_exprs, rsi_expr,
+    atr_expr,
+    kdj_exprs,
+    macd_exprs,
+    rsi_expr,
 )
-from src.alpha.factors.price_momentum import PriceMomentumFactors
 
 
 def _make_ohlcv(n: int = 300) -> pl.DataFrame:
@@ -223,7 +225,7 @@ def test_kdj_matches_tdx_recursive_sma():
         d_value = k_value if i == 0 else (k_value + 2 * d_ref[-1]) / 3.0
         k_ref.append(k_value)
         d_ref.append(d_value)
-    j_ref = [3 * k - 2 * d for k, d in zip(k_ref, d_ref)]
+    j_ref = [3 * k - 2 * d for k, d in zip(k_ref, d_ref, strict=False)]
 
     for col, ref in (('k', k_ref), ('d', d_ref), ('j', j_ref)):
         _assert_close(

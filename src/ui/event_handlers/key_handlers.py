@@ -2,20 +2,20 @@ class KeyHandler:
     """
     键盘事件处理器，负责处理键盘相关事件
     """
-    
+
     def __init__(self, main_window):
         """
         初始化键盘事件处理器
-        
+
         Args:
             main_window: 主窗口实例
         """
         self.main_window = main_window
-    
+
     def handle_key_pressed(self, event):
         """
         处理键盘按键事件
-        
+
         Args:
             event: 键盘事件
         """

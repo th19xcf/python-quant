@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 趋势跟踪策略：基于向量化预计算的均线交叉信号
@@ -10,7 +9,8 @@ generate_signal 只读当前行的预计算列，不再自己循环求和，
 避免在每根 K 线上做 O(n²) 的历史重建。
 """
 
-from typing import Dict, Any
+from typing import Any, Dict
+
 from src.backtest.strategies.base_strategy import BaseStrategy
 
 
@@ -18,14 +18,14 @@ class TrendFollowingStrategy(BaseStrategy):
     """
     趋势跟踪策略，基于移动平均线交叉信号
     """
-    
+
     def __init__(self):
         super().__init__("TrendFollowing")
         self.params = {
             'short_window': 10,
             'long_window': 20,
         }
-    
+
     def generate_signal(self, data: Dict[str, Any], index: int) -> str:
         short_window = self.params.get('short_window', 10)
         long_window = self.params.get('long_window', 20)

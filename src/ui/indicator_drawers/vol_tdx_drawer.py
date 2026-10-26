@@ -8,9 +8,9 @@ class VOLTDXDrawer(BaseIndicatorDrawer):
     VOL-TDX指标绘制器，仅负责绘制，不计算指标
     指标计算应在数据准备阶段完成
     """
-    
+
     required_columns = ['vol_tdx', 'close']
-    
+
     def draw_indicator(self, plot_widget, x, df_pl):
         """
         绘制VOL-TDX指标

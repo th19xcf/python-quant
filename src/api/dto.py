@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 数据传输对象(DTO)定义，用于各层之间的数据传输
@@ -7,7 +6,8 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
+
 import polars as pl
 
 
@@ -18,11 +18,11 @@ class StockDataDTO:
     frequency: str
     data: pl.DataFrame
     metadata: Dict[str, Any] = field(default_factory=dict)
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-    source: Optional[str] = None
-    update_time: Optional[str] = None
-    
+    start_date: str | None = None
+    end_date: str | None = None
+    source: str | None = None
+    update_time: str | None = None
+
     def __post_init__(self):
         """初始化后处理"""
         if self.start_date is None and len(self.data) > 0:
@@ -38,11 +38,11 @@ class IndexDataDTO:
     frequency: str
     data: pl.DataFrame
     metadata: Dict[str, Any] = field(default_factory=dict)
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-    source: Optional[str] = None
-    update_time: Optional[str] = None
-    
+    start_date: str | None = None
+    end_date: str | None = None
+    source: str | None = None
+    update_time: str | None = None
+
     def __post_init__(self):
         """初始化后处理"""
         if self.start_date is None and len(self.data) > 0:
@@ -56,11 +56,11 @@ class IndicatorResultDTO:
     """指标结果传输对象"""
     indicator_type: str
     params: Dict[str, Any] = field(default_factory=dict)
-    data: Optional[pl.DataFrame] = None
-    values: Optional[Dict[str, Any]] = None
-    signal: Optional[Dict[str, Any]] = None
-    calculate_time: Optional[float] = None
-    
+    data: pl.DataFrame | None = None
+    values: Dict[str, Any] | None = None
+    signal: Dict[str, Any] | None = None
+    calculate_time: float | None = None
+
     def __post_init__(self):
         """初始化后处理"""
         if self.data is None and self.values is None:
@@ -76,9 +76,9 @@ class SignalDTO:
     price: float
     indicators: Dict[str, Any] = field(default_factory=dict)
     confidence: float = 0.5  # 信号置信度（0-1）
-    strategy_name: Optional[str] = None
+    strategy_name: str | None = None
     params: Dict[str, Any] = field(default_factory=dict)
-    
+
     def __post_init__(self):
         """初始化后处理"""
         if self.confidence < 0 or self.confidence > 1:
@@ -95,12 +95,12 @@ class BacktestResultDTO:
     sharpe_ratio: float
     win_rate: float
     trade_count: int
-    backtest_data: Optional[pl.DataFrame] = None
-    equity_curve: Optional[pl.DataFrame] = None
+    backtest_data: pl.DataFrame | None = None
+    equity_curve: pl.DataFrame | None = None
     params: Dict[str, Any] = field(default_factory=dict)
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-    
+    start_date: str | None = None
+    end_date: str | None = None
+
     def __post_init__(self):
         """初始化后处理"""
         # 确保数值类型正确
@@ -118,9 +118,9 @@ class FactorResultDTO:
     factor_name: str
     factor_data: pl.DataFrame
     params: Dict[str, Any] = field(default_factory=dict)
-    calculate_time: Optional[float] = None
-    source: Optional[str] = None
-    
+    calculate_time: float | None = None
+    source: str | None = None
+
     def __post_init__(self):
         """初始化后处理"""
         if 'date' not in self.factor_data.columns:
@@ -134,9 +134,9 @@ class ProgressDTO:
     """进度传输对象"""
     progress: int  # 进度值（0-100）
     message: str = ""
-    task_name: Optional[str] = None
-    task_id: Optional[str] = None
-    
+    task_name: str | None = None
+    task_id: str | None = None
+
     def __post_init__(self):
         """初始化后处理"""
         if self.progress < 0:
@@ -150,9 +150,9 @@ class MessageDTO:
     """消息传输对象"""
     message: str
     message_type: str = 'info'  # 'info'、'warning'、'error'、'success'
-    title: Optional[str] = None
-    timeout: Optional[int] = None  # 自动关闭时间（秒）
-    
+    title: str | None = None
+    timeout: int | None = None  # 自动关闭时间（秒）
+
     def __post_init__(self):
         """初始化后处理"""
         if self.message_type not in ['info', 'warning', 'error', 'success']:

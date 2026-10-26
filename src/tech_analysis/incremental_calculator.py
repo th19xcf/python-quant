@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 增量计算模块，提供技术指标的增量计算功能。
@@ -14,9 +13,11 @@
 （如 WR 正负号、OBV cumsum 方法名、to_float32 精度丢失等）。
 """
 
+from typing import Any, Dict, List
+
 import polars as pl
-from typing import List, Dict, Any, Optional
 from loguru import logger
+
 from src.tech_analysis.indicator_calculator import calculate_multiple_indicators_polars
 
 # 基础 OHLCV 列集合（所有指标计算都能访问）

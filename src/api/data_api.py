@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 数据访问层接口定义
 统一使用Polars DataFrame作为数据格式
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, List, Union
+
 import polars as pl
 
 
@@ -76,7 +76,7 @@ class IDataProvider:
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def get_stock_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
+    def get_stock_basic(self, exchange: str | None = None) -> pl.DataFrame:
         """获取股票基本信息
 
         Args:
@@ -87,7 +87,7 @@ class IDataProvider:
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def get_index_basic(self, exchange: Optional[str] = None) -> pl.DataFrame:
+    def get_index_basic(self, exchange: str | None = None) -> pl.DataFrame:
         """获取指数基本信息
 
         Args:
@@ -98,7 +98,7 @@ class IDataProvider:
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def get_fund_basic(self, fund_type: Optional[str] = None) -> pl.DataFrame:
+    def get_fund_basic(self, fund_type: str | None = None) -> pl.DataFrame:
         """获取基金基本信息
 
         Args:
@@ -112,8 +112,8 @@ class IDataProvider:
     def get_stock_dividend(
         self,
         stock_code: str,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
     ) -> pl.DataFrame:
         """获取股票分红配股数据
 
@@ -153,9 +153,9 @@ class IDataProvider:
 
     def update_stock_daily(
         self,
-        ts_codes: Optional[List[str]] = None,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        ts_codes: List[str] | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
     ) -> bool:
         """更新日线数据
 
@@ -221,7 +221,7 @@ class IDataStorage:
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def delete_stock_data(self, stock_code: str, start_date: Optional[str] = None, end_date: Optional[str] = None, frequency: str = '1d') -> bool:
+    def delete_stock_data(self, stock_code: str, start_date: str | None = None, end_date: str | None = None, frequency: str = '1d') -> bool:
         """删除股票数据
 
         Args:
@@ -235,7 +235,7 @@ class IDataStorage:
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def delete_index_data(self, index_code: str, start_date: Optional[str] = None, end_date: Optional[str] = None, frequency: str = '1d') -> bool:
+    def delete_index_data(self, index_code: str, start_date: str | None = None, end_date: str | None = None, frequency: str = '1d') -> bool:
         """删除指数数据
 
         Args:
@@ -307,7 +307,7 @@ class IDataProcessor:
 class IDataCache:
     """数据缓存接口，定义数据缓存方法"""
 
-    def get_cache(self, key: str) -> Optional[Any]:
+    def get_cache(self, key: str) -> Any | None:
         """获取缓存数据
 
         Args:
@@ -318,7 +318,7 @@ class IDataCache:
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def set_cache(self, key: str, value: Any, expire_time: Optional[int] = None) -> bool:
+    def set_cache(self, key: str, value: Any, expire_time: int | None = None) -> bool:
         """设置缓存数据
 
         Args:

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 报告生成器
@@ -16,7 +15,7 @@ class ReportGenerator:
     """
     报告生成器
     """
-    
+
     def __init__(self):
         """
         初始化报告生成器
@@ -24,14 +23,14 @@ class ReportGenerator:
         self.reports_dir = os.path.join(os.getcwd(), "reports")
         if not os.path.exists(self.reports_dir):
             os.makedirs(self.reports_dir)
-    
+
     def generate_backtest_report(self, backtest_result):
         """
         生成策略回测报告
-        
+
         Args:
             backtest_result: 回测结果
-            
+
         Returns:
             str: 报告文件路径
         """
@@ -40,31 +39,31 @@ class ReportGenerator:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             report_filename = f"backtest_report_{timestamp}.html"
             report_path = os.path.join(self.reports_dir, report_filename)
-            
+
             # 生成HTML报告
             html_content = self._generate_backtest_html(backtest_result)
-            
+
             # 写入文件
             with open(report_path, 'w', encoding='utf-8') as f:
                 f.write(html_content)
-            
+
             # 打开浏览器预览
             webbrowser.open(f"file://{report_path}")
-            
+
             logger.info(f"回测报告生成成功: {report_path}")
             return report_path
-            
+
         except Exception as e:
             logger.error(f"生成回测报告失败: {e}")
             raise
-    
+
     def generate_recommendation_report(self, recommendation_result):
         """
         生成股票推荐报告
-        
+
         Args:
             recommendation_result: 推荐结果
-            
+
         Returns:
             str: 报告文件路径
         """
@@ -73,31 +72,31 @@ class ReportGenerator:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             report_filename = f"recommendation_report_{timestamp}.html"
             report_path = os.path.join(self.reports_dir, report_filename)
-            
+
             # 生成HTML报告
             html_content = self._generate_recommendation_html(recommendation_result)
-            
+
             # 写入文件
             with open(report_path, 'w', encoding='utf-8') as f:
                 f.write(html_content)
-            
+
             # 打开浏览器预览
             webbrowser.open(f"file://{report_path}")
-            
+
             logger.info(f"推荐报告生成成功: {report_path}")
             return report_path
-            
+
         except Exception as e:
             logger.error(f"生成推荐报告失败: {e}")
             raise
-    
+
     def generate_factor_analysis_report(self, factor_analysis_result):
         """
         生成因子分析报告
-        
+
         Args:
             factor_analysis_result: 因子分析结果
-            
+
         Returns:
             str: 报告文件路径
         """
@@ -106,31 +105,31 @@ class ReportGenerator:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             report_filename = f"factor_analysis_report_{timestamp}.html"
             report_path = os.path.join(self.reports_dir, report_filename)
-            
+
             # 生成HTML报告
             html_content = self._generate_factor_analysis_html(factor_analysis_result)
-            
+
             # 写入文件
             with open(report_path, 'w', encoding='utf-8') as f:
                 f.write(html_content)
-            
+
             # 打开浏览器预览
             webbrowser.open(f"file://{report_path}")
-            
+
             logger.info(f"因子分析报告生成成功: {report_path}")
             return report_path
-            
+
         except Exception as e:
             logger.error(f"生成因子分析报告失败: {e}")
             raise
-    
+
     def _generate_backtest_html(self, result):
         """
         生成回测报告的HTML内容
-        
+
         Args:
             result: 回测结果
-            
+
         Returns:
             str: HTML内容
         """
@@ -215,7 +214,7 @@ class ReportGenerator:
         <body>
             <div class="container">
                 <h1>策略回测报告</h1>
-                
+
                 <h2>基本信息</h2>
                 <table class="info-table">
                     <tr>
@@ -235,7 +234,7 @@ class ReportGenerator:
                         <td>{result.get('initial_capital', 0):,.2f} 元</td>
                     </tr>
                 </table>
-                
+
                 <h2>绩效指标</h2>
                 <div class="metrics">
                     <div class="metric-card">
@@ -267,10 +266,10 @@ class ReportGenerator:
                         <div class="metric-value">{result.get('win_rate', 0):.2f}%</div>
                     </div>
                 </div>
-                
+
                 <h2>结论与建议</h2>
                 <p>根据回测结果，该策略在测试期间表现{"良好" if result.get('total_return', 0) > 0 else "不佳"}。建议{"继续优化参数以提高收益" if result.get('total_return', 0) > 0 else "重新评估策略逻辑"}。</p>
-                
+
                 <div class="footer">
                     <p>报告生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 </div>
@@ -279,14 +278,14 @@ class ReportGenerator:
         </html>
         """
         return html
-    
+
     def _generate_recommendation_html(self, result):
         """
         生成推荐报告的HTML内容
-        
+
         Args:
             result: 推荐结果
-            
+
         Returns:
             str: HTML内容
         """
@@ -305,7 +304,7 @@ class ReportGenerator:
                     <td>{stock.get('risk', '中')}</td>
                 </tr>
                 """
-        
+
         html = f"""
         <!DOCTYPE html>
         <html lang="zh-CN">
@@ -369,7 +368,7 @@ class ReportGenerator:
         <body>
             <div class="container">
                 <h1>股票推荐报告</h1>
-                
+
                 <h2>推荐股票列表</h2>
                 <table class="stock-table">
                     <tr>
@@ -383,10 +382,10 @@ class ReportGenerator:
                     </tr>
                     {stocks_html}
                 </table>
-                
+
                 <h2>投资建议</h2>
                 <p>根据推荐结果，建议投资者关注上述股票，并结合自身风险承受能力进行投资决策。建议分散投资，控制仓位，定期回顾和调整投资组合。</p>
-                
+
                 <div class="footer">
                     <p>报告生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 </div>
@@ -395,14 +394,14 @@ class ReportGenerator:
         </html>
         """
         return html
-    
+
     def _generate_factor_analysis_html(self, result):
         """
         生成因子分析报告的HTML内容
-        
+
         Args:
             result: 因子分析结果
-            
+
         Returns:
             str: HTML内容
         """
@@ -419,7 +418,7 @@ class ReportGenerator:
                     <td>{factor_result.get('long_short_return', 0):.4f}</td>
                 </tr>
                 """
-        
+
         html = f"""
         <!DOCTYPE html>
         <html lang="zh-CN">
@@ -494,7 +493,7 @@ class ReportGenerator:
         <body>
             <div class="container">
                 <h1>因子分析报告</h1>
-                
+
                 <h2>基本信息</h2>
                 <table class="info-table">
                     <tr>
@@ -514,7 +513,7 @@ class ReportGenerator:
                         <td>{', '.join(result.get('factors', []))}</td>
                     </tr>
                 </table>
-                
+
                 <h2>因子分析结果</h2>
                 <table class="factor-table">
                     <tr>
@@ -526,10 +525,10 @@ class ReportGenerator:
                     </tr>
                     {factors_html}
                 </table>
-                
+
                 <h2>结论与建议</h2>
                 <p>根据因子分析结果，建议投资者关注IC值较高的因子，并结合市场环境进行因子组合配置。</p>
-                
+
                 <div class="footer">
                     <p>报告生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 </div>

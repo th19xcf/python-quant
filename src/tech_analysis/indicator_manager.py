@@ -1,55 +1,58 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 指标管理器模块，集成指标注册中心和缓存机制
 提供统一的指标计算和管理接口
 """
 
-from typing import List, Dict, Any, Optional, Union
-import polars as pl
+from typing import Any, Dict, List, Union
+
 import pandas as pd
+import polars as pl
 from loguru import logger
 
-from src.tech_analysis.indicator_registry import global_indicator_registry, register_indicator
-from src.tech_analysis.indicator_cache import global_indicator_cache, cached_calculation
+from src.tech_analysis.indicator_cache import global_indicator_cache
 from src.tech_analysis.indicator_calculator import (
-    calculate_ma_polars,
-    calculate_vol_ma_polars,
-    calculate_macd_polars,
-    calculate_rsi_polars,
-    calculate_kdj_polars,
-    calculate_wr_polars,
-    calculate_boll_polars,
-    calculate_dmi_polars,
-    calculate_cci_polars,
-    calculate_roc_polars,
-    calculate_mtm_polars,
-    calculate_obv_polars,
-    calculate_vr_polars,
-    calculate_psy_polars,
-    calculate_trix_polars,
-    calculate_brar_polars,
     calculate_asi_polars,
-    calculate_emv_polars,
-    calculate_mcst_polars,
-    calculate_dma_polars,
-    calculate_fsl_polars,
-    calculate_sar_polars,
-    calculate_vol_tdx_polars,
+    calculate_boll_polars,
+    calculate_brar_polars,
+    calculate_cci_polars,
     calculate_cr_polars,
+    calculate_dma_polars,
+    calculate_dmi_polars,
+    calculate_emv_polars,
+    calculate_fsl_polars,
+    calculate_kdj_polars,
+    calculate_ma_polars,
+    calculate_macd_polars,
+    calculate_mcst_polars,
+    calculate_mtm_polars,
     calculate_multiple_indicators_polars,
-    preprocess_data_polars
+    calculate_obv_polars,
+    calculate_psy_polars,
+    calculate_roc_polars,
+    calculate_rsi_polars,
+    calculate_sar_polars,
+    calculate_trix_polars,
+    calculate_vol_ma_polars,
+    calculate_vol_tdx_polars,
+    calculate_vr_polars,
+    calculate_wr_polars,
+    preprocess_data_polars,
 )
-from src.tech_analysis.indicators.trend import calculate_expma, calculate_bbi
-from src.tech_analysis.indicators.volume import calculate_hsl, calculate_lb
+from src.tech_analysis.indicator_registry import (
+    global_indicator_registry,
+    register_indicator,
+)
 from src.tech_analysis.indicators.cost import calculate_cyc, calculate_cys
 from src.tech_analysis.indicators.market_breadth import (
     calculate_abi,
     calculate_adl,
     calculate_adr,
-    calculate_obos
+    calculate_obos,
 )
+from src.tech_analysis.indicators.trend import calculate_bbi, calculate_expma
+from src.tech_analysis.indicators.volume import calculate_hsl, calculate_lb
 
 
 class IndicatorManager:
@@ -57,11 +60,11 @@ class IndicatorManager:
     指标管理器，集成指标注册中心和缓存机制
     提供统一的指标计算和管理接口
     """
-    
+
     def __init__(self, cache_enabled: bool = True, cache_max_size: int = 1000, cache_default_ttl: int = 3600):
         """
         初始化指标管理器
-        
+
         Args:
             cache_enabled: 是否启用缓存
             cache_max_size: 缓存最大条目数
@@ -69,7 +72,7 @@ class IndicatorManager:
         """
         # 注册所有内置指标
         self._register_builtin_indicators()
-        
+
         # 缓存配置
         self._cache_enabled = cache_enabled
         if self._cache_enabled:
@@ -77,7 +80,7 @@ class IndicatorManager:
             logger.info(f"指标缓存已启用，最大大小: {cache_max_size}, 默认TTL: {cache_default_ttl}秒")
         else:
             logger.info("指标缓存已禁用")
-    
+
     def _register_builtin_indicators(self):
         """
         注册所有内置指标
@@ -91,7 +94,7 @@ class IndicatorManager:
             description='移动平均线',
             category='趋势指标'
         )
-        
+
         # 2. VOL_MA指标
         register_indicator(
             name='vol_ma',
@@ -101,7 +104,7 @@ class IndicatorManager:
             description='成交量移动平均线',
             category='成交量指标'
         )
-        
+
         # 3. MACD指标
         register_indicator(
             name='macd',
@@ -111,7 +114,7 @@ class IndicatorManager:
             description='平滑异同移动平均线',
             category='趋势指标'
         )
-        
+
         # 4. RSI指标
         register_indicator(
             name='rsi',
@@ -121,7 +124,7 @@ class IndicatorManager:
             description='相对强弱指标',
             category='震荡指标'
         )
-        
+
         # 5. KDJ指标
         register_indicator(
             name='kdj',
@@ -131,7 +134,7 @@ class IndicatorManager:
             description='随机指标',
             category='震荡指标'
         )
-        
+
         # 6. WR指标
         register_indicator(
             name='wr',
@@ -141,7 +144,7 @@ class IndicatorManager:
             description='威廉指标',
             category='震荡指标'
         )
-        
+
         # 7. BOLL指标
         register_indicator(
             name='boll',
@@ -151,7 +154,7 @@ class IndicatorManager:
             description='布林带',
             category='趋势指标'
         )
-        
+
         # 8. DMI指标
         register_indicator(
             name='dmi',
@@ -161,7 +164,7 @@ class IndicatorManager:
             description='趋向指标',
             category='趋势指标'
         )
-        
+
         # 9. CCI指标
         register_indicator(
             name='cci',
@@ -171,7 +174,7 @@ class IndicatorManager:
             description='商品通道指标',
             category='震荡指标'
         )
-        
+
         # 10. ROC指标
         register_indicator(
             name='roc',
@@ -181,7 +184,7 @@ class IndicatorManager:
             description='变化率指标',
             category='震荡指标'
         )
-        
+
         # 11. MTM指标
         register_indicator(
             name='mtm',
@@ -191,7 +194,7 @@ class IndicatorManager:
             description='动量指标',
             category='震荡指标'
         )
-        
+
         # 12. OBV指标
         register_indicator(
             name='obv',
@@ -201,7 +204,7 @@ class IndicatorManager:
             description='能量潮',
             category='成交量指标'
         )
-        
+
         # 13. VR指标
         register_indicator(
             name='vr',
@@ -211,7 +214,7 @@ class IndicatorManager:
             description='成交量比率',
             category='成交量指标'
         )
-        
+
         # 14. PSY指标
         register_indicator(
             name='psy',
@@ -221,7 +224,7 @@ class IndicatorManager:
             description='心理线',
             category='情绪指标'
         )
-        
+
         # 15. TRIX指标
         register_indicator(
             name='trix',
@@ -231,7 +234,7 @@ class IndicatorManager:
             description='三重指数平滑',
             category='趋势指标'
         )
-        
+
         # 16. BRAR指标
         register_indicator(
             name='brar',
@@ -241,7 +244,7 @@ class IndicatorManager:
             description='情绪指标',
             category='情绪指标'
         )
-        
+
         # 17. ASI指标
         register_indicator(
             name='asi',
@@ -251,7 +254,7 @@ class IndicatorManager:
             description='振动升降指标',
             category='趋势指标'
         )
-        
+
         # 18. EMV指标
         register_indicator(
             name='emv',
@@ -261,7 +264,7 @@ class IndicatorManager:
             description='简易波动指标',
             category='趋势指标'
         )
-        
+
         # 19. MCST指标
         register_indicator(
             name='mcst',
@@ -423,7 +426,7 @@ class IndicatorManager:
         )
 
         logger.info(f"已注册{len(global_indicator_registry.get_supported_indicators())}个内置指标")
-    
+
     def calculate_indicator(self, data: Union[pl.DataFrame, pd.DataFrame], indicator_type: str,
                           return_polars: bool = True, **params) -> Union[pl.DataFrame, pd.DataFrame]:
         """
@@ -434,20 +437,20 @@ class IndicatorManager:
             indicator_type: 指标类型
             return_polars: 是否返回Polars DataFrame（默认True，避免不必要的格式转换开销）
             **params: 指标计算参数
-        
+
         Returns:
             Union[pl.DataFrame, pd.DataFrame]: 包含计算结果的数据
         """
         # 转换输入数据为Polars DataFrame
         pl_data = self._to_polars(data)
-        
+
         # 预处理数据
         pl_data = preprocess_data_polars(pl_data)
-        
+
         # 检查指标是否支持
         if not global_indicator_registry.is_indicator_supported(indicator_type):
             raise ValueError(f"不支持的指标类型: {indicator_type}")
-        
+
         # 计算指标
         if self._cache_enabled:
             # 尝试从缓存获取结果
@@ -455,16 +458,16 @@ class IndicatorManager:
             if cached_result is not None:
                 logger.debug(f"从缓存获取指标{indicator_type}计算结果")
                 return self._to_result_format(cached_result, return_polars)
-        
+
         # 执行计算
         result_df = global_indicator_registry.calculate_indicators(pl_data, [indicator_type], **params)
-        
+
         # 保存到缓存
         if self._cache_enabled:
             global_indicator_cache.set(pl_data, result_df, indicator_type, **params)
-        
+
         return self._to_result_format(result_df, return_polars)
-    
+
     def calculate_indicators(self, data: Union[pl.DataFrame, pd.DataFrame], indicator_types: List[str],
                            return_polars: bool = True, parallel: bool = False, max_workers: int = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
         """
@@ -477,28 +480,28 @@ class IndicatorManager:
             parallel: 是否使用并行计算
             max_workers: 并行计算的最大工作线程数，None表示使用所有可用核心
             **params: 指标计算参数
-        
+
         Returns:
             Union[pl.DataFrame, pd.DataFrame]: 包含计算结果的数据
         """
         # 转换输入数据为Polars DataFrame
         pl_data = self._to_polars(data)
-        
+
         # 预处理数据
         pl_data = preprocess_data_polars(pl_data)
-        
+
         # 检查所有指标是否支持
-        unsupported_indicators = [ind for ind in indicator_types 
+        unsupported_indicators = [ind for ind in indicator_types
                                  if not global_indicator_registry.is_indicator_supported(ind)]
         if unsupported_indicators:
             raise ValueError(f"不支持的指标类型: {', '.join(unsupported_indicators)}")
-        
+
         # 检查是否启用缓存
         if self._cache_enabled:
             # 尝试从缓存获取每个指标的结果
             cached_results = []
             uncached_indicators = []
-            
+
             for indicator_type in indicator_types:
                 cached_result = global_indicator_cache.get(pl_data, indicator_type, **params)
                 if cached_result is not None:
@@ -506,7 +509,7 @@ class IndicatorManager:
                     logger.debug(f"从缓存获取指标{indicator_type}计算结果")
                 else:
                     uncached_indicators.append(indicator_type)
-            
+
             # 如果所有指标都在缓存中，直接合并结果
             if not uncached_indicators:
                 # 合并缓存结果
@@ -521,17 +524,19 @@ class IndicatorManager:
                             how='left'
                         )
                 return self._to_result_format(result_df, return_polars)
-            
+
             # 对未缓存的指标进行计算
             if uncached_indicators:
                 if parallel and len(uncached_indicators) > 1:
                     # 使用并行计算
-                    from src.tech_analysis.indicator_calculator import calculate_indicators_parallel
+                    from src.tech_analysis.indicator_calculator import (
+                        calculate_indicators_parallel,
+                    )
                     result_df = calculate_indicators_parallel(pl_data, uncached_indicators, max_workers, **params)
                 else:
                     # 使用串行计算
                     result_df = calculate_multiple_indicators_polars(pl_data, uncached_indicators, **params)
-                
+
                 # 保存到缓存
                 for indicator_type in uncached_indicators:
                     # 提取该指标的结果
@@ -539,7 +544,7 @@ class IndicatorManager:
                     if indicator_cols:
                         indicator_result = result_df.select([result_df.columns[0]] + indicator_cols)
                         global_indicator_cache.set(pl_data, indicator_result, indicator_type, **params)
-                
+
                 # 合并缓存结果和新计算结果
                 for indicator_type, cached_df in cached_results:
                     # 只合并新的列（排除时间列和已存在的列）
@@ -555,14 +560,16 @@ class IndicatorManager:
             # 缓存禁用，直接计算所有指标
             if parallel and len(indicator_types) > 1:
                 # 使用并行计算
-                from src.tech_analysis.indicator_calculator import calculate_indicators_parallel
+                from src.tech_analysis.indicator_calculator import (
+                    calculate_indicators_parallel,
+                )
                 result_df = calculate_indicators_parallel(pl_data, indicator_types, max_workers, **params)
             else:
                 # 使用串行计算
                 result_df = calculate_multiple_indicators_polars(pl_data, indicator_types, **params)
-        
+
         return self._to_result_format(result_df, return_polars)
-    
+
     def calculate_all_indicators(self, data: Union[pl.DataFrame, pd.DataFrame],
                                return_polars: bool = True, parallel: bool = False, max_workers: int = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
         """
@@ -574,25 +581,25 @@ class IndicatorManager:
             parallel: 是否使用并行计算
             max_workers: 并行计算的最大工作线程数，None表示使用所有可用核心
             **params: 指标计算参数
-        
+
         Returns:
             Union[pl.DataFrame, pd.DataFrame]: 包含所有指标计算结果的数据
         """
         # 获取所有支持的指标
         all_indicators = global_indicator_registry.get_supported_indicators()
-        
+
         # 使用批量计算
         return self.calculate_indicators(data, all_indicators, return_polars, parallel, max_workers, **params)
-    
+
     def get_supported_indicators(self) -> Dict[str, Any]:
         """
         获取支持的指标列表
-        
+
         Returns:
             Dict[str, Any]: 支持的指标信息字典
         """
         indicators = global_indicator_registry.get_all_indicators()
-        
+
         result = {}
         for name, config in indicators.items():
             result[name] = {
@@ -600,21 +607,21 @@ class IndicatorManager:
                 'category': config.category,
                 'params': config.params
             }
-        
+
         return result
-    
+
     def get_indicators_by_category(self, category: str) -> Dict[str, Any]:
         """
         根据分类获取指标列表
-        
+
         Args:
             category: 指标分类
-        
+
         Returns:
             Dict[str, Any]: 指定分类的指标信息字典
         """
         indicators = global_indicator_registry.get_indicators_by_category(category)
-        
+
         result = {}
         for name, config in indicators.items():
             result[name] = {
@@ -622,25 +629,25 @@ class IndicatorManager:
                 'category': config.category,
                 'params': config.params
             }
-        
+
         return result
-    
+
     def is_indicator_supported(self, indicator_type: str) -> bool:
         """
         检查指标是否支持
-        
+
         Args:
             indicator_type: 指标类型
-        
+
         Returns:
             bool: 是否支持该指标
         """
         return global_indicator_registry.is_indicator_supported(indicator_type)
-    
-    def clear_cache(self, indicator_type: Optional[str] = None):
+
+    def clear_cache(self, indicator_type: str | None = None):
         """
         清除缓存
-        
+
         Args:
             indicator_type: 可选，指定要清除的指标类型，None表示清除所有
         """
@@ -648,11 +655,11 @@ class IndicatorManager:
             global_indicator_cache.clear(indicator_type)
         else:
             logger.warning("缓存已禁用，无法清除")
-    
+
     def get_cache_stats(self) -> Dict[str, Any]:
         """
         获取缓存统计信息
-        
+
         Returns:
             Dict[str, Any]: 缓存统计信息
         """
@@ -669,14 +676,14 @@ class IndicatorManager:
                 'evictions': 0,
                 'total_requests': 0
             }
-    
+
     def _to_polars(self, data: Union[pl.DataFrame, pd.DataFrame]) -> pl.DataFrame:
         """
         将输入数据转换为Polars DataFrame
-        
+
         Args:
             data: 输入数据
-        
+
         Returns:
             pl.DataFrame: 转换后的Polars DataFrame
         """
@@ -686,15 +693,15 @@ class IndicatorManager:
             return pl.from_pandas(data)
         else:
             return pl.DataFrame(data)
-    
+
     def _to_result_format(self, data: pl.DataFrame, return_polars: bool) -> Union[pl.DataFrame, pd.DataFrame]:
         """
         将结果转换为指定格式
-        
+
         Args:
             data: Polars DataFrame
             return_polars: 是否返回Polars DataFrame
-        
+
         Returns:
             Union[pl.DataFrame, pd.DataFrame]: 转换后的结果
         """
@@ -702,13 +709,13 @@ class IndicatorManager:
             return data
         else:
             return data.to_pandas()
-    
-    def register_custom_indicator(self, name: str, calculate_func: callable, dependencies: List[str] = None, 
-                               params: Dict[str, Any] = None, description: str = "", 
+
+    def register_custom_indicator(self, name: str, calculate_func: callable, dependencies: List[str] = None,
+                               params: Dict[str, Any] = None, description: str = "",
                                category: str = "自定义指标"):
         """
         注册自定义指标
-        
+
         Args:
             name: 指标名称
             calculate_func: 指标计算函数
@@ -718,7 +725,7 @@ class IndicatorManager:
             category: 指标分类
         """
         from src.tech_analysis.indicator_registry import IndicatorConfig
-        
+
         config = IndicatorConfig(
             name=name,
             calculate_func=calculate_func,
@@ -727,7 +734,7 @@ class IndicatorManager:
             description=description,
             category=category
         )
-        
+
         global_indicator_registry.register_indicator(config)
         logger.info(f"自定义指标{name}注册成功")
 

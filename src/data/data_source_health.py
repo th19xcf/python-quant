@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 数据源健康检查模块
@@ -7,12 +6,13 @@
 提供数据源的可用性检查、健康状态监控和故障自动切换支持
 """
 
-import time
 import threading
-from enum import Enum
-from typing import Dict, List, Optional, Callable
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from collections import defaultdict
+from enum import Enum
+from typing import Dict, List
+
 from loguru import logger
 
 
@@ -64,7 +64,7 @@ class DataSourceHealthChecker:
         self._monitor_thread = None
         self._check_interval = 60
 
-    def register_source(self, source_name: str, check_callback: Optional[Callable] = None):
+    def register_source(self, source_name: str, check_callback: Callable | None = None):
         """
         注册数据源
 
@@ -161,7 +161,7 @@ class DataSourceHealthChecker:
                 return HealthStatus.UNKNOWN
             return self._health_info[source_name].status
 
-    def get_health_info(self, source_name: str) -> Optional[SourceHealthInfo]:
+    def get_health_info(self, source_name: str) -> SourceHealthInfo | None:
         """
         获取数据源健康信息
 
@@ -197,7 +197,7 @@ class DataSourceHealthChecker:
                 if info.status in (HealthStatus.HEALTHY, HealthStatus.DEGRADED) and info.is_enabled
             ]
 
-    def get_best_source(self, sources: List[str]) -> Optional[str]:
+    def get_best_source(self, sources: List[str]) -> str | None:
         """
         获取最佳数据源
 
@@ -320,7 +320,7 @@ class DataSourceHealthChecker:
             except Exception as e:
                 logger.warning(f"执行数据源{source_name}健康检查时出错: {e}")
 
-    def reset_health_info(self, source_name: Optional[str] = None):
+    def reset_health_info(self, source_name: str | None = None):
         """
         重置健康信息
 

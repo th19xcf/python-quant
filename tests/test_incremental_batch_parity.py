@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 增量计算 vs 批量计算 逐位相等 parity 测试
@@ -15,17 +14,19 @@
 不同的种子值/warmup/公式，回测和实盘就是两个策略。
 """
 
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from datetime import date, timedelta
 
 import numpy as np
 import polars as pl
 import pytest
-from datetime import date, timedelta
 
 from src.tech_analysis.incremental_calculator import IncrementalCalculator
 from src.tech_analysis.indicator_calculator import calculate_multiple_indicators_polars
-
 
 # ======================================================================
 # Fixtures
@@ -80,7 +81,7 @@ def _compare(a: pl.DataFrame, b: pl.DataFrame, rtol=1e-5, atol=1e-8) -> None:
         # NaN mask
         nan_a = np.isnan(sa.astype(float)) if sa.dtype.kind == 'f' else np.zeros_like(sa, dtype=bool)
         nan_b = np.isnan(sb.astype(float)) if sb.dtype.kind == 'f' else np.zeros_like(sb, dtype=bool)
-        both_nan = nan_a & nan_b
+        nan_a & nan_b
         one_nan = nan_a ^ nan_b
         assert not one_nan.any(), f"{col}: 单边 NaN 出现 {one_nan.sum()} 次"
 
@@ -114,13 +115,13 @@ class TestIncrementalBatchParity:
              new.select(['date','open','high','low','close','volume'])],
             how='vertical_relaxed',
         )
-        kwargs_key = {'ma': 'ma_windows', 'expma': 'expma_windows',
+        {'ma': 'ma_windows', 'expma': 'expma_windows',
                       'rsi': 'rsi_windows', 'kdj': 'kdj_windows',
                       'boll': 'boll_windows', 'wr': 'wr_windows',
                       'vol_ma': 'vol_ma_windows', 'dmi': 'dmi_windows',
                       'trix': 'trix_windows', 'sar': 'sar_af_step',
                       'dma': 'dma_short_period',
-                      }.get(indicator_type, None)
+                      }.get(indicator_type)
 
         batch = calculate_multiple_indicators_polars(combined, [indicator_type], **kwargs)
         tail_batch = batch.tail(len(new))

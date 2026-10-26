@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 主窗口事件处理管理器
 """
 
-from src.utils.logger import logger
 from src.utils.event_bus import subscribe
+from src.utils.logger import logger
 
 
 class WindowEventManager:

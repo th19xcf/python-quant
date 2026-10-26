@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 回测引擎基类，提供数据转换和通用组件初始化的统一逻辑
 """
 
-from typing import Any, Union, Dict, List, Optional
-import polars as pl
-import pandas as pd
 import itertools
+from typing import Any, Dict, List, Union
+
+import pandas as pd
+import polars as pl
 from loguru import logger
 
 from src.backtest.costs.cost_model import CostModel
 from src.backtest.engine.execution_core import ExecutionRules
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
-from src.backtest.visualization.backtest_visualizer import BacktestVisualizer
 from src.backtest.strategies.base_strategy import BaseStrategy
+from src.backtest.visualization.backtest_visualizer import BacktestVisualizer
 from src.risk import RiskEngine
 from src.tech_analysis.indicators.formulas import atr_expr, macd_exprs, rsi_expr
-
 
 DataFrameType = Union[pl.DataFrame, pl.LazyFrame, pd.DataFrame, Any]
 
@@ -41,7 +40,7 @@ class BaseBacktestEngine:
         self.ts_code = ''
 
         # 风控层：None 表示不启用（所有订单直接过）；设置后 gate() 拦截
-        self.risk_engine: Optional[RiskEngine] = None
+        self.risk_engine: RiskEngine | None = None
         self.rejected_orders: List[Dict[str, Any]] = []   # 风控拒单日志
 
     @staticmethod

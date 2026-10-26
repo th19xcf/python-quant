@@ -16,31 +16,34 @@
 import re
 
 from .base_drawer import BaseIndicatorDrawer
+from .bbi_drawer import BbiDrawer
+from .boll_drawer import BOLLDrawer
+from .brar_drawer import BRARDrawer
+from .cr_drawer import CRDrawer
+from .cyc_drawer import CycDrawer
+from .dma_drawer import DMADrawer
+from .dmi_drawer import DMIDrawer
+from .expma_drawer import ExpmaDrawer
+from .fsl_drawer import FSLDrawer
+from .hsl_drawer import HslDrawer
 
 # 所有 drawer 文件的类 import（触发扫描）。保持 alphabetical 方便维护。
 from .kdj_drawer import KDJDrawer
-from .macd_drawer import MACDDrawer
-from .rsi_drawer import RSIDrawer
-from .vr_drawer import VRDrawer
-from .dmi_drawer import DMIDrawer
-from .trix_drawer import TRIXDrawer
-from .brar_drawer import BRARDrawer
-from .vol_drawer import VOLDrawer
-from .boll_drawer import BOLLDrawer
-from .wr_drawer import WRDrawer
-from .dma_drawer import DMADrawer
-from .fsl_drawer import FSLDrawer
-from .sar_drawer import SARDrawer
-from .vol_tdx_drawer import VOLTDXDrawer
-from .cr_drawer import CRDrawer
-from .expma_drawer import ExpmaDrawer
-from .bbi_drawer import BbiDrawer
-from .hsl_drawer import HslDrawer
 from .lb_drawer import LbDrawer
-from .cyc_drawer import CycDrawer
+from .macd_drawer import MACDDrawer
 from .market_breadth_drawer import (
-    ABIDrawer, ADLDrawer, ADRDrawer, OBOSDrawer,
+    ABIDrawer,
+    ADLDrawer,
+    ADRDrawer,
+    OBOSDrawer,
 )
+from .rsi_drawer import RSIDrawer
+from .sar_drawer import SARDrawer
+from .trix_drawer import TRIXDrawer
+from .vol_drawer import VOLDrawer
+from .vol_tdx_drawer import VOLTDXDrawer
+from .vr_drawer import VRDrawer
+from .wr_drawer import WRDrawer
 
 # 异形指标名覆盖：类名（去 Drawer）→ 实际指标名（大小写/连字符不同）
 SPECIAL_NAMES = {
@@ -83,8 +86,8 @@ class IndicatorDrawerManager:
     @classmethod
     def _build_drawers(cls) -> dict[str, BaseIndicatorDrawer]:
         """反射扫描：找本模块内所有继承 BaseIndicatorDrawer 的类"""
-        import sys
         import inspect
+        import sys
         module = sys.modules[cls.__module__]
         result: dict[str, BaseIndicatorDrawer] = {}
         for attr_name in dir(module):

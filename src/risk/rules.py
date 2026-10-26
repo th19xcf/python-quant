@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 风控规则与引擎模块
@@ -19,8 +18,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Dict, List, Optional, Tuple
-
+from typing import Any, Dict, List, Tuple
 
 # ---------------------------------------------------------------------------
 # Order —— 待审查的候选下单请求
@@ -45,7 +43,7 @@ class Order:
     price: float
     sector: str = ''
     industry: str = ''
-    trade_date: Optional[date] = None
+    trade_date: date | None = None
 
     @property
     def notional(self) -> float:
@@ -72,7 +70,7 @@ class Portfolio:
     positions: Dict[str, int] = field(default_factory=dict)
     last_prices: Dict[str, float] = field(default_factory=dict)
     cash: float = 0.0
-    total_value: Optional[float] = None
+    total_value: float | None = None
     industry_map: Dict[str, str] = field(default_factory=dict)
     equity_curve: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -285,7 +283,7 @@ class RiskEngine:
                 self.rejected_orders.extend(gate_result.rejected)  # 记日志
     """
 
-    def __init__(self, rules: Optional[List[Rule]] = None):
+    def __init__(self, rules: List[Rule] | None = None):
         self.rules: List[Rule] = list(rules or [])
 
     # ------------------------------------------------------------------

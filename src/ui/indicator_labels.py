@@ -8,10 +8,12 @@ WINDOW3_TEXTS 渲染，保证「刚绘制时」与「鼠标悬停时」显示的
 模块本身不 import 任何 GUI 库（仅在需要创建标签时才延迟导入 Qt 相关工具）。
 """
 
-from typing import Any, Dict, Mapping
+from collections.abc import Mapping
+from typing import Any, Dict
 
 from src.ui.event_handlers.indicator_display import (
-    WINDOW3_TEXTS, render_indicator_text,
+    WINDOW3_TEXTS,
+    render_indicator_text,
 )
 
 

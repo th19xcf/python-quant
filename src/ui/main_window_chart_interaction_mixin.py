@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 主窗口图表交互 Mixin：K线鼠标交互、指标/周期切换、缩放与右键菜单。
@@ -8,8 +7,15 @@
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit, QMenu,
-                               QPushButton, QVBoxLayout)
+from PySide6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QPushButton,
+    QVBoxLayout,
+)
 
 from src.utils.logger import logger
 
@@ -26,7 +32,7 @@ class MainWindowChartInteractionMixin:
         Chart window count changed
         """
         return self.indicator_interaction_manager.on_window_count_changed(count)
-    
+
     def on_period_changed(self, period):
         """
         Chart period changed
@@ -34,7 +40,7 @@ class MainWindowChartInteractionMixin:
         # Save current period
         self.current_period = period
         logger.info(f"Period changed to: {period}")
-        
+
         if hasattr(self, 'current_stock_code') and self.current_stock_code:
             # If a stock is currently selected, refresh data
             if hasattr(self, 'process_stock_data'):
@@ -74,7 +80,7 @@ class MainWindowChartInteractionMixin:
         """
         if event.double():
             self.crosshair_enabled = not self.crosshair_enabled
-            
+
             if self.crosshair_enabled:
                 logger.info("Double click: Enable crosshair")
                 if self.current_kline_data:
@@ -84,24 +90,24 @@ class MainWindowChartInteractionMixin:
                     x_val = view_pos.x()
                     index = int(round(x_val))
                     index = max(0, min(len(dates) - 1, index))
-                    
+
                     self.current_kline_index = index
                     self.current_mouse_pos = pos
                     self.current_kline_data['index'] = index
-                    
+
                     # Update crosshairs
                     if hasattr(self, 'vline'): self.vline.setValue(index); self.vline.show()
                     if hasattr(self, 'hline'): self.hline.setValue(view_pos.y()); self.hline.show()
                     if hasattr(self, 'volume_vline'): self.volume_vline.setValue(index); self.volume_vline.show()
-                    
+
                     volume_view_box = self.volume_plot_widget.getViewBox()
                     volume_pos = volume_view_box.mapSceneToView(pos)
                     if hasattr(self, 'volume_hline'): self.volume_hline.setValue(volume_pos.y()); self.volume_hline.show()
 
-                    if hasattr(self, 'kdj_vline'): 
+                    if hasattr(self, 'kdj_vline'):
                         self.kdj_vline.setValue(index)
                         self.kdj_vline.show()
-                    
+
                     kdj_view_box = self.kdj_plot_widget.getViewBox()
                     kdj_pos = kdj_view_box.mapSceneToView(pos)
                     if hasattr(self, 'kdj_hline'):
@@ -138,34 +144,34 @@ class MainWindowChartInteractionMixin:
             view_pos = view_box.mapSceneToView(pos)
             x_val = view_pos.x()
             y_val = view_pos.y()
-            
+
             index = int(round(x_val))
             clicked_ma = None
             min_distance = float('inf')
             tolerance = 0.02
-            
+
             y_range = self.tech_plot_widget.viewRange()[1]
             y_min, y_max = y_range
             price_tolerance = (y_max - y_min) * tolerance
-            
+
             if hasattr(self, 'moving_averages'):
                 for ma_name, ma_info in self.moving_averages.items():
                     x_data, y_data = ma_info['data']
                     if 0 <= index < len(x_data):
                         ma_value = y_data[index]
-                        if ma_value is None: continue 
+                        if ma_value is None: continue
                         distance = abs(y_val - ma_value)
-                        
+
                         if distance < price_tolerance and distance < min_distance:
                             min_distance = distance
                             clicked_ma = ma_name
-            
+
             if clicked_ma:
                 logger.info(f"Clicked MA: {clicked_ma}")
                 if not hasattr(self, 'ma_points'): self.ma_points = []
                 for p in self.ma_points: self.tech_plot_widget.removeItem(p)
                 self.ma_points.clear()
-                
+
                 ma_info = self.moving_averages.get(clicked_ma)
                 if ma_info:
                     x_data, y_data = ma_info['data']
@@ -176,14 +182,14 @@ class MainWindowChartInteractionMixin:
                             point = pg.ScatterPlotItem([x_data[i]], [y_data[i]], size=6, pen=pg.mkPen('w', width=1), brush=pg.mkBrush('w'))
                             self.tech_plot_widget.addItem(point)
                             self.ma_points.append(point)
-                
+
                 self.selected_ma = clicked_ma
             else:
                 if hasattr(self, 'ma_points'):
                     for p in self.ma_points: self.tech_plot_widget.removeItem(p)
                     self.ma_points.clear()
                 self.selected_ma = None
-                
+
                 if event.button() == Qt.RightButton:
                     self._show_custom_context_menu(event)
 
@@ -200,7 +206,7 @@ class MainWindowChartInteractionMixin:
             no_select_action = QAction("未选中均线，请先点击选中均线", self) # type: ignore
             no_select_action.setEnabled(False)
             menu.addAction(no_select_action)
-        
+
         scene_pos = event.pos()
         screen_pos = self.tech_plot_widget.mapToGlobal(scene_pos)
         menu.exec(screen_pos.toPoint())
@@ -219,7 +225,7 @@ class MainWindowChartInteractionMixin:
             no_select_action = QAction("未选中均线，请先点击选中均线", self) # type: ignore
             no_select_action.setEnabled(False)
             menu.addAction(no_select_action)
-        
+
         global_pos = self.tech_plot_widget.mapToGlobal(pos)
         menu.exec(global_pos)
 
@@ -230,25 +236,25 @@ class MainWindowChartInteractionMixin:
         dialog = QDialog(self) # type: ignore
         dialog.setWindowTitle(f"修改{ma_name}指标参数")
         dialog.setGeometry(300, 300, 300, 200)
-        
+
         layout = QVBoxLayout(dialog)
-        
+
         current_window = int(ma_name.replace("MA", ""))
-        
+
         window_label = QLabel("周期:", dialog)
         layout.addWidget(window_label)
-        
+
         window_input = QLineEdit(dialog)
         window_input.setText(str(current_window))
         layout.addWidget(window_input)
-        
+
         button_layout = QHBoxLayout()
         ok_button = QPushButton("确定", dialog)
         cancel_button = QPushButton("取消", dialog)
         button_layout.addWidget(ok_button)
         button_layout.addWidget(cancel_button)
         layout.addLayout(button_layout)
-        
+
         def on_ok():
             try:
                 new_window = int(window_input.text())
@@ -258,7 +264,7 @@ class MainWindowChartInteractionMixin:
                 dialog.accept()
             except ValueError as e:
                 logger.error(f"Input error: {e}")
-        
+
         ok_button.clicked.connect(on_ok)
         cancel_button.clicked.connect(dialog.reject)
         dialog.exec()
@@ -269,7 +275,7 @@ class MainWindowChartInteractionMixin:
         """
         if not hasattr(self, 'ma_values_label'): return
         if index < 0 or index >= len(dates): return
-        
+
         # 将日期转换为字符串格式
         date_val = dates[index]
         if hasattr(date_val, 'strftime'):
@@ -277,7 +283,7 @@ class MainWindowChartInteractionMixin:
         else:
             current_date = str(date_val)[:10]
         ma_values = {}
-        
+
         if hasattr(self, 'ma_data'):
             for ma in ['MA5', 'MA10', 'MA20', 'MA60']:
                 if 0 <= index < len(self.ma_data.get(ma, [])):
@@ -286,18 +292,18 @@ class MainWindowChartInteractionMixin:
                 else:
                     ma_values[ma] = "--"
         else:
-            ma_values = {k: "--" for k in ['MA5', 'MA10', 'MA20', 'MA60']}
-            
+            ma_values = dict.fromkeys(['MA5', 'MA10', 'MA20', 'MA60'], "--")
+
         ma5_color = 'white'
         ma10_color = 'cyan'
         ma20_color = 'red'
         ma60_color = '#00FF00'
-        
+
         ma_text = f"<font color='#C0C0C0'>日期: {current_date}</font>  <font color='{ma5_color}'>MA5: {ma_values['MA5']}</font>  <font color='{ma10_color}'>MA10: {ma_values['MA10']}</font>  <font color='{ma20_color}'>MA20: {ma_values['MA20']}</font>  <font color='{ma60_color}'>MA60: {ma_values['MA60']}</font>"
-        
+
         # 添加主图叠加指标显示（SAR、BOLL等）
         overlay_text = ""
-        
+
         # SAR指标
         if hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('SAR', {}).isChecked():
             if hasattr(self, 'current_sar_data') and self.current_sar_data is not None and 'sar' in self.current_sar_data:
@@ -306,7 +312,7 @@ class MainWindowChartInteractionMixin:
                     sar_val = sar_list[index]
                     if sar_val is not None and str(sar_val) != 'nan':
                         overlay_text += f"  <font color='white'>SAR: {sar_val:.2f}</font>"
-        
+
         # BOLL指标
         if hasattr(self, 'indicator_buttons') and self.indicator_buttons.get('BOLL', {}).isChecked():
             if hasattr(self, 'current_boll_data') and self.current_boll_data is not None:
@@ -319,7 +325,7 @@ class MainWindowChartInteractionMixin:
                     dn_val = dn_list[index] if index < len(dn_list) else None
                     if mb_val is not None and str(mb_val) != 'nan':
                         overlay_text += f"  <font color='white'>BOLL: {mb_val:.2f}/{up_val:.2f}/{dn_val:.2f}</font>"
-        
+
         self.ma_values_label.setText(ma_text + overlay_text)
 
     def show_info_box(self):

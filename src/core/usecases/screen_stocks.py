@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 screen_stocks —— 选股用例（Headless API）。
@@ -14,12 +13,12 @@ screen_stocks —— 选股用例（Headless API）。
 
 from __future__ import annotations
 
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List
+
 import polars as pl
 from loguru import logger
 
 from src.recommendation.stock_recommender import StockRecommender
-
 
 # 周期 → 日期范围
 _PERIOD_MAP = {
@@ -30,14 +29,14 @@ _PERIOD_MAP = {
 }
 
 
-def _fetch_panel(top_n: int, period: str) -> Optional[pl.DataFrame]:
+def _fetch_panel(top_n: int, period: str) -> pl.DataFrame | None:
     """
     从 DB 取选股面板数据（取 top_n*3 只股票的后复权日线）。
     放在 usecases 层，UI 层不会碰到 DatabaseManager。
     """
-    from src.utils.config import Config
-    from src.database.db_manager import DatabaseManager
     from src.data.data_manager import DataManager
+    from src.database.db_manager import DatabaseManager
+    from src.utils.config import Config
 
     config = Config()
     db = DatabaseManager(config)
@@ -78,11 +77,11 @@ def _fetch_panel(top_n: int, period: str) -> Optional[pl.DataFrame]:
 
 
 def screen_stocks(
-    stocks_data: Optional[pl.DataFrame] = None,
+    stocks_data: pl.DataFrame | None = None,
     top_n: int = 10,
     algorithm: str = "多因子选股",
     industry: str = "全部行业",
-    weights: Optional[Dict[str, float]] = None,
+    weights: Dict[str, float] | None = None,
     period: str = "12个月",
     **params,
 ) -> List[Dict[str, Any]]:

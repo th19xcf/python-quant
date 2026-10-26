@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 数据获取模块
@@ -7,24 +6,25 @@
 负责从多个数据源获取数据，处理数据源优先级和故障转移
 """
 
-from typing import List, Dict, Any, Optional, Union
-import polars as pl
-import time
-from datetime import date, datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import concurrent.futures
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime
+from typing import List, Union
+
+import polars as pl
 from loguru import logger
 
+from src.data.data_cache import global_data_cache
 from src.utils.memory_optimizer import MemoryOptimizer
 from src.utils.monitoring import global_monitoring_system
-from src.data.data_cache import global_data_cache
 
 
 class DataFetcher:
     """
     数据获取模块，负责从多个数据源获取数据
     """
-    
+
     def __init__(self, config, db_manager=None):
         """
         初始化数据获取器
@@ -43,7 +43,7 @@ class DataFetcher:
         self._source_capabilities = {}
         # 方法签名缓存：避免每次都做 inspect 反射
         self._method_sig_cache = {}
-    
+
     def register_source(self, source):
         """
         注册数据源
@@ -71,20 +71,20 @@ class DataFetcher:
             f"注册数据源: {source_name} "
             f"(stock={supports_stock}, index={supports_index}, local={is_local})"
         )
-    
+
     def get_sources(self) -> List:
         """
         获取所有注册的数据源
-        
+
         Returns:
             List: 数据源列表
         """
         return self.sources
-    
+
     def get_available_sources(self) -> List:
         """
         获取所有可用的数据源
-        
+
         Returns:
             List: 可用数据源列表
         """
@@ -103,10 +103,10 @@ class DataFetcher:
                 # 传统处理器没有is_available方法，默认可用
                 available_sources.append(source)
         return available_sources
-    
+
     def get_stock_data(self, stock_code: str, start_date: str, end_date: str,
                        frequency: str = '1d', adjustment_type: str = 'hfq',
-                       as_of: Optional[date] = None) -> pl.DataFrame:
+                       as_of: date | None = None) -> pl.DataFrame:
         """
         获取股票数据
 
@@ -153,49 +153,49 @@ class DataFetcher:
                                 frequency=frequency, adjustment_type=adjustment_type)
 
         return data
-    
+
     def get_index_data(self, index_code: str, start_date: str, end_date: str, frequency: str = '1d') -> pl.DataFrame:
         """
         获取指数数据
-        
+
         Args:
             index_code: 指数代码
             start_date: 开始日期
             end_date: 结束日期
             frequency: 数据频率
-            
+
         Returns:
             pl.DataFrame: 指数数据
         """
         # 尝试从缓存获取
-        cached_data = global_data_cache.get('index', index_code, start_date, end_date, 
+        cached_data = global_data_cache.get('index', index_code, start_date, end_date,
                                          frequency=frequency)
         if cached_data is not None:
             logger.info(f"从缓存获取指数数据: {index_code} {start_date} to {end_date}",
                         **{"symbol": index_code, "start": start_date, "end": end_date,
                                "frequency": frequency, "source": "cache"})
             return cached_data
-        
+
         # 从数据库获取
         db_data = self._get_data_from_database('index', index_code, start_date, end_date, frequency)
         if not db_data.is_empty():
             # 存入缓存
-            global_data_cache.set(db_data, 'index', index_code, start_date, end_date, 
+            global_data_cache.set(db_data, 'index', index_code, start_date, end_date,
                                 frequency=frequency)
             return db_data
-        
+
         # 从数据源获取
         data = self._get_data_from_sources('index', index_code, start_date, end_date, frequency)
-        
+
         # 存入缓存
         if not data.is_empty():
-            global_data_cache.set(data, 'index', index_code, start_date, end_date, 
+            global_data_cache.set(data, 'index', index_code, start_date, end_date,
                                 frequency=frequency)
-        
+
         return data
-    
+
     @staticmethod
-    def _parse_date_bound(value: Union[str, date, datetime, None]) -> Optional[date]:
+    def _parse_date_bound(value: Union[str, date, datetime, None]) -> date | None:
         """将日期字符串/对象统一转换为 date，供数据库查询使用"""
         if value is None:
             return None
@@ -231,7 +231,7 @@ class DataFetcher:
 
     @staticmethod
     def _apply_adjustment(df: pl.DataFrame, adjustment_type: str,
-                          as_of: Optional[date] = None) -> pl.DataFrame:
+                          as_of: date | None = None) -> pl.DataFrame:
         """
         在数据出口应用复权价，使 open/high/low/close 即为请求的复权类型。
 
@@ -281,7 +281,7 @@ class DataFetcher:
                                  start_date: str, end_date: str,
                                  frequency: str,
                                  adjustment_type: str = 'hfq',
-                                 as_of: Optional[date] = None) -> pl.DataFrame:
+                                 as_of: date | None = None) -> pl.DataFrame:
         """
         从数据库获取原始行情 + 复权因子，as_of 时截断 qfq_factor。
 
@@ -312,10 +312,10 @@ class DataFetcher:
             end_bound = self._parse_date_bound(end_date)
 
             query = session.query(model_class).filter(
-                getattr(model_class, 'ts_code') == code,
-                getattr(model_class, 'trade_date') >= (start_bound or start_date),
-                getattr(model_class, 'trade_date') <= (end_bound or end_date)
-            ).order_by(getattr(model_class, 'trade_date'))
+                model_class.ts_code == code,
+                model_class.trade_date >= (start_bound or start_date),
+                model_class.trade_date <= (end_bound or end_date)
+            ).order_by(model_class.trade_date)
 
             data = query.all()
             if not data:
@@ -330,8 +330,9 @@ class DataFetcher:
             rollback_factors: list = []   # [(event_factor, ex_date), ...]
             if as_of is not None and adjustment_type == 'qfq':
                 try:
-                    from src.database.models.stock import StockDividend
                     from sqlalchemy import select
+
+                    from src.database.models.stock import StockDividend
                     stmt = select(StockDividend).where(
                         StockDividend.ts_code == code,
                         StockDividend.ex_date > as_of
@@ -382,7 +383,7 @@ class DataFetcher:
             return pl.DataFrame()
 
     @staticmethod
-    def _dividend_event_factor(dividend) -> Optional[float]:
+    def _dividend_event_factor(dividend) -> float | None:
         """
         从除权除息事件对象计算单次事件的复权因子。
 
@@ -400,7 +401,7 @@ class DataFetcher:
             rights_ratio=getattr(dividend, 'rights_issue_ratio', None),
             rights_price=getattr(dividend, 'rights_issue_price', None),
         )
-    
+
     def _get_data_from_sources(self, data_type: str, code: str, start_date: str, end_date: str, frequency: str, adjustment_type: str = 'qfq') -> pl.DataFrame:
         """
         从多个数据源获取数据（优化版）
@@ -608,29 +609,29 @@ class DataFetcher:
         source_name = getattr(source, 'name', source.__class__.__name__)
         logger.debug(f"数据源 {source_name} 不支持 {data_type} 数据获取")
         return None
-    
+
     def _fetch_from_source(self, source, method_name, **kwargs):
         """
         从单个数据源获取数据
-        
+
         Args:
             source: 数据源
             method_name: 方法名
             **kwargs: 方法参数
-            
+
         Returns:
             tuple: (成功标志, 数据)
         """
         start_time = time.time()
         success = False
-        
+
         # 获取数据源名称，兼容传统处理器和插件数据源
         source_name = getattr(source, 'name', source.__class__.__name__)
-        
+
         try:
             logger.info(f"从{source_name}获取数据")
             result = getattr(source, method_name)(**kwargs)
-            
+
             if result is not None:
                 # 检查是否为DataFrame
                 if hasattr(result, 'is_empty'):
@@ -668,7 +669,7 @@ class DataFetcher:
             # 记录监控数据
             response_time = time.time() - start_time
             global_monitoring_system.record_data_source_request(source_name, response_time, success)
-            
+
             # 更新数据源优先级
             if source_name not in self.source_priorities:
                 self.source_priorities[source_name] = []
@@ -676,14 +677,14 @@ class DataFetcher:
             # 只保留最近10次的响应时间
             if len(self.source_priorities[source_name]) > 10:
                 self.source_priorities[source_name] = self.source_priorities[source_name][-10:]
-    
+
     def _get_source_priority(self, source_name: str) -> float:
         """
         获取数据源优先级
-        
+
         Args:
             source_name: 数据源名称
-            
+
         Returns:
             float: 优先级值，越小优先级越高
         """

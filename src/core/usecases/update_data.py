@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 update_data —— 数据更新用例。
@@ -9,12 +8,11 @@ update_data —— 数据更新用例。
 
 from __future__ import annotations
 
-from typing import Optional
 from loguru import logger
 
 
 def update_stock_data(
-    codes: Optional[list] = None,
+    codes: list | None = None,
     update_adj: bool = True,
 ) -> dict:
     """
@@ -27,9 +25,9 @@ def update_stock_data(
     Returns:
         dict —— {total, success, failed, details: [...]}
     """
-    from src.utils.config import Config
-    from src.database.db_manager import DatabaseManager
     from src.data.managers.data_updater import DataUpdater
+    from src.database.db_manager import DatabaseManager
+    from src.utils.config import Config
 
     config = Config()
     db = DatabaseManager(config)

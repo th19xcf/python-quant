@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 执行内核一致性回归测试。
@@ -16,7 +15,7 @@ from src.backtest.engine.backtest_engine import BacktestEngine
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.backtest.strategies.ma_strategy import MAStrategy
-from src.risk import RiskEngine, MaxPositionWeight
+from src.risk import MaxPositionWeight, RiskEngine
 
 
 class _IndexSignalStrategy(BaseStrategy):
@@ -110,7 +109,7 @@ def test_sell_proceeds_are_added_to_remaining_cash():
     result = engine.run_backtest(initial_capital=1_000_000.0)
 
     per_code_initial = 1_000_000.0 / len(data_dict)
-    cash = {code: per_code_initial for code in data_dict}
+    cash = dict.fromkeys(data_dict, per_code_initial)
 
     for trade in result['trades']:
         code = trade['stock_code']
@@ -125,7 +124,7 @@ def test_t_plus_one_open_price_and_lot_size():
     """t 日信号必须在 t+1 日开盘成交，且买入股数为 100 股整数倍。"""
     data = _oscillating(days=40)
     dates = data['date'].to_list()
-    opens = dict(zip(dates, data['open'].to_list()))
+    opens = dict(zip(dates, data['open'].to_list(), strict=False))
 
     engine = BacktestEngine(data)
     engine.set_strategy(_IndexSignalStrategy({5: 'buy', 15: 'sell'}))

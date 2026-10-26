@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 指标渲染类
 负责各类技术指标的绘制和渲染
 """
 
-import pyqtgraph as pg
+from typing import Any
+
 import numpy as np
-from typing import Any, Dict, Tuple, Optional
 from loguru import logger
 
+from .renderers.oscillator import OscillatorRenderMixin
 from .renderers.trend import TrendRenderMixin
 from .renderers.volume import VolumeRenderMixin
-from .renderers.oscillator import OscillatorRenderMixin
-
 
 # UI指标名 → (指标类型, 期望输出列)
 # 全部使用 calculate_multiple_indicators_polars 的默认参数，与原 render_* 兜底路径的
@@ -89,7 +87,9 @@ def ensure_indicator_columns(df: Any, indicator_names: Any) -> Any:
     if not missing_types:
         return df
 
-    from src.tech_analysis.indicator_calculator import calculate_multiple_indicators_polars
+    from src.tech_analysis.indicator_calculator import (
+        calculate_multiple_indicators_polars,
+    )
     logger.info(f"渲染前批量补齐指标列: {missing_types}")
     result = calculate_multiple_indicators_polars(df.lazy(), missing_types)
     return result.collect() if hasattr(result, 'collect') else result
@@ -100,32 +100,32 @@ class IndicatorRenderer(TrendRenderMixin, VolumeRenderMixin, OscillatorRenderMix
     指标渲染类
     负责绘制各类技术指标
     """
-    
+
     def __init__(self, main_window: Any):
         """
         初始化指标渲染器
-        
+
         Args:
             main_window: 主窗口实例
         """
         self.main_window = main_window
-    
+
     def render_indicator(
-        self, 
-        plot_widget: Any, 
-        indicator_name: str, 
-        x: np.ndarray, 
+        self,
+        plot_widget: Any,
+        indicator_name: str,
+        x: np.ndarray,
         df: Any
     ) -> Any:
         """
         根据指标名称渲染相应的指标
-        
+
         Args:
             plot_widget: 图表控件
             indicator_name: 指标名称
             x: x轴坐标
             df: 数据
-            
+
         Returns:
             Any: 处理后的数据
         """
@@ -133,7 +133,7 @@ class IndicatorRenderer(TrendRenderMixin, VolumeRenderMixin, OscillatorRenderMix
         if df is None:
             logger.warning(f"render_indicator: df is None, skipping indicator {indicator_name}")
             return df
-        
+
         renderers = {
             'VOL': self.render_volume,
             'KDJ': self.render_kdj,
@@ -171,7 +171,7 @@ class IndicatorRenderer(TrendRenderMixin, VolumeRenderMixin, OscillatorRenderMix
             'ADR': self.render_adr,
             'OBOS': self.render_obos,
         }
-        
+
         renderer = renderers.get(indicator_name)
         if renderer:
             df = renderer(plot_widget, df, x)

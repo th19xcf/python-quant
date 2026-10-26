@@ -74,8 +74,80 @@ target-version = "py314"
 exclude = ["venv", ".venv", "build", "dist"]
 
 [tool.ruff.lint]
-# 首期只开"必然是真错误"的规则：语法错误、无效比较、未定义名称
-select = ["E9", "F63", "F7", "F82"]
+# 全量规则集：错误 + bugbear + 盲捕异常 + bandit 安全 + 导入排序 + 现代化 + SIM 化简 + try + 复杂度
+select = [
+    "E",      # pycodestyle 错误
+    "F",      # pyflakes（未定义名等）
+    "W",      # pycodestyle 警告
+    "B",      # bugbear：常见 bug（如 __iter__ 返回 None、除以变量、重复异常、有问题的默认参数等）
+    "BLE",    # flake8-blind-except：禁止裸 except: 和 except Exception
+    "S",      # bandit：安全（eval/exec/hashlib 弱哈希/path traversal/subprocess 硬编码 shell 等）
+    "I",      # isort：导入排序
+    "UP",     # pyupgrade：现代化（f-string / .format / %-format / super() 等）
+    "SIM",    # flake8-simplify：代码化简（可合并 if/三元可化简/枚举比较等）
+    "TRY",    # flake8-try：异常处理风格
+    "C4",     # flake8-comprehensions：列表/集合/字典/元组推导式
+    "PLR09",  # pylint：复杂度（函数参数过多、行数过多）
+    "C901",   # mccabe：圈复杂度
+]
+# 行宽 88 是 black 默认，项目代码历史包袱略宽；启用但不阻塞
+ignore = [
+    # === 历史代码债务，暂时不阻塞 ===
+    "E501",       # 行过长：历史代码有大量 100~150 行，逐步收而非一刀切
+    "E402",       # import 不在文件顶部：项目里有模块中间动态 import 的合理用法
+    "E701",       # multiple-statements-on-one-line-colon：历史 if/for 单行风格
+    "E702",       # multiple-statements-on-one-line-semicolon：同上
+    "F401",       # unused-import：部分是类型 hint 延迟导入 / 插件注册导入，动态引用看不清
+    "PLR0911",    # too-many-return-statements：老策略类早返回密集
+    "PLR0912",    # 函数 too many branches：老策略类 if/elif 密集
+    "PLR0913",    # too many arguments：策略/引擎构造函数历史包袱
+    "PLR0915",    # 函数 too many statements：同上
+    "PLR0917",    # too-many-positional-arguments：同上
+    "C901",       # mccabe 圈复杂度：历史策略类逐步收
+    # === 风格建议（非 bug） ===
+    "BLE001",     # 盲捕 Exception：src/ 里 catch Exception 大多是 UI 层兜底，合理
+    "B007",       # unused-loop-control-variable：_ 前缀变量循环常见
+    "SIM102",     # collapsible-if：历史风格保留
+    "SIM105",     # suppressible-exception：同上
+    "SIM108",     # if-else-block-instead-of-if-exp：同上
+    "SIM114",     # if-with-same-arms：同上
+    "SIM117",     # single-context-manager：同上
+    "SIM113",     # enumerate-for-loop：同上
+    "SIM300",     # yoda-conditions：同上
+    "TRY002",     # raise-vanilla-class：项目 raise ValueError 等标准异常合理
+    "TRY003",     # raise from：历史 except 里裸 raise 合理
+    "TRY201",     # too many try statements
+    "TRY300",     # try-consider-else：代码风格偏好问题
+    "TRY301",     # raise-within-try：测试代码里常见
+    "TRY401",     # verbose-log-message：logger 风格
+    # === bandit 安全：项目无外部输入路径 ===
+    "S101",       # assert 用于生产逻辑（bandit：项目内部逻辑 assert 合理）
+    "S110",       # try-except-pass：部分清理代码吞掉 IOError 合理
+    "S324",       # hashlib-insecure-hash-function：项目 md5/sha1 仅用于本地文件 hash 校验，非安全上下文
+    "S603",       # subprocess 不设 shell=True（项目没走 subprocess）
+    "S607",       # subprocess cwd 硬编码（同上）
+    # === pyupgrade ===
+    "UP006",      # from __future__ import annotations（py314 不需要）
+    "UP007",      # from __future__ import annotations（同上）
+    "UP035",      # deprecated-import：需要逐步替换的旧 import（如 yaml.load→safe_load），后续批量处理
+    "B024",       # ABC 类无 abstract method：DataSourceBase/PluginBase 提供公共接口但不强制抽象
+    "B027",       # ABC 里的空方法无 abstract：同上，on_config_changed 提供默认空实现
+    # UP038 已被 ruff 移除，无需 ignore
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试文件：允许 assert、允许 monkeypatch 全局
+"tests/**/*.py" = ["S101", "BLE001", "TRY301"]
+# UI 回调：太多方法参数 + 嵌套 if
+"src/ui/**/*.py" = ["PLR0913", "PLR0912", "PLR0917", "C901", "F401", "E402"]
+# 策略文件：历史包袱的复杂度
+"src/backtest/strategies/**/*.py" = ["C901", "PLR0912", "PLR0915", "PLR0917", "SIM102", "SIM105"]
+# 数据库 upsert：动态 SQL 字符串拼接
+"src/database/**/*.py" = ["S608", "F401", "E402"]
+# 数据层 handler：历史 import 结构
+"src/data/**/*handler.py" = ["E402", "F401"]
+# 工具类：动态导入
+"src/utils/**/*.py" = ["F401"]
 
 [tool.mypy]
 python_version = "3.14"

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 通达信数据处理器
@@ -7,9 +6,9 @@
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 import polars as pl
 from loguru import logger
@@ -18,7 +17,9 @@ from src.data.sources.base import DataSourceBase
 from src.data.tdx_day_parser import parse_day_file as parse_tdx_day_file
 from src.data.tdx_day_parser import read_recent_records
 from src.utils.code_converter import (
-    parse_code, to_symbol, to_tdx_market, to_ts_code,
+    parse_code,
+    to_symbol,
+    to_tdx_market,
 )
 
 
@@ -30,11 +31,11 @@ class TdxHandler(DataSourceBase):
     get_stock_data / get_index_data 调度。get_kline_data 为本地文件级
     底层方法，仍供内部与增量同步使用。提供 close() 方法（基类没有）。
     """
-    
+
     def __init__(self, config, db_manager):
         """
         初始化通达信数据处理器
-        
+
         Args:
             config: 配置对象
             db_manager: 数据库管理器实例
@@ -49,12 +50,12 @@ class TdxHandler(DataSourceBase):
         self.available = self.tdx_data_path.exists()
         if not self.available:
             logger.warning(f"通达信数据路径不存在: {self.tdx_data_path}")
-        
+
         # 初始化线程池，使用配置中的最大工作线程数
         self.max_workers = self.config.data.max_workers
         self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
         logger.info(f"TdxHandler线程池初始化完成，最大工作线程数: {self.max_workers}")
-        
+
         # 线程本地存储，用于保存每个线程的数据库会话
         self.thread_local = threading.local()
 
@@ -83,15 +84,15 @@ class TdxHandler(DataSourceBase):
                 try:
                     self.thread_local.session.close()
                     logger.debug(f"线程 {threading.current_thread().name} 的数据库会话已关闭")
-                except (OSError, IOError) as e:
+                except OSError as e:
                     logger.warning(f"关闭线程数据库会话时出错: {e}")
-        except (OSError, IOError) as e:
+        except OSError as e:
             logger.exception(f"关闭TdxHandler时出错: {e}")
-        
+
     def _get_thread_safe_session(self):
         """
         获取线程安全的数据库会话
-        
+
         Returns:
             session: 当前线程的数据库会话
         """
@@ -106,25 +107,25 @@ class TdxHandler(DataSourceBase):
             else:
                 self.thread_local.session = None
         return self.thread_local.session
-    
+
     def get_stock_list(self) -> List[str]:
         """
         从通达信数据源获取所有股票代码列表
-        
+
         Returns:
             List[str]: 股票代码列表 (格式: 600000.SH, 000001.SZ 等)
         """
         stock_codes = []
-        
+
         try:
             if not self.tdx_data_path.exists():
                 logger.warning(f"通达信数据路径不存在: {self.tdx_data_path}")
                 return stock_codes
-            
+
             sh_lday = self.tdx_data_path / 'sh' / 'lday'
             sz_lday = self.tdx_data_path / 'sz' / 'lday'
             bj_lday = self.tdx_data_path / 'bj' / 'lday'
-            
+
             def is_valid_stock_code(code):
                 """验证股票代码是否有效"""
                 if len(code) != 6:
@@ -157,13 +158,10 @@ class TdxHandler(DataSourceBase):
                     num = int(code)
                     return 920000 <= num <= 920999
                 # 上海 ETF：510xxx, 511xxx, 512xxx, 513xxx, 515xxx, 588xxx
-                elif code.startswith('51') or code.startswith('58'):
-                    return True
-                # 深圳 ETF：150xxx, 151xxx, 152xxx, 153xxx, 159xxx, 160xxx, 161xxx
-                elif code.startswith('15') or code.startswith('16'):
+                elif code.startswith('51') or code.startswith('58') or code.startswith('15') or code.startswith('16'):
                     return True
                 return False
-            
+
             if sh_lday.exists():
                 sh_files = list(sh_lday.glob('sh*.day'))
                 for f in sh_files:
@@ -171,7 +169,7 @@ class TdxHandler(DataSourceBase):
                     if is_valid_stock_code(code):
                         stock_codes.append(f"{code}.SH")
                 logger.info(f"从沪市通达信数据中找到 {len([c for c in stock_codes if c.endswith('.SH')])} 个有效股票文件")
-            
+
             if sz_lday.exists():
                 sz_files = list(sz_lday.glob('sz*.day'))
                 for f in sz_files:
@@ -179,7 +177,7 @@ class TdxHandler(DataSourceBase):
                     if is_valid_stock_code(code):
                         stock_codes.append(f"{code}.SZ")
                 logger.info(f"从深市通达信数据中找到 {len([c for c in stock_codes if c.endswith('.SZ')])} 个有效股票文件")
-            
+
             # 北市（科创板）
             if bj_lday.exists():
                 bj_files = list(bj_lday.glob('bj*.day'))
@@ -188,22 +186,22 @@ class TdxHandler(DataSourceBase):
                     if is_valid_stock_code(code):
                         stock_codes.append(f"{code}.BJ")
                 logger.info(f"从北市通达信数据中找到 {len([c for c in stock_codes if c.endswith('.BJ')])} 个有效股票文件")
-            
+
             logger.info(f"通达信股票代码列表获取完成，共 {len(stock_codes)} 只有效股票")
-            
+
         except Exception as e:
             logger.exception(f"获取通达信股票代码列表失败: {e}")
-        
+
         return stock_codes
-    
+
     def parse_day_file(self, file_path: Path, max_days: int = None):
         """
         解析通达信日线数据文件
-        
+
         Args:
             file_path: 日线数据文件路径
             max_days: 最大天数，只解析最近的max_days天数据，None表示解析所有数据
-            
+
         Returns:
             polars.DataFrame: 解析后的日线数据
         """
@@ -212,41 +210,41 @@ class TdxHandler(DataSourceBase):
             df = parse_tdx_day_file(file_path, max_days)
             logger.info(f"成功解析通达信日线数据文件: {file_path}，获取{len(df)}条数据")
             return df
-        except (OSError, IOError) as e:
+        except OSError as e:
             logger.exception(f"解析通达信日线数据文件失败: {e}")
             raise
-            
+
     def _get_adj_factors(self, ts_code: str, start_date: date, end_date: date) -> pl.DataFrame:
         """
         从数据库获取复权因子
         如果没有预计算的复权因子，则根据分红数据实时计算
-        
+
         Args:
             ts_code: 股票代码
             start_date: 开始日期
             end_date: 结束日期
-            
+
         Returns:
             Polars DataFrame包含复权因子
         """
         try:
             from src.database.models.stock import StockAdjFactor
-            
+
             session = self._get_thread_safe_session()
             if not session:
-                logger.warning(f"无法获取数据库会话，无法获取复权因子")
+                logger.warning("无法获取数据库会话，无法获取复权因子")
                 return None
-            
+
             # 首先尝试获取预计算的复权因子
             query = session.query(StockAdjFactor).filter_by(ts_code=ts_code)
-            
+
             if start_date:
                 query = query.filter(StockAdjFactor.trade_date >= start_date)
             if end_date:
                 query = query.filter(StockAdjFactor.trade_date <= end_date)
-            
+
             factors = query.order_by(StockAdjFactor.trade_date).all()
-            
+
             if factors:
                 # 使用预计算的复权因子
                 logger.debug(f"{ts_code} 使用预计算的复权因子数据")
@@ -256,66 +254,66 @@ class TdxHandler(DataSourceBase):
                     'hfq_factor': [f.hfq_factor for f in factors],
                 }
                 return pl.DataFrame(data)
-            
+
             # 如果没有预计算的复权因子，根据分红数据实时计算
             logger.info(f"{ts_code} 没有预计算的复权因子，根据分红数据实时计算")
             return self._calculate_adj_factors_from_dividends(ts_code, start_date, end_date)
-            
+
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取复权因子失败: {e}")
             return None
-    
+
     def _calculate_adj_factors_from_dividends(self, ts_code: str, start_date: date, end_date: date) -> pl.DataFrame:
         """
         根据分红数据实时计算复权因子
-        
+
         Args:
             ts_code: 股票代码
             start_date: 开始日期
             end_date: 结束日期
-            
+
         Returns:
             Polars DataFrame包含复权因子
         """
         try:
             from src.database.models.stock import StockDividend
-            
+
             session = self._get_thread_safe_session()
             if not session:
                 return None
-            
+
             # 获取分红数据（获取所有历史分红数据，不限制日期范围）
             query = session.query(StockDividend).filter_by(ts_code=ts_code)
-            query = query.filter(StockDividend.ex_date != None)
-            
+            query = query.filter(StockDividend.ex_date is not None)
+
             # 注意：这里不限制日期范围，因为复权因子计算需要所有历史分红数据
             # 即使当前显示的K线范围内没有分红，历史分红也会影响当前价格的复权计算
-            
+
             dividends = query.order_by(StockDividend.ex_date).all()
-            
+
             if not dividends:
                 logger.debug(f"{ts_code} 没有找到分红数据")
                 return None
-            
+
             logger.info(f"{ts_code} 找到 {len(dividends)} 条分红记录，开始计算复权因子")
-            
+
             # 打印第一条和最后一条分红记录用于调试
             if dividends:
                 first_div = dividends[0]
                 last_div = dividends[-1]
                 logger.info(f"第一条分红: 日期={first_div.ex_date}, 现金={first_div.cash_div}, 送转={first_div.share_div}")
                 logger.info(f"最后一条分红: 日期={last_div.ex_date}, 现金={last_div.cash_div}, 送转={last_div.share_div}")
-            
+
             # 获取价格数据用于计算复权因子
             symbol = to_symbol(ts_code)
             market = to_tdx_market(ts_code)
             file_name = f"{market}{symbol}.day"
             file_path = self.tdx_data_path / market / "lday" / file_name
-            
+
             if not file_path.exists():
                 logger.warning(f"价格数据文件不存在: {file_path}")
                 return None
-            
+
             # 读取价格数据（复用统一的 .day 解析器，只需日期与收盘价）
             prices = [
                 {'trade_date': r['date'], 'close': r['close']}
@@ -362,21 +360,21 @@ class TdxHandler(DataSourceBase):
 
             logger.info(f"{ts_code} 复权因子计算完成，共 {len(df)} 条记录")
             return df
-            
+
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"根据分红数据计算复权因子失败: {e}")
             return None
-    
+
     def get_kline_data(self, stock_code: str, start_date: str, end_date: str, adjust: str = "none"):
         """
         获取指定股票在指定日期范围内的K线数据，支持复权
-        
+
         Args:
             stock_code: 股票代码，如"600000"或"sh.600000"
             start_date: 开始日期，格式：YYYY-MM-DD
             end_date: 结束日期，格式：YYYY-MM-DD
             adjust: 复权类型，"qfq"=前复权，"hfq"=后复权，"none"=不复权（默认）
-        
+
         Returns:
             pl.LazyFrame: K线数据的LazyFrame，包含date, open, high, low, close, volume, amount字段
                            如果指定了adjust，还会包含复权因子（qfq_factor/hfq_factor），
@@ -394,72 +392,72 @@ class TdxHandler(DataSourceBase):
                 return pl.LazyFrame({})
 
             logger.info(f"解析后的股票代码: {code}，市场: {market}")
-            
+
             # 构建通达信数据文件名
             file_name = f"{market}{code}.day"
-            
+
             # 构建数据文件路径
             lday_path = self.tdx_data_path / market / "lday"
             file_path = lday_path / file_name
-            
+
             logger.info(f"尝试从路径 {file_path} 读取数据")
-            
+
             # 检查文件是否存在
             if not file_path.exists():
                 logger.warning(f"股票 {stock_code} 的通达信数据文件不存在: {file_path}")
                 return pl.LazyFrame({})
-            
+
             # 复用统一的 .day 解析器（成交额元、成交量手）
             logger.info(f"开始解析文件 {file_path}")
             try:
                 data = read_recent_records(file_path)
-            except (OSError, IOError) as file_e:
+            except OSError as file_e:
                 logger.exception(f"文件操作失败: {file_e}")
                 return pl.LazyFrame({})
 
             logger.info(f"成功解析{len(data)}条数据")
             if not data:
                 return pl.LazyFrame({})
-            
+
             # 转换为polars DataFrame
             df = pl.DataFrame(data)
-            
+
             # 转换为LazyFrame
             lazy_df = df.lazy()
-            
+
             # 转换start_date和end_date为date对象
             start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
             end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
-            
+
             # 使用Lazy API过滤日期范围内的数据
             lazy_df = lazy_df.filter(
                 (pl.col('date') >= start_dt) & (pl.col('date') <= end_dt)
             )
-            
+
             # 计算复权价格（无论是否需要复权，都计算所有复权类型）
-            logger.info(f"计算复权价格...")
-            
+            logger.info("计算复权价格...")
+
             # 构建ts_code
             ts_code = f"{code}.{market.upper()}"
-            
+
             # 获取复权因子（使用完整日期范围，因为复权因子计算需要所有历史数据）
             # 传入None作为日期范围，让_get_adj_factors获取所有历史数据
             factors_df = self._get_adj_factors(ts_code, None, None)
-            
+
             if factors_df is not None and not factors_df.is_empty():
                 # 转换复权因子为LazyFrame
                 factors_lazy = factors_df.lazy()
-                
+
                 # 使用Lazy API进行复权计算
                 lazy_df = lazy_df.join(factors_lazy, left_on='date', right_on='trade_date', how='left')
-                
+
                 # 填充缺失的复权因子
                 for adj_type in ['qfq', 'hfq']:
                     factor_col = f'{adj_type}_factor'
                     lazy_df = lazy_df.with_columns([
                         pl.col(factor_col).fill_null(strategy='forward').fill_null(1.0).alias(factor_col)
                     ])
-                
+
                 # 计算所有复权类型的价格
                 for adj_type in ['qfq', 'hfq']:
                     factor_col = f'{adj_type}_factor'
@@ -469,7 +467,7 @@ class TdxHandler(DataSourceBase):
                         (pl.col('low') * pl.col(factor_col)).alias(f'{adj_type}_low'),
                         (pl.col('close') * pl.col(factor_col)).alias(f'{adj_type}_close'),
                     ])
-                
+
                 # 添加调试日志
                 logger.info(f"{ts_code} 复权价格计算完成，复权因子已应用到价格数据")
             else:
@@ -485,13 +483,13 @@ class TdxHandler(DataSourceBase):
                         pl.col('low').alias(f'{price_col}low'),
                         pl.col('close').alias(f'{price_col}close'),
                     ])
-            
-            logger.info(f"复权价格计算完成")
-            
+
+            logger.info("复权价格计算完成")
+
             logger.info(f"成功获取股票 {stock_code} 的K线数据，返回LazyFrame")
             return lazy_df
-            
-        except (OSError, IOError, ValueError) as e:
+
+        except (OSError, ValueError) as e:
             logger.exception(f"获取股票 {stock_code} 的K线数据失败: {e}")
             return pl.LazyFrame({})
 

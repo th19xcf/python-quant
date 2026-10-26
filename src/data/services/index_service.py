@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 指数数据服务
@@ -8,9 +7,10 @@
 枚举指数最新行情。UI 层只负责展示格式化，不再直接执行 SQL。
 """
 
+import contextlib
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from loguru import logger
 
@@ -24,7 +24,7 @@ INDEX_CODE_PREFIXES = {'sh': '000', 'sz': '399', 'bj': '899'}
 class IndexService:
     """指数元数据与最新行情查询服务。"""
 
-    def __init__(self, tdx_data_path: Optional[str], db_manager=None, cache_ttl_seconds: int = 300):
+    def __init__(self, tdx_data_path: str | None, db_manager=None, cache_ttl_seconds: int = 300):
         self._tdx_data_path = Path(tdx_data_path) if tdx_data_path else None
         self._db_manager = db_manager
         self._cache_ttl_seconds = cache_ttl_seconds
@@ -89,10 +89,8 @@ class IndexService:
                         if normalized_name and normalized_name not in normalized_ts_code_map:
                             normalized_ts_code_map[normalized_name] = ts_code
 
-                    try:
+                    with contextlib.suppress(Exception):
                         result.close()
-                    except Exception:
-                        pass
 
                 logger.info(f"从数据表加载了 {len(file_name_map)} 个指数名称")
         except DataException as e:
@@ -170,7 +168,7 @@ class IndexService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _ts_code_to_file_name(ts_code: str) -> Optional[str]:
+    def _ts_code_to_file_name(ts_code: str) -> str | None:
         """将 ts_code 转换为通达信文件主名（如 000001.SH -> sh000001）。"""
         if not ts_code or '.' not in ts_code:
             return None
@@ -199,10 +197,8 @@ class IndexService:
                 file_name = self._ts_code_to_file_name(row[0])
                 if file_name:
                     file_names.add(file_name)
-            try:
+            with contextlib.suppress(Exception):
                 result.close()
-            except Exception:
-                pass
         except DataException as e:
             logger.warning(f"按分类过滤指数时查询数据库失败: {e}")
             return set()
@@ -228,10 +224,8 @@ class IndexService:
                 file_name = self._ts_code_to_file_name(row[0])
                 if file_name:
                     file_names.add(file_name)
-            try:
+            with contextlib.suppress(Exception):
                 result.close()
-            except Exception:
-                pass
         except DataException as e:
             logger.warning(f"构建创业板/科创板排除列表失败: {e}")
             return set()
@@ -242,7 +236,7 @@ class IndexService:
     # 最新行情
     # ------------------------------------------------------------------
 
-    def _iter_index_files(self, market_filter: Optional[str]):
+    def _iter_index_files(self, market_filter: str | None):
         """按市场枚举指数 .day 文件，产出 (market, symbol, file_path)。"""
         if self._tdx_data_path is None:
             return
@@ -258,7 +252,7 @@ class IndexService:
                     yield market, symbol, file_path
 
     def list_index_quotes(
-        self, market_filter: Optional[str] = None, category_filter: Optional[str] = None
+        self, market_filter: str | None = None, category_filter: str | None = None
     ) -> List[Dict]:
         """
         枚举指数并读取最新行情。

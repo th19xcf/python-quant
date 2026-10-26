@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 MACD策略
@@ -10,8 +9,9 @@ macd 与 macd_signal 列，不再用实例 list 累积价格、EMA、MACD、sign
 prev_macd/prev_signal 列，留待后续扩展。
 """
 
+from typing import Any, Dict
+
 from src.backtest.strategies.base_strategy import BaseStrategy
-from typing import Dict, Any
 
 
 class MACDStrategy(BaseStrategy):

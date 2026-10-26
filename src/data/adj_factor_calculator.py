@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 复权因子计算和存储模块
@@ -7,20 +6,19 @@
 统一使用Polars DataFrame
 """
 
-from datetime import datetime, timedelta
-from typing import List, Optional, Dict
+from datetime import datetime
+from typing import List
 
 import polars as pl
-import numpy as np
 from loguru import logger
 
 from src.database.db_manager import DatabaseManager
-from src.database.models.stock import StockDaily, StockDividend, StockAdjFactor
+from src.database.models.stock import StockAdjFactor, StockDaily, StockDividend
 from src.utils.memory_optimizer import MemoryOptimizer
 
 
 def calc_dividend_event_factor(prev_close, cash_div, share_div,
-                               rights_ratio=0.0, rights_price=0.0) -> Optional[float]:
+                               rights_ratio=0.0, rights_price=0.0) -> float | None:
     """
     计算单次除权除息事件的前复权因子（所有复权计算的唯一公式收口点）。
 
@@ -68,7 +66,7 @@ def calc_dividend_event_factor(prev_close, cash_div, share_div,
 class AdjFactorCalculator:
     """
     复权因子计算器
-    
+
     功能：
     1. 计算前复权因子和后复权因子
     2. 计算复权价格
@@ -76,11 +74,11 @@ class AdjFactorCalculator:
     4. 支持增量更新
     5. 支持通达信数据源
     """
-    
+
     def __init__(self, db_manager: DatabaseManager, tdx_handler=None):
         """
         初始化
-        
+
         Args:
             db_manager: 数据库管理器实例
             tdx_handler: 通达信处理器实例（可选）
@@ -88,20 +86,20 @@ class AdjFactorCalculator:
         self.db_manager = db_manager
         self.session = db_manager.get_session()
         self.tdx_handler = tdx_handler
-        
-    def calculate_adj_factors(self, ts_code: str, 
-                             start_date: Optional[datetime] = None,
-                             end_date: Optional[datetime] = None,
+
+    def calculate_adj_factors(self, ts_code: str,
+                             start_date: datetime | None = None,
+                             end_date: datetime | None = None,
                              use_tdx: bool = True) -> pl.DataFrame:
         """
         计算单只股票的复权因子
-        
+
         Args:
             ts_code: 股票代码
             start_date: 开始日期
             end_date: 结束日期
             use_tdx: 是否使用通达信数据（默认True）
-            
+
         Returns:
             pl.DataFrame: 包含复权因子和复权价格
         """
@@ -111,34 +109,34 @@ class AdjFactorCalculator:
             if dividends is None or dividends.is_empty():
                 logger.warning(f"{ts_code} 没有分红数据，复权因子设为1.0")
                 return self._create_default_factors(ts_code, start_date, end_date, use_tdx)
-            
+
             # 获取价格数据
             if use_tdx and self.tdx_handler:
                 prices = self._get_prices_from_tdx(ts_code, start_date, end_date)
             else:
                 prices = self._get_prices_from_db(ts_code, start_date, end_date)
-            
+
             if prices is None or prices.is_empty():
                 logger.warning(f"{ts_code} 没有价格数据")
                 return None
-            
+
             # 计算复权因子
             result = self.calculate_factors(prices, dividends)
-            
+
             logger.info(f"{ts_code} 复权因子计算完成，共 {len(result)} 条记录")
             return result
-            
+
         except (OSError, RuntimeError) as e:
             logger.exception(f"计算 {ts_code} 复权因子失败: {e}")
             return None
-    
+
     def _get_dividends(self, ts_code: str) -> pl.DataFrame:
         """获取分红数据"""
         dividends = self.session.query(StockDividend).filter_by(ts_code=ts_code).order_by(StockDividend.ex_date).all()
-        
+
         if not dividends:
             return None
-        
+
         # 使用Polars直接构建DataFrame
         data = {
             'ts_code': [d.ts_code for d in dividends],
@@ -148,23 +146,23 @@ class AdjFactorCalculator:
             'rights_issue_ratio': [d.rights_issue_ratio or 0 for d in dividends],
             'rights_issue_price': [d.rights_issue_price or 0 for d in dividends],
         }
-        
+
         return pl.DataFrame(data)
-    
-    def _get_prices_from_db(self, ts_code: str, start_date: Optional[datetime], end_date: Optional[datetime]) -> pl.DataFrame:
+
+    def _get_prices_from_db(self, ts_code: str, start_date: datetime | None, end_date: datetime | None) -> pl.DataFrame:
         """从数据库获取价格数据"""
         query = self.session.query(StockDaily).filter_by(ts_code=ts_code)
-        
+
         if start_date:
             query = query.filter(StockDaily.trade_date >= start_date)
         if end_date:
             query = query.filter(StockDaily.trade_date <= end_date)
-        
+
         prices = query.order_by(StockDaily.trade_date).all()
-        
+
         if not prices:
             return None
-        
+
         # 使用Polars直接构建DataFrame
         data = {
             'ts_code': [p.ts_code for p in prices],
@@ -174,30 +172,30 @@ class AdjFactorCalculator:
             'low': [p.low for p in prices],
             'close': [p.close for p in prices],
         }
-        
+
         return pl.DataFrame(data)
-    
-    def _get_prices_from_tdx(self, ts_code: str, start_date: Optional[datetime], end_date: Optional[datetime]) -> pl.DataFrame:
+
+    def _get_prices_from_tdx(self, ts_code: str, start_date: datetime | None, end_date: datetime | None) -> pl.DataFrame:
         """从通达信获取价格数据"""
         if not self.tdx_handler:
             logger.warning("通达信处理器未初始化")
             return None
-        
+
         try:
             # 转换日期格式（通达信使用 YYYY-MM-DD 格式）
             start_str = start_date.strftime('%Y-%m-%d') if start_date else '1990-01-01'
             end_str = end_date.strftime('%Y-%m-%d') if end_date else datetime.now().strftime('%Y-%m-%d')
-            
+
             # 获取股票代码（不带后缀）
             symbol = ts_code.split('.')[0]
-            
+
             # 从通达信获取数据
             data_list = self.tdx_handler.get_kline_data(symbol, start_str, end_str)
-            
+
             if not data_list:
                 logger.warning(f"{ts_code} 从通达信获取数据失败")
                 return None
-            
+
             # 使用Polars直接构建DataFrame
             data = {
                 'ts_code': [ts_code] * len(data_list),
@@ -207,13 +205,13 @@ class AdjFactorCalculator:
                 'low': [item['low'] for item in data_list],
                 'close': [item['close'] for item in data_list],
             }
-            
+
             return pl.DataFrame(data)
-            
+
         except (OSError, RuntimeError) as e:
             logger.exception(f"从通达信获取价格数据失败: {e}")
             return None
-    
+
     def _create_default_factors(self, ts_code: str, start_date: datetime, end_date: datetime, use_tdx: bool = True) -> pl.DataFrame:
         """创建默认复权因子（全部为1.0）"""
         # 获取价格数据
@@ -221,10 +219,10 @@ class AdjFactorCalculator:
             prices_df = self._get_prices_from_tdx(ts_code, start_date, end_date)
         else:
             prices_df = self._get_prices_from_db(ts_code, start_date, end_date)
-        
+
         if prices_df is None or prices_df.is_empty():
             return None
-        
+
         # 添加默认复权因子
         result = prices_df.with_columns([
             pl.lit(1.0).alias('qfq_factor'),
@@ -233,7 +231,7 @@ class AdjFactorCalculator:
 
         # 内存优化：转换数据类型
         return MemoryOptimizer.optimize_dataframe(result)
-    
+
     @staticmethod
     def calculate_factors(prices_df: pl.DataFrame, dividends_df: pl.DataFrame) -> pl.DataFrame:
         """
@@ -319,7 +317,7 @@ class AdjFactorCalculator:
     def save_adj_factors(self, df: pl.DataFrame, batch_size: int = 1000):
         """
         保存复权因子到数据库
-        
+
         Args:
             df: 包含复权因子的Polars DataFrame
             batch_size: 批量插入大小
@@ -327,7 +325,7 @@ class AdjFactorCalculator:
         if df is None or df.is_empty():
             logger.warning("没有数据需要保存")
             return
-        
+
         try:
             records = []
             for row in df.to_dicts():
@@ -338,21 +336,21 @@ class AdjFactorCalculator:
                     hfq_factor=row['hfq_factor'],
                 )
                 records.append(record)
-                
+
                 if len(records) >= batch_size:
                     self._batch_insert(records)
                     records = []
-            
+
             # 插入剩余记录
             if records:
                 self._batch_insert(records)
-            
+
             logger.info(f"成功保存 {len(df)} 条复权因子记录")
-            
+
         except (OSError, RuntimeError) as e:
             logger.exception(f"保存复权因子失败: {e}")
             self.session.rollback()
-    
+
     def _batch_insert(self, records: List[StockAdjFactor]):
         """批量插入记录"""
         try:
@@ -386,17 +384,17 @@ class AdjFactorCalculator:
         except (OSError, RuntimeError) as e:
             self.session.rollback()
             raise e
-    
+
     def update_stock_daily_adj(self, df: pl.DataFrame):
         """
         更新stock_daily表的复权价格和因子
-        
+
         Args:
             df: 包含复权因子的Polars DataFrame
         """
         if df is None or df.is_empty():
             return
-        
+
         try:
             rows = df.to_dicts()
 
@@ -420,18 +418,18 @@ class AdjFactorCalculator:
 
             self.session.commit()
             logger.info(f"成功更新 {updated} 条stock_daily记录")
-            
+
         except (OSError, RuntimeError) as e:
             logger.exception(f"更新stock_daily失败: {e}")
             self.session.rollback()
-    
-    def batch_calculate_and_save(self, ts_codes: List[str], 
-                                  start_date: Optional[datetime] = None,
-                                  end_date: Optional[datetime] = None,
+
+    def batch_calculate_and_save(self, ts_codes: List[str],
+                                  start_date: datetime | None = None,
+                                  end_date: datetime | None = None,
                                   update_daily: bool = True):
         """
         批量计算并保存复权因子
-        
+
         Args:
             ts_codes: 股票代码列表
             start_date: 开始日期
@@ -441,51 +439,51 @@ class AdjFactorCalculator:
         total = len(ts_codes)
         success = 0
         failed = 0
-        
+
         for i, ts_code in enumerate(ts_codes):
             try:
                 logger.info(f"[{i+1}/{total}] 正在处理 {ts_code}")
-                
+
                 # 计算复权因子
                 df = self.calculate_adj_factors(ts_code, start_date, end_date)
                 if df is not None:
                     # 保存到stock_adj_factor表
                     self.save_adj_factors(df)
-                    
+
                     # 可选：更新stock_daily表
                     if update_daily:
                         self.update_stock_daily_adj(df)
-                    
+
                     success += 1
                 else:
                     failed += 1
-                    
+
             except (OSError, RuntimeError) as e:
                 logger.error(f"处理 {ts_code} 失败: {e}")
                 failed += 1
-        
+
         logger.info(f"批量处理完成：成功 {success}，失败 {failed}，总计 {total}")
 
 
 if __name__ == "__main__":
     # 测试代码
     from utils.config import Config
-    
+
     config = Config()
     db_manager = DatabaseManager(config)
     db_manager.connect()
-    
+
     calculator = AdjFactorCalculator(db_manager)
-    
+
     # 测试单只股票
     ts_code = "000001.SZ"
     result = calculator.calculate_adj_factors(ts_code)
-    
+
     if result is not None:
         print(f"\n{ts_code} 复权因子计算结果:")
         print(result.select(['trade_date', 'close', 'qfq_factor', 'hfq_factor']).tail(10))
-        
+
         # 保存到数据库
         calculator.save_adj_factors(result)
-    
+
     db_manager.disconnect()

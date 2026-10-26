@@ -45,8 +45,8 @@ def test_table_keys_exactly_match_migrated_indicators():
     assert set(WINDOW2_TEXTS) == EXPECTED_WINDOW2
     assert set(WINDOW3_TEXTS) == EXPECTED_WINDOW3
     # 窗口2 不含仅窗口3 提供的指标，窗口3 不含 VOL
-    assert EXPECTED_WINDOW3 - EXPECTED_WINDOW2 == {"EXPMA", "BBI", "CYC", "CYS"}
-    assert EXPECTED_WINDOW2 - EXPECTED_WINDOW3 == {"VOL"}
+    assert {"EXPMA", "BBI", "CYC", "CYS"} == EXPECTED_WINDOW3 - EXPECTED_WINDOW2
+    assert {"VOL"} == EXPECTED_WINDOW2 - EXPECTED_WINDOW3
 
 
 def test_macd_window3_renders_three_values_with_colors():

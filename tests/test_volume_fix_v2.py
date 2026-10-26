@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 测试周线成交量计算修复
 """
 
+import polars as pl
+
 from src.data.managers.data_processor import DataProcessor
 from src.utils.memory_optimizer import MemoryOptimizer
-import polars as pl
-import numpy as np
 
 # 创建测试数据 - 使用同一周的数据（2023年1月9日到1月13日）
 df = pl.DataFrame({
@@ -43,7 +42,7 @@ print(weekly_df['volume'][0])
 expected_volume = sum(df['volume'])
 actual_volume = weekly_df['volume'][0]
 
-print(f"\n验证结果:")
+print("\n验证结果:")
 print(f"预期成交量: {expected_volume}")
 print(f"实际成交量: {actual_volume}")
 print(f"是否正确: {expected_volume == actual_volume}")
@@ -59,7 +58,7 @@ print(optimized_df['volume'][0])
 
 # 再次验证
 optimized_volume = optimized_df['volume'][0]
-print(f"\n优化后验证结果:")
+print("\n优化后验证结果:")
 print(f"预期成交量: {expected_volume}")
 print(f"实际成交量: {optimized_volume}")
 print(f"是否正确: {expected_volume == optimized_volume}")
