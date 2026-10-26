@@ -250,12 +250,21 @@ class EventBacktestRunner:
             if ('raw_open' in df.columns) != ('raw_close' in df.columns):
                 raise ValueError(f"{code} 的 raw_open / raw_close 必须成对出现")
 
+        # 一次性把各列批量导出为 Python list（to_list 将 null 转为 None，与
+        # 原先 .row(named=True) 的取值语义完全一致），主循环只做数组下标取值
+        # 与纯 Python dict 组装，避免逐 bar 调用 DataFrame.row() 反复跨越
+        # PyO3 边界编组整行
+        column_data: Dict[str, Dict[str, list]] = {
+            code: {name: df[name].to_list() for name in df.columns}
+            for code, df in prepared.items()
+        }
+
         # 一次性建立 date -> 行号索引，主循环只做字典查找
         date_positions: Dict[str, Dict[Any, int]] = {}
         all_dates: set = set()
-        for code, df in prepared.items():
+        for code, cols in column_data.items():
             positions: Dict[Any, int] = {}
-            for i, d in enumerate(df['date'].to_list()):
+            for i, d in enumerate(cols['date']):
                 if d not in positions:
                     positions[d] = i
             date_positions[code] = positions
@@ -283,14 +292,22 @@ class EventBacktestRunner:
                     # 停牌（无数据行）：挂单顺延至该标的下一个交易日，不视为作废
                     continue
 
-                row = prepared[code].row(pos, named=True)
-                close_price = row['close']
-                open_price = row.get('open', close_price)
-                high = row.get('high')
-                low = row.get('low')
-                volume = row.get('volume')
-                raw_open = row.get('raw_open')
-                raw_close = row.get('raw_close')
+                cols = column_data[code]
+                close_price = cols['close'][pos]
+                # 列不存在时回退默认值，语义同原 row.get(name, default)；
+                # 列存在但值为 None（null）时透传 None，不回退
+                open_col = cols.get('open')
+                open_price = open_col[pos] if open_col is not None else close_price
+                high_col = cols.get('high')
+                high = high_col[pos] if high_col is not None else None
+                low_col = cols.get('low')
+                low = low_col[pos] if low_col is not None else None
+                volume_col = cols.get('volume')
+                volume = volume_col[pos] if volume_col is not None else None
+                raw_open_col = cols.get('raw_open')
+                raw_open = raw_open_col[pos] if raw_open_col is not None else None
+                raw_close_col = cols.get('raw_close')
+                raw_close = raw_close_col[pos] if raw_close_col is not None else None
 
                 self._execute_pending(
                     code=code, date=date, pending=pending, book=book, gate=gate,
@@ -304,9 +321,11 @@ class EventBacktestRunner:
                     close_raw=raw_close,
                 )
 
-                # 策略基于当日数据生成信号，延迟到该标的下一个交易日执行
+                # 策略基于当日数据生成信号，延迟到该标的下一个交易日执行；
+                # 仅在需要时按行号组装当日行 dict（键集合与原 .row(named=True) 一致）
                 strategy = strategies.get(code)
                 if strategy is not None:
+                    row = {name: col[pos] for name, col in cols.items()}
                     signal = strategy.generate_signal(row, bar_index[code])
                     if signal in ('buy', 'sell'):
                         pending[code] = signal
