@@ -65,28 +65,31 @@
 ### 注意事项
 - **Commit message 必须原样输出**：从 `git log -1 --format="%B"` 取，不做任何二次格式化（不要加"标题""正文"标签，不要改缩进）
 - **不要伪造输出**：所有数值、哈希、文件状态都必须来自 `git` 的真实输出
-- **备份方式**：Python 脚本精确复制 git 追踪文件（唯一可靠方案），命令为：
+- **备份方式**：只同步本次 commit 的变更文件到备份目录，**不删目录、不碰 .git**，命令为：
   ```powershell
   python -c "
-import subprocess, shutil, os, stat
+import subprocess, shutil, os
 src=r'E:\code\python\quant'; dst=r'E:\git\python-quant'
-def on_err(f,p,e):
-    try: os.chmod(p, stat.S_IWRITE); f(p)
-    except: pass
-shutil.rmtree(dst, onerror=on_err, ignore_errors=True)
-os.makedirs(dst, exist_ok=True)
-r=subprocess.run(['git','-C',src,'ls-files','-z'],capture_output=True)
-tracked=[x.decode('utf-8') for x in r.stdout.split(b'\x00') if x]
-for rel in tracked:
+# 1. 获取本次 commit 变更文件列表
+r=subprocess.run(['git','-C',src,'diff','--name-only','HEAD~1','HEAD'],capture_output=True,text=True)
+changed=[l for l in r.stdout.strip().split('\n') if l]
+# 2. 获取被删除的文件列表
+r2=subprocess.run(['git','-C',src,'diff','--name-only','--diff-filter=D','HEAD~1','HEAD'],capture_output=True,text=True)
+deleted=set(l for l in r2.stdout.strip().split('\n') if l)
+# 3. 同步修改/新增
+for rel in changed:
     s=os.path.join(src,rel); d=os.path.join(dst,rel)
     if os.path.isfile(s):
         os.makedirs(os.path.dirname(d),exist_ok=True)
         shutil.copy2(s,d)
+    elif rel in deleted and os.path.exists(d):
+        os.remove(d)
+print(f'synced {len(changed)} files, removed {len(deleted)} deleted')
 "
   ```
-  backup 目标固定 `E:\git\python-quant\`
-- **核心原则：备份目录与 git 仓库保持完全一致**。任何未被 git 追踪的文件（untracked 文件、`.gitignore` 中的文件、手动创建的临时文件、虚拟环境 venv/、编译缓存 __pycache__/ 等）都**绝对不能**进入备份目录
-- **为什么不用 robocopy**：robocopy `/MIR` 不看 `.gitignore`，`/XD` 对非 ASCII 路径下嵌套目录排除不可靠，且 PowerShell `Remove-Item` / `.NET File.Delete` 都删不掉 robocopy 复制的只读/系统属性文件；Python `shutil.rmtree` + `onerror` 钩子能强制清除任何残留，`git ls-files -z` 用 null 分隔完美处理 Unicode 路径
+  backup 目标固定 `E:\git\python-quant\`；备份目录有自己的 `.git`，**永远不要删整个目录**
+- **核心原则：增量同步，其他不动**。只拷贝本次 commit 变更的文件过去，删除源仓库已删的文件；备份目录里的 `.git` 信息、untracked 文件、手动添加的内容全部保留
+- **为什么不删整个目录**：备份目录是独立的 git 仓库（有自己的 `.git`），`shutil.rmtree` 会把备份仓库也干掉；之前的"精确匹配"方案过度设计了，用户只需要同步文件内容
 
 ## 备份同步规则
 
