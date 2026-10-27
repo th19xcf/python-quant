@@ -283,17 +283,21 @@ class EventBacktestRunner:
                     for i in range(height)
                 ]
 
-        # 一次性建立 date -> 行号索引，主循环只做字典查找
+        # 一次性建立 date -> 行号索引（用 dict(zip) 替代手动 enumerate 循环），
+        # 同时建反向索引 date -> [codes]，主循环按日期直查活跃标的，消除
+        # 笛卡尔遍历下大量 date_positions[code].get(date) -> None -> continue
+        # 的无效分支（标的上市日期分散时占外层迭代 40~50%）。
         date_positions: Dict[str, Dict[Any, int]] = {}
-        all_dates: set = set()
+        date_codes: Dict[Any, List[str]] = {}
+        sorted_dates: List[Any] = []
         for code, cols in column_data.items():
-            positions: Dict[Any, int] = {}
-            for i, d in enumerate(cols['date']):
-                if d not in positions:
-                    positions[d] = i
+            dates = cols['date']
+            positions = dict(zip(dates, range(len(dates))))
             date_positions[code] = positions
-            all_dates.update(positions)
-        sorted_dates = sorted(all_dates)
+            for d in positions:
+                bucket = date_codes.setdefault(d, [])
+                bucket.append(code)
+        sorted_dates = sorted(date_codes.keys())
 
         rules = ExecutionRules(lot_size=lot_size)
         book = AccountBook(initial_capital, codes, industry_map)
@@ -309,12 +313,8 @@ class EventBacktestRunner:
         equity_curve: List[Dict[str, Any]] = []
 
         for date in sorted_dates:
-            for code in codes:
-                pos = date_positions[code].get(date)
-                if pos is None:
-                    # 停牌（无数据行）：挂单顺延至该标的下一个交易日，不视为作废
-                    continue
-
+            for code in date_codes[date]:
+                pos = date_positions[code][date]
                 cols = column_data[code]
                 close_price = cols['close'][pos]
                 # 列不存在时回退默认值，语义同原 row.get(name, default)；
