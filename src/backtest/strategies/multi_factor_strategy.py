@@ -17,6 +17,8 @@ generate_signal 按权重聚合三个因子的二元贡献（1 / 0 / -1），
 
 from typing import Any, Dict, List
 
+import polars as pl
+
 from src.backtest.strategies.base_strategy import BaseStrategy
 
 
@@ -103,3 +105,75 @@ class MultiFactorStrategy(BaseStrategy):
         if score < -threshold:
             return 'sell'
         return 'hold'
+
+    def _factor_expr(self, name: str, df: pl.DataFrame) -> pl.Expr | None:
+        """单因子贡献表达式（1 / 0 / -1），与对应 _*_factor 逐行版语义一致。
+
+        依赖列缺失时返回 None，等价逐行版 data.get() 取 None → 贡献 0。
+        """
+        if name == 'ma':
+            short_w = self.params.get('short_window', 10)
+            long_w = self.params.get('long_window', 20)
+            short_col = f'ma_{short_w}'
+            long_col = f'ma_{long_w}'
+            if short_col not in df.columns or long_col not in df.columns:
+                return None
+            short_ma = pl.col(short_col)
+            long_ma = pl.col(long_col)
+            return (
+                pl.when(short_ma.is_null() | long_ma.is_null()).then(pl.lit(0.0))
+                  .when(short_ma > long_ma).then(pl.lit(1.0))
+                  .when(short_ma < long_ma).then(pl.lit(-1.0))
+                  .otherwise(pl.lit(0.0))
+            )
+        if name == 'macd':
+            if 'macd' not in df.columns or 'macd_signal' not in df.columns:
+                return None
+            macd = pl.col('macd')
+            sig = pl.col('macd_signal')
+            # 当前 MACD 穿越信号线的方向（同逐行版退化为同方向打分）
+            return (
+                pl.when(macd.is_null() | sig.is_null()).then(pl.lit(0.0))
+                  .when(macd > sig).then(pl.lit(1.0))
+                  .when(macd < sig).then(pl.lit(-1.0))
+                  .otherwise(pl.lit(0.0))
+            )
+        if name == 'rsi':
+            if 'rsi' not in df.columns:
+                return None
+            rsi = pl.col('rsi')
+            return (
+                pl.when(rsi.is_null()).then(pl.lit(0.0))
+                  .when(rsi < 30).then(pl.lit(1.0))
+                  .when(rsi > 70).then(pl.lit(-1.0))
+                  .otherwise(pl.lit(0.0))
+            )
+        return None
+
+    def generate_signals_vectorized(self, df: pl.DataFrame) -> pl.Series:
+        weights = self.params['weights']
+        threshold = self.params['threshold']
+
+        # 按 factors 顺序加权累加；sum() 从 0 起左折叠，与逐行版 sum()
+        # 的浮点累加顺序完全一致（表达式体避免语句级循环，架构守卫要求）
+        contributions = [
+            expr * weights.get(name, 0)
+            for name in self.params['factors']
+            if (expr := self._factor_expr(name, df)) is not None
+        ]
+
+        if contributions:
+            score = sum(contributions)
+            decision = (
+                pl.when(score > threshold).then(pl.lit('buy'))
+                  .when(score < -threshold).then(pl.lit('sell'))
+                  .otherwise(pl.lit('hold'))
+            )
+        else:
+            decision = pl.lit('hold')
+
+        # 暖机期内一律 hold（逐行版 index < warmup 直接返回，先于因子计算）
+        warmup = pl.int_range(0, df.height) < self._warmup_bars()
+        return df.select(
+            pl.when(warmup).then(pl.lit('hold')).otherwise(decision).alias('signal')
+        ).to_series()

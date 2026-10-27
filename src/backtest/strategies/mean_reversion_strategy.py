@@ -9,6 +9,8 @@ generate_signal 只读当前行的 rsi 值，不再自己维护历史窗口。
 
 from typing import Any, Dict
 
+import polars as pl
+
 from src.backtest.strategies.base_strategy import BaseStrategy
 
 
@@ -42,3 +44,21 @@ class MeanReversionStrategy(BaseStrategy):
         if rsi > overbought:
             return 'sell'
         return 'hold'
+
+    def generate_signals_vectorized(self, df: pl.DataFrame) -> pl.Series:
+        # 列缺失时对齐逐行语义：data.get() 返回 None → 全程 hold
+        if 'rsi' not in df.columns:
+            return pl.Series('signal', ['hold'] * df.height, dtype=pl.Utf8)
+
+        rsi_period = self.params.get('rsi_period', 14)
+        overbought = self.params.get('overbought', 70)
+        oversold = self.params.get('oversold', 30)
+        rsi = pl.col('rsi')
+        warmup = pl.int_range(0, df.height) < rsi_period
+        return df.select(
+            pl.when(warmup | rsi.is_null()).then(pl.lit('hold'))
+              .when(rsi < oversold).then(pl.lit('buy'))
+              .when(rsi > overbought).then(pl.lit('sell'))
+              .otherwise(pl.lit('hold'))
+              .alias('signal')
+        ).to_series()

@@ -11,6 +11,8 @@ prev_macd/prev_signal 列，留待后续扩展。
 
 from typing import Any, Dict
 
+import polars as pl
+
 from src.backtest.strategies.base_strategy import BaseStrategy
 
 
@@ -61,3 +63,21 @@ class MACDStrategy(BaseStrategy):
         if macd < signal:
             return 'sell'
         return 'hold'
+
+    def generate_signals_vectorized(self, df: pl.DataFrame) -> pl.Series:
+        # 列缺失时对齐逐行语义：data.get() 返回 None → 全程 hold
+        if 'macd' not in df.columns or 'macd_signal' not in df.columns:
+            return pl.Series('signal', ['hold'] * df.height, dtype=pl.Utf8)
+
+        macd = pl.col('macd')
+        signal = pl.col('macd_signal')
+        # MACD 按通达信口径从第 0 根就有值（EMA 种子 y0=x0），慢线+信号线根数内
+        # 的差离值未稳定，属暖机噪声，不交易（与引擎预计算的固定 12/26/9 参数对齐）
+        warmup = pl.int_range(0, df.height) < 26 + 9
+        return df.select(
+            pl.when(warmup | macd.is_null() | signal.is_null()).then(pl.lit('hold'))
+              .when(macd > signal).then(pl.lit('buy'))
+              .when(macd < signal).then(pl.lit('sell'))
+              .otherwise(pl.lit('hold'))
+              .alias('signal')
+        ).to_series()

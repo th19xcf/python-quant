@@ -11,6 +11,8 @@ prev_ma_* 列，留待后续扩展。
 
 from typing import Any, Dict
 
+import polars as pl
+
 from src.backtest.strategies.base_strategy import BaseStrategy
 
 
@@ -58,3 +60,24 @@ class MAStrategy(BaseStrategy):
         if short_ma < long_ma:
             return 'sell'
         return 'hold'
+
+    def generate_signals_vectorized(self, df: pl.DataFrame) -> pl.Series:
+        short_w = self.params.get('short_window', 5)
+        long_w = self.params.get('long_window', 20)
+        short_col = f'ma_{short_w}'
+        long_col = f'ma_{long_w}'
+
+        # 列缺失时对齐逐行语义：data.get() 返回 None → 全程 hold
+        if short_col not in df.columns or long_col not in df.columns:
+            return pl.Series('signal', ['hold'] * df.height, dtype=pl.Utf8)
+
+        short_ma = pl.col(short_col)
+        long_ma = pl.col(long_col)
+        return df.select(
+            # null 列（窗口未满）对齐逐行版 None → hold
+            pl.when(short_ma.is_null() | long_ma.is_null()).then(pl.lit('hold'))
+              .when(short_ma > long_ma).then(pl.lit('buy'))
+              .when(short_ma < long_ma).then(pl.lit('sell'))
+              .otherwise(pl.lit('hold'))
+              .alias('signal')
+        ).to_series()

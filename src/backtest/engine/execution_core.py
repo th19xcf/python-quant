@@ -259,6 +259,29 @@ class EventBacktestRunner:
             for code, df in prepared.items()
         }
 
+        # 信号批量预生成：每个标的只调用一次向量化策略接口，主循环退化为
+        # 数组下标取值，消除 N_days × N_symbols 次逐行策略调用与行 dict 组装。
+        # 信号按 prepared[code] 的行序对齐（_ensure_sorted 保证日期升序），
+        # 主循环里的 pos 即该信号在序列中的下标。未提供向量化接口的鸭子类型
+        # 策略对象在此逐行适配，主循环保持单一查表路径。
+        signal_columns: Dict[str, list] = {}
+        for code in codes:
+            strategy = strategies.get(code)
+            if strategy is None:
+                continue
+            vec = getattr(strategy, 'generate_signals_vectorized', None)
+            if vec is not None:
+                signal_columns[code] = vec(prepared[code]).to_list()
+            else:
+                cols = column_data[code]
+                height = len(next(iter(cols.values()))) if cols else 0
+                signal_columns[code] = [
+                    strategy.generate_signal(
+                        {name: col[i] for name, col in cols.items()}, i
+                    )
+                    for i in range(height)
+                ]
+
         # 一次性建立 date -> 行号索引，主循环只做字典查找
         date_positions: Dict[str, Dict[Any, int]] = {}
         all_dates: set = set()
@@ -276,7 +299,6 @@ class EventBacktestRunner:
         gate = RiskGate(self.risk_engine, industry_map)
 
         pending: Dict[str, str | None] = dict.fromkeys(codes)
-        bar_index: Dict[str, int] = dict.fromkeys(codes, 0)
         prev_close: Dict[str, float | None] = dict.fromkeys(codes)
         prev_raw_close: Dict[str, float | None] = dict.fromkeys(codes)
 
@@ -322,15 +344,13 @@ class EventBacktestRunner:
                 )
 
                 # 策略基于当日数据生成信号，延迟到该标的下一个交易日执行；
-                # 仅在需要时按行号组装当日行 dict（键集合与原 .row(named=True) 一致）
-                strategy = strategies.get(code)
-                if strategy is not None:
-                    row = {name: col[pos] for name, col in cols.items()}
-                    signal = strategy.generate_signal(row, bar_index[code])
+                # 信号已在主循环前按行序批量生成，此处仅按下标查表
+                signals = signal_columns.get(code)
+                if signals is not None:
+                    signal = signals[pos]
                     if signal in ('buy', 'sell'):
                         pending[code] = signal
 
-                bar_index[code] += 1
                 prev_close[code] = close_price
                 prev_raw_close[code] = raw_close if raw_close is not None else close_price
                 book.mark(code, close_price)
