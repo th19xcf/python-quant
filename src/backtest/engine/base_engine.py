@@ -70,14 +70,24 @@ class BaseBacktestEngine:
         self.trades = []
         self.equity_curve = []
 
-    def set_strategy(self, strategy: BaseStrategy) -> None:
+    def set_strategy(self, strategy: BaseStrategy, code: str = '') -> None:
         """
-        设置策略
+        设置策略（基类 1 参数契约：只传 strategy）。
+        内部委托 set_strategies，便于子类统一主入口。
+        """
+        self.set_strategies({code: strategy} if code else {'__default__': strategy})
 
-        Args:
-            strategy: 策略对象
+    def set_strategies(self, mapping: Dict[str, BaseStrategy]) -> None:
         """
-        self.strategy = strategy
+        主入口：一次性设置多标的策略映射。
+        单标的引擎取 mapping 中唯一或首个值存入 self.strategy；
+        组合引擎按 code 存入 self.strategies。
+        """
+        if not mapping:
+            self.strategy = None
+            return
+        # 单标的场景：只关心策略对象本身，code 在 run_backtest 里由 ts_code 补位
+        self.strategy = next(iter(mapping.values()))
 
     def set_cost_model(self, cost_model: CostModel) -> None:
         """

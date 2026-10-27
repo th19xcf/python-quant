@@ -105,8 +105,7 @@ def run_backtest(
 
         engine = PortfolioBacktestEngine(data)
         engine.risk_engine = risk_engine
-        for code, strat in strategies.items():
-            engine.set_strategy(code, strat)
+        engine.set_strategies(strategies)
 
         return engine.run_backtest(
             initial_capital=initial_capital,
