@@ -457,3 +457,72 @@ def test_close_nan_inf_blocked():
         assert result['trades'] == [], f"close={bad_close!r} 不应成交"
         assert any(o['reason'] == 'price_missing' for o in result['expired_orders']), \
             f"close={bad_close!r} 应触发 price_missing"
+
+
+# ------------------------------------------------------------------
+# P0-2：open 列存在但值为 None 时，不得用 close 伪造成交价
+# ------------------------------------------------------------------
+
+
+def test_open_none_prevents_close_fallback_execution():
+    """P0-2 回归：open 列存在但某 bar 为 None（停牌复牌日、除权日、脏数据），
+    不得用 close 伪造开盘价成交。回测不应发明价格。"""
+    # 4 天数据：day0 正常、day1 open=None、day2/3 正常
+    days = 4
+    dates = pd.date_range('2023-01-02', periods=days, freq='B')
+    df = pl.DataFrame({
+        'date': dates,
+        'open': [100.0, None, 100.0, 100.0],
+        'high': [101.0, 101.0, 101.0, 101.0],
+        'low': [99.0, 99.0, 99.0, 99.0],
+        'close': [100.0, 95.0, 100.0, 100.0],   # day1 close=95 若被伪造成交会是低价买入
+        'volume': [1_000_000.0] * days,
+    })
+    engine = BacktestEngine(df)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+
+    # 无成交（day1 open=None 挂单过期，不得用 close=95 伪造成交）
+    assert result['trades'] == []
+    # expired_orders 包含 price_missing
+    assert any(o['reason'] == 'price_missing' for o in result['expired_orders'])
+
+
+def test_open_none_col_existing_vs_col_missing_distinction():
+    """P0-2 边界：open 列整体缺失时，列被回填 close + fill_confidence=low；
+    open 列存在但值为 None 时，必须触发 price_missing 过期。"""
+    days = 3
+    dates = pd.date_range('2023-01-02', periods=days, freq='B')
+
+    # 场景 A：open 列整体缺失 → 列回填 close，fill_confidence=low
+    df_col_missing = pl.DataFrame({
+        'date': dates,
+        'high': [101.0] * days,
+        'low': [99.0] * days,
+        'close': [100.0] * days,
+        'volume': [1_000_000.0] * days,
+    })
+    engine = BacktestEngine(df_col_missing)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+    assert result['fill_confidence'] == 'low'
+    # 列缺失 → open 回填 close → 用 close 成交（退化，但 fill_confidence 已提示）
+    assert result['trades'] != []
+
+    # 场景 B：open 列存在但 day1 为 None → 不成交，price_missing
+    df_value_missing = pl.DataFrame({
+        'date': dates,
+        'open': [100.0, None, 100.0],
+        'high': [101.0] * days,
+        'low': [99.0] * days,
+        'close': [100.0] * days,
+        'volume': [1_000_000.0] * days,
+    })
+    engine2 = BacktestEngine(df_value_missing)
+    engine2.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result2 = engine2.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+    # fill_confidence=high（列存在，只是某 bar 值缺失）
+    assert result2['fill_confidence'] == 'high'
+    # 挂单过期，price_missing
+    assert result2['trades'] == []
+    assert any(o['reason'] == 'price_missing' for o in result2['expired_orders'])

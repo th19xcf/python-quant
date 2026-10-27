@@ -484,10 +484,14 @@ class EventBacktestRunner:
             _expire('not_tradable')
             return
 
-        exec_price = open_price if open_price is not None else close
-        if exec_price is None:
+        # P0-2 修复：开盘价是集合竞价成交价。open_price 为 None（列存在但值缺失，
+        # 如停牌复牌日、除权日）时，不能用 close 伪造成交价——回测不应发明价格。
+        # 列整体缺失时 open_price 已在主循环回填为 close_price + fill_confidence=low，
+        # 此处不会走到 None 分支。
+        if open_price is None or not math.isfinite(open_price) or open_price <= 0:
             _expire('price_missing')
             return
+        exec_price = open_price
 
         if side == 'buy':
             available = book.cash.get(code, 0.0)
