@@ -7,7 +7,9 @@ ORM 批量 upsert 工具（收口点）
 「逐行 query 查重 -> 更新或插入」，共 6 处。此模块提供统一实现：
 
 - 按主键批量预加载已存在的行（or_ 条件分块），逐行 SELECT 降为每 400 行一次
-- 已存在：更新 value_fields；不存在：用 key_fields + value_fields + create_defaults 插入
+- 已存在：更新 value_fields；不存在：按 key_fields + value_fields + create_defaults
+  收集后单次 executemany 批量插入（insert(model), list_of_dicts），替代逐行
+  session.add + flush
 - create_defaults 只在新插入时赋值，不会覆盖已有行的存量字段
 
 调用方需保证每个 dict 同时包含 key_fields 与 value_fields 的键；
@@ -17,7 +19,7 @@ ORM 批量 upsert 工具（收口点）
 from collections.abc import Iterable, Sequence
 from typing import Dict, Tuple
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, insert, or_
 
 # 单条 SQL 里 or_ 条件的分块大小，避免语句过长
 _PRELOAD_CHUNK = 400
@@ -75,6 +77,7 @@ def upsert_rows(
 
     existing = _preload_existing(session, model, rows, key_fields)
     defaults = dict(create_defaults or {})
+    to_insert: Dict[tuple, Dict] = {}
     inserted = 0
     updated = 0
 
@@ -82,17 +85,23 @@ def upsert_rows(
         key = tuple(row[field] for field in key_fields)
         obj = existing.get(key)
 
-        if obj is None:
+        if obj is None and key not in to_insert:
             payload = {field: row[field] for field in key_fields}
             payload.update({field: row[field] for field in value_fields})
             payload.update(defaults)
-            obj = model(**payload)
-            session.add(obj)
-            existing[key] = obj
+            to_insert[key] = payload
             inserted += 1
+        elif obj is None:
+            # 同批重复主键：后者覆盖待插入 payload（语义同原 ORM 路径的 setattr）
+            to_insert[key].update({field: row[field] for field in value_fields})
+            updated += 1
         else:
             for field in value_fields:
                 setattr(obj, field, row[field])
             updated += 1
+
+    # 批量插入新行：单次 executemany，替代逐行 session.add + flush
+    if to_insert:
+        session.execute(insert(model), list(to_insert.values()))
 
     return inserted, updated
