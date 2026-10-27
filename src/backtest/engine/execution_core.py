@@ -20,6 +20,7 @@ A 股交易语义只允许在本模块修改，禁止在具体引擎里再写一
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List
 
 import polars as pl
@@ -77,13 +78,15 @@ class ExecutionRules:
         """
         指定交易方向在某一天是否可成交。
 
-        - 停牌（成交量为 0）一律不可交易
+        - 停牌（成交量为 0 / NaN / inf）一律不可交易
         - 有开盘价时：开盘即涨停不可买、开盘即跌停不可卖
           （覆盖一字板 + 开盘封板后盘中打开两种情形）
-        - 无开盘价时退化为 high == low 的一字板判断
+        - 无开盘价时退化为 high ≈ low（相对容差）的一字板判断，
+          此时只做 close 涨跌停判定（偏乐观），调用侧应确保 open 列存在
         - 首根 K 线没有前收盘价，只做停牌判断
         """
-        if volume is not None and volume <= 0:
+        # 缺陷 A 修复：NaN / inf 穿过停牌检查，显式拦截
+        if volume is None or not math.isfinite(volume) or volume <= 0:
             return False
 
         if prev_close is None or prev_close <= 0:
@@ -91,18 +94,21 @@ class ExecutionRules:
 
         limit = self.resolve_limit_pct(ts_code, is_st)
 
-        if open_price is not None:
+        if open_price is not None and math.isfinite(open_price):
             open_pct = open_price / prev_close - 1
             if side == 'buy' and open_pct >= limit - self.LIMIT_TOLERANCE:
                 return False
             return not (side == 'sell' and open_pct <= -(limit - self.LIMIT_TOLERANCE))
 
-        if high is not None and low is not None and high == low and close is not None:
-            pct = close / prev_close - 1
-            if side == 'buy' and pct >= limit - self.LIMIT_TOLERANCE:
-                return False
-            if side == 'sell' and pct <= -(limit - self.LIMIT_TOLERANCE):
-                return False
+        # 缺陷 B 修复：复权后 high / low 可能相差 1e-16，改用相对容差
+        # 缺陷 C 修复：open_price 缺失时只退化到此分支，偏乐观
+        if high is not None and low is not None and close is not None:
+            if abs(high - low) / prev_close < 1e-6:
+                pct = close / prev_close - 1
+                if side == 'buy' and pct >= limit - self.LIMIT_TOLERANCE:
+                    return False
+                if side == 'sell' and pct <= -(limit - self.LIMIT_TOLERANCE):
+                    return False
 
         return True
 
@@ -260,6 +266,18 @@ class EventBacktestRunner:
             for code, df in prepared.items()
         }
 
+        # 缺陷 C：open 列缺失时 is_tradable 退化为 high≈low 路径，
+        # 判定偏乐观（遗漏"开盘涨停、盘中打开"等情形）。
+        # 整次回测任一标的缺 open 列 → 标记 fill_confidence 为 low。
+        _open_missing = any('open' not in cols for cols in column_data.values())
+        if _open_missing:
+            logger.warning(
+                "部分标的缺 open 列，开盘涨停判定将退化为 high≈low 路径，"
+                "成交假设偏乐观（fill_confidence=low）。"
+                "缺失标的: {}",
+                [c for c, cols in column_data.items() if 'open' not in cols],
+            )
+
         # 信号批量预生成：每个标的只调用一次向量化策略接口，主循环退化为
         # 数组下标取值，消除 N_days × N_symbols 次逐行策略调用与行 dict 组装。
         # 信号按 prepared[code] 的行序对齐（_ensure_sorted 保证日期升序），
@@ -384,6 +402,9 @@ class EventBacktestRunner:
             'risk_summary': risk_summary,
             'rejected_orders': rejected_orders,
             'expired_orders': expired_orders,
+            # 缺陷 C：整次回测任一标的缺 open 列 → 开盘涨停判定退化，
+            # 成交假设偏乐观，fill_confidence 提示调用方该结果可信度较低
+            'fill_confidence': 'low' if _open_missing else 'high',
         }
         if result_meta:
             result.update(result_meta)

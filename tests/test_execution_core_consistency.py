@@ -339,3 +339,67 @@ def test_growth_board_allows_open_above_ten_percent():
 
     assert [t['signal'] for t in result['trades']] == ['buy']
     assert result['expired_orders'] == []
+
+
+# ------------------------------------------------------------------
+# 缺陷 A/B/C 回归：确保三个可导致错误成交的路径被锁死
+# ------------------------------------------------------------------
+
+
+def test_volume_nan_blocks_trading():
+    """缺陷 A 回归：volume 为 NaN（数据源缺字段、pivot 补空、复权对齐空洞）
+    必须被视为停牌，禁止成交。"""
+    rules = ExecutionRules()
+    assert rules.is_tradable('buy', prev_close=100.0, open_price=100.0,
+                             high=101.0, low=99.0, close=100.5,
+                             volume=float('nan')) is False
+    assert rules.is_tradable('sell', prev_close=100.0, open_price=100.0,
+                             high=101.0, low=99.0, close=100.5,
+                             volume=float('inf')) is False
+    # volume=None 等价于缺失，同样视为停牌
+    assert rules.is_tradable('buy', prev_close=100.0, open_price=100.0,
+                             high=101.0, low=99.0, close=100.5,
+                             volume=None) is False
+
+
+def test_high_low_relative_tolerance_covers_reweighting_error():
+    """缺陷 B 回归：复权后同一价位的 high / low 可能相差 1e-16（浮点误差），
+    一字板判定必须用相对容差而非精确相等。"""
+    rules = ExecutionRules()
+    prev_close = 10.0
+    # 一字涨停日：close = 11.0（+10%），复权后 high / low 相差 1e-10
+    assert rules.is_tradable('buy', prev_close=prev_close, open_price=None,
+                             high=11.0 + 1e-10, low=11.0, close=11.0,
+                             volume=1_000_000.0, ts_code='600000.SH') is False
+    # 跌停同理
+    assert rules.is_tradable('sell', prev_close=prev_close, open_price=None,
+                             high=9.0, low=9.0 - 1e-12, close=9.0,
+                             volume=1_000_000.0, ts_code='600000.SH') is False
+    # high-low 差 1e-4（千分之一）不是一字板，不应误判
+    assert rules.is_tradable('buy', prev_close=prev_close, open_price=None,
+                             high=11.0 + 1e-4, low=11.0, close=11.0,
+                             volume=1_000_000.0, ts_code='600000.SH') is True
+
+
+def test_fill_confidence_low_when_open_missing():
+    """缺陷 C 回归：任一标的缺 open 列 → fill_confidence=low，
+    且整次回测可正常执行（high≈low 退化路径被激活但不会崩）。"""
+    days = 5
+    dates = pd.date_range('2023-01-02', periods=days, freq='B')
+    df_no_open = pl.DataFrame({
+        'date': dates,
+        'high': np.full(days, 105.0),
+        'low': np.full(days, 95.0),
+        'close': np.full(days, 100.0),
+        'volume': np.full(days, 1_000_000.0),
+    })
+    df_full = _make_df(opens=[100.0] * days, closes=[100.0] * days)
+
+    portfolio = PortfolioBacktestEngine({'NOOPEN.SH': df_no_open, 'FULL.SH': df_full})
+    portfolio.set_strategy('NOOPEN.SH', MAStrategy(short_window=1, long_window=3))
+    portfolio.set_strategy('FULL.SH', MAStrategy(short_window=1, long_window=3))
+    result = portfolio.run_backtest(initial_capital=1_000_000.0)
+
+    assert result['fill_confidence'] == 'low'
+    # 完整列的标的 fill_confidence 不影响（整次回测按最弱的标的标 low）
+    assert result is not None
