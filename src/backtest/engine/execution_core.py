@@ -368,6 +368,16 @@ class EventBacktestRunner:
                 if signals is not None:
                     signal = signals[pos]
                     if signal in ('buy', 'sell'):
+                        # P0-4：pending 残留挂单被新信号覆盖时必须记账，
+                        # 否则原始信号彻底消失，trades 分母不可对账。
+                        # 场景：停牌日 _execute_pending 不执行，pending 残留 →
+                        # 下一有信号日直接覆写，无任何日志。
+                        old = pending.get(code)
+                        if old is not None and old != signal:
+                            expired_orders.append({
+                                'date': date, 'side': old, 'ts_code': code,
+                                'reason': 'overwritten', 'qty': 0,
+                            })
                         pending[code] = signal
 
                 # close 缺失 / 非有限 / ≤0 时，挂单已在 _execute_pending 里过期；

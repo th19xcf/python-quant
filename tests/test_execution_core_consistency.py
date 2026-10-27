@@ -526,3 +526,52 @@ def test_open_none_col_existing_vs_col_missing_distinction():
     # 挂单过期，price_missing
     assert result2['trades'] == []
     assert any(o['reason'] == 'price_missing' for o in result2['expired_orders'])
+
+
+# ------------------------------------------------------------------
+# P0-4：pending 残留挂单被新信号覆盖时必须记账
+# ------------------------------------------------------------------
+
+
+def test_pending_no_overwrite_in_current_order():
+    """P0-4 防御性验证：当前主循环顺序是 _execute_pending（先 pop pending）
+    → 信号生成（后设置 pending），所以 pending 残留值总会在 pop 时被消费/过期，
+    不会被新信号覆写。overwritten 分支是安全网，当前不可达。
+
+    残留场景：标的某日整行缺失（不在 date_codes[date]）→ pending 残留 →
+    下一有数据日 _execute_pending pop 消费 → 信号生成设置新值。
+    残留值在 pop 时已处理，不会覆写。
+    """
+    from datetime import timedelta
+
+    base = pd.date_range('2023-01-02', periods=4, freq='B')
+    # 标的 A：day2 才上市（day0-1 无行）
+    df_a = pl.DataFrame({
+        'date': base[2:],
+        'open': [100.0, 100.0],
+        'high': [101.0, 101.0],
+        'low': [99.0, 99.0],
+        'close': [100.0, 100.0],
+        'volume': [1_000_000.0, 1_000_000.0],
+    })
+    df_b = pl.DataFrame({
+        'date': base,
+        'open': [100.0] * 4,
+        'high': [101.0] * 4,
+        'low': [99.0] * 4,
+        'close': [100.0] * 4,
+        'volume': [1_000_000.0] * 4,
+    })
+    engine = PortfolioBacktestEngine({
+        '000001.SZ': df_a,
+        '000002.SZ': df_b,
+    })
+    # 标的 A 在它自己的 day0（全局 day2）发 buy，day1（全局 day3）发 sell
+    engine.set_strategies({
+        '000001.SZ': _IndexSignalStrategy({0: 'buy', 1: 'sell'}),
+    })
+    result = engine.run_backtest(initial_capital=1_000_000.0)
+
+    # 当前代码结构下 overwritten 不会触发（_execute_pending 先 pop 再设置）
+    overwritten = [o for o in result['expired_orders'] if o['reason'] == 'overwritten']
+    assert overwritten == [], f"当前主循环顺序不应触发 overwritten，实际={overwritten}"
