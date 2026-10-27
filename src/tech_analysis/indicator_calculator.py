@@ -5,6 +5,7 @@
 """
 
 import polars as pl
+from loguru import logger
 
 from ..utils.memory_optimizer import MemoryOptimizer
 from .indicators import (
@@ -675,7 +676,7 @@ def calculate_cr_polars(df, windows=None):
     return calculate_multiple_indicators_polars(df, ['cr'], cr_windows=windows)
 
 
-def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
+def calculate_multiple_indicators_polars(df, indicator_types=None, *, optimize_memory=False, **params):
     """
     统一的多指标批量计算函数，将所有指标计算合并到单个查询计划
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
@@ -683,6 +684,9 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     Args:
         df: Polars DataFrame或LazyFrame
         indicator_types: 指标类型列表，默认计算所有指标
+        optimize_memory: 是否在结果落地前执行 dtype 压缩，默认关闭。
+            由调用方在缓存落地前决定是否开启；开启后指标列会降级为
+            Float32，EMA 等递推指标会在 Float32 下执行并累积误差
         **params: 指标计算参数
 
     Returns:
@@ -748,16 +752,16 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, **params):
     # 检查输入类型并返回相应的结果
     if isinstance(df, pl.LazyFrame):
         return lazy_df
-    else:
-        # 对于DataFrame，执行计算并优化内存使用
-        result = execute_optimized_pipeline(lazy_df)
-        # 内存优化：转换数据类型
-        optimized_result = MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
-        MemoryOptimizer.print_memory_stats(optimized_result, "指标计算结果优化后")
-        return optimized_result
+
+    # eager 路径：单次 collect。dtype 压缩默认关闭——execute_optimized_pipeline
+    # 内部已含一次压缩，此处再压是重复开销；且其惰性计划级压缩会把全部数值列
+    # 降级 Float32 后再执行 EMA 递推，与通达信口径产生可观测偏差
+    result = execute_optimized_pipeline(lazy_df, optimize_memory=optimize_memory)
+    logger.debug("指标计算结果: {} 行 x {} 列", result.height, result.width)
+    return result
 
 
-def calculate_indicators_parallel(data, indicator_types, max_workers=None, **params):
+def calculate_indicators_parallel(data, indicator_types, max_workers=None, *, optimize_memory=False, **params):
     """
     并行计算多个技术指标
 
@@ -765,6 +769,8 @@ def calculate_indicators_parallel(data, indicator_types, max_workers=None, **par
         data: 输入数据（Polars DataFrame或pandas DataFrame）
         indicator_types: 指标类型列表
         max_workers: 最大工作线程数，None表示使用所有可用核心
+        optimize_memory: 是否在合并结果落地前执行 dtype 压缩，默认关闭，
+            由调用方在缓存落地前决定
         **params: 指标计算参数
 
     Returns:
@@ -772,8 +778,6 @@ def calculate_indicators_parallel(data, indicator_types, max_workers=None, **par
     """
     import concurrent.futures
     import time
-
-    from loguru import logger
 
     # 转换为Polars DataFrame
     if not isinstance(data, pl.DataFrame):
@@ -853,14 +857,15 @@ def calculate_indicators_parallel(data, indicator_types, max_workers=None, **par
                 how='left'
             )
 
-    # 内存优化
-    optimized_result = MemoryOptimizer.optimize_dataframe(merged_result, enable_sparse=True)
-
     total_time = time.time() - start_time
     logger.info(f"并行计算完成，总耗时: {total_time:.2f}秒")
-    MemoryOptimizer.print_memory_stats(optimized_result, "并行计算结果优化后")
 
-    return optimized_result
+    # dtype 压缩默认关闭，由调用方在缓存落地前决定（见 optimize_memory 参数）
+    if optimize_memory:
+        merged_result = MemoryOptimizer.optimize_dataframe(merged_result, enable_sparse=True)
+    logger.debug("并行计算结果: {} 行 x {} 列", merged_result.height, merged_result.width)
+
+    return merged_result
 
 
 def generate_cache_key(data_hash, indicator_type, *args, **kwargs):

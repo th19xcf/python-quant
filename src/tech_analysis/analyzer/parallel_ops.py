@@ -15,13 +15,7 @@ from src.utils.event_bus import EventType, publish
 from ..gpu_acceleration import calculate_with_gpu, is_gpu_available
 from ..incremental_calculator import global_incremental_calculator
 from ..indicator_cache import global_indicator_cache
-from ..indicator_calculator import (
-    calculate_kdj_polars,
-    calculate_ma_polars,
-    calculate_multiple_indicators_polars,
-    calculate_rsi_polars,
-    calculate_vol_ma_polars,
-)
+from ..indicator_calculator import calculate_multiple_indicators_polars
 from ..indicator_manager import global_indicator_manager
 
 
@@ -51,21 +45,18 @@ class ParallelIndicatorMixin:
             windows_to_calculate = [w for w in windows if w not in self.calculated_indicators[indicator_type]]
 
             if windows_to_calculate:
-                # 直接调用指标计算函数，利用Polars内置并行
-                if indicator_type == 'ma':
-                    self.pl_df = calculate_ma_polars(self.pl_df, windows_to_calculate)
-                elif indicator_type == 'rsi':
-                    self.pl_df = calculate_rsi_polars(self.pl_df, windows_to_calculate)
-                elif indicator_type == 'kdj':
-                    self.pl_df = calculate_kdj_polars(self.pl_df, windows_to_calculate)
-                elif indicator_type == 'vol_ma':
-                    self.pl_df = calculate_vol_ma_polars(self.pl_df, windows_to_calculate)
-                # 使用批量计算函数处理所有新指标
-                else:
-                    # 使用calculate_multiple_indicators_polars处理所有其他指标
-                    lazy_df = self.pl_df.lazy()
-                    lazy_df = calculate_multiple_indicators_polars(lazy_df, [indicator_type], windows=windows_to_calculate)
-                    self.pl_df = lazy_df.collect()
+                # 统一走批量函数惰性路径：单计划、单 collect，避免单指标包装
+                # 函数 eager 路径的重复执行与内存压缩/打印开销；各指标的窗口
+                # 参数名需与 get_indicator_params 的口径一致
+                windows_param = {
+                    'ma': 'windows',
+                    'rsi': 'rsi_windows',
+                    'kdj': 'kdj_windows',
+                    'vol_ma': 'vol_ma_windows',
+                }.get(indicator_type, 'windows')
+                lazy_df = calculate_multiple_indicators_polars(
+                    self.pl_df.lazy(), [indicator_type], **{windows_param: windows_to_calculate})
+                self.pl_df = lazy_df.collect()
 
                 # 更新计算状态
                 self.calculated_indicators[indicator_type].update(windows_to_calculate)
