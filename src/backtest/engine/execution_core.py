@@ -38,24 +38,29 @@ class ExecutionRules:
     #: 开盘价与涨跌停阈值的最小容差（避免浮点误差把贴板成交误判为可成交）
     LIMIT_TOLERANCE = 0.005
 
-    def __init__(self, limit_pct: float = 0.10, lot_size: int = 100):
-        self.limit_pct = limit_pct
+    #: 无法从证券代码推导时的兜底涨跌停幅度（主板默认）
+    DEFAULT_LIMIT_PCT = 0.10
+
+    def __init__(self, lot_size: int = 100):
         self.lot_size = lot_size
 
     @staticmethod
-    def resolve_limit_pct(ts_code: str = '', is_st: bool = False, default: float = 0.10) -> float:
+    def resolve_limit_pct(ts_code: str = '', is_st: bool = False) -> float:
         """
-        按证券代码与 ST 状态推导涨跌停幅度。
+        按证券代码与 ST 状态推导涨跌停幅度（唯一真源）。
 
         ST/*ST → 5%；创业板 300/301 → 20%；科创板 68/688 → 20%；
         北交所 4/8/9 开头的 6 位代码 → 30%；其余主板默认 10%。
+
+        注意：is_st 分支已实现但当前无调用方传入 True（数据层尚未提供
+        ST 标识），接入 ST 判定时由调用侧补上即可。
         """
         if is_st:
             return 0.05
 
         code = (ts_code or '').split('.')[0]
         if not code:
-            return default
+            return ExecutionRules.DEFAULT_LIMIT_PCT
 
         if code.startswith(('300', '301')):
             return 0.20
@@ -64,11 +69,7 @@ class ExecutionRules:
         if code.startswith(('4', '8', '9')) and len(code) == 6:
             return 0.30
 
-        return 0.10
-
-    def effective_limit(self, ts_code: str = '', is_st: bool = False) -> float:
-        """有代码时按代码自适应，无代码时回退调用方传入的 limit_pct。"""
-        return self.resolve_limit_pct(ts_code, is_st, self.limit_pct) if ts_code else self.limit_pct
+        return ExecutionRules.DEFAULT_LIMIT_PCT
 
     def is_tradable(self, side: str, *, prev_close: float | None, open_price: float | None,
                     high: float | None, low: float | None, close: float | None,
@@ -88,7 +89,7 @@ class ExecutionRules:
         if prev_close is None or prev_close <= 0:
             return True
 
-        limit = self.effective_limit(ts_code, is_st)
+        limit = self.resolve_limit_pct(ts_code, is_st)
 
         if open_price is not None:
             open_pct = open_price / prev_close - 1
@@ -218,7 +219,7 @@ class EventBacktestRunner:
 
     def run(self, universe: Dict[str, pl.DataFrame], strategies: Dict[str, Any],
             initial_capital: float = 1_000_000.0, lot_size: int = 100,
-            limit_pct: float = 0.10, industry_map: Dict[str, str] | None = None,
+            industry_map: Dict[str, str] | None = None,
             result_meta: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """
         执行回测并返回结果字典。
@@ -294,7 +295,7 @@ class EventBacktestRunner:
             all_dates.update(positions)
         sorted_dates = sorted(all_dates)
 
-        rules = ExecutionRules(limit_pct=limit_pct, lot_size=lot_size)
+        rules = ExecutionRules(lot_size=lot_size)
         book = AccountBook(initial_capital, codes, industry_map)
         gate = RiskGate(self.risk_engine, industry_map)
 

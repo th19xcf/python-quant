@@ -7,11 +7,14 @@
 落在 execution_core，两条路径不允许再出现独立实现。
 """
 
+import inspect
+
 import numpy as np
 import pandas as pd
 import polars as pl
 
 from src.backtest.engine.backtest_engine import BacktestEngine
+from src.backtest.engine.execution_core import EventBacktestRunner, ExecutionRules
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.backtest.strategies.ma_strategy import MAStrategy
@@ -303,3 +306,36 @@ def test_limit_check_uses_raw_prices_blocks_buy_on_ex_dividend_limit_up():
     buys = [t for t in result['trades'] if t['signal'] == 'buy']
     assert not buys, '除权日一字涨停（按原始价判定）不得放行买入'
     assert any(o['reason'] == 'not_tradable' for o in result['expired_orders'])
+
+
+def test_limit_pct_resolves_by_board_prefix():
+    """涨跌停幅度必须按代码前缀自适应推导，且不存在可覆盖的 limit_pct 假旋钮。"""
+    resolve = ExecutionRules.resolve_limit_pct
+    assert resolve('600000.SH') == 0.10                         # 沪主板
+    assert resolve('000001.SZ') == 0.10                         # 深主板
+    assert resolve('300001.SZ') == 0.20                         # 创业板 300
+    assert resolve('301001.SZ') == 0.20                         # 创业板 301
+    assert resolve('688001.SH') == 0.20                         # 科创板 688
+    assert resolve('680001.SH') == 0.20                         # 科创板 68
+    assert resolve('830001.BJ') == 0.30                         # 北交所 8 开头
+    assert resolve('430001.BJ') == 0.30                         # 北交所 4 开头
+    assert resolve('900001.BJ') == 0.30                         # 北交所 9 开头
+    assert resolve('') == ExecutionRules.DEFAULT_LIMIT_PCT      # 无代码兜底
+    assert resolve('600000.SH', is_st=True) == 0.05             # ST 优先于板块
+
+    # 回归：limit_pct 曾被静默废弃（ts_code 非空时被忽略），现从调用链彻底移除
+    assert 'limit_pct' not in inspect.signature(ExecutionRules.__init__).parameters
+    assert 'limit_pct' not in inspect.signature(EventBacktestRunner.run).parameters
+    assert 'limit_pct' not in inspect.signature(BacktestEngine.run_backtest).parameters
+    assert 'limit_pct' not in inspect.signature(PortfolioBacktestEngine.run_backtest).parameters
+
+
+def test_growth_board_allows_open_above_ten_percent():
+    """创业板 20% 幅度：开盘 +15% 应可买入（误用 10% 阈值会被误判涨停而作废）。"""
+    df = _make_df(opens=[100.0, 115.0, 115.0], closes=[100.0, 115.0, 115.0])
+    engine = BacktestEngine(df)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='300001.SZ')
+
+    assert [t['signal'] for t in result['trades']] == ['buy']
+    assert result['expired_orders'] == []

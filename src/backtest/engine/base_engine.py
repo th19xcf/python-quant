@@ -12,7 +12,6 @@ import polars as pl
 from loguru import logger
 
 from src.backtest.costs.cost_model import CostModel
-from src.backtest.engine.execution_core import ExecutionRules
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.backtest.visualization.backtest_visualizer import BacktestVisualizer
@@ -79,64 +78,6 @@ class BaseBacktestEngine:
             strategy: 策略对象
         """
         self.strategy = strategy
-
-    @staticmethod
-    def _get_limit_pct(ts_code: str = '', is_st: bool = False) -> float:
-        """
-        按证券代码与 ST 状态推导涨跌停幅度阈值。
-
-        Args:
-            ts_code: 股票代码，形如 '000001.SZ' 或 '300001.SZ'
-            is_st: 是否 ST/*ST 股票（可由数据源或行情表 name 字段判定）
-
-        Returns:
-            float: 涨跌停幅度（如 0.10 表示 10%）
-
-        规则（按上交所/深交所现行制度）：
-            ST / *ST                 → 5%
-            创业板 300xx / 301xx     → 20%
-            科创板 68xxx / 688xxx    → 20%
-            北交所 8/4/9 开头代码   → 30%
-            主板默认                 → 10%
-        """
-        return ExecutionRules.resolve_limit_pct(ts_code, is_st, default=0.10)
-
-    @staticmethod
-    def _is_tradable(index: int, direction: str, close_prices, high_prices, low_prices, volumes,
-                     open_prices=None, limit_pct: float = 0.1, ts_code: str = '', is_st: bool = False) -> bool:
-        """
-        检查指定交易日是否可交易（A股交易制度校验）
-
-        Args:
-            index: 交易日索引
-            direction: 交易方向，'buy'或'sell'
-            close_prices: 收盘价序列
-            high_prices: 最高价序列（可为None）
-            low_prices: 最低价序列（可为None）
-            volumes: 成交量序列（可为None）
-            open_prices: 开盘价序列（可为None；传入后可识别"开盘即涨跌停但盘中打开"的不可成交情形）
-            limit_pct: 涨跌停幅度阈值（若传入 ts_code 则会被覆盖）
-            ts_code: 股票代码，用于自适应涨跌停幅度
-            is_st: 是否 ST/*ST 股票
-
-        Returns:
-            bool: 是否可交易。停牌（成交量为0）不可交易；
-                  开盘价触及涨停（含一字涨停、开盘封板后打开）不可买入；
-                  开盘价触及跌停（含一字跌停、开盘封板后打开）不可卖出
-        """
-        rules = ExecutionRules(limit_pct=limit_pct)
-        prev_close = close_prices[index - 1] if index > 0 else None
-        return rules.is_tradable(
-            direction,
-            prev_close=prev_close,
-            open_price=open_prices[index] if open_prices is not None else None,
-            high=high_prices[index] if high_prices is not None else None,
-            low=low_prices[index] if low_prices is not None else None,
-            close=close_prices[index],
-            volume=volumes[index] if volumes is not None else None,
-            ts_code=ts_code,
-            is_st=is_st,
-        )
 
     def set_cost_model(self, cost_model: CostModel) -> None:
         """

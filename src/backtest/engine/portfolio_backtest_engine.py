@@ -53,7 +53,7 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
         """
         self.strategies[stock_code] = strategy
 
-    def run_backtest(self, initial_capital: float = 1000000.0, allocation_strategy: str = 'equal', lot_size: int = 100, limit_pct: float = 0.1,
+    def run_backtest(self, initial_capital: float = 1000000.0, allocation_strategy: str = 'equal', lot_size: int = 100,
                      industry_map: Dict[str, str] = None,
                      **params) -> Dict[str, Any]:
         """
@@ -63,7 +63,6 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             initial_capital: 初始资金
             allocation_strategy: 资金分配方式（当前统一为等权，保留参数以兼容既有调用）
             lot_size: 最小交易单位（股）
-            limit_pct: 涨跌停幅度阈值（无代码时使用）
             industry_map: 行业映射 {ts_code: industry}
 
         Returns:
@@ -94,7 +93,6 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             strategies=self.strategies,
             initial_capital=initial_capital,
             lot_size=lot_size,
-            limit_pct=limit_pct,
             industry_map=industry_map or {},
             result_meta={
                 'strategy_names': {stock: strategy.name for stock, strategy in self.strategies.items()},
