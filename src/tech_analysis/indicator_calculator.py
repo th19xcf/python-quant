@@ -759,109 +759,39 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, *, optimize_m
 
 def calculate_indicators_parallel(data, indicator_types, max_workers=None, *, optimize_memory=False, **params):
     """
-    并行计算多个技术指标
+    已废弃：单标的多指标计算请直接使用 calculate_multiple_indicators_polars。
+
+    原实现按指标组拆分查询计划并用 ThreadPoolExecutor 并行提交，存在三个问题：
+    每组重复计算共享中间列（high_n/low_n、公共 EMA）；外层线程池与 Polars
+    内部线程池超额订阅（单次 collect 已能用满所有核）；按"结果首列是对齐键"
+    的启发式合并。现保留为薄包装，仅做 API 兼容，max_workers 不再生效。
 
     Args:
         data: 输入数据（Polars DataFrame或pandas DataFrame）
         indicator_types: 指标类型列表
-        max_workers: 最大工作线程数，None表示使用所有可用核心
-        optimize_memory: 是否在合并结果落地前执行 dtype 压缩，默认关闭，
+        max_workers: 已废弃，仅为 API 兼容保留
+        optimize_memory: 是否在结果落地前执行 dtype 压缩，默认关闭，
             由调用方在缓存落地前决定
         **params: 指标计算参数
 
     Returns:
         pl.DataFrame: 包含所有计算指标的DataFrame
     """
-    import concurrent.futures
-    import time
+    import warnings
 
-    # 转换为Polars DataFrame
+    warnings.warn(
+        "calculate_indicators_parallel 已废弃，请改用 calculate_multiple_indicators_polars",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     if not isinstance(data, pl.DataFrame):
         data = pl.from_pandas(data)
 
-    # 预处理数据
+    # 保留预处理以维持旧 API 的输入宽容度；已预处理的数据走幂等快速路径
     data = preprocess_data_polars(data)
 
-    # 计算指标分组，将相关指标放在一起计算以提高缓存利用率
-    indicator_groups = {
-        'trend': ['ma', 'macd', 'dma', 'fsl', 'sar', 'trix', 'emv', 'mcst', 'expma', 'bbi'],
-        'oscillator': ['rsi', 'kdj', 'wr', 'cci', 'roc', 'mtm', 'psy'],
-        'volume': ['vol_ma', 'obv', 'vr', 'hsl', 'lb'],
-        'volatility': ['boll'],
-        'cost': ['cyc', 'cys'],
-        'market_breadth': ['abi', 'adl', 'adr', 'obos'],
-        'other': ['dmi', 'brar', 'asi', 'cr', 'vol_tdx']
-    }
-
-    # 分配指标到不同组
-    grouped_indicators = {}
-    for indicator in indicator_types:
-        assigned = False
-        for group, group_indicators in indicator_groups.items():
-            if indicator in group_indicators:
-                if group not in grouped_indicators:
-                    grouped_indicators[group] = []
-                grouped_indicators[group].append(indicator)
-                assigned = True
-                break
-        if not assigned:
-            if 'other' not in grouped_indicators:
-                grouped_indicators['other'] = []
-            grouped_indicators['other'].append(indicator)
-
-    # 并行计算不同组的指标
-    results = {}
-    start_time = time.time()
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 提交所有计算任务
-        future_to_group = {}
-        for group, group_indicators in grouped_indicators.items():
-            if group_indicators:
-                future = executor.submit(
-                    calculate_multiple_indicators_polars,
-                    data,
-                    group_indicators,
-                    **params
-                )
-                future_to_group[future] = group
-
-        # 收集计算结果
-        for future in concurrent.futures.as_completed(future_to_group):
-            group = future_to_group[future]
-            try:
-                result = future.result()
-                results[group] = result
-                logger.info(f"完成指标组{group}的计算，包含{len(grouped_indicators[group])}个指标")
-            except Exception as e:
-                logger.error(f"计算指标组{group}时出错: {e}")
-
-    # 合并所有结果
-    if not results:
-        return data
-
-    # 从第一个结果开始，逐步合并
-    merged_result = data
-    for group, result in results.items():
-        # 只合并新的列（排除时间列和已存在的列）
-        new_columns = [col for col in result.columns if col not in merged_result.columns and col != result.columns[0]]
-        if new_columns:
-            # 直接合并，不添加suffix，因为已经排除了已存在的列
-            merged_result = merged_result.join(
-                result.select([result.columns[0]] + new_columns),
-                on=result.columns[0],
-                how='left'
-            )
-
-    total_time = time.time() - start_time
-    logger.info(f"并行计算完成，总耗时: {total_time:.2f}秒")
-
-    # dtype 压缩默认关闭，由调用方在缓存落地前决定（见 optimize_memory 参数）
-    if optimize_memory:
-        merged_result = MemoryOptimizer.optimize_dataframe(merged_result, enable_sparse=True)
-    logger.debug("并行计算结果: {} 行 x {} 列", merged_result.height, merged_result.width)
-
-    return merged_result
+    return calculate_multiple_indicators_polars(data, indicator_types, optimize_memory=optimize_memory, **params)
 
 
 def generate_cache_key(data_hash, indicator_type, *args, **kwargs):

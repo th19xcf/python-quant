@@ -527,15 +527,9 @@ class IndicatorManager:
 
             # 对未缓存的指标进行计算
             if uncached_indicators:
-                if parallel and len(uncached_indicators) > 1:
-                    # 使用并行计算
-                    from src.tech_analysis.indicator_calculator import (
-                        calculate_indicators_parallel,
-                    )
-                    result_df = calculate_indicators_parallel(pl_data, uncached_indicators, max_workers, **params)
-                else:
-                    # 使用串行计算
-                    result_df = calculate_multiple_indicators_polars(pl_data, uncached_indicators, **params)
+                # 单标的多指标：单次批量调用，由 Polars 在单个查询计划内并行；
+                # 外层再按组拆线程池只会重复计算共享中间列并超额订阅线程
+                result_df = calculate_multiple_indicators_polars(pl_data, uncached_indicators, **params)
 
                 # 保存到缓存
                 for indicator_type in uncached_indicators:
@@ -557,16 +551,8 @@ class IndicatorManager:
                             how='left'
                         )
         else:
-            # 缓存禁用，直接计算所有指标
-            if parallel and len(indicator_types) > 1:
-                # 使用并行计算
-                from src.tech_analysis.indicator_calculator import (
-                    calculate_indicators_parallel,
-                )
-                result_df = calculate_indicators_parallel(pl_data, indicator_types, max_workers, **params)
-            else:
-                # 使用串行计算
-                result_df = calculate_multiple_indicators_polars(pl_data, indicator_types, **params)
+            # 缓存禁用，直接计算所有指标（同上：单次批量调用）
+            result_df = calculate_multiple_indicators_polars(pl_data, indicator_types, **params)
 
         return self._to_result_format(result_df, return_polars)
 
