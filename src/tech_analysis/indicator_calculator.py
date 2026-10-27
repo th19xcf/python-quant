@@ -19,7 +19,6 @@ from .indicators import (
 from .utils import (
     cleanup_temp_columns,
     collect_indicator_windows,
-    collect_used_windows,
     get_indicator_params,
     merge_used_windows,
 )
@@ -330,8 +329,6 @@ def calculate_boll_polars(df, windows=None, std_dev=2.0):
     Returns:
         pl.DataFrame或pl.LazyFrame: 包含Boll指标的DataFrame或LazyFrame
     """
-    if windows is None:
-        windows = [20]
     if windows is None:
         windows = [20]
     # 调用批量计算函数，减少代码冗余，使用与其他指标一致的参数命名
@@ -671,8 +668,6 @@ def calculate_cr_polars(df, windows=None):
     """
     if windows is None:
         windows = [26]
-    if windows is None:
-        windows = [26]
     return calculate_multiple_indicators_polars(df, ['cr'], cr_windows=windows)
 
 
@@ -701,13 +696,10 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, *, optimize_m
     # 1. 收集所有需要计算的指标和参数
     indicator_params = get_indicator_params(**params)
 
-    # 2. 收集所有需要的窗口大小
-    collect_used_windows(indicator_types, indicator_params)
-
-    # 3. 预计算共享的窗口列（最高价、最低价的窗口统计）
+    # 2. 预计算共享的窗口列（最高价、最低价的窗口统计）
     need_high_low = any(indicator in indicator_types for indicator in ['kdj', 'wr', 'boll'])
 
-    # 4. 使用Lazy API构建查询，确保所有计算在单个查询计划中执行
+    # 3. 使用Lazy API构建查询，确保所有计算在单个查询计划中执行
     lazy_df = df.lazy()
 
     # 步骤1: 添加共享的窗口列
@@ -717,13 +709,17 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, *, optimize_m
         indicator_windows = collect_indicator_windows(indicator_types, indicator_params)
         used_windows = merge_used_windows(indicator_windows)
 
-        # 只创建实际使用的窗口列
-        for window in used_windows:
-            # 预计算最高价和最低价的rolling_max/min，min_samples=1确保从第一个数据点开始计算
-            lazy_df = lazy_df.with_columns(
+        # 只创建实际使用的窗口列；单次 with_columns 提交全部窗口表达式，
+        # 避免逐窗口生成独立的投影节点
+        # min_samples=1 确保从第一个数据点开始计算（与通达信 HHV/LLV 展示口径一致）
+        lazy_df = lazy_df.with_columns([
+            expr
+            for window in used_windows
+            for expr in (
                 pl.col('high').rolling_max(window_size=window, min_samples=1).alias(f'high_n_{window}'),
-                pl.col('low').rolling_min(window_size=window, min_samples=1).alias(f'low_n_{window}')
+                pl.col('low').rolling_min(window_size=window, min_samples=1).alias(f'low_n_{window}'),
             )
+        ])
 
     # 步骤2: 计算趋势类指标
     lazy_df = calculate_trend_indicators(lazy_df, indicator_types, **params)

@@ -9,25 +9,6 @@ from typing import Any, Dict, List, Set
 import polars as pl
 
 
-def collect_used_windows(indicator_types: List[str], indicator_params: Dict[str, Dict[str, Any]]) -> Set[int]:
-    """
-    收集所有指标需要使用的窗口大小并去重
-
-    Args:
-        indicator_types: 指标类型列表
-        indicator_params: 指标参数字典
-
-    Returns:
-        Set[int]: 去重后的窗口大小集合
-    """
-    all_windows = set()
-    for indicator in indicator_types:
-        if indicator in indicator_params:
-            if 'windows' in indicator_params[indicator]:
-                all_windows.update(indicator_params[indicator]['windows'])
-    return all_windows
-
-
 def collect_indicator_windows(indicator_types: List[str], indicator_params: Dict[str, Dict[str, Any]]) -> Dict[str, Set[int]]:
     """
     按指标类型收集需要使用的窗口大小
