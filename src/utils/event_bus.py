@@ -14,11 +14,29 @@
 import logging
 import threading
 import time
+import weakref
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Tuple
 
 from blinker import Namespace
+
+# Qt 跨线程事件桥接：blinker 为同步发布，在工作线程 publish 会让接收者运行在
+# 工作线程，若接收者触碰 Qt 对象即违反线程亲和性（随机崩溃）。对 QObject 绑定
+# 方法的订阅者，统一经以该对象为父的桥接 Signal 转发：AutoConnection 自动保证
+# 同线程 Direct（语义与 blinker 直连一致）、跨线程 Queued（投递到接收者线程
+# 事件循环），UI 槽函数永远在其所属线程执行。
+try:
+    from PySide6.QtCore import QObject, Signal as _QtSignal
+
+    class _QtSubscriberBridge(QObject):
+        triggered = _QtSignal(dict)
+
+    _HAS_QT = True
+except ImportError:  # 无 Qt 环境（如纯数据处理脚本）
+    QObject = None  # type: ignore[assignment]
+    _QtSubscriberBridge = None  # type: ignore[assignment,misc]
+    _HAS_QT = False
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +127,9 @@ class EventBus:
         # 线程池
         self._executor = ThreadPoolExecutor(max_workers=4)
 
+        # Qt 桥接订阅记录：(signal_name, 原始订阅者, 实际连接的可调用, 桥接对象)
+        self._qt_connections: List[Tuple[str, Callable, Callable, Any]] = []
+
     def subscribe(self, signal_name: str, subscriber: Callable, weak: bool = True, priority: int = 0, filter_func: Callable | None = None):
         """
         订阅事件
@@ -126,14 +147,29 @@ class EventBus:
         # 获取信号对象
         signal = self._events.signal(signal_name)
 
+        # QObject 绑定方法跨线程保护：经 Qt 信号桥接，跨线程自动转 QueuedConnection
+        original_subscriber = subscriber
+        qt_bridge = None
+        if _HAS_QT:
+            receiver = getattr(subscriber, '__self__', None)
+            if isinstance(receiver, QObject):
+                subscriber, qt_bridge = self._wrap_qt_subscriber(subscriber)
+
         # 创建过滤包装器
         if filter_func:
             def filtered_subscriber(**kwargs):
                 if filter_func(**kwargs):
                     return subscriber(**kwargs)
-            connection = signal.connect(filtered_subscriber, weak=weak)
+            effective = filtered_subscriber
         else:
-            connection = signal.connect(subscriber, weak=weak)
+            effective = subscriber
+
+        # 桥接包装闭包无外部强引用，必须禁用弱引用，改由 _qt_connections 持有
+        connection = signal.connect(effective, weak=weak if qt_bridge is None and not filter_func else False)
+
+        if qt_bridge is not None:
+            with self._lock:
+                self._qt_connections.append((signal_name, original_subscriber, effective, qt_bridge))
 
         # 保存订阅信息
         with self._lock:
@@ -151,6 +187,34 @@ class EventBus:
 
         return connection
 
+    @staticmethod
+    def _wrap_qt_subscriber(subscriber: Callable) -> Tuple[Callable, Any]:
+        """将 QObject 绑定方法包装为经 Qt 信号桥接的跨线程安全订阅者
+
+        桥接对象以接收者为父对象，随接收者销毁；同线程派发保持 Direct
+        （语义与 blinker 直连一致），跨线程自动转 QueuedConnection。
+
+        Returns:
+            (包装后的订阅者, 桥接对象)
+        """
+        receiver = subscriber.__self__
+        func = subscriber.__func__
+        receiver_ref = weakref.ref(receiver)
+        bridge = _QtSubscriberBridge(receiver)
+
+        def _deliver(payload: dict):
+            obj = receiver_ref()
+            if obj is not None:
+                func(obj, **payload)
+
+        bridge.triggered.connect(_deliver)
+
+        def wrapped(sender=None, **kwargs):
+            if receiver_ref() is not None:
+                bridge.triggered.emit({'sender': sender, **kwargs})
+
+        return wrapped, bridge
+
     def unsubscribe(self, signal_name: str, subscriber: Callable):
         """
         取消订阅事件
@@ -160,7 +224,17 @@ class EventBus:
             subscriber: 订阅者函数
         """
         signal = self._events.signal(signal_name)
-        signal.disconnect(subscriber)
+
+        # Qt 桥接订阅需断开实际连接的包装器并清理记录
+        with self._lock:
+            qt_entries = [e for e in self._qt_connections
+                          if e[0] == signal_name and e[1] == subscriber]
+            self._qt_connections = [e for e in self._qt_connections
+                                    if not (e[0] == signal_name and e[1] == subscriber)]
+        for _, _, effective, _bridge in qt_entries:
+            signal.disconnect(effective)
+        if not qt_entries:
+            signal.disconnect(subscriber)
 
         # 移除订阅信息
         with self._lock:
