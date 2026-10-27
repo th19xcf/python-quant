@@ -370,6 +370,10 @@ class EventBacktestRunner:
                     if signal in ('buy', 'sell'):
                         pending[code] = signal
 
+                # close 缺失 / 非有限 / ≤0 时，挂单已在 _execute_pending 里过期；
+                # 此处不更新 prev_close / book.mark，保留上一个有效值
+                if close_price is None or not math.isfinite(close_price) or close_price <= 0:
+                    continue
                 prev_close[code] = close_price
                 prev_raw_close[code] = raw_close if raw_close is not None else close_price
                 book.mark(code, close_price)
@@ -459,6 +463,12 @@ class EventBacktestRunner:
             return
         if side == 'sell' and position == 0:
             _expire('no_position')
+            return
+
+        # close 缺失 = 无有效行情，挂单作废（主循环已 continue 跳过整行，
+        # 此处防御性守卫，确保函数签名 close=None 不会漏进来）
+        if close is None or not math.isfinite(close) or close <= 0:
+            _expire('price_missing')
             return
 
         # 涨跌停 / 停牌（零成交量）当日不可按该方向成交。

@@ -403,3 +403,57 @@ def test_fill_confidence_low_when_open_missing():
     assert result['fill_confidence'] == 'low'
     # 完整列的标的 fill_confidence 不影响（整次回测按最弱的标的标 low）
     assert result is not None
+
+
+# ------------------------------------------------------------------
+# close 缺失 / NaN 回归：整行跳过撮合更新 + 挂单过期 + prev_close 保留
+# ------------------------------------------------------------------
+
+
+def test_close_none_row_expires_pending_order():
+    """close=None 当日挂单必须过期，不得泄漏到下一个有效 close 日成交。
+
+    语义：close 缺失 = 无有效行情，当日挂单作废；
+    不是静默顺延到下一个有效 close 日。
+    """
+    # 4 天数据：day0 正常、day1 close=None、day2/3 正常
+    # day0 的 buy 信号应该在 day1（close=None）过期，day2 补成交属于幽灵成交
+    days = 4
+    dates = pd.date_range('2023-01-02', periods=days, freq='B')
+    df = pl.DataFrame({
+        'date': dates,
+        'open': [100.0, 100.0, 100.0, 100.0],
+        'high': [101.0, 101.0, 101.0, 101.0],
+        'low': [99.0, 99.0, 99.0, 99.0],
+        'close': [100.0, None, 100.0, 100.0],
+        'volume': [1_000_000.0] * days,
+    })
+    engine = BacktestEngine(df)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+
+    # 无成交（day1 close=None 挂单过期）
+    assert result['trades'] == []
+    # expired_orders 包含 price_missing
+    assert any(o['reason'] == 'price_missing' for o in result['expired_orders'])
+
+
+def test_close_nan_inf_blocked():
+    """close 为 NaN / inf / ≤0 时，与 close=None 同等处理（跳过更新 + 挂单过期）。"""
+    for bad_close in (float('nan'), float('inf'), 0.0, -5.0):
+        days = 3
+        dates = pd.date_range('2023-01-02', periods=days, freq='B')
+        df = pl.DataFrame({
+            'date': dates,
+            'open': [100.0, 100.0, 100.0],
+            'high': [101.0, 101.0, 101.0],
+            'low': [99.0, 99.0, 99.0],
+            'close': [100.0, bad_close, 100.0],
+            'volume': [1_000_000.0] * days,
+        })
+        engine = BacktestEngine(df)
+        engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+        result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+        assert result['trades'] == [], f"close={bad_close!r} 不应成交"
+        assert any(o['reason'] == 'price_missing' for o in result['expired_orders']), \
+            f"close={bad_close!r} 应触发 price_missing"
