@@ -136,22 +136,28 @@ def _fetch_baostock_industry_map(baostock_handler):
 def _fetch_akshare_industry_map():
     """从 AkShare 行业板块成分获取行业映射（ts_code -> industry）。"""
     import akshare as ak
-    import polars as pl
 
     industry_map = {}
 
     try:
         board_pd = ak.stock_board_industry_name_em()
-        board_df = pl.from_pandas(board_pd)
-        if board_df.is_empty():
+        if board_pd is None or board_pd.empty:
             logger.warning("AkShare 行业板块列表为空")
             return industry_map
 
-        board_names = []
-        for row in board_df.iter_rows(named=True):
-            name = row.get('板块名称') or row.get('名称') or row.get('name')
-            if name:
-                board_names.append(str(name).strip())
+        # 按优先级选第一个真正有值的名称列（等价于原逐行 row.get 的候选顺序）
+        name_col = next(
+            (c for c in ('板块名称', '名称', 'name')
+             if c in board_pd.columns and board_pd[c].notna().any()),
+            None,
+        )
+        if name_col is None:
+            logger.warning("AkShare 行业板块列表缺少名称列")
+            return industry_map
+
+        board_names = [
+            str(v).strip() for v in board_pd[name_col].tolist() if v and str(v).strip()
+        ]
 
         logger.info(f"AkShare 行业板块数量: {len(board_names)}")
 
@@ -160,12 +166,19 @@ def _fetch_akshare_industry_map():
                 continue
             try:
                 cons_pd = ak.stock_board_industry_cons_em(symbol=board_name)
-                cons_df = pl.from_pandas(cons_pd)
-                if cons_df.is_empty():
+                if cons_pd is None or cons_pd.empty:
                     continue
 
-                for row in cons_df.iter_rows(named=True):
-                    raw_code = row.get('代码') or row.get('code') or row.get('symbol')
+                # 只需成分股代码一列：直接读 pandas 列，跳过 Polars 编组与逐行 named dict
+                code_col = next(
+                    (c for c in ('代码', 'code', 'symbol')
+                     if c in cons_pd.columns and cons_pd[c].notna().any()),
+                    None,
+                )
+                if code_col is None:
+                    continue
+
+                for raw_code in cons_pd[code_col].tolist():
                     if not raw_code:
                         continue
                     ts_code = _to_ts_code_or_none(raw_code)

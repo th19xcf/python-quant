@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import List, Tuple
 
 import baostock as bs
+import pandas as pd
 import polars as pl
 from loguru import logger
 
@@ -723,7 +724,7 @@ class BaostockHandler(DataSourceBase):
             # 获取最近若干天数据，确保能取到
             start_date, end_date = self._process_dates(None, None, default_days=default_days)
 
-            all_data = []
+            pd_frames = []
 
             for ts_code in ts_codes:
                 try:
@@ -736,21 +737,26 @@ class BaostockHandler(DataSourceBase):
                         adjustflag=adjustflag
                     )
 
-                    data_df = pl.from_pandas(rs.get_data())
-
-                    if not data_df.is_empty():
-                        all_data.append(data_df)
+                    frame = rs.get_data()
+                    if frame is not None and not frame.empty:
+                        pd_frames.append(frame)
+                    else:
+                        logger.warning(f"{ts_code}没有{noun}历史数据")
+                        continue
 
                 except (ConnectionError, TimeoutError, OSError) as e:
                     logger.exception(f"获取{ts_code}的历史{noun}数据失败: {e}")
                     continue
 
-            if not all_data:
+            if not pd_frames:
                 logger.warning(f"从Baostock获取的实时{noun}数据为空")
                 return pl.DataFrame()
 
-            # 合并所有数据并按日期降序，确保最新数据在前
-            combined_df = pl.concat(all_data, how="vertical").sort(by="date", descending=True)
+            # 循环内只收集 pandas 帧，循环结束后一次性 from_pandas：
+            # 原实现每个标的都调一次 from_pandas，需重复付 Arrow 互操作与 schema 推断的固定开销
+            combined_df = pl.from_pandas(
+                pd.concat(pd_frames, ignore_index=True)
+            ).sort(by="date", descending=True)
 
             logger.info(f"从Baostock获取到{combined_df.height}条{noun}实时数据")
             return combined_df
