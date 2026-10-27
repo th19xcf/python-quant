@@ -18,12 +18,12 @@ from src.data.services.dividend_service import DividendService
 from src.data.services.index_service import IndexService
 from src.ui.action_manager import ActionManager
 from src.ui.chart_manager import ChartManager
+from src.ui.data_controller import DataController
 from src.ui.data_view_manager import DataViewManager
 from src.ui.fund_section import FundSection
 from src.ui.indicator_interaction_manager import IndicatorInteractionManager
 from src.ui.main_window_candlestick_mixin import MainWindowCandlestickMixin
 from src.ui.main_window_chart_interaction_mixin import MainWindowChartInteractionMixin
-from src.ui.main_window_data_mixin import MainWindowDataMixin
 from src.ui.main_window_dividend_mixin import MainWindowDividendMixin
 from src.ui.main_window_drawing_mixin import MainWindowDrawingMixin
 from src.ui.main_window_event_mixin import MainWindowEventMixin
@@ -41,7 +41,7 @@ from src.utils.logger import logger
 class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
                  MainWindowCandlestickMixin, MainWindowIndicatorWindowMixin,
                  MainWindowDividendMixin, MainWindowUiMixin,
-                 MainWindowEventMixin, MainWindowDataMixin,
+                 MainWindowEventMixin,
                  MainWindowDrawingMixin, QMainWindow, IView, IController):
     """
     主窗口类，参考通达信软件界面设计
@@ -90,6 +90,9 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
 
         from src.ui.indicator_labels import IndicatorLabelManager
         self.indicator_label_manager = IndicatorLabelManager(self)
+
+        # 数据控制器：组合替代原 MainWindowDataMixin 继承
+        self.data_controller = DataController(self)
 
         # 初始化UI (From MainWindowUiMixin)
         self._init_ui_impl()
@@ -207,4 +210,62 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
         self._key_filter = GlobalKeyFilter(self)
         QApplication.instance().installEventFilter(self._key_filter)
         logger.info("全局按键过滤器已安装")
+
+    # ================= DataController 信号转发（原 MainWindowDataMixin）=================
+    # 保持公开 API 不变：既有调用方（data_view_manager / action_manager /
+    # indicator_interaction_manager / 其他 mixin）仍通过 window.<method> 访问。
+
+    def _clear_market_table_display(self):
+        return self.data_controller._clear_market_table_display()
+
+    def _clear_kline_display(self):
+        return self.data_controller._clear_kline_display()
+
+    def process_stock_data(self, stock_code, stock_name):
+        return self.data_controller.process_stock_data(stock_code, stock_name)
+
+    def _get_index_data_from_tdx(self, market_filter=None, category_filter=None):
+        return self.data_controller._get_index_data_from_tdx(market_filter, category_filter)
+
+    def _on_index_impl(self):
+        return self.data_controller._on_index_impl()
+
+    def _on_sh_index_impl(self):
+        return self.data_controller._on_sh_index_impl()
+
+    def _on_sz_index_impl(self):
+        return self.data_controller._on_sz_index_impl()
+
+    def _on_bj_index_impl(self):
+        return self.data_controller._on_bj_index_impl()
+
+    def _load_index_data(self, market='all', title='指数', category_filter=None):
+        return self.data_controller._load_index_data(market=market, title=title, category_filter=category_filter)
+
+    def _show_stock_data_by_type_impl(self, stock_type):
+        return self.data_controller._show_stock_data_by_type_impl(stock_type)
+
+    def _recalculate_indicators_for_period(self, df):
+        return self.data_controller._recalculate_indicators_for_period(df)
+
+    def _format_color_item(self, item, value):
+        return self.data_controller._format_color_item(item, value)
+
+    def _show_hs_aj_stock_data_impl(self):
+        return self.data_controller._show_hs_aj_stock_data_impl()
+
+    def _show_index_data_by_category_impl(self, category_name):
+        return self.data_controller._show_index_data_by_category_impl(category_name)
+
+    def _show_index_data_impl(self, index_name):
+        return self.data_controller._show_index_data_impl(index_name)
+
+    def _refresh_stock_data_impl(self):
+        return self.data_controller._refresh_stock_data_impl()
+
+    def show_latest_5days_data(self):
+        return self.data_controller.show_latest_5days_data()
+
+    def _add_table_row(self, data_row):
+        return self.data_controller._add_table_row(data_row)
 

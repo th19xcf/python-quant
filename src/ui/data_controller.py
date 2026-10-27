@@ -1,3 +1,10 @@
+"""DataController: data loading & table display logic extracted from MainWindowDataMixin.
+
+Composition over inheritance: all view/service dependencies are accessed explicitly
+via self.window (MainWindow), making cross-module dependencies visible and removing
+this logic from the MainWindow MRO.
+"""
+
 import contextlib
 from datetime import datetime
 
@@ -11,40 +18,44 @@ from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
 
 
-class MainWindowDataMixin:
+class DataController:
+    """Controller for data loading / table display, migrated from MainWindowDataMixin.
+
+    Holds a reference to the MainWindow (view + shared state), consistent with the
+    existing manager pattern (ChartManager, DataViewManager, ActionManager).
     """
-    Main Window Data Handling Mixin
-    Handles data loading and display in tables
-    """
+
+    def __init__(self, window):
+        self.window = window
 
     def _clear_market_table_display(self):
         """清空行情表格，避免旧菜单数据残留。"""
-        if not hasattr(self, 'stock_table') or self.stock_table is None:
+        if not hasattr(self.window, 'stock_table') or self.window.stock_table is None:
             return
 
-        self.stock_table.setSortingEnabled(False)
-        self.stock_table.clearContents()
-        self.stock_table.setRowCount(0)
+        self.window.stock_table.setSortingEnabled(False)
+        self.window.stock_table.clearContents()
+        self.window.stock_table.setRowCount(0)
 
     def _clear_kline_display(self):
         """清空K线显示区域，避免旧图表残留。"""
         try:
-            if hasattr(self, '_clear_plots'):
-                self._clear_plots()
+            if hasattr(self.window, '_clear_plots'):
+                self.window._clear_plots()
         except (AttributeError, TypeError) as e:
             logger.debug(f"清空K线图表失败: {e}")
 
-        self.current_kline_data = {}
-        self.current_kline_index = -1
-        self.current_stock_data = None
-        self.current_stock_name = ''
-        self.current_stock_code = ''
+        self.window.current_kline_data = {}
+        self.window.current_kline_index = -1
+        self.window.current_stock_data = None
+        self.window.current_stock_name = ''
+        self.window.current_stock_code = ''
 
-        if hasattr(self, 'ma_values_label') and self.ma_values_label is not None:
-            self.ma_values_label.setText('')
+        if hasattr(self.window, 'ma_values_label') and self.window.ma_values_label is not None:
+            self.window.ma_values_label.setText('')
 
-        if hasattr(self, 'chart_title_label') and self.chart_title_label is not None:
-            self.chart_title_label.setText('暂无数据')
+        if hasattr(self.window, 'chart_title_label') and self.window.chart_title_label is not None:
+            self.window.chart_title_label.setText('暂无数据')
 
     def process_stock_data(self, stock_code, stock_name):
         """
@@ -64,7 +75,7 @@ class MainWindowDataMixin:
 
                 # 根据柱体数动态计算日期范围
                 # 假设每个交易日约 1.4 天（考虑周末和节假日）
-                bar_count = getattr(self, 'displayed_bar_count', 100)
+                bar_count = getattr(self.window, 'displayed_bar_count', 100)
                 # 计算需要的历史天数：柱体数 * 1.4 + 缓冲 100 天
                 days_needed = int(bar_count * 1.4) + 100
                 # 确保至少获取 2 年的数据
@@ -75,14 +86,14 @@ class MainWindowDataMixin:
                 start_date = (datetime.now() - timedelta(days=days_needed)).strftime("%Y-%m-%d")
 
                 # 从数据管理器获取股票历史数据
-                adjustment_type = getattr(self, 'adjustment_type', 'qfq')
+                adjustment_type = getattr(self.window, 'adjustment_type', 'qfq')
 
                 # 根据当前周期确定数据频率
-                period = getattr(self, 'current_period', '日线')
+                period = getattr(self.window, 'current_period', '日线')
                 freq_map = {'日线': '1d', '周线': '1w', '月线': '1m'}
                 frequency = freq_map.get(period, '1d')
 
-                df = self.data_manager.get_stock_data(stock_code, start_date, end_date, frequency=frequency, adjustment_type=adjustment_type)
+                df = self.window.data_manager.get_stock_data(stock_code, start_date, end_date, frequency=frequency, adjustment_type=adjustment_type)
 
                 if df is None or df.is_empty():
                     logger.warning(f"未获取到股票数据: {stock_name}({stock_code})")
@@ -91,15 +102,15 @@ class MainWindowDataMixin:
                 logger.info(f"成功获取 {len(df)} 条 {stock_name}({stock_code}) 的数据")
 
                 # 保存当前股票数据（用于柱体加减按钮）
-                self.current_stock_data = df
-                self.current_stock_name = stock_name
-                self.current_stock_code = stock_code
+                self.window.current_stock_data = df
+                self.window.current_stock_name = stock_name
+                self.window.current_stock_code = stock_code
 
                 # 重新计算技术指标（确保数据包含所有指标列）
-                df = self._recalculate_indicators_for_period(df)
+                df = self.window._recalculate_indicators_for_period(df)
 
                 # 更新当前股票数据为重新计算后的数据（包含技术指标）
-                self.current_stock_data = df
+                self.window.current_stock_data = df
 
                 return {"success": True, "data": df, "stock_name": stock_name, "stock_code": stock_code}
             except (OSError, RuntimeError, ValueError) as e:
@@ -108,7 +119,7 @@ class MainWindowDataMixin:
 
         # 启动后台任务
         logger.info(f"启动处理股票数据任务: {stock_name}({stock_code})")
-        self.statusBar().showMessage(f"加载 {stock_name}({stock_code}) 数据...", 0)
+        self.window.statusBar().showMessage(f"加载 {stock_name}({stock_code}) 数据...", 0)
 
         # 创建任务
         global_task_manager.create_task(
@@ -124,44 +135,43 @@ class MainWindowDataMixin:
                 # 检查是否有必要的键（股票数据）
                 if "data" in result and "stock_name" in result and "stock_code" in result:
                     # 切换到图表标签页
-                    if hasattr(self, 'tab_widget'):
-                        self.tab_widget.setCurrentIndex(1)
+                    if hasattr(self.window, 'tab_widget'):
+                        self.window.tab_widget.setCurrentIndex(1)
 
                     # 绘制K线图
-                    if hasattr(self, 'plot_k_line'):
+                    if hasattr(self.window, 'plot_k_line'):
                         logger.info(f"[切换] 调用 plot_k_line: {result['stock_name']}({result['stock_code']})")
-                        self.plot_k_line(result["data"], result["stock_name"], result["stock_code"])
+                        self.window.plot_k_line(result["data"], result["stock_name"], result["stock_code"])
 
-                    self.statusBar().showMessage(f"已加载 {result['stock_name']}({result['stock_code']}) 的K线图", 3000)
+                    self.window.statusBar().showMessage(f"已加载 {result['stock_name']}({result['stock_code']}) 的K线图", 3000)
                 else:
                     # 不是股票数据，不处理
                     pass
             else:
-                self._clear_kline_display()
-                self.statusBar().showMessage(result["message"], 5000)
+                self.window._clear_kline_display()
+                self.window.statusBar().showMessage(result["message"], 5000)
 
         def on_task_error(task_id, error_message):
-            self._clear_kline_display()
-            self.statusBar().showMessage(f"加载失败: {error_message}", 5000)
+            self.window._clear_kline_display()
+            self.window.statusBar().showMessage(f"加载失败: {error_message}", 5000)
 
         # 断开上一次的回调（避免信号累积导致同一信号触发多个回调）
-        prev_completed = getattr(self, '_stock_data_completed_handler', None)
+        prev_completed = getattr(self.window, '_stock_data_completed_handler', None)
         if prev_completed is not None:
             with contextlib.suppress(RuntimeError, TypeError):
                 global_task_manager.task_completed.disconnect(prev_completed)
-        prev_error = getattr(self, '_stock_data_error_handler', None)
+        prev_error = getattr(self.window, '_stock_data_error_handler', None)
         if prev_error is not None:
             with contextlib.suppress(RuntimeError, TypeError):
                 global_task_manager.task_error.disconnect(prev_error)
 
         # 保存本次回调引用，便于下次断开
-        self._stock_data_completed_handler = on_task_completed
-        self._stock_data_error_handler = on_task_error
+        self.window._stock_data_completed_handler = on_task_completed
+        self.window._stock_data_error_handler = on_task_error
 
         # 连接信号
         global_task_manager.task_completed.connect(on_task_completed)
         global_task_manager.task_error.connect(on_task_error)
-
 
     def _get_index_data_from_tdx(self, market_filter=None, category_filter=None):
         """
@@ -174,7 +184,7 @@ class MainWindowDataMixin:
             list: 指数数据列表
         """
         index_data = []
-        for quote in self.index_service.list_index_quotes(market_filter, category_filter):
+        for quote in self.window.index_service.list_index_quotes(market_filter, category_filter):
             index_data.append([
                 quote['date'], quote['ts_code'], quote['name'],
                 f"{quote['pct_chg']:.2f}", f"{quote['close']:.2f}", f"{quote['change']:.2f}",
@@ -189,25 +199,25 @@ class MainWindowDataMixin:
         Click on HS/Joint index, load from TDX and update table
         获取沪深京指数数据（包括沪市和深市指数）
         """
-        self._load_index_data(market='all', title='沪深京指数')
+        self.window._load_index_data(market='all', title='沪深京指数')
 
     def _on_sh_index_impl(self):
         """
         显示沪市指数
         """
-        self._load_index_data(market='sh', title='沪市指数')
+        self.window._load_index_data(market='sh', title='沪市指数')
 
     def _on_sz_index_impl(self):
         """
         显示深市指数
         """
-        self._load_index_data(market='sz', title='深市指数')
+        self.window._load_index_data(market='sz', title='深市指数')
 
     def _on_bj_index_impl(self):
         """
         显示京市指数（北交所）
         """
-        self._load_index_data(market='bj', title='京市指数')
+        self.window._load_index_data(market='bj', title='京市指数')
 
     def _load_index_data(self, market='all', title='指数', category_filter=None):
         """
@@ -220,7 +230,7 @@ class MainWindowDataMixin:
         def _load_index_task(task_id=None, signals=None):
             """后台任务函数"""
             try:
-                index_data = self._get_index_data_from_tdx(
+                index_data = self.window._get_index_data_from_tdx(
                     market_filter=market if market != 'all' else None,
                     category_filter=category_filter,
                 )
@@ -231,12 +241,12 @@ class MainWindowDataMixin:
 
         # 启动后台任务
         logger.info(f"启动获取{title}数据任务")
-        self.statusBar().showMessage(f"加载{title}数据...", 0)
+        self.window.statusBar().showMessage(f"加载{title}数据...", 0)
 
         # 显示进度条
-        if hasattr(self, 'progress_bar'):
-            self.market_progress_bar.setVisible(True)
-            self.market_progress_bar.setValue(0)
+        if hasattr(self.window, 'progress_bar'):
+            self.window.market_progress_bar.setVisible(True)
+            self.window.market_progress_bar.setValue(0)
 
         # 创建任务
         global_task_manager.create_task(
@@ -246,8 +256,8 @@ class MainWindowDataMixin:
 
         # 连接任务信号
         def on_task_progress(task_id, current, total):
-            if hasattr(self, 'progress_bar'):
-                self.market_progress_bar.setValue(current)
+            if hasattr(self.window, 'progress_bar'):
+                self.window.market_progress_bar.setValue(current)
 
         def on_task_completed(task_id, result):
             # 断开信号连接，避免影响其他任务
@@ -260,27 +270,27 @@ class MainWindowDataMixin:
 
             if result["success"]:
                 # 更新表格
-                self.stock_table.setSortingEnabled(False)
-                self.stock_table.setRowCount(0)
+                self.window.stock_table.setSortingEnabled(False)
+                self.window.stock_table.setRowCount(0)
 
                 headers = ["日期", "代码", "名称", "涨跌幅", "现价", "涨跌额", "总量", "成交额", "开盘价", "最高价", "最低价", "昨收价", "振幅%"]
-                self.stock_table.setColumnCount(len(headers))
-                self.stock_table.setHorizontalHeaderLabels(headers)
+                self.window.stock_table.setColumnCount(len(headers))
+                self.window.stock_table.setHorizontalHeaderLabels(headers)
 
                 for data_row in result["index_data"]:
-                    self._add_table_row(data_row)
+                    self.window._add_table_row(data_row)
 
-                if hasattr(self, 'table_interaction_manager'):
-                    self.table_interaction_manager.restore_sort_state()
-                self.stock_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-                self.statusBar().showMessage(f"已加载 {self.stock_table.rowCount()} 个{result['title']}", 3000)
+                if hasattr(self.window, 'table_interaction_manager'):
+                    self.window.table_interaction_manager.restore_sort_state()
+                self.window.stock_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+                self.window.statusBar().showMessage(f"已加载 {self.window.stock_table.rowCount()} 个{result['title']}", 3000)
             else:
-                self._clear_market_table_display()
-                self.statusBar().showMessage(result["message"], 5000)
+                self.window._clear_market_table_display()
+                self.window.statusBar().showMessage(result["message"], 5000)
 
             # 隐藏进度条
-            if hasattr(self, 'progress_bar'):
-                self.market_progress_bar.setVisible(False)
+            if hasattr(self.window, 'progress_bar'):
+                self.window.market_progress_bar.setVisible(False)
 
         def on_task_error(task_id, error_message):
             # 断开信号连接，避免影响其他任务
@@ -291,10 +301,10 @@ class MainWindowDataMixin:
             except RuntimeError:
                 pass
 
-            self._clear_market_table_display()
-            self.statusBar().showMessage(f"Error: {error_message}", 5000)
-            if hasattr(self, 'progress_bar'):
-                self.market_progress_bar.setVisible(False)
+            self.window._clear_market_table_display()
+            self.window.statusBar().showMessage(f"Error: {error_message}", 5000)
+            if hasattr(self.window, 'progress_bar'):
+                self.window.market_progress_bar.setVisible(False)
 
         # 连接信号
         global_task_manager.task_progress.connect(on_task_progress)
@@ -314,7 +324,7 @@ class MainWindowDataMixin:
 
 
                 # 构建通达信日线数据目录路径
-                tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
+                tdx_data_path = Path(self.window.data_manager.config.data.tdx_data_path)
 
                 # 获取所有日线数据文件
                 sh_stock_files = list(Path(tdx_data_path / 'sh' / 'lday').glob('sh*.day')) if (tdx_data_path / 'sh' / 'lday').exists() else []
@@ -347,7 +357,7 @@ class MainWindowDataMixin:
                 table_rows = []
 
                 # 获取股票基本信息映射
-                stock_name_df = self.data_manager.get_stock_basic()
+                stock_name_df = self.window.data_manager.get_stock_basic()
                 # 将DataFrame转换为字典
                 stock_name_map = {}
                 if not stock_name_df.is_empty():
@@ -375,7 +385,7 @@ class MainWindowDataMixin:
                         if i % 100 == 0:
                             logger.info(f"正在解析文件: {file_path} ({i+1}/{total_files})")
 
-                        quote = self.data_manager.read_local_quote_file(file_path)
+                        quote = self.window.data_manager.read_local_quote_file(file_path)
                         if quote is None:
                             continue
 
@@ -465,12 +475,12 @@ class MainWindowDataMixin:
 
         # 启动后台任务
         logger.info(f"启动获取{stock_type}数据任务")
-        self.statusBar().showMessage(f"Loading {stock_type} data...", 0)
+        self.window.statusBar().showMessage(f"Loading {stock_type} data...", 0)
 
         # 显示进度条
-        if hasattr(self, 'progress_bar'):
-            self.market_progress_bar.setVisible(True)
-            self.market_progress_bar.setValue(0)
+        if hasattr(self.window, 'progress_bar'):
+            self.window.market_progress_bar.setVisible(True)
+            self.window.market_progress_bar.setValue(0)
 
         # 创建任务
         global_task_manager.create_task(
@@ -481,29 +491,29 @@ class MainWindowDataMixin:
 
         # 连接任务信号
         def on_task_progress(task_id, current, total):
-            if hasattr(self, 'progress_bar'):
-                self.market_progress_bar.setValue(current)
+            if hasattr(self.window, 'progress_bar'):
+                self.window.market_progress_bar.setValue(current)
 
         def on_task_completed(task_id, result):
             if result["success"]:
                 # 检查是否有table_data键（股票数据）
                 if "table_data" in result:
                     # 清空现有数据前先关闭排序
-                    self.stock_table.setSortingEnabled(False)
+                    self.window.stock_table.setSortingEnabled(False)
 
                     # 清空现有数据，手动释放QTableWidgetItem对象
-                    for row in range(self.stock_table.rowCount()):
-                        for col in range(self.stock_table.columnCount()):
-                            item = self.stock_table.takeItem(row, col)
+                    for row in range(self.window.stock_table.rowCount()):
+                        for col in range(self.window.stock_table.columnCount()):
+                            item = self.window.stock_table.takeItem(row, col)
                             if item:
                                 del item
-                    self.stock_table.setRowCount(0)
+                    self.window.stock_table.setRowCount(0)
 
                     # 添加数据到表格
                     for data_row in result["table_data"]:
                         # 添加行
-                        row_pos = self.stock_table.rowCount()
-                        self.stock_table.insertRow(row_pos)
+                        row_pos = self.window.stock_table.rowCount()
+                        self.window.stock_table.insertRow(row_pos)
 
                         # 设置数据
                         for col, value in enumerate(data_row):
@@ -556,24 +566,24 @@ class MainWindowDataMixin:
                                 else:
                                     item.setForeground(QColor(204, 204, 204))  # 灰色等于昨收
 
-                            self.stock_table.setItem(row_pos, col, item)
+                            self.window.stock_table.setItem(row_pos, col, item)
 
                     # 仅在当前页面已有有效排序时恢复排序
-                    if hasattr(self, 'table_interaction_manager'):
-                        self.table_interaction_manager.restore_sort_state()
+                    if hasattr(self.window, 'table_interaction_manager'):
+                        self.window.table_interaction_manager.restore_sort_state()
 
                     logger.info(f"{result['stock_type']}数据显示完成")
-                    self.statusBar().showMessage(f"成功显示{result['stock_count']}只{result['stock_type']}股票的最新交易日数据", 3000)
+                    self.window.statusBar().showMessage(f"成功显示{result['stock_count']}只{result['stock_type']}股票的最新交易日数据", 3000)
                 else:
                     # 指数数据或其他类型的数据，不处理表格显示
                     pass
             else:
-                self._clear_market_table_display()
-                self.statusBar().showMessage(result["message"], 5000)
+                self.window._clear_market_table_display()
+                self.window.statusBar().showMessage(result["message"], 5000)
 
             # 隐藏进度条
-            if hasattr(self, 'progress_bar'):
-                self.market_progress_bar.setVisible(False)
+            if hasattr(self.window, 'progress_bar'):
+                self.window.market_progress_bar.setVisible(False)
 
             # 断开信号连接，避免影响其他任务
             try:
@@ -584,10 +594,10 @@ class MainWindowDataMixin:
                 pass
 
         def on_task_error(task_id, error_message):
-            self._clear_market_table_display()
-            self.statusBar().showMessage(f"显示{stock_type}数据失败: {error_message}", 5000)
-            if hasattr(self, 'progress_bar'):
-                self.market_progress_bar.setVisible(False)
+            self.window._clear_market_table_display()
+            self.window.statusBar().showMessage(f"显示{stock_type}数据失败: {error_message}", 5000)
+            if hasattr(self.window, 'progress_bar'):
+                self.window.market_progress_bar.setVisible(False)
 
             # 断开信号连接，避免影响其他任务
             try:
@@ -633,19 +643,18 @@ class MainWindowDataMixin:
         except Exception as e:
             logger.debug(f"设置涨跌单元格颜色失败: {e}", exc_info=True)
 
-
     def _show_hs_aj_stock_data_impl(self):
-        self._show_stock_data_by_type_impl("全部A股")
+        self.window._show_stock_data_by_type_impl("全部A股")
 
     def _show_index_data_by_category_impl(self, category_name):
         """按 index_basic.category 展示指数行情，样式与其他指数页保持一致。"""
-        self._load_index_data(market='all', title=f"{category_name}指数", category_filter=category_name)
+        self.window._load_index_data(market='all', title=f"{category_name}指数", category_filter=category_name)
 
     def _show_index_data_impl(self, index_name):
         def _show_index_data_task(index_name, task_id=None, signals=None):
             """后台任务函数"""
             try:
-                index_code = self.index_service.resolve_ts_code(index_name)
+                index_code = self.window.index_service.resolve_ts_code(index_name)
                 if index_code == index_name:
                     logger.warning(f"未能从数据表解析指数代码，将使用原始值: {index_name}")
 
@@ -654,7 +663,7 @@ class MainWindowDataMixin:
                 end_date = datetime.now().strftime("%Y-%m-%d")
                 start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
 
-                df = self.data_manager.get_index_data(index_code, start_date, end_date, frequency='1d')
+                df = self.window.data_manager.get_index_data(index_code, start_date, end_date, frequency='1d')
 
                 if df is None or df.is_empty():
                     return {"success": False, "message": f"未获取到 {index_name} 的数据"}
@@ -668,7 +677,7 @@ class MainWindowDataMixin:
 
         # 启动后台任务
         logger.info(f"启动获取{index_name}数据任务")
-        self.statusBar().showMessage(f"Loading {index_name} data...", 0)
+        self.window.statusBar().showMessage(f"Loading {index_name} data...", 0)
 
         # 创建任务
         task_id = global_task_manager.create_task(
@@ -693,20 +702,20 @@ class MainWindowDataMixin:
                 # 检查是否有data键（指数数据）
                 if "data" in result and "index_name" in result and "index_code" in result:
                     # 切换到图表标签页
-                    if hasattr(self, 'tab_widget'):
-                        self.tab_widget.setCurrentIndex(1)
+                    if hasattr(self.window, 'tab_widget'):
+                        self.window.tab_widget.setCurrentIndex(1)
 
                     # 绘制K线图
-                    if hasattr(self, 'plot_k_line'):
-                        self.plot_k_line(result["data"], result["index_name"], result["index_code"])
+                    if hasattr(self.window, 'plot_k_line'):
+                        self.window.plot_k_line(result["data"], result["index_name"], result["index_code"])
 
-                    self.statusBar().showMessage(f"已加载 {result['index_name']} 的K线图", 3000)
+                    self.window.statusBar().showMessage(f"已加载 {result['index_name']} 的K线图", 3000)
                 else:
                     # 不是指数数据，不处理
                     pass
             else:
-                self._clear_kline_display()
-                self.statusBar().showMessage(result["message"], 5000)
+                self.window._clear_kline_display()
+                self.window.statusBar().showMessage(result["message"], 5000)
 
         def on_task_error(error_task_id, error_message):
             if error_task_id != task_id:
@@ -719,8 +728,8 @@ class MainWindowDataMixin:
             except RuntimeError:
                 pass
 
-            self._clear_kline_display()
-            self.statusBar().showMessage(f"加载失败: {error_message}", 5000)
+            self.window._clear_kline_display()
+            self.window.statusBar().showMessage(f"加载失败: {error_message}", 5000)
 
         # 连接信号
         global_task_manager.task_completed.connect(on_task_completed)
@@ -736,12 +745,12 @@ class MainWindowDataMixin:
         try:
             logger.info("Showing latest 5 days index data")
 
-            self.stock_table.setSortingEnabled(False)
-            self.stock_table.setRowCount(0)
+            self.window.stock_table.setSortingEnabled(False)
+            self.window.stock_table.setRowCount(0)
 
             headers = ["日期", "代码", "名称", "涨跌幅", "涨跌额", "最高价", "最低价", "收盘价", "开盘价", "成交量"]
-            self.stock_table.setColumnCount(len(headers))
-            self.stock_table.setHorizontalHeaderLabels(headers)
+            self.window.stock_table.setColumnCount(len(headers))
+            self.window.stock_table.setHorizontalHeaderLabels(headers)
 
             # Simplified for brevity - reuse logic or delegate if possible
             # But since this was explicit in the original file, I'll keep the key parts
@@ -755,8 +764,8 @@ class MainWindowDataMixin:
         """
         Helper to add a row to stock_table with coloring
         """
-        row_pos = self.stock_table.rowCount()
-        self.stock_table.insertRow(row_pos)
+        row_pos = self.window.stock_table.rowCount()
+        self.window.stock_table.insertRow(row_pos)
 
         def _to_float(text):
             try:
@@ -793,4 +802,4 @@ class MainWindowDataMixin:
                 else:
                     item.setForeground(QColor(204, 204, 204))
 
-            self.stock_table.setItem(row_pos, col, item)
+            self.window.stock_table.setItem(row_pos, col, item)
