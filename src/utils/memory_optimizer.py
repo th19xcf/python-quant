@@ -6,121 +6,15 @@
 
 特性：
 1. 支持更多数据类型的内存优化
-2. 增加内存使用监控和告警机制
-3. 优化大数据集的处理方式
-4. 支持分块处理和数据压缩
+2. 优化大数据集的处理方式
+3. 支持分块处理和数据压缩
 """
 
-import gc
-import threading
-import time
-from collections.abc import Callable
-from functools import wraps
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import polars as pl
-import psutil
 
 from src.utils.logger import logger
-
-
-class MemoryMonitor:
-    """
-    内存监控器
-    提供内存使用监控和告警功能
-    """
-
-    def __init__(self, interval: int = 5, threshold_mb: float = 500):
-        """
-        初始化内存监控器
-
-        Args:
-            interval: 监控间隔（秒）
-            threshold_mb: 内存使用阈值（MB）
-        """
-        self.interval = interval
-        self.threshold_mb = threshold_mb
-        self.running = False
-        self.thread = None
-        self.memory_history = []
-        self.max_history = 100
-        self.callbacks = []
-
-    def start(self):
-        """开始内存监控"""
-        self.running = True
-        self.thread = threading.Thread(target=self._monitor, daemon=True)
-        self.thread.start()
-        logger.info(f"内存监控已启动，监控间隔: {self.interval}秒，阈值: {self.threshold_mb}MB")
-
-    def stop(self):
-        """停止内存监控"""
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=2)
-        logger.info("内存监控已停止")
-
-    def _monitor(self):
-        """监控线程函数"""
-        while self.running:
-            # 获取当前内存使用
-            memory_usage = psutil.Process().memory_info().rss / (1024 * 1024)
-            timestamp = time.time()
-
-            # 记录内存使用历史
-            self.memory_history.append((timestamp, memory_usage))
-            if len(self.memory_history) > self.max_history:
-                self.memory_history.pop(0)
-
-            # 检查是否超过阈值
-            if memory_usage > self.threshold_mb:
-                self._alert(memory_usage)
-
-            # 调用回调函数
-            for callback in self.callbacks:
-                try:
-                    callback(memory_usage, timestamp)
-                except Exception as e:
-                    logger.exception(f"内存监控回调执行错误: {e}")
-
-            time.sleep(self.interval)
-
-    def _alert(self, memory_usage: float):
-        """内存使用告警"""
-        logger.warning(f"内存使用超过阈值: {memory_usage:.2f}MB > {self.threshold_mb}MB")
-
-    def add_callback(self, callback: Callable[[float, float], None]):
-        """添加内存监控回调
-
-        Args:
-            callback: 回调函数，接收内存使用量和时间戳
-        """
-        self.callbacks.append(callback)
-
-    def remove_callback(self, callback: Callable[[float, float], None]):
-        """移除内存监控回调
-
-        Args:
-            callback: 要移除的回调函数
-        """
-        if callback in self.callbacks:
-            self.callbacks.remove(callback)
-
-    def get_memory_history(self) -> List[Tuple[float, float]]:
-        """获取内存使用历史
-
-        Returns:
-            内存使用历史列表，每个元素为(时间戳, 内存使用量MB)
-        """
-        return self.memory_history.copy()
-
-    def get_current_memory(self) -> float:
-        """获取当前内存使用
-
-        Returns:
-            当前内存使用量（MB）
-        """
-        return psutil.Process().memory_info().rss / (1024 * 1024)
 
 
 class MemoryOptimizer:
@@ -602,34 +496,6 @@ class MemoryOptimizer:
         print(f"{'='*60}\n")
 
 
-# 全局内存监控器
-global_memory_monitor = MemoryMonitor()
-
-
-def optimize_memory(func):
-    """
-    装饰器：自动优化函数返回的 DataFrame 内存使用
-    """
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        result = func(*args, **kwargs)
-
-        # 如果返回的是 DataFrame，进行优化
-        if isinstance(result, pl.DataFrame):
-            result = MemoryOptimizer.optimize_dataframe(result)
-
-        return result
-
-    return wrapper
-
-
-def cleanup_memory():
-    """
-    强制垃圾回收，释放内存
-    """
-    gc.collect()
-
-
 # 便捷函数
 def optimize_df(df: pl.DataFrame, **kwargs) -> pl.DataFrame:
     """便捷函数：优化DataFrame"""
@@ -644,9 +510,4 @@ def process_large_df(df: pl.DataFrame, **kwargs) -> pl.DataFrame:
 def print_df_memory(df: pl.DataFrame, title: str = "DataFrame"):
     """便捷函数：打印DataFrame内存统计"""
     MemoryOptimizer.print_memory_stats(df, title)
-
-
-def get_memory_monitor() -> MemoryMonitor:
-    """获取全局内存监控器"""
-    return global_memory_monitor
 

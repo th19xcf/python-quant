@@ -296,13 +296,10 @@ class AsyncDataManager:
                     pl.col('date').dt.strftime("%Y-%m-%d").alias('date')
                 )
 
-                # 执行优化的惰性计算
+                # 执行优化的惰性计算（lazy_exec 内部已完成 dtype 压缩，无需重复优化）
                 from src.utils.lazy_optimizer import lazy_exec
                 result = lazy_exec(lazy_df)
-                # 内存优化：转换数据类型
-                optimized_result = MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
-                logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{optimized_result.height}条")
-                result = optimized_result
+                logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{result.height}条")
             else:
                 result = df
         else:

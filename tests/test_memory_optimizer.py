@@ -16,7 +16,6 @@ import polars as pl
 
 from utils.memory_optimizer import (
     MemoryOptimizer,
-    get_memory_monitor,
     optimize_df,
     print_df_memory,
     process_large_df,
@@ -85,32 +84,6 @@ def test_large_dataset():
     return optimized_large_df
 
 
-def test_memory_monitor():
-    """测试内存监控功能"""
-    print("\n=== 测试内存监控功能 ===")
-
-    # 获取全局内存监控器
-    monitor = get_memory_monitor()
-
-    # 启动监控
-    monitor.start()
-    print("内存监控已启动")
-
-    # 模拟内存使用
-    import time
-    time.sleep(2)
-
-    # 获取当前内存使用
-    current_memory = monitor.get_current_memory()
-    print(f"当前内存使用: {current_memory:.2f}MB")
-
-    # 停止监控
-    monitor.stop()
-    print("内存监控已停止")
-
-    return current_memory
-
-
 def test_optimization_suggestions():
     """测试优化建议功能"""
     print("\n=== 测试优化建议功能 ===")
@@ -144,7 +117,6 @@ if __name__ == "__main__":
     # 运行各个测试
     df, optimized_df = test_basic_optimization()
     optimized_large_df = test_large_dataset()
-    current_memory = test_memory_monitor()
     suggestions = test_optimization_suggestions()
 
     print("\n" + "=" * 60)
