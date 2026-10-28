@@ -21,6 +21,20 @@ from typing import Any, Dict, List, Tuple
 
 from blinker import Namespace
 
+# 调试日志中禁止明文输出的字段关键字（命中即脱敏）
+_SENSITIVE_LOG_KEYWORDS = (
+    'token', 'password', 'passwd', 'secret',
+    'api_key', 'apikey', 'authorization', 'cookie',
+)
+
+
+def _redact_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """对调试日志中的事件参数做敏感字段脱敏，避免凭据随 DEBUG 日志落盘。"""
+    return {
+        key: ('***' if any(word in key.lower() for word in _SENSITIVE_LOG_KEYWORDS) else value)
+        for key, value in kwargs.items()
+    }
+
 # Qt 跨线程事件桥接：blinker 为同步发布，在工作线程 publish 会让接收者运行在
 # 工作线程，若接收者触碰 Qt 对象即违反线程亲和性（随机崩溃）。对 QObject 绑定
 # 方法的订阅者，统一经以该对象为父的桥接 Signal 转发：AutoConnection 自动保证
@@ -490,7 +504,7 @@ class EventMonitor:
         """
         if event_type == 'publish':
             # 记录事件发布
-            logger.debug(f"[EVENT] Published: {signal_name} | Thread: {threading.get_ident()} | Kwargs: {kwargs}")
+            logger.debug(f"[EVENT] Published: {signal_name} | Thread: {threading.get_ident()} | Kwargs: {_redact_kwargs(kwargs)}")
         elif event_type == 'subscribe':
             # 记录事件订阅
             subscriber = args[0] if args else None

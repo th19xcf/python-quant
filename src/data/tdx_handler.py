@@ -5,7 +5,6 @@
 """
 
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import List
@@ -51,11 +50,6 @@ class TdxHandler(DataSourceBase):
         if not self.available:
             logger.warning(f"通达信数据路径不存在: {self.tdx_data_path}")
 
-        # 初始化线程池，使用配置中的最大工作线程数
-        self.max_workers = self.config.data.max_workers
-        self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
-        logger.info(f"TdxHandler线程池初始化完成，最大工作线程数: {self.max_workers}")
-
         # 线程本地存储，用于保存每个线程的数据库会话
         self.thread_local = threading.local()
 
@@ -73,12 +67,6 @@ class TdxHandler(DataSourceBase):
         关闭处理器，清理资源
         """
         try:
-            # 关闭线程池
-            if hasattr(self, 'executor') and self.executor:
-                logger.info("正在关闭TdxHandler线程池...")
-                self.executor.shutdown(wait=True)
-                logger.info("TdxHandler线程池已关闭")
-
             # 关闭线程本地存储的数据库会话
             if hasattr(self.thread_local, 'session') and self.thread_local.session:
                 try:
