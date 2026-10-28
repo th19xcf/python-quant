@@ -368,6 +368,36 @@ def test_volume_nan_blocks_trading():
                              volume=None) is False
 
 
+def test_limit_tolerance_compared_in_price_space():
+    """回归：涨跌停判定必须在价格空间比较，不能在比率空间直接减 0.005。
+
+    原实现 open_pct >= limit - 0.005 的容差被放大 prev_close 倍，
+    会把涨幅落在 [limit-0.5%, limit) 的正常开盘价双向误判为封板：
+    买入被拒（成交率低估）、卖出被拒（止损单滞留）。
+    """
+    rules = ExecutionRules()
+    kw = dict(prev_close=10.0, high=11.0, low=9.0, volume=1_000_000.0,
+              ts_code='600000.SH')
+    # 涨停价 11.00：10.99 仍可买（原实现从 10.95 起即拒绝）
+    assert rules.is_tradable('buy', open_price=10.99, close=10.99, **kw) is True
+    assert rules.is_tradable('buy', open_price=11.00, close=11.00, **kw) is False
+    # 跌停价 9.00：9.01 仍可卖，9.00 不可卖
+    assert rules.is_tradable('sell', open_price=9.01, close=9.01, **kw) is True
+    assert rules.is_tradable('sell', open_price=9.00, close=9.00, **kw) is False
+
+    # 3 元股：原实现容差放大 3 倍（+9.83% 即判涨停）
+    kw3 = dict(prev_close=3.0, high=3.3, low=2.7, volume=1_000_000.0,
+               ts_code='600000.SH')
+    assert rules.is_tradable('buy', open_price=3.29, close=3.29, **kw3) is True
+    assert rules.is_tradable('buy', open_price=3.30, close=3.30, **kw3) is False
+
+    # 200 元股：原实现容差被压缩到 0.025 元，现精确判到涨停价 220.00
+    kw200 = dict(prev_close=200.0, high=220.0, low=180.0, volume=1_000_000.0,
+                 ts_code='600000.SH')
+    assert rules.is_tradable('buy', open_price=219.99, close=219.99, **kw200) is True
+    assert rules.is_tradable('buy', open_price=220.00, close=220.00, **kw200) is False
+
+
 def test_high_low_relative_tolerance_covers_reweighting_error():
     """缺陷 B 回归：复权后同一价位的 high / low 可能相差 1e-16（浮点误差），
     一字板判定必须用相对容差而非精确相等。"""

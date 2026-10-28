@@ -36,8 +36,11 @@ from src.risk import RiskEngine
 class ExecutionRules:
     """A 股撮合规则：涨跌停幅度推导 + 当日可交易性判定。"""
 
-    #: 开盘价与涨跌停阈值的最小容差（避免浮点误差把贴板成交误判为可成交）
-    LIMIT_TOLERANCE = 0.005
+    #: 价格空间比较的浮点噪声容差（单位：元）。只用于吸收双精度乘法误差
+    #: （约 1e-14 量级），不是"允许多涨半个百分点"的业务容差——原实现在比率
+    #: 空间直接减 0.005，等于放大了 prev_close 倍，会把涨幅落在
+    #: [limit-0.5%, limit) 的开盘价系统性误判为封板不可成交。
+    PRICE_EPS = 1e-9
 
     #: 无法从证券代码推导时的兜底涨跌停幅度（主板默认）
     DEFAULT_LIMIT_PCT = 0.10
@@ -115,19 +118,23 @@ class ExecutionRules:
         limit = self.resolve_limit_pct(ts_code, is_st)
 
         if open_price is not None and math.isfinite(open_price):
-            open_pct = open_price / prev_close - 1
-            if side == 'buy' and open_pct >= limit - self.LIMIT_TOLERANCE:
+            # 价格空间比较：涨跌停价由前收盘价直接推出，不再在比率空间做减法。
+            # 原写法 (open_pct >= limit - 0.005) 的容差被放大 prev_close 倍，
+            # 3 元股等价于允许 1.5% 偏差、200 元股允许 0.25% 偏差，
+            # 结果是把 [limit-0.5%, limit) 的正常开盘价误当成封板双向拒绝。
+            if side == 'buy' and open_price >= prev_close * (1 + limit) - self.PRICE_EPS:
                 return False
-            return not (side == 'sell' and open_pct <= -(limit - self.LIMIT_TOLERANCE))
+            if side == 'sell' and open_price <= prev_close * (1 - limit) + self.PRICE_EPS:
+                return False
+            return True
 
         # 缺陷 B 修复：复权后 high / low 可能相差 1e-16，改用相对容差
         # 缺陷 C 修复：open_price 缺失时只退化到此分支，偏乐观
         if high is not None and low is not None and close is not None:
             if abs(high - low) / prev_close < 1e-6:
-                pct = close / prev_close - 1
-                if side == 'buy' and pct >= limit - self.LIMIT_TOLERANCE:
+                if side == 'buy' and close >= prev_close * (1 + limit) - self.PRICE_EPS:
                     return False
-                if side == 'sell' and pct <= -(limit - self.LIMIT_TOLERANCE):
+                if side == 'sell' and close <= prev_close * (1 - limit) + self.PRICE_EPS:
                     return False
 
         return True
