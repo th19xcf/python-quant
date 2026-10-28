@@ -231,7 +231,8 @@ class EventBacktestRunner:
         执行回测并返回结果字典。
 
         结果固定包含：initial_capital / final_equity / total_return / trades /
-        equity_curve / performance / risk_summary / rejected_orders。
+        equity_curve / performance / risk_summary / rejected_orders /
+        expired_orders / positions / slow_path_strategies。
         result_meta 里的键会合并进结果（如 strategy_name / strategy_names）。
 
         universe 价格口径（双价格列契约）：
@@ -283,7 +284,12 @@ class EventBacktestRunner:
         # 信号按 prepared[code] 的行序对齐（_ensure_sorted 保证日期升序），
         # 主循环里的 pos 即该信号在序列中的下标。未提供向量化接口的鸭子类型
         # 策略对象在此逐行适配，主循环保持单一查表路径。
+        #
+        # 降级路径的代价是一次回测 O(N_days × N_symbols) 次 Python 调用 + 行
+        # dict 构造，相比向量化是数量级的差距（分钟级 → 小时级）。此处必须
+        # 留痕：打 warning 并把策略名写进结果，避免调用方对慢速回测无感知。
         signal_columns: Dict[str, list] = {}
+        slow_path_strategies: List[Dict[str, str]] = []
         for code in codes:
             strategy = strategies.get(code)
             if strategy is None:
@@ -292,8 +298,17 @@ class EventBacktestRunner:
             if vec is not None:
                 signal_columns[code] = vec(prepared[code]).to_list()
             else:
+                strategy_name = getattr(strategy, 'name', None) or type(strategy).__name__
                 cols = column_data[code]
                 height = len(next(iter(cols.values()))) if cols else 0
+                rows = height * len(cols)
+                slow_path_strategies.append({'ts_code': code, 'strategy': strategy_name})
+                logger.warning(
+                    "策略 {} ({}) 未实现 generate_signals_vectorized，"
+                    "信号生成退化为逐 bar Python 调用（{} 行 × {} 列 = {} 次取值），"
+                    "回测耗时为向量化路径的数量级之上（slow_path_strategies）",
+                    strategy_name, code, height, len(cols), rows,
+                )
                 signal_columns[code] = [
                     strategy.generate_signal(
                         {name: col[i] for name, col in cols.items()}, i
@@ -419,6 +434,9 @@ class EventBacktestRunner:
             # 最终持仓直接取自 AccountBook 账本（唯一真源），
             # 不在引擎侧用 trades 反推，避免账本外再维护一份持仓状态
             'positions': dict(book.positions),
+            # 慢速路径标记：非空表示这些策略未实现 generate_signals_vectorized，
+            # 信号走了逐 bar Python 调用；空列表表示全部走向量化路径
+            'slow_path_strategies': slow_path_strategies,
             # 缺陷 C：整次回测任一标的缺 open 列 → 开盘涨停判定退化，
             # 成交假设偏乐观，fill_confidence 提示调用方该结果可信度较低
             'fill_confidence': 'low' if _open_missing else 'high',
