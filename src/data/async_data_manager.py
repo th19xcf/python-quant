@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
 """
-异步数据获取管理器，使用asyncio实现高效的并行数据获取
+异步数据获取管理器
+
+只负责在 asyncio.run_in_executor 中把 data_manager 包一层异步接口；
+不复刻 handler 调度或复权口径，与 DataFetcher._apply_adjustment 保持单一路径。
 """
 
 import asyncio
@@ -13,8 +16,6 @@ import polars as pl
 from loguru import logger
 
 from src.data.data_cache import global_data_cache
-from src.utils.memory_optimizer import MemoryOptimizer
-from src.utils.monitoring import global_monitoring_system
 
 
 class AsyncDataManager:
@@ -45,166 +46,24 @@ class AsyncDataManager:
 
     async def _get_data_from_sources_async(self, data_type: str, ts_code: str, start_date: str, end_date: str, freq: str = "daily", adjustment_type: str = "hfq"):
         """
-        异步通用数据获取方法
-
-        Args:
-            data_type: 数据类型，stock或index
-            ts_code: 代码
-            start_date: 开始日期
-            end_date: 结束日期
-            freq: 周期，daily或minute
-            adjustment_type: 复权类型，qfq=前复权, hfq=后复权, none=不复权
-
-        Returns:
-            pl.DataFrame: 数据
+        异步获取单标的数据。统一委托 data_manager，后者走 DataFetcher 单一路径
+        （DB 查询 + DataFetcher._apply_adjustment + 数据源故障转移）。
+        不复刻 handler 调度或复权口径，避免与 DataFetcher 的 _apply_adjustment 漂移。
         """
-        try:
-            # 数据类型映射
-            data_type_map = {
-                'stock': {
-                    'model': 'StockDaily',
-                    'module': 'stock',
-                    'handler_methods': {
-                        'tdx': 'get_kline_data',
-                        'akshare': 'get_stock_data',
-                        'baostock': 'download_stock_daily',
-                        'plugin': 'get_stock_data'
-                    }
-                },
-                'index': {
-                    'model': 'IndexDaily',
-                    'module': 'index',
-                    'handler_methods': {
-                        'tdx': 'get_kline_data',
-                        'akshare': 'get_index_data',
-                        'baostock': 'download_index_daily',
-                        'plugin': 'get_index_data'
-                    }
-                }
-            }
+        if data_type not in ('stock', 'index'):
+            raise ValueError(f"不支持的数据类型: {data_type}")
 
-            if data_type not in data_type_map:
-                raise ValueError(f"不支持的数据类型: {data_type}")
+        freq_map = {'daily': '1d', 'minute': '1m'}
+        frequency = freq_map.get(freq, '1d')
 
-            data_type_map[data_type]
-            type_name = "股票" if data_type == "stock" else "指数"
+        def fetch_data_sync():
+            if data_type == 'stock':
+                return self.data_manager.get_stock_data(
+                    ts_code, start_date, end_date, frequency, adjustment_type)
+            return self.data_manager.get_index_data(
+                ts_code, start_date, end_date, frequency)
 
-            def process_result(result):
-                """
-                统一处理数据源结果，转换为Polars DataFrame
-                """
-                if result is None:
-                    return None
-
-                # 已经是Polars LazyFrame，执行并返回DataFrame
-                if hasattr(result, 'collect'):
-                    return result.collect()
-
-                # 已经是Polars DataFrame
-                if hasattr(result, 'to_pandas'):
-                    return result
-
-                # 是pandas DataFrame，转换为Polars
-                if hasattr(result, 'to_dict'):
-                    if hasattr(result, 'empty') and result.empty:
-                        return None
-                    return pl.from_pandas(result)
-
-                # 是dict类型（Baostock离线模式返回），取第一个值
-                if isinstance(result, dict):
-                    if len(result) > 0:
-                        first_value = list(result.values())[0]
-                        if hasattr(first_value, 'to_dict'):
-                            if hasattr(first_value, 'empty') and first_value.empty:
-                                return None
-                            return pl.from_pandas(first_value)
-                        elif isinstance(first_value, list):
-                            return pl.DataFrame(first_value)
-                    return None
-
-                # 是list类型，转换为Polars
-                if isinstance(result, list):
-                    if len(result) == 0:
-                        return None
-                    return pl.DataFrame(result)
-
-                # 其他类型，尝试直接转换
-                try:
-                    return pl.DataFrame(result)
-                except (ValueError, TypeError):
-                    return None
-
-            async def fetch_from_source_async(source_name, handler, method_name, **kwargs):
-                """
-                从单个数据源异步获取数据
-                """
-                start_time = time.time()
-                success = False
-
-                try:
-                    logger.info(f"异步获取: 从{source_name}获取{type_name}{ts_code}数据")
-
-                    # 在线程池中执行同步方法
-                    # 创建一个包装函数来处理关键字参数
-                    def wrapper():
-                        return getattr(handler, method_name)(**kwargs)
-
-                    result = await asyncio.get_event_loop().run_in_executor(
-                        self.executor,
-                        wrapper
-                    )
-
-                    processed_result = process_result(result)
-                    if processed_result is not None:
-                        # 内存优化
-                        optimized_result = MemoryOptimizer.optimize_dataframe(processed_result, enable_sparse=True)
-                        success = True
-                        return True, optimized_result
-                    else:
-                        return False, f"{source_name}返回空数据"
-                except (OSError, RuntimeError, ValueError) as e:
-                    logger.warning(f"从{source_name}获取{type_name}数据失败: {e}")
-                    return False, str(e)
-                finally:
-                    # 记录监控数据
-                    response_time = time.time() - start_time
-                    global_monitoring_system.record_data_source_request(source_name, response_time, success)
-
-                    # 更新数据源优先级
-                    if source_name not in self.source_priorities:
-                        self.source_priorities[source_name] = []
-                    self.source_priorities[source_name].append(response_time)
-                    # 只保留最近10次的响应时间
-                    if len(self.source_priorities[source_name]) > 10:
-                        self.source_priorities[source_name] = self.source_priorities[source_name][-10:]
-
-            # 数据获取统一委托给 data_manager，后者走 DataFetcher 单一路径：
-            # DataFetcher._get_data_from_database + _apply_adjustment（含双复权列 + 因子回退）
-            # + 数据源故障转移。AsyncDataManager 不再自己做 DB 查询和复权，
-            # 避免与 DataFetcher 的 _apply_adjustment 形成行为漂移。
-            # 直接调用data_manager的方法获取数据
-            def fetch_data_sync():
-                if data_type == 'stock':
-                    # 转换频率格式
-                    freq_map = {'daily': '1d', 'minute': '1m'}
-                    frequency = freq_map.get(freq, '1d')
-                    return self.data_manager.get_stock_data(ts_code, start_date, end_date, frequency, adjustment_type)
-                else:
-                    freq_map = {'daily': '1d', 'minute': '1m'}
-                    frequency = freq_map.get(freq, '1d')
-                    return self.data_manager.get_index_data(ts_code, start_date, end_date, frequency)
-
-            # 在线程池中执行同步方法
-            result = await asyncio.get_event_loop().run_in_executor(
-                self.executor,
-                fetch_data_sync
-            )
-
-            return result
-
-        except (OSError, RuntimeError, ValueError) as e:
-            logger.exception(f"获取{type_name}数据失败: {e}")
-            raise
+        return await asyncio.get_event_loop().run_in_executor(self.executor, fetch_data_sync)
 
     async def get_stock_data_async(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'hfq') -> pl.DataFrame:
         """
@@ -230,8 +89,7 @@ class AsyncDataManager:
         # 将周线和月线转换为日线获取，然后进行聚合
         if frequency in ['1w', '1m']:
             # 获取日线数据
-            freq_map = {'1d': 'daily', '1m': 'minute'}
-            freq = freq_map.get('1d', 'daily')
+            freq = 'daily'
             df = await self._get_data_from_sources_async("stock", stock_code, start_date, end_date, freq, adjustment_type)
 
             # 将日线数据转换为周线或月线

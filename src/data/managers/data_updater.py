@@ -3,7 +3,11 @@
 """
 数据更新模块
 
-负责更新数据到数据库，处理数据更新逻辑
+单源故障转移更新（first-success-wins）。与 sync_service.py 的多源合并写入
+职责不同：DataUpdater 面向增量刷新，只调一个 handler；sync_service 面向
+首次拉取/全量校准，会同时调多个 handler 做并集合并。
+
+调用方：DataService → DataUpdater → handler
 """
 
 from typing import List
@@ -13,270 +17,96 @@ from loguru import logger
 
 class DataUpdater:
     """
-    数据更新模块，负责更新数据到数据库
+    单源故障转移更新器。
+
+    对每个数据类型，按 self.sources 注册顺序依次调用同名方法，
+    第一个不抛异常即视为成功，后续 source 不再尝试。
+    全部失败则返回 False。
     """
 
     def __init__(self, config, db_manager=None):
-        """
-        初始化数据更新器
-
-        Args:
-            config: 配置对象
-            db_manager: 数据库管理器实例
-        """
         self.config = config
         self.db_manager = db_manager
         self.sources = []
 
     def register_source(self, source):
-        """
-        注册数据源
-
-        Args:
-            source: 数据源实例
-        """
         if source not in self.sources:
             self.sources.append(source)
             logger.info(f"注册更新数据源: {source.name}")
 
-    def update_stock_basic(self):
-        """
-        更新股票基本信息
-        """
+    def _try_sources(self, method_name: str, type_name: str, **kwargs) -> bool:
+        """按注册顺序依次尝试各 source 的 method_name，首个成功即返回 True。"""
         for source in self.sources:
             try:
-                logger.info(f"使用{source.name}更新股票基本信息")
-                source.update_stock_basic()
-                return True
-            except Exception as e:
-                logger.warning(f"{source.name}更新股票基本信息失败: {e}")
-                continue
-
-        logger.error("所有数据源更新股票基本信息失败")
-        return False
-
-    def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
-        """
-        更新股票日线数据
-
-        Args:
-            ts_codes: 股票代码列表
-            start_date: 开始日期
-            end_date: 结束日期
-
-        Returns:
-            bool: 更新是否成功
-        """
-        for source in self.sources:
-            try:
-                logger.info(f"使用{source.name}更新股票日线数据")
-                source.update_stock_daily(ts_codes, start_date, end_date)
-                return True
-            except Exception as e:
-                logger.warning(f"{source.name}更新股票日线数据失败: {e}")
-                continue
-
-        logger.error("所有数据源更新股票日线数据失败")
-        return False
-
-    def update_fund_basic(self):
-        """
-        更新基金基本信息
-
-        Returns:
-            bool: 更新是否成功
-        """
-        for source in self.sources:
-            try:
-                logger.info(f"使用{source.name}更新基金基本信息")
-                source.update_fund_basic()
-                return True
-            except Exception as e:
-                logger.warning(f"{source.name}更新基金基本信息失败: {e}")
-                continue
-
-        logger.error("所有数据源更新基金基本信息失败")
-        return False
-
-    def update_fund_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
-        """
-        更新基金日线数据
-
-        Args:
-            ts_codes: 基金代码列表
-            start_date: 开始日期
-            end_date: 结束日期
-
-        Returns:
-            bool: 更新是否成功
-        """
-        for source in self.sources:
-            try:
-                logger.info(f"使用{source.name}更新基金日线数据")
-                source.update_fund_daily(ts_codes, start_date, end_date)
-                return True
-            except Exception as e:
-                logger.warning(f"{source.name}更新基金日线数据失败: {e}")
-                continue
-
-        logger.error("所有数据源更新基金日线数据失败")
-        return False
-
-    def update_closed_fund_basic(self):
-        """
-        更新封闭式基金基本信息
-
-        Returns:
-            bool: 更新是否成功
-        """
-        for source in self.sources:
-            try:
-                logger.info(f"使用{source.name}更新封闭式基金基本信息")
-                source.update_closed_fund_basic()
-                return True
-            except Exception as e:
-                logger.warning(f"{source.name}更新封闭式基金基本信息失败: {e}")
-                continue
-
-        logger.error("所有数据源更新封闭式基金基本信息失败")
-        return False
-
-    def update_closed_fund_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
-        """
-        更新封闭式基金日线数据
-
-        Args:
-            ts_codes: 封闭式基金代码列表
-            start_date: 开始日期
-            end_date: 结束日期
-
-        Returns:
-            bool: 更新是否成功
-        """
-        for source in self.sources:
-            try:
-                logger.info(f"使用{source.name}更新封闭式基金日线数据")
-                source.update_closed_fund_daily(ts_codes, start_date, end_date)
-                return True
-            except Exception as e:
-                logger.warning(f"{source.name}更新封闭式基金日线数据失败: {e}")
-                continue
-
-        logger.error("所有数据源更新封闭式基金日线数据失败")
-        return False
-
-    def update_index_basic(self):
-        """
-        更新指数基本信息
-
-        Returns:
-            bool: 更新是否成功
-        """
-        for source in self.sources:
-            try:
-                logger.info(f"使用{source.name}更新指数基本信息")
-                source.update_index_basic()
-                return True
-            except Exception as e:
-                logger.warning(f"{source.name}更新指数基本信息失败: {e}")
-                continue
-
-        logger.error("所有数据源更新指数基本信息失败")
-        return False
-
-    def update_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
-        """
-        更新指数日线数据
-
-        Args:
-            ts_codes: 指数代码列表
-            start_date: 开始日期
-            end_date: 结束日期
-
-        Returns:
-            bool: 更新是否成功
-        """
-        for source in self.sources:
-            try:
-                logger.info(f"使用{source.name}更新指数日线数据")
-                source.update_index_daily(ts_codes, start_date, end_date)
-                return True
-            except Exception as e:
-                logger.warning(f"{source.name}更新指数日线数据失败: {e}")
-                continue
-
-        logger.error("所有数据源更新指数日线数据失败")
-        return False
-
-    def update_macro_data(self, indicators: List[str] = None):
-        """
-        更新宏观经济数据
-
-        Args:
-            indicators: 宏观经济指标列表
-
-        Returns:
-            bool: 更新是否成功
-        """
-        for source in self.sources:
-            try:
-                logger.info(f"使用{source.name}更新宏观经济数据")
-                source.update_macro_data(indicators)
-                return True
-            except Exception as e:
-                logger.warning(f"{source.name}更新宏观经济数据失败: {e}")
-                continue
-
-        logger.error("所有数据源更新宏观经济数据失败")
-        return False
-
-    def update_news_data(self, sources: List[str] = None, start_date: str = None, end_date: str = None):
-        """
-        更新新闻数据
-
-        Args:
-            sources: 新闻来源列表
-            start_date: 开始日期
-            end_date: 结束日期
-
-        Returns:
-            bool: 更新是否成功
-        """
-        for source in self.sources:
-            try:
-                logger.info(f"使用{source.name}更新新闻数据")
-                source.update_news_data(sources, start_date, end_date)
-                return True
-            except Exception as e:
-                logger.warning(f"{source.name}更新新闻数据失败: {e}")
-                continue
-
-        logger.error("所有数据源更新新闻数据失败")
-        return False
-
-    def update_stock_dividend(self, ts_codes: List[str] = None):
-        """
-        更新股票分红配股数据
-
-        Args:
-            ts_codes: 股票代码列表
-
-        Returns:
-            bool: 更新是否成功
-        """
-        for source in self.sources:
-            try:
-                # 检查数据源是否有 update_stock_dividend 方法
-                if not hasattr(source, 'update_stock_dividend'):
-                    logger.info(f"{source.name} 不支持更新股票分红配股数据，跳过")
+                if not hasattr(source, method_name):
                     continue
-
-                logger.info(f"使用{source.name}更新股票分红配股数据")
-                source.update_stock_dividend(ts_codes)
+                logger.info(f"使用{source.name}更新{type_name}")
+                getattr(source, method_name)(**kwargs)
                 return True
             except Exception as e:
-                logger.warning(f"{source.name}更新股票分红配股数据失败: {e}")
+                logger.warning(f"{source.name}更新{type_name}失败: {e}")
                 continue
 
-        logger.error("所有数据源更新股票分红配股数据失败")
+        logger.error(f"所有数据源更新{type_name}失败")
         return False
+
+    # ------------------------------------------------------------------
+    # 数据更新入口（全部委托 _try_sources）
+    # ------------------------------------------------------------------
+
+    def update_stock_basic(self) -> bool:
+        return self._try_sources('update_stock_basic', '股票基本信息')
+
+    def update_stock_daily(self, ts_codes: List[str] = None,
+                           start_date: str = None, end_date: str = None) -> bool:
+        return self._try_sources(
+            'update_stock_daily', '股票日线数据',
+            ts_codes=ts_codes, start_date=start_date, end_date=end_date,
+        )
+
+    def update_fund_basic(self) -> bool:
+        return self._try_sources('update_fund_basic', '基金基本信息')
+
+    def update_fund_daily(self, ts_codes: List[str] = None,
+                          start_date: str = None, end_date: str = None) -> bool:
+        return self._try_sources(
+            'update_fund_daily', '基金日线数据',
+            ts_codes=ts_codes, start_date=start_date, end_date=end_date,
+        )
+
+    def update_closed_fund_basic(self) -> bool:
+        return self._try_sources('update_closed_fund_basic', '封闭式基金基本信息')
+
+    def update_closed_fund_daily(self, ts_codes: List[str] = None,
+                                  start_date: str = None, end_date: str = None) -> bool:
+        return self._try_sources(
+            'update_closed_fund_daily', '封闭式基金日线数据',
+            ts_codes=ts_codes, start_date=start_date, end_date=end_date,
+        )
+
+    def update_index_basic(self) -> bool:
+        return self._try_sources('update_index_basic', '指数基本信息')
+
+    def update_index_daily(self, ts_codes: List[str] = None,
+                           start_date: str = None, end_date: str = None) -> bool:
+        return self._try_sources(
+            'update_index_daily', '指数日线数据',
+            ts_codes=ts_codes, start_date=start_date, end_date=end_date,
+        )
+
+    def update_macro_data(self, indicators: List[str] = None) -> bool:
+        return self._try_sources('update_macro_data', '宏观经济数据', indicators=indicators)
+
+    def update_news_data(self, source_names: List[str] = None,
+                         start_date: str = None, end_date: str = None) -> bool:
+        """更新新闻数据。
+
+        参数改名 source_names 避免遮蔽 self.sources（已注册的 handler 列表）。
+        """
+        return self._try_sources(
+            'update_news_data', '新闻数据',
+            sources=source_names, start_date=start_date, end_date=end_date,
+        )
+
+    def update_stock_dividend(self, ts_codes: List[str] = None) -> bool:
+        return self._try_sources('update_stock_dividend', '股票分红配股数据', ts_codes=ts_codes)
