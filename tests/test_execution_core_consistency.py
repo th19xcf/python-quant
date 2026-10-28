@@ -14,7 +14,7 @@ import pandas as pd
 import polars as pl
 
 from src.backtest.engine.backtest_engine import BacktestEngine
-from src.backtest.engine.execution_core import EventBacktestRunner, ExecutionRules
+from src.backtest.engine.execution_core import AccountBook, EventBacktestRunner, ExecutionRules
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.backtest.strategies.ma_strategy import MAStrategy
@@ -600,6 +600,18 @@ def test_open_none_col_existing_vs_col_missing_distinction():
     # 挂单过期，price_missing
     assert result2['trades'] == []
     assert any(o['reason'] == 'price_missing' for o in result2['expired_orders'])
+
+
+def test_snapshot_shares_equity_curve_without_copying():
+    """快照必须共享 equity_curve 引用、不得整体复制。
+
+    每笔候选订单复制一次净值曲线，累计开销 O(mT²)（10 年 × 50 标的约
+    1.4 亿次元素复制），是长周期组合回测的首要纯开销；风控规则只读尾部
+    window，共享引用无副作用。
+    """
+    book = AccountBook(100_000.0, ['AAA.SZ'])
+    curve = [{'date': '2024-01-01', 'equity': 100_000.0}]
+    assert book.snapshot(curve).equity_curve is curve
 
 
 def test_idle_symbols_do_not_freeze_capital():

@@ -198,13 +198,20 @@ class AccountBook:
         return equity
 
     def snapshot(self, equity_curve: List[Dict[str, Any]]) -> RiskPortfolio:
-        """构造风控用的组合快照。"""
+        """构造风控用的组合快照。
+
+        equity_curve 共享调用方的列表引用、不做复制：风控规则只切片读取尾部
+        window（如 MaxDrawdown），快照对象在同一次订单审查结束即被丢弃。
+        原实现在这里 list(equity_curve) 整体复制，每笔候选订单一次，
+        10 年（T≈2400）× 日均 m 笔时累计复制 O(mT²) 个元素，是长周期
+        组合回测的主要纯开销。
+        """
         return RiskPortfolio(
             positions={code: qty for code, qty in self.positions.items() if qty > 0},
             last_prices=dict(self.last_prices),
             cash=self.total_cash,
             industry_map=dict(self.industry_map),
-            equity_curve=list(equity_curve),
+            equity_curve=equity_curve,
         )
 
 
