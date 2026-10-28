@@ -15,6 +15,95 @@ from loguru import logger
 K = TypeVar('K')
 V = TypeVar('V')
 
+# 参与缓存键哈希的原始输入列：内置指标读取的全部列必须在此覆盖。
+# 派生指标列（ma5、macd 等）不参与哈希，保证 get/set 两侧列集变化不影响键。
+_CACHE_KEY_INPUT_COLUMNS = (
+    'date', 'datetime', 'time',
+    'open', 'high', 'low', 'close', 'volume',
+    'amount', 'turnover',
+    'up_count', 'down_count',
+)
+
+# 原始输入列集合，用于整表缓存结果裁剪
+_RAW_INPUT_COLUMNS = frozenset(_CACHE_KEY_INPUT_COLUMNS)
+
+# 缓存控制参数：只影响存放策略，不影响计算结果，不参与语义键
+_CACHE_KEY_EXCLUDED_PARAMS = frozenset({'ttl'})
+
+
+def _hash_polars_data(data: pl.DataFrame) -> str:
+    """
+    对原始输入列做全量、顺序敏感的内容哈希。
+
+    旧实现只采样首尾各 50 行并用 sum 聚合：既丢失行内顺序，也看不到中间行，
+    不同数据可能命中同一缓存条目。这里逐行哈希后按行序拼接字节。
+    """
+    if not isinstance(data, pl.DataFrame):
+        raise ValueError(f"缓存键仅支持 Polars DataFrame，实际为 {type(data).__name__}")
+
+    cols = [c for c in _CACHE_KEY_INPUT_COLUMNS if c in data.columns]
+    if not cols:
+        raise ValueError("数据中没有可用于生成缓存键的输入列")
+
+    hasher = hashlib.md5()
+    hasher.update('|'.join(f'{c}:{data.schema[c]}' for c in cols).encode())
+    hasher.update(f'|rows={data.height}'.encode())
+
+    if data.height:
+        try:
+            row_hashes = data.select(cols).hash_rows(seed=42)
+        except Exception as e:
+            logger.debug(f"Polars hash_rows 失败，降级 numpy 哈希: {e}")
+            hasher.update(data.select(cols).to_numpy().tobytes())
+        else:
+            hasher.update(row_hashes.to_numpy().tobytes())
+
+    return hasher.hexdigest()
+
+
+def _canonical_param(value: Any) -> str:
+    """
+    将单个参数值规范化为带类型标记的确定性字符串。
+
+    使用类型标记避免 int/str、bool/int 等不同取值碰撞。
+    """
+    if isinstance(value, (bool, int, float, str, type(None))):
+        return f'{type(value).__name__}:{value!r}'
+    if isinstance(value, (list, tuple)):
+        return f'{type(value).__name__}[' + ','.join(_canonical_param(v) for v in value) + ']'
+    if isinstance(value, (set, frozenset)):
+        return 'set{' + ','.join(sorted(_canonical_param(v) for v in value)) + '}'
+    if isinstance(value, dict):
+        return 'dict{' + ','.join(
+            f'{k}={_canonical_param(value[k])}' for k in sorted(value, key=str)
+        ) + '}'
+    if isinstance(value, pl.DataFrame):
+        return f'pl.DataFrame:{_hash_polars_data(value)}'
+    if isinstance(value, pl.Series):
+        try:
+            return f'pl.Series:{hashlib.md5(value.to_numpy().tobytes()).hexdigest()}'
+        except Exception:
+            return f'pl.Series:{value!r}'
+    if hasattr(value, 'tobytes'):
+        return f'{type(value).__name__}:{hashlib.md5(value.tobytes()).hexdigest()}'
+    try:
+        import pandas as pd
+
+        if isinstance(value, (pd.DataFrame, pd.Series)):
+            row_hashes = pd.util.hash_pandas_object(value, index=True)
+            return f'{type(value).__name__}:{hashlib.md5(row_hashes.to_numpy().tobytes()).hexdigest()}'
+    except Exception:
+        pass
+    return f'{type(value).__name__}:{value!r}'
+
+
+def _canonical_params(params: Dict[str, Any]) -> str:
+    """把参数字典规范化为确定性字符串，排除缓存控制参数。"""
+    items = [(k, v) for k, v in params.items() if k not in _CACHE_KEY_EXCLUDED_PARAMS]
+    return '&'.join(
+        f'{k}={_canonical_param(v)}' for k, v in sorted(items, key=lambda kv: str(kv[0]))
+    )
+
 
 class IndicatorCacheEntry[V]:
     """
@@ -86,8 +175,11 @@ class IndicatorCache:
 
     def _generate_cache_key(self, data: pl.DataFrame, indicator_type: str, **params) -> str:
         """
-        生成唯一的缓存键 - 优化版本
-        使用Polars原生哈希方法，避免转换为pandas和CSV
+        生成唯一的缓存键
+
+        数据侧：对原始输入列做全量、顺序敏感哈希（周期、复权、数据源差异都会
+        体现在价格/成交量/日期取值上）；参数侧：带类型标记的确定性序列化，
+        并排除 ttl 等缓存控制参数。
 
         Args:
             data: 输入数据
@@ -97,47 +189,9 @@ class IndicatorCache:
         Returns:
             str: 唯一的缓存键
         """
-        # 1. 计算数据哈希
-        # 只使用核心列进行哈希计算，提高效率
-        core_cols = ['open', 'high', 'low', 'close', 'volume']
-        data_cols = [col for col in core_cols if col in data.columns]
-
-        if not data_cols:
-            raise ValueError("数据中没有核心列，无法生成缓存键")
-
-        # 计算数据摘要 - 使用Polars原生哈希方法（更快）
-        # 只采样前50行和后50行，减少计算量
-        sample_size = min(50, len(data) // 2)
-        head_sample = data.select(data_cols).head(sample_size)
-        tail_sample = data.select(data_cols).tail(sample_size)
-
-        try:
-            # 使用Polars内置的哈希方法（比to_csv快10倍以上）
-            head_hash = head_sample.hash_rows(seed=42).sum()
-            tail_hash = tail_sample.hash_rows(seed=42).sum()
-            row_count = len(data)
-            data_hash = hashlib.md5(f"{head_hash}_{tail_hash}_{row_count}".encode()).hexdigest()
-        except Exception as e:
-            # 降级方案：使用numpy
-            logger.debug(f"Polars哈希失败，使用numpy: {e}")
-            try:
-                head_bytes = head_sample.to_numpy().tobytes()
-                tail_bytes = tail_sample.to_numpy().tobytes()
-                data_hash = hashlib.md5(head_bytes + tail_bytes).hexdigest()
-            except Exception as e2:
-                # 最终降级方案
-                logger.warning(f"numpy哈希也失败，使用简化方案: {e2}")
-                data_hash = hashlib.md5(f"{len(data)}_{hash(tuple(data_cols))}".encode()).hexdigest()
-
-        # 2. 生成参数字符串
-        # 对参数进行排序，确保相同参数不同顺序生成相同的键
-        sorted_params = sorted(params.items(), key=lambda x: x[0])
-        params_str = "".join([f"{k}={v}" for k, v in sorted_params])
-        params_hash = hashlib.md5(params_str.encode('utf-8')).hexdigest()
-
-        # 3. 组合生成最终缓存键
-        cache_key = f"{indicator_type}_{data_hash}_{params_hash}"
-        return cache_key
+        data_hash = _hash_polars_data(data)
+        params_hash = hashlib.md5(_canonical_params(params).encode('utf-8')).hexdigest()
+        return f"{indicator_type}_{data_hash}_{params_hash}"
 
     def get(self, data: pl.DataFrame, indicator_type: str, **params) -> pl.DataFrame | None:
         """
@@ -200,12 +254,16 @@ class IndicatorCache:
             logger.warning(f"生成缓存键失败: {str(e)}")
             return
 
-        # 计算过期时间
+        # 计算过期时间（ttl 只控制存放策略，已在键生成时排除）
         ttl = params.get('ttl', self._default_ttl)
         expire_time = time.time() + ttl if ttl is not None else None
 
+        # 整表缓存（result 与 data 为同一对象）只保留对齐键 + 派生列，
+        # 避免命中合并时把 OHLCV 等原始列重复并入（产生 _right 列膨胀）
+        value = self._narrow_full_frame_result(data, result)
+
         # 创建缓存条目
-        entry = IndicatorCacheEntry(result, expire_time)
+        entry = IndicatorCacheEntry(value, expire_time)
 
         # 添加到缓存
         self._cache[cache_key] = entry
@@ -216,6 +274,23 @@ class IndicatorCache:
 
         # 尝试调整缓存大小
         self._adjust_cache_size()
+
+    @staticmethod
+    def _narrow_full_frame_result(data: pl.DataFrame, result: pl.DataFrame) -> pl.DataFrame:
+        """
+        当 result 与 data 为同一整表对象时，只保留对齐键与派生指标列。
+
+        调用方普遍用 ``set(self.pl_df, self.pl_df, ...)`` 缓存整表，若原样存储，
+        命中后 join 会把 OHLCV（含 date）再次并入，Polars 会生成 ``close_right``
+        之类的重复列，污染后续计算所用 DataFrame。
+        """
+        if result is not data or not data.columns:
+            return result
+        key_col = data.columns[0]
+        derived_cols = [c for c in result.columns if c not in _RAW_INPUT_COLUMNS and c != key_col]
+        if not derived_cols:
+            return result
+        return result.select([key_col] + derived_cols)
 
     def _evict_lru(self):
         """
@@ -332,58 +407,17 @@ class IndicatorCache:
             data: 输入数据
             indicator_type: 可选，指定要失效的指标类型，None表示失效所有相关指标
         """
-        # 生成数据哈希前缀
-        core_cols = ['open', 'high', 'low', 'close', 'volume']
-        data_cols = [col for col in core_cols if col in data.columns]
-
-        if not data_cols:
-            logger.warning("数据中没有核心列，无法生成缓存键前缀")
+        try:
+            data_hash = _hash_polars_data(data)
+        except ValueError as e:
+            logger.warning(f"使缓存失效失败: {e}")
             return
 
-        # 计算数据哈希 - 使用更高效的方法
-        try:
-            # 只采样前50行和后50行，减少计算量
-            sample_size = min(50, len(data) // 2)
-            head_sample = data.select(data_cols).head(sample_size)
-            tail_sample = data.select(data_cols).tail(sample_size)
-
-            # 使用Polars内置的哈希方法（更快）
-            head_hash = head_sample.hash_rows(seed=42).sum()
-            tail_hash = tail_sample.hash_rows(seed=42).sum()
-            row_count = len(data)
-            data_hash = hashlib.md5(f"{head_hash}_{tail_hash}_{row_count}".encode()).hexdigest()
-        except Exception as e:
-            # 降级方案：使用numpy
-            logger.debug(f"Polars哈希失败，使用numpy: {e}")
-            try:
-                data_sample = data.select(data_cols).head(100)
-                data_bytes = data_sample.to_numpy().tobytes()
-                data_hash = hashlib.md5(data_bytes).hexdigest()
-            except Exception as e2:
-                # 最终降级方案
-                logger.warning(f"numpy哈希也失败，使用简化方案: {e2}")
-                data_hash = hashlib.md5(f"{len(data)}_{hash(tuple(data_cols))}".encode()).hexdigest()
-
-        # 生成缓存键前缀
         if indicator_type:
             prefix = f"{indicator_type}_{data_hash}_"
+            keys_to_remove = [key for key in self._cache if key.startswith(prefix)]
         else:
-            # 生成包含数据哈希的前缀
-            keys_to_remove = []
-            for key in self._cache:
-                if f"_{data_hash}_" in key:
-                    keys_to_remove.append(key)
-
-            for key in keys_to_remove:
-                del self._cache[key]
-
-            self._evictions += len(keys_to_remove)
-            logger.info(f"使{len(keys_to_remove)}个缓存条目失效")
-            return
-
-        # 清除相关缓存
-        keys_to_remove = [key for key in self._cache
-                         if prefix in key]
+            keys_to_remove = [key for key in self._cache if f"_{data_hash}_" in key]
 
         for key in keys_to_remove:
             del self._cache[key]

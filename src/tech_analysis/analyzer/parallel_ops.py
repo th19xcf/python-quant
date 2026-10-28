@@ -106,13 +106,31 @@ class ParallelIndicatorMixin:
         cached_indicators = []
         uncached_indicators = []
 
+        def _cache_params(ind_type):
+            """get/set 必须使用同一套归一化参数，否则缓存键不一致会永久 miss。"""
+            p = {k: v for k, v in kwargs.items() if not k.endswith('_windows')}
+            if f'{ind_type}_windows' in kwargs:
+                p['windows'] = kwargs[f'{ind_type}_windows']
+            elif 'windows' in kwargs:
+                p['windows'] = kwargs['windows']
+            return p
+
         for indicator_type in builtin_indicators:
             try:
-                cached_result = global_indicator_cache.get(self.pl_df, indicator_type, **kwargs)
+                cached_result = global_indicator_cache.get(
+                    self.pl_df, indicator_type, **_cache_params(indicator_type)
+                )
                 if cached_result is not None:
                     cached_indicators.append(indicator_type)
-                    # 合并缓存结果到主DataFrame
-                    self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
+                    # 合并缓存结果到主DataFrame，只取尚未存在的列
+                    new_columns = [
+                        col for col in cached_result.columns
+                        if col not in self.pl_df.columns
+                    ]
+                    if new_columns:
+                        self.pl_df = self.pl_df.join(
+                            cached_result.select(new_columns), on=['date'], how='left'
+                        )
                     logger.info(f"{indicator_type}缓存命中，避免重复计算")
                 else:
                     uncached_indicators.append(indicator_type)
@@ -142,15 +160,12 @@ class ParallelIndicatorMixin:
                 # 更新内部DataFrame
                 self.pl_df = result_df
 
-                # 将计算结果存入缓存
+                # 将计算结果存入缓存（与 get 使用同一归一化参数）
                 for indicator_type in uncached_indicators:
                     try:
-                        indicator_kwargs = {k: v for k, v in kwargs.items() if not k.endswith('_windows')}
-                        if f'{indicator_type}_windows' in kwargs:
-                            indicator_kwargs['windows'] = kwargs[f'{indicator_type}_windows']
-                        elif 'windows' in kwargs:
-                            indicator_kwargs['windows'] = kwargs['windows']
-                        global_indicator_cache.set(self.pl_df, self.pl_df, indicator_type, **indicator_kwargs)
+                        global_indicator_cache.set(
+                            self.pl_df, self.pl_df, indicator_type, **_cache_params(indicator_type)
+                        )
                         logger.debug(f"{indicator_type}计算结果已缓存")
                     except (ValueError, TypeError) as e:
                         logger.debug(f"缓存{indicator_type}结果失败: {e}")
@@ -406,8 +421,12 @@ class ParallelIndicatorMixin:
         if cached_result is not None:
             # 缓存命中，使用缓存结果
             logger.info(f"{indicator_type}缓存命中，避免重复计算")
-            # 合并缓存结果到主DataFrame
-            self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
+            # 合并缓存结果到主DataFrame，只取尚未存在的列，避免重复列膨胀
+            new_columns = [col for col in cached_result.columns if col not in self.pl_df.columns]
+            if new_columns:
+                self.pl_df = self.pl_df.join(
+                    cached_result.select(new_columns), on=['date'], how='left'
+                )
 
             # 更新计算状态
             if indicator_type in self.calculated_indicators:

@@ -792,19 +792,3 @@ def calculate_indicators_parallel(data, indicator_types, max_workers=None, *, op
     data = preprocess_data_polars(data)
 
     return calculate_multiple_indicators_polars(data, indicator_types, optimize_memory=optimize_memory, **params)
-
-
-def generate_cache_key(data_hash, indicator_type, *args, **kwargs):
-    """
-    生成唯一的缓存键
-
-    Args:
-        data_hash: 数据哈希值
-        indicator_type: 指标类型
-        *args: 位置参数
-        **kwargs: 关键字参数
-
-    Returns:
-        int: 唯一的缓存键
-    """
-    return hash((data_hash, indicator_type, args, tuple(sorted(kwargs.items()))))

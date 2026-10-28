@@ -237,11 +237,19 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             if cached_result is not None:
                 # 缓存命中，使用缓存结果
                 logger.info(f"{indicator_type}缓存命中，避免重复计算")
-                # 合并缓存结果到主DataFrame或LazyFrame
-                if self.is_lazy:
-                    self.pl_df = self.pl_df.join(cached_result.lazy(), on=['date'], how='left')
-                else:
-                    self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
+                # 只合并主表尚未存在的列，避免重复列（_right）膨胀
+                new_columns = [
+                    col for col in cached_result.columns if col not in self.pl_df.columns
+                ]
+                if new_columns:
+                    if self.is_lazy:
+                        self.pl_df = self.pl_df.join(
+                            cached_result.lazy().select(new_columns), on=['date'], how='left'
+                        )
+                    else:
+                        self.pl_df = self.pl_df.join(
+                            cached_result.select(new_columns), on=['date'], how='left'
+                        )
             else:
                 # 缓存未命中，执行计算
                 # 调用具体的计算函数
@@ -296,11 +304,19 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             if cached_result is not None:
                 # 缓存命中，使用缓存结果
                 logger.info(f"{indicator_type}缓存命中，避免重复计算")
-                # 合并缓存结果到主DataFrame或LazyFrame
-                if self.is_lazy:
-                    self.pl_df = self.pl_df.join(cached_result.lazy(), on=['date'], how='left')
-                else:
-                    self.pl_df = self.pl_df.join(cached_result, on=['date'], how='left')
+                # 只合并主表尚未存在的列，避免重复列（_right）膨胀
+                new_columns = [
+                    col for col in cached_result.columns if col not in self.pl_df.columns
+                ]
+                if new_columns:
+                    if self.is_lazy:
+                        self.pl_df = self.pl_df.join(
+                            cached_result.lazy().select(new_columns), on=['date'], how='left'
+                        )
+                    else:
+                        self.pl_df = self.pl_df.join(
+                            cached_result.select(new_columns), on=['date'], how='left'
+                        )
             else:
                 # 缓存未命中，执行计算
                 # 调用具体的计算函数
