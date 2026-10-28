@@ -38,7 +38,8 @@ class BacktestEngine(BaseBacktestEngine):
         self.pl_df = self.convert_to_polars(data)
 
     def run_backtest(self, initial_capital: float = 1000000.0, lot_size: int = 100,
-                     ts_code: str = '', industry: str = '', **params) -> Dict[str, Any]:
+                     ts_code: str = '', industry: str = '',
+                     is_st: bool | None = None, **params) -> Dict[str, Any]:
         """
         运行回测
 
@@ -47,6 +48,8 @@ class BacktestEngine(BaseBacktestEngine):
             lot_size: 最小交易单位（股），A股买入为100股整数倍
             ts_code: 股票代码，涨跌停幅度据此自适应推导
             industry: 行业标签（风控 MaxIndustryWeight 用）
+            is_st: ST 三态——True=ST、False=明确非 ST、None=未知（默认）。
+                未知时涨跌停按 5% 保守判定，逐笔 fill_confidence=low。
             **params: 其他回测参数
 
         Returns:
@@ -76,6 +79,7 @@ class BacktestEngine(BaseBacktestEngine):
             lot_size=lot_size,
             industry_map={code: industry} if industry else {},
             result_meta={'strategy_name': self.strategy.name},
+            st_status={code: is_st},
         )
 
         self.trades = result.get('trades', [])

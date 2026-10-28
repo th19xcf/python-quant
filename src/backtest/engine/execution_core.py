@@ -42,6 +42,9 @@ class ExecutionRules:
     #: [limit-0.5%, limit) 的开盘价系统性误判为封板不可成交。
     PRICE_EPS = 1e-9
 
+    #: ST/*ST 及"ST 状态未知"时的涨跌停幅度
+    ST_LIMIT_PCT = 0.05
+
     #: 无法从证券代码推导时的兜底涨跌停幅度（主板默认）
     DEFAULT_LIMIT_PCT = 0.10
 
@@ -64,19 +67,27 @@ class ExecutionRules:
         self.lot_size = lot_size
 
     @staticmethod
-    def resolve_limit_pct(ts_code: str = '', is_st: bool = False) -> float:
+    def resolve_limit_pct(ts_code: str = '', is_st: bool | None = None) -> float:
         """
         按证券代码与 ST 状态推导涨跌停幅度（唯一真源）。
 
-        ST/*ST → 5%；科创板 688/689 → 20%；创业板 300/301 → 20%；
-        北交所 → 30%（优先看 .BJ 后缀，无后缀时按 83/87/88/920 号段兜底）；
-        沪市 B 股 900xxx、深市 B 股 200xxx 与其余主板 → 10%。
+        ST 状态为三态语义：
+        - ``None``（默认，数据层未提供 ST 标识）→ 5%，按最严处理。
+          未知时若按板块的 10%/20% 判定，ST 股开盘 +4.9% 会被当成完全可
+          交易，在连续一字涨停行情里产生虚假成交、系统性虚增收益；
+        - ``True`` → 5%（ST/*ST 真实幅度）；
+        - ``False`` → 按板块规则：科创板 688/689 与创业板 300/301 → 20%、
+          北交所 → 30%（优先 .BJ 后缀，无后缀按 83/87/88/920 号段兜底）、
+          沪市 B 股 900xxx / 深市 B 股 200xxx 与其余主板 → 10%。
 
-        注意：is_st 分支已实现但当前无调用方传入 True（数据层尚未提供
-        ST 标识），接入 ST 判定时由调用侧补上即可。
+        注：ST 状态随戴帽/摘帽逐年变化，精确判定需要
+        (code, start_date, end_date, is_st) 时间维表；当前数据层未提供，
+        故调用方只能走 None 分支，保守按 5% 成交判定。
         """
-        if is_st:
-            return 0.05
+        # 未知与明确 ST 同按 5%：两者对"是否可能已封板"的保守结论一致，
+        # 差异体现在结果的 st_unknown 标记上（未知时 fill_confidence=low）
+        if is_st is None or is_st:
+            return ExecutionRules.ST_LIMIT_PCT
 
         ts_code = (ts_code or '').strip().upper()
         code = ts_code.split('.')[0]
@@ -97,7 +108,8 @@ class ExecutionRules:
 
     def is_tradable(self, side: str, *, prev_close: float | None, open_price: float | None,
                     high: float | None, low: float | None, close: float | None,
-                    volume: float | None, ts_code: str = '', is_st: bool = False) -> bool:
+                    volume: float | None, ts_code: str = '',
+                    is_st: bool | None = None) -> bool:
         """
         指定交易方向在某一天是否可成交。
 
@@ -107,6 +119,8 @@ class ExecutionRules:
         - 无开盘价时退化为 high ≈ low（相对容差）的一字板判断，
           此时只做 close 涨跌停判定（偏乐观），调用侧应确保 open 列存在
         - 首根 K 线没有前收盘价，只做停牌判断
+        - is_st 默认 None 表示 ST 状态未知，按 5% 严格判定（见
+          resolve_limit_pct），避免 ST 股在 10%/20% 阈值下产生虚假成交
         """
         # 缺陷 A 修复：NaN / inf 穿过停牌检查，显式拦截
         if volume is None or not math.isfinite(volume) or volume <= 0:
@@ -253,14 +267,21 @@ class EventBacktestRunner:
     def run(self, universe: Dict[str, pl.DataFrame], strategies: Dict[str, Any],
             initial_capital: float = 1_000_000.0, lot_size: int = 100,
             industry_map: Dict[str, str] | None = None,
-            result_meta: Dict[str, Any] | None = None) -> Dict[str, Any]:
+            result_meta: Dict[str, Any] | None = None,
+            st_status: Dict[str, bool | None] | None = None) -> Dict[str, Any]:
         """
         执行回测并返回结果字典。
 
         结果固定包含：initial_capital / final_equity / total_return / trades /
         equity_curve / performance / risk_summary / rejected_orders /
-        expired_orders / positions / slow_path_strategies。
+        expired_orders / positions / slow_path_strategies / st_unknown。
         result_meta 里的键会合并进结果（如 strategy_name / strategy_names）。
+
+        st_status 为 (标的名 → ST 三态) 映射：True=ST、False=明确非 ST、
+        未出现在映射中=状态未知。未知标的按 ST 的 5% 保守判定涨跌停，
+        并把逐笔 fill_confidence 降为 low——ST 股开盘 +4.9% 已被封板，
+        若按 10%/20% 判定会放行虚假成交、系统性虚增收益。
+        接入 (code, start_date, end_date, is_st) 时间维表后由调用方传此参数。
 
         universe 价格口径（双价格列契约）：
             - open/high/low/close 为指标与收益计算用价（DataFetcher hfq 出口
@@ -304,6 +325,21 @@ class EventBacktestRunner:
                 "成交假设偏乐观（fill_confidence=low）。"
                 "缺失标的: {}",
                 [c for c, cols in column_data.items() if 'open' not in cols],
+            )
+
+        # ST 三态：True=ST、False=明确非 ST、未提供=未知（按 5% 保守判定）。
+        # 历史 ST 状态需 (code, start_date, end_date, is_st) 时间维表才能精确
+        # 判定（戴帽/摘帽逐年变化，只取当前名称会在历史区间张冠李戴），
+        # 当前数据层未提供，故默认全部走未知分支。
+        st_status = dict(st_status or {})
+        unknown_st_codes = [c for c in codes if st_status.get(c) is None]
+        st_unknown = bool(unknown_st_codes)
+        if st_unknown:
+            logger.warning(
+                "ST 状态未知的标的 {} 只（如 {}），涨跌停按 5% 保守判定，"
+                "订单 fill_confidence=low；若沿用 10%/20% 会让 ST 股 +4.9% 开盘"
+                "被放行成交而虚增收益。接入 ST 时间维表后传入 st_status 即可解除。",
+                len(unknown_st_codes), unknown_st_codes[:5],
             )
 
         # 信号批量预生成：每个标的只调用一次向量化策略接口，主循环退化为
@@ -402,6 +438,7 @@ class EventBacktestRunner:
                     high=high, low=low, close=close_price, volume=volume,
                     open_raw=raw_open, prev_close_raw=prev_raw_close[code],
                     close_raw=raw_close,
+                    is_st=st_status.get(code),
                 )
 
                 # 策略基于当日数据生成信号，延迟到该标的下一个交易日执行；
@@ -465,8 +502,11 @@ class EventBacktestRunner:
             # 信号走了逐 bar Python 调用；空列表表示全部走向量化路径
             'slow_path_strategies': slow_path_strategies,
             # 缺陷 C：整次回测任一标的缺 open 列 → 开盘涨停判定退化，
-            # 成交假设偏乐观，fill_confidence 提示调用方该结果可信度较低
-            'fill_confidence': 'low' if _open_missing else 'high',
+            # 成交假设偏乐观；ST 状态未知时同样整体偏乐观/保守不可全信
+            'fill_confidence': 'low' if (_open_missing or st_unknown) else 'high',
+            # ST 状态是否未知：True 表示本次回测按 5% 保守判定涨跌停，
+            # 逐笔 fill_confidence 也相应为 low，调用方应据此解读成交假设
+            'st_unknown': st_unknown,
         }
         if result_meta:
             result.update(result_meta)
@@ -493,7 +533,8 @@ class EventBacktestRunner:
                          close: float | None, volume: float | None,
                          open_raw: float | None = None,
                          prev_close_raw: float | None = None,
-                         close_raw: float | None = None) -> None:
+                         close_raw: float | None = None,
+                         is_st: bool | None = None) -> None:
         """执行该标的的挂单。
 
         订单生命周期语义（显式状态机，杜绝静默丢单）：
@@ -502,17 +543,23 @@ class EventBacktestRunner:
               rejected_orders、其余不可成交情形一律作废并记入 expired_orders
               （already_holding / no_position / not_tradable / price_missing /
               insufficient_cash），不会残留到下一交易日。
+
+        is_st 为 None 表示 ST 状态未知：涨跌停按 5% 严格判定，且该笔订单的
+        fill_confidence 标记为 low，提示成交假设可能偏保守/不可全信。
         """
         side = pending.pop(code, None)
         if side is None:
             return
 
         position = book.positions.get(code, 0)
+        st_unknown = is_st is None
+        order_confidence = 'low' if st_unknown else 'high'
 
         def _expire(reason: str, qty: int = 0) -> None:
             expired_orders.append({
                 'date': date, 'side': side, 'ts_code': code,
                 'reason': reason, 'qty': qty,
+                'fill_confidence': order_confidence,
             })
 
         # 持仓前置条件不满足：已持仓的买入、无持仓的卖出
@@ -538,7 +585,7 @@ class EventBacktestRunner:
         check_close = close_raw if close_raw is not None else close
         if not rules.is_tradable(side, prev_close=check_prev, open_price=check_open,
                                  high=high, low=low, close=check_close, volume=volume,
-                                 ts_code=code):
+                                 ts_code=code, is_st=is_st):
             _expire('not_tradable')
             return
 
@@ -586,6 +633,7 @@ class EventBacktestRunner:
                 'capital': book.cash[code],
                 'position': book.positions[code],
                 'cost': buy_cost,
+                'fill_confidence': order_confidence,
             })
             return
 
@@ -609,6 +657,7 @@ class EventBacktestRunner:
             'capital': book.cash[code],
             'position': 0,
             'cost': sell_cost,
+            'fill_confidence': order_confidence,
         })
 
     @staticmethod

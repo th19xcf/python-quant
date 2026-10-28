@@ -88,6 +88,7 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
 
     def run_backtest(self, initial_capital: float = 1000000.0, allocation_strategy: str = 'equal', lot_size: int = 100,
                      industry_map: Dict[str, str] = None,
+                     st_status: Dict[str, bool | None] | None = None,
                      **params) -> Dict[str, Any]:
         """
         运行组合回测
@@ -97,6 +98,8 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             allocation_strategy: 资金分配方式（当前统一为等权，保留参数以兼容既有调用）
             lot_size: 最小交易单位（股）
             industry_map: 行业映射 {ts_code: industry}
+            st_status: ST 三态映射 {ts_code: True/False/None}，未给出的标的视为
+                未知，涨跌停按 5% 保守判定且逐笔 fill_confidence=low
 
         Returns:
             Dict[str, Any]: 回测结果
@@ -128,6 +131,7 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             result_meta={
                 'strategy_names': {stock: strategy.name for stock, strategy in self.strategies.items()},
             },
+            st_status=st_status,
         )
 
         self.trades = result.get('trades', [])

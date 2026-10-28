@@ -310,7 +310,7 @@ def test_limit_check_uses_raw_prices_blocks_buy_on_ex_dividend_limit_up():
 
 def test_limit_pct_resolves_by_board_prefix():
     """涨跌停幅度必须按代码前缀自适应推导，且不存在可覆盖的 limit_pct 假旋钮。"""
-    resolve = ExecutionRules.resolve_limit_pct
+    resolve = lambda code: ExecutionRules.resolve_limit_pct(code, is_st=False)
     assert resolve('600000.SH') == 0.10                         # 沪主板
     assert resolve('000001.SZ') == 0.10                         # 深主板
     assert resolve('300001.SZ') == 0.20                         # 创业板 300
@@ -327,7 +327,11 @@ def test_limit_pct_resolves_by_board_prefix():
     assert resolve('200001.SZ') == 0.10                         # 深市 B 股
     assert resolve('430001') == 0.10                            # 无后缀老三板：不享受北交所 30%
     assert resolve('') == ExecutionRules.DEFAULT_LIMIT_PCT      # 无代码兜底
-    assert resolve('600000.SH', is_st=True) == 0.05             # ST 优先于板块
+    # ST 三态：True=ST、False=板块、None（默认）=未知，均按最严 5%
+    assert ExecutionRules.resolve_limit_pct('600000.SH', is_st=True) == 0.05
+    assert ExecutionRules.resolve_limit_pct('300001.SZ', is_st=True) == 0.05
+    assert ExecutionRules.resolve_limit_pct('600000.SH') == 0.05          # 未知
+    assert ExecutionRules.resolve_limit_pct('600000.SH', is_st=None) == 0.05
 
     # 回归：limit_pct 曾被静默废弃（ts_code 非空时被忽略），现从调用链彻底移除
     assert 'limit_pct' not in inspect.signature(ExecutionRules.__init__).parameters
@@ -341,10 +345,42 @@ def test_growth_board_allows_open_above_ten_percent():
     df = _make_df(opens=[100.0, 115.0, 115.0], closes=[100.0, 115.0, 115.0])
     engine = BacktestEngine(df)
     engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
-    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='300001.SZ')
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='300001.SZ',
+                                 is_st=False)
 
     assert [t['signal'] for t in result['trades']] == ['buy']
     assert result['expired_orders'] == []
+
+
+def test_st_unknown_blocks_suspected_limit_up_and_marks_low_confidence():
+    """ST 状态未知时按 5% 保守判定：+6% 开盘在板块 10% 下本可成交，
+    但 ST 股 5% 已封板，必须拒绝成交，且该笔订单 fill_confidence=low。"""
+    df = _make_df(opens=[100.0, 106.0, 106.0], closes=[100.0, 106.0, 106.0])
+    engine = BacktestEngine(df)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    # 不传 is_st → 未知
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+
+    assert result['st_unknown'] is True
+    assert result['fill_confidence'] == 'low'
+    assert result['trades'] == []
+    assert [o['reason'] for o in result['expired_orders']] == ['not_tradable']
+    assert all(o['fill_confidence'] == 'low' for o in result['expired_orders'])
+
+
+def test_st_known_non_st_restores_board_limit():
+    """明确非 ST（is_st=False）时回到板块 10%：同一 +6% 开盘可成交，
+    逐笔与整体 fill_confidence 均为 high。"""
+    df = _make_df(opens=[100.0, 106.0, 106.0], closes=[100.0, 106.0, 106.0])
+    engine = BacktestEngine(df)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH',
+                                 is_st=False)
+
+    assert result['st_unknown'] is False
+    assert result['fill_confidence'] == 'high'
+    assert [t['signal'] for t in result['trades']] == ['buy']
+    assert result['trades'][0]['fill_confidence'] == 'high'
 
 
 # ------------------------------------------------------------------
@@ -377,7 +413,7 @@ def test_limit_tolerance_compared_in_price_space():
     """
     rules = ExecutionRules()
     kw = dict(prev_close=10.0, high=11.0, low=9.0, volume=1_000_000.0,
-              ts_code='600000.SH')
+              ts_code='600000.SH', is_st=False)
     # 涨停价 11.00：10.99 仍可买（原实现从 10.95 起即拒绝）
     assert rules.is_tradable('buy', open_price=10.99, close=10.99, **kw) is True
     assert rules.is_tradable('buy', open_price=11.00, close=11.00, **kw) is False
@@ -387,13 +423,13 @@ def test_limit_tolerance_compared_in_price_space():
 
     # 3 元股：原实现容差放大 3 倍（+9.83% 即判涨停）
     kw3 = dict(prev_close=3.0, high=3.3, low=2.7, volume=1_000_000.0,
-               ts_code='600000.SH')
+               ts_code='600000.SH', is_st=False)
     assert rules.is_tradable('buy', open_price=3.29, close=3.29, **kw3) is True
     assert rules.is_tradable('buy', open_price=3.30, close=3.30, **kw3) is False
 
     # 200 元股：原实现容差被压缩到 0.025 元，现精确判到涨停价 220.00
     kw200 = dict(prev_close=200.0, high=220.0, low=180.0, volume=1_000_000.0,
-                 ts_code='600000.SH')
+                 ts_code='600000.SH', is_st=False)
     assert rules.is_tradable('buy', open_price=219.99, close=219.99, **kw200) is True
     assert rules.is_tradable('buy', open_price=220.00, close=220.00, **kw200) is False
 
@@ -540,7 +576,8 @@ def test_open_none_col_existing_vs_col_missing_distinction():
     })
     engine = BacktestEngine(df_col_missing)
     engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
-    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH',
+                                 is_st=False)
     assert result['fill_confidence'] == 'low'
     # 列缺失 → open 回填 close → 用 close 成交（退化，但 fill_confidence 已提示）
     assert result['trades'] != []
@@ -556,7 +593,8 @@ def test_open_none_col_existing_vs_col_missing_distinction():
     })
     engine2 = BacktestEngine(df_value_missing)
     engine2.set_strategy(_IndexSignalStrategy({0: 'buy'}))
-    result2 = engine2.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+    result2 = engine2.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH',
+                                   is_st=False)
     # fill_confidence=high（列存在，只是某 bar 值缺失）
     assert result2['fill_confidence'] == 'high'
     # 挂单过期，price_missing
