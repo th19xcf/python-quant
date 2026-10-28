@@ -37,9 +37,6 @@ class VOLDrawer(BaseIndicatorDrawer):
         close_data = close_data_full[-len(x):] if len(close_data_full) > len(x) else close_data_full
         open_data = open_data_full[-len(x):] if len(open_data_full) > len(x) else open_data_full
 
-        df_pl['vol_ma5'].to_numpy()[-len(x):] if len(df_pl['vol_ma5']) > len(x) else df_pl['vol_ma5'].to_numpy()
-        df_pl['vol_ma10'].to_numpy()[-len(x):] if len(df_pl['vol_ma10']) > len(x) else df_pl['vol_ma10'].to_numpy()
-
         brush_list = []
         for i in range(len(x)):
             brush_list.append(pg.mkBrush('#FF0000') if close_data[i] >= open_data[i] else pg.mkBrush('#00FF00'))
