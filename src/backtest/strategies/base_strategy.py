@@ -75,3 +75,9 @@ class BaseStrategy(ABC):
             for i in range(df.height)
         ]
         return pl.Series('signal', signals, dtype=pl.Utf8)
+
+    # 默认实现只是逐行兜底，性能与回测引擎的"逐 bar 降级路径"同级。
+    # 引擎据此识别"未覆写向量化接口"的策略，打 warning 并在结果里标记
+    # slow_path_strategies，避免把兜底循环误当成向量化快路径。
+    # 子类覆写后不再带该属性。
+    generate_signals_vectorized.is_fallback_impl = True

@@ -602,6 +602,27 @@ def test_open_none_col_existing_vs_col_missing_distinction():
     assert any(o['reason'] == 'price_missing' for o in result2['expired_orders'])
 
 
+def test_slow_path_strategies_marked_in_result():
+    """未实现 generate_signals_vectorized 的策略必须留痕：打 warning 并把
+    (标的名, 策略名) 写进结果的 slow_path_strategies，避免调用方对
+    "分钟级 → 小时级"的降级毫无感知；向量化策略则保持空列表。"""
+    df = _make_df(opens=[10.0, 10.0, 10.0], closes=[10.0, 10.0, 10.0])
+
+    slow = BacktestEngine(df)
+    slow.set_strategy(_IndexSignalStrategy({0: 'buy'}))          # 仅逐 bar 接口
+    slow_result = slow.run_backtest(initial_capital=1_000_000.0,
+                                    ts_code='600000.SH', is_st=False)
+    assert slow_result['slow_path_strategies'] == [
+        {'ts_code': '600000.SH', 'strategy': '索引信号策略'}
+    ]
+
+    fast = BacktestEngine(df)
+    fast.set_strategy(MAStrategy(short_window=1, long_window=2))  # 已覆写向量化接口
+    fast_result = fast.run_backtest(initial_capital=1_000_000.0,
+                                    ts_code='600000.SH', is_st=False)
+    assert fast_result['slow_path_strategies'] == []
+
+
 def test_snapshot_shares_equity_curve_without_copying():
     """快照必须共享 equity_curve 引用、不得整体复制。
 

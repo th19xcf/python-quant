@@ -365,7 +365,11 @@ class EventBacktestRunner:
             if strategy is None:
                 continue
             vec = getattr(strategy, 'generate_signals_vectorized', None)
-            if vec is not None:
+            # BaseStrategy 的默认实现内部就是逐行循环调 generate_signal，
+            # 性能与降级路径同级，不能因为方法存在就当成向量化快路径。
+            is_fallback = vec is not None and getattr(
+                getattr(vec, '__func__', vec), 'is_fallback_impl', False)
+            if vec is not None and not is_fallback:
                 signal_columns[code] = vec(prepared[code]).to_list()
             else:
                 strategy_name = getattr(strategy, 'name', None) or type(strategy).__name__
@@ -374,17 +378,21 @@ class EventBacktestRunner:
                 rows = height * len(cols)
                 slow_path_strategies.append({'ts_code': code, 'strategy': strategy_name})
                 logger.warning(
-                    "策略 {} ({}) 未实现 generate_signals_vectorized，"
+                    "策略 {} ({}) 未覆写 generate_signals_vectorized，"
                     "信号生成退化为逐 bar Python 调用（{} 行 × {} 列 = {} 次取值），"
                     "回测耗时为向量化路径的数量级之上（slow_path_strategies）",
                     strategy_name, code, height, len(cols), rows,
                 )
-                signal_columns[code] = [
-                    strategy.generate_signal(
-                        {name: col[i] for name, col in cols.items()}, i
-                    )
-                    for i in range(height)
-                ]
+                if vec is not None:
+                    # BaseStrategy 的逐行兜底实现，语义等价于下方的鸭子类型适配
+                    signal_columns[code] = vec(prepared[code]).to_list()
+                else:
+                    signal_columns[code] = [
+                        strategy.generate_signal(
+                            {name: col[i] for name, col in cols.items()}, i
+                        )
+                        for i in range(height)
+                    ]
 
         # 一次性建立 date -> 行号索引（用 dict(zip) 替代手动 enumerate 循环），
         # 同时建反向索引 date -> [codes]，主循环按日期直查活跃标的，消除
