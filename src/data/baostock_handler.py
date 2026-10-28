@@ -25,6 +25,13 @@ class BaostockHandler(DataSourceBase):
     继承 DataSourceBase 获得统一接口；DataFetcher 通过标准接口
     get_stock_data / get_index_data 调度，download_stock_daily 等
     方法供内部与批量同步使用。
+
+    事务契约：
+        1. 单表批量写入可按标的/批次 commit（checkpoint），用于长任务断点续传；
+        2. 同一方法内出现跨表写入时，必须收敛到单一 commit 边界
+           （优先 db_manager.transaction()），禁止跨表多次提交；
+        3. 跨阶段的流水线（如行情同步与复权因子计算）不合并为同一事务，
+           避免长事务持锁，一致性由各阶段的原子写入 + 事后校验保证。
     """
 
     def __init__(self, config, db_manager):
@@ -425,38 +432,38 @@ class BaostockHandler(DataSourceBase):
                             logger.exception(f"处理股票日线数据失败: {row_e}")
                             continue
 
-                    # 批量查重后写入（已存在则更新，不存在则新增）
-                    upsert_rows(
-                        self.session, StockDaily, daily_rows,
-                        key_fields=('ts_code', 'trade_date'),
-                        value_fields=('open', 'high', 'low', 'close', 'pre_close',
-                                      'change', 'pct_chg', 'vol', 'amount'),
-                    )
+                    # 跨表写（stock_daily + stock_basic）必须同一事务提交
+                    with self.db_manager.transaction():
+                        # 批量查重后写入（已存在则更新，不存在则新增）
+                        upsert_rows(
+                            self.session, StockDaily, daily_rows,
+                            key_fields=('ts_code', 'trade_date'),
+                            value_fields=('open', 'high', 'low', 'close', 'pre_close',
+                                          'change', 'pct_chg', 'vol', 'amount'),
+                        )
 
-                    # 更新股票的上市日期为最早交易日期
-                    if earliest_date:
-                        # 查询股票基本信息
-                        stock_basic = self.session.query(StockBasic).filter_by(ts_code=std_code).first()
-                        if stock_basic:
-                            # 如果还没有上市日期，或者找到更早的日期，则更新
-                            if not stock_basic.list_date or earliest_date < stock_basic.list_date:
-                                stock_basic.list_date = earliest_date
-                                logger.info(f"更新股票{std_code}的上市日期为: {earliest_date}")
-                        else:
-                            # 如果股票基本信息不存在，创建一个
-                            logger.warning(f"股票{std_code}的基本信息不存在，将创建一条新记录")
-                            # 由于Baostock不提供股票名称，使用代码作为名称
-                            new_stock = StockBasic(
-                                ts_code=std_code,
-                                symbol=to_symbol(std_code),
-                                name=std_code,
-                                list_date=earliest_date
-                            )
-                            self.session.add(new_stock)
-                            logger.info(f"创建股票{std_code}的基本信息，上市日期为: {earliest_date}")
+                        # 更新股票的上市日期为最早交易日期
+                        if earliest_date:
+                            # 查询股票基本信息
+                            stock_basic = self.session.query(StockBasic).filter_by(ts_code=std_code).first()
+                            if stock_basic:
+                                # 如果还没有上市日期，或者找到更早的日期，则更新
+                                if not stock_basic.list_date or earliest_date < stock_basic.list_date:
+                                    stock_basic.list_date = earliest_date
+                                    logger.info(f"更新股票{std_code}的上市日期为: {earliest_date}")
+                            else:
+                                # 如果股票基本信息不存在，创建一个
+                                logger.warning(f"股票{std_code}的基本信息不存在，将创建一条新记录")
+                                # 由于Baostock不提供股票名称，使用代码作为名称
+                                new_stock = StockBasic(
+                                    ts_code=std_code,
+                                    symbol=to_symbol(std_code),
+                                    name=std_code,
+                                    list_date=earliest_date
+                                )
+                                self.session.add(new_stock)
+                                logger.info(f"创建股票{std_code}的基本信息，上市日期为: {earliest_date}")
 
-                    # 每只股票提交一次事务
-                    self.session.commit()
                     logger.info(f"{ts_code}的日线数据更新完成")
 
                 except (ConnectionError, TimeoutError, OSError) as e:

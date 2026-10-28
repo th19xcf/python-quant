@@ -24,6 +24,13 @@ class AkShareHandler(DataSourceBase):
     继承 DataSourceBase 获得统一接口（is_available / 15+ update_* 默认 stubs）。
     实际数据获取由 DataFetcher._get_data_from_sources 按 handler 名硬编码
     调用对应方法（get_stock_data / get_index_data）。
+
+    事务契约：
+        1. 单表批量写入可按标的/批次 commit（checkpoint），用于长任务断点续传；
+        2. 同一方法内出现跨表写入时，必须收敛到单一 commit 边界
+           （优先 db_manager.transaction()），禁止跨表多次提交；
+        3. 跨阶段的流水线（如行情同步与复权因子计算）不合并为同一事务，
+           避免长事务持锁，一致性由各阶段的原子写入 + 事后校验保证。
     """
 
     def __init__(self, config, db_manager):
