@@ -42,6 +42,21 @@ class ExecutionRules:
     #: 无法从证券代码推导时的兜底涨跌停幅度（主板默认）
     DEFAULT_LIMIT_PCT = 0.10
 
+    #: 显式代码段表：(代码前缀元组, 涨跌停幅度, 板块名)，按顺序匹配、最长前缀优先。
+    #: 900/200 沪深的 B 股必须显式列出为 10%——否则 900xxx 会被更早的北交所
+    #: 判定吞掉，30% 阈值等于取消 B 股的涨跌停约束。
+    BOARD_RULES = (
+        (('688', '689'), 0.20, 'STAR'),        # 科创板（689 为 CDR 段）
+        (('300', '301'), 0.20, 'CHINEXT'),     # 创业板（注册制前 10% 的日期规则尚未接入）
+        (('900',), 0.10, 'SH_B'),              # 沪市 B 股
+        (('200',), 0.10, 'SZ_B'),              # 深市 B 股
+    )
+
+    #: 无交易所后缀时的北交所号段兜底。不再使用 '4'/'8'/'9' 宽泛前缀：
+    #: '9' 会误伤 900xxx 沪市 B 股，'8'/'4' 会误伤新三板/老三板代码。
+    #: 920 为北交所新号段（如 920001.BJ），代码段会随时间新增，后缀判定更可靠。
+    BJ_PREFIXES = ('83', '87', '88', '920')
+
     def __init__(self, lot_size: int = 100):
         self.lot_size = lot_size
 
@@ -50,8 +65,9 @@ class ExecutionRules:
         """
         按证券代码与 ST 状态推导涨跌停幅度（唯一真源）。
 
-        ST/*ST → 5%；创业板 300/301 → 20%；科创板 68/688 → 20%；
-        北交所 4/8/9 开头的 6 位代码 → 30%；其余主板默认 10%。
+        ST/*ST → 5%；科创板 688/689 → 20%；创业板 300/301 → 20%；
+        北交所 → 30%（优先看 .BJ 后缀，无后缀时按 83/87/88/920 号段兜底）；
+        沪市 B 股 900xxx、深市 B 股 200xxx 与其余主板 → 10%。
 
         注意：is_st 分支已实现但当前无调用方传入 True（数据层尚未提供
         ST 标识），接入 ST 判定时由调用侧补上即可。
@@ -59,16 +75,20 @@ class ExecutionRules:
         if is_st:
             return 0.05
 
-        code = (ts_code or '').split('.')[0]
+        ts_code = (ts_code or '').strip().upper()
+        code = ts_code.split('.')[0]
         if not code:
             return ExecutionRules.DEFAULT_LIMIT_PCT
 
-        if code.startswith(('300', '301')):
-            return 0.20
-        if code.startswith(('68', '688')):
-            return 0.20
-        if code.startswith(('4', '8', '9')) and len(code) == 6:
+        # 北交所：交易所后缀最可靠（代码段会新增），无后缀时用显式号段兜底
+        if ts_code.endswith('.BJ'):
             return 0.30
+        if code.startswith(ExecutionRules.BJ_PREFIXES):
+            return 0.30
+
+        for prefixes, pct, _board in ExecutionRules.BOARD_RULES:
+            if code.startswith(prefixes):
+                return pct
 
         return ExecutionRules.DEFAULT_LIMIT_PCT
 

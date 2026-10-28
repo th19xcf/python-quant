@@ -316,10 +316,16 @@ def test_limit_pct_resolves_by_board_prefix():
     assert resolve('300001.SZ') == 0.20                         # 创业板 300
     assert resolve('301001.SZ') == 0.20                         # 创业板 301
     assert resolve('688001.SH') == 0.20                         # 科创板 688
-    assert resolve('680001.SH') == 0.20                         # 科创板 68
+    assert resolve('689001.SH') == 0.20                         # 科创板 689（CDR）
+    assert resolve('680001.SH') == 0.10                         # 680 非科创板，回主板 10%
     assert resolve('830001.BJ') == 0.30                         # 北交所 8 开头
     assert resolve('430001.BJ') == 0.30                         # 北交所 4 开头
     assert resolve('900001.BJ') == 0.30                         # 北交所 9 开头
+    assert resolve('920001.BJ') == 0.30                         # 北交所新号段 920
+    assert resolve('920001') == 0.30                            # 无后缀时按 920 号段兜底
+    assert resolve('900001.SH') == 0.10                         # 沪市 B 股：不得被 9 开头误判 30%
+    assert resolve('200001.SZ') == 0.10                         # 深市 B 股
+    assert resolve('430001') == 0.10                            # 无后缀老三板：不享受北交所 30%
     assert resolve('') == ExecutionRules.DEFAULT_LIMIT_PCT      # 无代码兜底
     assert resolve('600000.SH', is_st=True) == 0.05             # ST 优先于板块
 
