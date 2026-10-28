@@ -52,6 +52,8 @@ class MemoryManager:
         self.memory_usage_patterns = []  # 内存使用模式
         self.data_structure_memory = {}  # 数据结构内存使用
         self.linecache_trim_threshold = 5000  # 超过该条目数时清理 linecache
+        self.gc_min_interval = 60.0  # 两次强制 GC 的最小间隔（秒），避免监控循环里反复停顿
+        self._last_gc_time = 0.0
 
         # 启动tracemalloc
         try:
@@ -157,6 +159,11 @@ class MemoryManager:
                 self._adjust_monitoring_interval(memory_info)
 
                 time.sleep(self.monitoring_interval)
+            except MemoryError as e:
+                # MemoryError 不能被监控循环吞掉继续轮询，否则会在内存耗尽时反复抖动
+                logger.critical(f"内存监控线程内存耗尽，停止监控: {e}")
+                self.monitoring_enabled = False
+                return
             except Exception as e:
                 logger.error(f"内存监控出错: {str(e)}")
                 time.sleep(self.monitoring_interval)
@@ -231,6 +238,8 @@ class MemoryManager:
 
             # 分析快照，检测内存泄漏
             self._analyze_memory_snapshot(snapshot)
+        except MemoryError:
+            raise
         except Exception as e:
             logger.error(f"拍摄内存快照失败: {e}")
 
@@ -277,6 +286,8 @@ class MemoryManager:
                     logger.warning("检测到可能的内存泄漏:")
                     for stat in leak_candidates[:5]:
                         logger.warning(f"  {stat}")
+        except MemoryError:
+            raise
         except Exception as e:
             logger.error(f"分析内存快照失败: {e}")
 
@@ -317,14 +328,26 @@ class MemoryManager:
             # 内存使用正常
             pass
 
+    def _collect_garbage(self, force: bool = False):
+        """
+        带冷却的 GC：避免监控线程每轮（2~10 秒）都触发全量回收造成停顿抖动。
+
+        force=True 用于 critical 级紧急处置，可绕过冷却。
+        """
+        now = time.time()
+        if not force and now - self._last_gc_time < self.gc_min_interval:
+            return
+        self._last_gc_time = now
+        gc.collect()
+
     def _take_emergency_measures(self):
         """
         采取紧急内存管理措施
         """
         logger.info("采取紧急内存管理措施")
 
-        # 1. 强制垃圾回收
-        gc.collect()
+        # 1. 强制垃圾回收（critical 级不受冷却限制）
+        self._collect_garbage(force=True)
 
         # 2. 清空所有缓存
         try:
@@ -352,8 +375,8 @@ class MemoryManager:
         """
         logger.info("采取缓解内存管理措施")
 
-        # 1. 执行垃圾回收
-        gc.collect()
+        # 1. 执行垃圾回收（受冷却限制）
+        self._collect_garbage()
 
         # 2. 清理过期缓存
         try:
@@ -377,8 +400,8 @@ class MemoryManager:
         """
         采取预防内存管理措施
         """
-        # 定期执行垃圾回收
-        gc.collect()
+        # 定期执行垃圾回收（受冷却限制，避免每轮监控都停顿）
+        self._collect_garbage()
 
         # 分析内存使用趋势，预测未来内存需求
         self._predict_memory_usage()
