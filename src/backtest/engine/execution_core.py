@@ -396,7 +396,12 @@ class EventBacktestRunner:
         sorted_dates = sorted(date_codes.keys())
 
         rules = ExecutionRules(lot_size=lot_size)
-        book = AccountBook(initial_capital, codes, industry_map)
+        # 现金桶只分配给配置了策略的标的：universe 里加载了但没配策略的"哑标的"
+        # 若参与 initial_capital / len(codes) 的等额切分，其份额全程闲置，
+        # 冻结比例恰等于无策略标的占比（20 只里只有 5 只配策略 → 75% 本金不动），
+        # 净值曲线被压成近水平线、最大回撤被压低，结果会被误读为"策略很稳"。
+        active_codes = [c for c in codes if c in strategies]
+        book = AccountBook(initial_capital, active_codes, industry_map)
         gate = RiskGate(self.risk_engine, industry_map)
 
         pending: Dict[str, str | None] = dict.fromkeys(codes)

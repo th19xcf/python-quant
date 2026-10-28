@@ -602,6 +602,21 @@ def test_open_none_col_existing_vs_col_missing_distinction():
     assert any(o['reason'] == 'price_missing' for o in result2['expired_orders'])
 
 
+def test_idle_symbols_do_not_freeze_capital():
+    """组合资金切分只覆盖活跃标的：universe 里加载了但未配策略的标的
+    不得分走 initial_capital 的等权份额，否则冻结比例 = 无策略标的占比。"""
+    df_a = _make_df(opens=[10.0, 10.0, 10.0], closes=[10.0, 10.0, 10.0])
+    df_b = _make_df(opens=[10.0, 10.0, 10.0], closes=[10.0, 10.0, 10.0])
+    engine = PortfolioBacktestEngine({'AAA.SZ': df_a, 'BBB.SZ': df_b})
+    engine.set_strategies({'AAA.SZ': _IndexSignalStrategy({0: 'buy'})})
+    result = engine.run_backtest(initial_capital=1_000_000.0)
+
+    # 现金桶只分配给有策略的标的
+    assert list(result['positions']) == ['AAA.SZ']
+    # AAA 用满全部本金买入；若 BBB 分走一半，股数会不足 5 万
+    assert result['trades'][0]['shares'] > 90_000
+
+
 # ------------------------------------------------------------------
 # P0-4：pending 残留挂单被新信号覆盖时必须记账
 # ------------------------------------------------------------------
