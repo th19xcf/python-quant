@@ -104,8 +104,8 @@ class TestMaxPositionWeight:
         # 新权重 = (5w + 40w) / 55w = 45/55 ≈ 81.8% >> 10%
         assert not result.passed
 
-    def test_current_total_value_none_auto_calc(self):
-        """total_value=None 时用 cash + positions 自动算"""
+    def test_current_total_value_auto_calc(self):
+        """总资产由 cash + positions 现场计算（不接受外部注入）"""
         p = Portfolio(
             positions={'A': 100},
             last_prices={'A': 10.0},
@@ -135,12 +135,27 @@ class TestMaxIndustryWeight:
         result = rule.check(order, portfolio_with_two_industries)
         assert not result.passed
 
-    def test_no_industry_label_skips(self, portfolio_with_two_industries):
-        """order.industry='' 不拦"""
+    def test_no_industry_label_rejected(self, portfolio_with_two_industries):
+        """order.industry='' 无法评估集中度，fail-closed 拒单（D1）"""
         rule = MaxIndustryWeight(0.30)
         order = Order('000001.SZ', 'buy', 1000, 100.0)   # industry=''
         result = rule.check(order, portfolio_with_two_industries)
-        assert result.passed
+        assert not result.passed
+        assert '行业标签' in result.reason
+
+    def test_unmapped_holding_rejected(self):
+        """持仓中存在未映射行业的标的时不静默漏算，直接拒单（D1）"""
+        rule = MaxIndustryWeight(0.30)
+        portfolio = Portfolio(
+            positions={'000001.SZ': 2500, '999999.SZ': 1000},
+            last_prices={'000001.SZ': 100.0, '999999.SZ': 50.0},
+            cash=500_000.0,
+            industry_map={'000001.SZ': '银行'},   # 999999.SZ 未映射
+        )
+        order = Order('000858.SZ', 'buy', 1000, 100.0, industry='银行')
+        result = rule.check(order, portfolio)
+        assert not result.passed
+        assert '未映射行业' in result.reason
 
     def test_sell_always_passes(self, portfolio_with_two_industries):
         rule = MaxIndustryWeight(0.30)
@@ -169,11 +184,70 @@ class TestMaxDrawdownCircuit:
         result = rule.check(order, dd_portfolio)
         assert result.passed
 
-    def test_no_equity_curve_treated_as_zero_dd(self, portfolio_with_one_holding):
+    def test_no_equity_curve_fail_closed(self, portfolio_with_one_holding):
+        """无权益曲线时无法评估回撤，fail-closed 拒单（D2）"""
         rule = MaxDrawdownCircuit(0.15)
         order = Order('000001.SZ', 'buy', 100, 100.0)
         result = rule.check(order, portfolio_with_one_holding)
-        assert result.passed
+        assert not result.passed
+        assert '无法评估回撤' in result.reason
+
+    def test_invalid_equity_fail_closed(self):
+        """权益缺失/非正时不得伪造 0 回撤（D2）"""
+        rule = MaxDrawdownCircuit(0.15)
+        portfolio = Portfolio(
+            cash=100_000.0,
+            equity_curve=[{'date': '2024-01-01', 'equity': None}],
+        )
+        order = Order('000001.SZ', 'buy', 100, 100.0)
+        result = rule.check(order, portfolio)
+        assert not result.passed
+        assert '数据非法' in result.reason
+
+    def test_unordered_equity_curve_sorted(self):
+        """乱序权益曲线按日期排序后再计算回撤（D3）"""
+        curve = [
+            {'date': '2024-01-03', 'equity': 1_000_000.0},
+            {'date': '2024-01-01', 'equity': 1_200_000.0},
+            {'date': '2024-01-02', 'equity': 900_000.0},
+        ]
+        portfolio = Portfolio(cash=500_000.0, equity_curve=curve)
+        # 按日期排序后峰值 120w，当前 100w → 回撤 16.67% > 15%
+        assert portfolio.current_drawdown() == pytest.approx((1_200_000 - 1_000_000) / 1_200_000)
+        rule = MaxDrawdownCircuit(0.15)
+        result = rule.check(Order('000001.SZ', 'buy', 100, 100.0), portfolio)
+        assert not result.passed
+
+
+# ======================================================================
+# Order 输入域校验
+# ======================================================================
+
+class TestOrderValidation:
+
+    def test_negative_qty_rejected(self):
+        with pytest.raises(ValueError, match='qty'):
+            Order('000001.SZ', 'buy', -100, 100.0)
+
+    def test_zero_qty_rejected(self):
+        with pytest.raises(ValueError, match='qty'):
+            Order('000001.SZ', 'buy', 0, 100.0)
+
+    def test_negative_price_rejected(self):
+        with pytest.raises(ValueError, match='price'):
+            Order('000001.SZ', 'buy', 100, -1.0)
+
+    def test_nan_price_rejected(self):
+        with pytest.raises(ValueError, match='price'):
+            Order('000001.SZ', 'buy', 100, float('nan'))
+
+    def test_invalid_side_rejected(self):
+        with pytest.raises(ValueError, match='side'):
+            Order('000001.SZ', 'short', 100, 100.0)
+
+    def test_empty_ts_code_rejected(self):
+        with pytest.raises(ValueError, match='ts_code'):
+            Order('', 'buy', 100, 100.0)
 
 
 # ======================================================================
@@ -182,12 +256,25 @@ class TestMaxDrawdownCircuit:
 
 class TestRiskEngine:
 
-    def test_no_rules_all_approved(self, empty_portfolio):
+    def test_no_rules_fail_closed(self, empty_portfolio):
+        """无规则时不得全放行，必须抛错（D5）"""
         engine = RiskEngine()
         order = Order('000001.SZ', 'buy', 100, 100.0)
+        with pytest.raises(RuntimeError, match='fail-closed'):
+            engine.gate([order], empty_portfolio)
+
+    def test_multiple_violations_aggregated(self, empty_portfolio):
+        """多规则同时违反时聚合全部原因（D11）"""
+        engine = RiskEngine([
+            MaxPositionWeight(0.05),
+            MaxDrawdownCircuit(0.15),
+        ])
+        order = Order('000001.SZ', 'buy', 600, 100.0)
         result = engine.gate([order], empty_portfolio)
-        assert result.reject_rate == 0.0
-        assert result.approved_orders == [order]
+        assert result.reject_count == 1
+        reason = result.rejected[0][2]
+        assert 'max_position_weight' in reason
+        assert 'max_drawdown_circuit' in reason
 
     def test_single_reject(self, empty_portfolio):
         engine = RiskEngine([MaxPositionWeight(0.05)])   # 5%

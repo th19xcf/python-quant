@@ -314,13 +314,16 @@ class AdjFactorCalculator:
         # 内存优化：转换数据类型
         return MemoryOptimizer.optimize_dataframe(result)
 
-    def save_adj_factors(self, df: pl.DataFrame, batch_size: int = 1000):
+    def save_adj_factors(self, df: pl.DataFrame, batch_size: int = 1000,
+                         commit: bool = True):
         """
         保存复权因子到数据库
 
         Args:
             df: 包含复权因子的Polars DataFrame
-            batch_size: 批量插入大小
+            batch_size: 批量插入大小（仅控制 add_all 分批，不再分批提交）
+            commit: 是否在本方法内提交。为 False 时由调用方统一提交，
+                用于把 stock_adj_factor 与 stock_daily 的写入放进同一事务
         """
         if df is None or df.is_empty():
             logger.warning("没有数据需要保存")
@@ -338,21 +341,25 @@ class AdjFactorCalculator:
                 records.append(record)
 
                 if len(records) >= batch_size:
-                    self._batch_insert(records)
+                    self._batch_insert(records, commit=False)
                     records = []
 
             # 插入剩余记录
             if records:
-                self._batch_insert(records)
+                self._batch_insert(records, commit=False)
 
+            if commit:
+                self.session.commit()
             logger.info(f"成功保存 {len(df)} 条复权因子记录")
 
         except (OSError, RuntimeError) as e:
             logger.exception(f"保存复权因子失败: {e}")
             self.session.rollback()
+            if not commit:
+                raise
 
-    def _batch_insert(self, records: List[StockAdjFactor]):
-        """批量插入记录"""
+    def _batch_insert(self, records: List[StockAdjFactor], commit: bool = True):
+        """批量插入记录（commit=False 时只入会话，不提交）"""
         try:
             existing_records_map = {}
             if records:
@@ -380,17 +387,20 @@ class AdjFactorCalculator:
             if records_to_add:
                 self.session.add_all(records_to_add)
 
-            self.session.commit()
+            if commit:
+                self.session.commit()
         except (OSError, RuntimeError) as e:
             self.session.rollback()
             raise e
 
-    def update_stock_daily_adj(self, df: pl.DataFrame):
+    def update_stock_daily_adj(self, df: pl.DataFrame, commit: bool = True):
         """
         更新stock_daily表的复权价格和因子
 
         Args:
             df: 包含复权因子的Polars DataFrame
+            commit: 是否在本方法内提交。为 False 时由调用方统一提交，
+                用于把 stock_adj_factor 与 stock_daily 的写入放进同一事务
         """
         if df is None or df.is_empty():
             return
@@ -416,12 +426,15 @@ class AdjFactorCalculator:
                         setattr(daily, field, row.get(field))
                     updated += 1
 
-            self.session.commit()
+            if commit:
+                self.session.commit()
             logger.info(f"成功更新 {updated} 条stock_daily记录")
 
         except (OSError, RuntimeError) as e:
             logger.exception(f"更新stock_daily失败: {e}")
             self.session.rollback()
+            if not commit:
+                raise
 
     def batch_calculate_and_save(self, ts_codes: List[str],
                                   start_date: datetime | None = None,
@@ -447,18 +460,21 @@ class AdjFactorCalculator:
                 # 计算复权因子
                 df = self.calculate_adj_factors(ts_code, start_date, end_date)
                 if df is not None:
-                    # 保存到stock_adj_factor表
-                    self.save_adj_factors(df)
+                    # stock_adj_factor 与 stock_daily 必须同一事务提交：
+                    # 任一表写入失败都回滚，避免两表复权因子不一致
+                    with self.db_manager.transaction():
+                        self.save_adj_factors(df, commit=False)
 
-                    # 可选：更新stock_daily表
-                    if update_daily:
-                        self.update_stock_daily_adj(df)
+                        # 可选：更新stock_daily表
+                        if update_daily:
+                            self.update_stock_daily_adj(df, commit=False)
 
                     success += 1
                 else:
                     failed += 1
 
             except (OSError, RuntimeError) as e:
+                self.session.rollback()
                 logger.error(f"处理 {ts_code} 失败: {e}")
                 failed += 1
 

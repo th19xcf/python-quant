@@ -41,8 +41,17 @@ def _is_index_ts_code(ts_code):
     return False
 
 
+# 基金市场/类型标记：数据源可能返回中文或英文，统一归一化后再判定，
+# 避免只认 '基金' 而漏掉 'Fund'/'ETF' 等字段口径。
+_FUND_MARKET_TOKENS = {'基金', 'FUND', 'FUNDS', 'ETF', 'LOF'}
+
+
 def _is_fund_ts_code(ts_code, name=None, market=None):
-    """判断是否为基金代码。"""
+    """判断是否为基金代码。
+
+    代码前缀是主判据（不依赖数据源文本字段）；market/name 仅作补充，
+    且先做大小写归一化，数据源字段口径变化（如 '基金' -> 'Fund'）不再失效。
+    """
     if not ts_code or '.' not in ts_code:
         return False
 
@@ -56,7 +65,7 @@ def _is_fund_ts_code(ts_code, name=None, market=None):
     if suffix == 'SZ' and symbol.startswith(('15', '16', '18')):
         return True
 
-    if '基金' in mkt:
+    if mkt.upper() in _FUND_MARKET_TOKENS:
         return True
     return bool(any(token in nm.upper() for token in ('ETF', 'LOF')) or '基金' in nm)
 
@@ -557,17 +566,8 @@ def get_stock_info_from_apis(ts_code, merged_basic, baostock_handler, akshare_ha
             result['ts_code'] = ts_code
             return result
 
-    logger.warning(f"在 Baostock/AkShare 数据中未找到股票 {ts_code} 的信息")
-    if symbol.startswith('880'):
-        return {'ts_code': ts_code, 'symbol': symbol, 'name': f'行业指数{symbol}', 'status': 'L'}
-    elif symbol.startswith('92') and len(symbol) == 6:
-        return {'ts_code': ts_code, 'symbol': symbol, 'name': f'北交所新股{symbol}', 'status': 'L'}
-    elif symbol.startswith('8') and len(symbol) == 6:
-        return {'ts_code': ts_code, 'symbol': symbol, 'name': f'北交所股票{symbol}', 'status': 'L'}
-    elif symbol.startswith('51') or symbol.startswith('58') or symbol.startswith('15') or symbol.startswith('16'):
-        return {'ts_code': ts_code, 'symbol': symbol, 'name': f'ETF{symbol}', 'status': 'L'}
-    else:
-        return {'ts_code': ts_code, 'symbol': symbol, 'name': f'股票{symbol}', 'status': 'L'}
+    logger.warning(f"在 Baostock/AkShare 数据中未找到股票 {ts_code} 的信息，跳过该标的")
+    return None
 
 
 def sync_tdx_stock_to_database(config, db_manager):
@@ -648,6 +648,15 @@ def sync_tdx_stock_to_database(config, db_manager):
         baostock_basic, akshare_basic, baostock_industry_map = _fetch_external_stock_basic(
             baostock_handler, akshare_handler
         )
+
+        # 两个外部基本信息源全部失败时终止同步：继续执行只会把占位/缺失字段
+        # 当作完整数据写入 stock_basic，且会误删存量记录
+        if baostock_basic is None and akshare_basic is None:
+            logger.error(
+                "Baostock 与 AkShare 股票基本信息均获取失败，终止本次股票同步，"
+                "避免以部分数据覆盖 stock_basic"
+            )
+            return result
 
         merged_basic = merge_stock_basic(baostock_basic, akshare_basic, set())
 
@@ -989,6 +998,15 @@ def sync_tdx_index_to_database(config, db_manager):
 
         external_info_map = _collect_external_index_name_map(config)
         logger.info(f"外部数据源可用指数信息映射总数: {len(external_info_map)}")
+
+        # 外部指数信息全失败时终止：继续执行会用 "指数XXXXXX" 占位名覆盖
+        # index_basic，把部分数据当成完整同步结果
+        if not external_info_map:
+            logger.error(
+                "Baostock 与 AkShare 指数基本信息均获取失败，终止 index_basic 同步，"
+                "避免写入占位名称"
+            )
+            return result
 
         session = db_manager.get_session()
 

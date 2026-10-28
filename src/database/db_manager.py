@@ -4,6 +4,8 @@
 数据库管理模块
 """
 
+from contextlib import contextmanager
+
 from loguru import logger
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
@@ -203,6 +205,24 @@ class DatabaseManager:
                 # 等待一段时间后重试
                 import time
                 time.sleep(1)
+
+    @contextmanager
+    def transaction(self):
+        """
+        跨表写事务边界：成功提交、异常回滚，保证同一逻辑单元的多表写入原子性。
+
+        用法：
+            with db_manager.transaction() as session:
+                session.add(...)
+                session.delete(...)
+        """
+        session = self.get_session()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
 
     def _cleanup_session(self):
         """

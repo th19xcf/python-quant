@@ -60,9 +60,11 @@ def main() -> None:
         if result is None or result.is_empty():
             raise RuntimeError("未计算到任何复权数据")
 
-        calculator.save_adj_factors(result)
-        if not args.no_update_daily:
-            calculator.update_stock_daily_adj(result)
+        # stock_adj_factor 与 stock_daily 同一事务提交，避免两表复权因子不一致
+        with db_manager.transaction():
+            calculator.save_adj_factors(result, commit=False)
+            if not args.no_update_daily:
+                calculator.update_stock_daily_adj(result, commit=False)
 
         logger.info(f"重算完成: {args.stock}, records={result.height}")
     finally:
