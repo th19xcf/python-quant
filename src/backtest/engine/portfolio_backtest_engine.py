@@ -40,7 +40,7 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             stock_code: self.convert_to_polars(data)
             for stock_code, data in data_dict.items()
         }
-        self.positions: Dict[str, int] = {}
+        # positions 由基类统一声明（回测结束后从账本回填）
         self.strategies: Dict[str, BaseStrategy] = {}
 
     def set_strategy(self, stock_code: str = '', strategy: BaseStrategy | None = None, *args) -> None:
@@ -105,8 +105,6 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             logger.error("未设置策略")
             return {}
 
-        self.rejected_orders = []
-
         # 指标预计算：每只标的只算一次（策略读取 ma_* / macd / rsi 等预计算列，
         # 若缺失则 generate_signal 恒返回 hold，回测会静默空跑）
         prepared_data = {}
@@ -135,9 +133,11 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
         self.trades = result.get('trades', [])
         self.equity_curve = result.get('equity_curve', [])
         self.rejected_orders = result.get('rejected_orders', [])
-        self.positions = dict.fromkeys(self.data_dict, 0)
-        for trade in self.trades:
-            self.positions[trade['stock_code']] = trade['position']
+        self.expired_orders = result.get('expired_orders', [])
+        # 最终持仓直接取自回测账本（result['positions']），
+        # 不用 trades 的最后一笔反推：账本是唯一真源，且不依赖 trade 是否带
+        # position 字段（外部注入或第三方 trades 会因缺键抛 KeyError）
+        self.positions = result.get('positions', {})
 
         self.backtest_results = result
         return result

@@ -57,7 +57,6 @@ class BacktestEngine(BaseBacktestEngine):
             return {}
 
         self.ts_code = ts_code or self.ts_code
-        self.rejected_orders = []
 
         # 指标预计算：根据策略参数一次性向量化算好，避免每根K线在策略里 O(n²) 循环
         self.pl_df = self._precompute_indicators(self.pl_df, self.strategy)
@@ -82,6 +81,8 @@ class BacktestEngine(BaseBacktestEngine):
         self.trades = result.get('trades', [])
         self.equity_curve = result.get('equity_curve', [])
         self.rejected_orders = result.get('rejected_orders', [])
+        self.expired_orders = result.get('expired_orders', [])
+        self.positions = result.get('positions', {})
         self.backtest_results = result
         return result
 

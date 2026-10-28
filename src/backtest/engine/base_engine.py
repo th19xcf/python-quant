@@ -41,6 +41,8 @@ class BaseBacktestEngine:
         # 风控层：None 表示不启用（所有订单直接过）；设置后 gate() 拦截
         self.risk_engine: RiskEngine | None = None
         self.rejected_orders: List[Dict[str, Any]] = []   # 风控拒单日志
+        self.expired_orders: List[Dict[str, Any]] = []    # 挂单作废日志
+        self.positions: Dict[str, int] = {}               # 回测结束的最终持仓（账本真源）
 
     @staticmethod
     def convert_to_polars(data: DataFrameType) -> pl.DataFrame:

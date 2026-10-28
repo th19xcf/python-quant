@@ -416,6 +416,9 @@ class EventBacktestRunner:
             'risk_summary': risk_summary,
             'rejected_orders': rejected_orders,
             'expired_orders': expired_orders,
+            # 最终持仓直接取自 AccountBook 账本（唯一真源），
+            # 不在引擎侧用 trades 反推，避免账本外再维护一份持仓状态
+            'positions': dict(book.positions),
             # 缺陷 C：整次回测任一标的缺 open 列 → 开盘涨停判定退化，
             # 成交假设偏乐观，fill_confidence 提示调用方该结果可信度较低
             'fill_confidence': 'low' if _open_missing else 'high',
