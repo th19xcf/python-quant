@@ -125,16 +125,30 @@ class DataFetcher:
         Returns:
             pl.DataFrame: 股票数据
         """
-        # 尝试从缓存获取
-        cache_extra = {'as_of': str(as_of) if as_of else None}
+        # get/set 必须使用完全一致的参数，否则精确命中失效且会跨复权/as_of 串用
+        cache_params = {
+            'frequency': frequency,
+            'adjustment_type': adjustment_type,
+            'as_of': str(as_of) if as_of else None,
+        }
         cached_data = global_data_cache.get('stock', stock_code, start_date, end_date,
-                                         frequency=frequency, adjustment_type=adjustment_type,
-                                         **cache_extra)
+                                         **cache_params)
         if cached_data is not None:
             logger.info(f"从缓存获取股票数据: {stock_code} {start_date} to {end_date}",
                         **{"symbol": stock_code, "start": start_date, "end": end_date,
                                "frequency": frequency, "adjustment": adjustment_type, "source": "cache"})
             return cached_data
+
+        # 周/月线：先取日线（复用日线缓存），再聚合到目标频率后按目标频率缓存
+        if frequency in ('1w', '1m'):
+            daily = self.get_stock_data(stock_code, start_date, end_date,
+                                        '1d', adjustment_type, as_of)
+            if daily.is_empty():
+                return daily
+            converted = self._convert_frequency(daily, frequency)
+            global_data_cache.set(converted, 'stock', stock_code, start_date, end_date,
+                                  **cache_params)
+            return converted
 
         # 从数据库获取（_get_data_from_database 内部处理 as_of 截断）
         db_data = self._get_data_from_database('stock', stock_code, start_date, end_date,
@@ -142,7 +156,7 @@ class DataFetcher:
         if not db_data.is_empty():
             db_data = self._apply_adjustment(db_data, adjustment_type, as_of)
             global_data_cache.set(db_data, 'stock', stock_code, start_date, end_date,
-                                frequency=frequency, adjustment_type=adjustment_type)
+                                **cache_params)
             return db_data
 
         # 从数据源获取（数据源一般不支持 as_of，直接传 None）
@@ -150,8 +164,11 @@ class DataFetcher:
 
         if not data.is_empty():
             data = self._apply_adjustment(data, adjustment_type, as_of=None)
+            # 数据源路径的复权按 as_of=None 计算，缓存键也必须是 None，避免错标
+            source_cache_params = dict(cache_params)
+            source_cache_params['as_of'] = None
             global_data_cache.set(data, 'stock', stock_code, start_date, end_date,
-                                frequency=frequency, adjustment_type=adjustment_type)
+                                **source_cache_params)
 
         return data
 
@@ -169,20 +186,31 @@ class DataFetcher:
             pl.DataFrame: 指数数据
         """
         # 尝试从缓存获取
+        cache_params = {'frequency': frequency}
         cached_data = global_data_cache.get('index', index_code, start_date, end_date,
-                                         frequency=frequency)
+                                         **cache_params)
         if cached_data is not None:
             logger.info(f"从缓存获取指数数据: {index_code} {start_date} to {end_date}",
                         **{"symbol": index_code, "start": start_date, "end": end_date,
                                "frequency": frequency, "source": "cache"})
             return cached_data
 
+        # 周/月线：先取日线（复用日线缓存），再聚合到目标频率后按目标频率缓存
+        if frequency in ('1w', '1m'):
+            daily = self.get_index_data(index_code, start_date, end_date, '1d')
+            if daily.is_empty():
+                return daily
+            converted = self._convert_frequency(daily, frequency)
+            global_data_cache.set(converted, 'index', index_code, start_date, end_date,
+                                  **cache_params)
+            return converted
+
         # 从数据库获取
         db_data = self._get_data_from_database('index', index_code, start_date, end_date, frequency)
         if not db_data.is_empty():
             # 存入缓存
             global_data_cache.set(db_data, 'index', index_code, start_date, end_date,
-                                frequency=frequency)
+                                **cache_params)
             return db_data
 
         # 从数据源获取
@@ -191,9 +219,15 @@ class DataFetcher:
         # 存入缓存
         if not data.is_empty():
             global_data_cache.set(data, 'index', index_code, start_date, end_date,
-                                frequency=frequency)
+                                **cache_params)
 
         return data
+
+    def _convert_frequency(self, df: pl.DataFrame, frequency: str) -> pl.DataFrame:
+        """将日线数据聚合到周线/月线（失败时 DataProcessor 会记录日志并返回原数据）"""
+        from src.data.managers.data_processor import DataProcessor
+
+        return DataProcessor(self.config).convert_frequency(df, frequency)
 
     @staticmethod
     def _parse_date_bound(value: Union[str, date, datetime, None]) -> date | None:
@@ -561,7 +595,8 @@ class DataFetcher:
         Returns:
             (method_name, kwargs) 或 None（源不支持该数据类型）
         """
-        freq = 'daily' if frequency == '1d' else 'minute'
+        # 日/周/月线在数据源层统一按日线获取，聚合由 _convert_frequency 负责
+        freq = 'daily' if frequency in ('1d', '1w', '1m') else 'minute'
 
         if data_type == 'stock':
             if hasattr(source, 'get_stock_data'):

@@ -7,7 +7,7 @@
 import hashlib
 import threading
 import time
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, TypeVar
 
 import polars as pl
@@ -16,6 +16,26 @@ from loguru import logger
 # 定义缓存键和值的类型变量
 K = TypeVar('K')
 V = TypeVar('V')
+
+# 非语义参数：只影响存放策略，不影响数据内容，不参与命中比对
+_NON_SEMANTIC_PARAMS = frozenset({'ttl'})
+
+
+def _semantic_params(params: Dict[str, Any] | None) -> Dict[str, Any]:
+    """提取参与语义隔离的参数（如 frequency / adjustment_type / as_of）"""
+    if not params:
+        return {}
+    return {k: v for k, v in params.items() if k not in _NON_SEMANTIC_PARAMS}
+
+
+def _parse_date_bound(value) -> date | None:
+    """将 YYYY-MM-DD / YYYYMMDD 解析为 date，供日期列比较使用"""
+    for fmt in ('%Y-%m-%d', '%Y%m%d'):
+        try:
+            return datetime.strptime(str(value), fmt).date()
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 class DataCacheEntry[V]:
@@ -88,22 +108,6 @@ class DataCacheEntry[V]:
         except Exception as e:
             logger.debug(f"缓存日期范围比较失败，视为不命中: {e}", exc_info=True)
             return False
-
-    def can_support_frequency(self, target_frequency: str) -> bool:
-        """
-        检查当前缓存是否可以支持目标频率
-
-        Args:
-            target_frequency: 目标频率
-
-        Returns:
-            bool: 是否可以支持
-        """
-        current_freq = self.params.get('frequency', '1d')
-        # 频率层次关系：1d -> 1w -> 1m
-        freq_hierarchy = {'1d': ['1w', '1m'], '1w': ['1m'], '1m': []}
-
-        return target_frequency in freq_hierarchy.get(current_freq, [])
 
 
 class DataCache:
@@ -246,39 +250,62 @@ class DataCache:
             except Exception as e:
                 logger.warning(f"生成缓存键失败: {str(e)}")
 
-            # 2. 尝试时间范围匹配
+            # 2. 尝试时间范围匹配（必须参数完全一致，避免跨复权/跨 as_of 串用）
             matched_entry = self._find_matching_cache(data_type, code, start_date, end_date, **params)
             if matched_entry:
-                self._partial_hits += 1
-                logger.debug(f"数据缓存部分命中: {data_type} {code}")
-                # 从匹配的缓存中提取需要的时间范围
                 try:
-                    df = matched_entry.value
-                    # 过滤出需要的时间范围
-                    if 'date' in df.columns:
-                        filtered_df = df.filter(
-                            (pl.col('date') >= start_date) &
-                            (pl.col('date') <= end_date)
-                        )
-                        if not filtered_df.is_empty():
-                            # 更新访问信息
-                            matched_entry.update_access()
-                            return filtered_df
+                    filtered_df = self._filter_by_date_range(
+                        matched_entry.value, start_date, end_date)
                 except Exception as e:
                     logger.warning(f"从缓存中提取数据失败: {e}")
-
-            # 3. 尝试频率层次匹配
-            freq_matched_entry = self._find_frequency_matching_cache(data_type, code, start_date, end_date, **params)
-            if freq_matched_entry:
-                self._partial_hits += 1
-                logger.debug(f"数据缓存频率匹配: {data_type} {code}")
-                # 这里可以返回原始数据，由调用方进行频率转换
-                freq_matched_entry.update_access()
-                return freq_matched_entry.value
+                else:
+                    if filtered_df is not None and not filtered_df.is_empty():
+                        self._partial_hits += 1
+                        matched_entry.update_access()
+                        logger.debug(f"数据缓存部分命中: {data_type} {code}")
+                        return filtered_df
 
             # 缓存未命中
             self._misses += 1
             return None
+
+    def _filter_by_date_range(self, df: pl.DataFrame, start_date: str,
+                              end_date: str) -> pl.DataFrame | None:
+        """
+        按请求区间裁剪缓存数据，兼容 date / trade_date 及 Date / Datetime / Utf8 类型
+
+        Returns:
+            Optional[pl.DataFrame]: 裁剪结果；无日期列时返回 None
+        """
+        date_col = 'date' if 'date' in df.columns else (
+            'trade_date' if 'trade_date' in df.columns else None)
+        if date_col is None:
+            return None
+
+        dtype = df.schema[date_col]
+        if dtype == pl.Date:
+            col_expr = pl.col(date_col)
+        elif dtype == pl.Datetime:
+            col_expr = pl.col(date_col).dt.date()
+        elif dtype == pl.String:
+            # 字符串日期统一解析为 Date：兼容 YYYY-MM-DD 与 YYYYMMDD
+            col_expr = pl.coalesce([
+                pl.col(date_col).str.strptime(pl.Date, '%Y-%m-%d', strict=False),
+                pl.col(date_col).str.strptime(pl.Date, '%Y%m%d', strict=False),
+            ])
+        else:
+            col_expr = pl.col(date_col).cast(pl.Utf8)
+            return df.filter(
+                (col_expr >= start_date) & (col_expr <= end_date))
+
+        start_value = _parse_date_bound(start_date)
+        end_value = _parse_date_bound(end_date)
+        if start_value is None or end_value is None:
+            return None
+
+        return df.filter(
+            (col_expr >= start_value) & (col_expr <= end_value)
+        )
 
     def _find_matching_cache(self, data_type: str, code: str, start_date: str, end_date: str, **params) -> DataCacheEntry[pl.DataFrame] | None:
         """
@@ -302,54 +329,12 @@ class DataCache:
                 if (entry.data_type == data_type and
                     entry.code == code and
                     not entry.is_expired()):
-                    # 检查参数是否匹配
-                    params_match = True
-                    for k, v in params.items():
-                        if entry.params.get(k) != v:
-                            params_match = False
-                            break
-
-                    if params_match and entry.contains_date_range(start_date, end_date):
+                    # 语义参数必须完全一致：请求未带的参数不得与缓存中已有的参数混用
+                    if (_semantic_params(entry.params) == _semantic_params(params)
+                            and entry.contains_date_range(start_date, end_date)):
                         candidate_entries.append(entry)
 
         # 按命中次数和访问时间排序，优先选择使用频率高的
-        if candidate_entries:
-            candidate_entries.sort(key=lambda x: (x.hit_count, x.access_time), reverse=True)
-            return candidate_entries[0]
-
-        return None
-
-    def _find_frequency_matching_cache(self, data_type: str, code: str, start_date: str, end_date: str, **params) -> DataCacheEntry[pl.DataFrame] | None:
-        """
-        查找可以支持目标频率的缓存
-
-        Args:
-            data_type: 数据类型
-            code: 代码
-            start_date: 开始日期
-            end_date: 结束日期
-            **params: 其他参数
-
-        Returns:
-            Optional[DataCacheEntry]: 匹配的缓存条目
-        """
-        target_frequency = params.get('frequency', '1d')
-
-        # 过滤条件：相同数据类型、代码，且未过期
-        with self._lock:
-            candidate_entries = []
-            for _key, entry in self._cache.items():
-                # 检查基本条件
-                if (entry.data_type == data_type and
-                    entry.code == code and
-                    not entry.is_expired()):
-                    # 检查是否可以支持目标频率
-                    if entry.can_support_frequency(target_frequency):
-                        # 检查日期范围
-                        if entry.contains_date_range(start_date, end_date):
-                            candidate_entries.append(entry)
-
-        # 按命中次数和访问时间排序
         if candidate_entries:
             candidate_entries.sort(key=lambda x: (x.hit_count, x.access_time), reverse=True)
             return candidate_entries[0]

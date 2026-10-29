@@ -436,49 +436,141 @@ class AdjFactorCalculator:
             if not commit:
                 raise
 
+    def _get_dividends_bulk(self, ts_codes: List[str]) -> pl.DataFrame:
+        """批量获取多只股票的分红数据（单次查询，避免逐股 N+1）"""
+        rows = (
+            self.session.query(
+                StockDividend.ts_code,
+                StockDividend.ex_date,
+                StockDividend.cash_div,
+                StockDividend.share_div,
+                StockDividend.rights_issue_ratio,
+                StockDividend.rights_issue_price,
+            )
+            .filter(StockDividend.ts_code.in_(ts_codes))
+            .order_by(StockDividend.ts_code, StockDividend.ex_date)
+            .all()
+        )
+        if not rows:
+            return pl.DataFrame(schema={
+                'ts_code': pl.String, 'ex_date': pl.Date,
+                'cash_div': pl.Float64, 'share_div': pl.Float64,
+                'rights_issue_ratio': pl.Float64, 'rights_issue_price': pl.Float64,
+            })
+        return pl.DataFrame({
+            'ts_code': [r[0] for r in rows],
+            'ex_date': [r[1] for r in rows],
+            'cash_div': [r[2] or 0 for r in rows],
+            'share_div': [r[3] or 0 for r in rows],
+            'rights_issue_ratio': [r[4] or 0 for r in rows],
+            'rights_issue_price': [r[5] or 0 for r in rows],
+        })
+
+    def _get_prices_bulk(self, ts_codes: List[str],
+                         start_date: datetime | None,
+                         end_date: datetime | None) -> pl.DataFrame:
+        """批量获取多只股票的日线价格（单次查询，避免逐股 N+1）"""
+        query = self.session.query(
+            StockDaily.ts_code, StockDaily.trade_date, StockDaily.open,
+            StockDaily.high, StockDaily.low, StockDaily.close,
+        ).filter(StockDaily.ts_code.in_(ts_codes))
+        if start_date:
+            query = query.filter(StockDaily.trade_date >= start_date)
+        if end_date:
+            query = query.filter(StockDaily.trade_date <= end_date)
+
+        rows = query.order_by(StockDaily.ts_code, StockDaily.trade_date).all()
+        if not rows:
+            return pl.DataFrame(schema={
+                'ts_code': pl.String, 'trade_date': pl.Date,
+                'open': pl.Float64, 'high': pl.Float64,
+                'low': pl.Float64, 'close': pl.Float64,
+            })
+        return pl.DataFrame({
+            'ts_code': [r[0] for r in rows],
+            'trade_date': [r[1] for r in rows],
+            'open': [r[2] for r in rows],
+            'high': [r[3] for r in rows],
+            'low': [r[4] for r in rows],
+            'close': [r[5] for r in rows],
+        })
+
     def batch_calculate_and_save(self, ts_codes: List[str],
                                   start_date: datetime | None = None,
                                   end_date: datetime | None = None,
-                                  update_daily: bool = True):
+                                  update_daily: bool = True,
+                                  chunk_size: int = 20):
         """
         批量计算并保存复权因子
+
+        分块预取价格/分红数据，每块一个事务提交：把逐股 2 次查询 + 逐股提交
+        降为每块 2 次查询 + 1 次提交，CPU 仍按单股向量化计算。
 
         Args:
             ts_codes: 股票代码列表
             start_date: 开始日期
             end_date: 结束日期
             update_daily: 是否同时更新stock_daily表
+            chunk_size: 每块处理的股票数（越大内存占用越高）
         """
         total = len(ts_codes)
         success = 0
         failed = 0
 
-        for i, ts_code in enumerate(ts_codes):
+        for offset in range(0, total, chunk_size):
+            chunk = ts_codes[offset:offset + chunk_size]
+            logger.info(f"[{offset+1}-{min(offset + chunk_size, total)}/{total}] "
+                        f"批量处理 {len(chunk)} 只股票")
+
             try:
-                logger.info(f"[{i+1}/{total}] 正在处理 {ts_code}")
+                # 每块各一次查询，替代逐股查询
+                dividends_bulk = self._get_dividends_bulk(chunk)
+                prices_bulk = None
+                if not self.tdx_handler:
+                    prices_bulk = self._get_prices_bulk(chunk, start_date, end_date)
 
-                # 计算复权因子
-                df = self.calculate_adj_factors(ts_code, start_date, end_date)
-                if df is not None:
-                    # stock_adj_factor 与 stock_daily 必须同一事务提交：
-                    # 任一表写入失败都回滚，避免两表复权因子不一致
-                    with self.db_manager.transaction():
-                        self.save_adj_factors(df, commit=False)
+                frames = []
+                for ts_code in chunk:
+                    if self.tdx_handler:
+                        prices = self._get_prices_from_tdx(ts_code, start_date, end_date)
+                    else:
+                        prices = prices_bulk.filter(pl.col('ts_code') == ts_code)
 
-                        # 可选：更新stock_daily表
-                        if update_daily:
-                            self.update_stock_daily_adj(df, commit=False)
+                    if prices is None or prices.is_empty():
+                        logger.warning(f"{ts_code} 没有价格数据")
+                        failed += 1
+                        continue
 
-                    success += 1
-                else:
-                    failed += 1
+                    dividends = dividends_bulk.filter(pl.col('ts_code') == ts_code)
+                    if dividends.is_empty():
+                        frame = prices.with_columns([
+                            pl.lit(1.0).alias('qfq_factor'),
+                            pl.lit(1.0).alias('hfq_factor'),
+                        ])
+                        frame = MemoryOptimizer.optimize_dataframe(frame)
+                    else:
+                        frame = self.calculate_factors(prices, dividends)
+                    frames.append(frame)
+
+                if not frames:
+                    continue
+
+                merged = pl.concat(frames)
+                # stock_adj_factor 与 stock_daily 必须同一事务提交：
+                # 任一表写入失败都回滚，避免两表复权因子不一致
+                with self.db_manager.transaction():
+                    self.save_adj_factors(merged, commit=False)
+                    if update_daily:
+                        self.update_stock_daily_adj(merged, commit=False)
+
+                success += len(frames)
 
             except (OSError, RuntimeError) as e:
                 self.session.rollback()
-                logger.error(f"处理 {ts_code} 失败: {e}")
-                failed += 1
+                logger.error(f"批量处理失败（{chunk[0]}..{chunk[-1]}）: {e}")
+                failed += len(chunk)
 
-        logger.info(f"批量处理完成：成功 {success}，失败 {failed}，总计 {total}")
+        logger.info(f"批量复权因子计算完成: 成功 {success}，失败 {failed}，共 {total}")
 
 
 if __name__ == "__main__":

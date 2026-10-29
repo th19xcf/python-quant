@@ -29,7 +29,64 @@ _CACHE_KEY_INPUT_COLUMNS = (
 _RAW_INPUT_COLUMNS = frozenset(_CACHE_KEY_INPUT_COLUMNS)
 
 # 缓存控制参数：只影响存放策略，不影响计算结果，不参与语义键
-_CACHE_KEY_EXCLUDED_PARAMS = frozenset({'ttl'})
+_CACHE_KEY_EXCLUDED_PARAMS = frozenset({'ttl', 'formula_version'})
+
+# 参与公式指纹计算的源码：公式实现或其注册表变更都必须使旧缓存失效
+_FORMULA_SOURCE_FILES = (
+    'indicator_calculator.py',
+    'indicator_registry.py',
+    'gpu_acceleration.py',
+)
+_FORMULA_SOURCE_DIRS = ('indicators',)
+
+_formula_version: str | None = None
+_formula_version_lock = threading.Lock()
+
+
+def _compute_formula_version() -> str:
+    """对指标公式相关源码做内容指纹（与 git 版本解耦，改动即失效）"""
+    from pathlib import Path
+
+    base = Path(__file__).resolve().parent
+    files = [base / name for name in _FORMULA_SOURCE_FILES]
+    for dirname in _FORMULA_SOURCE_DIRS:
+        directory = base / dirname
+        if directory.is_dir():
+            files.extend(sorted(directory.rglob('*.py')))
+
+    digest = hashlib.md5()
+    for path in files:
+        if not path.is_file():
+            continue
+        digest.update(path.name.encode('utf-8'))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:16]
+
+
+def get_formula_version() -> str:
+    """获取当前公式版本（懒计算，供缓存键使用）"""
+    global _formula_version
+    if _formula_version is None:
+        with _formula_version_lock:
+            if _formula_version is None:
+                try:
+                    _formula_version = _compute_formula_version()
+                except Exception as e:  # 源码不可读时退化为固定标记，避免缓存键随机化
+                    logger.warning(f"计算指标公式版本失败，使用 unknown: {e}")
+                    _formula_version = 'unknown'
+    return _formula_version
+
+
+def set_formula_version(version: str | None) -> None:
+    """
+    显式指定公式版本
+
+    Args:
+        version: 版本标识；None 表示恢复为源码指纹自动计算
+    """
+    global _formula_version
+    with _formula_version_lock:
+        _formula_version = version
 
 
 def _hash_polars_data(data: pl.DataFrame) -> str:
@@ -194,7 +251,11 @@ class IndicatorCache:
             str: 唯一的缓存键
         """
         data_hash = _hash_polars_data(data)
-        params_hash = hashlib.md5(_canonical_params(params).encode('utf-8')).hexdigest()
+        # 公式版本参与参数哈希：公式源码变更后旧结果不再命中
+        version = params.get('formula_version') or get_formula_version()
+        params_hash = hashlib.md5(
+            f"{_canonical_params(params)}&formula={version}".encode('utf-8')
+        ).hexdigest()
         return f"{indicator_type}_{data_hash}_{params_hash}"
 
     def get(self, data: pl.DataFrame, indicator_type: str, **params) -> pl.DataFrame | None:
