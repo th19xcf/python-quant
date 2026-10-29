@@ -208,13 +208,17 @@ class MainWindowIndicatorWindowMixin:
             # 添加到容器布局
             ui_builder.add_label_to_container(container, None, window_index)
 
-        # 保存指标数据
-        self._save_indicator_data(indicator_name, df_pl)
+        # 缓存指标数据到内存（供悬停/标题栏读取，不涉及数据库写入）
+        self._cache_indicator_data(indicator_name, df_pl)
         logger.debug(f"窗口 {window_index} 的指标 {indicator_name} 渲染完成")
 
-    def _save_indicator_data(self, indicator_name: str, df_pl):
+    def _cache_indicator_data(self, indicator_name: str, df_pl):
         """
-        保存指标数据
+        把指标序列缓存到内存（current_*_data 实例属性），供鼠标悬停与
+        标题栏标签读取。
+
+        注意：本方法只做内存态赋值，不写数据库；命名中的 cache 即为此意，
+        避免被误读为"指标落库"。
 
         Args:
             indicator_name: 指标名称

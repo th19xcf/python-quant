@@ -106,7 +106,7 @@ _PREPROCESS_STABLE_DTYPES = frozenset([
     pl.Float32, pl.Int32, pl.Int16, pl.Int8, pl.Date, pl.Boolean, pl.Categorical
 ])
 
-# 价格/成交量列按设计保留 Float64，不会被 optimize_dataframe 降精度
+# 价格/成交量/复权因子列按设计保留 Float64，不会被 optimize_dataframe 降精度
 _PREPROCESS_STABLE_FLOAT64_COLS = frozenset(
     MemoryOptimizer.COLUMN_TYPE_MAP['price_cols'] + MemoryOptimizer.COLUMN_TYPE_MAP['volume_cols']
 )

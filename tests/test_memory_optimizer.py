@@ -110,6 +110,36 @@ def test_optimization_suggestions():
     return suggestions
 
 
+def test_adj_factor_keep_float64():
+    """回归：qfq_factor/hfq_factor 必须保留 Float64，禁止按百分比列降 Float32。
+
+    复权因子参与连乘与"原始价×因子"还原，Float32 的 ~7 位有效位会在
+    连乘中累积出可观测误差（曾位于 pct_cols 被降精度，属回归防护）。
+    """
+    print("\n=== 测试复权因子 Float64 白名单 ===")
+
+    n = 500
+    df = pl.DataFrame({
+        'close': np.random.uniform(5, 50, n),
+        'qfq_factor': np.cumprod(np.full(n, 0.9997)),
+        'hfq_factor': np.cumprod(np.full(n, 1.0003)),
+        'pct_chg': np.random.randn(n),
+    })
+
+    optimized_df = MemoryOptimizer.optimize_dataframe(df)
+
+    assert optimized_df['qfq_factor'].dtype == pl.Float64, \
+        f"qfq_factor 被降为 {optimized_df['qfq_factor'].dtype}，复权连乘会累积精度误差"
+    assert optimized_df['hfq_factor'].dtype == pl.Float64, \
+        f"hfq_factor 被降为 {optimized_df['hfq_factor'].dtype}，复权连乘会累积精度误差"
+    # 因子值不得有任何舍入改动
+    assert optimized_df['qfq_factor'].equals(df['qfq_factor'])
+    assert optimized_df['hfq_factor'].equals(df['hfq_factor'])
+    # 对照：百分比列仍按设计降 Float32
+    assert optimized_df['pct_chg'].dtype == pl.Float32
+    print("复权因子保持 Float64，pct_chg 仍为 Float32，符合预期")
+
+
 if __name__ == "__main__":
     print("MemoryOptimizer 测试开始")
     print("=" * 60)
@@ -118,6 +148,7 @@ if __name__ == "__main__":
     df, optimized_df = test_basic_optimization()
     optimized_large_df = test_large_dataset()
     suggestions = test_optimization_suggestions()
+    test_adj_factor_keep_float64()
 
     print("\n" + "=" * 60)
     print("MemoryOptimizer 测试完成")
