@@ -82,9 +82,6 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
 
         # 初始化辅助管理器
         # 这些管理器在重构前是在__init__中导入并初始化的
-        from src.ui.indicator_drawers import IndicatorDrawerManager
-        self.indicator_drawer_manager = IndicatorDrawerManager()
-
         from src.ui.event_handlers import EventHandlerManager
         self.event_handler_manager = EventHandlerManager(self)
 

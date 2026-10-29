@@ -279,53 +279,6 @@ class ChartManager:
                     self._draw_indicator_curve(plot_widget, x, get_col_values(data_df, column), 'white', 1, column)
             self._setup_indicator_axis(plot_widget, x, get_all_values(data_df).flatten())
 
-    def draw_indicator(self, plot_widget, indicator_name, x, df_pl):
-        """
-        根据指标名称绘制相应的指标
-        """
-        import pyqtgraph as pg
-
-        window = self.window
-
-        try:
-            plot_widget.clear()
-        except (OSError, RuntimeError) as e:
-            logger.warning(f"Error clearing plot widget: {e}")
-
-        plot_widget.setBackground('#000000')
-        plot_widget.setLabel('left', indicator_name, color='#C0C0C0')
-        plot_widget.setLabel('bottom', '', color='#C0C0C0')
-        plot_widget.getAxis('left').setPen(pg.mkPen('#C0C0C0'))
-        plot_widget.getAxis('bottom').setPen(pg.mkPen('#C0C0C0'))
-        plot_widget.getAxis('left').setTextPen(pg.mkPen('#C0C0C0'))
-        plot_widget.getAxis('bottom').setTextPen(pg.mkPen('#C0C0C0'))
-        plot_widget.showGrid(x=True, y=True, alpha=0.3)
-
-        indicator_y_ranges = {
-            "VOL": (0, 1000000000),
-            "MACD": (-5, 5),
-            "KDJ": (-50, 150),
-            "RSI": (-50, 150),
-            "BOLL": (0, 100),
-            "WR": (-50, 150),
-            "DMI": (0, 100),
-            "VR": (0, 200)
-        }
-
-        if indicator_name in indicator_y_ranges:
-            y_min, y_max = indicator_y_ranges[indicator_name]
-            plot_widget.setYRange(y_min, y_max)
-
-            if indicator_name == "VOL":
-                plot_widget.setLogMode(y=False)
-
-        updated_df_pl = window.indicator_drawer_manager.draw_indicator(indicator_name, plot_widget, x, df_pl)
-
-        self.save_indicator_data(updated_df_pl)
-        window.indicator_label_manager.update_indicator_values_label(indicator_name, updated_df_pl)
-
-        return updated_df_pl
-
     def update_indicator_values_label(self, indicator_name, df_pl):
         """更新指标值显示标签"""
         from PySide6.QtWidgets import QLabel
