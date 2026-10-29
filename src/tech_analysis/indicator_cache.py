@@ -5,6 +5,7 @@
 """
 
 import hashlib
+import threading
 import time
 from typing import Any, Dict, List, TypeVar
 
@@ -173,6 +174,9 @@ class IndicatorCache:
         self._last_size_adjustment = time.time()
         self._size_adjustment_interval = 3600  # 缓存大小调整间隔（秒）
 
+        # 内存监控线程会并发触发释放/淘汰，所有缓存读写必须串行化
+        self._lock = threading.RLock()
+
     def _generate_cache_key(self, data: pl.DataFrame, indicator_type: str, **params) -> str:
         """
         生成唯一的缓存键
@@ -209,29 +213,31 @@ class IndicatorCache:
             cache_key = self._generate_cache_key(data, indicator_type, **params)
         except ValueError as e:
             logger.warning(f"生成缓存键失败: {str(e)}")
-            self._misses += 1
+            with self._lock:
+                self._misses += 1
             return None
 
-        if cache_key not in self._cache:
-            self._misses += 1
-            # 尝试调整缓存大小
-            self._adjust_cache_size()
-            return None
+        with self._lock:
+            if cache_key not in self._cache:
+                self._misses += 1
+                # 尝试调整缓存大小
+                self._adjust_cache_size()
+                return None
 
-        entry = self._cache[cache_key]
+            entry = self._cache[cache_key]
 
-        # 检查是否过期
-        if entry.is_expired():
-            del self._cache[cache_key]
-            self._evictions += 1
-            self._misses += 1
-            # 尝试调整缓存大小
-            self._adjust_cache_size()
-            return None
+            # 检查是否过期
+            if entry.is_expired():
+                del self._cache[cache_key]
+                self._evictions += 1
+                self._misses += 1
+                # 尝试调整缓存大小
+                self._adjust_cache_size()
+                return None
 
-        # 更新访问信息
-        entry.update_access()
-        self._hits += 1
+            # 更新访问信息
+            entry.update_access()
+            self._hits += 1
 
         logger.debug(f"缓存命中: {indicator_type}")
         # 尝试调整缓存大小
@@ -265,15 +271,52 @@ class IndicatorCache:
         # 创建缓存条目
         entry = IndicatorCacheEntry(value, expire_time)
 
-        # 添加到缓存
-        self._cache[cache_key] = entry
+        with self._lock:
+            # 添加到缓存
+            self._cache[cache_key] = entry
 
-        # 检查缓存大小，超过上限则进行LRU淘汰
-        if len(self._cache) > self._max_size:
-            self._evict_lru()
+            # 检查缓存大小，超过上限则进行LRU淘汰
+            if len(self._cache) > self._max_size:
+                self._evict_lru()
 
-        # 尝试调整缓存大小
-        self._adjust_cache_size()
+            # 尝试调整缓存大小
+            self._adjust_cache_size()
+
+    def release_memory(self, target_ratio: float = 0.5) -> Dict[str, int]:
+        """
+        按目标水位释放缓存内存（内存管理器唯一允许的释放入口）
+
+        Args:
+            target_ratio: 目标水位占 max_size 的比例，0 表示清空全部
+
+        Returns:
+            Dict[str, int]: 释放结果，含过期删除数、LRU 淘汰数与释放后条目数
+        """
+        ratio = max(0.0, min(1.0, target_ratio))
+        with self._lock:
+            expired_keys = [k for k, e in self._cache.items() if e.is_expired()]
+            for key in expired_keys:
+                del self._cache[key]
+            self._evictions += len(expired_keys)
+
+            target_size = int(self._max_size * ratio)
+            evicted = 0
+            if target_size <= 0:
+                evicted = len(self._cache)
+                self._cache.clear()
+                self._evictions += evicted
+            else:
+                while len(self._cache) > target_size:
+                    self._evict_lru()
+                    evicted += 1
+
+            size = len(self._cache)
+
+        logger.info(
+            f"指标缓存释放内存: 目标水位={ratio:.0%}, 过期删除={len(expired_keys)}, "
+            f"LRU淘汰={evicted}, 剩余={size}/{self._max_size}"
+        )
+        return {'expired': len(expired_keys), 'evicted': evicted, 'size': size}
 
     @staticmethod
     def _narrow_full_frame_result(data: pl.DataFrame, result: pl.DataFrame) -> pl.DataFrame:
@@ -296,55 +339,57 @@ class IndicatorCache:
         """
         执行LRU淘汰策略，移除最少使用的缓存条目
         """
-        if not self._cache:
-            return
+        with self._lock:
+            if not self._cache:
+                return
 
-        # 找到最少使用的条目（按访问时间和命中次数排序）
-        # 优先淘汰访问时间早且命中次数少的条目
-        lru_key = min(self._cache.keys(),
-                     key=lambda k: (self._cache[k].access_time, -self._cache[k].hit_count))
+            # 找到最少使用的条目（按访问时间和命中次数排序）
+            # 优先淘汰访问时间早且命中次数少的条目
+            lru_key = min(self._cache.keys(),
+                         key=lambda k: (self._cache[k].access_time, -self._cache[k].hit_count))
 
-        del self._cache[lru_key]
-        self._evictions += 1
-        logger.debug(f"LRU淘汰缓存: {lru_key}")
+            del self._cache[lru_key]
+            self._evictions += 1
+            logger.debug(f"LRU淘汰缓存: {lru_key}")
 
     def _adjust_cache_size(self):
         """
         动态调整缓存大小
         根据命中率和缓存使用情况自动调整缓存大小
         """
-        if not self._dynamic_size:
-            return
+        with self._lock:
+            if not self._dynamic_size:
+                return
 
-        current_time = time.time()
-        if current_time - self._last_size_adjustment < self._size_adjustment_interval:
-            return
+            current_time = time.time()
+            if current_time - self._last_size_adjustment < self._size_adjustment_interval:
+                return
 
-        self._last_size_adjustment = current_time
+            self._last_size_adjustment = current_time
 
-        total_requests = self._hits + self._misses
-        if total_requests < 100:  # 数据不足，不调整
-            return
+            total_requests = self._hits + self._misses
+            if total_requests < 100:  # 数据不足，不调整
+                return
 
-        hit_rate = self._hits / total_requests
-        current_size = len(self._cache)
+            hit_rate = self._hits / total_requests
+            current_size = len(self._cache)
 
-        # 根据命中率调整缓存大小
-        if hit_rate > 0.7 and current_size < self._max_size_limit:
-            # 命中率高，增加缓存大小
-            new_max_size = min(int(self._max_size * 1.2), self._max_size_limit)
-            if new_max_size > self._max_size:
-                self._max_size = new_max_size
-                logger.info(f"缓存命中率高({hit_rate:.2f})，增加缓存最大大小到{new_max_size}")
-        elif hit_rate < 0.3 and current_size > self._min_size:
-            # 命中率低，减少缓存大小
-            new_max_size = max(int(self._max_size * 0.8), self._min_size)
-            if new_max_size < self._max_size:
-                self._max_size = new_max_size
-                logger.info(f"缓存命中率低({hit_rate:.2f})，减少缓存最大大小到{new_max_size}")
-                # 立即执行一次LRU淘汰，确保缓存大小不超过新的限制
-                while len(self._cache) > self._max_size:
-                    self._evict_lru()
+            # 根据命中率调整缓存大小
+            if hit_rate > 0.7 and current_size < self._max_size_limit:
+                # 命中率高，增加缓存大小
+                new_max_size = min(int(self._max_size * 1.2), self._max_size_limit)
+                if new_max_size > self._max_size:
+                    self._max_size = new_max_size
+                    logger.info(f"缓存命中率高({hit_rate:.2f})，增加缓存最大大小到{new_max_size}")
+            elif hit_rate < 0.3 and current_size > self._min_size:
+                # 命中率低，减少缓存大小
+                new_max_size = max(int(self._max_size * 0.8), self._min_size)
+                if new_max_size < self._max_size:
+                    self._max_size = new_max_size
+                    logger.info(f"缓存命中率低({hit_rate:.2f})，减少缓存最大大小到{new_max_size}")
+                    # 立即执行一次LRU淘汰，确保缓存大小不超过新的限制
+                    while len(self._cache) > self._max_size:
+                        self._evict_lru()
 
     def warmup_cache(self, data: pl.DataFrame, indicator_types: List[str], **params):
         """
@@ -384,20 +429,21 @@ class IndicatorCache:
         Args:
             indicator_type: 可选，指定要清除的指标类型，None表示清除所有
         """
-        if indicator_type:
-            # 清除指定指标类型的缓存
-            keys_to_remove = [key for key in self._cache
-                             if key.startswith(f"{indicator_type}_")]
-            for key in keys_to_remove:
-                del self._cache[key]
-            self._evictions += len(keys_to_remove)
-            logger.info(f"清除指标{indicator_type}的{len(keys_to_remove)}个缓存条目")
-        else:
-            # 清除所有缓存
-            evicted = len(self._cache)
-            self._cache.clear()
-            self._evictions += evicted
-            logger.info(f"清除所有{evicted}个缓存条目")
+        with self._lock:
+            if indicator_type:
+                # 清除指定指标类型的缓存
+                keys_to_remove = [key for key in self._cache
+                                 if key.startswith(f"{indicator_type}_")]
+                for key in keys_to_remove:
+                    del self._cache[key]
+                self._evictions += len(keys_to_remove)
+                logger.info(f"清除指标{indicator_type}的{len(keys_to_remove)}个缓存条目")
+            else:
+                # 清除所有缓存
+                evicted = len(self._cache)
+                self._cache.clear()
+                self._evictions += evicted
+                logger.info(f"清除所有{evicted}个缓存条目")
 
     def invalidate(self, data: pl.DataFrame, indicator_type: str | None = None):
         """
@@ -413,16 +459,17 @@ class IndicatorCache:
             logger.warning(f"使缓存失效失败: {e}")
             return
 
-        if indicator_type:
-            prefix = f"{indicator_type}_{data_hash}_"
-            keys_to_remove = [key for key in self._cache if key.startswith(prefix)]
-        else:
-            keys_to_remove = [key for key in self._cache if f"_{data_hash}_" in key]
+        with self._lock:
+            if indicator_type:
+                prefix = f"{indicator_type}_{data_hash}_"
+                keys_to_remove = [key for key in self._cache if key.startswith(prefix)]
+            else:
+                keys_to_remove = [key for key in self._cache if f"_{data_hash}_" in key]
 
-        for key in keys_to_remove:
-            del self._cache[key]
+            for key in keys_to_remove:
+                del self._cache[key]
 
-        self._evictions += len(keys_to_remove)
+            self._evictions += len(keys_to_remove)
         logger.info(f"使{len(keys_to_remove)}个缓存条目失效")
 
     def get_stats(self) -> Dict[str, Any]:
@@ -432,30 +479,32 @@ class IndicatorCache:
         Returns:
             Dict[str, Any]: 缓存统计信息
         """
-        total_requests = self._hits + self._misses
-        hit_rate = self._hits / total_requests if total_requests > 0 else 0.0
+        with self._lock:
+            total_requests = self._hits + self._misses
+            hit_rate = self._hits / total_requests if total_requests > 0 else 0.0
 
-        return {
-            'size': len(self._cache),
-            'max_size': self._max_size,
-            'min_size': self._min_size,
-            'max_size_limit': self._max_size_limit,
-            'dynamic_size': self._dynamic_size,
-            'hits': self._hits,
-            'misses': self._misses,
-            'hit_rate': hit_rate,
-            'evictions': self._evictions,
-            'total_requests': total_requests,
-            'last_size_adjustment': self._last_size_adjustment
-        }
+            return {
+                'size': len(self._cache),
+                'max_size': self._max_size,
+                'min_size': self._min_size,
+                'max_size_limit': self._max_size_limit,
+                'dynamic_size': self._dynamic_size,
+                'hits': self._hits,
+                'misses': self._misses,
+                'hit_rate': hit_rate,
+                'evictions': self._evictions,
+                'total_requests': total_requests,
+                'last_size_adjustment': self._last_size_adjustment
+            }
 
     def reset_stats(self):
         """
         重置缓存统计信息
         """
-        self._hits = 0
-        self._misses = 0
-        self._evictions = 0
+        with self._lock:
+            self._hits = 0
+            self._misses = 0
+            self._evictions = 0
 
     def get_cache_info(self) -> Dict[str, Any]:
         """
@@ -465,16 +514,17 @@ class IndicatorCache:
             Dict[str, Any]: 详细的缓存信息
         """
         # 获取缓存条目的信息
-        entries_info = []
-        for key, entry in self._cache.items():
-            entries_info.append({
-                'key': key,
-                'size': entry.value.shape[0] * entry.value.shape[1],
-                'access_time': entry.access_time,
-                'hit_count': entry.hit_count,
-                'expire_time': entry.expire_time,
-                'is_expired': entry.is_expired()
-            })
+        with self._lock:
+            entries_info = []
+            for key, entry in self._cache.items():
+                entries_info.append({
+                    'key': key,
+                    'size': entry.value.shape[0] * entry.value.shape[1],
+                    'access_time': entry.access_time,
+                    'hit_count': entry.hit_count,
+                    'expire_time': entry.expire_time,
+                    'is_expired': entry.is_expired()
+                })
 
         return {
             'stats': self.get_stats(),

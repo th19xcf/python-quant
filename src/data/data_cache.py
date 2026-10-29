@@ -5,6 +5,7 @@
 """
 
 import hashlib
+import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, TypeVar
@@ -131,6 +132,9 @@ class DataCache:
         self._evictions = 0
         self._partial_hits = 0  # 部分命中次数
 
+        # 内存监控线程会并发触发释放/淘汰，所有缓存读写必须串行化
+        self._lock = threading.RLock()
+
     def set_max_size(self, max_size: int):
         """
         设置缓存最大条目数
@@ -138,11 +142,48 @@ class DataCache:
         Args:
             max_size: 缓存最大条目数
         """
-        self._max_size = max_size
-        # 如果当前缓存大小超过新的最大大小，执行LRU淘汰
-        while len(self._cache) > self._max_size:
-            self._evict_lru()
-        logger.info(f"缓存最大大小已设置为: {self._max_size}")
+        with self._lock:
+            self._max_size = max_size
+            # 如果当前缓存大小超过新的最大大小，执行LRU淘汰
+            while len(self._cache) > self._max_size:
+                self._evict_lru()
+            logger.info(f"缓存最大大小已设置为: {self._max_size}")
+
+    def release_memory(self, target_ratio: float = 0.5) -> Dict[str, int]:
+        """
+        按目标水位释放缓存内存（内存管理器唯一允许的释放入口）
+
+        Args:
+            target_ratio: 目标水位占 max_size 的比例，0 表示清空全部
+
+        Returns:
+            Dict[str, int]: 释放结果，含过期删除数、LRU 淘汰数与释放后条目数
+        """
+        ratio = max(0.0, min(1.0, target_ratio))
+        with self._lock:
+            expired_keys = [k for k, e in self._cache.items() if e.is_expired()]
+            for key in expired_keys:
+                del self._cache[key]
+            self._evictions += len(expired_keys)
+
+            target_size = int(self._max_size * ratio)
+            evicted = 0
+            if target_size <= 0:
+                evicted = len(self._cache)
+                self._cache.clear()
+                self._evictions += evicted
+            else:
+                while len(self._cache) > target_size:
+                    self._evict_lru()
+                    evicted += 1
+
+            size = len(self._cache)
+
+        logger.info(
+            f"数据缓存释放内存: 目标水位={ratio:.0%}, 过期删除={len(expired_keys)}, "
+            f"LRU淘汰={evicted}, 剩余={size}/{self._max_size}"
+        )
+        return {'expired': len(expired_keys), 'evicted': evicted, 'size': size}
 
     def _generate_cache_key(self, data_type: str, code: str, start_date: str, end_date: str, **params) -> str:
         """
@@ -191,52 +232,53 @@ class DataCache:
         Returns:
             Optional[pl.DataFrame]: 缓存的数据，如果不存在或已过期则返回None
         """
-        try:
-            # 1. 尝试精确匹配
-            cache_key = self._generate_cache_key(data_type, code, start_date, end_date, **params)
-            if cache_key in self._cache:
-                entry = self._cache[cache_key]
-                if not entry.is_expired():
-                    entry.update_access()
-                    self._hits += 1
-                    logger.debug(f"数据缓存精确命中: {data_type} {code}")
-                    return entry.value
-        except Exception as e:
-            logger.warning(f"生成缓存键失败: {str(e)}")
-
-        # 2. 尝试时间范围匹配
-        matched_entry = self._find_matching_cache(data_type, code, start_date, end_date, **params)
-        if matched_entry:
-            self._partial_hits += 1
-            logger.debug(f"数据缓存部分命中: {data_type} {code}")
-            # 从匹配的缓存中提取需要的时间范围
+        with self._lock:
             try:
-                df = matched_entry.value
-                # 过滤出需要的时间范围
-                if 'date' in df.columns:
-                    filtered_df = df.filter(
-                        (pl.col('date') >= start_date) &
-                        (pl.col('date') <= end_date)
-                    )
-                    if not filtered_df.is_empty():
-                        # 更新访问信息
-                        matched_entry.update_access()
-                        return filtered_df
+                # 1. 尝试精确匹配
+                cache_key = self._generate_cache_key(data_type, code, start_date, end_date, **params)
+                if cache_key in self._cache:
+                    entry = self._cache[cache_key]
+                    if not entry.is_expired():
+                        entry.update_access()
+                        self._hits += 1
+                        logger.debug(f"数据缓存精确命中: {data_type} {code}")
+                        return entry.value
             except Exception as e:
-                logger.warning(f"从缓存中提取数据失败: {e}")
+                logger.warning(f"生成缓存键失败: {str(e)}")
 
-        # 3. 尝试频率层次匹配
-        freq_matched_entry = self._find_frequency_matching_cache(data_type, code, start_date, end_date, **params)
-        if freq_matched_entry:
-            self._partial_hits += 1
-            logger.debug(f"数据缓存频率匹配: {data_type} {code}")
-            # 这里可以返回原始数据，由调用方进行频率转换
-            freq_matched_entry.update_access()
-            return freq_matched_entry.value
+            # 2. 尝试时间范围匹配
+            matched_entry = self._find_matching_cache(data_type, code, start_date, end_date, **params)
+            if matched_entry:
+                self._partial_hits += 1
+                logger.debug(f"数据缓存部分命中: {data_type} {code}")
+                # 从匹配的缓存中提取需要的时间范围
+                try:
+                    df = matched_entry.value
+                    # 过滤出需要的时间范围
+                    if 'date' in df.columns:
+                        filtered_df = df.filter(
+                            (pl.col('date') >= start_date) &
+                            (pl.col('date') <= end_date)
+                        )
+                        if not filtered_df.is_empty():
+                            # 更新访问信息
+                            matched_entry.update_access()
+                            return filtered_df
+                except Exception as e:
+                    logger.warning(f"从缓存中提取数据失败: {e}")
 
-        # 缓存未命中
-        self._misses += 1
-        return None
+            # 3. 尝试频率层次匹配
+            freq_matched_entry = self._find_frequency_matching_cache(data_type, code, start_date, end_date, **params)
+            if freq_matched_entry:
+                self._partial_hits += 1
+                logger.debug(f"数据缓存频率匹配: {data_type} {code}")
+                # 这里可以返回原始数据，由调用方进行频率转换
+                freq_matched_entry.update_access()
+                return freq_matched_entry.value
+
+            # 缓存未命中
+            self._misses += 1
+            return None
 
     def _find_matching_cache(self, data_type: str, code: str, start_date: str, end_date: str, **params) -> DataCacheEntry[pl.DataFrame] | None:
         """
@@ -253,21 +295,22 @@ class DataCache:
             Optional[DataCacheEntry]: 匹配的缓存条目
         """
         # 过滤条件：相同数据类型、代码、参数，且未过期
-        candidate_entries = []
-        for _key, entry in self._cache.items():
-            # 检查基本条件
-            if (entry.data_type == data_type and
-                entry.code == code and
-                not entry.is_expired()):
-                # 检查参数是否匹配
-                params_match = True
-                for k, v in params.items():
-                    if entry.params.get(k) != v:
-                        params_match = False
-                        break
+        with self._lock:
+            candidate_entries = []
+            for _key, entry in self._cache.items():
+                # 检查基本条件
+                if (entry.data_type == data_type and
+                    entry.code == code and
+                    not entry.is_expired()):
+                    # 检查参数是否匹配
+                    params_match = True
+                    for k, v in params.items():
+                        if entry.params.get(k) != v:
+                            params_match = False
+                            break
 
-                if params_match and entry.contains_date_range(start_date, end_date):
-                    candidate_entries.append(entry)
+                    if params_match and entry.contains_date_range(start_date, end_date):
+                        candidate_entries.append(entry)
 
         # 按命中次数和访问时间排序，优先选择使用频率高的
         if candidate_entries:
@@ -293,17 +336,18 @@ class DataCache:
         target_frequency = params.get('frequency', '1d')
 
         # 过滤条件：相同数据类型、代码，且未过期
-        candidate_entries = []
-        for _key, entry in self._cache.items():
-            # 检查基本条件
-            if (entry.data_type == data_type and
-                entry.code == code and
-                not entry.is_expired()):
-                # 检查是否可以支持目标频率
-                if entry.can_support_frequency(target_frequency):
-                    # 检查日期范围
-                    if entry.contains_date_range(start_date, end_date):
-                        candidate_entries.append(entry)
+        with self._lock:
+            candidate_entries = []
+            for _key, entry in self._cache.items():
+                # 检查基本条件
+                if (entry.data_type == data_type and
+                    entry.code == code and
+                    not entry.is_expired()):
+                    # 检查是否可以支持目标频率
+                    if entry.can_support_frequency(target_frequency):
+                        # 检查日期范围
+                        if entry.contains_date_range(start_date, end_date):
+                            candidate_entries.append(entry)
 
         # 按命中次数和访问时间排序
         if candidate_entries:
@@ -350,12 +394,13 @@ class DataCache:
             params=params
         )
 
-        # 添加到缓存
-        self._cache[cache_key] = entry
+        # 添加到缓存（类型优化在锁外完成，避免长时间阻塞其他线程的读写）
+        with self._lock:
+            self._cache[cache_key] = entry
 
-        # 检查缓存大小，超过上限则进行LRU淘汰
-        if len(self._cache) > self._max_size:
-            self._evict_lru()
+            # 检查缓存大小，超过上限则进行LRU淘汰
+            if len(self._cache) > self._max_size:
+                self._evict_lru()
 
     def prewarm_cache(self, data_type: str, code: str, start_date: str, end_date: str, **params):
         """
@@ -377,16 +422,17 @@ class DataCache:
         """
         执行LRU淘汰策略，移除最少使用的缓存条目
         """
-        if not self._cache:
-            return
+        with self._lock:
+            if not self._cache:
+                return
 
-        # 找到最少使用的条目（按访问时间排序）
-        lru_key = min(self._cache.keys(),
-                     key=lambda k: self._cache[k].access_time)
+            # 找到最少使用的条目（按访问时间排序）
+            lru_key = min(self._cache.keys(),
+                         key=lambda k: self._cache[k].access_time)
 
-        del self._cache[lru_key]
-        self._evictions += 1
-        logger.debug(f"LRU淘汰数据缓存: {lru_key}")
+            del self._cache[lru_key]
+            self._evictions += 1
+            logger.debug(f"LRU淘汰数据缓存: {lru_key}")
 
     def clear(self, data_type: str | None = None):
         """
@@ -395,8 +441,75 @@ class DataCache:
         Args:
             data_type: 可选，指定要清除的数据类型，None表示清除所有
         """
-        if data_type:
-            # 清除指定数据类型的缓存
+        with self._lock:
+            if data_type:
+                # 清除指定数据类型的缓存
+                keys_to_remove = []
+                for key in self._cache:
+                    # 从缓存键中提取数据类型信息
+                    # 缓存键格式: data_type:code:hash
+                    parts = key.split(':', 1)
+                    if len(parts) > 0:
+                        cache_data_type = parts[0]
+                        if cache_data_type == data_type:
+                            keys_to_remove.append(key)
+
+                # 清除相关缓存
+                removed_count = 0
+                for key in keys_to_remove:
+                    if key in self._cache:
+                        del self._cache[key]
+                        removed_count += 1
+
+                self._evictions += removed_count
+                logger.info(f"清除{data_type}类型的{removed_count}个数据缓存条目")
+            else:
+                # 清除所有缓存
+                evicted = len(self._cache)
+                self._cache.clear()
+                self._evictions += evicted
+                logger.info(f"清除所有{evicted}个数据缓存条目")
+
+    def invalidate(self, data_type: str, code: str):
+        """
+        使指定代码的数据缓存失效
+
+        Args:
+            data_type: 数据类型，如'stock'、'index'
+            code: 代码，如股票代码、指数代码
+        """
+        # 遍历所有缓存条目，找到与指定数据类型和代码相关的缓存
+        with self._lock:
+            keys_to_remove = []
+            for key in self._cache:
+                # 从缓存键中提取数据类型和代码信息
+                # 缓存键格式: data_type:code:hash
+                parts = key.split(':', 2)
+                if len(parts) >= 2:
+                    cache_data_type = parts[0]
+                    cache_code = parts[1]
+                    if cache_data_type == data_type and cache_code == code:
+                        keys_to_remove.append(key)
+
+            # 清除相关缓存
+            removed_count = 0
+            for key in keys_to_remove:
+                if key in self._cache:
+                    del self._cache[key]
+                    removed_count += 1
+
+            self._evictions += removed_count
+        logger.info(f"使{data_type} {code}的{removed_count}个缓存条目失效")
+
+    def invalidate_by_type(self, data_type: str):
+        """
+        使指定数据类型的所有缓存失效
+
+        Args:
+            data_type: 数据类型，如'stock'、'index'
+        """
+        # 遍历所有缓存条目，找到与指定数据类型相关的缓存
+        with self._lock:
             keys_to_remove = []
             for key in self._cache:
                 # 从缓存键中提取数据类型信息
@@ -415,70 +528,6 @@ class DataCache:
                     removed_count += 1
 
             self._evictions += removed_count
-            logger.info(f"清除{data_type}类型的{removed_count}个数据缓存条目")
-        else:
-            # 清除所有缓存
-            evicted = len(self._cache)
-            self._cache.clear()
-            self._evictions += evicted
-            logger.info(f"清除所有{evicted}个数据缓存条目")
-
-    def invalidate(self, data_type: str, code: str):
-        """
-        使指定代码的数据缓存失效
-
-        Args:
-            data_type: 数据类型，如'stock'、'index'
-            code: 代码，如股票代码、指数代码
-        """
-        # 遍历所有缓存条目，找到与指定数据类型和代码相关的缓存
-        keys_to_remove = []
-        for key in self._cache:
-            # 从缓存键中提取数据类型和代码信息
-            # 缓存键格式: data_type:code:hash
-            parts = key.split(':', 2)
-            if len(parts) >= 2:
-                cache_data_type = parts[0]
-                cache_code = parts[1]
-                if cache_data_type == data_type and cache_code == code:
-                    keys_to_remove.append(key)
-
-        # 清除相关缓存
-        removed_count = 0
-        for key in keys_to_remove:
-            if key in self._cache:
-                del self._cache[key]
-                removed_count += 1
-
-        self._evictions += removed_count
-        logger.info(f"使{data_type} {code}的{removed_count}个缓存条目失效")
-
-    def invalidate_by_type(self, data_type: str):
-        """
-        使指定数据类型的所有缓存失效
-
-        Args:
-            data_type: 数据类型，如'stock'、'index'
-        """
-        # 遍历所有缓存条目，找到与指定数据类型相关的缓存
-        keys_to_remove = []
-        for key in self._cache:
-            # 从缓存键中提取数据类型信息
-            # 缓存键格式: data_type:code:hash
-            parts = key.split(':', 1)
-            if len(parts) > 0:
-                cache_data_type = parts[0]
-                if cache_data_type == data_type:
-                    keys_to_remove.append(key)
-
-        # 清除相关缓存
-        removed_count = 0
-        for key in keys_to_remove:
-            if key in self._cache:
-                del self._cache[key]
-                removed_count += 1
-
-        self._evictions += removed_count
         logger.info(f"使{data_type}类型的{removed_count}个缓存条目失效")
 
     def get_stats(self) -> Dict[str, Any]:
@@ -488,28 +537,30 @@ class DataCache:
         Returns:
             Dict[str, Any]: 缓存统计信息
         """
-        total_requests = self._hits + self._misses + self._partial_hits
-        hit_rate = (self._hits + self._partial_hits) / total_requests if total_requests > 0 else 0.0
+        with self._lock:
+            total_requests = self._hits + self._misses + self._partial_hits
+            hit_rate = (self._hits + self._partial_hits) / total_requests if total_requests > 0 else 0.0
 
-        return {
-            'size': len(self._cache),
-            'max_size': self._max_size,
-            'hits': self._hits,
-            'partial_hits': self._partial_hits,
-            'misses': self._misses,
-            'hit_rate': hit_rate,
-            'evictions': self._evictions,
-            'total_requests': total_requests
-        }
+            return {
+                'size': len(self._cache),
+                'max_size': self._max_size,
+                'hits': self._hits,
+                'partial_hits': self._partial_hits,
+                'misses': self._misses,
+                'hit_rate': hit_rate,
+                'evictions': self._evictions,
+                'total_requests': total_requests
+            }
 
     def reset_stats(self):
         """
         重置缓存统计信息
         """
-        self._hits = 0
-        self._misses = 0
-        self._partial_hits = 0
-        self._evictions = 0
+        with self._lock:
+            self._hits = 0
+            self._misses = 0
+            self._partial_hits = 0
+            self._evictions = 0
 
     def get_cache_info(self) -> Dict[str, Any]:
         """
@@ -519,21 +570,22 @@ class DataCache:
             Dict[str, Any]: 详细的缓存信息
         """
         # 获取缓存条目的信息
-        entries_info = []
-        for key, entry in self._cache.items():
-            entries_info.append({
-                'key': key,
-                'size': entry.value.shape[0] * entry.value.shape[1],
-                'access_time': entry.access_time,
-                'hit_count': entry.hit_count,
-                'expire_time': entry.expire_time,
-                'is_expired': entry.is_expired(),
-                'data_type': entry.data_type,
-                'code': entry.code,
-                'start_date': entry.start_date,
-                'end_date': entry.end_date,
-                'params': entry.params
-            })
+        with self._lock:
+            entries_info = []
+            for key, entry in self._cache.items():
+                entries_info.append({
+                    'key': key,
+                    'size': entry.value.shape[0] * entry.value.shape[1],
+                    'access_time': entry.access_time,
+                    'hit_count': entry.hit_count,
+                    'expire_time': entry.expire_time,
+                    'is_expired': entry.is_expired(),
+                    'data_type': entry.data_type,
+                    'code': entry.code,
+                    'start_date': entry.start_date,
+                    'end_date': entry.end_date,
+                    'params': entry.params
+                })
 
         return {
             'stats': self.get_stats(),

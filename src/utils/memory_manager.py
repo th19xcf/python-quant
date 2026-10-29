@@ -19,6 +19,7 @@ import psutil
 from loguru import logger
 
 from src.data.data_cache import global_data_cache
+from src.tech_analysis.indicator_cache import global_indicator_cache
 
 
 class MemoryManager:
@@ -349,10 +350,11 @@ class MemoryManager:
         # 1. 强制垃圾回收（critical 级不受冷却限制）
         self._collect_garbage(force=True)
 
-        # 2. 清空所有缓存
+        # 2. 清空所有缓存（统一走缓存的 release_memory 入口，避免外部直接操作内部状态）
         try:
-            global_data_cache.clear()
-            logger.info("已清空所有数据缓存")
+            global_data_cache.release_memory(0.0)
+            global_indicator_cache.release_memory(0.0)
+            logger.info("已清空数据缓存与指标缓存")
         except Exception as e:
             logger.error(f"清空缓存失败: {str(e)}")
 
@@ -394,7 +396,7 @@ class MemoryManager:
             logger.error(f"清空linecache失败: {str(e)}")
 
         # 4. 优化缓存大小
-        self.optimize_cache()
+        self.optimize_cache(target_ratio=0.5)
 
     def _take_preventive_measures(self):
         """
@@ -426,7 +428,8 @@ class MemoryManager:
                 'timestamp': time.time(),
                 'memory_info': self.get_memory_usage(),
                 'memory_history': self.memory_history[-20:],
-                'cache_stats': global_data_cache.get_stats() if global_data_cache else None
+                'cache_stats': global_data_cache.get_stats() if global_data_cache else None,
+                'indicator_cache_stats': global_indicator_cache.get_stats() if global_indicator_cache else None
             }
 
             with open(log_file, 'w', encoding='utf-8') as f:
@@ -461,31 +464,28 @@ class MemoryManager:
                 # 提前采取预防措施
                 self._take_preventive_measures()
 
-    def optimize_cache(self, target_size: int | None = None):
+    def optimize_cache(self, target_ratio: float | None = None):
         """
-        优化缓存大小
+        按内存压力释放缓存
+
+        淘汰策略唯一归缓存自身所有：本方法不再读写缓存的 _max_size，
+        只调用 release_memory 下压水位，避免与缓存的 LRU / 命中率策略互相覆盖。
 
         Args:
-            target_size: 目标缓存大小，None表示根据内存情况自动调整
+            target_ratio: 目标水位占 max_size 的比例，None 表示根据内存压力自动决定
         """
         memory_info = self.get_memory_usage()
 
-        if target_size is None:
-            # 根据内存使用情况自动调整缓存大小
+        if target_ratio is None:
             if memory_info['memory_level'] in ['high', 'critical']:
-                # 减少缓存大小
-                new_size = max(100, global_data_cache._max_size // 2)
-                logger.info(f"内存使用较高，将缓存大小从 {global_data_cache._max_size} 减少到 {new_size}")
-                global_data_cache.set_max_size(new_size)
-            elif memory_info['memory_level'] in ['low', 'very_low']:
-                # 增加缓存大小
-                new_size = min(1000, global_data_cache._max_size * 2)
-                logger.info(f"内存使用较低，将缓存大小从 {global_data_cache._max_size} 增加到 {new_size}")
-                global_data_cache.set_max_size(new_size)
-        else:
-            # 使用指定的目标缓存大小
-            logger.info(f"将缓存大小设置为 {target_size}")
-            global_data_cache.set_max_size(target_size)
+                # 高压力才下压水位；正常时既不扩张也不收缩，交给缓存自身按命中率调节
+                target_ratio = 0.5
+            else:
+                return
+
+        logger.info(f"按目标水位 {target_ratio:.0%} 释放缓存")
+        global_data_cache.release_memory(target_ratio)
+        global_indicator_cache.release_memory(target_ratio)
 
 # 创建全局内存管理器实例
 global_memory_manager = MemoryManager(max_memory_percent=70.0)
