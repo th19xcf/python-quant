@@ -14,10 +14,10 @@ main.py 仅保留应用组装与启动，数据同步的领域逻辑收敛于此
 
 import contextlib
 from dataclasses import dataclass
-from pathlib import Path
 
 from loguru import logger
 
+from src.data.tdx_day_parser import build_day_file_path, read_first_last_trade_date
 from src.utils.code_converter import MARKET_BJ, MARKET_SH, MARKET_SZ, to_ts_code
 from src.utils.exceptions import DataSaveError, DataSourceException
 
@@ -1206,21 +1206,8 @@ def _infer_fund_type(symbol, name):
     return '基金'
 
 
-def _parse_tdx_day_to_date(day_value):
-    """将通达信 YYYYMMDD 整数转换为 date。"""
-    from datetime import datetime
-
-    try:
-        text = str(int(day_value))
-        if len(text) != 8:
-            return None
-        return datetime.strptime(text, '%Y%m%d').date()
-    except (ValueError, TypeError):
-        return None
-
-
 def _get_tdx_day_file_path(config, ts_code):
-    """根据 ts_code 生成通达信日线文件路径。"""
+    """根据 ts_code 生成通达信日线文件路径（委托统一路径构造）。"""
     if not ts_code or '.' not in ts_code:
         return None
 
@@ -1229,36 +1216,16 @@ def _get_tdx_day_file_path(config, ts_code):
     if market not in {'SH', 'SZ', 'BJ'}:
         return None
 
-    market_prefix = market.lower()
-    return Path(config.data.tdx_data_path) / market_prefix / 'lday' / f"{market_prefix}{symbol}.day"
+    return build_day_file_path(config.data.tdx_data_path, market.lower(), symbol)
 
 
 def _extract_tdx_first_last_trade_date(config, ts_code):
-    """读取通达信日线文件首末交易日。"""
-    import struct
-
+    """读取通达信日线文件首末交易日（委托统一解析入口）。"""
     day_file = _get_tdx_day_file_path(config, ts_code)
     if not day_file or not day_file.exists():
         return None, None
 
-    try:
-        with open(day_file, 'rb') as f:
-            f.seek(0, 2)
-            size = f.tell()
-            if size < 32:
-                return None, None
-
-            f.seek(0)
-            first_record = f.read(32)
-            first_raw = struct.unpack('I', first_record[0:4])[0]
-
-            f.seek(size - 32)
-            last_record = f.read(32)
-            last_raw = struct.unpack('I', last_record[0:4])[0]
-
-        return _parse_tdx_day_to_date(first_raw), _parse_tdx_day_to_date(last_raw)
-    except (OSError, ValueError):
-        return None, None
+    return read_first_last_trade_date(day_file)
 
 
 def sync_stock_fund_to_fund_basic(config, db_manager):

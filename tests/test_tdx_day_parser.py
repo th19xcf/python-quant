@@ -9,6 +9,7 @@ from src.data.tdx_day_parser import (
     build_day_file_path,
     is_index_file,
     parse_day_file,
+    read_first_last_trade_date,
     read_latest_quote,
     resolve_market,
 )
@@ -70,6 +71,53 @@ def test_read_latest_quote_single_record_has_zero_change(tmp_path):
 
 def test_read_latest_quote_missing_file_returns_none(tmp_path):
     assert read_latest_quote(tmp_path / "not_exists.day") is None
+
+
+def test_read_first_last_trade_date(tmp_path):
+    file_path = tmp_path / "sh600000.day"
+    _write_day_file(file_path, [
+        ("20240102", 10.0, 11.0, 9.0, 10.5, 100, 1000),
+        ("20240103", 10.5, 12.0, 10.0, 11.0, 200, 2200),
+        ("20240104", 11.0, 11.5, 10.5, 11.2, 300, 3300),
+    ])
+
+    first, last = read_first_last_trade_date(file_path)
+
+    assert first == date(2024, 1, 2)
+    assert last == date(2024, 1, 4)
+
+
+def test_read_first_last_trade_date_single_record(tmp_path):
+    file_path = tmp_path / "sh600000.day"
+    _write_day_file(file_path, [("20240103", 10.0, 10.5, 9.5, 10.25, 300, 3000)])
+
+    first, last = read_first_last_trade_date(file_path)
+
+    assert first == last == date(2024, 1, 3)
+
+
+def test_read_first_last_trade_date_missing_or_empty(tmp_path):
+    assert read_first_last_trade_date(tmp_path / "not_exists.day") == (None, None)
+
+    empty_file = tmp_path / "empty.day"
+    empty_file.write_bytes(b"")
+    assert read_first_last_trade_date(empty_file) == (None, None)
+
+
+def test_read_first_last_trade_date_ignores_partial_tail(tmp_path):
+    """不足 32 字节的残尾记录不计入，日期仍取最后一条完整记录。"""
+    file_path = tmp_path / "sh600000.day"
+    _write_day_file(file_path, [
+        ("20240102", 10.0, 11.0, 9.0, 10.5, 100, 1000),
+        ("20240103", 10.5, 12.0, 10.0, 11.0, 200, 2200),
+    ])
+    with open(file_path, "ab") as f:
+        f.write(b"\x01\x02\x03")
+
+    first, last = read_first_last_trade_date(file_path)
+
+    assert first == date(2024, 1, 2)
+    assert last == date(2024, 1, 3)
 
 
 def test_parse_day_file_respects_max_days(tmp_path):

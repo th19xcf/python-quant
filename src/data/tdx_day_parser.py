@@ -8,6 +8,7 @@
 """
 
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -180,6 +181,46 @@ def parse_day_file(file_path, max_days: int | None = None) -> pl.DataFrame:
         'volume': cols['volume'],
         'amount': cols['amount'],
     })
+
+
+def _decode_record_date(record: bytes) -> date | None:
+    """解码单条记录 @0 的 YYYYMMDD 日期，非法值返回 None。"""
+    try:
+        day_value = int(np.frombuffer(record, dtype=_DAY_DTYPE, count=1)['date'][0])
+        text = str(day_value)
+        if len(text) != 8:
+            return None
+        return datetime.strptime(text, '%Y%m%d').date()
+    except (ValueError, TypeError):
+        return None
+
+
+def read_first_last_trade_date(file_path) -> tuple[date | None, date | None]:
+    """
+    读取 .day 文件首末两条记录的交易日。
+
+    只读首尾各 32 字节，不加载全文件，供增量同步判断文件覆盖范围。
+
+    Args:
+        file_path: .day 文件路径
+
+    Returns:
+        tuple: (首个交易日, 最后一个交易日)；文件缺失、为空或解析失败时为 (None, None)
+    """
+    path = Path(file_path)
+    try:
+        record_count = path.stat().st_size // RECORD_SIZE
+        if record_count == 0:
+            return None, None
+
+        with open(path, 'rb') as f:
+            first_record = f.read(RECORD_SIZE)
+            f.seek((record_count - 1) * RECORD_SIZE)
+            last_record = f.read(RECORD_SIZE)
+
+        return _decode_record_date(first_record), _decode_record_date(last_record)
+    except (OSError, ValueError):
+        return None, None
 
 
 def read_latest_quote(file_path) -> QuoteSnapshot | None:
