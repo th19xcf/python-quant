@@ -2,15 +2,19 @@
 
 """
 AkShare数据处理器
+
+对 akshare 上游的全部依赖（端点名、字段名、别名）集中在
+src/data/sources/akshare_schema.py；本模块只做编排与入库，
+不再 import akshare、不再出现上游列名。
 """
 
 from datetime import datetime
 from typing import List
 
-import akshare as ak
 import polars as pl
 from loguru import logger
 
+from src.data.sources import akshare_schema as schema
 from src.data.sources.base import DataSourceBase
 from src.utils.code_converter import to_symbol, to_ts_code
 from src.utils.exception_handler import handle_exception_with_retry
@@ -65,11 +69,9 @@ class AkShareHandler(DataSourceBase):
         try:
             logger.info("开始从AkShare获取股票基本信息")
 
-            # 使用AkShare获取股票基本信息
-            stock_basic_pd = ak.stock_info_a_code_name()
-
-            # 转换为Polars DataFrame
-            stock_basic_df = pl.from_pandas(stock_basic_pd)
+            # 使用AkShare获取股票基本信息（上游契约见 akshare_schema.STOCK_BASIC）
+            stock_basic_df = schema.resolve(
+                schema.fetch_spec(schema.STOCK_BASIC), schema.STOCK_BASIC)
 
             if stock_basic_df.is_empty():
                 logger.warning("从AkShare获取的股票基本信息为空")
@@ -89,7 +91,7 @@ class AkShareHandler(DataSourceBase):
             for row in stock_basic_df.iter_rows(named=True):
                 try:
                     # 提取股票代码和名称
-                    symbol = row['code']
+                    symbol = row['symbol']
                     name = row['name']
 
                     # 构建完整的ts_code（统一市场推断，含北交所 4/8/92 开头）
@@ -136,18 +138,19 @@ class AkShareHandler(DataSourceBase):
         try:
             logger.info("开始获取市场涨跌家数数据")
 
-            # 使用AkShare获取A股实时行情数据
-            df = ak.stock_zh_a_spot_em()
+            # 使用AkShare获取A股实时行情数据（契约见 akshare_schema.MARKET_BREADTH）
+            df = schema.resolve(
+                schema.fetch_spec(schema.MARKET_BREADTH), schema.MARKET_BREADTH)
 
-            if df is None or df.empty:
+            if df.is_empty():
                 logger.warning("获取市场涨跌家数数据为空")
                 return None
 
             # 统计涨跌家数
-            up_count = len(df[df['涨跌幅'] > 0])
-            down_count = len(df[df['涨跌幅'] < 0])
-            flat_count = len(df[df['涨跌幅'] == 0])
-            total_count = len(df)
+            up_count = df.filter(pl.col('pct_chg') > 0).height
+            down_count = df.filter(pl.col('pct_chg') < 0).height
+            flat_count = df.filter(pl.col('pct_chg') == 0).height
+            total_count = df.height
 
             # 计算涨跌比例
             up_rate = (up_count / total_count * 100) if total_count > 0 else 0
@@ -266,17 +269,18 @@ class AkShareHandler(DataSourceBase):
                 try:
                     logger.info(f"正在获取{ts_code}的日线数据")
 
-                    # 使用AkShare获取股票日线数据
-                    stock_daily_pd = ak.stock_zh_a_hist(
-                        symbol=to_symbol(ts_code),  # AkShare使用数字代码
-                        period="daily",
-                        start_date=start_date,
-                        end_date=end_date,
-                        adjust=""  # 不复权：写库统一存原始价，复权由查询侧 DataFetcher 按因子计算
+                    # 使用AkShare获取股票日线数据（契约见 akshare_schema.STOCK_HIST）
+                    stock_daily_df = schema.resolve(
+                        schema.fetch_spec(
+                            schema.STOCK_HIST,
+                            symbol=to_symbol(ts_code),  # AkShare使用数字代码
+                            period="daily",
+                            start_date=start_date,
+                            end_date=end_date,
+                            adjust="",  # 不复权：写库统一存原始价，复权由查询侧 DataFetcher 按因子计算
+                        ),
+                        schema.STOCK_HIST,
                     )
-
-                    # 转换为Polars DataFrame
-                    stock_daily_df = pl.from_pandas(stock_daily_pd)
 
                     if stock_daily_df.is_empty():
                         logger.warning(f"{ts_code}在{start_date}至{end_date}期间没有日线数据")
@@ -300,16 +304,16 @@ class AkShareHandler(DataSourceBase):
                         try:
                             daily_rows.append({
                                 'ts_code': ts_code,
-                                'trade_date': datetime.strptime(row['日期'], "%Y-%m-%d").date(),
-                                'open': row['开盘'],
-                                'high': row['最高'],
-                                'low': row['最低'],
-                                'close': row['收盘'],
-                                'pre_close': row['昨收'],
-                                'change': row['涨跌额'],
-                                'pct_chg': row['涨跌幅'],
-                                'vol': row['成交量'],
-                                'amount': row['成交额'],
+                                'trade_date': datetime.strptime(row['date'], "%Y-%m-%d").date(),
+                                'open': row['open'],
+                                'high': row['high'],
+                                'low': row['low'],
+                                'close': row['close'],
+                                'pre_close': row['pre_close'],
+                                'change': row['change'],
+                                'pct_chg': row['pct_chg'],
+                                'vol': row['volume'],
+                                'amount': row['amount'],
                             })
                         except (ConnectionError, TimeoutError, OSError) as row_e:
                             logger.exception(f"处理股票日线数据失败: {row_e}")
@@ -350,11 +354,9 @@ class AkShareHandler(DataSourceBase):
         try:
             logger.info("开始从AkShare获取指数基本信息")
 
-            # 使用AkShare获取指数基本信息
-            index_basic_pd = ak.index_stock_info()
-
-            # 转换为Polars DataFrame
-            index_basic_df = pl.from_pandas(index_basic_pd)
+            # 使用AkShare获取指数基本信息（契约见 akshare_schema.INDEX_BASIC）
+            index_basic_df = schema.resolve(
+                schema.fetch_spec(schema.INDEX_BASIC), schema.INDEX_BASIC)
 
             if index_basic_df.is_empty():
                 logger.warning("从AkShare获取的指数基本信息为空")
@@ -374,8 +376,8 @@ class AkShareHandler(DataSourceBase):
             for row in index_basic_df.iter_rows(named=True):
                 try:
                     # 提取指数代码和名称
-                    ts_code = row['代码']
-                    name = row['名称']
+                    ts_code = row['ts_code']
+                    name = row['name']
 
                     # 查询指数是否已存在
                     index_basic = self.session.query(IndexBasic).filter_by(ts_code=ts_code).first()
@@ -447,13 +449,11 @@ class AkShareHandler(DataSourceBase):
                 try:
                     logger.info(f"正在获取{ts_code}的日线数据")
 
-                    # 使用AkShare获取指数日线数据
-                    index_daily_pd = ak.stock_zh_index_daily(
-                        symbol=ts_code
+                    # 使用AkShare获取指数日线数据（契约见 akshare_schema.INDEX_DAILY）
+                    index_daily_df = schema.resolve(
+                        schema.fetch_spec(schema.INDEX_DAILY, symbol=ts_code),
+                        schema.INDEX_DAILY,
                     )
-
-                    # 转换为Polars DataFrame
-                    index_daily_df = pl.from_pandas(index_daily_pd)
 
                     if index_daily_df.is_empty():
                         logger.warning(f"{ts_code}没有日线数据")
@@ -658,27 +658,22 @@ class AkShareHandler(DataSourceBase):
 
                     symbol = to_symbol(ts_code)
 
-                    # 使用AkShare获取股票分红数据
+                    # 使用AkShare获取股票分红数据（契约见 akshare_schema.DIVIDEND）
                     # 接口: stock_fhps_detail_em - 获取历史分红数据(东方财富)
                     try:
-                        dividend_pd = ak.stock_fhps_detail_em(symbol=symbol)
+                        dividend_df = schema.fetch_spec(schema.DIVIDEND, symbol=symbol)
                     except TypeError as e:
                         logger.warning(f"{ts_code}的分红配股数据获取失败，发生类型错误: {e}")
+                        continue
+                    except schema.AkShareContractError as e:
+                        logger.error(f"{ts_code}的分红配股数据结构不符: {e}")
                         continue
                     except Exception as e:
                         logger.warning(f"{ts_code}的分红配股数据获取失败: {e}")
                         continue
 
-                    # 检查dividend_pd是否为None
-                    if dividend_pd is None:
-                        logger.warning(f"{ts_code}的分红配股数据获取失败，返回None")
-                        continue
-
-                    # 转换为Polars DataFrame
-                    dividend_df = pl.from_pandas(dividend_pd)
-
-                    # 检查dividend_df是否为None或为空
-                    if dividend_df is None or dividend_df.is_empty():
+                    # 检查结果是否为空
+                    if dividend_df.is_empty():
                         logger.warning(f"{ts_code}没有分红配股数据")
                         continue
 
@@ -722,10 +717,10 @@ class AkShareHandler(DataSourceBase):
                             return default
 
                     def _pick(row_dict, keys, default=0.0):
-                        for key in keys:
-                            if key in row_dict and row_dict.get(key) not in (None, '', 'NaT'):
-                                return _parse_float(row_dict.get(key), default)
-                        return default
+                        return _parse_float(
+                            schema.pick_alias(row_dict, keys, default), default)
+
+                    aliases = schema.DIVIDEND_ALIASES
 
                     # 获取股票名称
                     stock_basic = self.session.query(StockBasic).filter_by(ts_code=ts_code).first()
@@ -742,35 +737,35 @@ class AkShareHandler(DataSourceBase):
 
                             # 报告期作为分红年度
                             dividend_year = None
-                            if '报告期' in row and row['报告期']:
-                                report_date_val = row['报告期']
-                                if isinstance(report_date_val, str):
-                                    dividend_year = report_date_val[:4]  # 提取年份
-                                elif report_date_val is not None:
-                                    dividend_year = str(report_date_val.year)
+                            report_period = schema.pick_alias(row, aliases['report_period'])
+                            if report_period:
+                                if isinstance(report_period, str):
+                                    dividend_year = report_period[:4]  # 提取年份
+                                else:
+                                    dividend_year = str(report_period.year)
 
-                            report_date = _parse_date(row.get('业绩披露日期') or row.get('公告日期'))
-                            record_date = _parse_date(row.get('股权登记日'))
-                            ex_date = _parse_date(row.get('除权除息日') or row.get('除权日'))
+                            report_date = _parse_date(schema.pick_alias(row, aliases['report_date']))
+                            record_date = _parse_date(schema.pick_alias(row, aliases['record_date']))
+                            ex_date = _parse_date(schema.pick_alias(row, aliases['ex_date']))
 
                             # 派息日（使用除权除息日作为派息日）
                             pay_date = ex_date
 
                             # 现金分红（10派X -> 每股X/10）
-                            cash_div_ratio = _pick(row, ['现金分红-现金分红比例', '每10股派息(税前)', '每10股派息'])
+                            cash_div_ratio = _pick(row, aliases['cash_div_ratio'])
                             cash_div = cash_div_ratio / 10.0 if cash_div_ratio else 0.0
 
                             # 送转比例（10送转X -> 每股X/10）
-                            share_div_ratio = _pick(row, ['送转股份-送转总比例', '每10股送转', '每10股送股', '每10股转增'])
+                            share_div_ratio = _pick(row, aliases['share_div_ratio'])
                             share_div = share_div_ratio / 10.0 if share_div_ratio else 0.0
 
                             # 配股信息（10配X -> 每股X/10）
-                            rights_issue_price = _pick(row, ['配股价格', '配股价'])
-                            rights_issue_ratio_raw = _pick(row, ['配股比例', '每10股配股比例', '10配股'])
+                            rights_issue_price = _pick(row, aliases['rights_issue_price'])
+                            rights_issue_ratio_raw = _pick(row, aliases['rights_issue_ratio'])
                             rights_issue_ratio = rights_issue_ratio_raw / 10.0 if rights_issue_ratio_raw else 0.0
 
                             # 总派现金额（单位存在差异，仅在字段存在时保存）
-                            total_div = _pick(row, ['总派现金额(含税)', '派现总额', '分红总额'], default=0.0)
+                            total_div = _pick(row, aliases['total_div'], default=0.0)
 
                             dividend_rows.append({
                                 'symbol': symbol,
@@ -857,25 +852,18 @@ class AkShareHandler(DataSourceBase):
             ed = self._normalize_date_str(end_date) if end_date else None
 
             # 获取不复权原始价格
-            raw = ak.stock_zh_a_hist(
-                symbol=symbol, period="daily",
-                start_date=sd, end_date=ed, adjust=""
+            df = schema.fetch_spec(
+                schema.STOCK_HIST, symbol=symbol, period="daily",
+                start_date=sd, end_date=ed, adjust="",
             )
-            if raw is None or raw.empty:
+            if df.is_empty():
                 return pl.DataFrame()
 
-            df = pl.from_pandas(raw)
-
-            # 中文列名映射
-            column_map = {
-                'date': '日期', 'open': '开盘', 'high': '最高', 'low': '最低',
-                'close': '收盘', 'pre_close': '昨收', 'change': '涨跌额',
-                'pct_chg': '涨跌幅', 'volume': '成交量', 'amount': '成交额',
-            }
-            # akshare 成交量单位为"手"
+            # 列名/单位/日期格式均取自上游契约，akshare 成交量单位为"手"
             normalized = self._normalize_kline(
-                df, column_map=column_map, ts_code=ts_code,
-                volume_unit='hand', date_format='%Y-%m-%d', include_factors=True,
+                df, column_map=dict(schema.STOCK_HIST.column_map), ts_code=ts_code,
+                volume_unit=schema.STOCK_HIST.volume_unit,
+                date_format=schema.STOCK_HIST.date_format, include_factors=True,
             )
 
             # akshare 无复权因子接口，normalize 只能补 1.0；
@@ -904,29 +892,20 @@ class AkShareHandler(DataSourceBase):
             sd = self._normalize_date_str(start_date) if start_date else None
             ed = self._normalize_date_str(end_date) if end_date else None
 
-            raw = ak.stock_zh_index_daily_em(
-                symbol=ts_code, start_date=sd, end_date=ed
+            df = schema.fetch_raw(
+                schema.INDEX_DAILY_EM_EN.name, symbol=ts_code,
+                start_date=sd, end_date=ed,
             )
-            if raw is None or raw.empty:
+            if df.is_empty():
                 return pl.DataFrame()
 
-            df = pl.from_pandas(raw)
-
-            # 指数接口列名可能为中文或英文，做兼容映射
-            column_map = {
-                'date': 'date', 'open': 'open', 'high': 'high', 'low': 'low',
-                'close': 'close', 'volume': 'volume', 'amount': 'amount',
-            }
-            # 若为中文列名则覆盖映射
-            cn_map = {'date': '日期', 'open': '开盘', 'high': '最高',
-                      'low': '最低', 'close': '收盘', 'volume': '成交量',
-                      'amount': '成交额'}
-            if '日期' in df.columns:
-                column_map = cn_map
-
+            # 上游中英文列名随版本切换，由 select_spec 选择匹配的规格
+            spec = schema.select_spec(
+                (schema.INDEX_DAILY_EM_EN, schema.INDEX_DAILY_EM_CN), df)
             return self._normalize_kline(
-                df, column_map=column_map, ts_code=ts_code,
-                volume_unit='hand', date_format='%Y-%m-%d', include_factors=True,
+                df, column_map=dict(spec.column_map), ts_code=ts_code,
+                volume_unit=spec.volume_unit, date_format=spec.date_format,
+                include_factors=True,
             )
 
         except Exception as e:
@@ -942,7 +921,7 @@ class AkShareHandler(DataSourceBase):
         重试 3 次后仍失败则抛出，由调用方捕获处理。
         """
         try:
-            return ak.fund_etf_spot_em()
+            return schema.fetch_spec(schema.ETF_SPOT)
         except (ConnectionError, TimeoutError, OSError) as e:
             raise DataSourceConnectionError(
                 source="akshare", message=f"获取 ETF 实时行情失败: {e}", cause=e) from e
@@ -953,32 +932,27 @@ class AkShareHandler(DataSourceBase):
         使用 AkShare 的 fund_etf_spot_em() 获取 ETF 列表和名称
         """
         try:
-            etf_spot_pd = self._fetch_etf_spot()
+            etf_df = self._fetch_etf_spot()
         except Exception as e:
             logger.error(f"从 AkShare 获取 ETF 基本信息失败，重试后仍失败: {e}")
             return None
 
-        if etf_spot_pd is None or etf_spot_pd.empty:
+        if etf_df.is_empty():
             logger.warning("从 AkShare 获取的 ETF 信息为空")
             return None
 
-        logger.info(f"从 AkShare 获取到 {len(etf_spot_pd)} 条 ETF 信息")
-
-        # 转换为 Polars DataFrame
-        etf_df = pl.from_pandas(etf_spot_pd)
-
-        if etf_df.is_empty():
-            logger.warning("ETF DataFrame 为空")
-            return None
+        logger.info(f"从 AkShare 获取到 {etf_df.height} 条 ETF 信息")
 
         logger.info(f"ETF DataFrame 列名: {etf_df.columns}")
+
+        # 列名以 akshare_schema.ETF_SPOT 为准（离线/入库均用标准列名）
+        etf_df = schema.resolve(etf_df, schema.ETF_SPOT)
 
         # 离线模式下，只获取数据不存储
         if not self.session:
             logger.info("离线模式下，跳过 ETF 基本信息存储")
             return etf_df
 
-        # 数据清洗和标准化
         from src.database.models.stock import StockBasic
 
         # 遍历数据，进行清洗和存储
@@ -986,9 +960,8 @@ class AkShareHandler(DataSourceBase):
         for row in etf_df.iter_rows(named=True):
             try:
                 # 提取 ETF 代码和名称
-                # AkShare ETF 实时行情字段：基金代码, 基金简称, 最新价, 涨跌幅, 成交量, 成交额, 最新份额, 更新时间
-                symbol = str(row.get('基金代码', ''))
-                name = row.get('基金简称', '')
+                symbol = str(row['symbol']).strip()
+                name = row['name']
 
                 if not symbol:
                     continue
