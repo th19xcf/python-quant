@@ -9,7 +9,7 @@
       fill_missing_values 的 backward 和 mean 原实现存在前视偏差，已改为安全版本。
 """
 
-from typing import Any, Dict, Union
+from typing import Any, Dict, Iterable, List, Union
 
 import polars as pl
 from loguru import logger
@@ -18,6 +18,21 @@ from src.utils.memory_optimizer import MemoryOptimizer
 
 # 可安全处理异常值检测的 OHLCV 列名
 _OhlcvCols = ('open', 'high', 'low', 'close', 'volume', 'amount')
+
+
+def find_missing_trade_dates(expected_dates: Iterable, actual_dates: Iterable) -> List:
+    """
+    返回预期交易日中存在、实际数据中缺失的日期（升序）
+
+    Args:
+        expected_dates: 预期交易日集合（通常取全市场 stock_daily 中实际出现的 trade_date）
+        actual_dates: 某标的实际拥有的 trade_date 集合
+
+    Returns:
+        List: 缺失日期列表
+    """
+    actual = set(actual_dates)
+    return sorted({d for d in expected_dates if d not in actual})
 
 
 class DataProcessor:

@@ -85,6 +85,12 @@ class DataSettings(BaseSettings):
     update_interval: int = Field(default=3600, description="数据更新间隔(秒)")
     max_workers: int = Field(default=4, description="数据获取最大工作线程数")
 
+    # 数据源重试配置
+    retry_max_retries: int = Field(default=3, description="数据源请求最大重试次数")
+    retry_delay: float = Field(default=1.0, description="首次重试间隔(秒)")
+    retry_backoff_factor: float = Field(default=2.0, description="重试退避倍数，1.0 表示固定间隔")
+    retry_max_delay: float = Field(default=30.0, description="单次重试最大间隔(秒)")
+
     # Baostock配置
     default_stock_codes: List[str] = Field(default=["sh.600000", "sz.000001", "sz.300001"], description="默认股票代码列表")
     default_index_codes: List[str] = Field(default=["sh.000001", "sz.399001", "sz.399006"], description="默认指数代码列表")

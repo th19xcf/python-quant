@@ -176,6 +176,77 @@ class DataSourceBase(ABC):
         if 'date' in df.columns:
             df = df.sort('date')
 
+        # 9. 质量校验：OHLC 硬错误剔除 + pct_chg 重算 + 停牌日统计
+        return DataSourceBase._validate_kline_quality(df)
+
+    @staticmethod
+    def _validate_kline_quality(df: pl.DataFrame) -> pl.DataFrame:
+        """
+        K 线质量校验（归一化收口点的最后一道闸门）
+
+        规则：
+            1. 停牌日（volume <= 0）保留，仅计数，不做价格结构校验
+            2. 非停牌日 OHLC 硬错误整行剔除并告警：
+               价格非正、low > high、low/high 未包住 open/close
+            3. 存在合法 pre_close 且非停牌时，change/pct_chg 按收盘价重算，
+               覆盖上游数据源的错误值
+
+        Args:
+            df: 已归一化、按 date 升序的 K 线数据
+
+        Returns:
+            pl.DataFrame: 校验后的 K 线数据
+        """
+        if df.is_empty():
+            return df
+
+        required = {'open', 'high', 'low', 'close'}
+        if not required.issubset(set(df.columns)):
+            return df
+
+        suspended = pl.col('volume') <= 0 if 'volume' in df.columns else pl.lit(False)
+
+        invalid_price = (
+            (pl.col('open') <= 0) | (pl.col('high') <= 0) |
+            (pl.col('low') <= 0) | (pl.col('close') <= 0) |
+            (pl.col('high') < pl.col('low')) |
+            (pl.col('low') > pl.min_horizontal('open', 'close')) |
+            (pl.col('high') < pl.max_horizontal('open', 'close'))
+        )
+        bad_mask = invalid_price & ~suspended
+        bad_count = df.filter(bad_mask).height
+        if bad_count:
+            sample = []
+            if 'date' in df.columns:
+                sample = df.filter(bad_mask).select('date').head(3).to_series().to_list()
+            logger.warning(f"K线质量校验剔除 {bad_count} 行非法 OHLC 数据，样例日期: {sample}")
+            df = df.filter(~bad_mask)
+
+        if 'pre_close' in df.columns:
+            valid_base = (pl.col('pre_close') > 0) & ~suspended
+            recompute_exprs = []
+            if 'change' in df.columns:
+                recompute_exprs.append(
+                    pl.when(valid_base)
+                    .then(pl.col('close') - pl.col('pre_close'))
+                    .otherwise(pl.col('change'))
+                    .alias('change')
+                )
+            if 'pct_chg' in df.columns:
+                recompute_exprs.append(
+                    pl.when(valid_base)
+                    .then((pl.col('close') / pl.col('pre_close') - 1) * 100)
+                    .otherwise(pl.col('pct_chg'))
+                    .alias('pct_chg')
+                )
+            if recompute_exprs:
+                df = df.with_columns(recompute_exprs)
+
+        if 'volume' in df.columns:
+            suspend_count = df.filter(pl.col('volume') <= 0).height
+            if suspend_count:
+                logger.info(f"K线含 {suspend_count} 个停牌交易日（volume<=0），已保留原始记录")
+
         return df
 
     # ------------------------------------------------------------------

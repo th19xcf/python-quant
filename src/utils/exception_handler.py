@@ -392,13 +392,49 @@ def get_error_message(exception):
     return f"{error_msg}: {str(exception)}"
 
 
-def handle_exception_with_retry(max_retries: int = 3, retry_delay: float = 1.0):
+_RETRY_DEFAULTS = {
+    'max_retries': 3,
+    'retry_delay': 1.0,
+    'backoff_factor': 2.0,
+    'max_delay': 30.0,
+}
+
+
+def configure_retry(max_retries: int | None = None, retry_delay: float | None = None,
+                    backoff_factor: float | None = None, max_delay: float | None = None):
     """
-    带重试机制的异常处理装饰器
+    配置全局重试策略（启动阶段从配置读取后调用）
+
+    未传的参数保持当前值，便于分项覆盖。
 
     Args:
         max_retries: 最大重试次数
-        retry_delay: 重试间隔（秒）
+        retry_delay: 首次重试间隔（秒）
+        backoff_factor: 退避倍数，1.0 表示固定间隔
+        max_delay: 单次退避上限（秒）
+    """
+    updates = {
+        'max_retries': max_retries,
+        'retry_delay': retry_delay,
+        'backoff_factor': backoff_factor,
+        'max_delay': max_delay,
+    }
+    for key, value in updates.items():
+        if value is not None:
+            _RETRY_DEFAULTS[key] = value
+    logger.info(f"重试策略已更新: {_RETRY_DEFAULTS}")
+
+
+def handle_exception_with_retry(max_retries: int | None = None, retry_delay: float | None = None,
+                                backoff_factor: float | None = None, max_delay: float | None = None):
+    """
+    带指数退避重试机制的异常处理装饰器
+
+    Args:
+        max_retries: 最大重试次数，None 时使用全局配置
+        retry_delay: 首次重试间隔（秒），None 时使用全局配置
+        backoff_factor: 退避倍数，None 时使用全局配置
+        max_delay: 单次退避上限（秒），None 时使用全局配置
 
     Returns:
         Callable: 包装后的函数
@@ -408,7 +444,12 @@ def handle_exception_with_retry(max_retries: int = 3, retry_delay: float = 1.0):
             retries = 0
             last_exception = None
 
-            while retries < max_retries:
+            limit = _RETRY_DEFAULTS['max_retries'] if max_retries is None else max_retries
+            delay = _RETRY_DEFAULTS['retry_delay'] if retry_delay is None else retry_delay
+            factor = _RETRY_DEFAULTS['backoff_factor'] if backoff_factor is None else backoff_factor
+            ceiling = _RETRY_DEFAULTS['max_delay'] if max_delay is None else max_delay
+
+            while retries < limit:
                 try:
                     return func(*args, **kwargs)
                 except Exception as e:
@@ -417,9 +458,11 @@ def handle_exception_with_retry(max_retries: int = 3, retry_delay: float = 1.0):
 
                     last_exception = e
                     retries += 1
-                    if retries < max_retries:
-                        logger.warning(f"操作失败，{retry_delay}秒后重试 ({retries}/{max_retries}): {e}")
-                        time.sleep(retry_delay)
+                    if retries < limit:
+                        sleep_seconds = min(delay, ceiling)
+                        logger.warning(f"操作失败，{sleep_seconds:.1f}秒后重试 ({retries}/{limit}): {e}")
+                        time.sleep(sleep_seconds)
+                        delay *= factor
                     else:
                         logger.error(f"操作失败，已达到最大重试次数: {e}")
 

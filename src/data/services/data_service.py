@@ -24,6 +24,7 @@ from src.data.data_cache import global_data_cache
 from src.data.managers.data_fetcher import DataFetcher
 from src.data.managers.data_updater import DataUpdater
 from src.utils.event_bus import publish
+from src.utils.exception_handler import configure_retry
 
 
 class DataService:
@@ -45,6 +46,14 @@ class DataService:
 
         # 插件数据源映射
         self.plugin_datasources = {}
+
+        # 按配置初始化全局重试策略（指数退避）
+        configure_retry(
+            max_retries=self.config.data.retry_max_retries,
+            retry_delay=self.config.data.retry_delay,
+            backoff_factor=self.config.data.retry_backoff_factor,
+            max_delay=self.config.data.retry_max_delay,
+        )
 
         self._init_builtin_datasources()
         self._init_plugin_datasources()
