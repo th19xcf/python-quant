@@ -13,7 +13,6 @@ from PySide6.QtWidgets import QApplication, QMainWindow
 # 忽略PySide6信号断开警告
 warnings.simplefilter("ignore", RuntimeWarning)
 
-from src.api.presentation_api import IController, IView
 from src.data.services.dividend_service import DividendService
 from src.data.services.index_service import IndexService
 from src.ui.action_manager import ActionManager
@@ -42,10 +41,9 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
                  MainWindowCandlestickMixin, MainWindowIndicatorWindowMixin,
                  MainWindowDividendMixin, MainWindowUiMixin,
                  MainWindowEventMixin,
-                 MainWindowDrawingMixin, QMainWindow, IView, IController):
+                 MainWindowDrawingMixin, QMainWindow):
     """
     主窗口类，参考通达信软件界面设计
-    实现了IView和IController接口
     """
 
     def __init__(self, config, data_manager, plugin_manager=None):
@@ -132,7 +130,6 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
 
         logger.info("MainWindow initialized successfully (Refactored)")
 
-    # IView Interface Implementation
     def show_message(self, message):
         self.statusBar().showMessage(message, 3000)
 
@@ -141,9 +138,6 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
 
     def refresh(self):
         self.update()
-
-    # IController Interface Implementation (if any specific methods needed)
-    pass
 
     def _install_global_key_filter(self):
         """
