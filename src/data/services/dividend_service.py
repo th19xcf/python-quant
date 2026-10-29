@@ -69,6 +69,33 @@ class DividendService:
 
     def __init__(self, data_manager=None):
         self._data_manager = data_manager
+        # 按 ts_code 缓存已裁剪的分红记录。绘图在 GUI 线程的槽函数里执行，
+        # 每次重绘都会取一次分红标记，命中缓存可避免在槽内同步查库。
+        self._dividend_cache = {}
+
+    def _load_dividend_rows(self, stock_code: str) -> list:
+        """查询并裁剪分红记录（带缓存）；查询异常向上抛出。"""
+        ts_code = format_stock_code(stock_code)
+        cached = self._dividend_cache.get(ts_code)
+        if cached is not None:
+            return cached
+
+        df = self._data_manager.get_stock_dividend(ts_code)
+        rows = []
+        if df is not None and not df.is_empty():
+            available = [c for c in _DIVIDEND_COLUMNS if c in df.columns]
+            rows = df.select(available).to_dicts()
+        self._dividend_cache[ts_code] = rows
+        return rows
+
+    def prefetch(self, stock_code: str) -> None:
+        """在后台线程预热分红缓存，避免 GUI 线程重绘时同步查库。"""
+        if not self._data_manager:
+            return
+        try:
+            self._load_dividend_rows(stock_code)
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.warning(f"预取分红数据失败: {e}")
 
     def get_dividends_in_range(self, stock_code: str, kline_dates) -> list:
         """
@@ -81,13 +108,9 @@ class DividendService:
             return []
 
         try:
-            ts_code = format_stock_code(stock_code)
-            df = self._data_manager.get_stock_dividend(ts_code)
-            if df is None or df.is_empty():
+            dividend_data = self._load_dividend_rows(stock_code)
+            if not dividend_data:
                 return []
-
-            available = [c for c in _DIVIDEND_COLUMNS if c in df.columns]
-            dividend_data = df.select(available).to_dicts()
             return filter_dividends_by_dates(dividend_data, kline_dates)
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取分红数据失败: {e}")

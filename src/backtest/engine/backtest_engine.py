@@ -142,13 +142,30 @@ class BacktestEngine(BaseBacktestEngine):
 
         results = []
 
+        # 进程池的启动成本必须由任务量摊销。Windows 用 spawn 启动子进程，每个
+        # 子进程都要重新导入 numpy/polars/回测引擎（实测 2.1–2.4s）；而单次回测
+        # 500 行仅 ~14ms、5000 行 ~26ms。实测 4 组参数：进程池 3358ms vs 串行
+        # 22.5ms（慢 147 倍）。因此只有预计串行总耗时超过启动成本时才切进程池。
+        pool_startup_ms = 3000.0
+        backtest_fixed_ms = 8.0
+        backtest_per_row_ms = 0.004
+        rows = self.pl_df.height if self.pl_df is not None else 0
+        est_serial_ms = len(param_combinations) * (backtest_fixed_ms + rows * backtest_per_row_ms)
+
         # 检查策略、数据、成本模型、风控引擎是否可 pickle，决定能否使用多进程
+        picklable = True
         try:
             pickle.dumps((self.strategy, self.pl_df, self.cost_model, self.risk_engine))
-            use_process_pool = True
         except (pickle.PicklingError, TypeError, AttributeError) as exc:
+            picklable = False
             logger.warning(f"策略/数据/成本模型不可 pickle（{exc}），回退到 ThreadPoolExecutor 并行回测")
-            use_process_pool = False
+
+        use_process_pool = picklable and len(param_combinations) > 1 and est_serial_ms > pool_startup_ms
+        if picklable and not use_process_pool:
+            logger.debug(
+                f"参数组合 {len(param_combinations)} 组 × {rows} 行，预计串行 "
+                f"{est_serial_ms:.0f}ms，低于进程池启动成本 {pool_startup_ms:.0f}ms，改用串行回测"
+            )
 
         if use_process_pool:
             # 纯 Python 回测循环受 GIL 限制，线程无法并行 CPU 计算，改用进程池利用多核

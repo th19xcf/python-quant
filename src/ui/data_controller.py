@@ -106,6 +106,12 @@ class DataController:
                 self.window.current_stock_name = stock_name
                 self.window.current_stock_code = stock_code
 
+                # 在后台线程预热分红标记缓存：绘图槽函数在 GUI 线程里取分红，
+                # 避免每次重绘都同步查库导致界面卡顿
+                dividend_service = getattr(self.window, 'dividend_service', None)
+                if dividend_service is not None:
+                    dividend_service.prefetch(stock_code)
+
                 # 重新计算技术指标（确保数据包含所有指标列）
                 df = self.window._recalculate_indicators_for_period(df)
 
