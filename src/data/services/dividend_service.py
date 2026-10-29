@@ -7,6 +7,7 @@
 下沉为纯函数与服务类，UI 层仅负责把结果交给标记管理器渲染。
 """
 
+from src.utils.code_converter import parse_code
 from src.utils.logger import logger
 
 # 分红数据输出列（按可用列裁剪）
@@ -17,16 +18,11 @@ def format_stock_code(stock_code: str) -> str:
     """
     格式化为标准 ts_code（如 600519.SH）。
 
-    支持输入：600519.SH / sh600519 / 600519（按首位推断市场）。
+    委托统一代码转换收口点，支持 600519.SH / sh600519 / sh.600519 / 600519；
+    纯数字代码按 code_converter.infer_market 推断市场（含北交所与沪市基金）。
     """
-    if '.' in stock_code:
-        return stock_code
-    if stock_code.startswith(('sh', 'sz')):
-        market = 'SH' if stock_code.startswith('sh') else 'SZ'
-        return f"{stock_code[2:]}.{market}"
-    if stock_code.startswith('6'):
-        return f"{stock_code}.SH"
-    return f"{stock_code}.SZ"
+    symbol, market = parse_code(stock_code)
+    return f"{symbol}.{market}"
 
 
 _SKIP = object()  # 无法识别的日期值：丢弃（与原实现一致）

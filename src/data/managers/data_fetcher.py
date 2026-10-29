@@ -7,6 +7,7 @@
 """
 
 import concurrent.futures
+import inspect
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
@@ -570,17 +571,15 @@ class DataFetcher:
                     'end_date': end_date,
                     'freq': freq,
                 }
-                # 用缓存避免每次都做 inspect
-                cache_key = ('adjust', id(source))
-                if cache_key not in self._method_sig_cache:
-                    try:
-                        import inspect
-                        params = inspect.signature(source.get_stock_data).parameters
-                        self._method_sig_cache[cache_key] = 'adjustment_type' in params
-                    except Exception:
-                        self._method_sig_cache[cache_key] = False
-                if self._method_sig_cache[cache_key]:
-                    kwargs['adjustment_type'] = adjustment_type
+                adjust_param = self._resolve_adjust_param(source)
+                if adjust_param:
+                    kwargs[adjust_param] = adjustment_type
+                else:
+                    source_name = getattr(source, 'name', source.__class__.__name__)
+                    logger.warning(
+                        f"数据源 {source_name} 的 get_stock_data 不接受复权参数，"
+                        f"将按源默认口径返回（可能为未复权价）"
+                    )
                 return 'get_stock_data', kwargs
             if hasattr(source, 'get_kline_data'):
                 return 'get_kline_data', {
@@ -609,6 +608,31 @@ class DataFetcher:
         source_name = getattr(source, 'name', source.__class__.__name__)
         logger.debug(f"数据源 {source_name} 不支持 {data_type} 数据获取")
         return None
+
+    def _resolve_adjust_param(self, source) -> str | None:
+        """
+        解析数据源 get_stock_data 接受的复权参数名
+
+        兼容两种命名约定：adjustment_type（标准）与 adjust（历史/第三方）。
+        两者都不存在时返回 None，由调用方告警，避免复权参数被静默丢弃。
+
+        Returns:
+            str | None: 'adjustment_type' / 'adjust' / None
+        """
+        # 以类为缓存键：id(source) 会因对象回收被复用，导致不同数据源串用解析结果
+        cache_key = ('adjust_param', type(source))
+        if cache_key not in self._method_sig_cache:
+            try:
+                params = inspect.signature(source.get_stock_data).parameters
+                if 'adjustment_type' in params:
+                    self._method_sig_cache[cache_key] = 'adjustment_type'
+                elif 'adjust' in params:
+                    self._method_sig_cache[cache_key] = 'adjust'
+                else:
+                    self._method_sig_cache[cache_key] = None
+            except (TypeError, ValueError):
+                self._method_sig_cache[cache_key] = None
+        return self._method_sig_cache[cache_key]
 
     def _fetch_from_source(self, source, method_name, **kwargs):
         """

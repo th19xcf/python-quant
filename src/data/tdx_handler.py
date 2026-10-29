@@ -422,10 +422,9 @@ class TdxHandler(DataSourceBase):
                 (pl.col('date') >= start_dt) & (pl.col('date') <= end_dt)
             )
 
-            # 计算复权价格（无论是否需要复权，都计算所有复权类型）
-            logger.info("计算复权价格...")
-
-            # 构建ts_code
+            # 复权统一由 DataFetcher._apply_adjustment 在数据出口处理：
+            # 此处只把复权因子对齐到 K 线日期，不再生成 qfq_*/hfq_* 预计算价格列，
+            # 避免同一份复权逻辑在多处实现导致口径漂移。
             ts_code = f"{code}.{market.upper()}"
 
             # 获取复权因子（使用完整日期范围，因为复权因子计算需要所有历史数据）
@@ -435,8 +434,6 @@ class TdxHandler(DataSourceBase):
             if factors_df is not None and not factors_df.is_empty():
                 # 转换复权因子为LazyFrame
                 factors_lazy = factors_df.lazy()
-
-                # 使用Lazy API进行复权计算
                 lazy_df = lazy_df.join(factors_lazy, left_on='date', right_on='trade_date', how='left')
 
                 # 填充缺失的复权因子
@@ -446,33 +443,13 @@ class TdxHandler(DataSourceBase):
                         pl.col(factor_col).fill_null(strategy='forward').fill_null(1.0).alias(factor_col)
                     ])
 
-                # 计算所有复权类型的价格
-                for adj_type in ['qfq', 'hfq']:
-                    factor_col = f'{adj_type}_factor'
-                    lazy_df = lazy_df.with_columns([
-                        (pl.col('open') * pl.col(factor_col)).alias(f'{adj_type}_open'),
-                        (pl.col('high') * pl.col(factor_col)).alias(f'{adj_type}_high'),
-                        (pl.col('low') * pl.col(factor_col)).alias(f'{adj_type}_low'),
-                        (pl.col('close') * pl.col(factor_col)).alias(f'{adj_type}_close'),
-                    ])
-
-                # 添加调试日志
-                logger.info(f"{ts_code} 复权价格计算完成，复权因子已应用到价格数据")
+                logger.info(f"{ts_code} 复权因子已对齐到K线日期，复权价由数据出口统一计算")
             else:
-                logger.warning(f"{ts_code} 没有获取到复权因子，使用原始价格并添加默认复权因子")
-                # 添加默认复权因子（值为1.0），保证数据结构一致性
+                logger.warning(f"{ts_code} 没有获取到复权因子，使用默认复权因子1.0")
                 for adj_type in ['qfq', 'hfq']:
-                    factor_col = f'{adj_type}_factor'
-                    price_col = f'{adj_type}_'
                     lazy_df = lazy_df.with_columns([
-                        pl.lit(1.0).alias(factor_col),
-                        pl.col('open').alias(f'{price_col}open'),
-                        pl.col('high').alias(f'{price_col}high'),
-                        pl.col('low').alias(f'{price_col}low'),
-                        pl.col('close').alias(f'{price_col}close'),
+                        pl.lit(1.0).alias(f'{adj_type}_factor')
                     ])
-
-            logger.info("复权价格计算完成")
 
             logger.info(f"成功获取股票 {stock_code} 的K线数据，返回LazyFrame")
             return lazy_df
