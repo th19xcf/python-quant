@@ -2,7 +2,7 @@
 
 基于 Windows 平台的 Python 量化分析系统，专注于 A 股技术分析、回测引擎、多因子选股与可视化。
 
-**技术栈**：Python 3.13+ / PySide6 / Polars / SQLAlchemy + MySQL / Loguru / Poetry
+**技术栈**：Python 3.14（`>=3.14,<3.16`）/ PySide6 / Polars / SQLAlchemy + MySQL / Loguru / Poetry（`poetry.lock` 锁定全部传递依赖）
 
 ---
 
@@ -12,8 +12,9 @@
 # 1. 克隆并进入项目
 git clone <your-repo> && cd quant
 
-# 2. 安装依赖（Poetry，或 pip install -e .）
-poetry install
+# 2. 安装依赖（Poetry 按 poetry.lock 精确安装，跨机器版本可复现）
+poetry install              # 运行时 + dev（pytest / ruff / mypy）
+poetry install --with gpu   # 可选：仅 CUDA 环境，额外安装 cupy
 
 # 3. 配置数据库与通达信路径
 cp .env.example .env            # 已被 .gitignore 保护
@@ -33,7 +34,7 @@ UI 中打开「策略回测」对话框 → 选股票代码 / 日期范围 / 策
 | 数据源 | 类型 | 启动条件 | 依赖 |
 |---|---|---|---|
 | **通达信本地**（TdxHandler） | 本地文件 | `.env.DATA__TDX_DIR` 指向通达信 VIPDOC 目录 | Windows 上需已安装通达信客户端，默认 `C:\new_tdx\vipdoc` |
-| **BaoStock** | 网络 API | `pip install baostock`（pyproject.toml 已声明） | 国内网络，无需额外配置 |
+| **BaoStock** | 网络 API | `pip install baostock`（可选依赖，未写入 pyproject；缺失时该源自动跳过） | 国内网络，无需额外配置 |
 | **AkShare** | 网络 API | `pip install akshare`（pyproject.toml 已声明） | 国内网络，无需额外配置 |
 
 推荐开发期把通达信 VIPDOC 准备好（2GB 左右，官网下载），BaoStock/AkShare 作为故障转移兜底。
@@ -190,9 +191,10 @@ cp .env.example .env
 
 ## 开发约定
 
-- 依赖管理：Poetry；运行时直接依赖固定为 `==` 版本，`poetry install --with dev` 安装测试与静态检查工具
+- 依赖管理：Poetry；运行时直接依赖固定为 `==` 版本，`poetry.lock` 锁定全部传递依赖（不要在未更新锁文件的情况下手工 `pip install` 升级依赖，否则回测结果不可复现）
+- 可选依赖组：`dev`（pytest / ruff / mypy / black，默认安装）、`gpu`（cupy，`poetry install --with gpu`）；GPU 缺失时 `gpu_acceleration.py` 自动降级为 NumPy
 - 提交路径：项目目录 `e:\code\python\quant` 为 Git 仓库；每次提交前先同步备份目录 `E:\git\python-quant`（保持相同相对路径）
-- 测试：pytest（`tests/` 下 228 个用例，`venv\Scripts\python.exe -m pytest tests -q`）
+- 测试：pytest（`tests/` 下 332 个用例，`venv\Scripts\python.exe -m pytest tests -q`）
 - 质量门禁（本地与 CI 一致）：
   - `ruff check src`（语法错误、无效比较、未定义名称）
   - `mypy`（当前只检查统一执行内核 `execution_core.py`）
