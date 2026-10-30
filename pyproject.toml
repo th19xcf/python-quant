@@ -97,6 +97,7 @@ select = [
     "C4",     # flake8-comprehensions：列表/集合/字典/元组推导式
     "PLR09",  # pylint：复杂度（函数参数过多、行数过多）
     "C901",   # mccabe：圈复杂度
+    "T201",   # flake8-print：禁止 print()，统一用 logger
 ]
 # 行宽 88 是 black 默认，项目代码历史包袱略宽；启用但不阻塞
 ignore = [
@@ -156,6 +157,8 @@ ignore = [
 "src/data/**/*handler.py" = ["E402", "F401"]
 # 工具类：动态导入
 "src/utils/**/*.py" = ["F401"]
+# logger.py 自身的 sink 用 print 转发，属于 loguru 框架要求
+"src/utils/logger.py" = ["T201"]
 
 [tool.mypy]
 python_version = "3.14"

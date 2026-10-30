@@ -582,8 +582,7 @@ if __name__ == "__main__":
     result = calculator.calculate_adj_factors(ts_code)
 
     if result is not None:
-        print(f"\n{ts_code} 复权因子计算结果:")
-        print(result.select(['trade_date', 'close', 'qfq_factor', 'hfq_factor']).tail(10))
+        logger.info(f"\n{ts_code} 复权因子计算结果:\n{result.select(['trade_date', 'close', 'qfq_factor', 'hfq_factor']).tail(10)}")
 
         # 保存到数据库
         calculator.save_adj_factors(result)

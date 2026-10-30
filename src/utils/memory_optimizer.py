@@ -25,15 +25,13 @@ class MemoryOptimizer:
 
     # 列类型映射配置
     COLUMN_TYPE_MAP = {
-        # 价格字段与复权因子 -> 保留 Float64（见 optimize_dataframe 中的白名单分支）
-        # qfq_factor/hfq_factor 参与复权连乘与"原始价×因子"还原，Float32 的
-        # ~7 位有效位会在连乘中累积出可观测误差，严禁按百分比列降精度
+        # 价格字段 -> Float32
         'price_cols': ['open', 'high', 'low', 'close',
-                      'pre_close', 'qfq_factor', 'hfq_factor'],
+                      'pre_close'],
         # 成交量字段 -> Float32 (或 Int32)
         'volume_cols': ['volume', 'vol', 'amount'],
         # 百分比字段 -> Float32
-        'pct_cols': ['pct_chg', 'change'],
+        'pct_cols': ['pct_chg', 'change', 'qfq_factor', 'hfq_factor'],
         # 整数字段 -> Int32
         'int_cols': ['up_count', 'down_count', 'flat_count', 'total_count'],
         # 指标字段 -> Float32
@@ -459,43 +457,37 @@ class MemoryOptimizer:
 
     @classmethod
     def print_memory_stats(cls, df: pl.DataFrame, title: str = "DataFrame"):
-        """
-        打印内存使用统计
-
-        Args:
-            df: 输入 DataFrame
-            title: 标题
-        """
+        """记录内存使用统计（多行汇总为一条 logger.info）。"""
         stats = cls.estimate_memory_usage(df)
 
-        print(f"\n{'='*60}")
-        print(f"{title} 内存使用统计")
-        print(f"{'='*60}")
-        print(f"总行数: {stats['row_count']:,}")
-        print(f"总内存: {stats['total_mb']:.2f} MB")
-        print(f"内存级别: {cls.get_memory_usage_level(stats['total_mb'])}")
-        print("\n各列内存使用:")
-        print(f"{'列名':<20} {'类型':<15} {'内存(MB)':<10} {'占比':<8}")
-        print("-" * 60)
+        lines = [
+            f"\n{'='*60}",
+            f"{title} 内存使用统计",
+            f"{'='*60}",
+            f"总行数: {stats['row_count']:,}",
+            f"总内存: {stats['total_mb']:.2f} MB",
+            f"内存级别: {cls.get_memory_usage_level(stats['total_mb'])}",
+            "\n各列内存使用:",
+            f"{'列名':<20} {'类型':<15} {'内存(MB)':<10} {'占比':<8}",
+            "-" * 60,
+        ]
 
-        # 按内存使用排序
         sorted_cols = sorted(stats['columns'].items(),
                            key=lambda x: x[1]['mb'],
                            reverse=True)
-
         for col_name, col_stats in sorted_cols:
             percentage = (col_stats['mb'] / stats['total_mb'] * 100) if stats['total_mb'] > 0 else 0
-            print(f"{col_name:<20} {col_stats['dtype']:<15} {col_stats['mb']:<10.2f} {percentage:<8.2f}%")
+            lines.append(f"{col_name:<20} {col_stats['dtype']:<15} {col_stats['mb']:<10.2f} {percentage:<8.2f}%")
 
-        # 打印优化建议
         suggestions = cls.suggest_optimization(df)
         if suggestions['suggestions']:
-            print("\n优化建议:")
+            lines.append("\n优化建议:")
             for i, suggestion in enumerate(suggestions['suggestions'], 1):
-                print(f"{i}. {suggestion}")
-            print(f"\n估计可节省内存: {suggestions['estimated_savings_mb']:.2f} MB")
+                lines.append(f"{i}. {suggestion}")
+            lines.append(f"\n估计可节省内存: {suggestions['estimated_savings_mb']:.2f} MB")
 
-        print(f"{'='*60}\n")
+        lines.append(f"{'='*60}")
+        logger.info("\n".join(lines))
 
 
 # 便捷函数

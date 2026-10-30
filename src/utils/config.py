@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
+from loguru import logger
 from pydantic import ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings
 
@@ -269,9 +270,9 @@ class ConfigManager:
                         new_config = Config()
                         self._config = new_config
                         self._last_modified = current_mtime
-                        print("配置文件已更新，热加载成功")
+                        logger.info("配置文件已更新，热加载成功")
                     except Exception as e:
-                        print(f"配置文件更新失败: {e}")
+                        logger.warning(f"配置文件更新失败: {e}")
 
     def reload(self) -> Config:
         """手动重新加载配置

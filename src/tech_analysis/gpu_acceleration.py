@@ -10,6 +10,8 @@ from typing import Any, Dict, List
 import numpy as np
 import polars as pl
 
+from src.utils.logger import logger
+
 from .indicators.formulas import macd_exprs, rsi_expr
 from .indicators.trend import _sar_core
 
@@ -17,9 +19,9 @@ from .indicators.trend import _sar_core
 try:
     import cupy as cp
     GPU_AVAILABLE = True
-    print("CuPy可用，将使用GPU加速")
+    logger.info("CuPy可用，将使用GPU加速")
 except ImportError:
-    print("CuPy不可用，将使用CPU计算")
+    logger.info("CuPy不可用，将使用CPU计算")
     cp = np
     GPU_AVAILABLE = False
 
@@ -27,9 +29,9 @@ except ImportError:
 try:
     import pyopencl as cl
     OPENCL_AVAILABLE = True
-    print("OpenCL可用，将作为GPU加速备选")
+    logger.info("OpenCL可用，将作为GPU加速备选")
 except ImportError:
-    print("OpenCL不可用")
+    logger.info("OpenCL不可用")
     OPENCL_AVAILABLE = False
 
 
@@ -62,15 +64,15 @@ class GPUAccelerator:
                 if devices:
                     self._opencl_context = cl.Context(devices)
                     self._opencl_queue = cl.CommandQueue(self._opencl_context)
-                    print(f"OpenCL初始化成功，设备: {devices[0].name}")
+                    logger.info(f"OpenCL初始化成功，设备: {devices[0].name}")
                 else:
-                    print("未找到GPU设备，使用CPU设备")
+                    logger.info("未找到GPU设备，使用CPU设备")
                     devices = platform.get_devices(cl.device_type.CPU)
                     if devices:
                         self._opencl_context = cl.Context(devices)
                         self._opencl_queue = cl.CommandQueue(self._opencl_context)
         except Exception as e:
-            print(f"OpenCL初始化失败: {e}")
+            logger.warning(f"OpenCL初始化失败: {e}")
             self.opencl_available = False
 
     def is_gpu_available(self) -> bool:

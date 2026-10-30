@@ -106,7 +106,7 @@ class IndicatorInteractionManager:
                 stock_code = window.current_stock_code
                 stock_name = window.current_stock_name
                 if stock_code and stock_name:
-                    print(f"切换到{period}，按照柱体数 {window.displayed_bar_count} 重新获取数据")
+                    logger.info(f"切换到{period}，按照柱体数 {window.displayed_bar_count} 重新获取数据")
                     window.process_stock_data(stock_code, stock_name)
 
     def on_window_count_changed(self, window_count, checked):
@@ -158,7 +158,7 @@ class IndicatorInteractionManager:
                     window.chart_splitter.setSizes([2000, 1000, 1000])
                     logger.info(f"切换到{window_count}个窗口：显示K线图、成交量图和KDJ图")
 
-            print(f"切换到{window_count}个窗口")
+            logger.info(f"切换到{window_count}个窗口")
 
     def on_bar_count_changed(self):
         window = self.window
@@ -168,19 +168,19 @@ class IndicatorInteractionManager:
 
             if bar_count > 0:
                 window.displayed_bar_count = bar_count
-                print(f"显示柱体数量更新为: {bar_count}")
+                logger.info(f"显示柱体数量更新为: {bar_count}")
 
                 if window.current_stock_data is not None:
-                    print(f"按照新的柱体数 {bar_count} 重新绘制K线图")
+                    logger.info(f"按照新的柱体数 {bar_count} 重新绘制K线图")
                     window.plot_k_line(window.current_stock_data, window.current_stock_name, window.current_stock_code)
             else:
                 window.bar_count_input.setText("100")
                 window.displayed_bar_count = 100
-                print("无效的柱体数量，已恢复为默认值: 100")
+                logger.info("无效的柱体数量，已恢复为默认值: 100")
         except ValueError:
             window.bar_count_input.setText("100")
             window.displayed_bar_count = 100
-            print("无效的输入，已恢复为默认值: 100")
+            logger.info("无效的输入，已恢复为默认值: 100")
 
     def on_adjustment_clicked(self, checked):
         window = self.window
