@@ -327,11 +327,12 @@ def test_limit_pct_resolves_by_board_prefix():
     assert resolve('200001.SZ') == 0.10                         # 深市 B 股
     assert resolve('430001') == 0.10                            # 无后缀老三板：不享受北交所 30%
     assert resolve('') == ExecutionRules.DEFAULT_LIMIT_PCT      # 无代码兜底
-    # ST 三态：True=ST、False=板块、None（默认）=未知，均按最严 5%
+    # ST 三态：True=ST 按 5%；False=板块；None（未知）同样按板块默认幅度
     assert ExecutionRules.resolve_limit_pct('600000.SH', is_st=True) == 0.05
     assert ExecutionRules.resolve_limit_pct('300001.SZ', is_st=True) == 0.05
-    assert ExecutionRules.resolve_limit_pct('600000.SH') == 0.05          # 未知
-    assert ExecutionRules.resolve_limit_pct('600000.SH', is_st=None) == 0.05
+    assert ExecutionRules.resolve_limit_pct('600000.SH') == 0.10          # 未知 → 主板
+    assert ExecutionRules.resolve_limit_pct('600000.SH', is_st=None) == 0.10
+    assert ExecutionRules.resolve_limit_pct('300001.SZ') == 0.20          # 未知 → 创业板
 
     # 回归：limit_pct 曾被静默废弃（ts_code 非空时被忽略），现从调用链彻底移除
     assert 'limit_pct' not in inspect.signature(ExecutionRules.__init__).parameters
@@ -352,20 +353,40 @@ def test_growth_board_allows_open_above_ten_percent():
     assert result['expired_orders'] == []
 
 
-def test_st_unknown_blocks_suspected_limit_up_and_marks_low_confidence():
-    """ST 状态未知时按 5% 保守判定：+6% 开盘在板块 10% 下本可成交，
-    但 ST 股 5% 已封板，必须拒绝成交，且该笔订单 fill_confidence=low。"""
+def test_st_unknown_uses_board_limit_and_marks_low_confidence():
+    """ST 状态未知时按板块默认幅度判定（不按 5%），并保留数据质量标记。
+
+    回归：未知曾按 ST 的 5% 判定，主板正常股开盘 +5% 以上即被判"已封板
+    不可买"，跳空走强类信号被系统性剔除，动量/突破策略收益被系统性低估，
+    且低波策略几乎不受影响，构成方向性偏置。
+    """
     df = _make_df(opens=[100.0, 106.0, 106.0], closes=[100.0, 106.0, 106.0])
     engine = BacktestEngine(df)
     engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
     # 不传 is_st → 未知
     result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
 
+    # 主板 10%：+6% 开盘正常可成交，不再是 ST 5% 的封板
+    assert [t['signal'] for t in result['trades']] == ['buy']
+    assert result['trades'][0]['fill_confidence'] == 'low'
+    assert result['expired_orders'] == []
+    # 数据质量标记保留
     assert result['st_unknown'] is True
     assert result['fill_confidence'] == 'low'
+
+
+def test_explicit_st_still_blocks_five_percent_gap_up():
+    """明确 ST（is_st=True）仍按 5%：+6% 开盘已封板，不可买。"""
+    df = _make_df(opens=[100.0, 106.0, 106.0], closes=[100.0, 106.0, 106.0])
+    engine = BacktestEngine(df)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH',
+                                 is_st=True)
+
     assert result['trades'] == []
     assert [o['reason'] for o in result['expired_orders']] == ['not_tradable']
-    assert all(o['fill_confidence'] == 'low' for o in result['expired_orders'])
+    assert result['st_unknown'] is False
+    assert result['fill_confidence'] == 'high'
 
 
 def test_st_known_non_st_restores_board_limit():

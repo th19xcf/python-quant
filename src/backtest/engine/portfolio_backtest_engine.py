@@ -99,7 +99,8 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             lot_size: 最小交易单位（股）
             industry_map: 行业映射 {ts_code: industry}
             st_status: ST 三态映射 {ts_code: True/False/None}，未给出的标的视为
-                未知，涨跌停按 5% 保守判定且逐笔 fill_confidence=low
+                未知，涨跌停按板块默认幅度判定，结果 st_unknown=True 且逐笔
+                fill_confidence=low（数据质量提示，不改变成交判定）
 
         Returns:
             Dict[str, Any]: 回测结果

@@ -76,21 +76,21 @@ class ExecutionRules:
         按证券代码与 ST 状态推导涨跌停幅度（唯一真源）。
 
         ST 状态为三态语义：
-        - ``None``（默认，数据层未提供 ST 标识）→ 5%，按最严处理。
-          未知时若按板块的 10%/20% 判定，ST 股开盘 +4.9% 会被当成完全可
-          交易，在连续一字涨停行情里产生虚假成交、系统性虚增收益；
         - ``True`` → 5%（ST/*ST 真实幅度）；
         - ``False`` → 按板块规则：科创板 688/689 与创业板 300/301 → 20%、
           北交所 → 30%（优先 .BJ 后缀，无后缀按 83/87/88/920 号段兜底）、
-          沪市 B 股 900xxx / 深市 B 股 200xxx 与其余主板 → 10%。
+          沪市 B 股 900xxx / 深市 B 股 200xxx 与其余主板 → 10%；
+        - ``None``（默认，数据层未提供 ST 标识）→ 同样按板块规则判定，
+          未知状态只体现为结果里的 st_unknown=True / fill_confidence=low。
 
-        注：ST 状态随戴帽/摘帽逐年变化，精确判定需要
-        (code, start_date, end_date, is_st) 时间维表；当前数据层未提供，
-        故调用方只能走 None 分支，保守按 5% 成交判定。
+        把未知按 ST 的 5% 处理看似保守，实际是方向性偏置：主板正常股开盘
+        +5% 就会被判"已封板不可买"，跳空走强类信号被系统性剔除，动量/突破
+        策略收益被系统性低估且低波策略几乎不受影响；而 ST 股封板误放行只
+        影响个别标的的局部乐观。ST 状态随戴帽/摘帽逐年变化，精确判定需要
+        (code, start_date, end_date, is_st) 时间维表，当前数据层未提供。
         """
-        # 未知与明确 ST 同按 5%：两者对"是否可能已封板"的保守结论一致，
-        # 差异体现在结果的 st_unknown 标记上（未知时 fill_confidence=low）
-        if is_st is None or is_st:
+        # 仅"明确 ST"按 5%；None 表示数据层无标记，回落到板块默认幅度
+        if is_st:
             return ExecutionRules.ST_LIMIT_PCT
 
         ts_code = (ts_code or '').strip().upper()
@@ -146,8 +146,9 @@ class ExecutionRules:
         - 无开盘价时退化为 high ≈ low（相对容差）的一字板判断，
           此时只做 close 涨跌停判定（偏乐观），调用侧应确保 open 列存在
         - 首根 K 线没有前收盘价，只做停牌判断
-        - is_st 默认 None 表示 ST 状态未知，按 5% 严格判定（见
-          resolve_limit_pct），避免 ST 股在 10%/20% 阈值下产生虚假成交
+        - is_st 仅 True（明确 ST）按 5% 判定；None（数据层无标记）与 False
+          都按板块规则（见 resolve_limit_pct），未知状态只由结果的
+          st_unknown / fill_confidence 标记，不再改变成交判定本身
         """
         # 缺陷 A 修复：NaN / inf 穿过停牌检查，显式拦截
         if self._is_suspended(volume):
@@ -337,9 +338,10 @@ class EventBacktestRunner:
         result_meta 里的键会合并进结果（如 strategy_name / strategy_names）。
 
         st_status 为 (标的名 → ST 三态) 映射：True=ST、False=明确非 ST、
-        未出现在映射中=状态未知。未知标的按 ST 的 5% 保守判定涨跌停，
-        并把逐笔 fill_confidence 降为 low——ST 股开盘 +4.9% 已被封板，
-        若按 10%/20% 判定会放行虚假成交、系统性虚增收益。
+        未出现在映射中=状态未知。未知标的涨跌停按板块默认幅度判定（与
+        False 相同），只把结果的 st_unknown 置 True、fill_confidence 降为
+        low，作为数据质量标记——若未知即按 5%，主板正常股开盘 +5% 会被
+        系统性判成封板，跳空走强信号被剔除、动量策略收益被系统性低估。
         接入 (code, start_date, end_date, is_st) 时间维表后由调用方传此参数。
 
         universe 价格口径（双价格列契约）：
@@ -469,9 +471,12 @@ class EventBacktestRunner:
     def _resolve_st_status(
         codes: List[str], st_status: Dict[str, bool | None] | None,
     ) -> tuple[Dict[str, bool | None], bool]:
-        """解析 ST 三态映射，返回 (st_status, st_unknown)，未知标的按原文案告警。
+        """解析 ST 三态映射，返回 (st_status, st_unknown)，未知标的按板块默认判定。
 
-        True=ST、False=明确非 ST、未出现在映射中=状态未知（按 5% 保守判定）。
+        True=ST、False=明确非 ST、未出现在映射中=状态未知。未知不代表 ST：
+        涨跌停按板块规则（与 False 相同）判定，只以 st_unknown=True /
+        fill_confidence=low 标记数据质量，避免把未知当 ST 后系统性剔除
+        主板 +5% 以上的跳空走强成交。
         历史 ST 状态需 (code, start_date, end_date, is_st) 时间维表才能精确
         判定（戴帽/摘帽逐年变化，只取当前名称会在历史区间张冠李戴），
         当前数据层未提供，故默认全部走未知分支。
@@ -481,9 +486,9 @@ class EventBacktestRunner:
         st_unknown = bool(unknown_st_codes)
         if st_unknown:
             logger.warning(
-                "ST 状态未知的标的 {} 只（如 {}），涨跌停按 5% 保守判定，"
-                "订单 fill_confidence=low；若沿用 10%/20% 会让 ST 股 +4.9% 开盘"
-                "被放行成交而虚增收益。接入 ST 时间维表后传入 st_status 即可解除。",
+                "ST 状态未知的标的 {} 只（如 {}），涨跌停按板块默认幅度判定，"
+                "结果标记 st_unknown=True、fill_confidence=low；"
+                "接入 ST 时间维表后传入 st_status 即可消除该标记。",
                 len(unknown_st_codes), unknown_st_codes[:5],
             )
         return st_status, st_unknown
@@ -746,8 +751,8 @@ class EventBacktestRunner:
               （already_holding / no_position / not_tradable / price_missing /
               insufficient_cash），不会残留到下一交易日。
 
-        is_st 为 None 表示 ST 状态未知：涨跌停按 5% 严格判定，且该笔订单的
-        fill_confidence 标记为 low，提示成交假设可能偏保守/不可全信。
+        is_st 为 None 表示 ST 状态未知：涨跌停按板块默认幅度判定（与明确
+        非 ST 相同），该笔订单 fill_confidence 标记为 low，作为数据质量提示。
         """
         side = pending.pop(code, None)
         if side is None:
@@ -755,6 +760,7 @@ class EventBacktestRunner:
 
         position = book.positions.get(code, 0)
         # is_st 为 None 表示 ST 状态未知：该笔订单 fill_confidence 标记为 low
+        # （仅数据质量提示，涨跌停仍按板块默认幅度判定）
         order_confidence = 'low' if is_st is None else 'high'
 
         reason = self._check_order_executable(

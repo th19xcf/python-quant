@@ -49,7 +49,8 @@ class BacktestEngine(BaseBacktestEngine):
             ts_code: 股票代码，涨跌停幅度据此自适应推导
             industry: 行业标签（风控 MaxIndustryWeight 用）
             is_st: ST 三态——True=ST、False=明确非 ST、None=未知（默认）。
-                未知时涨跌停按 5% 保守判定，逐笔 fill_confidence=low。
+                未知时涨跌停按板块默认幅度判定（与 False 相同），结果标记
+                st_unknown=True、逐笔 fill_confidence=low（数据质量提示）。
             **params: 其他回测参数
 
         Returns:
