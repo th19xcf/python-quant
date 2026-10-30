@@ -57,7 +57,7 @@ class Order:
                 or isinstance(self.qty, bool) or self.qty <= 0):
             raise ValueError(f'Order.qty 必须为正整数，实际为 {self.qty!r}')
         if not isinstance(self.price, numbers.Real) or isinstance(self.price, bool):
-            raise ValueError(f'Order.price 必须为实数，实际为 {self.price!r}')
+            raise TypeError(f'Order.price 必须为实数，实际为 {self.price!r}')
         price = float(self.price)
         if not math.isfinite(price) or price <= 0:
             raise ValueError(f'Order.price 必须为有限正数，实际为 {self.price!r}')
@@ -161,7 +161,8 @@ class Portfolio:
         curve = self.equity_curve
         keys = [self._date_sort_key(e) for e in curve]
         if any(keys[i] > keys[i + 1] for i in range(len(keys) - 1)):
-            curve = [entry for _, entry in sorted(zip(keys, curve), key=lambda pair: pair[0])]
+            curve = [entry for _, entry in sorted(
+                zip(keys, curve, strict=True), key=lambda pair: pair[0])]
         tail = curve[-window:]
 
         equities: List[float] = []

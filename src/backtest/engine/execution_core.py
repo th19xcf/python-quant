@@ -526,7 +526,7 @@ class EventBacktestRunner:
         date_codes: Dict[Any, List[str]] = {}
         for code, cols in column_data.items():
             dates = cols['date']
-            positions = dict(zip(dates, range(len(dates))))
+            positions = dict(zip(dates, range(len(dates)), strict=True))
             date_positions[code] = positions
             for d in positions:
                 bucket = date_codes.setdefault(d, [])

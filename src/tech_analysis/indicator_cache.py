@@ -97,7 +97,7 @@ def _hash_polars_data(data: pl.DataFrame) -> str:
     不同数据可能命中同一缓存条目。这里逐行哈希后按行序拼接字节。
     """
     if not isinstance(data, pl.DataFrame):
-        raise ValueError(f"缓存键仅支持 Polars DataFrame，实际为 {type(data).__name__}")
+        raise TypeError(f"缓存键仅支持 Polars DataFrame，实际为 {type(data).__name__}")
 
     cols = [c for c in _CACHE_KEY_INPUT_COLUMNS if c in data.columns]
     if not cols:
@@ -254,7 +254,7 @@ class IndicatorCache:
         # 公式版本参与参数哈希：公式源码变更后旧结果不再命中
         version = params.get('formula_version') or get_formula_version()
         params_hash = hashlib.md5(
-            f"{_canonical_params(params)}&formula={version}".encode('utf-8')
+            f"{_canonical_params(params)}&formula={version}".encode()
         ).hexdigest()
         return f"{indicator_type}_{data_hash}_{params_hash}"
 

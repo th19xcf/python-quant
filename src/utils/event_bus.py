@@ -41,7 +41,8 @@ def _redact_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
 # 同线程 Direct（语义与 blinker 直连一致）、跨线程 Queued（投递到接收者线程
 # 事件循环），UI 槽函数永远在其所属线程执行。
 try:
-    from PySide6.QtCore import QObject, Signal as _QtSignal
+    from PySide6.QtCore import QObject
+    from PySide6.QtCore import Signal as _QtSignal
 
     class _QtSubscriberBridge(QObject):
         triggered = _QtSignal(dict)

@@ -25,13 +25,15 @@ class MemoryOptimizer:
 
     # 列类型映射配置
     COLUMN_TYPE_MAP = {
-        # 价格字段 -> Float32
+        # 价格字段与复权因子 -> 保留 Float64（见 optimize_dataframe 中的白名单分支）
+        # qfq_factor/hfq_factor 参与复权连乘与"原始价×因子"还原，Float32 的
+        # ~7 位有效位会在连乘中累积出可观测误差，严禁按百分比列降精度
         'price_cols': ['open', 'high', 'low', 'close',
-                      'pre_close'],
+                      'pre_close', 'qfq_factor', 'hfq_factor'],
         # 成交量字段 -> Float32 (或 Int32)
         'volume_cols': ['volume', 'vol', 'amount'],
         # 百分比字段 -> Float32
-        'pct_cols': ['pct_chg', 'change', 'qfq_factor', 'hfq_factor'],
+        'pct_cols': ['pct_chg', 'change'],
         # 整数字段 -> Int32
         'int_cols': ['up_count', 'down_count', 'flat_count', 'total_count'],
         # 指标字段 -> Float32
