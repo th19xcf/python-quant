@@ -43,35 +43,27 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
         # positions 由基类统一声明（回测结束后从账本回填）
         self.strategies: Dict[str, BaseStrategy] = {}
 
-    def set_strategy(self, stock_code: str = '', strategy: BaseStrategy | None = None, *args) -> None:
+    def set_strategy(self, strategy: BaseStrategy | str, code: str | BaseStrategy = '') -> None:
         """
-        为特定股票设置策略。
+        为特定股票设置策略，签名与基类 BaseBacktestEngine.set_strategy 对齐。
 
-        同时支持两种调用风格（消除 LSP 违反）：
-            旧位置参数：engine.set_strategy('600000.SH', MAStrategy(...))
-            基类单参数：engine.set_strategy(MAStrategy(...))    # stock_code 自动补位
+        同时支持两种调用风格：
+            基类契约：engine.set_strategy(MAStrategy(...), '600000.SH')
+            旧位置风格：engine.set_strategy('600000.SH', MAStrategy(...))
 
-        stock_code 留空时：
-          - 多标的 Portfolio 需靠自动检测补位；
+        code 留空时：
+          - 多标的 Portfolio 无法确定归属，抛 ValueError 提示歧义；
           - 单标的 Portfolio 自动取唯一标的。
-          多标的且 stock_code 为空时，自动推断取 args[0]（若 args 第一个元素是 BaseStrategy），
-          否则抛 ValueError 提示歧义。
         """
-        # 动态识别调用风格：
-        #   set_strategy(MAStrategy(...))                  → stock_code 是 BaseStrategy（单参数基类风格）
-        #   set_strategy('600000.SH', MAStrategy(...))     → 正常两参数位置风格
-        #   set_strategy(strategy=MAStrategy(...))         → keyword 风格
-        if isinstance(stock_code, BaseStrategy) and strategy is None:
-            # 基类 1 参数契约：把 strategy 从 stock_code 位置取出
-            strategy = stock_code
-            stock_code = ''
-        elif args and strategy is None and stock_code:
-            # 旧两参数位置风格：set_strategy(code, strat)
-            strategy = args[0]
+        # 旧位置风格 (stock_code, strategy) → 交换两个参数
+        if isinstance(strategy, str):
+            strategy, code = code, strategy
 
-        if strategy is None:
+        if not isinstance(strategy, BaseStrategy):
             raise TypeError("set_strategy 必须传入策略对象")
 
+        # 交换与类型校验后 code 只可能是标的字符串，否则视为未传标的
+        stock_code = code if isinstance(code, str) else ''
         if not stock_code:
             codes = list(self.data_dict.keys())
             if len(codes) != 1:
@@ -87,7 +79,7 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
         self.strategies.update(mapping)
 
     def run_backtest(self, initial_capital: float = 1000000.0, allocation_strategy: str = 'equal', lot_size: int = 100,
-                     industry_map: Dict[str, str] = None,
+                     industry_map: Dict[str, str] | None = None,
                      st_status: Dict[str, bool | None] | None = None,
                      **params) -> Dict[str, Any]:
         """

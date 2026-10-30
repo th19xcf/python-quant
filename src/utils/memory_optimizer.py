@@ -58,7 +58,7 @@ class MemoryOptimizer:
     }
 
     @classmethod
-    def optimize_dataframe(cls, df: pl.DataFrame,
+    def optimize_dataframe(cls, df: pl.DataFrame,  # noqa: C901
                           preserve_cols: List[str] | None = None,
                           enable_sparse: bool = False,
                           enable_compression: bool = False) -> pl.DataFrame:
@@ -162,22 +162,26 @@ class MemoryOptimizer:
                             type_casts.append(
                                 pl.col(col).str.strptime(pl.Date, '%Y-%m-%d', strict=False)
                             )
-                        except Exception as e:
+                        # 兜底理由：日期格式解析失败尝试下一种格式
+                        except Exception as e:  # noqa: BLE001
                             logger.debug(f"日期格式 %Y-%m-%d 解析失败，尝试下一种: {e}", exc_info=True)
                             # 如果失败，尝试其他格式
                             try:
                                 type_casts.append(
                                     pl.col(col).str.strptime(pl.Date, '%Y%m%d', strict=False)
                                 )
-                            except Exception as e2:
+                            # 兜底理由：日期格式解析失败尝试下一种格式
+                            except Exception as e2:  # noqa: BLE001
                                 logger.debug(f"日期格式 %Y%m%d 解析失败，尝试下一种: {e2}", exc_info=True)
                                 try:
                                     type_casts.append(
                                         pl.col(col).str.strptime(pl.Date, '%Y/%m/%d', strict=False)
                                     )
-                                except Exception as e3:
+                                # 兜底理由：日期格式解析失败保留原类型
+                                except Exception as e3:  # noqa: BLE001
                                     logger.debug(f"日期格式 %Y/%m/%d 解析失败，保留原类型: {e3}", exc_info=True)
-                    except Exception as e:
+                    # 兜底理由：日期列类型优化失败保留原类型
+                    except Exception as e:  # noqa: BLE001
                         logger.debug(f"日期列类型优化失败，保留原类型: {e}", exc_info=True)
 
             # 通用类型优化

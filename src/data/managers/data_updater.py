@@ -44,7 +44,8 @@ class DataUpdater:
                 logger.info(f"使用{source.name}更新{type_name}")
                 getattr(source, method_name)(**kwargs)
                 return True
-            except Exception as e:
+            # 兜底理由：单个数据源更新失败继续尝试下一个
+            except Exception as e:  # noqa: BLE001
                 logger.warning(f"{source.name}更新{type_name}失败: {e}")
                 continue
 

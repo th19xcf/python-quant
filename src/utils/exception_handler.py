@@ -197,7 +197,8 @@ class GlobalExceptionHandler:
                         "详细错误信息已记录到日志文件中。\n"
                         "您可以继续使用应用程序，但某些功能可能不可用。"
                     )
-        except Exception as e:
+        # 兜底理由：错误处理链路自身失败不得再抛出
+        except Exception as e:  # noqa: BLE001
             # 确保即使在显示对话框时出错也能继续
             logger.error(f"显示错误对话框时出错: {e}")
 
@@ -270,7 +271,8 @@ class GlobalExceptionHandler:
         for callback in self.alert_callbacks:
             try:
                 callback(level, message, error_details)
-            except Exception as e:
+            # 兜底理由：告警回调用户口代码失败不得影响主流程
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"告警回调执行错误: {e}")
 
     def _check_error_frequency(self):
@@ -488,7 +490,8 @@ def handle_error_gracefully(error_handler=None):
         def wrapper(*args, **kwargs):
             try:
                 return func(*args, **kwargs)
-            except Exception as e:
+            # 兜底理由：装饰器职责即统一兜底并转交错误处理器
+            except Exception as e:  # noqa: BLE001
                 logger.exception(f"执行{func.__name__}时出错: {e}")
 
                 if error_handler:

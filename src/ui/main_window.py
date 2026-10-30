@@ -207,56 +207,56 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
     # indicator_interaction_manager / 其他 mixin）仍通过 window.<method> 访问。
 
     def _clear_market_table_display(self):
-        return self.data_controller._clear_market_table_display()
+        return self.data_controller.renderer._clear_market_table_display()
 
     def _clear_kline_display(self):
-        return self.data_controller._clear_kline_display()
+        return self.data_controller.stock._clear_kline_display()
 
     def process_stock_data(self, stock_code, stock_name):
-        return self.data_controller.process_stock_data(stock_code, stock_name)
+        return self.data_controller.stock.process_stock_data(stock_code, stock_name)
 
     def _get_index_data_from_tdx(self, market_filter=None, category_filter=None):
-        return self.data_controller._get_index_data_from_tdx(market_filter, category_filter)
+        return self.data_controller.index._get_index_data_from_tdx(market_filter, category_filter)
 
     def _on_index_impl(self):
-        return self.data_controller._on_index_impl()
+        return self.data_controller.index._on_index_impl()
 
     def _on_sh_index_impl(self):
-        return self.data_controller._on_sh_index_impl()
+        return self.data_controller.index._on_sh_index_impl()
 
     def _on_sz_index_impl(self):
-        return self.data_controller._on_sz_index_impl()
+        return self.data_controller.index._on_sz_index_impl()
 
     def _on_bj_index_impl(self):
-        return self.data_controller._on_bj_index_impl()
+        return self.data_controller.index._on_bj_index_impl()
 
     def _load_index_data(self, market='all', title='指数', category_filter=None):
-        return self.data_controller._load_index_data(market=market, title=title, category_filter=category_filter)
+        return self.data_controller.index._load_index_data(market=market, title=title, category_filter=category_filter)
 
     def _show_stock_data_by_type_impl(self, stock_type):
-        return self.data_controller._show_stock_data_by_type_impl(stock_type)
+        return self.data_controller.stock._show_stock_data_by_type_impl(stock_type)
 
     def _recalculate_indicators_for_period(self, df):
-        return self.data_controller._recalculate_indicators_for_period(df)
+        return self.data_controller.stock._recalculate_indicators_for_period(df)
 
     def _format_color_item(self, item, value):
-        return self.data_controller._format_color_item(item, value)
+        return self.data_controller.renderer._format_color_item(item, value)
 
     def _show_hs_aj_stock_data_impl(self):
-        return self.data_controller._show_hs_aj_stock_data_impl()
+        return self.data_controller.stock._show_hs_aj_stock_data_impl()
 
     def _show_index_data_by_category_impl(self, category_name):
-        return self.data_controller._show_index_data_by_category_impl(category_name)
+        return self.data_controller.index._show_index_data_by_category_impl(category_name)
 
     def _show_index_data_impl(self, index_name):
-        return self.data_controller._show_index_data_impl(index_name)
+        return self.data_controller.index._show_index_data_impl(index_name)
 
     def _refresh_stock_data_impl(self):
-        return self.data_controller._refresh_stock_data_impl()
+        return self.data_controller.stock._refresh_stock_data_impl()
 
     def show_latest_5days_data(self):
-        return self.data_controller.show_latest_5days_data()
+        return self.data_controller.index.show_latest_5days_data()
 
     def _add_table_row(self, data_row):
-        return self.data_controller._add_table_row(data_row)
+        return self.data_controller.renderer._add_table_row(data_row)
 

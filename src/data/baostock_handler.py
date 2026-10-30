@@ -17,6 +17,21 @@ from src.utils.code_converter import to_baostock_code, to_symbol, to_ts_code
 from src.utils.exception_handler import handle_exception_with_retry
 from src.utils.exceptions import DataSourceConnectionError
 
+# Baostock 查询字段串（集中声明，避免多处字面量漂移）
+_DAILY_FIELDS = (
+    "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,"
+    "tradestatus,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST"
+)
+_DAILY_FIELDS_BASIC = "date,code,open,high,low,close,preclose,volume,amount,pctChg"
+_MINUTE_FIELDS = "date,time,code,open,high,low,close,volume,amount"
+
+# Baostock 上游列名 -> 标准列名（供 _normalize_kline 使用）
+_BAOSTOCK_KLINE_COLUMN_MAP = {
+    'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close',
+    'pre_close': 'preclose', 'volume': 'volume', 'amount': 'amount',
+    'pct_chg': 'pctChg',
+}
+
 
 class BaostockHandler(DataSourceBase):
     """
@@ -149,7 +164,8 @@ class BaostockHandler(DataSourceBase):
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"Baostock登录异常: {e}")
             self.bs_login = False
-        except Exception as e:
+        # 兜底理由：第三方 SDK 异常类型不可预知，登录失败标记不可用
+        except Exception as e:  # noqa: BLE001
             # 捕获其他所有异常
             logger.exception(f"Baostock登录发生未知异常: {e}")
             self.bs_login = False
@@ -181,7 +197,8 @@ class BaostockHandler(DataSourceBase):
             self._login_with_retry()
             logger.info("Baostock登录成功")
             return True
-        except Exception as e:
+        # 兜底理由：重试耗尽后返回失败，不向上抛出
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"Baostock登录失败，已达到最大重试次数: {e}")
             return False
 
@@ -360,7 +377,7 @@ class BaostockHandler(DataSourceBase):
                     # 使用Baostock获取股票日线数据
                     rs = bs.query_history_k_data_plus(
                         bs_code,
-                        "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST",
+                        _DAILY_FIELDS,
                         start_date=start_date,
                         end_date=end_date,
                         frequency="d",
@@ -375,7 +392,8 @@ class BaostockHandler(DataSourceBase):
                     # 获取数据
                     try:
                         stock_daily_pd = rs.get_data()
-                    except Exception as e:
+                    # 兜底理由：单只股票取数失败跳过，不中断批量
+                    except Exception as e:  # noqa: BLE001
                         logger.warning(f"获取{ts_code}数据失败: {e}")
                         continue
 
@@ -394,10 +412,6 @@ class BaostockHandler(DataSourceBase):
                         logger.info(f"离线模式下，获取{std_code}的日线数据完成")
                         continue
 
-                    # 数据清洗和标准化
-                    from src.database.models.stock import StockBasic, StockDaily
-                    from src.database.upsert import upsert_rows
-
                     # 初始化最早交易日期
                     earliest_date = None
                     daily_rows = []
@@ -405,64 +419,20 @@ class BaostockHandler(DataSourceBase):
                     # 遍历数据，转换为待写入行（不合格行跳过）
                     for row in stock_daily_df.iter_rows(named=True):
                         try:
-                            # 转换日期格式
-                            trade_date = datetime.strptime(row['date'], "%Y-%m-%d").date()
+                            record = self._daily_row_to_record(row, std_code)
+                            trade_date = record['trade_date']
 
                             # 更新最早交易日期
                             if earliest_date is None or trade_date < earliest_date:
                                 earliest_date = trade_date
 
-                            # 转换数值类型
-                            close_val = float(row['close']) if row['close'] else 0.0
-                            pre_close_val = float(row['preclose']) if row['preclose'] else 0.0
-                            daily_rows.append({
-                                'ts_code': std_code,
-                                'trade_date': trade_date,
-                                'open': float(row['open']) if row['open'] else 0.0,
-                                'high': float(row['high']) if row['high'] else 0.0,
-                                'low': float(row['low']) if row['low'] else 0.0,
-                                'close': close_val,
-                                'pre_close': pre_close_val,
-                                'change': close_val - pre_close_val,
-                                'pct_chg': float(row['pctChg']) if row['pctChg'] else 0.0,
-                                'vol': float(row['volume']) if row['volume'] else 0.0,
-                                'amount': float(row['amount']) if row['amount'] else 0.0,
-                            })
+                            daily_rows.append(record)
                         except (ConnectionError, TimeoutError, OSError) as row_e:
                             logger.exception(f"处理股票日线数据失败: {row_e}")
                             continue
 
                     # 跨表写（stock_daily + stock_basic）必须同一事务提交
-                    with self.db_manager.transaction():
-                        # 批量查重后写入（已存在则更新，不存在则新增）
-                        upsert_rows(
-                            self.session, StockDaily, daily_rows,
-                            key_fields=('ts_code', 'trade_date'),
-                            value_fields=('open', 'high', 'low', 'close', 'pre_close',
-                                          'change', 'pct_chg', 'vol', 'amount'),
-                        )
-
-                        # 更新股票的上市日期为最早交易日期
-                        if earliest_date:
-                            # 查询股票基本信息
-                            stock_basic = self.session.query(StockBasic).filter_by(ts_code=std_code).first()
-                            if stock_basic:
-                                # 如果还没有上市日期，或者找到更早的日期，则更新
-                                if not stock_basic.list_date or earliest_date < stock_basic.list_date:
-                                    stock_basic.list_date = earliest_date
-                                    logger.info(f"更新股票{std_code}的上市日期为: {earliest_date}")
-                            else:
-                                # 如果股票基本信息不存在，创建一个
-                                logger.warning(f"股票{std_code}的基本信息不存在，将创建一条新记录")
-                                # 由于Baostock不提供股票名称，使用代码作为名称
-                                new_stock = StockBasic(
-                                    ts_code=std_code,
-                                    symbol=to_symbol(std_code),
-                                    name=std_code,
-                                    list_date=earliest_date
-                                )
-                                self.session.add(new_stock)
-                                logger.info(f"创建股票{std_code}的基本信息，上市日期为: {earliest_date}")
+                    self._persist_stock_daily(std_code, daily_rows, earliest_date)
 
                     logger.info(f"{ts_code}的日线数据更新完成")
 
@@ -610,7 +580,7 @@ class BaostockHandler(DataSourceBase):
                     # 使用Baostock获取指数日线数据
                     rs = bs.query_history_k_data_plus(
                         ts_code,
-                        "date,code,open,high,low,close,preclose,volume,amount,pctChg",
+                        _DAILY_FIELDS_BASIC,
                         start_date=start_date,
                         end_date=end_date,
                         frequency="d",
@@ -625,7 +595,8 @@ class BaostockHandler(DataSourceBase):
                     # 获取数据
                     try:
                         index_daily_pd = rs.get_data()
-                    except Exception as e:
+                    # 兜底理由：单只指数取数失败跳过，不中断批量
+                    except Exception as e:  # noqa: BLE001
                         logger.warning(f"获取{ts_code}数据失败: {e}")
                         continue
 
@@ -652,25 +623,7 @@ class BaostockHandler(DataSourceBase):
                     daily_rows = []
                     for row in index_daily_df.iter_rows(named=True):
                         try:
-                            # 转换日期格式
-                            trade_date = datetime.strptime(row['date'], "%Y-%m-%d").date()
-
-                            # 转换数值类型
-                            close_val = float(row['close']) if row['close'] else 0.0
-                            pre_close_val = float(row['preclose']) if row['preclose'] else 0.0
-                            daily_rows.append({
-                                'ts_code': ts_code,
-                                'trade_date': trade_date,
-                                'open': float(row['open']) if row['open'] else 0.0,
-                                'high': float(row['high']) if row['high'] else 0.0,
-                                'low': float(row['low']) if row['low'] else 0.0,
-                                'close': close_val,
-                                'pre_close': pre_close_val,
-                                'change': close_val - pre_close_val,
-                                'pct_chg': float(row['pctChg']) if row['pctChg'] else 0.0,
-                                'vol': float(row['volume']) if row['volume'] else 0.0,
-                                'amount': float(row['amount']) if row['amount'] else 0.0,
-                            })
+                            daily_rows.append(self._daily_row_to_record(row, ts_code))
                         except (ConnectionError, TimeoutError, OSError) as row_e:
                             logger.exception(f"处理指数日线数据失败: {row_e}")
                             continue
@@ -737,7 +690,7 @@ class BaostockHandler(DataSourceBase):
                 try:
                     rs = bs.query_history_k_data_plus(
                         ts_code,
-                        "date,code,open,high,low,close,preclose,volume,amount,pctChg",
+                        _DAILY_FIELDS_BASIC,
                         start_date=start_date,
                         end_date=end_date,
                         frequency="d",
@@ -840,7 +793,7 @@ class BaostockHandler(DataSourceBase):
             # 获取不复权原始价格（adjustflag=3）
             rs = bs.query_history_k_data_plus(
                 bs_code,
-                "date,code,open,high,low,close,preclose,volume,amount,pctChg",
+                _DAILY_FIELDS_BASIC,
                 start_date=start_date, end_date=end_date,
                 frequency="d", adjustflag="3"
             )
@@ -865,17 +818,14 @@ class BaostockHandler(DataSourceBase):
                 df = df.join(hfq_factor, on='date', how='left')
 
             # 归一化：列名映射 + 成交量(股→手) + 日期格式 + 复权因子补齐
-            column_map = {
-                'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close',
-                'pre_close': 'preclose', 'volume': 'volume', 'amount': 'amount',
-                'pct_chg': 'pctChg',
-            }
+            column_map = _BAOSTOCK_KLINE_COLUMN_MAP
             return self._normalize_kline(
                 df, column_map=column_map, ts_code=ts_code,
                 volume_unit='share', date_format='%Y-%m-%d', include_factors=True,
             )
 
-        except Exception as e:
+        # 兜底理由：第三方 SDK 异常类型不可预知，失败返回空表
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"baostock get_stock_data({ts_code}) 失败: {e}")
             return pl.DataFrame()
 
@@ -937,6 +887,80 @@ class BaostockHandler(DataSourceBase):
         qfq_factor = pl.DataFrame({'date': joined['date'], 'qfq_factor': factor / anchor})
         return qfq_factor, hfq_factor
 
+    # ------------------------------------------------------------------
+    # 行映射与入库：把 Baostock 字段 -> ORM 字段的转换集中在此
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _daily_row_to_record(row, ts_code):
+        """Baostock 日线行 -> 待入库记录；缺失数值统一按 0.0 处理"""
+        close_val = float(row['close']) if row['close'] else 0.0
+        pre_close_val = float(row['preclose']) if row['preclose'] else 0.0
+        return {
+            'ts_code': ts_code,
+            'trade_date': datetime.strptime(row['date'], "%Y-%m-%d").date(),
+            'open': float(row['open']) if row['open'] else 0.0,
+            'high': float(row['high']) if row['high'] else 0.0,
+            'low': float(row['low']) if row['low'] else 0.0,
+            'close': close_val,
+            'pre_close': pre_close_val,
+            'change': close_val - pre_close_val,
+            'pct_chg': float(row['pctChg']) if row['pctChg'] else 0.0,
+            'vol': float(row['volume']) if row['volume'] else 0.0,
+            'amount': float(row['amount']) if row['amount'] else 0.0,
+        }
+
+    @staticmethod
+    def _minute_row_to_record(row, ts_code):
+        """Baostock 分钟线行 -> 待入库记录"""
+        return {
+            'ts_code': ts_code,
+            'trade_date': datetime.strptime(row['date'], "%Y-%m-%d").date(),
+            'trade_time': row['time'],
+            'open': float(row['open']) if row['open'] else 0.0,
+            'high': float(row['high']) if row['high'] else 0.0,
+            'low': float(row['low']) if row['low'] else 0.0,
+            'close': float(row['close']) if row['close'] else 0.0,
+            'vol': float(row['volume']) if row['volume'] else 0.0,
+            'amount': float(row['amount']) if row['amount'] else 0.0,
+        }
+
+    def _persist_stock_daily(self, std_code, daily_rows, earliest_date):
+        """同一事务内写入股票日线，并回填上市日期（跨表写入收敛到单一 commit 边界）"""
+        from src.database.models.stock import StockBasic, StockDaily
+        from src.database.upsert import upsert_rows
+
+        with self.db_manager.transaction():
+            # 批量查重后写入（已存在则更新，不存在则新增）
+            upsert_rows(
+                self.session, StockDaily, daily_rows,
+                key_fields=('ts_code', 'trade_date'),
+                value_fields=('open', 'high', 'low', 'close', 'pre_close',
+                              'change', 'pct_chg', 'vol', 'amount'),
+            )
+
+            # 更新股票的上市日期为最早交易日期
+            if earliest_date:
+                # 查询股票基本信息
+                stock_basic = self.session.query(StockBasic).filter_by(ts_code=std_code).first()
+                if stock_basic:
+                    # 如果还没有上市日期，或者找到更早的日期，则更新
+                    if not stock_basic.list_date or earliest_date < stock_basic.list_date:
+                        stock_basic.list_date = earliest_date
+                        logger.info(f"更新股票{std_code}的上市日期为: {earliest_date}")
+                else:
+                    # 如果股票基本信息不存在，创建一个
+                    logger.warning(f"股票{std_code}的基本信息不存在，将创建一条新记录")
+                    # 由于Baostock不提供股票名称，使用代码作为名称
+                    new_stock = StockBasic(
+                        ts_code=std_code,
+                        symbol=to_symbol(std_code),
+                        name=std_code,
+                        list_date=earliest_date
+                    )
+                    self.session.add(new_stock)
+                    logger.info(f"创建股票{std_code}的基本信息，上市日期为: {earliest_date}")
+
     def get_index_data(self, ts_code: str, start_date: str, end_date: str,
                        freq: str = 'daily'):
         """
@@ -955,7 +979,7 @@ class BaostockHandler(DataSourceBase):
 
             rs = bs.query_history_k_data_plus(
                 bs_code,
-                "date,code,open,high,low,close,preclose,volume,amount,pctChg",
+                _DAILY_FIELDS_BASIC,
                 start_date=start_date, end_date=end_date,
                 frequency="d", adjustflag="3"
             )
@@ -968,18 +992,15 @@ class BaostockHandler(DataSourceBase):
 
             df = pl.from_pandas(raw)
 
-            column_map = {
-                'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close',
-                'pre_close': 'preclose', 'volume': 'volume', 'amount': 'amount',
-                'pct_chg': 'pctChg',
-            }
+            column_map = _BAOSTOCK_KLINE_COLUMN_MAP
             # 指数无复权因子，volume_unit 指数成交量单位为手
             return self._normalize_kline(
                 df, column_map=column_map, ts_code=ts_code,
                 volume_unit='hand', date_format='%Y-%m-%d', include_factors=True,
             )
 
-        except Exception as e:
+        # 兜底理由：第三方 SDK 异常类型不可预知，失败返回空表
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"baostock get_index_data({ts_code}) 失败: {e}")
             return pl.DataFrame()
 
@@ -1032,7 +1053,7 @@ class BaostockHandler(DataSourceBase):
 
                     rs = bs.query_history_k_data_plus(
                         ts_code,
-                        "date,time,code,open,high,low,close,volume,amount",
+                        _MINUTE_FIELDS,
                         start_date=start_date,
                         end_date=end_date,
                         frequency=frequency,
@@ -1045,7 +1066,8 @@ class BaostockHandler(DataSourceBase):
 
                     try:
                         minute_pd = rs.get_data()
-                    except Exception as e:
+                    # 兜底理由：单只股票分钟线取数失败跳过
+                    except Exception as e:  # noqa: BLE001
                         logger.warning(f"获取{ts_code}的{frequency}分钟线数据失败: {e}")
                         continue
 
@@ -1069,17 +1091,8 @@ class BaostockHandler(DataSourceBase):
                     minute_rows = []
                     for row in minute_df.iter_rows(named=True):
                         try:
-                            minute_rows.append({
-                                'ts_code': ts_code,
-                                'trade_date': datetime.strptime(row['date'], "%Y-%m-%d").date(),
-                                'trade_time': row['time'],
-                                'open': float(row['open']) if row['open'] else 0.0,
-                                'high': float(row['high']) if row['high'] else 0.0,
-                                'low': float(row['low']) if row['low'] else 0.0,
-                                'close': float(row['close']) if row['close'] else 0.0,
-                                'vol': float(row['volume']) if row['volume'] else 0.0,
-                                'amount': float(row['amount']) if row['amount'] else 0.0,
-                            })
+                            minute_rows.append(
+                                self._minute_row_to_record(row, ts_code))
                         except (ConnectionError, TimeoutError, OSError) as row_e:
                             logger.exception(f"处理{noun}分钟线数据失败: {row_e}")
                             continue

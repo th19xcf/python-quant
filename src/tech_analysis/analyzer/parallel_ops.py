@@ -80,7 +80,7 @@ class ParallelIndicatorMixin:
             self.is_lazy = False
         return self.pl_df
 
-    def calculate_indicators_parallel(self, indicator_types, *args, **kwargs):
+    def calculate_indicators_parallel(self, indicator_types, *args, **kwargs):  # noqa: C901
         """
         计算多个指标类型，利用多线程并行计算能力
 
@@ -222,7 +222,8 @@ class ParallelIndicatorMixin:
                         try:
                             future.result()
                             results.append(plugin_name)
-                        except Exception as e:
+                        # 兜底理由：单个插件指标计算失败不影响其余
+                        except Exception as e:  # noqa: BLE001
                             logger.error(f"计算插件指标{plugin_name}失败: {e}")
 
                 logger.info(f"并行计算完成，成功计算{len(results)}个插件指标")
@@ -394,7 +395,7 @@ class ParallelIndicatorMixin:
         return_polars = params.get('return_polars', True)
         return self.pl_df if return_polars else self.pl_df.to_pandas()
 
-    def calculate_indicator(self, indicator_type, *args, **kwargs):
+    def calculate_indicator(self, indicator_type, *args, **kwargs):  # noqa: C901
         """
         计算特定类型的指标
 

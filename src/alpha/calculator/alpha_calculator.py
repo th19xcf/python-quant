@@ -29,7 +29,7 @@ from src.alpha.factors.volume import VolumeFactors  # noqa: F401
 # FactorEvaluator 可能依赖 scipy，缺失时允许降级
 try:
     from src.alpha.evaluation.factor_evaluator import FactorEvaluator
-except Exception as _exc:  # pragma: no cover - 仅在 scipy 缺失时触发
+except Exception as _exc:  # noqa: BLE001  # pragma: no cover - 仅在 scipy 缺失时触发
     logger.warning(f"FactorEvaluator 加载失败（可能是 scipy 未安装），评估相关方法将跳过：{_exc}")
     FactorEvaluator = None
 
@@ -86,7 +86,8 @@ class AlphaCalculator:
                                     partition_by=self.partition_by).calculate(**params)
                 self.factor_results[factor_type] = result
                 logger.info(f"成功计算因子: {factor_type}")
-            except Exception as e:
+            # 兜底理由：单个因子计算失败不中断其他因子
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"计算因子 {factor_type} 失败: {e}")
 
         # 把各因子类返回的列合并回主表，保证返回值包含所有因子

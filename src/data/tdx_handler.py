@@ -177,7 +177,8 @@ class TdxHandler(DataSourceBase):
 
             logger.info(f"通达信股票代码列表获取完成，共 {len(stock_codes)} 只有效股票")
 
-        except Exception as e:
+        # 兜底理由：本地文件扫描异常不可预知，降级为空代码列表
+        except Exception as e:  # noqa: BLE001
             logger.exception(f"获取通达信股票代码列表失败: {e}")
 
         return stock_codes
@@ -525,7 +526,8 @@ class TdxHandler(DataSourceBase):
                 volume_unit='hand', date_format=None, include_factors=True,
             )
 
-        except Exception as e:
+        # 兜底理由：本地文件解析异常不可预知，失败返回空表
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"tdx get_stock_data({ts_code}) 失败: {e}")
             return pl.DataFrame()
 
@@ -577,6 +579,7 @@ class TdxHandler(DataSourceBase):
                 volume_unit='hand', date_format=None, include_factors=True,
             )
 
-        except Exception as e:
+        # 兜底理由：本地文件解析异常不可预知，失败返回空表
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"tdx get_index_data({ts_code}) 失败: {e}")
             return pl.DataFrame()

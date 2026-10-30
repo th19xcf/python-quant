@@ -71,7 +71,8 @@ class GPUAccelerator:
                     if devices:
                         self._opencl_context = cl.Context(devices)
                         self._opencl_queue = cl.CommandQueue(self._opencl_context)
-        except Exception as e:
+        # 兜底理由：OpenCL 初始化失败降级到 CPU/NumPy
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"OpenCL初始化失败: {e}")
             self.opencl_available = False
 

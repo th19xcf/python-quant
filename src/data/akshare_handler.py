@@ -20,6 +20,10 @@ from src.utils.code_converter import to_symbol, to_ts_code
 from src.utils.exception_handler import handle_exception_with_retry
 from src.utils.exceptions import DataSourceConnectionError
 
+# 离线模式默认代码列表（集中声明，避免多处字面量漂移）
+_DEFAULT_STOCK_CODES = ["600000.SH", "000001.SZ", "300001.SZ"]
+_DEFAULT_INDEX_CODES = ["sh000001", "sz399001", "sz399006"]
+
 
 class AkShareHandler(DataSourceBase):
     """
@@ -235,7 +239,7 @@ class AkShareHandler(DataSourceBase):
         """
         try:
             # 离线模式下的默认股票代码列表
-            default_ts_codes = ["600000.SH", "000001.SZ", "300001.SZ"]
+            default_ts_codes = _DEFAULT_STOCK_CODES
 
             # 如果没有指定股票代码，从数据库获取所有股票代码
             if not ts_codes:
@@ -422,7 +426,7 @@ class AkShareHandler(DataSourceBase):
         """
         try:
             # 离线模式下的默认指数代码列表（使用带前缀的格式）
-            default_ts_codes = ["sh000001", "sz399001", "sz399006"]
+            default_ts_codes = _DEFAULT_INDEX_CODES
 
             # 如果没有指定指数代码，从数据库获取所有指数代码
             if not ts_codes:
@@ -617,7 +621,71 @@ class AkShareHandler(DataSourceBase):
 
         return inserted, updated
 
-    def update_stock_dividend(self, ts_codes: List[str] = None):
+    @staticmethod
+    def _pick_number(row, keys, default=0.0):
+        """按候选上游列名取值并解析为数值"""
+        return schema.parse_number_value(
+            schema.pick_alias(row, keys, default), default)
+
+    def _dividend_row_to_record(self, row, symbol, stock_name):
+        """
+        分红行 -> 待入库记录
+
+        比例类字段统一由「每 10 股」换算为「每股」口径。
+        """
+        aliases = schema.DIVIDEND_ALIASES
+
+        # 报告期作为分红年度
+        dividend_year = None
+        report_period = schema.pick_alias(row, aliases['report_period'])
+        if report_period:
+            if isinstance(report_period, str):
+                dividend_year = report_period[:4]  # 提取年份
+            else:
+                dividend_year = str(report_period.year)
+
+        report_date = schema.parse_date_value(
+            schema.pick_alias(row, aliases['report_date']))
+        record_date = schema.parse_date_value(
+            schema.pick_alias(row, aliases['record_date']))
+        ex_date = schema.parse_date_value(
+            schema.pick_alias(row, aliases['ex_date']))
+
+        # 现金分红（10派X -> 每股X/10）
+        cash_div_ratio = self._pick_number(row, aliases['cash_div_ratio'])
+        cash_div = cash_div_ratio / 10.0 if cash_div_ratio else 0.0
+
+        # 送转比例（10送转X -> 每股X/10）
+        share_div_ratio = self._pick_number(row, aliases['share_div_ratio'])
+        share_div = share_div_ratio / 10.0 if share_div_ratio else 0.0
+
+        # 配股信息（10配X -> 每股X/10）
+        rights_issue_price = self._pick_number(
+            row, aliases['rights_issue_price'])
+        rights_issue_ratio_raw = self._pick_number(
+            row, aliases['rights_issue_ratio'])
+        rights_issue_ratio = (
+            rights_issue_ratio_raw / 10.0 if rights_issue_ratio_raw else 0.0)
+
+        # 总派现金额（单位存在差异，仅在字段存在时保存）
+        total_div = self._pick_number(row, aliases['total_div'], default=0.0)
+
+        return {
+            'symbol': symbol,
+            'name': stock_name,
+            'dividend_year': dividend_year,
+            'report_date': report_date,
+            'record_date': record_date,
+            'ex_date': ex_date,
+            'pay_date': ex_date,  # 派息日（使用除权除息日作为派息日）
+            'cash_div': cash_div,
+            'share_div': share_div,
+            'total_div': total_div,
+            'rights_issue_price': rights_issue_price if rights_issue_price > 0 else None,
+            'rights_issue_ratio': rights_issue_ratio if rights_issue_ratio > 0 else None,
+        }
+
+    def update_stock_dividend(self, ts_codes: List[str] = None):  # noqa: C901
         """
         更新股票分红配股数据
 
@@ -629,7 +697,7 @@ class AkShareHandler(DataSourceBase):
         """
         try:
             # 离线模式下的默认股票代码列表
-            default_ts_codes = ["600000.SH", "000001.SZ", "300001.SZ"]
+            default_ts_codes = _DEFAULT_STOCK_CODES
 
             # 如果没有指定股票代码，从数据库获取所有股票代码
             if not ts_codes:
@@ -668,7 +736,8 @@ class AkShareHandler(DataSourceBase):
                     except schema.AkShareContractError as e:
                         logger.error(f"{ts_code}的分红配股数据结构不符: {e}")
                         continue
-                    except Exception as e:
+                    # 兜底理由：第三方接口异常类型不可预知，单只失败不中断批量
+                    except Exception as e:  # noqa: BLE001
                         logger.warning(f"{ts_code}的分红配股数据获取失败: {e}")
                         continue
 
@@ -688,40 +757,6 @@ class AkShareHandler(DataSourceBase):
                     # 数据清洗和标准化
                     from src.database.models.stock import StockBasic
 
-                    def _parse_date(value):
-                        if value is None:
-                            return None
-                        if isinstance(value, datetime):
-                            return value.date()
-                        text = str(value).strip()
-                        if not text or text in {'NaT', 'None', 'nan'}:
-                            return None
-                        try:
-                            return datetime.strptime(text, "%Y-%m-%d").date()
-                        except Exception:
-                            return None
-
-                    def _parse_float(value, default=0.0):
-                        if value is None:
-                            return default
-                        if isinstance(value, (int, float)):
-                            return float(value)
-                        text = str(value).strip().replace(',', '')
-                        if not text or text in {'None', 'nan', 'NaN', '--'}:
-                            return default
-                        for suffix in ['元', '股', '%']:
-                            text = text.replace(suffix, '')
-                        try:
-                            return float(text)
-                        except Exception:
-                            return default
-
-                    def _pick(row_dict, keys, default=0.0):
-                        return _parse_float(
-                            schema.pick_alias(row_dict, keys, default), default)
-
-                    aliases = schema.DIVIDEND_ALIASES
-
                     # 获取股票名称
                     stock_basic = self.session.query(StockBasic).filter_by(ts_code=ts_code).first()
                     stock_name = stock_basic.name if stock_basic else ""
@@ -735,52 +770,8 @@ class AkShareHandler(DataSourceBase):
                                 logger.warning(f"处理{ts_code}的分红配股数据时，row为None，跳过")
                                 continue
 
-                            # 报告期作为分红年度
-                            dividend_year = None
-                            report_period = schema.pick_alias(row, aliases['report_period'])
-                            if report_period:
-                                if isinstance(report_period, str):
-                                    dividend_year = report_period[:4]  # 提取年份
-                                else:
-                                    dividend_year = str(report_period.year)
-
-                            report_date = _parse_date(schema.pick_alias(row, aliases['report_date']))
-                            record_date = _parse_date(schema.pick_alias(row, aliases['record_date']))
-                            ex_date = _parse_date(schema.pick_alias(row, aliases['ex_date']))
-
-                            # 派息日（使用除权除息日作为派息日）
-                            pay_date = ex_date
-
-                            # 现金分红（10派X -> 每股X/10）
-                            cash_div_ratio = _pick(row, aliases['cash_div_ratio'])
-                            cash_div = cash_div_ratio / 10.0 if cash_div_ratio else 0.0
-
-                            # 送转比例（10送转X -> 每股X/10）
-                            share_div_ratio = _pick(row, aliases['share_div_ratio'])
-                            share_div = share_div_ratio / 10.0 if share_div_ratio else 0.0
-
-                            # 配股信息（10配X -> 每股X/10）
-                            rights_issue_price = _pick(row, aliases['rights_issue_price'])
-                            rights_issue_ratio_raw = _pick(row, aliases['rights_issue_ratio'])
-                            rights_issue_ratio = rights_issue_ratio_raw / 10.0 if rights_issue_ratio_raw else 0.0
-
-                            # 总派现金额（单位存在差异，仅在字段存在时保存）
-                            total_div = _pick(row, aliases['total_div'], default=0.0)
-
-                            dividend_rows.append({
-                                'symbol': symbol,
-                                'name': stock_name,
-                                'dividend_year': dividend_year,
-                                'report_date': report_date,
-                                'record_date': record_date,
-                                'ex_date': ex_date,
-                                'pay_date': pay_date,
-                                'cash_div': cash_div,
-                                'share_div': share_div,
-                                'total_div': total_div,
-                                'rights_issue_price': rights_issue_price if rights_issue_price > 0 else None,
-                                'rights_issue_ratio': rights_issue_ratio if rights_issue_ratio > 0 else None,
-                            })
+                            dividend_rows.append(
+                                self._dividend_row_to_record(row, symbol, stock_name))
 
                         except TypeError as row_e:
                             logger.exception(f"处理{ts_code}的分红配股数据时发生类型错误: {row_e}")
@@ -788,7 +779,8 @@ class AkShareHandler(DataSourceBase):
                         except (ConnectionError, TimeoutError, OSError) as row_e:
                             logger.exception(f"处理股票分红配股数据失败: {row_e}")
                             continue
-                        except Exception as row_e:
+                        # 兜底理由：第三方接口异常类型不可预知，单只失败不中断批量
+                        except Exception as row_e:  # noqa: BLE001
                             logger.exception(f"处理{ts_code}的分红配股数据时发生未知错误: {row_e}")
                             continue
 
@@ -809,7 +801,8 @@ class AkShareHandler(DataSourceBase):
                         self.session.rollback()
                     logger.exception(f"获取{ts_code}的分红配股数据失败: {e}")
                     continue
-                except Exception as e:
+                # 兜底理由：第三方接口异常类型不可预知，单只失败不中断批量
+                except Exception as e:  # noqa: BLE001
                     if self.session:
                         self.session.rollback()
                     logger.exception(f"获取{ts_code}的分红配股数据时发生未知错误: {e}")
@@ -876,7 +869,8 @@ class AkShareHandler(DataSourceBase):
                     "如需复权请改用 baostock 或 tdx 数据源")
             return normalized
 
-        except Exception as e:
+        # 兜底理由：第三方接口异常类型不可预知，失败返回空表
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"akshare get_stock_data({ts_code}) 失败: {e}")
             return pl.DataFrame()
 
@@ -908,7 +902,8 @@ class AkShareHandler(DataSourceBase):
                 include_factors=True,
             )
 
-        except Exception as e:
+        # 兜底理由：第三方接口异常类型不可预知，失败返回空表
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"akshare get_index_data({ts_code}) 失败: {e}")
             return pl.DataFrame()
 
@@ -933,7 +928,8 @@ class AkShareHandler(DataSourceBase):
         """
         try:
             etf_df = self._fetch_etf_spot()
-        except Exception as e:
+        # 兜底理由：第三方接口异常类型不可预知，失败返回 None
+        except Exception as e:  # noqa: BLE001
             logger.error(f"从 AkShare 获取 ETF 基本信息失败，重试后仍失败: {e}")
             return None
 
@@ -994,7 +990,8 @@ class AkShareHandler(DataSourceBase):
                     self.session.add(stock)
                     updated_count += 1
 
-            except Exception as row_e:
+            # 兜底理由：单行记录写库失败跳过，不中断整批
+            except Exception as row_e:  # noqa: BLE001
                 logger.exception(f"处理 ETF 基本信息失败: {row_e}")
                 continue
 

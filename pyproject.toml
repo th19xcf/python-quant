@@ -112,9 +112,7 @@ ignore = [
     "PLR0913",    # too many arguments：策略/引擎构造函数历史包袱
     "PLR0915",    # 函数 too many statements：同上
     "PLR0917",    # too-many-positional-arguments：同上
-    "C901",       # mccabe 圈复杂度：历史策略类逐步收
     # === 风格建议（非 bug） ===
-    "BLE001",     # 盲捕 Exception：src/ 里 catch Exception 大多是 UI 层兜底，合理
     "B007",       # unused-loop-control-variable：_ 前缀变量循环常见
     "SIM102",     # collapsible-if：历史风格保留
     "SIM105",     # suppressible-exception：同上
@@ -131,7 +129,6 @@ ignore = [
     "TRY401",     # verbose-log-message：logger 风格
     # === bandit 安全：项目无外部输入路径 ===
     "S101",       # assert 用于生产逻辑（bandit：项目内部逻辑 assert 合理）
-    "S110",       # try-except-pass：部分清理代码吞掉 IOError 合理
     "S324",       # hashlib-insecure-hash-function：项目 md5/sha1 仅用于本地文件 hash 校验，非安全上下文
     "S603",       # subprocess 不设 shell=True（项目没走 subprocess）
     "S607",       # subprocess cwd 硬编码（同上）
@@ -144,11 +141,16 @@ ignore = [
     # UP038 已被 ruff 移除，无需 ignore
 ]
 
+[tool.ruff.lint.mccabe]
+# 圈复杂度门限：>25 即视为待拆分函数；现存遗留处以逐函数 noqa 标注，
+# 随 P4/P5 拆分巨函数后移除（不再用全局 ignore 关闭 C901）
+max-complexity = 25
+
 [tool.ruff.lint.per-file-ignores]
 # 测试文件：允许 assert、允许 monkeypatch 全局
 "tests/**/*.py" = ["S101", "BLE001", "TRY301"]
-# UI 回调：太多方法参数 + 嵌套 if
-"src/ui/**/*.py" = ["PLR0913", "PLR0912", "PLR0917", "C901", "F401", "E402"]
+# UI 回调：太多方法参数 + 嵌套 if；线程/界面回调顶层必须兜底盲捕，不允许异常穿透退出事件循环
+"src/ui/**/*.py" = ["PLR0913", "PLR0912", "PLR0917", "C901", "F401", "E402", "BLE001"]
 # 策略文件：历史包袱的复杂度
 "src/backtest/strategies/**/*.py" = ["C901", "PLR0912", "PLR0915", "PLR0917", "SIM102", "SIM105"]
 # 数据库 upsert：动态 SQL 字符串拼接
@@ -165,12 +167,15 @@ python_version = "3.14"
 mypy_path = "."
 explicit_package_bases = true
 ignore_missing_imports = true
-files = ["src/backtest/engine/execution_core.py"]
+# 先覆盖回测撮合内核，再逐步向外扩展；silent 表示只报告列出的目录内的错误，
+# 不把尚未收口的依赖模块错误一并暴露（避免门禁被无关存量错误淹没）
+files = ["src/backtest/engine"]
+follow_imports = "silent"
 
 [tool.coverage.run]
 source = ["src"]
 
 [tool.coverage.report]
-fail_under = 39
+fail_under = 42
 show_missing = true
 skip_covered = true

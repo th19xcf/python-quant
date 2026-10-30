@@ -289,7 +289,8 @@ class SystemMonitor:
                     })
 
                 time.sleep(self.interval - 1)  # 减去1秒的cpu_percent等待时间
-            except Exception as e:
+            # 兜底理由：系统监控线程兜底，不得因采集失败退出
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"系统监控出错: {e}")
                 time.sleep(self.interval)
 

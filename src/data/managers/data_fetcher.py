@@ -97,7 +97,8 @@ class DataFetcher:
                 try:
                     if source.is_available():
                         available_sources.append(source)
-                except Exception:
+                # 兜底理由：数据源可用性探测失败默认视为可用
+                except Exception:  # noqa: BLE001
                     # 如果is_available方法调用失败，默认可用
                     available_sources.append(source)
             else:
@@ -376,7 +377,8 @@ class DataFetcher:
                         factor = self._dividend_event_factor(div)
                         if factor is not None and factor != 1.0:
                             rollback_factors.append((factor, div.ex_date))
-                except Exception as e:
+                # 兜底理由：除权事件查询失败不影响主流程
+                except Exception as e:  # noqa: BLE001
                     logger.debug(f"as_of 截断时查除权事件失败（不影响主流程）: {e}")
 
             data_records = []
@@ -413,7 +415,8 @@ class DataFetcher:
             optimized_df = MemoryOptimizer.optimize_dataframe(df, enable_sparse=True)
             return optimized_df
 
-        except Exception as e:
+        # 兜底理由：数据库取数失败降级返回空表
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"从数据库获取{data_type}数据失败: {e}")
             return pl.DataFrame()
 
@@ -535,7 +538,8 @@ class DataFetcher:
                            **{"symbol": code, "source": source_name, "timeout": timeout})
             future.cancel()
             return None
-        except Exception as e:
+        # 兜底理由：单数据源取数失败降级为跳过
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"从{source_name}获取数据失败: {e}",
                            **{"symbol": code, "source": source_name, "error": str(e)})
             return None
@@ -573,7 +577,8 @@ class DataFetcher:
                 except concurrent.futures.TimeoutError:
                     logger.warning(f"从{source_name}获取数据超时",
                                    **{"symbol": code, "source": source_name})
-                except Exception as e:
+                # 兜底理由：单数据源结果处理失败降级为跳过
+                except Exception as e:  # noqa: BLE001
                     logger.warning(f"处理{source_name}结果时出错: {e}",
                                    **{"symbol": code, "source": source_name, "error": str(e)})
         except concurrent.futures.TimeoutError:
@@ -716,12 +721,15 @@ class DataFetcher:
                             optimized_result = MemoryOptimizer.optimize_dataframe(df, enable_sparse=True)
                             success = True
                             return True, optimized_result
-                    except Exception:
-                        pass
+                    # 兜底理由：内存优化失败退回未优化数据
+                    except Exception as exc:  # noqa: BLE001
+                        # 内存优化失败不影响主流程，退回未优化的原始 DataFrame
+                        logger.debug(f"内存优化失败，使用未优化数据: {exc}")
                 return False, None
             else:
                 return False, None
-        except Exception as e:
+        # 兜底理由：多源取数整体兜底返回失败
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"从{source_name}获取数据失败: {e}")
             return False, None
         finally:

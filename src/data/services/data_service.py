@@ -75,7 +75,8 @@ class DataService:
                 self.data_updater.register_source(handler)
             except ImportError as e:
                 logger.info(f"{handler_name}模块未安装: {e}")
-            except Exception as e:
+            # 兜底理由：单个内置数据源初始化失败不影响其余
+            except Exception as e:  # noqa: BLE001
                 logger.warning(f"{handler_name}数据处理器初始化失败: {e}")
 
         logger.info("内置数据源初始化完成")

@@ -63,7 +63,8 @@ def get_market_breadth_from_db(start_date: str = None, end_date: str = None):
         session.close()
         return df
 
-    except Exception as e:
+    # 兜底理由：数据库取数失败返回 None，由调用方降级
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"从数据库获取市场涨跌家数数据失败: {e}")
         return None
 
@@ -207,7 +208,8 @@ def _ensure_market_breadth_columns(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
                 pl.lit(0).cast(pl.Int32).alias('total_count')
             ])
 
-    except Exception as e:
+    # 兜底理由：数据库取数失败使用默认值
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"获取市场涨跌家数数据失败，使用默认值: {e}")
         lazy_df = lazy_df.with_columns([
             pl.lit(0).cast(pl.Int32).alias('up_count'),

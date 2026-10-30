@@ -165,7 +165,7 @@ class PluginConfigManager:
 
             logger.info(f"插件配置已更新: {plugin_name}")
             return True
-        except Exception as e:
+        except (TypeError, ValueError, KeyError, AttributeError) as e:
             logger.error(f"更新插件配置失败: {plugin_name}, 错误: {e}")
             return False
 
@@ -216,7 +216,7 @@ class PluginConfigManager:
                 json.dump(self.plugin_configs, f, ensure_ascii=False, indent=2)
             logger.info(f"插件配置已保存到文件: {file_path}")
             return True
-        except Exception as e:
+        except (OSError, TypeError, ValueError) as e:
             logger.error(f"保存插件配置失败: {e}")
             return False
 
@@ -241,7 +241,7 @@ class PluginConfigManager:
 
                 logger.info(f"插件配置已从文件加载: {file_path}")
                 return True
-        except Exception as e:
+        except (OSError, ValueError, TypeError, KeyError) as e:
             logger.error(f"加载插件配置失败: {e}")
 
         return False

@@ -71,7 +71,7 @@ def get_formula_version() -> str:
             if _formula_version is None:
                 try:
                     _formula_version = _compute_formula_version()
-                except Exception as e:  # 源码不可读时退化为固定标记，避免缓存键随机化
+                except Exception as e:  # noqa: BLE001  # 源码不可读时退化为固定标记，避免缓存键随机化
                     logger.warning(f"计算指标公式版本失败，使用 unknown: {e}")
                     _formula_version = 'unknown'
     return _formula_version
@@ -110,7 +110,8 @@ def _hash_polars_data(data: pl.DataFrame) -> str:
     if data.height:
         try:
             row_hashes = data.select(cols).hash_rows(seed=42)
-        except Exception as e:
+        # 兜底理由：Polars 哈希失败降级为 numpy 哈希
+        except Exception as e:  # noqa: BLE001
             logger.debug(f"Polars hash_rows 失败，降级 numpy 哈希: {e}")
             hasher.update(data.select(cols).to_numpy().tobytes())
         else:
@@ -140,7 +141,8 @@ def _canonical_param(value: Any) -> str:
     if isinstance(value, pl.Series):
         try:
             return f'pl.Series:{hashlib.md5(value.to_numpy().tobytes()).hexdigest()}'
-        except Exception:
+        # 兜底理由：哈希失败降级为 repr，仅影响命中率
+        except Exception:  # noqa: BLE001
             return f'pl.Series:{value!r}'
     if hasattr(value, 'tobytes'):
         return f'{type(value).__name__}:{hashlib.md5(value.tobytes()).hexdigest()}'
@@ -150,8 +152,10 @@ def _canonical_param(value: Any) -> str:
         if isinstance(value, (pd.DataFrame, pd.Series)):
             row_hashes = pd.util.hash_pandas_object(value, index=True)
             return f'{type(value).__name__}:{hashlib.md5(row_hashes.to_numpy().tobytes()).hexdigest()}'
-    except Exception:
-        pass
+    # 兜底理由：哈希失败降级为 repr，仅影响命中率
+    except Exception as exc:  # noqa: BLE001
+        # 哈希失败时降级为 repr 形式，仅影响缓存命中率，不影响计算结果
+        logger.debug(f"缓存键哈希失败，降级为 repr: {exc}")
     return f'{type(value).__name__}:{value!r}'
 
 

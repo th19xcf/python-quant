@@ -343,7 +343,8 @@ class IndicatorPlugin(PluginBase):
         source = data
         try:
             required = self.get_required_columns()
-        except Exception:
+        # 兜底理由：插件为外部扩展代码，异常类型不可预知
+        except Exception:  # noqa: BLE001
             required = None
         if required:
             base = ['date', 'open', 'high', 'low', 'close', 'volume']
@@ -354,7 +355,8 @@ class IndicatorPlugin(PluginBase):
         result_pd = self.calculate(df_pd, **kwargs)
         try:
             output_cols = self.get_output_columns()
-        except Exception:
+        # 兜底理由：插件为外部扩展代码，异常类型不可预知
+        except Exception:  # noqa: BLE001
             output_cols = None
         if output_cols and isinstance(result_pd, pd.DataFrame):
             keep = [c for c in ['date'] + list(output_cols) if c in result_pd.columns]

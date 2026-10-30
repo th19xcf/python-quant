@@ -238,7 +238,8 @@ def _cleanup_system(plugin_manager, db_manager):
         global_memory_manager.stop_monitoring()
         memory_usage = global_memory_manager.get_memory_usage()
         logger.info(f"最终内存使用: {memory_usage['process_rss_mb']:.2f} MB ({memory_usage['process_percent']:.1f}%)")
-    except Exception as e:
+    # 兜底理由：退出阶段清理失败不得阻断进程退出
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"停止内存监控时发生错误: {e}")
 
     publish(EventType.SYSTEM_SHUTDOWN)

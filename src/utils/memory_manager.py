@@ -61,7 +61,7 @@ class MemoryManager:
             tracemalloc.start()
             self.tracemalloc_enabled = True
             logger.info("内存跟踪已启动")
-        except Exception as e:
+        except RuntimeError as e:
             logger.warning(f"启动内存跟踪失败: {e}")
 
     def get_memory_usage(self) -> Dict[str, Any]:
@@ -165,7 +165,8 @@ class MemoryManager:
                 logger.critical(f"内存监控线程内存耗尽，停止监控: {e}")
                 self.monitoring_enabled = False
                 return
-            except Exception as e:
+            # 兜底理由：内存监控为旁路线程，失败不得终止主流程
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"内存监控出错: {str(e)}")
                 time.sleep(self.monitoring_interval)
 
@@ -241,7 +242,8 @@ class MemoryManager:
             self._analyze_memory_snapshot(snapshot)
         except MemoryError:
             raise
-        except Exception as e:
+        # 兜底理由：内存快照为旁路观测，失败不得影响主流程
+        except Exception as e:  # noqa: BLE001
             logger.error(f"拍摄内存快照失败: {e}")
 
     def _analyze_memory_snapshot(self, snapshot):
@@ -289,7 +291,8 @@ class MemoryManager:
                         logger.warning(f"  {stat}")
         except MemoryError:
             raise
-        except Exception as e:
+        # 兜底理由：快照分析为旁路观测，失败不得影响主流程
+        except Exception as e:  # noqa: BLE001
             logger.error(f"分析内存快照失败: {e}")
 
     def _trim_linecache_cache(self):
@@ -301,7 +304,8 @@ class MemoryManager:
             if cache_size >= self.linecache_trim_threshold:
                 linecache.clearcache()
                 logger.debug(f"linecache 缓存已清理，原条目数: {cache_size}")
-        except Exception as e:
+        # 兜底理由：linecache 裁剪为旁路优化，失败可忽略
+        except Exception as e:  # noqa: BLE001
             logger.debug(f"裁剪 linecache 缓存失败: {e}")
 
     def _check_memory_and_act(self, memory_info: Dict[str, Any]):
@@ -355,14 +359,16 @@ class MemoryManager:
             global_data_cache.release_memory(0.0)
             global_indicator_cache.release_memory(0.0)
             logger.info("已清空数据缓存与指标缓存")
-        except Exception as e:
+        # 兜底理由：清空缓存为旁路操作，失败不得影响主流程
+        except Exception as e:  # noqa: BLE001
             logger.error(f"清空缓存失败: {str(e)}")
 
         # 3. 清理linecache
         try:
             linecache.clearcache()
             logger.info("已清空linecache缓存")
-        except Exception as e:
+        # 兜底理由：linecache 清理为旁路操作，失败可忽略
+        except Exception as e:  # noqa: BLE001
             logger.error(f"清空linecache失败: {str(e)}")
 
         # 4. 减少线程池大小
@@ -385,14 +391,16 @@ class MemoryManager:
             # 清理过期缓存
             self._clean_expired_cache()
             logger.info("已清理过期缓存")
-        except Exception as e:
+        # 兜底理由：清理过期缓存为旁路操作，失败不得影响主流程
+        except Exception as e:  # noqa: BLE001
             logger.error(f"清理过期缓存失败: {str(e)}")
 
         # 3. 清理linecache
         try:
             linecache.clearcache()
             logger.info("已清空linecache缓存")
-        except Exception as e:
+        # 兜底理由：linecache 清理为旁路操作，失败可忽略
+        except Exception as e:  # noqa: BLE001
             logger.error(f"清空linecache失败: {str(e)}")
 
         # 4. 优化缓存大小
@@ -436,7 +444,8 @@ class MemoryManager:
                 json.dump(crisis_info, f, ensure_ascii=False, indent=2)
 
             logger.info(f"内存危机信息已记录到 {log_file}")
-        except Exception as e:
+        # 兜底理由：内存危机信息落盘为旁路操作，失败可忽略
+        except Exception as e:  # noqa: BLE001
             logger.error(f"记录内存危机信息失败: {e}")
 
     def _predict_memory_usage(self):

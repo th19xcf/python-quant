@@ -201,8 +201,9 @@ class BacktestEngine(BaseBacktestEngine):
             result['params'] = params
             return result
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_param = {executor.submit(run_single_backtest, params): params for params in param_combinations}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as thread_executor:
+            future_to_param = {thread_executor.submit(run_single_backtest, params): params
+                               for params in param_combinations}
 
             for future in concurrent.futures.as_completed(future_to_param):
                 try:

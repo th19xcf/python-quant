@@ -175,7 +175,8 @@ class DatabaseManager:
                     try:
                         # 测试会话是否仍然有效
                         self.session.execute(text("SELECT 1"))
-                    except Exception as e:
+                    # 兜底理由：会话探活失败按失效处理并重建
+                    except Exception as e:  # noqa: BLE001
                         logger.warning(f"现有数据库会话已失效，将创建新会话: {e}")
                         self._cleanup_session()
 
@@ -256,7 +257,8 @@ class DatabaseManager:
         """
         try:
             self.disconnect()
-        except Exception as e:
+        # 兜底理由：资源清理失败不得阻断退出流程
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"清理数据库资源时出错: {e}")
 
     def is_connected(self):

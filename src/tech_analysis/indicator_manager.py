@@ -54,6 +54,265 @@ from src.tech_analysis.indicators.market_breadth import (
 from src.tech_analysis.indicators.trend import calculate_bbi, calculate_expma
 from src.tech_analysis.indicators.volume import calculate_hsl, calculate_lb
 
+# 内置指标声明表：名称、计算函数、默认参数、描述、分类
+# 集中声明后由 _register_builtin_indicators 统一注册，避免 300+ 行重复的 register_indicator 调用
+_BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
+    {
+        "name": "ma",
+        "calculate_func": calculate_ma_polars,
+        "params": {"windows": [5, 10, 20, 60]},
+        "description": "移动平均线",
+        "category": "趋势指标",
+    },
+    {
+        "name": "vol_ma",
+        "calculate_func": calculate_vol_ma_polars,
+        "params": {"windows": [5, 10]},
+        "description": "成交量移动平均线",
+        "category": "成交量指标",
+    },
+    {
+        "name": "macd",
+        "calculate_func": calculate_macd_polars,
+        "params": {"fast_period": 12, "slow_period": 26, "signal_period": 9},
+        "description": "平滑异同移动平均线",
+        "category": "趋势指标",
+    },
+    {
+        "name": "rsi",
+        "calculate_func": calculate_rsi_polars,
+        "params": {"windows": [14]},
+        "description": "相对强弱指标",
+        "category": "震荡指标",
+    },
+    {
+        "name": "kdj",
+        "calculate_func": calculate_kdj_polars,
+        "params": {"windows": [14]},
+        "description": "随机指标",
+        "category": "震荡指标",
+    },
+    {
+        "name": "wr",
+        "calculate_func": calculate_wr_polars,
+        "params": {"windows": [10, 6]},
+        "description": "威廉指标",
+        "category": "震荡指标",
+    },
+    {
+        "name": "boll",
+        "calculate_func": calculate_boll_polars,
+        "params": {"windows": [20], "std_dev": 2.0},
+        "description": "布林带",
+        "category": "趋势指标",
+    },
+    {
+        "name": "dmi",
+        "calculate_func": calculate_dmi_polars,
+        "params": {"windows": [14]},
+        "description": "趋向指标",
+        "category": "趋势指标",
+    },
+    {
+        "name": "cci",
+        "calculate_func": calculate_cci_polars,
+        "params": {"windows": [14]},
+        "description": "商品通道指标",
+        "category": "震荡指标",
+    },
+    {
+        "name": "roc",
+        "calculate_func": calculate_roc_polars,
+        "params": {"windows": [12]},
+        "description": "变化率指标",
+        "category": "震荡指标",
+    },
+    {
+        "name": "mtm",
+        "calculate_func": calculate_mtm_polars,
+        "params": {"windows": [12]},
+        "description": "动量指标",
+        "category": "震荡指标",
+    },
+    {
+        "name": "obv",
+        "calculate_func": calculate_obv_polars,
+        "params": {},
+        "description": "能量潮",
+        "category": "成交量指标",
+    },
+    {
+        "name": "vr",
+        "calculate_func": calculate_vr_polars,
+        "params": {"windows": [26]},
+        "description": "成交量比率",
+        "category": "成交量指标",
+    },
+    {
+        "name": "psy",
+        "calculate_func": calculate_psy_polars,
+        "params": {"windows": [12]},
+        "description": "心理线",
+        "category": "情绪指标",
+    },
+    {
+        "name": "trix",
+        "calculate_func": calculate_trix_polars,
+        "params": {"windows": [12], "signal_period": 9},
+        "description": "三重指数平滑",
+        "category": "趋势指标",
+    },
+    {
+        "name": "brar",
+        "calculate_func": calculate_brar_polars,
+        "params": {"windows": [26]},
+        "description": "情绪指标",
+        "category": "情绪指标",
+    },
+    {
+        "name": "asi",
+        "calculate_func": calculate_asi_polars,
+        "params": {"signal_period": 20},
+        "description": "振动升降指标",
+        "category": "趋势指标",
+    },
+    {
+        "name": "emv",
+        "calculate_func": calculate_emv_polars,
+        "params": {"windows": [14], "constant": 100000000},
+        "description": "简易波动指标",
+        "category": "趋势指标",
+    },
+    {
+        "name": "mcst",
+        "calculate_func": calculate_mcst_polars,
+        "params": {"windows": [12]},
+        "description": "市场成本",
+        "category": "成本指标",
+    },
+    {
+        "name": "dma",
+        "calculate_func": calculate_dma_polars,
+        "params": {"short_period": 10, "long_period": 50, "signal_period": 10},
+        "description": "平均线差",
+        "category": "趋势指标",
+    },
+    {
+        "name": "fsl",
+        "calculate_func": calculate_fsl_polars,
+        "params": {},
+        "description": "分水岭指标",
+        "category": "趋势指标",
+    },
+    {
+        "name": "sar",
+        "calculate_func": calculate_sar_polars,
+        "params": {"af_step": 0.02, "max_af": 0.2},
+        "description": "抛物线转向指标",
+        "category": "趋势指标",
+    },
+    {
+        "name": "vol_tdx",
+        "calculate_func": calculate_vol_tdx_polars,
+        "params": {"ma_period": 5},
+        "description": "成交量趋势",
+        "category": "成交量指标",
+    },
+    {
+        "name": "cr",
+        "calculate_func": calculate_cr_polars,
+        "params": {"windows": [26]},
+        "description": "能量指标",
+        "category": "能量指标",
+    },
+    {
+        "name": "expma",
+        "calculate_func": lambda df, **kwargs: calculate_expma(
+            df.lazy(), kwargs.get("windows", [12, 50])
+        ).collect(),
+        "params": {"windows": [12, 50]},
+        "description": "指数平均线",
+        "category": "趋势指标",
+    },
+    {
+        "name": "bbi",
+        "calculate_func": lambda df, **kwargs: calculate_bbi(df.lazy()).collect(),
+        "params": {},
+        "description": "多空指数",
+        "category": "趋势指标",
+    },
+    {
+        "name": "hsl",
+        "calculate_func": lambda df, **kwargs: calculate_hsl(
+            df.lazy(), kwargs.get("float_share", None)
+        ).collect(),
+        "params": {"float_share": None},
+        "description": "换手率",
+        "category": "成交量指标",
+    },
+    {
+        "name": "lb",
+        "calculate_func": lambda df, **kwargs: calculate_lb(
+            df.lazy(), kwargs.get("period", 5)
+        ).collect(),
+        "params": {"period": 5},
+        "description": "量比",
+        "category": "成交量指标",
+    },
+    {
+        "name": "cyc",
+        "calculate_func": lambda df, **kwargs: calculate_cyc(
+            df.lazy(), kwargs.get("windows", [5, 13, 34])
+        ).collect(),
+        "params": {"windows": [5, 13, 34]},
+        "description": "成本均线",
+        "category": "成本指标",
+    },
+    {
+        "name": "cys",
+        "calculate_func": lambda df, **kwargs: calculate_cys(
+            df.lazy(), kwargs.get("cyc_window", 13)
+        ).collect(),
+        "params": {"cyc_window": 13},
+        "description": "市场盈亏",
+        "category": "成本指标",
+    },
+    {
+        "name": "abi",
+        "calculate_func": lambda df, **kwargs: calculate_abi(
+            df.lazy(), kwargs.get("period", 10)
+        ).collect(),
+        "params": {"period": 10},
+        "description": "绝对广量指标",
+        "category": "大势型",
+    },
+    {
+        "name": "adl",
+        "calculate_func": lambda df, **kwargs: calculate_adl(df.lazy()).collect(),
+        "params": {},
+        "description": "腾落指标",
+        "category": "大势型",
+    },
+    {
+        "name": "adr",
+        "calculate_func": lambda df, **kwargs: calculate_adr(
+            df.lazy(), kwargs.get("period", 10)
+        ).collect(),
+        "params": {"period": 10},
+        "description": "涨跌比率",
+        "category": "大势型",
+    },
+    {
+        "name": "obos",
+        "calculate_func": lambda df, **kwargs: calculate_obos(
+            df.lazy(), kwargs.get("period", 10)
+        ).collect(),
+        "params": {"period": 10},
+        "description": "超买超卖指标",
+        "category": "大势型",
+    },
+)
+
 
 class IndicatorManager:
     """
@@ -85,345 +344,16 @@ class IndicatorManager:
         """
         注册所有内置指标
         """
-        # 1. MA指标
-        register_indicator(
-            name='ma',
-            calculate_func=calculate_ma_polars,
-            dependencies=[],
-            params={'windows': [5, 10, 20, 60]},
-            description='移动平均线',
-            category='趋势指标'
-        )
-
-        # 2. VOL_MA指标
-        register_indicator(
-            name='vol_ma',
-            calculate_func=calculate_vol_ma_polars,
-            dependencies=[],
-            params={'windows': [5, 10]},
-            description='成交量移动平均线',
-            category='成交量指标'
-        )
-
-        # 3. MACD指标
-        register_indicator(
-            name='macd',
-            calculate_func=calculate_macd_polars,
-            dependencies=[],
-            params={'fast_period': 12, 'slow_period': 26, 'signal_period': 9},
-            description='平滑异同移动平均线',
-            category='趋势指标'
-        )
-
-        # 4. RSI指标
-        register_indicator(
-            name='rsi',
-            calculate_func=calculate_rsi_polars,
-            dependencies=[],
-            params={'windows': [14]},
-            description='相对强弱指标',
-            category='震荡指标'
-        )
-
-        # 5. KDJ指标
-        register_indicator(
-            name='kdj',
-            calculate_func=calculate_kdj_polars,
-            dependencies=[],
-            params={'windows': [14]},
-            description='随机指标',
-            category='震荡指标'
-        )
-
-        # 6. WR指标
-        register_indicator(
-            name='wr',
-            calculate_func=calculate_wr_polars,
-            dependencies=[],
-            params={'windows': [10, 6]},
-            description='威廉指标',
-            category='震荡指标'
-        )
-
-        # 7. BOLL指标
-        register_indicator(
-            name='boll',
-            calculate_func=calculate_boll_polars,
-            dependencies=[],
-            params={'windows': [20], 'std_dev': 2.0},
-            description='布林带',
-            category='趋势指标'
-        )
-
-        # 8. DMI指标
-        register_indicator(
-            name='dmi',
-            calculate_func=calculate_dmi_polars,
-            dependencies=[],
-            params={'windows': [14]},
-            description='趋向指标',
-            category='趋势指标'
-        )
-
-        # 9. CCI指标
-        register_indicator(
-            name='cci',
-            calculate_func=calculate_cci_polars,
-            dependencies=[],
-            params={'windows': [14]},
-            description='商品通道指标',
-            category='震荡指标'
-        )
-
-        # 10. ROC指标
-        register_indicator(
-            name='roc',
-            calculate_func=calculate_roc_polars,
-            dependencies=[],
-            params={'windows': [12]},
-            description='变化率指标',
-            category='震荡指标'
-        )
-
-        # 11. MTM指标
-        register_indicator(
-            name='mtm',
-            calculate_func=calculate_mtm_polars,
-            dependencies=[],
-            params={'windows': [12]},
-            description='动量指标',
-            category='震荡指标'
-        )
-
-        # 12. OBV指标
-        register_indicator(
-            name='obv',
-            calculate_func=calculate_obv_polars,
-            dependencies=[],
-            params={},
-            description='能量潮',
-            category='成交量指标'
-        )
-
-        # 13. VR指标
-        register_indicator(
-            name='vr',
-            calculate_func=calculate_vr_polars,
-            dependencies=[],
-            params={'windows': [26]},
-            description='成交量比率',
-            category='成交量指标'
-        )
-
-        # 14. PSY指标
-        register_indicator(
-            name='psy',
-            calculate_func=calculate_psy_polars,
-            dependencies=[],
-            params={'windows': [12]},
-            description='心理线',
-            category='情绪指标'
-        )
-
-        # 15. TRIX指标
-        register_indicator(
-            name='trix',
-            calculate_func=calculate_trix_polars,
-            dependencies=[],
-            params={'windows': [12], 'signal_period': 9},
-            description='三重指数平滑',
-            category='趋势指标'
-        )
-
-        # 16. BRAR指标
-        register_indicator(
-            name='brar',
-            calculate_func=calculate_brar_polars,
-            dependencies=[],
-            params={'windows': [26]},
-            description='情绪指标',
-            category='情绪指标'
-        )
-
-        # 17. ASI指标
-        register_indicator(
-            name='asi',
-            calculate_func=calculate_asi_polars,
-            dependencies=[],
-            params={'signal_period': 20},
-            description='振动升降指标',
-            category='趋势指标'
-        )
-
-        # 18. EMV指标
-        register_indicator(
-            name='emv',
-            calculate_func=calculate_emv_polars,
-            dependencies=[],
-            params={'windows': [14], 'constant': 100000000},
-            description='简易波动指标',
-            category='趋势指标'
-        )
-
-        # 19. MCST指标
-        register_indicator(
-            name='mcst',
-            calculate_func=calculate_mcst_polars,
-            dependencies=[],
-            params={'windows': [12]},
-            description='市场成本',
-            category='成本指标'
-        )
-
-        # 20. DMA指标
-        register_indicator(
-            name='dma',
-            calculate_func=calculate_dma_polars,
-            dependencies=[],
-            params={'short_period': 10, 'long_period': 50, 'signal_period': 10},
-            description='平均线差',
-            category='趋势指标'
-        )
-
-        # 21. FSL指标
-        register_indicator(
-            name='fsl',
-            calculate_func=calculate_fsl_polars,
-            dependencies=[],
-            params={},
-            description='分水岭指标',
-            category='趋势指标'
-        )
-
-        # 22. SAR指标
-        register_indicator(
-            name='sar',
-            calculate_func=calculate_sar_polars,
-            dependencies=[],
-            params={'af_step': 0.02, 'max_af': 0.2},
-            description='抛物线转向指标',
-            category='趋势指标'
-        )
-
-        # 23. VOL_TDX指标
-        register_indicator(
-            name='vol_tdx',
-            calculate_func=calculate_vol_tdx_polars,
-            dependencies=[],
-            params={'ma_period': 5},
-            description='成交量趋势',
-            category='成交量指标'
-        )
-
-        # 24. CR指标
-        register_indicator(
-            name='cr',
-            calculate_func=calculate_cr_polars,
-            dependencies=[],
-            params={'windows': [26]},
-            description='能量指标',
-            category='能量指标'
-        )
-
-        # 25. EXPMA指标（指数平均线）
-        register_indicator(
-            name='expma',
-            calculate_func=lambda df, **kwargs: calculate_expma(df.lazy(), kwargs.get('windows', [12, 50])).collect(),
-            dependencies=[],
-            params={'windows': [12, 50]},
-            description='指数平均线',
-            category='趋势指标'
-        )
-
-        # 26. BBI指标（多空指数）
-        register_indicator(
-            name='bbi',
-            calculate_func=lambda df, **kwargs: calculate_bbi(df.lazy()).collect(),
-            dependencies=[],
-            params={},
-            description='多空指数',
-            category='趋势指标'
-        )
-
-        # 27. HSL指标（换手率）
-        register_indicator(
-            name='hsl',
-            calculate_func=lambda df, **kwargs: calculate_hsl(df.lazy(), kwargs.get('float_share', None)).collect(),
-            dependencies=[],
-            params={'float_share': None},
-            description='换手率',
-            category='成交量指标'
-        )
-
-        # 28. LB指标（量比）
-        register_indicator(
-            name='lb',
-            calculate_func=lambda df, **kwargs: calculate_lb(df.lazy(), kwargs.get('period', 5)).collect(),
-            dependencies=[],
-            params={'period': 5},
-            description='量比',
-            category='成交量指标'
-        )
-
-        # 29. CYC指标（成本均线）
-        register_indicator(
-            name='cyc',
-            calculate_func=lambda df, **kwargs: calculate_cyc(df.lazy(), kwargs.get('windows', [5, 13, 34])).collect(),
-            dependencies=[],
-            params={'windows': [5, 13, 34]},
-            description='成本均线',
-            category='成本指标'
-        )
-
-        # 30. CYS指标（市场盈亏）
-        register_indicator(
-            name='cys',
-            calculate_func=lambda df, **kwargs: calculate_cys(df.lazy(), kwargs.get('cyc_window', 13)).collect(),
-            dependencies=[],
-            params={'cyc_window': 13},
-            description='市场盈亏',
-            category='成本指标'
-        )
-
-        # 31. ABI指标（绝对广量）
-        register_indicator(
-            name='abi',
-            calculate_func=lambda df, **kwargs: calculate_abi(df.lazy(), kwargs.get('period', 10)).collect(),
-            dependencies=[],
-            params={'period': 10},
-            description='绝对广量指标',
-            category='大势型'
-        )
-
-        # 32. ADL指标（腾落指标）
-        register_indicator(
-            name='adl',
-            calculate_func=lambda df, **kwargs: calculate_adl(df.lazy()).collect(),
-            dependencies=[],
-            params={},
-            description='腾落指标',
-            category='大势型'
-        )
-
-        # 33. ADR指标（涨跌比率）
-        register_indicator(
-            name='adr',
-            calculate_func=lambda df, **kwargs: calculate_adr(df.lazy(), kwargs.get('period', 10)).collect(),
-            dependencies=[],
-            params={'period': 10},
-            description='涨跌比率',
-            category='大势型'
-        )
-
-        # 34. OBOS指标（超买超卖）
-        register_indicator(
-            name='obos',
-            calculate_func=lambda df, **kwargs: calculate_obos(df.lazy(), kwargs.get('period', 10)).collect(),
-            dependencies=[],
-            params={'period': 10},
-            description='超买超卖指标',
-            category='大势型'
-        )
+        for spec in _BUILTIN_INDICATORS:
+            # params 复制一份，避免多个管理器实例共享同一份可变默认参数
+            register_indicator(
+                name=spec["name"],
+                calculate_func=spec["calculate_func"],
+                dependencies=[],
+                params=dict(spec["params"]),
+                description=spec["description"],
+                category=spec["category"]
+            )
 
         logger.info(f"已注册{len(global_indicator_registry.get_supported_indicators())}个内置指标")
 

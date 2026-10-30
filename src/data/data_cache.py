@@ -105,7 +105,7 @@ class DataCacheEntry[V]:
             query_end = datetime.strptime(end_date, '%Y-%m-%d')
 
             return cache_start <= query_start and cache_end >= query_end
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.debug(f"缓存日期范围比较失败，视为不命中: {e}", exc_info=True)
             return False
 
@@ -247,7 +247,8 @@ class DataCache:
                         self._hits += 1
                         logger.debug(f"数据缓存精确命中: {data_type} {code}")
                         return entry.value
-            except Exception as e:
+            # 兜底理由：缓存键生成失败降级为未命中
+            except Exception as e:  # noqa: BLE001
                 logger.warning(f"生成缓存键失败: {str(e)}")
 
             # 2. 尝试时间范围匹配（必须参数完全一致，避免跨复权/跨 as_of 串用）
@@ -256,7 +257,8 @@ class DataCache:
                 try:
                     filtered_df = self._filter_by_date_range(
                         matched_entry.value, start_date, end_date)
-                except Exception as e:
+                # 兜底理由：缓存数据裁剪失败降级为未命中
+                except Exception as e:  # noqa: BLE001
                     logger.warning(f"从缓存中提取数据失败: {e}")
                 else:
                     if filtered_df is not None and not filtered_df.is_empty():
@@ -355,7 +357,8 @@ class DataCache:
         """
         try:
             cache_key = self._generate_cache_key(data_type, code, start_date, end_date, **params)
-        except Exception as e:
+        # 兜底理由：缓存键生成失败则不写入缓存
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"生成缓存键失败: {str(e)}")
             return
 

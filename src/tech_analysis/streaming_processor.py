@@ -118,7 +118,8 @@ class StreamingProcessor:
                     result, indicator, return_polars=True, **self.indicator_params,
                 )
                 self.calculated_indicators[indicator] = True
-            except Exception as e:
+            # 兜底理由：单个指标计算失败不中断其余指标
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"计算{indicator}失败: {e}")
 
         # 统一 Float64，避免后续 concat dtype 抖动
@@ -164,7 +165,8 @@ class StreamingProcessor:
                         if col not in ('date', 'open', 'high', 'low', 'close', 'volume'):
                             new_values = full_result[col].tail(len(new_data))
                             result = result.with_columns(new_values.alias(col))
-            except Exception as e:
+            # 兜底理由：单个指标增量计算失败降级为全量结果
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"增量计算{indicator}失败: {e}")
 
         return result

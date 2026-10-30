@@ -58,7 +58,7 @@ class IndicatorCacheMixin:
             # 非窗口型指标，直接返回状态值
             return status
 
-    def reset_calculation(self, indicator_type=None, window=None):
+    def reset_calculation(self, indicator_type=None, window=None):  # noqa: C901
         """
         重置指标计算状态，可选择重置特定指标或所有指标
 

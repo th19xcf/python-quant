@@ -14,6 +14,7 @@ AkShare 上游接口契约
 
 import math
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
 
 import polars as pl
@@ -279,3 +280,45 @@ def pick_alias(row: Mapping, names: Sequence[str], default=None):
             continue
         return value
     return default
+
+
+def parse_date_value(value):
+    """
+    把上游日期值解析为 date，无法解析时返回 None
+
+    兼容 datetime/Timestamp 实例与 'YYYY-MM-DD' 字符串，
+    空串、'NaT'、'None'、'nan' 均视为缺失。
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    text = str(value).strip()
+    if not text or text in {'NaT', 'None', 'nan'}:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_number_value(value, default=0.0):
+    """
+    把上游数值解析为 float，无法解析时返回 default
+
+    兼容数值类型与带千分位/单位（元、股、%）的字符串，
+    空串、'None'、'nan'、'--' 均视为缺失。
+    """
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(',', '')
+    if not text or text in {'None', 'nan', 'NaN', '--'}:
+        return default
+    for suffix in ('元', '股', '%'):
+        text = text.replace(suffix, '')
+    try:
+        return float(text)
+    except (ValueError, TypeError):
+        return default

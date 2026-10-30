@@ -249,7 +249,8 @@ class AsyncDataManager:
                     except TimeoutError:
                         logger.error(f"获取{code}数据超时")
                         return pl.DataFrame()
-                    except Exception as e:
+                    # 兜底理由：单只股票异步取数失败返回空表
+                    except Exception as e:  # noqa: BLE001
                         logger.error(f"获取{code}数据失败: {e}")
                         return pl.DataFrame()
 

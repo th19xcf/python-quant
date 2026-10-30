@@ -744,11 +744,13 @@ class PluginManager:
             # 执行插件方法，捕获所有异常
             try:
                 return method(*args, **kwargs)
-            except Exception as e:
+            # 兜底理由：插件方法异常必须隔离，不影响其他插件
+            except Exception as e:  # noqa: BLE001
                 logger.exception(f"调用插件{plugin_name}的{method_name}方法失败: {str(e)}")
                 # 不抛出异常，确保其他插件不受影响
                 return None
-        except Exception as e:
+        # 兜底理由：插件调用异常必须隔离，保证主程序稳定
+        except Exception as e:  # noqa: BLE001
             logger.exception(f"调用插件{plugin_name}时发生错误: {str(e)}")
             # 不抛出异常，确保系统稳定运行
             return None

@@ -65,7 +65,8 @@ def _fetch_panel(top_n: int, period: str) -> pl.DataFrame | None:
                         pl.lit(ind).alias('industry'),
                     ])
                     stocks_data_list.append(df)
-            except Exception as e:
+            # 兜底理由：单只股票取数失败跳过
+            except Exception as e:  # noqa: BLE001
                 logger.debug(f"取 {code} 数据失败: {e}")
 
         if not stocks_data_list:

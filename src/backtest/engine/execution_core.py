@@ -777,6 +777,8 @@ class EventBacktestRunner:
             return
 
         # 校验通过后 open_price 必为有效价，作为成交价
+        # （_check_order_executable 已把缺失/非法价判为不可成交并提前返回）
+        assert open_price is not None
         exec_price = open_price
 
         if side == 'buy':

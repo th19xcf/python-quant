@@ -53,7 +53,8 @@ class PluginIndicatorMixin:
         """
         try:
             required = plugin.get_required_columns()
-        except Exception:
+        # 兜底理由：插件为外部扩展代码，异常类型不可预知
+        except Exception:  # noqa: BLE001
             required = None
         if not required:
             return self.pl_df.columns
@@ -74,7 +75,8 @@ class PluginIndicatorMixin:
             return None
         try:
             indicator_plugins = self.plugin_manager.get_available_indicator_plugins()
-        except Exception:
+        # 兜底理由：插件为外部扩展代码，异常类型不可预知
+        except Exception:  # noqa: BLE001
             return None
         union_cols = []
         legacy_found = False
@@ -87,7 +89,8 @@ class PluginIndicatorMixin:
             legacy_found = True
             try:
                 required = plugin.get_required_columns()
-            except Exception:
+            # 兜底理由：插件为外部扩展代码，异常类型不可预知
+            except Exception:  # noqa: BLE001
                 return None
             if not required:
                 return None
@@ -100,11 +103,12 @@ class PluginIndicatorMixin:
             return None
         try:
             return self.pl_df.select(cols)
-        except Exception as e:
+        # 兜底理由：列裁剪失败回退逐插件裁剪
+        except Exception as e:  # noqa: BLE001
             logger.debug(f"构建遗留插件共享源帧失败，回退逐插件裁剪: {e}")
             return None
 
-    def calculate_plugin_indicator(self, plugin_name, **kwargs):
+    def calculate_plugin_indicator(self, plugin_name, **kwargs):  # noqa: C901
         """
         计算插件指标
 
@@ -266,7 +270,8 @@ class PluginIndicatorMixin:
                     # 仅回转插件声明的输出列（+date），避免输入列重复转回Polars
                     try:
                         output_cols = plugin.get_output_columns()
-                    except Exception:
+                    # 兜底理由：插件为外部扩展代码，异常类型不可预知
+                    except Exception:  # noqa: BLE001
                         output_cols = None
                     if output_cols:
                         keep = [c for c in ['date'] + list(output_cols) if c in result_df.columns]
@@ -372,7 +377,8 @@ class PluginIndicatorMixin:
                     try:
                         future.result()
                         results.append(plugin_name)
-                    except Exception as e:
+                    # 兜底理由：单个插件指标计算失败不影响其余
+                    except Exception as e:  # noqa: BLE001
                         logger.error(f"计算插件指标{plugin_name}失败: {e}")
 
             logger.info(f"并行计算完成，成功计算{len(results)}个插件指标")

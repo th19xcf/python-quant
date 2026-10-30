@@ -271,7 +271,8 @@ class ConfigManager:
                         self._config = new_config
                         self._last_modified = current_mtime
                         logger.info("配置文件已更新，热加载成功")
-                    except Exception as e:
+                    # 兜底理由：配置热加载失败保留旧配置
+                    except Exception as e:  # noqa: BLE001
                         logger.warning(f"配置文件更新失败: {e}")
 
     def reload(self) -> Config:

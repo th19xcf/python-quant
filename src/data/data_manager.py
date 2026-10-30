@@ -453,14 +453,16 @@ class DataManager(IDataProvider, IDataProcessor):
         except (OSError, RuntimeError) as query_e:
             logger.warning(f"{model_name}查询失败: {query_e}")
             return pl.DataFrame()
-        except Exception as e:
+        # 兜底理由：数据库查询兜底返回空表，不中断调用方
+        except Exception as e:  # noqa: BLE001
             logger.exception(f"获取{model_name}失败: {e}")
             return pl.DataFrame()
         finally:
             if session and self.db_manager:
                 try:
                     self.db_manager._cleanup_session()
-                except Exception as cleanup_e:
+                # 兜底理由：会话清理失败不得掩盖原异常
+                except Exception as cleanup_e:  # noqa: BLE001
                     logger.debug(f"清理会话时出错: {cleanup_e}")
 
     def get_stock_basic(self, exchange: str | None = None) -> pl.DataFrame:
@@ -509,7 +511,8 @@ class DataManager(IDataProvider, IDataProcessor):
             if session and self.db_manager:
                 try:
                     self.db_manager._cleanup_session()
-                except Exception as cleanup_e:
+                # 兜底理由：会话清理失败不得掩盖原异常
+                except Exception as cleanup_e:  # noqa: BLE001
                     logger.debug(f"清理会话时出错: {cleanup_e}")
 
     def get_stock_name(self, ts_code: str) -> str | None:
@@ -544,7 +547,8 @@ class DataManager(IDataProvider, IDataProcessor):
             if session and self.db_manager:
                 try:
                     self.db_manager._cleanup_session()
-                except Exception as cleanup_e:
+                # 兜底理由：会话清理失败不得掩盖原异常
+                except Exception as cleanup_e:  # noqa: BLE001
                     logger.debug(f"清理会话时出错: {cleanup_e}")
 
     def list_stock_records(self) -> List[Dict[str, Any]]:
@@ -584,7 +588,8 @@ class DataManager(IDataProvider, IDataProcessor):
             if session and self.db_manager:
                 try:
                     self.db_manager._cleanup_session()
-                except Exception as cleanup_e:
+                # 兜底理由：会话清理失败不得掩盖原异常
+                except Exception as cleanup_e:  # noqa: BLE001
                     logger.debug(f"清理会话时出错: {cleanup_e}")
 
     # ------------------------------------------------------------------

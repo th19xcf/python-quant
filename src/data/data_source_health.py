@@ -288,7 +288,8 @@ class DataSourceHealthChecker:
         while self._monitoring:
             try:
                 self._perform_health_checks()
-            except Exception as e:
+            # 兜底理由：监控循环兜底，健康检查失败不得终止线程
+            except Exception as e:  # noqa: BLE001
                 logger.warning(f"健康检查监控异常: {e}")
 
             time.sleep(self._check_interval)
@@ -315,9 +316,11 @@ class DataSourceHealthChecker:
                             error_msg = ''
 
                         self.record_request(source_name, success, response_time, error_msg)
-                    except Exception as e:
+                    # 兜底理由：单个数据源探活失败记为不健康
+                    except Exception as e:  # noqa: BLE001
                         self.record_request(source_name, False, time.time() - start_time, str(e))
-            except Exception as e:
+            # 兜底理由：单个数据源探活失败记为不健康
+            except Exception as e:  # noqa: BLE001
                 logger.warning(f"执行数据源{source_name}健康检查时出错: {e}")
 
     def reset_health_info(self, source_name: str | None = None):

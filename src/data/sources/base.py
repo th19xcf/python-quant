@@ -51,7 +51,8 @@ class DataSourceBase(ABC):
             self._initialize()
             self.available = True
             logger.info(f"{self.name} 初始化成功")
-        except Exception as e:
+        # 兜底理由：数据源初始化失败标记不可用，不阻断启动
+        except Exception as e:  # noqa: BLE001
             self.available = False
             logger.warning(f"{self.name} 初始化失败: {e}")
 

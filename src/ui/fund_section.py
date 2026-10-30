@@ -211,8 +211,9 @@ class FundSection:
                     try:
                         global_task_manager.task_completed.disconnect(on_task_completed)
                         global_task_manager.task_progress.disconnect(on_task_progress)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        # 信号可能已被其他路径断开，重复解绑失败可忽略
+                        logger.debug(f"解绑任务信号失败: {exc}")
 
             def on_task_progress(task_id, current, total):
                 if task_id != current_task_id:
