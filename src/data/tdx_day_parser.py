@@ -103,6 +103,20 @@ def _load_content(path: Path, count: int | None) -> bytes:
         return f.read()
 
 
+# 少量记录（如只取末尾 2 条快照）走直接构造 date 的轻量路径，
+# 规避 pandas 每次调用的固定开销；大数组仍用向量化解析。
+_SMALL_DECODE_THRESHOLD = 8
+
+
+def _decode_dates_small(values) -> np.ndarray:
+    """把 YYYYMMDD 整数序列逐个构造成 datetime.date 对象数组。"""
+    out = np.empty(len(values), dtype=object)
+    for i, raw in enumerate(values):
+        text = f"{int(raw):08d}"
+        out[i] = date(int(text[:4]), int(text[4:6]), int(text[6:]))
+    return out
+
+
 def _decode_records(content: bytes, volume_in_hand: bool) -> Dict[str, Any]:
     """
     向量化解码整段 32 字节定长记录。
@@ -112,8 +126,11 @@ def _decode_records(content: bytes, volume_in_hand: bool) -> Dict[str, Any]:
     成交量个股/基金除以 100（股→手）、指数原样（手）。
     """
     arr = np.frombuffer(content, dtype=_DAY_DTYPE)
-    # pd.to_datetime 定格式走 C 层解析，校验规则与 strptime 一致
-    dates = pd.to_datetime(arr['date'].astype(str), format='%Y%m%d').date
+    if len(arr) <= _SMALL_DECODE_THRESHOLD:
+        dates = _decode_dates_small(arr['date'])
+    else:
+        # 大数组走 pd.to_datetime C 层向量化解析，校验规则与 strptime 一致
+        dates = pd.to_datetime(arr['date'].astype(str), format='%Y%m%d').date
     volume = arr['volume'].astype(np.int64) if volume_in_hand else arr['volume'] / 100.0
     return {
         'date': dates,

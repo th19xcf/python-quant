@@ -6,6 +6,7 @@ this logic from the MainWindow MRO.
 """
 
 import contextlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,9 @@ from PySide6.QtWidgets import QAbstractItemView, QTableWidgetItem
 from src.data.services.indicator_service import calculate_indicators_for_period
 from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
+
+# 行情表格扫描的并发线程数：每个文件只读末尾 2 条记录，属 IO 密集型
+_QUOTE_SCAN_WORKERS = 8
 
 
 class DataController:
@@ -503,32 +507,41 @@ class DataController:
         return self._format_market_row(quote, ts_code, stock_name), date
 
     def _scan_market_quotes_files(self, files, name_map, signals, task_id):
-        """扫描文件列表，返回 (表格行列表, 全部文件中的最新交易日)。"""
-        latest_date = None
-        table_rows = []
+        """并发扫描文件列表，返回 (按原文件顺序排列的表格行, 全部文件中的最新交易日)。"""
         total_files = len(files)
+        if total_files == 0:
+            self._emit_market_progress(signals, task_id, 80)
+            return [], None
 
-        for i, file_path in enumerate(files):
+        update_interval = max(1, total_files // 10)
+
+        def _read_one(index, file_path):
             try:
-                # 发送进度信号
-                update_interval = max(1, total_files // 10)
-                if i % update_interval == 0:
-                    progress = 20 + int((i / total_files) * 60)
-                    self._emit_market_progress(signals, task_id, progress)
-
                 # 只在每100个文件记录一次日志，减少IO开销
-                if i % 100 == 0:
-                    logger.info(f"正在解析文件: {file_path} ({i+1}/{total_files})")
-
-                row, date = self._quote_file_to_row(file_path, name_map)
-                if date is not None and (latest_date is None or date > latest_date):
-                    latest_date = date
-                if row is not None:
-                    table_rows.append(row)
-
+                if index % 100 == 0:
+                    logger.info(f"正在解析文件: {file_path} ({index+1}/{total_files})")
+                return self._quote_file_to_row(file_path, name_map)
             except (OSError, RuntimeError, ValueError) as e:
                 logger.warning(f"解析文件{file_path}失败: {e}")
-                continue
+                return None, None
+
+        # 并发读取尾部记录，结果按原索引回填，保证表格行顺序与逐文件扫描时一致
+        rows_by_index = [None] * total_files
+        with ThreadPoolExecutor(max_workers=_QUOTE_SCAN_WORKERS) as pool:
+            futures = {pool.submit(_read_one, i, f): i for i, f in enumerate(files)}
+            for done, future in enumerate(as_completed(futures), 1):
+                rows_by_index[futures[future]] = future.result()
+                if done % update_interval == 0:
+                    progress = 20 + int((done / total_files) * 60)
+                    self._emit_market_progress(signals, task_id, progress)
+
+        latest_date = None
+        table_rows = []
+        for row, date in rows_by_index:
+            if date is not None and (latest_date is None or date > latest_date):
+                latest_date = date
+            if row is not None:
+                table_rows.append(row)
 
         # 发送进度信号
         self._emit_market_progress(signals, task_id, 80)
