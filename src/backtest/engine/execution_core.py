@@ -15,12 +15,14 @@ A 股交易语义只允许在本模块修改，禁止在具体引擎里再写一
     2. 买入股数按 lot_size（默认 100 股）整数倍向下取整
     3. 买入成本在下单当时扣除，卖出所得叠加回剩余现金（不能覆盖）
     4. 开盘价触及涨停不可买、触及跌停不可卖、停牌（成交量为 0）不可交易
-    5. 涨跌停幅度按证券代码自适应（主板 10%、创业板/科创板 20%、北交所 30%、ST 5%）
+    5. 涨跌停幅度按证券代码与交易日自适应（主板 10%、创业板/科创板 20%、
+       北交所 30%、ST 5%；创业板注册制改革日 2020-08-24 前为 10%）
 """
 
 from __future__ import annotations
 
 import math
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List
 
@@ -35,6 +37,31 @@ from src.risk import RiskEngine
 
 #: A 股最小价格变动单位（1 分），交易所涨跌停价的取整单位
 PRICE_TICK = Decimal('0.01')
+
+
+def to_trade_date(value: Any) -> date | None:
+    """把回测主循环里的 date（date / datetime / 'YYYY-MM-DD' 字符串）归一为 date。
+
+    无法解析时返回 None，调用侧据此退回到无日期的板块默认幅度，保持旧行为。
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    # polars / pandas 时间戳类对象
+    if hasattr(value, 'date') and callable(value.date):
+        try:
+            return value.date()
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 class ExecutionRules:
@@ -52,12 +79,17 @@ class ExecutionRules:
     #: 无法从证券代码推导时的兜底涨跌停幅度（主板默认）
     DEFAULT_LIMIT_PCT = 0.10
 
+    #: 创业板注册制改革正式实施日：此前创业板涨跌停幅度为 10%，当日起放宽为 20%。
+    #: 历史回测必须按交易日落到改革前后分别取阈值，否则改革前固定用 20% 会把
+    #: 实际已封板（>+10%）的开盘价误判为可成交，系统性虚增收益。
+    CHINEXT_REG_DATE = date(2020, 8, 24)
+
     #: 显式代码段表：(代码前缀元组, 涨跌停幅度, 板块名)，按顺序匹配、最长前缀优先。
     #: 900/200 沪深的 B 股必须显式列出为 10%——否则 900xxx 会被更早的北交所
     #: 判定吞掉，30% 阈值等于取消 B 股的涨跌停约束。
     BOARD_RULES = (
         (('688', '689'), 0.20, 'STAR'),        # 科创板（689 为 CDR 段）
-        (('300', '301'), 0.20, 'CHINEXT'),     # 创业板（注册制前 10% 的日期规则尚未接入）
+        (('300', '301'), 0.20, 'CHINEXT'),     # 创业板：注册制后 20%，改革前需按 trade_date 回退 10%
         (('900',), 0.10, 'SH_B'),              # 沪市 B 股
         (('200',), 0.10, 'SZ_B'),              # 深市 B 股
     )
@@ -71,23 +103,26 @@ class ExecutionRules:
         self.lot_size = lot_size
 
     @staticmethod
-    def resolve_limit_pct(ts_code: str = '', is_st: bool | None = None) -> float:
+    def resolve_limit_pct(ts_code: str = '', is_st: bool | None = None,
+                          trade_date: date | None = None,
+                          listing_date: date | None = None) -> float:
         """
-        按证券代码与 ST 状态推导涨跌停幅度（唯一真源）。
+        按证券代码、交易日与 ST 状态推导涨跌停幅度（唯一真源）。
 
-        ST 状态为三态语义：
-        - ``True`` → 5%（ST/*ST 真实幅度）；
-        - ``False`` → 按板块规则：科创板 688/689 与创业板 300/301 → 20%、
-          北交所 → 30%（优先 .BJ 后缀，无后缀按 83/87/88/920 号段兜底）、
-          沪市 B 股 900xxx / 深市 B 股 200xxx 与其余主板 → 10%；
-        - ``None``（默认，数据层未提供 ST 标识）→ 同样按板块规则判定，
-          未知状态只体现为结果里的 st_unknown=True / fill_confidence=low。
+        规则：
+        - ``is_st=True`` → 5%（ST/*ST 真实幅度）；
+        - 创业板 300/301：``trade_date < CHINEXT_REG_DATE``（2020-08-24）按改革
+          前的 10%，当日起按 20%。``trade_date`` 缺失时回退到 BOARD_RULES 的
+          20%，保持与旧行为一致；
+        - 科创板 688/689 → 20%、北交所 → 30%（优先 .BJ 后缀，无后缀按
+          83/87/88/920 号段兜底）、沪市 B 股 900xxx / 深市 B 股 200xxx 与其余
+          主板 → 10%；
+        - ``is_st=None``（数据层未提供 ST 标识）按板块规则判定，未知状态只体现
+          为结果里的 st_unknown=True / fill_confidence=low，不改变成交判定本身。
 
-        把未知按 ST 的 5% 处理看似保守，实际是方向性偏置：主板正常股开盘
-        +5% 就会被判"已封板不可买"，跳空走强类信号被系统性剔除，动量/突破
-        策略收益被系统性低估且低波策略几乎不受影响；而 ST 股封板误放行只
-        影响个别标的的局部乐观。ST 状态随戴帽/摘帽逐年变化，精确判定需要
-        (code, start_date, end_date, is_st) 时间维表，当前数据层未提供。
+        ``listing_date`` 预留用于新股上市首日不限涨跌幅的判定，当前数据层未
+        提供，暂未启用；参数先固化以便未来接入 (code, listing_date) 维表时无需
+        改动签名。
         """
         # 仅"明确 ST"按 5%；None 表示数据层无标记，回落到板块默认幅度
         if is_st:
@@ -103,6 +138,12 @@ class ExecutionRules:
             return 0.30
         if code.startswith(ExecutionRules.BJ_PREFIXES):
             return 0.30
+
+        # 创业板注册制改革前按 10%，改革日及之后按 20%
+        if code.startswith(('300', '301')):
+            if trade_date is not None and trade_date < ExecutionRules.CHINEXT_REG_DATE:
+                return 0.10
+            return 0.20
 
         for prefixes, pct, _board in ExecutionRules.BOARD_RULES:
             if code.startswith(prefixes):
@@ -136,7 +177,8 @@ class ExecutionRules:
     def is_tradable(self, side: str, *, prev_close: float | None, open_price: float | None,
                     high: float | None, low: float | None, close: float | None,
                     volume: float | None, ts_code: str = '',
-                    is_st: bool | None = None) -> bool:
+                    is_st: bool | None = None,
+                    trade_date: date | None = None) -> bool:
         """
         指定交易方向在某一天是否可成交。
 
@@ -157,7 +199,7 @@ class ExecutionRules:
         if prev_close is None or prev_close <= 0:
             return True
 
-        limit = self.resolve_limit_pct(ts_code, is_st)
+        limit = self.resolve_limit_pct(ts_code, is_st, trade_date=trade_date)
 
         if open_price is not None and math.isfinite(open_price):
             # 价格空间比较：涨跌停价 = round(prev_close × (1±limit), 2) 后直接比较。
@@ -631,15 +673,15 @@ class EventBacktestRunner:
         st_status: Dict[str, bool | None], signal_columns: Dict[str, list],
     ) -> None:
         """逐日推进主循环：执行挂单、记账信号、更新 prev_close/盯市价、追加权益。"""
-        for date in sorted_dates:
-            for code in date_codes[date]:
-                pos = date_positions[code][date]
+        for trade_day in sorted_dates:
+            for code in date_codes[trade_day]:
+                pos = date_positions[code][trade_day]
                 cols = column_data[code]
                 (close_price, open_price, high, low,
                  volume, raw_open, raw_close) = self._extract_bar_prices(cols, pos)
 
                 self._execute_pending(
-                    code=code, date=date, pending=pending, book=book, gate=gate,
+                    code=code, date=trade_day, pending=pending, book=book, gate=gate,
                     rules=rules, cost_model=self.cost_model, trades=trades,
                     rejected_orders=rejected_orders, expired_orders=expired_orders,
                     equity_curve=equity_curve,
@@ -654,7 +696,7 @@ class EventBacktestRunner:
                 # 策略基于当日数据生成信号，延迟到该标的下一个交易日执行；
                 # 信号已在主循环前按行序批量生成，此处仅按下标查表
                 self._record_signal(
-                    code=code, date=date, pos=pos, signal_columns=signal_columns,
+                    code=code, date=trade_day, pos=pos, signal_columns=signal_columns,
                     pending=pending, expired_orders=expired_orders,
                 )
 
@@ -666,7 +708,7 @@ class EventBacktestRunner:
                 prev_raw_close[code] = raw_close if raw_close is not None else close_price
                 book.mark(code, close_price)
 
-            equity_curve.append({'date': date, 'equity': book.total_equity()})
+            equity_curve.append({'date': trade_day, 'equity': book.total_equity()})
 
     def _build_result(
         self, *, initial_capital: float, equity_curve: List[Dict[str, Any]],
@@ -768,6 +810,7 @@ class EventBacktestRunner:
             prev_close=prev_close, open_price=open_price, high=high, low=low,
             close=close, volume=volume, open_raw=open_raw,
             prev_close_raw=prev_close_raw, close_raw=close_raw, is_st=is_st,
+            trade_date=to_trade_date(date),
         )
         if reason is not None:
             self._append_expired(
@@ -822,6 +865,7 @@ class EventBacktestRunner:
         close: float | None = None, volume: float | None = None,
         open_raw: float | None = None, prev_close_raw: float | None = None,
         close_raw: float | None = None, is_st: bool | None = None,
+        trade_date: date | None = None,
     ) -> str | None:
         """按固定顺序校验订单可执行性，返回作废原因；None 表示可继续撮合。
 
@@ -850,7 +894,7 @@ class EventBacktestRunner:
             open_price, prev_close, close, open_raw, prev_close_raw, close_raw)
         if not rules.is_tradable(side, prev_close=check_prev, open_price=check_open,
                                  high=high, low=low, close=check_close, volume=volume,
-                                 ts_code=code, is_st=is_st):
+                                 ts_code=code, is_st=is_st, trade_date=trade_date):
             return 'not_tradable'
 
         # P0-2 修复：开盘价是集合竞价成交价。open_price 为 None（列存在但值缺失，

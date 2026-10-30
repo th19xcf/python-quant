@@ -341,6 +341,79 @@ def test_limit_pct_resolves_by_board_prefix():
     assert 'limit_pct' not in inspect.signature(PortfolioBacktestEngine.run_backtest).parameters
 
 
+def test_chinext_limit_pct_switches_at_registration_reform_date():
+    """创业板涨跌停幅度必须按交易日区分改革前后：2020-08-24 前 10%，当日起 20%。
+
+    回归：BOARD_RULES 曾把 300/301 固定映射为 20%，注册制改革前的历史行情
+    会把实际已封板（>+10%）的开盘价误判为可成交，系统性虚增收益。
+    """
+    from datetime import date
+
+    before = date(2020, 8, 21)   # 改革前最后一个周五
+    reform = date(2020, 8, 24)   # 改革实施日
+    after = date(2020, 8, 25)    # 改革后
+
+    for code in ('300001.SZ', '301001.SZ'):
+        assert ExecutionRules.resolve_limit_pct(code, is_st=False, trade_date=before) == 0.10
+        assert ExecutionRules.resolve_limit_pct(code, is_st=False, trade_date=reform) == 0.20
+        assert ExecutionRules.resolve_limit_pct(code, is_st=False, trade_date=after) == 0.20
+
+    # trade_date 缺失时回退到 BOARD_RULES 的 20%（与旧行为一致，不引入新偏置）
+    assert ExecutionRules.resolve_limit_pct('300001.SZ', is_st=False) == 0.20
+
+    # 科创板 20% 不受该日期影响（注册制从上市首日即 20%）
+    assert ExecutionRules.resolve_limit_pct(
+        '688001.SH', is_st=False, trade_date=before) == 0.20
+    # 主板 10% 不受该日期影响
+    assert ExecutionRules.resolve_limit_pct(
+        '600000.SH', is_st=False, trade_date=before) == 0.10
+
+
+def test_chinext_pre_reform_open_between_ten_and_twenty_percent_not_tradable():
+    """创业板改革前：开盘涨幅落在 (10%, 20%] 区间的买单必须被判为已封板、不可成交。
+
+    这是本缺陷的核心验收：不能只验 resolve_limit_pct 返回 10%，还要验
+    is_tradable 在新旧阈值之间的实际可成交性。
+    """
+    from datetime import date
+
+    rules = ExecutionRules()
+    # prev_close=100，改革前涨停价 110.00；开盘 115.00（+15%）实际已封板
+    kw = {'prev_close': 100.0, 'high': 115.0, 'low': 100.0, 'close': 115.0,
+          'volume': 1_000_000.0, 'ts_code': '300001.SZ', 'is_st': False,
+          'trade_date': date(2020, 8, 21)}
+    assert rules.is_tradable('buy', open_price=115.0, **kw) is False
+    # 改革后同一价格应可成交（20% 涨停价 120.00）
+    assert rules.is_tradable('buy', open_price=115.0,
+                             **{**kw, 'trade_date': date(2020, 8, 25)}) is True
+    # 改革前 +9.99% 仍可成交
+    assert rules.is_tradable('buy', open_price=109.99, **kw) is True
+    # 改革前跌停价 90.00：90.00 不可卖
+    assert rules.is_tradable('sell', open_price=90.0, **kw) is False
+    assert rules.is_tradable('sell', open_price=90.01, **kw) is True
+
+
+def test_chinext_pre_reform_backtest_rejects_above_ten_percent_open():
+    """端到端：创业板改革前历史区间内，开盘 +15% 的买单必须被作废（not_tradable）。"""
+    dates = pd.to_datetime(['2020-08-19', '2020-08-20', '2020-08-21'])
+    df = pl.DataFrame({
+        'date': dates,
+        'open': [100.0, 115.0, 115.0],
+        'high': [100.5, 115.5, 115.5],
+        'low': [99.5, 114.5, 114.5],
+        'close': [100.0, 115.0, 115.0],
+        'volume': [1_000_000.0] * 3,
+    })
+    engine = BacktestEngine(df)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='300001.SZ',
+                                 is_st=False)
+
+    buys = [t for t in result['trades'] if t['signal'] == 'buy']
+    assert not buys, '创业板改革前 +15% 开盘已封板，不得成交'
+    assert any(o['reason'] == 'not_tradable' for o in result['expired_orders'])
+
+
 def test_growth_board_allows_open_above_ten_percent():
     """创业板 20% 幅度：开盘 +15% 应可买入（误用 10% 阈值会被误判涨停而作废）。"""
     df = _make_df(opens=[100.0, 115.0, 115.0], closes=[100.0, 115.0, 115.0])
