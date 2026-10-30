@@ -103,36 +103,13 @@ class ExecutionRules:
         self.lot_size = lot_size
 
     @staticmethod
-    def resolve_limit_pct(ts_code: str = '', is_st: bool | None = None,
-                          trade_date: date | None = None,
-                          listing_date: date | None = None) -> float:
+    def _resolve_board_limit_pct(code: str, ts_code: str,
+                                 trade_date: date | None) -> float:
+        """按证券代码与交易日推导该板块常规（非 ST）涨跌停幅度。
+
+        判定顺序固定：北交所 → 创业板（含注册制改革日切换）→ BOARD_RULES
+        显式号段（科创板 / B 股）→ 主板兜底。
         """
-        按证券代码、交易日与 ST 状态推导涨跌停幅度（唯一真源）。
-
-        规则：
-        - ``is_st=True`` → 5%（ST/*ST 真实幅度）；
-        - 创业板 300/301：``trade_date < CHINEXT_REG_DATE``（2020-08-24）按改革
-          前的 10%，当日起按 20%。``trade_date`` 缺失时回退到 BOARD_RULES 的
-          20%，保持与旧行为一致；
-        - 科创板 688/689 → 20%、北交所 → 30%（优先 .BJ 后缀，无后缀按
-          83/87/88/920 号段兜底）、沪市 B 股 900xxx / 深市 B 股 200xxx 与其余
-          主板 → 10%；
-        - ``is_st=None``（数据层未提供 ST 标识）按板块规则判定，未知状态只体现
-          为结果里的 st_unknown=True / fill_confidence=low，不改变成交判定本身。
-
-        ``listing_date`` 预留用于新股上市首日不限涨跌幅的判定，当前数据层未
-        提供，暂未启用；参数先固化以便未来接入 (code, listing_date) 维表时无需
-        改动签名。
-        """
-        # 仅"明确 ST"按 5%；None 表示数据层无标记，回落到板块默认幅度
-        if is_st:
-            return ExecutionRules.ST_LIMIT_PCT
-
-        ts_code = (ts_code or '').strip().upper()
-        code = ts_code.split('.')[0]
-        if not code:
-            return ExecutionRules.DEFAULT_LIMIT_PCT
-
         # 北交所：交易所后缀最可靠（代码段会新增），无后缀时用显式号段兜底
         if ts_code.endswith('.BJ'):
             return 0.30
@@ -150,6 +127,46 @@ class ExecutionRules:
                 return pct
 
         return ExecutionRules.DEFAULT_LIMIT_PCT
+
+    @staticmethod
+    def resolve_limit_pct(ts_code: str = '', is_st: bool | None = None,
+                          trade_date: date | None = None,
+                          listing_date: date | None = None) -> float:
+        """
+        按交易日 → 板块常规幅度 → ST 状态的顺序推导涨跌停幅度（唯一真源）。
+
+        规则（判断顺序：交易日期 → 板块及当时有效制度 → ST 状态）：
+        - 先按代码与交易日推导板块常规幅度：主板 10%、科创板 20%、
+          创业板改革前（< 2020-08-24）10% / 改革日起 20%、北交所 30%、
+          沪深 B 股 10%；
+        - 再叠加 ST 状态：只有常规幅度为 10% 的板块（主板、B 股、改革前
+          创业板）的 ST 股票才收窄到 5%；常规幅度为 20%/30% 的板块（改革后
+          创业板、科创板、北交所）其风险警示股票涨跌幅与正常股票一致，不另
+          设 5%——这与 A 股现行风险警示规则一致；
+        - ``is_st=None``（数据层未提供 ST 标识）按板块常规幅度判定，未知状态
+          只体现为结果里的 st_unknown=True / fill_confidence=low，不改变成交
+          判定本身。
+
+        旧实现把 is_st=True 直接固定为 5% 并优先于板块判断，会把创业板/科创
+        板/北交所的 ST 股票错误套用 5%，与这些板块风险警示股票的实际交易限
+        制不一致。
+
+        ``listing_date`` 预留用于新股上市首日不限涨跌幅的判定，当前数据层未
+        提供，暂未启用；参数先固化以便未来接入 (code, listing_date) 维表时无需
+        改动签名。
+        """
+        ts_code = (ts_code or '').strip().upper()
+        code = ts_code.split('.')[0]
+        if not code:
+            return ExecutionRules.DEFAULT_LIMIT_PCT
+
+        regular = ExecutionRules._resolve_board_limit_pct(code, ts_code, trade_date)
+
+        # 仅常规幅度为 10% 的板块，ST 才收窄到 5%；
+        # 20%/30% 板块（改革后创业板、科创板、北交所）的 ST 股票与普通股同幅度
+        if is_st and regular == 0.10:
+            return ExecutionRules.ST_LIMIT_PCT
+        return regular
 
     @staticmethod
     def resolve_limit_price(prev_close: float, limit: float, side: str) -> float:
@@ -188,8 +205,10 @@ class ExecutionRules:
         - 无开盘价时退化为 high ≈ low（相对容差）的一字板判断，
           此时只做 close 涨跌停判定（偏乐观），调用侧应确保 open 列存在
         - 首根 K 线没有前收盘价，只做停牌判断
-        - is_st 仅 True（明确 ST）按 5% 判定；None（数据层无标记）与 False
-          都按板块规则（见 resolve_limit_pct），未知状态只由结果的
+        - is_st=True 时，常规幅度为 10% 的板块（主板、B 股、改革前创业板）
+          收窄为 5%，20%/30% 板块（改革后创业板、科创板、北交所）与普通股
+          同幅度；None（数据层无标记）与 False 都按板块规则（见
+          resolve_limit_pct），未知状态只由结果的
           st_unknown / fill_confidence 标记，不再改变成交判定本身
         """
         # 缺陷 A 修复：NaN / inf 穿过停牌检查，显式拦截

@@ -327,9 +327,16 @@ def test_limit_pct_resolves_by_board_prefix():
     assert resolve('200001.SZ') == 0.10                         # 深市 B 股
     assert resolve('430001') == 0.10                            # 无后缀老三板：不享受北交所 30%
     assert resolve('') == ExecutionRules.DEFAULT_LIMIT_PCT      # 无代码兜底
-    # ST 三态：True=ST 按 5%；False=板块；None（未知）同样按板块默认幅度
-    assert ExecutionRules.resolve_limit_pct('600000.SH', is_st=True) == 0.05
-    assert ExecutionRules.resolve_limit_pct('300001.SZ', is_st=True) == 0.05
+    # ST 三态：True=ST 仅在常规 10% 板块收窄到 5%；20%/30% 板块 ST 与普通股同幅度；
+    # False/None（未知）按板块默认幅度
+    from datetime import date
+    assert ExecutionRules.resolve_limit_pct('600000.SH', is_st=True) == 0.05   # 主板 ST → 5%
+    assert ExecutionRules.resolve_limit_pct('200001.SZ', is_st=True) == 0.05   # B 股 ST → 5%
+    assert ExecutionRules.resolve_limit_pct('300001.SZ', is_st=True) == 0.20   # 创业板 ST（改革后）→ 20%
+    assert ExecutionRules.resolve_limit_pct('300001.SZ', is_st=True,
+                                            trade_date=date(2020, 8, 21)) == 0.05  # 创业板 ST（改革前）→ 5%
+    assert ExecutionRules.resolve_limit_pct('688001.SH', is_st=True) == 0.20   # 科创板 ST → 20%
+    assert ExecutionRules.resolve_limit_pct('830001.BJ', is_st=True) == 0.30   # 北交所 ST → 30%
     assert ExecutionRules.resolve_limit_pct('600000.SH') == 0.10          # 未知 → 主板
     assert ExecutionRules.resolve_limit_pct('600000.SH', is_st=None) == 0.10
     assert ExecutionRules.resolve_limit_pct('300001.SZ') == 0.20          # 未知 → 创业板
@@ -475,6 +482,79 @@ def test_st_known_non_st_restores_board_limit():
     assert result['fill_confidence'] == 'high'
     assert [t['signal'] for t in result['trades']] == ['buy']
     assert result['trades'][0]['fill_confidence'] == 'high'
+
+
+def test_st_limit_is_board_aware_not_universally_five_percent():
+    """ST 涨跌幅必须按板块处理，不能统一 5%。
+
+    主板/B 股/改革前创业板 ST → 5%；改革后创业板/科创板/北交所 ST → 与普通股
+    同幅度（20%/20%/30%）。旧实现 is_st=True 优先返回 5% 会系统性低估
+    创业板/科创板/北交所 ST 股票的实际涨跌停边界。
+    """
+    from datetime import date
+
+    r = ExecutionRules.resolve_limit_pct
+
+    # 主板 ST：5%
+    assert r('600000.SH', is_st=True) == 0.05
+    assert r('000001.SZ', is_st=True) == 0.05
+    # B 股 ST：5%
+    assert r('900001.SH', is_st=True) == 0.05
+    assert r('200001.SZ', is_st=True) == 0.05
+
+    # 创业板 ST：改革前 5%，改革后 20%
+    assert r('300001.SZ', is_st=True, trade_date=date(2020, 8, 21)) == 0.05
+    assert r('300001.SZ', is_st=True, trade_date=date(2020, 8, 24)) == 0.20
+    assert r('301001.SZ', is_st=True) == 0.20
+
+    # 科创板 ST：20%（与普通股一致）
+    assert r('688001.SH', is_st=True) == 0.20
+    assert r('689001.SH', is_st=True) == 0.20
+
+    # 北交所 ST：30%（与普通股一致）
+    assert r('830001.BJ', is_st=True) == 0.30
+    assert r('920001.BJ', is_st=True) == 0.30
+
+    # 非 ST 对照：同板块常规幅度
+    assert r('600000.SH', is_st=False) == 0.10
+    assert r('300001.SZ', is_st=False) == 0.20
+    assert r('688001.SH', is_st=False) == 0.20
+    assert r('830001.BJ', is_st=False) == 0.30
+
+
+def test_st_and_non_st_rule_switching_across_adjacent_days():
+    """非 ST 与 ST 在相邻交易日的规则切换必须正确。
+
+    模拟同一只股票相邻两日 ST 状态变化，验证幅度在 5%/10%/20% 之间正确切换，
+    而不是被 ST=5% 永久覆盖。
+    """
+    from datetime import date
+
+    rules = ExecutionRules()
+
+    # 主板：相邻两日非 ST→ST，幅度 10% → 5%
+    d1, d2 = date(2023, 6, 1), date(2023, 6, 2)
+    assert rules.resolve_limit_pct('600000.SH', is_st=False, trade_date=d1) == 0.10
+    assert rules.resolve_limit_pct('600000.SH', is_st=True, trade_date=d2) == 0.05
+    # 次日摘帽恢复 10%
+    assert rules.resolve_limit_pct('600000.SH', is_st=False, trade_date=date(2023, 6, 5)) == 0.10
+
+    # 科创板：相邻两日非 ST→ST，幅度保持 20%（不切到 5%）
+    assert rules.resolve_limit_pct('688001.SH', is_st=False, trade_date=d1) == 0.20
+    assert rules.resolve_limit_pct('688001.SH', is_st=True, trade_date=d2) == 0.20
+
+    # 创业板：ST 状态跨改革日切换——改革前 ST=5%，改革后 ST=20%
+    assert rules.resolve_limit_pct('300001.SZ', is_st=True,
+                                   trade_date=date(2020, 8, 21)) == 0.05
+    assert rules.resolve_limit_pct('300001.SZ', is_st=True,
+                                   trade_date=date(2020, 8, 24)) == 0.20
+
+    # is_tradable 在 ST 切换日的实际可成交性：
+    # 主板 prev_close=100，+6% 开盘：非 ST 可买，ST 已封板不可买
+    base = dict(prev_close=100.0, high=106.0, low=100.0, close=106.0,
+                volume=1_000_000.0, ts_code='600000.SH', trade_date=d1)
+    assert rules.is_tradable('buy', open_price=106.0, is_st=False, **base) is True
+    assert rules.is_tradable('buy', open_price=106.0, is_st=True, **base) is False
 
 
 # ------------------------------------------------------------------
