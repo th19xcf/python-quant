@@ -14,12 +14,75 @@ main.py 仅保留应用组装与启动，数据同步的领域逻辑收敛于此
 
 import contextlib
 from dataclasses import dataclass
+from typing import Callable
 
 from loguru import logger
 
 from src.data.tdx_day_parser import build_day_file_path, read_first_last_trade_date
 from src.utils.code_converter import MARKET_BJ, MARKET_SH, MARKET_SZ, to_ts_code
 from src.utils.exceptions import DataSaveError, DataSourceException
+
+# ======================================================================
+# 同步流程骨架：股票 / 指数同步共用会话生命周期、异常策略与统计日志
+# ======================================================================
+
+@dataclass
+class SyncFlow:
+    """一次市场同步的流程描述。
+
+    prepare(session) 返回上下文对象；返回 None 表示前置条件不满足、终止同步。
+    run(ctx, session) 执行实际同步阶段。
+    log_stats(result) 输出结果统计。
+    """
+    title: str
+    error_label: str
+    result: dict
+    prepare: Callable
+    run: Callable
+    log_stats: Callable
+
+
+def _execute_sync_flow(flow, db_manager):
+    """统一执行同步流程：会话创建、异常回滚、结果统计。"""
+    logger.info("=" * 60)
+    logger.info(f"开始{flow.title}")
+    logger.info("=" * 60)
+
+    session = None
+    try:
+        session = db_manager.get_session()
+        ctx = flow.prepare(session)
+        if ctx is None:
+            return flow.result
+        flow.run(ctx, session)
+    except (DataSaveError, DataSourceException) as e:
+        logger.exception(f"{flow.error_label}失败: {e}")
+        if session:
+            session.rollback()
+    finally:
+        flow.log_stats(flow.result)
+
+    return flow.result
+
+
+def _sync_each_with_recovery(items, handler, *, result, failed_key, session,
+                             label, commit_interval=100, item_name=str):
+    """逐项执行 handler：单项失败记入 failed_key 后继续，不中断整批同步。
+
+    commit_interval 为 0 时不周期性提交，由调用方在阶段末尾统一提交。
+    """
+    total = len(items)
+    for i, item in enumerate(items):
+        try:
+            handler(item)
+            if commit_interval and (i + 1) % commit_interval == 0:
+                session.commit()
+                logger.info(f"已处理 {i + 1}/{total} 个{label}")
+        except (DataSaveError, Exception) as e:
+            logger.exception(f"处理{label} {item_name(item)} 失败: {e}")
+            result[failed_key].append(item_name(item))
+
+
 
 # ======================================================================
 # 通用代码判定与归一化
@@ -771,12 +834,7 @@ def sync_tdx_stock_to_database(config, db_manager):
         'refreshed_fields': 0,
     }
 
-    logger.info("=" * 60)
-    logger.info("开始从通达信数据源同步股票信息到数据库")
-    logger.info("=" * 60)
-
-    session = None
-    try:
+    def prepare(session):
         tdx_handler = TdxHandler(config, db_manager)
 
         raw_tdx_codes = tdx_handler.get_stock_list()
@@ -792,9 +850,7 @@ def sync_tdx_stock_to_database(config, db_manager):
 
         if not tdx_stock_codes:
             logger.warning("通达信数据源没有找到任何股票数据")
-            return result
-
-        session = db_manager.get_session()
+            return None
 
         existing_codes, _ = _prune_non_stock_rows(session, result)
 
@@ -816,7 +872,7 @@ def sync_tdx_stock_to_database(config, db_manager):
                 "Baostock 与 AkShare 股票基本信息均获取失败，终止本次股票同步，"
                 "避免以部分数据覆盖 stock_basic"
             )
-            return result
+            return None
 
         merged_basic = merge_stock_basic(baostock_basic, akshare_basic, set())
 
@@ -824,39 +880,55 @@ def sync_tdx_stock_to_database(config, db_manager):
         _apply_baostock_industry(merged_basic, baostock_industry_map)
         _apply_akshare_industry_fallback(merged_basic, tdx_stock_codes)
 
-        if new_codes:
-            ctx = StockBatchContext(
-                new_codes, merged_basic, existing_codes, session,
-                baostock_handler, akshare_handler, result
-            )
-            _process_single_stock_batch(ctx)
+        return StockSyncContext(
+            config=config,
+            db_manager=db_manager,
+            result=result,
+            session=session,
+            baostock_handler=baostock_handler,
+            akshare_handler=akshare_handler,
+            existing_codes=existing_codes,
+            new_codes=new_codes,
+            tdx_stock_codes=tdx_stock_codes,
+            merged_basic=merged_basic,
+        )
+
+    def run(ctx, session):
+        if ctx.new_codes:
+            _process_single_stock_batch(StockBatchContext(
+                ctx.new_codes, ctx.merged_basic, ctx.existing_codes, session,
+                ctx.baostock_handler, ctx.akshare_handler, result
+            ))
         else:
             logger.info("所有通达信股票都已存在，跳过新增阶段，继续执行存量回填")
 
         # 第二阶段：回填并刷新 stock_basic 存量信息
-        all_stocks = session.query(StockBasic).all()
-        for row in all_stocks:
-            try:
-                if _is_index_ts_code(row.ts_code) or _is_fund_ts_code(row.ts_code, row.name, row.market):
-                    continue
+        def _backfill(row):
+            if _is_index_ts_code(row.ts_code) or _is_fund_ts_code(row.ts_code, row.name, row.market):
+                return
+            source_info = ctx.merged_basic.get(row.ts_code, {})
+            if _backfill_stock_row(row, source_info, session, config, result):
+                result['updated_stocks'] += 1
 
-                source_info = merged_basic.get(row.ts_code, {})
-                if _backfill_stock_row(row, source_info, session, config, result):
-                    result['updated_stocks'] += 1
-
-            except (DataSaveError, Exception) as backfill_e:
-                logger.exception(f"回填股票 {row.ts_code} 信息失败: {backfill_e}")
-                result['failed_stocks'].append(row.ts_code)
+        _sync_each_with_recovery(
+            session.query(StockBasic).all(), _backfill,
+            result=result, failed_key='failed_stocks', session=session,
+            label='股票', commit_interval=0, item_name=lambda row: row.ts_code,
+        )
 
         _finalize_database_commit(session, result)
 
-    except (DataSaveError, DataSourceException) as e:
-        logger.exception(f"同步股票信息失败: {e}")
-        if session:
-            session.rollback()
-
-    _log_sync_result(result)
-    return result
+    return _execute_sync_flow(
+        SyncFlow(
+            title="从通达信数据源同步股票信息到数据库",
+            error_label="同步股票信息",
+            result=result,
+            prepare=prepare,
+            run=run,
+            log_stats=_log_sync_result,
+        ),
+        db_manager,
+    )
 
 
 # ======================================================================
@@ -1182,6 +1254,32 @@ def _delete_stale_index_rows(session, all_index_rows, tdx_index_code_set, result
         logger.info(f"已删除 {len(stale_rows)} 条不在通达信指数代码中的 index_basic 记录")
 
 
+@dataclass
+class IndexSyncContext:
+    """指数同步上下文"""
+    tdx_index_codes: list
+    tdx_index_code_set: set
+    external_info_map: dict
+    existing_index_map: dict
+
+
+def _log_index_sync_result(result):
+    """记录指数同步结果统计。"""
+    logger.info("=" * 60)
+    logger.info("指数同步结果统计:")
+    logger.info(f"  通达信指数总数: {result['total_tdx_indexes']}")
+    logger.info(f"  新增指数数量: {result['inserted_indexes']}")
+    logger.info(f"  删除指数数量: {result['deleted_indexes']}")
+    logger.info(f"  更新指数数量: {result['updated_indexes']}")
+    logger.info(f"  未变化数量: {result['unchanged_indexes']}")
+    logger.info(f"  回退命名数量: {result['fallback_named_indexes']}")
+    logger.info(f"  回填空白字段数量: {result['filled_blank_fields']}")
+    logger.info(f"  失败数量: {len(result['failed_indexes'])}")
+    if result['failed_indexes']:
+        logger.warning(f"  失败列表(前10): {result['failed_indexes'][:10]}")
+    logger.info("=" * 60)
+
+
 def sync_tdx_index_to_database(config, db_manager):
     """以通达信指数代码为基准同步 index_basic。"""
     from src.data.tdx_handler import TdxHandler
@@ -1198,12 +1296,7 @@ def sync_tdx_index_to_database(config, db_manager):
         'failed_indexes': []
     }
 
-    logger.info("=" * 60)
-    logger.info("开始以通达信指数代码为基准同步 index_basic")
-    logger.info("=" * 60)
-
-    session = None
-    try:
+    def prepare(session):
         tdx_handler = TdxHandler(config, db_manager)
         tdx_codes = tdx_handler.get_stock_list()
         tdx_index_codes = sorted({code for code in tdx_codes if _is_index_ts_code(code)})
@@ -1213,7 +1306,7 @@ def sync_tdx_index_to_database(config, db_manager):
 
         if not tdx_index_codes:
             logger.warning("通达信未发现指数代码，跳过同步")
-            return result
+            return None
 
         external_info_map = _collect_external_index_name_map(config)
         logger.info(f"外部数据源可用指数信息映射总数: {len(external_info_map)}")
@@ -1225,76 +1318,68 @@ def sync_tdx_index_to_database(config, db_manager):
                 "Baostock 与 AkShare 指数基本信息均获取失败，终止 index_basic 同步，"
                 "避免写入占位名称"
             )
-            return result
-
-        session = db_manager.get_session()
+            return None
 
         existing_index_map = {
             row.ts_code: row
             for row in session.query(IndexBasic).filter(IndexBasic.ts_code.in_(tdx_index_codes)).all()
         }
 
-        for i, ts_code in enumerate(tdx_index_codes):
-            try:
-                source_info = external_info_map.get(ts_code, {})
-                source_name = FORCED_INDEX_NAME_MAP.get(
-                    ts_code, _normalize_text_value(source_info.get('name'))
-                )
-                if not source_name:
-                    source_name = _index_name_from_code(ts_code)
-                    result['fallback_named_indexes'] += 1
+        return IndexSyncContext(
+            tdx_index_codes, tdx_index_code_set, external_info_map, existing_index_map
+        )
 
-                market = ts_code.split('.')[-1]
-                inferred = _infer_index_meta(ts_code, source_name)
-                default_desc = _index_desc_text(source_name, ts_code)
+    def run(ctx, session):
+        def _upsert(ts_code):
+            source_info = ctx.external_info_map.get(ts_code, {})
+            source_name = FORCED_INDEX_NAME_MAP.get(
+                ts_code, _normalize_text_value(source_info.get('name'))
+            )
+            if not source_name:
+                source_name = _index_name_from_code(ts_code)
+                result['fallback_named_indexes'] += 1
 
-                _upsert_index_row(
-                    existing_index_map.get(ts_code), ts_code, source_name,
-                    source_info, inferred, market, default_desc, session, result
-                )
+            market = ts_code.split('.')[-1]
+            inferred = _infer_index_meta(ts_code, source_name)
+            default_desc = _index_desc_text(source_name, ts_code)
 
-                if (i + 1) % 100 == 0:
-                    session.commit()
-                    logger.info(f"已处理 {i + 1}/{len(tdx_index_codes)} 个指数")
+            _upsert_index_row(
+                ctx.existing_index_map.get(ts_code), ts_code, source_name,
+                source_info, inferred, market, default_desc, session, result
+            )
 
-            except (DataSaveError, Exception) as row_e:
-                logger.exception(f"处理指数 {ts_code} 失败: {row_e}")
-                result['failed_indexes'].append(ts_code)
+        _sync_each_with_recovery(
+            ctx.tdx_index_codes, _upsert,
+            result=result, failed_key='failed_indexes', session=session, label='指数',
+        )
 
         # 第二阶段：存量空白字段回填
         all_index_rows = session.query(IndexBasic).all()
-        for row in all_index_rows:
-            try:
-                _backfill_index_row(row, external_info_map, tdx_index_code_set, result)
-            except (DataSaveError, Exception) as backfill_e:
-                logger.exception(f"回填指数 {row.ts_code} 空白字段失败: {backfill_e}")
-                result['failed_indexes'].append(row.ts_code)
+        _sync_each_with_recovery(
+            all_index_rows,
+            lambda row: _backfill_index_row(
+                row, ctx.external_info_map, ctx.tdx_index_code_set, result
+            ),
+            result=result, failed_key='failed_indexes', session=session,
+            label='指数', commit_interval=0, item_name=lambda row: row.ts_code,
+        )
 
         # 第三阶段：删除不在通达信指数代码白名单中的历史记录
-        _delete_stale_index_rows(session, all_index_rows, tdx_index_code_set, result)
+        _delete_stale_index_rows(session, all_index_rows, ctx.tdx_index_code_set, result)
 
         session.commit()
 
-    except (DataSaveError, DataSourceException) as e:
-        logger.exception(f"同步指数信息失败: {e}")
-        if session:
-            session.rollback()
-    finally:
-        logger.info("=" * 60)
-        logger.info("指数同步结果统计:")
-        logger.info(f"  通达信指数总数: {result['total_tdx_indexes']}")
-        logger.info(f"  新增指数数量: {result['inserted_indexes']}")
-        logger.info(f"  删除指数数量: {result['deleted_indexes']}")
-        logger.info(f"  更新指数数量: {result['updated_indexes']}")
-        logger.info(f"  未变化数量: {result['unchanged_indexes']}")
-        logger.info(f"  回退命名数量: {result['fallback_named_indexes']}")
-        logger.info(f"  回填空白字段数量: {result['filled_blank_fields']}")
-        logger.info(f"  失败数量: {len(result['failed_indexes'])}")
-        if result['failed_indexes']:
-            logger.warning(f"  失败列表(前10): {result['failed_indexes'][:10]}")
-        logger.info("=" * 60)
-
-    return result
+    return _execute_sync_flow(
+        SyncFlow(
+            title="以通达信指数代码为基准同步 index_basic",
+            error_label="同步指数信息",
+            result=result,
+            prepare=prepare,
+            run=run,
+            log_stats=_log_index_sync_result,
+        ),
+        db_manager,
+    )
 
 
 # ======================================================================
