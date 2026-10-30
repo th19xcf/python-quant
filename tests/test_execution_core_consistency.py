@@ -434,6 +434,35 @@ def test_limit_tolerance_compared_in_price_space():
     assert rules.is_tradable('buy', open_price=220.00, close=220.00, **kw200) is False
 
 
+def test_limit_price_rounded_to_cent_by_exchange_rule():
+    """涨跌停价必须按交易所规则 round(prev_close×(1±limit), 2) 取整到分。
+
+    回归：直接用浮点乘积比较时，prev_close=10.03 的涨停价算成 11.033，
+    交易所公布 11.03，一字涨停开盘 11.03 判定 price >= 11.033 为 False
+    → 该股被判可买入，连续一字板行情系统性虚增收益。
+    """
+    # 交易所涨跌停价：10.03×1.1=11.033 → 11.03；10.03×0.9=9.027 → 9.03
+    assert ExecutionRules.resolve_limit_price(10.03, 0.10, 'buy') == 11.03
+    assert ExecutionRules.resolve_limit_price(10.03, 0.10, 'sell') == 9.03
+    # .005 边界必须四舍五入（不是银行家舍入）：10.05×1.1=11.055 → 11.06
+    assert ExecutionRules.resolve_limit_price(10.05, 0.10, 'buy') == 11.06
+
+    rules = ExecutionRules()
+    base_kw = {
+        'prev_close': 10.03, 'volume': 1_000_000.0,
+        'ts_code': '600000.SH', 'is_st': False,
+    }
+    # 一字涨停 11.03 不可买，11.02 仍可买
+    up_kw = {**base_kw, 'high': 11.03, 'low': 11.03}
+    assert rules.is_tradable('buy', open_price=11.03, close=11.03, **up_kw) is False
+    assert rules.is_tradable('buy', open_price=11.02, close=11.02, **up_kw) is True
+
+    down_kw = {**base_kw, 'high': 9.03, 'low': 9.03}
+    # 一字跌停 9.03 不可卖，9.04 仍可卖
+    assert rules.is_tradable('sell', open_price=9.03, close=9.03, **down_kw) is False
+    assert rules.is_tradable('sell', open_price=9.04, close=9.04, **down_kw) is True
+
+
 def test_high_low_relative_tolerance_covers_reweighting_error():
     """缺陷 B 回归：复权后同一价位的 high / low 可能相差 1e-16（浮点误差），
     一字板判定必须用相对容差而非精确相等。"""

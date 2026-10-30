@@ -21,6 +21,7 @@ A 股交易语义只允许在本模块修改，禁止在具体引擎里再写一
 from __future__ import annotations
 
 import math
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List
 
 import polars as pl
@@ -31,6 +32,9 @@ from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.risk import Order as RiskOrder
 from src.risk import Portfolio as RiskPortfolio
 from src.risk import RiskEngine
+
+#: A 股最小价格变动单位（1 分），交易所涨跌停价的取整单位
+PRICE_TICK = Decimal('0.01')
 
 
 class ExecutionRules:
@@ -106,6 +110,29 @@ class ExecutionRules:
 
         return ExecutionRules.DEFAULT_LIMIT_PCT
 
+    @staticmethod
+    def resolve_limit_price(prev_close: float, limit: float, side: str) -> float:
+        """按交易所规则计算涨跌停价：round(prev_close × (1±limit), 2)（四舍五入到分）。
+
+        两个关键点：
+
+        - 先转 Decimal 再相乘。二进制浮点下 10.03×1.1 = 11.033000000000001，
+          10.05×1.1 = 11.054999999999998，直接用浮点乘积再 round 会在 .005
+          边界上少取一分（算出 11.05，交易所公布 11.06），一字板因此被误判
+          可成交、系统性虚增收益；
+        - 用 ROUND_HALF_UP 而非内置 round()（银行家舍入，.5 向偶数靠拢），
+          与交易所"四舍五入"口径一致。
+
+        Args:
+            prev_close: 前收盘价（原始价，非复权价）
+            limit: 涨跌停幅度（如 0.10 / 0.20）
+            side: 'buy' 取涨停价，'sell' 取跌停价
+        """
+        base = Decimal(str(prev_close))
+        pct = Decimal(str(limit))
+        factor = Decimal('1') + pct if side == 'buy' else Decimal('1') - pct
+        return float((base * factor).quantize(PRICE_TICK, rounding=ROUND_HALF_UP))
+
     def is_tradable(self, side: str, *, prev_close: float | None, open_price: float | None,
                     high: float | None, low: float | None, close: float | None,
                     volume: float | None, ts_code: str = '',
@@ -132,7 +159,7 @@ class ExecutionRules:
         limit = self.resolve_limit_pct(ts_code, is_st)
 
         if open_price is not None and math.isfinite(open_price):
-            # 价格空间比较：涨跌停价由前收盘价直接推出，不再在比率空间做减法。
+            # 价格空间比较：涨跌停价 = round(prev_close × (1±limit), 2) 后直接比较。
             # 原写法 (open_pct >= limit - 0.005) 的容差被放大 prev_close 倍，
             # 3 元股等价于允许 1.5% 偏差、200 元股允许 0.25% 偏差，
             # 结果是把 [limit-0.5%, limit) 的正常开盘价误当成封板双向拒绝。
@@ -152,11 +179,15 @@ class ExecutionRules:
 
     def _limit_breached(self, side: str, *, price: float,
                         prev_close: float, limit: float) -> bool:
-        """该方向在给定价格是否已触及涨跌停：buy 触涨停、sell 触跌停。"""
+        """该方向在给定价格是否已触及涨跌停：buy 触涨停、sell 触跌停。
+
+        涨跌停价必须按交易所规则取整到分（见 resolve_limit_price），
+        直接比较浮点乘积会把一字板误判为可成交。
+        """
         if side == 'buy':
-            return price >= prev_close * (1 + limit) - self.PRICE_EPS
+            return price >= self.resolve_limit_price(prev_close, limit, 'buy') - self.PRICE_EPS
         if side == 'sell':
-            return price <= prev_close * (1 - limit) + self.PRICE_EPS
+            return price <= self.resolve_limit_price(prev_close, limit, 'sell') + self.PRICE_EPS
         return False
 
     def _is_one_line_board_locked(
