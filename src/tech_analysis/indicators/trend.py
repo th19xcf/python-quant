@@ -182,8 +182,14 @@ def calculate_dmi(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
         ndm_sma = minus_dm.rolling_sum(window_size=window, min_samples=1)
 
         # 计算+DI和-DI
-        pdi = to_float32(pdm_sma / tr_sma * 100).alias(f'pdi_{window}')
-        ndi = to_float32(ndm_sma / tr_sma * 100).alias(f'ndi_{window}')
+        # tr_sma 为 0 表示窗口内无真实波幅（价格完全不动），按通达信口径 DI 取 0，
+        # 避免 0/0 产生 NaN/inf 静默污染指标
+        pdi = to_float32(
+            pl.when(tr_sma == 0).then(0.0).otherwise(pdm_sma / tr_sma * 100)
+        ).alias(f'pdi_{window}')
+        ndi = to_float32(
+            pl.when(tr_sma == 0).then(0.0).otherwise(ndm_sma / tr_sma * 100)
+        ).alias(f'ndi_{window}')
 
         # 计算DX
         dx = to_float32(pl.when((pdi + ndi) == 0).then(0.0).otherwise((pdi - ndi).abs() / (pdi + ndi) * 100)).alias(f'dx_{window}')

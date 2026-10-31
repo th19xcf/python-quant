@@ -80,8 +80,7 @@ quant/
 ├── pyproject.toml               # Poetry 依赖
 ├── README.md                    # 本文件
 │
-├── plugins/                     # 插件：指标 / 可视化（数据源统一在 src/data 内置注册）
-│   ├── indicator_visualization.py
+├── plugins/                     # 插件：可视化（数据源统一在 src/data 内置注册）
 │   └── kline_visualization.py
 │
 ├── tools/                       # 运维脚本：通达信精度校准、复权因子重算

@@ -325,3 +325,84 @@ def test_factor_analyzer_kdj_window_is_configurable():
     assert not np.allclose(
         default['kdj_k'].to_numpy(), custom['kdj_k'].to_numpy()
     ), '周期不同时 KDJ 取值应不同'
+
+
+def _make_flat_ohlcv(n: int = 60, price: float = 10.0) -> pl.DataFrame:
+    """构造价格完全不动的 OHLCV（模拟连续一字板 / 停牌），用于触发除零边界"""
+    flat = np.full(n, price, dtype=float)
+    return pl.DataFrame({
+        'open': flat,
+        'high': flat,
+        'low': flat,
+        'close': flat,
+        'volume': np.zeros(n, dtype=float),
+    })
+
+
+def test_gpu_ma_matches_authoritative_impl():
+    """GPU 路径 MA 必须与权威实现一致（首窗口边界与 Float32 口径同源）"""
+    df = _make_ohlcv()
+    close = df['close'].to_numpy()
+    accelerator = GPUAccelerator()
+
+    gpu_result = accelerator.calculate_ma_gpu(close, [5, 10, 20, 60])
+    authoritative = calculate_multiple_indicators_polars(
+        df, ['ma'], windows=[5, 10, 20, 60]
+    )
+
+    for col in ('ma5', 'ma10', 'ma20', 'ma60', 'ma'):
+        _assert_close(
+            gpu_result[col],
+            authoritative[col].to_numpy(),
+            rtol=1e-6,
+            atol=1e-6,
+            name=f'gpu_{col}',
+        )
+
+
+def test_gpu_rsi_columns_match_authoritative_naming(monkeypatch):
+    """GPU RSI 必须输出 rsi{N} + 默认别名 rsi，避免窗口状态被误标记后丢列"""
+    from src.tech_analysis import gpu_acceleration as gpu_module
+
+    df = _make_ohlcv()
+    close = df['close'].to_numpy()
+    monkeypatch.setattr(gpu_module.global_gpu_accelerator, 'gpu_available', True)
+    # 无 CuPy 时 cp 回退为 numpy，to_cpu 内的 cp.asnumpy 不存在，这里旁路为恒等转换
+    monkeypatch.setattr(
+        gpu_module.global_gpu_accelerator, 'to_cpu', lambda data: np.asarray(data)
+    )
+
+    result = gpu_module.calculate_with_gpu('rsi', {'close': close}, windows=[6])
+    assert set(result) == {'rsi6', 'rsi'}, f'GPU RSI 列名不一致: {set(result)}'
+
+    authoritative = calculate_multiple_indicators_polars(df, ['rsi'], rsi_windows=[6])
+    for col in ('rsi6', 'rsi'):
+        _assert_close(
+            result[col],
+            authoritative[col].to_numpy(),
+            rtol=1e-6,
+            atol=1e-6,
+            name=f'gpu_{col}',
+        )
+
+
+def test_wr_flat_window_is_zero_not_inf():
+    """窗口内 high == low 时 WR 应取 0，不得出现 NaN / inf"""
+    df = _make_flat_ohlcv()
+    result = calculate_multiple_indicators_polars(df, ['wr'], wr_windows=[10, 6])
+
+    for col in ('wr10', 'wr6', 'wr2', 'wr'):
+        values = result[col].fill_null(0.0).to_numpy()
+        assert np.isfinite(values).all(), f'{col} 出现 NaN/inf'
+        assert np.allclose(values, 0.0), f'{col} 在无波动窗口应为 0'
+
+
+def test_dmi_flat_window_is_zero_not_inf():
+    """真实波幅为 0 时 DMI 各线应取 0，不得出现 NaN / inf"""
+    df = _make_flat_ohlcv()
+    result = calculate_multiple_indicators_polars(df, ['dmi'], dmi_windows=[14])
+
+    for col in ('pdi_14', 'ndi_14', 'adx_14', 'adxr_14', 'pdi', 'ndi', 'adx', 'adxr'):
+        values = result[col].fill_null(0.0).to_numpy()
+        assert np.isfinite(values).all(), f'{col} 出现 NaN/inf'
+        assert np.allclose(values, 0.0), f'{col} 无波动时应为 0'

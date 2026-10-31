@@ -58,10 +58,16 @@ def calculate_wr(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
         pl.LazyFrame: 包含WR指标的LazyFrame
     """
     for window in windows:
-        lazy_df = lazy_df.with_columns(
-            to_float32((pl.col(f'high_n_{window}') - pl.col('close')) /
-             (pl.col(f'high_n_{window}') - pl.col(f'low_n_{window}')) * 100).alias(f'wr{window}')
+        highest = pl.col(f'high_n_{window}')
+        lowest = pl.col(f'low_n_{window}')
+        # 分母为 0 表示窗口内价格完全不动（连续一字板 / 停牌），按通达信口径取 0，
+        # 避免 0/0 产生 NaN/inf 静默污染图表与回测
+        wr = (
+            pl.when(highest == lowest)
+            .then(0.0)
+            .otherwise((highest - pl.col('close')) / (highest - lowest) * 100)
         )
+        lazy_df = lazy_df.with_columns(to_float32(wr).alias(f'wr{window}'))
 
     # 添加默认列名
     lazy_df = add_default_columns(lazy_df, 'wr', windows)

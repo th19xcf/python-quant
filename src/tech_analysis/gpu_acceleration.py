@@ -12,6 +12,7 @@ import polars as pl
 
 from src.utils.logger import logger
 
+from .common_calculations import calculate_moving_average
 from .indicators.formulas import macd_exprs, rsi_expr
 from .indicators.trend import _sar_core
 
@@ -115,27 +116,33 @@ class GPUAccelerator:
 
     def calculate_ma_gpu(self, data: np.ndarray, windows: List[int]) -> Dict[str, np.ndarray]:
         """
-        GPU加速计算移动平均线
+        计算移动平均线（与 CPU 权威实现逐位一致）
+
+        MA 是 O(n) 滚动均值，GPU 无收益。历史上用 cp.convolve(mode='valid')
+        补 NaN 前缀，与权威实现 rolling_mean(min_samples=1) 的窗口边界口径不同
+        （首窗口 CPU 有值、GPU 为 NaN），且精度为 Float64。此处统一委托
+        common_calculations.calculate_moving_average，避免图表与回测数值分歧。
 
         Args:
             data: 收盘价数据
             windows: 移动平均窗口列表
 
         Returns:
-            Dict[str, np.ndarray]: 各窗口的移动平均线结果
+            Dict[str, np.ndarray]: 各窗口的移动平均线结果（含首个窗口的默认列名）
         """
-        result = {}
-        gpu_data = self.to_gpu(data)
+        if not windows:
+            return {}
 
-        for window in windows:
-            # 使用卷积计算移动平均
-            kernel = self.to_gpu(np.ones(window) / window)
-            ma = cp.convolve(gpu_data, kernel, mode='valid')
-            # 补全前面的NaN值
-            ma = cp.concatenate([cp.full(window-1, np.nan), ma])
-            result[f'ma{window}'] = self.to_cpu(ma)
+        close = pl.Series('close', np.asarray(data, dtype=np.float64))
+        frame = calculate_moving_average(
+            pl.DataFrame({'close': close}).lazy(), 'close', list(windows)
+        )
+        result = frame.collect()
 
-        return result
+        out = {f'ma{window}': result[f'ma{window}'].to_numpy() for window in windows}
+        # 与权威实现的默认列名对齐（首个窗口别名 ma）
+        out['ma'] = out[f'ma{windows[0]}']
+        return out
 
     def calculate_macd_gpu(self, data: np.ndarray, fast_period: int, slow_period: int, signal_period: int) -> Dict[str, np.ndarray]:
         """
@@ -241,6 +248,8 @@ def calculate_with_gpu(indicator_type: str, data: Dict[str, np.ndarray], **kwarg
         close = data.get('close')
         if close is not None:
             windows = kwargs.get('windows', [5, 10, 20, 60])
+            if not isinstance(windows, list):
+                windows = [windows]
             return global_gpu_accelerator.calculate_ma_gpu(close, windows)
 
     elif indicator_type == 'macd':
@@ -254,9 +263,15 @@ def calculate_with_gpu(indicator_type: str, data: Dict[str, np.ndarray], **kwarg
     elif indicator_type == 'rsi':
         close = data.get('close')
         if close is not None:
-            window = kwargs.get('window', 14)
+            # 参数名兼容 window / windows，避免 GPU 侧默认 14 与调用方窗口不一致
+            window = kwargs.get('window')
+            if window is None:
+                window = kwargs.get('windows', 14)
+            if isinstance(window, (list, tuple)):
+                window = window[0] if window else 14
             result = global_gpu_accelerator.calculate_rsi_gpu(close, window)
-            return {'rsi': result}
+            # 列名与权威实现对齐：rsi{N} + 默认别名 rsi，避免窗口计算状态被误标记
+            return {f'rsi{window}': result, 'rsi': result}
 
     elif indicator_type == 'sar':
         high = data.get('high')
