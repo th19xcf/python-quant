@@ -50,6 +50,11 @@ class MemoryOptimizer:
         'decimal_cols': ['pe', 'pb', 'ps', 'pcf'],
     }
 
+    # 有符号整数上限（Polars Int8/Int16/Int32 均为有符号类型）
+    INT8_MAX = 127
+    INT16_MAX = 32767
+    INT32_MAX = 2_147_483_647
+
     # 内存使用阈值配置
     MEMORY_THRESHOLDS = {
         'high_memory_mb': 500,  # 高内存使用阈值
@@ -103,9 +108,10 @@ class MemoryOptimizer:
                     # 保持Float64类型，避免精度损失
                     type_casts.append(pl.col(col).cast(pl.Float64))
                 elif dtype == pl.Int64:
-                    # 检查数据范围，尝试使用更小的整数类型
+                    # Int32 是有符号类型，上限 2**31-1；曾误用 2**32 导致
+                    # 成交量 ~3e9 时按 Int32 转换抛 InvalidOperationError（溢出）
                     max_val = df[col].max()
-                    if max_val < 2**32:
+                    if max_val is not None and max_val <= cls.INT32_MAX:
                         type_casts.append(pl.col(col).cast(pl.Int32))
                     else:
                         type_casts.append(pl.col(col).cast(pl.Int64))
@@ -116,14 +122,19 @@ class MemoryOptimizer:
 
             elif col in cls.COLUMN_TYPE_MAP['int_cols']:
                 if dtype == pl.Int64:
-                    # 检查数据范围，尝试使用更小的整数类型
+                    # 各整数类型的上限必须按有符号区间判断，避免 Int8/Int16
+                    # 在 256/65536 边界附近溢出抛 InvalidOperationError
                     max_val = df[col].max()
-                    if max_val < 2**8:
-                        type_casts.append(pl.col(col).cast(pl.Int8))
-                    elif max_val < 2**16:
-                        type_casts.append(pl.col(col).cast(pl.Int16))
-                    else:
+                    if max_val is None:
                         type_casts.append(pl.col(col).cast(pl.Int32))
+                    elif max_val <= cls.INT8_MAX:
+                        type_casts.append(pl.col(col).cast(pl.Int8))
+                    elif max_val <= cls.INT16_MAX:
+                        type_casts.append(pl.col(col).cast(pl.Int16))
+                    elif max_val <= cls.INT32_MAX:
+                        type_casts.append(pl.col(col).cast(pl.Int32))
+                    else:
+                        type_casts.append(pl.col(col).cast(pl.Int64))
 
             elif col in cls.COLUMN_TYPE_MAP['indicator_cols']:
                 if dtype == pl.Float64:
@@ -186,18 +197,25 @@ class MemoryOptimizer:
 
             # 通用类型优化
             elif dtype == pl.Float64:
-                # 对于其他浮点列，统一转换为Float32
-                type_casts.append(pl.col(col).cast(pl.Float32))
+                # 未知浮点列（Alpha 因子、外部特征等）保持 Float64：
+                # 通用降精度曾把高精度因子截断为 ~7 位有效位，造成因子
+                # 排序/加权出现可观测偏差。仅 COLUMN_TYPE_MAP 中显式列
+                # （pct_cols / indicator_cols / decimal_cols）允许降 Float32。
+                pass
 
             elif dtype == pl.Int64:
-                # 对于其他整数列，检查范围后转换
+                # 对于其他整数列，按有符号上限判断可容纳的最小类型
                 max_val = df[col].max()
-                if max_val < 2**8:
-                    type_casts.append(pl.col(col).cast(pl.Int8))
-                elif max_val < 2**16:
-                    type_casts.append(pl.col(col).cast(pl.Int16))
-                else:
+                if max_val is None:
                     type_casts.append(pl.col(col).cast(pl.Int32))
+                elif max_val <= cls.INT8_MAX:
+                    type_casts.append(pl.col(col).cast(pl.Int8))
+                elif max_val <= cls.INT16_MAX:
+                    type_casts.append(pl.col(col).cast(pl.Int16))
+                elif max_val <= cls.INT32_MAX:
+                    type_casts.append(pl.col(col).cast(pl.Int32))
+                else:
+                    type_casts.append(pl.col(col).cast(pl.Int64))
 
             # 字符串类型优化
             elif dtype == pl.Utf8:

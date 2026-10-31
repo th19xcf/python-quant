@@ -34,6 +34,7 @@ from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.risk import Order as RiskOrder
 from src.risk import Portfolio as RiskPortfolio
 from src.risk import RiskEngine
+from src.risk.rules import DrawdownTracker
 
 #: A 股最小价格变动单位（1 分），交易所涨跌停价的取整单位
 PRICE_TICK = Decimal('0.01')
@@ -325,6 +326,8 @@ class AccountBook:
         self.cash: Dict[str, float] = dict.fromkeys(self.codes, per_code)
         self.positions: Dict[str, int] = dict.fromkeys(self.codes, 0)
         self.last_prices: Dict[str, float] = {}
+        # 回撤增量跟踪：snapshot 时只消费新增 bar，避免每笔订单重扫整条曲线
+        self._drawdown = DrawdownTracker()
 
     @property
     def total_cash(self) -> float:
@@ -366,6 +369,8 @@ class AccountBook:
         suspended 为当日停牌标的集合（由撮合循环按成交量口径注入），
         供 NoSuspendedTrade 规则审查；未传时为空集，不改变存量行为。
         """
+        # 增量同步权益曲线（通常每日 1 条），回撤规则读取时为 O(1)
+        self._drawdown.sync(equity_curve)
         return RiskPortfolio(
             positions={code: qty for code, qty in self.positions.items() if qty > 0},
             last_prices=dict(self.last_prices),
@@ -373,6 +378,7 @@ class AccountBook:
             industry_map=dict(self.industry_map),
             equity_curve=equity_curve,
             suspended=set(suspended or ()),
+            drawdown_tracker=self._drawdown,
         )
 
 
@@ -760,8 +766,15 @@ class EventBacktestRunner:
     def _record_signal(
         *, code: str, date: Any, pos: int, signal_columns: Dict[str, list],
         pending: Dict[str, str | None], expired_orders: List[Dict[str, Any]],
+        book: AccountBook,
     ) -> None:
         """把当日信号写入挂单；残留挂单被新信号覆盖时记入 expired_orders。
+
+        先按当前持仓做状态过滤：策略信号是"状态型"的（持仓期间持续输出
+        buy、空仓期间持续输出 sell），这类信号不构成新的委托意图。若逐 bar
+        派单，每笔都会在次日以 already_holding / no_position 作废，5000 bar
+        可产生数千条无效 expired_orders（实测 4716 条）。持仓状态在当日
+        撮合后即为次日开盘前的状态，因此在此处过滤与次日撮合语义等价。
 
         P0-4：pending 残留挂单被新信号覆盖时必须记账，否则原始信号彻底消失，
         trades 分母不可对账。场景：停牌日 _execute_pending 不执行，pending
@@ -772,6 +785,11 @@ class EventBacktestRunner:
             return
         signal = signals[pos]
         if signal not in ('buy', 'sell'):
+            return
+        position = book.positions.get(code, 0)
+        if signal == 'buy' and position > 0:
+            return
+        if signal == 'sell' and position == 0:
             return
         old = pending.get(code)
         if old is not None and old != signal:
@@ -836,7 +854,7 @@ class EventBacktestRunner:
                 # 信号已在主循环前按行序批量生成，此处仅按下标查表
                 self._record_signal(
                     code=code, date=trade_day, pos=pos, signal_columns=signal_columns,
-                    pending=pending, expired_orders=expired_orders,
+                    pending=pending, expired_orders=expired_orders, book=book,
                 )
 
                 # close 缺失 / 非有限 / ≤0 时，挂单已在 _execute_pending 里过期；
@@ -1082,7 +1100,7 @@ class EventBacktestRunner:
     ) -> None:
         """买入执行：按可用现金估算整手、逐手回退成本、风控审查、记账成交。"""
         available = book.cash.get(code, 0.0)
-        cost_rate = cost_model.get_buy_cost_rate()
+        cost_rate = cost_model.get_buy_cost_rate(trade_date=date, ts_code=code)
         affordable = available / (exec_price * (1 + cost_rate))
         shares = int(affordable // lot_size) * lot_size
         # 费率估算不含 min_commission 下限，小单实际成本可能超估算：
@@ -1090,7 +1108,8 @@ class EventBacktestRunner:
         buy_cost = 0.0
         total_pay = 0.0
         while shares > 0:
-            buy_cost = cost_model.calculate_buy_cost(shares, exec_price)
+            buy_cost = cost_model.calculate_buy_cost(
+                shares, exec_price, trade_date=date, ts_code=code)
             total_pay = shares * exec_price + buy_cost
             if total_pay <= available:
                 break
@@ -1134,7 +1153,8 @@ class EventBacktestRunner:
     ) -> None:
         """卖出执行：清空该标的持仓，风控审查通过后记账成交。"""
         shares = book.positions[code]
-        sell_cost = cost_model.calculate_sell_cost(shares, exec_price)
+        sell_cost = cost_model.calculate_sell_cost(
+            shares, exec_price, trade_date=date, ts_code=code)
         rejection = gate.check(
             ts_code=code, side='sell', qty=shares, price=exec_price,
             trade_date=date, book=book, equity_curve=equity_curve,

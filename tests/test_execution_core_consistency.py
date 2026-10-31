@@ -8,10 +8,12 @@
 """
 
 import inspect
+import time
 
 import numpy as np
 import pandas as pd
 import polars as pl
+import pytest
 
 from src.backtest.costs.cost_model import CostModel
 from src.backtest.engine._parallel_worker import clone_strategy, run_backtest_worker
@@ -26,6 +28,7 @@ from src.backtest.strategies.base_strategy import BaseStrategy
 from src.backtest.strategies.ma_strategy import MAStrategy
 from src.core.usecases import run_backtest
 from src.risk import MaxPositionWeight, PriceLimitTradable, RiskEngine
+from src.risk.rules import DrawdownTracker, MaxDrawdownCircuit, Portfolio
 
 
 class _IndexSignalStrategy(BaseStrategy):
@@ -214,19 +217,20 @@ def test_suspension_blocks_trading():
 
 
 def test_expired_orders_are_audited():
-    """挂单作废必须留痕：已持仓买 / 无持仓卖 / 资金不足 / 涨跌停均记入 expired_orders。
+    """挂单作废必须留痕：资金不足 / 涨跌停均记入 expired_orders。
 
-    回归：作废路径原先依赖巧合的控制流静默吞单，不进 trades / rejected_orders，
-    无任何可审计痕迹。
+    P1-3 语义变更：策略输出的是"状态型"信号（持仓期间持续 buy、空仓期间持续
+    sell），已持仓再买 / 无持仓再卖不构成新的委托意图，已在信号层过滤，不再
+    生成挂单，因此不产生 already_holding / no_position 作废记录。
     """
-    # 已持仓再买 + 卖出后再卖
+    # 已持仓再买 + 卖出后再卖：信号层过滤，无挂单、无作废
     data = _make_df(opens=[100.0] * 8, closes=[100.0] * 8)
     engine = BacktestEngine(data)
     engine.set_strategy(_IndexSignalStrategy({0: 'buy', 2: 'buy', 4: 'sell', 5: 'sell'}))
     result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
     reasons = [o['reason'] for o in result['expired_orders']]
     assert [t['signal'] for t in result['trades']] == ['buy', 'sell']
-    assert reasons == ['already_holding', 'no_position']
+    assert reasons == []
 
     # 资金不足：本金连一手都买不起
     data = _make_df(opens=[100.0] * 4, closes=[100.0] * 4)
@@ -1055,4 +1059,201 @@ def test_parallel_worker_receives_execution_context():
 
     assert [t['signal'] for t in with_context['trades']] == ['buy']
     assert without_context['trades'] == []
+
+
+# ------------------------------------------------------------------
+# P1-1：回撤改增量峰值结构，禁止每单 O(T) 重扫权益曲线
+# ------------------------------------------------------------------
+
+
+def _long_history(n: int = 5000) -> pl.DataFrame:
+    """构造 n 根日线（含趋势与波动），用于长周期性能与挂单量验收。"""
+    dates = pd.date_range('2005-01-03', periods=n, freq='B')
+    base = 100.0 + 10.0 * np.sin(np.arange(n) / 40.0) + 0.01 * np.arange(n)
+    return pl.DataFrame({
+        'date': dates,
+        'open': base * 1.001,
+        'high': base * 1.01,
+        'low': base * 0.99,
+        'close': base,
+        'volume': np.full(n, 1_000_000.0),
+    })
+
+
+def test_drawdown_tracker_matches_curve_slice_implementation():
+    """P1-1 等价性：增量跟踪器与 Portfolio 原曲线切片实现逐步、逐窗口一致。
+
+    覆盖随机游走、乱序无、以及 None/NaN/inf/≤0/非数值等非法权益值；任一窗口
+    内出现非法值时必须同样返回 None（fail-closed 语义不能因增量实现而改变）。
+    """
+    rng = np.random.default_rng(20260305)
+    bad_values = [None, float('nan'), float('inf'), 0.0, -3.0, 'oops', True]
+
+    curve: list[dict] = []
+    tracker = DrawdownTracker()
+    equity = 100_000.0
+    dates = pd.date_range('2020-01-01', periods=400, freq='B')
+    windows = (1, 3, 20, 252)
+
+    for day in dates:
+        if rng.random() < 0.06:
+            value = bad_values[int(rng.integers(len(bad_values)))]
+        else:
+            equity *= 1.0 + float(rng.normal(0.0, 0.02))
+            value = equity
+        curve.append({'date': day, 'equity': value})
+        tracker.sync(curve)
+
+        for window in windows:
+            expected = Portfolio(equity_curve=curve).current_drawdown(window)
+            actual = tracker.current_drawdown(window)
+            if expected is None:
+                assert actual is None, f'day={day} window={window}: 非法窗口应返回 None'
+            else:
+                assert actual is not None, f'day={day} window={window}: 不应返回 None'
+                assert abs(actual - expected) < 1e-12, (
+                    f'day={day} window={window}: {actual} != {expected}'
+                )
+
+
+def test_drawdown_tracker_keeps_5000_bar_two_rule_backtest_under_60ms():
+    """P1-1 性能验收：5000 bar + 双规则（回撤熔断 + 单票权重）回测 ≤ 60ms。
+
+    原实现每笔候选订单都把整条权益曲线转字符串排序，退化为 O(T²)，实测
+    1545ms；改增量单调队列后单日增量消费为 O(1)，同一日内多次审查零成本。
+
+    基线（1545ms）是独立进程单跑的墙钟口径，因此这里也放到子进程里测：
+    共享 pytest 进程此前跑过大量大数据集用例，堆碎片/GC 压力会把 5000 行
+    的固有 O(T) 预处理拖慢 2~3 倍，混入与回撤路径无关的噪声。
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = """
+import time
+
+import numpy as np
+import pandas as pd
+import polars as pl
+
+from src.backtest.engine.backtest_engine import BacktestEngine
+from src.backtest.strategies.ma_strategy import MAStrategy
+from src.risk import MaxPositionWeight, RiskEngine
+from src.risk.rules import MaxDrawdownCircuit
+
+n = 5000
+dates = pd.date_range('2005-01-03', periods=n, freq='B')
+base = 100.0 + 10.0 * np.sin(np.arange(n) / 40.0) + 0.01 * np.arange(n)
+df = pl.DataFrame({
+    'date': dates,
+    'open': base * 1.001,
+    'high': base * 1.01,
+    'low': base * 0.99,
+    'close': base,
+    'volume': np.full(n, 1_000_000.0),
+})
+risk = RiskEngine([MaxDrawdownCircuit(window=252), MaxPositionWeight(1.0)])
+
+def run_backtest():
+    engine = BacktestEngine(df)
+    engine.set_strategy(MAStrategy(short_window=5, long_window=20))
+    engine.risk_engine = risk
+    return engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+
+result = run_backtest()  # 预热：指标预计算 / polars 懒加载
+timings = []
+for _ in range(5):
+    engine = BacktestEngine(df)
+    engine.set_strategy(MAStrategy(short_window=5, long_window=20))
+    engine.risk_engine = risk
+    started = time.perf_counter()
+    engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+    timings.append((time.perf_counter() - started) * 1000.0)
+
+assert len(result['trades']) > 0
+assert result['risk_summary']['total_rejected'] == 0
+print(min(timings))
+"""
+    root = Path(__file__).resolve().parents[1]
+    completed = subprocess.run(
+        [sys.executable, '-c', script], cwd=root, capture_output=True,
+        text=True, timeout=180, check=False,
+    )
+    assert completed.returncode == 0, f'基准子进程失败：{completed.stderr[-2000:]}'
+
+    best = float(completed.stdout.strip().splitlines()[-1])
+    assert best <= 60.0, f'5000 bar 双规则回测 {best:.1f}ms 超过 60ms 验收线（原实现 1545ms）'
+
+
+# ------------------------------------------------------------------
+# P1-3：信号层持仓状态过滤，避免每 bar 派单
+# ------------------------------------------------------------------
+
+
+def test_status_signals_do_not_generate_per_bar_expired_orders():
+    """P1-3 验收：5000 bar 状态型策略的 expired_orders 降至信号切换次数级别。
+
+    MAStrategy 在持仓期间持续输出 buy、空仓期间持续输出 sell（状态型而非
+    委托意图）。逐 bar 派单时每次都会在次日以 already_holding / no_position
+    作废，实测 4716 条；信号层按持仓过滤后不再生成这些无效挂单。
+    """
+    data = _long_history()
+    engine = BacktestEngine(data)
+    engine.set_strategy(MAStrategy(short_window=5, long_window=20))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+
+    switches = len(result['trades'])
+    assert switches > 0
+    assert len(result['expired_orders']) <= switches, (
+        f"expired_orders={len(result['expired_orders'])} 超出信号切换次数 {switches}"
+        '（过滤前为 4716 条）'
+    )
+    # 状态过滤不得改变成交结果：仅移除无效挂单，有效切换仍照常成交
+    assert [t['signal'] for t in result['trades'][:2]] == ['buy', 'sell']
+
+
+# ------------------------------------------------------------------
+# P1-2：成本模型按 trade_date 取历史印花税/过户费
+# ------------------------------------------------------------------
+
+
+def test_cost_model_uses_historical_stamp_tax_and_transfer_fee():
+    """P1-2 验收：按 trade_date 取历史费率，2010 年卖出印花税为 0.1%。
+
+    成交额 10 万元基准：佣金 max(30,5)=30、滑点 0.0002×10 万=20。
+    - 2010-06-01 沪市卖出：印花税 0.1%=100 + 过户费 0.06%=60 → 210
+    - 2010-06-01 深市卖出：深市 2015-08-01 前不收过户费 → 150
+    - 2023-09 卖出：印花税 0.05%=50 + 统一过户费 0.002%=2 → 102（沪深一致）
+    - 2007-06-01：印花税 0.3% 双边，买卖两侧都含 300
+    """
+    from datetime import date
+
+    cm = CostModel()
+
+    assert cm.calculate_sell_cost(
+        10_000, 10.0, trade_date=date(2010, 6, 1), ts_code='600000.SH') == pytest.approx(210.0)
+    assert cm.calculate_sell_cost(
+        10_000, 10.0, trade_date=date(2010, 6, 1), ts_code='000001.SZ') == pytest.approx(150.0)
+    assert cm.calculate_buy_cost(
+        10_000, 10.0, trade_date=date(2010, 6, 1), ts_code='600000.SH') == pytest.approx(110.0)
+
+    assert cm.calculate_sell_cost(
+        10_000, 10.0, trade_date=date(2023, 9, 1), ts_code='600000.SH') == pytest.approx(102.0)
+    assert cm.calculate_sell_cost(
+        10_000, 10.0, trade_date=date(2023, 9, 1), ts_code='000001.SZ') == pytest.approx(102.0)
+    assert cm.calculate_buy_cost(
+        10_000, 10.0, trade_date=date(2023, 9, 1), ts_code='600000.SH') == pytest.approx(52.0)
+
+    # 2007-05-30 至 2008-09-18 印花税 0.3% 双边征收
+    assert cm.calculate_buy_cost(
+        10_000, 10.0, trade_date=date(2007, 6, 1), ts_code='600000.SH') == pytest.approx(410.0)
+    assert cm.calculate_sell_cost(
+        10_000, 10.0, trade_date=date(2007, 6, 1), ts_code='600000.SH') == pytest.approx(410.0)
+
+    # 不传 trade_date 保持原静态参数（向后兼容：印花税 0.05% 卖方单边）
+    assert cm.calculate_sell_cost(10_000, 10.0) == pytest.approx(101.0)
+    assert cm.get_buy_cost_rate(
+        trade_date=date(2010, 6, 1), ts_code='600000.SH') == pytest.approx(0.0011)
+
 

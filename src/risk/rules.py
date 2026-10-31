@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 import numbers
 from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
@@ -94,6 +95,89 @@ class Order:
 
 
 # ---------------------------------------------------------------------------
+# DrawdownTracker —— 增量回撤跟踪
+# ---------------------------------------------------------------------------
+
+class DrawdownTracker:
+    """增量回撤跟踪器：按窗口维护单调递减队列，``current_drawdown`` 摊销 O(1)。
+
+    回测主循环每日追加一次权益曲线，但风控每审一笔订单都会读取回撤。
+    原 ``Portfolio.current_drawdown`` 每次都把整条曲线转字符串排序并逐项
+    转 float，单票 5000 bar 下退化为 O(T²)（实测双规则回测 1545ms）。
+    本类只增量消费新增 bar，并把"窗口内峰值"维护成单调队列：插入、删除
+    窗口外元素均为摊销 O(1)，同一交易日内多次审查零成本。
+    """
+
+    def __init__(self) -> None:
+        self._values: List[float | None] = []
+        self._maxima: Dict[int, deque] = {}
+        self._invalid: Dict[int, deque] = {}
+
+    def sync(self, equity_curve: List[Dict[str, Any]]) -> None:
+        """把 equity_curve 的新增尾部增量并入跟踪器（O(新增 bar)）。"""
+        start = len(self._values)
+        total = len(equity_curve)
+        if total <= start:
+            return
+        for index in range(start, total):
+            entry = equity_curve[index]
+            raw = entry.get('equity') if isinstance(entry, dict) else None
+            value = self._to_value(raw)
+            self._values.append(value)
+            for window in self._maxima:
+                self._push(window, index, value)
+
+    @staticmethod
+    def _to_value(raw: Any) -> float | None:
+        """把权益值归一为有限正浮点数；非法值返回 None。"""
+        if raw is None or isinstance(raw, bool):
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value) or value <= 0:
+            return None
+        return value
+
+    def _push(self, window: int, index: int, value: float | None) -> None:
+        maxima = self._maxima[window]
+        invalid = self._invalid[window]
+        if value is None:
+            invalid.append(index)
+        else:
+            while maxima and maxima[-1][1] <= value:
+                maxima.pop()
+            maxima.append((index, value))
+        # 窗口为 [index - window + 1, index]：更早的元素移出
+        while maxima and maxima[0][0] <= index - window:
+            maxima.popleft()
+        while invalid and invalid[0] <= index - window:
+            invalid.popleft()
+
+    def _register(self, window: int) -> None:
+        """首次查询某窗口时，用已有权益构建窗口内单调队列。"""
+        self._maxima[window] = deque()
+        self._invalid[window] = deque()
+        for index in range(max(0, len(self._values) - window), len(self._values)):
+            self._push(window, index, self._values[index])
+
+    def current_drawdown(self, window: int) -> float | None:
+        """当前回撤 = (窗口内峰值 - 当前权益) / 窗口内峰值；非法时返回 None。"""
+        if window <= 0 or not self._values:
+            return None
+        if window not in self._maxima:
+            self._register(window)
+        current = self._values[-1]
+        if current is None or self._invalid[window]:
+            return None
+        peak = self._maxima[window][0][1]
+        if peak <= 0:
+            return None
+        return (peak - current) / peak
+
+
+# ---------------------------------------------------------------------------
 # Portfolio —— 轻量组合状态快照
 # ---------------------------------------------------------------------------
 
@@ -109,6 +193,7 @@ class Portfolio:
     industry_map: {ts_code: industry}     — 行业映射，算行业集中度时用
     equity_curve: [{date, equity}, ...]    — 算回撤用，取尾部 window
     suspended:    当日停牌标的集合       — 由实盘网关/数据源注入，默认空集
+    drawdown_tracker: 增量回撤跟踪器     — 由回测账本注入；缺省时回退到曲线切片
 
     总资产一律由 positions + last_prices + cash 现场计算，不接受外部注入，
     避免过期快照把风控分母带偏。
@@ -119,6 +204,7 @@ class Portfolio:
     industry_map: Dict[str, str] = field(default_factory=dict)
     equity_curve: List[Dict[str, Any]] = field(default_factory=list)
     suspended: Set[str] = field(default_factory=set)
+    drawdown_tracker: Any = None
 
     # ------------------------------------------------------------------
     # 便捷方法
@@ -179,7 +265,13 @@ class Portfolio:
         equity_curve 乱序时先按日期排序再截尾，避免把早期峰值误当近期峰值。
         无法计算（曲线为空、window 非法、权益缺失/非有限/非正）时返回 None，
         由调用方 fail-closed，不再伪造 0 回撤。
+
+        传入 drawdown_tracker（回测账本注入）时走增量 O(1) 路径；未注入时
+        保留原曲线切片实现，供单元测试与外部直接构造 Portfolio 的调用方使用。
         """
+        if self.drawdown_tracker is not None:
+            return self.drawdown_tracker.current_drawdown(window)
+
         if window <= 0 or not self.equity_curve:
             return None
 

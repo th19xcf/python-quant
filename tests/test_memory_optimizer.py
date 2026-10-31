@@ -140,6 +140,81 @@ def test_adj_factor_keep_float64():
     print("复权因子保持 Float64，pct_chg 仍为 Float32，符合预期")
 
 
+def test_volume_large_value_stays_int64():
+    """P1-4 回归：成交量超过 Int32 上限（2**31-1）时必须保持 Int64。
+
+    回归：判据曾误用 2**32（4294967296）作为 Int32 上限，成交量 3e9
+    （落在 2**31-1 与 2**32 之间）被错误降为 Int32，cast 直接抛
+    InvalidOperationError（溢出）。
+    """
+    print("\n=== 测试超大成交量 Int64 回归 ===")
+
+    df = pl.DataFrame({
+        'volume': pl.Series('volume', [1, 3_000_000_000], dtype=pl.Int64),
+    })
+
+    optimized_df = MemoryOptimizer.optimize_dataframe(df)
+
+    assert optimized_df['volume'].dtype == pl.Int64, \
+        f"volume=3e9 被降为 {optimized_df['volume'].dtype}，将触发 Int32 溢出"
+    assert optimized_df['volume'].to_list() == [1, 3_000_000_000]
+
+
+def test_int_boundaries_use_signed_limits():
+    """P1-4 回归：整数降型必须按有符号上限判断（Int8=127 / Int16=32767）。
+
+    回归：原先只按 2**32 判 Int32、其余一律 Int32，跨越 127/32767 边界
+    的整数列会在 cast 时溢出。
+    """
+    print("\n=== 测试有符号整数边界 ===")
+
+    df = pl.DataFrame({
+        'up_count': pl.Series('up_count', [0, 127], dtype=pl.Int64),
+        'down_count': pl.Series('down_count', [0, 200], dtype=pl.Int64),
+        'total_count': pl.Series('total_count', [0, 3_000_000_000], dtype=pl.Int64),
+    })
+
+    optimized_df = MemoryOptimizer.optimize_dataframe(df)
+
+    assert optimized_df['up_count'].dtype == pl.Int8
+    assert optimized_df['down_count'].dtype == pl.Int16
+    assert optimized_df['total_count'].dtype == pl.Int64
+    for col in ('up_count', 'down_count', 'total_count'):
+        assert optimized_df[col].to_list() == df[col].to_list()
+
+
+def test_alpha_factor_columns_keep_float64():
+    """P1-4 回归：通用 Float64 不再降 Float32，Alpha 因子列必须保持 Float64。
+
+    回归：通用分支曾把所有未识别的 Float64 列降为 Float32（~7 位有效位），
+    alpha_001 等因子列在排序/加权时出现可观测偏差。仅 COLUMN_TYPE_MAP 中
+    显式列（pct_chg / 指标 / 估值）允许按设计降 Float32。
+    """
+    print("\n=== 测试 Alpha 因子 Float64 白名单 ===")
+
+    n = 500
+    rng = np.random.default_rng(20260305)
+    df = pl.DataFrame({
+        'alpha_001': rng.normal(0, 1e-4, n),
+        'alpha_101': rng.normal(0, 1e-4, n),
+        'ma5': rng.normal(size=n),        # 显式指标列，仍按设计降 Float32
+        'pct_chg': rng.normal(size=n),    # 显式百分比列，仍按设计降 Float32
+    })
+
+    optimized_df = MemoryOptimizer.optimize_dataframe(df)
+
+    assert optimized_df['alpha_001'].dtype == pl.Float64, \
+        f"alpha_001 被降为 {optimized_df['alpha_001'].dtype}，因子精度受损"
+    assert optimized_df['alpha_101'].dtype == pl.Float64, \
+        f"alpha_101 被降为 {optimized_df['alpha_101'].dtype}，因子精度受损"
+    # 因子值不得有任何舍入改动
+    assert optimized_df['alpha_001'].equals(df['alpha_001'])
+    assert optimized_df['alpha_101'].equals(df['alpha_101'])
+    # 对照：显式列仍按设计降 Float32
+    assert optimized_df['ma5'].dtype == pl.Float32
+    assert optimized_df['pct_chg'].dtype == pl.Float32
+
+
 if __name__ == "__main__":
     print("MemoryOptimizer 测试开始")
     print("=" * 60)
@@ -149,6 +224,9 @@ if __name__ == "__main__":
     optimized_large_df = test_large_dataset()
     suggestions = test_optimization_suggestions()
     test_adj_factor_keep_float64()
+    test_volume_large_value_stays_int64()
+    test_int_boundaries_use_signed_limits()
+    test_alpha_factor_columns_keep_float64()
 
     print("\n" + "=" * 60)
     print("MemoryOptimizer 测试完成")
