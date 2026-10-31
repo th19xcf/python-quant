@@ -84,6 +84,130 @@ def _assemble_risk_engine(risk_engine: RiskEngine | None,
     return default_risk_engine() if enable_default_risk else None
 
 
+def _prepare_backtest_data(
+    ts_code: str | None,
+    start_date: str | None,
+    end_date: str | None,
+    data: Union[pl.DataFrame, Dict[str, pl.DataFrame]] | None,
+    db_manager: Any,
+) -> tuple[Union[pl.DataFrame, Dict[str, pl.DataFrame]] | None, Any]:
+    """数据准备：data 已提供时直接返回；否则按需取数并返回可复用的 db 句柄。"""
+    db = db_manager
+    if data is not None or not ts_code:
+        return data, db
+
+    # 按需 import 避免循环依赖
+    from src.data.managers.data_fetcher import DataFetcher
+
+    if db is None:
+        # 默认路径复用进程内长驻实例；本次调用不负责关闭它
+        fetcher, db = _get_shared_data_fetcher()
+    else:
+        # 调用方显式持有 db_manager，连接复用，避免每次回测新建连接池
+        if not db.is_connected():
+            db.connect()
+        fetcher = DataFetcher(db.config, db_manager=db)
+    data = fetcher.get_stock_data(
+        ts_code, start_date or '', end_date or '',
+        adjustment_type='hfq',
+    )
+    return data, db
+
+
+def _load_st_status(
+    st_status: Dict[str, Any] | None,
+    data: Union[pl.DataFrame, Dict[str, pl.DataFrame]] | None,
+    ts_code: str | None,
+    start_date: str | None,
+    end_date: str | None,
+    db: Any,
+    db_manager: Any,
+) -> Dict[str, Any] | None:
+    """ST 时间维表：未显式传入时按标的与日期范围加载。"""
+    if st_status is not None:
+        return st_status
+    st_db = db if db is not None else db_manager
+    if st_db is None or data is None:
+        return None
+    if isinstance(data, dict):
+        codes = list(data.keys())
+    else:
+        codes = [ts_code] if ts_code else []
+    if not codes:
+        return None
+    try:
+        from src.data.services.st_status_service import StStatusService
+
+        return StStatusService(db_manager=st_db).get_status_intervals(
+            codes, start_date, end_date,
+        )
+    # 兜底理由：ST 维表加载失败不影响回测，按未知处理
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"加载 ST 时间维表失败，按未知处理: {e}")
+        return None
+
+
+def _run_portfolio_backtest(
+    data: Dict[str, pl.DataFrame],
+    strategies: Dict[str, BaseStrategy] | None,
+    risk_engine: RiskEngine | None,
+    st_status: Dict[str, Any] | None,
+    initial_capital: float,
+    lot_size: int,
+    industry_map: Dict[str, str] | None,
+    kwargs: Dict[str, Any],
+) -> Dict[str, Any]:
+    """组合回测分支。"""
+    strategies = strategies or {}
+    if not strategies:
+        raise ValueError("组合回测需要 strategies dict")
+
+    engine = PortfolioBacktestEngine(data)
+    engine.risk_engine = risk_engine
+    engine.set_strategies(strategies)
+
+    # 显式 st_status 参数优先；调用方 kwargs 里已有的同名参数不覆盖
+    if st_status:
+        kwargs.setdefault('st_status', st_status)
+    return engine.run_backtest(
+        initial_capital=initial_capital,
+        lot_size=lot_size,
+        industry_map=industry_map or {},
+        **kwargs,
+    )
+
+
+def _run_single_backtest(
+    data: pl.DataFrame,
+    strategy: BaseStrategy | None,
+    risk_engine: RiskEngine | None,
+    st_status: Dict[str, Any] | None,
+    ts_code: str | None,
+    initial_capital: float,
+    lot_size: int,
+    industry: str,
+    kwargs: Dict[str, Any],
+) -> Dict[str, Any]:
+    """单票回测分支。"""
+    if strategy is None:
+        raise ValueError("单票回测需要 strategy")
+
+    single_engine = BacktestEngine(data)
+    single_engine.risk_engine = risk_engine
+    single_engine.set_strategy(strategy)
+
+    if 'is_st' not in kwargs:
+        kwargs['is_st'] = st_status.get(ts_code) if st_status and ts_code else None
+
+    return single_engine.run_backtest(
+        initial_capital=initial_capital,
+        lot_size=lot_size,
+        ts_code=ts_code or '',
+        industry=industry,
+        **kwargs,
+    )
+
+
 def run_backtest(
     ts_code: str | None = None,
     start_date: str | None = None,
@@ -136,85 +260,22 @@ def run_backtest(
     # ---- 风控装配：生产路径不允许"无风控即全放行" ----
     risk_engine = _assemble_risk_engine(risk_engine, enable_default_risk)
 
-    # ---- 数据准备 ----
-    db = db_manager
-    if data is None and ts_code:
-        # 按需 import 避免循环依赖
-        from src.data.managers.data_fetcher import DataFetcher
-
-        if db is None:
-            # 默认路径复用进程内长驻实例；本次调用不负责关闭它
-            fetcher, db = _get_shared_data_fetcher()
-        else:
-            # 调用方显式持有 db_manager，连接复用，避免每次回测新建连接池
-            if not db.is_connected():
-                db.connect()
-            fetcher = DataFetcher(db.config, db_manager=db)
-        data = fetcher.get_stock_data(
-            ts_code, start_date or '', end_date or '',
-            adjustment_type='hfq',
-        )
-
-    # ---- ST 时间维表：未显式传入时按标的与日期范围加载 ----
-    if st_status is None:
-        st_db = db if db is not None else db_manager
-        if st_db is not None and data is not None:
-            if isinstance(data, dict):
-                codes = list(data.keys())
-            else:
-                codes = [ts_code] if ts_code else []
-            if codes:
-                try:
-                    from src.data.services.st_status_service import StStatusService
-
-                    st_status = StStatusService(db_manager=st_db).get_status_intervals(
-                        codes, start_date, end_date,
-                    )
-                # 兜底理由：ST 维表加载失败不影响回测，按未知处理
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(f"加载 ST 时间维表失败，按未知处理: {e}")
-                    st_status = None
+    # ---- 数据准备 + ST 时间维表 ----
+    data, db = _prepare_backtest_data(ts_code, start_date, end_date, data, db_manager)
+    st_status = _load_st_status(
+        st_status, data, ts_code, start_date, end_date, db, db_manager,
+    )
 
     if data is None:
         raise ValueError("run_backtest: 必须传 data 或 ts_code")
 
     # ---- 分支：单票 vs 组合 ----
     if isinstance(data, dict):
-        # 组合回测
-        strategies = strategies or {}
-        if not strategies:
-            raise ValueError("组合回测需要 strategies dict")
-
-        engine = PortfolioBacktestEngine(data)
-        engine.risk_engine = risk_engine
-        engine.set_strategies(strategies)
-
-        # 显式 st_status 参数优先；调用方 kwargs 里已有的同名参数不覆盖
-        if st_status:
-            kwargs.setdefault('st_status', st_status)
-        return engine.run_backtest(
-            initial_capital=initial_capital,
-            lot_size=lot_size,
-            industry_map=industry_map or {},
-            **kwargs,
+        return _run_portfolio_backtest(
+            data, strategies, risk_engine, st_status,
+            initial_capital, lot_size, industry_map, kwargs,
         )
-
-    else:
-        # 单票回测
-        if strategy is None:
-            raise ValueError("单票回测需要 strategy")
-
-        single_engine = BacktestEngine(data)
-        single_engine.risk_engine = risk_engine
-        single_engine.set_strategy(strategy)
-
-        if 'is_st' not in kwargs:
-            kwargs['is_st'] = st_status.get(ts_code) if st_status and ts_code else None
-
-        return single_engine.run_backtest(
-            initial_capital=initial_capital,
-            lot_size=lot_size,
-            ts_code=ts_code or '',
-            industry=industry,
-            **kwargs,
-        )
+    return _run_single_backtest(
+        data, strategy, risk_engine, st_status, ts_code,
+        initial_capital, lot_size, industry, kwargs,
+    )

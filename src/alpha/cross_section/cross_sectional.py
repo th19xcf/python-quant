@@ -14,7 +14,7 @@
 """
 
 from collections.abc import Iterable
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Literal, Union, cast
 
 import pandas as pd
 import polars as pl
@@ -41,7 +41,7 @@ def _check_cols(df: pl.DataFrame, cols: Iterable[str], what: str) -> List[str]:
 def cross_sectional_rank(data,
                          factor_cols: Iterable[str],
                          by: str = 'date',
-                         method: str = 'average',
+                         method: Literal['average', 'min', 'max', 'dense', 'ordinal', 'random'] = 'average',
                          pct: bool = True,
                          suffix: str = RANK_SUFFIX) -> pl.DataFrame:
     """
@@ -165,7 +165,7 @@ def cross_sectional_ic(data,
                        factor_col: str,
                        return_col: str,
                        by: str = 'date',
-                       method: str = 'spearman') -> pl.DataFrame:
+                       method: Literal['spearman', 'pearson'] = 'spearman') -> pl.DataFrame:
     """
     逐期截面 IC
 
@@ -202,11 +202,11 @@ def ic_summary(ic_frame: pl.DataFrame,
     if n == 0:
         return {'mean_ic': 0.0, 'ic_std': 0.0, 'ic_ir': 0.0,
                 'positive_ratio': 0.0, 'n_periods': 0}
-    mean_ic = series.mean()
-    std = series.std()
+    mean_ic = cast(float, series.mean())
+    std = cast(float, series.std() or 0.0)
     return {
         'mean_ic': mean_ic,
-        'ic_std': std if std is not None else 0.0,
+        'ic_std': std,
         'ic_ir': (mean_ic / std) if std else 0.0,
         'positive_ratio': (series > 0).sum() / n,
         'n_periods': n,

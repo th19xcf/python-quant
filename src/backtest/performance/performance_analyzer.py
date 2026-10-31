@@ -167,7 +167,7 @@ class PerformanceAnalyzer:
 
         pairs = []
         for stock_trades in grouped.values():
-            open_buys = deque()
+            open_buys: deque[Any] = deque()
             for t in stock_trades:
                 if t.get('signal') == 'buy':
                     open_buys.append(t)

@@ -38,18 +38,8 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
     结构上满足 ITechnicalAnalyzer 契约（Protocol，无需继承）
     """
 
-    def __init__(self, data, plugin_manager=None):
-        """
-        初始化技术分析器
-
-        Args:
-            data: 股票数据，可以是Polars DataFrame、LazyFrame或Pandas DataFrame
-            plugin_manager: 插件管理器实例，用于加载和使用指标插件
-        """
-        # 保存Polars DataFrame或LazyFrame作为主要数据结构
-        self.pl_df = None
-        self.is_lazy = False
-
+    def _init_data_frame(self, data):
+        """按输入类型保存 Polars DataFrame/LazyFrame 主数据结构。"""
         if hasattr(data, 'collect'):
             # 输入是Polars LazyFrame
             self.pl_df = data
@@ -67,14 +57,10 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             self.pl_df = pl.DataFrame(data)
             self.is_lazy = False
 
-        # 使用Polars进行数据预处理
-        self._preprocess_data_polars()
-
-        # 保存插件管理器实例
-        self.plugin_manager = plugin_manager
-
-        # 添加指标计算状态跟踪
-        self.calculated_indicators = {
+    @staticmethod
+    def _build_calculated_indicators():
+        """构建指标计算状态跟踪字典。"""
+        return {
             'ma': set(),  # 已计算的MA窗口
             'macd': False,
             'rsi': set(),  # 已计算的RSI窗口
@@ -97,13 +83,9 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             'plugin': {}  # 已计算的插件指标，键为插件名称，值为已计算参数的集合
         }
 
-        # 添加缓存机制，避免重复计算
-        self._calculate_cache = {}
-        # 使用Polars原生方法计算数据哈希
-        self._data_hash = self._calculate_polars_data_hash()
-
-        # 初始化指标映射，便于统一管理
-        self.indicator_mapping = {
+    def _build_indicator_mapping(self):
+        """构建指标到计算方法的映射表。"""
+        return {
             'ma': self.calculate_ma,
             'macd': self.calculate_macd,
             'rsi': self.calculate_rsi,
@@ -141,6 +123,36 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             'adr': self.calculate_indicator_parallel,
             'obos': self.calculate_indicator_parallel
         }
+
+    def __init__(self, data, plugin_manager=None):
+        """
+        初始化技术分析器
+
+        Args:
+            data: 股票数据，可以是Polars DataFrame、LazyFrame或Pandas DataFrame
+            plugin_manager: 插件管理器实例，用于加载和使用指标插件
+        """
+        # 保存Polars DataFrame或LazyFrame作为主要数据结构
+        self.pl_df = None
+        self.is_lazy = False
+        self._init_data_frame(data)
+
+        # 使用Polars进行数据预处理
+        self._preprocess_data_polars()
+
+        # 保存插件管理器实例
+        self.plugin_manager = plugin_manager
+
+        # 添加指标计算状态跟踪
+        self.calculated_indicators = self._build_calculated_indicators()
+
+        # 添加缓存机制，避免重复计算
+        self._calculate_cache = {}
+        # 使用Polars原生方法计算数据哈希
+        self._data_hash = self._calculate_polars_data_hash()
+
+        # 初始化指标映射，便于统一管理
+        self.indicator_mapping = self._build_indicator_mapping()
 
         # 初始化插件指标映射
         self._init_plugin_indicator_mapping()

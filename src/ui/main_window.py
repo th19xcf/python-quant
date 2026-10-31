@@ -70,6 +70,26 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
         self.setGeometry(100, 100, 1400, 900)
 
         # 初始化管理器
+        self._init_managers()
+
+        # 初始化UI (From MainWindowUiMixin)
+        self._init_ui_impl()
+
+        # 订阅事件
+        self.event_manager.subscribe_events()
+
+        # 安装全局事件过滤器，捕获所有按键事件
+        self._install_global_key_filter()
+
+        # 初始化状态属性
+        self._init_state_attributes()
+
+        logger.info("MainWindow initialized successfully (Refactored)")
+
+    def _init_managers(self):
+        """
+        初始化功能管理器、辅助管理器与数据控制器
+        """
         self.ui_manager = UIManager(self)
         self.event_manager = WindowEventManager(self)
         self.chart_manager = ChartManager(self)
@@ -89,16 +109,10 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
         # 数据控制器：组合替代原 MainWindowDataMixin 继承
         self.data_controller = DataController(self)
 
-        # 初始化UI (From MainWindowUiMixin)
-        self._init_ui_impl()
-
-        # 订阅事件
-        self.event_manager.subscribe_events()
-
-        # 安装全局事件过滤器，捕获所有按键事件
-        self._install_global_key_filter()
-
-        # 初始化状态属性
+    def _init_state_attributes(self):
+        """
+        初始化绘图辅助线、均线与当前显示状态等属性
+        """
         self.vline = None
         self.hline = None
         self.volume_vline = None
@@ -127,8 +141,6 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
         self.current_page_type = "全部A股"  # 默认页面类型
         self.page_sort_states = {}  # 存储每个页面的排序状态
         self.page_sorted_columns = {}  # 存储每个页面的当前排序列
-
-        logger.info("MainWindow initialized successfully (Refactored)")
 
     def show_message(self, message):
         self.statusBar().showMessage(message, 3000)

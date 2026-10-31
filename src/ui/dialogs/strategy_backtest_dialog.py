@@ -72,7 +72,13 @@ class StrategyBacktestDialog(QDialog):
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
+        self._build_basic_section(main_layout)
+        self._build_param_section(main_layout)
+        self._build_result_section(main_layout)
+        self._build_button_section(main_layout)
 
+    def _build_basic_section(self, main_layout):
+        """构建基本设置分组"""
         basic_group = QGroupBox("基本设置")
         basic_layout = QGridLayout()
 
@@ -102,6 +108,8 @@ class StrategyBacktestDialog(QDialog):
         basic_group.setLayout(basic_layout)
         main_layout.addWidget(basic_group)
 
+    def _build_param_section(self, main_layout):
+        """构建策略参数分组"""
         param_group = QGroupBox("策略参数")
         param_layout = QGridLayout()
 
@@ -128,6 +136,8 @@ class StrategyBacktestDialog(QDialog):
         param_group.setLayout(param_layout)
         main_layout.addWidget(param_group)
 
+    def _build_result_section(self, main_layout):
+        """构建回测结果分组"""
         result_group = QGroupBox("回测结果")
         result_layout = QVBoxLayout()
 
@@ -143,6 +153,8 @@ class StrategyBacktestDialog(QDialog):
         result_group.setLayout(result_layout)
         main_layout.addWidget(result_group, 1)
 
+    def _build_button_section(self, main_layout):
+        """构建底部按钮布局"""
         button_layout = QHBoxLayout()
 
         self.run_button = QPushButton("开始回测")

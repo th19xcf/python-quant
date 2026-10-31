@@ -40,6 +40,64 @@ class StockDataController:
         if hasattr(self.window, 'chart_title_label') and self.window.chart_title_label is not None:
             self.window.chart_title_label.setText('暂无数据')
 
+    def _process_stock_data_task(self, stock_code, stock_name, task_id=None, signals=None):
+        """后台任务函数"""
+        from datetime import timedelta
+
+        try:
+            # 计算日期范围：根据柱体数获取足够的数据
+            end_date = datetime.now().strftime("%Y-%m-%d")
+
+            # 根据柱体数动态计算日期范围
+            # 假设每个交易日约 1.4 天（考虑周末和节假日）
+            bar_count = getattr(self.window, 'displayed_bar_count', 100)
+            # 计算需要的历史天数：柱体数 * 1.4 + 缓冲 100 天
+            days_needed = int(bar_count * 1.4) + 100
+            # 确保至少获取 2 年的数据
+            days_needed = max(days_needed, 730)
+            # 最多获取 10 年的数据
+            days_needed = min(days_needed, 3650)
+
+            start_date = (datetime.now() - timedelta(days=days_needed)).strftime("%Y-%m-%d")
+
+            # 从数据管理器获取股票历史数据
+            adjustment_type = getattr(self.window, 'adjustment_type', 'qfq')
+
+            # 根据当前周期确定数据频率
+            period = getattr(self.window, 'current_period', '日线')
+            freq_map = {'日线': '1d', '周线': '1w', '月线': '1m'}
+            frequency = freq_map.get(period, '1d')
+
+            df = self.window.data_manager.get_stock_data(stock_code, start_date, end_date, frequency=frequency, adjustment_type=adjustment_type)
+
+            if df is None or df.is_empty():
+                logger.warning(f"未获取到股票数据: {stock_name}({stock_code})")
+                return {"success": False, "message": f"未获取到 {stock_name}({stock_code}) 的数据"}
+
+            logger.info(f"成功获取 {len(df)} 条 {stock_name}({stock_code}) 的数据")
+
+            # 保存当前股票数据（用于柱体加减按钮）
+            self.window.current_stock_data = df
+            self.window.current_stock_name = stock_name
+            self.window.current_stock_code = stock_code
+
+            # 在后台线程预热分红标记缓存：绘图槽函数在 GUI 线程里取分红，
+            # 避免每次重绘都同步查库导致界面卡顿
+            dividend_service = getattr(self.window, 'dividend_service', None)
+            if dividend_service is not None:
+                dividend_service.prefetch(stock_code)
+
+            # 重新计算技术指标（确保数据包含所有指标列）
+            df = self.window._recalculate_indicators_for_period(df)
+
+            # 更新当前股票数据为重新计算后的数据（包含技术指标）
+            self.window.current_stock_data = df
+
+            return {"success": True, "data": df, "stock_name": stock_name, "stock_code": stock_code}
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"处理股票数据失败: {e}")
+            return {"success": False, "message": f"处理股票数据失败: {str(e)}"}
+
     def process_stock_data(self, stock_code, stock_name):
         """
         处理股票数据并显示K线图
@@ -48,64 +106,6 @@ class StockDataController:
             stock_code: 股票代码
             stock_name: 股票名称
         """
-        def _process_stock_data_task(stock_code, stock_name, task_id=None, signals=None):
-            """后台任务函数"""
-            from datetime import timedelta
-
-            try:
-                # 计算日期范围：根据柱体数获取足够的数据
-                end_date = datetime.now().strftime("%Y-%m-%d")
-
-                # 根据柱体数动态计算日期范围
-                # 假设每个交易日约 1.4 天（考虑周末和节假日）
-                bar_count = getattr(self.window, 'displayed_bar_count', 100)
-                # 计算需要的历史天数：柱体数 * 1.4 + 缓冲 100 天
-                days_needed = int(bar_count * 1.4) + 100
-                # 确保至少获取 2 年的数据
-                days_needed = max(days_needed, 730)
-                # 最多获取 10 年的数据
-                days_needed = min(days_needed, 3650)
-
-                start_date = (datetime.now() - timedelta(days=days_needed)).strftime("%Y-%m-%d")
-
-                # 从数据管理器获取股票历史数据
-                adjustment_type = getattr(self.window, 'adjustment_type', 'qfq')
-
-                # 根据当前周期确定数据频率
-                period = getattr(self.window, 'current_period', '日线')
-                freq_map = {'日线': '1d', '周线': '1w', '月线': '1m'}
-                frequency = freq_map.get(period, '1d')
-
-                df = self.window.data_manager.get_stock_data(stock_code, start_date, end_date, frequency=frequency, adjustment_type=adjustment_type)
-
-                if df is None or df.is_empty():
-                    logger.warning(f"未获取到股票数据: {stock_name}({stock_code})")
-                    return {"success": False, "message": f"未获取到 {stock_name}({stock_code}) 的数据"}
-
-                logger.info(f"成功获取 {len(df)} 条 {stock_name}({stock_code}) 的数据")
-
-                # 保存当前股票数据（用于柱体加减按钮）
-                self.window.current_stock_data = df
-                self.window.current_stock_name = stock_name
-                self.window.current_stock_code = stock_code
-
-                # 在后台线程预热分红标记缓存：绘图槽函数在 GUI 线程里取分红，
-                # 避免每次重绘都同步查库导致界面卡顿
-                dividend_service = getattr(self.window, 'dividend_service', None)
-                if dividend_service is not None:
-                    dividend_service.prefetch(stock_code)
-
-                # 重新计算技术指标（确保数据包含所有指标列）
-                df = self.window._recalculate_indicators_for_period(df)
-
-                # 更新当前股票数据为重新计算后的数据（包含技术指标）
-                self.window.current_stock_data = df
-
-                return {"success": True, "data": df, "stock_name": stock_name, "stock_code": stock_code}
-            except (OSError, RuntimeError, ValueError) as e:
-                logger.exception(f"处理股票数据失败: {e}")
-                return {"success": False, "message": f"处理股票数据失败: {str(e)}"}
-
         # 启动后台任务
         logger.info(f"启动处理股票数据任务: {stock_name}({stock_code})")
         self.window.statusBar().showMessage(f"加载 {stock_name}({stock_code}) 数据...", 0)
@@ -113,7 +113,7 @@ class StockDataController:
         # 创建任务
         global_task_manager.create_task(
             f"处理股票数据: {stock_name}({stock_code})",
-            _process_stock_data_task,
+            self._process_stock_data_task,
             (stock_code, stock_name)
         )
 

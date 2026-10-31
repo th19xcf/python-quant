@@ -92,90 +92,79 @@ class FactorAnalyzer:
             logger.error(f"分析失败: {e}")
             raise
 
-    def _calculate_factors(self, data, factors, kdj_window=14):
-        """
-        计算因子
+    @staticmethod
+    def _add_macd_factor(data):
+        """MACD 走共享公式层（标准 EMA 口径）。"""
+        macd = macd_exprs('close', 12, 26, 9)
+        return data.with_columns([
+            macd['macd'].alias('macd'),
+            macd['signal'].alias('macd_signal'),
+            macd['hist'].alias('macd_hist')
+        ])
 
-        Args:
-            data: 股票数据
-            factors: 因子列表
-            kdj_window: KDJ 的 RSV 周期（默认 14，与图表一致）
+    @staticmethod
+    def _add_rsi_factor(data):
+        """RSI 走共享公式层（Wilder 标准口径）。"""
+        return data.with_columns([rsi_expr('close', 14).alias('rsi')])
 
-        Returns:
-            pl.DataFrame: 包含因子的数据
-        """
-        # 计算各种因子
-        if 'MACD' in factors:
-            # MACD 走共享公式层（标准 EMA 口径）
-            macd = macd_exprs('close', 12, 26, 9)
-            data = data.with_columns([
-                macd['macd'].alias('macd'),
-                macd['signal'].alias('macd_signal'),
-                macd['hist'].alias('macd_hist')
-            ])
+    @staticmethod
+    def _add_boll_factor(data):
+        """计算布林带。"""
+        ma20 = data['close'].rolling_mean(window_size=20)
+        std20 = data['close'].rolling_std(window_size=20)
+        upper = ma20 + 2 * std20
+        lower = ma20 - 2 * std20
+        return data.with_columns([
+            ma20.alias('boll_mid'),
+            upper.alias('boll_upper'),
+            lower.alias('boll_lower')
+        ])
 
-        if 'RSI' in factors:
-            # RSI 走共享公式层（Wilder 标准口径）
-            data = data.with_columns([rsi_expr('close', 14).alias('rsi')])
+    @staticmethod
+    def _add_kdj_factor(data, kdj_window):
+        """KDJ 走共享公式层（RSV 含当日 + SMA(3,1) 递推），周期可配置。"""
+        kdj = kdj_exprs('high', 'low', 'close', window=kdj_window)
+        return data.with_columns([
+            kdj['k'].alias('kdj_k'),
+            kdj['d'].alias('kdj_d'),
+            kdj['j'].alias('kdj_j')
+        ])
 
-        if 'BOLL' in factors:
-            # 计算布林带
-            ma20 = data['close'].rolling_mean(window_size=20)
-            std20 = data['close'].rolling_std(window_size=20)
-            upper = ma20 + 2 * std20
-            lower = ma20 - 2 * std20
-            data = data.with_columns([
-                ma20.alias('boll_mid'),
-                upper.alias('boll_upper'),
-                lower.alias('boll_lower')
-            ])
+    @staticmethod
+    def _add_ma_factor(data):
+        """计算移动平均线。"""
+        return data.with_columns([
+            data['close'].rolling_mean(window_size=5).alias('ma5'),
+            data['close'].rolling_mean(window_size=10).alias('ma10'),
+            data['close'].rolling_mean(window_size=20).alias('ma20'),
+            data['close'].rolling_mean(window_size=60).alias('ma60')
+        ])
 
-        if 'KDJ' in factors:
-            # KDJ 走共享公式层（RSV 含当日 + SMA(3,1) 递推），周期可配置
-            kdj = kdj_exprs('high', 'low', 'close', window=kdj_window)
-            data = data.with_columns([
-                kdj['k'].alias('kdj_k'),
-                kdj['d'].alias('kdj_d'),
-                kdj['j'].alias('kdj_j')
-            ])
+    @staticmethod
+    def _add_atr_factor(data):
+        """ATR 走共享公式层（TR 三值取最大后 Wilder 平滑）。"""
+        return data.with_columns([atr_expr('high', 'low', 'close', 14).alias('atr')])
 
-        if 'MA' in factors:
-            # 计算移动平均线
-            data = data.with_columns([
-                data['close'].rolling_mean(window_size=5).alias('ma5'),
-                data['close'].rolling_mean(window_size=10).alias('ma10'),
-                data['close'].rolling_mean(window_size=20).alias('ma20'),
-                data['close'].rolling_mean(window_size=60).alias('ma60')
-            ])
+    @staticmethod
+    def _add_wr_factor(data):
+        """计算威廉指标。"""
+        low = data['low'].rolling_min(window_size=14)
+        high = data['high'].rolling_max(window_size=14)
+        wr = (high - data['close']) / (high - low + 1e-10) * 100
+        return data.with_columns([wr.alias('wr')])
 
-        if 'ATR' in factors:
-            # ATR 走共享公式层（TR 三值取最大后 Wilder 平滑）
-            data = data.with_columns([atr_expr('high', 'low', 'close', 14).alias('atr')])
+    @staticmethod
+    def _add_cci_factor(data):
+        """计算CCI。"""
+        typical_price = (data['high'] + data['low'] + data['close']) / 3
+        ma = typical_price.rolling_mean(window_size=14)
+        mean_dev = abs(typical_price - ma).rolling_mean(window_size=14)
+        cci = (typical_price - ma) / (0.015 * mean_dev)
+        return data.with_columns([cci.alias('cci')])
 
-        if 'WR' in factors:
-            # 计算威廉指标
-            low = data['low'].rolling_min(window_size=14)
-            high = data['high'].rolling_max(window_size=14)
-            wr = (high - data['close']) / (high - low + 1e-10) * 100
-            data = data.with_columns([wr.alias('wr')])
-
-        if 'CCI' in factors:
-            # 计算CCI
-            typical_price = (data['high'] + data['low'] + data['close']) / 3
-            ma = typical_price.rolling_mean(window_size=14)
-            mean_dev = abs(typical_price - ma).rolling_mean(window_size=14)
-            cci = (typical_price - ma) / (0.015 * mean_dev)
-            data = data.with_columns([cci.alias('cci')])
-
-        # 基本面因子：暂未接入真实数据源，跳过计算并在日志中提示
-        fundamental_factors = ['PE', 'PB', 'ROE', 'EPS']
-        missing = [f for f in fundamental_factors if f in factors]
-        if missing:
-            logger.warning(
-                f"基本面因子 {missing} 暂未接入真实数据源，已跳过。"
-                f"后续可对接 Tushare/BaoStock 基本面接口。"
-            )
-
+    @staticmethod
+    def _add_momentum_factors(data, factors):
+        """计算 1/3/6/12 个月动量因子。"""
         if 'MOM1M' in factors:
             # 1个月动量
             mom1m = data['close'].pct_change(20)
@@ -195,6 +184,56 @@ class FactorAnalyzer:
             # 12个月动量
             mom12m = data['close'].pct_change(240)
             data = data.with_columns([mom12m.alias('mom12m')])
+
+        return data
+
+    def _calculate_factors(self, data, factors, kdj_window=14):
+        """
+        计算因子
+
+        Args:
+            data: 股票数据
+            factors: 因子列表
+            kdj_window: KDJ 的 RSV 周期（默认 14，与图表一致）
+
+        Returns:
+            pl.DataFrame: 包含因子的数据
+        """
+        # 计算各种因子
+        if 'MACD' in factors:
+            data = self._add_macd_factor(data)
+
+        if 'RSI' in factors:
+            data = self._add_rsi_factor(data)
+
+        if 'BOLL' in factors:
+            data = self._add_boll_factor(data)
+
+        if 'KDJ' in factors:
+            data = self._add_kdj_factor(data, kdj_window)
+
+        if 'MA' in factors:
+            data = self._add_ma_factor(data)
+
+        if 'ATR' in factors:
+            data = self._add_atr_factor(data)
+
+        if 'WR' in factors:
+            data = self._add_wr_factor(data)
+
+        if 'CCI' in factors:
+            data = self._add_cci_factor(data)
+
+        # 基本面因子：暂未接入真实数据源，跳过计算并在日志中提示
+        fundamental_factors = ['PE', 'PB', 'ROE', 'EPS']
+        missing = [f for f in fundamental_factors if f in factors]
+        if missing:
+            logger.warning(
+                f"基本面因子 {missing} 暂未接入真实数据源，已跳过。"
+                f"后续可对接 Tushare/BaoStock 基本面接口。"
+            )
+
+        data = self._add_momentum_factors(data, factors)
 
         return data
 

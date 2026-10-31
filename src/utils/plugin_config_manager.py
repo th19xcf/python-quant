@@ -82,7 +82,7 @@ class PluginConfigManager:
         """
         return self.plugin_config_models.get(plugin_name)
 
-    def create_plugin_config(self, plugin_name: str, default_config: Dict[str, Any] = None) -> Dict[str, Any]:
+    def create_plugin_config(self, plugin_name: str, default_config: Dict[str, Any] | None = None) -> Dict[str, Any]:
         """
         创建插件配置，合并默认配置、系统配置和环境变量
 
@@ -263,12 +263,11 @@ class PluginConfigManager:
         doc = f"# {plugin_name} 配置文档\n\n"
 
         for field_name, field in config_model.model_fields.items():
-            field_info = field.field_info
             doc += f"## {field_name}\n"
-            doc += f"- **类型**: {field.annotation.__name__}\n"
+            doc += f"- **类型**: {getattr(field.annotation, '__name__', str(field.annotation))}\n"
             doc += f"- **默认值**: {field.default}\n"
-            if field_info.description:
-                doc += f"- **描述**: {field_info.description}\n"
+            if field.description:
+                doc += f"- **描述**: {field.description}\n"
             doc += "\n"
 
         return doc
@@ -278,7 +277,7 @@ class PluginConfigManager:
 global_plugin_config_manager = None
 
 
-def get_plugin_config_manager(config: Config = None) -> PluginConfigManager:
+def get_plugin_config_manager(config: Config | None = None) -> PluginConfigManager:
     """
     获取或创建全局插件配置管理器实例
 

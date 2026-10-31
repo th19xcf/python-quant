@@ -53,13 +53,6 @@ class MainWindowTechTabMixin:
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar.setStyleSheet("background-color: #222222;")
 
-        # 添加周期按钮
-        self.period_buttons = {
-            '日线': QPushButton('📅 日线'),
-            '周线': QPushButton('📆 周线'),
-            '月线': QPushButton('📈 月线')
-        }
-
         # 设置按钮样式
         button_style = """
         QPushButton {
@@ -80,6 +73,25 @@ class MainWindowTechTabMixin:
         }
         """
 
+        self._build_period_buttons(toolbar_layout, button_style)
+        self._build_bar_count_input(toolbar_layout)
+        self._build_adjustment_button(toolbar_layout, button_style)
+        self._build_stock_switch_buttons(toolbar_layout, button_style)
+
+        # 添加工具栏到布局
+        tech_layout.addWidget(toolbar)
+
+    def _build_period_buttons(self, toolbar_layout, button_style):
+        """
+        创建周期切换按钮并默认选中日线
+        """
+        # 添加周期按钮
+        self.period_buttons = {
+            '日线': QPushButton('📅 日线'),
+            '周线': QPushButton('📆 周线'),
+            '月线': QPushButton('📈 月线')
+        }
+
         # 添加按钮到工具栏
         for name, button in self.period_buttons.items():
             button.setCheckable(True)
@@ -93,6 +105,10 @@ class MainWindowTechTabMixin:
         self.period_buttons['日线'].setChecked(True)
         self.current_period = '日线'
 
+    def _build_bar_count_input(self, toolbar_layout):
+        """
+        创建柱体数输入框并连接编辑完成事件
+        """
         # 添加显示柱体数量的输入框
         bar_count_label = QLabel("柱体数:")
         bar_count_label.setStyleSheet("color: #C0C0C0; font-family: 'Microsoft YaHei'; font-size: 12px;")
@@ -123,6 +139,10 @@ class MainWindowTechTabMixin:
         # 添加分隔符
         toolbar_layout.addSpacing(10)
 
+    def _build_adjustment_button(self, toolbar_layout, button_style):
+        """
+        创建复权按钮并默认选中前复权
+        """
         # 添加复权按钮
         self.adjustment_btn = QPushButton("📊 前复权")  # 默认显示前复权
         self.adjustment_btn.setStyleSheet(button_style)
@@ -134,6 +154,10 @@ class MainWindowTechTabMixin:
         # 添加分隔符
         toolbar_layout.addSpacing(10)
 
+    def _build_stock_switch_buttons(self, toolbar_layout, button_style):
+        """
+        创建用于切换相邻股票的上下箭头按钮
+        """
         # 添加上下箭头按钮用于切换相邻股票
         self.prev_stock_btn = QPushButton("⬆️ 上一只")
         self.prev_stock_btn.setStyleSheet(button_style)
@@ -146,9 +170,6 @@ class MainWindowTechTabMixin:
         self.next_stock_btn.setToolTip("切换到列表中的下一只股票")
         self.next_stock_btn.clicked.connect(self._on_next_stock_clicked)
         toolbar_layout.addWidget(self.next_stock_btn)
-
-        # 添加工具栏到布局
-        tech_layout.addWidget(toolbar)
 
     def _create_tech_charts(self, tech_layout):
         """
@@ -166,6 +187,20 @@ class MainWindowTechTabMixin:
         self.chart_splitter.setHandleWidth(2)
         self.chart_splitter.setOpaqueResize(True)
 
+        self._create_chart_plot_widgets()
+        self._create_chart_containers()
+        self._setup_chart_splitter()
+
+        # 添加分割器到容器布局
+        self.chart_layout.addWidget(self.chart_splitter, 1)  # 1表示垂直方向拉伸
+
+        # 添加容器到主布局
+        tech_layout.addWidget(self.chart_container, 1)  # 1表示垂直方向拉伸
+
+    def _create_chart_plot_widgets(self):
+        """
+        创建K线、成交量与KDJ三个画布，统一坐标轴样式并对齐竖轴
+        """
         # 创建K线图
         self.tech_plot_widget = pg.PlotWidget()
         self.tech_plot_widget.setBackground('#000000')
@@ -214,6 +249,10 @@ class MainWindowTechTabMixin:
         self.kdj_plot_widget.getAxis('left').setWidth(50)
         self.kdj_plot_widget.getAxis('bottom').setHeight(20)
 
+    def _create_chart_containers(self):
+        """
+        为三个画布分别创建容器并绑定点击选中窗口事件
+        """
         # 为K线图创建容器，只包含K线图
         self.tech_container = QWidget()
         self.tech_container_layout = QVBoxLayout(self.tech_container)
@@ -247,6 +286,10 @@ class MainWindowTechTabMixin:
         # 添加点击事件，用于选中窗口
         self.kdj_container.mousePressEvent = lambda event: self.indicator_interaction_manager.on_window_clicked(3)
 
+    def _setup_chart_splitter(self):
+        """
+        将三个容器加入分割器并设置分割比例
+        """
         # 添加图表到分割器
         self.chart_splitter.addWidget(self.tech_container)
         self.chart_splitter.addWidget(self.volume_container)
@@ -260,9 +303,3 @@ class MainWindowTechTabMixin:
 
         # 再使用setSizes设置初始尺寸，确保比例正确
         self.chart_splitter.setSizes([2000, 1000, 1000])
-
-        # 添加分割器到容器布局
-        self.chart_layout.addWidget(self.chart_splitter, 1)  # 1表示垂直方向拉伸
-
-        # 添加容器到主布局
-        tech_layout.addWidget(self.chart_container, 1)  # 1表示垂直方向拉伸

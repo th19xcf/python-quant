@@ -11,6 +11,38 @@ from src.utils.logger import logger
 class ChartManager:
     """图表管理器"""
 
+    # (window 属性名, ((字典键, DataFrame 列名), ...))
+    _INDICATOR_SERIES_TABLE = (
+        ('current_kdj_data', (('k', 'k'), ('d', 'd'), ('j', 'j'))),
+        ('current_rsi_data', (('rsi', 'rsi14'),)),
+        ('current_macd_data', (
+            ('macd', 'macd'), ('macd_signal', 'macd_signal'), ('macd_hist', 'macd_hist'),
+        )),
+        ('current_volume_data', (
+            ('volume', 'volume'), ('vol_ma5', 'vol_ma5'), ('vol_ma10', 'vol_ma10'),
+        )),
+        ('current_wr_data', (('wr1', 'wr1'), ('wr2', 'wr2'))),
+        ('current_boll_data', (('mb', 'mb'), ('up', 'up'), ('dn', 'dn'))),
+        ('current_dmi_data', (
+            ('pdi', 'pdi'), ('ndi', 'ndi'), ('adx', 'adx'), ('adxr', 'adxr'),
+        )),
+        ('current_trix_data', (('trix', 'trix'), ('trma', 'trma'))),
+        ('current_brar_data', (('br', 'br'), ('ar', 'ar'))),
+        ('current_vr_data', (('vr', 'vr'), ('mavr', 'mavr'))),
+        ('current_dma_data', (('dma', 'dma'), ('ama', 'ama'))),
+        ('current_expma_data', (('expma12', 'expma12'), ('expma50', 'expma50'))),
+        ('current_bbi_data', (('bbi', 'bbi'),)),
+        ('current_hsl_data', (
+            ('hsl', 'hsl'), ('hsl_ma5', 'hsl_ma5'), ('hsl_ma10', 'hsl_ma10'),
+        )),
+        ('current_lb_data', (('lb', 'lb'),)),
+        ('current_cyc_data', (
+            ('cyc5', 'cyc5'), ('cyc13', 'cyc13'),
+            ('cyc34', 'cyc34'), ('cyc_inf', 'cyc_inf'),
+        )),
+        ('current_cys_data', (('cys', 'cys'), ('cys_ma5', 'cys_ma5'))),
+    )
+
     def __init__(self, window):
         self.window = window
 
@@ -293,163 +325,170 @@ class ChartManager:
         self.save_indicator_data(df_pl)
 
         # 使用传入的indicator_name，而不是从window_indicators获取
-        current_indicator = indicator_name
+        renderer = self._label_renderer(indicator_name)
+        window.kdj_values_label.setText(renderer(df_pl))
 
-        # 使用 Polars 的 item() 方法获取最后一行数据，避免转换为 pandas
-        def get_latest_value(df, col):
-            """获取列的最后一个值"""
-            if col in df.columns:
-                return df[col].item(-1) if len(df) > 0 else None
-            return None
+    def _label_renderer(self, indicator_name):
+        """按指标名返回对应的标签渲染函数，未知指标回退到默认渲染。"""
+        return {
+            "KDJ": self._render_kdj_label,
+            "RSI": self._render_rsi_label,
+            "MACD": self._render_macd_label,
+            "WR": self._render_wr_label,
+            "BOLL": self._render_boll_label,
+            "DMI": self._render_dmi_label,
+            "TRIX": self._render_trix_label,
+            "BRAR": self._render_brar_label,
+            "DMA": self._render_dma_label,
+            "EXPMA": self._render_expma_label,
+            "BBI": self._render_bbi_label,
+            "HSL": self._render_hsl_label,
+            "LB": self._render_lb_label,
+            "CYC": self._render_cyc_label,
+            "CYS": self._render_cys_label,
+        }.get(indicator_name, self._render_default_label)
 
-        if current_indicator == "KDJ":
-            latest_k = get_latest_value(df_pl, 'k')
-            latest_d = get_latest_value(df_pl, 'd')
-            latest_j = get_latest_value(df_pl, 'j')
-            if latest_k is not None and latest_d is not None and latest_j is not None:
-                kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
-            else:
-                kdj_text = "<font color='white'>KDJ指标数据不可用</font>"
-            window.kdj_values_label.setText(kdj_text)
-        elif current_indicator == "RSI":
-            latest_rsi = get_latest_value(df_pl, 'rsi14')
-            if latest_rsi is not None:
-                rsi_text = f"<font color='blue'>RSI14: {latest_rsi:.2f}</font>"
-            else:
-                rsi_text = "<font color='white'>RSI指标数据不可用</font>"
-            window.kdj_values_label.setText(rsi_text)
-        elif current_indicator == "MACD":
-            latest_macd = get_latest_value(df_pl, 'macd')
-            latest_macd_signal = get_latest_value(df_pl, 'macd_signal')
-            latest_macd_hist = get_latest_value(df_pl, 'macd_hist')
-            if all(v is not None for v in [latest_macd, latest_macd_signal, latest_macd_hist]):
-                macd_hist_color = '#FF0000' if latest_macd_hist >= 0 else '#00FF00'
-                macd_text = f"<font color='white'>MACD(12,26,9) </font><font color='#FFFFFF'>DIF: {latest_macd:.2f}</font> <font color='#FFFF00'>DEA: {latest_macd_signal:.2f}</font> <font color='{macd_hist_color}'>MACD: {latest_macd_hist:.2f}</font>"
-            else:
-                macd_text = "<font color='white'>MACD指标数据不可用</font>"
-            window.kdj_values_label.setText(macd_text)
-        elif current_indicator == "WR":
-            latest_wr1 = get_latest_value(df_pl, 'wr1')
-            latest_wr2 = get_latest_value(df_pl, 'wr2')
-            if latest_wr1 is not None and latest_wr2 is not None:
-                wr_text = f"<font color='white'>WR(10,6) </font><font color='yellow'>WR1: {latest_wr1:.2f}</font> <font color='white'>WR2: {latest_wr2:.2f}</font>"
-            else:
-                wr_text = "<font color='white'>WR指标数据不可用</font>"
-            window.kdj_values_label.setText(wr_text)
-        elif current_indicator == "BOLL":
-            latest_mb = get_latest_value(df_pl, 'mb')
-            latest_up = get_latest_value(df_pl, 'up')
-            latest_dn = get_latest_value(df_pl, 'dn')
-            if all(v is not None for v in [latest_mb, latest_up, latest_dn]):
-                boll_text = f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='#00FF00'>DN: {latest_dn:.2f}</font>"
-            else:
-                boll_text = "<font color='white'>BOLL指标数据不可用</font>"
-            window.kdj_values_label.setText(boll_text)
-        elif current_indicator == "DMI":
-            latest_pdi = get_latest_value(df_pl, 'pdi')
-            latest_ndi = get_latest_value(df_pl, 'ndi')
-            latest_adx = get_latest_value(df_pl, 'adx')
-            latest_adxr = get_latest_value(df_pl, 'adxr')
-            if all(v is not None for v in [latest_pdi, latest_ndi, latest_adx, latest_adxr]):
-                dmi_text = f"<font color='#FFFFFF'>PDI: {latest_pdi:.2f}</font>  <font color='#FFFF00'>NDI: {latest_ndi:.2f}</font>  <font color='#FF00FF'>ADX: {latest_adx:.2f}</font>  <font color='#00FF00'>ADXR: {latest_adxr:.2f}</font>"
-            else:
-                dmi_text = "<font color='white'>DMI指标数据不可用</font>"
-            window.kdj_values_label.setText(dmi_text)
-        elif current_indicator == "TRIX":
-            latest_trix = get_latest_value(df_pl, 'trix')
-            latest_trma = get_latest_value(df_pl, 'trma')
-            if latest_trix is not None and latest_trma is not None:
-                trix_text = f"<font color='#FFFF00'>TRIX: {latest_trix:.2f}</font>  <font color='#FFFFFF'>TRMA: {latest_trma:.2f}</font>"
-            else:
-                trix_text = "<font color='white'>TRIX指标数据不可用</font>"
-            window.kdj_values_label.setText(trix_text)
-        elif current_indicator == "BRAR":
-            latest_br = get_latest_value(df_pl, 'br')
-            latest_ar = get_latest_value(df_pl, 'ar')
-            if latest_br is not None and latest_ar is not None:
-                brar_text = f"<font color='#FFFF00'>BR: {latest_br:.2f}</font>  <font color='#FFFFFF'>AR: {latest_ar:.2f}</font>"
-            else:
-                brar_text = "<font color='white'>BRAR指标数据不可用</font>"
-            window.kdj_values_label.setText(brar_text)
-        elif current_indicator == "DMA":
-            latest_dma = get_latest_value(df_pl, 'dma')
-            latest_ama = get_latest_value(df_pl, 'ama')
-            if latest_dma is not None and latest_ama is not None:
-                dma_text = f"<font color='white'>DMA(10,50): {latest_dma:.2f}</font>  <font color='yellow'>AMA: {latest_ama:.2f}</font>"
-            else:
-                dma_text = "<font color='white'>DMA指标数据不可用</font>"
-            window.kdj_values_label.setText(dma_text)
-        elif current_indicator == "EXPMA":
-            latest_expma12 = get_latest_value(df_pl, 'expma12')
-            latest_expma50 = get_latest_value(df_pl, 'expma50')
-            if latest_expma12 is not None and latest_expma50 is not None:
-                expma_text = f"<font color='white'>EXPMA(12,50) </font><font color='#FFFF00'>EXPMA12: {latest_expma12:.2f}</font> <font color='#FF00FF'>EXPMA50: {latest_expma50:.2f}</font>"
-            else:
-                expma_text = "<font color='white'>EXPMA指标数据不可用</font>"
-            window.kdj_values_label.setText(expma_text)
-        elif current_indicator == "BBI":
-            latest_bbi = get_latest_value(df_pl, 'bbi')
-            if latest_bbi is not None:
-                bbi_text = f"<font color='white'>BBI(3,6,12,24): {latest_bbi:.2f}</font>"
-            else:
-                bbi_text = "<font color='white'>BBI指标数据不可用</font>"
-            window.kdj_values_label.setText(bbi_text)
-        elif current_indicator == "HSL":
-            latest_hsl = get_latest_value(df_pl, 'hsl')
-            latest_hsl_ma5 = get_latest_value(df_pl, 'hsl_ma5')
-            latest_hsl_ma10 = get_latest_value(df_pl, 'hsl_ma10')
-            if latest_hsl is not None:
-                hsl_color = '#FF0000' if latest_hsl > 10 else '#FFA500' if latest_hsl > 5 else '#00BFFF'
-                hsl_text = f"<font color='{hsl_color}'>HSL: {latest_hsl:.2f}%</font>"
-                if latest_hsl_ma5 is not None:
-                    hsl_text += f"  <font color='white'>MA5: {latest_hsl_ma5:.2f}%</font>"
-                if latest_hsl_ma10 is not None:
-                    hsl_text += f"  <font color='cyan'>MA10: {latest_hsl_ma10:.2f}%</font>"
-            else:
-                hsl_text = "<font color='white'>HSL指标数据不可用</font>"
-            window.kdj_values_label.setText(hsl_text)
-        elif current_indicator == "LB":
-            latest_lb = get_latest_value(df_pl, 'lb')
-            if latest_lb is not None:
-                lb_color = '#FF0000' if latest_lb > 2 else '#FFA500' if latest_lb > 1.5 else '#00FF7F' if latest_lb > 1 else '#00BFFF'
-                lb_text = f"<font color='{lb_color}'>LB: {latest_lb:.2f}</font>"
-            else:
-                lb_text = "<font color='white'>LB指标数据不可用</font>"
-            window.kdj_values_label.setText(lb_text)
-        elif current_indicator == "CYC":
-            latest_cyc5 = get_latest_value(df_pl, 'cyc5')
-            latest_cyc13 = get_latest_value(df_pl, 'cyc13')
-            latest_cyc34 = get_latest_value(df_pl, 'cyc34')
-            latest_cyc_inf = get_latest_value(df_pl, 'cyc_inf')
-            if latest_cyc5 is not None and latest_cyc13 is not None:
-                cyc_text = f"<font color='#FFFF00'>CYC5: {latest_cyc5:.2f}</font> <font color='#FFA500'>CYC13: {latest_cyc13:.2f}</font>"
-                if latest_cyc34 is not None:
-                    cyc_text += f" <font color='#FF00FF'>CYC34: {latest_cyc34:.2f}</font>"
-                if latest_cyc_inf is not None:
-                    cyc_text += f" <font color='#00FFFF'>CYC∞: {latest_cyc_inf:.2f}</font>"
-            else:
-                cyc_text = "<font color='white'>CYC指标数据不可用</font>"
-            window.kdj_values_label.setText(cyc_text)
-        elif current_indicator == "CYS":
-            latest_cys = get_latest_value(df_pl, 'cys')
-            latest_cys_ma5 = get_latest_value(df_pl, 'cys_ma5')
-            if latest_cys is not None:
-                cys_color = '#FF0000' if latest_cys > 0 else '#00FF00'
-                cys_text = f"<font color='{cys_color}'>CYS: {latest_cys:.2f}%</font>"
-                if latest_cys_ma5 is not None:
-                    cys_text += f"  <font color='white'>MA5: {latest_cys_ma5:.2f}%</font>"
-            else:
-                cys_text = "<font color='white'>CYS指标数据不可用</font>"
-            window.kdj_values_label.setText(cys_text)
-        else:
-            latest_k = get_latest_value(df_pl, 'k')
-            latest_d = get_latest_value(df_pl, 'd')
-            latest_j = get_latest_value(df_pl, 'j')
-            if all(v is not None for v in [latest_k, latest_d, latest_j]):
-                kdj_text = f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
-            else:
-                kdj_text = "<font color='white'>指标数据不可用</font>"
-            window.kdj_values_label.setText(kdj_text)
+    @staticmethod
+    def _latest_value(df, col):
+        """获取列的最后一个值（Polars item，避免转 pandas）"""
+        if col in df.columns:
+            return df[col].item(-1) if len(df) > 0 else None
+        return None
+
+    def _render_kdj_label(self, df_pl) -> str:
+        latest_k = self._latest_value(df_pl, 'k')
+        latest_d = self._latest_value(df_pl, 'd')
+        latest_j = self._latest_value(df_pl, 'j')
+        if latest_k is not None and latest_d is not None and latest_j is not None:
+            return f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
+        return "<font color='white'>KDJ指标数据不可用</font>"
+
+    def _render_default_label(self, df_pl) -> str:
+        latest_k = self._latest_value(df_pl, 'k')
+        latest_d = self._latest_value(df_pl, 'd')
+        latest_j = self._latest_value(df_pl, 'j')
+        if all(v is not None for v in [latest_k, latest_d, latest_j]):
+            return f"<font color='white'>K: {latest_k:.2f}</font>  <font color='yellow'>D: {latest_d:.2f}</font>  <font color='magenta'>J: {latest_j:.2f}</font>"
+        return "<font color='white'>指标数据不可用</font>"
+
+    def _render_rsi_label(self, df_pl) -> str:
+        latest_rsi = self._latest_value(df_pl, 'rsi14')
+        if latest_rsi is not None:
+            return f"<font color='blue'>RSI14: {latest_rsi:.2f}</font>"
+        return "<font color='white'>RSI指标数据不可用</font>"
+
+    def _render_macd_label(self, df_pl) -> str:
+        latest_macd = self._latest_value(df_pl, 'macd')
+        latest_macd_signal = self._latest_value(df_pl, 'macd_signal')
+        latest_macd_hist = self._latest_value(df_pl, 'macd_hist')
+        if all(v is not None for v in [latest_macd, latest_macd_signal, latest_macd_hist]):
+            macd_hist_color = '#FF0000' if latest_macd_hist >= 0 else '#00FF00'
+            return f"<font color='white'>MACD(12,26,9) </font><font color='#FFFFFF'>DIF: {latest_macd:.2f}</font> <font color='#FFFF00'>DEA: {latest_macd_signal:.2f}</font> <font color='{macd_hist_color}'>MACD: {latest_macd_hist:.2f}</font>"
+        return "<font color='white'>MACD指标数据不可用</font>"
+
+    def _render_wr_label(self, df_pl) -> str:
+        latest_wr1 = self._latest_value(df_pl, 'wr1')
+        latest_wr2 = self._latest_value(df_pl, 'wr2')
+        if latest_wr1 is not None and latest_wr2 is not None:
+            return f"<font color='white'>WR(10,6) </font><font color='yellow'>WR1: {latest_wr1:.2f}</font> <font color='white'>WR2: {latest_wr2:.2f}</font>"
+        return "<font color='white'>WR指标数据不可用</font>"
+
+    def _render_boll_label(self, df_pl) -> str:
+        latest_mb = self._latest_value(df_pl, 'mb')
+        latest_up = self._latest_value(df_pl, 'up')
+        latest_dn = self._latest_value(df_pl, 'dn')
+        if all(v is not None for v in [latest_mb, latest_up, latest_dn]):
+            return f"<font color='white'>MB: {latest_mb:.2f}</font>  <font color='red'>UP: {latest_up:.2f}</font>  <font color='#00FF00'>DN: {latest_dn:.2f}</font>"
+        return "<font color='white'>BOLL指标数据不可用</font>"
+
+    def _render_dmi_label(self, df_pl) -> str:
+        latest_pdi = self._latest_value(df_pl, 'pdi')
+        latest_ndi = self._latest_value(df_pl, 'ndi')
+        latest_adx = self._latest_value(df_pl, 'adx')
+        latest_adxr = self._latest_value(df_pl, 'adxr')
+        if all(v is not None for v in [latest_pdi, latest_ndi, latest_adx, latest_adxr]):
+            return f"<font color='#FFFFFF'>PDI: {latest_pdi:.2f}</font>  <font color='#FFFF00'>NDI: {latest_ndi:.2f}</font>  <font color='#FF00FF'>ADX: {latest_adx:.2f}</font>  <font color='#00FF00'>ADXR: {latest_adxr:.2f}</font>"
+        return "<font color='white'>DMI指标数据不可用</font>"
+
+    def _render_trix_label(self, df_pl) -> str:
+        latest_trix = self._latest_value(df_pl, 'trix')
+        latest_trma = self._latest_value(df_pl, 'trma')
+        if latest_trix is not None and latest_trma is not None:
+            return f"<font color='#FFFF00'>TRIX: {latest_trix:.2f}</font>  <font color='#FFFFFF'>TRMA: {latest_trma:.2f}</font>"
+        return "<font color='white'>TRIX指标数据不可用</font>"
+
+    def _render_brar_label(self, df_pl) -> str:
+        latest_br = self._latest_value(df_pl, 'br')
+        latest_ar = self._latest_value(df_pl, 'ar')
+        if latest_br is not None and latest_ar is not None:
+            return f"<font color='#FFFF00'>BR: {latest_br:.2f}</font>  <font color='#FFFFFF'>AR: {latest_ar:.2f}</font>"
+        return "<font color='white'>BRAR指标数据不可用</font>"
+
+    def _render_dma_label(self, df_pl) -> str:
+        latest_dma = self._latest_value(df_pl, 'dma')
+        latest_ama = self._latest_value(df_pl, 'ama')
+        if latest_dma is not None and latest_ama is not None:
+            return f"<font color='white'>DMA(10,50): {latest_dma:.2f}</font>  <font color='yellow'>AMA: {latest_ama:.2f}</font>"
+        return "<font color='white'>DMA指标数据不可用</font>"
+
+    def _render_expma_label(self, df_pl) -> str:
+        latest_expma12 = self._latest_value(df_pl, 'expma12')
+        latest_expma50 = self._latest_value(df_pl, 'expma50')
+        if latest_expma12 is not None and latest_expma50 is not None:
+            return f"<font color='white'>EXPMA(12,50) </font><font color='#FFFF00'>EXPMA12: {latest_expma12:.2f}</font> <font color='#FF00FF'>EXPMA50: {latest_expma50:.2f}</font>"
+        return "<font color='white'>EXPMA指标数据不可用</font>"
+
+    def _render_bbi_label(self, df_pl) -> str:
+        latest_bbi = self._latest_value(df_pl, 'bbi')
+        if latest_bbi is not None:
+            return f"<font color='white'>BBI(3,6,12,24): {latest_bbi:.2f}</font>"
+        return "<font color='white'>BBI指标数据不可用</font>"
+
+    def _render_hsl_label(self, df_pl) -> str:
+        latest_hsl = self._latest_value(df_pl, 'hsl')
+        latest_hsl_ma5 = self._latest_value(df_pl, 'hsl_ma5')
+        latest_hsl_ma10 = self._latest_value(df_pl, 'hsl_ma10')
+        if latest_hsl is None:
+            return "<font color='white'>HSL指标数据不可用</font>"
+        hsl_color = '#FF0000' if latest_hsl > 10 else '#FFA500' if latest_hsl > 5 else '#00BFFF'
+        hsl_text = f"<font color='{hsl_color}'>HSL: {latest_hsl:.2f}%</font>"
+        if latest_hsl_ma5 is not None:
+            hsl_text += f"  <font color='white'>MA5: {latest_hsl_ma5:.2f}%</font>"
+        if latest_hsl_ma10 is not None:
+            hsl_text += f"  <font color='cyan'>MA10: {latest_hsl_ma10:.2f}%</font>"
+        return hsl_text
+
+    def _render_lb_label(self, df_pl) -> str:
+        latest_lb = self._latest_value(df_pl, 'lb')
+        if latest_lb is not None:
+            lb_color = '#FF0000' if latest_lb > 2 else '#FFA500' if latest_lb > 1.5 else '#00FF7F' if latest_lb > 1 else '#00BFFF'
+            return f"<font color='{lb_color}'>LB: {latest_lb:.2f}</font>"
+        return "<font color='white'>LB指标数据不可用</font>"
+
+    def _render_cyc_label(self, df_pl) -> str:
+        latest_cyc5 = self._latest_value(df_pl, 'cyc5')
+        latest_cyc13 = self._latest_value(df_pl, 'cyc13')
+        latest_cyc34 = self._latest_value(df_pl, 'cyc34')
+        latest_cyc_inf = self._latest_value(df_pl, 'cyc_inf')
+        if latest_cyc5 is None or latest_cyc13 is None:
+            return "<font color='white'>CYC指标数据不可用</font>"
+        cyc_text = f"<font color='#FFFF00'>CYC5: {latest_cyc5:.2f}</font> <font color='#FFA500'>CYC13: {latest_cyc13:.2f}</font>"
+        if latest_cyc34 is not None:
+            cyc_text += f" <font color='#FF00FF'>CYC34: {latest_cyc34:.2f}</font>"
+        if latest_cyc_inf is not None:
+            cyc_text += f" <font color='#00FFFF'>CYC∞: {latest_cyc_inf:.2f}</font>"
+        return cyc_text
+
+    def _render_cys_label(self, df_pl) -> str:
+        latest_cys = self._latest_value(df_pl, 'cys')
+        latest_cys_ma5 = self._latest_value(df_pl, 'cys_ma5')
+        if latest_cys is None:
+            return "<font color='white'>CYS指标数据不可用</font>"
+        cys_color = '#FF0000' if latest_cys > 0 else '#00FF00'
+        cys_text = f"<font color='{cys_color}'>CYS: {latest_cys:.2f}%</font>"
+        if latest_cys_ma5 is not None:
+            cys_text += f"  <font color='white'>MA5: {latest_cys_ma5:.2f}%</font>"
+        return cys_text
 
     def save_indicator_data(self, df_pl):
         """保存指标数据，用于鼠标移动时更新指标数值 - 优化版本
@@ -464,97 +503,8 @@ class ChartManager:
                 return df_pl[col_name].to_numpy()
             return np.array([])
 
-        window.current_kdj_data = {
-            'k': get_col_array('k'),
-            'd': get_col_array('d'),
-            'j': get_col_array('j')
-        }
-
-        window.current_rsi_data = {
-            'rsi': get_col_array('rsi14')
-        }
-
-        window.current_macd_data = {
-            'macd': get_col_array('macd'),
-            'macd_signal': get_col_array('macd_signal'),
-            'macd_hist': get_col_array('macd_hist')
-        }
-
-        window.current_volume_data = {
-            'volume': get_col_array('volume'),
-            'vol_ma5': get_col_array('vol_ma5'),
-            'vol_ma10': get_col_array('vol_ma10')
-        }
-
-        window.current_wr_data = {
-            'wr1': get_col_array('wr1'),
-            'wr2': get_col_array('wr2')
-        }
-
-        window.current_boll_data = {
-            'mb': get_col_array('mb'),
-            'up': get_col_array('up'),
-            'dn': get_col_array('dn')
-        }
-
-        window.current_dmi_data = {
-            'pdi': get_col_array('pdi'),
-            'ndi': get_col_array('ndi'),
-            'adx': get_col_array('adx'),
-            'adxr': get_col_array('adxr')
-        }
-
-        window.current_trix_data = {
-            'trix': get_col_array('trix'),
-            'trma': get_col_array('trma')
-        }
-
-        window.current_brar_data = {
-            'br': get_col_array('br'),
-            'ar': get_col_array('ar')
-        }
-
-        window.current_vr_data = {
-            'vr': get_col_array('vr'),
-            'mavr': get_col_array('mavr')
-        }
-
-        window.current_dma_data = {
-            'dma': get_col_array('dma'),
-            'ama': get_col_array('ama')
-        }
-
-        # 新增指标数据保存
-        window.current_expma_data = {
-            'expma12': get_col_array('expma12'),
-            'expma50': get_col_array('expma50')
-        }
-
-        window.current_bbi_data = {
-            'bbi': get_col_array('bbi')
-        }
-
-        window.current_hsl_data = {
-            'hsl': get_col_array('hsl'),
-            'hsl_ma5': get_col_array('hsl_ma5'),
-            'hsl_ma10': get_col_array('hsl_ma10')
-        }
-
-        window.current_lb_data = {
-            'lb': get_col_array('lb')
-        }
-
-        window.current_cyc_data = {
-            'cyc5': get_col_array('cyc5'),
-            'cyc13': get_col_array('cyc13'),
-            'cyc34': get_col_array('cyc34'),
-            'cyc_inf': get_col_array('cyc_inf')
-        }
-
-        window.current_cys_data = {
-            'cys': get_col_array('cys'),
-            'cys_ma5': get_col_array('cys_ma5')
-        }
+        for attr, fields in self._INDICATOR_SERIES_TABLE:
+            setattr(window, attr, {key: get_col_array(col) for key, col in fields})
 
     def plot_k_line(self, df, stock_name, stock_code):
         """委托主窗口实现K线绘制"""

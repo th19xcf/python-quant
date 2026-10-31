@@ -125,7 +125,7 @@ class APIRouter:
         self._routes: Dict[str, Dict[str, Any]] = {}
         self._version_routes: Dict[str, Dict[str, Any]] = {}
 
-    def register_route(self, path: str, handler: Callable, methods: List[str] = None, **kwargs):
+    def register_route(self, path: str, handler: Callable, methods: List[str] | None = None, **kwargs):
         """注册API路由
 
         Args:
@@ -143,7 +143,7 @@ class APIRouter:
             'kwargs': kwargs
         }
 
-    def register_versioned_route(self, version: Union[str, APIVersion], path: str, handler: Callable, methods: List[str] = None, **kwargs):
+    def register_versioned_route(self, version: Union[str, APIVersion], path: str, handler: Callable, methods: List[str] | None = None, **kwargs):
         """注册带版本的API路由
 
         Args:
@@ -231,7 +231,7 @@ class APIRequest:
         self.headers = headers or {}
         self.params = params or {}
         self.body = body
-        self._version = None
+        self._version: APIVersion | None = None
 
     @property
     def version(self) -> APIVersion | None:
@@ -276,7 +276,7 @@ class APIResponse:
         self.status_code = status_code
         self.data = data
         self.headers = headers or {}
-        self.error = error
+        self.error = error  # type: ignore[method-assign, assignment]
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式

@@ -121,70 +121,12 @@ class FundSection:
         window = self._w
 
         try:
-            # 切换到行情标签页并清空表格
-            window.tab_widget.setCurrentIndex(0)
-            window.stock_table.setRowCount(0)
-            window.stock_table.setSortingEnabled(False)
-
-            # 显示状态栏消息和进度条
-            window.statusBar().showMessage(f"加载{title}数据...", 0)
-            window.market_progress_bar.setVisible(True)
-            window.market_progress_bar.setValue(0)
-            QApplication.processEvents()
-
-            def load_funds_task(task_id=None, signals=None):
-                """后台加载基金数据"""
-                try:
-                    if signals:
-                        signals.progress.emit(task_id, 0, 100)
-
-                    funds = []
-                    source = self._get_fund_source(kind)
-
-                    if source is not None and not source.is_empty():
-                        fund_codes = []
-                        for row in source.iter_rows(named=True):
-                            ts_code = str(row.get('ts_code', '') or '').strip().upper()
-                            if not ts_code or not is_fund_code(ts_code):
-                                continue
-
-                            name = row.get('name', '')
-                            code = ts_code.split('.')[0]
-                            if not name:
-                                name = code
-                            fund_codes.append((code, name, ts_code))
-
-                        # 为每只基金获取真实交易数据
-                        added_codes = set()
-                        total = len(fund_codes)
-                        for i, (code, name, ts_code) in enumerate(fund_codes):
-                            if code in added_codes:
-                                continue
-                            real_data = self.get_real_fund_data(code, name, ts_code)
-                            if real_data:
-                                funds.append(real_data)
-                            else:
-                                logger.info(f"获取{title} {name}({code}) 真实数据失败，使用默认数据")
-                                funds.append(_default_fund_data(code, name))
-                            added_codes.add(code)
-                            if signals and total > 0:
-                                signals.progress.emit(task_id, int((i + 1) / total * 100), 100)
-
-                    if not funds:
-                        logger.info(f"未从数据表读取到{title}名称或行情数据")
-
-                    if signals:
-                        signals.progress.emit(task_id, 100, 100)
-
-                    return {"success": True, result_key: funds}
-                except (OSError, RuntimeError, ValueError) as e:
-                    logger.exception(f"加载{title}数据失败: {e}")
-                    return {"success": False, "message": f"加载{title}数据失败: {str(e)}"}
+            self._prepare_fund_display(window, title)
 
             current_task_id = global_task_manager.create_task(
                 f"加载{title}数据",
-                load_funds_task,
-                ()
+                self._load_funds_task,
+                (kind, title, result_key, is_fund_code)
             )
 
             def on_task_completed(task_id, result):
@@ -195,10 +137,7 @@ class FundSection:
 
                     if result["success"]:
                         funds = result.get(result_key, [])
-                        self._fill_fund_table(funds)
-                        if hasattr(window, 'table_interaction_manager'):
-                            window.table_interaction_manager.restore_sort_state()
-                        window.statusBar().showMessage(f"成功加载 {len(funds)} 只{title}数据", 3000)
+                        self._render_funds_result(window, funds, title)
                     else:
                         error_message = result.get("message", f"加载{title}数据失败")
                         window.statusBar().showMessage(error_message, 3000)
@@ -231,6 +170,75 @@ class FundSection:
 
             if kind == 'etf' and hasattr(window, 'table_interaction_manager'):
                 window.table_interaction_manager.restore_sort_state()
+
+    def _prepare_fund_display(self, window, title):
+        """切换到行情标签页、清空表格并显示加载状态。"""
+        # 切换到行情标签页并清空表格
+        window.tab_widget.setCurrentIndex(0)
+        window.stock_table.setRowCount(0)
+        window.stock_table.setSortingEnabled(False)
+
+        # 显示状态栏消息和进度条
+        window.statusBar().showMessage(f"加载{title}数据...", 0)
+        window.market_progress_bar.setVisible(True)
+        window.market_progress_bar.setValue(0)
+        QApplication.processEvents()
+
+    def _load_funds_task(self, kind, title, result_key, is_fund_code, task_id=None, signals=None):
+        """后台加载基金数据"""
+        try:
+            if signals:
+                signals.progress.emit(task_id, 0, 100)
+
+            funds = []
+            source = self._get_fund_source(kind)
+
+            if source is not None and not source.is_empty():
+                fund_codes = []
+                for row in source.iter_rows(named=True):
+                    ts_code = str(row.get('ts_code', '') or '').strip().upper()
+                    if not ts_code or not is_fund_code(ts_code):
+                        continue
+
+                    name = row.get('name', '')
+                    code = ts_code.split('.')[0]
+                    if not name:
+                        name = code
+                    fund_codes.append((code, name, ts_code))
+
+                # 为每只基金获取真实交易数据
+                added_codes = set()
+                total = len(fund_codes)
+                for i, (code, name, ts_code) in enumerate(fund_codes):
+                    if code in added_codes:
+                        continue
+                    real_data = self.get_real_fund_data(code, name, ts_code)
+                    if real_data:
+                        funds.append(real_data)
+                    else:
+                        logger.info(f"获取{title} {name}({code}) 真实数据失败，使用默认数据")
+                        funds.append(_default_fund_data(code, name))
+                    added_codes.add(code)
+                    if signals and total > 0:
+                        signals.progress.emit(task_id, int((i + 1) / total * 100), 100)
+
+            if not funds:
+                logger.info(f"未从数据表读取到{title}名称或行情数据")
+
+            if signals:
+                signals.progress.emit(task_id, 100, 100)
+
+            return {"success": True, result_key: funds}
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"加载{title}数据失败: {e}")
+            return {"success": False, "message": f"加载{title}数据失败: {str(e)}"}
+
+    def _render_funds_result(self, window, funds, title):
+        """填充基金表格、恢复排序并提示加载结果。"""
+        self._fill_fund_table(funds)
+        if hasattr(window, 'table_interaction_manager'):
+            window.table_interaction_manager.restore_sort_state()
+        window.statusBar().showMessage(f"成功加载 {len(funds)} 只{title}数据", 3000)
 
     # ------------------------------------------------------------------
     # 表格填充

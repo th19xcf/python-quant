@@ -149,7 +149,94 @@ def _is_already_preprocessed(df):
     return True
 
 
-def sample_data_polars(df, target_points=1000, strategy='adaptive'):  # noqa: C901
+def _sample_uniform_polars(df, target_points):
+    """均匀采样（LazyFrame 走 nth_sample，DataFrame 按间隔取点）。"""
+    if isinstance(df, pl.LazyFrame):
+        # 对于LazyFrame，使用nth_sample进行均匀采样，这是更高效的方式
+        return df.nth_sample(target_points)
+    # 对于DataFrame，使用nth_sample
+    data_len = len(df)
+    sample_interval = data_len // target_points
+    if sample_interval < 1:
+        sample_interval = 1
+    return df.nth(range(0, data_len, sample_interval)).head(target_points)
+
+
+def _sample_adaptive_polars(df, target_points):
+    """自适应采样：优先保留价格变化大的点，再均匀采样并补齐首尾。"""
+    if isinstance(df, pl.LazyFrame):
+        # 对于LazyFrame，返回原始数据，让Polars优化器处理
+        # 自适应采样需要多次数据扫描，对于LazyFrame可能效率不高
+        # 这里选择直接返回原始数据，避免触发不必要的计算
+        return df.head(target_points)
+    return _sample_adaptive_frame(df, target_points)
+
+
+def _sample_adaptive_frame(df, target_points):
+    """对 DataFrame 执行自适应采样。"""
+    data_len = len(df)
+    if data_len <= target_points:
+        return df
+
+    # 计算价格变化
+    df_with_change = df.with_columns(
+        pl.col('close').diff().abs().alias('price_change')
+    )
+
+    # 计算变化率的分位数
+    change_quantile = df_with_change['price_change'].quantile(0.75)
+
+    # 标记重要数据点
+    important_points = df_with_change.filter(pl.col('price_change') > change_quantile)
+    important_count = len(important_points)
+
+    if important_count >= target_points:
+        return important_points.head(target_points)
+
+    # 计算需要从非重要数据点中采样的数量
+    regular_count = target_points - important_count
+
+    # 从非重要数据点中采样
+    regular_points = df_with_change.filter(pl.col('price_change') <= change_quantile)
+    regular_len = len(regular_points)
+
+    if regular_len <= regular_count:
+        # 非重要数据点不足，直接合并
+        combined = important_points.vstack(regular_points)
+    else:
+        # 均匀采样非重要数据点
+        sample_interval = regular_len // regular_count
+        if sample_interval < 1:
+            sample_interval = 1
+        sampled_regular = regular_points.nth(range(0, regular_len, sample_interval)).head(regular_count)
+        combined = important_points.vstack(sampled_regular)
+
+    # 按时间排序
+    sampled_data = combined.sort(by=df.columns[0])
+
+    # 确保包含首尾数据点
+    first_point = df.head(1)
+    last_point = df.tail(1)
+
+    # 检查并添加首尾数据点
+    if not sampled_data.filter(pl.col(df.columns[0]) == first_point[0, df.columns[0]]).is_empty():
+        first_point = None
+    if not sampled_data.filter(pl.col(df.columns[0]) == last_point[0, df.columns[0]]).is_empty():
+        last_point = None
+
+    if first_point is not None:
+        sampled_data = first_point.vstack(sampled_data)
+    if last_point is not None:
+        sampled_data = sampled_data.vstack(last_point)
+
+    # 确保采样数量不超过目标数量
+    if len(sampled_data) > target_points:
+        sampled_data = sampled_data.head(target_points)
+
+    return sampled_data
+
+
+def sample_data_polars(df, target_points=1000, strategy='adaptive'):
     """
     对Polars数据进行采样，减少数据量，提高图表渲染速度
     支持多种采样策略，包括均匀采样和自适应采样
@@ -166,97 +253,15 @@ def sample_data_polars(df, target_points=1000, strategy='adaptive'):  # noqa: C9
     is_lazy = isinstance(df, pl.LazyFrame)
 
     # 1. 快速路径：如果目标点数大于等于数据行数，直接返回
-    if is_lazy:
-        # 对于LazyFrame，我们只能在必要时才执行计算
-        # 尝试使用lazy的方式估算行数，但这可能不总是准确
-        # 所以我们直接进入后续逻辑，让Polars优化器处理
-        pass
-    else:
-        data_len = len(df)
-        if data_len <= target_points:
-            return df
+    # 对于LazyFrame，我们只能在必要时才执行计算，直接交给后续逻辑
+    if not is_lazy and len(df) <= target_points:
+        return df
 
     if strategy == 'uniform':
-        if is_lazy:
-            # 对于LazyFrame，使用nth_sample进行均匀采样，这是更高效的方式
-            return df.nth_sample(target_points)
-        else:
-            # 对于DataFrame，使用nth_sample
-            data_len = len(df)
-            sample_interval = data_len // target_points
-            if sample_interval < 1:
-                sample_interval = 1
-            return df.nth(range(0, data_len, sample_interval)).head(target_points)
-    elif strategy == 'adaptive':
-        if is_lazy:
-            # 对于LazyFrame，返回原始数据，让Polars优化器处理
-            # 自适应采样需要多次数据扫描，对于LazyFrame可能效率不高
-            # 这里选择直接返回原始数据，避免触发不必要的计算
-            return df.head(target_points)
-        else:
-            # 对于DataFrame，执行自适应采样
-            data_len = len(df)
-            if data_len <= target_points:
-                return df
-
-            # 计算价格变化
-            df_with_change = df.with_columns(
-                pl.col('close').diff().abs().alias('price_change')
-            )
-
-            # 计算变化率的分位数
-            change_quantile = df_with_change['price_change'].quantile(0.75)
-
-            # 标记重要数据点
-            important_points = df_with_change.filter(pl.col('price_change') > change_quantile)
-            important_count = len(important_points)
-
-            if important_count >= target_points:
-                return important_points.head(target_points)
-
-            # 计算需要从非重要数据点中采样的数量
-            regular_count = target_points - important_count
-
-            # 从非重要数据点中采样
-            regular_points = df_with_change.filter(pl.col('price_change') <= change_quantile)
-            regular_len = len(regular_points)
-
-            if regular_len <= regular_count:
-                # 非重要数据点不足，直接合并
-                combined = important_points.vstack(regular_points)
-            else:
-                # 均匀采样非重要数据点
-                sample_interval = regular_len // regular_count
-                if sample_interval < 1:
-                    sample_interval = 1
-                sampled_regular = regular_points.nth(range(0, regular_len, sample_interval)).head(regular_count)
-                combined = important_points.vstack(sampled_regular)
-
-            # 按时间排序
-            sampled_data = combined.sort(by=df.columns[0])
-
-            # 确保包含首尾数据点
-            first_point = df.head(1)
-            last_point = df.tail(1)
-
-            # 检查并添加首尾数据点
-            if not sampled_data.filter(pl.col(df.columns[0]) == first_point[0, df.columns[0]]).is_empty():
-                first_point = None
-            if not sampled_data.filter(pl.col(df.columns[0]) == last_point[0, df.columns[0]]).is_empty():
-                last_point = None
-
-            if first_point is not None:
-                sampled_data = first_point.vstack(sampled_data)
-            if last_point is not None:
-                sampled_data = sampled_data.vstack(last_point)
-
-            # 确保采样数量不超过目标数量
-            if len(sampled_data) > target_points:
-                sampled_data = sampled_data.head(target_points)
-
-            return sampled_data
-    else:
-        raise ValueError(f"不支持的采样策略: {strategy}")
+        return _sample_uniform_polars(df, target_points)
+    if strategy == 'adaptive':
+        return _sample_adaptive_polars(df, target_points)
+    raise ValueError(f"不支持的采样策略: {strategy}")
 
 
 def calculate_macd_polars(df, fast_period=12, slow_period=26, signal_period=9):
@@ -672,6 +677,29 @@ def calculate_cr_polars(df, windows=None):
     return calculate_multiple_indicators_polars(df, ['cr'], cr_windows=windows)
 
 
+def _add_shared_window_columns(lazy_df, indicator_types, indicator_params):
+    """为 kdj/wr/boll 预计算共享的最高价/最低价窗口列。"""
+    need_high_low = any(indicator in indicator_types for indicator in ['kdj', 'wr', 'boll'])
+    if not need_high_low:
+        return lazy_df
+
+    # 收集实际使用的窗口大小
+    indicator_windows = collect_indicator_windows(indicator_types, indicator_params)
+    used_windows = merge_used_windows(indicator_windows)
+
+    # 只创建实际使用的窗口列；单次 with_columns 提交全部窗口表达式，
+    # 避免逐窗口生成独立的投影节点
+    # min_samples=1 确保从第一个数据点开始计算（与通达信 HHV/LLV 展示口径一致）
+    return lazy_df.with_columns([
+        expr
+        for window in used_windows
+        for expr in (
+            pl.col('high').rolling_max(window_size=window, min_samples=1).alias(f'high_n_{window}'),
+            pl.col('low').rolling_min(window_size=window, min_samples=1).alias(f'low_n_{window}'),
+        )
+    ])
+
+
 def calculate_multiple_indicators_polars(df, indicator_types=None, *, optimize_memory=False, **params):
     """
     统一的多指标批量计算函数，将所有指标计算合并到单个查询计划
@@ -698,29 +726,11 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, *, optimize_m
     indicator_params = get_indicator_params(**params)
 
     # 2. 预计算共享的窗口列（最高价、最低价的窗口统计）
-    need_high_low = any(indicator in indicator_types for indicator in ['kdj', 'wr', 'boll'])
-
     # 3. 使用Lazy API构建查询，确保所有计算在单个查询计划中执行
     lazy_df = df.lazy()
 
-    # 步骤1: 添加共享的窗口列
-    # 只创建实际需要的共享窗口列
-    if need_high_low:
-        # 收集实际使用的窗口大小
-        indicator_windows = collect_indicator_windows(indicator_types, indicator_params)
-        used_windows = merge_used_windows(indicator_windows)
-
-        # 只创建实际使用的窗口列；单次 with_columns 提交全部窗口表达式，
-        # 避免逐窗口生成独立的投影节点
-        # min_samples=1 确保从第一个数据点开始计算（与通达信 HHV/LLV 展示口径一致）
-        lazy_df = lazy_df.with_columns([
-            expr
-            for window in used_windows
-            for expr in (
-                pl.col('high').rolling_max(window_size=window, min_samples=1).alias(f'high_n_{window}'),
-                pl.col('low').rolling_min(window_size=window, min_samples=1).alias(f'low_n_{window}'),
-            )
-        ])
+    # 步骤1: 添加共享的窗口列（只创建实际需要的共享窗口列）
+    lazy_df = _add_shared_window_columns(lazy_df, indicator_types, indicator_params)
 
     # 步骤2: 计算趋势类指标
     lazy_df = calculate_trend_indicators(lazy_df, indicator_types, **params)

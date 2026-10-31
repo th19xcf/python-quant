@@ -373,11 +373,92 @@ def _log_index_sync_result(result):
     logger.info("=" * 60)
 
 
-def sync_tdx_index_to_database(config, db_manager):
-    """以通达信指数代码为基准同步 index_basic。"""
+def _prepare_index_sync(config, db_manager, session, result):
+    """同步准备阶段：扫描通达信指数代码并收集外部信息映射。"""
     from src.data.tdx_handler import TdxHandler
     from src.database.models.index import IndexBasic
 
+    tdx_handler = TdxHandler(config, db_manager)
+    tdx_codes = tdx_handler.get_stock_list()
+    tdx_index_codes = sorted({code for code in tdx_codes if _is_index_ts_code(code)})
+    tdx_index_code_set = set(tdx_index_codes)
+    result['total_tdx_indexes'] = len(tdx_index_codes)
+    logger.info(f"通达信指数代码数量: {len(tdx_index_codes)}")
+
+    if not tdx_index_codes:
+        logger.warning("通达信未发现指数代码，跳过同步")
+        return None
+
+    external_info_map = _collect_external_index_name_map(config)
+    logger.info(f"外部数据源可用指数信息映射总数: {len(external_info_map)}")
+
+    # 外部指数信息全失败时终止：继续执行会用 "指数XXXXXX" 占位名覆盖
+    # index_basic，把部分数据当成完整同步结果
+    if not external_info_map:
+        logger.error(
+            "Baostock 与 AkShare 指数基本信息均获取失败，终止 index_basic 同步，"
+            "避免写入占位名称"
+        )
+        return None
+
+    existing_index_map = {
+        row.ts_code: row
+        for row in session.query(IndexBasic).filter(IndexBasic.ts_code.in_(tdx_index_codes)).all()
+    }
+
+    return IndexSyncContext(
+        tdx_index_codes, tdx_index_code_set, external_info_map, existing_index_map
+    )
+
+
+def _upsert_index_from_sources(ctx, ts_code, session, result):
+    """按外部信息映射新增或更新单个指数记录。"""
+    source_info = ctx.external_info_map.get(ts_code, {})
+    source_name = FORCED_INDEX_NAME_MAP.get(
+        ts_code, _normalize_text_value(source_info.get('name'))
+    )
+    if not source_name:
+        source_name = _index_name_from_code(ts_code)
+        result['fallback_named_indexes'] += 1
+
+    market = ts_code.split('.')[-1]
+    inferred = _infer_index_meta(ts_code, source_name)
+    default_desc = _index_desc_text(source_name, ts_code)
+
+    _upsert_index_row(
+        ctx.existing_index_map.get(ts_code), ts_code, source_name,
+        source_info, inferred, market, default_desc, session, result
+    )
+
+
+def _run_index_sync(ctx, session, result):
+    """同步执行阶段：新增/更新指数、回填存量空白字段并清理过期记录。"""
+    from src.database.models.index import IndexBasic
+
+    _sync_each_with_recovery(
+        ctx.tdx_index_codes, lambda ts_code: _upsert_index_from_sources(ctx, ts_code, session, result),
+        result=result, failed_key='failed_indexes', session=session, label='指数',
+    )
+
+    # 第二阶段：存量空白字段回填
+    all_index_rows = session.query(IndexBasic).all()
+    _sync_each_with_recovery(
+        all_index_rows,
+        lambda row: _backfill_index_row(
+            row, ctx.external_info_map, ctx.tdx_index_code_set, result
+        ),
+        result=result, failed_key='failed_indexes', session=session,
+        label='指数', commit_interval=0, item_name=lambda row: row.ts_code,
+    )
+
+    # 第三阶段：删除不在通达信指数代码白名单中的历史记录
+    _delete_stale_index_rows(session, all_index_rows, ctx.tdx_index_code_set, result)
+
+    session.commit()
+
+
+def sync_tdx_index_to_database(config, db_manager):
+    """以通达信指数代码为基准同步 index_basic。"""
     result = {
         'total_tdx_indexes': 0,
         'updated_indexes': 0,
@@ -390,77 +471,10 @@ def sync_tdx_index_to_database(config, db_manager):
     }
 
     def prepare(session):
-        tdx_handler = TdxHandler(config, db_manager)
-        tdx_codes = tdx_handler.get_stock_list()
-        tdx_index_codes = sorted({code for code in tdx_codes if _is_index_ts_code(code)})
-        tdx_index_code_set = set(tdx_index_codes)
-        result['total_tdx_indexes'] = len(tdx_index_codes)
-        logger.info(f"通达信指数代码数量: {len(tdx_index_codes)}")
-
-        if not tdx_index_codes:
-            logger.warning("通达信未发现指数代码，跳过同步")
-            return None
-
-        external_info_map = _collect_external_index_name_map(config)
-        logger.info(f"外部数据源可用指数信息映射总数: {len(external_info_map)}")
-
-        # 外部指数信息全失败时终止：继续执行会用 "指数XXXXXX" 占位名覆盖
-        # index_basic，把部分数据当成完整同步结果
-        if not external_info_map:
-            logger.error(
-                "Baostock 与 AkShare 指数基本信息均获取失败，终止 index_basic 同步，"
-                "避免写入占位名称"
-            )
-            return None
-
-        existing_index_map = {
-            row.ts_code: row
-            for row in session.query(IndexBasic).filter(IndexBasic.ts_code.in_(tdx_index_codes)).all()
-        }
-
-        return IndexSyncContext(
-            tdx_index_codes, tdx_index_code_set, external_info_map, existing_index_map
-        )
+        return _prepare_index_sync(config, db_manager, session, result)
 
     def run(ctx, session):
-        def _upsert(ts_code):
-            source_info = ctx.external_info_map.get(ts_code, {})
-            source_name = FORCED_INDEX_NAME_MAP.get(
-                ts_code, _normalize_text_value(source_info.get('name'))
-            )
-            if not source_name:
-                source_name = _index_name_from_code(ts_code)
-                result['fallback_named_indexes'] += 1
-
-            market = ts_code.split('.')[-1]
-            inferred = _infer_index_meta(ts_code, source_name)
-            default_desc = _index_desc_text(source_name, ts_code)
-
-            _upsert_index_row(
-                ctx.existing_index_map.get(ts_code), ts_code, source_name,
-                source_info, inferred, market, default_desc, session, result
-            )
-
-        _sync_each_with_recovery(
-            ctx.tdx_index_codes, _upsert,
-            result=result, failed_key='failed_indexes', session=session, label='指数',
-        )
-
-        # 第二阶段：存量空白字段回填
-        all_index_rows = session.query(IndexBasic).all()
-        _sync_each_with_recovery(
-            all_index_rows,
-            lambda row: _backfill_index_row(
-                row, ctx.external_info_map, ctx.tdx_index_code_set, result
-            ),
-            result=result, failed_key='failed_indexes', session=session,
-            label='指数', commit_interval=0, item_name=lambda row: row.ts_code,
-        )
-
-        # 第三阶段：删除不在通达信指数代码白名单中的历史记录
-        _delete_stale_index_rows(session, all_index_rows, ctx.tdx_index_code_set, result)
-
-        session.commit()
+        _run_index_sync(ctx, session, result)
 
     return _execute_sync_flow(
         SyncFlow(

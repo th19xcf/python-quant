@@ -255,29 +255,9 @@ class BacktestEngine(BaseBacktestEngine):
             'mean_oos_total_return': sum(oos_returns) / len(oos_returns) if oos_returns else 0.0,
         }
 
-    def _run_parallel_backtests(self, param_combinations: List[Dict[str, float]],
-                                initial_capital: float, max_workers: int,
-                                context: Dict[str, Any] | None = None,
-                                data = None) -> List[Dict[str, Any]]:
-        """
-        并行运行回测
-
-        Args:
-            param_combinations: 参数组合列表
-            initial_capital: 初始资金
-            max_workers: 最大工作线程数
-            context: 主回测执行上下文 {ts_code, industry, is_st}，逐个子回测透传
-            data: 本次回测使用的数据段；None 表示全量 self.pl_df（OOS/滚动验证传子段）
-
-        Returns:
-            List[Dict[str, Any]]: 回测结果列表
-        """
-        import concurrent.futures
-        import os
+    def _should_use_process_pool(self, frame, param_combinations) -> bool:
+        """判断是否值得切进程池：需可 pickle 且预计串行耗时超过启动成本。"""
         import pickle
-
-        frame = self.pl_df if data is None else data
-        results = []
 
         # 进程池的启动成本必须由任务量摊销。Windows 用 spawn 启动子进程，每个
         # 子进程都要重新导入 numpy/polars/回测引擎（实测 2.1–2.4s）；而单次回测
@@ -303,27 +283,40 @@ class BacktestEngine(BaseBacktestEngine):
                 f"参数组合 {len(param_combinations)} 组 × {rows} 行，预计串行 "
                 f"{est_serial_ms:.0f}ms，低于进程池启动成本 {pool_startup_ms:.0f}ms，改用串行回测"
             )
+        return use_process_pool
 
-        if use_process_pool:
-            # 纯 Python 回测循环受 GIL 限制，线程无法并行 CPU 计算，改用进程池利用多核
-            workers = max(1, min(max_workers, len(param_combinations), os.cpu_count() or 1))
-            with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
-                future_to_param = {
-                    executor.submit(run_backtest_worker, BacktestEngine, self.strategy,
-                                    frame, self.cost_model, params, initial_capital,
-                                    self.risk_engine, context): params
-                    for params in param_combinations
-                }
+    def _run_process_pool_backtests(self, frame, param_combinations, initial_capital,
+                                    max_workers, context) -> List[Dict[str, Any]]:
+        """用进程池并行执行回测并收集结果。"""
+        import concurrent.futures
+        import os
 
-                for future in concurrent.futures.as_completed(future_to_param):
-                    try:
-                        result = future.result()
-                        results.append(result)
-                    except (OSError, RuntimeError, ValueError) as exc:
-                        logger.error(f"参数组合 {future_to_param[future]} 回测失败: {exc}")
+        results = []
+        # 纯 Python 回测循环受 GIL 限制，线程无法并行 CPU 计算，改用进程池利用多核
+        workers = max(1, min(max_workers, len(param_combinations), os.cpu_count() or 1))
+        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+            future_to_param = {
+                executor.submit(run_backtest_worker, BacktestEngine, self.strategy,
+                                frame, self.cost_model, params, initial_capital,
+                                self.risk_engine, context): params
+                for params in param_combinations
+            }
 
-            return results
+            for future in concurrent.futures.as_completed(future_to_param):
+                try:
+                    result = future.result()
+                    results.append(result)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    logger.error(f"参数组合 {future_to_param[future]} 回测失败: {exc}")
 
+        return results
+
+    def _run_thread_pool_backtests(self, frame, param_combinations, initial_capital,
+                                   max_workers, context) -> List[Dict[str, Any]]:
+        """用线程池并行执行回测并收集结果。"""
+        import concurrent.futures
+
+        results = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as thread_executor:
             future_to_param = {
                 thread_executor.submit(
@@ -340,6 +333,33 @@ class BacktestEngine(BaseBacktestEngine):
                     logger.error(f"参数组合 {future_to_param[future]} 回测失败: {exc}")
 
         return results
+
+    def _run_parallel_backtests(self, param_combinations: List[Dict[str, float]],
+                                initial_capital: float, max_workers: int,
+                                context: Dict[str, Any] | None = None,
+                                data = None) -> List[Dict[str, Any]]:
+        """
+        并行运行回测
+
+        Args:
+            param_combinations: 参数组合列表
+            initial_capital: 初始资金
+            max_workers: 最大工作线程数
+            context: 主回测执行上下文 {ts_code, industry, is_st}，逐个子回测透传
+            data: 本次回测使用的数据段；None 表示全量 self.pl_df（OOS/滚动验证传子段）
+
+        Returns:
+            List[Dict[str, Any]]: 回测结果列表
+        """
+        frame = self.pl_df if data is None else data
+
+        if self._should_use_process_pool(frame, param_combinations):
+            return self._run_process_pool_backtests(
+                frame, param_combinations, initial_capital, max_workers, context
+            )
+        return self._run_thread_pool_backtests(
+            frame, param_combinations, initial_capital, max_workers, context
+        )
 
     def _run_single_backtest(self, params: Dict[str, float], initial_capital: float,
                              context: Dict[str, Any] | None, data) -> Dict[str, Any]:

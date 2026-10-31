@@ -678,6 +678,100 @@ def _backfill_stock_row(row, source_info, session, config, result):
     return changed
 
 
+def _prepare_stock_sync(config, db_manager, session, result):
+    """同步准备阶段：扫描通达信代码、清理非股票记录并准备外部基本信息。"""
+    from src.data.akshare_handler import AkShareHandler
+    from src.data.baostock_handler import BaostockHandler
+    from src.data.tdx_handler import TdxHandler
+
+    tdx_handler = TdxHandler(config, db_manager)
+
+    raw_tdx_codes = tdx_handler.get_stock_list()
+    tdx_stock_codes = [
+        code for code in raw_tdx_codes
+        if (not _is_index_ts_code(code)) and (not _is_fund_ts_code(code))
+    ]
+    result['total_tdx_stocks'] = len(tdx_stock_codes)
+    logger.info(
+        f"通达信原始代码数: {len(raw_tdx_codes)}，"
+        f"过滤基金/指数后个股数: {len(tdx_stock_codes)}"
+    )
+
+    if not tdx_stock_codes:
+        logger.warning("通达信数据源没有找到任何股票数据")
+        return None
+
+    existing_codes, _ = _prune_non_stock_rows(session, result)
+
+    new_codes = [code for code in tdx_stock_codes if code not in existing_codes]
+    result['new_stocks'] = len(new_codes)
+    logger.info(f"发现 {len(new_codes)} 只新股票需要添加到数据库")
+
+    baostock_handler = BaostockHandler(config, db_manager)
+    akshare_handler = AkShareHandler(config, db_manager)
+
+    baostock_basic, akshare_basic, baostock_industry_map = _fetch_external_stock_basic(
+        baostock_handler, akshare_handler
+    )
+
+    # 两个外部基本信息源全部失败时终止同步：继续执行只会把占位/缺失字段
+    # 当作完整数据写入 stock_basic，且会误删存量记录
+    if baostock_basic is None and akshare_basic is None:
+        logger.error(
+            "Baostock 与 AkShare 股票基本信息均获取失败，终止本次股票同步，"
+            "避免以部分数据覆盖 stock_basic"
+        )
+        return None
+
+    merged_basic = merge_stock_basic(baostock_basic, akshare_basic, set())
+
+    # 行业字段优先采用 Baostock 行业映射，随后按需用 AkShare 兜底
+    _apply_baostock_industry(merged_basic, baostock_industry_map)
+    _apply_akshare_industry_fallback(merged_basic, tdx_stock_codes)
+
+    return StockSyncContext(
+        config=config,
+        db_manager=db_manager,
+        result=result,
+        session=session,
+        baostock_handler=baostock_handler,
+        akshare_handler=akshare_handler,
+        existing_codes=existing_codes,
+        new_codes=new_codes,
+        tdx_stock_codes=tdx_stock_codes,
+        merged_basic=merged_basic,
+    )
+
+
+def _run_stock_sync(ctx, session, config, result):
+    """同步执行阶段：新增股票并回填 stock_basic 存量信息，最后提交。"""
+    from src.database.models.stock import StockBasic
+
+    if ctx.new_codes:
+        _process_single_stock_batch(StockBatchContext(
+            ctx.new_codes, ctx.merged_basic, ctx.existing_codes, session,
+            ctx.baostock_handler, ctx.akshare_handler, result
+        ))
+    else:
+        logger.info("所有通达信股票都已存在，跳过新增阶段，继续执行存量回填")
+
+    # 第二阶段：回填并刷新 stock_basic 存量信息
+    def _backfill(row):
+        if _is_index_ts_code(row.ts_code) or _is_fund_ts_code(row.ts_code, row.name, row.market):
+            return
+        source_info = ctx.merged_basic.get(row.ts_code, {})
+        if _backfill_stock_row(row, source_info, session, config, result):
+            result['updated_stocks'] += 1
+
+    _sync_each_with_recovery(
+        session.query(StockBasic).all(), _backfill,
+        result=result, failed_key='failed_stocks', session=session,
+        label='股票', commit_interval=0, item_name=lambda row: row.ts_code,
+    )
+
+    _finalize_database_commit(session, result)
+
+
 def sync_tdx_stock_to_database(config, db_manager):
     """
     从通达信数据源同步股票信息到数据库。
@@ -688,11 +782,6 @@ def sync_tdx_stock_to_database(config, db_manager):
     3. 新增股票：通过 baostock/akshare 获取完整信息后插入
     4. 存量股票：回填/刷新空白字段
     """
-    from src.data.akshare_handler import AkShareHandler
-    from src.data.baostock_handler import BaostockHandler
-    from src.data.tdx_handler import TdxHandler
-    from src.database.models.stock import StockBasic
-
     result = {
         'total_tdx_stocks': 0,
         'existing_stocks': 0,
@@ -706,88 +795,10 @@ def sync_tdx_stock_to_database(config, db_manager):
     }
 
     def prepare(session):
-        tdx_handler = TdxHandler(config, db_manager)
-
-        raw_tdx_codes = tdx_handler.get_stock_list()
-        tdx_stock_codes = [
-            code for code in raw_tdx_codes
-            if (not _is_index_ts_code(code)) and (not _is_fund_ts_code(code))
-        ]
-        result['total_tdx_stocks'] = len(tdx_stock_codes)
-        logger.info(
-            f"通达信原始代码数: {len(raw_tdx_codes)}，"
-            f"过滤基金/指数后个股数: {len(tdx_stock_codes)}"
-        )
-
-        if not tdx_stock_codes:
-            logger.warning("通达信数据源没有找到任何股票数据")
-            return None
-
-        existing_codes, _ = _prune_non_stock_rows(session, result)
-
-        new_codes = [code for code in tdx_stock_codes if code not in existing_codes]
-        result['new_stocks'] = len(new_codes)
-        logger.info(f"发现 {len(new_codes)} 只新股票需要添加到数据库")
-
-        baostock_handler = BaostockHandler(config, db_manager)
-        akshare_handler = AkShareHandler(config, db_manager)
-
-        baostock_basic, akshare_basic, baostock_industry_map = _fetch_external_stock_basic(
-            baostock_handler, akshare_handler
-        )
-
-        # 两个外部基本信息源全部失败时终止同步：继续执行只会把占位/缺失字段
-        # 当作完整数据写入 stock_basic，且会误删存量记录
-        if baostock_basic is None and akshare_basic is None:
-            logger.error(
-                "Baostock 与 AkShare 股票基本信息均获取失败，终止本次股票同步，"
-                "避免以部分数据覆盖 stock_basic"
-            )
-            return None
-
-        merged_basic = merge_stock_basic(baostock_basic, akshare_basic, set())
-
-        # 行业字段优先采用 Baostock 行业映射，随后按需用 AkShare 兜底
-        _apply_baostock_industry(merged_basic, baostock_industry_map)
-        _apply_akshare_industry_fallback(merged_basic, tdx_stock_codes)
-
-        return StockSyncContext(
-            config=config,
-            db_manager=db_manager,
-            result=result,
-            session=session,
-            baostock_handler=baostock_handler,
-            akshare_handler=akshare_handler,
-            existing_codes=existing_codes,
-            new_codes=new_codes,
-            tdx_stock_codes=tdx_stock_codes,
-            merged_basic=merged_basic,
-        )
+        return _prepare_stock_sync(config, db_manager, session, result)
 
     def run(ctx, session):
-        if ctx.new_codes:
-            _process_single_stock_batch(StockBatchContext(
-                ctx.new_codes, ctx.merged_basic, ctx.existing_codes, session,
-                ctx.baostock_handler, ctx.akshare_handler, result
-            ))
-        else:
-            logger.info("所有通达信股票都已存在，跳过新增阶段，继续执行存量回填")
-
-        # 第二阶段：回填并刷新 stock_basic 存量信息
-        def _backfill(row):
-            if _is_index_ts_code(row.ts_code) or _is_fund_ts_code(row.ts_code, row.name, row.market):
-                return
-            source_info = ctx.merged_basic.get(row.ts_code, {})
-            if _backfill_stock_row(row, source_info, session, config, result):
-                result['updated_stocks'] += 1
-
-        _sync_each_with_recovery(
-            session.query(StockBasic).all(), _backfill,
-            result=result, failed_key='failed_stocks', session=session,
-            label='股票', commit_interval=0, item_name=lambda row: row.ts_code,
-        )
-
-        _finalize_database_commit(session, result)
+        _run_stock_sync(ctx, session, config, result)
 
     return _execute_sync_flow(
         SyncFlow(

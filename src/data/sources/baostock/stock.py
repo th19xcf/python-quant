@@ -65,59 +65,8 @@ class BaostockStockMixin:
                 logger.info("离线模式下，跳过股票基本信息存储")
                 return stock_basic_df  # 离线模式下返回Polars DataFrame
 
-            # 数据清洗和标准化
-            from src.database.models.stock import StockBasic
-
-            # 为了避免事务问题，只更新默认股票
-            default_stocks = ["600000", "000001", "300001"]
-
-            # 遍历默认股票，进行清洗和存储
-            for symbol in default_stocks:
-                try:
-                    # 从Baostock数据中查找对应的股票信息（统一代码转换工具）
-                    baostock_code = to_baostock_code(symbol)
-                    stock_row = stock_basic_df.filter(pl.col('code') == baostock_code)
-
-                    if stock_row.is_empty():
-                        logger.warning(f"未找到股票{symbol}的基本信息")
-                        continue
-
-                    # 获取第一条匹配的记录
-                    row = stock_row.row(named=True)
-                    name = row['code_name']
-                    baostock_code = row['code']  # 格式如 sh.600000, sz.000001, bj.920181
-
-                    # 统一转换：baostock 格式 -> 标准 ts_code
-                    ts_code = to_ts_code(baostock_code)
-                    symbol = to_symbol(baostock_code)
-
-                    # 截断过长的股票名称（数据库字段限制20个字符）
-                    if len(name) > 20:
-                        name = name[:20]  # 截断到20个字符
-
-                    # 查询股票是否已存在
-                    stock = self.session.query(StockBasic).filter_by(ts_code=ts_code).first()
-
-                    if stock:
-                        # 更新现有股票信息
-                        stock.name = name
-                        stock.symbol = symbol
-                    else:
-                        # 创建新股票信息
-                        stock = StockBasic(
-                            ts_code=ts_code,
-                            symbol=symbol,
-                            name=name
-                        )
-                        self.session.add(stock)
-
-                except (ConnectionError, TimeoutError, OSError) as row_e:
-                    logger.exception(f"处理股票{symbol}基本信息失败: {row_e}")
-                    continue
-
-            # 提交事务
-            self.session.commit()
-            logger.info("股票基本信息更新完成")
+            # 数据清洗、存储并提交事务
+            self._persist_default_stock_basics(stock_basic_df)
             return stock_basic_df  # 返回Polars DataFrame
 
         except (ConnectionError, TimeoutError, OSError) as e:
@@ -129,7 +78,66 @@ class BaostockStockMixin:
             logger.exception(f"从Baostock获取股票基本信息失败: {e}")
             raise
 
-    def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, adjustflag: str = "3"):  # noqa: C901
+    def _persist_default_stock_basics(self, stock_basic_df):
+        """清洗默认股票的基本信息并写库，最后提交事务"""
+        # 数据清洗和标准化
+        from src.database.models.stock import StockBasic
+
+        # 为了避免事务问题，只更新默认股票
+        default_stocks = ["600000", "000001", "300001"]
+
+        # 遍历默认股票，进行清洗和存储
+        for symbol in default_stocks:
+            try:
+                self._upsert_stock_basic_row(stock_basic_df, symbol, StockBasic)
+            except (ConnectionError, TimeoutError, OSError) as row_e:
+                logger.exception(f"处理股票{symbol}基本信息失败: {row_e}")
+                continue
+
+        # 提交事务
+        self.session.commit()
+        logger.info("股票基本信息更新完成")
+
+    def _upsert_stock_basic_row(self, stock_basic_df, symbol, model):
+        """按 symbol 从上游数据取出单只股票信息并写入库（已存在则更新）"""
+        # 从Baostock数据中查找对应的股票信息（统一代码转换工具）
+        baostock_code = to_baostock_code(symbol)
+        stock_row = stock_basic_df.filter(pl.col('code') == baostock_code)
+
+        if stock_row.is_empty():
+            logger.warning(f"未找到股票{symbol}的基本信息")
+            return
+
+        # 获取第一条匹配的记录
+        row = stock_row.row(named=True)
+        name = row['code_name']
+        baostock_code = row['code']  # 格式如 sh.600000, sz.000001, bj.920181
+
+        # 统一转换：baostock 格式 -> 标准 ts_code
+        ts_code = to_ts_code(baostock_code)
+        symbol = to_symbol(baostock_code)
+
+        # 截断过长的股票名称（数据库字段限制20个字符）
+        if len(name) > 20:
+            name = name[:20]  # 截断到20个字符
+
+        # 查询股票是否已存在
+        stock = self.session.query(model).filter_by(ts_code=ts_code).first()
+
+        if stock:
+            # 更新现有股票信息
+            stock.name = name
+            stock.symbol = symbol
+        else:
+            # 创建新股票信息
+            stock = model(
+                ts_code=ts_code,
+                symbol=symbol,
+                name=name
+            )
+            self.session.add(stock)
+
+    def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, adjustflag: str = "3"):
         """
         更新股票日线数据
 
@@ -150,17 +158,7 @@ class BaostockStockMixin:
                 logger.warning("Baostock登录失败，无法获取股票日线数据")
                 return
 
-            # 如果没有指定股票代码，从数据库获取所有股票代码
-            if not ts_codes:
-                if self.session:
-                    from src.database.models.stock import StockBasic
-                    stock_basics = self.session.query(StockBasic.ts_code).all()
-                    # 保持标准 ts_code 格式（600000.SH），查询时再转换为 baostock 格式
-                    ts_codes = [sb.ts_code for sb in stock_basics]
-                else:
-                    # 离线模式下使用默认股票代码
-                    ts_codes = self._get_default_codes('stock')
-                    logger.info(f"离线模式下，使用默认股票代码列表: {ts_codes}")
+            ts_codes = self._resolve_stock_daily_codes(ts_codes)
 
             if not ts_codes:
                 logger.warning("没有需要更新的股票代码")
@@ -177,73 +175,8 @@ class BaostockStockMixin:
             # 遍历股票代码，获取日线数据
             for ts_code in ts_codes:
                 try:
-                    logger.info(f"正在获取{ts_code}的日线数据")
-
-                    # 统一转换：写库用标准 ts_code，API 查询用 baostock 格式
-                    std_code = to_ts_code(ts_code)
-                    bs_code = to_baostock_code(ts_code)
-
-                    # 使用Baostock获取股票日线数据
-                    rs = bs.query_history_k_data_plus(
-                        bs_code,
-                        schema.DAILY_FIELDS,
-                        start_date=start_date,
-                        end_date=end_date,
-                        frequency="d",
-                        adjustflag=adjustflag  # 使用传入的复权参数
-                    )
-
-                    # 检查rs是否为None
-                    if rs is None:
-                        logger.warning(f"Baostock API返回None，无法获取{ts_code}的日线数据")
-                        continue
-
-                    # 获取数据
-                    try:
-                        stock_daily_pd = rs.get_data()
-                    # 兜底理由：单只股票取数失败跳过，不中断批量
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(f"获取{ts_code}数据失败: {e}")
-                        continue
-
-                    # 转换为Polars DataFrame
-                    stock_daily_df = pl.from_pandas(stock_daily_pd)
-
-                    if stock_daily_df.is_empty():
-                        logger.warning(f"{ts_code}在{start_date}至{end_date}期间没有日线数据")
-                        continue
-
-                    logger.info(f"获取到{ts_code}的{stock_daily_df.height}条日线数据")
-
-                    # 离线模式下，只获取数据不存储
-                    if not self.session:
-                        result[std_code] = stock_daily_df
-                        logger.info(f"离线模式下，获取{std_code}的日线数据完成")
-                        continue
-
-                    # 初始化最早交易日期
-                    earliest_date = None
-                    daily_rows = []
-
-                    # 遍历数据，转换为待写入行（不合格行跳过）
-                    for row in stock_daily_df.iter_rows(named=True):
-                        try:
-                            record = schema.daily_row_to_record(row, std_code)
-                            trade_date = record['trade_date']
-
-                            # 更新最早交易日期
-                            if earliest_date is None or trade_date < earliest_date:
-                                earliest_date = trade_date
-
-                            daily_rows.append(record)
-                        except (ConnectionError, TimeoutError, OSError) as row_e:
-                            logger.exception(f"处理股票日线数据失败: {row_e}")
-                            continue
-
-                    # 跨表写（stock_daily + stock_basic）必须同一事务提交
-                    self._persist_stock_daily(std_code, daily_rows, earliest_date)
-
-                    logger.info(f"{ts_code}的日线数据更新完成")
+                    self._sync_stock_daily_one(
+                        ts_code, start_date, end_date, adjustflag, result)
 
                 except (ConnectionError, TimeoutError, OSError) as e:
                     if self.session:
@@ -260,6 +193,99 @@ class BaostockStockMixin:
                 self.session.rollback()
             logger.exception(f"更新股票日线数据失败: {e}")
             raise
+
+    def _resolve_stock_daily_codes(self, ts_codes: List[str] = None):
+        """解析待更新的股票代码：未指定时回落到数据库或离线默认列表"""
+        # 如果没有指定股票代码，从数据库获取所有股票代码
+        if ts_codes:
+            return ts_codes
+        if self.session:
+            from src.database.models.stock import StockBasic
+            stock_basics = self.session.query(StockBasic.ts_code).all()
+            # 保持标准 ts_code 格式（600000.SH），查询时再转换为 baostock 格式
+            return [sb.ts_code for sb in stock_basics]
+        # 离线模式下使用默认股票代码
+        codes = self._get_default_codes('stock')
+        logger.info(f"离线模式下，使用默认股票代码列表: {codes}")
+        return codes
+
+    @staticmethod
+    def _build_stock_daily_rows(stock_daily_df, std_code):
+        """转换为待写入行（不合格行跳过），并返回最早交易日期"""
+        # 初始化最早交易日期
+        earliest_date = None
+        daily_rows = []
+
+        # 遍历数据，转换为待写入行（不合格行跳过）
+        for row in stock_daily_df.iter_rows(named=True):
+            try:
+                record = schema.daily_row_to_record(row, std_code)
+                trade_date = record['trade_date']
+
+                # 更新最早交易日期
+                if earliest_date is None or trade_date < earliest_date:
+                    earliest_date = trade_date
+
+                daily_rows.append(record)
+            except (ConnectionError, TimeoutError, OSError) as row_e:
+                logger.exception(f"处理股票日线数据失败: {row_e}")
+                continue
+
+        return daily_rows, earliest_date
+
+    def _sync_stock_daily_one(self, ts_code, start_date, end_date, adjustflag, result):
+        """同步单只股票的日线数据（离线模式仅收集结果）"""
+        logger.info(f"正在获取{ts_code}的日线数据")
+
+        # 统一转换：写库用标准 ts_code，API 查询用 baostock 格式
+        std_code = to_ts_code(ts_code)
+        bs_code = to_baostock_code(ts_code)
+
+        # 使用Baostock获取股票日线数据
+        rs = bs.query_history_k_data_plus(
+            bs_code,
+            schema.DAILY_FIELDS,
+            start_date=start_date,
+            end_date=end_date,
+            frequency="d",
+            adjustflag=adjustflag  # 使用传入的复权参数
+        )
+
+        # 检查rs是否为None
+        if rs is None:
+            logger.warning(f"Baostock API返回None，无法获取{ts_code}的日线数据")
+            return
+
+        # 获取数据
+        try:
+            stock_daily_pd = rs.get_data()
+        # 兜底理由：单只股票取数失败跳过，不中断批量
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"获取{ts_code}数据失败: {e}")
+            return
+
+        # 转换为Polars DataFrame
+        stock_daily_df = pl.from_pandas(stock_daily_pd)
+
+        if stock_daily_df.is_empty():
+            logger.warning(f"{ts_code}在{start_date}至{end_date}期间没有日线数据")
+            return
+
+        logger.info(f"获取到{ts_code}的{stock_daily_df.height}条日线数据")
+
+        # 离线模式下，只获取数据不存储
+        if not self.session:
+            result[std_code] = stock_daily_df
+            logger.info(f"离线模式下，获取{std_code}的日线数据完成")
+            return
+
+        daily_rows, earliest_date = self._build_stock_daily_rows(
+            stock_daily_df, std_code)
+
+        # 跨表写（stock_daily + stock_basic）必须同一事务提交
+        self._persist_stock_daily(std_code, daily_rows, earliest_date)
+
+        logger.info(f"{ts_code}的日线数据更新完成")
 
     def download_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """

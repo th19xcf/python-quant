@@ -23,6 +23,59 @@ class StockRecommender:
         """
         self.recommendations = []
 
+    @staticmethod
+    def _default_weights(weights: Dict[str, float] | None) -> Dict[str, float]:
+        """未指定权重时返回默认多因子权重。"""
+        if weights is not None:
+            return weights
+        return {
+            'momentum': 0.2,
+            'value': 0.2,
+            'growth': 0.2,
+            'quality': 0.2,
+            'volatility': 0.2
+        }
+
+    def _score_stock_group(self, stock_code, group, algorithm, weights, params) -> Dict[str, Any] | None:
+        """对单只股票分组评分，返回推荐记录；数据不足返回 None。"""
+        latest_data = group.sort('date').tail(1)
+        if latest_data.is_empty():
+            return None
+
+        latest_data_dict = latest_data.to_dict(as_series=False)
+        latest_data = {}
+        for col, values in latest_data_dict.items():
+            if values:
+                latest_data[col] = values[0]
+
+        prices = group.sort('date')['close'].to_numpy()
+        if len(prices) < 20:
+            return None
+
+        if algorithm == "动量策略":
+            score, risk_score = self._calculate_momentum_score(prices, group, params)
+        elif algorithm == "行业轮动":
+            score, risk_score = self._calculate_industry_rotation_score(prices, group, params)
+        else:
+            score, risk_score = self._calculate_multi_factor_score(prices, group, weights, params)
+
+        risk_adjusted_score = score * (1 - risk_score / 100)
+        signal = self._generate_signal(risk_adjusted_score, score, risk_score)
+        risk_level = '低' if risk_score < 30 else '中' if risk_score < 60 else '高'
+
+        return {
+            'stock_code': stock_code,
+            'stock_name': latest_data.get('stock_name', f'股票{stock_code}'),
+            'score': score,
+            'risk_score': risk_score,
+            'risk_adjusted_score': risk_adjusted_score,
+            'signal': signal,
+            'risk_level': risk_level,
+            'current_price': latest_data.get('close', 0),
+            'industry': latest_data.get('industry', '未知'),
+            'expected_return': score * 100
+        }
+
     def recommend_stocks(self, stocks_data: pl.DataFrame, top_n: int = 10, algorithm: str = "多因子选股",
                         industry: str = "全部行业", weights: Dict[str, float] | None = None, **params) -> List[Dict[str, Any]]:
         """
@@ -43,14 +96,7 @@ class StockRecommender:
             logger.warning("没有股票数据")
             return []
 
-        if weights is None:
-            weights = {
-                'momentum': 0.2,
-                'value': 0.2,
-                'growth': 0.2,
-                'quality': 0.2,
-                'volatility': 0.2
-            }
+        weights = self._default_weights(weights)
 
         if industry != "全部行业":
             stocks_data = stocks_data.filter(pl.col('industry') == industry)
@@ -63,43 +109,9 @@ class StockRecommender:
         scored_stocks = []
 
         for stock_code, group in stock_groups:
-            latest_data = group.sort('date').tail(1)
-            if latest_data.is_empty():
-                continue
-
-            latest_data_dict = latest_data.to_dict(as_series=False)
-            latest_data = {}
-            for col, values in latest_data_dict.items():
-                if values:
-                    latest_data[col] = values[0]
-
-            prices = group.sort('date')['close'].to_numpy()
-            if len(prices) < 20:
-                continue
-
-            if algorithm == "动量策略":
-                score, risk_score = self._calculate_momentum_score(prices, group, params)
-            elif algorithm == "行业轮动":
-                score, risk_score = self._calculate_industry_rotation_score(prices, group, params)
-            else:
-                score, risk_score = self._calculate_multi_factor_score(prices, group, weights, params)
-
-            risk_adjusted_score = score * (1 - risk_score / 100)
-            signal = self._generate_signal(risk_adjusted_score, score, risk_score)
-            risk_level = '低' if risk_score < 30 else '中' if risk_score < 60 else '高'
-
-            scored_stocks.append({
-                'stock_code': stock_code,
-                'stock_name': latest_data.get('stock_name', f'股票{stock_code}'),
-                'score': score,
-                'risk_score': risk_score,
-                'risk_adjusted_score': risk_adjusted_score,
-                'signal': signal,
-                'risk_level': risk_level,
-                'current_price': latest_data.get('close', 0),
-                'industry': latest_data.get('industry', '未知'),
-                'expected_return': score * 100
-            })
+            record = self._score_stock_group(stock_code, group, algorithm, weights, params)
+            if record is not None:
+                scored_stocks.append(record)
 
         scored_stocks.sort(key=lambda x: x['risk_adjusted_score'], reverse=True)
         self.recommendations = scored_stocks[:top_n]

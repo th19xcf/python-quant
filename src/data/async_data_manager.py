@@ -95,78 +95,9 @@ class AsyncDataManager:
 
         # 将周线和月线转换为日线获取，然后进行聚合
         if frequency in ['1w', '1m']:
-            # 获取日线数据
-            freq = 'daily'
-            df = await self._get_data_from_sources_async("stock", stock_code, start_date, end_date, freq, adjustment_type)
-
-            # 将日线数据转换为周线或月线
-            if not df.is_empty():
-                # 使用惰性计算优化转换过程
-                lazy_df = df.lazy()
-
-                # 确保有日期列
-                if 'trade_date' in df.columns and 'date' not in df.columns:
-                    lazy_df = lazy_df.with_columns(pl.col('trade_date').alias('date'))
-                elif 'date' not in df.columns:
-                    logger.error("DataFrame中没有日期列")
-                    return df
-
-                # 统一日期列为 Date，兼容 Date/Datetime/字符串
-                if df.schema['date'] == pl.Utf8:
-                    lazy_df = lazy_df.with_columns(
-                        pl.coalesce([
-                            pl.col('date').str.strptime(pl.Date, "%Y-%m-%d", strict=False),
-                            pl.col('date').str.strptime(pl.Date, "%Y%m%d", strict=False),
-                        ]).alias('date')
-                    )
-                else:
-                    lazy_df = lazy_df.with_columns(pl.col('date').cast(pl.Date))
-
-                # 根据频率确定分组方式
-                if frequency == '1w':
-                    # 周线：按周分组
-                    lazy_df = lazy_df.with_columns(
-                        pl.col('date').dt.week().alias('week'),
-                        pl.col('date').dt.year().alias('year')
-                    )
-                    group_cols = ['year', 'week']
-                elif frequency == '1m':
-                    # 月线：按月分组
-                    lazy_df = lazy_df.with_columns(
-                        pl.col('date').dt.month().alias('month'),
-                        pl.col('date').dt.year().alias('year')
-                    )
-                    group_cols = ['year', 'month']
-                else:
-                    return df
-
-                # 聚合数据
-                lazy_df = lazy_df.group_by(group_cols).agg([
-                    pl.col('date').first().alias('date'),
-                    pl.col('open').first().alias('open'),
-                    pl.col('high').max().alias('high'),
-                    pl.col('low').min().alias('low'),
-                    pl.col('close').last().alias('close'),
-                    pl.col('vol').sum().alias('vol'),
-                    pl.col('amount').sum().alias('amount'),
-                    pl.col('pct_chg').sum().alias('pct_chg'),
-                    pl.col('change').sum().alias('change')
-                ])
-
-                # 按日期排序
-                lazy_df = lazy_df.sort('date')
-
-                # 将日期转换回字符串格式
-                lazy_df = lazy_df.with_columns(
-                    pl.col('date').dt.strftime("%Y-%m-%d").alias('date')
-                )
-
-                # 执行优化的惰性计算（lazy_exec 内部已完成 dtype 压缩，无需重复优化）
-                from src.utils.lazy_optimizer import lazy_exec
-                result = lazy_exec(lazy_df)
-                logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{result.height}条")
-            else:
-                result = df
+            result = await self._get_resampled_stock_data(
+                stock_code, start_date, end_date, frequency, adjustment_type
+            )
         else:
             # 日线或分钟线，直接获取
             freq_map = {'1d': 'daily', '1m': 'minute'}
@@ -179,6 +110,87 @@ class AsyncDataManager:
                                 frequency=frequency, adjustment_type=adjustment_type)
             logger.info(f"股票数据缓存已更新: {stock_code} {start_date} to {end_date}")
 
+        return result
+
+    async def _get_resampled_stock_data(self, stock_code: str, start_date: str,
+                                        end_date: str, frequency: str,
+                                        adjustment_type: str) -> pl.DataFrame:
+        """获取日线数据并按周线/月线聚合。"""
+        # 获取日线数据
+        freq = 'daily'
+        df = await self._get_data_from_sources_async("stock", stock_code, start_date, end_date, freq, adjustment_type)
+
+        if df.is_empty():
+            return df
+        return self._resample_stock_frame(df, frequency)
+
+    @staticmethod
+    def _resample_stock_frame(df: pl.DataFrame, frequency: str) -> pl.DataFrame:
+        """把日线 DataFrame 聚合为周线或月线（无日期列时原样返回）。"""
+        # 使用惰性计算优化转换过程
+        lazy_df = df.lazy()
+
+        # 确保有日期列
+        if 'trade_date' in df.columns and 'date' not in df.columns:
+            lazy_df = lazy_df.with_columns(pl.col('trade_date').alias('date'))
+        elif 'date' not in df.columns:
+            logger.error("DataFrame中没有日期列")
+            return df
+
+        # 统一日期列为 Date，兼容 Date/Datetime/字符串
+        if df.schema['date'] == pl.Utf8:
+            lazy_df = lazy_df.with_columns(
+                pl.coalesce([
+                    pl.col('date').str.strptime(pl.Date, "%Y-%m-%d", strict=False),
+                    pl.col('date').str.strptime(pl.Date, "%Y%m%d", strict=False),
+                ]).alias('date')
+            )
+        else:
+            lazy_df = lazy_df.with_columns(pl.col('date').cast(pl.Date))
+
+        # 根据频率确定分组方式
+        if frequency == '1w':
+            # 周线：按周分组
+            lazy_df = lazy_df.with_columns(
+                pl.col('date').dt.week().alias('week'),
+                pl.col('date').dt.year().alias('year')
+            )
+            group_cols = ['year', 'week']
+        elif frequency == '1m':
+            # 月线：按月分组
+            lazy_df = lazy_df.with_columns(
+                pl.col('date').dt.month().alias('month'),
+                pl.col('date').dt.year().alias('year')
+            )
+            group_cols = ['year', 'month']
+        else:
+            return df
+
+        # 聚合数据
+        lazy_df = lazy_df.group_by(group_cols).agg([
+            pl.col('date').first().alias('date'),
+            pl.col('open').first().alias('open'),
+            pl.col('high').max().alias('high'),
+            pl.col('low').min().alias('low'),
+            pl.col('close').last().alias('close'),
+            pl.col('vol').sum().alias('vol'),
+            pl.col('amount').sum().alias('amount'),
+            pl.col('pct_chg').sum().alias('pct_chg'),
+            pl.col('change').sum().alias('change')
+        ])
+
+        # 按日期排序
+        lazy_df = lazy_df.sort('date')
+
+        # 将日期转换回字符串格式
+        lazy_df = lazy_df.with_columns(
+            pl.col('date').dt.strftime("%Y-%m-%d").alias('date')
+        )
+
+        # 执行优化的惰性计算（lazy_exec 内部已完成 dtype 压缩，无需重复优化）
+        from src.utils.lazy_optimizer import lazy_exec
+        result = lazy_exec(lazy_df)
+        logger.info(f"将日线数据转换为{frequency}数据，从{df.height}条转换为{result.height}条")
         return result
 
     async def get_index_data_async(self, index_code: str, start_date: str, end_date: str, frequency: str = '1d') -> pl.DataFrame:

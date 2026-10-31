@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Set
 
 from loguru import logger
-from pydantic import ConfigDict, Field, field_validator
-from pydantic_settings import BaseSettings
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _validate_port_value(value: int) -> int:
@@ -179,7 +179,7 @@ class PluginSettings(BaseSettings):
     version: str | None = Field(default=None, description="插件版本")
     config: Dict[str, Any] = Field(default_factory=dict, description="插件特定配置")
 
-    model_config = ConfigDict(
+    model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
@@ -192,7 +192,7 @@ class PluginsSettings(BaseSettings):
     # 使用字典存储各个插件的配置
     plugins: Dict[str, PluginSettings] = Field(default_factory=dict, description="插件配置字典")
 
-    model_config = ConfigDict(
+    model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
@@ -209,7 +209,7 @@ class Config(BaseSettings):
     log: LogSettings = Field(default_factory=LogSettings)
     plugins: PluginsSettings = Field(default_factory=PluginsSettings)
 
-    model_config = ConfigDict(
+    model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         env_nested_delimiter="__",

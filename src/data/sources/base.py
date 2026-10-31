@@ -115,61 +115,26 @@ class DataSourceBase(ABC):
             return df
 
         # 1. 列名映射：标准名 <- 原始名
-        rename_map = {orig: std for std, orig in column_map.items() if orig in df.columns}
-        if rename_map:
-            df = df.rename(rename_map)
+        df = DataSourceBase._map_kline_columns(df, column_map)
 
         # 2. 日期统一为 date 类型
-        if date_format and 'date' in df.columns:
-            df = df.with_columns(
-                pl.col('date').cast(pl.Utf8)
-                .str.strptime(pl.Date, format=date_format, strict=False)
-                .alias('date')
-            )
-        elif 'date' in df.columns and df.schema['date'] != pl.Date:
-            df = df.with_columns(pl.col('date').cast(pl.Date, strict=False).alias('date'))
+        df = DataSourceBase._normalize_kline_date(df, date_format)
 
         # 3. 数值列统一为 float64
-        numeric_cols = ['open', 'high', 'low', 'close', 'pre_close',
-                        'volume', 'amount', 'pct_chg', 'change']
-        cast_exprs = [
-            pl.col(c).cast(pl.Float64, strict=False).alias(c)
-            for c in numeric_cols if c in df.columns
-        ]
-        if cast_exprs:
-            df = df.with_columns(cast_exprs)
+        df = DataSourceBase._cast_kline_numeric(df)
 
         # 4. 成交量单位统一为"手"（原始为"股"时除以 100）
-        if volume_unit == 'share' and 'volume' in df.columns:
-            df = df.with_columns((pl.col('volume') / 100.0).alias('volume'))
+        df = DataSourceBase._convert_kline_volume(df, volume_unit)
 
         # 5. 补齐 ts_code
         if ts_code and 'ts_code' not in df.columns:
             df = df.with_columns(pl.lit(ts_code).alias('ts_code'))
 
         # 6. 补齐复权因子列（缺失时填 1.0）
-        if include_factors:
-            factor_exprs = []
-            if 'qfq_factor' not in df.columns:
-                factor_exprs.append(pl.lit(1.0).alias('qfq_factor'))
-            if 'hfq_factor' not in df.columns:
-                factor_exprs.append(pl.lit(1.0).alias('hfq_factor'))
-            if factor_exprs:
-                df = df.with_columns(factor_exprs)
-            df = df.with_columns([
-                pl.col('qfq_factor').cast(pl.Float64, strict=False).fill_null(1.0),
-                pl.col('hfq_factor').cast(pl.Float64, strict=False).fill_null(1.0),
-            ])
+        df = DataSourceBase._fill_kline_factors(df, include_factors)
 
         # 7. 价格/量/额缺失值填 0
-        fill_cols = ['open', 'high', 'low', 'close', 'pre_close', 'volume', 'amount',
-                     'pct_chg', 'change']
-        fill_exprs = [
-            pl.col(c).fill_null(0.0).alias(c)
-            for c in fill_cols if c in df.columns
-        ]
-        if fill_exprs:
-            df = df.with_columns(fill_exprs)
+        df = DataSourceBase._fill_kline_nulls(df)
 
         # 8. 只保留标准列并按 date 排序
         keep_cols = [c for c in KLINE_STANDARD_COLUMNS if c in df.columns]
@@ -180,6 +145,78 @@ class DataSourceBase(ABC):
 
         # 9. 质量校验：OHLC 硬错误剔除 + pct_chg 重算 + 停牌日统计
         return DataSourceBase._validate_kline_quality(df)
+
+    @staticmethod
+    def _map_kline_columns(df: pl.DataFrame, column_map: Dict[str, str]) -> pl.DataFrame:
+        """1. 列名映射：标准名 <- 原始名"""
+        rename_map = {orig: std for std, orig in column_map.items() if orig in df.columns}
+        if rename_map:
+            df = df.rename(rename_map)
+        return df
+
+    @staticmethod
+    def _normalize_kline_date(df: pl.DataFrame, date_format: str | None) -> pl.DataFrame:
+        """2. 日期统一为 date 类型"""
+        if date_format and 'date' in df.columns:
+            return df.with_columns(
+                pl.col('date').cast(pl.Utf8)
+                .str.strptime(pl.Date, format=date_format, strict=False)
+                .alias('date')
+            )
+        if 'date' in df.columns and df.schema['date'] != pl.Date:
+            return df.with_columns(pl.col('date').cast(pl.Date, strict=False).alias('date'))
+        return df
+
+    @staticmethod
+    def _cast_kline_numeric(df: pl.DataFrame) -> pl.DataFrame:
+        """3. 数值列统一为 float64"""
+        numeric_cols = ['open', 'high', 'low', 'close', 'pre_close',
+                        'volume', 'amount', 'pct_chg', 'change']
+        cast_exprs = [
+            pl.col(c).cast(pl.Float64, strict=False).alias(c)
+            for c in numeric_cols if c in df.columns
+        ]
+        if cast_exprs:
+            df = df.with_columns(cast_exprs)
+        return df
+
+    @staticmethod
+    def _convert_kline_volume(df: pl.DataFrame, volume_unit: str) -> pl.DataFrame:
+        """4. 成交量单位统一为"手"（原始为"股"时除以 100）"""
+        if volume_unit == 'share' and 'volume' in df.columns:
+            return df.with_columns((pl.col('volume') / 100.0).alias('volume'))
+        return df
+
+    @staticmethod
+    def _fill_kline_factors(df: pl.DataFrame, include_factors: bool) -> pl.DataFrame:
+        """6. 补齐复权因子列（缺失时填 1.0）"""
+        if not include_factors:
+            return df
+
+        factor_exprs = []
+        if 'qfq_factor' not in df.columns:
+            factor_exprs.append(pl.lit(1.0).alias('qfq_factor'))
+        if 'hfq_factor' not in df.columns:
+            factor_exprs.append(pl.lit(1.0).alias('hfq_factor'))
+        if factor_exprs:
+            df = df.with_columns(factor_exprs)
+        return df.with_columns([
+            pl.col('qfq_factor').cast(pl.Float64, strict=False).fill_null(1.0),
+            pl.col('hfq_factor').cast(pl.Float64, strict=False).fill_null(1.0),
+        ])
+
+    @staticmethod
+    def _fill_kline_nulls(df: pl.DataFrame) -> pl.DataFrame:
+        """7. 价格/量/额缺失值填 0"""
+        fill_cols = ['open', 'high', 'low', 'close', 'pre_close', 'volume', 'amount',
+                     'pct_chg', 'change']
+        fill_exprs = [
+            pl.col(c).fill_null(0.0).alias(c)
+            for c in fill_cols if c in df.columns
+        ]
+        if fill_exprs:
+            df = df.with_columns(fill_exprs)
+        return df
 
     @staticmethod
     def _validate_kline_quality(df: pl.DataFrame) -> pl.DataFrame:

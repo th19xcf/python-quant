@@ -22,6 +22,53 @@ from src.utils.code_converter import (
 )
 
 
+def _is_valid_tdx_stock_code(code) -> bool:
+    """验证通达信文件名中的代码是否有效。"""
+    if len(code) != 6:
+        return False
+    if not code.isdigit():
+        return False
+    # 忽略 B 股：900 开头（沪市 B 股）、200 开头（深市 B 股）
+    if code.startswith('900') or code.startswith('200'):
+        return False
+    # 沪市指数：000001-000999
+    if code.startswith('000'):
+        return True
+    # 沪市股票：600000-603999, 688000-688999
+    elif code.startswith('6'):
+        num = int(code)
+        return (600000 <= num <= 603999) or (688000 <= num <= 688999)
+    # 深市指数：399001-399999
+    elif code.startswith('399'):
+        return True
+    # 深市股票：000000-002999, 300000-300999
+    elif code.startswith('0') or code.startswith('3'):
+        num = int(code)
+        return (0 <= num <= 2999) or (300000 <= num <= 300999)
+    # 北交所：800000-899999（原新三板精选层）
+    elif code.startswith('8'):
+        num = int(code)
+        return 800000 <= num <= 899999
+    # 北交所新股：920000-920999
+    elif code.startswith('92'):
+        num = int(code)
+        return 920000 <= num <= 920999
+    # 上海 ETF：510xxx, 511xxx, 512xxx, 513xxx, 515xxx, 588xxx
+    elif code.startswith('51') or code.startswith('58') or code.startswith('15') or code.startswith('16'):
+        return True
+    return False
+
+
+def _collect_tdx_market_codes(stock_codes, lday_dir, prefix, suffix, market_label):
+    """扫描单个市场目录，把有效代码追加到 stock_codes 并记录数量日志。"""
+    files = list(lday_dir.glob(f'{prefix}*.day'))
+    for f in files:
+        code = f.stem[2:]
+        if _is_valid_tdx_stock_code(code):
+            stock_codes.append(f"{code}.{suffix}")
+    logger.info(f"从{market_label}通达信数据中找到 {len([c for c in stock_codes if c.endswith(f'.{suffix}')])} 个有效股票文件")
+
+
 class TdxHandler(DataSourceBase):
     """
     通达信数据处理器，负责解析通达信数据文件并存储到数据库
@@ -114,66 +161,15 @@ class TdxHandler(DataSourceBase):
             sz_lday = self.tdx_data_path / 'sz' / 'lday'
             bj_lday = self.tdx_data_path / 'bj' / 'lday'
 
-            def is_valid_stock_code(code):
-                """验证股票代码是否有效"""
-                if len(code) != 6:
-                    return False
-                if not code.isdigit():
-                    return False
-                # 忽略 B 股：900 开头（沪市 B 股）、200 开头（深市 B 股）
-                if code.startswith('900') or code.startswith('200'):
-                    return False
-                # 沪市指数：000001-000999
-                if code.startswith('000'):
-                    return True
-                # 沪市股票：600000-603999, 688000-688999
-                elif code.startswith('6'):
-                    num = int(code)
-                    return (600000 <= num <= 603999) or (688000 <= num <= 688999)
-                # 深市指数：399001-399999
-                elif code.startswith('399'):
-                    return True
-                # 深市股票：000000-002999, 300000-300999
-                elif code.startswith('0') or code.startswith('3'):
-                    num = int(code)
-                    return (0 <= num <= 2999) or (300000 <= num <= 300999)
-                # 北交所：800000-899999（原新三板精选层）
-                elif code.startswith('8'):
-                    num = int(code)
-                    return 800000 <= num <= 899999
-                # 北交所新股：920000-920999
-                elif code.startswith('92'):
-                    num = int(code)
-                    return 920000 <= num <= 920999
-                # 上海 ETF：510xxx, 511xxx, 512xxx, 513xxx, 515xxx, 588xxx
-                elif code.startswith('51') or code.startswith('58') or code.startswith('15') or code.startswith('16'):
-                    return True
-                return False
-
             if sh_lday.exists():
-                sh_files = list(sh_lday.glob('sh*.day'))
-                for f in sh_files:
-                    code = f.stem[2:]
-                    if is_valid_stock_code(code):
-                        stock_codes.append(f"{code}.SH")
-                logger.info(f"从沪市通达信数据中找到 {len([c for c in stock_codes if c.endswith('.SH')])} 个有效股票文件")
+                _collect_tdx_market_codes(stock_codes, sh_lday, 'sh', 'SH', '沪市')
 
             if sz_lday.exists():
-                sz_files = list(sz_lday.glob('sz*.day'))
-                for f in sz_files:
-                    code = f.stem[2:]
-                    if is_valid_stock_code(code):
-                        stock_codes.append(f"{code}.SZ")
-                logger.info(f"从深市通达信数据中找到 {len([c for c in stock_codes if c.endswith('.SZ')])} 个有效股票文件")
+                _collect_tdx_market_codes(stock_codes, sz_lday, 'sz', 'SZ', '深市')
 
             # 北市（科创板）
             if bj_lday.exists():
-                bj_files = list(bj_lday.glob('bj*.day'))
-                for f in bj_files:
-                    code = f.stem[2:]
-                    if is_valid_stock_code(code):
-                        stock_codes.append(f"{code}.BJ")
-                logger.info(f"从北市通达信数据中找到 {len([c for c in stock_codes if c.endswith('.BJ')])} 个有效股票文件")
+                _collect_tdx_market_codes(stock_codes, bj_lday, 'bj', 'BJ', '北市')
 
             logger.info(f"通达信股票代码列表获取完成，共 {len(stock_codes)} 只有效股票")
 
@@ -252,6 +248,98 @@ class TdxHandler(DataSourceBase):
             logger.exception(f"获取复权因子失败: {e}")
             return None
 
+    def _load_dividend_records(self, ts_code: str):
+        """读取该股票全部历史分红记录（无会话或无数据返回 None）。"""
+        from src.database.models.stock import StockDividend
+
+        session = self._get_thread_safe_session()
+        if not session:
+            return None
+
+        # 获取分红数据（获取所有历史分红数据，不限制日期范围）
+        query = session.query(StockDividend).filter_by(ts_code=ts_code)
+        query = query.filter(StockDividend.ex_date is not None)
+
+        # 注意：这里不限制日期范围，因为复权因子计算需要所有历史分红数据
+        # 即使当前显示的K线范围内没有分红，历史分红也会影响当前价格的复权计算
+
+        dividends = query.order_by(StockDividend.ex_date).all()
+
+        if not dividends:
+            logger.debug(f"{ts_code} 没有找到分红数据")
+            return None
+
+        logger.info(f"{ts_code} 找到 {len(dividends)} 条分红记录，开始计算复权因子")
+
+        # 打印第一条和最后一条分红记录用于调试
+        first_div = dividends[0]
+        last_div = dividends[-1]
+        logger.info(f"第一条分红: 日期={first_div.ex_date}, 现金={first_div.cash_div}, 送转={first_div.share_div}")
+        logger.info(f"最后一条分红: 日期={last_div.ex_date}, 现金={last_div.cash_div}, 送转={last_div.share_div}")
+        return dividends
+
+    def _load_adj_price_records(self, ts_code: str):
+        """读取参与复权因子计算的收盘价记录（文件缺失或无数据返回 None）。"""
+        # 获取价格数据用于计算复权因子
+        symbol = to_symbol(ts_code)
+        market = to_tdx_market(ts_code)
+        file_name = f"{market}{symbol}.day"
+        file_path = self.tdx_data_path / market / "lday" / file_name
+
+        if not file_path.exists():
+            logger.warning(f"价格数据文件不存在: {file_path}")
+            return None
+
+        # 读取价格数据（复用统一的 .day 解析器，只需日期与收盘价）
+        prices = [
+            {'trade_date': r['date'], 'close': r['close']}
+            for r in read_recent_records(file_path)
+        ]
+
+        if not prices:
+            return None
+
+        # 按日期排序
+        prices.sort(key=lambda x: x['trade_date'])
+        return prices
+
+    def _compute_adj_factor_frame(self, ts_code: str, prices, dividends) -> pl.DataFrame:
+        """用统一复权计算器把价格与分红适配后计算复权因子。"""
+        # 复权因子计算统一收口到 AdjFactorCalculator.calculate_factors
+        # （向量化实现 + 含配股的统一公式），此处仅做数据适配
+        from src.data.adj_factor_calculator import AdjFactorCalculator
+
+        prices_df = pl.DataFrame({
+            'ts_code': [ts_code] * len(prices),
+            'trade_date': [p['trade_date'] for p in prices],
+            'close': [p['close'] for p in prices],
+        })
+        dividends_df = pl.DataFrame({
+            'ts_code': [d.ts_code for d in dividends],
+            'ex_date': [d.ex_date for d in dividends],
+            'cash_div': [d.cash_div or 0 for d in dividends],
+            'share_div': [d.share_div or 0 for d in dividends],
+            'rights_issue_ratio': [d.rights_issue_ratio or 0 for d in dividends],
+            'rights_issue_price': [d.rights_issue_price or 0 for d in dividends],
+        })
+
+        result = AdjFactorCalculator.calculate_factors(prices_df, dividends_df)
+        if result is None or result.is_empty():
+            return None
+
+        df = result.select(['trade_date', 'qfq_factor', 'hfq_factor'])
+
+        # 打印复权因子统计信息用于调试
+        if len(df) > 0:
+            min_qfq = df['qfq_factor'].min()
+            max_qfq = df['qfq_factor'].max()
+            min_hfq = df['hfq_factor'].min()
+            max_hfq = df['hfq_factor'].max()
+            logger.info(f"{ts_code} 复权因子统计: 前复权=[{min_qfq:.6f}, {max_qfq:.6f}], 后复权=[{min_hfq:.6f}, {max_hfq:.6f}]")
+
+        logger.info(f"{ts_code} 复权因子计算完成，共 {len(df)} 条记录")
+        return df
+
     def _calculate_adj_factors_from_dividends(self, ts_code: str, start_date: date, end_date: date) -> pl.DataFrame:
         """
         根据分红数据实时计算复权因子
@@ -265,94 +353,87 @@ class TdxHandler(DataSourceBase):
             Polars DataFrame包含复权因子
         """
         try:
-            from src.database.models.stock import StockDividend
-
-            session = self._get_thread_safe_session()
-            if not session:
-                return None
-
-            # 获取分红数据（获取所有历史分红数据，不限制日期范围）
-            query = session.query(StockDividend).filter_by(ts_code=ts_code)
-            query = query.filter(StockDividend.ex_date is not None)
-
-            # 注意：这里不限制日期范围，因为复权因子计算需要所有历史分红数据
-            # 即使当前显示的K线范围内没有分红，历史分红也会影响当前价格的复权计算
-
-            dividends = query.order_by(StockDividend.ex_date).all()
-
+            dividends = self._load_dividend_records(ts_code)
             if not dividends:
-                logger.debug(f"{ts_code} 没有找到分红数据")
                 return None
 
-            logger.info(f"{ts_code} 找到 {len(dividends)} 条分红记录，开始计算复权因子")
-
-            # 打印第一条和最后一条分红记录用于调试
-            if dividends:
-                first_div = dividends[0]
-                last_div = dividends[-1]
-                logger.info(f"第一条分红: 日期={first_div.ex_date}, 现金={first_div.cash_div}, 送转={first_div.share_div}")
-                logger.info(f"最后一条分红: 日期={last_div.ex_date}, 现金={last_div.cash_div}, 送转={last_div.share_div}")
-
-            # 获取价格数据用于计算复权因子
-            symbol = to_symbol(ts_code)
-            market = to_tdx_market(ts_code)
-            file_name = f"{market}{symbol}.day"
-            file_path = self.tdx_data_path / market / "lday" / file_name
-
-            if not file_path.exists():
-                logger.warning(f"价格数据文件不存在: {file_path}")
-                return None
-
-            # 读取价格数据（复用统一的 .day 解析器，只需日期与收盘价）
-            prices = [
-                {'trade_date': r['date'], 'close': r['close']}
-                for r in read_recent_records(file_path)
-            ]
-
+            prices = self._load_adj_price_records(ts_code)
             if not prices:
                 return None
 
-            # 按日期排序
-            prices.sort(key=lambda x: x['trade_date'])
-
-            # 复权因子计算统一收口到 AdjFactorCalculator.calculate_factors
-            # （向量化实现 + 含配股的统一公式），此处仅做数据适配
-            from src.data.adj_factor_calculator import AdjFactorCalculator
-
-            prices_df = pl.DataFrame({
-                'ts_code': [ts_code] * len(prices),
-                'trade_date': [p['trade_date'] for p in prices],
-                'close': [p['close'] for p in prices],
-            })
-            dividends_df = pl.DataFrame({
-                'ts_code': [d.ts_code for d in dividends],
-                'ex_date': [d.ex_date for d in dividends],
-                'cash_div': [d.cash_div or 0 for d in dividends],
-                'share_div': [d.share_div or 0 for d in dividends],
-                'rights_issue_ratio': [d.rights_issue_ratio or 0 for d in dividends],
-                'rights_issue_price': [d.rights_issue_price or 0 for d in dividends],
-            })
-
-            result = AdjFactorCalculator.calculate_factors(prices_df, dividends_df)
-            if result is None or result.is_empty():
-                return None
-
-            df = result.select(['trade_date', 'qfq_factor', 'hfq_factor'])
-
-            # 打印复权因子统计信息用于调试
-            if len(df) > 0:
-                min_qfq = df['qfq_factor'].min()
-                max_qfq = df['qfq_factor'].max()
-                min_hfq = df['hfq_factor'].min()
-                max_hfq = df['hfq_factor'].max()
-                logger.info(f"{ts_code} 复权因子统计: 前复权=[{min_qfq:.6f}, {max_qfq:.6f}], 后复权=[{min_hfq:.6f}, {max_hfq:.6f}]")
-
-            logger.info(f"{ts_code} 复权因子计算完成，共 {len(df)} 条记录")
-            return df
+            return self._compute_adj_factor_frame(ts_code, prices, dividends)
 
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"根据分红数据计算复权因子失败: {e}")
             return None
+
+    def _resolve_kline_path(self, stock_code: str):
+        """解析股票代码并定位 .day 文件；代码非法或文件缺失返回 None。"""
+        # 统一代码解析（支持 600000.SH / sh.600000 / sh600000 / 600000）
+        try:
+            code, market_upper = parse_code(stock_code)
+            market = market_upper.lower()
+        except ValueError:
+            logger.warning(f"无效的股票代码格式: {stock_code}")
+            return None
+
+        logger.info(f"解析后的股票代码: {code}，市场: {market}")
+
+        # 构建通达信数据文件名
+        file_name = f"{market}{code}.day"
+
+        # 构建数据文件路径
+        lday_path = self.tdx_data_path / market / "lday"
+        file_path = lday_path / file_name
+
+        logger.info(f"尝试从路径 {file_path} 读取数据")
+
+        # 检查文件是否存在
+        if not file_path.exists():
+            logger.warning(f"股票 {stock_code} 的通达信数据文件不存在: {file_path}")
+            return None
+
+        return code, market, file_path
+
+    def _read_kline_records(self, file_path):
+        """解析 .day 文件；文件读取失败返回 None。"""
+        logger.info(f"开始解析文件 {file_path}")
+        try:
+            data = read_recent_records(file_path)
+        except OSError as file_e:
+            logger.exception(f"文件操作失败: {file_e}")
+            return None
+
+        logger.info(f"成功解析{len(data)}条数据")
+        return data
+
+    def _apply_adj_factors_to_kline(self, lazy_df, ts_code: str):
+        """把复权因子对齐到 K 线日期，缺失时填充默认值 1.0。"""
+        # 获取复权因子（使用完整日期范围，因为复权因子计算需要所有历史数据）
+        # 传入None作为日期范围，让_get_adj_factors获取所有历史数据
+        factors_df = self._get_adj_factors(ts_code, None, None)
+
+        if factors_df is not None and not factors_df.is_empty():
+            # 转换复权因子为LazyFrame
+            factors_lazy = factors_df.lazy()
+            lazy_df = lazy_df.join(factors_lazy, left_on='date', right_on='trade_date', how='left')
+
+            # 填充缺失的复权因子
+            for adj_type in ['qfq', 'hfq']:
+                factor_col = f'{adj_type}_factor'
+                lazy_df = lazy_df.with_columns([
+                    pl.col(factor_col).fill_null(strategy='forward').fill_null(1.0).alias(factor_col)
+                ])
+
+            logger.info(f"{ts_code} 复权因子已对齐到K线日期，复权价由数据出口统一计算")
+        else:
+            logger.warning(f"{ts_code} 没有获取到复权因子，使用默认复权因子1.0")
+            for adj_type in ['qfq', 'hfq']:
+                lazy_df = lazy_df.with_columns([
+                    pl.lit(1.0).alias(f'{adj_type}_factor')
+                ])
+
+        return lazy_df
 
     def get_kline_data(self, stock_code: str, start_date: str, end_date: str, adjust: str = "none"):
         """
@@ -372,39 +453,13 @@ class TdxHandler(DataSourceBase):
         try:
             logger.info(f"开始获取股票 {stock_code} 在 {start_date} 到 {end_date} 期间的K线数据")
 
-            # 统一代码解析（支持 600000.SH / sh.600000 / sh600000 / 600000）
-            try:
-                code, market_upper = parse_code(stock_code)
-                market = market_upper.lower()
-            except ValueError:
-                logger.warning(f"无效的股票代码格式: {stock_code}")
+            resolved = self._resolve_kline_path(stock_code)
+            if resolved is None:
                 return pl.LazyFrame({})
-
-            logger.info(f"解析后的股票代码: {code}，市场: {market}")
-
-            # 构建通达信数据文件名
-            file_name = f"{market}{code}.day"
-
-            # 构建数据文件路径
-            lday_path = self.tdx_data_path / market / "lday"
-            file_path = lday_path / file_name
-
-            logger.info(f"尝试从路径 {file_path} 读取数据")
-
-            # 检查文件是否存在
-            if not file_path.exists():
-                logger.warning(f"股票 {stock_code} 的通达信数据文件不存在: {file_path}")
-                return pl.LazyFrame({})
+            code, market, file_path = resolved
 
             # 复用统一的 .day 解析器（成交额元、成交量手）
-            logger.info(f"开始解析文件 {file_path}")
-            try:
-                data = read_recent_records(file_path)
-            except OSError as file_e:
-                logger.exception(f"文件操作失败: {file_e}")
-                return pl.LazyFrame({})
-
-            logger.info(f"成功解析{len(data)}条数据")
+            data = self._read_kline_records(file_path)
             if not data:
                 return pl.LazyFrame({})
 
@@ -427,30 +482,7 @@ class TdxHandler(DataSourceBase):
             # 此处只把复权因子对齐到 K 线日期，不再生成 qfq_*/hfq_* 预计算价格列，
             # 避免同一份复权逻辑在多处实现导致口径漂移。
             ts_code = f"{code}.{market.upper()}"
-
-            # 获取复权因子（使用完整日期范围，因为复权因子计算需要所有历史数据）
-            # 传入None作为日期范围，让_get_adj_factors获取所有历史数据
-            factors_df = self._get_adj_factors(ts_code, None, None)
-
-            if factors_df is not None and not factors_df.is_empty():
-                # 转换复权因子为LazyFrame
-                factors_lazy = factors_df.lazy()
-                lazy_df = lazy_df.join(factors_lazy, left_on='date', right_on='trade_date', how='left')
-
-                # 填充缺失的复权因子
-                for adj_type in ['qfq', 'hfq']:
-                    factor_col = f'{adj_type}_factor'
-                    lazy_df = lazy_df.with_columns([
-                        pl.col(factor_col).fill_null(strategy='forward').fill_null(1.0).alias(factor_col)
-                    ])
-
-                logger.info(f"{ts_code} 复权因子已对齐到K线日期，复权价由数据出口统一计算")
-            else:
-                logger.warning(f"{ts_code} 没有获取到复权因子，使用默认复权因子1.0")
-                for adj_type in ['qfq', 'hfq']:
-                    lazy_df = lazy_df.with_columns([
-                        pl.lit(1.0).alias(f'{adj_type}_factor')
-                    ])
+            lazy_df = self._apply_adj_factors_to_kline(lazy_df, ts_code)
 
             logger.info(f"成功获取股票 {stock_code} 的K线数据，返回LazyFrame")
             return lazy_df

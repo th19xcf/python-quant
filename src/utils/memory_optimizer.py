@@ -10,7 +10,7 @@
 3. 支持分块处理和数据压缩
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, cast
 
 import polars as pl
 
@@ -63,10 +63,10 @@ class MemoryOptimizer:
     }
 
     @classmethod
-    def optimize_dataframe(cls, df: pl.DataFrame,  # noqa: C901
-                          preserve_cols: List[str] | None = None,
-                          enable_sparse: bool = False,
-                          enable_compression: bool = False) -> pl.DataFrame:
+    def optimize_dataframe(cls, df: pl.DataFrame,
+                           preserve_cols: List[str] | None = None,
+                           enable_sparse: bool = False,
+                           enable_compression: bool = False) -> pl.DataFrame:
         """
         优化 DataFrame 数据类型
 
@@ -95,159 +95,9 @@ class MemoryOptimizer:
             if dtype in [pl.Float32, pl.Int32, pl.Int16, pl.Int8, pl.Date, pl.Boolean, pl.Categorical]:
                 continue
 
-            # 根据列名映射类型
-            if col in cls.COLUMN_TYPE_MAP['price_cols']:
-                # 价格列必须保留 Float64，否则累计收益、涨跌停比较、
-                # 复权因子连乘会出现可观测精度误差（量化场景不能降精度）
-                if dtype == pl.Decimal:
-                    type_casts.append(pl.col(col).cast(pl.Float64))
-                # Float64/Float32 都不动，保持原值
-
-            elif col in cls.COLUMN_TYPE_MAP['volume_cols']:
-                if dtype == pl.Float64:
-                    # 保持Float64类型，避免精度损失
-                    type_casts.append(pl.col(col).cast(pl.Float64))
-                elif dtype == pl.Int64:
-                    # Int32 是有符号类型，上限 2**31-1；曾误用 2**32 导致
-                    # 成交量 ~3e9 时按 Int32 转换抛 InvalidOperationError（溢出）
-                    max_val = df[col].max()
-                    if max_val is not None and max_val <= cls.INT32_MAX:
-                        type_casts.append(pl.col(col).cast(pl.Int32))
-                    else:
-                        type_casts.append(pl.col(col).cast(pl.Int64))
-
-            elif col in cls.COLUMN_TYPE_MAP['pct_cols']:
-                if dtype in [pl.Float64, pl.Decimal]:
-                    type_casts.append(pl.col(col).cast(pl.Float32))
-
-            elif col in cls.COLUMN_TYPE_MAP['int_cols']:
-                if dtype == pl.Int64:
-                    # 各整数类型的上限必须按有符号区间判断，避免 Int8/Int16
-                    # 在 256/65536 边界附近溢出抛 InvalidOperationError
-                    max_val = df[col].max()
-                    if max_val is None:
-                        type_casts.append(pl.col(col).cast(pl.Int32))
-                    elif max_val <= cls.INT8_MAX:
-                        type_casts.append(pl.col(col).cast(pl.Int8))
-                    elif max_val <= cls.INT16_MAX:
-                        type_casts.append(pl.col(col).cast(pl.Int16))
-                    elif max_val <= cls.INT32_MAX:
-                        type_casts.append(pl.col(col).cast(pl.Int32))
-                    else:
-                        type_casts.append(pl.col(col).cast(pl.Int64))
-
-            elif col in cls.COLUMN_TYPE_MAP['indicator_cols']:
-                if dtype == pl.Float64:
-                    type_casts.append(pl.col(col).cast(pl.Float32))
-
-            elif col in cls.COLUMN_TYPE_MAP['category_cols']:
-                # 转换为分类类型
-                if dtype == pl.Utf8:
-                    # 检查唯一值数量，只有当唯一值较少时才使用分类类型
-                    unique_count = df[col].n_unique()
-                    total_count = len(df)
-                    if unique_count < total_count * 0.1:  # 唯一值少于10%
-                        type_casts.append(pl.col(col).cast(pl.Categorical))
-
-            elif col in cls.COLUMN_TYPE_MAP['bool_cols']:
-                # 转换为布尔类型
-                if dtype in [pl.Int64, pl.Float64, pl.Utf8]:
-                    type_casts.append(pl.col(col).cast(pl.Boolean))
-
-            elif col in cls.COLUMN_TYPE_MAP['decimal_cols']:
-                # 小数字段转换为Float32
-                if dtype in [pl.Float64, pl.Decimal]:
-                    type_casts.append(pl.col(col).cast(pl.Float32))
-
-            # 日期类型优化
-            elif 'date' in col.lower() or 'time' in col.lower():
-                if dtype == pl.Datetime:
-                    # 如果只需要日期部分，转换为 Date
-                    type_casts.append(pl.col(col).cast(pl.Date))
-                elif dtype == pl.Utf8:
-                    # 尝试解析日期字符串，使用strict=False避免转换失败
-                    try:
-                        # 尝试多种日期格式
-                        # 先尝试常用格式
-                        try:
-                            type_casts.append(
-                                pl.col(col).str.strptime(pl.Date, '%Y-%m-%d', strict=False)
-                            )
-                        # 兜底理由：日期格式解析失败尝试下一种格式
-                        except Exception as e:  # noqa: BLE001
-                            logger.debug(f"日期格式 %Y-%m-%d 解析失败，尝试下一种: {e}", exc_info=True)
-                            # 如果失败，尝试其他格式
-                            try:
-                                type_casts.append(
-                                    pl.col(col).str.strptime(pl.Date, '%Y%m%d', strict=False)
-                                )
-                            # 兜底理由：日期格式解析失败尝试下一种格式
-                            except Exception as e2:  # noqa: BLE001
-                                logger.debug(f"日期格式 %Y%m%d 解析失败，尝试下一种: {e2}", exc_info=True)
-                                try:
-                                    type_casts.append(
-                                        pl.col(col).str.strptime(pl.Date, '%Y/%m/%d', strict=False)
-                                    )
-                                # 兜底理由：日期格式解析失败保留原类型
-                                except Exception as e3:  # noqa: BLE001
-                                    logger.debug(f"日期格式 %Y/%m/%d 解析失败，保留原类型: {e3}", exc_info=True)
-                    # 兜底理由：日期列类型优化失败保留原类型
-                    except Exception as e:  # noqa: BLE001
-                        logger.debug(f"日期列类型优化失败，保留原类型: {e}", exc_info=True)
-
-            # 通用类型优化
-            elif dtype == pl.Float64:
-                # 未知浮点列（Alpha 因子、外部特征等）保持 Float64：
-                # 通用降精度曾把高精度因子截断为 ~7 位有效位，造成因子
-                # 排序/加权出现可观测偏差。仅 COLUMN_TYPE_MAP 中显式列
-                # （pct_cols / indicator_cols / decimal_cols）允许降 Float32。
-                pass
-
-            elif dtype == pl.Int64:
-                # 对于其他整数列，按有符号上限判断可容纳的最小类型
-                max_val = df[col].max()
-                if max_val is None:
-                    type_casts.append(pl.col(col).cast(pl.Int32))
-                elif max_val <= cls.INT8_MAX:
-                    type_casts.append(pl.col(col).cast(pl.Int8))
-                elif max_val <= cls.INT16_MAX:
-                    type_casts.append(pl.col(col).cast(pl.Int16))
-                elif max_val <= cls.INT32_MAX:
-                    type_casts.append(pl.col(col).cast(pl.Int32))
-                else:
-                    type_casts.append(pl.col(col).cast(pl.Int64))
-
-            # 字符串类型优化
-            elif dtype == pl.Utf8:
-                # 检查字符串长度，考虑使用更高效的存储方式
-                string_series = df[col].drop_nulls()
-                if string_series.len() == 0:
-                    max_length = 0
-                else:
-                    max_length = string_series.map_elements(
-                        lambda x: len(x),
-                        return_dtype=pl.Int32,
-                    ).max() or 0
-                if max_length < 100:
-                    # 短字符串可以保持Utf8类型
-                    pass
-                else:
-                    # 长字符串考虑使用更高效的存储
-                    unique_count = df[col].n_unique()
-                    total_count = len(df)
-                    if unique_count < total_count * 0.1:
-                        type_casts.append(pl.col(col).cast(pl.Categorical))
-
-            # 列表类型优化
-            elif hasattr(dtype, 'inner'):
-                # 处理List类型
-                inner_dtype = dtype.inner
-                if inner_dtype == pl.Float64:
-                    # 列表中的Float64转换为Float32
-                    type_casts.append(pl.col(col).cast(pl.List(pl.Float32)))
-                elif inner_dtype == pl.Int64:
-                    # 列表中的Int64转换为Int32
-                    type_casts.append(pl.col(col).cast(pl.List(pl.Int32)))
+            expr = cls._column_cast_expr(df, col)
+            if expr is not None:
+                type_casts.append(expr)
 
         # 执行类型转换
         if type_casts:
@@ -262,6 +112,150 @@ class MemoryOptimizer:
             df = cls._optimize_compression(df, preserve_cols)
 
         return df
+
+    @classmethod
+    def _column_cast_expr(cls, df: pl.DataFrame, col: str) -> Any:
+        """按列名映射或 dtype 规则，返回该列的类型转换表达式；无需转换返回 None。"""
+        dtype = df[col].dtype
+
+        # 根据列名映射类型
+        if col in cls.COLUMN_TYPE_MAP['price_cols']:
+            # 价格列必须保留 Float64，否则累计收益、涨跌停比较、
+            # 复权因子连乘会出现可观测精度误差（量化场景不能降精度）
+            return pl.col(col).cast(pl.Float64) if dtype == pl.Decimal else None
+        if col in cls.COLUMN_TYPE_MAP['volume_cols']:
+            return cls._volume_cast_expr(df, col, dtype)
+        if col in cls.COLUMN_TYPE_MAP['pct_cols']:
+            return pl.col(col).cast(pl.Float32) if dtype in [pl.Float64, pl.Decimal] else None
+        if col in cls.COLUMN_TYPE_MAP['int_cols']:
+            return cls._narrow_int_expr(df, col) if dtype == pl.Int64 else None
+        if col in cls.COLUMN_TYPE_MAP['indicator_cols']:
+            return pl.col(col).cast(pl.Float32) if dtype == pl.Float64 else None
+        if col in cls.COLUMN_TYPE_MAP['category_cols']:
+            return cls._category_cast_expr(df, col, dtype)
+        if col in cls.COLUMN_TYPE_MAP['bool_cols']:
+            return pl.col(col).cast(pl.Boolean) if dtype in [pl.Int64, pl.Float64, pl.Utf8] else None
+        if col in cls.COLUMN_TYPE_MAP['decimal_cols']:
+            return pl.col(col).cast(pl.Float32) if dtype in [pl.Float64, pl.Decimal] else None
+
+        # 日期类型优化
+        if 'date' in col.lower() or 'time' in col.lower():
+            return cls._date_cast_expr(col, dtype)
+
+        # 通用类型优化
+        if dtype == pl.Float64:
+            # 未知浮点列（Alpha 因子、外部特征等）保持 Float64：
+            # 通用降精度曾把高精度因子截断为 ~7 位有效位，造成因子
+            # 排序/加权出现可观测偏差。仅 COLUMN_TYPE_MAP 中显式列
+            # （pct_cols / indicator_cols / decimal_cols）允许降 Float32。
+            return None
+        if dtype == pl.Int64:
+            return cls._narrow_int_expr(df, col)
+        if dtype == pl.Utf8:
+            return cls._string_cast_expr(df, col)
+        if hasattr(dtype, 'inner'):
+            return cls._list_cast_expr(col, dtype)
+        return None
+
+    @classmethod
+    def _volume_cast_expr(cls, df: pl.DataFrame, col: str, dtype) -> Any:
+        """成交量列：Float64 保持不变，Int64 按有符号上限缩到 Int32。"""
+        if dtype == pl.Float64:
+            # 保持Float64类型，避免精度损失
+            return pl.col(col).cast(pl.Float64)
+        if dtype == pl.Int64:
+            # Int32 是有符号类型，上限 2**31-1；曾误用 2**32 导致
+            # 成交量 ~3e9 时按 Int32 转换抛 InvalidOperationError（溢出）
+            max_val: Any = df[col].max()
+            if max_val is not None and max_val <= cls.INT32_MAX:
+                return pl.col(col).cast(pl.Int32)
+            return pl.col(col).cast(pl.Int64)
+        return None
+
+    @classmethod
+    def _narrow_int_expr(cls, df: pl.DataFrame, col: str) -> Any:
+        """按有符号上限把 Int64 缩到可容纳的最小整数类型。"""
+        # 各整数类型的上限必须按有符号区间判断，避免 Int8/Int16
+        # 在 256/65536 边界附近溢出抛 InvalidOperationError
+        max_val: Any = df[col].max()
+        if max_val is None:
+            return pl.col(col).cast(pl.Int32)
+        if max_val <= cls.INT8_MAX:
+            return pl.col(col).cast(pl.Int8)
+        if max_val <= cls.INT16_MAX:
+            return pl.col(col).cast(pl.Int16)
+        if max_val <= cls.INT32_MAX:
+            return pl.col(col).cast(pl.Int32)
+        return pl.col(col).cast(pl.Int64)
+
+    @classmethod
+    def _category_cast_expr(cls, df: pl.DataFrame, col: str, dtype) -> Any:
+        """字符串列唯一值少于 10% 时转 Categorical。"""
+        if dtype != pl.Utf8:
+            return None
+        unique_count = df[col].n_unique()
+        total_count = len(df)
+        if unique_count < total_count * 0.1:  # 唯一值少于10%
+            return pl.col(col).cast(pl.Categorical)
+        return None
+
+    @classmethod
+    def _date_cast_expr(cls, col: str, dtype) -> Any:
+        """日期/时间列：Datetime 转 Date，字符串按多种格式尝试解析。"""
+        if dtype == pl.Datetime:
+            # 如果只需要日期部分，转换为 Date
+            return pl.col(col).cast(pl.Date)
+        if dtype != pl.Utf8:
+            return None
+        # 尝试解析日期字符串，使用strict=False避免转换失败
+        try:
+            try:
+                return pl.col(col).str.strptime(pl.Date, '%Y-%m-%d', strict=False)
+            # 兜底理由：日期格式解析失败尝试下一种格式
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"日期格式 %Y-%m-%d 解析失败，尝试下一种: {e}", exc_info=True)
+                return pl.col(col).str.strptime(pl.Date, '%Y%m%d', strict=False)
+        # 兜底理由：日期格式解析失败尝试下一种格式
+        except Exception as e2:  # noqa: BLE001
+            logger.debug(f"日期格式 %Y%m%d 解析失败，尝试下一种: {e2}", exc_info=True)
+            try:
+                return pl.col(col).str.strptime(pl.Date, '%Y/%m/%d', strict=False)
+            # 兜底理由：日期格式解析失败保留原类型
+            except Exception as e3:  # noqa: BLE001
+                logger.debug(f"日期格式 %Y/%m/%d 解析失败，保留原类型: {e3}", exc_info=True)
+                return None
+
+    @classmethod
+    def _string_cast_expr(cls, df: pl.DataFrame, col: str) -> Any:
+        """长字符串且唯一值少于 10% 时转 Categorical。"""
+        # 检查字符串长度，考虑使用更高效的存储方式
+        string_series = df[col].drop_nulls()
+        if string_series.len() == 0:
+            max_length = 0
+        else:
+            max_length = cast(int, string_series.map_elements(
+                lambda x: len(x),
+                return_dtype=pl.Int32,
+            ).max() or 0)
+        if max_length < 100:
+            # 短字符串可以保持Utf8类型
+            return None
+        # 长字符串考虑使用更高效的存储
+        unique_count = df[col].n_unique()
+        total_count = len(df)
+        if unique_count < total_count * 0.1:
+            return pl.col(col).cast(pl.Categorical)
+        return None
+
+    @classmethod
+    def _list_cast_expr(cls, col: str, dtype) -> Any:
+        """List 列：内层 Float64 降 Float32、Int64 降 Int32。"""
+        inner_dtype = dtype.inner
+        if inner_dtype == pl.Float64:
+            return pl.col(col).cast(pl.List(pl.Float32))
+        if inner_dtype == pl.Int64:
+            return pl.col(col).cast(pl.List(pl.Int32))
+        return None
 
     @classmethod
     def process_large_dataset(cls, df: pl.DataFrame, chunk_size: int = 10000, **kwargs) -> pl.DataFrame:
@@ -310,14 +304,15 @@ class MemoryOptimizer:
             row_count = len(df)
 
             # 估算每种类型的字节数
-            bytes_per_element = {
+            sizes: Dict[Any, int] = {
                 pl.Float64: 8, pl.Float32: 4,
                 pl.Int64: 8, pl.Int32: 4, pl.Int16: 2, pl.Int8: 1,
                 pl.Boolean: 1,
                 pl.Date: 4, pl.Datetime: 8,
                 pl.Utf8: 50,  # 字符串平均估算
                 pl.Categorical: 2,  # 分类类型平均估算
-            }.get(dtype, 8)  # 默认 8 字节
+            }
+            bytes_per_element = sizes.get(dtype, 8)  # 默认 8 字节
 
             # 处理复杂类型
             if hasattr(dtype, 'inner'):

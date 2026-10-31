@@ -17,7 +17,7 @@ class QuantException(Exception):
     所有业务异常的基类，提供统一的异常处理接口
     """
 
-    def __init__(self, message: str, error_code: str = None, details: Dict[str, Any] = None, cause: Exception = None):
+    def __init__(self, message: str, error_code: str | None = None, details: Dict[str, Any] | None = None, cause: Exception | None = None):
         self.message = message
         self.error_code = error_code or "UNKNOWN_ERROR"
         self.details = details or {}
@@ -93,7 +93,7 @@ class QuantException(Exception):
 class DataSourceException(QuantException):
     """数据源异常基类"""
 
-    def __init__(self, source: str, message: str, error_code: str = None, details: Dict[str, Any] = None, cause: Exception = None):
+    def __init__(self, source: str, message: str, error_code: str | None = None, details: Dict[str, Any] | None = None, cause: Exception | None = None):
         self.source = source
         super().__init__(
             message=f"[{source}] {message}",
@@ -109,7 +109,7 @@ class DataSourceConnectionError(DataSourceException):
     当无法连接到数据源时抛出
     """
 
-    def __init__(self, source: str, message: str, retryable: bool = True, retry_count: int = 0, cause: Exception = None):
+    def __init__(self, source: str, message: str, retryable: bool = True, retry_count: int = 0, cause: Exception | None = None):
         self.retryable = retryable
         self.retry_count = retry_count
         super().__init__(
@@ -133,7 +133,7 @@ class DataSourceConnectionError(DataSourceException):
 class DataSourceTimeoutError(DataSourceException):
     """数据源请求超时"""
 
-    def __init__(self, source: str, timeout: float = None, cause: Exception = None):
+    def __init__(self, source: str, timeout: float | None = None, cause: Exception | None = None):
         self.timeout = timeout
         super().__init__(
             source=source,
@@ -156,7 +156,7 @@ class DataSourceTimeoutError(DataSourceException):
 class DataSourceConfigError(DataSourceException):
     """数据源配置错误"""
 
-    def __init__(self, source: str, config_key: str = None, message: str = None, cause: Exception = None):
+    def __init__(self, source: str, config_key: str | None = None, message: str | None = None, cause: Exception | None = None):
         self.config_key = config_key
         super().__init__(
             source=source,
@@ -170,7 +170,7 @@ class DataSourceConfigError(DataSourceException):
 class DataSourceNotAvailableError(DataSourceException):
     """数据源不可用（离线模式）"""
 
-    def __init__(self, source: str, reason: str = None, cause: Exception = None):
+    def __init__(self, source: str, reason: str | None = None, cause: Exception | None = None):
         super().__init__(
             source=source,
             message=reason or "数据源当前不可用",
@@ -187,7 +187,7 @@ class DataSourceNotAvailableError(DataSourceException):
 class DataException(QuantException):
     """数据异常基类"""
 
-    def __init__(self, message: str, error_code: str = None, details: Dict[str, Any] = None, cause: Exception = None):
+    def __init__(self, message: str, error_code: str | None = None, details: Dict[str, Any] | None = None, cause: Exception | None = None):
         super().__init__(
             message=message,
             error_code=error_code or "DATA_ERROR",
@@ -202,7 +202,7 @@ class DataValidationError(DataException):
     当数据不符合预期格式或约束时抛出
     """
 
-    def __init__(self, errors: List[str], field: str = None, value: Any = None, cause: Exception = None):
+    def __init__(self, errors: List[str], field: str | None = None, value: Any = None, cause: Exception | None = None):
         self.errors = errors if isinstance(errors, list) else [errors]
         self.field = field
         self.value = value
@@ -221,7 +221,7 @@ class DataValidationError(DataException):
 class DataNotFoundError(DataException):
     """数据不存在"""
 
-    def __init__(self, data_type: str, identifier: str = None, cause: Exception = None):
+    def __init__(self, data_type: str, identifier: str | None = None, cause: Exception | None = None):
         self.data_type = data_type
         self.identifier = identifier
         super().__init__(
@@ -235,7 +235,7 @@ class DataNotFoundError(DataException):
 class DataIntegrityError(DataException):
     """数据完整性错误"""
 
-    def __init__(self, message: str, constraint: str = None, cause: Exception = None):
+    def __init__(self, message: str, constraint: str | None = None, cause: Exception | None = None):
         self.constraint = constraint
         super().__init__(
             message=message,
@@ -248,7 +248,7 @@ class DataIntegrityError(DataException):
 class DataSaveError(DataException):
     """数据保存错误"""
 
-    def __init__(self, message: str, operation: str = None, cause: Exception = None):
+    def __init__(self, message: str, operation: str | None = None, cause: Exception | None = None):
         self.operation = operation
         super().__init__(
             message=message,
@@ -264,7 +264,7 @@ class AdjustmentError(DataException):
     当前复权因子缺失、复权类型不支持或复权计算失败时抛出。
     """
 
-    def __init__(self, symbol: str = None, adjustment_type: str = None, message: str = None, cause: Exception = None):
+    def __init__(self, symbol: str | None = None, adjustment_type: str | None = None, message: str | None = None, cause: Exception | None = None):
         self.symbol = symbol
         self.adjustment_type = adjustment_type
         super().__init__(
@@ -282,7 +282,7 @@ class AdjustmentError(DataException):
 class CalculationException(QuantException):
     """计算异常基类"""
 
-    def __init__(self, message: str, error_code: str = None, details: Dict[str, Any] = None, cause: Exception = None):
+    def __init__(self, message: str, error_code: str | None = None, details: Dict[str, Any] | None = None, cause: Exception | None = None):
         super().__init__(
             message=message,
             error_code=error_code or "CALCULATION_ERROR",
@@ -294,7 +294,7 @@ class CalculationException(QuantException):
 class IndicatorCalculationError(CalculationException):
     """指标计算错误"""
 
-    def __init__(self, indicator: str, message: str, params: Dict[str, Any] = None, cause: Exception = None):
+    def __init__(self, indicator: str, message: str, params: Dict[str, Any] | None = None, cause: Exception | None = None):
         self.indicator = indicator
         self.params = params or {}
         super().__init__(
@@ -308,7 +308,7 @@ class IndicatorCalculationError(CalculationException):
 class IndicatorNotFoundError(CalculationException):
     """指标不存在"""
 
-    def __init__(self, indicator: str, available_indicators: List[str] = None, cause: Exception = None):
+    def __init__(self, indicator: str, available_indicators: List[str] | None = None, cause: Exception | None = None):
         self.indicator = indicator
         self.available_indicators = available_indicators or []
         super().__init__(
@@ -316,8 +316,8 @@ class IndicatorNotFoundError(CalculationException):
             error_code="INDICATOR_NOT_FOUND",
             details={
                 "indicator": indicator,
-                "available_count": len(available_indicators),
-                "suggestions": available_indicators[:5] if available_indicators else []
+                "available_count": len(self.available_indicators),
+                "suggestions": self.available_indicators[:5]
             },
             cause=cause
         )
@@ -326,7 +326,7 @@ class IndicatorNotFoundError(CalculationException):
 class InsufficientDataError(CalculationException):
     """数据不足无法计算"""
 
-    def __init__(self, indicator: str, required: int, actual: int, cause: Exception = None):
+    def __init__(self, indicator: str, required: int, actual: int, cause: Exception | None = None):
         self.required = required
         self.actual = actual
         super().__init__(
@@ -344,7 +344,7 @@ class InsufficientDataError(CalculationException):
 class UIException(QuantException):
     """UI异常基类"""
 
-    def __init__(self, message: str, error_code: str = None, details: Dict[str, Any] = None, cause: Exception = None):
+    def __init__(self, message: str, error_code: str | None = None, details: Dict[str, Any] | None = None, cause: Exception | None = None):
         super().__init__(
             message=message,
             error_code=error_code or "UI_ERROR",
@@ -356,7 +356,7 @@ class UIException(QuantException):
 class ComponentNotFoundError(UIException):
     """UI组件不存在"""
 
-    def __init__(self, component_name: str, container: str = None, cause: Exception = None):
+    def __init__(self, component_name: str, container: str | None = None, cause: Exception | None = None):
         super().__init__(
             message=f"组件[{component_name}]不存在" + (f" in {container}" if container else ""),
             error_code="COMPONENT_NOT_FOUND",
@@ -368,7 +368,7 @@ class ComponentNotFoundError(UIException):
 class RenderError(UIException):
     """渲染错误"""
 
-    def __init__(self, component: str, message: str, cause: Exception = None):
+    def __init__(self, component: str, message: str, cause: Exception | None = None):
         super().__init__(
             message=f"组件[{component}]渲染失败: {message}",
             error_code="RENDER_ERROR",
@@ -384,7 +384,7 @@ class RenderError(UIException):
 class ConfigException(QuantException):
     """配置异常基类"""
 
-    def __init__(self, message: str, error_code: str = None, details: Dict[str, Any] = None, cause: Exception = None):
+    def __init__(self, message: str, error_code: str | None = None, details: Dict[str, Any] | None = None, cause: Exception | None = None):
         super().__init__(
             message=message,
             error_code=error_code or "CONFIG_ERROR",
@@ -396,7 +396,7 @@ class ConfigException(QuantException):
 class ConfigNotFoundError(ConfigException):
     """配置文件不存在"""
 
-    def __init__(self, config_path: str, cause: Exception = None):
+    def __init__(self, config_path: str, cause: Exception | None = None):
         self.config_path = config_path
         super().__init__(
             message=f"配置文件不存在: {config_path}",
@@ -409,7 +409,7 @@ class ConfigNotFoundError(ConfigException):
 class ConfigValidationError(ConfigException):
     """配置验证错误"""
 
-    def __init__(self, field: str, value: Any, expected_type: type = None, cause: Exception = None):
+    def __init__(self, field: str, value: Any, expected_type: type | None = None, cause: Exception | None = None):
         self.field = field
         self.value = value
         self.expected_type = expected_type
@@ -428,7 +428,7 @@ class ConfigValidationError(ConfigException):
 class PluginException(QuantException):
     """插件异常基类"""
 
-    def __init__(self, plugin_name: str, message: str, error_code: str = None, cause: Exception = None):
+    def __init__(self, plugin_name: str, message: str, error_code: str | None = None, cause: Exception | None = None):
         self.plugin_name = plugin_name
         super().__init__(
             message=f"插件[{plugin_name}]: {message}",
@@ -441,7 +441,7 @@ class PluginException(QuantException):
 class PluginNotFoundError(PluginException):
     """插件不存在"""
 
-    def __init__(self, plugin_name: str, cause: Exception = None):
+    def __init__(self, plugin_name: str, cause: Exception | None = None):
         super().__init__(
             plugin_name=plugin_name,
             message="插件不存在",
@@ -453,7 +453,7 @@ class PluginNotFoundError(PluginException):
 class PluginLoadError(PluginException):
     """插件加载错误"""
 
-    def __init__(self, plugin_name: str, reason: str, cause: Exception = None):
+    def __init__(self, plugin_name: str, reason: str, cause: Exception | None = None):
         super().__init__(
             plugin_name=plugin_name,
             message=f"加载失败: {reason}",
@@ -465,7 +465,7 @@ class PluginLoadError(PluginException):
 class PluginInitError(PluginException):
     """插件初始化错误"""
 
-    def __init__(self, plugin_name: str, reason: str, cause: Exception = None):
+    def __init__(self, plugin_name: str, reason: str, cause: Exception | None = None):
         super().__init__(
             plugin_name=plugin_name,
             message=f"初始化失败: {reason}",
@@ -481,7 +481,7 @@ class PluginInitError(PluginException):
 class TradingException(QuantException):
     """交易异常基类"""
 
-    def __init__(self, message: str, error_code: str = None, details: Dict[str, Any] = None, cause: Exception = None):
+    def __init__(self, message: str, error_code: str | None = None, details: Dict[str, Any] | None = None, cause: Exception | None = None):
         super().__init__(
             message=message,
             error_code=error_code or "TRADING_ERROR",
@@ -497,7 +497,7 @@ class OrderRejectedError(TradingException):
     不可重试——需人工或策略层调整后重新提交。
     """
 
-    def __init__(self, symbol: str = None, reason: str = None, order_side: str = None, details: Dict[str, Any] = None, cause: Exception = None):
+    def __init__(self, symbol: str | None = None, reason: str | None = None, order_side: str | None = None, details: Dict[str, Any] | None = None, cause: Exception | None = None):
         self.symbol = symbol
         self.reason = reason
         self.order_side = order_side

@@ -29,8 +29,8 @@ class DataSourceMonitor:
         Args:
             max_history: 每个数据源保存的最大历史记录数
         """
-        self.response_times = defaultdict(lambda: deque(maxlen=max_history))
-        self.success_rates = defaultdict(lambda: {'success': 0, 'total': 0})
+        self.response_times: Dict[str, deque[Dict[str, Any]]] = defaultdict(lambda: deque(maxlen=max_history))
+        self.success_rates: Dict[str, Dict[str, int]] = defaultdict(lambda: {'success': 0, 'total': 0})
         self.lock = threading.Lock()
 
     def record_request(self, source_name: str, response_time: float, success: bool):
@@ -100,8 +100,8 @@ class DataSourceMonitor:
             if current_time - item['timestamp'] <= 300:  # 5分钟
                 recent_5min.append(item)
 
-        recent_avg = 0
-        recent_success_rate = 0
+        recent_avg = 0.0
+        recent_success_rate = 0.0
         if recent_5min:
             recent_response_times = [item['response_time'] for item in recent_5min]
             recent_avg = sum(recent_response_times) / len(recent_response_times)

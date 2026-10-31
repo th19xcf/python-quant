@@ -132,6 +132,27 @@ class MainWindowIndicatorBarMixin:
         ]
 
         # 创建水平滚动区域
+        scroll_area = self._create_indicator_scroll_widget()
+
+        # 创建滚动内容容器并填充指标按钮
+        scroll_content = self._build_indicator_scroll_content(indicators, button_style)
+
+        # 设置滚动区域内容
+        scroll_area.setWidget(scroll_content)
+
+        # 添加窗口按钮与左箭头等固定在滚动区外部的控件
+        self._add_indicator_fixed_buttons(indicator_layout, button_style, scroll_area)
+
+        # 设置滚动区域高度
+        scroll_area.setMaximumHeight(30)
+
+    def _create_indicator_scroll_widget(self):
+        """
+        创建水平滚动区域并注册到指标交互管理器
+
+        Returns:
+            QScrollArea: 滚动区域实例
+        """
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -140,7 +161,19 @@ class MainWindowIndicatorBarMixin:
         # 设置滚动区域的尺寸策略，确保给右侧按钮留出空间
         scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.indicator_interaction_manager.set_scroll_area(scroll_area)
+        return scroll_area
 
+    def _build_indicator_scroll_content(self, indicators, button_style):
+        """
+        创建滚动内容容器：指标按钮、分隔符与指标B/模板按钮
+
+        Args:
+            indicators: 指标名称列表
+            button_style: 按钮样式
+
+        Returns:
+            QWidget: 已填充按钮的滚动内容容器
+        """
         # 创建滚动内容容器
         scroll_content = QWidget()
         scroll_layout = QHBoxLayout(scroll_content)
@@ -164,9 +197,17 @@ class MainWindowIndicatorBarMixin:
         scroll_layout.addWidget(btn)
         self.indicator_buttons["模板"] = btn
 
-        # 设置滚动区域内容
-        scroll_area.setWidget(scroll_content)
+        return scroll_content
 
+    def _add_indicator_fixed_buttons(self, indicator_layout, button_style, scroll_area):
+        """
+        在滚动区外侧添加窗口菜单按钮、左箭头滚动按钮与分隔符
+
+        Args:
+            indicator_layout: 指标栏主布局
+            button_style: 按钮样式
+            scroll_area: 指标按钮滚动区域
+        """
         # 添加窗口按钮（最左侧，固定不动）
         window_btn = self._create_indicator_button(
             "窗口",
@@ -196,9 +237,6 @@ class MainWindowIndicatorBarMixin:
 
         # 添加滚动区域到主布局
         indicator_layout.addWidget(scroll_area)
-
-        # 设置滚动区域高度
-        scroll_area.setMaximumHeight(30)
 
     def _add_indicator_scroll_button(self, scroll_layout, indicator, button_style):
         """

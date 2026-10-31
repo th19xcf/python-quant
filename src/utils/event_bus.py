@@ -51,7 +51,7 @@ try:
 
     _HAS_QT = True
 except ImportError:  # 无 Qt 环境（如纯数据处理脚本）
-    QObject = None  # type: ignore[assignment]
+    QObject = None  # type: ignore[assignment,misc]
     _QtSubscriberBridge = None  # type: ignore[assignment,misc]
     _HAS_QT = False
 
@@ -270,8 +270,8 @@ class EventBus:
         Returns:
             (包装后的订阅者, 桥接对象)
         """
-        receiver = subscriber.__self__
-        func = subscriber.__func__
+        receiver = subscriber.__self__  # type: ignore[attr-defined]
+        func = subscriber.__func__  # type: ignore[attr-defined]
         accepts_sender = EventBus._wants_sender(subscriber)
         receiver_ref = weakref.ref(receiver)
         bridge = _QtSubscriberBridge(receiver)
@@ -616,12 +616,12 @@ class EventMonitor:
         elif event_type == 'subscribe':
             # 记录事件订阅
             subscriber = args[0] if args else None
-            subscriber_name = subscriber.__name__ if hasattr(subscriber, '__name__') else str(subscriber)
+            subscriber_name = getattr(subscriber, '__name__', None) or str(subscriber)
             logger.debug(f"[EVENT] Subscribed: {signal_name} | Subscriber: {subscriber_name}")
         elif event_type == 'unsubscribe':
             # 记录事件取消订阅
             subscriber = args[0] if args else None
-            subscriber_name = subscriber.__name__ if hasattr(subscriber, '__name__') else str(subscriber)
+            subscriber_name = getattr(subscriber, '__name__', None) or str(subscriber)
             logger.debug(f"[EVENT] Unsubscribed: {signal_name} | Subscriber: {subscriber_name}")
 
     @staticmethod

@@ -10,6 +10,230 @@ from datetime import datetime
 
 from src.utils.logger import logger
 
+# 回测报告静态页头（含样式），动态内容由 _generate_backtest_html 拼接
+_BACKTEST_REPORT_HEAD = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>策略回测报告</title>
+    <style>
+        body {
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            background-color: #f5f5f5;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 30px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            border-bottom: 2px solid #0066cc;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #555;
+            margin-top: 30px;
+            border-left: 4px solid #0066cc;
+            padding-left: 10px;
+        }
+        .info-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        .info-table th, .info-table td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: left;
+        }
+        .info-table th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .metric-card {
+            background-color: #f9f9f9;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .metric-card h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #0066cc;
+        }
+        .footer {
+            margin-top: 40px;
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            border-top: 1px solid #ddd;
+            padding-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>策略回测报告</h1>
+"""
+
+# 股票推荐报告静态页头
+_RECOMMENDATION_REPORT_HEAD = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>股票推荐报告</title>
+    <style>
+        body {
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            background-color: #f5f5f5;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 30px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            border-bottom: 2px solid #0066cc;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #555;
+            margin-top: 30px;
+            border-left: 4px solid #0066cc;
+            padding-left: 10px;
+        }
+        .stock-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        .stock-table th, .stock-table td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: left;
+        }
+        .stock-table th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        .stock-table tr:hover {
+            background-color: #f5f5f5;
+        }
+        .footer {
+            margin-top: 40px;
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            border-top: 1px solid #ddd;
+            padding-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>股票推荐报告</h1>
+"""
+
+# 因子分析报告静态页头
+_FACTOR_REPORT_HEAD = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>因子分析报告</title>
+    <style>
+        body {
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            background-color: #f5f5f5;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 30px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            border-bottom: 2px solid #0066cc;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #555;
+            margin-top: 30px;
+            border-left: 4px solid #0066cc;
+            padding-left: 10px;
+        }
+        .info-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        .info-table th, .info-table td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: left;
+        }
+        .info-table th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        .factor-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        .factor-table th, .factor-table td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: left;
+        }
+        .factor-table th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        .footer {
+            margin-top: 40px;
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            border-top: 1px solid #ddd;
+            padding-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>因子分析报告</h1>
+"""
+
 
 class ReportGenerator:
     """
@@ -133,88 +357,10 @@ class ReportGenerator:
         Returns:
             str: HTML内容
         """
-        html = f"""
-        <!DOCTYPE html>
-        <html lang="zh-CN">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>策略回测报告</title>
-            <style>
-                body {{
-                    font-family: 'Microsoft YaHei', Arial, sans-serif;
-                    background-color: #f5f5f5;
-                    margin: 0;
-                    padding: 20px;
-                }}
-                .container {{
-                    max-width: 1200px;
-                    margin: 0 auto;
-                    background-color: white;
-                    padding: 30px;
-                    box-shadow: 0 0 10px rgba(0,0,0,0.1);
-                }}
-                h1 {{
-                    color: #333;
-                    text-align: center;
-                    border-bottom: 2px solid #0066cc;
-                    padding-bottom: 10px;
-                }}
-                h2 {{
-                    color: #555;
-                    margin-top: 30px;
-                    border-left: 4px solid #0066cc;
-                    padding-left: 10px;
-                }}
-                .info-table {{
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin: 20px 0;
-                }}
-                .info-table th, .info-table td {{
-                    border: 1px solid #ddd;
-                    padding: 10px;
-                    text-align: left;
-                }}
-                .info-table th {{
-                    background-color: #f2f2f2;
-                    font-weight: bold;
-                }}
-                .metrics {{
-                    display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                    gap: 20px;
-                    margin: 20px 0;
-                }}
-                .metric-card {{
-                    background-color: #f9f9f9;
-                    padding: 20px;
-                    border-radius: 5px;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                }}
-                .metric-card h3 {{
-                    margin-top: 0;
-                    color: #333;
-                }}
-                .metric-value {{
-                    font-size: 24px;
-                    font-weight: bold;
-                    color: #0066cc;
-                }}
-                .footer {{
-                    margin-top: 40px;
-                    text-align: center;
-                    color: #666;
-                    font-size: 14px;
-                    border-top: 1px solid #ddd;
-                    padding-top: 20px;
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>策略回测报告</h1>
-
+        total_return = result.get('total_return', 0)
+        performance = "良好" if total_return > 0 else "不佳"
+        suggestion = "继续优化参数以提高收益" if total_return > 0 else "重新评估策略逻辑"
+        body = f"""
                 <h2>基本信息</h2>
                 <table class="info-table">
                     <tr>
@@ -268,8 +414,14 @@ class ReportGenerator:
                 </div>
 
                 <h2>结论与建议</h2>
-                <p>根据回测结果，该策略在测试期间表现{"良好" if result.get('total_return', 0) > 0 else "不佳"}。建议{"继续优化参数以提高收益" if result.get('total_return', 0) > 0 else "重新评估策略逻辑"}。</p>
+                <p>根据回测结果，该策略在测试期间表现{performance}。建议{suggestion}。</p>
+"""
+        return _BACKTEST_REPORT_HEAD + body + self._report_footer()
 
+    @staticmethod
+    def _report_footer():
+        """统一报告页脚（生成时间 + 闭合标签）。"""
+        return f"""
                 <div class="footer">
                     <p>报告生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 </div>
@@ -277,7 +429,6 @@ class ReportGenerator:
         </body>
         </html>
         """
-        return html
 
     def _generate_recommendation_html(self, result):
         """
@@ -305,70 +456,7 @@ class ReportGenerator:
                 </tr>
                 """
 
-        html = f"""
-        <!DOCTYPE html>
-        <html lang="zh-CN">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>股票推荐报告</title>
-            <style>
-                body {{
-                    font-family: 'Microsoft YaHei', Arial, sans-serif;
-                    background-color: #f5f5f5;
-                    margin: 0;
-                    padding: 20px;
-                }}
-                .container {{
-                    max-width: 1200px;
-                    margin: 0 auto;
-                    background-color: white;
-                    padding: 30px;
-                    box-shadow: 0 0 10px rgba(0,0,0,0.1);
-                }}
-                h1 {{
-                    color: #333;
-                    text-align: center;
-                    border-bottom: 2px solid #0066cc;
-                    padding-bottom: 10px;
-                }}
-                h2 {{
-                    color: #555;
-                    margin-top: 30px;
-                    border-left: 4px solid #0066cc;
-                    padding-left: 10px;
-                }}
-                .stock-table {{
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin: 20px 0;
-                }}
-                .stock-table th, .stock-table td {{
-                    border: 1px solid #ddd;
-                    padding: 10px;
-                    text-align: left;
-                }}
-                .stock-table th {{
-                    background-color: #f2f2f2;
-                    font-weight: bold;
-                }}
-                .stock-table tr:hover {{
-                    background-color: #f5f5f5;
-                }}
-                .footer {{
-                    margin-top: 40px;
-                    text-align: center;
-                    color: #666;
-                    font-size: 14px;
-                    border-top: 1px solid #ddd;
-                    padding-top: 20px;
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>股票推荐报告</h1>
-
+        body = f"""
                 <h2>推荐股票列表</h2>
                 <table class="stock-table">
                     <tr>
@@ -385,15 +473,8 @@ class ReportGenerator:
 
                 <h2>投资建议</h2>
                 <p>根据推荐结果，建议投资者关注上述股票，并结合自身风险承受能力进行投资决策。建议分散投资，控制仓位，定期回顾和调整投资组合。</p>
-
-                <div class="footer">
-                    <p>报告生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-        return html
+"""
+        return _RECOMMENDATION_REPORT_HEAD + body + self._report_footer()
 
     def _generate_factor_analysis_html(self, result):
         """
@@ -419,81 +500,7 @@ class ReportGenerator:
                 </tr>
                 """
 
-        html = f"""
-        <!DOCTYPE html>
-        <html lang="zh-CN">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>因子分析报告</title>
-            <style>
-                body {{
-                    font-family: 'Microsoft YaHei', Arial, sans-serif;
-                    background-color: #f5f5f5;
-                    margin: 0;
-                    padding: 20px;
-                }}
-                .container {{
-                    max-width: 1200px;
-                    margin: 0 auto;
-                    background-color: white;
-                    padding: 30px;
-                    box-shadow: 0 0 10px rgba(0,0,0,0.1);
-                }}
-                h1 {{
-                    color: #333;
-                    text-align: center;
-                    border-bottom: 2px solid #0066cc;
-                    padding-bottom: 10px;
-                }}
-                h2 {{
-                    color: #555;
-                    margin-top: 30px;
-                    border-left: 4px solid #0066cc;
-                    padding-left: 10px;
-                }}
-                .info-table {{
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin: 20px 0;
-                }}
-                .info-table th, .info-table td {{
-                    border: 1px solid #ddd;
-                    padding: 10px;
-                    text-align: left;
-                }}
-                .info-table th {{
-                    background-color: #f2f2f2;
-                    font-weight: bold;
-                }}
-                .factor-table {{
-                    width: 100%;
-                    border-collapse: collapse;
-                    margin: 20px 0;
-                }}
-                .factor-table th, .factor-table td {{
-                    border: 1px solid #ddd;
-                    padding: 10px;
-                    text-align: left;
-                }}
-                .factor-table th {{
-                    background-color: #f2f2f2;
-                    font-weight: bold;
-                }}
-                .footer {{
-                    margin-top: 40px;
-                    text-align: center;
-                    color: #666;
-                    font-size: 14px;
-                    border-top: 1px solid #ddd;
-                    padding-top: 20px;
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>因子分析报告</h1>
-
+        body = f"""
                 <h2>基本信息</h2>
                 <table class="info-table">
                     <tr>
@@ -528,12 +535,5 @@ class ReportGenerator:
 
                 <h2>结论与建议</h2>
                 <p>根据因子分析结果，建议投资者关注IC值较高的因子，并结合市场环境进行因子组合配置。</p>
-
-                <div class="footer">
-                    <p>报告生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-        return html
+"""
+        return _FACTOR_REPORT_HEAD + body + self._report_footer()

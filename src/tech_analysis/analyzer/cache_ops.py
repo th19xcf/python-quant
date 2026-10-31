@@ -14,6 +14,12 @@ from ..indicator_cache import global_indicator_cache
 class IndicatorCacheMixin:
     """指标计算状态与缓存操作混入类"""
 
+    # 需要按窗口维护计算状态的指标
+    _WINDOW_BASED_INDICATORS = {
+        'ma', 'rsi', 'kdj', 'vol_ma', 'boll', 'wr', 'dmi', 'cci',
+        'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst',
+    }
+
     def _generate_cache_key(self, indicator_type, *args, **kwargs):
         """
         生成唯一的缓存键，基于数据哈希和指标参数
@@ -58,7 +64,7 @@ class IndicatorCacheMixin:
             # 非窗口型指标，直接返回状态值
             return status
 
-    def reset_calculation(self, indicator_type=None, window=None):  # noqa: C901
+    def reset_calculation(self, indicator_type=None, window=None):
         """
         重置指标计算状态，可选择重置特定指标或所有指标
 
@@ -66,130 +72,19 @@ class IndicatorCacheMixin:
             indicator_type: 要重置的指标类型，None表示重置所有指标
             window: 对于需要窗口的指标，指定要重置的窗口，None表示重置该类型的所有窗口
         """
-        def _reset_all_indicators():
-            """重置所有指标"""
-            # 重新初始化计算状态字典
-            self.calculated_indicators = {
-                'ma': set(),
-                'macd': False,
-                'rsi': set(),
-                'kdj': set(),
-                'vol_ma': set(),
-                'boll': set(),
-                'wr': set(),
-                'dmi': set(),
-                'cci': set(),
-                'roc': set(),
-                'mtm': set(),
-                'obv': False,
-                'vr': set(),
-                'psy': set(),
-                'trix': set(),
-                'brar': set(),
-                'asi': set(),
-                'emv': set(),
-                'mcst': set(),
-                'plugin': {}
-            }
-            # 重置缓存
-            self._calculate_cache.clear()
-            # 重置插件指标映射
-            self._init_plugin_indicator_mapping()
-            # 重置数据哈希
-            self._data_hash = self._calculate_polars_data_hash()
-
-            # 重置Polars DataFrame，只保留原始列
-            original_columns = ['open', 'high', 'low', 'close', 'volume']
-            self.pl_df = self.pl_df.select(original_columns)
-
-
-
-        def _reset_plugin_indicator(plugin_name):
-            """重置特定插件指标"""
-            if plugin_name in self.calculated_indicators['plugin']:
-                del self.calculated_indicators['plugin'][plugin_name]
-                # 从缓存中删除
-                # 注意：这里无法直接删除全局缓存中的条目，因为缓存键包含数据哈希
-                # 但我们可以清除本地计算缓存
-
-        def _reset_window_based_indicator(ind_type, win):
-            """重置基于窗口的指标"""
-            columns_to_drop = []
-
-            if win:
-                # 重置特定窗口
-                self.calculated_indicators[ind_type].discard(win)
-                # 准备删除的列名
-                if ind_type == 'vol_ma':
-                    columns_to_drop = [f'vol_ma{win}']
-                elif ind_type == 'boll':
-                    columns_to_drop = [f'mb{win}', f'up{win}', f'dn{win}']
-                else:
-                    columns_to_drop = [f'{ind_type}{win}']
-                # 从缓存中删除
-                cache_key = self._generate_cache_key(ind_type, win)
-                self._calculate_cache.pop(cache_key, None)
-            else:
-                # 重置该类型的所有窗口
-                windows = list(self.calculated_indicators[ind_type])
-                for w in windows:
-                    if ind_type == 'vol_ma':
-                        columns_to_drop.append(f'vol_ma{w}')
-                    elif ind_type == 'boll':
-                        columns_to_drop.extend([f'mb{w}', f'up{w}', f'dn{w}'])
-                    else:
-                        columns_to_drop.append(f'{ind_type}{w}')
-                    # 从缓存中删除
-                    cache_key = self._generate_cache_key(ind_type, w)
-                    self._calculate_cache.pop(cache_key, None)
-                # 清空该类型的所有窗口
-                self.calculated_indicators[ind_type].clear()
-                # 删除默认列名
-                if ind_type == 'boll':
-                    columns_to_drop.extend(['mb', 'up', 'dn'])
-                elif ind_type == 'wr':
-                    columns_to_drop.extend(['wr'])
-
-            # 统一删除需要删除的列
-            if columns_to_drop:
-                columns_to_drop_existing = [col for col in columns_to_drop if col in self.pl_df.columns]
-                if columns_to_drop_existing:
-                    self.pl_df = self.pl_df.drop(columns_to_drop_existing)
-
-        def _reset_simple_indicator(ind_type):
-            """重置简单指标"""
-            self.calculated_indicators[ind_type] = False
-            # 准备删除的列名
-            if ind_type == 'macd':
-                columns_to_drop = ['macd', 'macd_signal', 'macd_hist']
-            elif ind_type == 'obv':
-                columns_to_drop = ['obv']
-            else:
-                columns_to_drop = [ind_type]
-
-            # 从缓存中删除
-            cache_key = self._generate_cache_key(ind_type)
-            self._calculate_cache.pop(cache_key, None)
-
-            # 统一删除需要删除的列
-            columns_to_drop_existing = [col for col in columns_to_drop if col in self.pl_df.columns]
-            if columns_to_drop_existing:
-                self.pl_df = self.pl_df.drop(columns_to_drop_existing)
-
-        # 主逻辑
         if not indicator_type:
             # 重置所有指标
-            _reset_all_indicators()
+            self._reset_all_indicators()
         elif self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():
             # 重置特定插件指标
-            _reset_plugin_indicator(indicator_type)
+            self._reset_plugin_indicator(indicator_type)
         elif indicator_type in self.calculated_indicators:
-            if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma', 'boll', 'wr', 'dmi', 'cci', 'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst']:
+            if indicator_type in self._WINDOW_BASED_INDICATORS:
                 # 重置基于窗口的指标
-                _reset_window_based_indicator(indicator_type, window)
+                self._reset_window_based_indicator(indicator_type, window)
             elif indicator_type in ['macd', 'obv']:
                 # 重置简单指标
-                _reset_simple_indicator(indicator_type)
+                self._reset_simple_indicator(indicator_type)
             elif indicator_type == 'plugin':
                 # 重置所有插件指标
                 self.calculated_indicators['plugin'].clear()
@@ -197,6 +92,114 @@ class IndicatorCacheMixin:
                 for cache_key in list(self._calculate_cache.keys()):
                     if cache_key.startswith('plugin_'):
                         del self._calculate_cache[cache_key]
+
+    def _reset_all_indicators(self):
+        """重置所有指标"""
+        # 重新初始化计算状态字典
+        self.calculated_indicators = {
+            'ma': set(),
+            'macd': False,
+            'rsi': set(),
+            'kdj': set(),
+            'vol_ma': set(),
+            'boll': set(),
+            'wr': set(),
+            'dmi': set(),
+            'cci': set(),
+            'roc': set(),
+            'mtm': set(),
+            'obv': False,
+            'vr': set(),
+            'psy': set(),
+            'trix': set(),
+            'brar': set(),
+            'asi': set(),
+            'emv': set(),
+            'mcst': set(),
+            'plugin': {}
+        }
+        # 重置缓存
+        self._calculate_cache.clear()
+        # 重置插件指标映射
+        self._init_plugin_indicator_mapping()
+        # 重置数据哈希
+        self._data_hash = self._calculate_polars_data_hash()
+
+        # 重置Polars DataFrame，只保留原始列
+        original_columns = ['open', 'high', 'low', 'close', 'volume']
+        self.pl_df = self.pl_df.select(original_columns)
+
+    def _reset_plugin_indicator(self, plugin_name):
+        """重置特定插件指标"""
+        if plugin_name in self.calculated_indicators['plugin']:
+            del self.calculated_indicators['plugin'][plugin_name]
+            # 从缓存中删除
+            # 注意：这里无法直接删除全局缓存中的条目，因为缓存键包含数据哈希
+            # 但我们可以清除本地计算缓存
+
+    def _reset_window_based_indicator(self, ind_type, win):
+        """重置基于窗口的指标"""
+        columns_to_drop = []
+
+        if win:
+            # 重置特定窗口
+            self.calculated_indicators[ind_type].discard(win)
+            # 准备删除的列名
+            if ind_type == 'vol_ma':
+                columns_to_drop = [f'vol_ma{win}']
+            elif ind_type == 'boll':
+                columns_to_drop = [f'mb{win}', f'up{win}', f'dn{win}']
+            else:
+                columns_to_drop = [f'{ind_type}{win}']
+            # 从缓存中删除
+            cache_key = self._generate_cache_key(ind_type, win)
+            self._calculate_cache.pop(cache_key, None)
+        else:
+            # 重置该类型的所有窗口
+            windows = list(self.calculated_indicators[ind_type])
+            for w in windows:
+                if ind_type == 'vol_ma':
+                    columns_to_drop.append(f'vol_ma{w}')
+                elif ind_type == 'boll':
+                    columns_to_drop.extend([f'mb{w}', f'up{w}', f'dn{w}'])
+                else:
+                    columns_to_drop.append(f'{ind_type}{w}')
+                # 从缓存中删除
+                cache_key = self._generate_cache_key(ind_type, w)
+                self._calculate_cache.pop(cache_key, None)
+            # 清空该类型的所有窗口
+            self.calculated_indicators[ind_type].clear()
+            # 删除默认列名
+            if ind_type == 'boll':
+                columns_to_drop.extend(['mb', 'up', 'dn'])
+            elif ind_type == 'wr':
+                columns_to_drop.extend(['wr'])
+
+        # 统一删除需要删除的列
+        if columns_to_drop:
+            columns_to_drop_existing = [col for col in columns_to_drop if col in self.pl_df.columns]
+            if columns_to_drop_existing:
+                self.pl_df = self.pl_df.drop(columns_to_drop_existing)
+
+    def _reset_simple_indicator(self, ind_type):
+        """重置简单指标"""
+        self.calculated_indicators[ind_type] = False
+        # 准备删除的列名
+        if ind_type == 'macd':
+            columns_to_drop = ['macd', 'macd_signal', 'macd_hist']
+        elif ind_type == 'obv':
+            columns_to_drop = ['obv']
+        else:
+            columns_to_drop = [ind_type]
+
+        # 从缓存中删除
+        cache_key = self._generate_cache_key(ind_type)
+        self._calculate_cache.pop(cache_key, None)
+
+        # 统一删除需要删除的列
+        columns_to_drop_existing = [col for col in columns_to_drop if col in self.pl_df.columns]
+        if columns_to_drop_existing:
+            self.pl_df = self.pl_df.drop(columns_to_drop_existing)
 
     def get_calculated_indicators(self):
         """

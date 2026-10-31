@@ -71,91 +71,77 @@ class TableInteractionManager:
             window.column_sort_states[logical_index] = next_state
 
             from PySide6.QtCore import Qt
-            from PySide6.QtGui import QColor
-            from PySide6.QtWidgets import QTableWidgetItem
 
             if next_state == 1:
-                window.stock_table.horizontalHeader().setSortIndicatorShown(True)
-                window.stock_table.horizontalHeader().setSortIndicator(logical_index, Qt.AscendingOrder)
-                window.stock_table.setSortingEnabled(True)
-                window.stock_table.sortItems(logical_index, Qt.AscendingOrder)
-                window.current_sorted_column = logical_index
+                self._apply_sort(window, logical_index, Qt.AscendingOrder)
             elif next_state == 2:
-                window.stock_table.horizontalHeader().setSortIndicatorShown(True)
-                window.stock_table.horizontalHeader().setSortIndicator(logical_index, Qt.DescendingOrder)
-                window.stock_table.setSortingEnabled(True)
-                window.stock_table.sortItems(logical_index, Qt.DescendingOrder)
-                window.current_sorted_column = logical_index
+                self._apply_sort(window, logical_index, Qt.DescendingOrder)
             else:
-                window.stock_table.setSortingEnabled(False)
-                window.stock_table.horizontalHeader().setSortIndicatorShown(False)
-                window.stock_table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
-
-                current_data = []
-                row_count = window.stock_table.rowCount()
-                for row in range(row_count):
-                    row_data = []
-                    for col in range(window.stock_table.columnCount()):
-                        item = window.stock_table.item(row, col)
-                        row_data.append(item.text() if item else "")
-                    current_data.append(row_data)
-
-                window.stock_table.setRowCount(0)
-
-                for row_data in current_data:
-                    row_pos = window.stock_table.rowCount()
-                    window.stock_table.insertRow(row_pos)
-                    for col, value in enumerate(row_data):
-                        item = QTableWidgetItem(value)
-                        if col in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
-                            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                        if col == 3 or col == 5:
-                            if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
-                                item.setForeground(QColor(255, 0, 0))
-                            elif value.startswith("-"):
-                                item.setForeground(QColor(0, 255, 0))
-                            else:
-                                item.setForeground(QColor(204, 204, 204))
-                        elif col == 4:
-                            preclose = float(row_data[11]) if len(row_data) > 11 and row_data[11] != "-" else 0.0
-                            current_price = float(value) if value != "-" else 0.0
-                            if current_price > preclose:
-                                item.setForeground(QColor(255, 0, 0))
-                            elif current_price < preclose:
-                                item.setForeground(QColor(0, 255, 0))
-                            else:
-                                item.setForeground(QColor(204, 204, 204))
-                        elif col == 8:
-                            preclose = float(row_data[11]) if len(row_data) > 11 and row_data[11] != "-" else 0.0
-                            open_price = float(value) if value != "-" else 0.0
-                            if open_price > preclose:
-                                item.setForeground(QColor(255, 0, 0))
-                            elif open_price < preclose:
-                                item.setForeground(QColor(0, 255, 0))
-                            else:
-                                item.setForeground(QColor(204, 204, 204))
-                        elif col == 9:
-                            preclose = float(row_data[11]) if len(row_data) > 11 and row_data[11] != "-" else 0.0
-                            high_price = float(value) if value != "-" else 0.0
-                            if high_price > preclose:
-                                item.setForeground(QColor(255, 0, 0))
-                            elif high_price < preclose:
-                                item.setForeground(QColor(0, 255, 0))
-                            else:
-                                item.setForeground(QColor(204, 204, 204))
-                        elif col == 10:
-                            preclose = float(row_data[11]) if len(row_data) > 11 and row_data[11] != "-" else 0.0
-                            low_price = float(value) if value != "-" else 0.0
-                            if low_price > preclose:
-                                item.setForeground(QColor(255, 0, 0))
-                            elif low_price < preclose:
-                                item.setForeground(QColor(0, 255, 0))
-                            else:
-                                item.setForeground(QColor(204, 204, 204))
-                        window.stock_table.setItem(row_pos, col, item)
-                window.current_sorted_column = -1
+                self._reset_sort_and_restore_rows(window)
         except (OSError, RuntimeError) as e:
             logger.exception(f"处理表头点击事件失败: {e}")
+
+    def _apply_sort(self, window, logical_index, order):
+        """按指定方向启用排序并记录当前排序列。"""
+        window.stock_table.horizontalHeader().setSortIndicatorShown(True)
+        window.stock_table.horizontalHeader().setSortIndicator(logical_index, order)
+        window.stock_table.setSortingEnabled(True)
+        window.stock_table.sortItems(logical_index, order)
+        window.current_sorted_column = logical_index
+
+    def _reset_sort_and_restore_rows(self, window):
+        """取消排序并按当前顺序重绘所有行（保留涨跌配色）。"""
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QTableWidgetItem
+
+        window.stock_table.setSortingEnabled(False)
+        window.stock_table.horizontalHeader().setSortIndicatorShown(False)
+        window.stock_table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
+
+        current_data = []
+        row_count = window.stock_table.rowCount()
+        for row in range(row_count):
+            row_data = []
+            for col in range(window.stock_table.columnCount()):
+                item = window.stock_table.item(row, col)
+                row_data.append(item.text() if item else "")
+            current_data.append(row_data)
+
+        window.stock_table.setRowCount(0)
+
+        for row_data in current_data:
+            row_pos = window.stock_table.rowCount()
+            window.stock_table.insertRow(row_pos)
+            for col, value in enumerate(row_data):
+                item = QTableWidgetItem(value)
+                self._apply_restored_cell_style(item, row_data, col, value)
+                window.stock_table.setItem(row_pos, col, item)
+        window.current_sorted_column = -1
+
+    @staticmethod
+    def _apply_restored_cell_style(item, row_data, col, value):
+        """按列恢复单元格对齐与涨跌配色。"""
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor
+
+        if col in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
+            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        if col == 3 or col == 5:
+            if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
+                item.setForeground(QColor(255, 0, 0))
+            elif value.startswith("-"):
+                item.setForeground(QColor(0, 255, 0))
+            else:
+                item.setForeground(QColor(204, 204, 204))
+        elif col in (4, 8, 9, 10):
+            preclose = float(row_data[11]) if len(row_data) > 11 and row_data[11] != "-" else 0.0
+            price = float(value) if value != "-" else 0.0
+            if price > preclose:
+                item.setForeground(QColor(255, 0, 0))
+            elif price < preclose:
+                item.setForeground(QColor(0, 255, 0))
+            else:
+                item.setForeground(QColor(204, 204, 204))
 
     def on_stock_double_clicked(self, row, column):
         """处理股票双击事件"""
@@ -171,49 +157,7 @@ class TableInteractionManager:
             name = name_item.text()
             logger.debug(f"双击了股票: {name}({code})")
 
-            if code.startswith('sh'):
-                market = 'sh'
-                tdx_code = code
-                f'{code[2:]}.SH'
-            elif code.startswith('sz'):
-                market = 'sz'
-                tdx_code = code
-                f'{code[2:]}.SZ'
-            elif code.startswith('bj'):
-                # 京市指数（北交所）
-                market = 'bj'
-                tdx_code = code
-                f'{code[2:]}.BJ'
-            elif code.startswith('6') or code.startswith('51'):
-                # 沪市股票（6开头）和沪市ETF（51开头）
-                market = 'sh'
-                tdx_code = f'sh{code}'
-            elif code.startswith('15'):
-                # 深市ETF（15开头）
-                market = 'sz'
-                tdx_code = f'sz{code}'
-            elif code.endswith('.SH'):
-                market = 'sh'
-                tdx_code = f'sh{code[:-3]}'
-            elif code.endswith('.SZ'):
-                market = 'sz'
-                tdx_code = f'sz{code[:-3]}'
-            elif code == '999999':
-                # 上证指数特殊处理
-                market = 'sh'
-                tdx_code = 'sh000001'
-            elif code.startswith('88'):
-                # 沪市行业指数（88开头）
-                market = 'sh'
-                tdx_code = f'sh{code}'
-            elif code.startswith('92') and len(code) == 6:
-                # 京市个股（北交所，92开头）
-                market = 'bj'
-                tdx_code = f'bj{code}'
-            else:
-                # 其他代码默认为深市
-                market = 'sz'
-                tdx_code = f'sz{code}'
+            market, tdx_code = self._resolve_tdx_code(code)
 
             from pathlib import Path
             tdx_data_path = Path(window.data_manager.config.data.tdx_data_path)
@@ -238,6 +182,54 @@ class TableInteractionManager:
         except (OSError, RuntimeError) as e:
             logger.exception(f"处理股票双击事件失败: {e}")
             window.statusBar().showMessage(f"处理股票双击事件失败: {str(e)[:50]}...", 5000)
+
+    @staticmethod
+    def _resolve_tdx_code(code):
+        """根据代码前缀/后缀推断市场与通达信代码。"""
+        if code.startswith('sh'):
+            market = 'sh'
+            tdx_code = code
+            f'{code[2:]}.SH'
+        elif code.startswith('sz'):
+            market = 'sz'
+            tdx_code = code
+            f'{code[2:]}.SZ'
+        elif code.startswith('bj'):
+            # 京市指数（北交所）
+            market = 'bj'
+            tdx_code = code
+            f'{code[2:]}.BJ'
+        elif code.startswith('6') or code.startswith('51'):
+            # 沪市股票（6开头）和沪市ETF（51开头）
+            market = 'sh'
+            tdx_code = f'sh{code}'
+        elif code.startswith('15'):
+            # 深市ETF（15开头）
+            market = 'sz'
+            tdx_code = f'sz{code}'
+        elif code.endswith('.SH'):
+            market = 'sh'
+            tdx_code = f'sh{code[:-3]}'
+        elif code.endswith('.SZ'):
+            market = 'sz'
+            tdx_code = f'sz{code[:-3]}'
+        elif code == '999999':
+            # 上证指数特殊处理
+            market = 'sh'
+            tdx_code = 'sh000001'
+        elif code.startswith('88'):
+            # 沪市行业指数（88开头）
+            market = 'sh'
+            tdx_code = f'sh{code}'
+        elif code.startswith('92') and len(code) == 6:
+            # 京市个股（北交所，92开头）
+            market = 'bj'
+            tdx_code = f'bj{code}'
+        else:
+            # 其他代码默认为深市
+            market = 'sz'
+            tdx_code = f'sz{code}'
+        return market, tdx_code
 
     def on_data_read_completed(self, df, name, code):
         """数据读取完成"""

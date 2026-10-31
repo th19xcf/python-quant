@@ -60,6 +60,18 @@ class IndexDataController:
         """
         self.window._load_index_data(market='bj', title='京市指数')
 
+    def _load_index_task(self, market, title, category_filter, task_id=None, signals=None):
+        """后台任务函数"""
+        try:
+            index_data = self.window._get_index_data_from_tdx(
+                market_filter=market if market != 'all' else None,
+                category_filter=category_filter,
+            )
+            return {"success": True, "index_data": index_data, "title": title}
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"Failed to fetch index data: {e}")
+            return {"success": False, "message": f"获取指数数据失败: {str(e)}"}
+
     def _load_index_data(self, market='all', title='指数', category_filter=None):
         """
         加载指数数据并显示在表格中
@@ -68,18 +80,6 @@ class IndexDataController:
             market: 'all'表示全部，'sh'表示沪市，'sz'表示深市
             title: 显示标题
         """
-        def _load_index_task(task_id=None, signals=None):
-            """后台任务函数"""
-            try:
-                index_data = self.window._get_index_data_from_tdx(
-                    market_filter=market if market != 'all' else None,
-                    category_filter=category_filter,
-                )
-                return {"success": True, "index_data": index_data, "title": title}
-            except (OSError, RuntimeError, ValueError) as e:
-                logger.exception(f"Failed to fetch index data: {e}")
-                return {"success": False, "message": f"获取指数数据失败: {str(e)}"}
-
         # 启动后台任务
         logger.info(f"启动获取{title}数据任务")
         self.window.statusBar().showMessage(f"加载{title}数据...", 0)
@@ -92,7 +92,8 @@ class IndexDataController:
         # 创建任务
         global_task_manager.create_task(
             f"获取{title}数据",
-            _load_index_task
+            self._load_index_task,
+            (market, title, category_filter)
         )
 
         # 连接任务信号
@@ -111,20 +112,7 @@ class IndexDataController:
 
             if result["success"]:
                 # 更新表格
-                self.window.stock_table.setSortingEnabled(False)
-                self.window.stock_table.setRowCount(0)
-
-                headers = ["日期", "代码", "名称", "涨跌幅", "现价", "涨跌额", "总量", "成交额", "开盘价", "最高价", "最低价", "昨收价", "振幅%"]
-                self.window.stock_table.setColumnCount(len(headers))
-                self.window.stock_table.setHorizontalHeaderLabels(headers)
-
-                for data_row in result["index_data"]:
-                    self.window._add_table_row(data_row)
-
-                if hasattr(self.window, 'table_interaction_manager'):
-                    self.window.table_interaction_manager.restore_sort_state()
-                self.window.stock_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-                self.window.statusBar().showMessage(f"已加载 {self.window.stock_table.rowCount()} 个{result['title']}", 3000)
+                self._render_index_result(result)
             else:
                 self.window._clear_market_table_display()
                 self.window.statusBar().showMessage(result["message"], 5000)
@@ -152,35 +140,53 @@ class IndexDataController:
         global_task_manager.task_completed.connect(on_task_completed)
         global_task_manager.task_error.connect(on_task_error)
 
+    def _render_index_result(self, result):
+        """把指数行情结果渲染到行情表格。"""
+        window = self.window
+        window.stock_table.setSortingEnabled(False)
+        window.stock_table.setRowCount(0)
+
+        headers = ["日期", "代码", "名称", "涨跌幅", "现价", "涨跌额", "总量", "成交额", "开盘价", "最高价", "最低价", "昨收价", "振幅%"]
+        window.stock_table.setColumnCount(len(headers))
+        window.stock_table.setHorizontalHeaderLabels(headers)
+
+        for data_row in result["index_data"]:
+            window._add_table_row(data_row)
+
+        if hasattr(window, 'table_interaction_manager'):
+            window.table_interaction_manager.restore_sort_state()
+        window.stock_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        window.statusBar().showMessage(f"已加载 {window.stock_table.rowCount()} 个{result['title']}", 3000)
+
     def _show_index_data_by_category_impl(self, category_name):
         """按 index_basic.category 展示指数行情，样式与其他指数页保持一致。"""
         self.window._load_index_data(market='all', title=f"{category_name}指数", category_filter=category_name)
 
+    def _show_index_data_task(self, index_name, task_id=None, signals=None):
+        """后台任务函数"""
+        try:
+            index_code = self.window.index_service.resolve_ts_code(index_name)
+            if index_code == index_name:
+                logger.warning(f"未能从数据表解析指数代码，将使用原始值: {index_name}")
+
+            # 从数据管理器获取指数历史数据
+            from datetime import datetime, timedelta
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+
+            df = self.window.data_manager.get_index_data(index_code, start_date, end_date, frequency='1d')
+
+            if df is None or df.is_empty():
+                return {"success": False, "message": f"未获取到 {index_name} 的数据"}
+
+            logger.info(f"成功获取 {len(df)} 条 {index_name}({index_code}) 的数据")
+
+            return {"success": True, "data": df, "index_name": index_name, "index_code": index_code}
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.exception(f"显示指数数据失败: {e}")
+            return {"success": False, "message": f"加载失败: {str(e)}"}
+
     def _show_index_data_impl(self, index_name):
-        def _show_index_data_task(index_name, task_id=None, signals=None):
-            """后台任务函数"""
-            try:
-                index_code = self.window.index_service.resolve_ts_code(index_name)
-                if index_code == index_name:
-                    logger.warning(f"未能从数据表解析指数代码，将使用原始值: {index_name}")
-
-                # 从数据管理器获取指数历史数据
-                from datetime import datetime, timedelta
-                end_date = datetime.now().strftime("%Y-%m-%d")
-                start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-
-                df = self.window.data_manager.get_index_data(index_code, start_date, end_date, frequency='1d')
-
-                if df is None or df.is_empty():
-                    return {"success": False, "message": f"未获取到 {index_name} 的数据"}
-
-                logger.info(f"成功获取 {len(df)} 条 {index_name}({index_code}) 的数据")
-
-                return {"success": True, "data": df, "index_name": index_name, "index_code": index_code}
-            except (OSError, RuntimeError, ValueError) as e:
-                logger.exception(f"显示指数数据失败: {e}")
-                return {"success": False, "message": f"加载失败: {str(e)}"}
-
         # 启动后台任务
         logger.info(f"启动获取{index_name}数据任务")
         self.window.statusBar().showMessage(f"Loading {index_name} data...", 0)
@@ -188,7 +194,7 @@ class IndexDataController:
         # 创建任务
         task_id = global_task_manager.create_task(
             f"获取{index_name}数据",
-            _show_index_data_task,
+            self._show_index_data_task,
             (index_name,)
         )
 

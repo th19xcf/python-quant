@@ -79,7 +79,7 @@ class PluginRegistry:
         except (OSError, RuntimeError, ImportError, TypeError):
             return False
 
-    def unregister_plugin(self, plugin_name: str, plugin_type: str = None) -> bool:
+    def unregister_plugin(self, plugin_name: str, plugin_type: str | None = None) -> bool:
         """
         注销插件
 
@@ -102,7 +102,7 @@ class PluginRegistry:
                     return True
         return False
 
-    def get_plugin_class(self, plugin_name: str, plugin_type: str = None) -> Type[PluginBase] or None:
+    def get_plugin_class(self, plugin_name: str, plugin_type: str | None = None) -> Type[PluginBase] | None:
         """
         获取插件类
 
@@ -111,7 +111,7 @@ class PluginRegistry:
             plugin_type: 插件类型，如不指定则在所有类型中查找
 
         Returns:
-            Type[PluginBase] or None: 插件类或None
+            Type[PluginBase] | None: 插件类或None
         """
         if plugin_type:
             return self.registry.get(plugin_type, {}).get(plugin_name)
@@ -122,7 +122,7 @@ class PluginRegistry:
                     return self.registry[type_key][plugin_name]
         return None
 
-    def get_all_plugins(self, plugin_type: str = None) -> List[Dict[str, Any]]:
+    def get_all_plugins(self, plugin_type: str | None = None) -> List[Dict[str, Any]]:
         """
         获取所有插件信息
 
@@ -162,7 +162,7 @@ class PluginRegistry:
         """
         return self.get_all_plugins(plugin_type)
 
-    def is_plugin_registered(self, plugin_name: str, plugin_type: str = None) -> bool:
+    def is_plugin_registered(self, plugin_name: str, plugin_type: str | None = None) -> bool:
         """
         检查插件是否已注册
 
@@ -196,7 +196,7 @@ class PluginRegistry:
         else:
             return 'other'
 
-    def _get_plugin_info(self, plugin_class: Type[PluginBase]) -> Dict[str, Any] or None:
+    def _get_plugin_info(self, plugin_class: Type[PluginBase]) -> Dict[str, Any] | None:
         """
         获取插件详细信息
 
@@ -204,7 +204,7 @@ class PluginRegistry:
             plugin_class: 插件类
 
         Returns:
-            Dict[str, Any] or None: 插件信息或None
+            Dict[str, Any] | None: 插件信息或None
         """
         try:
             # 尝试从元数据缓存中获取
@@ -237,7 +237,7 @@ class PluginRegistry:
         for type_key in self.plugin_metadata:
             self.plugin_metadata[type_key].clear()
 
-    def get_plugin_metadata(self, plugin_name: str, plugin_type: str = None) -> Dict[str, Any] or None:
+    def get_plugin_metadata(self, plugin_name: str, plugin_type: str | None = None) -> Dict[str, Any] | None:
         """
         获取插件元数据，不实例化插件
 
@@ -246,7 +246,7 @@ class PluginRegistry:
             plugin_type: 插件类型，如不指定则在所有类型中查找
 
         Returns:
-            Dict[str, Any] or None: 插件元数据或None
+            Dict[str, Any] | None: 插件元数据或None
         """
         if plugin_type:
             return self.plugin_metadata.get(plugin_type, {}).get(plugin_name)
@@ -257,7 +257,7 @@ class PluginRegistry:
                     return self.plugin_metadata[type_key][plugin_name]
         return None
 
-    def get_all_plugin_metadata(self, plugin_type: str = None) -> List[Dict[str, Any]]:
+    def get_all_plugin_metadata(self, plugin_type: str | None = None) -> List[Dict[str, Any]]:
         """
         获取所有插件元数据，不实例化插件
 
@@ -267,7 +267,7 @@ class PluginRegistry:
         Returns:
             List[Dict[str, Any]]: 插件元数据列表
         """
-        metadata_list = []
+        metadata_list: list[Dict[str, Any]] = []
 
         if plugin_type:
             if plugin_type in self.plugin_metadata:
@@ -279,7 +279,7 @@ class PluginRegistry:
 
         return metadata_list
 
-    def get_plugin_dependencies(self, plugin_name: str, plugin_type: str = None) -> List[Dict[str, str]]:
+    def get_plugin_dependencies(self, plugin_name: str, plugin_type: str | None = None) -> List[Dict[str, str]]:
         """
         获取插件依赖，不实例化插件
 
@@ -295,7 +295,7 @@ class PluginRegistry:
             return metadata.get('dependencies', [])
         return []
 
-    def get_plugin_count(self, plugin_type: str = None) -> int:
+    def get_plugin_count(self, plugin_type: str | None = None) -> int:
         """
         获取插件数量
 

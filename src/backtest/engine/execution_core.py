@@ -501,23 +501,11 @@ class EventBacktestRunner:
         # 一次性建立 date→行号与 date→活跃标的反向索引，主循环按日期直查
         date_positions, date_codes, sorted_dates = self._build_date_index(column_data)
 
-        rules = ExecutionRules(lot_size=lot_size)
-        # 现金桶只分配给配置了策略的标的：universe 里加载了但没配策略的"哑标的"
-        # 若参与 initial_capital / len(codes) 的等额切分，其份额全程闲置，
-        # 冻结比例恰等于无策略标的占比（20 只里只有 5 只配策略 → 75% 本金不动），
-        # 净值曲线被压成近水平线、最大回撤被压低，结果会被误读为"策略很稳"。
-        active_codes = [c for c in codes if c in strategies]
-        book = AccountBook(initial_capital, active_codes, industry_map)
-        gate = RiskGate(self.risk_engine, industry_map)
-
-        pending: Dict[str, str | None] = dict.fromkeys(codes)
-        prev_close: Dict[str, float | None] = dict.fromkeys(codes)
-        prev_raw_close: Dict[str, float | None] = dict.fromkeys(codes)
-
-        trades: List[Dict[str, Any]] = []
-        rejected_orders: List[Dict[str, Any]] = []
-        expired_orders: List[Dict[str, Any]] = []
-        equity_curve: List[Dict[str, Any]] = []
+        rules, book, gate = self._create_execution_context(
+            codes, strategies, initial_capital, industry_map, lot_size
+        )
+        (pending, prev_close, prev_raw_close, trades,
+         rejected_orders, expired_orders, equity_curve) = self._init_run_collections(codes)
 
         loop_st_unknown = self._run_trading_loop(
             sorted_dates=sorted_dates, date_codes=date_codes,
@@ -543,6 +531,33 @@ class EventBacktestRunner:
     # ------------------------------------------------------------------
     # run() 编排子步骤
     # ------------------------------------------------------------------
+
+    def _create_execution_context(self, codes, strategies, initial_capital,
+                                  industry_map, lot_size):
+        """创建撮合规则、账户账本与风控闸门。"""
+        rules = ExecutionRules(lot_size=lot_size)
+        # 现金桶只分配给配置了策略的标的：universe 里加载了但没配策略的"哑标的"
+        # 若参与 initial_capital / len(codes) 的等额切分，其份额全程闲置，
+        # 冻结比例恰等于无策略标的占比（20 只里只有 5 只配策略 → 75% 本金不动），
+        # 净值曲线被压成近水平线、最大回撤被压低，结果会被误读为"策略很稳"。
+        active_codes = [c for c in codes if c in strategies]
+        book = AccountBook(initial_capital, active_codes, industry_map)
+        gate = RiskGate(self.risk_engine, industry_map)
+        return rules, book, gate
+
+    @staticmethod
+    def _init_run_collections(codes):
+        """初始化挂单、前收盘、成交与权益曲线容器。"""
+        pending: Dict[str, str | None] = dict.fromkeys(codes)
+        prev_close: Dict[str, float | None] = dict.fromkeys(codes)
+        prev_raw_close: Dict[str, float | None] = dict.fromkeys(codes)
+
+        trades: List[Dict[str, Any]] = []
+        rejected_orders: List[Dict[str, Any]] = []
+        expired_orders: List[Dict[str, Any]] = []
+        equity_curve: List[Dict[str, Any]] = []
+        return (pending, prev_close, prev_raw_close, trades,
+                rejected_orders, expired_orders, equity_curve)
 
     def _prepare_universe(
         self, universe: Dict[str, pl.DataFrame], strategies: Dict[str, Any],
@@ -985,6 +1000,21 @@ class EventBacktestRunner:
         assert open_price is not None
         exec_price = open_price
 
+        self._dispatch_order(
+            side, code=code, date=date, book=book, gate=gate, rules=rules,
+            cost_model=cost_model, trades=trades,
+            rejected_orders=rejected_orders, expired_orders=expired_orders,
+            equity_curve=equity_curve, lot_size=lot_size,
+            exec_price=exec_price, order_confidence=order_confidence,
+            volume=volume, prev_close=prev_close, prev_close_raw=prev_close_raw,
+            is_st=is_st, trade_day=trade_day, suspended=suspended,
+        )
+
+    def _dispatch_order(self, side, *, code, date, book, gate, rules, cost_model,
+                        trades, rejected_orders, expired_orders, equity_curve,
+                        lot_size, exec_price, order_confidence, volume,
+                        prev_close, prev_close_raw, is_st, trade_day, suspended):
+        """按买/卖方向派发已通过可成交校验的订单。"""
         # 风控闸门所需上下文：原始价口径前收盘（交易所涨跌停定义在原始价上）
         # 与板块标签必须由撮合内核注入，缺一 PriceLimitTradable 就会 fail-closed。
         risk_prev_close = prev_close_raw if prev_close_raw is not None else prev_close

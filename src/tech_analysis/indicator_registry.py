@@ -120,44 +120,22 @@ class IndicatorRegistry:
         return {name: config for name, config in self._indicators.items()
                 if config.category == category}
 
-    def _topological_sort(self, indicators: List[str]) -> List[str]:  # noqa: C901
-        """
-        对指标进行拓扑排序，确定计算顺序
+    def _collect_indicator_dependencies(self, indicator_name: str, all_related: set):
+        """递归收集指标的所有依赖项。"""
+        if indicator_name in all_related:
+            return
 
-        Args:
-            indicators: 需要计算的指标列表
+        all_related.add(indicator_name)
+        config = self.get_indicator(indicator_name)
+        if config:
+            for dep in config.dependencies:
+                self._collect_indicator_dependencies(dep, all_related)
 
-        Returns:
-            List[str]: 排序后的指标计算顺序
-        """
-        # 检查缓存
-        cache_key = tuple(sorted(indicators))
-        if cache_key in self._calculation_order_cache:
-            return self._calculation_order_cache[cache_key]
-
-        # 构建依赖图
+    def _build_dependency_graph(self, all_related: set):
+        """构建依赖图和入度表。"""
         graph = {}
         in_degree = {}
 
-        # 收集所有相关指标（包括依赖项）
-        all_related = set()
-
-        def collect_dependencies(indicator_name: str):
-            """递归收集指标的所有依赖项"""
-            if indicator_name in all_related:
-                return
-
-            all_related.add(indicator_name)
-            config = self.get_indicator(indicator_name)
-            if config:
-                for dep in config.dependencies:
-                    collect_dependencies(dep)
-
-        # 收集所有依赖项
-        for indicator in indicators:
-            collect_dependencies(indicator)
-
-        # 构建图和入度表
         for indicator_name in all_related:
             config = self.get_indicator(indicator_name)
             if not config:
@@ -169,7 +147,11 @@ class IndicatorRegistry:
             for dep in config.dependencies:
                 in_degree[dep] = in_degree.get(dep, 0) + 1
 
-        # 执行拓扑排序
+        return graph, in_degree
+
+    @staticmethod
+    def _kahn_sort(graph, in_degree):
+        """执行 Kahn 拓扑排序，返回节点顺序。"""
         from collections import deque
         queue = deque()
 
@@ -188,6 +170,34 @@ class IndicatorRegistry:
                     in_degree[neighbor] -= 1
                     if in_degree[neighbor] == 0:
                         queue.append(neighbor)
+
+        return result
+
+    def _topological_sort(self, indicators: List[str]) -> List[str]:
+        """
+        对指标进行拓扑排序，确定计算顺序
+
+        Args:
+            indicators: 需要计算的指标列表
+
+        Returns:
+            List[str]: 排序后的指标计算顺序
+        """
+        # 检查缓存
+        cache_key = tuple(sorted(indicators))
+        if cache_key in self._calculation_order_cache:
+            return self._calculation_order_cache[cache_key]
+
+        # 收集所有相关指标（包括依赖项）
+        all_related = set()
+        for indicator in indicators:
+            self._collect_indicator_dependencies(indicator, all_related)
+
+        # 构建图和入度表
+        graph, in_degree = self._build_dependency_graph(all_related)
+
+        # 执行拓扑排序
+        result = self._kahn_sort(graph, in_degree)
 
         # 检查是否有循环依赖
         if len(result) != len(all_related):

@@ -238,54 +238,15 @@ class MainWindowNavigationMixin:
                 return
 
             # 标准化当前代码（确保带后缀）
-            if '.' not in current_code:
-                # 如果没有后缀，添加默认后缀
-                if current_code.startswith('sh'):
-                    # 沪市代码，如 sh000016
-                    symbol = current_code[2:]
-                    current_code = f"{symbol}.SH"
-                elif current_code.startswith('sz'):
-                    # 深市代码，如 sz399001
-                    symbol = current_code[2:]
-                    current_code = f"{symbol}.SZ"
-                elif current_code.startswith('bj'):
-                    # 京市代码，如 bj899001
-                    symbol = current_code[2:]
-                    current_code = f"{symbol}.BJ"
-                elif current_code.startswith('6'):
-                    current_code = f"{current_code}.SH"
-                elif current_code.startswith('8') or current_code.startswith('4') or current_code.startswith('92'):
-                    # 京市股票代码（北交所，8、4、92开头）
-                    current_code = f"{current_code}.BJ"
-                else:
-                    current_code = f"{current_code}.SZ"
+            current_code = self._normalize_adjacent_code(current_code)
 
             # 找到当前代码在列表中的位置
-            try:
-                current_index = item_list.index(current_code)
-            except ValueError:
-                logger.warning(f"当前{item_type} {current_code} 不在列表中，尝试模糊匹配")
-                # 尝试模糊匹配（只比较代码部分）
-                current_symbol = current_code.split('.')[0] if '.' in current_code else current_code
-                for i, code in enumerate(item_list):
-                    symbol = code.split('.')[0] if '.' in code else code
-                    if symbol == current_symbol:
-                        current_index = i
-                        current_code = code  # 使用列表中的完整代码
-                        break
-                else:
-                    logger.warning(f"当前{item_type} {current_code} 不在列表中")
-                    return
+            current_index = self._locate_adjacent_code(item_list, current_code, item_type)
+            if current_index is None:
+                return
 
             # 按照列表顺序查找下一个项（不跳过任何项）
-            if direction == 'prev':
-                target_index = current_index - 1
-                if target_index < 0:
-                    target_index = len(item_list) - 1  # 循环到末尾
-            else:  # next
-                target_index = current_index + 1
-                if target_index >= len(item_list):
-                    target_index = 0  # 循环到开头
+            target_index = self._next_list_index(current_index, len(item_list), direction)
 
             # 获取目标代码和名称
             target_code = item_list[target_index]
@@ -304,6 +265,86 @@ class MainWindowNavigationMixin:
 
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"切换失败: {e}")
+
+    def _normalize_adjacent_code(self, current_code):
+        """
+        标准化当前代码：缺少后缀时按市场规则补齐
+
+        Args:
+            current_code: 原始代码
+
+        Returns:
+            str: 补全后缀后的代码
+        """
+        if '.' not in current_code:
+            # 如果没有后缀，添加默认后缀
+            if current_code.startswith('sh'):
+                # 沪市代码，如 sh000016
+                symbol = current_code[2:]
+                current_code = f"{symbol}.SH"
+            elif current_code.startswith('sz'):
+                # 深市代码，如 sz399001
+                symbol = current_code[2:]
+                current_code = f"{symbol}.SZ"
+            elif current_code.startswith('bj'):
+                # 京市代码，如 bj899001
+                symbol = current_code[2:]
+                current_code = f"{symbol}.BJ"
+            elif current_code.startswith('6'):
+                current_code = f"{current_code}.SH"
+            elif current_code.startswith('8') or current_code.startswith('4') or current_code.startswith('92'):
+                # 京市股票代码（北交所，8、4、92开头）
+                current_code = f"{current_code}.BJ"
+            else:
+                current_code = f"{current_code}.SZ"
+        return current_code
+
+    def _locate_adjacent_code(self, item_list, current_code, item_type):
+        """
+        定位当前代码在列表中的位置，失败时按代码部分模糊匹配
+
+        Args:
+            item_list: 当前显示的股票/指数列表
+            current_code: 已标准化的当前代码
+            item_type: "股票" 或 "指数"，仅用于日志
+
+        Returns:
+            int | None: 当前代码在列表中的位置，未找到返回 None
+        """
+        try:
+            return item_list.index(current_code)
+        except ValueError:
+            logger.warning(f"当前{item_type} {current_code} 不在列表中，尝试模糊匹配")
+            # 尝试模糊匹配（只比较代码部分）
+            current_symbol = current_code.split('.')[0] if '.' in current_code else current_code
+            for i, code in enumerate(item_list):
+                symbol = code.split('.')[0] if '.' in code else code
+                if symbol == current_symbol:
+                    return i
+            logger.warning(f"当前{item_type} {current_code} 不在列表中")
+            return None
+
+    def _next_list_index(self, current_index, list_length, direction):
+        """
+        按列表顺序计算相邻项下标，越界时循环到另一端
+
+        Args:
+            current_index: 当前项下标
+            list_length: 列表长度
+            direction: 'prev' 或 'next'
+
+        Returns:
+            int: 目标项下标
+        """
+        if direction == 'prev':
+            target_index = current_index - 1
+            if target_index < 0:
+                target_index = list_length - 1  # 循环到末尾
+        else:  # next
+            target_index = current_index + 1
+            if target_index >= list_length:
+                target_index = 0  # 循环到开头
+        return target_index
 
     def _on_prev_stock_clicked(self):
         """

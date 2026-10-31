@@ -44,8 +44,14 @@ class FactorAnalysisDialog(QDialog):
         初始化UI
         """
         main_layout = QVBoxLayout(self)
+        self._build_basic_section(main_layout)
+        self._build_factor_section(main_layout)
+        self._build_analysis_section(main_layout)
+        self._build_result_section(main_layout)
+        self._build_button_section(main_layout)
 
-        # 基本设置分组
+    def _build_basic_section(self, main_layout):
+        """构建基本设置分组"""
         basic_group = QGroupBox("基本设置")
         basic_layout = QGridLayout()
 
@@ -68,7 +74,8 @@ class FactorAnalysisDialog(QDialog):
         basic_group.setLayout(basic_layout)
         main_layout.addWidget(basic_group)
 
-        # 因子选择分组
+    def _build_factor_section(self, main_layout):
+        """构建因子选择分组"""
         factor_group = QGroupBox("因子选择")
         factor_layout = QGridLayout()
 
@@ -140,7 +147,8 @@ class FactorAnalysisDialog(QDialog):
         factor_group.setLayout(factor_layout)
         main_layout.addWidget(factor_group)
 
-        # 分析设置分组
+    def _build_analysis_section(self, main_layout):
+        """构建分析设置分组"""
         analysis_group = QGroupBox("分析设置")
         analysis_layout = QGridLayout()
 
@@ -163,7 +171,8 @@ class FactorAnalysisDialog(QDialog):
         analysis_group.setLayout(analysis_layout)
         main_layout.addWidget(analysis_group)
 
-        # 分析结果
+    def _build_result_section(self, main_layout):
+        """构建分析结果分组"""
         result_group = QGroupBox("分析结果")
         result_layout = QVBoxLayout()
 
@@ -179,7 +188,8 @@ class FactorAnalysisDialog(QDialog):
         result_group.setLayout(result_layout)
         main_layout.addWidget(result_group, 1)
 
-        # 按钮布局
+    def _build_button_section(self, main_layout):
+        """构建底部按钮布局"""
         button_layout = QHBoxLayout()
 
         self.run_button = QPushButton("开始分析")

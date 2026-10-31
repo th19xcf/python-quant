@@ -98,41 +98,8 @@ class StStatusService:
                 codes.append(ts_code)
         return codes
 
-    def refresh_current(self, as_of: Any = None, coverage_start: Any = None) -> Dict[str, Any]:
-        """
-        用当前 ST 名单刷新时间维表。
-
-        Args:
-            as_of: 探测基准日（默认今天）
-            coverage_start: 当前 ST 区间的开始日期（默认 = as_of）。
-                由于没有历史戴帽日期，调用方可显式传入一个保守起点，
-                表示"从该日起该标的按 ST 处理"。
-
-        Returns:
-            dict: ok / mode / st_count / opened / closed / coverage_start / as_of
-        """
-        as_of_date = _parse_date(as_of) or date.today()
-        coverage = _parse_date(coverage_start) or as_of_date
-
-        try:
-            current_codes = self._fetch_current_st_codes()
-        # 兜底理由：数据源不可用时保留已有维表，不阻断回测
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"拉取当前 ST 名单失败，保留已有 ST 维表: {e}")
-            return {
-                'ok': False, 'mode': 'current_only', 'error': str(e),
-                'st_count': 0, 'opened': 0, 'closed': 0,
-                'coverage_start': coverage, 'as_of': as_of_date,
-            }
-
-        session = self.session
-        if session is None:
-            return {
-                'ok': False, 'mode': 'current_only', 'error': '数据库不可用',
-                'st_count': len(current_codes), 'opened': 0, 'closed': 0,
-                'coverage_start': coverage, 'as_of': as_of_date,
-            }
-
+    def _apply_current_st_rows(self, session, current_codes, coverage, as_of_date):
+        """写入当前 ST 区间，返回 (ok, opened, closed, error)。"""
         opened = closed = 0
         try:
             open_rows = (
@@ -168,8 +135,51 @@ class StStatusService:
         except Exception as e:  # noqa: BLE001
             session.rollback()
             logger.warning(f"刷新 ST 时间维表失败: {e}")
+            return False, opened, closed, str(e)
+
+        return True, opened, closed, None
+
+    def refresh_current(self, as_of: Any = None, coverage_start: Any = None) -> Dict[str, Any]:
+        """
+        用当前 ST 名单刷新时间维表。
+
+        Args:
+            as_of: 探测基准日（默认今天）
+            coverage_start: 当前 ST 区间的开始日期（默认 = as_of）。
+                由于没有历史戴帽日期，调用方可显式传入一个保守起点，
+                表示"从该日起该标的按 ST 处理"。
+
+        Returns:
+            dict: ok / mode / st_count / opened / closed / coverage_start / as_of
+        """
+        as_of_date = _parse_date(as_of) or date.today()
+        coverage = _parse_date(coverage_start) or as_of_date
+
+        try:
+            current_codes = self._fetch_current_st_codes()
+        # 兜底理由：数据源不可用时保留已有维表，不阻断回测
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"拉取当前 ST 名单失败，保留已有 ST 维表: {e}")
             return {
                 'ok': False, 'mode': 'current_only', 'error': str(e),
+                'st_count': 0, 'opened': 0, 'closed': 0,
+                'coverage_start': coverage, 'as_of': as_of_date,
+            }
+
+        session = self.session
+        if session is None:
+            return {
+                'ok': False, 'mode': 'current_only', 'error': '数据库不可用',
+                'st_count': len(current_codes), 'opened': 0, 'closed': 0,
+                'coverage_start': coverage, 'as_of': as_of_date,
+            }
+
+        ok, opened, closed, error = self._apply_current_st_rows(
+            session, current_codes, coverage, as_of_date
+        )
+        if not ok:
+            return {
+                'ok': False, 'mode': 'current_only', 'error': error,
                 'st_count': len(current_codes), 'opened': opened, 'closed': closed,
                 'coverage_start': coverage, 'as_of': as_of_date,
             }

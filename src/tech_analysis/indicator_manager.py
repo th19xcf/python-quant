@@ -399,6 +399,61 @@ class IndicatorManager:
 
         return self._to_result_format(result_df, return_polars)
 
+    def _calculate_indicators_with_cache(self, pl_data, indicator_types, params):
+        """带缓存的批量指标计算：命中缓存直接合并，未命中统一批量计算。"""
+        # 尝试从缓存获取每个指标的结果
+        cached_results = []
+        uncached_indicators = []
+
+        for indicator_type in indicator_types:
+            cached_result = global_indicator_cache.get(pl_data, indicator_type, **params)
+            if cached_result is not None:
+                cached_results.append((indicator_type, cached_result))
+                logger.debug(f"从缓存获取指标{indicator_type}计算结果")
+            else:
+                uncached_indicators.append(indicator_type)
+
+        # 如果所有指标都在缓存中，直接合并结果
+        if not uncached_indicators:
+            # 合并缓存结果
+            result_df = pl_data
+            for _, cached_df in cached_results:
+                # 只合并新的列（排除时间列和已存在的列）
+                new_columns = [col for col in cached_df.columns if col not in result_df.columns and col != cached_df.columns[0]]
+                if new_columns:
+                    result_df = result_df.join(
+                        cached_df.select([cached_df.columns[0]] + new_columns),
+                        on=result_df.columns[0],
+                        how='left'
+                    )
+            return result_df
+
+        # 单标的多指标：单次批量调用，由 Polars 在单个查询计划内并行；
+        # 外层再按组拆线程池只会重复计算共享中间列并超额订阅线程
+        result_df = calculate_multiple_indicators_polars(pl_data, uncached_indicators, **params)
+
+        # 保存到缓存
+        for indicator_type in uncached_indicators:
+            # 提取该指标的结果
+            indicator_cols = [col for col in result_df.columns if col.startswith(indicator_type) or col in ['dma', 'ama', 'fsl', 'sar', 'obv']]
+            if indicator_cols:
+                indicator_result = result_df.select([result_df.columns[0]] + indicator_cols)
+                global_indicator_cache.set(pl_data, indicator_result, indicator_type, **params)
+
+        # 合并缓存结果和新计算结果
+        for indicator_type, cached_df in cached_results:
+            # 只合并新的列（排除时间列和已存在的列）
+            new_columns = [col for col in cached_df.columns if col not in result_df.columns and col != cached_df.columns[0]]
+            if new_columns:
+                # 确保不会重复添加列
+                result_df = result_df.join(
+                    cached_df.select([cached_df.columns[0]] + new_columns),
+                    on=result_df.columns[0],
+                    how='left'
+                )
+
+        return result_df
+
     def calculate_indicators(self, data: Union[pl.DataFrame, pd.DataFrame], indicator_types: List[str],
                            return_polars: bool = True, parallel: bool = False, max_workers: int = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
         """
@@ -429,58 +484,7 @@ class IndicatorManager:
 
         # 检查是否启用缓存
         if self._cache_enabled:
-            # 尝试从缓存获取每个指标的结果
-            cached_results = []
-            uncached_indicators = []
-
-            for indicator_type in indicator_types:
-                cached_result = global_indicator_cache.get(pl_data, indicator_type, **params)
-                if cached_result is not None:
-                    cached_results.append((indicator_type, cached_result))
-                    logger.debug(f"从缓存获取指标{indicator_type}计算结果")
-                else:
-                    uncached_indicators.append(indicator_type)
-
-            # 如果所有指标都在缓存中，直接合并结果
-            if not uncached_indicators:
-                # 合并缓存结果
-                result_df = pl_data
-                for _, cached_df in cached_results:
-                    # 只合并新的列（排除时间列和已存在的列）
-                    new_columns = [col for col in cached_df.columns if col not in result_df.columns and col != cached_df.columns[0]]
-                    if new_columns:
-                        result_df = result_df.join(
-                            cached_df.select([cached_df.columns[0]] + new_columns),
-                            on=result_df.columns[0],
-                            how='left'
-                        )
-                return self._to_result_format(result_df, return_polars)
-
-            # 对未缓存的指标进行计算
-            if uncached_indicators:
-                # 单标的多指标：单次批量调用，由 Polars 在单个查询计划内并行；
-                # 外层再按组拆线程池只会重复计算共享中间列并超额订阅线程
-                result_df = calculate_multiple_indicators_polars(pl_data, uncached_indicators, **params)
-
-                # 保存到缓存
-                for indicator_type in uncached_indicators:
-                    # 提取该指标的结果
-                    indicator_cols = [col for col in result_df.columns if col.startswith(indicator_type) or col in ['dma', 'ama', 'fsl', 'sar', 'obv']]
-                    if indicator_cols:
-                        indicator_result = result_df.select([result_df.columns[0]] + indicator_cols)
-                        global_indicator_cache.set(pl_data, indicator_result, indicator_type, **params)
-
-                # 合并缓存结果和新计算结果
-                for indicator_type, cached_df in cached_results:
-                    # 只合并新的列（排除时间列和已存在的列）
-                    new_columns = [col for col in cached_df.columns if col not in result_df.columns and col != cached_df.columns[0]]
-                    if new_columns:
-                        # 确保不会重复添加列
-                        result_df = result_df.join(
-                            cached_df.select([cached_df.columns[0]] + new_columns),
-                            on=result_df.columns[0],
-                            how='left'
-                        )
+            result_df = self._calculate_indicators_with_cache(pl_data, indicator_types, params)
         else:
             # 缓存禁用，直接计算所有指标（同上：单次批量调用）
             result_df = calculate_multiple_indicators_polars(pl_data, indicator_types, **params)

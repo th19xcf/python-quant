@@ -114,23 +114,7 @@ class DividendMarkerItem(GraphicsObject):
             y_min, y_max = view_range[1]
             y_range = y_max - y_min
 
-            # 计算标记高度（使用固定像素高度，转换为数据坐标）
-            # 获取图表的像素高度，计算每个像素对应的数据高度
-            plot_rect = self.plot_widget.geometry()
-            pixel_height = plot_rect.height()
-
-            if pixel_height > 0:
-                # 每个像素对应的数据高度
-                data_per_pixel = y_range / pixel_height
-                # 标记高度为15像素（固定值）
-                marker_height = 15 * data_per_pixel
-            else:
-                # 如果无法获取像素高度，使用Y轴范围的2%
-                marker_height = y_range * 0.02
-
-            # 确保标记高度不会太大或太小
-            marker_height = max(marker_height, y_range * 0.01)  # 最小为Y轴范围的1%
-            marker_height = min(marker_height, y_range * 0.05)  # 最大为Y轴范围的5%
+            marker_height = self._calculate_marker_height(y_range)
 
             # 标记从y_min（x轴）向下延伸
             # QRectF的y参数是左上角坐标，高度向下延伸
@@ -144,62 +128,90 @@ class DividendMarkerItem(GraphicsObject):
                 logger.debug(f"绘制分红标记: X范围 {x_min:.2f} - {x_max:.2f}, Y范围 {y_min:.2f} - {y_max:.2f}, 标记高度: {marker_height:.2f}")
                 self._debug_logged = True
 
-            for _i, (div, idx) in enumerate(zip(self.dividend_data, self.dividend_indices, strict=False)):
-                if idx < 0:
-                    continue  # 跳过未找到对应日期的分红数据
-
-                x = idx  # K线索引作为X坐标
-
-                # 判断分红类型
-                cash_div = div.get('cash_div', 0) or 0
-                share_div = div.get('share_div', 0) or 0
-
-                # 根据分红类型选择颜色和标记
-                if cash_div > 0 and share_div > 0:
-                    # 既有分红又有送转 - 紫色
-                    marker_type = 'both'
-                elif cash_div > 0:
-                    # 只有分红 - 红色
-                    marker_type = 'cash'
-                elif share_div > 0:
-                    # 只有送转 - 蓝色
-                    marker_type = 'share'
-                else:
-                    continue  # 没有有效的分红数据
-
-                # 定义标记矩形区域（从y_min向下延伸，高度为marker_height）
-                # 这样标记会显示在x轴下方，不会遮挡K线
-                marker_rect = QRectF(x - marker_width/2, marker_y, marker_width, marker_height)
-
-                # 根据类型设置颜色
-                if marker_type == 'cash':
-                    bg_color = QColor(255, 0, 0, 200)  # 红色半透明背景
-                    text_color = QColor(255, 255, 255)  # 白色文字
-                    text = "分"
-                elif marker_type == 'share':
-                    bg_color = QColor(0, 128, 255, 200)  # 蓝色半透明背景
-                    text_color = QColor(255, 255, 255)  # 白色文字
-                    text = "送"
-                else:
-                    bg_color = QColor(255, 0, 255, 200)  # 紫色半透明背景
-                    text_color = QColor(255, 255, 255)  # 白色文字
-                    text = "权"
-
-                # 绘制背景矩形
-                p.setBrush(QBrush(bg_color))
-                p.setPen(QPen(bg_color, 1))
-                p.drawRect(marker_rect)
-
-                # 绘制文字
-                p.setPen(QPen(text_color, 1))
-                # 字体大小根据标记高度自适应（确保最小为8，最大为12）
-                font_size = max(8, min(12, int(marker_height)))
-                font = QFont("Microsoft YaHei", font_size, QFont.Bold)
-                p.setFont(font)
-                p.drawText(marker_rect, Qt.AlignCenter, text)
+            self._paint_markers(p, marker_y, marker_width, marker_height)
 
         except (OSError, RuntimeError, ValueError) as e:
             logger.warning(f"绘制分红标记失败: {e}")
+
+    def _calculate_marker_height(self, y_range):
+        """计算标记高度：固定像素高度换算为数据坐标，并限制在Y轴范围的1%~5%。"""
+        # 计算标记高度（使用固定像素高度，转换为数据坐标）
+        # 获取图表的像素高度，计算每个像素对应的数据高度
+        plot_rect = self.plot_widget.geometry()
+        pixel_height = plot_rect.height()
+
+        if pixel_height > 0:
+            # 每个像素对应的数据高度
+            data_per_pixel = y_range / pixel_height
+            # 标记高度为15像素（固定值）
+            marker_height = 15 * data_per_pixel
+        else:
+            # 如果无法获取像素高度，使用Y轴范围的2%
+            marker_height = y_range * 0.02
+
+        # 确保标记高度不会太大或太小
+        marker_height = max(marker_height, y_range * 0.01)  # 最小为Y轴范围的1%
+        marker_height = min(marker_height, y_range * 0.05)  # 最大为Y轴范围的5%
+        return marker_height
+
+    def _paint_markers(self, p, marker_y, marker_width, marker_height):
+        """逐条绘制分红标记。"""
+        for _i, (div, idx) in enumerate(zip(self.dividend_data, self.dividend_indices, strict=False)):
+            if idx < 0:
+                continue  # 跳过未找到对应日期的分红数据
+
+            x = idx  # K线索引作为X坐标
+
+            # 判断分红类型
+            cash_div = div.get('cash_div', 0) or 0
+            share_div = div.get('share_div', 0) or 0
+
+            marker_type = self._resolve_marker_type(cash_div, share_div)
+            if marker_type is None:
+                continue  # 没有有效的分红数据
+
+            # 定义标记矩形区域（从y_min向下延伸，高度为marker_height）
+            # 这样标记会显示在x轴下方，不会遮挡K线
+            marker_rect = QRectF(x - marker_width/2, marker_y, marker_width, marker_height)
+
+            # 根据类型设置颜色
+            bg_color, text_color, text = self._marker_style(marker_type)
+
+            # 绘制背景矩形
+            p.setBrush(QBrush(bg_color))
+            p.setPen(QPen(bg_color, 1))
+            p.drawRect(marker_rect)
+
+            # 绘制文字
+            p.setPen(QPen(text_color, 1))
+            # 字体大小根据标记高度自适应（确保最小为8，最大为12）
+            font_size = max(8, min(12, int(marker_height)))
+            font = QFont("Microsoft YaHei", font_size, QFont.Bold)
+            p.setFont(font)
+            p.drawText(marker_rect, Qt.AlignCenter, text)
+
+    @staticmethod
+    def _resolve_marker_type(cash_div, share_div):
+        """根据分红类型返回标记类别，没有有效数据时返回 None。"""
+        if cash_div > 0 and share_div > 0:
+            # 既有分红又有送转 - 紫色
+            return 'both'
+        if cash_div > 0:
+            # 只有分红 - 红色
+            return 'cash'
+        if share_div > 0:
+            # 只有送转 - 蓝色
+            return 'share'
+        return None
+
+    @staticmethod
+    def _marker_style(marker_type):
+        """返回标记的背景色、文字色与文字内容。"""
+        if marker_type == 'cash':
+            return QColor(255, 0, 0, 200), QColor(255, 255, 255), "分"
+        if marker_type == 'share':
+            return QColor(0, 128, 255, 200), QColor(255, 255, 255), "送"
+        return QColor(255, 0, 255, 200), QColor(255, 255, 255), "权"
 
     def boundingRect(self):
         """

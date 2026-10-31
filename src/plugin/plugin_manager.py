@@ -51,7 +51,7 @@ class PluginManager:
         self.plugin_config_manager = get_plugin_config_manager(config)
 
         # 插件初始化顺序，由_resolve_plugin_order方法生成
-        self._plugin_initialization_order = []
+        self._plugin_initialization_order: list[Dict[str, Any]] = []
 
         # 订阅配置变更事件
         subscribe('plugin_config_changed', self._on_plugin_config_changed)
@@ -226,7 +226,7 @@ class PluginManager:
 
         return dependency_graph
 
-    def _topological_sort(self, graph: Dict[str, List[str]]) -> List[str] or None:
+    def _topological_sort(self, graph: Dict[str, List[str]]) -> List[str] | None:
         """
         拓扑排序，确定插件初始化顺序
 
@@ -266,7 +266,7 @@ class PluginManager:
 
         return result
 
-    def _resolve_plugin_order(self) -> List[Dict[str, Any]] or None:
+    def _resolve_plugin_order(self) -> List[Dict[str, Any]] | None:
         """
         解析插件初始化顺序
 
@@ -315,7 +315,7 @@ class PluginManager:
         logger.info(f"插件系统初始化完成，共解析 {len(sorted_plugins)} 个插件的依赖关系")
         return len(sorted_plugins)
 
-    def get_plugin_instance(self, plugin_name: str, plugin_type: str = None, lazy_load: bool = True) -> PluginBase | None:
+    def get_plugin_instance(self, plugin_name: str, plugin_type: str | None = None, lazy_load: bool = True) -> PluginBase | None:
         """
         获取插件实例，支持懒加载和依赖自动加载
 
@@ -484,7 +484,7 @@ class PluginManager:
         """
         return self.plugin_instances.get(plugin_type, {})
 
-    def enable_plugin(self, plugin_name: str, plugin_type: str = None) -> bool:
+    def enable_plugin(self, plugin_name: str, plugin_type: str | None = None) -> bool:
         """
         启用插件
 
@@ -502,7 +502,7 @@ class PluginManager:
             return True
         return False
 
-    def disable_plugin(self, plugin_name: str, plugin_type: str = None) -> bool:
+    def disable_plugin(self, plugin_name: str, plugin_type: str | None = None) -> bool:
         """
         禁用插件
 
@@ -574,7 +574,7 @@ class PluginManager:
 
         return loaded_count
 
-    def get_plugin_info(self, plugin_name: str, plugin_type: str = None) -> Dict[str, Any] | None:
+    def get_plugin_info(self, plugin_name: str, plugin_type: str | None = None) -> Dict[str, Any] | None:
         """
         获取插件信息
 
@@ -714,7 +714,7 @@ class PluginManager:
 
         return available_plugins
 
-    def call_plugin_method(self, plugin_name: str, method_name: str, plugin_type: str = None, *args, **kwargs) -> Any:
+    def call_plugin_method(self, plugin_name: str, method_name: str, plugin_type: str | None = None, *args, **kwargs) -> Any:
         """
         直接调用插件方法，带异常隔离
 

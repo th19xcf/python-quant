@@ -114,80 +114,98 @@ class AkShareStockMixin:
                 logger.warning("获取市场涨跌家数数据为空")
                 return None
 
-            # 统计涨跌家数
-            up_count = df.filter(pl.col('pct_chg') > 0).height
-            down_count = df.filter(pl.col('pct_chg') < 0).height
-            flat_count = df.filter(pl.col('pct_chg') == 0).height
-            total_count = df.height
-
-            # 计算涨跌比例
-            up_rate = (up_count / total_count * 100) if total_count > 0 else 0
-            down_rate = (down_count / total_count * 100) if total_count > 0 else 0
-
-            logger.info(f"市场涨跌家数: 上涨={up_count}, 下跌={down_count}, 平盘={flat_count}, 总计={total_count}")
+            # 统计涨跌家数并计算涨跌比例
+            stats = self._calc_market_breadth(df)
 
             # 转换日期格式
-            from datetime import datetime
-            if trade_date:
-                trade_date_obj = datetime.strptime(trade_date, "%Y%m%d").date()
-            else:
-                trade_date_obj = datetime.now().date()
+            trade_date_obj = self._resolve_breadth_date(trade_date)
 
             # 离线模式下返回结果
             if not self.session:
-                return {
-                    'trade_date': trade_date_obj,
-                    'up_count': up_count,
-                    'down_count': down_count,
-                    'flat_count': flat_count,
-                    'total_count': total_count,
-                    'up_rate': up_rate,
-                    'down_rate': down_rate
-                }
+                return self._market_breadth_result(trade_date_obj, stats)
 
-            # 存储到数据库
-            from src.database.models.stock import MarketBreadth
-
-            # 查询是否已存在
-            existing = self.session.query(MarketBreadth).filter_by(trade_date=trade_date_obj).first()
-
-            if existing:
-                existing.up_count = up_count
-                existing.down_count = down_count
-                existing.flat_count = flat_count
-                existing.total_count = total_count
-                existing.up_rate = up_rate
-                existing.down_rate = down_rate
-                logger.info(f"更新市场涨跌家数数据: {trade_date_obj}")
-            else:
-                market_breadth = MarketBreadth(
-                    trade_date=trade_date_obj,
-                    up_count=up_count,
-                    down_count=down_count,
-                    flat_count=flat_count,
-                    total_count=total_count,
-                    up_rate=up_rate,
-                    down_rate=down_rate
-                )
-                self.session.add(market_breadth)
-                logger.info(f"新增市场涨跌家数数据: {trade_date_obj}")
-
-            self.session.commit()
-            return {
-                'trade_date': trade_date_obj,
-                'up_count': up_count,
-                'down_count': down_count,
-                'flat_count': flat_count,
-                'total_count': total_count,
-                'up_rate': up_rate,
-                'down_rate': down_rate
-            }
+            self._save_market_breadth(trade_date_obj, stats)
+            return self._market_breadth_result(trade_date_obj, stats)
 
         except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
                 self.session.rollback()
             logger.exception(f"获取市场涨跌家数数据失败: {e}")
             raise
+
+    @staticmethod
+    def _calc_market_breadth(df):
+        """统计涨跌家数并计算涨跌比例"""
+        up_count = df.filter(pl.col('pct_chg') > 0).height
+        down_count = df.filter(pl.col('pct_chg') < 0).height
+        flat_count = df.filter(pl.col('pct_chg') == 0).height
+        total_count = df.height
+
+        # 计算涨跌比例
+        up_rate = (up_count / total_count * 100) if total_count > 0 else 0
+        down_rate = (down_count / total_count * 100) if total_count > 0 else 0
+
+        logger.info(f"市场涨跌家数: 上涨={up_count}, 下跌={down_count}, 平盘={flat_count}, 总计={total_count}")
+
+        return {
+            'up_count': up_count,
+            'down_count': down_count,
+            'flat_count': flat_count,
+            'total_count': total_count,
+            'up_rate': up_rate,
+            'down_rate': down_rate,
+        }
+
+    @staticmethod
+    def _resolve_breadth_date(trade_date: str = None):
+        """转换日期格式：YYYYMMDD -> date，未指定时取当天"""
+        if trade_date:
+            return datetime.strptime(trade_date, "%Y%m%d").date()
+        return datetime.now().date()
+
+    @staticmethod
+    def _market_breadth_result(trade_date_obj, stats):
+        """构造返回结果（字段顺序保持与原接口一致）"""
+        return {
+            'trade_date': trade_date_obj,
+            'up_count': stats['up_count'],
+            'down_count': stats['down_count'],
+            'flat_count': stats['flat_count'],
+            'total_count': stats['total_count'],
+            'up_rate': stats['up_rate'],
+            'down_rate': stats['down_rate'],
+        }
+
+    def _save_market_breadth(self, trade_date_obj, stats):
+        """写入市场涨跌家数（已存在则更新）并提交事务"""
+        # 存储到数据库
+        from src.database.models.stock import MarketBreadth
+
+        # 查询是否已存在
+        existing = self.session.query(MarketBreadth).filter_by(trade_date=trade_date_obj).first()
+
+        if existing:
+            existing.up_count = stats['up_count']
+            existing.down_count = stats['down_count']
+            existing.flat_count = stats['flat_count']
+            existing.total_count = stats['total_count']
+            existing.up_rate = stats['up_rate']
+            existing.down_rate = stats['down_rate']
+            logger.info(f"更新市场涨跌家数数据: {trade_date_obj}")
+        else:
+            market_breadth = MarketBreadth(
+                trade_date=trade_date_obj,
+                up_count=stats['up_count'],
+                down_count=stats['down_count'],
+                flat_count=stats['flat_count'],
+                total_count=stats['total_count'],
+                up_rate=stats['up_rate'],
+                down_rate=stats['down_rate'],
+            )
+            self.session.add(market_breadth)
+            logger.info(f"新增市场涨跌家数数据: {trade_date_obj}")
+
+        self.session.commit()
 
     def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
         """
@@ -202,19 +220,7 @@ class AkShareStockMixin:
             dict: 股票代码到日线数据的映射（离线模式下）
         """
         try:
-            # 离线模式下的默认股票代码列表
-            default_ts_codes = _DEFAULT_STOCK_CODES
-
-            # 如果没有指定股票代码，从数据库获取所有股票代码
-            if not ts_codes:
-                if self.session:
-                    from src.database.models.stock import StockBasic
-                    stock_basics = self.session.query(StockBasic.ts_code).all()
-                    ts_codes = [sb.ts_code for sb in stock_basics]
-                else:
-                    # 离线模式下使用默认股票代码
-                    ts_codes = default_ts_codes
-                    logger.info(f"离线模式下，使用默认股票代码列表: {ts_codes}")
+            ts_codes = self._resolve_stock_daily_codes(ts_codes)
 
             if not ts_codes:
                 logger.warning("没有需要更新的股票代码")
@@ -232,69 +238,7 @@ class AkShareStockMixin:
             # 遍历股票代码，获取日线数据
             for ts_code in ts_codes:
                 try:
-                    logger.info(f"正在获取{ts_code}的日线数据")
-
-                    # 使用AkShare获取股票日线数据（契约见 akshare_schema.STOCK_HIST）
-                    stock_daily_df = schema.resolve(
-                        schema.fetch_spec(
-                            schema.STOCK_HIST,
-                            symbol=to_symbol(ts_code),  # AkShare使用数字代码
-                            period="daily",
-                            start_date=start_date,
-                            end_date=end_date,
-                            adjust="",  # 不复权：写库统一存原始价，复权由查询侧 DataFetcher 按因子计算
-                        ),
-                        schema.STOCK_HIST,
-                    )
-
-                    if stock_daily_df.is_empty():
-                        logger.warning(f"{ts_code}在{start_date}至{end_date}期间没有日线数据")
-                        continue
-
-                    logger.info(f"获取到{ts_code}的{stock_daily_df.height}条日线数据")
-
-                    # 离线模式下，只获取数据不存储
-                    if not self.session:
-                        result[ts_code] = stock_daily_df
-                        logger.info(f"离线模式下，获取{ts_code}的日线数据完成")
-                        continue
-
-                    # 数据清洗和标准化
-                    from src.database.models.stock import StockDaily
-                    from src.database.upsert import upsert_rows
-
-                    # 遍历数据，转换为待写入行（不合格行跳过）
-                    daily_rows = []
-                    for row in stock_daily_df.iter_rows(named=True):
-                        try:
-                            daily_rows.append({
-                                'ts_code': ts_code,
-                                'trade_date': datetime.strptime(row['date'], "%Y-%m-%d").date(),
-                                'open': row['open'],
-                                'high': row['high'],
-                                'low': row['low'],
-                                'close': row['close'],
-                                'pre_close': row['pre_close'],
-                                'change': row['change'],
-                                'pct_chg': row['pct_chg'],
-                                'vol': row['volume'],
-                                'amount': row['amount'],
-                            })
-                        except (ConnectionError, TimeoutError, OSError) as row_e:
-                            logger.exception(f"处理股票日线数据失败: {row_e}")
-                            continue
-
-                    # 批量查重后写入（已存在则更新，不存在则新增）
-                    upsert_rows(
-                        self.session, StockDaily, daily_rows,
-                        key_fields=('ts_code', 'trade_date'),
-                        value_fields=('open', 'high', 'low', 'close', 'pre_close',
-                                      'change', 'pct_chg', 'vol', 'amount'),
-                    )
-
-                    # 每只股票提交一次事务
-                    self.session.commit()
-                    logger.info(f"{ts_code}的日线数据更新完成")
+                    self._sync_stock_daily_one(ts_code, start_date, end_date, result)
 
                 except (ConnectionError, TimeoutError, OSError) as e:
                     if self.session:
@@ -311,6 +255,93 @@ class AkShareStockMixin:
                 self.session.rollback()
             logger.exception(f"更新股票日线数据失败: {e}")
             raise
+
+    def _resolve_stock_daily_codes(self, ts_codes: List[str] = None):
+        """解析待更新的股票代码：未指定时回落到数据库或离线默认列表"""
+        # 如果没有指定股票代码，从数据库获取所有股票代码
+        if ts_codes:
+            return ts_codes
+        if self.session:
+            from src.database.models.stock import StockBasic
+            stock_basics = self.session.query(StockBasic.ts_code).all()
+            return [sb.ts_code for sb in stock_basics]
+        # 离线模式下使用默认股票代码
+        logger.info(f"离线模式下，使用默认股票代码列表: {_DEFAULT_STOCK_CODES}")
+        return _DEFAULT_STOCK_CODES
+
+    @staticmethod
+    def _build_akshare_daily_rows(stock_daily_df, ts_code):
+        """遍历原始行，转换为待写入行（不合格行跳过）"""
+        daily_rows = []
+        for row in stock_daily_df.iter_rows(named=True):
+            try:
+                daily_rows.append({
+                    'ts_code': ts_code,
+                    'trade_date': datetime.strptime(row['date'], "%Y-%m-%d").date(),
+                    'open': row['open'],
+                    'high': row['high'],
+                    'low': row['low'],
+                    'close': row['close'],
+                    'pre_close': row['pre_close'],
+                    'change': row['change'],
+                    'pct_chg': row['pct_chg'],
+                    'vol': row['volume'],
+                    'amount': row['amount'],
+                })
+            except (ConnectionError, TimeoutError, OSError) as row_e:
+                logger.exception(f"处理股票日线数据失败: {row_e}")
+                continue
+        return daily_rows
+
+    def _persist_akshare_daily(self, ts_code, daily_rows):
+        """批量查重写入并提交（每只股票一次事务）"""
+        # 数据清洗和标准化
+        from src.database.models.stock import StockDaily
+        from src.database.upsert import upsert_rows
+
+        # 批量查重后写入（已存在则更新，不存在则新增）
+        upsert_rows(
+            self.session, StockDaily, daily_rows,
+            key_fields=('ts_code', 'trade_date'),
+            value_fields=('open', 'high', 'low', 'close', 'pre_close',
+                          'change', 'pct_chg', 'vol', 'amount'),
+        )
+
+        # 每只股票提交一次事务
+        self.session.commit()
+        logger.info(f"{ts_code}的日线数据更新完成")
+
+    def _sync_stock_daily_one(self, ts_code, start_date, end_date, result):
+        """同步单只股票的日线数据（离线模式仅收集结果）"""
+        logger.info(f"正在获取{ts_code}的日线数据")
+
+        # 使用AkShare获取股票日线数据（契约见 akshare_schema.STOCK_HIST）
+        stock_daily_df = schema.resolve(
+            schema.fetch_spec(
+                schema.STOCK_HIST,
+                symbol=to_symbol(ts_code),  # AkShare使用数字代码
+                period="daily",
+                start_date=start_date,
+                end_date=end_date,
+                adjust="",  # 不复权：写库统一存原始价，复权由查询侧 DataFetcher 按因子计算
+            ),
+            schema.STOCK_HIST,
+        )
+
+        if stock_daily_df.is_empty():
+            logger.warning(f"{ts_code}在{start_date}至{end_date}期间没有日线数据")
+            return
+
+        logger.info(f"获取到{ts_code}的{stock_daily_df.height}条日线数据")
+
+        # 离线模式下，只获取数据不存储
+        if not self.session:
+            result[ts_code] = stock_daily_df
+            logger.info(f"离线模式下，获取{ts_code}的日线数据完成")
+            return
+
+        daily_rows = self._build_akshare_daily_rows(stock_daily_df, ts_code)
+        self._persist_akshare_daily(ts_code, daily_rows)
 
     def get_stock_data(self, ts_code: str, start_date: str, end_date: str,
                        freq: str = 'daily', adjustment_type: str = 'qfq'):

@@ -32,7 +32,7 @@ try:
     from src.alpha.evaluation.factor_evaluator import FactorEvaluator
 except Exception as _exc:  # noqa: BLE001  # pragma: no cover - 仅在 scipy 缺失时触发
     logger.warning(f"FactorEvaluator 加载失败（可能是 scipy 未安装），评估相关方法将跳过：{_exc}")
-    FactorEvaluator = None
+    FactorEvaluator = None  # type: ignore[misc, assignment]
 
 
 def _next_period_returns(close: np.ndarray) -> pl.Series:
@@ -64,8 +64,8 @@ class AlphaCalculator:
 
         # partition_by: 传标的代码列名时，因子按该列分组求值（单查询计划，无逐组循环）
         self.partition_by = partition_by
-        self.evaluator = FactorEvaluator() if FactorEvaluator is not None else None
-        self.factor_results = {}
+        self.evaluator: Any = FactorEvaluator() if FactorEvaluator is not None else None
+        self.factor_results: Dict[str, Any] = {}
 
     def calculate_factors(self, factor_types: List[str], **params) -> pl.DataFrame:
         """
@@ -171,7 +171,7 @@ class AlphaCalculator:
         correlation_matrix = np.corrcoef(factor_data)
 
         # 构建相关性字典
-        correlation_dict = {}
+        correlation_dict: Dict[str, Dict[str, float]] = {}
         for i, factor1 in enumerate(valid_factors):
             correlation_dict[factor1] = {}
             for j, factor2 in enumerate(valid_factors):

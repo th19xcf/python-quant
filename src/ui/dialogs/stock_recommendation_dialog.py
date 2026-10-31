@@ -38,7 +38,13 @@ class StockRecommendationDialog(QDialog):
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
+        self._build_basic_section(main_layout)
+        self._build_factor_section(main_layout)
+        self._build_result_section(main_layout)
+        self._build_button_section(main_layout)
 
+    def _build_basic_section(self, main_layout):
+        """构建推荐设置分组"""
         basic_group = QGroupBox("推荐设置")
         basic_layout = QGridLayout()
 
@@ -64,6 +70,8 @@ class StockRecommendationDialog(QDialog):
         basic_group.setLayout(basic_layout)
         main_layout.addWidget(basic_group)
 
+    def _build_factor_section(self, main_layout):
+        """构建因子权重设置分组"""
         factor_group = QGroupBox("因子权重设置")
         factor_layout = QGridLayout()
 
@@ -90,6 +98,8 @@ class StockRecommendationDialog(QDialog):
         factor_group.setLayout(factor_layout)
         main_layout.addWidget(factor_group)
 
+    def _build_result_section(self, main_layout):
+        """构建推荐结果分组"""
         result_group = QGroupBox("推荐结果")
         result_layout = QVBoxLayout()
 
@@ -122,6 +132,8 @@ class StockRecommendationDialog(QDialog):
         result_group.setLayout(result_layout)
         main_layout.addWidget(result_group, 1)
 
+    def _build_button_section(self, main_layout):
+        """构建底部按钮布局"""
         button_layout = QHBoxLayout()
         self.run_button = QPushButton("生成推荐")
         self.run_button.clicked.connect(self.generate_recommendation)
