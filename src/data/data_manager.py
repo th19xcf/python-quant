@@ -13,7 +13,7 @@ data_updater.py 三层薄包装，统一到 DataService 单一路径。
 
 import contextlib
 import time
-from typing import Any, Dict, List, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Union
 
 import polars as pl
 from loguru import logger
@@ -24,10 +24,10 @@ from src.utils.exception_handler import handle_exception_with_retry
 from src.utils.memory_optimizer import MemoryOptimizer
 
 
-class DataManager(IDataProvider, IDataProcessor):
+class DataManager:
     """
     数据管理器，负责统一管理各种数据源的获取、清洗和存储
-    实现了IDataProvider和IDataProcessor接口
+    结构上满足 IDataProvider / IDataProcessor 契约（Protocol，无需继承）
 
     此壳保留是为了兼容 main.py / 三个 dialog 等外部调用者。
     所有 update_* / get_stock_data / get_index_data / 缓存管理
@@ -96,7 +96,7 @@ class DataManager(IDataProvider, IDataProcessor):
         """
         return self.data_service.update_stock_basic()
 
-    def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_stock_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         更新股票日线数据
 
@@ -727,3 +727,15 @@ class DataManager(IDataProvider, IDataProcessor):
         from src.data.managers.data_processor import DataProcessor
         processor = DataProcessor(self.config)
         return processor.clean_data(data)
+
+
+if TYPE_CHECKING:
+    def _assert_contract_conformance(manager: DataManager) -> None:
+        """类型层契约校验：DataManager 必须满足两个 Protocol 的全部方法。
+
+        不继承 Protocol 就无法在类定义处发现缺失方法，这里用赋值断言把
+        结构化一致性检查前移到 mypy（缺方法或签名不符会直接报错）。
+        运行时不会执行本函数。
+        """
+        _provider: IDataProvider = manager
+        _processor: IDataProcessor = manager

@@ -3,6 +3,9 @@
 """
 表现层接口定义
 统一使用Polars DataFrame作为数据格式
+
+预留契约：本文件全部接口（IView / IController）当前无实现方与调用方
+（全仓仅本文件引用），保留供未来扩展，不要把它们当作已生效的约束。
 """
 
 from typing import Any, Dict, List
@@ -11,7 +14,11 @@ import polars as pl
 
 
 class IView:
-    """视图接口，定义视图更新和消息显示方法"""
+    """视图接口，定义视图更新和消息显示方法
+
+    预留契约：当前无实现方与调用方（全仓仅本文件引用），保留供未来扩展，
+    不要把它当作已生效的约束。
+    """
 
     def update_chart(self, data: pl.DataFrame, indicators: List[str] | None = None, **params):
         """更新图表数据
@@ -57,7 +64,11 @@ class IView:
 
 
 class IController:
-    """控制器接口，定义用户交互事件处理方法"""
+    """控制器接口，定义用户交互事件处理方法
+
+    预留契约：当前无实现方与调用方（全仓仅本文件引用），保留供未来扩展，
+    不要把它当作已生效的约束。
+    """
 
     def on_stock_selected(self, stock_code: str, **params):
         """处理股票选择事件

@@ -3,6 +3,9 @@
 """
 数据传输对象(DTO)定义，用于各层之间的数据传输
 统一使用Polars DataFrame作为数据格式
+
+预留契约：本文件全部 DTO 当前无实现方与调用方（全仓仅本文件引用），
+保留供未来扩展，不要把它们当作已生效的约束。
 """
 
 from dataclasses import dataclass, field

@@ -5,24 +5,32 @@
 统一使用Polars DataFrame作为数据格式
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Protocol
 
 import polars as pl
 
 
-class ITechnicalAnalyzer:
-    """技术分析器接口，定义技术指标计算方法"""
+class ITechnicalAnalyzer(Protocol):
+    """技术分析器契约（结构化子类型）
 
-    def calculate_indicator(self, data: pl.DataFrame, indicator_type: str, **params) -> pl.DataFrame:
+    实现类无需继承本类（TechnicalAnalyzer 由 mixin 组合出全部方法），
+    mypy 按方法签名做结构化一致性校验。
+    """
+
+    def calculate_indicator(self, indicator_type: str, *args: Any, **kwargs: Any) -> Any:
         """计算单个技术指标
 
+        实际实现（ParallelIndicatorMixin）以 self.data 为输入，按指标类型
+        分派到具体计算器，data 不作为显式参数——契约按实现签名维护，避免
+        契约与实际调用方式漂移。
+
         Args:
-            data: 股票数据（Polars DataFrame）
             indicator_type: 指标类型，如：'ma'、'macd'、'kdj'等
-            **params: 指标计算参数
+            *args: 位置参数
+            **kwargs: 指标计算参数（如 windows）
 
         Returns:
-            pl.DataFrame: 包含计算结果的数据
+            Any: 计算结果，默认 Polars DataFrame；return_polars=False 时为 pandas
         """
         raise NotImplementedError("子类必须实现此方法")
 
@@ -71,7 +79,11 @@ class ITechnicalAnalyzer:
 
 
 class IStrategyAnalyzer:
-    """策略分析器接口，定义策略分析和回测方法"""
+    """策略分析器接口，定义策略分析和回测方法
+
+    预留契约：当前无实现方与调用方（全仓仅本文件引用），保留供未来扩展，
+    不要把它当作已生效的约束。
+    """
 
     def backtest(self, data: pl.DataFrame, strategy: Any, **params) -> Dict[str, Any]:
         """回测策略
@@ -120,7 +132,11 @@ class IStrategyAnalyzer:
 
 
 class ISignalGenerator:
-    """信号生成器接口，定义买卖信号生成方法"""
+    """信号生成器接口，定义买卖信号生成方法
+
+    预留契约：当前无实现方与调用方（全仓仅本文件引用），保留供未来扩展，
+    不要把它当作已生效的约束。
+    """
 
     def generate_signals(self, data: pl.DataFrame, indicators: List[str] | None = None, **params) -> pl.DataFrame:
         """生成买卖信号
@@ -156,7 +172,11 @@ class ISignalGenerator:
 
 
 class IFactorAnalyzer:
-    """因子分析器接口，定义因子计算和分析方法"""
+    """因子分析器接口，定义因子计算和分析方法
+
+    预留契约：当前无实现方与调用方（全仓仅本文件引用），保留供未来扩展，
+    不要把它当作已生效的约束。
+    """
 
     def calculate_factor(self, data: pl.DataFrame, factor_type: str, **params) -> pl.DataFrame:
         """计算因子值

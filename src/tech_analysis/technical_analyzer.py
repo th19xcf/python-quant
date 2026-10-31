@@ -5,7 +5,7 @@
 """
 
 # 第三方库导入
-from typing import List
+from typing import TYPE_CHECKING, List
 
 import pandas as pd
 import polars as pl
@@ -32,10 +32,10 @@ from .indicator_calculator import (
 )
 
 
-class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorCacheMixin, ITechnicalAnalyzer):
+class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorCacheMixin):
     """
     技术分析器类，提供各种技术指标的计算方法
-    实现了ITechnicalAnalyzer接口
+    结构上满足 ITechnicalAnalyzer 契约（Protocol，无需继承）
     """
 
     def __init__(self, data, plugin_manager=None):
@@ -532,3 +532,13 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
         """
         supported_indicators = self.get_supported_indicators()
         return indicator_type in supported_indicators
+
+
+if TYPE_CHECKING:
+    def _assert_contract_conformance(analyzer: TechnicalAnalyzer) -> None:
+        """类型层契约校验：TechnicalAnalyzer 必须满足 ITechnicalAnalyzer 契约。
+
+        契约方法由 mixin 组合提供，不继承 Protocol 时只能靠赋值断言把结构化
+        一致性检查交给 mypy。运行时不会执行本函数。
+        """
+        _iface: ITechnicalAnalyzer = analyzer
