@@ -180,7 +180,7 @@ class IndexService:
 
     def _query_category_file_names(self, category: str) -> set:
         """查询指定 category 的指数文件主名集合。数据库不可用时返回空集合。"""
-        file_names = set()
+        file_names: set[str] = set()
         if not self._db_manager:
             return file_names
 
@@ -207,7 +207,7 @@ class IndexService:
 
     def _query_excluded_file_names(self) -> set:
         """查询需要在沪/深指数总览中排除的创业板/科创板指数。"""
-        file_names = set()
+        file_names: set[str] = set()
         if not self._db_manager:
             return file_names
 

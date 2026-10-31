@@ -7,6 +7,7 @@
 """
 
 from datetime import datetime, timedelta
+from typing import Any, cast
 
 import polars as pl
 from loguru import logger
@@ -14,7 +15,7 @@ from loguru import logger
 from ..utils import to_float32
 
 
-def get_market_breadth_from_db(start_date: str = None, end_date: str = None):
+def get_market_breadth_from_db(start_date: str | None = None, end_date: str | None = None) -> pl.DataFrame | None:
     """
     从数据库获取市场涨跌家数数据
 
@@ -28,14 +29,15 @@ def get_market_breadth_from_db(start_date: str = None, end_date: str = None):
     try:
         from src.database.db_manager import DatabaseManager
 
-        db_manager = DatabaseManager()
+        # 保持原有运行期行为：此处调用方未提供 config，缺参会导致构造异常并被下方兜底捕获
+        db_manager = cast(Any, DatabaseManager)()
         session = db_manager.get_session()
 
         from sqlalchemy import select
 
         from src.database.models.stock import MarketBreadth
 
-        query = select(
+        query: Any = select(
             MarketBreadth.trade_date,
             MarketBreadth.up_count,
             MarketBreadth.down_count,

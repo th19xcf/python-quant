@@ -13,7 +13,7 @@ import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import date, datetime
-from typing import List, Union
+from typing import Any, List, Literal, Union, cast
 
 import polars as pl
 from loguru import logger
@@ -420,7 +420,7 @@ class DataFetcher:
         from src.data.adj_factor_calculator import calc_dividend_event_factor
         from src.database.models.stock import StockDividend
 
-        stmt = (
+        stmt: Any = (
             select(
                 StockDividend.ex_date,
                 StockDividend.cash_div,
@@ -429,7 +429,7 @@ class DataFetcher:
                 StockDividend.rights_issue_price,
             )
             .where(StockDividend.ts_code == code)
-            .where(StockDividend.ex_date > as_of)
+            .where(cast(Any, StockDividend.ex_date > as_of))
             .order_by(StockDividend.ex_date)
         )
         with self.db_manager.engine.connect() as conn:
@@ -628,7 +628,7 @@ class DataFetcher:
     def __enter__(self) -> DataFetcher:
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+    def __exit__(self, exc_type, exc_value, traceback) -> Literal[False]:
         self.close()
         return False
 

@@ -4,7 +4,7 @@
 并行与批量指标计算 Mixin
 """
 
-from typing import List, Union
+from typing import Any, Callable, List, Union
 
 import pandas as pd
 import polars as pl
@@ -57,6 +57,11 @@ _INDICATOR_UPDATE_MAP = {
 
 class ParallelIndicatorMixin:
     """并行与批量指标计算混入类"""
+
+    # 由宿主 TechnicalAnalyzer 注入的状态与插件方法
+    calculated_indicators: dict[str, Any]
+    calculate_plugin_indicator: Callable[..., Any]
+    get_available_plugin_indicators: Callable[..., Any]
 
     def calculate_indicator_parallel(self, indicator_type, *args, **kwargs):
         """

@@ -5,7 +5,7 @@
 负责K线图数据的预处理、复权计算、MA计算等
 """
 
-from typing import Tuple
+from typing import Tuple, cast
 
 import numpy as np
 import polars as pl
@@ -283,4 +283,4 @@ class ChartDataPreparer:
         high_index = np.argmax(highs)
         low_index = np.argmin(lows)
 
-        return current_high, current_low, high_index, low_index
+        return current_high, current_low, cast(int, high_index), cast(int, low_index)

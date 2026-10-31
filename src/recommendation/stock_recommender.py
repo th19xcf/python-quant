@@ -289,7 +289,7 @@ class StockRecommender:
         avg_risk_adjusted_score = np.mean([rec['risk_adjusted_score'] for rec in self.recommendations])
 
         # 按行业分类
-        industry_stats = {}
+        industry_stats: Dict[str, Dict[str, float]] = {}
         for rec in self.recommendations:
             industry = rec.get('industry', '未知')
             if industry not in industry_stats:

@@ -108,7 +108,7 @@ class BaostockIndexMixin:
             logger.exception(f"从Baostock获取指数基本信息失败: {e}")
             raise
 
-    def update_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_index_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         更新指数日线数据
 
@@ -137,7 +137,7 @@ class BaostockIndexMixin:
             logger.info(f"开始更新{len(ts_codes)}个指数的日线数据，时间范围: {start_date} 至 {end_date}")
 
             # 存储结果（离线模式下返回）
-            result = {}
+            result: dict[str, Any] = {}
 
             # 遍历指数代码，获取日线数据
             for ts_code in ts_codes:
@@ -160,7 +160,7 @@ class BaostockIndexMixin:
             logger.exception(f"更新指数日线数据失败: {e}")
             raise
 
-    def _resolve_index_daily_codes(self, ts_codes: List[str] = None):
+    def _resolve_index_daily_codes(self, ts_codes: List[str] | None = None):
         """解析待更新的指数代码：未指定时回落到数据库或离线默认列表"""
         # 如果没有指定指数代码，从数据库获取所有指数代码
         if ts_codes:
@@ -249,7 +249,7 @@ class BaostockIndexMixin:
         daily_rows = self._build_index_daily_rows(index_daily_df, ts_code)
         self._persist_index_daily(ts_code, daily_rows)
 
-    def download_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def download_index_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         下载指数日线数据
 

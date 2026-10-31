@@ -14,6 +14,9 @@ from ..indicator_cache import global_indicator_cache
 class IndicatorCacheMixin:
     """指标计算状态与缓存操作混入类"""
 
+    # 由宿主 TechnicalAnalyzer 持有的计算结果缓存
+    _calculate_cache: dict[str, Any]
+
     # 需要按窗口维护计算状态的指标
     _WINDOW_BASED_INDICATORS = {
         'ma', 'rsi', 'kdj', 'vol_ma', 'boll', 'wr', 'dmi', 'cci',

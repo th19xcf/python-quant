@@ -29,7 +29,7 @@ class TaskRunner(QRunnable):
     """
 
     def __init__(self, task_id: str, task_name: str, func: Callable, args: tuple = (),
-                 kwargs: dict = None, timeout_seconds: float | None = 60):
+                 kwargs: dict | None = None, timeout_seconds: float | None = 60):
         """
         初始化任务运行器
 
@@ -142,7 +142,7 @@ class TaskManager(QObject):
         logger.info(f"任务管理器初始化完成，最大线程数: {self.thread_pool.maxThreadCount()}")
 
     def create_task(self, task_name: str, func: Callable, args: tuple = (),
-                    kwargs: dict = None, timeout_seconds: float | None = 60) -> str:
+                    kwargs: dict | None = None, timeout_seconds: float | None = 60) -> str:
         """
         创建并启动一个后台任务
 

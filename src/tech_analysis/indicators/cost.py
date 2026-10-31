@@ -11,7 +11,7 @@ from ..common_calculations import add_default_columns
 from ..utils import to_float32
 
 
-def calculate_cyc(lazy_df: pl.LazyFrame, windows: list = None) -> pl.LazyFrame:
+def calculate_cyc(lazy_df: pl.LazyFrame, windows: list[int] | None = None) -> pl.LazyFrame:
     """
     计算CYC指标（成本均线）
     CYC = Σ(成交量 × 成交价格) / Σ(成交量)

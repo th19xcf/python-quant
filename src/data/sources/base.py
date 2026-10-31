@@ -394,7 +394,7 @@ class DataSourceBase(ABC):
         """
         logger.info(f"{self.name} 不支持更新股票基本信息")
 
-    def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_stock_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         更新股票日线数据
 
@@ -415,7 +415,7 @@ class DataSourceBase(ABC):
         """
         logger.info(f"{self.name} 不支持更新指数基本信息")
 
-    def update_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_index_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         更新指数日线数据
 
@@ -428,7 +428,7 @@ class DataSourceBase(ABC):
         """
         logger.info(f"{self.name} 不支持更新指数日线数据")
 
-    def update_macro_data(self, indicators: List[str] = None):
+    def update_macro_data(self, indicators: List[str] | None = None):
         """
         更新宏观经济数据
 
@@ -439,7 +439,7 @@ class DataSourceBase(ABC):
         """
         logger.info(f"{self.name} 不支持更新宏观经济数据")
 
-    def update_news_data(self, sources: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_news_data(self, sources: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         更新新闻数据
 
@@ -452,7 +452,7 @@ class DataSourceBase(ABC):
         """
         logger.info(f"{self.name} 不支持更新新闻数据")
 
-    def update_stock_dividend(self, ts_codes: List[str] = None):
+    def update_stock_dividend(self, ts_codes: List[str] | None = None):
         """
         更新股票分红配股数据
 
@@ -516,7 +516,7 @@ class DataSourceBase(ABC):
         """
         logger.info(f"{self.name} 不支持更新基金基本信息")
 
-    def update_fund_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_fund_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         更新基金日线数据
 
@@ -569,7 +569,7 @@ class DataSourceBase(ABC):
         """
         logger.info(f"{self.name} 不支持更新封闭式基金基本信息")
 
-    def update_closed_fund_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_closed_fund_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         更新封闭式基金日线数据
 

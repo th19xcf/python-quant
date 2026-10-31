@@ -7,7 +7,7 @@
 """
 
 from datetime import datetime
-from typing import List
+from typing import Any, List
 
 import numpy as np
 import polars as pl
@@ -91,7 +91,7 @@ class AdjFactorCalculator:
     def calculate_adj_factors(self, ts_code: str,
                              start_date: datetime | None = None,
                              end_date: datetime | None = None,
-                             use_tdx: bool = True) -> pl.DataFrame:
+                             use_tdx: bool = True) -> pl.DataFrame | None:
         """
         计算单只股票的复权因子
 
@@ -131,7 +131,7 @@ class AdjFactorCalculator:
             logger.exception(f"计算 {ts_code} 复权因子失败: {e}")
             return None
 
-    def _get_dividends(self, ts_code: str) -> pl.DataFrame:
+    def _get_dividends(self, ts_code: str) -> pl.DataFrame | None:
         """获取分红数据"""
         dividends = self.session.query(StockDividend).filter_by(ts_code=ts_code).order_by(StockDividend.ex_date).all()
 
@@ -150,7 +150,7 @@ class AdjFactorCalculator:
 
         return pl.DataFrame(data)
 
-    def _get_prices_from_db(self, ts_code: str, start_date: datetime | None, end_date: datetime | None) -> pl.DataFrame:
+    def _get_prices_from_db(self, ts_code: str, start_date: datetime | None, end_date: datetime | None) -> pl.DataFrame | None:
         """从数据库获取价格数据"""
         query = self.session.query(StockDaily).filter_by(ts_code=ts_code)
 
@@ -176,7 +176,7 @@ class AdjFactorCalculator:
 
         return pl.DataFrame(data)
 
-    def _get_prices_from_tdx(self, ts_code: str, start_date: datetime | None, end_date: datetime | None) -> pl.DataFrame:
+    def _get_prices_from_tdx(self, ts_code: str, start_date: datetime | None, end_date: datetime | None) -> pl.DataFrame | None:
         """从通达信获取价格数据"""
         if not self.tdx_handler:
             logger.warning("通达信处理器未初始化")
@@ -213,7 +213,7 @@ class AdjFactorCalculator:
             logger.exception(f"从通达信获取价格数据失败: {e}")
             return None
 
-    def _create_default_factors(self, ts_code: str, start_date: datetime, end_date: datetime, use_tdx: bool = True) -> pl.DataFrame:
+    def _create_default_factors(self, ts_code: str, start_date: datetime | None, end_date: datetime | None, use_tdx: bool = True) -> pl.DataFrame | None:
         """创建默认复权因子（全部为1.0）"""
         # 获取价格数据
         if use_tdx and self.tdx_handler:
@@ -355,7 +355,7 @@ class AdjFactorCalculator:
     def _batch_insert(self, records: List[StockAdjFactor], commit: bool = True):
         """批量插入记录（commit=False 时只入会话，不提交）"""
         try:
-            existing_records_map = {}
+            existing_records_map: dict[tuple[Any, Any], StockAdjFactor] = {}
             if records:
                 ts_codes = [r.ts_code for r in records]
                 trade_dates = [r.trade_date for r in records]
@@ -519,7 +519,7 @@ class AdjFactorCalculator:
             try:
                 # 每块各一次查询，替代逐股查询
                 dividends_bulk = self._get_dividends_bulk(chunk)
-                prices_bulk = None
+                prices_bulk: pl.DataFrame | None = None
                 if not self.tdx_handler:
                     prices_bulk = self._get_prices_bulk(chunk, start_date, end_date)
 
@@ -527,8 +527,10 @@ class AdjFactorCalculator:
                 for ts_code in chunk:
                     if self.tdx_handler:
                         prices = self._get_prices_from_tdx(ts_code, start_date, end_date)
-                    else:
+                    elif prices_bulk is not None:
                         prices = prices_bulk.filter(pl.col('ts_code') == ts_code)
+                    else:
+                        prices = None
 
                     if prices is None or prices.is_empty():
                         logger.warning(f"{ts_code} 没有价格数据")

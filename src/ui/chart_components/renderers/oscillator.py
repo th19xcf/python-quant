@@ -85,11 +85,11 @@ class OscillatorRenderMixin:
     def _add_kdj_reference_lines(self, plot_widget: Any, x: np.ndarray):
         """添加KDJ参考线"""
         # 20线（超卖线）
-        plot_widget.addLine(y=20, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+        plot_widget.addLine(y=20, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
         # 50线（中线）
-        plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+        plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
         # 80线（超买线）
-        plot_widget.addLine(y=80, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+        plot_widget.addLine(y=80, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
 
     def render_macd(self, plot_widget: Any, df: Any, x: np.ndarray):
         """
@@ -215,9 +215,9 @@ class OscillatorRenderMixin:
                 )
 
             # 添加参考线
-            plot_widget.addLine(y=20, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
-            plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
-            plot_widget.addLine(y=80, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+            plot_widget.addLine(y=20, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
+            plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
+            plot_widget.addLine(y=80, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
 
             # 设置Y轴范围
             plot_widget.setYRange(0, 100)
@@ -278,9 +278,9 @@ class OscillatorRenderMixin:
                     )
 
             # 添加参考线
-            plot_widget.addLine(y=-20, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
-            plot_widget.addLine(y=-50, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
-            plot_widget.addLine(y=-80, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+            plot_widget.addLine(y=-20, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
+            plot_widget.addLine(y=-50, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
+            plot_widget.addLine(y=-80, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
 
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染WR失败: {e}")
@@ -335,7 +335,7 @@ class OscillatorRenderMixin:
                 )
 
             # 添加参考线
-            plot_widget.addLine(y=100, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+            plot_widget.addLine(y=100, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
 
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染BRAR失败: {e}")
@@ -418,8 +418,8 @@ class OscillatorRenderMixin:
                 plot_widget.setYRange(-200, 200)
                 y_axis = plot_widget.getAxis('left')
                 y_axis.enableAutoSIPrefix(False)
-                plot_widget.addLine(y=100, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
-                plot_widget.addLine(y=-100, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+                plot_widget.addLine(y=100, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
+                plot_widget.addLine(y=-100, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染CCI失败: {e}")
         return df
@@ -493,7 +493,7 @@ class OscillatorRenderMixin:
                 plot_widget.setYRange(0, 100)
                 y_axis = plot_widget.getAxis('left')
                 y_axis.enableAutoSIPrefix(False)
-                plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+                plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染PSY失败: {e}")
         return df
@@ -578,7 +578,7 @@ class OscillatorRenderMixin:
                         ['r', '#FFA500'],
                         default='#00BFFF'
                     )
-                    self._draw_colored_vertical_lines(plot_widget, x[mask], hsl_data[mask], colors[mask])
+                    self._draw_colored_vertical_lines(plot_widget, x[mask], hsl_data[mask], colors[mask])  # type: ignore[attr-defined]
                     # 绘制HSL_MA5和HSL_MA10
                     if 'hsl_ma5' in df.columns:
                         hsl_ma5 = as_f64(df['hsl_ma5'])
@@ -607,7 +607,7 @@ class OscillatorRenderMixin:
                 mask = ~np.isnan(abi_data)
                 if np.any(mask):
                     plot_widget.plot(x[mask], abi_data[mask], pen=pg.mkPen('#00FF00', width=1.5), name='ABI')
-                plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.DashLine))
+                plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DashLine))
                 plot_widget.setYRange(0, 100)
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染ABI失败: {e}")
@@ -623,7 +623,7 @@ class OscillatorRenderMixin:
                 mask = ~np.isnan(adl_data)
                 if np.any(mask):
                     plot_widget.plot(x[mask], adl_data[mask], pen=pg.mkPen('#00FFFF', width=1.5), name='ADL')
-                plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1, style=Qt.DashLine))
+                plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DashLine))
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染ADL失败: {e}")
         return df
@@ -638,7 +638,7 @@ class OscillatorRenderMixin:
                 mask = ~np.isnan(adr_data)
                 if np.any(mask):
                     plot_widget.plot(x[mask], adr_data[mask], pen=pg.mkPen('#FF00FF', width=1.5), name='ADR')
-                plot_widget.addLine(y=100, pen=pg.mkPen('#666666', width=1, style=Qt.DashLine))
+                plot_widget.addLine(y=100, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DashLine))
                 plot_widget.setYRange(0, 200)
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染ADR失败: {e}")
@@ -654,7 +654,7 @@ class OscillatorRenderMixin:
                 mask = ~np.isnan(obos_data)
                 if np.any(mask):
                     plot_widget.plot(x[mask], obos_data[mask], pen=pg.mkPen('#FFFF00', width=1.5), name='OBOS')
-                plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1, style=Qt.DashLine))
+                plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DashLine))
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染OBOS失败: {e}")
         return df

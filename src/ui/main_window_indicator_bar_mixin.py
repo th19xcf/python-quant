@@ -22,6 +22,8 @@ from src.utils.logger import logger
 class MainWindowIndicatorBarMixin:
     """通达信风格指标选择栏与指标按钮交互。"""
 
+    window_menu: QMenu
+
     def _create_indicator_button(self, indicator_name, style_sheet, checkable=True, fixed_width=None, clicked_handler=None):
         """
         创建指标按钮的通用方法

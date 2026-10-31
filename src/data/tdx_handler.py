@@ -7,7 +7,7 @@
 import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import List
+from typing import List, cast
 
 import polars as pl
 from loguru import logger
@@ -150,7 +150,7 @@ class TdxHandler(DataSourceBase):
         Returns:
             List[str]: 股票代码列表 (格式: 600000.SH, 000001.SZ 等)
         """
-        stock_codes = []
+        stock_codes: List[str] = []
 
         try:
             if not self.tdx_data_path.exists():
@@ -179,7 +179,7 @@ class TdxHandler(DataSourceBase):
 
         return stock_codes
 
-    def parse_day_file(self, file_path: Path, max_days: int = None):
+    def parse_day_file(self, file_path: Path, max_days: int | None = None):
         """
         解析通达信日线数据文件
 
@@ -199,7 +199,7 @@ class TdxHandler(DataSourceBase):
             logger.exception(f"解析通达信日线数据文件失败: {e}")
             raise
 
-    def _get_adj_factors(self, ts_code: str, start_date: date, end_date: date) -> pl.DataFrame:
+    def _get_adj_factors(self, ts_code: str, start_date: date | None, end_date: date | None) -> pl.DataFrame | None:
         """
         从数据库获取复权因子
         如果没有预计算的复权因子，则根据分红数据实时计算
@@ -303,7 +303,7 @@ class TdxHandler(DataSourceBase):
         prices.sort(key=lambda x: x['trade_date'])
         return prices
 
-    def _compute_adj_factor_frame(self, ts_code: str, prices, dividends) -> pl.DataFrame:
+    def _compute_adj_factor_frame(self, ts_code: str, prices, dividends) -> pl.DataFrame | None:
         """用统一复权计算器把价格与分红适配后计算复权因子。"""
         # 复权因子计算统一收口到 AdjFactorCalculator.calculate_factors
         # （向量化实现 + 含配股的统一公式），此处仅做数据适配
@@ -331,16 +331,16 @@ class TdxHandler(DataSourceBase):
 
         # 打印复权因子统计信息用于调试
         if len(df) > 0:
-            min_qfq = df['qfq_factor'].min()
-            max_qfq = df['qfq_factor'].max()
-            min_hfq = df['hfq_factor'].min()
-            max_hfq = df['hfq_factor'].max()
+            min_qfq = cast(float, df['qfq_factor'].min())
+            max_qfq = cast(float, df['qfq_factor'].max())
+            min_hfq = cast(float, df['hfq_factor'].min())
+            max_hfq = cast(float, df['hfq_factor'].max())
             logger.info(f"{ts_code} 复权因子统计: 前复权=[{min_qfq:.6f}, {max_qfq:.6f}], 后复权=[{min_hfq:.6f}, {max_hfq:.6f}]")
 
         logger.info(f"{ts_code} 复权因子计算完成，共 {len(df)} 条记录")
         return df
 
-    def _calculate_adj_factors_from_dividends(self, ts_code: str, start_date: date, end_date: date) -> pl.DataFrame:
+    def _calculate_adj_factors_from_dividends(self, ts_code: str, start_date: date | None, end_date: date | None) -> pl.DataFrame | None:
         """
         根据分红数据实时计算复权因子
 

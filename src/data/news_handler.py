@@ -37,7 +37,7 @@ class NewsHandler(DataSourceBase):
         if self.db_manager is not None:
             self.session = db_manager.get_session()
 
-    def update_news_data(self, sources: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_news_data(self, sources: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         更新新闻数据
 

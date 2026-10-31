@@ -138,7 +138,7 @@ class DataService:
             self._publish_updated('stock', 'basic', cache_type='stock_basic')
         return success
 
-    def update_stock_daily(self, ts_codes: List[str] | None = None, start_date: str = None, end_date: str = None):
+    def update_stock_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         success = self.data_updater.update_stock_daily(ts_codes, start_date, end_date)
         if success:
             self._publish_updated('stock', 'daily', cache_type='stock', ts_codes=ts_codes)
@@ -150,7 +150,7 @@ class DataService:
             self._publish_updated('fund', 'basic', cache_type='fund_basic')
         return success
 
-    def update_fund_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_fund_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         success = self.data_updater.update_fund_daily(ts_codes, start_date, end_date)
         if success:
             self._publish_updated('fund', 'daily', cache_type='fund', ts_codes=ts_codes)
@@ -162,7 +162,7 @@ class DataService:
             self._publish_updated('closed_fund', 'basic', cache_type='closed_fund_basic')
         return success
 
-    def update_closed_fund_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_closed_fund_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         success = self.data_updater.update_closed_fund_daily(ts_codes, start_date, end_date)
         if success:
             self._publish_updated('closed_fund', 'daily', cache_type='closed_fund', ts_codes=ts_codes)
@@ -174,25 +174,25 @@ class DataService:
             self._publish_updated('index', 'basic', cache_type='index_basic')
         return success
 
-    def update_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_index_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         success = self.data_updater.update_index_daily(ts_codes, start_date, end_date)
         if success:
             self._publish_updated('index', 'daily', cache_type='index', ts_codes=ts_codes)
         return success
 
-    def update_macro_data(self, indicators: List[str] = None):
+    def update_macro_data(self, indicators: List[str] | None = None):
         success = self.data_updater.update_macro_data(indicators)
         if success:
             self._publish_updated('macro', 'data')
         return success
 
-    def update_news_data(self, sources: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_news_data(self, sources: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         success = self.data_updater.update_news_data(sources, start_date, end_date)
         if success:
             self._publish_updated('news', 'data')
         return success
 
-    def update_stock_dividend(self, ts_codes: List[str] = None):
+    def update_stock_dividend(self, ts_codes: List[str] | None = None):
         success = self.data_updater.update_stock_dividend(ts_codes)
         if success:
             self._publish_updated('stock', 'dividend',

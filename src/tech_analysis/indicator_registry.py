@@ -18,8 +18,8 @@ class IndicatorConfig:
     def __init__(self,
                  name: str,
                  calculate_func: Callable,
-                 dependencies: List[str] = None,
-                 params: Dict[str, Any] = None,
+                 dependencies: List[str] | None = None,
+                 params: Dict[str, Any] | None = None,
                  description: str = "",
                  category: str = "技术指标"):
         """
@@ -54,7 +54,7 @@ class IndicatorRegistry:
         # 存储所有注册的指标配置
         self._indicators: Dict[str, IndicatorConfig] = {}
         # 指标计算顺序缓存（基于依赖关系的拓扑排序结果）
-        self._calculation_order_cache: Dict[List[str], List[str]] = {}
+        self._calculation_order_cache: Dict[tuple[str, ...], List[str]] = {}
 
     def register_indicator(self, config: IndicatorConfig):
         """
@@ -120,7 +120,7 @@ class IndicatorRegistry:
         return {name: config for name, config in self._indicators.items()
                 if config.category == category}
 
-    def _collect_indicator_dependencies(self, indicator_name: str, all_related: set):
+    def _collect_indicator_dependencies(self, indicator_name: str, all_related: set[str]):
         """递归收集指标的所有依赖项。"""
         if indicator_name in all_related:
             return
@@ -131,10 +131,10 @@ class IndicatorRegistry:
             for dep in config.dependencies:
                 self._collect_indicator_dependencies(dep, all_related)
 
-    def _build_dependency_graph(self, all_related: set):
+    def _build_dependency_graph(self, all_related: set[str]):
         """构建依赖图和入度表。"""
-        graph = {}
-        in_degree = {}
+        graph: dict[str, List[str]] = {}
+        in_degree: dict[str, int] = {}
 
         for indicator_name in all_related:
             config = self.get_indicator(indicator_name)
@@ -189,7 +189,7 @@ class IndicatorRegistry:
             return self._calculation_order_cache[cache_key]
 
         # 收集所有相关指标（包括依赖项）
-        all_related = set()
+        all_related: set[str] = set()
         for indicator in indicators:
             self._collect_indicator_dependencies(indicator, all_related)
 
@@ -291,8 +291,8 @@ class IndicatorRegistry:
 global_indicator_registry = IndicatorRegistry()
 
 
-def register_indicator(name: str, calculate_func: Callable, dependencies: List[str] = None,
-                      params: Dict[str, Any] = None, description: str = "",
+def register_indicator(name: str, calculate_func: Callable, dependencies: List[str] | None = None,
+                      params: Dict[str, Any] | None = None, description: str = "",
                       category: str = "技术指标"):
     """
     便捷装饰器，用于注册指标

@@ -141,7 +141,7 @@ def calculate_cr(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     return lazy_df
 
 
-def calculate_hsl(lazy_df: pl.LazyFrame, float_share: float = None) -> pl.LazyFrame:
+def calculate_hsl(lazy_df: pl.LazyFrame, float_share: float | None = None) -> pl.LazyFrame:
     """
     计算HSL指标（换手率）
     HSL = 成交量 / 流通股本 × 100%

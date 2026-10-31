@@ -17,6 +17,8 @@ from ._arrays import as_f64
 class TrendRenderMixin:
     """趋势类指标渲染"""
 
+    main_window: Any
+
     def render_ma_lines(self, plot_widget: Any, df: Any, x: np.ndarray):
         """
         渲染移动平均线
@@ -269,8 +271,8 @@ class TrendRenderMixin:
                     )
 
             # 添加参考线
-            plot_widget.addLine(y=20, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
-            plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.DotLine))
+            plot_widget.addLine(y=20, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
+            plot_widget.addLine(y=50, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DotLine))
 
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染DMI失败: {e}")
@@ -372,7 +374,7 @@ class TrendRenderMixin:
                 if np.any(mask50):
                     plot_widget.plot(x[mask50], expma50_data[mask50], pen=pg.mkPen('#FF00FF', width=1.5), name='EXPMA50')
                 # 设置Y轴范围
-                valid_data = []
+                valid_data: list[float] = []
                 if np.any(mask12):
                     valid_data.extend(expma12_data[mask12])
                 if np.any(mask50):
@@ -380,7 +382,7 @@ class TrendRenderMixin:
                 if valid_data:
                     min_val = np.min(valid_data)
                     max_val = np.max(valid_data)
-                    range_val = max_val - min_val
+                    range_val: float = max_val - min_val
                     if range_val == 0:
                         range_val = abs(max_val) * 0.1 if max_val != 0 else 1
                     plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)
@@ -424,7 +426,7 @@ class TrendRenderMixin:
                 ('cyc34', 'CYC34', '#FF00FF'),    # 紫色 - 长期
                 ('cyc_inf', 'CYC∞', '#00FFFF'),   # 青色 - 无穷
             ]
-            valid_data = []
+            valid_data: list[float] = []
             for col_name, name, color in cyc_configs:
                 if col_name in df.columns:
                     cyc_data = as_f64(df[col_name])
@@ -436,7 +438,7 @@ class TrendRenderMixin:
             if valid_data:
                 min_val = np.min(valid_data)
                 max_val = np.max(valid_data)
-                range_val = max_val - min_val
+                range_val: float = max_val - min_val
                 if range_val == 0:
                     range_val = abs(max_val) * 0.1 if max_val != 0 else 1
                 plot_widget.setYRange(min_val - range_val * 0.1, max_val + range_val * 0.1)

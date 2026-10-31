@@ -9,7 +9,7 @@
       fill_missing_values 的 backward 和 mean 原实现存在前视偏差，已改为安全版本。
 """
 
-from typing import Any, Dict, Iterable, List, Union
+from typing import Any, Dict, Iterable, List, Union, cast
 
 import polars as pl
 from loguru import logger
@@ -58,9 +58,8 @@ class DataProcessor:
 
     def sample_data(self, data: Union[pl.DataFrame, pl.LazyFrame],
                     target_points: int = 1000, strategy: str = 'adaptive') -> Union[pl.DataFrame, pl.LazyFrame]:
-        is_lazy = isinstance(data, pl.LazyFrame)
-        if is_lazy:
-            return data.nth_sample(target_points)
+        if isinstance(data, pl.LazyFrame):
+            return cast(Any, data).nth_sample(target_points)
         if len(data) <= target_points:
             return data
         step = max(1, len(data) // target_points)
@@ -161,7 +160,7 @@ class DataProcessor:
             # 滚动累积均值（只包含历史数据），不引入前视
             exprs = [
                 pl.col(c).fill_null(
-                    pl.col(c).cum_sum() / pl.col(c).is_not_null().cum_sum().clip_min(1)
+                    cast(Any, pl.col(c).cum_sum() / pl.col(c).is_not_null().cum_sum()).clip_min(1)
                 )
                 for c in cols
             ]

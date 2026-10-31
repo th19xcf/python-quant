@@ -137,7 +137,7 @@ class BaostockStockMixin:
             )
             self.session.add(stock)
 
-    def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, adjustflag: str = "3"):
+    def update_stock_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None, adjustflag: str = "3"):
         """
         更新股票日线数据
 
@@ -170,7 +170,7 @@ class BaostockStockMixin:
             logger.info(f"开始更新{len(ts_codes)}只股票的日线数据，时间范围: {start_date} 至 {end_date}")
 
             # 存储结果（离线模式下返回）
-            result = {}
+            result: dict[str, pl.DataFrame] = {}
 
             # 遍历股票代码，获取日线数据
             for ts_code in ts_codes:
@@ -194,7 +194,7 @@ class BaostockStockMixin:
             logger.exception(f"更新股票日线数据失败: {e}")
             raise
 
-    def _resolve_stock_daily_codes(self, ts_codes: List[str] = None):
+    def _resolve_stock_daily_codes(self, ts_codes: List[str] | None = None):
         """解析待更新的股票代码：未指定时回落到数据库或离线默认列表"""
         # 如果没有指定股票代码，从数据库获取所有股票代码
         if ts_codes:
@@ -287,7 +287,7 @@ class BaostockStockMixin:
 
         logger.info(f"{ts_code}的日线数据更新完成")
 
-    def download_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def download_stock_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         下载股票日线数据
 

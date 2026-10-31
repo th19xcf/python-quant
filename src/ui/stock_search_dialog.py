@@ -272,20 +272,20 @@ class StockSearchDialog(QDialog):
 
     def keyPressEvent(self, event: QKeyEvent):
         """键盘事件处理"""
-        if event.key() == Qt.Key_Up:
+        if event.key() == Qt.Key.Key_Up:
             # 向上选择
             current_row = self.result_table.currentRow()
             if current_row > 0:
                 self.result_table.selectRow(current_row - 1)
-        elif event.key() == Qt.Key_Down:
+        elif event.key() == Qt.Key.Key_Down:
             # 向下选择
             current_row = self.result_table.currentRow()
             if current_row < self.result_table.rowCount() - 1:
                 self.result_table.selectRow(current_row + 1)
-        elif event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+        elif event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
             # 回车确认
             self.on_ok_clicked()
-        elif event.key() == Qt.Key_Escape:
+        elif event.key() == Qt.Key.Key_Escape:
             # ESC取消
             self.reject()
         else:

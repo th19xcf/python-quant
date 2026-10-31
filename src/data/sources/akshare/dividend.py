@@ -206,7 +206,7 @@ class AkShareDividendMixin:
             'rights_issue_ratio': rights_issue_ratio if rights_issue_ratio > 0 else None,
         }
 
-    def update_stock_dividend(self, ts_codes: List[str] = None):
+    def update_stock_dividend(self, ts_codes: List[str] | None = None):
         """
         更新股票分红配股数据
 
@@ -226,7 +226,7 @@ class AkShareDividendMixin:
             logger.info(f"开始更新{len(ts_codes)}只股票的分红配股数据")
 
             # 存储结果（离线模式下返回）
-            result = {}
+            result: dict[str, Any] = {}
 
             # 遍历股票代码，获取分红配股数据
             for ts_code in ts_codes:
@@ -260,7 +260,7 @@ class AkShareDividendMixin:
             logger.exception(f"更新股票分红配股数据失败: {e}")
             raise
 
-    def _resolve_dividend_codes(self, ts_codes: List[str] = None):
+    def _resolve_dividend_codes(self, ts_codes: List[str] | None = None):
         """解析待更新的股票代码：未指定时回落到数据库或离线默认列表"""
         # 如果没有指定股票代码，从数据库获取所有股票代码
         if ts_codes:

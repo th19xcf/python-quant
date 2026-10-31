@@ -55,7 +55,7 @@ def upsert_rows(
     rows: Iterable[Dict],
     key_fields: Sequence[str],
     value_fields: Sequence[str] = (),
-    create_defaults: Dict = None,
+    create_defaults: Dict | None = None,
 ) -> Tuple[int, int]:
     """
     按主键批量写入（存在则更新 value_fields，不存在则插入）。

@@ -28,7 +28,7 @@ class BaostockMinuteMixin:
     _process_dates: Callable[..., tuple]
     _validate_frequency: Callable[..., str]
 
-    def _get_realtime_data(self, ts_codes: List[str], code_type: str, noun: str,
+    def _get_realtime_data(self, ts_codes: List[str] | None, code_type: str, noun: str,
                            default_days: int, adjustflag: str):
         """
         通用实现：以最近若干日历史数据代替实时数据（股票/指数共用）
@@ -97,18 +97,18 @@ class BaostockMinuteMixin:
             logger.exception(f"获取实时{noun}数据失败: {e}")
             return pl.DataFrame()
 
-    def get_realtime_stock_data(self, ts_codes: List[str] = None):
+    def get_realtime_stock_data(self, ts_codes: List[str] | None = None):
         """获取实时股票数据（以最近历史数据替代）。"""
         return self._get_realtime_data(
             ts_codes, 'stock', '股票', self.config.data.default_realtime_days, "2")
 
-    def get_realtime_index_data(self, ts_codes: List[str] = None):
+    def get_realtime_index_data(self, ts_codes: List[str] | None = None):
         """获取实时指数数据（以最近历史数据替代）。"""
         return self._get_realtime_data(ts_codes, 'index', '指数', 5, "3")
 
     def _download_minute(self, model, code_type: str, noun: str, default_days: int,
-                         ts_codes: List[str], start_date: str, end_date: str,
-                         frequency: str):
+                         ts_codes: List[str] | None, start_date: str | None,
+                         end_date: str | None, frequency: str):
         """
         通用实现：分钟线下载并入库（股票/指数共用）
 
@@ -147,7 +147,7 @@ class BaostockMinuteMixin:
 
             logger.info(f"开始下载{len(ts_codes)}个{noun}的{frequency}分钟线数据，时间范围: {start_date} 至 {end_date}")
 
-            result = {}
+            result: dict[str, Any] = {}
 
             for ts_code in ts_codes:
                 try:
@@ -241,16 +241,18 @@ class BaostockMinuteMixin:
         self.session.commit()
         logger.info(f"{ts_code}的{frequency}分钟线数据下载完成")
 
-    def download_stock_minute(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, frequency: str = "5"):
+    def download_stock_minute(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None, frequency: str = "5"):
         """下载股票分钟线数据并入库（写库存原始价）。"""
         from src.database.models.stock import StockMinute
         return self._download_minute(
             StockMinute, 'stock', '股票', self.config.data.default_minute_days,
             ts_codes, start_date, end_date, frequency)
 
-    def download_index_minute(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, frequency: str = "5"):
+    def download_index_minute(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None, frequency: str = "5"):
         """下载指数分钟线数据并入库（写库存原始价）。"""
-        from src.database.models.index import IndexMinute
+        # 存量问题：IndexMinute 模型尚未在 src.database.models.index 中实现，
+        # 该接口一旦被调用会在运行期失败；此处仅按既有约定保留导入以避免改动行为
+        from src.database.models.index import IndexMinute  # type: ignore[attr-defined]
         return self._download_minute(
             IndexMinute, 'index', '指数', 3,
             ts_codes, start_date, end_date, frequency)

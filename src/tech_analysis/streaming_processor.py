@@ -10,7 +10,7 @@
   - rechunk 控制 chunk 数，防止 to_numpy 零拷贝退化为复制
 """
 
-from typing import List
+from typing import List, cast
 
 import numpy as np
 import polars as pl
@@ -134,6 +134,8 @@ class StreamingProcessor:
     # 增量计算
     # ------------------------------------------------------------------
     def _calculate_incremental(self, new_data: pl.DataFrame) -> pl.DataFrame:
+        # process_data 仅在 history_data 非 None 时进入增量分支
+        history_data = cast(pl.DataFrame, self.history_data)
         # 先把 new_data 按 history 的列集合补齐（填 null + 对齐 dtype + 重排顺序）
         result = self._align_to_history_schema(new_data)
 
@@ -142,7 +144,7 @@ class StreamingProcessor:
                 if global_incremental_calculator.is_supported(indicator):
                     logger.info(f"使用增量计算{indicator}")
                     raw_new = new_data.select(['date', 'open', 'high', 'low', 'close', 'volume'])
-                    raw_hist = self.history_data.select(['date', 'open', 'high', 'low', 'close', 'volume'])
+                    raw_hist = history_data.select(['date', 'open', 'high', 'low', 'close', 'volume'])
 
                     inc_result = global_incremental_calculator.incremental_calculate(
                         indicator, raw_hist, raw_new, **self.indicator_params,
@@ -157,7 +159,7 @@ class StreamingProcessor:
                     from .indicator_manager import global_indicator_manager
                     # 用 history schema 对齐后 strict vertical concat，替代 diagonal_relaxed
                     aligned = self._align_to_history_schema(result)
-                    combined = pl.concat([self.history_data, aligned], how='vertical', rechunk=False)
+                    combined = pl.concat([history_data, aligned], how='vertical', rechunk=False)
                     full_result = global_indicator_manager.calculate_indicator(
                         combined, indicator, return_polars=True, **self.indicator_params,
                     )

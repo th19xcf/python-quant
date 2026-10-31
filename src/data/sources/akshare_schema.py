@@ -27,7 +27,7 @@ class AkShareContractError(DataIntegrityError):
     """AkShare 端点或返回结构与约定不符（通常意味着上游接口变更）"""
 
     def __init__(self, endpoint: str, missing: Iterable[str] = (),
-                 actual: Iterable[str] = (), reason: str = None):
+                 actual: Iterable[str] = (), reason: str | None = None):
         self.endpoint = endpoint
         self.missing = list(missing)
         self.actual = list(actual)

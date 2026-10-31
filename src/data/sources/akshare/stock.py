@@ -96,7 +96,7 @@ class AkShareStockMixin:
             logger.exception(f"从AkShare获取股票基本信息失败: {e}")
             raise
 
-    def update_market_breadth(self, trade_date: str = None):
+    def update_market_breadth(self, trade_date: str | None = None):
         """
         更新市场涨跌家数数据
 
@@ -157,7 +157,7 @@ class AkShareStockMixin:
         }
 
     @staticmethod
-    def _resolve_breadth_date(trade_date: str = None):
+    def _resolve_breadth_date(trade_date: str | None = None):
         """转换日期格式：YYYYMMDD -> date，未指定时取当天"""
         if trade_date:
             return datetime.strptime(trade_date, "%Y%m%d").date()
@@ -207,7 +207,7 @@ class AkShareStockMixin:
 
         self.session.commit()
 
-    def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_stock_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         更新股票日线数据
 
@@ -233,7 +233,7 @@ class AkShareStockMixin:
             logger.info(f"开始更新{len(ts_codes)}只股票的日线数据，时间范围: {start_date} 至 {end_date}")
 
             # 存储结果（离线模式下返回）
-            result = {}
+            result: dict[str, pl.DataFrame] = {}
 
             # 遍历股票代码，获取日线数据
             for ts_code in ts_codes:
@@ -256,7 +256,7 @@ class AkShareStockMixin:
             logger.exception(f"更新股票日线数据失败: {e}")
             raise
 
-    def _resolve_stock_daily_codes(self, ts_codes: List[str] = None):
+    def _resolve_stock_daily_codes(self, ts_codes: List[str] | None = None):
         """解析待更新的股票代码：未指定时回落到数据库或离线默认列表"""
         # 如果没有指定股票代码，从数据库获取所有股票代码
         if ts_codes:

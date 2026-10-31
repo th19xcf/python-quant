@@ -18,6 +18,10 @@ from ..indicator_cache import global_indicator_cache
 class PluginIndicatorMixin:
     """插件指标计算混入类"""
 
+    # 由宿主 TechnicalAnalyzer 注入的属性
+    plugin_manager: Any
+    calculated_indicators: dict[str, Any]
+
     def _init_plugin_indicator_mapping(self):
         """
         初始化插件指标映射

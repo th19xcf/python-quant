@@ -383,14 +383,14 @@ class StockSyncContext:
     config: object
     db_manager: object
     result: dict
-    session: object = None
-    tdx_handler: object = None
-    baostock_handler: object = None
-    akshare_handler: object = None
-    existing_codes: set = None
-    new_codes: list = None
-    tdx_stock_codes: list = None
-    merged_basic: dict = None
+    session: object | None = None
+    tdx_handler: object | None = None
+    baostock_handler: object | None = None
+    akshare_handler: object | None = None
+    existing_codes: set | None = None
+    new_codes: list | None = None
+    tdx_stock_codes: list | None = None
+    merged_basic: dict | None = None
 
 
 def _first_stock_field(row, *keys):

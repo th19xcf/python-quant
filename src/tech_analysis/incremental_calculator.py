@@ -111,13 +111,13 @@ class IncrementalCalculator:
     # ------------------------------------------------------------------
 
     def incremental_calculate_ma(self, existing, new,
-                                 windows: List[int] = None, **_):
+                                 windows: List[int] | None = None, **_):
         if windows is None:
             windows = [5, 10, 20, 60]
         return self._reuse('ma', existing, new, {'ma_windows': windows})
 
     def incremental_calculate_vol_ma(self, existing, new,
-                                      windows: List[int] = None, **_):
+                                      windows: List[int] | None = None, **_):
         if windows is None:
             windows = [5, 10]
         return self._reuse('vol_ma', existing, new, {'vol_ma_windows': windows})
@@ -132,19 +132,19 @@ class IncrementalCalculator:
         })
 
     def incremental_calculate_rsi(self, existing, new,
-                                   windows: List[int] = None, **_):
+                                   windows: List[int] | None = None, **_):
         if windows is None:
             windows = [14]
         return self._reuse('rsi', existing, new, {'rsi_windows': windows})
 
     def incremental_calculate_kdj(self, existing, new,
-                                   windows: List[int] = None, **_):
+                                   windows: List[int] | None = None, **_):
         if windows is None:
             windows = [14]
         return self._reuse('kdj', existing, new, {'kdj_windows': windows})
 
     def incremental_calculate_boll(self, existing, new,
-                                   windows: List[int] = None,
+                                   windows: List[int] | None = None,
                                    std_dev: float = 2.0, **_):
         if windows is None:
             windows = [20]
@@ -154,7 +154,7 @@ class IncrementalCalculator:
         })
 
     def incremental_calculate_wr(self, existing, new,
-                                 windows: List[int] = None, **_):
+                                 windows: List[int] | None = None, **_):
         if windows is None:
             windows = [10, 6]
         return self._reuse('wr', existing, new, {'wr_windows': windows})
@@ -163,20 +163,20 @@ class IncrementalCalculator:
         return self._reuse('obv', existing, new, {})
 
     def incremental_calculate_expma(self, existing, new,
-                                     windows: List[int] = None, **_):
+                                     windows: List[int] | None = None, **_):
         if windows is None:
             windows = [12, 50]
         return self._reuse('expma', existing, new,
                             {'expma_windows': windows})
 
     def incremental_calculate_dmi(self, existing, new,
-                                  windows: List[int] = None, **_):
+                                  windows: List[int] | None = None, **_):
         if windows is None:
             windows = [14]
         return self._reuse('dmi', existing, new, {'dmi_windows': windows})
 
     def incremental_calculate_trix(self, existing, new,
-                                    windows: List[int] = None,
+                                    windows: List[int] | None = None,
                                     signal_period: int = 9, **_):
         if windows is None:
             windows = [12]

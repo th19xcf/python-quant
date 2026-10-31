@@ -229,7 +229,7 @@ def is_gpu_available() -> bool:
     return global_gpu_accelerator.is_gpu_available()
 
 
-def calculate_with_gpu(indicator_type: str, data: Dict[str, np.ndarray], **kwargs) -> Dict[str, np.ndarray]:
+def calculate_with_gpu(indicator_type: str, data: Dict[str, np.ndarray | None], **kwargs) -> Dict[str, np.ndarray] | None:
     """
     使用GPU加速计算指标
 

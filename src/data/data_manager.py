@@ -113,7 +113,7 @@ class DataManager:
         """
         return self.data_service.update_fund_basic()
 
-    def update_fund_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_fund_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         更新基金日线数据
 
@@ -130,7 +130,7 @@ class DataManager:
         """
         return self.data_service.update_closed_fund_basic()
 
-    def update_closed_fund_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_closed_fund_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         更新封闭式基金日线数据
 
@@ -147,7 +147,7 @@ class DataManager:
         """
         return self.data_service.update_index_basic()
 
-    def update_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_index_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         更新指数日线数据
 
@@ -158,7 +158,7 @@ class DataManager:
         """
         return self.data_service.update_index_daily(ts_codes, start_date, end_date)
 
-    def update_macro_data(self, indicators: List[str] = None):
+    def update_macro_data(self, indicators: List[str] | None = None):
         """
         更新宏观经济数据
 
@@ -167,7 +167,7 @@ class DataManager:
         """
         return self.data_service.update_macro_data(indicators)
 
-    def update_news_data(self, sources: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_news_data(self, sources: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
         """
         更新新闻数据
 
@@ -178,7 +178,7 @@ class DataManager:
         """
         return self.data_service.update_news_data(sources, start_date, end_date)
 
-    def update_stock_dividend(self, ts_codes: List[str] = None):
+    def update_stock_dividend(self, ts_codes: List[str] | None = None):
         """
         更新股票分红配股数据
 
@@ -392,7 +392,7 @@ class DataManager:
 
             return result
 
-    def _get_basic_data(self, model_class, model_name, exchange: str | None = None, defaults: List[dict] = None, supports_bj: bool = False) -> pl.DataFrame:
+    def _get_basic_data(self, model_class, model_name, exchange: str | None = None, defaults: List[dict] | None = None, supports_bj: bool = False) -> pl.DataFrame:
         """
         通用的获取基础信息方法
 

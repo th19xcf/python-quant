@@ -5,7 +5,7 @@
 提供统一的指标计算和管理接口
 """
 
-from typing import Any, Dict, List, Union
+from typing import Any, Callable, Dict, List, Union
 
 import pandas as pd
 import polars as pl
@@ -455,7 +455,7 @@ class IndicatorManager:
         return result_df
 
     def calculate_indicators(self, data: Union[pl.DataFrame, pd.DataFrame], indicator_types: List[str],
-                           return_polars: bool = True, parallel: bool = False, max_workers: int = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
+                           return_polars: bool = True, parallel: bool = False, max_workers: int | None = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
         """
         批量计算多个指标
 
@@ -492,7 +492,7 @@ class IndicatorManager:
         return self._to_result_format(result_df, return_polars)
 
     def calculate_all_indicators(self, data: Union[pl.DataFrame, pd.DataFrame],
-                               return_polars: bool = True, parallel: bool = False, max_workers: int = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
+                               return_polars: bool = True, parallel: bool = False, max_workers: int | None = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
         """
         计算所有支持的指标
 
@@ -628,8 +628,8 @@ class IndicatorManager:
         """
         return to_output(data, return_polars)
 
-    def register_custom_indicator(self, name: str, calculate_func: callable, dependencies: List[str] = None,
-                               params: Dict[str, Any] = None, description: str = "",
+    def register_custom_indicator(self, name: str, calculate_func: Callable, dependencies: List[str] | None = None,
+                               params: Dict[str, Any] | None = None, description: str = "",
                                category: str = "自定义指标"):
         """
         注册自定义指标

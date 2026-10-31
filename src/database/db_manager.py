@@ -5,13 +5,16 @@
 """
 
 from contextlib import contextmanager
+from typing import Any
 
 from loguru import logger
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import scoped_session, sessionmaker
 
-Base = declarative_base()
+# 显式标注为 Any：declarative_base() 在 SQLAlchemy 中返回 Any，
+# 未标注时 mypy 会把它当作普通变量而拒绝作为类基类使用
+Base: Any = declarative_base()
 
 
 class DatabaseManager:

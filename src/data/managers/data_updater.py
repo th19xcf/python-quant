@@ -145,8 +145,8 @@ class DataUpdater:
     def update_fund_basic(self) -> bool:
         return self._try_sources('update_fund_basic', '基金基本信息')
 
-    def update_fund_daily(self, ts_codes: List[str] = None,
-                          start_date: str = None, end_date: str = None) -> bool:
+    def update_fund_daily(self, ts_codes: List[str] | None = None,
+                          start_date: str | None = None, end_date: str | None = None) -> bool:
         return self._try_sources(
             'update_fund_daily', '基金日线数据',
             ts_codes=ts_codes, start_date=start_date, end_date=end_date,
@@ -155,8 +155,8 @@ class DataUpdater:
     def update_closed_fund_basic(self) -> bool:
         return self._try_sources('update_closed_fund_basic', '封闭式基金基本信息')
 
-    def update_closed_fund_daily(self, ts_codes: List[str] = None,
-                                  start_date: str = None, end_date: str = None) -> bool:
+    def update_closed_fund_daily(self, ts_codes: List[str] | None = None,
+                                  start_date: str | None = None, end_date: str | None = None) -> bool:
         return self._try_sources(
             'update_closed_fund_daily', '封闭式基金日线数据',
             ts_codes=ts_codes, start_date=start_date, end_date=end_date,
@@ -165,18 +165,18 @@ class DataUpdater:
     def update_index_basic(self) -> bool:
         return self._try_sources('update_index_basic', '指数基本信息')
 
-    def update_index_daily(self, ts_codes: List[str] = None,
-                           start_date: str = None, end_date: str = None) -> bool:
+    def update_index_daily(self, ts_codes: List[str] | None = None,
+                           start_date: str | None = None, end_date: str | None = None) -> bool:
         return self._try_sources(
             'update_index_daily', '指数日线数据',
             ts_codes=ts_codes, start_date=start_date, end_date=end_date,
         )
 
-    def update_macro_data(self, indicators: List[str] = None) -> bool:
+    def update_macro_data(self, indicators: List[str] | None = None) -> bool:
         return self._try_sources('update_macro_data', '宏观经济数据', indicators=indicators)
 
-    def update_news_data(self, source_names: List[str] = None,
-                         start_date: str = None, end_date: str = None) -> bool:
+    def update_news_data(self, source_names: List[str] | None = None,
+                         start_date: str | None = None, end_date: str | None = None) -> bool:
         """更新新闻数据。
 
         参数改名 source_names 避免遮蔽 self.sources（已注册的 handler 列表）。
@@ -186,5 +186,5 @@ class DataUpdater:
             sources=source_names, start_date=start_date, end_date=end_date,
         )
 
-    def update_stock_dividend(self, ts_codes: List[str] = None) -> bool:
+    def update_stock_dividend(self, ts_codes: List[str] | None = None) -> bool:
         return self._try_sources('update_stock_dividend', '股票分红配股数据', ts_codes=ts_codes)
