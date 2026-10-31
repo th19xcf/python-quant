@@ -20,7 +20,8 @@ import numbers
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, Dict, List, Tuple
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, Dict, List, Set, Tuple
 
 # ---------------------------------------------------------------------------
 # Order —— 待审查的候选下单请求
@@ -38,6 +39,8 @@ class Order:
     sector:    板块标签（主板 / 创业板 / 科创板 / 北交所 / ST）
     industry:  行业标签（申万一级行业，如"银行"）
     trade_date: 交易日期（回测时的 Bar 日期）
+    prev_close: 前收盘价（涨跌停规则用；由调用方按原始价口径注入）
+    bar_volume: 当日 Bar 成交量（委托量占比规则用）
     """
     ts_code: str
     side: str           # 'buy' | 'sell'
@@ -46,6 +49,8 @@ class Order:
     sector: str = ''
     industry: str = ''
     trade_date: date | None = None
+    prev_close: float | None = None
+    bar_volume: float | None = None
 
     def __post_init__(self):
         """输入域校验：非法订单直接拒绝构造，避免绕过权重类规则。"""
@@ -64,6 +69,24 @@ class Order:
 
         self.qty = int(self.qty)
         self.price = price
+
+        if self.prev_close is not None:
+            if (not isinstance(self.prev_close, numbers.Real)
+                    or isinstance(self.prev_close, bool)):
+                raise TypeError(f'Order.prev_close 必须为实数，实际为 {self.prev_close!r}')
+            prev_close = float(self.prev_close)
+            if not math.isfinite(prev_close) or prev_close <= 0:
+                raise ValueError(f'Order.prev_close 必须为有限正数，实际为 {self.prev_close!r}')
+            self.prev_close = prev_close
+
+        if self.bar_volume is not None:
+            if (not isinstance(self.bar_volume, numbers.Real)
+                    or isinstance(self.bar_volume, bool)):
+                raise TypeError(f'Order.bar_volume 必须为实数，实际为 {self.bar_volume!r}')
+            bar_volume = float(self.bar_volume)
+            if not math.isfinite(bar_volume) or bar_volume < 0:
+                raise ValueError(f'Order.bar_volume 必须为有限非负数，实际为 {self.bar_volume!r}')
+            self.bar_volume = bar_volume
 
     @property
     def notional(self) -> float:
@@ -85,6 +108,7 @@ class Portfolio:
     cash:         可用现金
     industry_map: {ts_code: industry}     — 行业映射，算行业集中度时用
     equity_curve: [{date, equity}, ...]    — 算回撤用，取尾部 window
+    suspended:    当日停牌标的集合       — 由实盘网关/数据源注入，默认空集
 
     总资产一律由 positions + last_prices + cash 现场计算，不接受外部注入，
     避免过期快照把风控分母带偏。
@@ -94,6 +118,7 @@ class Portfolio:
     cash: float = 0.0
     industry_map: Dict[str, str] = field(default_factory=dict)
     equity_curve: List[Dict[str, Any]] = field(default_factory=list)
+    suspended: Set[str] = field(default_factory=set)
 
     # ------------------------------------------------------------------
     # 便捷方法
@@ -301,6 +326,190 @@ class MaxDrawdownCircuit(Rule):
             return RuleResult(
                 False,
                 f"组合回撤 {dd:.2%} > 熔断上限 {self.limit:.2%}，停止开新仓"
+            )
+        return RuleResult(True)
+
+
+class MinCashReserve(Rule):
+    """
+    现金约束：buy 后剩余现金不得低于 reserve（默认 0，即不允许透支/杠杆）。
+    sell 永远放行。
+    """
+
+    name = 'min_cash_reserve'
+
+    def __init__(self, reserve: float = 0.0):
+        self.reserve = reserve
+
+    def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
+        if order.side != 'buy':
+            return RuleResult(True)
+
+        remaining = portfolio.cash - order.notional
+        if remaining < self.reserve:
+            return RuleResult(
+                False,
+                f"买入 {order.ts_code} 金额 {order.notional:.2f} 后剩余现金 "
+                f"{remaining:.2f} 低于最低保留 {self.reserve:.2f}，拒绝买入"
+            )
+        return RuleResult(True)
+
+
+class MaxIndustryHHI(Rule):
+    """
+    行业集中度 HHI（赫芬达尔指数）上限：buy 后 Σ(行业权重²) 不得超过 limit
+    （默认 0.25）。sell 永远放行。
+
+    与 MaxIndustryWeight 互补：前者管单一行业上限，本规则管整体离散度。
+    现金不计入行业分子（行业权重分母与 MaxIndustryWeight 一致，为总资产）。
+    缺行业标签 / 存在未映射持仓时 fail-closed 拒绝，口径与 MaxIndustryWeight 相同。
+    """
+
+    name = 'max_industry_hhi'
+
+    def __init__(self, limit: float = 0.25):
+        self.limit = limit
+
+    def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
+        if order.side != 'buy':
+            return RuleResult(True)
+        if not order.industry:
+            return RuleResult(
+                False,
+                f"单票 {order.ts_code} 缺少行业标签，无法评估行业集中度，拒绝开新仓"
+            )
+
+        tv = portfolio.current_total_value()
+        if tv <= 0:
+            return RuleResult(False, '组合总资产为 0，无法买入')
+
+        unmapped = portfolio.unmapped_value()
+        if unmapped > 0:
+            return RuleResult(
+                False,
+                f"组合存在未映射行业的持仓（市值 {unmapped:.2f}），行业集中度无法评估，拒绝开新仓"
+            )
+
+        industries = {
+            portfolio.industry_map.get(code, '')
+            for code, qty in portfolio.positions.items() if qty > 0
+        }
+        industries.discard('')
+        industries.add(order.industry)
+
+        hhi = 0.0
+        for ind in industries:
+            value = portfolio.industry_value(ind)
+            if ind == order.industry:
+                value += order.notional
+            hhi += (value / tv) ** 2
+
+        if hhi > self.limit:
+            return RuleResult(
+                False,
+                f"买入后行业 HHI {hhi:.4f} > 上限 {self.limit:.4f}，拒绝买入"
+            )
+        return RuleResult(True)
+
+
+class PriceLimitTradable(Rule):
+    """
+    涨跌停不可成交：buy 委托价触及涨停价、sell 委托价触及跌停价时拒绝。
+
+    涨跌幅按板块差异化（order.sector 承载，含 ST 差异化档位）：
+        主板 10% / 创业板 20% / 科创板 20% / 北交所 30% / ST 5%
+    涨跌停价按交易所规则四舍五入至 0.01（Decimal half-up，不用银行家舍入）。
+
+    order.prev_close 缺失或 sector 无法匹配档位时 fail-closed 拒绝。
+    注意：prev_close 必须是原始价口径（交易所规则定义在原始价上），
+    hfq 复权价在除权日因子跳变会使比值失真。
+    """
+
+    name = 'price_limit_tradable'
+
+    DEFAULT_LIMITS: Dict[str, float] = {
+        '主板': 0.10, '创业板': 0.20, '科创板': 0.20, '北交所': 0.30, 'ST': 0.05,
+    }
+
+    def __init__(self, limits: Dict[str, float] | None = None):
+        self.limits = dict(limits or self.DEFAULT_LIMITS)
+
+    @staticmethod
+    def _round_to_tick(price: Decimal) -> float:
+        """涨跌停价四舍五入至最小变动价位 0.01（交易所口径）。"""
+        return float(price.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+    def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
+        if order.prev_close is None:
+            return RuleResult(
+                False,
+                f"单票 {order.ts_code} 缺少前收盘价，无法评估涨跌停，拒绝"
+            )
+        limit = self.limits.get(order.sector)
+        if limit is None:
+            return RuleResult(
+                False,
+                f"单票 {order.ts_code} 板块标签 {order.sector!r} 无法确定涨跌幅限制，拒绝"
+            )
+
+        prev = Decimal(str(order.prev_close))
+        pct = Decimal(str(limit))
+        limit_up = self._round_to_tick(prev * (1 + pct))
+        limit_down = self._round_to_tick(prev * (1 - pct))
+
+        if order.side == 'buy' and order.price >= limit_up:
+            return RuleResult(
+                False,
+                f"买入价 {order.price:.2f} 触及涨停价 {limit_up:.2f}"
+                f"（{order.sector} ±{limit:.0%}），无法成交"
+            )
+        if order.side == 'sell' and order.price <= limit_down:
+            return RuleResult(
+                False,
+                f"卖出价 {order.price:.2f} 触及跌停价 {limit_down:.2f}"
+                f"（{order.sector} ±{limit:.0%}），无法成交"
+            )
+        return RuleResult(True)
+
+
+class NoSuspendedTrade(Rule):
+    """停牌不可交易：标的在 portfolio.suspended 集合中时，buy/sell 均拒绝。"""
+
+    name = 'no_suspended_trade'
+
+    def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
+        if order.ts_code in portfolio.suspended:
+            return RuleResult(
+                False,
+                f"单票 {order.ts_code} 当日停牌，不可交易"
+            )
+        return RuleResult(True)
+
+
+class MaxOrderVolumeRatio(Rule):
+    """
+    单笔委托量占当日成交量比上限（默认 10%），buy/sell 双向审查。
+
+    防两类失真：回测里一笔吃掉全天成交量的幻觉成交；实盘里的冲击成本。
+    order.bar_volume 缺失或为 0（无流动性）时 fail-closed 拒绝。
+    """
+
+    name = 'max_order_volume_ratio'
+
+    def __init__(self, limit: float = 0.10):
+        self.limit = limit
+
+    def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
+        if order.bar_volume is None or order.bar_volume <= 0:
+            return RuleResult(
+                False,
+                f"单票 {order.ts_code} 缺少当日成交量，无法评估委托量占比，拒绝"
+            )
+        ratio = order.qty / order.bar_volume
+        if ratio > self.limit:
+            return RuleResult(
+                False,
+                f"单票 {order.ts_code} 委托量占比 {ratio:.2%} > 上限 {self.limit:.2%}"
             )
         return RuleResult(True)
 

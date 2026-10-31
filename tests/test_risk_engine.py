@@ -2,7 +2,7 @@
 
 """
 风控模块单元测试
-覆盖：Order / Portfolio / 3 条 Rule / RiskEngine.gate() 组合场景
+覆盖：Order / Portfolio / 8 条 Rule / RiskEngine.gate() 组合场景
 """
 
 import os
@@ -14,10 +14,15 @@ import pytest
 
 from src.risk import (
     MaxDrawdownCircuit,
+    MaxIndustryHHI,
     MaxIndustryWeight,
+    MaxOrderVolumeRatio,
     MaxPositionWeight,
+    MinCashReserve,
+    NoSuspendedTrade,
     Order,
     Portfolio,
+    PriceLimitTradable,
     RiskEngine,
 )
 
@@ -249,6 +254,14 @@ class TestOrderValidation:
         with pytest.raises(ValueError, match='ts_code'):
             Order('', 'buy', 100, 100.0)
 
+    def test_invalid_prev_close_rejected(self):
+        with pytest.raises(ValueError, match='prev_close'):
+            Order('000001.SZ', 'buy', 100, 100.0, prev_close=0.0)
+
+    def test_negative_bar_volume_rejected(self):
+        with pytest.raises(ValueError, match='bar_volume'):
+            Order('000001.SZ', 'buy', 100, 100.0, bar_volume=-1.0)
+
 
 # ======================================================================
 # RiskEngine.gate() 组合
@@ -314,6 +327,217 @@ class TestRiskEngine:
         assert result.rejected[0] == (orders[0], 'max_position_weight', result.rejected[0][2])
         # 第三元组是 reason 字符串
         assert '上限' in result.rejected[0][2]
+
+
+# ======================================================================
+# MinCashReserve
+# ======================================================================
+
+class TestMinCashReserve:
+
+    def test_buy_within_cash_passes(self, empty_portfolio):
+        rule = MinCashReserve()
+        order = Order('000001.SZ', 'buy', 500, 100.0)   # 5w < 100w 现金
+        assert rule.check(order, empty_portfolio).passed
+
+    def test_buy_overdraft_rejected(self, empty_portfolio):
+        rule = MinCashReserve()
+        order = Order('000001.SZ', 'buy', 20000, 100.0)   # 200w > 100w 现金
+        result = rule.check(order, empty_portfolio)
+        assert not result.passed
+        assert '现金' in result.reason
+
+    def test_buy_all_in_allowed(self, empty_portfolio):
+        """默认 reserve=0：满仓买入（剩余现金恰好为 0）放行"""
+        rule = MinCashReserve()
+        order = Order('000001.SZ', 'buy', 10000, 100.0)   # 恰好 100w
+        assert rule.check(order, empty_portfolio).passed
+
+    def test_reserve_threshold(self, empty_portfolio):
+        rule = MinCashReserve(reserve=100_000.0)
+        order = Order('000001.SZ', 'buy', 9500, 100.0)   # 95w，剩余 5w < 10w 保留
+        assert not rule.check(order, empty_portfolio).passed
+
+    def test_sell_always_passes(self, portfolio_with_one_holding):
+        rule = MinCashReserve()
+        order = Order('000001.SZ', 'sell', 500, 100.0)
+        assert rule.check(order, portfolio_with_one_holding).passed
+
+
+# ======================================================================
+# MaxIndustryHHI
+# ======================================================================
+
+class TestMaxIndustryHHI:
+
+    def test_balanced_buy_passes(self, portfolio_with_two_industries):
+        rule = MaxIndustryHHI(0.25)
+        # 买入 10w 银行 → 银行 0.35 / 证券 0.25 → HHI = 0.185 < 0.25
+        order = Order('000001.SZ', 'buy', 1000, 100.0, industry='银行')
+        assert rule.check(order, portfolio_with_two_industries).passed
+
+    def test_concentrated_buy_rejected(self, portfolio_with_two_industries):
+        rule = MaxIndustryHHI(0.25)
+        # 买入 50w 银行 → 银行 0.75 / 证券 0.25 → HHI = 0.625 > 0.25
+        order = Order('000001.SZ', 'buy', 5000, 100.0, industry='银行')
+        result = rule.check(order, portfolio_with_two_industries)
+        assert not result.passed
+        assert 'HHI' in result.reason
+
+    def test_new_industry_counted(self, portfolio_with_two_industries):
+        """买入新行业：新行业市值计入 HHI"""
+        rule = MaxIndustryHHI(0.20)
+        # 买入 40w 保险（新行业）→ 0.25²+0.25²+0.40² = 0.285 > 0.20
+        order = Order('600000.SH', 'buy', 4000, 100.0, industry='保险')
+        assert not rule.check(order, portfolio_with_two_industries).passed
+
+    def test_missing_industry_fail_closed(self, portfolio_with_two_industries):
+        rule = MaxIndustryHHI(0.25)
+        order = Order('000001.SZ', 'buy', 100, 100.0)   # 无行业标签
+        assert not rule.check(order, portfolio_with_two_industries).passed
+
+    def test_unmapped_position_fail_closed(self):
+        rule = MaxIndustryHHI(0.25)
+        portfolio = Portfolio(
+            positions={'000001.SZ': 100},
+            last_prices={'000001.SZ': 100.0},
+            cash=900_000.0,
+            industry_map={},   # 持仓未映射行业
+        )
+        order = Order('601211.SH', 'buy', 100, 100.0, industry='证券')
+        assert not rule.check(order, portfolio).passed
+
+    def test_sell_always_passes(self, portfolio_with_two_industries):
+        rule = MaxIndustryHHI(0.0001)   # 再严也不拦 sell
+        order = Order('000001.SZ', 'sell', 100, 100.0)
+        assert rule.check(order, portfolio_with_two_industries).passed
+
+
+# ======================================================================
+# PriceLimitTradable
+# ======================================================================
+
+class TestPriceLimitTradable:
+
+    def test_buy_at_limit_up_rejected(self, empty_portfolio):
+        rule = PriceLimitTradable()
+        # 主板 10%：prev_close 10.00 → 涨停 11.00
+        order = Order('000001.SZ', 'buy', 100, 11.0, sector='主板', prev_close=10.0)
+        result = rule.check(order, empty_portfolio)
+        assert not result.passed
+        assert '涨停' in result.reason
+
+    def test_buy_below_limit_up_passes(self, empty_portfolio):
+        rule = PriceLimitTradable()
+        order = Order('000001.SZ', 'buy', 100, 10.5, sector='主板', prev_close=10.0)
+        assert rule.check(order, empty_portfolio).passed
+
+    def test_sell_at_limit_down_rejected(self, portfolio_with_one_holding):
+        rule = PriceLimitTradable()
+        order = Order('000001.SZ', 'sell', 100, 9.0, sector='主板', prev_close=10.0)
+        result = rule.check(order, portfolio_with_one_holding)
+        assert not result.passed
+        assert '跌停' in result.reason
+
+    def test_st_tier_five_percent(self, empty_portfolio):
+        """ST 档 5%：主板口径下放行的 +6% 买入，ST 档下触及涨停"""
+        rule = PriceLimitTradable()
+        order_st = Order('000001.SZ', 'buy', 100, 10.6, sector='ST', prev_close=10.0)
+        assert not rule.check(order_st, empty_portfolio).passed   # ST 涨停 10.50
+        order_main = Order('000001.SZ', 'buy', 100, 10.6, sector='主板', prev_close=10.0)
+        assert rule.check(order_main, empty_portfolio).passed   # 主板涨停 11.00
+
+    def test_chinext_tier(self, empty_portfolio):
+        """创业板 20%：+15% 买入不触板"""
+        rule = PriceLimitTradable()
+        order = Order('300001.SZ', 'buy', 100, 11.5, sector='创业板', prev_close=10.0)
+        assert rule.check(order, empty_portfolio).passed
+
+    def test_missing_prev_close_fail_closed(self, empty_portfolio):
+        rule = PriceLimitTradable()
+        order = Order('000001.SZ', 'buy', 100, 10.5, sector='主板')
+        assert not rule.check(order, empty_portfolio).passed
+
+    def test_unknown_sector_fail_closed(self, empty_portfolio):
+        rule = PriceLimitTradable()
+        order = Order('000001.SZ', 'buy', 100, 10.5, sector='', prev_close=10.0)
+        assert not rule.check(order, empty_portfolio).passed
+
+    def test_limit_price_rounding(self, empty_portfolio):
+        """涨跌停价按交易所口径四舍五入：10.05 × 1.1 = 11.055 → 11.06"""
+        rule = PriceLimitTradable()
+        # 11.05 < 11.06 → 放行（若舍入成 11.05 会被误拦）
+        order = Order('000001.SZ', 'buy', 100, 11.05, sector='主板', prev_close=10.05)
+        assert rule.check(order, empty_portfolio).passed
+        order2 = Order('000001.SZ', 'buy', 100, 11.06, sector='主板', prev_close=10.05)
+        assert not rule.check(order2, empty_portfolio).passed
+
+
+# ======================================================================
+# NoSuspendedTrade
+# ======================================================================
+
+class TestNoSuspendedTrade:
+
+    def test_suspended_buy_rejected(self, portfolio_with_one_holding):
+        portfolio_with_one_holding.suspended = {'000001.SZ'}
+        rule = NoSuspendedTrade()
+        order = Order('000001.SZ', 'buy', 100, 100.0)
+        result = rule.check(order, portfolio_with_one_holding)
+        assert not result.passed
+        assert '停牌' in result.reason
+
+    def test_suspended_sell_rejected(self, portfolio_with_one_holding):
+        """停牌双向拒：sell 也无法成交"""
+        portfolio_with_one_holding.suspended = {'000001.SZ'}
+        rule = NoSuspendedTrade()
+        order = Order('000001.SZ', 'sell', 100, 100.0)
+        assert not rule.check(order, portfolio_with_one_holding).passed
+
+    def test_normal_trade_passes(self, portfolio_with_one_holding):
+        rule = NoSuspendedTrade()
+        order = Order('601211.SH', 'buy', 100, 100.0)
+        assert rule.check(order, portfolio_with_one_holding).passed
+
+    def test_default_empty_suspended(self, portfolio_with_one_holding):
+        """默认 suspended 为空集，不影响存量组合"""
+        assert portfolio_with_one_holding.suspended == set()
+
+
+# ======================================================================
+# MaxOrderVolumeRatio
+# ======================================================================
+
+class TestMaxOrderVolumeRatio:
+
+    def test_within_ratio_passes(self, empty_portfolio):
+        rule = MaxOrderVolumeRatio(0.10)
+        order = Order('000001.SZ', 'buy', 100, 100.0, bar_volume=1_000_000.0)
+        assert rule.check(order, empty_portfolio).passed
+
+    def test_over_ratio_rejected(self, empty_portfolio):
+        rule = MaxOrderVolumeRatio(0.10)
+        # 20w 股 / 100w 股 = 20% > 10%
+        order = Order('000001.SZ', 'buy', 200_000, 100.0, bar_volume=1_000_000.0)
+        result = rule.check(order, empty_portfolio)
+        assert not result.passed
+        assert '占比' in result.reason
+
+    def test_sell_also_checked(self, portfolio_with_one_holding):
+        """双向审查：sell 同样受占比约束"""
+        rule = MaxOrderVolumeRatio(0.10)
+        order = Order('000001.SZ', 'sell', 200_000, 100.0, bar_volume=1_000_000.0)
+        assert not rule.check(order, portfolio_with_one_holding).passed
+
+    def test_missing_bar_volume_fail_closed(self, empty_portfolio):
+        rule = MaxOrderVolumeRatio(0.10)
+        order = Order('000001.SZ', 'buy', 100, 100.0)
+        assert not rule.check(order, empty_portfolio).passed
+
+    def test_zero_volume_fail_closed(self, empty_portfolio):
+        rule = MaxOrderVolumeRatio(0.10)
+        order = Order('000001.SZ', 'buy', 100, 100.0, bar_volume=0.0)
+        assert not rule.check(order, empty_portfolio).passed
 
 
 if __name__ == '__main__':

@@ -338,9 +338,13 @@ class RiskGate:
 
     def check(self, *, ts_code: str, side: str, qty: int, price: float,
               trade_date: Any, book: AccountBook,
-              equity_curve: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+              equity_curve: List[Dict[str, Any]],
+              bar_volume: float | None = None) -> Dict[str, Any] | None:
         """
         审查一笔候选订单。
+
+        bar_volume 为当日 Bar 成交量，供 MaxOrderVolumeRatio 等流动性规则使用；
+        未配置这类规则时传不传都不影响既有行为。
 
         Returns:
             None 表示放行；否则返回可直接写入 rejected_orders 的拒单记录。
@@ -355,6 +359,7 @@ class RiskGate:
             price=price,
             industry=self.industry_map.get(ts_code, ''),
             trade_date=trade_date,
+            bar_volume=bar_volume,
         )
         gate = self.risk_engine.gate([order], book.snapshot(equity_curve))
         if not gate.rejected:
@@ -850,6 +855,7 @@ class EventBacktestRunner:
                 rejected_orders=rejected_orders, expired_orders=expired_orders,
                 equity_curve=equity_curve, lot_size=lot_size,
                 exec_price=exec_price, order_confidence=order_confidence,
+                bar_volume=volume,
             )
             return
 
@@ -858,7 +864,7 @@ class EventBacktestRunner:
             code=code, date=date, book=book, gate=gate, cost_model=cost_model,
             trades=trades, rejected_orders=rejected_orders,
             equity_curve=equity_curve, exec_price=exec_price,
-            order_confidence=order_confidence,
+            order_confidence=order_confidence, bar_volume=volume,
         )
 
     @staticmethod
@@ -943,6 +949,7 @@ class EventBacktestRunner:
         expired_orders: List[Dict[str, Any]],
         equity_curve: List[Dict[str, Any]], lot_size: int,
         exec_price: float, order_confidence: str,
+        bar_volume: float | None = None,
     ) -> None:
         """买入执行：按可用现金估算整手、逐手回退成本、风控审查、记账成交。"""
         available = book.cash.get(code, 0.0)
@@ -968,6 +975,7 @@ class EventBacktestRunner:
         rejection = gate.check(
             ts_code=code, side='buy', qty=shares, price=exec_price,
             trade_date=date, book=book, equity_curve=equity_curve,
+            bar_volume=bar_volume,
         )
         if rejection is not None:
             rejected_orders.append(rejection)
@@ -990,7 +998,7 @@ class EventBacktestRunner:
         cost_model: CostModel, trades: List[Dict[str, Any]],
         rejected_orders: List[Dict[str, Any]],
         equity_curve: List[Dict[str, Any]], exec_price: float,
-        order_confidence: str,
+        order_confidence: str, bar_volume: float | None = None,
     ) -> None:
         """卖出执行：清空该标的持仓，风控审查通过后记账成交。"""
         shares = book.positions[code]
@@ -998,6 +1006,7 @@ class EventBacktestRunner:
         rejection = gate.check(
             ts_code=code, side='sell', qty=shares, price=exec_price,
             trade_date=date, book=book, equity_curve=equity_curve,
+            bar_volume=bar_volume,
         )
         if rejection is not None:
             rejected_orders.append(rejection)
