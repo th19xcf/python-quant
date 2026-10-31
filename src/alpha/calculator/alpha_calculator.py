@@ -25,6 +25,7 @@ from src.alpha.factors.risk import RiskFactors  # noqa: F401
 from src.alpha.factors.technical import TechnicalFactors  # noqa: F401
 from src.alpha.factors.volatility import VolatilityFactors  # noqa: F401
 from src.alpha.factors.volume import VolumeFactors  # noqa: F401
+from src.utils.frame_adapter import to_polars
 
 # FactorEvaluator 可能依赖 scipy，缺失时允许降级
 try:
@@ -55,7 +56,7 @@ class AlphaCalculator:
 
     def __init__(self, data, partition_by: str | None = None):
         if isinstance(data, pd.DataFrame):
-            self.pl_df = pl.from_pandas(data)
+            self.pl_df = to_polars(data)
         elif hasattr(data, 'to_pandas'):
             self.pl_df = data
         else:
@@ -260,7 +261,7 @@ def calculate_factors_cross_sectional(data,
     Raises:
         ValueError: 输入缺少 code_col 列
     """
-    df = pl.from_pandas(data) if isinstance(data, pd.DataFrame) else data
+    df = to_polars(data)
     if not factor_types or df.is_empty():
         return df
     if code_col not in df.columns:

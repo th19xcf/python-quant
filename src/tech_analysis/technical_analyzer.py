@@ -13,6 +13,7 @@ from loguru import logger
 
 # 内部模块导入
 from src.api.business_api import ITechnicalAnalyzer
+from src.utils.frame_adapter import to_output, to_polars
 
 from .analyzer.cache_ops import IndicatorCacheMixin
 from .analyzer.parallel_ops import ParallelIndicatorMixin
@@ -59,7 +60,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             self.is_lazy = False
         elif isinstance(data, pd.DataFrame):
             # 输入是Pandas DataFrame，转换为Polars
-            self.pl_df = pl.from_pandas(data)
+            self.pl_df = to_polars(data)
             self.is_lazy = False
         else:
             # 输入是其他格式，转换为Polars
@@ -356,7 +357,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             signal_period: 信号线EMA周期
 
         Returns:
-            pd.DataFrame: 包含MACD指标的DataFrame
+            pl.DataFrame: 包含MACD指标的DataFrame
         """
         return self._calculate_simple_indicator('macd', calculate_macd_polars, fast_period=fast_period, slow_period=slow_period, signal_period=signal_period)
 
@@ -368,7 +369,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             windows: KDJ计算窗口，支持单个窗口或窗口列表
 
         Returns:
-            pd.DataFrame: 包含KDJ指标的DataFrame
+            pl.DataFrame: 包含KDJ指标的DataFrame
         """
         return self._calculate_window_based_indicator('kdj', calculate_kdj_polars, windows)
 
@@ -413,7 +414,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             windows: WR计算窗口，支持单个窗口或窗口列表，默认[10, 6]（通达信风格）
 
         Returns:
-            pd.DataFrame: 包含WR指标的DataFrame
+            pl.DataFrame: 包含WR指标的DataFrame
         """
         # 通达信默认使用WR10和WR6
         if windows is None:
@@ -435,7 +436,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
         """
         current_data = self.get_data(return_polars=True)
         sampled_data = sample_data_polars(current_data, target_points, strategy)
-        return sampled_data if return_polars else sampled_data.to_pandas()
+        return to_output(sampled_data, return_polars)
 
     def get_data(self, return_polars=True, sample=False, sample_params=None):
         """
@@ -454,7 +455,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             self.pl_df = self.pl_df.collect()
             self.is_lazy = False
 
-        data = self.pl_df if return_polars else self.pl_df.to_pandas()
+        data = to_output(self.pl_df, return_polars)
 
         if sample:
             sample_params = sample_params or {}
@@ -472,7 +473,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             windows: 移动平均窗口列表
 
         Returns:
-            pd.DataFrame: 包含移动平均线的DataFrame
+            pl.DataFrame: 包含移动平均线的DataFrame
         """
         if windows is None:
             windows = [5, 10, 20, 60]
@@ -486,7 +487,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             windows: RSI计算窗口，支持单个窗口或窗口列表
 
         Returns:
-            pd.DataFrame: 包含RSI指标的DataFrame
+            pl.DataFrame: 包含RSI指标的DataFrame
         """
         return self._calculate_window_based_indicator('rsi', calculate_rsi_polars, windows)
 
@@ -498,7 +499,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             windows: 移动平均窗口列表
 
         Returns:
-            pd.DataFrame: 包含成交量移动平均线的DataFrame
+            pl.DataFrame: 包含成交量移动平均线的DataFrame
         """
         if windows is None:
             windows = [5, 10]

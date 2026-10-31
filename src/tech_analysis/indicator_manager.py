@@ -53,6 +53,7 @@ from src.tech_analysis.indicators.market_breadth import (
 )
 from src.tech_analysis.indicators.trend import calculate_bbi, calculate_expma
 from src.tech_analysis.indicators.volume import calculate_hsl, calculate_lb
+from src.utils.frame_adapter import to_output, to_polars
 
 # 内置指标声明表：名称、计算函数、默认参数、描述、分类
 # 集中声明后由 _register_builtin_indicators 统一注册，避免 300+ 行重复的 register_indicator 调用
@@ -606,7 +607,7 @@ class IndicatorManager:
         if isinstance(data, pl.DataFrame):
             return data
         elif isinstance(data, pd.DataFrame):
-            return pl.from_pandas(data)
+            return to_polars(data)
         else:
             return pl.DataFrame(data)
 
@@ -621,10 +622,7 @@ class IndicatorManager:
         Returns:
             Union[pl.DataFrame, pd.DataFrame]: 转换后的结果
         """
-        if return_polars:
-            return data
-        else:
-            return data.to_pandas()
+        return to_output(data, return_polars)
 
     def register_custom_indicator(self, name: str, calculate_func: callable, dependencies: List[str] = None,
                                params: Dict[str, Any] = None, description: str = "",

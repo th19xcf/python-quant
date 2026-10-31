@@ -11,6 +11,7 @@ import polars as pl
 from loguru import logger
 
 from src.utils.event_bus import EventType, publish
+from src.utils.frame_adapter import to_output, to_polars
 
 from ..gpu_acceleration import calculate_with_gpu, is_gpu_available
 from ..incremental_calculator import global_incremental_calculator
@@ -32,7 +33,7 @@ class ParallelIndicatorMixin:
             **kwargs: 传递给指标计算方法的关键字参数
 
         Returns:
-            pd.DataFrame: 包含计算指标的DataFrame
+            pl.DataFrame: 包含计算指标的DataFrame
         """
         # 检查指标类型是否支持多窗口计算
         if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma', 'dmi', 'cci', 'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'expma', 'cyc', 'hsl', 'lb']:
@@ -90,7 +91,7 @@ class ParallelIndicatorMixin:
             **kwargs: 传递给指标计算方法的关键字参数
 
         Returns:
-            pd.DataFrame: 包含所有计算指标的DataFrame
+            pl.DataFrame: 包含所有计算指标的DataFrame
         """
         # 分离内置指标和插件指标
         builtin_indicators = []
@@ -262,7 +263,7 @@ class ParallelIndicatorMixin:
                 self.pl_df = data
             elif isinstance(data, pd.DataFrame):
                 # 输入是Pandas DataFrame，转换为Polars
-                self.pl_df = pl.from_pandas(data)
+                self.pl_df = to_polars(data)
             else:
                 # 输入是其他格式，转换为Polars
                 self.pl_df = pl.DataFrame(data)
@@ -393,7 +394,7 @@ class ParallelIndicatorMixin:
 
         # 返回结果，根据参数决定返回类型（默认返回Polars，避免全量to_pandas转换开销）
         return_polars = params.get('return_polars', True)
-        return self.pl_df if return_polars else self.pl_df.to_pandas()
+        return to_output(self.pl_df, return_polars)
 
     def calculate_indicator(self, indicator_type, *args, **kwargs):  # noqa: C901
         """
@@ -405,7 +406,7 @@ class ParallelIndicatorMixin:
             **kwargs: 传递给指标计算方法的关键字参数
 
         Returns:
-            pd.DataFrame: 包含计算指标的DataFrame
+            pl.DataFrame: 包含计算指标的DataFrame
         """
         # 检查是否为插件指标
         if self.plugin_manager and indicator_type in self.plugin_manager.get_available_indicator_plugins():

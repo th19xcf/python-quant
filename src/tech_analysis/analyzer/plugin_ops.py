@@ -10,6 +10,8 @@ import pandas as pd
 import polars as pl
 from loguru import logger
 
+from src.utils.frame_adapter import to_output, to_polars
+
 from ..indicator_cache import global_indicator_cache
 
 
@@ -117,7 +119,7 @@ class PluginIndicatorMixin:
             **kwargs: 传递给插件calculate方法的参数
 
         Returns:
-            pd.DataFrame: 包含插件指标的DataFrame
+            pl.DataFrame: 包含插件指标的DataFrame
         """
         if not self.plugin_manager:
             raise ValueError("插件管理器未初始化")
@@ -258,9 +260,9 @@ class PluginIndicatorMixin:
                 # 优先使用批量入口共享的裁剪后源帧；否则按插件声明的所需列裁剪，
                 # 避免对全量列（含已计算指标列）做 to_pandas 全量转换
                 if shared_source_df is not None:
-                    df_pd = shared_source_df.to_pandas()
+                    df_pd = to_output(shared_source_df, return_polars=False)
                 else:
-                    df_pd = self.pl_df.select(self._plugin_required_columns(plugin)).to_pandas()
+                    df_pd = to_output(self.pl_df.select(self._plugin_required_columns(plugin)), return_polars=False)
 
                 # 调用插件的calculate方法
                 result_df = plugin.calculate(df_pd, **kwargs)
@@ -278,7 +280,7 @@ class PluginIndicatorMixin:
                         if keep:
                             result_df = result_df[keep]
                     # 转换为Polars
-                    result_pl = pl.from_pandas(result_df)
+                    result_pl = to_polars(result_df)
                     # 合并到主Polars DataFrame，只添加新列
                     new_columns = [col for col in result_pl.columns if col not in self.pl_df.columns]
                     if new_columns:
@@ -318,7 +320,7 @@ class PluginIndicatorMixin:
             **kwargs: 传递给插件计算方法的关键字参数
 
         Returns:
-            pd.DataFrame: 包含所有计算结果的DataFrame
+            pl.DataFrame: 包含所有计算结果的DataFrame
         """
         if not plugin_names:
             plugin_names = self.get_available_plugin_indicators()

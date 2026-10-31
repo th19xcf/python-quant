@@ -7,6 +7,7 @@
 import polars as pl
 from loguru import logger
 
+from ..utils.frame_adapter import to_polars
 from ..utils.memory_optimizer import MemoryOptimizer
 from .indicators import (
     calculate_cost_indicators,
@@ -786,7 +787,7 @@ def calculate_indicators_parallel(data, indicator_types, max_workers=None, *, op
     )
 
     if not isinstance(data, pl.DataFrame):
-        data = pl.from_pandas(data)
+        data = to_polars(data)
 
     # 保留预处理以维持旧 API 的输入宽容度；已预处理的数据走幂等快速路径
     data = preprocess_data_polars(data)

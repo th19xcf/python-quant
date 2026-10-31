@@ -19,13 +19,15 @@ from typing import Any, Dict, List, Union
 import pandas as pd
 import polars as pl
 
+from src.utils.frame_adapter import to_polars
+
 RANK_SUFFIX = '_cs_rank'
 WINSOR_SUFFIX = '_win'
 NEUTRAL_SUFFIX = '_neu'
 
 
 def _as_polars(data: Union[pl.DataFrame, pd.DataFrame]) -> pl.DataFrame:
-    return pl.from_pandas(data) if isinstance(data, pd.DataFrame) else data
+    return to_polars(data)
 
 
 def _check_cols(df: pl.DataFrame, cols: Iterable[str], what: str) -> List[str]:
