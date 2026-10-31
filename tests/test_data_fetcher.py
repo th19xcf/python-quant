@@ -7,6 +7,8 @@
 import sys
 from pathlib import Path
 
+from loguru import logger
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import threading
@@ -91,7 +93,7 @@ def test_local_priority_returns_immediately():
 
     assert out is not None and not out.is_empty(), "本地源应当返回数据"
     assert elapsed < 3, f"本地源应快速返回，耗时={elapsed:.2f}s"
-    print(f"  [PASS] test_local_priority_returns_immediately  耗时={elapsed:.2f}s, 远程被调用={remote_called['n']}次")
+    logger.info(f"  [PASS] test_local_priority_returns_immediately  耗时={elapsed:.2f}s, 远程被调用={remote_called['n']}次")
 
 
 def test_remote_parallel_returns_first_success():
@@ -128,7 +130,7 @@ def test_remote_parallel_returns_first_success():
     assert out is not None and not out.is_empty()
     assert elapsed < 3, f"应该约 0.5s 返回，实际={elapsed:.2f}s"
     # 慢源可能在取消前已 submit，但返回的 future 不应被使用
-    print(f"  [PASS] test_remote_parallel_returns_first_success  耗时={elapsed:.2f}s, 慢源被调用={slow_called['n']}次(取消前可能已起)")
+    logger.info(f"  [PASS] test_remote_parallel_returns_first_success  耗时={elapsed:.2f}s, 慢源被调用={slow_called['n']}次(取消前可能已起)")
 
 
 def test_remote_all_fail_returns_quickly():
@@ -154,7 +156,7 @@ def test_remote_all_fail_returns_quickly():
     assert out.is_empty(), "全部失败应返回空 DataFrame"
     # as_completed timeout = per_source_timeout + 5 = 15s；最坏情况下 2 个源并行 = ~15s
     assert elapsed < 20, f"全部超时应在 20s 内返回，实际={elapsed:.2f}s"
-    print(f"  [PASS] test_remote_all_fail_returns_quickly  耗时={elapsed:.2f}s")
+    logger.info(f"  [PASS] test_remote_all_fail_returns_quickly  耗时={elapsed:.2f}s")
 
 
 def test_unsupported_source_skipped():
@@ -168,7 +170,7 @@ def test_unsupported_source_skipped():
     fetcher.register_source(only_index)
     out = fetcher._get_data_from_sources("stock", "000001.SZ", "20240101", "20241231", "1d")
     assert out.is_empty()
-    print("  [PASS] test_unsupported_source_skipped  不支持的源被静默过滤")
+    logger.info("  [PASS] test_unsupported_source_skipped  不支持的源被静默过滤")
 
 
 def test_executor_is_single_instance_under_concurrency():
@@ -191,6 +193,22 @@ def test_executor_is_single_instance_under_concurrency():
     assert len({id(executor) for executor in obtained}) == 1
     assert len(obtained) == 8
     obtained[0].shutdown()
+
+
+def test_executor_reused_100_times_and_close_releases_it():
+    """P2-1 回归：连续复用同一线程池，close() 后池被关闭且可重复调用。"""
+    fetcher = make_fetcher()
+    executors = {id(fetcher._get_executor()) for _ in range(100)}
+    assert len(executors) == 1, "100 次取用必须复用同一个线程池"
+
+    pool = fetcher._get_executor()
+    fetcher.close()
+    assert fetcher._executor is None
+    assert getattr(pool, '_shutdown', False) is True
+
+    # 幂等：重复 close 不得抛异常，也不得重建池
+    fetcher.close()
+    assert fetcher._executor is None
 
 
 def test_unhealthy_source_is_filtered_then_cools_down():
@@ -247,7 +265,7 @@ def test_subprocess_isolation_returns_data():
 
     assert not out.is_empty(), "子进程应返回数据"
     assert out.height == 3
-    print("  [PASS] test_subprocess_isolation_returns_data  子进程取数正常")
+    logger.info("  [PASS] test_subprocess_isolation_returns_data  子进程取数正常")
 
 
 def test_subprocess_isolation_timeout_terminates_workers():
@@ -277,17 +295,18 @@ def test_subprocess_isolation_timeout_terminates_workers():
     after_pids = {p.pid for p in psutil.Process().children(recursive=True)}
     leftover = [pid for pid in (after_pids - before_pids) if psutil.pid_exists(pid)]
     assert not leftover, f"存在未回收的子进程: {leftover}"
-    print(f"  [PASS] test_subprocess_isolation_timeout_terminates_workers  耗时={elapsed:.2f}s")
+    logger.info(f"  [PASS] test_subprocess_isolation_timeout_terminates_workers  耗时={elapsed:.2f}s")
 
 
 if __name__ == "__main__":
-    print("== data_fetcher 优化烟测 ==")
+    logger.info("== data_fetcher 优化烟测 ==")
     test_local_priority_returns_immediately()
     test_remote_parallel_returns_first_success()
     test_remote_all_fail_returns_quickly()
     test_unsupported_source_skipped()
     test_executor_is_single_instance_under_concurrency()
+    test_executor_reused_100_times_and_close_releases_it()
     test_unhealthy_source_is_filtered_then_cools_down()
     test_subprocess_isolation_returns_data()
     test_subprocess_isolation_timeout_terminates_workers()
-    print("== 全部通过 ==")
+    logger.info("== 全部通过 ==")

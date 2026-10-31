@@ -209,9 +209,33 @@ class StockBatchContext:
     result: dict
 
 
+STOCK_INSERT_BATCH_SIZE = 200
+
+
+def _flush_stock_batch(session, pending, result):
+    """批量写入一批 StockBasic 记录（一次 add_all + 一次 commit）。
+
+    原先逐股 ``session.add`` 且每只固定 ``sleep(0.1)``，5000 只股票仅 sleep
+    就有 500s 的硬性下限。改为攒批写入，批量大小与网络/DB 能力挂钩，
+    不再有与标的数量线性相关的固定等待。
+    """
+    if not pending:
+        return
+    try:
+        session.add_all([stock for _, stock in pending])
+        session.commit()
+        logger.info(f"已批量写入 {len(pending)} 条股票记录到数据库")
+    # 兜底理由：批量提交失败回滚，本批计入失败清单
+    except Exception as commit_e:  # noqa: BLE001
+        logger.exception(f"批量写入股票记录失败: {commit_e}")
+        session.rollback()
+        result['inserted_stocks'] -= len(pending)
+        result['failed_stocks'].extend(ts_code for ts_code, _ in pending)
+
+
 def _process_single_stock_batch(ctx):
-    """处理单批股票（新增阶段）。"""
-    import time
+    """处理单批股票（新增阶段）：攒批写入，逐股仅做内存字典查询。"""
+    pending = []
 
     for i, ts_code in enumerate(ctx.new_codes):
         try:
@@ -231,26 +255,21 @@ def _process_single_stock_batch(ctx):
                 continue
 
             stock = _create_stock_basic_from_info(ts_code, stock_info)
-            ctx.session.add(stock)
+            pending.append((ts_code, stock))
             ctx.result['inserted_stocks'] += 1
             ctx.existing_codes.add(ts_code)
 
-            if (i + 1) % 50 == 0:
-                try:
-                    ctx.session.commit()
-                    logger.info(f"已提交 {i + 1} 条股票记录到数据库")
-                # 兜底理由：周期提交失败回滚后继续
-                except Exception as commit_e:  # noqa: BLE001
-                    logger.exception(f"提交数据库时失败: {commit_e}")
-                    ctx.session.rollback()
-
-            time.sleep(0.1)
+            if len(pending) >= STOCK_INSERT_BATCH_SIZE:
+                _flush_stock_batch(ctx.session, pending, ctx.result)
+                pending = []
 
         # 兜底理由：单只股票处理失败不中断整批
         except Exception as e:  # noqa: BLE001
             logger.exception(f"处理股票 {ts_code} 失败: {e}")
             ctx.result['failed_stocks'].append(ts_code)
             continue
+
+    _flush_stock_batch(ctx.session, pending, ctx.result)
 
 
 def _finalize_database_commit(session, result):

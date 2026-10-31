@@ -321,7 +321,8 @@ def test_limit_check_uses_raw_prices_blocks_buy_on_ex_dividend_limit_up():
 
 def test_limit_pct_resolves_by_board_prefix():
     """涨跌停幅度必须按代码前缀自适应推导，且不存在可覆盖的 limit_pct 假旋钮。"""
-    resolve = lambda code: ExecutionRules.resolve_limit_pct(code, is_st=False)
+    def resolve(code):
+        return ExecutionRules.resolve_limit_pct(code, is_st=False)
     assert resolve('600000.SH') == 0.10                         # 沪主板
     assert resolve('000001.SZ') == 0.10                         # 深主板
     assert resolve('300001.SZ') == 0.20                         # 创业板 300
@@ -562,8 +563,8 @@ def test_st_and_non_st_rule_switching_across_adjacent_days():
 
     # is_tradable 在 ST 切换日的实际可成交性：
     # 主板 prev_close=100，+6% 开盘：非 ST 可买，ST 已封板不可买
-    base = dict(prev_close=100.0, high=106.0, low=100.0, close=106.0,
-                volume=1_000_000.0, ts_code='600000.SH', trade_date=d1)
+    base = {'prev_close': 100.0, 'high': 106.0, 'low': 100.0, 'close': 106.0,
+            'volume': 1_000_000.0, 'ts_code': '600000.SH', 'trade_date': d1}
     assert rules.is_tradable('buy', open_price=106.0, is_st=False, **base) is True
     assert rules.is_tradable('buy', open_price=106.0, is_st=True, **base) is False
 
@@ -597,8 +598,8 @@ def test_limit_tolerance_compared_in_price_space():
     买入被拒（成交率低估）、卖出被拒（止损单滞留）。
     """
     rules = ExecutionRules()
-    kw = dict(prev_close=10.0, high=11.0, low=9.0, volume=1_000_000.0,
-              ts_code='600000.SH', is_st=False)
+    kw = {'prev_close': 10.0, 'high': 11.0, 'low': 9.0, 'volume': 1_000_000.0,
+          'ts_code': '600000.SH', 'is_st': False}
     # 涨停价 11.00：10.99 仍可买（原实现从 10.95 起即拒绝）
     assert rules.is_tradable('buy', open_price=10.99, close=10.99, **kw) is True
     assert rules.is_tradable('buy', open_price=11.00, close=11.00, **kw) is False
@@ -607,14 +608,14 @@ def test_limit_tolerance_compared_in_price_space():
     assert rules.is_tradable('sell', open_price=9.00, close=9.00, **kw) is False
 
     # 3 元股：原实现容差放大 3 倍（+9.83% 即判涨停）
-    kw3 = dict(prev_close=3.0, high=3.3, low=2.7, volume=1_000_000.0,
-               ts_code='600000.SH', is_st=False)
+    kw3 = {'prev_close': 3.0, 'high': 3.3, 'low': 2.7, 'volume': 1_000_000.0,
+           'ts_code': '600000.SH', 'is_st': False}
     assert rules.is_tradable('buy', open_price=3.29, close=3.29, **kw3) is True
     assert rules.is_tradable('buy', open_price=3.30, close=3.30, **kw3) is False
 
     # 200 元股：原实现容差被压缩到 0.025 元，现精确判到涨停价 220.00
-    kw200 = dict(prev_close=200.0, high=220.0, low=180.0, volume=1_000_000.0,
-                 ts_code='600000.SH', is_st=False)
+    kw200 = {'prev_close': 200.0, 'high': 220.0, 'low': 180.0,
+             'volume': 1_000_000.0, 'ts_code': '600000.SH', 'is_st': False}
     assert rules.is_tradable('buy', open_price=219.99, close=219.99, **kw200) is True
     assert rules.is_tradable('buy', open_price=220.00, close=220.00, **kw200) is False
 
@@ -1059,6 +1060,65 @@ def test_parallel_worker_receives_execution_context():
 
     assert [t['signal'] for t in with_context['trades']] == ['buy']
     assert without_context['trades'] == []
+
+
+# ------------------------------------------------------------------
+# P2-4：参数优化必须附带样本外（OOS）指标与参数稳定性报告
+# ------------------------------------------------------------------
+
+
+def test_optimize_strategy_reports_oos_metrics_and_stability():
+    """样本内选参后必须在后段样本外给出独立指标，并输出稳定性报告。"""
+    data = _oscillating()
+    engine = BacktestEngine(data)
+    engine.set_strategy(MAStrategy(short_window=5, long_window=20))
+
+    optimized = engine.optimize_strategy(
+        {'short_window': [3, 5, 8]}, initial_capital=1_000_000.0,
+        max_workers=2, oos_ratio=0.3,
+    )
+
+    oos = optimized['oos_validation']
+    assert oos['enabled'] is True
+    assert oos['split_index'] == int(data.height * 0.7)
+    assert oos['in_sample_range'].split(' ~ ')[1] < oos['out_of_sample_range'].split(' ~ ')[0]
+
+    for key in ('total_return', 'sharpe_ratio', 'max_drawdown', 'trade_count'):
+        assert key in oos['in_sample']
+        assert key in oos['out_of_sample']
+
+    assert set(oos['in_sample_best_params']) == {'short_window'}
+    assert set(oos['decay']) == {'total_return', 'sharpe_ratio'}
+
+    stability = oos['param_stability']
+    assert stability['param_stability'], '必须输出逐参数稳定性条目'
+    assert 0.0 <= stability['stable_ratio'] <= 1.0
+    # 全样本网格的报告与 OOS 内样本报告都应存在
+    assert 'param_stability_report' in optimized
+
+
+def test_walk_forward_validation_returns_per_fold_oos():
+    """walk-forward 按折滚动选参，并对每折后一段给出样本外指标。"""
+    data = _oscillating(days=300)
+    engine = BacktestEngine(data)
+    engine.set_strategy(MAStrategy(short_window=5, long_window=20))
+
+    optimized = engine.optimize_strategy(
+        {'short_window': [3, 5]}, initial_capital=1_000_000.0,
+        max_workers=1, walk_forward_windows=2,
+    )
+
+    walk_forward = optimized['oos_validation']['walk_forward']
+    assert walk_forward['enabled'] is True
+    assert walk_forward['windows'] == 2
+    assert len(walk_forward['folds']) == 2
+
+    for fold in walk_forward['folds']:
+        assert fold['train_range'] and fold['test_range']
+        assert 'total_return' in fold['out_of_sample']
+        assert set(fold['best_params']) == {'short_window'}
+
+    assert 0.0 <= walk_forward['positive_ratio'] <= 1.0
 
 
 # ------------------------------------------------------------------

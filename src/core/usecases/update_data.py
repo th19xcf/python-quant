@@ -3,7 +3,7 @@
 """
 update_data —— 数据更新用例。
 
-封装 DataUpdater 的常用路径：批量更新日线、批量算复权因子。
+封装 DataService 的常用路径：批量更新日线、批量算复权因子。
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from loguru import logger
 
 
 def update_stock_data(
-    codes: list | None = None,
+    codes: list[str] | None = None,
     update_adj: bool = True,
 ) -> dict:
     """
@@ -25,7 +25,7 @@ def update_stock_data(
     Returns:
         dict —— {total, success, failed, details: [...]}
     """
-    from src.data.managers.data_updater import DataUpdater
+    from src.data.services.data_service import DataService
     from src.database.db_manager import DatabaseManager
     from src.utils.config import Config
 
@@ -34,18 +34,24 @@ def update_stock_data(
     db.connect()
 
     try:
-        updater = DataUpdater(db_manager=db)
-        result = updater.update_all_stocks(codes=codes)
-        logger.info(f"日线更新完成: {result.get('success', 0)}/{result.get('total', 0)}")
+        service = DataService(config, db_manager=db)
+        success = service.update_stock_daily(codes)
+        logger.info(f"日线更新完成: success={success}, codes={len(codes) if codes else '全市场'}")
 
         if update_adj:
             from src.data.adj_factor_calculator import AdjFactorCalculator
             calc = AdjFactorCalculator(db_manager=db)
-            target_codes = codes or result.get('success_codes', [])
-            if target_codes:
-                calc.batch_calculate_and_save(target_codes, update_daily=True)
-                logger.info(f"复权因子更新完成: {len(target_codes)} 只")
+            if codes:
+                calc.batch_calculate_and_save(codes, update_daily=True)
+                logger.info(f"复权因子更新完成: {len(codes)} 只")
+            else:
+                logger.warning("未指定 codes，跳过复权因子重算（全市场请显式传入代码列表）")
 
-        return result
+        return {
+            'total': len(codes) if codes else 0,
+            'success': 1 if success else 0,
+            'failed': 0 if success else 1,
+            'details': [],
+        }
     finally:
         db.disconnect()

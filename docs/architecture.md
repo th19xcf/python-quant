@@ -78,12 +78,13 @@ graph TD
 ┌────────────────────────────────────────────────────────────────────────────┐
 │ DataManager.get_stock_data(code, start, end, adjustment_type='hfq')        │
 │   ├─ global_data_cache 命中 → 直接返回                                     │
-│   ├─ _get_data_from_database → 拿到 qfq + hfq 两套列                      │
-│   │    └─ _apply_adjustment('hfq') → 把 hfq_open/high/low/close 写进主列  │
+│   ├─ _get_data_from_database → 原始 OHLC + qfq_factor/hfq_factor 因子列    │
+│   │    └─ _apply_adjustment('hfq') → 主列 × hfq_factor，并保留 raw_open/  │
+│   │       raw_close 供撮合内核判定涨跌停                                   │
 │   └─ _get_data_from_sources → 按优先级 TDX → BaoStock → AkShare 故障转移 │
 └──────────────────────────┬─────────────────────────────────────────────────┘
                            │  Polars DataFrame 含 date/open/high/low/close/volume
-                           │                    + qfq_*/hfq_* 双列
+                           │                    + qfq_factor/hfq_factor 因子列
                            │                    + raw_open/raw_close（hfq 时保留原始价）
                            ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
@@ -120,9 +121,13 @@ graph TD
 
 ### 为什么回测用后复权价
 
-消除分红送转对收益率计算的干扰。DB 在 stock_daily 表中同时存储
-`qfq_*` 和 `hfq_*` 两套列，data_fetcher 按请求类型写入主列，
-下游拿到的 `open/high/low/close` 即为所请求的复权价。
+消除分红送转对收益率计算的干扰。DB 的 stock_daily 表只存原始
+`open/high/low/close` 与两列复权因子 `qfq_factor` / `hfq_factor`
+（旧的 `qfq_open`/`hfq_open` 等 8 列预计算价格已整体废弃删除）；
+`data_fetcher._apply_adjustment` 在数据出口按请求类型把因子实时乘进主列
+（`price × factor`），下游拿到的 `open/high/low/close` 即为所请求的复权价。
+hfq 路径额外保留 `raw_open` / `raw_close`：交易所涨跌停规则定义在原始价上，
+用复权价比值会在除权日失真。
 
 ### 单一执行内核（已收口）
 
@@ -191,7 +196,7 @@ graph TD
 | **MACD** | EMA(12) - EMA(26), Signal = EMA(9) | 同上 | 种子：Polars 第一个有效值；通达信用前 26 行 SMA 作种子——**两者在种子附近最多差 1 根 bar**，之后一致 |
 | **RSI** | Wilder 平滑 (非简单平均) | `delta=close.diff(); gain=pl.when(delta>0).then(delta).otherwise(0); avg_gain=gain.ewm_mean(alpha=1/14, adjust=False)` | Polars `ewm_mean(alpha, adjust=False)` 即 Wilder 递推 |
 | **KDJ** | RSV 含当日 `HHV/LLV(14)`；K/D 为 SMA(X,3,1) 递推 | `rsv=(close-LN14)/(HN14-LN14)*100; K=2/3 K_prev + 1/3 rsv; D=2/3 D_prev + 1/3 K; J=3K-2D` | 唯一实现见 `formulas.kdj_exprs`，种子取首个 RSV；图表与 Alpha 因子层同源 |
-| **ATR** | Wilder 14 日 | `TR = max(H-L, \|H-C\|, \|L-C\|)`；`ATR = TR.rolling_mean(14)` | 引擎 `_precompute_indicators` 一次性算好 |
+| **ATR** | Wilder 14 日 | `TR = max(H-L, \|H-prev_close\|, \|L-prev_close\|)`；`ATR = wilder_expr(TR, 14)`（`ewm_mean(alpha=1/14, adjust=False)`，非 `rolling_mean`） | 唯一实现 `formulas.atr_expr`，引擎 `_precompute_indicators` 一次性算好；首行无 prev_close 时 TR 退化为 `H-L` |
 | **后复权价** | `price × cum_prod(复权因子)` | 复权因子在分红 ex_date 前：`(prev_close - 现金分红) / (prev_close × (1 + 送转比例) + 配股比例 × 配股价)` | 上一轮 A1-2 已补配股项，公式统一 |
 | **前复权价** | `price × cum_prod(1/复权因子)` | 与后复权互逆 | 同上，只方向相反 |
 
@@ -204,6 +209,12 @@ self.pl_df = self._precompute_indicators(self.pl_df, self.strategy)
 ```
 
 策略的 `generate_signal(data, index)` 现在是 O(1) dict lookup（读第 index 行的 ma/macd/rsi 值），不再自己维护 Python list。
+
+**整列向量化信号（可选快路径）**：策略可实现 `generate_signals_vectorized(df) -> pl.Series`，
+一次 `select` 产出一整列信号，语义必须与逐行 `generate_signal` 严格一致——
+如 `MAStrategy` 用 `when(short.is_null() | long.is_null()).then('hold')`
+对齐逐行版读取缺失列/窗口未满返回 `'hold'` 的行为。事件循环仍逐 bar 消费该列，
+T+1 撮合语义不变。
 
 ### 与通达信口径的微小差异（可接受）
 

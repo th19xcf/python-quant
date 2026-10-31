@@ -348,89 +348,138 @@ class DataFetcher:
             return pl.DataFrame()
 
         try:
+            from sqlalchemy import select
+
             module_path = f"src.database.models.{data_type}"
             module = __import__(module_path, fromlist=[f"{data_type.capitalize()}Daily"])
             model_class = getattr(module, f"{data_type.capitalize()}Daily")
 
-            session = self.db_manager.get_session()
-            if not session:
+            engine = getattr(self.db_manager, 'engine', None)
+            if engine is None:
                 return pl.DataFrame()
 
             start_bound = self._parse_date_bound(start_date)
             end_bound = self._parse_date_bound(end_date)
 
-            query = session.query(model_class).filter(
-                model_class.ts_code == code,
-                model_class.trade_date >= (start_bound or start_date),
-                model_class.trade_date <= (end_bound or end_date)
-            ).order_by(model_class.trade_date)
+            # 直接走 pl.read_database：一次 Arrow 批量拉取，替代 ORM 逐行
+            # 实例化 + Python dict 组装，10 年单票（约 2500 行）由数百毫秒降到毫秒级。
+            columns = [
+                model_class.trade_date,
+                model_class.open,
+                model_class.high,
+                model_class.low,
+                model_class.close,
+                model_class.vol.label('volume'),
+                model_class.amount,
+            ]
+            if hasattr(model_class, 'qfq_factor'):
+                columns.append(model_class.qfq_factor)
+            if hasattr(model_class, 'hfq_factor'):
+                columns.append(model_class.hfq_factor)
 
-            data = query.all()
-            if not data:
+            stmt = (
+                select(*columns)
+                .where(model_class.ts_code == code)
+                .where(model_class.trade_date >= (start_bound or start_date))
+                .where(model_class.trade_date <= (end_bound or end_date))
+                .order_by(model_class.trade_date)
+            )
+
+            with engine.connect() as conn:
+                df = pl.read_database(stmt, conn)
+
+            if df.is_empty():
                 return pl.DataFrame()
 
-            has_qfq_factor = hasattr(data[0], 'qfq_factor')
-            has_hfq_factor = hasattr(data[0], 'hfq_factor')
-
-            # --- as_of 截断：查除权事件 ---
-            # qfq_factor 回滚公式：截断后 = 原 qfq_factor / ∏{ex_date > max(trade_date, as_of)} event_factor
-            # （ex_date > as_of 的事件是观察者还不知道的，应从因子中移除）
-            rollback_factors: list = []   # [(event_factor, ex_date), ...]
-            if as_of is not None and adjustment_type == 'qfq':
-                try:
-                    from sqlalchemy import select
-
-                    from src.database.models.stock import StockDividend
-                    stmt = select(StockDividend).where(
-                        StockDividend.ts_code == code,
-                        StockDividend.ex_date > as_of
-                    ).order_by(StockDividend.ex_date)
-                    for div in session.execute(stmt).scalars().all():
-                        factor = self._dividend_event_factor(div)
-                        if factor is not None and factor != 1.0:
-                            rollback_factors.append((factor, div.ex_date))
-                # 兜底理由：除权事件查询失败不影响主流程
-                except Exception as e:  # noqa: BLE001
-                    logger.debug(f"as_of 截断时查除权事件失败（不影响主流程）: {e}")
-
-            data_records = []
-            for item in data:
-                record = {
-                    'trade_date': item.trade_date,
-                    'open': item.open,
-                    'high': item.high,
-                    'low': item.low,
-                    'close': item.close,
-                    'volume': item.vol,
-                    'amount': item.amount,
-                }
-
-                # --- 始终带 factor 列 ---
-                if has_qfq_factor:
-                    raw_qfq = getattr(item, 'qfq_factor', 1.0) or 1.0
-                    # as_of 截断：除以所有 ex_date > max(trade_date, as_of) 的事件 factor
-                    if rollback_factors:
-                        td = item.trade_date
-                        for evt_factor, evt_ex_date in rollback_factors:
-                            if evt_ex_date is not None and evt_ex_date > td:
-                                # 该事件影响 trade_date 行，且观察者还不知道它
-                                raw_qfq /= evt_factor
-                    record['qfq_factor'] = raw_qfq
-
-                if has_hfq_factor:
-                    record['hfq_factor'] = getattr(item, 'hfq_factor', 1.0) or 1.0
-
-                data_records.append(record)
-
-            df = pl.from_dicts(data_records)
             df = self._normalize_trade_date(df)
-            optimized_df = MemoryOptimizer.optimize_dataframe(df, enable_sparse=True)
-            return optimized_df
+
+            # as_of 截断：ex_date > as_of 的事件是观察者还不知道的，从 qfq_factor 中回滚
+            if as_of is not None and adjustment_type == 'qfq' and 'qfq_factor' in df.columns:
+                df = self._rollback_qfq_factor(df, code, as_of)
+
+            return MemoryOptimizer.optimize_dataframe(df, enable_sparse=True)
 
         # 兜底理由：数据库取数失败降级返回空表
         except Exception as e:  # noqa: BLE001
             logger.warning(f"从数据库获取{data_type}数据失败: {e}")
             return pl.DataFrame()
+
+    def _rollback_qfq_factor(self, df: pl.DataFrame, code: str,
+                             as_of: date) -> pl.DataFrame:
+        """按 as_of 回滚 qfq_factor（向量化，O((N+E) log N)）。
+
+        公式：截断后因子[td] = 原因子[td] / ∏{ex_date > max(td, as_of)} event_factor。
+
+        事件因子的前收由行情帧内 ``close`` 反推（上一交易日收盘），与复权
+        因子计算器同源公式；事件按除权日排序后做后缀连乘，再用一次
+        ``searchsorted`` 广播回每行，避免"每行 × 每事件"的双重循环。
+        """
+        import numpy as np
+        from sqlalchemy import select
+
+        from src.data.adj_factor_calculator import calc_dividend_event_factor
+        from src.database.models.stock import StockDividend
+
+        stmt = (
+            select(
+                StockDividend.ex_date,
+                StockDividend.cash_div,
+                StockDividend.share_div,
+                StockDividend.rights_issue_ratio,
+                StockDividend.rights_issue_price,
+            )
+            .where(StockDividend.ts_code == code)
+            .where(StockDividend.ex_date > as_of)
+            .order_by(StockDividend.ex_date)
+        )
+        with self.db_manager.engine.connect() as conn:
+            events = pl.read_database(stmt, conn)
+
+        if events.is_empty():
+            return df
+
+        events = (
+            events.filter(pl.col('ex_date').is_not_null())
+            .with_columns(pl.col('ex_date').cast(pl.Datetime))
+            .sort('ex_date')
+        )
+        if events.is_empty():
+            return df
+
+        trade_dates = df['trade_date'].to_numpy()
+        closes = df['close'].to_numpy()
+        ex_dates = events['ex_date'].to_numpy()
+
+        # pos 为第一条 trade_date >= ex_date 的行号；pos == 0 表示区间内没有
+        # 除权日之前的行情可取前收，该事件无法计算因子，跳过。
+        pos = np.searchsorted(trade_dates, ex_dates, side='left')
+        event_rows = events.to_dicts()
+        kept_ex: list = []
+        factors: list = []
+        for i in np.flatnonzero(pos > 0):
+            row = event_rows[i]
+            factor = calc_dividend_event_factor(
+                closes[pos[i] - 1],
+                row.get('cash_div'),
+                row.get('share_div'),
+                row.get('rights_issue_ratio'),
+                row.get('rights_issue_price'),
+            )
+            if factor is None:
+                continue
+            kept_ex.append(ex_dates[i])
+            factors.append(factor)
+
+        if not factors:
+            return df
+
+        # suffix[k] = ∏ factors[k:]；cnt 为该行之前（含）已完成的事件数
+        suffix = np.append(np.cumprod(np.asarray(factors, dtype=np.float64)[::-1])[::-1], 1.0)
+        cnt = np.searchsorted(np.asarray(kept_ex), trade_dates, side='right')
+        divisor = suffix[cnt]
+        qfq = df['qfq_factor'].to_numpy() / divisor
+
+        return df.with_columns(pl.Series('qfq_factor', qfq, dtype=pl.Float64))
 
     @staticmethod
     def _dividend_event_factor(dividend) -> float | None:
@@ -550,6 +599,38 @@ class DataFetcher:
                 )
                 self._executor = executor
             return executor
+
+    def close(self) -> None:
+        """释放取数资源（线程池 + 子进程池），可重复调用。
+
+        DataFetcher 是长驻对象：线程池按需创建后一直复用，不再随单次取数
+        创建/销毁。进程退出或明确不再使用时调用本方法，把常驻线程真正回收，
+        避免反复新建 DataFetcher 造成线程数单调增长。
+        """
+        with self._executor_lock:
+            executor, self._executor = self._executor, None
+        if executor is not None:
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            # 兜底理由：旧版本 ThreadPoolExecutor 不支持 cancel_futures
+            except TypeError:
+                executor.shutdown(wait=False)
+
+        with self._process_lock:
+            pool, self._process_executor = self._process_executor, None
+        if pool is not None:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            # 兜底理由：旧版本 ProcessPoolExecutor 不支持 cancel_futures
+            except TypeError:
+                pool.shutdown(wait=False)
+
+    def __enter__(self) -> DataFetcher:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        self.close()
+        return False
 
     def _try_source_with_timeout(self, source, data_type, code, start_date, end_date,
                                   frequency, adjustment_type, timeout):

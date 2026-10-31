@@ -95,18 +95,27 @@ class BacktestEngine(BaseBacktestEngine):
         self.backtest_results = result
         return result
 
-    def optimize_strategy(self, param_ranges: Dict[str, List[float]], initial_capital: float = 1000000.0, objective: str = 'total_return', max_workers: int = 4) -> Dict[str, Any]:
+    def optimize_strategy(self, param_ranges: Dict[str, List[float]],
+                          initial_capital: float = 1000000.0,
+                          objective: str = 'total_return', max_workers: int = 4,
+                          validation: str = 'oos', oos_ratio: float = 0.3,
+                          walk_forward_windows: int = 0) -> Dict[str, Any]:
         """
-        优化策略参数
+        优化策略参数，并附带样本外（OOS）验证与参数稳定性报告。
 
         Args:
             param_ranges: 参数范围
             initial_capital: 初始资金
             objective: 优化目标
             max_workers: 并行计算的最大工作线程数
+            validation: 'oos' 时按时间顺序切出后段作为样本外验证；
+                'none' 时只做全样本网格搜索（旧行为）
+            oos_ratio: 样本外占比（0~1），仅 validation='oos' 时生效
+            walk_forward_windows: ≥2 时追加 walk-forward 滚动验证折数；
+                0/1 表示不做滚动验证
 
         Returns:
-            Dict[str, Any]: 优化结果
+            Dict[str, Any]: 优化结果（含 oos_validation / walk_forward）
         """
         if not self.strategy:
             logger.error("未设置策略")
@@ -126,14 +135,130 @@ class BacktestEngine(BaseBacktestEngine):
 
         self.strategy.set_params(best_params)
 
-        return {
+        response: Dict[str, Any] = {
             'best_params': best_params,
             'best_value': best_value,
             'optimization_results': results,
-            'objective': objective
+            'objective': objective,
+            # 全样本网格上的参数稳定性：最优点是否为孤立尖峰
+            'param_stability_report': self._build_stability_report(results, objective),
         }
 
-    def _run_parallel_backtests(self, param_combinations: List[Dict[str, float]], initial_capital: float, max_workers: int, context: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
+        if validation == 'oos':
+            response['oos_validation'] = self._validate_out_of_sample(
+                param_ranges, initial_capital, max_workers, context,
+                objective, oos_ratio, walk_forward_windows,
+            )
+            logger.info(
+                f"样本外验证: {response['oos_validation'].get('out_of_sample')}"
+            )
+
+        return response
+
+    def _validate_out_of_sample(self, param_ranges: Dict[str, List[float]],
+                                initial_capital: float, max_workers: int,
+                                context: Dict[str, Any], objective: str,
+                                oos_ratio: float, walk_forward_windows: int) -> Dict[str, Any]:
+        """样本内选参 → 样本外验证，并返回衰减指标与稳定性报告。"""
+        split = self._split_out_of_sample(self.pl_df, oos_ratio)
+        if split is None:
+            return {
+                'enabled': False,
+                'reason': f'数据仅 {self.pl_df.height} 行，不足以切出样本内/样本外两段',
+            }
+
+        is_df, oos_df = split
+        # 严格样本内选参：不在样本外上做任何选择，避免信息泄漏
+        is_results = self._run_parallel_backtests(
+            self._generate_param_combinations(param_ranges), initial_capital,
+            max_workers, context=context, data=is_df,
+        )
+        is_best_params, is_best_value = self._select_best_params(is_results, objective)
+        best_row = next((r for r in is_results if r.get('params') == is_best_params), {})
+        is_metrics = self._metric_snapshot(best_row)
+
+        oos_result = self._run_single_backtest(is_best_params, initial_capital, context, oos_df)
+        oos_metrics = self._metric_snapshot(oos_result)
+
+        report: Dict[str, Any] = {
+            'enabled': True,
+            'objective': objective,
+            'oos_ratio': oos_ratio,
+            'split_index': is_df.height,
+            'in_sample_range': self._slice_label(is_df),
+            'out_of_sample_range': self._slice_label(oos_df),
+            'in_sample_best_params': is_best_params,
+            'in_sample_best_value': is_best_value,
+            'in_sample': is_metrics,
+            'out_of_sample': oos_metrics,
+            # 衰减 = 样本外 - 样本内；收益/夏普明显转负说明参数过拟合
+            'decay': {
+                'total_return': oos_metrics['total_return'] - is_metrics['total_return'],
+                'sharpe_ratio': oos_metrics['sharpe_ratio'] - is_metrics['sharpe_ratio'],
+            },
+            'param_stability': self._build_stability_report(is_results, objective),
+        }
+
+        if walk_forward_windows and walk_forward_windows >= 2:
+            report['walk_forward'] = self._walk_forward_validate(
+                param_ranges, initial_capital, max_workers, context,
+                objective, walk_forward_windows,
+            )
+
+        return report
+
+    def _walk_forward_validate(self, param_ranges: Dict[str, List[float]],
+                                initial_capital: float, max_workers: int,
+                                context: Dict[str, Any], objective: str,
+                                windows: int) -> Dict[str, Any]:
+        """滚动 walk-forward：逐折用前段选参，在其后一段上验证。"""
+        total = self.pl_df.height
+        chunk = total // (windows + 1)
+        if chunk < 20:
+            return {
+                'enabled': False,
+                'reason': f'数据仅 {total} 行，无法切出 {windows} 折（每折至少 20 行）',
+            }
+
+        combinations = self._generate_param_combinations(param_ranges)
+        folds = []
+        for i in range(1, windows + 1):
+            train_df = self.pl_df.head(chunk * i)
+            test_df = self.pl_df.slice(chunk * i, chunk)
+            train_results = self._run_parallel_backtests(
+                combinations, initial_capital, max_workers,
+                context=context, data=train_df,
+            )
+            fold_params, fold_value = self._select_best_params(train_results, objective)
+            fold_result = self._run_single_backtest(
+                fold_params, initial_capital, context, test_df,
+            )
+            folds.append({
+                'fold': i,
+                'train_range': self._slice_label(train_df),
+                'test_range': self._slice_label(test_df),
+                'best_params': fold_params,
+                'in_sample_value': fold_value,
+                'out_of_sample': self._metric_snapshot(fold_result),
+            })
+
+        oos_returns = [f['out_of_sample']['total_return'] for f in folds]
+        positive_ratio = (
+            sum(1 for value in oos_returns if value > 0) / len(oos_returns)
+            if oos_returns else 0.0
+        )
+        return {
+            'enabled': True,
+            'windows': windows,
+            'folds': folds,
+            'positive_ratio': positive_ratio,
+            'mean_oos_total_return': sum(oos_returns) / len(oos_returns) if oos_returns else 0.0,
+        }
+
+    def _run_parallel_backtests(self, param_combinations: List[Dict[str, float]],
+                                initial_capital: float, max_workers: int,
+                                context: Dict[str, Any] | None = None,
+                                data = None) -> List[Dict[str, Any]]:
         """
         并行运行回测
 
@@ -142,6 +267,7 @@ class BacktestEngine(BaseBacktestEngine):
             initial_capital: 初始资金
             max_workers: 最大工作线程数
             context: 主回测执行上下文 {ts_code, industry, is_st}，逐个子回测透传
+            data: 本次回测使用的数据段；None 表示全量 self.pl_df（OOS/滚动验证传子段）
 
         Returns:
             List[Dict[str, Any]]: 回测结果列表
@@ -150,6 +276,7 @@ class BacktestEngine(BaseBacktestEngine):
         import os
         import pickle
 
+        frame = self.pl_df if data is None else data
         results = []
 
         # 进程池的启动成本必须由任务量摊销。Windows 用 spawn 启动子进程，每个
@@ -159,13 +286,13 @@ class BacktestEngine(BaseBacktestEngine):
         pool_startup_ms = 3000.0
         backtest_fixed_ms = 8.0
         backtest_per_row_ms = 0.004
-        rows = self.pl_df.height if self.pl_df is not None else 0
+        rows = frame.height if frame is not None else 0
         est_serial_ms = len(param_combinations) * (backtest_fixed_ms + rows * backtest_per_row_ms)
 
         # 检查策略、数据、成本模型、风控引擎是否可 pickle，决定能否使用多进程
         picklable = True
         try:
-            pickle.dumps((self.strategy, self.pl_df, self.cost_model, self.risk_engine))
+            pickle.dumps((self.strategy, frame, self.cost_model, self.risk_engine))
         except (pickle.PicklingError, TypeError, AttributeError) as exc:
             picklable = False
             logger.warning(f"策略/数据/成本模型不可 pickle（{exc}），回退到 ThreadPoolExecutor 并行回测")
@@ -183,7 +310,7 @@ class BacktestEngine(BaseBacktestEngine):
             with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
                 future_to_param = {
                     executor.submit(run_backtest_worker, BacktestEngine, self.strategy,
-                                    self.pl_df, self.cost_model, params, initial_capital,
+                                    frame, self.cost_model, params, initial_capital,
                                     self.risk_engine, context): params
                     for params in param_combinations
                 }
@@ -197,29 +324,13 @@ class BacktestEngine(BaseBacktestEngine):
 
             return results
 
-        ctx = context or {}
-
-        def run_single_backtest(params):
-            strategy_copy = clone_strategy(self.strategy, params)
-
-            engine_copy = BacktestEngine(self.pl_df)
-            engine_copy.set_strategy(strategy_copy)
-            engine_copy.set_cost_model(self.cost_model)
-            engine_copy.risk_engine = self.risk_engine
-
-            # 与进程池路径同口径：ts_code/行业/ST 必须透传，否则涨跌停档位退化
-            result = engine_copy.run_backtest(
-                initial_capital,
-                ts_code=ctx.get('ts_code', ''),
-                industry=ctx.get('industry', ''),
-                is_st=ctx.get('is_st'),
-            )
-            result['params'] = params
-            return result
-
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as thread_executor:
-            future_to_param = {thread_executor.submit(run_single_backtest, params): params
-                               for params in param_combinations}
+            future_to_param = {
+                thread_executor.submit(
+                    self._run_single_backtest, params, initial_capital, context, frame,
+                ): params
+                for params in param_combinations
+            }
 
             for future in concurrent.futures.as_completed(future_to_param):
                 try:
@@ -229,3 +340,24 @@ class BacktestEngine(BaseBacktestEngine):
                     logger.error(f"参数组合 {future_to_param[future]} 回测失败: {exc}")
 
         return results
+
+    def _run_single_backtest(self, params: Dict[str, float], initial_capital: float,
+                             context: Dict[str, Any] | None, data) -> Dict[str, Any]:
+        """用指定参数在指定数据段上跑一次回测（OOS / walk-forward 复用）。"""
+        strategy_copy = clone_strategy(self.strategy, params)
+
+        engine_copy = BacktestEngine(self.pl_df if data is None else data)
+        engine_copy.set_strategy(strategy_copy)
+        engine_copy.set_cost_model(self.cost_model)
+        engine_copy.risk_engine = self.risk_engine
+
+        # 与进程池路径同口径：ts_code/行业/ST 必须透传，否则涨跌停档位退化
+        ctx = context or {}
+        result = engine_copy.run_backtest(
+            initial_capital,
+            ts_code=ctx.get('ts_code', ''),
+            industry=ctx.get('industry', ''),
+            is_st=ctx.get('is_st'),
+        )
+        result['params'] = params
+        return result

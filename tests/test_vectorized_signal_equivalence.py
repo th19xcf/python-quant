@@ -17,8 +17,8 @@ import pytest
 
 from src.backtest.engine.backtest_engine import BacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
-from src.backtest.strategies.macd_strategy import MACDStrategy
 from src.backtest.strategies.ma_strategy import MAStrategy
+from src.backtest.strategies.macd_strategy import MACDStrategy
 from src.backtest.strategies.mean_reversion_strategy import MeanReversionStrategy
 from src.backtest.strategies.multi_factor_strategy import MultiFactorStrategy
 from src.backtest.strategies.trend_following_strategy import TrendFollowingStrategy

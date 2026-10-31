@@ -28,6 +28,7 @@ Usage:
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Dict, Union
 
 import polars as pl
@@ -37,6 +38,42 @@ from src.backtest.engine.backtest_engine import BacktestEngine
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.risk import RiskEngine, default_risk_engine
+
+# 长驻取数资源：CLI / GUI 会反复调用 run_backtest，若每次新建
+# DatabaseManager 与 DataFetcher，连接池与线程池随之反复创建，
+# 线程数随调用次数单调增长。这里进程内只保留一份，跨调用复用。
+_shared_lock = threading.Lock()
+_shared_fetcher: Any = None
+_shared_db_manager: Any = None
+
+
+def _get_shared_data_fetcher() -> tuple[Any, Any]:
+    """获取（或懒创建）进程内长驻的 ``(DataFetcher, DatabaseManager)``。"""
+    global _shared_fetcher, _shared_db_manager
+    with _shared_lock:
+        if _shared_fetcher is None or _shared_db_manager is None:
+            from src.data.managers.data_fetcher import DataFetcher
+            from src.database.db_manager import DatabaseManager
+            from src.utils.config import Config
+
+            db = DatabaseManager(Config())
+            db.connect()
+            _shared_db_manager = db
+            _shared_fetcher = DataFetcher(db.config, db_manager=db)
+        return _shared_fetcher, _shared_db_manager
+
+
+def close_shared_data_fetcher() -> None:
+    """关闭进程内长驻取数资源（测试清理 / 进程退出钩子使用），可重复调用。"""
+    global _shared_fetcher, _shared_db_manager
+    with _shared_lock:
+        fetcher, db = _shared_fetcher, _shared_db_manager
+        _shared_fetcher = None
+        _shared_db_manager = None
+    if fetcher is not None:
+        fetcher.close()
+    if db is not None:
+        db.disconnect()
 
 
 def _assemble_risk_engine(risk_engine: RiskEngine | None,
@@ -100,21 +137,19 @@ def run_backtest(
     risk_engine = _assemble_risk_engine(risk_engine, enable_default_risk)
 
     # ---- 数据准备 ----
-    db = None
-    owns_db = False
+    db = db_manager
     if data is None and ts_code:
         # 按需 import 避免循环依赖
         from src.data.managers.data_fetcher import DataFetcher
-        from src.database.db_manager import DatabaseManager
-        from src.utils.config import Config
 
-        config = Config()
-        db = db_manager
-        owns_db = db is None
         if db is None:
-            db = DatabaseManager(config)
-        db.connect()
-        fetcher = DataFetcher(config, db_manager=db)
+            # 默认路径复用进程内长驻实例；本次调用不负责关闭它
+            fetcher, db = _get_shared_data_fetcher()
+        else:
+            # 调用方显式持有 db_manager，连接复用，避免每次回测新建连接池
+            if not db.is_connected():
+                db.connect()
+            fetcher = DataFetcher(db.config, db_manager=db)
         data = fetcher.get_stock_data(
             ts_code, start_date or '', end_date or '',
             adjustment_type='hfq',
@@ -139,9 +174,6 @@ def run_backtest(
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"加载 ST 时间维表失败，按未知处理: {e}")
                     st_status = None
-
-    if owns_db and db is not None:
-        db.disconnect()
 
     if data is None:
         raise ValueError("run_backtest: 必须传 data 或 ts_code")
@@ -172,14 +204,14 @@ def run_backtest(
         if strategy is None:
             raise ValueError("单票回测需要 strategy")
 
-        engine = BacktestEngine(data)
-        engine.risk_engine = risk_engine
-        engine.set_strategy(strategy)
+        single_engine = BacktestEngine(data)
+        single_engine.risk_engine = risk_engine
+        single_engine.set_strategy(strategy)
 
         if 'is_st' not in kwargs:
             kwargs['is_st'] = st_status.get(ts_code) if st_status and ts_code else None
 
-        return engine.run_backtest(
+        return single_engine.run_backtest(
             initial_capital=initial_capital,
             lot_size=lot_size,
             ts_code=ts_code or '',

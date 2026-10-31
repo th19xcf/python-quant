@@ -4,6 +4,8 @@
 策略回测对话框（UI 层只调 usecases，不直接碰 DatabaseManager）
 """
 
+import contextlib
+
 from PySide6.QtCore import QDate
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -25,7 +27,32 @@ from src.backtest.strategies.mean_reversion_strategy import MeanReversionStrateg
 from src.backtest.strategies.multi_factor_strategy import MultiFactorStrategy
 from src.backtest.strategies.trend_following_strategy import TrendFollowingStrategy
 from src.core.usecases import run_backtest
+from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
+
+
+def _run_backtest_task(ts_code, start_date, end_date, strategy, initial_capital,
+                       task_id=None, signals=None):
+    """后台回测任务：在工作线程中执行，不阻塞 UI 事件循环。
+
+    TaskRunner 会以关键字参数注入 ``task_id`` / ``signals``，用于回传进度。
+    """
+    def _progress(value: int) -> None:
+        if signals is not None and task_id is not None:
+            signals.progress.emit(task_id, value, 100)
+
+    _progress(5)
+
+    result = run_backtest(
+        ts_code=ts_code,
+        start_date=start_date,
+        end_date=end_date,
+        strategy=strategy,
+        initial_capital=initial_capital,
+    )
+
+    _progress(100)
+    return result
 
 
 class StrategyBacktestDialog(QDialog):
@@ -36,6 +63,10 @@ class StrategyBacktestDialog(QDialog):
         self.setWindowTitle("策略回测")
         self.setGeometry(100, 100, 800, 600)
         self.setModal(True)
+
+        # 后台任务 ID 与信号连接：任务执行期间窗口仍可拖动、可重绘
+        self._task_id = None
+        self._task_handlers = []
 
         self.init_ui()
 
@@ -130,72 +161,144 @@ class StrategyBacktestDialog(QDialog):
         main_layout.addLayout(button_layout)
 
     def run_backtest(self):
-        """运行策略回测（走 usecases 层）"""
+        """启动策略回测：参数校验后下沉到 global_task_manager 后台执行。
+
+        UI 线程只做参数组装与信号连接，长区间回测期间事件循环不被阻塞，
+        窗口可拖动、进度条随任务信号更新。
+        """
+        if self._task_id is not None:
+            logger.info("回测任务仍在执行，忽略重复触发")
+            return
+
         try:
-            strategy_type = self.strategy_combo.currentText()
-            stock_code = self.stock_code_edit.text()
-            start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
-            end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
-            initial_capital = float(self.initial_capital_edit.text())
+            spec = self._collect_backtest_spec()
+        except ValueError as e:
+            logger.error(f"回测参数无效: {e}")
+            self.result_text.setText(f"回测参数无效: {e}")
+            return
 
-            short_ma = int(self.short_ma_edit.text())
-            long_ma = int(self.long_ma_edit.text())
-            rsi_period = int(self.rsi_period_edit.text())
-            rsi_overbought = float(self.rsi_overbought_edit.text())
-            rsi_oversold = float(self.rsi_oversold_edit.text())
+        self.run_button.setEnabled(False)
+        self.export_button.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.result_text.setText("回测执行中...")
 
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(10)
+        self._task_id = global_task_manager.create_task(
+            f"策略回测: {spec['stock_code']}",
+            _run_backtest_task,
+            (spec['stock_code'], spec['start_date'], spec['end_date'],
+             spec['strategy'], spec['initial_capital']),
+            timeout_seconds=None,   # 长区间回测不受 60s 默认超时限制
+        )
+        self._connect_task_signals(spec)
 
-            strategy_map = {
-                "趋势跟踪策略": TrendFollowingStrategy,
-                "均值回归策略": MeanReversionStrategy,
-                "多因子策略": MultiFactorStrategy
-            }
-            strategy_cls = strategy_map.get(strategy_type, TrendFollowingStrategy)
-            strategy = strategy_cls()
-            if strategy_type == "趋势跟踪策略":
-                strategy.params['short_window'] = short_ma
-                strategy.params['long_window'] = long_ma
-            elif strategy_type == "均值回归策略":
-                strategy.params['rsi_period'] = rsi_period
-                strategy.params['overbought'] = rsi_overbought
-                strategy.params['oversold'] = rsi_oversold
+    def _collect_backtest_spec(self) -> dict:
+        """从界面读取并校验参数，构造后台任务所需的最小配置。"""
+        strategy_type = self.strategy_combo.currentText()
+        stock_code = self.stock_code_edit.text().strip()
+        if not stock_code:
+            raise ValueError("股票代码不能为空")
 
-            self.progress_bar.setValue(30)
+        start_date = self.start_date_edit.date().toString("yyyy-MM-dd")
+        end_date = self.end_date_edit.date().toString("yyyy-MM-dd")
+        if start_date > end_date:
+            raise ValueError("开始日期不能晚于结束日期")
 
-            result = run_backtest(
-                ts_code=stock_code,
-                start_date=start_date,
-                end_date=end_date,
-                strategy=strategy,
-                initial_capital=initial_capital,
-            )
+        initial_capital = float(self.initial_capital_edit.text())
+        if initial_capital <= 0:
+            raise ValueError("初始资金必须大于 0")
 
-            self.progress_bar.setValue(80)
+        short_ma = int(self.short_ma_edit.text())
+        long_ma = int(self.long_ma_edit.text())
+        rsi_period = int(self.rsi_period_edit.text())
+        rsi_overbought = float(self.rsi_overbought_edit.text())
+        rsi_oversold = float(self.rsi_oversold_edit.text())
 
-            if result:
-                result['strategy_type'] = strategy_type
-                result['stock_code'] = stock_code
-                result['start_date'] = start_date
-                result['end_date'] = end_date
-                performance = result.get('performance', {})
-                result.setdefault('annual_return', performance.get('annual_return', 0))
-                result.setdefault('sharpe_ratio', performance.get('sharpe_ratio', 0))
-                result.setdefault('max_drawdown', performance.get('max_drawdown', 0))
-                result.setdefault('trade_count', len(result.get('trades', [])) // 2)
-                result.setdefault('win_rate', performance.get('winning_rate', 0))
-                result.setdefault('final_capital', result.get('final_equity', 0))
+        strategy_map = {
+            "趋势跟踪策略": TrendFollowingStrategy,
+            "均值回归策略": MeanReversionStrategy,
+            "多因子策略": MultiFactorStrategy,
+        }
+        strategy_cls = strategy_map.get(strategy_type, TrendFollowingStrategy)
+        strategy = strategy_cls()
+        if strategy_type == "趋势跟踪策略":
+            strategy.params['short_window'] = short_ma
+            strategy.params['long_window'] = long_ma
+        elif strategy_type == "均值回归策略":
+            strategy.params['rsi_period'] = rsi_period
+            strategy.params['overbought'] = rsi_overbought
+            strategy.params['oversold'] = rsi_oversold
 
-            self.display_result(result)
+        return {
+            'strategy_type': strategy_type,
+            'stock_code': stock_code,
+            'start_date': start_date,
+            'end_date': end_date,
+            'initial_capital': initial_capital,
+            'strategy': strategy,
+        }
+
+    def _connect_task_signals(self, spec: dict):
+        """连接全局任务信号，按 task_id 过滤，避免串扰其他后台任务。"""
+        def on_progress(task_id, current, total):
+            if task_id != self._task_id:
+                return
+            self.progress_bar.setRange(0, max(total, 1))
+            self.progress_bar.setValue(current)
+
+        def on_completed(task_id, result):
+            if task_id != self._task_id:
+                return
+            self.display_result(self._show_result(result, spec))
             self.export_button.setEnabled(True)
 
-        except Exception as e:
-            logger.error(f"回测失败: {e}")
-            self.result_text.setText(f"回测失败: {str(e)}")
-        finally:
+        def on_error(task_id, error_message):
+            if task_id != self._task_id:
+                return
+            self.result_text.setText(f"回测失败: {error_message}")
+
+        def on_finished(task_id):
+            if task_id != self._task_id:
+                return
+            self._disconnect_task_signals()
+            self._task_id = None
+            self.run_button.setEnabled(True)
             self.progress_bar.setVisible(False)
             self.progress_bar.setValue(0)
+
+        self._task_handlers = [
+            (global_task_manager.task_progress, on_progress),
+            (global_task_manager.task_completed, on_completed),
+            (global_task_manager.task_error, on_error),
+            (global_task_manager.task_finished, on_finished),
+        ]
+        for signal, handler in self._task_handlers:
+            signal.connect(handler)
+
+    def _disconnect_task_signals(self):
+        """断开本次任务的信号连接，避免回调累积。"""
+        for signal, handler in self._task_handlers:
+            with contextlib.suppress(RuntimeError, TypeError):
+                signal.disconnect(handler)
+        self._task_handlers = []
+
+    @staticmethod
+    def _show_result(result, spec: dict):
+        """把用例返回值补齐 UI 展示字段后交给结果面板。"""
+        if result:
+            result['strategy_type'] = spec['strategy_type']
+            result['stock_code'] = spec['stock_code']
+            result['start_date'] = spec['start_date']
+            result['end_date'] = spec['end_date']
+            performance = result.get('performance', {})
+            result.setdefault('annual_return', performance.get('annual_return', 0))
+            result.setdefault('sharpe_ratio', performance.get('sharpe_ratio', 0))
+            result.setdefault('max_drawdown', performance.get('max_drawdown', 0))
+            result.setdefault('trade_count', len(result.get('trades', [])) // 2)
+            result.setdefault('win_rate', performance.get('winning_rate', 0))
+            result.setdefault('final_capital', result.get('final_equity', 0))
+        return result
 
     def display_result(self, result):
         if not result:

@@ -12,6 +12,57 @@ from src.ui.chart_components import ChartUIBuilder
 from src.ui.utils.chart_utils import ChartUtils
 from src.utils.logger import logger
 
+# 指标数据落库表： (触发列, 目标属性, ((输出键, 源列), ...))
+# 触发列存在即写入该属性；同名输出键无对应源列时填 []（保持旧行为的容错）。
+# 新增副图指标只需在此追加一行，无需再改 _save_indicator_data。
+_INDICATOR_FIELD_SPECS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
+    ('k', 'current_kdj_data', (('k', 'k'), ('d', 'd'), ('j', 'j'))),
+    ('rsi14', 'current_rsi_data', (('rsi', 'rsi14'),)),
+    ('macd', 'current_macd_data', (
+        ('macd', 'macd'), ('macd_signal', 'macd_signal'), ('macd_hist', 'macd_hist'))),
+    ('wr1', 'current_wr_data', (('wr1', 'wr1'), ('wr2', 'wr2'))),
+    ('mb', 'current_boll_data', (('mb', 'mb'), ('up', 'up'), ('dn', 'dn'))),
+    ('volume', 'current_volume_data', (
+        ('volume', 'volume'), ('vol_ma5', 'vol_ma5'), ('vol_ma10', 'vol_ma10'))),
+    ('vr', 'current_vr_data', (('vr', 'vr'), ('mavr', 'mavr'))),
+    ('pdi', 'current_dmi_data', (
+        ('pdi', 'pdi'), ('ndi', 'ndi'), ('adx', 'adx'), ('adxr', 'adxr'))),
+    ('trix', 'current_trix_data', (('trix', 'trix'), ('trma', 'trma'))),
+    ('br', 'current_brar_data', (('br', 'br'), ('ar', 'ar'))),
+    ('dma', 'current_dma_data', (('dma', 'dma'), ('ama', 'ama'))),
+    ('sar', 'current_sar_data', (('sar', 'sar'),)),
+    ('swl', 'current_fsl_data', (('swl', 'swl'), ('sws', 'sws'))),
+    ('cr', 'current_cr_data', (('cr', 'cr'),)),
+    ('obv', 'current_obv_data', (('obv', 'obv'),)),
+    ('expma12', 'current_expma_data', (('expma12', 'expma12'), ('expma50', 'expma50'))),
+    ('bbi', 'current_bbi_data', (('bbi', 'bbi'),)),
+    ('hsl', 'current_hsl_data', (
+        ('hsl', 'hsl'), ('hsl_ma5', 'hsl_ma5'), ('hsl_ma10', 'hsl_ma10'))),
+    ('lb', 'current_lb_data', (('lb', 'lb'),)),
+    ('cyc5', 'current_cyc_data', (
+        ('cyc5', 'cyc5'), ('cyc13', 'cyc13'), ('cyc34', 'cyc34'), ('cyc_inf', 'cyc_inf'))),
+    ('cys', 'current_cys_data', (('cys', 'cys'), ('cys_ma5', 'cys_ma5'))),
+    ('asi', 'current_asi_data', (('asi', 'asi'), ('asi_sig', 'asi_sig'))),
+    ('emv', 'current_emv_data', (('emv', 'emv'),)),
+    ('cci', 'current_cci_data', (('cci', 'cci'),)),
+    ('roc', 'current_roc_data', (('roc', 'roc'),)),
+    ('mtm', 'current_mtm_data', (('mtm', 'mtm'),)),
+    ('psy', 'current_psy_data', (('psy', 'psy'),)),
+    ('mcst', 'current_mcst_data', (('mcst', 'mcst'),)),
+)
+
+# SAR 为叠加型主图指标：切到 SAR 时清空这些副图缓存，避免标题栏读到旧值
+_SAR_RESET_ATTRS = (
+    'current_kdj_data', 'current_rsi_data', 'current_macd_data', 'current_wr_data',
+    'current_boll_data', 'current_dmi_data', 'current_trix_data', 'current_brar_data',
+    'current_vr_data', 'current_dma_data',
+)
+
+# 切到这些副图指标时清空 SAR 缓存（避免主图标题栏显示错误的 SAR 值）
+_SAR_CLEARING_INDICATORS = frozenset({
+    'KDJ', 'RSI', 'MACD', 'WR', 'BOLL', 'DMI', 'TRIX', 'BRAR', 'VR', 'DMA',
+})
+
 
 class MainWindowIndicatorWindowMixin:
     def _update_ma_values_display(self, df: pl.DataFrame, dates: list):
@@ -212,222 +263,33 @@ class MainWindowIndicatorWindowMixin:
         self._save_indicator_data(indicator_name, df_pl)
         logger.debug(f"窗口 {window_index} 的指标 {indicator_name} 渲染完成")
 
-    def _save_indicator_data(self, indicator_name: str, df_pl):
+    def _save_indicator_data(self, indicator_name: str, df_pl) -> None:
         """
-        保存指标数据
+        保存指标数据（表驱动，见模块级 _INDICATOR_FIELD_SPECS）。
 
         Args:
             indicator_name: 指标名称
             df_pl: 数据
         """
-        # 清除之前可能存在的其他指标数据（避免数据混乱）
-        # 根据当前指标类型，清除不相关的指标数据
-        if indicator_name == "SAR":
-            # SAR指标只保留SAR数据
-            self.current_kdj_data = None
-            self.current_rsi_data = None
-            self.current_macd_data = None
-            self.current_wr_data = None
-            self.current_boll_data = None
-            self.current_dmi_data = None
-            self.current_trix_data = None
-            self.current_brar_data = None
-            self.current_vr_data = None
-            self.current_dma_data = None
-        elif indicator_name in ["KDJ", "RSI", "MACD", "WR", "BOLL", "DMI", "TRIX", "BRAR", "VR", "DMA"]:
-            # 其他副图指标清除SAR数据（避免主图标题栏显示错误的SAR值）
+        self._reset_indicator_data(indicator_name)
+
+        for trigger_col, attr_name, fields in _INDICATOR_FIELD_SPECS:
+            if trigger_col not in df_pl.columns:
+                continue
+            # 触发列存在即写缓存；同名子列缺失时填 []，与旧的逐列 if 判断等价
+            setattr(self, attr_name, {
+                key: df_pl[col].to_list() if col in df_pl.columns else []
+                for key, col in fields
+            })
+
+    def _reset_indicator_data(self, indicator_name: str) -> None:
+        """切换指标时清空互相干扰的缓存，避免标题栏读到上一个指标的值。"""
+        if indicator_name == 'SAR':
+            # SAR 只保留自身的缓存
+            for attr_name in _SAR_RESET_ATTRS:
+                setattr(self, attr_name, None)
+        elif indicator_name in _SAR_CLEARING_INDICATORS:
+            # 其他副图指标清除 SAR 数据
             self.current_sar_data = None
-
-        # KDJ数据
-        if 'k' in df_pl.columns:
-            self.current_kdj_data = {
-                'k': df_pl['k'].to_list(),
-                'd': df_pl['d'].to_list() if 'd' in df_pl.columns else [],
-                'j': df_pl['j'].to_list() if 'j' in df_pl.columns else [],
-            }
-
-        # RSI数据
-        if 'rsi14' in df_pl.columns:
-            self.current_rsi_data = {'rsi': df_pl['rsi14'].to_list()}
-
-        # MACD数据
-        if 'macd' in df_pl.columns:
-            self.current_macd_data = {
-                'macd': df_pl['macd'].to_list(),
-                'macd_signal': df_pl['macd_signal'].to_list() if 'macd_signal' in df_pl.columns else [],
-                'macd_hist': df_pl['macd_hist'].to_list() if 'macd_hist' in df_pl.columns else [],
-            }
-
-        # WR数据
-        if 'wr1' in df_pl.columns:
-            self.current_wr_data = {
-                'wr1': df_pl['wr1'].to_list(),
-                'wr2': df_pl['wr2'].to_list() if 'wr2' in df_pl.columns else [],
-            }
-
-        # BOLL数据
-        if 'mb' in df_pl.columns:
-            self.current_boll_data = {
-                'mb': df_pl['mb'].to_list(),
-                'up': df_pl['up'].to_list() if 'up' in df_pl.columns else [],
-                'dn': df_pl['dn'].to_list() if 'dn' in df_pl.columns else [],
-            }
-
-        # 成交量数据
-        if 'volume' in df_pl.columns:
-            self.current_volume_data = {
-                'volume': df_pl['volume'].to_list(),
-                'vol_ma5': df_pl['vol_ma5'].to_list() if 'vol_ma5' in df_pl.columns else [],
-                'vol_ma10': df_pl['vol_ma10'].to_list() if 'vol_ma10' in df_pl.columns else [],
-            }
-
-        # VR数据
-        if 'vr' in df_pl.columns:
-            self.current_vr_data = {
-                'vr': df_pl['vr'].to_list(),
-                'mavr': df_pl['mavr'].to_list() if 'mavr' in df_pl.columns else [],
-            }
-
-        # DMI数据
-        if 'pdi' in df_pl.columns:
-            self.current_dmi_data = {
-                'pdi': df_pl['pdi'].to_list(),
-                'ndi': df_pl['ndi'].to_list() if 'ndi' in df_pl.columns else [],
-                'adx': df_pl['adx'].to_list() if 'adx' in df_pl.columns else [],
-                'adxr': df_pl['adxr'].to_list() if 'adxr' in df_pl.columns else [],
-            }
-
-        # TRIX数据
-        if 'trix' in df_pl.columns:
-            self.current_trix_data = {
-                'trix': df_pl['trix'].to_list(),
-                'trma': df_pl['trma'].to_list() if 'trma' in df_pl.columns else [],
-            }
-
-        # BRAR数据
-        if 'br' in df_pl.columns:
-            self.current_brar_data = {
-                'br': df_pl['br'].to_list(),
-                'ar': df_pl['ar'].to_list() if 'ar' in df_pl.columns else [],
-            }
-
-        # DMA数据
-        if 'dma' in df_pl.columns:
-            self.current_dma_data = {
-                'dma': df_pl['dma'].to_list(),
-                'ama': df_pl['ama'].to_list() if 'ama' in df_pl.columns else [],
-            }
-
-        # SAR数据
-        if 'sar' in df_pl.columns:
-            self.current_sar_data = {
-                'sar': df_pl['sar'].to_list(),
-            }
-
-        # FSL数据
-        if 'swl' in df_pl.columns:
-            self.current_fsl_data = {
-                'swl': df_pl['swl'].to_list(),
-                'sws': df_pl['sws'].to_list() if 'sws' in df_pl.columns else [],
-            }
-
-        # CR数据
-        if 'cr' in df_pl.columns:
-            self.current_cr_data = {
-                'cr': df_pl['cr'].to_list(),
-            }
-
-        # OBV数据
-        if 'obv' in df_pl.columns:
-            self.current_obv_data = {
-                'obv': df_pl['obv'].to_list(),
-            }
-
-        # 新增指标数据保存
-        # EXPMA数据
-        if 'expma12' in df_pl.columns:
-            self.current_expma_data = {
-                'expma12': df_pl['expma12'].to_list(),
-                'expma50': df_pl['expma50'].to_list() if 'expma50' in df_pl.columns else [],
-            }
-
-        # BBI数据
-        if 'bbi' in df_pl.columns:
-            self.current_bbi_data = {
-                'bbi': df_pl['bbi'].to_list(),
-            }
-
-        # HSL数据
-        if 'hsl' in df_pl.columns:
-            self.current_hsl_data = {
-                'hsl': df_pl['hsl'].to_list(),
-                'hsl_ma5': df_pl['hsl_ma5'].to_list() if 'hsl_ma5' in df_pl.columns else [],
-                'hsl_ma10': df_pl['hsl_ma10'].to_list() if 'hsl_ma10' in df_pl.columns else [],
-            }
-
-        # LB数据
-        if 'lb' in df_pl.columns:
-            self.current_lb_data = {
-                'lb': df_pl['lb'].to_list(),
-            }
-
-        # CYC数据
-        if 'cyc5' in df_pl.columns:
-            self.current_cyc_data = {
-                'cyc5': df_pl['cyc5'].to_list(),
-                'cyc13': df_pl['cyc13'].to_list() if 'cyc13' in df_pl.columns else [],
-                'cyc34': df_pl['cyc34'].to_list() if 'cyc34' in df_pl.columns else [],
-                'cyc_inf': df_pl['cyc_inf'].to_list() if 'cyc_inf' in df_pl.columns else [],
-            }
-
-        # CYS数据
-        if 'cys' in df_pl.columns:
-            self.current_cys_data = {
-                'cys': df_pl['cys'].to_list(),
-                'cys_ma5': df_pl['cys_ma5'].to_list() if 'cys_ma5' in df_pl.columns else [],
-            }
-
-        # ASI数据
-        if 'asi' in df_pl.columns:
-            self.current_asi_data = {
-                'asi': df_pl['asi'].to_list(),
-                'asi_sig': df_pl['asi_sig'].to_list() if 'asi_sig' in df_pl.columns else [],
-            }
-
-        # EMV数据
-        if 'emv' in df_pl.columns:
-            self.current_emv_data = {
-                'emv': df_pl['emv'].to_list(),
-            }
-
-        # CCI数据
-        if 'cci' in df_pl.columns:
-            self.current_cci_data = {
-                'cci': df_pl['cci'].to_list(),
-            }
-
-        # ROC数据
-        if 'roc' in df_pl.columns:
-            self.current_roc_data = {
-                'roc': df_pl['roc'].to_list(),
-            }
-
-        # MTM数据
-        if 'mtm' in df_pl.columns:
-            self.current_mtm_data = {
-                'mtm': df_pl['mtm'].to_list(),
-            }
-
-        # PSY数据
-        if 'psy' in df_pl.columns:
-            self.current_psy_data = {
-                'psy': df_pl['psy'].to_list(),
-            }
-
-        # MCST数据
-        if 'mcst' in df_pl.columns:
-            self.current_mcst_data = {
-                'mcst': df_pl['mcst'].to_list(),
-            }
 
     # ===== 分红标记相关方法（保持原有逻辑） =====

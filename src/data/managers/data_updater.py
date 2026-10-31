@@ -59,8 +59,8 @@ class DataUpdater:
     def update_stock_basic(self) -> bool:
         return self._try_sources('update_stock_basic', '股票基本信息')
 
-    def update_stock_daily(self, ts_codes: List[str] = None,
-                           start_date: str = None, end_date: str = None) -> bool:
+    def update_stock_daily(self, ts_codes: List[str] | None = None,
+                           start_date: str | None = None, end_date: str | None = None) -> bool:
         success = self._try_sources(
             'update_stock_daily', '股票日线数据',
             ts_codes=ts_codes, start_date=start_date, end_date=end_date,

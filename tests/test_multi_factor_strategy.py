@@ -7,6 +7,7 @@
 import numpy as np
 import pandas as pd
 import polars as pl
+from loguru import logger
 
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.multi_factor_strategy import MultiFactorStrategy
@@ -57,7 +58,7 @@ def test_multi_factor_strategy():
     """
     测试多因子策略功能
     """
-    print("=== 测试多因子策略功能 ===")
+    logger.info("=== 测试多因子策略功能 ===")
 
     # 生成测试数据
     stock1_data = generate_test_data('600000.SH', '2023-01-01', '2023-12-31', volatility=0.02, trend=0.0005)
@@ -80,29 +81,29 @@ def test_multi_factor_strategy():
     engine.set_strategy('000001.SZ', MultiFactorStrategy(weights=custom_weights))
 
     # 运行回测
-    print("运行多因子策略回测...")
+    logger.info("运行多因子策略回测...")
     results = engine.run_backtest(initial_capital=1000000.0, allocation_strategy='equal')
 
     # 打印回测结果
-    print("\n回测结果:")
-    print(f"初始资金: {results['initial_capital']:.2f}")
-    print(f"最终资金: {results['final_equity']:.2f}")
-    print(f"总收益率: {results['total_return']:.2f}%")
+    logger.info("\n回测结果:")
+    logger.info(f"初始资金: {results['initial_capital']:.2f}")
+    logger.info(f"最终资金: {results['final_equity']:.2f}")
+    logger.info(f"总收益率: {results['total_return']:.2f}%")
 
     # 打印性能指标
-    print("\n性能指标:")
+    logger.info("\n性能指标:")
     performance = results['performance']
     for key, value in performance.items():
-        print(f"{key}: {value:.4f}")
+        logger.info(f"{key}: {value:.4f}")
 
     # 打印交易记录
-    print("\n交易记录数量:", len(results['trades']))
+    logger.info("{} {}", "\n交易记录数量:", len(results['trades']))
     if results['trades']:
-        print("前5条交易记录:")
+        logger.info("前5条交易记录:")
         for trade in results['trades'][:5]:
-            print(f"日期: {trade['date']}, 股票: {trade['stock_code']}, 信号: {trade['signal']}, 价格: {trade['price']:.2f}")
+            logger.info(f"日期: {trade['date']}, 股票: {trade['stock_code']}, 信号: {trade['signal']}, 价格: {trade['price']:.2f}")
 
-    print("\n多因子策略测试完成！")
+    logger.info("\n多因子策略测试完成！")
 
 
 if __name__ == "__main__":

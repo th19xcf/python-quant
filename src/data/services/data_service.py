@@ -138,7 +138,7 @@ class DataService:
             self._publish_updated('stock', 'basic', cache_type='stock_basic')
         return success
 
-    def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_stock_daily(self, ts_codes: List[str] | None = None, start_date: str = None, end_date: str = None):
         success = self.data_updater.update_stock_daily(ts_codes, start_date, end_date)
         if success:
             self._publish_updated('stock', 'daily', cache_type='stock', ts_codes=ts_codes)

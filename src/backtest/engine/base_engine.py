@@ -245,3 +245,101 @@ class BaseBacktestEngine:
                     best_params = result.get('params', {})
 
         return best_params, best_value
+
+    # ------------------------------------------------------------------
+    # 样本外（OOS）/ walk-forward 参数验证
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _objective_value(result: Dict[str, Any], objective: str) -> float:
+        """从单次回测结果中取目标函数值（与 _select_best_params 口径一致）。"""
+        if objective == 'sharpe_ratio':
+            return float(result.get('performance', {}).get('sharpe_ratio', 0.0) or 0.0)
+        if objective == 'max_drawdown':
+            return float(result.get('performance', {}).get('max_drawdown', 0.0) or 0.0)
+        return float(result.get('total_return', 0.0) or 0.0)
+
+    @staticmethod
+    def _metric_snapshot(result: Dict[str, Any]) -> Dict[str, float]:
+        """抽取对外展示的核心指标快照。"""
+        performance = result.get('performance', {}) or {}
+        return {
+            'total_return': float(result.get('total_return', 0.0) or 0.0),
+            'sharpe_ratio': float(performance.get('sharpe_ratio', 0.0) or 0.0),
+            'max_drawdown': float(performance.get('max_drawdown', 0.0) or 0.0),
+            'winning_rate': float(performance.get('winning_rate', 0.0) or 0.0),
+            'trade_count': len(result.get('trades', []) or []) // 2,
+            'final_equity': float(result.get('final_equity', 0.0) or 0.0),
+        }
+
+    @staticmethod
+    def _split_out_of_sample(df: pl.DataFrame, oos_ratio: float,
+                             min_rows: int = 20) -> tuple[pl.DataFrame, pl.DataFrame] | None:
+        """按时间顺序切分样本内 / 样本外（前段训练，后段验证）。
+
+        行数不足以切出两段时返回 None，由调用方标记 OOS 未启用。
+        """
+        total = df.height
+        split = int(total * (1.0 - oos_ratio))
+        if split < min_rows or total - split < min_rows:
+            return None
+        return df.head(split), df.tail(total - split)
+
+    def _build_stability_report(self, results: List[Dict[str, Any]],
+                                objective: str) -> Dict[str, Any]:
+        """参数稳定性报告：同一参数取值在网格中的平均目标值。
+
+        只要某个取值的平均表现仍接近最优值（≥ 最优的 90%），
+        说明最优点不是孤立尖峰，参数在该方向上"平坦"，实盘更耐受。
+        """
+        if not results:
+            return {'param_stability': [], 'stable_ratio': 0.0, 'best_value': 0.0}
+
+        values = [self._objective_value(r, objective) for r in results]
+        best_value = max(values) if objective != 'max_drawdown' else min(values)
+
+        param_names = sorted({name for r in results for name in (r.get('params') or {})})
+        stability = []
+        stable_count = 0
+        for name in param_names:
+            buckets: Dict[Any, List[float]] = {}
+            for result, value in zip(results, values, strict=True):
+                params = result.get('params') or {}
+                if name not in params:
+                    continue
+                buckets.setdefault(params[name], []).append(value)
+
+            entry = {'param': name, 'values': [], 'stable': True}
+            for value, bucket_values in sorted(buckets.items(), key=lambda item: item[0]):
+                mean_value = sum(bucket_values) / len(bucket_values)
+                if objective == 'max_drawdown':
+                    # 回撤越小越好：允许比最优值高 10% 以内
+                    is_stable = mean_value <= best_value * 1.1 if best_value > 0 else mean_value <= best_value
+                else:
+                    # 收益类目标越大越好：允许平均表现比最优值低 10% 以内
+                    is_stable = mean_value >= best_value * 0.9
+                entry['values'].append({
+                    'value': value,
+                    'mean_objective': mean_value,
+                    'stable': is_stable,
+                })
+                if not is_stable:
+                    entry['stable'] = False
+            if entry['stable']:
+                stable_count += 1
+            stability.append(entry)
+
+        return {
+            'param_stability': stability,
+            'stable_ratio': (stable_count / len(stability)) if stability else 0.0,
+            'best_value': best_value,
+            'objective': objective,
+        }
+
+    @staticmethod
+    def _slice_label(df: pl.DataFrame, column: str = 'date') -> str:
+        """取 DataFrame 指定列的起止日期标签（无该列时返回空串）。"""
+        if df.is_empty() or column not in df.columns:
+            return ''
+        first, last = df[column][0], df[column][-1]
+        return f'{first} ~ {last}'

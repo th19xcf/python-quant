@@ -7,6 +7,8 @@ MemoryOptimizer 测试脚本
 import sys
 from pathlib import Path
 
+from loguru import logger
+
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from datetime import datetime, timedelta
@@ -24,7 +26,7 @@ from utils.memory_optimizer import (
 
 def test_basic_optimization():
     """测试基本的内存优化功能"""
-    print("=== 测试基本内存优化功能 ===")
+    logger.info("=== 测试基本内存优化功能 ===")
 
     # 创建测试数据
     dates = [datetime(2020, 1, 1) + timedelta(days=i) for i in range(1000)]
@@ -36,21 +38,21 @@ def test_basic_optimization():
         'date': dates
     })
 
-    print("原始数据类型:")
-    print(df.dtypes)
-    print()
+    logger.info("原始数据类型:")
+    logger.info(df.dtypes)
+    logger.info("")
 
-    print("原始数据内存使用:")
+    logger.info("原始数据内存使用:")
     print_df_memory(df)
 
     # 优化数据
     optimized_df = optimize_df(df)
 
-    print("优化后数据类型:")
-    print(optimized_df.dtypes)
-    print()
+    logger.info("优化后数据类型:")
+    logger.info(optimized_df.dtypes)
+    logger.info("")
 
-    print("优化后数据内存使用:")
+    logger.info("优化后数据内存使用:")
     print_df_memory(optimized_df)
 
     return df, optimized_df
@@ -58,7 +60,7 @@ def test_basic_optimization():
 
 def test_large_dataset():
     """测试大数据集处理"""
-    print("\n=== 测试大数据集处理 ===")
+    logger.info("\n=== 测试大数据集处理 ===")
 
     # 创建测试数据
     dates = [datetime(2020, 1, 1) + timedelta(days=i) for i in range(1000)]
@@ -72,21 +74,21 @@ def test_large_dataset():
 
     # 构建大数据集
     large_df = pl.concat([df]*100)
-    print(f"大数据集大小: {len(large_df):,}行")
+    logger.info(f"大数据集大小: {len(large_df):,}行")
 
     # 分块处理
     optimized_large_df = process_large_df(large_df, chunk_size=50000)
-    print("大数据集优化完成")
+    logger.info("大数据集优化完成")
 
-    print("优化后数据类型:")
-    print(optimized_large_df.dtypes)
+    logger.info("优化后数据类型:")
+    logger.info(optimized_large_df.dtypes)
 
     return optimized_large_df
 
 
 def test_optimization_suggestions():
     """测试优化建议功能"""
-    print("\n=== 测试优化建议功能 ===")
+    logger.info("\n=== 测试优化建议功能 ===")
 
     # 创建测试数据
     dates = [datetime(2020, 1, 1) + timedelta(days=i) for i in range(1000)]
@@ -100,12 +102,12 @@ def test_optimization_suggestions():
 
     # 获取优化建议
     suggestions = MemoryOptimizer.suggest_optimization(df)
-    print(f"当前内存使用: {suggestions['current_memory_mb']:.2f}MB")
-    print(f"内存级别: {suggestions['memory_level']}")
-    print("优化建议:")
+    logger.info(f"当前内存使用: {suggestions['current_memory_mb']:.2f}MB")
+    logger.info(f"内存级别: {suggestions['memory_level']}")
+    logger.info("优化建议:")
     for i, suggestion in enumerate(suggestions['suggestions'], 1):
-        print(f"{i}. {suggestion}")
-    print(f"估计可节省内存: {suggestions['estimated_savings_mb']:.2f}MB")
+        logger.info(f"{i}. {suggestion}")
+    logger.info(f"估计可节省内存: {suggestions['estimated_savings_mb']:.2f}MB")
 
     return suggestions
 
@@ -116,7 +118,7 @@ def test_adj_factor_keep_float64():
     复权因子参与连乘与"原始价×因子"还原，Float32 的 ~7 位有效位会在
     连乘中累积出可观测误差（曾位于 pct_cols 被降精度，属回归防护）。
     """
-    print("\n=== 测试复权因子 Float64 白名单 ===")
+    logger.info("\n=== 测试复权因子 Float64 白名单 ===")
 
     n = 500
     df = pl.DataFrame({
@@ -137,7 +139,7 @@ def test_adj_factor_keep_float64():
     assert optimized_df['hfq_factor'].equals(df['hfq_factor'])
     # 对照：百分比列仍按设计降 Float32
     assert optimized_df['pct_chg'].dtype == pl.Float32
-    print("复权因子保持 Float64，pct_chg 仍为 Float32，符合预期")
+    logger.info("复权因子保持 Float64，pct_chg 仍为 Float32，符合预期")
 
 
 def test_volume_large_value_stays_int64():
@@ -147,7 +149,7 @@ def test_volume_large_value_stays_int64():
     （落在 2**31-1 与 2**32 之间）被错误降为 Int32，cast 直接抛
     InvalidOperationError（溢出）。
     """
-    print("\n=== 测试超大成交量 Int64 回归 ===")
+    logger.info("\n=== 测试超大成交量 Int64 回归 ===")
 
     df = pl.DataFrame({
         'volume': pl.Series('volume', [1, 3_000_000_000], dtype=pl.Int64),
@@ -166,7 +168,7 @@ def test_int_boundaries_use_signed_limits():
     回归：原先只按 2**32 判 Int32、其余一律 Int32，跨越 127/32767 边界
     的整数列会在 cast 时溢出。
     """
-    print("\n=== 测试有符号整数边界 ===")
+    logger.info("\n=== 测试有符号整数边界 ===")
 
     df = pl.DataFrame({
         'up_count': pl.Series('up_count', [0, 127], dtype=pl.Int64),
@@ -190,7 +192,7 @@ def test_alpha_factor_columns_keep_float64():
     alpha_001 等因子列在排序/加权时出现可观测偏差。仅 COLUMN_TYPE_MAP 中
     显式列（pct_chg / 指标 / 估值）允许按设计降 Float32。
     """
-    print("\n=== 测试 Alpha 因子 Float64 白名单 ===")
+    logger.info("\n=== 测试 Alpha 因子 Float64 白名单 ===")
 
     n = 500
     rng = np.random.default_rng(20260305)
@@ -216,8 +218,8 @@ def test_alpha_factor_columns_keep_float64():
 
 
 if __name__ == "__main__":
-    print("MemoryOptimizer 测试开始")
-    print("=" * 60)
+    logger.info("MemoryOptimizer 测试开始")
+    logger.info("=" * 60)
 
     # 运行各个测试
     df, optimized_df = test_basic_optimization()
@@ -228,5 +230,5 @@ if __name__ == "__main__":
     test_int_boundaries_use_signed_limits()
     test_alpha_factor_columns_keep_float64()
 
-    print("\n" + "=" * 60)
-    print("MemoryOptimizer 测试完成")
+    logger.info("\n" + "=" * 60)
+    logger.info("MemoryOptimizer 测试完成")

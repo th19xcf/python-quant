@@ -28,7 +28,8 @@ class TaskRunner(QRunnable):
     任务运行器，用于在后台线程中执行任务
     """
 
-    def __init__(self, task_id: str, task_name: str, func: Callable, args: tuple = (), kwargs: dict = None):
+    def __init__(self, task_id: str, task_name: str, func: Callable, args: tuple = (),
+                 kwargs: dict = None, timeout_seconds: float | None = 60):
         """
         初始化任务运行器
 
@@ -38,6 +39,7 @@ class TaskRunner(QRunnable):
             func: 要执行的函数
             args: 函数参数
             kwargs: 函数关键字参数
+            timeout_seconds: 任务超时（秒）；None 表示不限时（长区间回测用）
         """
         if kwargs is None:
             kwargs = {}
@@ -47,6 +49,7 @@ class TaskRunner(QRunnable):
         self.func = func
         self.args = args
         self.kwargs = kwargs
+        self.timeout_seconds = timeout_seconds
         self.signals = TaskSignals()
         self.is_cancelled = False
 
@@ -77,12 +80,9 @@ class TaskRunner(QRunnable):
             logger.info(f"任务完成: {self.task_name} (ID: {self.task_id})，耗时: {elapsed_time:.2f}秒")
             self.signals.finished.emit(self.task_id)
 
-    def _run_with_timeout(self, timeout_seconds=60):
+    def _run_with_timeout(self):
         """
-        带超时的任务执行
-
-        Args:
-            timeout_seconds: 超时时间（秒），默认60秒
+        带超时的任务执行（超时时间取自 timeout_seconds，None 表示不限时）
 
         Returns:
             任务执行结果
@@ -91,6 +91,8 @@ class TaskRunner(QRunnable):
             TimeoutError: 任务执行超时
         """
         import concurrent.futures
+
+        timeout_seconds = self.timeout_seconds
 
         # 使用线程池执行任务，支持超时
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
@@ -139,7 +141,8 @@ class TaskManager(QObject):
         }
         logger.info(f"任务管理器初始化完成，最大线程数: {self.thread_pool.maxThreadCount()}")
 
-    def create_task(self, task_name: str, func: Callable, args: tuple = (), kwargs: dict = None) -> str:
+    def create_task(self, task_name: str, func: Callable, args: tuple = (),
+                    kwargs: dict = None, timeout_seconds: float | None = 60) -> str:
         """
         创建并启动一个后台任务
 
@@ -148,6 +151,7 @@ class TaskManager(QObject):
             func: 要执行的函数
             args: 函数参数
             kwargs: 函数关键字参数
+            timeout_seconds: 任务超时（秒）；None 表示不限时（长区间回测用）
 
         Returns:
             str: 任务ID
@@ -155,7 +159,7 @@ class TaskManager(QObject):
         if kwargs is None:
             kwargs = {}
         task_id = str(uuid.uuid4())
-        runner = TaskRunner(task_id, task_name, func, args, kwargs)
+        runner = TaskRunner(task_id, task_name, func, args, kwargs, timeout_seconds)
 
         # 连接信号
         runner.signals.started.connect(self._on_task_started)

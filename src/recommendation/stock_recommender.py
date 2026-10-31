@@ -24,7 +24,7 @@ class StockRecommender:
         self.recommendations = []
 
     def recommend_stocks(self, stocks_data: pl.DataFrame, top_n: int = 10, algorithm: str = "多因子选股",
-                        industry: str = "全部行业", weights: Dict[str, float] = None, **params) -> List[Dict[str, Any]]:
+                        industry: str = "全部行业", weights: Dict[str, float] | None = None, **params) -> List[Dict[str, Any]]:
         """
         推荐股票
 

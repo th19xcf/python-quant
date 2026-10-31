@@ -9,6 +9,7 @@ import time
 import numpy as np
 import pandas as pd
 import polars as pl
+from loguru import logger
 
 from src.tech_analysis.gpu_acceleration import is_gpu_available
 from src.tech_analysis.streaming_processor import (
@@ -58,7 +59,7 @@ def test_gpu_acceleration():
     """
     测试GPU加速计算
     """
-    print("=== 测试GPU加速计算 ===")
+    logger.info("=== 测试GPU加速计算 ===")
 
     # 生成测试数据
     data = generate_test_data(1000)
@@ -73,16 +74,16 @@ def test_gpu_acceleration():
         start_time = time.time()
         analyzer.calculate_indicator(indicator)
         end_time = time.time()
-        print(f"{indicator} 计算时间: {end_time - start_time:.4f}秒")
+        logger.info(f"{indicator} 计算时间: {end_time - start_time:.4f}秒")
 
-    print()
+    logger.info("")
 
 
 def test_incremental_calculation():
     """
     测试增量计算
     """
-    print("=== 测试增量计算 ===")
+    logger.info("=== 测试增量计算 ===")
 
     # 生成历史数据
     history_data = generate_test_data(990)
@@ -100,16 +101,16 @@ def test_incremental_calculation():
     start_time = time.time()
     analyzer.calculate_indicator('ma', incremental_data=new_data)
     end_time = time.time()
-    print(f"增量计算MA时间: {end_time - start_time:.4f}秒")
+    logger.info(f"增量计算MA时间: {end_time - start_time:.4f}秒")
 
-    print()
+    logger.info("")
 
 
 def test_streaming_processing():
     """
     测试流式处理
     """
-    print("=== 测试流式处理 ===")
+    logger.info("=== 测试流式处理 ===")
 
     # 创建流式处理器
     processor = create_streaming_processor(['ma', 'macd', 'rsi'])
@@ -128,17 +129,17 @@ def test_streaming_processing():
         end_time = time.time()
         batch_time = end_time - start_time
         total_time += batch_time
-        print(f"批次 {i//batch_size + 1} 处理时间: {batch_time:.4f}秒")
+        logger.info(f"批次 {i//batch_size + 1} 处理时间: {batch_time:.4f}秒")
 
-    print(f"总处理时间: {total_time:.4f}秒")
-    print()
+    logger.info(f"总处理时间: {total_time:.4f}秒")
+    logger.info("")
 
 
 def test_performance_comparison():
     """
     性能比较测试
     """
-    print("=== 性能比较测试 ===")
+    logger.info("=== 性能比较测试 ===")
 
     # 生成测试数据
     data = generate_test_data(2000)
@@ -154,16 +155,16 @@ def test_performance_comparison():
         analyzer.calculate_indicator(indicator)
     end_time = time.time()
 
-    print(f"计算 {len(indicators)} 个指标总时间: {end_time - start_time:.4f}秒")
-    print()
+    logger.info(f"计算 {len(indicators)} 个指标总时间: {end_time - start_time:.4f}秒")
+    logger.info("")
 
 
 if __name__ == "__main__":
     import pandas as pd
 
-    print("开始测试计算优化效果...")
-    print(f"GPU可用: {is_gpu_available()}")
-    print()
+    logger.info("开始测试计算优化效果...")
+    logger.info(f"GPU可用: {is_gpu_available()}")
+    logger.info("")
 
     # 测试GPU加速
     test_gpu_acceleration()
@@ -177,4 +178,4 @@ if __name__ == "__main__":
     # 测试性能比较
     test_performance_comparison()
 
-    print("测试完成！")
+    logger.info("测试完成！")

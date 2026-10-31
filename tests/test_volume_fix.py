@@ -5,6 +5,7 @@
 """
 
 import polars as pl
+from loguru import logger
 
 from src.data.managers.data_processor import DataProcessor
 from src.utils.memory_optimizer import MemoryOptimizer
@@ -20,45 +21,45 @@ df = pl.DataFrame({
     'amount': [100000000000, 200000000000, 300000000000, 400000000000, 500000000000]
 })
 
-print("原始日线数据:")
-print(df)
-print("\n成交量类型:")
-print(df['volume'].dtype)
-print("\n成交量值:")
-print(df['volume'].to_list())
+logger.info("原始日线数据:")
+logger.info(df)
+logger.info("\n成交量类型:")
+logger.info(df['volume'].dtype)
+logger.info("\n成交量值:")
+logger.info(df['volume'].to_list())
 
 # 转换为周线数据
 processor = DataProcessor(None)
 weekly_df = processor.convert_frequency(df, '1w')
 
-print("\n周线数据:")
-print(weekly_df)
-print("\n成交量类型:")
-print(weekly_df['volume'].dtype)
-print("\n成交量值:")
-print(weekly_df['volume'][0])
+logger.info("\n周线数据:")
+logger.info(weekly_df)
+logger.info("\n成交量类型:")
+logger.info(weekly_df['volume'].dtype)
+logger.info("\n成交量值:")
+logger.info(weekly_df['volume'][0])
 
 # 验证成交量是否正确
 expected_volume = sum(df['volume'])
 actual_volume = weekly_df['volume'][0]
 
-print("\n验证结果:")
-print(f"预期成交量: {expected_volume}")
-print(f"实际成交量: {actual_volume}")
-print(f"是否正确: {expected_volume == actual_volume}")
+logger.info("\n验证结果:")
+logger.info(f"预期成交量: {expected_volume}")
+logger.info(f"实际成交量: {actual_volume}")
+logger.info(f"是否正确: {expected_volume == actual_volume}")
 
 # 测试内存优化后的结果
 optimized_df = MemoryOptimizer.optimize_dataframe(weekly_df, enable_sparse=True)
 
-print("\n内存优化后:")
-print("成交量类型:")
-print(optimized_df['volume'].dtype)
-print("成交量值:")
-print(optimized_df['volume'][0])
+logger.info("\n内存优化后:")
+logger.info("成交量类型:")
+logger.info(optimized_df['volume'].dtype)
+logger.info("成交量值:")
+logger.info(optimized_df['volume'][0])
 
 # 再次验证
 optimized_volume = optimized_df['volume'][0]
-print("\n优化后验证结果:")
-print(f"预期成交量: {expected_volume}")
-print(f"实际成交量: {optimized_volume}")
-print(f"是否正确: {expected_volume == optimized_volume}")
+logger.info("\n优化后验证结果:")
+logger.info(f"预期成交量: {expected_volume}")
+logger.info(f"实际成交量: {optimized_volume}")
+logger.info(f"是否正确: {expected_volume == optimized_volume}")
