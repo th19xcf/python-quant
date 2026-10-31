@@ -11,16 +11,52 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import polars as pl
+import psutil
 
+from src.data.managers import data_fetcher as data_fetcher_module
 from src.data.managers.data_fetcher import DataFetcher
+
+
+class SubprocessOkSource:
+    """子进程隔离测试源：正常返回数据"""
+    name = "SubprocessOk"
+    is_local = False
+
+    def __init__(self, config, db_manager):
+        pass
+
+    def get_index_data(self, **kwargs):
+        return pl.DataFrame({"close": [1.0, 2.0, 3.0]})
+
+
+class SubprocessHangSource:
+    """子进程隔离测试源：挂死 60s，验证超时能真正终止子进程"""
+    name = "SubprocessHang"
+    is_local = False
+
+    def __init__(self, config, db_manager):
+        pass
+
+    def get_index_data(self, **kwargs):
+        time.sleep(60)
+        return pl.DataFrame()
 
 
 def make_fetcher():
     cfg = MagicMock()
     cfg.data.max_workers = 5
+    return DataFetcher(config=cfg)
+
+
+def make_process_fetcher():
+    """灰度开关开启的 fetcher；config 必须可 pickle（MagicMock 不行）"""
+    cfg = SimpleNamespace(
+        data=SimpleNamespace(max_workers=4, use_subprocess_sources=True)
+    )
     return DataFetcher(config=cfg)
 
 
@@ -187,6 +223,63 @@ def test_unhealthy_source_is_filtered_then_cools_down():
         checker.reset_health_info("Broken")
 
 
+def _enable_isolation(*classes):
+    """把测试源的类路径加入子进程隔离白名单，返回用于清理的键集合"""
+    keys = {f"{cls.__module__}:{cls.__name__}" for cls in classes}
+    data_fetcher_module._PROCESS_ISOLATED_HANDLERS.update(keys)
+    return keys
+
+
+def test_subprocess_isolation_returns_data():
+    """开关开启后，白名单内的远程源在子进程内取数并回传 DataFrame"""
+    fetcher = make_process_fetcher()
+    src = SubprocessOkSource(None, None)
+    fetcher.register_source(src)
+    keys = _enable_isolation(SubprocessOkSource)
+    try:
+        out = fetcher._try_remote_sources_parallel(
+            [src], "index", "000001.SH", "20240101", "20241231", "1d", "hfq",
+            per_source_timeout=5,
+        )
+    finally:
+        data_fetcher_module._PROCESS_ISOLATED_HANDLERS.difference_update(keys)
+        fetcher._abort_process_pool()
+
+    assert not out.is_empty(), "子进程应返回数据"
+    assert out.height == 3
+    print("  [PASS] test_subprocess_isolation_returns_data  子进程取数正常")
+
+
+def test_subprocess_isolation_timeout_terminates_workers():
+    """挂死源超时后必须终止子进程池且无残留进程"""
+    fetcher = make_process_fetcher()
+    src = SubprocessHangSource(None, None)
+    fetcher.register_source(src)
+    keys = _enable_isolation(SubprocessHangSource)
+
+    before_pids = {p.pid for p in psutil.Process().children(recursive=True)}
+    try:
+        t0 = time.time()
+        out = fetcher._try_remote_sources_parallel(
+            [src], "index", "000001.SH", "20240101", "20241231", "1d", "hfq",
+            per_source_timeout=2,
+        )
+        elapsed = time.time() - t0
+        assert fetcher._process_executor is None, "超时后进程池应被丢弃"
+    finally:
+        data_fetcher_module._PROCESS_ISOLATED_HANDLERS.difference_update(keys)
+        fetcher._abort_process_pool()
+
+    assert out.is_empty(), "全部挂死应返回空 DataFrame"
+    assert elapsed < 10, f"超时应在 10s 内返回并终止子进程，实际={elapsed:.2f}s"
+
+    # 终止的进程已被 join 回收，不应再出现在子进程列表中
+    after_pids = {p.pid for p in psutil.Process().children(recursive=True)}
+    leftover = [pid for pid in (after_pids - before_pids) if psutil.pid_exists(pid)]
+    assert not leftover, f"存在未回收的子进程: {leftover}"
+    print(f"  [PASS] test_subprocess_isolation_timeout_terminates_workers  耗时={elapsed:.2f}s")
+
+
 if __name__ == "__main__":
     print("== data_fetcher 优化烟测 ==")
     test_local_priority_returns_immediately()
@@ -195,4 +288,6 @@ if __name__ == "__main__":
     test_unsupported_source_skipped()
     test_executor_is_single_instance_under_concurrency()
     test_unhealthy_source_is_filtered_then_cools_down()
+    test_subprocess_isolation_returns_data()
+    test_subprocess_isolation_timeout_terminates_workers()
     print("== 全部通过 ==")

@@ -29,6 +29,7 @@ from __future__ import annotations
 from typing import Any, Dict, Union
 
 import polars as pl
+from loguru import logger
 
 from src.backtest.engine.backtest_engine import BacktestEngine
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
@@ -48,6 +49,8 @@ def run_backtest(
     lot_size: int = 100,
     industry: str = '',
     industry_map: Dict[str, str] | None = None,
+    st_status: Dict[str, Any] | None = None,
+    db_manager: Any = None,
     **kwargs,
 ) -> Dict[str, Any]:
     """
@@ -69,6 +72,10 @@ def run_backtest(
         lot_size:      最小交易单位（A股 100 股）。
         industry:      单票行业标签（风控 MaxIndustryWeight 用）。
         industry_map:  组合行业映射 {ts_code: industry}。
+        st_status:     ST 状态映射，值可为 bool / None / 区间列表。
+                       不传时若持有 db_manager 会自动从 ST 时间维表加载。
+        db_manager:    可选的数据库管理器；传入后即使 data 已提供也会加载
+                       ST 时间维表。为 None 且需要取数时自动创建。
 
     Returns:
         dict —— BacktestEngine.run_backtest() 的返回值，包含：
@@ -77,6 +84,8 @@ def run_backtest(
             - risk_summary（如有风控）、rejected_orders（如有风控）
     """
     # ---- 数据准备 ----
+    db = None
+    owns_db = False
     if data is None and ts_code:
         # 按需 import 避免循环依赖
         from src.data.managers.data_fetcher import DataFetcher
@@ -84,13 +93,38 @@ def run_backtest(
         from src.utils.config import Config
 
         config = Config()
-        db = DatabaseManager(config)
+        db = db_manager
+        owns_db = db is None
+        if db is None:
+            db = DatabaseManager(config)
         db.connect()
         fetcher = DataFetcher(config, db_manager=db)
         data = fetcher.get_stock_data(
             ts_code, start_date or '', end_date or '',
             adjustment_type='hfq',
         )
+
+    # ---- ST 时间维表：未显式传入时按标的与日期范围加载 ----
+    if st_status is None:
+        st_db = db if db is not None else db_manager
+        if st_db is not None and data is not None:
+            if isinstance(data, dict):
+                codes = list(data.keys())
+            else:
+                codes = [ts_code] if ts_code else []
+            if codes:
+                try:
+                    from src.data.services.st_status_service import StStatusService
+
+                    st_status = StStatusService(db_manager=st_db).get_status_intervals(
+                        codes, start_date, end_date,
+                    )
+                # 兜底理由：ST 维表加载失败不影响回测，按未知处理
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"加载 ST 时间维表失败，按未知处理: {e}")
+                    st_status = None
+
+    if owns_db and db is not None:
         db.disconnect()
 
     if data is None:
@@ -107,6 +141,9 @@ def run_backtest(
         engine.risk_engine = risk_engine
         engine.set_strategies(strategies)
 
+        # 显式 st_status 参数优先；调用方 kwargs 里已有的同名参数不覆盖
+        if st_status:
+            kwargs.setdefault('st_status', st_status)
         return engine.run_backtest(
             initial_capital=initial_capital,
             lot_size=lot_size,
@@ -122,6 +159,9 @@ def run_backtest(
         engine = BacktestEngine(data)
         engine.risk_engine = risk_engine
         engine.set_strategy(strategy)
+
+        if 'is_st' not in kwargs:
+            kwargs['is_st'] = st_status.get(ts_code) if st_status and ts_code else None
 
         return engine.run_backtest(
             initial_capital=initial_capital,

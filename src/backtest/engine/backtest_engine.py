@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 from loguru import logger
 
 from src.backtest.engine.base_engine import BaseBacktestEngine
-from src.backtest.engine.execution_core import EventBacktestRunner
+from src.backtest.engine.execution_core import EventBacktestRunner, StStatusEntry
 
 
 class BacktestEngine(BaseBacktestEngine):
@@ -39,7 +39,7 @@ class BacktestEngine(BaseBacktestEngine):
 
     def run_backtest(self, initial_capital: float = 1000000.0, lot_size: int = 100,
                      ts_code: str = '', industry: str = '',
-                     is_st: bool | None = None, **params) -> Dict[str, Any]:
+                     is_st: StStatusEntry | None = None, **params) -> Dict[str, Any]:
         """
         运行回测
 

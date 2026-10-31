@@ -9,7 +9,7 @@ from typing import Any, Dict
 from loguru import logger
 
 from src.backtest.engine.base_engine import BaseBacktestEngine
-from src.backtest.engine.execution_core import EventBacktestRunner
+from src.backtest.engine.execution_core import EventBacktestRunner, StStatus
 from src.backtest.strategies.base_strategy import BaseStrategy
 
 
@@ -80,7 +80,7 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
 
     def run_backtest(self, initial_capital: float = 1000000.0, allocation_strategy: str = 'equal', lot_size: int = 100,
                      industry_map: Dict[str, str] | None = None,
-                     st_status: Dict[str, bool | None] | None = None,
+                     st_status: StStatus | None = None,
                      **params) -> Dict[str, Any]:
         """
         运行组合回测

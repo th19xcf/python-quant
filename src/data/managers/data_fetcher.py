@@ -8,9 +8,10 @@
 
 import concurrent.futures
 import inspect
+import multiprocessing
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import date, datetime
 from typing import List, Union
 
@@ -19,8 +20,16 @@ from loguru import logger
 
 from src.data.data_cache import global_data_cache
 from src.data.data_source_health import get_global_health_checker
+from src.data.managers.source_worker import call_source
 from src.utils.memory_optimizer import MemoryOptimizer
 from src.utils.monitoring import global_monitoring_system
+
+# 允许子进程隔离的远程纯网络源（handler 类路径）
+# 本地源（TDX）依赖进程内状态，不走子进程；插件源无法保证可重建，也不走。
+_PROCESS_ISOLATED_HANDLERS = {
+    'src.data.akshare_handler:AkShareHandler',
+    'src.data.baostock_handler:BaostockHandler',
+}
 
 
 class DataFetcher:
@@ -53,6 +62,10 @@ class DataFetcher:
         self._health_checker = get_global_health_checker()
         # 熔断冷却窗口（秒）：数据源故障后仍定期放行探测，避免被永久锁死
         self._health_cooldown = 300
+        # 远程纯网络源的子进程池（惰性创建，仅灰度开关开启时使用）
+        self._process_executor = None
+        # 子进程池的创建/终止锁：超时终止与并发取数会同时访问池
+        self._process_lock = threading.Lock()
 
     def register_source(self, source):
         """
@@ -582,7 +595,6 @@ class DataFetcher:
     def _try_remote_sources_parallel(self, sources, data_type, code, start_date, end_date,
                                       frequency, adjustment_type, per_source_timeout=10) -> pl.DataFrame:
         """并行调用多个远程源，命中即取消其他"""
-        executor = self._get_executor()
         futures = {}
         type_name = "股票" if data_type == "stock" else "指数"
 
@@ -592,35 +604,40 @@ class DataFetcher:
             if call is None:
                 continue
             method_name, kwargs = call
-            f = executor.submit(self._fetch_from_source, src, method_name, **kwargs)
-            f.add_done_callback(self._consume_late_result)
-            futures[f] = (src, method_name)
+            future, isolated = self._submit_source_call(src, method_name, kwargs)
+            futures[future] = (src, isolated, time.time())
 
         try:
             for future in concurrent.futures.as_completed(futures, timeout=per_source_timeout + 5):
-                src, _ = futures[future]
-                source_name = getattr(src, 'name', src.__class__.__name__)
-                try:
-                    success, result = future.result(timeout=0.1)
-                    if success and result is not None and not result.is_empty():
-                        # 命中：取消其他
-                        for f in futures:
-                            if f is not future and not f.done():
-                                f.cancel()
-                        logger.info(f"从{source_name}成功获取{type_name}{code}数据",
-                                    **{"symbol": code, "source": source_name, "data_type": data_type, "rows": result.height})
-                        return result
-                except concurrent.futures.TimeoutError:
-                    logger.warning(f"从{source_name}获取数据超时",
-                                   **{"symbol": code, "source": source_name})
-                # 兜底理由：单数据源结果处理失败降级为跳过
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(f"处理{source_name}结果时出错: {e}",
-                                   **{"symbol": code, "source": source_name, "error": str(e)})
+                src, isolated, start_time = futures[future]
+                result = self._resolve_source_future(future, src, isolated, start_time)
+                if result is not None and not result.is_empty():
+                    # 命中：取消其他
+                    for f in futures:
+                        if f is not future and not f.done():
+                            f.cancel()
+                    source_name = getattr(src, 'name', src.__class__.__name__)
+                    logger.info(f"从{source_name}成功获取{type_name}{code}数据",
+                                **{"symbol": code, "source": source_name, "data_type": data_type, "rows": result.height})
+                    return result
         except concurrent.futures.TimeoutError:
             # 所有源在 (per_source_timeout + 5) 秒内都没有完成
             logger.warning(f"远程源全部超时（>{per_source_timeout + 5}s）",
                            **{"symbol": code, "data_type": data_type, "timeout": per_source_timeout + 5})
+            # 先记账再终止：终止后 future 会变成 broken，无法再判断真实状态
+            pending_isolated = [
+                (getattr(src, 'name', src.__class__.__name__), start_time)
+                for future, (src, isolated, start_time) in futures.items()
+                if isolated and not future.done()
+            ]
+            for source_name, start_time in pending_isolated:
+                self._record_isolated_result(
+                    source_name, start_time, False,
+                    f"timeout>{per_source_timeout + 5}s",
+                )
+            # 子进程挂死时线程超时只能"不再等待"，必须真正终止子进程并重建池
+            if any(isolated for _, isolated, _ in futures.values()):
+                self._abort_process_pool()
         finally:
             # 确保取消所有未完成的 future
             for f in futures:
@@ -628,6 +645,150 @@ class DataFetcher:
                     f.cancel()
 
         return pl.DataFrame()
+
+    def _resolve_source_future(self, future, src, isolated: bool,
+                               start_time: float) -> pl.DataFrame | None:
+        """解析单个取数 future，成功返回 DataFrame（可能为空），失败/超时返回 None"""
+        source_name = getattr(src, 'name', src.__class__.__name__)
+        try:
+            if isolated:
+                # 子进程返回 (ok, error, df)，健康统计需在主进程记账
+                success, error, result = future.result(timeout=0.1)
+                self._record_isolated_result(source_name, start_time, success, error)
+            else:
+                success, result = future.result(timeout=0.1)
+
+            if success and result is not None and not result.is_empty():
+                return MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
+            return None
+        except concurrent.futures.TimeoutError:
+            logger.warning(f"从{source_name}获取数据超时",
+                           **{"symbol": source_name})
+            return None
+        # 兜底理由：单数据源结果处理失败降级为跳过
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"处理{source_name}结果时出错: {e}",
+                           **{"source": source_name, "error": str(e)})
+            if isolated:
+                self._record_isolated_result(source_name, start_time, False, str(e))
+            return None
+
+    # ------------------------------------------------------------------
+    # 子进程隔离（灰度）
+    # ------------------------------------------------------------------
+
+    def _process_isolation_enabled(self) -> bool:
+        """读取灰度开关：默认关闭，保持原有线程路径"""
+        data_cfg = getattr(self.config, 'data', None)
+        return bool(getattr(data_cfg, 'use_subprocess_sources', False))
+
+    def _can_isolate(self, source) -> bool:
+        """是否允许该源走子进程：开关开启且属于受支持的远程纯网络 handler"""
+        if not self._process_isolation_enabled():
+            return False
+        path = f"{type(source).__module__}:{type(source).__name__}"
+        return path in _PROCESS_ISOLATED_HANDLERS
+
+    def _get_process_executor(self) -> ProcessPoolExecutor:
+        """获取（或懒创建）常驻子进程池
+
+        使用 spawn 上下文：子进程不继承主进程的线程锁、数据库连接等状态。
+        """
+        pool = self._process_executor
+        if pool is not None and not getattr(pool, '_shutdown', False):
+            return pool
+
+        with self._process_lock:
+            pool = self._process_executor
+            if pool is None or getattr(pool, '_shutdown', False):
+                data_cfg = getattr(self.config, 'data', None)
+                max_workers = getattr(data_cfg, 'max_workers', 4)
+                workers = max(2, min(max_workers, 4))
+                pool = ProcessPoolExecutor(
+                    max_workers=workers,
+                    mp_context=multiprocessing.get_context('spawn'),
+                )
+                self._process_executor = pool
+            return pool
+
+    def _abort_process_pool(self):
+        """终止子进程池并丢弃（超时/挂死场景下唯一的真正中断手段）"""
+        with self._process_lock:
+            pool = self._process_executor
+            self._process_executor = None
+        if pool is None:
+            return
+
+        processes = []
+        try:
+            processes = list(getattr(pool, '_processes', {}).values())
+        # 兜底理由：CPython 私有属性可能变化，拿不到进程句柄时仍要关闭池
+        except Exception:  # noqa: BLE001
+            processes = []
+
+        for proc in processes:
+            try:
+                if proc.is_alive():
+                    proc.terminate()
+            # 兜底理由：单个进程终止失败不阻断其余
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"终止子进程失败（忽略）: {e}")
+                continue
+
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        # 兜底理由：旧版本不支持 cancel_futures
+        except TypeError:
+            pool.shutdown(wait=False)
+
+        for proc in processes:
+            try:
+                proc.join(timeout=2)
+            # 兜底理由：join 失败不影响主流程
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"回收子进程失败（忽略）: {e}")
+                continue
+
+        logger.warning("远程数据源子进程池因超时被终止并重建")
+
+    def _submit_source_call(self, source, method_name, kwargs):
+        """提交单源取数
+
+        Returns:
+            (future, isolated)：isolated=True 表示在子进程池中执行
+        """
+        if self._can_isolate(source):
+            pool = self._get_process_executor()
+            payload = {
+                'handler': f"{type(source).__module__}:{type(source).__name__}",
+                'method': method_name,
+                'kwargs': kwargs,
+                'config': self.config,
+            }
+            future = pool.submit(call_source, payload)
+            future.add_done_callback(self._consume_late_result)
+            return future, True
+
+        future = self._get_executor().submit(
+            self._fetch_from_source, source, method_name, **kwargs
+        )
+        future.add_done_callback(self._consume_late_result)
+        return future, False
+
+    def _record_isolated_result(self, source_name: str, start_time: float,
+                                success: bool, error: str):
+        """主进程侧记账：子进程无法直接更新监控与健康检查状态"""
+        response_time = time.time() - start_time
+        global_monitoring_system.record_data_source_request(source_name, response_time, success)
+        # 空结果不算故障，与线程路径保持一致
+        if success or error:
+            self._health_checker.record_request(source_name, success, response_time, error)
+
+        if source_name not in self.source_priorities:
+            self.source_priorities[source_name] = []
+        self.source_priorities[source_name].append(response_time)
+        if len(self.source_priorities[source_name]) > 10:
+            self.source_priorities[source_name] = self.source_priorities[source_name][-10:]
 
     def _build_source_call(self, source, data_type, code, start_date, end_date,
                             frequency, adjustment_type):
@@ -795,7 +956,11 @@ class DataFetcher:
         """
         if future.cancelled():
             return
-        future.exception()
+        try:
+            future.exception()
+        # 兜底理由：子进程池被终止后 exception() 会抛 BrokenProcessPool
+        except Exception:  # noqa: BLE001
+            return
 
     def _get_source_priority(self, source_name: str) -> float:
         """

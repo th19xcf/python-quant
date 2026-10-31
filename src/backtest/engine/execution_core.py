@@ -38,6 +38,13 @@ from src.risk import RiskEngine
 #: A 股最小价格变动单位（1 分），交易所涨跌停价的取整单位
 PRICE_TICK = Decimal('0.01')
 
+#: ST 状态条目：
+#:   - bool / None：静态三态（None=未知）
+#:   - List[dict]：时间区间列表，每项含 start_date / end_date / is_st，
+#:     end_date=None 表示当前仍有效；区间外按未知（None）处理。
+StStatusEntry = bool | None | List[Dict[str, Any]]
+StStatus = Dict[str, StStatusEntry]
+
 
 def to_trade_date(value: Any) -> date | None:
     """把回测主循环里的 date（date / datetime / 'YYYY-MM-DD' 字符串）归一为 date。
@@ -394,7 +401,7 @@ class EventBacktestRunner:
             initial_capital: float = 1_000_000.0, lot_size: int = 100,
             industry_map: Dict[str, str] | None = None,
             result_meta: Dict[str, Any] | None = None,
-            st_status: Dict[str, bool | None] | None = None) -> Dict[str, Any]:
+            st_status: StStatus | None = None) -> Dict[str, Any]:
         """
         执行回测并返回结果字典。
 
@@ -428,7 +435,7 @@ class EventBacktestRunner:
         # 缺陷 C：整次回测任一标的缺 open 列 → 标记 fill_confidence 为 low
         _open_missing = self._check_open_column(column_data)
 
-        # ST 三态：True=ST、False=明确非 ST、未提供=未知（按 5% 保守判定）
+        # ST 三态：True=ST、False=明确非 ST、未提供/区间外=未知（按板块默认判定）
         st_status, st_unknown = self._resolve_st_status(codes, st_status)
 
         # 信号批量预生成：每个标的只调用一次向量化策略接口，主循环退化为
@@ -458,7 +465,7 @@ class EventBacktestRunner:
         expired_orders: List[Dict[str, Any]] = []
         equity_curve: List[Dict[str, Any]] = []
 
-        self._run_trading_loop(
+        loop_st_unknown = self._run_trading_loop(
             sorted_dates=sorted_dates, date_codes=date_codes,
             date_positions=date_positions, column_data=column_data,
             pending=pending, prev_close=prev_close, prev_raw_close=prev_raw_close,
@@ -467,6 +474,8 @@ class EventBacktestRunner:
             equity_curve=equity_curve, lot_size=lot_size,
             st_status=st_status, signal_columns=signal_columns,
         )
+        # 区间模式下，区间外日期仍为未知；loop 内逐 bar 判定并回传该标记
+        st_unknown = loop_st_unknown or st_unknown
 
         return self._build_result(
             initial_capital=initial_capital, equity_curve=equity_curve,
@@ -535,29 +544,54 @@ class EventBacktestRunner:
 
     @staticmethod
     def _resolve_st_status(
-        codes: List[str], st_status: Dict[str, bool | None] | None,
-    ) -> tuple[Dict[str, bool | None], bool]:
-        """解析 ST 三态映射，返回 (st_status, st_unknown)，未知标的按板块默认判定。
+        codes: List[str], st_status: StStatus | None,
+    ) -> tuple[StStatus, bool]:
+        """解析 ST 映射，返回 (st_status, st_unknown)。
 
-        True=ST、False=明确非 ST、未出现在映射中=状态未知。未知不代表 ST：
-        涨跌停按板块规则（与 False 相同）判定，只以 st_unknown=True /
-        fill_confidence=low 标记数据质量，避免把未知当 ST 后系统性剔除
-        主板 +5% 以上的跳空走强成交。
-        历史 ST 状态需 (code, start_date, end_date, is_st) 时间维表才能精确
-        判定（戴帽/摘帽逐年变化，只取当前名称会在历史区间张冠李戴），
-        当前数据层未提供，故默认全部走未知分支。
+        True=ST、False=明确非 ST、None=未知；区间列表表示按日期查询。
+        未知不代表 ST：涨跌停按板块规则（与 False 相同）判定，只以
+        st_unknown=True / fill_confidence=low 标记数据质量。
         """
         st_status = dict(st_status or {})
-        unknown_st_codes = [c for c in codes if st_status.get(c) is None]
+        unknown_st_codes = []
+        for code in codes:
+            value = st_status.get(code)
+            if value is None or (isinstance(value, list) and not value):
+                unknown_st_codes.append(code)
+
         st_unknown = bool(unknown_st_codes)
         if st_unknown:
             logger.warning(
                 "ST 状态未知的标的 {} 只（如 {}），涨跌停按板块默认幅度判定，"
                 "结果标记 st_unknown=True、fill_confidence=low；"
-                "接入 ST 时间维表后传入 st_status 即可消除该标记。",
+                "接入 ST 时间维表后传入区间列表即可缩小未知范围。",
                 len(unknown_st_codes), unknown_st_codes[:5],
             )
         return st_status, st_unknown
+
+    @staticmethod
+    def _resolve_st_for_date(value: StStatusEntry, trade_date: Any) -> bool | None:
+        """按 trade_date 解析单个标的的 ST 状态。
+
+        - bool/None：静态三态，直接返回；
+        - 区间列表：命中区间返回对应 is_st，区间外返回 None（未知）。
+        """
+        if value is None or isinstance(value, bool):
+            return value
+
+        day = to_trade_date(trade_date)
+        if day is None:
+            return None
+
+        for interval in value:
+            start = to_trade_date(interval.get('start_date'))
+            if start is None or day < start:
+                continue
+            end = to_trade_date(interval.get('end_date'))
+            if end is not None and day > end:
+                continue
+            return bool(interval.get('is_st', True))
+        return None
 
     def _build_signal_columns(
         self, codes: List[str], strategies: Dict[str, Any],
@@ -694,15 +728,25 @@ class EventBacktestRunner:
         rejected_orders: List[Dict[str, Any]],
         expired_orders: List[Dict[str, Any]],
         equity_curve: List[Dict[str, Any]], lot_size: int,
-        st_status: Dict[str, bool | None], signal_columns: Dict[str, list],
-    ) -> None:
-        """逐日推进主循环：执行挂单、记账信号、更新 prev_close/盯市价、追加权益。"""
+        st_status: StStatus, signal_columns: Dict[str, list],
+    ) -> bool:
+        """逐日推进主循环：执行挂单、记账信号、更新 prev_close/盯市价、追加权益。
+
+        Returns:
+            bool: 是否出现按日期无法判定 ST 状态的 bar（用于 st_unknown 标记）
+        """
+        st_unknown_seen = False
         for trade_day in sorted_dates:
             for code in date_codes[trade_day]:
                 pos = date_positions[code][trade_day]
                 cols = column_data[code]
                 (close_price, open_price, high, low,
                  volume, raw_open, raw_close) = self._extract_bar_prices(cols, pos)
+
+                # 区间模式按 trade_date 查 ST；静态三态直接返回原值
+                is_st = self._resolve_st_for_date(st_status.get(code), trade_day)
+                if is_st is None:
+                    st_unknown_seen = True
 
                 self._execute_pending(
                     code=code, date=trade_day, pending=pending, book=book, gate=gate,
@@ -714,7 +758,7 @@ class EventBacktestRunner:
                     high=high, low=low, close=close_price, volume=volume,
                     open_raw=raw_open, prev_close_raw=prev_raw_close[code],
                     close_raw=raw_close,
-                    is_st=st_status.get(code),
+                    is_st=is_st,
                 )
 
                 # 策略基于当日数据生成信号，延迟到该标的下一个交易日执行；
@@ -733,6 +777,8 @@ class EventBacktestRunner:
                 book.mark(code, close_price)
 
             equity_curve.append({'date': trade_day, 'equity': book.total_equity()})
+
+        return st_unknown_seen
 
     def _build_result(
         self, *, initial_capital: float, equity_curve: List[Dict[str, Any]],

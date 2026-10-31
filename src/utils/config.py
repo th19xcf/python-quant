@@ -86,6 +86,11 @@ class DataSettings(BaseSettings):
     update_interval: int = Field(default=3600, description="数据更新间隔(秒)")
     max_workers: int = Field(default=4, description="数据获取最大工作线程数")
 
+    # 远程数据源子进程隔离（灰度开关，默认关闭）
+    # 开启后 AkShare/BaoStock 等纯网络源在独立进程内执行，超时可直接终止进程，
+    # 避免第三方库挂死拖住整个主进程。
+    use_subprocess_sources: bool = Field(default=False, description="远程数据源是否启用子进程隔离")
+
     # 数据源重试配置
     retry_max_retries: int = Field(default=3, description="数据源请求最大重试次数")
     retry_delay: float = Field(default=1.0, description="首次重试间隔(秒)")

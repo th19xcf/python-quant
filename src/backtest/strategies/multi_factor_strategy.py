@@ -25,7 +25,7 @@ from src.backtest.strategies.base_strategy import BaseStrategy
 class MultiFactorStrategy(BaseStrategy):
     """结合 MA / MACD / RSI 的综合因子策略（默认需至少两因子共振）"""
 
-    def __init__(self, factors: List[str] = None, weights: Dict[str, float] = None,
+    def __init__(self, factors: List[str] | None = None, weights: Dict[str, float] | None = None,
                  threshold: float = 0.5):
         super().__init__(name="多因子策略")
         self.params['factors'] = factors or ['ma', 'macd', 'rsi']

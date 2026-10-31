@@ -6,7 +6,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Column, Date, DateTime, Float, Index, Integer, String
+from sqlalchemy import Boolean, Column, Date, DateTime, Float, Index, Integer, String
 
 from src.database.db_manager import Base
 
@@ -202,6 +202,44 @@ class StockAdjFactor(Base):
 
     def __repr__(self):
         return f"<StockAdjFactor(ts_code='{self.ts_code}', trade_date='{self.trade_date}', qfq={self.qfq_factor}, hfq={self.hfq_factor})>"
+
+
+class StockStatusHistory(Base):
+    """
+    股票 ST 状态时间维表
+
+    记录 (ts_code, start_date, end_date) 区间内的 ST 状态，供回测按
+    trade_date 精确判定涨跌停幅度。end_date 为 None 表示当前仍有效。
+
+    数据源限制：akshare 仅提供"当前"风险警示板名单，无历史戴帽/摘帽日期；
+    因此当前实现只能记录从 coverage_start 起的近似区间，更早的历史日期
+    仍按未知（None）处理，由回测结果 st_unknown 标记数据质量。
+    """
+    __tablename__ = "stock_status_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ts_code = Column(String(20), nullable=False, comment="股票代码")
+    start_date = Column(Date, nullable=False, comment="区间开始日期")
+    end_date = Column(Date, nullable=True, comment="区间结束日期，None 表示当前仍有效")
+    is_st = Column(Boolean, default=True, nullable=False, comment="是否 ST")
+    source = Column(String(30), comment="数据来源")
+    created_at = Column(DateTime, default=datetime.now, comment="创建时间")
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
+
+    __table_args__ = (
+        Index('idx_stock_status_history_ts_code_start', 'ts_code', 'start_date', unique=True),
+        Index('idx_stock_status_history_range', 'start_date', 'end_date'),
+        {
+            "comment": "股票 ST 状态时间维表",
+            "mysql_charset": "utf8mb4",
+            "mysql_collate": "utf8mb4_general_ci",
+            "extend_existing": True
+        }
+    )
+
+    def __repr__(self):
+        return (f"<StockStatusHistory(ts_code='{self.ts_code}', "
+                f"start={self.start_date}, end={self.end_date}, is_st={self.is_st})>")
 
 
 class MarketBreadth(Base):

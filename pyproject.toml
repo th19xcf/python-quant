@@ -169,7 +169,7 @@ explicit_package_bases = true
 ignore_missing_imports = true
 # 先覆盖回测撮合内核，再逐步向外扩展；silent 表示只报告列出的目录内的错误，
 # 不把尚未收口的依赖模块错误一并暴露（避免门禁被无关存量错误淹没）
-files = ["src/backtest/engine"]
+files = ["src/backtest/engine", "src/backtest/strategies", "src/risk"]
 follow_imports = "silent"
 
 [tool.coverage.run]
