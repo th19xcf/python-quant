@@ -227,8 +227,8 @@ class TestBaostockDailyFactors:
 
     @staticmethod
     def _compute(raw, hfq):
-        from src.data.baostock_handler import BaostockHandler
-        return BaostockHandler._compute_daily_factors(raw, hfq)
+        from src.data.sources.baostock_schema import compute_daily_factors
+        return compute_daily_factors(raw, hfq)
 
     def test_factor_covers_every_trading_day(self):
         """每个交易日都必须有因子，不能只在除权日有值"""

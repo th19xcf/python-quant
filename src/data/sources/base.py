@@ -7,6 +7,7 @@
 """
 
 from abc import ABC
+from datetime import datetime, timedelta
 from typing import Dict, List, Union
 
 import polars as pl
@@ -249,6 +250,72 @@ class DataSourceBase(ABC):
                 logger.info(f"K线含 {suspend_count} 个停牌交易日（volume<=0），已保留原始记录")
 
         return df
+
+    # ------------------------------------------------------------------
+    # 通用参数处理
+    #
+    # 默认代码列表、日期默认值、分钟线频率校验在各数据源中语义一致，
+    # 统一收口到基类，避免每个 handler/Mixin 各写一份实现而漂移。
+    # ------------------------------------------------------------------
+
+    def _get_default_codes(self, code_type: str):
+        """
+        获取默认代码列表
+
+        Args:
+            code_type: 代码类型，'stock'或'index'
+
+        Returns:
+            list: 默认代码列表
+        """
+        if code_type == 'stock':
+            return getattr(self, 'default_stock_codes', [])
+        elif code_type == 'index':
+            return getattr(self, 'default_index_codes', [])
+        else:
+            return []
+
+    def _process_dates(self, start_date: str, end_date: str,
+                       default_days: int = 30, date_format: str = "%Y-%m-%d"):
+        """
+        处理日期参数，设置默认值
+
+        Args:
+            start_date: 开始日期
+            end_date: 结束日期
+            default_days: 默认天数
+            date_format: 日期字符串格式（baostock 用 %Y-%m-%d，akshare 用 %Y%m%d）
+
+        Returns:
+            tuple: (start_date, end_date)
+        """
+        if not end_date:
+            end_date = datetime.now().strftime(date_format)
+        if not start_date:
+            # 默认更新最近 default_days 天的数据
+            start_date = (datetime.now() - timedelta(days=default_days)).strftime(date_format)
+
+        return start_date, end_date
+
+    def _validate_frequency(self, frequency: str):
+        """
+        验证分钟线频率
+
+        子类未声明 supported_frequencies 时原样返回，不做校验。
+
+        Args:
+            frequency: 分钟线频率
+
+        Returns:
+            str: 验证后的分钟线频率
+        """
+        supported = getattr(self, 'supported_frequencies', None)
+        if supported is None:
+            return frequency
+        if frequency not in supported:
+            logger.warning(f"不支持的分钟线频率: {frequency}，使用默认频率5分钟")
+            return "5"
+        return frequency
 
     # ------------------------------------------------------------------
     # 标准接口契约
