@@ -152,14 +152,6 @@ class MainWindowEventMixin:
             except Exception as e:
                 logger.error(f"停止内存监控时出错: {e}")
 
-            # 停止系统监控
-            try:
-                from src.utils.monitoring import global_monitoring_system
-                global_monitoring_system.stop()
-                logger.info("系统监控已停止")
-            except Exception as e:
-                logger.error(f"停止系统监控时出错: {e}")
-
             # 调用父类的关闭方法
             with contextlib.suppress(Exception):
                 super().closeEvent(event)

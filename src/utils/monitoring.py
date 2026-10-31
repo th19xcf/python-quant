@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 
 """
-监控系统模块，提供数据源响应时间、缓存使用情况和系统性能的监控功能
+监控系统模块，提供数据源响应时间和缓存使用情况的监控功能
+
+系统级性能（CPU/内存/磁盘/网络）采样曾由 SystemMonitor 承担，但全仓从未调用
+MonitoringSystem.start()，该采样线程从未运行；进程级内存监控由
+src.utils.memory_manager.MemoryManager 实际承担（main.py 启动时开启），故移除
+这条休眠链路，避免两套监控设施并存。
 """
 
 import threading
@@ -9,7 +14,6 @@ import time
 from collections import defaultdict, deque
 from typing import Any, Dict
 
-import psutil
 from loguru import logger
 
 
@@ -143,7 +147,8 @@ class DataSourceMonitor:
 
 class CacheStatsRegistry:
     """
-    缓存统计登记表，记录各命名缓存的命中/淘汰指标（与 src.utils.cache_monitor.CacheMonitor 职责不同）
+    缓存统计登记表，记录由外部上报的各命名缓存命中/淘汰指标
+    （与直接读取 global_data_cache/global_indicator_cache 的 log_cache_stats 职责不同）
     """
 
     def __init__(self):
@@ -216,151 +221,9 @@ class CacheStatsRegistry:
             self.cache_stats.clear()
 
 
-class SystemMonitor:
-    """
-    系统监控器，记录系统性能指标
-    """
-
-    def __init__(self, interval: int = 60):
-        """
-        初始化系统监控器
-
-        Args:
-            interval: 监控间隔（秒）
-        """
-        self.interval = interval
-        self.cpu_usage = deque(maxlen=60)  # 保存1小时的数据
-        self.memory_usage = deque(maxlen=60)
-        self.disk_usage = deque(maxlen=60)
-        self.network_usage = deque(maxlen=60)
-        self.lock = threading.Lock()
-        self.running = False
-        self.thread = None
-
-    def start(self):
-        """
-        启动系统监控
-        """
-        if not self.running:
-            self.running = True
-            self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
-            self.thread.start()
-            logger.info("系统监控已启动")
-
-    def stop(self):
-        """
-        停止系统监控
-        """
-        if self.running:
-            self.running = False
-            if self.thread:
-                self.thread.join()
-            logger.info("系统监控已停止")
-
-    def _monitor_loop(self):
-        """
-        监控循环
-        """
-        while self.running:
-            try:
-                # 收集系统指标
-                cpu = psutil.cpu_percent(interval=1)
-                memory = psutil.virtual_memory().percent
-                disk = psutil.disk_usage('/').percent
-                net_io = psutil.net_io_counters()
-
-                with self.lock:
-                    self.cpu_usage.append({
-                        'timestamp': time.time(),
-                        'value': cpu
-                    })
-                    self.memory_usage.append({
-                        'timestamp': time.time(),
-                        'value': memory
-                    })
-                    self.disk_usage.append({
-                        'timestamp': time.time(),
-                        'value': disk
-                    })
-                    self.network_usage.append({
-                        'timestamp': time.time(),
-                        'bytes_sent': net_io.bytes_sent,
-                        'bytes_recv': net_io.bytes_recv
-                    })
-
-                time.sleep(self.interval - 1)  # 减去1秒的cpu_percent等待时间
-            # 兜底理由：系统监控线程兜底，不得因采集失败退出
-            except Exception as e:  # noqa: BLE001
-                logger.error(f"系统监控出错: {e}")
-                time.sleep(self.interval)
-
-    def get_stats(self) -> Dict[str, Any]:
-        """
-        获取系统统计信息
-
-        Returns:
-            dict: 系统统计信息
-        """
-        with self.lock:
-            cpu_values = [item['value'] for item in self.cpu_usage]
-            memory_values = [item['value'] for item in self.memory_usage]
-            disk_values = [item['value'] for item in self.disk_usage]
-
-            avg_cpu = sum(cpu_values) / len(cpu_values) if cpu_values else 0
-            avg_memory = sum(memory_values) / len(memory_values) if memory_values else 0
-            avg_disk = sum(disk_values) / len(disk_values) if disk_values else 0
-
-            return {
-                'cpu': {
-                    'avg': avg_cpu,
-                    'last': cpu_values[-1] if cpu_values else 0,
-                    'max': max(cpu_values) if cpu_values else 0,
-                    'min': min(cpu_values) if cpu_values else 0,
-                    'history': list(self.cpu_usage)
-                },
-                'memory': {
-                    'avg': avg_memory,
-                    'last': memory_values[-1] if memory_values else 0,
-                    'max': max(memory_values) if memory_values else 0,
-                    'min': min(memory_values) if memory_values else 0,
-                    'history': list(self.memory_usage)
-                },
-                'disk': {
-                    'avg': avg_disk,
-                    'last': disk_values[-1] if disk_values else 0,
-                    'max': max(disk_values) if disk_values else 0,
-                    'min': min(disk_values) if disk_values else 0,
-                    'history': list(self.disk_usage)
-                },
-                'network': {
-                    'history': list(self.network_usage)
-                }
-            }
-
-    def log_stats(self):
-        """
-        记录系统统计信息到日志
-        """
-        stats = self.get_stats()
-        logger.info(f"系统监控统计: "
-                  f"CPU使用率={stats['cpu']['last']:.1f}% (平均={stats['cpu']['avg']:.1f}%), "
-                  f"内存使用率={stats['memory']['last']:.1f}% (平均={stats['memory']['avg']:.1f}%), "
-                  f"磁盘使用率={stats['disk']['last']:.1f}% (平均={stats['disk']['avg']:.1f}%)")
-
-    def reset(self):
-        """
-        重置监控数据
-        """
-        with self.lock:
-            self.cpu_usage.clear()
-            self.memory_usage.clear()
-            self.disk_usage.clear()
-            self.network_usage.clear()
-
-
 class MonitoringSystem:
     """
-    监控系统，整合所有监控器
+    监控系统，整合数据源与缓存监控
     """
 
     def __init__(self):
@@ -369,21 +232,6 @@ class MonitoringSystem:
         """
         self.data_source_monitor = DataSourceMonitor()
         self.cache_monitor = CacheStatsRegistry()
-        self.system_monitor = SystemMonitor()
-
-    def start(self):
-        """
-        启动监控系统
-        """
-        self.system_monitor.start()
-        logger.info("监控系统已启动")
-
-    def stop(self):
-        """
-        停止监控系统
-        """
-        self.system_monitor.stop()
-        logger.info("监控系统已停止")
 
     def record_data_source_request(self, source_name: str, response_time: float, success: bool):
         """
@@ -416,7 +264,6 @@ class MonitoringSystem:
         return {
             'data_sources': self.data_source_monitor.get_stats(),
             'cache': self.cache_monitor.get_stats(),
-            'system': self.system_monitor.get_stats()
         }
 
     def log_all_stats(self):
@@ -426,7 +273,6 @@ class MonitoringSystem:
         logger.info("=== 监控系统统计信息 ===")
         self.data_source_monitor.log_stats()
         self.cache_monitor.log_stats()
-        self.system_monitor.log_stats()
         logger.info("====================")
 
     def reset_all(self):
@@ -435,7 +281,6 @@ class MonitoringSystem:
         """
         self.data_source_monitor.reset()
         self.cache_monitor.reset()
-        self.system_monitor.reset()
         logger.info("监控系统数据已重置")
 
 
@@ -483,3 +328,35 @@ def monitor_cache(func):
         return result
 
     return wrapper
+
+
+def log_cache_stats():
+    """
+    记录数据缓存与指标缓存的统计信息（原 cache_monitor.log_cache_stats）
+
+    直接读取两个全局缓存的 get_stats()，不依赖额外的监控器实例。
+    """
+    # 延迟导入：避免 utils.monitoring 在导入期就拉起 data/tech_analysis 依赖
+    from src.data.data_cache import global_data_cache
+    from src.tech_analysis.indicator_cache import global_indicator_cache
+
+    data_stats = global_data_cache.get_stats()
+    indicator_stats = global_indicator_cache.get_stats()
+
+    logger.info("缓存监控统计:")
+    logger.info("  数据缓存:")
+    logger.info(f"    缓存大小: {data_stats['size']}/{data_stats['max_size']}")
+    logger.info(f"    命中次数: {data_stats['hits']}")
+    logger.info(f"    未命中次数: {data_stats['misses']}")
+    logger.info(f"    命中率: {data_stats['hit_rate']:.2%}")
+    logger.info(f"    淘汰次数: {data_stats['evictions']}")
+    logger.info("  指标缓存:")
+    logger.info(f"    缓存大小: {indicator_stats['size']}/{indicator_stats['max_size']}")
+    logger.info(f"    命中次数: {indicator_stats['hits']}")
+    logger.info(f"    未命中次数: {indicator_stats['misses']}")
+    logger.info(f"    命中率: {indicator_stats['hit_rate']:.2%}")
+    logger.info(f"    淘汰次数: {indicator_stats['evictions']}")
+    logger.info("  总计:")
+    logger.info(f"    总缓存大小: {data_stats['size'] + indicator_stats['size']}")
+    logger.info(f"    总命中次数: {data_stats['hits'] + indicator_stats['hits']}")
+    logger.info(f"    总未命中次数: {data_stats['misses'] + indicator_stats['misses']}")

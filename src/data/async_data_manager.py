@@ -5,6 +5,13 @@
 
 只负责在 asyncio.run_in_executor 中把 data_manager 包一层异步接口；
 不复刻 handler 调度或复权口径，与 DataFetcher._apply_adjustment 保持单一路径。
+
+【asyncio 孤岛】生产代码没有任何调用方接入本模块：src 内仅 DataManager 的
+async 包装方法转发到此，而这些 async 方法全仓唯一的调用点是
+tests/performance_test.py 的 asyncio.run(...)。也就是说这条 10 线程长驻池
+（本项目长驻池中占用最大者）目前只为性能测试存在。若接入真实异步调用方，
+需要同时确认 UI/回测主循环不被 asyncio 事件循环阻塞；若长期不接入，应连同
+DataManager 的 async 包装方法一并移除。
 """
 
 import asyncio
@@ -41,7 +48,7 @@ class AsyncDataManager:
         # 数据源优先级缓存（基于历史响应时间）
         self.source_priorities = {}
 
-        # 线程池用于执行同步操作
+        # 线程池用于执行同步操作（长驻 10 线程，当前仅性能测试路径使用，见模块文档）
         self.executor = ThreadPoolExecutor(max_workers=10)
 
     async def _get_data_from_sources_async(self, data_type: str, ts_code: str, start_date: str, end_date: str, freq: str = "daily", adjustment_type: str = "hfq"):

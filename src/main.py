@@ -28,7 +28,7 @@ from src.database.db_manager import DatabaseManager
 from src.plugin.plugin_manager import PluginManager
 from src.ui.main_window import MainWindow
 from src.ui.theme_manager import ThemeManager
-from src.utils.cache_monitor import log_cache_stats
+from src.utils.monitoring import log_cache_stats
 
 # 内部模块导入
 from src.utils.config import config_manager, get_config

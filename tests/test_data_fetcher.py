@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import threading
 import time
 from unittest.mock import MagicMock
 
@@ -134,10 +135,33 @@ def test_unsupported_source_skipped():
     print("  [PASS] test_unsupported_source_skipped  不支持的源被静默过滤")
 
 
+def test_executor_is_single_instance_under_concurrency():
+    """多个线程并发首次取用线程池，只能建出一个实例（双检锁回归）"""
+    fetcher = make_fetcher()
+    barrier = threading.Barrier(8)
+    obtained = []
+
+    def grab():
+        barrier.wait()
+        obtained.append(fetcher._get_executor())
+
+    threads = [threading.Thread(target=grab) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # 持有对象引用后再比较身份，避免 id 复用导致误判
+    assert len({id(executor) for executor in obtained}) == 1
+    assert len(obtained) == 8
+    obtained[0].shutdown()
+
+
 if __name__ == "__main__":
     print("== data_fetcher 优化烟测 ==")
     test_local_priority_returns_immediately()
     test_remote_parallel_returns_first_success()
     test_remote_all_fail_returns_quickly()
     test_unsupported_source_skipped()
+    test_executor_is_single_instance_under_concurrency()
     print("== 全部通过 ==")

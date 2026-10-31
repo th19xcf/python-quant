@@ -8,6 +8,7 @@
 
 import concurrent.futures
 import inspect
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
@@ -38,8 +39,11 @@ class DataFetcher:
         self.db_manager = db_manager
         self.sources = []
         self.source_priorities = {}
-        # 复用的线程池，避免每次请求都创建/销毁
+        # 复用的线程池，避免每次请求都创建/销毁；上限 8 线程（本项目长驻池之一）
         self._executor = None
+        # 线程池惰性创建的保护锁：_get_executor 可能被多个线程同时进入，
+        # 无锁会出现 check-then-act 竞态（建出两个池，其中一个永不 shutdown）
+        self._executor_lock = threading.Lock()
         # 源能力缓存：source -> {supports_stock, supports_index, is_local}
         self._source_capabilities = {}
         # 方法签名缓存：避免每次都做 inspect 反射
@@ -505,14 +509,26 @@ class DataFetcher:
         return [s for s in available if self._source_capabilities.get(s, {}).get(key, False)]
 
     def _get_executor(self) -> ThreadPoolExecutor:
-        """获取（或懒创建）复用的线程池"""
-        if self._executor is None or getattr(self._executor, '_shutdown', False):
-            max_workers = self.config.data.max_workers if hasattr(self.config, 'data') else 5
-            self._executor = ThreadPoolExecutor(
-                max_workers=max(2, min(max_workers, 8)),
-                thread_name_prefix='DataFetcher',
-            )
-        return self._executor
+        """获取（或懒创建）复用的线程池
+
+        双检锁：先用一次廉价判断挡住绝大多数已创建的调用，仅在确实需要创建时
+        再持锁复查。这样既保留热路径开销，又避免多线程并发首用时建出两个线程池
+        （其中一个会失去引用、线程永不回收）。
+        """
+        executor = self._executor
+        if executor is not None and not getattr(executor, '_shutdown', False):
+            return executor
+
+        with self._executor_lock:
+            executor = self._executor
+            if executor is None or getattr(executor, '_shutdown', False):
+                max_workers = self.config.data.max_workers if hasattr(self.config, 'data') else 5
+                executor = ThreadPoolExecutor(
+                    max_workers=max(2, min(max_workers, 8)),
+                    thread_name_prefix='DataFetcher',
+                )
+                self._executor = executor
+            return executor
 
     def _try_source_with_timeout(self, source, data_type, code, start_date, end_date,
                                   frequency, adjustment_type, timeout):

@@ -28,14 +28,10 @@ class MemoryManager:
     提供内存监控、智能缓存管理和资源限制功能
     """
 
-    def __init__(self, max_memory_percent: float = 70.0):
+    def __init__(self):
         """
         初始化内存管理器
-
-        Args:
-            max_memory_percent: 最大内存使用百分比（相对于总可用内存）
         """
-        self.max_memory_percent = max_memory_percent
         self.process = psutil.Process(os.getpid())
         self.memory_thresholds = {
             'critical': 90.0,  # 临界内存使用百分比
@@ -51,7 +47,6 @@ class MemoryManager:
         self.memory_snapshots = []  # 内存快照
         self.auto_optimization_enabled = True  # 自动优化开关
         self.memory_usage_patterns = []  # 内存使用模式
-        self.data_structure_memory = {}  # 数据结构内存使用
         self.linecache_trim_threshold = 5000  # 超过该条目数时清理 linecache
         self.gc_min_interval = 60.0  # 两次强制 GC 的最小间隔（秒），避免监控循环里反复停顿
         self._last_gc_time = 0.0
@@ -386,16 +381,7 @@ class MemoryManager:
         # 1. 执行垃圾回收（受冷却限制）
         self._collect_garbage()
 
-        # 2. 清理过期缓存
-        try:
-            # 清理过期缓存
-            self._clean_expired_cache()
-            logger.info("已清理过期缓存")
-        # 兜底理由：清理过期缓存为旁路操作，失败不得影响主流程
-        except Exception as e:  # noqa: BLE001
-            logger.error(f"清理过期缓存失败: {str(e)}")
-
-        # 3. 清理linecache
+        # 2. 清理linecache
         try:
             linecache.clearcache()
             logger.info("已清空linecache缓存")
@@ -403,7 +389,7 @@ class MemoryManager:
         except Exception as e:  # noqa: BLE001
             logger.error(f"清空linecache失败: {str(e)}")
 
-        # 4. 优化缓存大小
+        # 3. 优化缓存大小
         self.optimize_cache(target_ratio=0.5)
 
     def _take_preventive_measures(self):
@@ -415,14 +401,6 @@ class MemoryManager:
 
         # 分析内存使用趋势，预测未来内存需求
         self._predict_memory_usage()
-
-    def _clean_expired_cache(self):
-        """
-        清理过期缓存
-        """
-        # 这里可以实现清理过期缓存的逻辑
-        # 例如，遍历缓存条目，删除过期的条目
-        pass
 
     def _log_memory_crisis(self):
         """
@@ -470,8 +448,9 @@ class MemoryManager:
 
             if predicted_memory > self.memory_thresholds['high']:
                 logger.warning(f"预测5分钟后内存使用将达到 {predicted_memory:.2f}%，接近高内存阈值")
-                # 提前采取预防措施
-                self._take_preventive_measures()
+                # 只触发一次带冷却的 GC。不能回调 _take_preventive_measures：
+                # 后者又会调用本方法，形成无限互递归（RecursionError）
+                self._collect_garbage()
 
     def optimize_cache(self, target_ratio: float | None = None):
         """
@@ -497,4 +476,4 @@ class MemoryManager:
         global_indicator_cache.release_memory(target_ratio)
 
 # 创建全局内存管理器实例
-global_memory_manager = MemoryManager(max_memory_percent=70.0)
+global_memory_manager = MemoryManager()
