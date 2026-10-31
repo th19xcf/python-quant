@@ -96,7 +96,7 @@ class TdxHandler(DataSourceBase):
                 self.thread_local.session = None
         return self.thread_local.session
 
-    def get_stock_list(self) -> List[str]:
+    def get_stock_list(self) -> List[str]:  # noqa: C901
         """
         从通达信数据源获取所有股票代码列表
 

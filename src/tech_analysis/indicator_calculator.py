@@ -149,7 +149,7 @@ def _is_already_preprocessed(df):
     return True
 
 
-def sample_data_polars(df, target_points=1000, strategy='adaptive'):
+def sample_data_polars(df, target_points=1000, strategy='adaptive'):  # noqa: C901
     """
     对Polars数据进行采样，减少数据量，提高图表渲染速度
     支持多种采样策略，包括均匀采样和自适应采样

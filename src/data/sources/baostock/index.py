@@ -108,7 +108,7 @@ class BaostockIndexMixin:
             logger.exception(f"从Baostock获取指数基本信息失败: {e}")
             raise
 
-    def update_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):
+    def update_index_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None):  # noqa: C901
         """
         更新指数日线数据
 

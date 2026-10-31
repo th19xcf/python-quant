@@ -31,7 +31,7 @@ from .formulas import ema_expr, macd_exprs
 
 
 @njit(cache=True)
-def _sar_core(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
+def _sar_core(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,  # noqa: C901
               af_step: float, max_af: float) -> np.ndarray:
     """Numba JIT 编译的 SAR 核心迭代。
 

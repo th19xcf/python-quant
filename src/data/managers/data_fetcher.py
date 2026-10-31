@@ -18,6 +18,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.data_cache import global_data_cache
+from src.data.data_source_health import get_global_health_checker
 from src.utils.memory_optimizer import MemoryOptimizer
 from src.utils.monitoring import global_monitoring_system
 
@@ -48,6 +49,10 @@ class DataFetcher:
         self._source_capabilities = {}
         # 方法签名缓存：避免每次都做 inspect 反射
         self._method_sig_cache = {}
+        # 数据源健康检查器（全局单例）：逐源记录成败，并在候选过滤时熔断
+        self._health_checker = get_global_health_checker()
+        # 熔断冷却窗口（秒）：数据源故障后仍定期放行探测，避免被永久锁死
+        self._health_cooldown = 300
 
     def register_source(self, source):
         """
@@ -503,10 +508,23 @@ class DataFetcher:
         return pl.DataFrame()
 
     def _get_candidate_sources(self, data_type: str) -> List:
-        """获取支持该数据类型且当前可用的数据源"""
+        """获取支持该数据类型、当前可用且未处于熔断期的数据源"""
         available = self.get_available_sources()
         key = f'supports_{data_type}'
-        return [s for s in available if self._source_capabilities.get(s, {}).get(key, False)]
+        candidates = [s for s in available if self._source_capabilities.get(s, {}).get(key, False)]
+        healthy = [s for s in candidates if self._is_source_usable(s)]
+        # 全部熔断时回退到原始候选：健康检查用于降权而非彻底锁死取数路径
+        return healthy or candidates
+
+    def _is_source_usable(self, source) -> bool:
+        """数据源是否可用：健康检查通过，或已过熔断冷却期（半开探测）。"""
+        name = getattr(source, 'name', source.__class__.__name__)
+        if self._health_checker.is_source_available(name):
+            return True
+        info = self._health_checker.get_health_info(name)
+        if not info or not info.last_failure_time:
+            return True
+        return time.time() - info.last_failure_time > self._health_cooldown
 
     def _get_executor(self) -> ThreadPoolExecutor:
         """获取（或懒创建）复用的线程池
@@ -542,6 +560,7 @@ class DataFetcher:
 
         executor = self._get_executor()
         future = executor.submit(self._fetch_from_source, source, method_name, **kwargs)
+        future.add_done_callback(self._consume_late_result)
         try:
             success, result = future.result(timeout=timeout)
             if success and result is not None and not result.is_empty():
@@ -574,6 +593,7 @@ class DataFetcher:
                 continue
             method_name, kwargs = call
             f = executor.submit(self._fetch_from_source, src, method_name, **kwargs)
+            f.add_done_callback(self._consume_late_result)
             futures[f] = (src, method_name)
 
         try:
@@ -704,6 +724,7 @@ class DataFetcher:
         """
         start_time = time.time()
         success = False
+        error_message = ""
 
         # 获取数据源名称，兼容传统处理器和插件数据源
         source_name = getattr(source, 'name', source.__class__.__name__)
@@ -746,12 +767,16 @@ class DataFetcher:
                 return False, None
         # 兜底理由：多源取数整体兜底返回失败
         except Exception as e:  # noqa: BLE001
+            error_message = str(e)
             logger.warning(f"从{source_name}获取数据失败: {e}")
             return False, None
         finally:
             # 记录监控数据
             response_time = time.time() - start_time
             global_monitoring_system.record_data_source_request(source_name, response_time, success)
+            # 空结果（该源没有这只标的的数据）不算故障，否则会误熔断正常数据源
+            if success or error_message:
+                self._health_checker.record_request(source_name, success, response_time, error_message)
 
             # 更新数据源优先级
             if source_name not in self.source_priorities:
@@ -760,6 +785,17 @@ class DataFetcher:
             # 只保留最近10次的响应时间
             if len(self.source_priorities[source_name]) > 10:
                 self.source_priorities[source_name] = self.source_priorities[source_name][-10:]
+
+    @staticmethod
+    def _consume_late_result(future):
+        """消费超时后才完成的 future。
+
+        线程无法被中断，超时只是调用方不再等待；这里读取一次异常，
+        避免 "exception was never retrieved" 泄漏，也便于排查慢源。
+        """
+        if future.cancelled():
+            return
+        future.exception()
 
     def _get_source_priority(self, source_name: str) -> float:
         """

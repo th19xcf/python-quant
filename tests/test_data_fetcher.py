@@ -157,6 +157,36 @@ def test_executor_is_single_instance_under_concurrency():
     obtained[0].shutdown()
 
 
+def test_unhealthy_source_is_filtered_then_cools_down():
+    """连续失败达到阈值后数据源被熔断；冷却期后放行半开探测。"""
+    from src.data.data_source_health import get_global_health_checker
+
+    fetcher = make_fetcher()
+    src = MagicMock()
+    src.name = "Broken"
+    src.is_local = False
+    src.get_index_data = lambda **k: pl.DataFrame({"a": [1]})
+    fetcher.register_source(src)
+
+    checker = get_global_health_checker()
+    try:
+        for _ in range(5):
+            checker.record_request("Broken", False, 0.1, "boom")
+
+        assert checker.get_health_status("Broken").value == "unhealthy"
+        assert checker.get_health_info("Broken").error_messages == ["boom"] * 5
+        assert fetcher._is_source_usable(src) is False
+
+        # 冷却期后允许再次探测，避免数据源被永久锁死
+        checker.get_health_info("Broken").last_failure_time = time.time() - 1000
+        assert fetcher._is_source_usable(src) is True
+
+        # 全部候选都熔断时仍回退到候选集合，不会把取数路径彻底锁死
+        assert fetcher._get_candidate_sources("index") == [src]
+    finally:
+        checker.reset_health_info("Broken")
+
+
 if __name__ == "__main__":
     print("== data_fetcher 优化烟测 ==")
     test_local_priority_returns_immediately()
@@ -164,4 +194,5 @@ if __name__ == "__main__":
     test_remote_all_fail_returns_quickly()
     test_unsupported_source_skipped()
     test_executor_is_single_instance_under_concurrency()
+    test_unhealthy_source_is_filtered_then_cools_down()
     print("== 全部通过 ==")

@@ -48,7 +48,7 @@ def merge_used_windows(indicator_windows: Dict[str, Set[int]]) -> Set[int]:
     return merged
 
 
-def add_default_column_names(lazy_df: pl.LazyFrame, indicator: str, window: int, columns: List[str]) -> pl.LazyFrame:
+def add_default_column_names(lazy_df: pl.LazyFrame, indicator: str, window: int, columns: List[str]) -> pl.LazyFrame:  # noqa: C901
     """
     为指标添加默认列名
 

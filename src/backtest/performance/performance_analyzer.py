@@ -4,6 +4,8 @@
 绩效分析器，用于计算回测的各种绩效指标
 """
 
+from collections import defaultdict, deque
+from datetime import date, datetime
 from typing import Any, Dict, List
 
 import numpy as np
@@ -30,16 +32,22 @@ class PerformanceAnalyzer:
 
         # 提取权益数据
         equities = [item['equity'] for item in equity_curve]
-        [item['date'] for item in equity_curve]
 
         # 计算基本指标
         initial_equity = equities[0]
         final_equity = equities[-1]
         total_return = (final_equity - initial_equity) / initial_equity * 100
 
-        # 计算年化收益率
-        days = len(equities)
-        annual_return = (pow((final_equity / initial_equity), 252 / days) - 1) * 100
+        # 年化收益率：优先按真实日历跨度折算；日期缺失时退回 bar 数口径。
+        # 原实现用 252/bar 数，在停牌、周线或缺失交易日场景会系统性高估年化。
+        days = self._calendar_span_days(equity_curve)
+        if initial_equity > 0 and final_equity > 0:
+            if days:
+                annual_return = (pow(final_equity / initial_equity, 365 / days) - 1) * 100
+            else:
+                annual_return = (pow(final_equity / initial_equity, 252 / len(equities)) - 1) * 100
+        else:
+            annual_return = 0
 
         # 计算收益率序列（向量化：r_t = (e_t - e_{t-1}) / e_{t-1}）
         equity_array = np.asarray(equities, dtype=float)
@@ -98,6 +106,29 @@ class PerformanceAnalyzer:
         sharpe_ratio = (avg_return - risk_free_rate / 252) / std_return * np.sqrt(252)
         return sharpe_ratio
 
+    @staticmethod
+    def _calendar_span_days(equity_curve: List[Dict[str, Any]]) -> int | None:
+        """返回权益曲线首末日期之间的日历天数；日期缺失或非法时返回 None。"""
+        start = PerformanceAnalyzer._parse_date(equity_curve[0].get('date'))
+        end = PerformanceAnalyzer._parse_date(equity_curve[-1].get('date'))
+        if not start or not end:
+            return None
+        span = (end - start).days
+        return span if span > 0 else None
+
+    @staticmethod
+    def _parse_date(value: Any) -> date | None:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str):
+            try:
+                return date.fromisoformat(value[:10])
+            except ValueError:
+                return None
+        return None
+
     def _calculate_max_drawdown(self, equities: List[float]) -> float:
         """
         计算最大回撤
@@ -130,27 +161,43 @@ class PerformanceAnalyzer:
 
         组合回测中多只股票的交易记录交错存储，不能简单按列表下标两两配对
         """
-        from collections import defaultdict
         grouped = defaultdict(list)
         for t in trades:
             grouped[t.get('stock_code', '_default')].append(t)
 
         pairs = []
         for stock_trades in grouped.values():
-            open_buys = []
+            open_buys = deque()
             for t in stock_trades:
                 if t.get('signal') == 'buy':
                     open_buys.append(t)
                 elif t.get('signal') == 'sell' and open_buys:
-                    pairs.append((open_buys.pop(0), t))
+                    pairs.append((open_buys.popleft(), t))
         return pairs
 
     @staticmethod
     def _pair_profit(buy_trade: Dict[str, Any], sell_trade: Dict[str, Any]) -> float:
-        """计算单笔配对交易的净盈亏（扣除已知成本）"""
-        profit = (sell_trade['price'] - buy_trade['price']) * buy_trade['shares']
-        profit -= buy_trade.get('cost', 0) + sell_trade.get('cost', 0)
+        """计算单笔配对交易的净盈亏（按实际成交股数计量，成本按比例分摊）。"""
+        buy_shares = buy_trade.get('shares') or 0
+        sell_shares = sell_trade.get('shares') or 0
+        # 配对数量取买卖重叠部分，避免用买入股数计量部分卖出时高估盈亏
+        if buy_shares and sell_shares:
+            matched = min(buy_shares, sell_shares)
+        else:
+            matched = buy_shares or sell_shares
+
+        profit = (sell_trade['price'] - buy_trade['price']) * matched
+        profit -= PerformanceAnalyzer._prorated_cost(buy_trade, matched, buy_shares)
+        profit -= PerformanceAnalyzer._prorated_cost(sell_trade, matched, sell_shares)
         return profit
+
+    @staticmethod
+    def _prorated_cost(trade: Dict[str, Any], matched: float, total_shares: float) -> float:
+        """按配对股数占比分摊单笔交易成本；股数缺失时不分摊。"""
+        cost = trade.get('cost', 0) or 0
+        if matched and total_shares:
+            return cost * matched / total_shares
+        return cost
 
     def _calculate_winning_rate(self, trades: List[Dict[str, Any]]) -> float:
         """
@@ -194,6 +241,7 @@ class PerformanceAnalyzer:
                 losses.append(abs(profit))
 
         avg_profit = np.mean(profits) if profits else 0
-        avg_loss = np.mean(losses) if losses else 1
+        # 无亏损时盈亏比无定义，避免用 1 元作为分母产生量纲错误
+        avg_loss = np.mean(losses) if losses else 0
 
         return avg_profit / avg_loss if avg_loss > 0 else 0

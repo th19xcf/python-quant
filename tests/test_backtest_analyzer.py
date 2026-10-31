@@ -63,5 +63,61 @@ def test_backtest_analyzer():
     print("\n测试完成！")
 
 
+# ----------------------------------------------------------------------
+# 绩效指标口径回归：年化日历跨度、盈亏比、按股数分摊
+# ----------------------------------------------------------------------
+
+def test_annual_return_uses_calendar_span():
+    """一年翻倍应按日历跨度折算为 100%，而非按 bar 数复利。"""
+    from datetime import date
+
+    analyzer = PerformanceAnalyzer()
+    curve = [
+        {'date': date(2024, 1, 1), 'equity': 100.0},
+        {'date': date(2024, 12, 31), 'equity': 200.0},
+    ]
+    result = analyzer.analyze(curve, [])
+    assert abs(result['annual_return'] - 100.0) < 1e-6
+
+
+def test_annual_return_falls_back_when_dates_missing():
+    """日期缺失时退回 bar 数口径，不抛异常。"""
+    analyzer = PerformanceAnalyzer()
+    curve = [{'equity': 100.0}, {'equity': 110.0}]
+    result = analyzer.analyze(curve, [])
+    assert isinstance(result['annual_return'], float)
+
+
+def test_average_profit_loss_is_zero_when_no_losses():
+    """全胜时盈亏比无定义，应返回 0，而不是用 1 元作分母。"""
+    analyzer = PerformanceAnalyzer()
+    trades = [
+        {'stock_code': 'A', 'signal': 'buy', 'price': 10.0, 'shares': 100, 'cost': 0},
+        {'stock_code': 'A', 'signal': 'sell', 'price': 11.0, 'shares': 100, 'cost': 0},
+    ]
+    assert analyzer._calculate_average_profit_loss(trades) == 0
+
+
+def test_pair_profit_uses_matched_sell_shares():
+    """部分卖出时按重叠股数计量，不得用买入股数放大盈亏。"""
+    buy = {'price': 10.0, 'shares': 1000, 'cost': 0}
+    sell = {'price': 11.0, 'shares': 200, 'cost': 0}
+    assert PerformanceAnalyzer._pair_profit(buy, sell) == 200.0
+
+
+def test_pair_trades_fifo_per_stock():
+    """买卖按标的分组并 FIFO 配对，不跨标的串配。"""
+    trades = [
+        {'stock_code': 'A', 'signal': 'buy', 'price': 10.0, 'shares': 100},
+        {'stock_code': 'B', 'signal': 'buy', 'price': 20.0, 'shares': 100},
+        {'stock_code': 'A', 'signal': 'sell', 'price': 11.0, 'shares': 100},
+        {'stock_code': 'B', 'signal': 'sell', 'price': 19.0, 'shares': 100},
+    ]
+    pairs = PerformanceAnalyzer._pair_trades(trades)
+    assert len(pairs) == 2
+    assert pairs[0][1]['stock_code'] == 'A'
+    assert pairs[1][1]['stock_code'] == 'B'
+
+
 if __name__ == "__main__":
     test_backtest_analyzer()

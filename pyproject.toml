@@ -142,9 +142,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.mccabe]
-# 圈复杂度门限：>25 即视为待拆分函数；现存遗留处以逐函数 noqa 标注，
-# 随 P4/P5 拆分巨函数后移除（不再用全局 ignore 关闭 C901）
-max-complexity = 25
+# 圈复杂度门限：>15 即视为待拆分函数；现存遗留处以逐函数 noqa: C901 标注，
+# 随拆分巨函数后移除（不再用全局 ignore 关闭 C901）
+max-complexity = 15
 
 [tool.ruff.lint.per-file-ignores]
 # 测试文件：允许 assert、允许 monkeypatch 全局

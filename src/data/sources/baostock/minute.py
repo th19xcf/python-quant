@@ -106,7 +106,7 @@ class BaostockMinuteMixin:
         """获取实时指数数据（以最近历史数据替代）。"""
         return self._get_realtime_data(ts_codes, 'index', '指数', 5, "3")
 
-    def _download_minute(self, model, code_type: str, noun: str, default_days: int,
+    def _download_minute(self, model, code_type: str, noun: str, default_days: int,  # noqa: C901
                          ts_codes: List[str], start_date: str, end_date: str,
                          frequency: str):
         """

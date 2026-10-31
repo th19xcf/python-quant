@@ -239,7 +239,7 @@ class ParallelIndicatorMixin:
             self.is_lazy = False
         return self.pl_df
 
-    def calculate_all_indicators(self, data: Union[pl.DataFrame, pd.DataFrame] | None = None, indicator_types: List[str] | None = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:
+    def calculate_all_indicators(self, data: Union[pl.DataFrame, pd.DataFrame] | None = None, indicator_types: List[str] | None = None, **params) -> Union[pl.DataFrame, pd.DataFrame]:  # noqa: C901
         """
         计算多个技术指标
         使用多指标批量计算框架，充分利用Polars的Lazy API和并行计算能力

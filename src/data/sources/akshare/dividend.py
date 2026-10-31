@@ -20,7 +20,7 @@ class AkShareDividendMixin:
 
     session: Any
 
-    def _save_dividend_rows(self, ts_code: str, rows: List[dict]):
+    def _save_dividend_rows(self, ts_code: str, rows: List[dict]):  # noqa: C901
         """
         分红配股数据入库（双键去重）
 

@@ -120,7 +120,7 @@ class IndicatorRegistry:
         return {name: config for name, config in self._indicators.items()
                 if config.category == category}
 
-    def _topological_sort(self, indicators: List[str]) -> List[str]:
+    def _topological_sort(self, indicators: List[str]) -> List[str]:  # noqa: C901
         """
         对指标进行拓扑排序，确定计算顺序
 

@@ -129,7 +129,7 @@ class BaostockStockMixin:
             logger.exception(f"从Baostock获取股票基本信息失败: {e}")
             raise
 
-    def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, adjustflag: str = "3"):
+    def update_stock_daily(self, ts_codes: List[str] = None, start_date: str = None, end_date: str = None, adjustflag: str = "3"):  # noqa: C901
         """
         更新股票日线数据
 

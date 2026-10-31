@@ -134,10 +134,9 @@ class DataSourceHealthChecker:
                 info.last_failure_time = time.time()
                 info.failed_requests += 1
 
-                if info.error_messages:
-                    info.error_messages.append(error_message)
-                    if len(info.error_messages) > 10:
-                        info.error_messages = info.error_messages[-10:]
+                info.error_messages.append(error_message)
+                if len(info.error_messages) > 10:
+                    info.error_messages = info.error_messages[-10:]
 
                 if info.consecutive_failures >= 5:
                     info.status = HealthStatus.UNHEALTHY
