@@ -37,6 +37,11 @@ class BaseBacktestEngine:
         self.trades = []
         self.equity_curve = []
         self.ts_code = ''
+        # 最近一次回测的执行上下文：参数优化必须复用同一 ts_code / 行业 / ST 状态，
+        # 否则优化子回测会按主板 10% 涨跌停、空行业、ST 未知的口径运行，
+        # 与主回测不可比
+        self.industry = ''
+        self.is_st = None
 
         # 风控层：None 表示不启用（所有订单直接过）；设置后 gate() 拦截
         self.risk_engine: RiskEngine | None = None

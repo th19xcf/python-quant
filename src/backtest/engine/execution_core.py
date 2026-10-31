@@ -24,7 +24,7 @@ from __future__ import annotations
 import math
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 
 import polars as pl
 from loguru import logger
@@ -176,6 +176,41 @@ class ExecutionRules:
         return regular
 
     @staticmethod
+    def resolve_sector(ts_code: str = '', is_st: bool | None = None,
+                       trade_date: date | None = None) -> str:
+        """
+        推导风控侧板块标签（Order.sector 取值），与 resolve_limit_pct 同源。
+
+        PriceLimitTradable 按 sector 查涨跌停档位，因此标签必须满足：
+        ``PriceLimitTradable.DEFAULT_LIMITS[sector] == resolve_limit_pct(...)``。
+        只有常规幅度为 10% 的板块（主板 / B 股 / 改革前创业板）的 ST 股票
+        才映射为 'ST'（5%），20%/30% 板块的 ST 与普通股同档，沿用板块标签。
+
+        无法识别的代码统一按主板（10%）——与 resolve_limit_pct 的兜底一致。
+        """
+        ts_code = (ts_code or '').strip().upper()
+        code = ts_code.split('.')[0]
+        if not code:
+            return '主板'
+
+        regular = ExecutionRules._resolve_board_limit_pct(code, ts_code, trade_date)
+        if is_st and regular == ExecutionRules.DEFAULT_LIMIT_PCT:
+            return 'ST'
+
+        if ts_code.endswith('.BJ') or code.startswith(ExecutionRules.BJ_PREFIXES):
+            return '北交所'
+        for prefixes, _pct, board in ExecutionRules.BOARD_RULES:
+            if code.startswith(prefixes):
+                if board == 'STAR':
+                    return '科创板'
+                if board == 'CHINEXT':
+                    # 注册制改革前的创业板常规幅度为 10%，按主板档位审查
+                    return '创业板' if regular == 0.20 else '主板'
+                # B 股（SH_B / SZ_B）在风控侧按主板 10% 口径
+                return '主板'
+        return '主板'
+
+    @staticmethod
     def resolve_limit_price(prev_close: float, limit: float, side: str) -> float:
         """按交易所规则计算涨跌停价：round(prev_close × (1±limit), 2)（四舍五入到分）。
 
@@ -318,7 +353,8 @@ class AccountBook:
                 equity += qty * self.last_prices.get(code, 0.0)
         return equity
 
-    def snapshot(self, equity_curve: List[Dict[str, Any]]) -> RiskPortfolio:
+    def snapshot(self, equity_curve: List[Dict[str, Any]],
+                 suspended: Set[str] | None = None) -> RiskPortfolio:
         """构造风控用的组合快照。
 
         equity_curve 共享调用方的列表引用、不做复制：风控规则只切片读取尾部
@@ -326,6 +362,9 @@ class AccountBook:
         原实现在这里 list(equity_curve) 整体复制，每笔候选订单一次，
         10 年（T≈2400）× 日均 m 笔时累计复制 O(mT²) 个元素，是长周期
         组合回测的主要纯开销。
+
+        suspended 为当日停牌标的集合（由撮合循环按成交量口径注入），
+        供 NoSuspendedTrade 规则审查；未传时为空集，不改变存量行为。
         """
         return RiskPortfolio(
             positions={code: qty for code, qty in self.positions.items() if qty > 0},
@@ -333,6 +372,7 @@ class AccountBook:
             cash=self.total_cash,
             industry_map=dict(self.industry_map),
             equity_curve=equity_curve,
+            suspended=set(suspended or ()),
         )
 
 
@@ -346,12 +386,18 @@ class RiskGate:
     def check(self, *, ts_code: str, side: str, qty: int, price: float,
               trade_date: Any, book: AccountBook,
               equity_curve: List[Dict[str, Any]],
-              bar_volume: float | None = None) -> Dict[str, Any] | None:
+              bar_volume: float | None = None,
+              prev_close: float | None = None,
+              sector: str = '',
+              suspended: Set[str] | None = None) -> Dict[str, Any] | None:
         """
         审查一笔候选订单。
 
         bar_volume 为当日 Bar 成交量，供 MaxOrderVolumeRatio 等流动性规则使用；
-        未配置这类规则时传不传都不影响既有行为。
+        prev_close 为原始价口径前收盘价（PriceLimitTradable 用），sector 为
+        resolve_sector 推导的板块标签；两者都必须由调用方注入，否则
+        PriceLimitTradable 会按 fail-closed 拒绝全部订单。
+        suspended 为当日停牌集合，供 NoSuspendedTrade 使用。
 
         Returns:
             None 表示放行；否则返回可直接写入 rejected_orders 的拒单记录。
@@ -364,11 +410,13 @@ class RiskGate:
             side=side,
             qty=qty,
             price=price,
+            sector=sector,
             industry=self.industry_map.get(ts_code, ''),
             trade_date=trade_date,
+            prev_close=prev_close,
             bar_volume=bar_volume,
         )
-        gate = self.risk_engine.gate([order], book.snapshot(equity_curve))
+        gate = self.risk_engine.gate([order], book.snapshot(equity_curve, suspended))
         if not gate.rejected:
             return None
 
@@ -670,6 +718,21 @@ class EventBacktestRunner:
         return date_positions, date_codes, sorted(date_codes.keys())
 
     @staticmethod
+    def _daily_suspended_codes(codes: List[str],
+                               date_positions: Dict[str, Dict[Any, int]],
+                               column_data: Dict[str, Dict[str, list]],
+                               trade_day: Any) -> Set[str]:
+        """当日停牌集合：成交量为 None / NaN / inf / ≤0 的标的（与撮合判定同源）。"""
+        suspended: Set[str] = set()
+        for code in codes:
+            volume_col = column_data[code].get('volume')
+            pos = date_positions[code][trade_day]
+            volume = volume_col[pos] if volume_col is not None else None
+            if ExecutionRules._is_suspended(volume):
+                suspended.add(code)
+        return suspended
+
+    @staticmethod
     def _extract_bar_prices(
         cols: Dict[str, list], pos: int,
     ) -> tuple[float | None, ...]:
@@ -737,6 +800,13 @@ class EventBacktestRunner:
         """
         st_unknown_seen = False
         for trade_day in sorted_dates:
+            # 当日停牌集合只在启用风控时构造：NoSuspendedTrade 规则需要它，
+            # 未启用风控时该集合无消费方，避免给默认路径增加 O(N_symbols/日) 开销
+            suspended_today = (
+                self._daily_suspended_codes(
+                    date_codes[trade_day], date_positions, column_data, trade_day)
+                if gate.risk_engine is not None else None
+            )
             for code in date_codes[trade_day]:
                 pos = date_positions[code][trade_day]
                 cols = column_data[code]
@@ -759,6 +829,7 @@ class EventBacktestRunner:
                     open_raw=raw_open, prev_close_raw=prev_raw_close[code],
                     close_raw=raw_close,
                     is_st=is_st,
+                    suspended=suspended_today,
                 )
 
                 # 策略基于当日数据生成信号，延迟到该标的下一个交易日执行；
@@ -853,7 +924,8 @@ class EventBacktestRunner:
                          open_raw: float | None = None,
                          prev_close_raw: float | None = None,
                          close_raw: float | None = None,
-                         is_st: bool | None = None) -> None:
+                         is_st: bool | None = None,
+                         suspended: Set[str] | None = None) -> None:
         """执行该标的的挂单。
 
         订单生命周期语义（显式状态机，杜绝静默丢单）：
@@ -875,12 +947,13 @@ class EventBacktestRunner:
         # （仅数据质量提示，涨跌停仍按板块默认幅度判定）
         order_confidence = 'low' if is_st is None else 'high'
 
+        trade_day = to_trade_date(date)
         reason = self._check_order_executable(
             code=code, side=side, position=position, rules=rules,
             prev_close=prev_close, open_price=open_price, high=high, low=low,
             close=close, volume=volume, open_raw=open_raw,
             prev_close_raw=prev_close_raw, close_raw=close_raw, is_st=is_st,
-            trade_date=to_trade_date(date),
+            trade_date=trade_day,
         )
         if reason is not None:
             self._append_expired(
@@ -894,6 +967,12 @@ class EventBacktestRunner:
         assert open_price is not None
         exec_price = open_price
 
+        # 风控闸门所需上下文：原始价口径前收盘（交易所涨跌停定义在原始价上）
+        # 与板块标签必须由撮合内核注入，缺一 PriceLimitTradable 就会 fail-closed。
+        risk_prev_close = prev_close_raw if prev_close_raw is not None else prev_close
+        sector = (rules.resolve_sector(code, is_st, trade_day)
+                  if gate.risk_engine is not None else '')
+
         if side == 'buy':
             self._execute_buy(
                 code=code, date=date, book=book, gate=gate,
@@ -901,7 +980,8 @@ class EventBacktestRunner:
                 rejected_orders=rejected_orders, expired_orders=expired_orders,
                 equity_curve=equity_curve, lot_size=lot_size,
                 exec_price=exec_price, order_confidence=order_confidence,
-                bar_volume=volume,
+                bar_volume=volume, prev_close=risk_prev_close,
+                sector=sector, suspended=suspended,
             )
             return
 
@@ -911,6 +991,7 @@ class EventBacktestRunner:
             trades=trades, rejected_orders=rejected_orders,
             equity_curve=equity_curve, exec_price=exec_price,
             order_confidence=order_confidence, bar_volume=volume,
+            prev_close=risk_prev_close, sector=sector, suspended=suspended,
         )
 
     @staticmethod
@@ -996,6 +1077,8 @@ class EventBacktestRunner:
         equity_curve: List[Dict[str, Any]], lot_size: int,
         exec_price: float, order_confidence: str,
         bar_volume: float | None = None,
+        prev_close: float | None = None, sector: str = '',
+        suspended: Set[str] | None = None,
     ) -> None:
         """买入执行：按可用现金估算整手、逐手回退成本、风控审查、记账成交。"""
         available = book.cash.get(code, 0.0)
@@ -1021,7 +1104,8 @@ class EventBacktestRunner:
         rejection = gate.check(
             ts_code=code, side='buy', qty=shares, price=exec_price,
             trade_date=date, book=book, equity_curve=equity_curve,
-            bar_volume=bar_volume,
+            bar_volume=bar_volume, prev_close=prev_close, sector=sector,
+            suspended=suspended,
         )
         if rejection is not None:
             rejected_orders.append(rejection)
@@ -1045,6 +1129,8 @@ class EventBacktestRunner:
         rejected_orders: List[Dict[str, Any]],
         equity_curve: List[Dict[str, Any]], exec_price: float,
         order_confidence: str, bar_volume: float | None = None,
+        prev_close: float | None = None, sector: str = '',
+        suspended: Set[str] | None = None,
     ) -> None:
         """卖出执行：清空该标的持仓，风控审查通过后记账成交。"""
         shares = book.positions[code]
@@ -1052,7 +1138,8 @@ class EventBacktestRunner:
         rejection = gate.check(
             ts_code=code, side='sell', qty=shares, price=exec_price,
             trade_date=date, book=book, equity_curve=equity_curve,
-            bar_volume=bar_volume,
+            bar_volume=bar_volume, prev_close=prev_close, sector=sector,
+            suspended=suspended,
         )
         if rejection is not None:
             rejected_orders.append(rejection)

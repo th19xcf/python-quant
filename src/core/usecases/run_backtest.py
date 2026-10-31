@@ -4,7 +4,9 @@
 run_backtest —— 回测唯一用例入口。
 
 CLI / GUI / 服务端 都应该调用这个函数，不要各自 new BacktestEngine 然后手写循环。
-风控闸门通过 risk_engine 参数注入——不注入就是 no-op（所有订单放行）。
+风控闸门默认装配安全规则集（涨跌停不可成交 + 停牌不可交易，与撮合内核
+既有判定同源，不改变成交结果）；需要权重/行业/回撤等规则时显式传 risk_engine，
+需要完全关闭风控时传 enable_default_risk=False。
 
 Usage:
     from src.core.usecases import run_backtest
@@ -34,7 +36,15 @@ from loguru import logger
 from src.backtest.engine.backtest_engine import BacktestEngine
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
-from src.risk import RiskEngine
+from src.risk import RiskEngine, default_risk_engine
+
+
+def _assemble_risk_engine(risk_engine: RiskEngine | None,
+                          enable_default_risk: bool) -> RiskEngine | None:
+    """风控装配：显式传入优先；否则按开关装配默认安全规则集（False 表示完全关闭）。"""
+    if risk_engine is not None:
+        return risk_engine
+    return default_risk_engine() if enable_default_risk else None
 
 
 def run_backtest(
@@ -45,6 +55,7 @@ def run_backtest(
     strategy: BaseStrategy | None = None,
     strategies: Dict[str, BaseStrategy] | None = None,
     risk_engine: RiskEngine | None = None,
+    enable_default_risk: bool = True,
     initial_capital: float = 1_000_000.0,
     lot_size: int = 100,
     industry: str = '',
@@ -67,7 +78,9 @@ def run_backtest(
         data:          直接传入数据（跳过取数）。单票=pl.DataFrame，组合=Dict[str, pl.DataFrame]。
         strategy:      单票策略实例。
         strategies:    组合策略字典 {ts_code: BaseStrategy}。
-        risk_engine:   风控引擎。None 表示不启用。
+        risk_engine:   风控引擎。None 时按 enable_default_risk 装配默认安全规则集。
+        enable_default_risk: 默认 True——装配「涨跌停不可成交 + 停牌不可交易」，
+                       与撮合内核既有判定同源、不改变成交结果；False 表示完全关闭风控。
         initial_capital: 初始资金。
         lot_size:      最小交易单位（A股 100 股）。
         industry:      单票行业标签（风控 MaxIndustryWeight 用）。
@@ -83,6 +96,9 @@ def run_backtest(
             - trades, equity_curve, performance
             - risk_summary（如有风控）、rejected_orders（如有风控）
     """
+    # ---- 风控装配：生产路径不允许"无风控即全放行" ----
+    risk_engine = _assemble_risk_engine(risk_engine, enable_default_risk)
+
     # ---- 数据准备 ----
     db = None
     owns_db = False

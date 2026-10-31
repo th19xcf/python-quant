@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 
 from loguru import logger
 
+from src.backtest.engine._parallel_worker import clone_strategy, run_backtest_worker
 from src.backtest.engine.base_engine import BaseBacktestEngine
 from src.backtest.engine.execution_core import EventBacktestRunner, StStatusEntry
 
@@ -61,6 +62,9 @@ class BacktestEngine(BaseBacktestEngine):
             return {}
 
         self.ts_code = ts_code or self.ts_code
+        # 执行上下文供参数优化复用：子回测必须与主回测同口径
+        self.industry = industry
+        self.is_st = is_st
 
         # 指标预计算：根据策略参数一次性向量化算好，避免每根K线在策略里 O(n²) 循环
         self.pl_df = self._precompute_indicators(self.pl_df, self.strategy)
@@ -109,7 +113,13 @@ class BacktestEngine(BaseBacktestEngine):
             return {}
 
         param_combinations = self._generate_param_combinations(param_ranges)
-        results = self._run_parallel_backtests(param_combinations, initial_capital, max_workers)
+        context = {
+            'ts_code': self.ts_code,
+            'industry': self.industry,
+            'is_st': self.is_st,
+        }
+        results = self._run_parallel_backtests(
+            param_combinations, initial_capital, max_workers, context=context)
         best_params, best_value = self._select_best_params(results, objective)
 
         logger.info(f"参数优化完成: 最佳参数 = {best_params}, 最佳{objective} = {best_value:.4f}")
@@ -123,7 +133,7 @@ class BacktestEngine(BaseBacktestEngine):
             'objective': objective
         }
 
-    def _run_parallel_backtests(self, param_combinations: List[Dict[str, float]], initial_capital: float, max_workers: int) -> List[Dict[str, Any]]:
+    def _run_parallel_backtests(self, param_combinations: List[Dict[str, float]], initial_capital: float, max_workers: int, context: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
         """
         并行运行回测
 
@@ -131,6 +141,7 @@ class BacktestEngine(BaseBacktestEngine):
             param_combinations: 参数组合列表
             initial_capital: 初始资金
             max_workers: 最大工作线程数
+            context: 主回测执行上下文 {ts_code, industry, is_st}，逐个子回测透传
 
         Returns:
             List[Dict[str, Any]]: 回测结果列表
@@ -138,8 +149,6 @@ class BacktestEngine(BaseBacktestEngine):
         import concurrent.futures
         import os
         import pickle
-
-        from src.backtest.engine._parallel_worker import run_backtest_worker
 
         results = []
 
@@ -175,7 +184,7 @@ class BacktestEngine(BaseBacktestEngine):
                 future_to_param = {
                     executor.submit(run_backtest_worker, BacktestEngine, self.strategy,
                                     self.pl_df, self.cost_model, params, initial_capital,
-                                    self.risk_engine): params
+                                    self.risk_engine, context): params
                     for params in param_combinations
                 }
 
@@ -188,16 +197,23 @@ class BacktestEngine(BaseBacktestEngine):
 
             return results
 
+        ctx = context or {}
+
         def run_single_backtest(params):
-            strategy_copy = self.strategy.__class__()
-            strategy_copy.set_params(params)
+            strategy_copy = clone_strategy(self.strategy, params)
 
             engine_copy = BacktestEngine(self.pl_df)
             engine_copy.set_strategy(strategy_copy)
             engine_copy.set_cost_model(self.cost_model)
             engine_copy.risk_engine = self.risk_engine
 
-            result = engine_copy.run_backtest(initial_capital)
+            # 与进程池路径同口径：ts_code/行业/ST 必须透传，否则涨跌停档位退化
+            result = engine_copy.run_backtest(
+                initial_capital,
+                ts_code=ctx.get('ts_code', ''),
+                industry=ctx.get('industry', ''),
+                is_st=ctx.get('is_st'),
+            )
             result['params'] = params
             return result
 

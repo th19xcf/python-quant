@@ -13,12 +13,19 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
+from src.backtest.costs.cost_model import CostModel
+from src.backtest.engine._parallel_worker import clone_strategy, run_backtest_worker
 from src.backtest.engine.backtest_engine import BacktestEngine
-from src.backtest.engine.execution_core import AccountBook, EventBacktestRunner, ExecutionRules
+from src.backtest.engine.execution_core import (
+    AccountBook,
+    EventBacktestRunner,
+    ExecutionRules,
+)
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.backtest.strategies.ma_strategy import MAStrategy
-from src.risk import MaxPositionWeight, RiskEngine
+from src.core.usecases import run_backtest
+from src.risk import MaxPositionWeight, PriceLimitTradable, RiskEngine
 
 
 class _IndexSignalStrategy(BaseStrategy):
@@ -900,3 +907,152 @@ def test_pending_no_overwrite_in_current_order():
     # 当前代码结构下 overwritten 不会触发（_execute_pending 先 pop 再设置）
     overwritten = [o for o in result['expired_orders'] if o['reason'] == 'overwritten']
     assert overwritten == [], f"当前主循环顺序不应触发 overwritten，实际={overwritten}"
+
+
+# ------------------------------------------------------------------
+# P0-1：默认风控装配（涨跌停不可成交 + 停牌不可交易）不得误拒正常订单
+# ------------------------------------------------------------------
+
+
+def test_default_risk_engine_does_not_change_fills():
+    """P0-1 验收：run_backtest 默认装配安全规则集后，成交与完全无风控时逐笔一致。
+
+    回归：装配前 RiskOrder 未注入 prev_close / sector，PriceLimitTradable 按
+    fail-closed 拒绝全部订单，表现为"开了风控就 0 成交"。本用例同时锁定
+    risk_summary.rules 与 total_rejected==0，确保默认规则只是可审计闸门，
+    不改变撮合结果。
+    """
+    data = _oscillating()
+
+    no_risk = run_backtest(
+        data=data, strategy=MAStrategy(short_window=5, long_window=20),
+        ts_code='600000.SH', initial_capital=1_000_000.0,
+        enable_default_risk=False,
+    )
+    with_risk = run_backtest(
+        data=data, strategy=MAStrategy(short_window=5, long_window=20),
+        ts_code='600000.SH', initial_capital=1_000_000.0,
+    )
+
+    assert no_risk['risk_summary'] is None
+    assert with_risk['risk_summary']['rules'] == [
+        'price_limit_tradable', 'no_suspended_trade',
+    ]
+    assert with_risk['risk_summary']['total_rejected'] == 0
+    assert with_risk['trades'] == no_risk['trades']
+    assert with_risk['final_equity'] == no_risk['final_equity']
+    assert len(with_risk['trades']) > 0
+
+
+def test_resolve_sector_matches_limit_tier():
+    """P0-1 回归：风控板块标签必须与撮合幅度同源。
+
+    PriceLimitTradable 按 order.sector 查阈值，因此任何代码/日期/ST 组合都
+    必须满足 DEFAULT_LIMITS[resolve_sector(...)] == resolve_limit_pct(...)。
+    旧实现把改革后创业板（20%）映射为 '主板'（10%），风控侧会漏放已封板的
+    订单，与撮合判定分叉。
+    """
+    from datetime import date
+
+    limits = PriceLimitTradable.DEFAULT_LIMITS
+    cases = [
+        ('600000.SH', False, None),                    # 沪主板 10%
+        ('000001.SZ', False, None),                    # 深主板 10%
+        ('688001.SH', False, None),                    # 科创板 20%
+        ('689001.SH', False, None),                    # 科创板 CDR 20%
+        ('300001.SZ', False, date(2020, 8, 24)),       # 创业板改革后 20%
+        ('301001.SZ', False, date(2020, 8, 25)),       # 创业板 301
+        ('300001.SZ', False, date(2020, 8, 21)),       # 创业板改革前 10%
+        ('600000.SH', True, None),                     # 主板 ST 5%
+        ('900001.SH', True, None),                     # 沪 B 股 ST 5%
+        ('200001.SZ', True, None),                     # 深 B 股 ST 5%
+        ('300001.SZ', True, date(2020, 8, 21)),        # 改革前创业板 ST 5%
+        ('300001.SZ', True, date(2020, 8, 24)),        # 改革后创业板 ST 20%
+        ('688001.SH', True, None),                     # 科创板 ST 20%
+        ('830001.BJ', False, None),                    # 北交所 30%
+        ('920001.BJ', False, None),                    # 北交所新号段 30%
+        ('920001', False, None),                       # 无后缀号段兜底
+        ('', False, None),                             # 空代码兜底
+    ]
+    for ts_code, is_st, trade_date in cases:
+        sector = ExecutionRules.resolve_sector(ts_code, is_st, trade_date)
+        pct = ExecutionRules.resolve_limit_pct(ts_code, is_st, trade_date=trade_date)
+        assert sector in limits, f'{ts_code} 产出未知板块标签 {sector!r}'
+        assert limits[sector] == pct, (
+            f'{ts_code} is_st={is_st} date={trade_date}: '
+            f'板块 {sector} 阈值 {limits[sector]:.0%} != 撮合幅度 {pct:.0%}'
+        )
+
+
+# ------------------------------------------------------------------
+# P0-2：参数优化子回测必须复用主回测的执行上下文与完整策略参数
+# ------------------------------------------------------------------
+
+
+def test_clone_strategy_preserves_unoptimized_params():
+    """P0-2 回归：克隆策略必须保留未参与优化的原参数，且不污染原实例。
+
+    旧实现用 ``strategy.__class__()`` 重建，只优化 short_window 时
+    long_window 会回落到类默认 20，子回测与主回测口径不一致。
+    """
+    original = MAStrategy(short_window=5, long_window=60)
+    clone = clone_strategy(original, {'short_window': 3})
+
+    assert clone.params['short_window'] == 3
+    assert clone.params['long_window'] == 60
+    assert original.params['short_window'] == 5
+    assert clone is not original
+
+
+def test_optimizer_subbacktests_match_direct_backtest():
+    """P0-2 验收：同参数下优化子回测与直接回测 trades/final_equity 完全一致。
+
+    子回测必须同时满足两条：保留未优化参数（long_window=20）与透传
+    ts_code（创业板 20% 涨跌停档位）。任一缺失都会让结果与主回测不可比。
+    """
+    data = _oscillating()
+
+    engine = BacktestEngine(data)
+    engine.set_strategy(MAStrategy(short_window=5, long_window=20))
+    engine.run_backtest(initial_capital=1_000_000.0, ts_code='300001.SZ',
+                        industry='计算机', is_st=False)
+
+    optimized = engine.optimize_strategy(
+        {'short_window': [3, 8]}, initial_capital=1_000_000.0, max_workers=2,
+    )
+    assert len(optimized['optimization_results']) == 2
+
+    for row in optimized['optimization_results']:
+        params = row['params']
+        direct = BacktestEngine(data)
+        direct.set_strategy(MAStrategy(short_window=int(params['short_window']),
+                                       long_window=20))
+        expected = direct.run_backtest(
+            initial_capital=1_000_000.0, ts_code='300001.SZ',
+            industry='计算机', is_st=False,
+        )
+        assert row['trades'] == expected['trades'], f'参数 {params} 成交不一致'
+        assert row['final_equity'] == expected['final_equity'], f'参数 {params} 权益不一致'
+
+
+def test_parallel_worker_receives_execution_context():
+    """P0-2 回归：进程池 worker 必须透传 ts_code/ST 上下文。
+
+    创业板（改革后）开盘 +15% 可成交；不带 context 时按 '__default__'
+    主板 10% 推导，同一笔买单被判涨停而作废。
+    """
+    df = _make_df(opens=[100.0, 115.0, 115.0], closes=[100.0, 115.0, 115.0])
+
+    with_context = run_backtest_worker(
+        BacktestEngine, _IndexSignalStrategy({0: 'buy'}), df, CostModel(),
+        {'tag': 0}, 1_000_000.0, None,
+        {'ts_code': '300001.SZ', 'industry': '', 'is_st': False},
+    )
+    without_context = run_backtest_worker(
+        BacktestEngine, _IndexSignalStrategy({0: 'buy'}), df, CostModel(),
+        {'tag': 0}, 1_000_000.0, None,
+    )
+
+    assert [t['signal'] for t in with_context['trades']] == ['buy']
+    assert without_context['trades'] == []
+

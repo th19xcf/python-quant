@@ -29,6 +29,18 @@ from src.risk.rules import (
     RuleResult,
 )
 
+
+def default_risk_engine() -> RiskEngine:
+    """
+    默认安全规则集：涨跌停不可成交 + 停牌不可交易。
+
+    只包含与撮合内核既有判定同源的两条规则（板块幅度、Decimal 取整口径一致），
+    因此装配后不改变成交结果，只把"引擎内联判定"提升为可审计的风控闸门。
+    权重/行业/回撤类规则需要调用方显式注入，避免默认收窄仓位语义。
+    """
+    return RiskEngine([PriceLimitTradable(), NoSuspendedTrade()])
+
+
 __all__ = [
     'Order',
     'Portfolio',
@@ -44,4 +56,5 @@ __all__ = [
     'NoSuspendedTrade',
     'MaxOrderVolumeRatio',
     'RiskEngine',
+    'default_risk_engine',
 ]
