@@ -25,4 +25,4 @@ jobs:
       - name: Type check core execution kernel
         run: poetry run mypy
       - name: Test with coverage gate
-        run: poetry run pytest --cov=src --cov-report=term-missing --cov-fail-under=39
+        run: poetry run pytest --cov=src --cov-report=term-missing --cov-fail-under=42

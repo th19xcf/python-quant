@@ -399,3 +399,110 @@ def test_extract_tdx_first_last_trade_date_missing_file(tmp_path):
     config = SimpleNamespace(data=SimpleNamespace(tdx_data_path=str(tmp_path)))
 
     assert ss._extract_tdx_first_last_trade_date(config, "600000.SH") == (None, None)
+
+
+# ----------------------------------------------------------------------
+# 逐项同步骨架：失败恢复与会话回滚
+# ----------------------------------------------------------------------
+
+class _FakeSession:
+    """最小会话替身：只实现骨架用到的 is_active / rollback / commit。"""
+
+    def __init__(self):
+        self.rolled_back = 0
+        self.commits = 0
+        self.active = True
+
+    @property
+    def is_active(self):
+        return self.active
+
+    def rollback(self):
+        self.rolled_back += 1
+        self.active = True
+
+    def commit(self):
+        if not self.active:
+            raise RuntimeError("会话处于 requires-rollback 状态")
+        self.commits += 1
+
+
+def test_sync_each_with_recovery_continues_and_counts_failures():
+    session = _FakeSession()
+    result = {"failed": []}
+    handled = []
+
+    def handler(item):
+        if item == "b":
+            raise ValueError("解析失败")
+        handled.append(item)
+
+    ss._sync_each_with_recovery(
+        ["a", "b", "c"], handler,
+        result=result, failed_key="failed", session=session, label="测试",
+    )
+
+    # 单条失败不中断整批；非数据库异常不丢弃已处理记录，故不回滚
+    assert handled == ["a", "c"]
+    assert result["failed"] == ["b"]
+    assert session.rolled_back == 0
+
+
+def test_sync_each_with_recovery_rolls_back_poisoned_session():
+    session = _FakeSession()
+    result = {"failed": []}
+
+    def handler(item):
+        if item == "b":
+            session.active = False  # 模拟数据库错误后会话失效
+            raise RuntimeError("db error")
+
+    ss._sync_each_with_recovery(
+        ["a", "b", "c"], handler,
+        result=result, failed_key="failed", session=session, label="测试",
+    )
+
+    assert result["failed"] == ["b"]
+    assert session.rolled_back == 1
+    assert session.active
+
+
+def test_sync_each_with_recovery_rolls_back_on_commit_failure():
+    session = _FakeSession()
+    result = {"failed": []}
+
+    def handler(item):
+        return None
+
+    def boom():
+        session.active = False
+        raise RuntimeError("周期提交失败")
+
+    session.commit = boom
+
+    ss._sync_each_with_recovery(
+        ["a", "b", "c"], handler,
+        result=result, failed_key="failed", session=session, label="测试",
+        commit_interval=2,
+    )
+
+    assert result["failed"] == ["b"]
+    assert session.rolled_back == 1
+    assert session.active
+
+
+def test_sync_each_with_recovery_commits_periodically():
+    session = _FakeSession()
+    result = {"failed": []}
+    handled = []
+
+    ss._sync_each_with_recovery(
+        ["a", "b", "c", "d"], handled.append,
+        result=result, failed_key="failed", session=session, label="测试",
+        commit_interval=2,
+    )
+
+    assert handled == ["a", "b", "c", "d"]
+    assert result["failed"] == []
+    assert session.commits == 2
+    assert session.rolled_back == 0

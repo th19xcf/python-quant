@@ -41,6 +41,7 @@ scipy = "==1.18.1"
 pytest = "==9.1.1"
 pytest-cov = "==7.1.0"
 coverage = "==7.17.0"
+psutil = "==7.2.2"
 # 静态检查
 ruff = "==0.17.2"
 mypy = "==2.4.0"

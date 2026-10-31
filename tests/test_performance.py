@@ -94,21 +94,46 @@ def test_data_processing_performance(data: pl.DataFrame):
 
     # 测试数据质量检查
     start_time = time.time()
-    processor.check_data_quality(cleaned_data)
+    quality_report = processor.check_data_quality(cleaned_data)
     quality_time = time.time() - start_time
     logger.info(f"数据质量检查时间: {quality_time:.2f}秒")
 
     # 测试数据类型转换
     start_time = time.time()
-    processor.convert_data_type(cleaned_data, 'float32')
+    converted_data = processor.convert_data_type(cleaned_data, 'float32')
     convert_time = time.time() - start_time
     logger.info(f"数据类型转换时间: {convert_time:.2f}秒")
+
+    # 功能性断言：清洗结果不能为空、不留空值与零成交量，转换后数值列为 float32
+    assert isinstance(cleaned_data, pl.DataFrame)
+    assert 0 < cleaned_data.height <= data.height
+    assert quality_report['total_rows'] == cleaned_data.height
+    assert quality_report['zero_volume_rows'] == 0
+    assert all(count == 0 for count in quality_report['null_values'].values())
+    assert isinstance(converted_data, pl.DataFrame)
+    for column in ('open', 'high', 'low', 'close', 'volume', 'amount'):
+        assert converted_data.schema[column] == pl.Float32
+
+    # 粗粒度性能上限：仅拦截数量级级别的回归（1.8M 行远低于该阈值）
+    assert cleanup_time < 60.0
+    assert quality_time < 60.0
+    assert convert_time < 60.0
 
     return {
         'cleanup_time': cleanup_time,
         'quality_time': quality_time,
         'convert_time': convert_time
     }
+
+
+def _assert_factor_result(calculator, factor_type, columns_before, expected_height):
+    """断言因子计算成功：返回表行数不变，且至少新增一列因子。"""
+    result = calculator.calculate_factors([factor_type])
+    assert isinstance(result, pl.DataFrame)
+    assert result.height == expected_height
+    assert factor_type in calculator.factor_results
+    assert calculator.factor_results[factor_type] is not None
+    assert len(result.columns) > columns_before
 
 
 def test_alpha_factor_calculation(data: pl.DataFrame):
@@ -126,34 +151,42 @@ def test_alpha_factor_calculation(data: pl.DataFrame):
     calculator = AlphaCalculator(single_stock_data)
 
     # 测试价格动量因子
+    columns_before = len(calculator.pl_df.columns)
     start_time = time.time()
-    calculator.calculate_factors(['price_momentum'])
+    _assert_factor_result(calculator, 'price_momentum', columns_before, single_stock_data.height)
     price_momentum_time = time.time() - start_time
     logger.info(f"价格动量因子计算时间: {price_momentum_time:.2f}秒")
 
     # 测试波动率因子
+    columns_before = len(calculator.pl_df.columns)
     start_time = time.time()
-    calculator.calculate_factors(['volatility'])
+    _assert_factor_result(calculator, 'volatility', columns_before, single_stock_data.height)
     volatility_time = time.time() - start_time
     logger.info(f"波动率因子计算时间: {volatility_time:.2f}秒")
 
     # 测试成交量因子
+    columns_before = len(calculator.pl_df.columns)
     start_time = time.time()
-    calculator.calculate_factors(['volume'])
+    _assert_factor_result(calculator, 'volume', columns_before, single_stock_data.height)
     volume_time = time.time() - start_time
     logger.info(f"成交量因子计算时间: {volume_time:.2f}秒")
 
     # 测试技术指标因子
+    columns_before = len(calculator.pl_df.columns)
     start_time = time.time()
-    calculator.calculate_factors(['technical'])
+    _assert_factor_result(calculator, 'technical', columns_before, single_stock_data.height)
     technical_time = time.time() - start_time
     logger.info(f"技术指标因子计算时间: {technical_time:.2f}秒")
 
     # 测试风险因子
+    columns_before = len(calculator.pl_df.columns)
     start_time = time.time()
-    calculator.calculate_factors(['risk'])
+    _assert_factor_result(calculator, 'risk', columns_before, single_stock_data.height)
     risk_time = time.time() - start_time
     logger.info(f"风险因子计算时间: {risk_time:.2f}秒")
+
+    # 风险因子应产出 beta / max_drawdown_20 / sharpe_ratio_20 三列
+    assert {'beta', 'max_drawdown_20', 'sharpe_ratio_20'}.issubset(calculator.pl_df.columns)
 
     return {
         'price_momentum_time': price_momentum_time,
@@ -185,7 +218,7 @@ def test_backtest_performance(data: pl.DataFrame):
 
     # 测试回测
     start_time = time.time()
-    engine.run_backtest()
+    result = engine.run_backtest()
     backtest_time = time.time() - start_time
     logger.info(f"回测时间: {backtest_time:.2f}秒")
 
@@ -195,9 +228,26 @@ def test_backtest_performance(data: pl.DataFrame):
         'short_window': [5, 10, 20],
         'long_window': [50, 100, 200]
     }
-    engine.optimize_strategy(param_ranges, max_workers=4)
+    optimization_result = engine.optimize_strategy(param_ranges, max_workers=4)
     optimization_time = time.time() - start_time
     logger.info(f"参数优化时间: {optimization_time:.2f}秒")
+
+    # 回测结果断言：账户非空、资金回正、净值曲线与成交记录结构完整
+    assert isinstance(result, dict) and result
+    assert result['final_equity'] > 0
+    assert isinstance(result['total_return'], (int, float))
+    assert len(result['equity_curve']) > 0
+    assert len(result['equity_curve']) <= single_stock_data.height
+    assert isinstance(result['trades'], list)
+
+    # 参数优化断言：目标函数正确、最佳参数来自给定候选集、候选组合全部完成
+    assert isinstance(optimization_result, dict) and optimization_result
+    assert optimization_result['objective'] == 'total_return'
+    assert set(optimization_result['best_params']) == {'short_window', 'long_window'}
+    assert optimization_result['best_params']['short_window'] in param_ranges['short_window']
+    assert optimization_result['best_params']['long_window'] in param_ranges['long_window']
+    assert isinstance(optimization_result['best_value'], (int, float))
+    assert 1 <= len(optimization_result['optimization_results']) <= 9
 
     return {
         'backtest_time': backtest_time,
@@ -222,9 +272,19 @@ def test_stock_recommendation(data: pl.DataFrame):
 
     # 测试股票推荐
     start_time = time.time()
-    recommender.recommend_stocks(test_data, top_n=20)
+    recommendations = recommender.recommend_stocks(test_data, top_n=20)
     recommendation_time = time.time() - start_time
     logger.info(f"股票推荐时间: {recommendation_time:.2f}秒")
+
+    # 推荐结果断言：数量受 top_n 约束、评分降序、字段完整且信号取值合法
+    assert isinstance(recommendations, list)
+    assert 0 < len(recommendations) <= 20
+    scores = [item['risk_adjusted_score'] for item in recommendations]
+    assert scores == sorted(scores, reverse=True)
+    for item in recommendations:
+        assert item['signal'] in {'buy', 'hold', 'sell'}
+        assert item['risk_level'] in {'低', '中', '高'}
+        assert item['current_price'] > 0
 
     return {
         'recommendation_time': recommendation_time
@@ -251,11 +311,19 @@ def test_memory_usage(data: pl.DataFrame):
     # 执行一些数据处理操作
     processor = DataProcessor({})
     cleaned_data = processor.clean_data(data)
-    processor.convert_data_type(cleaned_data, 'float32')
+    converted_data = processor.convert_data_type(cleaned_data, 'float32')
 
     memory_after = process.memory_info().rss / 1024 / 1024  # MB
     logger.info(f"处理后内存使用: {memory_after:.2f} MB")
     logger.info(f"内存使用增加: {memory_after - memory_before:.2f} MB")
+
+    # 内存断言：进程 RSS 非零、增量在数量级合理范围内（PSUtil 读数本身有抖动，故放宽上限）
+    assert memory_before > 0
+    assert memory_after > 0
+    assert memory_after - memory_before < 4096
+    assert isinstance(converted_data, pl.DataFrame)
+    assert converted_data.height > 0
+    assert converted_data.schema['close'] == pl.Float32
 
     return {
         'memory_before': memory_before,

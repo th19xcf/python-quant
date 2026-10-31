@@ -61,23 +61,60 @@ def _execute_sync_flow(flow, db_manager):
     return flow.result
 
 
+def _rollback_poisoned_session(session, label):
+    """异常后若会话进入 requires-rollback 状态则回滚。
+
+    数据库错误会让 Session 失效，若不回滚，后续所有 commit 都会继续失败，
+    且被逐条吞掉，最终落库统计完全失真。非数据库异常（会话仍 active）
+    不回滚，避免丢弃本批次尚未提交的成功记录。
+    """
+    try:
+        if session.is_active:
+            return
+        session.rollback()
+        logger.warning(f"{label}同步异常导致会话失效，已回滚（未提交改动下轮重试）")
+    # 兜底理由：回滚失败时记录日志，避免掩盖原始异常
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"{label}同步会话回滚失败: {e}")
+
+
 def _sync_each_with_recovery(items, handler, *, result, failed_key, session,
                              label, commit_interval=100, item_name=str):
     """逐项执行 handler：单项失败记入 failed_key 后继续，不中断整批同步。
 
     commit_interval 为 0 时不周期性提交，由调用方在阶段末尾统一提交。
+    失败计入 failed_key，并在会话失效时回滚，保证后续提交仍可执行。
     """
     total = len(items)
+    failed = 0
+
+    def _mark_failed(item):
+        nonlocal failed
+        failed += 1
+        result[failed_key].append(item_name(item))
+
     for i, item in enumerate(items):
         try:
             handler(item)
-            if commit_interval and (i + 1) % commit_interval == 0:
-                session.commit()
-                logger.info(f"已处理 {i + 1}/{total} 个{label}")
         # 兜底理由：单条记录同步失败不中断整批
         except Exception as e:  # noqa: BLE001
             logger.exception(f"处理{label} {item_name(item)} 失败: {e}")
-            result[failed_key].append(item_name(item))
+            _mark_failed(item)
+            _rollback_poisoned_session(session, label)
+            continue
+
+        if commit_interval and (i + 1) % commit_interval == 0:
+            try:
+                session.commit()
+                logger.info(f"已处理 {i + 1}/{total} 个{label}")
+            # 兜底理由：周期提交失败不中断整批，回滚后继续处理
+            except Exception as e:  # noqa: BLE001
+                logger.exception(f"{label}周期提交失败（第 {i + 1} 条后）: {e}")
+                _mark_failed(item)
+                _rollback_poisoned_session(session, label)
+
+    if failed:
+        logger.warning(f"{label}同步失败 {failed}/{total} 个，失败清单共 {len(result[failed_key])} 条")
 
 
 

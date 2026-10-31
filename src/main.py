@@ -28,7 +28,6 @@ from src.database.db_manager import DatabaseManager
 from src.plugin.plugin_manager import PluginManager
 from src.ui.main_window import MainWindow
 from src.ui.theme_manager import ThemeManager
-from src.utils.monitoring import log_cache_stats
 
 # 内部模块导入
 from src.utils.config import config_manager, get_config
@@ -37,6 +36,7 @@ from src.utils.exception_handler import setup_global_exception_handler
 from src.utils.exceptions import DataSourceException
 from src.utils.logger import setup_logger
 from src.utils.memory_manager import global_memory_manager
+from src.utils.monitoring import log_cache_stats
 
 
 def parse_args():
