@@ -178,22 +178,24 @@ class PluginManager:
 
         return False
 
-    def _on_plugin_config_changed(self, plugin_name: str, old_config: Dict[str, Any], new_config: Dict[str, Any]):
+    def _on_plugin_config_changed(self, sender=None, plugin_name: str = '', old_config: Dict[str, Any] | None = None, new_config: Dict[str, Any] | None = None):
         """
         处理插件配置变更事件
 
         Args:
+            sender: blinker 事件发送者（本总线不区分，占位以匹配调度签名）
             plugin_name: 插件名称
             old_config: 旧配置
             new_config: 新配置
         """
         logger.debug(f"插件配置已变更: {plugin_name}")
 
-    def _on_plugin_config_reloaded(self, plugin_name: str, config: Dict[str, Any]):
+    def _on_plugin_config_reloaded(self, sender=None, plugin_name: str = '', config: Dict[str, Any] | None = None):
         """
         处理插件配置重新加载事件
 
         Args:
+            sender: blinker 事件发送者（本总线不区分，占位以匹配调度签名）
             plugin_name: 插件名称
             config: 新配置
         """
@@ -202,7 +204,7 @@ class PluginManager:
         # 通知插件配置已变更
         plugin_instance = self.get_plugin_instance(plugin_name)
         if plugin_instance:
-            plugin_instance.on_config_changed({}, config)
+            plugin_instance.on_config_changed({}, config or {})
 
     def _build_dependency_graph(self) -> Dict[str, List[str]]:
         """

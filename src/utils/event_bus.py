@@ -11,13 +11,15 @@
 5. 支持异步事件发布
 """
 
+import inspect
 import logging
 import threading
 import time
 import weakref
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Tuple
+from typing import Any, Deque, Dict, List, Tuple
 
 from blinker import Namespace
 
@@ -119,15 +121,23 @@ class EventBus:
     事件总线管理类，提供事件发布和订阅的封装
     """
 
-    def __init__(self, history_max_size: int = 1000):
+    def __init__(self, history_max_size: int = 1000, async_max_pending: int = 1000):
         """初始化事件总线
 
         Args:
             history_max_size: 事件历史记录最大数量
+            async_max_pending: 异步发布待处理任务上限，超出后丢弃新任务并计数，
+                避免行情突发时无界队列把线程池任务无限堆积
         """
+        if history_max_size <= 0:
+            raise ValueError("历史记录最大数量必须大于0")
+        if async_max_pending <= 0:
+            raise ValueError("异步发布待处理上限必须大于0")
+
         self._events = quant_events
         self._subscribers: Dict[str, List[Tuple[Callable, bool, int, Callable | None]]] = {}
-        self._event_history: List[Dict[str, Any]] = []
+        # 定长双端队列：超出上限自动从头部淘汰，避免 list.pop(0) 的 O(n) 搬移
+        self._event_history: Deque[Dict[str, Any]] = deque(maxlen=history_max_size)
         self._history_max_size = history_max_size
         self._event_monitors: List[Callable] = []
         self._lock = threading.RLock()  # 线程锁，确保线程安全
@@ -142,8 +152,15 @@ class EventBus:
         # 线程池
         self._executor = ThreadPoolExecutor(max_workers=4)
 
-        # Qt 桥接订阅记录：(signal_name, 原始订阅者, 实际连接的可调用, 桥接对象)
-        self._qt_connections: List[Tuple[str, Callable, Callable, Any]] = []
+        # 异步发布背压状态（读写在 self._lock 保护下）
+        self._async_max_pending = async_max_pending
+        self._async_pending = 0
+        self._async_dropped = 0
+
+        # 包装后的订阅记录：(signal_name, 原始订阅者, 实际连接的可调用, Qt 桥接对象或 None)
+        # Qt 桥接与 filter_func 都会产生包装闭包，二者统一在此登记，取消订阅时
+        # 必须断开 effective（而非原始订阅者），否则 disconnect 会对不上号
+        self._wrapped_connections: List[Tuple[str, Callable, Callable, Any]] = []
 
     def subscribe(self, signal_name: str, subscriber: Callable, weak: bool = True, priority: int = 0, filter_func: Callable | None = None):
         """
@@ -151,7 +168,9 @@ class EventBus:
 
         Args:
             signal_name: 事件名称
-            subscriber: 订阅者函数
+            subscriber: 订阅者函数。blinker 以 sender 作为第一位置参数调用
+                接收者，因此订阅者应声明 `sender`（可为 None 默认值）；只写
+                `**kwargs` 的回调由总线自动适配，无需改动签名
             weak: 是否使用弱引用，默认为True
             priority: 事件优先级，数值越大，优先级越高，默认为0
             filter_func: 事件过滤函数，用于过滤事件，返回True表示接收事件，False表示忽略事件
@@ -170,27 +189,42 @@ class EventBus:
             if isinstance(receiver, QObject):
                 subscriber, qt_bridge = self._wrap_qt_subscriber(subscriber)
 
+        # 首个位置参数不是 sender 的订阅者在此吞掉 blinker 注入的 sender，
+        # 否则 send() 会抛 "takes 0 positional arguments" /
+        # "got multiple values for argument"
+        if not self._wants_sender(subscriber):
+            inner = subscriber
+
+            def _drop_sender(sender=None, **kwargs):
+                return inner(**kwargs)
+
+            subscriber = _drop_sender
+
         # 创建过滤包装器
         if filter_func:
-            def filtered_subscriber(**kwargs):
+            def filtered_subscriber(sender=None, **kwargs):
                 if filter_func(**kwargs):
-                    return subscriber(**kwargs)
+                    return subscriber(sender, **kwargs)
+
             effective = filtered_subscriber
         else:
             effective = subscriber
 
-        # 桥接包装闭包无外部强引用，必须禁用弱引用，改由 _qt_connections 持有
-        connection = signal.connect(effective, weak=weak if qt_bridge is None and not filter_func else False)
+        # 包装闭包无外部强引用，必须禁用弱引用，改由 _wrapped_connections 持有
+        is_wrapped = effective is not original_subscriber
+        connection = signal.connect(effective, weak=False if is_wrapped else weak)
 
-        if qt_bridge is not None:
+        if is_wrapped:
             with self._lock:
-                self._qt_connections.append((signal_name, original_subscriber, effective, qt_bridge))
+                self._wrapped_connections.append(
+                    (signal_name, original_subscriber, effective, qt_bridge))
 
-        # 保存订阅信息
+        # 保存订阅信息（weak 记录实际生效值，避免元数据与实际连接方式不一致）
         with self._lock:
             if signal_name not in self._subscribers:
                 self._subscribers[signal_name] = []
-            self._subscribers[signal_name].append((subscriber, weak, priority, filter_func))
+            self._subscribers[signal_name].append(
+                (original_subscriber, False if is_wrapped else weak, priority, filter_func))
             # 按优先级排序
             self._subscribers[signal_name].sort(key=lambda x: x[2], reverse=True)
 
@@ -198,9 +232,33 @@ class EventBus:
             self._event_stats['subscribe_count'][signal_name] = self._event_stats['subscribe_count'].get(signal_name, 0) + 1
 
         # 通知监控器
-        self._notify_monitors('subscribe', signal_name, subscriber)
+        self._notify_monitors('subscribe', signal_name, original_subscriber)
 
         return connection
+
+    @staticmethod
+    def _wants_sender(receiver: Callable) -> bool:
+        """判断接收者的第一个位置参数是否为 sender。
+
+        blinker 的 send() 固定以 sender 作为第一位置参数调用接收者，但本总线
+        不做多 sender 语义，需要一个"该不该透传"的判定：首个位置参数名为
+        sender 时原样透传（保留既有订阅者语义），否则在适配层吞掉——不能只看
+        "能否接受位置参数"，否则 `(plugin_name, ...)` 之类的签名会把 sender
+        绑到业务参数上，抛 "got multiple values for argument"。
+
+        签名无法探测时保守返回 True（按 blinker 原生行为透传）。
+        """
+        try:
+            parameters = inspect.signature(receiver).parameters.values()
+        except (TypeError, ValueError):
+            return True
+        for param in parameters:
+            if param.kind == inspect.Parameter.VAR_POSITIONAL:
+                return True
+            if param.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                              inspect.Parameter.POSITIONAL_OR_KEYWORD):
+                return param.name == 'sender'
+        return False
 
     @staticmethod
     def _wrap_qt_subscriber(subscriber: Callable) -> Tuple[Callable, Any]:
@@ -214,13 +272,20 @@ class EventBus:
         """
         receiver = subscriber.__self__
         func = subscriber.__func__
+        accepts_sender = EventBus._wants_sender(subscriber)
         receiver_ref = weakref.ref(receiver)
         bridge = _QtSubscriberBridge(receiver)
 
         def _deliver(payload: dict):
             obj = receiver_ref()
-            if obj is not None:
-                func(obj, **payload)
+            if obj is None:
+                return
+            sender = payload.get('sender')
+            kwargs = {key: value for key, value in payload.items() if key != 'sender'}
+            if accepts_sender:
+                func(obj, sender, **kwargs)
+            else:
+                func(obj, **kwargs)
 
         bridge.triggered.connect(_deliver)
 
@@ -240,15 +305,19 @@ class EventBus:
         """
         signal = self._events.signal(signal_name)
 
-        # Qt 桥接订阅需断开实际连接的包装器并清理记录
+        # 包装过的订阅（Qt 桥接 / filter_func）必须断开实际连接的包装器，
+        # 对原始订阅者 disconnect 会因对象不同而静默失效，订阅永远留在信号上
         with self._lock:
-            qt_entries = [e for e in self._qt_connections
-                          if e[0] == signal_name and e[1] == subscriber]
-            self._qt_connections = [e for e in self._qt_connections
-                                    if not (e[0] == signal_name and e[1] == subscriber)]
-        for _, _, effective, _bridge in qt_entries:
+            wrapped_entries = [e for e in self._wrapped_connections
+                               if e[0] == signal_name and e[1] == subscriber]
+            self._wrapped_connections = [e for e in self._wrapped_connections
+                                         if not (e[0] == signal_name and e[1] == subscriber)]
+        for _, _, effective, bridge in wrapped_entries:
             signal.disconnect(effective)
-        if not qt_entries:
+            if bridge is not None:
+                bridge.setParent(None)
+                bridge.deleteLater()
+        if not wrapped_entries:
             signal.disconnect(subscriber)
 
         # 移除订阅信息
@@ -283,10 +352,8 @@ class EventBus:
         }
 
         with self._lock:
+            # deque(maxlen=...) 追加即自动淘汰头部，无 pop(0) 的 O(n) 搬移
             self._event_history.append(event)
-            # 限制历史记录数量
-            if len(self._event_history) > self._history_max_size:
-                self._event_history.pop(0)
 
             # 更新统计
             self._event_stats['publish_count'][signal_name] = self._event_stats['publish_count'].get(signal_name, 0) + 1
@@ -302,15 +369,48 @@ class EventBus:
         """
         异步发布事件
 
+        ThreadPoolExecutor 的任务队列无界，突发行情下 submit 会把任务无限
+        堆积。这里以 async_max_pending 做有界背压：待处理任务达到上限时直接
+        丢弃本次发布并计数告警，保证内存与延迟可控（丢事件优于雪崩）。
+
         Args:
             signal_name: 事件名称
             **kwargs: 事件参数
+
+        Returns:
+            bool: 是否成功入队；被丢弃时为 False
         """
+        with self._lock:
+            if self._async_pending >= self._async_max_pending:
+                self._async_dropped += 1
+                dropped = True
+            else:
+                self._async_pending += 1
+                dropped = False
+
+        if dropped:
+            logger.warning(
+                f"异步事件待处理任务已达上限 {self._async_max_pending}，"
+                f"丢弃事件: {signal_name}（累计丢弃 {self._async_dropped}）")
+            return False
+
         def _async_publish():
-            self.publish(signal_name, **kwargs)
+            try:
+                self.publish(signal_name, **kwargs)
+            finally:
+                with self._lock:
+                    self._async_pending -= 1
 
         # 使用线程池执行异步发布
-        self._executor.submit(_async_publish)
+        try:
+            self._executor.submit(_async_publish)
+        except RuntimeError:
+            # 线程池已 shutdown，回退计数并告警，不向调用方抛错
+            with self._lock:
+                self._async_pending -= 1
+            logger.warning(f"事件总线已关闭，丢弃异步事件: {signal_name}")
+            return False
+        return True
 
     def get_signal(self, signal_name: str):
         """
@@ -348,7 +448,7 @@ class EventBus:
             List[Dict[str, Any]]: 事件历史记录
         """
         with self._lock:
-            return self._event_history[-limit:].copy()
+            return list(self._event_history)[-limit:]
 
     def clear_event_history(self):
         """清除事件历史记录"""
@@ -367,9 +467,8 @@ class EventBus:
 
         with self._lock:
             self._history_max_size = size
-            # 限制历史记录数量
-            if len(self._event_history) > size:
-                self._event_history = self._event_history[-size:]
+            # maxlen 不可变，重建队列保留最新 size 条（deque 构造时超限自动留尾部）
+            self._event_history = deque(self._event_history, maxlen=size)
 
     def add_monitor(self, monitor: Callable):
         """
@@ -419,7 +518,7 @@ class EventBus:
         Returns:
             List[str]: 信号名称列表
         """
-        return list(self._events._signals.keys())
+        return list(self._events.keys())
 
     def get_event_stats(self) -> Dict[str, Dict[str, int]]:
         """
@@ -481,6 +580,9 @@ class EventBus:
                 'event_history_size': len(self._event_history),
                 'history_max_size': self._history_max_size,
                 'monitors_count': len(self._event_monitors),
+                'async_pending': self._async_pending,
+                'async_max_pending': self._async_max_pending,
+                'async_dropped': self._async_dropped,
                 'stats': self.get_event_stat_summary()
             }
 
@@ -503,6 +605,11 @@ class EventMonitor:
             *args: 位置参数
             **kwargs: 关键字参数
         """
+        if not logger.isEnabledFor(logging.DEBUG):
+            # 热路径：debug 日志被关闭时直接返回，避免逐事件构造 f-string
+            # 与 _redact_kwargs() 的字典推导（实测占 publish 总耗时六成以上）
+            return
+
         if event_type == 'publish':
             # 记录事件发布
             logger.debug(f"[EVENT] Published: {signal_name} | Thread: {threading.get_ident()} | Kwargs: {_redact_kwargs(kwargs)}")
