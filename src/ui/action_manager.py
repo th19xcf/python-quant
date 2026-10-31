@@ -4,6 +4,10 @@
 动作/菜单处理管理器
 """
 
+from src.ui.utils.ui_feedback import (
+    show_data_read_error,
+    show_indicator_calculate_error,
+)
 from src.utils.logger import logger
 
 
@@ -152,10 +156,7 @@ class ActionManager:
 
     def _on_data_read_error(self, error_msg):
         """数据读取错误"""
-        self.window.statusBar().showMessage(error_msg, 5000)
-        logger.error(f"数据读取错误: {error_msg}")
-        if hasattr(self.window, 'market_progress_bar'):
-            self.window.market_progress_bar.setVisible(False)
+        show_data_read_error(self.window, error_msg)
 
     def _on_data_read_progress(self, progress, total):
         """数据读取进度"""
@@ -183,8 +184,7 @@ class ActionManager:
 
     def _on_indicator_calculate_error(self, error_msg):
         """指标计算错误"""
-        logger.error(f"指标计算错误: {error_msg}")
-        self.window.statusBar().showMessage(error_msg, 5000)
+        show_indicator_calculate_error(self.window, error_msg)
 
     def _on_indicator_calculate_progress(self, progress, total):
         """指标计算进度"""

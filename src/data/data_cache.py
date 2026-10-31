@@ -13,6 +13,8 @@ from typing import Any, Dict, TypeVar
 import polars as pl
 from loguru import logger
 
+from src.utils.cache_entry import TimestampedCacheEntryMixin
+
 # 定义缓存键和值的类型变量
 K = TypeVar('K')
 V = TypeVar('V')
@@ -38,7 +40,7 @@ def _parse_date_bound(value) -> date | None:
     return None
 
 
-class DataCacheEntry[V]:
+class DataCacheEntry[V](TimestampedCacheEntryMixin):
     """
     缓存条目类，用于存储缓存值及其元数据
     """
@@ -68,24 +70,6 @@ class DataCacheEntry[V]:
         self.start_date = start_date
         self.end_date = end_date
         self.params = params or {}
-
-    def is_expired(self) -> bool:
-        """
-        检查缓存是否过期
-
-        Returns:
-            bool: 是否过期
-        """
-        if self.expire_time is None:
-            return False
-        return time.time() > self.expire_time
-
-    def update_access(self):
-        """
-        更新访问信息
-        """
-        self.access_time = time.time()
-        self.hit_count += 1
 
     def contains_date_range(self, start_date: str, end_date: str) -> bool:
         """

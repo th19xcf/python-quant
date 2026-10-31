@@ -27,6 +27,13 @@ from pydantic import ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings
 
 
+def _validate_port_value(value: int) -> int:
+    """端口号合法范围校验（DatabaseSettings / RedisSettings 共用）"""
+    if value < 1 or value > 65535:
+        raise ValueError('端口号必须在1-65535之间')
+    return value
+
+
 class DatabaseSettings(BaseSettings):
     """数据库配置"""
     host: str = Field(default="localhost", description="数据库主机")
@@ -42,9 +49,7 @@ class DatabaseSettings(BaseSettings):
     @classmethod
     def validate_port(cls, v: int) -> int:
         """验证端口号"""
-        if v < 1 or v > 65535:
-            raise ValueError('端口号必须在1-65535之间')
-        return v
+        return _validate_port_value(v)
 
     @field_validator('pool_size')
     @classmethod
@@ -67,9 +72,7 @@ class RedisSettings(BaseSettings):
     @classmethod
     def validate_port(cls, v: int) -> int:
         """验证端口号"""
-        if v < 1 or v > 65535:
-            raise ValueError('端口号必须在1-65535之间')
-        return v
+        return _validate_port_value(v)
 
     @field_validator('db')
     @classmethod

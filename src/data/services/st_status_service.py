@@ -17,13 +17,14 @@ ST 状态服务
       更早的日期仍返回未知（None），由回测 st_unknown 标记数据质量。
 """
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any, Dict, List
 
 from loguru import logger
 from sqlalchemy import or_
 
 from src.database.models.stock import StockStatusHistory
+from src.utils.date_utils import parse_date
 
 # 数据来源标识
 SOURCE_AKSHARE_CURRENT = 'akshare_st_em_current'
@@ -55,19 +56,8 @@ def normalize_ts_code(raw: Any) -> str | None:
 
 
 def _parse_date(value: Any) -> date | None:
-    """字符串/date/datetime 统一转 date，无法解析返回 None"""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    for fmt in ('%Y-%m-%d', '%Y%m%d'):
-        try:
-            return datetime.strptime(str(value), fmt).date()
-        except ValueError:
-            continue
-    return None
+    """本模块内的日期解析，复用公共工具保持口径一致"""
+    return parse_date(value)
 
 
 class StStatusService:

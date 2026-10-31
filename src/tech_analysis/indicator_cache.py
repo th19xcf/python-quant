@@ -12,6 +12,8 @@ from typing import Any, Dict, List, TypeVar
 import polars as pl
 from loguru import logger
 
+from src.utils.cache_entry import TimestampedCacheEntryMixin
+
 # 定义缓存键和值的类型变量
 K = TypeVar('K')
 V = TypeVar('V')
@@ -167,7 +169,7 @@ def _canonical_params(params: Dict[str, Any]) -> str:
     )
 
 
-class IndicatorCacheEntry[V]:
+class IndicatorCacheEntry[V](TimestampedCacheEntryMixin):
     """
     缓存条目类，用于存储缓存值及其元数据
     """
@@ -184,24 +186,6 @@ class IndicatorCacheEntry[V]:
         self.expire_time = expire_time
         self.access_time = time.time()  # 上次访问时间
         self.hit_count = 1  # 命中次数
-
-    def is_expired(self) -> bool:
-        """
-        检查缓存是否过期
-
-        Returns:
-            bool: 是否过期
-        """
-        if self.expire_time is None:
-            return False
-        return time.time() > self.expire_time
-
-    def update_access(self):
-        """
-        更新访问信息
-        """
-        self.access_time = time.time()
-        self.hit_count += 1
 
 
 class IndicatorCache:

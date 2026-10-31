@@ -59,11 +59,8 @@ class LazyOptimizer:
         Returns:
             pl.LazyFrame: 处理后的LazyFrame
         """
-        # 使用Polars的并行处理能力
-        # Polars会自动处理并行计算
-        # 对于大型数据集，可以考虑使用分区处理
-
-        return lazy_df
+        # Polars 自动并行，与查询计划优化同为空操作，统一委托单一入口
+        return cls.optimize_query_plan(lazy_df)
 
     @classmethod
     def optimize_query_plan(cls, lazy_df: pl.LazyFrame) -> pl.LazyFrame:

@@ -158,16 +158,25 @@ graph TD
 
 ### 涨跌停自适应规则
 
-```python
-def _get_limit_pct(ts_code, is_st=False):
-    if is_st:        return 0.05  # ST / *ST
-    if 300/301xx    return 0.20  # 创业板
-    if 68/688xx     return 0.20  # 科创板
-    if 4/8/9xxxxxx  return 0.30  # 北交所
-    return 0.10                    # 主板默认
-```
+唯一真源是 `ExecutionRules.resolve_limit_pct(ts_code, is_st, trade_date)`
+（`src/backtest/engine/execution_core.py`），判定顺序固定为
+**交易日 → 板块常规幅度 → ST 状态**：
 
-两条回测路径共用同一判定。向后兼容：未传 ts_code 时回退 `limit_pct=0.1`。
+| 情形 | 幅度 | 判定依据 |
+|---|---|---|
+| 科创板 | 20% | 代码 688 / 689 段 |
+| 创业板 | 20%（2020-08-24 起）/ 10%（改革前） | 代码 300 / 301 段 + `trade_date` |
+| 北交所 | 30% | `.BJ` 后缀优先，无后缀时用 83 / 87 / 88 / 920 号段 |
+| 沪深 B 股 | 10% | 900（沪）/ 200（深）显式号段 |
+| 主板 | 10% | 兜底 |
+| ST / *ST | 5%，仅常规幅度为 10% 的板块 | `is_st=True` 且板块常规幅度为 10%；20%/30% 板块的 ST 股票与普通股同幅度 |
+| 数据层未提供 ST 标识 | 按板块常规幅度 | `is_st=None`，只标记 `st_unknown` / `fill_confidence=low`，不改变成交判定 |
+
+涨跌停价按 `round(prev_close × (1 ± limit), 2)` 计算：先转 `Decimal` 再相乘并
+`ROUND_HALF_UP`，与交易所"四舍五入到分"口径一致。开盘价触及涨停不可买、
+触及跌停不可卖、成交量 0（停牌）不可交易；`PRICE_EPS` 只吸收双精度乘法噪声。
+
+两条回测路径共用同一判定。未传 `ts_code` 时回退主板 10%。
 
 ---
 

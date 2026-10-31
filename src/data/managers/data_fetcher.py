@@ -21,6 +21,7 @@ from loguru import logger
 from src.data.data_cache import global_data_cache
 from src.data.data_source_health import get_global_health_checker
 from src.data.managers.source_worker import call_source
+from src.utils.date_utils import parse_date
 from src.utils.memory_optimizer import MemoryOptimizer
 from src.utils.monitoring import global_monitoring_system
 
@@ -254,19 +255,8 @@ class DataFetcher:
 
     @staticmethod
     def _parse_date_bound(value: Union[str, date, datetime, None]) -> date | None:
-        """将日期字符串/对象统一转换为 date，供数据库查询使用"""
-        if value is None:
-            return None
-        if isinstance(value, datetime):
-            return value.date()
-        if isinstance(value, date):
-            return value
-        for fmt in ('%Y-%m-%d', '%Y%m%d'):
-            try:
-                return datetime.strptime(str(value), fmt).date()
-            except ValueError:
-                continue
-        return None
+        """将日期字符串/对象统一转换为 date，供数据库查询使用（复用公共工具）"""
+        return parse_date(value)
 
     @staticmethod
     def _normalize_trade_date(df: pl.DataFrame) -> pl.DataFrame:

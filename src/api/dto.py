@@ -14,6 +14,18 @@ from typing import Any, Dict
 import polars as pl
 
 
+def _resolve_date_range(data: pl.DataFrame, start_date: str | None,
+                        end_date: str | None) -> tuple[str | None, str | None]:
+    """data 非空时用实际首末日期补齐缺失的起止日期"""
+    if len(data) == 0:
+        return start_date, end_date
+    if start_date is None:
+        start_date = str(data['date'].min())
+    if end_date is None:
+        end_date = str(data['date'].max())
+    return start_date, end_date
+
+
 @dataclass
 class StockDataDTO:
     """股票数据传输对象"""
@@ -27,11 +39,9 @@ class StockDataDTO:
     update_time: str | None = None
 
     def __post_init__(self):
-        """初始化后处理"""
-        if self.start_date is None and len(self.data) > 0:
-            self.start_date = str(self.data['date'].min())
-        if self.end_date is None and len(self.data) > 0:
-            self.end_date = str(self.data['date'].max())
+        """初始化后处理：未显式提供起止日期时按数据实际范围补齐"""
+        self.start_date, self.end_date = _resolve_date_range(
+            self.data, self.start_date, self.end_date)
 
 
 @dataclass
@@ -47,11 +57,9 @@ class IndexDataDTO:
     update_time: str | None = None
 
     def __post_init__(self):
-        """初始化后处理"""
-        if self.start_date is None and len(self.data) > 0:
-            self.start_date = str(self.data['date'].min())
-        if self.end_date is None and len(self.data) > 0:
-            self.end_date = str(self.data['date'].max())
+        """初始化后处理：未显式提供起止日期时按数据实际范围补齐"""
+        self.start_date, self.end_date = _resolve_date_range(
+            self.data, self.start_date, self.end_date)
 
 
 @dataclass
