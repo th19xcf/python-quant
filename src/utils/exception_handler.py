@@ -7,7 +7,9 @@
 import sys
 import time
 import traceback
-from typing import Any, Dict
+from collections.abc import Callable
+from types import TracebackType
+from typing import Any, Dict, List, ParamSpec, TypeVar, cast
 
 from loguru import logger
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -20,7 +22,7 @@ class GlobalExceptionHandler:
     全局异常处理器，用于捕获和处理未捕获的异常
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """
         初始化全局异常处理器
         """
@@ -29,7 +31,7 @@ class GlobalExceptionHandler:
         # 安装全局异常处理器
         sys.excepthook = self.handle_exception
         # 错误统计
-        self.error_stats = {
+        self.error_stats: Dict[str, Any] = {
             "total_errors": 0,
             "error_types": {},
             "error_categories": {},
@@ -41,16 +43,21 @@ class GlobalExceptionHandler:
         # 最大历史记录数
         self.max_history = 100
         # 告警配置
-        self.alert_config = {
+        self.alert_config: Dict[str, Any] = {
             "enabled": True,
             "critical_threshold": 5,  # 5分钟内严重错误数阈值
             "warning_threshold": 10,  # 5分钟内警告数阈值
             "alert_history": []
         }
         # 告警回调函数
-        self.alert_callbacks = []
+        self.alert_callbacks: List[Callable[..., Any]] = []
 
-    def handle_exception(self, exc_type, exc_value, exc_traceback):
+    def handle_exception(
+        self,
+        exc_type: type[BaseException],
+        exc_value: BaseException,
+        exc_traceback: TracebackType | None,
+    ) -> None:
         """
         处理全局异常
 
@@ -85,7 +92,12 @@ class GlobalExceptionHandler:
         # 调用原始的异常处理器（如果需要）
         # self.original_excepthook(exc_type, exc_value, exc_traceback)
 
-    def _update_error_stats(self, exc_type, exc_value, error_details):
+    def _update_error_stats(
+        self,
+        exc_type: type[BaseException],
+        exc_value: BaseException,
+        error_details: Dict[str, Any],
+    ) -> None:
         """
         更新错误统计信息
 
@@ -135,7 +147,12 @@ class GlobalExceptionHandler:
 
         self.error_stats["last_error_time"] = time.time()
 
-    def _generate_error_details(self, exc_type, exc_value, exc_traceback) -> Dict[str, Any]:
+    def _generate_error_details(
+        self,
+        exc_type: type[BaseException],
+        exc_value: BaseException,
+        exc_traceback: TracebackType | None,
+    ) -> Dict[str, Any]:
         """
         生成错误详情
 
@@ -149,8 +166,8 @@ class GlobalExceptionHandler:
         """
         error_message = f"{exc_type.__name__}: {exc_value}"
         error_traceback = ''.join(traceback.format_tb(exc_traceback))
-        error_severity = get_error_severity(exc_value)
-        retryable = is_retryable_error(exc_value)
+        error_severity = get_error_severity(cast(Exception, exc_value))
+        retryable = is_retryable_error(cast(Exception, exc_value))
 
         # 提取业务异常信息
         if isinstance(exc_value, QuantException):
@@ -169,7 +186,7 @@ class GlobalExceptionHandler:
             "error_details": error_details
         }
 
-    def _show_error_dialog(self, error_details: Dict[str, Any]):
+    def _show_error_dialog(self, error_details: Dict[str, Any]) -> None:
         """
         显示错误对话框
 
@@ -211,13 +228,13 @@ class GlobalExceptionHandler:
         """
         return self.error_stats
 
-    def restore(self):
+    def restore(self) -> None:
         """
         恢复原始的异常处理器
         """
         sys.excepthook = self.original_excepthook
 
-    def _check_alert(self, error_details):
+    def _check_alert(self, error_details: Dict[str, Any]) -> None:
         """
         检查是否需要触发告警
 
@@ -240,7 +257,9 @@ class GlobalExceptionHandler:
         # 检查错误频率
         self._check_error_frequency()
 
-    def _trigger_alert(self, level, message, error_details):
+    def _trigger_alert(
+        self, level: str, message: str, error_details: Dict[str, Any]
+    ) -> None:
         """
         触发告警
 
@@ -275,7 +294,7 @@ class GlobalExceptionHandler:
             except Exception as e:  # noqa: BLE001
                 logger.error(f"告警回调执行错误: {e}")
 
-    def _check_error_frequency(self):
+    def _check_error_frequency(self) -> None:
         """
         检查错误频率，触发频率告警
         """
@@ -315,7 +334,7 @@ class GlobalExceptionHandler:
                 }
             )
 
-    def add_alert_callback(self, callback):
+    def add_alert_callback(self, callback: Callable[..., Any]) -> None:
         """
         添加告警回调函数
 
@@ -324,7 +343,7 @@ class GlobalExceptionHandler:
         """
         self.alert_callbacks.append(callback)
 
-    def remove_alert_callback(self, callback):
+    def remove_alert_callback(self, callback: Callable[..., Any]) -> None:
         """
         移除告警回调函数
 
@@ -334,7 +353,7 @@ class GlobalExceptionHandler:
         if callback in self.alert_callbacks:
             self.alert_callbacks.remove(callback)
 
-    def get_alert_history(self):
+    def get_alert_history(self) -> List[Dict[str, Any]]:
         """
         获取告警历史
 
@@ -343,7 +362,7 @@ class GlobalExceptionHandler:
         """
         return self.alert_config["alert_history"].copy()
 
-    def clear_alert_history(self):
+    def clear_alert_history(self) -> None:
         """
         清空告警历史
         """
@@ -354,7 +373,7 @@ class GlobalExceptionHandler:
 global_exception_handler = GlobalExceptionHandler()
 
 
-def setup_global_exception_handler():
+def setup_global_exception_handler() -> GlobalExceptionHandler:
     """
     设置全局异常处理器
     """
@@ -362,7 +381,7 @@ def setup_global_exception_handler():
     return global_exception_handler
 
 
-def get_error_message(exception):
+def get_error_message(exception: Exception) -> str:
     """
     获取异常的友好错误信息
 
@@ -394,16 +413,19 @@ def get_error_message(exception):
     return f"{error_msg}: {str(exception)}"
 
 
-_RETRY_DEFAULTS = {
+_RETRY_DEFAULTS: Dict[str, float] = {
     'max_retries': 3,
     'retry_delay': 1.0,
     'backoff_factor': 2.0,
     'max_delay': 30.0,
 }
 
+P = ParamSpec("P")
+R = TypeVar("R")
+
 
 def configure_retry(max_retries: int | None = None, retry_delay: float | None = None,
-                    backoff_factor: float | None = None, max_delay: float | None = None):
+                    backoff_factor: float | None = None, max_delay: float | None = None) -> None:
     """
     配置全局重试策略（启动阶段从配置读取后调用）
 
@@ -428,7 +450,7 @@ def configure_retry(max_retries: int | None = None, retry_delay: float | None = 
 
 
 def handle_exception_with_retry(max_retries: int | None = None, retry_delay: float | None = None,
-                                backoff_factor: float | None = None, max_delay: float | None = None):
+                                backoff_factor: float | None = None, max_delay: float | None = None) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """
     带指数退避重试机制的异常处理装饰器
 
@@ -441,8 +463,8 @@ def handle_exception_with_retry(max_retries: int | None = None, retry_delay: flo
     Returns:
         Callable: 包装后的函数
     """
-    def decorator(func):
-        def wrapper(*args, **kwargs):
+    def decorator(func: Callable[P, R]) -> Callable[P, R]:
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             retries = 0
             last_exception = None
 
@@ -470,13 +492,14 @@ def handle_exception_with_retry(max_retries: int | None = None, retry_delay: flo
 
             if last_exception:
                 raise last_exception
+            return cast("R", None)
 
         return wrapper
 
     return decorator
 
 
-def handle_error_gracefully(error_handler=None):
+def handle_error_gracefully(error_handler: Callable[..., Any] | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     优雅处理错误的装饰器
 
@@ -486,8 +509,8 @@ def handle_error_gracefully(error_handler=None):
     Returns:
         Callable: 包装后的函数
     """
-    def decorator(func):
-        def wrapper(*args, **kwargs):
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             try:
                 return func(*args, **kwargs)
             # 兜底理由：装饰器职责即统一兜底并转交错误处理器

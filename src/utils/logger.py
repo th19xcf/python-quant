@@ -5,11 +5,15 @@
 """
 
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+if TYPE_CHECKING:
+    from src.utils.config import Config
 
-def _patcher(record):
+
+def _patcher(record: Any) -> bool:
     """预计算结构化字段字符串，避免空 extra 时显示 {}"""
     extra = record["extra"]
     # 排除内部字段
@@ -32,7 +36,7 @@ _CONSOLE_FORMAT = (
 )
 
 
-def setup_logger(config):
+def setup_logger(config: Config) -> None:
     """
     配置日志系统
 

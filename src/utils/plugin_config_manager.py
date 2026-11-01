@@ -24,7 +24,7 @@ class PluginConfigManager:
     插件配置管理器，负责插件配置的加载、验证和更新
     """
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config) -> None:
         """
         初始化插件配置管理器
 
@@ -38,7 +38,7 @@ class PluginConfigManager:
         # 加载默认配置
         self._load_default_configs()
 
-    def _load_default_configs(self):
+    def _load_default_configs(self) -> None:
         """
         加载默认配置
         """

@@ -12,6 +12,7 @@ src.utils.memory_manager.MemoryManager 实际承担（main.py 启动时开启）
 import threading
 import time
 from collections import defaultdict, deque
+from collections.abc import Callable
 from typing import Any, Dict
 
 from loguru import logger
@@ -22,7 +23,7 @@ class DataSourceMonitor:
     数据源监控器，记录数据源响应时间和成功率
     """
 
-    def __init__(self, max_history: int = 100):
+    def __init__(self, max_history: int = 100) -> None:
         """
         初始化数据源监控器
 
@@ -33,7 +34,7 @@ class DataSourceMonitor:
         self.success_rates: Dict[str, Dict[str, int]] = defaultdict(lambda: {'success': 0, 'total': 0})
         self.lock = threading.Lock()
 
-    def record_request(self, source_name: str, response_time: float, success: bool):
+    def record_request(self, source_name: str, response_time: float, success: bool) -> None:
         """
         记录数据源请求
 
@@ -123,7 +124,7 @@ class DataSourceMonitor:
             'last_requests': list(times)[-10:]  # 最近10次请求
         }
 
-    def log_stats(self):
+    def log_stats(self) -> None:
         """
         记录监控统计信息到日志
         """
@@ -136,7 +137,7 @@ class DataSourceMonitor:
                       f"总请求数={stat['total_requests']}, "
                       f"最近5分钟请求数={stat['recent_5min']['request_count']}")
 
-    def reset(self):
+    def reset(self) -> None:
         """
         重置监控数据
         """
@@ -151,11 +152,11 @@ class CacheStatsRegistry:
     （与直接读取 global_data_cache/global_indicator_cache 的 log_cache_stats 职责不同）
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """
         初始化缓存监控器
         """
-        self.cache_stats = defaultdict(lambda: {
+        self.cache_stats: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
             'hits': 0,
             'misses': 0,
             'evictions': 0,
@@ -165,7 +166,7 @@ class CacheStatsRegistry:
         })
         self.lock = threading.Lock()
 
-    def update_stats(self, cache_name: str, stats: Dict[str, Any]):
+    def update_stats(self, cache_name: str, stats: Dict[str, Any]) -> None:
         """
         更新缓存统计信息
 
@@ -199,7 +200,7 @@ class CacheStatsRegistry:
             else:
                 return dict(self.cache_stats)
 
-    def log_stats(self):
+    def log_stats(self) -> None:
         """
         记录缓存统计信息到日志
         """
@@ -213,7 +214,7 @@ class CacheStatsRegistry:
                       f"最大大小={stat['max_size']}, "
                       f"驱逐次数={stat['evictions']}")
 
-    def reset(self):
+    def reset(self) -> None:
         """
         重置监控数据
         """
@@ -226,14 +227,14 @@ class MonitoringSystem:
     监控系统，整合数据源与缓存监控
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """
         初始化监控系统
         """
         self.data_source_monitor = DataSourceMonitor()
         self.cache_monitor = CacheStatsRegistry()
 
-    def record_data_source_request(self, source_name: str, response_time: float, success: bool):
+    def record_data_source_request(self, source_name: str, response_time: float, success: bool) -> None:
         """
         记录数据源请求
 
@@ -244,7 +245,7 @@ class MonitoringSystem:
         """
         self.data_source_monitor.record_request(source_name, response_time, success)
 
-    def update_cache_stats(self, cache_name: str, stats: Dict[str, Any]):
+    def update_cache_stats(self, cache_name: str, stats: Dict[str, Any]) -> None:
         """
         更新缓存统计信息
 
@@ -266,7 +267,7 @@ class MonitoringSystem:
             'cache': self.cache_monitor.get_stats(),
         }
 
-    def log_all_stats(self):
+    def log_all_stats(self) -> None:
         """
         记录所有监控统计信息到日志
         """
@@ -275,7 +276,7 @@ class MonitoringSystem:
         self.cache_monitor.log_stats()
         logger.info("====================")
 
-    def reset_all(self):
+    def reset_all(self) -> None:
         """
         重置所有监控数据
         """
@@ -289,11 +290,11 @@ global_monitoring_system = MonitoringSystem()
 
 
 # 监控装饰器
-def monitor_data_source(func):
+def monitor_data_source(func: Callable[..., Any]) -> Callable[..., Any]:
     """
     数据源监控装饰器
     """
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         source_name = args[0].__class__.__name__ if args else "unknown"
         start_time = time.time()
         success = True
@@ -312,11 +313,11 @@ def monitor_data_source(func):
     return wrapper
 
 
-def monitor_cache(func):
+def monitor_cache(func: Callable[..., Any]) -> Callable[..., Any]:
     """
     缓存监控装饰器
     """
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         result = func(*args, **kwargs)
 
         # 假设第一个参数是缓存实例
@@ -330,7 +331,7 @@ def monitor_cache(func):
     return wrapper
 
 
-def log_cache_stats():
+def log_cache_stats() -> None:
     """
     记录数据缓存与指标缓存的统计信息（原 cache_monitor.log_cache_stats）
 

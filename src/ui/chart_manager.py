@@ -174,7 +174,7 @@ class ChartManager:
             x=np.array(x),
             height=np.array(data),
             width=width,
-            brush=colors,
+            brushes=colors,
             pen=None
         )
         plot_widget.addItem(bar_item)
@@ -278,7 +278,9 @@ class ChartManager:
             self._draw_indicator_histogram(plot_widget, x, macd_hist_values, '#FF0000', '#00FF00')
             self._setup_indicator_axis(plot_widget, x, np.column_stack((macd_values, macd_signal_values, macd_hist_values)).flatten())
         elif indicator_name == "RSI":
-            rsi_values = get_col_values(data_df, 'rsi')
+            # 指标列优先 rsi14（与 _INDICATOR_SERIES_TABLE 一致），旧数据回退 rsi
+            rsi_column = 'rsi14' if 'rsi14' in data_df.columns else 'rsi'
+            rsi_values = get_col_values(data_df, rsi_column)
             self._draw_indicator_curve(plot_widget, x, rsi_values, 'white', 1, 'RSI')
             self._setup_indicator_axis(plot_widget, x, rsi_values)
         elif indicator_name == "VOL":

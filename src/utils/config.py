@@ -218,7 +218,7 @@ class Config(BaseSettings):
 class ConfigManager:
     """配置管理器，支持配置热加载"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """初始化配置管理器"""
         self._config: Config = Config()
         self._last_modified: float = self._get_env_file_mtime()
@@ -244,7 +244,7 @@ class ConfigManager:
                 self._last_modified = current_mtime
             return self._config
 
-    def start_watching(self, interval: int = 5):
+    def start_watching(self, interval: int = 5) -> None:
         """开始监控配置文件变化
 
         Args:
@@ -254,13 +254,13 @@ class ConfigManager:
         self._watch_thread = threading.Thread(target=self._watch_config, args=(interval,), daemon=True)
         self._watch_thread.start()
 
-    def stop_watching(self):
+    def stop_watching(self) -> None:
         """停止监控配置文件变化"""
         self._running = False
         if self._watch_thread:
             self._watch_thread.join(timeout=2)
 
-    def _watch_config(self, interval: int):
+    def _watch_config(self, interval: int) -> None:
         """监控配置文件变化的线程函数
 
         Args:

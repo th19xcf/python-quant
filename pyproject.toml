@@ -192,10 +192,16 @@ ignore_missing_imports = true
 files = ["src/backtest", "src/core", "src/risk", "src/api", "src/plugin", "src/alpha", "src/utils", "src/data", "src/database", "src/tech_analysis", "src/quant", "src/recommendation", "src/ui"]
 follow_imports = "silent"
 
-# 分目录加严：核心链路（回测 / 风控 / API）与数据服务层强制函数注解。
+# 分目录加严：核心链路（回测 / 风控 / API）、数据服务层与公共工具层强制函数注解。
 # 其余目录通过 tests/test_mypy_ratchet.py 的“未注解数量不增长”棘轮逐步收口。
 [[tool.mypy.overrides]]
-module = ["src.backtest.*", "src.risk.*", "src.api.*", "src.data.services.*"]
+module = [
+    "src.backtest.*",
+    "src.risk.*",
+    "src.api.*",
+    "src.data.services.*",
+    "src.utils.*",
+]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 
@@ -203,8 +209,8 @@ disallow_incomplete_defs = true
 source = ["src"]
 
 [tool.coverage.report]
-# 棘轮：实测 53.5%，门禁只允许上调。每轮补齐测试后同步抬高，
+# 棘轮：实测 63.9%，门禁只允许上调。每轮补齐测试后同步抬高，
 # 防止覆盖率随新增代码悄悄回落。
-fail_under = 53
+fail_under = 63
 show_missing = true
 skip_covered = true

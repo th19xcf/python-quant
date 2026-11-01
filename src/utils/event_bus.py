@@ -121,7 +121,7 @@ class EventBus:
     事件总线管理类，提供事件发布和订阅的封装
     """
 
-    def __init__(self, history_max_size: int = 1000, async_max_pending: int = 1000):
+    def __init__(self, history_max_size: int = 1000, async_max_pending: int = 1000) -> None:
         """初始化事件总线
 
         Args:
@@ -135,11 +135,11 @@ class EventBus:
             raise ValueError("异步发布待处理上限必须大于0")
 
         self._events = quant_events
-        self._subscribers: Dict[str, List[Tuple[Callable, bool, int, Callable | None]]] = {}
+        self._subscribers: Dict[str, List[Tuple[Callable[..., Any], bool, int, Callable[..., Any] | None]]] = {}
         # 定长双端队列：超出上限自动从头部淘汰，避免 list.pop(0) 的 O(n) 搬移
         self._event_history: Deque[Dict[str, Any]] = deque(maxlen=history_max_size)
         self._history_max_size = history_max_size
-        self._event_monitors: List[Callable] = []
+        self._event_monitors: List[Callable[..., Any]] = []
         self._lock = threading.RLock()  # 线程锁，确保线程安全
 
         # 事件统计
@@ -160,9 +160,9 @@ class EventBus:
         # 包装后的订阅记录：(signal_name, 原始订阅者, 实际连接的可调用, Qt 桥接对象或 None)
         # Qt 桥接与 filter_func 都会产生包装闭包，二者统一在此登记，取消订阅时
         # 必须断开 effective（而非原始订阅者），否则 disconnect 会对不上号
-        self._wrapped_connections: List[Tuple[str, Callable, Callable, Any]] = []
+        self._wrapped_connections: List[Tuple[str, Callable[..., Any], Callable[..., Any], Any]] = []
 
-    def subscribe(self, signal_name: str, subscriber: Callable, weak: bool = True, priority: int = 0, filter_func: Callable | None = None):
+    def subscribe(self, signal_name: str, subscriber: Callable[..., Any], weak: bool = True, priority: int = 0, filter_func: Callable[..., Any] | None = None) -> Any:
         """
         订阅事件
 
@@ -195,14 +195,14 @@ class EventBus:
         if not self._wants_sender(subscriber):
             inner = subscriber
 
-            def _drop_sender(sender=None, **kwargs):
+            def _drop_sender(sender: Any = None, **kwargs: Any) -> Any:
                 return inner(**kwargs)
 
             subscriber = _drop_sender
 
         # 创建过滤包装器
         if filter_func:
-            def filtered_subscriber(sender=None, **kwargs):
+            def filtered_subscriber(sender: Any = None, **kwargs: Any) -> Any:
                 if filter_func(**kwargs):
                     return subscriber(sender, **kwargs)
 
@@ -237,7 +237,7 @@ class EventBus:
         return connection
 
     @staticmethod
-    def _wants_sender(receiver: Callable) -> bool:
+    def _wants_sender(receiver: Callable[..., Any]) -> bool:
         """判断接收者的第一个位置参数是否为 sender。
 
         blinker 的 send() 固定以 sender 作为第一位置参数调用接收者，但本总线
@@ -261,7 +261,7 @@ class EventBus:
         return False
 
     @staticmethod
-    def _wrap_qt_subscriber(subscriber: Callable) -> Tuple[Callable, Any]:
+    def _wrap_qt_subscriber(subscriber: Callable[..., Any]) -> Tuple[Callable[..., Any], Any]:
         """将 QObject 绑定方法包装为经 Qt 信号桥接的跨线程安全订阅者
 
         桥接对象以接收者为父对象，随接收者销毁；同线程派发保持 Direct
@@ -276,7 +276,7 @@ class EventBus:
         receiver_ref = weakref.ref(receiver)
         bridge = _QtSubscriberBridge(receiver)
 
-        def _deliver(payload: dict):
+        def _deliver(payload: dict[str, Any]) -> None:
             obj = receiver_ref()
             if obj is None:
                 return
@@ -289,13 +289,13 @@ class EventBus:
 
         bridge.triggered.connect(_deliver)
 
-        def wrapped(sender=None, **kwargs):
+        def wrapped(sender: Any = None, **kwargs: Any) -> None:
             if receiver_ref() is not None:
                 bridge.triggered.emit({'sender': sender, **kwargs})
 
         return wrapped, bridge
 
-    def unsubscribe(self, signal_name: str, subscriber: Callable):
+    def unsubscribe(self, signal_name: str, subscriber: Callable[..., Any]) -> None:
         """
         取消订阅事件
 
@@ -335,7 +335,7 @@ class EventBus:
         # 通知监控器
         self._notify_monitors('unsubscribe', signal_name, subscriber)
 
-    def publish(self, signal_name: str, **kwargs):
+    def publish(self, signal_name: str, **kwargs: Any) -> None:
         """
         发布事件
 
@@ -365,7 +365,7 @@ class EventBus:
         signal = self._events.signal(signal_name)
         signal.send(**kwargs)
 
-    def publish_async(self, signal_name: str, **kwargs):
+    def publish_async(self, signal_name: str, **kwargs: Any) -> bool:
         """
         异步发布事件
 
@@ -394,7 +394,7 @@ class EventBus:
                 f"丢弃事件: {signal_name}（累计丢弃 {self._async_dropped}）")
             return False
 
-        def _async_publish():
+        def _async_publish() -> None:
             try:
                 self.publish(signal_name, **kwargs)
             finally:
@@ -412,7 +412,7 @@ class EventBus:
             return False
         return True
 
-    def get_signal(self, signal_name: str):
+    def get_signal(self, signal_name: str) -> Any:
         """
         获取事件信号对象
 
@@ -424,7 +424,7 @@ class EventBus:
         """
         return self._events.signal(signal_name)
 
-    def get_subscribers(self, signal_name: str) -> List[Tuple[Callable, bool, int, Callable | None]]:
+    def get_subscribers(self, signal_name: str) -> List[Tuple[Callable[..., Any], bool, int, Callable[..., Any] | None]]:
         """
         获取事件订阅者列表
 
@@ -450,12 +450,12 @@ class EventBus:
         with self._lock:
             return list(self._event_history)[-limit:]
 
-    def clear_event_history(self):
+    def clear_event_history(self) -> None:
         """清除事件历史记录"""
         with self._lock:
             self._event_history.clear()
 
-    def set_history_max_size(self, size: int):
+    def set_history_max_size(self, size: int) -> None:
         """
         设置事件历史记录最大数量
 
@@ -470,7 +470,7 @@ class EventBus:
             # maxlen 不可变，重建队列保留最新 size 条（deque 构造时超限自动留尾部）
             self._event_history = deque(self._event_history, maxlen=size)
 
-    def add_monitor(self, monitor: Callable):
+    def add_monitor(self, monitor: Callable[..., Any]) -> None:
         """
         添加事件监控器
 
@@ -480,7 +480,7 @@ class EventBus:
         with self._lock:
             self._event_monitors.append(monitor)
 
-    def remove_monitor(self, monitor: Callable):
+    def remove_monitor(self, monitor: Callable[..., Any]) -> None:
         """
         移除事件监控器
 
@@ -491,7 +491,7 @@ class EventBus:
             if monitor in self._event_monitors:
                 self._event_monitors.remove(monitor)
 
-    def _notify_monitors(self, event_type: str, signal_name: str, *args, **kwargs):
+    def _notify_monitors(self, event_type: str, signal_name: str, *args: Any, **kwargs: Any) -> None:
         """
         通知事件监控器
 
@@ -530,7 +530,7 @@ class EventBus:
         with self._lock:
             return {k: v.copy() for k, v in self._event_stats.items()}
 
-    def clear_event_stats(self):
+    def clear_event_stats(self) -> None:
         """
         清除事件统计信息
         """
@@ -555,7 +555,7 @@ class EventBus:
                 'total_unsubscribe': sum(self._event_stats['unsubscribe_count'].values())
             }
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         """
         关闭事件总线，清理资源
         """
@@ -595,7 +595,7 @@ class EventMonitor:
     """事件监控器类"""
 
     @staticmethod
-    def debug_monitor(event_type: str, signal_name: str, *args, **kwargs):
+    def debug_monitor(event_type: str, signal_name: str, *args: Any, **kwargs: Any) -> None:
         """
         调试监控器，详细记录事件活动
 
@@ -625,7 +625,7 @@ class EventMonitor:
             logger.debug(f"[EVENT] Unsubscribed: {signal_name} | Subscriber: {subscriber_name}")
 
     @staticmethod
-    def info_monitor(event_type: str, signal_name: str, *args, **kwargs):
+    def info_monitor(event_type: str, signal_name: str, *args: Any, **kwargs: Any) -> None:
         """
         信息监控器，记录重要事件活动
 
@@ -640,7 +640,7 @@ class EventMonitor:
             logger.info(f"[EVENT] {signal_name}")
 
     @staticmethod
-    def error_monitor(event_type: str, signal_name: str, *args, **kwargs):
+    def error_monitor(event_type: str, signal_name: str, *args: Any, **kwargs: Any) -> None:
         """
         错误监控器，记录错误事件
 
@@ -659,27 +659,27 @@ class EventMonitor:
 event_bus.add_monitor(EventMonitor.debug_monitor)
 
 # 事件总线便捷函数
-def subscribe(signal_name: str, subscriber: Callable, weak: bool = True, priority: int = 0, filter_func: Callable | None = None):
+def subscribe(signal_name: str, subscriber: Callable[..., Any], weak: bool = True, priority: int = 0, filter_func: Callable[..., Any] | None = None) -> Any:
     """便捷订阅事件函数"""
     return event_bus.subscribe(signal_name, subscriber, weak, priority, filter_func)
 
 
-def unsubscribe(signal_name: str, subscriber: Callable):
+def unsubscribe(signal_name: str, subscriber: Callable[..., Any]) -> None:
     """便捷取消订阅事件函数"""
     return event_bus.unsubscribe(signal_name, subscriber)
 
 
-def publish(signal_name: str, **kwargs):
+def publish(signal_name: str, **kwargs: Any) -> None:
     """便捷发布事件函数"""
     return event_bus.publish(signal_name, **kwargs)
 
 
-def publish_async(signal_name: str, **kwargs):
+def publish_async(signal_name: str, **kwargs: Any) -> bool:
     """便捷异步发布事件函数"""
     return event_bus.publish_async(signal_name, **kwargs)
 
 
-def get_signal(signal_name: str):
+def get_signal(signal_name: str) -> Any:
     """便捷获取信号函数"""
     return event_bus.get_signal(signal_name)
 
@@ -689,6 +689,6 @@ def get_event_bus() -> EventBus:
     return event_bus
 
 
-def shutdown_event_bus():
+def shutdown_event_bus() -> None:
     """关闭事件总线"""
     event_bus.shutdown()

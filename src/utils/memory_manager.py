@@ -13,13 +13,13 @@ import threading
 import time
 import tracemalloc
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import psutil
 from loguru import logger
 
 
-def _get_caches():
+def _get_caches() -> tuple[Any, Any]:
     """延迟导入缓存单例，避免 utils 在导入期反向依赖 data / tech_analysis。"""
     from src.data.data_cache import global_data_cache
     from src.tech_analysis.indicator_cache import global_indicator_cache
@@ -33,7 +33,7 @@ class MemoryManager:
     提供内存监控、智能缓存管理和资源限制功能
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """
         初始化内存管理器
         """
@@ -44,14 +44,14 @@ class MemoryManager:
             'medium': 60.0,     # 中等内存使用百分比
             'low': 40.0         # 低内存使用百分比
         }
-        self.memory_history = []  # 内存使用历史记录
+        self.memory_history: List[Dict[str, Any]] = []  # 内存使用历史记录
         self.monitoring_enabled = False
-        self.monitoring_thread = None
+        self.monitoring_thread: threading.Thread | None = None
         self.monitoring_interval = 5  # 监控间隔（秒）
         self.tracemalloc_enabled = False
-        self.memory_snapshots = []  # 内存快照
+        self.memory_snapshots: List[Dict[str, Any]] = []  # 内存快照
         self.auto_optimization_enabled = True  # 自动优化开关
-        self.memory_usage_patterns = []  # 内存使用模式
+        self.memory_usage_patterns: List[Dict[str, Any]] = []  # 内存使用模式
         self.linecache_trim_threshold = 5000  # 超过该条目数时清理 linecache
         self.gc_min_interval = 60.0  # 两次强制 GC 的最小间隔（秒），避免监控循环里反复停顿
         self._last_gc_time = 0.0
@@ -110,7 +110,7 @@ class MemoryManager:
         else:
             return 'very_low'
 
-    def start_monitoring(self):
+    def start_monitoring(self) -> None:
         """
         启动内存监控
         """
@@ -120,7 +120,7 @@ class MemoryManager:
             self.monitoring_thread.start()
             logger.info("内存监控已启动")
 
-    def stop_monitoring(self):
+    def stop_monitoring(self) -> None:
         """
         停止内存监控
         """
@@ -129,7 +129,7 @@ class MemoryManager:
             self.monitoring_thread.join(timeout=2)
             logger.info("内存监控已停止")
 
-    def _monitor_memory(self):
+    def _monitor_memory(self) -> None:
         """
         内存监控线程函数
         """
@@ -170,7 +170,7 @@ class MemoryManager:
                 logger.error(f"内存监控出错: {str(e)}")
                 time.sleep(self.monitoring_interval)
 
-    def _analyze_memory_patterns(self):
+    def _analyze_memory_patterns(self) -> None:
         """
         分析内存使用模式
         """
@@ -200,7 +200,7 @@ class MemoryManager:
         if len(self.memory_usage_patterns) > 20:
             self.memory_usage_patterns = self.memory_usage_patterns[-20:]
 
-    def _adjust_monitoring_interval(self, memory_info: Dict[str, Any]):
+    def _adjust_monitoring_interval(self, memory_info: Dict[str, Any]) -> None:
         """
         动态调整监控间隔
 
@@ -220,7 +220,7 @@ class MemoryManager:
             # 内存使用较低时，减少监控频率
             self.monitoring_interval = 10
 
-    def _take_memory_snapshot(self):
+    def _take_memory_snapshot(self) -> None:
         """
         拍摄内存快照
         """
@@ -246,7 +246,7 @@ class MemoryManager:
         except Exception as e:  # noqa: BLE001
             logger.error(f"拍摄内存快照失败: {e}")
 
-    def _analyze_memory_snapshot(self, snapshot):
+    def _analyze_memory_snapshot(self, snapshot: tracemalloc.Snapshot) -> None:
         """
         分析内存快照，检测内存泄漏
 
@@ -272,12 +272,12 @@ class MemoryManager:
                 # 过滤标准库 linecache 噪音，避免误报“内存泄漏”
                 leak_candidates = []
                 filtered_noise = []
-                for stat in growing_stats:
-                    trace_text = str(stat.traceback).lower()
+                for diff in growing_stats:
+                    trace_text = str(diff.traceback).lower()
                     if 'linecache.py' in trace_text:
-                        filtered_noise.append(stat)
+                        filtered_noise.append(diff)
                         continue
-                    leak_candidates.append(stat)
+                    leak_candidates.append(diff)
 
                 if filtered_noise:
                     logger.info(
@@ -287,15 +287,15 @@ class MemoryManager:
 
                 if leak_candidates:
                     logger.warning("检测到可能的内存泄漏:")
-                    for stat in leak_candidates[:5]:
-                        logger.warning(f"  {stat}")
+                    for diff in leak_candidates[:5]:
+                        logger.warning(f"  {diff}")
         except MemoryError:
             raise
         # 兜底理由：快照分析为旁路观测，失败不得影响主流程
         except Exception as e:  # noqa: BLE001
             logger.error(f"分析内存快照失败: {e}")
 
-    def _trim_linecache_cache(self):
+    def _trim_linecache_cache(self) -> None:
         """
         清理 linecache 缓存，降低快照分析噪音。
         """
@@ -308,7 +308,7 @@ class MemoryManager:
         except Exception as e:  # noqa: BLE001
             logger.debug(f"裁剪 linecache 缓存失败: {e}")
 
-    def _check_memory_and_act(self, memory_info: Dict[str, Any]):
+    def _check_memory_and_act(self, memory_info: Dict[str, Any]) -> None:
         """
         检查内存使用情况并采取相应措施
 
@@ -333,7 +333,7 @@ class MemoryManager:
             # 内存使用正常
             pass
 
-    def _collect_garbage(self, force: bool = False):
+    def _collect_garbage(self, force: bool = False) -> None:
         """
         带冷却的 GC：避免监控线程每轮（2~10 秒）都触发全量回收造成停顿抖动。
 
@@ -345,7 +345,7 @@ class MemoryManager:
         self._last_gc_time = now
         gc.collect()
 
-    def _take_emergency_measures(self):
+    def _take_emergency_measures(self) -> None:
         """
         采取紧急内存管理措施
         """
@@ -378,7 +378,7 @@ class MemoryManager:
         # 5. 记录内存使用情况
         self._log_memory_crisis()
 
-    def _take_relief_measures(self):
+    def _take_relief_measures(self) -> None:
         """
         采取缓解内存管理措施
         """
@@ -398,7 +398,7 @@ class MemoryManager:
         # 3. 优化缓存大小
         self.optimize_cache(target_ratio=0.5)
 
-    def _take_preventive_measures(self):
+    def _take_preventive_measures(self) -> None:
         """
         采取预防内存管理措施
         """
@@ -408,7 +408,7 @@ class MemoryManager:
         # 分析内存使用趋势，预测未来内存需求
         self._predict_memory_usage()
 
-    def _log_memory_crisis(self):
+    def _log_memory_crisis(self) -> None:
         """
         记录内存危机情况
         """
@@ -433,7 +433,7 @@ class MemoryManager:
         except Exception as e:  # noqa: BLE001
             logger.error(f"记录内存危机信息失败: {e}")
 
-    def _predict_memory_usage(self):
+    def _predict_memory_usage(self) -> None:
         """
         预测内存使用趋势
         """
@@ -459,7 +459,7 @@ class MemoryManager:
                 # 后者又会调用本方法，形成无限互递归（RecursionError）
                 self._collect_garbage()
 
-    def optimize_cache(self, target_ratio: float | None = None):
+    def optimize_cache(self, target_ratio: float | None = None) -> None:
         """
         按内存压力释放缓存
 

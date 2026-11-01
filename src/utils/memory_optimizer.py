@@ -158,7 +158,7 @@ class MemoryOptimizer:
         return None
 
     @classmethod
-    def _volume_cast_expr(cls, df: pl.DataFrame, col: str, dtype) -> Any:
+    def _volume_cast_expr(cls, df: pl.DataFrame, col: str, dtype: Any) -> Any:
         """成交量列：Float64 保持不变，Int64 按有符号上限缩到 Int32。"""
         if dtype == pl.Float64:
             # 保持Float64类型，避免精度损失
@@ -189,7 +189,7 @@ class MemoryOptimizer:
         return pl.col(col).cast(pl.Int64)
 
     @classmethod
-    def _category_cast_expr(cls, df: pl.DataFrame, col: str, dtype) -> Any:
+    def _category_cast_expr(cls, df: pl.DataFrame, col: str, dtype: Any) -> Any:
         """字符串列唯一值少于 10% 时转 Categorical。"""
         if dtype != pl.Utf8:
             return None
@@ -200,7 +200,7 @@ class MemoryOptimizer:
         return None
 
     @classmethod
-    def _date_cast_expr(cls, col: str, dtype) -> Any:
+    def _date_cast_expr(cls, col: str, dtype: Any) -> Any:
         """日期/时间列：Datetime 转 Date，字符串按多种格式尝试解析。"""
         if dtype == pl.Datetime:
             # 如果只需要日期部分，转换为 Date
@@ -248,7 +248,7 @@ class MemoryOptimizer:
         return None
 
     @classmethod
-    def _list_cast_expr(cls, col: str, dtype) -> Any:
+    def _list_cast_expr(cls, col: str, dtype: Any) -> Any:
         """List 列：内层 Float64 降 Float32、Int64 降 Int32。"""
         inner_dtype = dtype.inner
         if inner_dtype == pl.Float64:
@@ -258,7 +258,7 @@ class MemoryOptimizer:
         return None
 
     @classmethod
-    def process_large_dataset(cls, df: pl.DataFrame, chunk_size: int = 10000, **kwargs) -> pl.DataFrame:
+    def process_large_dataset(cls, df: pl.DataFrame, chunk_size: int = 10000, **kwargs: Any) -> pl.DataFrame:
         """
         分块处理大数据集
 
@@ -395,7 +395,7 @@ class MemoryOptimizer:
         return df
 
     @classmethod
-    def optimize_dataframe_inplace(cls, df: pl.DataFrame, **kwargs) -> pl.DataFrame:
+    def optimize_dataframe_inplace(cls, df: pl.DataFrame, **kwargs: Any) -> pl.DataFrame:
         """
         原地优化 DataFrame 数据类型
 
@@ -475,7 +475,7 @@ class MemoryOptimizer:
         }
 
     @classmethod
-    def print_memory_stats(cls, df: pl.DataFrame, title: str = "DataFrame"):
+    def print_memory_stats(cls, df: pl.DataFrame, title: str = "DataFrame") -> None:
         """记录内存使用统计（多行汇总为一条 logger.info）。"""
         stats = cls.estimate_memory_usage(df)
 
@@ -510,17 +510,17 @@ class MemoryOptimizer:
 
 
 # 便捷函数
-def optimize_df(df: pl.DataFrame, **kwargs) -> pl.DataFrame:
+def optimize_df(df: pl.DataFrame, **kwargs: Any) -> pl.DataFrame:
     """便捷函数：优化DataFrame"""
     return MemoryOptimizer.optimize_dataframe(df, **kwargs)
 
 
-def process_large_df(df: pl.DataFrame, **kwargs) -> pl.DataFrame:
+def process_large_df(df: pl.DataFrame, **kwargs: Any) -> pl.DataFrame:
     """便捷函数：处理大数据集"""
     return MemoryOptimizer.process_large_dataset(df, **kwargs)
 
 
-def print_df_memory(df: pl.DataFrame, title: str = "DataFrame"):
+def print_df_memory(df: pl.DataFrame, title: str = "DataFrame") -> None:
     """便捷函数：打印DataFrame内存统计"""
     MemoryOptimizer.print_memory_stats(df, title)
 
