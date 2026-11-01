@@ -102,7 +102,7 @@ class MacroHandler(DataSourceBase):
         try:
             logger.info("开始更新GDP数据")
 
-            # TODO: 实现GDP数据爬取和存储逻辑
+            raise NotImplementedError("GDP 数据抓取尚未实现")
 
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新GDP数据失败: {e}")
@@ -115,7 +115,7 @@ class MacroHandler(DataSourceBase):
         try:
             logger.info("开始更新CPI数据")
 
-            # TODO: 实现CPI数据爬取和存储逻辑
+            raise NotImplementedError("CPI 数据抓取尚未实现")
 
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新CPI数据失败: {e}")
@@ -128,7 +128,7 @@ class MacroHandler(DataSourceBase):
         try:
             logger.info("开始更新PPI数据")
 
-            # TODO: 实现PPI数据爬取和存储逻辑
+            raise NotImplementedError("PPI 数据抓取尚未实现")
 
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新PPI数据失败: {e}")
@@ -141,7 +141,7 @@ class MacroHandler(DataSourceBase):
         try:
             logger.info("开始更新M2数据")
 
-            # TODO: 实现M2数据爬取和存储逻辑
+            raise NotImplementedError("M2 数据抓取尚未实现")
 
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新M2数据失败: {e}")
@@ -154,7 +154,7 @@ class MacroHandler(DataSourceBase):
         try:
             logger.info("开始更新利率数据")
 
-            # TODO: 实现利率数据爬取和存储逻辑
+            raise NotImplementedError("利率数据抓取尚未实现")
 
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新利率数据失败: {e}")
@@ -167,7 +167,7 @@ class MacroHandler(DataSourceBase):
         try:
             logger.info("开始更新汇率数据")
 
-            # TODO: 实现汇率数据爬取和存储逻辑
+            raise NotImplementedError("汇率数据抓取尚未实现")
 
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新汇率数据失败: {e}")

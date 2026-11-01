@@ -5,7 +5,6 @@ r"""
 
 该模块负责管理系统的所有配置项，包括：
 - 数据库配置
-- Redis配置
 - 数据配置
 - 日志配置
 - 插件配置
@@ -28,7 +27,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _validate_port_value(value: int) -> int:
-    """端口号合法范围校验（DatabaseSettings / RedisSettings 共用）"""
+    """端口号合法范围校验（DatabaseSettings 使用）"""
     if value < 1 or value > 65535:
         raise ValueError('端口号必须在1-65535之间')
     return value
@@ -57,29 +56,6 @@ class DatabaseSettings(BaseSettings):
         """验证连接池大小"""
         if v < 1:
             raise ValueError('连接池大小必须大于0')
-        return v
-
-
-class RedisSettings(BaseSettings):
-    """Redis配置"""
-    host: str = Field(default="localhost", description="Redis主机")
-    port: int = Field(default=6379, description="Redis端口")
-    password: str | None = Field(default=None, description="Redis密码")
-    db: int = Field(default=0, description="Redis数据库")
-    decode_responses: bool = Field(default=True, description="是否解码响应")
-
-    @field_validator('port')
-    @classmethod
-    def validate_port(cls, v: int) -> int:
-        """验证端口号"""
-        return _validate_port_value(v)
-
-    @field_validator('db')
-    @classmethod
-    def validate_db(cls, v: int) -> int:
-        """验证数据库编号"""
-        if v < 0 or v > 15:
-            raise ValueError('Redis数据库编号必须在0-15之间')
         return v
 
 
@@ -204,7 +180,6 @@ class PluginsSettings(BaseSettings):
 class Config(BaseSettings):
     """主配置类"""
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
-    redis: RedisSettings = Field(default_factory=RedisSettings)
     data: DataSettings = Field(default_factory=DataSettings)
     log: LogSettings = Field(default_factory=LogSettings)
     plugins: PluginsSettings = Field(default_factory=PluginsSettings)
@@ -213,7 +188,9 @@ class Config(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
-        case_sensitive=False
+        case_sensitive=False,
+        # 容忍 .env 中的历史/未知变量（如已下线的 REDIS__*），避免旧环境升级后启动失败
+        extra='ignore',
     )
 
 
@@ -335,17 +312,7 @@ CONFIG_DOCUMENTATION = r"""
 | DATABASE__POOL_SIZE | 10 | 连接池大小 | 大于0 |
 | DATABASE__POOL_RECYCLE | 3600 | 连接池回收时间 | 整数 |
 
-### 2. Redis配置
-
-| 配置项 | 默认值 | 说明 | 验证规则 |
-|--------|--------|------|----------|
-| REDIS__HOST | localhost | Redis主机 | 字符串 |
-| REDIS__PORT | 6379 | Redis端口 | 1-65535 |
-| REDIS__PASSWORD | None | Redis密码 | 字符串或None |
-| REDIS__DB | 0 | Redis数据库 | 0-15 |
-| REDIS__DECODE_RESPONSES | True | 是否解码响应 | 布尔值 |
-
-### 3. 数据配置
+### 2. 数据配置
 
 | 配置项 | 默认值 | 说明 | 验证规则 |
 |--------|--------|------|----------|
@@ -361,7 +328,7 @@ CONFIG_DOCUMENTATION = r"""
 | DATA__AUTO_UPDATE_STOCK_BASIC | False | 是否在启动时自动更新股票基本信息 | 布尔值 |
 | DATA__STOCK_BASIC_UPDATE_INTERVAL | 7 | 股票基本信息更新间隔（天） | 大于0 |
 
-### 4. 日志配置
+### 3. 日志配置
 
 | 配置项 | 默认值 | 说明 | 验证规则 |
 |--------|--------|------|----------|
@@ -371,7 +338,7 @@ CONFIG_DOCUMENTATION = r"""
 | LOG__RETENTION | 30 days | 日志文件保留时间 | 字符串 |
 | LOG__COMPRESSION | zip | 日志文件压缩格式 | 字符串 |
 
-### 5. 插件配置
+### 4. 插件配置
 
 | 配置项 | 默认值 | 说明 | 验证规则 |
 |--------|--------|------|----------|
@@ -396,10 +363,6 @@ DATABASE__PORT=3306
 DATABASE__USERNAME=root
 DATABASE__PASSWORD=
 DATABASE__DATABASE=stock_quant
-
-# Redis配置
-REDIS__HOST=localhost
-REDIS__PORT=6379
 
 # 数据配置
 DATA__TDX_DATA_PATH=D:\TDX\vipdoc

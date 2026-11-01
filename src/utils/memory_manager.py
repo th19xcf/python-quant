@@ -18,8 +18,13 @@ from typing import Any, Dict
 import psutil
 from loguru import logger
 
-from src.data.data_cache import global_data_cache
-from src.tech_analysis.indicator_cache import global_indicator_cache
+
+def _get_caches():
+    """延迟导入缓存单例，避免 utils 在导入期反向依赖 data / tech_analysis。"""
+    from src.data.data_cache import global_data_cache
+    from src.tech_analysis.indicator_cache import global_indicator_cache
+
+    return global_data_cache, global_indicator_cache
 
 
 class MemoryManager:
@@ -351,6 +356,7 @@ class MemoryManager:
 
         # 2. 清空所有缓存（统一走缓存的 release_memory 入口，避免外部直接操作内部状态）
         try:
+            global_data_cache, global_indicator_cache = _get_caches()
             global_data_cache.release_memory(0.0)
             global_indicator_cache.release_memory(0.0)
             logger.info("已清空数据缓存与指标缓存")
@@ -410,6 +416,7 @@ class MemoryManager:
         log_file = f"memory_crisis_{timestamp}.json"
 
         try:
+            global_data_cache, global_indicator_cache = _get_caches()
             crisis_info = {
                 'timestamp': time.time(),
                 'memory_info': self.get_memory_usage(),
@@ -472,6 +479,7 @@ class MemoryManager:
                 return
 
         logger.info(f"按目标水位 {target_ratio:.0%} 释放缓存")
+        global_data_cache, global_indicator_cache = _get_caches()
         global_data_cache.release_memory(target_ratio)
         global_indicator_cache.release_memory(target_ratio)
 

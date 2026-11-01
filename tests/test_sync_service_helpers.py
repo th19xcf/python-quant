@@ -1,6 +1,6 @@
 """sync_service 纯函数回归基线。
 
-sync_service 承担股票/指数/基金三类同步编排，此前无任何测试覆盖。
+sync_common/sync_stock/sync_index/sync_fund 承担股票/指数/基金三类同步编排，此前无任何测试覆盖。
 本文件只锁定其中不依赖数据库、网络与外部数据源的纯函数行为，
 供后续拆分模块时作为行为不变的回归网。
 """
@@ -11,7 +11,34 @@ from types import SimpleNamespace
 import polars as pl
 import pytest
 
-from src.data.services import sync_service as ss
+from src.data.services.sync_common import (
+    _extract_tdx_first_last_trade_date,
+    _get_tdx_day_file_path,
+    _is_fund_ts_code,
+    _is_index_ts_code,
+    _normalize_date_value,
+    _normalize_text_value,
+    _sync_each_with_recovery,
+    _to_ts_code_or_none,
+)
+from src.data.services.sync_fund import (
+    _infer_fund_type,
+)
+from src.data.services.sync_index import (
+    _infer_index_meta,
+    _normalize_index_ts_code,
+    _parse_index_date,
+)
+from src.data.services.sync_stock import (
+    _build_stock_info,
+    _create_stock_basic_from_info,
+    _infer_stock_market_from_ts_code,
+    _normalize_stock_status,
+    _update_stock_date_field,
+    _update_stock_text_field,
+    get_stock_info_from_apis,
+    merge_stock_basic,
+)
 
 # ----------------------------------------------------------------------
 # 代码判定
@@ -31,7 +58,7 @@ from src.data.services import sync_service as ss
     ("", False),
 ])
 def test_is_index_ts_code(ts_code, expected):
-    assert ss._is_index_ts_code(ts_code) is expected
+    assert _is_index_ts_code(ts_code) is expected
 
 
 @pytest.mark.parametrize("ts_code, expected", [
@@ -46,16 +73,16 @@ def test_is_index_ts_code(ts_code, expected):
     ("920001.BJ", False),
 ])
 def test_is_fund_ts_code_by_symbol(ts_code, expected):
-    assert ss._is_fund_ts_code(ts_code) is expected
+    assert _is_fund_ts_code(ts_code) is expected
 
 
 def test_is_fund_ts_code_by_market_and_name():
     # 数据源可能返回中文或英文市场字段，需归一化后判定
-    assert ss._is_fund_ts_code("000001.SZ", market="基金") is True
-    assert ss._is_fund_ts_code("000001.SZ", market="fund") is True
-    assert ss._is_fund_ts_code("000001.SZ", name="沪深300ETF") is True
-    assert ss._is_fund_ts_code("000001.SZ", name="某某LOF") is True
-    assert ss._is_fund_ts_code("000001.SZ", name="平安银行") is False
+    assert _is_fund_ts_code("000001.SZ", market="基金") is True
+    assert _is_fund_ts_code("000001.SZ", market="fund") is True
+    assert _is_fund_ts_code("000001.SZ", name="沪深300ETF") is True
+    assert _is_fund_ts_code("000001.SZ", name="某某LOF") is True
+    assert _is_fund_ts_code("000001.SZ", name="平安银行") is False
 
 
 @pytest.mark.parametrize("raw, expected", [
@@ -70,7 +97,7 @@ def test_is_fund_ts_code_by_market_and_name():
     ("", None),
 ])
 def test_to_ts_code_or_none(raw, expected):
-    assert ss._to_ts_code_or_none(raw) == expected
+    assert _to_ts_code_or_none(raw) == expected
 
 
 # ----------------------------------------------------------------------
@@ -84,7 +111,7 @@ def test_to_ts_code_or_none(raw, expected):
     ("未知状态", "L"), (None, "L"), ("", "L"),
 ])
 def test_normalize_stock_status(raw, expected):
-    assert ss._normalize_stock_status(raw) == expected
+    assert _normalize_stock_status(raw) == expected
 
 
 @pytest.mark.parametrize("ts_code, expected", [
@@ -98,48 +125,48 @@ def test_normalize_stock_status(raw, expected):
     (None, ""),
 ])
 def test_infer_stock_market_from_ts_code(ts_code, expected):
-    assert ss._infer_stock_market_from_ts_code(ts_code) == expected
+    assert _infer_stock_market_from_ts_code(ts_code) == expected
 
 
 def test_normalize_text_value():
-    assert ss._normalize_text_value(None) == ""
-    assert ss._normalize_text_value("  ") == ""
-    assert ss._normalize_text_value("  平安银行 ") == "平安银行"
-    assert ss._normalize_text_value("abcdef", max_len=3) == "abc"
-    assert ss._normalize_text_value(123) == "123"
+    assert _normalize_text_value(None) == ""
+    assert _normalize_text_value("  ") == ""
+    assert _normalize_text_value("  平安银行 ") == "平安银行"
+    assert _normalize_text_value("abcdef", max_len=3) == "abc"
+    assert _normalize_text_value(123) == "123"
 
 
 def test_normalize_date_value():
-    assert ss._normalize_date_value(None) is None
-    assert ss._normalize_date_value(datetime(2024, 1, 2, 9, 30)) == date(2024, 1, 2)
-    assert ss._normalize_date_value(date(2024, 1, 2)) == date(2024, 1, 2)
-    assert ss._normalize_date_value("2024-01-02") == date(2024, 1, 2)
-    assert ss._normalize_date_value("2024/01/02") == date(2024, 1, 2)
-    assert ss._normalize_date_value("20240102") == date(2024, 1, 2)
-    assert ss._normalize_date_value(20240102) == date(2024, 1, 2)
+    assert _normalize_date_value(None) is None
+    assert _normalize_date_value(datetime(2024, 1, 2, 9, 30)) == date(2024, 1, 2)
+    assert _normalize_date_value(date(2024, 1, 2)) == date(2024, 1, 2)
+    assert _normalize_date_value("2024-01-02") == date(2024, 1, 2)
+    assert _normalize_date_value("2024/01/02") == date(2024, 1, 2)
+    assert _normalize_date_value("20240102") == date(2024, 1, 2)
+    assert _normalize_date_value(20240102) == date(2024, 1, 2)
     for blank in ("0000-00-00", "None", "nan", "NaT", "", "not-a-date"):
-        assert ss._normalize_date_value(blank) is None
+        assert _normalize_date_value(blank) is None
 
 
 def test_update_stock_text_field_counts_fill_and_refresh():
     row = SimpleNamespace(name=None)
     result = {"filled_blank_fields": 0, "refreshed_fields": 0}
 
-    assert ss._update_stock_text_field(row, "name", "平安银行", result) is True
+    assert _update_stock_text_field(row, "name", "平安银行", result) is True
     assert row.name == "平安银行"
     assert result == {"filled_blank_fields": 1, "refreshed_fields": 0}
 
     # 同值不改
-    assert ss._update_stock_text_field(row, "name", "平安银行", result) is False
+    assert _update_stock_text_field(row, "name", "平安银行", result) is False
     assert result == {"filled_blank_fields": 1, "refreshed_fields": 0}
 
     # 已有值变化计为刷新
-    assert ss._update_stock_text_field(row, "name", "浦发银行", result) is True
+    assert _update_stock_text_field(row, "name", "浦发银行", result) is True
     assert row.name == "浦发银行"
     assert result == {"filled_blank_fields": 1, "refreshed_fields": 1}
 
     # 空值不覆盖
-    assert ss._update_stock_text_field(row, "name", "", result) is False
+    assert _update_stock_text_field(row, "name", "", result) is False
     assert row.name == "浦发银行"
 
 
@@ -147,14 +174,14 @@ def test_update_stock_date_field_counts_fill_and_refresh():
     row = SimpleNamespace(list_date=None)
     result = {"filled_blank_fields": 0, "refreshed_fields": 0}
 
-    assert ss._update_stock_date_field(row, "list_date", "1999-11-10", result) is True
+    assert _update_stock_date_field(row, "list_date", "1999-11-10", result) is True
     assert row.list_date == date(1999, 11, 10)
     assert result == {"filled_blank_fields": 1, "refreshed_fields": 0}
 
-    assert ss._update_stock_date_field(row, "list_date", None, result) is False
-    assert ss._update_stock_date_field(row, "list_date", "1999-11-10", result) is False
+    assert _update_stock_date_field(row, "list_date", None, result) is False
+    assert _update_stock_date_field(row, "list_date", "1999-11-10", result) is False
 
-    assert ss._update_stock_date_field(row, "list_date", "2000-01-01", result) is True
+    assert _update_stock_date_field(row, "list_date", "2000-01-01", result) is True
     assert row.list_date == date(2000, 1, 1)
     assert result == {"filled_blank_fields": 1, "refreshed_fields": 1}
 
@@ -164,7 +191,7 @@ def test_update_stock_date_field_counts_fill_and_refresh():
 # ----------------------------------------------------------------------
 
 def test_build_stock_info_accepts_source_field_aliases():
-    info = ss._build_stock_info(
+    info = _build_stock_info(
         "600000.SH", "sh.600000",
         {
             "code_name": "浦发银行",
@@ -199,7 +226,7 @@ def test_merge_stock_basic_baostock_only():
         "industry": ["银行", "银行"],
     })
 
-    merged = ss.merge_stock_basic(baostock_df, None)
+    merged = merge_stock_basic(baostock_df, None)
 
     assert set(merged) == {"600000.SH", "000001.SZ"}
     assert merged["600000.SH"]["name"] == "浦发银行"
@@ -221,7 +248,7 @@ def test_merge_stock_basic_akshare_fills_missing_fields():
         "上市日期": ["1999-11-10"],
     })
 
-    merged = ss.merge_stock_basic(baostock_df, akshare_df)
+    merged = merge_stock_basic(baostock_df, akshare_df)
 
     assert merged["600000.SH"]["area"] == "上海"
     assert merged["600000.SH"]["industry"] == "银行"
@@ -237,7 +264,7 @@ def test_merge_stock_basic_akshare_only_uses_raw_symbol():
         "industry": ["行业A"],
     })
 
-    merged = ss.merge_stock_basic(None, akshare_df)
+    merged = merge_stock_basic(None, akshare_df)
 
     assert merged["600001.SH"]["symbol"] == "600001"
     assert merged["600001.SH"]["source"] == "akshare"
@@ -250,7 +277,7 @@ def test_merge_stock_basic_filters_existing_codes():
         "code_name": ["浦发银行", "平安银行"],
     })
 
-    merged = ss.merge_stock_basic(baostock_df, None, existing_codes={"600000.SH"})
+    merged = merge_stock_basic(baostock_df, None, existing_codes={"600000.SH"})
 
     assert list(merged) == ["000001.SZ"]
 
@@ -260,7 +287,7 @@ def test_get_stock_info_from_apis_converts_string_date():
         "600000.SH": {"symbol": "600000", "name": "浦发银行", "list_date": "1999-11-10"},
     }
 
-    info = ss.get_stock_info_from_apis("600000.SH", merged_basic, None, None)
+    info = get_stock_info_from_apis("600000.SH", merged_basic, None, None)
 
     assert info["ts_code"] == "600000.SH"
     assert info["list_date"] == date(1999, 11, 10)
@@ -273,19 +300,19 @@ def test_get_stock_info_from_apis_falls_back_to_symbol_match():
         "000001.SH": {"symbol": "000001", "name": "上证指数"},
     }
 
-    info = ss.get_stock_info_from_apis("000001.SZ", merged_basic, None, None)
+    info = get_stock_info_from_apis("000001.SZ", merged_basic, None, None)
 
     assert info["ts_code"] == "000001.SZ"
     assert info["name"] == "上证指数"
 
 
 def test_get_stock_info_from_apis_returns_none_when_absent():
-    assert ss.get_stock_info_from_apis("600000.SH", {}, None, None) is None
+    assert get_stock_info_from_apis("600000.SH", {}, None, None) is None
 
 
 def test_create_stock_basic_from_info_truncates_and_defaults():
     stock_info = {"name": "长" * 50, "symbol": "s" * 12}
-    stock = ss._create_stock_basic_from_info("600000.SH", stock_info)
+    stock = _create_stock_basic_from_info("600000.SH", stock_info)
 
     assert stock.ts_code == "600000.SH"
     assert stock.name == "长" * 45
@@ -310,15 +337,15 @@ def test_create_stock_basic_from_info_truncates_and_defaults():
     (None, None),
 ])
 def test_normalize_index_ts_code(raw, expected):
-    assert ss._normalize_index_ts_code(raw) == expected
+    assert _normalize_index_ts_code(raw) == expected
 
 
 def test_parse_index_date():
-    assert ss._parse_index_date("2024-01-02") == date(2024, 1, 2)
-    assert ss._parse_index_date("2024/01/02") == date(2024, 1, 2)
-    assert ss._parse_index_date("20240102") == date(2024, 1, 2)
+    assert _parse_index_date("2024-01-02") == date(2024, 1, 2)
+    assert _parse_index_date("2024/01/02") == date(2024, 1, 2)
+    assert _parse_index_date("20240102") == date(2024, 1, 2)
     for blank in (None, "", "0000-00-00", "NaT", "not-a-date"):
-        assert ss._parse_index_date(blank) is None
+        assert _parse_index_date(blank) is None
 
 
 @pytest.mark.parametrize("ts_code, expected_publisher", [
@@ -328,7 +355,7 @@ def test_parse_index_date():
     ("000001", "交易所"),
 ])
 def test_infer_index_meta_publisher(ts_code, expected_publisher):
-    meta = ss._infer_index_meta(ts_code, "")
+    meta = _infer_index_meta(ts_code, "")
     assert meta["publisher"] == expected_publisher
 
 
@@ -344,7 +371,7 @@ def test_infer_index_meta_publisher(ts_code, expected_publisher):
     (None, ("综合指数", "通用")),
 ])
 def test_infer_index_meta_type_and_category(name, expected):
-    meta = ss._infer_index_meta("000001.SH", name)
+    meta = _infer_index_meta("000001.SH", name)
     assert (meta["index_type"], meta["category"]) == expected
     assert meta["weight_rule"] == "市值加权"
 
@@ -355,7 +382,7 @@ def test_infer_index_meta_type_and_category(name, expected):
     ("000001", "某基金", "基金"),
 ])
 def test_infer_fund_type(symbol, name, expected):
-    assert ss._infer_fund_type(symbol, name) == expected
+    assert _infer_fund_type(symbol, name) == expected
 
 
 # ----------------------------------------------------------------------
@@ -375,12 +402,12 @@ def _write_day_records(path, day_values):
 def test_get_tdx_day_file_path_layout(tmp_path):
     config = SimpleNamespace(data=SimpleNamespace(tdx_data_path=str(tmp_path)))
 
-    assert ss._get_tdx_day_file_path(config, "600000.SH") == tmp_path / "sh" / "lday" / "sh600000.day"
-    assert ss._get_tdx_day_file_path(config, "000001.SZ") == tmp_path / "sz" / "lday" / "sz000001.day"
-    assert ss._get_tdx_day_file_path(config, "920001.BJ") == tmp_path / "bj" / "lday" / "bj920001.day"
-    assert ss._get_tdx_day_file_path(config, "600000") is None
-    assert ss._get_tdx_day_file_path(config, "600000.XX") is None
-    assert ss._get_tdx_day_file_path(config, None) is None
+    assert _get_tdx_day_file_path(config, "600000.SH") == tmp_path / "sh" / "lday" / "sh600000.day"
+    assert _get_tdx_day_file_path(config, "000001.SZ") == tmp_path / "sz" / "lday" / "sz000001.day"
+    assert _get_tdx_day_file_path(config, "920001.BJ") == tmp_path / "bj" / "lday" / "bj920001.day"
+    assert _get_tdx_day_file_path(config, "600000") is None
+    assert _get_tdx_day_file_path(config, "600000.XX") is None
+    assert _get_tdx_day_file_path(config, None) is None
 
 
 def test_extract_tdx_first_last_trade_date(tmp_path):
@@ -390,7 +417,7 @@ def test_extract_tdx_first_last_trade_date(tmp_path):
         ["20240102", "20240103", "20240104"],
     )
 
-    assert ss._extract_tdx_first_last_trade_date(config, "600000.SH") == (
+    assert _extract_tdx_first_last_trade_date(config, "600000.SH") == (
         date(2024, 1, 2), date(2024, 1, 4),
     )
 
@@ -398,7 +425,7 @@ def test_extract_tdx_first_last_trade_date(tmp_path):
 def test_extract_tdx_first_last_trade_date_missing_file(tmp_path):
     config = SimpleNamespace(data=SimpleNamespace(tdx_data_path=str(tmp_path)))
 
-    assert ss._extract_tdx_first_last_trade_date(config, "600000.SH") == (None, None)
+    assert _extract_tdx_first_last_trade_date(config, "600000.SH") == (None, None)
 
 
 # ----------------------------------------------------------------------
@@ -437,7 +464,7 @@ def test_sync_each_with_recovery_continues_and_counts_failures():
             raise ValueError("解析失败")
         handled.append(item)
 
-    ss._sync_each_with_recovery(
+    _sync_each_with_recovery(
         ["a", "b", "c"], handler,
         result=result, failed_key="failed", session=session, label="测试",
     )
@@ -457,7 +484,7 @@ def test_sync_each_with_recovery_rolls_back_poisoned_session():
             session.active = False  # 模拟数据库错误后会话失效
             raise RuntimeError("db error")
 
-    ss._sync_each_with_recovery(
+    _sync_each_with_recovery(
         ["a", "b", "c"], handler,
         result=result, failed_key="failed", session=session, label="测试",
     )
@@ -480,7 +507,7 @@ def test_sync_each_with_recovery_rolls_back_on_commit_failure():
 
     session.commit = boom
 
-    ss._sync_each_with_recovery(
+    _sync_each_with_recovery(
         ["a", "b", "c"], handler,
         result=result, failed_key="failed", session=session, label="测试",
         commit_interval=2,
@@ -496,7 +523,7 @@ def test_sync_each_with_recovery_commits_periodically():
     result = {"failed": []}
     handled = []
 
-    ss._sync_each_with_recovery(
+    _sync_each_with_recovery(
         ["a", "b", "c", "d"], handled.append,
         result=result, failed_key="failed", session=session, label="测试",
         commit_interval=2,

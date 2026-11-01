@@ -13,8 +13,6 @@ polars = "==2.0.0"
 numpy = "==2.5.4"
 # 数据获取
 akshare = "==1.19.3"
-requests = "==2.34.2"
-beautifulsoup4 = "==4.15.0"
 # 技术分析
 numba = "==0.68.0"
 # UI框架

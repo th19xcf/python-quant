@@ -112,7 +112,7 @@ class NewsHandler(DataSourceBase):
         try:
             logger.info(f"开始更新新浪财经新闻，时间范围: {start_date} 至 {end_date}")
 
-            # TODO: 实现新浪财经新闻爬取逻辑
+            raise NotImplementedError("新浪财经新闻抓取尚未实现")
 
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新新浪财经新闻失败: {e}")
@@ -129,7 +129,7 @@ class NewsHandler(DataSourceBase):
         try:
             logger.info(f"开始更新东方财富新闻，时间范围: {start_date} 至 {end_date}")
 
-            # TODO: 实现东方财富新闻爬取逻辑
+            raise NotImplementedError("东方财富新闻抓取尚未实现")
 
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新东方财富新闻失败: {e}")
@@ -146,7 +146,7 @@ class NewsHandler(DataSourceBase):
         try:
             logger.info(f"开始更新和讯网新闻，时间范围: {start_date} 至 {end_date}")
 
-            # TODO: 实现和讯网新闻爬取逻辑
+            raise NotImplementedError("和讯网新闻抓取尚未实现")
 
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新和讯网新闻失败: {e}")
@@ -163,7 +163,7 @@ class NewsHandler(DataSourceBase):
         try:
             logger.info(f"开始更新凤凰财经新闻，时间范围: {start_date} 至 {end_date}")
 
-            # TODO: 实现凤凰财经新闻爬取逻辑
+            raise NotImplementedError("凤凰财经新闻抓取尚未实现")
 
         except (ConnectionError, TimeoutError, OSError) as e:
             logger.exception(f"更新凤凰财经新闻失败: {e}")

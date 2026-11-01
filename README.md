@@ -33,7 +33,7 @@ UI 中打开「策略回测」对话框 → 选股票代码 / 日期范围 / 策
 
 | 数据源 | 类型 | 启动条件 | 依赖 |
 |---|---|---|---|
-| **通达信本地**（TdxHandler） | 本地文件 | `.env.DATA__TDX_DIR` 指向通达信 VIPDOC 目录 | Windows 上需已安装通达信客户端，默认 `C:\new_tdx\vipdoc` |
+| **通达信本地**（TdxHandler） | 本地文件 | `.env` 中 `DATA__TDX_DATA_PATH` 指向通达信 VIPDOC 目录 | Windows 上需已安装通达信客户端，默认 `C:\new_tdx\vipdoc` |
 | **BaoStock** | 网络 API | `pip install baostock`（可选依赖，未写入 pyproject；缺失时该源自动跳过） | 国内网络，无需额外配置 |
 | **AkShare** | 网络 API | `pip install akshare`（pyproject.toml 已声明） | 国内网络，无需额外配置 |
 
@@ -48,7 +48,7 @@ DATABASE__HOST=localhost
 DATABASE__PORT=3306
 DATABASE__USERNAME=<your-user>
 DATABASE__PASSWORD=<your-password>   # .env 已被 .gitignore 保护
-DATABASE__DATABASE=quant_db
+DATABASE__DATABASE=stock_quant
 ```
 
 当前代码默认只支持 **MySQL 8.0**（SQLAlchemy 方言 `mysql+pymysql`），其他数据库未测试。首次启动系统会尝试建表。
@@ -94,8 +94,7 @@ quant/
 └── src/
     ├── main.py                  # 入口：启动 PySide6 主窗口 / 或仅跑数据初始化
     │
-    ├── api/                     # 应用层 API（业务 API / 数据 API / DTO）
-    ├── business/                # 业务规则引擎
+    ├── api/                     # 应用层 API（业务 API / 数据 API / 表现层 DTO）
     │
     ├── data/                    # 数据获取与管理
     │   ├── managers/data_fetcher.py   # 多数据源故障转移（TDX → BaoStock → AkShare）
@@ -114,9 +113,12 @@ quant/
     │   ├── performance/        # 绩效分析（Sharpe / Drawdown / ...）
     │   └── visualization/      # 回测结果 PySide6 可视化
     │
-    ├── quant/analysis/         # 上层分析对话框：策略回测 / 因子分析 / 推荐
-    ├── alpha/                  # Alpha 因子计算器（price_momentum / risk / technical / ...）
-    ├── strategy/               # 信号生成 + 策略分析（上层辅助）
+    ├── quant/                  # analysis/（分析对话框）+ reports/
+    ├── core/usecases/          # 应用用例编排
+    ├── recommendation/         # 多因子选股推荐（stock_recommender.py）
+    ├── risk/                   # 风控规则（rules.py）
+    ├── plugin/                 # 插件基类 / 注册表 / 管理器
+    ├── alpha/                  # Alpha 因子（calculator / cross_section / evaluation / factors）
     ├── tech_analysis/          # 技术指标计算与注册（MA / MACD / RSI / KDJ / 布林 / ...）
     ├── ui/                     # PySide6 主窗口 + mixin（chart / event / ui / data）
     └── utils/                  # config（pydantic_settings）/ logger / memory / event_bus / ...
@@ -193,11 +195,11 @@ cp .env.example .env
 - 依赖管理：Poetry；运行时直接依赖固定为 `==` 版本，`poetry.lock` 锁定全部传递依赖（不要在未更新锁文件的情况下手工 `pip install` 升级依赖，否则回测结果不可复现）
 - 可选依赖组：`dev`（pytest / ruff / mypy / black，默认安装）、`gpu`（cupy，`poetry install --with gpu`）；GPU 缺失时 `gpu_acceleration.py` 自动降级为 NumPy
 - 提交路径：项目目录 `e:\code\python\quant` 为 Git 仓库；每次提交前先同步备份目录 `E:\git\python-quant`（保持相同相对路径）
-- 测试：pytest（`tests/` 下 332 个用例，`venv\Scripts\python.exe -m pytest tests -q`）
+- 测试：pytest 全量回归（`.\venv\Scripts\python.exe -m pytest tests -q`）
 - 质量门禁（本地与 CI 一致）：
-  - `ruff check src`（语法错误、无效比较、未定义名称）
-  - `mypy`（当前只检查统一执行内核 `execution_core.py`）
-  - `pytest --cov=src --cov-fail-under=39`（当前覆盖率 40%）
+  - `ruff check src tests`（pyflakes / bugbear / bandit / isort / mccabe C901 等全量规则）
+  - `mypy src`（覆盖 src 下全部业务模块，配置见 `pyproject.toml [tool.mypy]`）
+  - `pytest --cov=src`（覆盖率门禁 `[tool.coverage.report] fail_under = 42`，当前约 47%）
 
 ---
 

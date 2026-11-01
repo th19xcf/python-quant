@@ -64,8 +64,6 @@ class DataService:
             ('通达信', 'src.data.tdx_handler', 'TdxHandler'),
             ('BaoStock', 'src.data.baostock_handler', 'BaostockHandler'),
             ('AkShare', 'src.data.akshare_handler', 'AkShareHandler'),
-            ('宏观数据', 'src.data.macro_handler', 'MacroHandler'),
-            ('新闻数据', 'src.data.news_handler', 'NewsHandler'),
         ]:
             try:
                 mod = __import__(import_path, fromlist=[module_name])
