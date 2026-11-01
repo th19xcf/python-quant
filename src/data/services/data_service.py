@@ -15,7 +15,7 @@ DataService 是真正干活的核心，持有 DataFetcher / DataUpdater + global
         └─ _get_data_from_sources → TDX / BaoStock / AkShare 故障转移
 """
 
-from typing import Dict, List
+from typing import Any
 
 import polars as pl
 from loguru import logger
@@ -35,7 +35,8 @@ class DataService:
     这三层薄壳（已于 2026-10 重构删除）。
     """
 
-    def __init__(self, config, db_manager=None, plugin_manager=None):
+    def __init__(self, config: Any, db_manager: Any = None,
+                 plugin_manager: Any = None) -> None:
         self.config = config
         self.db_manager = db_manager
         self.plugin_manager = plugin_manager
@@ -45,7 +46,7 @@ class DataService:
         self.data_updater = DataUpdater(config, db_manager)
 
         # 插件数据源映射
-        self.plugin_datasources = {}
+        self.plugin_datasources: dict[str, Any] = {}
 
         # 按配置初始化全局重试策略（指数退避）
         configure_retry(
@@ -58,7 +59,7 @@ class DataService:
         self._init_builtin_datasources()
         self._init_plugin_datasources()
 
-    def _init_builtin_datasources(self):
+    def _init_builtin_datasources(self) -> None:
         """初始化内置数据源"""
         for handler_name, import_path, module_name in [
             ('通达信', 'src.data.tdx_handler', 'TdxHandler'),
@@ -79,7 +80,7 @@ class DataService:
 
         logger.info("内置数据源初始化完成")
 
-    def _init_plugin_datasources(self):
+    def _init_plugin_datasources(self) -> None:
         """初始化插件数据源"""
         if not self.plugin_manager:
             return
@@ -98,7 +99,7 @@ class DataService:
     @handle_exception_with_retry(max_retries=3, retry_delay=1.0)
     def get_stock_data(self, stock_code: str, start_date: str, end_date: str,
                       frequency: str = '1d', adjustment_type: str = 'hfq',
-                      as_of=None) -> pl.DataFrame:
+                      as_of: Any = None) -> pl.DataFrame:
         return self.data_fetcher.get_stock_data(
             stock_code, start_date, end_date, frequency, adjustment_type, as_of
         )
@@ -110,15 +111,15 @@ class DataService:
             index_code, start_date, end_date, frequency
         )
 
-    def get_available_sources(self) -> List:
+    def get_available_sources(self) -> list[Any]:
         return self.data_fetcher.get_available_sources()
 
     # ------------------------------------------------------------------
     # 数据更新（直接透传 DataUpdater + 事件发布）
     # ------------------------------------------------------------------
 
-    def _publish_updated(self, data_type, data_subtype, cache_type=None,
-                         ts_codes=None, status="success"):
+    def _publish_updated(self, data_type: str, data_subtype: str, cache_type: str | None = None,
+                         ts_codes: list[str] | None = None, status: str = "success") -> None:
         """统一的事件发布 + 缓存失效"""
         if cache_type is not None:
             if ts_codes:
@@ -132,67 +133,77 @@ class DataService:
             data_subtype=data_subtype,
         )
 
-    def update_stock_basic(self):
+    def update_stock_basic(self) -> bool:
         success = self.data_updater.update_stock_basic()
         if success:
             self._publish_updated('stock', 'basic', cache_type='stock_basic')
         return success
 
-    def update_stock_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
+    def update_stock_daily(self, ts_codes: list[str] | None = None,
+                           start_date: str | None = None,
+                           end_date: str | None = None) -> bool:
         success = self.data_updater.update_stock_daily(ts_codes, start_date, end_date)
         if success:
             self._publish_updated('stock', 'daily', cache_type='stock', ts_codes=ts_codes)
         return success
 
-    def update_fund_basic(self):
+    def update_fund_basic(self) -> bool:
         success = self.data_updater.update_fund_basic()
         if success:
             self._publish_updated('fund', 'basic', cache_type='fund_basic')
         return success
 
-    def update_fund_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
+    def update_fund_daily(self, ts_codes: list[str] | None = None,
+                          start_date: str | None = None,
+                          end_date: str | None = None) -> bool:
         success = self.data_updater.update_fund_daily(ts_codes, start_date, end_date)
         if success:
             self._publish_updated('fund', 'daily', cache_type='fund', ts_codes=ts_codes)
         return success
 
-    def update_closed_fund_basic(self):
+    def update_closed_fund_basic(self) -> bool:
         success = self.data_updater.update_closed_fund_basic()
         if success:
             self._publish_updated('closed_fund', 'basic', cache_type='closed_fund_basic')
         return success
 
-    def update_closed_fund_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
+    def update_closed_fund_daily(self, ts_codes: list[str] | None = None,
+                                 start_date: str | None = None,
+                                 end_date: str | None = None) -> bool:
         success = self.data_updater.update_closed_fund_daily(ts_codes, start_date, end_date)
         if success:
             self._publish_updated('closed_fund', 'daily', cache_type='closed_fund', ts_codes=ts_codes)
         return success
 
-    def update_index_basic(self):
+    def update_index_basic(self) -> bool:
         success = self.data_updater.update_index_basic()
         if success:
             self._publish_updated('index', 'basic', cache_type='index_basic')
         return success
 
-    def update_index_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
+    def update_index_daily(self, ts_codes: list[str] | None = None,
+                           start_date: str | None = None,
+                           end_date: str | None = None) -> bool:
         success = self.data_updater.update_index_daily(ts_codes, start_date, end_date)
         if success:
             self._publish_updated('index', 'daily', cache_type='index', ts_codes=ts_codes)
         return success
 
-    def update_macro_data(self, indicators: List[str] | None = None):
+    def update_macro_data(self, indicators: list[str] | None = None) -> bool:
         success = self.data_updater.update_macro_data(indicators)
         if success:
             self._publish_updated('macro', 'data')
         return success
 
-    def update_news_data(self, sources: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
+    def update_news_data(self, sources: list[str] | None = None,
+                         start_date: str | None = None,
+                         end_date: str | None = None) -> bool:
         success = self.data_updater.update_news_data(sources, start_date, end_date)
         if success:
             self._publish_updated('news', 'data')
         return success
 
-    def update_stock_dividend(self, ts_codes: List[str] | None = None):
+    def update_stock_dividend(self, ts_codes: list[str] | None = None) -> bool:
         success = self.data_updater.update_stock_dividend(ts_codes)
         if success:
             self._publish_updated('stock', 'dividend',
@@ -203,14 +214,14 @@ class DataService:
     # 缓存管理（直接透传 global_data_cache）
     # ------------------------------------------------------------------
 
-    def get_cache_stats(self) -> Dict:
+    def get_cache_stats(self) -> dict[str, Any]:
         return global_data_cache.get_stats()
 
-    def clear_cache(self):
+    def clear_cache(self) -> None:
         global_data_cache.clear()
 
-    def invalidate_cache(self, data_type: str, code: str, **kwargs):
+    def invalidate_cache(self, data_type: str, code: str, **kwargs: Any) -> None:
         global_data_cache.invalidate(data_type, code, **kwargs)
 
-    def invalidate_cache_by_type(self, data_type: str):
+    def invalidate_cache_by_type(self, data_type: str) -> None:
         global_data_cache.invalidate_by_type(data_type)

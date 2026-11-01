@@ -71,12 +71,19 @@ def daily_row_to_record(row, ts_code):
     }
 
 
+def _parse_minute_time(raw_time) -> datetime:
+    """解析 Baostock 分钟线时间：``YYYYMMDDHHMMSSmmm`` 或 ISO 字符串。"""
+    text = str(raw_time).strip()
+    if text.isdigit():
+        return datetime.strptime(text, "%Y%m%d%H%M%S%f")
+    return datetime.fromisoformat(text)
+
+
 def minute_row_to_record(row, ts_code):
-    """Baostock 分钟线行 -> 待入库记录"""
+    """Baostock 分钟线行 -> 待入库记录（与 StockMinute 列一致）。"""
     return {
         'ts_code': ts_code,
-        'trade_date': datetime.strptime(row['date'], "%Y-%m-%d").date(),
-        'trade_time': row['time'],
+        'trade_time': _parse_minute_time(row['time']),
         'open': float(row['open']) if row['open'] else 0.0,
         'high': float(row['high']) if row['high'] else 0.0,
         'low': float(row['low']) if row['low'] else 0.0,

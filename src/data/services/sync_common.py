@@ -9,10 +9,14 @@
 从 sync_service.py 拆出；对外仍由 sync_service 聚合导出，调用方无感。
 """
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Callable
+from datetime import date
+from pathlib import Path
+from typing import Any
 
 from loguru import logger
+from sqlalchemy.orm import Session
 
 from src.data.tdx_day_parser import build_day_file_path, read_first_last_trade_date
 from src.utils.code_converter import to_ts_code
@@ -38,13 +42,13 @@ class SyncFlow:
     log_stats: Callable
 
 
-def _execute_sync_flow(flow, db_manager):
+def _execute_sync_flow(flow: SyncFlow, db_manager: Any) -> dict[str, Any]:
     """统一执行同步流程：会话创建、异常回滚、结果统计。"""
     logger.info("=" * 60)
     logger.info(f"开始{flow.title}")
     logger.info("=" * 60)
 
-    session = None
+    session: Session | None = None
     try:
         session = db_manager.get_session()
         ctx = flow.prepare(session)
@@ -61,7 +65,7 @@ def _execute_sync_flow(flow, db_manager):
     return flow.result
 
 
-def _rollback_poisoned_session(session, label):
+def _rollback_poisoned_session(session: Session, label: str) -> None:
     """异常后若会话进入 requires-rollback 状态则回滚。
 
     数据库错误会让 Session 失效，若不回滚，后续所有 commit 都会继续失败，
@@ -78,8 +82,10 @@ def _rollback_poisoned_session(session, label):
         logger.exception(f"{label}同步会话回滚失败: {e}")
 
 
-def _sync_each_with_recovery(items, handler, *, result, failed_key, session,
-                             label, commit_interval=100, item_name=str):
+def _sync_each_with_recovery(items: Sequence[Any], handler: Callable[[Any], Any], *,
+                             result: dict[str, Any], failed_key: str, session: Session,
+                             label: str, commit_interval: int = 100,
+                             item_name: Callable[[Any], str] = str) -> None:
     """逐项执行 handler：单项失败记入 failed_key 后继续，不中断整批同步。
 
     commit_interval 为 0 时不周期性提交，由调用方在阶段末尾统一提交。
@@ -88,7 +94,7 @@ def _sync_each_with_recovery(items, handler, *, result, failed_key, session,
     total = len(items)
     failed = 0
 
-    def _mark_failed(item):
+    def _mark_failed(item: Any) -> None:
         nonlocal failed
         failed += 1
         result[failed_key].append(item_name(item))
@@ -122,7 +128,7 @@ def _sync_each_with_recovery(items, handler, *, result, failed_key, session,
 # 通用代码判定与归一化
 # ======================================================================
 
-def _is_index_ts_code(ts_code):
+def _is_index_ts_code(ts_code: str | None) -> bool:
     """判断 ts_code 是否为指数代码。"""
     if not ts_code or '.' not in ts_code:
         return False
@@ -143,7 +149,8 @@ def _is_index_ts_code(ts_code):
 _FUND_MARKET_TOKENS = {'基金', 'FUND', 'FUNDS', 'ETF', 'LOF'}
 
 
-def _is_fund_ts_code(ts_code, name=None, market=None):
+def _is_fund_ts_code(ts_code: str | None, name: str | None = None,
+                     market: str | None = None) -> bool:
     """判断是否为基金代码。
 
     代码前缀是主判据（不依赖数据源文本字段）；market/name 仅作补充，
@@ -167,7 +174,7 @@ def _is_fund_ts_code(ts_code, name=None, market=None):
     return bool(any(token in nm.upper() for token in ('ETF', 'LOF')) or '基金' in nm)
 
 
-def _to_ts_code_or_none(code):
+def _to_ts_code_or_none(code: Any) -> str | None:
     """将外部数据源代码统一转换为标准 ts_code，非法格式返回 None。"""
     try:
         return to_ts_code(str(code).strip())
@@ -175,7 +182,7 @@ def _to_ts_code_or_none(code):
         return None
 
 
-def _normalize_text_value(value, max_len=None):
+def _normalize_text_value(value: Any, max_len: int | None = None) -> str:
     """标准化文本字段值。"""
     text = str(value or '').strip()
     if not text:
@@ -185,9 +192,9 @@ def _normalize_text_value(value, max_len=None):
     return text
 
 
-def _normalize_date_value(value):
+def _normalize_date_value(value: Any) -> date | None:
     """标准化日期字段值，支持 date/datetime/常见字符串格式。"""
-    from datetime import date, datetime
+    from datetime import datetime
 
     if value is None:
         return None
@@ -215,7 +222,7 @@ def _normalize_date_value(value):
 # 通达信日线文件
 # ======================================================================
 
-def _get_tdx_day_file_path(config, ts_code):
+def _get_tdx_day_file_path(config: Any, ts_code: str | None) -> Path | None:
     """根据 ts_code 生成通达信日线文件路径（委托统一路径构造）。"""
     if not ts_code or '.' not in ts_code:
         return None
@@ -228,7 +235,8 @@ def _get_tdx_day_file_path(config, ts_code):
     return build_day_file_path(config.data.tdx_data_path, market.lower(), symbol)
 
 
-def _extract_tdx_first_last_trade_date(config, ts_code):
+def _extract_tdx_first_last_trade_date(config: Any,
+                                       ts_code: str) -> tuple[date | None, date | None]:
     """读取通达信日线文件首末交易日（委托统一解析入口）。"""
     day_file = _get_tdx_day_file_path(config, ts_code)
     if not day_file or not day_file.exists():

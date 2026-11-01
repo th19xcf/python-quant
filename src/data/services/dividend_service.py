@@ -7,6 +7,8 @@
 下沉为纯函数与服务类，UI 层仅负责把结果交给标记管理器渲染。
 """
 
+from typing import Any
+
 from src.utils.code_converter import to_ts_code
 from src.utils.logger import logger
 
@@ -27,7 +29,7 @@ def format_stock_code(stock_code: str) -> str:
 _SKIP = object()  # 无法识别的日期值：丢弃（与原实现一致）
 
 
-def _to_date(value):
+def _to_date(value: Any) -> Any:
     """按原实现规则转换 K 线日期值；无法识别时返回 _SKIP。"""
     if hasattr(value, 'date') and callable(value.date):
         return value.date()
@@ -42,18 +44,19 @@ def _to_date(value):
     return _SKIP
 
 
-def filter_dividends_by_dates(dividend_data, kline_dates):
+def filter_dividends_by_dates(dividend_data: list[dict[str, Any]],
+                              kline_dates: Any) -> list[dict[str, Any]]:
     """过滤出除权日落在 K 线日期范围内的分红记录。"""
     if len(kline_dates) == 0:
         return []
 
-    kline_date_set = set()
+    kline_date_set: set[Any] = set()
     for d in kline_dates:
         converted = _to_date(d)
         if converted is not _SKIP:
             kline_date_set.add(converted)
 
-    filtered = []
+    filtered: list[dict[str, Any]] = []
     for div in dividend_data:
         ex_date = div.get('ex_date')
         if ex_date:
@@ -67,13 +70,13 @@ def filter_dividends_by_dates(dividend_data, kline_dates):
 class DividendService:
     """分红配股数据查询服务。"""
 
-    def __init__(self, data_manager=None):
+    def __init__(self, data_manager: Any = None) -> None:
         self._data_manager = data_manager
         # 按 ts_code 缓存已裁剪的分红记录。绘图在 GUI 线程的槽函数里执行，
         # 每次重绘都会取一次分红标记，命中缓存可避免在槽内同步查库。
-        self._dividend_cache = {}
+        self._dividend_cache: dict[str, list[dict[str, Any]]] = {}
 
-    def _load_dividend_rows(self, stock_code: str) -> list:
+    def _load_dividend_rows(self, stock_code: str) -> list[dict[str, Any]]:
         """查询并裁剪分红记录（带缓存）；查询异常向上抛出。"""
         ts_code = format_stock_code(stock_code)
         cached = self._dividend_cache.get(ts_code)
@@ -81,7 +84,7 @@ class DividendService:
             return cached
 
         df = self._data_manager.get_stock_dividend(ts_code)
-        rows = []
+        rows: list[dict[str, Any]] = []
         if df is not None and not df.is_empty():
             available = [c for c in _DIVIDEND_COLUMNS if c in df.columns]
             rows = df.select(available).to_dicts()
@@ -97,7 +100,8 @@ class DividendService:
         except (OSError, RuntimeError, ValueError) as e:
             logger.warning(f"预取分红数据失败: {e}")
 
-    def get_dividends_in_range(self, stock_code: str, kline_dates) -> list:
+    def get_dividends_in_range(self, stock_code: str,
+                               kline_dates: Any) -> list[dict[str, Any]]:
         """
         获取指定股票在 K 线日期范围内的分红记录。
 

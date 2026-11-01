@@ -9,8 +9,9 @@
 
 import contextlib
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, cast
 
 from loguru import logger
 
@@ -24,28 +25,29 @@ INDEX_CODE_PREFIXES = {'sh': '000', 'sz': '399', 'bj': '899'}
 class IndexService:
     """指数元数据与最新行情查询服务。"""
 
-    def __init__(self, tdx_data_path: str | None, db_manager=None, cache_ttl_seconds: int = 300):
+    def __init__(self, tdx_data_path: str | None, db_manager: Any = None,
+                 cache_ttl_seconds: int = 300) -> None:
         self._tdx_data_path = Path(tdx_data_path) if tdx_data_path else None
         self._db_manager = db_manager
         self._cache_ttl_seconds = cache_ttl_seconds
         self._cache_time = 0.0
-        self._file_name_map: Dict[str, str] = {}
-        self._name_ts_code_map: Dict[str, str] = {}
-        self._normalized_ts_code_map: Dict[str, str] = {}
+        self._file_name_map: dict[str, str] = {}
+        self._name_ts_code_map: dict[str, str] = {}
+        self._normalized_ts_code_map: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # 指数名称 / ts_code 解析
     # ------------------------------------------------------------------
 
-    def _load_index_maps(self):
+    def _load_index_maps(self) -> None:
         """从 index_basic 加载名称映射（带 TTL 缓存，失败时回退上次结果）。"""
         now_ts = time.time()
         if now_ts - self._cache_time <= self._cache_ttl_seconds:
             return
 
-        file_name_map: Dict[str, str] = {}
-        name_ts_code_map: Dict[str, str] = {}
-        normalized_ts_code_map: Dict[str, str] = {}
+        file_name_map: dict[str, str] = {}
+        name_ts_code_map: dict[str, str] = {}
+        normalized_ts_code_map: dict[str, str] = {}
 
         try:
             if self._db_manager:
@@ -178,7 +180,7 @@ class IndexService:
             return None
         return f"{market}{symbol}"
 
-    def _query_category_file_names(self, category: str) -> set:
+    def _query_category_file_names(self, category: str) -> set[str]:
         """查询指定 category 的指数文件主名集合。数据库不可用时返回空集合。"""
         file_names: set[str] = set()
         if not self._db_manager:
@@ -205,7 +207,7 @@ class IndexService:
 
         return file_names
 
-    def _query_excluded_file_names(self) -> set:
+    def _query_excluded_file_names(self) -> set[str]:
         """查询需要在沪/深指数总览中排除的创业板/科创板指数。"""
         file_names: set[str] = set()
         if not self._db_manager:
@@ -236,12 +238,13 @@ class IndexService:
     # 最新行情
     # ------------------------------------------------------------------
 
-    def _iter_index_files(self, market_filter: str | None):
+    def _iter_index_files(self, market_filter: str | None) -> Iterator[tuple[str, str, Path]]:
         """按市场枚举指数 .day 文件，产出 (market, symbol, file_path)。"""
         if self._tdx_data_path is None:
             return
 
-        markets = [market_filter] if market_filter in INDEX_CODE_PREFIXES else list(INDEX_CODE_PREFIXES)
+        markets = ([cast(str, market_filter)] if market_filter in INDEX_CODE_PREFIXES
+                   else list(INDEX_CODE_PREFIXES))
         for market in markets:
             directory = self._tdx_data_path / market / 'lday'
             if not directory.exists():
@@ -253,7 +256,7 @@ class IndexService:
 
     def list_index_quotes(
         self, market_filter: str | None = None, category_filter: str | None = None
-    ) -> List[Dict]:
+    ) -> list[dict[str, Any]]:
         """
         枚举指数并读取最新行情。
 
@@ -274,7 +277,7 @@ class IndexService:
             else set()
         )
 
-        quotes = []
+        quotes: list[dict[str, Any]] = []
         for market, symbol, file_path in self._iter_index_files(market_filter):
             file_name = file_path.stem
             if allowed is not None and file_name not in allowed:

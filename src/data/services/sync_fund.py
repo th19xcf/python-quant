@@ -8,7 +8,11 @@
 对外由 sync_service 聚合导出。
 """
 
+from datetime import date
+from typing import Any, cast
+
 from loguru import logger
+from sqlalchemy.orm import Session
 
 from src.data.services.sync_common import (
     _extract_tdx_first_last_trade_date,
@@ -20,7 +24,7 @@ from src.utils.exceptions import DataSaveError, DataSourceException
 # 基金同步
 # ======================================================================
 
-def _infer_fund_type(symbol, name):
+def _infer_fund_type(symbol: str, name: str | None) -> str:
     """推断基金类型。"""
     nm = (name or '').upper()
     if 'ETF' in nm:
@@ -30,14 +34,15 @@ def _infer_fund_type(symbol, name):
     return '基金'
 
 
-def _migrate_fund_stock_tuple(stock):
+def _migrate_fund_stock_tuple(stock: Any) -> tuple[str, str, str, str]:
     """由 stock_basic 记录派生基金的代码、名称、类型与市场。"""
     symbol = (stock.symbol or stock.ts_code.split('.')[0])[:9]
     name = (stock.name or symbol)[:20]
     return symbol, name, _infer_fund_type(symbol, name), stock.ts_code.split('.')[-1]
 
 
-def _fill_fund_from_stock(fund, stock, symbol, name, inferred_type, inferred_market):
+def _fill_fund_from_stock(fund: Any, stock: Any, symbol: str, name: str,
+                          inferred_type: str, inferred_market: str) -> bool:
     """用 stock_basic 记录补全 fund_basic 空白字段，返回是否有改动。"""
     changed = False
     if not fund.symbol and symbol:
@@ -64,7 +69,8 @@ def _fill_fund_from_stock(fund, stock, symbol, name, inferred_type, inferred_mar
     return changed
 
 
-def _migrate_fund_stock_row(stock, existing_fund_map, session, result):
+def _migrate_fund_stock_row(stock: Any, existing_fund_map: dict[str, Any], session: Session,
+                            result: dict[str, Any]) -> None:
     """把单条 stock_basic 基金记录迁移或更新到 fund_basic。"""
     from src.database.models.fund import FundBasic
 
@@ -87,7 +93,7 @@ def _migrate_fund_stock_row(stock, existing_fund_map, session, result):
         result['updated_funds'] += 1
 
 
-def _infer_fund_ts_code_by_symbol(symbol):
+def _infer_fund_ts_code_by_symbol(symbol: str) -> str | None:
     """按基金代码前缀推断 ETF 的 ts_code，无法识别返回 None。"""
     if symbol.startswith('51') or symbol.startswith('58'):
         return f"{symbol}.SH"
@@ -96,7 +102,8 @@ def _infer_fund_ts_code_by_symbol(symbol):
     return None
 
 
-def _merge_etf_row(row, existing_fund_map, session, result):
+def _merge_etf_row(row: dict[str, Any], existing_fund_map: dict[str, Any], session: Session,
+                   result: dict[str, Any]) -> None:
     """用 AkShare ETF 行补全或新增 fund_basic 记录。"""
     from src.database.models.fund import FundBasic
 
@@ -133,7 +140,8 @@ def _merge_etf_row(row, existing_fund_map, session, result):
         result['akshare_enriched'] += 1
 
 
-def _enrich_funds_from_akshare(config, existing_fund_map, session, result):
+def _enrich_funds_from_akshare(config: Any, existing_fund_map: dict[str, Any], session: Session,
+                               result: dict[str, Any]) -> None:
     """使用 AkShare ETF 列表补全基金名称与类型。"""
     from src.data.akshare_handler import AkShareHandler
 
@@ -147,7 +155,8 @@ def _enrich_funds_from_akshare(config, existing_fund_map, session, result):
         logger.warning(f"使用 AkShare 补全基金信息失败: {e}")
 
 
-def _fill_fund_date_row(fund, config, tdx_date_cache, result):
+def _fill_fund_date_row(fund: Any, config: Any, tdx_date_cache: dict[str, Any],
+                        result: dict[str, Any]) -> bool:
     """用通达信日线首末日期回填基金日期，返回是否有改动。"""
     status = str(fund.status or '').strip().upper()
     is_delisted = status in {'D', '0', 'DELIST', 'DELISTED'}
@@ -176,11 +185,11 @@ def _fill_fund_date_row(fund, config, tdx_date_cache, result):
     return changed
 
 
-def _fill_fund_dates(config, session, result):
+def _fill_fund_dates(config: Any, session: Session, result: dict[str, Any]) -> None:
     """使用通达信日线数据补全基金日期信息。"""
     from src.database.models.fund import FundBasic
 
-    tdx_date_cache = {}
+    tdx_date_cache: dict[str, tuple[date | None, date | None]] = {}
     all_funds = session.query(FundBasic).all()
     for fund in all_funds:
         try:
@@ -192,19 +201,20 @@ def _fill_fund_dates(config, session, result):
             result['failed'] += 1
 
 
-def _delete_migrated_funds(session, fund_stocks, result):
+def _delete_migrated_funds(session: Session, fund_stocks: list[Any],
+                           result: dict[str, Any]) -> None:
     """从 stock_basic 删除已迁移的基金记录。"""
     for stock in fund_stocks:
         session.delete(stock)
     result['deleted_from_stock_basic'] = len(fund_stocks)
 
 
-def sync_stock_fund_to_fund_basic(config, db_manager):
+def sync_stock_fund_to_fund_basic(config: Any, db_manager: Any) -> dict[str, Any]:
     """将 stock_basic 中基金记录迁移到 fund_basic，并补全信息。"""
     from src.database.models.fund import FundBasic
     from src.database.models.stock import StockBasic
 
-    result = {
+    result: dict[str, Any] = {
         'stock_fund_candidates': 0,
         'inserted_funds': 0,
         'updated_funds': 0,
@@ -219,11 +229,11 @@ def sync_stock_fund_to_fund_basic(config, db_manager):
     logger.info("开始执行基金迁移: stock_basic -> fund_basic")
     logger.info("=" * 60)
 
-    session = None
+    session: Session | None = None
     try:
         session = db_manager.get_session()
 
-        all_stocks = session.query(StockBasic).all()
+        all_stocks = cast(Any, session.query(StockBasic).all())
         fund_stocks = [
             row for row in all_stocks
             if _is_fund_ts_code(row.ts_code, row.name, row.market)
@@ -231,7 +241,9 @@ def sync_stock_fund_to_fund_basic(config, db_manager):
         result['stock_fund_candidates'] = len(fund_stocks)
         logger.info(f"识别到 {len(fund_stocks)} 条基金候选记录")
 
-        existing_fund_map = {f.ts_code: f for f in session.query(FundBasic).all()}
+        existing_fund_map = {
+            f.ts_code: f for f in cast(Any, session.query(FundBasic).all())
+        }
 
         for stock in fund_stocks:
             try:

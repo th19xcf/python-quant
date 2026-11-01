@@ -200,9 +200,6 @@ class ChartEventBinder:
             # 禁用默认右键菜单
             self._disable_default_context_menu()
 
-            # 设置自定义右键菜单
-            self._setup_custom_context_menu()
-
         except (OSError, RuntimeError) as e:
             logger.exception(f"设置右键菜单失败: {e}")
 
@@ -221,50 +218,6 @@ class ChartEventBinder:
         for item in self.main_window.tech_plot_widget.items():
             if hasattr(item, 'setMenuEnabled'):
                 item.setMenuEnabled(False)
-
-    def _setup_custom_context_menu(self):
-        """设置自定义右键菜单"""
-        from PySide6.QtGui import QAction
-        from PySide6.QtWidgets import QMenu
-
-        def custom_context_menu(event):
-            """自定义右键菜单处理函数"""
-            try:
-                # 创建自定义菜单
-                menu = QMenu(self.main_window.tech_plot_widget)
-
-                # 如果有选中的均线，添加修改指标参数选项
-                if hasattr(self.main_window, 'selected_ma') and self.main_window.selected_ma:
-                    modify_action = QAction(
-                        f"修改{self.main_window.selected_ma}指标参数",
-                        self.main_window
-                    )
-                    modify_action.triggered.connect(
-                        lambda: self.main_window.on_modify_indicator(self.main_window.selected_ma)
-                    )
-                    menu.addAction(modify_action)
-                else:
-                    # 如果没有选中均线，添加提示信息
-                    no_select_action = QAction("未选中均线，请先点击选中均线", self.main_window)
-                    no_select_action.setEnabled(False)
-                    menu.addAction(no_select_action)
-
-                # 在鼠标位置显示菜单
-                qpoint = event.globalPos().toPoint()
-                menu.exec(qpoint)
-
-                # 阻止事件传播
-                event.accept()
-
-            except (OSError, RuntimeError) as e:
-                logger.debug(f"显示右键菜单失败: {e}")
-
-        # 设置自定义右键菜单
-        self.main_window.tech_plot_widget.contextMenuEvent = custom_context_menu
-        self.main_window.tech_plot_widget.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.main_window.tech_plot_widget.customContextMenuRequested.connect(
-            lambda pos: self.main_window.on_custom_context_menu(pos)
-        )
 
     def _setup_info_timer(self):
         """设置信息框定时器"""

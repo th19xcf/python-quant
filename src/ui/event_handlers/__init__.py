@@ -1,6 +1,5 @@
 from .indicator_handlers import IndicatorHandler
 from .key_handlers import KeyHandler
-from .menu_handlers import MenuHandler
 from .mouse_handlers import MouseHandler
 
 
@@ -19,7 +18,6 @@ class EventHandlerManager:
         self.main_window = main_window
         self.mouse_handler = MouseHandler(main_window)
         self.key_handler = KeyHandler(main_window)
-        self.menu_handler = MenuHandler(main_window)
         self.indicator_handler = IndicatorHandler(main_window)
 
     def get_mouse_handler(self):
@@ -39,15 +37,6 @@ class EventHandlerManager:
             键盘事件处理器实例
         """
         return self.key_handler
-
-    def get_menu_handler(self):
-        """
-        获取菜单事件处理器
-
-        Returns:
-            菜单事件处理器实例
-        """
-        return self.menu_handler
 
     def get_indicator_handler(self):
         """

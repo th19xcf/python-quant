@@ -22,6 +22,7 @@ from typing import Any, Dict, List
 
 from loguru import logger
 from sqlalchemy import or_
+from sqlalchemy.orm import Session
 
 from src.database.models.stock import StockStatusHistory
 from src.utils.date_utils import parse_date
@@ -63,12 +64,12 @@ def _parse_date(value: Any) -> date | None:
 class StStatusService:
     """ST 时间维表的写入与查询"""
 
-    def __init__(self, db_manager=None, session=None):
+    def __init__(self, db_manager: Any = None, session: Session | None = None) -> None:
         self.db_manager = db_manager
         self._session = session
 
     @property
-    def session(self):
+    def session(self) -> Session | None:
         """优先使用注入的 session，否则从 db_manager 取（连接失败返回 None）"""
         if self._session is not None:
             return self._session
@@ -98,7 +99,8 @@ class StStatusService:
                 codes.append(ts_code)
         return codes
 
-    def _apply_current_st_rows(self, session, current_codes, coverage, as_of_date):
+    def _apply_current_st_rows(self, session: Session, current_codes: list[str], coverage: date,
+                               as_of_date: date) -> tuple[bool, int, int, str | None]:
         """写入当前 ST 区间，返回 (ok, opened, closed, error)。"""
         opened = closed = 0
         try:

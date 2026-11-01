@@ -203,7 +203,7 @@ cp .env.example .env
 - 质量门禁（本地与 CI 一致）：
   - `ruff check src tests`（pyflakes / bugbear / bandit / isort / mccabe C901 等全量规则）
   - `mypy src`（覆盖 src 下全部业务模块，配置见 `pyproject.toml [tool.mypy]`）
-  - `pytest --cov=src`（覆盖率门禁 `[tool.coverage.report] fail_under = 47`，当前约 49%）
+  - `pytest --cov=src`（覆盖率门禁 `[tool.coverage.report] fail_under = 53`，当前约 53.5%）
 
 ---
 

@@ -5,17 +5,6 @@
 """
 
 import pyqtgraph as pg
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
-from PySide6.QtWidgets import (
-    QDialog,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMenu,
-    QPushButton,
-    QVBoxLayout,
-)
 
 from src.utils.logger import logger
 
@@ -190,84 +179,8 @@ class MainWindowChartInteractionMixin:
                     self.ma_points.clear()
                 self.selected_ma = None
 
-                if event.button() == Qt.RightButton:
-                    self._show_custom_context_menu(event)
-
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Error handling MA click: {e}")
-
-    def _show_custom_context_menu(self, event):
-        menu = QMenu(self) # type: ignore
-        if hasattr(self, 'selected_ma') and self.selected_ma:
-            modify_action = QAction(f"修改{self.selected_ma}指标参数", self) # type: ignore
-            modify_action.triggered.connect(lambda: self.on_modify_indicator(self.selected_ma))
-            menu.addAction(modify_action)
-        else:
-            no_select_action = QAction("未选中均线，请先点击选中均线", self) # type: ignore
-            no_select_action.setEnabled(False)
-            menu.addAction(no_select_action)
-
-        scene_pos = event.pos()
-        screen_pos = self.tech_plot_widget.mapToGlobal(scene_pos)
-        menu.exec(screen_pos.toPoint())
-        event.accept()
-
-    def on_custom_context_menu(self, pos):
-        """
-        Handle customContextMenuRequested
-        """
-        menu = QMenu(self.tech_plot_widget)
-        if hasattr(self, 'selected_ma') and self.selected_ma:
-            modify_action = QAction(f"修改{self.selected_ma}指标参数", self) # type: ignore
-            modify_action.triggered.connect(lambda: self.on_modify_indicator(self.selected_ma))
-            menu.addAction(modify_action)
-        else:
-            no_select_action = QAction("未选中均线，请先点击选中均线", self) # type: ignore
-            no_select_action.setEnabled(False)
-            menu.addAction(no_select_action)
-
-        global_pos = self.tech_plot_widget.mapToGlobal(pos)
-        menu.exec(global_pos)
-
-    def on_modify_indicator(self, ma_name):
-        """
-        Dialog to modify indicator parameters
-        """
-        dialog = QDialog(self) # type: ignore
-        dialog.setWindowTitle(f"修改{ma_name}指标参数")
-        dialog.setGeometry(300, 300, 300, 200)
-
-        layout = QVBoxLayout(dialog)
-
-        current_window = int(ma_name.replace("MA", ""))
-
-        window_label = QLabel("周期:", dialog)
-        layout.addWidget(window_label)
-
-        window_input = QLineEdit(dialog)
-        window_input.setText(str(current_window))
-        layout.addWidget(window_input)
-
-        button_layout = QHBoxLayout()
-        ok_button = QPushButton("确定", dialog)
-        cancel_button = QPushButton("取消", dialog)
-        button_layout.addWidget(ok_button)
-        button_layout.addWidget(cancel_button)
-        layout.addLayout(button_layout)
-
-        def on_ok():
-            try:
-                new_window = int(window_input.text())
-                if new_window <= 0: raise ValueError("周期必须大于0")
-                logger.info(f"Modify {ma_name} to: {new_window}")
-                # TODO: Implement update logic
-                dialog.accept()
-            except ValueError as e:
-                logger.error(f"Input error: {e}")
-
-        ok_button.clicked.connect(on_ok)
-        cancel_button.clicked.connect(dialog.reject)
-        dialog.exec()
 
     def update_ma_values_display(self, index, dates, opens, highs, lows, closes):
         """

@@ -23,12 +23,12 @@ from pathlib import Path
 SRC_ROOT = Path(__file__).resolve().parents[1] / 'src'
 
 #: 棘轮基线：只允许下降。收口后请同步下调该值。
-#: 本轮为 data/services/sync_stock.py 与 tech_analysis/technical_analyzer.py
-#: 的热点函数补注解后实测值（903 -> 845）。
-UNTYPED_BASELINE = 845
+#: 本轮为 data/services 全目录补齐注解（含删除 macro/news 死代码）后的实测值
+#: （903 -> 845 -> 766）。
+UNTYPED_BASELINE = 766
 
-#: 已由 pyproject 强制注解的目录，必须恒为 0
-STRICT_DIRS = ('backtest', 'risk', 'api')
+#: 已由 pyproject 强制注解的目录（一级或子目录相对路径），必须恒为 0
+STRICT_DIRS = ('backtest', 'risk', 'api', 'data/services')
 
 
 def _function_is_untyped(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -74,12 +74,19 @@ def test_untyped_function_count_does_not_grow():
     )
 
 
-def test_strict_directories_have_no_untyped_functions():
-    """pyproject 强制注解的核心目录里不允许出现完全无注解的函数。"""
-    counts = _untyped_counts(SRC_ROOT)
+def _count_in_directory(relative_dir: str) -> int:
+    """统计某个相对目录（可多级）下未注解函数数。"""
+    return sum(
+        _count_untyped(ast.parse(path.read_text(encoding='utf-8')))
+        for path in (SRC_ROOT / relative_dir).rglob('*.py')
+    )
 
+
+def test_strict_directories_have_no_untyped_functions():
+    """pyproject 强制注解的目录里不允许出现完全无注解的函数。"""
     for directory in STRICT_DIRS:
-        assert counts.get(directory, 0) == 0, (
-            f'src/{directory} 仍有 {counts.get(directory)} 个无注解函数，'
+        count = _count_in_directory(directory)
+        assert count == 0, (
+            f'src/{directory} 仍有 {count} 个无注解函数，'
             f'与 pyproject 的 disallow_untyped_defs 门禁不一致'
         )

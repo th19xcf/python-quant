@@ -115,7 +115,7 @@ class BaostockMinuteMixin:
         写库统一存原始价（adjustflag=3），复权由查询侧按因子统一处理。
 
         Args:
-            model: 目标 ORM 模型（StockMinute / IndexMinute）
+            model: 目标 ORM 模型（StockMinute）
             code_type: 默认代码类型（stock/index）
             noun: 日志中的中文名词（股票/指数）
             default_days: 未指定日期时回溯的天数
@@ -232,9 +232,9 @@ class BaostockMinuteMixin:
         # 批量查重后写入（已存在则更新，不存在则新增）
         upsert_rows(
             self.session, model, minute_rows,
-            key_fields=('ts_code', 'trade_date', 'trade_time'),
+            key_fields=('ts_code', 'trade_time'),
             value_fields=('open', 'high', 'low', 'close', 'vol', 'amount'),
-            create_defaults={'frequency': frequency},
+            create_defaults={'freq': frequency},
         )
 
         # 每个标的提交一次事务
@@ -246,13 +246,4 @@ class BaostockMinuteMixin:
         from src.database.models.stock import StockMinute
         return self._download_minute(
             StockMinute, 'stock', '股票', self.config.data.default_minute_days,
-            ts_codes, start_date, end_date, frequency)
-
-    def download_index_minute(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None, frequency: str = "5"):
-        """下载指数分钟线数据并入库（写库存原始价）。"""
-        # 存量问题：IndexMinute 模型尚未在 src.database.models.index 中实现，
-        # 该接口一旦被调用会在运行期失败；此处仅按既有约定保留导入以避免改动行为
-        from src.database.models.index import IndexMinute  # type: ignore[attr-defined]
-        return self._download_minute(
-            IndexMinute, 'index', '指数', 3,
             ts_codes, start_date, end_date, frequency)

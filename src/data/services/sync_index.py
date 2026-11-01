@@ -10,8 +10,11 @@ index_basic 增删改与 sync_tdx_index_to_database 编排。
 
 import contextlib
 from dataclasses import dataclass
+from datetime import date
+from typing import Any, cast
 
 from loguru import logger
+from sqlalchemy.orm import Session
 
 from src.data.services.sync_common import (
     SyncFlow,
@@ -34,7 +37,7 @@ FORCED_INDEX_NAME_MAP = {
 }
 
 
-def _normalize_index_ts_code(code):
+def _normalize_index_ts_code(code: Any) -> str | None:
     """
     统一规范 Baostock / AkShare 指数代码格式为 000001.SH。
 
@@ -63,7 +66,7 @@ def _normalize_index_ts_code(code):
     return None
 
 
-def _parse_index_date(value):
+def _parse_index_date(value: Any) -> date | None:
     """解析指数日期字段，返回 date 或 None。"""
     from datetime import datetime
 
@@ -82,7 +85,7 @@ def _parse_index_date(value):
     return None
 
 
-def _infer_index_publisher(ts_code):
+def _infer_index_publisher(ts_code: str | None) -> str:
     """按市场后缀推断指数发布方。"""
     market = ts_code.split('.')[-1].upper() if ts_code and '.' in ts_code else ''
     if market == 'SH':
@@ -94,7 +97,7 @@ def _infer_index_publisher(ts_code):
     return '交易所'
 
 
-def _infer_index_type_category(index_name):
+def _infer_index_type_category(index_name: str | None) -> tuple[str, str]:
     """按名称关键词推断指数类型与类别。"""
     name = (index_name or '').strip()
     if '行业' in name:
@@ -114,7 +117,7 @@ def _infer_index_type_category(index_name):
     return '综合指数', '通用'
 
 
-def _infer_index_meta(ts_code, index_name):
+def _infer_index_meta(ts_code: str | None, index_name: str | None) -> dict[str, str]:
     """根据代码和名称推断指数元信息。"""
     index_type, category = _infer_index_type_category(index_name)
     return {
@@ -125,7 +128,8 @@ def _infer_index_meta(ts_code, index_name):
     }
 
 
-def _merge_index_info(merged_info_map, ts_code, name, date_value, overwrite_name):
+def _merge_index_info(merged_info_map: dict[str, dict[str, Any]], ts_code: str, name: str,
+                      date_value: date | None, overwrite_name: bool) -> None:
     """并入单个指数信息：名称可覆盖或仅补空，日期取更早值。"""
     item = merged_info_map.get(ts_code)
     if item is None:
@@ -142,7 +146,8 @@ def _merge_index_info(merged_info_map, ts_code, name, date_value, overwrite_name
             item['base_date'] = date_value
 
 
-def _merge_baostock_index_row(merged_info_map, row):
+def _merge_baostock_index_row(merged_info_map: dict[str, dict[str, Any]],
+                              row: dict[str, Any]) -> None:
     """并入单行 Baostock 指数信息。"""
     ts_code = _normalize_index_ts_code(row.get('code'))
     name = (row.get('code_name') or '').strip()
@@ -153,7 +158,8 @@ def _merge_baostock_index_row(merged_info_map, row):
     )
 
 
-def _collect_baostock_index_info(merged_info_map, baostock_handler):
+def _collect_baostock_index_info(merged_info_map: dict[str, dict[str, Any]],
+                                 baostock_handler: Any) -> None:
     """从 Baostock 收集指数名称与日期信息。"""
     import baostock as bs
     import polars as pl
@@ -172,7 +178,8 @@ def _collect_baostock_index_info(merged_info_map, baostock_handler):
         logger.warning(f"从 Baostock 获取指数基本信息失败: {e}")
 
 
-def _merge_akshare_index_row(merged_info_map, row):
+def _merge_akshare_index_row(merged_info_map: dict[str, dict[str, Any]],
+                             row: dict[str, Any]) -> bool:
     """并入单行 AkShare 指数信息，成功计入时返回 True。"""
     ts_code = _normalize_index_ts_code(row.get('代码', row.get('index_code')))
     raw_name = row.get('名称', row.get('display_name'))
@@ -187,7 +194,8 @@ def _merge_akshare_index_row(merged_info_map, row):
     return True
 
 
-def _collect_akshare_index_info(merged_info_map, akshare_handler):
+def _collect_akshare_index_info(merged_info_map: dict[str, dict[str, Any]],
+                                akshare_handler: Any) -> None:
     """从 AkShare 收集指数名称与日期信息。"""
     logger.info("开始从 AkShare 获取指数基本信息...")
     try:
@@ -202,7 +210,7 @@ def _collect_akshare_index_info(merged_info_map, akshare_handler):
         logger.warning(f"从 AkShare 获取指数基本信息失败: {e}")
 
 
-def _collect_external_index_name_map(config):
+def _collect_external_index_name_map(config: Any) -> dict[str, dict[str, Any]]:
     """收集外部数据源的指数信息映射。"""
     from src.data.akshare_handler import AkShareHandler
     from src.data.baostock_handler import BaostockHandler
@@ -210,7 +218,7 @@ def _collect_external_index_name_map(config):
     baostock_handler = BaostockHandler(config, None)
     akshare_handler = AkShareHandler(config, None)
 
-    merged_info_map = {}
+    merged_info_map: dict[str, dict[str, Any]] = {}
     _collect_baostock_index_info(merged_info_map, baostock_handler)
     try:
         _collect_akshare_index_info(merged_info_map, akshare_handler)
@@ -221,21 +229,22 @@ def _collect_external_index_name_map(config):
     return merged_info_map
 
 
-def _index_name_from_code(ts_code):
+def _index_name_from_code(ts_code: str | None) -> str:
     """由指数代码生成占位名，代码无市场后缀时返回空串。"""
     if ts_code and '.' in ts_code:
         return f"指数{ts_code.split('.')[0]}"
     return ''
 
 
-def _index_desc_text(index_name, ts_code):
+def _index_desc_text(index_name: str | None, ts_code: str | None) -> str:
     """生成指数描述文本。"""
     safe_name = index_name or _index_name_from_code(ts_code) or '指数'
     return f"{safe_name}({ts_code})，通达信基准，Baostock/AkShare补全"
 
 
-def _fill_index_blank_fields(index_row, inferred, source_list_date,
-                             source_base_date, default_desc, result):
+def _fill_index_blank_fields(index_row: Any, inferred: dict[str, str],
+                             source_list_date: date | None, source_base_date: date | None,
+                             default_desc: str, result: dict[str, Any]) -> bool:
     """回填指数空白字段（仅空值），返回是否有改动。"""
     changed = False
 
@@ -261,8 +270,9 @@ def _fill_index_blank_fields(index_row, inferred, source_list_date,
     return changed
 
 
-def _upsert_index_row(existing, ts_code, source_name, source_info, inferred,
-                      market, default_desc, session, result):
+def _upsert_index_row(existing: Any, ts_code: str, source_name: str,
+                      source_info: dict[str, Any], inferred: dict[str, str], market: str,
+                      default_desc: str, session: Session, result: dict[str, Any]) -> None:
     """新增或更新单条 index_basic 记录，并累计统计计数。"""
     from src.database.models.index import IndexBasic
 
@@ -297,7 +307,8 @@ def _upsert_index_row(existing, ts_code, source_name, source_info, inferred,
         result['unchanged_indexes'] += 1
 
 
-def _backfill_index_row(row, external_info_map, tdx_index_code_set, result):
+def _backfill_index_row(row: Any, external_info_map: dict[str, dict[str, Any]],
+                        tdx_index_code_set: set[str], result: dict[str, Any]) -> bool:
     """回填单条存量指数空白字段，返回是否有改动。"""
     changed = False
     normalized_code = _normalize_index_ts_code(row.ts_code) or row.ts_code
@@ -333,7 +344,8 @@ def _backfill_index_row(row, external_info_map, tdx_index_code_set, result):
     return changed
 
 
-def _delete_stale_index_rows(session, all_index_rows, tdx_index_code_set, result):
+def _delete_stale_index_rows(session: Session, all_index_rows: list[Any],
+                             tdx_index_code_set: set[str], result: dict[str, Any]) -> None:
     """删除不在通达信指数代码白名单中的历史记录。"""
     stale_rows = [
         row for row in all_index_rows
@@ -350,13 +362,13 @@ def _delete_stale_index_rows(session, all_index_rows, tdx_index_code_set, result
 @dataclass
 class IndexSyncContext:
     """指数同步上下文"""
-    tdx_index_codes: list
-    tdx_index_code_set: set
-    external_info_map: dict
-    existing_index_map: dict
+    tdx_index_codes: list[str]
+    tdx_index_code_set: set[str]
+    external_info_map: dict[str, dict[str, Any]]
+    existing_index_map: dict[str, Any]
 
 
-def _log_index_sync_result(result):
+def _log_index_sync_result(result: dict[str, Any]) -> None:
     """记录指数同步结果统计。"""
     logger.info("=" * 60)
     logger.info("指数同步结果统计:")
@@ -373,7 +385,8 @@ def _log_index_sync_result(result):
     logger.info("=" * 60)
 
 
-def _prepare_index_sync(config, db_manager, session, result):
+def _prepare_index_sync(config: Any, db_manager: Any, session: Session,
+                        result: dict[str, Any]) -> IndexSyncContext | None:
     """同步准备阶段：扫描通达信指数代码并收集外部信息映射。"""
     from src.data.tdx_handler import TdxHandler
     from src.database.models.index import IndexBasic
@@ -403,7 +416,10 @@ def _prepare_index_sync(config, db_manager, session, result):
 
     existing_index_map = {
         row.ts_code: row
-        for row in session.query(IndexBasic).filter(IndexBasic.ts_code.in_(tdx_index_codes)).all()
+        for row in cast(
+            Any,
+            session.query(IndexBasic).filter(IndexBasic.ts_code.in_(tdx_index_codes)).all(),
+        )
     }
 
     return IndexSyncContext(
@@ -411,7 +427,8 @@ def _prepare_index_sync(config, db_manager, session, result):
     )
 
 
-def _upsert_index_from_sources(ctx, ts_code, session, result):
+def _upsert_index_from_sources(ctx: IndexSyncContext, ts_code: str, session: Session,
+                               result: dict[str, Any]) -> None:
     """按外部信息映射新增或更新单个指数记录。"""
     source_info = ctx.external_info_map.get(ts_code, {})
     source_name = FORCED_INDEX_NAME_MAP.get(
@@ -431,7 +448,7 @@ def _upsert_index_from_sources(ctx, ts_code, session, result):
     )
 
 
-def _run_index_sync(ctx, session, result):
+def _run_index_sync(ctx: IndexSyncContext, session: Session, result: dict[str, Any]) -> None:
     """同步执行阶段：新增/更新指数、回填存量空白字段并清理过期记录。"""
     from src.database.models.index import IndexBasic
 
@@ -457,9 +474,9 @@ def _run_index_sync(ctx, session, result):
     session.commit()
 
 
-def sync_tdx_index_to_database(config, db_manager):
+def sync_tdx_index_to_database(config: Any, db_manager: Any) -> dict[str, Any]:
     """以通达信指数代码为基准同步 index_basic。"""
-    result = {
+    result: dict[str, Any] = {
         'total_tdx_indexes': 0,
         'updated_indexes': 0,
         'inserted_indexes': 0,
@@ -470,10 +487,10 @@ def sync_tdx_index_to_database(config, db_manager):
         'failed_indexes': []
     }
 
-    def prepare(session):
+    def prepare(session: Session) -> IndexSyncContext | None:
         return _prepare_index_sync(config, db_manager, session, result)
 
-    def run(ctx, session):
+    def run(ctx: IndexSyncContext, session: Session) -> None:
         _run_index_sync(ctx, session, result)
 
     return _execute_sync_flow(
