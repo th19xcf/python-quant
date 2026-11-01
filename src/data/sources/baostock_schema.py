@@ -12,6 +12,7 @@ from typing import Any, Tuple
 
 import pandas as pd
 import polars as pl
+from loguru import logger
 
 # Baostock 查询字段串（集中声明，避免多处字面量漂移）
 DAILY_FIELDS = (
@@ -37,6 +38,11 @@ def result_to_frame(result: Any) -> pd.DataFrame:
     AttributeError；这里改走官方推荐的 next()/get_row_data() 逐行拉取，与 pandas
     版本无关。空结果按 fields 建空表，保持调用方 `df.empty` 语义不变。
     """
+    if result.error_code != '0':
+        # Baostock 把网络失败收敛成 error_code，若不显式告警，
+        # 上层只会看到"数据为空"，无法区分网络中断与真的没有数据
+        logger.warning(
+            f"Baostock 返回错误({result.error_code}): {getattr(result, 'error_msg', '')}")
     rows = []
     while result.error_code == '0' and result.next():
         rows.append(result.get_row_data())

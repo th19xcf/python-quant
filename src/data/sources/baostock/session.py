@@ -16,16 +16,16 @@ from src.utils.exceptions import DataSourceConnectionError
 class BaostockSessionMixin:
     """Baostock 登录会话管理（登录/重试/登出）。"""
 
+    # Baostock 的 recv 循环没有自带超时，而全市场分页查询单次需要几十秒。
+    # 30s 的进程级默认超时会在服务端换页时打断接收，导致半截报文解码失败
+    # （'utf-8' codec can't decode ... unexpected end of data）。
+    BAOSTOCK_READ_TIMEOUT_SECONDS = 120.0
+
     def _login_baostock(self):
         """
         登录Baostock
         """
         try:
-            # 设置登录超时
-            import socket
-            # 设置全局超时为30秒
-            socket.setdefaulttimeout(30)
-
             logger.info("正在连接Baostock服务器...")
             lg = bs.login()
 
@@ -37,6 +37,7 @@ class BaostockSessionMixin:
             if lg.error_code == '0':
                 logger.info("Baostock登录成功")
                 self.bs_login = True
+                self._apply_baostock_read_timeout()
             else:
                 logger.warning(f"Baostock登录失败: {lg.error_msg}")
                 self.bs_login = False
@@ -48,6 +49,21 @@ class BaostockSessionMixin:
             # 捕获其他所有异常
             logger.exception(f"Baostock登录发生未知异常: {e}")
             self.bs_login = False
+
+    def _apply_baostock_read_timeout(self) -> None:
+        """给 baostock 专用 socket 设置读超时。
+
+        只作用于 baostock 自己的连接：socket.setdefaulttimeout 是进程级设置，
+        会连带影响进程内其它所有裸 socket，且 30s 对全市场分页查询过短。
+        """
+        try:
+            from baostock.common import context
+            sock = getattr(context, 'default_socket', None)
+            if sock is not None:
+                sock.settimeout(self.BAOSTOCK_READ_TIMEOUT_SECONDS)
+        # 兜底理由：上游内部结构可能变化，设置失败不应阻断登录
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"设置 Baostock socket 读超时失败: {e}")
 
     @handle_exception_with_retry(max_retries=3, retry_delay=2)
     def _login_with_retry(self):
