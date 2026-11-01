@@ -869,8 +869,49 @@ class StockRepairContext:
     industry_map: dict[str, str]
 
 
-def _repair_stock_row(row: Any, industry_map: dict[str, str], result: dict[str, Any]) -> None:
-    """修复单只股票：清空误写的 area、推断缺失的 market、补齐缺失的 industry。"""
+def _fetch_industry_from_cninfo(ak: Any, ts_code: str) -> str:
+    """逐只查询巨潮公司概况获取所属行业，失败或无数据返回空串。"""
+    symbol = ts_code.split('.')[0]
+    try:
+        profile_pd = ak.stock_profile_cninfo(symbol=symbol)
+    # 兜底理由：单只个股资料接口失败（退市/无覆盖/连接中断）跳过该只
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"获取 {ts_code} 巨潮公司概况失败: {e}")
+        return ''
+
+    if profile_pd is None or profile_pd.empty:
+        return ''
+    return _normalize_text_value(profile_pd.iloc[0].get('所属行业'), 50)
+
+
+def _build_industry_fetcher() -> Any:
+    """构造逐只行业兜底抓取器，附带进度日志。"""
+    import akshare as ak
+
+    attempts = {'count': 0, 'success': 0}
+
+    def fetch(ts_code: str) -> str:
+        attempts['count'] += 1
+        industry = _fetch_industry_from_cninfo(ak, ts_code)
+        if industry:
+            attempts['success'] += 1
+        if attempts['count'] % 50 == 0:
+            logger.info(
+                f"逐只行业兜底进度: {attempts['count']} 次查询，"
+                f"成功 {attempts['success']} 条"
+            )
+        return industry
+
+    return fetch
+
+
+def _repair_stock_row(row: Any, industry_map: dict[str, str], result: dict[str, Any],
+                      industry_fetcher: Any = None) -> None:
+    """修复单只股票：清空误写的 area、推断缺失的 market、补齐缺失的 industry。
+
+    industry_fetcher 为可选的逐只兜底抓取器（ts_code -> industry），
+    仅在批量映射也覆盖不到时才会被调用。
+    """
     if _is_industry_category_value(row.area):
         row.area = None
         result['cleared_area'] += 1
@@ -883,6 +924,8 @@ def _repair_stock_row(row: Any, industry_map: dict[str, str], result: dict[str, 
 
     if not _normalize_text_value(row.industry):
         industry = _normalize_text_value(industry_map.get(row.ts_code), 50)
+        if not industry and industry_fetcher is not None:
+            industry = industry_fetcher(row.ts_code)
         if industry:
             row.industry = industry
             result['filled_industry'] += 1
@@ -896,18 +939,20 @@ def _log_repair_result(result: dict[str, Any]) -> None:
     logger.info(f"  清空错误地域数量: {result['cleared_area']}")
     logger.info(f"  补全市场类型数量: {result['filled_market']}")
     logger.info(f"  补全行业数量: {result['filled_industry']}")
+    logger.info(f"  逐只兜底查询数量: {result['deep_fetched']}")
     logger.info(f"  失败股票数量: {len(result['failed_stocks'])}")
     if result['failed_stocks']:
         logger.warning(f"  失败股票列表: {result['failed_stocks'][:10]}...")
     logger.info("=" * 60)
 
 
-def repair_stock_basic(config: Any, db_manager: Any) -> dict[str, Any]:
+def repair_stock_basic(config: Any, db_manager: Any, deep_industry: bool = False) -> dict[str, Any]:
     """一次性修复 stock_basic 存量记录的 area/industry/market 缺口。
 
     - area：该列语义为地域，被误写成证监会行业门类的值直接置空，不做地域抓取
     - market：空值按股票代码推断板块
     - industry：空值用 Baostock 行业分类 + AkShare 行业板块成分批量补全
+    - deep_industry=True 时，批量源覆盖不到的再逐只查巨潮公司概况兜底
     """
     from src.database.models.stock import StockBasic
 
@@ -916,6 +961,7 @@ def repair_stock_basic(config: Any, db_manager: Any) -> dict[str, Any]:
         'cleared_area': 0,
         'filled_market': 0,
         'filled_industry': 0,
+        'deep_fetched': 0,
         'failed_stocks': [],
     }
 
@@ -930,10 +976,20 @@ def repair_stock_basic(config: Any, db_manager: Any) -> dict[str, Any]:
         return StockRepairContext(rows, _build_repair_industry_map(config))
 
     def run(ctx: StockRepairContext, session: Any) -> None:
+        industry_fetcher = None
+        if deep_industry:
+            logger.info("已开启逐只行业兜底，批量源未覆盖的股票将逐只查询巨潮公司概况")
+            fetch_industry = _build_industry_fetcher()
+
+            def industry_fetcher(ts_code: str) -> str:
+                result['deep_fetched'] += 1
+                return fetch_industry(ts_code)
+
         _sync_each_with_recovery(
-            ctx.rows, lambda row: _repair_stock_row(row, ctx.industry_map, result),
+            ctx.rows,
+            lambda row: _repair_stock_row(row, ctx.industry_map, result, industry_fetcher),
             result=result, failed_key='failed_stocks', session=session,
-            label='股票', commit_interval=0, item_name=lambda row: row.ts_code,
+            label='股票', commit_interval=100, item_name=lambda row: row.ts_code,
         )
         try:
             session.commit()

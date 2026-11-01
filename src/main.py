@@ -50,6 +50,7 @@ def parse_args():
     parser.add_argument('--update-index', action='store_true', help='以通达信指数代码为基准更新 index_basic（Baostock/AkShare 补全）')
     parser.add_argument('--update-fund', action='store_true', help='将 stock_basic 中基金迁移到 fund_basic 并补全信息')
     parser.add_argument('--repair-stock-basic', action='store_true', help='一次性修复 stock_basic 存量的地域/行业/市场字段')
+    parser.add_argument('--deep-industry', action='store_true', help='与 --repair-stock-basic 配合：批量源覆盖不到的行业逐只查巨潮公司概况兜底')
     parser.add_argument('--plugins', action='store_true', help='显示已加载的插件')
     return parser.parse_args()
 
@@ -202,7 +203,7 @@ def _handle_update_fund_arg(config):
         return True
 
 
-def _handle_repair_stock_basic_arg(config):
+def _handle_repair_stock_basic_arg(config, deep_industry=False):
     """处理 stock_basic 存量修复参数。"""
     logger.info("检测到 --repair-stock-basic 参数，将修复 stock_basic 的地域/行业/市场字段")
 
@@ -218,7 +219,7 @@ def _handle_repair_stock_basic_arg(config):
         except (OSError, RuntimeError) as table_e:
             logger.warning(f"创建数据库表时发生错误: {table_e}")
 
-        repair_stock_basic(config, db_manager)
+        repair_stock_basic(config, db_manager, deep_industry=deep_industry)
         db_manager.cleanup()
         logger.info("数据库资源已清理")
         return True
@@ -325,8 +326,8 @@ def main():
             _handle_update_fund_arg(config)
             return
 
-        if args.repair_stock_basic:
-            _handle_repair_stock_basic_arg(config)
+        if args.repair_stock_basic or args.deep_industry:
+            _handle_repair_stock_basic_arg(config, deep_industry=args.deep_industry)
             return
 
         data_manager = _initialize_data_manager(config, plugin_manager)

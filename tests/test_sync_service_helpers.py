@@ -32,6 +32,7 @@ from src.data.services.sync_index import (
 from src.data.services.sync_stock import (
     _build_stock_info,
     _create_stock_basic_from_info,
+    _fetch_industry_from_cninfo,
     _infer_stock_market_from_ts_code,
     _is_industry_category_value,
     _normalize_stock_status,
@@ -593,3 +594,51 @@ def test_repair_stock_row_keeps_valid_values_and_skips_unknown_industry():
     assert row.market == "主板"
     assert row.industry == "银行"
     assert result == {"cleared_area": 0, "filled_market": 0, "filled_industry": 0}
+
+
+def test_repair_stock_row_uses_deep_fetcher_when_batch_map_misses():
+    row = SimpleNamespace(ts_code="920000.BJ", area=None, industry=None, market="北交所")
+    result = {"cleared_area": 0, "filled_market": 0, "filled_industry": 0}
+    fetched = []
+
+    _repair_stock_row(row, {}, result, lambda code: fetched.append(code) or "汽车制造业")
+
+    assert fetched == ["920000.BJ"]
+    assert row.industry == "汽车制造业"
+    assert result["filled_industry"] == 1
+
+
+def test_repair_stock_row_skips_deep_fetcher_when_batch_map_hits():
+    row = SimpleNamespace(ts_code="600000.SH", area=None, industry=None, market="主板")
+    result = {"cleared_area": 0, "filled_market": 0, "filled_industry": 0}
+
+    _repair_stock_row(row, {"600000.SH": "银行"}, result, lambda code: "不应被调用")
+
+    assert row.industry == "银行"
+    assert result["filled_industry"] == 1
+
+
+def test_fetch_industry_from_cninfo_reads_industry_field():
+    import pandas as pd
+
+    class _FakeAk:
+        @staticmethod
+        def stock_profile_cninfo(symbol):
+            assert symbol == "920000"
+            return pd.DataFrame([{"所属行业": "汽车制造业"}])
+
+    assert _fetch_industry_from_cninfo(_FakeAk, "920000.BJ") == "汽车制造业"
+
+    class _EmptyAk:
+        @staticmethod
+        def stock_profile_cninfo(symbol):
+            return pd.DataFrame()
+
+    assert _fetch_industry_from_cninfo(_EmptyAk, "600000.SH") == ""
+
+    class _BrokenAk:
+        @staticmethod
+        def stock_profile_cninfo(symbol):
+            raise ConnectionError("远端断开")
+
+    assert _fetch_industry_from_cninfo(_BrokenAk, "600000.SH") == ""
