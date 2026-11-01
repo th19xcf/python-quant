@@ -20,6 +20,24 @@ from src.utils.event_bus import subscribe
 from src.utils.plugin_config_manager import get_plugin_config_manager
 
 
+def is_safe_module_name(module_name: str) -> bool:
+    """
+    校验插件模块名是否安全。
+
+    插件目录会被插入 sys.path 头部，若插件文件与标准库同名（如 json.py），
+    后续 `import json` 会命中插件而遮蔽标准库，必须拒绝。
+
+    Args:
+        module_name: 待加载的模块/包名
+
+    Returns:
+        bool: 名称合法且不与标准库/内建模块冲突时为 True
+    """
+    if not module_name.isidentifier():
+        return False
+    return module_name not in sys.stdlib_module_names and module_name not in sys.builtin_module_names
+
+
 class PluginManager:
     """
     插件管理器，负责插件的加载、初始化和管理
@@ -120,6 +138,30 @@ class PluginManager:
         logger.info(f"插件加载完成，共加载 {loaded_count} 个插件")
         return loaded_count
 
+    def _is_inside_plugin_dirs(self, path: str) -> bool:
+        """
+        校验插件路径（解析符号链接后）确实位于已配置的插件目录内。
+
+        Args:
+            path: 插件文件或包目录路径
+
+        Returns:
+            bool: 路径在插件目录内时为 True
+        """
+        try:
+            target = Path(path).resolve()
+        except OSError as e:
+            logger.warning(f"无法解析插件路径: {path}，错误: {e}")
+            return False
+
+        for plugin_dir in self.plugin_dirs:
+            try:
+                if target.is_relative_to(Path(plugin_dir).resolve()):
+                    return True
+            except OSError:
+                continue
+        return False
+
     def _load_plugin_from_file(self, file_path: str) -> bool:
         """
         从Python文件加载插件
@@ -131,14 +173,24 @@ class PluginManager:
             bool: 加载是否成功
         """
         try:
+            # 加载前校验：路径必须在插件目录内，模块名不得遮蔽标准库
+            if not self._is_inside_plugin_dirs(file_path):
+                logger.error(f"拒绝加载插件：路径不在已配置的插件目录内: {file_path}")
+                return False
+
             # 获取模块名
             module_name = os.path.splitext(os.path.basename(file_path))[0]
+            if not is_safe_module_name(module_name):
+                logger.error(f"拒绝加载插件：模块名与标准库/内建模块冲突或非法: {module_name}")
+                return False
 
             # 导入模块
             module = importlib.import_module(module_name)
 
-            # 查找插件类
+            # 查找插件类（仅接受本模块内定义的类，避免把 import 进来的基类当插件）
             for _name, obj in inspect.getmembers(module, inspect.isclass):
+                if obj.__module__ != module.__name__:
+                    continue
                 if issubclass(obj, PluginBase) and obj is not PluginBase:
                     # 注册插件
                     if self.registry.register_plugin(obj):
@@ -160,14 +212,24 @@ class PluginManager:
             bool: 加载是否成功
         """
         try:
+            # 加载前校验：路径必须在插件目录内，包名不得遮蔽标准库
+            if not self._is_inside_plugin_dirs(package_path):
+                logger.error(f"拒绝加载插件包：路径不在已配置的插件目录内: {package_path}")
+                return False
+
             # 获取包名
             package_name = os.path.basename(package_path)
+            if not is_safe_module_name(package_name):
+                logger.error(f"拒绝加载插件包：包名与标准库/内建模块冲突或非法: {package_name}")
+                return False
 
             # 导入包
             module = importlib.import_module(package_name)
 
-            # 查找插件类
+            # 查找插件类（仅接受本模块内定义的类，避免把 import 进来的基类当插件）
             for _name, obj in inspect.getmembers(module, inspect.isclass):
+                if obj.__module__ != module.__name__:
+                    continue
                 if issubclass(obj, PluginBase) and obj is not PluginBase:
                     # 注册插件
                     if self.registry.register_plugin(obj):

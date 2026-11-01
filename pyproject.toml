@@ -35,6 +35,7 @@ pypinyin = "==0.55.0"
 scipy = "==1.18.1"
 # 系统监控（src/utils/memory_manager.py 运行时依赖，不可放入 dev 组）
 psutil = "==7.2.2"
+alembic = "==1.20.1"
 
 [tool.poetry.group.dev.dependencies]
 # 测试
@@ -46,6 +47,9 @@ ruff = "==0.17.2"
 mypy = "==2.4.0"
 # 代码格式化
 black = "==26.10.1"
+# 测试环境依赖：数据源契约测试需要 baostock，Polars/pandas 转换测试需要 pyarrow
+baostock = "==0.9.4"
+pyarrow = "==26.0.0"
 
 [tool.poetry.group.gpu]
 # 可选组：仅有 CUDA 环境才需要安装

@@ -5,12 +5,18 @@
 """
 
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
 from sqlalchemy import URL, create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import scoped_session, sessionmaker
+
+# 数据库层可预期异常：驱动/网络错误（OSError、RuntimeError、ValueError）
+# 与 SQLAlchemy 自身的 OperationalError / DBAPIError 等，统一收口处理
+_DB_ERRORS = (SQLAlchemyError, OSError, RuntimeError, ValueError)
 
 # 显式标注为 Any：declarative_base() 在 SQLAlchemy 中返回 Any，
 # 未标注时 mypy 会把它当作普通变量而拒绝作为类基类使用
@@ -57,6 +63,8 @@ class DatabaseManager:
             self.engine = create_engine(
                 connection_url,
                 pool_size=db_config.pool_size,
+                max_overflow=db_config.max_overflow,
+                pool_timeout=db_config.pool_timeout,
                 pool_recycle=db_config.pool_recycle,
                 pool_pre_ping=True,
                 echo=False
@@ -76,8 +84,13 @@ class DatabaseManager:
             # 返回创建的会话对象
             return self.session
 
-        except (OSError, RuntimeError, ValueError) as e:
-            logger.exception(f"数据库连接失败: {e}")
+        except _DB_ERRORS as e:
+            # OperationalError / DBAPIError 等驱动异常原先会直接穿透到调用方，
+            # 这里统一记录可读日志后原样抛出，保持上层 fail-fast 的既有约定
+            logger.exception(
+                f"数据库连接失败: {self.config.database.host}:{self.config.database.port}"
+                f"/{self.config.database.database}，错误类型: {type(e).__name__}，原因: {e}"
+            )
             raise
 
     def disconnect(self):
@@ -89,7 +102,7 @@ class DatabaseManager:
                 try:
                     self.session.close()
                     self.Session.remove()
-                except (OSError, RuntimeError, ValueError) as session_e:
+                except _DB_ERRORS as session_e:
                     logger.warning(f"关闭数据库会话时发生错误（可能是连接已丢失）: {session_e}")
                     # 即使会话关闭失败，也要继续释放其他资源
                     self.session = None
@@ -97,32 +110,37 @@ class DatabaseManager:
             if self.engine:
                 try:
                     self.engine.dispose()
-                except (OSError, RuntimeError, ValueError) as engine_e:
+                except _DB_ERRORS as engine_e:
                     logger.warning(f"释放数据库引擎时发生错误: {engine_e}")
 
             logger.info("数据库连接已断开")
 
-        except (OSError, RuntimeError, ValueError) as e:
+        except _DB_ERRORS as e:
             logger.exception(f"数据库断开连接失败: {e}")
 
     def create_tables(self):
         """
-        创建数据库表
+        建表：统一经 Alembic 迁移执行（等价于 `alembic upgrade head`）
+
+        这样 schema 的创建与升级只有一个来源，并且会写入 `alembic_version` 版本表，
+        后续变更必须通过 `alembic revision --autogenerate` 生成增量脚本。
+        对已由旧版 create_all 建过表的库可重复执行（基线使用 checkfirst 语义）。
+
+        Raises:
+            Exception: 迁移失败时抛出，由调用方决定是否降级为离线模式
         """
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+        from alembic.util.exc import CommandError
+
         try:
-            # 导入已存在的模型，确保Base.metadata包含所有表定义
-            try:
-                from src.database.models import fund, index, stock
-                logger.info("成功导入stock、index和fund模型")
-            except ImportError as import_e:
-                logger.warning(f"导入模型时发生错误: {import_e}")
+            project_root = Path(__file__).resolve().parents[2]
+            alembic_cfg = AlembicConfig(str(project_root / 'alembic.ini'))
+            command.upgrade(alembic_cfg, 'head')
+            logger.info("数据库表迁移成功（alembic upgrade head）")
 
-            # 创建所有表
-            Base.metadata.create_all(self.engine)
-            logger.info("数据库表创建成功")
-
-        except (OSError, RuntimeError, ValueError) as e:
-            logger.exception(f"数据库表创建失败: {e}")
+        except (CommandError, *_DB_ERRORS) as e:
+            logger.exception(f"数据库表迁移失败: {e}")
             raise
 
     def drop_tables(self):
@@ -134,7 +152,7 @@ class DatabaseManager:
             Base.metadata.drop_all(self.engine)
             logger.info("数据库表删除成功")
 
-        except (OSError, RuntimeError, ValueError) as e:
+        except _DB_ERRORS as e:
             logger.exception(f"数据库表删除失败: {e}")
             raise
 

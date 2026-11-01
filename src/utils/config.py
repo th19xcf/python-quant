@@ -42,6 +42,8 @@ class DatabaseSettings(BaseSettings):
     database: str = Field(default="stock_quant", description="数据库名称")
     charset: str = Field(default="utf8mb4", description="数据库字符集")
     pool_size: int = Field(default=10, description="连接池大小")
+    max_overflow: int = Field(default=10, description="连接池溢出上限（池满后最多再开临时连接数）")
+    pool_timeout: int = Field(default=30, description="池满后获取连接的最大等待秒数，超时抛 QueuePool 上限错误")
     pool_recycle: int = Field(default=3600, description="连接池回收时间")
 
     @field_validator('port')
@@ -56,6 +58,25 @@ class DatabaseSettings(BaseSettings):
         """验证连接池大小"""
         if v < 1:
             raise ValueError('连接池大小必须大于0')
+        return v
+
+    @field_validator('max_overflow')
+    @classmethod
+    def validate_max_overflow(cls, v: int) -> int:
+        """验证连接池溢出上限。
+
+        显式设置为 0 时池满即等待；负数在 SQLAlchemy 中表示不限量，因此只允许 >= 0。
+        """
+        if v < 0:
+            raise ValueError('连接池溢出上限不能为负数')
+        return v
+
+    @field_validator('pool_timeout')
+    @classmethod
+    def validate_pool_timeout(cls, v: int) -> int:
+        """验证获取连接等待时长：必须为正，避免池满后无限阻塞"""
+        if v < 1:
+            raise ValueError('获取连接等待时长必须大于0秒')
         return v
 
 
@@ -310,6 +331,8 @@ CONFIG_DOCUMENTATION = r"""
 | DATABASE__DATABASE | stock_quant | 数据库名称 | 字符串 |
 | DATABASE__CHARSET | utf8mb4 | 数据库字符集 | 字符串 |
 | DATABASE__POOL_SIZE | 10 | 连接池大小 | 大于0 |
+| DATABASE__MAX_OVERFLOW | 10 | 连接池溢出上限（池满后可再开的临时连接数） | 大于等于0 |
+| DATABASE__POOL_TIMEOUT | 30 | 池满后获取连接的最大等待秒数 | 大于0 |
 | DATABASE__POOL_RECYCLE | 3600 | 连接池回收时间 | 整数 |
 
 ### 2. 数据配置

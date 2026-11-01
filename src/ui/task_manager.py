@@ -4,6 +4,8 @@
 任务管理器模块，负责管理后台线程任务，提供任务状态跟踪和取消功能
 """
 
+import inspect
+import threading
 import uuid
 from collections.abc import Callable
 from typing import Any, Dict
@@ -52,6 +54,9 @@ class TaskRunner(QRunnable):
         self.timeout_seconds = timeout_seconds
         self.signals = TaskSignals()
         self.is_cancelled = False
+        # 协作式取消信号：任务函数若声明 cancel_event 参数，可轮询它提前退出
+        self.cancel_event = threading.Event()
+        self._future: Any = None
 
     def run(self):
         """
@@ -94,22 +99,49 @@ class TaskRunner(QRunnable):
 
         timeout_seconds = self.timeout_seconds
 
-        # 使用线程池执行任务，支持超时
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(self.func, *self.args, **self.kwargs, task_id=self.task_id, signals=self.signals)
-            try:
-                # 等待任务完成，超时后抛出异常
-                return future.result(timeout=timeout_seconds)
-            except concurrent.futures.TimeoutError:
-                # 任务超时
-                self.is_cancelled = True
-                raise TimeoutError(f"任务执行超时: {self.task_name} (ID: {self.task_id})，超过 {timeout_seconds} 秒") from None
+        # 使用线程池执行任务，支持超时。
+        # 注意不能用 with 语句：`with` 退出时会 shutdown(wait=True)，即使 future 已超时
+        # 也会继续阻塞等待任务结束，导致超时形同虚设。这里显式 shutdown(wait=False)。
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        kwargs = dict(self.kwargs)
+        if self._accepts_cancel_event():
+            kwargs['cancel_event'] = self.cancel_event
+        self._future = executor.submit(
+            self.func, *self.args, **kwargs, task_id=self.task_id, signals=self.signals
+        )
+        try:
+            # 等待任务完成，超时后抛出异常
+            return self._future.result(timeout=timeout_seconds)
+        except concurrent.futures.TimeoutError:
+            # 任务超时：置取消标志供任务函数协作退出，并立即返回，不阻塞线程池
+            self.is_cancelled = True
+            self.cancel_event.set()
+            self._future.cancel()
+            raise TimeoutError(f"任务执行超时: {self.task_name} (ID: {self.task_id})，超过 {timeout_seconds} 秒") from None
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _accepts_cancel_event(self) -> bool:
+        """
+        判断任务函数是否声明了 cancel_event 参数（用于协作式取消）。
+
+        Returns:
+            bool: 函数签名包含 cancel_event 时为 True
+        """
+        try:
+            params = inspect.signature(self.func).parameters
+        except (TypeError, ValueError):
+            return False
+        return 'cancel_event' in params
 
     def cancel(self):
         """
-        取消任务
+        取消任务：置取消标志并通知任务函数协作退出，同时取消尚未开始执行的 future
         """
         self.is_cancelled = True
+        self.cancel_event.set()
+        if self._future is not None:
+            self._future.cancel()
 
 
 class TaskManager(QObject):
@@ -231,8 +263,9 @@ class TaskManager(QObject):
         """
         清理已完成的任务
         """
-        completed_tasks = [task_id for task_id in self.tasks if task_id not in self.tasks]
-        for task_id in completed_tasks:
+        # 正常结束的任务在 _on_task_finished 中已移除，这里只兜底清理已取消的残留项
+        stale_tasks = [task_id for task_id, runner in self.tasks.items() if runner.is_cancelled]
+        for task_id in stale_tasks:
             del self.tasks[task_id]
 
     def shutdown(self):
