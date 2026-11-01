@@ -4,6 +4,11 @@ version = "0.1.0"
 description = "中国股市量化分析系统"
 authors = ["Your Name <your.email@example.com>"]
 readme = "README.md"
+# 项目代码位于顶层 src/ 目录（不是以项目名命名的包），必须显式声明，
+# 否则 poetry build 会按 china-stock-quant 去找同名目录并直接失败。
+packages = [
+    { include = "src" },
+]
 
 [tool.poetry.dependencies]
 python = ">=3.14,<3.16"
