@@ -35,13 +35,14 @@ loguru = "==0.7.3"
 pypinyin = "==0.55.0"
 # 科学计算（FactorEvaluator 依赖）
 scipy = "==1.18.1"
+# 系统监控（src/utils/memory_manager.py 运行时依赖，不可放入 dev 组）
+psutil = "==7.2.2"
 
 [tool.poetry.group.dev.dependencies]
 # 测试
 pytest = "==9.1.1"
 pytest-cov = "==7.1.0"
 coverage = "==7.17.0"
-psutil = "==7.2.2"
 # 静态检查
 ruff = "==0.17.2"
 mypy = "==2.4.0"
@@ -55,6 +56,11 @@ optional = true
 
 [tool.poetry.group.gpu.dependencies]
 cupy = "*"
+
+[[tool.poetry.source]]
+name = "mirrors"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+priority = "primary"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

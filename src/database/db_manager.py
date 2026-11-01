@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import create_engine, text
+from sqlalchemy import URL, create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import scoped_session, sessionmaker
 
@@ -42,7 +42,17 @@ class DatabaseManager:
         try:
             # 创建数据库连接引擎
             db_config = self.config.database
-            connection_url = f"mysql+pymysql://{db_config.username}:{db_config.password}@{db_config.host}:{db_config.port}/{db_config.database}?charset={db_config.charset}"
+            # 用 URL.create 构造，用户名/密码中的 @ : / # ? 等字符会被自动转义；
+            # f-string 直拼在密码含特殊字符时会解析出错误的 host/port
+            connection_url = URL.create(
+                drivername="mysql+pymysql",
+                username=db_config.username,
+                password=db_config.password,
+                host=db_config.host,
+                port=db_config.port,
+                database=db_config.database,
+                query={"charset": db_config.charset},
+            )
 
             self.engine = create_engine(
                 connection_url,

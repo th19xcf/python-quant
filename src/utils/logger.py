@@ -56,7 +56,9 @@ def setup_logger(config):
         encoding="utf-8",
         enqueue=True,  # 保持异步写入
         backtrace=True,
-        diagnose=True,
+        # diagnose=True 会把异常帧的局部变量值写入日志（账户、持仓、凭据），
+        # 存在敏感数据泄漏风险，因此永久关闭；堆栈信息由 backtrace 保留
+        diagnose=False,
         format=_FILE_FORMAT,
         filter=_patcher,
     )
