@@ -129,16 +129,23 @@ class DatabaseManager:
         Raises:
             Exception: 迁移失败时抛出，由调用方决定是否降级为离线模式
         """
-        from alembic import command
-        from alembic.config import Config as AlembicConfig
-        from alembic.util.exc import CommandError
-
         try:
+            from alembic import command
+            from alembic.config import Config as AlembicConfig
+            from alembic.util.exc import CommandError
+
             project_root = Path(__file__).resolve().parents[2]
             alembic_cfg = AlembicConfig(str(project_root / 'alembic.ini'))
             command.upgrade(alembic_cfg, 'head')
             logger.info("数据库表迁移成功（alembic upgrade head）")
 
+        except ImportError as e:
+            # 依赖漂移：当前解释器未安装 alembic（如 IDE 指向旧 venv）。
+            # 按"迁移失败抛出、调用方决定是否降级"的契约转成 RuntimeError，
+            # 否则 ImportError 会穿透 OSError/RuntimeError 捕获链，让整个程序起不来
+            raise RuntimeError(
+                f"缺少 alembic 依赖，无法执行数据库迁移，请确认当前解释器已安装 alembic: {e}"
+            ) from e
         except (CommandError, *_DB_ERRORS) as e:
             logger.exception(f"数据库表迁移失败: {e}")
             raise
