@@ -69,7 +69,7 @@ class BaostockMinuteMixin:
                         adjustflag=adjustflag
                     )
 
-                    frame = rs.get_data()
+                    frame = schema.result_to_frame(rs)
                     if frame is not None and not frame.empty:
                         pd_frames.append(frame)
                     else:
@@ -189,7 +189,7 @@ class BaostockMinuteMixin:
             return
 
         try:
-            minute_pd = rs.get_data()
+            minute_pd = schema.result_to_frame(rs)
         # 兜底理由：单只股票分钟线取数失败跳过
         except Exception as e:  # noqa: BLE001
             logger.warning(f"获取{ts_code}的{frequency}分钟线数据失败: {e}")

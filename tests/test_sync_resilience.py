@@ -449,6 +449,30 @@ def test_fetch_external_stock_basic_degrades_on_akshare_failure(monkeypatch):
     assert industry_map == {}
 
 
+class _FakeResultSet:
+    """最小化的 baostock ResultData：只实现 next()/get_row_data() 协议。
+
+    故意不提供 get_data()：pandas 2.0 起已移除 DataFrame.append，baostock 的
+    get_data() 在多页结果上必然 AttributeError，生产代码必须走逐行拉取。
+    """
+
+    error_code = '0'
+
+    def __init__(self, frame: pd.DataFrame):
+        self.fields = list(frame.columns)
+        self._rows = frame.astype(object).values.tolist()
+        self._cursor = 0
+
+    def next(self):
+        if self._cursor >= len(self._rows):
+            return False
+        self._cursor += 1
+        return True
+
+    def get_row_data(self):
+        return self._rows[self._cursor - 1]
+
+
 def test_fetch_baostock_industry_map_filters_index_and_fund(monkeypatch):
     """行业映射只保留个股，指数/基金/空行业均被过滤。"""
     raw = pd.DataFrame({
@@ -457,12 +481,8 @@ def test_fetch_baostock_industry_map_filters_index_and_fund(monkeypatch):
         'industry': ['银行', '指数', '银行', 'ETF', '科技', ''],
     })
 
-    class _ResultSet:
-        def get_data(self):
-            return raw
-
     fake_baostock = types.ModuleType('baostock')
-    fake_baostock.query_stock_industry = lambda: _ResultSet()
+    fake_baostock.query_stock_industry = lambda: _FakeResultSet(raw)
     monkeypatch.setitem(sys.modules, 'baostock', fake_baostock)
 
     class _Handler:
@@ -492,11 +512,8 @@ def test_fetch_baostock_industry_map_returns_empty_on_login_or_empty_data(
 
     assert sync_stock._fetch_baostock_industry_map(_NotLoggedIn()) == {}
 
-    class _EmptyResultSet:
-        def get_data(self):
-            return pd.DataFrame({'code': [], 'industry': []})
-
-    fake_baostock.query_stock_industry = lambda: _EmptyResultSet()
+    empty = pd.DataFrame({'code': [], 'industry': []})
+    fake_baostock.query_stock_industry = lambda: _FakeResultSet(empty)
 
     class _LoggedIn:
         def _ensure_baostock_login(self):

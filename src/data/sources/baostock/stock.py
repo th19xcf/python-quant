@@ -44,7 +44,7 @@ class BaostockStockMixin:
             rs = bs.query_stock_basic(code_name="")
 
             # 转换为DataFrame
-            stock_basic_pd = rs.get_data()
+            stock_basic_pd = schema.result_to_frame(rs)
 
             # 转换为Polars DataFrame
             stock_basic_df = pl.from_pandas(stock_basic_pd)
@@ -258,7 +258,7 @@ class BaostockStockMixin:
 
         # 获取数据
         try:
-            stock_daily_pd = rs.get_data()
+            stock_daily_pd = schema.result_to_frame(rs)
         # 兜底理由：单只股票取数失败跳过，不中断批量
         except Exception as e:  # noqa: BLE001
             logger.warning(f"获取{ts_code}数据失败: {e}")
@@ -339,7 +339,7 @@ class BaostockStockMixin:
             if rs is None:
                 return pl.DataFrame()
 
-            raw = rs.get_data()
+            raw = schema.result_to_frame(rs)
             if raw is None or raw.empty:
                 return pl.DataFrame()
 
@@ -392,7 +392,7 @@ class BaostockStockMixin:
         )
         if rs is None:
             return None, None
-        hfq_raw = rs.get_data()
+        hfq_raw = schema.result_to_frame(rs)
         if hfq_raw is None or hfq_raw.empty:
             return None, None
 

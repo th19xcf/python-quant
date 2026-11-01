@@ -12,6 +12,7 @@ from typing import Any
 
 from loguru import logger
 
+from src.data.sources import baostock_schema as schema
 from src.data.services.sync_common import (
     SyncFlow,
     _execute_sync_flow,
@@ -72,7 +73,7 @@ def _fetch_baostock_industry_map(baostock_handler: Any) -> dict[str, str]:
         return industry_map
 
     rs = bs.query_stock_industry()
-    industry_pd = rs.get_data()
+    industry_pd = schema.result_to_frame(rs)
     industry_df = pl.from_pandas(industry_pd)
     if industry_df.is_empty():
         return industry_map

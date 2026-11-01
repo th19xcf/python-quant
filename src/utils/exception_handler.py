@@ -72,8 +72,11 @@ class GlobalExceptionHandler:
         # 更新错误统计
         self._update_error_stats(exc_type, exc_value, error_details)
 
-        # 记录异常信息
-        logger.exception(
+        # 记录异常信息：excepthook 回调中没有活动异常，logger.exception 只会输出
+        # "NoneType: None" 丢掉栈，必须显式把 traceback 传给 opt(exception=...)
+        sink = (logger.opt(exception=(exc_type, exc_value, exc_traceback))
+                if exc_traceback is not None else logger)
+        sink.error(
             f"未捕获的异常: {error_details['error_message']}",
             extra={
                 "error_code": error_details.get("error_code"),

@@ -8,8 +8,9 @@ handler 层不再出现上游字段字面量（preclose/pctChg 等）；
 """
 
 from datetime import datetime
-from typing import Tuple
+from typing import Any, Tuple
 
+import pandas as pd
 import polars as pl
 
 # Baostock 查询字段串（集中声明，避免多处字面量漂移）
@@ -26,6 +27,20 @@ BAOSTOCK_KLINE_COLUMN_MAP = {
     'pre_close': 'preclose', 'volume': 'volume', 'amount': 'amount',
     'pct_chg': 'pctChg',
 }
+
+
+def result_to_frame(result: Any) -> pd.DataFrame:
+    """把 Baostock 结果集逐页拉全并拼成 pandas DataFrame。
+
+    baostock 0.9.4 的 ResultData.get_data() 内部仍在使用 pandas 已在 2.0 移除的
+    DataFrame.append，多页结果（如 query_stock_basic 全市场、跨年日线）必然抛
+    AttributeError；这里改走官方推荐的 next()/get_row_data() 逐行拉取，与 pandas
+    版本无关。空结果按 fields 建空表，保持调用方 `df.empty` 语义不变。
+    """
+    rows = []
+    while result.error_code == '0' and result.next():
+        rows.append(result.get_row_data())
+    return pd.DataFrame(rows, columns=result.fields)
 
 
 def compute_daily_factors(raw_df: pl.DataFrame, hfq_df: pl.DataFrame

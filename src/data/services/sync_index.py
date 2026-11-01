@@ -16,6 +16,7 @@ from typing import Any, cast
 from loguru import logger
 from sqlalchemy.orm import Session
 
+from src.data.sources import baostock_schema as schema
 from src.data.services.sync_common import (
     SyncFlow,
     _execute_sync_flow,
@@ -169,7 +170,7 @@ def _collect_baostock_index_info(merged_info_map: dict[str, dict[str, Any]],
         if not baostock_handler._ensure_baostock_login():
             return
         rs = bs.query_stock_basic(code_name="")
-        baostock_df = pl.from_pandas(rs.get_data())
+        baostock_df = pl.from_pandas(schema.result_to_frame(rs))
         if not baostock_df.is_empty():
             for row in baostock_df.iter_rows(named=True):
                 _merge_baostock_index_row(merged_info_map, row)
