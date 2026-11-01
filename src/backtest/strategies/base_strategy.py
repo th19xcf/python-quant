@@ -77,7 +77,11 @@ class BaseStrategy(ABC):
             self.generate_signal({name: col[i] for name, col in cols.items()}, i)
             for i in range(df.height)
         ]
-        return pl.Series('signal', signals, dtype=pl.Utf8)
+        # 字符串信号走 Utf8；显式意图（{'action','fraction'} 等映射）无法落到
+        # Utf8，用 Object 列保留原始对象，由引擎侧 _normalize_signal 解析。
+        if all(isinstance(signal, str) for signal in signals):
+            return pl.Series('signal', signals, dtype=pl.Utf8)
+        return pl.Series('signal', signals, dtype=pl.Object)
 
     # 默认实现只是逐行兜底，性能与回测引擎的"逐 bar 降级路径"同级。
     # 引擎据此识别"未覆写向量化接口"的策略，打 warning 并在结果里标记

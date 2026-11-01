@@ -17,14 +17,25 @@ A 股交易语义只允许在本模块修改，禁止在具体引擎里再写一
     4. 开盘价触及涨停不可买、触及跌停不可卖、停牌（成交量为 0）不可交易
     5. 涨跌停幅度按证券代码与交易日自适应（主板 10%、创业板/科创板 20%、
        北交所 30%、ST 5%；创业板注册制改革日 2020-08-24 前为 10%）
+    6. 有 raw_open / raw_close（hfq 出口保留的原始价）时，成交与盯市一律
+       使用原始价，股数取整与最低佣金的经济口径与交易所名义价一致；
+       没有 raw_* 列时退化为使用主列价
+    7. 信号既可以是 'buy'/'sell'/'hold' 字符串（全仓进/全仓出），也可以是
+       {'action': 'buy'|'sell', 'fraction': 0~1, 'target_weight': 0~1}
+       映射（分批建仓 / 金字塔加仓 / 部分减仓）
+
+横截面（组合级）策略可通过 ``portfolio_strategy`` 入口接入：它一次性看到
+全部标的，返回 {ts_code: 信号序列}，由内核与单标的信号合并后统一撮合。
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, NamedTuple, Set, Tuple
 
 import polars as pl
 from loguru import logger
@@ -38,6 +49,13 @@ from src.risk.rules import DrawdownTracker
 
 #: A 股最小价格变动单位（1 分），交易所涨跌停价的取整单位
 PRICE_TICK = Decimal('0.01')
+
+#: 现金/持仓记账的浮点容差（仅吸收乘加误差）
+CASH_EPS = 1e-6
+
+#: 挂单在标的无行情行时的默认存活天数：超过该天数仍未获得可撮合 bar
+#: 即作废，避免复牌后按数月前的信号成交
+DEFAULT_PENDING_TTL_DAYS = 5
 
 #: ST 状态条目：
 #:   - bool / None：静态三态（None=未知）
@@ -70,6 +88,53 @@ def to_trade_date(value: Any) -> date | None:
         except (TypeError, ValueError):
             return None
     return None
+
+
+def _finite_float(value: Any) -> float | None:
+    """把行情值归一为有限 float；None / NaN / inf / 非数值一律返回 None。
+
+    回测数据可能混入 Decimal、字符串或 numpy 标量，直接参与比较或
+    math.isfinite 会抛 TypeError；统一在入口处归一，后续热路径只处理 float。
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+@dataclass(frozen=True, slots=True)
+class SignalIntent:
+    """一条归一化后的委托意图。
+
+    - 字符串 'buy'/'sell' 归一为 ``explicit=False`` 的状态型信号，仍按持仓
+      状态过滤（持仓期间持续 buy、空仓期间持续 sell 不构成新委托）；
+    - 映射信号归一为 ``explicit=True`` 的显式意图，允许在持仓上加仓、
+      在持仓上部分减仓。
+    """
+
+    action: str
+    fraction: float = 1.0
+    target_weight: float | None = None
+    explicit: bool = False
+
+
+class Bar(NamedTuple):
+    """单标单单日的撮合上下文（避免 19 个关键字参数层层透传）。"""
+
+    open_price: float | None
+    high: float | None
+    low: float | None
+    close: float | None
+    volume: float | None
+    raw_open: float | None
+    raw_close: float | None
+    prev_close: float | None
+    prev_close_raw: float | None
+    is_st: bool | None
+    suspended: Set[str] | None
 
 
 class ExecutionRules:
@@ -111,13 +176,20 @@ class ExecutionRules:
         self.lot_size = lot_size
 
     @staticmethod
-    def _resolve_board_limit_pct(code: str, ts_code: str,
-                                 trade_date: date | None) -> float:
+    def _resolve_board_limit_pct(ts_code: str, trade_date: date | None) -> float:
         """按证券代码与交易日推导该板块常规（非 ST）涨跌停幅度。
+
+        统一以 ts_code 为唯一标识符（A22：不再同时接收 code 与 ts_code），
+        代码段由 ts_code 内部派生。
 
         判定顺序固定：北交所 → 创业板（含注册制改革日切换）→ BOARD_RULES
         显式号段（科创板 / B 股）→ 主板兜底。
         """
+        ts_code = (ts_code or '').strip().upper()
+        code = ts_code.split('.')[0]
+        if not code:
+            return ExecutionRules.DEFAULT_LIMIT_PCT
+
         # 北交所：交易所后缀最可靠（代码段会新增），无后缀时用显式号段兜底
         if ts_code.endswith('.BJ'):
             return 0.30
@@ -155,20 +227,15 @@ class ExecutionRules:
           只体现为结果里的 st_unknown=True / fill_confidence=low，不改变成交
           判定本身。
 
-        旧实现把 is_st=True 直接固定为 5% 并优先于板块判断，会把创业板/科创
-        板/北交所的 ST 股票错误套用 5%，与这些板块风险警示股票的实际交易限
-        制不一致。
-
         ``listing_date`` 预留用于新股上市首日不限涨跌幅的判定，当前数据层未
         提供，暂未启用；参数先固化以便未来接入 (code, listing_date) 维表时无需
         改动签名。
         """
         ts_code = (ts_code or '').strip().upper()
-        code = ts_code.split('.')[0]
-        if not code:
+        if not ts_code.split('.')[0]:
             return ExecutionRules.DEFAULT_LIMIT_PCT
 
-        regular = ExecutionRules._resolve_board_limit_pct(code, ts_code, trade_date)
+        regular = ExecutionRules._resolve_board_limit_pct(ts_code, trade_date)
 
         # 仅常规幅度为 10% 的板块，ST 才收窄到 5%；
         # 20%/30% 板块（改革后创业板、科创板、北交所）的 ST 股票与普通股同幅度
@@ -194,7 +261,7 @@ class ExecutionRules:
         if not code:
             return '主板'
 
-        regular = ExecutionRules._resolve_board_limit_pct(code, ts_code, trade_date)
+        regular = ExecutionRules._resolve_board_limit_pct(ts_code, trade_date)
         if is_st and regular == ExecutionRules.DEFAULT_LIMIT_PCT:
             return 'ST'
 
@@ -242,7 +309,7 @@ class ExecutionRules:
         """
         指定交易方向在某一天是否可成交。
 
-        - 停牌（成交量为 0 / NaN / inf）一律不可交易
+        - 停牌（成交量为 0 / NaN / inf / 非数值）一律不可交易
         - 有开盘价时：开盘即涨停不可买、开盘即跌停不可卖
           （覆盖一字板 + 开盘封板后盘中打开两种情形）
         - 无开盘价时退化为 high ≈ low（相对容差）的一字板判断，
@@ -258,29 +325,32 @@ class ExecutionRules:
         if self._is_suspended(volume):
             return False
 
-        if prev_close is None or prev_close <= 0:
+        prev = _finite_float(prev_close)
+        if prev is None or prev <= 0:
             return True
 
         limit = self.resolve_limit_pct(ts_code, is_st, trade_date=trade_date)
 
-        if open_price is not None and math.isfinite(open_price):
+        open_number = _finite_float(open_price)
+        if open_number is not None:
             # 价格空间比较：涨跌停价 = round(prev_close × (1±limit), 2) 后直接比较。
             # 原写法 (open_pct >= limit - 0.005) 的容差被放大 prev_close 倍，
             # 3 元股等价于允许 1.5% 偏差、200 元股允许 0.25% 偏差，
             # 结果是把 [limit-0.5%, limit) 的正常开盘价误当成封板双向拒绝。
             return not self._limit_breached(
-                side, price=open_price, prev_close=prev_close, limit=limit)
+                side, price=open_number, prev_close=prev, limit=limit)
 
         # 缺陷 B 修复：复权后 high / low 可能相差 1e-16，改用相对容差
         # 缺陷 C 修复：open_price 缺失时只退化到此分支，偏乐观
         return not self._is_one_line_board_locked(
             side, high=high, low=low, close=close,
-            prev_close=prev_close, limit=limit)
+            prev_close=prev, limit=limit)
 
     @staticmethod
     def _is_suspended(volume: float | None) -> bool:
-        """成交量为 None / NaN / inf / ≤0 视为停牌，不可交易。"""
-        return volume is None or not math.isfinite(volume) or volume <= 0
+        """成交量为 None / NaN / inf / 非数值 / ≤0 视为停牌，不可交易。"""
+        number = _finite_float(volume)
+        return number is None or number <= 0
 
     def _limit_breached(self, side: str, *, price: float,
                         prev_close: float, limit: float) -> bool:
@@ -301,13 +371,16 @@ class ExecutionRules:
     ) -> bool:
         """无有效开盘价时的退化判定：high≈low（相对容差）且 close 已触板。
 
-        high / low / close 任一缺失时不做封板判定（视为可交易）。
+        high / low / close 任一缺失或非数值时不做封板判定（视为可交易）。
         """
-        if high is None or low is None or close is None:
+        high_number = _finite_float(high)
+        low_number = _finite_float(low)
+        close_number = _finite_float(close)
+        if high_number is None or low_number is None or close_number is None:
             return False
-        if abs(high - low) / prev_close >= 1e-6:
+        if abs(high_number - low_number) / prev_close >= 1e-6:
             return False
-        return self._limit_breached(side, price=close,
+        return self._limit_breached(side, price=close_number,
                                     prev_close=prev_close, limit=limit)
 
 
@@ -316,6 +389,9 @@ class AccountBook:
     账户账本：按标的拆分现金桶（组合等权分配），持仓、最新价与权益估值统一在此维护。
 
     单票回测只有一个现金桶，等价于原来的全局 current_capital。
+
+    权益为增量维护：每次 buy/sell/mark 只更新变化量，total_equity() 为 O(1)
+    （原实现每日对所有标的全量求和）。
     """
 
     def __init__(self, initial_capital: float, codes: List[str],
@@ -326,6 +402,7 @@ class AccountBook:
         self.cash: Dict[str, float] = dict.fromkeys(self.codes, per_code)
         self.positions: Dict[str, int] = dict.fromkeys(self.codes, 0)
         self.last_prices: Dict[str, float] = {}
+        self._equity: float = float(sum(self.cash.values()))
         # 回撤增量跟踪：snapshot 时只消费新增 bar，避免每笔订单重扫整条曲线
         self._drawdown = DrawdownTracker()
 
@@ -333,28 +410,65 @@ class AccountBook:
     def total_cash(self) -> float:
         return sum(self.cash.values())
 
+    def position(self, code: str) -> int:
+        """读取某标的当前持仓（0 表示空仓），替代直接访问原始 positions 字典。"""
+        return self.positions.get(code, 0)
+
     def mark(self, code: str, price: float | None) -> None:
-        """更新盯市价（收盘后调用）。"""
-        if price is not None and price > 0:
-            self.last_prices[code] = float(price)
+        """更新盯市价（收盘后调用），同时维护增量权益。"""
+        number = _finite_float(price)
+        if number is None or number <= 0:
+            return
+        old = self.last_prices.get(code)
+        baseline = number if old is None else old
+        self._equity += self.position(code) * (number - baseline)
+        self.last_prices[code] = number
 
     def buy(self, code: str, price: float, shares: int, cost: float) -> None:
-        """买入：现金扣除成交额与买方成本，持仓增加。"""
-        self.cash[code] -= shares * price + cost
-        self.positions[code] = self.positions.get(code, 0) + shares
+        """买入：现金扣除成交额与买方成本，持仓增加。
+
+        A25：账本自身校验资金充足性与股数合法性，不再只依赖调用方保证。
+        """
+        if shares <= 0:
+            raise ValueError(f"{code} 买入股数必须为正，实际 {shares}")
+        required = shares * price + cost
+        if required > self.cash.get(code, 0.0) + CASH_EPS:
+            raise ValueError(
+                f"{code} 买入资金不足：需要 {required:.6f}，"
+                f"可用 {self.cash.get(code, 0.0):.6f}"
+            )
+        baseline = self.last_prices.get(code)
+        if baseline is None:
+            baseline = price
+            self.last_prices[code] = price
+        self.cash[code] -= required
+        # 成交价与盯市价之差（滑点/折价）即时体现，成本按笔扣除
+        self._equity += shares * (baseline - price) - cost
+        self.positions[code] = self.position(code) + shares
 
     def sell(self, code: str, price: float, shares: int, cost: float) -> None:
-        """卖出：所得净额叠加回该标的现金桶（不能覆盖买入后剩余现金）。"""
+        """卖出：所得净额叠加回该标的现金桶（不能覆盖买入后剩余现金）。
+
+        A25 同时支持部分卖出（A12）：按股数递减持仓，而不是一律清零。
+        """
+        position = self.position(code)
+        if shares <= 0:
+            raise ValueError(f"{code} 卖出股数必须为正，实际 {shares}")
+        if shares > position:
+            raise ValueError(
+                f"{code} 卖出股数 {shares} 超过当前持仓 {position}"
+            )
+        baseline = self.last_prices.get(code)
+        if baseline is None:
+            baseline = price
+            self.last_prices[code] = price
         self.cash[code] += shares * price - cost
-        self.positions[code] = 0
+        self._equity += shares * (price - baseline) - cost
+        self.positions[code] = position - shares
 
     def total_equity(self) -> float:
-        """权益 = 各桶现金之和 + 各持仓按最新价盯市。"""
-        equity = self.total_cash
-        for code, qty in self.positions.items():
-            if qty > 0:
-                equity += qty * self.last_prices.get(code, 0.0)
-        return equity
+        """权益 = 各桶现金之和 + 各持仓按最新价盯市（增量维护，O(1)）。"""
+        return self._equity
 
     def snapshot(self, equity_curve: List[Dict[str, Any]],
                  suspended: Set[str] | None = None) -> RiskPortfolio:
@@ -438,11 +552,40 @@ class RiskGate:
         }
 
 
+@dataclass(slots=True)
+class RunContext:
+    """一次回测的可变状态容器：账本、规则、风控与全部日志/曲线列表。
+
+    A23：把原先 14~19 个同构关键字参数在多层函数间反复透传改为单一上下文，
+    新增字段（overwritten_orders / filtered_signals / pending_age 等）无需
+    再修改每一层签名。
+    """
+
+    book: AccountBook
+    gate: RiskGate
+    rules: ExecutionRules
+    cost_model: CostModel
+    lot_size: int
+    equity_curve: List[Dict[str, Any]]
+    trades: List[Dict[str, Any]]
+    rejected_orders: List[Dict[str, Any]]
+    expired_orders: List[Dict[str, Any]]
+    overwritten_orders: List[Dict[str, Any]]
+    filtered_signals: List[Dict[str, Any]]
+    pending: Dict[str, SignalIntent]
+    pending_age: Dict[str, int]
+    prev_close: Dict[str, float | None]
+    prev_raw_close: Dict[str, float | None]
+    pending_ttl_days: int
+    st_unknown_bars: List[Tuple[str, Any]]
+
+
 class EventBacktestRunner:
     """
     通用事件循环：多标的日频回测的唯一撮合实现。
 
     输入 universe 必须已完成指标预计算（策略按列名读取 ma_* / macd / rsi 等）。
+    ``portfolio_strategy`` 可选，用于表达横截面/组合级策略（A11）。
     """
 
     def __init__(self, cost_model: CostModel, performance_analyzer: PerformanceAnalyzer,
@@ -455,31 +598,46 @@ class EventBacktestRunner:
             initial_capital: float = 1_000_000.0, lot_size: int = 100,
             industry_map: Dict[str, str] | None = None,
             result_meta: Dict[str, Any] | None = None,
-            st_status: StStatus | None = None) -> Dict[str, Any]:
+            st_status: StStatus | None = None,
+            portfolio_strategy: Any | None = None,
+            pending_ttl_days: int = DEFAULT_PENDING_TTL_DAYS) -> Dict[str, Any]:
         """
         执行回测并返回结果字典。
 
         结果固定包含：initial_capital / final_equity / total_return / trades /
         equity_curve / performance / risk_summary / rejected_orders /
-        expired_orders / positions / slow_path_strategies / st_unknown。
+        expired_orders / overwritten_orders / filtered_signals / positions /
+        slow_path_strategies / st_unknown / st_unknown_bars。
+
         result_meta 里的键会合并进结果（如 strategy_name / strategy_names）。
+
+        Args:
+            portfolio_strategy: 横截面（组合级）策略对象，一次性看到全部标的。
+                - 覆写 ``generate_signals_vectorized(universe)`` 时返回
+                  {ts_code: 信号序列}，序列长度必须与该标的行数一致；
+                - 只提供 ``generate_signal(universe_rows, index)`` 时按日兜底调用，
+                  返回 {ts_code: 信号}，并计入 slow_path_strategies。
+                它产出的信号优先于同标的的单标的策略信号。
+            pending_ttl_days: 挂单在标的连续无行情行时的最大存活天数（默认 5），
+                超过即作废（reason='pending_ttl'），避免复牌后按数月前信号成交。
 
         st_status 为 (标的名 → ST 三态) 映射：True=ST、False=明确非 ST、
         未出现在映射中=状态未知。未知标的涨跌停按板块默认幅度判定（与
         False 相同），只把结果的 st_unknown 置 True、fill_confidence 降为
-        low，作为数据质量标记——若未知即按 5%，主板正常股开盘 +5% 会被
-        系统性判成封板，跳空走强信号被剔除、动量策略收益被系统性低估。
-        接入 (code, start_date, end_date, is_st) 时间维表后由调用方传此参数。
+        low，并逐条记入 st_unknown_bars。
 
         universe 价格口径（双价格列契约）：
             - open/high/low/close 为指标与收益计算用价（DataFetcher hfq 出口
               即为后复权价）；
             - 若携带 raw_open / raw_close（hfq 出口自动保留的原始价），
-              涨跌停判定一律使用原始价——交易所规则定义在原始价上，除权日
-              因子跳变会使复权比值失真；两列必须成对出现；
+              涨跌停判定与成交/盯市一律使用原始价——交易所规则定义在原始价上，
+              且整手取整与最低佣金必须落在名义价上（A16）；两列必须成对出现；
             - 无 raw_* 列时视为原始价输入（如 TDX 本地数据），直接用主列判定。
         """
-        prepared_data = self._prepare_universe(universe, strategies)
+        if pending_ttl_days < 0:
+            raise ValueError(f"pending_ttl_days 必须 ≥ 0，实际 {pending_ttl_days}")
+
+        prepared_data = self._prepare_universe(universe, strategies, portfolio_strategy)
         # 空 universe / 无标的配置策略时 _prepare_universe 返回 None，提前返回
         if prepared_data is None:
             return {}
@@ -494,9 +652,9 @@ class EventBacktestRunner:
 
         # 信号批量预生成：每个标的只调用一次向量化策略接口，主循环退化为
         # 数组下标取值，消除 N_days × N_symbols 次逐行策略调用与行 dict 组装。
-        # 降级路径必须留痕（slow_path_strategies + warning）
+        # 降级路径必须留痕（slow_path_strategies + 聚合 warning）
         signal_columns, slow_path_strategies = self._build_signal_columns(
-            codes, strategies, prepared, column_data)
+            codes, strategies, prepared, column_data, portfolio_strategy)
 
         # 一次性建立按日期对齐的 (活跃标的, 行号) 平行数组，主循环按下标直取
         day_codes, day_positions, sorted_dates = self._build_date_index(column_data)
@@ -509,30 +667,27 @@ class EventBacktestRunner:
         }
 
         rules, book, gate = self._create_execution_context(
-            codes, strategies, initial_capital, industry_map, lot_size
+            codes, strategies, initial_capital, industry_map, lot_size,
+            portfolio_strategy,
         )
-        (pending, prev_close, prev_raw_close, trades,
-         rejected_orders, expired_orders, equity_curve) = self._init_run_collections(codes)
+        ctx = self._init_run_context(codes, rules, book, gate, lot_size,
+                                     pending_ttl_days)
 
-        loop_st_unknown = self._run_trading_loop(
-            sorted_dates=sorted_dates, day_codes=day_codes,
+        loop = self._run_trading_loop(
+            ctx=ctx, sorted_dates=sorted_dates, day_codes=day_codes,
             day_positions=day_positions, column_data=column_data,
-            bar_columns=bar_columns,
-            pending=pending, prev_close=prev_close, prev_raw_close=prev_raw_close,
-            book=book, gate=gate, rules=rules, trades=trades,
-            rejected_orders=rejected_orders, expired_orders=expired_orders,
-            equity_curve=equity_curve, lot_size=lot_size,
-            st_status=st_status, signal_columns=signal_columns,
+            bar_columns=bar_columns, st_status=st_status,
+            signal_columns=signal_columns,
         )
         # 区间模式下，区间外日期仍为未知；loop 内逐 bar 判定并回传该标记
+        loop_st_unknown, st_unknown_bars = loop
         st_unknown = loop_st_unknown or st_unknown
 
         return self._build_result(
-            initial_capital=initial_capital, equity_curve=equity_curve,
-            trades=trades, rejected_orders=rejected_orders,
-            expired_orders=expired_orders, book=book,
+            initial_capital=initial_capital, ctx=ctx,
             slow_path_strategies=slow_path_strategies,
             open_missing=_open_missing, st_unknown=st_unknown,
+            st_unknown_bars=st_unknown_bars,
             result_meta=result_meta,
         )
 
@@ -542,57 +697,60 @@ class EventBacktestRunner:
 
     def _create_execution_context(self, codes: List[str], strategies: Dict[str, Any],
                                   initial_capital: float, industry_map: Any,
-                                  lot_size: int) -> tuple[ExecutionRules, AccountBook, RiskGate]:
+                                  lot_size: int,
+                                  portfolio_strategy: Any | None) -> tuple[ExecutionRules, AccountBook, RiskGate]:
         """创建撮合规则、账户账本与风控闸门。"""
         rules = ExecutionRules(lot_size=lot_size)
-        # 现金桶只分配给配置了策略的标的：universe 里加载了但没配策略的"哑标的"
-        # 若参与 initial_capital / len(codes) 的等额切分，其份额全程闲置，
-        # 冻结比例恰等于无策略标的占比（20 只里只有 5 只配策略 → 75% 本金不动），
-        # 净值曲线被压成近水平线、最大回撤被压低，结果会被误读为"策略很稳"。
-        active_codes = [c for c in codes if c in strategies]
+        # 现金桶只分配给会产生活跃信号的标的：universe 里加载了但没配策略的
+        # "哑标的"若参与 initial_capital / len(codes) 的等额切分，其份额全程
+        # 闲置，冻结比例恰等于无策略标的占比（20 只里只有 5 只配策略 → 75%
+        # 本金不动），净值曲线被压成近水平线、最大回撤被压低。
+        # 组合级策略覆盖全部标的，因此其现金桶分配给 universe 全量。
+        if portfolio_strategy is not None:
+            active_codes = list(codes)
+        else:
+            active_codes = [c for c in codes if c in strategies]
         book = AccountBook(initial_capital, active_codes, industry_map)
         gate = RiskGate(self.risk_engine, industry_map)
         return rules, book, gate
 
-    @staticmethod
-    def _init_run_collections(codes: List[str]) -> tuple[
-        Dict[str, str | None], Dict[str, float | None], Dict[str, float | None],
-        List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]],
-        List[Dict[str, Any]],
-    ]:
-        """初始化挂单、前收盘、成交与权益曲线容器。"""
-        pending: Dict[str, str | None] = dict.fromkeys(codes)
-        prev_close: Dict[str, float | None] = dict.fromkeys(codes)
-        prev_raw_close: Dict[str, float | None] = dict.fromkeys(codes)
-
-        trades: List[Dict[str, Any]] = []
-        rejected_orders: List[Dict[str, Any]] = []
-        expired_orders: List[Dict[str, Any]] = []
-        equity_curve: List[Dict[str, Any]] = []
-        return (pending, prev_close, prev_raw_close, trades,
-                rejected_orders, expired_orders, equity_curve)
+    def _init_run_context(self, codes: List[str], rules: ExecutionRules,
+                          book: AccountBook, gate: RiskGate, lot_size: int,
+                          pending_ttl_days: int) -> RunContext:
+        """初始化挂单、前收盘、成交与权益曲线等可变状态。"""
+        return RunContext(
+            book=book, gate=gate, rules=rules, cost_model=self.cost_model,
+            lot_size=lot_size,
+            equity_curve=[],
+            trades=[],
+            rejected_orders=[],
+            expired_orders=[],
+            overwritten_orders=[],
+            filtered_signals=[],
+            pending=dict.fromkeys(codes),
+            pending_age=dict.fromkeys(codes, 0),
+            prev_close=dict.fromkeys(codes),
+            prev_raw_close=dict.fromkeys(codes),
+            pending_ttl_days=pending_ttl_days,
+            st_unknown_bars=[],
+        )
 
     def _prepare_universe(
         self, universe: Dict[str, pl.DataFrame], strategies: Dict[str, Any],
+        portfolio_strategy: Any | None = None,
     ) -> tuple[Dict[str, pl.DataFrame], Dict[str, Dict[str, list]]] | None:
         """校验 universe 与策略配置，按日期排序并批量导出各列为 Python list。
 
-        universe 为空或没有任何标的配置策略时返回 None，由调用方提前返回空
-        结果；raw_open / raw_close 必须成对出现，否则直接抛 ValueError。
-
-        column_data 用 to_list 把 null 转为 None，与原先 ``.row(named=True)``
-        的取值语义完全一致：主循环只做数组下标取值与纯 Python dict 组装，
-        避免逐 bar 调用 ``DataFrame.row()`` 反复跨越 PyO3 边界编组整行。
-
-        Returns:
-            (prepared, column_data)；校验失败返回 None。
+        universe 为空或没有任何标的配置策略（且无组合级策略）时返回 None，
+        由调用方提前返回空结果；raw_open / raw_close 必须成对出现，否则直接
+        抛 ValueError。
         """
         if not universe:
             logger.error("回测数据为空")
             return None
 
         codes = list(universe.keys())
-        if not any(code in strategies for code in codes):
+        if portfolio_strategy is None and not any(code in strategies for code in codes):
             logger.error("未设置策略")
             return None
 
@@ -609,11 +767,7 @@ class EventBacktestRunner:
 
     @staticmethod
     def _check_open_column(column_data: Dict[str, Dict[str, list]]) -> bool:
-        """返回是否有标的缺 open 列；缺失时按原文案告警（fill_confidence=low）。
-
-        缺陷 C：open 列缺失时 is_tradable 退化为 high≈low 路径，判定偏乐观
-        （遗漏"开盘涨停、盘中打开"等情形）。
-        """
+        """返回是否有标的缺 open 列；缺失时按原文案告警（fill_confidence=low）。"""
         _open_missing = any('open' not in cols for cols in column_data.values())
         if _open_missing:
             logger.warning(
@@ -679,6 +833,7 @@ class EventBacktestRunner:
         self, codes: List[str], strategies: Dict[str, Any],
         prepared: Dict[str, pl.DataFrame],
         column_data: Dict[str, Dict[str, list]],
+        portfolio_strategy: Any | None = None,
     ) -> tuple[Dict[str, list], List[Dict[str, str]]]:
         """按行序批量预生成各标的信号，返回 (signal_columns, slow_path_strategies)。
 
@@ -687,10 +842,8 @@ class EventBacktestRunner:
             2. BaseStrategy 的默认兜底实现（is_fallback_impl=True），逐行调用；
             3. 鸭子类型策略对象没有向量化接口，逐行适配 generate_signal。
 
-        信号按 prepared[code] 的行序对齐（_ensure_sorted 保证日期升序），主循环
-        里的 pos 即该信号在序列中的下标。降级路径的代价是一次回测
-        O(N_days × N_symbols) 次 Python 调用 + 行 dict 构造，必须留痕
-        （warning + slow_path_strategies），避免调用方对慢速回测无感知。
+        组合级策略（A11）产出的信号优先覆盖同标的的单标的信号。所有降级路径
+        只在此处聚合一条 warning（A9：原实现逐标的打一条，5000 标的即 5000 条）。
         """
         signal_columns: Dict[str, list] = {}
         slow_path_strategies: List[Dict[str, str]] = []
@@ -708,45 +861,136 @@ class EventBacktestRunner:
                 continue
 
             strategy_name = getattr(strategy, 'name', None) or type(strategy).__name__
-            cols = column_data[code]
-            height = len(next(iter(cols.values()), []))
-            rows = height * len(cols)
             slow_path_strategies.append({'ts_code': code, 'strategy': strategy_name})
-            logger.warning(
-                "策略 {} ({}) 未覆写 generate_signals_vectorized，"
-                "信号生成退化为逐 bar Python 调用（{} 行 × {} 列 = {} 次取值），"
-                "回测耗时为向量化路径的数量级之上（slow_path_strategies）",
-                strategy_name, code, height, len(cols), rows,
-            )
             if vec is not None:
                 # BaseStrategy 的逐行兜底实现，语义等价于下方的鸭子类型适配
                 signal_columns[code] = vec(prepared[code]).to_list()
             else:
+                cols = column_data[code]
+                height = len(next(iter(cols.values()), []))
                 signal_columns[code] = [
                     strategy.generate_signal(
                         {name: col[i] for name, col in cols.items()}, i
                     )
                     for i in range(height)
                 ]
+
+        if portfolio_strategy is not None:
+            self._merge_portfolio_signals(
+                codes, portfolio_strategy, prepared, column_data,
+                signal_columns, slow_path_strategies,
+            )
+
+        if slow_path_strategies:
+            logger.warning(
+                "{} 个策略未覆写 generate_signals_vectorized，信号生成退化为逐 bar "
+                "Python 调用（slow_path_strategies）：{}",
+                len(slow_path_strategies), slow_path_strategies[:5],
+            )
         return signal_columns, slow_path_strategies
+
+    def _merge_portfolio_signals(
+        self, codes: List[str], portfolio_strategy: Any,
+        prepared: Dict[str, pl.DataFrame],
+        column_data: Dict[str, Dict[str, list]],
+        signal_columns: Dict[str, list],
+        slow_path_strategies: List[Dict[str, str]],
+    ) -> None:
+        """把组合级（横截面）策略的信号合并进 signal_columns（A11）。
+
+        - 向量化路径：``generate_signals_vectorized(universe)`` 返回
+          {ts_code: 与行序对齐的信号序列}；未返回的标的保留原信号。
+        - 兜底路径：逐日调用 ``generate_signal(universe_rows, index)``，返回
+          {ts_code: 信号}；计入 slow_path_strategies。
+        """
+        name = getattr(portfolio_strategy, 'name', None) or type(portfolio_strategy).__name__
+        vec = getattr(portfolio_strategy, 'generate_signals_vectorized', None)
+        is_fallback = vec is not None and getattr(
+            getattr(vec, '__func__', vec), 'is_fallback_impl', False)
+
+        if vec is not None and not is_fallback:
+            produced = vec(prepared)
+            if not isinstance(produced, Mapping):
+                raise TypeError(
+                    f"组合级策略 {name} 的 generate_signals_vectorized 必须返回 "
+                    f"{{ts_code: 信号序列}}，实际 {type(produced).__name__}"
+                )
+            for code in codes:
+                series = produced.get(code)
+                if series is None:
+                    continue
+                expected = self._height(column_data[code])
+                values = list(series)
+                if len(values) != expected:
+                    raise ValueError(
+                        f"组合级策略 {name} 给 {code} 的信号长度 {len(values)} "
+                        f"与行情行数 {expected} 不一致"
+                    )
+                signal_columns[code] = values
+            return
+
+        if not hasattr(portfolio_strategy, 'generate_signal'):
+            raise TypeError(
+                f"组合级策略 {name} 缺少 generate_signals_vectorized 或 generate_signal"
+            )
+
+        slow_path_strategies.append({'ts_code': '__portfolio__', 'strategy': name})
+        heights = {code: self._height(column_data[code]) for code in codes}
+        # 原地改写调用方传入的字典，避免局部重绑定导致合并结果丢失
+        for code in codes:
+            signal_columns[code] = ['hold'] * heights[code]
+        day_codes, day_positions, sorted_dates = self._build_date_index(column_data)
+        for day_index in range(len(sorted_dates)):
+            pos_by_code = dict(zip(day_codes[day_index], day_positions[day_index], strict=True))
+            rows = {
+                code: {name: col[pos] for name, col in column_data[code].items()}
+                for code, pos in pos_by_code.items()
+            }
+            produced = portfolio_strategy.generate_signal(rows, day_index) or {}
+            if not isinstance(produced, Mapping):
+                raise TypeError(
+                    f"组合级策略 {name} 的 generate_signal 必须返回 "
+                    f"{{ts_code: 信号}}，实际 {type(produced).__name__}"
+                )
+            for code, signal in produced.items():
+                pos = pos_by_code.get(code)
+                if pos is not None:
+                    signal_columns[code][pos] = signal
+
+    @staticmethod
+    def _height(cols: Dict[str, list]) -> int:
+        """返回该标的的行数（优先用 date 列，缺失时用任一列）。"""
+        if 'date' in cols:
+            return len(cols['date'])
+        return len(next(iter(cols.values()), []))
 
     @staticmethod
     def _build_date_index(
         column_data: Dict[str, Dict[str, list]],
     ) -> tuple[List[List[str]], List[List[int]], List[Any]]:
-        """按日期建立对齐的 (活跃标的, 行号) 平行数组，返回 (day_codes, day_positions, sorted_dates)。
+        """按日期建立对齐的 (活跃标的, 行号) 平行数组。
 
         数组化后主循环直接按下标迭代，不再逐 bar 做 ``date_positions[code][trade_day]``
-        的双层字典查找；同时对每个标的只构建一次 date→行号映射（dict(zip)，C 实现）。
+        的双层字典查找；同时对每个标的只构建一次 date→行号映射。
+
+        A4：同一标的的 date 列若存在重复日期，原实现用 dict(zip) 后者覆盖前者，
+        该 bar 及其信号被静默吞掉；现在直接抛 ValueError，避免回测结果无声失真。
         """
         codes_by_date: Dict[Any, List[str]] = {}
         positions_by_date: Dict[Any, List[int]] = {}
         for code, cols in column_data.items():
             dates = cols['date']
-            positions = dict(zip(dates, range(len(dates)), strict=True))
-            for d, pos in positions.items():
-                codes_by_date.setdefault(d, []).append(code)
-                positions_by_date.setdefault(d, []).append(pos)
+            positions: Dict[Any, int] = {}
+            for index, day in enumerate(dates):
+                if day in positions:
+                    raise ValueError(
+                        f"{code} 的 date 列存在重复日期 {day}（行 {positions[day]} 与 "
+                        f"行 {index}），会造成该 bar 及其信号被静默合并"
+                    )
+                positions[day] = index
+            for day, pos in positions.items():
+                codes_by_date.setdefault(day, []).append(code)
+                positions_by_date.setdefault(day, []).append(pos)
 
         sorted_dates = sorted(codes_by_date.keys())
         day_codes = [codes_by_date[d] for d in sorted_dates]
@@ -757,9 +1001,10 @@ class EventBacktestRunner:
     def _daily_suspended_codes(codes: List[str],
                                positions: List[int],
                                column_data: Dict[str, Dict[str, list]]) -> Set[str]:
-        """当日停牌集合：成交量为 None / NaN / inf / ≤0 的标的（与撮合判定同源）。
+        """当日停牌集合：成交量为 None / NaN / inf / 非数值 / ≤0 的标的。
 
-        positions 与 codes 按下标对齐，由 _build_date_index 预先生成。
+        positions 与 codes 按下标对齐，由 _build_date_index 预先生成；
+        判定与撮合侧同源（ExecutionRules._is_suspended）。
         """
         suspended: Set[str] = set()
         for code, pos in zip(codes, positions, strict=True):
@@ -770,143 +1015,225 @@ class EventBacktestRunner:
         return suspended
 
     @staticmethod
+    def _normalize_signal(signal: Any) -> SignalIntent | None:
+        """把策略输出归一为 SignalIntent；'hold'/None/无法识别返回 None。
+
+        字符串 'buy'/'sell' 为状态型信号（explicit=False）；映射
+        {'action': 'buy'|'sell', 'fraction': 0~1, 'target_weight': 0~1}
+        为显式意图（explicit=True），允许加仓与部分减仓（A12）。
+        """
+        if isinstance(signal, SignalIntent):
+            return signal
+        if isinstance(signal, str):
+            if signal == 'buy':
+                return SignalIntent('buy')
+            if signal == 'sell':
+                return SignalIntent('sell')
+            return None
+        if not isinstance(signal, Mapping):
+            return None
+
+        action = signal.get('action')
+        if action not in ('buy', 'sell'):
+            return None
+
+        fraction = _finite_float(signal.get('fraction', 1.0))
+        if fraction is None or not 0 < fraction <= 1:
+            raise ValueError(f"信号 fraction 必须在 (0, 1]，实际 {signal.get('fraction')!r}")
+
+        target = signal.get('target_weight')
+        if target is not None:
+            target = _finite_float(target)
+            if target is None or not 0 <= target <= 1:
+                raise ValueError(
+                    f"信号 target_weight 必须在 [0, 1]，实际 {signal.get('target_weight')!r}"
+                )
+            if action == 'sell':
+                raise ValueError('target_weight 只适用于 buy 信号')
+
+        return SignalIntent(action, fraction, target, explicit=True)
+
+    @staticmethod
     def _record_signal(
-        *, code: str, date: Any, pos: int, signal_columns: Dict[str, list],
-        pending: Dict[str, str | None], expired_orders: List[Dict[str, Any]],
-        book: AccountBook,
+        ctx: RunContext, *, code: str, date: Any, pos: int,
+        signal_columns: Dict[str, list],
     ) -> None:
-        """把当日信号写入挂单；残留挂单被新信号覆盖时记入 expired_orders。
+        """把当日信号写入挂单；被持仓状态过滤的信号记入 filtered_signals。
 
-        先按当前持仓做状态过滤：策略信号是"状态型"的（持仓期间持续输出
-        buy、空仓期间持续输出 sell），这类信号不构成新的委托意图。若逐 bar
-        派单，每笔都会在次日以 already_holding / no_position 作废，5000 bar
-        可产生数千条无效 expired_orders（实测 4716 条）。持仓状态在当日
-        撮合后即为次日开盘前的状态，因此在此处过滤与次日撮合语义等价。
-
-        P0-4：pending 残留挂单被新信号覆盖时必须记账，否则原始信号彻底消失，
-        trades 分母不可对账。场景：停牌日 _execute_pending 不执行，pending
-        残留 → 下一有信号日直接覆写，无任何日志。
+        - 状态型字符串信号（explicit=False）按持仓预过滤：持仓期间持续 buy、
+          空仓期间持续 sell 不构成新委托，避免逐 bar 派单产生数千条无效日志；
+        - 显式映射信号（explicit=True）允许持仓上加仓、持仓上部分减仓；
+        - 被过滤的信号不再静默丢弃，逐条记入 filtered_signals（A13），
+          可据此区分"策略未发信号"与"信号被持仓过滤"；
+        - 挂单被新意图覆盖时记入 overwritten_orders（A20：不再混入
+          expired_orders 污染作废统计）。
         """
         signals = signal_columns.get(code)
         if signals is None:
             return
-        signal = signals[pos]
-        if signal not in ('buy', 'sell'):
+        if pos < 0 or pos >= len(signals):
+            # A6：信号列与行情行序本应等长，越界说明上游 build 出错，
+            # 记录后跳过该 bar，避免 IndexError 中断整次回测
+            logger.warning(
+                "{} 在 {} 的信号下标 {} 越界（信号长度 {}），已跳过该 bar",
+                code, date, pos, len(signals),
+            )
             return
-        position = book.positions.get(code, 0)
-        if signal == 'buy' and position > 0:
+
+        intent = EventBacktestRunner._normalize_signal(signals[pos])
+        if intent is None:
             return
-        if signal == 'sell' and position == 0:
-            return
-        old = pending.get(code)
-        if old is not None and old != signal:
-            expired_orders.append({
-                'date': date, 'side': old, 'ts_code': code,
-                'reason': 'overwritten', 'qty': 0,
+
+        position = ctx.book.position(code)
+        if intent.action == 'buy' and position > 0 and not intent.explicit:
+            ctx.filtered_signals.append({
+                'date': date, 'ts_code': code, 'side': 'buy',
+                'reason': 'already_holding', 'qty': 0,
             })
-        pending[code] = signal
+            return
+        if intent.action == 'sell' and position == 0:
+            ctx.filtered_signals.append({
+                'date': date, 'ts_code': code, 'side': 'sell',
+                'reason': 'no_position', 'qty': 0,
+            })
+            return
+
+        old = ctx.pending.get(code)
+        if old is not None and old != intent:
+            ctx.overwritten_orders.append({
+                'date': date, 'side': old.action, 'ts_code': code,
+                'reason': 'overwritten', 'qty': 0,
+                'replaced_by': intent.action,
+            })
+        ctx.pending[code] = intent
+        ctx.pending_age[code] = 0
 
     def _run_trading_loop(
-        self, *, sorted_dates: List[Any], day_codes: List[List[str]],
-        day_positions: List[List[int]],
+        self, *, ctx: RunContext, sorted_dates: List[Any],
+        day_codes: List[List[str]], day_positions: List[List[int]],
         column_data: Dict[str, Dict[str, list]],
         bar_columns: Dict[str, tuple],
-        pending: Dict[str, str | None], prev_close: Dict[str, float | None],
-        prev_raw_close: Dict[str, float | None], book: AccountBook,
-        gate: RiskGate, rules: ExecutionRules, trades: List[Dict[str, Any]],
-        rejected_orders: List[Dict[str, Any]],
-        expired_orders: List[Dict[str, Any]],
-        equity_curve: List[Dict[str, Any]], lot_size: int,
         st_status: StStatus, signal_columns: Dict[str, list],
-    ) -> bool:
+    ) -> tuple[bool, List[Tuple[str, Any]]]:
         """逐日推进主循环：执行挂单、记账信号、更新 prev_close/盯市价、追加权益。
 
         Returns:
-            bool: 是否出现按日期无法判定 ST 状态的 bar（用于 st_unknown 标记）
+            (是否出现按日期无法判定 ST 状态的 bar, 逐条 (标的, 日期) 审计记录)
         """
         st_unknown_seen = False
         for day_index, trade_day in enumerate(sorted_dates):
             codes_today = day_codes[day_index]
+            positions_today = day_positions[day_index]
             # 当日停牌集合只在启用风控时构造：NoSuspendedTrade 规则需要它，
             # 未启用风控时该集合无消费方，避免给默认路径增加 O(N_symbols/日) 开销
             suspended_today = (
                 self._daily_suspended_codes(
-                    codes_today, day_positions[day_index], column_data)
-                if gate.risk_engine is not None else None
+                    codes_today, positions_today, column_data)
+                if ctx.gate.risk_engine is not None else None
             )
-            positions_today = day_positions[day_index]
+
+            # A8：标的当日无行情行时挂单顺延，但必须有存活上限，否则停牌/数据
+            # 空洞会让数月前的信号在复牌首日按当时开盘价成交
+            if ctx.pending:
+                today_set = set(codes_today)
+                for code in list(ctx.pending.keys()):
+                    if ctx.pending[code] is None or code in today_set:
+                        continue
+                    age = ctx.pending_age.get(code, 0) + 1
+                    if age > ctx.pending_ttl_days:
+                        intent = ctx.pending[code]
+                        ctx.pending[code] = None
+                        ctx.pending_age[code] = 0
+                        self._append_expired(
+                            ctx.expired_orders, date=trade_day,
+                            side=intent.action, code=code,
+                            reason='pending_ttl', fill_confidence='low',
+                        )
+                    else:
+                        ctx.pending_age[code] = age
+
             for code, pos in zip(codes_today, positions_today, strict=True):
                 # 内联 _extract_bar_prices：热路径少一次函数调用与 6 次 dict.get
                 # （列引用已在 run() 中按标的一次性解析为 bar_columns[code] 元组）
                 (close_col, open_col, high_col, low_col,
                  volume_col, raw_open_col, raw_close_col) = bar_columns[code]
-                close_price = close_col[pos]
-                open_price = open_col[pos] if open_col is not None else close_price
-                high = high_col[pos] if high_col is not None else None
-                low = low_col[pos] if low_col is not None else None
-                volume = volume_col[pos] if volume_col is not None else None
-                raw_open = raw_open_col[pos] if raw_open_col is not None else None
-                raw_close = raw_close_col[pos] if raw_close_col is not None else None
+                # A24：行情值统一归一到有限 float，字符串/Decimal/NaN/inf 不再
+                # 在后续比较或费用计算中抛 TypeError
+                close_price = _finite_float(close_col[pos])
+                open_price = (
+                    _finite_float(open_col[pos]) if open_col is not None else close_price)
+                high = _finite_float(high_col[pos]) if high_col is not None else None
+                low = _finite_float(low_col[pos]) if low_col is not None else None
+                volume = _finite_float(volume_col[pos]) if volume_col is not None else None
+                raw_open = (
+                    _finite_float(raw_open_col[pos]) if raw_open_col is not None else None)
+                raw_close = (
+                    _finite_float(raw_close_col[pos]) if raw_close_col is not None else None)
 
                 # 区间模式按 trade_date 查 ST；静态三态直接返回原值
                 is_st = self._resolve_st_for_date(st_status.get(code), trade_day)
                 if is_st is None:
                     st_unknown_seen = True
+                    # A14：保留 (标的, 日期)，可审计哪些 bar 的涨跌停判定不可信
+                    ctx.st_unknown_bars.append((code, trade_day))
 
-                self._execute_pending(
-                    code=code, date=trade_day, pending=pending, book=book, gate=gate,
-                    rules=rules, cost_model=self.cost_model, trades=trades,
-                    rejected_orders=rejected_orders, expired_orders=expired_orders,
-                    equity_curve=equity_curve,
-                    lot_size=lot_size,
-                    prev_close=prev_close[code], open_price=open_price,
-                    high=high, low=low, close=close_price, volume=volume,
-                    open_raw=raw_open, prev_close_raw=prev_raw_close[code],
-                    close_raw=raw_close,
-                    is_st=is_st,
-                    suspended=suspended_today,
-                )
+                intent = ctx.pending.get(code)
+                if intent is not None:
+                    bar = Bar(
+                        open_price=open_price, high=high, low=low,
+                        close=close_price, volume=volume, raw_open=raw_open,
+                        raw_close=raw_close,
+                        prev_close=ctx.prev_close.get(code),
+                        prev_close_raw=ctx.prev_raw_close.get(code),
+                        is_st=is_st, suspended=suspended_today,
+                    )
+                    self._execute_pending(
+                        ctx, code=code, date=trade_day, bar=bar,
+                    )
 
                 # 策略基于当日数据生成信号，延迟到该标的下一个交易日执行；
                 # 信号已在主循环前按行序批量生成，此处仅按下标查表
                 self._record_signal(
-                    code=code, date=trade_day, pos=pos, signal_columns=signal_columns,
-                    pending=pending, expired_orders=expired_orders, book=book,
+                    ctx, code=code, date=trade_day, pos=pos,
+                    signal_columns=signal_columns,
                 )
 
-                # close 缺失 / 非有限 / ≤0 时，挂单已在 _execute_pending 里过期；
+                # close 缺失 / NaN / inf / ≤0 时，挂单已在 _execute_pending 里过期；
                 # 此处不更新 prev_close / book.mark，保留上一个有效值
-                if close_price is None or not math.isfinite(close_price) or close_price <= 0:
+                if close_price is None or close_price <= 0:
                     continue
-                prev_close[code] = close_price
-                prev_raw_close[code] = raw_close if raw_close is not None else close_price
-                book.mark(code, close_price)
+                ctx.prev_close[code] = close_price
+                ctx.prev_raw_close[code] = (
+                    raw_close if raw_close is not None else close_price)
+                # A16：有原始价时按原始价盯市，与原始价成交的现金记账保持同一口径
+                ctx.book.mark(code, raw_close if raw_close is not None else close_price)
 
-            equity_curve.append({'date': trade_day, 'equity': book.total_equity()})
+            # A10：total_equity 改为增量维护，O(1)
+            ctx.equity_curve.append({'date': trade_day, 'equity': ctx.book.total_equity()})
 
-        return st_unknown_seen
+        return st_unknown_seen, ctx.st_unknown_bars
 
     def _build_result(
-        self, *, initial_capital: float, equity_curve: List[Dict[str, Any]],
-        trades: List[Dict[str, Any]], rejected_orders: List[Dict[str, Any]],
-        expired_orders: List[Dict[str, Any]], book: AccountBook,
+        self, *, initial_capital: float, ctx: RunContext,
         slow_path_strategies: List[Dict[str, str]], open_missing: bool,
-        st_unknown: bool, result_meta: Dict[str, Any] | None,
+        st_unknown: bool, st_unknown_bars: List[Tuple[str, Any]],
+        result_meta: Dict[str, Any] | None,
     ) -> Dict[str, Any]:
         """组装结果字典（含 fill_confidence / st_unknown / result_meta 合并）并输出完成日志。"""
+        equity_curve = ctx.equity_curve
         final_equity = equity_curve[-1]['equity'] if equity_curve else initial_capital
         total_return = (final_equity - initial_capital) / initial_capital * 100
 
-        performance = self.performance_analyzer.analyze(equity_curve, trades)
+        performance = self.performance_analyzer.analyze(equity_curve, ctx.trades)
 
         risk_summary = None
         if self.risk_engine is not None:
             risk_summary = {
                 'rules': [r.name for r in self.risk_engine.rules],
-                'total_rejected': len(rejected_orders),
+                'total_rejected': len(ctx.rejected_orders),
                 'reject_detail': [
                     f"[{r['date']}] {r['side']} {r['ts_code']} qty={r['qty']} → {r['rule']}: {r['reason']}"
-                    for r in rejected_orders
+                    for r in ctx.rejected_orders
                 ],
             }
 
@@ -914,32 +1241,42 @@ class EventBacktestRunner:
             'initial_capital': initial_capital,
             'final_equity': final_equity,
             'total_return': total_return,
-            'trades': trades,
+            'trades': ctx.trades,
             'equity_curve': equity_curve,
             'performance': performance,
             'risk_summary': risk_summary,
-            'rejected_orders': rejected_orders,
-            'expired_orders': expired_orders,
+            'rejected_orders': ctx.rejected_orders,
+            'expired_orders': ctx.expired_orders,
+            # A20：被新信号覆盖的挂单独立记账，不再混入 expired_orders
+            'overwritten_orders': ctx.overwritten_orders,
+            # A13：被持仓状态过滤、未形成委托的信号
+            'filtered_signals': ctx.filtered_signals,
             # 最终持仓直接取自 AccountBook 账本（唯一真源），
             # 不在引擎侧用 trades 反推，避免账本外再维护一份持仓状态
-            'positions': dict(book.positions),
+            'positions': dict(ctx.book.positions),
             # 慢速路径标记：非空表示这些策略未实现 generate_signals_vectorized，
             # 信号走了逐 bar Python 调用；空列表表示全部走向量化路径
             'slow_path_strategies': slow_path_strategies,
             # 缺陷 C：整次回测任一标的缺 open 列 → 开盘涨停判定退化，
             # 成交假设偏乐观；ST 状态未知时同样整体偏乐观/保守不可全信
             'fill_confidence': 'low' if (open_missing or st_unknown) else 'high',
-            # ST 状态是否未知：True 表示本次回测按 5% 保守判定涨跌停，
+            # ST 状态是否未知：True 表示本次回测按板块默认幅度判定涨跌停，
             # 逐笔 fill_confidence 也相应为 low，调用方应据此解读成交假设
             'st_unknown': st_unknown,
+            # A14：逐条 (标的, 日期) 审计记录，替代单一全局 bool 的信息丢失
+            'st_unknown_bars': [
+                {'ts_code': code, 'date': day} for code, day in st_unknown_bars
+            ],
         }
         if result_meta:
             result.update(result_meta)
 
         logger.info(
             f"回测完成: 总收益率 = {total_return:.2f}%"
-            + (f" | 风控拒单 {len(rejected_orders)} 笔" if risk_summary else "")
-            + (f" | 挂单作废 {len(expired_orders)} 笔" if expired_orders else "")
+            + (f" | 风控拒单 {len(ctx.rejected_orders)} 笔" if risk_summary else "")
+            + (f" | 挂单作废 {len(ctx.expired_orders)} 笔" if ctx.expired_orders else "")
+            + (f" | 信号被持仓过滤 {len(ctx.filtered_signals)} 条"
+               if ctx.filtered_signals else "")
         )
         return result
 
@@ -947,113 +1284,93 @@ class EventBacktestRunner:
     # 撮合
     # ------------------------------------------------------------------
 
-    def _execute_pending(self, *, code: str, date: Any, pending: Dict[str, str | None],
-                         book: AccountBook, gate: RiskGate, rules: ExecutionRules,
-                         cost_model: CostModel, trades: List[Dict[str, Any]],
-                         rejected_orders: List[Dict[str, Any]],
-                         expired_orders: List[Dict[str, Any]],
-                         equity_curve: List[Dict[str, Any]], lot_size: int,
-                         prev_close: float | None, open_price: float | None,
-                         high: float | None, low: float | None,
-                         close: float | None, volume: float | None,
-                         open_raw: float | None = None,
-                         prev_close_raw: float | None = None,
-                         close_raw: float | None = None,
-                         is_st: bool | None = None,
-                         suspended: Set[str] | None = None) -> None:
+    def _execute_pending(self, ctx: RunContext, *, code: str, date: Any,
+                         bar: Bar) -> None:
         """执行该标的的挂单。
 
         订单生命周期语义（显式状态机，杜绝静默丢单）：
-            - 标的停牌无数据行时不进入本函数，挂单顺延至下一交易日；
+            - 标的当日无行情行时挂单顺延，但超过 pending_ttl_days 即作废；
             - 进入本函数即消费挂单，当日有效：成交进 trades、被风控拦截进
               rejected_orders、其余不可成交情形一律作废并记入 expired_orders
               （already_holding / no_position / not_tradable / price_missing /
-              insufficient_cash），不会残留到下一交易日。
+              insufficient_cash / zero_order），不会残留到下一交易日。
 
         is_st 为 None 表示 ST 状态未知：涨跌停按板块默认幅度判定（与明确
         非 ST 相同），该笔订单 fill_confidence 标记为 low，作为数据质量提示。
+
+        A16：成交价优先用原始价（raw_open），使整手取整与最低佣金落在名义价上；
+        无 raw 列时退回复权开盘价。
         """
-        side = pending.pop(code, None)
-        if side is None:
+        intent = ctx.pending.get(code)
+        ctx.pending[code] = None
+        ctx.pending_age[code] = 0
+        if intent is None:
             return
 
-        position = book.positions.get(code, 0)
+        position = ctx.book.position(code)
         # is_st 为 None 表示 ST 状态未知：该笔订单 fill_confidence 标记为 low
-        # （仅数据质量提示，涨跌停仍按板块默认幅度判定）
-        order_confidence = 'low' if is_st is None else 'high'
-
+        order_confidence = 'low' if bar.is_st is None else 'high'
         trade_day = to_trade_date(date)
+
+        exec_price = bar.raw_open if self._is_valid_price(bar.raw_open) else bar.open_price
         reason = self._check_order_executable(
-            code=code, side=side, position=position, rules=rules,
-            prev_close=prev_close, open_price=open_price, high=high, low=low,
-            close=close, volume=volume, open_raw=open_raw,
-            prev_close_raw=prev_close_raw, close_raw=close_raw, is_st=is_st,
-            trade_date=trade_day,
+            code=code, intent=intent, position=position, rules=ctx.rules, bar=bar,
+            exec_price=exec_price, trade_date=trade_day,
         )
         if reason is not None:
             self._append_expired(
-                expired_orders, date=date, side=side, code=code,
+                ctx.expired_orders, date=date, side=intent.action, code=code,
                 reason=reason, fill_confidence=order_confidence,
             )
             return
 
-        # 校验通过后 open_price 必为有效价，作为成交价
-        # （_check_order_executable 已把缺失/非法价判为不可成交并提前返回）
-        assert open_price is not None
-        exec_price = open_price
+        # A7：原 assert 在生产路径且 python -O 下被剥离；改为显式校验并作废
+        if not self._is_valid_price(exec_price):
+            self._append_expired(
+                ctx.expired_orders, date=date, side=intent.action, code=code,
+                reason='price_missing', fill_confidence=order_confidence,
+            )
+            return
 
         self._dispatch_order(
-            side, code=code, date=date, book=book, gate=gate, rules=rules,
-            cost_model=cost_model, trades=trades,
-            rejected_orders=rejected_orders, expired_orders=expired_orders,
-            equity_curve=equity_curve, lot_size=lot_size,
+            ctx, intent=intent, code=code, date=date, bar=bar,
             exec_price=exec_price, order_confidence=order_confidence,
-            volume=volume, prev_close=prev_close, prev_close_raw=prev_close_raw,
-            is_st=is_st, trade_day=trade_day, suspended=suspended,
+            trade_day=trade_day,
         )
 
     def _dispatch_order(
-        self, side: str, *, code: str, date: Any, book: AccountBook,
-        gate: RiskGate, rules: ExecutionRules, cost_model: CostModel,
-        trades: List[Dict[str, Any]], rejected_orders: List[Dict[str, Any]],
-        expired_orders: List[Dict[str, Any]], equity_curve: List[Dict[str, Any]],
-        lot_size: int, exec_price: float, order_confidence: str,
-        volume: float | None, prev_close: float | None,
-        prev_close_raw: float | None, is_st: bool | None,
-        trade_day: date | None, suspended: Set[str] | None,
+        self, ctx: RunContext, *, intent: SignalIntent, code: str, date: Any,
+        bar: Bar, exec_price: float, order_confidence: str,
+        trade_day: date | None,
     ) -> None:
         """按买/卖方向派发已通过可成交校验的订单。"""
         # 风控闸门所需上下文：原始价口径前收盘（交易所涨跌停定义在原始价上）
         # 与板块标签必须由撮合内核注入，缺一 PriceLimitTradable 就会 fail-closed。
-        risk_prev_close = prev_close_raw if prev_close_raw is not None else prev_close
-        sector = (rules.resolve_sector(code, is_st, trade_day)
-                  if gate.risk_engine is not None else '')
+        risk_prev_close = (
+            bar.prev_close_raw if bar.prev_close_raw is not None else bar.prev_close)
+        sector = (ctx.rules.resolve_sector(code, bar.is_st, trade_day)
+                  if ctx.gate.risk_engine is not None else '')
 
-        if side == 'buy':
+        if intent.action == 'buy':
             self._execute_buy(
-                code=code, date=date, book=book, gate=gate,
-                cost_model=cost_model, trades=trades,
-                rejected_orders=rejected_orders, expired_orders=expired_orders,
-                equity_curve=equity_curve, lot_size=lot_size,
-                exec_price=exec_price, order_confidence=order_confidence,
-                bar_volume=volume, prev_close=risk_prev_close,
-                sector=sector, suspended=suspended,
+                ctx, code=code, date=date, bar=bar, exec_price=exec_price,
+                intent=intent, order_confidence=order_confidence,
+                prev_close=risk_prev_close, sector=sector,
             )
             return
 
-        # side == 'sell'（持仓前置条件已在 _check_order_executable 校验）
+        # action == 'sell'（持仓前置条件已在 _check_order_executable 校验）
         self._execute_sell(
-            code=code, date=date, book=book, gate=gate, cost_model=cost_model,
-            trades=trades, rejected_orders=rejected_orders,
-            equity_curve=equity_curve, exec_price=exec_price,
-            order_confidence=order_confidence, bar_volume=volume,
-            prev_close=risk_prev_close, sector=sector, suspended=suspended,
+            ctx, code=code, date=date, bar=bar, exec_price=exec_price,
+            intent=intent, order_confidence=order_confidence,
+            prev_close=risk_prev_close, sector=sector,
         )
 
     @staticmethod
-    def _is_valid_price(price: float | None) -> bool:
-        """价格是否有效：None / NaN / inf / ≤0 均视为缺失。"""
-        return price is not None and math.isfinite(price) and price > 0
+    def _is_valid_price(price: Any) -> bool:
+        """价格是否有效：None / NaN / inf / ≤0 / 非数值均视为缺失（A24）。"""
+        number = _finite_float(price)
+        return number is not None and number > 0
 
     @staticmethod
     def _append_expired(expired_orders: List[Dict[str, Any]], *, date: Any,
@@ -1067,49 +1384,49 @@ class EventBacktestRunner:
         })
 
     def _check_order_executable(
-        self, *, code: str, side: str, position: int, rules: ExecutionRules,
-        prev_close: float | None, open_price: float | None,
-        high: float | None = None, low: float | None = None,
-        close: float | None = None, volume: float | None = None,
-        open_raw: float | None = None, prev_close_raw: float | None = None,
-        close_raw: float | None = None, is_st: bool | None = None,
+        self, *, code: str, intent: SignalIntent, position: int,
+        rules: ExecutionRules, bar: Bar, exec_price: float | None,
         trade_date: date | None = None,
     ) -> str | None:
         """按固定顺序校验订单可执行性，返回作废原因；None 表示可继续撮合。
 
         判定顺序（与订单生命周期一致，不可调换）：
-            1. 持仓前置：买入已持仓 → already_holding；卖出无持仓 → no_position；
+            1. 持仓前置：状态型买入已持仓 → already_holding；卖出无持仓 → no_position；
+               显式买入允许持仓上加仓（A12），不做 this 过滤；
             2. close 缺失 / 非有限 / ≤0 → price_missing；
             3. 涨跌停 / 停牌（零成交量）→ not_tradable；
-            4. 开盘价缺失 / 非有限 / ≤0 → price_missing（不得用 close 伪造成交价）。
+            4. 成交价缺失 / 非有限 / ≤0 → price_missing（不得用 close 伪造成交价）。
 
         交易所规则定义在原始价上：携带 raw_* 列（hfq 复权输入）时用原始价判定，
         除权日因子跳变会让复权比值失真；high == low 的一字板等式判断在线性
         缩放下不变，可直接透传。
         """
-        # 持仓前置条件不满足：已持仓的买入、无持仓的卖出
-        if side == 'buy' and position > 0:
+        # 持仓前置条件不满足：状态型买入已持仓、无持仓的卖出
+        if intent.action == 'buy' and position > 0 and not intent.explicit:
             return 'already_holding'
-        if side == 'sell' and position == 0:
+        if intent.action == 'sell' and position == 0:
             return 'no_position'
 
         # close 缺失 = 无有效行情，挂单作废（主循环已 continue 跳过整行，
-        # 此处防御性守卫，确保函数签名 close=None 不会漏进来）
-        if not self._is_valid_price(close):
+        # 此处防御性守卫，确保 bar.close=None 不会漏进来）
+        if not self._is_valid_price(bar.close):
             return 'price_missing'
 
         check_open, check_prev, check_close = self._select_check_prices(
-            open_price, prev_close, close, open_raw, prev_close_raw, close_raw)
-        if not rules.is_tradable(side, prev_close=check_prev, open_price=check_open,
-                                 high=high, low=low, close=check_close, volume=volume,
-                                 ts_code=code, is_st=is_st, trade_date=trade_date):
+            bar.open_price, bar.prev_close, bar.close,
+            bar.raw_open, bar.prev_close_raw, bar.raw_close)
+        if not rules.is_tradable(intent.action, prev_close=check_prev,
+                                 open_price=check_open, high=bar.high, low=bar.low,
+                                 close=check_close, volume=bar.volume,
+                                 ts_code=code, is_st=bar.is_st,
+                                 trade_date=trade_date):
             return 'not_tradable'
 
         # P0-2 修复：开盘价是集合竞价成交价。open_price 为 None（列存在但值缺失，
         # 如停牌复牌日、除权日）时，不能用 close 伪造成交价——回测不应发明价格。
         # 列整体缺失时 open_price 已在主循环回填为 close_price + fill_confidence=low，
         # 此处不会走到 None 分支。
-        if not self._is_valid_price(open_price):
+        if not self._is_valid_price(exec_price):
             return 'price_missing'
         return None
 
@@ -1126,91 +1443,116 @@ class EventBacktestRunner:
         return check_open, check_prev, check_close
 
     def _execute_buy(
-        self, *, code: str, date: Any, book: AccountBook, gate: RiskGate,
-        cost_model: CostModel, trades: List[Dict[str, Any]],
-        rejected_orders: List[Dict[str, Any]],
-        expired_orders: List[Dict[str, Any]],
-        equity_curve: List[Dict[str, Any]], lot_size: int,
-        exec_price: float, order_confidence: str,
-        bar_volume: float | None = None,
-        prev_close: float | None = None, sector: str = '',
-        suspended: Set[str] | None = None,
+        self, ctx: RunContext, *, code: str, date: Any, bar: Bar,
+        exec_price: float, intent: SignalIntent, order_confidence: str,
+        prev_close: float | None, sector: str,
     ) -> None:
-        """买入执行：按可用现金估算整手、逐手回退成本、风控审查、记账成交。"""
+        """买入执行：按目标仓位/资金比例估算整手、逐手回退成本、风控、记账。
+
+        A12：``fraction`` 控制本次使用该桶可用现金的比例（默认 1.0 全仓），
+        ``target_weight`` 控制买入后该标的市值占桶内权益的目标比例，
+        因而可在持仓上继续加仓（金字塔建仓）。
+        """
+        book = ctx.book
         available = book.cash.get(code, 0.0)
-        cost_rate = cost_model.get_buy_cost_rate(trade_date=date, ts_code=code)
-        affordable = available / (exec_price * (1 + cost_rate))
-        shares = int(affordable // lot_size) * lot_size
+        cost_rate = ctx.cost_model.get_buy_cost_rate(trade_date=date, ts_code=code)
+
+        if intent.target_weight is not None:
+            held = book.position(code)
+            bucket_equity = available + held * exec_price
+            target_value = bucket_equity * intent.target_weight
+            budget = target_value - held * exec_price
+        else:
+            budget = available * intent.fraction
+        budget = min(budget, available)
+
+        affordable = (
+            budget / (exec_price * (1 + cost_rate)) if exec_price > 0 else 0.0)
+        shares = int(affordable // ctx.lot_size) * ctx.lot_size
         # 费率估算不含 min_commission 下限，小单实际成本可能超估算：
         # 按实际成本逐手回退，而不是整笔静默作废
-        buy_cost = 0.0
-        total_pay = 0.0
         while shares > 0:
-            buy_cost = cost_model.calculate_buy_cost(
+            buy_cost = ctx.cost_model.calculate_buy_cost(
                 shares, exec_price, trade_date=date, ts_code=code)
             total_pay = shares * exec_price + buy_cost
-            if total_pay <= available:
+            if total_pay <= available + CASH_EPS:
                 break
-            shares -= lot_size
+            shares -= ctx.lot_size
         if shares == 0:
             self._append_expired(
-                expired_orders, date=date, side='buy', code=code,
-                reason='insufficient_cash', fill_confidence=order_confidence,
+                ctx.expired_orders, date=date, side='buy', code=code,
+                reason='zero_order' if budget <= 0 else 'insufficient_cash',
+                fill_confidence=order_confidence,
             )
             return
-        rejection = gate.check(
+
+        buy_cost = ctx.cost_model.calculate_buy_cost(
+            shares, exec_price, trade_date=date, ts_code=code)
+        rejection = ctx.gate.check(
             ts_code=code, side='buy', qty=shares, price=exec_price,
-            trade_date=date, book=book, equity_curve=equity_curve,
-            bar_volume=bar_volume, prev_close=prev_close, sector=sector,
-            suspended=suspended,
+            trade_date=date, book=book, equity_curve=ctx.equity_curve,
+            bar_volume=bar.volume, prev_close=prev_close, sector=sector,
+            suspended=bar.suspended,
         )
         if rejection is not None:
-            rejected_orders.append(rejection)
+            ctx.rejected_orders.append(rejection)
             return
         book.buy(code, exec_price, shares, buy_cost)
-        trades.append({
+        ctx.trades.append({
             'date': date,
             'stock_code': code,
             'signal': 'buy',
             'price': exec_price,
             'shares': shares,
             'capital': book.cash[code],
-            'position': book.positions[code],
+            'position': book.position(code),
             'cost': buy_cost,
             'fill_confidence': order_confidence,
         })
 
     def _execute_sell(
-        self, *, code: str, date: Any, book: AccountBook, gate: RiskGate,
-        cost_model: CostModel, trades: List[Dict[str, Any]],
-        rejected_orders: List[Dict[str, Any]],
-        equity_curve: List[Dict[str, Any]], exec_price: float,
-        order_confidence: str, bar_volume: float | None = None,
-        prev_close: float | None = None, sector: str = '',
-        suspended: Set[str] | None = None,
+        self, ctx: RunContext, *, code: str, date: Any, bar: Bar,
+        exec_price: float, intent: SignalIntent, order_confidence: str,
+        prev_close: float | None, sector: str,
     ) -> None:
-        """卖出执行：清空该标的持仓，风控审查通过后记账成交。"""
-        shares = book.positions[code]
-        sell_cost = cost_model.calculate_sell_cost(
+        """卖出执行：按 fraction 计算卖出股数（默认清仓），风控通过后记账。
+
+        A12：``fraction`` 控制本次卖出占当前持仓的比例；部分卖出按整手向下取整，
+        fraction=1.0 全数卖出（含零股），与原有全仓卖出语义一致。
+        """
+        book = ctx.book
+        position = book.position(code)
+        if intent.fraction >= 1.0:
+            shares = position
+        else:
+            shares = int((position * intent.fraction) // ctx.lot_size) * ctx.lot_size
+        if shares <= 0:
+            self._append_expired(
+                ctx.expired_orders, date=date, side='sell', code=code,
+                reason='zero_order', fill_confidence=order_confidence,
+            )
+            return
+
+        sell_cost = ctx.cost_model.calculate_sell_cost(
             shares, exec_price, trade_date=date, ts_code=code)
-        rejection = gate.check(
+        rejection = ctx.gate.check(
             ts_code=code, side='sell', qty=shares, price=exec_price,
-            trade_date=date, book=book, equity_curve=equity_curve,
-            bar_volume=bar_volume, prev_close=prev_close, sector=sector,
-            suspended=suspended,
+            trade_date=date, book=book, equity_curve=ctx.equity_curve,
+            bar_volume=bar.volume, prev_close=prev_close, sector=sector,
+            suspended=bar.suspended,
         )
         if rejection is not None:
-            rejected_orders.append(rejection)
+            ctx.rejected_orders.append(rejection)
             return
         book.sell(code, exec_price, shares, sell_cost)
-        trades.append({
+        ctx.trades.append({
             'date': date,
             'stock_code': code,
             'signal': 'sell',
             'price': exec_price,
             'shares': shares,
             'capital': book.cash[code],
-            'position': 0,
+            'position': book.position(code),
             'cost': sell_cost,
             'fill_confidence': order_confidence,
         })

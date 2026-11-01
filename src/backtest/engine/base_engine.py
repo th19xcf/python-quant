@@ -47,6 +47,8 @@ class BaseBacktestEngine:
         self.risk_engine: RiskEngine | None = None
         self.rejected_orders: List[Dict[str, Any]] = []   # 风控拒单日志
         self.expired_orders: List[Dict[str, Any]] = []    # 挂单作废日志
+        self.overwritten_orders: List[Dict[str, Any]] = []  # 被新信号覆盖的挂单
+        self.filtered_signals: List[Dict[str, Any]] = []    # 被持仓状态过滤的信号
         self.positions: Dict[str, int] = {}               # 回测结束的最终持仓（账本真源）
 
     @staticmethod

@@ -91,6 +91,8 @@ class BacktestEngine(BaseBacktestEngine):
         self.equity_curve = result.get('equity_curve', [])
         self.rejected_orders = result.get('rejected_orders', [])
         self.expired_orders = result.get('expired_orders', [])
+        self.overwritten_orders = result.get('overwritten_orders', [])
+        self.filtered_signals = result.get('filtered_signals', [])
         self.positions = result.get('positions', {})
         self.backtest_results = result
         return result

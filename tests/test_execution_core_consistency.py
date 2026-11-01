@@ -1317,3 +1317,217 @@ def test_cost_model_uses_historical_stamp_tax_and_transfer_fee():
         trade_date=date(2010, 6, 1), ts_code='600000.SH') == pytest.approx(0.0011)
 
 
+# ------------------------------------------------------------------
+# A4 / A8 / A10 / A11 / A12 / A13 / A14 / A16 / A20 / A24 / A25 回归
+# ------------------------------------------------------------------
+
+
+class _MappingSignalStrategy(BaseStrategy):
+    """按 bar 下标返回字符串或映射意图，验证部分建仓 / 加仓 / 减仓。"""
+
+    def __init__(self, signals, name: str = '映射意图策略'):
+        super().__init__(name=name)
+        self.signals = dict(signals)
+
+    def generate_signal(self, data, index):
+        return self.signals.get(index, 'hold')
+
+
+class _VectorizedPortfolioStrategy:
+    """组合级（横截面）策略：一次性返回各标的全段信号。"""
+
+    name = '组合级向量策略'
+
+    def __init__(self, signals_by_code):
+        self.signals_by_code = dict(signals_by_code)
+
+    def generate_signals_vectorized(self, universe):
+        return {
+            code: pl.Series(
+                'signal',
+                self.signals_by_code.get(code, ['hold'] * df.height),
+                dtype=pl.Utf8,
+            )
+            for code, df in universe.items()
+        }
+
+
+def test_duplicate_dates_raise_instead_of_silent_merge():
+    """A4：同一标的重复日期必须报错，而不是静默合并丢 bar。"""
+    df = pl.DataFrame({
+        'date': pd.to_datetime(['2023-01-02', '2023-01-02', '2023-01-03']),
+        'open': [10.0, 10.0, 10.0],
+        'high': [10.0, 10.0, 10.0],
+        'low': [10.0, 10.0, 10.0],
+        'close': [10.0, 10.0, 10.0],
+        'volume': [1_000_000.0] * 3,
+    })
+    engine = BacktestEngine(df)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    with pytest.raises(ValueError, match='重复日期'):
+        engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+
+
+def test_pending_ttl_expires_when_symbol_has_no_rows():
+    """A8：标的连续无行情行时，挂单超过 TTL 必须作废，不得复牌后按旧信号成交。"""
+    base = pd.date_range('2023-01-02', periods=6, freq='B')
+
+    def frame(dates):
+        return pl.DataFrame({
+            'date': dates,
+            'open': [10.0] * len(dates),
+            'high': [10.0] * len(dates),
+            'low': [10.0] * len(dates),
+            'close': [10.0] * len(dates),
+            'volume': [1_000_000.0] * len(dates),
+        })
+
+    # AAA 只在首尾两日有行，BBB 提供完整全局日历
+    engine = PortfolioBacktestEngine({
+        'AAA.SZ': frame([base[0], base[5]]),
+        'BBB.SZ': frame(base),
+    })
+    engine.set_strategy('AAA.SZ', _IndexSignalStrategy({0: 'buy'}))
+    engine.set_strategy('BBB.SZ', _IndexSignalStrategy({}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, pending_ttl_days=2)
+
+    assert result['trades'] == []
+    assert [o['reason'] for o in result['expired_orders']] == ['pending_ttl']
+
+
+def test_partial_build_and_reduce_positions():
+    """A12：映射信号支持分批建仓（金字塔加仓）与部分减仓。"""
+    data = _make_df(opens=[10.0] * 6, closes=[10.0] * 6)
+    engine = BacktestEngine(data)
+    engine.set_strategy(_MappingSignalStrategy({
+        0: {'action': 'buy', 'fraction': 0.5},
+        2: {'action': 'buy', 'fraction': 0.5},
+        4: {'action': 'sell', 'fraction': 0.5},
+    }))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH',
+                                 is_st=False)
+
+    trades = result['trades']
+    assert [t['signal'] for t in trades] == ['buy', 'buy', 'sell']
+    assert trades[0]['shares'] % 100 == 0
+    # 第二次买入发生在持仓之上：仓位单调增加
+    assert trades[1]['position'] > trades[0]['position']
+    # 部分卖出只减半，按整手向下取整
+    assert trades[2]['shares'] == int(trades[1]['position'] * 0.5 // 100) * 100
+    assert result['positions']['600000.SH'] > 0
+
+
+def test_filtered_signals_are_recorded():
+    """A13：被持仓状态过滤的信号逐条留痕，可区分"未发信号"与"被过滤"。"""
+    data = _make_df(opens=[10.0] * 6, closes=[10.0] * 6)
+    engine = BacktestEngine(data)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy', 2: 'buy'}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH',
+                                 is_st=False)
+
+    assert len([t for t in result['trades'] if t['signal'] == 'buy']) == 1
+    assert [f['reason'] for f in result['filtered_signals']] == ['already_holding']
+    assert result['filtered_signals'][0]['ts_code'] == '600000.SH'
+
+
+def test_st_unknown_bars_keeps_code_and_date():
+    """A14：ST 未知不能再只留一个全局 bool，必须保留 (标的, 日期)。"""
+    data = _make_df(opens=[10.0] * 3, closes=[10.0] * 3)
+    dates = data['date'].to_list()
+    engine = BacktestEngine(data)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+
+    assert result['st_unknown'] is True
+    assert result['st_unknown_bars'][0]['ts_code'] == '600000.SH'
+    assert result['st_unknown_bars'][0]['date'] == dates[0]
+    assert len(result['st_unknown_bars']) == len(dates)
+
+
+def test_execution_and_marking_use_raw_prices_when_present():
+    """A16：有原始价时成交与盯市都用原始价，整手取整与费用口径落在名义价上。"""
+    dates = pd.date_range('2023-01-02', periods=3, freq='B')
+    df = pl.DataFrame({
+        'date': dates,
+        'open': [10.0, 10.5, 10.5],
+        'high': [10.5, 10.5, 10.5],
+        'low': [10.0, 10.0, 10.0],
+        'close': [10.0, 10.0, 10.0],
+        'volume': [1_000_000.0] * 3,
+        'raw_open': [10.0, 10.0, 10.0],
+        'raw_close': [10.0, 9.5, 9.5],
+    })
+    engine = BacktestEngine(df)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH',
+                                 is_st=False)
+
+    buy = result['trades'][0]
+    assert buy['price'] == 10.0, '应以原始开盘价成交，而不是复权开盘价 10.5'
+    # 期末按原始收盘价 9.5 盯市
+    assert result['final_equity'] == pytest.approx(
+        buy['capital'] + buy['shares'] * 9.5)
+
+
+def test_portfolio_strategy_can_express_cross_sectional_signals():
+    """A11：组合级策略一次性输出多标信号，引擎层可表达横截面逻辑。"""
+    df_a = _make_df(opens=[10.0] * 4, closes=[10.0] * 4)
+    df_b = _make_df(opens=[10.0] * 4, closes=[10.0] * 4)
+    engine = PortfolioBacktestEngine({'AAA.SZ': df_a, 'BBB.SZ': df_b})
+    engine.set_portfolio_strategy(_VectorizedPortfolioStrategy({
+        'AAA.SZ': ['buy', 'hold', 'hold', 'hold'],
+        'BBB.SZ': ['hold', 'hold', 'hold', 'hold'],
+    }))
+    result = engine.run_backtest(initial_capital=1_000_000.0)
+
+    assert [t['stock_code'] for t in result['trades']] == ['AAA.SZ']
+    assert result['slow_path_strategies'] == []
+    assert result['trades'][0]['price'] == pytest.approx(10.0)
+
+
+def test_overwritten_orders_are_separated_from_expired():
+    """A20：被覆盖的挂单独立记账，不再污染 expired_orders 的作废统计。"""
+    data = _make_df(opens=[10.0] * 4, closes=[10.0] * 4)
+    engine = BacktestEngine(data)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH',
+                                 is_st=False)
+
+    assert result['overwritten_orders'] == []
+    assert all(o['reason'] != 'overwritten' for o in result['expired_orders'])
+
+
+def test_account_book_rejects_order_beyond_cash_and_position():
+    """A25：账本自身校验资金与持仓，不再只依赖调用方。"""
+    book = AccountBook(1_000.0, ['AAA.SZ'])
+    with pytest.raises(ValueError):
+        book.buy('AAA.SZ', 10.0, 200, 0.0)
+    with pytest.raises(ValueError):
+        book.sell('AAA.SZ', 10.0, 100, 0.0)
+
+
+def test_incremental_equity_matches_full_recompute():
+    """A10：增量维护的权益与"现金 + 持仓×最新价"全量重算一致。"""
+    book = AccountBook(100_000.0, ['AAA.SZ', 'BBB.SZ'])
+    book.buy('AAA.SZ', 10.0, 1_000, 5.0)
+    book.mark('AAA.SZ', 11.0)
+    book.buy('BBB.SZ', 20.0, 100, 2.0)
+    book.mark('BBB.SZ', 18.0)
+    book.sell('AAA.SZ', 11.5, 400, 3.0)
+
+    expected = sum(book.cash.values()) + sum(
+        qty * book.last_prices.get(code, 0.0)
+        for code, qty in book.positions.items() if qty > 0
+    )
+    assert book.total_equity() == pytest.approx(expected)
+
+
+def test_non_numeric_market_values_do_not_raise():
+    """A24：字符串等非数值行情不得在 math.isfinite / 比较中抛 TypeError。"""
+    rules = ExecutionRules()
+    assert rules.is_tradable(
+        'buy', prev_close=10.0, open_price='oops', high='x', low='y',
+        close='z', volume='bad', ts_code='600000.SH',
+    ) is False
+
+

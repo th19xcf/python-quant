@@ -9,7 +9,11 @@ from typing import Any, Dict
 from loguru import logger
 
 from src.backtest.engine.base_engine import BaseBacktestEngine
-from src.backtest.engine.execution_core import EventBacktestRunner, StStatus
+from src.backtest.engine.execution_core import (
+    DEFAULT_PENDING_TTL_DAYS,
+    EventBacktestRunner,
+    StStatus,
+)
 from src.backtest.strategies.base_strategy import BaseStrategy
 
 
@@ -42,6 +46,9 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
         }
         # positions 由基类统一声明（回测结束后从账本回填）
         self.strategies: Dict[str, BaseStrategy] = {}
+        # 横截面（组合级）策略：一次性看到全部标的，可表达轮动/截面排序等
+        # 单标的策略实例无法表达的逻辑（A11）
+        self.portfolio_strategy: Any = None
 
     def set_strategy(self, strategy: BaseStrategy | str, code: str | BaseStrategy = '') -> None:
         """
@@ -78,9 +85,25 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
         """主入口：一次性设置多标的策略映射。"""
         self.strategies.update(mapping)
 
+    def set_portfolio_strategy(self, strategy: Any) -> None:
+        """设置横截面（组合级）策略。
+
+        策略对象需覆写 ``generate_signals_vectorized(universe)``（返回
+        {ts_code: 信号序列}），或逐日提供 ``generate_signal(universe_rows, index)``
+        （返回 {ts_code: 信号}，走慢速路径并记入 slow_path_strategies）。
+        与单标的策略同时存在时，组合级信号优先。
+        """
+        self.portfolio_strategy = strategy
+
+    def _portfolio_strategy_name(self) -> str:
+        """组合级策略名称（用于结果元信息）。"""
+        return (getattr(self.portfolio_strategy, 'name', None)
+                or type(self.portfolio_strategy).__name__)
+
     def run_backtest(self, initial_capital: float = 1000000.0, allocation_strategy: str = 'equal', lot_size: int = 100,
                      industry_map: Dict[str, str] | None = None,
                      st_status: StStatus | None = None,
+                     pending_ttl_days: int = DEFAULT_PENDING_TTL_DAYS,
                      **params: Any) -> Dict[str, Any]:
         """
         运行组合回测
@@ -93,11 +116,13 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             st_status: ST 三态映射 {ts_code: True/False/None}，未给出的标的视为
                 未知，涨跌停按板块默认幅度判定，结果 st_unknown=True 且逐笔
                 fill_confidence=low（数据质量提示，不改变成交判定）
+            pending_ttl_days: 挂单最长顺延天数，超过即作废（默认 5 个交易日），
+                避免停牌标的复牌后仍按数日前的信号成交
 
         Returns:
             Dict[str, Any]: 回测结果
         """
-        if not self.strategies:
+        if not self.strategies and self.portfolio_strategy is None:
             logger.error("未设置策略")
             return {}
 
@@ -123,14 +148,20 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             industry_map=industry_map or {},
             result_meta={
                 'strategy_names': {stock: strategy.name for stock, strategy in self.strategies.items()},
+                **({'portfolio_strategy_name': self._portfolio_strategy_name()}
+                   if self.portfolio_strategy is not None else {}),
             },
             st_status=st_status,
+            portfolio_strategy=self.portfolio_strategy,
+            pending_ttl_days=pending_ttl_days,
         )
 
         self.trades = result.get('trades', [])
         self.equity_curve = result.get('equity_curve', [])
         self.rejected_orders = result.get('rejected_orders', [])
         self.expired_orders = result.get('expired_orders', [])
+        self.overwritten_orders = result.get('overwritten_orders', [])
+        self.filtered_signals = result.get('filtered_signals', [])
         # 最终持仓直接取自回测账本（result['positions']），
         # 不用 trades 的最后一笔反推：账本是唯一真源，且不依赖 trade 是否带
         # position 字段（外部注入或第三方 trades 会因缺键抛 KeyError）
