@@ -7,6 +7,7 @@
 与 sync_tdx_stock_to_database 编排。对外由 sync_service 聚合导出。
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -822,6 +823,134 @@ def sync_tdx_stock_to_database(config: Any, db_manager: Any) -> dict[str, Any]:
             prepare=prepare,
             run=run,
             log_stats=_log_sync_result,
+        ),
+        db_manager,
+    )
+
+
+# ======================================================================
+# stock_basic 存量修复（area / industry / market）
+# ======================================================================
+
+# 证监会行业门类写法：单个门类字母 + 空白 + 门类名，如 "C 制造业"、"I 信息技术"
+_INDUSTRY_CATEGORY_PATTERN = re.compile(r'^\s*[A-Za-z]\s')
+
+
+def _is_industry_category_value(value: Any) -> bool:
+    """判断 area 字段的值是否被误写成了行业门类。"""
+    return bool(_INDUSTRY_CATEGORY_PATTERN.match(str(value or '')))
+
+
+def _build_repair_industry_map(config: Any) -> dict[str, str]:
+    """合并 Baostock 行业分类与 AkShare 行业板块成分，作为存量行业回填来源。"""
+    from src.data.baostock_handler import BaostockHandler
+
+    industry_map: dict[str, str] = {}
+    try:
+        industry_map.update(
+            _fetch_baostock_industry_map(BaostockHandler(config, None))
+        )
+        logger.info(f"Baostock 行业映射 {len(industry_map)} 条")
+    # 兜底理由：单一行业源失败不应阻断另一源
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"获取 Baostock 行业映射失败: {e}")
+
+    akshare_map = _fetch_akshare_industry_map()
+    for ts_code, industry in akshare_map.items():
+        industry_map.setdefault(ts_code, industry)
+    logger.info(f"行业回填来源合计 {len(industry_map)} 只股票")
+    return industry_map
+
+
+@dataclass
+class StockRepairContext:
+    """stock_basic 存量修复上下文"""
+    rows: list[Any]
+    industry_map: dict[str, str]
+
+
+def _repair_stock_row(row: Any, industry_map: dict[str, str], result: dict[str, Any]) -> None:
+    """修复单只股票：清空误写的 area、推断缺失的 market、补齐缺失的 industry。"""
+    if _is_industry_category_value(row.area):
+        row.area = None
+        result['cleared_area'] += 1
+
+    if not _normalize_text_value(row.market):
+        inferred_market = _infer_stock_market_from_ts_code(row.ts_code)
+        if inferred_market:
+            row.market = inferred_market
+            result['filled_market'] += 1
+
+    if not _normalize_text_value(row.industry):
+        industry = _normalize_text_value(industry_map.get(row.ts_code), 50)
+        if industry:
+            row.industry = industry
+            result['filled_industry'] += 1
+
+
+def _log_repair_result(result: dict[str, Any]) -> None:
+    """记录 stock_basic 修复结果统计。"""
+    logger.info("=" * 60)
+    logger.info("stock_basic 修复结果统计:")
+    logger.info(f"  待修复股票数量: {result['total_stocks']}")
+    logger.info(f"  清空错误地域数量: {result['cleared_area']}")
+    logger.info(f"  补全市场类型数量: {result['filled_market']}")
+    logger.info(f"  补全行业数量: {result['filled_industry']}")
+    logger.info(f"  失败股票数量: {len(result['failed_stocks'])}")
+    if result['failed_stocks']:
+        logger.warning(f"  失败股票列表: {result['failed_stocks'][:10]}...")
+    logger.info("=" * 60)
+
+
+def repair_stock_basic(config: Any, db_manager: Any) -> dict[str, Any]:
+    """一次性修复 stock_basic 存量记录的 area/industry/market 缺口。
+
+    - area：该列语义为地域，被误写成证监会行业门类的值直接置空，不做地域抓取
+    - market：空值按股票代码推断板块
+    - industry：空值用 Baostock 行业分类 + AkShare 行业板块成分批量补全
+    """
+    from src.database.models.stock import StockBasic
+
+    result: dict[str, Any] = {
+        'total_stocks': 0,
+        'cleared_area': 0,
+        'filled_market': 0,
+        'filled_industry': 0,
+        'failed_stocks': [],
+    }
+
+    def prepare(session: Any) -> StockRepairContext:
+        rows = [
+            row for row in session.query(StockBasic).all()
+            if not _is_index_ts_code(row.ts_code)
+            and not _is_fund_ts_code(row.ts_code, row.name, row.market)
+        ]
+        result['total_stocks'] = len(rows)
+        logger.info(f"stock_basic 待修复股票 {len(rows)} 只")
+        return StockRepairContext(rows, _build_repair_industry_map(config))
+
+    def run(ctx: StockRepairContext, session: Any) -> None:
+        _sync_each_with_recovery(
+            ctx.rows, lambda row: _repair_stock_row(row, ctx.industry_map, result),
+            result=result, failed_key='failed_stocks', session=session,
+            label='股票', commit_interval=0, item_name=lambda row: row.ts_code,
+        )
+        try:
+            session.commit()
+            logger.info("stock_basic 修复结果已提交")
+        # 兜底理由：提交失败回滚，由调用方读取失败清单
+        except Exception as commit_e:  # noqa: BLE001
+            logger.exception(f"提交 stock_basic 修复结果失败: {commit_e}")
+            session.rollback()
+
+    return _execute_sync_flow(
+        SyncFlow(
+            title="修复 stock_basic 存量的地域/行业/市场字段",
+            error_label="修复 stock_basic",
+            result=result,
+            prepare=prepare,
+            run=run,
+            log_stats=_log_repair_result,
         ),
         db_manager,
     )

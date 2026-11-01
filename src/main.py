@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data.data_manager import DataManager
 from src.data.services.sync_service import (
+    repair_stock_basic,
     sync_stock_fund_to_fund_basic,
     sync_tdx_index_to_database,
     sync_tdx_stock_to_database,
@@ -48,6 +49,7 @@ def parse_args():
     parser.add_argument('--update-stock', action='store_true', help='从通达信数据源同步股票信息到数据库')
     parser.add_argument('--update-index', action='store_true', help='以通达信指数代码为基准更新 index_basic（Baostock/AkShare 补全）')
     parser.add_argument('--update-fund', action='store_true', help='将 stock_basic 中基金迁移到 fund_basic 并补全信息')
+    parser.add_argument('--repair-stock-basic', action='store_true', help='一次性修复 stock_basic 存量的地域/行业/市场字段')
     parser.add_argument('--plugins', action='store_true', help='显示已加载的插件')
     return parser.parse_args()
 
@@ -200,6 +202,32 @@ def _handle_update_fund_arg(config):
         return True
 
 
+def _handle_repair_stock_basic_arg(config):
+    """处理 stock_basic 存量修复参数。"""
+    logger.info("检测到 --repair-stock-basic 参数，将修复 stock_basic 的地域/行业/市场字段")
+
+    db_manager = None
+    try:
+        db_manager = DatabaseManager(config)
+        db_manager.connect()
+        logger.info("数据库连接成功")
+
+        try:
+            db_manager.create_tables()
+            logger.info("数据库表创建/更新成功")
+        except (OSError, RuntimeError) as table_e:
+            logger.warning(f"创建数据库表时发生错误: {table_e}")
+
+        repair_stock_basic(config, db_manager)
+        db_manager.cleanup()
+        logger.info("数据库资源已清理")
+        return True
+
+    except (OSError, RuntimeError) as db_e:
+        logger.error(f"数据库连接失败，无法执行 stock_basic 修复: {db_e}")
+        return True
+
+
 def _initialize_data_manager(config, plugin_manager):
     """初始化数据管理器
 
@@ -295,6 +323,10 @@ def main():
 
         if args.update_fund:
             _handle_update_fund_arg(config)
+            return
+
+        if args.repair_stock_basic:
+            _handle_repair_stock_basic_arg(config)
             return
 
         data_manager = _initialize_data_manager(config, plugin_manager)

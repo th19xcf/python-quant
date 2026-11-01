@@ -33,7 +33,9 @@ from src.data.services.sync_stock import (
     _build_stock_info,
     _create_stock_basic_from_info,
     _infer_stock_market_from_ts_code,
+    _is_industry_category_value,
     _normalize_stock_status,
+    _repair_stock_row,
     _update_stock_date_field,
     _update_stock_text_field,
     get_stock_info_from_apis,
@@ -549,3 +551,45 @@ def test_sync_each_with_recovery_commits_periodically():
     assert result["failed"] == []
     assert session.commits == 2
     assert session.rolled_back == 0
+
+
+# ----------------------------------------------------------------------
+# stock_basic 存量修复
+# ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("value, expected", [
+    ("C 制造业", True),
+    ("I 信息技术", True),
+    ("C\u3000制造业", True),
+    ("C39计算机、通信和其他电子设备制造业", False),
+    ("上海", False),
+    ("广东 深圳", False),
+    (None, False),
+    ("", False),
+])
+def test_is_industry_category_value(value, expected):
+    assert _is_industry_category_value(value) == expected
+
+
+def test_repair_stock_row_clears_area_and_fills_market_and_industry():
+    row = SimpleNamespace(ts_code="600000.SH", area="C 制造业", industry=None, market="")
+    result = {"cleared_area": 0, "filled_market": 0, "filled_industry": 0}
+
+    _repair_stock_row(row, {"600000.SH": "银行"}, result)
+
+    assert row.area is None
+    assert row.market == "主板"
+    assert row.industry == "银行"
+    assert result == {"cleared_area": 1, "filled_market": 1, "filled_industry": 1}
+
+
+def test_repair_stock_row_keeps_valid_values_and_skips_unknown_industry():
+    row = SimpleNamespace(ts_code="000001.SZ", area="广东", industry="银行", market="主板")
+    result = {"cleared_area": 0, "filled_market": 0, "filled_industry": 0}
+
+    _repair_stock_row(row, {}, result)
+
+    assert row.area == "广东"
+    assert row.market == "主板"
+    assert row.industry == "银行"
+    assert result == {"cleared_area": 0, "filled_market": 0, "filled_industry": 0}

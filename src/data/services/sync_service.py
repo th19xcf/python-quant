@@ -15,10 +15,11 @@
 
 from src.data.services.sync_fund import sync_stock_fund_to_fund_basic
 from src.data.services.sync_index import sync_tdx_index_to_database
-from src.data.services.sync_stock import sync_tdx_stock_to_database
+from src.data.services.sync_stock import repair_stock_basic, sync_tdx_stock_to_database
 
 __all__ = [
     "sync_tdx_stock_to_database",
     "sync_tdx_index_to_database",
     "sync_stock_fund_to_fund_basic",
+    "repair_stock_basic",
 ]
