@@ -27,7 +27,7 @@ class MeanReversionStrategy(BaseStrategy):
             'oversold': 30,
         }
 
-    def generate_signal(self, data: Dict[str, Any], index: int) -> str:
+    def generate_signal(self, row: Dict[str, Any], index: int) -> str:
         rsi_period = self.params.get('rsi_period', 14)
         overbought = self.params.get('overbought', 70)
         oversold = self.params.get('oversold', 30)
@@ -35,7 +35,7 @@ class MeanReversionStrategy(BaseStrategy):
         if index < rsi_period:
             return 'hold'
 
-        rsi = data.get('rsi')
+        rsi = row.get('rsi')
         if rsi is None:
             return 'hold'
 
@@ -46,7 +46,7 @@ class MeanReversionStrategy(BaseStrategy):
         return 'hold'
 
     def generate_signals_vectorized(self, df: pl.DataFrame) -> pl.Series:
-        # 列缺失时对齐逐行语义：data.get() 返回 None → 全程 hold
+        # 列缺失时对齐逐行语义：row.get() 返回 None → 全程 hold
         if 'rsi' not in df.columns:
             return pl.Series('signal', ['hold'] * df.height, dtype=pl.Utf8)
 

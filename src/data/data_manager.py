@@ -20,19 +20,17 @@ from loguru import logger
 
 from src.api.data_api import IDataProcessor, IDataProvider
 from src.data.services.data_service import DataService
-from src.utils.exception_handler import handle_exception_with_retry
 from src.utils.memory_optimizer import MemoryOptimizer
 
 
-class DataManager:
+class DataManager(DataService):
     """
     数据管理器，负责统一管理各种数据源的获取、清洗和存储
     结构上满足 IDataProvider / IDataProcessor 契约（Protocol，无需继承）
 
-    此壳保留是为了兼容 main.py / 三个 dialog 等外部调用者。
-    所有 update_* / get_stock_data / get_index_data / 缓存管理
-    方法均透传到 self.data_service；独有方法（async、get_basic、
-    get_stock_dividend、preprocess_data）在此直接实现。
+    直接继承 DataService：取数 / 更新 / 缓存方法全部由基类提供，
+    本类只保留基础数据查询、本地行情读取与预处理等独有能力。
+    兼容旧调用方的 ``manager.data_service`` 访问由 property 返回 self。
     """
 
     def __init__(self, config, db_manager, plugin_manager=None):
@@ -44,36 +42,18 @@ class DataManager:
             db_manager: 数据库管理器实例
             plugin_manager: 插件管理器实例
         """
-        self.config = config
-        self.db_manager = db_manager
-        self.plugin_manager = plugin_manager
-
-        # 使用新的DataService
-        self.data_service = DataService(config, db_manager, plugin_manager)
-
-        # 插件数据源映射
-        self.plugin_datasources = {}
+        super().__init__(config, db_manager, plugin_manager)
 
         # 异步数据管理器
         self.async_data_manager = None
-
-        self._init_plugin_datasources()
         self._init_async_manager()
 
-        logger.info("DataManager 已初始化（兼容层，内部委托 DataService）")
+        logger.info("DataManager 已初始化（继承 DataService，无额外透传层）")
 
-    def _init_plugin_datasources(self):
-        """
-        初始化插件数据源
-        """
-        if not self.plugin_manager:
-            return
-
-        datasource_plugins = self.plugin_manager.get_available_datasource_plugins()
-
-        for plugin_name, plugin in datasource_plugins.items():
-            self.plugin_datasources[plugin_name] = plugin
-            logger.info(f"已注册插件数据源: {plugin_name}")
+    @property
+    def data_service(self) -> DataManager:
+        """兼容旧调用方：DataManager 自身就是 DataService。"""
+        return self
 
     def _init_async_manager(self):
         """
@@ -89,108 +69,6 @@ class DataManager:
         except (OSError, RuntimeError) as e:
             logger.warning(f"异步数据管理器初始化失败: {e}")
             self.async_data_manager = None
-
-    def update_stock_basic(self):
-        """
-        更新股票基本信息
-        """
-        return self.data_service.update_stock_basic()
-
-    def update_stock_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
-        """
-        更新股票日线数据
-
-        Args:
-            ts_codes: 股票代码列表，None表示更新所有股票
-            start_date: 开始日期，格式：YYYYMMDD
-            end_date: 结束日期，格式：YYYYMMDD
-        """
-        return self.data_service.update_stock_daily(ts_codes, start_date, end_date)
-
-    def update_fund_basic(self):
-        """
-        更新基金基本信息
-        """
-        return self.data_service.update_fund_basic()
-
-    def update_fund_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
-        """
-        更新基金日线数据
-
-        Args:
-            ts_codes: 基金代码列表，None表示更新所有基金
-            start_date: 开始日期，格式：YYYYMMDD
-            end_date: 结束日期，格式：YYYYMMDD
-        """
-        return self.data_service.update_fund_daily(ts_codes, start_date, end_date)
-
-    def update_closed_fund_basic(self):
-        """
-        更新封闭式基金基本信息
-        """
-        return self.data_service.update_closed_fund_basic()
-
-    def update_closed_fund_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
-        """
-        更新封闭式基金日线数据
-
-        Args:
-            ts_codes: 封闭式基金代码列表，None表示更新所有封闭式基金
-            start_date: 开始日期，格式：YYYYMMDD
-            end_date: 结束日期，格式：YYYYMMDD
-        """
-        return self.data_service.update_closed_fund_daily(ts_codes, start_date, end_date)
-
-    def update_index_basic(self):
-        """
-        更新指数基本信息
-        """
-        return self.data_service.update_index_basic()
-
-    def update_index_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
-        """
-        更新指数日线数据
-
-        Args:
-            ts_codes: 指数代码列表，None表示更新所有指数
-            start_date: 开始日期，格式：YYYYMMDD
-            end_date: 结束日期，格式：YYYYMMDD
-        """
-        return self.data_service.update_index_daily(ts_codes, start_date, end_date)
-
-    def update_macro_data(self, indicators: List[str] | None = None):
-        """
-        更新宏观经济数据
-
-        Args:
-            indicators: 宏观经济指标列表，None表示更新所有指标
-        """
-        return self.data_service.update_macro_data(indicators)
-
-    def update_news_data(self, sources: List[str] | None = None, start_date: str | None = None, end_date: str | None = None):
-        """
-        更新新闻数据
-
-        Args:
-            sources: 新闻来源列表，None表示更新所有来源
-            start_date: 开始日期，格式：YYYY-MM-DD
-            end_date: 结束日期，格式：YYYY-MM-DD
-        """
-        return self.data_service.update_news_data(sources, start_date, end_date)
-
-    def update_stock_dividend(self, ts_codes: List[str] | None = None):
-        """
-        更新股票分红配股数据
-
-        Args:
-            ts_codes: 股票代码列表，None表示更新所有股票
-
-        Raises:
-            DataSourceConnectionError: 数据源连接失败
-            DataValidationError: 数据验证失败
-            DataSaveError: 数据保存失败
-        """
-        return self.data_service.update_stock_dividend(ts_codes)
 
     def get_stock_dividend(self, ts_code: str) -> pl.DataFrame:
         """
@@ -271,44 +149,6 @@ class DataManager:
             if session:
                 with contextlib.suppress(OSError, RuntimeError):
                     session.close()
-
-    @handle_exception_with_retry(max_retries=3, retry_delay=1.0)
-    def get_stock_data(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'hfq', as_of=None) -> pl.DataFrame:
-        """
-        获取股票历史数据
-
-        Args:
-            stock_code: 股票代码
-            start_date: 开始日期，格式：YYYY-MM-DD
-            end_date: 结束日期，格式：YYYY-MM-DD
-            frequency: 数据频率，默认：1d（日线），支持1d/1w/1m（日/周/月线）
-            adjustment_type: 复权类型，qfq=前复权, hfq=后复权, none=不复权
-            as_of: 观察基准日，仅 qfq 场景用于 PIT 截断
-
-        Returns:
-            pl.DataFrame: 股票历史数据
-        """
-        # 使用新的DataService
-        return self.data_service.get_stock_data(stock_code, start_date, end_date, frequency, adjustment_type, as_of)
-
-
-
-    @handle_exception_with_retry(max_retries=3, retry_delay=1.0)
-    def get_index_data(self, index_code: str, start_date: str, end_date: str, frequency: str = '1d') -> pl.DataFrame:
-        """
-        获取指数历史数据
-
-        Args:
-            index_code: 指数代码
-            start_date: 开始日期，格式：YYYY-MM-DD
-            end_date: 结束日期，格式：YYYY-MM-DD
-            frequency: 数据频率，默认：1d（日线）
-
-        Returns:
-            pl.DataFrame: 指数历史数据
-        """
-        # 使用新的DataService
-        return self.data_service.get_index_data(index_code, start_date, end_date, frequency)
 
     async def get_stock_data_async(self, stock_code: str, start_date: str, end_date: str, frequency: str = '1d', adjustment_type: str = 'hfq') -> pl.DataFrame:
         """

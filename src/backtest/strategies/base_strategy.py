@@ -15,8 +15,10 @@ class BaseStrategy(ABC):
     策略基类，所有具体策略都应继承此类
 
     双接口约定：
-        - generate_signal(data, index)：逐行接口，每根 K 线调用一次，
-          服务少量需要跨行状态的策略（保留兼容）；
+        - generate_signal(row, index)：逐行接口，每根 K 线调用一次，
+          row 是**单根 bar 的行 dict**（列名 → 该行取值），不提供整段序列；
+          index 仅用于位置相关判定（如 MACD 暖机），服务少量需要
+          跨行状态的策略（保留兼容）；
         - generate_signals_vectorized(df)：向量化接口，整段数据一次性
           产出信号列，回测引擎在主循环前批量调用。子类覆写它即可用
           纯 polars 表达式消除 N_days × N_symbols 次 Python 函数调用。
@@ -42,13 +44,14 @@ class BaseStrategy(ABC):
         self.params.update(params)
 
     @abstractmethod
-    def generate_signal(self, data: Dict[str, Any], index: int) -> str:
+    def generate_signal(self, row: Dict[str, Any], index: int) -> str:
         """
-        生成交易信号
+        生成交易信号（逐 bar 回调）
 
         Args:
-            data: 当前数据
-            index: 当前数据索引
+            row: 当前 bar 的行字典（键为列名，值为该行取值），不是整段序列；
+                 需要历史窗口请在 _precompute_indicators 中预计算成列
+            index: 当前 bar 在序列中的行号，仅位置相关判定（如 MACD 暖机）使用
 
         Returns:
             str: 交易信号，'buy'、'sell'或'hold'

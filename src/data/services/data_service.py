@@ -24,7 +24,7 @@ from src.data.data_cache import global_data_cache
 from src.data.managers.data_fetcher import DataFetcher
 from src.data.managers.data_updater import DataUpdater
 from src.utils.event_bus import publish
-from src.utils.exception_handler import configure_retry
+from src.utils.exception_handler import configure_retry, handle_exception_with_retry
 
 
 class DataService:
@@ -95,6 +95,7 @@ class DataService:
     # 数据获取（直接透传 DataFetcher）
     # ------------------------------------------------------------------
 
+    @handle_exception_with_retry(max_retries=3, retry_delay=1.0)
     def get_stock_data(self, stock_code: str, start_date: str, end_date: str,
                       frequency: str = '1d', adjustment_type: str = 'hfq',
                       as_of=None) -> pl.DataFrame:
@@ -102,6 +103,7 @@ class DataService:
             stock_code, start_date, end_date, frequency, adjustment_type, as_of
         )
 
+    @handle_exception_with_retry(max_retries=3, retry_delay=1.0)
     def get_index_data(self, index_code: str, start_date: str, end_date: str,
                       frequency: str = '1d') -> pl.DataFrame:
         return self.data_fetcher.get_index_data(

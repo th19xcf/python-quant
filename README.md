@@ -161,7 +161,7 @@ README 旧版宣称 8 阶段，代码现状已完成/部分完成/待补齐，�
 
 ### 策略无状态约定
 
-所有 `BaseStrategy` 子类**不得**持有 per-bar 累积的 list / dict（见 P0-1 修复）。引擎先在 `run_backtest` 开头一次性向量化预计算全部指标列，策略 `generate_signal(data, index)` 只读当前 bar 的 dict。
+所有 `BaseStrategy` 子类**不得**持有 per-bar 累积的 list / dict（见 P0-1 修复）。引擎先在 `run_backtest` 开头一次性向量化预计算全部指标列，策略 `generate_signal(row, index)` 只读当前 bar 的 dict。
 
 ### 成本模型（A 股现行规则）
 
@@ -203,7 +203,7 @@ cp .env.example .env
 - 质量门禁（本地与 CI 一致）：
   - `ruff check src tests`（pyflakes / bugbear / bandit / isort / mccabe C901 等全量规则）
   - `mypy src`（覆盖 src 下全部业务模块，配置见 `pyproject.toml [tool.mypy]`）
-  - `pytest --cov=src`（覆盖率门禁 `[tool.coverage.report] fail_under = 42`，当前约 47%）
+  - `pytest --cov=src`（覆盖率门禁 `[tool.coverage.report] fail_under = 47`，当前约 49%）
 
 ---
 

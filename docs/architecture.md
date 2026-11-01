@@ -95,7 +95,7 @@ graph TD
 │      ├─ ExecutionRules — 涨跌停幅度 + 停牌/开盘触板不可成交               │
 │      │    （携带 raw_* 列时用原始价判定：交易所规则定义在原始价上，        │
 │      │     除权日复权比值会失真）                                         │
-│      ├─ strategy.generate_signal(current_data, index) → O(1) dict lookup  │
+│      ├─ strategy.generate_signal(row, index) → O(1) dict lookup          │
 │      ├─ pending_signal 延迟 T+1 开盘成交                                   │
 │      ├─ AccountBook — 整手取整、买入即时扣费、卖出资金累加               │
 │      ├─ RiskGate — 可选风控闸门，拒单写入 rejected_orders                  │
@@ -208,7 +208,7 @@ self.pl_df = self._precompute_indicators(self.pl_df, self.strategy)
 # → 自动在 DF 上生成 ma_{short_window} / ma_{long_window} / macd / macd_signal / rsi / atr
 ```
 
-策略的 `generate_signal(data, index)` 现在是 O(1) dict lookup（读第 index 行的 ma/macd/rsi 值），不再自己维护 Python list。
+策略的 `generate_signal(row, index)` 现在是 O(1) dict lookup（row 是单根 bar 的列名→取值字典），不再自己维护 Python list。
 
 **整列向量化信号（可选快路径）**：策略可实现 `generate_signals_vectorized(df) -> pl.Series`，
 一次 `select` 产出一整列信号，语义必须与逐行 `generate_signal` 严格一致——

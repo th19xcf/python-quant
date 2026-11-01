@@ -13,7 +13,7 @@ import time
 import pytest
 
 from src.plugin.plugin_manager import PluginManager, is_safe_module_name
-from src.ui.task_manager import TaskRunner
+from src.ui.task_manager import TaskManager, TaskRunner
 from src.utils.config import DatabaseSettings
 
 
@@ -139,3 +139,156 @@ class TestTaskTimeout:
         runner = TaskRunner('t-3', 'sleepy', _sleepy_task, timeout_seconds=5)
         assert not runner._accepts_cancel_event()
         assert runner._run_with_timeout() == 'done'
+
+
+class TestTaskRunnerSignalDispatch:
+    """任务信号分发：成功/异常/超时都必须回传终止信号，异常不穿透 run()"""
+
+    def test_run_emits_started_completed_finished(self, qapp):
+        seen = {}
+        runner = TaskRunner('ok-1', 'ok-task', lambda **_: 42, timeout_seconds=5)
+        runner.signals.started.connect(
+            lambda tid, name: seen.update(started=(tid, name))
+        )
+        runner.signals.completed.connect(
+            lambda tid, result: seen.update(completed=(tid, result))
+        )
+        runner.signals.error.connect(
+            lambda tid, msg: seen.update(error=(tid, msg))
+        )
+        runner.signals.finished.connect(lambda tid: seen.update(finished=tid))
+
+        runner.run()
+
+        assert seen['started'] == ('ok-1', 'ok-task')
+        assert seen['completed'] == ('ok-1', 42)
+        assert 'error' not in seen
+        assert seen['finished'] == 'ok-1'
+
+    def test_run_converts_exception_to_error_signal(self, qapp):
+        def _boom(**_kwargs):
+            raise RuntimeError('boom')
+
+        seen = {}
+        runner = TaskRunner('err-1', 'bad-task', _boom, timeout_seconds=5)
+        runner.signals.error.connect(
+            lambda tid, msg: seen.update(error=(tid, msg))
+        )
+        runner.signals.finished.connect(lambda tid: seen.update(finished=tid))
+
+        runner.run()
+
+        assert seen['error'][0] == 'err-1'
+        assert seen['error'][1].startswith('任务执行失败')
+        assert 'boom' in seen['error'][1]
+        assert seen['finished'] == 'err-1'
+
+    def test_run_timeout_dispatches_error_and_marks_cancelled(self, qapp):
+        seen = {}
+        runner = TaskRunner('to-1', 'slow-task', _sleepy_task, timeout_seconds=0.1)
+        runner.signals.error.connect(
+            lambda tid, msg: seen.update(error=(tid, msg))
+        )
+        runner.signals.finished.connect(lambda tid: seen.update(finished=tid))
+
+        runner.run()
+
+        assert runner.is_cancelled is True
+        assert runner.cancel_event.is_set()
+        assert '超时' in seen['error'][1]
+        assert seen['finished'] == 'to-1'
+
+
+class TestTaskManagerLifecycle:
+    """任务管理器：取消、状态查询、统计回调与共享池调度"""
+
+    def test_cancel_task_and_status_queries(self, qapp):
+        manager = TaskManager()
+        runner = TaskRunner('t-1', 'cancel-me', _cooperative_task, timeout_seconds=5)
+        manager.tasks['t-1'] = runner
+        manager.task_stats['total'] = 1
+        manager.task_stats['running'] = 1
+
+        assert manager.get_task_status('t-1') == {
+            'task_id': 't-1', 'task_name': 'cancel-me', 'is_running': True,
+        }
+        assert manager.get_all_tasks() == {
+            't-1': {'task_name': 'cancel-me', 'is_running': True},
+        }
+        assert manager.get_task_status('missing') is None
+
+        manager.cancel_task('t-1')
+        assert runner.is_cancelled is True
+        assert runner.cancel_event.is_set()
+
+        manager.clear_completed_tasks()
+        assert 't-1' not in manager.tasks
+
+        manager.reset_task_stats()
+        assert manager.get_task_stats()['total'] == 0
+
+        # 未知任务取消是空操作，不应抛出
+        manager.cancel_task('missing')
+
+    def test_callbacks_forward_signals_and_update_stats(self, qapp):
+        manager = TaskManager()
+        received = []
+        manager.task_started.connect(
+            lambda tid, name: received.append(('started', tid, name))
+        )
+        manager.task_progress.connect(
+            lambda tid, cur, total: received.append(('progress', cur, total))
+        )
+        manager.task_completed.connect(
+            lambda tid, result: received.append(('completed', tid, result))
+        )
+        manager.task_error.connect(
+            lambda tid, msg: received.append(('error', tid, msg))
+        )
+        manager.task_finished.connect(
+            lambda tid: received.append(('finished', tid))
+        )
+
+        runner = TaskRunner('t-2', 'named', lambda **_: None)
+        runner.is_cancelled = True
+        manager.tasks['t-2'] = runner
+        manager.task_stats['running'] = 1
+
+        manager._on_task_started('t-2', 'named')
+        manager._on_task_progress('t-2', 1, 3)
+        manager._on_task_completed('t-2', 'ok')
+        manager._on_task_error('t-2', 'bad')
+        manager._on_task_finished('t-2')
+
+        assert manager.task_stats['completed'] == 1
+        assert manager.task_stats['failed'] == 1
+        assert manager.task_stats['cancelled'] == 1
+        assert manager.task_stats['running'] == 0
+        assert 't-2' not in manager.tasks
+        assert received == [
+            ('started', 't-2', 'named'),
+            ('progress', 1, 3),
+            ('completed', 't-2', 'ok'),
+            ('error', 't-2', 'bad'),
+            ('finished', 't-2'),
+        ]
+
+    def test_create_task_wires_signals_and_finishes(self, qapp):
+        manager = TaskManager()
+        task_id = manager.create_task(
+            'quick', lambda **_: 'ok', timeout_seconds=5
+        )
+
+        assert task_id in manager.tasks
+        assert manager.task_stats['total'] == 1
+        assert manager.task_stats['running'] == 1
+
+        manager.thread_pool.waitForDone()
+        deadline = time.time() + 3
+        while manager.task_stats['running'] > 0 and time.time() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+
+        assert manager.task_stats['completed'] == 1
+        assert manager.task_stats['running'] == 0
+        assert task_id not in manager.tasks

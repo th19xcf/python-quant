@@ -36,13 +36,13 @@ class MACDStrategy(BaseStrategy):
         self.params['slow_period'] = slow_period
         self.params['signal_period'] = signal_period
 
-    def generate_signal(self, data: Dict[str, Any], index: int) -> str:
+    def generate_signal(self, row: Dict[str, Any], index: int) -> str:
         """
         生成交易信号
 
         Args:
-            data: 当前数据（含引擎预计算的 macd、macd_signal 列）
-            index: 当前数据索引
+            row: 当前 bar 的行字典（含引擎预计算的 macd、macd_signal 列）
+            index: 当前 bar 行号（用于暖机期判定）
 
         Returns:
             str: 交易信号，'buy'、'sell'或'hold'
@@ -52,8 +52,8 @@ class MACDStrategy(BaseStrategy):
         if index < 26 + 9:
             return 'hold'
 
-        macd = data.get('macd')
-        signal = data.get('macd_signal')
+        macd = row.get('macd')
+        signal = row.get('macd_signal')
 
         if macd is None or signal is None:
             return 'hold'
@@ -65,7 +65,7 @@ class MACDStrategy(BaseStrategy):
         return 'hold'
 
     def generate_signals_vectorized(self, df: pl.DataFrame) -> pl.Series:
-        # 列缺失时对齐逐行语义：data.get() 返回 None → 全程 hold
+        # 列缺失时对齐逐行语义：row.get() 返回 None → 全程 hold
         if 'macd' not in df.columns or 'macd_signal' not in df.columns:
             return pl.Series('signal', ['hold'] * df.height, dtype=pl.Utf8)
 

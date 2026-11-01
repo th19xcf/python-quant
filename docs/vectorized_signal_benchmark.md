@@ -17,7 +17,7 @@
 
 ## 2. 改造内容回顾
 
-改造前：`BaseStrategy.generate_signal(data, index)` 为逐行接口，引擎主循环每根 K 线组装一次行 dict + 调用一次 Python 函数，全市场调用次数为 `N_days × N_symbols`（5,000 交易日 × 500 标的 = 250 万次）。
+改造前：`BaseStrategy.generate_signal(row, index)` 为逐行接口，引擎主循环每根 K 线组装一次行 dict + 调用一次 Python 函数，全市场调用次数为 `N_days × N_symbols`（5,000 交易日 × 500 标的 = 250 万次）。
 
 改造后：
 

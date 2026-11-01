@@ -5,7 +5,7 @@
 """
 
 # 第三方库导入
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, Any, List
 
 import pandas as pd
 import polars as pl
@@ -38,7 +38,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
     结构上满足 ITechnicalAnalyzer 契约（Protocol，无需继承）
     """
 
-    def _init_data_frame(self, data):
+    def _init_data_frame(self, data: Any) -> None:
         """按输入类型保存 Polars DataFrame/LazyFrame 主数据结构。"""
         if hasattr(data, 'collect'):
             # 输入是Polars LazyFrame
@@ -58,7 +58,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             self.is_lazy = False
 
     @staticmethod
-    def _build_calculated_indicators():
+    def _build_calculated_indicators() -> dict[str, Any]:
         """构建指标计算状态跟踪字典。"""
         return {
             'ma': set(),  # 已计算的MA窗口
@@ -83,7 +83,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             'plugin': {}  # 已计算的插件指标，键为插件名称，值为已计算参数的集合
         }
 
-    def _build_indicator_mapping(self):
+    def _build_indicator_mapping(self) -> dict[str, Any]:
         """构建指标到计算方法的映射表。"""
         return {
             'ma': self.calculate_ma,
@@ -124,7 +124,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             'obos': self.calculate_indicator_parallel
         }
 
-    def __init__(self, data, plugin_manager=None):
+    def __init__(self, data: Any, plugin_manager: Any = None) -> None:
         """
         初始化技术分析器
 
@@ -157,7 +157,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
         # 初始化插件指标映射
         self._init_plugin_indicator_mapping()
 
-    def _calculate_polars_data_hash(self):
+    def _calculate_polars_data_hash(self) -> int:
         """
         使用轻量级方法计算数据哈希，优化性能
 
@@ -172,7 +172,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
         if self.is_lazy:
             # 对于LazyFrame，使用列名和数据类型生成哈希
             schema = df.schema
-            hash_components = [str(schema)]
+            hash_components: list[Any] = [str(schema)]
             return hash(tuple(hash_components))
         else:
             # 对于DataFrame，使用更高效的哈希生成方法
@@ -203,7 +203,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
 
             return hash(tuple(hash_components))
 
-    def _preprocess_data_polars(self):
+    def _preprocess_data_polars(self) -> None:
         """
         使用Polars进行数据预处理
         - 检查必要列是否存在
@@ -218,7 +218,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             # 对于DataFrame，使用常规预处理
             self.pl_df = preprocess_data_polars(self.pl_df)
 
-    def _calculate_window_based_indicator(self, indicator_type, calc_func, windows):
+    def _calculate_window_based_indicator(self, indicator_type: str, calc_func: Any, windows: Any) -> Any:
         """
         通用窗口指标计算方法
 
@@ -293,7 +293,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             self.is_lazy = False
         return self.pl_df
 
-    def _calculate_simple_indicator(self, indicator_type, calc_func, **kwargs):
+    def _calculate_simple_indicator(self, indicator_type: str, calc_func: Any, **kwargs: Any) -> Any:
         """
         通用非窗口指标计算方法
 
@@ -359,7 +359,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             self.is_lazy = False
         return self.pl_df
 
-    def calculate_macd(self, fast_period=12, slow_period=26, signal_period=9):
+    def calculate_macd(self, fast_period: int = 12, slow_period: int = 26, signal_period: int = 9) -> Any:
         """
         计算MACD指标
 
@@ -373,7 +373,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
         """
         return self._calculate_simple_indicator('macd', calculate_macd_polars, fast_period=fast_period, slow_period=slow_period, signal_period=signal_period)
 
-    def calculate_kdj(self, windows=14):
+    def calculate_kdj(self, windows: Any = 14) -> Any:
         """
         计算KDJ指标
 
@@ -385,7 +385,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
         """
         return self._calculate_window_based_indicator('kdj', calculate_kdj_polars, windows)
 
-    def calculate_boll(self, windows=None, std_dev=2.0):
+    def calculate_boll(self, windows: Any = None, std_dev: float = 2.0) -> Any:
         """
         计算Boll指标（布林带）
 
@@ -418,7 +418,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             self.is_lazy = False
         return self.pl_df
 
-    def calculate_wr(self, windows=None):
+    def calculate_wr(self, windows: Any = None) -> Any:
         """
         计算WR指标（威廉指标）
 
@@ -434,7 +434,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
 
         return self._calculate_window_based_indicator('wr', calculate_wr_polars, windows)
 
-    def sample_data(self, target_points=1000, strategy='uniform', return_polars=True):
+    def sample_data(self, target_points: int = 1000, strategy: str = 'uniform', return_polars: bool = True) -> Any:
         """
         对数据进行采样，减少数据量，提高图表渲染速度
 
@@ -450,7 +450,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
         sampled_data = sample_data_polars(current_data, target_points, strategy)
         return to_output(sampled_data, return_polars)
 
-    def get_data(self, return_polars=True, sample=False, sample_params=None):
+    def get_data(self, return_polars: bool = True, sample: bool = False, sample_params: dict[str, Any] | None = None) -> Any:
         """
         获取包含所有计算指标的数据
 
@@ -477,7 +477,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
 
         return data
 
-    def calculate_ma(self, windows=None):
+    def calculate_ma(self, windows: Any = None) -> Any:
         """
         计算移动平均线
 
@@ -491,7 +491,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             windows = [5, 10, 20, 60]
         return self._calculate_window_based_indicator('ma', calculate_ma_polars, windows)
 
-    def calculate_rsi(self, windows=14):
+    def calculate_rsi(self, windows: Any = 14) -> Any:
         """
         计算RSI指标
 
@@ -503,7 +503,7 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
         """
         return self._calculate_window_based_indicator('rsi', calculate_rsi_polars, windows)
 
-    def calculate_vol_ma(self, windows=None):
+    def calculate_vol_ma(self, windows: Any = None) -> Any:
         """
         计算成交量移动平均线
 

@@ -204,6 +204,16 @@ class BacktestEngine(BaseBacktestEngine):
                 param_ranges, initial_capital, max_workers, context,
                 objective, walk_forward_windows,
             )
+        else:
+            # 未启用滚动验证时显式告知原因，避免调用方误以为已做过 walk-forward
+            logger.warning(
+                f"未启用 walk-forward 滚动验证（walk_forward_windows={walk_forward_windows}，"
+                f"需 ≥2）；仅执行一次样本内/样本外切分"
+            )
+            report['walk_forward'] = {
+                'enabled': False,
+                'reason': f'walk_forward_windows={walk_forward_windows}，需 ≥2 才启用滚动验证',
+            }
 
         return report
 

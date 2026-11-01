@@ -28,7 +28,7 @@ class TrendFollowingStrategy(BaseStrategy):
             'long_window': 20,
         }
 
-    def generate_signal(self, data: Dict[str, Any], index: int) -> str:
+    def generate_signal(self, row: Dict[str, Any], index: int) -> str:
         short_window = self.params.get('short_window', 10)
         long_window = self.params.get('long_window', 20)
 
@@ -39,8 +39,8 @@ class TrendFollowingStrategy(BaseStrategy):
         short_col = f'ma_{short_window}'
         long_col = f'ma_{long_window}'
 
-        short_ma = data.get(short_col)
-        long_ma = data.get(long_col)
+        short_ma = row.get(short_col)
+        long_ma = row.get(long_col)
         if short_ma is None or long_ma is None:
             return 'hold'
 
@@ -57,7 +57,7 @@ class TrendFollowingStrategy(BaseStrategy):
         short_col = f'ma_{short_window}'
         long_col = f'ma_{long_window}'
 
-        # 列缺失时对齐逐行语义：data.get() 返回 None → 全程 hold
+        # 列缺失时对齐逐行语义：row.get() 返回 None → 全程 hold
         if short_col not in df.columns or long_col not in df.columns:
             return pl.Series('signal', ['hold'] * df.height, dtype=pl.Utf8)
 

@@ -170,6 +170,10 @@ def test_optimize_strategy_enforces_oos_by_default():
     )
     assert 'oos_validation' in default_result
     assert default_result['oos_validation']['enabled'] is True
+    # 未指定 walk_forward_windows 时必须显式标记未启用并给出原因
+    walk_forward = default_result['oos_validation']['walk_forward']
+    assert walk_forward['enabled'] is False
+    assert 'walk_forward_windows' in walk_forward['reason']
 
     engine = BacktestEngine(data)
     engine.set_strategy(MAStrategy(short_window=5, long_window=20))

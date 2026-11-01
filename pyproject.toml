@@ -203,6 +203,8 @@ disallow_incomplete_defs = true
 source = ["src"]
 
 [tool.coverage.report]
-fail_under = 42
+# 棘轮：实测 47.8%，门禁只允许上调。每轮补齐测试后同步抬高，
+# 防止覆盖率随新增代码悄悄回落。
+fail_under = 47
 show_missing = true
 skip_covered = true

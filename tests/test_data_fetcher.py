@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 
 import polars as pl
 import psutil
+import pytest
 
 from src.data.managers import data_fetcher as data_fetcher_module
 from src.data.managers.data_fetcher import DataFetcher
@@ -134,7 +135,9 @@ def test_remote_parallel_returns_first_success():
 
 
 def test_remote_all_fail_returns_quickly():
-    """所有远程源都超时，10s 内必须返回（不是每个 future 30s）"""
+    """所有远程源都超时，10s 内必须返回（不是每个 future 30s），并抛结构化异常"""
+    from src.utils.exceptions import DataSourceException
+
     fetcher = make_fetcher()
 
     def hang(**kwargs):
@@ -150,13 +153,33 @@ def test_remote_all_fail_returns_quickly():
     fetcher.register_source(src2)
 
     t0 = time.time()
-    out = fetcher._get_data_from_sources("index", "000001.SH", "20240101", "20241231", "1d")
+    # 全部源故障不能静默返回空表：必须抛结构化异常，调用方能区分"源挂了"与"没数据"
+    with pytest.raises(DataSourceException) as exc_info:
+        fetcher._get_data_from_sources("index", "000001.SH", "20240101", "20241231", "1d")
     elapsed = time.time() - t0
 
-    assert out.is_empty(), "全部失败应返回空 DataFrame"
+    details = exc_info.value.details
+    assert details['attempted'] == 2
+    assert set(details['failed_sources']) == {"H1", "H2"}
     # as_completed timeout = per_source_timeout + 5 = 15s；最坏情况下 2 个源并行 = ~15s
     assert elapsed < 20, f"全部超时应在 20s 内返回，实际={elapsed:.2f}s"
     logger.info(f"  [PASS] test_remote_all_fail_returns_quickly  耗时={elapsed:.2f}s")
+
+
+def test_sources_return_empty_is_not_treated_as_failure():
+    """源正常但无该标的数据：返回空表且不抛异常（与"全部源故障"区分）"""
+    fetcher = make_fetcher()
+
+    def empty(**kwargs):
+        return pl.DataFrame()
+
+    src1 = MagicMock(name="E1"); src1.name = "E1"; src1.is_local = False
+    src1.get_index_data = empty
+    fetcher.register_source(src1)
+
+    out = fetcher._get_data_from_sources("index", "000001.SH", "20240101", "20241231", "1d")
+    assert out.is_empty(), "无数据应返回空表而非异常"
+    logger.info("  [PASS] test_sources_return_empty_is_not_treated_as_failure  空结果不抛异常")
 
 
 def test_unsupported_source_skipped():
@@ -303,6 +326,7 @@ if __name__ == "__main__":
     test_local_priority_returns_immediately()
     test_remote_parallel_returns_first_success()
     test_remote_all_fail_returns_quickly()
+    test_sources_return_empty_is_not_treated_as_failure()
     test_unsupported_source_skipped()
     test_executor_is_single_instance_under_concurrency()
     test_executor_reused_100_times_and_close_releases_it()

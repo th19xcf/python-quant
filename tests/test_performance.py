@@ -324,6 +324,60 @@ def test_memory_usage(data: pl.DataFrame):
     }
 
 
+def test_cpu_usage_baseline(data: pl.DataFrame):
+    """CPU/内存资源基线：向量化信号路径的粗粒度资源门禁。
+
+    固定工作量（单标的 1825 根 K 线 × 20 轮）采集进程 CPU 时间与 RSS 增量，
+    阈值刻意放宽，只拦截数量级回归（例如退化为逐 bar Python 循环、或引入
+    无界缓存），不作为精确基准。
+    """
+    import os
+
+    import psutil
+
+    logger.info("测试 CPU/内存资源基线...")
+    single_stock_data = data.filter(pl.col('stock_code') == 'STOCK0000')
+    strategy = TrendFollowingStrategy()
+    # 预热：表达式编译/调度属固定开销，不计入测量区间
+    strategy.generate_signals_vectorized(single_stock_data)
+
+    process = psutil.Process(os.getpid())
+    cpu_before = process.cpu_times()
+    rss_before = process.memory_info().rss
+    start_time = time.perf_counter()
+
+    passes = 20
+    signals = None
+    for _ in range(passes):
+        signals = strategy.generate_signals_vectorized(single_stock_data)
+
+    elapsed = time.perf_counter() - start_time
+    cpu_after = process.cpu_times()
+    rss_after = process.memory_info().rss
+
+    cpu_delta = (
+        cpu_after.user + cpu_after.system
+        - cpu_before.user - cpu_before.system
+    )
+    rss_increase_mb = (rss_after - rss_before) / 1024 / 1024
+    logger.info(
+        f"信号向量化 {passes} 轮耗时 {elapsed:.3f}s，"
+        f"CPU {cpu_delta:.3f}s，RSS 增量 {rss_increase_mb:.2f} MB"
+    )
+
+    assert signals is not None
+    assert signals.len() == single_stock_data.height
+    assert elapsed < 30.0
+    assert cpu_delta < 30.0
+    assert rss_increase_mb < 1024
+
+    return {
+        'signal_elapsed': elapsed,
+        'signal_cpu': cpu_delta,
+        'signal_rss_increase_mb': rss_increase_mb
+    }
+
+
 def main():
     """
     主函数
@@ -348,6 +402,9 @@ def main():
     # 测试内存使用情况
     memory_results = test_memory_usage(test_data)
 
+    # 测试 CPU/内存资源基线
+    resource_results = test_cpu_usage_baseline(test_data)
+
     # 输出测试结果
     logger.info("\n===== 性能测试结果 =====")
     logger.info("数据处理性能:")
@@ -369,6 +426,10 @@ def main():
     logger.info("\n内存使用情况:")
     for key, value in memory_results.items():
         logger.info(f"  {key}: {value:.2f} MB")
+
+    logger.info("\nCPU/内存资源基线:")
+    for key, value in resource_results.items():
+        logger.info(f"  {key}: {value:.3f}")
 
     logger.info("\n性能测试完成！")
 

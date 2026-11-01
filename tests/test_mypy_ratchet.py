@@ -23,7 +23,9 @@ from pathlib import Path
 SRC_ROOT = Path(__file__).resolve().parents[1] / 'src'
 
 #: 棘轮基线：只允许下降。收口后请同步下调该值。
-UNTYPED_BASELINE = 903
+#: 本轮为 data/services/sync_stock.py 与 tech_analysis/technical_analyzer.py
+#: 的热点函数补注解后实测值（903 -> 845）。
+UNTYPED_BASELINE = 845
 
 #: 已由 pyproject 强制注解的目录，必须恒为 0
 STRICT_DIRS = ('backtest', 'risk', 'api')

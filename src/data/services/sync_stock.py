@@ -7,7 +7,8 @@
 与 sync_tdx_stock_to_database 编排。对外由 sync_service 聚合导出。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from loguru import logger
 
@@ -28,7 +29,7 @@ from src.utils.exceptions import DataSourceException
 # 股票基本信息同步
 # ======================================================================
 
-def _fetch_external_stock_basic(baostock_handler, akshare_handler):
+def _fetch_external_stock_basic(baostock_handler: Any, akshare_handler: Any) -> tuple[Any, Any, dict[str, str]]:
     """获取外部股票基本信息 + Baostock 行业映射。"""
     baostock_basic = None
     akshare_basic = None
@@ -61,12 +62,12 @@ def _fetch_external_stock_basic(baostock_handler, akshare_handler):
     return baostock_basic, akshare_basic, baostock_industry_map
 
 
-def _fetch_baostock_industry_map(baostock_handler):
+def _fetch_baostock_industry_map(baostock_handler: Any) -> dict[str, str]:
     """从 Baostock 获取股票行业映射（ts_code -> industry）。"""
     import baostock as bs
     import polars as pl
 
-    industry_map = {}
+    industry_map: dict[str, str] = {}
     if not baostock_handler or not baostock_handler._ensure_baostock_login():
         return industry_map
 
@@ -89,7 +90,7 @@ def _fetch_baostock_industry_map(baostock_handler):
     return industry_map
 
 
-def _select_akshare_column(frame, candidates):
+def _select_akshare_column(frame: Any, candidates: Any) -> str | None:
     """从 AkShare DataFrame 中选第一个存在且有值的候选列。"""
     return next(
         (c for c in candidates if c in frame.columns and frame[c].notna().any()),
@@ -97,7 +98,7 @@ def _select_akshare_column(frame, candidates):
     )
 
 
-def _collect_akshare_board_names(board_pd):
+def _collect_akshare_board_names(board_pd: Any) -> list[str] | None:
     """从行业板块列表提取板块名称，列表不可用时返回 None。"""
     if board_pd is None or board_pd.empty:
         logger.warning("AkShare 行业板块列表为空")
@@ -111,7 +112,7 @@ def _collect_akshare_board_names(board_pd):
     return [str(v).strip() for v in board_pd[name_col].tolist() if v and str(v).strip()]
 
 
-def _add_board_codes_to_industry_map(industry_map, raw_codes, board_name):
+def _add_board_codes_to_industry_map(industry_map: dict[str, str], raw_codes: Any, board_name: str) -> None:
     """把单板块成分股代码写入行业映射，已存在的代码不覆盖。"""
     for raw_code in raw_codes:
         if not raw_code:
@@ -125,9 +126,9 @@ def _add_board_codes_to_industry_map(industry_map, raw_codes, board_name):
             industry_map[ts_code] = board_name
 
 
-def _collect_board_industry_map(ak, board_names):
+def _collect_board_industry_map(ak: Any, board_names: list[str]) -> dict[str, str]:
     """逐板块拉取成分股，生成 ts_code -> 行业映射。"""
-    industry_map = {}
+    industry_map: dict[str, str] = {}
     for i, board_name in enumerate(board_names):
         if not board_name:
             continue
@@ -157,7 +158,7 @@ def _collect_board_industry_map(ak, board_names):
     return industry_map
 
 
-def _fetch_akshare_industry_map():
+def _fetch_akshare_industry_map() -> dict[str, str]:
     """从 AkShare 行业板块成分获取行业映射（ts_code -> industry）。"""
     import akshare as ak
 
@@ -174,7 +175,7 @@ def _fetch_akshare_industry_map():
         return {}
 
 
-def _create_stock_basic_from_info(ts_code, stock_info):
+def _create_stock_basic_from_info(ts_code: str, stock_info: dict[str, Any]) -> Any:
     """从股票信息字典创建 StockBasic 模型对象。"""
     from src.database.models.stock import StockBasic
 
@@ -212,7 +213,7 @@ class StockBatchContext:
 STOCK_INSERT_BATCH_SIZE = 200
 
 
-def _flush_stock_batch(session, pending, result):
+def _flush_stock_batch(session: Any, pending: list[Any], result: dict[str, Any]) -> None:
     """批量写入一批 StockBasic 记录（一次 add_all + 一次 commit）。
 
     原先逐股 ``session.add`` 且每只固定 ``sleep(0.1)``，5000 只股票仅 sleep
@@ -233,7 +234,7 @@ def _flush_stock_batch(session, pending, result):
         result['failed_stocks'].extend(ts_code for ts_code, _ in pending)
 
 
-def _process_single_stock_batch(ctx):
+def _process_single_stock_batch(ctx: StockBatchContext) -> None:
     """处理单批股票（新增阶段）：攒批写入，逐股仅做内存字典查询。"""
     pending = []
 
@@ -272,7 +273,7 @@ def _process_single_stock_batch(ctx):
     _flush_stock_batch(ctx.session, pending, ctx.result)
 
 
-def _finalize_database_commit(session, result):
+def _finalize_database_commit(session: Any, result: dict[str, Any]) -> None:
     """完成数据库最终提交。"""
     try:
         session.commit()
@@ -289,7 +290,7 @@ def _finalize_database_commit(session, result):
     )
 
 
-def _log_sync_result(result):
+def _log_sync_result(result: dict[str, Any]) -> None:
     """记录股票同步结果统计。"""
     logger.info("=" * 60)
     logger.info("同步结果统计:")
@@ -306,7 +307,7 @@ def _log_sync_result(result):
     logger.info("=" * 60)
 
 
-def _normalize_stock_status(status):
+def _normalize_stock_status(status: Any) -> str:
     """将外部状态值归一化到 L/D/P。"""
     raw = str(status or '').strip().upper()
     if raw in {'L', '1', 'LISTED'}:
@@ -318,7 +319,7 @@ def _normalize_stock_status(status):
     return 'L'
 
 
-def _infer_stock_market_from_ts_code(ts_code):
+def _infer_stock_market_from_ts_code(ts_code: str | None) -> str:
     """根据 ts_code 推断市场板块。"""
     if not ts_code or '.' not in ts_code:
         return ''
@@ -341,7 +342,7 @@ def _infer_stock_market_from_ts_code(ts_code):
     return ''
 
 
-def _update_stock_text_field(row, field_name, source_value, result, max_len=None):
+def _update_stock_text_field(row: Any, field_name: str, source_value: Any, result: dict[str, Any], max_len: int | None = None) -> bool:
     """更新股票文本字段；空值视为回填，非空且变化视为刷新。"""
     new_value = _normalize_text_value(source_value, max_len)
     if not new_value:
@@ -359,7 +360,7 @@ def _update_stock_text_field(row, field_name, source_value, result, max_len=None
     return True
 
 
-def _update_stock_date_field(row, field_name, source_value, result):
+def _update_stock_date_field(row: Any, field_name: str, source_value: Any, result: dict[str, Any]) -> bool:
     """更新股票日期字段；空值视为回填，非空且变化视为刷新。"""
     new_value = _normalize_date_value(source_value)
     if new_value is None:
@@ -387,13 +388,13 @@ class StockSyncContext:
     tdx_handler: object | None = None
     baostock_handler: object | None = None
     akshare_handler: object | None = None
-    existing_codes: set | None = None
-    new_codes: list | None = None
-    tdx_stock_codes: list | None = None
-    merged_basic: dict | None = None
+    existing_codes: set[str] = field(default_factory=set)
+    new_codes: list[str] | None = None
+    tdx_stock_codes: list[str] | None = None
+    merged_basic: dict[str, Any] = field(default_factory=dict)
 
 
-def _first_stock_field(row, *keys):
+def _first_stock_field(row: Any, *keys: str) -> Any:
     """按候选字段顺序取第一个非空值，全部缺失返回空串。"""
     for key in keys:
         value = row.get(key)
@@ -402,7 +403,7 @@ def _first_stock_field(row, *keys):
     return ''
 
 
-def _build_stock_info(ts_code, symbol, row, source):
+def _build_stock_info(ts_code: str, symbol: str, row: Any, source: str) -> dict[str, Any]:
     """构建股票信息字典（统一多源字段名）。"""
     return {
         'symbol': symbol,
@@ -417,7 +418,7 @@ def _build_stock_info(ts_code, symbol, row, source):
     }
 
 
-def _merge_baostock_basic(merged, baostock_df, existing_codes):
+def _merge_baostock_basic(merged: dict[str, Any], baostock_df: Any, existing_codes: set[str]) -> None:
     """并入 Baostock 基本信息，已存在或非法代码跳过。"""
     if baostock_df is None or baostock_df.is_empty():
         return
@@ -432,7 +433,7 @@ def _merge_baostock_basic(merged, baostock_df, existing_codes):
         merged[ts_code] = _build_stock_info(ts_code, code, row, 'baostock')
 
 
-def _merge_akshare_basic(merged, akshare_df, existing_codes):
+def _merge_akshare_basic(merged: dict[str, Any], akshare_df: Any, existing_codes: set[str]) -> None:
     """并入 AkShare 基本信息，已存在代码按字段补全。"""
     if akshare_df is None or akshare_df.is_empty():
         return
@@ -470,12 +471,12 @@ def _merge_akshare_basic(merged, akshare_df, existing_codes):
             }
 
 
-def merge_stock_basic(baostock_df, akshare_df, existing_codes=None):
+def merge_stock_basic(baostock_df: Any, akshare_df: Any, existing_codes: set[str] | None = None) -> dict[str, Any]:
     """合并 Baostock 和 AkShare 的股票基本信息。"""
     if existing_codes is None:
         existing_codes = set()
 
-    merged = {}
+    merged: dict[str, Any] = {}
     _merge_baostock_basic(merged, baostock_df, existing_codes)
     _merge_akshare_basic(merged, akshare_df, existing_codes)
 
@@ -483,7 +484,7 @@ def merge_stock_basic(baostock_df, akshare_df, existing_codes=None):
     return merged
 
 
-def get_stock_info_from_apis(ts_code, merged_basic, baostock_handler, akshare_handler):
+def get_stock_info_from_apis(ts_code: str, merged_basic: dict[str, Any], baostock_handler: Any, akshare_handler: Any) -> dict[str, Any] | None:
     """从合并后的基本信息中获取单个股票的详细信息。"""
     symbol = ts_code.split('.')[0]
 
@@ -510,7 +511,7 @@ def get_stock_info_from_apis(ts_code, merged_basic, baostock_handler, akshare_ha
     return None
 
 
-def _prune_non_stock_rows(session, result):
+def _prune_non_stock_rows(session: Any, result: dict[str, Any]) -> tuple[set[str], set[str]]:
     """清理 stock_basic 中的基金/指数行，返回 (existing_codes, non_stock_code_set)。"""
     from src.database.models.stock import StockBasic
 
@@ -534,7 +535,7 @@ def _prune_non_stock_rows(session, result):
     return existing_codes, non_stock_code_set
 
 
-def _apply_baostock_industry(merged_basic, baostock_industry_map):
+def _apply_baostock_industry(merged_basic: dict[str, Any], baostock_industry_map: dict[str, str]) -> None:
     """把 Baostock 行业映射并入 merged_basic，仅在缺失或未知时覆盖。"""
     if not baostock_industry_map:
         return
@@ -552,7 +553,7 @@ def _apply_baostock_industry(merged_basic, baostock_industry_map):
                 merged_basic[ts_code]['industry'] = industry
 
 
-def _apply_akshare_industry_fallback(merged_basic, tdx_stock_codes):
+def _apply_akshare_industry_fallback(merged_basic: dict[str, Any], tdx_stock_codes: list[str]) -> int:
     """按需用 AkShare 行业板块成分兜底缺失行业，返回补充映射条数。"""
     missing_industry_count = sum(
         1 for ts_code in tdx_stock_codes
@@ -579,7 +580,7 @@ def _apply_akshare_industry_fallback(merged_basic, tdx_stock_codes):
     return len(akshare_industry_map)
 
 
-def _backfill_text_fields(row, source_info, result):
+def _backfill_text_fields(row: Any, source_info: dict[str, Any], result: dict[str, Any]) -> bool:
     """回填存量股票的名称/地区/行业/市场字段，返回是否有改动。"""
     changed = False
 
@@ -612,7 +613,7 @@ def _backfill_text_fields(row, source_info, result):
     return changed
 
 
-def _backfill_list_date(row, source_info, session, config, result):
+def _backfill_list_date(row: Any, source_info: dict[str, Any], session: Any, config: Any, result: dict[str, Any]) -> bool:
     """按外部字段 -> 通达信首末日期 -> stock_daily 最早交易日三档回填上市日期。"""
     changed = False
 
@@ -644,7 +645,7 @@ def _backfill_list_date(row, source_info, session, config, result):
     return changed
 
 
-def _backfill_status(row, source_info, result):
+def _backfill_status(row: Any, source_info: dict[str, Any], result: dict[str, Any]) -> bool:
     """回填或刷新存量股票状态，返回是否有改动。"""
     raw_status = str(source_info.get('status', '') or '').strip()
     source_status = _normalize_stock_status(raw_status) if raw_status else ''
@@ -662,7 +663,7 @@ def _backfill_status(row, source_info, result):
     return False
 
 
-def _backfill_stock_row(row, source_info, session, config, result):
+def _backfill_stock_row(row: Any, source_info: dict[str, Any], session: Any, config: Any, result: dict[str, Any]) -> bool:
     """回填单只存量股票的文本、上市/退市日期与状态，返回是否有改动。"""
     changed = _backfill_text_fields(row, source_info, result)
 
@@ -678,7 +679,7 @@ def _backfill_stock_row(row, source_info, session, config, result):
     return changed
 
 
-def _prepare_stock_sync(config, db_manager, session, result):
+def _prepare_stock_sync(config: Any, db_manager: Any, session: Any, result: dict[str, Any]) -> StockSyncContext | None:
     """同步准备阶段：扫描通达信代码、清理非股票记录并准备外部基本信息。"""
     from src.data.akshare_handler import AkShareHandler
     from src.data.baostock_handler import BaostockHandler
@@ -743,7 +744,7 @@ def _prepare_stock_sync(config, db_manager, session, result):
     )
 
 
-def _run_stock_sync(ctx, session, config, result):
+def _run_stock_sync(ctx: StockSyncContext, session: Any, config: Any, result: dict[str, Any]) -> None:
     """同步执行阶段：新增股票并回填 stock_basic 存量信息，最后提交。"""
     from src.database.models.stock import StockBasic
 
@@ -756,7 +757,7 @@ def _run_stock_sync(ctx, session, config, result):
         logger.info("所有通达信股票都已存在，跳过新增阶段，继续执行存量回填")
 
     # 第二阶段：回填并刷新 stock_basic 存量信息
-    def _backfill(row):
+    def _backfill(row: Any) -> None:
         if _is_index_ts_code(row.ts_code) or _is_fund_ts_code(row.ts_code, row.name, row.market):
             return
         source_info = ctx.merged_basic.get(row.ts_code, {})
@@ -772,7 +773,7 @@ def _run_stock_sync(ctx, session, config, result):
     _finalize_database_commit(session, result)
 
 
-def sync_tdx_stock_to_database(config, db_manager):
+def sync_tdx_stock_to_database(config: Any, db_manager: Any) -> dict[str, Any]:
     """
     从通达信数据源同步股票信息到数据库。
 
@@ -794,10 +795,10 @@ def sync_tdx_stock_to_database(config, db_manager):
         'refreshed_fields': 0,
     }
 
-    def prepare(session):
+    def prepare(session: Any) -> StockSyncContext | None:
         return _prepare_stock_sync(config, db_manager, session, result)
 
-    def run(ctx, session):
+    def run(ctx: StockSyncContext, session: Any) -> None:
         _run_stock_sync(ctx, session, config, result)
 
     return _execute_sync_flow(

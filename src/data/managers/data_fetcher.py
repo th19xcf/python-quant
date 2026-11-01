@@ -12,6 +12,7 @@ import multiprocessing
 import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, List, Literal, Union, cast
 
@@ -22,6 +23,7 @@ from src.data.data_cache import global_data_cache
 from src.data.data_source_health import get_global_health_checker
 from src.data.managers.source_worker import call_source
 from src.utils.date_utils import parse_date
+from src.utils.exceptions import DataSourceException
 from src.utils.memory_optimizer import MemoryOptimizer
 from src.utils.monitoring import global_monitoring_system
 
@@ -31,6 +33,30 @@ _PROCESS_ISOLATED_HANDLERS = {
     'src.data.akshare_handler:AkShareHandler',
     'src.data.baostock_handler:BaostockHandler',
 }
+
+
+@dataclass
+class _SourceAttempts:
+    """单次取数的源尝试记录。
+
+    用于把「全部数据源都故障」与「数据源正常但没有该标的数据」分开：
+    后者返回空 DataFrame（业务流程据此提示"无数据"），前者抛结构化异常，
+    避免数据源整体不可用时被静默当成"没有数据"。
+    """
+
+    attempted: int = 0
+    failed: List[str] = field(default_factory=list)
+
+    def record(self, source_name: str, failed: bool) -> None:
+        self.attempted += 1
+        if failed:
+            self.failed.append(source_name)
+
+    @property
+    def all_failed(self) -> bool:
+        """全部尝试过的源都报错（而非返回空结果）"""
+        return self.attempted > 0 and len(self.failed) == self.attempted
+
 
 
 class DataFetcher:
@@ -528,6 +554,9 @@ class DataFetcher:
             logger.warning(f"没有可用的数据源来获取{data_type}数据")
             return pl.DataFrame()
 
+        # 逐源记账：区分「源故障」与「源正常但无该标的数据」
+        attempts = _SourceAttempts()
+
         # 分离本地与远程
         local_sources = [s for s in candidates if self._source_capabilities[s]['is_local']]
         remote_sources = [s for s in candidates if not self._source_capabilities[s]['is_local']]
@@ -537,7 +566,8 @@ class DataFetcher:
             local_sources.sort(key=lambda s: self._get_source_priority(getattr(s, 'name', s.__class__.__name__)))
             for src in local_sources:
                 data = self._try_source_with_timeout(
-                    src, data_type, code, start_date, end_date, frequency, adjustment_type, timeout=5
+                    src, data_type, code, start_date, end_date, frequency, adjustment_type,
+                    timeout=5, attempts=attempts,
                 )
                 if data is not None and not data.is_empty():
                     source_name = getattr(src, 'name', src.__class__.__name__)
@@ -550,14 +580,40 @@ class DataFetcher:
             remote_sources.sort(key=lambda s: self._get_source_priority(getattr(s, 'name', s.__class__.__name__)))
             logger.info(f"并行从{len(remote_sources)}个远程源获取{type_name}{code}数据",
                         **{"symbol": code, "data_type": data_type, "remote_sources": len(remote_sources)})
-            return self._try_remote_sources_parallel(
+            data = self._try_remote_sources_parallel(
                 remote_sources, data_type, code, start_date, end_date, frequency, adjustment_type,
-                per_source_timeout=10,
+                per_source_timeout=10, attempts=attempts,
             )
+            if not data.is_empty():
+                return data
+            self._raise_if_all_sources_failed(attempts, type_name, code, data_type)
+            return data
 
+        self._raise_if_all_sources_failed(attempts, type_name, code, data_type)
         logger.warning(f"无法从任何数据源获取{type_name}{code}数据",
                        **{"symbol": code, "data_type": data_type})
         return pl.DataFrame()
+
+    @staticmethod
+    def _raise_if_all_sources_failed(attempts: _SourceAttempts, type_name: str,
+                                     code: str, data_type: str) -> None:
+        """全部尝试过的源都故障时抛结构化异常；只要有一个源正常返回空结果就视为无数据。"""
+        if not attempts.all_failed:
+            return
+
+        failed_sources = list(attempts.failed)
+        logger.error(f"全部{attempts.attempted}个数据源获取{type_name}{code}均失败",
+                     **{"symbol": code, "data_type": data_type, "failed_sources": failed_sources})
+        raise DataSourceException(
+            source=','.join(failed_sources),
+            message=f"全部 {attempts.attempted} 个数据源获取{type_name}{code}均失败",
+            details={
+                'code': code,
+                'data_type': data_type,
+                'attempted': attempts.attempted,
+                'failed_sources': failed_sources,
+            },
+        )
 
     def _get_candidate_sources(self, data_type: str) -> List:
         """获取支持该数据类型、当前可用且未处于熔断期的数据源"""
@@ -633,7 +689,8 @@ class DataFetcher:
         return False
 
     def _try_source_with_timeout(self, source, data_type, code, start_date, end_date,
-                                  frequency, adjustment_type, timeout):
+                                  frequency, adjustment_type, timeout,
+                                  attempts: _SourceAttempts | None = None):
         """调用单个源，带超时。返回 DataFrame 或 None"""
         call = self._build_source_call(source, data_type, code, start_date, end_date,
                                         frequency, adjustment_type)
@@ -646,27 +703,38 @@ class DataFetcher:
         future = executor.submit(self._fetch_from_source, source, method_name, **kwargs)
         future.add_done_callback(self._consume_late_result)
         try:
-            success, result = future.result(timeout=timeout)
+            success, result, error = future.result(timeout=timeout)
             if success and result is not None and not result.is_empty():
                 logger.info(f"从{source_name}成功获取数据",
                             **{"symbol": code, "source": source_name, "rows": result.height})
+                if attempts is not None:
+                    attempts.record(source_name, failed=False)
                 return result
+            # 空结果 = 该源正常但没有这只标的的数据，不算故障
+            if attempts is not None:
+                attempts.record(source_name, failed=bool(error))
             return None
         except concurrent.futures.TimeoutError:
             logger.warning(f"从{source_name}获取数据超时（{timeout}s）",
                            **{"symbol": code, "source": source_name, "timeout": timeout})
             future.cancel()
+            if attempts is not None:
+                attempts.record(source_name, failed=True)
             return None
         # 兜底理由：单数据源取数失败降级为跳过
         except Exception as e:  # noqa: BLE001
             logger.warning(f"从{source_name}获取数据失败: {e}",
                            **{"symbol": code, "source": source_name, "error": str(e)})
+            if attempts is not None:
+                attempts.record(source_name, failed=True)
             return None
 
     def _try_remote_sources_parallel(self, sources, data_type, code, start_date, end_date,
-                                      frequency, adjustment_type, per_source_timeout=10) -> pl.DataFrame:
+                                      frequency, adjustment_type, per_source_timeout=10,
+                                      attempts: _SourceAttempts | None = None) -> pl.DataFrame:
         """并行调用多个远程源，命中即取消其他"""
         futures = {}
+        resolved = set()
         type_name = "股票" if data_type == "stock" else "指数"
 
         for src in sources:
@@ -677,11 +745,14 @@ class DataFetcher:
             method_name, kwargs = call
             future, isolated = self._submit_source_call(src, method_name, kwargs)
             futures[future] = (src, isolated, time.time())
+            if attempts is not None:
+                attempts.attempted += 1
 
         try:
             for future in concurrent.futures.as_completed(futures, timeout=per_source_timeout + 5):
                 src, isolated, start_time = futures[future]
-                result = self._resolve_source_future(future, src, isolated, start_time)
+                result = self._resolve_source_future(future, src, isolated, start_time, attempts)
+                resolved.add(future)
                 if result is not None and not result.is_empty():
                     # 命中：取消其他
                     for f in futures:
@@ -695,17 +766,7 @@ class DataFetcher:
             # 所有源在 (per_source_timeout + 5) 秒内都没有完成
             logger.warning(f"远程源全部超时（>{per_source_timeout + 5}s）",
                            **{"symbol": code, "data_type": data_type, "timeout": per_source_timeout + 5})
-            # 先记账再终止：终止后 future 会变成 broken，无法再判断真实状态
-            pending_isolated = [
-                (getattr(src, 'name', src.__class__.__name__), start_time)
-                for future, (src, isolated, start_time) in futures.items()
-                if isolated and not future.done()
-            ]
-            for source_name, start_time in pending_isolated:
-                self._record_isolated_result(
-                    source_name, start_time, False,
-                    f"timeout>{per_source_timeout + 5}s",
-                )
+            self._settle_timeout_futures(futures, resolved, attempts, per_source_timeout)
             # 子进程挂死时线程超时只能"不再等待"，必须真正终止子进程并重建池
             if any(isolated for _, isolated, _ in futures.values()):
                 self._abort_process_pool()
@@ -717,8 +778,34 @@ class DataFetcher:
 
         return pl.DataFrame()
 
+    def _settle_timeout_futures(self, futures, resolved, attempts: _SourceAttempts | None,
+                                per_source_timeout: int) -> None:
+        """远程源整体超时后的收尾记账：健康检查 + 故障归因"""
+        # 先记账再终止：终止后 future 会变成 broken，无法再判断真实状态
+        pending_isolated = [
+            (getattr(src, 'name', src.__class__.__name__), start_time)
+            for future, (src, isolated, start_time) in futures.items()
+            if isolated and not future.done()
+        ]
+        for source_name, start_time in pending_isolated:
+            self._record_isolated_result(
+                source_name, start_time, False,
+                f"timeout>{per_source_timeout + 5}s",
+            )
+        if attempts is None:
+            return
+        # 未拿到结果的源统一记为失败（已完成的按真实结果记账，避免误判）
+        for future, (src, isolated, start_time) in futures.items():
+            if future in resolved:
+                continue
+            if future.done() and not future.cancelled():
+                self._resolve_source_future(future, src, isolated, start_time, attempts)
+            else:
+                attempts.failed.append(getattr(src, 'name', src.__class__.__name__))
+
     def _resolve_source_future(self, future, src, isolated: bool,
-                               start_time: float) -> pl.DataFrame | None:
+                               start_time: float,
+                               attempts: _SourceAttempts | None = None) -> pl.DataFrame | None:
         """解析单个取数 future，成功返回 DataFrame（可能为空），失败/超时返回 None"""
         source_name = getattr(src, 'name', src.__class__.__name__)
         try:
@@ -727,14 +814,19 @@ class DataFetcher:
                 success, error, result = future.result(timeout=0.1)
                 self._record_isolated_result(source_name, start_time, success, error)
             else:
-                success, result = future.result(timeout=0.1)
+                success, result, error = future.result(timeout=0.1)
 
             if success and result is not None and not result.is_empty():
                 return MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
+            if attempts is not None and error:
+                # 源报错才算故障；空结果表示该源没有此标的的数据
+                attempts.failed.append(source_name)
             return None
         except concurrent.futures.TimeoutError:
             logger.warning(f"从{source_name}获取数据超时",
                            **{"symbol": source_name})
+            if attempts is not None:
+                attempts.failed.append(source_name)
             return None
         # 兜底理由：单数据源结果处理失败降级为跳过
         except Exception as e:  # noqa: BLE001
@@ -742,6 +834,8 @@ class DataFetcher:
                            **{"source": source_name, "error": str(e)})
             if isolated:
                 self._record_isolated_result(source_name, start_time, False, str(e))
+            if attempts is not None:
+                attempts.failed.append(source_name)
             return None
 
     # ------------------------------------------------------------------
@@ -952,7 +1046,7 @@ class DataFetcher:
             **kwargs: 方法参数
 
         Returns:
-            tuple: (成功标志, 数据)
+            tuple: (成功标志, 数据, 错误信息)；空结果不算故障，error 留空
         """
         start_time = time.time()
         success = False
@@ -972,7 +1066,7 @@ class DataFetcher:
                         # 内存优化
                         optimized_result = MemoryOptimizer.optimize_dataframe(result, enable_sparse=True)
                         success = True
-                        return True, optimized_result
+                        return True, optimized_result, ""
                 elif hasattr(result, 'collect'):
                     # 处理LazyFrame
                     collected_result = result.collect()
@@ -980,7 +1074,7 @@ class DataFetcher:
                         # 内存优化
                         optimized_result = MemoryOptimizer.optimize_dataframe(collected_result, enable_sparse=True)
                         success = True
-                        return True, optimized_result
+                        return True, optimized_result, ""
                 else:
                     # 处理其他类型的结果
                     try:
@@ -989,19 +1083,19 @@ class DataFetcher:
                             # 内存优化
                             optimized_result = MemoryOptimizer.optimize_dataframe(df, enable_sparse=True)
                             success = True
-                            return True, optimized_result
+                            return True, optimized_result, ""
                     # 兜底理由：内存优化失败退回未优化数据
                     except Exception as exc:  # noqa: BLE001
                         # 内存优化失败不影响主流程，退回未优化的原始 DataFrame
                         logger.debug(f"内存优化失败，使用未优化数据: {exc}")
-                return False, None
+                return False, None, ""
             else:
-                return False, None
+                return False, None, ""
         # 兜底理由：多源取数整体兜底返回失败
         except Exception as e:  # noqa: BLE001
             error_message = str(e)
             logger.warning(f"从{source_name}获取数据失败: {e}")
-            return False, None
+            return False, None, error_message
         finally:
             # 记录监控数据
             response_time = time.time() - start_time

@@ -32,11 +32,11 @@ class MultiFactorStrategy(BaseStrategy):
         self.params['weights'] = weights or {'ma': 0.3, 'macd': 0.4, 'rsi': 0.3}
         self.params['threshold'] = threshold
 
-    def _ma_factor(self, data: Dict[str, Any]) -> float:
+    def _ma_factor(self, row: Dict[str, Any]) -> float:
         short_w = self.params.get('short_window', 10)
         long_w = self.params.get('long_window', 20)
-        short_ma = data.get(f'ma_{short_w}')
-        long_ma = data.get(f'ma_{long_w}')
+        short_ma = row.get(f'ma_{short_w}')
+        long_ma = row.get(f'ma_{long_w}')
         if short_ma is None or long_ma is None:
             return 0
         if short_ma > long_ma:
@@ -45,9 +45,9 @@ class MultiFactorStrategy(BaseStrategy):
             return -1
         return 0
 
-    def _macd_factor(self, data: Dict[str, Any]) -> float:
-        macd = data.get('macd')
-        signal = data.get('macd_signal')
+    def _macd_factor(self, row: Dict[str, Any]) -> float:
+        macd = row.get('macd')
+        signal = row.get('macd_signal')
         if macd is None or signal is None:
             return 0
         # 当前 MACD 穿越信号线的方向（回测里没有 prev_macd/prev_signal 历史，
@@ -58,8 +58,8 @@ class MultiFactorStrategy(BaseStrategy):
             return -1
         return 0
 
-    def _rsi_factor(self, data: Dict[str, Any]) -> float:
-        rsi = data.get('rsi')
+    def _rsi_factor(self, row: Dict[str, Any]) -> float:
+        rsi = row.get('rsi')
         if rsi is None:
             return 0
         if rsi < 30:
@@ -81,17 +81,17 @@ class MultiFactorStrategy(BaseStrategy):
             26 + 9,
         )
 
-    def generate_signal(self, data: Dict[str, Any], index: int) -> str:
+    def generate_signal(self, row: Dict[str, Any], index: int) -> str:
         if index < self._warmup_bars():
             return 'hold'
         factor_values = {}
         factors = self.params['factors']
         if 'ma' in factors:
-            factor_values['ma'] = self._ma_factor(data)
+            factor_values['ma'] = self._ma_factor(row)
         if 'macd' in factors:
-            factor_values['macd'] = self._macd_factor(data)
+            factor_values['macd'] = self._macd_factor(row)
         if 'rsi' in factors:
-            factor_values['rsi'] = self._rsi_factor(data)
+            factor_values['rsi'] = self._rsi_factor(row)
 
         weights = self.params['weights']
         score = sum(
@@ -109,7 +109,7 @@ class MultiFactorStrategy(BaseStrategy):
     def _factor_expr(self, name: str, df: pl.DataFrame) -> pl.Expr | None:
         """单因子贡献表达式（1 / 0 / -1），与对应 _*_factor 逐行版语义一致。
 
-        依赖列缺失时返回 None，等价逐行版 data.get() 取 None → 贡献 0。
+        依赖列缺失时返回 None，等价逐行版 row.get() 取 None → 贡献 0。
         """
         if name == 'ma':
             short_w = self.params.get('short_window', 10)

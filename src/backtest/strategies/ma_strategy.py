@@ -34,13 +34,13 @@ class MAStrategy(BaseStrategy):
         self.params['short_window'] = short_window
         self.params['long_window'] = long_window
 
-    def generate_signal(self, data: Dict[str, Any], index: int) -> str:
+    def generate_signal(self, row: Dict[str, Any], index: int) -> str:
         """
         生成交易信号
 
         Args:
-            data: 当前数据（含引擎预计算的 ma_{short_window}、ma_{long_window} 列）
-            index: 当前数据索引
+            row: 当前 bar 的行字典（含引擎预计算的 ma_{short_window}、ma_{long_window} 列）
+            index: 当前 bar 行号（本策略不使用）
 
         Returns:
             str: 交易信号，'buy'、'sell'或'hold'
@@ -48,8 +48,8 @@ class MAStrategy(BaseStrategy):
         short_w = self.params.get('short_window', 5)
         long_w = self.params.get('long_window', 20)
 
-        short_ma = data.get(f'ma_{short_w}')
-        long_ma = data.get(f'ma_{long_w}')
+        short_ma = row.get(f'ma_{short_w}')
+        long_ma = row.get(f'ma_{long_w}')
 
         # 预计算列窗口未满的前 long_window-1 根为 None，此时不交易
         if short_ma is None or long_ma is None:
@@ -67,7 +67,7 @@ class MAStrategy(BaseStrategy):
         short_col = f'ma_{short_w}'
         long_col = f'ma_{long_w}'
 
-        # 列缺失时对齐逐行语义：data.get() 返回 None → 全程 hold
+        # 列缺失时对齐逐行语义：row.get() 返回 None → 全程 hold
         if short_col not in df.columns or long_col not in df.columns:
             return pl.Series('signal', ['hold'] * df.height, dtype=pl.Utf8)
 
