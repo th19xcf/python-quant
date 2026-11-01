@@ -116,6 +116,8 @@ def service(tmp_path):
     session = sessionmaker(bind=engine)()
     yield StStatusService(session=session)
     session.close()
+    # 释放连接池持有的 sqlite 连接，避免 ResourceWarning: unclosed database
+    engine.dispose()
 
 
 def test_refresh_current_writes_and_closes_intervals(service, monkeypatch):

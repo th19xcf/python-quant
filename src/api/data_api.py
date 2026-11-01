@@ -268,7 +268,7 @@ class IDataProcessor(Protocol):
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def convert_data_type(self, data: Union[pl.DataFrame, pl.LazyFrame], target_type: str = 'float32') -> Union[pl.DataFrame, pl.LazyFrame]:
+    def convert_data_type(self, data: Union[pl.DataFrame, pl.LazyFrame], target_type: str = 'float64') -> Union[pl.DataFrame, pl.LazyFrame]:
         """转换数据类型
 
         Args:

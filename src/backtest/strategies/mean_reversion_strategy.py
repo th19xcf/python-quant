@@ -19,7 +19,7 @@ class MeanReversionStrategy(BaseStrategy):
     均值回归策略，基于 RSI 超买超卖信号
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("MeanReversion")
         self.params = {
             'rsi_period': 14,

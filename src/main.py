@@ -72,6 +72,11 @@ def _initialize_system(config):
     setup_logger(config)
     logger.info("日志系统初始化成功")
 
+    # 内置指标注册有一次性开销（约 1.2s），放到后台线程预热，避免阻塞首屏
+    from src.tech_analysis.indicator_manager import prewarm_indicators_async
+    prewarm_indicators_async()
+    logger.info("指标注册预热已在后台启动")
+
     plugin_manager = PluginManager(config)
     logger.info("插件管理器初始化成功")
 

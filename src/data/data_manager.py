@@ -699,7 +699,7 @@ class DataManager:
         processor = DataProcessor(self.config)
         return processor.sample_data(data, target_points, strategy)
 
-    def convert_data_type(self, data: Union[pl.DataFrame, pl.LazyFrame], target_type: str = 'float32') -> Union[pl.DataFrame, pl.LazyFrame]:
+    def convert_data_type(self, data: Union[pl.DataFrame, pl.LazyFrame], target_type: str = 'float64') -> Union[pl.DataFrame, pl.LazyFrame]:
         """
         转换数据类型
 

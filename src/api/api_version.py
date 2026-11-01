@@ -120,12 +120,12 @@ class APIVersion:
 class APIRouter:
     """API路由器，用于管理API路由和版本"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """初始化API路由器"""
         self._routes: Dict[str, Dict[str, Any]] = {}
         self._version_routes: Dict[str, Dict[str, Any]] = {}
 
-    def register_route(self, path: str, handler: Callable, methods: List[str] | None = None, **kwargs):
+    def register_route(self, path: str, handler: Callable[..., Any], methods: List[str] | None = None, **kwargs: Any) -> None:
         """注册API路由
 
         Args:
@@ -143,7 +143,7 @@ class APIRouter:
             'kwargs': kwargs
         }
 
-    def register_versioned_route(self, version: Union[str, APIVersion], path: str, handler: Callable, methods: List[str] | None = None, **kwargs):
+    def register_versioned_route(self, version: Union[str, APIVersion], path: str, handler: Callable[..., Any], methods: List[str] | None = None, **kwargs: Any) -> None:
         """注册带版本的API路由
 
         Args:
@@ -248,7 +248,7 @@ class APIRequest:
         return self._version
 
     @version.setter
-    def version(self, version: Union[str, APIVersion]):
+    def version(self, version: Union[str, APIVersion]) -> None:
         """设置API版本
 
         Args:

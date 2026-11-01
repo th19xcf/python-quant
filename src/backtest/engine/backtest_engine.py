@@ -28,7 +28,7 @@ class BacktestEngine(BaseBacktestEngine):
     - 被拒的单子记进 self.rejected_orders，包含规则名和原因
     """
 
-    def __init__(self, data):
+    def __init__(self, data: Any) -> None:
         """
         初始化回测引擎
 
@@ -40,7 +40,7 @@ class BacktestEngine(BaseBacktestEngine):
 
     def run_backtest(self, initial_capital: float = 1000000.0, lot_size: int = 100,
                      ts_code: str = '', industry: str = '',
-                     is_st: StStatusEntry | None = None, **params) -> Dict[str, Any]:
+                     is_st: StStatusEntry | None = None, **params: Any) -> Dict[str, Any]:
         """
         运行回测
 
@@ -255,7 +255,7 @@ class BacktestEngine(BaseBacktestEngine):
             'mean_oos_total_return': sum(oos_returns) / len(oos_returns) if oos_returns else 0.0,
         }
 
-    def _should_use_process_pool(self, frame, param_combinations) -> bool:
+    def _should_use_process_pool(self, frame: Any, param_combinations: List[Dict[str, float]]) -> bool:
         """判断是否值得切进程池：需可 pickle 且预计串行耗时超过启动成本。"""
         import pickle
 
@@ -285,8 +285,9 @@ class BacktestEngine(BaseBacktestEngine):
             )
         return use_process_pool
 
-    def _run_process_pool_backtests(self, frame, param_combinations, initial_capital,
-                                    max_workers, context) -> List[Dict[str, Any]]:
+    def _run_process_pool_backtests(self, frame: Any, param_combinations: List[Dict[str, float]],
+                                    initial_capital: float, max_workers: int,
+                                    context: Dict[str, Any] | None) -> List[Dict[str, Any]]:
         """用进程池并行执行回测并收集结果。"""
         import concurrent.futures
         import os
@@ -311,8 +312,9 @@ class BacktestEngine(BaseBacktestEngine):
 
         return results
 
-    def _run_thread_pool_backtests(self, frame, param_combinations, initial_capital,
-                                   max_workers, context) -> List[Dict[str, Any]]:
+    def _run_thread_pool_backtests(self, frame: Any, param_combinations: List[Dict[str, float]],
+                                   initial_capital: float, max_workers: int,
+                                   context: Dict[str, Any] | None) -> List[Dict[str, Any]]:
         """用线程池并行执行回测并收集结果。"""
         import concurrent.futures
 
@@ -337,7 +339,7 @@ class BacktestEngine(BaseBacktestEngine):
     def _run_parallel_backtests(self, param_combinations: List[Dict[str, float]],
                                 initial_capital: float, max_workers: int,
                                 context: Dict[str, Any] | None = None,
-                                data = None) -> List[Dict[str, Any]]:
+                                data: Any = None) -> List[Dict[str, Any]]:
         """
         并行运行回测
 
@@ -362,7 +364,7 @@ class BacktestEngine(BaseBacktestEngine):
         )
 
     def _run_single_backtest(self, params: Dict[str, float], initial_capital: float,
-                             context: Dict[str, Any] | None, data) -> Dict[str, Any]:
+                             context: Dict[str, Any] | None, data: Any) -> Dict[str, Any]:
         """用指定参数在指定数据段上跑一次回测（OOS / walk-forward 复用）。"""
         strategy_copy = clone_strategy(self.strategy, params)
 

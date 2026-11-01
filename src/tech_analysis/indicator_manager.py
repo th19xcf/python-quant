@@ -5,6 +5,7 @@
 提供统一的指标计算和管理接口
 """
 
+import threading
 from typing import Any, Callable, Dict, List, Union
 
 import pandas as pd
@@ -315,6 +316,52 @@ _BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
 )
 
 
+# 内置指标注册状态：导入本模块不再触发注册（50+ 指标的注册耗时约 1.2s，
+# 会直接算进首屏启动时间）。注册由 ensure_indicators_registered() 惰性触发，
+# 或在启动阶段用 prewarm_indicators_async() 放到后台线程预热。
+_register_lock = threading.Lock()
+_indicators_registered = False
+
+
+def ensure_indicators_registered() -> None:
+    """
+    确保内置指标已注册（幂等、线程安全）。
+
+    首次调用会执行全部内置指标的注册，之后直接返回。
+    """
+    global _indicators_registered
+    if _indicators_registered:
+        return
+
+    with _register_lock:
+        if _indicators_registered:
+            return
+        for spec in _BUILTIN_INDICATORS:
+            # params 复制一份，避免多个管理器实例共享同一份可变默认参数
+            register_indicator(
+                name=spec["name"],
+                calculate_func=spec["calculate_func"],
+                dependencies=[],
+                params=dict(spec["params"]),
+                description=spec["description"],
+                category=spec["category"],
+            )
+        _indicators_registered = True
+        logger.info(f"已注册{len(global_indicator_registry.get_supported_indicators())}个内置指标")
+
+
+def prewarm_indicators_async() -> threading.Thread:
+    """
+    在后台线程预热指标注册，避免阻塞首屏。
+
+    Returns:
+        threading.Thread: 已启动的预热线程（daemon）
+    """
+    thread = threading.Thread(target=ensure_indicators_registered, name='indicator-prewarm', daemon=True)
+    thread.start()
+    return thread
+
+
 class IndicatorManager:
     """
     指标管理器，集成指标注册中心和缓存机制
@@ -325,14 +372,14 @@ class IndicatorManager:
         """
         初始化指标管理器
 
+        注意：构造函数不再注册内置指标（见 ensure_indicators_registered），
+        具体接口在首次调用时惰性完成注册。
+
         Args:
             cache_enabled: 是否启用缓存
             cache_max_size: 缓存最大条目数
             cache_default_ttl: 默认缓存过期时间（秒）
         """
-        # 注册所有内置指标
-        self._register_builtin_indicators()
-
         # 缓存配置
         self._cache_enabled = cache_enabled
         if self._cache_enabled:
@@ -341,22 +388,9 @@ class IndicatorManager:
         else:
             logger.info("指标缓存已禁用")
 
-    def _register_builtin_indicators(self):
-        """
-        注册所有内置指标
-        """
-        for spec in _BUILTIN_INDICATORS:
-            # params 复制一份，避免多个管理器实例共享同一份可变默认参数
-            register_indicator(
-                name=spec["name"],
-                calculate_func=spec["calculate_func"],
-                dependencies=[],
-                params=dict(spec["params"]),
-                description=spec["description"],
-                category=spec["category"]
-            )
-
-        logger.info(f"已注册{len(global_indicator_registry.get_supported_indicators())}个内置指标")
+    def _ensure_ready(self) -> None:
+        """惰性注册内置指标（幂等，首次调用有一次性注册开销）"""
+        ensure_indicators_registered()
 
     def calculate_indicator(self, data: Union[pl.DataFrame, pd.DataFrame], indicator_type: str,
                           return_polars: bool = True, **params) -> Union[pl.DataFrame, pd.DataFrame]:
@@ -372,6 +406,8 @@ class IndicatorManager:
         Returns:
             Union[pl.DataFrame, pd.DataFrame]: 包含计算结果的数据
         """
+        self._ensure_ready()
+
         # 转换输入数据为Polars DataFrame
         pl_data = self._to_polars(data)
 
@@ -470,6 +506,8 @@ class IndicatorManager:
         Returns:
             Union[pl.DataFrame, pd.DataFrame]: 包含计算结果的数据
         """
+        self._ensure_ready()
+
         # 转换输入数据为Polars DataFrame
         pl_data = self._to_polars(data)
 
@@ -506,6 +544,8 @@ class IndicatorManager:
         Returns:
             Union[pl.DataFrame, pd.DataFrame]: 包含所有指标计算结果的数据
         """
+        self._ensure_ready()
+
         # 获取所有支持的指标
         all_indicators = global_indicator_registry.get_supported_indicators()
 
@@ -519,6 +559,7 @@ class IndicatorManager:
         Returns:
             Dict[str, Any]: 支持的指标信息字典
         """
+        self._ensure_ready()
         indicators = global_indicator_registry.get_all_indicators()
 
         result = {}
@@ -541,6 +582,7 @@ class IndicatorManager:
         Returns:
             Dict[str, Any]: 指定分类的指标信息字典
         """
+        self._ensure_ready()
         indicators = global_indicator_registry.get_indicators_by_category(category)
 
         result = {}
@@ -563,6 +605,7 @@ class IndicatorManager:
         Returns:
             bool: 是否支持该指标
         """
+        self._ensure_ready()
         return global_indicator_registry.is_indicator_supported(indicator_type)
 
     def clear_cache(self, indicator_type: str | None = None):

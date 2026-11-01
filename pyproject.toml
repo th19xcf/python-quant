@@ -47,9 +47,16 @@ ruff = "==0.17.2"
 mypy = "==2.4.0"
 # 代码格式化
 black = "==26.10.1"
-# 测试环境依赖：数据源契约测试需要 baostock，Polars/pandas 转换测试需要 pyarrow
-baostock = "==0.9.4"
+# 测试环境依赖：Polars/pandas 转换测试需要 pyarrow
 pyarrow = "==26.0.0"
+
+[tool.poetry.group.baostock]
+# 可选组：BaoStock 在线数据源（`poetry install --with baostock`）
+# 未安装时 BaostockHandler 不会被注册，相关契约测试自动跳过
+optional = true
+
+[tool.poetry.group.baostock.dependencies]
+baostock = "==0.9.4"
 
 [tool.poetry.group.gpu]
 # 可选组：仅有 CUDA 环境才需要安装
@@ -179,6 +186,13 @@ ignore_missing_imports = true
 # 不把尚未收口的依赖模块错误一并暴露（避免门禁被无关存量错误淹没）
 files = ["src/backtest", "src/core", "src/risk", "src/api", "src/plugin", "src/alpha", "src/utils", "src/data", "src/database", "src/tech_analysis", "src/quant", "src/recommendation", "src/ui"]
 follow_imports = "silent"
+
+# 分目录加严：核心链路（回测 / 风控 / API）强制函数注解。
+# 其余目录通过 tests/test_mypy_ratchet.py 的“未注解数量不增长”棘轮逐步收口。
+[[tool.mypy.overrides]]
+module = ["src.backtest.*", "src.risk.*", "src.api.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
 
 [tool.coverage.run]
 source = ["src"]

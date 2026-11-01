@@ -73,6 +73,39 @@ class TestPluginPathGuard:
         assert not self._manager([str(tmp_path / 'plugins')])._is_inside_plugin_dirs(str(plugin_file))
 
 
+class TestIndicatorLazyRegistration:
+    """P1-5：指标注册改为惰性 + 后台预热"""
+
+    def test_manager_construction_does_not_register(self):
+        import src.tech_analysis.indicator_manager as im
+
+        if im._indicators_registered:
+            pytest.skip('其他用例已触发指标注册')
+        im.IndicatorManager()
+        assert not im._indicators_registered
+
+    def test_ensure_registered_is_idempotent(self):
+        from src.tech_analysis.indicator_manager import (
+            ensure_indicators_registered,
+            global_indicator_registry,
+        )
+
+        ensure_indicators_registered()
+        first = set(global_indicator_registry.get_supported_indicators())
+        ensure_indicators_registered()
+        assert first == set(global_indicator_registry.get_supported_indicators())
+        assert 'ma' in first
+
+
+class TestSharedExecutor:
+    """P1-7：任务执行复用同一个线程池"""
+
+    def test_executor_is_reused(self):
+        from src.ui import task_manager
+
+        assert task_manager._get_executor() is task_manager._get_executor()
+
+
 def _sleepy_task(task_id=None, signals=None):
     time.sleep(1.0)
     return 'done'

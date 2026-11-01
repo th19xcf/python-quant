@@ -13,7 +13,7 @@ import copy
 from typing import Any, Dict
 
 
-def clone_strategy(strategy, params: Dict[str, Any]):
+def clone_strategy(strategy: Any, params: Dict[str, Any]) -> Any:
     """
     按原策略完整参数深拷贝后覆盖本次网格参数。
 
@@ -30,9 +30,9 @@ def clone_strategy(strategy, params: Dict[str, Any]):
     return clone
 
 
-def run_backtest_worker(engine_cls, strategy, data, cost_model,
+def run_backtest_worker(engine_cls: Any, strategy: Any, data: Any, cost_model: Any,
                         params: Dict[str, Any], initial_capital: float,
-                        risk_engine=None,
+                        risk_engine: Any = None,
                         context: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """
     在子进程中执行单次回测。

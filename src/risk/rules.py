@@ -53,7 +53,7 @@ class Order:
     prev_close: float | None = None
     bar_volume: float | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """输入域校验：非法订单直接拒绝构造，避免绕过权重类规则。"""
         if not isinstance(self.ts_code, str) or not self.ts_code.strip():
             raise ValueError(f'Order.ts_code 必须为非空字符串，实际为 {self.ts_code!r}')
@@ -669,10 +669,10 @@ class RiskEngine:
     # 规则管理
     # ------------------------------------------------------------------
 
-    def add_rule(self, rule: Rule):
+    def add_rule(self, rule: Rule) -> None:
         self.rules.append(rule)
 
-    def clear_rules(self):
+    def clear_rules(self) -> None:
         self.rules.clear()
 
     # ------------------------------------------------------------------

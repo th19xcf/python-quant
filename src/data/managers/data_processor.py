@@ -5,7 +5,9 @@
 
 负责数据预处理、清洗、采样等操作
 
-注意：异常值删除会破坏时间序列连续性，回测场景请谨慎使用 remove_outliers=True。
+注意：异常值删除会破坏时间序列连续性，因此 clean_data 默认 remove_outliers=False；
+      确需剔除时必须显式开启。数值列默认转换为 float64（float32 精度不足以表示
+      复权后的高价与累计成交额）。
       fill_missing_values 的 backward 和 mean 原实现存在前视偏差，已改为安全版本。
 """
 
@@ -69,7 +71,7 @@ class DataProcessor:
         return data[::step]
 
     def convert_data_type(self, data: Union[pl.DataFrame, pl.LazyFrame],
-                          target_type: str = 'float32') -> Union[pl.DataFrame, pl.LazyFrame]:
+                          target_type: str = 'float64') -> Union[pl.DataFrame, pl.LazyFrame]:
         numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
         dtype = pl.Float32 if target_type == 'float32' else pl.Float64
         exprs = [pl.col(c).cast(dtype) for c in numeric_columns if c in data.columns]
@@ -81,7 +83,7 @@ class DataProcessor:
     # 数据清洗：缺失值 + 异常值
     # ------------------------------------------------------------------
     def clean_data(self, data: Union[pl.DataFrame, pl.LazyFrame],
-                   remove_outliers: bool = True, outlier_method: str = 'iqr') -> Union[pl.DataFrame, pl.LazyFrame]:
+                   remove_outliers: bool = False, outlier_method: str = 'iqr') -> Union[pl.DataFrame, pl.LazyFrame]:
         data = data.drop_nulls()
         if 'volume' in data.columns:
             data = data.filter(pl.col('volume') > 0)

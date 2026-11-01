@@ -78,7 +78,7 @@ class CostModel:
         if overrides:
             self.params.update(overrides)
 
-    def set_params(self, params: Dict[str, Any]):
+    def set_params(self, params: Dict[str, Any]) -> None:
         """
         设置成本模型参数
         """

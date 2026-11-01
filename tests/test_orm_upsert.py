@@ -29,6 +29,8 @@ def session():
     db_session = sessionmaker(bind=engine)()
     yield db_session
     db_session.close()
+    # 释放连接池持有的 sqlite 连接，避免 ResourceWarning: unclosed database
+    engine.dispose()
 
 
 def _row(day, close, vol=100.0):

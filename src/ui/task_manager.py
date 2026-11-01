@@ -4,6 +4,7 @@
 任务管理器模块，负责管理后台线程任务，提供任务状态跟踪和取消功能
 """
 
+import concurrent.futures
 import inspect
 import threading
 import uuid
@@ -12,6 +13,32 @@ from typing import Any, Dict
 
 from loguru import logger
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+
+# 全局共享的工作线程池：原先每个任务都新建 ThreadPoolExecutor(max_workers=1)，
+# 任务频繁创建/销毁线程的开销与线程数不受控。这里复用同一个池并限制并发上限。
+_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
+_EXECUTOR_LOCK = threading.Lock()
+_EXECUTOR_MAX_WORKERS = 8
+
+
+def _get_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """获取（惰性创建）全局任务工作线程池"""
+    global _EXECUTOR
+    with _EXECUTOR_LOCK:
+        if _EXECUTOR is None:
+            _EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+                max_workers=_EXECUTOR_MAX_WORKERS, thread_name_prefix='task-exec'
+            )
+        return _EXECUTOR
+
+
+def shutdown_executor(wait: bool = False) -> None:
+    """关闭全局任务工作线程池（应用退出时调用）"""
+    global _EXECUTOR
+    with _EXECUTOR_LOCK:
+        if _EXECUTOR is not None:
+            _EXECUTOR.shutdown(wait=wait, cancel_futures=True)
+            _EXECUTOR = None
 
 
 class TaskSignals(QObject):
@@ -95,31 +122,25 @@ class TaskRunner(QRunnable):
         Raises:
             TimeoutError: 任务执行超时
         """
-        import concurrent.futures
-
         timeout_seconds = self.timeout_seconds
 
-        # 使用线程池执行任务，支持超时。
-        # 注意不能用 with 语句：`with` 退出时会 shutdown(wait=True)，即使 future 已超时
-        # 也会继续阻塞等待任务结束，导致超时形同虚设。这里显式 shutdown(wait=False)。
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        # 提交到全局共享线程池；不能用 `with`（退出时 shutdown(wait=True) 会把
+        # 已超时的等待重新阻塞回去，超时形同虚设）
         kwargs = dict(self.kwargs)
         if self._accepts_cancel_event():
             kwargs['cancel_event'] = self.cancel_event
-        self._future = executor.submit(
+        self._future = _get_executor().submit(
             self.func, *self.args, **kwargs, task_id=self.task_id, signals=self.signals
         )
         try:
             # 等待任务完成，超时后抛出异常
             return self._future.result(timeout=timeout_seconds)
         except concurrent.futures.TimeoutError:
-            # 任务超时：置取消标志供任务函数协作退出，并立即返回，不阻塞线程池
+            # 任务超时：置取消标志供任务函数协作退出，并立即返回，不占用等待线程
             self.is_cancelled = True
             self.cancel_event.set()
             self._future.cancel()
             raise TimeoutError(f"任务执行超时: {self.task_name} (ID: {self.task_id})，超过 {timeout_seconds} 秒") from None
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
 
     def _accepts_cancel_event(self) -> bool:
         """
@@ -274,6 +295,8 @@ class TaskManager(QObject):
         """
         self.thread_pool.clear()
         self.thread_pool.waitForDone()
+        # 等待未超时任务收敛后再关闭共享池，避免退出阶段后台线程继续访问已释放资源
+        shutdown_executor(wait=True)
         logger.info("任务管理器已关闭")
 
     def _on_task_started(self, task_id: str, task_name: str):

@@ -20,7 +20,7 @@ class IView:
     不要把它当作已生效的约束。
     """
 
-    def update_chart(self, data: pl.DataFrame, indicators: List[str] | None = None, **params):
+    def update_chart(self, data: pl.DataFrame, indicators: List[str] | None = None, **params: Any) -> None:
         """更新图表数据
 
         Args:
@@ -30,7 +30,7 @@ class IView:
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def show_message(self, message: str, message_type: str = 'info', title: str | None = None):
+    def show_message(self, message: str, message_type: str = 'info', title: str | None = None) -> None:
         """显示消息
 
         Args:
@@ -40,7 +40,7 @@ class IView:
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def update_progress(self, progress: int, message: str | None = None):
+    def update_progress(self, progress: int, message: str | None = None) -> None:
         """更新进度
 
         Args:
@@ -49,11 +49,11 @@ class IView:
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def clear_progress(self):
+    def clear_progress(self) -> None:
         """清除进度显示"""
         raise NotImplementedError("子类必须实现此方法")
 
-    def show_loading(self, visible: bool, message: str | None = None):
+    def show_loading(self, visible: bool, message: str | None = None) -> None:
         """显示或隐藏加载指示器
 
         Args:
@@ -70,7 +70,7 @@ class IController:
     不要把它当作已生效的约束。
     """
 
-    def on_stock_selected(self, stock_code: str, **params):
+    def on_stock_selected(self, stock_code: str, **params: Any) -> None:
         """处理股票选择事件
 
         Args:
@@ -79,7 +79,7 @@ class IController:
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def on_indicator_selected(self, indicator_type: str, **params):
+    def on_indicator_selected(self, indicator_type: str, **params: Any) -> None:
         """处理指标选择事件
 
         Args:
@@ -88,7 +88,7 @@ class IController:
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def on_timeframe_changed(self, timeframe: str):
+    def on_timeframe_changed(self, timeframe: str) -> None:
         """处理时间周期变化事件
 
         Args:
@@ -96,7 +96,7 @@ class IController:
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def on_chart_type_changed(self, chart_type: str):
+    def on_chart_type_changed(self, chart_type: str) -> None:
         """处理图表类型变化事件
 
         Args:
@@ -104,7 +104,7 @@ class IController:
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def on_signal_clicked(self, signal: Dict[str, Any]):
+    def on_signal_clicked(self, signal: Dict[str, Any]) -> None:
         """处理信号点击事件
 
         Args:
@@ -112,11 +112,11 @@ class IController:
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def on_refresh_data(self):
+    def on_refresh_data(self) -> None:
         """处理刷新数据事件"""
         raise NotImplementedError("子类必须实现此方法")
 
-    def on_backtest_start(self, strategy: str, **params):
+    def on_backtest_start(self, strategy: str, **params: Any) -> None:
         """处理回测开始事件
 
         Args:

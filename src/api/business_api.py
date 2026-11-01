@@ -34,7 +34,7 @@ class ITechnicalAnalyzer(Protocol):
         """
         raise NotImplementedError("子类必须实现此方法")
 
-    def calculate_all_indicators(self, data: pl.DataFrame, indicator_types: List[str] | None = None, **params) -> pl.DataFrame:
+    def calculate_all_indicators(self, data: pl.DataFrame, indicator_types: List[str] | None = None, **params: Any) -> pl.DataFrame:
         """计算多个技术指标
 
         Args:
@@ -85,7 +85,7 @@ class IStrategyAnalyzer:
     不要把它当作已生效的约束。
     """
 
-    def backtest(self, data: pl.DataFrame, strategy: Any, **params) -> Dict[str, Any]:
+    def backtest(self, data: pl.DataFrame, strategy: Any, **params: Any) -> Dict[str, Any]:
         """回测策略
 
         Args:
@@ -138,7 +138,7 @@ class ISignalGenerator:
     不要把它当作已生效的约束。
     """
 
-    def generate_signals(self, data: pl.DataFrame, indicators: List[str] | None = None, **params) -> pl.DataFrame:
+    def generate_signals(self, data: pl.DataFrame, indicators: List[str] | None = None, **params: Any) -> pl.DataFrame:
         """生成买卖信号
 
         Args:
@@ -178,7 +178,7 @@ class IFactorAnalyzer:
     不要把它当作已生效的约束。
     """
 
-    def calculate_factor(self, data: pl.DataFrame, factor_type: str, **params) -> pl.DataFrame:
+    def calculate_factor(self, data: pl.DataFrame, factor_type: str, **params: Any) -> pl.DataFrame:
         """计算因子值
 
         Args:

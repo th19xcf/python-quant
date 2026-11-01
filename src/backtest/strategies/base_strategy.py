@@ -32,7 +32,7 @@ class BaseStrategy(ABC):
         self.name = name
         self.params: Dict[str, Any] = {}
 
-    def set_params(self, params: Dict[str, Any]):
+    def set_params(self, params: Dict[str, Any]) -> None:
         """
         设置策略参数
 

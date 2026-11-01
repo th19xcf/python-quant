@@ -8,6 +8,8 @@
 否则同一 handler 会被实例化两次（两套数据库连接、重复抓取、结果不一致）。
 """
 
+import importlib.util
+
 from src.data.services.data_service import DataService
 from src.plugin.plugin_manager import PluginManager
 from src.utils.config import Config
@@ -34,5 +36,9 @@ def test_builtin_sources_are_registered_exactly_once():
     assert not any(t.__name__.endswith('DataSourcePlugin') for t in source_types)
 
     registered = {t.__name__ for t in source_types}
-    assert {'TdxHandler', 'BaostockHandler'} <= registered
+    # BaoStock 为可选依赖（poetry group `baostock`），未安装时不应注册该数据源
+    expected = {'TdxHandler', 'AkShareHandler'}
+    if importlib.util.find_spec('baostock') is not None:
+        expected.add('BaostockHandler')
+    assert expected <= registered
     assert registered <= {'TdxHandler', 'BaostockHandler', 'AkShareHandler', 'MacroHandler', 'NewsHandler'}

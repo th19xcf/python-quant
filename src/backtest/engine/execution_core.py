@@ -498,8 +498,15 @@ class EventBacktestRunner:
         signal_columns, slow_path_strategies = self._build_signal_columns(
             codes, strategies, prepared, column_data)
 
-        # 一次性建立 date→行号与 date→活跃标的反向索引，主循环按日期直查
-        date_positions, date_codes, sorted_dates = self._build_date_index(column_data)
+        # 一次性建立按日期对齐的 (活跃标的, 行号) 平行数组，主循环按下标直取
+        day_codes, day_positions, sorted_dates = self._build_date_index(column_data)
+
+        # 各标的的列引用预先解析成元组，主循环内不再重复做 dict.get
+        bar_columns = {
+            code: (cols['close'], cols.get('open'), cols.get('high'), cols.get('low'),
+                   cols.get('volume'), cols.get('raw_open'), cols.get('raw_close'))
+            for code, cols in column_data.items()
+        }
 
         rules, book, gate = self._create_execution_context(
             codes, strategies, initial_capital, industry_map, lot_size
@@ -508,8 +515,9 @@ class EventBacktestRunner:
          rejected_orders, expired_orders, equity_curve) = self._init_run_collections(codes)
 
         loop_st_unknown = self._run_trading_loop(
-            sorted_dates=sorted_dates, date_codes=date_codes,
-            date_positions=date_positions, column_data=column_data,
+            sorted_dates=sorted_dates, day_codes=day_codes,
+            day_positions=day_positions, column_data=column_data,
+            bar_columns=bar_columns,
             pending=pending, prev_close=prev_close, prev_raw_close=prev_raw_close,
             book=book, gate=gate, rules=rules, trades=trades,
             rejected_orders=rejected_orders, expired_orders=expired_orders,
@@ -532,8 +540,9 @@ class EventBacktestRunner:
     # run() 编排子步骤
     # ------------------------------------------------------------------
 
-    def _create_execution_context(self, codes, strategies, initial_capital,
-                                  industry_map, lot_size):
+    def _create_execution_context(self, codes: List[str], strategies: Dict[str, Any],
+                                  initial_capital: float, industry_map: Any,
+                                  lot_size: int) -> tuple[ExecutionRules, AccountBook, RiskGate]:
         """创建撮合规则、账户账本与风控闸门。"""
         rules = ExecutionRules(lot_size=lot_size)
         # 现金桶只分配给配置了策略的标的：universe 里加载了但没配策略的"哑标的"
@@ -546,7 +555,11 @@ class EventBacktestRunner:
         return rules, book, gate
 
     @staticmethod
-    def _init_run_collections(codes):
+    def _init_run_collections(codes: List[str]) -> tuple[
+        Dict[str, str | None], Dict[str, float | None], Dict[str, float | None],
+        List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]],
+        List[Dict[str, Any]],
+    ]:
         """初始化挂单、前收盘、成交与权益曲线容器。"""
         pending: Dict[str, str | None] = dict.fromkeys(codes)
         prev_close: Dict[str, float | None] = dict.fromkeys(codes)
@@ -720,62 +733,41 @@ class EventBacktestRunner:
     @staticmethod
     def _build_date_index(
         column_data: Dict[str, Dict[str, list]],
-    ) -> tuple[Dict[str, Dict[Any, int]], Dict[Any, List[str]], List[Any]]:
-        """建立 date→行号索引与反向索引 date→[codes]，返回三元组。
+    ) -> tuple[List[List[str]], List[List[int]], List[Any]]:
+        """按日期建立对齐的 (活跃标的, 行号) 平行数组，返回 (day_codes, day_positions, sorted_dates)。
 
-        用 dict(zip) 替代手动 enumerate 循环；反向索引让主循环按日期直查
-        活跃标的，消除笛卡尔遍历下大量 date_positions[code].get(date) ->
-        None -> continue 的无效分支（标的上市日期分散时占外层迭代 40~50%）。
+        数组化后主循环直接按下标迭代，不再逐 bar 做 ``date_positions[code][trade_day]``
+        的双层字典查找；同时对每个标的只构建一次 date→行号映射（dict(zip)，C 实现）。
         """
-        date_positions: Dict[str, Dict[Any, int]] = {}
-        date_codes: Dict[Any, List[str]] = {}
+        codes_by_date: Dict[Any, List[str]] = {}
+        positions_by_date: Dict[Any, List[int]] = {}
         for code, cols in column_data.items():
             dates = cols['date']
             positions = dict(zip(dates, range(len(dates)), strict=True))
-            date_positions[code] = positions
-            for d in positions:
-                bucket = date_codes.setdefault(d, [])
-                bucket.append(code)
-        return date_positions, date_codes, sorted(date_codes.keys())
+            for d, pos in positions.items():
+                codes_by_date.setdefault(d, []).append(code)
+                positions_by_date.setdefault(d, []).append(pos)
+
+        sorted_dates = sorted(codes_by_date.keys())
+        day_codes = [codes_by_date[d] for d in sorted_dates]
+        day_positions = [positions_by_date[d] for d in sorted_dates]
+        return day_codes, day_positions, sorted_dates
 
     @staticmethod
     def _daily_suspended_codes(codes: List[str],
-                               date_positions: Dict[str, Dict[Any, int]],
-                               column_data: Dict[str, Dict[str, list]],
-                               trade_day: Any) -> Set[str]:
-        """当日停牌集合：成交量为 None / NaN / inf / ≤0 的标的（与撮合判定同源）。"""
+                               positions: List[int],
+                               column_data: Dict[str, Dict[str, list]]) -> Set[str]:
+        """当日停牌集合：成交量为 None / NaN / inf / ≤0 的标的（与撮合判定同源）。
+
+        positions 与 codes 按下标对齐，由 _build_date_index 预先生成。
+        """
         suspended: Set[str] = set()
-        for code in codes:
+        for code, pos in zip(codes, positions, strict=True):
             volume_col = column_data[code].get('volume')
-            pos = date_positions[code][trade_day]
             volume = volume_col[pos] if volume_col is not None else None
             if ExecutionRules._is_suspended(volume):
                 suspended.add(code)
         return suspended
-
-    @staticmethod
-    def _extract_bar_prices(
-        cols: Dict[str, list], pos: int,
-    ) -> tuple[float | None, ...]:
-        """按行号取当日价格列，返回 (close, open, high, low, volume, raw_open, raw_close)。
-
-        列不存在时回退默认值，语义同原 ``row.get(name, default)``：open 回退为
-        close，其余回退 None；列存在但值为 None（null）时透传 None，不回退。
-        """
-        close_price = cols['close'][pos]
-        open_col = cols.get('open')
-        open_price = open_col[pos] if open_col is not None else close_price
-        high_col = cols.get('high')
-        high = high_col[pos] if high_col is not None else None
-        low_col = cols.get('low')
-        low = low_col[pos] if low_col is not None else None
-        volume_col = cols.get('volume')
-        volume = volume_col[pos] if volume_col is not None else None
-        raw_open_col = cols.get('raw_open')
-        raw_open = raw_open_col[pos] if raw_open_col is not None else None
-        raw_close_col = cols.get('raw_close')
-        raw_close = raw_close_col[pos] if raw_close_col is not None else None
-        return close_price, open_price, high, low, volume, raw_open, raw_close
 
     @staticmethod
     def _record_signal(
@@ -815,9 +807,10 @@ class EventBacktestRunner:
         pending[code] = signal
 
     def _run_trading_loop(
-        self, *, sorted_dates: List[Any], date_codes: Dict[Any, List[str]],
-        date_positions: Dict[str, Dict[Any, int]],
+        self, *, sorted_dates: List[Any], day_codes: List[List[str]],
+        day_positions: List[List[int]],
         column_data: Dict[str, Dict[str, list]],
+        bar_columns: Dict[str, tuple],
         pending: Dict[str, str | None], prev_close: Dict[str, float | None],
         prev_raw_close: Dict[str, float | None], book: AccountBook,
         gate: RiskGate, rules: ExecutionRules, trades: List[Dict[str, Any]],
@@ -832,19 +825,28 @@ class EventBacktestRunner:
             bool: 是否出现按日期无法判定 ST 状态的 bar（用于 st_unknown 标记）
         """
         st_unknown_seen = False
-        for trade_day in sorted_dates:
+        for day_index, trade_day in enumerate(sorted_dates):
+            codes_today = day_codes[day_index]
             # 当日停牌集合只在启用风控时构造：NoSuspendedTrade 规则需要它，
             # 未启用风控时该集合无消费方，避免给默认路径增加 O(N_symbols/日) 开销
             suspended_today = (
                 self._daily_suspended_codes(
-                    date_codes[trade_day], date_positions, column_data, trade_day)
+                    codes_today, day_positions[day_index], column_data)
                 if gate.risk_engine is not None else None
             )
-            for code in date_codes[trade_day]:
-                pos = date_positions[code][trade_day]
-                cols = column_data[code]
-                (close_price, open_price, high, low,
-                 volume, raw_open, raw_close) = self._extract_bar_prices(cols, pos)
+            positions_today = day_positions[day_index]
+            for code, pos in zip(codes_today, positions_today, strict=True):
+                # 内联 _extract_bar_prices：热路径少一次函数调用与 6 次 dict.get
+                # （列引用已在 run() 中按标的一次性解析为 bar_columns[code] 元组）
+                (close_col, open_col, high_col, low_col,
+                 volume_col, raw_open_col, raw_close_col) = bar_columns[code]
+                close_price = close_col[pos]
+                open_price = open_col[pos] if open_col is not None else close_price
+                high = high_col[pos] if high_col is not None else None
+                low = low_col[pos] if low_col is not None else None
+                volume = volume_col[pos] if volume_col is not None else None
+                raw_open = raw_open_col[pos] if raw_open_col is not None else None
+                raw_close = raw_close_col[pos] if raw_close_col is not None else None
 
                 # 区间模式按 trade_date 查 ST；静态三态直接返回原值
                 is_st = self._resolve_st_for_date(st_status.get(code), trade_day)
@@ -1010,10 +1012,16 @@ class EventBacktestRunner:
             is_st=is_st, trade_day=trade_day, suspended=suspended,
         )
 
-    def _dispatch_order(self, side, *, code, date, book, gate, rules, cost_model,
-                        trades, rejected_orders, expired_orders, equity_curve,
-                        lot_size, exec_price, order_confidence, volume,
-                        prev_close, prev_close_raw, is_st, trade_day, suspended):
+    def _dispatch_order(
+        self, side: str, *, code: str, date: Any, book: AccountBook,
+        gate: RiskGate, rules: ExecutionRules, cost_model: CostModel,
+        trades: List[Dict[str, Any]], rejected_orders: List[Dict[str, Any]],
+        expired_orders: List[Dict[str, Any]], equity_curve: List[Dict[str, Any]],
+        lot_size: int, exec_price: float, order_confidence: str,
+        volume: float | None, prev_close: float | None,
+        prev_close_raw: float | None, is_st: bool | None,
+        trade_day: date | None, suspended: Set[str] | None,
+    ) -> None:
         """按买/卖方向派发已通过可成交校验的订单。"""
         # 风控闸门所需上下文：原始价口径前收盘（交易所涨跌停定义在原始价上）
         # 与板块标签必须由撮合内核注入，缺一 PriceLimitTradable 就会 fail-closed。

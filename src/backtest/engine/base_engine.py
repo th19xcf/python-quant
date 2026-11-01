@@ -27,21 +27,21 @@ class BaseBacktestEngine:
     子类仅需实现各自的回测主体逻辑。
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """初始化通用组件（不含数据）。子类应先调用此方法，再处理数据。"""
-        self.strategy = None
+        self.strategy: BaseStrategy | None = None
         self.cost_model = CostModel()
         self.performance_analyzer = PerformanceAnalyzer()
         self.visualizer = BacktestVisualizer()
-        self.backtest_results = {}
-        self.trades = []
-        self.equity_curve = []
+        self.backtest_results: Dict[str, Any] = {}
+        self.trades: List[Dict[str, Any]] = []
+        self.equity_curve: List[Dict[str, Any]] = []
         self.ts_code = ''
         # 最近一次回测的执行上下文：参数优化必须复用同一 ts_code / 行业 / ST 状态，
         # 否则优化子回测会按主板 10% 涨跌停、空行业、ST 未知的口径运行，
         # 与主回测不可比
         self.industry = ''
-        self.is_st = None
+        self.is_st: bool | None | List[Dict[str, Any]] = None
 
         # 风控层：None 表示不启用（所有订单直接过）；设置后 gate() 拦截
         self.risk_engine: RiskEngine | None = None

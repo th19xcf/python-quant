@@ -38,7 +38,7 @@ class StockDataDTO:
     source: str | None = None
     update_time: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """初始化后处理：未显式提供起止日期时按数据实际范围补齐"""
         self.start_date, self.end_date = _resolve_date_range(
             self.data, self.start_date, self.end_date)
@@ -56,7 +56,7 @@ class IndexDataDTO:
     source: str | None = None
     update_time: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """初始化后处理：未显式提供起止日期时按数据实际范围补齐"""
         self.start_date, self.end_date = _resolve_date_range(
             self.data, self.start_date, self.end_date)
@@ -72,7 +72,7 @@ class IndicatorResultDTO:
     signal: Dict[str, Any] | None = None
     calculate_time: float | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """初始化后处理"""
         if self.data is None and self.values is None:
             raise ValueError("至少需要提供data或values中的一个")
@@ -90,7 +90,7 @@ class SignalDTO:
     strategy_name: str | None = None
     params: Dict[str, Any] = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """初始化后处理"""
         if self.confidence < 0 or self.confidence > 1:
             raise ValueError("置信度必须在0-1之间")
@@ -112,7 +112,7 @@ class BacktestResultDTO:
     start_date: str | None = None
     end_date: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """初始化后处理"""
         # 确保数值类型正确
         self.total_return = float(self.total_return)
@@ -132,7 +132,7 @@ class FactorResultDTO:
     calculate_time: float | None = None
     source: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """初始化后处理"""
         if 'date' not in self.factor_data.columns:
             raise ValueError("因子数据必须包含date列")
@@ -148,7 +148,7 @@ class ProgressDTO:
     task_name: str | None = None
     task_id: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """初始化后处理"""
         if self.progress < 0:
             self.progress = 0
@@ -164,7 +164,7 @@ class MessageDTO:
     title: str | None = None
     timeout: int | None = None  # 自动关闭时间（秒）
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """初始化后处理"""
         if self.message_type not in ['info', 'warning', 'error', 'success']:
             self.message_type = 'info'

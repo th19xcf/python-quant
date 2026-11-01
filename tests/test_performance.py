@@ -32,39 +32,31 @@ def generate_test_data(days: int = 1825, stocks: int = 1000) -> pl.DataFrame:
     """
     logger.info(f"生成{stocks}只股票，{days}天的测试数据...")
 
-    # 生成日期范围
-    import datetime
-    start_date = datetime.datetime(2019, 1, 1)
-    dates = [start_date + datetime.timedelta(days=i) for i in range(days)]
+    # 全向量化构造：逐股票逐日 append dict 的写法在 100x1825 规模下要几十秒，
+    # 占满整个性能测试的耗时，掩盖了被测代码的真实开销。
+    rng = np.random.default_rng(42)
+    dates = np.arange(np.datetime64('2019-01-01'), np.datetime64('2019-01-01') + np.timedelta64(days, 'D'))
 
-    # 生成股票数据
-    data = []
-    for stock_id in range(stocks):
-        # 生成随机价格数据
-        base_price = 10 + stock_id * 0.1
-        price_series = np.random.normal(0, 0.02, days).cumsum() + base_price
-        price_series = np.maximum(price_series, 1)  # 确保价格为正
+    stock_ids = np.arange(stocks)
+    base_price = 10 + stock_ids * 0.1
+    # 价格: (stocks, days)，按股票独立随机游走并保证为正
+    price = np.maximum(
+        np.cumsum(rng.normal(0, 0.02, (stocks, days)), axis=1) + base_price[:, None],
+        1,
+    )
+    volume = np.maximum(rng.normal(1000000, 500000, (stocks, days)), 10000)
 
-        # 生成成交量数据
-        volume_series = np.random.normal(1000000, 500000, days)
-        volume_series = np.maximum(volume_series, 10000)  # 确保成交量为正
-
-        # 生成每天的数据
-        for i in range(days):
-            data.append({
-                'date': dates[i],
-                'stock_code': f'STOCK{stock_id:04d}',
-                'stock_name': f'股票{stock_id:04d}',
-                'open': price_series[i] * (1 + np.random.normal(0, 0.01)),
-                'high': price_series[i] * (1 + np.random.normal(0.01, 0.01)),
-                'low': price_series[i] * (1 - np.random.normal(0.01, 0.01)),
-                'close': price_series[i],
-                'volume': volume_series[i],
-                'amount': volume_series[i] * price_series[i]
-            })
-
-    # 转换为Polars DataFrame
-    df = pl.DataFrame(data)
+    df = pl.DataFrame({
+        'date': np.tile(dates, stocks),
+        'stock_code': np.repeat([f'STOCK{i:04d}' for i in range(stocks)], days),
+        'stock_name': np.repeat([f'股票{i:04d}' for i in range(stocks)], days),
+        'open': (price * (1 + rng.normal(0, 0.01, (stocks, days)))).ravel(),
+        'high': (price * (1 + rng.normal(0.01, 0.01, (stocks, days)))).ravel(),
+        'low': (price * (1 - rng.normal(0.01, 0.01, (stocks, days)))).ravel(),
+        'close': price.ravel(),
+        'volume': volume.ravel(),
+        'amount': (volume * price).ravel(),
+    })
     logger.info(f"生成完成，数据形状: {df.shape}")
     return df
 

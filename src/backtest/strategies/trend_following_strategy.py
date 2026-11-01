@@ -21,7 +21,7 @@ class TrendFollowingStrategy(BaseStrategy):
     趋势跟踪策略，基于移动平均线交叉信号
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__("TrendFollowing")
         self.params = {
             'short_window': 10,

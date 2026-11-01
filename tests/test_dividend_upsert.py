@@ -24,6 +24,8 @@ def handler(tmp_path):
     yield instance
 
     db_session.close()
+    # 释放连接池持有的 sqlite 连接，避免 ResourceWarning: unclosed database
+    engine.dispose()
 
 
 def _row(ex_date=None, year='2023', cash_div=0.5, share_div=0.0):
