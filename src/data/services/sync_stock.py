@@ -155,6 +155,10 @@ def _collect_board_industry_map(ak: Any, board_names: list[str]) -> dict[str, st
         except DataSourceException as board_e:
             logger.warning(f"获取行业板块 {board_name} 成分失败: {board_e}")
             continue
+        # 兜底理由：单个板块请求异常（连接中断/解析失败）跳过该板块，继续兜底其余板块
+        except Exception as board_e:  # noqa: BLE001
+            logger.warning(f"获取行业板块 {board_name} 成分失败: {board_e}")
+            continue
 
     return industry_map
 
@@ -171,7 +175,8 @@ def _fetch_akshare_industry_map() -> dict[str, str]:
 
         logger.info(f"AkShare 行业板块数量: {len(board_names)}")
         return _collect_board_industry_map(ak, board_names)
-    except DataSourceException as e:
+    # 兜底理由：行业字段只是补充信息，板块接口偶发连接中断不能让整轮同步终止
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"从 AkShare 获取行业映射失败: {e}")
         return {}
 
@@ -186,13 +191,16 @@ def _create_stock_basic_from_info(ts_code: str, stock_info: dict[str, Any]) -> A
     symbol = stock_info.get('symbol', ts_code.split('.')[0])
     symbol = symbol[:9] if len(symbol) > 9 else symbol
 
+    # 两个外部源都不提供板块字段，新增行直接按代码推断，避免写入 market=None
+    market = _normalize_text_value(stock_info.get('market'), 20) or _infer_stock_market_from_ts_code(ts_code)
+
     return StockBasic(
         ts_code=ts_code,
         symbol=symbol,
         name=name,
         area=stock_info.get('area'),
         industry=stock_info.get('industry'),
-        market=stock_info.get('market'),
+        market=market or None,
         list_date=stock_info.get('list_date'),
         delist_date=stock_info.get('delist_date'),
         status=stock_info.get('status', 'L')
@@ -335,7 +343,7 @@ def _infer_stock_market_from_ts_code(ts_code: str | None) -> str:
             return '科创板'
         return '主板'
     if market == 'SZ':
-        if symbol.startswith('300'):
+        if symbol.startswith(('300', '301')):
             return '创业板'
         if symbol.startswith('002'):
             return '中小板'
@@ -709,8 +717,12 @@ def _prepare_stock_sync(config: Any, db_manager: Any, session: Any, result: dict
     result['new_stocks'] = len(new_codes)
     logger.info(f"发现 {len(new_codes)} 只新股票需要添加到数据库")
 
-    baostock_handler = BaostockHandler(config, db_manager)
-    akshare_handler = AkShareHandler(config, db_manager)
+    # 外部 handler 只用它们取数，不传 db_manager：两者在持有数据库会话时会把
+    # 股票基本信息直接写库（AkShare 仅写 ts_code/symbol/name，Baostock 只写默认
+    # 三只），绕开本流程的字段回填，且先于同步提交，导致后续批次因主键冲突
+    # 整批回滚、新增行只剩名称。stock_basic 的唯一写入方是本同步流程。
+    baostock_handler = BaostockHandler(config, None)
+    akshare_handler = AkShareHandler(config, None)
 
     baostock_basic, akshare_basic, baostock_industry_map = _fetch_external_stock_basic(
         baostock_handler, akshare_handler

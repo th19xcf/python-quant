@@ -47,6 +47,7 @@ from src.data.services.sync_stock import (
 @pytest.mark.parametrize("ts_code, expected", [
     ("000001.SH", True),
     ("880001.SH", True),
+    ("881479.SH", True),
     ("399001.SZ", True),
     ("884001.BJ", True),
     ("899050.BJ", True),
@@ -118,6 +119,7 @@ def test_normalize_stock_status(raw, expected):
     ("688001.SH", "科创板"),
     ("600000.SH", "主板"),
     ("300001.SZ", "创业板"),
+    ("301660.SZ", "创业板"),
     ("002001.SZ", "中小板"),
     ("000001.SZ", "主板"),
     ("920001.BJ", "北交所"),
@@ -317,6 +319,20 @@ def test_create_stock_basic_from_info_truncates_and_defaults():
     assert stock.ts_code == "600000.SH"
     assert stock.name == "长" * 45
     assert stock.symbol == "s" * 9
+    assert stock.status == "L"
+    assert stock.market == "主板"
+
+
+@pytest.mark.parametrize("ts_code, expected", [
+    ("301660.SZ", "创业板"),
+    ("920001.BJ", "北交所"),
+    ("600000.SH", "主板"),
+])
+def test_create_stock_basic_from_info_infers_market_when_source_absent(ts_code, expected):
+    """两个外部源都不给 market 时，新增行必须按代码推断板块，不能写 NULL。"""
+    stock = _create_stock_basic_from_info(ts_code, {"name": "测试股"})
+
+    assert stock.market == expected
     assert stock.status == "L"
 
 

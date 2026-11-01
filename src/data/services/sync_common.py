@@ -136,7 +136,7 @@ def _is_index_ts_code(ts_code: str | None) -> bool:
     symbol, market = ts_code.split('.', 1)
     market = market.upper()
     if market == 'SH':
-        return symbol.startswith('000') or symbol.startswith('880')
+        return symbol.startswith(('000', '880', '881'))
     if market == 'SZ':
         return symbol.startswith('399')
     if market == 'BJ':
