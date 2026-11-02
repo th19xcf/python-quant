@@ -109,7 +109,7 @@ class BaostockSessionMixin:
             except (ConnectionError, TimeoutError, OSError) as e:
                 logger.exception(f"Baostock登出异常: {e}")
 
-    def __del__(self):
+    def __del__(self) -> None:
         """
         析构函数，确保登出Baostock
         """

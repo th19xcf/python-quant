@@ -14,12 +14,12 @@ packages = [
 python = ">=3.14,<3.16"
 # 数据处理
 pandas = "==3.1.0"
-polars = "==2.0.0"
+polars = "==2.1.0"
 numpy = "==2.5.4"
 # 数据获取
-akshare = "==1.19.3"
+akshare = "==1.20.21"
 # 技术分析
-numba = "==0.68.0"
+numba = "==0.68.1"
 # UI框架
 pyside6 = "==6.12.0"
 pyqtgraph = "==0.14.0"
@@ -28,8 +28,8 @@ plotly = "==7.1.0"
 pymysql = "==1.2.3"
 sqlalchemy = "==2.1.6"
 # 配置管理
-pydantic = "==2.14.1"
-pydantic-settings = "==2.16.1"
+pydantic = "==2.14.2"
+pydantic-settings = "==2.16.2"
 # 事件总线
 blinker = "==1.9.0"
 # 日志管理
@@ -44,12 +44,12 @@ alembic = "==1.20.1"
 
 [tool.poetry.group.dev.dependencies]
 # 测试
-pytest = "==9.1.1"
+pytest = "==9.2.0"
 pytest-cov = "==7.1.0"
 coverage = "==7.17.0"
 # 静态检查
-ruff = "==0.17.2"
-mypy = "==2.4.0"
+ruff = "==0.17.3"
+mypy = "==2.4.1"
 # 代码格式化
 black = "==26.10.1"
 # 测试环境依赖：Polars/pandas 转换测试需要 pyarrow
