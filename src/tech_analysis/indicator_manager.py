@@ -325,7 +325,10 @@ _BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
     {
         "name": "abi",
         "calculate_func": lambda df, **kwargs: calculate_abi(
-            df.lazy(), kwargs.get("period", 10)
+            df.lazy(),
+            kwargs.get("period", 10),
+            db_manager=kwargs.get("db_manager"),
+            market_breadth=kwargs.get("market_breadth"),
         ).collect(),
         "params": {"period": 10},
         "description": "绝对广量指标",
@@ -333,7 +336,11 @@ _BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
     },
     {
         "name": "adl",
-        "calculate_func": lambda df, **kwargs: calculate_adl(df.lazy()).collect(),
+        "calculate_func": lambda df, **kwargs: calculate_adl(
+            df.lazy(),
+            db_manager=kwargs.get("db_manager"),
+            market_breadth=kwargs.get("market_breadth"),
+        ).collect(),
         "params": {},
         "description": "腾落指标",
         "category": "大势型",
@@ -341,7 +348,10 @@ _BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
     {
         "name": "adr",
         "calculate_func": lambda df, **kwargs: calculate_adr(
-            df.lazy(), kwargs.get("period", 10)
+            df.lazy(),
+            kwargs.get("period", 10),
+            db_manager=kwargs.get("db_manager"),
+            market_breadth=kwargs.get("market_breadth"),
         ).collect(),
         "params": {"period": 10},
         "description": "涨跌比率",
@@ -350,7 +360,10 @@ _BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
     {
         "name": "obos",
         "calculate_func": lambda df, **kwargs: calculate_obos(
-            df.lazy(), kwargs.get("period", 10)
+            df.lazy(),
+            kwargs.get("period", 10),
+            db_manager=kwargs.get("db_manager"),
+            market_breadth=kwargs.get("market_breadth"),
         ).collect(),
         "params": {"period": 10},
         "description": "超买超卖指标",
