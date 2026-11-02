@@ -16,7 +16,6 @@ from typing import Any, cast
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from src.data.sources import baostock_schema as schema
 from src.data.services.sync_common import (
     SyncFlow,
     _execute_sync_flow,
@@ -26,6 +25,7 @@ from src.data.services.sync_common import (
     _sync_each_with_recovery,
     _to_ts_code_or_none,
 )
+from src.data.sources import baostock_schema as schema
 from src.utils.code_converter import MARKET_BJ, MARKET_SH, MARKET_SZ
 from src.utils.exceptions import DataSourceException
 

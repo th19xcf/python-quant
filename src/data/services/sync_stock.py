@@ -13,7 +13,6 @@ from typing import Any
 
 from loguru import logger
 
-from src.data.sources import baostock_schema as schema
 from src.data.services.sync_common import (
     SyncFlow,
     _execute_sync_flow,
@@ -26,6 +25,7 @@ from src.data.services.sync_common import (
     _sync_each_with_recovery,
     _to_ts_code_or_none,
 )
+from src.data.sources import baostock_schema as schema
 from src.utils.exceptions import DataSourceException
 
 # ======================================================================
