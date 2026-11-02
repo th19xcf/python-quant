@@ -16,10 +16,8 @@ from typing import Any, cast
 from loguru import logger
 
 from src.data.tdx_day_parser import read_latest_quote
+from src.utils.code_converter import is_index_code, to_index_ts_code, to_tdx_file_stem
 from src.utils.exceptions import DataException
-
-# 各市场指数代码前缀
-INDEX_CODE_PREFIXES = {'sh': '000', 'sz': '399', 'bj': '899'}
 
 
 class IndexService:
@@ -55,36 +53,23 @@ class IndexService:
 
                 session = self._db_manager.get_session()
                 if session:
+                    # 指数口径统一委托 code_converter.is_index_code，
+                    # 不再在 SQL / Python 里维护一份前缀表
                     sql = text(
-                        """
-                        SELECT ts_code, name
-                        FROM index_basic
-                        WHERE name IS NOT NULL
-                          AND (
-                            ts_code LIKE '000%.SH'
-                            OR ts_code LIKE '399%.SZ'
-                            OR ts_code LIKE '899%.BJ'
-                            OR ts_code LIKE '884%.BJ'
-                          )
-                        """
+                        "SELECT ts_code, name FROM index_basic WHERE name IS NOT NULL"
                     )
 
                     result = session.execute(sql)
                     for row in result:
                         ts_code, name = row[0], row[1]
-                        if not ts_code or not name:
+                        if not ts_code or not name or not is_index_code(ts_code):
                             continue
 
-                        symbol, _, market_suffix = ts_code.partition('.')
-                        market_suffix = market_suffix.upper()
-                        if market_suffix == 'SH' and symbol.startswith('000'):
-                            file_name_map[f"sh{symbol}"] = name
-                        elif market_suffix == 'SZ' and symbol.startswith('399'):
-                            file_name_map[f"sz{symbol}"] = name
-                        elif market_suffix == 'BJ' and symbol.startswith(('899', '884')):
-                            file_name_map[f"bj{symbol}"] = name
-                        else:
+                        try:
+                            file_name = to_tdx_file_stem(ts_code)
+                        except (TypeError, ValueError):
                             continue
+                        file_name_map[file_name] = name
 
                         name_ts_code_map[name] = ts_code
                         normalized_name = self.normalize_index_name(name)
@@ -156,12 +141,10 @@ class IndexService:
             return candidates[0][1]
 
         if index_name_or_code.isdigit() and len(index_name_or_code) == 6:
-            if index_name_or_code.startswith('000'):
-                return f"{index_name_or_code}.SH"
-            if index_name_or_code.startswith('399'):
-                return f"{index_name_or_code}.SZ"
-            if index_name_or_code.startswith(('899', '884')):
-                return f"{index_name_or_code}.BJ"
+            try:
+                return to_index_ts_code(index_name_or_code)
+            except (TypeError, ValueError):
+                return index_name_or_code
 
         return index_name_or_code
 
@@ -172,13 +155,12 @@ class IndexService:
     @staticmethod
     def _ts_code_to_file_name(ts_code: str) -> str | None:
         """将 ts_code 转换为通达信文件主名（如 000001.SH -> sh000001）。"""
-        if not ts_code or '.' not in ts_code:
+        if not is_index_code(ts_code):
             return None
-        symbol, _, market_suffix = ts_code.partition('.')
-        market = market_suffix.lower()
-        if market not in INDEX_CODE_PREFIXES:
+        try:
+            return to_tdx_file_stem(ts_code)
+        except (TypeError, ValueError):
             return None
-        return f"{market}{symbol}"
 
     def _query_category_file_names(self, category: str) -> set[str]:
         """查询指定 category 的指数文件主名集合。数据库不可用时返回空集合。"""
@@ -243,15 +225,16 @@ class IndexService:
         if self._tdx_data_path is None:
             return
 
-        markets = ([cast(str, market_filter)] if market_filter in INDEX_CODE_PREFIXES
-                   else list(INDEX_CODE_PREFIXES))
+        all_markets = ('sh', 'sz', 'bj')
+        markets = (cast(str, market_filter),) if market_filter in all_markets else all_markets
         for market in markets:
             directory = self._tdx_data_path / market / 'lday'
             if not directory.exists():
                 continue
             for file_path in sorted(directory.glob(f"{market}*.day")):
                 symbol = file_path.stem[2:]
-                if symbol.startswith(INDEX_CODE_PREFIXES[market]):
+                # 指数判定统一委托 code_converter，避免各处维护前缀表
+                if is_index_code(f"{symbol}.{market.upper()}"):
                     yield market, symbol, file_path
 
     def list_index_quotes(

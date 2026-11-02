@@ -14,7 +14,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.sources import baostock_schema as schema
-from src.utils.code_converter import to_baostock_code, to_symbol, to_ts_code
+from src.utils.code_converter import to_baostock_code, to_ts_code
 
 
 class BaostockStockMixin:
@@ -60,13 +60,11 @@ class BaostockStockMixin:
             if stock_basic_df.height > 0:
                 logger.debug(f"前5行数据: {stock_basic_df.head(5)}")
 
-            # 离线模式下，只获取数据不存储
-            if not self.session:
-                logger.info("离线模式下，跳过股票基本信息存储")
-                return stock_basic_df  # 离线模式下返回Polars DataFrame
-
-            # 数据清洗、存储并提交事务
-            self._persist_default_stock_basics(stock_basic_df)
+            # stock_basic 唯一写入方是同步流程：本 handler 只返回数据，不写库
+            if self.session:
+                logger.info(
+                    "BaostockHandler.update_stock_basic 只返回数据，stock_basic 由同步流程写入"
+                )
             return stock_basic_df  # 返回Polars DataFrame
 
         except (ConnectionError, TimeoutError, OSError) as e:
@@ -77,65 +75,6 @@ class BaostockStockMixin:
                     logger.warning(f"回滚事务失败: {rollback_e}")
             logger.exception(f"从Baostock获取股票基本信息失败: {e}")
             raise
-
-    def _persist_default_stock_basics(self, stock_basic_df):
-        """清洗默认股票的基本信息并写库，最后提交事务"""
-        # 数据清洗和标准化
-        from src.database.models.stock import StockBasic
-
-        # 为了避免事务问题，只更新默认股票
-        default_stocks = ["600000", "000001", "300001"]
-
-        # 遍历默认股票，进行清洗和存储
-        for symbol in default_stocks:
-            try:
-                self._upsert_stock_basic_row(stock_basic_df, symbol, StockBasic)
-            except (ConnectionError, TimeoutError, OSError) as row_e:
-                logger.exception(f"处理股票{symbol}基本信息失败: {row_e}")
-                continue
-
-        # 提交事务
-        self.session.commit()
-        logger.info("股票基本信息更新完成")
-
-    def _upsert_stock_basic_row(self, stock_basic_df, symbol, model):
-        """按 symbol 从上游数据取出单只股票信息并写入库（已存在则更新）"""
-        # 从Baostock数据中查找对应的股票信息（统一代码转换工具）
-        baostock_code = to_baostock_code(symbol)
-        stock_row = stock_basic_df.filter(pl.col('code') == baostock_code)
-
-        if stock_row.is_empty():
-            logger.warning(f"未找到股票{symbol}的基本信息")
-            return
-
-        # 获取第一条匹配的记录
-        row = stock_row.row(named=True)
-        name = row['code_name']
-        baostock_code = row['code']  # 格式如 sh.600000, sz.000001, bj.920181
-
-        # 统一转换：baostock 格式 -> 标准 ts_code
-        ts_code = to_ts_code(baostock_code)
-        symbol = to_symbol(baostock_code)
-
-        # 截断过长的股票名称（数据库字段限制20个字符）
-        if len(name) > 20:
-            name = name[:20]  # 截断到20个字符
-
-        # 查询股票是否已存在
-        stock = self.session.query(model).filter_by(ts_code=ts_code).first()
-
-        if stock:
-            # 更新现有股票信息
-            stock.name = name
-            stock.symbol = symbol
-        else:
-            # 创建新股票信息
-            stock = model(
-                ts_code=ts_code,
-                symbol=symbol,
-                name=name
-            )
-            self.session.add(stock)
 
     def update_stock_daily(self, ts_codes: List[str] | None = None, start_date: str | None = None, end_date: str | None = None, adjustflag: str = "3"):
         """
@@ -310,7 +249,7 @@ class BaostockStockMixin:
         return to_baostock_code(ts_code)
 
     def get_stock_data(self, ts_code: str, start_date: str, end_date: str,
-                       freq: str = 'daily', adjustment_type: str = 'qfq'):
+                       freq: str = 'daily', adjustment_type: str = 'hfq'):
         """
         标准接口：获取股票日线数据，返回统一格式（原始价 + 复权因子）。
 
@@ -426,14 +365,9 @@ class BaostockStockMixin:
                         stock_basic.list_date = earliest_date
                         logger.info(f"更新股票{std_code}的上市日期为: {earliest_date}")
                 else:
-                    # 如果股票基本信息不存在，创建一个
-                    logger.warning(f"股票{std_code}的基本信息不存在，将创建一条新记录")
-                    # 由于Baostock不提供股票名称，使用代码作为名称
-                    new_stock = StockBasic(
-                        ts_code=std_code,
-                        symbol=to_symbol(std_code),
-                        name=std_code,
-                        list_date=earliest_date
+                    # stock_basic 唯一写入方是同步流程：名称拿不到就跳过，
+                    # 不能把代码伪装成名称写库
+                    logger.warning(
+                        f"股票{std_code}的基本信息不存在，跳过上市日期回填；"
+                        "stock_basic 由同步流程写入"
                     )
-                    self.session.add(new_stock)
-                    logger.info(f"创建股票{std_code}的基本信息，上市日期为: {earliest_date}")

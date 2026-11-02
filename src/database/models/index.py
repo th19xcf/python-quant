@@ -6,7 +6,16 @@
 
 from datetime import datetime
 
-from sqlalchemy import Column, Date, DateTime, Float, Integer, String
+from sqlalchemy import (
+    Column,
+    Date,
+    DateTime,
+    Double,
+    Float,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 
 from src.database.db_manager import Base
 
@@ -45,19 +54,27 @@ class IndexDaily(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts_code = Column(String(20), nullable=False, comment="指数代码")
     trade_date = Column(Date, nullable=False, comment="交易日期")
-    open = Column(Float, comment="开盘价")
-    high = Column(Float, comment="最高价")
-    low = Column(Float, comment="最低价")
-    close = Column(Float, comment="收盘价")
-    pre_close = Column(Float, comment="昨收价")
-    change = Column(Float, comment="涨跌额")
-    pct_chg = Column(Float, comment="涨跌幅(%)")
-    vol = Column(Float, comment="成交量(手)")
-    amount = Column(Float, comment="成交额(千元)")
+    # 指数点位与成交量统一用双精度：MySQL FLOAT(4 字节) 落库会引入
+    # ~1e-7 相对误差，K 线比对与回测信号会受尾差影响。
+    open = Column(Double, comment="开盘价")
+    high = Column(Double, comment="最高价")
+    low = Column(Double, comment="最低价")
+    close = Column(Double, comment="收盘价")
+    pre_close = Column(Double, comment="昨收价")
+    change = Column(Double, comment="涨跌额")
+    pct_chg = Column(Double, comment="涨跌幅(%)")
+    # 单位契约同 stock_daily：vol=手（1 手=100 股），amount=元
+    vol = Column(Double, comment="成交量(手，1手=100股)")
+    # 成交额量级可达 1e12，用 Double 保存 float64 精度；
+    # NULL 表示上游未提供成交额（如 AkShare 指数日线），不得用 0 冒充
+    amount = Column(Double, comment="成交额(元)，NULL=上游未提供")
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
 
     __table_args__ = (
+        # 业务唯一键：一个指数一个交易日只能有一行，供原子 upsert 的
+        # ON DUPLICATE KEY / ON CONFLICT 命中
+        UniqueConstraint('ts_code', 'trade_date', name='uq_index_daily_ts_code_trade_date'),
         {
             "comment": "指数日线行情表",
             "mysql_charset": "utf8mb4",

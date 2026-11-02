@@ -24,6 +24,10 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List, Set, Tuple
 
+#: A 股一手 = 100 股。K 线数据契约中成交量列（vol）以“手”为单位，
+#: 风控 Order.qty 以“股”为单位；两者比较前必须统一为手。
+SHARES_PER_LOT = 100
+
 # ---------------------------------------------------------------------------
 # Order —— 待审查的候选下单请求
 # ---------------------------------------------------------------------------
@@ -41,7 +45,7 @@ class Order:
     industry:  行业标签（申万一级行业，如"银行"）
     trade_date: 交易日期（回测时的 Bar 日期）
     prev_close: 前收盘价（涨跌停规则用；由调用方按原始价口径注入）
-    bar_volume: 当日 Bar 成交量（委托量占比规则用）
+    bar_volume: 当日 Bar 成交量，单位“手”（1 手 = 100 股，与 vol 列口径一致）
     """
     ts_code: str
     side: str           # 'buy' | 'sell'
@@ -584,6 +588,9 @@ class MaxOrderVolumeRatio(Rule):
 
     防两类失真：回测里一笔吃掉全天成交量的幻觉成交；实盘里的冲击成本。
     order.bar_volume 缺失或为 0（无流动性）时 fail-closed 拒绝。
+
+    单位：``order.qty`` 为股，``order.bar_volume`` 为手（1 手 = 100 股）。
+    比较前先把 qty 折算成手，避免“股 vs 手”混比把占比放大 100 倍。
     """
 
     name = 'max_order_volume_ratio'
@@ -597,7 +604,8 @@ class MaxOrderVolumeRatio(Rule):
                 False,
                 f"单票 {order.ts_code} 缺少当日成交量，无法评估委托量占比，拒绝"
             )
-        ratio = order.qty / order.bar_volume
+        # 量纲统一：qty（股）→ 手，再与 bar_volume（手）比较
+        ratio = (order.qty / SHARES_PER_LOT) / order.bar_volume
         if ratio > self.limit:
             return RuleResult(
                 False,

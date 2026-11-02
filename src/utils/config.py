@@ -106,7 +106,7 @@ class DataSettings(BaseSettings):
 
     # Baostock配置
     default_stock_codes: List[str] = Field(default=["sh.600000", "sz.000001", "sz.300001"], description="默认股票代码列表")
-    default_index_codes: List[str] = Field(default=["sh.000001", "sz.399001", "sz.399006"], description="默认指数代码列表")
+    default_index_codes: List[str] = Field(default=["000001.SH", "399001.SZ", "399006.SZ"], description="默认指数代码列表（标准 ts_code 口径）")
     supported_frequencies: List[str] = Field(default=["1", "5", "15", "30", "60"], description="支持的分钟线频率")
     default_days: int = Field(default=30, description="默认数据更新天数")
     default_minute_days: int = Field(default=3, description="默认分钟线数据下载天数")
@@ -363,7 +363,7 @@ CONFIG_DOCUMENTATION = r"""
 | DATA__MAX_WORKERS | 4 | 数据获取最大工作线程数 | 大于0 |
 | DATA__ALLOW_REMOTE_SOURCES | False | 是否允许运行时/批量同步调用远程数据源（Baostock/AkShare） | 布尔值 |
 | DATA__DEFAULT_STOCK_CODES | ["sh.600000", "sz.000001", "sz.300001"] | 默认股票代码列表 | 字符串列表 |
-| DATA__DEFAULT_INDEX_CODES | ["sh.000001", "sz.399001", "sz.399006"] | 默认指数代码列表 | 字符串列表 |
+| DATA__DEFAULT_INDEX_CODES | ["000001.SH", "399001.SZ", "399006.SZ"] | 默认指数代码列表（标准 ts_code 口径） | 字符串列表 |
 | DATA__SUPPORTED_FREQUENCIES | ["1", "5", "15", "30", "60"] | 支持的分钟线频率 | 字符串列表 |
 | DATA__DEFAULT_DAYS | 30 | 默认数据更新天数 | 大于0 |
 | DATA__DEFAULT_MINUTE_DAYS | 3 | 默认分钟线数据下载天数 | 大于0 |

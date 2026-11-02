@@ -339,8 +339,19 @@ class DataFetcher:
         price_cols = ['open', 'high', 'low', 'close']
 
         if factor_col not in df.columns:
-            logger.debug(f"数据未提供 {factor_col} 列，保持原始价格")
+            logger.warning(
+                f"[复权降级] 请求 {adjustment_type} 复权，但数据未提供 {factor_col} 列，"
+                f"{df.height} 行已按未复权价返回")
             return df
+
+        # 因子全为 1.0 表示没有可用的除权事件：乘以 1.0 后仍是原始价，
+        # 若静默通过，上游会把未复权价当成复权结果用于回测/指标，必须显式告警
+        non_null = df[factor_col].drop_nulls()
+        if df.height > 0 and non_null.len() == df.height and bool((non_null == 1.0).all()):
+            logger.warning(
+                f"[复权降级] 请求 {adjustment_type} 复权，但 {factor_col} 全为 1.0"
+                f"（{df.height} 行），无可用除权事件，已按未复权价返回；"
+                "请检查分红数据与因子回填")
 
         # === 用因子列实时算复权价 ===
         factor_expr = pl.col(factor_col)
@@ -589,7 +600,7 @@ class DataFetcher:
             },
         )
 
-    def _get_data_from_sources(self, data_type: str, code: str, start_date: str, end_date: str, frequency: str, adjustment_type: str = 'qfq') -> pl.DataFrame:
+    def _get_data_from_sources(self, data_type: str, code: str, start_date: str, end_date: str, frequency: str, adjustment_type: str = 'hfq') -> pl.DataFrame:
         """
         从多个数据源获取数据（优化版）
 

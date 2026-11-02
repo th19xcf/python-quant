@@ -375,7 +375,7 @@ class DataSourceBase(ABC):
             "若在 __init__ 中自行初始化，请显式覆盖 initialize() 或直接设置 available")
 
     def get_stock_data(self, ts_code: str, start_date: str, end_date: str,
-                       freq: str = 'daily', adjustment_type: str = 'qfq'):
+                       freq: str = 'daily', adjustment_type: str = 'hfq'):
         """获取股票数据（标准接口，子类必须覆盖）"""
         raise NotImplementedError(
             f"{self.__class__.__name__} 未实现标准接口 get_stock_data()")
@@ -529,7 +529,7 @@ class DataSourceBase(ABC):
         """
         logger.info(f"{self.name} 不支持更新基金日线数据")
 
-    def get_fund_data(self, ts_code: str, start_date: str, end_date: str, freq: str = 'daily', adjustment_type: str = 'qfq') -> Union[pl.DataFrame, None]:
+    def get_fund_data(self, ts_code: str, start_date: str, end_date: str, freq: str = 'daily', adjustment_type: str = 'hfq') -> Union[pl.DataFrame, None]:
         """
         获取基金数据
 
@@ -582,7 +582,7 @@ class DataSourceBase(ABC):
         """
         logger.info(f"{self.name} 不支持更新封闭式基金日线数据")
 
-    def get_closed_fund_data(self, ts_code: str, start_date: str, end_date: str, freq: str = 'daily', adjustment_type: str = 'qfq') -> Union[pl.DataFrame, None]:
+    def get_closed_fund_data(self, ts_code: str, start_date: str, end_date: str, freq: str = 'daily', adjustment_type: str = 'hfq') -> Union[pl.DataFrame, None]:
         """
         获取封闭式基金数据
 

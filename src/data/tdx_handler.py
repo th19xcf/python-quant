@@ -16,6 +16,7 @@ from src.data.sources.base import DataSourceBase
 from src.data.tdx_day_parser import parse_day_file as parse_tdx_day_file
 from src.data.tdx_day_parser import read_recent_records
 from src.utils.code_converter import (
+    is_fund_code,
     is_index_code,
     parse_code,
     to_symbol,
@@ -23,8 +24,14 @@ from src.utils.code_converter import (
 )
 
 
-def _is_valid_tdx_stock_code(code) -> bool:
-    """验证通达信文件名中的代码是否有效。"""
+def _is_valid_tdx_stock_code(code, market: str | None = None) -> bool:
+    """验证通达信文件名中的代码是否有效。
+
+    Args:
+        code: 6 位数字代码
+        market: 代码所属市场（'sh'/'sz'/'bj'），用于基金前缀判定；
+            未提供时按统一规则推断（同名代码跨市场歧义时以传入值为准）
+    """
     if len(code) != 6:
         return False
     if not code.isdigit():
@@ -42,20 +49,23 @@ def _is_valid_tdx_stock_code(code) -> bool:
     # 深市指数：399001-399999
     elif code.startswith('399'):
         return True
-    # 深市股票：000000-002999, 300000-300999
+    # 深市股票：000000-002999, 创业板 300000-301999（301 为创业板新段）
     elif code.startswith('0') or code.startswith('3'):
         num = int(code)
-        return (0 <= num <= 2999) or (300000 <= num <= 300999)
+        return (0 <= num <= 2999) or (300000 <= num <= 301999)
     # 北交所：800000-899999（原新三板精选层）
+    # 810xxx 为北交所定向可转债号段（如 810011 优机定转），不属于股票/基金，
+    # 不能进入 stock_basic 的股票撮合路径
     elif code.startswith('8'):
         num = int(code)
-        return 800000 <= num <= 899999
+        return 800000 <= num <= 899999 and not 810000 <= num <= 819999
     # 北交所新股：920000-920999
     elif code.startswith('92'):
         num = int(code)
         return 920000 <= num <= 920999
-    # 上海 ETF：510xxx, 511xxx, 512xxx, 513xxx, 515xxx, 588xxx
-    elif code.startswith('51') or code.startswith('58') or code.startswith('15') or code.startswith('16'):
+    # 基金（ETF/LOF/封闭式）：前缀判定统一委托 code_converter.is_fund_code，
+    # 避免此处硬编码前缀与同步流程 _is_fund_ts_code 口径分叉
+    elif is_fund_code(code, market):
         return True
     return False
 
@@ -70,7 +80,7 @@ def _collect_tdx_market_codes(stock_codes, lday_dir, prefix, suffix, market_labe
     files = list(lday_dir.glob(f'{prefix}*.day'))
     for f in files:
         code = f.stem[2:]
-        if not _is_valid_tdx_stock_code(code):
+        if not _is_valid_tdx_stock_code(code, suffix):
             continue
         if is_index_code(f"{code}.{suffix}") != want_index:
             continue
@@ -547,7 +557,7 @@ class TdxHandler(DataSourceBase):
     # ------------------------------------------------------------------
 
     def get_stock_data(self, ts_code: str, start_date: str, end_date: str,
-                       freq: str = 'daily', adjustment_type: str = 'qfq'):
+                       freq: str = 'daily', adjustment_type: str = 'hfq'):
         """
         标准接口：获取股票日线数据，返回统一格式（原始价 + 复权因子）。
 

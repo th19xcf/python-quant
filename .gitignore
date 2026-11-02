@@ -127,3 +127,6 @@ config.ini
 
 # Quickstart 运行产物
 examples/output/
+
+# 审计产物（数据库清理与因子快照 CSV，约 75MB，属本地产物不入库）
+reports/

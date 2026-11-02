@@ -96,7 +96,8 @@ class _FakeSession:
 def _index_result():
     return {
         'total_tdx_indexes': 0, 'updated_indexes': 0, 'inserted_indexes': 0,
-        'deleted_indexes': 0, 'unchanged_indexes': 0, 'fallback_named_indexes': 0,
+        'deleted_indexes': 0, 'unchanged_indexes': 0, 'skipped_no_name_indexes': 0,
+        'missing_name_indexes': [],
         'filled_blank_fields': 0, 'failed_indexes': [],
     }
 
@@ -615,6 +616,8 @@ def test_prune_non_stock_rows_removes_index_and_fund_rows():
         StockBasic(ts_code='600000.SH', name='浦发银行', market='SH'),
         StockBasic(ts_code='000001.SH', name='上证指数', market='SH'),
         StockBasic(ts_code='510300.SH', name='沪深300ETF', market='SH'),
+        StockBasic(ts_code='881001.SH', name='通达信板块指数', market='SH'),
+        StockBasic(ts_code='880001.SH', name='通达信板块指数', market='SH'),
     ])
     result = _stock_result()
 
@@ -623,8 +626,8 @@ def test_prune_non_stock_rows_removes_index_and_fund_rows():
     )
 
     assert existing_codes == {'600000.SH'}
-    assert non_stock_codes == {'000001.SH', '510300.SH'}
-    assert result['deleted_non_stock_rows'] == 2
+    assert non_stock_codes == {'000001.SH', '510300.SH', '881001.SH', '880001.SH'}
+    assert result['deleted_non_stock_rows'] == 4
     assert result['existing_stocks'] == 1
     assert [row.ts_code for row in session.query(StockBasic).all()] == ['600000.SH']
 

@@ -490,29 +490,21 @@ class MainWindowNavigationMixin:
                 index_list = []
                 row_count = self.stock_table.rowCount()
 
+                from src.utils.code_converter import is_index_code, to_index_ts_code
+
                 for row in range(row_count):
                     # 获取代码列的值（通常是第1列）
                     code_item = self.stock_table.item(row, 1)  # 代码列
                     if code_item:
                         code = code_item.text()
-                        # 只保留指数代码（沪市000、深市399、京市899）
-                        if code.startswith('sh000') or code.startswith('sz399') or code.startswith('bj899'):
-                            if code.startswith('sh'):
-                                market = 'SH'
-                            elif code.startswith('sz'):
-                                market = 'SZ'
-                            else:
-                                market = 'BJ'
-                            symbol = code[2:]
-                            ts_code = f"{symbol}.{market}"
-                            index_list.append(ts_code)
-                        elif code.isdigit() and (code.startswith('000') or code.startswith('399') or code.startswith('899')):
-                            if code.startswith('000'):
-                                ts_code = f"{code}.SH"
-                            elif code.startswith('899'):
-                                ts_code = f"{code}.BJ"
-                            else:
-                                ts_code = f"{code}.SZ"
+                        if not code:
+                            continue
+                        # 指数判定与代码归一统一委托 code_converter，不再内联前缀表
+                        try:
+                            ts_code = to_index_ts_code(code)
+                        except (TypeError, ValueError):
+                            continue
+                        if is_index_code(ts_code):
                             index_list.append(ts_code)
 
                 if index_list:

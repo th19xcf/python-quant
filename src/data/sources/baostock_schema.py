@@ -74,7 +74,12 @@ def compute_daily_factors(raw_df: pl.DataFrame, hfq_df: pl.DataFrame
 
 
 def daily_row_to_record(row, ts_code):
-    """Baostock 日线行 -> 待入库记录；缺失数值统一按 0.0 处理"""
+    """Baostock 日线行 -> 待入库记录；缺失数值统一按 0.0 处理。
+
+    成交量口径：Baostock 上游 volume 单位为「股」，写库契约要求
+    stock_daily/index_daily 的 vol 为「手」，这里统一除以 100（1 手=100 股）。
+    该函数是日线写库的唯一收口点，调用方（stock/index）不得再换算一次。
+    """
     close_val = float(row['close']) if row['close'] else 0.0
     pre_close_val = float(row['preclose']) if row['preclose'] else 0.0
     return {
@@ -87,7 +92,7 @@ def daily_row_to_record(row, ts_code):
         'pre_close': pre_close_val,
         'change': close_val - pre_close_val,
         'pct_chg': float(row['pctChg']) if row['pctChg'] else 0.0,
-        'vol': float(row['volume']) if row['volume'] else 0.0,
+        'vol': float(row['volume']) / 100 if row['volume'] else 0.0,
         'amount': float(row['amount']) if row['amount'] else 0.0,
     }
 
@@ -101,7 +106,11 @@ def _parse_minute_time(raw_time) -> datetime:
 
 
 def minute_row_to_record(row, ts_code):
-    """Baostock 分钟线行 -> 待入库记录（与 StockMinute 列一致）。"""
+    """Baostock 分钟线行 -> 待入库记录（与 StockMinute 列一致）。
+
+    成交量口径：上游 volume 为「股」，StockMinute.vol 契约为「手」，
+    此处统一除以 100；写入层不再换算。
+    """
     return {
         'ts_code': ts_code,
         'trade_time': _parse_minute_time(row['time']),
@@ -109,6 +118,6 @@ def minute_row_to_record(row, ts_code):
         'high': float(row['high']) if row['high'] else 0.0,
         'low': float(row['low']) if row['low'] else 0.0,
         'close': float(row['close']) if row['close'] else 0.0,
-        'vol': float(row['volume']) if row['volume'] else 0.0,
+        'vol': float(row['volume']) / 100 if row['volume'] else 0.0,
         'amount': float(row['amount']) if row['amount'] else 0.0,
     }

@@ -7,14 +7,16 @@
 """
 
 from datetime import datetime
-from typing import Any, List
+from typing import List
 
 import numpy as np
 import polars as pl
 from loguru import logger
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from src.database.db_manager import DatabaseManager
 from src.database.models.stock import StockAdjFactor, StockDaily, StockDividend
+from src.database.upsert import upsert_rows
 from src.utils.memory_optimizer import MemoryOptimizer
 
 
@@ -139,13 +141,15 @@ class AdjFactorCalculator:
             return None
 
         # 使用Polars直接构建DataFrame
+        # 数值列统一转 float：`x or 0` 在 0/None 时产生 int，与小数混列会导致
+        # polars 严格类型推断失败；转 float 不改变数值，只固定为 Float64。
         data = {
             'ts_code': [d.ts_code for d in dividends],
             'ex_date': [d.ex_date for d in dividends],
-            'cash_div': [d.cash_div or 0 for d in dividends],
-            'share_div': [d.share_div or 0 for d in dividends],
-            'rights_issue_ratio': [d.rights_issue_ratio or 0 for d in dividends],
-            'rights_issue_price': [d.rights_issue_price or 0 for d in dividends],
+            'cash_div': [float(d.cash_div or 0) for d in dividends],
+            'share_div': [float(d.share_div or 0) for d in dividends],
+            'rights_issue_ratio': [float(d.rights_issue_ratio or 0) for d in dividends],
+            'rights_issue_price': [float(d.rights_issue_price or 0) for d in dividends],
         }
 
         return pl.DataFrame(data)
@@ -190,26 +194,36 @@ class AdjFactorCalculator:
             # 获取股票代码（不带后缀）
             symbol = ts_code.split('.')[0]
 
-            # 从通达信获取数据
-            data_list = self.tdx_handler.get_kline_data(symbol, start_str, end_str)
+            # 从通达信获取数据（get_kline_data 返回 LazyFrame，旧版本为 list[dict]）
+            result = self.tdx_handler.get_kline_data(symbol, start_str, end_str)
+            if isinstance(result, pl.LazyFrame):
+                frame = result.collect()
+            elif isinstance(result, pl.DataFrame):
+                frame = result
+            else:
+                data_list = result or []
+                if not data_list:
+                    logger.warning(f"{ts_code} 从通达信获取数据失败")
+                    return None
+                frame = pl.DataFrame({
+                    'date': [item['date'] for item in data_list],
+                    'open': [item['open'] for item in data_list],
+                    'high': [item['high'] for item in data_list],
+                    'low': [item['low'] for item in data_list],
+                    'close': [item['close'] for item in data_list],
+                })
 
-            if not data_list:
-                logger.warning(f"{ts_code} 从通达信获取数据失败")
+            required = {'date', 'open', 'high', 'low', 'close'}
+            if frame.is_empty() or not required.issubset(set(frame.columns)):
+                logger.warning(f"{ts_code} 从通达信获取数据为空或缺少列")
                 return None
 
-            # 使用Polars直接构建DataFrame
-            data = {
-                'ts_code': [ts_code] * len(data_list),
-                'trade_date': [item['date'] for item in data_list],
-                'open': [item['open'] for item in data_list],
-                'high': [item['high'] for item in data_list],
-                'low': [item['low'] for item in data_list],
-                'close': [item['close'] for item in data_list],
-            }
+            frame = frame.select('date', 'open', 'high', 'low', 'close')
+            return frame.rename({'date': 'trade_date'}).with_columns(
+                pl.lit(ts_code).alias('ts_code')
+            ).select('ts_code', 'trade_date', 'open', 'high', 'low', 'close')
 
-            return pl.DataFrame(data)
-
-        except (OSError, RuntimeError) as e:
+        except (OSError, RuntimeError, TypeError) as e:
             logger.exception(f"从通达信获取价格数据失败: {e}")
             return None
 
@@ -311,11 +325,21 @@ class AdjFactorCalculator:
     def save_adj_factors(self, df: pl.DataFrame, batch_size: int = 1000,
                          commit: bool = True):
         """
-        保存复权因子到数据库
+        保存复权因子到数据库（原子 upsert）。
+
+        写入语义（与旧实现 _batch_insert 对齐）：
+            - 键 (ts_code, trade_date) 已存在 → 覆盖 qfq_factor / hfq_factor；
+            - 键不存在 → 新增，created_at / updated_at 取当前时间；
+            - 冲突更新保留 created_at，只刷新 updated_at（数据库 NOW()）。
+
+        旧实现是「先 SELECT 再 setattr/add_all」的非原子查重，并发下可能插入
+        重复行；这里改用 upsert_rows（MySQL ON DUPLICATE KEY UPDATE /
+        SQLite ON CONFLICT DO UPDATE），重复键不再产生 1062/IntegrityError。
+        唯一约束由迁移 0012_stock_adj_factor_unique 提供。
 
         Args:
-            df: 包含复权因子的Polars DataFrame
-            batch_size: 批量插入大小（仅控制 add_all 分批，不再分批提交）
+            df: 包含复权因子的 Polars DataFrame
+            batch_size: 单次 upsert 提交的行数（upsert_rows 内部再按 400 行分批）
             commit: 是否在本方法内提交。为 False 时由调用方统一提交，
                 用于把 stock_adj_factor 与 stock_daily 的写入放进同一事务
         """
@@ -324,68 +348,39 @@ class AdjFactorCalculator:
             return
 
         try:
-            records = []
-            for row in df.to_dicts():
-                record = StockAdjFactor(
-                    ts_code=row['ts_code'],
-                    trade_date=row['trade_date'],
-                    qfq_factor=row['qfq_factor'],
-                    hfq_factor=row['hfq_factor'],
+            rows = [
+                {
+                    'ts_code': row['ts_code'],
+                    'trade_date': row['trade_date'],
+                    'qfq_factor': row['qfq_factor'],
+                    'hfq_factor': row['hfq_factor'],
+                }
+                for row in df.to_dicts()
+            ]
+
+            for start in range(0, len(rows), batch_size):
+                upsert_rows(
+                    self.session, StockAdjFactor,
+                    rows[start:start + batch_size],
+                    key_fields=('ts_code', 'trade_date'),
+                    value_fields=('qfq_factor', 'hfq_factor'),
                 )
-                records.append(record)
-
-                if len(records) >= batch_size:
-                    self._batch_insert(records, commit=False)
-                    records = []
-
-            # 插入剩余记录
-            if records:
-                self._batch_insert(records, commit=False)
 
             if commit:
                 self.session.commit()
-            logger.info(f"成功保存 {len(df)} 条复权因子记录")
+            logger.info(f"成功保存 {len(rows)} 条复权因子记录")
 
-        except (OSError, RuntimeError) as e:
+        except IntegrityError as e:
+            # 原子 upsert 已消除重复键冲突；此处兜底其他完整性错误（如 NOT NULL）
+            logger.exception(f"保存复权因子违反完整性约束: {e}")
+            self.session.rollback()
+            if not commit:
+                raise
+        except (OSError, RuntimeError, SQLAlchemyError) as e:
             logger.exception(f"保存复权因子失败: {e}")
             self.session.rollback()
             if not commit:
                 raise
-
-    def _batch_insert(self, records: List[StockAdjFactor], commit: bool = True):
-        """批量插入记录（commit=False 时只入会话，不提交）"""
-        try:
-            existing_records_map: dict[tuple[Any, Any], StockAdjFactor] = {}
-            if records:
-                ts_codes = [r.ts_code for r in records]
-                trade_dates = [r.trade_date for r in records]
-
-                existing_records = self.session.query(StockAdjFactor).filter(
-                    StockAdjFactor.ts_code.in_(ts_codes),
-                    StockAdjFactor.trade_date.in_(trade_dates)
-                ).all()
-
-                for rec in existing_records:
-                    existing_records_map[(rec.ts_code, rec.trade_date)] = rec
-
-            records_to_add = []
-            for record in records:
-                key = (record.ts_code, record.trade_date)
-                if key in existing_records_map:
-                    existing = existing_records_map[key]
-                    existing.qfq_factor = record.qfq_factor
-                    existing.hfq_factor = record.hfq_factor
-                else:
-                    records_to_add.append(record)
-
-            if records_to_add:
-                self.session.add_all(records_to_add)
-
-            if commit:
-                self.session.commit()
-        except (OSError, RuntimeError) as e:
-            self.session.rollback()
-            raise e
 
     def update_stock_daily_adj(self, df: pl.DataFrame, commit: bool = True):
         """
@@ -451,13 +446,14 @@ class AdjFactorCalculator:
                 'cash_div': pl.Float64, 'share_div': pl.Float64,
                 'rights_issue_ratio': pl.Float64, 'rights_issue_price': pl.Float64,
             })
+        # 数值列统一转 float，避免 0/None 的 int 与小数混列导致 polars 推断失败
         return pl.DataFrame({
             'ts_code': [r[0] for r in rows],
             'ex_date': [r[1] for r in rows],
-            'cash_div': [r[2] or 0 for r in rows],
-            'share_div': [r[3] or 0 for r in rows],
-            'rights_issue_ratio': [r[4] or 0 for r in rows],
-            'rights_issue_price': [r[5] or 0 for r in rows],
+            'cash_div': [float(r[2] or 0) for r in rows],
+            'share_div': [float(r[3] or 0) for r in rows],
+            'rights_issue_ratio': [float(r[4] or 0) for r in rows],
+            'rights_issue_price': [float(r[5] or 0) for r in rows],
         })
 
     def _get_prices_bulk(self, ts_codes: List[str],
@@ -561,7 +557,7 @@ class AdjFactorCalculator:
 
                 success += len(frames)
 
-            except (OSError, RuntimeError) as e:
+            except (OSError, RuntimeError, SQLAlchemyError) as e:
                 self.session.rollback()
                 logger.error(f"批量处理失败（{chunk[0]}..{chunk[-1]}）: {e}")
                 failed += len(chunk)

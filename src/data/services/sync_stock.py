@@ -347,8 +347,6 @@ def _infer_stock_market_from_ts_code(ts_code: str | None) -> str:
     if market == 'SZ':
         if symbol.startswith(('300', '301')):
             return '创业板'
-        if symbol.startswith('002'):
-            return '中小板'
         return '主板'
     return ''
 
@@ -414,13 +412,27 @@ def _first_stock_field(row: Any, *keys: str) -> Any:
     return ''
 
 
+def _is_blank_stock_field(value: Any) -> bool:
+    """判断字段是否为空/未知占位值（用于「只补空缺、不覆盖」的合并口径）。"""
+    if value is None:
+        return True
+    text = str(value).strip()
+    return not text or text in {'未知', '--', 'N/A'}
+
+
 def _build_stock_info(ts_code: str, symbol: str, row: Any, source: str) -> dict[str, Any]:
-    """构建股票信息字典（统一多源字段名）。"""
+    """构建股票信息字典（统一多源字段名）。
+
+    `industry_source` 仅在内存中标记行业字段的提供方，用于后续合并时执行
+    「Baostock 非空优先、AkShare 只补空缺」的口径；不写入数据库列。
+    """
+    industry = _first_stock_field(row, 'industry', '所属行业', '行业')
     return {
         'symbol': symbol,
         'name': _first_stock_field(row, 'code_name', 'name', '名称'),
         'area': _first_stock_field(row, 'area', 'region', '地域', '地区'),
-        'industry': _first_stock_field(row, 'industry', '所属行业', '行业'),
+        'industry': industry,
+        'industry_source': source if industry else '',
         'market': _first_stock_field(row, 'market', '市场'),
         'list_date': _first_stock_field(row, 'list_date', 'ipoDate', '上市日期') or None,
         'delist_date': _first_stock_field(row, 'delist_date', 'outDate', '退市日期') or None,
@@ -445,7 +457,7 @@ def _merge_baostock_basic(merged: dict[str, Any], baostock_df: Any, existing_cod
 
 
 def _merge_akshare_basic(merged: dict[str, Any], akshare_df: Any, existing_codes: set[str]) -> None:
-    """并入 AkShare 基本信息，已存在代码按字段补全。"""
+    """并入 AkShare 基本信息；已有 Baostock 值时只补空缺，不覆盖。"""
     if akshare_df is None or akshare_df.is_empty():
         return
 
@@ -456,24 +468,26 @@ def _merge_akshare_basic(merged: dict[str, Any], akshare_df: Any, existing_codes
         if ts_code is None or ts_code in existing_codes:
             continue
 
+        merged_info = _build_stock_info(ts_code, code, row, 'akshare')
         if ts_code in merged:
-            merged_info = _build_stock_info(ts_code, code, row, 'akshare')
-            merged[ts_code].update({
-                'name': merged_info.get('name', merged[ts_code].get('name', '')),
-                'area': merged_info.get('area', merged[ts_code].get('area', '')),
-                'industry': merged_info.get('industry', merged[ts_code].get('industry', '')),
-                'market': merged_info.get('market', merged[ts_code].get('market', '')),
-                'list_date': merged_info.get('list_date', merged[ts_code].get('list_date')),
-                'delist_date': merged_info.get('delist_date', merged[ts_code].get('delist_date')),
-                'status': merged_info.get('status', merged[ts_code].get('status', 'L')),
-            })
+            target = merged[ts_code]
+            for key in ('name', 'area', 'industry', 'market',
+                        'list_date', 'delist_date', 'status'):
+                if not _is_blank_stock_field(target.get(key)):
+                    continue
+                new_value = merged_info.get(key)
+                if _is_blank_stock_field(new_value):
+                    continue
+                target[key] = new_value
+                if key == 'industry':
+                    target['industry_source'] = 'akshare'
         else:
-            merged_info = _build_stock_info(ts_code, code, row, 'akshare')
             merged[ts_code] = {
                 'symbol': code,
                 'name': merged_info.get('name', ''),
                 'area': merged_info.get('area', ''),
                 'industry': merged_info.get('industry', ''),
+                'industry_source': merged_info.get('industry_source', ''),
                 'market': merged_info.get('market', ''),
                 'list_date': merged_info.get('list_date'),
                 'delist_date': merged_info.get('delist_date'),
@@ -483,7 +497,7 @@ def _merge_akshare_basic(merged: dict[str, Any], akshare_df: Any, existing_codes
 
 
 def merge_stock_basic(baostock_df: Any, akshare_df: Any, existing_codes: set[str] | None = None) -> dict[str, Any]:
-    """合并 Baostock 和 AkShare 的股票基本信息。"""
+    """合并 Baostock 和 AkShare 的股票基本信息（Baostock 非空优先）。"""
     if existing_codes is None:
         existing_codes = set()
 
@@ -491,7 +505,17 @@ def merge_stock_basic(baostock_df: Any, akshare_df: Any, existing_codes: set[str
     _merge_baostock_basic(merged, baostock_df, existing_codes)
     _merge_akshare_basic(merged, akshare_df, existing_codes)
 
-    logger.info(f"合并后共有 {len(merged)} 条股票基本信息（已过滤已存在的 {len(existing_codes)} 条）")
+    source_stats: dict[str, int] = {}
+    for info in merged.values():
+        if _is_blank_stock_field(info.get('industry')):
+            continue
+        key = str(info.get('industry_source') or 'unknown')
+        source_stats[key] = source_stats.get(key, 0) + 1
+
+    logger.info(
+        f"合并后共有 {len(merged)} 条股票基本信息（已过滤已存在的 {len(existing_codes)} 条）；"
+        f"行业来源统计: {source_stats}"
+    )
     return merged
 
 
@@ -547,7 +571,7 @@ def _prune_non_stock_rows(session: Any, result: dict[str, Any]) -> tuple[set[str
 
 
 def _apply_baostock_industry(merged_basic: dict[str, Any], baostock_industry_map: dict[str, str]) -> None:
-    """把 Baostock 行业映射并入 merged_basic，仅在缺失或未知时覆盖。"""
+    """把 Baostock 行业映射并入 merged_basic（非空优先，覆盖 AkShare 填充值）。"""
     if not baostock_industry_map:
         return
 
@@ -556,12 +580,17 @@ def _apply_baostock_industry(merged_basic: dict[str, Any], baostock_industry_map
             symbol = ts_code.split('.')[0] if '.' in ts_code else ts_code
             merged_basic[ts_code] = {
                 'symbol': symbol, 'name': '', 'area': '', 'industry': industry,
+                'industry_source': 'baostock',
                 'market': '', 'list_date': None, 'status': 'L', 'source': 'baostock_industry'
             }
         else:
-            existing_industry = str(merged_basic[ts_code].get('industry', '') or '').strip()
-            if (not existing_industry) or existing_industry in {'未知', '--', 'N/A'}:
-                merged_basic[ts_code]['industry'] = industry
+            target = merged_basic[ts_code]
+            current_source = str(target.get('industry_source') or '')
+            # Baostock 非空值优先：仅当前行业为空/未知，或由 AkShare 填入时覆盖；
+            # 来源未知的既有有效行业保持不变
+            if _is_blank_stock_field(target.get('industry')) or current_source == 'akshare':
+                target['industry'] = industry
+                target['industry_source'] = 'baostock'
 
 
 def _apply_akshare_industry_fallback(merged_basic: dict[str, Any], tdx_stock_codes: list[str]) -> int:
@@ -581,12 +610,14 @@ def _apply_akshare_industry_fallback(merged_basic: dict[str, Any], tdx_stock_cod
                 symbol = ts_code.split('.')[0] if '.' in ts_code else ts_code
                 merged_basic[ts_code] = {
                     'symbol': symbol, 'name': '', 'area': '', 'industry': industry,
+                    'industry_source': 'akshare',
                     'market': '', 'list_date': None, 'status': 'L', 'source': 'akshare_industry'
                 }
             else:
-                existing_industry = str(merged_basic[ts_code].get('industry', '') or '').strip()
-                if not existing_industry:
+                # AkShare 兜底只补真正的空值，不覆盖任何既有行业文本
+                if not str(merged_basic[ts_code].get('industry', '') or '').strip():
                     merged_basic[ts_code]['industry'] = industry
+                    merged_basic[ts_code]['industry_source'] = 'akshare'
         logger.info(f"AkShare 行业兜底完成，补充映射 {len(akshare_industry_map)} 只股票")
     return len(akshare_industry_map)
 
@@ -611,6 +642,11 @@ def _backfill_text_fields(row: Any, source_info: dict[str, Any], result: dict[st
 
     if _update_stock_text_field(row, 'area', source_area, result, max_len=20):
         changed = True
+
+    # 行业口径：Baostock 非空值优先，AkShare 只补空缺、不覆盖存量值
+    if source_industry and str(source_info.get('industry_source') or '') == 'akshare':
+        if not _is_blank_stock_field(row.industry):
+            source_industry = ''
     if _update_stock_text_field(row, 'industry', source_industry, result, max_len=50):
         changed = True
     if _update_stock_text_field(row, 'market', source_market, result, max_len=20):

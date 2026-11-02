@@ -235,3 +235,43 @@ def test_stock_and_index_lists_are_separated(tmp_path):
             '000001.SH', '399001.SZ', '880001.SH']
     finally:
         handler.close()
+
+
+def test_stock_list_excludes_bse_convertible_bonds(tmp_path):
+    """北交所定向可转债号段 810xxx 不得进入个股列表（810011 优机定转）"""
+    for stem in ('bj810011', 'bj920001'):
+        path = tmp_path / 'bj' / 'lday' / f'{stem}.day'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'')
+
+    handler = _handler(tmp_path)
+    try:
+        stocks = set(handler.get_stock_list())
+        assert '810011.BJ' not in stocks
+        assert '920001.BJ' in stocks
+    finally:
+        handler.close()
+
+
+def test_stock_list_covers_chinext_301_and_fund_prefixes(tmp_path):
+    """301 创业板新段与扩展基金前缀（50/52/56/58/15/16/18）进入个股列表"""
+    for market, stem in [
+        ('sz', 'sz301001'),
+        ('sh', 'sh501001'), ('sh', 'sh520001'), ('sh', 'sh560001'),
+        ('sh', 'sh588001'), ('sz', 'sz158000'), ('sz', 'sz180101'),
+        ('sz', 'sz160105'),
+    ]:
+        path = tmp_path / market / 'lday' / f'{stem}.day'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'')
+
+    handler = _handler(tmp_path)
+    try:
+        stocks = set(handler.get_stock_list())
+        assert '301001.SZ' in stocks
+        for code in ['501001.SH', '520001.SH', '560001.SH', '588001.SH',
+                     '158000.SZ', '180101.SZ', '160105.SZ']:
+            assert code in stocks
+        assert set(handler.get_stock_list()) & set(handler.get_index_list()) == set()
+    finally:
+        handler.close()

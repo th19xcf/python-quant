@@ -35,10 +35,20 @@ def _infer_fund_type(symbol: str, name: str | None) -> str:
     return '基金'
 
 
+def _is_placeholder_fund_name(name: str | None, symbol: str) -> bool:
+    """判断基金名称是否为占位（空 / 等于代码 / 「股票+代码」）。"""
+    text = (name or '').strip()
+    return not text or text == symbol or text == f"股票{symbol}"
+
+
 def _migrate_fund_stock_tuple(stock: Any) -> tuple[str, str, str, str]:
-    """由 stock_basic 记录派生基金的代码、名称、类型与市场。"""
+    """由 stock_basic 记录派生基金的代码、名称、类型与市场。
+
+    占位名不迁移：宁可 name 为空并记为缺名，也不把代码伪装成名称。
+    """
     symbol = (stock.symbol or stock.ts_code.split('.')[0])[:9]
-    name = (stock.name or symbol)[:20]
+    raw_name = (stock.name or '').strip()
+    name = '' if _is_placeholder_fund_name(raw_name, symbol) else raw_name[:20]
     return symbol, name, _infer_fund_type(symbol, name), stock.ts_code.split('.')[-1]
 
 
@@ -49,7 +59,7 @@ def _fill_fund_from_stock(fund: Any, stock: Any, symbol: str, name: str,
     if not fund.symbol and symbol:
         fund.symbol = symbol
         changed = True
-    if (not fund.name or fund.name.startswith('股票')) and name:
+    if (not fund.name or _is_placeholder_fund_name(fund.name, symbol)) and name:
         fund.name = name
         changed = True
     if not fund.fund_type:
@@ -76,6 +86,11 @@ def _migrate_fund_stock_row(stock: Any, existing_fund_map: dict[str, Any], sessi
     from src.database.models.fund import FundBasic
 
     symbol, name, inferred_type, inferred_market = _migrate_fund_stock_tuple(stock)
+
+    # 无真实名称时不新建记录：避免把代码/空串写成基金名称，缺名标的单独记账
+    if not name:
+        result['missing_name_funds'].append(stock.ts_code)
+        return
 
     fund = existing_fund_map.get(stock.ts_code)
     if fund is None:
@@ -117,10 +132,15 @@ def _merge_etf_row(row: dict[str, Any], existing_fund_map: dict[str, Any], sessi
     if not ts_code:
         return
 
+    # 上游缺名时不入库，避免把代码伪装成名称
+    if _is_placeholder_fund_name(name, symbol):
+        result['missing_name_funds'].append(ts_code)
+        return
+
     fund = existing_fund_map.get(ts_code)
     if fund is None:
         fund = FundBasic(
-            ts_code=ts_code, symbol=symbol[:9], name=(name or symbol)[:20],
+            ts_code=ts_code, symbol=symbol[:9], name=name[:20],
             fund_type='ETF', market=ts_code.split('.')[-1], status='L',
         )
         session.add(fund)
@@ -130,7 +150,7 @@ def _merge_etf_row(row: dict[str, Any], existing_fund_map: dict[str, Any], sessi
         return
 
     changed = False
-    if name and ((not fund.name) or fund.name.startswith('股票')):
+    if name and ((not fund.name) or _is_placeholder_fund_name(fund.name, symbol)):
         fund.name = name[:20]
         changed = True
     if not fund.fund_type:
@@ -228,6 +248,7 @@ def sync_stock_fund_to_fund_basic(config: Any, db_manager: Any) -> dict[str, Any
         'list_date_filled': 0,
         'delist_date_filled': 0,
         'failed': 0,
+        'missing_name_funds': [],
     }
 
     logger.info("=" * 60)
@@ -264,8 +285,12 @@ def sync_stock_fund_to_fund_basic(config: Any, db_manager: Any) -> dict[str, Any
         # 使用通达信日线数据补全日期信息
         _fill_fund_dates(config, session, result)
 
-        # 从 stock_basic 删除已迁移基金
-        _delete_migrated_funds(session, fund_stocks, result)
+        # 从 stock_basic 删除已迁移基金（缺名未入库的保留，避免静默丢数据）
+        _delete_migrated_funds(
+            session,
+            [s for s in fund_stocks if s.ts_code in existing_fund_map],
+            result,
+        )
 
         session.commit()
 
@@ -284,6 +309,11 @@ def sync_stock_fund_to_fund_basic(config: Any, db_manager: Any) -> dict[str, Any
         logger.info(f"  list_date 回填: {result['list_date_filled']}")
         logger.info(f"  delist_date 回填: {result['delist_date_filled']}")
         logger.info(f"  stock_basic 删除: {result['deleted_from_stock_basic']}")
+        logger.info(f"  缺名跳过入库: {len(result['missing_name_funds'])}")
+        if result['missing_name_funds']:
+            logger.warning(
+                f"  缺名基金清单(前20): {result['missing_name_funds'][:20]}"
+            )
         logger.info(f"  失败数: {result['failed']}")
         logger.info("=" * 60)
 

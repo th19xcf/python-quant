@@ -23,10 +23,8 @@ from src.data.services.sync_common import (
     _normalize_text_value,
     _remote_sync_blocked,
     _sync_each_with_recovery,
-    _to_ts_code_or_none,
 )
 from src.data.sources import baostock_schema as schema
-from src.utils.code_converter import MARKET_BJ, MARKET_SH, MARKET_SZ
 from src.utils.exceptions import DataSourceException
 
 # ======================================================================
@@ -43,10 +41,11 @@ def _normalize_index_ts_code(code: Any) -> str | None:
     """
     统一规范 Baostock / AkShare 指数代码格式为 000001.SH。
 
-    显式带市场标识（sh.000001 / 000001.SH）时委托统一代码转换工具；
     纯数字代码不能用个股规则推断市场（000001 是上证指数而非平安银行），
-    因此按指数前缀规则处理：000 -> SH、399 -> SZ、884/899 -> BJ。
+    判定与归一化统一委托 code_converter.to_index_ts_code，避免前缀规则分叉。
     """
+    from src.utils.code_converter import to_index_ts_code
+
     if code is None:
         return None
 
@@ -54,18 +53,10 @@ def _normalize_index_ts_code(code: Any) -> str | None:
     if not text:
         return None
 
-    if '.' in text:
-        return _to_ts_code_or_none(text)
-
-    if not text.isdigit() or len(text) != 6:
+    try:
+        return to_index_ts_code(text)
+    except (TypeError, ValueError):
         return None
-    if text.startswith('000'):
-        return f"{text}.{MARKET_SH}"
-    if text.startswith('399'):
-        return f"{text}.{MARKET_SZ}"
-    if text.startswith(('884', '899')):
-        return f"{text}.{MARKET_BJ}"
-    return None
 
 
 def _parse_index_date(value: Any) -> date | None:
@@ -231,16 +222,9 @@ def _collect_external_index_name_map(config: Any) -> dict[str, dict[str, Any]]:
     return merged_info_map
 
 
-def _index_name_from_code(ts_code: str | None) -> str:
-    """由指数代码生成占位名，代码无市场后缀时返回空串。"""
-    if ts_code and '.' in ts_code:
-        return f"指数{ts_code.split('.')[0]}"
-    return ''
-
-
 def _index_desc_text(index_name: str | None, ts_code: str | None) -> str:
-    """生成指数描述文本。"""
-    safe_name = index_name or _index_name_from_code(ts_code) or '指数'
+    """生成指数描述文本（desc 允许兜底，name 字段不允许占位）。"""
+    safe_name = index_name or '指数'
     return f"{safe_name}({ts_code})，通达信基准，Baostock/AkShare补全"
 
 
@@ -319,8 +303,7 @@ def _backfill_index_row(row: Any, external_info_map: dict[str, dict[str, Any]],
 
     if not row.name:
         source_name = forced_name or _normalize_text_value(source_info.get('name'))
-        if not source_name:
-            source_name = _index_name_from_code(normalized_code)
+        # 拿不到真实名称时不回填占位名，交由缺名清单显式暴露
         if source_name:
             row.name = source_name
             changed = True
@@ -379,7 +362,9 @@ def _log_index_sync_result(result: dict[str, Any]) -> None:
     logger.info(f"  删除指数数量: {result['deleted_indexes']}")
     logger.info(f"  更新指数数量: {result['updated_indexes']}")
     logger.info(f"  未变化数量: {result['unchanged_indexes']}")
-    logger.info(f"  回退命名数量: {result['fallback_named_indexes']}")
+    logger.info(f"  缺名跳过: {result['skipped_no_name_indexes']}")
+    if result['missing_name_indexes']:
+        logger.warning(f"  缺名指数清单(前20): {result['missing_name_indexes'][:20]}")
     logger.info(f"  回填空白字段数量: {result['filled_blank_fields']}")
     logger.info(f"  失败数量: {len(result['failed_indexes'])}")
     if result['failed_indexes']:
@@ -437,9 +422,11 @@ def _upsert_index_from_sources(ctx: IndexSyncContext, ts_code: str, session: Ses
     source_name = FORCED_INDEX_NAME_MAP.get(
         ts_code, _normalize_text_value(source_info.get('name'))
     )
+    # 无真实名称时不建行：禁止用「指数XXXXXX」式占位名伪装
     if not source_name:
-        source_name = _index_name_from_code(ts_code)
-        result['fallback_named_indexes'] += 1
+        result['skipped_no_name_indexes'] += 1
+        result['missing_name_indexes'].append(ts_code)
+        return
 
     market = ts_code.split('.')[-1]
     inferred = _infer_index_meta(ts_code, source_name)
@@ -485,7 +472,8 @@ def sync_tdx_index_to_database(config: Any, db_manager: Any) -> dict[str, Any]:
         'inserted_indexes': 0,
         'deleted_indexes': 0,
         'unchanged_indexes': 0,
-        'fallback_named_indexes': 0,
+        'skipped_no_name_indexes': 0,
+        'missing_name_indexes': [],
         'filled_blank_fields': 0,
         'failed_indexes': [],
         'skipped_reason': '',

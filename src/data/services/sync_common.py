@@ -164,21 +164,20 @@ def _is_fund_ts_code(ts_code: str | None, name: str | None = None,
                      market: str | None = None) -> bool:
     """判断是否为基金代码。
 
-    代码前缀是主判据（不依赖数据源文本字段）；market/name 仅作补充，
+    代码前缀是主判据（委托 code_converter.is_fund_code 单一实现，
+    与 TDX 文件扫描共用同一份前缀表）；market/name 仅作补充，
     且先做大小写归一化，数据源字段口径变化（如 '基金' -> 'Fund'）不再失效。
     """
-    if not ts_code or '.' not in ts_code:
-        return False
+    from src.utils.code_converter import is_fund_code
 
-    symbol, suffix = ts_code.split('.', 1)
-    suffix = suffix.upper()
     mkt = (market or '').strip()
     nm = (name or '').strip()
 
-    if suffix == 'SH' and symbol.startswith(('50', '51', '52', '56', '58')):
+    if is_fund_code(ts_code, mkt or None):
         return True
-    if suffix == 'SZ' and symbol.startswith(('15', '16', '18')):
-        return True
+
+    if not ts_code or '.' not in ts_code:
+        return False
 
     if mkt.upper() in _FUND_MARKET_TOKENS:
         return True

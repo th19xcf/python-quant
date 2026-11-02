@@ -58,8 +58,9 @@ class FundDaily(Base):
     pre_close = Column(Float, comment="昨收价")
     change = Column(Float, comment="涨跌额")
     pct_chg = Column(Float, comment="涨跌幅(%)")
-    vol = Column(Float, comment="成交量(手)")
-    amount = Column(Float, comment="成交额(千元)")
+    # 单位契约同 stock_daily：vol=手（1 手=100 股），amount=元
+    vol = Column(Float, comment="成交量(手，1手=100股)")
+    amount = Column(Float, comment="成交额(元)")
 
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
@@ -124,8 +125,9 @@ class ClosedFundDaily(Base):
     pre_close = Column(Float, comment="昨收价")
     change = Column(Float, comment="涨跌额")
     pct_chg = Column(Float, comment="涨跌幅(%)")
-    vol = Column(Float, comment="成交量(手)")
-    amount = Column(Float, comment="成交额(千元)")
+    # 单位契约同 stock_daily：vol=手（1 手=100 股），amount=元
+    vol = Column(Float, comment="成交量(手，1手=100股)")
+    amount = Column(Float, comment="成交额(元)")
 
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")

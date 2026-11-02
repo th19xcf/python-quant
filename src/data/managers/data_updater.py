@@ -57,7 +57,18 @@ class DataUpdater:
     # ------------------------------------------------------------------
 
     def update_stock_basic(self) -> bool:
-        return self._try_sources('update_stock_basic', '股票基本信息')
+        """股票基本信息：stock_basic 唯一写入方是同步流程。
+
+        禁止把该方法转发给已注册的 handler（它们持有可写会话，会绕开
+        同步流程的字段回填与清理，直接写 stock_basic）。
+        """
+        if not self.db_manager:
+            # 无库模式没有写入目标，保持原有 handler 兜底行为
+            return self._try_sources('update_stock_basic', '股票基本信息')
+        from src.data.services.sync_stock import sync_tdx_stock_to_database
+
+        result = sync_tdx_stock_to_database(self.config, self.db_manager)
+        return not result.get('skipped_reason')
 
     def update_stock_daily(self, ts_codes: List[str] | None = None,
                            start_date: str | None = None, end_date: str | None = None) -> bool:

@@ -15,6 +15,7 @@ from loguru import logger
 
 from src.data.sources import akshare_schema as schema
 from src.data.sources.akshare.constants import _DEFAULT_INDEX_CODES
+from src.utils.code_converter import to_index_ts_code, to_tdx_file_stem
 
 
 class AkShareIndexMixin:
@@ -134,17 +135,22 @@ class AkShareIndexMixin:
             raise
 
     def _resolve_index_daily_codes(self, ts_codes: List[str] | None = None):
-        """解析待更新的指数代码：未指定时回落到数据库或离线默认列表"""
-        # 如果没有指定指数代码，从数据库获取所有指数代码
+        """解析待更新的指数代码：统一为标准 ts_code（写库口径与 index_basic 一致）"""
         if ts_codes:
-            return ts_codes
+            codes = []
+            for code in ts_codes:
+                try:
+                    codes.append(to_index_ts_code(code))
+                except ValueError as e:
+                    logger.warning(f"跳过无法识别的指数代码: {e}")
+            return codes
         if self.session:
             from src.database.models.index import IndexBasic
             index_basics = self.session.query(IndexBasic.ts_code).all()
-            return [ib.ts_code for ib in index_basics]
-        # 离线模式下使用默认指数代码（使用带前缀的格式）
+            return [to_index_ts_code(ib.ts_code) for ib in index_basics]
+        # 离线模式下使用默认指数代码（常量已统一为 ts_code 格式）
         logger.info(f"离线模式下，使用默认指数代码列表: {_DEFAULT_INDEX_CODES}")
-        return _DEFAULT_INDEX_CODES
+        return [to_index_ts_code(code) for code in _DEFAULT_INDEX_CODES]
 
     @staticmethod
     def _build_akshare_index_daily_rows(index_daily_df, ts_code):
@@ -181,7 +187,8 @@ class AkShareIndexMixin:
                 'pre_close': 0.0,  # stock_zh_index_daily 不提供昨收价
                 'change': 0.0,  # 不提供涨跌额
                 'pct_chg': 0.0,  # 不提供涨跌幅
-                'amount': 0.0,  # 不提供成交额
+                # 不提供成交额：写 NULL 表示「上游缺失」，不得用 0 冒充真实零成交
+                'amount': None,
             },
         )
 
@@ -193,9 +200,9 @@ class AkShareIndexMixin:
         """同步单个指数的日线数据（离线模式仅收集结果）"""
         logger.info(f"正在获取{ts_code}的日线数据")
 
-        # 使用AkShare获取指数日线数据（契约见 akshare_schema.INDEX_DAILY）
+        # 使用AkShare获取指数日线数据（上游只认 sh000001 方言，写库仍用 ts_code）
         index_daily_df = schema.resolve(
-            schema.fetch_spec(schema.INDEX_DAILY, symbol=ts_code),
+            schema.fetch_spec(schema.INDEX_DAILY, symbol=to_tdx_file_stem(ts_code)),
             schema.INDEX_DAILY,
         )
 

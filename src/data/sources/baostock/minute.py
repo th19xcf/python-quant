@@ -229,12 +229,16 @@ class BaostockMinuteMixin:
         """批量查重写入并提交（每个标的一次事务）"""
         from src.database.upsert import upsert_rows
 
-        # 批量查重后写入（已存在则更新，不存在则新增）
+        # freq 是分钟线身份的一部分：同一时间戳的 1min/5min 数据必须分开存，
+        # 否则会互相覆盖。这里显式注入到每一行，upsert 键含 freq。
+        for row in minute_rows:
+            row['freq'] = frequency
+
+        # 原子 upsert（唯一键 ts_code + freq + trade_time，已存在则更新）
         upsert_rows(
             self.session, model, minute_rows,
-            key_fields=('ts_code', 'trade_time'),
+            key_fields=('ts_code', 'freq', 'trade_time'),
             value_fields=('open', 'high', 'low', 'close', 'vol', 'amount'),
-            create_defaults={'freq': frequency},
         )
 
         # 每个标的提交一次事务

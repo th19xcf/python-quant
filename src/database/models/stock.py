@@ -6,7 +6,18 @@
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, Date, DateTime, Float, Index, Integer, String
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Double,
+    Float,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 
 from src.database.db_manager import Base
 
@@ -52,24 +63,31 @@ class StockDaily(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts_code = Column(String(20), nullable=False, comment="股票代码")
     trade_date = Column(Date, nullable=False, comment="交易日期")
-    open = Column(Float, comment="开盘价")
-    high = Column(Float, comment="最高价")
-    low = Column(Float, comment="最低价")
-    close = Column(Float, comment="收盘价")
-    pre_close = Column(Float, comment="昨收价")
+    # 价格与复权因子必须保持双精度：MySQL float(4 字节) 落库会引入
+    # ~1e-7 相对误差，复权因子连乘后放大，影响回测收益与信号。
+    open = Column(Double, comment="开盘价")
+    high = Column(Double, comment="最高价")
+    low = Column(Double, comment="最低价")
+    close = Column(Double, comment="收盘价")
+    pre_close = Column(Double, comment="昨收价")
     change = Column(Float, comment="涨跌额")
     pct_chg = Column(Float, comment="涨跌幅(%)")
-    vol = Column(Float, comment="成交量(手)")
-    amount = Column(Float, comment="成交额(千元)")
+    # 单位契约（与数据源归一化、upsert 写入、DataFetcher 读取路径一致）：
+    # vol 为「手」（1 手 = 100 股），amount 为「元」，两者都不得再二次换算。
+    vol = Column(Float, comment="成交量(手，1手=100股)")
+    amount = Column(Float, comment="成交额(元)")
 
-    # 复权因子（用于实时计算复权价格）
-    qfq_factor = Column(Float, default=1.0, comment="前复权因子")
-    hfq_factor = Column(Float, default=1.0, comment="后复权因子")
+    # 复权因子（用于实时计算复权价格）；Double 对应 MySQL DOUBLE(8 字节)
+    qfq_factor = Column(Double, default=1.0, comment="前复权因子")
+    hfq_factor = Column(Double, default=1.0, comment="后复权因子")
 
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
 
     __table_args__ = (
+        # 业务唯一键：一个代码一个交易日只能有一行，供原子 upsert 的
+        # ON DUPLICATE KEY / ON CONFLICT 命中
+        UniqueConstraint('ts_code', 'trade_date', name='uq_stock_daily_ts_code_trade_date'),
         # 添加ts_code和trade_date的组合索引，优化按股票代码和日期范围查询
         Index('idx_stock_daily_ts_code_trade_date', 'ts_code', 'trade_date'),
         # 添加trade_date的索引，优化按日期范围查询所有股票
@@ -99,13 +117,17 @@ class StockMinute(Base):
     high = Column(Float, comment="最高价")
     low = Column(Float, comment="最低价")
     close = Column(Float, comment="收盘价")
-    vol = Column(Float, comment="成交量(手)")
-    amount = Column(Float, comment="成交额(千元)")
+    # 单位契约同 stock_daily：vol=手（1 手=100 股），amount=元
+    vol = Column(Float, comment="成交量(手，1手=100股)")
+    amount = Column(Float, comment="成交额(元)")
     freq = Column(String(10), nullable=False, comment="周期: 1min, 5min, 15min, 30min, 60min")
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
 
     __table_args__ = (
+        # 业务唯一键：分钟线身份为「代码 + 周期 + 时间」，缺一不可
+        UniqueConstraint('ts_code', 'freq', 'trade_time',
+                         name='uq_stock_minute_ts_code_freq_trade_time'),
         # 添加ts_code、freq和trade_time的组合索引，优化按股票代码、周期和时间范围查询
         Index('idx_stock_minute_ts_code_freq_trade_time', 'ts_code', 'freq', 'trade_time'),
         # 添加trade_time的索引，优化按时间范围查询所有股票
@@ -180,9 +202,9 @@ class StockAdjFactor(Base):
     ts_code = Column(String(20), nullable=False, comment="股票代码")
     trade_date = Column(Date, nullable=False, comment="交易日期")
 
-    # 复权因子
-    qfq_factor = Column(Float, default=1.0, comment="前复权因子")
-    hfq_factor = Column(Float, default=1.0, comment="后复权因子")
+    # 复权因子；Double 对应 MySQL DOUBLE(8 字节)
+    qfq_factor = Column(Double, default=1.0, comment="前复权因子")
+    hfq_factor = Column(Double, default=1.0, comment="后复权因子")
 
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
@@ -192,6 +214,10 @@ class StockAdjFactor(Base):
         Index('idx_stock_adj_factor_ts_code_trade_date', 'ts_code', 'trade_date'),
         # 添加trade_date的索引，优化按日期范围查询所有股票
         Index('idx_stock_adj_factor_trade_date', 'trade_date'),
+        # 业务唯一键：一个股票一个交易日只能有一行，供原子 upsert 的
+        # ON DUPLICATE KEY / ON CONFLICT 命中（迁移 0012 落库）
+        UniqueConstraint('ts_code', 'trade_date',
+                         name='uq_stock_adj_factor_ts_code_trade_date'),
         {
             "comment": "股票复权因子表",
             "mysql_charset": "utf8mb4",

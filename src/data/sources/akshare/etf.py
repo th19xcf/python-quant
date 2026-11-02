@@ -63,9 +63,9 @@ class AkShareEtfMixin:
             logger.info("离线模式下，跳过 ETF 基本信息存储")
             return etf_df
 
-        from src.database.models.stock import StockBasic
+        from src.database.models.fund import FundBasic
 
-        # 遍历数据，进行清洗和存储
+        # 遍历数据，进行清洗和存储（ETF 属基金，写 fund_basic，不写 stock_basic）
         updated_count = 0
         for row in etf_df.iter_rows(named=True):
             try:
@@ -84,24 +84,26 @@ class AkShareEtfMixin:
                     continue
 
                 # 查询 ETF 是否已存在
-                stock = self.session.query(StockBasic).filter_by(ts_code=ts_code).first()
+                fund = self.session.query(FundBasic).filter_by(ts_code=ts_code).first()
 
-                if stock:
+                if fund:
                     # 更新现有 ETF 名称
-                    if stock.name != name:
-                        logger.info(f"更新 ETF 名称: {ts_code} - {stock.name} -> {name}")
-                        stock.name = name
+                    if fund.name != name:
+                        logger.info(f"更新 ETF 名称: {ts_code} - {fund.name} -> {name}")
+                        fund.name = name[:20]
                         updated_count += 1
                 else:
                     # 创建新 ETF 信息
                     logger.info(f"新增 ETF: {ts_code} - {name}")
-                    stock = StockBasic(
+                    fund = FundBasic(
                         ts_code=ts_code,
                         symbol=symbol[:9] if len(symbol) > 9 else symbol,
-                        name=name[:45] if len(name) > 45 else name,
-                        status='L'
+                        name=name[:20],
+                        fund_type='ETF',
+                        market=ts_code.split('.')[-1],
+                        status='L',
                     )
-                    self.session.add(stock)
+                    self.session.add(fund)
                     updated_count += 1
 
             # 兜底理由：单行记录写库失败跳过，不中断整批

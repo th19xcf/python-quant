@@ -14,6 +14,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.sources import baostock_schema as schema
+from src.utils.code_converter import to_index_ts_code
 
 
 class BaostockIndexMixin:
@@ -161,18 +162,23 @@ class BaostockIndexMixin:
             raise
 
     def _resolve_index_daily_codes(self, ts_codes: List[str] | None = None):
-        """解析待更新的指数代码：未指定时回落到数据库或离线默认列表"""
-        # 如果没有指定指数代码，从数据库获取所有指数代码
+        """解析待更新的指数代码：统一为标准 ts_code（写库口径与 index_basic 一致）"""
         if ts_codes:
-            return ts_codes
+            codes = []
+            for code in ts_codes:
+                try:
+                    codes.append(to_index_ts_code(code))
+                except ValueError as e:
+                    logger.warning(f"跳过无法识别的指数代码: {e}")
+            return codes
         if self.session:
             from src.database.models.index import IndexBasic
             index_basics = self.session.query(IndexBasic.ts_code).all()
-            return [ib.ts_code for ib in index_basics]
-        # 离线模式下使用默认指数代码
+            return [to_index_ts_code(ib.ts_code) for ib in index_basics]
+        # 离线模式下使用默认指数代码（配置已统一为 ts_code 格式）
         codes = self._get_default_codes('index')
         logger.info(f"离线模式下，使用默认指数代码列表: {codes}")
-        return codes
+        return [to_index_ts_code(code) for code in codes]
 
     @staticmethod
     def _build_index_daily_rows(index_daily_df, ts_code):
@@ -208,9 +214,9 @@ class BaostockIndexMixin:
         """同步单个指数的日线数据（离线模式仅收集结果）"""
         logger.info(f"正在获取{ts_code}的日线数据")
 
-        # 使用Baostock获取指数日线数据
+        # 使用Baostock获取指数日线数据（上游只认 sh.000001 方言，写库仍用 ts_code）
         rs = bs.query_history_k_data_plus(
-            ts_code,
+            self._to_baostock_code(ts_code),
             schema.DAILY_FIELDS_BASIC,
             start_date=start_date,
             end_date=end_date,

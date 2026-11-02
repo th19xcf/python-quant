@@ -509,24 +509,43 @@ class TestNoSuspendedTrade:
 # ======================================================================
 
 class TestMaxOrderVolumeRatio:
+    """bar_volume 单位为“手”，qty 单位为“股”（1 手 = 100 股）。"""
 
     def test_within_ratio_passes(self, empty_portfolio):
         rule = MaxOrderVolumeRatio(0.10)
         order = Order('000001.SZ', 'buy', 100, 100.0, bar_volume=1_000_000.0)
         assert rule.check(order, empty_portfolio).passed
 
+    def test_one_hundred_shares_equals_one_lot_at_boundary(self, empty_portfolio):
+        """100 股 = 1 手；1 手 / 10 手 = 10%，恰好等于上限，应放行。"""
+        rule = MaxOrderVolumeRatio(0.10)
+        order = Order('000001.SZ', 'buy', 100, 100.0, bar_volume=10.0)
+        assert rule.check(order, empty_portfolio).passed
+
+    def test_one_hundred_shares_against_one_lot_rejected(self, empty_portfolio):
+        """100 股 = 1 手；当日仅成交 1 手时占比 100%，必须拒绝。"""
+        rule = MaxOrderVolumeRatio(0.10)
+        order = Order('000001.SZ', 'buy', 100, 100.0, bar_volume=1.0)
+        assert not rule.check(order, empty_portfolio).passed
+
     def test_over_ratio_rejected(self, empty_portfolio):
         rule = MaxOrderVolumeRatio(0.10)
-        # 20w 股 / 100w 股 = 20% > 10%
-        order = Order('000001.SZ', 'buy', 200_000, 100.0, bar_volume=1_000_000.0)
+        # 20w 股 = 2000 手 / 当日 1w 手 = 20% > 10%
+        order = Order('000001.SZ', 'buy', 200_000, 100.0, bar_volume=10_000.0)
         result = rule.check(order, empty_portfolio)
         assert not result.passed
         assert '占比' in result.reason
 
+    def test_just_over_boundary_rejected(self, empty_portfolio):
+        rule = MaxOrderVolumeRatio(0.10)
+        # 110 股 = 1.1 手 / 10 手 = 11% > 10%
+        order = Order('000001.SZ', 'buy', 110, 100.0, bar_volume=10.0)
+        assert not rule.check(order, empty_portfolio).passed
+
     def test_sell_also_checked(self, portfolio_with_one_holding):
         """双向审查：sell 同样受占比约束"""
         rule = MaxOrderVolumeRatio(0.10)
-        order = Order('000001.SZ', 'sell', 200_000, 100.0, bar_volume=1_000_000.0)
+        order = Order('000001.SZ', 'sell', 200_000, 100.0, bar_volume=10_000.0)
         assert not rule.check(order, portfolio_with_one_holding).passed
 
     def test_missing_bar_volume_fail_closed(self, empty_portfolio):
@@ -538,6 +557,7 @@ class TestMaxOrderVolumeRatio:
         rule = MaxOrderVolumeRatio(0.10)
         order = Order('000001.SZ', 'buy', 100, 100.0, bar_volume=0.0)
         assert not rule.check(order, empty_portfolio).passed
+
 
 
 if __name__ == '__main__':

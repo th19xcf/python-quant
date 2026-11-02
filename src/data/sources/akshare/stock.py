@@ -15,7 +15,7 @@ from loguru import logger
 
 from src.data.sources import akshare_schema as schema
 from src.data.sources.akshare.constants import _DEFAULT_STOCK_CODES
-from src.utils.code_converter import to_symbol, to_ts_code
+from src.utils.code_converter import to_symbol
 
 
 class AkShareStockMixin:
@@ -47,48 +47,12 @@ class AkShareStockMixin:
 
             logger.info(f"从AkShare获取到{stock_basic_df.height}条股票基本信息")
 
-            # 离线模式下，只获取数据不存储
-            if not self.session:
-                logger.info("离线模式下，跳过股票基本信息存储")
-                return stock_basic_df  # 离线模式下返回Polars DataFrame
-
-            # 数据清洗和标准化
-            from src.database.models.stock import StockBasic
-
-            # 遍历数据，进行清洗和存储
-            for row in stock_basic_df.iter_rows(named=True):
-                try:
-                    # 提取股票代码和名称
-                    symbol = row['symbol']
-                    name = row['name']
-
-                    # 构建完整的ts_code（统一市场推断，含北交所 4/8/92 开头）
-                    ts_code = to_ts_code(symbol)
-
-                    # 查询股票是否已存在
-                    stock = self.session.query(StockBasic).filter_by(ts_code=ts_code).first()
-
-                    if stock:
-                        # 更新现有股票信息
-                        stock.name = name[:45] if len(name) > 45 else name
-                        stock.symbol = symbol[:9] if len(symbol) > 9 else symbol
-                    else:
-                        # 创建新股票信息
-                        stock = StockBasic(
-                            ts_code=ts_code,
-                            symbol=symbol[:9] if len(symbol) > 9 else symbol,
-                            name=name[:45] if len(name) > 45 else name
-                        )
-                        self.session.add(stock)
-
-                except (ConnectionError, TimeoutError, OSError) as row_e:
-                    logger.exception(f"处理股票基本信息失败: {row_e}")
-                    continue
-
-            # 提交事务
-            self.session.commit()
-            logger.info("股票基本信息更新完成")
-            return stock_basic_df  # 返回Polars DataFrame
+            # stock_basic 唯一写入方是同步流程：本 handler 只返回数据，不写库
+            if self.session:
+                logger.info(
+                    "AkShareHandler.update_stock_basic 只返回数据，stock_basic 由同步流程写入"
+                )
+            return stock_basic_df
 
         except (ConnectionError, TimeoutError, OSError) as e:
             if self.session:
@@ -344,7 +308,7 @@ class AkShareStockMixin:
         self._persist_akshare_daily(ts_code, daily_rows)
 
     def get_stock_data(self, ts_code: str, start_date: str, end_date: str,
-                       freq: str = 'daily', adjustment_type: str = 'qfq'):
+                       freq: str = 'daily', adjustment_type: str = 'hfq'):
         """
         标准接口：获取股票日线数据，返回统一格式（原始价 + 复权因子）。
 
