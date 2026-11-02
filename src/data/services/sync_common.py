@@ -144,6 +144,26 @@ def _is_index_ts_code(ts_code: str | None) -> bool:
     return False
 
 
+def _remote_sync_blocked(config: Any, title: str) -> bool:
+    """批量同步入口的远程开关校验。
+
+    返回 True 表示远程数据源被禁用、本次同步应直接跳过：
+    股票/指数基本信息与分红同步都依赖 Baostock/AkShare，
+    开关关闭时继续执行只会得到空结果或占位数据，必须显式提示开启。
+    """
+    from src.utils.config import remote_sources_enabled
+
+    if remote_sources_enabled(config):
+        return False
+
+    logger.error(
+        f"{title}需要远程数据源（Baostock/AkShare），"
+        "当前 DATA__ALLOW_REMOTE_SOURCES=false，已跳过；"
+        "请在 .env 中设置 DATA__ALLOW_REMOTE_SOURCES=true 后重试"
+    )
+    return True
+
+
 # 基金市场/类型标记：数据源可能返回中文或英文，统一归一化后再判定，
 # 避免只认 '基金' 而漏掉 'Fund'/'ETF' 等字段口径。
 _FUND_MARKET_TOKENS = {'基金', 'FUND', 'FUNDS', 'ETF', 'LOF'}

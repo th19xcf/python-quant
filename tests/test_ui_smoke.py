@@ -104,6 +104,13 @@ def test_stock_name_label_precedes_period_buttons(qapp, tmp_path):
         assert name_index < first_period_index
         # 长名称不挤压按钮：标签宽度被限制
         assert window.stock_name_label.maximumWidth() == window._STOCK_NAME_MAX_WIDTH
+        # 醒目样式：14px 加粗亮金色，与工具栏 12px 按钮文字形成层级
+        style = window.stock_name_label.styleSheet()
+        assert 'font-size: 14px' in style
+        assert 'font-weight: bold' in style
+        assert '#FFD04B' in style
+        assert window._stock_name_font().pixelSize() == 14
+        assert window._stock_name_font().weight() == QFont.Bold
     finally:
         window.hide()
         window.deleteLater()
@@ -131,7 +138,8 @@ def test_stock_name_label_updates_and_elides(qapp, tmp_path):
         assert long_name not in text
         assert text.endswith('…') or text.endswith('...')
         font = QFont('Microsoft YaHei')
-        font.setPixelSize(12)
+        font.setPixelSize(14)
+        font.setWeight(QFont.Bold)
         assert QFontMetrics(font).horizontalAdvance(text) <= (
             window._STOCK_NAME_MAX_WIDTH - window._STOCK_NAME_PADDING
         )

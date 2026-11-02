@@ -23,8 +23,10 @@ class MainWindowTechTabMixin:
     """技术分析标签页：周期/柱体数/复权工具栏与三个画布。"""
 
     # 股票名称标签的最大宽度，超出部分以省略号截断，避免挤压周期按钮
-    _STOCK_NAME_MAX_WIDTH = 220
+    _STOCK_NAME_MAX_WIDTH = 260
     _STOCK_NAME_PADDING = 8
+    _STOCK_NAME_FONT_SIZE = 14
+    _STOCK_NAME_COLOR = '#FFD04B'
 
     def create_tech_tab(self):
         """
@@ -93,7 +95,8 @@ class MainWindowTechTabMixin:
         """
         self.stock_name_label = QLabel('--')
         self.stock_name_label.setStyleSheet(
-            "color: #C0C0C0; font-family: 'Microsoft YaHei'; font-size: 12px;"
+            f"color: {self._STOCK_NAME_COLOR}; font-family: 'Microsoft YaHei';"
+            f"font-size: {self._STOCK_NAME_FONT_SIZE}px; font-weight: bold;"
             f"padding-right: {self._STOCK_NAME_PADDING}px;"
         )
         self.stock_name_label.setMaximumWidth(self._STOCK_NAME_MAX_WIDTH)
@@ -127,7 +130,8 @@ class MainWindowTechTabMixin:
     def _stock_name_font(self) -> QFont:
         """股票名称标签使用的字体（与 _build_stock_name_label 的样式表保持一致）"""
         font = QFont('Microsoft YaHei')
-        font.setPixelSize(12)
+        font.setPixelSize(self._STOCK_NAME_FONT_SIZE)
+        font.setWeight(QFont.Bold)
         return font
 
     def _build_period_buttons(self, toolbar_layout, button_style):

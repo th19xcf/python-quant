@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from src.data.services.sync_common import (
     _extract_tdx_first_last_trade_date,
     _is_fund_ts_code,
+    _remote_sync_blocked,
 )
 from src.utils.exceptions import DataSaveError, DataSourceException
 
@@ -143,6 +144,10 @@ def _merge_etf_row(row: dict[str, Any], existing_fund_map: dict[str, Any], sessi
 def _enrich_funds_from_akshare(config: Any, existing_fund_map: dict[str, Any], session: Session,
                                result: dict[str, Any]) -> None:
     """使用 AkShare ETF 列表补全基金名称与类型。"""
+    # 基金迁移本身只读写本地库，仅 AkShare 补全属于远程能力，受同一开关控制
+    if _remote_sync_blocked(config, "使用 AkShare 补全基金信息"):
+        return
+
     from src.data.akshare_handler import AkShareHandler
 
     try:

@@ -14,6 +14,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, List, Literal, Union, cast
 
 import polars as pl
@@ -22,6 +23,9 @@ from loguru import logger
 from src.data.data_cache import global_data_cache
 from src.data.data_source_health import get_global_health_checker
 from src.data.managers.source_worker import call_source
+from src.data.tdx_day_parser import build_day_file_path
+from src.utils.code_converter import parse_code
+from src.utils.config import remote_sources_enabled
 from src.utils.date_utils import parse_date
 from src.utils.exceptions import DataSourceException
 from src.utils.memory_optimizer import MemoryOptimizer
@@ -527,6 +531,58 @@ class DataFetcher:
             rights_price=getattr(dividend, 'rights_issue_price', None),
         )
 
+    def _remote_sources_allowed(self) -> bool:
+        """运行时是否允许调度远程数据源。
+
+        开关位于 `config.data.allow_remote_sources`（默认 False）：
+        关闭时运行时的取数链路只读本地通达信文件，不调用 Baostock/AkShare，
+        也不发起任何网络请求；命令行批量同步需显式开启后才走远程。
+        """
+        return remote_sources_enabled(self.config)
+
+    def _local_day_file_path(self, code: str) -> Path | None:
+        """按通达信本地目录规则推导 .day 文件路径。
+
+        配置缺少 tdx_data_path 或代码无法解析时返回 None（无法定位本地文件）。
+        """
+        tdx_data_path = getattr(getattr(self.config, 'data', None), 'tdx_data_path', None)
+        if not tdx_data_path:
+            return None
+        try:
+            symbol, market = parse_code(code)
+        except (TypeError, ValueError):
+            return None
+        return build_day_file_path(tdx_data_path, market.lower(), symbol)
+
+    @staticmethod
+    def _raise_local_only_unavailable(type_name: str, code: str, data_type: str,
+                                      local_file: Path | None, *,
+                                      file_missing: bool) -> None:
+        """远程禁用且本地取不到数据时抛出可展示的结构化异常。
+
+        UI 调用方（后台任务）会把异常转成 `task_error` 展示，因此不能再像
+        以往那样静默返回空表——用户会误以为"该标的本就没有数据"。
+        """
+        if local_file is None:
+            detail = "本地通达信数据路径未配置或代码无法解析，且远程已禁用"
+        elif file_missing:
+            detail = f"本地无此文件且远程已禁用: {local_file}"
+        else:
+            detail = f"本地通达信文件无数据且远程已禁用: {local_file}"
+        logger.error(f"无法获取{type_name}{code}数据（{detail}）",
+                     **{"symbol": code, "data_type": data_type,
+                        "local_file": str(local_file) if local_file else None})
+        raise DataSourceException(
+            source='TdxHandler',
+            message=f"获取{type_name}{code}失败：{detail}",
+            details={
+                'code': code,
+                'data_type': data_type,
+                'local_file': str(local_file) if local_file else None,
+                'remote_sources_enabled': False,
+            },
+        )
+
     def _get_data_from_sources(self, data_type: str, code: str, start_date: str, end_date: str, frequency: str, adjustment_type: str = 'qfq') -> pl.DataFrame:
         """
         从多个数据源获取数据（优化版）
@@ -534,6 +590,8 @@ class DataFetcher:
         策略：
         1. 优先尝试本地源（TDX）：同步调用，5s 超时，成功即返回
         2. 本地失败后，并行尝试远程源：每源 10s 超时，第一个成功就取消其他
+        3. 远程开关（data.allow_remote_sources）关闭时跳过第 2 步：
+           本地 .day 文件缺失立即抛错，不再等待远程超时
 
         Args:
             data_type: 数据类型 ('stock' | 'index')
@@ -545,12 +603,26 @@ class DataFetcher:
 
         Returns:
             pl.DataFrame: 数据
+
+        Raises:
+            DataSourceException: 远程禁用时本地文件缺失，或全部数据源故障
         """
         type_name = "股票" if data_type == "stock" else "指数"
+        remote_allowed = self._remote_sources_allowed()
+        local_file = self._local_day_file_path(code)
+
+        # 远程禁用：本地 .day 路径是确定的，缺失即立即失败，
+        # 不进入任何源调用（避免 5s 本地超时与 10s/15s 远程超时）。
+        if not remote_allowed and local_file is not None and not local_file.exists():
+            self._raise_local_only_unavailable(
+                type_name, code, data_type, local_file, file_missing=True)
 
         # 按能力 + 可用性过滤数据源
         candidates = self._get_candidate_sources(data_type)
         if not candidates:
+            if not remote_allowed:
+                self._raise_local_only_unavailable(
+                    type_name, code, data_type, local_file, file_missing=False)
             logger.warning(f"没有可用的数据源来获取{data_type}数据")
             return pl.DataFrame()
 
@@ -559,7 +631,11 @@ class DataFetcher:
 
         # 分离本地与远程
         local_sources = [s for s in candidates if self._source_capabilities[s]['is_local']]
-        remote_sources = [s for s in candidates if not self._source_capabilities[s]['is_local']]
+        # 远程开关关闭时直接清空远程候选：不调度、不发网络请求
+        remote_sources = (
+            [s for s in candidates if not self._source_capabilities[s]['is_local']]
+            if remote_allowed else []
+        )
 
         # 1. 本地优先（同步尝试，命中即返回）
         if local_sources:
@@ -588,6 +664,11 @@ class DataFetcher:
                 return data
             self._raise_if_all_sources_failed(attempts, type_name, code, data_type)
             return data
+
+        if not remote_allowed:
+            # 远程禁用：本地取不到数据就是终态，显式报错，不静默返回空表
+            self._raise_local_only_unavailable(
+                type_name, code, data_type, local_file, file_missing=False)
 
         self._raise_if_all_sources_failed(attempts, type_name, code, data_type)
         logger.warning(f"无法从任何数据源获取{type_name}{code}数据",

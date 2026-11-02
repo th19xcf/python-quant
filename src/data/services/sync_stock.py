@@ -22,6 +22,7 @@ from src.data.services.sync_common import (
     _is_index_ts_code,
     _normalize_date_value,
     _normalize_text_value,
+    _remote_sync_blocked,
     _sync_each_with_recovery,
     _to_ts_code_or_none,
 )
@@ -807,7 +808,13 @@ def sync_tdx_stock_to_database(config: Any, db_manager: Any) -> dict[str, Any]:
         'updated_stocks': 0,
         'filled_blank_fields': 0,
         'refreshed_fields': 0,
+        'skipped_reason': '',
     }
+
+    # 股票基本信息依赖 Baostock/AkShare 补全，远程开关关闭时显式跳过而非空跑
+    if _remote_sync_blocked(config, "同步股票基本信息"):
+        result['skipped_reason'] = 'remote_sources_disabled'
+        return result
 
     def prepare(session: Any) -> StockSyncContext | None:
         return _prepare_stock_sync(config, db_manager, session, result)

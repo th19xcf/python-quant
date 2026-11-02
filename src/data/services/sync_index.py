@@ -22,6 +22,7 @@ from src.data.services.sync_common import (
     _execute_sync_flow,
     _is_index_ts_code,
     _normalize_text_value,
+    _remote_sync_blocked,
     _sync_each_with_recovery,
     _to_ts_code_or_none,
 )
@@ -485,8 +486,14 @@ def sync_tdx_index_to_database(config: Any, db_manager: Any) -> dict[str, Any]:
         'unchanged_indexes': 0,
         'fallback_named_indexes': 0,
         'filled_blank_fields': 0,
-        'failed_indexes': []
+        'failed_indexes': [],
+        'skipped_reason': '',
     }
+
+    # 指数基本信息依赖 Baostock/AkShare 补全，远程开关关闭时显式跳过而非空跑
+    if _remote_sync_blocked(config, "同步指数基本信息"):
+        result['skipped_reason'] = 'remote_sources_disabled'
+        return result
 
     def prepare(session: Session) -> IndexSyncContext | None:
         return _prepare_index_sync(config, db_manager, session, result)

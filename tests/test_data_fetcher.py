@@ -196,6 +196,94 @@ def test_unsupported_source_skipped():
     logger.info("  [PASS] test_unsupported_source_skipped  不支持的源被静默过滤")
 
 
+def _local_only_fetcher(tmp_path):
+    """构造远程禁用（离线）配置的 fetcher。"""
+    cfg = SimpleNamespace(data=SimpleNamespace(
+        max_workers=4, tdx_data_path=str(tmp_path), allow_remote_sources=False,
+    ))
+    return DataFetcher(config=cfg)
+
+
+def _record_sources(fetcher):
+    """注册本地/远程替身，返回各自的调用计数。"""
+    calls = {'local': 0, 'remote': 0}
+
+    local = MagicMock(name="LocalTDX")
+    local.name = "LocalTDX"
+    local.is_local = True
+
+    def local_get(**kwargs):
+        calls['local'] += 1
+        return pl.DataFrame()
+
+    local.get_stock_data = local_get
+
+    remote = MagicMock(name="Remote")
+    remote.name = "Remote"
+    remote.is_local = False
+
+    def remote_get(**kwargs):
+        calls['remote'] += 1
+        return pl.DataFrame({"a": [1]})
+
+    remote.get_stock_data = remote_get
+
+    fetcher.register_source(remote)
+    fetcher.register_source(local)
+    return calls
+
+
+def test_allow_remote_sources_defaults_to_false():
+    """配置默认关闭远程；未声明该字段的轻量配置对象缺省允许（兼容历史调用）"""
+    from src.utils.config import DataSettings, remote_sources_enabled
+
+    assert DataSettings().allow_remote_sources is False
+    assert remote_sources_enabled(SimpleNamespace(data=SimpleNamespace(max_workers=4))) is True
+
+
+def test_local_file_missing_fails_fast_when_remote_disabled(tmp_path):
+    """远程禁用 + 本地 .day 缺失：立即抛明确错误，且不调度任何源（无网络等待）"""
+    from src.utils.exceptions import DataSourceException
+
+    fetcher = _local_only_fetcher(tmp_path)
+    calls = _record_sources(fetcher)
+
+    expected = Path(tmp_path) / 'sh' / 'lday' / 'sh600000.day'
+    assert not expected.exists()
+
+    t0 = time.time()
+    with pytest.raises(DataSourceException) as exc_info:
+        fetcher._get_data_from_sources("stock", "600000.SH", "20240101", "20241231", "1d")
+    elapsed = time.time() - t0
+
+    message = str(exc_info.value)
+    assert elapsed < 0.5, f"本地文件缺失应立即失败，实际={elapsed:.2f}s"
+    assert calls == {'local': 0, 'remote': 0}, "本地/远程源都不应被调用"
+    assert "本地无此文件且远程已禁用" in message
+    assert str(expected) in message
+    assert exc_info.value.details['local_file'] == str(expected)
+    assert exc_info.value.details['remote_sources_enabled'] is False
+
+
+def test_remote_disabled_skips_remote_when_local_file_has_no_data(tmp_path):
+    """本地文件存在但无数据：远程仍不被调度，抛可展示错误而非静默空表"""
+    from src.utils.exceptions import DataSourceException
+
+    fetcher = _local_only_fetcher(tmp_path)
+    calls = _record_sources(fetcher)
+
+    day_file = Path(tmp_path) / 'sh' / 'lday' / 'sh600000.day'
+    day_file.parent.mkdir(parents=True)
+    day_file.write_bytes(b'')
+
+    with pytest.raises(DataSourceException) as exc_info:
+        fetcher._get_data_from_sources("stock", "600000.SH", "20240101", "20241231", "1d")
+
+    assert calls['remote'] == 0, "远程禁用时不得发起远程取数"
+    assert calls['local'] == 1
+    assert "本地通达信文件无数据且远程已禁用" in str(exc_info.value)
+
+
 def test_executor_is_single_instance_under_concurrency():
     """多个线程并发首次取用线程池，只能建出一个实例（双检锁回归）"""
     fetcher = make_fetcher()

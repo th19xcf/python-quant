@@ -20,6 +20,7 @@ from src.data.data_manager import DataManager
 from src.database.db_manager import DatabaseManager
 from src.plugin.plugin_manager import PluginManager
 from src.utils.config import Config
+from src.utils.exceptions import DataSourceException
 
 
 @pytest.fixture(scope="module")
@@ -65,22 +66,32 @@ def test_data_manager_initialization():
 def test_data_fetcher(data_manager):
     """
     测试数据获取功能
+
+    测试环境可能没有本地通达信文件且默认禁用远程数据源：
+    此时取数必须显式抛出可展示的 DataSourceException，而非静默返回空表。
     """
-    stock_data = data_manager.get_stock_data(
+    def _fetch(func):
+        try:
+            return func()
+        except DataSourceException as exc:
+            assert '远程已禁用' in str(exc)
+            return pl.DataFrame()
+
+    stock_data = _fetch(lambda: data_manager.get_stock_data(
         stock_code="600000.SH",
         start_date="2024-01-01",
         end_date="2024-01-31",
         frequency="1d",
         adjustment_type="qfq"
-    )
+    ))
     assert isinstance(stock_data, pl.DataFrame)
 
-    index_data = data_manager.get_index_data(
+    index_data = _fetch(lambda: data_manager.get_index_data(
         index_code="000001.SH",
         start_date="2024-01-01",
         end_date="2024-01-31",
         frequency="1d"
-    )
+    ))
     assert isinstance(index_data, pl.DataFrame)
 
 
