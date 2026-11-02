@@ -30,6 +30,8 @@ from .indicator_calculator import (
     preprocess_data_polars,
     sample_data_polars,
 )
+from .indicator_manager import ensure_indicators_registered
+from .indicator_registry import global_indicator_registry
 
 
 class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorCacheMixin):
@@ -80,6 +82,20 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             'asi': set(),  # 已计算的ASI窗口
             'emv': set(),  # 已计算的EMV窗口
             'mcst': set(),  # 已计算的MCST窗口
+            'dma': False,  # 已计算的DMA
+            'fsl': False,  # 已计算的FSL
+            'sar': False,  # 已计算的SAR
+            'cr': set(),  # 已计算的CR窗口
+            'expma': set(),  # 已计算的EXPMA窗口
+            'bbi': False,  # 已计算的BBI
+            'hsl': False,  # 已计算的HSL
+            'lb': False,  # 已计算的LB
+            'cyc': set(),  # 已计算的CYC窗口
+            'cys': False,  # 已计算的CYS
+            'abi': False,  # 已计算的ABI
+            'adl': False,  # 已计算的ADL
+            'adr': False,  # 已计算的ADR
+            'obos': False,  # 已计算的OBOS
             'plugin': {}  # 已计算的插件指标，键为插件名称，值为已计算参数的集合
         }
 
@@ -108,7 +124,6 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
             'dma': self.calculate_indicator_parallel,
             'fsl': self.calculate_indicator_parallel,
             'sar': self.calculate_indicator_parallel,
-            'vol_tdx': self.calculate_indicator_parallel,
             'cr': self.calculate_indicator_parallel,
             # 新增指标
             'expma': self.calculate_indicator_parallel,
@@ -524,13 +539,16 @@ class TechnicalAnalyzer(ParallelIndicatorMixin, PluginIndicatorMixin, IndicatorC
         Returns:
             List[str]: 支持的技术指标列表
         """
-        # 内置指标
-        builtin_indicators = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'abi', 'adl', 'adr', 'obos']
+        # 内置指标以注册表为唯一真源，避免硬编码清单与注册表脱节
+        ensure_indicators_registered()
+        builtin_indicators = list(global_indicator_registry.get_supported_indicators())
 
         # 插件指标
         plugin_indicators = self.get_available_plugin_indicators()
 
-        return builtin_indicators + plugin_indicators
+        return builtin_indicators + [
+            name for name in plugin_indicators if name not in builtin_indicators
+        ]
 
     def is_indicator_supported(self, indicator_type: str) -> bool:
         """
