@@ -40,6 +40,10 @@ class StockDataController:
         if hasattr(self.window, 'chart_title_label') and self.window.chart_title_label is not None:
             self.window.chart_title_label.setText('暂无数据')
 
+        update_stock_name_label = getattr(self.window, 'update_stock_name_label', None)
+        if callable(update_stock_name_label):
+            update_stock_name_label('', '')
+
     def _process_stock_data_task(self, stock_code, stock_name, task_id=None, signals=None):
         """后台任务函数"""
         from datetime import timedelta

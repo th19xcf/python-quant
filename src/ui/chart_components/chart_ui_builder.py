@@ -47,8 +47,13 @@ class ChartUIBuilder:
         # 清理旧组件
         self._cleanup_old_title_widgets()
 
-        # 创建标题标签
-        chart_title_label = self._create_chart_title_label(stock_name, stock_code, period)
+        # 股票名称(代码)已移入顶部工具栏，这里同步刷新，避免两处状态不同步
+        update_stock_name_label = getattr(self.main_window, 'update_stock_name_label', None)
+        if callable(update_stock_name_label):
+            update_stock_name_label(stock_name, stock_code)
+
+        # 创建标题标签（仅保留周期文字）
+        chart_title_label = self._create_chart_title_label(period)
 
         # 创建MA值显示标签
         ma_values_label = self._create_ma_values_label()
@@ -92,14 +97,14 @@ class ChartUIBuilder:
         self.main_window.ma_values_label = None
         self.main_window.menu_btn = None
 
-    def _create_chart_title_label(self, stock_name: str, stock_code: str, period: str) -> QLabel:
-        """创建图表标题标签"""
+    def _create_chart_title_label(self, period: str) -> QLabel:
+        """创建图表标题标签（股票名称已移至顶部工具栏，此处只显示周期）"""
         label = QLabel()
         label.setStyleSheet(
             "font-family: Consolas, monospace; padding: 5px; color: #C0C0C0; "
             "background-color: transparent; border: none;"
         )
-        label.setText(f"{stock_name}({stock_code}) {period}")
+        label.setText(period)
         label.setWordWrap(False)
         return label
 
