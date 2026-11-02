@@ -157,11 +157,13 @@ class TableInteractionManager:
             name = name_item.text()
             logger.debug(f"双击了股票: {name}({code})")
 
-            market, tdx_code = self._resolve_tdx_code(code)
-
-            from pathlib import Path
-            tdx_data_path = Path(window.data_manager.config.data.tdx_data_path)
-            tdx_file_path = tdx_data_path / market / 'lday' / f'{tdx_code}.day'
+            # 路径构造统一走 DataManager 的单一入口，避免 UI 再实现一份
+            # 代码→市场/文件名 映射（两份实现曾分叉出 sh600000.SH.day）
+            base_code = code.split('.')[0]
+            tdx_file_path = window.data_manager.get_local_day_file_path(base_code, code)
+            if tdx_file_path is None:
+                window.statusBar().showMessage(f"未配置通达信数据目录，无法加载 {name}({code})", 5000)
+                return
 
             window.statusBar().showMessage(f"正在加载 {name}({code}) 数据...", 0)
             window.tab_widget.setCurrentIndex(1)
@@ -185,20 +187,38 @@ class TableInteractionManager:
 
     @staticmethod
     def _resolve_tdx_code(code):
-        """根据代码前缀/后缀推断市场与通达信代码。"""
+        """根据代码后缀/前缀推断市场与通达信代码。
+
+        行情表格展示的是标准 ts_code（如 600000.SH），必须先剥离交易所后缀，
+        否则会被 6/51/15 等数值前缀分支截获，拼出 sh600000.SH 这类不存在的代码。
+        """
+        code = str(code).strip()
+
+        # 后缀优先：600000.SH / 000001.SZ / 899001.BJ
+        if '.' in code:
+            base, suffix = code.rsplit('.', 1)
+            suffix = suffix.upper()
+            base = base.lower()
+            for prefix in ('sh', 'sz', 'bj'):
+                if base.startswith(prefix):
+                    base = base[len(prefix):]
+                    break
+            if suffix in ('SH', 'SZ', 'BJ') and base:
+                if base == '999999':
+                    return 'sh', 'sh000001'
+                market = suffix.lower()
+                return market, f'{market}{base}'
+
         if code.startswith('sh'):
             market = 'sh'
             tdx_code = code
-            f'{code[2:]}.SH'
         elif code.startswith('sz'):
             market = 'sz'
             tdx_code = code
-            f'{code[2:]}.SZ'
         elif code.startswith('bj'):
             # 京市指数（北交所）
             market = 'bj'
             tdx_code = code
-            f'{code[2:]}.BJ'
         elif code.startswith('6') or code.startswith('51'):
             # 沪市股票（6开头）和沪市ETF（51开头）
             market = 'sh'
@@ -207,12 +227,6 @@ class TableInteractionManager:
             # 深市ETF（15开头）
             market = 'sz'
             tdx_code = f'sz{code}'
-        elif code.endswith('.SH'):
-            market = 'sh'
-            tdx_code = f'sh{code[:-3]}'
-        elif code.endswith('.SZ'):
-            market = 'sz'
-            tdx_code = f'sz{code[:-3]}'
         elif code == '999999':
             # 上证指数特殊处理
             market = 'sh'

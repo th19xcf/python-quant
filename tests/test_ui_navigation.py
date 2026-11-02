@@ -1,5 +1,6 @@
 """导航 Mixin 与表格交互管理器测试（离屏，无网络/数据库）。"""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -607,68 +608,6 @@ def test_get_current_index_list_empty_table():
     assert host._get_current_index_list() == []
 
 
-@pytest.mark.parametrize(('ts_code', 'market', 'tdx_code'), [
-    ('600519.SH', 'sh', 'sh600519'),
-    ('000001.SZ', 'sz', 'sz000001'),
-    ('830000.BJ', 'bj', 'bj830000'),
-    ('600519', 'sh', 'sh600519'),
-    ('830000', 'bj', 'bj830000'),
-    ('000001', 'sz', 'sz000001'),
-])
-def test_check_stock_data_exists(tmp_path, ts_code, market, tdx_code):
-    host = _make_host()
-    host.data_manager = SimpleNamespace(
-        config=SimpleNamespace(data=SimpleNamespace(tdx_data_path=str(tmp_path)))
-    )
-    lday = tmp_path / market / 'lday'
-    lday.mkdir(parents=True)
-    (lday / f'{tdx_code}.day').write_bytes(b'')
-
-    assert host._check_stock_data_exists(ts_code) is True
-
-
-def test_check_stock_data_exists_missing_and_no_manager(tmp_path):
-    host = _make_host()
-    host.data_manager = SimpleNamespace(
-        config=SimpleNamespace(data=SimpleNamespace(tdx_data_path=str(tmp_path)))
-    )
-    assert host._check_stock_data_exists('600519.SH') is False
-
-    host = _make_host()
-    assert host._check_stock_data_exists('600519.SH') is False
-
-
-@pytest.mark.parametrize(('ts_code', 'market', 'tdx_code'), [
-    ('000001.SH', 'sh', 'sh000001'),
-    ('399001.SZ', 'sz', 'sz399001'),
-    ('899001.BJ', 'bj', 'bj899001'),
-    ('000001', 'sh', 'sh000001'),
-    ('899001', 'bj', 'bj899001'),
-    ('399001', 'sz', 'sz399001'),
-])
-def test_check_index_data_exists(tmp_path, ts_code, market, tdx_code):
-    host = _make_host()
-    host.data_manager = SimpleNamespace(
-        config=SimpleNamespace(data=SimpleNamespace(tdx_data_path=str(tmp_path)))
-    )
-    lday = tmp_path / market / 'lday'
-    lday.mkdir(parents=True)
-    (lday / f'{tdx_code}.day').write_bytes(b'')
-
-    assert host._check_index_data_exists(ts_code) is True
-
-
-def test_check_index_data_exists_missing_and_no_manager(tmp_path):
-    host = _make_host()
-    host.data_manager = SimpleNamespace(
-        config=SimpleNamespace(data=SimpleNamespace(tdx_data_path=str(tmp_path)))
-    )
-    assert host._check_index_data_exists('000001.SH') is False
-
-    host = _make_host()
-    assert host._check_index_data_exists('000001.SH') is False
-
-
 # ---------------------------------------------------------------------------
 # TableInteractionManager：排序
 # ---------------------------------------------------------------------------
@@ -813,6 +752,14 @@ def test_apply_restored_cell_style_aligns_numeric_columns():
     ('880001', 'sh', 'sh880001'),
     ('920001', 'bj', 'bj920001'),
     ('600000', 'sh', 'sh600000'),
+    # 标准 ts_code：后缀必须先于 6/51/15 数值前缀判定
+    ('600000.SH', 'sh', 'sh600000'),
+    ('688981.SH', 'sh', 'sh688981'),
+    ('510300.SH', 'sh', 'sh510300'),
+    ('159915.SZ', 'sz', 'sz159915'),
+    ('430047.BJ', 'bj', 'bj430047'),
+    ('899001.BJ', 'bj', 'bj899001'),
+    ('920001.BJ', 'bj', 'bj920001'),
 ])
 def test_resolve_tdx_code(code, market, tdx_code):
     assert TableInteractionManager._resolve_tdx_code(code) == (market, tdx_code)
@@ -826,6 +773,84 @@ def test_double_click_without_items_does_not_start_thread(qapp):
     manager.on_stock_double_clicked(0, 0)
 
     assert not hasattr(window, 'data_read_thread')
+
+
+class _FakeSignal:
+    """只记录 connect 的槽函数，替代 QThread 信号。"""
+
+    def __init__(self):
+        self.receivers = []
+
+    def connect(self, receiver):
+        self.receivers.append(receiver)
+
+
+class _FakeReadThread:
+    """替身 DataReadThread：只保存构造参数并记录是否 start。"""
+
+    def __init__(self, file_path, name, code, data_manager):
+        self.file_path = file_path
+        self.name = name
+        self.code = code
+        self.data_manager = data_manager
+        self.data_read_completed = _FakeSignal()
+        self.data_read_error = _FakeSignal()
+        self.data_read_progress = _FakeSignal()
+        self.started = False
+
+    def start(self):
+        self.started = True
+
+
+class _LocalPathDataManager:
+    """仅提供 get_local_day_file_path，内部复用数据层 canonical 映射。"""
+
+    def __init__(self, tdx_data_path):
+        self._tdx_data_path = tdx_data_path
+
+    def get_local_day_file_path(self, code, ts_code=None):
+        from src.data.tdx_day_parser import build_day_file_path, resolve_market
+
+        return build_day_file_path(self._tdx_data_path, resolve_market(code, ts_code), code)
+
+
+@pytest.mark.parametrize(('ts_code', 'expected_name'), [
+    ('600000.SH', 'sh600000.day'),
+    ('688981.SH', 'sh688981.day'),
+    ('510300.SH', 'sh510300.day'),
+    ('159915.SZ', 'sz159915.day'),
+    ('430047.BJ', 'bj430047.day'),
+    ('899001.BJ', 'bj899001.day'),
+    ('920001.BJ', 'bj920001.day'),
+])
+def test_double_click_ts_code_builds_single_day_suffix_path(
+        qapp, monkeypatch, tmp_path, ts_code, expected_name):
+    """双击标准 ts_code 后交给 DataReadThread 的路径必须是 xxx.day，禁止再叠 .SH/.BJ。"""
+    created = []
+
+    def _factory(file_path, name, code, data_manager):
+        thread = _FakeReadThread(file_path, name, code, data_manager)
+        created.append(thread)
+        return thread
+
+    monkeypatch.setattr('src.ui.async_processing.DataReadThread', _factory)
+
+    # 列布局：0 日期、1 代码、2 名称，其余占位
+    values = [['-', ts_code, '测试股'] + ['-'] * (COLUMNS - 3)]
+    table = _make_table(row_count=1, values=values)
+    manager, window = _make_manager(table)
+    window.data_manager = _LocalPathDataManager(tmp_path)
+    window.tab_widget = SimpleNamespace(setCurrentIndex=lambda index: None)
+    window.statusBar = lambda: SimpleNamespace(showMessage=lambda msg, timeout=0: None)
+
+    manager.on_stock_double_clicked(0, 0)
+
+    assert len(created) == 1
+    file_path = created[0].file_path
+    assert Path(file_path).name == expected_name
+    assert file_path.endswith('.day')
+    assert file_path.count('.day') == 1
+    assert created[0].started is True
 
 
 # ---------------------------------------------------------------------------

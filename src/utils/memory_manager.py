@@ -55,6 +55,12 @@ class MemoryManager:
         self.linecache_trim_threshold = 5000  # 超过该条目数时清理 linecache
         self.gc_min_interval = 60.0  # 两次强制 GC 的最小间隔（秒），避免监控循环里反复停顿
         self._last_gc_time = 0.0
+        # 泄漏判定：同一 traceback 连续增长 3 次快照且累计超过 1MB 才告警。
+        # 单次增长多是整表重建等瞬时分配（如 QTableWidgetItem），不应报 WARNING。
+        self.leak_growth_min_snapshots = 3
+        self.leak_growth_threshold_bytes = 1024 * 1024
+        self._growth_streaks: Dict[str, int] = {}
+        self._growth_totals: Dict[str, int] = {}
 
         # 启动tracemalloc
         try:
@@ -225,7 +231,9 @@ class MemoryManager:
         拍摄内存快照
         """
         try:
-            # 先裁剪 linecache，减少 stdlib 缓存对快照结果的干扰
+            # 先回收一次垃圾（受 gc_min_interval 冷却），避免把已断开引用的
+            # 瞬时对象算成泄漏；再裁剪 linecache，减少 stdlib 缓存干扰
+            self._collect_garbage()
             self._trim_linecache_cache()
 
             snapshot = tracemalloc.take_snapshot()
@@ -266,8 +274,8 @@ class MemoryManager:
                 prev_snapshot = self.memory_snapshots[-2]['snapshot']
                 stats = snapshot.compare_to(prev_snapshot, 'lineno')
 
-                # 检测增长的内存使用
-                growing_stats = [stat for stat in stats if stat.size_diff > 1024 * 1024]  # 只关注增长超过1MB的
+                # 只看增长项（负增长无需追踪）
+                growing_stats = [stat for stat in stats if stat.size_diff > 0]
 
                 # 过滤标准库 linecache 噪音，避免误报“内存泄漏”
                 leak_candidates = []
@@ -285,15 +293,58 @@ class MemoryManager:
                         "已按缓存噪音忽略"
                     )
 
-                if leak_candidates:
-                    logger.warning("检测到可能的内存泄漏:")
-                    for diff in leak_candidates[:5]:
+                confirmed, single = self._classify_growth(leak_candidates)
+
+                if confirmed:
+                    logger.warning(
+                        "检测到可能的内存泄漏（同一位置连续 "
+                        f"{self.leak_growth_min_snapshots} 次快照持续增长）:"
+                    )
+                    for diff in confirmed[:5]:
                         logger.warning(f"  {diff}")
+                if single:
+                    logger.info(
+                        f"检测到 {len(single)} 条单次内存增长，"
+                        f"未达连续 {self.leak_growth_min_snapshots} 次快照判定，降为 INFO 忽略"
+                    )
         except MemoryError:
             raise
         # 兜底理由：快照分析为旁路观测，失败不得影响主流程
         except Exception as e:  # noqa: BLE001
             logger.error(f"分析内存快照失败: {e}")
+
+    def _classify_growth(self, diffs: List[Any]) -> tuple[List[Any], List[Any]]:
+        """按 traceback 追踪连续增长，返回 (持续增长候选, 单次增长)。
+
+        只有同一 traceback 连续 ``leak_growth_min_snapshots`` 次快照都在增长、
+        且累计增长超过 ``leak_growth_threshold_bytes`` 才判定为泄漏候选；
+        中间任一快照未增长即重置该位置的连续计数。
+
+        Args:
+            diffs: 当前快照相对上一快照的增长项（需含 traceback 与 size_diff）
+        """
+        streaks: Dict[str, int] = {}
+        totals: Dict[str, int] = {}
+        confirmed: List[Any] = []
+        single: List[Any] = []
+
+        for diff in diffs:
+            key = str(diff.traceback)
+            streak = self._growth_streaks.get(key, 0) + 1
+            total = self._growth_totals.get(key, 0) + diff.size_diff
+            streaks[key] = streak
+            totals[key] = total
+
+            if (streak >= self.leak_growth_min_snapshots
+                    and total >= self.leak_growth_threshold_bytes):
+                confirmed.append(diff)
+            else:
+                single.append(diff)
+
+        # 只保留本轮仍增长的位置，未增长的自动清零，避免字典无限增长
+        self._growth_streaks = streaks
+        self._growth_totals = totals
+        return confirmed, single
 
     def _trim_linecache_cache(self) -> None:
         """

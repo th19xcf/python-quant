@@ -462,49 +462,6 @@ class MainWindowNavigationMixin:
             logger.exception(f"获取股票名称失败: {e}")
             return ts_code
 
-    def _check_stock_data_exists(self, ts_code: str) -> bool:
-        """
-        检查股票数据文件是否存在
-
-        Args:
-            ts_code: 股票代码 (如: 600519.SH, 835305.BJ)
-
-        Returns:
-            bool: 数据文件是否存在
-        """
-        try:
-            # 转换代码格式
-            if ts_code.endswith('.SH'):
-                market = 'sh'
-                tdx_code = f"sh{ts_code[:-3]}"
-            elif ts_code.endswith('.SZ'):
-                market = 'sz'
-                tdx_code = f"sz{ts_code[:-3]}"
-            elif ts_code.endswith('.BJ'):
-                market = 'bj'
-                tdx_code = f"bj{ts_code[:-3]}"
-            else:
-                # 假设是纯数字代码
-                if ts_code.startswith('6'):
-                    market = 'sh'
-                elif ts_code.startswith('8') or ts_code.startswith('4'):
-                    market = 'bj'
-                else:
-                    market = 'sz'
-                tdx_code = f"{market}{ts_code}"
-
-            from pathlib import Path
-            if hasattr(self, 'data_manager') and self.data_manager:
-                tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
-                tdx_file_path = tdx_data_path / market / 'lday' / f'{tdx_code}.day'
-                return tdx_file_path.exists()
-
-            return False
-
-        except (OSError, RuntimeError, ValueError) as e:
-            logger.exception(f"检查股票数据文件失败: {e}")
-            return False
-
     def _is_index_code(self, code: str) -> bool:
         """
         判断代码是否为指数代码
@@ -617,47 +574,3 @@ class MainWindowNavigationMixin:
             logger.exception(f"获取指数名称失败: {e}")
             return ts_code
 
-    def _check_index_data_exists(self, ts_code: str) -> bool:
-        """
-        检查指数数据文件是否存在
-
-        Args:
-            ts_code: 指数代码 (如: 000001.SH, 899001.BJ)
-
-        Returns:
-            bool: 数据文件是否存在
-        """
-        try:
-            # 转换代码格式
-            if ts_code.endswith('.SH'):
-                market = 'sh'
-                tdx_code = f"sh{ts_code[:-3]}"
-            elif ts_code.endswith('.SZ'):
-                market = 'sz'
-                tdx_code = f"sz{ts_code[:-3]}"
-            elif ts_code.endswith('.BJ'):
-                market = 'bj'
-                tdx_code = f"bj{ts_code[:-3]}"
-            else:
-                # 假设是纯数字代码
-                if ts_code.startswith('000'):
-                    market = 'sh'
-                    tdx_code = f"sh{ts_code}"
-                elif ts_code.startswith('899'):
-                    market = 'bj'
-                    tdx_code = f"bj{ts_code}"
-                else:
-                    market = 'sz'
-                    tdx_code = f"sz{ts_code}"
-
-            from pathlib import Path
-            if hasattr(self, 'data_manager') and self.data_manager:
-                tdx_data_path = Path(self.data_manager.config.data.tdx_data_path)
-                tdx_file_path = tdx_data_path / market / 'lday' / f'{tdx_code}.day'
-                return tdx_file_path.exists()
-
-            return False
-
-        except (OSError, RuntimeError, ValueError) as e:
-            logger.exception(f"检查指数数据文件失败: {e}")
-            return False

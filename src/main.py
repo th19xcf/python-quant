@@ -12,8 +12,10 @@ import sys
 from pathlib import Path
 
 # 第三方库导入
+from alembic.util.exc import CommandError
 from loguru import logger
 from PySide6.QtWidgets import QApplication
+from sqlalchemy.exc import SQLAlchemyError
 
 # 添加项目根目录到Python路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -38,6 +40,11 @@ from src.utils.exceptions import DataSourceException
 from src.utils.logger import setup_logger
 from src.utils.memory_manager import global_memory_manager
 from src.utils.monitoring import log_cache_stats
+
+# 启动期数据库相关异常：SQLAlchemy 的 OperationalError 等不会以 OSError/RuntimeError
+# 形式出现，必须显式纳入捕获范围，否则离线模式降级分支永远走不到。
+# alembic 迁移失败抛出的 CommandError 同样属于可预期的数据库不可用场景。
+_STARTUP_ERRORS = (SQLAlchemyError, CommandError, OSError, RuntimeError)
 
 
 def parse_args():
@@ -126,7 +133,7 @@ def _handle_update_stock_arg(config):
         try:
             db_manager.create_tables()
             logger.info("数据库表创建/更新成功")
-        except (OSError, RuntimeError) as table_e:
+        except _STARTUP_ERRORS as table_e:
             logger.warning(f"创建数据库表时发生错误: {table_e}")
 
         sync_tdx_stock_to_database(config, db_manager)
@@ -145,7 +152,7 @@ def _handle_update_stock_arg(config):
         logger.info("数据库资源已清理")
         return True
 
-    except (OSError, RuntimeError) as db_e:
+    except _STARTUP_ERRORS as db_e:
         logger.error(f"数据库连接失败，无法执行同步: {db_e}")
         return True
 
@@ -163,7 +170,7 @@ def _handle_update_index_arg(config):
         try:
             db_manager.create_tables()
             logger.info("数据库表创建/更新成功")
-        except (OSError, RuntimeError) as table_e:
+        except _STARTUP_ERRORS as table_e:
             logger.warning(f"创建数据库表时发生错误: {table_e}")
 
         sync_tdx_index_to_database(config, db_manager)
@@ -171,7 +178,7 @@ def _handle_update_index_arg(config):
         logger.info("数据库资源已清理")
         return True
 
-    except (OSError, RuntimeError) as db_e:
+    except _STARTUP_ERRORS as db_e:
         logger.error(f"数据库连接失败，无法执行指数同步: {db_e}")
         return True
 
@@ -189,7 +196,7 @@ def _handle_update_fund_arg(config):
         try:
             db_manager.create_tables()
             logger.info("数据库表创建/更新成功")
-        except (OSError, RuntimeError) as table_e:
+        except _STARTUP_ERRORS as table_e:
             logger.warning(f"创建数据库表时发生错误: {table_e}")
 
         sync_stock_fund_to_fund_basic(config, db_manager)
@@ -197,7 +204,7 @@ def _handle_update_fund_arg(config):
         logger.info("数据库资源已清理")
         return True
 
-    except (OSError, RuntimeError) as db_e:
+    except _STARTUP_ERRORS as db_e:
         logger.error(f"数据库连接失败，无法执行基金迁移: {db_e}")
         return True
 
@@ -215,7 +222,7 @@ def _handle_repair_stock_basic_arg(config):
         try:
             db_manager.create_tables()
             logger.info("数据库表创建/更新成功")
-        except (OSError, RuntimeError) as table_e:
+        except _STARTUP_ERRORS as table_e:
             logger.warning(f"创建数据库表时发生错误: {table_e}")
 
         repair_stock_basic(config, db_manager)
@@ -223,7 +230,7 @@ def _handle_repair_stock_basic_arg(config):
         logger.info("数据库资源已清理")
         return True
 
-    except (OSError, RuntimeError) as db_e:
+    except _STARTUP_ERRORS as db_e:
         logger.error(f"数据库连接失败，无法执行 stock_basic 修复: {db_e}")
         return True
 
@@ -247,13 +254,15 @@ def _initialize_data_manager(config, plugin_manager):
         try:
             db_manager.create_tables()
             logger.info("数据库表创建/更新成功")
-        except (OSError, RuntimeError) as table_e:
+        except _STARTUP_ERRORS as table_e:
             logger.warning(f"创建数据库表时发生错误: {table_e}")
 
         data_manager = DataManager(config, db_manager, plugin_manager)
         logger.info("数据管理器初始化成功")
-    except (OSError, RuntimeError) as db_e:
-        logger.warning(f"数据库连接失败，将以离线模式运行: {db_e}")
+    except _STARTUP_ERRORS as db_e:
+        logger.warning(
+            f"数据库连接失败，将以离线模式运行（错误类型 {type(db_e).__name__}）: {db_e}"
+        )
         data_manager = DataManager(config, None, plugin_manager)
         logger.info("数据管理器（离线模式）初始化成功")
 
@@ -281,7 +290,7 @@ def _cleanup_system(plugin_manager, db_manager):
     try:
         if db_manager:
             db_manager.cleanup()
-    except (OSError, RuntimeError) as cleanup_e:
+    except _STARTUP_ERRORS as cleanup_e:
         logger.warning(f"清理数据库资源时发生错误: {cleanup_e}")
 
     if plugin_manager:
@@ -352,7 +361,7 @@ def main():
 
         sys.exit(app.exec())
 
-    except (OSError, RuntimeError) as e:
+    except _STARTUP_ERRORS as e:
         logger.exception(f"系统启动失败: {e}")
         sys.exit(1)
     finally:

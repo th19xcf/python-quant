@@ -13,6 +13,8 @@ screen_stocks —— 选股用例（Headless API）。
 
 from __future__ import annotations
 
+import calendar
+from datetime import date, datetime
 from typing import Any, Dict, List
 
 import polars as pl
@@ -20,19 +22,71 @@ from loguru import logger
 
 from src.recommendation.stock_recommender import StockRecommender
 
-# 周期 → 日期范围
-_PERIOD_MAP = {
-    '1个月':  ('2024-11-01', '2024-12-31'),
-    '3个月':  ('2024-10-01', '2024-12-31'),
-    '6个月':  ('2024-07-01', '2024-12-31'),
-    '12个月': ('2024-01-01', '2024-12-31'),
+# 周期 → 回溯月数（锚点为最新交易日，不再是写死的 2024 年日期）
+_PERIOD_MONTHS = {
+    '1个月': 1,
+    '3个月': 3,
+    '6个月': 6,
+    '12个月': 12,
 }
 
 
-def _fetch_panel(top_n: int, period: str) -> pl.DataFrame | None:
+def _months_before(anchor: date, months: int) -> date:
+    """按自然月回溯，月末日期自动夹取到目标月最后一天（如 3-31 → 2-28）。"""
+    year = anchor.year - (months // 12)
+    month = anchor.month - (months % 12)
+    if month <= 0:
+        month += 12
+        year -= 1
+    day = min(anchor.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _period_range(period: str, anchor: date) -> tuple[date, date]:
+    """把分析周期换算为 [开始日, 结束日]，结束日固定为最新交易日。"""
+    months = _PERIOD_MONTHS.get(period, _PERIOD_MONTHS['12个月'])
+    return _months_before(anchor, months), anchor
+
+
+def _coerce_date(value: date | str | None) -> date | None:
+    """把可选的 today 参数规范化为 date；无法解析时返回 None（交给 DB 锚点）。"""
+    if value is None or isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            logger.warning(f"无法解析选股截止日 {value!r}，将使用数据库最新交易日")
+    return None
+
+
+def _latest_trade_date(db: Any) -> date:
+    """取数据库中最新的交易日；数据库不可用/无数据时回退到当天日期。"""
+    try:
+        from sqlalchemy import func
+
+        from src.database.models.stock import StockDaily
+
+        session = db.get_session()
+        latest = session.query(func.max(StockDaily.trade_date)).scalar()
+        if isinstance(latest, datetime):
+            latest = latest.date()
+        if isinstance(latest, date):
+            return latest
+        logger.warning("数据库中没有可用的交易日数据，选股日期回退到当天")
+    # 兜底理由：行情库不可达时选股仍需可运行，按当天日期降级
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"查询最新交易日失败，选股日期回退到当天: {e}")
+    return date.today()
+
+
+def _fetch_panel(top_n: int, period: str, as_of: date | None = None) -> pl.DataFrame | None:
     """
     从 DB 取选股面板数据（取 top_n*3 只股票的后复权日线）。
     放在 usecases 层，UI 层不会碰到 DatabaseManager。
+
+    Args:
+        as_of: 分析截止日（最新交易日的显式覆盖，主要供测试固定 today）。
     """
     from src.data.data_manager import DataManager
     from src.database.db_manager import DatabaseManager
@@ -42,7 +96,9 @@ def _fetch_panel(top_n: int, period: str) -> pl.DataFrame | None:
     db = DatabaseManager(config)
     data_manager = DataManager(config, db)
 
-    start_date, end_date = _PERIOD_MAP.get(period, _PERIOD_MAP['12个月'])
+    anchor = as_of or _latest_trade_date(db)
+    start_date, end_date = _period_range(period, anchor)
+    start_date_str, end_date_str = start_date.isoformat(), end_date.isoformat()
 
     try:
         stock_basic = data_manager.get_stock_basic()
@@ -54,7 +110,7 @@ def _fetch_panel(top_n: int, period: str) -> pl.DataFrame | None:
 
         for code in stock_codes:
             try:
-                df = data_manager.get_stock_data(code, start_date, end_date, adjustment_type='hfq')
+                df = data_manager.get_stock_data(code, start_date_str, end_date_str, adjustment_type='hfq')
                 if not df.is_empty() and len(df) >= 20:
                     info = stock_basic.filter(pl.col('ts_code') == code)
                     name = info['name'].to_list()[0] if not info.is_empty() else f'股票{code}'
@@ -84,6 +140,7 @@ def screen_stocks(
     industry: str = "全部行业",
     weights: Dict[str, float] | None = None,
     period: str = "12个月",
+    today: date | str | None = None,
     **params,
 ) -> List[Dict[str, Any]]:
     """
@@ -96,12 +153,15 @@ def screen_stocks(
         industry:    '全部行业' 或 具体行业名。
         weights:     因子权重字典。
         period:      自动取数时的分析周期：'1个月' / '3个月' / '6个月' / '12个月'。
+        today:       分析截止日（默认取数据库最新交易日）；仅自动取数时生效，
+                     显式传入可让选股区间可复现。
 
     Returns:
         List[Dict] —— 每只股票含 score / risk / expected_return / industry 等。
     """
     if stocks_data is None:
-        stocks_data = _fetch_panel(top_n, period)
+        anchor = _coerce_date(today)
+        stocks_data = _fetch_panel(top_n, period, as_of=anchor)
         if stocks_data is None:
             logger.error("screen_stocks: 无法获取面板数据")
             return []

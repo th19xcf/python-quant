@@ -58,8 +58,14 @@ def _write_day_file(path, close, preclose):
 def _fake_data_manager(tdx_data_path):
     """构造仅暴露本地行情读取能力的 DataManager 替身。"""
     from src.data.data_manager import DataManager
+    from src.data.tdx_day_parser import build_day_file_path, resolve_market
 
     manager = SimpleNamespace(config=SimpleNamespace(data=SimpleNamespace(tdx_data_path=tdx_data_path)))
+    # get_latest_local_quote 内部会调 get_local_day_file_path，替身必须一并提供；
+    # 这里直接复用 tdx_day_parser 的 canonical 映射，不依赖 DataManager 实例状态
+    manager.get_local_day_file_path = lambda code, ts_code=None: build_day_file_path(
+        tdx_data_path, resolve_market(code, ts_code), code
+    )
     manager.get_latest_local_quote = lambda code, ts_code=None: DataManager.get_latest_local_quote(
         manager, code, ts_code
     )
