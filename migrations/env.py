@@ -1,72 +1,82 @@
-"""Alembic 运行环境：复用项目 Config 与 ORM Base.metadata。
+"""Alembic 运行环境配置。
 
-数据库 URL 统一由 src/utils/config.py（读取 .env）构造，
-不在 alembic.ini 中重复维护，避免两处配置漂移。
+数据库 URL 从 src/utils/config.py（.env）运行时构建，避免凭据写入 alembic.ini。
+迁移脚本统一使用 src.database.db_manager.Base 作为 target_metadata。
 """
 
-import sys
 from logging.config import fileConfig
-from pathlib import Path
 
 from alembic import context
-from sqlalchemy import URL, create_engine
+from sqlalchemy import URL, create_engine, pool
 
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from src.database.db_manager import Base  # noqa: E402
-from src.database.models import fund, index, stock  # noqa: E402,F401  确保全部表注册到 metadata
-from src.utils.config import get_config  # noqa: E402
+from src.database.db_manager import Base
+from src.database.models import fund, index, stock  # noqa: F401  导入以注册全部表
+from src.utils.config import get_config
 
 config = context.config
-target_metadata = Base.metadata
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+target_metadata = Base.metadata
+
+# 远程库为共享库，存在大量与本项目无关的表；autogenerate 只应比较项目模型表，
+# 否则会把其他业务的表误判为“待删除”并生成 drop_table。
+_PROJECT_TABLES = frozenset(target_metadata.tables)
+
+
+def _include_name(
+    name: str | None,
+    type_: str,
+    parent_names: dict[str, str | None],
+) -> bool:
+    """限制 autogenerate 的反射范围，仅保留项目模型定义的表。"""
+    if type_ == 'table':
+        return name in _PROJECT_TABLES
+    return True
+
 
 def _database_url() -> URL:
-    """按 .env 配置构造数据库 URL（密码等特殊字符由 URL.create 转义）。"""
+    """按 DatabaseSettings 构造 SQLAlchemy URL，与运行时连接口径保持一致。"""
     db = get_config().database
     return URL.create(
-        drivername="mysql+pymysql",
+        drivername='mysql+pymysql',
         username=db.username,
         password=db.password,
         host=db.host,
         port=db.port,
         database=db.database,
-        query={"charset": db.charset},
+        query={'charset': db.charset},
     )
 
 
 def run_migrations_offline() -> None:
-    """离线模式：只生成 SQL，不建立数据库连接。"""
+    """离线模式：仅生成 SQL，不实际连接数据库。"""
     context.configure(
         url=_database_url(),
         target_metadata=target_metadata,
         literal_binds=True,
-        dialect_opts={"paramstyle": "named"},
+        dialect_opts={'paramstyle': 'named'},
         compare_type=True,
+        include_name=_include_name,
     )
-
     with context.begin_transaction():
         context.run_migrations()
 
 
 def run_migrations_online() -> None:
-    """在线模式：连接数据库并执行迁移。"""
-    connectable = create_engine(_database_url())
-
+    """在线模式：使用 NullPool 建立一次性连接执行迁移。"""
+    connectable = create_engine(_database_url(), poolclass=pool.NullPool)
     with connectable.connect() as connection:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            include_name=_include_name,
         )
-
         with context.begin_transaction():
             context.run_migrations()
+    connectable.dispose()
 
 
 if context.is_offline_mode():
