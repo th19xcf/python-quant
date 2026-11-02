@@ -3,9 +3,8 @@
 """
 契约层一致性测试（Protocol 结构化子类型校验）
 
-src/api 的契约既不是 ABC、也没有任何测试覆盖，缺失实现只会在运行时才暴露。
-这里补一层运行时兜底：实现类必须提供契约声明的全部方法，且新增契约必须显式
-标注"预留"或接入实现，避免契约面继续虚增。
+src/api 只保留仍被实现类结构断言引用的最小契约；这里对契约与实现的一致性
+做运行时兜底，避免实现类缺方法只在运行时才暴露。
 """
 
 import os
@@ -16,27 +15,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import pytest
 
 from src.api import api_version, dto
-from src.api.business_api import (
-    IFactorAnalyzer,
-    ISignalGenerator,
-    IStrategyAnalyzer,
-    ITechnicalAnalyzer,
-)
-from src.api.data_api import IDataCache, IDataProcessor, IDataProvider, IDataStorage
-from src.api.presentation_api import IController, IView
+from src.api.business_api import ITechnicalAnalyzer
+from src.api.data_api import IDataProcessor, IDataProvider
 from src.data.data_manager import DataManager
 from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
-
-#: 零实现方/零调用方的预留契约，仅作占位，不应被当作已生效约束
-RESERVED_CONTRACTS = [
-    IDataStorage,
-    IDataCache,
-    IStrategyAnalyzer,
-    ISignalGenerator,
-    IFactorAnalyzer,
-    IView,
-    IController,
-]
 
 
 def contract_members(contract) -> list[str]:
@@ -78,21 +60,12 @@ class TestProtocolConformance:
         assert 'get_fund_data' not in contract_members(IDataProvider)
 
 
-class TestReservedContracts:
-
-    @pytest.mark.parametrize('contract', RESERVED_CONTRACTS, ids=lambda c: c.__name__)
-    def test_reserved_contract_annotated(self, contract):
-        assert '预留契约' in (contract.__doc__ or ''), contract.__name__
+class TestReservedModules:
 
     def test_reserved_modules_annotated(self):
+        """dto / api_version 仍为零消费方的预留模块，必须显式标注。"""
         assert '预留契约' in (dto.__doc__ or '')
         assert '预留契约' in (api_version.__doc__ or '')
-
-    def test_reserved_contracts_have_no_implementations(self):
-        """预留契约不应被任何实现类继承，否则应改为接入实现。"""
-        for contract in RESERVED_CONTRACTS:
-            assert contract not in DataManager.__mro__
-            assert contract not in TechnicalAnalyzer.__mro__
 
 
 if __name__ == '__main__':

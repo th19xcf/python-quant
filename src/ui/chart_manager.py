@@ -46,14 +46,6 @@ class ChartManager:
     def __init__(self, window):
         self.window = window
 
-    def refresh_kline_chart(self):
-        """刷新K线图"""
-        pass
-
-    def refresh_indicator_charts(self):
-        """刷新指标图表"""
-        pass
-
     def _setup_chart_labels(self, stock_name, stock_code):
         """
         设置图表标签

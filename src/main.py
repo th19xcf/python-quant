@@ -86,18 +86,13 @@ def _initialize_system(config):
     prewarm_indicators_async()
     logger.info("指标注册预热已在后台启动")
 
+    # 插件系统已暂停：保留空管理器实例以兼容 DataManager 构造，不再扫描/加载/初始化插件
     plugin_manager = PluginManager(config)
-    logger.info("插件管理器初始化成功")
-
-    loaded_count = plugin_manager.load_plugins()
-    logger.info(f"插件加载完成，共加载 {loaded_count} 个插件")
+    logger.info("插件系统已暂停，跳过插件加载与初始化")
 
     cpu_count = os.cpu_count() or 4
     os.environ['POLARS_MAX_THREADS'] = str(cpu_count)
     logger.info(f"已通过环境变量设置Polars线程池大小为 {cpu_count}")
-
-    initialized_count = plugin_manager.initialize_plugins()
-    logger.info(f"插件初始化完成，共初始化 {initialized_count} 个插件")
 
     return plugin_manager, cpu_count
 

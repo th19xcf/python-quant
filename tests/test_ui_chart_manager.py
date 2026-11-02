@@ -56,12 +56,16 @@ def _plot_items(widget):
     return widget.plotItem.items
 
 
-def test_init_and_noop_refresh():
+def test_init():
     manager, window = _make_manager()
 
     assert manager.window is window
-    assert manager.refresh_kline_chart() is None
-    assert manager.refresh_indicator_charts() is None
+
+
+def test_empty_refresh_methods_removed():
+    """空 pass 的刷新方法已删除，避免留下"调用后无任何效果"的假入口。"""
+    assert not hasattr(ChartManager, 'refresh_kline_chart')
+    assert not hasattr(ChartManager, 'refresh_indicator_charts')
 
 
 def test_setup_chart_labels_builds_title_bar(qapp):

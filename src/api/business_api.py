@@ -5,7 +5,7 @@
 统一使用Polars DataFrame作为数据格式
 """
 
-from typing import Any, Dict, List, Protocol
+from typing import Any, List, Protocol
 
 import polars as pl
 
@@ -74,139 +74,6 @@ class ITechnicalAnalyzer(Protocol):
 
         Returns:
             bool: 清除是否成功
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-
-class IStrategyAnalyzer:
-    """策略分析器接口，定义策略分析和回测方法
-
-    预留契约：当前无实现方与调用方（全仓仅本文件引用），保留供未来扩展，
-    不要把它当作已生效的约束。
-    """
-
-    def backtest(self, data: pl.DataFrame, strategy: Any, **params: Any) -> Dict[str, Any]:
-        """回测策略
-
-        Args:
-            data: 股票数据（Polars DataFrame）
-            strategy: 策略对象或策略名称
-            **params: 回测参数
-
-        Returns:
-            Dict[str, Any]: 回测结果，包含收益率、最大回撤等指标
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def evaluate_performance(self, backtest_results: Dict[str, Any]) -> Dict[str, Any]:
-        """评估策略绩效
-
-        Args:
-            backtest_results: 回测结果
-
-        Returns:
-            Dict[str, Any]: 绩效评估结果
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def optimize_parameters(self, data: pl.DataFrame, strategy: Any, param_space: Dict[str, List[Any]]) -> Dict[str, Any]:
-        """优化策略参数
-
-        Args:
-            data: 股票数据（Polars DataFrame）
-            strategy: 策略对象或策略名称
-            param_space: 参数空间，如：{'fast_period': [5, 10, 15], 'slow_period': [20, 25, 30]}
-
-        Returns:
-            Dict[str, Any]: 优化结果，包含最优参数和对应的绩效指标
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def get_supported_strategies(self) -> List[str]:
-        """获取支持的策略列表
-
-        Returns:
-            List[str]: 支持的策略列表
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-
-class ISignalGenerator:
-    """信号生成器接口，定义买卖信号生成方法
-
-    预留契约：当前无实现方与调用方（全仓仅本文件引用），保留供未来扩展，
-    不要把它当作已生效的约束。
-    """
-
-    def generate_signals(self, data: pl.DataFrame, indicators: List[str] | None = None, **params: Any) -> pl.DataFrame:
-        """生成买卖信号
-
-        Args:
-            data: 股票数据，包含技术指标（Polars DataFrame）
-            indicators: 用于生成信号的指标列表
-            **params: 信号生成参数
-
-        Returns:
-            pl.DataFrame: 包含信号的数据
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def get_signal_rules(self) -> List[Dict[str, Any]]:
-        """获取信号生成规则
-
-        Returns:
-            List[Dict[str, Any]]: 信号生成规则列表
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def validate_signals(self, signals_data: pl.DataFrame) -> Dict[str, Any]:
-        """验证信号有效性
-
-        Args:
-            signals_data: 包含信号的数据（Polars DataFrame）
-
-        Returns:
-            Dict[str, Any]: 验证结果
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-
-class IFactorAnalyzer:
-    """因子分析器接口，定义因子计算和分析方法
-
-    预留契约：当前无实现方与调用方（全仓仅本文件引用），保留供未来扩展，
-    不要把它当作已生效的约束。
-    """
-
-    def calculate_factor(self, data: pl.DataFrame, factor_type: str, **params: Any) -> pl.DataFrame:
-        """计算因子值
-
-        Args:
-            data: 股票数据（Polars DataFrame）
-            factor_type: 因子类型
-            **params: 因子计算参数
-
-        Returns:
-            pl.DataFrame: 包含因子值的数据
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def evaluate_factor(self, factor_data: pl.DataFrame) -> Dict[str, Any]:
-        """评估因子有效性
-
-        Args:
-            factor_data: 包含因子值的数据（Polars DataFrame）
-
-        Returns:
-            Dict[str, Any]: 因子评估结果
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def get_supported_factors(self) -> List[str]:
-        """获取支持的因子列表
-
-        Returns:
-            List[str]: 支持的因子列表
         """
         raise NotImplementedError("子类必须实现此方法")
 
