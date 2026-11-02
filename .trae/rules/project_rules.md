@@ -7,6 +7,7 @@
 - 用户当场明确提出异议或要求暂缓的，以用户指令为准
 - **Commit message 必须使用中文**：标题与正文描述统一使用中文，仅保留约定式提交的类型前缀（feat/fix/refactor/perf/chore 等）与 scope 为英文，格式为 `type(scope): 中文描述`
 - **Commit message 不得包含空行**：标题行与正文之间、正文各条目之间均不插入空行；条目紧接标题下一行开始，逐行连续书写（不使用 `git commit -m "标题\n\n正文"` 这种带空行的写法）
+- **Commit message 文件必须无 BOM**：禁止用 PowerShell 5.1 的 `Set-Content -Encoding utf8` 写消息文件（其 `utf8` 即 UTF-8 带 BOM，会写入 `EF BB BF`，且 `git commit -F` / `git stripspace` 不会自动清理）；统一用 `.venv\Scripts\python.exe` 以 `open(p, 'w', encoding='utf-8', newline='\n')` 写临时文件后 `git commit -F <文件>`，或无 Python 时用 `[System.IO.File]::WriteAllText($p, $msg, (New-Object System.Text.UTF8Encoding($false)))`；提交前可自检首 3 字节不为 `EF BB BF`
 - **每次执行 git commit 后，必须立即在聊天窗口输出完整的提交信息**，固定包含以下 5 块：
 
 ---
