@@ -169,3 +169,19 @@ def test_create_title_section_moves_name_to_toolbar(qapp, tmp_path):
         window.hide()
         window.deleteLater()
         qapp.processEvents()
+
+
+def test_vol_tdx_button_removed_from_indicator_bar(qapp, tmp_path):
+    """vol_tdx 已随指标注册表注销，指标栏不得再出现该按钮。"""
+    from src.ui.main_window import MainWindow
+
+    config = SimpleNamespace(data=SimpleNamespace(tdx_data_path=str(tmp_path)))
+    data_manager = SimpleNamespace(db_manager=None)
+
+    window = MainWindow(config, data_manager)
+    try:
+        assert 'VOL-TDX' not in window.indicator_buttons
+    finally:
+        window.hide()
+        window.deleteLater()
+        qapp.processEvents()

@@ -16,6 +16,8 @@ class MouseHandler:
         self.main_window = main_window
         # 指标文本渲染缓存键：(id(dates), index)，同一根K线不重复重建富文本
         self._last_render_key = None
+        # 已告警过的无效指标 (窗口, 指标名)，避免鼠标逐根移动时重复刷日志
+        self._warned_invalid_indicators = set()
 
     def _format_value(self, value, format_str="{:.2f}"):
         """格式化指标值，None 或格式错误时返回 "--"。"""
@@ -74,19 +76,39 @@ class MouseHandler:
         main_window = self.main_window
         main_window.update_ma_values_display(index, dates, opens, highs, lows, closes)
         fmt = self._format_value
+        # 取消勾选 SAR/BOLL 会把对应窗口的指标置为 None（表示该副图已清空），
+        # 这里必须先校验指标名再参与属性名拼接，不能假设它一定是字符串
+        indicators = getattr(main_window, 'window_indicators', None) or {}
         for window, texts, label_name in (
             (2, WINDOW2_TEXTS, 'volume_values_label'),
             (3, WINDOW3_TEXTS, 'kdj_values_label'),
         ):
             if not hasattr(main_window, label_name):
                 continue
-            indicator = main_window.window_indicators[window]
+            indicator = indicators.get(window)
+            if not isinstance(indicator, str) or not indicator.strip():
+                self._warn_invalid_indicator(window, indicator)
+                continue
+            if indicator not in texts:
+                self._warn_invalid_indicator(window, indicator)
+                continue
             attr = 'current_volume_data' if indicator == 'VOL' else f'current_{indicator.lower()}_data'
             data = getattr(main_window, attr, None)
             text = render_indicator_text(texts, indicator, data, index, fmt)
             if text:
                 getattr(main_window, label_name).setText(text)
         return True
+
+    def _warn_invalid_indicator(self, window, indicator):
+        """提示表查不到指标名时显式跳过并告警（同一无效指标只告警一次）。"""
+        key = (window, repr(indicator))
+        if key in self._warned_invalid_indicators:
+            return
+        self._warned_invalid_indicators.add(key)
+        if not isinstance(indicator, str) or not indicator.strip():
+            logger.warning(f"窗口{window}的指标名为空或非法: {indicator!r}，跳过指标提示更新")
+        else:
+            logger.warning(f"窗口{window}的指标 {indicator} 没有对应的提示渲染器，跳过指标提示更新")
 
     def _update_crosshair(self, pos, index, dates_len, info_changed):
         """更新三个图表的十字线；同一根K线只在索引变化时刷新信息框。"""
