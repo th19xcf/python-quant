@@ -43,9 +43,21 @@ class WindowEventManager:
         logger.warning(f"数据错误: {data_type} {ts_code} {message}")
 
     def handle_indicator_calculated(self, sender, data_type=None, indicators=None, calculated_indicators=None,
-                                   success=True, error=None, indicator_name=None, ts_code=None, result=None, **kwargs):
-        """处理技术指标计算完成事件"""
-        logger.info(f"技术指标计算完成: {indicators}")
+                                   success=True, error=None, indicator_name=None, ts_code=None, result=None,
+                                   data=None, **kwargs):
+        """处理技术指标计算完成事件
+
+        该事件有两个发布点：parallel_ops 携带 indicators，IndicatorCalculateThread
+        在计算结束后再发布一次仅携带 data 的完成事件。后者没有 indicators 字段，
+        不能把“未携带指标列表”误报成“指标为空（None）”。
+        """
+        if indicators is not None:
+            logger.info(f"技术指标计算完成: {indicators}")
+        elif data is not None:
+            shape = getattr(data, 'shape', None)
+            logger.info(f"技术指标计算完成，结果数据: {shape if shape is not None else type(data).__name__}")
+        else:
+            logger.info("技术指标计算完成（事件未携带指标列表或结果数据）")
 
     def handle_indicator_error(self, sender, data_type=None, indicators=None, error="", indicator_name=None, ts_code=None, **kwargs):
         """处理技术指标计算错误事件"""

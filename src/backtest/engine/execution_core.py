@@ -35,7 +35,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, Dict, List, NamedTuple, Set, Tuple
+from typing import Any, Dict, List, NamedTuple, Set, Tuple, TypeIs
 
 import polars as pl
 from loguru import logger
@@ -572,7 +572,8 @@ class RunContext:
     expired_orders: List[Dict[str, Any]]
     overwritten_orders: List[Dict[str, Any]]
     filtered_signals: List[Dict[str, Any]]
-    pending: Dict[str, SignalIntent]
+    #: 挂单槽位：None 表示该标的当前无待执行信号（成交/作废后即清空）
+    pending: Dict[str, SignalIntent | None]
     pending_age: Dict[str, int]
     prev_close: Dict[str, float | None]
     prev_raw_close: Dict[str, float | None]
@@ -1137,11 +1138,11 @@ class EventBacktestRunner:
             if ctx.pending:
                 today_set = set(codes_today)
                 for code in list(ctx.pending.keys()):
-                    if ctx.pending[code] is None or code in today_set:
+                    intent = ctx.pending[code]
+                    if intent is None or code in today_set:
                         continue
                     age = ctx.pending_age.get(code, 0) + 1
                     if age > ctx.pending_ttl_days:
-                        intent = ctx.pending[code]
                         ctx.pending[code] = None
                         ctx.pending_age[code] = 0
                         self._append_expired(
@@ -1177,8 +1178,8 @@ class EventBacktestRunner:
                     # A14：保留 (标的, 日期)，可审计哪些 bar 的涨跌停判定不可信
                     ctx.st_unknown_bars.append((code, trade_day))
 
-                intent = ctx.pending.get(code)
-                if intent is not None:
+                pending_intent = ctx.pending.get(code)
+                if pending_intent is not None:
                     bar = Bar(
                         open_price=open_price, high=high, low=low,
                         close=close_price, volume=volume, raw_open=raw_open,
@@ -1367,8 +1368,13 @@ class EventBacktestRunner:
         )
 
     @staticmethod
-    def _is_valid_price(price: Any) -> bool:
-        """价格是否有效：None / NaN / inf / ≤0 / 非数值均视为缺失（A24）。"""
+    def _is_valid_price(price: Any) -> TypeIs[float]:
+        """价格是否有效：None / NaN / inf / ≤0 / 非数值均视为缺失（A24）。
+
+        返回类型用 TypeIs 而非 bool：判定为真时调用方可直接按 float 使用该
+        价格（涨跌停/成交价计算都要求有限正数），避免下游为通过类型检查再做
+        多余判空；运行时仍是同一布尔判定，行为不变。
+        """
         number = _finite_float(price)
         return number is not None and number > 0
 

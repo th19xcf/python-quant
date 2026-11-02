@@ -131,7 +131,7 @@ class MainWindowTechTabMixin:
         """股票名称标签使用的字体（与 _build_stock_name_label 的样式表保持一致）"""
         font = QFont('Microsoft YaHei')
         font.setPixelSize(self._STOCK_NAME_FONT_SIZE)
-        font.setWeight(QFont.Bold)
+        font.setWeight(QFont.Weight.Bold)
         return font
 
     def _build_period_buttons(self, toolbar_layout, button_style):
