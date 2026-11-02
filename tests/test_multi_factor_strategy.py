@@ -94,7 +94,11 @@ def test_multi_factor_strategy():
     logger.info("\n性能指标:")
     performance = results['performance']
     for key, value in performance.items():
-        logger.info(f"{key}: {value:.4f}")
+        # frequency/frequency_fallback 等口径元数据不是数值，不能按浮点格式化
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            logger.info(f"{key}: {value:.4f}")
+        else:
+            logger.info(f"{key}: {value}")
 
     # 打印交易记录
     logger.info("{} {}", "\n交易记录数量:", len(results['trades']))

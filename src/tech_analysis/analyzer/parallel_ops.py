@@ -16,43 +16,88 @@ from src.utils.frame_adapter import to_output, to_polars
 from ..gpu_acceleration import calculate_with_gpu, is_gpu_available
 from ..incremental_calculator import global_incremental_calculator
 from ..indicator_cache import global_indicator_cache
-from ..indicator_calculator import calculate_multiple_indicators_polars
-from ..indicator_manager import global_indicator_manager
+from ..indicator_calculator import (
+    calculate_multiple_indicators_polars,
+    get_default_indicator_types,
+)
+from ..indicator_manager import ensure_indicators_registered, global_indicator_manager
+from ..indicator_registry import global_indicator_registry
 
-# 默认批量计算的指标集合
-_DEFAULT_INDICATOR_TYPES = [
-    'ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd', 'dmi', 'cci', 'roc', 'mtm',
-    'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst',
-]
+# 窗口类指标的真实参数名：实现层按 {type}_windows 读取参数，
+# 统一传 windows 会被静默忽略（历史上 dmi/cci 等自定义窗口失效即源于此）
+_WINDOW_PARAM_MAP = {
+    'ma': 'ma_windows',
+    'rsi': 'rsi_windows',
+    'kdj': 'kdj_windows',
+    'vol_ma': 'vol_ma_windows',
+    'wr': 'wr_windows',
+    'boll': 'boll_windows',
+    'dmi': 'dmi_windows',
+    'cci': 'cci_windows',
+    'roc': 'roc_windows',
+    'mtm': 'mtm_windows',
+    'vr': 'vr_windows',
+    'psy': 'psy_windows',
+    'trix': 'trix_windows',
+    'brar': 'brar_windows',
+    'emv': 'emv_windows',
+    'mcst': 'mcst_windows',
+    'expma': 'expma_windows',
+    'cyc': 'cyc_windows',
+    'cr': 'cr_windows',
+}
 
-# 可走 Polars 批量计算的内置指标集合
-_BUILTIN_INDICATOR_TYPES = [
-    'ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'macd', 'dmi', 'cci', 'roc', 'mtm',
-    'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst',
-    'abi', 'adl', 'adr', 'obos',
-]
-
-# 批量计算后各指标的参数登记规则
+# 批量计算后各指标的参数登记规则（param_key 必须是该指标真实参数名）
 _INDICATOR_UPDATE_MAP = {
-    'ma': {'param_key': 'windows', 'default': [5, 10, 20, 60], 'update_type': 'windows'},
+    'ma': {'param_key': 'ma_windows', 'default': [5, 10, 20, 60], 'update_type': 'windows'},
     'rsi': {'param_key': 'rsi_windows', 'default': [14], 'update_type': 'windows'},
     'kdj': {'param_key': 'kdj_windows', 'default': [14], 'update_type': 'windows'},
     'vol_ma': {'param_key': 'vol_ma_windows', 'default': [5, 10], 'update_type': 'windows'},
     'wr': {'param_key': 'wr_windows', 'default': [10, 6], 'update_type': 'windows'},
+    'boll': {'param_key': 'boll_windows', 'default': [20], 'update_type': 'windows'},
     'macd': {'update_type': 'boolean'},
-    'dmi': {'param_key': 'windows', 'default': [14], 'update_type': 'windows'},
-    'cci': {'param_key': 'windows', 'default': [14], 'update_type': 'windows'},
-    'roc': {'param_key': 'windows', 'default': [12], 'update_type': 'windows'},
-    'mtm': {'param_key': 'windows', 'default': [12], 'update_type': 'windows'},
+    'dmi': {'param_key': 'dmi_windows', 'default': [14], 'update_type': 'windows'},
+    'cci': {'param_key': 'cci_windows', 'default': [14], 'update_type': 'windows'},
+    'roc': {'param_key': 'roc_windows', 'default': [12], 'update_type': 'windows'},
+    'mtm': {'param_key': 'mtm_windows', 'default': [12], 'update_type': 'windows'},
     'obv': {'update_type': 'boolean'},
-    'vr': {'param_key': 'windows', 'default': [24], 'update_type': 'windows'},
-    'psy': {'param_key': 'windows', 'default': [12], 'update_type': 'windows'},
-    'trix': {'param_key': 'windows', 'default': [12], 'update_type': 'windows'},
-    'brar': {'param_key': 'windows', 'default': [26], 'update_type': 'windows'},
-    'asi': {'param_key': 'windows', 'default': [14], 'update_type': 'windows'},
-    'emv': {'param_key': 'windows', 'default': [14], 'update_type': 'windows'},
-    'mcst': {'param_key': 'windows', 'default': [12], 'update_type': 'windows'},
+    'vr': {'param_key': 'vr_windows', 'default': [26], 'update_type': 'windows'},
+    'psy': {'param_key': 'psy_windows', 'default': [12], 'update_type': 'windows'},
+    'trix': {'param_key': 'trix_windows', 'default': [12], 'update_type': 'windows'},
+    'brar': {'param_key': 'brar_windows', 'default': [26], 'update_type': 'windows'},
+    'emv': {'param_key': 'emv_windows', 'default': [14], 'update_type': 'windows'},
+    'mcst': {'param_key': 'mcst_windows', 'default': [12], 'update_type': 'windows'},
+    'expma': {'param_key': 'expma_windows', 'default': [12, 50], 'update_type': 'windows'},
+    'cyc': {'param_key': 'cyc_windows', 'default': [5, 13, 34], 'update_type': 'windows'},
+    'cr': {'param_key': 'cr_windows', 'default': [26], 'update_type': 'windows'},
+    # 非窗口型指标：只登记布尔状态，避免把标量周期误当窗口集合迭代
+    'asi': {'update_type': 'boolean'},
+    'dma': {'update_type': 'boolean'},
+    'fsl': {'update_type': 'boolean'},
+    'sar': {'update_type': 'boolean'},
+    'bbi': {'update_type': 'boolean'},
+    'hsl': {'update_type': 'boolean'},
+    'lb': {'update_type': 'boolean'},
+    'cys': {'update_type': 'boolean'},
+    'abi': {'update_type': 'boolean'},
+    'adl': {'update_type': 'boolean'},
+    'adr': {'update_type': 'boolean'},
+    'obos': {'update_type': 'boolean'},
 }
+
+
+# 非窗口型指标：整表一次计算，参数原样透传（float_share / period 等）
+_SINGLE_CALL_INDICATOR_TYPES = frozenset({
+    'macd', 'obv', 'asi', 'dma', 'fsl', 'sar', 'bbi', 'hsl', 'lb', 'cys',
+    'abi', 'adl', 'adr', 'obos',
+})
+
+
+def _as_window_set(value: Any) -> set:
+    """把窗口参数统一成可迭代集合，兼容标量周期（如 asi_signal_period）。"""
+    if isinstance(value, (list, tuple, set)):
+        return set(value)
+    return {value}
 
 
 class ParallelIndicatorMixin:
@@ -75,36 +120,32 @@ class ParallelIndicatorMixin:
         Returns:
             pl.DataFrame: 包含计算指标的DataFrame
         """
-        # 检查指标类型是否支持多窗口计算
-        if indicator_type in ['ma', 'rsi', 'kdj', 'vol_ma', 'dmi', 'cci', 'roc', 'mtm', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'expma', 'cyc', 'hsl', 'lb']:
-            # 对于支持多窗口的指标
-            windows = kwargs.get('windows', [14])
+        # 窗口类指标：按指标真实参数名传参，避免自定义窗口被静默丢弃
+        window_param = _WINDOW_PARAM_MAP.get(indicator_type)
+        if window_param is not None:
+            default_windows = _INDICATOR_UPDATE_MAP.get(indicator_type, {}).get('default', [14])
+            # 同时接受真实参数名 {type}_windows 与通用 windows（真实参数名优先）
+            windows = kwargs.get(window_param, kwargs.get('windows', default_windows))
             if not isinstance(windows, list):
                 windows = [windows]
 
             # 只计算尚未计算过的窗口
-            windows_to_calculate = [w for w in windows if w not in self.calculated_indicators[indicator_type]]
+            state = self.calculated_indicators.setdefault(indicator_type, set())
+            windows_to_calculate = [w for w in windows if w not in state]
 
             if windows_to_calculate:
                 # 统一走批量函数惰性路径：单计划、单 collect，避免单指标包装
-                # 函数 eager 路径的重复执行与内存压缩/打印开销；各指标的窗口
-                # 参数名需与 get_indicator_params 的口径一致
-                windows_param = {
-                    'ma': 'windows',
-                    'rsi': 'rsi_windows',
-                    'kdj': 'kdj_windows',
-                    'vol_ma': 'vol_ma_windows',
-                }.get(indicator_type, 'windows')
+                # 函数 eager 路径的重复执行与内存压缩/打印开销
                 lazy_df = calculate_multiple_indicators_polars(
-                    self.pl_df.lazy(), [indicator_type], **{windows_param: windows_to_calculate})
+                    self.pl_df.lazy(), [indicator_type], **{window_param: windows_to_calculate})
                 self.pl_df = lazy_df.collect()
 
                 # 更新计算状态
-                self.calculated_indicators[indicator_type].update(windows_to_calculate)
-        elif indicator_type in ['macd', 'obv']:
-            # 对于不支持多窗口的指标，直接使用批量计算函数
-            lazy_df = self.pl_df.lazy()
-            lazy_df = calculate_multiple_indicators_polars(lazy_df, [indicator_type])
+                state.update(windows_to_calculate)
+        elif indicator_type in _SINGLE_CALL_INDICATOR_TYPES:
+            # 非窗口型指标：整表一次计算，参数原样透传
+            lazy_df = calculate_multiple_indicators_polars(
+                self.pl_df.lazy(), [indicator_type], **kwargs)
             self.pl_df = lazy_df.collect()
 
             # 更新计算状态
@@ -290,13 +331,15 @@ class ParallelIndicatorMixin:
         # 保存复权列，避免在指标计算过程中丢失
         adj_data = self._load_indicator_input(data)
 
-        # 1. 确定要计算的指标类型
+        # 1. 确定要计算的指标类型（以注册表为唯一真源）
         if indicator_types is None:
-            indicator_types = list(_DEFAULT_INDICATOR_TYPES)
+            indicator_types = get_default_indicator_types()
 
         # 2/3. 准备内置指标并使用批量计算函数计算
+        ensure_indicators_registered()
+        supported = set(global_indicator_registry.get_supported_indicators())
         builtin_indicators = [
-            ind for ind in indicator_types if ind in _BUILTIN_INDICATOR_TYPES
+            ind for ind in indicator_types if ind in supported
         ]
         success, error_message = self._calculate_builtin_batch(builtin_indicators, params)
 
@@ -375,8 +418,13 @@ class ParallelIndicatorMixin:
                 if not update_info:
                     continue
                 if update_info['update_type'] == 'windows':
-                    windows = params.get(update_info['param_key'], update_info['default'])
-                    self.calculated_indicators[indicator].update(windows)
+                    windows = params.get(
+                        update_info['param_key'],
+                        params.get('windows', update_info['default']),
+                    )
+                    self.calculated_indicators.setdefault(indicator, set()).update(
+                        _as_window_set(windows)
+                    )
                 elif update_info['update_type'] == 'boolean':
                     self.calculated_indicators[indicator] = True
 
@@ -555,15 +603,15 @@ class ParallelIndicatorMixin:
         except ValueError as e:
             raise ValueError(f"不支持的指标类型: {indicator_type}") from e
 
-    def _update_indicator_state(self, indicator_type, kwargs, windows_key='windows') -> None:
+    def _update_indicator_state(self, indicator_type, kwargs, windows_key=None) -> None:
         """按指标登记类型更新 calculated_indicators（窗口集合或布尔标记）。"""
-        if indicator_type not in self.calculated_indicators:
+        state = self.calculated_indicators.get(indicator_type)
+        if state is None:
             return
-        if isinstance(self.calculated_indicators[indicator_type], set):
-            windows = kwargs.get(windows_key, kwargs.get('windows', [14]))
-            if not isinstance(windows, list):
-                windows = [windows]
-            self.calculated_indicators[indicator_type].update(windows)
+        if isinstance(state, set):
+            key = windows_key or _WINDOW_PARAM_MAP.get(indicator_type, 'windows')
+            windows = kwargs.get(key, kwargs.get('windows', [14]))
+            state.update(_as_window_set(windows))
         else:
             self.calculated_indicators[indicator_type] = True
 

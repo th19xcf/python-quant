@@ -6,6 +6,7 @@
 
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -20,6 +21,12 @@ from PySide6.QtWidgets import (
 
 class MainWindowTechTabMixin:
     """技术分析标签页：周期/柱体数/复权工具栏与三个画布。"""
+
+    # 股票名称标签的最大宽度，超出部分以省略号截断，避免挤压周期按钮
+    _STOCK_NAME_MAX_WIDTH = 260
+    _STOCK_NAME_PADDING = 8
+    _STOCK_NAME_FONT_SIZE = 14
+    _STOCK_NAME_COLOR = '#FFD04B'
 
     def create_tech_tab(self):
         """
@@ -73,6 +80,7 @@ class MainWindowTechTabMixin:
         }
         """
 
+        self._build_stock_name_label(toolbar_layout)
         self._build_period_buttons(toolbar_layout, button_style)
         self._build_bar_count_input(toolbar_layout)
         self._build_adjustment_button(toolbar_layout, button_style)
@@ -80,6 +88,51 @@ class MainWindowTechTabMixin:
 
         # 添加工具栏到布局
         tech_layout.addWidget(toolbar)
+
+    def _build_stock_name_label(self, toolbar_layout):
+        """
+        创建工具栏最左侧的股票名称标签（位于周期按钮之前）
+        """
+        self.stock_name_label = QLabel('--')
+        self.stock_name_label.setStyleSheet(
+            f"color: {self._STOCK_NAME_COLOR}; font-family: 'Microsoft YaHei';"
+            f"font-size: {self._STOCK_NAME_FONT_SIZE}px; font-weight: bold;"
+            f"padding-right: {self._STOCK_NAME_PADDING}px;"
+        )
+        self.stock_name_label.setMaximumWidth(self._STOCK_NAME_MAX_WIDTH)
+        self.stock_name_label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        self.stock_name_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.stock_name_label.setWordWrap(False)
+        toolbar_layout.addWidget(self.stock_name_label)
+
+    def update_stock_name_label(self, stock_name='', stock_code=''):
+        """
+        刷新工具栏股票名称标签
+
+        切换股票、切换周期与清空图表共用此入口，保证工具栏与图表标题状态一致。
+        名称过长时按标签最大宽度省略，避免把日线/周线/月线按钮推走。
+
+        Args:
+            stock_name: 股票名称
+            stock_code: 股票代码
+        """
+        label = getattr(self, 'stock_name_label', None)
+        if label is None:
+            return
+
+        text = f"{stock_name}({stock_code})" if (stock_name or stock_code) else '--'
+        available_width = self._STOCK_NAME_MAX_WIDTH - self._STOCK_NAME_PADDING
+        # 用与样式表一致的字体度量做省略，避免依赖控件默认字体导致截断判断失真
+        metrics = QFontMetrics(self._stock_name_font())
+        label.setText(metrics.elidedText(text, Qt.ElideRight, available_width))
+        label.setToolTip(text)
+
+    def _stock_name_font(self) -> QFont:
+        """股票名称标签使用的字体（与 _build_stock_name_label 的样式表保持一致）"""
+        font = QFont('Microsoft YaHei')
+        font.setPixelSize(self._STOCK_NAME_FONT_SIZE)
+        font.setWeight(QFont.Bold)
+        return font
 
     def _build_period_buttons(self, toolbar_layout, button_style):
         """

@@ -4,6 +4,8 @@
 股票推荐对话框（UI 层只调 usecases，不直接碰 DatabaseManager）
 """
 
+import contextlib
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -22,7 +24,30 @@ from PySide6.QtWidgets import (
 )
 
 from src.core.usecases import screen_stocks
+from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
+
+
+def _run_screen_task(top_n, algorithm, industry, weights, period,
+                     task_id=None, signals=None) -> list:
+    """后台选股任务：在工作线程执行，避免阻塞 UI 事件循环。
+
+    TaskRunner 以关键字参数注入 ``task_id`` / ``signals`` 用于回传进度。
+    """
+    def _progress(value: int) -> None:
+        if signals is not None and task_id is not None:
+            signals.progress.emit(task_id, value, 100)
+
+    _progress(10)
+    recommendations = screen_stocks(
+        top_n=top_n,
+        algorithm=algorithm,
+        industry=industry,
+        weights=weights,
+        period=period,
+    )
+    _progress(90)
+    return recommendations
 
 
 class StockRecommendationDialog(QDialog):
@@ -33,6 +58,11 @@ class StockRecommendationDialog(QDialog):
         self.setWindowTitle("股票推荐")
         self.setGeometry(100, 100, 900, 600)
         self.setModal(True)
+
+        # 后台任务状态 + 最近一次推荐结果（导出报告必须用真实结果）
+        self._task_id = None
+        self._task_handlers = []
+        self._recommendations = []
 
         self.init_ui()
 
@@ -149,59 +179,128 @@ class StockRecommendationDialog(QDialog):
         button_layout.addWidget(self.close_button)
         main_layout.addLayout(button_layout)
 
-    def generate_recommendation(self):
-        """生成股票推荐（走 usecases 层）"""
+    def generate_recommendation(self) -> None:
+        """启动选股：参数校验后下沉到 global_task_manager 后台执行。
+
+        UI 线程只做参数组装与信号连接；选股期间事件循环不被阻塞。
+        global_task_manager 的 Qt 信号跨线程自动 Queued，回调在 UI 线程执行。
+        """
+        if self._task_id is not None:
+            logger.info("选股任务仍在执行，忽略重复触发")
+            return
+
         try:
-            algorithm = self.algorithm_combo.currentText()
+            spec = self._collect_screen_spec()
+        except ValueError as e:
+            logger.error(f"选股参数无效: {e}")
+            self._show_message("参数无效", str(e))
+            return
+
+        self.run_button.setEnabled(False)
+        self.export_button.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+
+        self._task_id = global_task_manager.create_task(
+            f"股票推荐: {spec['algorithm']}",
+            _run_screen_task,
+            (spec['top_n'], spec['algorithm'], spec['industry'],
+             spec['weights'], spec['period']),
+            timeout_seconds=None,   # 全市场选股可能较慢，不套用 60s 默认超时
+        )
+        self._connect_task_signals()
+
+    def _collect_screen_spec(self) -> dict:
+        """从界面读取并校验参数，构造后台任务所需的最小配置。"""
+        algorithm = self.algorithm_combo.currentText()
+        period = self.period_combo.currentText()
+        industry = self.industry_combo.currentText()
+
+        try:
             stock_count = int(self.stock_count_edit.text())
-            period = self.period_combo.currentText()
-            industry = self.industry_combo.currentText()
+        except ValueError as e:
+            raise ValueError("推荐股票数量必须为整数") from e
+        if stock_count <= 0:
+            raise ValueError("推荐股票数量必须大于 0")
 
-            weights = {
-                'momentum': float(self.momentum_weight_edit.text()),
-                'value': float(self.value_weight_edit.text()),
-                'growth': float(self.growth_weight_edit.text()),
-                'quality': float(self.quality_weight_edit.text()),
-                'volatility': float(self.volatility_weight_edit.text())
-            }
+        weights = {
+            'momentum': float(self.momentum_weight_edit.text()),
+            'value': float(self.value_weight_edit.text()),
+            'growth': float(self.growth_weight_edit.text()),
+            'quality': float(self.quality_weight_edit.text()),
+            'volatility': float(self.volatility_weight_edit.text()),
+        }
+        return {
+            'algorithm': algorithm,
+            'period': period,
+            'industry': industry,
+            'top_n': stock_count,
+            'weights': weights,
+        }
 
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setValue(10)
-
-            # === 走 usecases 层 ===
-            recommendations = screen_stocks(
-                top_n=stock_count,
-                algorithm=algorithm,
-                industry=industry,
-                weights=weights,
-                period=period,
-            )
-
-            self.progress_bar.setValue(80)
-
-            if not recommendations:
-                self.result_table.setRowCount(1)
-                self.result_table.setItem(0, 0, QTableWidgetItem("无推荐结果"))
+    def _connect_task_signals(self) -> None:
+        """连接全局任务信号，按 task_id 过滤，避免串扰其他后台任务。"""
+        def on_progress(task_id, current, total) -> None:
+            if task_id != self._task_id:
                 return
+            self.progress_bar.setRange(0, max(total, 1))
+            self.progress_bar.setValue(current)
 
-            # 适配展示字段
-            for rec in recommendations:
-                rec.setdefault('code', rec.get('stock_code', ''))
-                rec.setdefault('name', rec.get('stock_name', ''))
-                rec.setdefault('expected_return', rec.get('expected_return', rec.get('score', 0) * 100))
-                rec.setdefault('risk', rec.get('risk_level', '中'))
+        def on_completed(task_id, result) -> None:
+            if task_id != self._task_id:
+                return
+            self._recommendations = self._normalize_recommendations(result)
+            self.display_result(self._recommendations)
+            self.export_button.setEnabled(bool(self._recommendations))
 
-            self.display_result(recommendations)
-            self.export_button.setEnabled(True)
+        def on_error(task_id, error_message) -> None:
+            if task_id != self._task_id:
+                return
+            self._show_message("生成推荐失败", error_message)
 
-        except Exception as e:
-            logger.error(f"生成推荐失败: {e}")
-            self.result_table.setRowCount(1)
-            self.result_table.setItem(0, 0, QTableWidgetItem("错误"))
-            self.result_table.setItem(0, 1, QTableWidgetItem(str(e)))
-        finally:
+        def on_finished(task_id) -> None:
+            if task_id != self._task_id:
+                return
+            self._disconnect_task_signals()
+            self._task_id = None
+            self.run_button.setEnabled(True)
             self.progress_bar.setVisible(False)
             self.progress_bar.setValue(0)
+
+        self._task_handlers = [
+            (global_task_manager.task_progress, on_progress),
+            (global_task_manager.task_completed, on_completed),
+            (global_task_manager.task_error, on_error),
+            (global_task_manager.task_finished, on_finished),
+        ]
+        for signal, handler in self._task_handlers:
+            signal.connect(handler)
+
+    def _disconnect_task_signals(self) -> None:
+        """断开本次任务的信号连接，避免回调累积。"""
+        for signal, handler in self._task_handlers:
+            with contextlib.suppress(RuntimeError, TypeError):
+                signal.disconnect(handler)
+        self._task_handlers = []
+
+    @staticmethod
+    def _normalize_recommendations(recommendations) -> list:
+        """补齐展示字段，返回统一结构的推荐列表。"""
+        normalized = []
+        for rec in recommendations or []:
+            rec = dict(rec)
+            rec.setdefault('code', rec.get('stock_code', ''))
+            rec.setdefault('name', rec.get('stock_name', ''))
+            rec.setdefault('expected_return', rec.get('score', 0) * 100)
+            rec.setdefault('risk', rec.get('risk_level', '中'))
+            normalized.append(rec)
+        return normalized
+
+    def _show_message(self, title, detail) -> None:
+        """在结果表格第一行显示提示信息。"""
+        self.result_table.setRowCount(1)
+        self.result_table.setItem(0, 0, QTableWidgetItem(title))
+        self.result_table.setItem(0, 1, QTableWidgetItem(detail))
 
     def display_result(self, recommendations):
         for row in range(self.result_table.rowCount()):
@@ -241,10 +340,13 @@ class StockRecommendationDialog(QDialog):
             self.result_table.setItem(i, 5, risk_item)
 
     def export_report(self):
+        if not self._recommendations:
+            self._show_message("无法导出", "暂无推荐结果，请先生成推荐")
+            return
         try:
             from src.quant.reports.report_generator import ReportGenerator
             report_generator = ReportGenerator()
-            report_generator.generate_recommendation_report({})
+            report_generator.generate_recommendation_report(self._recommendations)
             self.result_table.setRowCount(self.result_table.rowCount() + 1)
             self.result_table.setItem(self.result_table.rowCount() - 1, 0, QTableWidgetItem("报告导出成功！"))
         except Exception as e:

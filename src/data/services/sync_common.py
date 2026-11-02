@@ -129,19 +129,30 @@ def _sync_each_with_recovery(items: Sequence[Any], handler: Callable[[Any], Any]
 # ======================================================================
 
 def _is_index_ts_code(ts_code: str | None) -> bool:
-    """判断 ts_code 是否为指数代码。"""
-    if not ts_code or '.' not in ts_code:
+    """判断 ts_code 是否为指数代码（委托 code_converter 单一实现）。"""
+    from src.utils.code_converter import is_index_code
+
+    return is_index_code(ts_code)
+
+
+def _remote_sync_blocked(config: Any, title: str) -> bool:
+    """批量同步入口的远程开关校验。
+
+    返回 True 表示远程数据源被禁用、本次同步应直接跳过：
+    股票/指数基本信息与分红同步都依赖 Baostock/AkShare，
+    开关关闭时继续执行只会得到空结果或占位数据，必须显式提示开启。
+    """
+    from src.utils.config import remote_sources_enabled
+
+    if remote_sources_enabled(config):
         return False
 
-    symbol, market = ts_code.split('.', 1)
-    market = market.upper()
-    if market == 'SH':
-        return symbol.startswith(('000', '880', '881'))
-    if market == 'SZ':
-        return symbol.startswith('399')
-    if market == 'BJ':
-        return symbol.startswith('884') or symbol.startswith('899')
-    return False
+    logger.error(
+        f"{title}需要远程数据源（Baostock/AkShare），"
+        "当前 DATA__ALLOW_REMOTE_SOURCES=false，已跳过；"
+        "请在 .env 中设置 DATA__ALLOW_REMOTE_SOURCES=true 后重试"
+    )
+    return True
 
 
 # 基金市场/类型标记：数据源可能返回中文或英文，统一归一化后再判定，

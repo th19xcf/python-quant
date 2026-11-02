@@ -55,11 +55,11 @@ class DataReadThread(QThread):
 
             tdx_file_path = Path(self.file_path)
             if not tdx_file_path.exists():
-                error_msg = f"找不到股票数据文件: {tdx_file_path}"
+                # 显式报错并带上完整路径：静默发空 DataFrame 会把路径拼接 bug
+                # 伪装成“该股没有数据”，掩盖真实故障点
+                error_msg = f"找不到股票数据文件: {tdx_file_path}（请检查通达信数据目录与代码格式）"
                 logger.warning(error_msg)
-                # 文件不存在时返回空DataFrame，与tdx_handler处理方式一致
-                df = pl.DataFrame()
-                self.data_read_completed.emit(df, self.name, self.code)
+                self.data_read_error.emit(error_msg)
                 return
 
             df = self.data_manager.load_tdx_day_file(tdx_file_path)

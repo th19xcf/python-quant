@@ -19,7 +19,7 @@ class StockBasic(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts_code = Column(String(20), unique=True, nullable=False, comment="股票代码")
-    symbol = Column(String(10), comment="股票代码(数字)")
+    symbol = Column(String(10), nullable=False, server_default='', comment="股票代码(数字)")
     name = Column(String(50), comment="股票名称")
     area = Column(String(20), comment="地域")
     industry = Column(String(50), comment="行业")

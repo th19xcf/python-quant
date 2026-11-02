@@ -86,6 +86,13 @@ class DataSettings(BaseSettings):
     update_interval: int = Field(default=3600, description="数据更新间隔(秒)")
     max_workers: int = Field(default=4, description="数据获取最大工作线程数")
 
+    # 远程数据源开关（默认关闭）：关闭时运行时取数只读本地通达信文件，
+    # 不发起任何网络请求；命令行批量同步需要显式开启后才允许调用 Baostock/AkShare。
+    allow_remote_sources: bool = Field(
+        default=False,
+        description="是否允许运行时/批量同步使用 Baostock/AkShare 等远程数据源",
+    )
+
     # 远程数据源子进程隔离（灰度开关，默认关闭）
     # 开启后 AkShare/BaoStock 等纯网络源在独立进程内执行，超时可直接终止进程，
     # 避免第三方库挂死拖住整个主进程。
@@ -306,6 +313,18 @@ def get_config() -> Config:
     """获取全局配置实例"""
     return config_manager.get_config()
 
+
+def remote_sources_enabled(config_obj: Any) -> bool:
+    """判断给定配置是否允许使用远程数据源。
+
+    统一收口运行时取数与命令行同步的开关判定：
+    - 真实 Config 默认 `data.allow_remote_sources=False`（离线优先）；
+    - 未声明该字段的轻量配置对象（测试替身/历史调用）缺省视为允许，
+      避免为兼容测试替身而改写全部调用点。
+    """
+    data_cfg = getattr(config_obj, 'data', None)
+    return bool(getattr(data_cfg, 'allow_remote_sources', True))
+
 # 导出配置实例
 config = get_config()
 
@@ -342,6 +361,7 @@ CONFIG_DOCUMENTATION = r"""
 | DATA__TDX_DATA_PATH | "" | 通达信数据路径 | 字符串 |
 | DATA__UPDATE_INTERVAL | 3600 | 数据更新间隔(秒) | 大于等于60 |
 | DATA__MAX_WORKERS | 4 | 数据获取最大工作线程数 | 大于0 |
+| DATA__ALLOW_REMOTE_SOURCES | False | 是否允许运行时/批量同步调用远程数据源（Baostock/AkShare） | 布尔值 |
 | DATA__DEFAULT_STOCK_CODES | ["sh.600000", "sz.000001", "sz.300001"] | 默认股票代码列表 | 字符串列表 |
 | DATA__DEFAULT_INDEX_CODES | ["sh.000001", "sz.399001", "sz.399006"] | 默认指数代码列表 | 字符串列表 |
 | DATA__SUPPORTED_FREQUENCIES | ["1", "5", "15", "30", "60"] | 支持的分钟线频率 | 字符串列表 |

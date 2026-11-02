@@ -13,11 +13,13 @@
     - 两者可以共存，但 UI 层只应该依赖 usecases
 """
 
+from src.core.usecases.analyze_factors import analyze_factors
 from src.core.usecases.run_backtest import run_backtest
 from src.core.usecases.screen_stocks import screen_stocks
 from src.core.usecases.update_data import update_stock_data
 
 __all__ = [
+    'analyze_factors',
     'run_backtest',
     'screen_stocks',
     'update_stock_data',

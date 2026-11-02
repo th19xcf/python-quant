@@ -20,7 +20,7 @@ class FundBasic(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     ts_code = Column(String(20), unique=True, nullable=False, comment="基金代码")
     symbol = Column(String(10), comment="基金代码(数字)")
-    name = Column(String(20), comment="基金名称")
+    name = Column(String(40), comment="基金名称")
     fund_type = Column(String(10), comment="基金类型")
     market = Column(String(10), comment="市场类型")
     list_date = Column(Date, comment="上市日期")

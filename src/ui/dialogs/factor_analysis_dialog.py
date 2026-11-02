@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from src.quant.analysis.factor_analyzer import FactorAnalyzer
+from src.core.usecases import analyze_factors
 from src.utils.logger import logger
 
 
@@ -36,6 +36,9 @@ class FactorAnalysisDialog(QDialog):
         self.setWindowTitle("因子分析")
         self.setGeometry(100, 100, 800, 600)
         self.setModal(True)
+
+        # 最近一次分析结果：导出报告必须使用真实结果
+        self._analysis_result = None
 
         self.init_ui()
 
@@ -240,11 +243,8 @@ class FactorAnalysisDialog(QDialog):
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
 
-            # 创建因子分析器
-            analyzer = FactorAnalyzer()
-
-            # 运行分析
-            result = analyzer.run_analysis(
+            # 创建因子分析器（统一经用例层，UI 不直接依赖 quant.analysis）
+            result = analyze_factors(
                 stock_code=stock_code,
                 start_date=start_date,
                 end_date=end_date,
@@ -253,6 +253,8 @@ class FactorAnalysisDialog(QDialog):
                 window=window,
                 kdj_window=kdj_window
             )
+
+            self._analysis_result = result
 
             # 显示结果
             self.display_result(result)
@@ -313,13 +315,14 @@ class FactorAnalysisDialog(QDialog):
         """
         导出分析报告
         """
+        if not self._analysis_result:
+            self.result_text.append("\n暂无分析结果，请先执行因子分析再导出报告")
+            return
         try:
-            # 这里可以实现报告导出逻辑
             from src.quant.reports.report_generator import ReportGenerator
 
-            # 获取分析结果（这里需要从result_text中解析，实际应该从分析器获取）
             report_generator = ReportGenerator()
-            report_generator.generate_factor_analysis_report({})
+            report_generator.generate_factor_analysis_report(self._analysis_result)
 
             self.result_text.append("\n报告导出成功！")
         except Exception as e:

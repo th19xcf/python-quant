@@ -240,6 +240,10 @@ class ReportGenerator:
     报告生成器
     """
 
+    # 各报告的最低字段要求：缺失即拒绝生成，避免导出用户拿到的只是空壳页面
+    _BACKTEST_REQUIRED_FIELDS = ('initial_capital', 'final_equity', 'total_return', 'equity_curve')
+    _FACTOR_RESULT_KEYS = ('factor_results', 'correlation_matrix', 'factor_combination')
+
     def __init__(self):
         """
         初始化报告生成器
@@ -247,6 +251,15 @@ class ReportGenerator:
         self.reports_dir = os.path.join(os.getcwd(), "reports")
         if not os.path.exists(self.reports_dir):
             os.makedirs(self.reports_dir)
+
+    @staticmethod
+    def _validate_mapping_result(result, required_fields, report_name) -> None:
+        """校验 dict 结果包含关键字段；类型不符抛 TypeError，字段缺失抛 ValueError。"""
+        if not isinstance(result, dict):
+            raise TypeError(f"{report_name}: 结果必须为 dict，实际为 {type(result).__name__}")
+        missing = [field for field in required_fields if result.get(field) is None]
+        if missing:
+            raise ValueError(f"{report_name}: 缺少关键字段 {missing}，拒绝生成空壳报告")
 
     def generate_backtest_report(self, backtest_result):
         """
@@ -258,6 +271,8 @@ class ReportGenerator:
         Returns:
             str: 报告文件路径
         """
+        self._validate_mapping_result(
+            backtest_result, self._BACKTEST_REQUIRED_FIELDS, '生成回测报告失败')
         try:
             # 生成报告文件名
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -291,6 +306,10 @@ class ReportGenerator:
         Returns:
             str: 报告文件路径
         """
+        if not isinstance(recommendation_result, (list, tuple)) or not recommendation_result:
+            raise ValueError('生成推荐报告失败: 推荐结果为空，拒绝生成空壳报告')
+        if not all(isinstance(item, dict) for item in recommendation_result):
+            raise ValueError('生成推荐报告失败: 推荐结果条目必须为 dict')
         try:
             # 生成报告文件名
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -324,6 +343,17 @@ class ReportGenerator:
         Returns:
             str: 报告文件路径
         """
+        self._validate_mapping_result(
+            factor_analysis_result, (), '生成因子分析报告失败')
+        if not any(
+            isinstance(factor_analysis_result.get(key), (dict, list))
+            and factor_analysis_result.get(key)
+            for key in self._FACTOR_RESULT_KEYS
+        ):
+            raise ValueError(
+                '生成因子分析报告失败: factor_results / correlation_matrix / '
+                'factor_combination 均为空，拒绝生成空壳报告'
+            )
         try:
             # 生成报告文件名
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -486,20 +516,6 @@ class ReportGenerator:
         Returns:
             str: HTML内容
         """
-        # 生成因子结果表格
-        factors_html = ""
-        if 'factor_results' in result:
-            for factor, factor_result in result['factor_results'].items():
-                factors_html += f"""
-                <tr>
-                    <td>{factor}</td>
-                    <td>{factor_result.get('ic', 0):.4f}</td>
-                    <td>{factor_result.get('long_return', 0):.4f}</td>
-                    <td>{factor_result.get('short_return', 0):.4f}</td>
-                    <td>{factor_result.get('long_short_return', 0):.4f}</td>
-                </tr>
-                """
-
         body = f"""
                 <h2>基本信息</h2>
                 <table class="info-table">
@@ -521,7 +537,33 @@ class ReportGenerator:
                     </tr>
                 </table>
 
-                <h2>因子分析结果</h2>
+                {self._factor_detail_sections(result)}
+
+                <h2>结论与建议</h2>
+                <p>根据因子分析结果，建议投资者关注IC值较高的因子，并结合市场环境进行因子组合配置。</p>
+"""
+        return _FACTOR_REPORT_HEAD + body + self._report_footer()
+
+    @staticmethod
+    def _factor_detail_sections(result) -> str:
+        """按分析类型渲染结果表：有效性 / 相关性 / 组合三种结果都有真实数值。"""
+        sections = ""
+        factor_results = result.get('factor_results')
+        if factor_results:
+            rows = "".join(
+                f"""
+                <tr>
+                    <td>{factor}</td>
+                    <td>{values.get('ic', 0):.4f}</td>
+                    <td>{values.get('long_return', 0):.4f}</td>
+                    <td>{values.get('short_return', 0):.4f}</td>
+                    <td>{values.get('long_short_return', 0):.4f}</td>
+                </tr>
+                """
+                for factor, values in factor_results.items()
+            )
+            sections += f"""
+                <h2>因子有效性结果</h2>
                 <table class="factor-table">
                     <tr>
                         <th>因子</th>
@@ -530,10 +572,45 @@ class ReportGenerator:
                         <th>空头收益</th>
                         <th>多空收益</th>
                     </tr>
-                    {factors_html}
+                    {rows}
                 </table>
-
-                <h2>结论与建议</h2>
-                <p>根据因子分析结果，建议投资者关注IC值较高的因子，并结合市场环境进行因子组合配置。</p>
 """
-        return _FACTOR_REPORT_HEAD + body + self._report_footer()
+
+        correlation_matrix = result.get('correlation_matrix')
+        if correlation_matrix:
+            columns = result.get('factor_columns') or [
+                f'因子{i + 1}' for i in range(len(correlation_matrix[0]))
+            ]
+            header = "".join(f"<th>{name}</th>" for name in columns)
+            rows = "".join(
+                "<tr>" + "".join(f"<td>{value:.4f}</td>" for value in row) + "</tr>"
+                for row in correlation_matrix
+            )
+            sections += f"""
+                <h2>因子相关性矩阵</h2>
+                <table class="factor-table">
+                    <tr><th></th>{header}</tr>
+                    {rows}
+                </table>
+"""
+
+        factor_combination = result.get('factor_combination')
+        if factor_combination:
+            sections += f"""
+                <h2>因子组合结果</h2>
+                <table class="factor-table">
+                    <tr>
+                        <th>IC值</th>
+                        <th>多头收益</th>
+                        <th>空头收益</th>
+                        <th>多空收益</th>
+                    </tr>
+                    <tr>
+                        <td>{factor_combination.get('ic', 0):.4f}</td>
+                        <td>{factor_combination.get('long_return', 0):.4f}</td>
+                        <td>{factor_combination.get('short_return', 0):.4f}</td>
+                        <td>{factor_combination.get('long_short_return', 0):.4f}</td>
+                    </tr>
+                </table>
+"""
+        return sections

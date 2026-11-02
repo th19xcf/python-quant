@@ -46,14 +46,6 @@ class ChartManager:
     def __init__(self, window):
         self.window = window
 
-    def refresh_kline_chart(self):
-        """刷新K线图"""
-        pass
-
-    def refresh_indicator_charts(self):
-        """刷新指标图表"""
-        pass
-
     def _setup_chart_labels(self, stock_name, stock_code):
         """
         设置图表标签
@@ -77,8 +69,13 @@ class ChartManager:
         window.chart_title_label = QLabel()
         window.chart_title_label.setStyleSheet("font-family: Consolas, monospace; padding: 5px; color: #C0C0C0; background-color: transparent; border: none;")
         current_period = getattr(window, 'current_period', '日线')
-        window.chart_title_label.setText(f"{stock_name}({stock_code}) {current_period}")
+        # 股票名称(代码)已移入顶部工具栏，标题行只保留周期文字
+        window.chart_title_label.setText(current_period)
         window.chart_title_label.setWordWrap(False)
+
+        update_stock_name_label = getattr(window, 'update_stock_name_label', None)
+        if callable(update_stock_name_label):
+            update_stock_name_label(stock_name, stock_code)
 
         window.ma_values_label = QLabel()
         window.ma_values_label.setStyleSheet("font-family: Consolas, monospace; padding: 5px; color: #C0C0C0; background-color: transparent; border: none;")

@@ -2,6 +2,9 @@
 
 """
 插件管理器，负责插件的加载、初始化和管理
+
+当前状态：暂停使用。src/main.py 已不再调用 load_plugins / initialize_plugins，
+启动流程不会加载任何插件；本类仅保留给测试与工具脚本显式调用。
 """
 
 import importlib

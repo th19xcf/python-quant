@@ -10,7 +10,14 @@ from PySide6.QtWidgets import QPushButton
 
 
 class MainWindowMenuMixin:
-    """主窗口菜单栏与工具栏构建。"""
+    """主窗口菜单栏与工具栏构建。
+
+    未接实现的入口一律以 callback=None 声明，由 add_menu_actions 统一置灰
+    并写入「未实现」提示，避免界面看起来可点、点击后只静默打日志。
+    """
+
+    #: 未实现入口的统一提示文案
+    UNIMPLEMENTED_TOOLTIP = "未实现：该功能尚未接入，当前版本不可用"
 
     def create_menu_bar(self):
         """
@@ -21,50 +28,50 @@ class MainWindowMenuMixin:
         # 行情菜单
         market_menu = menu_bar.addMenu("行情")
         self.add_menu_actions(market_menu, [
-            ("自选股", self.action_manager.on_self_selected),
-            ("全景图", self.action_manager.on_panorama),
+            ("自选股", None),
+            ("全景图", None),
             ("沪深京指数", self.data_view_manager.show_index_overview),
-            ("沪深京板块", self.action_manager.on_sector),
-            ("沪深京个股", self.action_manager.on_stock),
+            ("沪深京板块", None),
+            ("沪深京个股", None),
         ])
 
         # 交易菜单
         trade_menu = menu_bar.addMenu("交易")
         self.add_menu_actions(trade_menu, [
-            ("传统交易", self.action_manager.on_traditional_trade),
-            ("条件单", self.action_manager.on_conditional_order),
-            ("新股申购", self.action_manager.on_new_stock_subscribe),
+            ("传统交易", None),
+            ("条件单", None),
+            ("新股申购", None),
         ])
 
         # 发现菜单
         discovery_menu = menu_bar.addMenu("发现")
         self.add_menu_actions(discovery_menu, [
-            ("热点主题", self.action_manager.on_hot_topics),
-            ("资金流向", self.action_manager.on_capital_flow),
-            ("研报中心", self.action_manager.on_research_report),
+            ("热点主题", None),
+            ("资金流向", None),
+            ("研报中心", None),
         ])
 
         # 资讯菜单
         info_menu = menu_bar.addMenu("资讯")
         self.add_menu_actions(info_menu, [
-            ("财经新闻", self.action_manager.on_financial_news),
-            ("公司公告", self.action_manager.on_company_announcement),
-            ("行业资讯", self.action_manager.on_industry_info),
+            ("财经新闻", None),
+            ("公司公告", None),
+            ("行业资讯", None),
         ])
 
         # 数据菜单
         data_menu = menu_bar.addMenu("数据")
         self.add_menu_actions(data_menu, [
-            ("宏观数据", self.action_manager.on_macro_data),
-            ("财务数据", self.action_manager.on_financial_data),
-            ("技术指标", self.action_manager.on_technical_indicator),
-            ("盘后数据下载", self.action_manager.on_download_data),
+            ("宏观数据", None),
+            ("财务数据", None),
+            ("技术指标", None),
+            ("盘后数据下载", None),
         ])
 
         # 特色功能菜单
         feature_menu = menu_bar.addMenu("特色功能")
         self.add_menu_actions(feature_menu, [
-            ("自动交易", self.action_manager.on_auto_trade),
+            ("自动交易", None),
         ])
 
         # 量化分析菜单
@@ -78,8 +85,8 @@ class MainWindowMenuMixin:
         # 系统菜单
         system_menu = menu_bar.addMenu("系统")
         self.add_menu_actions(system_menu, [
-            ("设置", self.action_manager.on_settings),
-            ("关于", self.action_manager.on_about),
+            ("设置", None),
+            ("关于", None),
             ("退出", self.action_manager.on_exit),
         ])
 
@@ -91,7 +98,8 @@ class MainWindowMenuMixin:
 
         Args:
             menu: 菜单对象
-            actions: 动作列表，每个动作是一个元组(名称, 回调函数, 图标名称)
+            actions: 动作列表，每个动作是一个元组(名称, 回调函数, 图标名称)；
+                     callback 为 None 表示该入口尚未实现，动作会被置灰并标注提示
         """
 
         # 图标映射字典
@@ -157,7 +165,11 @@ class MainWindowMenuMixin:
             else:
                 action = QAction(name, self)
 
-            action.triggered.connect(callback)
+            if callback is None:
+                action.setEnabled(False)
+                action.setToolTip(self.UNIMPLEMENTED_TOOLTIP)
+            else:
+                action.triggered.connect(callback)
             menu.addAction(action)
 
     def create_tool_bar(self):
@@ -170,14 +182,16 @@ class MainWindowMenuMixin:
         # 添加分隔符
         tool_bar.addSeparator()
 
-        # 添加自选股按钮
+        # 添加自选股按钮（未实现，置灰并标注）
         self.selected_btn = QPushButton("📋 自选股")
-        self.selected_btn.clicked.connect(self.action_manager.on_self_selected)
+        self.selected_btn.setEnabled(False)
+        self.selected_btn.setToolTip(self.UNIMPLEMENTED_TOOLTIP)
         tool_bar.addWidget(self.selected_btn)
 
-        # 添加行情按钮
+        # 添加行情按钮（未实现，置灰并标注）
         self.market_btn = QPushButton("📊 行情")
-        self.market_btn.clicked.connect(self.action_manager.on_market)
+        self.market_btn.setEnabled(False)
+        self.market_btn.setToolTip(self.UNIMPLEMENTED_TOOLTIP)
         tool_bar.addWidget(self.market_btn)
 
         # 添加技术分析按钮
@@ -188,12 +202,14 @@ class MainWindowMenuMixin:
         # 添加分隔符
         tool_bar.addSeparator()
 
-        # 添加刷新按钮
+        # 添加刷新按钮（未实现，置灰并标注）
         refresh_btn = QPushButton("🔄 刷新")
-        refresh_btn.clicked.connect(self.action_manager.on_refresh)
+        refresh_btn.setEnabled(False)
+        refresh_btn.setToolTip(self.UNIMPLEMENTED_TOOLTIP)
         tool_bar.addWidget(refresh_btn)
 
-        # 添加设置按钮
+        # 添加设置按钮（未实现，置灰并标注）
         settings_btn = QPushButton("⚙️ 设置")
-        settings_btn.clicked.connect(self.action_manager.on_settings)
+        settings_btn.setEnabled(False)
+        settings_btn.setToolTip(self.UNIMPLEMENTED_TOOLTIP)
         tool_bar.addWidget(settings_btn)

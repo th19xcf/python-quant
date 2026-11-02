@@ -27,7 +27,12 @@ class WindowEventManager:
         """处理数据更新事件"""
         if data_type in ['stock_daily', 'index_daily']:
             if hasattr(self.window, 'current_stock_code') and self.window.current_stock_code == ts_code:
-                self.window.refresh_kline_chart()
+                # 明确能力边界：自动重绘K线尚未接入。历史实现调用的是 MainWindow 上
+                # 不存在的 refresh_kline_chart，事件触发时会抛 AttributeError；
+                # 这里改为显式告警，避免用异常表达"未实现"。
+                logger.warning(
+                    f"数据已更新但K线自动刷新未实现，当前图表保持旧数据: {ts_code}"
+                )
         elif data_type == 'stock_basic':
             self.window.update_stock_list()
         elif data_type == 'index_basic':

@@ -22,6 +22,7 @@ from src.data.services.sync_common import (
     _execute_sync_flow,
     _is_index_ts_code,
     _normalize_text_value,
+    _remote_sync_blocked,
     _sync_each_with_recovery,
     _to_ts_code_or_none,
 )
@@ -393,7 +394,8 @@ def _prepare_index_sync(config: Any, db_manager: Any, session: Session,
     from src.database.models.index import IndexBasic
 
     tdx_handler = TdxHandler(config, db_manager)
-    tdx_codes = tdx_handler.get_stock_list()
+    # 通达信扫描已按资产类型分流，指数走 get_index_list，个股/基金不再混入
+    tdx_codes = tdx_handler.get_index_list()
     tdx_index_codes = sorted({code for code in tdx_codes if _is_index_ts_code(code)})
     tdx_index_code_set = set(tdx_index_codes)
     result['total_tdx_indexes'] = len(tdx_index_codes)
@@ -485,8 +487,14 @@ def sync_tdx_index_to_database(config: Any, db_manager: Any) -> dict[str, Any]:
         'unchanged_indexes': 0,
         'fallback_named_indexes': 0,
         'filled_blank_fields': 0,
-        'failed_indexes': []
+        'failed_indexes': [],
+        'skipped_reason': '',
     }
+
+    # 指数基本信息依赖 Baostock/AkShare 补全，远程开关关闭时显式跳过而非空跑
+    if _remote_sync_blocked(config, "同步指数基本信息"):
+        result['skipped_reason'] = 'remote_sources_disabled'
+        return result
 
     def prepare(session: Session) -> IndexSyncContext | None:
         return _prepare_index_sync(config, db_manager, session, result)

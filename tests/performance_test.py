@@ -20,6 +20,7 @@ from src.data.data_manager import DataManager
 from src.database.db_manager import DatabaseManager
 from src.tech_analysis.indicator_manager import global_indicator_manager
 from src.utils.config import config
+from src.utils.exceptions import DataSourceException
 
 
 def generate_test_data(days=1000):
@@ -150,7 +151,12 @@ def test_data_fetch_performance():
     start_time = time.time()
     result_serial = {}
     for stock_code in stock_codes:
-        result_serial[stock_code] = data_manager.get_stock_data(stock_code, start_date, end_date)
+        try:
+            result_serial[stock_code] = data_manager.get_stock_data(stock_code, start_date, end_date)
+        except DataSourceException as e:
+            # 离线环境（本地无 .day 且远程禁用）会显式失败，按空表继续统计耗时
+            logger.warning(f"{stock_code} 取数失败（离线）: {e}")
+            result_serial[stock_code] = pl.DataFrame()
     serial_time = time.time() - start_time
     logger.info(f"串行数据获取完成，耗时: {serial_time:.2f}秒")
 

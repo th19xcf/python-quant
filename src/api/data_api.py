@@ -5,7 +5,7 @@
 统一使用Polars DataFrame作为数据格式
 """
 
-from typing import Any, List, Protocol, Union
+from typing import List, Protocol, Union
 
 import polars as pl
 
@@ -151,90 +151,6 @@ class IDataProvider(Protocol):
         raise NotImplementedError("子类必须实现此方法")
 
 
-class IDataStorage:
-    """数据存储接口，定义数据存储方法
-
-    预留契约：当前无实现方与调用方（全仓仅本文件引用），保留供未来扩展，
-    不要把它当作已生效的约束。
-    """
-
-    def save_stock_data(self, stock_code: str, data: pl.DataFrame, frequency: str = '1d') -> bool:
-        """保存股票数据
-
-        Args:
-            stock_code: 股票代码
-            data: 股票数据（Polars DataFrame）
-            frequency: 数据频率，默认：1d（日线）
-
-        Returns:
-            bool: 保存是否成功
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def save_index_data(self, index_code: str, data: pl.DataFrame, frequency: str = '1d') -> bool:
-        """保存指数数据
-
-        Args:
-            index_code: 指数代码
-            data: 指数数据（Polars DataFrame）
-            frequency: 数据频率，默认：1d（日线）
-
-        Returns:
-            bool: 保存是否成功
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def save_stock_basic(self, data: pl.DataFrame) -> bool:
-        """保存股票基本信息
-
-        Args:
-            data: 股票基本信息（Polars DataFrame）
-
-        Returns:
-            bool: 保存是否成功
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def save_index_basic(self, data: pl.DataFrame) -> bool:
-        """保存指数基本信息
-
-        Args:
-            data: 指数基本信息（Polars DataFrame）
-
-        Returns:
-            bool: 保存是否成功
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def delete_stock_data(self, stock_code: str, start_date: str | None = None, end_date: str | None = None, frequency: str = '1d') -> bool:
-        """删除股票数据
-
-        Args:
-            stock_code: 股票代码
-            start_date: 开始日期，格式：YYYY-MM-DD
-            end_date: 结束日期，格式：YYYY-MM-DD
-            frequency: 数据频率，默认：1d（日线）
-
-        Returns:
-            bool: 删除是否成功
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def delete_index_data(self, index_code: str, start_date: str | None = None, end_date: str | None = None, frequency: str = '1d') -> bool:
-        """删除指数数据
-
-        Args:
-            index_code: 指数代码
-            start_date: 开始日期，格式：YYYY-MM-DD
-            end_date: 结束日期，格式：YYYY-MM-DD
-            frequency: 数据频率，默认：1d（日线）
-
-        Returns:
-            bool: 删除是否成功
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-
 class IDataProcessor(Protocol):
     """数据处理器契约（结构化子类型）
 
@@ -291,64 +207,3 @@ class IDataProcessor(Protocol):
         """
         raise NotImplementedError("子类必须实现此方法")
 
-
-class IDataCache:
-    """数据缓存接口，定义数据缓存方法
-
-    预留契约：当前无实现方与调用方（全仓仅本文件引用），保留供未来扩展，
-    不要把它当作已生效的约束。
-    """
-
-    def get_cache(self, key: str) -> Any | None:
-        """获取缓存数据
-
-        Args:
-            key: 缓存键
-
-        Returns:
-            Any: 缓存数据，如果不存在则返回None
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def set_cache(self, key: str, value: Any, expire_time: int | None = None) -> bool:
-        """设置缓存数据
-
-        Args:
-            key: 缓存键
-            value: 缓存值
-            expire_time: 过期时间（秒），默认：None（永不过期）
-
-        Returns:
-            bool: 设置是否成功
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def delete_cache(self, key: str) -> bool:
-        """删除缓存数据
-
-        Args:
-            key: 缓存键
-
-        Returns:
-            bool: 删除是否成功
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def clear_cache(self) -> bool:
-        """清空所有缓存数据
-
-        Returns:
-            bool: 清空是否成功
-        """
-        raise NotImplementedError("子类必须实现此方法")
-
-    def get_cache_keys(self, pattern: str) -> List[str]:
-        """获取匹配模式的缓存键
-
-        Args:
-            pattern: 匹配模式，如：'stock:*'
-
-        Returns:
-            List[str]: 匹配的缓存键列表
-        """
-        raise NotImplementedError("子类必须实现此方法")

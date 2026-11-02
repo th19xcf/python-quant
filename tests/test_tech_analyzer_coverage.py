@@ -854,14 +854,33 @@ def test_calculate_multiple_indicators_default_and_lazy(frame):
     [
         'ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'boll', 'macd', 'dmi', 'cci',
         'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv',
-        'mcst', 'abi', 'adl', 'adr', 'obos', 'dma', 'fsl', 'sar',
-        'cr', 'expma', 'bbi',
+        'mcst', 'dma', 'fsl', 'sar', 'cr', 'expma', 'bbi',
     ],
 )
 def test_calculate_multiple_indicators_each_indicator(indicator, frame):
     """逐指标批量计算至少产出一列，且不破坏主帧行数。"""
     result = indicator_calculator.calculate_multiple_indicators_polars(
         frame, [indicator]
+    )
+
+    assert result.height == frame.height
+    assert len(result.columns) > len(frame.columns)
+
+
+@pytest.mark.parametrize('indicator', ['abi', 'adl', 'adr', 'obos'])
+def test_calculate_multiple_indicators_breadth_with_injected_data(indicator, frame):
+    """大势型指标需注入涨跌家数数据，注入后正常产出一列。"""
+    breadth = pl.DataFrame(
+        {
+            'trade_date': frame['date'],
+            'up_count': np.arange(frame.height, dtype=np.int64) + 10,
+            'down_count': np.arange(frame.height, dtype=np.int64) + 5,
+            'flat_count': np.zeros(frame.height, dtype=np.int64),
+            'total_count': np.arange(frame.height, dtype=np.int64) + 15,
+        }
+    )
+    result = indicator_calculator.calculate_multiple_indicators_polars(
+        frame, [indicator], market_breadth=breadth
     )
 
     assert result.height == frame.height

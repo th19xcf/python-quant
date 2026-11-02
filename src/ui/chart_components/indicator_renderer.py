@@ -18,7 +18,7 @@ from .renderers.volume import VolumeRenderMixin
 # 全部使用 calculate_multiple_indicators_polars 的默认参数，与原 render_* 兜底路径的
 # 有效参数一致（MACD 12/26/9、BOLL [20]/2.0、EXPMA [12,50]、CYC [5,13,34]、
 # CYS cyc_window=13、LB period=5、ABI/ADR/OBOS period=10 等均为框架默认值）。
-# 注意：'VOL' 直接绘制 volume 列无需计算；'VOL-TDX' 在批量计算框架中无实现，保持现状跳过。
+# 注意：'VOL' 直接绘制 volume 列无需计算；'VOL-TDX' 已随指标注册表注销，UI 侧不再提供该指标。
 INDICATOR_CALC_MAP = {
     'KDJ': ('kdj', ['k', 'd']),
     'MACD': ('macd', ['macd', 'macd_signal']),
@@ -156,7 +156,6 @@ class IndicatorRenderer(TrendRenderMixin, VolumeRenderMixin, OscillatorRenderMix
             'DMA': self.render_dma,
             'FSL': self.render_fsl,
             'SAR': self.render_sar,
-            'VOL-TDX': self.render_vol_tdx,
             'CR': self.render_cr,
             # 新增指标
             'EXPMA': self.render_expma,

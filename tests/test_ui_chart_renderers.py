@@ -300,26 +300,6 @@ def test_render_cys_missing_column(qapp, plot):
     _assert_nothing_drawn(plot)
 
 
-def test_render_vol_tdx_draws_two_color_groups(qapp, plot):
-    renderer, mw = _host()
-    df = pl.DataFrame({
-        'vol_tdx': [10.0, 20.0, 15.0, 30.0, 25.0, 12.0, 18.0, 22.0],
-        'close': [10.0, 11.0, 10.5, 12.0, 11.0, 10.8, 11.5, 12.4],
-    })
-
-    renderer.render_vol_tdx(plot, df, np.arange(N))
-
-    assert _names(plot) == set()
-    assert len(_curves(plot)) == 2
-
-
-def test_render_vol_tdx_missing_column(qapp, plot):
-    renderer, mw = _host()
-
-    assert renderer.render_vol_tdx(plot, _df(['close']), np.arange(N)) is not None
-    _assert_nothing_drawn(plot)
-
-
 def test_render_macd_histogram_bars(qapp, plot):
     renderer, mw = _host()
     df = pl.DataFrame({

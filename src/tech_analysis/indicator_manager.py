@@ -5,6 +5,7 @@
 提供统一的指标计算和管理接口
 """
 
+import re
 import threading
 from typing import Any, Callable, Dict, List, Union
 
@@ -36,7 +37,6 @@ from src.tech_analysis.indicator_calculator import (
     calculate_sar_polars,
     calculate_trix_polars,
     calculate_vol_ma_polars,
-    calculate_vol_tdx_polars,
     calculate_vr_polars,
     calculate_wr_polars,
     preprocess_data_polars,
@@ -55,6 +55,56 @@ from src.tech_analysis.indicators.market_breadth import (
 from src.tech_analysis.indicators.trend import calculate_bbi, calculate_expma
 from src.tech_analysis.indicators.volume import calculate_hsl, calculate_lb
 from src.utils.frame_adapter import to_output, to_polars
+
+# 各指标产出列的真实命名规则（fullmatch 匹配，避免前缀误伤）
+# 例如 dmi 的列是 pdi_14/ndi_14/adx_14/adxr_14，而 ma 的前缀会误吞 macd_* 列
+_INDICATOR_COLUMN_PATTERNS: Dict[str, tuple[str, ...]] = {
+    'ma': (r'ma', r'ma\d+'),
+    'vol_ma': (r'vol_ma', r'vol_ma\d+'),
+    'macd': ('macd', 'macd_signal', 'macd_hist'),
+    'rsi': (r'rsi', r'rsi\d+'),
+    'kdj': (r'k', r'd', r'j', r'k\d+', r'd\d+', r'j\d+'),
+    'wr': (r'wr', r'wr\d+', 'wr2'),
+    'boll': ('mb', 'up', 'dn', r'mb\d+', r'up\d+', r'dn\d+'),
+    'dmi': (
+        'pdi', 'ndi', 'adx', 'adxr',
+        r'pdi_\d+', r'ndi_\d+', r'adx_\d+', r'adxr_\d+', r'dx_\d+',
+    ),
+    'cci': (r'cci', r'cci\d+'),
+    'roc': (r'roc', r'roc\d+'),
+    'mtm': (r'mtm', r'mtm\d+'),
+    'obv': ('obv',),
+    'vr': (r'vr', r'vr\d+'),
+    'psy': (r'psy', r'psy\d+'),
+    'trix': ('trix', 'trma', r'trix\d+', r'trma\d+'),
+    'brar': ('ar', 'br', r'ar\d+', r'br\d+'),
+    'asi': ('asi', 'asi_sig'),
+    'emv': ('emv', r'emv\d+'),
+    'mcst': ('mcst', r'mcst_ma\d+'),
+    'dma': ('dma', 'ama'),
+    'fsl': ('swl', 'sws'),
+    'sar': ('sar',),
+    'cr': ('cr', r'cr\d+'),
+    'expma': ('expma', r'expma\d+'),
+    'bbi': ('bbi',),
+    'hsl': ('hsl', r'hsl_ma\d+'),
+    'lb': ('lb',),
+    'cyc': ('cyc', 'cyc_inf', r'cyc\d+'),
+    'cys': ('cys', r'cys_ma\d+'),
+    'abi': (r'abi\d+',),
+    'adl': ('adl',),
+    'adr': (r'adr\d+',),
+    'obos': (r'obos\d+',),
+}
+
+
+def _extract_indicator_columns(columns: List[str], indicator_type: str) -> List[str]:
+    """按指标声明列名抽取结果列（未知指标返回空列表，不写缓存）。"""
+    patterns = _INDICATOR_COLUMN_PATTERNS.get(indicator_type)
+    if not patterns:
+        return []
+    return [col for col in columns if any(re.fullmatch(p, col) for p in patterns)]
+
 
 # 内置指标声明表：名称、计算函数、默认参数、描述、分类
 # 集中声明后由 _register_builtin_indicators 统一注册，避免 300+ 行重复的 register_indicator 调用
@@ -214,13 +264,6 @@ _BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
         "category": "趋势指标",
     },
     {
-        "name": "vol_tdx",
-        "calculate_func": calculate_vol_tdx_polars,
-        "params": {"ma_period": 5},
-        "description": "成交量趋势",
-        "category": "成交量指标",
-    },
-    {
         "name": "cr",
         "calculate_func": calculate_cr_polars,
         "params": {"windows": [26]},
@@ -282,7 +325,10 @@ _BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
     {
         "name": "abi",
         "calculate_func": lambda df, **kwargs: calculate_abi(
-            df.lazy(), kwargs.get("period", 10)
+            df.lazy(),
+            kwargs.get("period", 10),
+            db_manager=kwargs.get("db_manager"),
+            market_breadth=kwargs.get("market_breadth"),
         ).collect(),
         "params": {"period": 10},
         "description": "绝对广量指标",
@@ -290,7 +336,11 @@ _BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
     },
     {
         "name": "adl",
-        "calculate_func": lambda df, **kwargs: calculate_adl(df.lazy()).collect(),
+        "calculate_func": lambda df, **kwargs: calculate_adl(
+            df.lazy(),
+            db_manager=kwargs.get("db_manager"),
+            market_breadth=kwargs.get("market_breadth"),
+        ).collect(),
         "params": {},
         "description": "腾落指标",
         "category": "大势型",
@@ -298,7 +348,10 @@ _BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
     {
         "name": "adr",
         "calculate_func": lambda df, **kwargs: calculate_adr(
-            df.lazy(), kwargs.get("period", 10)
+            df.lazy(),
+            kwargs.get("period", 10),
+            db_manager=kwargs.get("db_manager"),
+            market_breadth=kwargs.get("market_breadth"),
         ).collect(),
         "params": {"period": 10},
         "description": "涨跌比率",
@@ -307,7 +360,10 @@ _BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
     {
         "name": "obos",
         "calculate_func": lambda df, **kwargs: calculate_obos(
-            df.lazy(), kwargs.get("period", 10)
+            df.lazy(),
+            kwargs.get("period", 10),
+            db_manager=kwargs.get("db_manager"),
+            market_breadth=kwargs.get("market_breadth"),
         ).collect(),
         "params": {"period": 10},
         "description": "超买超卖指标",
@@ -470,8 +526,8 @@ class IndicatorManager:
 
         # 保存到缓存
         for indicator_type in uncached_indicators:
-            # 提取该指标的结果
-            indicator_cols = [col for col in result_df.columns if col.startswith(indicator_type) or col in ['dma', 'ama', 'fsl', 'sar', 'obv']]
+            # 提取该指标的结果列（按声明列名，不再用前缀匹配）
+            indicator_cols = _extract_indicator_columns(result_df.columns, indicator_type)
             if indicator_cols:
                 indicator_result = result_df.select([result_df.columns[0]] + indicator_cols)
                 global_indicator_cache.set(pl_data, indicator_result, indicator_type, **params)

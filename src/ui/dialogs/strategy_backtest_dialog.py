@@ -67,6 +67,8 @@ class StrategyBacktestDialog(QDialog):
         # 后台任务 ID 与信号连接：任务执行期间窗口仍可拖动、可重绘
         self._task_id = None
         self._task_handlers = []
+        # 最近一次回测结果：导出报告必须使用真实结果，禁止传空 dict
+        self._last_result = None
 
         self.init_ui()
 
@@ -317,6 +319,8 @@ class StrategyBacktestDialog(QDialog):
             self.result_text.setText("回测结果为空")
             return
 
+        self._last_result = result
+
         text = "回测结果:\n"
         text += "-" * 50 + "\n"
         text += f"策略类型: {result.get('strategy_type', '未知')}\n"
@@ -345,10 +349,13 @@ class StrategyBacktestDialog(QDialog):
         self.result_text.setText(text)
 
     def export_report(self):
+        if not self._last_result:
+            self.result_text.append("\n暂无回测结果，请先执行回测再导出报告")
+            return
         try:
             from src.quant.reports.report_generator import ReportGenerator
             report_generator = ReportGenerator()
-            report_generator.generate_backtest_report({})
+            report_generator.generate_backtest_report(self._last_result)
             self.result_text.append("\n报告导出成功！")
         except Exception as e:
             logger.error(f"导出报告失败: {e}")

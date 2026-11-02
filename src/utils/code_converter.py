@@ -137,3 +137,33 @@ def to_tdx_file_stem(code: str) -> str:
     """任意格式 -> tdx 文件名主体（如 'sh600000'，对应 sh600000.day）"""
     symbol, market = parse_code(code)
     return f"{market.lower()}{symbol}"
+
+
+def is_index_code(code: str | None) -> bool:
+    """判断任意格式的证券代码是否为指数（单一实现，供全项目复用）。
+
+    支持的指数代码规则：
+    - 沪市：000xxx（上证系列）、880xxx / 881xxx（通达信板块指数）
+    - 深市：399xxx（深证系列）
+    - 北交所：884xxx / 899xxx
+
+    兼容 ts_code（000001.SH）、baostock（sh.000001）、tdx（sh000001）。
+    纯数字代码因存在「000001.SZ 个股 / 000001.SH 指数」的同号歧义，
+    一律返回 False，由调用方先补全市场后缀再判定。
+    """
+    if not code:
+        return False
+
+    try:
+        symbol, market = parse_code(code)
+    except (TypeError, ValueError):
+        return False
+
+    market = market.upper()
+    if market == MARKET_SH:
+        return symbol.startswith(('000', '880', '881'))
+    if market == MARKET_SZ:
+        return symbol.startswith('399')
+    if market == MARKET_BJ:
+        return symbol.startswith(('884', '899'))
+    return False

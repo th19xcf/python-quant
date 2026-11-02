@@ -337,26 +337,6 @@ class VolumeRenderMixin:
             logger.exception(f"渲染MCST失败: {e}")
         return df
 
-    def render_vol_tdx(self, plot_widget: Any, df: Any, x: np.ndarray):
-        """渲染VOL-TDX指标"""
-        try:
-            if 'vol_tdx' not in df.columns:
-                logger.warning("VOL-TDX数据列不存在，跳过渲染")
-            if 'vol_tdx' in df.columns:
-                vol_tdx_data = as_f64(df['vol_tdx'])
-                mask = ~np.isnan(vol_tdx_data)
-                if np.any(mask):
-                    # 根据涨跌决定颜色（向量化）
-                    close_data = as_f64(df['close'])
-                    prev_close = np.roll(close_data, 1)
-                    prev_close[0] = close_data[0]
-                    colors = np.where(close_data >= prev_close, 'r', 'g')
-                    # 批量绘制柱状竖线（按颜色分组的 PlotCurveItem）
-                    self._draw_colored_vertical_lines(plot_widget, x[mask], vol_tdx_data[mask], colors[mask])
-        except (OSError, RuntimeError, ValueError) as e:
-            logger.exception(f"渲染VOL-TDX失败: {e}")
-        return df
-
     def render_lb(self, plot_widget: Any, df: Any, x: np.ndarray):
         """渲染LB（量比）指标"""
         try:

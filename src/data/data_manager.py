@@ -20,6 +20,7 @@ from loguru import logger
 
 from src.api.data_api import IDataProcessor, IDataProvider
 from src.data.services.data_service import DataService
+from src.utils.code_converter import is_index_code
 from src.utils.memory_optimizer import MemoryOptimizer
 
 
@@ -83,6 +84,11 @@ class DataManager(DataService):
         # 参数验证
         if not ts_code:
             logger.warning("股票代码不能为空")
+            return pl.DataFrame()
+
+        # 指数没有分红/送转，库里同号指数记录与个股同源，查询侧直接排除
+        if is_index_code(ts_code):
+            logger.debug(f"{ts_code} 为指数代码，无分红数据")
             return pl.DataFrame()
 
         # 检查数据库连接
@@ -435,6 +441,25 @@ class DataManager(DataService):
     # ------------------------------------------------------------------
     # 本地通达信日线文件：UI 层的唯一入口（禁止 UI 直接 import tdx_day_parser）
     # ------------------------------------------------------------------
+
+    def get_local_day_file_path(self, code: str, ts_code: str | None = None):
+        """构造本地通达信日线文件路径；未配置数据目录时返回 None。
+
+        UI 层构造 .day 路径必须走此入口，禁止在 UI 内重复实现
+        「代码 + 市场 → 文件名」映射（历史上有三份实现分叉出
+        sh600000.SH.day 这类错误文件名）。
+
+        Args:
+            code: 不带市场前缀的证券代码，如 600000
+            ts_code: 可选的标准代码，如 600000.SH，优先用其后缀定市场
+        """
+        from src.data.tdx_day_parser import build_day_file_path, resolve_market
+
+        if not getattr(self.config, 'data', None):
+            return None
+
+        market = resolve_market(code, ts_code)
+        return build_day_file_path(self.config.data.tdx_data_path, market, code)
 
     def get_latest_local_quote(self, code: str, ts_code: str | None = None):
         """按证券代码读取本地通达信日线文件的最新一根 K 线快照。"""

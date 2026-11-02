@@ -404,7 +404,7 @@ def calculate_trend_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **p
     """
     # 计算MA指标
     if 'ma' in indicator_types:
-        windows = params.get('windows', [5, 10, 20, 60])
+        windows = params.get('ma_windows', params.get('windows', [5, 10, 20, 60]))
         lazy_df = calculate_ma(lazy_df, windows)
 
     # 计算MACD指标

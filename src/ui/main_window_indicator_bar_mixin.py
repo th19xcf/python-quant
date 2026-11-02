@@ -118,7 +118,7 @@ class MainWindowIndicatorBarMixin:
             "MA", "MACD", "BOLL", "SAR", "TRIX", "DMA", "FSL", "EXPMA", "BBI",
             "|",  # 分隔符
             # 成交量指标
-            "VOL", "VOL-TDX", "OBV", "VR", "CR", "BRAR", "ASI", "EMV", "HSL", "LB",
+            "VOL", "OBV", "VR", "CR", "BRAR", "ASI", "EMV", "HSL", "LB",
             "|",  # 分隔符
             # 震荡指标
             "KDJ", "RSI", "WR", "CCI", "ROC", "MTM", "PSY",
@@ -270,7 +270,7 @@ class MainWindowIndicatorBarMixin:
             # 已实现的指标列表
             implemented_indicators = [
                 'MA', 'VOL', 'MACD', 'KDJ', 'DMI', 'DMA', 'FSL', 'TRIX', 'BRAR', 'CR',
-                'VR', 'OBV', 'ASI', 'EMV', 'VOL-TDX', 'RSI', 'WR', 'SAR',
+                'VR', 'OBV', 'ASI', 'EMV', 'RSI', 'WR', 'SAR',
                 'CCI', 'ROC', 'MTM', 'BOLL', 'PSY', 'MCST',
                 # 新增指标
                 'EXPMA', 'BBI', 'HSL', 'LB', 'CYC', 'CYS',

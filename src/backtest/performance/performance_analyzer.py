@@ -10,25 +10,46 @@ from typing import Any, Dict, List
 
 import numpy as np
 
+# 不同数据频率对应的年化因子：收益率序列按 bar 计算，波动率/夏普必须
+# 按实际频率折算，统一写死 252 会把周线、月线回测的风险指标系统性高估。
+_ANNUALIZATION_FACTORS = {
+    'daily': 252,
+    'weekly': 52,
+    'monthly': 12,
+}
+
+# 兼容中文/常见缩写输入
+_FREQUENCY_ALIASES = {
+    '日': 'daily', '日线': 'daily', 'd': 'daily', '1d': 'daily',
+    '周': 'weekly', '周线': 'weekly', 'w': 'weekly', '1w': 'weekly',
+    '月': 'monthly', '月线': 'monthly', 'm': 'monthly', '1m': 'monthly',
+}
+
 
 class PerformanceAnalyzer:
     """
     绩效分析器类，提供回测绩效指标计算功能
     """
 
-    def analyze(self, equity_curve: List[Dict[str, Any]], trades: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def analyze(self, equity_curve: List[Dict[str, Any]], trades: List[Dict[str, Any]],
+                frequency: str = 'daily') -> Dict[str, Any]:
         """
         分析回测绩效
 
         Args:
             equity_curve: 权益曲线
             trades: 交易记录
+            frequency: 数据频率（daily / weekly / monthly）。未知频率回退到
+                daily，并在返回值的 frequency_fallback 中标注。
 
         Returns:
             Dict[str, Any]: 绩效分析结果
         """
         if not equity_curve:
             return {}
+
+        # 年化因子按实际频率取；未知频率回退日频并显式标注
+        resolved_frequency, periods_per_year, fallback = self._resolve_frequency(frequency)
 
         # 提取权益数据
         equities = [item['equity'] for item in equity_curve]
@@ -45,7 +66,9 @@ class PerformanceAnalyzer:
             if days:
                 annual_return = (pow(final_equity / initial_equity, 365 / days) - 1) * 100
             else:
-                annual_return = (pow(final_equity / initial_equity, 252 / len(equities)) - 1) * 100
+                annual_return = (
+                    pow(final_equity / initial_equity, periods_per_year / len(equities)) - 1
+                ) * 100
         else:
             annual_return = 0
 
@@ -59,9 +82,9 @@ class PerformanceAnalyzer:
 
         # 计算风险指标
         if returns:
-            sharpe_ratio = self._calculate_sharpe_ratio(returns)
+            sharpe_ratio = self._calculate_sharpe_ratio(returns, periods_per_year=periods_per_year)
             max_drawdown = self._calculate_max_drawdown(equities)
-            volatility = np.std(returns) * np.sqrt(252) * 100
+            volatility = np.std(returns) * np.sqrt(periods_per_year) * 100
             winning_rate = self._calculate_winning_rate(trades)
             average_profit_loss = self._calculate_average_profit_loss(trades)
         else:
@@ -79,16 +102,34 @@ class PerformanceAnalyzer:
             'volatility': volatility,
             'winning_rate': winning_rate,
             'average_profit_loss': average_profit_loss,
-            'trades_count': len(self._pair_trades(trades))  # 完整买卖对数量
+            'trades_count': len(self._pair_trades(trades)),  # 完整买卖对数量
+            # 口径可观测性：调用方据此确认风险指标使用的年化基准
+            'frequency': resolved_frequency,
+            'annualization_factor': periods_per_year,
+            'frequency_fallback': fallback,
         }
 
-    def _calculate_sharpe_ratio(self, returns: List[float], risk_free_rate: float = 0) -> float:
+    @staticmethod
+    def _resolve_frequency(frequency: str) -> tuple[str, int, bool]:
+        """把频率映射为 (规范频率, 年化因子, 是否回退日频)。
+
+        未知频率不静默按日频糊弄，返回 fallback=True 供调用方标注。
+        """
+        normalized = str(frequency or '').strip().lower()
+        normalized = _FREQUENCY_ALIASES.get(normalized, normalized)
+        if normalized in _ANNUALIZATION_FACTORS:
+            return normalized, _ANNUALIZATION_FACTORS[normalized], False
+        return 'daily', _ANNUALIZATION_FACTORS['daily'], True
+
+    def _calculate_sharpe_ratio(self, returns: List[float], risk_free_rate: float = 0,
+                                periods_per_year: int = 252) -> float:
         """
         计算夏普比率
 
         Args:
             returns: 收益率序列
-            risk_free_rate: 无风险利率
+            risk_free_rate: 年化无风险利率
+            periods_per_year: 年化期数（日 252 / 周 52 / 月 12）
 
         Returns:
             float: 夏普比率
@@ -102,8 +143,11 @@ class PerformanceAnalyzer:
         if std_return == 0:
             return 0
 
-        # 年化处理
-        sharpe_ratio = (avg_return - risk_free_rate / 252) / std_return * np.sqrt(252)
+        # 年化处理：无风险利率按年化值折算到单期，波动率按 sqrt(期数) 放大
+        sharpe_ratio = (
+            (avg_return - risk_free_rate / periods_per_year) / std_return
+            * np.sqrt(periods_per_year)
+        )
         return sharpe_ratio
 
     @staticmethod

@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import polars as pl
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from src.data.tdx_handler import TdxHandler
 
@@ -120,3 +122,116 @@ def test_missing_file_returns_empty(tmp_path):
         handler.close()
 
     assert df.is_empty()
+
+
+def _dividend(ex_date=None, share_div=0.0):
+    """构造分红记录替身（只含复权因子计算用到的字段）。"""
+    return SimpleNamespace(
+        ts_code='600000.SH', ex_date=ex_date, cash_div=None,
+        share_div=share_div, rights_issue_ratio=None, rights_issue_price=None,
+    )
+
+
+def test_dividend_frame_uses_explicit_float64(tmp_path, monkeypatch):
+    """分红列显式 Float64：0.0 与 0.4 混合时不会被推断成 Int64"""
+    from src.data.adj_factor_calculator import AdjFactorCalculator
+
+    handler = _handler(tmp_path)
+    captured = {}
+
+    def fake_calculate(prices_df, dividends_df):
+        captured['dividends'] = dividends_df
+        return pl.DataFrame({
+            'trade_date': prices_df['trade_date'],
+            'qfq_factor': [1.0] * prices_df.height,
+            'hfq_factor': [1.0] * prices_df.height,
+        })
+
+    monkeypatch.setattr(AdjFactorCalculator, 'calculate_factors', fake_calculate)
+    try:
+        handler._compute_adj_factor_frame(
+            '600000.SH',
+            [{'trade_date': date(2024, 1, 2), 'close': 10.0}],
+            [_dividend(date(2024, 1, 2), share_div=0.0),
+             _dividend(date(2024, 1, 3), share_div=0.4)],
+        )
+    finally:
+        handler.close()
+
+    dividends_df = captured['dividends']
+    for column in ('cash_div', 'share_div', 'rights_issue_ratio', 'rights_issue_price'):
+        assert dividends_df.schema[column] == pl.Float64
+    assert dividends_df['share_div'].to_list() == [0.0, 0.4]
+
+
+def test_adj_factor_frame_handles_mixed_float_values(tmp_path):
+    """真实计算器：0.0/0.4 混合送转不再触发 Int64 构建异常"""
+    handler = _handler(tmp_path)
+    try:
+        prices = [
+            {'trade_date': date(2024, 1, 2), 'close': 10.0},
+            {'trade_date': date(2024, 1, 3), 'close': 10.5},
+            {'trade_date': date(2024, 1, 4), 'close': 11.0},
+        ]
+        result = handler._compute_adj_factor_frame(
+            '600000.SH', prices,
+            [_dividend(date(2024, 1, 3), share_div=0.0),
+             _dividend(date(2024, 1, 4), share_div=0.4)],
+        )
+    finally:
+        handler.close()
+
+    assert result is not None
+    assert result.height == len(prices)
+
+
+def test_load_dividend_records_filters_null_ex_date_and_index(tmp_path):
+    """分红查询只返回有除权日的个股记录，指数代码直接跳过"""
+    from src.database.models.stock import StockDividend
+
+    engine = create_engine(f'sqlite:///{tmp_path / "dividend.db"}')
+    StockDividend.__table__.create(engine)
+    session = sessionmaker(bind=engine)()
+    session.add_all([
+        StockDividend(ts_code='600000.SH', symbol='600000', name='浦发银行',
+                      ex_date=date(2024, 1, 11), cash_div=0.5, share_div=0.0),
+        StockDividend(ts_code='600000.SH', symbol='600000', name='浦发银行',
+                      ex_date=None, cash_div=0.3, share_div=0.4),
+        StockDividend(ts_code='000001.SH', symbol='000001', name='上证指数',
+                      ex_date=date(2024, 2, 1), cash_div=0.5, share_div=0.0),
+    ])
+    session.commit()
+
+    class _DB:
+        def get_session(self):
+            return session
+
+    handler = _handler(tmp_path, _DB())
+    try:
+        records = handler._load_dividend_records('600000.SH')
+        assert records is not None
+        assert [record.ex_date for record in records] == [date(2024, 1, 11)]
+        assert handler._load_dividend_records('000001.SH') is None
+    finally:
+        handler.close()
+        session.close()
+        engine.dispose()
+
+
+def test_stock_and_index_lists_are_separated(tmp_path):
+    """通达信扫描按资产类型分流：sh000xxx 指数不进入个股列表"""
+    for market, stem in [
+        ('sh', 'sh600000'), ('sh', 'sh000001'), ('sh', 'sh880001'),
+        ('sz', 'sz000001'), ('sz', 'sz399001'),
+    ]:
+        path = tmp_path / market / 'lday' / f'{stem}.day'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'')
+
+    handler = _handler(tmp_path)
+    try:
+        assert sorted(handler.get_stock_list()) == ['000001.SZ', '600000.SH']
+        assert sorted(handler.get_index_list()) == [
+            '000001.SH', '399001.SZ', '880001.SH']
+    finally:
+        handler.close()

@@ -644,22 +644,6 @@ def calculate_sar_polars(df, af_step=0.02, max_af=0.2):
                                                sar_max_af=max_af)
 
 
-def calculate_vol_tdx_polars(df, ma_period=5):
-    """
-    使用Polars计算VOL-TDX指标（成交量趋势）
-    支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
-
-    Args:
-        df: Polars DataFrame或LazyFrame
-        ma_period: 移动平均周期，默认5
-
-    Returns:
-        pl.DataFrame或pl.LazyFrame: 包含VOL-TDX指标的DataFrame或LazyFrame
-    """
-    return calculate_multiple_indicators_polars(df, ['vol_tdx'],
-                                               vol_tdx_ma_period=ma_period)
-
-
 def calculate_cr_polars(df, windows=None):
     """
     使用Polars计算CR指标（能量指标）
@@ -700,7 +684,26 @@ def _add_shared_window_columns(lazy_df, indicator_types, indicator_params):
     ])
 
 
-def calculate_multiple_indicators_polars(df, indicator_types=None, *, optimize_memory=False, **params):
+def get_default_indicator_types() -> list[str]:
+    """
+    返回内置指标全集，以注册表为唯一真源。
+
+    各层（批量入口 / TechnicalAnalyzer / 指标管理器）都复用本函数，
+    避免出现多套默认集合（历史上曾有 34/23/18 三种口径）。
+
+    Returns:
+        list[str]: 已注册的内置指标名称列表
+    """
+    # 延迟导入：indicator_manager 在模块级导入本模块，避免循环依赖
+    from src.tech_analysis.indicator_manager import ensure_indicators_registered
+    from src.tech_analysis.indicator_registry import global_indicator_registry
+
+    ensure_indicators_registered()
+    return list(global_indicator_registry.get_supported_indicators())
+
+
+def calculate_multiple_indicators_polars(df, indicator_types=None, *, optimize_memory=False,
+                                         db_manager=None, market_breadth=None, **params):
     """
     统一的多指标批量计算函数，将所有指标计算合并到单个查询计划
     支持链式调用，返回与输入类型一致（DataFrame或LazyFrame）
@@ -711,6 +714,8 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, *, optimize_m
         optimize_memory: 是否在结果落地前执行 dtype 压缩，默认关闭。
             由调用方在缓存落地前决定是否开启；开启后指标列会降级为
             Float32，EMA 等递推指标会在 Float32 下执行并累积误差
+        db_manager: 由调用方注入的数据库管理器，供大势型指标读取涨跌家数
+        market_breadth: 直接传入的市场涨跌家数 DataFrame，优先于数据库取数
         **params: 指标计算参数
 
     Returns:
@@ -718,9 +723,9 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, *, optimize_m
     """
     from src.utils.lazy_optimizer import execute_optimized_pipeline, optimize_lazy_frame
 
-    # 默认计算所有指标
+    # 默认计算所有指标（以注册表为唯一真源）
     if indicator_types is None:
-        indicator_types = ['ma', 'rsi', 'kdj', 'vol_ma', 'wr', 'boll', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'abi', 'adl', 'adr', 'obos']
+        indicator_types = get_default_indicator_types()
 
     # 1. 收集所有需要计算的指标和参数
     indicator_params = get_indicator_params(**params)
@@ -747,8 +752,12 @@ def calculate_multiple_indicators_polars(df, indicator_types=None, *, optimize_m
     # 步骤6: 计算成本类指标
     lazy_df = calculate_cost_indicators(lazy_df, indicator_types, **params)
 
-    # 步骤7: 计算大势型指标
-    lazy_df = calculate_market_breadth_indicators(lazy_df, indicator_types, **params)
+    # 步骤7: 计算大势型指标（缺涨跌家数数据时跳过，不使用全 0 占位）
+    breadth_df = calculate_market_breadth_indicators(
+        lazy_df, indicator_types, db_manager=db_manager,
+        market_breadth=market_breadth, **params)
+    if breadth_df is not None:
+        lazy_df = breadth_df
 
     # 清理临时列
     lazy_df = cleanup_temp_columns(lazy_df, indicator_types, indicator_params)

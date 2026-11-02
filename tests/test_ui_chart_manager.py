@@ -56,12 +56,16 @@ def _plot_items(widget):
     return widget.plotItem.items
 
 
-def test_init_and_noop_refresh():
+def test_init():
     manager, window = _make_manager()
 
     assert manager.window is window
-    assert manager.refresh_kline_chart() is None
-    assert manager.refresh_indicator_charts() is None
+
+
+def test_empty_refresh_methods_removed():
+    """空 pass 的刷新方法已删除，避免留下"调用后无任何效果"的假入口。"""
+    assert not hasattr(ChartManager, 'refresh_kline_chart')
+    assert not hasattr(ChartManager, 'refresh_indicator_charts')
 
 
 def test_setup_chart_labels_builds_title_bar(qapp):
@@ -77,7 +81,8 @@ def test_setup_chart_labels_builds_title_bar(qapp):
 
     manager._setup_chart_labels('贵州茅台', '600519.SH')
 
-    assert window.chart_title_label.text() == '贵州茅台(600519.SH) 日线'
+    assert window.chart_title_label.text() == '日线'
+    assert '贵州茅台(600519.SH)' not in window.chart_title_label.text()
     assert 'MA5: --' in window.ma_values_label.text()
     assert window.menu_btn is not None
     assert layout.count() >= 1
@@ -98,7 +103,8 @@ def test_setup_chart_labels_replaces_previous_labels(qapp):
 
     manager._setup_chart_labels('平安银行', '000001.SZ')
 
-    assert '平安银行(000001.SZ)' in window.chart_title_label.text()
+    assert window.chart_title_label.text() == '日线'
+    assert '平安银行(000001.SZ)' not in window.chart_title_label.text()
     assert layout.count() == 1
 
 
@@ -458,7 +464,8 @@ def test_create_title_section_builds_labels(qapp):
 
     container = builder.create_title_section('贵州茅台', '600519.SH')
 
-    assert window.chart_title_label.text() == '贵州茅台(600519.SH) 日线'
+    assert window.chart_title_label.text() == '日线'
+    assert '贵州茅台(600519.SH)' not in window.chart_title_label.text()
     assert 'MA5: --' in window.ma_values_label.text()
     assert isinstance(window.menu_btn, QWidget)
     assert window.title_ma_container is container
@@ -476,7 +483,7 @@ def test_create_title_section_replaces_previous_container(qapp):
     builder.create_title_section('平安银行', '000001.SZ')
     builder.create_title_section('招商银行', '600036.SH')
 
-    assert window.chart_title_label.text() == '招商银行(600036.SH) 日线'
+    assert window.chart_title_label.text() == '日线'
     assert layout.count() == 1
     assert layout.itemAt(0).widget() is window.title_ma_container
 
@@ -487,7 +494,25 @@ def test_create_title_section_without_chart_layout(qapp):
     container = builder.create_title_section('中国平安', '601318.SH')
 
     assert window.title_ma_container is container
-    assert '中国平安(601318.SH)' in window.chart_title_label.text()
+    assert window.chart_title_label.text() == '日线'
+
+
+def test_create_title_section_syncs_toolbar_stock_name_label(qapp):
+    """名称(代码)移入工具栏：标题行不再重复，工具栏标签随切换更新。"""
+    builder, window = _make_builder()
+    layout = QVBoxLayout()
+    holder = QWidget()
+    holder.setLayout(layout)
+    window.chart_layout = layout
+    window.stock_name_label = QLabel('--')
+    window.update_stock_name_label = lambda name, code: window.stock_name_label.setText(f'{name}({code})')
+
+    builder.create_title_section('平安银行', '000001.SZ')
+    assert window.stock_name_label.text() == '平安银行(000001.SZ)'
+
+    builder.create_title_section('招商银行', '600036.SH')
+    assert window.stock_name_label.text() == '招商银行(600036.SH)'
+    assert window.chart_title_label.text() == '日线'
 
 
 @pytest.mark.parametrize(('window_index', 'indicator', 'prefix', 'keyword'), [

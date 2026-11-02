@@ -108,7 +108,8 @@ def get_indicator_params(**params: Any) -> Dict[str, Dict[str, Any]]:
         Dict[str, Dict[str, Any]]: 指标参数配置字典
     """
     return {
-        'ma': {'windows': params.get('windows', [5, 10, 20, 60])},
+        # ma 同时接受专用参数名 ma_windows 与通用 windows（专用优先）
+        'ma': {'windows': params.get('ma_windows', params.get('windows', [5, 10, 20, 60]))},
         'rsi': {'windows': params.get('rsi_windows', [14])},
         'kdj': {'windows': params.get('kdj_windows', [14])},
         'vol_ma': {'windows': params.get('vol_ma_windows', [5, 10])},
@@ -144,7 +145,8 @@ def get_indicator_params(**params: Any) -> Dict[str, Dict[str, Any]]:
         },
         'mcst': {
             'windows': params.get('mcst_windows', [12])
-        }
+        },
+        'expma': {'windows': params.get('expma_windows', params.get('windows', [12, 50]))},
     }
 
 
