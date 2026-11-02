@@ -284,6 +284,29 @@ def test_remote_disabled_skips_remote_when_local_file_has_no_data(tmp_path):
     assert "本地通达信文件无数据且远程已禁用" in str(exc_info.value)
 
 
+def test_index_code_routes_to_index_path(monkeypatch):
+    """指数代码从股票入口请求时改走 index 取数，不再按 stock 类型请求数据源"""
+    fetcher = make_fetcher()
+    calls = {'index': [], 'sources': []}
+
+    def fake_index_data(code, start, end, frequency='1d'):
+        calls['index'].append((code, start, end, frequency))
+        return pl.DataFrame({'close': [1.0]})
+
+    def fake_sources(data_type, *args, **kwargs):
+        calls['sources'].append(data_type)
+        return pl.DataFrame()
+
+    monkeypatch.setattr(fetcher, 'get_index_data', fake_index_data)
+    monkeypatch.setattr(fetcher, '_get_data_from_sources', fake_sources)
+
+    out = fetcher.get_stock_data('000001.SH', '20240101', '20241231')
+
+    assert calls['index'] == [('000001.SH', '20240101', '20241231', '1d')]
+    assert calls['sources'] == [], "指数不得以 stock 类型进入数据源取数"
+    assert out.height == 1
+
+
 def test_executor_is_single_instance_under_concurrency():
     """多个线程并发首次取用线程池，只能建出一个实例（双检锁回归）"""
     fetcher = make_fetcher()

@@ -24,7 +24,7 @@ from src.data.data_cache import global_data_cache
 from src.data.data_source_health import get_global_health_checker
 from src.data.managers.source_worker import call_source
 from src.data.tdx_day_parser import build_day_file_path
-from src.utils.code_converter import parse_code
+from src.utils.code_converter import is_index_code, parse_code
 from src.utils.config import remote_sources_enabled
 from src.utils.date_utils import parse_date
 from src.utils.exceptions import DataSourceException
@@ -179,6 +179,12 @@ class DataFetcher:
         Returns:
             pl.DataFrame: 股票数据
         """
+        # 资产类型路由：指数代码不能按股票取数（如 000001.SH 是上证综合指数）
+        if is_index_code(stock_code):
+            logger.info(f"{stock_code} 为指数代码，改走指数取数路径",
+                        **{"symbol": stock_code, "data_type": "index"})
+            return self.get_index_data(stock_code, start_date, end_date, frequency)
+
         # get/set 必须使用完全一致的参数，否则精确命中失效且会跨复权/as_of 串用
         cache_params = {
             'frequency': frequency,

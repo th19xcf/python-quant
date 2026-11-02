@@ -12,7 +12,7 @@ from loguru import logger
 
 from src.data.sources import akshare_schema as schema
 from src.data.sources.akshare.constants import _DEFAULT_STOCK_CODES
-from src.utils.code_converter import to_symbol
+from src.utils.code_converter import is_index_code, to_symbol
 
 
 class AkShareDividendMixin:
@@ -261,17 +261,23 @@ class AkShareDividendMixin:
             raise
 
     def _resolve_dividend_codes(self, ts_codes: List[str] | None = None):
-        """解析待更新的股票代码：未指定时回落到数据库或离线默认列表"""
-        # 如果没有指定股票代码，从数据库获取所有股票代码
+        """解析待更新的股票代码：未指定时回落到数据库或离线默认列表
+
+        指数没有分红/送转，库里同号指数记录（如 000001.SH）与个股同源，
+        必须在解析阶段排除，避免把个股分红写到指数代码上。
+        """
         if ts_codes:
-            return ts_codes
+            return [code for code in ts_codes if not is_index_code(code)]
         if self.session:
             from src.database.models.stock import StockBasic
             stock_basics = self.session.query(StockBasic.ts_code).all()
-            return [sb.ts_code for sb in stock_basics]
+            return [
+                sb.ts_code for sb in stock_basics
+                if not is_index_code(sb.ts_code)
+            ]
         # 离线模式下使用默认股票代码
         logger.info(f"离线模式下，使用默认股票代码列表: {_DEFAULT_STOCK_CODES}")
-        return _DEFAULT_STOCK_CODES
+        return [code for code in _DEFAULT_STOCK_CODES if not is_index_code(code)]
 
     @staticmethod
     def _fetch_dividend_frame(ts_code, symbol):
@@ -321,6 +327,11 @@ class AkShareDividendMixin:
 
     def _update_stock_dividend_one(self, ts_code, result):
         """同步单只股票的分红配股数据（离线模式仅收集结果）"""
+        # 指数不参与分红同步：同号指数会拿到个股分红，写库后污染复权计算
+        if is_index_code(ts_code):
+            logger.debug(f"{ts_code} 为指数代码，跳过分红同步")
+            return
+
         logger.info(f"正在获取{ts_code}的分红配股数据")
 
         symbol = to_symbol(ts_code)

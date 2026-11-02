@@ -582,6 +582,16 @@ def test_stock_dividend_returns_frame_and_guards():
     assert instance.get_stock_dividend('600000.SH').is_empty()
 
 
+def test_stock_dividend_excludes_index_codes():
+    """指数代码直接返回空表，即使库里存在同号分红记录也不读取。"""
+    session = _Session({StockDividend: _dividend_rows()})
+    instance = DataManager.__new__(DataManager)
+    instance.config = _FakeConfig()
+    instance.db_manager = _FakeDB(session)
+
+    assert instance.get_stock_dividend('000001.SH').is_empty()
+
+
 def test_stock_dividend_swallows_query_error():
     """分红查询抛 RuntimeError 时返回空表，并仍清理会话。"""
     db = _FakeDB(_Session(query_error=True))

@@ -20,6 +20,7 @@ from loguru import logger
 
 from src.api.data_api import IDataProcessor, IDataProvider
 from src.data.services.data_service import DataService
+from src.utils.code_converter import is_index_code
 from src.utils.memory_optimizer import MemoryOptimizer
 
 
@@ -83,6 +84,11 @@ class DataManager(DataService):
         # 参数验证
         if not ts_code:
             logger.warning("股票代码不能为空")
+            return pl.DataFrame()
+
+        # 指数没有分红/送转，库里同号指数记录与个股同源，查询侧直接排除
+        if is_index_code(ts_code):
+            logger.debug(f"{ts_code} 为指数代码，无分红数据")
             return pl.DataFrame()
 
         # 检查数据库连接

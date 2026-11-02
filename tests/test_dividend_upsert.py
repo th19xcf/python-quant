@@ -106,3 +106,27 @@ def test_two_events_same_year_are_kept_separately(handler):
 
     assert (inserted, updated) == (1, 0)
     assert handler.session.query(StockDividend).count() == 2
+
+
+def test_resolve_dividend_codes_excludes_explicit_index_codes(handler):
+    """显式传入的指数代码在解析阶段就被排除。"""
+    assert handler._resolve_dividend_codes(
+        ['600000.SH', '000001.SH', '399001.SZ', '000001.SZ']
+    ) == ['600000.SH', '000001.SZ']
+
+
+def test_resolve_dividend_codes_excludes_index_rows_from_stock_basic(handler):
+    """未指定代码时按 stock_basic 解析，指数代码不参与分红同步。"""
+    from src.database.models.stock import StockBasic
+
+    StockBasic.__table__.create(handler.session.get_bind())
+    handler.session.add_all([
+        StockBasic(ts_code='600000.SH', symbol='600000', name='浦发银行'),
+        StockBasic(ts_code='000001.SZ', symbol='000001', name='平安银行'),
+        StockBasic(ts_code='000001.SH', symbol='000001', name='上证指数'),
+        StockBasic(ts_code='399001.SZ', symbol='399001', name='深证成指'),
+    ])
+    handler.session.commit()
+
+    assert sorted(handler._resolve_dividend_codes(None)) == [
+        '000001.SZ', '600000.SH']

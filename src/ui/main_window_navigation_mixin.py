@@ -464,7 +464,7 @@ class MainWindowNavigationMixin:
 
     def _is_index_code(self, code: str) -> bool:
         """
-        判断代码是否为指数代码
+        判断代码是否为指数代码（委托 code_converter 单一实现）
 
         Args:
             code: 股票/指数代码
@@ -472,25 +472,9 @@ class MainWindowNavigationMixin:
         Returns:
             bool: 是否为指数
         """
-        # 检查不同格式的指数代码
-        if '.' in code:
-            # 格式：数字.SH/SZ/BJ
-            symbol, market = code.split('.')
-            return (symbol.startswith('000') and market == 'SH') or \
-                   (symbol.startswith('399') and market == 'SZ') or \
-                   (symbol.startswith('899') and market == 'BJ')
-        else:
-            # 格式：sh/sz/bj+数字
-            if code.startswith('sh'):
-                return code[2:].startswith('000')
-            elif code.startswith('sz'):
-                return code[2:].startswith('399')
-            elif code.startswith('bj'):
-                return code[2:].startswith('899')
-            else:
-                # 纯数字格式，根据数字开头和市场判断
-                # 注意：纯数字格式无法准确判断，这里保守处理
-                return False
+        from src.utils.code_converter import is_index_code
+
+        return is_index_code(code)
 
     def _get_current_index_list(self):
         """

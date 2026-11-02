@@ -394,7 +394,8 @@ def _prepare_index_sync(config: Any, db_manager: Any, session: Session,
     from src.database.models.index import IndexBasic
 
     tdx_handler = TdxHandler(config, db_manager)
-    tdx_codes = tdx_handler.get_stock_list()
+    # 通达信扫描已按资产类型分流，指数走 get_index_list，个股/基金不再混入
+    tdx_codes = tdx_handler.get_index_list()
     tdx_index_codes = sorted({code for code in tdx_codes if _is_index_ts_code(code)})
     tdx_index_code_set = set(tdx_index_codes)
     result['total_tdx_indexes'] = len(tdx_index_codes)

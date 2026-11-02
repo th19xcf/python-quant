@@ -243,7 +243,7 @@ def test_prepare_index_sync_terminates_without_external_info(monkeypatch):
         def __init__(self, _config, _db_manager):
             pass
 
-        def get_stock_list(self):
+        def get_index_list(self):
             return ['000001.SH', '399001.SZ', '600000.SH']
 
     monkeypatch.setattr('src.data.tdx_handler.TdxHandler', _FakeTdxHandler)
@@ -264,7 +264,7 @@ def test_prepare_index_sync_terminates_without_tdx_index_codes(monkeypatch):
         def __init__(self, _config, _db_manager):
             pass
 
-        def get_stock_list(self):
+        def get_index_list(self):
             return ['600000.SH', '000001.SZ']
 
     monkeypatch.setattr('src.data.tdx_handler.TdxHandler', _FakeTdxHandler)

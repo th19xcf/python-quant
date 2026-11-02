@@ -129,19 +129,10 @@ def _sync_each_with_recovery(items: Sequence[Any], handler: Callable[[Any], Any]
 # ======================================================================
 
 def _is_index_ts_code(ts_code: str | None) -> bool:
-    """判断 ts_code 是否为指数代码。"""
-    if not ts_code or '.' not in ts_code:
-        return False
+    """判断 ts_code 是否为指数代码（委托 code_converter 单一实现）。"""
+    from src.utils.code_converter import is_index_code
 
-    symbol, market = ts_code.split('.', 1)
-    market = market.upper()
-    if market == 'SH':
-        return symbol.startswith(('000', '880', '881'))
-    if market == 'SZ':
-        return symbol.startswith('399')
-    if market == 'BJ':
-        return symbol.startswith('884') or symbol.startswith('899')
-    return False
+    return is_index_code(ts_code)
 
 
 def _remote_sync_blocked(config: Any, title: str) -> bool:

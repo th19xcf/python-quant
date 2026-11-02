@@ -16,6 +16,7 @@ from src.data.sources.base import DataSourceBase
 from src.data.tdx_day_parser import parse_day_file as parse_tdx_day_file
 from src.data.tdx_day_parser import read_recent_records
 from src.utils.code_converter import (
+    is_index_code,
     parse_code,
     to_symbol,
     to_tdx_market,
@@ -59,14 +60,23 @@ def _is_valid_tdx_stock_code(code) -> bool:
     return False
 
 
-def _collect_tdx_market_codes(stock_codes, lday_dir, prefix, suffix, market_label):
-    """扫描单个市场目录，把有效代码追加到 stock_codes 并记录数量日志。"""
+def _collect_tdx_market_codes(stock_codes, lday_dir, prefix, suffix, market_label,
+                              *, want_index: bool):
+    """扫描单个市场目录，按资产类型把有效代码追加到 stock_codes。
+
+    want_index=True 只收集指数，False 只收集个股/基金：
+    指数判定统一委托 code_converter.is_index_code，避免 sh000xxx 混入 stock_basic。
+    """
     files = list(lday_dir.glob(f'{prefix}*.day'))
     for f in files:
         code = f.stem[2:]
-        if _is_valid_tdx_stock_code(code):
-            stock_codes.append(f"{code}.{suffix}")
-    logger.info(f"从{market_label}通达信数据中找到 {len([c for c in stock_codes if c.endswith(f'.{suffix}')])} 个有效股票文件")
+        if not _is_valid_tdx_stock_code(code):
+            continue
+        if is_index_code(f"{code}.{suffix}") != want_index:
+            continue
+        stock_codes.append(f"{code}.{suffix}")
+    logger.info(f"从{market_label}通达信数据中找到 {len(stock_codes)} 个有效"
+                f"{'指数' if want_index else '股票'}文件")
 
 
 class TdxHandler(DataSourceBase):
@@ -143,13 +153,26 @@ class TdxHandler(DataSourceBase):
                 self.thread_local.session = None
         return self.thread_local.session
 
-    def get_stock_list(self) -> List[str]:  # noqa: C901
+    def get_stock_list(self) -> List[str]:
         """
-        从通达信数据源获取所有股票代码列表
+        从通达信数据源获取所有个股/基金代码列表（不含指数）
 
         Returns:
             List[str]: 股票代码列表 (格式: 600000.SH, 000001.SZ 等)
         """
+        return self._scan_tdx_codes(want_index=False)
+
+    def get_index_list(self) -> List[str]:
+        """
+        从通达信数据源获取所有指数代码列表（不含个股）
+
+        Returns:
+            List[str]: 指数代码列表 (格式: 000001.SH, 399001.SZ 等)
+        """
+        return self._scan_tdx_codes(want_index=True)
+
+    def _scan_tdx_codes(self, *, want_index: bool) -> List[str]:
+        """扫描 sh/sz/bj 的 lday 目录，按资产类型收集代码。"""
         stock_codes: List[str] = []
 
         try:
@@ -162,20 +185,24 @@ class TdxHandler(DataSourceBase):
             bj_lday = self.tdx_data_path / 'bj' / 'lday'
 
             if sh_lday.exists():
-                _collect_tdx_market_codes(stock_codes, sh_lday, 'sh', 'SH', '沪市')
+                _collect_tdx_market_codes(
+                    stock_codes, sh_lday, 'sh', 'SH', '沪市', want_index=want_index)
 
             if sz_lday.exists():
-                _collect_tdx_market_codes(stock_codes, sz_lday, 'sz', 'SZ', '深市')
+                _collect_tdx_market_codes(
+                    stock_codes, sz_lday, 'sz', 'SZ', '深市', want_index=want_index)
 
             # 北市（科创板）
             if bj_lday.exists():
-                _collect_tdx_market_codes(stock_codes, bj_lday, 'bj', 'BJ', '北市')
+                _collect_tdx_market_codes(
+                    stock_codes, bj_lday, 'bj', 'BJ', '北市', want_index=want_index)
 
-            logger.info(f"通达信股票代码列表获取完成，共 {len(stock_codes)} 只有效股票")
+            label = '指数' if want_index else '股票'
+            logger.info(f"通达信{label}代码列表获取完成，共 {len(stock_codes)} 只")
 
         # 兜底理由：本地文件扫描异常不可预知，降级为空代码列表
         except Exception as e:  # noqa: BLE001
-            logger.exception(f"获取通达信股票代码列表失败: {e}")
+            logger.exception(f"获取通达信代码列表失败: {e}")
 
         return stock_codes
 
@@ -249,16 +276,27 @@ class TdxHandler(DataSourceBase):
             return None
 
     def _load_dividend_records(self, ts_code: str):
-        """读取该股票全部历史分红记录（无会话或无数据返回 None）。"""
+        """读取该股票全部历史分红记录（无会话、无数据或指数代码返回 None）。"""
         from src.database.models.stock import StockDividend
+
+        # 指数没有分红/送转，库里同号指数记录（如 000001.SH）与个股同源，
+        # 混入复权因子计算会污染价格，直接跳过
+        if is_index_code(ts_code):
+            logger.debug(f"{ts_code} 为指数代码，忽略分红记录")
+            return None
 
         session = self._get_thread_safe_session()
         if not session:
             return None
 
         # 获取分红数据（获取所有历史分红数据，不限制日期范围）
-        query = session.query(StockDividend).filter_by(ts_code=ts_code)
-        query = query.filter(StockDividend.ex_date is not None)
+        # 用 SQL 侧 IS NOT NULL 过滤：Python 的 `ex_date is not None` 恒为 True，
+        # 等于没有过滤，会把除权日为空的记录也算进复权因子
+        query = (
+            session.query(StockDividend)
+            .filter(StockDividend.ts_code == ts_code)
+            .filter(StockDividend.ex_date.isnot(None))
+        )
 
         # 注意：这里不限制日期范围，因为复权因子计算需要所有历史分红数据
         # 即使当前显示的K线范围内没有分红，历史分红也会影响当前价格的复权计算
@@ -317,10 +355,23 @@ class TdxHandler(DataSourceBase):
         dividends_df = pl.DataFrame({
             'ts_code': [d.ts_code for d in dividends],
             'ex_date': [d.ex_date for d in dividends],
-            'cash_div': [d.cash_div or 0 for d in dividends],
-            'share_div': [d.share_div or 0 for d in dividends],
-            'rights_issue_ratio': [d.rights_issue_ratio or 0 for d in dividends],
-            'rights_issue_price': [d.rights_issue_price or 0 for d in dividends],
+            # 显式 Float64：None -> 0.0，避免 0.0 被当成 int 0 让 Polars 推断成 Int64，
+            # 遇到 0.4 之类的浮点送转比例时报 "unexpected value while building Series"
+            'cash_div': [d.cash_div if d.cash_div is not None else 0.0 for d in dividends],
+            'share_div': [d.share_div if d.share_div is not None else 0.0 for d in dividends],
+            'rights_issue_ratio': [
+                d.rights_issue_ratio if d.rights_issue_ratio is not None else 0.0
+                for d in dividends
+            ],
+            'rights_issue_price': [
+                d.rights_issue_price if d.rights_issue_price is not None else 0.0
+                for d in dividends
+            ],
+        }, schema_overrides={
+            'cash_div': pl.Float64,
+            'share_div': pl.Float64,
+            'rights_issue_ratio': pl.Float64,
+            'rights_issue_price': pl.Float64,
         })
 
         result = AdjFactorCalculator.calculate_factors(prices_df, dividends_df)
