@@ -62,16 +62,22 @@ def parse_args():
                         help='用本地通达信基金 .day 补齐 fund_basic/closed_fund_basic（离线，不猜名称与退市状态；配合 --dry-run）')
     parser.add_argument('--sync-stock-daily', action='store_true',
                         help='用本地通达信 .day 补库 stock_daily（默认增量，离线可运行）')
+    parser.add_argument('--sync-fund-daily', action='store_true',
+                        help='用本地列存补库 fund_daily / closed_fund_daily（离线，幂等可续跑）')
+    parser.add_argument('--sync-index-daily', action='store_true',
+                        help='用本地列存补库 index_daily（默认 index_basic 标的池，本地为准覆盖）')
     parser.add_argument('--codes', default=None,
-                        help='逗号分隔的股票代码，配合 --sync-stock-daily 限定股票池')
+                        help='逗号分隔的标的代码，配合 --sync-stock-daily / --sync-fund-daily / --sync-index-daily 限定标的池')
     parser.add_argument('--full', action='store_true',
                         help='配合 --sync-stock-daily：全量补历史（默认只补库内水位之后）')
     parser.add_argument('--dry-run', action='store_true',
-                        help='配合 --sync-stock-daily：只统计行数，不写库')
+                        help='配合各 --sync-* 参数：只统计行数与区间，不写库')
+    parser.add_argument('--progress-file', default='',
+                        help='断点续跑进度文件路径；留空用 logs/sync_progress/ 下的默认文件')
     parser.add_argument('--max-date', default='',
                         help='配合 --sync-stock-daily：只写入不晚于该日期的记录（YYYY-MM-DD）')
     parser.add_argument('--since', default='',
-                        help='配合 --sync-stock-daily：只写入不早于该日期的记录（库内无水位时的有界回填，YYYY-MM-DD）')
+                        help='配合各 --sync-* 参数：只写入不早于该日期的记录（YYYY-MM-DD）')
     parser.add_argument('--repair-stock-basic', action='store_true', help='一次性修复 stock_basic 存量的地域/行业/市场字段')
     parser.add_argument('--deep-industry', action='store_true', help='与 --repair-stock-basic 配合：批量源覆盖不到的行业逐只查巨潮公司概况兜底')
     parser.add_argument('--plugins', action='store_true', help='显示已加载的插件')
@@ -209,6 +215,53 @@ def _handle_sync_stock_daily_arg(config, args):
         logger.info(f"stock_daily 补库结果: {summary}")
     except (DataSourceException, *_STARTUP_ERRORS) as e:
         logger.exception(f"stock_daily 补库失败: {e}")
+    finally:
+        if db_manager is not None:
+            try:
+                db_manager.cleanup()
+            except _STARTUP_ERRORS as cleanup_e:
+                logger.warning(f"清理数据库资源失败: {cleanup_e}")
+
+
+def _handle_sync_local_store_daily_arg(config, args, asset):
+    """处理 --sync-fund-daily / --sync-index-daily：本地列存 → MySQL。"""
+    from src.data.services.local_store_daily_sync import sync_local_store_daily
+
+    logger.info(f"检测到 --sync-{asset}-daily 参数，将执行本地列存入库")
+
+    db_manager = None
+    try:
+        db_manager = DatabaseManager(config)
+        db_manager.connect()
+        logger.info("数据库连接成功")
+
+        # dry-run 不执行迁移，避免“只估算”却改了表结构
+        if not getattr(args, 'dry_run', False):
+            try:
+                db_manager.create_tables()
+                logger.info("数据库表创建/更新成功")
+            except _STARTUP_ERRORS as table_e:
+                logger.warning(f"创建数据库表时发生错误: {table_e}")
+
+        codes = None
+        if args.codes:
+            codes = [code.strip() for code in args.codes.split(',') if code.strip()]
+
+        since = None
+        if getattr(args, 'since', ''):
+            since = date.fromisoformat(args.since)
+
+        summary = sync_local_store_daily(
+            config, db_manager,
+            asset=asset,
+            ts_codes=codes,
+            since=since,
+            dry_run=getattr(args, 'dry_run', False),
+            progress_path=getattr(args, 'progress_file', '') or None,
+        )
+        logger.info(f"{asset} 日线入库结果: {summary}")
+    except (DataSourceException, *_STARTUP_ERRORS) as e:
+        logger.exception(f"{asset} 日线入库失败: {e}")
     finally:
         if db_manager is not None:
             try:
@@ -409,6 +462,14 @@ def main():
 
         if args.sync_stock_daily:
             _handle_sync_stock_daily_arg(config, args)
+            return
+
+        if args.sync_fund_daily:
+            _handle_sync_local_store_daily_arg(config, args, 'fund')
+            return
+
+        if args.sync_index_daily:
+            _handle_sync_local_store_daily_arg(config, args, 'index')
             return
 
         if args.update_index:

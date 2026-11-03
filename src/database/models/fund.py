@@ -6,7 +6,16 @@
 
 from datetime import datetime
 
-from sqlalchemy import Column, Date, DateTime, Float, Integer, String
+from sqlalchemy import (
+    Column,
+    Date,
+    DateTime,
+    Float,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 
 from src.database.db_manager import Base
 
@@ -66,6 +75,9 @@ class FundDaily(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
 
     __table_args__ = (
+        # 业务唯一键：一只基金一个交易日只能有一行，供原子 upsert 命中
+        UniqueConstraint('ts_code', 'trade_date', name='uk_fund_daily_code_date'),
+        Index('idx_fund_daily_trade_date', 'trade_date'),
         {
             "comment": "基金日线行情表",
             "mysql_charset": "utf8mb4",
@@ -133,6 +145,10 @@ class ClosedFundDaily(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
 
     __table_args__ = (
+        # 业务唯一键：一只封闭式基金一个交易日只能有一行
+        UniqueConstraint('ts_code', 'trade_date',
+                         name='uk_closed_fund_daily_code_date'),
+        Index('idx_closed_fund_daily_trade_date', 'trade_date'),
         {
             "comment": "封闭式基金日线行情表",
             "mysql_charset": "utf8mb4",
