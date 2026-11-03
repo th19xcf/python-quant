@@ -9,6 +9,7 @@
 # 标准库导入
 import argparse
 import sys
+from datetime import date
 from pathlib import Path
 
 # 第三方库导入
@@ -67,6 +68,10 @@ def parse_args():
                         help='配合 --sync-stock-daily：全量补历史（默认只补库内水位之后）')
     parser.add_argument('--dry-run', action='store_true',
                         help='配合 --sync-stock-daily：只统计行数，不写库')
+    parser.add_argument('--max-date', default='',
+                        help='配合 --sync-stock-daily：只写入不晚于该日期的记录（YYYY-MM-DD）')
+    parser.add_argument('--since', default='',
+                        help='配合 --sync-stock-daily：只写入不早于该日期的记录（库内无水位时的有界回填，YYYY-MM-DD）')
     parser.add_argument('--repair-stock-basic', action='store_true', help='一次性修复 stock_basic 存量的地域/行业/市场字段')
     parser.add_argument('--deep-industry', action='store_true', help='与 --repair-stock-basic 配合：批量源覆盖不到的行业逐只查巨潮公司概况兜底')
     parser.add_argument('--plugins', action='store_true', help='显示已加载的插件')
@@ -185,11 +190,21 @@ def _handle_sync_stock_daily_arg(config, args):
         if args.codes:
             codes = [code.strip() for code in args.codes.split(',') if code.strip()]
 
+        max_date = None
+        if getattr(args, 'max_date', ''):
+            max_date = date.fromisoformat(args.max_date)
+
+        since = None
+        if getattr(args, 'since', ''):
+            since = date.fromisoformat(args.since)
+
         summary = fill_stock_daily(
             config, db_manager,
             ts_codes=codes,
             full=getattr(args, 'full', False),
             dry_run=getattr(args, 'dry_run', False),
+            since=since,
+            max_date=max_date,
         )
         logger.info(f"stock_daily 补库结果: {summary}")
     except (DataSourceException, *_STARTUP_ERRORS) as e:

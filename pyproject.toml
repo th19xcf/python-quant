@@ -84,6 +84,16 @@ optional = true
 alphalens-reloaded = "0.5.1"
 quantstats = "0.0.86"
 
+[tool.poetry.group.learning]
+# 可选组：自学习 L2 的 LightGBM 对照（`poetry install --with learning`）
+# 默认安装不受影响；缺失时学习管道自动跳过 LightGBM，仅保留
+# 等权 / IC / ICIR / Ridge（Ridge 由 NumPy 闭式解实现，无需 sklearn）
+optional = true
+
+[tool.poetry.group.learning.dependencies]
+lightgbm = "==4.6.0"
+scikit-learn = "^1.5"
+
 [[tool.poetry.source]]
 name = "mirrors"
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"

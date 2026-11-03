@@ -163,3 +163,38 @@ def test_missing_file_is_counted_as_skipped(tmp_path):
     finally:
         session.close()
         engine.dispose()
+
+
+def test_max_date_excludes_newer_record(tmp_path):
+    """max_date 只写入不晚于目标日的记录，盘中行不入库。"""
+    _write_day_file(tmp_path, _RECORDS_V1 + [_RECORD_V2])
+    engine, session = _open(tmp_path)
+    try:
+        summary = fill_stock_daily(
+            _config(tmp_path), _DB(session), max_date=date(2024, 1, 3))
+        dates = [row.trade_date for row in _rows(session)]
+    finally:
+        session.close()
+        engine.dispose()
+
+    assert summary['rows'] == 2
+    assert dates == [date(2024, 1, 2), date(2024, 1, 3)]
+
+
+def test_since_bounded_backfill_keeps_pre_close(tmp_path):
+    """since 有界回填：首行的 pre_close 仍取自 since 前一根，不置空。"""
+    _write_day_file(tmp_path, _RECORDS_V1 + [_RECORD_V2])
+    engine, session = _open(tmp_path)
+    try:
+        summary = fill_stock_daily(
+            _config(tmp_path), _DB(session), since=date(2024, 1, 3))
+        data = [(row.trade_date, row.pre_close) for row in _rows(session)]
+    finally:
+        session.close()
+        engine.dispose()
+
+    assert summary['rows'] == 2
+    assert [d for d, _ in data] == [date(2024, 1, 3), date(2024, 1, 4)]
+    assert data[0][1] == 10.0
+    assert data[1][1] == 10.5
+
