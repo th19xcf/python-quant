@@ -7,8 +7,10 @@ import pytest
 
 from src.data.tdx_day_parser import (
     build_day_file_path,
+    is_fund_file,
     is_index_file,
     parse_day_file,
+    price_divisor,
     read_first_last_trade_date,
     read_latest_quote,
     resolve_market,
@@ -193,6 +195,64 @@ def test_stock_file_volume_in_shares(tmp_path):
     df = parse_day_file(path)
 
     assert df["volume"][0] == pytest.approx(hands)
+
+
+def test_is_fund_file():
+    """基金（ETF/LOF/封闭式/REITs）按代码段识别，用于切换价格缩放。"""
+    assert is_fund_file("sh510300.day")
+    assert is_fund_file("sh588000.day")
+    assert is_fund_file("sh501000.day")
+    assert is_fund_file("sh508000.day")
+    assert is_fund_file("sz159915.day")
+    assert is_fund_file("sz160130.day")
+    assert is_fund_file("sz180307.day")
+    assert not is_fund_file("sh600000.day")
+    assert not is_fund_file("sz000001.day")
+    assert not is_fund_file("sh000001.day")
+    assert not is_fund_file("sz399001.day")
+
+
+def test_price_divisor():
+    assert price_divisor("sh600000.day") == 100.0
+    assert price_divisor("sh000001.day") == 100.0
+    assert price_divisor("sh510300.day") == 1000.0
+    assert price_divisor("sz159915.day") == 1000.0
+
+
+def test_fund_file_price_scaled_by_1000(tmp_path):
+    """基金 .day 价格字段按 3 位小数存储，解析结果不得放大 10 倍。"""
+    price = 4.343          # 510300 常见价位
+    shares = 1_000_000     # @24 单位：份
+    amount = price * shares
+    path = tmp_path / "sh510300.day"
+    with open(path, "wb") as f:
+        f.write(struct.pack("<IIIIIfII", 20240103, 4343, 4350, 4300, 4343,
+                            amount, shares, 0))
+
+    df = parse_day_file(path)
+
+    assert df["close"][0] == pytest.approx(price, rel=1e-6)
+    assert df["volume"][0] == pytest.approx(shares / 100)       # 份 → 手
+    assert df["amount"][0] == pytest.approx(amount, rel=1e-6)
+    # 量纲契约：amount ≈ close × volume(手) × 100
+    assert df["amount"][0] / (df["close"][0] * df["volume"][0] * 100) == pytest.approx(1.0, rel=1e-6)
+
+
+def test_fund_volume_hand_row_detected(tmp_path):
+    """巨量基金行成交量字段溢出为「手」时，按成交额反算识别并保留手值。"""
+    price = 0.45
+    shares = 8_000_000_000        # 80 亿份，超过 uint32 上限
+    amount = price * shares
+    path = tmp_path / "sh513330.day"
+    with open(path, "wb") as f:
+        # @24 被通达信写成手（8000 万），而非份
+        f.write(struct.pack("<IIIIIfII", 20240103, 450, 452, 448, 450,
+                            amount, shares // 100, 0))
+
+    df = parse_day_file(path)
+
+    assert df["volume"][0] == pytest.approx(shares / 100)       # 80,000,000 手
+    assert df["amount"][0] / (df["close"][0] * df["volume"][0] * 100) == pytest.approx(1.0, rel=1e-6)
 
 
 def test_parse_day_file_empty_file(tmp_path):

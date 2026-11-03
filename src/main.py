@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data.data_manager import DataManager
 from src.data.services.sync_service import (
+    backfill_fund_basic_from_local_tdx,
     repair_stock_basic,
     sync_stock_fund_to_fund_basic,
     sync_tdx_index_to_database,
@@ -56,6 +57,8 @@ def parse_args():
     parser.add_argument('--update-stock', action='store_true', help='从通达信数据源同步股票信息到数据库')
     parser.add_argument('--update-index', action='store_true', help='以通达信指数代码为基准更新 index_basic（Baostock/AkShare 补全）')
     parser.add_argument('--update-fund', action='store_true', help='将 stock_basic 中基金迁移到 fund_basic 并补全信息')
+    parser.add_argument('--backfill-fund-basic', action='store_true',
+                        help='用本地通达信基金 .day 补齐 fund_basic/closed_fund_basic（离线，不猜名称与退市状态；配合 --dry-run）')
     parser.add_argument('--sync-stock-daily', action='store_true',
                         help='用本地通达信 .day 补库 stock_daily（默认增量，离线可运行）')
     parser.add_argument('--codes', default=None,
@@ -251,6 +254,27 @@ def _handle_update_fund_arg(config):
         return True
 
 
+def _handle_backfill_fund_basic_arg(config, dry_run=False):
+    """处理基金基础表补齐参数（离线，只读 .day）。"""
+    logger.info(f"检测到 --backfill-fund-basic 参数，dry_run={dry_run}")
+
+    db_manager = None
+    try:
+        db_manager = DatabaseManager(config)
+        db_manager.connect()
+        logger.info("数据库连接成功")
+
+        # 不做 create_tables：本次仅补数据行，禁止任何表结构变更
+        result = backfill_fund_basic_from_local_tdx(config, db_manager, dry_run=dry_run)
+        logger.info(f"基金基础表补齐结果: {result}")
+        db_manager.cleanup()
+        return True
+
+    except _STARTUP_ERRORS as db_e:
+        logger.error(f"数据库连接失败，无法补齐基金基础表: {db_e}")
+        return True
+
+
 def _handle_repair_stock_basic_arg(config, deep_industry=False):
     """处理 stock_basic 存量修复参数。"""
     logger.info("检测到 --repair-stock-basic 参数，将修复 stock_basic 的地域/行业/市场字段")
@@ -378,6 +402,10 @@ def main():
 
         if args.update_fund:
             _handle_update_fund_arg(config)
+            return
+
+        if args.backfill_fund_basic:
+            _handle_backfill_fund_basic_arg(config, dry_run=args.dry_run)
             return
 
         if args.repair_stock_basic or args.deep_industry:

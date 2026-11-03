@@ -234,6 +234,152 @@ def _delete_migrated_funds(session: Session, fund_stocks: list[Any],
     result['deleted_from_stock_basic'] = len(fund_stocks)
 
 
+def _classify_local_fund_symbol(symbol: str) -> tuple[str | None, str] | None:
+    """按代码段判定本地基金的类型与归属表，无法可靠判定返回 None。
+
+    只做「代码段 → 类型」的确定性映射，不使用价格/名称推断：
+    - ETF：沪 51/52/56/58，深 159/158
+    - LOF：沪 501/502/506/508，深 16/18（REITs 沿用库内既有的 LOF 归类）
+    - 分级：深 150（历史分级基金代码段）
+    - 封闭式：沪 500/505（无类型来源，仅补基础表，不猜 fund_type）
+    """
+    if symbol.startswith(('51', '52', '56', '58')) or symbol.startswith(('159', '158')):
+        return 'ETF', 'fund_basic'
+    if symbol.startswith(('501', '502', '506', '508', '16', '18')):
+        return 'LOF', 'fund_basic'
+    if symbol.startswith('150'):
+        return '分级', 'fund_basic'
+    if symbol.startswith(('500', '505')):
+        return None, 'closed_fund_basic'
+    return None
+
+
+def backfill_fund_basic_from_local_tdx(config: Any, db_manager: Any,
+                                       dry_run: bool = False) -> dict[str, Any]:
+    """用本地通达信基金 ``.day`` 补齐 fund_basic / closed_fund_basic。
+
+    只补「确定可得」的字段：代码、市场、首个本地行情日、按代码段推断的类型。
+    名称与退市状态没有本地权威来源，一律留空并在计划清单中标注，不猜。
+    已存在的记录只填空字段，不覆盖任何已有值（upsert 语义）。
+    """
+    from pathlib import Path
+
+    from src.data.local_store.build import discover_local_files
+    from src.data.tdx_day_parser import read_first_last_trade_date
+    from src.database.models.fund import ClosedFundBasic, FundBasic
+
+    logs_dir = Path('logs')
+    logs_dir.mkdir(exist_ok=True)
+    plan_path = logs_dir / 'fund_backfill_plan.txt'
+
+    result: dict[str, Any] = {
+        'scanned': 0, 'inserted_fund_basic': 0, 'inserted_closed': 0,
+        'updated': 0, 'unknown_type': 0, 'by_type': {}, 'dry_run': dry_run,
+        'plan_path': str(plan_path),
+    }
+
+    discovered = discover_local_files(Path(config.data.tdx_data_path), 'fund')
+    session = db_manager.get_session()
+    try:
+        existing_fund = {f.ts_code: f for f in session.query(FundBasic).all()}
+        existing_closed = {f.ts_code: f for f in session.query(ClosedFundBasic).all()}
+
+        plan_lines: list[str] = []
+        for _kind, ts_code, path in sorted(discovered, key=lambda x: x[1]):
+            result['scanned'] += 1
+            symbol, market = ts_code.split('.')
+            market = market.lower()
+            classified = _classify_local_fund_symbol(symbol)
+            if classified is None:
+                result['unknown_type'] += 1
+                plan_lines.append(f'{ts_code}\t-\t-\t\t\tSKIP\t代码段无法可靠归类')
+                continue
+            fund_type, table = classified
+            first, last = read_first_last_trade_date(path)
+            last_note = ''
+            if last and last < date(2025, 1, 1):
+                last_note = f'尾部日期 {last}（本地停更/退市无法区分，status 留空）'
+
+            if table == 'closed_fund_basic':
+                obj = existing_closed.get(ts_code)
+                is_new = obj is None
+                action = 'INSERT' if is_new else 'EXIST'
+                if is_new and not dry_run:
+                    obj = ClosedFundBasic(ts_code=ts_code, symbol=symbol,
+                                          market=market.upper(), list_date=first)
+                    session.add(obj)
+                    existing_closed[ts_code] = obj
+                if obj is not None:
+                    changed = _fill_fund_backfill_fields(obj, symbol, market, first)
+                    if changed and not dry_run:
+                        result['updated'] += 1
+                if is_new:
+                    result['inserted_closed'] += 1
+            else:
+                obj = existing_fund.get(ts_code)
+                is_new = obj is None
+                action = 'INSERT' if is_new else 'EXIST'
+                if is_new and not dry_run:
+                    obj = FundBasic(ts_code=ts_code, symbol=symbol, name=None,
+                                    fund_type=fund_type, market=market.upper(),
+                                    list_date=first, delist_date=None, status=None)
+                    session.add(obj)
+                    existing_fund[ts_code] = obj
+                if obj is not None:
+                    changed = _fill_fund_backfill_fields(obj, symbol, market, first)
+                    if changed and not dry_run:
+                        result['updated'] += 1
+                if is_new:
+                    result['inserted_fund_basic'] += 1
+                result['by_type'][fund_type] = result['by_type'].get(fund_type, 0) + 1
+
+            plan_lines.append(
+                f'{ts_code}\t{table}\t{fund_type or "-"}\t{first}\t{last}\t{action}'
+                f'{"(dry-run)" if dry_run else ""}\t{last_note}')
+
+        if not dry_run:
+            session.commit()
+        else:
+            session.rollback()
+
+        plan_path.write_text('\n'.join(plan_lines) + '\n', encoding='utf-8')
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+    logger.info(
+        f"基金基础表补齐: 扫描 {result['scanned']}，"
+        f"新增 fund_basic {result['inserted_fund_basic']}，"
+        f"新增 closed_fund_basic {result['inserted_closed']}，"
+        f"更新 {result['updated']}，无法归类 {result['unknown_type']}，"
+        f"dry_run={dry_run}，计划清单 {plan_path}"
+    )
+    return result
+
+
+def _fill_fund_backfill_fields(fund: Any, symbol: str, market: str,
+                               first: date | None) -> bool:
+    """只补空字段，不覆盖已有名称/状态/类型，返回是否有改动。"""
+    changed = False
+    if not fund.symbol:
+        fund.symbol = symbol
+        changed = True
+    if not fund.market:
+        fund.market = market.upper()
+        changed = True
+    if not fund.list_date and first:
+        fund.list_date = first
+        changed = True
+    if hasattr(fund, 'fund_type') and not fund.fund_type:
+        classified = _classify_local_fund_symbol(symbol)
+        if classified and classified[0]:
+            fund.fund_type = classified[0]
+            changed = True
+    return changed
+
+
 def sync_stock_fund_to_fund_basic(config: Any, db_manager: Any) -> dict[str, Any]:
     """将 stock_basic 中基金记录迁移到 fund_basic，并补全信息。"""
     from src.database.models.fund import FundBasic

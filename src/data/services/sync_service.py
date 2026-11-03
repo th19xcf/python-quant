@@ -13,7 +13,10 @@
 自行持有，不再经此聚合导出，避免对外暴露私有实现。
 """
 
-from src.data.services.sync_fund import sync_stock_fund_to_fund_basic
+from src.data.services.sync_fund import (
+    backfill_fund_basic_from_local_tdx,
+    sync_stock_fund_to_fund_basic,
+)
 from src.data.services.sync_index import sync_tdx_index_to_database
 from src.data.services.sync_stock import repair_stock_basic, sync_tdx_stock_to_database
 
@@ -21,5 +24,6 @@ __all__ = [
     "sync_tdx_stock_to_database",
     "sync_tdx_index_to_database",
     "sync_stock_fund_to_fund_basic",
+    "backfill_fund_basic_from_local_tdx",
     "repair_stock_basic",
 ]

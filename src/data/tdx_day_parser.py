@@ -16,15 +16,23 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
+from src.utils.code_converter import is_fund_code
+
 RECORD_SIZE = 32
+# 价格字段缩放：个股/指数整数单位为「分」（÷100），基金（ETF/LOF/封闭式）
+# 报价保留 3 位小数，整数单位为「厘」（÷1000）。用 510050 上市首日
+# （原始 876）与成交额反算验证：÷100 得 8.76 元与 amount 相差 10 倍，
+# ÷1000 得 0.876 元且 amount/(price*volume) ≈ 1，故基金必须 ÷1000。
+STOCK_PRICE_DIVISOR = 100.0
+FUND_PRICE_DIVISOR = 1000.0
 
 # 32 字节定长记录的 numpy 结构化布局（与真实 .day 文件逐字段一致）
 _DAY_DTYPE = np.dtype([
     ('date', '<u4'),      # YYYYMMDD
-    ('open', '<u4'),      # 价格 × 100
-    ('high', '<u4'),      # 价格 × 100
-    ('low', '<u4'),       # 价格 × 100
-    ('close', '<u4'),     # 价格 × 100
+    ('open', '<u4'),      # 价格 × 100（个股/指数）或 × 1000（基金，3 位小数）
+    ('high', '<u4'),      # 同上
+    ('low', '<u4'),       # 同上
+    ('close', '<u4'),     # 同上
     ('amount', '<f4'),    # 成交额（元）
     ('volume', '<u4'),    # 成交量（个股/基金=股，指数=手）
     ('reserved', '<u4'),
@@ -45,6 +53,23 @@ def is_index_file(file_path) -> bool:
     if name.startswith('sz'):
         return name[2:].startswith('399')
     return False
+
+
+def is_fund_file(file_path) -> bool:
+    """按文件名判断是否为基金（ETF/LOF/封闭式/REITs）的 .day 文件。
+
+    基金与个股共用 lday 目录与 32 字节布局，但价格缩放不同（基金 ÷1000），
+    代码段判定统一委托 ``code_converter.is_fund_code``，避免前缀规则分叉。
+    """
+    name = Path(file_path).stem.lower()
+    if len(name) != 8 or name[:2] not in ('sh', 'sz', 'bj'):
+        return False
+    return is_fund_code(name[2:], name[:2])
+
+
+def price_divisor(file_path) -> float:
+    """返回该 .day 文件价格字段的缩放因子（个股/指数 100，基金 1000）。"""
+    return FUND_PRICE_DIVISOR if is_fund_file(file_path) else STOCK_PRICE_DIVISOR
 
 
 @dataclass(frozen=True)
@@ -117,13 +142,16 @@ def _decode_dates_small(values) -> np.ndarray:
     return out
 
 
-def _decode_records(content: bytes, volume_in_hand: bool) -> Dict[str, Any]:
+def _decode_records(content: bytes, volume_in_hand: bool,
+                    price_div: float = STOCK_PRICE_DIVISOR) -> Dict[str, Any]:
     """
     向量化解码整段 32 字节定长记录。
 
     与旧版逐记录 struct.unpack + strptime 的输出语义完全一致：
-    日期为 datetime.date、价格除以 100、成交额为 float32 原值宽化到 float64、
-    成交量个股/基金除以 100（股→手）、指数原样（手）。
+    日期为 datetime.date、价格按 ``price_div`` 缩放（个股/指数 100、基金 1000）、
+    成交额为 float32 原值宽化到 float64、
+    成交量个股/基金除以 100（股/份→手）、指数原样（手）；
+    基金极少数「手」单位行按成交额反算单独识别。
     """
     arr = np.frombuffer(content, dtype=_DAY_DTYPE)
     if len(arr) <= _SMALL_DECODE_THRESHOLD:
@@ -131,15 +159,35 @@ def _decode_records(content: bytes, volume_in_hand: bool) -> Dict[str, Any]:
     else:
         # 大数组走 pd.to_datetime C 层向量化解析，校验规则与 strptime 一致
         dates = pd.to_datetime(arr['date'].astype(str), format='%Y%m%d').date
-    volume = arr['volume'].astype(np.int64) if volume_in_hand else arr['volume'] / 100.0
+    price = {
+        key: arr[key] / price_div
+        for key in ('open', 'high', 'low', 'close')
+    }
+    amount = arr['amount'].astype(np.float64)
+    raw_vol = arr['volume'].astype(np.float64)
+
+    if price_div == FUND_PRICE_DIVISOR:
+        # 基金成交量绝大多数按「份」存储（÷100 得到手）；极少数巨量行
+        # （全量 281 万行中约 0.37 万行、66 个标的）因份值超过 uint32 上限
+        # 被通达信改写为「手」。用成交额反算识别：amount/(close*raw) ≈ 100
+        # 说明原值已是手，直接保留；≈1 说明是份，除以 100。阈值取 50 以
+        # 拉开两个真实簇（1 与 100）之间的判定余量。
+        with np.errstate(divide='ignore', invalid='ignore'):
+            implied = np.where(
+                (price['close'] > 0) & (raw_vol > 0),
+                amount / (price['close'] * raw_vol), 0.0)
+        volume = np.where(implied > 50.0, raw_vol, raw_vol / 100.0)
+    else:
+        volume = raw_vol.astype(np.int64) if volume_in_hand else raw_vol / 100.0
+
     return {
         'date': dates,
-        'open': arr['open'] / 100.0,
-        'high': arr['high'] / 100.0,
-        'low': arr['low'] / 100.0,
-        'close': arr['close'] / 100.0,
+        'open': price['open'],
+        'high': price['high'],
+        'low': price['low'],
+        'close': price['close'],
         'volume': volume,
-        'amount': arr['amount'].astype(np.float64),
+        'amount': amount,
     }
 
 
@@ -166,7 +214,7 @@ def read_recent_records(file_path, count: int | None = None,
         volume_in_hand = is_index_file(path)
 
     content = _load_content(path, count)
-    cols = _decode_records(content, volume_in_hand)
+    cols = _decode_records(content, volume_in_hand, price_divisor(path))
     keys = tuple(cols.keys())
     return [dict(zip(keys, row, strict=False)) for row in zip(*(cols[k] for k in keys), strict=False)]
 
@@ -188,7 +236,8 @@ def parse_day_file(file_path, max_days: int | None = None) -> pl.DataFrame:
         return pl.DataFrame()
 
     # 批量解析：numpy frombuffer 一次解码，直接按列构建 DataFrame，避免逐记录建字典
-    cols = _decode_records(_load_content(path, max_days), is_index_file(path))
+    cols = _decode_records(_load_content(path, max_days), is_index_file(path),
+                           price_divisor(path))
     return pl.DataFrame({
         'date': cols['date'].tolist(),
         'open': cols['open'],

@@ -715,6 +715,17 @@ class TdxHandler(DataSourceBase):
             logger.warning(f"tdx get_stock_data({ts_code}) 失败: {e}")
             return pl.DataFrame()
 
+    def get_fund_data(self, ts_code: str, start_date: str, end_date: str,
+                      freq: str = 'daily', adjustment_type: str = 'hfq'):
+        """标准接口：获取基金（ETF/LOF/封闭式/REITs）日线数据。
+
+        基金与个股共用通达信 lday 目录与 32 字节布局，差异只在价格缩放
+        （基金 ÷1000，由 ``tdx_day_parser`` 按代码段自动处理），因此直接
+        复用 ``get_stock_data`` 的解析 + 归一化出口；不复用个股语义的
+        其他分支（如 stock_basic 前缀过滤、个股复权因子查询）。
+        """
+        return self.get_stock_data(ts_code, start_date, end_date, freq, adjustment_type)
+
     def get_index_data(self, ts_code: str, start_date: str, end_date: str,
                        freq: str = 'daily'):
         """

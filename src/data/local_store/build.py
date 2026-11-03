@@ -4,7 +4,7 @@
 
 用法（项目根目录执行）::
 
-    # 全市场首建（个股 + 指数），只读 .day，不写库
+    # 全市场首建（个股 + 指数 + 基金），只读 .day，不写库
     .venv\\Scripts\\python.exe -m src.data.local_store build --all
 
     # 预演，只统计不落盘
@@ -76,8 +76,9 @@ def _valid_stock_code(code: str, market: str) -> bool:
 def discover_local_files(tdx_path: Path, data_type: str = 'all') -> list[tuple[str, str, Path]]:
     """扫描通达信 lday 目录，返回 (data_type, ts_code, 文件路径)。
 
-    ``data_type`` 取 ``stock`` / ``index``；基金、债券等非行情标的跳过，
-    保持与画图/回测实际读取的资产类型一致。
+    ``data_type`` 取 ``stock`` / ``index`` / ``fund``：基金（ETF/LOF/封闭式/
+    REITs）与个股共用 lday 目录和 32 字节布局，但价格缩放为 ÷1000，必须
+    单独成类，不能混入 ``stock`` 目录（否则回测会拿到 10 倍价格）。
     """
     found: list[tuple[str, str, Path]] = []
     for market in ('sh', 'sz', 'bj'):
@@ -93,7 +94,7 @@ def discover_local_files(tdx_path: Path, data_type: str = 'all') -> list[tuple[s
             if is_index_code(ts_code):
                 kind = 'index'
             elif is_fund_code(code, market):
-                continue
+                kind = 'fund'
             elif _valid_stock_code(code, market):
                 kind = 'stock'
             else:
@@ -167,6 +168,10 @@ def build_frame(
     if data_type == 'stock':
         qfq, hfq = _factor_arrays(
             factor_store, ts_code, raw['date'].to_list(), raw['close'].to_list())
+    # data_type == 'fund'：本地因子快照与分红快照当前均无基金记录
+    # （stock_adj_factor / stock_dividend 里基金行为 0），因此基金不查因子，
+    # 统一按因子 1.0（原始价）写入；请求复权时由 DataFetcher 显式告警，
+    # 不做「伪复权」也不把因子伪造成非 1 值。
 
     frame = raw.with_columns(pl.lit(ts_code).alias('ts_code'))
     if qfq is not None and hfq is not None:
@@ -380,7 +385,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     build_cmd.add_argument('--all', action='store_true', help='全市场全量重建（默认）')
     build_cmd.add_argument('--codes', default='', help='逗号分隔的 ts_code 列表')
     build_cmd.add_argument('--since', default='', help='只更新该日期之后的记录（YYYY-MM-DD）')
-    build_cmd.add_argument('--data-type', default='all', choices=['all', 'stock', 'index'])
+    build_cmd.add_argument('--data-type', default='all',
+                           choices=['all', 'stock', 'index', 'fund'])
     build_cmd.add_argument('--dry-run', action='store_true', help='只统计不落盘')
 
     factor_cmd = sub.add_parser('refresh-factors', help='从远程库刷新因子/分红快照')

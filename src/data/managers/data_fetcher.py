@@ -26,7 +26,7 @@ from src.data.local_store import get_local_quote_store, remote_database_enabled
 from src.data.local_store import metrics as route_metrics
 from src.data.managers.source_worker import call_source
 from src.data.tdx_day_parser import build_day_file_path, read_recent_records
-from src.utils.code_converter import is_index_code, parse_code
+from src.utils.code_converter import is_fund_code, is_index_code, parse_code
 from src.utils.config import remote_sources_enabled
 from src.utils.date_utils import parse_date
 from src.utils.exceptions import DataSourceException
@@ -116,16 +116,20 @@ class DataFetcher:
         # 一次性识别并缓存源能力
         supports_stock = hasattr(source, 'get_stock_data') or hasattr(source, 'get_kline_data')
         supports_index = hasattr(source, 'get_index_data') or hasattr(source, 'get_kline_data')
+        supports_fund = hasattr(source, 'get_fund_data') or hasattr(source, 'get_stock_data') \
+            or hasattr(source, 'get_kline_data')
         is_local = bool(getattr(source, 'is_local', False))
         self._source_capabilities[source] = {
             'supports_stock': supports_stock,
             'supports_index': supports_index,
+            'supports_fund': supports_fund,
             'is_local': is_local,
         }
 
         logger.info(
             f"注册数据源: {source_name} "
-            f"(stock={supports_stock}, index={supports_index}, local={is_local})"
+            f"(stock={supports_stock}, index={supports_index}, "
+            f"fund={supports_fund}, local={is_local})"
         )
 
     def get_sources(self) -> List:
@@ -288,6 +292,14 @@ class DataFetcher:
                         **{"symbol": stock_code, "data_type": "index"})
             return self.get_index_data(stock_code, start_date, end_date, frequency)
 
+        # 基金（ETF/LOF/封闭式/REITs）不能按个股取数：价格缩放为 ÷1000、
+        # 复权因子来源为空，且个股前缀过滤会排除 51/15 等代码段。
+        if is_fund_code(stock_code):
+            logger.info(f"{stock_code} 为基金代码，改走基金取数路径",
+                        **{"symbol": stock_code, "data_type": "fund"})
+            return self.get_fund_data(stock_code, start_date, end_date, frequency,
+                                      adjustment_type, as_of)
+
         # get/set 必须使用完全一致的参数，否则精确命中失效且会跨复权/as_of 串用
         cache_params = {
             'frequency': frequency,
@@ -369,6 +381,12 @@ class DataFetcher:
         for code in stock_codes:
             if is_index_code(code):
                 frame = self.get_index_data(code, start_date, end_date, frequency)
+                if not frame.is_empty():
+                    result[code] = frame
+                continue
+            if is_fund_code(code):
+                frame = self.get_fund_data(code, start_date, end_date, frequency,
+                                           adjustment_type, as_of)
                 if not frame.is_empty():
                     result[code] = frame
                 continue
@@ -501,6 +519,80 @@ class DataFetcher:
                     'index', index_code, start_date, end_date, db_data):
                 global_data_cache.set(db_data, 'index', index_code, start_date, end_date,
                                     **cache_params)
+                return db_data
+
+        return pl.DataFrame()
+
+    def get_fund_data(self, fund_code: str, start_date: str, end_date: str,
+                      frequency: str = '1d', adjustment_type: str = 'hfq',
+                      as_of: date | None = None) -> pl.DataFrame:
+        """获取基金（ETF/LOF/封闭式/REITs）行情。
+
+        路由与个股同构：缓存 → 本地列存（``data_type='fund'``）→ 通达信
+        ``.day`` 兜底 → 仅显式允许时回退远程库。基金不复用个股逻辑，
+        因为两者价格缩放不同（基金 ÷1000），且基金代码不属于 ``stock_basic``
+        的合法前缀。
+
+        复权口径：本地因子/分红快照目前没有基金记录，``qfq_factor`` /
+        ``hfq_factor`` 全为 1.0；请求复权时会由 ``_apply_adjustment``
+        输出显式告警，而不是静默伪造成非 1 因子。
+        """
+        cache_params = {
+            'frequency': frequency,
+            'adjustment_type': adjustment_type,
+            'as_of': str(as_of) if as_of else None,
+        }
+        cached_data = global_data_cache.get('fund', fund_code, start_date, end_date,
+                                            **cache_params)
+        if cached_data is not None:
+            logger.info(f"从缓存获取基金数据: {fund_code} {start_date} to {end_date}",
+                        **{"symbol": fund_code, "start": start_date, "end": end_date,
+                           "frequency": frequency, "adjustment": adjustment_type,
+                           "source": "cache"})
+            return cached_data
+
+        # 周/月线：先取日线（复用日线缓存），再聚合到目标频率后按目标频率缓存
+        if frequency in ('1w', '1m'):
+            daily = self.get_fund_data(fund_code, start_date, end_date,
+                                       '1d', adjustment_type, as_of)
+            if daily.is_empty():
+                return daily
+            converted = self._convert_frequency(daily, frequency)
+            global_data_cache.set(converted, 'fund', fund_code, start_date, end_date,
+                                  **cache_params)
+            return converted
+
+        # 1) 本地列存（主路径，零公网往返）
+        local_data = self._get_data_from_local_store(
+            'fund', fund_code, start_date, end_date, frequency)
+        if local_data is not None and not local_data.is_empty():
+            adjusted = self._apply_adjustment(local_data, adjustment_type, as_of)
+            global_data_cache.set(adjusted, 'fund', fund_code, start_date, end_date,
+                                  **cache_params)
+            return adjusted
+
+        # 2) 数据源（通达信本地 .day 兜底；数据源路径不支持 as_of，固定 None）
+        data = self._get_data_from_sources(
+            'fund', fund_code, start_date, end_date, frequency, adjustment_type)
+        if not data.is_empty():
+            data = self._apply_adjustment(data, adjustment_type, as_of=None)
+            source_cache_params = dict(cache_params)
+            source_cache_params['as_of'] = None
+            global_data_cache.set(data, 'fund', fund_code, start_date, end_date,
+                                  **source_cache_params)
+            return data
+
+        # 3) 远程数据库（仅显式允许；残缺命中不得短路）
+        if remote_database_enabled(getattr(self, 'config', None)):
+            started = time.perf_counter()
+            db_data = self._get_data_from_database(
+                'fund', fund_code, start_date, end_date, frequency)
+            route_metrics.record(route_metrics.ROUTE_DB, hit=not db_data.is_empty(),
+                                 elapsed_ms=(time.perf_counter() - started) * 1000)
+            if not db_data.is_empty() and not self._db_result_is_partial(
+                    'fund', fund_code, start_date, end_date, db_data):
+                global_data_cache.set(db_data, 'fund', fund_code, start_date, end_date,
+                                      **cache_params)
                 return db_data
 
         return pl.DataFrame()
@@ -888,7 +980,7 @@ class DataFetcher:
         Raises:
             DataSourceException: 远程禁用时本地文件缺失，或全部数据源故障
         """
-        type_name = "股票" if data_type == "stock" else "指数"
+        type_name = {'stock': '股票', 'index': '指数', 'fund': '基金'}.get(data_type, data_type)
         remote_allowed = self._remote_sources_allowed()
         local_file = self._local_day_file_path(code)
 
@@ -1097,7 +1189,7 @@ class DataFetcher:
         """并行调用多个远程源，命中即取消其他"""
         futures = {}
         resolved = set()
-        type_name = "股票" if data_type == "stock" else "指数"
+        type_name = {'stock': '股票', 'index': '指数', 'fund': '基金'}.get(data_type, data_type)
 
         for src in sources:
             call = self._build_source_call(src, data_type, code, start_date, end_date,
@@ -1344,6 +1436,37 @@ class DataFetcher:
                         f"数据源 {source_name} 的 get_stock_data 不接受复权参数，"
                         f"将按源默认口径返回（可能为未复权价）"
                     )
+                return 'get_stock_data', kwargs
+            if hasattr(source, 'get_kline_data'):
+                return 'get_kline_data', {
+                    'stock_code': code,
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'adjust': adjustment_type,
+                }
+        elif data_type == 'fund':
+            # 基金优先专有方法；TDX 等本地源直接用 get_stock_data 读同一 .day
+            if hasattr(source, 'get_fund_data'):
+                kwargs = {
+                    'ts_code': code,
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'freq': freq,
+                }
+                adjust_param = self._resolve_adjust_param(source)
+                if adjust_param:
+                    kwargs[adjust_param] = adjustment_type
+                return 'get_fund_data', kwargs
+            if hasattr(source, 'get_stock_data'):
+                kwargs = {
+                    'ts_code': code,
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'freq': freq,
+                }
+                adjust_param = self._resolve_adjust_param(source)
+                if adjust_param:
+                    kwargs[adjust_param] = adjustment_type
                 return 'get_stock_data', kwargs
             if hasattr(source, 'get_kline_data'):
                 return 'get_kline_data', {
