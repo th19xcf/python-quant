@@ -98,6 +98,24 @@ class DataSettings(BaseSettings):
     # 避免第三方库挂死拖住整个主进程。
     use_subprocess_sources: bool = Field(default=False, description="远程数据源是否启用子进程隔离")
 
+    # 本地列存（Parquet）：行情/因子/分红的主读取源。
+    # 开启后取数顺序为「本地列存 → 通达信 .day → 远程库（显式允许时）→ 远程源」，
+    # 画图与回测不再依赖公网 MySQL 的往返延迟。
+    local_store_enabled: bool = Field(
+        default=True,
+        description="是否启用本地 Parquet 列存作为行情/因子/分红主读取源",
+    )
+    local_store_path: str = Field(
+        default="data/local_store",
+        description="本地列存根目录（相对项目根目录或绝对路径）",
+    )
+    # 远程数据库兜底（默认关闭）：关闭时读侧不发起任何 MySQL 查询；
+    # 仅当本地列存与通达信都没有数据时才允许显式打开。
+    remote_database_fallback: bool = Field(
+        default=False,
+        description="本地与通达信均无数据时，是否允许回退到远程 MySQL 读行情",
+    )
+
     # 数据源重试配置
     retry_max_retries: int = Field(default=3, description="数据源请求最大重试次数")
     retry_delay: float = Field(default=1.0, description="首次重试间隔(秒)")

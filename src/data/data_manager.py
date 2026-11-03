@@ -91,6 +91,21 @@ class DataManager(DataService):
             logger.debug(f"{ts_code} 为指数代码，无分红数据")
             return pl.DataFrame()
 
+        # 本地分红快照优先：命中即零公网往返，列与 stock_dividend 表一致
+        try:
+            from src.data.local_store import get_local_factor_store
+
+            local = get_local_factor_store(
+                getattr(self, 'config', None)).dividends(ts_code)
+        except (ImportError, OSError, ValueError, TypeError) as exc:
+            logger.debug(f"读取本地分红快照失败，回退数据库: {exc}")
+            local = None
+        if local is not None and not local.is_empty():
+            try:
+                return MemoryOptimizer.optimize_dataframe(local.clone())
+            except (ValueError, TypeError):
+                return local.clone()
+
         # 检查数据库连接
         if not self.db_manager:
             logger.warning("数据库管理器未初始化，无法获取分红配股数据")

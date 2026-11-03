@@ -8,7 +8,11 @@ from typing import Any, Dict, List
 
 from loguru import logger
 
-from src.backtest.engine._parallel_worker import clone_strategy, run_backtest_worker
+from src.backtest.engine._parallel_worker import (
+    clone_strategy,
+    init_worker,
+    run_backtest_worker_cached,
+)
 from src.backtest.engine.base_engine import BaseBacktestEngine
 from src.backtest.engine.execution_core import EventBacktestRunner, StStatusEntry
 
@@ -307,11 +311,22 @@ class BacktestEngine(BaseBacktestEngine):
         results = []
         # 纯 Python 回测循环受 GIL 限制，线程无法并行 CPU 计算，改用进程池利用多核
         workers = max(1, min(max_workers, len(param_combinations), os.cpu_count() or 1))
-        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+        # 行情数据在池启动时注入一次，各参数组合只传参数字典，
+        # 避免 N 个组合各 pickle 一遍大 DataFrame
+        payload = {
+            'engine_cls': BacktestEngine,
+            'strategy': self.strategy,
+            'data': frame,
+            'cost_model': self.cost_model,
+            'initial_capital': initial_capital,
+            'risk_engine': self.risk_engine,
+            'context': context,
+        }
+        with concurrent.futures.ProcessPoolExecutor(
+                max_workers=workers, initializer=init_worker, initargs=(payload,)
+        ) as executor:
             future_to_param = {
-                executor.submit(run_backtest_worker, BacktestEngine, self.strategy,
-                                frame, self.cost_model, params, initial_capital,
-                                self.risk_engine, context): params
+                executor.submit(run_backtest_worker_cached, params): params
                 for params in param_combinations
             }
 

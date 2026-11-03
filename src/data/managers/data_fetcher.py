@@ -22,8 +22,10 @@ from loguru import logger
 
 from src.data.data_cache import global_data_cache
 from src.data.data_source_health import get_global_health_checker
+from src.data.local_store import get_local_quote_store, remote_database_enabled
+from src.data.local_store import metrics as route_metrics
 from src.data.managers.source_worker import call_source
-from src.data.tdx_day_parser import build_day_file_path
+from src.data.tdx_day_parser import build_day_file_path, read_recent_records
 from src.utils.code_converter import is_index_code, parse_code
 from src.utils.config import remote_sources_enabled
 from src.utils.date_utils import parse_date
@@ -159,6 +161,107 @@ class DataFetcher:
                 available_sources.append(source)
         return available_sources
 
+    # ------------------------------------------------------------------
+    # 本地列存读取（主路径）
+    # ------------------------------------------------------------------
+    def _local_store_instance(self):
+        """懒加载本地列存单例；未启用时返回禁用实例。"""
+        if getattr(self, '_local_store', None) is None:
+            self._local_store = get_local_quote_store(getattr(self, 'config', None))
+        return self._local_store
+
+    def _tdx_source_path(self, data_type: str, code: str) -> Path | None:
+        """构造对应标的的通达信 .day 路径（用于新鲜度判断）。"""
+        settings = getattr(getattr(self, 'config', None), 'data', None)
+        tdx_root = str(getattr(settings, 'tdx_data_path', '') or '')
+        if not tdx_root:
+            return None
+        try:
+            symbol, market = parse_code(code)
+        except ValueError:
+            return None
+        path = build_day_file_path(tdx_root, market.lower(), symbol)
+        return path if path.exists() else None
+
+    def _last_tdx_date(self, data_type: str, code: str) -> date | None:
+        """读通达信文件末条记录日期（32 字节，成本可忽略）。"""
+        path = self._tdx_source_path(data_type, code)
+        if path is None:
+            return None
+        try:
+            records = read_recent_records(path, count=1)
+        except (OSError, ValueError, RuntimeError):
+            return None
+        if not records:
+            return None
+        return parse_date(records[-1].get('date'))
+
+    def _get_data_from_local_store(self, data_type: str, code: str,
+                                   start_date: str, end_date: str,
+                                   frequency: str) -> pl.DataFrame | None:
+        """从本地列存读取；未覆盖 / 源端已更新 / 未启用时返回 None。"""
+        store = self._local_store_instance()
+        if store is None or not store.enabled:
+            return None
+
+        started = time.perf_counter()
+        # 源 .day 比构建设备更新 → 本地存量落后，回退 TDX 而不是返回旧数据
+        if store.is_stale(data_type, code, self._tdx_source_path(data_type, code)):
+            route_metrics.record(route_metrics.ROUTE_LOCAL, hit=False,
+                                 elapsed_ms=(time.perf_counter() - started) * 1000)
+            logger.info(f"[local-store] {code} 源文件已更新，回退通达信",
+                        **{"symbol": code, "source": "local_store", "hit": False})
+            return None
+
+        frame = store.read_daily(data_type, code, start_date, end_date, frequency)
+        elapsed = (time.perf_counter() - started) * 1000
+        route_metrics.record(route_metrics.ROUTE_LOCAL, hit=frame is not None,
+                             elapsed_ms=elapsed)
+        if frame is None:
+            logger.debug(f"[local-store] {code} 未覆盖 {start_date}~{end_date}，回退",
+                         **{"symbol": code, "source": "local_store", "hit": False})
+        else:
+            # 与 TDX/远程源出口保持一致的内存压缩（pct_chg/change→Float32 等），
+            # 保证同一标的在新旧路径下逐列数值完全一致
+            frame = MemoryOptimizer.optimize_dataframe(frame, enable_sparse=True)
+            logger.info(f"[local-store] 命中 {code} {start_date}~{end_date} "
+                        f"({frame.height} 行, {elapsed:.2f} ms)",
+                        **{"symbol": code, "source": "local_store", "hit": True,
+                           "rows": frame.height, "elapsed_ms": round(elapsed, 3)})
+        return frame
+
+    def _db_result_is_partial(self, data_type: str, code: str,
+                              start_date: str, end_date: str,
+                              data: pl.DataFrame) -> bool:
+        """判断数据库结果是否为"残缺命中"。
+
+        旧逻辑只要非空就短路返回，导致部分落库（例如只有 2024-01 的 22 行）
+        被当成完整历史。这里以本地列存/通达信末端日期为基准做新鲜度校验。
+        """
+        if data.is_empty() or 'date' not in data.columns:
+            return False
+        latest = parse_date(data['date'].max())
+        if latest is None:
+            return False
+
+        expected: date | None = None
+        store = self._local_store_instance()
+        if store is not None:
+            coverage = store.coverage(data_type, code)
+            if coverage is not None:
+                expected = coverage.end
+        if expected is None:
+            expected = self._last_tdx_date(data_type, code)
+
+        if expected is not None and latest < expected:
+            logger.warning(
+                f"[db-partial] {code} 库内最新 {latest} 落后本地/通达信 {expected}，"
+                f"拒绝短路并回退完整数据源",
+                **{"symbol": code, "source": "remote_db", "hit": False,
+                   "db_latest": str(latest), "expected_latest": str(expected)})
+            return True
+        return False
+
     def get_stock_data(self, stock_code: str, start_date: str, end_date: str,
                        frequency: str = '1d', adjustment_type: str = 'hfq',
                        as_of: date | None = None) -> pl.DataFrame:
@@ -210,16 +313,16 @@ class DataFetcher:
                                   **cache_params)
             return converted
 
-        # 从数据库获取（_get_data_from_database 内部处理 as_of 截断）
-        db_data = self._get_data_from_database('stock', stock_code, start_date, end_date,
-                                                frequency, adjustment_type, as_of)
-        if not db_data.is_empty():
-            db_data = self._apply_adjustment(db_data, adjustment_type, as_of)
-            global_data_cache.set(db_data, 'stock', stock_code, start_date, end_date,
+        # 1) 本地列存（主路径，零公网往返）
+        local_data = self._get_data_from_local_store(
+            'stock', stock_code, start_date, end_date, frequency)
+        if local_data is not None and not local_data.is_empty():
+            adjusted = self._apply_adjustment(local_data, adjustment_type, as_of)
+            global_data_cache.set(adjusted, 'stock', stock_code, start_date, end_date,
                                 **cache_params)
-            return db_data
+            return adjusted
 
-        # 从数据源获取（数据源一般不支持 as_of，直接传 None）
+        # 2) 数据源（通达信本地 .day 兜底；数据源一般不支持 as_of，直接传 None）
         data = self._get_data_from_sources('stock', stock_code, start_date, end_date, frequency, adjustment_type)
 
         if not data.is_empty():
@@ -229,8 +332,116 @@ class DataFetcher:
             source_cache_params['as_of'] = None
             global_data_cache.set(data, 'stock', stock_code, start_date, end_date,
                                 **source_cache_params)
+            return data
 
-        return data
+        # 3) 远程数据库（仅显式允许；残缺命中不得短路）
+        if remote_database_enabled(getattr(self, 'config', None)):
+            started = time.perf_counter()
+            db_data = self._get_data_from_database('stock', stock_code, start_date, end_date,
+                                                    frequency, adjustment_type, as_of)
+            route_metrics.record(route_metrics.ROUTE_DB, hit=not db_data.is_empty(),
+                                 elapsed_ms=(time.perf_counter() - started) * 1000)
+            if not db_data.is_empty() and not self._db_result_is_partial(
+                    'stock', stock_code, start_date, end_date, db_data):
+                db_data = self._apply_adjustment(db_data, adjustment_type, as_of)
+                global_data_cache.set(db_data, 'stock', stock_code, start_date, end_date,
+                                    **cache_params)
+                return db_data
+
+        return pl.DataFrame()
+
+    def get_stock_batch(self, stock_codes: List[str], start_date: str, end_date: str,
+                        frequency: str = '1d', adjustment_type: str = 'hfq',
+                        as_of: date | None = None) -> dict[str, pl.DataFrame]:
+        """批量取多票日线（组合回测/横截面一次加载，避免每票重复路由开销）。
+
+        与 ``get_stock_data`` 保持同一路由优先级与同一出口复权：
+        缓存 → 本地列存批量 → 逐票兜底（TDX → 远程）。
+        返回只包含有数据的标的；缺失标的不会出现在 dict 中。
+        """
+        result: dict[str, pl.DataFrame] = {}
+        cache_params = {
+            'frequency': frequency,
+            'adjustment_type': adjustment_type,
+            'as_of': str(as_of) if as_of else None,
+        }
+        pending: List[str] = []
+        for code in stock_codes:
+            if is_index_code(code):
+                frame = self.get_index_data(code, start_date, end_date, frequency)
+                if not frame.is_empty():
+                    result[code] = frame
+                continue
+            cached = global_data_cache.get('stock', code, start_date, end_date,
+                                           **cache_params)
+            if cached is not None:
+                route_metrics.record(route_metrics.ROUTE_CACHE, hit=True, elapsed_ms=0.0)
+                result[code] = cached
+            else:
+                pending.append(code)
+
+        if pending and frequency in ('1w', '1m'):
+            for code in pending:
+                frame = self.get_stock_data(code, start_date, end_date, frequency,
+                                            adjustment_type, as_of)
+                if not frame.is_empty():
+                    result[code] = frame
+            return result
+
+        # 本地列存批量直读：每票一次 Parquet 读，出口统一复权
+        if pending:
+            local_hits, pending = self._batch_from_local_store(
+                pending, start_date, end_date, frequency, adjustment_type,
+                as_of, cache_params)
+            result.update(local_hits)
+
+        # 本地未覆盖的标的逐票走完整路由（TDX → 远程，仍然受显式开关约束）
+        for code in pending:
+            try:
+                frame = self.get_stock_data(code, start_date, end_date, frequency,
+                                            adjustment_type, as_of)
+            # 兜底理由：单票无数据（退市/本地无文件）不应中断整批
+            except (DataSourceException, OSError, ValueError) as exc:
+                logger.warning(f"[batch] {code} 取数失败，跳过: {exc}")
+                continue
+            if not frame.is_empty():
+                result[code] = frame
+
+        return result
+
+    def _batch_from_local_store(self, codes: List[str], start_date: str,
+                                end_date: str, frequency: str,
+                                adjustment_type: str, as_of: date | None,
+                                cache_params: dict[str, Any],
+                                ) -> tuple[dict[str, pl.DataFrame], List[str]]:
+        """批量读本地列存，返回 (命中结果, 仍需逐票回退的标的)。"""
+        hits: dict[str, pl.DataFrame] = {}
+        pending: List[str] = []
+        store = self._local_store_instance()
+        if store is None or not store.enabled:
+            return hits, list(codes)
+
+        for code in codes:
+            started = time.perf_counter()
+            if store.is_stale('stock', code, self._tdx_source_path('stock', code)):
+                pending.append(code)
+                continue
+            frame = store.read_daily('stock', code, start_date, end_date, frequency)
+            if frame is None or frame.is_empty():
+                route_metrics.record(
+                    route_metrics.ROUTE_LOCAL, hit=False,
+                    elapsed_ms=(time.perf_counter() - started) * 1000)
+                pending.append(code)
+                continue
+            frame = MemoryOptimizer.optimize_dataframe(frame, enable_sparse=True)
+            adjusted = self._apply_adjustment(frame, adjustment_type, as_of)
+            global_data_cache.set(adjusted, 'stock', code, start_date, end_date,
+                                  **cache_params)
+            route_metrics.record(
+                route_metrics.ROUTE_LOCAL, hit=True,
+                elapsed_ms=(time.perf_counter() - started) * 1000)
+            hits[code] = adjusted
+        return hits, pending
 
     def get_index_data(self, index_code: str, start_date: str, end_date: str, frequency: str = '1d') -> pl.DataFrame:
         """
@@ -265,23 +476,34 @@ class DataFetcher:
                                   **cache_params)
             return converted
 
-        # 从数据库获取
-        db_data = self._get_data_from_database('index', index_code, start_date, end_date, frequency)
-        if not db_data.is_empty():
-            # 存入缓存
-            global_data_cache.set(db_data, 'index', index_code, start_date, end_date,
+        # 1) 本地列存（主路径）
+        local_data = self._get_data_from_local_store(
+            'index', index_code, start_date, end_date, frequency)
+        if local_data is not None and not local_data.is_empty():
+            global_data_cache.set(local_data, 'index', index_code, start_date, end_date,
                                 **cache_params)
-            return db_data
+            return local_data
 
-        # 从数据源获取
+        # 2) 数据源（通达信本地 .day 兜底）
         data = self._get_data_from_sources('index', index_code, start_date, end_date, frequency)
-
-        # 存入缓存
         if not data.is_empty():
             global_data_cache.set(data, 'index', index_code, start_date, end_date,
                                 **cache_params)
+            return data
 
-        return data
+        # 3) 远程数据库（仅显式允许；残缺命中不得短路）
+        if remote_database_enabled(getattr(self, 'config', None)):
+            started = time.perf_counter()
+            db_data = self._get_data_from_database('index', index_code, start_date, end_date, frequency)
+            route_metrics.record(route_metrics.ROUTE_DB, hit=not db_data.is_empty(),
+                                 elapsed_ms=(time.perf_counter() - started) * 1000)
+            if not db_data.is_empty() and not self._db_result_is_partial(
+                    'index', index_code, start_date, end_date, db_data):
+                global_data_cache.set(db_data, 'index', index_code, start_date, end_date,
+                                    **cache_params)
+                return db_data
+
+        return pl.DataFrame()
 
     def _convert_frequency(self, df: pl.DataFrame, frequency: str) -> pl.DataFrame:
         """将日线数据聚合到周线/月线（失败时 DataProcessor 会记录日志并返回原数据）"""
@@ -451,6 +673,64 @@ class DataFetcher:
             logger.warning(f"从数据库获取{data_type}数据失败: {e}")
             return pl.DataFrame()
 
+    def _get_dividend_events(self, code: str, as_of: date) -> pl.DataFrame:
+        """读取 ``ex_date > as_of`` 的除权事件，本地分红快照优先。
+
+        本地快照命中时零公网往返；仅在本地快照不可用/为空且显式允许远程时
+        才回退 MySQL，保持 PIT 截断语义与旧路径一致。
+        """
+        columns = ['ex_date', 'cash_div', 'share_div',
+                   'rights_issue_ratio', 'rights_issue_price']
+
+        started = time.perf_counter()
+        try:
+            from src.data.local_store import get_local_factor_store
+
+            local = get_local_factor_store(getattr(self, 'config', None)).dividends(code)
+        except (ImportError, OSError, ValueError, TypeError) as exc:
+            logger.debug(f"读取本地分红快照失败，回退数据库: {exc}")
+            local = None
+        if local is not None and not local.is_empty():
+            events = local.filter(
+                pl.col('ex_date').is_not_null() & (pl.col('ex_date') > as_of)
+            ).select(columns).sort('ex_date')
+            route_metrics.record(route_metrics.ROUTE_LOCAL, hit=True,
+                                 elapsed_ms=(time.perf_counter() - started) * 1000)
+            if not events.is_empty():
+                return events
+
+        if not remote_database_enabled(getattr(self, 'config', None)):
+            return pl.DataFrame()
+        if not self.db_manager or not self.db_manager.is_connected():
+            return pl.DataFrame()
+
+        try:
+            from sqlalchemy import select
+
+            from src.database.models.stock import StockDividend
+
+            stmt: Any = (
+                select(
+                    StockDividend.ex_date,
+                    StockDividend.cash_div,
+                    StockDividend.share_div,
+                    StockDividend.rights_issue_ratio,
+                    StockDividend.rights_issue_price,
+                )
+                .where(StockDividend.ts_code == code)
+                .where(cast(Any, StockDividend.ex_date > as_of))
+                .order_by(StockDividend.ex_date)
+            )
+            with self.db_manager.engine.connect() as conn:
+                events = pl.read_database(stmt, conn)
+            route_metrics.record(route_metrics.ROUTE_DB, hit=not events.is_empty(),
+                                 elapsed_ms=(time.perf_counter() - started) * 1000)
+            return events
+        # 兜底理由：远程读取失败时按无事件处理（与旧逻辑一致的降级路径）
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"读取 {code} 除权事件失败，按无事件处理: {exc}")
+            return pl.DataFrame()
+
     def _rollback_qfq_factor(self, df: pl.DataFrame, code: str,
                              as_of: date) -> pl.DataFrame:
         """按 as_of 回滚 qfq_factor（向量化，O((N+E) log N)）。
@@ -462,26 +742,10 @@ class DataFetcher:
         ``searchsorted`` 广播回每行，避免"每行 × 每事件"的双重循环。
         """
         import numpy as np
-        from sqlalchemy import select
 
         from src.data.adj_factor_calculator import calc_dividend_event_factor
-        from src.database.models.stock import StockDividend
 
-        stmt: Any = (
-            select(
-                StockDividend.ex_date,
-                StockDividend.cash_div,
-                StockDividend.share_div,
-                StockDividend.rights_issue_ratio,
-                StockDividend.rights_issue_price,
-            )
-            .where(StockDividend.ts_code == code)
-            .where(cast(Any, StockDividend.ex_date > as_of))
-            .order_by(StockDividend.ex_date)
-        )
-        with self.db_manager.engine.connect() as conn:
-            events = pl.read_database(stmt, conn)
-
+        events = self._get_dividend_events(code, as_of)
         if events.is_empty():
             return df
 

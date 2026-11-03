@@ -90,10 +90,11 @@ def _prepare_backtest_data(
     end_date: str | None,
     data: Union[pl.DataFrame, Dict[str, pl.DataFrame]] | None,
     db_manager: Any,
+    ts_codes: list[str] | None = None,
 ) -> tuple[Union[pl.DataFrame, Dict[str, pl.DataFrame]] | None, Any]:
     """数据准备：data 已提供时直接返回；否则按需取数并返回可复用的 db 句柄。"""
     db = db_manager
-    if data is not None or not ts_code:
+    if data is not None or not (ts_code or ts_codes):
         return data, db
 
     # 按需 import 避免循环依赖
@@ -107,6 +108,11 @@ def _prepare_backtest_data(
         if not db.is_connected():
             db.connect()
         fetcher = DataFetcher(db.config, db_manager=db)
+    if ts_codes:
+        # 组合/横截面一次加载面板，避免逐票重复路由
+        return fetcher.get_stock_batch(
+            ts_codes, start_date or '', end_date or '', adjustment_type='hfq',
+        ), db
     data = fetcher.get_stock_data(
         ts_code, start_date or '', end_date or '',
         adjustment_type='hfq',
@@ -223,6 +229,7 @@ def run_backtest(
     industry_map: Dict[str, str] | None = None,
     st_status: Dict[str, Any] | None = None,
     db_manager: Any = None,
+    ts_codes: list[str] | None = None,
     **kwargs,
 ) -> Dict[str, Any]:
     """
@@ -250,6 +257,7 @@ def run_backtest(
                        不传时若持有 db_manager 会自动从 ST 时间维表加载。
         db_manager:    可选的数据库管理器；传入后即使 data 已提供也会加载
                        ST 时间维表。为 None 且需要取数时自动创建。
+        ts_codes:      组合回测的标的列表；未传 data 时一次批量加载面板。
 
     Returns:
         dict —— BacktestEngine.run_backtest() 的返回值，包含：
@@ -261,7 +269,9 @@ def run_backtest(
     risk_engine = _assemble_risk_engine(risk_engine, enable_default_risk)
 
     # ---- 数据准备 + ST 时间维表 ----
-    data, db = _prepare_backtest_data(ts_code, start_date, end_date, data, db_manager)
+    data, db = _prepare_backtest_data(
+        ts_code, start_date, end_date, data, db_manager, ts_codes,
+    )
     st_status = _load_st_status(
         st_status, data, ts_code, start_date, end_date, db, db_manager,
     )

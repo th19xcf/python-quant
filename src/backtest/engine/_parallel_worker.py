@@ -55,6 +55,41 @@ def run_backtest_worker(engine_cls: Any, strategy: Any, data: Any, cost_model: A
     Returns:
         Dict[str, Any]: 回测结果（附带 params）
     """
+    return _run(engine_cls, strategy, data, cost_model, params, initial_capital,
+                risk_engine, context)
+
+
+# ----------------------------------------------------------------------
+# 进程池复用：数据在池启动时注入一次，后续每个参数组合只传参数字典
+# ----------------------------------------------------------------------
+_WORKER_STATE: Dict[str, Any] = {}
+
+
+def init_worker(payload: Dict[str, Any]) -> None:
+    """进程池 initializer：把回测上下文（含行情面板）注入子进程全局。
+
+    避免每个参数组合都通过 pickle 传一遍大 DataFrame —— 200 只 × 5 年
+    面板在 Windows spawn 下重复序列化是主要瓶颈。
+    """
+    _WORKER_STATE.clear()
+    _WORKER_STATE.update(payload)
+
+
+def run_backtest_worker_cached(params: Dict[str, Any]) -> Dict[str, Any]:
+    """进程池任务：复用 initializer 注入的数据，只接收本次参数字典。"""
+    state = _WORKER_STATE
+    return _run(
+        state['engine_cls'], state['strategy'], state['data'],
+        state['cost_model'], params, state['initial_capital'],
+        state.get('risk_engine'), state.get('context'),
+    )
+
+
+def _run(engine_cls: Any, strategy: Any, data: Any, cost_model: Any,
+         params: Dict[str, Any], initial_capital: float,
+         risk_engine: Any = None,
+         context: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """实际回测执行体（供一次性任务与缓存任务共用）。"""
     strategy_copy = clone_strategy(strategy, params)
 
     engine = engine_cls(data)

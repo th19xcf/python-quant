@@ -252,6 +252,33 @@ class TdxHandler(DataSourceBase):
             Polars DataFrame包含复权因子
         """
         try:
+            # 本地因子快照优先：命中后完全不发起公网往返，且结果确定（不受远程
+            # 会话抖动影响，避免同一请求多次调用得到不同的因子值）
+            try:
+                from src.data.local_store import get_local_factor_store
+
+                local = get_local_factor_store(getattr(self, 'config', None)).factors(ts_code)
+            except (ImportError, OSError, ValueError, TypeError) as local_exc:
+                logger.debug(f"读取本地因子快照失败，回退数据库: {local_exc}")
+                local = None
+            if local is not None and not local.is_empty():
+                frame = local
+                if start_date:
+                    frame = frame.filter(pl.col('trade_date') >= start_date)
+                if end_date:
+                    frame = frame.filter(pl.col('trade_date') <= end_date)
+                if not frame.is_empty():
+                    logger.debug(f"{ts_code} 使用本地复权因子快照")
+                    return frame.select(['trade_date', 'qfq_factor', 'hfq_factor'])
+
+            from src.data.local_store import remote_database_enabled
+
+            if not remote_database_enabled(getattr(self, 'config', None)):
+                # 显式关闭远程时不得再查 stock_adj_factor，直接走本地分红计算
+                logger.debug(f"{ts_code} 本地无预计算因子且远程已关闭，改用本地分红计算")
+                return self._calculate_adj_factors_from_dividends(
+                    ts_code, start_date, end_date, price_records=price_records)
+
             from src.database.models.stock import StockAdjFactor
 
             session = self._get_thread_safe_session()
@@ -296,6 +323,38 @@ class TdxHandler(DataSourceBase):
         # 混入复权因子计算会污染价格，直接跳过
         if is_index_code(ts_code):
             logger.debug(f"{ts_code} 为指数代码，忽略分红记录")
+            return None
+
+        # 本地分红快照优先：避免公网往返，同时消除远程会话导致的非确定性
+        try:
+            from types import SimpleNamespace
+
+            from src.data.local_store import get_local_factor_store
+
+            local = get_local_factor_store(getattr(self, 'config', None)).dividends(ts_code)
+        except (ImportError, OSError, ValueError, TypeError) as local_exc:
+            logger.debug(f"读取本地分红快照失败，回退数据库: {local_exc}")
+            local = None
+        if local is not None and not local.is_empty():
+            rows = [
+                SimpleNamespace(
+                    ts_code=row['ts_code'],
+                    ex_date=row['ex_date'],
+                    cash_div=row.get('cash_div'),
+                    share_div=row.get('share_div'),
+                    rights_issue_ratio=row.get('rights_issue_ratio'),
+                    rights_issue_price=row.get('rights_issue_price'),
+                )
+                for row in local.filter(pl.col('ex_date').is_not_null()).to_dicts()
+            ]
+            if rows:
+                logger.debug(f"{ts_code} 使用本地分红快照，共 {len(rows)} 条")
+                return rows
+
+        from src.data.local_store import remote_database_enabled
+
+        if not remote_database_enabled(getattr(self, 'config', None)):
+            logger.debug(f"{ts_code} 本地无分红快照且远程已关闭，按无分红处理")
             return None
 
         session = self._get_thread_safe_session()
@@ -504,6 +563,11 @@ class TdxHandler(DataSourceBase):
             # 转换复权因子为LazyFrame
             factors_lazy = factors_df.lazy()
             lazy_df = lazy_df.join(factors_lazy, left_on='date', right_on='trade_date', how='left')
+
+            # 关键：join 之后不保证行序，而 fill_null(strategy='forward') 依赖行序。
+            # 不排序会让同一份数据在不同次调用里填充出不同的因子值（实测可复现），
+            # 因此这里显式按日期升序再前向填充。
+            lazy_df = lazy_df.sort('date')
 
             # 填充缺失的复权因子
             for adj_type in ['qfq', 'hfq']:

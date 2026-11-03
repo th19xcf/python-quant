@@ -126,6 +126,14 @@ class DataService:
             index_code, start_date, end_date, frequency
         )
 
+    def get_stock_batch(self, stock_codes: list[str], start_date: str, end_date: str,
+                        frequency: str = '1d', adjustment_type: str = 'hfq',
+                        as_of: Any = None) -> dict[str, pl.DataFrame]:
+        """批量取多票日线（组合回测/横截面一次加载）。"""
+        return self.data_fetcher.get_stock_batch(
+            stock_codes, start_date, end_date, frequency, adjustment_type, as_of
+        )
+
     def get_available_sources(self) -> list[Any]:
         return self.data_fetcher.get_available_sources()
 
