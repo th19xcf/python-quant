@@ -6,11 +6,18 @@
 页面内部的数据/线程/渲染逻辑全部收敛在 ``src/ui/advice`` 包内。
 """
 
+from typing import Any
+
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 
 class MainWindowAdviceMixin:
     """中央标签页的「每日推荐」入口。"""
+
+    #: 由 MainWindow 提供的中央标签容器
+    tab_widget: Any
+    advice_tab: QWidget
+    advice_page: Any
 
     def create_advice_tab(self):
         """创建每日推荐标签页（由 create_center_area 在末尾追加）。"""

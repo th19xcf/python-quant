@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import polars as pl
 
-from src.alpha.cross_section.cross_sectional import winsorize
 from src.advice.config import FactorSpec, TierConfig
+from src.alpha.cross_section.cross_sectional import winsorize
 
 WINSOR_SUFFIX = '__win'
 MIN_STD = 1e-9

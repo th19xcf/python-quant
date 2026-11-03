@@ -48,7 +48,7 @@ def _seed(candidate: Candidate) -> float:
     return max(1e-4, (float(candidate.score_percentile) - 0.5) ** 1.5)
 
 
-def allocate(candidates: list[Candidate], equity: float,
+def allocate(candidates: list[Candidate], equity: float,  # noqa: C901
              constraints: PortfolioConstraints,
              max_positions: int | None = None) -> list[Allocation]:
     """把候选标的分配为具体仓位与整手股数。"""

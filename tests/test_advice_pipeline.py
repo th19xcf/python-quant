@@ -6,9 +6,10 @@ from __future__ import annotations
 
 from datetime import date
 
+from _advice_synth import build_store
+
 from src.advice.pipeline import AdviceEngine
 from src.advice.universe import list_local_stock_codes
-from _advice_synth import build_store
 
 
 def _codes() -> list[str]:
@@ -36,6 +37,10 @@ def test_generate_advice_schema_and_directions(tmp_path):
     assert all(int(value) % 100 == 0 for value in buys['shares'].to_list())
     assert all(text for text in buys['top_factors'].to_list())
     assert result.trade_date == date(2026, 6, 30)
+    # 短线档位未通过样本外验证：档位说明与 BUY 风险提示都要显式标注
+    short = result.tiers['short']
+    assert any('样本外验证' in text for text in short.notes)
+    assert any('样本外验证' in text for text in buys['risk_notes'].to_list())
 
 
 def test_limit_up_candidate_becomes_avoid(tmp_path):

@@ -107,6 +107,8 @@ class TierConfig:
     max_atr_pct: float
     min_amount: float
     factors: tuple[FactorSpec, ...] = field(default_factory=tuple)
+    #: 档位级风险提示（会写入 TierAdvice.notes 与 BUY 行 risk_notes）
+    note: str = ''
 
     def with_overrides(self, **kwargs) -> TierConfig:
         """返回覆盖部分字段的新档位（不修改原对象）。"""
@@ -142,6 +144,8 @@ TIER_PRESETS: dict[str, TierConfig] = {
             FactorSpec('rsi_14', 'RSI(14)', 0.10),
             FactorSpec('atr_pct', 'ATR占比', 0.20, direction=-1.0),
         ),
+        note=('短线档位未通过样本外验证：日频信号在≤4x换手下扣费后仍为负收益，'
+              '仅作观察，不建议据此实盘下单'),
     ),
     'mid': TierConfig(
         key='mid',

@@ -13,21 +13,46 @@ from typing import Any
 from loguru import logger
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QButtonGroup, QComboBox, QFrame,
-    QHeaderView, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton,
-    QSizePolicy, QSplitter, QStackedWidget, QTableView, QVBoxLayout, QWidget,
+    QAbstractItemView,
+    QApplication,
+    QButtonGroup,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QPushButton,
+    QSizePolicy,
+    QSplitter,
+    QStackedWidget,
+    QTableView,
+    QVBoxLayout,
+    QWidget,
 )
 
 from src.core.usecases.get_daily_recommendations import (
-    DailyRecommendationBundle, get_daily_recommendations,
+    DailyRecommendationBundle,
+    get_daily_recommendations,
 )
 from src.ui.advice.table_model import (
-    ASSET_FILTERS, COLUMNS, COL_CODE, COL_CONFIDENCE, COL_WEIGHT, DTO_ROLE,
-    AdviceFilterProxyModel, AdviceTableModel,
+    ASSET_FILTERS,
+    COL_CODE,
+    COL_CONFIDENCE,
+    COL_WEIGHT,
+    COLUMNS,
+    DTO_ROLE,
+    AdviceFilterProxyModel,
+    AdviceTableModel,
 )
 from src.ui.advice.tokens import TOKENS, palette_for
 from src.ui.advice.widgets import (
-    AdviceItemDelegate, DetailPanel, EmptyState, KpiCard, SegmentedControl,
+    AdviceItemDelegate,
+    DetailPanel,
+    EmptyState,
+    KpiCard,
+    SegmentedControl,
     SkeletonWidget,
 )
 
@@ -52,7 +77,7 @@ class AdvicePage(QWidget):
         self.setObjectName('advicePage')
         self.host = host
         self.theme = 'light' if str(theme).lower() == 'light' else 'dark'
-        self.palette = palette_for(self.theme)
+        self._pal = palette_for(self.theme)
         self._bundle: DailyRecommendationBundle | None = None
         self._tier = 'short'
         self._busy = False
@@ -74,7 +99,7 @@ class AdvicePage(QWidget):
 
         toolbar = QHBoxLayout()
         toolbar.setSpacing(TOKENS.space_md)
-        self.segmented = SegmentedControl(self.palette)
+        self.segmented = SegmentedControl(self._pal)
         self.segmented.set_current('short', animate=False)
         self.segmented.changed.connect(self._on_tier_changed)
         toolbar.addWidget(self.segmented)
@@ -110,7 +135,7 @@ class AdvicePage(QWidget):
         filters.addWidget(self.result_label)
         root.addLayout(filters)
 
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
         self.stack = QStackedWidget()
 
@@ -122,15 +147,15 @@ class AdvicePage(QWidget):
         card_layout.addWidget(self._build_table())
         self.stack.addWidget(self.table_card)
 
-        self.skeleton = SkeletonWidget(self.palette)
+        self.skeleton = SkeletonWidget(self._pal)
         self.stack.addWidget(self.skeleton)
 
-        self.empty_state = EmptyState(self.palette)
+        self.empty_state = EmptyState(self._pal)
         self.empty_state.generate_requested.connect(self._on_generate_clicked)
         self.stack.addWidget(self.empty_state)
 
         splitter.addWidget(self.stack)
-        self.detail = DetailPanel(self.palette)
+        self.detail = DetailPanel(self._pal)
         splitter.addWidget(self.detail)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
@@ -157,13 +182,13 @@ class AdvicePage(QWidget):
 
         self.theme_button = QPushButton('浅色')
         self.theme_button.setObjectName('themeBtn')
-        self.theme_button.setCursor(Qt.PointingHandCursor)
+        self.theme_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.theme_button.clicked.connect(self.toggle_theme)
         header.addWidget(self.theme_button)
 
         self.refresh_button = QPushButton('重新生成')
         self.refresh_button.setObjectName('refreshBtn')
-        self.refresh_button.setCursor(Qt.PointingHandCursor)
+        self.refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_button.clicked.connect(self._on_generate_clicked)
         header.addWidget(self.refresh_button)
         return header
@@ -182,7 +207,7 @@ class AdvicePage(QWidget):
         self._kpi: dict[str, KpiCard] = {}
         self._kpi_accents = {key: color for key, _, color in specs if color}
         for key, caption, _ in specs:
-            card = KpiCard(caption, self.palette)
+            card = KpiCard(caption, self._pal)
             card.setMinimumHeight(84)
             layout.addWidget(card, 1)
             self._kpi[key] = card
@@ -192,7 +217,7 @@ class AdvicePage(QWidget):
         self.model = AdviceTableModel()
         self.proxy = AdviceFilterProxyModel()
         self.proxy.setSourceModel(self.model)
-        self.delegate = AdviceItemDelegate(self.palette)
+        self.delegate = AdviceItemDelegate(self._pal)
         table = QTableView()
         table.setObjectName('adviceTable')
         table.setModel(self.proxy)
@@ -201,11 +226,11 @@ class AdvicePage(QWidget):
         table.setShowGrid(False)
         table.setAlternatingRowColors(True)
         table.setMouseTracking(True)
-        table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SingleSelection)
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-        table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(TOKENS.row_height)
 
@@ -215,16 +240,16 @@ class AdvicePage(QWidget):
         header.setHighlightSections(False)
         for index, column in enumerate(COLUMNS):
             table.setColumnWidth(index, column.width)
-        header.setSectionResizeMode(QHeaderView.Fixed)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         header.setStretchLastSection(True)
 
-        table.setContextMenuPolicy(Qt.CustomContextMenu)
+        table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         table.customContextMenuRequested.connect(self._show_context_menu)
         table.doubleClicked.connect(self._on_row_double_clicked)
         table.selectionModel().currentRowChanged.connect(self._on_current_changed)
         header.sectionClicked.connect(self._on_header_clicked)
         self.table = table
-        self.table.sortByColumn(COL_CONFIDENCE, Qt.DescendingOrder)
+        self.table.sortByColumn(COL_CONFIDENCE, Qt.SortOrder.DescendingOrder)
         return table
 
     def _build_chips(self, layout: QHBoxLayout, caption: str,
@@ -240,7 +265,7 @@ class AdvicePage(QWidget):
             button = QPushButton(option)
             button.setObjectName('filterChip')
             button.setCheckable(True)
-            button.setCursor(Qt.PointingHandCursor)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setChecked(index == 0)
             group.addButton(button, index)
             layout.addWidget(button)
@@ -257,16 +282,16 @@ class AdvicePage(QWidget):
     def set_theme(self, theme: str) -> None:
         from src.ui.advice.tokens import advice_qss
         self.theme = 'light' if str(theme).lower() == 'light' else 'dark'
-        self.palette = palette_for(self.theme)
+        self._pal = palette_for(self.theme)
         self.setStyleSheet(advice_qss(self.theme))
         self.theme_button.setText('浅色' if self.theme == 'dark' else '深色')
         for widget in (self.segmented, self.delegate, self.skeleton,
                        self.empty_state, self.detail):
             if hasattr(widget, 'set_palette'):
-                widget.set_palette(self.palette)
+                widget.set_palette(self._pal)
         for key, card in self._kpi.items():
             color_key = self._kpi_accents.get(key)
-            card.set_accent(getattr(self.palette, color_key) if color_key else None)
+            card.set_accent(getattr(self._pal, color_key) if color_key else None)
         self.table.viewport().update()
         self.theme_changed.emit(self.theme)
 
@@ -381,7 +406,7 @@ class AdvicePage(QWidget):
         buy, sell = counts.get('BUY', 0), counts.get('SELL', 0)
         self._kpi['count'].set_value(str(actionable))
         self._kpi['flow'].set_value(f'{buy} / {sell}')
-        summary = {}
+        summary: dict[str, Any] = {}
         if self._bundle is not None:
             summary = (self._bundle.summary or {}).get(self._tier, {}) or {}
         turnover = float(summary.get('turnover_pct') or 0.0)
@@ -397,13 +422,13 @@ class AdvicePage(QWidget):
             self._kpi['trade_date'].set_value('无数据')
             self._kpi['trade_date'].set_caption('数据日期 / 新鲜度')
 
-        self._kpi['flow'].set_accent(self.palette.buy)
+        self._kpi['flow'].set_accent(self._pal.buy)
         self._kpi['turnover'].set_accent(
-            self.palette.hold if turnover > 50 else None)
+            self._pal.hold if turnover > 50 else None)
         stale = bundle.is_stale if bundle is not None else False
         self._kpi['trade_date'].set_accent(
-            self.palette.hold if stale else None)
-        self._kpi['count'].set_accent(self.palette.accent)
+            self._pal.hold if stale else None)
+        self._kpi['count'].set_accent(self._pal.accent)
 
     def _update_view_state(self) -> None:
         bundle = self._bundle
@@ -483,7 +508,7 @@ class AdvicePage(QWidget):
         mapping = {0: (COL_CONFIDENCE, True), 1: (COL_WEIGHT, True),
                    2: (COL_CODE, False)}
         column, descending = mapping.get(index, (COL_CONFIDENCE, True))
-        order = Qt.DescendingOrder if descending else Qt.AscendingOrder
+        order = Qt.SortOrder.DescendingOrder if descending else Qt.SortOrder.AscendingOrder
         self.table.sortByColumn(column, order)
 
     def _on_header_clicked(self, section: int) -> None:

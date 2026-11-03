@@ -8,17 +8,29 @@ import pytest
 from PySide6.QtCore import Qt
 
 from src.core.usecases.get_daily_recommendations import (
-    DailyRecommendationBundle, DailyRecommendationDTO,
+    DailyRecommendationBundle,
+    DailyRecommendationDTO,
 )
 from src.ui.advice.table_model import (
-    COL_CONFIDENCE, COL_FACTORS, COL_PRICE, COL_RISK, COL_SHARES, COL_WEIGHT,
-    DTO_ROLE, AdviceFilterProxyModel, AdviceTableModel, display_value,
-    filter_rows, match_filters, sort_rows, sort_value,
+    COL_CONFIDENCE,
+    COL_FACTORS,
+    COL_PRICE,
+    COL_RISK,
+    COL_SHARES,
+    COL_WEIGHT,
+    DTO_ROLE,
+    AdviceFilterProxyModel,
+    AdviceTableModel,
+    display_value,
+    filter_rows,
+    match_filters,
+    sort_rows,
+    sort_value,
 )
 
 
 def _dto(**overrides) -> DailyRecommendationDTO:
-    base = dict(
+    base = dict(  # noqa: C408
         trade_date='2026-10-19', ts_code='600000.SH', name='浦发银行',
         direction='BUY', target_weight_pct=6.2, shares=12000, ref_price=9.87,
         horizon='短线', validity_days=20, confidence=0.86,
@@ -157,11 +169,11 @@ def test_theme_switch_updates_palette_and_stylesheet(qapp):
     from src.ui.advice.page import AdvicePage
     from src.ui.advice.tokens import DARK, LIGHT
     page = AdvicePage(host=None, theme='dark')
-    assert page.palette == DARK
+    assert page._pal == DARK
     assert page.theme_button.text() == '浅色'
     page.toggle_theme()
-    assert page.palette == LIGHT
+    assert page._pal == LIGHT
     assert '#F3F5F8' in page.styleSheet()
     page.toggle_theme()
-    assert page.palette == DARK
+    assert page._pal == DARK
     assert '#12151A' in page.styleSheet()

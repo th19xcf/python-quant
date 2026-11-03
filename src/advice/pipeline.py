@@ -19,19 +19,35 @@ from src.advice.data import LocalPanelLoader, panel_trading_dates
 from src.advice.eligibility import check_eligibility
 from src.advice.factor_panel import compute_factor_panel
 from src.advice.models import (
-    AdviceResult, DIRECTION_AVOID, DIRECTION_BUY, DIRECTION_HOLD, DIRECTION_SELL,
-    HoldingState, Recommendation, TierAdvice,
+    DIRECTION_AVOID,
+    DIRECTION_BUY,
+    DIRECTION_HOLD,
+    DIRECTION_SELL,
+    AdviceResult,
+    HoldingState,
+    Recommendation,
+    TierAdvice,
 )
-from src.advice.portfolio import Candidate, Allocation, allocate
+from src.advice.portfolio import Allocation, Candidate, allocate
 from src.advice.scoring import (
-    attach_score, confidence_from_score, explain_factors, factor_stats,
+    attach_score,
+    confidence_from_score,
+    explain_factors,
+    factor_stats,
 )
 from src.advice.turnover import (
-    HoldingDecision, TradeIntent, apply_turnover_cap, count_trading_days,
-    entry_allowed, update_holding,
+    HoldingDecision,
+    TradeIntent,
+    apply_turnover_cap,
+    count_trading_days,
+    entry_allowed,
+    update_holding,
 )
 from src.advice.universe import (
-    INDUSTRY_SOURCE_BOARD, build_meta, list_local_stock_codes, load_name_map,
+    INDUSTRY_SOURCE_BOARD,
+    build_meta,
+    list_local_stock_codes,
+    load_name_map,
 )
 from src.utils.config import get_config
 
@@ -170,7 +186,7 @@ class AdviceEngine:
                                 float(equity), new_state)
         return result
 
-    def _run_tier(self, scored: pl.DataFrame, trade_date: date,
+    def _run_tier(self, scored: pl.DataFrame, trade_date: date,  # noqa: C901
                   meta: dict[str, Any], tier: Any, equity: float,
                   state: dict[str, HoldingState], trading_dates: list[date],
                   coverage: dict[str, Any]) -> tuple[TierAdvice, dict[str, HoldingState]]:
@@ -191,7 +207,7 @@ class AdviceEngine:
                 '行业无权威表，使用代码前缀/板块近似（industry_source=code_prefix_board）',
                 f"本地面板覆盖 {coverage.get('loaded', 0)}/"
                 f"{coverage.get('requested', 0)} 标的",
-            ])
+            ] + ([tier.note] if tier.note else []))
 
         # 1) 候选池：分数达标 + 可交易 + 成本门槛
         candidates: list[tuple[dict, Candidate, Any]] = []
@@ -395,9 +411,11 @@ class AdviceEngine:
         common['target_weight'] = allocation.target_weight
         common['shares'] = allocation.shares
         common['ref_price'] = ref_price
+        extra = f'持有期{tier.min_hold_days}-{tier.validity_days}个交易日'
+        if tier.note:
+            extra = f'{extra}；{tier.note}'
         common['risk_notes'] = self._risk_notes(
-            eligibility, common['industry_source'],
-            f'持有期{tier.min_hold_days}-{tier.validity_days}个交易日')
+            eligibility, common['industry_source'], extra)
         return Recommendation(**common)
 
     def _sell_row(self, row: dict, holding: HoldingState, decision: HoldingDecision,

@@ -26,9 +26,18 @@ from src.advice.eligibility import check_eligibility
 from src.advice.factor_panel import compute_factor_panel
 from src.advice.pipeline import AdviceEngine
 from src.advice.portfolio import Candidate, allocate
-from src.advice.scoring import attach_score, confidence_from_score, explain_factors, factor_stats
+from src.advice.scoring import (
+    attach_score,
+    confidence_from_score,
+    explain_factors,
+    factor_stats,
+)
 from src.advice.turnover import (
-    TradeIntent, apply_turnover_cap, count_trading_days, entry_allowed, update_holding,
+    TradeIntent,
+    apply_turnover_cap,
+    count_trading_days,
+    entry_allowed,
+    update_holding,
 )
 from src.advice.universe import build_meta, list_local_stock_codes, load_name_map
 from src.backtest.engine.execution_core import ExecutionRules

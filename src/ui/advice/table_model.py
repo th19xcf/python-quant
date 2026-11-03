@@ -7,13 +7,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QModelIndex,
+    QPersistentModelIndex,
+    QSortFilterProxyModel,
+    Qt,
+)
 from PySide6.QtGui import QFont
 
 from src.core.usecases.get_daily_recommendations import DailyRecommendationDTO
 
-DTO_ROLE = Qt.UserRole + 1
-SORT_ROLE = Qt.UserRole + 2
+DTO_ROLE = Qt.ItemDataRole.UserRole + 1
+SORT_ROLE = Qt.ItemDataRole.UserRole + 2
+#: 模型顶层索引的共享默认值（避免在函数签名里重复构造 QModelIndex）
+_NO_PARENT = QModelIndex()
 
 
 @dataclass(frozen=True)
@@ -26,15 +34,15 @@ class Column:
 
 
 COLUMNS: tuple[Column, ...] = (
-    Column('ts_code', '代码', 92, Qt.AlignLeft | Qt.AlignVCenter),
-    Column('name', '名称', 84, Qt.AlignLeft | Qt.AlignVCenter),
-    Column('direction', '方向', 72, Qt.AlignHCenter | Qt.AlignVCenter),
-    Column('target_weight_pct', '仓位', 70, Qt.AlignRight | Qt.AlignVCenter, True),
-    Column('shares', '参考股数', 84, Qt.AlignRight | Qt.AlignVCenter, True),
-    Column('ref_price', '参考价', 68, Qt.AlignRight | Qt.AlignVCenter, True),
-    Column('confidence', '置信度', 100, Qt.AlignLeft | Qt.AlignVCenter),
-    Column('top_factors', '因子贡献', 190, Qt.AlignLeft | Qt.AlignVCenter),
-    Column('risk_notes', '风险 / 持有期', 210, Qt.AlignLeft | Qt.AlignVCenter),
+    Column('ts_code', '代码', 92, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+    Column('name', '名称', 84, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+    Column('direction', '方向', 72, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter),
+    Column('target_weight_pct', '仓位', 70, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, True),
+    Column('shares', '参考股数', 84, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, True),
+    Column('ref_price', '参考价', 68, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, True),
+    Column('confidence', '置信度', 100, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+    Column('top_factors', '因子贡献', 190, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+    Column('risk_notes', '风险 / 持有期', 210, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
 )
 
 COL_CODE = 0
@@ -143,24 +151,31 @@ class AdviceTableModel(QAbstractTableModel):
     def items(self) -> list[DailyRecommendationDTO]:
         return list(self._items)
 
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+    def rowCount(  # noqa: N802
+        self, parent: QModelIndex | QPersistentModelIndex = _NO_PARENT
+    ) -> int:
         return 0 if parent.isValid() else len(self._items)
 
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
+    def columnCount(  # noqa: N802
+        self, parent: QModelIndex | QPersistentModelIndex = _NO_PARENT
+    ) -> int:
         return 0 if parent.isValid() else len(COLUMNS)
 
-    def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Any:
+    def data(  # noqa: N802
+        self, index: QModelIndex | QPersistentModelIndex,
+        role: int = Qt.ItemDataRole.DisplayRole
+    ) -> Any:
         if not index.isValid() or not (0 <= index.row() < len(self._items)):
             return None
         dto = self._items[index.row()]
         column = index.column()
-        if role == Qt.DisplayRole:
+        if role == Qt.ItemDataRole.DisplayRole:
             return display_value(dto, column)
-        if role == Qt.TextAlignmentRole:
+        if role == Qt.ItemDataRole.TextAlignmentRole:
             return COLUMNS[column].align
-        if role == Qt.ToolTipRole:
+        if role == Qt.ItemDataRole.ToolTipRole:
             return f'{dto.ts_code} {dto.name}\n{dto.top_factors}\n{dto.risk_notes}'
-        if role == Qt.FontRole and COLUMNS[column].numeric:
+        if role == Qt.ItemDataRole.FontRole and COLUMNS[column].numeric:
             font = QFont('Consolas')
             font.setPointSize(9)
             return font
@@ -171,10 +186,10 @@ class AdviceTableModel(QAbstractTableModel):
         return None
 
     def headerData(self, section: int, orientation: Qt.Orientation,
-                   role: int = Qt.DisplayRole) -> Any:  # noqa: N802
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+                   role: int = Qt.ItemDataRole.DisplayRole) -> Any:  # noqa: N802
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
             return COLUMNS[section].title
-        if orientation == Qt.Horizontal and role == Qt.TextAlignmentRole:
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.TextAlignmentRole:
             return COLUMNS[section].align
         return None
 
@@ -205,8 +220,10 @@ class AdviceFilterProxyModel(QSortFilterProxyModel):
         self._search = value
         self._invalidate()
 
-    def filterAcceptsRow(self, source_row: int,
-                         source_parent: QModelIndex) -> bool:  # noqa: N802
+    def filterAcceptsRow(  # noqa: N802
+        self, source_row: int,
+        source_parent: QModelIndex | QPersistentModelIndex
+    ) -> bool:
         model = self.sourceModel()
         if not isinstance(model, AdviceTableModel):
             return True
@@ -216,7 +233,10 @@ class AdviceFilterProxyModel(QSortFilterProxyModel):
             return True
         return match_filters(dto, self._direction, self._asset_type, self._search)
 
-    def lessThan(self, left: QModelIndex, right: QModelIndex) -> bool:  # noqa: N802
+    def lessThan(  # noqa: N802
+        self, left: QModelIndex | QPersistentModelIndex,
+        right: QModelIndex | QPersistentModelIndex
+    ) -> bool:
         model = self.sourceModel()
         left_dto = model.data(left, DTO_ROLE)
         right_dto = model.data(right, DTO_ROLE)
