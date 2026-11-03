@@ -22,7 +22,7 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
 
 import polars as pl
 from loguru import logger
@@ -37,7 +37,7 @@ from src.advice.config import (
 )
 from src.advice.data import LocalPanelLoader, panel_trading_dates
 from src.advice.factor_panel import compute_factor_panel
-from src.advice.pipeline import _StoreConfig
+from src.advice.pipeline import AdviceEngine, _StoreConfig
 from src.advice.replay import _ReplayTier
 from src.advice.scoring import attach_score
 from src.advice.universe import build_meta, list_local_stock_codes, load_name_map
@@ -146,10 +146,11 @@ def run_combo(base: AdviceConfig, tier: TierConfig, scored: pl.DataFrame,
               turnover: TurnoverConfig | None = None) -> dict[str, Any]:
     config = replace(base, tiers={**base.tiers, tier.key: tier},
                      turnover=turnover or base.turnover)
-    runner = _ReplayTier(SimpleNamespace(config=config), tier, scored, dates,
-                         meta, EQUITY)
-    runner._rows = lambda day: cache.get(day, {})
-    runner._sample_rows = lambda: []
+    runner = _ReplayTier(cast(AdviceEngine, SimpleNamespace(config=config)),
+                         tier, scored, dates, meta, EQUITY)
+    patched: Any = runner
+    patched._rows = lambda day: cache.get(day, {})
+    patched._sample_rows = lambda: []
     summary = runner.run().summary()
     summary.pop('sample_rows', None)
     return summary
@@ -347,10 +348,10 @@ def neighbourhood_combos(params: dict[str, Any]) -> list[tuple[str, dict[str, An
             combos.append((f'{label} {tag}',
                            dict(params, **{field: max(1, round(value * (1 + 0.2 * sign)))})))
     for field, label in float_fields:
-        value = float(params[field])
+        fvalue = float(params[field])
         for sign, tag in ((-1, '-20%'), (1, '+20%')):
             combos.append((f'{label} {tag}',
-                           dict(params, **{field: value * (1 + 0.2 * sign)})))
+                           dict(params, **{field: fvalue * (1 + 0.2 * sign)})))
     return combos
 
 

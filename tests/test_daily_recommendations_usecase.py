@@ -6,12 +6,14 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
+from _advice_synth import build_store
+
 from src.core.usecases.get_daily_recommendations import (
-    DailyRecommendationDTO, DailyRecommendationBundle, _to_dto,
+    DailyRecommendationBundle,
+    DailyRecommendationDTO,
+    _to_dto,
     get_daily_recommendations,
 )
-
-from _advice_synth import build_store
 
 
 def _row(**overrides) -> dict:

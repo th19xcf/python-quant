@@ -8,10 +8,20 @@ from dataclasses import replace
 
 import pytest
 
-from src.advice.config import AdviceConfig, PortfolioConstraints, TierConfig, TradingCosts, TurnoverConfig
+from src.advice.config import (
+    AdviceConfig,
+    PortfolioConstraints,
+    TierConfig,
+    TradingCosts,
+    TurnoverConfig,
+)
 from src.advice.turnover import (
-    TradeIntent, apply_turnover_cap, count_trading_days, entry_allowed,
-    expected_edge, update_holding,
+    TradeIntent,
+    apply_turnover_cap,
+    count_trading_days,
+    entry_allowed,
+    expected_edge,
+    update_holding,
 )
 
 
@@ -105,8 +115,6 @@ def test_validity_expiry_forces_exit():
 
 
 def test_turnover_cap_budgets_both_sides():
-    tier = _tier()
-    config = _config(tier, turnover=TurnoverConfig(max_turnover_per_rebalance=0.1))
     intents = [
         TradeIntent('A', 'sell', 50_000, 0.1),
         TradeIntent('B', 'buy', 90_000, 0.95),

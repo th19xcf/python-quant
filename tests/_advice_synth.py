@@ -38,8 +38,10 @@ def write_stock(root: Path, ts_code: str, dates: list[date], base: float,
     opens = [closes[0]] + closes[:-1]
     if limit_up_last:
         opens[-1] = closes[-1]
-    highs = [max(open_, close) * 1.01 for open_, close in zip(opens, closes)]
-    lows = [min(open_, close) * 0.99 for open_, close in zip(opens, closes)]
+    highs = [max(open_, close) * 1.01
+             for open_, close in zip(opens, closes, strict=False)]
+    lows = [min(open_, close) * 0.99
+            for open_, close in zip(opens, closes, strict=False)]
     prev = [None] + closes[:-1]
     frame = pl.DataFrame({
         'date': dates,

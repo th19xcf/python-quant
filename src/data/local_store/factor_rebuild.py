@@ -174,6 +174,32 @@ def _assemble(parts: list[Path], target: Path, replaced: set[str]) -> int | None
         return None
 
 
+def _process_chunk(
+    index: int,
+    chunk: list[str],
+    quote_store: LocalQuoteStore,
+    factor_store: LocalFactorStore,
+    rebuild_dir: Path,
+) -> tuple[list[str], list[str], int]:
+    """计算单个分块并落盘，返回（已写入代码, 失败代码, 新增行数）。"""
+    frames: list[pl.DataFrame] = []
+    failed: list[str] = []
+    for code in chunk:
+        try:
+            frame = _compute_code_factors(code, quote_store, factor_store)
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            failed.append(code)
+            logger.warning(f'[factor-rebuild] {code} 计算失败: {exc}')
+            continue
+        if frame is not None and not frame.is_empty():
+            frames.append(frame)
+    if not frames:
+        return [], failed, 0
+    part_frame = pl.concat(frames, how='vertical_relaxed')
+    _write_part(rebuild_dir / f'part_{index:05d}.parquet', part_frame)
+    return list(chunk), failed, part_frame.height
+
+
 def rebuild_factors_from_local(
     quote_store: LocalQuoteStore,
     factor_store: LocalFactorStore,
@@ -265,21 +291,11 @@ def rebuild_factors_from_local(
         if index in completed:
             written_codes.extend(chunk)
             continue
-        frames: list[pl.DataFrame] = []
-        for code in chunk:
-            try:
-                frame = _compute_code_factors(code, quote_store, factor_store)
-            except (OSError, ValueError, RuntimeError, TypeError) as exc:
-                failed_codes.append(code)
-                logger.warning(f'[factor-rebuild] {code} 计算失败: {exc}')
-                continue
-            if frame is not None and not frame.is_empty():
-                frames.append(frame)
-        if frames:
-            part_frame = pl.concat(frames, how='vertical_relaxed')
-            _write_part(rebuild_dir / f'part_{index:05d}.parquet', part_frame)
-            rows_added += part_frame.height
-            written_codes.extend(chunk)
+        written, failed, chunk_rows = _process_chunk(
+            index, chunk, quote_store, factor_store, rebuild_dir)
+        written_codes.extend(written)
+        failed_codes.extend(failed)
+        rows_added += chunk_rows
         completed.add(index)
         _write_manifest(manifest_path, {
             'version': STORE_VERSION,

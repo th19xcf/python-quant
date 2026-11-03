@@ -4,7 +4,13 @@
 
 from __future__ import annotations
 
-from src.advice.config import AdviceConfig, PortfolioConstraints, TierConfig, TradingCosts, TurnoverConfig
+from src.advice.config import (
+    AdviceConfig,
+    PortfolioConstraints,
+    TierConfig,
+    TradingCosts,
+    TurnoverConfig,
+)
 from src.advice.eligibility import check_eligibility
 
 
