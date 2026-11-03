@@ -90,18 +90,24 @@ class IndexDataController:
             self.window.market_progress_bar.setValue(0)
 
         # 创建任务
-        global_task_manager.create_task(
+        task_id = global_task_manager.create_task(
             f"获取{title}数据",
             self._load_index_task,
             (market, title, category_filter)
         )
 
         # 连接任务信号
-        def on_task_progress(task_id, current, total):
+        def on_task_progress(progress_task_id, current, total):
+            if progress_task_id != task_id:
+                return
             if hasattr(self.window, 'progress_bar'):
                 self.window.market_progress_bar.setValue(current)
 
-        def on_task_completed(task_id, result):
+        def on_task_completed(completed_task_id, result):
+            # task_completed 是全局信号，其他任务完成时也会触发，必须先按 task_id 过滤
+            if completed_task_id != task_id:
+                return
+
             # 断开信号连接，避免影响其他任务
             try:
                 global_task_manager.task_progress.disconnect(on_task_progress)
@@ -110,18 +116,30 @@ class IndexDataController:
             except RuntimeError:
                 pass
 
-            if result["success"]:
+            if not isinstance(result, dict) or "success" not in result:
+                logger.error(
+                    f"获取{title}数据任务返回结果缺少 success 字段: "
+                    f"task_id={completed_task_id}, result_type={type(result).__name__}, result={result!r}"
+                )
+                self.window._clear_market_table_display()
+                self.window.statusBar().showMessage("获取指数数据失败: 任务返回结果格式异常（缺少 success 字段）", 5000)
+            elif result["success"]:
                 # 更新表格
                 self._render_index_result(result)
             else:
+                message = result.get("message") or "获取指数数据失败（任务未返回原因）"
+                logger.error(message)
                 self.window._clear_market_table_display()
-                self.window.statusBar().showMessage(result["message"], 5000)
+                self.window.statusBar().showMessage(message, 5000)
 
             # 隐藏进度条
             if hasattr(self.window, 'progress_bar'):
                 self.window.market_progress_bar.setVisible(False)
 
-        def on_task_error(task_id, error_message):
+        def on_task_error(error_task_id, error_message):
+            if error_task_id != task_id:
+                return
+
             # 断开信号连接，避免影响其他任务
             try:
                 global_task_manager.task_progress.disconnect(on_task_progress)
@@ -142,6 +160,16 @@ class IndexDataController:
 
     def _render_index_result(self, result):
         """把指数行情结果渲染到行情表格。"""
+        index_data = result.get("index_data") if isinstance(result, dict) else None
+        title = result.get("title") if isinstance(result, dict) else None
+        if not isinstance(index_data, (list, tuple)) or title is None:
+            logger.error(
+                f"指数行情结果缺少必要字段或类型非法: index_data_type={type(index_data).__name__}, "
+                f"title={title!r}, result_type={type(result).__name__}, result={result!r}"
+            )
+            self.window.statusBar().showMessage("显示指数数据失败: 任务返回结果缺少必要字段", 5000)
+            return
+
         window = self.window
         window.stock_table.setSortingEnabled(False)
         window.stock_table.setRowCount(0)
@@ -150,13 +178,21 @@ class IndexDataController:
         window.stock_table.setColumnCount(len(headers))
         window.stock_table.setHorizontalHeaderLabels(headers)
 
-        for data_row in result["index_data"]:
+        for row_index, data_row in enumerate(index_data):
+            if not isinstance(data_row, (list, tuple)) or len(data_row) < 11:
+                code = data_row[1] if isinstance(data_row, (list, tuple)) and len(data_row) > 1 else "<未知>"
+                name = data_row[2] if isinstance(data_row, (list, tuple)) and len(data_row) > 2 else "<未知>"
+                field_count = len(data_row) if isinstance(data_row, (list, tuple)) else "非序列"
+                logger.warning(
+                    f"跳过字段不足的指数行情行: 行号={row_index}, 标的={name}({code}), 字段数={field_count}"
+                )
+                continue
             window._add_table_row(data_row)
 
         if hasattr(window, 'table_interaction_manager'):
             window.table_interaction_manager.restore_sort_state()
         window.stock_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        window.statusBar().showMessage(f"已加载 {window.stock_table.rowCount()} 个{result['title']}", 3000)
+        window.statusBar().showMessage(f"已加载 {window.stock_table.rowCount()} 个{title}", 3000)
 
     def _show_index_data_by_category_impl(self, category_name):
         """按 index_basic.category 展示指数行情，样式与其他指数页保持一致。"""
@@ -210,6 +246,14 @@ class IndexDataController:
             except RuntimeError:
                 pass
 
+            if not isinstance(result, dict) or "success" not in result:
+                logger.error(
+                    f"获取{index_name}数据任务返回结果缺少 success 字段: "
+                    f"task_id={completed_task_id}, result_type={type(result).__name__}, result={result!r}"
+                )
+                self.window.statusBar().showMessage("加载失败: 任务返回结果格式异常（缺少 success 字段）", 5000)
+                return
+
             if result["success"]:
                 # 检查是否有data键（指数数据）
                 if "data" in result and "index_name" in result and "index_code" in result:
@@ -227,7 +271,9 @@ class IndexDataController:
                     pass
             else:
                 self.window._clear_kline_display()
-                self.window.statusBar().showMessage(result["message"], 5000)
+                message = result.get("message") or f"加载{index_name}数据失败（任务未返回原因）"
+                logger.error(message)
+                self.window.statusBar().showMessage(message, 5000)
 
         def on_task_error(error_task_id, error_message):
             if error_task_id != task_id:

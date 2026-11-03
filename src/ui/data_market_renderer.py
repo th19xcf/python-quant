@@ -55,8 +55,8 @@ class MarketTableRenderer:
         if col in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
             item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-        # 获取昨收价用于比较
-        preclose = float(data_row[11]) if len(data_row) > 11 and data_row[11] != "-" else 0.0
+        # 获取昨收价用于比较（无法解析的文本按 0.0 处理，避免 float() 抛异常）
+        preclose = self._to_float(data_row[11]) if len(data_row) > 11 and data_row[11] != "-" else 0.0
 
         # 设置通达信风格的颜色
         if col in (3, 5):  # 涨跌幅%
@@ -90,23 +90,53 @@ class MarketTableRenderer:
 
     def _render_market_result(self, result):
         """在 GUI 线程把行情结果写入表格，并更新日志与状态栏。"""
+        if not isinstance(result, dict) or "success" not in result:
+            logger.error(
+                f"行情任务返回结果缺少 success 字段: "
+                f"result_type={type(result).__name__}, result={result!r}"
+            )
+            return
+
         if result["success"]:
-            # 检查是否有table_data键（股票数据）
-            if "table_data" in result:
-                self._append_market_rows_to_table(self.window.stock_table, result["table_data"])
+            table_data = result.get("table_data")
+            bad_row_index = None
+            if isinstance(table_data, (list, tuple)):
+                bad_row_index = next(
+                    (index for index, row in enumerate(table_data) if not isinstance(row, (list, tuple))),
+                    None,
+                )
+            if not isinstance(table_data, (list, tuple)) or bad_row_index is not None:
+                logger.error(
+                    f"行情结果 table_data 非法: table_data_type={type(table_data).__name__}, "
+                    f"非法行号={bad_row_index}, result={result!r}"
+                )
+                return
 
-                # 仅在当前页面已有有效排序时恢复排序
-                if hasattr(self.window, 'table_interaction_manager'):
-                    self.window.table_interaction_manager.restore_sort_state()
+            self._append_market_rows_to_table(self.window.stock_table, table_data)
 
-                logger.info(f"{result['stock_type']}数据显示完成")
+            # 仅在当前页面已有有效排序时恢复排序
+            if hasattr(self.window, 'table_interaction_manager'):
+                self.window.table_interaction_manager.restore_sort_state()
+
+            stock_type = result.get("stock_type")
+            stock_count = result.get("stock_count")
+            if stock_type is None or stock_count is None:
+                logger.error(
+                    f"行情结果缺少 stock_type 或 stock_count: "
+                    f"stock_type={stock_type!r}, stock_count={stock_count!r}, result={result!r}"
+                )
+                self.window.statusBar().showMessage("行情数据显示完成（部分统计信息缺失）", 3000)
+            else:
+                logger.info(f"{stock_type}数据显示完成")
                 self.window.statusBar().showMessage(
-                    f"成功显示{result['stock_count']}只{result['stock_type']}股票的最新交易日数据", 3000
+                    f"成功显示{stock_count}只{stock_type}股票的最新交易日数据", 3000
                 )
             return
 
         self.window._clear_market_table_display()
-        self.window.statusBar().showMessage(result["message"], 5000)
+        message = result.get("message") or "显示行情数据失败（任务未返回原因）"
+        logger.error(message)
+        self.window.statusBar().showMessage(message, 5000)
 
     @staticmethod
     def _to_float(text):

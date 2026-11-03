@@ -115,14 +115,28 @@ class StockDataController:
         self.window.statusBar().showMessage(f"加载 {stock_name}({stock_code}) 数据...", 0)
 
         # 创建任务
-        global_task_manager.create_task(
+        task_id = global_task_manager.create_task(
             f"处理股票数据: {stock_name}({stock_code})",
             self._process_stock_data_task,
             (stock_code, stock_name)
         )
 
         # 连接任务信号
-        def on_task_completed(task_id, result):
+        def on_task_completed(completed_task_id, result):
+            # task_completed 是全局信号，其他任务（如每日推荐）完成时也会触发，
+            # 必须先按 task_id 过滤，否则会把无关任务的返回值当成股票数据结果
+            if completed_task_id != task_id:
+                return
+
+            if not isinstance(result, dict) or "success" not in result:
+                logger.error(
+                    f"处理股票数据任务返回结果缺少 success 字段: "
+                    f"task_id={completed_task_id}, result_type={type(result).__name__}, result={result!r}"
+                )
+                self.window._clear_kline_display()
+                self.window.statusBar().showMessage("加载失败: 任务返回结果格式异常（缺少 success 字段）", 5000)
+                return
+
             logger.info(f"[切换] 回调触发: {result.get('stock_code')} success={result.get('success')}")
             if result["success"]:
                 # 检查是否有必要的键（股票数据）
@@ -142,9 +156,14 @@ class StockDataController:
                     pass
             else:
                 self.window._clear_kline_display()
-                self.window.statusBar().showMessage(result["message"], 5000)
+                message = result.get("message") or "加载股票数据失败（任务未返回原因）"
+                logger.error(f"处理股票数据失败: {message}")
+                self.window.statusBar().showMessage(message, 5000)
 
-        def on_task_error(task_id, error_message):
+        def on_task_error(error_task_id, error_message):
+            # 全局信号：其他任务报错时也会触发，只处理本次股票数据任务
+            if error_task_id != task_id:
+                return
             self.window._clear_kline_display()
             self.window.statusBar().showMessage(f"加载失败: {error_message}", 5000)
 
@@ -189,19 +208,33 @@ class StockDataController:
             self.window.market_progress_bar.setValue(0)
 
         # 创建任务
-        global_task_manager.create_task(
+        task_id = global_task_manager.create_task(
             f"获取{stock_type}数据",
             _show_stock_data_by_type_task,
             (stock_type,)
         )
 
         # 连接任务信号
-        def on_task_progress(task_id, current, total):
+        def on_task_progress(progress_task_id, current, total):
+            if progress_task_id != task_id:
+                return
             if hasattr(self.window, 'progress_bar'):
                 self.window.market_progress_bar.setValue(current)
 
-        def on_task_completed(task_id, result):
-            self.renderer._render_market_result(result)
+        def on_task_completed(completed_task_id, result):
+            # task_completed 是全局信号，其他任务完成时也会触发，必须先按 task_id 过滤
+            if completed_task_id != task_id:
+                return
+
+            if not isinstance(result, dict) or "success" not in result:
+                logger.error(
+                    f"显示{stock_type}数据任务返回结果缺少 success 字段: "
+                    f"task_id={completed_task_id}, result_type={type(result).__name__}, result={result!r}"
+                )
+                self.window._clear_market_table_display()
+                self.window.statusBar().showMessage("显示行情失败: 任务返回结果格式异常（缺少 success 字段）", 5000)
+            else:
+                self.renderer._render_market_result(result)
 
             # 隐藏进度条
             if hasattr(self.window, 'progress_bar'):
@@ -214,7 +247,9 @@ class StockDataController:
                 (global_task_manager.task_error, on_task_error),
             ])
 
-        def on_task_error(task_id, error_message):
+        def on_task_error(error_task_id, error_message):
+            if error_task_id != task_id:
+                return
             self.window._clear_market_table_display()
             self.window.statusBar().showMessage(f"显示{stock_type}数据失败: {error_message}", 5000)
             if hasattr(self.window, 'progress_bar'):
