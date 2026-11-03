@@ -194,12 +194,12 @@
 
 | 文件 | 内容 |
 |---|---|
-| `tmp/mootdx_probe_servers.py` / `.json` | 142 节点 TCP + 协议探测原始结果 |
-| `tmp/mootdx_probe_funcs.py` | 8 个节点的接口矩阵（K 线/盘口/分时/除权/财务） |
-| `tmp/mootdx_scan_all.py` / `.json` | 全量并发扫描（38 可达 / 0 可取 K 线） |
-| `tmp/mootdx_minute_probe.py` | 分时单位、口径、回溯年限、指数覆盖 |
-| `tmp/mootdx_stability.py` | 200 次稳定性与吞吐 |
-| `tmp/mootdx_coverage.py` | mootdx 接口层行为 + 品种覆盖 + 北交所 market |
+| `research/mootdx/mootdx_probe_servers.py` / `.json` | 142 节点 TCP + 协议探测原始结果 |
+| `research/mootdx/mootdx_probe_funcs.py` | 8 个节点的接口矩阵（K 线/盘口/分时/除权/财务） |
+| `research/mootdx/mootdx_scan_all.py` / `.json` | 全量并发扫描（38 可达 / 0 可取 K 线） |
+| `research/mootdx/mootdx_minute_probe.py` | 分时单位、口径、回溯年限、指数覆盖 |
+| `research/mootdx/mootdx_stability.py` | 200 次稳定性与吞吐 |
+| `research/mootdx/mootdx_coverage.py` | mootdx 接口层行为 + 品种覆盖 + 北交所 market |
 
 > 验证后已从 `.venv` 卸载 mootdx 及其新增依赖，`pyproject.toml` / `poetry.lock` 未改动，venv 恢复原状。
 
