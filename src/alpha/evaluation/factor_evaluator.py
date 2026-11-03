@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 
 """
-因子评估器，用于评估因子的有效性
+因子评估器（旧版单序列时序 IC，兼容保留）
+
+本模块的 IC 是**时序 IC（ts_ic）**：把因子值与下一期收益按时间顺序做相关。
+它在选股/截面场景不可信；截面 IC 请使用 ``alphalens_adapter``（analytics 可选组）。
+
+为避免破坏既有调用方，``calculate_ic`` / ``calculate_rank_ic`` 的签名与返回值
+保持不变；另提供 ``calculate_ts_ic`` / ``calculate_ts_rank_ic`` 作为显式别名，
+新代码应使用别名以表明口径。
 """
 
 import numpy as np
@@ -67,6 +74,15 @@ class FactorEvaluator:
         # 计算斯皮尔曼相关系数
         rank_ic, _ = spearmanr(factor_valid, returns_valid)
         return rank_ic
+
+    def calculate_ts_ic(self, factor_values: pl.Series, target_returns: pl.Series) -> float:
+        """时序 IC 的显式别名（兼容旧实现，口径见模块文档）。"""
+        return self.calculate_ic(factor_values, target_returns)
+
+    def calculate_ts_rank_ic(self, factor_values: pl.Series,
+                             target_returns: pl.Series) -> float:
+        """时序 Rank IC 的显式别名（兼容旧实现，口径见模块文档）。"""
+        return self.calculate_rank_ic(factor_values, target_returns)
 
     def perform_quantile_test(self, factor_values: pl.Series, target_returns: pl.Series, n_quantiles: int = 5) -> dict:
         """

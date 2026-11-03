@@ -18,6 +18,9 @@ polars = "==2.1.0"
 numpy = "==2.5.4"
 # 数据获取
 akshare = "==1.20.21"
+# AkShare 元数据只声明 mini-racer，但其代码 import 的是 py_mini_racer；
+# 缺包会导致 `import akshare` 直接失败（表现为东财接口 RemoteDisconnected）
+py-mini-racer = "==0.6.0"
 # 技术分析
 numba = "==0.68.1"
 # UI框架
@@ -70,6 +73,16 @@ optional = true
 
 [tool.poetry.group.gpu.dependencies]
 cupy = "*"
+
+[tool.poetry.group.analytics]
+# 可选组：只读分析层（Alphalens 因子评估 + QuantStats 绩效 tearsheet）
+# `poetry install --with analytics` 才安装；默认 `poetry install` 不受影响，
+# 缺失时适配层抛 ImportError 并以「可选能力不可用」提示，不影响回测主流程
+optional = true
+
+[tool.poetry.group.analytics.dependencies]
+alphalens-reloaded = "0.5.1"
+quantstats = "0.0.86"
 
 [[tool.poetry.source]]
 name = "mirrors"
