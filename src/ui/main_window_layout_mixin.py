@@ -4,6 +4,8 @@
 主窗口整体布局 Mixin：UI 初始化编排、左右分割布局、行情页、财务页与状态栏。
 """
 
+import contextlib
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
@@ -21,6 +23,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from src.utils.logger import logger
 
 
 class MainWindowLayoutMixin:
@@ -272,15 +276,42 @@ class MainWindowLayoutMixin:
 
     def create_finance_tab(self):
         """
-        创建财务分析标签页
+        创建财务分析标签页：财务指标 + 近期资讯，按需后台取数。
         """
-        finance_layout = QVBoxLayout(self.finance_tab)
+        from src.ui.finance import FinancePage
 
-        # 添加财务分析占位符
-        finance_label = QLabel("财务分析区域")
-        finance_label.setAlignment(Qt.AlignCenter)
-        finance_label.setStyleSheet("font-size: 16px; color: #666;")
-        finance_layout.addWidget(finance_label)
+        finance_layout = QVBoxLayout(self.finance_tab)
+        finance_layout.setContentsMargins(0, 0, 0, 0)
+        self.finance_page = FinancePage(host=self, parent=self.finance_tab)
+        finance_layout.addWidget(self.finance_page)
+
+        # 页签切到财务分析时才触发加载，避免后台无谓请求
+        with contextlib.suppress(RuntimeError, TypeError):
+            self.tab_widget.currentChanged.connect(self._on_finance_tab_changed)
+
+    def _on_finance_tab_changed(self, index: int) -> None:
+        """仅在当前页签就是财务分析时加载，避免其他页签切换误触。"""
+        page = getattr(self, 'finance_page', None)
+        if page is None:
+            return
+        if self.tab_widget.widget(index) is not self.finance_tab:
+            return
+        try:
+            page.refresh_if_needed()
+        except RuntimeError as exc:
+            logger.error(f"财务分析页刷新失败: {exc}")
+
+    def show_finance_tab(self):
+        """统一入口：菜单/导航需要打开财务分析窗口时调用。"""
+        page = getattr(self, 'finance_page', None)
+        if page is None:
+            logger.warning("财务分析页尚未初始化")
+            return
+        self.tab_widget.setCurrentWidget(self.finance_tab)
+        try:
+            page.refresh_if_needed()
+        except RuntimeError as exc:
+            logger.error(f"财务分析页刷新失败: {exc}")
 
     def create_right_area(self, parent):
         """

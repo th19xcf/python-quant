@@ -63,7 +63,8 @@ class MainWindowMenuMixin:
         data_menu = menu_bar.addMenu("数据")
         self.add_menu_actions(data_menu, [
             ("宏观数据", None),
-            ("财务数据", None),
+            ("财务数据", lambda: self.show_finance_tab()
+             if hasattr(self, 'show_finance_tab') else None),
             ("技术指标", None),
             ("盘后数据下载", None),
         ])

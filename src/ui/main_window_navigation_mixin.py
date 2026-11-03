@@ -79,6 +79,14 @@ class MainWindowNavigationMixin:
         text = item.text(column)
         logger.info(f"Clicked nav item: {text}")
 
+        # 「发现 → 财务分析」：进入财务页签，而不是回落到行情页
+        if text == "财务分析":
+            if hasattr(self, 'show_finance_tab'):
+                self.show_finance_tab()
+            else:
+                logger.warning("财务分析入口不可用：财务页尚未初始化")
+            return
+
         market_view_items = {
             "沪深京指数", "沪市指数", "深市指数", "京市指数", "创业板指", "科创板指",
             "沪深京个股", "沪深京A股", "全部A股", "上证A股", "深证A股",

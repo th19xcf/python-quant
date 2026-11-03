@@ -114,6 +114,14 @@ class StockDataController:
         logger.info(f"启动处理股票数据任务: {stock_name}({stock_code})")
         self.window.statusBar().showMessage(f"加载 {stock_name}({stock_code}) 数据...", 0)
 
+        # 同步当前标的到财务分析页：仅记录目标并按需后台加载，UI 线程不发起网络请求
+        finance_page = getattr(self.window, 'finance_page', None)
+        if finance_page is not None:
+            try:
+                finance_page.set_stock(stock_code, stock_name)
+            except (RuntimeError, ValueError, TypeError) as exc:
+                logger.error(f"同步标的到财务分析页失败 {stock_code}: {exc}")
+
         # 创建任务
         task_id = global_task_manager.create_task(
             f"处理股票数据: {stock_name}({stock_code})",
