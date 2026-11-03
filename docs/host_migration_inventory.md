@@ -190,22 +190,22 @@ Copy-Item <源机>\reports\advice\latest.json D:\code\python\quant\reports\advic
 | `factors/rebuild/manifest.json` | 440 B | 是 | ✅ 重建进度标记，`rebuild-factors` 自动维护 | 丢失后重建从头开始（耗时增加），不影响结果 |
 | `factors/_bench_last.parquet` | **100,879,795 B（96.2 MB）** | 是 | ❌ 代码中**无任何引用**（`grep` 仅命中文件自身）；可删/可重跑基准 | 无影响（历史基准/校准遗留产物）；是否被仓库外脚本使用**未验证** |
 
-**必须拷贝、无法用命令重建的 4 项**：`meta/names.json`、`factors/stock_dividend.parquet`、`meta/st_status/`（历史日期）、`meta/industry/`（历史日期）。`meta/events/` 需原始公告文件才能重导入。
+**必须拷贝、无法用命令重建的资产共 5 项**（`data/local_store/` 内 4 项 + 仓库外 1 项）：`meta/names.json`、`factors/stock_dividend.parquet`、`meta/st_status/`（历史日期）、`meta/industry/`（历史日期），以及仓库外的 `reports/advice/state/{long,mid,short}.json`（3 个文件 / 5,885 B，约 6 KB，见 §1.4）。`meta/events/` 需原始公告文件才能重导入。
 
 ### 1.4 仓库外运行时产物（不入库，可选搬运）
 
-下表体积/文件数均为**本次实测**（除注明外）；`reports/`、`logs/`、`tmp/` 被 `.gitignore:132,111,138` 忽略。
+下表体积/文件数均为**本次实测**（除注明外）；`reports/`、`logs/`、`tmp/` 被 `.gitignore:132,110,138` 忽略。**结论性内容统一看 `docs/`（含新增的 `docs/factor_lib_report.md`），可重建产物与运行时状态留在 `reports/`。** 注意 `reports/` 整体忽略，若迁移时用 `robocopy /XD reports` 排除该目录，会连带丢掉 `reports/advice/state/` 这 3 个不可重建的状态文件，需单独拷贝。
 
 | 路径 | 体积 / 内容（实测） | 被 .gitignore 忽略 | 能否重建 | 缺失后果 |
 |---|---|---|---|---|
 | `reports/advice/` 顶层 | 15 个文件 / 144,389 B（`latest.json`、`all.csv`、`summary.json`、`replay_*`、`risk_*`） | **是**（`.gitignore:132`） | ✅ 重新运行每日推荐生成 | 无历史报告可查，功能正常 |
-| `reports/advice/state/{long,mid,short}.json` | 3 个文件 / 5,885 B（2,380 + 2,366 + 1,139） | 是 | ⚠️ 只能从空仓重新开始（无法反推出历史持仓） | 推荐组合的历史仓位/净值断档 |
+| `reports/advice/state/{long,mid,short}.json` | 3 个文件 / 5,885 B（2,380 + 2,366 + 1,139，约 6 KB） | 是 | ❌ **不可重建**：只能从空仓重新开始（无法反推出历史持仓） | 推荐组合的历史仓位/净值断档。**必须拷贝**；`robocopy /XD reports` 会跳过，需单独加拷 |
 | `reports/advice/calibration/` | 6 个文件 / 416,698,819 B：`factor_panel.parquet` 416,442,112 B（约 397 MiB）+ 5 个 JSON 共 256,707 B（`baseline/scan/refine/frontier/universe`） | 是 | ✅ `python scripts/calibrate_advice.py`（需全市场本地数据，耗时**未实测**） | 运行时不读；仅影响校准脚本首次速度与校准结论复算 |
-| `reports/factor_lib/` | 12 个文件 / 189,281 B | 是 | ✅ 对应研究脚本可重算（耗时未实测） | 无影响 |
+| `reports/factor_lib/` | 12 个文件 / 189,281 B | 是 | ✅ `python -m src.quant.factor_lib --size 80` 可重算（耗时未实测） | 无影响；结论已整理进 `docs/factor_lib_report.md`，目录内明细仅作复核 |
 | `reports/alphalens_test/` | 4 个文件 / 328,712 B | 是 | ✅ 对应研究脚本可重算 | 无影响 |
 | `reports/analytics_validation/` | 4 个文件 / 905,526 B | 是 | ✅ 对应研究脚本可重算 | 无影响 |
-| `logs/` | 50 个文件 / 30,491,712 B（`app.log` + 质检/对拍/因子审计报告） | **是**（`.gitignore:111`） | ✅ 运行自动生成 | 无历史日志与历史质检报告，不影响运行 |
-| `tmp/`（基准与调试脚本输出） | 145 个文件 / 94,796,793 B（数量随工作区变化） | **是**（`.gitignore:138` 新增整目录规则，此前只忽略 `*.tmp`） | — | 无影响，**不需要搬**（草稿/一次性脚本，不要提交） |
+| `logs/` | 50 个文件 / 30,491,712 B（`app.log` + 质检/对拍/因子审计报告） | **是**（`.gitignore:110`） | ✅ 运行自动生成 | 无历史日志与历史质检报告，不影响运行 |
+| `tmp/`（基准与调试脚本输出） | 2 个文件 / 4,252 B（清理后仅余 `db_snapshot_20261103_094535/` 下 `manifest.txt` 与 `stock_daily.csv` 留证；数量随工作区变化） | **是**（`.gitignore:138` 新增整目录规则，此前只忽略 `*.tmp`） | — | 无影响，**不需要搬**（草稿/一次性脚本，不要提交） |
 | `runs/` | **不存在**（实测 missing；此前记录为 0 文件） | 未核对 | — | 无影响 |
 | `.coverage` | 98,304 B | 是 | `pytest --cov` 重新生成 | 无影响 |
 | `research/`（代码 + 数据） | 23 个文件 / 13,409,819 B | 部分 | 代码与 `research/events/data/` 下 15 个数据文件（原始/规范化 parquet、汇总 CSV、映射表）均已入库；本次新增忽略 2 个可重建中间产物（`.gitignore:141-142`：`announcement_event_level_car.csv`、`announcements_partial.parquet`） | 不影响运行；已入库数据是离线重导 `meta/events/events.parquet` 的原始来源之一 |
