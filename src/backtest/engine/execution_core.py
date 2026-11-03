@@ -23,6 +23,10 @@ A 股交易语义只允许在本模块修改，禁止在具体引擎里再写一
     7. 信号既可以是 'buy'/'sell'/'hold' 字符串（全仓进/全仓出），也可以是
        {'action': 'buy'|'sell', 'fraction': 0~1, 'target_weight': 0~1}
        映射（分批建仓 / 金字塔加仓 / 部分减仓）
+    8. 除权除息（分红 / 送转 / 配股）只在原始价口径下记账：每个交易日撮合前
+       按 ex_date 把现金分红计入现金、送转计入股数、配股扣减现金，权益始终为
+       现金 + Σ(股数 × 原始收盘价)。信号/指标用的后复权价已含分红，禁止再
+       叠加本事件表（双重计入）；未传事件表时行为完全不变
 
 横截面（组合级）策略可通过 ``portfolio_strategy`` 入口接入：它一次性看到
 全部标的，返回 {ts_code: 信号序列}，由内核与单标的信号合并后统一撮合。
@@ -41,6 +45,11 @@ import polars as pl
 from loguru import logger
 
 from src.backtest.costs.cost_model import CostModel
+from src.backtest.engine.corporate_actions import (
+    RIGHTS_POLICIES,
+    CorporateAction,
+    CorporateActionSchedule,
+)
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.risk import Order as RiskOrder
 from src.risk import Portfolio as RiskPortfolio
@@ -466,6 +475,95 @@ class AccountBook:
         self._equity += shares * (price - baseline) - cost
         self.positions[code] = position - shares
 
+    def apply_corporate_action(
+        self, code: str, *, cash_per_share: float, share_ratio: float,
+        rights_ratio: float = 0.0, rights_price: float = 0.0,
+        tax_rate: float = 0.0, rights_policy: str = 'partial',
+    ) -> Dict[str, Any]:
+        """按除权除息事件调整现金与股数（成本总额不变）。
+
+        记账口径（与权益估值保持同源）：
+            - 现金分红：``现金 += 每股派息 × 持仓股数 × (1 - 税率)``；
+            - 送转：``股数 += floor(每股送转股数 × 持仓股数)``，成本总额不变；
+            - 配股：按配股比例认购、按配股价扣现金；现金不足按
+              ``rights_policy`` 部分认购或放弃，未认购部分记录在案。
+
+        权益为增量维护：除权日开盘前持仓仍按「上一交易日收盘价」（含权价）
+        计价，因此增加股数必须同时按该含权价补足权益，等收盘按除权价盯市后
+        自然回到中性；现金分红同理（现金增加、收盘价下跌相互抵消）。
+
+        Returns:
+            Dict[str, Any]: 本次事件的记账明细（写入回测结果的
+            ``corporate_actions`` 日志，供逐笔对账）。
+        """
+        if rights_policy not in RIGHTS_POLICIES:
+            raise ValueError(
+                f"rights_policy 必须是 {RIGHTS_POLICIES} 之一，实际 {rights_policy!r}")
+        if not 0.0 <= tax_rate <= 1.0:
+            raise ValueError(f"dividend_tax_rate 必须在 [0, 1]，实际 {tax_rate}")
+
+        position = self.position(code)
+        baseline = self.last_prices.get(code)
+        record: Dict[str, Any] = {
+            'ts_code': code,
+            'shares_before': position,
+            'cash_per_share': cash_per_share,
+            'share_ratio': share_ratio,
+            'rights_ratio': rights_ratio,
+            'rights_price': rights_price,
+            'cash_dividend': 0.0,
+            'bonus_shares': 0,
+            'rights_shares': 0,
+            'rights_cost': 0.0,
+            'rights_abandoned_shares': 0,
+            'shares_after': position,
+        }
+        if position <= 0:
+            return record
+
+        # 1) 现金分红（按除权日计提应收，税后入账）
+        cash_dividend = cash_per_share * position * (1.0 - tax_rate)
+        if cash_dividend > 0:
+            self.cash[code] = self.cash.get(code, 0.0) + cash_dividend
+            self._equity += cash_dividend
+        record['cash_dividend'] = cash_dividend
+
+        # 2) 送转：股数增加、成本总额不变
+        bonus_shares = int(math.floor(share_ratio * position + CASH_EPS))
+        bonus_shares = max(0, bonus_shares)
+        added_value = bonus_shares * baseline if baseline is not None else 0.0
+        self._equity += added_value
+        record['bonus_shares'] = bonus_shares
+
+        # 3) 配股：认购股数受现金约束，现金不足时显式部分认购/放弃
+        rights_entitled = int(math.floor(rights_ratio * position + CASH_EPS))
+        rights_entitled = max(0, rights_entitled)
+        rights_shares = 0
+        rights_cost = 0.0
+        if rights_entitled > 0:
+            available_cash = max(0.0, self.cash.get(code, 0.0))
+            affordable = (
+                int(math.floor(available_cash / rights_price + CASH_EPS))
+                if rights_price > 0 else rights_entitled
+            )
+            if rights_policy == 'abandon':
+                rights_shares = 0
+            else:  # 'partial'
+                rights_shares = min(rights_entitled, max(0, affordable))
+            rights_cost = rights_shares * rights_price
+            self.cash[code] = self.cash.get(code, 0.0) - rights_cost
+            if baseline is not None:
+                self._equity += rights_shares * baseline - rights_cost
+            else:
+                self._equity -= rights_cost
+        record['rights_shares'] = rights_shares
+        record['rights_cost'] = rights_cost
+        record['rights_abandoned_shares'] = rights_entitled - rights_shares
+
+        self.positions[code] = position + bonus_shares + rights_shares
+        record['shares_after'] = self.positions[code]
+        return record
+
     def total_equity(self) -> float:
         """权益 = 各桶现金之和 + 各持仓按最新价盯市（增量维护，O(1)）。"""
         return self._equity
@@ -579,6 +677,14 @@ class RunContext:
     prev_raw_close: Dict[str, float | None]
     pending_ttl_days: int
     st_unknown_bars: List[Tuple[str, Any]]
+    #: 除权除息事件表（None 表示本次回测不记账分红/送转/配股）
+    corporate_actions: CorporateActionSchedule | None
+    dividend_tax_rate: float
+    rights_policy: str
+    #: 各标的已处理到的除权事件下标（按 ex_date 升序游标）
+    corporate_action_cursor: Dict[str, int]
+    #: 逐笔除权记账日志（写入结果，供逐笔对账）
+    corporate_action_log: List[Dict[str, Any]]
 
 
 class EventBacktestRunner:
@@ -601,7 +707,10 @@ class EventBacktestRunner:
             result_meta: Dict[str, Any] | None = None,
             st_status: StStatus | None = None,
             portfolio_strategy: Any | None = None,
-            pending_ttl_days: int = DEFAULT_PENDING_TTL_DAYS) -> Dict[str, Any]:
+            pending_ttl_days: int = DEFAULT_PENDING_TTL_DAYS,
+            corporate_actions: CorporateActionSchedule | None = None,
+            dividend_tax_rate: float = 0.0,
+            rights_policy: str = 'partial') -> Dict[str, Any]:
         """
         执行回测并返回结果字典。
 
@@ -634,9 +743,19 @@ class EventBacktestRunner:
               涨跌停判定与成交/盯市一律使用原始价——交易所规则定义在原始价上，
               且整手取整与最低佣金必须落在名义价上（A16）；两列必须成对出现；
             - 无 raw_* 列时视为原始价输入（如 TDX 本地数据），直接用主列判定。
+
+        除权除息（``corporate_actions``）：
+            只在**原始价**口径下启用（成交/盯市本来就是原始价）。传入事件表后，
+            每个交易日在撮合前按 ``ex_date ≤ 当日`` 的顺序记账：现金分红入现金、
+            送转加股数、配股扣现金。**禁止**在 hfq 价格序列上再叠加本事件表，
+            否则分红会被计入两次。未传事件表时行为与此前完全一致。
         """
         if pending_ttl_days < 0:
             raise ValueError(f"pending_ttl_days 必须 ≥ 0，实际 {pending_ttl_days}")
+        if not 0.0 <= dividend_tax_rate <= 1.0:
+            raise ValueError(f"dividend_tax_rate 必须在 [0, 1]，实际 {dividend_tax_rate}")
+        if rights_policy not in RIGHTS_POLICIES:
+            raise ValueError(f"rights_policy 必须是 {RIGHTS_POLICIES} 之一，实际 {rights_policy!r}")
 
         prepared_data = self._prepare_universe(universe, strategies, portfolio_strategy)
         # 空 universe / 无标的配置策略时 _prepare_universe 返回 None，提前返回
@@ -672,7 +791,8 @@ class EventBacktestRunner:
             portfolio_strategy,
         )
         ctx = self._init_run_context(codes, rules, book, gate, lot_size,
-                                     pending_ttl_days)
+                                     pending_ttl_days, corporate_actions,
+                                     dividend_tax_rate, rights_policy)
 
         loop = self._run_trading_loop(
             ctx=ctx, sorted_dates=sorted_dates, day_codes=day_codes,
@@ -717,7 +837,10 @@ class EventBacktestRunner:
 
     def _init_run_context(self, codes: List[str], rules: ExecutionRules,
                           book: AccountBook, gate: RiskGate, lot_size: int,
-                          pending_ttl_days: int) -> RunContext:
+                          pending_ttl_days: int,
+                          corporate_actions: CorporateActionSchedule | None = None,
+                          dividend_tax_rate: float = 0.0,
+                          rights_policy: str = 'partial') -> RunContext:
         """初始化挂单、前收盘、成交与权益曲线等可变状态。"""
         return RunContext(
             book=book, gate=gate, rules=rules, cost_model=self.cost_model,
@@ -734,6 +857,11 @@ class EventBacktestRunner:
             prev_raw_close=dict.fromkeys(codes),
             pending_ttl_days=pending_ttl_days,
             st_unknown_bars=[],
+            corporate_actions=corporate_actions if not corporate_actions or not corporate_actions.is_empty() else None,
+            dividend_tax_rate=dividend_tax_rate,
+            rights_policy=rights_policy,
+            corporate_action_cursor={},
+            corporate_action_log=[],
         )
 
     def _prepare_universe(
@@ -1109,6 +1237,42 @@ class EventBacktestRunner:
         ctx.pending[code] = intent
         ctx.pending_age[code] = 0
 
+    def _apply_corporate_actions(self, ctx: RunContext, trade_day: Any) -> None:
+        """在当日撮合前记账所有已到除权日的事件。
+
+        - 以 ``ex_date ≤ 当日`` 为到期条件：除权日落在非交易日或标的当日完全
+          无行情行（数据空洞）时，顺延到下一个回测交易日记账，不会漏记；
+        - 权益归属按「记账时点的持仓」判定：除权日当天新买入（撮合在记账之后）
+          不享有本次分红/送转，记录日持有者才享有；
+        - 持仓为 0 的标的只推进游标，不产生日志，避免后续买入被旧事件误伤。
+        """
+        schedule = ctx.corporate_actions
+        if schedule is None:
+            return
+        day = to_trade_date(trade_day)
+        if day is None:
+            return
+        for code in schedule.codes():
+            events = schedule.events_for(code)
+            cursor = ctx.corporate_action_cursor.get(code, 0)
+            while cursor < len(events) and events[cursor].ex_date <= day:
+                event = events[cursor]
+                cursor += 1
+                if ctx.book.position(code) <= 0:
+                    continue
+                record = ctx.book.apply_corporate_action(
+                    code,
+                    cash_per_share=event.cash_per_share,
+                    share_ratio=event.share_ratio,
+                    rights_ratio=event.rights_ratio,
+                    rights_price=event.rights_price,
+                    tax_rate=ctx.dividend_tax_rate,
+                    rights_policy=ctx.rights_policy,
+                )
+                record.update({'date': trade_day, 'ex_date': event.ex_date})
+                ctx.corporate_action_log.append(record)
+            ctx.corporate_action_cursor[code] = cursor
+
     def _run_trading_loop(
         self, *, ctx: RunContext, sorted_dates: List[Any],
         day_codes: List[List[str]], day_positions: List[List[int]],
@@ -1125,6 +1289,9 @@ class EventBacktestRunner:
         for day_index, trade_day in enumerate(sorted_dates):
             codes_today = day_codes[day_index]
             positions_today = day_positions[day_index]
+            # 除权除息必须在当日撮合之前记账：除权日开盘价已扣权，且送转新增
+            # 的股数在当日卖出时必须已经计入持仓（记录日持有者才享有权益）
+            self._apply_corporate_actions(ctx, trade_day)
             # 当日停牌集合只在启用风控时构造：NoSuspendedTrade 规则需要它，
             # 未启用风控时该集合无消费方，避免给默认路径增加 O(N_symbols/日) 开销
             suspended_today = (
@@ -1268,6 +1435,13 @@ class EventBacktestRunner:
             'st_unknown_bars': [
                 {'ts_code': code, 'date': day} for code, day in st_unknown_bars
             ],
+            # 除权除息逐笔记账日志：现金分红、送转股数、配股认购/放弃，
+            # 未传事件表时为空列表（与修复前结果结构保持兼容）
+            'corporate_actions': ctx.corporate_action_log,
+            # 已实现现金分红合计（税后），供绩效归因直接引用
+            'dividend_cash_total': sum(
+                float(item.get('cash_dividend', 0.0)) for item in ctx.corporate_action_log
+            ),
         }
         if result_meta:
             result.update(result_meta)

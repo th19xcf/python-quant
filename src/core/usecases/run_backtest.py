@@ -29,6 +29,7 @@ Usage:
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
 from typing import Any, Dict, Union
 
 import polars as pl
@@ -153,6 +154,34 @@ def _load_st_status(
         return None
 
 
+def _load_local_dividends(
+    codes: list[str], db: Any, db_manager: Any,
+) -> Dict[str, pl.DataFrame]:
+    """从本地列存分红快照加载除权事件（只读；任何失败均降级为空）。
+
+    不经过 ``DatabaseManager`` / 远程接口：分红数据缺失只意味着本次回测不记账
+    除权事件，不会阻塞回测，也不会静默从远端补数。
+    """
+    if not codes:
+        return {}
+    config = getattr(db, 'config', None) or getattr(db_manager, 'config', None)
+    if config is None:
+        try:
+            from src.utils.config import Config
+            config = Config()
+        # 兜底理由：配置不可用时退化为不记账分红，保持回测可运行
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"分红配置不可用，跳过除权事件: {exc}")
+            return {}
+    try:
+        from src.backtest.engine.corporate_actions import load_local_dividend_frames
+        return load_local_dividend_frames(codes, config)
+    # 兜底理由：本地快照损坏/缺失时不影响回测主流程
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"加载本地分红快照失败，跳过除权事件: {exc}")
+        return {}
+
+
 def _run_portfolio_backtest(
     data: Dict[str, pl.DataFrame],
     strategies: Dict[str, BaseStrategy] | None,
@@ -230,6 +259,10 @@ def run_backtest(
     st_status: Dict[str, Any] | None = None,
     db_manager: Any = None,
     ts_codes: list[str] | None = None,
+    apply_dividends: bool = True,
+    dividend_tax_rate: float = 0.0,
+    rights_policy: str = 'partial',
+    dividends: Mapping[str, pl.DataFrame] | None = None,
     **kwargs,
 ) -> Dict[str, Any]:
     """
@@ -258,6 +291,15 @@ def run_backtest(
         db_manager:    可选的数据库管理器；传入后即使 data 已提供也会加载
                        ST 时间维表。为 None 且需要取数时自动创建。
         ts_codes:      组合回测的标的列表；未传 data 时一次批量加载面板。
+        apply_dividends: 默认 True——从本地分红快照（stock_dividend）加载除权
+                       除息事件，按「原始价成交 + 分红入现金」记账，权益口径为
+                       现金 + Σ(股数 × 原始收盘价)。只在原始价口径下启用；
+                       显式传入的 dividends 优先，不再自动加载。
+        dividend_tax_rate: 现金分红税率（0~1），默认 0；未建模持股期限差异化税率。
+        rights_policy:  配股现金不足处置：'partial'（按现金能力部分认购）或
+                       'abandon'（放弃配股）。
+        dividends:      显式指定的除权除息事件表 {ts_code: DataFrame}，
+                       传给 apply_dividends=False 时完全不做分红记账。
 
     Returns:
         dict —— BacktestEngine.run_backtest() 的返回值，包含：
@@ -278,6 +320,26 @@ def run_backtest(
 
     if data is None:
         raise ValueError("run_backtest: 必须传 data 或 ts_code")
+
+    # ---- 除权除息：只读本地分红快照，运行时主路径不发远程查询 ----
+    # 只有带原始价列（raw_open/raw_close）的数据才记账分红：主列是后复权价时
+    # 再加现金分红就是双重计入，必须跳过
+    if dividends is None and apply_dividends:
+        frames = data if isinstance(data, dict) else ({ts_code: data} if ts_code else {})
+        raw_codes = [
+            code for code, frame in frames.items()
+            if frame is not None and ('raw_open' in frame.columns or 'raw_close' in frame.columns)
+        ]
+        if raw_codes:
+            dividends = _load_local_dividends(raw_codes, db, db_manager)
+        elif frames:
+            logger.warning(
+                "回测数据缺少 raw_open/raw_close 原始价列，已跳过除权记账，"
+                "避免与后复权价双重计入；如需记账请传入原始价数据")
+    if dividends:
+        kwargs.setdefault('dividends', dividends)
+    kwargs.setdefault('dividend_tax_rate', dividend_tax_rate)
+    kwargs.setdefault('rights_policy', rights_policy)
 
     # ---- 分支：单票 vs 组合 ----
     if isinstance(data, dict):

@@ -142,7 +142,36 @@ hfq 路径额外保留 `raw_open` / `raw_close`：交易所涨跌停规则定义
 
 `BacktestEngine` 与 `PortfolioBacktestEngine` 只是同一内核的参数化封装（单标的/多标的、资金分配方式），
 不再各自维护撮合分支；`OptimizedBacktestEngine` 已删除。结果字典键保持
-`trades / final_equity / total_return / equity_curve / performance / risk_summary / rejected_orders`。
+`trades / final_equity / total_return / equity_curve / performance / risk_summary / rejected_orders`，
+并新增 `corporate_actions / dividend_cash_total`（未启用除权记账时为空列表 / 0）。
+
+### 除权除息记账（原始价口径的唯一入口）
+
+**口径边界（禁止跨口径混用）**：
+
+| 用途 | 价格 | 说明 |
+|---|---|---|
+| 信号 / 指标 | 后复权价（`hfq`） | 均线、MACD、RSI 等全部读复权列 |
+| 撮合价 / 涨跌停 | 原始价（`raw_open` / `raw_close`） | 交易所规则定义在名义价上 |
+| 盯市 / 权益估值 | 原始收盘价 | `总权益 = 现金 + Σ(持仓股数 × raw_close)` |
+
+后复权价本身已按除权事件上调，**不得**再叠加现金分红（双重计入）；原始价口径
+**必须**把分红/送转落到现金与股数上，否则送转标的会因价格下跌出现虚假巨亏。
+实现在 `src/backtest/engine/corporate_actions.py`（事件表）与
+`AccountBook.apply_corporate_action`（记账）。
+
+| 事件 | 记账规则 | 时点 / 配置 |
+|---|---|---|
+| 现金分红 | `现金 += 每股派息 × 股数 × (1 - 税率)` | **除权日**计提（应收），不是派息日；`dividend_tax_rate` 默认 0 |
+| 送转 | `股数 += floor(每股送转 × 股数)`，成本总额不变 | 除权日；零股向下取整、不折现 |
+| 配股 | 按比例认购、按配股价扣现金 | 现金不足：`partial`（按现金能力部分认购，默认）/ `abandon`（放弃），未认购股数写入日志 |
+
+- 数据源只读本地分红快照 `data/local_store/factors/stock_dividend.parquet`，
+  运行时主路径不发远程查询；指数通过 `is_index_code` 排除。
+- 未建模 A 股按持股期限的差异化红利税（≤1 年 20%、1~2 年 10%、>2 年免税），
+  统一按单一税率近似。
+- 除权日记账发生在当日撮合之前：除权日新买入不享有本次权益，记录日持有者享有；
+  除权日停牌/非交易日顺延到下一个回测交易日记账，不会漏记，也不会重复计入。
 
 ### 为什么 _calculate_factors 用事件逐行更新而不是全因子公式
 

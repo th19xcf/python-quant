@@ -4,11 +4,14 @@
 组合回测引擎，撮合逻辑全部委托给 execution_core 统一内核
 """
 
+from collections.abc import Mapping
 from typing import Any, Dict
 
+import polars as pl
 from loguru import logger
 
 from src.backtest.engine.base_engine import BaseBacktestEngine
+from src.backtest.engine.corporate_actions import CorporateActionSchedule
 from src.backtest.engine.execution_core import (
     DEFAULT_PENDING_TTL_DAYS,
     EventBacktestRunner,
@@ -104,6 +107,9 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
                      industry_map: Dict[str, str] | None = None,
                      st_status: StStatus | None = None,
                      pending_ttl_days: int = DEFAULT_PENDING_TTL_DAYS,
+                     dividends: Mapping[str, pl.DataFrame] | None = None,
+                     dividend_tax_rate: float = 0.0,
+                     rights_policy: str = 'partial',
                      **params: Any) -> Dict[str, Any]:
         """
         运行组合回测
@@ -118,6 +124,10 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
                 fill_confidence=low（数据质量提示，不改变成交判定）
             pending_ttl_days: 挂单最长顺延天数，超过即作废（默认 5 个交易日），
                 避免停牌标的复牌后仍按数日前的信号成交
+            dividends: 标的 → 除权除息记录（列同 stock_dividend 表），
+                None/空表表示不记账分红；只在原始价口径下启用
+            dividend_tax_rate: 现金分红税率（0~1），默认 0
+            rights_policy: 配股现金不足处置，'partial'（默认）或 'abandon'
 
         Returns:
             Dict[str, Any]: 回测结果
@@ -134,6 +144,11 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             prepared_data[stock_code] = (
                 self._precompute_indicators(data, strategy) if strategy else data
             )
+
+        self.dividends = dict(dividends) if dividends else None
+        self.dividend_tax_rate = dividend_tax_rate
+        self.rights_policy = rights_policy
+        schedule = CorporateActionSchedule.from_frames(dividends)
 
         runner = EventBacktestRunner(
             cost_model=self.cost_model,
@@ -154,6 +169,9 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             st_status=st_status,
             portfolio_strategy=self.portfolio_strategy,
             pending_ttl_days=pending_ttl_days,
+            corporate_actions=schedule,
+            dividend_tax_rate=dividend_tax_rate,
+            rights_policy=rights_policy,
         )
 
         self.trades = result.get('trades', [])

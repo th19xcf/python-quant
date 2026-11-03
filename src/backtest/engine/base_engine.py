@@ -5,6 +5,7 @@
 """
 
 import itertools
+from collections.abc import Mapping
 from typing import Any, Dict, List, Union
 
 import pandas as pd
@@ -50,6 +51,11 @@ class BaseBacktestEngine:
         self.overwritten_orders: List[Dict[str, Any]] = []  # 被新信号覆盖的挂单
         self.filtered_signals: List[Dict[str, Any]] = []    # 被持仓状态过滤的信号
         self.positions: Dict[str, int] = {}               # 回测结束的最终持仓（账本真源）
+        # 除权除息（附加账本层）：dividends 为「标的 → 分红记录」，None 表示
+        # 本次回测不记账分红/送转/配股（与修复前行为一致）
+        self.dividends: Mapping[str, pl.DataFrame] | None = None
+        self.dividend_tax_rate: float = 0.0
+        self.rights_policy: str = 'partial'
 
     @staticmethod
     def convert_to_polars(data: DataFrameType) -> pl.DataFrame:

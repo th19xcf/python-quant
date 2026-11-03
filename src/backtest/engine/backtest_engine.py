@@ -4,8 +4,10 @@
 回测引擎（单票），撮合逻辑全部委托给 execution_core 统一内核
 """
 
+from collections.abc import Mapping
 from typing import Any, Dict, List
 
+import polars as pl
 from loguru import logger
 
 from src.backtest.engine._parallel_worker import (
@@ -14,6 +16,7 @@ from src.backtest.engine._parallel_worker import (
     run_backtest_worker_cached,
 )
 from src.backtest.engine.base_engine import BaseBacktestEngine
+from src.backtest.engine.corporate_actions import CorporateActionSchedule
 from src.backtest.engine.execution_core import EventBacktestRunner, StStatusEntry
 
 
@@ -44,7 +47,11 @@ class BacktestEngine(BaseBacktestEngine):
 
     def run_backtest(self, initial_capital: float = 1000000.0, lot_size: int = 100,
                      ts_code: str = '', industry: str = '',
-                     is_st: StStatusEntry | None = None, **params: Any) -> Dict[str, Any]:
+                     is_st: StStatusEntry | None = None,
+                     dividends: Mapping[str, pl.DataFrame] | None = None,
+                     dividend_tax_rate: float = 0.0,
+                     rights_policy: str = 'partial',
+                     **params: Any) -> Dict[str, Any]:
         """
         运行回测
 
@@ -56,6 +63,13 @@ class BacktestEngine(BaseBacktestEngine):
             is_st: ST 三态——True=ST、False=明确非 ST、None=未知（默认）。
                 未知时涨跌停按板块默认幅度判定（与 False 相同），结果标记
                 st_unknown=True、逐笔 fill_confidence=low（数据质量提示）。
+            dividends: 标的 → 除权除息记录（列同 stock_dividend 表），
+                None/空表表示不记账分红。只在原始价口径下启用，hfq 价格序列
+                不得再传本参数（否则分红双重计入）。
+            dividend_tax_rate: 现金分红税率（0~1），默认 0；未建模持股期限
+                差异化税率，按单一税率近似。
+            rights_policy: 配股现金不足时的处置：'partial'（按现金能力部分
+                认购，默认）或 'abandon'（放弃配股）。
             **params: 其他回测参数
 
         Returns:
@@ -76,6 +90,12 @@ class BacktestEngine(BaseBacktestEngine):
         # 单票 = 单标的账户，初始资金全部归属该标的
         code = self.ts_code or '__default__'
 
+        # 除权除息事件表：按标的构建一次，单标的只取当前代码的记录
+        self.dividends = dividends
+        self.dividend_tax_rate = dividend_tax_rate
+        self.rights_policy = rights_policy
+        schedule = CorporateActionSchedule.from_frames(dividends)
+
         runner = EventBacktestRunner(
             cost_model=self.cost_model,
             performance_analyzer=self.performance_analyzer,
@@ -89,6 +109,9 @@ class BacktestEngine(BaseBacktestEngine):
             industry_map={code: industry} if industry else {},
             result_meta={'strategy_name': self.strategy.name},
             st_status={code: is_st},
+            corporate_actions=schedule,
+            dividend_tax_rate=dividend_tax_rate,
+            rights_policy=rights_policy,
         )
 
         self.trades = result.get('trades', [])
