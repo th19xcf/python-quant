@@ -134,6 +134,8 @@ def fill_stock_daily(
     ts_codes: Sequence[str] | None = None,
     full: bool = False,
     dry_run: bool = False,
+    since: date | None = None,
+    max_date: date | None = None,
     batch_stocks: int = _BATCH_STOCKS,
 ) -> dict[str, Any]:
     """把本地 TDX 日线补入 ``stock_daily``。
@@ -144,6 +146,8 @@ def fill_stock_daily(
         ts_codes: 显式股票池；None 时枚举本地全部股票（排除指数/基金）
         full: True 为全量（全历史），False 为增量（库内最新交易日之后）
         dry_run: 只统计不写库
+        since: 只写入不早于该日期的记录（用于库内水位缺失时的有界回填）
+        max_date: 只写入不晚于该日期的记录（用于避开盘中未收盘 K 线）
         batch_stocks: 每批股票数
 
     Returns:
@@ -202,11 +206,22 @@ def fill_stock_daily(
                 logger.warning(f"{ts_code} 解析 {file_path} 失败，跳过: {e}")
                 continue
 
+            if max_date is not None:
+                records = [r for r in records if r['date'] <= max_date]
             if not records:
                 summary['skipped_reasons']['empty_file'] += 1
                 continue
 
             window, existing = _incremental_window(records, watermarks.get(ts_code))
+            if since is not None:
+                # 有界回填：保留 since 前一根作为 pre_close 种子并标记为既有，
+                # 保证首行的 pre_close/change/pct_chg 与全量口径一致。
+                seed = [r for r in window if r['date'] < since][-1:]
+                window = seed + [r for r in window if r['date'] >= since]
+                existing = list(existing) + [r['date'] for r in seed]
+                if len(window) == len(seed):
+                    summary['skipped_reasons']['no_new_rows'] += 1
+                    continue
             rows = build_missing_rows(ts_code, window, existing)
             if not rows:
                 summary['skipped_reasons']['no_new_rows'] += 1

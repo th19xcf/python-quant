@@ -21,6 +21,7 @@ from src.ui.data_controller import DataController
 from src.ui.data_view_manager import DataViewManager
 from src.ui.fund_section import FundSection
 from src.ui.indicator_interaction_manager import IndicatorInteractionManager
+from src.ui.main_window_advice_mixin import MainWindowAdviceMixin
 from src.ui.main_window_candlestick_mixin import MainWindowCandlestickMixin
 from src.ui.main_window_chart_interaction_mixin import MainWindowChartInteractionMixin
 from src.ui.main_window_dividend_mixin import MainWindowDividendMixin
@@ -39,7 +40,8 @@ from src.utils.logger import logger
 
 class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
                  MainWindowCandlestickMixin, MainWindowIndicatorWindowMixin,
-                 MainWindowDividendMixin, MainWindowUiMixin,
+                 MainWindowDividendMixin, MainWindowAdviceMixin,
+                 MainWindowUiMixin,
                  MainWindowEventMixin,
                  MainWindowDrawingMixin, QMainWindow):
     """

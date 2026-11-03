@@ -166,7 +166,8 @@ class LocalQuoteStore:
     def _load_meta(self) -> Dict[tuple[str, str], dict[str, Any]]:
         """加载覆盖度元数据（按 mtime 失效）。"""
         if not self.meta_path.exists():
-            self._meta = {}
+            # 不能清空内存：write_daily 逐标的调用本函数，元数据文件尚未落盘时
+            # 清空会把前几个标的的条目丢掉（首次构建即触发）。
             self._meta_mtime = None
             return self._meta
         mtime = self.meta_path.stat().st_mtime_ns
@@ -219,19 +220,98 @@ class LocalQuoteStore:
         return not (not cov.full and start_dt is not None and cov.start > start_dt)
 
     def is_stale(self, data_type: str, ts_code: str, source_path: Path | None) -> bool:
-        """源 ``.day`` 文件在构建后是否被更新过（用于决定是否回退 TDX）。
+        """源 ``.day`` 文件内容是否比本地存量更新。
 
-        只比较 mtime，不解析文件；源文件不存在时视为不落后。
+        以**内容级末行日期**为准：只读源文件首尾各 32 字节，末行日期晚于
+        本地 ``end`` 即判落后；mtime 仅在源文件无法解析时作兜底。这样即使
+        同步工具保留了旧 mtime，也不会静默停在旧日期。
         """
         if source_path is None or not source_path.exists():
             return False
         cov = self.coverage(data_type, ts_code)
-        if cov is None or cov.source_mtime_ns is None:
+        if cov is None:
+            return True
+        from src.data.tdx_day_parser import read_first_last_trade_date  # noqa: PLC0415
+
+        _, source_last = read_first_last_trade_date(source_path)
+        if source_last is not None:
+            return source_last > cov.end
+        if cov.source_mtime_ns is None:
             return False
         try:
             return source_path.stat().st_mtime_ns > int(cov.source_mtime_ns)
         except OSError:
             return False
+
+    def rescan_meta(self, tdx_path: Path | None = None) -> dict[str, Any]:
+        """从 ``quotes/`` 现有 Parquet 重建覆盖度元数据。
+
+        元数据文件被误覆盖/丢失时使用：逐文件读 ``date`` 列的 min/max 与
+        行数，不重算行情；给了 ``tdx_path`` 时顺带对比源文件首日，判断
+        ``full`` 并记录源 mtime。返回按类型统计的数量。
+        """
+        from src.data.tdx_day_parser import read_first_last_trade_date  # noqa: PLC0415
+
+        quote_dir = self.root / 'quotes'
+        rebuilt: Dict[tuple[str, str], dict[str, Any]] = {}
+        by_type: Dict[str, int] = {}
+        if not quote_dir.is_dir():
+            logger.warning(f'[local-store] 列存目录不存在，无法重建元数据: {quote_dir}')
+            return {'total': 0, 'by_type': {}}
+
+        for kind_dir in sorted(p for p in quote_dir.iterdir() if p.is_dir()):
+            data_type = kind_dir.name
+            for market_dir in sorted(p for p in kind_dir.iterdir() if p.is_dir()):
+                market = market_dir.name
+                for path in sorted(market_dir.glob('*.parquet')):
+                    ts_code = path.stem
+                    try:
+                        agg = pl.scan_parquet(str(path)).select([
+                            pl.len().alias('rows'),
+                            pl.col('date').min().alias('start'),
+                            pl.col('date').max().alias('end'),
+                        ]).collect()
+                    except (OSError, pl.exceptions.PolarsError) as exc:
+                        logger.warning(f'[local-store] 元数据重建跳过 {path}: {exc}')
+                        continue
+                    if agg.is_empty() or int(agg['rows'][0]) == 0:
+                        continue
+                    start = _as_date(agg['start'][0])
+                    end = _as_date(agg['end'][0])
+                    if start is None or end is None:
+                        continue
+                    full = True
+                    source_mtime_ns = None
+                    if tdx_path is not None:
+                        source = tdx_path / market / 'lday' / f'{market}{ts_code.split(".")[0]}.day'
+                        if source.exists():
+                            source_mtime_ns = source.stat().st_mtime_ns
+                            source_first, _ = read_first_last_trade_date(source)
+                            if source_first is not None:
+                                full = start <= source_first
+                    rebuilt[(data_type, ts_code)] = {
+                        'ts_code': ts_code,
+                        'data_type': data_type,
+                        'market': market_of(ts_code),
+                        'rows': int(agg['rows'][0]),
+                        'start': start,
+                        'end': end,
+                        'built_at': datetime.now(),
+                        'file_size': path.stat().st_size,
+                        'version': STORE_VERSION,
+                        'full': full,
+                        'source_mtime_ns': source_mtime_ns,
+                    }
+                    by_type[data_type] = by_type.get(data_type, 0) + 1
+
+        with self._lock:
+            self._meta = rebuilt
+            # 让 flush_meta 内的惰性加载认为内存已是磁盘最新版本，避免把重建结果覆盖回旧文件。
+            self._meta_mtime = (
+                self.meta_path.stat().st_mtime_ns if self.meta_path.exists() else None)
+        self.flush_meta()
+        logger.info(f'[local-store] 覆盖度元数据重建完成: {len(rebuilt)} 个文件 / {by_type}')
+        return {'total': len(rebuilt), 'by_type': by_type}
 
     def codes(self, data_type: str = 'stock') -> list[str]:
         """返回该资产类型下已构建的全部 ts_code（升序）。"""
@@ -320,6 +400,8 @@ class LocalQuoteStore:
         rows = frame.height
         first = frame['date'].min()
         last = frame['date'].max()
+        # 必须先加载既有元数据再更新，否则只写本次涉及的标的会把其他条目清空。
+        self._load_meta()
         with self._lock:
             self._meta[(data_type, ts_code)] = {
                 'ts_code': ts_code,
@@ -338,6 +420,10 @@ class LocalQuoteStore:
 
     def flush_meta(self) -> None:
         """把内存中的覆盖度元数据落盘。"""
+        # 只在磁盘已有元数据时合并：文件不存在时 _load_meta 会把内存清空，
+        # 导致首次构建（write_daily → flush_meta）写入的条目丢失。
+        if self.meta_path.exists():
+            self._load_meta()
         with self._lock:
             rows = list(self._meta.values())
         self.meta_path.parent.mkdir(parents=True, exist_ok=True)

@@ -14,12 +14,20 @@
 """
 
 from src.core.usecases.analyze_factors import analyze_factors
+from src.core.usecases.get_daily_recommendations import (
+    DailyRecommendationBundle,
+    DailyRecommendationDTO,
+    get_daily_recommendations,
+)
 from src.core.usecases.run_backtest import run_backtest
 from src.core.usecases.screen_stocks import screen_stocks
 from src.core.usecases.update_data import update_stock_data
 
 __all__ = [
+    'DailyRecommendationBundle',
+    'DailyRecommendationDTO',
     'analyze_factors',
+    'get_daily_recommendations',
     'run_backtest',
     'screen_stocks',
     'update_stock_data',

@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+
+"""每日推荐命令行入口。
+
+用法：
+    python -m src.advice --as-of 2026-10-19 --equity 1000000
+    python -m src.advice --replay --start 2024-11-01 --end 2026-10-19
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from datetime import date, datetime
+from pathlib import Path
+
+import polars as pl
+from loguru import logger
+
+from src.advice.config import AdviceConfig, default_config
+from src.advice.pipeline import AdviceEngine
+from src.advice.replay import run_replay
+from src.utils.config import get_config
+
+
+def _parse_date(value: str | None) -> date | None:
+    return date.fromisoformat(value) if value else None
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _write_snapshot(result: dict, out_dir: Path, equity: float) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / 'latest.json'
+    payload = {
+        'trade_date': result['trade_date'],
+        'generated_at': datetime.now().isoformat(timespec='seconds'),
+        'equity': equity,
+        'is_sample': False,
+        'tiers': result['tiers'],
+        'items': result['items'],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding='utf-8')
+    return path
+
+
+def _run_generate(args: argparse.Namespace) -> int:
+    as_of = _parse_date(args.as_of)
+    now = datetime.now()
+    if (as_of is None and not args.force
+            and (now.hour < 15 or (now.hour == 15 and now.minute < 30))):
+        logger.warning('未到收盘后（15:30 之后），如需生成今日清单请加 --force')
+        return 2
+    config: AdviceConfig = default_config()
+    engine = AdviceEngine(config=config)
+    result = engine.generate(as_of=as_of, equity=args.equity,
+                             tiers=args.tiers, state_dir=args.state_dir)
+    frame = result.to_frame()
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    frame.write_csv(out_dir / 'all.csv')
+    summary = result.summary()
+    out_dir.joinpath('summary.json').write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+    _write_snapshot(
+        {'trade_date': result.trade_date.isoformat(), 'tiers': summary['tiers'],
+         'items': result.to_dicts()},
+        out_dir, args.equity)
+    logger.info(
+        f"[advice] 生成完成 {result.trade_date}: {len(frame)} 行 → {out_dir}")
+    for key, advice in result.tiers.items():
+        counts = advice.summary()['counts']
+        logger.info(f"[advice] {key} {advice.label}: {counts}")
+    return 0
+
+
+def _run_replay(args: argparse.Namespace) -> int:
+    results = run_replay(
+        config=default_config(),
+        start=_parse_date(args.start),
+        end=_parse_date(args.end),
+        max_symbols=args.max_symbols,
+        initial_equity=args.equity,
+        tiers=args.tiers,
+    )
+    if not results:
+        logger.error('[replay] 无回放结果')
+        return 1
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    payload = {key: item.summary() for key, item in results.items()}
+    out_dir.joinpath('replay_summary.json').write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    for key, item in results.items():
+        if item.equity_curve:
+            pl.DataFrame(
+                item.equity_curve, schema=['date', 'equity'], orient='row'
+            ).write_csv(out_dir / f'replay_equity_{key}.csv')
+        samples = item.sample_rows
+        if samples:
+            pl.DataFrame(samples).write_csv(out_dir / f'replay_sample_{key}.csv')
+        logger.info(f"[replay] {key} {item.label}: {item.summary()}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description='每日收盘后推荐清单')
+    parser.add_argument('--as-of', help='推荐基准日 YYYY-MM-DD（默认最新交易日）')
+    parser.add_argument('--equity', type=float, default=1_000_000.0,
+                        help='组合总资金（元），默认 100 万')
+    parser.add_argument('--tiers', nargs='+', default=['short', 'mid', 'long'],
+                        help='档位：short/mid/long')
+    parser.add_argument('--state-dir', default=None, help='持仓状态目录')
+    parser.add_argument('--out-dir',
+                        default=str(_project_root() / 'reports' / 'advice'),
+                        help='输出目录')
+    parser.add_argument('--force', action='store_true',
+                        help='忽略收盘后 15:30 的时间检查')
+    parser.add_argument('--replay', action='store_true', help='运行历史回放')
+    parser.add_argument('--start', help='回放开始日 YYYY-MM-DD')
+    parser.add_argument('--end', help='回放结束日 YYYY-MM-DD')
+    parser.add_argument('--max-symbols', type=int, default=300,
+                        help='回放抽样标的数，0 表示全市场')
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    _ = get_config()
+    if args.replay:
+        return _run_replay(args)
+    return _run_generate(args)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

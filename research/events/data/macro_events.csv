@@ -1,0 +1,46 @@
+event_id,event_date,trade_day,event_type,event_name,region,affected_sectors,polarity,source_url,note
+FED20190731,2019-07-31,,美联储降息,FOMC 降息 25bp,US,黄金;券商;地产;银行;科技;创业板,+,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm,北京时间次日凌晨公布
+FED20190918,2019-09-18,,美联储降息,FOMC 降息 25bp,US,黄金;券商;地产;银行;科技;创业板,+,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm,
+FED20191030,2019-10-30,,美联储降息,FOMC 降息 25bp,US,黄金;券商;地产;银行;科技;创业板,+,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm,
+FED20200303,2020-03-03,,美联储降息,FOMC 紧急降息 50bp,US,黄金;券商;地产;银行;科技;创业板,+,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm,盘中紧急降息
+FED20200315,2020-03-15,,美联储降息,FOMC 紧急降息至零利率,US,黄金;券商;地产;银行;科技;创业板,+,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm,周日公布
+FED20240918,2024-09-18,,美联储降息,FOMC 降息 50bp,US,黄金;券商;地产;银行;科技;创业板,+,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm,
+FED20241107,2024-11-07,,美联储降息,FOMC 降息 25bp,US,黄金;券商;地产;银行;科技;创业板,+,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm,
+FED20241218,2024-12-18,,美联储降息,FOMC 降息 25bp,US,黄金;券商;地产;银行;科技;创业板,+,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm,
+FED20250917,2025-09-17,,美联储降息,FOMC 降息 25bp,US,黄金;券商;地产;银行;科技;创业板,+,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm,
+FED20251029,2025-10-29,,美联储降息,FOMC 降息 25bp,US,黄金;券商;地产;银行;科技;创业板,+,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm,
+FED20251210,2025-12-10,,美联储降息,FOMC 降息 25bp,US,黄金;券商;地产;银行;科技;创业板,+,https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm,
+PBOC20190104,2019-01-04,,中国降准降息,央行宣布全面降准,CN,券商;地产;银行;基建,+,http://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125434/125443/index.html,周五晚间公布
+PBOC20190906,2019-09-06,,中国降准降息,央行宣布全面降准,CN,券商;地产;银行;基建,+,http://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125434/125443/index.html,
+PBOC20200313,2020-03-13,,中国降准降息,央行宣布定向降准,CN,券商;地产;银行;基建,+,http://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125434/125443/index.html,
+PBOC20210709,2021-07-09,,中国降准降息,央行宣布全面降准,CN,券商;地产;银行;基建,+,http://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125434/125443/index.html,
+PBOC20211206,2021-12-06,,中国降准降息,央行宣布全面降准,CN,券商;地产;银行;基建,+,http://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125434/125443/index.html,
+PBOC20220415,2022-04-15,,中国降准降息,央行宣布全面降准,CN,券商;地产;银行;基建,+,http://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125434/125443/index.html,
+PBOC20221125,2022-11-25,,中国降准降息,央行宣布全面降准,CN,券商;地产;银行;基建,+,http://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125434/125443/index.html,
+PBOC20230317,2023-03-17,,中国降准降息,央行宣布全面降准,CN,券商;地产;银行;基建,+,http://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125434/125443/index.html,
+PBOC20230914,2023-09-14,,中国降准降息,央行宣布全面降准,CN,券商;地产;银行;基建,+,http://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125434/125443/index.html,
+PBOC20240124,2024-01-24,,中国降准降息,央行宣布全面降准,CN,券商;地产;银行;基建,+,http://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125434/125443/index.html,
+PBOC20240924,2024-09-24,,中国降准降息,一揽子货币政策（降准+降息）,CN,券商;地产;银行;基建,+,http://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125434/125443/index.html,早间公布，T+1 口径偏保守
+PBOC20250507,2025-05-07,,中国降准降息,一揽子货币政策（降准+降息）,CN,券商;地产;银行;基建,+,http://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125434/125443/index.html,早间公布，T+1 口径偏保守
+PBOC20250520,2025-05-20,,中国降准降息,LPR 下调,CN,券商;地产;银行;基建,+,http://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125434/125443/index.html,
+TWO20160305,2016-03-05,2016-03-07,两会,十二届全国人大四次会议开幕,CN,基建;消费;科技;军工,+,http://www.gov.cn/,
+TWO20170305,2017-03-05,2017-03-06,两会,十二届全国人大五次会议开幕,CN,基建;消费;科技;军工,+,http://www.gov.cn/,
+TWO20180305,2018-03-05,2018-03-05,两会,十三届全国人大一次会议开幕,CN,基建;消费;科技;军工,+,http://www.gov.cn/,
+TWO20190305,2019-03-05,2019-03-05,两会,十三届全国人大二次会议开幕,CN,基建;消费;科技;军工,+,http://www.gov.cn/,
+TWO20200522,2020-05-22,2020-05-22,两会,十三届全国人大三次会议开幕,CN,基建;消费;科技;军工,+,http://www.gov.cn/,疫情推迟至5月
+TWO20210305,2021-03-05,2021-03-05,两会,十三届全国人大四次会议开幕,CN,基建;消费;科技;军工,+,http://www.gov.cn/,
+TWO20220305,2022-03-05,2022-03-07,两会,十三届全国人大五次会议开幕,CN,基建;消费;科技;军工,+,http://www.gov.cn/,3月5日为周六
+TWO20230305,2023-03-05,2023-03-06,两会,十四届全国人大一次会议开幕,CN,基建;消费;科技;军工,+,http://www.gov.cn/,3月5日为周日
+TWO20240305,2024-03-05,2024-03-05,两会,十四届全国人大二次会议开幕,CN,基建;消费;科技;军工,+,http://www.gov.cn/,
+TWO20250305,2025-03-05,2025-03-05,两会,十四届全国人大三次会议开幕,CN,基建;消费;科技;军工,+,http://www.gov.cn/,
+GEO20220224,2022-02-24,,地缘冲突,俄乌冲突爆发,EU/RU,黄金;军工;油气;有色,+,https://www.reuters.com/world/,
+GEO20231007,2023-10-07,,地缘冲突,巴以冲突爆发,IL/PS,黄金;军工;油气;有色,+,https://www.reuters.com/world/middle-east/,周六公布
+GEO20240413,2024-04-13,,地缘冲突,伊朗对以色列发动袭击,IR/IL,黄金;军工;油气;有色,+,https://www.reuters.com/world/middle-east/,周六公布
+GEO20250613,2025-06-13,,地缘冲突,以色列空袭伊朗核设施,IL/IR,黄金;军工;油气;有色,+,https://www.reuters.com/world/middle-east/,
+GEO20250622,2025-06-22,,地缘冲突,美国空袭伊朗核设施,US/IR,黄金;军工;油气;有色,+,https://www.reuters.com/world/middle-east/,周日公布
+TRADE20180322,2018-03-22,,中美贸易摩擦,美国对华 301 调查备忘录,US/CN,半导体;军工;黄金;消费,-,https://ustr.gov/,
+TRADE20190515,2019-05-15,,中美贸易摩擦,华为被列入实体清单,US/CN,半导体;军工;黄金;消费,-,https://www.bis.doc.gov/,
+TRADE20200515,2020-05-15,,中美贸易摩擦,美国升级对华为出口管制,US/CN,半导体;军工;黄金;消费,-,https://www.bis.doc.gov/,
+TRADE20221007,2022-10-07,,中美贸易摩擦,美国对华半导体出口管制升级,US/CN,半导体;军工;黄金;消费,-,https://www.bis.doc.gov/,
+TRADE20231017,2023-10-17,,中美贸易摩擦,美国扩大对华 AI 芯片出口限制,US/CN,半导体;军工;黄金;消费,-,https://www.bis.doc.gov/,
+TRADE20250402,2025-04-02,,中美贸易摩擦,美国宣布对等关税,US/CN,半导体;军工;黄金;消费,-,https://ustr.gov/,

@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+
+"""主窗口「每日推荐」标签页 Mixin。
+
+只负责把 ``AdvicePage`` 挂到中央标签页，并做首次显示时的懒加载；
+页面内部的数据/线程/渲染逻辑全部收敛在 ``src/ui/advice`` 包内。
+"""
+
+from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+
+class MainWindowAdviceMixin:
+    """中央标签页的「每日推荐」入口。"""
+
+    def create_advice_tab(self):
+        """创建每日推荐标签页（由 create_center_area 在末尾追加）。"""
+        layout = QVBoxLayout(self.advice_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        from src.ui.advice import AdvicePage
+        self.advice_page = AdvicePage(host=self)
+        layout.addWidget(self.advice_page)
+
+        self._advice_loaded = False
+        self.tab_widget.currentChanged.connect(self._on_center_tab_changed)
+
+    def _on_center_tab_changed(self, index: int):
+        """首次切到每日推荐页时才触发后台加载，避免拖慢启动。"""
+        if not hasattr(self, 'advice_tab') or not hasattr(self, 'advice_page'):
+            return
+        if self.tab_widget.widget(index) is not self.advice_tab:
+            return
+        if getattr(self, '_advice_loaded', False):
+            return
+        self._advice_loaded = True
+        self.advice_page.load_async()

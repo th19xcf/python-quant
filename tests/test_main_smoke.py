@@ -161,7 +161,8 @@ def test_main_launches_window_and_cleans_up(monkeypatch, qapp, tmp_path, windows
     assert len(windows) == 1
     window = windows[0]
     assert window.maximized is True
-    assert window.tab_widget.count() == 3
+    assert window.tab_widget.count() == 4
+    assert window.advice_page is not None
 
     app = records.apps[0]
     assert app.name == '中国股市量化分析系统'

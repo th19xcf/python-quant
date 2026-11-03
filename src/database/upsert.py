@@ -153,10 +153,16 @@ def upsert_rows(
         return inserted, updated
 
     dialect_name = session.get_bind().dialect.name
-    stmt = _build_upsert_statement(model, key_fields, value_fields, dialect_name)
-
     values = list(payloads.values())
     for start in range(0, len(values), _WRITE_CHUNK):
-        session.execute(stmt, values[start:start + _WRITE_CHUNK])
+        chunk = values[start:start + _WRITE_CHUNK]
+        # 显式 values（而非 ``execute(stmt, chunk)`` 的 executemany）：
+        # MySQL 8 的 insertmanyvalues 在参数含 NULL 时会把对应列从 INSERT
+        # 列表中剔除，导致 ON DUPLICATE KEY UPDATE 里 ``new.<col>`` 引用
+        # 不存在的列（1054 Unknown column）。显式 values 保留 NULL 列，
+        # 且同样支持 ON DUPLICATE / ON CONFLICT。
+        stmt = _build_upsert_statement(
+            model, key_fields, value_fields, dialect_name).values(chunk)
+        session.execute(stmt)
 
     return inserted, updated

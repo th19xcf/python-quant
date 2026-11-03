@@ -36,6 +36,7 @@ class _FakeDaily(Base):
     trade_date = Column(Date, nullable=False)
     close = Column(Float)
     vol = Column(Float)
+    pre_close = Column(Float)
     frequency = Column(String(4))
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now)
@@ -199,3 +200,32 @@ def test_insert_sets_both_timestamps(session):
 
 def test_empty_rows_noop(session):
     assert upsert_rows(session, _FakeDaily, [], ('ts_code', 'trade_date')) == (0, 0)
+
+
+def test_null_value_rows_are_written(session):
+    """含 NULL 业务列的行仍能写入（首行 pre_close 为空是合法口径）。"""
+    rows = [{**_row(2, 10.0), 'pre_close': None}]
+    inserted, updated = upsert_rows(
+        session, _FakeDaily, rows, ('ts_code', 'trade_date'),
+        ('close', 'vol', 'pre_close'))
+    session.commit()
+
+    assert (inserted, updated) == (1, 0)
+    assert session.query(_FakeDaily).one().pre_close is None
+
+
+def test_mysql_upsert_null_column_stays_in_insert_list():
+    """MySQL 8 显式 values 时，NULL 列不能从 INSERT 列表里消失。
+
+    否则 ON DUPLICATE KEY UPDATE 的 ``new.<col>`` 会报 1054 Unknown column。
+    """
+    stmt = _build_upsert_statement(
+        _FakeDaily, ('ts_code', 'trade_date'), ('close', 'vol', 'pre_close'),
+        'mysql')
+    params = [{**_row(2, 10.0), 'pre_close': None}]
+
+    compiled = str(stmt.values(params).compile(dialect=mysql.dialect())).lower()
+    insert_part = compiled.split('on duplicate')[0]
+
+    assert 'pre_close' in insert_part
+

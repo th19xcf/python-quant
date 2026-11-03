@@ -6,9 +6,14 @@
 3. 数据库"非空即返回"遮蔽修正（库内最新日期落后本地时判残缺）
 4. 因子/分红读取本地优先、不再访问远程
 5. get_stock_batch 与逐票 get_stock_data 数值等价
+6. 增量构建：只重建落后/内容变化的标的、max_date 截断、盘中守卫
+7. 元数据增量写入不丢其他条目、rescan_meta 可从 parquet 重建
+8. 目标日校验分类（源缺目标日不计为本地漏建）
 """
 
-from datetime import date, timedelta
+import struct
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import polars as pl
@@ -19,9 +24,41 @@ from src.data.data_cache import global_data_cache
 from src.data.data_manager import DataManager
 from src.data.local_store import metrics as route_metrics
 from src.data.local_store import reset_local_stores
+from src.data.local_store.build import (
+    build,
+    verify_incremental_target,
+)
 from src.data.local_store.factor_rebuild import rebuild_factors_from_local
+from src.data.local_store.session_guard import filter_intraday_rows
 from src.data.local_store.store import LocalFactorStore, LocalQuoteStore
 from src.data.managers.data_fetcher import DataFetcher
+
+_RECS = [
+    ('20240102', 10.0, 10.5, 9.8, 10.0, 100, 1000),
+    ('20240103', 10.0, 10.8, 9.9, 10.5, 120, 1260),
+]
+
+
+def _write_day_file(root, market, code, records) -> Path:
+    path = Path(root) / market / 'lday' / f'{market}{code}.day'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'wb') as f:
+        for day, open_, high, low, close, volume, amount in records:
+            f.write(struct.pack(
+                '<IIIIIfII',
+                int(day), int(open_ * 100), int(high * 100), int(low * 100),
+                int(close * 100), float(amount), int(volume * 100), 0,
+            ))
+    return path
+
+
+def _build_config(tdx_root, store_root) -> SimpleNamespace:
+    return SimpleNamespace(data=SimpleNamespace(
+        tdx_data_path=str(tdx_root),
+        local_store_path=str(store_root),
+        local_store_enabled=True,
+        remote_database_fallback=False,
+    ))
 
 
 def make_frame(rows: int = 5, start: date = date(2024, 1, 2)) -> pl.DataFrame:
@@ -212,6 +249,155 @@ def test_get_stock_batch_matches_single_fetch(tmp_path):
         single = fetcher.get_stock_data(code, '2024-01-01', '2024-01-10',
                                         adjustment_type='hfq')
         assert single.equals(batch[code]), f'{code} 批量与逐票结果不一致'
+
+
+def test_incremental_only_rebuilds_stale_symbols(tmp_path):
+    """只重建尾部落后的标的，已最新的标的直接跳过。"""
+    tdx = tmp_path / 'tdx'
+    _write_day_file(tdx, 'sh', '600000', _RECS)
+    _write_day_file(tdx, 'sz', '000001', _RECS[:1])
+    store_root = tmp_path / 'store'
+    store = LocalQuoteStore(store_root)
+    factor_store = LocalFactorStore(store_root)
+    cfg = _build_config(tdx, store_root)
+
+    full = build(cfg, store, factor_store, data_type='stock')
+    assert full['symbols'] == 2
+
+    # 000001 源端前进一天，600000 不变
+    _write_day_file(tdx, 'sz', '000001', _RECS)
+    stats = build(cfg, store, factor_store, data_type='stock', incremental=True)
+
+    assert stats['symbols'] == 1
+    assert stats['skipped_uptodate'] == 1
+    assert store.coverage('stock', '000001.SZ').end == date(2024, 1, 3)
+
+
+def test_incremental_detects_same_date_content_change(tmp_path):
+    """日期相同但末行内容变化时仍触发重建（不依赖 mtime）。"""
+    tdx = tmp_path / 'tdx'
+    _write_day_file(tdx, 'sh', '600000', _RECS)
+    store_root = tmp_path / 'store'
+    store = LocalQuoteStore(store_root)
+    factor_store = LocalFactorStore(store_root)
+    cfg = _build_config(tdx, store_root)
+    build(cfg, store, factor_store, data_type='stock')
+
+    modified = [*_RECS[:-1], ('20240103', 10.0, 10.8, 9.9, 10.5, 120, 9999)]
+    _write_day_file(tdx, 'sh', '600000', modified)
+    stats = build(cfg, store, factor_store, data_type='stock', incremental=True)
+
+    assert stats['symbols'] == 1
+    last = store.read_file('stock', '600000.SH').sort('date').tail(1).to_dicts()[0]
+    assert last['amount'] == pytest.approx(9999.0)
+
+
+def test_build_max_date_truncates_intraday_row(tmp_path):
+    """max_date 只写入不晚于目标日的记录，避免盘中行入库。"""
+    tdx = tmp_path / 'tdx'
+    records = [*_RECS, ('20240104', 10.5, 11.0, 10.4, 10.8, 130, 1404)]
+    _write_day_file(tdx, 'sh', '600000', records)
+    store_root = tmp_path / 'store'
+    store = LocalQuoteStore(store_root)
+    factor_store = LocalFactorStore(store_root)
+    cfg = _build_config(tdx, store_root)
+
+    build(cfg, store, factor_store, data_type='stock',
+          max_date=date(2024, 1, 3))
+
+    assert store.coverage('stock', '600000.SH').end == date(2024, 1, 3)
+
+
+def test_filter_intraday_rows_drops_today_before_close():
+    """盘中守卫：15:00 前丢弃当日行，收盘后保留，force 强制保留。"""
+    frame = pl.DataFrame({'date': [date(2024, 1, 2), date(2024, 1, 3)]})
+
+    assert filter_intraday_rows(frame, moment=datetime(2024, 1, 3, 10, 0)).height == 1
+    assert filter_intraday_rows(frame, moment=datetime(2024, 1, 3, 15, 1)).height == 2
+    assert filter_intraday_rows(
+        frame, moment=datetime(2024, 1, 3, 10, 0), force=True).height == 2
+
+
+def test_incremental_write_keeps_other_meta_entries(tmp_path):
+    """增量写单只不应清空元数据里其他标的（历史回归）。"""
+    store = LocalQuoteStore(tmp_path)
+    store.write_daily(
+        'stock', '600000.SH', make_frame(rows=3), full=True, source_mtime_ns=1)
+    store.flush_meta()
+
+    # 新实例模拟下一次进程启动：内存元数据为空，只写另一只标的
+    other = LocalQuoteStore(tmp_path)
+    other.write_daily(
+        'stock', '000001.SZ', make_frame(rows=3), full=True, source_mtime_ns=2)
+    other.flush_meta()
+
+    meta = LocalQuoteStore(tmp_path)._load_meta()
+    assert ('stock', '600000.SH') in meta
+    assert ('stock', '000001.SZ') in meta
+
+
+def test_rescan_meta_rebuilds_from_parquet(tmp_path):
+    """元数据丢失后可从行情 Parquet 重建覆盖度。"""
+    store = LocalQuoteStore(tmp_path)
+    store.write_daily(
+        'stock', '600000.SH', make_frame(rows=3, start=date(2024, 1, 2)),
+        full=True, source_mtime_ns=1)
+    store.flush_meta()
+    LocalQuoteStore(tmp_path).meta_path.unlink()
+
+    fresh = LocalQuoteStore(tmp_path)
+    result = fresh.rescan_meta()
+
+    assert result['total'] >= 1
+    cov = fresh.coverage('stock', '600000.SH')
+    assert cov is not None
+    assert cov.rows == 3
+    assert cov.end == date(2024, 1, 4)
+
+
+def test_verify_target_classifies_source_missing_target(tmp_path):
+    """源文件缺目标日时归为 source_stale，而不是本地漏建。"""
+    tdx = tmp_path / 'tdx'
+    _write_day_file(tdx, 'sh', '600000', _RECS)
+    store_root = tmp_path / 'store'
+    store = LocalQuoteStore(store_root)
+    factor_store = LocalFactorStore(store_root)
+    cfg = _build_config(tdx, store_root)
+    build(cfg, store, factor_store, data_type='stock')
+
+    result = verify_incremental_target(
+        cfg, store, target_date=date(2024, 1, 4), data_type='stock')
+
+    assert result['source_stale'] == 1
+    assert result['local_behind'] == 0
+    assert result['source_stale_samples'][0]['reason'] == 'source_lagging'
+
+
+def test_verify_target_flags_local_behind_when_source_has_target(tmp_path):
+    """源有目标日、本地没有时才算本地漏建并告警。"""
+    tdx = tmp_path / 'tdx'
+    _write_day_file(tdx, 'sh', '600000', _RECS)
+    store_root = tmp_path / 'store'
+    store = LocalQuoteStore(store_root)
+    store.write_daily(
+        'stock', '600000.SH', make_frame(rows=2, start=date(2024, 1, 2)),
+        full=True, source_mtime_ns=1)
+    store.flush_meta()
+    cfg = _build_config(tdx, store_root)
+
+    # 源端有 2024-01-03，本地只到 01-03，目标日设为 01-03 时不算落后；
+    # 把目标日设为源端不含的 01-04 时归 source_stale，这里改为直接构造
+    # 本地落后一天且源含目标日的场景：本地只到 01-02。
+    store.write_daily(
+        'stock', '600000.SH', make_frame(rows=1, start=date(2024, 1, 2)),
+        full=True, source_mtime_ns=1)
+    store.flush_meta()
+
+    result = verify_incremental_target(
+        cfg, store, target_date=date(2024, 1, 3), data_type='stock')
+
+    assert result['local_behind'] == 1
+    assert result['source_stale'] == 0
 
 
 def test_rebuild_factors_matches_dividend_path(tmp_path):

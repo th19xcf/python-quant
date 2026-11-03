@@ -194,6 +194,11 @@ class MainWindowLayoutMixin:
         self.tab_widget.addTab(self.finance_tab, "财务分析")
         self.create_finance_tab()
 
+        # 添加每日推荐标签页（追加在末尾，保持技术分析页 index=1）
+        self.advice_tab = QWidget()
+        self.tab_widget.addTab(self.advice_tab, "每日推荐")
+        self.create_advice_tab()
+
         parent.addWidget(center_widget)
 
     def create_market_tab(self):
