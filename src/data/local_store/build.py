@@ -17,6 +17,9 @@
     # 从远程库刷新因子与分红快照（必须显式 --allow-remote）
     .venv\\Scripts\\python.exe -m src.data.local_store refresh-factors --allow-remote
 
+    # 用本地行情+分红补齐全市场因子快照（不写远程库，断点续跑）
+    .venv\\Scripts\\python.exe -m src.data.local_store rebuild-factors
+
     # 查看列存规模
     .venv\\Scripts\\python.exe -m src.data.local_store stats
 
@@ -380,9 +383,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     build_cmd.add_argument('--data-type', default='all', choices=['all', 'stock', 'index'])
     build_cmd.add_argument('--dry-run', action='store_true', help='只统计不落盘')
 
-    factor_cmd = sub.add_parser('refresh-factors', help='刷新因子/分红快照')
+    factor_cmd = sub.add_parser('refresh-factors', help='从远程库刷新因子/分红快照')
     factor_cmd.add_argument('--allow-remote', action='store_true', help='显式允许访问远程库')
     factor_cmd.add_argument('--dry-run', action='store_true')
+
+    rebuild_cmd = sub.add_parser(
+        'rebuild-factors', help='用本地行情+分红批量重算因子快照（不写远程库）')
+    rebuild_cmd.add_argument('--codes', default='', help='逗号分隔的 ts_code 列表')
+    rebuild_cmd.add_argument('--chunk-size', type=int, default=200,
+                             help='每个分块处理的标的数（默认 200）')
+    rebuild_cmd.add_argument('--include-existing', action='store_true',
+                             help='连同快照里已有的标的一起重算（默认只补缺）')
+    rebuild_cmd.add_argument('--no-resume', action='store_true',
+                             help='忽略断点，从头开始')
+    rebuild_cmd.add_argument('--dry-run', action='store_true', help='只统计不落盘')
 
     sub.add_parser('stats', help='查看列存规模')
     return parser.parse_args(argv)
@@ -410,6 +424,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == 'refresh-factors':
         refresh_factors(config, factor_store,
                         allow_remote=args.allow_remote, dry_run=args.dry_run)
+        return 0
+
+    if args.command == 'rebuild-factors':
+        from src.data.local_store.factor_rebuild import (  # noqa: PLC0415
+            rebuild_factors_from_local,
+        )
+
+        codes = [c for c in args.codes.split(',') if c.strip()] if args.codes else None
+        result = rebuild_factors_from_local(
+            quote_store, factor_store,
+            codes=codes, chunk_size=args.chunk_size,
+            include_existing=args.include_existing,
+            resume=not args.no_resume, dry_run=args.dry_run,
+        )
+        logger.info(f'因子重建结果: {result}')
         return 0
 
     codes = [c for c in args.codes.split(',') if c.strip()] if args.codes else None

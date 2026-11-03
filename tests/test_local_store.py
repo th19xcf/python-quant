@@ -14,11 +14,13 @@ from types import SimpleNamespace
 import polars as pl
 import pytest
 
+from src.data.adj_factor_calculator import AdjFactorCalculator
 from src.data.data_cache import global_data_cache
 from src.data.data_manager import DataManager
 from src.data.local_store import metrics as route_metrics
 from src.data.local_store import reset_local_stores
-from src.data.local_store.store import LocalQuoteStore
+from src.data.local_store.factor_rebuild import rebuild_factors_from_local
+from src.data.local_store.store import LocalFactorStore, LocalQuoteStore
 from src.data.managers.data_fetcher import DataFetcher
 
 
@@ -210,3 +212,50 @@ def test_get_stock_batch_matches_single_fetch(tmp_path):
         single = fetcher.get_stock_data(code, '2024-01-01', '2024-01-10',
                                         adjustment_type='hfq')
         assert single.equals(batch[code]), f'{code} 批量与逐票结果不一致'
+
+
+def test_rebuild_factors_matches_dividend_path(tmp_path):
+    """全市场因子补齐：结果与「读分红现算」逐行一致，且只补缺失标的。"""
+    quote_store = LocalQuoteStore(tmp_path)
+    for code in ('600000.SH', '000001.SZ'):
+        quote_store.write_daily('stock', code, make_frame(rows=6, start=date(2024, 1, 2)),
+                                full=True, source_mtime_ns=1)
+    quote_store.flush_meta()
+
+    factor_dir = tmp_path / 'factors'
+    factor_dir.mkdir(parents=True)
+    pl.DataFrame({
+        'ts_code': ['600000.SH'],
+        'ex_date': [date(2024, 1, 4)],
+        'cash_div': [0.5],
+        'share_div': [0.0],
+        'rights_issue_ratio': [0.0],
+        'rights_issue_price': [0.0],
+    }).write_parquet(factor_dir / 'stock_dividend.parquet')
+    factor_store = LocalFactorStore(tmp_path)
+
+    result = rebuild_factors_from_local(quote_store, factor_store, chunk_size=1)
+    assert result['codes_added'] == 2
+    assert result['factor_codes'] == 2
+
+    snapshot = pl.read_parquet(factor_dir / 'stock_adj_factor.parquet')
+    prices = quote_store.read_file('stock', '600000.SH').select([
+        pl.col('date').alias('trade_date'), pl.col('close').cast(pl.Float64)])
+    expected = AdjFactorCalculator.calculate_factors(
+        prices, factor_store.dividends('600000.SH'))
+    actual = snapshot.filter(pl.col('ts_code') == '600000.SH').select(
+        ['trade_date', 'qfq_factor', 'hfq_factor'])
+    joined = actual.join(expected.select(['trade_date', 'qfq_factor', 'hfq_factor']),
+                         on='trade_date', suffix='_calc')
+    assert (joined['qfq_factor'] - joined['qfq_factor_calc']).abs().max() == 0.0
+    assert (joined['hfq_factor'] - joined['hfq_factor_calc']).abs().max() == 0.0
+
+    flat = snapshot.filter(pl.col('ts_code') == '000001.SZ')
+    assert flat['qfq_factor'].max() == 1.0 and flat['hfq_factor'].max() == 1.0
+
+    # 幂等：再次只补缺失时为 0；显式重算单只时其余标的仍保留
+    again = rebuild_factors_from_local(quote_store, factor_store)
+    assert again['codes_added'] == 0
+    updated = rebuild_factors_from_local(
+        quote_store, factor_store, codes=['600000.SH'], include_existing=True)
+    assert updated['factor_codes'] == 2

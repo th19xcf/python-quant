@@ -26,6 +26,7 @@ import contextlib
 import json
 import os
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -35,6 +36,10 @@ import polars as pl
 from loguru import logger
 
 STORE_VERSION = 1
+# 因子快照单文件可能达到千万行，不能像分红快照那样一次性 partition 进内存。
+# 采用「按 ts_code 谓词扫描 + 小容量 LRU」把常驻内存控制在几十 MB，
+# 同时借助 parquet 行组统计（文件按 ts_code 排序）跳过无关数据块。
+_FACTOR_LRU_MAX = 128
 
 _META_SCHEMA = {
     'ts_code': pl.Utf8,
@@ -228,6 +233,12 @@ class LocalQuoteStore:
         except OSError:
             return False
 
+    def codes(self, data_type: str = 'stock') -> list[str]:
+        """返回该资产类型下已构建的全部 ts_code（升序）。"""
+        if not self.enabled:
+            return []
+        return sorted(code for (kind, code) in self._load_meta() if kind == data_type)
+
     def stats(self) -> dict[str, Any]:
         """汇总列存规模（供 CLI 与可观测性使用）。"""
         meta = self._load_meta()
@@ -360,7 +371,12 @@ class LocalQuoteStore:
 
 
 class LocalFactorStore:
-    """复权因子与分红本地快照（只读）。"""
+    """复权因子与分红本地快照（只读）。
+
+    因子快照按 ``(ts_code, trade_date)`` 升序落盘：读单票时用谓词扫描
+    （parquet 行组统计可跳过无关块）+ 小容量 LRU，避免把千万行整表
+    ``partition_by`` 进内存；分红快照只有几万行，仍整表分组常驻。
+    """
 
     _FACTOR_COLUMNS = ('trade_date', 'qfq_factor', 'hfq_factor')
 
@@ -369,9 +385,21 @@ class LocalFactorStore:
         self.enabled = bool(enabled)
         self._factor_path = self.root / 'factors' / 'stock_adj_factor.parquet'
         self._dividend_path = self.root / 'factors' / 'stock_dividend.parquet'
-        self._factor_rows: dict[str, pl.DataFrame] | None = None
+        self._factor_cache: OrderedDict[str, pl.DataFrame | None] = OrderedDict()
+        self._factor_lazy: pl.LazyFrame | None = None
+        self._factor_file_mtime: int | None = None
         self._dividend_rows: dict[str, pl.DataFrame] | None = None
         self._lock = threading.RLock()
+
+    @property
+    def factor_path(self) -> Path:
+        """因子快照文件路径（构建器用于原子替换）。"""
+        return self._factor_path
+
+    @property
+    def dividend_path(self) -> Path:
+        """分红快照文件路径。"""
+        return self._dividend_path
 
     def available(self) -> bool:
         return self.enabled and (
@@ -385,27 +413,52 @@ class LocalFactorStore:
             return {}
         return {str(group[key][0]): group for group in frame.partition_by(key, maintain_order=True)}
 
-    def _load_factors(self) -> dict[str, pl.DataFrame]:
-        with self._lock:
-            if self._factor_rows is None:
-                self._factor_rows = self._partition(self._factor_path, 'ts_code')
-            return self._factor_rows
-
     def _load_dividends(self) -> dict[str, pl.DataFrame]:
         with self._lock:
             if self._dividend_rows is None:
                 self._dividend_rows = self._partition(self._dividend_path, 'ts_code')
             return self._dividend_rows
 
+    def _factor_frame(self, ts_code: str) -> pl.DataFrame | None:
+        """按代码读取因子片段（LRU 缓存；快照文件被重建后自动失效）。"""
+        if not self._factor_path.exists():
+            return None
+        try:
+            file_mtime = self._factor_path.stat().st_mtime_ns
+        except OSError:
+            return None
+        with self._lock:
+            if self._factor_file_mtime != file_mtime:
+                self._factor_cache.clear()
+                # 复用同一个 LazyFrame 可省掉每次重复读取 parquet footer 的开销。
+                self._factor_lazy = pl.scan_parquet(str(self._factor_path))
+                self._factor_file_mtime = file_mtime
+            if ts_code in self._factor_cache:
+                self._factor_cache.move_to_end(ts_code)
+                return self._factor_cache[ts_code]
+            lazy = self._factor_lazy
+
+        if lazy is None:
+            return None
+        frame = lazy.filter(pl.col('ts_code') == ts_code).collect()
+        result: pl.DataFrame | None
+        if frame.is_empty():
+            result = None
+        else:
+            cols = [c for c in self._FACTOR_COLUMNS if c in frame.columns]
+            result = frame.select(cols).sort('trade_date')
+
+        with self._lock:
+            self._factor_cache[ts_code] = result
+            while len(self._factor_cache) > _FACTOR_LRU_MAX:
+                self._factor_cache.popitem(last=False)
+        return result
+
     def factors(self, ts_code: str) -> pl.DataFrame | None:
         """返回单标的复权因子（trade_date/qfq_factor/hfq_factor）。"""
         if not self.enabled:
             return None
-        frame = self._load_factors().get(ts_code)
-        if frame is None or frame.is_empty():
-            return None
-        cols = [c for c in self._FACTOR_COLUMNS if c in frame.columns]
-        return frame.select(cols).sort('trade_date')
+        return self._factor_frame(ts_code)
 
     def dividends(self, ts_code: str) -> pl.DataFrame | None:
         """返回单标的分红记录（列与 ``stock_dividend`` 表一致）。"""
