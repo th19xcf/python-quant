@@ -16,7 +16,7 @@ from loguru import logger
 
 from src.advice.config import AdviceConfig, default_config
 from src.advice.data import LocalPanelLoader, panel_trading_dates
-from src.advice.eligibility import check_eligibility
+from src.advice.eligibility import EligibilityResult, check_eligibility
 from src.advice.factor_panel import compute_factor_panel
 from src.advice.models import (
     DIRECTION_AVOID,
@@ -29,6 +29,7 @@ from src.advice.models import (
     TierAdvice,
 )
 from src.advice.portfolio import Allocation, Candidate, allocate
+from src.advice.risk_filters import RiskContext
 from src.advice.scoring import (
     attach_score,
     confidence_from_score,
@@ -166,6 +167,8 @@ class AdviceEngine:
         meta = build_meta(factors['ts_code'].unique().to_list(),
                           self.name_map, self.industry_map)
         trading_dates = panel_trading_dates(factors)
+        risk = RiskContext(self.config.risk, self.store_root, trading_dates)
+        meta = risk.enrich_meta(meta, trade_date)
         state_path = Path(state_dir) if state_dir else (
             Path(__file__).resolve().parents[2] / 'reports' / 'advice' / 'state')
 
@@ -179,7 +182,7 @@ class AdviceEngine:
             state = self.load_state(state_path, tier.key)
             advice, new_state = self._run_tier(
                 scored, trade_date, meta, tier, float(equity), state,
-                trading_dates, report.summary())
+                trading_dates, report.summary(), risk)
             result.tiers[tier.key] = advice
             if persist_state:
                 self.save_state(state_path, tier.key, trade_date,
@@ -189,22 +192,24 @@ class AdviceEngine:
     def _run_tier(self, scored: pl.DataFrame, trade_date: date,  # noqa: C901
                   meta: dict[str, Any], tier: Any, equity: float,
                   state: dict[str, HoldingState], trading_dates: list[date],
-                  coverage: dict[str, Any]) -> tuple[TierAdvice, dict[str, HoldingState]]:
+                  coverage: dict[str, Any],
+                  risk: RiskContext) -> tuple[TierAdvice, dict[str, HoldingState]]:
         latest = scored.filter(pl.col('date') == trade_date)
         if latest.is_empty():
             return TierAdvice(tier=tier.key, label=tier.label,
                               trade_date=trade_date, equity=equity), state
         rows = latest.to_dicts()
+        count_start = dict(risk.counts)
+        audit_start = len(risk.audit)
         stats_frame = factor_stats(scored, tier).filter(
             pl.col('date') == trade_date)
         stats = stats_frame.to_dicts()[0] if not stats_frame.is_empty() else None
-        by_code = {str(row['ts_code']): row for row in rows}
+        by_code = {str(item['ts_code']): item for item in rows}
 
         advice = TierAdvice(
             tier=tier.key, label=tier.label, trade_date=trade_date,
             equity=equity, candidates=len(rows),
             notes=[
-                '行业无权威表，使用代码前缀/板块近似（industry_source=code_prefix_board）',
                 f"本地面板覆盖 {coverage.get('loaded', 0)}/"
                 f"{coverage.get('requested', 0)} 标的",
             ] + ([tier.note] if tier.note else []))
@@ -212,35 +217,46 @@ class AdviceEngine:
         # 1) 候选池：分数达标 + 可交易 + 成本门槛
         candidates: list[tuple[dict, Candidate, Any]] = []
         avoid_rows: list[tuple[dict, Any]] = []
-        ranked = sorted(rows, key=lambda row: row.get('score_percentile') or 0.0,
+        ranked = sorted(rows, key=lambda entry: entry.get('score_percentile') or 0.0,
                         reverse=True)
-        for row in ranked:
-            code = str(row['ts_code'])
+        for entry in ranked:
+            code = str(entry['ts_code'])
             if code in state:
                 continue
-            percentile = float(row.get('score_percentile') or 0.0)
+            percentile = float(entry.get('score_percentile') or 0.0)
             if percentile >= tier.buy_percentile:
-                eligibility = check_eligibility(row, tier, self.config, 'buy')
+                verdict = risk.evaluate(code, trade_date)
+                st_status = risk.st_status(code, trade_date)
+                eligibility = check_eligibility(
+                    entry, tier, self.config, 'buy', st_status=st_status)
+                if not eligibility.ok and len(avoid_rows) < self.config.max_avoid_rows:
+                    avoid_rows.append((entry, eligibility))
+                    continue
+                if not verdict.ok:
+                    if len(avoid_rows) < self.config.max_avoid_rows:
+                        avoid_rows.append((entry, EligibilityResult(
+                            False, [verdict.reason], verdict.reason)))
+                    continue
                 if eligibility.ok:
                     ok_edge, reason = entry_allowed(percentile, tier, self.config)
                     if ok_edge:
                         stock_meta = meta.get(code)
-                        candidates.append((row, Candidate(
+                        candidates.append((entry, Candidate(
                             ts_code=code,
                             score_percentile=percentile,
-                            price=float(row.get('raw_close') or 0.0),
+                            price=float(entry.get('raw_close') or 0.0),
                             industry=stock_meta.industry if stock_meta else '未知',
                             industry_source=(stock_meta.industry_source
                                              if stock_meta else INDUSTRY_SOURCE_BOARD),
                         ), eligibility))
                     elif len(avoid_rows) < self.config.max_avoid_rows:
-                        avoid_rows.append((row, eligibility))
-                elif len(avoid_rows) < self.config.max_avoid_rows:
-                    avoid_rows.append((row, eligibility))
+                        avoid_rows.append((entry, eligibility))
             elif percentile >= tier.buy_percentile - 0.05:
-                eligibility = check_eligibility(row, tier, self.config, 'buy')
+                eligibility = check_eligibility(
+                    entry, tier, self.config, 'buy',
+                    st_status=risk.st_status(code, trade_date))
                 if not eligibility.ok and len(avoid_rows) < self.config.max_avoid_rows:
-                    avoid_rows.append((row, eligibility))
+                    avoid_rows.append((entry, eligibility))
 
         best_pct = candidates[0][1].score_percentile if candidates else None
 
@@ -312,6 +328,9 @@ class AdviceEngine:
         new_state: dict[str, HoldingState] = {}
         for code, holding in state.items():
             row = by_code.get(code)
+            if row is None:
+                new_state[code] = holding
+                continue
             decision = decisions[code]
             if code in exits and code not in admitted_sells:
                 # 换手上限延后卖出：仍保留持仓
@@ -338,10 +357,11 @@ class AdviceEngine:
         for code, item in alloc_by_code.items():
             if code not in admitted_buys:
                 continue
-            row, candidate, eligibility = next(
-                (entry for entry in candidates if entry[1].ts_code == code), (None, None, None))
-            if row is None:
+            match = next(
+                (entry for entry in candidates if entry[1].ts_code == code), None)
+            if match is None:
                 continue
+            row, candidate, eligibility = match
             ref_price = float(row.get('raw_close') or item.price)
             advice.rows.append(self._buy_row(
                 row, item, eligibility, meta, tier, ref_price, stats))
@@ -363,6 +383,13 @@ class AdviceEngine:
             advice.notes.append(
                 f"换手上限 {self.config.turnover.max_turnover_per_rebalance:.0%} "
                 f"延后 {len(plan.deferred)} 笔调仓")
+        stats_local = {key: risk.counts[key] - count_start.get(key, 0)
+                       for key in risk.counts}
+        advice.filter_stats = stats_local
+        advice.filter_audit = list(risk.audit[audit_start:])
+        advice.notes.extend(
+            risk.notes(self.config.constraints.max_industry_weight,
+                       counts=stats_local))
         return advice, new_state
 
     # ------------------------------------------------------------------

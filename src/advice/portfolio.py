@@ -75,6 +75,7 @@ def allocate(candidates: list[Candidate], equity: float,  # noqa: C901
     info = {candidate.ts_code: candidate for _, candidate in seeds}
     single_cap = constraints.max_single_weight * equity
     industry_cap = constraints.max_industry_weight * equity
+    uncapped = set(constraints.uncapped_industry_buckets)
 
     for _ in range(max(1, constraints.normalize_iterations)):
         changed = False
@@ -86,6 +87,10 @@ def allocate(candidates: list[Candidate], equity: float,  # noqa: C901
         for code, weight in targets.items():
             groups[info[code].industry] = groups.get(info[code].industry, 0.0) + weight
         for industry, group_weight in groups.items():
+            if industry in uncapped:
+                # 未知行业是缺数据而非真实行业：单独成桶但不设上限，
+                # 否则缺失数据会把整个组合压到行业上限以内。
+                continue
             if group_weight <= industry_cap + 1e-9:
                 continue
             scale = industry_cap / group_weight
@@ -100,7 +105,8 @@ def allocate(candidates: list[Candidate], equity: float,  # noqa: C901
         eligible = [
             code for code, weight in targets.items()
             if weight < single_cap - 1e-9
-            and groups.get(info[code].industry, 0.0) < industry_cap - 1e-9
+            and (info[code].industry in uncapped
+                 or groups.get(info[code].industry, 0.0) < industry_cap - 1e-9)
         ]
         if not eligible:
             break

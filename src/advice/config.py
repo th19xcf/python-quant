@@ -77,7 +77,11 @@ class PortfolioConstraints:
     """仓位约束。
 
     ``max_single_weight`` 与 ``max_industry_weight`` 都是「占总资金」的比例，
-    不是占可投资金；``cash_buffer`` 同理。行业缺失时由代码前缀近似并显式标注。
+    不是占可投资金；``cash_buffer`` 同理。
+
+    ``uncapped_industry_buckets`` 是不受行业上限约束的桶。默认放行
+    ``unknown``：未知行业是「缺数据」而不是一个真实行业，若给它 25% 上限，
+    等于用缺失数据把整个组合压到 25%（基金/指数无行业口径时尤其明显）。
     """
 
     max_single_weight: float = 0.08
@@ -86,6 +90,49 @@ class PortfolioConstraints:
     lot_size: int = 100
     #: 行业上限迭代归一的最大轮数
     normalize_iterations: int = 12
+    #: 不参与行业上限的桶（unknown 永远单独成桶，但不默认设上限）
+    uncapped_industry_buckets: tuple[str, ...] = ('unknown',)
+
+
+@dataclass(frozen=True)
+class RiskFilterConfig:
+    """ST / 行业 / 公告事件三类风险过滤开关。
+
+    默认值理由：
+
+    - ``st_enabled=True``：当日推荐必须剔除 ST 风险警示标的；
+    - ``st_unknown_policy='keep'``：ST 历史不可回溯（本地只有当日名称快照），
+      历史区间全是 ``unknown``。若默认 ``drop``，等于把整个股票池清空；
+      默认 ``keep`` 但**显式统计并写入档位说明**，不把 unknown 当 non_st；
+    - ``industry_enabled=True``：用通达信行业二级（约 56 组）替代代码前缀近似；
+    - ``event_enabled=True``：只做三类风险冷却过滤；
+    - ``event_unknown_policy='keep'``：事件表覆盖不到的日期返回 unknown，
+      默认放行但显式登记，绝不当成「没有事件」。
+    """
+
+    st_enabled: bool = True
+    st_unknown_policy: str = 'keep'  # 'keep' | 'drop'
+    industry_enabled: bool = True
+    event_enabled: bool = True
+    event_unknown_policy: str = 'keep'  # 'keep' | 'drop'
+    #: 事件类型 → 冷却交易日数 N，区间 [T+1, T+N]
+    event_cooldown: tuple[tuple[str, int], ...] = (
+        ('并购重组', 20),
+        ('重大合同/中标', 5),
+        ('监管处罚', 5),
+    )
+
+    def cooldowns(self) -> dict[str, int]:
+        return dict(self.event_cooldown)
+
+    def validate(self) -> None:
+        for name, value in (('st_unknown_policy', self.st_unknown_policy),
+                            ('event_unknown_policy', self.event_unknown_policy)):
+            if value not in ('keep', 'drop'):
+                raise ValueError(f"{name} 只能是 'keep' 或 'drop'，实际 {value!r}")
+        for event_type, days in self.event_cooldown:
+            if days < 0:
+                raise ValueError(f'事件 {event_type} 的冷却天数不能为负: {days}')
 
 
 @dataclass(frozen=True)
@@ -204,6 +251,7 @@ class AdviceConfig:
     constraints: PortfolioConstraints = field(default_factory=PortfolioConstraints)
     costs: TradingCosts = field(default_factory=TradingCosts)
     turnover: TurnoverConfig = field(default_factory=TurnoverConfig)
+    risk: RiskFilterConfig = field(default_factory=RiskFilterConfig)
     #: 单票最少历史行数（不足则 AVOID）
     min_history_rows: int = 60
     #: 单票最低参考价（过滤仙股）

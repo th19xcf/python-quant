@@ -86,6 +86,10 @@ class TierAdvice:
     candidates: int = 0
     turnover: float = 0.0
     notes: list[str] = field(default_factory=list)
+    #: 风险过滤计数（st_dropped / event_dropped / *_unknown_passed 等）
+    filter_stats: dict[str, int] = field(default_factory=dict)
+    #: 逐条剔除记录（交易日、标的、类型、原因），供人工核对
+    filter_audit: list[dict[str, Any]] = field(default_factory=list)
 
     def to_frame(self) -> pl.DataFrame:
         rows = [rec.to_row() for rec in self.rows]
@@ -109,6 +113,8 @@ class TierAdvice:
             'turnover_pct': round(self.turnover * 100, 2),
             'counts': counts,
             'notes': self.notes,
+            'filter_stats': dict(self.filter_stats),
+            'filter_audit': self.filter_audit[:20],
         }
 
 

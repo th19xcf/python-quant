@@ -36,12 +36,16 @@ def _finite(value: Any) -> float | None:
 
 
 def check_eligibility(row: dict, tier: TierConfig, config: AdviceConfig,
-                      side: str = 'buy') -> EligibilityResult:
+                      side: str = 'buy',
+                      st_status: str | None = None) -> EligibilityResult:
     """检查单标的是否满足推荐条件。
 
     ``row`` 需含原始价列（``raw_open/raw_high/raw_low/raw_close/
     raw_prev_close/raw_volume``）与因子列（``amount_ma20/volatility_20/
     atr_pct/history_rows``）。涨跌停/停牌判定统一委托 ``ExecutionRules``。
+
+    ``st_status`` 取 ``'st'|'non_st'|'unknown'``；``unknown`` 只提示不臆测，
+    不能当成 ``non_st``。
     """
     notes: list[str] = []
     blocked: list[str] = []
@@ -89,8 +93,11 @@ def check_eligibility(row: dict, tier: TierConfig, config: AdviceConfig,
     elif not tradable:
         blocked.append('当日跌停，次日可能无法卖出')
 
-    # 数据层无 ST 标识：显式提示，不臆测
-    notes.append('ST状态未知（本地数据无标识）')
+    # ST 三态：st 直接拦截；unknown 只提示，不臆测为「非 ST」
+    if st_status == 'st':
+        blocked.append('ST/*ST 风险警示，不建仓')
+    elif st_status == 'unknown' or st_status is None:
+        notes.append('ST状态未知（无当日快照），非「非 ST」')
 
     if blocked:
         return EligibilityResult(False, notes + blocked, '；'.join(blocked))

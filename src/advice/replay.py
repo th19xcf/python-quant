@@ -26,6 +26,7 @@ from src.advice.eligibility import check_eligibility
 from src.advice.factor_panel import compute_factor_panel
 from src.advice.pipeline import AdviceEngine
 from src.advice.portfolio import Candidate, allocate
+from src.advice.risk_filters import RiskContext
 from src.advice.scoring import (
     attach_score,
     confidence_from_score,
@@ -93,6 +94,8 @@ class ReplayResult:
     untradable_skipped: int
     equity_curve: list[tuple[str, float]] = field(default_factory=list)
     sample_rows: list[dict[str, Any]] = field(default_factory=list)
+    filter_stats: dict[str, int] = field(default_factory=dict)
+    filter_audit: list[dict[str, Any]] = field(default_factory=list)
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -112,6 +115,8 @@ class ReplayResult:
             'avg_holding_days': round(self.avg_holding_days, 1),
             'annual_turnover': round(self.annual_turnover, 4),
             'untradable_skipped': self.untradable_skipped,
+            'filter_stats': dict(self.filter_stats),
+            'filter_audit': self.filter_audit[:20],
             'sample_rows': self.sample_rows[:8],
         }
 
@@ -141,6 +146,10 @@ class _ReplayTier:
         self.skipped = 0
         self.last_prices: dict[str, float] = {}
         self.last_date = self.dates[-1] if self.dates else date.today()
+        store_root = getattr(engine, 'store_root', None)
+        if not store_root:
+            store_root = get_config().data.local_store_path
+        self.risk = RiskContext(self.config.risk, store_root, self.dates)
 
     def run(self) -> ReplayResult:
         rules = ExecutionRules()
@@ -159,9 +168,9 @@ class _ReplayTier:
 
     def _step(self, index: int, today: dict[str, dict], tomorrow: dict[str, dict],
               rules: ExecutionRules) -> None:
-        best_pct = self._best_candidate(today)
+        best_pct = self._best_candidate(today, self.dates[index])
         exit_codes = self._decide_exits(index, today, best_pct)
-        buy_candidates = self._buy_candidates(today)
+        buy_candidates = self._buy_candidates(today, self.dates[index])
         allocations = self._allocate(buy_candidates)
 
         sells = [TradeIntent(code, 'sell',
@@ -187,12 +196,13 @@ class _ReplayTier:
                 self._execute_buy(item, tomorrow.get(item.ts_code), index + 1,
                                   self.dates[index + 1], rules)
 
-    def _best_candidate(self, rows: dict[str, dict]) -> float | None:
+    def _best_candidate(self, rows: dict[str, dict], day: date) -> float | None:
         values = [
             float(row.get('score_percentile') or 0.0)
             for code, row in rows.items()
             if code not in self.positions
             and float(row.get('score_percentile') or 0.0) >= self.tier.buy_percentile
+            and self.risk.evaluate(code, day, record=False).ok
         ]
         return max(values) if values else None
 
@@ -219,7 +229,8 @@ class _ReplayTier:
                 exits.add(code)
         return exits
 
-    def _buy_candidates(self, rows: dict[str, dict]) -> list[tuple[dict, Candidate]]:
+    def _buy_candidates(self, rows: dict[str, dict], day: date,
+                        record: bool = True) -> list[tuple[dict, Candidate]]:
         result: list[tuple[dict, Candidate]] = []
         for code, row in rows.items():
             if code in self.positions:
@@ -227,18 +238,26 @@ class _ReplayTier:
             percentile = float(row.get('score_percentile') or 0.0)
             if percentile < self.tier.buy_percentile:
                 continue
-            eligibility = check_eligibility(row, self.tier, self.config, 'buy')
+            eligibility = check_eligibility(
+                row, self.tier, self.config, 'buy',
+                st_status=self.risk.st_status(code, day))
             if not eligibility.ok:
                 continue
             if not entry_allowed(percentile, self.tier, self.config)[0]:
                 continue
-            stock_meta = self.meta.get(code)
+            if not self.risk.evaluate(code, day, record=record).ok:
+                continue
+            if self.risk.config.industry_enabled:
+                industry, industry_source = self.risk.industry(code, day)
+            else:
+                stock_meta = self.meta.get(code)
+                industry = stock_meta.industry if stock_meta else '未知'
+                industry_source = (stock_meta.industry_source
+                                   if stock_meta else 'code_prefix_board')
             result.append((row, Candidate(
                 ts_code=code, score_percentile=percentile,
                 price=float(row.get('raw_close') or 0.0),
-                industry=stock_meta.industry if stock_meta else '未知',
-                industry_source=(stock_meta.industry_source
-                                 if stock_meta else 'code_prefix_board'),
+                industry=industry, industry_source=industry_source,
             )))
         result.sort(key=lambda item: item[1].score_percentile, reverse=True)
         return result
@@ -375,7 +394,9 @@ class _ReplayTier:
             total_cost=self.total_cost, buy_count=self.buy_count,
             sell_count=self.sell_count, avg_holding_days=avg_days,
             annual_turnover=annual_turnover, untradable_skipped=self.skipped,
-            equity_curve=self.equity_curve, sample_rows=sample)
+            equity_curve=self.equity_curve, sample_rows=sample,
+            filter_stats=dict(self.risk.counts),
+            filter_audit=list(self.risk.audit))
 
     def _sample_rows(self) -> list[dict[str, Any]]:
         """用最后交易日的决策生成与线上清单同 schema 的样例行。"""
@@ -390,7 +411,8 @@ class _ReplayTier:
                 continue
             output.append(self._sample_row(row, 'HOLD', position.shares,
                                             position.last_price, stats))
-        for row, _candidate in self._buy_candidates(rows)[:5]:
+        for row, _candidate in self._buy_candidates(
+                rows, self.dates[-1], record=False)[:5]:
             output.append(self._sample_row(row, 'BUY', 0,
                                            float(row.get('raw_close') or 0.0), stats))
         return output
