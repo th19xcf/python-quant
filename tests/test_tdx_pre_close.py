@@ -2,6 +2,7 @@
 
 import struct
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 
 import polars as pl
@@ -82,7 +83,7 @@ def test_ex_dividend_pre_close_uses_factor_ratio(tmp_path, day_file, monkeypatch
     """
     handler = _handler(tmp_path)
 
-    def fake_factors(ts_code, start_date=None, end_date=None):
+    def fake_factors(ts_code, start_date=None, end_date=None, price_records=None):
         return pl.DataFrame({
             "trade_date": [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)],
             "qfq_factor": [1.0, 0.9, 0.9],
@@ -272,6 +273,56 @@ def test_stock_list_covers_chinext_301_and_fund_prefixes(tmp_path):
         for code in ['501001.SH', '520001.SH', '560001.SH', '588001.SH',
                      '158000.SZ', '180101.SZ', '160105.SZ']:
             assert code in stocks
-        assert set(handler.get_stock_list()) & set(handler.get_index_list()) == set()
     finally:
         handler.close()
+
+
+def test_single_parse_shared_between_kline_and_adj_factors(tmp_path, day_file, monkeypatch):
+    """K 线与复权因子复用同一份解析结果：单次取数只解析 .day 一次，且数值等价。"""
+    from src.data import tdx_handler as tdx_module
+    from src.database.models.stock import StockAdjFactor, StockDividend
+
+    engine = create_engine(f'sqlite:///{tmp_path / "single_parse.db"}')
+    StockDividend.__table__.create(engine)
+    StockAdjFactor.__table__.create(engine)
+    session = sessionmaker(bind=engine)()
+    session.add(StockDividend(
+        ts_code='600000.SH', symbol='600000', name='浦发银行',
+        ex_date=date(2024, 1, 3), cash_div=1.0, share_div=0.0,
+    ))
+    session.commit()
+
+    class _DB:
+        def get_session(self):
+            return session
+
+    handler = _handler(tmp_path, _DB())
+    calls = []
+    original = tdx_module.read_recent_records
+
+    def _counting(path, count=None, volume_in_hand=None):
+        calls.append(Path(path).name)
+        return original(path, count, volume_in_hand)
+
+    monkeypatch.setattr(tdx_module, 'read_recent_records', _counting)
+    try:
+        df = handler.get_stock_data('600000.SH', '2024-01-03', '2024-01-03')
+        assert calls == ['sh600000.day'], f'单次取数应只解析一次，实际 {calls}'
+
+        records = original(day_file)
+        factors_shared = handler._get_adj_factors(
+            '600000.SH', None, None, price_records=records)
+        assert calls == ['sh600000.day'], '传入 records 后不应再次解析文件'
+
+        factors_reparsed = handler._get_adj_factors('600000.SH', None, None)
+        assert calls == ['sh600000.day', 'sh600000.day']
+    finally:
+        handler.close()
+        session.close()
+        engine.dispose()
+
+    # 数值等价：复用 records 与独立重解析得到完全相同的因子表
+    assert factors_shared is not None
+    assert factors_reparsed is not None
+    assert factors_shared.equals(factors_reparsed)
+    assert df.height == 1

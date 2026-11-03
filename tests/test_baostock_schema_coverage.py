@@ -45,7 +45,8 @@ def test_minute_row_parses_numeric_and_iso_time(raw_time, expected):
     assert record['ts_code'] == '600000.SH'
     assert record['trade_time'] == expected
     assert record['close'] == 10.8
-    assert record['vol'] == 100.0
+    # 成交量契约：上游 volume 为「股」，此处统一除以 100 归一为「手」（1 手=100 股）
+    assert record['vol'] == 1.0
 
 
 def test_minute_row_falls_back_to_zero_for_empty_values():

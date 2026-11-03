@@ -1006,7 +1006,14 @@ def repair_stock_basic(config: Any, db_manager: Any, deep_industry: bool = False
         'filled_industry': 0,
         'deep_fetched': 0,
         'failed_stocks': [],
+        'skipped_reason': '',
     }
+
+    # 行业回填依赖 Baostock/AkShare（deep_industry 还会逐只查巨潮），
+    # 远程开关关闭时显式跳过，避免离线运行偷偷联网
+    if _remote_sync_blocked(config, "修复 stock_basic"):
+        result['skipped_reason'] = 'remote_sources_disabled'
+        return result
 
     def prepare(session: Any) -> StockRepairContext:
         rows = [

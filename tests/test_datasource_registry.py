@@ -24,8 +24,10 @@ def test_plugins_directory_has_no_datasource_adapters():
 
 
 def test_builtin_sources_are_registered_exactly_once():
-    """内置数据源必须各注册一次，且不存在插件数据源重复注册。"""
+    """远程开关开启时内置数据源必须各注册一次，且不存在插件数据源重复注册。"""
     config = Config()
+    # 本用例校验「注册唯一性」，需显式开启远程源（默认离线只注册 TDX）
+    config.data.allow_remote_sources = True
     plugin_manager = PluginManager(config)
     plugin_manager.load_plugins()
 
@@ -42,3 +44,19 @@ def test_builtin_sources_are_registered_exactly_once():
         expected.add('BaostockHandler')
     assert expected <= registered
     assert registered <= {'TdxHandler', 'BaostockHandler', 'AkShareHandler', 'MacroHandler', 'NewsHandler'}
+
+
+def test_offline_config_only_registers_local_tdx():
+    """默认离线配置下只注册本地 TDX，BaoStock/AkShare 完全不实例化。"""
+    config = Config()
+    assert config.data.allow_remote_sources is False
+
+    plugin_manager = PluginManager(config)
+    plugin_manager.load_plugins()
+
+    service = DataService(config, db_manager=None, plugin_manager=plugin_manager)
+    registered = {type(source).__name__ for source in service.data_fetcher.sources}
+
+    assert 'TdxHandler' in registered
+    assert 'AkShareHandler' not in registered
+    assert 'BaostockHandler' not in registered

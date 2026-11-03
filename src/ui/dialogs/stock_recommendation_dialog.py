@@ -28,11 +28,12 @@ from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
 
 
-def _run_screen_task(top_n, algorithm, industry, weights, period,
+def _run_screen_task(top_n, algorithm, industry, weights, period, data_manager=None,
                      task_id=None, signals=None) -> list:
     """后台选股任务：在工作线程执行，避免阻塞 UI 事件循环。
 
-    TaskRunner 以关键字参数注入 ``task_id`` / ``signals`` 用于回传进度。
+    TaskRunner 以关键字参数注入 ``task_id`` / ``signals`` 用于回传进度；
+    ``data_manager`` 由对话框从主窗口注入，选股用例不再自建数据库连接。
     """
     def _progress(value: int) -> None:
         if signals is not None and task_id is not None:
@@ -45,6 +46,7 @@ def _run_screen_task(top_n, algorithm, industry, weights, period,
         industry=industry,
         weights=weights,
         period=period,
+        data_manager=data_manager,
     )
     _progress(90)
     return recommendations
@@ -205,7 +207,8 @@ class StockRecommendationDialog(QDialog):
             f"股票推荐: {spec['algorithm']}",
             _run_screen_task,
             (spec['top_n'], spec['algorithm'], spec['industry'],
-             spec['weights'], spec['period']),
+             spec['weights'], spec['period'],
+             getattr(self.parent(), 'data_manager', None)),
             timeout_seconds=None,   # 全市场选股可能较慢，不套用 60s 默认超时
         )
         self._connect_task_signals()

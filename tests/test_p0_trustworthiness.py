@@ -498,13 +498,8 @@ def test_stock_dialog_export_passes_real_recommendations(monkeypatch, qapp):
 # P0-2 自动取数路径：按最新交易日回溯后取后复权面板
 # ----------------------------------------------------------------------
 
-def test_fetch_panel_requests_date_range_from_trade_date(monkeypatch):
-    from datetime import date as date_type
-
-    from src.data import data_manager as data_manager_module
-    from src.database import db_manager as db_manager_module
-    from src.utils import config as config_module
-
+def test_fetch_panel_requests_date_range_from_trade_date():
+    """自动取数走注入的 DataManager：批量 API 一次覆盖股票池，不再自建连接。"""
     days = 60
     dates = [date(2023, 12, 1) + timedelta(days=offset) for offset in range(days)]
     bars = pl.DataFrame({
@@ -519,10 +514,6 @@ def test_fetch_panel_requests_date_range_from_trade_date(monkeypatch):
     requested = {}
 
     class _FakeDB:
-        def __init__(self, config):
-            self.config = config
-            self.disconnected = False
-
         def get_session(self):
             return self
 
@@ -530,14 +521,12 @@ def test_fetch_panel_requests_date_range_from_trade_date(monkeypatch):
             return self
 
         def scalar(self):
-            return date_type(2024, 12, 31)
-
-        def disconnect(self):
-            self.disconnected = True
+            return date(2024, 12, 31)
 
     class _FakeDataManager:
-        def __init__(self, config, db_manager):
-            self.db_manager = db_manager
+        def __init__(self):
+            self.db_manager = _FakeDB()
+            self.bulk_calls = []
 
         def get_stock_basic(self):
             return pl.DataFrame({
@@ -546,25 +535,77 @@ def test_fetch_panel_requests_date_range_from_trade_date(monkeypatch):
                 'industry': ['银行'],
             })
 
-        def get_stock_data(self, code, start_date, end_date, adjustment_type='hfq'):
+        async def get_multiple_stocks_data_async(self, codes, start_date, end_date,
+                                                 frequency='1d', adjustment_type='hfq',
+                                                 batch_size=10, timeout=30):
+            self.bulk_calls.append(list(codes))
             requested.update({
-                'code': code,
+                'codes': list(codes),
                 'start_date': start_date,
                 'end_date': end_date,
                 'adjustment_type': adjustment_type,
             })
-            return bars
+            return dict.fromkeys(codes, bars)
 
-    monkeypatch.setattr(db_manager_module, 'DatabaseManager', _FakeDB)
-    monkeypatch.setattr(data_manager_module, 'DataManager', _FakeDataManager)
-    monkeypatch.setattr(config_module, 'Config', lambda: SimpleNamespace())
+        def get_stock_data(self, *args, **kwargs):  # 逐股串行路径不应再被调用
+            raise AssertionError('不应回退到逐股 get_stock_data')
 
-    panel = screen_stocks_module._fetch_panel(2, '12个月', as_of=date(2024, 12, 31))
+    data_manager = _FakeDataManager()
+    panel = screen_stocks_module._fetch_panel(
+        2, '12个月', as_of=date(2024, 12, 31), data_manager=data_manager)
 
     assert panel is not None
     assert panel.height == days
     assert panel['stock_code'][0] == '600000.SH'
     assert panel['stock_name'][0] == '浦发银行'
+    assert data_manager.bulk_calls == [['600000.SH']]
     assert requested['start_date'] == '2023-12-31'
     assert requested['end_date'] == '2024-12-31'
     assert requested['adjustment_type'] == 'hfq'
+
+
+def test_fetch_panel_requires_injected_data_manager():
+    """未注入 data_manager 时明确拒绝取数，而不是自建 Config/DatabaseManager。"""
+    panel = screen_stocks_module._fetch_panel(2, '12个月', as_of=date(2024, 12, 31))
+    assert panel is None
+
+
+def test_resolve_universe_sorts_and_excludes_index_fund():
+    """默认股票池口径：排除指数/基金，按 ts_code 升序（不依赖表物理行序）。"""
+
+    class _FakeDataManager:
+        def get_stock_basic(self):
+            return pl.DataFrame({
+                'ts_code': ['600519.SH', '000001.SZ', '000001.SH',
+                            '510300.SH', '000858.SZ'],
+            })
+
+    codes, _ = screen_stocks_module._resolve_universe(_FakeDataManager(), 2, None)
+    assert codes == ['000001.SZ', '000858.SZ', '600519.SH']
+
+
+def test_screen_stocks_accepts_explicit_universe(monkeypatch):
+    """显式股票池原样传给取数层（去重与口径由 _resolve_universe 负责）。"""
+    captured = {}
+    days = 30
+
+    def _fake_fetch(top_n, period, as_of=None, *, data_manager=None, stock_codes=None):
+        captured['stock_codes'] = stock_codes
+        return pl.DataFrame({
+            'stock_code': [code for code in stock_codes for _ in range(days)],
+            'stock_name': [f'股票{code}' for code in stock_codes for _ in range(days)],
+            'industry': ['未知' for _ in stock_codes for _ in range(days)],
+            'date': [date(2024, 1, 2)] * (days * len(stock_codes)),
+            'open': [1.0] * (days * len(stock_codes)),
+            'high': [1.0] * (days * len(stock_codes)),
+            'low': [1.0] * (days * len(stock_codes)),
+            'close': [1.0] * (days * len(stock_codes)),
+            'volume': [1.0] * (days * len(stock_codes)),
+            'amount': [1.0] * (days * len(stock_codes)),
+        })
+
+    monkeypatch.setattr(screen_stocks_module, '_fetch_panel', _fake_fetch)
+    result = screen_stocks_module.screen_stocks(
+        top_n=2, stock_codes=['600519.SH', '600519.SH', '000858.SZ'])
+    assert captured['stock_codes'] == ['600519.SH', '600519.SH', '000858.SZ']
+    assert isinstance(result, list)

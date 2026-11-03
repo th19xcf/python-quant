@@ -13,6 +13,7 @@ screen_stocks —— 选股用例（Headless API）。
 
 from __future__ import annotations
 
+import asyncio
 import calendar
 from datetime import date, datetime
 from typing import Any, Dict, List
@@ -80,57 +81,86 @@ def _latest_trade_date(db: Any) -> date:
     return date.today()
 
 
-def _fetch_panel(top_n: int, period: str, as_of: date | None = None) -> pl.DataFrame | None:
+def _resolve_universe(data_manager: Any, top_n: int,
+                      stock_codes: List[str] | None) -> tuple[List[str], pl.DataFrame]:
+    """确定选股股票池并返回 (代码列表, stock_basic 面板)。
+
+    默认口径：``stock_basic`` 中排除指数与基金后的全部代码，按 ``ts_code`` 升序
+    取前 ``top_n * 3`` 只。升序保证同一数据快照下结果可复现，不再依赖表物理行序。
+    显式传入 ``stock_codes`` 时按传入顺序去重后使用，不做截断。
     """
-    从 DB 取选股面板数据（取 top_n*3 只股票的后复权日线）。
-    放在 usecases 层，UI 层不会碰到 DatabaseManager。
+    stock_basic = data_manager.get_stock_basic()
+
+    if stock_codes:
+        normalized = list(dict.fromkeys(code for code in stock_codes if code))
+        return normalized, stock_basic
+
+    if stock_basic.is_empty() or 'ts_code' not in stock_basic.columns:
+        return [], stock_basic
+
+    from src.utils.code_converter import is_fund_code, is_index_code
+
+    codes = [
+        str(code) for code in stock_basic['ts_code'].to_list()
+        if code and not is_index_code(str(code)) and not is_fund_code(str(code))
+    ]
+    return sorted(set(codes))[:top_n * 3], stock_basic
+
+
+def _fetch_panel(top_n: int, period: str, as_of: date | None = None, *,
+                 data_manager: Any = None,
+                 stock_codes: List[str] | None = None) -> pl.DataFrame | None:
+    """
+    取选股面板数据（后复权日线）。
+
+    ``data_manager`` 由调用方注入（UI 传已有 DataManager 实例），本函数不再
+    自建 ``Config`` / ``DatabaseManager``，避免每次选股重复建连并绕开依赖注入。
 
     Args:
         as_of: 分析截止日（最新交易日的显式覆盖，主要供测试固定 today）。
+        stock_codes: 显式股票池；None 时按 ``_resolve_universe`` 的默认口径。
     """
-    from src.data.data_manager import DataManager
-    from src.database.db_manager import DatabaseManager
-    from src.utils.config import Config
+    if data_manager is None:
+        logger.error("screen_stocks: 未注入 data_manager，无法自动取数"
+                     "（请由调用方传入 DataManager 实例）")
+        return None
 
-    config = Config()
-    db = DatabaseManager(config)
-    data_manager = DataManager(config, db)
-
+    db = getattr(data_manager, 'db_manager', None)
     anchor = as_of or _latest_trade_date(db)
     start_date, end_date = _period_range(period, anchor)
     start_date_str, end_date_str = start_date.isoformat(), end_date.isoformat()
 
-    try:
-        stock_basic = data_manager.get_stock_basic()
-        if stock_basic.is_empty():
-            return None
+    codes, stock_basic = _resolve_universe(data_manager, top_n, stock_codes)
+    if not codes:
+        logger.warning("screen_stocks: 股票池为空（stock_basic 无可用股票）")
+        return None
+    logger.info(f"选股股票池 {len(codes)} 只（period={period}, as_of={anchor}）")
 
-        stock_codes = stock_basic['ts_code'].to_list()[:top_n * 3]
-        stocks_data_list = []
+    # 批量并发取数：一次调用覆盖全部代码，替代原逐股串行 get_stock_data
+    frames = asyncio.run(data_manager.get_multiple_stocks_data_async(
+        codes, start_date_str, end_date_str,
+        frequency='1d', adjustment_type='hfq'))
 
-        for code in stock_codes:
-            try:
-                df = data_manager.get_stock_data(code, start_date_str, end_date_str, adjustment_type='hfq')
-                if not df.is_empty() and len(df) >= 20:
-                    info = stock_basic.filter(pl.col('ts_code') == code)
-                    name = info['name'].to_list()[0] if not info.is_empty() else f'股票{code}'
-                    ind = info['industry'].to_list()[0] if 'industry' in info.columns else '未知'
-                    df = df.with_columns([
-                        pl.lit(code).alias('stock_code'),
-                        pl.lit(name).alias('stock_name'),
-                        pl.lit(ind).alias('industry'),
-                    ])
-                    stocks_data_list.append(df)
-            # 兜底理由：单只股票取数失败跳过
-            except Exception as e:  # noqa: BLE001
-                logger.debug(f"取 {code} 数据失败: {e}")
+    meta: Dict[str, tuple[str | None, str | None]] = {}
+    if not stock_basic.is_empty() and 'ts_code' in stock_basic.columns:
+        columns = [c for c in ('ts_code', 'name', 'industry') if c in stock_basic.columns]
+        for row in stock_basic.select(columns).to_dicts():
+            meta[row['ts_code']] = (row.get('name'), row.get('industry'))
 
-        if not stocks_data_list:
-            return None
-        return pl.concat(stocks_data_list)
+    stocks_data_list = []
+    for code, df in frames.items():
+        if df is None or df.is_empty() or len(df) < 20:
+            continue
+        name, ind = meta.get(code, (None, None))
+        stocks_data_list.append(df.with_columns([
+            pl.lit(code).alias('stock_code'),
+            pl.lit(name or f'股票{code}').alias('stock_name'),
+            pl.lit(ind or '未知').alias('industry'),
+        ]))
 
-    finally:
-        db.disconnect()
+    if not stocks_data_list:
+        return None
+    return pl.concat(stocks_data_list)
 
 
 def screen_stocks(
@@ -141,6 +171,8 @@ def screen_stocks(
     weights: Dict[str, float] | None = None,
     period: str = "12个月",
     today: date | str | None = None,
+    data_manager: Any | None = None,
+    stock_codes: List[str] | None = None,
     **params,
 ) -> List[Dict[str, Any]]:
     """
@@ -155,13 +187,20 @@ def screen_stocks(
         period:      自动取数时的分析周期：'1个月' / '3个月' / '6个月' / '12个月'。
         today:       分析截止日（默认取数据库最新交易日）；仅自动取数时生效，
                      显式传入可让选股区间可复现。
+        data_manager: 数据管理器实例（自动取数时必填，用于批量取数与元数据查询）。
+        stock_codes: 显式股票池；None 时用 stock_basic 按 ts_code 升序前 top_n*3 只。
 
     Returns:
         List[Dict] —— 每只股票含 score / risk / expected_return / industry 等。
     """
     if stocks_data is None:
         anchor = _coerce_date(today)
-        stocks_data = _fetch_panel(top_n, period, as_of=anchor)
+        panel_kwargs: Dict[str, Any] = {}
+        if data_manager is not None:
+            panel_kwargs['data_manager'] = data_manager
+        if stock_codes is not None:
+            panel_kwargs['stock_codes'] = stock_codes
+        stocks_data = _fetch_panel(top_n, period, as_of=anchor, **panel_kwargs)
         if stocks_data is None:
             logger.error("screen_stocks: 无法获取面板数据")
             return []

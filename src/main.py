@@ -33,7 +33,7 @@ from src.ui.main_window import MainWindow
 from src.ui.theme_manager import ThemeManager
 
 # 内部模块导入
-from src.utils.config import config_manager, get_config
+from src.utils.config import config_manager, get_config, remote_sources_enabled
 from src.utils.event_bus import EventType, publish, shutdown_event_bus
 from src.utils.exception_handler import setup_global_exception_handler
 from src.utils.exceptions import DataSourceException
@@ -56,6 +56,14 @@ def parse_args():
     parser.add_argument('--update-stock', action='store_true', help='从通达信数据源同步股票信息到数据库')
     parser.add_argument('--update-index', action='store_true', help='以通达信指数代码为基准更新 index_basic（Baostock/AkShare 补全）')
     parser.add_argument('--update-fund', action='store_true', help='将 stock_basic 中基金迁移到 fund_basic 并补全信息')
+    parser.add_argument('--sync-stock-daily', action='store_true',
+                        help='用本地通达信 .day 补库 stock_daily（默认增量，离线可运行）')
+    parser.add_argument('--codes', default=None,
+                        help='逗号分隔的股票代码，配合 --sync-stock-daily 限定股票池')
+    parser.add_argument('--full', action='store_true',
+                        help='配合 --sync-stock-daily：全量补历史（默认只补库内水位之后）')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='配合 --sync-stock-daily：只统计行数，不写库')
     parser.add_argument('--repair-stock-basic', action='store_true', help='一次性修复 stock_basic 存量的地域/行业/市场字段')
     parser.add_argument('--deep-industry', action='store_true', help='与 --repair-stock-basic 配合：批量源覆盖不到的行业逐只查巨潮公司概况兜底')
     parser.add_argument('--plugins', action='store_true', help='显示已加载的插件')
@@ -134,15 +142,20 @@ def _handle_update_stock_arg(config):
 
         sync_tdx_stock_to_database(config, db_manager)
 
-        from src.data.akshare_handler import AkShareHandler
-        akshare_handler = AkShareHandler(config, db_manager)
-        logger.info("开始更新 ETF 基本信息...")
-        try:
-            etf_result = akshare_handler.update_etf_basic()
-            if etf_result is not None:
-                logger.info("ETF 基本信息更新完成")
-        except DataSourceException as etf_e:
-            logger.warning(f"更新 ETF 基本信息失败: {etf_e}")
+        if remote_sources_enabled(config):
+            from src.data.akshare_handler import AkShareHandler
+            akshare_handler = AkShareHandler(config, db_manager)
+            logger.info("开始更新 ETF 基本信息...")
+            try:
+                etf_result = akshare_handler.update_etf_basic()
+                if etf_result is not None:
+                    logger.info("ETF 基本信息更新完成")
+            except DataSourceException as etf_e:
+                logger.warning(f"更新 ETF 基本信息失败: {etf_e}")
+        else:
+            logger.info(
+                "data.allow_remote_sources=false，跳过 AkShare ETF 基本信息补全"
+            )
 
         db_manager.cleanup()
         logger.info("数据库资源已清理")
@@ -151,6 +164,39 @@ def _handle_update_stock_arg(config):
     except _STARTUP_ERRORS as db_e:
         logger.error(f"数据库连接失败，无法执行同步: {db_e}")
         return True
+
+
+def _handle_sync_stock_daily_arg(config, args):
+    """处理 --sync-stock-daily：本地 TDX → stock_daily 离线补库。"""
+    from src.data.services.stock_daily_fill import fill_stock_daily
+
+    logger.info("检测到 --sync-stock-daily 参数，将执行 stock_daily 本地补库")
+
+    db_manager = None
+    try:
+        db_manager = DatabaseManager(config)
+        db_manager.connect()
+        logger.info("数据库连接成功")
+
+        codes = None
+        if args.codes:
+            codes = [code.strip() for code in args.codes.split(',') if code.strip()]
+
+        summary = fill_stock_daily(
+            config, db_manager,
+            ts_codes=codes,
+            full=getattr(args, 'full', False),
+            dry_run=getattr(args, 'dry_run', False),
+        )
+        logger.info(f"stock_daily 补库结果: {summary}")
+    except (DataSourceException, *_STARTUP_ERRORS) as e:
+        logger.exception(f"stock_daily 补库失败: {e}")
+    finally:
+        if db_manager is not None:
+            try:
+                db_manager.cleanup()
+            except _STARTUP_ERRORS as cleanup_e:
+                logger.warning(f"清理数据库资源失败: {cleanup_e}")
 
 
 def _handle_update_index_arg(config):
@@ -320,6 +366,10 @@ def main():
 
         if args.update_stock:
             _handle_update_stock_arg(config)
+            return
+
+        if args.sync_stock_daily:
+            _handle_sync_stock_daily_arg(config, args)
             return
 
         if args.update_index:

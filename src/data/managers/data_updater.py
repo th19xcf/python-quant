@@ -36,8 +36,23 @@ class DataUpdater:
             logger.info(f"注册更新数据源: {source.name}")
 
     def _try_sources(self, method_name: str, type_name: str, **kwargs) -> bool:
-        """按注册顺序依次尝试各 source 的 method_name，首个成功即返回 True。"""
+        """按注册顺序依次尝试各 source 的 method_name，首个成功即返回 True。
+
+        远程开关关闭时跳过非本地数据源（`is_local=False`），避免
+        `update_stock_daily/index_daily/fund_daily` 等入口在离线模式下
+        偷偷落到 BaoStock/AkShare 发起网络请求。
+        """
+        from src.utils.config import remote_sources_enabled
+
+        allow_remote = remote_sources_enabled(self.config)
+
         for source in self.sources:
+            if not allow_remote and not getattr(source, 'is_local', False):
+                logger.debug(
+                    f"远程数据源已关闭，跳过 {getattr(source, 'name', source)} "
+                    f"更新{type_name}"
+                )
+                continue
             try:
                 if not hasattr(source, method_name):
                     continue
@@ -49,7 +64,13 @@ class DataUpdater:
                 logger.warning(f"{source.name}更新{type_name}失败: {e}")
                 continue
 
-        logger.error(f"所有数据源更新{type_name}失败")
+        if not allow_remote:
+            logger.error(
+                f"没有可用于更新{type_name}的数据源（远程数据源已关闭，"
+                "本地通达信不支持该更新入口）"
+            )
+        else:
+            logger.error(f"所有数据源更新{type_name}失败")
         return False
 
     # ------------------------------------------------------------------

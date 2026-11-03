@@ -236,7 +236,8 @@ class TdxHandler(DataSourceBase):
             logger.exception(f"解析通达信日线数据文件失败: {e}")
             raise
 
-    def _get_adj_factors(self, ts_code: str, start_date: date | None, end_date: date | None) -> pl.DataFrame | None:
+    def _get_adj_factors(self, ts_code: str, start_date: date | None, end_date: date | None,
+                         price_records=None) -> pl.DataFrame | None:
         """
         从数据库获取复权因子
         如果没有预计算的复权因子，则根据分红数据实时计算
@@ -245,6 +246,7 @@ class TdxHandler(DataSourceBase):
             ts_code: 股票代码
             start_date: 开始日期
             end_date: 结束日期
+            price_records: 已解析的 .day 记录，传入时实时计算复用、不再重复解析文件
 
         Returns:
             Polars DataFrame包含复权因子
@@ -279,7 +281,8 @@ class TdxHandler(DataSourceBase):
 
             # 如果没有预计算的复权因子，根据分红数据实时计算
             logger.info(f"{ts_code} 没有预计算的复权因子，根据分红数据实时计算")
-            return self._calculate_adj_factors_from_dividends(ts_code, start_date, end_date)
+            return self._calculate_adj_factors_from_dividends(
+                ts_code, start_date, end_date, price_records=price_records)
 
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取复权因子失败: {e}")
@@ -326,8 +329,24 @@ class TdxHandler(DataSourceBase):
         logger.info(f"最后一条分红: 日期={last_div.ex_date}, 现金={last_div.cash_div}, 送转={last_div.share_div}")
         return dividends
 
-    def _load_adj_price_records(self, ts_code: str):
-        """读取参与复权因子计算的收盘价记录（文件缺失或无数据返回 None）。"""
+    def _load_adj_price_records(self, ts_code: str, price_records=None):
+        """读取参与复权因子计算的收盘价记录（文件缺失或无数据返回 None）。
+
+        Args:
+            price_records: 已解析的 .day 记录（同一文件的 K 线读取结果）。
+                传入时直接复用，避免对同一文件做第二次完整解析；
+                未传入（None）时保持原行为，自行读取文件。
+        """
+        if price_records is not None:
+            prices = [
+                {'trade_date': r['date'], 'close': r['close']}
+                for r in price_records
+            ]
+            if not prices:
+                return None
+            prices.sort(key=lambda x: x['trade_date'])
+            return prices
+
         # 获取价格数据用于计算复权因子
         symbol = to_symbol(ts_code)
         market = to_tdx_market(ts_code)
@@ -401,7 +420,8 @@ class TdxHandler(DataSourceBase):
         logger.info(f"{ts_code} 复权因子计算完成，共 {len(df)} 条记录")
         return df
 
-    def _calculate_adj_factors_from_dividends(self, ts_code: str, start_date: date | None, end_date: date | None) -> pl.DataFrame | None:
+    def _calculate_adj_factors_from_dividends(self, ts_code: str, start_date: date | None, end_date: date | None,
+                                              price_records=None) -> pl.DataFrame | None:
         """
         根据分红数据实时计算复权因子
 
@@ -409,6 +429,7 @@ class TdxHandler(DataSourceBase):
             ts_code: 股票代码
             start_date: 开始日期
             end_date: 结束日期
+            price_records: 已解析的 .day 记录，传入时复用、不再二次解析文件
 
         Returns:
             Polars DataFrame包含复权因子
@@ -418,7 +439,7 @@ class TdxHandler(DataSourceBase):
             if not dividends:
                 return None
 
-            prices = self._load_adj_price_records(ts_code)
+            prices = self._load_adj_price_records(ts_code, price_records)
             if not prices:
                 return None
 
@@ -468,11 +489,16 @@ class TdxHandler(DataSourceBase):
         logger.info(f"成功解析{len(data)}条数据")
         return data
 
-    def _apply_adj_factors_to_kline(self, lazy_df, ts_code: str):
-        """把复权因子对齐到 K 线日期，缺失时填充默认值 1.0。"""
+    def _apply_adj_factors_to_kline(self, lazy_df, ts_code: str, price_records=None):
+        """把复权因子对齐到 K 线日期，缺失时填充默认值 1.0。
+
+        price_records 为本次 K 线解析得到的原始记录，传入后复权因子计算
+        直接复用该记录，不再对同一 .day 文件做第二次完整解析。
+        """
         # 获取复权因子（使用完整日期范围，因为复权因子计算需要所有历史数据）
         # 传入None作为日期范围，让_get_adj_factors获取所有历史数据
-        factors_df = self._get_adj_factors(ts_code, None, None)
+        factors_df = self._get_adj_factors(
+            ts_code, None, None, price_records=price_records)
 
         if factors_df is not None and not factors_df.is_empty():
             # 转换复权因子为LazyFrame
@@ -543,7 +569,8 @@ class TdxHandler(DataSourceBase):
             # 此处只把复权因子对齐到 K 线日期，不再生成 qfq_*/hfq_* 预计算价格列，
             # 避免同一份复权逻辑在多处实现导致口径漂移。
             ts_code = f"{code}.{market.upper()}"
-            lazy_df = self._apply_adj_factors_to_kline(lazy_df, ts_code)
+            lazy_df = self._apply_adj_factors_to_kline(
+                lazy_df, ts_code, price_records=data)
 
             logger.info(f"成功获取股票 {stock_code} 的K线数据，返回LazyFrame")
             return lazy_df

@@ -60,12 +60,27 @@ class DataService:
         self._init_plugin_datasources()
 
     def _init_builtin_datasources(self) -> None:
-        """初始化内置数据源"""
-        for handler_name, import_path, module_name in [
-            ('通达信', 'src.data.tdx_handler', 'TdxHandler'),
-            ('BaoStock', 'src.data.baostock_handler', 'BaostockHandler'),
-            ('AkShare', 'src.data.akshare_handler', 'AkShareHandler'),
-        ]:
+        """初始化内置数据源。
+
+        离线优先：`data.allow_remote_sources=False` 时只注册本地通达信，
+        BaoStock/AkShare 不实例化、不注册，运行时取数不会发起任何网络请求。
+        """
+        from src.utils.config import remote_sources_enabled
+
+        allow_remote = remote_sources_enabled(self.config)
+        builtin_sources = [('通达信', 'src.data.tdx_handler', 'TdxHandler')]
+        if allow_remote:
+            builtin_sources.extend([
+                ('BaoStock', 'src.data.baostock_handler', 'BaostockHandler'),
+                ('AkShare', 'src.data.akshare_handler', 'AkShareHandler'),
+            ])
+        else:
+            logger.info(
+                "data.allow_remote_sources=false，仅注册本地通达信数据源"
+                "（跳过 BaoStock/AkShare）"
+            )
+
+        for handler_name, import_path, module_name in builtin_sources:
             try:
                 mod = __import__(import_path, fromlist=[module_name])
                 handler_cls = getattr(mod, module_name)
