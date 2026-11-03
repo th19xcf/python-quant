@@ -194,7 +194,7 @@ Copy-Item <源机>\reports\advice\latest.json D:\code\python\quant\reports\advic
 
 ### 1.4 仓库外运行时产物（不入库，可选搬运）
 
-下表体积/文件数均为**本次实测**（除注明外）；`reports/`、`logs/` 被 `.gitignore:132,110` 忽略，`tmp/` 为未跟踪目录。
+下表体积/文件数均为**本次实测**（除注明外）；`reports/`、`logs/`、`tmp/` 被 `.gitignore:132,111,138` 忽略。
 
 | 路径 | 体积 / 内容（实测） | 被 .gitignore 忽略 | 能否重建 | 缺失后果 |
 |---|---|---|---|---|
@@ -204,11 +204,11 @@ Copy-Item <源机>\reports\advice\latest.json D:\code\python\quant\reports\advic
 | `reports/factor_lib/` | 12 个文件 / 189,281 B | 是 | ✅ 对应研究脚本可重算（耗时未实测） | 无影响 |
 | `reports/alphalens_test/` | 4 个文件 / 328,712 B | 是 | ✅ 对应研究脚本可重算 | 无影响 |
 | `reports/analytics_validation/` | 4 个文件 / 905,526 B | 是 | ✅ 对应研究脚本可重算 | 无影响 |
-| `logs/` | 50 个文件 / 30,491,712 B（`app.log` + 质检/对拍/因子审计报告） | **是**（`.gitignore:110`） | ✅ 运行自动生成 | 无历史日志与历史质检报告，不影响运行 |
-| `tmp/`（基准与调试脚本输出） | 145 个文件 / 94,796,793 B（数量随工作区变化） | **否**（`.gitignore` 只忽略 `*.tmp`，`tmp/` 目前 untracked） | — | 无影响，**不需要搬**（草稿/一次性脚本，不要提交） |
+| `logs/` | 50 个文件 / 30,491,712 B（`app.log` + 质检/对拍/因子审计报告） | **是**（`.gitignore:111`） | ✅ 运行自动生成 | 无历史日志与历史质检报告，不影响运行 |
+| `tmp/`（基准与调试脚本输出） | 145 个文件 / 94,796,793 B（数量随工作区变化） | **是**（`.gitignore:138` 新增整目录规则，此前只忽略 `*.tmp`） | — | 无影响，**不需要搬**（草稿/一次性脚本，不要提交） |
 | `runs/` | **不存在**（实测 missing；此前记录为 0 文件） | 未核对 | — | 无影响 |
 | `.coverage` | 98,304 B | 是 | `pytest --cov` 重新生成 | 无影响 |
-| `research/`（代码 + untracked 数据） | 23 个文件 / 13,409,819 B | 部分 | 代码随仓库；`research/events/data/*.parquet` 为 untracked 原始公告 | 不影响运行；但它是离线重导 `meta/events/events.parquet` 的原始数据来源之一 |
+| `research/`（代码 + 数据） | 23 个文件 / 13,409,819 B | 部分 | 代码与 `research/events/data/` 下 15 个数据文件（原始/规范化 parquet、汇总 CSV、映射表）均已入库；本次新增忽略 2 个可重建中间产物（`.gitignore:141-142`：`announcement_event_level_car.csv`、`announcements_partial.parquet`） | 不影响运行；已入库数据是离线重导 `meta/events/events.parquet` 的原始来源之一 |
 
 ---
 
@@ -288,7 +288,7 @@ Copy-Item <源机>\reports\advice\latest.json D:\code\python\quant\reports\advic
 ### 3.2 明确未验证（不要当确定结论使用）
 1. 目标机 GUI 实际启动与页面渲染（本机未做自动化启动验证）。
 2. 「GUI 回测无库必定抛异常」的具体异常类型、超时时长（代码路径已确认会 `connect()`，但未真实断网复现）。
-3. `names.json` 能否用外部工具（mootdx/pytdx 读 `*.tnf`）重建：**本仓库代码不支持**；外部工具可行性未验证，且 `docs/mootdx_feasibility_report.md` 为未跟踪的调研稿，不能作为实现依据。
+3. `names.json` 能否用外部工具（mootdx/pytdx 读 `*.tnf`）重建：**本仓库代码不支持**；外部工具读 `*.tnf` 的可行性仍未验证。mootdx 整体可行性已有实测报告且已入版本库（`docs/mootdx_feasibility_report.md`），结论为「不值得接入」，不能作为实现依据。
 4. 目标机 TDX 日线与源机的完整度差异（未逐文件比对），以及 `build --all` 在目标机的实际耗时（源机历史记录 115～180 s，未在目标机复测）。
 5. 分红快照与生产 MySQL 的时效差（本机快照 53,974 行 / 5,376 代码，未与线上库比对）。
 6. 全量推荐链路与因子库在纯离线环境的端到端结果（仅确认代码不连库，未跑全流程）。

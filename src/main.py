@@ -204,13 +204,21 @@ def _handle_sync_stock_daily_arg(config, args):
         if getattr(args, 'since', ''):
             since = date.fromisoformat(args.since)
 
+        full = getattr(args, 'full', False)
+        progress_file = getattr(args, 'progress_file', '')
+        if not progress_file:
+            mode = 'full' if full else 'incremental'
+            progress_file = str(Path('logs') / 'sync_progress'
+                                / f'stock_daily_{mode}.json')
+
         summary = fill_stock_daily(
             config, db_manager,
             ts_codes=codes,
-            full=getattr(args, 'full', False),
+            full=full,
             dry_run=getattr(args, 'dry_run', False),
             since=since,
             max_date=max_date,
+            progress_path=progress_file,
         )
         logger.info(f"stock_daily 补库结果: {summary}")
     except (DataSourceException, *_STARTUP_ERRORS) as e:

@@ -198,3 +198,65 @@ def test_since_bounded_backfill_keeps_pre_close(tmp_path):
     assert data[0][1] == 10.0
     assert data[1][1] == 10.5
 
+
+def test_full_second_run_skips_already_complete(tmp_path):
+    """全量二次执行：库内已覆盖源端首末日期时整只跳过，不再重扫。"""
+    _write_day_file(tmp_path, _RECORDS_V1 + [_RECORD_V2])
+    engine, session = _open(tmp_path)
+    try:
+        first = fill_stock_daily(_config(tmp_path), _DB(session), full=True)
+    finally:
+        session.close()
+
+    second_session = sessionmaker(bind=engine)()
+    try:
+        second = fill_stock_daily(
+            _config(tmp_path), _DB(second_session), full=True)
+        count = second_session.query(StockDaily).count()
+    finally:
+        second_session.close()
+        engine.dispose()
+
+    assert first['rows'] == 3
+    assert second['rows'] == 0
+    assert second['skipped_reasons']['already_complete'] == 1
+    assert count == 3
+
+
+def test_progress_file_records_done_codes_for_resume(tmp_path):
+    """进度文件按批写入已完成股票；续跑时直接跳过，不再重复读文件。"""
+    _write_day_file(tmp_path, _RECORDS_V1)
+    progress = tmp_path / 'stock_daily_progress.json'
+    engine, session = _open(tmp_path)
+    try:
+        fill_stock_daily(
+            _config(tmp_path), _DB(session), progress_path=progress)
+    finally:
+        session.close()
+
+    assert progress.exists()
+    second_session = sessionmaker(bind=engine)()
+    try:
+        summary = fill_stock_daily(
+            _config(tmp_path), _DB(second_session), progress_path=progress)
+    finally:
+        second_session.close()
+        engine.dispose()
+
+    assert summary['stocks_resumed'] == 1
+    assert summary['rows'] == 0
+
+
+def test_no_progress_file_written_when_path_omitted(tmp_path):
+    """未显式给进度路径时不落盘，避免测试/临时调用污染仓库目录。"""
+    _write_day_file(tmp_path, _RECORDS_V1)
+    engine, session = _open(tmp_path)
+    try:
+        summary = fill_stock_daily(_config(tmp_path), _DB(session), full=True)
+    finally:
+        session.close()
+        engine.dispose()
+
+    assert summary['progress_path'] == ''
+
+

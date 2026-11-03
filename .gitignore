@@ -133,3 +133,10 @@ reports/
 
 # 本地 Parquet 列存（行情/因子/分红，可由 CLI 重建，不入库）
 data/local_store/
+
+# 本地临时脚本与基准/调试产物（一次性，不入库）
+tmp/
+
+# 研究中间产物（可由 research/events 脚本重建，体积大）
+research/events/data/announcement_event_level_car.csv
+research/events/data/announcements_partial.parquet

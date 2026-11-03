@@ -37,11 +37,13 @@ _PRELOAD_CHUNK = 400
 _WRITE_CHUNK = 400
 
 
-def _existing_keys(session, model, rows, key_fields) -> set[tuple]:
+def _existing_keys(session, model, rows, key_fields,
+                   preload_chunk: int | None = None) -> set[tuple]:
     """一次性预加载所有主键已存在的键集合（仅用于统计 inserted/updated）。"""
     keys: set[tuple] = set()
     conditions = []
     seen = set()
+    chunk_size = preload_chunk or _PRELOAD_CHUNK
 
     for row in rows:
         key = tuple(row[field] for field in key_fields)
@@ -51,8 +53,8 @@ def _existing_keys(session, model, rows, key_fields) -> set[tuple]:
         conditions.append(and_(*[getattr(model, field) == row[field]
                                  for field in key_fields]))
 
-    for start in range(0, len(conditions), _PRELOAD_CHUNK):
-        chunk = conditions[start:start + _PRELOAD_CHUNK]
+    for start in range(0, len(conditions), chunk_size):
+        chunk = conditions[start:start + chunk_size]
         for obj in session.query(model).filter(or_(*chunk)).all():
             keys.add(tuple(getattr(obj, field) for field in key_fields))
     return keys
@@ -108,6 +110,8 @@ def upsert_rows(
     key_fields: Sequence[str],
     value_fields: Sequence[str] = (),
     create_defaults: Dict | None = None,
+    write_chunk: int | None = None,
+    preload_chunk: int | None = None,
 ) -> Tuple[int, int]:
     """
     按主键原子写入（存在则更新 value_fields，不存在则插入）。
@@ -119,6 +123,10 @@ def upsert_rows(
         key_fields: 唯一键字段名，如 ('ts_code', 'trade_date')
         value_fields: 冲突时需要更新的字段名
         create_defaults: 仅在插入时赋值的字段（如 frequency），默认不赋值
+        write_chunk: 单次 executemany 的行数上限；None 用模块默认 400
+        preload_chunk: 主键预加载单条 SQL 的条件数；None 用模块默认 400。
+            仅影响 inserted/updated 统计查询，不影响写入原子性；大批量
+            全量回补可调大以减少往返次数。
 
     Returns:
         Tuple[int, int]: (新增条数, 更新条数)
@@ -127,7 +135,7 @@ def upsert_rows(
     if not rows:
         return 0, 0
 
-    existing = _existing_keys(session, model, rows, key_fields)
+    existing = _existing_keys(session, model, rows, key_fields, preload_chunk)
     defaults = dict(create_defaults or {})
     payloads: Dict[tuple, Dict] = {}
     seen: set[tuple] = set()
@@ -154,8 +162,9 @@ def upsert_rows(
 
     dialect_name = session.get_bind().dialect.name
     values = list(payloads.values())
-    for start in range(0, len(values), _WRITE_CHUNK):
-        chunk = values[start:start + _WRITE_CHUNK]
+    chunk_size = write_chunk or _WRITE_CHUNK
+    for start in range(0, len(values), chunk_size):
+        chunk = values[start:start + chunk_size]
         # 显式 values（而非 ``execute(stmt, chunk)`` 的 executemany）：
         # MySQL 8 的 insertmanyvalues 在参数含 NULL 时会把对应列从 INSERT
         # 列表中剔除，导致 ON DUPLICATE KEY UPDATE 里 ``new.<col>`` 引用
