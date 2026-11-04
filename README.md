@@ -91,8 +91,8 @@ quant/
 ├── examples/
 │   └── quickstart.py            # 端到端样例：取数 → 因子 → 回测 → 报告
 ├── docs/                        # 架构文档 + 校准指南
-│   ├── architecture.md          # 模块依赖与数据流
-│   └── tdx_calibration_guide.md
+│   ├── 架构与数据流.md          # 模块依赖与数据流
+│   └── 通达信单股票校准指南.md
 │
 └── src/
     ├── main.py                  # 入口：启动 PySide6 主窗口 / 或仅跑数据初始化

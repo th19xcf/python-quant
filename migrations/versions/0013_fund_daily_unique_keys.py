@@ -4,7 +4,7 @@ Revision ID: 0013_fund_daily_unique_keys
 Revises: 0012_stock_adj_factor_unique
 Create Date: 2026-11-03
 
-依据 docs/fund_daily_constraints_review.md 的结论执行（核查时两表均为 0 行、
+依据 docs/基金日线唯一键与索引补齐评审.md 的结论执行（核查时两表均为 0 行、
 无业务唯一键、无二级索引）：
 - 唯一键 (ts_code, trade_date)：供 upsert_rows 的
   ON DUPLICATE KEY UPDATE / ON CONFLICT DO UPDATE 命中冲突分支；

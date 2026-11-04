@@ -8,22 +8,49 @@
 
 - :func:`is_known_anomaly` —— 判断 ``(ts_code, trade_date)`` 是否命中台账；
 - :func:`find_anomalies` —— 返回命中的全部记录（可带上下文）；
-- :func:`register_anomaly` —— 扩展接口，新增问题无需改巡检代码。
+- :func:`query_anomalies` —— 下游查询入口，返回命中条目 + 建议动作 + 证据出处；
+- :func:`register_anomaly` —— 扩展接口（幂等），新增问题无需改巡检代码。
 
-登记内容与来源依据均为静态事实，运行时不做任何网络/数据库访问。
+登记内容与来源依据均为静态事实，运行时不做任何网络/数据库访问；规则级
+登记只读取本地清单文件（``data/local_store/meta/anomalies/``），按 mtime 缓存。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from threading import RLock
-from typing import Iterable, Iterator
+from typing import Any, Iterable, Iterator
 
 from src.utils.code_converter import to_ts_code
 
-#: 处置建议：exclude=回测/取数应排除；flag=保留但在结果中标注；ignore=仅记录
-ANOMALY_ACTIONS = ('exclude', 'flag', 'ignore')
+#: 原始处置动作（向后兼容）：exclude=排除、flag=标注、ignore=仅记录；
+#: 统一词表：use=可直接用、avoid=不应使用、warn=可用但需标注
+ANOMALY_ACTIONS = ('exclude', 'flag', 'ignore', 'use', 'avoid', 'warn')
+
+#: 原始动作 → 下游三类建议（查询入口统一输出 use / avoid / warn）
+ACTION_ADVICE: dict[str, str] = {
+    'exclude': 'avoid', 'avoid': 'avoid',
+    'flag': 'warn', 'warn': 'warn',
+    'ignore': 'use', 'use': 'use',
+}
+_ADVICE_RANK = {'use': 0, 'warn': 1, 'avoid': 2}
+
+SEVERITY_LEVELS = ('low', 'medium', 'high', 'critical')
+_DEFAULT_SEVERITY = {
+    'exclude': 'high', 'avoid': 'high',
+    'flag': 'medium', 'warn': 'medium',
+    'ignore': 'low', 'use': 'low',
+}
+ANOMALY_SCOPES = ('code', 'rule', 'placeholder')
+ANOMALY_STATUSES = ('active', 'pending')
+
+#: 规则级登记的标的清单目录
+ANOMALY_LIST_DIR = (
+    Path(__file__).resolve().parents[3]
+    / 'data' / 'local_store' / 'meta' / 'anomalies'
+)
 
 
 def _as_date(value: object) -> date | None:
@@ -62,13 +89,62 @@ def _normalize_code(ts_code: str) -> str:
         return str(ts_code).strip().upper()
 
 
+#: 规则级清单缓存：list_ref -> (mtime_ns, {code: [(start, end), ...]})
+_LIST_CACHE: dict[
+    str, tuple[int, dict[str, list[tuple[date | None, date | None]]]]
+] = {}
+
+
+def _load_code_list(
+    list_ref: str,
+) -> dict[str, list[tuple[date | None, date | None]]]:
+    """读取规则级标的清单（CSV 或每行一个代码），按 mtime 缓存。
+
+    清单列约定：``ts_code,start,end``；``start/end`` 可空表示不限。同一标的
+    可有多行（多次事件），按区间列表保存。缺文件时返回空字典（规则不命中），
+    不让台账查询因清单缺失而报错。
+    """
+    path = ANOMALY_LIST_DIR / list_ref
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return {}
+    cached = _LIST_CACHE.get(list_ref)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    entries: dict[str, list[tuple[date | None, date | None]]] = {}
+    for raw in path.read_text('utf-8').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = [item.strip() for item in line.split(',')]
+        code = parts[0]
+        if code.lower() in ('ts_code', '代码'):
+            continue
+        start = _as_date(parts[1]) if len(parts) > 1 else None
+        end = _as_date(parts[2]) if len(parts) > 2 else None
+        entries.setdefault(_normalize_code(code), []).append((start, end))
+    _LIST_CACHE[list_ref] = (mtime, entries)
+    return entries
+
+
+
 @dataclass(frozen=True)
 class KnownAnomaly:
     """一条已知异常登记。
 
     ``dates`` 与 ``start/end`` 二选一：精确日期优先；区间适合"整段历史都
     受影响"的问题（如复权基期差）。``applies_to`` 用于限定上下文
-    （raw/local/factor/database），``any`` 表示不区分。
+    （raw/local/tdx/factor/legacy），``any`` 表示不区分。
+
+    ``scope``：
+    - ``code``：单标的问题，``ts_code`` 精确匹配；
+    - ``rule``：规则级问题，``ts_code`` 通常为 ``*``，实际标的来自
+      ``list_ref`` 指向的清单文件（支持逐标的发生区间）；
+    - ``placeholder``：占位项（``status='pending'``），不参与匹配。
+
+    ``severity`` 缺省时按 ``action`` 推导；``action`` 保留原始值，查询入口
+    统一归一化为 use / avoid / warn。
     """
 
     anomaly_id: str
@@ -81,21 +157,62 @@ class KnownAnomaly:
     start: date | None = None
     end: date | None = None
     applies_to: tuple[str, ...] = ('any',)
+    severity: str = ''
+    evidence: str = ''
+    detected_at: date | None = None
+    scope: str = 'code'
+    list_ref: str | None = None
+    status: str = 'active'
 
     def __post_init__(self) -> None:
         if self.action not in ANOMALY_ACTIONS:
             raise ValueError(f'未知处置动作 {self.action!r}，应为 {ANOMALY_ACTIONS}')
+        if self.scope not in ANOMALY_SCOPES:
+            raise ValueError(f'未知登记范围 {self.scope!r}，应为 {ANOMALY_SCOPES}')
+        if self.status not in ANOMALY_STATUSES:
+            raise ValueError(f'未知登记状态 {self.status!r}，应为 {ANOMALY_STATUSES}')
+        if self.severity and self.severity not in SEVERITY_LEVELS:
+            raise ValueError(f'未知严重级别 {self.severity!r}，应为 {SEVERITY_LEVELS}')
+        if self.scope == 'rule' and not self.list_ref:
+            raise ValueError('规则级登记必须提供 list_ref 清单文件')
+        if self.scope != 'rule' and self.list_ref:
+            raise ValueError('仅规则级登记可设置 list_ref')
+        object.__setattr__(
+            self, 'severity', self.severity or _DEFAULT_SEVERITY[self.action])
+        object.__setattr__(self, 'detected_at', _as_date(self.detected_at))
         object.__setattr__(self, 'ts_code', _normalize_code(self.ts_code))
         if self.dates:
             object.__setattr__(self, 'dates', tuple(sorted(set(self.dates))))
         object.__setattr__(self, 'applies_to', tuple(self.applies_to))
 
+    def _matches_rule(self, ts_code: str, trade_date: object) -> bool:
+        entries = _load_code_list(self.list_ref or '')
+        key = _normalize_code(ts_code)
+        if key not in entries:
+            return False
+        if trade_date is None:
+            return True
+        current = _as_date(trade_date)
+        if current is None:
+            return False
+        for item_start, item_end in entries[key]:
+            if item_start is not None and current < item_start:
+                continue
+            if item_end is not None and current > item_end:
+                continue
+            return True
+        return False
+
     def matches(self, ts_code: str, trade_date: object = None,
                 context: str | None = None) -> bool:
         """``(代码, 日期)`` 是否命中本条登记。"""
-        if _normalize_code(ts_code) != self.ts_code:
+        if self.status != 'active':
             return False
         if context and 'any' not in self.applies_to and context not in self.applies_to:
+            return False
+        if self.scope == 'rule':
+            return self._matches_rule(ts_code, trade_date)
+        if _normalize_code(ts_code) != self.ts_code:
             return False
         if trade_date is None:
             return True
@@ -109,18 +226,30 @@ class KnownAnomaly:
         return not (self.end is not None and current > self.end)
 
     def as_dict(self) -> dict[str, object]:
-        """可 JSON 化的记录。"""
+        """可 JSON 化的记录（``code`` 与 ``issue_type`` 同义）。"""
         return {
             'anomaly_id': self.anomaly_id,
             'ts_code': self.ts_code,
+            'code': self.issue_type,
             'issue_type': self.issue_type,
             'action': self.action,
+            'advice': ACTION_ADVICE[self.action],
+            'severity': self.severity,
             'reason': self.reason,
+            'evidence': self.evidence,
             'source': self.source,
+            'detected_at': str(self.detected_at) if self.detected_at else None,
             'dates': [str(d) for d in self.dates],
             'start': str(self.start) if self.start else None,
             'end': str(self.end) if self.end else None,
             'applies_to': list(self.applies_to),
+            'scope': self.scope,
+            'list_ref': self.list_ref,
+            'list_size': (
+                sum(len(items) for items in _load_code_list(self.list_ref).values())
+                if self.list_ref else 0
+            ),
+            'status': self.status,
         }
 
 
@@ -219,8 +348,13 @@ _BUILTIN_ANOMALIES: tuple[KnownAnomaly, ...] = (
         ts_code='000004.SZ',
         issue_type='hfq_base_shift',
         action='flag',
-        reason='后复权因子相对历史基准存在约 1.2 倍整体偏移；收益率与相对形态不受影响',
+        reason=('后复权因子（hfq）基期与同源算法差约 16.67%（qfq 相对差为 0）；'
+                '复权收益率不受影响，但 hfq 绝对价位不可跨源比较'),
         source='2026-11-03 stock_adj_factor 自洽性核查',
+        evidence=('logs/factor_audit_20261103_204206_333018_codes.csv'
+                  '#000004.SZ（max_rel_hfq=0.1667，max_rel_qfq=0.0）'),
+        detected_at=date(2026, 11, 3),
+        severity='low',
         start=date(1990, 1, 1),
         end=date(2026, 12, 31),
         applies_to=('factor',),
@@ -237,6 +371,142 @@ _BUILTIN_ANOMALIES: tuple[KnownAnomaly, ...] = (
         end=date(2021, 6, 22),
         applies_to=('legacy',),
     ),
+    KnownAnomaly(
+        anomaly_id='duplicate_ex_date_000002_sz',
+        ts_code='000002.SZ',
+        issue_type='duplicate_ex_date',
+        action='avoid',
+        reason=('1991-06-08 除权键重复 2 行（akshare_pg 配股 + mysql_remote 旧记录），'
+                '复权因子在该日被应用两次；该日复权价与收益率不可直接使用'),
+        source='2026-11-04 stock_dividend 快照核查（同代码同 ex_date 两行）',
+        evidence=('data/local_store/factors/stock_dividend.parquet'
+                  '#000002.SZ@1991-06-08（2 行）；logs/verification_20261104/'
+                  'verification_summary.json'),
+        detected_at=date(2026, 11, 4),
+        severity='high',
+        dates=(date(1991, 6, 8),),
+        applies_to=('factor',),
+    ),
+    KnownAnomaly(
+        anomaly_id='factor_tail_lag_rule',
+        ts_code='*',
+        issue_type='factor_tail_lag',
+        action='avoid',
+        reason=('因子快照末端落后行情末端（缺口内无除权事件）：按快照对齐时缺口日期缺行；'
+                '本规则覆盖因子末端 >= 2026-10-01 的 1,604 只标的，缺口区间逐只在清单中给出'),
+        source=('2026-11-04 验证线 market_scan 复算（factor_end_before_quote=1709，'
+                '其中 105 只历史性落后并入源端停更/历史缺口）'),
+        evidence=('logs/verification_20261104/market_scan.json'
+                  '#coverage.factor_end_before_quote（缺事件 codes_with_event_in_gap=0）；'
+                  '清单 data/local_store/meta/anomalies/factor_tail_lag_codes.csv'),
+        detected_at=date(2026, 11, 4),
+        severity='medium',
+        applies_to=('factor',),
+        scope='rule',
+        list_ref='factor_tail_lag_codes.csv',
+    ),
+    KnownAnomaly(
+        anomaly_id='no_local_quote_dividend_rule',
+        ts_code='*',
+        issue_type='no_local_quote',
+        action='avoid',
+        reason=('157 只标的（950 条历史除权事件）无本地行情：无法重建因子、无法回测；'
+                '这些标的的除权事件仅存在于分红快照'),
+        source='2026-11-04 验证线 market_scan（dividend_codes_without_quotes=157）',
+        evidence=('logs/verification_20261104/market_scan.json'
+                  '#coverage.dividend_codes_without_quotes 与 no_market_detail（157 只/950 条）；'
+                  '清单 data/local_store/meta/anomalies/no_local_quote_codes.csv'),
+        detected_at=date(2026, 11, 4),
+        severity='high',
+        applies_to=('local', 'factor'),
+        scope='rule',
+        list_ref='no_local_quote_codes.csv',
+    ),
+    KnownAnomaly(
+        anomaly_id='source_stale_rule',
+        ts_code='*',
+        issue_type='source_stale',
+        action='warn',
+        reason=('666 只标的源端停更（stock 241 / index 50 / fund 375）：本地末行日期之后'
+                '无数据，查询该日之后的记录应视为缺失；清单给出每只的停更起点'),
+        source='2026-11-04 本地列存 daily_index 复算 + logs/stale_symbols_20261103.csv',
+        evidence=('data/local_store/meta/daily_index.parquet#end；'
+                  'logs/stale_symbols_20261103.csv；'
+                  '清单 data/local_store/meta/anomalies/source_stale_codes.csv'),
+        detected_at=date(2026, 11, 4),
+        severity='medium',
+        applies_to=('local', 'factor'),
+        scope='rule',
+        list_ref='source_stale_codes.csv',
+    ),
+    KnownAnomaly(
+        anomaly_id='low_confidence_rights_issue_rule',
+        ts_code='*',
+        issue_type='low_confidence',
+        action='warn',
+        reason=('配股事件仅有同源复核，无独立第二源；参与复权的配股行置信度为 '
+                'low_confidence（置信度问题，不是缺陷）'),
+        source=('2026-11-04 跨源对拍覆盖核查：cross_source_detail.csv 仅覆盖纯现金/送转样本，'
+                '配股无外部源'),
+        evidence=('logs/verification_20261104/cross_source_detail.csv；'
+                  'data/local_store/factors/stock_dividend.parquet#rights_issue_*；'
+                  '清单 data/local_store/meta/anomalies/rights_issue_codes.csv'),
+        detected_at=date(2026, 11, 4),
+        severity='low',
+        applies_to=('factor',),
+        scope='rule',
+        list_ref='rights_issue_codes.csv',
+    ),
+    KnownAnomaly(
+        anomaly_id='placeholder_quote_rule',
+        ts_code='*',
+        issue_type='placeholder_quote',
+        action='avoid',
+        reason=(
+            '96 只基金行情为占位桩：84 只全序列 close 恒为 1.0，12 只尾部连续 '
+            '1.0（161907.SZ 2,881 行中末 13 行、160603.SZ/160605.SZ 各末 1,533 行）。'
+            '价格序列无意义，任何收益率都是假的，禁止进入回测与推荐；'
+            '不是数据缺失，是可判定坏数据（close 严格等于 1.0）。'
+            '因子非 1 时会在事件日产生因子驱动的假 pct_chg：'
+            '160217.SZ 4 行中 1 行 +40.68%（2019-09-17，qfq_factor 0.710852→1.0）；'
+            '查“单日涨幅异常”前必须先排除本规则标的，否则会捞出一批幽灵。'
+            '交叉核对：84 只中 24 只有分红事件（177 条），事件落在行情区间内 18 只'
+            '（148 条），6 只事件全在区间外；12 只尾占位中 9 只有分红'
+        ),
+        source=(
+            '2026-11-04 副本线占位行情清单 + 本地基金行情逐只复算'
+            '（logs/fund_placeholder_quotes_20261104.csv 84 行；'
+            'logs/fund_placeholder_tail_20261104.csv 96 行）'
+        ),
+        evidence=(
+            'logs/fund_placeholder_quotes_20261104.csv#84 只全序列 close==1.0；'
+            'logs/fund_placeholder_tail_20261104.csv#96 只含尾部占位（161907.SZ '
+            'rows=2881/trailing_ones=13/dividend_events=27）；'
+            'factor_non1_rows_in_range=行情区间内 qfq/hfq 任一非 1 的行数'
+            '（160217.SZ=4、160808.SZ=19）；'
+            'data/local_store/quotes/fund/sz/160217.SZ.parquet#2019-09-17 pct_chg=40.676318；'
+            '清单 data/local_store/meta/anomalies/placeholder_quote_codes.csv'
+        ),
+        detected_at=date(2026, 11, 4),
+        severity='high',
+        applies_to=('local', 'factor'),
+        scope='rule',
+        list_ref='placeholder_quote_codes.csv',
+    ),
+    KnownAnomaly(
+        anomaly_id='pending_fund_dividend_adjust',
+        ts_code='*',
+        issue_type='pending_etf_fund_dividend',
+        action='warn',
+        reason=('ETF/基金分红是否纳入复权：验证线核查中，结论未出前该占位项不参与匹配'),
+        source='2026-11-04 占位登记，等验证线结论后补登',
+        evidence='待补：验证线 ETF/基金分红复权核查报告',
+        detected_at=date(2026, 11, 4),
+        severity='medium',
+        applies_to=('factor',),
+        scope='placeholder',
+        status='pending',
+    ),
 )
 
 _REGISTRY: dict[str, KnownAnomaly] = {a.anomaly_id: a for a in _BUILTIN_ANOMALIES}
@@ -244,10 +514,17 @@ _LOCK = RLock()
 
 
 def register_anomaly(record: KnownAnomaly) -> KnownAnomaly:
-    """登记一条新异常（扩展接口）；重复 ID 直接报错，避免静默覆盖。"""
+    """登记一条新异常（扩展接口，幂等）。
+
+    同 ID 且内容完全相同的重复登记直接返回已有记录，不产生重复条目；
+    同 ID 但内容不同则报错，避免静默覆盖。
+    """
     with _LOCK:
-        if record.anomaly_id in _REGISTRY:
-            raise ValueError(f'异常 ID 已存在: {record.anomaly_id}')
+        existing = _REGISTRY.get(record.anomaly_id)
+        if existing is not None:
+            if existing == record:
+                return existing
+            raise ValueError(f'异常 ID 已存在且内容不同: {record.anomaly_id}')
         _REGISTRY[record.anomaly_id] = record
     return record
 
@@ -276,6 +553,48 @@ def is_known_anomaly(ts_code: str, trade_date: object = None,
 
 def anomaly_action(ts_code: str, trade_date: object = None,
                    context: str | None = None) -> str | None:
-    """返回首条命中登记的处置动作：exclude / flag / ignore / None。"""
+    """返回首条命中登记的处置动作：exclude / flag / ignore / use / avoid / warn。"""
     hits = find_anomalies(ts_code, trade_date, context)
     return hits[0].action if hits else None
+
+
+def query_anomalies(ts_code: str, trade_date: object = None,
+                    context: str | None = None) -> dict[str, Any]:
+    """下游查询入口：某标的/日期是否命中已知问题、建议动作与证据出处。
+
+    ``advice`` 统一归一化为 use / avoid / warn；多条命中取最严的一条
+    （avoid > warn > use）。无命中时 ``advice='use'``，表示无已知问题。
+    """
+    hits = find_anomalies(ts_code, trade_date, context)
+    advice = 'use'
+    for item in hits:
+        candidate = ACTION_ADVICE[item.action]
+        if _ADVICE_RANK[candidate] > _ADVICE_RANK[advice]:
+            advice = candidate
+    current = _as_date(trade_date)
+    return {
+        'ts_code': _normalize_code(ts_code),
+        'date': str(current) if current else None,
+        'context': context,
+        'known': bool(hits),
+        'hit_count': len(hits),
+        'advice': advice,
+        'hits': [
+            {
+                'anomaly_id': item.anomaly_id,
+                'code': item.issue_type,
+                'issue_type': item.issue_type,
+                'severity': item.severity,
+                'action': ACTION_ADVICE[item.action],
+                'raw_action': item.action,
+                'reason': item.reason,
+                'evidence': item.evidence,
+                'source': item.source,
+                'detected_at': str(item.detected_at) if item.detected_at else None,
+                'scope': item.scope,
+                'list_ref': item.list_ref,
+                'applies_to': list(item.applies_to),
+            }
+            for item in hits
+        ],
+    }

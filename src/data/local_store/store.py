@@ -15,6 +15,10 @@
 读取约定：
 - 行情文件按 ``date`` 升序，已含 ``pre_close/change/pct_chg`` 与
   ``qfq_factor/hfq_factor``，列名与 ``DataSourceBase._normalize_kline`` 一致；
+- 行情文件里的 ``qfq_factor/hfq_factor`` **只是构建时点的副本**，因子快照
+  ``factors/stock_adj_factor.parquet`` 才是唯一可信来源。读出口统一用快照
+  覆盖副本（asof 前向填充 + 1.0 兜底），避免因子重建早于/晚于行情构建时
+  出现「存的是一套、用的是另一套」；
 - ``LocalQuoteStore.read_daily`` 只做区间切片，不做复权计算（复权由
   ``DataFetcher._apply_adjustment`` 在出口统一完成），保证与旧路径逐值一致；
 - 覆盖度元数据单独存放，避免每次读单票都要打开 5,800 个文件。
@@ -26,11 +30,12 @@ import contextlib
 import json
 import os
 import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Iterable
 
 import polars as pl
 from loguru import logger
@@ -136,12 +141,22 @@ class Coverage:
 class LocalQuoteStore:
     """日线行情本地列存（读写）。"""
 
-    def __init__(self, root: Path | str, enabled: bool = True) -> None:
+    def __init__(self, root: Path | str, enabled: bool = True,
+                 factor_store: LocalFactorStore | None = None) -> None:
         self.root = Path(root)
         self.enabled = bool(enabled)
+        # 因子快照才是复权口径的唯一可信来源；行情文件里的 qfq/hfq 只是
+        # 构建时点的副本。未显式注入时按同一根目录惰性创建。
+        self.factor_store = factor_store
         self._meta: Dict[tuple[str, str], dict[str, Any]] = {}
         self._meta_mtime: int | None = None
         self._lock = threading.RLock()
+
+    def factor_snapshot_store(self) -> LocalFactorStore:
+        """返回因子快照读取器（未注入时按同一根目录惰性创建）。"""
+        if self.factor_store is None:
+            self.factor_store = LocalFactorStore(self.root, enabled=self.enabled)
+        return self.factor_store
 
     # ------------------------------------------------------------------
     # 路径
@@ -359,14 +374,23 @@ class LocalQuoteStore:
             frame = frame.filter(pl.col('date') >= start_dt)
         if end_dt is not None:
             frame = frame.filter(pl.col('date') <= end_dt)
-        return frame
+        return _overlay_factor_snapshot(frame, ts_code, self.factor_snapshot_store())
 
-    def read_file(self, data_type: str, ts_code: str) -> pl.DataFrame | None:
-        """直接读整份存量文件（不做覆盖度判断，供增量合并使用）。"""
+    def read_file(self, data_type: str, ts_code: str,
+                  with_factors: bool = False) -> pl.DataFrame | None:
+        """直接读整份存量文件（不做覆盖度判断，供增量合并使用）。
+
+        ``with_factors=True`` 时用因子快照覆盖内嵌副本；纯扫描场景（流动性
+        筛选、日期序列、增量合并比对）保持默认 False，避免为每只标的都做
+        一次因子查询。
+        """
         path = self.quote_path(data_type, ts_code)
         if not path.exists():
             return None
-        return pl.read_parquet(path)
+        frame = pl.read_parquet(path)
+        if not with_factors:
+            return frame
+        return _overlay_factor_snapshot(frame, ts_code, self.factor_snapshot_store())
 
     def read_daily_batch(self, data_type: str, codes: list[str], start: Any, end: Any,
                          frequency: str = '1d') -> dict[str, pl.DataFrame]:
@@ -471,10 +495,18 @@ class LocalFactorStore:
         self.enabled = bool(enabled)
         self._factor_path = self.root / 'factors' / 'stock_adj_factor.parquet'
         self._dividend_path = self.root / 'factors' / 'stock_dividend.parquet'
+        # 基金事件与因子单独成表（语义与个股不同，维护链路也不同）；
+        # 读侧按代码回退到这两个文件，避免把基金混入个股 covered_codes 语义。
+        self._fund_factor_path = self.root / 'factors' / 'fund_adj_factor.parquet'
+        self._fund_dividend_path = self.root / 'factors' / 'fund_dividend.parquet'
         self._factor_cache: OrderedDict[str, pl.DataFrame | None] = OrderedDict()
         self._factor_lazy: pl.LazyFrame | None = None
         self._factor_file_mtime: int | None = None
+        self._fund_factor_cache: OrderedDict[str, pl.DataFrame | None] = OrderedDict()
+        self._fund_factor_lazy: pl.LazyFrame | None = None
+        self._fund_factor_file_mtime: int | None = None
         self._dividend_rows: dict[str, pl.DataFrame] | None = None
+        self._fund_dividend_rows: dict[str, pl.DataFrame] | None = None
         self._lock = threading.RLock()
 
     @property
@@ -487,9 +519,15 @@ class LocalFactorStore:
         """分红快照文件路径。"""
         return self._dividend_path
 
+    @property
+    def fund_factor_path(self) -> Path:
+        """基金因子快照文件路径（与个股因子分表存放）。"""
+        return self._fund_factor_path
+
     def available(self) -> bool:
         return self.enabled and (
-            self._factor_path.exists() or self._dividend_path.exists())
+            self._factor_path.exists() or self._dividend_path.exists()
+            or self._fund_factor_path.exists() or self._fund_dividend_path.exists())
 
     def _partition(self, path: Path, key: str) -> dict[str, pl.DataFrame]:
         if not path.exists():
@@ -504,6 +542,13 @@ class LocalFactorStore:
             if self._dividend_rows is None:
                 self._dividend_rows = self._partition(self._dividend_path, 'ts_code')
             return self._dividend_rows
+
+    def _load_fund_dividends(self) -> dict[str, pl.DataFrame]:
+        with self._lock:
+            if self._fund_dividend_rows is None:
+                self._fund_dividend_rows = self._partition(
+                    self._fund_dividend_path, 'ts_code')
+            return self._fund_dividend_rows
 
     def _factor_frame(self, ts_code: str) -> pl.DataFrame | None:
         """按代码读取因子片段（LRU 缓存；快照文件被重建后自动失效）。"""
@@ -541,16 +586,63 @@ class LocalFactorStore:
         return result
 
     def factors(self, ts_code: str) -> pl.DataFrame | None:
-        """返回单标的复权因子（trade_date/qfq_factor/hfq_factor）。"""
+        """返回单标的复权因子（trade_date/qfq_factor/hfq_factor）。
+
+        个股/指数走 ``stock_adj_factor.parquet``；该文件中没有的代码再回退到
+        ``fund_adj_factor.parquet``（基金与个股共用同一口径的因子列）。
+        """
         if not self.enabled:
             return None
-        return self._factor_frame(ts_code)
+        result = self._factor_frame(ts_code)
+        if result is None:
+            result = self._fund_factor_frame(ts_code)
+        return result
+
+    def _fund_factor_frame(self, ts_code: str) -> pl.DataFrame | None:
+        """按代码读取基金因子片段（LRU 缓存；文件重建后自动失效）。"""
+        path = self._fund_factor_path
+        if not path.exists():
+            return None
+        try:
+            file_mtime = path.stat().st_mtime_ns
+        except OSError:
+            return None
+        with self._lock:
+            if self._fund_factor_file_mtime != file_mtime:
+                self._fund_factor_cache.clear()
+                self._fund_factor_lazy = pl.scan_parquet(str(path))
+                self._fund_factor_file_mtime = file_mtime
+            if ts_code in self._fund_factor_cache:
+                self._fund_factor_cache.move_to_end(ts_code)
+                return self._fund_factor_cache[ts_code]
+            lazy = self._fund_factor_lazy
+
+        if lazy is None:
+            return None
+        frame = lazy.filter(pl.col('ts_code') == ts_code).collect()
+        result: pl.DataFrame | None
+        if frame.is_empty():
+            result = None
+        else:
+            cols = [c for c in self._FACTOR_COLUMNS if c in frame.columns]
+            result = frame.select(cols).sort('trade_date')
+
+        with self._lock:
+            self._fund_factor_cache[ts_code] = result
+            while len(self._fund_factor_cache) > _FACTOR_LRU_MAX:
+                self._fund_factor_cache.popitem(last=False)
+        return result
 
     def dividends(self, ts_code: str) -> pl.DataFrame | None:
-        """返回单标的分红记录（列与 ``stock_dividend`` 表一致）。"""
+        """返回单标的分红记录（列与 ``stock_dividend`` 表一致）。
+
+        基金代码在个股分红快照中没有记录时，回退到 ``fund_dividend.parquet``。
+        """
         if not self.enabled:
             return None
         frame = self._load_dividends().get(ts_code)
+        if frame is None or frame.is_empty():
+            frame = self._load_fund_dividends().get(ts_code)
         if frame is None or frame.is_empty():
             return None
         return frame
@@ -565,6 +657,203 @@ class LocalFactorStore:
             return {}
 
 
+def _mtime_ns(path: Path) -> int | None:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def _overlay_factor_snapshot(
+    frame: pl.DataFrame, ts_code: str, factor_store: LocalFactorStore | None,
+) -> pl.DataFrame:
+    """用因子快照覆盖行情内嵌的 ``qfq_factor/hfq_factor`` 副本。
+
+    口径与 ``build_frame`` 完全一致：按日期左连接快照 → 前向填充 → 1.0 兜底。
+    行情副本只是构建时点的快照；因子重建一旦晚于行情构建，副本就会过期，
+    直接把副本当复权因子会把未复权价当复权价返回。
+    """
+    if frame.is_empty() or 'date' not in frame.columns:
+        return frame
+    if 'qfq_factor' not in frame.columns and 'hfq_factor' not in frame.columns:
+        return frame
+    if factor_store is None or not factor_store.enabled:
+        return frame
+    snapshot = factor_store.factors(ts_code)
+    if snapshot is None or snapshot.is_empty():
+        return frame
+
+    snap = snapshot.rename({
+        'trade_date': 'date',
+        'qfq_factor': '_qfq_snapshot',
+        'hfq_factor': '_hfq_snapshot',
+    }).select(['date', '_qfq_snapshot', '_hfq_snapshot']).sort('date')
+    merged = frame.sort('date').join_asof(snap, on='date', strategy='backward')
+    exprs: list[pl.Expr] = []
+    if 'qfq_factor' in frame.columns:
+        exprs.append(pl.col('_qfq_snapshot').fill_null(1.0)
+                     .cast(pl.Float64).alias('qfq_factor'))
+    if 'hfq_factor' in frame.columns:
+        exprs.append(pl.col('_hfq_snapshot').fill_null(1.0)
+                     .cast(pl.Float64).alias('hfq_factor'))
+    return merged.with_columns(exprs).select(frame.columns)
+
+
+def _recompute_derived_columns(frame: pl.DataFrame) -> pl.DataFrame:
+    """按新 qfq_factor 重算 ``pre_close/change/pct_chg``（与 ``build_frame`` 同式）。
+
+    调用方必须保证 ``frame`` 已按 ``date`` 升序；仅用于整文件重建，
+    读取侧切片后的首行没有前一日，重算会把 pre_close 置空，故不在读路径使用。
+    """
+    if not {'close', 'qfq_factor', 'pre_close', 'change', 'pct_chg'} <= set(frame.columns):
+        return frame
+    qfq = pl.col('qfq_factor').cast(pl.Float64)
+    pre_close = pl.col('close').shift(1) * (qfq.shift(1) / qfq)
+    return frame.with_columns([
+        pre_close.alias('pre_close'),
+        (pl.col('close') - pre_close).alias('change'),
+        pl.when(pre_close.is_not_null() & (pre_close != 0))
+        .then((pl.col('close') / pre_close - 1) * 100)
+        .otherwise(None).alias('pct_chg'),
+    ])
+
+
+def refresh_quote_factor_columns(
+    quote_store: LocalQuoteStore,
+    factor_store: LocalFactorStore,
+    *,
+    codes: Iterable[str] | None = None,
+    kind: str = 'stock',
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """把行情 parquet 内嵌的因子副本对齐到因子快照（原子重写单文件）。
+
+    因子快照重建后必须调用本函数，否则行情副本会一直停在旧口径。
+    返回统计信息；``dry_run=True`` 只统计需要重写多少只/多少行。
+    """
+    started = time.perf_counter()
+    targets = list(codes) if codes is not None else quote_store.codes(kind)
+    watched_paths = (factor_store.factor_path, factor_store.fund_factor_path)
+    factor_mtime = tuple(_mtime_ns(path) for path in watched_paths)
+    changed_codes: list[str] = []
+    changed_rows = 0
+    missing = 0
+    unchanged = 0
+    no_factor_cols = 0
+
+    for code in targets:
+        if not code:
+            continue
+        frame = quote_store.read_file(kind, code)
+        if frame is None or frame.is_empty():
+            missing += 1
+            continue
+        if 'qfq_factor' not in frame.columns and 'hfq_factor' not in frame.columns:
+            no_factor_cols += 1
+            continue
+        fixed = _overlay_factor_snapshot(frame, code, factor_store)
+        diff_rows = 0
+        for col in ('qfq_factor', 'hfq_factor'):
+            if col in frame.columns and col in fixed.columns:
+                diff_rows += int((fixed[col] != frame[col]).sum())
+        if diff_rows == 0:
+            unchanged += 1
+            continue
+        changed_codes.append(code)
+        changed_rows += diff_rows
+        if dry_run:
+            continue
+        fixed = _recompute_derived_columns(fixed.sort('date'))
+        cov = quote_store.coverage(kind, code)
+        quote_store.write_daily(
+            kind, code, fixed,
+            full=cov.full if cov is not None else True,
+            source_mtime_ns=cov.source_mtime_ns if cov is not None else None)
+
+    if not dry_run and changed_codes:
+        quote_store.flush_meta()
+    current_mtime = tuple(_mtime_ns(path) for path in watched_paths)
+    if factor_mtime != current_mtime:
+        logger.warning(
+            '[local-store] 因子快照在同步过程中被重建，副本可能仍落后，请重跑本步骤')
+
+    stats = {
+        'kind': kind,
+        'targets': len(targets),
+        'changed_codes': len(changed_codes),
+        'changed_rows': changed_rows,
+        'unchanged_codes': unchanged,
+        'missing_codes': missing,
+        'no_factor_columns': no_factor_cols,
+        'dry_run': dry_run,
+        'elapsed_s': round(time.perf_counter() - started, 3),
+    }
+    logger.info(
+        f'[local-store] 行情因子副本同步{"（dry-run）" if dry_run else ""}：'
+        f'重写 {stats["changed_codes"]} 只 / {changed_rows:,} 行，'
+        f'已一致 {unchanged} 只，耗时 {stats["elapsed_s"]}s')
+    return stats
+
+
+def verify_quote_factor_consistency(
+    quote_store: LocalQuoteStore,
+    factor_store: LocalFactorStore,
+    *,
+    kinds: tuple[str, ...] = ('stock', 'index', 'fund'),
+    tolerance: float = 1e-12,
+) -> dict[str, Any]:
+    """全量核对行情副本 vs 因子快照，返回按类型的差异统计。
+
+    以快照为基准做 asof 前向填充 + 1.0 兜底，逐行比对 ``qfq_factor`` 与
+    ``hfq_factor``；个股/指数以 ``stock_adj_factor.parquet`` 为基准，基金以
+    ``fund_adj_factor.parquet`` 为基准（两表代码不重叠，合并后统一查询）。
+    任何一只出现偏差都计入 ``mismatch_codes``。
+    """
+    factor_path = factor_store.factor_path
+    fund_factor_path = factor_store.fund_factor_path
+    parts: list[pl.DataFrame] = []
+    for path in (factor_path, fund_factor_path):
+        if path.exists():
+            parts.append(pl.read_parquet(
+                path, columns=['ts_code', 'trade_date', 'qfq_factor', 'hfq_factor']))
+    if not parts:
+        return {'error': f'因子快照不存在: {factor_path} / {fund_factor_path}'}
+    snapshot = pl.concat(parts, how='vertical_relaxed').unique(
+        subset=['ts_code', 'trade_date'], keep='last').sort(['ts_code', 'trade_date'])
+
+    result: dict[str, Any] = {}
+    for kind in kinds:
+        files = sorted((quote_store.root / 'quotes' / kind).rglob('*.parquet'))
+        if not files:
+            result[kind] = {'files': 0, 'rows': 0, 'mismatch_codes': 0,
+                            'mismatch_rows': 0}
+            continue
+        quotes = pl.scan_parquet([str(p) for p in files]).select(
+            ['ts_code', 'date', 'qfq_factor', 'hfq_factor']).collect().sort(
+            ['ts_code', 'date'])
+        joined = quotes.join_asof(
+            snapshot, left_on='date', right_on='trade_date',
+            by='ts_code', strategy='backward')
+        bad_q = (pl.col('qfq_factor') - pl.col('qfq_factor_right').fill_null(1.0)).abs() > (
+            tolerance * pl.col('qfq_factor_right').fill_null(1.0).abs().clip(1e-300))
+        bad_h = (pl.col('hfq_factor') - pl.col('hfq_factor_right').fill_null(1.0)).abs() > (
+            tolerance * pl.col('hfq_factor_right').fill_null(1.0).abs().clip(1e-300))
+        agg = joined.group_by('ts_code').agg([
+            (bad_q | bad_h).sum().alias('bad_rows'),
+            pl.len().alias('rows'),
+        ])
+        bad = agg.filter(pl.col('bad_rows') > 0)
+        result[kind] = {
+            'files': len(files),
+            'rows': int(quotes.height),
+            'codes': int(agg.height),
+            'mismatch_codes': int(bad.height),
+            'mismatch_rows': int(agg['bad_rows'].sum()),
+            'sample_codes': bad.sort('bad_rows', descending=True)['ts_code'].head(20).to_list(),
+        }
+    return result
+
+
 def get_local_quote_store(config: Any) -> LocalQuoteStore:
     """进程内单例：按根目录与开关缓存。"""
     root = resolve_store_root(config)
@@ -572,7 +861,9 @@ def get_local_quote_store(config: Any) -> LocalQuoteStore:
     with _LOCK:
         store = _QUOTE_STORE_CACHE.get(key)
         if store is None:
-            store = LocalQuoteStore(root, enabled=local_store_enabled(config))
+            store = LocalQuoteStore(
+                root, enabled=local_store_enabled(config),
+                factor_store=get_local_factor_store(config))
             _QUOTE_STORE_CACHE[key] = store
         return store
 

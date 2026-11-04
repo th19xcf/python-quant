@@ -1,0 +1,1280 @@
+#!/usr/bin/env python3
+
+"""按日期求值的洁净集准入闸门（替代静态白名单）。
+
+设计要点
+--------
+1. **判定按日期实时求值**：``eligible(ts_code, date)`` 回答的是"该标的在
+   ``date`` 当天是否有可用数据、是否命中当日 ST"，而不是"该标的是否曾经
+   出过问题"。2019 年停更的标的在 2018 年仍然可用，不会被提前剔除。
+2. **缺陷分两类**：
+   - 结构性缺陷（永久）：无本地行情文件、内容不一致、重复除权键、
+     复权因子缺失/不可逆。这类缺陷与日期无关。
+   - 时效性缺陷（按日）：源端停更、因子末端落后、停牌/缺口。只在
+     ``date`` 落入缺陷区间时剔除。
+3. **ST 按区间判定**：``meta/st/st_intervals.parquet`` 覆盖的区间命中当天
+   即不可选；区间结束（摘帽）后自动回归。区间表未覆盖的日期返回
+   ``unknown``，默认放行并标记 pending，不编造历史状态。
+4. 三档视图：
+   - ``full``      ：当天有行情的全部标的，不做质量/ST过滤；
+   - ``standard``  ：剔除结构性缺陷 + 当日 ST，容忍因子末端落后与历史缺口；
+   - ``strict``    ：在 standard 之上再要求当日因子可用，并剔除除权事件存疑
+                     （配股无第二源、跳变/事件不匹配、因子台账标记）。
+5. 本模块只读本地列存，产出写入 ``meta/clean/``，幂等可重跑。
+
+读侧用法::
+
+    from src.data.quality.clean_set import eligible, eligible_set
+
+    ok, reasons = eligible('600000.SH', '2026-11-03', tier='strict')
+    codes = eligible_set('2026-11-03', tier='strict', data_type='stock')
+
+    # 回测主循环：每个交易日取一次当日严格池
+    for d in trading_dates:
+        pool = eligible_set(d, tier='strict', data_type='stock')
+
+首次调用会构建行情/因子日期索引（约 30-60 秒），之后同一进程内查询为
+毫秒级。快照文件仅供查看，**不要**把 2026 年的快照当作历史某日的名单。
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import os
+import sys
+import threading
+from bisect import bisect_left, bisect_right
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, Iterable, Literal
+
+import numpy as np
+import polars as pl
+from loguru import logger
+
+from src.data.quality.anomalies import iter_anomalies
+from src.utils.code_converter import is_fund_code, is_index_code
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_ROOT = PROJECT_ROOT / 'data' / 'local_store'
+
+ViewTier = Literal['full', 'standard', 'strict']
+VIEWS: tuple[ViewTier, ...] = ('full', 'standard', 'strict')
+VS_FULL_VIEWS: tuple[ViewTier, ...] = ('standard', 'strict')
+DATA_TYPES: tuple[str, ...] = ('stock', 'index', 'fund')
+
+#: 横截面打分的可用下限：10 分组每组约 30 只；低于 300 只时分组内样本过少，
+#: 因子 IC / 分层收益的置信区间会显著变宽。该值可按研究口径调整。
+MIN_CROSS_SECTION = 300
+
+#: 月末采样中连续满足下限的月数
+MIN_STREAK_MONTHS = 12
+
+
+# ----------------------------------------------------------------------
+# 原因词表（结构化 / 时效性 / ST / pending）
+# ----------------------------------------------------------------------
+STRUCTURAL_REASONS: dict[str, str] = {
+    'structural_no_local_quote': '无本地行情文件',
+    'structural_content_inconsistent': '行情内容不一致（OHLC/重复日期/元数据不符）',
+    'structural_duplicate_exdiv_key': '除权键重复（同代码同 ex_date 多行）',
+    'structural_factor_bad': '复权因子缺失或非法值',
+    'structural_factor_irreversible': '复权因子不可逆（qfq/hfq 比例失配）',
+    'structural_event_jump_mismatch': '除权事件与因子跳变不一一对应',
+    'structural_rights_no_second_source': '配股事件无独立第二源（strict 口径）',
+    'structural_factor_base_shift': '后复权基期偏移台账标记（strict 口径）',
+    'structural_date_anomaly': '当日命中已知源端异常行',
+}
+
+TEMPORAL_REASONS: dict[str, str] = {
+    'temporal_not_listed': '当日尚未上市',
+    'temporal_no_quote_on_date': '当日无行情行（停牌/缺口）',
+    'temporal_source_stopped': '当日已超过本地行情末行（源端停更/退市）',
+    'temporal_gap_or_suspension': '当日处于上市区间但无行情行（停牌/缺口）',
+    'temporal_factor_tail': '当日超过复权因子末端',
+}
+
+ST_REASONS: dict[str, str] = {
+    'st_confirmed': '当日处于确证 ST/*ST 区间',
+    'st_suspected': '当日命中疑似 ST 标记（默认不参与 strict）',
+}
+
+PENDING_REASONS: dict[str, str] = {
+    'pending_fund_dividend': 'ETF/基金分红是否纳入复权尚未结论',
+    'pending_st_history': 'ST 区间表未覆盖该日期',
+}
+
+REASON_CATEGORY: dict[str, str] = {
+    **dict.fromkeys(STRUCTURAL_REASONS, 'structural'),
+    **dict.fromkeys(TEMPORAL_REASONS, 'temporal'),
+    **dict.fromkeys(ST_REASONS, 'st'),
+    **dict.fromkeys(PENDING_REASONS, 'pending'),
+}
+
+LAYER_LABELS = {
+    'data_defect': '数据缺陷层',
+    'st': 'ST 层',
+    'div_doubt': '除权事件存疑层',
+    'pending': '除权口径 pending（基金）',
+    'remaining': '剩余层',
+}
+
+
+def _as_date(value: Any) -> date:
+    """把 str/date/datetime/ordinal 统一成 ``date``。"""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return date.fromordinal(value)
+    text = str(value).strip()
+    for fmt in ('%Y-%m-%d', '%Y%m%d'):
+        with contextlib.suppress(ValueError):
+            return datetime.strptime(text[:10] if '-' in text else text, fmt).date()
+    raise ValueError(f'无法解析日期: {value!r}')
+
+
+def _ord(value: date | None) -> int | None:
+    return value.toordinal() if value is not None else None
+
+
+def _code_type(ts_code: str) -> str:
+    """按代码段推断类型；仅用于台账里没有类型字段的补充清单。"""
+    if is_index_code(ts_code):
+        return 'index'
+    if is_fund_code(ts_code):
+        return 'fund'
+    return 'stock'
+
+
+@dataclass
+class CodeInfo:
+    ts_code: str
+    data_type: str
+    rows: int
+    start: date | None
+    end: date | None
+    market: str = ''
+    start_ord: int | None = None
+    end_ord: int | None = None
+    gaps: int = 0
+    invalid_ohlc: int = 0
+    null_close: int = 0
+    neg_values: int = 0
+    dup_dates: int = 0
+    meta_bad: bool = False
+    quote_dates: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.int64))
+    factor_dates: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.int64))
+    factor_rows: int = 0
+    factor_start: date | None = None
+    factor_end: date | None = None
+    factor_bad: int = 0
+    factor_ratio_dev: float = 0.0
+    structural: list[str] = field(default_factory=list)
+    strict_static: list[str] = field(default_factory=list)
+    stale_start: int | None = None
+    factor_tail_start: int | None = None
+    rights_start: int | None = None
+    mismatch_start: int | None = None
+    st_intervals: list[tuple[int, int]] = field(default_factory=list)
+    st_coverage: tuple[int, int] | None = None
+    suspected_st: bool = False
+    date_excl_standard: set[int] = field(default_factory=set)
+    date_excl_strict: set[int] = field(default_factory=set)
+
+
+class EligibilityEngine:
+    """加载本地列存索引，按日期回答准入问题。"""
+
+    def __init__(
+        self,
+        root: str | Path | None = None,
+        *,
+        target_date: str | date | None = None,
+        exclude_st: bool = True,
+        include_suspected_st: bool = False,
+    ) -> None:
+        self.root = Path(root) if root else DEFAULT_ROOT
+        self.exclude_st = exclude_st
+        self.include_suspected_st = include_suspected_st
+        self.codes: dict[str, CodeInfo] = {}
+        self.calendar: list[date] = []
+        self.calendar_ord = np.array([], dtype=np.int64)
+        self.as_of: date | None = _as_date(target_date) if target_date else None
+        self._load_meta()
+        self._load_calendar()
+        self._load_quote_stats()
+        self._load_factor_stats()
+        self._load_dividend_flags()
+        self._load_anomaly_lists()
+        self._load_anomaly_records()
+        self._load_st()
+        self._finalize_structural()
+        if self.as_of is None:
+            self.as_of = self.calendar[-1]
+        logger.debug(
+            f'准入索引就绪: {len(self.codes)} 只, '
+            f'日历 {self.calendar[0]} ~ {self.calendar[-1]}, as_of={self.as_of}'
+        )
+
+    # ------------------------------------------------------------------
+    # 加载
+    # ------------------------------------------------------------------
+    @property
+    def as_of_date(self) -> date:
+        """已初始化的 as_of 日期；索引构建完成后必然存在。"""
+        if self.as_of is None:
+            raise RuntimeError('as_of 尚未初始化')
+        return self.as_of
+
+    def _load_meta(self) -> None:
+        meta = pl.read_parquet(self.root / 'meta/daily_index.parquet')
+        for row in meta.iter_rows(named=True):
+            code = str(row['ts_code'])
+            info = CodeInfo(
+                ts_code=code,
+                data_type=str(row['data_type']),
+                rows=int(row['rows']),
+                start=row['start'],
+                end=row['end'],
+                market=str(row['market']),
+            )
+            info.start_ord = _ord(info.start)
+            info.end_ord = _ord(info.end)
+            self.codes[code] = info
+
+    def _load_calendar(self) -> None:
+        cal = pl.read_parquet(
+            self.root / 'quotes/index/sh/000001.SH.parquet', columns=['date']
+        )['date'].unique().sort()
+        self.calendar = [d for d in cal.to_list() if d is not None]
+        self.calendar_ord = np.array([d.toordinal() for d in self.calendar], dtype=np.int64)
+
+    def _load_quote_stats(self) -> None:
+        glob = str(self.root / 'quotes' / '**' / '*.parquet')
+        scan = pl.scan_parquet(glob).select(
+            ['ts_code', 'date', 'open', 'high', 'low', 'close', 'volume']
+        )
+        null_any = (
+            pl.col('open').is_null() | pl.col('high').is_null()
+            | pl.col('low').is_null() | pl.col('close').is_null()
+        )
+        bad = (
+            null_any
+            | (pl.col('high') < pl.col('low'))
+            | (pl.col('high') < pl.max_horizontal('open', 'close'))
+            | (pl.col('low') > pl.min_horizontal('open', 'close'))
+        ).fill_null(False)
+        neg = (
+            (pl.col('close') <= 0) | (pl.col('volume') < 0)
+        ).fill_null(False)
+        stats = (
+            scan.with_columns(
+                bad.alias('bad'),
+                pl.col('close').is_null().alias('null_close'),
+                neg.alias('neg'),
+            )
+            .group_by('ts_code')
+            .agg(
+                pl.len().alias('rows'),
+                pl.col('date').min().alias('start'),
+                pl.col('date').max().alias('end'),
+                pl.col('bad').sum().alias('bad'),
+                pl.col('null_close').sum().alias('null_close'),
+                pl.col('neg').sum().alias('neg'),
+            )
+            .collect()
+        )
+        dups = (
+            scan.group_by(['ts_code', 'date']).len()
+            .filter(pl.col('len') > 1)
+            .group_by('ts_code').agg(pl.len().alias('dup_dates'))
+            .collect()
+        )
+        dup_map = dict(
+            zip(dups['ts_code'].to_list(), dups['dup_dates'].to_list(), strict=True)
+        )
+        for row in stats.iter_rows(named=True):
+            code = str(row['ts_code'])
+            info = self.codes.get(code)
+            if info is None:
+                continue
+            info.invalid_ohlc = int(row['bad'])
+            info.null_close = int(row['null_close'])
+            info.neg_values = int(row['neg'])
+            info.dup_dates = int(dup_map.get(code, 0))
+            info.meta_bad = (
+                int(row['rows']) != info.rows
+                or row['start'] != info.start
+                or row['end'] != info.end
+            )
+        # 读取每只标的的日期索引（一次性扫描，避免 9600 次 open）
+        dates = scan.select(['ts_code', 'date']).collect().sort(['ts_code', 'date'])
+        for g in dates.partition_by('ts_code', maintain_order=True):
+            code = str(g['ts_code'][0])
+            info = self.codes.get(code)
+            if info is None:
+                continue
+            info.quote_dates = np.array(
+                [d.toordinal() for d in g['date'].to_list()], dtype=np.int64
+            )
+        # 缺口率：上市区间内应有交易日 - 实际行数（停牌也计入缺口）
+        for info in self.codes.values():
+            if not info.quote_dates.size or info.start_ord is None:
+                continue
+            lo = bisect_left(self.calendar_ord, info.start_ord)
+            hi = bisect_right(self.calendar_ord, info.end_ord)
+            expected = max(0, hi - lo)
+            info.gaps = max(0, expected - int(info.quote_dates.size))
+
+    def _load_factor_stats(self) -> None:
+        path = self.root / 'factors/stock_adj_factor.parquet'
+        if not path.exists():
+            return
+        scan = pl.scan_parquet(path).select(
+            ['ts_code', 'trade_date', 'qfq_factor', 'hfq_factor']
+        )
+        bad_q = (
+            pl.col('qfq_factor').is_null() | pl.col('qfq_factor').is_nan()
+            | (pl.col('qfq_factor') <= 0)
+        ).fill_null(False)
+        bad_h = (
+            pl.col('hfq_factor').is_null() | pl.col('hfq_factor').is_nan()
+            | (pl.col('hfq_factor') <= 0)
+        ).fill_null(False)
+        fstats = (
+            scan.with_columns(
+                (bad_q | bad_h).alias('bad'),
+                (pl.col('hfq_factor') / pl.col('qfq_factor')).alias('ratio'),
+            )
+            .group_by('ts_code')
+            .agg(
+                pl.len().alias('f_rows'),
+                pl.col('trade_date').min().alias('f_start'),
+                pl.col('trade_date').max().alias('f_end'),
+                pl.col('bad').sum().alias('bad'),
+                pl.col('ratio').min().alias('r_min'),
+                pl.col('ratio').max().alias('r_max'),
+            )
+            .collect()
+        )
+        for row in fstats.iter_rows(named=True):
+            info = self.codes.get(str(row['ts_code']))
+            if info is None:
+                continue
+            info.factor_rows = int(row['f_rows'])
+            info.factor_start = row['f_start']
+            info.factor_end = row['f_end']
+            info.factor_bad = int(row['bad'])
+            rmin, rmax = row['r_min'], row['r_max']
+            if rmin is None or rmax is None or rmax == 0:
+                info.factor_ratio_dev = 0.0 if int(row['bad']) else 1.0
+            else:
+                info.factor_ratio_dev = abs(float(rmax) - float(rmin)) / abs(float(rmax))
+        # 因子日期索引 + 跳变/事件匹配（读一次，算完即释放 hfq）
+        factors = scan.select(['ts_code', 'trade_date', 'hfq_factor']).collect() \
+            .sort(['ts_code', 'trade_date'])
+        events = self._dividend_events()
+        for g in factors.partition_by('ts_code', maintain_order=True):
+            code = str(g['ts_code'][0])
+            info = self.codes.get(code)
+            if info is None:
+                continue
+            fd = np.array([d.toordinal() for d in g['trade_date'].to_list()], dtype=np.int64)
+            info.factor_dates = fd
+            hfq = g['hfq_factor'].to_numpy().astype(np.float64)
+            if fd.size >= 2:
+                jumps = fd[1:][np.diff(hfq) != 0]
+            else:
+                jumps = np.array([], dtype=np.int64)
+            ev = events.get(code, np.array([], dtype=np.int64))
+            if ev.size:
+                pos = np.searchsorted(fd, ev, side='left')
+                valid = (pos > 0) & (pos < fd.size)
+                expected = np.unique(fd[pos[valid]])
+            else:
+                expected = np.array([], dtype=np.int64)
+            extra_jumps = np.setdiff1d(jumps, expected, assume_unique=False)
+            missing_jumps = np.setdiff1d(expected, jumps, assume_unique=False)
+            if extra_jumps.size:
+                info.mismatch_start = int(extra_jumps.min())
+            elif missing_jumps.size:
+                info.mismatch_start = int(missing_jumps.min())
+
+    def _dividend_events(self) -> dict[str, np.ndarray]:
+        path = self.root / 'factors/stock_dividend.parquet'
+        if not path.exists():
+            return {}
+        div = pl.read_parquet(path, columns=['ts_code', 'ex_date'])
+        div = div.filter(pl.col('ex_date').is_not_null())
+        out: dict[str, np.ndarray] = {}
+        for g in div.partition_by('ts_code', maintain_order=True):
+            out[str(g['ts_code'][0])] = np.array(
+                [d.toordinal() for d in g['ex_date'].to_list()], dtype=np.int64
+            )
+        return out
+
+    def _load_dividend_flags(self) -> None:
+        path = self.root / 'factors/stock_dividend.parquet'
+        if not path.exists():
+            return
+        div = pl.read_parquet(path)
+        # 同代码同非空 ex_date 多行 → 结构性重复键
+        dup = (
+            div.filter(pl.col('ex_date').is_not_null())
+            .group_by(['ts_code', 'ex_date']).len()
+            .filter(pl.col('len') > 1)
+            .select('ts_code').unique()['ts_code'].to_list()
+        )
+        self.dup_exdiv_codes = set(dup)
+        # 空 ex_date 重复仅作台账标注，不参与准入
+        self.null_exdiv_dup_codes = set(
+            div.filter(pl.col('ex_date').is_null())
+            .group_by(['ts_code', 'ex_date']).len()
+            .filter(pl.col('len') > 1)
+            .select('ts_code').unique()['ts_code'].to_list()
+        )
+        rights = div.filter(pl.col('rights_issue_ratio') > 0)
+        if rights.height:
+            first = rights.group_by('ts_code').agg(pl.col('ex_date').min().alias('d'))
+            for row in first.iter_rows(named=True):
+                if row['d'] is not None:
+                    info = self.codes.get(str(row['ts_code']))
+                    if info is not None:
+                        info.rights_start = row['d'].toordinal()
+
+    def _read_anomaly_list(self, name: str) -> pl.DataFrame | None:
+        path = self.root / 'meta' / 'anomalies' / name
+        if not path.exists():
+            return None
+        return pl.read_csv(path)
+
+    def _load_anomaly_lists(self) -> None:
+        # 补数线台账（规则级清单）
+        self._load_stale_list(self._read_anomaly_list('source_stale_codes.csv'))
+        self._load_factor_lag_list(self._read_anomaly_list('factor_tail_lag_codes.csv'))
+        self._load_no_local_list(self._read_anomaly_list('no_local_quote_codes.csv'))
+        self._load_rights_list(self._read_anomaly_list('rights_issue_codes.csv'))
+
+    def _load_stale_list(self, stale: pl.DataFrame | None) -> None:
+        if stale is None:
+            return
+        for row in stale.iter_rows(named=True):
+            info = self.codes.get(str(row['ts_code']))
+            if info is None:
+                continue
+            if row.get('start'):
+                info.stale_start = _as_date(row['start']).toordinal()
+            else:
+                info.stale_start = (info.end_ord + 1) if info.end_ord else None
+
+    def _load_factor_lag_list(self, lag: pl.DataFrame | None) -> None:
+        if lag is None:
+            return
+        for row in lag.iter_rows(named=True):
+            info = self.codes.get(str(row['ts_code']))
+            if info is None:
+                continue
+            if row.get('start'):
+                info.factor_tail_start = _as_date(row['start']).toordinal()
+            elif info.factor_end:
+                info.factor_tail_start = info.factor_end.toordinal() + 1
+
+    def _load_no_local_list(self, no_local: pl.DataFrame | None) -> None:
+        if no_local is None:
+            return
+        for raw_code in no_local['ts_code'].to_list():
+            code = str(raw_code)
+            if code in self.codes:
+                continue
+            self.codes[code] = CodeInfo(
+                ts_code=code, data_type=_code_type(code), rows=0,
+                start=None, end=None, market=code.rsplit('.', 1)[-1].lower(),
+            )
+
+    def _load_rights_list(self, rights: pl.DataFrame | None) -> None:
+        if rights is None:
+            return
+        first = rights.group_by('ts_code').agg(pl.col('start').min().alias('d'))
+        for row in first.iter_rows(named=True):
+            info = self.codes.get(str(row['ts_code']))
+            if info is None or row['d'] is None:
+                continue
+            value = _as_date(row['d']).toordinal()
+            info.rights_start = (
+                value if info.rights_start is None else min(info.rights_start, value)
+            )
+
+    def _load_anomaly_records(self) -> None:
+        for rec in iter_anomalies():
+            if rec.status != 'active' or rec.scope == 'rule':
+                continue
+            info = self.codes.get(rec.ts_code)
+            if info is None:
+                continue
+            if rec.issue_type == 'duplicate_ex_date':
+                info.structural.append('structural_duplicate_exdiv_key')
+            elif rec.issue_type == 'hfq_base_shift':
+                info.strict_static.append('structural_factor_base_shift')
+            elif rec.issue_type in ('ohlc_bounds', 'weekend_trade_date'):
+                info.date_excl_standard.update(d.toordinal() for d in rec.dates)
+            elif rec.issue_type == 'pre_close_gap':
+                info.date_excl_strict.update(d.toordinal() for d in rec.dates)
+
+    def _load_st(self) -> None:
+        path = self.root / 'meta/st/st_intervals.parquet'
+        if not path.exists():
+            return
+        intervals = pl.read_parquet(path)
+        for g in intervals.partition_by('ts_code', maintain_order=True):
+            code = str(g['ts_code'][0])
+            info = self.codes.get(code)
+            if info is None:
+                continue
+            for row in g.iter_rows(named=True):
+                start = row['start_date']
+                end = row['end_date']
+                if start is None:
+                    continue
+                info.st_intervals.append((
+                    start.toordinal(),
+                    end.toordinal() if end is not None else 99999999,
+                ))
+        coverage = pl.read_parquet(self.root / 'meta/st/st_coverage.parquet')
+        default_row = coverage.filter(pl.col('ts_code').is_null()).to_dicts()
+        self.st_default = (
+            (default_row[0]['coverage_start'].toordinal(),
+             default_row[0]['coverage_end'].toordinal())
+            if default_row else None
+        )
+        for row in coverage.filter(pl.col('ts_code').is_not_null()).iter_rows(named=True):
+            info = self.codes.get(str(row['ts_code']))
+            if info is None:
+                continue
+            info.st_coverage = (
+                row['coverage_start'].toordinal(), row['coverage_end'].toordinal()
+            )
+        # 疑似 ST：当前名称带 ST 但不在确证区间内的标的（本快照为 0 只）
+        names_path = self.root / 'meta/names.json'
+        self.suspected_st: set[str] = set()
+        if names_path.exists():
+            names = json.loads(names_path.read_text('utf-8'))
+            st_like = {
+                code for code, name in names.items()
+                if isinstance(name, str) and 'ST' in name.upper()
+            }
+            self.suspected_st = {
+                code for code in st_like
+                if code in self.codes
+                and self.codes[code].data_type == 'stock'
+                and not self.codes[code].st_intervals
+            }
+        snapshot = self.root / 'meta/st_status/st_status_20261103.parquet'
+        if snapshot.exists():
+            snap = pl.read_parquet(snapshot)
+            self.snapshot_st = set(
+                snap.filter(pl.col('status') == 'st')['code'].to_list()
+            )
+        else:
+            self.snapshot_st = set()
+
+    def _finalize_structural(self) -> None:
+        for info in self.codes.values():
+            # 无本地行情：后续检查无意义，直接短路
+            if info.rows == 0 or not info.quote_dates.size:
+                info.structural.append('structural_no_local_quote')
+                continue
+            # 行情内容
+            if (
+                info.invalid_ohlc or info.null_close or info.neg_values
+                or info.dup_dates or info.meta_bad
+            ):
+                info.structural.append('structural_content_inconsistent')
+            # 因子
+            if info.data_type == 'stock':
+                if info.factor_rows == 0:
+                    info.structural.append('structural_factor_bad')
+                elif info.factor_bad:
+                    info.structural.append('structural_factor_bad')
+                elif info.factor_ratio_dev > 1e-12:
+                    info.structural.append('structural_factor_irreversible')
+            # 重复键（台账 + 快照）
+            if info.ts_code in getattr(self, 'dup_exdiv_codes', set()):
+                if 'structural_duplicate_exdiv_key' not in info.structural:
+                    info.structural.append('structural_duplicate_exdiv_key')
+
+    # ------------------------------------------------------------------
+    # 日期判定
+    # ------------------------------------------------------------------
+    def _has_quote(self, info: CodeInfo, o: int) -> bool:
+        arr = info.quote_dates
+        if arr.size == 0:
+            return False
+        i = bisect_left(arr, o)
+        return i < arr.size and int(arr[i]) == o
+
+    def _has_factor(self, info: CodeInfo, o: int) -> bool:
+        arr = info.factor_dates
+        if arr.size == 0:
+            return False
+        i = bisect_left(arr, o)
+        return i < arr.size and int(arr[i]) == o
+
+    def _st_status(self, info: CodeInfo, o: int) -> bool | None:
+        """返回 True=ST、False=非 ST、None=区间表未覆盖（unknown）。"""
+        covered = True
+        cov = info.st_coverage or self.st_default
+        if cov is not None and (o < cov[0] or o > cov[1]):
+            covered = False
+        if info.st_intervals:
+            for start, end in info.st_intervals:
+                if start <= o <= end:
+                    return True
+        return False if covered else None
+
+    def _structural_reasons(self, info: CodeInfo, o: int, tier: str) -> list[str]:
+        reasons = list(info.structural)
+        if tier == 'strict':
+            reasons.extend(info.strict_static)
+            if o in info.date_excl_strict or o in info.date_excl_standard:
+                reasons.append('structural_date_anomaly')
+        elif tier == 'standard':
+            if o in info.date_excl_standard:
+                reasons.append('structural_date_anomaly')
+        return reasons
+
+    def _availability_reasons(self, info: CodeInfo, o: int) -> list[str]:
+        if info.start_ord is None or info.end_ord is None:
+            return ['temporal_no_quote_on_date']
+        if o < info.start_ord:
+            return ['temporal_not_listed']
+        if o > info.end_ord:
+            return ['temporal_source_stopped']
+        if not self._has_quote(info, o):
+            return ['temporal_gap_or_suspension']
+        return []
+
+    def _strict_reasons(self, info: CodeInfo, o: int) -> list[str]:
+        """strict 档在 standard 之上的额外闸门。"""
+        reasons: list[str] = []
+        if info.data_type == 'stock' and not self._has_factor(info, o):
+            reasons.append('temporal_factor_tail')
+        if info.stale_start is not None and o >= info.stale_start:
+            reasons.append('temporal_source_stopped')
+        if info.rights_start is not None and o >= info.rights_start:
+            reasons.append('structural_rights_no_second_source')
+        if info.mismatch_start is not None and o >= info.mismatch_start:
+            reasons.append('structural_event_jump_mismatch')
+        if info.data_type == 'fund':
+            reasons.append('pending_fund_dividend')
+        return reasons
+
+    def eligible(
+        self,
+        ts_code: str,
+        trade_date: str | date | int,
+        tier: ViewTier = 'strict',
+        *,
+        include_suspected_st: bool | None = None,
+    ) -> tuple[bool, list[str]]:
+        """判断某标的在某日是否进入指定档位。"""
+        if tier not in VIEWS:
+            raise ValueError(f'未知档位: {tier!r}，应为 {VIEWS}')
+        info = self.codes.get(str(ts_code))
+        if info is None:
+            return False, ['unknown_code']
+        d = _as_date(trade_date)
+        o = d.toordinal()
+
+        if tier == 'full':
+            reasons = self._availability_reasons(info, o)
+            return (not reasons, reasons)
+
+        reasons = self._structural_reasons(info, o, tier)
+        if reasons:
+            return False, reasons
+
+        avail = self._availability_reasons(info, o)
+        if avail:
+            return False, avail
+
+        if self.exclude_st:
+            status = self._st_status(info, o)
+            if status is True:
+                return False, ['st_confirmed']
+            use_suspected = (
+                self.include_suspected_st if include_suspected_st is None
+                else include_suspected_st
+            )
+            if use_suspected and info.ts_code in self.suspected_st:
+                return False, ['st_suspected']
+
+        if tier == 'standard':
+            return True, []
+
+        strict_reasons = self._strict_reasons(info, o)
+        if strict_reasons:
+            return False, strict_reasons
+        return True, []
+
+    def eligible_set(
+        self,
+        trade_date: str | date,
+        tier: ViewTier = 'strict',
+        *,
+        data_type: str | None = None,
+        include_suspected_st: bool | None = None,
+    ) -> list[str]:
+        """返回某日指定档位的标的白名单。"""
+        d = _as_date(trade_date).toordinal()
+        out: list[str] = []
+        for code, info in self.codes.items():
+            if data_type and info.data_type != data_type:
+                continue
+            ok, _ = self.eligible(code, d, tier, include_suspected_st=include_suspected_st)
+            if ok:
+                out.append(code)
+        return out
+
+    # ------------------------------------------------------------------
+    # 月末时间序列
+    # ------------------------------------------------------------------
+    def month_end_dates(
+        self, start: str | date | None = None, end: str | date | None = None
+    ) -> list[date]:
+        lo = _as_date(start) if start else self.calendar[0]
+        hi = _as_date(end) if end else self.calendar[-1]
+        out: list[date] = []
+        current: tuple[int, int] | None = None
+        last: date | None = None
+        for d in self.calendar:
+            if d < lo or d > hi:
+                continue
+            key = (d.year, d.month)
+            if current != key:
+                if last is not None:
+                    out.append(last)
+                current = key
+            last = d
+        if last is not None:
+            out.append(last)
+        return out
+
+    def timeline(
+        self,
+        start: str | date | None = None,
+        end: str | date | None = None,
+    ) -> list[dict[str, Any]]:
+        """按月末采样计算三档可用池只数。"""
+        rows: list[dict[str, Any]] = []
+        for d in self.month_end_dates(start, end):
+            o = d.toordinal()
+            counts = {v: dict.fromkeys(DATA_TYPES, 0) for v in VIEWS}
+            for info in self.codes.values():
+                if not self._has_quote(info, o):
+                    continue
+                counts['full'][info.data_type] += 1
+                if info.structural or o in info.date_excl_standard:
+                    continue
+                status = (
+                    self._st_status(info, o)
+                    if self.exclude_st and info.st_intervals else False
+                )
+                if status is True:
+                    continue
+                if include_suspected_check(self, info):
+                    continue
+                counts['standard'][info.data_type] += 1
+                # strict
+                if info.data_type == 'stock' and not self._has_factor(info, o):
+                    continue
+                if info.stale_start is not None and o >= info.stale_start:
+                    continue
+                if o in info.date_excl_strict or o in info.date_excl_standard:
+                    continue
+                if info.rights_start is not None and o >= info.rights_start:
+                    continue
+                if info.mismatch_start is not None and o >= info.mismatch_start:
+                    continue
+                if info.strict_static:
+                    continue
+                if info.data_type == 'fund':
+                    continue
+                counts['strict'][info.data_type] += 1
+            item: dict[str, Any] = {'date': str(d)}
+            for view in VIEWS:
+                item[f'{view}_stock'] = counts[view]['stock']
+                item[f'{view}_index'] = counts[view]['index']
+                item[f'{view}_fund'] = counts[view]['fund']
+                item[f'{view}_total'] = sum(counts[view].values())
+            rows.append(item)
+        return rows
+
+    # ------------------------------------------------------------------
+    # 快照 / 分层
+    # ------------------------------------------------------------------
+    def _layer_hits(self, code: str, trade_date: str | date | None = None) -> set[str]:
+        """返回该标的在该日命中的分层标签集合（可同时命中多层）。"""
+        info = self.codes[code]
+        d = _as_date(trade_date) if trade_date else self.as_of_date
+        o = d.toordinal()
+        hits: set[str] = set()
+        defect = list(info.structural)
+        if info.stale_start is not None and o >= info.stale_start:
+            defect.append('temporal_source_stopped')
+        if info.factor_tail_start is not None and o >= info.factor_tail_start:
+            defect.append('temporal_factor_tail')
+        if info.data_type == 'stock' and self._has_quote(info, o) and not self._has_factor(info, o):
+            defect.append('temporal_factor_tail')
+        if o in info.date_excl_standard or o in info.date_excl_strict:
+            defect.append('structural_date_anomaly')
+        if info.mismatch_start is not None and o >= info.mismatch_start:
+            defect.append('structural_event_jump_mismatch')
+        if info.strict_static:
+            defect.extend(info.strict_static)
+        if defect:
+            hits.add('data_defect')
+        if info.st_intervals and self._st_status(info, o) is True:
+            hits.add('st')
+        if info.data_type == 'stock' and info.rights_start is not None and o >= info.rights_start:
+            hits.add('div_doubt')
+        if info.data_type == 'fund':
+            hits.add('pending')
+        return hits
+
+    def layer_at(self, code: str, trade_date: str | date | None = None) -> str:
+        """按 as_of 日期给出互斥分层（数据缺陷 > ST > 除权存疑 > pending > 剩余）。"""
+        hits = self._layer_hits(code, trade_date)
+        for name in ('data_defect', 'st', 'div_doubt', 'pending'):
+            if name in hits:
+                return name
+        return 'remaining'
+
+    def summary_at(self, trade_date: str | date | None = None) -> dict[str, Any]:  # noqa: C901
+        """静态快照统计：三档只数/行数、分层、剔除原因、年份分布。
+
+        这里按报告口径顺序列出全部统计项，拆成多个小函数会打断“同一份
+        快照必须同源”的阅读路径，因此保留单函数并对圈复杂度做显式豁免。
+        """
+        d = _as_date(trade_date) if trade_date else self.as_of_date
+        o = d.toordinal()
+
+        def rows_of(codes: Iterable[str]) -> int:
+            return sum(self.codes[c].rows for c in codes)
+
+        all_codes = list(self.codes)
+        view_codes: dict[str, list[str]] = {v: [] for v in VIEWS}
+        view_reasons: dict[str, dict[str, set[str]]] = {
+            v: {k: set() for k in REASON_CATEGORY} for v in VIEWS
+        }
+        multi_reason_set: set[str] = set()
+        for code in all_codes:
+            for view in VIEWS:
+                ok, reasons = self.eligible(code, d, view)
+                if ok:
+                    view_codes[view].append(code)
+                else:
+                    for reason in reasons:
+                        if reason in view_reasons[view]:
+                            view_reasons[view][reason].add(code)
+                    if view == 'strict' and len(reasons) > 1:
+                        multi_reason_set.add(code)
+
+        views: dict[str, Any] = {}
+        for view in VIEWS:
+            codes = view_codes[view]
+            views[view] = {
+                'codes': len(codes),
+                'rows': rows_of(codes),
+                'by_type': {
+                    t: {
+                        'codes': sum(1 for c in codes if self.codes[c].data_type == t),
+                        'rows': sum(self.codes[c].rows for c in codes
+                                    if self.codes[c].data_type == t),
+                    }
+                    for t in DATA_TYPES
+                },
+            }
+
+        # 分层（互斥）
+        layer_codes: dict[str, list[str]] = {
+            'data_defect': [], 'st': [], 'div_doubt': [], 'pending': [], 'remaining': []
+        }
+        for code in all_codes:
+            layer_codes[self.layer_at(code, d)].append(code)
+        layers = {}
+        for name, codes in layer_codes.items():
+            starts = [s for c in codes if (s := self.codes[c].start) is not None]
+            ends = [e for c in codes if (e := self.codes[c].end) is not None]
+            layers[name] = {
+                'codes': len(codes),
+                'rows': rows_of(codes),
+                'start': str(min(starts)) if starts else None,
+                'end': str(max(ends)) if ends else None,
+                'by_type': {
+                    t: {
+                        'codes': sum(1 for c in codes if self.codes[c].data_type == t),
+                        'rows': sum(self.codes[c].rows for c in codes
+                                    if self.codes[c].data_type == t),
+                        'end_at_as_of': sum(
+                            1 for c in codes
+                            if self.codes[c].data_type == t and self.codes[c].end == d
+                        ),
+                    }
+                    for t in DATA_TYPES
+                },
+            }
+
+        # 剔除原因分类
+        reason_summary: dict[str, Any] = {}
+        for view in VIEWS:
+            by_cat: dict[str, dict[str, int]] = {}
+            for reason, hit_codes in view_reasons[view].items():
+                cat = REASON_CATEGORY[reason]
+                by_cat.setdefault(cat, {})[reason] = len(hit_codes)
+            reason_summary[view] = by_cat
+
+        # 相对 full（当日有行情）的剔除口径：只统计 full 内部被剔的标的，
+        # 避免把"停更/无本地行情"这些 full 本来就没有的标的重复计入。
+        full_set = set(view_codes['full'])
+        vs_full: dict[str, Any] = {}
+        for view in VS_FULL_VIEWS:
+            counts: dict[str, int] = {}
+            excluded: set[str] = set()
+            multi = 0
+            for code in full_set:
+                ok, reasons = self.eligible(code, d, view)
+                if ok:
+                    continue
+                excluded.add(code)
+                if len(reasons) > 1:
+                    multi += 1
+                for reason in reasons:
+                    counts[reason] = counts.get(reason, 0) + 1
+            vs_full[view] = {
+                'excluded_codes': len(excluded),
+                'multi_reason_codes': multi,
+                'reasons': counts,
+            }
+
+        # 交集矩阵：缺陷 / ST / 除权存疑 / 基金 pending 可同时命中
+        matrix: dict[str, int] = {}
+        for code in all_codes:
+            hits = self._layer_hits(code, d)
+            key = '+'.join(sorted(hits)) if hits else 'none'
+            matrix[key] = matrix.get(key, 0) + 1
+
+        # 缺陷原因命中面（含重叠，独立计数）
+        defect_breakdown = {
+            'no_local_quote': 0,
+            'source_stopped_at_as_of': 0,
+            'factor_tail_at_as_of': 0,
+            'event_jump_mismatch': 0,
+            'factor_base_shift_or_ledger_flag': 0,
+            'date_anomaly_at_as_of': 0,
+            'content_inconsistent': 0,
+            'duplicate_exdiv_key': 0,
+        }
+        for code in all_codes:
+            info = self.codes[code]
+            if 'structural_no_local_quote' in info.structural:
+                defect_breakdown['no_local_quote'] += 1
+            if 'structural_content_inconsistent' in info.structural:
+                defect_breakdown['content_inconsistent'] += 1
+            if 'structural_duplicate_exdiv_key' in info.structural:
+                defect_breakdown['duplicate_exdiv_key'] += 1
+            if info.stale_start is not None and o >= info.stale_start:
+                defect_breakdown['source_stopped_at_as_of'] += 1
+            if (
+                (info.factor_tail_start is not None and o >= info.factor_tail_start)
+                or (info.data_type == 'stock' and self._has_quote(info, o)
+                    and not self._has_factor(info, o))
+            ):
+                defect_breakdown['factor_tail_at_as_of'] += 1
+            if info.mismatch_start is not None and o >= info.mismatch_start:
+                defect_breakdown['event_jump_mismatch'] += 1
+            if info.strict_static:
+                defect_breakdown['factor_base_shift_or_ledger_flag'] += 1
+            if o in info.date_excl_standard or o in info.date_excl_strict:
+                defect_breakdown['date_anomaly_at_as_of'] += 1
+
+        st_active = sum(
+            1 for info in self.codes.values()
+            if info.st_intervals and self._st_status(info, o) is True
+        )
+        st_active_with_quote = sum(
+            1 for info in self.codes.values()
+            if info.st_intervals and self._has_quote(info, o)
+            and self._st_status(info, o) is True
+        )
+
+        # strict 年份分布（按行情起始年）
+        def year_bucket(year: int) -> str:
+            if year <= 1994:
+                return '<=1994'
+            if year <= 1999:
+                return '1995-1999'
+            if year <= 2004:
+                return '2000-2004'
+            if year <= 2009:
+                return '2005-2009'
+            if year <= 2014:
+                return '2010-2014'
+            if year <= 2019:
+                return '2015-2019'
+            if year <= 2024:
+                return '2020-2024'
+            return '2025+'
+
+        buckets = ['<=1994', '1995-1999', '2000-2004', '2005-2009',
+                   '2010-2014', '2015-2019', '2020-2024', '2025+']
+        year_dist = {
+            b: {'full': 0, 'strict': 0} for b in buckets
+        }
+        strict_set = set(view_codes['strict'])
+        for code in all_codes:
+            info = self.codes[code]
+            if info.data_type != 'stock' or info.start is None:
+                continue
+            b = year_bucket(info.start.year)
+            year_dist[b]['full'] += 1
+            if code in strict_set:
+                year_dist[b]['strict'] += 1
+
+        total_rows = sum(i.rows for i in self.codes.values())
+        strict_rows = views['strict']['rows']
+        return {
+            'as_of': str(d),
+            'universe': {
+                'codes': len(self.codes),
+                'rows': total_rows,
+                'by_type': {
+                    t: {
+                        'codes': sum(1 for i in self.codes.values() if i.data_type == t),
+                        'rows': sum(i.rows for i in self.codes.values() if i.data_type == t),
+                    } for t in DATA_TYPES
+                },
+                'no_local_quote_codes': sum(
+                    1 for i in self.codes.values()
+                    if 'structural_no_local_quote' in i.structural
+                ),
+                'null_exdiv_duplicate_codes': len(getattr(self, 'null_exdiv_dup_codes', set())),
+                'suspected_st_codes': len(getattr(self, 'suspected_st', set())),
+            },
+            'views': views,
+            'layers': layers,
+            'reasons': reason_summary,
+            'vs_full': vs_full,
+            'intersection_matrix': matrix,
+            'defect_breakdown': defect_breakdown,
+            'st_active_at_as_of': st_active,
+            'st_active_with_quote_at_as_of': st_active_with_quote,
+            'st_intervals_ongoing_codes': sum(
+                1 for i in self.codes.values() if i.st_intervals
+            ),
+            'multi_reason_codes': len(multi_reason_set),
+            'strict_year_distribution': year_dist,
+            'strict_rows_pct': (strict_rows / total_rows) if total_rows else 0.0,
+        }
+
+
+def include_suspected_check(engine: EligibilityEngine, info: CodeInfo) -> bool:
+    return bool(engine.include_suspected_st and info.ts_code in engine.suspected_st)
+
+
+# ----------------------------------------------------------------------
+# 进程级引擎缓存 + 便捷入口
+# ----------------------------------------------------------------------
+_ENGINES: dict[str, EligibilityEngine] = {}
+_ENGINE_LOCK = threading.RLock()
+
+
+def get_engine(
+    root: str | Path | None = None,
+    *,
+    target_date: str | date | None = None,
+    include_suspected_st: bool = False,
+) -> EligibilityEngine:
+    """获取（并缓存）默认引擎。首次调用会加载全部日期索引。"""
+    key = f'{Path(root) if root else DEFAULT_ROOT}|{target_date}|{include_suspected_st}'
+    with _ENGINE_LOCK:
+        engine = _ENGINES.get(key)
+        if engine is None:
+            engine = EligibilityEngine(
+                root, target_date=target_date, include_suspected_st=include_suspected_st
+            )
+            _ENGINES[key] = engine
+        return engine
+
+
+def eligible(
+    ts_code: str,
+    trade_date: str | date,
+    tier: ViewTier = 'strict',
+    *,
+    include_suspected_st: bool | None = None,
+    root: str | Path | None = None,
+) -> tuple[bool, list[str]]:
+    """单标的准入判断（便捷入口）。"""
+    engine = get_engine(root)
+    return engine.eligible(
+        ts_code, trade_date, tier, include_suspected_st=include_suspected_st
+    )
+
+
+def eligible_set(
+    trade_date: str | date,
+    tier: ViewTier = 'strict',
+    *,
+    data_type: str | None = None,
+    include_suspected_st: bool | None = None,
+    root: str | Path | None = None,
+) -> list[str]:
+    """某日某档位的白名单（便捷入口）。"""
+    engine = get_engine(root)
+    return engine.eligible_set(
+        trade_date, tier, data_type=data_type,
+        include_suspected_st=include_suspected_st,
+    )
+
+
+# ----------------------------------------------------------------------
+# 产物落盘
+# ----------------------------------------------------------------------
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), 'utf-8')
+    os.replace(tmp, path)
+
+
+def build_snapshot(
+    root: str | Path | None = None,
+    as_of: str | date | None = None,
+    *,
+    output_dir: str | Path | None = None,
+    timeline_start: str | date | None = None,
+) -> dict[str, Any]:
+    """构建某日快照 + 月末时间序列 + 汇总，幂等覆盖 ``meta/clean/``。"""
+    engine = EligibilityEngine(root, target_date=as_of)
+    as_of_date = engine.as_of_date
+    out = Path(output_dir) if output_dir else (engine.root / 'meta' / 'clean')
+    out.mkdir(parents=True, exist_ok=True)
+
+    rows = []
+    for code, info in engine.codes.items():
+        layer = engine.layer_at(code, as_of_date)
+        for view in VIEWS:
+            ok, reasons = engine.eligible(code, as_of_date, view)
+            rows.append({
+                'as_of': as_of_date,
+                'view': view,
+                'data_type': info.data_type,
+                'ts_code': code,
+                'eligible': ok,
+                'reasons': reasons,
+                'layer': layer,
+                'rows': info.rows,
+                'start': info.start,
+                'end': info.end,
+            })
+    snapshot = pl.DataFrame(rows)
+    snap_path = out / f'eligibility_{as_of_date}.parquet'
+    tmp = snap_path.with_suffix('.parquet.tmp')
+    snapshot.write_parquet(tmp)
+    os.replace(tmp, snap_path)
+
+    timeline_rows = engine.timeline(start=timeline_start)
+    timeline = pl.DataFrame(timeline_rows)
+    time_path = out / f'timeline_{as_of_date}.csv'
+    timeline.write_csv(time_path)
+
+    summary = engine.summary_at(as_of_date)
+    # 样本量下限：strict 股票池连续 12 个月 >= 300 的首个月
+    stock_series = [(r['date'], r['strict_stock']) for r in timeline_rows]
+    adequate = None
+    for idx, (d, count) in enumerate(stock_series):
+        if count < MIN_CROSS_SECTION:
+            continue
+        window = stock_series[idx:idx + MIN_STREAK_MONTHS]
+        if len(window) < MIN_STREAK_MONTHS:
+            break
+        if all(c >= MIN_CROSS_SECTION for _, c in window):
+            adequate = d
+            break
+    summary['timeline'] = {
+        'empty': False,
+        'months': len(timeline_rows),
+        'first_date': timeline_rows[0]['date'] if timeline_rows else None,
+        'last_date': timeline_rows[-1]['date'] if timeline_rows else None,
+        'min_cross_section': MIN_CROSS_SECTION,
+        'min_streak_months': MIN_STREAK_MONTHS,
+        'strict_stock_adequate_from': adequate,
+        'strict_stock_first_300': next(
+            (d for d, c in stock_series if c >= MIN_CROSS_SECTION), None
+        ),
+        'standard_stock_first_300': next(
+            (r['date'] for r in timeline_rows if r['standard_stock'] >= MIN_CROSS_SECTION),
+            None
+        ),
+    }
+    summary['outputs'] = {
+        'snapshot': str(snap_path),
+        'timeline': str(time_path),
+    }
+    summary_path = out / f'summary_{as_of_date}.json'
+    _atomic_write_json(summary_path, summary)
+    logger.info('洁净集快照已写入 %s', out)
+    return summary
+
+
+# ----------------------------------------------------------------------
+# CLI
+# ----------------------------------------------------------------------
+def _main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description='按日期求值的洁净集准入闸门')
+    sub = parser.add_subparsers(dest='cmd', required=True)
+
+    p_build = sub.add_parser('build', help='构建快照 + 时间序列 + 汇总')
+    p_build.add_argument('--as-of', default=None, help='目标日期 YYYY-MM-DD')
+    p_build.add_argument('--root', default=None)
+    p_build.add_argument('--out', default=None)
+    p_build.add_argument('--timeline-start', default=None)
+
+    p_codes = sub.add_parser('codes', help='输出某日某档位白名单')
+    p_codes.add_argument('--date', required=True)
+    p_codes.add_argument('--tier', default='strict', choices=VIEWS)
+    p_codes.add_argument('--data-type', default=None, choices=DATA_TYPES)
+    p_codes.add_argument('--root', default=None)
+
+    p_check = sub.add_parser('check', help='检查单票单日')
+    p_check.add_argument('--code', required=True)
+    p_check.add_argument('--date', required=True)
+    p_check.add_argument('--tier', default='strict', choices=VIEWS)
+    p_check.add_argument('--root', default=None)
+
+    args = parser.parse_args(argv)
+    if args.cmd == 'build':
+        summary = build_snapshot(
+            root=args.root, as_of=args.as_of, output_dir=args.out,
+            timeline_start=args.timeline_start,
+        )
+        sys.stdout.write(json.dumps(summary, ensure_ascii=False, indent=2) + '\n')
+        return 0
+    if args.cmd == 'codes':
+        codes = eligible_set(
+            args.date, args.tier, data_type=args.data_type, root=args.root
+        )
+        sys.stdout.write(json.dumps(codes, ensure_ascii=False) + '\n')
+        return 0
+    engine = get_engine(args.root)
+    ok, reasons = engine.eligible(args.code, args.date, args.tier)
+    sys.stdout.write(json.dumps({'eligible': ok, 'reasons': reasons}, ensure_ascii=False) + '\n')
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(_main())

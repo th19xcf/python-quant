@@ -8,10 +8,12 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QVBoxLayout,
@@ -28,11 +30,47 @@ class MainWindowTechTabMixin:
     _STOCK_NAME_FONT_SIZE = 14
     _STOCK_NAME_COLOR = '#FFD04B'
 
+    # 主图/副图的最小可读高度（像素，含各自坐标轴；副图的指标标题栏另计入容器最小高度）。
+    # 3 张图时最小总高 = 110 + (84 + 约 24) * 2 + 分割条 2 * 2 ≈ 330，
+    # 因此窗口内容区高度 ≥ 约 600px 时三张图可首屏完整显示，低于该高度由滚动容器兜底。
+    _MAIN_PLOT_MIN_HEIGHT = 110
+    _SUB_PLOT_MIN_HEIGHT = 84
+
+    # 深色主题滚动条：与页面 #222222 / #333333 配色一致，不出现系统亮色条
+    _CHART_SCROLLBAR_STYLE = """
+    QScrollArea { background-color: transparent; border: none; }
+    QScrollArea > QWidget > QWidget { background-color: transparent; }
+    QScrollBar:vertical {
+        background-color: #222222;
+        width: 10px;
+        margin: 0px;
+        border: none;
+    }
+    QScrollBar::handle:vertical {
+        background-color: #555555;
+        min-height: 24px;
+        border-radius: 5px;
+    }
+    QScrollBar::handle:vertical:hover {
+        background-color: #777777;
+    }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+        height: 0px;
+        background: none;
+        border: none;
+    }
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+        background: none;
+    }
+    """
+
     def create_tech_tab(self):
         """
         创建技术分析标签页
         """
         tech_layout = QVBoxLayout(self.tech_tab)
+        tech_layout.setContentsMargins(0, 0, 0, 0)
+        tech_layout.setSpacing(0)
 
         self._create_tech_toolbar(tech_layout)
         self._create_tech_charts(tech_layout)
@@ -59,6 +97,8 @@ class MainWindowTechTabMixin:
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar.setStyleSheet("background-color: #222222;")
+        # 顶部工具栏常驻：垂直方向固定高度，不随图表区压缩或滚动
+        toolbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         # 设置按钮样式
         button_style = """
@@ -239,13 +279,25 @@ class MainWindowTechTabMixin:
         self.chart_splitter.setStyleSheet("QSplitter::handle:vertical { background-color: #444444; height: 2px; border: 0px; }")
         self.chart_splitter.setHandleWidth(2)
         self.chart_splitter.setOpaqueResize(True)
+        # 禁止拖拽把某张副图折叠成 0 高度（避免只剩标题栏）
+        self.chart_splitter.setChildrenCollapsible(False)
 
         self._create_chart_plot_widgets()
         self._create_chart_containers()
         self._setup_chart_splitter()
 
-        # 添加分割器到容器布局
-        self.chart_layout.addWidget(self.chart_splitter, 1)  # 1表示垂直方向拉伸
+        # 指标区外层套竖向滚动容器：高度足够时铺满、无滚动条；
+        # 高度不足（低于各图最小可读高度之和）时出现竖向滚动条，底部副图可滚动访问。
+        self.chart_scroll_area = QScrollArea()
+        self.chart_scroll_area.setWidgetResizable(True)
+        self.chart_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.chart_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.chart_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.chart_scroll_area.setStyleSheet(self._CHART_SCROLLBAR_STYLE)
+        self.chart_scroll_area.setWidget(self.chart_splitter)
+
+        # 添加滚动容器到容器布局
+        self.chart_layout.addWidget(self.chart_scroll_area, 1)  # 1表示垂直方向拉伸
 
         # 添加容器到主布局
         tech_layout.addWidget(self.chart_container, 1)  # 1表示垂直方向拉伸
@@ -257,6 +309,7 @@ class MainWindowTechTabMixin:
         # 创建K线图
         self.tech_plot_widget = pg.PlotWidget()
         self.tech_plot_widget.setBackground('#000000')
+        self.tech_plot_widget.setMinimumHeight(self._MAIN_PLOT_MIN_HEIGHT)
         self.tech_plot_widget.setLabel('left', '价格', color='#C0C0C0')
         # 不显示X轴标签
         self.tech_plot_widget.setLabel('bottom', '')
@@ -269,6 +322,7 @@ class MainWindowTechTabMixin:
         # 创建成交量图
         self.volume_plot_widget = pg.PlotWidget()
         self.volume_plot_widget.setBackground('#000000')
+        self.volume_plot_widget.setMinimumHeight(self._SUB_PLOT_MIN_HEIGHT)
         self.volume_plot_widget.setLabel('left', '成交量', color='#C0C0C0')
         self.volume_plot_widget.setLabel('bottom', '', color='#C0C0C0')
         self.volume_plot_widget.getAxis('left').setPen(pg.mkPen('#C0C0C0'))
@@ -289,6 +343,7 @@ class MainWindowTechTabMixin:
         # 创建KDJ指标图
         self.kdj_plot_widget = pg.PlotWidget()
         self.kdj_plot_widget.setBackground('#000000')
+        self.kdj_plot_widget.setMinimumHeight(self._SUB_PLOT_MIN_HEIGHT)
         self.kdj_plot_widget.setLabel('left', 'KDJ', color='#C0C0C0')
         self.kdj_plot_widget.setLabel('bottom', '', color='#C0C0C0')
         self.kdj_plot_widget.getAxis('left').setPen(pg.mkPen('#C0C0C0'))
@@ -356,3 +411,84 @@ class MainWindowTechTabMixin:
 
         # 再使用setSizes设置初始尺寸，确保比例正确
         self.chart_splitter.setSizes([2000, 1000, 1000])
+        self._update_chart_height_policy(rebalance=True)
+
+    def _update_chart_height_policy(self, rebalance: bool = False):
+        """
+        按当前可见画布数量重算最小高度，并在需要时按 2:1:1 重新分配。
+
+        每张画布都有最小可读高度（主图 _MAIN_PLOT_MIN_HEIGHT、副图
+        _SUB_PLOT_MIN_HEIGHT，副图另加指标标题栏高度）。可见画布最小高度之和
+        即分割器的最小高度：
+        - 视口高于该值时，分割器铺满视口，剩余高度按拉伸因子分配，不出现滚动条；
+        - 视口低于该值时，分割器保持最小高度，由外层 QScrollArea 提供竖向滚动，
+          底部副图可滚动访问，不会被窗口底边裁掉。
+
+        Args:
+            rebalance: 为 True 时立即按 2:1:1 重算尺寸（窗口数量切换、指标增删、
+                切换周期/股票后的布局重算）；为 False 时只更新最小高度，
+                保留用户手动拖拽的分割比例。
+        """
+        if not hasattr(self, 'chart_splitter'):
+            return
+
+        containers = [self.tech_container, self.volume_container, self.kdj_container]
+        visible = [c for c in containers if not c.isHidden()]
+        if not visible:
+            return
+
+        handle_total = self.chart_splitter.handleWidth() * (len(visible) - 1)
+        # 容器最小高度 = 画布最小高度 + 指标标题栏高度（副图才有，位于布局第 0 项）
+        container_min = {
+            c: self._chart_container_min_height(c)
+            for c in visible
+        }
+        min_total = sum(container_min.values()) + handle_total
+        self.chart_splitter.setMinimumHeight(min_total)
+
+        if not rebalance:
+            return
+
+        viewport = 0
+        if hasattr(self, 'chart_scroll_area'):
+            viewport = self.chart_scroll_area.viewport().height()
+        if viewport <= 0:
+            viewport = self.chart_splitter.height()
+        target = max(viewport, min_total)
+        extra = target - min_total
+        weights = [2 if c is self.tech_container else 1 for c in visible]
+        weight_total = sum(weights) or 1
+
+        sizes = []
+        visible_sizes = {
+            c: int(container_min[c] + extra * w / weight_total)
+            for c, w in zip(visible, weights, strict=True)
+        }
+        for c in containers:
+            sizes.append(visible_sizes.get(c, 0))
+        self.chart_splitter.setSizes(sizes)
+
+    @staticmethod
+    def _chart_container_min_height(container):
+        """
+        计算单个画布容器的最小高度：画布自身最小高度 + 指标标题栏高度。
+
+        直接取子项尺寸而非 container.minimumSizeHint()，避免 Qt 尺寸缓存
+        在标题栏刚插入、尚未重新布局时返回过期值。
+        """
+        layout = container.layout()
+        if layout is None:
+            return container.minimumHeight()
+        height = 0
+        for i in range(layout.count()):
+            widget = layout.itemAt(i).widget()
+            if widget is None:
+                continue
+            if i == 0 and layout.count() > 1:
+                # 第 0 项是副图的指标标题栏，按固定行高计入
+                # （新建控件尚未布局时 height() 是默认 480，必须用 sizeHint）
+                height += widget.sizeHint().height()
+            else:
+                height += widget.minimumHeight()
+        return height
+

@@ -130,17 +130,35 @@ def _load_st_status(
     db: Any,
     db_manager: Any,
 ) -> Dict[str, Any] | None:
-    """ST 时间维表：未显式传入时按标的与日期范围加载。"""
+    """ST 时间维表：未显式传入时按标的与日期范围加载。
+
+    优先读本地历史区间表（``meta/st``，含可信窗口内的显式非 ST 段），
+    本地无记录再回退数据库维表；两者都没有才按未知处理。
+    """
     if st_status is not None:
         return st_status
-    st_db = db if db is not None else db_manager
-    if st_db is None or data is None:
+    if data is None:
         return None
     if isinstance(data, dict):
         codes = list(data.keys())
     else:
         codes = [ts_code] if ts_code else []
     if not codes:
+        return None
+    try:
+        from src.data import st_history
+        from src.data.local_store.store import resolve_store_root
+        from src.utils.config import get_config
+
+        local = st_history.intervals_for_backtest(
+            resolve_store_root(get_config()), codes, start_date, end_date)
+        if local:
+            return local
+    # 兜底理由：本地区间表读取失败时继续走数据库维表，不阻断回测
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"读取本地 ST 历史区间表失败，回退数据库维表: {e}")
+    st_db = db if db is not None else db_manager
+    if st_db is None:
         return None
     try:
         from src.data.services.st_status_service import StStatusService

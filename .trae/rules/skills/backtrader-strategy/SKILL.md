@@ -11,6 +11,6 @@
 - 迁移指南
 
 目前 Trae 对本项目量化场景的引导，请参考：
-- `docs/architecture.md`
-- `docs/tdx_calibration_guide.md`
+- `docs/架构与数据流.md`
+- `docs/通达信单股票校准指南.md`
 - `src/backtest/engine/base_engine.py` 顶部模块文档

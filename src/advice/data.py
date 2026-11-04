@@ -128,7 +128,7 @@ class LocalPanelLoader:
         frames: list[pl.DataFrame] = []
 
         for code in codes:
-            raw = self.store.read_file('stock', code)
+            raw = self.store.read_file('stock', code, with_factors=True)
             if raw is None or raw.is_empty():
                 report.missing.append(code)
                 continue

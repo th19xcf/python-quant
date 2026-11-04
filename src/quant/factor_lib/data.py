@@ -138,8 +138,12 @@ def load_panel(request: PanelRequest | None = None, codes: list[str] | None = No
         store=store, use_cache=request.use_cache,
     )
 
+    factor_store = store.factor_snapshot_store()
+    factor_version = '0'
+    if factor_store.factor_path.exists():
+        factor_version = str(factor_store.factor_path.stat().st_mtime_ns)
     cache_path = _cache_dir() / (
-        f'panel_{len(codes)}_{request.start}_{request.end}.parquet'
+        f'panel_{len(codes)}_{request.start}_{request.end}_{factor_version}.parquet'
     )
     if request.use_cache and cache_path.exists():
         return _with_derived(pl.read_parquet(cache_path))
@@ -147,7 +151,7 @@ def load_panel(request: PanelRequest | None = None, codes: list[str] | None = No
     frames: list[pl.DataFrame] = []
     missing: list[str] = []
     for code in codes:
-        frame = store.read_file('stock', code)
+        frame = store.read_file('stock', code, with_factors=True)
         if frame is None or frame.is_empty():
             missing.append(code)
             continue

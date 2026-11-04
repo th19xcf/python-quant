@@ -86,6 +86,7 @@ class AdvicePage(QWidget):
         self._build_ui()
         self.set_theme(self.theme)
         self._connect_task_signals()
+        self._populate_history()
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
@@ -179,6 +180,13 @@ class AdvicePage(QWidget):
         self.fresh_label = QLabel('数据加载中')
         self.fresh_label.setObjectName('freshBadge')
         header.addWidget(self.fresh_label)
+
+        self.history_combo = QComboBox()
+        self.history_combo.setObjectName('historyCombo')
+        self.history_combo.setMinimumWidth(150)
+        self.history_combo.setToolTip('选择已归档的历史交易日；「当前」回到最新清单')
+        self.history_combo.currentIndexChanged.connect(self._on_history_changed)
+        header.addWidget(self.history_combo)
 
         self.theme_button = QPushButton('浅色')
         self.theme_button.setObjectName('themeBtn')
@@ -319,7 +327,41 @@ class AdvicePage(QWidget):
             timeout_seconds=None)
 
     def _on_generate_clicked(self) -> None:
+        if self.history_combo.currentData() is not None:
+            self.history_combo.blockSignals(True)
+            self.history_combo.setCurrentIndex(0)
+            self.history_combo.blockSignals(False)
         self.load_async(refresh=True)
+
+    def _populate_history(self) -> None:
+        """刷新头部历史归档下拉框（「当前」+ 升序归档，界面显示倒序）。"""
+        from src.core.usecases.get_daily_recommendations import list_archived_dates
+        dates = list_archived_dates()
+        keep = self.history_combo.currentData()
+        self.history_combo.blockSignals(True)
+        self.history_combo.clear()
+        self.history_combo.addItem('当前（最新）', None)
+        for trade_date in reversed(dates):
+            self.history_combo.addItem(trade_date, trade_date)
+        index = self.history_combo.findData(keep)
+        self.history_combo.setCurrentIndex(max(0, index))
+        self.history_combo.blockSignals(False)
+
+    def _on_history_changed(self, index: int) -> None:
+        trade_date = self.history_combo.itemData(index)
+        if trade_date is None:
+            self.load_async(refresh=False)
+            return
+        from src.core.usecases.get_daily_recommendations import (
+            load_archived_recommendations,
+        )
+        bundle = load_archived_recommendations(trade_date, horizon='all')
+        if bundle is None or not bundle.items:
+            self.empty_state.set_message(
+                '归档不可用', f'{trade_date} 的推荐归档未找到或为空', True)
+            self.stack.setCurrentWidget(self.empty_state)
+            return
+        self.set_bundle(bundle)
 
     def _on_task_completed(self, task_id: str, result: Any) -> None:
         if not isinstance(result, dict):
@@ -333,6 +375,7 @@ class AdvicePage(QWidget):
             return
         self._finish_busy()
         self.set_bundle(bundle)
+        self._populate_history()
 
     def _on_task_error(self, task_id: str, error_message: str) -> None:
         if not self._busy:
@@ -370,10 +413,15 @@ class AdvicePage(QWidget):
                     f'参考资金 ¥{bundle.equity:,.0f}')
         if bundle.is_sample:
             subtitle += ' · 样例数据'
+        if bundle.source == 'archive':
+            subtitle += ' · 历史归档（不重算）'
         self.subtitle_label.setText(subtitle)
         self.subtitle_label.setToolTip('\n'.join(bundle.warnings))
         if bundle.is_sample:
             self.fresh_label.setText('样例数据')
+            self.fresh_label.setObjectName('freshBadge')
+        elif bundle.source == 'archive':
+            self.fresh_label.setText('历史归档')
             self.fresh_label.setObjectName('freshBadge')
         elif bundle.is_stale:
             self.fresh_label.setText(f'数据落后 {bundle.data_lag_days} 天')
@@ -409,8 +457,14 @@ class AdvicePage(QWidget):
         summary: dict[str, Any] = {}
         if self._bundle is not None:
             summary = (self._bundle.summary or {}).get(self._tier, {}) or {}
-        turnover = float(summary.get('turnover_pct') or 0.0)
-        self._kpi['turnover'].set_value(f'{turnover:.1f}%')
+        turnover = 0.0
+        if self._bundle is not None and self._bundle.source == 'archive':
+            self._kpi['turnover'].set_value('—')
+            self._kpi['turnover'].set_caption('组合换手（归档未记录）')
+        else:
+            turnover = float(summary.get('turnover_pct') or 0.0)
+            self._kpi['turnover'].set_value(f'{turnover:.1f}%')
+            self._kpi['turnover'].set_caption('预计组合换手（单边）')
 
         bundle = self._bundle
         if bundle is not None and bundle.trade_date:

@@ -1,8 +1,6 @@
 import contextlib
 from functools import wraps
 
-from PySide6.QtWidgets import QMessageBox
-
 from src.utils.logger import logger
 
 
@@ -111,58 +109,42 @@ class MainWindowEventMixin:
 
     def closeEvent(self, event):
         """
-        Application close event handler
+        应用关闭事件：点击关闭直接退出，不再弹二次确认。
+
+        关闭顺序：先隐藏窗口（用户感知立即关闭）→ 有界等待后台任务收敛 →
+        停止内存监控 → 接受事件并退出事件循环。任何清理失败都不阻断退出。
         """
-        # 创建自定义消息框以使用中文按钮
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle('退出确认')
-        msg_box.setText('确定要退出程序吗？')
-        msg_box.setIcon(QMessageBox.Question)
+        logger.info("收到窗口关闭事件，开始退出流程")
 
-        # 添加中文按钮
-        yes_btn = msg_box.addButton('是', QMessageBox.YesRole)
-        no_btn = msg_box.addButton('否', QMessageBox.NoRole)
-        msg_box.setDefaultButton(no_btn)
+        # 先隐藏窗口：后续清理即使被后台任务拖慢，窗口也已从屏幕上消失
+        with contextlib.suppress(Exception):
+            self.hide()
 
-        msg_box.exec()
+        # 关闭任务管理器：有界等待，避免取数/回测任务卡住关窗
+        try:
+            from src.ui.task_manager import global_task_manager
+            global_task_manager.shutdown(wait_ms=800)
+            logger.info("任务管理器已关闭")
+        except Exception as e:
+            logger.error(f"关闭任务管理器时出错: {e}")
 
-        if msg_box.clickedButton() == yes_btn:
-            # Save window state
-            try:
-                # Save window geometry
-                # self.settings.setValue('window_geometry', self.saveGeometry())
-                # self.settings.setValue('window_state', self.saveState())
-                pass
-            except (OSError, RuntimeError, ValueError) as e:
-                logger.error(f"Error saving window state: {e}")
+        # 停止内存监控（daemon 线程，超时即放弃等待，不阻断退出）
+        try:
+            from src.utils.memory_manager import global_memory_manager
+            global_memory_manager.stop_monitoring()
+            logger.info("内存监控已停止")
+        except Exception as e:
+            logger.error(f"停止内存监控时出错: {e}")
 
-            # 关闭任务管理器，确保所有后台线程被正确终止
-            try:
-                from src.ui.task_manager import global_task_manager
-                global_task_manager.shutdown()
-                logger.info("任务管理器已关闭")
-            except Exception as e:
-                logger.error(f"关闭任务管理器时出错: {e}")
+        # 调用父类的关闭方法
+        with contextlib.suppress(Exception):
+            super().closeEvent(event)
 
-            # 停止内存监控
-            try:
-                from src.utils.memory_manager import global_memory_manager
-                global_memory_manager.stop_monitoring()
-                logger.info("内存监控已停止")
-            except Exception as e:
-                logger.error(f"停止内存监控时出错: {e}")
+        event.accept()
 
-            # 调用父类的关闭方法
-            with contextlib.suppress(Exception):
-                super().closeEvent(event)
-
-            event.accept()
-
-            # 强制退出应用程序，确保所有线程都被终止
-            from PySide6.QtWidgets import QApplication
-            QApplication.quit()
-        else:
-            event.ignore()
+        # 退出事件循环；进程在 main.py 完成资源清理后强制收敛
+        from PySide6.QtWidgets import QApplication
+        QApplication.quit()
 
     def _show_global_search_dialog(self, initial_text=""):
         """

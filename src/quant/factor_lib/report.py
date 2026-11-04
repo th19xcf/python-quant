@@ -4,12 +4,13 @@
 报告输出 —— 因子登记表、评估表、冗余簇报告、生产建议清单。
 
 所有产物写入 ``reports/factor_lib/``（与源码目录分离，便于复核与版本对比）：
-    factor_registry.csv / .md      因子登记表（名称/公式/依赖/方向/来源/状态）
-    factor_eval.csv / .md          分层回测指标
-    redundancy_clusters.csv / .md  |corr|>0.7 聚类报告
-    recommended_factors.csv / .md  建议纳入生产因子库清单（30~50 个）
-    strategy_results.csv / .md     公开策略对照结果
-    run_meta.json                  运行参数、股票池、量纲自检结果
+    factor_registry.csv / 因子登记表.md              因子登记表（名称/公式/依赖/方向/来源/状态）
+    factor_eval.csv / 因子分层回测结果.md            分层回测指标
+    redundancy_clusters.csv / 因子冗余聚类报告.md    |corr|>0.7 聚类报告
+    recommended_factors.csv / 建议纳入生产因子库的因子清单.md  建议纳入生产因子库清单（30~50 个）
+    strategy_results.csv / 公开策略对照结果.md       公开策略对照结果
+    因子库验证汇总.md                                总览（summary 汇总各报告结论）
+    run_meta.json                                    运行参数、股票池、量纲自检结果
 """
 
 from __future__ import annotations
@@ -114,8 +115,8 @@ def write_registry(specs: list[FactorSpec], headline: str | None = None) -> Path
                           [[s.name, s.expression, s.dependencies, s.direction,
                             s.status_label, s.source, s.note] for s in items],
                       ), ''])
-    (out / 'factor_registry.md').write_text('\n'.join(parts), encoding='utf-8')
-    return out / 'factor_registry.md'
+    (out / '因子登记表.md').write_text('\n'.join(parts), encoding='utf-8')
+    return out / '因子登记表.md'
 
 
 def write_evaluation(metrics: pl.DataFrame, headline: str | None = None) -> Path:
@@ -150,8 +151,8 @@ def write_evaluation(metrics: pl.DataFrame, headline: str | None = None) -> Path
                       _md_table(['因子', '原因'],
                                 [[r['factor'], r['error']]
                                  for r in failures.iter_rows(named=True)]), ''])
-    (out / 'factor_eval.md').write_text('\n'.join(parts), encoding='utf-8')
-    return out / 'factor_eval.md'
+    (out / '因子分层回测结果.md').write_text('\n'.join(parts), encoding='utf-8')
+    return out / '因子分层回测结果.md'
 
 
 def write_clusters(clusters: ClusterResult, headline: str | None = None) -> Path:
@@ -171,8 +172,8 @@ def write_clusters(clusters: ClusterResult, headline: str | None = None) -> Path
                    f"{r['max_abs_corr']:.2f}", r['members']]
                   for r in clusters.clusters.iter_rows(named=True)],
              ), '']
-    (out / 'redundancy_clusters.md').write_text('\n'.join(parts), encoding='utf-8')
-    return out / 'redundancy_clusters.md'
+    (out / '因子冗余聚类报告.md').write_text('\n'.join(parts), encoding='utf-8')
+    return out / '因子冗余聚类报告.md'
 
 
 def select_recommendations(
@@ -292,8 +293,8 @@ def write_recommendation(
             continue
         seen.add(spec.source)
         parts.append(f'- `{spec.name}`：{spec.source}')
-    (out / 'recommended_factors.md').write_text('\n'.join(parts) + '\n', encoding='utf-8')
-    return out / 'recommended_factors.md'
+    (out / '建议纳入生产因子库的因子清单.md').write_text('\n'.join(parts) + '\n', encoding='utf-8')
+    return out / '建议纳入生产因子库的因子清单.md'
 
 
 def write_strategies(frame: pl.DataFrame, headline: str | None = None) -> Path:
@@ -311,8 +312,8 @@ def write_strategies(frame: pl.DataFrame, headline: str | None = None) -> Path:
                    r['source']]
                   for r in frame.iter_rows(named=True)],
              ), '']
-    (out / 'strategy_results.md').write_text('\n'.join(parts), encoding='utf-8')
-    return out / 'strategy_results.md'
+    (out / '公开策略对照结果.md').write_text('\n'.join(parts), encoding='utf-8')
+    return out / '公开策略对照结果.md'
 
 
 def write_summary(
@@ -386,7 +387,7 @@ def write_summary(
         f'输入 {clusters.correlation.shape[0]} 个因子，'
         f'在 |Spearman corr| ≥ 0.7 处切成 {clusters.clusters.height} 簇，'
         f'保留 {len(clusters.kept)} 个簇代表。各簇明细见 '
-        '`redundancy_clusters.md`；同簇内只保留 ICIR 最高者。', '',
+        '`因子冗余聚类报告.md`；同簇内只保留 ICIR 最高者。', '',
     ]
 
     if strategy_frame is not None and not strategy_frame.is_empty():
@@ -410,7 +411,7 @@ def write_summary(
         f'- **观察（C）**：{len(watch)} 个，建议在扩到全市场后再决定',
         f'- **不纳入（D）**：{counts["D-噪音"]} 个，列表仅作候选池留档',
         '',
-        '完整清单（含公式、分级、出处）见 `recommended_factors.md`。'
+        '完整清单（含公式、分级、出处）见 `建议纳入生产因子库的因子清单.md`。'
         f'实际建议先上线的只有 {len(usable)} 个 A/B 因子，'
         '其余请等全市场样本外验证。', '',
         '## 7. 局限与下一步', '',
@@ -425,8 +426,8 @@ def write_summary(
         '如用于实盘需接入 ST 名单。',
         '',
     ])
-    (out / 'summary.md').write_text('\n'.join(parts), encoding='utf-8')
-    return out / 'summary.md'
+    (out / '因子库验证汇总.md').write_text('\n'.join(parts), encoding='utf-8')
+    return out / '因子库验证汇总.md'
 
 
 def write_meta(payload: dict) -> Path:

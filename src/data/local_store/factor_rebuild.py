@@ -30,6 +30,7 @@ from src.data.local_store.store import (
     STORE_VERSION,
     LocalFactorStore,
     LocalQuoteStore,
+    refresh_quote_factor_columns,
 )
 
 _FACTOR_SCHEMA = {
@@ -333,6 +334,15 @@ def rebuild_factors_from_local(
     final_codes = (existing - replaced) | replaced
     _write_sidecar(factor_store, final_codes)
 
+    # 因子快照是唯一可信来源：重建完成后立刻把行情 parquet 里内嵌的
+    # qfq/hfq 副本对齐，避免「副本还是旧口径、因子快照已是新口径」。
+    quote_refresh: dict[str, Any] | None = None
+    try:
+        quote_refresh = refresh_quote_factor_columns(
+            quote_store, factor_store, codes=sorted(replaced))
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning(f'[factor-rebuild] 行情因子副本同步失败，需手工重跑: {exc}')
+
     elapsed = time.perf_counter() - started
     file_bytes = factor_store.factor_path.stat().st_size if factor_store.factor_path.exists() else 0
     previous_meta = factor_store.meta()
@@ -350,6 +360,7 @@ def rebuild_factors_from_local(
         'elapsed_s': round(elapsed, 3),
         'updated_at': datetime.now().isoformat(timespec='seconds'),
         'version': STORE_VERSION,
+        'quote_factor_refresh': quote_refresh,
     }
     meta_path = factor_store.root / 'factors' / 'meta.json'
     tmp_meta = meta_path.with_suffix('.json.tmp')

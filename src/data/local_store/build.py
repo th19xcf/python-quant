@@ -45,7 +45,9 @@ from src.data.local_store.store import (
     STORE_VERSION,
     LocalFactorStore,
     LocalQuoteStore,
+    refresh_quote_factor_columns,
     resolve_store_root,
+    verify_quote_factor_consistency,
 )
 from src.data.sources.base import DataSourceBase
 from src.data.tdx_day_parser import (
@@ -628,6 +630,27 @@ def refresh_factors(
 # ----------------------------------------------------------------------
 # CLI
 # ----------------------------------------------------------------------
+def _refresh_anomaly_lists_step(root: Path, *, skip: bool,
+                                dry_run: bool = False) -> dict[str, Any] | None:
+    """数据写入完成后的末步：刷新异常台账清单（非致命）。"""
+    if dry_run:
+        logger.info('dry-run：跳过异常台账清单刷新')
+        return None
+    if skip:
+        logger.info('已跳过异常台账清单刷新（--skip-anomaly-lists）')
+        return None
+    from src.data.quality.anomaly_lists import (  # noqa: PLC0415
+        refresh_anomaly_lists,
+    )
+
+    result = refresh_anomaly_lists(root)
+    if result['status'] != 'ok':
+        logger.warning(
+            f'异常台账清单刷新失败（不影响本次补数，退出码仍为 0）: '
+            f'{result["error"]}')
+    return result
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog='python -m src.data.local_store')
     sub = parser.add_subparsers(dest='command', required=True)
@@ -647,10 +670,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     build_cmd.add_argument('--force-intraday', action='store_true',
                            help='交易时段也写入当日未收盘 K 线（默认跳过）')
     build_cmd.add_argument('--dry-run', action='store_true', help='只统计不落盘')
+    build_cmd.add_argument('--skip-anomaly-lists', action='store_true',
+                           help='数据写入完成后不刷新异常台账清单（默认刷新）')
 
     factor_cmd = sub.add_parser('refresh-factors', help='从远程库刷新因子/分红快照')
     factor_cmd.add_argument('--allow-remote', action='store_true', help='显式允许访问远程库')
     factor_cmd.add_argument('--dry-run', action='store_true')
+    factor_cmd.add_argument('--skip-anomaly-lists', action='store_true',
+                            help='不刷新异常台账清单（默认刷新）')
 
     rebuild_cmd = sub.add_parser(
         'rebuild-factors', help='用本地行情+分红批量重算因子快照（不写远程库）')
@@ -662,6 +689,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     rebuild_cmd.add_argument('--no-resume', action='store_true',
                              help='忽略断点，从头开始')
     rebuild_cmd.add_argument('--dry-run', action='store_true', help='只统计不落盘')
+    rebuild_cmd.add_argument('--skip-anomaly-lists', action='store_true',
+                             help='不刷新异常台账清单（默认刷新）')
+
+    sync_cmd = sub.add_parser(
+        'sync-quote-factors', help='把行情 parquet 内嵌的 qfq/hfq 副本对齐到因子快照')
+    sync_cmd.add_argument('--codes', default='', help='逗号分隔的 ts_code 列表（默认全市场）')
+    sync_cmd.add_argument('--kind', default='stock', choices=['stock', 'index', 'fund'],
+                          help='行情类型（默认 stock）')
+    sync_cmd.add_argument('--dry-run', action='store_true', help='只统计需要重写的标的/行数')
+
+    verify_cmd = sub.add_parser(
+        'verify-quote-factors', help='全量核对行情副本与因子快照的一致性')
+    verify_cmd.add_argument('--json', action='store_true', help='以 JSON 输出')
 
     sub.add_parser('rescan-meta', help='从现有 Parquet 重建覆盖度元数据（不重算行情）')
     sub.add_parser('stats', help='查看列存规模')
@@ -690,6 +730,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == 'refresh-factors':
         refresh_factors(config, factor_store,
                         allow_remote=args.allow_remote, dry_run=args.dry_run)
+        _refresh_anomaly_lists_step(
+            root, skip=args.skip_anomaly_lists, dry_run=args.dry_run)
         return 0
 
     if args.command == 'rebuild-factors':
@@ -705,6 +747,25 @@ def main(argv: list[str] | None = None) -> int:
             resume=not args.no_resume, dry_run=args.dry_run,
         )
         logger.info(f'因子重建结果: {result}')
+        _refresh_anomaly_lists_step(
+            root, skip=args.skip_anomaly_lists, dry_run=args.dry_run)
+        return 0
+
+    if args.command == 'sync-quote-factors':
+        codes = [c.strip() for c in args.codes.split(',') if c.strip()] if args.codes else None
+        stats = refresh_quote_factor_columns(
+            quote_store, factor_store, codes=codes, kind=args.kind,
+            dry_run=args.dry_run)
+        logger.info(f'行情因子副本同步: {stats}')
+        return 0
+
+    if args.command == 'verify-quote-factors':
+        result = verify_quote_factor_consistency(quote_store, factor_store)
+        if args.json:
+            sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
+        else:
+            for kind, stats in result.items():
+                logger.info(f'[{kind}] {stats}')
         return 0
 
     if args.command == 'rescan-meta':
@@ -732,6 +793,8 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
     )
     logger.info(f'构建结果: {result}')
+    _refresh_anomaly_lists_step(
+        root, skip=args.skip_anomaly_lists, dry_run=args.dry_run)
     return 0
 
 

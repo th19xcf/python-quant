@@ -184,6 +184,10 @@ class MainWindowIndicatorWindowMixin:
         indicator_3 = self.window_indicators[3]
         self._render_indicator_window(3, indicator_3, df_pl, x, dates)
 
+        # 副图标题栏会改变容器最小高度，渲染完成后重算最小高度与分配比例
+        if hasattr(self, '_update_chart_height_policy'):
+            self._update_chart_height_policy(rebalance=True)
+
     def _render_indicator_window(self, window_index, indicator_name, df_pl, x, dates):
         """
         渲染单个指标窗口

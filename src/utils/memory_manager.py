@@ -48,6 +48,9 @@ class MemoryManager:
         self.monitoring_enabled = False
         self.monitoring_thread: threading.Thread | None = None
         self.monitoring_interval = 5  # 监控间隔（秒）
+        # 停止信号：用 Event 等待代替 time.sleep，退出时立即唤醒监控线程，
+        # 避免关窗被 sleep 中的 join(timeout) 拖住
+        self._stop_event = threading.Event()
         self.tracemalloc_enabled = False
         self.memory_snapshots: List[Dict[str, Any]] = []  # 内存快照
         self.auto_optimization_enabled = True  # 自动优化开关
@@ -122,6 +125,7 @@ class MemoryManager:
         """
         if not self.monitoring_enabled:
             self.monitoring_enabled = True
+            self._stop_event.clear()
             self.monitoring_thread = threading.Thread(target=self._monitor_memory, daemon=True)
             self.monitoring_thread.start()
             logger.info("内存监控已启动")
@@ -131,8 +135,10 @@ class MemoryManager:
         停止内存监控
         """
         self.monitoring_enabled = False
+        # 立即唤醒可能正在 sleep 的监控线程，join 只作兜底
+        self._stop_event.set()
         if self.monitoring_thread:
-            self.monitoring_thread.join(timeout=2)
+            self.monitoring_thread.join(timeout=1)
             logger.info("内存监控已停止")
 
     def _monitor_memory(self) -> None:
@@ -165,7 +171,8 @@ class MemoryManager:
                 # 动态调整监控间隔
                 self._adjust_monitoring_interval(memory_info)
 
-                time.sleep(self.monitoring_interval)
+                # 可被 stop_monitoring 立即唤醒，退出时不必等满一个监控间隔
+                self._stop_event.wait(self.monitoring_interval)
             except MemoryError as e:
                 # MemoryError 不能被监控循环吞掉继续轮询，否则会在内存耗尽时反复抖动
                 logger.critical(f"内存监控线程内存耗尽，停止监控: {e}")
@@ -174,7 +181,8 @@ class MemoryManager:
             # 兜底理由：内存监控为旁路线程，失败不得终止主流程
             except Exception as e:  # noqa: BLE001
                 logger.error(f"内存监控出错: {str(e)}")
-                time.sleep(self.monitoring_interval)
+                # 可被 stop_monitoring 立即唤醒，退出时不必等满一个监控间隔
+                self._stop_event.wait(self.monitoring_interval)
 
     def _analyze_memory_patterns(self) -> None:
         """

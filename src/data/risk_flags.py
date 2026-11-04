@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
 
-"""ST / 风险警示三态数据 API（本地优先，不联网，不回溯历史）。
+"""ST / 风险警示三态数据 API（本地优先，不联网）。
 
 数据来源（按优先级）：
 
-1. ``{store_root}/meta/names.json``——本地通达信证券名称快照；
-2. 远程库 ``stock_basic`` 的 ``name`` / ``status``（可选，仅补本地无名称的标的）。
+1. ``{store_root}/meta/st/st_intervals.parquet``——历史 ST 区间表（由
+   :mod:`src.data.st_history` 从深交所简称变更 + 巨潮公告重建），覆盖
+   区间内的历史日期可精确判定；
+2. ``{store_root}/meta/names.json``——本地通达信证券名称快照（当日真值）；
+3. 远程库 ``stock_basic`` 的 ``name`` / ``status``（可选，仅补本地无名称的标的）。
 
 三态语义：
 
-- ``st``：名称前缀命中 ``ST`` / ``*ST`` / ``S*ST`` / ``SST``；
-- ``non_st``：有名称且前缀不命中；
-- ``unknown``：无名称、已退市或查不到快照——**调用方不得当成 non_st**。
+- ``st``：区间命中，或名称前缀命中 ``ST`` / ``*ST`` / ``S*ST`` / ``SST``；
+- ``non_st``：区间未命中且 ``as_of`` 落在该标的**可信覆盖窗口**内，或有名称且
+  前缀不命中；
+- ``unknown``：无区间、无名称、已退市、或查询日期早于该标的可信窗口——
+  **调用方不得当成 non_st**。
 
-历史能力（重要红线）：通达信本地只保存**当前**名称，没有戴帽/摘帽日期，
-因此历史 ST 状态**不可回溯**。本模块只按日期累积每日快照
-（``meta/st_status/st_status_YYYYMMDD.parquet``），查询时取不晚于
-``as_of`` 的最新一份；早于首份快照的日期一律返回 ``unknown``，
-绝不用今天的名单回填历史。
+历史能力（重要红线）：通达信本地只保存**当前**名称，快照按日累积后只能覆盖
+快照日之后；早于首份快照的历史日期由区间表兜底。区间表对「没有任何记录」的
+标的返回 ``unknown``，绝不用区间外推回填历史。
 """
 
 import argparse
@@ -36,6 +39,7 @@ UNKNOWN = 'unknown'
 
 SOURCE_TDX_NAMES = 'tdx_names'
 SOURCE_STOCK_BASIC = 'stock_basic'
+SOURCE_ST_HISTORY = 'st_history'
 SOURCE_MISSING = 'missing'
 
 _ST_PREFIX = re.compile(r'^(S\*ST|SST|\*ST|ST)')
@@ -183,13 +187,19 @@ def load_snapshot(
 def get_st_status_detail(
     code: str, as_of: Any = None, *, store_root: Path | str | None = None,
 ) -> dict[str, Any]:
-    """返回 ST 三态详情（含来源、快照日与原因）。"""
+    """返回 ST 三态详情（含来源、快照日与原因）。
+
+    优先用不晚于 ``as_of`` 的每日快照（当日真值）；该日期早于首份快照时
+    回退到历史区间表，二者都无法给出结论才返回 ``unknown``。
+    """
     from src.data.services.st_status_service import normalize_ts_code  # noqa: PLC0415
 
     result: dict[str, Any] = {
         'code': normalize_ts_code(code) or str(code).upper(),
         'status': UNKNOWN, 'name': '', 'source': SOURCE_MISSING,
         'as_of': None, 'reason': 'no_snapshot',
+        'coverage_start': None, 'coverage_end': None,
+        'interval_start': None, 'interval_end': None,
     }
     if store_root is None:
         from src.data.local_store.store import resolve_store_root  # noqa: PLC0415
@@ -197,19 +207,42 @@ def get_st_status_detail(
 
         store_root = resolve_store_root(get_config())
     frame, day = load_snapshot(store_root, as_of)
-    if frame is None or day is None:
-        return result
-    rows = frame.filter(pl.col('code') == result['code']).to_dicts()
-    if not rows:
+    if frame is not None and day is not None:
+        rows = frame.filter(pl.col('code') == result['code']).to_dicts()
+        if rows:
+            row = rows[0]
+            result.update({
+                'status': row['status'], 'name': row['name'], 'source': row['source'],
+                'as_of': day.isoformat(), 'reason': row['reason'] or '',
+            })
+            if row['status'] != UNKNOWN:
+                return result
+            result['reason'] = row['reason'] or 'snapshot_unknown'
+    history = _history_detail(result['code'], as_of, store_root)
+    if history is not None:
+        return history
+    if frame is not None and day is not None:
         result['as_of'] = day.isoformat()
         result['reason'] = 'code_not_covered'
-        return result
-    row = rows[0]
-    result.update({
-        'status': row['status'], 'name': row['name'], 'source': row['source'],
-        'as_of': day.isoformat(), 'reason': row['reason'] or '',
-    })
     return result
+
+
+def _history_detail(code: str, as_of: Any, store_root: Path | str) -> dict[str, Any] | None:
+    """历史区间表判定；无可信记录返回 ``None`` 交给快照兜底。"""
+    from src.data import st_history  # noqa: PLC0415
+
+    if not st_history.intervals_path(store_root).is_file():
+        return None
+    hit = st_history.status_at(store_root, code, as_of)
+    if hit.status == UNKNOWN:
+        return None
+    return {
+        'code': code, 'status': hit.status, 'name': '',
+        'source': SOURCE_ST_HISTORY, 'as_of': str(as_of or ''),
+        'reason': hit.reason, 'coverage_start': hit.coverage_start,
+        'coverage_end': hit.coverage_end, 'interval_start': hit.start,
+        'interval_end': hit.end, 'flag': hit.flag,
+    }
 
 
 def get_st_status(
@@ -222,7 +255,11 @@ def get_st_status(
 def get_st_intervals(
     code: str, start: Any, end: Any, *, store_root: Path | str | None = None,
 ) -> list[dict[str, Any]]:
-    """按已累积快照返回 [start, end] 内的 ST 状态区间（不外推、不补洞）。"""
+    """返回 [start, end] 内的 ST 状态区间。
+
+    有历史区间表时优先使用（区间外但落在可信窗口内的空档显式标 ``non_st``）；
+    否则按已累积快照拼接（不外推、不补洞）。
+    """
     from src.data.services.st_status_service import normalize_ts_code  # noqa: PLC0415
 
     start_day = _as_date(start)
@@ -233,6 +270,15 @@ def get_st_intervals(
 
         store_root = resolve_store_root(get_config())
     target = normalize_ts_code(code) or str(code).upper()
+    from src.data import st_history  # noqa: PLC0415
+
+    if st_history.intervals_path(store_root).is_file():
+        historical = st_history.intervals_for_backtest(
+            store_root, [target], start_day, end_day).get(target)
+        if historical:
+            return [{'status': ST if item['is_st'] else NON_ST,
+                      'start': item['start_date'], 'end': item['end_date']}
+                    for item in historical]
     series: list[tuple[date, str]] = []
     for day, path in _snapshot_files(store_root):
         if (start_day is not None and day < start_day) \
@@ -255,19 +301,23 @@ def get_st_intervals(
 
 
 def history_coverage(store_root: Path | str | None = None) -> dict[str, Any]:
-    """历史可回溯性：本地方案只能从首份快照起累积，早期日期不可回溯。"""
+    """历史可回溯性：区间表覆盖范围 + 每日快照累积情况。"""
     if store_root is None:
         from src.data.local_store.store import resolve_store_root  # noqa: PLC0415
         from src.utils.config import get_config  # noqa: PLC0415
 
         store_root = resolve_store_root(get_config())
     files = _snapshot_files(store_root)
+    from src.data import st_history  # noqa: PLC0415
+
+    hist = st_history.coverage_summary(store_root)
     return {
-        'backfillable': False,
+        'backfillable': bool(hist.get('available')),
         'snapshots': len(files),
         'first_snapshot': files[0][0].isoformat() if files else None,
         'last_snapshot': files[-1][0].isoformat() if files else None,
-        'note': '本地方案无戴帽/摘帽日期，早于首份快照的日期只能返回 unknown',
+        'history': hist,
+        'note': '历史日期由区间表判定；无记录的标的仍返回 unknown，不做非 ST 默认',
     }
 
 

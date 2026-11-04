@@ -8,7 +8,8 @@
 
 from typing import Any
 
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QFrame, QScrollArea, QVBoxLayout, QWidget
 
 
 class MainWindowAdviceMixin:
@@ -26,7 +27,17 @@ class MainWindowAdviceMixin:
 
         from src.ui.advice import AdvicePage
         self.advice_page = AdvicePage(host=self)
-        layout.addWidget(self.advice_page)
+
+        # 整页套竖向滚动容器：该页自身最小高度约 795px，不套滚动会把整个主窗口
+        # 的最小高度撑到 929px，导致技术分析页在 1024×600 下被窗口底边裁掉。
+        # 页面内部布局不变，窗口变矮时由该页自身滚动。
+        self.advice_scroll_area = QScrollArea()
+        self.advice_scroll_area.setWidgetResizable(True)
+        self.advice_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.advice_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.advice_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.advice_scroll_area.setWidget(self.advice_page)
+        layout.addWidget(self.advice_scroll_area)
 
         self._advice_loaded = False
         self.tab_widget.currentChanged.connect(self._on_center_tab_changed)

@@ -18,6 +18,7 @@ import polars as pl
 from loguru import logger
 
 from src.alpha.calculator.alpha_calculator import calculate_factors_cross_sectional
+from src.data.local_store.store import LocalQuoteStore
 
 PRICE_COLUMNS = ('open', 'high', 'low', 'close')
 FACTOR_TYPES = ('price_momentum', 'volatility', 'volume', 'technical', 'risk')
@@ -94,6 +95,7 @@ def load_panel(root: Path, start: date, end: date,
     if missing:
         logger.warning(f'{len(missing)} 只标的不在本地列存中，已跳过: {missing[:5]}')
 
+    quote_store = LocalQuoteStore(root / 'data' / 'local_store')
     frames: List[pl.DataFrame] = []
     skipped = 0
     for code in codes:
@@ -101,7 +103,9 @@ def load_panel(root: Path, start: date, end: date,
         if path is None:
             continue
         try:
-            frame = pl.read_parquet(path)
+            frame = quote_store.read_file(asset, code, with_factors=True)
+            if frame is None:
+                raise FileNotFoundError(path)
         except Exception as exc:  # noqa: BLE001 - 单个坏文件不应中断整批加载
             logger.warning(f'读取 {code} 失败，已跳过: {exc}')
             skipped += 1

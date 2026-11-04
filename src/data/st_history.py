@@ -1,0 +1,1338 @@
+#!/usr/bin/env python3
+
+"""历史 ST 状态区间表（网络取数 + 本地列存落地）。
+
+与 :mod:`src.data.risk_flags` 的「每日快照」互补：快照只知道当日名单，本模块
+从「证券简称变更时间序列」重建**历史区间**，使任意历史日期都能判定某只股票
+当时是否被实施风险警示。
+
+数据源（实测结论，2026-11-04）：
+
+- 深交所官方「简称变更」表（经 akshare ``stock_info_sz_change_name``）：
+  1994 年至今 7,500+ 条带日期记录，含变更前/后简称，**深市可完整重建**；
+- 巨潮资讯公告检索（``cninfo`` hisAnnouncement）：沪市/北交所没有官方简称
+  变更表，只能按「风险警示 / 特别处理」公告标题重建，2002 年起有记录，
+  2005 年后可用性稳定；
+- 上交所/深交所暂停终止上市名单：辅助校验已退市标的的末段状态；
+- 2026-11-03 的 ``meta/st_status`` 快照：作为当日真值锚点合并进来。
+
+落盘位置（本地列存，不写数据库）::
+
+    data/local_store/meta/st/st_intervals.parquet   # 区间表
+    data/local_store/meta/st/st_coverage.parquet    # 每标的状态可信窗口
+    data/local_store/meta/st/coverage.json          # 全局覆盖说明
+    data/local_store/meta/st/raw/*.parquet          # 原始抓取缓存（增量续跑）
+    data/local_store/meta/st/fetch_state.json       # 分年抓取完成状态
+    logs/st_history/<run>/...                       # 原始响应留档
+
+查询语义（与 ``risk_flags.get_st_status`` 对齐，硬红线）：
+
+- 区间命中 → ``st``；
+- 区间未命中但 ``as_of`` 落在该标的可信窗口内 → ``non_st``；
+- 其余一律 ``unknown``——**绝不默认 non_st**，避免前视偏差。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import time
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Any, Iterable
+
+import polars as pl
+import requests
+from loguru import logger
+
+FLAG_ST = 'st'
+FLAG_STAR = '*st'
+FLAG_DELISTED = 'delisted'
+FLAG_ANY = '*'
+
+STATUS_ST = 'st'
+STATUS_NON_ST = 'non_st'
+STATUS_UNKNOWN = 'unknown'
+
+SOURCE_SZ_OFFICIAL = 'szse_change_name'
+SOURCE_CNINFO = 'cninfo_notice'
+SOURCE_SH_DELIST = 'sse_delist'
+SOURCE_SNAPSHOT = 'snapshot_anchor'
+
+PRECISION_EXACT = 'exact'
+PRECISION_ANNOUNCEMENT = 'announcement'
+PRECISION_SNAPSHOT = 'snapshot'
+PRECISION_INFERRED = 'inferred'
+
+# 巨潮公告检索在 2005 年前明显不完整（2002 年仅 4 条「风险警示」），
+# 沪市/北交所只在 2005 年之后按「无公告即非 ST」推断，之前保持 unknown。
+CNINFO_SAFE_START = date(2005, 1, 1)
+
+CNINFO_URL = 'http://www.cninfo.com.cn/new/hisAnnouncement/query'
+CNINFO_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    'Referer': 'http://www.cninfo.com.cn/new/commonUrl?url=disclosure/list/notice',
+    'X-Requested-With': 'XMLHttpRequest',
+}
+CNINFO_KEYWORDS = ('风险警示', '特别处理')
+CNINFO_PAGE_SIZE = 30
+CNINFO_SLEEP = 0.35
+
+_TAG_RE = re.compile(r'<[^>]+>')
+_SPACE_RE = re.compile(r'[\s\u3000]+')
+_ST_PREFIX_RE = re.compile(r'^(S?\*ST|SST|PT|ST)')
+_DATE_IN_TITLE_RE = re.compile(r'自(\d{4})年(\d{1,2})月(\d{1,2})日起')
+_DELIST_RE = re.compile(r'^(退市|.*退)$')
+
+# 公告标题里的噪声：进展/提示/可能/申请/中介意见等都不是生效事件
+_TITLE_NOISE = (
+    '进展', '措施', '提示', '可能', '拟', '申请', '核查意见', '法律意见',
+    '独立财务顾问', '意见', '说明', '回复', '不予', '异常波动', '风险提示',
+    '停牌核查', '关注函', '更正', '补充公告', '预告', '撤销申请', '陈述', '存在',
+)
+
+_IMPL_ST = re.compile(r'(?:实施|实行)(?:其他风险警示|其他特别处理|特别处理)')
+_IMPL_STAR = re.compile(r'(?:实施|实行)(?:退市风险警示|警示存在终止上市风险的特别处理)')
+_LIFT_STAR = re.compile(r'(?:撤销|撤消|解除)(?:.{0,8}?)(?:退市风险警示)')
+_LIFT_ST = re.compile(r'(?:撤销|撤消|解除)(?:.{0,8}?)(?:其他风险警示|其他特别处理|特别处理)')
+_LIFT_ANY = re.compile(r'(?:撤销|撤消|解除)(?:.{0,8}?)(?:风险警示)')
+
+_INTERVAL_SCHEMA = {
+    'ts_code': pl.Utf8, 'start_date': pl.Date, 'end_date': pl.Date,
+    'flag': pl.Utf8, 'source': pl.Utf8, 'precision': pl.Utf8,
+    'fetched_at': pl.Datetime,
+}
+_COVERAGE_SCHEMA = {
+    'ts_code': pl.Utf8, 'coverage_start': pl.Date, 'coverage_end': pl.Date,
+    'source': pl.Utf8, 'fetched_at': pl.Datetime,
+}
+_RAW_NOTICE_SCHEMA = {
+    'notice_id': pl.Utf8, 'sec_code': pl.Utf8, 'sec_name': pl.Utf8,
+    'title': pl.Utf8, 'publish_date': pl.Date,
+}
+_RAW_SZ_SCHEMA = {
+    'code': pl.Utf8, 'change_date': pl.Date, 'name_prev': pl.Utf8, 'name_new': pl.Utf8,
+}
+_ORG_SCHEMA = {'code': pl.Utf8, 'org_id': pl.Utf8}
+_CLOSURE_SCHEMA = {'ts_code': pl.Utf8, 'close_date': pl.Date, 'evidence': pl.Utf8}
+
+_INTERVAL_CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
+_COVERAGE_CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
+
+
+# ----------------------------------------------------------------------
+# 名称归一与分类
+# ----------------------------------------------------------------------
+def clean_name(value: Any) -> str:
+    """去掉 HTML 标签、全角/半角空白，便于前缀判定。"""
+    if value is None:
+        return ''
+    text = _TAG_RE.sub('', str(value))
+    return _SPACE_RE.sub('', text).upper()
+
+
+def flag_from_name(value: Any) -> str:
+    """按证券简称前缀返回 ``st`` / ``*st`` / ``delisted`` / 空串。"""
+    name = clean_name(value)
+    if not name:
+        return ''
+    if name.startswith('退市') or name.endswith('退'):
+        return FLAG_DELISTED
+    match = _ST_PREFIX_RE.match(name)
+    if not match:
+        return ''
+    prefix = match.group(1)
+    return FLAG_STAR if '*ST' in prefix else FLAG_ST
+
+
+def classify_title(title: Any) -> list[tuple[str, str]]:
+    """把公告标题解析成 ``[(flag, action)]``；action ∈ {impl, lift}。"""
+    text = clean_name(title)
+    if not text or any(marker in text for marker in _TITLE_NOISE):
+        return []
+    actions: list[tuple[str, str]] = []
+    if _IMPL_STAR.search(text):
+        actions.append((FLAG_STAR, 'impl'))
+    if _IMPL_ST.search(text):
+        actions.append((FLAG_ST, 'impl'))
+    if _LIFT_STAR.search(text):
+        actions.append((FLAG_STAR, 'lift'))
+    if _LIFT_ST.search(text):
+        actions.append((FLAG_ST, 'lift'))
+    if not actions and _LIFT_ANY.search(text):
+        # 「撤销风险警示」未点明类型：闭合当前打开的任意 ST 区间
+        actions.append((FLAG_ANY, 'lift'))
+    # 「撤销退市风险警示并实行其他特别处理」这类同日切换：先摘星再戴帽
+    actions.sort(key=lambda item: 0 if item[1] == 'lift' else 1)
+    return actions
+
+
+def _event_date(title: str, publish: date) -> date:
+    match = _DATE_IN_TITLE_RE.search(clean_name(title))
+    if match:
+        with_date = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        return with_date
+    # 公告多在收盘后发布、次一交易日生效；+1 天在交易日序列上等价
+    return publish + timedelta(days=1)
+
+
+def _code_to_ts(code: str) -> str:
+    digits = str(code).strip()[-6:]
+    if not digits.isdigit():
+        return ''
+    if digits[0] in ('6', '9'):
+        return f'{digits}.SH'
+    if digits[0] in ('0', '3'):
+        return f'{digits}.SZ'
+    if digits[0] in ('4', '8'):
+        return f'{digits}.BJ'
+    return ''
+
+
+# ----------------------------------------------------------------------
+# 路径
+# ----------------------------------------------------------------------
+def st_dir(store_root: Path | str) -> Path:
+    return Path(store_root) / 'meta' / 'st'
+
+
+def intervals_path(store_root: Path | str) -> Path:
+    return st_dir(store_root) / 'st_intervals.parquet'
+
+
+def coverage_path(store_root: Path | str) -> Path:
+    return st_dir(store_root) / 'st_coverage.parquet'
+
+
+def coverage_json_path(store_root: Path | str) -> Path:
+    return st_dir(store_root) / 'coverage.json'
+
+
+def raw_dir(store_root: Path | str) -> Path:
+    return st_dir(store_root) / 'raw'
+
+
+def state_path(store_root: Path | str) -> Path:
+    return st_dir(store_root) / 'fetch_state.json'
+
+
+# ----------------------------------------------------------------------
+# 抓取（限速 + 退避 + 原始留档 + 断点续跑）
+# ----------------------------------------------------------------------
+def _cninfo_payload(keyword: str, year: int, page: int) -> dict[str, Any]:
+    return {
+        'pageNum': page, 'pageSize': CNINFO_PAGE_SIZE, 'column': 'sse',
+        'tabName': 'fulltext', 'plate': '', 'stock': '', 'searchkey': keyword,
+        'secid': '', 'category': '', 'trade': '',
+        'seDate': f'{year}-01-01~{year}-12-31',
+        'sortName': '', 'sortType': '', 'isHLtitle': 'true',
+    }
+
+
+def _post_with_retry(session: requests.Session, payload: dict[str, Any],
+                     retries: int = 3) -> dict[str, Any]:
+    delay = 2.0
+    last_exc: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            resp = session.post(CNINFO_URL, data=payload, headers=CNINFO_HEADERS, timeout=25)
+            if resp.status_code == 200:
+                return dict(resp.json())
+            last_exc = RuntimeError(f'cninfo HTTP {resp.status_code}')
+            if resp.status_code not in (403, 429, 500, 502, 503, 504) or attempt >= retries:
+                raise last_exc
+        except (requests.RequestException, ValueError) as exc:  # 网络/JSON 解析失败
+            last_exc = exc
+            if attempt >= retries:
+                raise
+        logger.warning(f'[st] 巨潮请求失败，退避 {delay:.0f}s 重试: {last_exc}')
+        time.sleep(delay)
+        delay *= 2
+    raise RuntimeError(f'cninfo 请求失败: {last_exc}')
+
+
+def fetch_cninfo_chunk(keyword: str, year: int, session: requests.Session) -> dict[str, Any]:
+    """抓取「关键词 + 年份」的全部公告页（单次 30 条/页）。"""
+    rows: list[dict[str, Any]] = []
+    total = 0
+    page = 1
+    while page <= 400:
+        data = _post_with_retry(session, _cninfo_payload(keyword, year, page))
+        if page == 1:
+            total = int(data.get('totalRecordNum') or 0)
+        for item in data.get('announcements') or []:
+            stamp = item.get('announcementTime')
+            rows.append({
+                'notice_id': str(item.get('announcementId') or ''),
+                'sec_code': str(item.get('secCode') or '').zfill(6),
+                'sec_name': str(item.get('secName') or ''),
+                'title': _TAG_RE.sub('', str(item.get('announcementTitle') or '')),
+                'publish_date': date.fromtimestamp(float(stamp) / 1000.0) if stamp else None,
+            })
+        if not data.get('hasMore') or not data.get('announcements'):
+            break
+        if len(rows) >= total > 0:
+            break
+        page += 1
+        time.sleep(CNINFO_SLEEP)
+    complete = len(rows) >= total
+    return {'keyword': keyword, 'year': year, 'total': total,
+            'fetched': len(rows), 'complete': complete, 'rows': rows}
+
+
+def _fetch_sz_official() -> list[dict[str, Any]]:
+    import akshare as ak  # 重量级可选依赖，延迟导入
+
+    frame = ak.stock_info_sz_change_name(symbol='简称变更')
+    rows: list[dict[str, Any]] = []
+    for item in frame.itertuples(index=False):
+        change_date = item.变更日期
+        rows.append({
+            'code': _code_to_ts(str(item.证券代码)),
+            'change_date': change_date if isinstance(change_date, date)
+            else date.fromisoformat(str(change_date)[:10]),
+            'name_prev': str(item.变更前简称),
+            'name_new': str(item.变更后简称),
+        })
+    return rows
+
+
+def _load_frame(path: Path, schema: dict[str, Any]) -> pl.DataFrame:
+    if path.is_file():
+        return pl.read_parquet(path)
+    return pl.DataFrame(schema=schema)
+
+
+def _write_parquet_atomic(frame: pl.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix('.tmp.parquet')
+    frame.write_parquet(tmp)
+    os.replace(tmp, path)
+
+
+def sync_sources(store_root: Path | str, *, years: Iterable[int] | None = None,
+                 force: bool = False, log_root: Path | str = Path('logs/st_history'),
+                 with_sz: bool = True) -> dict[str, Any]:
+    """抓取并落盘原始数据（增量：已完成的年份跳过，当年始终刷新）。"""
+    root = Path(store_root)
+    rdir = raw_dir(root)
+    rdir.mkdir(parents=True, exist_ok=True)
+    state: dict[str, Any] = {}
+    if state_path(root).is_file():
+        state = json.loads(state_path(root).read_text(encoding='utf-8'))
+
+    run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+    archive = Path(log_root) / run_id
+    archive.mkdir(parents=True, exist_ok=True)
+    report: dict[str, Any] = {'run_id': run_id, 'archive': str(archive), 'chunks': []}
+
+    if with_sz:
+        sz_rows = _fetch_sz_official()
+        sz_frame = pl.DataFrame(sz_rows, schema=_RAW_SZ_SCHEMA)
+        _write_parquet_atomic(sz_frame, rdir / 'sz_change_name.parquet')
+        sz_frame.write_csv(archive / 'sz_change_name.csv')
+        state['sz'] = {'fetched_at': datetime.now().isoformat(timespec='seconds'),
+                       'rows': sz_frame.height}
+        report['sz_rows'] = sz_frame.height
+
+    today_year = date.today().year
+    target_years = list(years) if years else list(range(2002, today_year + 1))
+    notices = _load_frame(rdir / 'cninfo_notices.parquet', _RAW_NOTICE_SCHEMA)
+    session = requests.Session()
+    cn_state: dict[str, dict[str, Any]] = state.setdefault('cninfo', {})
+    for keyword in CNINFO_KEYWORDS:
+        bucket = cn_state.setdefault(keyword, {})
+        for year in target_years:
+            key = str(year)
+            cached = bucket.get(key) or {}
+            if not force and cached.get('complete') and year != today_year:
+                continue
+            chunk = fetch_cninfo_chunk(keyword, year, session)
+            bucket[key] = {'total': chunk['total'], 'fetched': chunk['fetched'],
+                           'complete': chunk['complete'],
+                           'fetched_at': datetime.now().isoformat(timespec='seconds')}
+            if chunk['rows']:
+                new_frame = pl.DataFrame(chunk['rows'], schema=_RAW_NOTICE_SCHEMA)
+                notices = pl.concat([notices, new_frame], how='vertical_relaxed')
+            (archive / f'cninfo_{keyword}_{year}.json').write_text(
+                json.dumps(chunk['rows'], ensure_ascii=False, default=str),
+                encoding='utf-8')
+            report['chunks'].append({'keyword': keyword, 'year': year,
+                                     'total': chunk['total'], 'fetched': chunk['fetched'],
+                                     'complete': chunk['complete']})
+            logger.info(f'[st] {keyword} {year}: {chunk["fetched"]}/{chunk["total"]}')
+
+    if notices.height:
+        notices = notices.unique(subset=['notice_id'], keep='last').sort(['publish_date', 'notice_id'])
+    _write_parquet_atomic(notices, rdir / 'cninfo_notices.parquet')
+    state['updated_at'] = datetime.now().isoformat(timespec='seconds')
+    state_path(root).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+    report['notice_rows'] = notices.height
+    (archive / 'manifest.json').write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+    return report
+
+
+# ----------------------------------------------------------------------
+# 开区间闭合（沪深缺失摘帽公告时用个股全量公告补证）
+# ----------------------------------------------------------------------
+_CLOSURE_LIFT_RE = re.compile(r'(撤销|撤消).{0,12}(风险警示|特别处理)')
+_CLOSURE_RENAME_RE = re.compile(
+    r'公司名称.{0,25}(?:变更|更名)|(?:证券|股票)简称.{0,25}(?:变更|更名|实施)')
+
+
+def _org_id_map(root: Path, archive: Path, session: requests.Session,
+                force: bool = False) -> dict[str, str]:
+    path = raw_dir(root) / 'org_ids.parquet'
+    if path.is_file() and not force:
+        return dict(pl.read_parquet(path).rows())
+    resp = session.get('http://www.cninfo.com.cn/new/data/szse_stock.json', timeout=25)
+    resp.raise_for_status()
+    items = resp.json().get('stockList') or []
+    rows = [{'code': str(item.get('code') or '').zfill(6), 'org_id': str(item.get('orgId') or '')}
+            for item in items if item.get('code') and item.get('orgId')]
+    frame = pl.DataFrame(rows, schema=_ORG_SCHEMA).unique(subset=['code'], keep='last')
+    _write_parquet_atomic(frame, path)
+    frame.write_csv(archive / 'org_ids.csv')
+    return dict(frame.rows())
+
+
+def _fetch_stock_notices(session: requests.Session, code: str, org_id: str,
+                         start_day: date, end_day: date) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    page = 1
+    while page <= 60:
+        payload = {
+            'pageNum': page, 'pageSize': CNINFO_PAGE_SIZE, 'column': 'sse',
+            'tabName': 'fulltext', 'plate': '',
+            'stock': f'{code},{org_id}', 'searchkey': '', 'secid': '', 'category': '',
+            'trade': '', 'seDate': f'{start_day.isoformat()}~{end_day.isoformat()}',
+            'sortName': '', 'sortType': '', 'isHLtitle': 'true',
+        }
+        data = _post_with_retry(session, payload)
+        anns = data.get('announcements') or []
+        total = int(data.get('totalRecordNum') or 0)
+        for item in anns:
+            stamp = item.get('announcementTime')
+            rows.append({'notice_id': str(item.get('announcementId') or ''),
+                         'sec_code': code,
+                         'sec_name': str(item.get('secName') or ''),
+                         'title': _TAG_RE.sub('', str(item.get('announcementTitle') or '')),
+                         'publish_date': date.fromtimestamp(float(stamp) / 1000.0)
+                         if stamp else None})
+        if not anns or not data.get('hasMore') or len(rows) >= total:
+            break
+        page += 1
+        time.sleep(CNINFO_SLEEP)
+    return rows
+
+
+def _closure_candidate(rows: list[dict[str, Any]],
+                       since: date) -> tuple[str, dict[str, Any]] | None:
+    """优先认「撤销风险警示/特别处理」，没有再退到「更名/简称变更」。"""
+    lift: dict[str, Any] | None = None
+    rename: dict[str, Any] | None = None
+    for row in rows:
+        day = row['publish_date']
+        if not day or day < since:
+            continue
+        title = row['title']
+        if any(marker in clean_name(title) for marker in _TITLE_NOISE):
+            continue
+        if _CLOSURE_LIFT_RE.search(title):
+            if lift is None or day < lift['publish_date']:
+                lift = row
+        elif _CLOSURE_RENAME_RE.search(title):
+            if rename is None or day < rename['publish_date']:
+                rename = row
+    if lift is not None:
+        return 'lift', lift
+    if rename is not None:
+        return 'rename', rename
+    return None
+
+
+def resolve_open_closures(store_root: Path | str, *, log_root: Path | str = Path('logs/st_history'),
+                          force: bool = False) -> dict[str, Any]:
+    """对「仍为开区间但快照显示非 ST」的沪市/北交所标的，翻个股公告找摘帽证据。"""
+    root = Path(store_root)
+    intervals = load_intervals(root)
+    snapshot, snap_day = _latest_snapshot(root)
+    if intervals is None or snapshot is None or snap_day is None:
+        return {'targets': 0, 'resolved': 0}
+    open_rows = intervals.filter(
+        pl.col('end_date').is_null()
+        & ((pl.col('ts_code').str.ends_with('.SH')) | (pl.col('ts_code').str.ends_with('.BJ')))
+    ).sort('start_date').to_dicts()
+    if not open_rows:
+        return {'targets': 0, 'resolved': 0}
+    latest_open = {row['ts_code']: row['start_date'] for row in open_rows}
+    non_st_codes = set(snapshot.filter(pl.col('status') == STATUS_NON_ST)['code'].to_list())
+    targets = sorted(code for code in latest_open if code in non_st_codes)
+    if not targets:
+        return {'targets': 0, 'resolved': 0}
+
+    run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+    archive = Path(log_root) / f'{run_id}_closure'
+    archive.mkdir(parents=True, exist_ok=True)
+    session = requests.Session()
+    org_map = _org_id_map(root, archive, session, force=force)
+    existing = _load_frame(raw_dir(root) / 'closure_evidence.parquet', _CLOSURE_SCHEMA)
+    resolved = 0
+    missing_org = 0
+    all_rows: list[dict[str, Any]] = []
+    for code in targets:
+        org_id = org_map.get(code[:6])
+        if not org_id:
+            missing_org += 1
+            continue
+        since = latest_open[code]
+        best: tuple[str, dict[str, Any]] | None = None
+        window_start = since
+        while window_start <= snap_day:
+            window_end = min(snap_day, date(window_start.year + 2, 12, 31))
+            rows = _fetch_stock_notices(session, code[:6], org_id, window_start, window_end)
+            all_rows.extend(rows)
+            candidate = _closure_candidate(rows, since)
+            if candidate is not None and (best is None
+                                          or (best[0] == 'rename' and candidate[0] == 'lift')):
+                best = candidate
+                if candidate[0] == 'lift':
+                    break
+            window_start = window_end + timedelta(days=1)
+        (archive / f'{code}.json').write_text(
+            json.dumps(all_rows, ensure_ascii=False, default=str), encoding='utf-8')
+        all_rows = []
+        if best is None:
+            continue
+        best_row = best[1]
+        existing = pl.concat([existing, pl.DataFrame([{
+            'ts_code': code, 'close_date': best_row['publish_date'],
+            'evidence': best_row['title'][:120]}], schema=_CLOSURE_SCHEMA)], how='vertical')
+        resolved += 1
+        logger.info(f'[st] {code} 开区间以「{best_row["title"][:40]}」于 '
+                    f'{best_row["publish_date"]} 闭合')
+    if existing.height:
+        existing = existing.unique(subset=['ts_code'], keep='last').sort('ts_code')
+        _write_parquet_atomic(existing, raw_dir(root) / 'closure_evidence.parquet')
+    return {'targets': len(targets), 'resolved': resolved,
+            'missing_org': missing_org, 'archive': str(archive)}
+
+
+# ----------------------------------------------------------------------
+# 区间构建
+# ----------------------------------------------------------------------
+@dataclass
+class _Timeline:
+    ts_code: str
+    listing: date
+    segments: list[tuple[date, str]]  # (起始日, flag)
+    source: str
+
+
+def _listing_dates(store_root: Path | str, codes: Iterable[str]) -> dict[str, date]:
+    from src.data.local_store.store import LocalQuoteStore  # noqa: PLC0415
+
+    store = LocalQuoteStore(Path(store_root))
+    out: dict[str, date] = {}
+    for code in codes:
+        cov = store.coverage('stock', code)
+        if cov is not None:
+            out[code] = cov.start
+    return out
+
+
+def _changes_from_sz(frame: pl.DataFrame) -> dict[str, tuple[str, list[tuple[date, str]]]]:
+    """深市官方简称变更 → ``{code: (上市时简称flag, [(变更日, 新flag)])}``。"""
+    out: dict[str, tuple[str, list[tuple[date, str]]]] = {}
+    for key, rows in frame.group_by('code'):
+        code = str(key[0]) if isinstance(key, tuple) else str(key)
+        items = sorted(rows.to_dicts(), key=lambda r: (r['change_date'], r['name_new']))
+        # 同一天多条（A/B 股同步改名等）取最后一条
+        by_date: dict[date, str] = {}
+        for item in items:
+            by_date[item['change_date']] = flag_from_name(item['name_new'])
+        out[code] = (flag_from_name(items[0]['name_prev']), sorted(by_date.items()))
+    return out
+
+
+def _segments_from_notices(notices: pl.DataFrame, *, include_sz: bool = False
+                           ) -> dict[str, list[tuple[date, str, str]]]:
+    """巨潮公告 → 每标的 (生效日, flag, action)。
+
+    默认剔除深市（深市有官方简称变更表，精度更高）；交叉校验时需要保留深市，
+    以便用公告法的结果检验官方表的召回率。
+    """
+    out: dict[str, list[tuple[date, str, str]]] = {}
+    for row in notices.to_dicts():
+        ts_code = _code_to_ts(row['sec_code'])
+        if not ts_code or (not include_sz and ts_code.endswith('.SZ')) \
+                or row['publish_date'] is None:
+            continue
+        actions = classify_title(row['title'])
+        if not actions:
+            continue
+        effective = _event_date(row['title'], row['publish_date'])
+        out.setdefault(ts_code, []).extend(
+            (effective, flag, action) for flag, action in actions)
+    for code in out:
+        out[code].sort(key=lambda item: (item[0], 0 if item[2] == 'lift' else 1))
+    return out
+
+
+def _build_timeline(code: str, prev_flag: str,
+                    changes: list[tuple[date, str]], listing: date,
+                    today: date, source: str) -> tuple[_Timeline, date | None]:
+    """把「上市时简称 + 变更序列」压成状态段（跳过重复状态与退市）。"""
+    state_segments: list[tuple[date, str]] = []
+    delist_date: date | None = None
+    for start, flag in [(listing, prev_flag), *changes]:
+        if flag == FLAG_DELISTED:
+            delist_date = start
+            # 退市当日闭合此前 ST 区间（退市后不可交易，覆盖窗口到此为止）
+            if state_segments and state_segments[-1][1] != '':
+                state_segments.append((start, ''))
+            break
+        start = max(start, listing)
+        if state_segments and state_segments[-1][1] == flag:
+            continue
+        state_segments.append((start, flag))
+    return _Timeline(code, listing, state_segments, source), delist_date
+
+
+def _cninfo_timeline(code: str, events: list[tuple[date, str, str]], listing: date,
+                     today: date) -> tuple[list[tuple[date, str]], date | None]:
+    start = max(listing, CNINFO_SAFE_START)
+    segments: list[tuple[date, str]] = []
+    for effective, flag, action in events:
+        if effective < start:
+            continue
+        if action == 'lift':
+            # 空 flag 段只用来闭合上一段 ST，不单独成为状态记录
+            if segments and segments[-1][1] != '' and (flag == FLAG_ANY
+                                                       or segments[-1][1] == flag):
+                segments.append((effective, ''))
+        elif not segments or segments[-1][1] != flag:
+            segments.append((effective, flag))
+    return segments, None
+
+
+def _segments_to_intervals(code: str, segments: list[tuple[date, str]], coverage_end: date,
+                           today: date, source: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, (start, flag) in enumerate(segments):
+        if flag not in (FLAG_ST, FLAG_STAR):
+            continue
+        nxt = segments[index + 1][0] if index + 1 < len(segments) else None
+        end = nxt - timedelta(days=1) if nxt else None
+        if end is not None and end > coverage_end:
+            end = coverage_end
+        rows.append({
+            'ts_code': code, 'start_date': start, 'end_date': end, 'flag': flag,
+            'source': source,
+            'precision': PRECISION_EXACT if source == SOURCE_SZ_OFFICIAL
+            else PRECISION_ANNOUNCEMENT,
+            'fetched_at': datetime.now(),
+        })
+    return rows
+
+
+def _latest_snapshot(store_root: Path | str) -> tuple[pl.DataFrame | None, date | None]:
+    dir_path = Path(store_root) / 'meta' / 'st_status'
+    files = sorted(path for path in dir_path.glob('st_status_*.parquet')) \
+        if dir_path.is_dir() else []
+    if not files:
+        return None, None
+    path = files[-1]
+    digits = path.stem.split('_')[-1]
+    day = datetime.strptime(digits[:8], '%Y%m%d').date()
+    return pl.read_parquet(path), day
+
+
+def _merge_snapshot(interval_frame: pl.DataFrame, coverage_frame: pl.DataFrame,
+                    snapshot: pl.DataFrame, snap_day: date,
+                    today: date) -> tuple[pl.DataFrame, pl.DataFrame, dict[str, Any]]:
+    """把快照当日状态并入区间表：缺区间则补锚点，冲突则以快照为准闭合。"""
+    anchors = 0
+    closes = 0
+    conflicts: list[dict[str, Any]] = []
+    extra_coverage: list[dict[str, Any]] = []
+    known = set(coverage_frame['ts_code'].to_list())
+    rows = interval_frame.to_dicts()
+    cov_rows = coverage_frame.to_dicts()
+    for item in snapshot.filter(pl.col('status') != STATUS_UNKNOWN).to_dicts():
+        code = str(item['code'])
+        flag = flag_from_name(item['name'])
+        if item['status'] == STATUS_ST and flag:
+            covering = [row for row in rows
+                        if row['ts_code'] == code and row['start_date'] <= snap_day
+                        and (row['end_date'] is None or row['end_date'] >= snap_day)]
+            if covering:
+                continue
+            rows.append({
+                'ts_code': code, 'start_date': snap_day, 'end_date': None,
+                'flag': flag, 'source': SOURCE_SNAPSHOT,
+                'precision': PRECISION_SNAPSHOT, 'fetched_at': datetime.now(),
+            })
+            anchors += 1
+            if code not in known:
+                extra_coverage.append({
+                    'ts_code': code, 'coverage_start': snap_day,
+                    'coverage_end': today, 'source': SOURCE_SNAPSHOT,
+                    'fetched_at': datetime.now()})
+            else:
+                for cov_row in cov_rows:
+                    if cov_row['ts_code'] == code:
+                        cov_row['coverage_start'] = min(cov_row['coverage_start'], snap_day)
+        elif item['status'] == STATUS_NON_ST:
+            for row in rows:
+                if row['ts_code'] != code:
+                    continue
+                if row['start_date'] <= snap_day and (row['end_date'] is None
+                                                      or row['end_date'] >= snap_day):
+                    row['end_date'] = snap_day - timedelta(days=1)
+                    row['precision'] = PRECISION_SNAPSHOT
+                    closes += 1
+                    conflicts.append({
+                        'ts_code': code, 'snapshot': 'non_st',
+                        'interval_flag': row['flag'],
+                        'interval_start': row['start_date'].isoformat()})
+    interval_frame = pl.DataFrame(rows, schema=_INTERVAL_SCHEMA)
+    coverage_frame = pl.DataFrame(cov_rows, schema=_COVERAGE_SCHEMA)
+    if extra_coverage:
+        coverage_frame = pl.concat([
+            coverage_frame,
+            pl.DataFrame(extra_coverage, schema=_COVERAGE_SCHEMA)], how='vertical')
+    return interval_frame, coverage_frame, {
+        'anchors': anchors, 'closes': closes, 'conflicts': conflicts}
+
+
+def _local_codes(store_root: Path | str) -> list[str]:
+    from src.data.local_store.store import LocalQuoteStore  # noqa: PLC0415
+
+    try:
+        return LocalQuoteStore(Path(store_root)).codes('stock')
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def build_store(store_root: Path | str, *, apply_snapshot: bool = True) -> dict[str, Any]:
+    """从原始缓存重建区间表与覆盖窗口（幂等，原子替换）。"""
+    root = Path(store_root)
+    rdir = raw_dir(root)
+    today = date.today()
+    sz_raw = _load_frame(rdir / 'sz_change_name.parquet', _RAW_SZ_SCHEMA)
+    notices = _load_frame(rdir / 'cninfo_notices.parquet', _RAW_NOTICE_SCHEMA)
+    if sz_raw.height == 0 and notices.height == 0:
+        raise RuntimeError('无原始数据，请先执行 sync')
+
+    sz_changes = _changes_from_sz(sz_raw) if sz_raw.height else {}
+    notice_events = _segments_from_notices(notices) if notices.height else {}
+    # 深交所简称变更表是完整登记册：无任何记录的深市标的即「上市至今未改名」
+    # → 全程非 ST。沪市/北交所没有官方登记册，只对出现过 ST 记录的标的建窗口。
+    local_codes = [code for code in _local_codes(root) if code.endswith('.SZ')]
+    all_codes = {code for code in
+                 set(sz_changes) | set(notice_events) | set(local_codes) if code}
+    listings = _listing_dates(root, all_codes)
+
+    intervals: list[dict[str, Any]] = []
+    coverage: list[dict[str, Any]] = []
+    for code in sorted(all_codes):
+        listing = listings.get(code, date(1990, 1, 1))
+        if code.endswith('.SZ'):
+            prev_flag, changes = sz_changes.get(code, ('', []))
+            timeline, delist = _build_timeline(
+                code, prev_flag, changes, listing, today, SOURCE_SZ_OFFICIAL)
+            cov_start = listing
+            cov_end = min(delist, today) if delist else today
+            intervals.extend(_segments_to_intervals(
+                code, timeline.segments, cov_end, today, SOURCE_SZ_OFFICIAL))
+        else:
+            segments, _ = _cninfo_timeline(code, notice_events.get(code, []), listing, today)
+            cov_start = max(listing, CNINFO_SAFE_START)
+            cov_end = today
+            intervals.extend(_segments_to_intervals(
+                code, segments, cov_end, today, SOURCE_CNINFO))
+        coverage.append({'ts_code': code, 'coverage_start': cov_start,
+                         'coverage_end': cov_end, 'source': 'merged',
+                         'fetched_at': datetime.now()})
+
+    interval_frame = pl.DataFrame(intervals, schema=_INTERVAL_SCHEMA)
+    coverage_frame = pl.DataFrame(coverage, schema=_COVERAGE_SCHEMA)
+
+    # 开区间闭合：用个股全量公告找到的摘帽/更名证据
+    closure = _load_frame(rdir / 'closure_evidence.parquet', _CLOSURE_SCHEMA)
+    closure_fixed = 0
+    if closure.height:
+        mapping = {row['ts_code']: row['close_date'] for row in closure.to_dicts()}
+        rows = interval_frame.to_dicts()
+        for row in rows:
+            close_day = mapping.get(row['ts_code'])
+            if row['end_date'] is None and close_day and close_day > row['start_date']:
+                row['end_date'] = close_day - timedelta(days=1)
+                row['precision'] = PRECISION_INFERRED
+                closure_fixed += 1
+        interval_frame = pl.DataFrame(rows, schema=_INTERVAL_SCHEMA)
+
+    # 合并快照：当日真值锚点，防止公告缺失导致历史/当前状态错判
+    snapshot, snap_day = _latest_snapshot(root)
+    if apply_snapshot and snapshot is not None and snap_day is not None:
+        interval_frame, coverage_frame, stats = _merge_snapshot(
+            interval_frame, coverage_frame, snapshot, snap_day, today)
+    else:
+        stats = {'anchors': 0, 'closes': 0, 'conflicts': []}
+    conflicts = stats['conflicts']
+
+    frame = interval_frame.unique(
+        subset=['ts_code', 'start_date', 'end_date', 'flag', 'source'], keep='last'
+    ).sort(['ts_code', 'start_date'])
+    coverage_frame = coverage_frame.unique(subset=['ts_code'], keep='last') \
+        .sort('ts_code')
+
+    _write_parquet_atomic(frame, intervals_path(root))
+    _write_parquet_atomic(coverage_frame, coverage_path(root))
+    summary = {
+        'built_at': datetime.now().isoformat(timespec='seconds'),
+        'snapshot_date': snap_day.isoformat() if snap_day else None,
+        'sources': [SOURCE_SZ_OFFICIAL, SOURCE_CNINFO, SOURCE_SNAPSHOT],
+        'sse_bse_safe_start': CNINFO_SAFE_START.isoformat(),
+        'interval_rows': frame.height,
+        'security_count': frame['ts_code'].n_unique(),
+        'coverage_rows': coverage_frame.height,
+        'snapshot_anchors': stats['anchors'],
+        'snapshot_conflicts': len(conflicts),
+        'snapshot_closed_intervals': stats['closes'],
+        'closure_fixed_intervals': closure_fixed,
+    }
+    coverage_json_path(root).write_text(
+        json.dumps({**summary, 'conflicts': conflicts[:200]}, ensure_ascii=False, indent=2),
+        encoding='utf-8')
+    logger.info(f'[st] 区间表已落盘: {intervals_path(root)}（{frame.height} 行 / '
+                f'{frame["ts_code"].n_unique()} 只）')
+    return summary
+
+
+# ----------------------------------------------------------------------
+# 查询
+# ----------------------------------------------------------------------
+def _read_cached(path: Path, cache: dict[str, tuple[int, pl.DataFrame]],
+                 schema: dict[str, Any]) -> pl.DataFrame | None:
+    if not path.is_file():
+        return None
+    mtime = path.stat().st_mtime_ns
+    cached = cache.get(str(path))
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    frame = pl.read_parquet(path)
+    cache[str(path)] = (mtime, frame)
+    return frame
+
+
+def load_intervals(store_root: Path | str) -> pl.DataFrame | None:
+    return _read_cached(intervals_path(store_root), _INTERVAL_CACHE, _INTERVAL_SCHEMA)
+
+
+def load_coverage(store_root: Path | str) -> pl.DataFrame | None:
+    return _read_cached(coverage_path(store_root), _COVERAGE_CACHE, _COVERAGE_SCHEMA)
+
+
+@dataclass(frozen=True)
+class StHistoryResult:
+    """单标的单日 ST 历史判定结果。"""
+
+    status: str
+    flag: str | None = None
+    source: str = ''
+    start: date | None = None
+    end: date | None = None
+    coverage_start: date | None = None
+    coverage_end: date | None = None
+    reason: str = ''
+    suspected: bool = False
+
+
+def _as_date(value: Any) -> date | None:
+    if value is None or value == '':
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value)
+    for fmt in ('%Y-%m-%d', '%Y%m%d'):
+        try:
+            return datetime.strptime(text[:10], fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _normalize(code: str) -> str:
+    text = str(code).strip().upper()
+    if '.' in text:
+        return text
+    return _code_to_ts(text) or text
+
+
+def status_at(store_root: Path | str, code: str, as_of: Any, *,
+              include_suspected: bool = False) -> StHistoryResult:
+    """按历史区间判定 ST；无记录且不在可信窗口内 → ``unknown``。
+
+    ``include_suspected=True`` 时才采信「行情反推」的疑似区间（``flag='st'``,
+    ``suspected=True``, ``source='price_inference'``）。默认只认确证区间，
+    回测风险过滤走默认值。
+    """
+    day = _as_date(as_of)
+    if day is None:
+        return StHistoryResult(STATUS_UNKNOWN, reason='bad_date')
+    target = _normalize(code)
+    intervals = load_intervals(store_root)
+    coverage = load_coverage(store_root)
+    if intervals is None or intervals.height == 0:
+        return StHistoryResult(STATUS_UNKNOWN, reason='no_history_table')
+    hits = intervals.filter(
+        (pl.col('ts_code') == target) & (pl.col('start_date') <= day)
+        & ((pl.col('end_date').is_null()) | (pl.col('end_date') >= day)))
+    if hits.height:
+        row = hits.sort('start_date').to_dicts()[-1]
+        return StHistoryResult(STATUS_ST, flag=row['flag'], source=row['source'],
+                               start=row['start_date'], end=row['end_date'],
+                               reason='interval_hit')
+    cov_rows = coverage.filter(pl.col('ts_code') == target).to_dicts() \
+        if coverage is not None else []
+    if not cov_rows:
+        result = StHistoryResult(STATUS_UNKNOWN, reason='code_not_in_coverage')
+        return _apply_suspected(store_root, target, day, result, include_suspected)
+    cov = cov_rows[0]
+    if cov['coverage_start'] <= day <= cov['coverage_end']:
+        return StHistoryResult(STATUS_NON_ST, source=cov['source'],
+                               coverage_start=cov['coverage_start'],
+                               coverage_end=cov['coverage_end'],
+                               reason='outside_interval_in_coverage')
+    result = StHistoryResult(STATUS_UNKNOWN, coverage_start=cov['coverage_start'],
+                             coverage_end=cov['coverage_end'], reason='outside_coverage')
+    return _apply_suspected(store_root, target, day, result, include_suspected)
+
+
+def _apply_suspected(store_root: Path | str, code: str, day: date,
+                     base: StHistoryResult, include: bool) -> StHistoryResult:
+    """``unknown`` 且显式允许时，用行情推断的疑似区间兜底（绝不覆盖 non_st）。"""
+    if not include or base.status != STATUS_UNKNOWN:
+        return base
+    from src.data import st_price_infer  # noqa: PLC0415
+
+    hit = st_price_infer.suspected_status_at(store_root, code, day)
+    if hit is None:
+        return base
+    return StHistoryResult(STATUS_ST, flag=hit.flag, source=hit.source,
+                           start=hit.start, end=hit.end, reason='suspected_interval_hit',
+                           coverage_start=base.coverage_start,
+                           coverage_end=base.coverage_end, suspected=True)
+
+
+def intervals_for_backtest(store_root: Path | str, codes: Iterable[str],
+                           start: Any, end: Any) -> dict[str, list[dict[str, Any]]]:
+    """导出与 ``StStatusService.get_status_intervals`` 同构的区间列表。
+
+    区间外但落在可信窗口内的空档，显式补 ``is_st=False`` 段，让回测把
+    「已知非 ST」与「未知」区分开；窗口外不补，保持 unknown。
+    """
+    start_day = _as_date(start) or date(1990, 1, 1)
+    end_day = _as_date(end) or date.today()
+    intervals = load_intervals(store_root)
+    coverage = load_coverage(store_root)
+    if intervals is None or coverage is None:
+        return {}
+    wanted = {_normalize(code) for code in codes}
+    st_rows = intervals.filter(
+        pl.col('ts_code').is_in(list(wanted))
+        & (pl.col('start_date') <= end_day)
+        & ((pl.col('end_date').is_null()) | (pl.col('end_date') >= start_day)))
+    cov_rows = coverage.filter(pl.col('ts_code').is_in(list(wanted)))
+    result: dict[str, list[dict[str, Any]]] = {}
+    for cov in cov_rows.to_dicts():
+        code = cov['ts_code']
+        window_start = max(start_day, cov['coverage_start'])
+        window_end = min(end_day, cov['coverage_end'])
+        if window_start > window_end:
+            continue
+        pieces: list[dict[str, Any]] = []
+        for row in st_rows.filter(pl.col('ts_code') == code).sort('start_date').to_dicts():
+            seg_start = max(window_start, row['start_date'])
+            seg_end = min(window_end, row['end_date'] or window_end)
+            if seg_start <= seg_end:
+                pieces.append({'start_date': seg_start, 'end_date': seg_end,
+                               'is_st': True})
+        result[code] = _carve_non_st(pieces, window_start, window_end)
+    for item in result.values():
+        for seg in item:
+            seg['start_date'] = seg['start_date'].isoformat()
+            seg['end_date'] = seg['end_date'].isoformat()
+    return result
+
+
+def _carve_non_st(st_pieces: list[dict[str, Any]], window_start: date,
+                  window_end: date) -> list[dict[str, Any]]:
+    """在可信窗口内挖掉 ST 子区间，其余显式标为非 ST，保证区间不重叠。"""
+    out: list[dict[str, Any]] = []
+    cursor = window_start
+    for seg in sorted(st_pieces, key=lambda p: p['start_date']):
+        if seg['start_date'] > cursor:
+            out.append({'start_date': cursor,
+                        'end_date': min(window_end, seg['start_date'] - timedelta(days=1)),
+                        'is_st': False})
+        out.append(seg)
+        cursor = max(cursor, seg['end_date'] + timedelta(days=1))
+    if cursor <= window_end:
+        out.append({'start_date': cursor, 'end_date': window_end, 'is_st': False})
+    return out
+
+
+def coverage_summary(store_root: Path | str) -> dict[str, Any]:
+    path = coverage_json_path(store_root)
+    if not path.is_file():
+        return {'available': False}
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    payload['available'] = True
+    intervals = load_intervals(store_root)
+    coverage = load_coverage(store_root)
+    if intervals is not None and coverage is not None:
+        payload['st_code_count'] = intervals['ts_code'].n_unique()
+        payload['covered_code_count'] = coverage.height
+        payload['first_coverage'] = str(coverage['coverage_start'].min())
+        payload['last_coverage'] = str(coverage['coverage_end'].max())
+    return payload
+
+
+# ----------------------------------------------------------------------
+# 验证（对拍快照 / 深市交叉校验 / 只数时序 / 回测影响）
+# ----------------------------------------------------------------------
+def _snapshot_agreement(root: Path, snapshot: pl.DataFrame,
+                        snap_day: date) -> dict[str, Any]:
+    """与快照对拍：区分「可判定对」与「覆盖缺口」。
+
+    ``unknown`` 只说明本地证据没有覆盖到该标的（沪市/北交所从未 ST 的票），
+    不是「判错」——这是语义红线要求的保守结果，因此单独统计覆盖率，
+    可判定一致率只算 history ∈ {st, non_st} 的对。
+    """
+    mismatches: list[dict[str, Any]] = []
+    undecidable: list[dict[str, Any]] = []
+    checked = agreed = decided = 0
+    decided_agreed = 0
+    by_market: dict[str, dict[str, int]] = {}
+    for item in snapshot.filter(pl.col('status') != STATUS_UNKNOWN).to_dicts():
+        checked += 1
+        res = status_at(root, item['code'], snap_day)
+        market = str(item['code'])[-2:]
+        bucket = by_market.setdefault(market, {'checked': 0, 'decided': 0, 'agreed': 0})
+        bucket['checked'] += 1
+        if res.status == item['status']:
+            agreed += 1
+            bucket['agreed'] += 1
+        if res.status in (STATUS_ST, STATUS_NON_ST):
+            decided += 1
+            bucket['decided'] += 1
+            if res.status == item['status']:
+                decided_agreed += 1
+            else:
+                mismatches.append({
+                    'code': item['code'], 'name': item['name'],
+                    'snapshot': item['status'], 'history': res.status,
+                    'history_reason': res.reason,
+                    'interval_start': res.start.isoformat() if res.start else '',
+                    'interval_end': res.end.isoformat() if res.end else ''})
+        else:
+            undecidable.append({
+                'code': item['code'], 'name': item['name'],
+                'snapshot': item['status'], 'history': res.status,
+                'history_reason': res.reason, 'market': market})
+    return {'checked': checked, 'agreed': agreed,
+            'rate': agreed / checked if checked else 0.0,
+            'decidable': decided, 'decidable_agreed': decided_agreed,
+            'decidable_rate': decided_agreed / decided if decided else 0.0,
+            'coverage_rate': decided / checked if checked else 0.0,
+            'by_market': by_market,
+            'undecidable': undecidable, 'mismatches': mismatches}
+
+
+def _sz_cross_validation(root: Path, sz_raw: pl.DataFrame,
+                         notices: pl.DataFrame) -> dict[str, Any]:
+    """用深交所官方简称变更表检验「公告标题法」的精确率/召回率。"""
+    official: dict[str, list[tuple[date, str]]] = {}
+    for key, rows in sz_raw.group_by('code'):
+        code = str(key[0]) if isinstance(key, tuple) else str(key)
+        items = sorted(rows.to_dicts(), key=lambda r: (r['change_date'], r['name_new']))
+        by_date: dict[date, str] = {item['change_date']: flag_from_name(item['name_new'])
+                                    for item in items}
+        segments = [(items[0]['change_date'], flag_from_name(items[0]['name_prev']))]
+        segments.extend(sorted(by_date.items()))
+        official[code] = segments
+
+    derived: dict[str, list[tuple[date, str]]] = {}
+    for code, events in _segments_from_notices(notices, include_sz=True).items():
+        if not code.endswith('.SZ'):
+            continue
+        derived[code] = _cninfo_timeline(code, events, date(1990, 1, 1), date.today())[0]
+
+    tp, fp, fn, details = _score_pairs(official, derived)
+    precision = tp / (tp + fp) if tp + fp else 1.0
+    recall = tp / (tp + fn) if tp + fn else 1.0
+    return {'precision': precision, 'recall': recall, 'tp': tp, 'fp': fp, 'fn': fn,
+            'samples': details[:100]}
+
+
+def _score_pairs(official: dict[str, list[tuple[date, str]]],
+                 derived: dict[str, list[tuple[date, str]]]
+                 ) -> tuple[int, int, int, list[dict[str, Any]]]:
+    tp = fp = fn = 0
+    details: list[dict[str, Any]] = []
+
+    def state_at(segments: list[tuple[date, str]], day: date) -> bool | None:
+        state: bool | None = None
+        for start, flag in segments:
+            if start > day:
+                break
+            state = flag in (FLAG_ST, FLAG_STAR)
+        return state
+
+    for code, segments in official.items():
+        for day, flag in segments:
+            if day < CNINFO_SAFE_START:
+                continue
+            expect = flag in (FLAG_ST, FLAG_STAR)
+            got = state_at(derived.get(code, []), day) if code in derived else None
+            if got is None:
+                fn += int(expect)
+                continue
+            if got and expect:
+                tp += 1
+            elif got:
+                fp += 1
+                details.append({'code': code, 'date': day.isoformat(),
+                                'issue': 'false_st'})
+            elif expect:
+                fn += 1
+                details.append({'code': code, 'date': day.isoformat(),
+                                'issue': 'missed_st'})
+    return tp, fp, fn, details
+
+
+def _trading_dates(root: Path, start: date, end: date) -> list[date]:
+    from src.data.local_store.store import LocalQuoteStore  # noqa: PLC0415
+
+    store = LocalQuoteStore(root)
+
+    def _dates(frame: pl.DataFrame | None) -> list[date]:
+        if frame is None:
+            return []
+        column = 'date' if 'date' in frame.columns else (
+            'trade_date' if 'trade_date' in frame.columns else None)
+        if column is None:
+            return []
+        values = [value if isinstance(value, date) else _as_date(value)
+                  for value in frame[column].to_list()]
+        return [day for day in values if day is not None]
+
+    days = _dates(store.read_file('stock', '000001.SZ'))
+    if not days:
+        for code in store.codes('stock')[:3]:
+            days.extend(_dates(store.read_file('stock', code)))
+            if days:
+                break
+    return sorted({day for day in days if day is not None and start <= day <= end})
+
+
+def _daily_series(intervals: pl.DataFrame,
+                  calendar: list[date]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """按交易日统计 ST 只数与环比突变日。"""
+    deltas: dict[date, int] = {}
+    for row in intervals.to_dicts():
+        deltas[row['start_date']] = deltas.get(row['start_date'], 0) + 1
+        if row['end_date'] is not None:
+            after = row['end_date'] + timedelta(days=1)
+            deltas[after] = deltas.get(after, 0) - 1
+    points = sorted(deltas.items())
+    out: list[dict[str, Any]] = []
+    count = 0
+    index = 0
+    for day in calendar:
+        while index < len(points) and points[index][0] <= day:
+            count += points[index][1]
+            index += 1
+        out.append({'date': day.isoformat(), 'st_count': count})
+    jumps = []
+    for prev, cur in zip(out, out[1:], strict=False):
+        diff = cur['st_count'] - prev['st_count']
+        if abs(diff) > 20:
+            jumps.append({'date': cur['date'], 'delta': diff,
+                          'st_count': cur['st_count']})
+    return out, jumps
+
+
+def _impact(root: Path, intervals: pl.DataFrame, coverage: pl.DataFrame,
+            calendar: list[date]) -> dict[str, Any]:
+    """量化：历史 (标的, 交易日) 中由 unknown 变为可判定的比例。"""
+    from src.data.local_store.store import LocalQuoteStore  # noqa: PLC0415
+
+    store = LocalQuoteStore(root)
+    codes = store.codes('stock')
+    cov_map = {row['ts_code']: (row['coverage_start'], row['coverage_end'])
+               for row in coverage.to_dicts()}
+    st_by_code: dict[str, list[tuple[date, date]]] = {}
+    for row in intervals.to_dicts():
+        st_by_code.setdefault(row['ts_code'], []).append(
+            (row['start_date'], row['end_date'] or date.today()))
+    total = covered = st_pairs = 0
+    for code in codes:
+        cov = cov_map.get(code)
+        if cov is None:
+            total += len(calendar)
+            continue
+        start_cov, end_cov = max(cov[0], calendar[0]), min(cov[1], calendar[-1])
+        in_window = [day for day in calendar if start_cov <= day <= end_cov]
+        total += len(calendar)
+        covered += len(in_window)
+        for interval_start, interval_end in st_by_code.get(code, []):
+            st_pairs += sum(1 for day in in_window
+                            if interval_start <= day <= interval_end)
+    return {'calendar_days': len(calendar), 'total_pairs': total,
+            'covered_pairs': covered,
+            'covered_ratio': covered / total if total else 0.0,
+            'st_pairs': st_pairs,
+            'still_unknown_pairs': total - covered}
+
+
+def verify(store_root: Path | str, *, output_dir: Path | str = Path('logs/st_history/verify')
+           ) -> dict[str, Any]:
+    root = Path(store_root)
+    intervals = load_intervals(root)
+    coverage = load_coverage(root)
+    if intervals is None or coverage is None:
+        raise RuntimeError('区间表尚未生成，先执行 build')
+    snapshot, snap_day = _latest_snapshot(root)
+    rdir = raw_dir(root)
+    sz_raw = _load_frame(rdir / 'sz_change_name.parquet', _RAW_SZ_SCHEMA)
+    notices = _load_frame(rdir / 'cninfo_notices.parquet', _RAW_NOTICE_SCHEMA)
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    result: dict[str, Any] = {'store_root': str(root)}
+    if snapshot is not None and snap_day is not None:
+        result['snapshot'] = _snapshot_agreement(root, snapshot, snap_day)
+        pl.DataFrame(result['snapshot']['mismatches']).write_csv(out / 'snapshot_mismatch.csv')
+        pl.DataFrame(result['snapshot']['undecidable']).write_csv(out / 'snapshot_undecidable.csv')
+    if sz_raw.height:
+        result['sz_cross_validation'] = _sz_cross_validation(root, sz_raw, notices)
+        pl.DataFrame(result['sz_cross_validation']['samples']).write_csv(
+            out / 'sz_cross_validation_samples.csv')
+    first_cov = _as_date(coverage['coverage_start'].min())
+    start = max(first_cov if first_cov is not None else date(2015, 1, 1), date(2015, 1, 1))
+    calendar = _trading_dates(root, start, date.today())
+    if calendar:
+        series, jumps = _daily_series(intervals, calendar)
+        pl.DataFrame(series).write_csv(out / 'st_count_by_date.csv')
+        pl.DataFrame(jumps).write_csv(out / 'st_count_jumps.csv')
+        result['daily_series'] = {'days': len(series), 'jumps': jumps[:50],
+                                 'max_st_count': max((p['st_count'] for p in series),
+                                                     default=0)}
+        result['impact'] = _impact(root, intervals, coverage, calendar)
+    (out / 'report.json').write_text(
+        json.dumps(result, ensure_ascii=False, default=str, indent=2), encoding='utf-8')
+    return result
+
+
+def _cmd_sync(args: argparse.Namespace) -> int:
+    root = _resolve_root(args)
+    years = list(range(args.start_year, args.end_year + 1)) if args.end_year else None
+    report = sync_sources(root, years=years, force=args.force)
+    logger.info(f'[st] 抓取完成: {report}')
+    return 0
+
+
+def _cmd_build(args: argparse.Namespace) -> int:
+    root = _resolve_root(args)
+    logger.info(f'[st] 构建完成: {build_store(root, apply_snapshot=not args.no_snapshot)}')
+    return 0
+
+
+def _cmd_verify(args: argparse.Namespace) -> int:
+    root = _resolve_root(args)
+    report = verify(root, output_dir=args.output_dir)
+    snap = report.get('snapshot') or {}
+    short = {
+        'snapshot': {key: snap.get(key) for key in
+                     ('checked', 'agreed', 'rate', 'decidable', 'decidable_agreed',
+                      'decidable_rate', 'coverage_rate', 'by_market')},
+        'sz_cross_validation': {key: (report.get('sz_cross_validation') or {}).get(key)
+                                for key in ('precision', 'recall', 'tp', 'fp', 'fn')},
+        'daily_series': {key: value for key, value in
+                         (report.get('daily_series') or {}).items() if key != 'jumps'},
+        'jump_count': len((report.get('daily_series') or {}).get('jumps', [])),
+        'impact': report.get('impact'),
+        'output_dir': str(args.output_dir),
+    }
+    logger.info(f'[st] 验证结果: {json.dumps(short, ensure_ascii=False, default=str)}')
+    return 0
+
+
+def _cmd_stats(args: argparse.Namespace) -> int:
+    root = _resolve_root(args)
+    logger.info(f'[st] 覆盖信息: {coverage_summary(root)}')
+    return 0
+
+
+def _cmd_resolve(args: argparse.Namespace) -> int:
+    root = _resolve_root(args)
+    logger.info(f'[st] 开区间闭合: {resolve_open_closures(root, force=args.force)}')
+    return 0
+
+
+def _cmd_refresh(args: argparse.Namespace) -> int:
+    root = _resolve_root(args)
+    sync_sources(root, force=args.force)
+    build_store(root, apply_snapshot=False)
+    stats = resolve_open_closures(root, force=args.force)
+    build_store(root)
+    logger.info(f'[st] 全量刷新完成: {stats}')
+    return 0
+
+
+def _resolve_root(args: argparse.Namespace) -> Path:
+    from src.data.local_store.store import resolve_store_root  # noqa: PLC0415
+    from src.utils.config import get_config  # noqa: PLC0415
+
+    return Path(args.store_root) if args.store_root else resolve_store_root(get_config())
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description='历史 ST 区间表（网络取数 + 本地落地）')
+    parser.add_argument('--store-root', default=None, help='本地列存根目录')
+    sub = parser.add_subparsers(dest='command', required=True)
+    sync = sub.add_parser('sync', help='抓取原始数据（限速 + 断点续跑）')
+    sync.add_argument('--start-year', type=int, default=2002)
+    sync.add_argument('--end-year', type=int, default=None)
+    sync.add_argument('--force', action='store_true', help='忽略断点全量重抓')
+    sync.set_defaults(func=_cmd_sync)
+    build = sub.add_parser('build', help='从原始缓存重建区间表')
+    build.add_argument('--no-snapshot', action='store_true', help='暂不合并每日快照')
+    build.set_defaults(func=_cmd_build)
+    resolve = sub.add_parser('resolve', help='为开区间标的补抓个股公告')
+    resolve.add_argument('--force', action='store_true')
+    resolve.set_defaults(func=_cmd_resolve)
+    refresh = sub.add_parser('refresh', help='sync + build + resolve + build')
+    refresh.add_argument('--force', action='store_true')
+    refresh.set_defaults(func=_cmd_refresh)
+    stats = sub.add_parser('stats', help='打印覆盖信息')
+    stats.set_defaults(func=_cmd_stats)
+    verify_cmd = sub.add_parser('verify', help='对拍快照 + 交叉校验 + 时序/影响量化')
+    verify_cmd.add_argument('--output-dir', default='logs/st_history/verify')
+    verify_cmd.set_defaults(func=_cmd_verify)
+    args = parser.parse_args()
+    return int(args.func(args))
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

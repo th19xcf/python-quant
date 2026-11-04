@@ -289,15 +289,23 @@ class TaskManager(QObject):
         for task_id in stale_tasks:
             del self.tasks[task_id]
 
-    def shutdown(self):
+    def shutdown(self, wait_ms: int = 2000):
         """
         关闭任务管理器
+
+        Args:
+            wait_ms: 等待运行中任务收敛的最大毫秒数，0 表示不等待。
+                     必须有界：取数/回测任务卡在网络请求时，无超时的 waitForDone()
+                     会让关闭窗口一直挂住，用户表现为"程序退不掉"。
         """
+        # 先置协作式取消标志，让声明了 cancel_event 的任务尽快退出
+        for task in list(self.tasks.values()):
+            task.cancel()
         self.thread_pool.clear()
-        self.thread_pool.waitForDone()
-        # 等待未超时任务收敛后再关闭共享池，避免退出阶段后台线程继续访问已释放资源
-        shutdown_executor(wait=True)
-        logger.info("任务管理器已关闭")
+        self.thread_pool.waitForDone(wait_ms)
+        # 共享池不再等待：残留的 daemon 化不了的工作线程由 main.py 退出阶段强制收敛
+        shutdown_executor(wait=False)
+        logger.info(f"任务管理器已关闭（等待上限 {wait_ms} ms）")
 
     def _on_task_started(self, task_id: str, task_name: str):
         """

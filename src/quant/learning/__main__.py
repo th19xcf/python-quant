@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--lightgbm', action='store_true',
                         help='启用 LightGBM 对照（需 poetry install --with learning）')
     parser.add_argument('--report', type=Path,
-                        default=PROJECT_ROOT / 'docs' / 'learning_phase1_report.md',
+                        default=PROJECT_ROOT / 'docs' / '自学习第一阶段报告.md',
                         help='输出 Markdown 报告路径')
     return parser
 

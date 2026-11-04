@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import date, datetime
 from pathlib import Path
 
@@ -18,6 +19,7 @@ import polars as pl
 from loguru import logger
 
 from src.advice.config import AdviceConfig, default_config
+from src.advice.daily_store import list_daily_snapshots, load_daily_snapshot
 from src.advice.pipeline import AdviceEngine
 from src.advice.replay import run_replay
 from src.utils.config import get_config
@@ -56,8 +58,10 @@ def _run_generate(args: argparse.Namespace) -> int:
         return 2
     config: AdviceConfig = default_config()
     engine = AdviceEngine(config=config)
+    daily_dir = Path(args.daily_dir) if args.daily_dir else Path(args.out_dir) / 'daily'
     result = engine.generate(as_of=as_of, equity=args.equity,
-                             tiers=args.tiers, state_dir=args.state_dir)
+                             tiers=args.tiers, state_dir=args.state_dir,
+                             daily_dir=daily_dir, persist_daily=not args.no_daily)
     frame = result.to_frame()
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -94,15 +98,54 @@ def _run_replay(args: argparse.Namespace) -> int:
     payload = {key: item.summary() for key, item in results.items()}
     out_dir.joinpath('replay_summary.json').write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    diagnostics = {key: item.diagnostics for key, item in results.items()}
+    out_dir.joinpath('replay_diagnostics.json').write_text(
+        json.dumps(diagnostics, ensure_ascii=False, indent=2), encoding='utf-8')
     for key, item in results.items():
         if item.equity_curve:
             pl.DataFrame(
                 item.equity_curve, schema=['date', 'equity'], orient='row'
             ).write_csv(out_dir / f'replay_equity_{key}.csv')
+        if item.daily:
+            pl.DataFrame(item.daily).write_csv(
+                out_dir / f'replay_daily_{key}.csv')
+        if item.positions:
+            pl.DataFrame(item.positions).write_csv(
+                out_dir / f'replay_positions_{key}.csv')
+        if item.position_daily:
+            pl.DataFrame(item.position_daily).write_csv(
+                out_dir / f'replay_position_daily_{key}.csv')
         samples = item.sample_rows
         if samples:
             pl.DataFrame(samples).write_csv(out_dir / f'replay_sample_{key}.csv')
         logger.info(f"[replay] {key} {item.label}: {item.summary()}")
+    return 0
+
+
+def _daily_dir(args: argparse.Namespace) -> Path:
+    return Path(args.daily_dir) if args.daily_dir else Path(args.out_dir) / 'daily'
+
+
+def _run_daily_view(args: argparse.Namespace) -> int:
+    directory = _daily_dir(args)
+    if args.daily_list:
+        entries = list_daily_snapshots(directory)
+        if not entries:
+            sys.stdout.write(f'[daily] 暂无归档: {directory}\n')
+            return 1
+        for entry in entries:
+            sys.stdout.write(
+                f"{entry['trade_date']}  {entry['items']}  {entry['path']}\n")
+        return 0
+    parsed = _parse_date(args.daily_show)
+    if parsed is None:
+        sys.stdout.write(f'[daily] 日期无效: {args.daily_show}\n')
+        return 1
+    payload = load_daily_snapshot(directory, parsed)
+    if payload is None:
+        sys.stdout.write(f'[daily] 找不到归档: {directory}/{args.daily_show}\n')
+        return 1
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + '\n')
     return 0
 
 
@@ -124,12 +167,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--end', help='回放结束日 YYYY-MM-DD')
     parser.add_argument('--max-symbols', type=int, default=300,
                         help='回放抽样标的数，0 表示全市场')
+    parser.add_argument('--daily-dir', default=None,
+                        help='每日归档目录（默认 out-dir/daily）')
+    parser.add_argument('--no-daily', action='store_true', help='本次不写每日归档')
+    parser.add_argument('--daily-list', action='store_true',
+                        help='列出已归档的交易日')
+    parser.add_argument('--daily-show', default=None,
+                        help='查看某交易日归档 YYYY-MM-DD')
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _ = get_config()
+    if args.daily_list or args.daily_show:
+        return _run_daily_view(args)
     if args.replay:
         return _run_replay(args)
     return _run_generate(args)

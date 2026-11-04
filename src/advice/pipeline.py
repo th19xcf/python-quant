@@ -15,6 +15,7 @@ import polars as pl
 from loguru import logger
 
 from src.advice.config import AdviceConfig, default_config
+from src.advice.daily_store import default_daily_dir, save_daily_snapshot
 from src.advice.data import LocalPanelLoader, panel_trading_dates
 from src.advice.eligibility import EligibilityResult, check_eligibility
 from src.advice.factor_panel import compute_factor_panel
@@ -144,8 +145,14 @@ class AdviceEngine:
                  tiers: Iterable[str] | None = None,
                  state_dir: str | Path | None = None,
                  persist_state: bool = True,
-                 codes: Iterable[str] | None = None) -> AdviceResult:
-        """生成指定日期（默认最新交易日）的三档推荐清单。"""
+                 codes: Iterable[str] | None = None,
+                 daily_dir: str | Path | None = None,
+                 persist_daily: bool = False) -> AdviceResult:
+        """生成指定日期（默认最新交易日）的三档推荐清单。
+
+        ``persist_daily=True`` 时把结果另存为按日归档（``daily_dir``，
+        默认 ``reports/advice/daily/{YYYYMMDD}.json``）；归档与 ``state`` 完全解耦。
+        """
         tier_keys = list(tiers) if tiers else list(self.config.tiers)
         selected = [self.config.tier(key) for key in tier_keys]
         max_lookback = max(tier.lookback_days for tier in selected)
@@ -187,6 +194,8 @@ class AdviceEngine:
             if persist_state:
                 self.save_state(state_path, tier.key, trade_date,
                                 float(equity), new_state)
+        if persist_daily:
+            save_daily_snapshot(result, daily_dir or default_daily_dir())
         return result
 
     def _run_tier(self, scored: pl.DataFrame, trade_date: date,  # noqa: C901

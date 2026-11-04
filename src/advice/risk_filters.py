@@ -21,6 +21,7 @@ from typing import Any, Sequence
 
 from src.advice.config import RiskFilterConfig
 from src.advice.universe import StockMeta
+from src.data import st_history
 from src.data.events import STATUS_COOLING, STATUS_UNKNOWN, EventStore
 from src.data.industry import load_snapshot as load_industry_snapshot
 from src.data.risk_flags import (
@@ -113,11 +114,16 @@ class RiskContext:
         return self._st_maps[snapshot_day]
 
     def st_status(self, code: str, as_of: date) -> str:
-        """ST 三态；无快照或未覆盖一律 ``unknown``（不是 ``non_st``）。"""
+        """ST 三态：快照优先，早于首份快照的日期回退历史区间表。
+
+        无快照且不在区间表可信窗口内一律 ``unknown``（不是 ``non_st``）。
+        """
         mapping = self._st_map(as_of)
-        if mapping is None:
-            return ST_UNKNOWN
-        return mapping.get(str(code).upper(), ST_UNKNOWN)
+        status = mapping.get(str(code).upper(), ST_UNKNOWN) if mapping else ST_UNKNOWN
+        if status != ST_UNKNOWN:
+            return status
+        hit = st_history.status_at(self.store_root, code, as_of)
+        return hit.status if hit.status != ST_UNKNOWN else ST_UNKNOWN
 
     def _industry_map(self, as_of: date) -> dict[str, tuple[str, str]] | None:
         frame, snapshot_day = load_industry_snapshot(self.store_root, as_of)

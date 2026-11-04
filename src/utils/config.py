@@ -250,6 +250,9 @@ class ConfigManager:
         self._lock = threading.RLock()
         self._watch_thread: threading.Thread | None = None
         self._running = False
+        # 停止信号：用 Event 等待代替 sleep，退出时立即唤醒热加载线程，
+        # 避免关窗被 join(timeout) 里的轮询间隔拖住
+        self._stop_event = threading.Event()
 
     def _get_env_file_mtime(self) -> float:
         """获取.env文件的修改时间"""
@@ -276,14 +279,17 @@ class ConfigManager:
             interval: 监控间隔（秒）
         """
         self._running = True
+        self._stop_event.clear()
         self._watch_thread = threading.Thread(target=self._watch_config, args=(interval,), daemon=True)
         self._watch_thread.start()
 
     def stop_watching(self) -> None:
         """停止监控配置文件变化"""
         self._running = False
+        # 立即唤醒轮询线程，join 只作兜底
+        self._stop_event.set()
         if self._watch_thread:
-            self._watch_thread.join(timeout=2)
+            self._watch_thread.join(timeout=1)
 
     def _watch_config(self, interval: int) -> None:
         """监控配置文件变化的线程函数
@@ -292,7 +298,9 @@ class ConfigManager:
             interval: 监控间隔（秒）
         """
         while self._running:
-            time.sleep(interval)
+            # 可被 stop_watching 立即唤醒，退出时不必等满一个轮询间隔
+            if self._stop_event.wait(interval):
+                break
             current_mtime = self._get_env_file_mtime()
             if current_mtime > self._last_modified:
                 with self._lock:

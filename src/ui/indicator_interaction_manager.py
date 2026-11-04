@@ -158,6 +158,10 @@ class IndicatorInteractionManager:
                     window.chart_splitter.setSizes([2000, 1000, 1000])
                     logger.info(f"切换到{window_count}个窗口：显示K线图、成交量图和KDJ图")
 
+            # 画布数量变化后立即重算最小高度与分配比例（高度不足时由滚动容器兜底）
+            if hasattr(window, '_update_chart_height_policy'):
+                window._update_chart_height_policy(rebalance=True)
+
             logger.info(f"切换到{window_count}个窗口")
 
     def on_bar_count_changed(self):

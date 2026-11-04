@@ -168,10 +168,35 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
                 self._search_dialog_open = False
 
             def eventFilter(self, obj, event):
+                # 过滤器装在 QApplication 上，窗口/控件 deleteLater 后仍可能收到
+                # 残留事件；此时 Python 包装对象可能已失效，任何属性访问都会抛
+                # RuntimeError（内部 C++ 对象已删除）。这里只做「安全地不处理」，
+                # 不吞掉业务异常。
+                if obj is None or event is None:
+                    return False
+                try:
+                    event_type = event.type()
+                except RuntimeError:
+                    return False
+
                 # 只处理按键事件
-                if event.type() == QEvent.KeyPress:
-                    key_event = QKeyEvent(event)
-                    key = key_event.key()
+                if event_type == QEvent.KeyPress:
+                    try:
+                        key_event = QKeyEvent(event)
+                        key = key_event.key()
+                    except (RuntimeError, TypeError):
+                        return False
+
+                    # 技术分析页方向键：QScrollArea/QGraphicsView 会消费方向键，
+                    # 必须在目标控件处理前拦截，否则左/右箭头改柱体数失效。
+                    arrow_handler = getattr(self.main_window, '_handle_tech_tab_arrow_key', None)
+                    if arrow_handler is not None:
+                        try:
+                            if arrow_handler(key):
+                                return True
+                        except RuntimeError:
+                            # 主窗口/子控件已销毁（关闭或构造中途）
+                            return False
 
                     # 忽略特殊按键
                     if key in (Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta,
@@ -196,15 +221,23 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
 
                     # 检查焦点是否在输入框中
                     from PySide6.QtWidgets import QLineEdit, QPlainTextEdit, QTextEdit
-                    focus_widget = self.main_window.focusWidget()
+                    try:
+                        focus_widget = self.main_window.focusWidget()
+                    except RuntimeError:
+                        return False
                     if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
                         # 如果焦点在输入框中，不拦截按键
                         return False
 
                     # 显示搜索对话框
                     self._search_dialog_open = True
-                    self.main_window._show_global_search_dialog(text)
-                    self._search_dialog_open = False
+                    try:
+                        self.main_window._show_global_search_dialog(text)
+                    except RuntimeError:
+                        # 主窗口已销毁，放弃本次搜索
+                        return False
+                    finally:
+                        self._search_dialog_open = False
 
                     # 拦截事件，不传递给其他控件
                     return True

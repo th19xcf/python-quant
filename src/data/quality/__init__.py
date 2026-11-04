@@ -8,6 +8,7 @@ from src.data.quality.anomalies import (
     find_anomalies,
     is_known_anomaly,
     iter_anomalies,
+    query_anomalies,
     register_anomaly,
 )
 from src.data.quality.checker import (
@@ -37,6 +38,7 @@ __all__ = [
     'is_known_anomaly',
     'iter_anomalies',
     'prepare_frame',
+    'query_anomalies',
     'register_anomaly',
     'rule_map',
 ]

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, timedelta
 
 import polars as pl
@@ -344,8 +345,13 @@ def test_known_anomaly_context_and_extension() -> None:
         assert any(item.anomaly_id == 'test_extension_only' for item in iter_anomalies())
         hits = find_anomalies('600000.SH', '2020-01-02')
         assert [item.anomaly_id for item in hits] == ['test_extension_only']
+        # 幂等：重复登记同一条记录不报错、不产生新条目
+        before = len(list(iter_anomalies()))
+        register_anomaly(record)
+        assert len(list(iter_anomalies())) == before
+        # 同 ID 但内容不同仍报错，避免静默覆盖
         with pytest.raises(ValueError):
-            register_anomaly(record)
+            register_anomaly(replace(record, reason='不同内容'))
     finally:
         from src.data.quality import anomalies as module
 

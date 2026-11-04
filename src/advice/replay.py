@@ -57,6 +57,11 @@ class ReplayPosition:
     last_price: float
     smoothed: float = 0.5
     confirm: int = 0
+    #: 推荐日收盘价（未复权），仅用于展示与人工核对
+    entry_ref_price: float = 0.0
+    #: 买入佣金（元），用于计算逐票净收益
+    buy_cost: float = 0.0
+    industry: str = ''
 
 
 @dataclass
@@ -70,6 +75,13 @@ class ClosedTrade:
     entry_price: float
     exit_price: float
     pnl: float
+    entry_ref_price: float = 0.0
+    buy_cost: float = 0.0
+    sell_cost: float = 0.0
+    return_pct: float = 0.0
+    net_return_pct: float = 0.0
+    shares: int = 0
+    industry: str = ''
 
 
 @dataclass
@@ -96,6 +108,14 @@ class ReplayResult:
     sample_rows: list[dict[str, Any]] = field(default_factory=list)
     filter_stats: dict[str, int] = field(default_factory=dict)
     filter_audit: list[dict[str, Any]] = field(default_factory=list)
+    #: 逐票台账：建仓日/建仓价/状态/调出日/累计收益率/持有交易日数
+    positions: list[dict[str, Any]] = field(default_factory=list)
+    #: 逐日逐票：持仓每日收盘、浮动盈亏与自建仓累计收益率
+    position_daily: list[dict[str, Any]] = field(default_factory=list)
+    #: 组合逐日净值与当日盈亏
+    daily: list[dict[str, Any]] = field(default_factory=list)
+    #: 口径与数据可得性诊断（价格口径/成本/成交规则/风险快照覆盖）
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -118,6 +138,12 @@ class ReplayResult:
             'filter_stats': dict(self.filter_stats),
             'filter_audit': self.filter_audit[:20],
             'sample_rows': self.sample_rows[:8],
+            'open_positions': sum(
+                1 for item in self.positions if item.get('status') == 'holding'),
+            'closed_trades': sum(
+                1 for item in self.positions if item.get('status') == 'exited'),
+            'last_daily_pnl': self.daily[-1]['pnl'] if self.daily else 0.0,
+            'diagnostics': self.diagnostics,
         }
 
 
@@ -137,6 +163,9 @@ class _ReplayTier:
         self.positions: dict[str, ReplayPosition] = {}
         self.closed: list[ClosedTrade] = []
         self.equity_curve: list[tuple[str, float]] = []
+        self.position_daily: list[dict[str, Any]] = []
+        self.daily: list[dict[str, Any]] = []
+        self.prev_equity = equity
         self.market_value = 0.0
         self.total_cost = 0.0
         self.bought = 0.0
@@ -190,10 +219,12 @@ class _ReplayTier:
         admitted_buys = {item.ts_code for item in plan.admitted if item.side == 'buy'}
 
         for code in admitted_sells:
-            self._execute_sell(code, tomorrow.get(code), index, rules)
+            # 卖出同样在 T+1 开盘执行，持有交易日数按执行日计算
+            self._execute_sell(code, tomorrow.get(code), index + 1, rules)
         for item in allocations:
             if item.ts_code in admitted_buys:
-                self._execute_buy(item, tomorrow.get(item.ts_code), index + 1,
+                self._execute_buy(item, tomorrow.get(item.ts_code),
+                                  today.get(item.ts_code), index + 1,
                                   self.dates[index + 1], rules)
 
     def _best_candidate(self, rows: dict[str, dict], day: date) -> float | None:
@@ -290,6 +321,7 @@ class _ReplayTier:
         if row is None:
             self.skipped += 1
             return
+        is_st = self.risk.st_status(code, row['date'])
         if not rules.is_tradable(
                 'sell', prev_close=self._finite(row.get('raw_prev_close')),
                 open_price=self._finite(row.get('raw_open')),
@@ -297,7 +329,8 @@ class _ReplayTier:
                 low=self._finite(row.get('raw_low')),
                 close=self._finite(row.get('raw_close')),
                 volume=self._finite(row.get('raw_volume')),
-                ts_code=code, is_st=None, trade_date=row.get('date')):
+                ts_code=code, is_st=True if is_st == 'st' else None,
+                trade_date=row.get('date')):
             self.skipped += 1
             return
         position = self.positions.pop(code)
@@ -309,18 +342,30 @@ class _ReplayTier:
         self.total_cost += commission + stamp
         self.sold += notional
         self.sell_count += 1
+        sell_cost = commission + stamp
+        basis = position.shares * position.entry_price + position.buy_cost
+        proceeds = notional - sell_cost
         self.closed.append(ClosedTrade(
             ts_code=code, entry_date=position.entry_date,
             exit_date=row['date'], hold_days=index - position.entry_idx,
             entry_price=position.entry_price, exit_price=price,
             pnl=(price - position.entry_price) * position.shares,
+            entry_ref_price=position.entry_ref_price,
+            buy_cost=position.buy_cost, sell_cost=sell_cost,
+            return_pct=(price / position.entry_price - 1.0) * 100.0
+            if position.entry_price else 0.0,
+            net_return_pct=(proceeds / basis - 1.0) * 100.0 if basis else 0.0,
+            shares=position.shares,
+            industry=position.industry,
         ))
 
-    def _execute_buy(self, allocation: Any, row: dict | None, index: int,
+    def _execute_buy(self, allocation: Any, row: dict | None,
+                     signal_row: dict | None, index: int,
                      trade_date: date, rules: ExecutionRules) -> None:
         if row is None or allocation.shares <= 0:
             self.skipped += 1
             return
+        is_st = self.risk.st_status(allocation.ts_code, trade_date)
         if not rules.is_tradable(
                 'buy', prev_close=self._finite(row.get('raw_prev_close')),
                 open_price=self._finite(row.get('raw_open')),
@@ -328,7 +373,8 @@ class _ReplayTier:
                 low=self._finite(row.get('raw_low')),
                 close=self._finite(row.get('raw_close')),
                 volume=self._finite(row.get('raw_volume')),
-                ts_code=allocation.ts_code, is_st=None, trade_date=row.get('date')):
+                ts_code=allocation.ts_code, is_st=True if is_st == 'st' else None,
+                trade_date=row.get('date')):
             self.skipped += 1
             return
         price = float(row['open']) * (1.0 + self.config.costs.impact_rate)
@@ -350,22 +396,56 @@ class _ReplayTier:
         self.total_cost += commission
         self.bought += notional
         self.buy_count += 1
+        ref_price = self._finite((signal_row or {}).get('raw_close'))
         self.positions[allocation.ts_code] = ReplayPosition(
             ts_code=allocation.ts_code, shares=shares, entry_idx=index,
             entry_date=trade_date, entry_price=price, last_price=price,
-            smoothed=float(row.get('score_percentile') or 0.5), confirm=0)
+            smoothed=float(row.get('score_percentile') or 0.5), confirm=0,
+            entry_ref_price=ref_price if ref_price is not None else price,
+            buy_cost=commission,
+            industry=getattr(allocation, 'industry', ''))
 
     def _mark(self, day: date, rows: dict[str, dict]) -> None:
         self.market_value = 0.0
         for code, position in self.positions.items():
             row = rows.get(code)
+            prev_price = position.last_price
             if row and row.get('close'):
                 position.last_price = float(row['close'])
             self.market_value += position.shares * position.last_price
+            self.position_daily.append({
+                'date': day.isoformat(),
+                'ts_code': code,
+                'entry_date': position.entry_date.isoformat(),
+                'entry_price': round(position.entry_price, 6),
+                'shares': position.shares,
+                'close': round(position.last_price, 6),
+                'cum_return_pct': round(
+                    (position.last_price / position.entry_price - 1.0) * 100.0, 6)
+                if position.entry_price else 0.0,
+                'day_pnl': round(
+                    position.shares * (position.last_price - prev_price), 2),
+                'day_return_pct': round(
+                    (position.last_price / prev_price - 1.0) * 100.0, 6)
+                if prev_price else 0.0,
+                'industry': position.industry,
+            })
+        equity = self.cash + self.market_value
+        self.daily.append({
+            'date': day.isoformat(),
+            'equity': round(equity, 2),
+            'pnl': round(equity - self.prev_equity, 2),
+            'return_pct': round((equity / self.prev_equity - 1.0) * 100.0, 6)
+            if self.prev_equity else 0.0,
+            'cash': round(self.cash, 2),
+            'market_value': round(self.market_value, 2),
+            'positions': len(self.positions),
+        })
+        self.prev_equity = equity
         self.last_prices = {
             code: position.last_price for code, position in self.positions.items()}
         self.last_date = day
-        self.equity_curve.append((day.isoformat(), self.cash + self.market_value))
+        self.equity_curve.append((day.isoformat(), equity))
 
     def _result(self, final: float, years: float) -> ReplayResult:
         peak = -1e18
@@ -386,6 +466,8 @@ class _ReplayTier:
         annual_turnover = ((self.bought + self.sold) / 2.0
                            / max(average_equity, 1e-9) / years)
         sample = self._sample_rows()
+        positions = self._positions_ledger()
+        diagnostics = self._diagnostics()
         return ReplayResult(
             tier=self.tier.key, label=self.tier.label, start=self.dates[0],
             end=self.dates[-1], initial_equity=self.initial, final_equity=final,
@@ -396,7 +478,117 @@ class _ReplayTier:
             annual_turnover=annual_turnover, untradable_skipped=self.skipped,
             equity_curve=self.equity_curve, sample_rows=sample,
             filter_stats=dict(self.risk.counts),
-            filter_audit=list(self.risk.audit))
+            filter_audit=list(self.risk.audit),
+            positions=positions, position_daily=self.position_daily,
+            daily=self.daily, diagnostics=diagnostics)
+
+    def _positions_ledger(self) -> list[dict[str, Any]]:
+        """逐票台账：已调出与期末持有统一成一张表。"""
+        rows: list[dict[str, Any]] = []
+        last_index = len(self.dates) - 1
+        costs = self.config.costs
+        for trade in self.closed:
+            stock_meta = self.meta.get(trade.ts_code)
+            rows.append({
+                'tier': self.tier.key,
+                'ts_code': trade.ts_code,
+                'name': stock_meta.name if stock_meta else trade.ts_code,
+                'entry_date': trade.entry_date.isoformat(),
+                'entry_ref_price': round(trade.entry_ref_price, 3),
+                'entry_price': trade.entry_price,
+                'shares': trade.shares,
+                'status': 'exited',
+                'exit_date': trade.exit_date.isoformat(),
+                'exit_price': trade.exit_price,
+                'last_date': trade.exit_date.isoformat(),
+                'hold_days': trade.hold_days,
+                'return_pct': trade.return_pct,
+                'net_return_pct': trade.net_return_pct,
+                'industry': trade.industry,
+            })
+        for code, position in self.positions.items():
+            stock_meta = self.meta.get(code)
+            exit_price = position.last_price * (1.0 - costs.impact_rate)
+            notional = position.shares * exit_price
+            sell_cost = costs.commission(notional) \
+                + notional * costs.stamp_duty_rate
+            basis = position.shares * position.entry_price + position.buy_cost
+            proceeds = notional - sell_cost
+            rows.append({
+                'tier': self.tier.key,
+                'ts_code': code,
+                'name': stock_meta.name if stock_meta else code,
+                'entry_date': position.entry_date.isoformat(),
+                'entry_ref_price': round(position.entry_ref_price, 3),
+                'entry_price': position.entry_price,
+                'shares': position.shares,
+                'status': 'holding',
+                'exit_date': '',
+                'exit_price': exit_price,
+                'last_date': self.last_date.isoformat(),
+                'hold_days': last_index - position.entry_idx,
+                'return_pct': (position.last_price / position.entry_price - 1.0) * 100.0
+                if position.entry_price else 0.0,
+                'net_return_pct': (proceeds / basis - 1.0) * 100.0
+                if basis else 0.0,
+                'industry': position.industry,
+            })
+        return rows
+
+    def _snapshot_span(self, sub_dir: str, prefix: str) -> dict[str, Any]:
+        root = Path(self.risk.store_root) / 'meta' / sub_dir
+        files = sorted(root.glob(f'{prefix}_*.parquet')) if root.is_dir() else []
+        if not files:
+            return {'snapshots': 0, 'first': None, 'last': None}
+        return {
+            'snapshots': len(files),
+            'first': files[0].stem[len(prefix) + 1:],
+            'last': files[-1].stem[len(prefix) + 1:],
+        }
+
+    def _dividend_coverage(self) -> dict[str, Any]:
+        path = Path(self.risk.store_root) / 'factors' / 'stock_dividend.parquet'
+        if not path.is_file():
+            return {'path': str(path), 'rows': 0, 'last_ex_date': None}
+        try:
+            frame = pl.read_parquet(path, columns=['ex_date'])
+        except (OSError, pl.exceptions.PolarsError):
+            return {'path': str(path), 'rows': 0, 'last_ex_date': None}
+        return {
+            'path': str(path),
+            'rows': frame.height,
+            'last_ex_date': str(frame['ex_date'].max()) if frame.height else None,
+        }
+
+    def _diagnostics(self) -> dict[str, Any]:
+        """口径与数据可得性：写死进结果，避免报告与实现脱节。"""
+        costs = self.config.costs
+        return {
+            'risk': self.risk.describe(),
+            'coverage': {
+                'st_snapshots': self._snapshot_span('st_status', 'st_status'),
+                'industry_snapshots': self._snapshot_span('industry', 'industry'),
+                'events': self.risk.event_coverage,
+                'dividend': self._dividend_coverage(),
+            },
+            'price_basis': {
+                'valuation': 'hfq_close',
+                'execution': 'hfq_open',
+                'ref_price': 'raw_close（推荐日未复权收盘，仅展示/核对）',
+            },
+            'execution': {
+                'entry': 'T 日收盘生成推荐，T+1 开盘买入',
+                'exit': '调出信号 T+1 开盘卖出',
+                'untradable': '涨跌停/停牌当日不可成交，直接放弃并计数（不顺延）',
+            },
+            'costs': {
+                'commission_rate': costs.commission_rate,
+                'min_commission': costs.min_commission,
+                'stamp_duty_rate': costs.stamp_duty_rate,
+                'impact_rate': costs.impact_rate,
+                'round_trip_rate': round(costs.round_trip_rate, 6),
+            },
+        }
 
     def _sample_rows(self) -> list[dict[str, Any]]:
         """用最后交易日的决策生成与线上清单同 schema 的样例行。"""
@@ -409,8 +601,9 @@ class _ReplayTier:
             row = rows.get(code)
             if row is None:
                 continue
-            output.append(self._sample_row(row, 'HOLD', position.shares,
-                                            position.last_price, stats))
+            output.append(self._sample_row(
+                row, 'HOLD', position.shares,
+                float(row.get('raw_close') or position.last_price), stats))
         for row, _candidate in self._buy_candidates(
                 rows, self.dates[-1], record=False)[:5]:
             output.append(self._sample_row(row, 'BUY', 0,

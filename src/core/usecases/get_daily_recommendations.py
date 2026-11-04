@@ -23,6 +23,10 @@ from typing import Any, Iterable
 from loguru import logger
 
 from src.advice.config import AdviceConfig, default_config
+from src.advice.daily_store import (
+    list_daily_snapshots,
+    load_daily_snapshot,
+)
 from src.advice.pipeline import AdviceEngine
 from src.utils.code_converter import is_fund_code
 
@@ -169,6 +173,53 @@ def _default_dirs() -> tuple[Path, Path]:
     return base, base / 'state'
 
 
+def _archived_daily_dir(out_dir: str | Path | None = None) -> Path:
+    return Path(out_dir) / 'daily' if out_dir else _default_dirs()[0] / 'daily'
+
+
+def list_archived_dates(out_dir: str | Path | None = None) -> list[str]:
+    """列出已归档的推荐交易日（升序）。"""
+    return [str(entry['trade_date'])
+            for entry in list_daily_snapshots(_archived_daily_dir(out_dir))]
+
+
+def load_archived_recommendations(trade_date: Any,
+                                  horizon: str = 'short',
+                                  *, out_dir: str | Path | None = None
+                                  ) -> DailyRecommendationBundle | None:
+    """读取某交易日的归档清单；不存在返回 ``None``。
+
+    归档不含换手统计，``summary`` 只标记 ``archive``，UI 用 ``source`` 区分。
+    """
+    try:
+        parsed = (trade_date if isinstance(trade_date, date)
+                  else date.fromisoformat(str(trade_date)[:10]))
+    except ValueError:
+        return None
+    payload = load_daily_snapshot(_archived_daily_dir(out_dir), parsed)
+    if payload is None:
+        return None
+    rows: list[dict[str, Any]] = []
+    for tier in payload.get('tiers', []):
+        key = str(tier.get('tier', 'mid'))
+        label = str(tier.get('label', TIER_LABELS.get(key, '中线')))
+        for item in tier.get('items', []):
+            rows.append({**item, 'tier': key, 'horizon': label})
+    items = [_to_dto(row, str(row['tier'])) for row in rows]
+    if horizon != 'all':
+        items = [item for item in items if item.tier == horizon]
+    generated_at = datetime.now()
+    try:
+        generated_at = datetime.fromisoformat(str(payload.get('generated_at')))
+    except (TypeError, ValueError):
+        pass
+    return DailyRecommendationBundle(
+        items=items, trade_date=parsed, generated_at=generated_at,
+        data_lag_days=0, equity=float(payload.get('equity') or 1_000_000.0),
+        warnings=['历史归档：展示当时落盘的清单，不会重新计算'],
+        summary={'archive': True}, source='archive')
+
+
 def _load_snapshot(path: Path, horizon: str, equity: float) -> DailyRecommendationBundle | None:
     if not path.is_file():
         return None
@@ -254,7 +305,8 @@ def get_daily_recommendations(trade_date: Any = None, horizon: str = 'short',
     result = engine.generate(
         as_of=trade_date, equity=equity,
         tiers=list(tiers) if tiers else list(ALL_TIERS),
-        state_dir=state_path)
+        state_dir=state_path,
+        daily_dir=output_dir / 'daily', persist_daily=True)
     generated_at = datetime.now()
     lag = (date.today() - result.trade_date).days if result.trade_date else 0
     items = [_to_dto({**rec.to_row(), 'tier': key}, key)

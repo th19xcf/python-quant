@@ -10,9 +10,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QFrame,
     QLabel,
     QMenu,
     QProgressBar,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QStatusBar,
@@ -283,7 +285,16 @@ class MainWindowLayoutMixin:
         finance_layout = QVBoxLayout(self.finance_tab)
         finance_layout.setContentsMargins(0, 0, 0, 0)
         self.finance_page = FinancePage(host=self, parent=self.finance_tab)
-        finance_layout.addWidget(self.finance_page)
+
+        # 整页套竖向滚动容器：该页最小高度约 570px，不套滚动会成为「每日推荐」
+        # 之后新的窗口最小高度瓶颈，技术分析页仍无法在 1024×600 下完整显示。
+        self.finance_scroll_area = QScrollArea()
+        self.finance_scroll_area.setWidgetResizable(True)
+        self.finance_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.finance_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.finance_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.finance_scroll_area.setWidget(self.finance_page)
+        finance_layout.addWidget(self.finance_scroll_area)
 
         # 页签切到财务分析时才触发加载，避免后台无谓请求
         with contextlib.suppress(RuntimeError, TypeError):

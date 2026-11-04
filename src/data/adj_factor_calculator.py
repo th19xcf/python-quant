@@ -21,7 +21,8 @@ from src.utils.memory_optimizer import MemoryOptimizer
 
 
 def calc_dividend_event_factor(prev_close, cash_div, share_div,
-                               rights_ratio=0.0, rights_price=0.0) -> float | None:
+                               rights_ratio=0.0, rights_price=0.0,
+                               max_factor: float = 10.0) -> float | None:
     """
     计算单次除权除息事件的前复权因子（所有复权计算的唯一公式收口点）。
 
@@ -38,6 +39,8 @@ def calc_dividend_event_factor(prev_close, cash_div, share_div,
         share_div: 每股送转股比例
         rights_ratio: 配股比例
         rights_price: 配股价
+        max_factor: 因子上限。个股默认 10；基金份额反向折算（1:0.01）可达 100，
+            调用方需显式放宽，避免真实事件被静默丢弃。
 
     Returns:
         float: 事件因子；输入非法（价格缺失/分母为0/因子越界）时返回 None
@@ -61,7 +64,7 @@ def calc_dividend_event_factor(prev_close, cash_div, share_div,
         return None
 
     factor = numerator / denominator
-    if factor <= 0 or factor > 10:
+    if factor <= 0 or factor > max_factor:
         return None
     return factor
 
@@ -248,7 +251,8 @@ class AdjFactorCalculator:
         return MemoryOptimizer.optimize_dataframe(result)
 
     @staticmethod
-    def calculate_factors(prices_df: pl.DataFrame, dividends_df: pl.DataFrame) -> pl.DataFrame:
+    def calculate_factors(prices_df: pl.DataFrame, dividends_df: pl.DataFrame,
+                          max_factor: float = 10.0) -> pl.DataFrame:
         """
         计算复权因子（事件级向量化版本，静态方法，供各处复用）。
 
@@ -299,6 +303,7 @@ class AdjFactorCalculator:
                 div.get('share_div'),
                 div.get('rights_issue_ratio'),
                 div.get('rights_issue_price'),
+                max_factor,
             )
             if factor is None:
                 continue

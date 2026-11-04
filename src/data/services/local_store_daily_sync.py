@@ -108,6 +108,24 @@ def _index_basic_codes(db_manager: Any) -> set[str]:
         raise RuntimeError(f'读取 index_basic 代码失败: {exc}') from exc
 
 
+def _refresh_anomaly_lists_step(store_root: Path) -> dict[str, Any]:
+    """末步：刷新异常台账清单；失败只记 warning，不抛给主流程。"""
+    from src.data.quality.anomaly_lists import (  # noqa: PLC0415
+        refresh_anomaly_lists,
+    )
+
+    try:
+        result = refresh_anomaly_lists(store_root)
+    except Exception as exc:  # noqa: BLE001 - 兜底，确保补数主流程非致命
+        logger.warning(f'异常台账清单刷新异常（不影响本次入库）: {exc}')
+        return {'status': 'failed', 'error': f'{type(exc).__name__}: {exc}',
+                'elapsed_sec': 0.0}
+    if result['status'] != 'ok':
+        logger.warning(
+            f'异常台账清单刷新失败（不影响本次入库）: {result["error"]}')
+    return result
+
+
 def _records_from_frame(frame: Any) -> list[dict[str, Any]]:
     """列存帧 → ``build_missing_rows`` 需要的原始记录（只做列名映射）。"""
     available = [col for col in _RECORD_COLUMNS if col in frame.columns]
@@ -245,6 +263,7 @@ def sync_local_store_daily(
     progress_path: Path | str | None = None,
     resume: bool = True,
     store: LocalQuoteStore | None = None,
+    refresh_lists: bool = False,
 ) -> dict[str, Any]:
     """把本地列存中的基金 / 指数日线写入 MySQL。
 
@@ -260,6 +279,7 @@ def sync_local_store_daily(
         progress_path: 断点续跑进度文件；None 用 ``logs/sync_progress/``
         resume: 是否读取已有进度跳过已完成标的（upsert 幂等，跳过只省时间）
         store: 注入列存（测试用）；None 时按配置解析
+        refresh_lists: 写入完成后是否刷新异常台账清单（默认关；日常 CLI 默认开）
 
     Returns:
         统计字典，含每张表的标的数 / 行数 / 新增 / 更新 / 日期区间、
@@ -304,6 +324,8 @@ def sync_local_store_daily(
     }
     if not codes:
         logger.warning(f'{asset} 入库：标的池为空，未执行任何操作')
+        summary['anomaly_lists'] = {'status': 'skipped',
+                                    'reason': 'empty_universe'}
         return summary
 
     if asset == 'index':
@@ -370,13 +392,23 @@ def sync_local_store_daily(
 
     summary['unclassified_funds'] = len(unclassified)
     summary['unclassified_sample'] = unclassified[:10]
+    if refresh_lists and not dry_run:
+        summary['anomaly_lists'] = _refresh_anomaly_lists_step(store.root)
+    else:
+        summary['anomaly_lists'] = {
+            'status': 'skipped',
+            'reason': 'dry-run' if dry_run else 'disabled',
+        }
     summary['elapsed_sec'] = round((datetime.now() - started).total_seconds(), 2)
     summary['progress_path'] = str(progress_file)
     logger.info(
         f'{asset} 入库完成{"（dry-run）" if dry_run else ""}：'
         f'标的 {summary["codes_processed"]}/{summary["codes_total"]}，'
         f'行 {summary["rows"]}，表 {summary["tables"]}，'
-        f'跳过 {summary["skipped_reasons"]}，耗时 {summary["elapsed_sec"]}s'
+        f'跳过 {summary["skipped_reasons"]}，'
+        f'清单刷新 {summary["anomaly_lists"]["status"]} '
+        f'({summary["anomaly_lists"].get("elapsed_sec", 0.0)}s)，'
+        f'总耗时 {summary["elapsed_sec"]}s'
     )
     return summary
 

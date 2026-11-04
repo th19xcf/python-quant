@@ -8,6 +8,7 @@
 
 # 标准库导入
 import argparse
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -20,6 +21,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 # 添加项目根目录到Python路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# 真实 QApplication 类的引用：测试会把 main 模块里的 QApplication 打桩成假对象，
+# 用它在退出前判定「是不是真的 GUI 进程」，避免把测试进程一起硬退出
+_REAL_QAPPLICATION = QApplication
 
 from src.data.data_manager import DataManager
 from src.data.services.sync_service import (
@@ -80,6 +85,8 @@ def parse_args():
                         help='配合各 --sync-* 参数：只写入不早于该日期的记录（YYYY-MM-DD）')
     parser.add_argument('--repair-stock-basic', action='store_true', help='一次性修复 stock_basic 存量的地域/行业/市场字段')
     parser.add_argument('--deep-industry', action='store_true', help='与 --repair-stock-basic 配合：批量源覆盖不到的行业逐只查巨潮公司概况兜底')
+    parser.add_argument('--skip-anomaly-lists', action='store_true',
+                        help='数据写入完成后不刷新异常台账清单（默认刷新；失败不影响补数）')
     parser.add_argument('--plugins', action='store_true', help='显示已加载的插件')
     return parser.parse_args()
 
@@ -266,6 +273,7 @@ def _handle_sync_local_store_daily_arg(config, args, asset):
             since=since,
             dry_run=getattr(args, 'dry_run', False),
             progress_path=getattr(args, 'progress_file', '') or None,
+            refresh_lists=not getattr(args, 'skip_anomaly_lists', False),
         )
         logger.info(f"{asset} 日线入库结果: {summary}")
     except (DataSourceException, *_STARTUP_ERRORS) as e:
@@ -453,6 +461,8 @@ def main():
 
     plugin_manager = None
     db_manager = None
+    # GUI 事件循环退出码；None 表示走命令行分支（不需要强制终止进程）
+    app_exit_code = None
 
     try:
         config = get_config()
@@ -517,13 +527,23 @@ def main():
 
         log_cache_stats()
 
-        sys.exit(app.exec())
+        app_exit_code = app.exec()
 
     except _STARTUP_ERRORS as e:
         logger.exception(f"系统启动失败: {e}")
         sys.exit(1)
     finally:
         _cleanup_system(plugin_manager, db_manager)
+
+    # 桌面 GUI 正常关窗：资源已清理，强制终止进程。
+    # ThreadPoolExecutor 的工作线程是非 daemon 的，若某个取数/网络任务卡住，
+    # 解释器退出会在 atexit 阶段被它拖住，表现为关窗后进程残留。
+    if app_exit_code is not None:
+        if isinstance(app, _REAL_QAPPLICATION):
+            logger.info(f"GUI 已退出（退出码 {app_exit_code}），强制终止进程")
+            os._exit(app_exit_code)
+        # 非真实 GUI（测试打桩的 App）：保持原有 SystemExit 语义，不硬退出
+        sys.exit(app_exit_code)
 
 
 if __name__ == "__main__":

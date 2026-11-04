@@ -21,7 +21,7 @@ from typing import Sequence
 from loguru import logger
 
 from src.data.local_store import LocalQuoteStore, resolve_store_root
-from src.data.quality.anomalies import find_anomalies, iter_anomalies
+from src.data.quality.anomalies import iter_anomalies, query_anomalies
 from src.data.quality.checker import (
     FrameSource,
     LocalStoreFrameSource,
@@ -176,9 +176,25 @@ def _run_check(args: argparse.Namespace) -> int:
 def _run_anomalies(args: argparse.Namespace) -> int:
     trade_date = _parse_date(args.date)
     if args.code or trade_date:
-        records = find_anomalies(args.code or '', trade_date, context=args.context)
-    else:
-        records = list(iter_anomalies())
+        payload = query_anomalies(args.code or '', trade_date, context=args.context)
+        if args.json:
+            logger.info(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+        current = payload['date'] or '-'
+        if not payload['known']:
+            logger.info(f"{payload['ts_code']} | {current} | 未命中已知异常 | "
+                        f"advice={payload['advice']}")
+            return 0
+        logger.info(f"{payload['ts_code']} | {current} | 命中 {payload['hit_count']} 条 | "
+                    f"advice={payload['advice']}")
+        for hit in payload['hits']:
+            logger.info(f"  {hit['anomaly_id']} | {hit['code']} | "
+                        f"severity={hit['severity']} | action={hit['action']}")
+            logger.info(f"    原因: {hit['reason']}")
+            logger.info(f"    证据: {hit['evidence']}")
+            logger.info(f"    来源: {hit['source']} | detected_at={hit['detected_at']}")
+        return 0
+    records = list(iter_anomalies())
     if args.json:
         logger.info(json.dumps([record.as_dict() for record in records],
                                ensure_ascii=False, indent=2))
@@ -193,7 +209,8 @@ def _run_anomalies(args: argparse.Namespace) -> int:
             f'{record.start or "-"}..{record.end or "-"}'
         )
         logger.info(f'{record.anomaly_id} | {record.ts_code} | {record.issue_type} | '
-                    f'{record.action} | {span}')
+                    f'{record.action} | severity={record.severity} | '
+                    f'scope={record.scope} | status={record.status} | {span}')
         logger.info(f'  原因: {record.reason}')
         logger.info(f'  来源: {record.source}')
     return 0

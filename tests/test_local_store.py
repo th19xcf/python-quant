@@ -30,7 +30,12 @@ from src.data.local_store.build import (
 )
 from src.data.local_store.factor_rebuild import rebuild_factors_from_local
 from src.data.local_store.session_guard import filter_intraday_rows
-from src.data.local_store.store import LocalFactorStore, LocalQuoteStore
+from src.data.local_store.store import (
+    LocalFactorStore,
+    LocalQuoteStore,
+    refresh_quote_factor_columns,
+    verify_quote_factor_consistency,
+)
 from src.data.managers.data_fetcher import DataFetcher
 
 _RECS = [
@@ -445,3 +450,67 @@ def test_rebuild_factors_matches_dividend_path(tmp_path):
     updated = rebuild_factors_from_local(
         quote_store, factor_store, codes=['600000.SH'], include_existing=True)
     assert updated['factor_codes'] == 2
+
+
+def _write_factor_snapshot(store_root: Path, code: str, dates: list[date],
+                           qfq: list[float], hfq: list[float]) -> None:
+    factor_dir = Path(store_root) / 'factors'
+    factor_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({
+        'ts_code': [code] * len(dates),
+        'trade_date': dates,
+        'qfq_factor': qfq,
+        'hfq_factor': hfq,
+    }).write_parquet(factor_dir / 'stock_adj_factor.parquet')
+
+
+def test_read_daily_uses_factor_snapshot_instead_of_stale_copy(tmp_path):
+    """行情内嵌因子副本过期时，读出口必须以因子快照为准。"""
+    store = LocalQuoteStore(tmp_path)
+    frame = make_frame(5).with_columns(pl.lit('600000.SH').alias('ts_code'))
+    store.write_daily('stock', '600000.SH', frame)
+    store.flush_meta()
+    _write_factor_snapshot(tmp_path, '600000.SH', frame['date'].to_list(),
+                           [0.9, 0.9, 0.9, 1.0, 1.0],
+                           [1.0, 1.0, 1.003, 1.003, 1.003])
+
+    reader = LocalQuoteStore(tmp_path)
+    sliced = reader.read_daily('stock', '600000.SH',
+                               date(2024, 1, 2), date(2024, 1, 3))
+    assert sliced is not None
+    assert sliced['qfq_factor'].to_list() == [0.9, 0.9]
+    assert sliced['hfq_factor'].to_list() == [1.0, 1.0]
+
+    # 默认读文件仍是原始副本（供扫描/增量合并使用），显式要求时才覆盖
+    assert reader.read_file('stock', '600000.SH')['qfq_factor'].to_list() == [1.0] * 5
+    fixed = reader.read_file('stock', '600000.SH', with_factors=True)
+    assert fixed['qfq_factor'].to_list() == [0.9, 0.9, 0.9, 1.0, 1.0]
+
+
+def test_sync_quote_factors_aligns_copy_then_verify_is_zero(tmp_path):
+    """副本对齐后全量核对不一致只数必须为 0，且 dry-run 不改文件。"""
+    store = LocalQuoteStore(tmp_path)
+    frame = make_frame(5).with_columns(pl.lit('600000.SH').alias('ts_code'))
+    store.write_daily('stock', '600000.SH', frame)
+    store.flush_meta()
+    _write_factor_snapshot(tmp_path, '600000.SH', frame['date'].to_list(),
+                           [0.9, 0.9, 0.9, 1.0, 1.0],
+                           [1.0, 1.0, 1.003, 1.003, 1.003])
+    factor_store = LocalFactorStore(tmp_path)
+
+    dry = refresh_quote_factor_columns(store, factor_store, dry_run=True)
+    assert dry['changed_codes'] == 1
+    assert dry['changed_rows'] == 6
+    assert store.read_file('stock', '600000.SH')['qfq_factor'].to_list() == [1.0] * 5
+
+    done = refresh_quote_factor_columns(store, factor_store)
+    assert done['changed_codes'] == 1
+    assert store.read_file('stock', '600000.SH')['qfq_factor'].to_list() == [
+        0.9, 0.9, 0.9, 1.0, 1.0]
+
+    stats = verify_quote_factor_consistency(store, factor_store)
+    assert stats['stock']['mismatch_codes'] == 0
+    assert stats['stock']['mismatch_rows'] == 0
+    assert stats['index']['mismatch_codes'] == 0
+    assert stats['fund']['mismatch_codes'] == 0
+

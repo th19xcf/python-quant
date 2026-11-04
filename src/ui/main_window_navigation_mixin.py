@@ -143,6 +143,58 @@ class MainWindowNavigationMixin:
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Failed to handle nav item click: {e}")
 
+    def _handle_tech_tab_arrow_key(self, key) -> bool:
+        """
+        技术分析页方向键统一处理：左/右缩放柱体数，上/下切换相邻股票。
+
+        QScrollArea 与 pyqtgraph 的 QGraphicsView 都会在 keyPressEvent 里消费方向键，
+        所以由应用级事件过滤器在目标控件处理前调用本方法。焦点在输入框、按钮、
+        页签栏时不拦截，避免方向键用于光标移动或焦点导航时误改柱体数。
+
+        Returns:
+            bool: 已处理返回 True，调用方应停止继续分发该按键
+        """
+        if key not in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down):
+            return False
+
+        tab_widget = getattr(self, 'tab_widget', None)
+        tech_tab = getattr(self, 'tech_tab', None)
+        if tab_widget is None or tech_tab is None:
+            return False
+        if tab_widget.currentWidget() is not tech_tab:
+            return False
+
+        from PySide6.QtWidgets import (
+            QAbstractButton,
+            QAbstractSpinBox,
+            QApplication,
+            QLineEdit,
+            QPlainTextEdit,
+            QTabBar,
+            QTextEdit,
+        )
+
+        focus = QApplication.focusWidget()
+        if focus is not None:
+            if isinstance(focus, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+                return False
+            if isinstance(focus, (QAbstractButton, QTabBar)):
+                return False
+            if focus is not self and not tech_tab.isAncestorOf(focus):
+                return False
+
+        if key == Qt.Key.Key_Left:
+            # 左箭头：放大（增加柱体数）
+            self._on_zoom_in()  # type: ignore[attr-defined]
+        elif key == Qt.Key.Key_Right:
+            # 右箭头：缩小（减少柱体数）
+            self._on_zoom_out()  # type: ignore[attr-defined]
+        elif key == Qt.Key.Key_Up:
+            self._switch_to_adjacent_stock('prev')
+        else:
+            self._switch_to_adjacent_stock('next')
+        return True
+
     def keyPressEvent(self, event):
         """
         Handle key press events
@@ -151,6 +203,10 @@ class MainWindowNavigationMixin:
         Other keys: Show stock search dialog at bottom right
         """
         key = event.key()
+
+        # 技术分析页方向键统一入口（与全局按键过滤器共用）
+        if self._handle_tech_tab_arrow_key(key):
+            return
 
         # ESC键：返回行情标签页
         if key == Qt.Key_Escape:
