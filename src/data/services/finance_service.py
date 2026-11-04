@@ -359,24 +359,24 @@ def _parse_ths_financial(frame: Any) -> tuple[dict[str, Any] | None, list[str]]:
 # 默认抓取器（延迟导入 akshare，便于测试注入替身）
 # ---------------------------------------------------------------------------
 def _default_fetchers() -> dict[str, Callable[[str], Any]]:
-    def financial_em(ts_code: str):
+    def financial_em(ts_code: str) -> Any:
         import akshare as ak  # noqa: PLC0415
 
         return ak.stock_financial_analysis_indicator_em(
             symbol=_em_symbol(ts_code), indicator='按报告期')
 
-    def financial_ths(ts_code: str):
+    def financial_ths(ts_code: str) -> Any:
         import akshare as ak  # noqa: PLC0415
 
         return ak.stock_financial_abstract_ths(
             symbol=_plain_symbol(ts_code), indicator='按报告期')
 
-    def valuation(ts_code: str):
+    def valuation(ts_code: str) -> Any:
         import akshare as ak  # noqa: PLC0415
 
         return ak.stock_value_em(symbol=_plain_symbol(ts_code))
 
-    def news(ts_code: str):
+    def news(ts_code: str) -> Any:
         import akshare as ak  # noqa: PLC0415
 
         return ak.stock_news_em(symbol=_plain_symbol(ts_code))
@@ -568,7 +568,7 @@ def _parse_news(frame: Any) -> tuple[list[dict[str, Any]], list[str]]:
 # ---------------------------------------------------------------------------
 # 缓存（键必须同时包含标的与日期）
 # ---------------------------------------------------------------------------
-_CACHE: 'OrderedDict[tuple[str, str], tuple[float, dict[str, Any]]]' = OrderedDict()
+_CACHE: OrderedDict[tuple[str, str], tuple[float, dict[str, Any]]] = OrderedDict()
 _CACHE_LOCK = threading.Lock()
 
 
@@ -653,6 +653,88 @@ def _empty_snapshot(ts_code: str, name: str, day_text: str,
     }
 
 
+def _collect_financial(
+    fetch: dict[str, Callable[[str], Any]],
+    ts_code: str,
+    snapshot: dict[str, Any],
+) -> dict[str, Any] | None:
+    """财务指标：东财 → 同花顺 → 空态；警告与错误写回 ``snapshot``。"""
+    for key, parser, source in (
+            ('financial_em', _parse_em_financial, SOURCE_EM),
+            ('financial_ths', _parse_ths_financial, SOURCE_THS),
+    ):
+        func = fetch.get(key)
+        if func is None:
+            continue
+        try:
+            frame = func(ts_code)
+            parsed, warnings = parser(frame)
+        except Exception as exc:  # noqa: BLE001
+            message = f'{type(exc).__name__}: {exc}'
+            logger.warning(f'[finance] {source}失败 {ts_code}: {message}')
+            snapshot['errors'].append(
+                {'stage': key, 'source': 'akshare', 'message': message})
+            continue
+        snapshot['warnings'].extend(warnings)
+        if parsed:
+            snapshot['sources'][key] = source
+            return parsed
+        logger.warning(f'[finance] {source}无有效数据 {ts_code}: {warnings}')
+    return None
+
+
+def _collect_valuation(
+    fetch: dict[str, Callable[[str], Any]],
+    ts_code: str,
+    snapshot: dict[str, Any],
+) -> dict[str, Any] | None:
+    """估值：东财「估值分析」最新一行；失败只记录不抛出。"""
+    func = fetch.get('valuation')
+    if func is None:
+        return None
+    try:
+        frame = func(ts_code)
+        parsed, warnings = _parse_valuation(frame)
+    except Exception as exc:  # noqa: BLE001
+        message = f'{type(exc).__name__}: {exc}'
+        logger.warning(f'[finance] {SOURCE_VALUE}失败 {ts_code}: {message}')
+        snapshot['errors'].append(
+            {'stage': 'valuation', 'source': 'akshare', 'message': message})
+        return None
+    snapshot['warnings'].extend(warnings)
+    if not parsed:
+        logger.warning(f'[finance] {SOURCE_VALUE}无有效数据 {ts_code}: {warnings}')
+        return None
+    snapshot['sources']['valuation'] = SOURCE_VALUE
+    return parsed
+
+
+def _collect_remote_news(
+    fetch: dict[str, Callable[[str], Any]],
+    ts_code: str,
+    snapshot: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """远程个股新闻；单源失败只记录错误，返回空列表。"""
+    func = fetch.get('news')
+    if func is None:
+        return []
+    try:
+        frame = func(ts_code)
+        items, warnings = _parse_news(frame)
+    except Exception as exc:  # noqa: BLE001
+        message = f'{type(exc).__name__}: {exc}'
+        logger.warning(f'[finance] 个股新闻源失败 {ts_code}: {message}')
+        snapshot['errors'].append(
+            {'stage': 'news', 'source': 'akshare', 'message': message})
+        return []
+    snapshot['warnings'].extend(warnings)
+    if items:
+        snapshot['sources']['news'] = SOURCE_NEWS
+    else:
+        logger.warning(f'[finance] 个股新闻无有效数据 {ts_code}: {warnings}')
+    return items
+
+
 def _build_snapshot(
     ts_code: str,
     name: str,
@@ -673,53 +755,10 @@ def _build_snapshot(
     root = _resolve_root(config, store_root)
 
     # 1) 财务指标：东财 → 同花顺 → 空态
-    financial = None
-    for key in ('financial_em', 'financial_ths'):
-        func = fetch.get(key)
-        if func is None:
-            continue
-        try:
-            frame = func(ts_code)
-        except Exception as exc:  # noqa: BLE001 - 单源失败必须降级
-            message = f'{type(exc).__name__}: {exc}'
-            logger.warning(f'[finance] 财务源 {key} 失败 {ts_code}: {message}')
-            snapshot['errors'].append(
-                {'stage': f'financial.{key}', 'source': 'akshare', 'message': message})
-            continue
-        parsed = None
-        try:
-            if key == 'financial_em':
-                parsed, warnings = _parse_em_financial(frame)
-            else:
-                parsed, warnings = _parse_ths_financial(frame)
-        except (TypeError, ValueError, KeyError, IndexError) as exc:
-            message = f'{type(exc).__name__}: {exc}'
-            logger.warning(f'[finance] 财务源 {key} 解析失败 {ts_code}: {message}')
-            snapshot['errors'].append(
-                {'stage': f'financial.{key}.parse', 'source': 'akshare', 'message': message})
-            continue
-        snapshot['warnings'].extend(warnings)
-        if parsed:
-            financial = parsed
-            snapshot['sources']['financial'] = parsed['source']
-            break
-        logger.warning(f'[finance] 财务源 {key} 无有效数据 {ts_code}: {warnings}')
+    financial = _collect_financial(fetch, ts_code, snapshot)
 
     # 2) 估值
-    valuation = None
-    func = fetch.get('valuation')
-    if func is not None:
-        try:
-            frame = func(ts_code)
-            valuation, warnings = _parse_valuation(frame)
-            snapshot['warnings'].extend(warnings)
-            if valuation:
-                snapshot['sources']['valuation'] = valuation['source']
-        except Exception as exc:  # noqa: BLE001
-            message = f'{type(exc).__name__}: {exc}'
-            logger.warning(f'[finance] 估值源失败 {ts_code}: {message}')
-            snapshot['errors'].append(
-                {'stage': 'valuation', 'source': 'akshare', 'message': message})
+    valuation = _collect_valuation(fetch, ts_code, snapshot)
 
     # 3) 本地公告/分红/风险
     local_news: list[dict[str, Any]] = []
@@ -737,22 +776,7 @@ def _build_snapshot(
                 {'stage': label, 'source': 'local', 'message': message})
 
     # 4) 远程个股新闻
-    remote_news: list[dict[str, Any]] = []
-    func = fetch.get('news')
-    if func is not None:
-        try:
-            frame = func(ts_code)
-            remote_news, warnings = _parse_news(frame)
-            snapshot['warnings'].extend(warnings)
-            if remote_news:
-                snapshot['sources']['news'] = SOURCE_NEWS
-            else:
-                logger.warning(f'[finance] 个股新闻无有效数据 {ts_code}: {warnings}')
-        except Exception as exc:  # noqa: BLE001
-            message = f'{type(exc).__name__}: {exc}'
-            logger.warning(f'[finance] 个股新闻源失败 {ts_code}: {message}')
-            snapshot['errors'].append(
-                {'stage': 'news', 'source': 'akshare', 'message': message})
+    remote_news = _collect_remote_news(fetch, ts_code, snapshot)
 
     news = _merge_news(local_news, remote_news)
     industry = _local_industry(ts_code, root, day)
