@@ -10,7 +10,8 @@
 - 滑点 0.02% 双边，可按流动性覆盖
 
 传入 ``trade_date`` 时按历史时间表取费率（印花税/过户费），避免用现行
-费率回测历史区间造成系统性成本偏差；不传时保持原静态参数行为，向后兼容。
+费率回测历史区间造成系统性成本偏差；不传时使用 ``COST_DEFAULTS`` 中的
+现行静态费率（过户费 0.002%，与时间表当日口径一致）。
 """
 
 from datetime import date, datetime
@@ -34,6 +35,17 @@ STAMP_TAX_SCHEDULE: Tuple[Tuple[date, float, str], ...] = (
 TRANSFER_FEE_SWITCH = date(2015, 8, 1)
 TRANSFER_FEE_RATE_UNIFIED = 0.00002
 TRANSFER_FEE_RATE_SH_LEGACY = 0.0006
+
+#: 成本单一真源：回测内核、推荐配置（src.advice.config）与因子评估
+#: （src.advice.factor_eval，直接使用 CostModel）都从这里取值。
+#: 语义映射：推荐侧的 ``impact_rate`` 对应回测侧的 ``slippage``（均为双边）。
+COST_DEFAULTS: Dict[str, float] = {
+    'commission_rate': 0.0003,       # 佣金费率（双边）
+    'min_commission': 5.0,           # 单笔最低佣金（元）
+    'stamp_tax_rate': 0.0005,        # 印花税（仅卖出，2023-08-28 起 0.05%）
+    'transfer_fee_rate': TRANSFER_FEE_RATE_UNIFIED,  # 过户费（双边 0.002%）
+    'slippage': 0.0002,              # 滑点（双边）
+}
 
 TradeDate = Union[date, datetime, str, None]
 
@@ -68,13 +80,7 @@ class CostModel:
                        commission_rate / min_commission / stamp_tax_rate /
                        transfer_fee_rate / slippage
         """
-        self.params = {
-            'commission_rate': 0.0003,       # 佣金费率（双边）
-            'min_commission': 5.0,           # 单笔最低佣金
-            'stamp_tax_rate': 0.0005,        # 印花税（仅卖出，2023-08-28 起为 0.05%）
-            'transfer_fee_rate': 0.00001,    # 过户费（双边，近似）
-            'slippage': 0.0002,              # 滑点（双边）
-        }
+        self.params = dict(COST_DEFAULTS)
         if overrides:
             self.params.update(overrides)
 

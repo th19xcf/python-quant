@@ -14,8 +14,9 @@
     .venv\\Scripts\\python.exe -m src.data.local_store build --codes 600000.SH,000001.SZ
     .venv\\Scripts\\python.exe -m src.data.local_store build --since 2026-10-01
 
-    # 从远程库刷新因子与分红快照（必须显式 --allow-remote）
-    .venv\\Scripts\\python.exe -m src.data.local_store refresh-factors --allow-remote
+    # 危险操作：用远程库整表覆盖本地因子与分红快照（默认禁止，需二次确认）
+    .venv\\Scripts\\python.exe -m src.data.local_store refresh-factors --allow-remote \
+        --force-overwrite --confirm OVERWRITE-LOCAL-SNAPSHOT
 
     # 用本地行情+分红补齐全市场因子快照（不写远程库，断点续跑）
     .venv\\Scripts\\python.exe -m src.data.local_store rebuild-factors
@@ -24,7 +25,8 @@
     .venv\\Scripts\\python.exe -m src.data.local_store stats
 
 构建口径与 ``TdxHandler`` 完全一致：同一份 ``parse_day_file`` 原始记录 →
-同一套复权因子来源（预计算因子优先，缺失时按分红本地计算）→ 同一个
+同一套复权因子来源（本地因子快照优先；缺票时按本地分红现场计算；远程预计算
+因子仅作最后兜底，且全为 1.0 时跳过）→ 同一个
 ``DataSourceBase._normalize_kline`` 出口，保证数值逐行等价。
 """
 
@@ -34,7 +36,7 @@ import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
 
 import polars as pl
 from loguru import logger
@@ -565,17 +567,149 @@ def verify_incremental_target(
 
 
 
+_OVERWRITE_CONFIRM_TOKEN = 'OVERWRITE-LOCAL-SNAPSHOT'  # noqa: S105
+
+
+def _load_snapshot_columns(path: Path, columns: list[str]) -> pl.DataFrame | None:
+    """读取现有快照中的指定列；文件缺失或损坏时按「无快照」处理。"""
+    if not path.exists():
+        return None
+    try:
+        frame = pl.read_parquet(path)
+    except (OSError, ValueError) as exc:  # 损坏的快照不应阻塞校验，交给上层决定
+        logger.warning(f'读取本地快照失败，按无快照校验：{path} -> {exc}')
+        return None
+    return frame.select([c for c in columns if c in frame.columns])
+
+
+def validate_remote_overwrite(
+    factor_store: LocalFactorStore,
+    factors: pl.DataFrame,
+    dividends: pl.DataFrame,
+    *,
+    max_event_drop_rows: int = 0,
+    max_event_drop_codes: int = 0,
+    max_latest_date_regression_days: int = 0,
+    max_factor_mismatch_codes: int = 0,
+) -> dict[str, Any]:
+    """写前差异校验：远程数据不得让本地快照「变差」。
+
+    逐项对比现有快照与远程库：分红事件条数（按票）、最新除权日、因子末值。
+    默认阈值全为 0，即任何事件减少、除权日倒退、因子末值不一致都会中止写入；
+    快照不存在（首次冷启动）时不做回退判定。
+    """
+    factor_dir = factor_store.root / 'factors'
+    snapshot_factors = _load_snapshot_columns(
+        factor_dir / 'stock_adj_factor.parquet',
+        ['ts_code', 'trade_date', 'qfq_factor', 'hfq_factor'])
+    snapshot_dividends = _load_snapshot_columns(
+        factor_dir / 'stock_dividend.parquet', ['ts_code', 'ex_date'])
+
+    stats: dict[str, Any] = {
+        'snapshot_factor_rows': 0 if snapshot_factors is None else snapshot_factors.height,
+        'snapshot_dividend_rows': 0 if snapshot_dividends is None else snapshot_dividends.height,
+        'remote_factor_rows': factors.height,
+        'remote_dividend_rows': dividends.height,
+        'event_drop_rows': 0,
+        'event_drop_codes': 0,
+        'latest_date_regression_codes': 0,
+        'max_latest_date_regression_days': 0,
+        'factor_mismatch_codes': 0,
+        'violations': [],
+        'ok': True,
+    }
+
+    if snapshot_dividends is not None and not snapshot_dividends.is_empty():
+        snap = (snapshot_dividends.filter(pl.col('ex_date').is_not_null())
+                .group_by('ts_code')
+                .agg(pl.len().alias('snap_n'),
+                     pl.col('ex_date').max().alias('snap_max')))
+        remote = (dividends.filter(pl.col('ex_date').is_not_null())
+                  .group_by('ts_code')
+                  .agg(pl.len().alias('remote_n'),
+                       pl.col('ex_date').max().alias('remote_max')))
+        joined = snap.join(remote, on='ts_code', how='left').with_columns(
+            pl.col('remote_n').fill_null(0),
+            pl.col('remote_max').fill_null(pl.date(1900, 1, 1)))
+        dropped = joined.with_columns(
+            (pl.col('snap_n') - pl.col('remote_n')).clip(lower_bound=0).alias('lost'))
+        stats['event_drop_rows'] = int(dropped['lost'].sum())
+        stats['event_drop_codes'] = int(dropped.filter(pl.col('lost') > 0).height)
+
+        regressed = joined.with_columns(
+            (pl.col('snap_max') - pl.col('remote_max')).dt.total_days().alias('gap')
+        ).filter(pl.col('gap') > max_latest_date_regression_days)
+        stats['latest_date_regression_codes'] = regressed.height
+        if regressed.height:
+            stats['max_latest_date_regression_days'] = int(
+                cast(int, regressed['gap'].max()))
+
+        if stats['event_drop_rows'] > max_event_drop_rows:
+            stats['violations'].append(
+                f'分红事件将减少 {stats["event_drop_rows"]} 行（阈值 {max_event_drop_rows}）')
+        if stats['event_drop_codes'] > max_event_drop_codes:
+            stats['violations'].append(
+                f'{stats["event_drop_codes"]} 只票的分红事件减少（阈值 {max_event_drop_codes}）')
+        if regressed.height:
+            stats['violations'].append(
+                f'{regressed.height} 只票最新除权日倒退，最大 '
+                f'{stats["max_latest_date_regression_days"]} 天'
+                f'（阈值 {max_latest_date_regression_days} 天）')
+
+    if (snapshot_factors is not None and not snapshot_factors.is_empty()
+            and not factors.is_empty()):
+        snap_last = (snapshot_factors.sort('trade_date').group_by('ts_code')
+                     .agg(pl.col('qfq_factor').last().alias('snap_qfq'),
+                          pl.col('hfq_factor').last().alias('snap_hfq')))
+        remote_last = (factors.sort('trade_date').group_by('ts_code')
+                       .agg(pl.col('qfq_factor').last().alias('remote_qfq'),
+                            pl.col('hfq_factor').last().alias('remote_hfq')))
+        compared = snap_last.join(remote_last, on='ts_code', how='inner')
+        mismatch = compared.filter(
+            ((pl.col('snap_qfq') - pl.col('remote_qfq')).abs() > 1e-6)
+            | ((pl.col('snap_hfq') - pl.col('remote_hfq')).abs() > 1e-6))
+        stats['factor_mismatch_codes'] = mismatch.height
+        if mismatch.height > max_factor_mismatch_codes:
+            stats['violations'].append(
+                f'{mismatch.height} 只票因子末值不一致（阈值 {max_factor_mismatch_codes}）')
+
+    stats['ok'] = not stats['violations']
+    return stats
+
+
 def refresh_factors(
     config: Any,
     factor_store: LocalFactorStore,
     *,
     allow_remote: bool = False,
+    force_overwrite: bool = False,
+    confirm: str = '',
     dry_run: bool = False,
+    max_event_drop_rows: int = 0,
+    max_event_drop_codes: int = 0,
+    max_latest_date_regression_days: int = 0,
+    max_factor_mismatch_codes: int = 0,
 ) -> dict[str, Any]:
-    """从远程库一次性拉取复权因子与分红快照；未显式允许时拒绝联网。"""
+    """危险操作：用远程库整表覆盖本地因子/分红快照（默认禁止）。
+
+    本地快照是唯一权威数据源。该入口默认拒绝覆盖，即使显式
+    ``allow_remote`` 也必须同时提供 ``force_overwrite`` 与
+    ``confirm='OVERWRITE-LOCAL-SNAPSHOT'``；写前还会做差异校验，
+    远程数据相对快照出现任何事件减少/除权日倒退/因子末值不一致即中止。
+
+    仅用于首次冷启动（快照不存在）或经确认的全量重建。
+    """
     if not allow_remote:
         raise PermissionError(
             '刷新因子/分红需要显式 --allow-remote，避免运行期偷偷访问远程库')
+    if not force_overwrite:
+        raise PermissionError(
+            '默认禁止用远程库覆盖本地因子/分红快照（本地快照为唯一权威源）；'
+            '确需冷启动重建请显式 --force-overwrite --confirm '
+            f'{_OVERWRITE_CONFIRM_TOKEN}')
+    if confirm != _OVERWRITE_CONFIRM_TOKEN:
+        raise PermissionError(
+            f'危险操作二次确认失败：--confirm 必须为 {_OVERWRITE_CONFIRM_TOKEN}')
 
     from src.database.db_manager import DatabaseManager  # noqa: PLC0415
 
@@ -596,21 +730,42 @@ def refresh_factors(
         db.disconnect()
 
     elapsed = time.perf_counter() - started
+    validation = validate_remote_overwrite(
+        factor_store, factors, dividends,
+        max_event_drop_rows=max_event_drop_rows,
+        max_event_drop_codes=max_event_drop_codes,
+        max_latest_date_regression_days=max_latest_date_regression_days,
+        max_factor_mismatch_codes=max_factor_mismatch_codes)
     planned = {'factors': factors.height, 'dividends': dividends.height,
-               'elapsed_s': round(elapsed, 3)}
-    if dry_run:
-        logger.info(f'[dry-run] 因子 {factors.height:,} 行 / 分红 {dividends.height:,} 行')
-        return planned
+               'elapsed_s': round(elapsed, 3), 'validation': validation,
+               'forced': True}
 
     out_dir = factor_store.root / 'factors'
-    out_dir.mkdir(parents=True, exist_ok=True)
     factor_path = out_dir / 'stock_adj_factor.parquet'
     dividend_path = out_dir / 'stock_dividend.parquet'
+
+    if not validation['ok']:
+        message = '远程数据相对本地快照存在回退，已中止写入：' + '；'.join(
+            validation['violations'])
+        if dry_run:
+            planned['would_abort'] = True
+            logger.warning(f'[dry-run] {message}')
+            return planned
+        raise RuntimeError(message)
+
+    if dry_run:
+        logger.info(
+            f'[dry-run] 校验通过：因子 {factors.height:,} 行 / 分红 {dividends.height:,} 行')
+        return planned
+
+    out_dir.mkdir(parents=True, exist_ok=True)
     factors.write_parquet(factor_path, compression='zstd', statistics=True)
     dividends.write_parquet(dividend_path, compression='zstd', statistics=True)
 
     meta = {
         'source': 'remote_mysql',
+        'forced_overwrite': True,
+        'validation': validation,
         'factor_rows': factors.height,
         'dividend_rows': dividends.height,
         'factor_file_bytes': factor_path.stat().st_size,
@@ -622,7 +777,7 @@ def refresh_factors(
     (out_dir / 'meta.json').write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
     logger.info(
-        f'[local-store] 因子/分红快照已刷新：{factors.height:,} / {dividends.height:,} 行，'
+        f'[local-store] 危险覆盖完成：{factors.height:,} / {dividends.height:,} 行，'
         f'耗时 {elapsed:.1f}s')
     return meta
 
@@ -673,8 +828,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     build_cmd.add_argument('--skip-anomaly-lists', action='store_true',
                            help='数据写入完成后不刷新异常台账清单（默认刷新）')
 
-    factor_cmd = sub.add_parser('refresh-factors', help='从远程库刷新因子/分红快照')
+    factor_cmd = sub.add_parser(
+        'refresh-factors', help='危险操作：用远程库整表覆盖本地快照（默认拒绝）')
     factor_cmd.add_argument('--allow-remote', action='store_true', help='显式允许访问远程库')
+    factor_cmd.add_argument('--force-overwrite', action='store_true',
+                            help='危险：允许远程库覆盖本地快照（需配合 --confirm）')
+    factor_cmd.add_argument('--confirm', default='',
+                            help='二次确认口令，必须为 OVERWRITE-LOCAL-SNAPSHOT')
+    factor_cmd.add_argument('--max-event-drop-rows', type=int, default=0,
+                            help='允许的分红事件减少行数（默认 0，即不允许）')
+    factor_cmd.add_argument('--max-event-drop-codes', type=int, default=0,
+                            help='允许的分红事件减少票数（默认 0）')
+    factor_cmd.add_argument('--max-latest-date-regression-days', type=int, default=0,
+                            help='允许的最新除权日倒退天数（默认 0）')
+    factor_cmd.add_argument('--max-factor-mismatch-codes', type=int, default=0,
+                            help='允许的因子末值不一致票数（默认 0）')
     factor_cmd.add_argument('--dry-run', action='store_true')
     factor_cmd.add_argument('--skip-anomaly-lists', action='store_true',
                             help='不刷新异常台账清单（默认刷新）')
@@ -705,6 +873,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     sub.add_parser('rescan-meta', help='从现有 Parquet 重建覆盖度元数据（不重算行情）')
     sub.add_parser('stats', help='查看列存规模')
+
+    turnover_cmd = sub.add_parser(
+        'sync-turnover', help='从 baostock 回补换手率事实表（幂等、断点续跑）')
+    turnover_cmd.add_argument('--codes', default='', help='逗号分隔的 ts_code 列表（默认全市场）')
+    turnover_cmd.add_argument('--chunk-size', type=int, default=200,
+                              help='每批写盘的标的数（默认 200）')
+    turnover_cmd.add_argument('--workers', type=int, default=1,
+                              help='并发进程数；默认 1 串行（实测并发登录会被 baostock 拉黑）')
+    turnover_cmd.add_argument('--max-codes', type=int, default=None,
+                              help='只处理前 N 只（调试用）')
+    turnover_cmd.add_argument('--no-resume', action='store_true',
+                              help='忽略断点，从头开始')
+    turnover_cmd.add_argument('--dry-run', action='store_true', help='只统计不落盘')
     return parser.parse_args(argv)
 
 
@@ -729,7 +910,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == 'refresh-factors':
         refresh_factors(config, factor_store,
-                        allow_remote=args.allow_remote, dry_run=args.dry_run)
+                        allow_remote=args.allow_remote,
+                        force_overwrite=args.force_overwrite,
+                        confirm=args.confirm,
+                        dry_run=args.dry_run,
+                        max_event_drop_rows=args.max_event_drop_rows,
+                        max_event_drop_codes=args.max_event_drop_codes,
+                        max_latest_date_regression_days=(
+                            args.max_latest_date_regression_days),
+                        max_factor_mismatch_codes=args.max_factor_mismatch_codes)
         _refresh_anomaly_lists_step(
             root, skip=args.skip_anomaly_lists, dry_run=args.dry_run)
         return 0
@@ -766,6 +955,18 @@ def main(argv: list[str] | None = None) -> int:
         else:
             for kind, stats in result.items():
                 logger.info(f'[{kind}] {stats}')
+        return 0
+
+    if args.command == 'sync-turnover':
+        from src.data.local_store.turnover import backfill_turnover  # noqa: PLC0415
+
+        codes = [c.strip() for c in args.codes.split(',') if c.strip()] if args.codes else None
+        result = backfill_turnover(
+            quote_store, root,
+            codes=codes, chunk_size=args.chunk_size, workers=args.workers,
+            resume=not args.no_resume, dry_run=args.dry_run,
+            max_codes=args.max_codes)
+        logger.info(f'换手率回补结果: {result}')
         return 0
 
     if args.command == 'rescan-meta':

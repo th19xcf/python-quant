@@ -15,7 +15,6 @@ from src.quant.factor_lib.factors import (
 
 def load_all() -> int:
     """导入全部因子实现并登记不可用因子，返回可计算因子数量。"""
-    alpha101.register_unavailable()
     gtja191.register_unavailable()
     famafrench.register_unavailable()
     from src.quant.factor_lib.registry import computable_specs

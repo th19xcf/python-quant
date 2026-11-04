@@ -326,3 +326,41 @@ def test_single_parse_shared_between_kline_and_adj_factors(tmp_path, day_file, m
     assert factors_reparsed is not None
     assert factors_shared.equals(factors_reparsed)
     assert df.height == 1
+
+
+def test_remote_adj_factor_all_one_is_skipped_with_warning(tmp_path):
+    """远程 stock_adj_factor 恒 1.0 时不得静默采用：返回 None 并告警。
+
+    该表仅覆盖约 1.8% 的票且大量行恒为 1.0，直接采用等于把原始价当复权价；
+    本地快照与本地分红均无数据时，应放弃该档而不是返回全 1.0 因子。
+    """
+    from loguru import logger
+
+    from src.database.models.stock import StockAdjFactor, StockDividend
+
+    engine = create_engine(f'sqlite:///{tmp_path / "flat_factor.db"}')
+    StockDividend.__table__.create(engine)
+    StockAdjFactor.__table__.create(engine)
+    session = sessionmaker(bind=engine)()
+    session.add(StockAdjFactor(
+        ts_code='600000.SH', trade_date=date(2024, 1, 3),
+        qfq_factor=1.0, hfq_factor=1.0))
+    session.commit()
+
+    class _DB:
+        def get_session(self):
+            return session
+
+    handler = _handler(tmp_path, _DB())
+    messages: list[str] = []
+    handler_id = logger.add(lambda m: messages.append(str(m)), level='WARNING')
+    try:
+        factors = handler._get_adj_factors('600000.SH', None, None)
+    finally:
+        logger.remove(handler_id)
+        handler.close()
+        session.close()
+        engine.dispose()
+
+    assert factors is None
+    assert any('恒为 1.0' in m for m in messages)

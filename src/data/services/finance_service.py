@@ -673,7 +673,7 @@ def _collect_financial(
             message = f'{type(exc).__name__}: {exc}'
             logger.warning(f'[finance] {source}失败 {ts_code}: {message}')
             snapshot['errors'].append(
-                {'stage': key, 'source': 'akshare', 'message': message})
+                {'stage': f'financial.{key}', 'source': 'akshare', 'message': message})
             continue
         snapshot['warnings'].extend(warnings)
         if parsed:

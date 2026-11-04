@@ -10,7 +10,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from src.advice.config import default_config
+from src.advice.config import TradingCosts, default_config
 from src.advice.pipeline import AdviceEngine
 from src.advice.portfolio import Allocation
 from src.advice.replay import _ReplayTier
@@ -61,10 +61,12 @@ def test_buy_and_sell_execution(tmp_path):
     tier._execute_buy(allocation, buy_day, signal, 1, DATES[1],
                       ExecutionRules())
     position = tier.positions[CODE]
-    expected_entry = 10.2 * 1.001
+    costs = TradingCosts()
+    expected_entry = 10.2 * (1.0 + costs.impact_rate)
     expected_shares = int(math.floor(
         0.05 * 1_000_000.0 / expected_entry / 100) * 100)
-    expected_commission = max(5.0, expected_shares * expected_entry * 0.0003)
+    expected_commission = max(
+        costs.min_commission, expected_shares * expected_entry * costs.commission_rate)
     assert position.entry_price == pytest.approx(expected_entry)
     assert position.entry_ref_price == pytest.approx(10.0)
     assert position.shares == expected_shares
@@ -84,12 +86,13 @@ def test_buy_and_sell_execution(tmp_path):
     tier._execute_sell(CODE, sell_day, 2, ExecutionRules())
     assert CODE not in tier.positions
     trade = tier.closed[-1]
-    expected_exit = 10.5 * 0.999
+    expected_exit = 10.5 * (1.0 - costs.impact_rate)
     assert trade.exit_price == pytest.approx(expected_exit)
     assert trade.hold_days == 1
     assert trade.shares == expected_shares
     notional = expected_shares * expected_exit
-    sell_cost = max(5.0, notional * 0.0003) + notional * 0.001
+    sell_cost = (max(costs.min_commission, notional * costs.commission_rate)
+                 + notional * costs.stamp_duty_rate)
     assert trade.sell_cost == pytest.approx(sell_cost)
     basis = expected_shares * expected_entry + expected_commission
     assert trade.net_return_pct == pytest.approx(

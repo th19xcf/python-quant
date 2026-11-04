@@ -8,12 +8,18 @@ from datetime import date
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from src.data.quality.clean_set import (
+    FUND_DIVIDEND_PENDING_ENV,
+    FUND_DIVIDEND_PENDING_SCOPE_ENV,
     CodeInfo,
     EligibilityEngine,
+    _apply_scope_with_etf_codes,
     _as_date,
     _code_type,
+    _load_fund_etf_codes,
+    _resolve_fund_pending_scope,
 )
 
 
@@ -193,6 +199,110 @@ def test_fund_is_pending_only_in_strict() -> None:
     ok, reasons = engine.eligible('510300.SH', '2024-06-03', 'strict')
     assert ok is False
     assert reasons == ['pending_fund_dividend']
+
+
+def test_fund_pending_switch_opens_strict() -> None:
+    """一键开关打开后，基金不再被 pending 剔除，standard 口径不变。"""
+    info = make_code(
+        '510300.SH',
+        data_type='fund',
+        start=date(2020, 1, 2),
+        quotes=[date(2024, 6, 3)],
+    )
+    engine = make_engine([info])
+    engine.close_fund_dividend_pending = True
+
+    assert engine.eligible('510300.SH', '2024-06-03', 'standard') == (True, [])
+    assert engine.eligible('510300.SH', '2024-06-03', 'strict') == (True, [])
+    assert engine.eligible_set('2024-06-03', 'strict', data_type='fund') == [
+        '510300.SH'
+    ]
+    assert engine.layer_at('510300.SH', '2024-06-03') == 'remaining'
+    assert engine._layer_hits('510300.SH', '2024-06-03') == set()
+
+
+def test_fund_pending_switch_in_timeline() -> None:
+    """时间序列的 strict 基金只数随开关变化。"""
+    calendar = [date(2018, 1, 2), date(2018, 1, 31)]
+    fund = make_code(
+        '510700.SH',
+        data_type='fund',
+        quotes=[date(2018, 1, 31)],
+    )
+    engine = make_engine([fund], calendar=calendar, as_of=date(2018, 1, 31))
+
+    assert engine.timeline('2018-01-31', '2018-01-31')[0]['strict_fund'] == 0
+    engine.close_fund_dividend_pending = True
+    assert engine.timeline('2018-01-31', '2018-01-31')[0]['strict_fund'] == 1
+
+
+def test_close_fund_pending_flag_sources(monkeypatch) -> None:
+    """开关优先级：显式传参 > 环境变量 > 默认关闭。"""
+    monkeypatch.delenv(FUND_DIVIDEND_PENDING_ENV, raising=False)
+    monkeypatch.delenv(FUND_DIVIDEND_PENDING_SCOPE_ENV, raising=False)
+    assert _resolve_fund_pending_scope() == 'none'
+    assert _resolve_fund_pending_scope(None, True) == 'all'
+    assert _resolve_fund_pending_scope(None, False) == 'none'
+    assert _resolve_fund_pending_scope('etf', False) == 'etf'
+    monkeypatch.setenv(FUND_DIVIDEND_PENDING_ENV, '1')
+    assert _resolve_fund_pending_scope() == 'all'
+    monkeypatch.setenv(FUND_DIVIDEND_PENDING_SCOPE_ENV, 'etf')
+    assert _resolve_fund_pending_scope() == 'etf'
+    assert _resolve_fund_pending_scope('none') == 'none'
+    with pytest.raises(ValueError):
+        _resolve_fund_pending_scope('bogus')
+
+
+def test_fund_pending_scope_none_etf_all() -> None:
+    """三档取值：none 全剔、etf 只放 fund_basic 名单、all 全放。"""
+    etf = make_code('510300.SH', data_type='fund', quotes=[date(2024, 6, 3)])
+    lof = make_code('161907.SZ', data_type='fund', quotes=[date(2024, 6, 3)])
+    engine = make_engine([etf, lof])
+    engine.etf_codes = {'510300.SH'}
+
+    for scope, etf_ok, lof_ok in (
+        ('none', False, False), ('etf', True, False), ('all', True, True)
+    ):
+        engine.close_fund_dividend_pending_scope = scope
+        assert engine.eligible('510300.SH', '2024-06-03', 'strict') == (
+            etf_ok, [] if etf_ok else ['pending_fund_dividend'])
+        assert engine.eligible('161907.SZ', '2024-06-03', 'strict') == (
+            lof_ok, [] if lof_ok else ['pending_fund_dividend'])
+
+    engine.close_fund_dividend_pending_scope = 'etf'
+    assert engine.layer_at('510300.SH', '2024-06-03') == 'remaining'
+    assert engine.layer_at('161907.SZ', '2024-06-03') == 'pending'
+
+
+def test_fund_pending_legacy_bool_maps_to_scope() -> None:
+    """旧布尔参数/属性兼容映射：True→all，False→none。"""
+    engine = make_engine(
+        [make_code('510300.SH', data_type='fund', quotes=[date(2024, 6, 3)])]
+    )
+    engine.close_fund_dividend_pending = True
+    assert engine.close_fund_dividend_pending_scope == 'all'
+    assert engine.close_fund_dividend_pending is True
+    engine.close_fund_dividend_pending = False
+    assert engine.close_fund_dividend_pending_scope == 'none'
+    assert engine.close_fund_dividend_pending is False
+
+
+def test_fund_pending_scope_degrades_without_etf_codes(monkeypatch) -> None:
+    """fund_basic 不可用或为空名单时，etf 范围降级为不放开。"""
+    def boom() -> set[str]:
+        raise RuntimeError('db down')
+
+    monkeypatch.setattr(
+        'src.data.quality.clean_set._fund_etf_codes_from_db', boom)
+    assert _load_fund_etf_codes() is None
+    assert _apply_scope_with_etf_codes('etf', None) == 'none'
+    assert _apply_scope_with_etf_codes('etf', {'510300.SH'}) == 'etf'
+    assert _apply_scope_with_etf_codes('all', None) == 'all'
+
+    monkeypatch.setattr(
+        'src.data.quality.clean_set._fund_etf_codes_from_db',
+        lambda: {'510300.SH'})
+    assert _load_fund_etf_codes() == {'510300.SH'}
 
 
 def test_rights_and_jump_mismatch_are_strict_only() -> None:

@@ -23,6 +23,23 @@ from ..indicator_calculator import (
 from ..indicator_manager import ensure_indicators_registered, global_indicator_manager
 from ..indicator_registry import global_indicator_registry
 
+
+def _load_breadth_for_frame(df: pl.DataFrame) -> pl.DataFrame | None:
+    """按主帧日期范围加载本地 breadth 快照（含 10 个交易日预热）。"""
+    try:
+        date_col = 'date' if 'date' in df.columns else (
+            'trade_date' if 'trade_date' in df.columns else None)
+        if date_col is None or df.height == 0:
+            return None
+        from src.data.services.breadth_service import get_breadth
+
+        dates = df[date_col]
+        return get_breadth(dates.min(), dates.max(), warmup=10)
+    except Exception as exc:  # noqa: BLE001 - 兜底：失败时退化为无广度指标
+        logger.warning(f"加载本地涨跌家数快照失败，跳过大势型指标: {exc}")
+        return None
+
+
 # 窗口类指标的真实参数名：实现层按 {type}_windows 读取参数，
 # 统一传 windows 会被静默忽略（历史上 dmi/cci 等自定义窗口失效即源于此）
 _WINDOW_PARAM_MAP = {
@@ -407,6 +424,13 @@ class ParallelIndicatorMixin:
             return success, error_message
 
         try:
+            # 大势型指标需要全市场涨跌家数：与 UI 共用 breadth_service 本地快照
+            if any(name in builtin_indicators for name in ('abi', 'adl', 'adr', 'obos')) \
+                    and params.get('market_breadth') is None:
+                breadth = _load_breadth_for_frame(self.pl_df)
+                if breadth is not None:
+                    params['market_breadth'] = breadth
+
             # 使用新的批量计算函数，将所有指标计算合并到单个查询计划
             lazy_df = self.pl_df.lazy()
             lazy_df = calculate_multiple_indicators_polars(lazy_df, builtin_indicators, **params)

@@ -13,37 +13,71 @@ WINSOR_SUFFIX = '__win'
 MIN_STD = 1e-9
 
 
-def _z_expr(column: str) -> pl.Expr:
+def _z_expr(column: str, fill_null: bool = True) -> pl.Expr:
     """按交易日标准化的稳健 z 值（去极值后截断到 ±3）。"""
     mean = pl.col(column).mean().over('date')
     std = pl.col(column).std().over('date')
     z = pl.when(std.is_not_null() & (std > MIN_STD)).then(
-        (pl.col(column) - mean) / std).otherwise(0.0)
-    return z.clip(lower_bound=-3.0, upper_bound=3.0).fill_null(0.0)
+        (pl.col(column) - mean) / std).otherwise(None)
+    z = z.clip(lower_bound=-3.0, upper_bound=3.0)
+    return z.fill_null(0.0) if fill_null else z
 
 
 def _winsor_columns(tier: TierConfig) -> list[str]:
     return [f'{spec.column}{WINSOR_SUFFIX}' for spec in tier.factors]
 
 
-def attach_score(frame: pl.DataFrame, tier: TierConfig) -> pl.DataFrame:
+def attach_score(frame: pl.DataFrame, tier: TierConfig, *,
+                 missing_policy: str = 'fill_zero',
+                 min_history_rows: int = 0) -> pl.DataFrame:
     """给因子面板追加 ``score`` 与 ``score_percentile``。
 
     流程：按交易日去极值（1%/99%）→ 标准化 → 按档位权重/方向加权求和
     → 截面百分位（0~1，越高越看多）。不修改入参 DataFrame。
+
+    ``missing_policy='reweight'``（extended 默认）：
+    - 缺失不填 0、不填均值；该票在该因子的权重从分母剔除，用剩余因子归一；
+    - 历史不足 ``min_history_rows`` 或停牌（volume<=0）的票，因子先置空；
+    - 全部因子缺失时 score 为 null，不参与候选。
     """
+    if missing_policy not in ('fill_zero', 'reweight'):
+        raise ValueError(f"未知 missing_policy: {missing_policy}")
     columns = [spec.column for spec in tier.factors]
     missing = [column for column in columns if column not in frame.columns]
     if missing:
         raise ValueError(f"档位 {tier.key} 缺少因子列: {missing}")
 
-    scored = winsorize(frame, columns, by='date', suffix=WINSOR_SUFFIX)
-    score_expr: pl.Expr = pl.lit(0.0)
-    for spec in tier.factors:
-        score_expr = score_expr + (
-            spec.weight * spec.direction * _z_expr(f'{spec.column}{WINSOR_SUFFIX}'))
+    working = frame
+    if missing_policy == 'reweight':
+        valid = pl.lit(True)
+        if 'history_rows' in working.columns and min_history_rows > 0:
+            valid = valid & (pl.col('history_rows') >= min_history_rows)
+        if 'volume' in working.columns:
+            valid = valid & (pl.col('volume') > 0)
+        working = working.with_columns([
+            pl.when(valid).then(pl.col(column).cast(pl.Float64, strict=False))
+            .otherwise(None).alias(column)
+            for column in columns
+        ])
 
-    scored = scored.with_columns(score_expr.alias('score'))
+    scored = winsorize(working, columns, by='date', suffix=WINSOR_SUFFIX)
+    score_expr: pl.Expr = pl.lit(0.0)
+    available_expr: pl.Expr = pl.lit(0.0)
+    for spec in tier.factors:
+        z = _z_expr(f'{spec.column}{WINSOR_SUFFIX}',
+                    fill_null=missing_policy != 'reweight')
+        contribution = pl.when(z.is_not_null()).then(
+            spec.weight * spec.direction * z).otherwise(0.0)
+        score_expr = score_expr + contribution
+        available_expr = available_expr + pl.when(z.is_not_null()).then(
+            abs(spec.weight)).otherwise(0.0)
+
+    if missing_policy == 'reweight':
+        scored = scored.with_columns(
+            pl.when(available_expr > 0).then(score_expr / available_expr)
+            .otherwise(None).alias('score'))
+    else:
+        scored = scored.with_columns(score_expr.alias('score'))
     scored = scored.with_columns(
         (pl.col('score').rank('average').over('date')
          / pl.len().over('date')).alias('score_percentile'))

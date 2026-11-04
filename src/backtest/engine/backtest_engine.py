@@ -128,7 +128,8 @@ class BacktestEngine(BaseBacktestEngine):
                           initial_capital: float = 1000000.0,
                           objective: str = 'total_return', max_workers: int = 4,
                           validation: str = 'oos', oos_ratio: float = 0.3,
-                          walk_forward_windows: int = 0) -> Dict[str, Any]:
+                          walk_forward_windows: int = 0,
+                          oos_horizon: int = 10, oos_embargo: int = 20) -> Dict[str, Any]:
         """
         优化策略参数，并附带样本外（OOS）验证与参数稳定性报告。
 
@@ -142,6 +143,8 @@ class BacktestEngine(BaseBacktestEngine):
             oos_ratio: 样本外占比（0~1），仅 validation='oos' 时生效
             walk_forward_windows: ≥2 时追加 walk-forward 滚动验证折数；
                 0/1 表示不做滚动验证
+            oos_horizon: 标签跨度（交易日），默认 10；训练窗末尾按该跨度 purge
+            oos_embargo: 训练窗与测试窗隔离带（交易日），默认 20，须 ≥ horizon
 
         Returns:
             Dict[str, Any]: 优化结果（含 oos_validation / walk_forward）
@@ -177,6 +180,7 @@ class BacktestEngine(BaseBacktestEngine):
             response['oos_validation'] = self._validate_out_of_sample(
                 param_ranges, initial_capital, max_workers, context,
                 objective, oos_ratio, walk_forward_windows,
+                oos_horizon, oos_embargo,
             )
             logger.info(
                 f"样本外验证: {response['oos_validation'].get('out_of_sample')}"
@@ -187,16 +191,25 @@ class BacktestEngine(BaseBacktestEngine):
     def _validate_out_of_sample(self, param_ranges: Dict[str, List[float]],
                                 initial_capital: float, max_workers: int,
                                 context: Dict[str, Any], objective: str,
-                                oos_ratio: float, walk_forward_windows: int) -> Dict[str, Any]:
+                                oos_ratio: float, walk_forward_windows: int,
+                                horizon: int = 10, embargo: int = 20) -> Dict[str, Any]:
         """样本内选参 → 样本外验证，并返回衰减指标与稳定性报告。"""
-        split = self._split_out_of_sample(self.pl_df, oos_ratio)
+        split = self._split_out_of_sample(
+            self.pl_df, oos_ratio, horizon=horizon, embargo=embargo)
         if split is None:
             return {
                 'enabled': False,
-                'reason': f'数据仅 {self.pl_df.height} 行，不足以切出样本内/样本外两段',
+                'oos_ratio': oos_ratio,
+                'horizon': horizon,
+                'embargo': embargo,
+                'reason': (
+                    f'数据仅 {self.pl_df.height} 行，不足以在 purge+embargo 后'
+                    '切出样本内/样本外两段'
+                ),
             }
 
-        is_df, oos_df = split
+        is_df, oos_df = split.is_df, split.oos_df
+        bounds = split.bounds
         # 严格样本内选参：不在样本外上做任何选择，避免信息泄漏
         is_results = self._run_parallel_backtests(
             self._generate_param_combinations(param_ranges), initial_capital,
@@ -213,7 +226,11 @@ class BacktestEngine(BaseBacktestEngine):
             'enabled': True,
             'objective': objective,
             'oos_ratio': oos_ratio,
-            'split_index': is_df.height,
+            'horizon': horizon,
+            'embargo': embargo,
+            'purged_train_end': bounds.purged_train_end,
+            'purge_gap_days': bounds.purge_gap_days,
+            'split_index': bounds.purged_train_end,
             'in_sample_range': self._slice_label(is_df),
             'out_of_sample_range': self._slice_label(oos_df),
             'in_sample_best_params': is_best_params,
@@ -231,7 +248,7 @@ class BacktestEngine(BaseBacktestEngine):
         if walk_forward_windows and walk_forward_windows >= 2:
             report['walk_forward'] = self._walk_forward_validate(
                 param_ranges, initial_capital, max_workers, context,
-                objective, walk_forward_windows,
+                objective, walk_forward_windows, horizon, embargo,
             )
         else:
             # 未启用滚动验证时显式告知原因，避免调用方误以为已做过 walk-forward
@@ -249,8 +266,13 @@ class BacktestEngine(BaseBacktestEngine):
     def _walk_forward_validate(self, param_ranges: Dict[str, List[float]],
                                 initial_capital: float, max_workers: int,
                                 context: Dict[str, Any], objective: str,
-                                windows: int) -> Dict[str, Any]:
-        """滚动 walk-forward：逐折用前段选参，在其后一段上验证。"""
+                                windows: int, horizon: int = 10,
+                                embargo: int = 20) -> Dict[str, Any]:
+        """滚动 walk-forward：逐折用前段选参，在其后一段上验证。
+
+        每折训练窗末尾按标签跨度 purge，测试窗从 ``train_end + embargo``
+        开始，训练标签不会跨进测试窗（与学习层 splits 口径一致）。
+        """
         total = self.pl_df.height
         chunk = total // (windows + 1)
         if chunk < 20:
@@ -262,8 +284,14 @@ class BacktestEngine(BaseBacktestEngine):
         combinations = self._generate_param_combinations(param_ranges)
         folds = []
         for i in range(1, windows + 1):
-            train_df = self.pl_df.head(chunk * i)
-            test_df = self.pl_df.slice(chunk * i, chunk)
+            train_end = chunk * i
+            test_start = train_end + embargo
+            test_end = min(test_start + chunk, total)
+            purged_train_end = min(test_start - horizon - 1, train_end)
+            if purged_train_end < 20 or test_end - test_start < 20:
+                continue
+            train_df = self.pl_df.head(purged_train_end)
+            test_df = self.pl_df.slice(test_start, test_end - test_start)
             train_results = self._run_parallel_backtests(
                 combinations, initial_capital, max_workers,
                 context=context, data=train_df,
@@ -276,6 +304,8 @@ class BacktestEngine(BaseBacktestEngine):
                 'fold': i,
                 'train_range': self._slice_label(train_df),
                 'test_range': self._slice_label(test_df),
+                'purged_train_end': purged_train_end,
+                'purge_gap_days': test_start - purged_train_end,
                 'best_params': fold_params,
                 'in_sample_value': fold_value,
                 'out_of_sample': self._metric_snapshot(fold_result),
@@ -287,8 +317,10 @@ class BacktestEngine(BaseBacktestEngine):
             if oos_returns else 0.0
         )
         return {
-            'enabled': True,
+            'enabled': bool(folds),
             'windows': windows,
+            'horizon': horizon,
+            'embargo': embargo,
             'folds': folds,
             'positive_ratio': positive_ratio,
             'mean_oos_total_return': sum(oos_returns) / len(oos_returns) if oos_returns else 0.0,

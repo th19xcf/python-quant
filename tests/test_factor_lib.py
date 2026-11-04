@@ -116,6 +116,64 @@ def test_clustering_keeps_highest_icir_per_cluster():
     assert 'low' in clusters.dropped
 
 
+def test_rolling_argmax_matches_manual_windows():
+    values = pl.Series([3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0])
+    result = ops.rolling_argmax(values, 3)
+    # 索引自窗口最老一天起算：满窗后 [3,1,4]→2、[1,4,1]→1、[4,1,5]→2、
+    # [1,5,9]→2、[5,9,2]→1、[9,2,6]→0
+    assert result.to_list() == [None, None, 2.0, 1.0, 2.0, 2.0, 1.0, 0.0]
+
+
+def test_rolling_argmin_ties_use_earliest_position():
+    values = pl.Series([2.0, 1.0, 1.0, 3.0, 0.0])
+    result = ops.rolling_argmin(values, 3)
+    # 并列最小值取窗口内最早出现的位置：[1,1,3]→0
+    assert result.to_list() == [None, None, 1.0, 0.0, 2.0]
+
+
+def test_rolling_argmax_returns_null_on_nan_or_short_window():
+    assert ops.rolling_argmax(pl.Series([1.0, 2.0, float('nan'), 3.0]), 3).to_list() == [
+        None, None, None, None
+    ]
+    assert ops.rolling_argmax(pl.Series([1.0, 2.0]), 3).to_list() == [None, None]
+    assert ops.rolling_argmin(pl.Series([1.0, None, 3.0]), 2).to_list() == [
+        None, None, None
+    ]
+
+
+def test_ts_argmax_does_not_leak_across_groups():
+    panel = pl.DataFrame({
+        'ts_code': ['A'] * 4 + ['B'] * 4,
+        'x': [1.0, 3.0, 2.0, 5.0, 10.0, 20.0, 15.0, 30.0],
+    })
+    out = ops.ts_argmax(panel, pl.col('x'), 2, name='am')
+    # 若跨组滑窗，B 首行会借用 A 的末值而不是 null
+    assert out['am'].to_list() == [None, 1.0, 0.0, 1.0, None, 1.0, 0.0, 1.0]
+
+
+def test_rolling_slope_matches_numpy_polyfit():
+    rng = np.random.default_rng(3)
+    arr = rng.normal(size=50)
+    frame = pl.DataFrame({'ts_code': ['A'] * 50, 'x': arr})
+    got = frame.select(ops.rolling_slope(pl.col('x'), 4).alias('s'))['s'].to_numpy()
+    expected = np.full(arr.size, np.nan)
+    for index in range(3, arr.size):
+        expected[index] = np.polyfit(np.arange(4.0), arr[index - 3:index + 1], 1)[0]
+    assert np.allclose(got[3:], expected[3:], atol=1e-10)
+    assert np.isnan(got[:3]).all()
+
+
+def test_rolling_slope_flat_and_short_windows_are_zero_or_null():
+    flat = pl.DataFrame({'ts_code': ['A'] * 5, 'x': [2.0] * 5})
+    assert flat.select(ops.rolling_slope(pl.col('x'), 3).alias('s'))['s'].to_list() == [
+        None, None, 0.0, 0.0, 0.0
+    ]
+    short = pl.DataFrame({'ts_code': ['A'] * 2, 'x': [1.0, 3.0]})
+    assert short.select(ops.rolling_slope(pl.col('x'), 3).alias('s'))['s'].to_list() == [
+        None, None
+    ]
+
+
 def test_registry_marks_unavailable_factors():
     load_all()
     specs = all_specs()

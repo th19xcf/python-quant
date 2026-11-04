@@ -942,6 +942,9 @@ def test_default_risk_engine_does_not_change_fills():
     assert no_risk['risk_summary'] is None
     assert with_risk['risk_summary']['rules'] == [
         'price_limit_tradable', 'no_suspended_trade',
+        'max_position_weight', 'max_order_volume_ratio',
+        'max_adv_participation', 'max_drawdown_circuit',
+        'min_cash_reserve',
     ]
     assert with_risk['risk_summary']['total_rejected'] == 0
     assert with_risk['trades'] == no_risk['trades']
@@ -1311,8 +1314,9 @@ def test_cost_model_uses_historical_stamp_tax_and_transfer_fee():
     assert cm.calculate_sell_cost(
         10_000, 10.0, trade_date=date(2007, 6, 1), ts_code='600000.SH') == pytest.approx(410.0)
 
-    # 不传 trade_date 保持原静态参数（向后兼容：印花税 0.05% 卖方单边）
-    assert cm.calculate_sell_cost(10_000, 10.0) == pytest.approx(101.0)
+    # 不传 trade_date 使用 COST_DEFAULTS：印花税 0.05% 卖方单边、
+    # 过户费 0.002% 双边（与 2023-09 起的时间表口径一致，不再少扣一半）
+    assert cm.calculate_sell_cost(10_000, 10.0) == pytest.approx(102.0)
     assert cm.get_buy_cost_rate(
         trade_date=date(2010, 6, 1), ts_code='600000.SH') == pytest.approx(0.0011)
 

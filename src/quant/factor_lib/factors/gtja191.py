@@ -384,21 +384,46 @@ def gtja_055(_panel: pl.DataFrame) -> pl.Expr:
     return o.ts_sum(value, 20)
 
 
+@factor('gtja_021', 'gtja191',
+         'REGBETA(MEAN(CLOSE,6), SEQUENCE(6))',
+         'close', '?', SOURCE.format(tag='21'), lookback=11,
+         note='SEQUENCE(6) 取窗口内 0..5 序号，OLS 斜率用闭式解，结果与按全局序号回归一致')
+def gtja_021(panel: pl.DataFrame) -> pl.Series:
+    # MEAN(CLOSE,6) 是滚动结果，必须先落列，再对其做 6 期回归
+    frame = o.stage(panel, y=o.ts_mean(C('close'), 6))
+    return o.out(frame, o.rolling_slope(C('y'), 6))
+
+
+@factor('gtja_056', 'gtja191',
+         '(RANK(OPEN-TSMIN(OPEN,12)) < TSRANK((RANK(CORR(SUM((HIGH+LOW)/2,19),'
+         'SUM(MEAN(VOLUME,40),19),13))^5),12)) * -1',
+         'open, high, low, volume', '?', SOURCE.format(tag='56'), lookback=84,
+         note='按研报/DolphinDB 口径（TSRANK 12 日窗口 + 乘以 -1）；'
+              'BigQuant 转写版漏掉 TSRANK 窗口与 -1，不采用')
+def gtja_056(panel: pl.DataFrame) -> pl.Series:
+    frame = o.stage(panel,
+                    mv=o.ts_mean(C('volume'), 40),
+                    mid=o.ts_sum((C('high') + C('low')) / 2.0, 19),
+                    lv=o.ts_min(C('open'), 12))
+    frame = o.stage(frame, s2=o.ts_sum(C('mv'), 19))
+    frame = o.stage(frame, c=o.corr(C('mid'), C('s2'), 13))
+    frame = o.stage(frame, r5=o.rank_cs(C('c')).pow(5), gross=C('open') - C('lv'))
+    frame = o.stage(frame, left=o.rank_cs(C('gross')), t=o.ts_rank(C('r5'), 12))
+    is_less = C('left') < C('t')
+    return o.out(frame, pl.when(C('left').is_null() | C('t').is_null()).then(None)
+                 .when(is_less).then(-1.0).otherwise(0.0))
+
+
 # ----------------------------------------------------------------------
 # 不可用因子（缺指数 / 行业 / 财务数据）
 # ----------------------------------------------------------------------
 
 _UNAVAILABLE = {
     'gtja_005': ('-1 * TSMAX(CORR(TSRANK(VOLUME,5), TSRANK(HIGH,5),5), 3)', 'volume, high',
-                 '与 Alpha101#26 公式重复，且公开实现版本互相矛盾，未纳入'),
-    'gtja_021': ('REGBETA(MEAN(CLOSE,6), SEQUENCE(6))', 'close',
-                 '回归斜率需序列算子，等价实现留待后续（非数据依赖缺失）'),
+                 '与 Alpha101#26 公式逐字相同（重复因子），保留 a101_026，不重复纳入'),
     'gtja_030': ('WMA((REGRESI(CLOSE/DELAY(CLOSE)-1, MKT, SMB, HML, 60))^2, 20)',
                  'close, 市场指数, FF 三因子',
                  '需要 MKT/SMB/HML 三因子收益序列，本地库无 FF 因子数据'),
-    'gtja_056': ('(RANK(OPEN-TSMIN(OPEN,12)) < TSRANK((RANK(CORR(SUM((HIGH+LOW)/2,19),'
-                 'SUM(MEAN(VOLUME,40),19),13))^5),12)) * -1', 'open, high, low, volume',
-                 '依赖 40 日成交额均值（可算）但公开实现版本文献不一致，暂不纳入'),
 }
 
 

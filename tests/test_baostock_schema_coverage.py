@@ -97,6 +97,30 @@ def test_daily_row_falls_back_to_zero_for_empty_values():
     assert record['vol'] == 0.0
 
 
+def test_daily_row_keeps_turn_as_percent_without_conversion():
+    """turn 原样保留上游百分数（0.1979 表示 0.1979%），缺键时按 0.0。
+
+    实测依据：600000.SH ``volume / (turn/100)`` 稳定反推出流通股本，
+    若按小数解释会小两个数量级；因此这里断言不做任何 ×100/÷100 换算。
+    """
+    row = {
+        'date': '2024-01-02', 'open': 9.9, 'high': 10.5, 'low': 9.8,
+        'close': 10.2, 'preclose': 10.0, 'pctChg': 2.0,
+        'volume': 1000.0, 'amount': 5000.0, 'turn': '0.1979',
+    }
+
+    record = schema.daily_row_to_record(row, '600000.SH')
+    assert record['turn'] == pytest.approx(0.1979)
+    # 成交量仍按「股→手」收口，与 turn 无关
+    assert record['vol'] == pytest.approx(10.0)
+
+    without_turn = {k: v for k, v in row.items() if k != 'turn'}
+    assert schema.daily_row_to_record(without_turn, '600000.SH')['turn'] == 0.0
+
+    suspended = {**row, 'turn': ''}
+    assert schema.daily_row_to_record(suspended, '600000.SH')['turn'] == 0.0
+
+
 def test_compute_daily_factors_success():
     """复权因子：qfq 按区间末锚点归一，hfq 为原始比值。"""
     raw = pl.DataFrame({'date': [1, 2, 3], 'close': [10.0, 11.0, 12.0]})

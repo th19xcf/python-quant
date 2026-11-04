@@ -20,13 +20,13 @@ DISPLAY_MODULE = REPO_ROOT / 'src' / 'ui' / 'event_handlers' / 'indicator_displa
 EXPECTED_WINDOW2 = {
     "VOL", "MACD", "RSI", "KDJ", "WR", "BOLL", "SAR", "TRIX", "DMI", "DMA",
     "BRAR", "FSL", "VR", "CR", "OBV", "HSL", "LB", "ASI", "EMV", "CCI",
-    "ROC", "MTM", "PSY", "MCST",
+    "ROC", "MTM", "PSY", "MCST", "ABI", "ADL", "ADR", "OBOS",
 }
 
 EXPECTED_WINDOW3 = {
     "KDJ", "RSI", "MACD", "WR", "BOLL", "DMI", "TRIX", "BRAR", "VR", "DMA",
     "SAR", "FSL", "CR", "OBV", "EXPMA", "BBI", "CYC", "CYS", "ASI", "EMV",
-    "CCI", "ROC", "MTM", "PSY", "MCST", "HSL", "LB",
+    "CCI", "ROC", "MTM", "PSY", "MCST", "HSL", "LB", "ABI", "ADL", "ADR", "OBOS",
 }
 
 
@@ -89,12 +89,12 @@ def test_hsl_renders_threshold_color_and_ma_tails():
         "<font color='cyan'>MA10: 8.25%</font>"
     )
     assert render_indicator_text(WINDOW3_TEXTS, "HSL", data, 0, fmt) == expected
-    # 阈值配色：>5 用橙色，<=5 用蓝色
-    assert render_indicator_text(WINDOW3_TEXTS, "HSL", {'hsl': [6.0]}, 0, fmt) == (
-        "<font color='#FFA500'>HSL: 6.00%</font>"
+    # 阈值配色：样本不足 60 时回退主板固定阈值（1.0 / 3.0）
+    assert render_indicator_text(WINDOW3_TEXTS, "HSL", {'hsl': [2.0]}, 0, fmt) == (
+        "<font color='#FFA500'>HSL: 2.00%</font>"
     )
-    assert render_indicator_text(WINDOW3_TEXTS, "HSL", {'hsl': [5.0]}, 0, fmt) == (
-        "<font color='#00BFFF'>HSL: 5.00%</font>"
+    assert render_indicator_text(WINDOW3_TEXTS, "HSL", {'hsl': [0.5]}, 0, fmt) == (
+        "<font color='#00BFFF'>HSL: 0.50%</font>"
     )
 
 
@@ -140,3 +140,23 @@ def test_display_module_import_does_not_load_gui_libraries():
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == ""
+
+
+def test_breadth_indicators_have_renderers_with_column_keys():
+    """ABI/ADL/ADR/OBOS 必须在两个窗口表里注册，且渲染键是数值列名。"""
+    for texts in (WINDOW2_TEXTS, WINDOW3_TEXTS):
+        assert {'ABI', 'ADL', 'ADR', 'OBOS'} <= set(texts)
+    data = {'abi10': [12.345], 'adl': [123456.0], 'adr10': [85.678], 'obos10': [-12.34]}
+    assert 'ABI(10): 12.35' in render_indicator_text(WINDOW3_TEXTS, 'ABI', data, 0, fmt)
+    assert 'ADL: 123,456' in render_indicator_text(WINDOW3_TEXTS, 'ADL', data, 0, fmt)
+    assert 'ADR(10): 85.68' in render_indicator_text(WINDOW3_TEXTS, 'ADR', data, 0, fmt)
+    assert 'OBOS(10): -12.34' in render_indicator_text(WINDOW3_TEXTS, 'OBOS', data, 0, fmt)
+    # 键名是列名而不是显示名
+    assert render_indicator_text(WINDOW3_TEXTS, 'ABI', {'ABI': [1.0]}, 0, fmt) == ''
+
+
+def test_registered_indicators_all_have_renderers():
+    from src.ui.event_handlers.indicator_display import missing_indicator_renderers
+
+    assert missing_indicator_renderers(['ma', 'vol_ma', 'abi', 'adl', 'adr', 'obos']) == []
+    assert missing_indicator_renderers(['ma', 'vol_ma', 'unknown_x']) == ['UNKNOWN_X']

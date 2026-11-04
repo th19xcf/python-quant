@@ -5,6 +5,7 @@
 """
 
 from src.ui.utils.chart_utils import ChartUtils
+from src.utils.hsl_threshold import classify, percentile_thresholds
 from src.utils.logger import logger
 
 
@@ -41,6 +42,10 @@ class ChartManager:
             ('cyc34', 'cyc34'), ('cyc_inf', 'cyc_inf'),
         )),
         ('current_cys_data', (('cys', 'cys'), ('cys_ma5', 'cys_ma5'))),
+        ('current_abi_data', (('abi10', 'abi10'),)),
+        ('current_adl_data', (('adl', 'adl'),)),
+        ('current_adr_data', (('adr10', 'adr10'),)),
+        ('current_obos_data', (('obos10', 'obos10'),)),
     )
 
     def __init__(self, window):
@@ -449,7 +454,14 @@ class ChartManager:
         latest_hsl_ma10 = self._latest_value(df_pl, 'hsl_ma10')
         if latest_hsl is None:
             return "<font color='white'>HSL指标数据不可用</font>"
-        hsl_color = '#FF0000' if latest_hsl > 10 else '#FFA500' if latest_hsl > 5 else '#00BFFF'
+        # 阈值口径：个股 120 日滚动 60%/85% 分位，样本不足按板块固定值回退；
+        # 周/月线是累计口径，固定回退值需按周期放大（见 hsl_threshold）
+        code = getattr(self.window, 'current_stock_code', None)
+        period = getattr(self.window, 'current_period', None)
+        hsl_values = df_pl['hsl'].to_numpy() if 'hsl' in df_pl.columns else []
+        low, high = percentile_thresholds(hsl_values, code, period=period)
+        level = classify(latest_hsl, low, high)
+        hsl_color = {'high': '#FF0000', 'mid': '#FFA500'}.get(level, '#00BFFF')
         hsl_text = f"<font color='{hsl_color}'>HSL: {latest_hsl:.2f}%</font>"
         if latest_hsl_ma5 is not None:
             hsl_text += f"  <font color='white'>MA5: {latest_hsl_ma5:.2f}%</font>"

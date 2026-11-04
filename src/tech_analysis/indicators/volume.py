@@ -6,9 +6,25 @@
 """
 
 import polars as pl
+from loguru import logger
 
 from ..common_calculations import add_default_columns, calculate_moving_average
 from ..utils import to_float32
+
+
+def _attach_turn(lazy_df: pl.LazyFrame, ts_code: str) -> pl.LazyFrame:
+    """给行情帧追加 ``turn``（百分数）与 ``turn_source``，来源分级由数据层决定。
+
+    优先级：逐日流通股本反算 > 当前股本静态近似 > 已落库 baostock turn。
+    读取失败（股本表/换手率表缺失、文件损坏）按“缺失”处理，回退估算口径；
+    该模块不反向依赖数据层的初始化状态。
+    """
+    try:
+        from src.data.local_store.turnover import attach_turn
+        return attach_turn(lazy_df, ts_code)
+    except (ImportError, OSError, ValueError, TypeError, pl.exceptions.PolarsError) as exc:
+        logger.debug(f'附加换手率失败({ts_code}): {exc}')
+        return lazy_df
 
 
 def calculate_vol_ma(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
@@ -141,28 +157,61 @@ def calculate_cr(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     return lazy_df
 
 
-def calculate_hsl(lazy_df: pl.LazyFrame, float_share: float | None = None) -> pl.LazyFrame:
+def calculate_hsl(lazy_df: pl.LazyFrame, float_share: float | None = None,
+                  turn_frame: pl.DataFrame | None = None) -> pl.LazyFrame:
     """
     计算HSL指标（换手率）
-    HSL = 成交量 / 流通股本 × 100%
+
+    数值来源优先级（列名 ``hsl`` 与 0~100 百分比语义保持不变，只改数值来源）：
+    1. 输入帧自带 ``turn`` 列（真实换手率，**百分数**，0.1979 即 0.1979%；
+       日线由 ``turnover.attach_turn`` 按「逐日股本 > 静态股本 > baostock」
+       分级填充，周/月线由聚合层按区间成交量加权计算）；
+    2. ``turn_frame``（列 ``trade_date/turn``）按日期左连接；
+    3. ``float_share`` 有效时按 ``volume(手) × 100 / float_share × 100``；
+    4. 以上都没有 → 旧口径估算 ``volume / MA60(volume) × 5``，并在
+       ``hsl_source`` 列标注 ``estimated``。
 
     Args:
-        lazy_df: Polars LazyFrame
-        float_share: 流通股本（股），如果为None则使用volume列的5日平均作为估算
+        lazy_df: Polars LazyFrame（需含 ``volume``，可选 ``date``/``turn``）
+        float_share: 流通股本（股）；仅在第 3 优先级使用
+        turn_frame: 真实换手率帧，列 ``trade_date/turn``（百分数）
 
     Returns:
-        pl.LazyFrame: 包含HSL指标的LazyFrame
+        pl.LazyFrame: 含 ``hsl`` / ``hsl_ma5`` / ``hsl_ma10`` / ``hsl_source``
     """
-    if float_share is not None and float_share > 0:
-        # 使用提供的流通股本计算
-        hsl = to_float32(pl.col('volume') / float_share * 100).alias('hsl')
-    else:
-        # 估算：使用60日平均成交量作为流通股本的参考
-        avg_volume = pl.col('volume').rolling_mean(window_size=60, min_samples=1)
-        hsl = to_float32(pl.when(avg_volume > 0).then(pl.col('volume') / avg_volume * 5).otherwise(0)).alias('hsl')
+    names = lazy_df.collect_schema().names()
+    date_key = 'date' if 'date' in names else (
+        'trade_date' if 'trade_date' in names else None)
 
-    # 先添加HSL列
-    lazy_df = lazy_df.with_columns(hsl)
+    turn_expr: pl.Expr | None = None
+    if 'turn' in names:
+        turn_expr = pl.col('turn').cast(pl.Float64)
+    elif turn_frame is not None and not turn_frame.is_empty() and date_key is not None:
+        joined = turn_frame.rename({'trade_date': date_key}).select([date_key, 'turn'])
+        lazy_df = lazy_df.join(joined.lazy(), on=date_key, how='left')
+        turn_expr = pl.col('turn').cast(pl.Float64)
+
+    # 旧口径估算：60 日平均成交量作为流通股本的参考量
+    avg_volume = pl.col('volume').rolling_mean(window_size=60, min_samples=1)
+    estimated = pl.when(avg_volume > 0).then(
+        pl.col('volume') / avg_volume * 5).otherwise(0.0)
+
+    if turn_expr is not None:
+        real = turn_expr.is_not_null() & (turn_expr > 0)
+        hsl_expr = pl.when(real).then(turn_expr).otherwise(estimated)
+        source_expr = pl.when(real).then(pl.lit('turn')).otherwise(pl.lit('estimated'))
+    elif float_share is not None and float_share > 0:
+        # volume 单位「手」：×100 换股，再 ×100 转百分数
+        hsl_expr = pl.col('volume') * 100.0 * 100.0 / float_share
+        source_expr = pl.lit('float_share')
+    else:
+        hsl_expr = estimated
+        source_expr = pl.lit('estimated')
+
+    lazy_df = lazy_df.with_columns([
+        to_float32(hsl_expr).alias('hsl'),
+        source_expr.alias('hsl_source'),
+    ])
 
     # 计算HSL的5日和10日移动平均
     hsl_ma5 = to_float32(pl.col('hsl').rolling_mean(window_size=5, min_samples=1)).alias('hsl_ma5')
@@ -231,7 +280,20 @@ def calculate_volume_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **
     # 计算HSL指标（换手率）
     if 'hsl' in indicator_types:
         float_share = params.get('float_share')
-        lazy_df = calculate_hsl(lazy_df, float_share)
+        turn_frame = params.get('turn_frame')
+        ts_code = params.get('ts_code')
+        if turn_frame is None and ts_code:
+            # 分级来源：逐日股本 > 静态股本 > baostock turn；周/月线帧自带聚合 turn
+            lazy_df = _attach_turn(lazy_df, ts_code)
+        has_turn = 'turn' in lazy_df.collect_schema().names()
+        if not has_turn and (turn_frame is None or turn_frame.is_empty()):
+            msg = (f'HSL 未取到 {ts_code or "<unknown>"} 的真实换手率，'
+                   f'回退估算口径 (hsl_source=estimated)')
+            if ts_code:
+                logger.warning(msg)
+            else:
+                logger.debug(msg)
+        lazy_df = calculate_hsl(lazy_df, float_share, turn_frame)
 
     # 计算LB指标（量比）
     if 'lb' in indicator_types:

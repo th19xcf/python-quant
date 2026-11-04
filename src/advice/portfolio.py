@@ -30,6 +30,8 @@ class Candidate:
     price: float
     industry: str
     industry_source: str
+    #: 20 日均成交额（元）；<=0 表示数据缺失，不施加 ADV 容量上限
+    adv_amount: float = 0.0
 
 
 @dataclass
@@ -77,11 +79,26 @@ def allocate(candidates: list[Candidate], equity: float,  # noqa: C901
     industry_cap = constraints.max_industry_weight * equity
     uncapped = set(constraints.uncapped_industry_buckets)
 
+    # 单票资金上限 = min(单票权重上限, 20 日均成交额 × 参与率)
+    caps: dict[str, float] = {}
+    missing_adv: list[str] = []
+    for code, candidate in info.items():
+        cap = single_cap
+        if candidate.adv_amount > 0:
+            cap = min(cap, candidate.adv_amount * constraints.adv_pct)
+        else:
+            missing_adv.append(code)
+        caps[code] = cap
+    if missing_adv:
+        logger.warning(
+            f"[advice] {len(missing_adv)} 只候选缺少 20 日均成交额，"
+            f"未施加 ADV 容量上限（示例 {missing_adv[:3]}）")
+
     for _ in range(max(1, constraints.normalize_iterations)):
         changed = False
         for code, weight in list(targets.items()):
-            if weight > single_cap + 1e-9:
-                targets[code] = single_cap
+            if weight > caps[code] + 1e-9:
+                targets[code] = caps[code]
                 changed = True
         groups: dict[str, float] = {}
         for code, weight in targets.items():
@@ -104,7 +121,7 @@ def allocate(candidates: list[Candidate], equity: float,  # noqa: C901
             break
         eligible = [
             code for code, weight in targets.items()
-            if weight < single_cap - 1e-9
+            if weight < caps[code] - 1e-9
             and (info[code].industry in uncapped
                  or groups.get(info[code].industry, 0.0) < industry_cap - 1e-9)
         ]

@@ -90,9 +90,35 @@ def ensure_indicator_columns(df: Any, indicator_names: Any) -> Any:
     from src.tech_analysis.indicator_calculator import (
         calculate_multiple_indicators_polars,
     )
+
+    kwargs = {}
+    if any(t in missing_types for t in ('abi', 'adl', 'adr', 'obos')):
+        breadth = _load_breadth_for_frame(df)
+        if breadth is not None:
+            kwargs['market_breadth'] = breadth
+
     logger.info(f"渲染前批量补齐指标列: {missing_types}")
-    result = calculate_multiple_indicators_polars(df.lazy(), missing_types)
+    result = calculate_multiple_indicators_polars(df.lazy(), missing_types, **kwargs)
     return result.collect() if hasattr(result, 'collect') else result
+
+
+def _load_breadth_for_frame(df: Any) -> Any:
+    """按主帧日期范围取 breadth 快照，并向前留 10 个交易日做 ADR/OBOS 预热。"""
+    date_col = 'date' if 'date' in df.columns else (
+        'trade_date' if 'trade_date' in df.columns else None)
+    if date_col is None:
+        logger.warning("主帧缺少日期列，无法加载涨跌家数")
+        return None
+    try:
+        dates = df[date_col]
+        start = dates.min()
+        end = dates.max()
+        from src.data.services.breadth_service import get_breadth
+
+        return get_breadth(start, end, warmup=10)
+    except Exception as exc:  # 失败时保持原有「跳过大势型指标」行为，不拖垮其它指标
+        logger.warning(f"加载本地涨跌家数快照失败，跳过大势型指标: {exc}")
+        return None
 
 
 class IndicatorRenderer(TrendRenderMixin, VolumeRenderMixin, OscillatorRenderMixin):

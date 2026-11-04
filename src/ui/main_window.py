@@ -18,6 +18,7 @@ from src.data.services.index_service import IndexService
 from src.ui.action_manager import ActionManager
 from src.ui.chart_manager import ChartManager
 from src.ui.data_controller import DataController
+from src.ui.data_stock_controller import DEFAULT_BAR_COUNT
 from src.ui.data_view_manager import DataViewManager
 from src.ui.fund_section import FundSection
 from src.ui.indicator_interaction_manager import IndicatorInteractionManager
@@ -27,6 +28,7 @@ from src.ui.main_window_chart_interaction_mixin import MainWindowChartInteractio
 from src.ui.main_window_dividend_mixin import MainWindowDividendMixin
 from src.ui.main_window_drawing_mixin import MainWindowDrawingMixin
 from src.ui.main_window_event_mixin import MainWindowEventMixin
+from src.ui.main_window_indicator_bar_mixin import IMPLEMENTED_INDICATORS
 from src.ui.main_window_indicator_window_mixin import MainWindowIndicatorWindowMixin
 from src.ui.main_window_navigation_mixin import MainWindowNavigationMixin
 
@@ -103,7 +105,8 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
         # 初始化辅助管理器
         # 这些管理器在重构前是在__init__中导入并初始化的
         from src.ui.event_handlers import EventHandlerManager
-        self.event_handler_manager = EventHandlerManager(self)
+        self.event_handler_manager = EventHandlerManager(
+            self, registered_types=set(IMPLEMENTED_INDICATORS))
 
         from src.ui.indicator_labels import IndicatorLabelManager
         self.indicator_label_manager = IndicatorLabelManager(self)
@@ -136,7 +139,7 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
         # Initialize additional properties expected by Mixins
         self.window_indicators = {2: "VOL", 3: "KDJ"} # Default indicators
         self.current_window_count = 3
-        self.displayed_bar_count = 100
+        self.displayed_bar_count = DEFAULT_BAR_COUNT
         self.adjustment_type = 'qfq'  # 复权类型：qfq=前复权, hfq=后复权, none=不复权
 
         # 页面类型和排序状态管理
@@ -196,6 +199,15 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
                                 return True
                         except RuntimeError:
                             # 主窗口/子控件已销毁（关闭或构造中途）
+                            return False
+
+                    # 技术分析页 Ctrl+U：切换筹码栏显隐（只在技术分析页签内生效）
+                    chip_handler = getattr(self.main_window, '_handle_tech_tab_chip_shortcut', None)
+                    if chip_handler is not None:
+                        try:
+                            if chip_handler(key_event):
+                                return True
+                        except RuntimeError:
                             return False
 
                     # 忽略特殊按键

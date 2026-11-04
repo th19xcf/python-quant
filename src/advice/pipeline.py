@@ -14,11 +14,17 @@ from typing import Any, Iterable
 import polars as pl
 from loguru import logger
 
-from src.advice.config import AdviceConfig, default_config
+from src.advice.config import (
+    TIER_PRESETS,
+    AdviceConfig,
+    default_config,
+    default_output_tiers,
+)
 from src.advice.daily_store import default_daily_dir, save_daily_snapshot
 from src.advice.data import LocalPanelLoader, panel_trading_dates
 from src.advice.eligibility import EligibilityResult, check_eligibility
 from src.advice.factor_panel import compute_factor_panel
+from src.advice.ic_monitor import monitor_note, run_ic_monitor
 from src.advice.models import (
     DIRECTION_AVOID,
     DIRECTION_BUY,
@@ -153,7 +159,8 @@ class AdviceEngine:
         ``persist_daily=True`` 时把结果另存为按日归档（``daily_dir``，
         默认 ``reports/advice/daily/{YYYYMMDD}.json``）；归档与 ``state`` 完全解耦。
         """
-        tier_keys = list(tiers) if tiers else list(self.config.tiers)
+        tier_keys = (list(tiers) if tiers
+                     else default_output_tiers(self.config.tiers))
         selected = [self.config.tier(key) for key in tier_keys]
         max_lookback = max(tier.lookback_days for tier in selected)
 
@@ -168,7 +175,14 @@ class AdviceEngine:
         if panel.is_empty():
             return AdviceResult(trade_date=end, equity=float(equity))
 
-        factors = compute_factor_panel(panel)
+        base_columns = {
+            spec.column for preset in TIER_PRESETS.values() for spec in preset.factors
+        }
+        extended = any(
+            spec.column not in base_columns
+            for preset in selected for spec in preset.factors
+        )
+        factors = compute_factor_panel(panel, extended=extended)
         trade_date = _resolve_as_of(self.config, factors['date'].unique().to_list(),
                                     as_of_date)
         meta = build_meta(factors['ts_code'].unique().to_list(),
@@ -184,12 +198,22 @@ class AdviceEngine:
             f"标的={report.loaded}, 档位={tier_keys}")
 
         result = AdviceResult(trade_date=trade_date, equity=float(equity))
+        soft_enabled = extended and self.config.soft_filter.enabled
         for tier in selected:
-            scored = attach_score(factors, tier)
+            scored = attach_score(
+                factors, tier,
+                missing_policy='reweight' if extended else 'fill_zero',
+                min_history_rows=self.config.min_history_rows)
+            if soft_enabled:
+                from src.advice.soft_filters import apply_soft_filter
+
+                scored = apply_soft_filter(scored, self.config.soft_filter)
             state = self.load_state(state_path, tier.key)
             advice, new_state = self._run_tier(
                 scored, trade_date, meta, tier, float(equity), state,
                 trading_dates, report.summary(), risk)
+            monitor = run_ic_monitor(scored, tier.key, trade_date=trade_date)
+            advice.notes.append(monitor_note(monitor))
             result.tiers[tier.key] = advice
             if persist_state:
                 self.save_state(state_path, tier.key, trade_date,
@@ -223,13 +247,23 @@ class AdviceEngine:
                 f"{coverage.get('requested', 0)} 标的",
             ] + ([tier.note] if tier.note else []))
 
-        # 1) 候选池：分数达标 + 可交易 + 成本门槛
+        # 1) 候选池：软筛选 + 分数达标 + 可交易 + 成本门槛
         candidates: list[tuple[dict, Candidate, Any]] = []
         avoid_rows: list[tuple[dict, Any]] = []
+        if 'soft_pass' in scored.columns:
+            latest = scored.filter(pl.col('date') == trade_date)
+            passed = latest.filter(pl.col('soft_pass')).height
+            advice.notes.append(f"软筛选通过 {passed}/{latest.height}（仅 extended）")
         ranked = sorted(rows, key=lambda entry: entry.get('score_percentile') or 0.0,
                         reverse=True)
         for entry in ranked:
             code = str(entry['ts_code'])
+            if entry.get('soft_pass') is False:
+                if len(avoid_rows) < self.config.max_avoid_rows:
+                    reason = str(entry.get('soft_reason') or '软筛选未通过')
+                    avoid_rows.append((entry, EligibilityResult(
+                        False, [f'软筛选:{reason}'], f'软筛选不通过：{reason}')))
+                continue
             if code in state:
                 continue
             percentile = float(entry.get('score_percentile') or 0.0)
@@ -257,6 +291,7 @@ class AdviceEngine:
                             industry=stock_meta.industry if stock_meta else '未知',
                             industry_source=(stock_meta.industry_source
                                              if stock_meta else INDUSTRY_SOURCE_BOARD),
+                            adv_amount=float(entry.get('amount_ma20') or 0.0),
                         ), eligibility))
                     elif len(avoid_rows) < self.config.max_avoid_rows:
                         avoid_rows.append((entry, eligibility))
@@ -387,7 +422,8 @@ class AdviceEngine:
         advice.cash = equity - advice.invested
         # gross_notional 为买卖双边合计；组合换手按行业惯例取单边口径
         advice.turnover = (plan.gross_notional / (2 * equity)) if equity > 0 else 0.0
-        advice.excluded = max(0, len(ranked) - len(candidates) - len(avoid_rows))
+        advice.excluded = max(
+            0, len(ranked) - len(candidates) - len(avoid_rows))
         if plan.deferred:
             advice.notes.append(
                 f"换手上限 {self.config.turnover.max_turnover_per_rebalance:.0%} "

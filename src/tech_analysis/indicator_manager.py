@@ -56,6 +56,25 @@ from src.tech_analysis.indicators.trend import calculate_bbi, calculate_expma
 from src.tech_analysis.indicators.volume import calculate_hsl, calculate_lb
 from src.utils.frame_adapter import to_output, to_polars
 
+
+def _calculate_hsl_with_turnover(df: pl.DataFrame, **kwargs) -> pl.DataFrame:
+    """HSL：按「逐日股本 > 静态股本 > baostock turn」分级取真实换手率。
+
+    真实值来自 ``turn`` 列（百分数）；``ts_code`` 由调用方透传，用于按票取表。
+    """
+    turn_frame = kwargs.get("turn_frame")
+    ts_code = kwargs.get("ts_code")
+    lazy = df.lazy()
+    if turn_frame is None and ts_code:
+        try:
+            from src.data.local_store.turnover import attach_turn
+            lazy = attach_turn(lazy, ts_code)
+        except (ImportError, OSError, ValueError, TypeError,
+                pl.exceptions.PolarsError) as exc:
+            logger.debug(f"附加换手率失败({ts_code}): {exc}")
+    return calculate_hsl(lazy, kwargs.get("float_share"), turn_frame).collect()
+
+
 # 各指标产出列的真实命名规则（fullmatch 匹配，避免前缀误伤）
 # 例如 dmi 的列是 pdi_14/ndi_14/adx_14/adxr_14，而 ma 的前缀会误吞 macd_* 列
 _INDICATOR_COLUMN_PATTERNS: Dict[str, tuple[str, ...]] = {
@@ -87,7 +106,7 @@ _INDICATOR_COLUMN_PATTERNS: Dict[str, tuple[str, ...]] = {
     'cr': ('cr', r'cr\d+'),
     'expma': ('expma', r'expma\d+'),
     'bbi': ('bbi',),
-    'hsl': ('hsl', r'hsl_ma\d+'),
+    'hsl': ('hsl', r'hsl_ma\d+', 'hsl_source'),
     'lb': ('lb',),
     'cyc': ('cyc', 'cyc_inf', r'cyc\d+'),
     'cys': ('cys', r'cys_ma\d+'),
@@ -288,10 +307,8 @@ _BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
     },
     {
         "name": "hsl",
-        "calculate_func": lambda df, **kwargs: calculate_hsl(
-            df.lazy(), kwargs.get("float_share", None)
-        ).collect(),
-        "params": {"float_share": None},
+        "calculate_func": _calculate_hsl_with_turnover,
+        "params": {"float_share": None, "ts_code": None},
         "description": "换手率",
         "category": "成交量指标",
     },

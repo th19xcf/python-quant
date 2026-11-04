@@ -11,6 +11,7 @@
 8. 目标日校验分类（源缺目标日不计为本地漏建）
 """
 
+import contextlib
 import struct
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -18,6 +19,7 @@ from types import SimpleNamespace
 
 import polars as pl
 import pytest
+from loguru import logger
 
 from src.data.adj_factor_calculator import AdjFactorCalculator
 from src.data.data_cache import global_data_cache
@@ -26,6 +28,8 @@ from src.data.local_store import metrics as route_metrics
 from src.data.local_store import reset_local_stores
 from src.data.local_store.build import (
     build,
+    refresh_factors,
+    validate_remote_overwrite,
     verify_incremental_target,
 )
 from src.data.local_store.factor_rebuild import rebuild_factors_from_local
@@ -513,4 +517,186 @@ def test_sync_quote_factors_aligns_copy_then_verify_is_zero(tmp_path):
     assert stats['stock']['mismatch_rows'] == 0
     assert stats['index']['mismatch_codes'] == 0
     assert stats['fund']['mismatch_codes'] == 0
+
+
+# ----------------------------------------------------------------------
+# refresh-factors：本地快照为唯一权威源，默认禁止被远程库反向覆盖
+# ----------------------------------------------------------------------
+def _write_dividend_snapshot(store_root: Path, rows: list[tuple[str, date, float]]) -> Path:
+    factor_dir = Path(store_root) / 'factors'
+    factor_dir.mkdir(parents=True, exist_ok=True)
+    path = factor_dir / 'stock_dividend.parquet'
+    pl.DataFrame({
+        'ts_code': [r[0] for r in rows],
+        'ex_date': [r[1] for r in rows],
+        'cash_div': [r[2] for r in rows],
+        'share_div': [0.0 for _ in rows],
+        'rights_issue_ratio': [0.0 for _ in rows],
+        'rights_issue_price': [0.0 for _ in rows],
+    }).write_parquet(path)
+    return path
+
+
+class _FakeDBConnection:
+    """占位连接对象：read_database 已被替换，不需要真实游标。"""
+
+
+class _FakeDBEngine:
+    def connect(self):
+        return contextlib.nullcontext(_FakeDBConnection())
+
+
+class _FakeDatabaseManager:
+    """拦截 refresh_factors 的数据库访问，断言全程不产生公网请求。"""
+
+    def __init__(self, config=None):
+        self.engine = _FakeDBEngine()
+        self.disconnected = False
+
+    def connect(self) -> bool:
+        return True
+
+    def disconnect(self) -> None:
+        self.disconnected = True
+
+
+def _patch_remote_refresh(monkeypatch, factors: pl.DataFrame, dividends: pl.DataFrame) -> None:
+    """把 refresh_factors 的数据库读取替换成给定帧（按 SQL 关键字分流）。"""
+    import src.database.db_manager as db_module
+
+    monkeypatch.setattr(db_module, 'DatabaseManager', _FakeDatabaseManager)
+    monkeypatch.setattr(
+        pl, 'read_database',
+        lambda sql, conn: factors if 'stock_adj_factor' in sql else dividends)
+
+
+def test_refresh_factors_refuses_without_explicit_switches(tmp_path):
+    """默认拒绝覆盖：缺 allow-remote / 缺 force-overwrite / 口令错误都中止。"""
+    factor_store = LocalFactorStore(tmp_path)
+
+    with pytest.raises(PermissionError, match='allow-remote'):
+        refresh_factors(make_config(tmp_path), factor_store)
+    with pytest.raises(PermissionError, match='默认禁止'):
+        refresh_factors(make_config(tmp_path), factor_store, allow_remote=True)
+    with pytest.raises(PermissionError, match='二次确认'):
+        refresh_factors(make_config(tmp_path), factor_store,
+                        allow_remote=True, force_overwrite=True, confirm='yes')
+
+    # 拒绝路径不得创建任何快照文件
+    assert not (tmp_path / 'factors').exists()
+
+
+def test_refresh_factors_aborts_when_remote_regresses(tmp_path, monkeypatch):
+    """危险开关下差异超阈值中止：快照文件字节不变、不写 meta。"""
+    _write_dividend_snapshot(tmp_path, [
+        ('600000.SH', date(2024, 1, 4), 0.5),
+        ('600000.SH', date(2025, 1, 4), 0.6),
+    ])
+    _write_factor_snapshot(tmp_path, '600000.SH', [date(2024, 1, 2)], [0.9], [1.1])
+    factor_path = tmp_path / 'factors' / 'stock_adj_factor.parquet'
+    dividend_path = tmp_path / 'factors' / 'stock_dividend.parquet'
+    before = (factor_path.read_bytes(), dividend_path.read_bytes())
+
+    # 远程：少一条分红事件、最新除权日倒退、因子末值恒 1.0
+    remote_dividends = pl.DataFrame({
+        'ts_code': ['600000.SH'],
+        'ex_date': [date(2024, 1, 4)],
+        'cash_div': [0.5],
+    })
+    remote_factors = pl.DataFrame({
+        'ts_code': ['600000.SH'],
+        'trade_date': [date(2024, 1, 2)],
+        'qfq_factor': [1.0],
+        'hfq_factor': [1.0],
+    })
+    _patch_remote_refresh(monkeypatch, remote_factors, remote_dividends)
+    config = make_config(tmp_path)
+    factor_store = LocalFactorStore(tmp_path)
+
+    with pytest.raises(RuntimeError, match='存在回退'):
+        refresh_factors(config, factor_store,
+                        allow_remote=True, force_overwrite=True,
+                        confirm='OVERWRITE-LOCAL-SNAPSHOT')
+
+    assert (factor_path.read_bytes(), dividend_path.read_bytes()) == before
+    assert not (tmp_path / 'factors' / 'meta.json').exists()
+
+    # dry-run 只报告 would_abort，同样不落盘
+    planned = refresh_factors(config, factor_store,
+                              allow_remote=True, force_overwrite=True,
+                              confirm='OVERWRITE-LOCAL-SNAPSHOT', dry_run=True)
+    assert planned['would_abort'] is True
+    assert planned['validation']['ok'] is False
+    assert planned['validation']['event_drop_rows'] == 1
+    assert planned['validation']['event_drop_codes'] == 1
+    assert planned['validation']['latest_date_regression_codes'] == 1
+    assert planned['validation']['factor_mismatch_codes'] == 1
+    assert (factor_path.read_bytes(), dividend_path.read_bytes()) == before
+
+
+def test_refresh_factors_cold_start_writes_snapshot(tmp_path, monkeypatch):
+    """首次冷启动（无快照）在 force + confirm 下允许写入远程数据。"""
+    factors = pl.DataFrame({
+        'ts_code': ['600000.SH'],
+        'trade_date': [date(2024, 1, 2)],
+        'qfq_factor': [0.9],
+        'hfq_factor': [1.0],
+    })
+    dividends = pl.DataFrame({
+        'ts_code': ['600000.SH'],
+        'ex_date': [date(2024, 1, 4)],
+        'cash_div': [0.5],
+        'share_div': [0.0],
+        'rights_issue_ratio': [0.0],
+        'rights_issue_price': [0.0],
+    })
+    _patch_remote_refresh(monkeypatch, factors, dividends)
+
+    meta = refresh_factors(make_config(tmp_path), LocalFactorStore(tmp_path),
+                           allow_remote=True, force_overwrite=True,
+                           confirm='OVERWRITE-LOCAL-SNAPSHOT')
+
+    assert meta['source'] == 'remote_mysql'
+    assert meta['forced_overwrite'] is True
+    assert meta['validation']['ok'] is True
+    written = pl.read_parquet(tmp_path / 'factors' / 'stock_adj_factor.parquet')
+    assert written.height == 1
+
+
+def test_validate_remote_overwrite_skips_when_snapshot_absent(tmp_path):
+    """无快照时不判回退（冷启动不应被阈值拦住）。"""
+    stats = validate_remote_overwrite(
+        LocalFactorStore(tmp_path),
+        pl.DataFrame({
+            'ts_code': ['600000.SH'], 'trade_date': [date(2024, 1, 2)],
+            'qfq_factor': [1.0], 'hfq_factor': [1.0],
+        }),
+        pl.DataFrame({
+            'ts_code': ['600000.SH'], 'ex_date': [date(2024, 1, 4)],
+        }),
+    )
+    assert stats['ok'] is True
+    assert stats['snapshot_factor_rows'] == 0
+    assert stats['snapshot_dividend_rows'] == 0
+
+
+def test_overlay_warns_when_factor_snapshot_missing(tmp_path):
+    """快照缺票时 overlay 必须告警，不能静默沿用内嵌副本。"""
+    store = LocalQuoteStore(tmp_path)
+    frame = make_frame(3).with_columns(pl.lit('600000.SH').alias('ts_code'))
+    store.write_daily('stock', '600000.SH', frame)
+    store.flush_meta()
+
+    reader = LocalQuoteStore(tmp_path)
+    messages: list[str] = []
+    handler_id = logger.add(lambda m: messages.append(str(m)), level='WARNING')
+    try:
+        fixed = reader.read_file('stock', '600000.SH', with_factors=True)
+    finally:
+        logger.remove(handler_id)
+
+    assert fixed is not None
+    # 缺票时保留内嵌副本（本测试里副本恰为 1.0），但必须留下告警
+    assert fixed['qfq_factor'].to_list() == [1.0] * 3
+    assert any('因子快照缺失' in m for m in messages)
 

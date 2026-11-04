@@ -79,9 +79,18 @@ def daily_row_to_record(row, ts_code):
     成交量口径：Baostock 上游 volume 单位为「股」，写库契约要求
     stock_daily/index_daily 的 vol 为「手」，这里统一除以 100（1 手=100 股）。
     该函数是日线写库的唯一收口点，调用方（stock/index）不得再换算一次。
+
+    换手率口径：上游 ``turn`` 为**百分数**（``0.1979`` 表示 0.1979%，不是
+    19.79%）。实测 2026-09~11：600000.SH 连续 26 个交易日的
+    ``volume / (turn / 100)`` 稳定在 3.3304e10±0.03%（流通股本 333.0 亿股），
+    300750.SZ 稳定在 4.2606e9±0.01%（42.6 亿股），与公开流通股本一致；
+    若按小数解释则反推股本小两个数量级且与公开数据不符。故此处原样保留
+    百分数，不做 ×100/÷100 换算。停牌日上游为空串，按 0.0 处理。
     """
     close_val = float(row['close']) if row['close'] else 0.0
     pre_close_val = float(row['preclose']) if row['preclose'] else 0.0
+    # 指数/自定义字段串的行可能不带 turn，缺键时按缺失处理
+    turn_raw = row.get('turn') if hasattr(row, 'get') else None
     return {
         'ts_code': ts_code,
         'trade_date': datetime.strptime(row['date'], "%Y-%m-%d").date(),
@@ -94,6 +103,7 @@ def daily_row_to_record(row, ts_code):
         'pct_chg': float(row['pctChg']) if row['pctChg'] else 0.0,
         'vol': float(row['volume']) / 100 if row['volume'] else 0.0,
         'amount': float(row['amount']) if row['amount'] else 0.0,
+        'turn': float(turn_raw) if turn_raw else 0.0,
     }
 
 

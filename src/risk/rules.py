@@ -46,6 +46,7 @@ class Order:
     trade_date: 交易日期（回测时的 Bar 日期）
     prev_close: 前收盘价（涨跌停规则用；由调用方按原始价口径注入）
     bar_volume: 当日 Bar 成交量，单位“手”（1 手 = 100 股，与 vol 列口径一致）
+    adv_volume: 20 日均成交量，单位“手”；容量规则 ``MaxAdvParticipation`` 用
     """
     ts_code: str
     side: str           # 'buy' | 'sell'
@@ -56,6 +57,7 @@ class Order:
     trade_date: date | None = None
     prev_close: float | None = None
     bar_volume: float | None = None
+    adv_volume: float | None = None
 
     def __post_init__(self) -> None:
         """输入域校验：非法订单直接拒绝构造，避免绕过权重类规则。"""
@@ -92,6 +94,15 @@ class Order:
             if not math.isfinite(bar_volume) or bar_volume < 0:
                 raise ValueError(f'Order.bar_volume 必须为有限非负数，实际为 {self.bar_volume!r}')
             self.bar_volume = bar_volume
+
+        if self.adv_volume is not None:
+            if (not isinstance(self.adv_volume, numbers.Real)
+                    or isinstance(self.adv_volume, bool)):
+                raise TypeError(f'Order.adv_volume 必须为实数，实际为 {self.adv_volume!r}')
+            adv_volume = float(self.adv_volume)
+            if not math.isfinite(adv_volume) or adv_volume < 0:
+                raise ValueError(f'Order.adv_volume 必须为有限非负数，实际为 {self.adv_volume!r}')
+            self.adv_volume = adv_volume
 
     @property
     def notional(self) -> float:
@@ -610,6 +621,40 @@ class MaxOrderVolumeRatio(Rule):
             return RuleResult(
                 False,
                 f"单票 {order.ts_code} 委托量占比 {ratio:.2%} > 上限 {self.limit:.2%}"
+            )
+        return RuleResult(True)
+
+
+class MaxAdvParticipation(Rule):
+    """
+    单笔委托量占 20 日均成交量（ADV）比上限（默认 10%），buy/sell 双向审查。
+
+    与 ``MaxOrderVolumeRatio`` 的区别：后者约束「当日成交量」，只防单日幻觉
+    成交；本规则约束「20 日均量」，防止在缩量日反复用同一笔流动性、也用于
+    容量估算（单票最多能承接多少资金）。回测与推荐共用同一参与率上限。
+
+    单位：``order.qty`` 为股，``order.adv_volume`` 为手（1 手 = 100 股）。
+    ``adv_volume`` 缺失或为 0 时 fail-closed 拒绝。
+    """
+
+    name = 'max_adv_participation'
+
+    def __init__(self, limit: float = 0.10, window: int = 20):
+        self.limit = limit
+        self.window = window
+
+    def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
+        if order.adv_volume is None or order.adv_volume <= 0:
+            return RuleResult(
+                False,
+                f"单票 {order.ts_code} 缺少 {self.window} 日均成交量，"
+                f"无法评估 ADV 参与率，拒绝"
+            )
+        ratio = (order.qty / SHARES_PER_LOT) / order.adv_volume
+        if ratio > self.limit:
+            return RuleResult(
+                False,
+                f"单票 {order.ts_code} ADV 参与率 {ratio:.2%} > 上限 {self.limit:.2%}"
             )
         return RuleResult(True)
 

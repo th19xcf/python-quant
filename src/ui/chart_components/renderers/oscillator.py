@@ -11,7 +11,34 @@ import pyqtgraph as pg
 from loguru import logger
 from PySide6.QtCore import Qt
 
+from src.utils.hsl_threshold import rolling_thresholds
+
 from ._arrays import as_f64
+
+
+def _apply_adaptive_y_range(plot_widget: Any, values: np.ndarray, padding: float = 0.08) -> None:
+    """无界型指标：按数据 min/max（含 padding）设初始范围，再交给 pyqtgraph 自适应。
+
+    ADL（全历史累计，6 万量级）、OBOS（正负均值差，千量级）没有天然上下界，
+    不能沿用上一个指标残留的固定范围（如 ADR 的 0~200），否则线会落在视口外。
+    先显式设范围保证首帧可见，再开启 Y 轴自适应，使缩放/平移后跟随可见数据。
+    """
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return
+    low = float(np.min(finite))
+    high = float(np.max(finite))
+    span = high - low
+    if span <= 0:
+        span = abs(high) * 0.02 or 1.0
+    pad = span * padding
+    plot_widget.setYRange(low - pad, high + pad)
+    try:
+        plot_widget.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
+        plot_widget.setAutoVisible(y=True)
+    except (AttributeError, TypeError):
+        # 兜底：不支持自适应的测试桩/旧控件沿用上面的显式范围
+        pass
 
 
 class OscillatorRenderMixin:
@@ -567,14 +594,22 @@ class OscillatorRenderMixin:
                 hsl_data = as_f64(df['hsl'])
                 mask = ~np.isnan(hsl_data)
                 if np.any(mask):
-                    # 设置Y轴范围
+                    # 阈值口径：个股 120 日滚动 60%/85% 分位（样本不足按板块固定值，
+                    # 周/月线按周期放大固定值；分位本身自适应，无需缩放）
+                    window = getattr(self, 'main_window', None)
+                    code = getattr(window, 'current_stock_code', None)
+                    period = getattr(window, 'current_period', None)
+                    low_t, high_t = rolling_thresholds(hsl_data, code,
+                                                       period=period)
+                    # 设置Y轴范围（旧阈值 5/10 固定的 20 下限已失效，按数据与阈值定）
                     valid_data = hsl_data[mask]
                     if len(valid_data) > 0:
-                        max_val = np.max(valid_data)
-                        plot_widget.setYRange(0, max(max_val * 1.1, 20))
+                        max_val = float(np.max(valid_data))
+                        top = max(max_val * 1.1, float(np.max(high_t[mask])) * 1.2, 1.0)
+                        plot_widget.setYRange(0, top)
                     # 根据换手率大小设置颜色（向量化）并批量绘制竖线
                     colors = np.select(
-                        [hsl_data > 10, hsl_data > 5],
+                        [hsl_data > high_t, hsl_data > low_t],
                         ['r', '#FFA500'],
                         default='#00BFFF'
                     )
@@ -590,9 +625,10 @@ class OscillatorRenderMixin:
                         mask_ma10 = ~np.isnan(hsl_ma10)
                         if np.any(mask_ma10):
                             plot_widget.plot(x[mask_ma10], hsl_ma10[mask_ma10], pen=pg.mkPen('#FF00FF', width=1), name='MA10')
-                    # 添加参考线
-                    plot_widget.addLine(y=5, pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
-                    plot_widget.addLine(y=10, pen=pg.mkPen('#FF0000', width=1, style=pg.QtCore.Qt.DashLine))
+                    # 添加参考线（取最新一根的有效阈值，与标签着色口径一致）
+                    idx = int(np.flatnonzero(mask)[-1])
+                    plot_widget.addLine(y=float(low_t[idx]), pen=pg.mkPen('#666666', width=1, style=pg.QtCore.Qt.DashLine))
+                    plot_widget.addLine(y=float(high_t[idx]), pen=pg.mkPen('#FF0000', width=1, style=pg.QtCore.Qt.DashLine))
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染HSL失败: {e}")
         return df
@@ -623,7 +659,8 @@ class OscillatorRenderMixin:
                 mask = ~np.isnan(adl_data)
                 if np.any(mask):
                     plot_widget.plot(x[mask], adl_data[mask], pen=pg.mkPen('#00FFFF', width=1.5), name='ADL')
-                plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DashLine))
+                    # ADL 为全历史累计量，无天然中轴，只做自适应范围、不画参考线
+                    _apply_adaptive_y_range(plot_widget, adl_data[mask])
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染ADL失败: {e}")
         return df
@@ -654,7 +691,9 @@ class OscillatorRenderMixin:
                 mask = ~np.isnan(obos_data)
                 if np.any(mask):
                     plot_widget.plot(x[mask], obos_data[mask], pen=pg.mkPen('#FFFF00', width=1.5), name='OBOS')
-                plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DashLine))
+                    # 0 轴是超买/超卖分界；范围为正负无界，需按数据自适应
+                    plot_widget.addLine(y=0, pen=pg.mkPen('#666666', width=1, style=Qt.PenStyle.DashLine))
+                    _apply_adaptive_y_range(plot_widget, obos_data[mask])
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"渲染OBOS失败: {e}")
         return df

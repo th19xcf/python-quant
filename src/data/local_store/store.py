@@ -681,6 +681,11 @@ def _overlay_factor_snapshot(
         return frame
     snapshot = factor_store.factors(ts_code)
     if snapshot is None or snapshot.is_empty():
+        # 快照缺票时不能静默沿用行情内嵌副本：副本可能过期甚至恒为 1.0，
+        # 复权结果会退化成未复权价，必须让调用方/日志可见。
+        logger.warning(
+            f'[local-store] {ts_code} 因子快照缺失，沿用行情内嵌因子副本'
+            '（副本可能过期或恒为 1.0，复权结果不可靠）')
         return frame
 
     snap = snapshot.rename({
@@ -697,6 +702,13 @@ def _overlay_factor_snapshot(
         exprs.append(pl.col('_hfq_snapshot').fill_null(1.0)
                      .cast(pl.Float64).alias('hfq_factor'))
     return merged.with_columns(exprs).select(frame.columns)
+
+
+def overlay_factor_snapshot(
+    frame: pl.DataFrame, ts_code: str, factor_store: LocalFactorStore | None,
+) -> pl.DataFrame:
+    """公开别名：用本地因子快照覆盖行情/库内内嵌的因子副本。"""
+    return _overlay_factor_snapshot(frame, ts_code, factor_store)
 
 
 def _recompute_derived_columns(frame: pl.DataFrame) -> pl.DataFrame:

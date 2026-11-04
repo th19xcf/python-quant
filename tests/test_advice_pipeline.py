@@ -8,6 +8,7 @@ from datetime import date
 
 from _advice_synth import build_store
 
+from src.advice.config import default_config
 from src.advice.pipeline import AdviceEngine
 from src.advice.universe import list_local_stock_codes
 
@@ -19,7 +20,7 @@ def _codes() -> list[str]:
 def test_generate_advice_schema_and_directions(tmp_path):
     root = build_store(tmp_path / 'local_store', _codes(),
                        end=date(2026, 6, 30), days=320)
-    engine = AdviceEngine(store_root=root)
+    engine = AdviceEngine(config=default_config('legacy'), store_root=root)
     result = engine.generate(as_of=date(2026, 6, 30), equity=1_000_000,
                              tiers=['short'], codes=_codes(),
                              persist_state=False)
@@ -48,7 +49,7 @@ def test_limit_up_candidate_becomes_avoid(tmp_path):
     root = build_store(tmp_path / 'local_store', codes,
                        end=date(2026, 6, 30), days=320,
                        with_limit_up=codes[-1])
-    engine = AdviceEngine(store_root=root)
+    engine = AdviceEngine(config=default_config('legacy'), store_root=root)
     result = engine.generate(as_of=date(2026, 6, 30), equity=2_000_000,
                              tiers=['short'], codes=codes,
                              persist_state=False)
@@ -63,7 +64,7 @@ def test_state_persisted_and_held_next_run(tmp_path):
     root = build_store(tmp_path / 'local_store', codes,
                        end=date(2026, 6, 30), days=320)
     state_dir = tmp_path / 'state'
-    engine = AdviceEngine(store_root=root)
+    engine = AdviceEngine(config=default_config('legacy'), store_root=root)
     first = engine.generate(as_of=date(2026, 6, 30), equity=1_000_000,
                             tiers=['short'], codes=codes,
                             state_dir=state_dir)
@@ -82,7 +83,7 @@ def test_state_persisted_and_held_next_run(tmp_path):
 def test_all_tiers_have_distinct_horizons(tmp_path):
     root = build_store(tmp_path / 'local_store', _codes(),
                        end=date(2026, 6, 30), days=420)
-    engine = AdviceEngine(store_root=root)
+    engine = AdviceEngine(config=default_config('legacy'), store_root=root)
     result = engine.generate(as_of=date(2026, 6, 30), equity=1_000_000,
                              tiers=['short', 'mid', 'long'], codes=_codes(),
                              persist_state=False)

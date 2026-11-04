@@ -11,6 +11,7 @@ from __future__ import annotations
 import polars as pl
 from loguru import logger
 
+from src.advice.extended_factors import compute_extended_candidates
 from src.alpha.calculator.alpha_calculator import calculate_factors_cross_sectional
 
 #: 推荐打分使用的因子分组（technical 组与 price_momentum 组存在同名列，
@@ -29,8 +30,11 @@ SCORE_COLUMNS = (
 )
 
 
-def compute_factor_panel(panel: pl.DataFrame) -> pl.DataFrame:
+def compute_factor_panel(panel: pl.DataFrame, extended: bool = False) -> pl.DataFrame:
     """在本地行情面板上计算因子，并追加推荐层衍生列。
+
+    ``extended=True`` 时额外计算 6 类扩展因子（只算启用的列），并保留缺失值
+    供打分层按可用权重归一；``extended=False`` 保持原 12 因子填 0 行为。
 
     输入必须包含 ``date/ts_code/open/high/low/close/volume/amount``，
     其中价格已由加载器统一为后复权价。输出按 ``(ts_code, date)`` 升序。
@@ -65,11 +69,24 @@ def compute_factor_panel(panel: pl.DataFrame) -> pl.DataFrame:
     ])
 
     score_cols = [column for column in SCORE_COLUMNS if column in frame.columns]
-    frame = frame.with_columns([
-        pl.col(column).cast(pl.Float64, strict=False).fill_null(0.0).fill_nan(0.0)
-        for column in score_cols
-    ])
+    if extended:
+        from src.advice.factor_sets import enabled_extended_columns
+
+        compat = frame.with_columns([
+            pl.col('raw_prev_close').alias('pre_close')
+            if 'raw_prev_close' in frame.columns else pl.col('close').shift(1).over(
+                'ts_code').alias('pre_close'),
+        ])
+        frame = compute_extended_candidates(
+            compat, columns=enabled_extended_columns(), mask_invalid=True)
+        frame = frame.drop('pre_close')
+    else:
+        frame = frame.with_columns([
+            pl.col(column).cast(pl.Float64, strict=False).fill_null(0.0).fill_nan(0.0)
+            for column in score_cols
+        ])
     logger.info(
         f"[advice] 因子面板完成: {frame.height} 行 × "
-        f"{frame[partition].n_unique()} 标的 × {len(score_cols)} 因子列")
+        f"{frame[partition].n_unique()} 标的 × {len(score_cols)} 因子列"
+        f"{'（extended）' if extended else ''}")
     return frame

@@ -269,11 +269,10 @@ class KpiCard(QFrame):
 
 
 class SegmentedControl(QWidget):
-    """三档 segmented control，带轻微滑动过渡。"""
+    """档位 segmented control（仅中线/长线；短线已降级为只读观察）。"""
 
     changed = Signal(str)
     ITEMS = (
-        ('short', '短线', '5–20 日'),
         ('mid', '中线', '1–3 月'),
         ('long', '长线', '6–12 月'),
     )

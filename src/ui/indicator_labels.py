@@ -73,14 +73,17 @@ class IndicatorLabelManager:
             return
         index = min(lengths) - 1
 
+        code = getattr(self.main_window, 'current_stock_code', None)
+        period = getattr(self.main_window, 'current_period', None)
         text = render_indicator_text(
-            WINDOW3_TEXTS, indicator_name, data, index, _format_number)
+            WINDOW3_TEXTS, indicator_name, data, index, _format_number,
+            code, period)
 
         if not text:
             # 未注册的指标名（如窗口 2 的 VOL）沿用旧行为：回退显示 KDJ；
             # KDJ 数据也不可用时保持原先的提示文案
             text = render_indicator_text(
-                WINDOW3_TEXTS, 'KDJ', data, index, _format_number)
+                WINDOW3_TEXTS, 'KDJ', data, index, _format_number, code)
         if not text:
             text = "<font color='white'>指标数据不可用</font>"
 

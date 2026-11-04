@@ -257,7 +257,7 @@ def apply_combo(base_tier: TierConfig, combo: dict[str, Any],
 
 def base_config() -> AdviceConfig:
     # 校准脚本只做参数搜索：关闭风险过滤，避免把 ST/行业/事件的效应混入参数比较
-    return replace(default_config(), risk=RiskFilterConfig(
+    return replace(default_config(factor_set='legacy'), risk=RiskFilterConfig(
         st_enabled=False, industry_enabled=False, event_enabled=False))
 
 

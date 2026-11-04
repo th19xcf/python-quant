@@ -4,14 +4,16 @@
 输入是 main_window 上预计算好的数据数组、索引与数字格式化函数，
 输出是 Qt 富文本片段；数据缺失或索引越界时返回空串。
 
-本模块只依赖标准库与 typing，可在无 GUI 环境下单独测试。
+本模块只依赖标准库、typing 与纯数值阈值工具，可在无 GUI 环境下单独测试。
 """
 
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from src.utils.hsl_threshold import classify, percentile_thresholds
+
 NumberFormatter = Callable[[Any], str]
-Renderer = Callable[[Mapping, int, NumberFormatter], str]
+Renderer = Callable[..., str]
 
 
 def _has(data: Mapping, key: str, index: int) -> bool:
@@ -239,6 +241,43 @@ def _w3_cys(data, index, fmt):
     return text
 
 
+# ---------------------------------------------------------------- 大势型指标
+def _render_abi(data, index, fmt):
+    """ABI（绝对广量指标）：0~100 的百分比型量，保留两位小数。"""
+    if not _has(data, 'abi10', index):
+        return ""
+    return f"<font color='#00FF00'>ABI(10): {fmt(data['abi10'][index])}</font>"
+
+
+def _render_adl(data, index, fmt):
+    """ADL（腾落指标）：全历史累计的整数家数差，取整并加千分位。"""
+    if not _has(data, 'adl', index):
+        return ""
+    value = data['adl'][index]
+    if value is None:
+        return ""
+    return f"<font color='#00FFFF'>ADL: {int(value):,}</font>"
+
+
+def _render_adr(data, index, fmt):
+    """ADR（涨跌比率）：0~200 的比率量，保留两位小数。"""
+    if not _has(data, 'adr10', index):
+        return ""
+    return f"<font color='#FF00FF'>ADR(10): {fmt(data['adr10'][index])}</font>"
+
+
+def _render_obos(data, index, fmt):
+    """OBOS（超买超卖）：涨跌家数均值之差，带正负号并按方向着色。"""
+    if not _has(data, 'obos10', index):
+        return ""
+    value = data['obos10'][index]
+    if value is None:
+        return ""
+    color = '#FF0000' if value >= 0 else '#00FF00'
+    sign = '+' if value > 0 else ''
+    return f"<font color='{color}'>OBOS(10): {sign}{fmt(value)}</font>"
+
+
 # ---------------------------------------------------------------- 两窗口通用
 def _render_sar(data, index, fmt):
     if not _has(data, 'sar', index):
@@ -294,11 +333,16 @@ def _render_asi(data, index, fmt):
     return text
 
 
-def _render_hsl(data, index, fmt):
+def _render_hsl(data, index, fmt, ts_code=None, period=None):
     if not _has(data, 'hsl', index):
         return ""
     hsl = data['hsl'][index]
-    hsl_color = '#FF0000' if hsl > 10 else '#FFA500' if hsl > 5 else '#00BFFF'
+    # 阈值口径：截至当前 bar 的 120 日滚动 60%/85% 分位
+    # （样本不足按板块固定值；周/月线累计口径需按周期放大固定值）
+    low, high = percentile_thresholds(data['hsl'][:index + 1], ts_code,
+                                      period=period)
+    level = classify(hsl, low, high)
+    hsl_color = {'high': '#FF0000', 'mid': '#FFA500'}.get(level, '#00BFFF')
     text = f"<font color='{hsl_color}'>HSL: {fmt(hsl)}%</font>"
     if 'hsl_ma5' in data and index < len(data['hsl_ma5']):
         text += f"  <font color='white'>MA5: {fmt(data['hsl_ma5'][index])}%</font>"
@@ -357,6 +401,10 @@ WINDOW2_TEXTS: dict[str, Renderer] = {
     "MTM": render_mtm,
     "PSY": render_psy,
     "MCST": render_mcst,
+    "ABI": _render_abi,
+    "ADL": _render_adl,
+    "ADR": _render_adr,
+    "OBOS": _render_obos,
 }
 
 WINDOW3_TEXTS: dict[str, Renderer] = {
@@ -387,14 +435,49 @@ WINDOW3_TEXTS: dict[str, Renderer] = {
     "MCST": render_mcst,
     "HSL": _render_hsl,
     "LB": _render_lb,
+    "ABI": _render_abi,
+    "ADL": _render_adl,
+    "ADR": _render_adr,
+    "OBOS": _render_obos,
 }
+
+
+# 注册表指标类型名 -> UI 显示名（其余按大写直接映射）
+_UI_NAME_MAP = {'vol_ma': 'VOL', 'ma': 'MA'}
+
+# 仅主图叠加、没有独立副图提示的指标
+_MAIN_CHART_ONLY = frozenset({'MA'})
+
+
+def missing_indicator_renderers(
+    registered_types: Any,
+    texts: Mapping[str, Renderer] | None = None,
+) -> list[str]:
+    """返回注册表指标中缺少副图提示文本渲染器的 UI 名称（排序后）。"""
+    merged = {**WINDOW2_TEXTS, **WINDOW3_TEXTS} if texts is None else texts
+    missing = set()
+    for name in registered_types:
+        ui_name = _UI_NAME_MAP.get(str(name), str(name).upper())
+        if ui_name in _MAIN_CHART_ONLY:
+            continue
+        if ui_name not in merged:
+            missing.add(ui_name)
+    return sorted(missing)
 
 
 def render_indicator_text(texts: Mapping[str, Renderer], indicator: str,
                           data: Mapping, index: int,
-                          fmt: NumberFormatter) -> str:
-    """按指标名查表渲染提示文本；未注册的指标名返回空串。"""
+                          fmt: NumberFormatter,
+                          ts_code: str | None = None,
+                          period: str | None = None) -> str:
+    """按指标名查表渲染提示文本；未注册的指标名返回空串。
+
+    ``ts_code`` / ``period`` 仅 HSL 需要（分位阈值不足时按板块固定阈值回退，
+    周/月累计口径的固定值还要按周期放大），其余渲染函数保持三元签名。
+    """
     renderer = texts.get(indicator)
     if renderer is None:
         return ""
+    if indicator == 'HSL':
+        return renderer(data, index, fmt, ts_code, period)
     return renderer(data, index, fmt)

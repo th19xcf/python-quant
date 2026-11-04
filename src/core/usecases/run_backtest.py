@@ -28,17 +28,24 @@ Usage:
 
 from __future__ import annotations
 
+import copy
 import threading
 from collections.abc import Mapping
-from typing import Any, Dict, Union
+from typing import Any, Callable, Dict, Union
 
 import polars as pl
 from loguru import logger
 
 from src.backtest.engine.backtest_engine import BacktestEngine
+from src.backtest.engine.holdout import holdout_bounds
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
-from src.risk import RiskEngine, default_risk_engine
+from src.risk import (
+    DEFAULT_RISK_LIMITS,
+    RiskEngine,
+    default_risk_engine,
+    single_asset_risk_engine,
+)
 
 # 长驻取数资源：CLI / GUI 会反复调用 run_backtest，若每次新建
 # DatabaseManager 与 DataFetcher，连接池与线程池随之反复创建，
@@ -77,12 +84,260 @@ def close_shared_data_fetcher() -> None:
         db.disconnect()
 
 
-def _assemble_risk_engine(risk_engine: RiskEngine | None,
-                          enable_default_risk: bool) -> RiskEngine | None:
-    """风控装配：显式传入优先；否则按开关装配默认安全规则集（False 表示完全关闭）。"""
+def _assemble_risk_engine(
+    risk_engine: RiskEngine | None,
+    enable_default_risk: bool,
+    data: Union[pl.DataFrame, Dict[str, pl.DataFrame]] | None,
+    ts_code: str | None,
+    industry: str,
+    industry_map: Dict[str, str] | None,
+) -> tuple[RiskEngine | None, Dict[str, Any]]:
+    """风控装配：显式传入优先；否则按单票/组合模式装配默认规则集。
+
+    默认集补全后不能对单票账户直接套用 10%/30% 上限：单票天然满仓且只有
+    一个行业，照搬会让回测 0 成交。因此：
+    - 单票：权重上限 100%，关闭行业/HHI，保留回撤/现金/流动性；
+    - 组合：权重上限 ``max(10%, 1/N + 1pp)``，行业上限按行业数可行域放宽
+      （``max(30%, 1/m + 3pp)``、HHI ``max(25%, 1/m + 5pp)``），
+      无行业映射时关闭行业规则；
+    - 数据缺 volume 列时关闭成交量/ADV 规则（否则 fail-closed 会拒掉全部订单）。
+
+    返回 ``(engine, profile)``；profile 记录实际生效的参数与放宽理由，
+    供报告审计。
+    """
     if risk_engine is not None:
-        return risk_engine
-    return default_risk_engine() if enable_default_risk else None
+        return risk_engine, {
+            'source': 'explicit',
+            'rules': [rule.name for rule in risk_engine.rules],
+            'notes': ['调用方显式传入 risk_engine，默认集未生效'],
+        }
+    if not enable_default_risk:
+        return None, {
+            'source': 'disabled',
+            'rules': [],
+            'notes': ['enable_default_risk=False，完全关闭风控闸门'],
+        }
+
+    is_portfolio = isinstance(data, dict)
+    codes = list(data.keys()) if isinstance(data, dict) else ([ts_code] if ts_code else [])
+    frames = list(data.values()) if isinstance(data, dict) else ([data] if data is not None else [])
+    has_volume = bool(frames) and all(
+        frame is not None and 'volume' in frame.columns for frame in frames)
+    notes: list[str] = []
+
+    if not is_portfolio:
+        engine = single_asset_risk_engine()
+        if not has_volume:
+            engine = default_risk_engine(
+                position_limit=1.0, include_industry=False, include_liquidity=False)
+            notes.append('数据缺 volume 列，已关闭单日成交量/ADV 参与率规则')
+        profile = {
+            'source': 'default',
+            'mode': 'single',
+            'rules': [rule.name for rule in engine.rules],
+            'effective_limits': {
+                'max_position_weight': 1.0,
+                'max_industry_weight': None,
+                'max_industry_hhi': None,
+                'max_drawdown': DEFAULT_RISK_LIMITS['max_drawdown'],
+                'drawdown_window': DEFAULT_RISK_LIMITS['drawdown_window'],
+                'min_cash_reserve': DEFAULT_RISK_LIMITS['min_cash_reserve'],
+                'max_order_volume_ratio': (
+                    DEFAULT_RISK_LIMITS['max_order_volume_ratio'] if has_volume else None),
+                'max_adv_participation': (
+                    DEFAULT_RISK_LIMITS['max_adv_participation'] if has_volume else None),
+            },
+            'notes': [
+                '单票账户天然满仓且只有一个行业：行业/HHI 规则关闭，'
+                '权重上限放宽到 100%，避免默认集把回测压成 0 成交',
+                *notes,
+            ],
+        }
+        return engine, profile
+
+    n_codes = len(codes)
+    position_limit = max(
+        DEFAULT_RISK_LIMITS['max_position_weight'],
+        (1.0 / n_codes if n_codes else 1.0) + 0.01,
+    )
+    if position_limit > DEFAULT_RISK_LIMITS['max_position_weight']:
+        notes.append(
+            f'组合仅 {n_codes} 只，等权目标 {1.0 / n_codes:.0%} 高于默认 10%，'
+            f'单票上限放宽为 {position_limit:.0%}（等权 +1pp 漂移余量，'
+            '避免整手取整/价格波动把正常调仓判为超限）')
+
+    mapping = dict(industry_map or {})
+    missing = [code for code in codes if not mapping.get(code)]
+    include_industry = bool(codes) and not missing and n_codes >= 2
+    industry_limit = hhi_limit = None
+    if include_industry:
+        n_industries = len({mapping[code] for code in codes})
+        # 可行域 = 行业等权下限；再给 3pp / 5pp 漂移余量，否则 2 只同行业
+        # 组合在价格微涨后就会从 28.6% 漂到 30%+ 被反复拒单
+        industry_limit = max(DEFAULT_RISK_LIMITS['max_industry_weight'],
+                             1.0 / n_industries + 0.03)
+        hhi_limit = max(DEFAULT_RISK_LIMITS['max_industry_hhi'],
+                        1.0 / n_industries + 0.05)
+        if industry_limit > DEFAULT_RISK_LIMITS['max_industry_weight']:
+            notes.append(
+                f'组合仅覆盖 {n_industries} 个行业，行业上限按可行域放宽为 '
+                f'{industry_limit:.0%}，HHI 上限 {hhi_limit:.0%}'
+                '（等权下限 + 漂移余量）')
+    else:
+        if missing:
+            notes.append(
+                f'行业映射缺失 {len(missing)} 只（示例 {missing[:3]}），'
+                '已关闭行业权重/HHI 规则；如需行业约束请传 industry_map')
+        else:
+            notes.append('组合标的 <2，行业集中度规则无意义，已关闭')
+
+    if not has_volume:
+        notes.append('数据缺 volume 列，已关闭单日成交量/ADV 参与率规则')
+
+    engine = default_risk_engine(
+        position_limit=position_limit,
+        industry_limit=industry_limit,
+        hhi_limit=hhi_limit,
+        include_industry=include_industry,
+        include_liquidity=has_volume,
+    )
+    return engine, {
+        'source': 'default',
+        'mode': 'portfolio',
+        'rules': [rule.name for rule in engine.rules],
+        'effective_limits': {
+            'max_position_weight': position_limit,
+            'max_industry_weight': industry_limit,
+            'max_industry_hhi': hhi_limit,
+            'max_drawdown': DEFAULT_RISK_LIMITS['max_drawdown'],
+            'drawdown_window': DEFAULT_RISK_LIMITS['drawdown_window'],
+            'min_cash_reserve': DEFAULT_RISK_LIMITS['min_cash_reserve'],
+            'max_order_volume_ratio': (
+                DEFAULT_RISK_LIMITS['max_order_volume_ratio'] if has_volume else None),
+            'max_adv_participation': (
+                DEFAULT_RISK_LIMITS['max_adv_participation'] if has_volume else None),
+        },
+        'notes': notes or ['默认阈值全部生效，无需放宽'],
+    }
+
+
+# ---------------------------------------------------------------------------
+# 样本内/样本外（purge + embargo）
+# ---------------------------------------------------------------------------
+
+def _sorted_dates(data: Union[pl.DataFrame, Dict[str, pl.DataFrame]]) -> list[Any]:
+    """提取数据覆盖的升序交易日（组合取各标的并集）。"""
+    frames = list(data.values()) if isinstance(data, dict) else [data]
+    dates: set[Any] = set()
+    for frame in frames:
+        if frame is not None and 'date' in frame.columns:
+            dates.update(frame['date'].drop_nulls().to_list())
+    return sorted(dates, key=str)
+
+
+def _slice_data(data: Union[pl.DataFrame, Dict[str, pl.DataFrame]],
+                start: Any, end: Any) -> Union[pl.DataFrame, Dict[str, pl.DataFrame]]:
+    """按日期闭区间裁剪数据；组合分支丢弃区间内无行情的标的。"""
+    def _filter(frame: pl.DataFrame) -> pl.DataFrame:
+        if 'date' not in frame.columns:
+            return frame
+        return frame.filter((pl.col('date') >= start) & (pl.col('date') <= end))
+
+    if isinstance(data, dict):
+        sliced = {code: _filter(frame) for code, frame in data.items()}
+        return {code: frame for code, frame in sliced.items() if frame.height > 0}
+    return _filter(data)
+
+
+def _segment_metrics(result: Dict[str, Any]) -> Dict[str, Any]:
+    """从单次回测结果抽取分段指标（收益/年化/回撤/夏普/换手/拒单）。"""
+    performance = result.get('performance', {}) or {}
+    trades = result.get('trades', []) or []
+    initial = float(result.get('initial_capital', 0.0) or 0.0)
+    traded_notional = sum(
+        abs(float(trade.get('price', 0.0) or 0.0) * float(trade.get('shares', 0) or 0))
+        for trade in trades
+    )
+    return {
+        'total_return': float(result.get('total_return', 0.0) or 0.0),
+        'annual_return': float(performance.get('annual_return', 0.0) or 0.0),
+        'max_drawdown': float(performance.get('max_drawdown', 0.0) or 0.0),
+        'sharpe_ratio': float(performance.get('sharpe_ratio', 0.0) or 0.0),
+        'trades': len(trades) // 2,
+        'turnover': (traded_notional / initial) if initial > 0 else 0.0,
+        'rejected': len(result.get('rejected_orders', []) or []),
+        'final_equity': float(result.get('final_equity', 0.0) or 0.0),
+    }
+
+
+def _run_oos_validation(
+    data: Union[pl.DataFrame, Dict[str, pl.DataFrame]],
+    run_segment: Callable[[Any], Dict[str, Any]],
+    oos_ratio: float,
+    horizon: int,
+    embargo: int,
+) -> Dict[str, Any]:
+    """对固定参数策略做样本内/样本外分段回测（含 purge + embargo）。
+
+    注意：``run_backtest`` 不做参数选择，因此这里的样本外是「时间切分
+    稳健性检查」；真正的「样本内选参 → 样本外验证」在
+    ``BacktestEngine.optimize_strategy``。
+    """
+    dates = _sorted_dates(data)
+    bounds = holdout_bounds(len(dates), oos_ratio, horizon=horizon, embargo=embargo)
+    if bounds is None:
+        return {
+            'enabled': False,
+            'oos_ratio': oos_ratio,
+            'horizon': horizon,
+            'embargo': embargo,
+            'reason': (
+                f'仅 {len(dates)} 个交易日，purge+embargo 后不足以切出'
+                '样本内/样本外两段'
+            ),
+        }
+
+    is_data = _slice_data(data, dates[0], dates[bounds.purged_train_end - 1])
+    oos_data = _slice_data(
+        data, dates[bounds.test_start], dates[bounds.test_end - 1])
+    is_empty = (not is_data) if isinstance(is_data, dict) else is_data.is_empty()
+    oos_empty = (not oos_data) if isinstance(oos_data, dict) else oos_data.is_empty()
+    if is_empty or oos_empty:
+        return {
+            'enabled': False,
+            'oos_ratio': oos_ratio,
+            'horizon': horizon,
+            'embargo': embargo,
+            'reason': '切分后样本内或样本外数据为空',
+        }
+
+    is_result = run_segment(is_data)
+    oos_result = run_segment(oos_data)
+    is_metrics = _segment_metrics(is_result)
+    oos_metrics = _segment_metrics(oos_result)
+    return {
+        'enabled': True,
+        'oos_ratio': oos_ratio,
+        'horizon': horizon,
+        'embargo': embargo,
+        'purged_train_end': bounds.purged_train_end,
+        'purge_gap_days': bounds.purge_gap_days,
+        'in_sample_range': f'{dates[0]} ~ {dates[bounds.purged_train_end - 1]}',
+        'out_of_sample_range': f'{dates[bounds.test_start]} ~ {dates[-1]}',
+        'in_sample_days': bounds.purged_train_end,
+        'out_of_sample_days': bounds.test_end - bounds.test_start,
+        'in_sample': is_metrics,
+        'out_of_sample': oos_metrics,
+        'decay': {
+            'total_return': oos_metrics['total_return'] - is_metrics['total_return'],
+            'annual_return': oos_metrics['annual_return'] - is_metrics['annual_return'],
+            'sharpe_ratio': oos_metrics['sharpe_ratio'] - is_metrics['sharpe_ratio'],
+        },
+        'note': (
+            '固定参数的时间切分检查；训练窗末尾按 horizon 做标签 purge，'
+            '测试窗从 train_end + embargo 开始'
+        ),
+    }
 
 
 def _prepare_backtest_data(
@@ -281,6 +536,9 @@ def run_backtest(
     dividend_tax_rate: float = 0.0,
     rights_policy: str = 'partial',
     dividends: Mapping[str, pl.DataFrame] | None = None,
+    oos_ratio: float = 0.3,
+    oos_horizon: int = 10,
+    oos_embargo: int = 20,
     **kwargs,
 ) -> Dict[str, Any]:
     """
@@ -318,15 +576,23 @@ def run_backtest(
                        'abandon'（放弃配股）。
         dividends:      显式指定的除权除息事件表 {ts_code: DataFrame}，
                        传给 apply_dividends=False 时完全不做分红记账。
+        oos_ratio:     样本外占比，默认 0.3（训练 70% / 样本外 30%）。
+                       默认开启的理由：固定参数回测也常被拿来做决策，30% 的
+                       留出段足以覆盖一轮信用/风格周期；传 0 可显式关闭。
+                       启用后会额外跑样本内、样本外两次回测，耗时约 ×3。
+        oos_horizon:   标签跨度（交易日），默认 10；训练窗末尾按该跨度 purge。
+        oos_embargo:   训练窗与测试窗隔离带（交易日），默认 20，须 ≥ horizon。
 
     Returns:
         dict —— BacktestEngine.run_backtest() 的返回值，包含：
             - initial_capital, final_equity, total_return
             - trades, equity_curve, performance
             - risk_summary（如有风控）、rejected_orders（如有风控）
+            - risk_profile（本次实际生效的风控规则与参数）
+            - oos_validation（样本内/样本外分段指标；未启用时 enabled=False）
     """
-    # ---- 风控装配：生产路径不允许"无风控即全放行" ----
-    risk_engine = _assemble_risk_engine(risk_engine, enable_default_risk)
+    if not 0 <= oos_ratio < 1:
+        raise ValueError(f"oos_ratio 必须在 [0, 1) 内，实际 {oos_ratio}")
 
     # ---- 数据准备 + ST 时间维表 ----
     data, db = _prepare_backtest_data(
@@ -338,6 +604,11 @@ def run_backtest(
 
     if data is None:
         raise ValueError("run_backtest: 必须传 data 或 ts_code")
+
+    # ---- 风控装配：显式优先；否则按单票/组合模式装配默认安全集 ----
+    risk_engine, risk_profile = _assemble_risk_engine(
+        risk_engine, enable_default_risk, data, ts_code, industry, industry_map,
+    )
 
     # ---- 除权除息：只读本地分红快照，运行时主路径不发远程查询 ----
     # 只有带原始价列（raw_open/raw_close）的数据才记账分红：主列是后复权价时
@@ -360,12 +631,34 @@ def run_backtest(
     kwargs.setdefault('rights_policy', rights_policy)
 
     # ---- 分支：单票 vs 组合 ----
-    if isinstance(data, dict):
-        return _run_portfolio_backtest(
-            data, strategies, risk_engine, st_status,
-            initial_capital, lot_size, industry_map, kwargs,
+    def _clone(obj: Any) -> Any:
+        """分段回测各自持有策略副本，避免状态跨段污染。"""
+        try:
+            return copy.deepcopy(obj)
+        except Exception:  # noqa: BLE001 - 少数策略含不可深拷贝资源
+            return obj
+
+    def run_segment(segment_data: Union[pl.DataFrame, Dict[str, pl.DataFrame]]) -> Dict[str, Any]:
+        segment_kwargs = dict(kwargs)
+        if isinstance(segment_data, dict):
+            return _run_portfolio_backtest(
+                segment_data, _clone(strategies), risk_engine, st_status,
+                initial_capital, lot_size, industry_map, segment_kwargs,
+            )
+        return _run_single_backtest(
+            segment_data, _clone(strategy), risk_engine, st_status, ts_code,
+            initial_capital, lot_size, industry, segment_kwargs,
         )
-    return _run_single_backtest(
-        data, strategy, risk_engine, st_status, ts_code,
-        initial_capital, lot_size, industry, kwargs,
-    )
+
+    result = run_segment(data)
+    result['risk_profile'] = risk_profile
+    if oos_ratio > 0:
+        result['oos_validation'] = _run_oos_validation(
+            data, run_segment, oos_ratio, oos_horizon, oos_embargo)
+    else:
+        result['oos_validation'] = {
+            'enabled': False,
+            'oos_ratio': 0.0,
+            'reason': '调用方显式传 oos_ratio=0，关闭样本外切分',
+        }
+    return result

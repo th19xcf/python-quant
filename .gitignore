@@ -131,6 +131,9 @@ examples/output/
 # 审计产物（数据库清理与因子快照 CSV，约 75MB，属本地产物不入库）
 reports/
 
+# 本地验证产物（UI 截图等一次性核对文件，不入库）
+artifacts/
+
 # 本地 Parquet 列存（行情/因子/分红，可由 CLI 重建，不入库）
 data/local_store/
 

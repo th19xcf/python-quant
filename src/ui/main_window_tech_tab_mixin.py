@@ -20,6 +20,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.ui.chip_panel import ChipController, ChipPanel
+from src.ui.data_stock_controller import DEFAULT_BAR_COUNT, MIN_BAR_COUNT
+
 
 class MainWindowTechTabMixin:
     """技术分析标签页：周期/柱体数/复权工具栏与三个画布。"""
@@ -77,6 +80,14 @@ class MainWindowTechTabMixin:
 
         # 添加指标选择窗口
         self.create_indicator_selection()
+        # 筹码显隐按钮/全区间开关与筹码栏联动
+        self.chip_controller.bind_controls(
+            self.chip_toggle_btn,
+            self.chip_full_range_checkbox,
+            self.chip_floor_combo,
+        )
+        # 把下栏已创建的增减柱体按钮移动到上栏复权按钮左侧（复用同一实例）
+        self._relocate_bar_count_buttons()
         # 设置指标选择栏的尺寸策略，确保显示完整
         self.indicator_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.indicator_widget.setMinimumHeight(36)  # 确保高度足够显示按钮
@@ -96,6 +107,7 @@ class MainWindowTechTabMixin:
         """
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
+        self.tech_toolbar_layout = toolbar_layout
         toolbar.setStyleSheet("background-color: #222222;")
         # 顶部工具栏常驻：垂直方向固定高度，不随图表区压缩或滚动
         toolbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -119,12 +131,14 @@ class MainWindowTechTabMixin:
             border: 1px solid #666666;
         }
         """
+        self._tech_button_style = button_style
 
         self._build_stock_name_label(toolbar_layout)
+        # 上一只/下一只放在周期按钮左侧
+        self._build_stock_switch_buttons(toolbar_layout, button_style)
         self._build_period_buttons(toolbar_layout, button_style)
         self._build_bar_count_input(toolbar_layout)
         self._build_adjustment_button(toolbar_layout, button_style)
-        self._build_stock_switch_buttons(toolbar_layout, button_style)
 
         # 添加工具栏到布局
         tech_layout.addWidget(toolbar)
@@ -188,6 +202,7 @@ class MainWindowTechTabMixin:
         # 添加按钮到工具栏
         for name, button in self.period_buttons.items():
             button.setCheckable(True)
+            button.setObjectName({'日线': 'periodDayBtn', '周线': 'periodWeekBtn', '月线': 'periodMonthBtn'}[name])
             button.setStyleSheet(button_style)
             button.toggled.connect(lambda checked, p=name: self.indicator_interaction_manager.on_period_changed(p, checked))
             toolbar_layout.addWidget(button)
@@ -208,7 +223,8 @@ class MainWindowTechTabMixin:
         toolbar_layout.addWidget(bar_count_label)
 
         self.bar_count_input = QLineEdit()
-        self.bar_count_input.setText("100")  # 默认显示100个柱体
+        self.bar_count_input.setObjectName('barCountInput')
+        self.bar_count_input.setText(str(DEFAULT_BAR_COUNT))  # 默认显示柱体数
         self.bar_count_input.setStyleSheet("""
         QLineEdit {
             background-color: #333333;
@@ -232,6 +248,29 @@ class MainWindowTechTabMixin:
         # 添加分隔符
         toolbar_layout.addSpacing(10)
 
+    def _relocate_bar_count_buttons(self):
+        """把下栏创建的增减柱体按钮移动到上栏复权按钮左侧。
+
+        直接搬移原 QPushButton 实例，不重新创建，原有 clicked 连接保持不变；
+        两个按钮只操作 window.displayed_bar_count 这一份设定值。
+        """
+        bottom_layout = self.plus_btn.parentWidget().layout()
+        bottom_layout.removeWidget(self._bar_count_separator)
+        self._bar_count_separator.setParent(None)
+
+        bottom_layout.removeWidget(self.plus_btn)
+        bottom_layout.removeWidget(self.minus_btn)
+
+        # 套用上方工具栏样式，保持视觉一致
+        self.plus_btn.setStyleSheet(self._tech_button_style)
+        self.minus_btn.setStyleSheet(self._tech_button_style)
+
+        index = self.tech_toolbar_layout.indexOf(self.adjustment_btn)
+        self.tech_toolbar_layout.insertWidget(index, self.plus_btn)
+        self.tech_toolbar_layout.insertWidget(index + 1, self.minus_btn)
+
+        self.indicator_interaction_manager.update_bar_count_controls()
+
     def _build_adjustment_button(self, toolbar_layout, button_style):
         """
         创建复权按钮并默认选中前复权
@@ -253,12 +292,14 @@ class MainWindowTechTabMixin:
         """
         # 添加上下箭头按钮用于切换相邻股票
         self.prev_stock_btn = QPushButton("⬆️ 上一只")
+        self.prev_stock_btn.setObjectName('prevStockBtn')
         self.prev_stock_btn.setStyleSheet(button_style)
         self.prev_stock_btn.setToolTip("切换到列表中的上一只股票")
         self.prev_stock_btn.clicked.connect(self._on_prev_stock_clicked)
         toolbar_layout.addWidget(self.prev_stock_btn)
 
         self.next_stock_btn = QPushButton("⬇️ 下一只")
+        self.next_stock_btn.setObjectName('nextStockBtn')
         self.next_stock_btn.setStyleSheet(button_style)
         self.next_stock_btn.setToolTip("切换到列表中的下一只股票")
         self.next_stock_btn.clicked.connect(self._on_next_stock_clicked)
@@ -361,38 +402,94 @@ class MainWindowTechTabMixin:
         """
         为三个画布分别创建容器并绑定点击选中窗口事件
         """
-        # 为K线图创建容器，只包含K线图
+        # 为K线图创建容器：主图 + 右侧筹码栏共用价格轴
         self.tech_container = QWidget()
-        self.tech_container_layout = QVBoxLayout(self.tech_container)
+        self.tech_container_layout = QHBoxLayout(self.tech_container)
         self.tech_container_layout.setSpacing(0)
         self.tech_container_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.tech_container_layout.addWidget(self.tech_plot_widget)
+        self.tech_container_layout.addWidget(self.tech_plot_widget, 3)
+
+        self.chip_panel = ChipPanel(self.tech_plot_widget)
+        self.chip_panel.setObjectName('chipPanel')
+        self.tech_container_layout.addWidget(self.chip_panel, 1)
+        self.chip_controller = ChipController(self, self.chip_panel)
 
         # 添加点击事件，用于选中窗口
         self.tech_container.mousePressEvent = lambda event: self.indicator_interaction_manager.on_window_clicked(1)
 
-        # 为成交量图创建容器，只包含成交量图
+        # 副图：指标标题栏占据整行，标题栏下方才是「绘图区 + 右侧占位列」。
+        # 占位列宽度与筹码栏一致，保证所有绘图区左右边界逐像素对齐。
         self.volume_container = QWidget()
         self.volume_container_layout = QVBoxLayout(self.volume_container)
         self.volume_container_layout.setSpacing(0)
         self.volume_container_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.volume_container_layout.addWidget(self.volume_plot_widget)
+        self.volume_plot_row = QWidget()
+        self.volume_plot_row.setMinimumHeight(self._SUB_PLOT_MIN_HEIGHT)
+        self.volume_plot_row_layout = QHBoxLayout(self.volume_plot_row)
+        self.volume_plot_row_layout.setSpacing(0)
+        self.volume_plot_row_layout.setContentsMargins(0, 0, 0, 0)
+        self.volume_chip_gutter = self._create_chip_gutter()
+        self.volume_plot_row_layout.addWidget(self.volume_plot_widget, 1)
+        self.volume_plot_row_layout.addWidget(self.volume_chip_gutter)
+        self.volume_container_layout.addWidget(self.volume_plot_row, 1)
 
         # 添加点击事件，用于选中窗口
         self.volume_container.mousePressEvent = lambda event: self.indicator_interaction_manager.on_window_clicked(2)
 
-        # 为KDJ指标图创建容器，只包含KDJ指标图
+        # 为KDJ指标图创建容器：结构同成交量图
         self.kdj_container = QWidget()
         self.kdj_container_layout = QVBoxLayout(self.kdj_container)
         self.kdj_container_layout.setSpacing(0)
         self.kdj_container_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.kdj_container_layout.addWidget(self.kdj_plot_widget)
+        self.kdj_plot_row = QWidget()
+        self.kdj_plot_row.setMinimumHeight(self._SUB_PLOT_MIN_HEIGHT)
+        self.kdj_plot_row_layout = QHBoxLayout(self.kdj_plot_row)
+        self.kdj_plot_row_layout.setSpacing(0)
+        self.kdj_plot_row_layout.setContentsMargins(0, 0, 0, 0)
+        self.kdj_chip_gutter = self._create_chip_gutter()
+        self.kdj_plot_row_layout.addWidget(self.kdj_plot_widget, 1)
+        self.kdj_plot_row_layout.addWidget(self.kdj_chip_gutter)
+        self.kdj_container_layout.addWidget(self.kdj_plot_row, 1)
 
         # 添加点击事件，用于选中窗口
         self.kdj_container.mousePressEvent = lambda event: self.indicator_interaction_manager.on_window_clicked(3)
+
+        # 列宽同步：筹码栏自身宽度变化、显隐切换都会驱动副图占位列
+        self._chip_gutters = (self.volume_chip_gutter, self.kdj_chip_gutter)
+        self.chip_panel.set_width_callback(self._sync_chip_gutters)
+        self.chip_controller.set_layout_callback(self._sync_chip_gutters)
+        self._sync_chip_gutters()
+
+    @staticmethod
+    def _create_chip_gutter():
+        """创建副图右侧的黑色占位块，宽度跟随筹码栏。"""
+        gutter = QWidget()
+        gutter.setObjectName('chipGutter')
+        gutter.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        gutter.setStyleSheet('background-color: #000000;')
+        gutter.setFixedWidth(0)
+        gutter.hide()
+        return gutter
+
+    def _sync_chip_gutters(self, width: int | None = None):
+        """把副图右侧占位列统一到筹码栏的当前宽度。
+
+        所有占位列使用同一个像素宽度（筹码栏实测宽度），而不是各行的
+        stretch 比例，避免四舍五入后左右边界出现 1~2px 偏差。
+        """
+        gutters = getattr(self, '_chip_gutters', ())
+        controller = getattr(self, 'chip_controller', None)
+        panel = getattr(self, 'chip_panel', None)
+        visible = bool(controller is not None and controller.is_visible())
+        target = 0
+        if visible and panel is not None:
+            target = max(int(width if width is not None else panel.width()), 0)
+        for gutter in gutters:
+            gutter.setFixedWidth(target)
+            gutter.setVisible(visible and target > 0)
 
     def _setup_chart_splitter(self):
         """

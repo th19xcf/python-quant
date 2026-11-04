@@ -81,6 +81,13 @@ FACTOR_COLUMNS = ('ts_code', 'trade_date', 'qfq_factor', 'hfq_factor')
 _ETF_PREFIXES = ('159', '51', '56', '58', '520', '530')
 FUND_FACTOR_MAX = 1000.0
 
+#: 行情源已对份额折算做过前复权的基金：``quotes/fund`` 在折算日**没有**价格
+#: 跳空（原始价连续），再乘折算因子会构成二次复权。实测 159930.SZ 2013-12-12
+#: 原始收益 -0.32%，因子台阶 2.588957→1.054741 却造出 -59.4% 的伪跳变；
+#: 2025-09-22 同理（原始 -1.19% vs 报表 pct_chg -6.31%）。这类标的跳过份额
+#: 折算事件，现金分红仍按原逻辑处理。
+QUOTE_SPLIT_ADJUSTED_CODES: tuple[str, ...] = ('159930.SZ',)
+
 
 # ----------------------------------------------------------------------
 # 代码与日期工具
@@ -346,7 +353,8 @@ def prepare_events_for_code(
             entry = combined.setdefault(event_date, [0.0, 1.0])
             entry[0] += cash
 
-    if share_changes is not None and not share_changes.is_empty():
+    if (share_changes is not None and not share_changes.is_empty()
+            and ts_code not in QUOTE_SPLIT_ADJUSTED_CODES):
         for row in share_changes.iter_rows(named=True):
             ratio = float(row['share_ratio'] or 0.0)
             if ratio <= 0:

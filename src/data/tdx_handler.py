@@ -271,13 +271,20 @@ class TdxHandler(DataSourceBase):
                     logger.debug(f"{ts_code} 使用本地复权因子快照")
                     return frame.select(['trade_date', 'qfq_factor', 'hfq_factor'])
 
+            # 按分红现场计算优先于远程预计算因子：stock_adj_factor 覆盖极少
+            # （约 1.8% 的票）且其中大量恒为 1.0，先采用它会把原始价当复权价；
+            # 本地分红快照是权威事件源，优先据此计算。
+            computed = self._calculate_adj_factors_from_dividends(
+                ts_code, start_date, end_date, price_records=price_records)
+            if computed is not None and not computed.is_empty():
+                logger.debug(f"{ts_code} 使用按分红现场计算的复权因子")
+                return computed
+
             from src.data.local_store import remote_database_enabled
 
             if not remote_database_enabled(getattr(self, 'config', None)):
-                # 显式关闭远程时不得再查 stock_adj_factor，直接走本地分红计算
-                logger.debug(f"{ts_code} 本地无预计算因子且远程已关闭，改用本地分红计算")
-                return self._calculate_adj_factors_from_dividends(
-                    ts_code, start_date, end_date, price_records=price_records)
+                logger.debug(f"{ts_code} 无本地分红可计算且远程已关闭，返回无因子")
+                return None
 
             from src.database.models.stock import StockAdjFactor
 
@@ -286,7 +293,7 @@ class TdxHandler(DataSourceBase):
                 logger.warning("无法获取数据库会话，无法获取复权因子")
                 return None
 
-            # 首先尝试获取预计算的复权因子
+            # 远程预计算因子仅作最后兜底
             query = session.query(StockAdjFactor).filter_by(ts_code=ts_code)
 
             if start_date:
@@ -297,8 +304,13 @@ class TdxHandler(DataSourceBase):
             factors = query.order_by(StockAdjFactor.trade_date).all()
 
             if factors:
-                # 使用预计算的复权因子
-                logger.debug(f"{ts_code} 使用预计算的复权因子数据")
+                if (all(f.qfq_factor == 1.0 for f in factors)
+                        and all(f.hfq_factor == 1.0 for f in factors)):
+                    logger.warning(
+                        f"{ts_code} 远程 stock_adj_factor 恒为 1.0，已跳过"
+                        "（避免把原始价当作复权价）")
+                    return None
+                logger.debug(f"{ts_code} 兜底使用远程预计算因子")
                 data = {
                     'trade_date': [f.trade_date for f in factors],
                     'qfq_factor': [f.qfq_factor for f in factors],
@@ -306,10 +318,8 @@ class TdxHandler(DataSourceBase):
                 }
                 return pl.DataFrame(data)
 
-            # 如果没有预计算的复权因子，根据分红数据实时计算
-            logger.info(f"{ts_code} 没有预计算的复权因子，根据分红数据实时计算")
-            return self._calculate_adj_factors_from_dividends(
-                ts_code, start_date, end_date, price_records=price_records)
+            logger.info(f"{ts_code} 无可用复权因子（本地快照/分红计算/远程预计算均为空）")
+            return None
 
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"获取复权因子失败: {e}")

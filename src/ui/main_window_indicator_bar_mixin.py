@@ -7,6 +7,8 @@
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -16,7 +18,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.api.chip_api import (
+    DEFAULT_TURNOVER_FLOOR_MODE,
+    TURNOVER_FLOOR_LABELS,
+)
+from src.ui.data_stock_controller import MIN_BAR_COUNT
 from src.utils.logger import logger
+
+# 指标栏中已实现（可点击）的指标名：既是按钮样式判据，也是启动自检的注入源
+IMPLEMENTED_INDICATORS: frozenset[str] = frozenset({
+    'MA', 'VOL', 'MACD', 'KDJ', 'DMI', 'DMA', 'FSL', 'TRIX', 'BRAR', 'CR',
+    'VR', 'OBV', 'ASI', 'EMV', 'RSI', 'WR', 'SAR',
+    'CCI', 'ROC', 'MTM', 'BOLL', 'PSY', 'MCST',
+    # 新增指标
+    'EXPMA', 'BBI', 'HSL', 'LB', 'CYC', 'CYS',
+    # 大势型指标
+    'ABI', 'ADL', 'ADR', 'OBOS',
+})
 
 
 class MainWindowIndicatorBarMixin:
@@ -267,21 +285,11 @@ class MainWindowIndicatorBarMixin:
                 separator.setStyleSheet("color: #666666; font-size: 12px;")
                 scroll_layout.addWidget(separator)
         else:
-            # 已实现的指标列表
-            implemented_indicators = [
-                'MA', 'VOL', 'MACD', 'KDJ', 'DMI', 'DMA', 'FSL', 'TRIX', 'BRAR', 'CR',
-                'VR', 'OBV', 'ASI', 'EMV', 'RSI', 'WR', 'SAR',
-                'CCI', 'ROC', 'MTM', 'BOLL', 'PSY', 'MCST',
-                # 新增指标
-                'EXPMA', 'BBI', 'HSL', 'LB', 'CYC', 'CYS',
-                # 大势型指标
-                'ABI', 'ADL', 'ADR', 'OBOS'
-            ]
             # 未实现指标的样式（灰色文字）
             disabled_indicator_style = button_style + "QPushButton { color: #666666; }"
 
             # 普通指标按钮
-            if indicator in implemented_indicators:
+            if indicator in IMPLEMENTED_INDICATORS:
                 # 已实现的指标，使用默认样式
                 btn = self._create_indicator_button(indicator, button_style)
             else:
@@ -295,6 +303,9 @@ class MainWindowIndicatorBarMixin:
     def _create_indicator_control_buttons(self, indicator_layout, button_style):
         """
         创建滚动区右侧的翻页按钮与柱体数增减按钮
+
+        增减按钮先创建在此，随后由 _relocate_bar_count_buttons 搬到上方工具栏，
+        复用同一实例，避免出现两套柱体数控件。
         """
         # 添加右箭头滚动按钮（固定在滚动区域右侧外部）
         right_arrow_btn = self._create_indicator_button(
@@ -309,31 +320,71 @@ class MainWindowIndicatorBarMixin:
         indicator_layout.addWidget(right_arrow_btn)
         self.indicator_buttons[">"] = right_arrow_btn
 
-        # 添加+、-按钮用于调整柱体数量
-        # 添加分隔符
+        # 筹码栏显隐入口（Ctrl+U 与按钮双向同步）与「全区间」开关
         indicator_layout.addWidget(self._create_separator())
 
-        # 添加+按钮
-        plus_btn = self._create_indicator_button(
-            "+",
+        self.chip_toggle_btn = self._create_indicator_button(
+            "📊 筹码 显示中",
+            button_style,
+            checkable=True,
+            clicked_handler=lambda checked: None,
+        )
+        self.chip_toggle_btn.setObjectName('chipToggleBtn')
+        self.chip_toggle_btn.setToolTip("隐藏筹码分布（Ctrl+U）")
+        indicator_layout.addWidget(self.chip_toggle_btn)
+
+        self.chip_full_range_checkbox = QCheckBox("全区间")
+        self.chip_full_range_checkbox.setObjectName('chipFullRangeCheckbox')
+        self.chip_full_range_checkbox.setStyleSheet(
+            "QCheckBox { color: #C0C0C0; font-size: 11px; }"
+            "QCheckBox::indicator { width: 12px; height: 12px; }"
+        )
+        self.chip_full_range_checkbox.setToolTip("筹码覆盖该标的历史全价格区间")
+        indicator_layout.addWidget(self.chip_full_range_checkbox)
+
+        # A 档真实换手下限：原始换手 / 0.05% / 0.2%（默认）/ 2%（旧口径）/ 自动 p10
+        self.chip_floor_combo = QComboBox()
+        self.chip_floor_combo.setObjectName('chipFloorCombo')
+        self.chip_floor_combo.setStyleSheet(
+            "QComboBox { color: #C0C0C0; background: #2B2B2B; font-size: 11px;"
+            " border: 1px solid #3C3C3C; border-radius: 3px; padding: 1px 6px; }"
+            "QComboBox QAbstractItemView { color: #C0C0C0; background: #2B2B2B;"
+            " selection-background-color: #3A6EA5; }"
+        )
+        for mode, label in TURNOVER_FLOOR_LABELS.items():
+            self.chip_floor_combo.addItem(label, mode)
+        self.chip_floor_combo.setCurrentIndex(
+            self.chip_floor_combo.findData(DEFAULT_TURNOVER_FLOOR_MODE)
+        )
+        self.chip_floor_combo.setToolTip(
+            "A 档换手率衰减下限；原始换手仅防零，0.05%/0.2% 为固定下限，"
+            "2% 用于回看旧图，自动 p10 按个股历史换手 p10 自适应（0.02~0.2%）"
+        )
+        indicator_layout.addWidget(self.chip_floor_combo)
+
+        # 添加+、-按钮用于调整柱体数量（移动到上方工具栏前暂存于此）
+        self._bar_count_separator = self._create_separator()
+        indicator_layout.addWidget(self._bar_count_separator)
+
+        self.plus_btn = self._create_indicator_button(
+            "➕ 增加柱体",
             button_style,
             checkable=False,
-            fixed_width=24,
             clicked_handler=self.indicator_interaction_manager.on_plus_btn_clicked
         )
-        plus_btn.setMinimumWidth(24)
-        indicator_layout.addWidget(plus_btn)
+        self.plus_btn.setObjectName('plusBarCountBtn')
+        self.plus_btn.setToolTip("柱体数翻倍，不超过当前周期可得根数")
+        indicator_layout.addWidget(self.plus_btn)
 
-        # 添加-按钮
-        minus_btn = self._create_indicator_button(
-            "-",
+        self.minus_btn = self._create_indicator_button(
+            "➖ 减少柱体",
             button_style,
             checkable=False,
-            fixed_width=24,
             clicked_handler=self.indicator_interaction_manager.on_minus_btn_clicked
         )
-        minus_btn.setMinimumWidth(24)
-        indicator_layout.addWidget(minus_btn)
+        self.minus_btn.setObjectName('minusBarCountBtn')
+        self.minus_btn.setToolTip(f"柱体数减半，不低于 {MIN_BAR_COUNT} 根")
+        indicator_layout.addWidget(self.minus_btn)
 
     def create_indicator_menu(self):
         """

@@ -219,9 +219,12 @@ class DataProcessor:
                 lazy_df = lazy_df.with_columns(pl.col('date').dt.date())
 
             if frequency == '1w':
+                # 周分组必须用 ISO 年配 ISO 周：dt.week() 是 ISO 周（跨年那周属新年第 1 周），
+                # 若配自然年会与「12/30~12/31 + 次年 1 月」的 ISO 周 1 撞键，
+                # 把两个不相干的周合并成一根 K 线（HSL 累计口径也随之失真）。
                 lazy_df = lazy_df.with_columns(
                     pl.col('date').dt.week().alias('week'),
-                    pl.col('date').dt.year().alias('year'),
+                    pl.col('date').dt.iso_year().alias('year'),
                 )
                 group_cols = ['year', 'week']
             elif frequency == '1m':
@@ -245,6 +248,26 @@ class DataProcessor:
             for extra in ('pct_chg', 'change'):
                 if extra in df.columns:
                     agg.append(pl.col(extra).sum())
+
+            # 区间换手率：不能把日 turn 直接带到周期末（会错配日期）。
+            # 新口径（写入 turn）：区间累计换手 = 区间内各交易日 turn 直接求和。
+            # turn 单位是百分数（0.1943 = 0.1943%），求和后仍是百分数，不做二次换算；
+            # 股本中途变更时每日 turn 各自按当日股本计算，求和无偏。
+            # 旧口径（写入 turn_legacy）：Σ(turn_i × float_share_i) / mean(float_share)，
+            # 即「区间成交量的股本加权平均」，股本变更区间内与真实累计值有偏差
+            # （实测最大 17%），仅保留供对照/回滚，下游请统一读 turn。
+            if 'turn' in df.columns:
+                agg.append(pl.col('turn').sum().alias('turn'))
+                if 'float_share' in df.columns:
+                    agg.append(
+                        ((pl.col('turn') * pl.col('float_share')).sum()
+                         / pl.col('float_share').mean()).alias('turn_legacy'))
+                else:
+                    # 股本列不可用：旧口径与逐日和等价，保留同值以便列始终存在
+                    agg.append(pl.col('turn').sum().alias('turn_legacy'))
+                if 'turn_source' in df.columns:
+                    agg.append(
+                        pl.col('turn_source').drop_nulls().last().alias('turn_source'))
 
             result = (
                 lazy_df

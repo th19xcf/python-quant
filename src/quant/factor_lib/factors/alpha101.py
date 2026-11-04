@@ -19,8 +19,8 @@ WorldQuant Alpha101 —— 公开公式的可核验子集。
     - ``advN``：N 日平均成交金额，取 ``mean(amount, N)``；
     - ``indneutralize``：无行业维表，退化为横截面去均值；
     - ``rank``：横截面分位（1-based rank / 非空数量），取值 (0, 1]；
-    - 依赖 ``ts_argmax`` / ``ts_argmin`` 的 Alpha#1/#57/#60/#96 等不实现，
-      在登记表标为不可用。
+    - ``ts_argmax``：返回自窗口最老一天起算的 0-based 索引（并列取最早），
+      窗口不满或含 null 时返回 null，见 ``ops.ts_argmax``。
 """
 
 from __future__ import annotations
@@ -794,38 +794,76 @@ def a101_101(panel: pl.DataFrame) -> pl.Series:
     return o.out(panel, o.safe_div(C('close') - C('open'), (C('high') - C('low')) + 0.001))
 
 
-# ----------------------------------------------------------------------
-# 依赖 ts_argmax 等不可用算子：只登记不计算
-# ----------------------------------------------------------------------
-
-_UNAVAILABLE = {
-    'a101_001': ('rank(ts_argmax(signedpower((returns < 0 ? stddev(returns, 20) : close), 2), 5)) - 0.5',
-                 'close, returns', 'Alpha#1'),
-    'a101_025': ('rank((-1 * returns) * sum(returns, 250) * '
-                 '(1 - rank(decay_linear(volume / adv20, 15))))', 'close, volume, amount',
-                 'Alpha#25'),
-    'a101_057': ('-1 * ((close - vwap) / decay_linear(rank(ts_argmax(close, 30)), 2))',
-                 'close, vwap', 'Alpha#57'),
-    'a101_060': ('-1 * ((2 * scale(rank(((close - low) - (high - close)) / (high - low)) '
-                 '* volume)) - scale(rank(ts_argmax(close, 10))))',
-                 'close, high, low, volume', 'Alpha#60'),
-    'a101_096': ('max(ts_rank(decay_linear(correlation(rank(vwap), rank(volume), 4), 4), 8), '
-                 'ts_rank(decay_linear(ts_argmax(correlation(ts_rank(close, 3), '
-                 'ts_rank(adv60, 12), 4), 4), 6), 6))',
-                 'close, vwap, volume, amount', 'Alpha#96'),
-}
+@factor('a101_001', 'alpha101',
+         'rank(ts_argmax(signedpower((returns < 0 ? stddev(returns, 20) : close), 2), 5)) - 0.5',
+         'close, ret', '?', SOURCE.format(tag='Alpha#1'), lookback=24)
+def a101_001(panel: pl.DataFrame) -> pl.Series:
+    frame = o.stage(panel, sigma=o.ts_std(RET, 20))
+    frame = o.stage(frame,
+                    base=pl.when(RET < 0).then(C('sigma')).otherwise(C('close')))
+    frame = o.ts_argmax(frame, o.signed_power(C('base'), 2.0), 5, name='am')
+    return o.out(frame, o.rank_cs(C('am')) - 0.5)
 
 
-def register_unavailable() -> None:
-    """把依赖缺失算子的 Alpha101 因子登记为不可用（幂等）。"""
-    from src.quant.factor_lib.registry import _REGISTRY
-    from src.quant.factor_lib.registry import register_unavailable as _reg
+@factor('a101_025', 'alpha101',
+         'rank((-1 * returns) * sum(returns, 250) * '
+         '(1 - rank(decay_linear(volume / adv20, 15))))',
+         'close, volume, amount', '-', SOURCE.format(tag='Alpha#25'), lookback=264,
+         status='approx', note='adv20 用成交额均值近似')
+def a101_025(panel: pl.DataFrame) -> pl.Series:
+    frame = o.stage(panel, ratio=o.safe_div(C('volume'), adv(20)))
+    frame = o.stage(frame,
+                    s=o.ts_sum(RET, 250), dl=o.decay_linear(C('ratio'), 15))
+    frame = rank_of(frame, 'rdl', C('dl'))
+    inner = -1.0 * RET * C('s') * (1.0 - C('rdl'))
+    return o.out(frame, o.rank_cs(inner))
 
-    for name, (expression, deps, tag) in _UNAVAILABLE.items():
-        if name in _REGISTRY:
-            continue
-        _reg(name, 'alpha101', expression, deps, '?', SOURCE.format(tag=tag),
-             note='依赖 ts_argmax；polars 无高效窗口 argmax 算子，不近似替代')
+
+@factor('a101_057', 'alpha101',
+         '-1 * ((close - vwap) / decay_linear(rank(ts_argmax(close, 30)), 2))',
+         'close, vwap', '?', SOURCE.format(tag='Alpha#57'), lookback=31,
+         status='approx', note='vwap 用日频成交均价近似')
+def a101_057(panel: pl.DataFrame) -> pl.Series:
+    frame = o.ts_argmax(panel, C('close'), 30, name='am')
+    frame = rank_of(frame, 'ram', C('am'))
+    frame = o.stage(frame, dl=o.decay_linear(C('ram'), 2))
+    return o.out(frame, -1.0 * o.safe_div(C('close') - C('vwap'), C('dl')))
 
 
-__all__ = ['adv', 'rank_of', 'register_unavailable']
+@factor('a101_060', 'alpha101',
+         '-1 * ((2 * scale(rank(((close - low) - (high - close)) / (high - low)) '
+         '* volume)) - scale(rank(ts_argmax(close, 10))))',
+         'close, high, low, volume', '?', SOURCE.format(tag='Alpha#60'), lookback=10)
+def a101_060(panel: pl.DataFrame) -> pl.Series:
+    gross = (C('close') - C('low')) - (C('high') - C('close'))
+    frame = rank_of(panel, 'r1', o.safe_div(gross, C('high') - C('low')))
+    frame = o.stage(frame, s1=o.scale(C('r1') * C('volume')))
+    frame = o.ts_argmax(frame, C('close'), 10, name='am')
+    frame = rank_of(frame, 'r2', C('am'))
+    frame = o.stage(frame, s2=o.scale(C('r2')))
+    return o.out(frame, -1.0 * (2.0 * C('s1') - C('s2')))
+
+
+@factor('a101_096', 'alpha101',
+         'max(ts_rank(decay_linear(correlation(rank(vwap), rank(volume), 4), 4), 8), '
+         'ts_rank(decay_linear(ts_argmax(correlation(ts_rank(close, 3), '
+         'ts_rank(adv60, 12), 4), 4), 6), 6))',
+         'close, vwap, volume, amount', '?', SOURCE.format(tag='Alpha#96'), lookback=88,
+         status='approx', note='vwap / adv60 均为日频近似')
+def a101_096(panel: pl.DataFrame) -> pl.Series:
+    frame = o.stage(panel,
+                    adv60=adv(60),
+                    pv=o.rank_cs(C('vwap')), pvol=o.rank_cs(C('volume')))
+    frame = o.stage(frame,
+                    tc=o.ts_rank(C('close'), 3), ta=o.ts_rank(C('adv60'), 12),
+                    ca=o.corr(C('pv'), C('pvol'), 4))
+    frame = o.stage(frame, cb=o.corr(C('tc'), C('ta'), 4))
+    frame = o.ts_argmax(frame, C('cb'), 4, name='am')
+    frame = o.stage(frame,
+                    da=o.decay_linear(C('ca'), 4), db=o.decay_linear(C('am'), 6))
+    frame = o.stage(frame,
+                    ta1=o.ts_rank(C('da'), 8), tb1=o.ts_rank(C('db'), 6))
+    return o.out(frame, pl.max_horizontal(C('ta1'), C('tb1')))
+
+
+__all__ = ['adv', 'rank_of']

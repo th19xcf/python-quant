@@ -192,6 +192,8 @@ max-complexity = 15
 [tool.ruff.lint.per-file-ignores]
 # 测试文件：允许 assert、允许 monkeypatch 全局
 "tests/**/*.py" = ["S101", "BLE001", "TRY301"]
+# 命令行工具：报告默认输出到 stdout，允许 print / 路径注入后的延迟 import
+"tools/**/*.py" = ["T201", "E402"]
 # UI 回调：太多方法参数 + 嵌套 if；线程/界面回调顶层必须兜底盲捕，不允许异常穿透退出事件循环
 "src/ui/**/*.py" = ["PLR0913", "PLR0912", "PLR0917", "C901", "F401", "E402", "BLE001"]
 # 策略文件：历史包袱的复杂度

@@ -144,10 +144,15 @@ class Bar(NamedTuple):
     prev_close_raw: float | None
     is_st: bool | None
     suspended: Set[str] | None
+    #: 20 日均成交量（手），供 MaxAdvParticipation 容量规则使用
+    adv_volume: float | None = None
 
 
 class ExecutionRules:
     """A 股撮合规则：涨跌停幅度推导 + 当日可交易性判定。"""
+
+    #: ADV 窗口（交易日）：容量规则统一按 20 日均成交量估算
+    ADV_WINDOW = 20
 
     #: 价格空间比较的浮点噪声容差（单位：元）。只用于吸收双精度乘法误差
     #: （约 1e-14 量级），不是"允许多涨半个百分点"的业务容差——原实现在比率
@@ -605,6 +610,7 @@ class RiskGate:
               trade_date: Any, book: AccountBook,
               equity_curve: List[Dict[str, Any]],
               bar_volume: float | None = None,
+              adv_volume: float | None = None,
               prev_close: float | None = None,
               sector: str = '',
               suspended: Set[str] | None = None) -> Dict[str, Any] | None:
@@ -633,6 +639,7 @@ class RiskGate:
             trade_date=trade_date,
             prev_close=prev_close,
             bar_volume=bar_volume,
+            adv_volume=adv_volume,
         )
         gate = self.risk_engine.gate([order], book.snapshot(equity_curve, suspended))
         if not gate.rejected:
@@ -782,7 +789,8 @@ class EventBacktestRunner:
         # 各标的的列引用预先解析成元组，主循环内不再重复做 dict.get
         bar_columns = {
             code: (cols['close'], cols.get('open'), cols.get('high'), cols.get('low'),
-                   cols.get('volume'), cols.get('raw_open'), cols.get('raw_close'))
+                   cols.get('volume'), cols.get('raw_open'), cols.get('raw_close'),
+                   cols.get('adv_volume'))
             for code, cols in column_data.items()
         }
 
@@ -892,6 +900,18 @@ class EventBacktestRunner:
             code: {name: df[name].to_list() for name in df.columns}
             for code, df in prepared.items()
         }
+        # ADV 列：20 日均成交量（手）。min_samples=1，避免上市初期整段为空；
+        # 缺 volume 列时保留 None，由 MaxAdvParticipation fail-closed。
+        for code, df in prepared.items():
+            if 'volume' in df.columns:
+                adv = (
+                    df['volume'].cast(pl.Float64, strict=False)
+                    .rolling_mean(window_size=ExecutionRules.ADV_WINDOW, min_samples=1)
+                    .to_list()
+                )
+            else:
+                adv = [None] * df.height
+            column_data[code]['adv_volume'] = adv
         return prepared, column_data
 
     @staticmethod
@@ -1324,7 +1344,8 @@ class EventBacktestRunner:
                 # 内联 _extract_bar_prices：热路径少一次函数调用与 6 次 dict.get
                 # （列引用已在 run() 中按标的一次性解析为 bar_columns[code] 元组）
                 (close_col, open_col, high_col, low_col,
-                 volume_col, raw_open_col, raw_close_col) = bar_columns[code]
+                 volume_col, raw_open_col, raw_close_col,
+                 adv_col) = bar_columns[code]
                 # A24：行情值统一归一到有限 float，字符串/Decimal/NaN/inf 不再
                 # 在后续比较或费用计算中抛 TypeError
                 close_price = _finite_float(close_col[pos])
@@ -1333,6 +1354,8 @@ class EventBacktestRunner:
                 high = _finite_float(high_col[pos]) if high_col is not None else None
                 low = _finite_float(low_col[pos]) if low_col is not None else None
                 volume = _finite_float(volume_col[pos]) if volume_col is not None else None
+                adv_volume = (
+                    _finite_float(adv_col[pos]) if adv_col is not None else None)
                 raw_open = (
                     _finite_float(raw_open_col[pos]) if raw_open_col is not None else None)
                 raw_close = (
@@ -1354,6 +1377,7 @@ class EventBacktestRunner:
                         prev_close=ctx.prev_close.get(code),
                         prev_close_raw=ctx.prev_raw_close.get(code),
                         is_st=is_st, suspended=suspended_today,
+                        adv_volume=adv_volume,
                     )
                     self._execute_pending(
                         ctx, code=code, date=trade_day, bar=bar,
@@ -1671,7 +1695,8 @@ class EventBacktestRunner:
         rejection = ctx.gate.check(
             ts_code=code, side='buy', qty=shares, price=exec_price,
             trade_date=date, book=book, equity_curve=ctx.equity_curve,
-            bar_volume=bar.volume, prev_close=prev_close, sector=sector,
+            bar_volume=bar.volume, adv_volume=bar.adv_volume,
+            prev_close=prev_close, sector=sector,
             suspended=bar.suspended,
         )
         if rejection is not None:
@@ -1718,7 +1743,8 @@ class EventBacktestRunner:
         rejection = ctx.gate.check(
             ts_code=code, side='sell', qty=shares, price=exec_price,
             trade_date=date, book=book, equity_curve=ctx.equity_curve,
-            bar_volume=bar.volume, prev_close=prev_close, sector=sector,
+            bar_volume=bar.volume, adv_volume=bar.adv_volume,
+            prev_close=prev_close, sector=sector,
             suspended=bar.suspended,
         )
         if rejection is not None:

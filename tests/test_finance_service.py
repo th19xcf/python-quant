@@ -137,8 +137,7 @@ def test_network_exception_is_collected_and_degraded(tmp_path):
 
     snapshot = fs.fetch_finance_snapshot(
         '600519.SH', '贵州茅台', store_root=tmp_path,
-        fetchers={key: boom for key in
-                  ('financial_em', 'financial_ths', 'valuation', 'news')},
+        fetchers=dict.fromkeys(('financial_em', 'financial_ths', 'valuation', 'news'), boom),
         use_cache=False)
 
     assert isinstance(snapshot, dict)
@@ -238,8 +237,7 @@ def test_index_code_returns_not_applicable_without_remote_calls():
         return pd.DataFrame()
 
     snapshot = fs.fetch_finance_snapshot(
-        '000001.SH', '上证指数', fetchers={key: spy for key in
-                                         ('financial_em', 'financial_ths', 'valuation', 'news')},
+        '000001.SH', '上证指数', fetchers=dict.fromkeys(('financial_em', 'financial_ths', 'valuation', 'news'), spy),
         use_cache=False)
 
     assert snapshot['not_applicable'] is True

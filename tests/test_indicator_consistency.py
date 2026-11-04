@@ -406,3 +406,48 @@ def test_dmi_flat_window_is_zero_not_inf():
         values = result[col].fill_null(0.0).to_numpy()
         assert np.isfinite(values).all(), f'{col} 出现 NaN/inf'
         assert np.allclose(values, 0.0), f'{col} 无波动时应为 0'
+
+
+def test_hsl_falls_back_to_estimated_without_turn():
+    """无真实换手率时 HSL 回退旧估算口径，并标注 hsl_source=estimated。
+
+    旧口径：``volume / MA60(volume) × 5``（0~100 百分比语义不变）。
+    """
+    from src.tech_analysis.indicators.volume import calculate_hsl
+
+    df = _make_ohlcv(80)
+    result = calculate_hsl(df.lazy()).collect()
+
+    assert result['hsl_source'].unique().to_list() == ['estimated']
+    expected = df.select(
+        (pl.col('volume') / pl.col('volume').rolling_mean(60, min_samples=1) * 5)
+        .alias('hsl')
+    )['hsl'].to_numpy()
+    np.testing.assert_allclose(
+        result['hsl'].to_numpy(), expected, rtol=1e-4, atol=1e-3)
+
+
+def test_hsl_prefers_real_turnover_and_falls_back_per_row():
+    """有真实 turn 的日期用真实值（百分数原样），缺失日期逐行回退估算。"""
+    from datetime import date, timedelta
+
+    from src.tech_analysis.indicators.volume import calculate_hsl
+
+    n = 70
+    dates = [date(2024, 1, 1) + timedelta(days=i) for i in range(n)]
+    df = _make_ohlcv(n).with_columns(pl.Series('date', dates))
+
+    # 只有最近 20 个交易日有真实换手率（2.0%），更早的日期缺失
+    turn = pl.DataFrame({
+        'trade_date': dates[-20:],
+        'turn': [2.0] * 20,
+    })
+    result = calculate_hsl(df.lazy(), turn_frame=turn).collect()
+
+    recent = result.filter(pl.col('date') >= dates[-20])
+    assert set(recent['hsl_source'].to_list()) == {'turn'}
+    np.testing.assert_allclose(recent['hsl'].to_numpy(), 2.0, rtol=1e-5, atol=1e-5)
+    assert set(result.filter(pl.col('date') < dates[-20])['hsl_source'].to_list()) == {
+        'estimated'}
+
+

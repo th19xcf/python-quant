@@ -289,6 +289,7 @@ class _ReplayTier:
                 ts_code=code, score_percentile=percentile,
                 price=float(row.get('raw_close') or 0.0),
                 industry=industry, industry_source=industry_source,
+                adv_amount=float(row.get('amount_ma20') or 0.0),
             )))
         result.sort(key=lambda item: item[1].score_percentile, reverse=True)
         return result

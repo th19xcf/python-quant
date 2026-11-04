@@ -338,11 +338,12 @@ def test_label_renderer_missing_columns(name, keyword):
 
 
 @pytest.mark.parametrize(('value', 'expected'), [
-    (12.0, '#FF0000'),
-    (6.0, '#FFA500'),
-    (3.0, '#00BFFF'),
+    (4.0, '#FF0000'),   # > 主板固定高阈值 3.0
+    (2.0, '#FFA500'),   # 1.0~3.0
+    (0.5, '#00BFFF'),   # <= 1.0
 ])
 def test_hsl_label_color(value, expected):
+    """样本不足 60 时按主板固定阈值回退（1.0 / 3.0）。"""
     manager, window = _make_manager()
     df = _df(2).with_columns(pl.lit(value).alias('hsl'))
 

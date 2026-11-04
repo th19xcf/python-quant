@@ -3,13 +3,60 @@
 """个股数据控制器：个股K线加载、指标重算与个股行情表格展示。"""
 
 import contextlib
-from datetime import datetime
+import math
+from datetime import date, timedelta
 
 import polars as pl
 
 from src.data.services.indicator_service import calculate_indicators_for_period
 from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
+
+# 柱体数唯一默认值：主窗口状态、输入框与周期切换都从这里取，不再各处硬编码 100
+DEFAULT_BAR_COUNT = 100
+# 减少柱体时的下限（沿用原有“减半且不低于 50”的约束）
+MIN_BAR_COUNT = 50
+
+# 指标预热根数：显示区首根K线也要有 MA60/BBI/DMA 等有效值
+INDICATOR_WARMUP_BARS = 60
+# 每根K线对应的自然日：日线按每年约 244 个交易日折算，周线 7 天，月线按 30.5 天
+_CALENDAR_DAYS_PER_BAR = {'日线': 1.5, '周线': 7.0, '月线': 30.5}
+_DEFAULT_CALENDAR_DAYS_PER_BAR = 1.5
+# 额外缓冲：覆盖首尾不完整周/月与节假日
+_HISTORY_BUFFER_DAYS = 30
+# 日线至少回溯 2 年：保持原有行为，保证近期停牌/退市标的仍能取到最后一段行情
+_MIN_DAILY_HISTORY_DAYS = 730
+# A 股最长历史约 35 年，统一封顶避免异常输入导致日期下溢
+_MAX_HISTORY_DAYS = 40 * 365
+
+PERIOD_TO_FREQUENCY = {'日线': '1d', '周线': '1w', '月线': '1m'}
+
+
+def history_window_for_bars(bar_count: int, period: str, today: date | None = None) -> tuple[str, str]:
+    """按周期把“柱体数”换算成取数日期区间。
+
+    周线/月线由日线聚合而成，同样根数需要回溯更长的自然时间：
+    100 根日线约 150 天，100 根周线约 700 天，100 根月线约 3050 天。
+    这里额外加载 ``INDICATOR_WARMUP_BARS`` 根用于指标预热，实际渲染时再按设定根数裁剪。
+
+    Args:
+        bar_count: 目标显示根数
+        period: 日线/周线/月线
+        today: 基准日，默认当天（便于测试注入）
+
+    Returns:
+        (start_date, end_date)，格式 YYYY-MM-DD
+    """
+    bars = max(int(bar_count), 1)
+    ratio = _CALENDAR_DAYS_PER_BAR.get(period, _DEFAULT_CALENDAR_DAYS_PER_BAR)
+    days_needed = math.ceil((bars + INDICATOR_WARMUP_BARS) * ratio) + _HISTORY_BUFFER_DAYS
+    if period == '日线':
+        days_needed = max(days_needed, _MIN_DAILY_HISTORY_DAYS)
+    days_needed = min(days_needed, _MAX_HISTORY_DAYS)
+
+    end = today or date.today()
+    start = end - timedelta(days=days_needed)
+    return start.isoformat(), end.isoformat()
 
 
 class StockDataController:
@@ -46,31 +93,19 @@ class StockDataController:
 
     def _process_stock_data_task(self, stock_code, stock_name, task_id=None, signals=None):
         """后台任务函数"""
-        from datetime import timedelta
-
         try:
-            # 计算日期范围：根据柱体数获取足够的数据
-            end_date = datetime.now().strftime("%Y-%m-%d")
-
-            # 根据柱体数动态计算日期范围
-            # 假设每个交易日约 1.4 天（考虑周末和节假日）
-            bar_count = getattr(self.window, 'displayed_bar_count', 100)
-            # 计算需要的历史天数：柱体数 * 1.4 + 缓冲 100 天
-            days_needed = int(bar_count * 1.4) + 100
-            # 确保至少获取 2 年的数据
-            days_needed = max(days_needed, 730)
-            # 最多获取 10 年的数据
-            days_needed = min(days_needed, 3650)
-
-            start_date = (datetime.now() - timedelta(days=days_needed)).strftime("%Y-%m-%d")
-
-            # 从数据管理器获取股票历史数据
-            adjustment_type = getattr(self.window, 'adjustment_type', 'qfq')
+            # 柱体数只有 window.displayed_bar_count 一个来源；取数区间按当前周期换算，
+            # 周线/月线不能沿用日线的日期跨度，否则同样根数会因聚合后的行数不足而变少。
+            bar_count = getattr(self.window, 'displayed_bar_count', DEFAULT_BAR_COUNT)
 
             # 根据当前周期确定数据频率
             period = getattr(self.window, 'current_period', '日线')
-            freq_map = {'日线': '1d', '周线': '1w', '月线': '1m'}
-            frequency = freq_map.get(period, '1d')
+            frequency = PERIOD_TO_FREQUENCY.get(period, '1d')
+
+            start_date, end_date = history_window_for_bars(bar_count, period)
+
+            # 从数据管理器获取股票历史数据
+            adjustment_type = getattr(self.window, 'adjustment_type', 'qfq')
 
             df = self.window.data_manager.get_stock_data(stock_code, start_date, end_date, frequency=frequency, adjustment_type=adjustment_type)
 
@@ -293,7 +328,9 @@ class StockDataController:
             pl.DataFrame: 包含技术指标的数据
         """
         try:
-            result_pl = calculate_indicators_for_period(df)
+            # 透传当前标的代码：HSL 需要它来读取本地真实换手率
+            code = getattr(self.window, 'current_stock_code', None)
+            result_pl = calculate_indicators_for_period(df, ts_code=code)
             logger.info(f"为{df.height}条数据重新计算了技术指标")
             return result_pl
 

@@ -260,7 +260,8 @@ def test_render_hsl_draws_bars_and_ma(qapp, plot):
     renderer.render_hsl(plot, df, np.arange(N))
 
     assert _names(plot) == {'MA5', 'MA10'}
-    assert len(_curves(plot)) == 3
+    # 阈值改为分位/板块固定值后，这批数据只落 2 个颜色分组（红/橙）
+    assert len(_curves(plot)) == 2
 
 
 def test_render_lb_draws_colored_lines(qapp, plot):
@@ -350,3 +351,61 @@ def test_render_cr_reference_line_added(qapp, plot):
     renderer.render_cr(plot, _df(['cr']), np.arange(N))
     assert len(plot.listDataItems()) == 1
     assert len(plot.items()) > lines_before
+
+
+def _y_range(widget):
+    """返回 Y 轴当前可视范围（先强制重算一次自适应）。"""
+    widget.getViewBox().updateAutoRange()
+    return widget.getViewBox().viewRange()[1]
+
+
+def _infinite_lines(widget):
+    return [item for item in _user_items(widget) if isinstance(item, pg.InfiniteLine)]
+
+
+@pytest.mark.parametrize(('method', 'column'), [
+    ('render_adl', 'adl'),
+    ('render_obos', 'obos10'),
+])
+def test_unbounded_breadth_indicator_y_range_covers_data(qapp, plot, method, column):
+    """ADL/OBOS 是无界量：Y 范围必须覆盖数据 min/max，不能被上一个指标残留范围锁死。"""
+    renderer, mw = _host()
+    if column == 'adl':
+        values = [60000.0 + i * 900.0 for i in range(N)]  # 6 万量级累计值
+    else:
+        values = [-1200.0 + i * 300.0 for i in range(N)]  # 正负千量级差值
+    df = pl.DataFrame({column: values})
+
+    getattr(renderer, method)(plot, df, np.arange(N))
+
+    low, high = _y_range(plot)
+    assert low <= min(values), f'Y 下界 {low} 未覆盖数据最小值 {min(values)}'
+    assert high >= max(values), f'Y 上界 {high} 未覆盖数据最大值 {max(values)}'
+
+
+def test_adl_has_no_reference_line_but_obos_has_zero_axis(qapp, plot):
+    """ADL 无天然中轴不画参考线；OBOS 的 0 轴是超买/超卖分界必须保留。"""
+    renderer, mw = _host()
+    renderer.render_adl(plot, pl.DataFrame({'adl': [60000.0] * N}), np.arange(N))
+    assert _infinite_lines(plot) == []
+
+    plot.clear()
+    renderer.render_obos(plot, pl.DataFrame({'obos10': [-900.0 + i for i in range(N)]}), np.arange(N))
+    zero_lines = [line for line in _infinite_lines(plot) if line.value() == 0]
+    assert len(zero_lines) == 1
+
+
+@pytest.mark.parametrize(('method', 'column', 'expected'), [
+    ('render_abi', 'abi10', (0.0, 100.0)),
+    ('render_adr', 'adr10', (0.0, 200.0)),
+])
+def test_bounded_breadth_indicator_keeps_fixed_y_range(qapp, plot, method, column, expected):
+    """ABI 0~100、ADR 0~200 有天然边界，固定范围不能被改坏。"""
+    renderer, mw = _host()
+    getattr(renderer, method)(plot, pl.DataFrame({column: [50.0] * N}), np.arange(N))
+
+    low, high = _y_range(plot)
+    basis_low, basis_high = expected
+    # pyqtgraph setYRange 自带少量 padding（约 2%~5%），只要求覆盖基准区间且未大幅外扩
+    assert basis_low - 10 <= low <= basis_low
+    assert basis_high <= high <= basis_high + 10

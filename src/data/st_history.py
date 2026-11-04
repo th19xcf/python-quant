@@ -700,6 +700,14 @@ def _merge_snapshot(interval_frame: pl.DataFrame, coverage_frame: pl.DataFrame,
                         'ts_code': code, 'snapshot': 'non_st',
                         'interval_flag': row['flag'],
                         'interval_start': row['start_date'].isoformat()})
+        if item['status'] == STATUS_ST:
+            for cov_row in cov_rows:
+                if cov_row['ts_code'] == code and cov_row['source'] == 'em_name_history_clean' \
+                        and cov_row['coverage_start'] < snap_day:
+                    # 名称登记册的「从未 ST」负证据被当日快照推翻：
+                    # 只从快照日起算可知窗口，之前一律 unknown
+                    cov_row['coverage_start'] = snap_day
+                    cov_row['source'] = SOURCE_SNAPSHOT
     interval_frame = pl.DataFrame(rows, schema=_INTERVAL_SCHEMA)
     coverage_frame = pl.DataFrame(cov_rows, schema=_COVERAGE_SCHEMA)
     if extra_coverage:
@@ -717,6 +725,18 @@ def _local_codes(store_root: Path | str) -> list[str]:
         return LocalQuoteStore(Path(store_root)).codes('stock')
     except Exception:  # noqa: BLE001
         return []
+
+
+def _load_supplement(store_root: Path | str) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """读取 :mod:`src.data.st_name_history` 的补充表（不存在时返回空表）。"""
+    base = st_dir(store_root) / 'supplement'
+    interval_path = base / 'supplement_intervals.parquet'
+    coverage_path_ = base / 'supplement_coverage.parquet'
+    intervals = pl.read_parquet(interval_path) if interval_path.is_file() \
+        else pl.DataFrame(schema=_INTERVAL_SCHEMA)
+    coverage = pl.read_parquet(coverage_path_) if coverage_path_.is_file() \
+        else pl.DataFrame(schema=_COVERAGE_SCHEMA)
+    return intervals, coverage
 
 
 def build_store(store_root: Path | str, *, apply_snapshot: bool = True) -> dict[str, Any]:
@@ -777,6 +797,14 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True) -> dict[
                 closure_fixed += 1
         interval_frame = pl.DataFrame(rows, schema=_INTERVAL_SCHEMA)
 
+    # 合并名称登记册补充覆盖（src.data.st_name_history）：只补原表没有的标的
+    supp_intervals, supp_coverage = _load_supplement(root)
+    if supp_coverage.height:
+        coverage_frame = pl.concat([coverage_frame, supp_coverage], how='vertical_relaxed') \
+            .unique(subset=['ts_code'], keep='first')
+    if supp_intervals.height:
+        interval_frame = pl.concat([interval_frame, supp_intervals], how='vertical_relaxed')
+
     # 合并快照：当日真值锚点，防止公告缺失导致历史/当前状态错判
     snapshot, snap_day = _latest_snapshot(root)
     if apply_snapshot and snapshot is not None and snap_day is not None:
@@ -806,6 +834,8 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True) -> dict[
         'snapshot_conflicts': len(conflicts),
         'snapshot_closed_intervals': stats['closes'],
         'closure_fixed_intervals': closure_fixed,
+        'supplement_interval_rows': supp_intervals.height,
+        'supplement_coverage_rows': supp_coverage.height,
     }
     coverage_json_path(root).write_text(
         json.dumps({**summary, 'conflicts': conflicts[:200]}, ensure_ascii=False, indent=2),

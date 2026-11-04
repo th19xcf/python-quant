@@ -20,6 +20,10 @@
    - ``standard``  ：剔除结构性缺陷 + 当日 ST，容忍因子末端落后与历史缺口；
    - ``strict``    ：在 standard 之上再要求当日因子可用，并剔除除权事件存疑
                      （配股无第二源、跳变/事件不匹配、因子台账标记）。
+   strict 默认对全部基金挂 ``pending_fund_dividend``。可用
+   ``close_fund_dividend_pending_scope``（``none``/``etf``/``all``）按资产
+   子类放开：``etf`` 只放远程 ``fund_basic.fund_type='ETF'`` 的基金，名单
+   取不到时自动降级为 ``none``（宁严不宽）。
 5. 本模块只读本地列存，产出写入 ``meta/clean/``，幂等可重跑。
 
 读侧用法::
@@ -72,6 +76,96 @@ MIN_CROSS_SECTION = 300
 
 #: 月末采样中连续满足下限的月数
 MIN_STREAK_MONTHS = 12
+
+#: 基金分红复权 pending 的开关范围：``none`` 保持现状（strict 剔除全部基金）；
+#: ``etf`` 只放开 ``fund_basic.fund_type='ETF'`` 的基金；``all`` 放开全部基金。
+#: 默认 ``none``。``etf`` 依赖远程库 fund_basic，取不到名单时降级为 ``none``
+#: （宁严不宽）。
+FUND_DIVIDEND_PENDING_SCOPES: tuple[str, ...] = ('all', 'etf', 'none')
+FUND_DIVIDEND_PENDING_SCOPE_ENV = 'QUANT_CLOSE_FUND_DIVIDEND_PENDING_SCOPE'
+#: 旧的布尔开关环境变量，保留兼容：真值映射 all，假值映射 none。
+FUND_DIVIDEND_PENDING_ENV = 'QUANT_CLOSE_FUND_DIVIDEND_PENDING'
+_TRUTHY = frozenset({'1', 'true', 'yes', 'on'})
+
+
+def _normalize_scope(value: str | None, *, strict: bool = True) -> str | None:
+    """校验范围取值；``strict=False`` 用于环境变量，非法值告警后忽略。"""
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in FUND_DIVIDEND_PENDING_SCOPES:
+        return text
+    if strict:
+        raise ValueError(
+            f'未知基金 pending 开关范围: {value!r}，'
+            f'应为 {FUND_DIVIDEND_PENDING_SCOPES}')
+    logger.warning(
+        f'[clean_set] 忽略未知的 {FUND_DIVIDEND_PENDING_SCOPE_ENV} 取值: {value!r}')
+    return None
+
+
+def _resolve_fund_pending_scope(
+    scope: str | None = None,
+    legacy: bool | None = None,
+) -> str:
+    """解析开关范围。
+
+    优先级：显式 ``scope`` > 显式旧布尔 ``legacy``
+    > 环境变量 ``QUANT_CLOSE_FUND_DIVIDEND_PENDING_SCOPE``
+    > 环境变量 ``QUANT_CLOSE_FUND_DIVIDEND_PENDING`` > 默认 ``none``。
+    """
+    explicit = _normalize_scope(scope)
+    if explicit is not None:
+        return explicit
+    if legacy is not None:
+        return 'all' if legacy else 'none'
+    env_scope = _normalize_scope(
+        os.getenv(FUND_DIVIDEND_PENDING_SCOPE_ENV), strict=False)
+    if env_scope is not None:
+        return env_scope
+    env_legacy = os.getenv(FUND_DIVIDEND_PENDING_ENV)
+    if env_legacy is not None:
+        return 'all' if env_legacy.strip().lower() in _TRUTHY else 'none'
+    return 'none'
+
+
+def _fund_etf_codes_from_db() -> set[str]:
+    """只读远程库 ``fund_basic`` 的 ETF 代码（不做任何写入）。"""
+    from sqlalchemy import text  # noqa: PLC0415 - 延迟导入，离线场景不加载驱动
+
+    from src.database.db_manager import DatabaseManager  # noqa: PLC0415
+    from src.utils.config import get_config  # noqa: PLC0415
+
+    db_manager = DatabaseManager(get_config())
+    db_manager.connect()
+    try:
+        with db_manager.engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT ts_code FROM fund_basic WHERE fund_type = 'ETF'"))
+            return {str(row[0]).strip() for row in rows if row[0]}
+    finally:
+        db_manager.disconnect()
+
+
+def _load_fund_etf_codes() -> set[str] | None:
+    """加载 ETF 名单；库不可用或为空时返回 None（由调用方降级为不放开）。"""
+    try:
+        return _fund_etf_codes_from_db() or None
+    # 兜底理由：离线/库不可用不应阻断 clean_set，etf 范围降级为 none
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f'[clean_set] fund_basic 不可用，etf 范围降级为不放开: {exc}')
+        return None
+
+
+def _apply_scope_with_etf_codes(
+    scope: str, etf_codes: set[str] | None
+) -> str:
+    """``etf`` 范围缺少 ETF 名单时降级为 ``none``（宁严不宽）。"""
+    if scope == 'etf' and not etf_codes:
+        logger.warning('[clean_set] etf 范围缺少 fund_basic ETF 名单，降级为 none')
+        return 'none'
+    return scope
 
 
 # ----------------------------------------------------------------------
@@ -190,6 +284,20 @@ class CodeInfo:
 class EligibilityEngine:
     """加载本地列存索引，按日期回答准入问题。"""
 
+    #: 手工组装引擎（测试）时的默认值，避免未跑 __init__ 的属性缺失。
+    close_fund_dividend_pending_scope: str = 'none'
+    etf_codes: set[str] | None = None
+
+    @property
+    def close_fund_dividend_pending(self) -> bool:
+        """旧布尔开关的只读视图：仅 ``all`` 视为打开。"""
+        return self.close_fund_dividend_pending_scope == 'all'
+
+    @close_fund_dividend_pending.setter
+    def close_fund_dividend_pending(self, value: bool) -> None:
+        """旧布尔开关的兼容写入：True→all，False→none。"""
+        self.close_fund_dividend_pending_scope = 'all' if value else 'none'
+
     def __init__(
         self,
         root: str | Path | None = None,
@@ -197,10 +305,18 @@ class EligibilityEngine:
         target_date: str | date | None = None,
         exclude_st: bool = True,
         include_suspected_st: bool = False,
+        close_fund_dividend_pending: bool | None = None,
+        close_fund_dividend_pending_scope: str | None = None,
     ) -> None:
         self.root = Path(root) if root else DEFAULT_ROOT
         self.exclude_st = exclude_st
         self.include_suspected_st = include_suspected_st
+        scope = _resolve_fund_pending_scope(
+            close_fund_dividend_pending_scope, close_fund_dividend_pending)
+        etf_codes = _load_fund_etf_codes() if scope == 'etf' else None
+        self.close_fund_dividend_pending_scope = _apply_scope_with_etf_codes(
+            scope, etf_codes)
+        self.etf_codes = etf_codes
         self.codes: dict[str, CodeInfo] = {}
         self.calendar: list[date] = []
         self.calendar_ord = np.array([], dtype=np.int64)
@@ -658,6 +774,15 @@ class EligibilityEngine:
             return ['temporal_gap_or_suspension']
         return []
 
+    def _fund_pending_open(self, info: CodeInfo) -> bool:
+        """该基金的 pending 是否已按范围放开（none/etf/all）。"""
+        scope = self.close_fund_dividend_pending_scope
+        if scope == 'all':
+            return True
+        if scope == 'etf':
+            return info.ts_code in (self.etf_codes or set())
+        return False
+
     def _strict_reasons(self, info: CodeInfo, o: int) -> list[str]:
         """strict 档在 standard 之上的额外闸门。"""
         reasons: list[str] = []
@@ -669,7 +794,7 @@ class EligibilityEngine:
             reasons.append('structural_rights_no_second_source')
         if info.mismatch_start is not None and o >= info.mismatch_start:
             reasons.append('structural_event_jump_mismatch')
-        if info.data_type == 'fund':
+        if info.data_type == 'fund' and not self._fund_pending_open(info):
             reasons.append('pending_fund_dividend')
         return reasons
 
@@ -802,7 +927,7 @@ class EligibilityEngine:
                     continue
                 if info.strict_static:
                     continue
-                if info.data_type == 'fund':
+                if info.data_type == 'fund' and not self._fund_pending_open(info):
                     continue
                 counts['strict'][info.data_type] += 1
             item: dict[str, Any] = {'date': str(d)}
@@ -842,7 +967,7 @@ class EligibilityEngine:
             hits.add('st')
         if info.data_type == 'stock' and info.rights_start is not None and o >= info.rights_start:
             hits.add('div_doubt')
-        if info.data_type == 'fund':
+        if info.data_type == 'fund' and not self._fund_pending_open(info):
             hits.add('pending')
         return hits
 
@@ -1098,14 +1223,21 @@ def get_engine(
     *,
     target_date: str | date | None = None,
     include_suspected_st: bool = False,
+    close_fund_dividend_pending: bool | None = None,
+    close_fund_dividend_pending_scope: str | None = None,
 ) -> EligibilityEngine:
     """获取（并缓存）默认引擎。首次调用会加载全部日期索引。"""
-    key = f'{Path(root) if root else DEFAULT_ROOT}|{target_date}|{include_suspected_st}'
+    scope = _resolve_fund_pending_scope(
+        close_fund_dividend_pending_scope, close_fund_dividend_pending)
+    key = (f'{Path(root) if root else DEFAULT_ROOT}|{target_date}|'
+           f'{include_suspected_st}|{scope}')
     with _ENGINE_LOCK:
         engine = _ENGINES.get(key)
         if engine is None:
             engine = EligibilityEngine(
-                root, target_date=target_date, include_suspected_st=include_suspected_st
+                root, target_date=target_date,
+                include_suspected_st=include_suspected_st,
+                close_fund_dividend_pending_scope=scope,
             )
             _ENGINES[key] = engine
         return engine
@@ -1118,9 +1250,15 @@ def eligible(
     *,
     include_suspected_st: bool | None = None,
     root: str | Path | None = None,
+    close_fund_dividend_pending: bool | None = None,
+    close_fund_dividend_pending_scope: str | None = None,
 ) -> tuple[bool, list[str]]:
     """单标的准入判断（便捷入口）。"""
-    engine = get_engine(root)
+    engine = get_engine(
+        root,
+        close_fund_dividend_pending=close_fund_dividend_pending,
+        close_fund_dividend_pending_scope=close_fund_dividend_pending_scope,
+    )
     return engine.eligible(
         ts_code, trade_date, tier, include_suspected_st=include_suspected_st
     )
@@ -1133,9 +1271,15 @@ def eligible_set(
     data_type: str | None = None,
     include_suspected_st: bool | None = None,
     root: str | Path | None = None,
+    close_fund_dividend_pending: bool | None = None,
+    close_fund_dividend_pending_scope: str | None = None,
 ) -> list[str]:
     """某日某档位的白名单（便捷入口）。"""
-    engine = get_engine(root)
+    engine = get_engine(
+        root,
+        close_fund_dividend_pending=close_fund_dividend_pending,
+        close_fund_dividend_pending_scope=close_fund_dividend_pending_scope,
+    )
     return engine.eligible_set(
         trade_date, tier, data_type=data_type,
         include_suspected_st=include_suspected_st,
@@ -1157,9 +1301,15 @@ def build_snapshot(
     *,
     output_dir: str | Path | None = None,
     timeline_start: str | date | None = None,
+    close_fund_dividend_pending: bool | None = None,
+    close_fund_dividend_pending_scope: str | None = None,
 ) -> dict[str, Any]:
     """构建某日快照 + 月末时间序列 + 汇总，幂等覆盖 ``meta/clean/``。"""
-    engine = EligibilityEngine(root, target_date=as_of)
+    engine = EligibilityEngine(
+        root, target_date=as_of,
+        close_fund_dividend_pending=close_fund_dividend_pending,
+        close_fund_dividend_pending_scope=close_fund_dividend_pending_scope,
+    )
     as_of_date = engine.as_of_date
     out = Path(output_dir) if output_dir else (engine.root / 'meta' / 'clean')
     out.mkdir(parents=True, exist_ok=True)
@@ -1243,34 +1393,59 @@ def _main(argv: list[str] | None = None) -> int:
     p_build.add_argument('--root', default=None)
     p_build.add_argument('--out', default=None)
     p_build.add_argument('--timeline-start', default=None)
+    p_build.add_argument(
+        '--close-fund-dividend-pending', action='store_true', default=None,
+        help='旧布尔开关兼容：等价于 scope=all')
+    p_build.add_argument(
+        '--close-fund-dividend-pending-scope', default=None,
+        choices=FUND_DIVIDEND_PENDING_SCOPES,
+        help='基金分红 pending 开关范围：none（默认）/ etf（仅 fund_basic ETF）/ all')
 
     p_codes = sub.add_parser('codes', help='输出某日某档位白名单')
     p_codes.add_argument('--date', required=True)
     p_codes.add_argument('--tier', default='strict', choices=VIEWS)
     p_codes.add_argument('--data-type', default=None, choices=DATA_TYPES)
     p_codes.add_argument('--root', default=None)
+    p_codes.add_argument(
+        '--close-fund-dividend-pending', action='store_true', default=None)
+    p_codes.add_argument(
+        '--close-fund-dividend-pending-scope', default=None,
+        choices=FUND_DIVIDEND_PENDING_SCOPES)
 
     p_check = sub.add_parser('check', help='检查单票单日')
     p_check.add_argument('--code', required=True)
     p_check.add_argument('--date', required=True)
     p_check.add_argument('--tier', default='strict', choices=VIEWS)
     p_check.add_argument('--root', default=None)
+    p_check.add_argument(
+        '--close-fund-dividend-pending', action='store_true', default=None)
+    p_check.add_argument(
+        '--close-fund-dividend-pending-scope', default=None,
+        choices=FUND_DIVIDEND_PENDING_SCOPES)
 
     args = parser.parse_args(argv)
     if args.cmd == 'build':
         summary = build_snapshot(
             root=args.root, as_of=args.as_of, output_dir=args.out,
             timeline_start=args.timeline_start,
+            close_fund_dividend_pending=args.close_fund_dividend_pending,
+            close_fund_dividend_pending_scope=args.close_fund_dividend_pending_scope,
         )
         sys.stdout.write(json.dumps(summary, ensure_ascii=False, indent=2) + '\n')
         return 0
     if args.cmd == 'codes':
         codes = eligible_set(
-            args.date, args.tier, data_type=args.data_type, root=args.root
+            args.date, args.tier, data_type=args.data_type, root=args.root,
+            close_fund_dividend_pending=args.close_fund_dividend_pending,
+            close_fund_dividend_pending_scope=args.close_fund_dividend_pending_scope,
         )
         sys.stdout.write(json.dumps(codes, ensure_ascii=False) + '\n')
         return 0
-    engine = get_engine(args.root)
+    engine = get_engine(
+        args.root,
+        close_fund_dividend_pending=args.close_fund_dividend_pending,
+        close_fund_dividend_pending_scope=args.close_fund_dividend_pending_scope,
+    )
     ok, reasons = engine.eligible(args.code, args.date, args.tier)
     sys.stdout.write(json.dumps({'eligible': ok, 'reasons': reasons}, ensure_ascii=False) + '\n')
     return 0

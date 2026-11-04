@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
+from src.backtest.costs.cost_model import COST_DEFAULTS
+
 
 @dataclass(frozen=True)
 class FactorSpec:
@@ -32,12 +34,17 @@ class FactorSpec:
 
 @dataclass(frozen=True)
 class TradingCosts:
-    """交易成本：双边佣金 + 卖出印花税 + 双边冲击成本。"""
+    """交易成本：双边佣金 + 卖出印花税 + 双边冲击成本。
 
-    commission_rate: float = 0.0003
-    stamp_duty_rate: float = 0.001
-    impact_rate: float = 0.001
-    min_commission: float = 5.0
+    默认值直接引用回测成本单一真源 ``COST_DEFAULTS``，避免推荐、因子评估
+    与回测三套口径漂移。语义映射：``impact_rate`` ↔ 回测 ``slippage``，
+    ``stamp_duty_rate`` ↔ 回测 ``stamp_tax_rate``（均按一次完整往返计算）。
+    """
+
+    commission_rate: float = COST_DEFAULTS['commission_rate']
+    stamp_duty_rate: float = COST_DEFAULTS['stamp_tax_rate']
+    impact_rate: float = COST_DEFAULTS['slippage']
+    min_commission: float = COST_DEFAULTS['min_commission']
 
     @property
     def round_trip_rate(self) -> float:
@@ -88,6 +95,8 @@ class PortfolioConstraints:
     max_industry_weight: float = 0.25
     cash_buffer: float = 0.10
     lot_size: int = 100
+    #: 单票 ADV（20 日均成交额）参与率上限，默认 10%；与回测容量规则同口径
+    adv_pct: float = 0.10
     #: 行业上限迭代归一的最大轮数
     normalize_iterations: int = 12
     #: 不参与行业上限的桶（unknown 永远单独成桶，但不默认设上限）
@@ -136,6 +145,26 @@ class RiskFilterConfig:
 
 
 @dataclass(frozen=True)
+class SoftFilterConfig:
+    """扩展因子集的软筛选门槛（只在 extended 模式、只作用于新开仓）。
+
+    阈值全部用当日截面分位数，不用绝对值拍数：
+    - 均线多头：``ma20_gap > 0`` 且 ``ma60_gap > 0``；
+    - 量能放大：``volume_momentum_20`` 不低于截面 ``volume_quantile``；
+    - 波动区间：``atr_pct`` 不高于截面 ``atr_quantile``；
+    - RSI 极值：剔除截面最低 ``rsi_low`` 与最高 ``rsi_high``。
+    任一输入缺失时该票软筛选不通过（缺数据不放行），并记录原因。
+    """
+
+    enabled: bool = True
+    ma_trend_required: bool = True
+    volume_quantile: float = 0.60
+    atr_quantile: float = 0.80
+    rsi_low: float = 0.10
+    rsi_high: float = 0.90
+
+
+@dataclass(frozen=True)
 class TierConfig:
     """单个持有期档位的完整参数。"""
 
@@ -164,10 +193,15 @@ class TierConfig:
 
 # ----------------------------------------------------------------------
 # 三档预设
-# 短线：5-20 交易日，动量+量能为主导，信号衰减快；
+# 短线：5-20 交易日，动量+量能为主导，信号衰减快；已降级为「仅观察」——
+#   实测扣成本年化 -10.14%（加回撤熔断 -2.60%），未通过样本外，不在默认档位中；
 # 中线：1-3 月，动量+趋势+夏普，保留更多历史信号；
 # 长线：6-12 月，长周期动量+回撤修复，信号最平滑。
 # ----------------------------------------------------------------------
+#: 仅观察档位：不进入默认产出；显式请求时只输出观察态标记（不报错）
+OBSERVE_ONLY_TIERS: frozenset[str] = frozenset({'short'})
+
+
 TIER_PRESETS: dict[str, TierConfig] = {
     'short': TierConfig(
         key='short',
@@ -191,8 +225,8 @@ TIER_PRESETS: dict[str, TierConfig] = {
             FactorSpec('rsi_14', 'RSI(14)', 0.10),
             FactorSpec('atr_pct', 'ATR占比', 0.20, direction=-1.0),
         ),
-        note=('短线档位未通过样本外验证：日频信号在≤4x换手下扣费后仍为负收益，'
-              '仅作观察，不建议据此实盘下单'),
+        note=('短线档位未通过样本外验证：实测年化单边换手约 11.2x，'
+              '未达 ≤4x 标定筛选门槛、未通过样本外，仅作观察，不建议据此实盘下单'),
     ),
     'mid': TierConfig(
         key='mid',
@@ -258,6 +292,12 @@ class AdviceConfig:
     min_price: float = 1.0
     #: 每个档位最多输出多少条 AVOID 观察项
     max_avoid_rows: int = 10
+    #: 因子集开关：legacy=原 12 因子；extended=legacy + 6 类扩展因子
+    factor_set: str = 'legacy'
+    #: 软筛选（仅 extended 生效）
+    soft_filter: SoftFilterConfig = field(default_factory=SoftFilterConfig)
+    #: 归一化方式：'zscore'（默认）或 'percentile'
+    normalization: str = 'zscore'
 
     def tier(self, key: str) -> TierConfig:
         if key not in self.tiers:
@@ -272,6 +312,33 @@ class AdviceConfig:
         return max(0, tier.min_hold_days)
 
 
-def default_config() -> AdviceConfig:
-    """返回一套默认参数（三档预设 + 默认约束/成本）。"""
-    return AdviceConfig()
+def default_output_tiers(
+        tiers: dict[str, TierConfig] | None = None) -> list[str]:
+    """默认产出的档位集合：排除 ``OBSERVE_ONLY_TIERS``。
+
+    ``TIER_PRESETS`` 仍保留 short 配置，供历史回放与显式复核使用，
+    但任何「未指定档位」的调用（CLI / 引擎 / UI）都不再默认产出 short。
+    """
+    source = TIER_PRESETS if tiers is None else tiers
+    return [key for key in source if key not in OBSERVE_ONLY_TIERS]
+
+
+def default_config(factor_set: str = 'extended',
+                   soft_filter_enabled: bool = True) -> AdviceConfig:
+    """返回一套默认参数（默认启用扩展因子集）。
+
+    ``factor_set='legacy'`` 时完全回到原 12 因子与无软筛选行为，
+    用于 A/B 对照。
+    """
+    if factor_set not in ('legacy', 'extended'):
+        raise ValueError(f"factor_set 只能是 legacy/extended，实际 {factor_set!r}")
+    tiers = dict(TIER_PRESETS)
+    if factor_set == 'extended':
+        from src.advice.factor_sets import build_extended_tiers
+
+        tiers = build_extended_tiers(TIER_PRESETS)
+    return AdviceConfig(
+        tiers=tiers,
+        factor_set=factor_set,
+        soft_filter=SoftFilterConfig(enabled=soft_filter_enabled),
+    )

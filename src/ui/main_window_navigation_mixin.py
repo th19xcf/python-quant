@@ -195,6 +195,47 @@ class MainWindowNavigationMixin:
             self._switch_to_adjacent_stock('next')
         return True
 
+    def _handle_tech_tab_chip_shortcut(self, event) -> bool:
+        """技术分析页 Ctrl+U：切换筹码分布栏显隐。
+
+        只在技术分析页签内生效；焦点在文本输入控件时让给输入框，
+        避免用户编辑柱体数时误触发。
+
+        Returns:
+            bool: 已处理返回 True，调用方应停止继续分发该按键
+        """
+        from PySide6.QtWidgets import (
+            QAbstractSpinBox,
+            QApplication,
+            QLineEdit,
+            QPlainTextEdit,
+            QTextEdit,
+        )
+
+        if event.key() != Qt.Key.Key_U:
+            return False
+        if event.modifiers() != Qt.KeyboardModifier.ControlModifier:
+            return False
+
+        tab_widget = getattr(self, 'tab_widget', None)
+        tech_tab = getattr(self, 'tech_tab', None)
+        if tab_widget is None or tech_tab is None:
+            return False
+        if tab_widget.currentWidget() is not tech_tab:
+            return False
+
+        controller = getattr(self, 'chip_controller', None)
+        if controller is None:
+            return False
+
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            return False
+
+        controller.toggle_visible()
+        logger.info(f"Ctrl+U 切换筹码分布 -> {controller.is_visible()}")
+        return True
+
     def keyPressEvent(self, event):
         """
         Handle key press events
@@ -206,6 +247,10 @@ class MainWindowNavigationMixin:
 
         # 技术分析页方向键统一入口（与全局按键过滤器共用）
         if self._handle_tech_tab_arrow_key(key):
+            return
+
+        # 技术分析页 Ctrl+U：切换筹码栏显隐
+        if self._handle_tech_tab_chip_shortcut(event):
             return
 
         # ESC键：返回行情标签页

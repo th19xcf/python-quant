@@ -56,6 +56,7 @@ from src.ui.advice.widgets import (
     SkeletonWidget,
 )
 
+#: 历史快照仍含 short，映射保留以兼容旧数据；UI 分段控件已隐藏该档
 TIER_OF_SEGMENT = {'short': 'short', 'mid': 'mid', 'long': 'long'}
 
 
@@ -79,7 +80,7 @@ class AdvicePage(QWidget):
         self.theme = 'light' if str(theme).lower() == 'light' else 'dark'
         self._pal = palette_for(self.theme)
         self._bundle: DailyRecommendationBundle | None = None
-        self._tier = 'short'
+        self._tier = 'mid'
         self._busy = False
         self._token = 0
         self._kpi_accents: dict[str, str] = {}
@@ -101,7 +102,7 @@ class AdvicePage(QWidget):
         toolbar = QHBoxLayout()
         toolbar.setSpacing(TOKENS.space_md)
         self.segmented = SegmentedControl(self._pal)
-        self.segmented.set_current('short', animate=False)
+        self.segmented.set_current('mid', animate=False)
         self.segmented.changed.connect(self._on_tier_changed)
         toolbar.addWidget(self.segmented)
         toolbar.addStretch(1)
@@ -540,7 +541,7 @@ class AdvicePage(QWidget):
 
     # -------------------------------------------------------------- handlers
     def _on_tier_changed(self, key: str) -> None:
-        self._tier = TIER_OF_SEGMENT.get(key, 'short')
+        self._tier = TIER_OF_SEGMENT.get(key, 'mid')
         self._refresh_table()
 
     def _on_search_changed(self, text: str) -> None:

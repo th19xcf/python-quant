@@ -4,6 +4,7 @@
 指标交互管理器
 """
 
+from src.ui.data_stock_controller import DEFAULT_BAR_COUNT, MIN_BAR_COUNT
 from src.utils.logger import logger
 
 
@@ -13,10 +14,72 @@ class IndicatorInteractionManager:
     def __init__(self, window):
         self.window = window
         self._scroll_area = None
+        # 加号翻倍后若超过标的历史，等取数完成再收敛到实际可得根数
+        self._pending_plus_clamp = False
+        self._pending_plus_clamp_code = ''
 
     def set_scroll_area(self, scroll_area):
         """缓存指标滚动区域"""
         self._scroll_area = scroll_area
+
+    def _set_displayed_bar_count(self, count):
+        """写入唯一的柱体数状态，并同步输入框显示。"""
+        self.window.displayed_bar_count = count
+        bar_count_input = getattr(self.window, 'bar_count_input', None)
+        if bar_count_input is not None:
+            bar_count_input.setText(str(count))
+
+    def _sync_bar_count_from_input(self):
+        """把输入框中的有效值同步到 displayed_bar_count。
+
+        周期切换按钮可能在输入框 editingFinished 之前触发，这里兜底同步，
+        保证“周期切换读取的是用户当前设定值”。
+        """
+        bar_count_input = getattr(self.window, 'bar_count_input', None)
+        if bar_count_input is None:
+            return
+        try:
+            value = int(bar_count_input.text().strip())
+        except (TypeError, ValueError):
+            return
+        if value > 0:
+            self.window.displayed_bar_count = value
+
+    def _available_bar_rows(self):
+        """当前标的已加载的可得根数；无数据时返回 None。"""
+        data = getattr(self.window, 'current_stock_data', None)
+        if data is None:
+            return None
+        try:
+            return len(data)
+        except TypeError:
+            return None
+
+    def update_bar_count_controls(self):
+        """按当前设定值与可得根数刷新增减按钮可用状态（到边界置灰）。"""
+        plus_btn = getattr(self.window, 'plus_btn', None)
+        minus_btn = getattr(self.window, 'minus_btn', None)
+        bar_count = getattr(self.window, 'displayed_bar_count', DEFAULT_BAR_COUNT)
+        available = self._available_bar_rows()
+
+        if minus_btn is not None:
+            minus_btn.setEnabled(bar_count > MIN_BAR_COUNT)
+        if plus_btn is not None:
+            # 无数据时无法判断上限，禁用增加；有数据时不得超过可得行数
+            plus_btn.setEnabled(available is not None and bar_count < available)
+
+    def on_data_loaded(self):
+        """一次取数/绘图完成后调用：收敛加号越界设置并刷新按钮状态。"""
+        if self._pending_plus_clamp:
+            current_code = getattr(self.window, 'current_stock_code', '')
+            if current_code == self._pending_plus_clamp_code:
+                available = self._available_bar_rows()
+                if available is not None and self.window.displayed_bar_count > available:
+                    logger.info(f"加号超过可得行数，设定值收敛为 {available}")
+                    self._set_displayed_bar_count(available)
+            self._pending_plus_clamp = False
+            self._pending_plus_clamp_code = ''
+        self.update_bar_count_controls()
 
     def on_indicator_usage(self):
         logger.info("显示指标用法注释")
@@ -36,38 +99,76 @@ class IndicatorInteractionManager:
     def on_plus_btn_clicked(self):
         window = self.window
         try:
-            new_count = window.displayed_bar_count * 2
-            window.bar_count_input.setText(str(new_count))
-            window.displayed_bar_count = new_count
-            logger.info(f"柱体数增加1倍，当前柱体数: {new_count}")
+            current = window.displayed_bar_count
+            available = self._available_bar_rows()
+            if available is None:
+                logger.warning("current_stock_data 为 None，无法增加柱体数")
+                self.update_bar_count_controls()
+                return
+            if current >= available:
+                logger.info(f"柱体数已到上限 {available}，无法继续增加")
+                self.update_bar_count_controls()
+                return
 
-            if window.current_stock_data is not None:
-                data_len = len(window.current_stock_data)
-                actual_count = min(new_count, data_len)
-                logger.info(f"重新绘制K线图，数据长度: {data_len}, 请求柱体数: {new_count}, 实际显示: {actual_count}")
-                window.plot_k_line(window.current_stock_data, window.current_stock_name, window.current_stock_code)
-            else:
-                logger.warning("current_stock_data 为 None，无法重新绘制K线图")
+            new_count = current * 2
+            self._pending_plus_clamp = True
+            self._pending_plus_clamp_code = getattr(window, 'current_stock_code', '')
+            self._set_displayed_bar_count(new_count)
+            logger.info(f"柱体数增加1倍，当前柱体数: {new_count}，已加载: {available}")
+            self._apply_bar_count_change()
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"增加柱体数失败: {e}")
 
     def on_minus_btn_clicked(self):
         window = self.window
         try:
-            new_count = max(50, window.displayed_bar_count // 2)
-            window.bar_count_input.setText(str(new_count))
-            window.displayed_bar_count = new_count
-            logger.info(f"柱体数减少1倍，当前柱体数: {new_count}")
+            current = window.displayed_bar_count
+            if current <= MIN_BAR_COUNT:
+                logger.info(f"柱体数已到下限 {MIN_BAR_COUNT}，无法继续减少")
+                self.update_bar_count_controls()
+                return
 
-            if window.current_stock_data is not None:
-                data_len = len(window.current_stock_data)
-                actual_count = min(new_count, data_len)
-                logger.info(f"重新绘制K线图，数据长度: {data_len}, 请求柱体数: {new_count}, 实际显示: {actual_count}")
-                window.plot_k_line(window.current_stock_data, window.current_stock_name, window.current_stock_code)
-            else:
-                logger.warning("current_stock_data 为 None，无法重新绘制K线图")
+            new_count = max(MIN_BAR_COUNT, current // 2)
+            self._set_displayed_bar_count(new_count)
+            logger.info(f"柱体数减少（减半且不低于 {MIN_BAR_COUNT}），当前柱体数: {new_count}")
+            self._apply_bar_count_change()
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"减少柱体数失败: {e}")
+
+    def _redraw_current_data(self):
+        """用已加载数据按新柱体数重绘；数据不足时展示实际可得根数。"""
+        window = self.window
+        if window.current_stock_data is None:
+            logger.warning("current_stock_data 为 None，无法重新绘制K线图")
+            return
+        data_len = len(window.current_stock_data)
+        actual_count = min(window.displayed_bar_count, data_len)
+        logger.info(
+            f"重新绘制K线图，数据长度: {data_len}, "
+            f"请求柱体数: {window.displayed_bar_count}, 实际显示: {actual_count}"
+        )
+        window.plot_k_line(window.current_stock_data, window.current_stock_name, window.current_stock_code)
+
+    def _apply_bar_count_change(self):
+        """柱体数变更后要么原地重绘，要么按新设定值重新取数。
+
+        已加载行数足够时直接重绘（快）；设定值超过已加载行数时重新取数，
+        取数窗口由 history_window_for_bars 按周期换算，避免“设 1000 根却只有 2 年数据”。
+        """
+        window = self.window
+        setting = window.displayed_bar_count
+        loaded = self._available_bar_rows()
+
+        has_context = bool(getattr(window, 'current_stock_code', '')) and bool(
+            getattr(window, 'current_stock_name', '')
+        )
+        if loaded is not None and setting > loaded and has_context:
+            logger.info(f"柱体数 {setting} 超过已加载 {loaded} 行，按新设定值重新取数")
+            window.process_stock_data(window.current_stock_code, window.current_stock_name)
+        elif window.current_stock_data is not None:
+            self._redraw_current_data()
+
+        self.update_bar_count_controls()
 
     def on_left_arrow_clicked(self):
         try:
@@ -99,6 +200,9 @@ class IndicatorInteractionManager:
                 if name != period:
                     button.setChecked(False)
 
+            # 输入框可能尚未触发 editingFinished，先同步到唯一状态变量，
+            # 保证周期切换后仍按用户当前设定的柱体数取数。
+            self._sync_bar_count_from_input()
             window.current_period = period
 
             # 切换周期时，如果有当前股票数据，重新获取数据并绘制
@@ -167,24 +271,19 @@ class IndicatorInteractionManager:
     def on_bar_count_changed(self):
         window = self.window
         try:
-            bar_count_text = window.bar_count_input.text()
+            bar_count_text = window.bar_count_input.text().strip()
             bar_count = int(bar_count_text)
 
             if bar_count > 0:
-                window.displayed_bar_count = bar_count
+                self._set_displayed_bar_count(bar_count)
                 logger.info(f"显示柱体数量更新为: {bar_count}")
-
-                if window.current_stock_data is not None:
-                    logger.info(f"按照新的柱体数 {bar_count} 重新绘制K线图")
-                    window.plot_k_line(window.current_stock_data, window.current_stock_name, window.current_stock_code)
+                self._apply_bar_count_change()
             else:
-                window.bar_count_input.setText("100")
-                window.displayed_bar_count = 100
-                logger.info("无效的柱体数量，已恢复为默认值: 100")
+                self._set_displayed_bar_count(DEFAULT_BAR_COUNT)
+                logger.info(f"无效的柱体数量，已恢复为默认值: {DEFAULT_BAR_COUNT}")
         except ValueError:
-            window.bar_count_input.setText("100")
-            window.displayed_bar_count = 100
-            logger.info("无效的输入，已恢复为默认值: 100")
+            self._set_displayed_bar_count(DEFAULT_BAR_COUNT)
+            logger.info(f"无效的输入，已恢复为默认值: {DEFAULT_BAR_COUNT}")
 
     def on_adjustment_clicked(self, checked):
         window = self.window

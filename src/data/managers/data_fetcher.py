@@ -320,6 +320,9 @@ class DataFetcher:
                                         '1d', adjustment_type, as_of)
             if daily.is_empty():
                 return daily
+            # 聚合前先补日级换手率与流通股本：周/月 HSL 按「区间内各日 turn 求和」
+            # 的逐日累计口径计算，不能把日 turn 直接左连接到周期末日期
+            daily = self._attach_turn_for_aggregation(daily, stock_code)
             converted = self._convert_frequency(daily, frequency)
             global_data_cache.set(converted, 'stock', stock_code, start_date, end_date,
                                   **cache_params)
@@ -604,6 +607,22 @@ class DataFetcher:
         return DataProcessor(self.config).convert_frequency(df, frequency)
 
     @staticmethod
+    def _attach_turn_for_aggregation(daily: pl.DataFrame, stock_code: str) -> pl.DataFrame:
+        """聚合前补日级 ``turn``（股本反算优先，其次 baostock）。
+
+        失败时保持原帧：聚合层会因缺少 turn 列而跳过 HSL 区间累计，
+        由指标层回退估算口径，不影响 K 线本体。
+        """
+        try:
+            from src.data.local_store.turnover import attach_turn
+            return attach_turn(daily.lazy(), stock_code,
+                               keep_float_share=True).collect()
+        except (ImportError, OSError, ValueError, TypeError,
+                pl.exceptions.PolarsError) as exc:
+            logger.debug(f"[聚合] 附加换手率失败({stock_code}): {exc}")
+            return daily
+
+    @staticmethod
     def _parse_date_bound(value: Union[str, date, datetime, None]) -> date | None:
         """将日期字符串/对象统一转换为 date，供数据库查询使用（复用公共工具）"""
         return parse_date(value)
@@ -754,6 +773,26 @@ class DataFetcher:
 
             df = self._normalize_trade_date(df)
 
+            # 本地快照是唯一权威因子源：库内 stock_daily 的因子列抽样几乎恒 1.0。
+            # 命中快照时以快照覆盖（随后 as_of 回滚仍生效）；快照缺票且库内因子
+            # 恒 1.0 时剔除因子列，避免把未复权价当作复权价返回。
+            if 'qfq_factor' in df.columns or 'hfq_factor' in df.columns:
+                try:
+                    from src.data.local_store import get_local_factor_store
+                    from src.data.local_store.store import overlay_factor_snapshot
+
+                    store = get_local_factor_store(getattr(self, 'config', None))
+                    snapshot = store.factors(code)
+                    df = overlay_factor_snapshot(df, code, store)
+                    if (snapshot is None or snapshot.is_empty()) and self._factors_all_one(df):
+                        logger.warning(
+                            f"{code} 库内因子列恒为 1.0 且本地快照无该票，"
+                            "已剔除因子列（复权将回退为原始价）")
+                        drop_cols = [c for c in ('qfq_factor', 'hfq_factor') if c in df.columns]
+                        df = df.drop(drop_cols)
+                except (ImportError, OSError, ValueError, TypeError) as exc:
+                    logger.debug(f"本地因子快照覆盖失败，保留库内因子列: {exc}")
+
             # as_of 截断：ex_date > as_of 的事件是观察者还不知道的，从 qfq_factor 中回滚
             if as_of is not None and adjustment_type == 'qfq' and 'qfq_factor' in df.columns:
                 df = self._rollback_qfq_factor(df, code, as_of)
@@ -764,6 +803,14 @@ class DataFetcher:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"从数据库获取{data_type}数据失败: {e}")
             return pl.DataFrame()
+
+    @staticmethod
+    def _factors_all_one(df: pl.DataFrame) -> bool:
+        """判断因子列是否（在区间内）全部为 1.0，即等价于未复权。"""
+        cols = [c for c in ('qfq_factor', 'hfq_factor') if c in df.columns]
+        if not cols:
+            return True
+        return all(df[c].min() == 1.0 and df[c].max() == 1.0 for c in cols)
 
     def _get_dividend_events(self, code: str, as_of: date) -> pl.DataFrame:
         """读取 ``ex_date > as_of`` 的除权事件，本地分红快照优先。

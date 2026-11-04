@@ -241,6 +241,56 @@ def test_multiple_polars_skips_breadth_without_dependency():
     assert 'abi10' not in result.columns
 
 
+def test_ensure_market_breadth_accepts_trade_date_and_date():
+    """rename 兼容：trade_date 与 date 两种入参都能产出相同指标。"""
+    primary = calculate_abi(_ohlcv().lazy(), market_breadth=_breadth_frame()).collect()
+    renamed = calculate_abi(
+        _ohlcv().lazy(), market_breadth=_breadth_frame().rename({'trade_date': 'date'})
+    ).collect()
+
+    np.testing.assert_allclose(
+        primary['abi10'].to_numpy(), renamed['abi10'].to_numpy(), rtol=1e-6, atol=1e-6
+    )
+
+
+def test_breadth_join_keeps_date_order_for_rolling_indicators():
+    """乱序注入后按 date 排序，ADR/OBOS 的滚动窗口仍按交易日顺序计算。"""
+    breadth = _breadth_frame().sample(fraction=1.0, shuffle=True, seed=7)
+    result = calculate_adr(_ohlcv().lazy(), market_breadth=breadth).collect()
+
+    dates = result['date'].to_list()
+    assert dates == sorted(dates)
+
+    ordered = _breadth_frame().sort('trade_date')
+    expected = (
+        ordered['up_count'].rolling_mean(10) / ordered['down_count'].rolling_mean(10) * 100
+    )
+    np.testing.assert_allclose(
+        result['adr10'].to_numpy(), expected.to_numpy(), rtol=1e-5, atol=1e-5, equal_nan=True
+    )
+
+
+def test_breadth_uint32_counts_do_not_underflow_in_adl():
+    """UInt32 的 up/down 相减前必须转 Int64，避免 ADL 下溢成 4.29e9。"""
+    dates = pl.date_range(
+        pl.date(2024, 1, 1), pl.date(2024, 1, 20), interval='1d', eager=True
+    )
+    breadth = pl.DataFrame(
+        {
+            'trade_date': dates,
+            'up_count': pl.Series('up_count', [1] * len(dates), dtype=pl.UInt32),
+            'down_count': pl.Series('down_count', [5] * len(dates), dtype=pl.UInt32),
+            'flat_count': pl.Series('flat_count', [0] * len(dates), dtype=pl.UInt32),
+            'total_count': pl.Series('total_count', [6] * len(dates), dtype=pl.UInt32),
+        }
+    )
+    result = calculate_adl(_ohlcv(20).lazy(), market_breadth=breadth).collect()
+
+    adl = result['adl'].to_numpy()
+    assert np.nanmax(adl) < 1_000_000
+    np.testing.assert_allclose(adl, np.arange(1, 21) * -4, rtol=1e-5, atol=1e-5)
+
+
 def test_multiple_polars_uses_injected_market_breadth():
     """默认批量入口注入涨跌家数后正常产出大势型指标。"""
     from src.tech_analysis.indicator_calculator import (

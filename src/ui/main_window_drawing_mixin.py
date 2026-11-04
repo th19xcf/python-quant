@@ -12,6 +12,7 @@ from src.ui.chart_components import (
     ChartEventBinder,
     IndicatorRenderer,
 )
+from src.ui.data_stock_controller import DEFAULT_BAR_COUNT
 from src.utils.logger import logger
 
 
@@ -90,6 +91,10 @@ class MainWindowDrawingMixin:
         # 清除指标图表（如KDJ）
         if hasattr(self, 'kdj_plot_widget') and self.kdj_plot_widget:
             self.kdj_plot_widget.clear()
+        # 筹码栏与主图同生命周期，重建前一起清空
+        chip_controller = getattr(self, 'chip_controller', None)
+        if chip_controller is not None:
+            chip_controller.clear()
 
     def _prepare_data(self, df: pl.DataFrame) -> pl.DataFrame:
         """
@@ -101,7 +106,7 @@ class MainWindowDrawingMixin:
         Returns:
             pl.DataFrame: 处理后的数据
         """
-        bar_count = getattr(self, 'displayed_bar_count', 100)
+        bar_count = getattr(self, 'displayed_bar_count', DEFAULT_BAR_COUNT)
         adjustment_type = getattr(self, 'adjustment_type', 'qfq')
 
         return self._data_preparer.prepare_kline_data(df, bar_count, adjustment_type)

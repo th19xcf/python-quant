@@ -88,6 +88,11 @@ class MainWindowCandlestickMixin:
             # 14. 保存当前数据
             self._save_current_data(df, stock_name, stock_code, dates, opens, highs, lows, closes)
 
+            # 14.5 数据量变化后收敛越界设定并刷新柱体增减按钮状态
+            bar_count_manager = getattr(self, 'indicator_interaction_manager', None)
+            if bar_count_manager is not None:
+                bar_count_manager.on_data_loaded()
+
             # 15. 更新窗口数量
             self.indicator_interaction_manager.on_window_count_changed(
                 self.current_window_count, True
@@ -95,6 +100,13 @@ class MainWindowCandlestickMixin:
 
             # 16. 更新标题栏显示最后一个交易日的均线数据
             self._update_ma_values_display(df_pl, dates)
+
+            # 17. 筹码分布：主图已绘制完成，延后一拍计算并贴到右侧栏
+            chip_controller = getattr(self, 'chip_controller', None)
+            if chip_controller is not None:
+                adjustment_type = getattr(self, 'adjustment_type', 'qfq')
+                chip_controller.set_source(df, stock_code, adjustment_type)
+                chip_controller.request_history(stock_code, adjustment_type)
 
             logger.info(f"成功绘制 {stock_name}({stock_code}) 的K线图")
 

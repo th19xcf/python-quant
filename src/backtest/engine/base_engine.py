@@ -13,6 +13,7 @@ import polars as pl
 from loguru import logger
 
 from src.backtest.costs.cost_model import CostModel
+from src.backtest.engine.holdout import FrameSplit, split_frame_with_purge
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.backtest.visualization.backtest_visualizer import BacktestVisualizer
@@ -282,16 +283,17 @@ class BaseBacktestEngine:
 
     @staticmethod
     def _split_out_of_sample(df: pl.DataFrame, oos_ratio: float,
-                             min_rows: int = 20) -> tuple[pl.DataFrame, pl.DataFrame] | None:
-        """按时间顺序切分样本内 / 样本外（前段训练，后段验证）。
+                             min_rows: int = 20, horizon: int = 10,
+                             embargo: int = 20) -> FrameSplit | None:
+        """按时间顺序切分样本内 / 样本外，并施加 purge + embargo。
 
+        口径见 ``src.backtest.engine.holdout``（与学习层 splits 同源）：
+        训练窗末尾按标签跨度 purge，测试窗从 ``train_end + embargo`` 开始。
         行数不足以切出两段时返回 None，由调用方标记 OOS 未启用。
         """
-        total = df.height
-        split = int(total * (1.0 - oos_ratio))
-        if split < min_rows or total - split < min_rows:
-            return None
-        return df.head(split), df.tail(total - split)
+        return split_frame_with_purge(
+            df, oos_ratio, horizon=horizon, embargo=embargo, min_rows=min_rows,
+        )
 
     def _build_stability_report(self, results: List[Dict[str, Any]],
                                 objective: str) -> Dict[str, Any]:

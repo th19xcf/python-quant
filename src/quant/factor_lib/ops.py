@@ -15,13 +15,25 @@
     - ``scale`` 为 Alpha101 的 ``x * a / sum(|x|)`` 横截面缩放；
     - 除法一律走 ``safe_div``，避免 0 除产生 inf 污染后续 rank。
 
-未实现的算子（``ts_argmax`` / ``ts_argmin``）：polars 无窗口内 argmax，
-用 Python 回调 ``rolling_map`` 在 10 万行面板上代价过高，因此依赖它们的
-Alpha101 因子（如 alpha001）在登记表里标为不可用，不做近似替代。
+窗口内极值位置（``ts_argmax`` / ``ts_argmin``）：
+    Alpha101 定义为「窗口内最大值/最小值出现在第几天」，本模块返回
+    **自窗口最老一天起算的 0-based 索引**（最老 = 0，最新 = n-1），
+    与 ``numpy.argmax`` / ``pandas.rolling().apply(np.argmax)`` 一致；
+    窗口内出现并列极值时取最早出现的位置。polars 没有窗口 argmax 算子，
+    这里用 ``numpy`` 滑窗 + 分块求值（C 层向量化，无逐行 Python 循环），
+    并显式按 ``ts_code`` 分段。窗口内任何位置为 null 时结果返回 null，
+    与其余「满窗」算子口径一致。
+
+回归斜率（``rolling_slope``）：
+    对窗口内固定自变量 x = 0..n-1 做 OLS，闭式解
+    ``slope = (n*Σ(x*y) - Σx*Σy) / (n*Σx² - (Σx)²)``，
+    Σx / Σx² 是常数，Σ(x*y) 用 ``delay`` 展开后逐项相加，
+    全程走 polars 表达式，没有 Python 回调。
 """
 
 from __future__ import annotations
 
+import numpy as np
 import polars as pl
 
 #: 时序分组键（单标的的时间序列）
@@ -64,6 +76,110 @@ def ts_min(expr: pl.Expr, n: int) -> pl.Expr:
 def ts_max(expr: pl.Expr, n: int) -> pl.Expr:
     """n 期滚动最大值（满窗）。"""
     return expr.rolling_max(window_size=n, min_samples=n).over(GROUP)
+
+
+#: 窗口 argmax 分块求值的最大行数（每块需 n 倍布尔临时量，分块控内存）
+_ARG_CHUNK_ROWS = 200_000
+
+
+def _rolling_arg_np(values: np.ndarray, n: int, *, find_max: bool) -> np.ndarray:
+    """单标的序列的窗口 argmax/argmin，返回 0-based 窗口内索引（NaN 表示无效）。
+
+    ``np.lib.stride_tricks.sliding_window_view`` 是零拷贝视图，argmax 在 C 层
+    完成；分块只为限制 ``isnan`` 产生的临时布尔数组大小。
+    """
+    length = values.size
+    out = np.full(length, np.nan, dtype=np.float64)
+    if n < 1 or length < n:
+        return out
+    arg = np.argmax if find_max else np.argmin
+    stop_last = length - n + 1
+    for start in range(0, stop_last, _ARG_CHUNK_ROWS):
+        stop = min(start + _ARG_CHUNK_ROWS, stop_last)
+        block = np.lib.stride_tricks.sliding_window_view(
+            values[start : stop + n - 1], n
+        )
+        valid = ~np.isnan(block).any(axis=1)
+        idx = arg(block, axis=1).astype(np.float64)
+        out[start + n - 1 : stop + n - 1] = np.where(valid, idx, np.nan)
+    return out
+
+
+def rolling_argmax(values: pl.Series, n: int) -> pl.Series:
+    """单标的窗口 argmax（0-based，窗口最老一天为 0），满窗才有效。"""
+    raw = values.to_numpy().astype(np.float64, copy=False)
+    return pl.Series(
+        'ts_argmax', _rolling_arg_np(raw, n, find_max=True), nan_to_null=True
+    )
+
+
+def rolling_argmin(values: pl.Series, n: int) -> pl.Series:
+    """单标的窗口 argmin（0-based，窗口最老一天为 0），满窗才有效。"""
+    raw = values.to_numpy().astype(np.float64, copy=False)
+    return pl.Series(
+        'ts_argmin', _rolling_arg_np(raw, n, find_max=False), nan_to_null=True
+    )
+
+
+def _arg_frame(
+    frame: pl.DataFrame, expr: pl.Expr, n: int, *, find_max: bool, name: str
+) -> pl.DataFrame:
+    """把 ``expr`` 落列后按 ``ts_code`` 分段求窗口 argmax/argmin 并写回 ``name``。"""
+    src = f'_arg_src_{name}'
+    staged = stage(frame, **{src: expr})
+    values = staged[src].to_numpy().astype(np.float64, copy=False)
+    # 面板按 (ts_code, date) 排序，同一标的连续；rle_id 一次扫完给出连续段编号
+    codes = staged[GROUP].rle_id().to_numpy()
+    result = np.full(values.size, np.nan, dtype=np.float64)
+    starts = np.concatenate(([0], np.flatnonzero(np.diff(codes)) + 1))
+    ends = np.concatenate((starts[1:], [codes.size]))
+    for start, end in zip(starts, ends, strict=True):
+        result[start:end] = _rolling_arg_np(
+            values[start:end], n, find_max=find_max
+        )
+    return staged.with_columns(
+        pl.Series(name=name, values=result, nan_to_null=True)
+    ).drop(src)
+
+
+def ts_argmax(
+    frame: pl.DataFrame, expr: pl.Expr, n: int, *, name: str = '_ts_argmax'
+) -> pl.DataFrame:
+    """窗口内最大值位置（0-based，自窗口最老一天起算），需先有面板框架。
+
+    与 Alpha101 ``ts_argmax`` 语义对齐：返回 ``argmax`` 的 0-based 索引，
+    并取并列极值中最早出现的位置；窗口不满 n 行或含 null 时结果为 null。
+    返回带 ``name`` 列的新 frame，供后续阶段（rank / decay_linear）使用。
+    """
+    return _arg_frame(frame, expr, n, find_max=True, name=name)
+
+
+def ts_argmin(
+    frame: pl.DataFrame, expr: pl.Expr, n: int, *, name: str = '_ts_argmin'
+) -> pl.DataFrame:
+    """窗口内最小值位置（0-based，自窗口最老一天起算），其余同 ``ts_argmax``。"""
+    return _arg_frame(frame, expr, n, find_max=False, name=name)
+
+
+def rolling_slope(expr: pl.Expr, n: int) -> pl.Expr:
+    """n 期窗口对窗口内序号 0..n-1 的 OLS 回归斜率（闭式解，向量化）。
+
+    ``slope = (n*Σ(x*y) - Σx*Σy) / (n*Σx² - (Σx)²)``，x 固定为 0..n-1，
+    分母是常数；Σ(x*y) 用 ``delay`` 展开逐项求和，窗口内 null 沿加法传播。
+    满窗才有效（前 n-1 行为 null）。
+    """
+    if n < 2:  # noqa: PLR2004 —— 单点无法定义斜率
+        return pl.lit(None, dtype=pl.Float64)
+    sum_t = float(n * (n - 1) / 2)
+    sum_t2 = float((n - 1) * n * (2 * n - 1) / 6)
+    denom = float(n) * sum_t2 - sum_t**2
+    # x 从窗口最老一天起算为 0，故延迟 k 天对应 x = n-1-k；末项权重为 0
+    # 仍然保留，用于把窗口内任意位置的 null 传播成 null
+    terms = [delay(expr, k) * float(n - 1 - k) for k in range(n)]
+    weighted = terms[0]
+    for term in terms[1:]:
+        weighted = weighted + term
+    return safe_div(weighted * float(n) - ts_sum(expr, n) * sum_t, pl.lit(denom))
 
 
 def ts_rank(expr: pl.Expr, n: int) -> pl.Expr:
@@ -210,11 +326,16 @@ __all__ = [
     'log',
     'out',
     'rank_cs',
+    'rolling_argmax',
+    'rolling_argmin',
+    'rolling_slope',
     'safe_div',
     'scale',
     'sign',
     'signed_power',
     'stage',
+    'ts_argmax',
+    'ts_argmin',
     'ts_count',
     'ts_max',
     'ts_mean',

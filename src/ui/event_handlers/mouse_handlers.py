@@ -94,7 +94,10 @@ class MouseHandler:
                 continue
             attr = 'current_volume_data' if indicator == 'VOL' else f'current_{indicator.lower()}_data'
             data = getattr(main_window, attr, None)
-            text = render_indicator_text(texts, indicator, data, index, fmt)
+            text = render_indicator_text(
+                texts, indicator, data, index, fmt,
+                getattr(main_window, 'current_stock_code', None),
+                getattr(main_window, 'current_period', None))
             if text:
                 getattr(main_window, label_name).setText(text)
         return True

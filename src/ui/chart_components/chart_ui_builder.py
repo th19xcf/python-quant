@@ -11,6 +11,8 @@ from typing import Any
 from loguru import logger
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
+from src.utils.hsl_threshold import classify, percentile_thresholds
+
 
 class ChartUIBuilder:
     """
@@ -561,7 +563,12 @@ class ChartUIBuilder:
         """获取HSL（换手率）标签文本"""
         if 'hsl' in df.columns:
             latest_hsl = df['hsl'].tail(1)[0]
-            hsl_color = '#FF0000' if latest_hsl > 10 else '#FFA500' if latest_hsl > 5 else '#00BFFF'
+            code = getattr(self.main_window, 'current_stock_code', None)
+            period = getattr(self.main_window, 'current_period', None)
+            low, high = percentile_thresholds(df['hsl'].to_numpy(), code,
+                                              period=period)
+            hsl_color = {'high': '#FF0000', 'mid': '#FFA500'}.get(
+                classify(latest_hsl, low, high), '#00BFFF')
             text = f"<font color='{hsl_color}'>HSL: {latest_hsl:.2f}%</font>"
             if 'hsl_ma5' in df.columns:
                 latest_hsl_ma5 = df['hsl_ma5'].tail(1)[0]

@@ -18,7 +18,12 @@ from pathlib import Path
 import polars as pl
 from loguru import logger
 
-from src.advice.config import AdviceConfig, default_config
+from src.advice.config import (
+    OBSERVE_ONLY_TIERS,
+    AdviceConfig,
+    default_config,
+    default_output_tiers,
+)
 from src.advice.daily_store import list_daily_snapshots, load_daily_snapshot
 from src.advice.pipeline import AdviceEngine
 from src.advice.replay import run_replay
@@ -49,6 +54,20 @@ def _write_snapshot(result: dict, out_dir: Path, equity: float) -> Path:
     return path
 
 
+def mark_observe_only(tiers: dict[str, dict]) -> dict[str, dict]:
+    """给「仅观察」档位附加 ``observe_only`` 标记，数值原样保留。
+
+    显式请求 short 时不报错，而是产出带标记的结果，避免既有回放/归档中断；
+    默认调用不会走到这里，因为 `--tiers` 与引擎默认都已排除 short。
+    """
+    marked: dict[str, dict] = {}
+    for key, payload in tiers.items():
+        item = dict(payload)
+        item['observe_only'] = key in OBSERVE_ONLY_TIERS
+        marked[key] = item
+    return marked
+
+
 def _run_generate(args: argparse.Namespace) -> int:
     as_of = _parse_date(args.as_of)
     now = datetime.now()
@@ -56,7 +75,9 @@ def _run_generate(args: argparse.Namespace) -> int:
             and (now.hour < 15 or (now.hour == 15 and now.minute < 30))):
         logger.warning('未到收盘后（15:30 之后），如需生成今日清单请加 --force')
         return 2
-    config: AdviceConfig = default_config()
+    config: AdviceConfig = default_config(
+        factor_set=args.factor_set,
+        soft_filter_enabled=not args.no_soft_filter)
     engine = AdviceEngine(config=config)
     daily_dir = Path(args.daily_dir) if args.daily_dir else Path(args.out_dir) / 'daily'
     result = engine.generate(as_of=as_of, equity=args.equity,
@@ -67,12 +88,15 @@ def _run_generate(args: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     frame.write_csv(out_dir / 'all.csv')
     summary = result.summary()
+    summary['tiers'] = mark_observe_only(summary['tiers'])
     out_dir.joinpath('summary.json').write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
     _write_snapshot(
         {'trade_date': result.trade_date.isoformat(), 'tiers': summary['tiers'],
          'items': result.to_dicts()},
         out_dir, args.equity)
+    if OBSERVE_ONLY_TIERS.intersection(result.tiers):
+        logger.warning('[advice] 短线档位仅观察（未通过样本外），输出已标记 observe_only')
     logger.info(
         f"[advice] 生成完成 {result.trade_date}: {len(frame)} 行 → {out_dir}")
     for key, advice in result.tiers.items():
@@ -83,7 +107,9 @@ def _run_generate(args: argparse.Namespace) -> int:
 
 def _run_replay(args: argparse.Namespace) -> int:
     results = run_replay(
-        config=default_config(),
+        config=default_config(
+            factor_set=args.factor_set,
+            soft_filter_enabled=not args.no_soft_filter),
         start=_parse_date(args.start),
         end=_parse_date(args.end),
         max_symbols=args.max_symbols,
@@ -95,7 +121,8 @@ def _run_replay(args: argparse.Namespace) -> int:
         return 1
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    payload = {key: item.summary() for key, item in results.items()}
+    payload = mark_observe_only(
+        {key: item.summary() for key, item in results.items()})
     out_dir.joinpath('replay_summary.json').write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
     diagnostics = {key: item.diagnostics for key, item in results.items()}
@@ -154,8 +181,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--as-of', help='推荐基准日 YYYY-MM-DD（默认最新交易日）')
     parser.add_argument('--equity', type=float, default=1_000_000.0,
                         help='组合总资金（元），默认 100 万')
-    parser.add_argument('--tiers', nargs='+', default=['short', 'mid', 'long'],
-                        help='档位：short/mid/long')
+    parser.add_argument('--tiers', nargs='+', default=default_output_tiers(),
+                        help='档位：mid/long（short 仅观察，需显式指定并会被标记）')
     parser.add_argument('--state-dir', default=None, help='持仓状态目录')
     parser.add_argument('--out-dir',
                         default=str(_project_root() / 'reports' / 'advice'),
@@ -167,6 +194,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--end', help='回放结束日 YYYY-MM-DD')
     parser.add_argument('--max-symbols', type=int, default=300,
                         help='回放抽样标的数，0 表示全市场')
+    parser.add_argument('--factor-set', choices=['legacy', 'extended'],
+                        default='extended',
+                        help='因子集：legacy=原 12 因子，extended=扩展因子集')
+    parser.add_argument('--no-soft-filter', action='store_true',
+                        help='关闭 extended 模式的软筛选（用于 A/B）')
     parser.add_argument('--daily-dir', default=None,
                         help='每日归档目录（默认 out-dir/daily）')
     parser.add_argument('--no-daily', action='store_true', help='本次不写每日归档')
