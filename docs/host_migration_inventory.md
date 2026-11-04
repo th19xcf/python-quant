@@ -62,24 +62,30 @@ robocopy <源机>\data\local_store D:\code\python\quant\data\local_store /E
 ### 步骤 4：仅搬通达信时的本地库重建
 
 ```powershell
+# 耗时：本机历史实测 115～180 s（9,602 标的 / 25,056,094 行；不同批次/缓存状态）
 poetry run python -m src.data.local_store build --all          # 从 TDX .day 生成 quotes/ 与 meta/
+# 耗时：未实测
 poetry run python -m src.data.local_store rescan-meta          # 只复制了 quotes/ 时，重建 daily_index.parquet
 # 分红快照无法从 TDX 生成，必须先拷贝 factors/stock_dividend.parquet，再二选一：
+# 耗时：本机历史实测 24 s（17,577,983 行）
 poetry run python -m src.data.local_store rebuild-factors --include-existing   # 连同已有因子一起重算
+# 耗时：未实测（增量规模随缺失标的数变化）
 poetry run python -m src.data.local_store rebuild-factors                      # 默认只补缺失标的
 ```
 
 - `--include-existing` = 把快照里已有的标的**重新计算**；不加该参数则**只补缺失**（`src/data/local_store/factor_rebuild.py:203-229`）。两者都是离线命令，不写远程库；按需选择其一。
-- 本机历史实测：行情全量构建 9,602 标的 / 25,056,094 行，耗时记录为 **115～180 s**（不同批次/缓存状态）；因子重建 17,577,983 行，约 **24 s**。目标机未复测（见 3.2 第 4 条）。
+- 耗时口径：`build --all` 为源机历史记录 **115～180 s**（规模 9,602 标的 / 25,056,094 行，差异来自不同批次/缓存状态）；`rebuild-factors` 为源机历史记录 **24 s**（17,577,983 行，`--include-existing` 与默认增量两种模式未分别计时）。以上均为源机数值，**目标机未复测**（见 3.2 第 4 条）；`rescan-meta` 本次**未实测**。
 
 ### 步骤 5：刷新当日参考数据快照
 
 ```powershell
+# 耗时：未实测
 poetry run python -m src.data.risk_flags refresh    # meta/st_status/st_status_<今天>.parquet
+# 耗时：未实测
 poetry run python -m src.data.industry refresh      # meta/industry/industry_<今天>.parquet
 ```
 
-> `risk_flags refresh` 会尝试从远程 `stock_basic` 补充名称/退市状态（`src/data/risk_flags.py:274-301`），离线时异常被捕获后继续用 `names.json` 构建；离线等待时长**未验证**。`industry refresh` 只读本地 `tdxhy.cfg`，完全离线可用。
+> `risk_flags refresh` 会尝试从远程 `stock_basic` 补充名称/退市状态（`src/data/risk_flags.py:274-301`），离线时异常被捕获后继续用 `names.json` 构建；**耗时：未实测**（含离线时尝试远程 `stock_basic` 的等待，等待时长同样未实测）。`industry refresh` 只读本地 `tdxhy.cfg`，完全离线可用，**耗时：未实测**。
 
 ### 步骤 6：验证跑通（全部为只读命令）
 
@@ -174,17 +180,17 @@ Copy-Item <源机>\reports\advice\latest.json D:\code\python\quant\reports\advic
 
 | 路径 | 体积 / 规模 | 被忽略 | 能否重建 / 确切命令 | 缺失后果 |
 |---|---|---|---|---|
-| `quotes/stock/{sh,sz,bj}/*.parquet` | 5,654 个 / 554.1 MB | 是 | ✅ `poetry run python -m src.data.local_store build --all`（源＝TDX 日线） | 股票 K 线退化为直读 TDX（仍可用，但全市场扫描变慢）；参数优化/因子库批量读取显著变慢 |
+| `quotes/stock/{sh,sz,bj}/*.parquet` | 5,654 个 / 554.1 MB | 是 | ✅ `poetry run python -m src.data.local_store build --all`（源＝TDX 日线；**耗时：本机历史实测 115～180 s / 9,602 标的 / 25,056,094 行**） | 股票 K 线退化为直读 TDX（仍可用，但全市场扫描变慢）；参数优化/因子库批量读取显著变慢 |
 | `quotes/fund/{sh,sz}/*.parquet` | 2,615 个 / 96.5 MB | 是 | ✅ 同上（TDX 基金日线） | 基金页/基金回测缺数据 |
 | `quotes/index/{sh,sz,bj}/*.parquet` | 1,333 个 / 165.8 MB | 是 | ✅ 同上（TDX 指数日线） | 指数行情、基准对比、指数推荐缺数据 |
-| `meta/daily_index.parquet` | 157,472 B / 9,602 行（stock 5654 / fund 2615 / index 1333） | 是 | ✅ `poetry run python -m src.data.local_store rescan-meta`（扫 quotes 重建） | 「代码/区间索引」缺失，`LocalQuoteStore` 无法判断覆盖区间，取数回退 TDX；ST/行业快照会生成 0 行 |
+| `meta/daily_index.parquet` | 157,472 B / 9,602 行（stock 5654 / fund 2615 / index 1333） | 是 | ✅ `poetry run python -m src.data.local_store rescan-meta`（扫 quotes 重建；**耗时：未实测**） | 「代码/区间索引」缺失，`LocalQuoteStore` 无法判断覆盖区间，取数回退 TDX；ST/行业快照会生成 0 行 |
 | `meta/state.json` | 305 B（记录 stock_adj_factor 17,577,983 行、stock_dividend 53,974 行、5650 代码等） | 是 | ✅ 由 `build` / `rebuild-factors` / `rescan-meta` 自动写 | 因子/缓存状态统计缺失；不影响取数主流程 |
 | `meta/names.json` | **1,346,680 B（1.35 MB）/ 52,784 条**（含股票、指数、基金名称） | 是 | ❌ **代码无任何写入口**（全仓库直接引用该文件名的仅 5 处读取：`src/advice/pipeline.py:100`、`src/data/risk_flags.py:101`、`scripts/calibrate_advice.py:117`、`scripts/smoke_risk_filters.py:50`、`tests/test_reference_data.py:53`） | 推荐/ST 判定中的中文名缺失：展示退化为代码；ST 未知代码按「非 ST」处理（可能放行 ST 股）。**必须从源机拷贝** |
-| `meta/st_status/st_status_20261103.parquet` | 49,683 B / 5,654 行 | 是 | ⚠️ 仅能生成**当天**：`poetry run python -m src.data.risk_flags refresh --as-of 2026-11-03`；**历史日期不可补** | 回测/推荐按日取不到 ST 快照 → 按未知处理（可能把 ST 纳入候选）；缺失当天的会即时降级 |
-| `meta/industry/industry_20261103.parquet` | 23,028 B / 5,654 行 | 是 | ⚠️ 仅能生成**当天**：`poetry run python -m src.data.industry refresh --as-of 2026-11-03`（读 `tdxhy.cfg`） | 行业分散度约束失效/行业过滤退化为未知；历史日期不可补 |
-| `meta/events/events.parquet` | 413 KB / 22,101 行（coverage 2025-01-01～2025-12-31） | 是 | ⚠️ 需原始公告 CSV/Parquet：`poetry run python -m src.data.events import --path <文件>`（`src/data/events.py:493-510`）；**仓库内无联网抓取命令**，离线只能拷贝已有文件或 `research/events/data/*.parquet` | 事件风险过滤（减持/立案/业绩预告）失效，推荐不再规避事件雷 |
-| `factors/stock_adj_factor.parquet` | 12,468,497 B / 17,577,983 行 / 5,650 代码 | 是 | ✅ `poetry run python -m src.data.local_store rebuild-factors --include-existing`（依赖本地行情 + 分红快照） | 复权因子缺失 → **前/后复权价等于原始价**（`src/data/local_store/factor_rebuild.py:93-112`），回测收益口径失真 |
-| `factors/stock_dividend.parquet` | 677,598 B / 53,974 行 / 5,376 代码 | 是 | ❌ **只能由 MySQL `stock_dividend` 刷新**：`poetry run python -m src.data.local_store refresh-factors --allow-remote`；**TDX 无分红文件、仓库无解析实现** | 无库且缺此文件时：复权因子恒为 1.0（静默）+ 回测除权记账不计分红/送转/配股（见 Q1）。**必须从源机拷贝** |
+| `meta/st_status/st_status_20261103.parquet` | 49,683 B / 5,654 行 | 是 | ⚠️ 仅能生成**当天**：`poetry run python -m src.data.risk_flags refresh --as-of 2026-11-03`（**耗时：未实测**）；**历史日期不可补** | 回测/推荐按日取不到 ST 快照 → 按未知处理（可能把 ST 纳入候选）；缺失当天的会即时降级 |
+| `meta/industry/industry_20261103.parquet` | 23,028 B / 5,654 行 | 是 | ⚠️ 仅能生成**当天**：`poetry run python -m src.data.industry refresh --as-of 2026-11-03`（读 `tdxhy.cfg`；**耗时：未实测**）；历史日期不可补 | 行业分散度约束失效/行业过滤退化为未知；历史日期不可补 |
+| `meta/events/events.parquet` | 413 KB / 22,101 行（coverage 2025-01-01～2025-12-31） | 是 | ⚠️ 需原始公告 CSV/Parquet：`poetry run python -m src.data.events import --path <文件>`（`src/data/events.py:493-510`；**耗时：未实测**）；**仓库内无联网抓取命令**，离线只能拷贝已有文件或 `research/events/data/*.parquet` | 事件风险过滤（减持/立案/业绩预告）失效，推荐不再规避事件雷 |
+| `factors/stock_adj_factor.parquet` | 12,468,497 B / 17,577,983 行 / 5,650 代码 | 是 | ✅ `poetry run python -m src.data.local_store rebuild-factors --include-existing`（依赖本地行情 + 分红快照；**耗时：本机历史实测 24 s / 17,577,983 行**） | 复权因子缺失 → **前/后复权价等于原始价**（`src/data/local_store/factor_rebuild.py:93-112`），回测收益口径失真 |
+| `factors/stock_dividend.parquet` | 677,598 B / 53,974 行 / 5,376 代码 | 是 | ❌ **只能由 MySQL `stock_dividend` 刷新**：`poetry run python -m src.data.local_store refresh-factors --allow-remote`（**耗时：未实测**，需远程库、离线不可用）；**TDX 无分红文件、仓库无解析实现** | 无库且缺此文件时：复权因子恒为 1.0（静默）+ 回测除权记账不计分红/送转/配股（见 Q1）。**必须从源机拷贝** |
 | `factors/covered_codes.txt` | 56,500 B | 是 | ✅ 由 `rebuild-factors` 自动生成 | 无影响（仅重建进度辅助；缺失会退化为扫 Parquet 求唯一值，稍慢） |
 | `factors/meta.json` | 354 B（`source: local_dividend`、17,582,589 行、5,650 代码） | 是 | ✅ 自动生成 | 因子来源/覆盖率统计缺失，不影响计算 |
 | `factors/rebuild/manifest.json` | 440 B | 是 | ✅ 重建进度标记，`rebuild-factors` 自动维护 | 丢失后重建从头开始（耗时增加），不影响结果 |
@@ -198,12 +204,12 @@ Copy-Item <源机>\reports\advice\latest.json D:\code\python\quant\reports\advic
 
 | 路径 | 体积 / 内容（实测） | 被 .gitignore 忽略 | 能否重建 | 缺失后果 |
 |---|---|---|---|---|
-| `reports/advice/` 顶层 | 15 个文件 / 144,389 B（`latest.json`、`all.csv`、`summary.json`、`replay_*`、`risk_*`） | **是**（`.gitignore:132`） | ✅ 重新运行每日推荐生成 | 无历史报告可查，功能正常 |
+| `reports/advice/` 顶层 | 15 个文件 / 144,389 B（`latest.json`、`all.csv`、`summary.json`、`replay_*`、`risk_*`） | **是**（`.gitignore:132`） | ✅ 重新运行每日推荐生成（**耗时：未实测**） | 无历史报告可查，功能正常 |
 | `reports/advice/state/{long,mid,short}.json` | 3 个文件 / 5,885 B（2,380 + 2,366 + 1,139，约 6 KB） | 是 | ❌ **不可重建**：只能从空仓重新开始（无法反推出历史持仓） | 推荐组合的历史仓位/净值断档。**必须拷贝**；`robocopy /XD reports` 会跳过，需单独加拷 |
-| `reports/advice/calibration/` | 6 个文件 / 416,698,819 B：`factor_panel.parquet` 416,442,112 B（约 397 MiB）+ 5 个 JSON 共 256,707 B（`baseline/scan/refine/frontier/universe`） | 是 | ✅ `python scripts/calibrate_advice.py`（需全市场本地数据，耗时**未实测**） | 运行时不读；仅影响校准脚本首次速度与校准结论复算 |
-| `reports/factor_lib/` | 12 个文件 / 189,281 B | 是 | ✅ `python -m src.quant.factor_lib --size 80` 可重算（耗时未实测） | 无影响；结论已整理进 `docs/factor_lib_report.md`，目录内明细仅作复核 |
-| `reports/alphalens_test/` | 4 个文件 / 328,712 B | 是 | ✅ 对应研究脚本可重算 | 无影响 |
-| `reports/analytics_validation/` | 4 个文件 / 905,526 B | 是 | ✅ 对应研究脚本可重算 | 无影响 |
+| `reports/advice/calibration/` | 6 个文件 / 416,698,819 B：`factor_panel.parquet` 416,442,112 B（约 397 MiB）+ 5 个 JSON 共 256,707 B（`baseline/scan/refine/frontier/universe`） | 是 | ✅ `python scripts/calibrate_advice.py --stage prepare/baseline/scan/refine`（需全市场本地数据，脚本默认 `--symbols 1200`；**耗时：未实测**） | 运行时不读；仅影响校准脚本首次速度与校准结论复算 |
+| `reports/factor_lib/` | 12 个文件 / 189,281 B | 是 | ✅ `python -m src.quant.factor_lib --size 80` 可重算（样本 80 只；**耗时：未实测**） | 无影响；结论已整理进 `docs/factor_lib_report.md`，目录内明细仅作复核 |
+| `reports/alphalens_test/` | 4 个文件 / 328,712 B | 是 | ✅ 对应研究脚本可重算（**耗时：未实测**） | 无影响 |
+| `reports/analytics_validation/` | 4 个文件 / 905,526 B | 是 | ✅ 对应研究脚本可重算（**耗时：未实测**） | 无影响 |
 | `logs/` | 50 个文件 / 30,491,712 B（`app.log` + 质检/对拍/因子审计报告） | **是**（`.gitignore:110`） | ✅ 运行自动生成 | 无历史日志与历史质检报告，不影响运行 |
 | `tmp/`（基准与调试脚本输出） | 2 个文件 / 4,252 B（清理后仅余 `db_snapshot_20261103_094535/` 下 `manifest.txt` 与 `stock_daily.csv` 留证；数量随工作区变化） | **是**（`.gitignore:138` 新增整目录规则，此前只忽略 `*.tmp`） | — | 无影响，**不需要搬**（草稿/一次性脚本，不要提交） |
 | `runs/` | **不存在**（实测 missing；此前记录为 0 文件） | 未核对 | — | 无影响 |
@@ -252,6 +258,8 @@ Copy-Item <源机>\reports\advice\latest.json D:\code\python\quant\reports\advic
 | DB 同步类命令 | ❌ `--sync-*`、`--update-*` 等会连接失败并 `logger.error`，不静默改数据 | `src/main.py:134-377` |
 | 远程辅助（AkShare/Baostock/腾讯补数/分红刷新） | ❌ 不可用（默认关闭且目标机离线） | 配置默认值 |
 
+> 补充：`--sync-stock-daily --full`（全历史回补，需 MySQL）此前实测为**数小时量级**的排队任务（当时标的数/行数未记录，目标机未复测）；它不属于离线迁移路径，仅作耗时参考。
+
 **结论**：MySQL 不是运行期「读行情」的必需品，但**当前 GUI 策略回测**与**分红快照刷新**两处是硬依赖。目标机若不架设数据库，建议：① 回测改用「显式传 data」的调用方式（脚本/CLI）；② 从源机拷贝 `stock_dividend.parquet`。
 
 ### Q3. 机器相关硬编码路径 / 必须改哪几处
@@ -282,22 +290,24 @@ Copy-Item <源机>\reports\advice\latest.json D:\code\python\quant\reports\advic
 - 代码检索：`grep` 覆盖 `vipdoc|lday|.day|hq_cache|.tnf|tdxhy|tdxzs|minline|fzline|gpcw|names.json|stock_dividend|local_store|db_manager` 等关键字，逐条核对调用点与行号。
 - 体积/规模：`Get-ChildItem -Recurse` 统计；`polars.read_parquet` 读取 `meta/daily_index.parquet`、`factors/stock_adj_factor.parquet`、`stock_dividend.parquet`、`st_status_20261103.parquet` 的行数与代码数。
 - CLI 实测：`python -m src.data.local_store stats`（9602 标的 / 25,056,094 行 / 816.4 MB）；离线取数 242 行；离线回测 `-6.26% / 14 笔`。
-- CLI 参数核对：`build --all`、`rebuild-factors [--include-existing]`、`rescan-meta`、`stats`、`refresh-factors --allow-remote`、`risk_flags/industry refresh|stats`、`quality check --source local`、`events import --path` 均由 argparse 定义确认。
+- CLI 参数核对：`build --all`、`rebuild-factors [--include-existing]`、`rescan-meta`、`stats`、`refresh-factors --allow-remote`、`risk_flags/industry refresh|stats`、`quality check --source local`、`events import --path`、`calibrate_advice.py --stage`、`src.quant.factor_lib --size` 均由 argparse 定义确认；其中 `calibrate_advice.py` 的 `--stage` 为必填，旧稿漏写该参数，已按实际 CLI 更正。
 - 全程未修改数据、未写远程库、未改生产代码；仅维护本文档。
 
 ### 3.2 明确未验证（不要当确定结论使用）
 1. 目标机 GUI 实际启动与页面渲染（本机未做自动化启动验证）。
 2. 「GUI 回测无库必定抛异常」的具体异常类型、超时时长（代码路径已确认会 `connect()`，但未真实断网复现）。
 3. `names.json` 能否用外部工具（mootdx/pytdx 读 `*.tnf`）重建：**本仓库代码不支持**；外部工具读 `*.tnf` 的可行性仍未验证。mootdx 整体可行性已有实测报告且已入版本库（`docs/mootdx_feasibility_report.md`），结论为「不值得接入」，不能作为实现依据。
-4. 目标机 TDX 日线与源机的完整度差异（未逐文件比对），以及 `build --all` 在目标机的实际耗时（源机历史记录 115～180 s，未在目标机复测）。
+4. 目标机 TDX 日线与源机的完整度差异（未逐文件比对），以及 `build --all` 在目标机的实际耗时（源机历史记录 115～180 s / 9,602 标的 / 25,056,094 行，未在目标机复测）。
 5. 分红快照与生产 MySQL 的时效差（本机快照 53,974 行 / 5,376 代码，未与线上库比对）。
 6. 全量推荐链路与因子库在纯离线环境的端到端结果（仅确认代码不连库，未跑全流程）。
 7. `names.json` 中 52,784 个键的资产类别构成（股票/基金/指数/退市）：只实测了总键数与 ST 构建结果，**未逐类拆分**。
 8. 通达信客户端如何补齐/回溯历史日线：**未验证**（本机数据由用户维护）。
 9. 数据质检在无数据库环境的完整可用性：只做了引用检索与参数核对，**未实测运行该命令**。
-10. `reports/advice/calibration/factor_panel.parquet` 重算耗时：**未实测**。
-11. `factors/_bench_last.parquet` 是否被仓库外脚本使用：`src/` 无引用，**未验证**外部依赖。
-12. 目标机的重建耗时、磁盘占用：本机数值仅作数量级参考，**目标机未验证**。
+10. `reports/advice/calibration/`（`--stage prepare/baseline/scan/refine`）与 `reports/factor_lib/`（`--size 80`）的重算耗时：**均未实测**。
+11. `rescan-meta`、`risk_flags refresh`、`industry refresh`、`events import --path` 的耗时：**均未实测**（只核对了命令与参数）。
+12. `factors/_bench_last.parquet` 是否被仓库外脚本使用：`src/` 无引用，**未验证**外部依赖。
+13. 目标机的重建耗时、磁盘占用：本机数值仅作数量级参考，**目标机未验证**。
+14. `--sync-stock-daily --full`：仅有「数小时量级（排队任务）」的历史记录，缺标的数/行数前提，**目标机未复测**。
 
 ---
 
@@ -308,8 +318,8 @@ Copy-Item <源机>\reports\advice\latest.json D:\code\python\quant\reports\advic
 | 必需项是 5 样还是 6 样 | **5 样** | 合并口径：通达信日线与 3 个 cfg 合为 1 样，并把 `.env` 计入必需（缺 `.env` 时 `tdx_data_path=""`，代码核对会直接取数失败）；旧口径拆成 6 样且未计 `.env`。按「缺任一项就跑不起来」取 5 样 |
 | 列存子目录大小写 | **小写 `sh/sz/bj`** | 本次实测 `data/local_store/quotes/stock/` 下为 `sh`、`sz`、`bj`；旧稿写 `{SH,SZ,BJ}` 与实测不符 |
 | `rebuild-factors` 参数 | **两种都保留** | 旧稿只写 `rebuild-factors`（默认只补缺）；新稿写 `--include-existing`（重算已有）。语义不同（`factor_rebuild.py:209,218,228-229`），文档按场景二选一说明 |
-| `tmp/` 文件数 | **145 个 / 94,796,793 B（本次实测）** | 该目录随工作区变化，此前记录为 142、122；统一标注为当日快照 |
-| 构建耗时 | **115～180 s（区间）** | 旧稿记 179.6 s、新稿记约 115 s，应为不同批次/缓存状态；不写单一值，且标注目标机未复测 |
+| `tmp/` 文件数 | **2 个 / 4,252 B（本次清理后实测）** | 该目录随工作区变化，此前记录为 145 个 / 94,796,793 B、142、122；本次清理后仅余 `db_snapshot` 留证两文件，统一标注为当日快照 |
+| 构建耗时 | **115～180 s（9,602 标的 / 25,056,094 行，源机历史记录）** | 旧稿记 179.6 s、新稿记 115 s，应为不同批次/缓存状态；不写单一值，并补上规模前提与「目标机未复测」 |
 | `reports/advice/` 顶层规模 | **15 个文件 / 144,389 B（本次实测）** | 旧稿记「约 130 KB / 16 个文件」，本次实测更新 |
 | 分红快照路径 | **`data/local_store/factors/stock_dividend.parquet`** | 两稿一致，且本次实测存在（677,598 B / 53,974 行），无冲突 |
 | `tencent minute` 命令 | **补 `--codes`** | 旧/新稿均写成 `minute --allow-remote`，但 argparse 中 `--codes` 为必填（`src/data/tencent/__main__.py:204`），按实际 CLI 修正 |
