@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -20,7 +20,12 @@ from src.advice.config import (
     default_config,
     default_output_tiers,
 )
-from src.advice.daily_store import default_daily_dir, save_daily_snapshot
+from src.advice.daily_store import (
+    default_daily_dir,
+    next_trading_day,
+    resolve_exec_status,
+    save_daily_snapshot,
+)
 from src.advice.data import LocalPanelLoader, panel_trading_dates
 from src.advice.eligibility import EligibilityResult, check_eligibility
 from src.advice.factor_panel import compute_factor_panel
@@ -92,6 +97,53 @@ def _rescale(allocations: list[Allocation], cap_amount: float, equity: float,
     return result
 
 
+#: 同码冲突时的方向优先级（数值越大越优先）
+DIRECTION_PRIORITY = {
+    DIRECTION_BUY: 4,
+    DIRECTION_SELL: 3,
+    DIRECTION_HOLD: 2,
+    DIRECTION_AVOID: 1,
+}
+
+
+def merge_duplicate_rows(
+        rows: list[Recommendation]) -> tuple[list[Recommendation], list[dict[str, Any]]]:
+    """按 **(档位, 代码)** 合并重复行，冲突时保留优先级更高的方向。
+
+    合并键里的“档位”由调用方保证（``_run_tier`` 一次只处理一个档位）。
+    优先级写死为 ``BUY > SELL > HOLD > AVOID``：持仓/卖出语义优先于
+    观察性 AVOID，避免同一标的在清单里同时出现「持有」和「AVOID」。
+    """
+    kept: dict[str, Recommendation] = {}
+    order: list[str] = []
+    merges: list[dict[str, Any]] = []
+    for rec in rows:
+        code = rec.ts_code
+        prev = kept.get(code)
+        if prev is None:
+            kept[code] = rec
+            order.append(code)
+            continue
+        prev_rank = DIRECTION_PRIORITY.get(prev.direction, 0)
+        rank = DIRECTION_PRIORITY.get(rec.direction, 0)
+        if rank > prev_rank:
+            merges.append({
+                'ts_code': code,
+                'kept': rec.direction,
+                'dropped': prev.direction,
+                'reason': '同码冲突，按 BUY>SELL>HOLD>AVOID 保留高优先级',
+            })
+            kept[code] = rec
+        else:
+            merges.append({
+                'ts_code': code,
+                'kept': prev.direction,
+                'dropped': rec.direction,
+                'reason': '同码冲突，按 BUY>SELL>HOLD>AVOID 保留高优先级',
+            })
+    return [kept[code] for code in order], merges
+
+
 class AdviceEngine:
     """每日推荐引擎（无 UI 依赖）。"""
 
@@ -153,12 +205,15 @@ class AdviceEngine:
                  persist_state: bool = True,
                  codes: Iterable[str] | None = None,
                  daily_dir: str | Path | None = None,
-                 persist_daily: bool = False) -> AdviceResult:
+                 persist_daily: bool = False,
+                 generated_at: datetime | None = None) -> AdviceResult:
         """生成指定日期（默认最新交易日）的三档推荐清单。
 
         ``persist_daily=True`` 时把结果另存为按日归档（``daily_dir``，
         默认 ``reports/advice/daily/{YYYYMMDD}.json``）；归档与 ``state`` 完全解耦。
+        ``generated_at`` 仅用于执行时点判定（测试可注入固定时刻），默认当前时间。
         """
+        gen_at = generated_at or datetime.now()
         tier_keys = (list(tiers) if tiers
                      else default_output_tiers(self.config.tiers))
         selected = [self.config.tier(key) for key in tier_keys]
@@ -198,6 +253,11 @@ class AdviceEngine:
             f"标的={report.loaded}, 档位={tier_keys}")
 
         result = AdviceResult(trade_date=trade_date, equity=float(equity))
+        earliest_exec, exec_basis = next_trading_day(trade_date, trading_dates)
+        result.signal_date = trade_date
+        result.earliest_exec_date = earliest_exec
+        result.exec_date_basis = exec_basis
+        result.exec_status = resolve_exec_status(earliest_exec, gen_at)
         soft_enabled = extended and self.config.soft_filter.enabled
         for tier in selected:
             scored = attach_score(
@@ -211,7 +271,7 @@ class AdviceEngine:
             state = self.load_state(state_path, tier.key)
             advice, new_state = self._run_tier(
                 scored, trade_date, meta, tier, float(equity), state,
-                trading_dates, report.summary(), risk)
+                trading_dates, report.summary(), risk, earliest_exec)
             monitor = run_ic_monitor(scored, tier.key, trade_date=trade_date)
             advice.notes.append(monitor_note(monitor))
             result.tiers[tier.key] = advice
@@ -219,14 +279,19 @@ class AdviceEngine:
                 self.save_state(state_path, tier.key, trade_date,
                                 float(equity), new_state)
         if persist_daily:
-            save_daily_snapshot(result, daily_dir or default_daily_dir())
+            save_daily_snapshot(result, daily_dir or default_daily_dir(),
+                                generated_at=gen_at,
+                                earliest_exec_date=earliest_exec,
+                                exec_date_basis=exec_basis)
         return result
 
     def _run_tier(self, scored: pl.DataFrame, trade_date: date,  # noqa: C901
                   meta: dict[str, Any], tier: Any, equity: float,
                   state: dict[str, HoldingState], trading_dates: list[date],
                   coverage: dict[str, Any],
-                  risk: RiskContext) -> tuple[TierAdvice, dict[str, HoldingState]]:
+                  risk: RiskContext,
+                  earliest_exec: date | None = None,
+                  ) -> tuple[TierAdvice, dict[str, HoldingState]]:
         latest = scored.filter(pl.col('date') == trade_date)
         if latest.is_empty():
             return TierAdvice(tier=tier.key, label=tier.label,
@@ -377,10 +442,14 @@ class AdviceEngine:
                 continue
             decision = decisions[code]
             if code in exits and code not in admitted_sells:
-                # 换手上限延后卖出：仍保留持仓
-                advice.rows.append(self._hold_row(
+                # 换手上限延后卖出：仍保留持仓，但归档里显式标 deferred
+                row_out = self._hold_row(
                     row, holding, decision, meta, tier, equity,
-                    stats, note='卖出被换手上限延后'))
+                    stats, note='卖出被换手上限延后')
+                row_out.disposition = 'deferred'
+                row_out.defer_reason = '卖出被换手上限（单边 20%）延后'
+                row_out.defer_until = earliest_exec
+                advice.rows.append(row_out)
                 new_state[code] = HoldingState(
                     ts_code=code, shares=holding.shares,
                     entry_date=holding.entry_date, entry_price=holding.entry_price,
@@ -415,10 +484,43 @@ class AdviceEngine:
                 smoothed_percentile=float(row.get('score_percentile') or 0.0),
                 sell_confirm=0)
 
+        # 5b) 被换手上限延后的买入也必须写入归档（disposition=deferred），
+        #     否则归档与当日实际建议集合不一致。
+        for intent in plan.deferred:
+            if intent.side != 'buy':
+                continue
+            deferred_item = alloc_by_code.get(intent.ts_code)
+            if deferred_item is None:
+                continue
+            match = next(
+                (entry for entry in candidates if entry[1].ts_code == intent.ts_code),
+                None)
+            if match is None:
+                continue
+            row, candidate, eligibility = match
+            ref_price = float(row.get('raw_close') or deferred_item.price)
+            rec = self._buy_row(
+                row, deferred_item, eligibility, meta, tier, ref_price, stats)
+            rec.disposition = 'deferred'
+            rec.defer_reason = '单次换手上限（单边 20%）预算不足'
+            rec.defer_until = earliest_exec
+            rec.risk_notes.append(
+                f'本次未成交：{rec.defer_reason}；预计 {earliest_exec} 可再排')
+            advice.rows.append(rec)
+
         for row, eligibility in avoid_rows:
             advice.rows.append(self._avoid_row(row, eligibility, meta, tier, stats))
 
-        advice.invested = sum(rec.target_weight for rec in advice.rows) * equity
+        # 5c) 同日同档按 (档位, 代码) 合并；冲突优先级 BUY > SELL > HOLD > AVOID
+        advice.rows, advice.row_merge = merge_duplicate_rows(advice.rows)
+        if advice.row_merge:
+            advice.notes.append(
+                f'行合并：按 (档位,代码) 去掉 {len(advice.row_merge)} 条重复行'
+                f'（优先级 BUY>SELL>HOLD>AVOID）')
+
+        advice.invested = sum(
+            rec.target_weight for rec in advice.rows
+            if rec.disposition != 'deferred') * equity
         advice.cash = equity - advice.invested
         # gross_notional 为买卖双边合计；组合换手按行业惯例取单边口径
         advice.turnover = (plan.gross_notional / (2 * equity)) if equity > 0 else 0.0
@@ -427,9 +529,10 @@ class AdviceEngine:
         if plan.deferred:
             advice.notes.append(
                 f"换手上限 {self.config.turnover.max_turnover_per_rebalance:.0%} "
-                f"延后 {len(plan.deferred)} 笔调仓")
+                f"延后 {len(plan.deferred)} 笔调仓（已写入归档并标 deferred）")
         stats_local = {key: risk.counts[key] - count_start.get(key, 0)
                        for key in risk.counts}
+        stats_local['row_merge_dropped'] = len(advice.row_merge)
         advice.filter_stats = stats_local
         advice.filter_audit = list(risk.audit[audit_start:])
         advice.notes.extend(

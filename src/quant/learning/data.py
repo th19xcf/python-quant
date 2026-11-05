@@ -19,6 +19,7 @@ from loguru import logger
 
 from src.alpha.calculator.alpha_calculator import calculate_factors_cross_sectional
 from src.data.local_store.store import LocalQuoteStore
+from src.data.quality.code_migration import load_entity_index
 
 PRICE_COLUMNS = ('open', 'high', 'low', 'close')
 FACTOR_TYPES = ('price_momentum', 'volatility', 'volume', 'technical', 'risk')
@@ -52,9 +53,12 @@ def select_universe(root: Path, limit: int, asset: str = 'stock') -> List[str]:
     的新股；真正的流动性过滤在 ``load_panel`` 里用近期成交额完成。
     """
     store = root / 'data' / 'local_store' / 'quotes' / asset
+    entity_index = load_entity_index(store.parents[1]) if asset == 'stock' else None
     files = sorted(store.glob('*/*.parquet'))
     candidates = [path for path in files
                   if _eligible_code(_code_from_path(path))
+                  and (entity_index is None
+                       or not entity_index.is_superseded(_code_from_path(path)))
                   and path.stat().st_size >= 50_000]
     if not candidates:
         return []

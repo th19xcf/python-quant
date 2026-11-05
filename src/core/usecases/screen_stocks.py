@@ -21,6 +21,7 @@ from typing import Any, Dict, List
 import polars as pl
 from loguru import logger
 
+from src.data.quality.code_migration import load_entity_index
 from src.recommendation.stock_recommender import StockRecommender
 
 # 周期 → 回溯月数（锚点为最新交易日，不再是写死的 2024 年日期）
@@ -90,10 +91,11 @@ def _resolve_universe(data_manager: Any, top_n: int,
     显式传入 ``stock_codes`` 时按传入顺序去重后使用，不做截断。
     """
     stock_basic = data_manager.get_stock_basic()
+    entity_index = load_entity_index()
 
     if stock_codes:
         normalized = list(dict.fromkeys(code for code in stock_codes if code))
-        return normalized, stock_basic
+        return [code for code in normalized if not entity_index.is_superseded(code)], stock_basic
 
     if stock_basic.is_empty() or 'ts_code' not in stock_basic.columns:
         return [], stock_basic
@@ -103,6 +105,7 @@ def _resolve_universe(data_manager: Any, top_n: int,
     codes = [
         str(code) for code in stock_basic['ts_code'].to_list()
         if code and not is_index_code(str(code)) and not is_fund_code(str(code))
+        and not entity_index.is_superseded(str(code))
     ]
     return sorted(set(codes))[:top_n * 3], stock_basic
 

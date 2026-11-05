@@ -21,6 +21,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from src.data.adj_factor_calculator import AdjFactorCalculator
 from src.data.managers.data_fetcher import DataFetcher
 
 
@@ -271,4 +272,134 @@ class TestBaostockDailyFactors:
         disjoint = pl.DataFrame({'date': ['2030-01-01'], 'close_hfq': [1.0]},
                                 schema={'date': pl.Utf8, 'close_hfq': pl.Float64})
         assert self._compute(raw, disjoint) == (None, None)
+
+
+def _syn_prices(dates: list[datetime.date], close: float = 10.0) -> pl.DataFrame:
+    return pl.DataFrame({
+        'ts_code': ['600000.SH'] * len(dates),
+        'trade_date': dates,
+        'close': [close] * len(dates),
+    })
+
+
+def _syn_events(rows: list[tuple[datetime.date, float]]) -> pl.DataFrame:
+    return pl.DataFrame({
+        'ts_code': ['600000.SH'] * len(rows),
+        'ex_date': [r[0] for r in rows],
+        'cash_div': [r[1] for r in rows],
+        'share_div': [0.0] * len(rows),
+        'rights_issue_ratio': [0.0] * len(rows),
+        'rights_issue_price': [0.0] * len(rows),
+    })
+
+
+class TestEventTruncation:
+    """规则 4：晚于行情末行（或 as_of）的事件不得参与因子计算"""
+
+    def test_event_after_last_trade_date_changes_no_row(self):
+        dates = [datetime.date(2026, 10, 28) + datetime.timedelta(days=i)
+                 for i in range(6)]
+        prices = _syn_prices(dates)
+        future = _syn_events([(datetime.date(2026, 11, 6), 1.0)])
+
+        result = AdjFactorCalculator.calculate_factors(prices, future)
+        baseline = AdjFactorCalculator.calculate_factors(
+            prices, _syn_events([]))
+
+        assert result['qfq_factor'].to_list() == pytest.approx([1.0] * 6)
+        assert result['hfq_factor'].to_list() == pytest.approx([1.0] * 6)
+        assert (result['qfq_factor'] - baseline['qfq_factor']).abs().max() == 0.0
+        assert (result['hfq_factor'] - baseline['hfq_factor']).abs().max() == 0.0
+
+    def test_future_event_does_not_alter_in_range_event_result(self):
+        dates = [datetime.date(2026, 10, 28) + datetime.timedelta(days=i)
+                 for i in range(6)]
+        prices = _syn_prices(dates)
+        in_range = _syn_events([(datetime.date(2026, 10, 30), 0.5)])
+        mixed = _syn_events([
+            (datetime.date(2026, 10, 30), 0.5),
+            (datetime.date(2026, 11, 6), 1.0),
+        ])
+        only_in_range = AdjFactorCalculator.calculate_factors(prices, in_range)
+        with_future = AdjFactorCalculator.calculate_factors(prices, mixed)
+        assert (only_in_range['qfq_factor']
+                - with_future['qfq_factor']).abs().max() == 0.0
+        assert (only_in_range['hfq_factor']
+                - with_future['hfq_factor']).abs().max() == 0.0
+
+    def test_as_of_truncation_expected_sequence(self):
+        """as_of 早于最后除权日时，qfq 逐行等于"只含可见事件"的手算序列"""
+        dates = [datetime.date(2026, 1, 5) + datetime.timedelta(days=i)
+                 for i in range(12)]
+        prices = _syn_prices(dates, close=10.0)
+        events = _syn_events([
+            (datetime.date(2026, 1, 9), 1.0),    # factor 0.9
+            (datetime.date(2026, 1, 15), 2.0),   # factor 0.8
+        ])
+        as_of = datetime.date(2026, 1, 12)
+
+        truncated = AdjFactorCalculator.calculate_factors(
+            prices, events, as_of=as_of)
+        full = AdjFactorCalculator.calculate_factors(prices, events)
+
+        # 10 元收 1 元派息 → 0.9；as_of=01-12 时 01-15 的事件不可见
+        assert truncated['qfq_factor'].to_list() == pytest.approx(
+            [0.9] * 4 + [1.0] * 8)
+        # hfq 只由已生效事件决定：01-09 之后 × 1/0.9
+        assert truncated['hfq_factor'].to_list() == pytest.approx(
+            [1.0] * 4 + [1.0 / 0.9] * 8)
+        # 不传 as_of（以行情末行为界）时两个事件都生效
+        assert full['qfq_factor'].to_list() == pytest.approx(
+            [0.72] * 4 + [0.8] * 6 + [1.0] * 2)
+        assert full['hfq_factor'].to_list() == pytest.approx(
+            [1.0] * 4 + [1.0 / 0.9] * 6 + [1.0 / 0.72] * 2)
+
+
+class TestLocalPathAsOfRollback:
+    """规则 5：本地列存出口（date 列）也要按 as_of 回滚 qfq"""
+
+    @staticmethod
+    def _frame() -> pl.DataFrame:
+        dates = [datetime.date(2026, 1, 5) + datetime.timedelta(days=i)
+                 for i in range(12)]
+        raw = [10.0] * 12
+        return pl.DataFrame({
+            'date': dates,
+            'open': raw, 'high': raw, 'low': raw, 'close': raw,
+            # 以最新交易日为锚的 qfq（01-15 事件已含在快照里）
+            'qfq_factor': [0.72] * 4 + [0.8] * 6 + [1.0] * 2,
+            # hfq 只由已生效事件决定，天然 PIT 安全
+            'hfq_factor': [1.0] * 4 + [1.0 / 0.9] * 6 + [1.0 / 0.72] * 2,
+        })
+
+    def test_local_apply_adjustment_rolls_back_qfq(self):
+        fetcher = DataFetcher.__new__(DataFetcher)
+        result = fetcher._apply_adjustment_with_pit(
+            self._frame(), 'qfq', as_of=datetime.date(2026, 1, 12),
+            code='600000.SH')
+
+        # 除以 as_of 锚点 0.8：01-09 之前 0.9，其余 1.0（与手工序列一致）
+        assert result['qfq_factor'].to_list() == pytest.approx(
+            [0.9] * 4 + [1.0] * 8)
+        assert result['close'].to_list() == pytest.approx(
+            [9.0] * 4 + [10.0] * 8)
+        # as_of 当日（第 8 行）因子必须精确回到 1.0，锚点不漂移
+        assert result['qfq_factor'][7] == pytest.approx(1.0)
+
+    def test_rows_after_as_of_get_unit_factor(self):
+        fetcher = DataFetcher.__new__(DataFetcher)
+        result = fetcher._apply_adjustment_with_pit(
+            self._frame(), 'qfq', as_of=datetime.date(2026, 1, 12),
+            code='600000.SH')
+        assert result['qfq_factor'].to_list()[8:] == pytest.approx([1.0] * 4)
+
+    def test_hfq_not_rolled_back(self):
+        fetcher = DataFetcher.__new__(DataFetcher)
+        df = self._frame()
+        result = fetcher._apply_adjustment_with_pit(
+            df, 'hfq', as_of=datetime.date(2026, 1, 12), code='600000.SH')
+        assert result['hfq_factor'].to_list() == pytest.approx(
+            df['hfq_factor'].to_list())
+        assert result['close'].to_list() == pytest.approx(
+            [v * 10.0 for v in df['hfq_factor'].to_list()])
 

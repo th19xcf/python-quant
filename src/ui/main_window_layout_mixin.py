@@ -6,11 +6,12 @@
 
 import contextlib
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
+    QHeaderView,
     QLabel,
     QMenu,
     QProgressBar,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.ui.theme_manager import SidebarItemDelegate, is_dark_palette, sidebar_qss
 from src.utils.logger import logger
 
 
@@ -102,7 +104,7 @@ class MainWindowLayoutMixin:
         main_splitter.addWidget(center_right_splitter)
 
         # 设置分割器比例
-        main_splitter.setSizes([200, 1200])
+        main_splitter.setSizes([205, 1195])
 
         # 创建中间主区域
         self.create_center_area(center_right_splitter)
@@ -124,11 +126,29 @@ class MainWindowLayoutMixin:
             parent: 父部件
         """
         left_widget = QWidget()
+        left_widget.setObjectName("navPanel")
         left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
 
-        # 创建导航树
+        # 创建导航树：样式与绘制委托统一在 theme_manager 里，深浅主题共用一套结构
         self.nav_tree = QTreeWidget()
+        self.nav_tree.setObjectName("navTree")
         self.nav_tree.setHeaderHidden(True)
+        self.nav_tree.setIndentation(12)
+        self.nav_tree.setIconSize(QSize(16, 16))
+        self.nav_tree.setFrameShape(QFrame.NoFrame)
+        # 视口开启鼠标跟踪与 hover 事件，条目悬停高亮才会被委托收到
+        self.nav_tree.viewport().setMouseTracking(True)
+        self.nav_tree.viewport().setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.nav_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # 列宽撑满视口，悬停/选中高亮块才能铺满整行
+        self.nav_tree.header().setStretchLastSection(True)
+        self.nav_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+
+        dark = is_dark_palette()
+        left_widget.setStyleSheet(sidebar_qss(dark))
+        self.nav_tree.setItemDelegate(SidebarItemDelegate(self.nav_tree, dark=dark))
 
         # 添加导航项
         self.add_nav_item(self.nav_tree, "自选股", ["我的自选", "自定义板块1", "自定义板块2"])

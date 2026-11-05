@@ -35,6 +35,7 @@ from loguru import logger
 
 from src.data.local_store.store import LocalQuoteStore, get_local_quote_store
 from src.data.managers.data_fetcher import DataFetcher
+from src.data.quality.code_migration import load_entity_index
 from src.utils.config import get_config
 
 #: 面板必需列
@@ -137,6 +138,8 @@ def load_panel(request: PanelRequest | None = None, codes: list[str] | None = No
         request.universe_size, request.liquidity_lookback,
         store=store, use_cache=request.use_cache,
     )
+    # 同一实体的旧码已被新码完整覆盖时只保留新码，避免横截面重复计样本
+    codes = load_entity_index(store.root).dedupe(codes)
 
     factor_store = store.factor_snapshot_store()
     factor_version = '0'

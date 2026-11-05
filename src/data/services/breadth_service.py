@@ -37,6 +37,7 @@ import polars as pl
 from loguru import logger
 
 from src.backtest.engine.execution_core import ExecutionRules
+from src.data.quality.code_migration import load_entity_index
 from src.data.st_history import load_intervals
 
 #: 快照口径版本号；口径变化时必须改版本，触发全量重建
@@ -223,6 +224,10 @@ def _daily_from_quotes(
         return pl.DataFrame(schema=_SNAPSHOT_SCHEMA)
 
     hist = hist.with_columns(pl.col('date').cast(pl.Date))
+    # 同一实体的旧码已被新码完整覆盖时先剔除，避免涨跌家数重复计数
+    superseded = sorted(load_entity_index(store_root).superseded)
+    if superseded:
+        hist = hist.filter(~pl.col('ts_code').is_in(superseded))
     dates = sorted(hist['date'].unique().to_list())
 
     st_pairs = _st_pairs(store_root, dates)

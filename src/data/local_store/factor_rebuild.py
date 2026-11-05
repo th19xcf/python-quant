@@ -99,6 +99,9 @@ def _compute_code_factors(code: str, quote_store: LocalQuoteStore,
                 pl.col(col).cast(pl.Float64).fill_null(0.0)
                 for col in _DIVIDEND_NUMERIC if col in dividends.columns
             ])
+            # 事件截断由 calculate_factors 按 prices 末行自动完成，不额外传 as_of：
+            # 本函数只重建到行情末行为止的快照，prices 末行即作用域边界，
+            # 显式再传一个日期等于重复同一事实，反而可能在增量重建时漂移。
             result = AdjFactorCalculator.calculate_factors(prices, dividends)
         else:
             result = None

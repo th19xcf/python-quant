@@ -44,6 +44,16 @@ from src.advice.universe import build_meta, list_local_stock_codes, load_name_ma
 from src.backtest.engine.execution_core import ExecutionRules
 from src.utils.config import get_config
 
+#: 新旧回放可比性说明（代码常量，随每次写盘自动带上，避免生成文件被覆盖后丢失）
+REPLAY_COMPARABILITY_NOTE = (
+    '新旧回放不可直接相减：pre_failclosed 旧件为 ST keep + 往返成本 0.36%，'
+    'st_unknown_passed=19706/15634/6015，且当时 ST 区间表、事件覆盖与本地标的池'
+    '均与现在不同；replay_summary_legacy.json 为 11-04 前归档口径（12 因子），'
+    '也不可与 extended 直接比。当前正式件为 fail-closed ST + 往返 0.19% + '
+    'extended 因子集；P0 可归因对照只用同数据同成本下的 keep(0.19%) vs '
+    'drop(0.19%)。'
+)
+
 
 @dataclass
 class ReplayPosition:
@@ -143,6 +153,10 @@ class ReplayResult:
             'closed_trades': sum(
                 1 for item in self.positions if item.get('status') == 'exited'),
             'last_daily_pnl': self.daily[-1]['pnl'] if self.daily else 0.0,
+            'factor_set': self.diagnostics.get('run', {}).get('factor_set'),
+            'max_symbols': self.diagnostics.get('run', {}).get('max_symbols'),
+            'loaded_symbols': self.diagnostics.get('run', {}).get('loaded_symbols'),
+            'comparability': REPLAY_COMPARABILITY_NOTE,
             'diagnostics': self.diagnostics,
         }
 
@@ -675,7 +689,8 @@ def run_replay(config: AdviceConfig | None = None, store_root: Any = None,
         logger.warning('[replay] 没有可用行情，返回空结果')
         return {}
 
-    factors = compute_factor_panel(panel)
+    extended = advice_config.factor_set == 'extended'
+    factors = compute_factor_panel(panel, extended=extended)
     all_dates = panel_trading_dates(factors)
     window = [item for item in all_dates if item >= start_date]
     meta = build_meta(factors['ts_code'].unique().to_list(),
@@ -684,15 +699,33 @@ def run_replay(config: AdviceConfig | None = None, store_root: Any = None,
     if len(window) < 2:
         logger.warning('[replay] 回放窗口不足 2 个交易日，返回空结果')
         return {}
+    run_meta = {
+        'factor_set': advice_config.factor_set,
+        'start': window[0].isoformat(),
+        'end': window[-1].isoformat(),
+        'max_symbols': max_symbols,
+        'loaded_symbols': report.loaded,
+        'round_trip_rate': round(advice_config.costs.round_trip_rate, 6),
+        'comparability': REPLAY_COMPARABILITY_NOTE,
+    }
     logger.info(
         f"[replay] 标的 {report.loaded} 只, 回放 {len(window)} 个交易日 "
         f"({window[0]} ~ {window[-1]})")
 
     results: dict[str, ReplayResult] = {}
     for tier in selected:
-        scored = attach_score(factors, tier)
+        scored = attach_score(
+            factors, tier,
+            missing_policy='reweight' if extended else 'fill_zero',
+            min_history_rows=advice_config.min_history_rows)
+        if extended and advice_config.soft_filter.enabled:
+            from src.advice.soft_filters import apply_soft_filter
+
+            scored = apply_soft_filter(scored, advice_config.soft_filter)
         runner = _ReplayTier(engine, tier, scored, window, meta, initial_equity)
-        results[tier.key] = runner.run()
+        result = runner.run()
+        result.diagnostics['run'] = dict(run_meta)
+        results[tier.key] = result
     return results
 
 

@@ -7,11 +7,14 @@ market_breadth 数据；缺依赖时显式失败/返回 None，禁止用全 0 �
 """
 
 import datetime
+from pathlib import Path
 
 import numpy as np
 import polars as pl
 import pytest
 
+from src.data.quality.code_migration import EntityIndex
+from src.data.services.breadth_service import _daily_from_quotes
 from src.tech_analysis.indicators import market_breadth as mb
 from src.tech_analysis.indicators.market_breadth import (
     MarketBreadthUnavailableError,
@@ -315,3 +318,42 @@ def test_indicator_manager_forwards_injected_market_breadth():
     )
 
     assert 'abi10' in result.columns
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+REAL_STORE = PROJECT_ROOT / 'data' / 'local_store'
+
+
+@pytest.mark.skipif(not (REAL_STORE / 'quotes' / 'stock').is_dir(),
+                    reason='本地行情未就绪')
+def test_breadth_dedup_removes_superseded_old_code(monkeypatch):
+    """同一实体旧码（000043.SZ）被剔除后，2015-06-30 只减少 1 只重复样本。"""
+    import src.data.services.breadth_service as bs
+
+    glob = str(REAL_STORE / 'quotes' / 'stock' / '*' / '*.parquet')
+    hist = pl.scan_parquet(glob).select(
+        ['date', 'ts_code', 'close', 'pre_close', 'volume', 'qfq_factor']
+    ).filter(pl.col('date') == pl.date(2015, 6, 30)).collect()
+    assert hist.height > 2000
+
+    real_index = bs.load_entity_index(REAL_STORE)
+    monkeypatch.setattr(bs, 'load_entity_index',
+                        lambda *args, **kwargs: EntityIndex({}, frozenset()))
+    before = _daily_from_quotes(hist, REAL_STORE, with_rolling=False)
+    monkeypatch.setattr(bs, 'load_entity_index',
+                        lambda *args, **kwargs: real_index)
+    after = _daily_from_quotes(hist, REAL_STORE, with_rolling=False)
+
+    b = before.to_dicts()[0]
+    a = after.to_dicts()[0]
+    # 2026-11-05 回补后 302132.SZ 已覆盖 300114.SZ 全历史，2015-06-30 当日
+    # 同时存在 000043.SZ / 300114.SZ 两个被收敛旧码；按当日实际命中数动态核对。
+    present = sorted(set(hist['ts_code'].unique().to_list()) & real_index.superseded)
+    assert present == ['000043.SZ', '300114.SZ']
+    required = len(present)
+    assert b['total_count'] - a['total_count'] == required
+    diff = {key: int(b[key]) - int(a[key])
+            for key in ('up_count', 'down_count', 'flat_count')}
+    # 剔除的旧码全部落在同一方向桶：涨/跌/平中恰好一列减少 required
+    assert sum(diff.values()) == required
+    assert sum(1 for value in diff.values() if value != 0) == 1

@@ -110,9 +110,10 @@ class RiskFilterConfig:
     默认值理由：
 
     - ``st_enabled=True``：当日推荐必须剔除 ST 风险警示标的；
-    - ``st_unknown_policy='keep'``：ST 历史不可回溯（本地只有当日名称快照），
-      历史区间全是 ``unknown``。若默认 ``drop``，等于把整个股票池清空；
-      默认 ``keep`` 但**显式统计并写入档位说明**，不把 unknown 当 non_st；
+    - ``st_unknown_policy='drop'``：ST 状态未知时 **fail-closed**，一律不进
+      买入候选并单列 ``st_unknown_rejected``；只有明确 ``non_st`` 才放行。
+      历史回放若遇到区间表/快照都覆盖不到的早期日期，会被如实记为 unknown
+      并拒绝，不用「放行」掩盖数据缺口；
     - ``industry_enabled=True``：用通达信行业二级（约 56 组）替代代码前缀近似；
     - ``event_enabled=True``：只做三类风险冷却过滤；
     - ``event_unknown_policy='keep'``：事件表覆盖不到的日期返回 unknown，
@@ -120,7 +121,7 @@ class RiskFilterConfig:
     """
 
     st_enabled: bool = True
-    st_unknown_policy: str = 'keep'  # 'keep' | 'drop'
+    st_unknown_policy: str = 'drop'  # 'keep' | 'drop'；默认 fail-closed
     industry_enabled: bool = True
     event_enabled: bool = True
     event_unknown_policy: str = 'keep'  # 'keep' | 'drop'

@@ -332,7 +332,8 @@ class DataFetcher:
         local_data = self._get_data_from_local_store(
             'stock', stock_code, start_date, end_date, frequency)
         if local_data is not None and not local_data.is_empty():
-            adjusted = self._apply_adjustment(local_data, adjustment_type, as_of)
+            adjusted = self._apply_adjustment_with_pit(
+                local_data, adjustment_type, as_of, stock_code)
             global_data_cache.set(adjusted, 'stock', stock_code, start_date, end_date,
                                 **cache_params)
             return adjusted
@@ -455,7 +456,7 @@ class DataFetcher:
                 pending.append(code)
                 continue
             frame = MemoryOptimizer.optimize_dataframe(frame, enable_sparse=True)
-            adjusted = self._apply_adjustment(frame, adjustment_type, as_of)
+            adjusted = self._apply_adjustment_with_pit(frame, adjustment_type, as_of, code)
             global_data_cache.set(adjusted, 'stock', code, start_date, end_date,
                                   **cache_params)
             route_metrics.record(
@@ -569,7 +570,8 @@ class DataFetcher:
         local_data = self._get_data_from_local_store(
             'fund', fund_code, start_date, end_date, frequency)
         if local_data is not None and not local_data.is_empty():
-            adjusted = self._apply_adjustment(local_data, adjustment_type, as_of)
+            adjusted = self._apply_adjustment_with_pit(
+                local_data, adjustment_type, as_of, fund_code)
             global_data_cache.set(adjusted, 'fund', fund_code, start_date, end_date,
                                   **cache_params)
             return adjusted
@@ -645,6 +647,22 @@ class DataFetcher:
             .str.strptime(pl.Datetime, format='%Y%m%d', strict=False)
             .alias('date')
         )
+
+    def _apply_adjustment_with_pit(self, df: pl.DataFrame, adjustment_type: str,
+                                   as_of: date | None = None,
+                                   code: str | None = None) -> pl.DataFrame:
+        """复权出口统一入口：先按 as_of 回滚 qfq，再乘复权因子。
+
+        远程库路径原本在取数阶段单独回滚（见 _get_data_from_database），而本地
+        列存主路径与批量路径完全忽略 as_of，导致 qfq 锚定最新交易日、无法回到
+        观察时点。这里把同一份 _rollback_qfq_factor 下沉到出口层，三条读路径
+        共用，避免各自实现漂移。hfq 不回滚：后复权天然 PIT 安全，回滚只动
+        qfq_factor，不会改坏 hfq。
+        """
+        if (as_of is not None and adjustment_type == 'qfq' and code is not None
+                and 'qfq_factor' in df.columns):
+            df = self._rollback_qfq_factor(df, code, as_of)
+        return self._apply_adjustment(df, adjustment_type)
 
     @staticmethod
     def _apply_adjustment(df: pl.DataFrame, adjustment_type: str,
@@ -870,66 +888,52 @@ class DataFetcher:
             logger.warning(f"读取 {code} 除权事件失败，按无事件处理: {exc}")
             return pl.DataFrame()
 
-    def _rollback_qfq_factor(self, df: pl.DataFrame, code: str,
+    @staticmethod
+    def _rollback_qfq_factor(df: pl.DataFrame, code: str,
                              as_of: date) -> pl.DataFrame:
-        """按 as_of 回滚 qfq_factor（向量化，O((N+E) log N)）。
+        """把 qfq_factor 回滚到 as_of 观察锚点（向量化，O(N log N)）。
 
-        公式：截断后因子[td] = 原因子[td] / ∏{ex_date > max(td, as_of)} event_factor。
+        因子快照以最新交易日 L 为锚：qfq[t] = ∏{ex_date > t, e <= L} f_e。
+        因此 as_of 时点可见的因子为：
 
-        事件因子的前收由行情帧内 ``close`` 反推（上一交易日收盘），与复权
-        因子计算器同源公式；事件按除权日排序后做后缀连乘，再用一次
-        ``searchsorted`` 广播回每行，避免"每行 × 每事件"的双重循环。
+            qfq_asof[t] = qfq[t] / qfq[as_of]   (t <= as_of)
+            qfq_asof[t] = 1.0                   (t >  as_of 的未来行)
+
+        与旧事件连乘实现的等价关系：qfq[t] / qfq[as_of] 恰好等于
+        ∏{ex_date > max(t, as_of)} f_e，但不再需要事件表，也不再依赖“事件日
+        之前的收盘价”。这样请求区间早于事件日时不会用错前收；快照若提前含
+        未来事件，该事件在分子分母同时出现而相互抵消，两种情形下 PIT 语义都
+        精确。hfq 不在此处处理（后复权天然 PIT 安全）。
+
+        ``code`` 保留在签名中以维持调用方接口一致（本实现不再按标的读事件）。
         """
         import numpy as np
 
-        from src.data.adj_factor_calculator import calc_dividend_event_factor
-
-        events = self._get_dividend_events(code, as_of)
-        if events.is_empty():
+        if df.is_empty() or 'qfq_factor' not in df.columns:
             return df
 
-        events = (
-            events.filter(pl.col('ex_date').is_not_null())
-            .with_columns(pl.col('ex_date').cast(pl.Datetime))
-            .sort('ex_date')
-        )
-        if events.is_empty():
+        # 本地列存帧用 date 列，远程库帧用 trade_date；统一转 Datetime 比较。
+        date_col = 'trade_date' if 'trade_date' in df.columns else 'date'
+        date_series = df[date_col]
+        if date_series.dtype in (pl.Date, pl.Datetime):
+            trade_dates = date_series.cast(pl.Datetime).to_numpy()
+        else:
+            trade_dates = date_series.cast(pl.Utf8).str.strptime(
+                pl.Datetime, format='%Y-%m-%d', strict=False).to_numpy()
+
+        qfq = df['qfq_factor'].to_numpy().astype(np.float64)
+        visible = trade_dates <= np.datetime64(as_of)
+        if not visible.any():
+            # as_of 早于区间首行：所有行都在观察日之后，前复权因子记 1.0
+            return df.with_columns(
+                pl.Series('qfq_factor', np.ones_like(qfq), dtype=pl.Float64))
+
+        anchor = qfq[visible][-1]  # as_of 当日（或之前最近一行）的锚定因子
+        if not np.isfinite(anchor) or anchor <= 0:
             return df
 
-        trade_dates = df['trade_date'].to_numpy()
-        closes = df['close'].to_numpy()
-        ex_dates = events['ex_date'].to_numpy()
-
-        # pos 为第一条 trade_date >= ex_date 的行号；pos == 0 表示区间内没有
-        # 除权日之前的行情可取前收，该事件无法计算因子，跳过。
-        pos = np.searchsorted(trade_dates, ex_dates, side='left')
-        event_rows = events.to_dicts()
-        kept_ex: list = []
-        factors: list = []
-        for i in np.flatnonzero(pos > 0):
-            row = event_rows[i]
-            factor = calc_dividend_event_factor(
-                closes[pos[i] - 1],
-                row.get('cash_div'),
-                row.get('share_div'),
-                row.get('rights_issue_ratio'),
-                row.get('rights_issue_price'),
-            )
-            if factor is None:
-                continue
-            kept_ex.append(ex_dates[i])
-            factors.append(factor)
-
-        if not factors:
-            return df
-
-        # suffix[k] = ∏ factors[k:]；cnt 为该行之前（含）已完成的事件数
-        suffix = np.append(np.cumprod(np.asarray(factors, dtype=np.float64)[::-1])[::-1], 1.0)
-        cnt = np.searchsorted(np.asarray(kept_ex), trade_dates, side='right')
-        divisor = suffix[cnt]
-        qfq = df['qfq_factor'].to_numpy() / divisor
-
-        return df.with_columns(pl.Series('qfq_factor', qfq, dtype=pl.Float64))
+        rolled = np.where(visible, qfq / anchor, 1.0)
+        return df.with_columns(pl.Series('qfq_factor', rolled, dtype=pl.Float64))
 
     @staticmethod
     def _dividend_event_factor(dividend) -> float | None:

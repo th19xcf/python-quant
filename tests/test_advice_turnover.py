@@ -95,7 +95,8 @@ def test_cost_gate_blocks_low_edge_sell():
 
 
 def test_entry_cost_gate():
-    tier = _tier(edge_scale=0.004)
+    # 成本默认值已统一到 COST_DEFAULTS（一次完整往返 0.15%），门槛随之下移
+    tier = _tier(edge_scale=0.001)
     config = _config(tier)
     allowed, reason = entry_allowed(0.9, tier, config)
     assert not allowed and '成本门槛' in reason

@@ -133,6 +133,21 @@ def test_reweight_missing_is_not_zero_and_short_history_masked() -> None:
     assert abs(last['score'][0]) > 1e-6
 
 
+def test_attach_score_reports_missing_extended_columns() -> None:
+    """扩展档位缺列时必须明确报错并列出列名，不得静默降级。"""
+    frame = _synthetic_panel(days=20, codes=3)
+    tier = default_config().tiers['mid']
+    missing = [spec.column for spec in tier.factors
+               if spec.column not in frame.columns]
+    assert missing
+    with pytest.raises(ValueError) as exc:
+        attach_score(frame, tier, missing_policy='reweight')
+    message = str(exc.value)
+    assert '缺少因子列' in message
+    for column in missing:
+        assert column in message
+
+
 def test_score_uses_no_future_data() -> None:
     frame = _synthetic_panel(days=80, codes=5)
     tier = default_config().tiers['mid']

@@ -598,12 +598,17 @@ class FinancialsCollector:
         aligned.write_parquet(tmp, compression='zstd', statistics=True)
         os.replace(tmp, path)
 
-    def _load_dividends(self) -> dict[str, pl.DataFrame]:
-        """读取本地分红快照，用于计算股息率（只读，不修改该文件）。"""
+    def _load_dividends(self) -> dict[str, pl.DataFrame] | None:
+        """读取本地分红快照，用于计算股息率（只读，不修改该文件）。
+
+        返回 ``None`` 表示快照整体不可用（此时 ``dv_ratio`` 保持为空，避免把
+        「缺数据」误写成 0）；快照可用但某标的无分红记录时由调用方按空表处理，
+        股息率记为 0。
+        """
         path = Path(self.store_root) / 'factors' / 'stock_dividend.parquet'
         if not path.exists():
             logger.warning(f'[financials] 分红快照不存在，dv_ratio 将为空: {path}')
-            return {}
+            return None
         try:
             frame = pl.read_parquet(
                 path, columns=['ts_code', 'ex_date', 'cash_div']).filter(
@@ -612,7 +617,7 @@ class FinancialsCollector:
                     for group in frame.partition_by('ts_code', maintain_order=True)}
         except (OSError, pl.exceptions.PolarsError) as exc:
             logger.warning(f'[financials] 分红快照读取失败，dv_ratio 将为空: {exc}')
-            return {}
+            return None
 
     # ------------------------------------------------------------------
     # 合并
@@ -857,15 +862,28 @@ def normalize_valuation(df: Any, ts_code: str,
         pl.lit('akshare:stock_value_em').alias('source'),
         pl.lit(fetched_at or datetime.now()).alias('fetched_at'),
     ])
-    frame = _attach_dividend_yield(frame, dividends.get(ts_code) if dividends else None)
+    if dividends is None:
+        divs = None
+    else:
+        divs = dividends.get(ts_code)
+        if divs is None:
+            # 快照可用但该标的无任何分红记录：视为零股息，而不是缺数据
+            divs = pl.DataFrame(schema={'ex_date': pl.Date, 'cash_div': pl.Float64})
+    frame = _attach_dividend_yield(frame, divs)
     return store.coerce_schema(frame, 'valuation')
 
 
 def _attach_dividend_yield(frame: pl.DataFrame,
                            divs: pl.DataFrame | None) -> pl.DataFrame:
-    """用本地分红快照计算滚动 12 个月股息率（百分数，按除息日计）。"""
-    if divs is None or divs.is_empty():
+    """用本地分红快照计算滚动 12 个月股息率（百分数，按除息日计）。
+
+    ``divs=None`` 表示分红快照整体不可用，结果保持为空；``divs`` 为空表表示
+    该标的确认无分红记录，股息率记 0；有记录但近 365 天无分红时同样记 0。
+    """
+    if divs is None:
         return frame.with_columns(pl.lit(None, dtype=pl.Float64).alias('dv_ratio'))
+    if divs.is_empty():
+        return frame.with_columns(pl.lit(0.0, dtype=pl.Float64).alias('dv_ratio'))
     divs = divs.sort('ex_date').with_columns(
         pl.col('cash_div').cum_sum().alias('_cum_div'))
     left = frame.sort('trade_date')
@@ -883,5 +901,5 @@ def _attach_dividend_yield(frame: pl.DataFrame,
              / pl.col('close').clip(1e-9) * 100)
     result = left.with_columns(
         pl.when(pl.col('_cum_div').is_not_null()).then(ratio)
-        .otherwise(None).alias('dv_ratio'))
+        .otherwise(0.0).alias('dv_ratio'))
     return result.select(frame.columns + ['dv_ratio'])

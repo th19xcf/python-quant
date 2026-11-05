@@ -36,7 +36,7 @@ def _dto(**overrides) -> DailyRecommendationDTO:
         horizon='短线', validity_days=20, confidence=0.86,
         top_factors='momentum_1m +0.42 | volume_momentum_20 +0.31 | atr_pct -0.12',
         risk_notes='行业口径为代码前缀近似；参考价可能跳空', industry='沪主板',
-        asset_type='股票', tier='short', tier_label='短线', score=1.24,
+        asset_type='股票', tier='mid', tier_label='中线', score=1.24,
         score_percentile=0.93,
         factor_contributions=[
             {'label': 'momentum_1m', 'value': 0.42},
@@ -53,7 +53,7 @@ def _bundle(items: list[DailyRecommendationDTO]) -> DailyRecommendationBundle:
         items=items, trade_date=date(2026, 10, 19),
         generated_at=datetime(2026, 10, 19, 15, 40), data_lag_days=0,
         equity=1_000_000.0,
-        summary={'short': {'turnover_pct': 8.4}, 'mid': {}, 'long': {}})
+        summary={'short': {}, 'mid': {'turnover_pct': 8.4}, 'long': {}})
 
 
 # ---------------------------------------------------------------- mapping

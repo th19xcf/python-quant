@@ -94,11 +94,18 @@ class PerformanceAnalyzer:
             winning_rate = 0
             average_profit_loss = 0
 
+        # 最长水下按月计（月末净值连续低于前高的月数），与 max_drawdown 同表
+        longest_underwater_months = self.calculate_longest_underwater_months(equity_curve)
+        # Calmar = 年化收益 / 最大回撤（两者均为百分数，比值无量纲）
+        calmar = annual_return / max_drawdown if max_drawdown > 0 else 0
+
         return {
             'total_return': total_return,
             'annual_return': annual_return,
             'sharpe_ratio': sharpe_ratio,
             'max_drawdown': max_drawdown,
+            'longest_underwater_months': longest_underwater_months,
+            'calmar': calmar,
             'volatility': volatility,
             'winning_rate': winning_rate,
             'average_profit_loss': average_profit_loss,
@@ -197,6 +204,64 @@ class PerformanceAnalyzer:
                 max_drawdown = drawdown
 
         return max_drawdown
+
+    def calculate_longest_underwater_months(
+            self, equity_curve: List[Dict[str, Any]]) -> int:
+        """计算最长水下月数：月末净值连续低于历史前高的最长月数。
+
+        口径：每月取最后一个交易日的权益作为月末净值；当月末净值 >= 此前
+        最高月末净值时视为出坑并重置计数，否则累计一个月。未满整月的最后
+        一段按已发生的月末计入。返回整数月数（0 表示从未水下）。
+        """
+        if not equity_curve:
+            return 0
+
+        month_end: List[tuple[tuple[int, int], float]] = []
+        for item in equity_curve:
+            day = self._parse_date(item.get('date'))
+            equity = item.get('equity')
+            if day is None or equity is None:
+                continue
+            key = (day.year, day.month)
+            if month_end and month_end[-1][0] == key:
+                month_end[-1] = (key, float(equity))
+            else:
+                month_end.append((key, float(equity)))
+
+        peak = float('-inf')
+        longest = 0
+        current = 0
+        for _, equity in month_end:
+            if equity >= peak:
+                peak = equity
+                current = 0
+            else:
+                current += 1
+                longest = max(longest, current)
+        return longest
+
+    @staticmethod
+    def annual_turnover(buy_notional: float, average_equity: float,
+                        years: float) -> Dict[str, float]:
+        """年换手倍数：单边 = 年买入成交额 / 平均权益；双边 = 单边 ×2。
+
+        Args:
+            buy_notional: 区间买入成交额合计（与 average_equity 同币种/同口径）
+            average_equity: 区间平均权益（建议按日权益均值，而非期末值）
+            years: 区间年数（按交易日数 / 252 或日历跨度折算均可，需在报表注明）
+        """
+        if average_equity <= 0 or years <= 0:
+            return {'one_way': 0.0, 'two_way': 0.0}
+        one_way = buy_notional / average_equity / years
+        return {'one_way': one_way, 'two_way': one_way * 2.0}
+
+    @staticmethod
+    def annual_cost_ratio(total_cost: float, average_equity: float,
+                          years: float) -> float:
+        """年化成本占比（百分点）：总成本 / 平均权益 / 年数 × 100。"""
+        if average_equity <= 0 or years <= 0:
+            return 0.0
+        return total_cost / average_equity / years * 100.0
 
     @staticmethod
     def _pair_trades(trades: List[Dict[str, Any]]) -> List[tuple]:

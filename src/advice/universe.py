@@ -18,6 +18,7 @@ from typing import Any, Iterable
 from loguru import logger
 
 from src.data.local_store.store import resolve_store_root
+from src.data.quality.code_migration import load_entity_index
 from src.utils.code_converter import is_fund_code, is_index_code
 
 INDUSTRY_SOURCE_BOARD = 'code_prefix_board'
@@ -45,6 +46,7 @@ def list_local_stock_codes(config: Any, markets: Iterable[str] = ('sh', 'sz', 'b
     """
     root = resolve_store_root(config)
     base = root / 'quotes' / 'stock'
+    entity_index = load_entity_index(root)
     codes: list[str] = []
     for market in markets:
         directory = base / market
@@ -53,6 +55,9 @@ def list_local_stock_codes(config: Any, markets: Iterable[str] = ('sh', 'sz', 'b
         for path in sorted(directory.glob('*.parquet')):
             code = path.stem.upper()
             if is_index_code(code) or is_fund_code(code):
+                continue
+            if entity_index.is_superseded(code):
+                # 旧码已被同一实体的新码完整覆盖，读侧只保留新码
                 continue
             codes.append(code)
     return sorted(set(codes))

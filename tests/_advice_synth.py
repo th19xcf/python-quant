@@ -70,4 +70,20 @@ def build_store(root: Path, codes: list[str], end: date, days: int = 320,
             trend=0.03 + index * 0.01, wave=0.02 if index % 2 else 0.0,
             limit_up_last=(code == with_limit_up),
         )
+    write_st_snapshot(root, codes, end)
     return root
+
+
+def write_st_snapshot(root: Path, codes: list[str], day: date) -> None:
+    """写入全量 non_st 快照，供合成测试通过 fail-closed 的 ST 检查。"""
+    path = root / 'meta' / 'st_status' / f'st_status_{day:%Y%m%d}.parquet'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({
+        'code': codes,
+        'name': codes,
+        'status': ['non_st'] * len(codes),
+        'source': ['test'] * len(codes),
+        'reason': [''] * len(codes),
+        'as_of': [day] * len(codes),
+        'is_st': [False] * len(codes),
+    }).write_parquet(path)

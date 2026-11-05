@@ -12,8 +12,10 @@
 * 语义是**按 ``effective_date`` 生效的区间事实**：同一票多行 = 多次股本
   变动，不逐日展开。下游按 ``effective_date`` forward-fill 得到「某日适用
   股本」。查询入口 :func:`shares_as_of` 已按此语义实现。
-* ``free_float_share``（自由流通股本）当前**无稳定公开源**，整列为 NULL，
-  保留列位以便后续接入中证自由流通口径。
+* ``free_float_share``（自由流通股本）取东财 F10 股本结构同一张表的
+  ``FREELIQCI_SHARES``（同生效日、单位股）：2019 年后事件行覆盖较全，
+  上市前/源端未披露的行保持 NULL。填充时强制 ``free <= float``，
+  东财自相矛盾（自由流通大于流通）的行跳过不填。
 
 生效日选择（点时正确）
 =====================
@@ -967,7 +969,8 @@ def _write_meta(path: Path, frame: pl.DataFrame) -> None:
             'effective_date': '股本实际生效日（送转=除权日，增发=新股上市日，回购=注销日）',
             'total_share': '总股本（股）',
             'float_share': '流通股本（股，A股口径；无数据为 NULL）',
-            'free_float_share': '自由流通股本（股）；当前无公开源，恒为 NULL',
+            'free_float_share': '自由流通股本（股）；东财 F10 FREELIQCI_SHARES 口径，'
+                                '未披露/上市前为 NULL，已强制 ≤ 流通股本',
             'change_reason': '源端变动原因原文（审计用）',
             'source': '数据源标识',
             'fetched_at': '采集时间',

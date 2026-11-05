@@ -4,8 +4,8 @@
 交易成本模型，用于计算交易成本
 
 默认参数对齐 A 股现行规则（2023-08-28 起印花税降为 0.05%）：
-- 佣金双边 0.03%，单笔最低 5 元
-- 印花税卖出侧 0.05%
+- 佣金双边 0.05%，单笔最低 5 元
+- 印花税卖出侧 0.05%（ETF/LOF 按品种豁免）
 - 过户费双边 0.002%（2015-08-01 起沪深统一）
 - 滑点 0.02% 双边，可按流动性覆盖
 
@@ -40,12 +40,32 @@ TRANSFER_FEE_RATE_SH_LEGACY = 0.0006
 #: （src.advice.factor_eval，直接使用 CostModel）都从这里取值。
 #: 语义映射：推荐侧的 ``impact_rate`` 对应回测侧的 ``slippage``（均为双边）。
 COST_DEFAULTS: Dict[str, float] = {
-    'commission_rate': 0.0003,       # 佣金费率（双边）
+    'commission_rate': 0.0005,       # 佣金费率（双边，按成交额买卖各扣一次）
     'min_commission': 5.0,           # 单笔最低佣金（元）
     'stamp_tax_rate': 0.0005,        # 印花税（仅卖出，2023-08-28 起 0.05%）
     'transfer_fee_rate': TRANSFER_FEE_RATE_UNIFIED,  # 过户费（双边 0.002%）
-    'slippage': 0.0002,              # 滑点（双边）
+    'slippage': 0.0002,              # 滑点（双边，未分档时的兜底值）
 }
+
+#: ETF/LOF 滑点分档：按 20 日 ADV（元）从高到低取第一档。
+#: 依据：场内基金以做市商报价为主，宽基 ETF 盘口最深；ADV 越低、盘口越薄，
+#: 冲击成本越高。行业/主题 ETF 在同一 ADV 档上取相邻更高的档位（见
+#: ``slippage_rate`` 的 ``category`` 参数）。
+ETF_SLIPPAGE_TIERS: Tuple[Tuple[float, float], ...] = (
+    (1.0e8, 0.0005),   # ADV ≥ 1 亿：5bp
+    (5.0e7, 0.0007),   # 5,000 万 ~ 1 亿：7bp
+    (0.0, 0.0010),     # < 5,000 万：10bp
+)
+
+#: 个股滑点分档：按总市值（**亿元**）从高到低取第一档。
+#: 依据：总市值是冲击成本最稳定的代理变量（与 ADV 高度相关），分档阈值取
+#: A 股总市值分布的大盘/中盘/小盘常用切分（500 亿 / 100 亿）。
+STOCK_SLIPPAGE_TIERS_YI: Tuple[Tuple[float, float], ...] = (
+    (500.0, 0.0015),   # 大盘：15bp
+    (100.0, 0.0020),   # 中盘：20bp
+    (0.0, 0.0030),     # 小盘 / 市值缺失：30bp
+)
+
 
 TradeDate = Union[date, datetime, str, None]
 
@@ -91,65 +111,134 @@ class CostModel:
         self.params.update(params)
 
     def calculate_buy_cost(self, shares: float, price: float,
-                           trade_date: TradeDate = None, ts_code: str = '') -> float:
+                           trade_date: TradeDate = None, ts_code: str = '',
+                           adv20: float | None = None,
+                           total_mv_yi: float | None = None,
+                           category: str | None = None) -> float:
         """
         买入侧成本（佣金 + 过户费 + 滑点）；2008-09-19 前印花税双边征收时含税。
 
         trade_date 传入时按历史时间表取印花税/过户费；未传时沿用静态参数。
+        adv20 / total_mv_yi / category 传入时按分档滑点计费（见 ``slippage_rate``）。
         """
         commission_rate = self.params['commission_rate']
         min_commission = self.params['min_commission']
-        slippage = self.params['slippage']
 
         amount = shares * price
         commission = max(amount * commission_rate, min_commission)
         transfer = amount * self._transfer_fee_rate(trade_date, ts_code)
-        tax = amount * self._stamp_tax_rate(trade_date, side='buy')
-        slip = amount * slippage
+        tax = amount * self._stamp_tax_rate(trade_date, side='buy', ts_code=ts_code)
+        slip = amount * self.slippage_rate(ts_code, adv20, total_mv_yi, category)
 
         return commission + transfer + tax + slip
 
     def calculate_sell_cost(self, shares: float, price: float,
-                            trade_date: TradeDate = None, ts_code: str = '') -> float:
+                            trade_date: TradeDate = None, ts_code: str = '',
+                            adv20: float | None = None,
+                            total_mv_yi: float | None = None,
+                            category: str | None = None) -> float:
         """
         卖出侧成本（佣金 + 印花税 + 过户费 + 滑点）。
 
         trade_date 传入时按历史时间表取印花税/过户费；2010 年卖出印花税
         应为 0.1%（2008-09-19 至 2023-08-27），而不是现行 0.05%。
+        ETF/LOF 按品种豁免印花税（见 ``_is_fund``）。
         """
         commission_rate = self.params['commission_rate']
         min_commission = self.params['min_commission']
-        slippage = self.params['slippage']
 
         amount = shares * price
         commission = max(amount * commission_rate, min_commission)
-        tax = amount * self._stamp_tax_rate(trade_date, side='sell')
+        tax = amount * self._stamp_tax_rate(trade_date, side='sell', ts_code=ts_code)
         transfer = amount * self._transfer_fee_rate(trade_date, ts_code)
-        slip = amount * slippage
+        slip = amount * self.slippage_rate(ts_code, adv20, total_mv_yi, category)
 
         return commission + tax + transfer + slip
 
     def calculate_cost(self, shares: float, buy_price: float, sell_price: float,
-                       trade_date: TradeDate = None, ts_code: str = '') -> float:
+                       trade_date: TradeDate = None, ts_code: str = '',
+                       adv20: float | None = None, total_mv_yi: float | None = None,
+                       category: str | None = None) -> float:
         """
         一轮完整买卖的总交易成本
         """
-        return (self.calculate_buy_cost(shares, buy_price, trade_date, ts_code)
-                + self.calculate_sell_cost(shares, sell_price, trade_date, ts_code))
+        return (self.calculate_buy_cost(shares, buy_price, trade_date, ts_code,
+                                        adv20, total_mv_yi, category)
+                + self.calculate_sell_cost(shares, sell_price, trade_date, ts_code,
+                                           adv20, total_mv_yi, category))
 
-    def get_buy_cost_rate(self, trade_date: TradeDate = None, ts_code: str = '') -> float:
+    def get_buy_cost_rate(self, trade_date: TradeDate = None, ts_code: str = '',
+                          adv20: float | None = None,
+                          total_mv_yi: float | None = None,
+                          category: str | None = None) -> float:
         """估算买入侧成本费率（用于计算可负担股数）"""
         return (self.params['commission_rate']
                 + self._transfer_fee_rate(trade_date, ts_code)
-                + self._stamp_tax_rate(trade_date, side='buy')
-                + self.params['slippage'])
+                + self._stamp_tax_rate(trade_date, side='buy', ts_code=ts_code)
+                + self.slippage_rate(ts_code, adv20, total_mv_yi, category))
+
+    def get_sell_cost_rate(self, trade_date: TradeDate = None, ts_code: str = '',
+                           adv20: float | None = None,
+                           total_mv_yi: float | None = None,
+                           category: str | None = None) -> float:
+        """估算卖出侧成本费率（佣金 + 印花税 + 过户费 + 分档滑点）。
+
+        与 ``get_buy_cost_rate`` 对称，供评估侧重算逐笔成本时按标的查询费率。
+        """
+        return (self.params['commission_rate']
+                + self._stamp_tax_rate(trade_date, side='sell', ts_code=ts_code)
+                + self._transfer_fee_rate(trade_date, ts_code)
+                + self.slippage_rate(ts_code, adv20, total_mv_yi, category))
+
+    # ------------------------------------------------------------------
+    # 品种判定与滑点分档
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_fund(ts_code: str) -> bool:
+        """判定是否场内基金（ETF/LOF）：沪市 5 开头，深市 15/16/18 开头。
+
+        ETF 与 LOF 卖出均免征印花税（按品种判定，不用市场统一开关）。
+        """
+        code = (ts_code or '').upper().split('.')[0]
+        return code.startswith('5') or code.startswith(('15', '16', '18'))
+
+    def slippage_rate(self, ts_code: str = '', adv20: float | None = None,
+                      total_mv_yi: float | None = None,
+                      category: str | None = None) -> float:
+        """按品种与流动性返回单边滑点费率；缺少分档输入时退回 ``slippage``。
+
+        - ETF/LOF：按 ``ETF_SLIPPAGE_TIERS``（ADV 门槛，元）；``category='sector'``
+          （行业/主题）在同一 ADV 档上取相邻更高的一档。
+        - 个股：按 ``STOCK_SLIPPAGE_TIERS_YI``（总市值门槛，亿元）；市值缺失按小盘 30bp。
+        """
+        if self._is_fund(ts_code):
+            if adv20 is None or not (adv20 > 0):
+                return self.params['slippage']
+            for i, (floor, rate) in enumerate(ETF_SLIPPAGE_TIERS):
+                if adv20 >= floor:
+                    if str(category or '').lower() in ('sector', 'industry', 'theme'):
+                        i = min(i + 1, len(ETF_SLIPPAGE_TIERS) - 1)
+                        rate = ETF_SLIPPAGE_TIERS[i][1]
+                    return rate
+            return ETF_SLIPPAGE_TIERS[-1][1]
+
+        if total_mv_yi is None or not (total_mv_yi > 0):
+            return STOCK_SLIPPAGE_TIERS_YI[-1][1]
+        for floor, rate in STOCK_SLIPPAGE_TIERS_YI:
+            if total_mv_yi >= floor:
+                return rate
+        return STOCK_SLIPPAGE_TIERS_YI[-1][1]
 
     # ------------------------------------------------------------------
     # 历史费率解析
     # ------------------------------------------------------------------
 
-    def _stamp_tax_rate(self, trade_date: TradeDate, side: str) -> float:
-        """按交易日与买卖方向取印花税率；未传日期时沿用静态参数（买入不计）。"""
+    def _stamp_tax_rate(self, trade_date: TradeDate, side: str,
+                        ts_code: str = '') -> float:
+        """按交易日、方向与品种取印花税率；ETF/LOF 买卖均豁免。"""
+        if self._is_fund(ts_code):
+            return 0.0
         day = _as_date(trade_date)
         if day is None:
             return self.params['stamp_tax_rate'] if side == 'sell' else 0.0

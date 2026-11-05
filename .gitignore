@@ -107,7 +107,9 @@ ehthumbs.db
 Thumbs.db
 
 # Logs
-logs/
+logs/*
+!logs/data_changelog.csv
+!logs/data_changelog.README.md
 *.log
 
 # Database

@@ -1,19 +1,29 @@
 """证券代码迁移映射的离线单测（不连数据库、不写业务数据）。"""
 
 from datetime import date, datetime
+from pathlib import Path
 
 import polars as pl
+import pytest
 
+from src.data.quality import code_migration
 from src.data.quality.code_migration import (
+    EntityIndex,
     Sources,
     build_mapping,
     detect_cycles,
+    entity_key,
     is_a_share,
+    load_entity_index,
     load_mapping,
     mapping_path,
     resolve_ts_code,
     validate_mapping,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+REAL_STORE = PROJECT_ROOT / 'data' / 'local_store'
+HAS_REAL_STORE = (REAL_STORE / 'meta' / 'code_migration.parquet').is_file()
 
 
 def _write_pairs(tmp_path, pairs: list[tuple[str, str]]) -> None:
@@ -186,3 +196,112 @@ def test_build_mapping_is_idempotent_on_verified_at():
     second, _ = build_mapping(sources, previous=first)
     assert first.equals(second)
     assert first['verified_at'].to_list() == second['verified_at'].to_list()
+
+
+# ----------------------------------------------------------------------
+# 读侧实体索引（旧码 → 新码收敛）
+# ----------------------------------------------------------------------
+def _write_store(root: Path, pairs: list[tuple[str, str]], spans: dict,
+                 quotes: dict[str, list[tuple[date, float]]] | None = None) -> None:
+    """构造最小本地列存：映射表 + 日线索引 + 新旧码行情文件。"""
+    _write_pairs(root, pairs)
+    (root / 'meta').mkdir(parents=True, exist_ok=True)
+    rows = [{'ts_code': code, 'data_type': 'stock', 'start': span[0], 'end': span[1]}
+            for code, span in spans.items()]
+    pl.DataFrame(rows, schema={'ts_code': pl.Utf8, 'data_type': pl.Utf8,
+                               'start': pl.Date, 'end': pl.Date},
+                 strict=False).write_parquet(root / 'meta' / 'daily_index.parquet')
+    for code, series in (quotes or {}).items():
+        market = code.rsplit('.', 1)[-1].lower()
+        path = root / 'quotes' / 'stock' / market / f'{code}.parquet'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(series, schema={'date': pl.Date, 'close': pl.Float64},
+                     orient='row').write_parquet(path)
+
+
+def test_entity_index_cached_and_idempotent(tmp_path):
+    _write_store(
+        tmp_path,
+        [('600001.SH', '601001.SH')],
+        {'600001.SH': (date(2010, 1, 4), date(2015, 12, 31)),
+         '601001.SH': (date(2010, 1, 4), date(2026, 11, 3))},
+        {'600001.SH': [(date(2010, 1, 4), 10.0), (date(2010, 1, 5), 10.5)],
+         '601001.SH': [(date(2010, 1, 4), 10.0), (date(2010, 1, 5), 10.5),
+                       (date(2020, 1, 2), 30.0)]},
+    )
+    first = load_entity_index(tmp_path)
+    second = load_entity_index(tmp_path)
+    # 同一 store 且文件未变 → 命中缓存，返回同一对象
+    assert first is second
+    assert first.superseded == frozenset({'600001.SH'})
+    assert first.entity_key('600001.SH') == '601001.SH'
+    assert first.dedupe(['600001.SH', '601001.SH']) == ['601001.SH']
+
+
+def test_entity_index_keeps_old_code_when_new_has_no_quotes(tmp_path):
+    _write_store(
+        tmp_path,
+        [('300114.SZ', '302132.SZ')],
+        {'300114.SZ': (date(2010, 8, 27), date(2019, 9, 17))},
+        {'300114.SZ': [(date(2010, 8, 27), 20.0)]},
+    )
+    index = load_entity_index(tmp_path)
+    assert '300114.SZ' not in index.superseded
+    assert index.entity_key('300114.SZ') == '302132.SZ'
+    assert index.dedupe(['300114.SZ']) == ['300114.SZ']
+
+
+def test_entity_key_is_idempotent_on_new_and_unmapped_codes(tmp_path):
+    _write_store(
+        tmp_path,
+        [('600001.SH', '601001.SH')],
+        {'600001.SH': (date(2010, 1, 4), date(2015, 12, 31)),
+         '601001.SH': (date(2010, 1, 4), date(2026, 11, 3))},
+        {'600001.SH': [(date(2010, 1, 4), 10.0)],
+         '601001.SH': [(date(2010, 1, 4), 10.0)]},
+    )
+    assert entity_key('601001.SH', tmp_path) == '601001.SH'
+    assert entity_key('600000.SH', tmp_path) == '600000.SH'
+    assert entity_key('601001.sh', tmp_path) == '601001.SH'
+
+
+def test_entity_index_rejects_merge_when_prices_differ(tmp_path, monkeypatch):
+    warnings: list[str] = []
+
+    class _FakeLogger:
+        @staticmethod
+        def warning(message: str) -> None:
+            warnings.append(message)
+
+    monkeypatch.setattr(code_migration, 'logger', _FakeLogger)
+    _write_store(
+        tmp_path,
+        [('600001.SH', '601001.SH')],
+        {'600001.SH': (date(2010, 1, 4), date(2015, 12, 31)),
+         '601001.SH': (date(2010, 1, 4), date(2026, 11, 3))},
+        {'600001.SH': [(date(2010, 1, 4), 10.0), (date(2010, 1, 5), 10.5)],
+         '601001.SH': [(date(2010, 1, 4), 11.0), (date(2010, 1, 5), 12.0)]},
+    )
+    index = load_entity_index(tmp_path)
+    assert index.superseded == frozenset()
+    assert index.dedupe(['600001.SH', '601001.SH']) == ['600001.SH', '601001.SH']
+    assert any('安全闸' in message for message in warnings)
+
+
+def test_entity_index_degrades_without_mapping(tmp_path):
+    (tmp_path / 'meta').mkdir(parents=True, exist_ok=True)
+    index = load_entity_index(tmp_path)
+    assert index == EntityIndex(canonical={}, superseded=frozenset())
+    assert index.dedupe(['600000.SH']) == ['600000.SH']
+
+
+@pytest.mark.skipif(not HAS_REAL_STORE, reason='本地列存未就绪')
+def test_real_store_supersedes_fully_covered_old_codes():
+    index = load_entity_index(REAL_STORE)
+    assert '000043.SZ' in index.superseded
+    assert index.entity_key('000043.SZ') == '001914.SZ'
+    # 2026-11-05 回补后 302132.SZ 已覆盖 300114.SZ 全历史（2010-08-27 起），
+    # 旧码同样应被收敛；「新码无行情时保留旧码」由
+    # test_entity_index_keeps_old_code_when_new_has_no_quotes 单独覆盖。
+    assert '300114.SZ' in index.superseded
+    assert index.dedupe(['000043.SZ', '001914.SZ', '300114.SZ']) == ['001914.SZ']

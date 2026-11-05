@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 
 from src.advice.daily_store import (
@@ -9,6 +10,7 @@ from src.advice.daily_store import (
     load_daily_snapshot,
     save_daily_snapshot,
     snapshot_path,
+    usage_boundary,
 )
 from src.advice.models import (
     DIRECTION_AVOID,
@@ -66,6 +68,30 @@ def test_archive_write_twice_is_idempotent(tmp_path):
     assert items[0]['trade_date'] == '2026-11-03'
     assert payload['execution_basis'] == 'next_open'
     assert payload['tiers'][0]['counts'] == {'HOLD': 1, 'BUY': 1, 'AVOID': 1}
+    # 信号日 T 收盘生成、T+1 开盘执行：2026-11-03 生成 → 11-04 才可执行
+    assert payload['signal_date'] == '2026-11-03'
+    assert payload['earliest_exec_date'] == '2026-11-04'
+    assert payload['exec_status'] == 'pending'
+    assert items[0]['actionable'] is True
+    assert 'confidence' in payload['usage_boundary']
+    assert 'stop_loss' in payload['usage_boundary']
+
+
+def test_archive_expired_blocks_buyable_label(tmp_path):
+    """生成时 T+1 开盘已过 → expired，BUY/SELL 不得再标「可买/可卖」。"""
+    result = _result()
+    path = save_daily_snapshot(result, tmp_path,
+                               generated_at=datetime(2026, 11, 4, 15, 13))
+    payload = load_daily_snapshot(tmp_path, date(2026, 11, 3))
+    assert payload is not None
+    assert payload['exec_status'] == 'expired'
+    assert payload['earliest_exec_date'] == '2026-11-04'
+    buy = next(item for item in payload['tiers'][0]['items']
+               if item['direction'] == DIRECTION_BUY)
+    assert buy['action'] == '买入(已过期)'
+    assert buy['actionable'] is False
+    assert any('exec_status=expired' in note for note in payload['notes'])
+    assert path == snapshot_path(tmp_path, date(2026, 11, 3))
 
 
 def test_archive_list_and_missing(tmp_path):
@@ -75,3 +101,25 @@ def test_archive_list_and_missing(tmp_path):
     assert [item['trade_date'] for item in entries] == ['2026-11-03']
     assert entries[0]['items'] == {'short': 3}
     assert load_daily_snapshot(tmp_path, date(2026, 11, 4)) is None
+
+
+def test_usage_boundary_reads_replay_summary(tmp_path):
+    """回放数字必须来自 replay_summary.json，不能写死在代码里。"""
+    path = tmp_path / 'reports' / 'advice' / 'backtest' / 'replay_summary.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        'short': {'start': '2026-08-03', 'end': '2026-11-03',
+                  'net_return': -0.2568},
+        'mid': {'start': '2026-08-03', 'end': '2026-11-03',
+                'net_return': -0.0346},
+        'long': {'start': '2026-08-03', 'end': '2026-11-03',
+                 'net_return': 0.0194},
+    }), encoding='utf-8')
+    text = usage_boundary(tmp_path)['validation']
+    assert '2026-08-03~2026-11-03' in text
+    assert 'short -25.68%' in text
+    assert 'mid -3.46%' in text
+    assert 'long +1.94%' in text
+
+    empty = usage_boundary(tmp_path / 'missing')
+    assert 'replay_summary.json' in empty['validation']

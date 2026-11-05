@@ -60,6 +60,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.quality.anomalies import iter_anomalies
+from src.data.quality.code_migration import load_entity_index
 from src.utils.code_converter import is_fund_code, is_index_code
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -76,6 +77,20 @@ MIN_CROSS_SECTION = 300
 
 #: 月末采样中连续满足下限的月数
 MIN_STREAK_MONTHS = 12
+
+#: 1991-1992 年拆细/送转比例未能外部确认的代码：1993-01-01 之前不参与
+#: standard/strict（full 视图仅做数据检查，不受影响）。
+PRE_1993_BREAK_CODES: frozenset[str] = frozenset({
+    '600601.SH', '600651.SH', '600653.SH', '600654.SH',
+    '600605.SH', '600606.SH', '600609.SH', '600616.SH', '600621.SH',
+})
+PRE_1993_BREAK_CUTOFF = date(1993, 1, 1)
+_PRE_1993_BREAK_ORD = PRE_1993_BREAK_CUTOFF.toordinal()
+
+
+def _pre_1993_break(info: CodeInfo, o: int) -> bool:
+    """该标的是否落在“1993 年前拆细比例未确认”的排除区间。"""
+    return info.ts_code in PRE_1993_BREAK_CODES and o < _PRE_1993_BREAK_ORD
 
 #: 基金分红复权 pending 的开关范围：``none`` 保持现状（strict 剔除全部基金）；
 #: ``etf`` 只放开 ``fund_basic.fund_type='ETF'`` 的基金；``all`` 放开全部基金。
@@ -181,6 +196,7 @@ STRUCTURAL_REASONS: dict[str, str] = {
     'structural_rights_no_second_source': '配股事件无独立第二源（strict 口径）',
     'structural_factor_base_shift': '后复权基期偏移台账标记（strict 口径）',
     'structural_date_anomaly': '当日命中已知源端异常行',
+    'structural_pre_1993_break': '1991-1992 拆细比例未确认，1993 年前不参与回测',
 }
 
 TEMPORAL_REASONS: dict[str, str] = {
@@ -349,8 +365,12 @@ class EligibilityEngine:
 
     def _load_meta(self) -> None:
         meta = pl.read_parquet(self.root / 'meta/daily_index.parquet')
+        entity_index = load_entity_index(self.root)
         for row in meta.iter_rows(named=True):
             code = str(row['ts_code'])
+            if entity_index.is_superseded(code):
+                # 旧码已被同一实体的新码完整覆盖，读侧只保留新码
+                continue
             info = CodeInfo(
                 ts_code=code,
                 data_type=str(row['data_type']),
@@ -754,6 +774,8 @@ class EligibilityEngine:
 
     def _structural_reasons(self, info: CodeInfo, o: int, tier: str) -> list[str]:
         reasons = list(info.structural)
+        if _pre_1993_break(info, o):
+            reasons.append('structural_pre_1993_break')
         if tier == 'strict':
             reasons.extend(info.strict_static)
             if o in info.date_excl_strict or o in info.date_excl_standard:
@@ -903,7 +925,8 @@ class EligibilityEngine:
                 if not self._has_quote(info, o):
                     continue
                 counts['full'][info.data_type] += 1
-                if info.structural or o in info.date_excl_standard:
+                if (info.structural or o in info.date_excl_standard
+                        or _pre_1993_break(info, o)):
                     continue
                 status = (
                     self._st_status(info, o)
@@ -919,7 +942,8 @@ class EligibilityEngine:
                     continue
                 if info.stale_start is not None and o >= info.stale_start:
                     continue
-                if o in info.date_excl_strict or o in info.date_excl_standard:
+                if (o in info.date_excl_strict or o in info.date_excl_standard
+                        or _pre_1993_break(info, o)):
                     continue
                 if info.rights_start is not None and o >= info.rights_start:
                     continue
@@ -959,6 +983,8 @@ class EligibilityEngine:
             defect.append('structural_date_anomaly')
         if info.mismatch_start is not None and o >= info.mismatch_start:
             defect.append('structural_event_jump_mismatch')
+        if _pre_1993_break(info, o):
+            defect.append('structural_pre_1993_break')
         if info.strict_static:
             defect.extend(info.strict_static)
         if defect:
@@ -1103,6 +1129,7 @@ class EligibilityEngine:
             'date_anomaly_at_as_of': 0,
             'content_inconsistent': 0,
             'duplicate_exdiv_key': 0,
+            'pre_1993_break': 0,
         }
         for code in all_codes:
             info = self.codes[code]
@@ -1124,6 +1151,8 @@ class EligibilityEngine:
                 defect_breakdown['event_jump_mismatch'] += 1
             if info.strict_static:
                 defect_breakdown['factor_base_shift_or_ledger_flag'] += 1
+            if _pre_1993_break(info, o):
+                defect_breakdown['pre_1993_break'] += 1
             if o in info.date_excl_standard or o in info.date_excl_strict:
                 defect_breakdown['date_anomaly_at_as_of'] += 1
 

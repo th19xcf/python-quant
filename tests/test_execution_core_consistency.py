@@ -255,17 +255,18 @@ def test_small_order_steps_down_one_lot_instead_of_expiring():
     回归：估算用 get_buy_cost_rate() 不含 min_commission=5.0 下限，
     现金接近满仓的小单曾只做一次 total_pay <= available 检查就被吞掉。
     """
-    # 价格 10 元/股、现金 10006：费率估算 10006/10.0051≈1000.09→1000 股，
-    # 实际成本 max(10000*0.0003,5)+0.1+2.0=7.1 → 总价 10007.1 > 10006 超估算，
-    # 回退一手后 900 股：9000 + max(2.7,5)+0.09+1.8 = 9006.89 ≤ 10006 成交
+    # 价格 10 元/股、现金 9032：费率估算 9032/10.0352≈900.03→900 股，
+    # 实际成本 max(9000*0.0005,5)+0.18+27.0=32.18 → 总价 9032.18 > 9032 超估算，
+    # 回退一手后 800 股：8000 + max(4,5)+0.16+24.0 = 8029.16 ≤ 9032 成交
+    # （缺市值按小盘 30bp 滑点，见 CostModel.slippage_rate）
     data = _make_df(opens=[10.0] * 4, closes=[10.0] * 4)
     engine = BacktestEngine(data)
     engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
-    result = engine.run_backtest(initial_capital=10_006.0, ts_code='600000.SH')
+    result = engine.run_backtest(initial_capital=9_032.0, ts_code='600000.SH')
 
     assert result['expired_orders'] == []
     assert len(result['trades']) == 1
-    assert result['trades'][0]['shares'] == 900
+    assert result['trades'][0]['shares'] == 800
 
 
 def test_limit_check_uses_raw_prices_on_ex_dividend_day():
@@ -1284,41 +1285,53 @@ def test_status_signals_do_not_generate_per_bar_expired_orders():
 def test_cost_model_uses_historical_stamp_tax_and_transfer_fee():
     """P1-2 验收：按 trade_date 取历史费率，2010 年卖出印花税为 0.1%。
 
-    成交额 10 万元基准：佣金 max(30,5)=30、滑点 0.0002×10 万=20。
-    - 2010-06-01 沪市卖出：印花税 0.1%=100 + 过户费 0.06%=60 → 210
-    - 2010-06-01 深市卖出：深市 2015-08-01 前不收过户费 → 150
-    - 2023-09 卖出：印花税 0.05%=50 + 统一过户费 0.002%=2 → 102（沪深一致）
+    成交额 10 万元基准（总市值 600 亿 → 大盘 15bp 滑点）：
+    佣金 max(50,5)=50、滑点 0.0015×10 万=150。
+    - 2010-06-01 沪市卖出：印花税 0.1%=100 + 过户费 0.06%=60 → 360
+    - 2010-06-01 深市卖出：深市 2015-08-01 前不收过户费 → 300
+    - 2023-09 卖出：印花税 0.05%=50 + 统一过户费 0.002%=2 → 252（沪深一致）
     - 2007-06-01：印花税 0.3% 双边，买卖两侧都含 300
     """
     from datetime import date
 
     cm = CostModel()
+    mv = 600.0  # 亿元，落在大盘档（≥500 亿 → 15bp）
 
     assert cm.calculate_sell_cost(
-        10_000, 10.0, trade_date=date(2010, 6, 1), ts_code='600000.SH') == pytest.approx(210.0)
+        10_000, 10.0, trade_date=date(2010, 6, 1), ts_code='600000.SH',
+        total_mv_yi=mv) == pytest.approx(360.0)
     assert cm.calculate_sell_cost(
-        10_000, 10.0, trade_date=date(2010, 6, 1), ts_code='000001.SZ') == pytest.approx(150.0)
+        10_000, 10.0, trade_date=date(2010, 6, 1), ts_code='000001.SZ',
+        total_mv_yi=mv) == pytest.approx(300.0)
     assert cm.calculate_buy_cost(
-        10_000, 10.0, trade_date=date(2010, 6, 1), ts_code='600000.SH') == pytest.approx(110.0)
+        10_000, 10.0, trade_date=date(2010, 6, 1), ts_code='600000.SH',
+        total_mv_yi=mv) == pytest.approx(260.0)
 
     assert cm.calculate_sell_cost(
-        10_000, 10.0, trade_date=date(2023, 9, 1), ts_code='600000.SH') == pytest.approx(102.0)
+        10_000, 10.0, trade_date=date(2023, 9, 1), ts_code='600000.SH',
+        total_mv_yi=mv) == pytest.approx(252.0)
     assert cm.calculate_sell_cost(
-        10_000, 10.0, trade_date=date(2023, 9, 1), ts_code='000001.SZ') == pytest.approx(102.0)
+        10_000, 10.0, trade_date=date(2023, 9, 1), ts_code='000001.SZ',
+        total_mv_yi=mv) == pytest.approx(252.0)
     assert cm.calculate_buy_cost(
-        10_000, 10.0, trade_date=date(2023, 9, 1), ts_code='600000.SH') == pytest.approx(52.0)
+        10_000, 10.0, trade_date=date(2023, 9, 1), ts_code='600000.SH',
+        total_mv_yi=mv) == pytest.approx(202.0)
 
     # 2007-05-30 至 2008-09-18 印花税 0.3% 双边征收
     assert cm.calculate_buy_cost(
-        10_000, 10.0, trade_date=date(2007, 6, 1), ts_code='600000.SH') == pytest.approx(410.0)
+        10_000, 10.0, trade_date=date(2007, 6, 1), ts_code='600000.SH',
+        total_mv_yi=mv) == pytest.approx(560.0)
     assert cm.calculate_sell_cost(
-        10_000, 10.0, trade_date=date(2007, 6, 1), ts_code='600000.SH') == pytest.approx(410.0)
+        10_000, 10.0, trade_date=date(2007, 6, 1), ts_code='600000.SH',
+        total_mv_yi=mv) == pytest.approx(560.0)
 
     # 不传 trade_date 使用 COST_DEFAULTS：印花税 0.05% 卖方单边、
     # 过户费 0.002% 双边（与 2023-09 起的时间表口径一致，不再少扣一半）
-    assert cm.calculate_sell_cost(10_000, 10.0) == pytest.approx(102.0)
+    assert cm.calculate_sell_cost(
+        10_000, 10.0, total_mv_yi=mv) == pytest.approx(252.0)
     assert cm.get_buy_cost_rate(
-        trade_date=date(2010, 6, 1), ts_code='600000.SH') == pytest.approx(0.0011)
+        trade_date=date(2010, 6, 1), ts_code='600000.SH',
+        total_mv_yi=mv) == pytest.approx(0.0026)
 
 
 # ------------------------------------------------------------------

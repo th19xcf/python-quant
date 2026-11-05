@@ -38,6 +38,9 @@ DEFAULT_OUT = PROJECT_ROOT / 'data/local_store/factors/stock_dividend.parquet'
 DEFAULT_CACHE = PROJECT_ROOT / 'data/local_store/factors/rebuild/stock_dividend_parts'
 DEFAULT_REPORT = PROJECT_ROOT / 'reports/stock_dividend_20261105'
 SOURCE_NAME = 'em_fhps_bulk'
+# 交易所除权参考价校验用的本地行情根目录与现金容差
+_QUOTE_ROOT = PROJECT_ROOT / 'data/local_store/quotes/stock'
+QUOTE_CASH_TOL = 1e-3
 
 FINAL_SCHEMA: dict[str, Any] = {
     'ts_code': pl.Utf8,
@@ -225,6 +228,13 @@ def _year_of(src: dict[str, Any]) -> str:
     return str(year or '')
 
 
+def _event_type(src: dict[str, Any]) -> tuple[bool, bool, bool]:
+    """事件类型签名：现金 / 送转 / 配股，三类允许同日并存。"""
+    return (float(src.get('cash_div') or 0.0) > 0,
+            float(src.get('share_div') or 0.0) > 0,
+            float(src.get('rights_issue_ratio') or 0.0) > 0)
+
+
 class _Merger:
     """把新事件并入存量行，保留全部存量并记录同日金额冲突。"""
 
@@ -234,7 +244,8 @@ class _Merger:
             'matched_by_ex': 0, 'matched_by_plan': 0,
             'appended_same_day': 0, 'appended_plan': 0, 'enriched_rows': 0,
             'filled_ex_date': 0, 'filled_record_date': 0, 'amount_conflicts': 0,
-            'same_day_conflict_rows': 0, 'claimed_placeholder': 0}
+            'same_day_conflict_rows': 0, 'claimed_placeholder': 0,
+            'duplicate_source_rows': 0}
         self.claimed: set[int] = set()
         self.appends: list[dict[str, Any]] = []
         self.conflicts: list[dict[str, Any]] = []
@@ -288,17 +299,22 @@ class _Merger:
                 else:
                     used.add(hit)
                     self._attach(hit, src, 'ex')
-            capacity = len(srcs) - len(cands)
+            # 存量已有该除权日事件时不再补录：原先 capacity = len(srcs) - len(cands)
+            # 在“源端同日 2 行、存量 1 行”时会算出 1，把同一笔分红被 em 按第二个
+            # 报告期重复披露的行追加成新事件（300760 2025-05-29 的 0.56 即由此补录
+            # 进来）。只有该键没有任何存量事件时，才按事件类型补录（现金 / 送转 /
+            # 配股），且同类型最多补一条，避免同类型重复披露被当成多笔事件。
+            allowed_types = set() if cands else {_event_type(src) for src in unmatched}
             for src in unmatched:
                 amt = _amount_key(src)
                 cand = (self._plan_hit(code, _year_of(src), amt)
                         if amt[0] > 0 or amt[1] > 0 else None)
                 if cand is not None:
                     self._claim(cand, src)
-                elif capacity > 0:
+                elif _event_type(src) in allowed_types:
                     self.appends.append(_new_row(src))
                     self.stats['appended_same_day'] += 1
-                    capacity -= 1
+                    allowed_types.discard(_event_type(src))
                 else:
                     self._conflict(code, ex, cands, src)
 
@@ -312,14 +328,41 @@ class _Merger:
         self.stats['same_day_conflict_rows'] += 1
         self.stats['amount_conflicts'] += 1
         amt = _amount_key(src)
-        local_amt = _amount_key(self.rows[cands[0]])
+        local_row = self.rows[cands[0]] if cands else {}
+        local_amt = _amount_key(local_row)
         if len(cands) == 1:
             # 金额存疑不代表公告日/进度不可用，点时字段仍按源端补齐
             _enrich(self.rows[cands[0]], src)
             self.stats['enriched_rows'] += 1
         self.conflicts.append({'ts_code': code, 'ex_date': ex,
                                'local_cash': local_amt[0], 'local_share': local_amt[1],
-                               'src_cash': amt[0], 'src_share': amt[1]})
+                               'src_cash': amt[0], 'src_share': amt[1],
+                               'local_rights': float(
+                                   local_row.get('rights_issue_ratio') or 0.0),
+                               'src_rights': float(src.get('rights_issue_ratio') or 0.0)})
+
+    def _dedup_source_rows(
+        self, rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """同日同键的源端重复披露去重（按 ``(每股现金, 每股送转)`` 判重）。
+
+        东财按报告期返回，同一个除权日常被相邻两个报告期各披露一行。金额完全
+        相同的两行是同一笔事件的重复披露，只保留先出现的一行（报告期最早），
+        重复计数记入 ``duplicate_source_rows``。判重键带金额，因此同日“现金分红
+        + 送转”两条不同类型事件不会被误吞（000002 这类同日多类型事件仍按两条
+        正常入库）。
+        """
+        seen: set[tuple[str, date, float, float]] = set()
+        kept: list[dict[str, Any]] = []
+        for src in rows:
+            cash, share = _amount_key(src)
+            key = (src['ts_code'], src['ex_date'], round(cash, 6), round(share, 6))
+            if key in seen:
+                self.stats['duplicate_source_rows'] += 1
+                continue
+            seen.add(key)
+            kept.append(src)
+        return kept
 
     def _plans(self, plans: list[dict[str, Any]]) -> None:
         for src in plans:
@@ -331,8 +374,10 @@ class _Merger:
                 self.stats['appended_plan'] += 1
 
     def run(self, new: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, Any], list[dict[str, Any]]]:
-        implemented = [r for r in new.to_dicts() if r.get('ex_date') is not None]
-        plans = [r for r in new.to_dicts() if r.get('ex_date') is None]
+        rows = new.to_dicts()
+        implemented = self._dedup_source_rows(
+            [r for r in rows if r.get('ex_date') is not None])
+        plans = [r for r in rows if r.get('ex_date') is None]
         grouped: dict[tuple[str, date], list[dict[str, Any]]] = {}
         for src in implemented:
             grouped.setdefault((src['ts_code'], src['ex_date']), []).append(src)
@@ -349,15 +394,80 @@ def merge_frames(
     existing: pl.DataFrame,
     new: pl.DataFrame,
 ) -> tuple[pl.DataFrame, dict[str, Any], list[dict[str, Any]]]:
-    """存量行全部保留；新行按同日金额配对，同日多笔时补录缺失事件。
+    """存量行全部保留；新行按同日金额配对，缺事件才补录，其余记冲突。
 
-    同一除权日可能并存多笔分红（年度 + 季度/特别分红），因此不能简单按
-    ``(ts_code, ex_date)`` 折叠。策略：
-    1. 同日先按 (每股现金, 每股送转) 一一配对；
-    2. 源端同日笔数多于存量时，未配对的源端行补录；
-    3. 源端同日笔数不多于存量时，未配对视为金额冲突，保留存量并计数。
+    同一除权日可能并存多笔分红（年度 + 季度/特别分红、现金 + 送转），因此
+    不能简单按 ``(ts_code, ex_date)`` 折叠。策略：
+    1. 源端同日同键先按 (每股现金, 每股送转) 去重，重复披露只保留一行；
+    2. 同日按 (每股现金, 每股送转) 与存量行一一配对；
+    3. 该 ``(ts_code, ex_date)`` 已有存量事件时不再补录：未配对源端行一律记为
+       金额冲突。历史上按 ``源端笔数 - 存量笔数`` 补录，会把同一笔分红被东财
+       按第二个报告期重复披露的行追加成新事件（300760 2025-05-29 的 0.56 即
+       由此产生）；
+    4. 该键没有任何存量事件时，按事件类型（现金 / 送转 / 配股）补录，每类
+       最多一条，避免同类型重复披露被当成多笔事件。
     """
     return _Merger(existing).run(new)
+
+
+def _quote_frame(
+    code: str, cache: dict[str, pl.DataFrame | None],
+) -> pl.DataFrame | None:
+    """按代码读取本地行情（只取校验所需列），缺失或读取失败返回 None。"""
+    if code in cache:
+        return cache[code]
+    market = code.rsplit('.', 1)[-1].lower()
+    path = _QUOTE_ROOT / market / f'{code}.parquet'
+    frame: pl.DataFrame | None = None
+    if path.exists():
+        try:
+            frame = pl.read_parquet(
+                path, columns=['date', 'close', 'pre_close', 'qfq_factor']).sort('date')
+        except (OSError, pl.PolarsError):
+            frame = None
+    cache[code] = frame
+    return frame
+
+
+def quote_implied_cash(
+    code: str,
+    ex_date: date,
+    share_div: float,
+    rights_ratio: float,
+    cache: dict[str, pl.DataFrame | None],
+) -> float | None:
+    """用交易所除权参考价反推每股现金分红，无法可靠反推时返回 None。
+
+    本地行情 ``pre_close`` 不是“上一交易日原始收盘价”，而是按 qfq 因子还原的
+    除权参考价（见 ``src/data/local_store/build.py``）：除权日当天
+    ``pre_close = (prev_close - cash + rights_price*ratio) / (1 + share + ratio)``，
+    因此纯现金 / 现金+送转事件可反解 ``cash = prev_close - pre_close*(1+share)``。
+
+    只有送转、只有配股的冲突跳过校验：前者参考价里不含现金信息，后者还需要
+    配股价。若行情缺该日、缺上一交易日，或前后 qfq 因子相同（说明该日参考价
+    未被复权调整、因子快照无事件），同样返回 None，避免误判。
+    """
+    if rights_ratio > 0:
+        return None
+    frame = _quote_frame(code, cache)
+    if frame is None or frame.is_empty():
+        return None
+    dates = frame['date'].to_list()
+    try:
+        pos = dates.index(ex_date)
+    except ValueError:
+        return None
+    if pos == 0:
+        return None
+    prev_close = frame['close'][pos - 1]
+    ref_pre_close = frame['pre_close'][pos]
+    factor_prev = frame['qfq_factor'][pos - 1]
+    factor_cur = frame['qfq_factor'][pos]
+    if None in (prev_close, ref_pre_close, factor_prev, factor_cur):
+        return None
+    if factor_cur == 0 or abs(factor_prev / factor_cur - 1.0) < 1e-12:
+        return None
+    return float(prev_close) - float(ref_pre_close) * (1.0 + share_div)
 
 
 def cninfo_table(code: str, cache_dir: Path) -> pl.DataFrame:
@@ -398,13 +508,21 @@ def reconcile_conflicts(
     conflicts: list[dict[str, Any]],
     cache_dir: Path,
 ) -> tuple[pl.DataFrame, dict[str, Any]]:
-    """用巨潮仲裁同日金额冲突：本地对则保留，源端对则修正，双方都不对则留证。"""
+    """用巨潮仲裁同日金额冲突：本地对则保留，源端对则修正，双方都不对则留证。
+
+    采纳源端数值（``corrected_to_source``）之前，再用交易所除权参考价
+    （行情 ``pre_close``，见 :func:`quote_implied_cash`）复核：反推的现金分红与
+    源端候选差超过 ``QUOTE_CASH_TOL`` 时判定源端不可信，记 ``unresolved`` 并
+    保留本地值。只有送转、只有配股的冲突不参与参考价校验。
+    """
     stats: dict[str, Any] = {'checked': 0, 'kept_local': 0, 'corrected_to_source': 0,
-                             'unresolved': 0, 'unresolved_rows': []}
+                             'unresolved': 0, 'quote_checked': 0,
+                             'quote_mismatch': 0, 'unresolved_rows': []}
     if not conflicts:
         return frame, stats
     tables = {c['ts_code']: cninfo_table(c['ts_code'], cache_dir)
               for c in {c['ts_code']: c for c in conflicts}.values()}
+    quotes: dict[str, pl.DataFrame | None] = {}
     replacements: list[dict[str, Any]] = []
     for item in conflicts:
         stats['checked'] += 1
@@ -416,6 +534,17 @@ def reconcile_conflicts(
         if any(_amount_match(local, a, tol=1e-3) for a in cn_amts):
             stats['kept_local'] += 1
         elif any(_amount_match(source, a, tol=1e-3) for a in cn_amts):
+            implied = quote_implied_cash(
+                item['ts_code'], item['ex_date'],
+                item.get('src_share', 0.0), item.get('src_rights', 0.0), quotes)
+            if implied is not None:
+                stats['quote_checked'] += 1
+                if abs(implied - item['src_cash']) > QUOTE_CASH_TOL:
+                    stats['quote_mismatch'] += 1
+                    stats['unresolved'] += 1
+                    stats['unresolved_rows'].append(
+                        {**item, 'reason': 'quote_mismatch', 'quote_cash': implied})
+                    continue
             stats['corrected_to_source'] += 1
             replacements.append(item)
         else:
@@ -573,7 +702,8 @@ def main(argv: list[str] | None = None) -> int:
         final, reconcile_stats = reconcile_conflicts(final, conflicts, args.cache)
     else:
         reconcile_stats = {'checked': 0, 'kept_local': 0, 'corrected_to_source': 0,
-                           'unresolved': 0, 'unresolved_rows': []}
+                           'unresolved': 0, 'quote_checked': 0,
+                           'quote_mismatch': 0, 'unresolved_rows': []}
     after = frame_stats(final)
 
     report = {

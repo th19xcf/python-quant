@@ -18,6 +18,7 @@ DIRECTION_AVOID = 'AVOID'
 #: 导出列顺序（CLI CSV/JSON 统一口径）
 OUTPUT_COLUMNS = (
     'trade_date', 'ts_code', 'name', 'name_source', 'direction',
+    'disposition',
     'target_weight_pct', 'shares', 'ref_price', 'horizon', 'validity_days',
     'confidence', 'top_factors', 'risk_notes', 'industry', 'industry_source',
     'score', 'score_percentile',
@@ -45,6 +46,12 @@ class Recommendation:
     score: float
     score_percentile: float
     name_source: str = 'code'
+    #: ``active``（本次可执行/持有）或 ``deferred``（被换手上限延后）
+    disposition: str = 'active'
+    #: 延后原因（仅 ``disposition='deferred'`` 时填写）
+    defer_reason: str = ''
+    #: 预计可执行日（仅 ``disposition='deferred'`` 时填写）
+    defer_until: date | None = None
 
     def to_row(self) -> dict[str, Any]:
         """转为 CSV 友好的扁平字典（百分比字段按百分数输出）。"""
@@ -56,6 +63,7 @@ class Recommendation:
             'name': self.name,
             'name_source': self.name_source,
             'direction': self.direction,
+            'disposition': self.disposition,
             'target_weight_pct': round(self.target_weight * 100, 2),
             'shares': int(self.shares),
             'ref_price': round(float(self.ref_price), 3),
@@ -90,6 +98,8 @@ class TierAdvice:
     filter_stats: dict[str, int] = field(default_factory=dict)
     #: 逐条剔除记录（交易日、标的、类型、原因），供人工核对
     filter_audit: list[dict[str, Any]] = field(default_factory=list)
+    #: 同日同档重复行合并记录（合并键 = 档位 + 代码）
+    row_merge: list[dict[str, Any]] = field(default_factory=list)
 
     def to_frame(self) -> pl.DataFrame:
         rows = [rec.to_row() for rec in self.rows]
@@ -115,6 +125,10 @@ class TierAdvice:
             'notes': self.notes,
             'filter_stats': dict(self.filter_stats),
             'filter_audit': self.filter_audit[:20],
+            'row_merge': {
+                'dropped': len(self.row_merge),
+                'details': self.row_merge[:20],
+            },
         }
 
 
@@ -125,6 +139,14 @@ class AdviceResult:
     trade_date: date
     equity: float
     tiers: dict[str, TierAdvice] = field(default_factory=dict)
+    #: 信号日（面板最后交易日），与 ``trade_date`` 同义，显式写出避免相对词歧义
+    signal_date: date | None = None
+    #: 最早可执行交易日（T+1）
+    earliest_exec_date: date | None = None
+    #: 执行状态：``pending`` / ``expired``
+    exec_status: str = 'pending'
+    #: 下一交易日的来源：``calendar`` / ``weekday_fallback``
+    exec_date_basis: str = 'weekday_fallback'
 
     def to_frame(self) -> pl.DataFrame:
         frames = [advice.to_frame() for advice in self.tiers.values()]
@@ -136,6 +158,11 @@ class AdviceResult:
     def summary(self) -> dict[str, Any]:
         return {
             'trade_date': self.trade_date.isoformat(),
+            'signal_date': (self.signal_date or self.trade_date).isoformat(),
+            'earliest_exec_date': self.earliest_exec_date.isoformat()
+            if self.earliest_exec_date else None,
+            'exec_status': self.exec_status,
+            'exec_date_basis': self.exec_date_basis,
             'equity': round(self.equity, 2),
             'tiers': {
                 key: advice.summary() for key, advice in self.tiers.items()

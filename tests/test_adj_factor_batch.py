@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import date
 
 import polars as pl
+import pytest
 
 from src.data.adj_factor_calculator import AdjFactorCalculator
 
@@ -38,6 +39,112 @@ def _prices(code: str) -> pl.DataFrame:
         'open': [1.0, 1.0], 'high': [1.0, 1.0],
         'low': [1.0, 1.0], 'close': [1.0, 2.0],
     })
+
+
+def test_calculate_factors_skips_no_ex_rights_event():
+    """no_ex_rights=true 的事件不参与因子计算，但事件行仍可正常读取。"""
+    prices = pl.DataFrame({
+        'ts_code': ['600306.SH'] * 3,
+        'trade_date': [date(2023, 12, 22), date(2023, 12, 25), date(2023, 12, 26)],
+        'open': [10.0, 10.0, 9.0],
+        'close': [10.0, 10.0, 9.0],
+    })
+    dividends = pl.DataFrame({
+        'ts_code': ['600306.SH'],
+        'ex_date': [date(2023, 12, 26)],
+        'cash_div': [0.0],
+        'share_div': [0.85],
+        'rights_issue_ratio': [0.0],
+        'rights_issue_price': [0.0],
+        'no_ex_rights': [True],
+    })
+
+    result = AdjFactorCalculator.calculate_factors(prices, dividends)
+
+    # 事件被排除：三行因子全为 1.0，除权日不再出现人为跳变
+    assert result['qfq_factor'].to_list() == [1.0, 1.0, 1.0]
+    assert result['hfq_factor'].to_list() == [1.0, 1.0, 1.0]
+    # 输入事件行未被丢弃/改写，快照仍可正常读取
+    assert dividends.height == 1
+    assert dividends['no_ex_rights'].to_list() == [True]
+
+    # 对照：同一事件不标记时正常参与计算
+    control = AdjFactorCalculator.calculate_factors(
+        prices, dividends.with_columns(pl.lit(False).alias('no_ex_rights')))
+    f = 10.0 / (10.0 * (1.0 + 0.85))
+    assert control['qfq_factor'].to_list() == pytest.approx([f, f, 1.0])
+    assert control['hfq_factor'].to_list() == pytest.approx([1.0, 1.0, 1.0 + 0.85])
+
+
+def test_calculate_factors_share_div_fix_overrides_original():
+    """share_div_fix 非空时覆盖原始 share_div，原始值仍保留在输入帧里。"""
+    prices = pl.DataFrame({
+        'ts_code': ['600306.SH'] * 2,
+        'trade_date': [date(2023, 12, 25), date(2023, 12, 26)],
+        'open': [10.0, 9.0], 'close': [10.0, 9.0],
+    })
+    dividends = pl.DataFrame({
+        'ts_code': ['600306.SH'], 'ex_date': [date(2023, 12, 26)],
+        'cash_div': [0.0], 'share_div': [0.85],
+        'rights_issue_ratio': [0.0], 'rights_issue_price': [0.0],
+        'no_ex_rights': [False],
+        'share_div_fix': [0.471744], 'cash_div_fix': [None],
+    })
+
+    result = AdjFactorCalculator.calculate_factors(prices, dividends)
+
+    f = 1.0 / (1.0 + 0.471744)
+    assert result['qfq_factor'].to_list() == pytest.approx([f, 1.0])
+    assert result['hfq_factor'].to_list() == pytest.approx([1.0, 1.0 + 0.471744])
+    # 原始 share_div 不被改写
+    assert dividends['share_div'].to_list() == [0.85]
+
+
+def test_calculate_factors_no_ex_rights_ignores_fix_columns():
+    """no_ex_rights=true 优先级最高：即使 *_fix 有值也不参与计算。"""
+    prices = pl.DataFrame({
+        'ts_code': ['600306.SH'] * 2,
+        'trade_date': [date(2023, 12, 25), date(2023, 12, 26)],
+        'open': [10.0, 10.0], 'close': [10.0, 10.0],
+    })
+    dividends = pl.DataFrame({
+        'ts_code': ['600306.SH'], 'ex_date': [date(2023, 12, 26)],
+        'cash_div': [0.0], 'share_div': [0.85],
+        'rights_issue_ratio': [0.0], 'rights_issue_price': [0.0],
+        'no_ex_rights': [True],
+        'share_div_fix': [0.5], 'cash_div_fix': [0.1],
+    })
+
+    result = AdjFactorCalculator.calculate_factors(prices, dividends)
+
+    assert result['qfq_factor'].to_list() == [1.0, 1.0]
+    assert result['hfq_factor'].to_list() == [1.0, 1.0]
+    # 事件行与修正值原样可读
+    assert dividends['share_div_fix'].to_list() == [0.5]
+    assert dividends['cash_div_fix'].to_list() == [0.1]
+
+
+def test_calculate_factors_cash_div_fix_overrides_original():
+    """cash_div_fix 非空时覆盖原始 cash_div（601258 补漏记 0.04）。"""
+    prices = pl.DataFrame({
+        'ts_code': ['601258.SH'] * 2,
+        'trade_date': [date(2019, 12, 27), date(2019, 12, 30)],
+        'open': [1.46, 1.43], 'close': [1.46, 1.45],
+    })
+    dividends = pl.DataFrame({
+        'ts_code': ['601258.SH'], 'ex_date': [date(2019, 12, 30)],
+        'cash_div': [0.0], 'share_div': [0.56416],
+        'rights_issue_ratio': [0.0], 'rights_issue_price': [0.0],
+        'no_ex_rights': [False],
+        'share_div_fix': [0.0], 'cash_div_fix': [0.04],
+    })
+
+    result = AdjFactorCalculator.calculate_factors(prices, dividends)
+
+    f = (1.46 - 0.04) / 1.46
+    assert result['qfq_factor'].to_list() == pytest.approx([f, 1.0])
+    assert result['hfq_factor'].to_list() == pytest.approx([1.0, 1.46 / 1.42])
+    assert dividends['cash_div'].to_list() == [0.0]
 
 
 def test_batch_prefetches_per_chunk_and_commits_once(monkeypatch):

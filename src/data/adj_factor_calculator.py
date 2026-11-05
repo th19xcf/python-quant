@@ -6,7 +6,7 @@
 统一使用Polars DataFrame
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import List
 
 import numpy as np
@@ -252,7 +252,8 @@ class AdjFactorCalculator:
 
     @staticmethod
     def calculate_factors(prices_df: pl.DataFrame, dividends_df: pl.DataFrame,
-                          max_factor: float = 10.0) -> pl.DataFrame:
+                          max_factor: float = 10.0,
+                          as_of: date | None = None) -> pl.DataFrame:
         """
         计算复权因子（事件级向量化版本，静态方法，供各处复用）。
 
@@ -268,6 +269,19 @@ class AdjFactorCalculator:
         算法：
             - 前复权因子 qfq_factor：行 t 的因子 = prod{ f_e | ex_date_e > t }
             - 后复权因子 hfq_factor：行 t 的因子 = prod{ 1/f_e | ex_date_e <= t }
+
+        Args:
+            prices_df: 行情帧，trade_date 未排序时内部按升序排序。
+            dividends_df: 除权事件帧，ex_date 为空的行忽略。
+            max_factor: 单事件因子上限，超过视为数据异常并丢弃。
+            as_of: 观察基准日；事件晚于 min(行情末行, as_of) 时一律不参与计算。
+                传 None 时只以行情末行为边界（快照/现算场景下价格帧末行就是作用域边界）。
+
+        事件截断口径（与 ``fund_factors.prepare_events_for_code`` 的
+        ``event_date > last_date → continue`` 一致）：
+            晚于行情末行（或 as_of）的除权事件不参与 qfq 计算，避免末行因子被尚未
+            发生的事件提前改写。hfq 不受影响：hfq(t) = qfq(t) / prod{全部事件因子}，
+            未来事件在分子与分母同时出现而抵消，截断前后逐行数值不变。
         """
         # --- 排序断言 ---
         # polars 2.0 移除了 DataFrame.is_sorted_by，改用列的 Series.is_sorted()
@@ -282,6 +296,32 @@ class AdjFactorCalculator:
             dividends_df = dividends_df.sort('ex_date')
 
         divs = dividends_df.filter(pl.col('ex_date').is_not_null())
+        # no_ex_rights：分红表保留原始事件行（share_div 原样不动），但该事件
+        # 不参与除权因子计算（典型场景：退市/重整转增用于抵债，原股东不获得、
+        # 原始价不除权）。标记列缺省视为 False，不影响既有调用方。
+        if not divs.is_empty() and 'no_ex_rights' in divs.columns:
+            divs = divs.filter(~pl.col('no_ex_rights').fill_null(False))
+        if divs.is_empty():
+            return MemoryOptimizer.optimize_dataframe(prices_df.with_columns(ones))
+        # *_fix：修正列非空时覆盖同名字段（原始 share_div/cash_div 保留在快照里
+        # 可追溯）。优先级写死为 no_ex_rights（剔除） > *_fix > 原值；列缺省时
+        # 保持既有调用方行为不变。修正只影响事件聚积，不触碰 as_of 截断与 PIT 回滚。
+        if 'share_div_fix' in divs.columns and 'share_div' in divs.columns:
+            divs = divs.with_columns(
+                pl.col('share_div_fix').fill_null(pl.col('share_div')).alias('share_div'))
+        if 'cash_div_fix' in divs.columns and 'cash_div' in divs.columns:
+            divs = divs.with_columns(
+                pl.col('cash_div_fix').fill_null(pl.col('cash_div')).alias('cash_div'))
+
+        # 事件截断：晚于行情末行（或 as_of）的事件不参与计算。
+        # searchsorted(side='left') 对这类事件会返回 pos == N，若不截断会被广播到
+        # 全部行（末行因子被未来事件提前改写）。日期统一转 ISO 字符串比较，
+        # 兼容 Date / Datetime / 字符串三种 schema。
+        cutoff = str(prices_df['trade_date'][-1])[:10]
+        if as_of is not None:
+            cutoff = min(cutoff, as_of.strftime('%Y-%m-%d'))
+        divs = divs.filter(
+            pl.col('ex_date').cast(pl.Utf8).str.slice(0, 10) <= cutoff)
         if divs.is_empty():
             return MemoryOptimizer.optimize_dataframe(prices_df.with_columns(ones))
 

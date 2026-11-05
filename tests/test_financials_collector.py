@@ -121,6 +121,27 @@ def test_normalize_valuation_without_dividends_is_null() -> None:
     assert frame.to_dicts()[0]['dv_ratio'] is None
 
 
+def test_normalize_valuation_no_dividend_record_is_zero() -> None:
+    """分红快照可用但该标的无记录 / 窗口内无分红时，股息率应为 0。"""
+    df = pd.DataFrame({'数据日期': ['2026-11-04'], '当日收盘价': [100.0],
+                       'PE(TTM)': [20.0], '市净率': [8.0], '市销率': [7.0],
+                       '总市值': [1.0e8], '流通市值': [9.0e7]})
+    absent = normalize_valuation(df, '600519.SH', {})
+    assert absent.to_dicts()[0]['dv_ratio'] == 0.0
+
+    empty = pl.DataFrame(schema={'ex_date': pl.Date, 'cash_div': pl.Float64})
+    empty_frame = normalize_valuation(df, '600519.SH', {'600519.SH': empty})
+    assert empty_frame.to_dicts()[0]['dv_ratio'] == 0.0
+
+    future_div = pl.DataFrame({
+        'ts_code': ['600519.SH'],
+        'ex_date': [date(2026, 12, 20)],
+        'cash_div': [2.0],
+    })
+    future = normalize_valuation(df, '600519.SH', {'600519.SH': future_div})
+    assert future.to_dicts()[0]['dv_ratio'] == 0.0
+
+
 def test_bulk_mapping_covers_schema_columns() -> None:
     """收入/资产/现金流映射的目标列必须存在于 schema 中。"""
     for table, mapping in collector._BULK_MAPPINGS.items():  # noqa: SLF001

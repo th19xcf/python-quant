@@ -24,7 +24,11 @@ from src.advice.config import (
     default_config,
     default_output_tiers,
 )
-from src.advice.daily_store import list_daily_snapshots, load_daily_snapshot
+from src.advice.daily_store import (
+    list_daily_snapshots,
+    load_daily_snapshot,
+    usage_boundary,
+)
 from src.advice.pipeline import AdviceEngine
 from src.advice.replay import run_replay
 from src.utils.config import get_config
@@ -42,6 +46,10 @@ def _write_snapshot(result: dict, out_dir: Path, equity: float) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / 'latest.json'
     payload = {
+        'usage_boundary': usage_boundary(),
+        'signal_date': result.get('signal_date', result['trade_date']),
+        'earliest_exec_date': result.get('earliest_exec_date'),
+        'exec_status': result.get('exec_status'),
         'trade_date': result['trade_date'],
         'generated_at': datetime.now().isoformat(timespec='seconds'),
         'equity': equity,
@@ -83,17 +91,24 @@ def _run_generate(args: argparse.Namespace) -> int:
     result = engine.generate(as_of=as_of, equity=args.equity,
                              tiers=args.tiers, state_dir=args.state_dir,
                              daily_dir=daily_dir, persist_daily=not args.no_daily)
+    logger.info(
+        '[advice] 使用边界：confidence 为 0.30/0.40/0.25 启发式加权、不是概率；'
+        '系统没有止损字段；不得转述为“年化 X%”或收益承诺')
     frame = result.to_frame()
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     frame.write_csv(out_dir / 'all.csv')
     summary = result.summary()
+    summary['usage_boundary'] = usage_boundary()
     summary['tiers'] = mark_observe_only(summary['tiers'])
     out_dir.joinpath('summary.json').write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
     _write_snapshot(
-        {'trade_date': result.trade_date.isoformat(), 'tiers': summary['tiers'],
-         'items': result.to_dicts()},
+        {'trade_date': result.trade_date.isoformat(),
+         'signal_date': summary['signal_date'],
+         'earliest_exec_date': summary['earliest_exec_date'],
+         'exec_status': summary['exec_status'],
+         'tiers': summary['tiers'], 'items': result.to_dicts()},
         out_dir, args.equity)
     if OBSERVE_ONLY_TIERS.intersection(result.tiers):
         logger.warning('[advice] 短线档位仅观察（未通过样本外），输出已标记 observe_only')

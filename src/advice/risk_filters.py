@@ -4,8 +4,8 @@
 
 三条红线：
 
-1. ``unknown`` 不是 ``non_st``：ST 状态未知时按显式策略处理（默认放行但登记），
-   绝不静默当成「非 ST」；
+1. ``unknown`` 不是 ``non_st``：ST 状态未知时 **fail-closed**（默认 ``drop``），
+   一律不进买入候选并单列 ``st_unknown_rejected``；只有明确 ``non_st`` 才放行；
 2. 行业未知单独成桶（``unknown``），绝不并入任何真实行业；
 3. 事件数据覆盖不到的日期返回 ``unknown``，不默认当成「没有事件」。
 
@@ -78,7 +78,7 @@ class RiskContext:
         self.st_snapshot_date: date | None = None
         self.industry_snapshot_date: date | None = None
         self.counts: dict[str, int] = {
-            'st_dropped': 0, 'st_unknown_passed': 0,
+            'st_dropped': 0, 'st_unknown_rejected': 0, 'st_unknown_passed': 0,
             'event_dropped': 0, 'event_unknown_passed': 0,
             'industry_unknown': 0,
         }
@@ -193,16 +193,16 @@ class RiskContext:
                 return RiskVerdict(False, 'st', 'ST/*ST 风险警示',
                                    {'status': status})
             if status == ST_UNKNOWN:
+                if self.config.st_unknown_policy == ST_UNKNOWN_POLICY_DROP:
+                    reason = 'ST 状态未知（fail-closed，不进买入候选）'
+                    if record:
+                        self._drop(code, as_of, 'st_unknown', reason,
+                                   {'status': status},
+                                   count_key='st_unknown_rejected')
+                    return RiskVerdict(False, 'st_unknown', reason,
+                                       {'status': status})
                 if record:
                     self.counts['st_unknown_passed'] += 1
-                if self.config.st_unknown_policy == ST_UNKNOWN_POLICY_DROP:
-                    if record:
-                        self._drop(code, as_of, 'st',
-                                   'ST 状态未知（无快照，按 drop 策略剔除）',
-                                   {'status': status})
-                    return RiskVerdict(
-                        False, 'st', 'ST 状态未知（无快照，按 drop 策略剔除）',
-                        {'status': status})
 
         if self.config.event_enabled and self.events is not None:
             if not self.events.available or not self.events.covers(as_of):
@@ -226,8 +226,8 @@ class RiskContext:
         return RiskVerdict(True)
 
     def _drop(self, code: str, as_of: date, kind: str, reason: str,
-              detail: dict[str, Any]) -> None:
-        self.counts[f'{kind}_dropped'] += 1
+              detail: dict[str, Any], count_key: str | None = None) -> None:
+        self.counts[count_key or f'{kind}_dropped'] += 1
         if len(self.audit) < self.audit_limit:
             self.audit.append({
                 'date': as_of.isoformat(), 'ts_code': str(code).upper(),
@@ -274,8 +274,9 @@ class RiskContext:
                     f'（未当作非 ST），剔除 {counts["st_dropped"]} 只')
             else:
                 notes.append(
-                    f'ST 过滤：unknown 按 drop 剔除，'
-                    f'共剔除 {counts["st_dropped"]} 只')
+                    f'ST 过滤：unknown 按 drop（fail-closed）剔除，'
+                    f'共拒绝 {counts["st_unknown_rejected"]} 只，'
+                    f'明确 ST 剔除 {counts["st_dropped"]} 只')
         if self.config.industry_enabled:
             snapshot = self.industry_snapshot_date
             cap_text = f'{industry_cap:.0%}' if industry_cap else '未设置'

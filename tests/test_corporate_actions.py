@@ -213,13 +213,15 @@ def test_rights_issue_partial_subscription_when_cash_short():
     cash_after_buy = _buy_trade(result)['capital']
     log = result['corporate_actions'][0]
     assert log['shares_before'] == 100
-    assert log['rights_shares'] == 6          # 可用现金约 50 元，8 元/股 → 6 股
-    assert log['rights_abandoned_shares'] == 4
-    assert log['rights_cost'] == pytest.approx(48.0)
-    assert result['positions'] == {CODE: 106}
-    # 剩余现金 + 106 股 × 9.818181...（部分认购不享受未认购部分的折价）
+    # 现行成本（佣金 0.05% + 过户费 0.002% + 缺市值按 30bp 滑点）买入成本 8.2 元，
+    # 可用现金 41.8 元，8 元/股 → 5 股
+    assert log['rights_shares'] == 5
+    assert log['rights_abandoned_shares'] == 5
+    assert log['rights_cost'] == pytest.approx(40.0)
+    assert result['positions'] == {CODE: 105}
+    # 剩余现金 + 105 股 × 9.818181...（部分认购不享受未认购部分的折价）
     assert result['final_equity'] == pytest.approx(
-        cash_after_buy - 48.0 + 106 * ex_price, abs=1e-6)
+        cash_after_buy - 40.0 + 105 * ex_price, abs=1e-6)
 
 
 def test_rights_issue_abandon_policy_is_explicit():

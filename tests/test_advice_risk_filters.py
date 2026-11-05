@@ -91,9 +91,12 @@ class TestST:
         assert ctx.st_status('600519.SH', DAY) == ST_UNKNOWN
 
     def test_unknown_is_not_non_st(self, ctx):
+        # 默认 fail-closed：unknown 一律不进买入候选，单列 st_unknown_rejected
         verdict = ctx.evaluate('600519.SH', DAY)
-        assert verdict.ok
-        assert ctx.counts['st_unknown_passed'] == 1
+        assert not verdict.ok
+        assert verdict.kind == 'st_unknown'
+        assert ctx.counts['st_unknown_rejected'] == 1
+        assert ctx.counts['st_unknown_passed'] == 0
         assert ctx.counts['st_dropped'] == 0
 
     def test_drop_policy_rejects_unknown(self, tmp_path):
@@ -101,7 +104,9 @@ class TestST:
         context = RiskContext(RiskFilterConfig(st_unknown_policy='drop'),
                               tmp_path, TRADING)
         assert not context.evaluate('600519.SH', DAY).ok
-        assert context.counts['st_dropped'] == 1
+        assert context.counts['st_unknown_rejected'] == 1
+        assert context.counts['st_dropped'] == 0
+        assert context.counts['st_unknown_passed'] == 0
 
     def test_st_is_rejected_with_audit(self, ctx):
         verdict = ctx.evaluate('000001.SZ', DAY)
@@ -113,8 +118,9 @@ class TestST:
     def test_no_snapshot_is_unknown(self, tmp_path):
         context = RiskContext(RiskFilterConfig(), tmp_path, TRADING)
         assert context.st_status('600000.SH', DAY) == ST_UNKNOWN
-        # 默认 keep：没有快照不等于安全放行后的「非 ST」统计
-        assert context.evaluate('600000.SH', DAY).ok
+        # fail-closed：没有快照不等于安全放行
+        assert not context.evaluate('600000.SH', DAY).ok
+        assert context.counts['st_unknown_rejected'] == 1
 
 
 class TestIndustry:
@@ -165,6 +171,7 @@ class TestIndustry:
 class TestEvent:
     def test_cooling_drops_candidate(self, tmp_path):
         _write_events(tmp_path)
+        _write_st(tmp_path, [('000001.SZ', '某某', NON_ST)])
         context = RiskContext(RiskFilterConfig(), tmp_path, TRADING)
         verdict = context.evaluate('000001.SZ', DAY)
         assert not verdict.ok
@@ -174,6 +181,7 @@ class TestEvent:
 
     def test_coverage_outside_is_unknown_not_clear(self, tmp_path):
         _write_events(tmp_path)
+        _write_st(tmp_path, [('000001.SZ', '某某', NON_ST)])
         context = RiskContext(RiskFilterConfig(), tmp_path,
                               [date(2025, 2, 3)])
         status = context.event_status('000001.SZ', date(2025, 2, 3))
@@ -184,10 +192,12 @@ class TestEvent:
 
     def test_unknown_drop_policy(self, tmp_path):
         context = RiskContext(
-            RiskFilterConfig(event_unknown_policy='drop'), tmp_path, TRADING)
+            RiskFilterConfig(event_unknown_policy='drop', st_enabled=False),
+            tmp_path, TRADING)
         assert not context.evaluate('600000.SH', DAY).ok
 
     def test_missing_table_is_unknown(self, tmp_path):
+        _write_st(tmp_path, [('600000.SH', '浦发银行', NON_ST)])
         context = RiskContext(RiskFilterConfig(), tmp_path, TRADING)
         assert context.event_status('600000.SH', DAY)['reason'] == 'no_data'
         assert context.evaluate('600000.SH', DAY).ok
@@ -213,7 +223,7 @@ class TestSwitches:
     def test_defaults_are_explicit(self):
         config = RiskFilterConfig()
         assert config.st_enabled and config.industry_enabled and config.event_enabled
-        assert config.st_unknown_policy == 'keep'
+        assert config.st_unknown_policy == 'drop'
         assert config.event_unknown_policy == 'keep'
         assert config.cooldowns() == {'并购重组': 20, '重大合同/中标': 5,
                                       '监管处罚': 5}

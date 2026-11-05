@@ -40,6 +40,7 @@ from src.backtest.engine.backtest_engine import BacktestEngine
 from src.backtest.engine.holdout import holdout_bounds
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
+from src.data.quality.code_migration import load_entity_index
 from src.risk import (
     DEFAULT_RISK_LIMITS,
     RiskEngine,
@@ -366,8 +367,10 @@ def _prepare_backtest_data(
         fetcher = DataFetcher(db.config, db_manager=db)
     if ts_codes:
         # 组合/横截面一次加载面板，避免逐票重复路由
+        # 同一实体的旧码已被新码完整覆盖时先去重，避免同一只票重复计入
+        codes = load_entity_index().dedupe(ts_codes)
         return fetcher.get_stock_batch(
-            ts_codes, start_date or '', end_date or '', adjustment_type='hfq',
+            codes, start_date or '', end_date or '', adjustment_type='hfq',
         ), db
     data = fetcher.get_stock_data(
         ts_code, start_date or '', end_date or '',

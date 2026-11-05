@@ -37,7 +37,7 @@ import os
 import re
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -146,6 +146,182 @@ def resolve_ts_code(code: str, store_root: Path | str | None = None) -> str:
         seen.add(nxt)
         current = nxt
     return current
+
+
+# ----------------------------------------------------------------------
+# 读侧实体索引：同一只票只保留一个代表代码
+# ----------------------------------------------------------------------
+#: 允许判定「旧码可被新码完全覆盖」的最大收盘价相对偏差
+SUPERSEDE_MAX_REL_DEV = 1e-6
+#: 重叠交易日行数至少占旧码行数的比例
+SUPERSEDE_MIN_OVERLAP = 0.9
+
+_ENTITY_CACHE: dict[tuple[Any, ...], EntityIndex] = {}
+
+
+@dataclass(frozen=True)
+class EntityIndex:
+    """读侧实体索引；只读、不可变，可安全跨线程共享。"""
+
+    canonical: dict[str, str]
+    superseded: frozenset[str]
+    notes: tuple[str, ...] = ()
+
+    def entity_key(self, code: str) -> str:
+        """旧码解析为实体代表码；新码或未映射码返回自身。"""
+        text = str(code).strip().upper()
+        return self.canonical.get(text, text)
+
+    def is_superseded(self, code: str) -> bool:
+        """该代码是否已被同实体的新代码完整覆盖（读侧应丢弃）。"""
+        return str(code).strip().upper() in self.superseded
+
+    def dedupe(self, codes: Iterable[str]) -> list[str]:
+        """按传入顺序去重：丢弃被覆盖的旧码，同码只保留一次。"""
+        out: list[str] = []
+        seen: set[str] = set()
+        for code in codes:
+            text = str(code).strip().upper()
+            if not text or text in self.superseded or text in seen:
+                continue
+            seen.add(text)
+            out.append(text)
+        return out
+
+
+def _empty_entity_index() -> EntityIndex:
+    return EntityIndex(canonical={}, superseded=frozenset())
+
+
+def _daily_index_coverage(root: Path) -> dict[str, tuple[date | None, date | None]]:
+    path = root / 'meta' / 'daily_index.parquet'
+    if not path.is_file():
+        return {}
+    frame = pl.read_parquet(
+        path, columns=['ts_code', 'data_type', 'start', 'end']
+    ).filter(pl.col('data_type') == 'stock')
+    return {str(row['ts_code']): (_date(row['start']), _date(row['end']))
+            for row in frame.to_dicts()}
+
+
+def _quote_close(root: Path, code: str) -> pl.DataFrame | None:
+    market = code.rsplit('.', 1)[-1].lower()
+    path = root / 'quotes' / 'stock' / market / f'{code}.parquet'
+    if not path.is_file():
+        return None
+    return pl.read_parquet(path, columns=['date', 'close'])
+
+
+def _price_guard(root: Path, old: str, new: str) -> tuple[bool, str]:
+    """安全闸：新旧码重叠段收盘价必须几乎完全一致，才允许丢弃旧码。"""
+    old_frame, new_frame = _quote_close(root, old), _quote_close(root, new)
+    if old_frame is None or new_frame is None:
+        return False, '缺少新旧行情文件'
+    if old_frame.height == 0:
+        return False, '旧码行情为空'
+    joined = old_frame.rename({'close': 'c_old'}).join(
+        new_frame.rename({'close': 'c_new'}), on='date', how='inner'
+    ).drop_nulls()
+    required = max(int(old_frame.height * SUPERSEDE_MIN_OVERLAP), 1)
+    if joined.height < required:
+        return False, f'重叠不足({joined.height}/{old_frame.height}行)'
+    rel_dev = joined.select(
+        ((pl.col('c_old') - pl.col('c_new')).abs()
+         / pl.col('c_new').abs().clip(lower_bound=1e-9)).max()
+    ).item()
+    if rel_dev is None or float(rel_dev) > SUPERSEDE_MAX_REL_DEV:
+        return False, f'收盘价最大相对偏差 {rel_dev} 超阈值'
+    return True, f'重叠{joined.height}/{old_frame.height}行，最大相对偏差{rel_dev:.3g}'
+
+
+def _build_entity_index(root: Path) -> EntityIndex:
+    mapping = load_mapping(root)
+    if mapping.height == 0:
+        return _empty_entity_index()
+    coverage = _daily_index_coverage(root)
+    canonical: dict[str, str] = {}
+    notes: list[str] = []
+    for row in mapping.to_dicts():
+        old, new = str(row['old_ts_code']).strip().upper(), str(
+            row['new_ts_code']).strip().upper()
+        if old != new:
+            canonical[old] = new
+
+    superseded: set[str] = set()
+    for old, new in canonical.items():
+        old_span = coverage.get(old)
+        if old_span is None:
+            # 旧码无本地行情：没有可去重对象，保留映射仅用于别名查询
+            continue
+        new_span = coverage.get(new)
+        if new_span is None:
+            notes.append(f'{old}→{new}: 新码无本地行情，保留旧码为代表')
+            continue
+        old_start, old_end = old_span
+        new_start, new_end = new_span
+        if old_start is None or old_end is None or new_start is None or new_end is None:
+            notes.append(f'{old}→{new}: 覆盖窗口不完整，保留旧码为代表')
+            continue
+        if new_start > old_start or new_end < old_end:
+            notes.append(f'{old}→{new}: 新码覆盖窗口未包住旧码，保留旧码为代表')
+            continue
+        ok, detail = _price_guard(root, old, new)
+        if not ok:
+            notes.append(f'{old}→{new}: 安全闸拒绝合并（{detail}）')
+            logger.warning(f'[code-migration] {old}→{new} 未通过安全闸: {detail}，'
+                           f'读侧保留两个代码')
+            continue
+        superseded.add(old)
+    return EntityIndex(canonical=canonical, superseded=frozenset(superseded),
+                       notes=tuple(notes))
+
+
+def _entity_cache_key(root: Path) -> tuple[Any, ...]:
+    """缓存键：映射表/日线索引 mtime + 行情子目录 mtime（覆盖行情回填）。"""
+    parts: list[Any] = [str(root)]
+    for rel in ('meta/code_migration.parquet', 'meta/daily_index.parquet'):
+        path = root / rel
+        parts.append(path.stat().st_mtime_ns if path.is_file() else -1)
+    quote_dirs = sorted((root / 'quotes' / 'stock').glob('*'))
+    parts.append(max((d.stat().st_mtime_ns for d in quote_dirs if d.is_dir()),
+                     default=-1))
+    return tuple(parts)
+
+
+def load_entity_index(
+    store_root: Path | str | None = None,
+    *,
+    refresh: bool = False,
+) -> EntityIndex:
+    """构建读侧实体索引（按 mtime 缓存）。
+
+    映射表缺失、依赖文件损坏或任何异常时**降级为不收敛**（返回空索引），
+    保证宁可多算一只，也不会因为索引失败而少股票。
+    """
+    root = Path(store_root) if store_root is not None else _default_root()
+    key = _entity_cache_key(root)
+    with _CACHE_LOCK:
+        cached = _ENTITY_CACHE.get(key)
+        if cached is not None and not refresh:
+            return cached
+    try:
+        index = _build_entity_index(root)
+    except Exception as exc:  # noqa: BLE001 - 降级为不收敛，不阻断读路径
+        logger.warning(f'[code-migration] 实体索引构建失败，降级为不收敛: {exc}')
+        index = _empty_entity_index()
+    with _CACHE_LOCK:
+        _ENTITY_CACHE[key] = index
+    return index
+
+
+def entity_key(code: str, store_root: Path | str | None = None) -> str:
+    """便捷入口：把代码解析为实体代表码。"""
+    return load_entity_index(store_root).entity_key(code)
+
+
+def is_superseded(code: str, store_root: Path | str | None = None) -> bool:
+    """便捷入口：该代码是否已被同实体的新代码完整覆盖。"""
+    return load_entity_index(store_root).is_superseded(code)
 
 
 def detect_cycles(pairs: Iterable[tuple[str, str]]) -> list[list[str]]:
@@ -324,13 +500,19 @@ class _Facts:
     quote: dict[str, tuple[date, date]]
     notice: dict[str, dict[str, Any]]
     active: set[str]
+    #: 新三板 ``.NQ`` 登记，仅用于旧北交所代码的身份证据（不入 A 股 universe）
+    em_nq: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _facts(sources: Sources) -> _Facts:
     em: dict[str, dict[str, Any]] = {}
+    em_nq: dict[str, dict[str, Any]] = {}
     if sources.em.height:
         for row in sources.em.to_dicts():
             code = str(row['secucode']).upper()
+            if code.endswith('.NQ'):
+                em_nq[code] = row
+                continue
             if is_a_share(code):
                 em[code] = row
     db = {row['ts_code']: row for row in sources.stock_basic.to_dicts()}
@@ -341,7 +523,8 @@ def _facts(sources: Sources) -> _Facts:
               if code[:2] in OLD_BSE_PREFIXES + (NEW_BSE_PREFIX,)}
     active = {code for code, row in db.items()
               if row.get('status') == 'L' and not row.get('delist_date')}
-    return _Facts(em=em, db=db, quote=quote, notice=notice, active=active)
+    return _Facts(em=em, db=db, quote=quote, notice=notice, active=active,
+                  em_nq=em_nq)
 
 
 def _code_span(code: str, facts: _Facts) -> tuple[date | None, date | None]:
@@ -386,6 +569,9 @@ def _pair_record(old: str, new: str, facts: _Facts, *,
                  source: str, extra_names: set[str] | None = None
                  ) -> dict[str, Any] | None:
     old_em, new_em = facts.em.get(old, {}), facts.em.get(new, {})
+    if not old_em and old[:2] in OLD_BSE_PREFIXES:
+        # 旧北交所代码在登记册里可能只留新三板 .NQ 记录；仅取身份证据，不入 universe
+        old_em = facts.em_nq.get(f'{old[:6]}.NQ', {})
     old_db, new_db = facts.db.get(old, {}), facts.db.get(new, {})
     old_note = facts.notice.get(old, {})
     old_names = _chain(old_em) if old_em else set()
