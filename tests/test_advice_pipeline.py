@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from pathlib import Path
 
 from _advice_synth import build_store, business_dates, write_st_snapshot, write_stock
 
@@ -191,3 +192,23 @@ def test_deferred_buys_are_written_to_archive(tmp_path):
     engine_rows = sum(len(advice.rows) for advice in result.tiers.values())
     archived_rows = sum(len(tier['items']) for tier in payload['tiers'])
     assert archived_rows == engine_rows
+
+
+def test_generate_does_not_write_repo_advice_artifacts(tmp_path):
+    """generate 未显式传产物目录时，不得把夹具快照写进仓库 reports/。"""
+    repo_dir = Path(__file__).resolve().parents[1] / 'reports' / 'advice' / 'ic_monitor'
+
+    def snapshot() -> dict[str, tuple[int, int]]:
+        if not repo_dir.is_dir():
+            return {}
+        return {path.name: (path.stat().st_size, path.stat().st_mtime_ns)
+                for path in repo_dir.iterdir() if path.is_file()}
+
+    before = snapshot()
+    root = build_store(tmp_path / 'local_store', _codes(),
+                       end=date(2026, 6, 30), days=420)
+    engine = AdviceEngine(config=default_config('legacy'), store_root=root)
+    engine.generate(as_of=date(2026, 6, 30), equity=1_000_000,
+                    tiers=['short', 'mid', 'long'], codes=_codes(),
+                    state_dir=tmp_path / 'state', persist_state=False)
+    assert snapshot() == before
