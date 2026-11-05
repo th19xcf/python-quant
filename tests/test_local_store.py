@@ -700,3 +700,59 @@ def test_overlay_warns_when_factor_snapshot_missing(tmp_path):
     assert fixed['qfq_factor'].to_list() == [1.0] * 3
     assert any('因子快照缺失' in m for m in messages)
 
+
+def _add_backfilled_row(store, kind, code, day) -> None:
+    """模拟历史缺口回补：向本地单票文件追加一条源端当前没有的行。"""
+    frame = store.read_file(kind, code)
+    extra = frame.head(1).with_columns(pl.lit(day).cast(frame.schema['date']).alias('date'))
+    merged = (pl.concat([frame, extra], how='vertical_relaxed')
+              .unique(subset=['date'], keep='last').sort('date'))
+    store.write_daily(kind, code, merged, full=True, source_mtime_ns=1)
+    store.flush_meta()
+
+
+def test_full_rebuild_keeps_backfilled_superset_rows(tmp_path):
+    """全量重建不得用较短源端整只覆盖本地已回补的超集行。"""
+    tdx = tmp_path / 'tdx'
+    store_root = tmp_path / 'store'
+    _write_day_file(tdx, 'sh', '600000', _RECS)
+    store = LocalQuoteStore(store_root)
+    factor_store = LocalFactorStore(store_root)
+    cfg = _build_config(tdx, store_root)
+
+    build(cfg, store, factor_store, data_type='stock')
+    assert store.read_file('stock', '600000.SH').height == 2
+
+    _add_backfilled_row(store, 'stock', '600000.SH', date(2023, 12, 29))
+    assert store.read_file('stock', '600000.SH').height == 3
+
+    # 源端仍只有 2 行，再次全量重建后补入行必须原样保留
+    build(cfg, store, factor_store, data_type='stock')
+    frame = store.read_file('stock', '600000.SH')
+    assert frame.height == 3
+    assert frame['date'].to_list() == [
+        date(2023, 12, 29), date(2024, 1, 2), date(2024, 1, 3)]
+
+
+def test_incremental_rebuild_keeps_backfilled_superset_rows(tmp_path):
+    """增量重建（源端前进）同样不得裁掉本地更早的补入行。"""
+    tdx = tmp_path / 'tdx'
+    store_root = tmp_path / 'store'
+    _write_day_file(tdx, 'sh', '600000', _RECS[:1])
+    store = LocalQuoteStore(store_root)
+    factor_store = LocalFactorStore(store_root)
+    cfg = _build_config(tdx, store_root)
+
+    build(cfg, store, factor_store, data_type='stock')
+    _add_backfilled_row(store, 'stock', '600000.SH', date(2023, 12, 29))
+
+    # 源端前进一天（2024-01-03），触发增量重建
+    _write_day_file(tdx, 'sh', '600000', _RECS)
+    stats = build(cfg, store, factor_store, data_type='stock', incremental=True)
+    assert stats['symbols'] == 1
+
+    frame = store.read_file('stock', '600000.SH')
+    assert frame.height == 3
+    assert frame['date'].to_list() == [
+        date(2023, 12, 29), date(2024, 1, 2), date(2024, 1, 3)]
+

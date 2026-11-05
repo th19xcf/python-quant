@@ -4,6 +4,8 @@
 主题管理模块：调色板切换 + 左侧导航栏（QTreeWidget）的配色与条目绘制。
 """
 
+from typing import cast
+
 from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPalette
 from PySide6.QtWidgets import (
@@ -53,10 +55,10 @@ def _colors(dark: bool) -> dict:
 
 def is_dark_palette(app: QApplication | None = None) -> bool:
     """按当前应用调色板的窗口亮度判断深浅主题，供启动期挂样式使用。"""
-    app = app or QApplication.instance()
-    if app is None:
+    application = app if app is not None else cast(QApplication, QApplication.instance())
+    if application is None:
         return True
-    return app.palette().color(QPalette.ColorRole.Window).lightness() < 128
+    return application.palette().color(QPalette.ColorRole.Window).lightness() < 128
 
 
 def sidebar_qss(dark: bool = True) -> str:

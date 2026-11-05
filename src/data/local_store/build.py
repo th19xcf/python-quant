@@ -291,15 +291,28 @@ def _incremental_plan(
     return stale_count, planned_rows
 
 
-def _apply_since(
+def _merge_source_with_existing(
     quote_store: LocalQuoteStore, kind: str, ts_code: str,
-    fresh: pl.DataFrame, since: date,
+    fresh: pl.DataFrame, since: date | None,
 ) -> tuple[pl.DataFrame, bool]:
-    """把全量新帧裁到 ``since`` 后与存量合并；无存量时返回尾段并标记非完整。"""
+    """把源端新帧与存量合并，返回（待写入帧, 是否完整覆盖）。
+
+    源端 ``.day`` 并不保证是存量的超集：代码复用换段、停更后回退、同步
+    进程盘中重写历史，都会让源端区间比本地短。因此重建一律按
+    ``(date)`` 做 upsert —— 保留存量所有行，同日以源端为准 —— 而不是
+    用源端整只覆盖本地。源端缺失的历史行只可能来自此前的缺口回补，
+    整只覆盖会把它静默删掉。
+
+    ``since`` 只影响从源端取哪一段（无存量时写入的是尾段，标记非完整）；
+    有存量时始终合并。
+    """
     existing = quote_store.read_file(kind, ts_code)
     if existing is not None and not existing.is_empty():
-        return _merge_incremental(existing, fresh.filter(pl.col('date') >= since)), True
-    return fresh.filter(pl.col('date') >= since), False
+        tail = fresh.filter(pl.col('date') >= since) if since is not None else fresh
+        return _merge_incremental(existing, tail), True
+    if since is not None:
+        return fresh.filter(pl.col('date') >= since), False
+    return fresh, True
 
 
 def _rebuild_target(
@@ -320,9 +333,8 @@ def _rebuild_target(
         fresh = fresh.filter(pl.col('date') <= max_date)
     if fresh.is_empty():
         return None
-    full = True
-    if since is not None:
-        fresh, full = _apply_since(quote_store, kind, ts_code, fresh, since)
+    fresh, full = _merge_source_with_existing(
+        quote_store, kind, ts_code, fresh, since)
     if fresh.is_empty():
         return None
     return quote_store.write_daily(

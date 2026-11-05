@@ -1,0 +1,595 @@
+{
+  "version": 1,
+  "description": "数据新鲜度检查registry：每类数据的权威新鲜度字段、正常更新频率与分级阈值。所有阈值只在此文件维护，代码内不写死。",
+  "defaults": {
+    "holidays": [],
+    "holiday_note": "交易日按周一至周五近似；如遇法定节假日，把日期以 YYYY-MM-DD 加入 holidays，避免误报超期。"
+  },
+  "datasets": [
+    {
+      "key": "quotes_stock",
+      "label": "A股日线行情",
+      "category": "行情",
+      "freshness_field": "daily_index.end",
+      "source": {
+        "kind": "meta_max",
+        "path": "meta/daily_index.parquet",
+        "filter": {"column": "data_type", "value": "stock"},
+        "column": "end"
+      },
+      "cadence": {
+        "unit": "trading_day",
+        "expected_interval": 1,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "每交易日"
+      },
+      "coverage": {
+        "count": {
+          "kind": "meta_distinct",
+          "path": "meta/daily_index.parquet",
+          "filter": {"column": "data_type", "value": "stock"},
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "latest_glob_distinct",
+          "path_glob": "meta/st_status/st_status_*.parquet",
+          "column": "code"
+        },
+        "min_ratio": 0.95,
+        "critical_ratio": 0.8
+      },
+      "note": "行情末日期来自 daily_index 元数据；覆盖分母取最新 ST 状态快照中的上市股票数。"
+    },
+    {
+      "key": "quotes_index",
+      "label": "指数日线行情",
+      "category": "行情",
+      "freshness_field": "daily_index.end",
+      "source": {
+        "kind": "meta_max",
+        "path": "meta/daily_index.parquet",
+        "filter": {"column": "data_type", "value": "index"},
+        "column": "end"
+      },
+      "cadence": {
+        "unit": "trading_day",
+        "expected_interval": 1,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "每交易日"
+      },
+      "coverage": {
+        "count": {
+          "kind": "meta_distinct",
+          "path": "meta/daily_index.parquet",
+          "filter": {"column": "data_type", "value": "index"},
+          "column": "ts_code"
+        }
+      },
+      "note": "指数没有稳定的「应有标的数」分母，只报覆盖数量，不计算占比。"
+    },
+    {
+      "key": "quotes_fund",
+      "label": "基金日线行情",
+      "category": "行情",
+      "freshness_field": "daily_index.end",
+      "source": {
+        "kind": "meta_max",
+        "path": "meta/daily_index.parquet",
+        "filter": {"column": "data_type", "value": "fund"},
+        "column": "end"
+      },
+      "cadence": {
+        "unit": "trading_day",
+        "expected_interval": 1,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "每交易日"
+      },
+      "coverage": {
+        "count": {
+          "kind": "meta_distinct",
+          "path": "meta/daily_index.parquet",
+          "filter": {"column": "data_type", "value": "fund"},
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "file_lines",
+          "path": "factors/fund_covered_codes.txt"
+        },
+        "min_ratio": 0.95,
+        "critical_ratio": 0.8
+      },
+      "note": "覆盖分母取因子侧基金代码清单 fund_covered_codes.txt。"
+    },
+    {
+      "key": "valuation_daily",
+      "label": "每日估值（PE/PB/市值等）",
+      "category": "估值",
+      "freshness_field": "trade_date",
+      "source": {
+        "kind": "parquet_max",
+        "path": "meta/financials/valuation_daily.parquet",
+        "column": "trade_date"
+      },
+      "cadence": {
+        "unit": "trading_day",
+        "expected_interval": 1,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "每交易日"
+      },
+      "coverage": {
+        "count": {
+          "kind": "parquet_distinct",
+          "path": "meta/financials/valuation_daily.parquet",
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "latest_glob_distinct",
+          "path_glob": "meta/st_status/st_status_*.parquet",
+          "column": "code"
+        },
+        "min_ratio": 0.95,
+        "critical_ratio": 0.8
+      },
+      "note": "估值表按交易日更新，滞后于行情即视为落后。"
+    },
+    {
+      "key": "financials_income",
+      "label": "利润表",
+      "category": "财务",
+      "freshness_field": "ann_date",
+      "source": {
+        "kind": "parquet_max",
+        "path": "meta/financials/income.parquet",
+        "column": "ann_date"
+      },
+      "cadence": {
+        "unit": "calendar_day",
+        "expected_interval": 90,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "每季度（90天兜底）"
+      },
+      "coverage": {
+        "count": {
+          "kind": "parquet_distinct",
+          "path": "meta/financials/income.parquet",
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "latest_glob_distinct",
+          "path_glob": "meta/st_status/st_status_*.parquet",
+          "column": "code"
+        },
+        "min_ratio": 0.95,
+        "critical_ratio": 0.8
+      },
+      "note": "财务按公告日 ann_date 计新鲜度；披露季之间允许 1 个季度。"
+    },
+    {
+      "key": "financials_balance",
+      "label": "资产负债表",
+      "category": "财务",
+      "freshness_field": "ann_date",
+      "source": {
+        "kind": "parquet_max",
+        "path": "meta/financials/balance.parquet",
+        "column": "ann_date"
+      },
+      "cadence": {
+        "unit": "calendar_day",
+        "expected_interval": 90,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "每季度（90天兜底）"
+      },
+      "coverage": {
+        "count": {
+          "kind": "parquet_distinct",
+          "path": "meta/financials/balance.parquet",
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "latest_glob_distinct",
+          "path_glob": "meta/st_status/st_status_*.parquet",
+          "column": "code"
+        },
+        "min_ratio": 0.95,
+        "critical_ratio": 0.8
+      },
+      "note": "与利润表同口径。"
+    },
+    {
+      "key": "financials_cashflow",
+      "label": "现金流量表",
+      "category": "财务",
+      "freshness_field": "ann_date",
+      "source": {
+        "kind": "parquet_max",
+        "path": "meta/financials/cashflow.parquet",
+        "column": "ann_date"
+      },
+      "cadence": {
+        "unit": "calendar_day",
+        "expected_interval": 90,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "每季度（90天兜底）"
+      },
+      "coverage": {
+        "count": {
+          "kind": "parquet_distinct",
+          "path": "meta/financials/cashflow.parquet",
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "latest_glob_distinct",
+          "path_glob": "meta/st_status/st_status_*.parquet",
+          "column": "code"
+        },
+        "min_ratio": 0.95,
+        "critical_ratio": 0.8
+      },
+      "note": "与利润表同口径。"
+    },
+    {
+      "key": "events",
+      "label": "公告事件",
+      "category": "事件",
+      "freshness_field": "publish_time",
+      "source": {
+        "kind": "parquet_max",
+        "path": "meta/events/events.parquet",
+        "column": "publish_time"
+      },
+      "cadence": {
+        "unit": "calendar_day",
+        "expected_interval": 90,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "不定期（90天兜底）"
+      },
+      "coverage": {
+        "count": {
+          "kind": "parquet_distinct",
+          "path": "meta/events/events.parquet",
+          "column": "ts_code"
+        }
+      },
+      "note": "事件不定期，但不应连续一个季度无新增；来源 coverage.json 声明只覆盖 2025 年时会在报告里体现。"
+    },
+    {
+      "key": "names_json",
+      "label": "证券名称码表",
+      "category": "基础资料",
+      "freshness_field": "file_mtime",
+      "source": {
+        "kind": "file_mtime",
+        "path": "meta/names.json"
+      },
+      "cadence": {
+        "unit": "calendar_day",
+        "expected_interval": 1,
+        "warn_multiple": 2,
+        "critical_multiple": 7,
+        "label": "每日（自然日）"
+      },
+      "coverage": {
+        "count": {
+          "kind": "json_keys",
+          "path": "meta/names.json"
+        }
+      },
+      "note": "names.json 内部无时间戳，只能取文件 mtime；覆盖数为键数（含股票/基金/指数/债券）。"
+    },
+    {
+      "key": "stock_turnover",
+      "label": "个股换手率",
+      "category": "因子",
+      "freshness_field": "trade_date",
+      "source": {
+        "kind": "parquet_max",
+        "path": "factors/stock_turnover.parquet",
+        "column": "trade_date"
+      },
+      "cadence": {
+        "unit": "trading_day",
+        "expected_interval": 1,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "每交易日"
+      },
+      "coverage": {
+        "count": {
+          "kind": "parquet_distinct",
+          "path": "factors/stock_turnover.parquet",
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "latest_glob_distinct",
+          "path_glob": "meta/st_status/st_status_*.parquet",
+          "column": "code"
+        },
+        "min_ratio": 0.9,
+        "critical_ratio": 0.7
+      },
+      "note": "换手率因子依赖行情，正常应与行情同一交易日。"
+    },
+    {
+      "key": "stock_adj_factor",
+      "label": "个股复权因子",
+      "category": "因子",
+      "freshness_field": "trade_date",
+      "source": {
+        "kind": "parquet_max",
+        "path": "factors/stock_adj_factor.parquet",
+        "column": "trade_date"
+      },
+      "cadence": {
+        "unit": "trading_day",
+        "expected_interval": 1,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "每交易日"
+      },
+      "coverage": {
+        "count": {
+          "kind": "parquet_distinct",
+          "path": "factors/stock_adj_factor.parquet",
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "latest_glob_distinct",
+          "path_glob": "meta/st_status/st_status_*.parquet",
+          "column": "code"
+        },
+        "min_ratio": 0.95,
+        "critical_ratio": 0.8
+      },
+      "note": "复权因子快照应覆盖全部在库股票。"
+    },
+    {
+      "key": "stock_dividend",
+      "label": "股票分红与拆分",
+      "category": "公司行为",
+      "freshness_field": "notice_date",
+      "source": {
+        "kind": "parquet_max",
+        "path": "factors/stock_dividend.parquet",
+        "column": "notice_date"
+      },
+      "cadence": {
+        "unit": "calendar_day",
+        "expected_interval": 30,
+        "warn_multiple": 2,
+        "critical_multiple": 6,
+        "label": "不定期（30天兜底）"
+      },
+      "coverage": {
+        "count": {
+          "kind": "parquet_distinct",
+          "path": "factors/stock_dividend.parquet",
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "latest_glob_distinct",
+          "path_glob": "meta/st_status/st_status_*.parquet",
+          "column": "code"
+        },
+        "min_ratio": 0.85,
+        "critical_ratio": 0.7
+      },
+      "note": "用公告日而非未来除权日判断采集是否断更；分红本身不定期。"
+    },
+    {
+      "key": "fund_dividend",
+      "label": "基金分红",
+      "category": "公司行为",
+      "freshness_field": "ex_date",
+      "source": {
+        "kind": "parquet_max",
+        "path": "factors/fund_dividend.parquet",
+        "column": "ex_date"
+      },
+      "cadence": {
+        "unit": "calendar_day",
+        "expected_interval": 30,
+        "warn_multiple": 2,
+        "critical_multiple": 6,
+        "label": "不定期（30天兜底）"
+      },
+      "coverage": {
+        "count": {
+          "kind": "parquet_distinct",
+          "path": "factors/fund_dividend.parquet",
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "file_lines",
+          "path": "factors/fund_covered_codes.txt"
+        },
+        "min_ratio": 0.1,
+        "critical_ratio": 0.05,
+        "note": "分红只发生在部分基金，占比仅作观察，不按满覆盖预期判定。"
+      },
+      "note": "不定期事件；覆盖占比低属正常，重点看是否还有新增。"
+    },
+    {
+      "key": "fund_share_change",
+      "label": "基金份额变动/拆分",
+      "category": "公司行为",
+      "freshness_field": "ex_date",
+      "source": {
+        "kind": "parquet_max",
+        "path": "factors/fund_share_change.parquet",
+        "column": "ex_date"
+      },
+      "cadence": {
+        "unit": "calendar_day",
+        "expected_interval": 30,
+        "warn_multiple": 2,
+        "critical_multiple": 6,
+        "label": "不定期（30天兜底）"
+      },
+      "coverage": {
+        "count": {
+          "kind": "parquet_distinct",
+          "path": "factors/fund_share_change.parquet",
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "file_lines",
+          "path": "factors/fund_covered_codes.txt"
+        },
+        "min_ratio": 0.1,
+        "critical_ratio": 0.05,
+        "note": "份额变动只发生在部分基金，占比仅作观察。"
+      },
+      "note": "不定期事件；覆盖占比低属正常。"
+    },
+    {
+      "key": "stock_shares",
+      "label": "股本变动",
+      "category": "公司行为",
+      "freshness_field": "effective_date",
+      "source": {
+        "kind": "parquet_max",
+        "path": "meta/factors/stock_shares.parquet",
+        "column": "effective_date"
+      },
+      "cadence": {
+        "unit": "calendar_day",
+        "expected_interval": 30,
+        "warn_multiple": 2,
+        "critical_multiple": 6,
+        "label": "不定期（30天兜底）"
+      },
+      "coverage": {
+        "count": {
+          "kind": "parquet_distinct",
+          "path": "meta/factors/stock_shares.parquet",
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "latest_glob_distinct",
+          "path_glob": "meta/st_status/st_status_*.parquet",
+          "column": "code"
+        },
+        "min_ratio": 0.95,
+        "critical_ratio": 0.8
+      },
+      "note": "股本变动不定期，但覆盖应接近全部在库股票。"
+    },
+    {
+      "key": "breadth_daily",
+      "label": "市场广度日频",
+      "category": "衍生指标",
+      "freshness_field": "trade_date",
+      "source": {
+        "kind": "parquet_max",
+        "path": "meta/breadth/breadth_daily.parquet",
+        "column": "trade_date"
+      },
+      "cadence": {
+        "unit": "trading_day",
+        "expected_interval": 1,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "每交易日"
+      },
+      "coverage": {},
+      "note": "由本地行情派生，应与行情同一天；落后一天即提示重算。"
+    },
+    {
+      "key": "clean_eligibility",
+      "label": "洁净集准入快照",
+      "category": "衍生指标",
+      "freshness_field": "as_of",
+      "source": {
+        "kind": "latest_glob_max",
+        "path_glob": "meta/clean/eligibility_*.parquet",
+        "column": "as_of"
+      },
+      "cadence": {
+        "unit": "trading_day",
+        "expected_interval": 1,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "每交易日"
+      },
+      "coverage": {},
+      "note": "按快照文件的 as_of 判断；文件名日期与 as_of 不一致时以 as_of 为准。"
+    },
+    {
+      "key": "st_status",
+      "label": "ST 状态快照",
+      "category": "状态快照",
+      "freshness_field": "as_of",
+      "source": {
+        "kind": "latest_glob_max",
+        "path_glob": "meta/st_status/st_status_*.parquet",
+        "column": "as_of"
+      },
+      "cadence": {
+        "unit": "trading_day",
+        "expected_interval": 1,
+        "warn_multiple": 1,
+        "critical_multiple": 3,
+        "label": "每交易日"
+      },
+      "coverage": {
+        "count": {
+          "kind": "latest_glob_distinct",
+          "path_glob": "meta/st_status/st_status_*.parquet",
+          "column": "code"
+        },
+        "expected": {
+          "kind": "meta_distinct",
+          "path": "meta/daily_index.parquet",
+          "filter": {"column": "data_type", "value": "stock"},
+          "column": "ts_code"
+        },
+        "min_ratio": 0.95,
+        "critical_ratio": 0.8
+      },
+      "note": "状态快照应覆盖全部在库股票。"
+    },
+    {
+      "key": "industry",
+      "label": "行业分类快照",
+      "category": "状态快照",
+      "freshness_field": "as_of",
+      "source": {
+        "kind": "latest_glob_max",
+        "path_glob": "meta/industry/industry_*.parquet",
+        "column": "as_of"
+      },
+      "cadence": {
+        "unit": "trading_day",
+        "expected_interval": 1,
+        "warn_multiple": 2,
+        "critical_multiple": 5,
+        "label": "每交易日"
+      },
+      "coverage": {
+        "count": {
+          "kind": "latest_glob_distinct",
+          "path_glob": "meta/industry/industry_*.parquet",
+          "column": "code"
+        },
+        "expected": {
+          "kind": "meta_distinct",
+          "path": "meta/daily_index.parquet",
+          "filter": {"column": "data_type", "value": "stock"},
+          "column": "ts_code"
+        },
+        "min_ratio": 0.95,
+        "critical_ratio": 0.8
+      },
+      "note": "行业分类变化慢，允许 1 个交易日冗余。"
+    }
+  ]
+}
