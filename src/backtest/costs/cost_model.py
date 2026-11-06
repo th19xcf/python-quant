@@ -17,6 +17,8 @@
 from datetime import date, datetime
 from typing import Any, Dict, Tuple, Union
 
+from src.utils.dates import as_date
+
 #: 印花税历史时间表：(生效日, 税率, 征收方向)，按生效日倒序排列。
 #: 2023-08-28 减半至 0.05%（卖方单边）；2008-09-19 起 0.1%（卖方单边）；
 #: 2007-05-30 上调至 0.3% 且双边；2005-01-24 起 0.1% 双边；
@@ -79,26 +81,9 @@ def _as_date(value: TradeDate) -> date | None:
     与 ``_transfer_fee_rate`` 静默退回到现行静态费率，历史区间印花税/过户费
     口径整体失真（2015/2023 两次费率切换全部失效）。
     """
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str):
-        try:
-            return date.fromisoformat(value[:10])
-        except ValueError:
-            return None
-    # Polars / Pandas / numpy 时间戳：统一走 .date() 鸭子类型
-    if hasattr(value, 'date') and callable(value.date):
-        try:
-            converted = value.date()
-            if isinstance(converted, date):
-                return converted
-        except (TypeError, ValueError):
-            return None
-    return None
+    # 统一走 src.utils.dates.as_date：该函数额外覆盖 np.datetime64、NaT、
+    # 'YYYYMMDD' 与 pd.Timestamp，避免本模块单独维护一套不完整的解析分支。
+    return as_date(value)
 
 
 class CostModel:

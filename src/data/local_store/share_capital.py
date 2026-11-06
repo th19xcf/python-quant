@@ -98,6 +98,7 @@ import polars as pl
 from loguru import logger
 
 from src.utils.code_converter import to_symbol, to_ts_code
+from src.utils.dates import as_date
 from src.utils.exception_handler import handle_exception_with_retry
 from src.utils.exceptions import DataSourceConnectionError
 
@@ -297,20 +298,13 @@ def _opt_int(value: Any) -> int | None:
 
 
 def _as_date(value: Any) -> date | None:
-    """宽松解析日期：date / datetime / pandas Timestamp / 'YYYY-MM-DD'。"""
-    if value is None or value == '':
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value).strip()[:10]
-    if not text or text.lower() in {'nan', 'nat', 'none', '-'}:
-        return None
-    try:
-        return datetime.strptime(text.replace('/', '-'), '%Y-%m-%d').date()
-    except ValueError:
-        return None
+    """宽松解析日期：源端含 ``YYYY/MM/DD``，先规范化再走统一真源。"""
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text.lower() in {'nan', 'nat', 'none', '-'}:
+            return None
+        value = text.replace('/', '-')
+    return as_date(value)
 
 
 def _to_shares(value: Any, scale: float = 1.0) -> int | None:

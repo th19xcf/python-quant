@@ -4,6 +4,7 @@
 回测引擎（单票），撮合逻辑全部委托给 execution_core 统一内核
 """
 
+import warnings
 from collections.abc import Mapping
 from typing import Any, Dict, List
 
@@ -18,6 +19,16 @@ from src.backtest.engine._parallel_worker import (
 from src.backtest.engine.base_engine import BaseBacktestEngine
 from src.backtest.engine.corporate_actions import CorporateActionSchedule
 from src.backtest.engine.execution_core import EventBacktestRunner, StStatusEntry
+
+
+class WalkForwardDisabledWarning(UserWarning):
+    """启用单次样本外验证但未开启 walk-forward 滚动验证时发出的告警。
+
+    单次切分的 OOS 指标对切分点高度敏感，容易被误读为「策略稳健」。
+    默认 ``walk_forward_windows=0`` 是历史行为，直接改默认值会改变既有
+    输出，因此这里保持行为不变、只显式留痕，并在结果的
+    ``leakage_guard`` 中同步标记。
+    """
 
 
 class BacktestEngine(BaseBacktestEngine):
@@ -184,6 +195,15 @@ class BacktestEngine(BaseBacktestEngine):
                 objective, oos_ratio, walk_forward_windows,
                 oos_horizon, oos_embargo,
             )
+            if walk_forward_windows < 2:
+                warnings.warn(
+                    "参数优化只做单次样本外切分，未开启 walk-forward 滚动验证"
+                    f"（walk_forward_windows={walk_forward_windows}，需 ≥2）；"
+                    "单次 OOS 指标对切分点敏感，不足以排除参数过拟合。"
+                    "生产评估请显式传入 walk_forward_windows≥2 并配合 PBO/DSR 校正。",
+                    WalkForwardDisabledWarning,
+                    stacklevel=2,
+                )
             if oos_report.get('enabled'):
                 # 严格样本内选参：IS 网格、IS 最优值、IS 稳定性报告三者同源
                 best_params = oos_report['in_sample_best_params']
@@ -233,6 +253,8 @@ class BacktestEngine(BaseBacktestEngine):
                 'walk_forward_windows': walk_forward_windows,
                 'walk_forward_enabled': bool(
                     oos_report and oos_report.get('walk_forward', {}).get('enabled')),
+                'walk_forward_disabled_warning': bool(
+                    oos_report and walk_forward_windows < 2),
                 # PBO / Deflated Sharpe 尚未实现：显式标注而不是默认声称已校正
                 'multiple_testing_correction': 'not_implemented',
             },

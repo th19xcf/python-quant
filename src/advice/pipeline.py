@@ -63,6 +63,7 @@ from src.advice.universe import (
     load_name_map,
 )
 from src.utils.config import get_config
+from src.utils.dates import as_date
 
 
 def _resolve_as_of(config: AdviceConfig, values: list[date], as_of: date | None) -> date:
@@ -645,11 +646,8 @@ class AdviceEngine:
 
 
 def _as_date(value: Any) -> date | None:
-    if value is None:
-        return None
-    if isinstance(value, date):
-        return value
-    return date.fromisoformat(str(value)[:10])
+    """统一日期归一；原实现会把 datetime 当 date 原样返回（类型不一致）。"""
+    return as_date(value)
 
 
 class _StoreConfig:

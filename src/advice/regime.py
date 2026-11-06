@@ -22,6 +22,8 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from src.utils.dates import as_date
+
 #: 年化交易日
 ANNUAL_DAYS = 252.0
 
@@ -107,7 +109,11 @@ def load_breadth_snapshot(
 
 
 def _as_date(value: str | date) -> date:
-    return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
+    """保持原有严格语义（无法解析时抛错），但 datetime 必须归一为 date。"""
+    parsed = as_date(value, strict=True)
+    if parsed is None:
+        raise ValueError(f"无法解析为日期: {value!r}")
+    return parsed
 
 
 # ----------------------------------------------------------------------

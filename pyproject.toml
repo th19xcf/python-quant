@@ -118,6 +118,9 @@ extend-exclude = '''
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "perf: 性能回归门禁（固定 seed、多次取中位数、含真实耗时断言）",
+]
 
 [tool.ruff]
 line-length = 88

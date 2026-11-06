@@ -64,6 +64,7 @@ from src.data.local_store.store import (
     LocalQuoteStore,
     refresh_quote_factor_columns,
 )
+from src.utils.dates import as_date
 
 FUND_DIVIDEND_FILENAME = 'fund_dividend.parquet'
 FUND_SHARE_CHANGE_FILENAME = 'fund_share_change.parquet'
@@ -104,17 +105,8 @@ def is_etf_code(ts_code: str) -> bool:
 
 
 def _as_date(value: Any) -> date | None:
-    if value is None or value == '':
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value).strip()[:10]
-    try:
-        return datetime.strptime(text, '%Y-%m-%d').date()
-    except ValueError:
-        return None
+    """统一日期归一；新增 'YYYYMMDD' 与 numpy 时间戳支持，行为向真源对齐。"""
+    return as_date(value)
 
 
 def _parse_split_ratio(value: Any) -> float | None:
