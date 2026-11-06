@@ -111,7 +111,10 @@ EXTRA_COLUMNS: tuple[str, ...] = tuple(item.column for item in EXTRA_CANDIDATES)
 
 def _eval_lib_spec(panel: pl.DataFrame, spec: FactorSpec) -> pl.Series:
     """执行 factor_lib builder，返回与面板等长的 Series。"""
-    assert spec.builder is not None
+    # 显式校验而非 assert：python -O 会剥离 assert，导致 builder=None 时
+    # 落到 TypeError 且丢失上下文；显式分支同时保留静态类型收窄。
+    if spec.builder is None:
+        raise ValueError('FactorSpec.builder 不能为空')
     value = spec.builder(panel)
     if isinstance(value, pl.Series):
         return value

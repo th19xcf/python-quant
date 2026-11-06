@@ -67,7 +67,9 @@ def _evaluate_spec(panel: pl.DataFrame, spec: FactorSpec) -> pl.Series:
           的窗口限制；
         - ``pl.Expr``：单层窗口的简单公式，直接在面板上求值。
     """
-    assert spec.builder is not None
+    # 显式校验而非 assert：python -O 会剥离 assert；显式分支同样能让类型检查器收窄。
+    if spec.builder is None:
+        raise ValueError('FactorSpec.builder 不能为空')
     result = spec.builder(panel)
     if isinstance(result, pl.Series):
         series = result

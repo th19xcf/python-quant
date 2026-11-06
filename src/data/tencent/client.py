@@ -144,7 +144,9 @@ class RateLimiter:
                 logger.warning(
                     f'[tencent] 请求失败（第 {attempt + 1} 次），{delay:.1f}s 后重试: {exc}')
                 time.sleep(delay)
-        assert last_error is not None
+        # 防御性分支：显式异常替代 assert，避免 python -O 下被剥离。
+        if last_error is None:  # pragma: no cover
+            raise RuntimeError('重试结束但未记录到异常')
         raise last_error
 
 
