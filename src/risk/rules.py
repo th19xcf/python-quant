@@ -22,7 +22,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, Dict, List, Set, Tuple
+from typing import AbstractSet, Any, Dict, List, Mapping, Set, Tuple
 
 #: A 股一手 = 100 股。K 线数据契约中成交量列（vol）以“手”为单位，
 #: 风控 Order.qty 以“股”为单位；两者比较前必须统一为手。
@@ -213,12 +213,14 @@ class Portfolio:
     总资产一律由 positions + last_prices + cash 现场计算，不接受外部注入，
     避免过期快照把风控分母带偏。
     """
-    positions: Dict[str, int] = field(default_factory=dict)
-    last_prices: Dict[str, float] = field(default_factory=dict)
+    # A10：回测账本注入的是实时只读视图（MappingProxyType / frozenset），
+    # 类型按「只读」契约声明；外部直接构造 Portfolio 时 dict/set 同样合法。
+    positions: Mapping[str, int] = field(default_factory=dict)
+    last_prices: Mapping[str, float] = field(default_factory=dict)
     cash: float = 0.0
-    industry_map: Dict[str, str] = field(default_factory=dict)
+    industry_map: Mapping[str, str] = field(default_factory=dict)
     equity_curve: List[Dict[str, Any]] = field(default_factory=list)
-    suspended: Set[str] = field(default_factory=set)
+    suspended: AbstractSet[str] = field(default_factory=set)
     drawdown_tracker: Any = None
 
     # ------------------------------------------------------------------

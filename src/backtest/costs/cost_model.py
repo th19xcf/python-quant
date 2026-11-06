@@ -71,7 +71,14 @@ TradeDate = Union[date, datetime, str, None]
 
 
 def _as_date(value: TradeDate) -> date | None:
-    """把 date/datetime/'YYYY-MM-DD' 归一为 date；无法解析时返回 None。"""
+    """把 date/datetime/'YYYY-MM-DD'/时间戳对象归一为 date；无法解析时返回 None。
+
+    必须覆盖 Polars / Pandas 时间戳：回测主循环的 ``trade_date`` 由列
+    ``to_list()`` 得来，若 date 列是 Datetime 会返回第三方时间戳对象。
+    早期实现只认内置 date/datetime/str，此时返回 None 会让 ``_stamp_tax_rate``
+    与 ``_transfer_fee_rate`` 静默退回到现行静态费率，历史区间印花税/过户费
+    口径整体失真（2015/2023 两次费率切换全部失效）。
+    """
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -82,6 +89,14 @@ def _as_date(value: TradeDate) -> date | None:
         try:
             return date.fromisoformat(value[:10])
         except ValueError:
+            return None
+    # Polars / Pandas / numpy 时间戳：统一走 .date() 鸭子类型
+    if hasattr(value, 'date') and callable(value.date):
+        try:
+            converted = value.date()
+            if isinstance(converted, date):
+                return converted
+        except (TypeError, ValueError):
             return None
     return None
 

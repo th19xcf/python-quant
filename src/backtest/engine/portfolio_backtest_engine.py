@@ -154,6 +154,7 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             cost_model=self.cost_model,
             performance_analyzer=self.performance_analyzer,
             risk_engine=self.risk_engine,
+            on_missing_risk=self.risk_gate_policy,
         )
         result = runner.run(
             universe=prepared_data,

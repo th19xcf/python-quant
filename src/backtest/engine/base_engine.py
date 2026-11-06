@@ -17,7 +17,7 @@ from src.backtest.engine.holdout import FrameSplit, split_frame_with_purge
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.backtest.visualization.backtest_visualizer import BacktestVisualizer
-from src.risk import RiskEngine
+from src.risk import RiskEngine, single_asset_risk_engine
 from src.tech_analysis.indicators.formulas import atr_expr, macd_exprs, rsi_expr
 
 DataFrameType = Union[pl.DataFrame, pl.LazyFrame, pd.DataFrame, Any]
@@ -45,8 +45,12 @@ class BaseBacktestEngine:
         self.industry = ''
         self.is_st: bool | None | List[Dict[str, Any]] = None
 
-        # 风控层：None 表示不启用（所有订单直接过）；设置后 gate() 拦截
+        # 风控层：None 表示未装配规则。P0-3 起并非「静默全放行」：RiskGate
+        # 会按 risk_gate_policy 告警 / fail-closed，并把放行订单数写入结果。
         self.risk_engine: RiskEngine | None = None
+        #: 未装配规则时 RiskGate 的处置策略：'warn'（默认，保持历史成交口径）、
+        #: 'fail_closed'（生产路径建议，直接抛错）、'off'（显式静默对照实验）
+        self.risk_gate_policy: str = 'warn'
         self.rejected_orders: List[Dict[str, Any]] = []   # 风控拒单日志
         self.expired_orders: List[Dict[str, Any]] = []    # 挂单作废日志
         self.overwritten_orders: List[Dict[str, Any]] = []  # 被新信号覆盖的挂单
@@ -57,6 +61,11 @@ class BaseBacktestEngine:
         self.dividends: Mapping[str, pl.DataFrame] | None = None
         self.dividend_tax_rate: float = 0.0
         self.rights_policy: str = 'partial'
+        # P0-4：一次参数优化中所有失败组合的台账与尝试总数。
+        # 早期实现把失败的 future 只写日志后丢弃，在残缺网格上照常选最优，
+        # 结果无法反映"这次优化其实只跑了 8/10 组"。
+        self._failed_combinations: List[Dict[str, Any]] = []
+        self._optimization_attempts: int = 0
 
     @staticmethod
     def convert_to_polars(data: DataFrameType) -> pl.DataFrame:
@@ -104,6 +113,16 @@ class BaseBacktestEngine:
             return
         # 单标的场景：只关心策略对象本身，code 在 run_backtest 里由 ts_code 补位
         self.strategy = next(iter(mapping.values()))
+
+    def enable_default_risk_gate(self) -> RiskEngine:
+        """装配与撮合内核同源的最小安全规则集（涨跌停/停牌/回撤/现金/流动性）。
+
+        裸用 ``BacktestEngine(data)`` 时风控默认为 None；生产路径应要么走
+        ``src.core.usecases.run_backtest``（默认装配），要么显式调用本方法，
+        要么把 ``risk_gate_policy`` 设为 ``'fail_closed'``，避免"无风控却不自知"。
+        """
+        self.risk_engine = single_asset_risk_engine()
+        return self.risk_engine
 
     def set_cost_model(self, cost_model: CostModel) -> None:
         """

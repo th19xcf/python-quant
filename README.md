@@ -29,15 +29,19 @@ UI 中打开「策略回测」对话框 → 选股票代码 / 日期范围 / 策
 
 ### 数据源前置条件（四选其一或组合）
 
-项目内置三套数据源，按 `DataFetcher.register_source` 注册顺序故障转移：
+项目内置三套数据源，但**默认只注册本地通达信一套**：`src/utils/config.py` 的
+`data.allow_remote_sources` 默认为 `False`，`DataService` 在该开关关闭时只注册
+TDX、不发起任何网络请求（见 `src/data/services/data_service.py`）。只有显式设置
+`DATA__ALLOW_REMOTE_SOURCES=true`，才会按 `DataFetcher.register_source` 的注册顺序
+追加 BaoStock → AkShare，形成三源故障转移。
 
 | 数据源 | 类型 | 启动条件 | 依赖 |
 |---|---|---|---|
-| **通达信本地**（TdxHandler） | 本地文件 | `.env` 中 `DATA__TDX_DATA_PATH` 指向通达信 VIPDOC 目录 | Windows 上需已安装通达信客户端，默认 `C:\new_tdx\vipdoc` |
-| **BaoStock** | 网络 API | `pip install baostock`（可选依赖，未写入 pyproject；缺失时该源自动跳过） | 国内网络，无需额外配置 |
-| **AkShare** | 网络 API | `pip install akshare`（pyproject.toml 已声明） | 国内网络，无需额外配置 |
+| **通达信本地**（TdxHandler） | 本地文件 | 恒注册；`.env` 中 `DATA__TDX_DATA_PATH` 指向通达信 VIPDOC 目录 | Windows 上需已安装通达信客户端，默认 `C:\new_tdx\vipdoc` |
+| **BaoStock** | 网络 API | 需 `DATA__ALLOW_REMOTE_SOURCES=true`；缺失依赖时该源自动跳过 | `pyproject.toml` 已声明可选组 `baostock`，国内网络 |
+| **AkShare** | 网络 API | 需 `DATA__ALLOW_REMOTE_SOURCES=true`；缺失依赖时该源自动跳过 | `pyproject.toml` 已声明 `akshare`，国内网络 |
 
-推荐开发期把通达信 VIPDOC 准备好（2GB 左右，官网下载），BaoStock/AkShare 作为故障转移兜底。
+推荐开发期把通达信 VIPDOC 准备好（2GB 左右，官网下载）；需要在线源兜底或回补退市股时再显式打开远程开关。
 
 ### 数据库配置
 
@@ -165,10 +169,35 @@ README 旧版宣称 8 阶段，代码现状已完成/部分完成/待补齐，�
 
 ### 成本模型（A 股现行规则）
 
+单一真源是 `src/backtest/costs/cost_model.py` 的 `COST_DEFAULTS`；本段数值由
+`tests/test_p0_hardening.py::test_readme_cost_constants_match_code` 自动校验，
+改常量必须同步改文档。
+
+| 项目 | 代码常量 | 现行值 |
+|---|---|---|
+| 佣金（双边） | `commission_rate` | **0.05%**（单笔最低 5 元） |
+| 印花税（仅卖出，2023-08-28 起） | `stamp_tax_rate` | **0.05%**（ETF/LOF 豁免） |
+| 过户费（双边，2015-08-01 起沪深统一） | `transfer_fee_rate` | **0.002%** |
+| 滑点兜底（仅 ETF/LOF 缺 ADV20 时） | `slippage` | **0.02%** |
+
 ```
-buy_cost  =  max(佣金最低5元, 成交额 × 0.03%)           + 过户费 0.001% × 成交额 + 滑点 0.02% × 成交额
-sell_cost =  max(佣金最低5元, 成交额 × 0.03%) + 印花税 0.05% × 成交额 + 过户费 0.001% × 成交额 + 滑点 0.02% × 成交额
+buy_cost  =  max(5元, 成交额 × 0.05%)           + 成交额 × 0.002% + 滑点档 × 成交额
+sell_cost =  max(5元, 成交额 × 0.05%) + 印花税 × 成交额 + 成交额 × 0.002% + 滑点档 × 成交额
 ```
+
+历史区间传 `trade_date` 时按 `STAMP_TAX_SCHEDULE` / `TRANSFER_FEE_SWITCH` 取当日起费率，
+不得用现行费率回测 2015 / 2023 切换前的区间。
+
+**分档滑点（2026-11-06 起主撮合链路已真实生效）**：
+
+- 个股按总市值（亿元）：≥500 亿 **15bp**、≥100 亿 **20bp**、其余或市值缺失 **30bp**。
+  输入列 `total_mv_yi`（亿元）或 `total_mv`（元，自动 /1e8）。
+- ETF/LOF 按 20 日均成交额（元）：≥1 亿 **5bp**、≥5,000 万 **7bp**、其余 **10bp**；
+  `category=sector/industry/theme` 取相邻更高档。输入列 `amount`。
+- **因果约束**：订单在 t 日开盘成交，分档输入一律按 `shift(1)` 只用 t-1 及之前数据，
+  不使用当日全天成交额/收盘市值（避免前视偏差）。
+- 完全没有分档输入时，个股一律 30bp、ETF 一律 2bp 兜底；结果中的
+  `cost_inputs.tiered_symbols` 会显式列出覆盖情况并输出 warning，不再静默兜底。
 
 ### 数据复权
 

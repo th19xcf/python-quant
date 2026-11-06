@@ -100,6 +100,7 @@ class BacktestEngine(BaseBacktestEngine):
             cost_model=self.cost_model,
             performance_analyzer=self.performance_analyzer,
             risk_engine=self.risk_engine,
+            on_missing_risk=self.risk_gate_policy,
         )
         result = runner.run(
             universe={code: self.pl_df},
@@ -129,7 +130,8 @@ class BacktestEngine(BaseBacktestEngine):
                           objective: str = 'total_return', max_workers: int = 4,
                           validation: str = 'oos', oos_ratio: float = 0.3,
                           walk_forward_windows: int = 0,
-                          oos_horizon: int = 10, oos_embargo: int = 20) -> Dict[str, Any]:
+                          oos_horizon: int = 10, oos_embargo: int = 20,
+                          max_failed_ratio: float = 0.0) -> Dict[str, Any]:
         """
         优化策略参数，并附带样本外（OOS）验证与参数稳定性报告。
 
@@ -145,6 +147,8 @@ class BacktestEngine(BaseBacktestEngine):
                 0/1 表示不做滚动验证
             oos_horizon: 标签跨度（交易日），默认 10；训练窗末尾按该跨度 purge
             oos_embargo: 训练窗与测试窗隔离带（交易日），默认 20，须 ≥ horizon
+            max_failed_ratio: 允许失败的参数组合占比，默认 0.0（零容忍）。
+                超过比例直接抛 RuntimeError，避免在残缺网格上选最优参数。
 
         Returns:
             Dict[str, Any]: 优化结果（含 oos_validation / walk_forward）
@@ -153,39 +157,106 @@ class BacktestEngine(BaseBacktestEngine):
             logger.error("未设置策略")
             return {}
 
+        # P0-4：一次优化的所有子网格（全样本参考 / IS / walk-forward 各折）
+        # 共用一份失败台账；开头清零，结尾统一验收。
+        self._failed_combinations = []
+        self._optimization_attempts = 0
         param_combinations = self._generate_param_combinations(param_ranges)
         context = {
             'ts_code': self.ts_code,
             'industry': self.industry,
             'is_st': self.is_st,
         }
+        # 全样本网格保留为「参考 + 兼容」数据（历史调用方直接读它做对账），
+        # 但 P0-2 起**绝不**用它选择最终参数：它含 OOS 段，用它选参即信息泄漏。
         results = self._run_parallel_backtests(
             param_combinations, initial_capital, max_workers, context=context)
-        best_params, best_value = self._select_best_params(results, objective)
+        full_best_params, full_best_value = self._select_best_params(results, objective)
 
-        logger.info(f"参数优化完成: 最佳参数 = {best_params}, 最佳{objective} = {best_value:.4f}")
+        best_params, best_value = full_best_params, full_best_value
+        selection_results = results
+        selection_sample = 'full_sample_no_oos'
+        oos_report: Dict[str, Any] | None = None
 
+        if validation == 'oos':
+            oos_report = self._validate_out_of_sample(
+                param_ranges, initial_capital, max_workers, context,
+                objective, oos_ratio, walk_forward_windows,
+                oos_horizon, oos_embargo,
+            )
+            if oos_report.get('enabled'):
+                # 严格样本内选参：IS 网格、IS 最优值、IS 稳定性报告三者同源
+                best_params = oos_report['in_sample_best_params']
+                best_value = oos_report['in_sample_best_value']
+                selection_results = oos_report['in_sample_grid']
+                selection_sample = 'in_sample'
+            else:
+                # 切分不可用时也不退回全样本选参，只退回全样本「描述性」网格，
+                # 并显式标记本次没有干净的样本外验证，避免调用方误用结果。
+                selection_sample = 'full_sample_oos_unavailable'
+                logger.warning(
+                    "样本外切分不可用，本次优化未完成严格的样本内选参；"
+                    "best_params 仅作全样本描述性参考，不可用于实盘决策"
+                )
+            logger.info(f"样本外验证: {oos_report.get('out_of_sample')}")
+        else:
+            logger.warning(
+                "validation='none'：在全样本网格上选参，存在过拟合/信息泄漏风险；"
+                "生产路径请使用默认 validation='oos'"
+            )
+
+        logger.info(
+            f"参数优化完成: 最佳参数 = {best_params}, 最佳{objective} = {best_value:.4f}"
+            f" (选参样本: {selection_sample})")
         self.strategy.set_params(best_params)
 
         response: Dict[str, Any] = {
             'best_params': best_params,
             'best_value': best_value,
+            # 兼容字段：全样本网格参考（不参与选参）
             'optimization_results': results,
             'objective': objective,
-            # 全样本网格上的参数稳定性：最优点是否为孤立尖峰
-            'param_stability_report': self._build_stability_report(results, objective),
+            # 本次真正用于选参的样本与结果
+            'selection_sample': selection_sample,
+            'in_sample_optimization_results': (
+                selection_results if selection_sample == 'in_sample' else []),
+            # 稳定性报告必须与选参样本同源，不能再看含 OOS 的全样本
+            'param_stability_report': self._build_stability_report(
+                selection_results, objective),
+            'leakage_guard': {
+                'strict_in_sample_selection': selection_sample == 'in_sample',
+                'full_sample_best_params': full_best_params,
+                'full_sample_best_value': full_best_value,
+                'selection_sample': selection_sample,
+                'oos_evaluations': (
+                    1 if oos_report and oos_report.get('enabled') else 0),
+                'walk_forward_windows': walk_forward_windows,
+                'walk_forward_enabled': bool(
+                    oos_report and oos_report.get('walk_forward', {}).get('enabled')),
+                # PBO / Deflated Sharpe 尚未实现：显式标注而不是默认声称已校正
+                'multiple_testing_correction': 'not_implemented',
+            },
         }
+        if oos_report is not None:
+            response['oos_validation'] = oos_report
 
-        if validation == 'oos':
-            response['oos_validation'] = self._validate_out_of_sample(
-                param_ranges, initial_capital, max_workers, context,
-                objective, oos_ratio, walk_forward_windows,
-                oos_horizon, oos_embargo,
+        failed = list(self._failed_combinations)
+        attempts = self._optimization_attempts
+        ratio = (len(failed) / attempts) if attempts else 0.0
+        response['failed_combinations'] = failed
+        response['failed_ratio'] = ratio
+        response['optimization_attempts'] = attempts
+        if failed:
+            logger.error(
+                "参数优化有 {}/{} 组失败（{:.1%}）：{}",
+                len(failed), attempts, ratio, failed[:3],
             )
-            logger.info(
-                f"样本外验证: {response['oos_validation'].get('out_of_sample')}"
+        if ratio > max_failed_ratio:
+            raise RuntimeError(
+                f"参数优化失败组合占比 {ratio:.1%} 超过上限 {max_failed_ratio:.1%}"
+                f"（{len(failed)}/{attempts} 组）；拒绝在残缺网格上选最优参数。"
+                "请修复失败原因，或显式调高 max_failed_ratio 并接受结果偏差"
             )
-
         return response
 
     def _validate_out_of_sample(self, param_ranges: Dict[str, List[float]],
@@ -235,6 +306,9 @@ class BacktestEngine(BaseBacktestEngine):
             'out_of_sample_range': self._slice_label(oos_df),
             'in_sample_best_params': is_best_params,
             'in_sample_best_value': is_best_value,
+            # P0-2：把样本内网格结果回传，供 optimize_strategy 复用同一份结果
+            # 做最终选参与稳定性报告，避免为了「修泄漏」再跑一遍网格。
+            'in_sample_grid': is_results,
             'in_sample': is_metrics,
             'out_of_sample': oos_metrics,
             # 衰减 = 样本外 - 样本内；收益/夏普明显转负说明参数过拟合
@@ -389,8 +463,13 @@ class BacktestEngine(BaseBacktestEngine):
                 try:
                     result = future.result()
                     results.append(result)
-                except (OSError, RuntimeError, ValueError) as exc:
-                    logger.error(f"参数组合 {future_to_param[future]} 回测失败: {exc}")
+                except Exception as exc:  # noqa: BLE001 - 失败组合必须入台账，不得静默丢弃
+                    params = future_to_param[future]
+                    logger.error(f"参数组合 {params} 回测失败: {exc}")
+                    self._failed_combinations.append({
+                        'params': params, 'error': f'{type(exc).__name__}: {exc}',
+                        'executor': 'process_pool',
+                    })
 
         return results
 
@@ -413,8 +492,13 @@ class BacktestEngine(BaseBacktestEngine):
                 try:
                     result = future.result()
                     results.append(result)
-                except (OSError, RuntimeError, ValueError) as exc:
-                    logger.error(f"参数组合 {future_to_param[future]} 回测失败: {exc}")
+                except Exception as exc:  # noqa: BLE001 - 失败组合必须入台账，不得静默丢弃
+                    params = future_to_param[future]
+                    logger.error(f"参数组合 {params} 回测失败: {exc}")
+                    self._failed_combinations.append({
+                        'params': params, 'error': f'{type(exc).__name__}: {exc}',
+                        'executor': 'thread_pool',
+                    })
 
         return results
 
@@ -436,6 +520,7 @@ class BacktestEngine(BaseBacktestEngine):
             List[Dict[str, Any]]: 回测结果列表
         """
         frame = self.pl_df if data is None else data
+        self._optimization_attempts += len(param_combinations)
 
         if self._should_use_process_pool(frame, param_combinations):
             return self._run_process_pool_backtests(
