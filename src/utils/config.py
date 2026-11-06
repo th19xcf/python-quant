@@ -82,9 +82,19 @@ class DatabaseSettings(BaseSettings):
 
 class DataSettings(BaseSettings):
     """数据配置"""
+    # 容忍旧 .env 中的已下线变量（DATA__UPDATE_INTERVAL / DATA__REDIS__* 等），
+    # 避免历史环境升级后启动失败；已废弃字段见下方 DEPRECATED 段。
+    model_config = SettingsConfigDict(extra='ignore')
+
     tdx_data_path: str = Field(default="", description="通达信数据路径")
-    update_interval: int = Field(default=3600, description="数据更新间隔(秒)")
     max_workers: int = Field(default=4, description="数据获取最大工作线程数")
+
+    # ---- 已废弃（DEPRECATED）：仅为兼容旧 .env 保留，生产代码无任何读取方 ----
+    # 原 UI 定时刷新 / 启动时自动更新 stock_basic 的入口已下线；设置这些变量
+    # 不会触发任何行为。新代码请勿读取，也勿依赖其默认值。
+    update_interval: int = Field(default=3600, description="[已废弃] 数据更新间隔(秒)")
+    auto_update_stock_basic: bool = Field(default=False, description="[已废弃] 启动时自动更新股票基本信息")
+    stock_basic_update_interval: int = Field(default=7, description="[已废弃] 股票基本信息更新间隔（天）")
 
     # 远程数据源开关（默认关闭）：关闭时运行时取数只读本地通达信文件，
     # 不发起任何网络请求；命令行批量同步需要显式开启后才允许调用 Baostock/AkShare。
@@ -99,8 +109,10 @@ class DataSettings(BaseSettings):
     use_subprocess_sources: bool = Field(default=False, description="远程数据源是否启用子进程隔离")
 
     # 本地列存（Parquet）：行情/因子/分红的主读取源。
-    # 开启后取数顺序为「本地列存 → 通达信 .day → 远程库（显式允许时）→ 远程源」，
-    # 画图与回测不再依赖公网 MySQL 的往返延迟。
+    # 实际取数顺序（见 DataFetcher.get_stock_data）：
+    #   缓存 → 本地列存 → 数据源（TDX .day 同步；远程源并行竞速、首个成功即返回）
+    #   → 远程 MySQL 兜底（仅 remote_database_fallback=True 时）。
+    # 注意远程库是「最后兜底」而不是第二跳；默认配置下读侧完全离线。
     local_store_enabled: bool = Field(
         default=True,
         description="是否启用本地 Parquet 列存作为行情/因子/分红主读取源",
@@ -130,18 +142,6 @@ class DataSettings(BaseSettings):
     default_minute_days: int = Field(default=3, description="默认分钟线数据下载天数")
     default_realtime_days: int = Field(default=5, description="默认实时数据替代天数")
 
-    # 股票基本信息更新配置
-    auto_update_stock_basic: bool = Field(default=False, description="是否在启动时自动更新股票基本信息")
-    stock_basic_update_interval: int = Field(default=7, description="股票基本信息更新间隔（天）")
-
-    @field_validator('update_interval')
-    @classmethod
-    def validate_update_interval(cls, v: int) -> int:
-        """验证更新间隔"""
-        if v < 60:
-            raise ValueError('更新间隔必须大于等于60秒')
-        return v
-
     @field_validator('max_workers')
     @classmethod
     def validate_max_workers(cls, v: int) -> int:
@@ -156,14 +156,6 @@ class DataSettings(BaseSettings):
         """验证天数"""
         if v < 1:
             raise ValueError('天数必须大于0')
-        return v
-
-    @field_validator('stock_basic_update_interval')
-    @classmethod
-    def validate_stock_basic_update_interval(cls, v: int) -> int:
-        """验证股票基本信息更新间隔"""
-        if v < 1:
-            raise ValueError('股票基本信息更新间隔必须大于0')
         return v
 
 
@@ -384,18 +376,27 @@ CONFIG_DOCUMENTATION = r"""
 
 | 配置项 | 默认值 | 说明 | 验证规则 |
 |--------|--------|------|----------|
-| DATA__TDX_DATA_PATH | "" | 通达信数据路径 | 字符串 |
-| DATA__UPDATE_INTERVAL | 3600 | 数据更新间隔(秒) | 大于等于60 |
+| DATA__TDX_DATA_PATH | "" | 通达信 VIPDOC 根目录 | 字符串 |
 | DATA__MAX_WORKERS | 4 | 数据获取最大工作线程数 | 大于0 |
-| DATA__ALLOW_REMOTE_SOURCES | False | 是否允许运行时/批量同步调用远程数据源（Baostock/AkShare） | 布尔值 |
+| DATA__LOCAL_STORE_ENABLED | True | 本地 Parquet 列存作为行情/因子/分红主读取源 | 布尔值 |
+| DATA__LOCAL_STORE_PATH | data/local_store | 列存根目录（相对项目根或绝对路径） | 字符串 |
+| DATA__ALLOW_REMOTE_SOURCES | False | 允许注册远程数据源（Baostock/AkShare）；关闭时读侧零网络请求 | 布尔值 |
+| DATA__USE_SUBPROCESS_SOURCES | False | 远程源启用子进程隔离（超时可强杀） | 布尔值 |
+| DATA__REMOTE_DATABASE_FALLBACK | False | 本地列存与通达信都无数据时回退远程 MySQL 读行情 | 布尔值 |
+| DATA__RETRY_MAX_RETRIES | 3 | 数据源最大重试次数 | 整数 |
+| DATA__RETRY_DELAY | 1.0 | 首次重试间隔(秒) | 浮点数 |
+| DATA__RETRY_BACKOFF_FACTOR | 2.0 | 重试退避倍数 | 浮点数 |
+| DATA__RETRY_MAX_DELAY | 30.0 | 单次重试最大间隔(秒) | 浮点数 |
 | DATA__DEFAULT_STOCK_CODES | ["sh.600000", "sz.000001", "sz.300001"] | 默认股票代码列表 | 字符串列表 |
 | DATA__DEFAULT_INDEX_CODES | ["000001.SH", "399001.SZ", "399006.SZ"] | 默认指数代码列表（标准 ts_code 口径） | 字符串列表 |
 | DATA__SUPPORTED_FREQUENCIES | ["1", "5", "15", "30", "60"] | 支持的分钟线频率 | 字符串列表 |
 | DATA__DEFAULT_DAYS | 30 | 默认数据更新天数 | 大于0 |
 | DATA__DEFAULT_MINUTE_DAYS | 3 | 默认分钟线数据下载天数 | 大于0 |
 | DATA__DEFAULT_REALTIME_DAYS | 5 | 默认实时数据替代天数 | 大于0 |
-| DATA__AUTO_UPDATE_STOCK_BASIC | False | 是否在启动时自动更新股票基本信息 | 布尔值 |
-| DATA__STOCK_BASIC_UPDATE_INTERVAL | 7 | 股票基本信息更新间隔（天） | 大于0 |
+
+已废弃（仅为兼容旧 .env 保留，设置后无任何效果，生产代码不读取）：
+`DATA__UPDATE_INTERVAL`、`DATA__AUTO_UPDATE_STOCK_BASIC`、
+`DATA__STOCK_BASIC_UPDATE_INTERVAL`、以及历史 `REDIS__*` 系列。
 
 ### 3. 日志配置
 
@@ -433,10 +434,14 @@ DATABASE__USERNAME=root
 DATABASE__PASSWORD=
 DATABASE__DATABASE=stock_quant
 
-# 数据配置
+# 数据配置（默认本地离线优先）
 DATA__TDX_DATA_PATH=D:\TDX\vipdoc
-DATA__UPDATE_INTERVAL=3600
 DATA__MAX_WORKERS=4
+DATA__LOCAL_STORE_ENABLED=true
+DATA__LOCAL_STORE_PATH=data/local_store
+DATA__ALLOW_REMOTE_SOURCES=false
+DATA__USE_SUBPROCESS_SOURCES=false
+DATA__REMOTE_DATABASE_FALLBACK=false
 
 # 日志配置
 LOG__LEVEL=INFO

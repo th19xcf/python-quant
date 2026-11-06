@@ -105,7 +105,7 @@ def _insert(engine, rows: list[dict]) -> int:
         session.close()
 
 
-def main() -> None:
+def main() -> None:  # noqa: C901 - 一次性补数脚本，顺序步骤难以再拆
     config = get_config()
     db = config.database
     url = URL.create(

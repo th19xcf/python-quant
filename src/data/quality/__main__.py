@@ -4,6 +4,7 @@
 
 子命令：
     check       数据契约巡检（local / tdx，可按标的/区间/全市场）
+    baseline    把当前 error 级违规登记为已知基线（需显式确认）
     anomalies   查询已知异常台账
     cross-check 跨源抽样对拍（BaoStock / AkShare，只读）
     factor-check 复权因子全市场准确性核验（只读）
@@ -34,6 +35,11 @@ from src.data.quality.cross_check import (
     default_date_range,
     run_cross_check,
     sample_codes,
+)
+from src.data.quality.exemptions import (
+    DEFAULT_EXEMPTION_PATH,
+    build_baseline,
+    write_exemptions,
 )
 
 
@@ -91,6 +97,27 @@ def _build_parser() -> argparse.ArgumentParser:
     check.add_argument('--fail-on-error', action='store_true',
                        help='存在 error 级违规时返回退出码 1')
 
+    baseline = sub.add_parser(
+        'baseline',
+        help='把当前 error 级违规登记为已知基线（精确到规则+标的+日期）',
+    )
+    baseline.add_argument('--reason', required=True,
+                          help='登记理由，会写入每条基线记录，便于审计')
+    baseline.add_argument('--confirm', required=True, choices=('REBASELINE',),
+                          help='显式确认覆盖已有基线文件，必须填 REBASELINE')
+    baseline.add_argument('--expires', default='',
+                          help='可选到期日 YYYY-MM-DD，到期后豁免自动失效')
+    baseline.add_argument('--output', default=str(DEFAULT_EXEMPTION_PATH),
+                          help='基线文件输出路径')
+    baseline.add_argument('--codes', help='逗号分隔的 ts_code；缺省为全市场')
+    baseline.add_argument('--data-type', choices=('stock', 'index', 'all'),
+                          default='all')
+    baseline.add_argument('--source', choices=('local', 'tdx'), default='local')
+    baseline.add_argument('--latest-trade-date', help='交易日上界，默认今天')
+    baseline.add_argument('--amount-tolerance', type=float, default=0.25)
+    baseline.add_argument('--dry-run', action='store_true',
+                          help='只统计拟登记条数，不写文件')
+
     anomalies = sub.add_parser('anomalies', help='查询已知异常台账')
     anomalies.add_argument('--code', help='ts_code，如 000001.SH')
     anomalies.add_argument('--date', help='交易日期 YYYY-MM-DD')
@@ -120,29 +147,38 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _make_source(args: argparse.Namespace, config: object) -> FrameSource | None:
+    """按 --source 构造只读数据源；通达信目录缺失时返回 None。"""
+    if args.source == 'local':
+        return LocalStoreFrameSource(_make_store(config))
+    tdx_path = Path(config.data.tdx_data_path)  # type: ignore[attr-defined]
+    if not tdx_path.is_dir():
+        logger.error(f'通达信目录不存在: {tdx_path}')
+        return None
+    return TdxFrameSource(tdx_path)
+
+
+def _make_checker(args: argparse.Namespace, config: object,
+                  source: FrameSource) -> QualityChecker:
+    """按公共参数构造巡检器（check 与 baseline 共用）。"""
+    return QualityChecker(
+        source=source,
+        latest_trade_date=_parse_date(args.latest_trade_date) or date.today(),
+        amount_tolerance=getattr(args, 'amount_tolerance', 0.25),
+    )
+
+
 def _run_check(args: argparse.Namespace) -> int:
     from src.utils.config import Config  # noqa: PLC0415
 
     config = Config()
-    store = _make_store(config)
-    source: FrameSource
-    if args.source == 'local':
-        source = LocalStoreFrameSource(store)
-    else:
-        tdx_path = Path(config.data.tdx_data_path)
-        if not tdx_path.is_dir():
-            logger.error(f'通达信目录不存在: {tdx_path}')
-            return 2
-        source = TdxFrameSource(tdx_path)
+    source = _make_source(args, config)
+    if source is None:
+        return 2
 
     codes = _split_codes(args.codes) if args.codes else None
     data_types = ('stock', 'index') if args.data_type == 'all' else (args.data_type,)
-    latest = _parse_date(args.latest_trade_date) or date.today()
-    checker = QualityChecker(
-        source=source,
-        latest_trade_date=latest,
-        amount_tolerance=args.amount_tolerance,
-    )
+    checker = _make_checker(args, config, source)
     report = checker.run(
         codes=codes,
         data_types=data_types,
@@ -160,6 +196,8 @@ def _run_check(args: argparse.Namespace) -> int:
         logger.info(f'  severity: {report.by_severity}')
     if report.known_by_anomaly:
         logger.info(f'  台账命中: {report.known_by_anomaly}')
+    if report.exempt_errors:
+        logger.info(f'  已登记基线豁免 error: {report.exempt_errors} 条')
     if report.missing_symbols:
         logger.warning(f'缺数据标的 {len(report.missing_symbols)} 个: '
                        f'{report.missing_symbols[:10]}')
@@ -168,8 +206,49 @@ def _run_check(args: argparse.Namespace) -> int:
             logger.info(f'  报告 {name}: {path}')
     else:
         logger.info('  dry-run：未写报告')
-    if args.fail_on_error and report.by_severity.get('error', 0):
+    # 只认「未登记为已知基线」的 error；基线缺失时 actionable_errors 等于
+    # 全部 error，行为退化为原有的 fail-closed 门禁。
+    if args.fail_on_error and report.actionable_errors:
+        logger.error(f'存在 {report.actionable_errors} 条未登记的 error 级违规')
         return 1
+    return 0
+
+
+def _run_baseline(args: argparse.Namespace) -> int:
+    """跑一次全量巡检，把 error 级违规指纹登记为已知基线。
+
+    只在显式给出 ``--confirm REBASELINE`` 且非 dry-run 时覆盖基线文件；
+    用于「确认这批历史瑕疵无法修复、后续只关心新增回归」的运维场景。
+    """
+    from src.utils.config import Config  # noqa: PLC0415
+
+    expires = _parse_date(args.expires) if args.expires else None
+    config = Config()
+    source = _make_source(args, config)
+    if source is None:
+        return 2
+    data_types = ('stock', 'index') if args.data_type == 'all' else (args.data_type,)
+    checker = _make_checker(args, config, source)
+    report = checker.run(
+        codes=_split_codes(args.codes),
+        data_types=data_types,
+        write_report=False,
+    )
+    records = build_baseline(
+        report.violations,
+        reason=args.reason,
+        expires=expires.isoformat() if expires else '',
+    )
+    logger.info(
+        f'基线生成: source={args.source} symbols={report.symbols_scanned} '
+        f'rows={report.rows_scanned} errors={report.by_severity.get("error", 0)} '
+        f'fingerprints={len(records)}'
+    )
+    if args.dry_run:
+        logger.info('dry-run：未写基线文件')
+        return 0
+    written = write_exemptions(records, Path(args.output))
+    logger.info(f'基线已写入 {args.output}（{written} 条，reason={args.reason}）')
     return 0
 
 
@@ -295,6 +374,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == 'check':
             return _run_check(args)
+        if args.command == 'baseline':
+            return _run_baseline(args)
         if args.command == 'anomalies':
             return _run_anomalies(args)
         if args.command == 'cross-check':

@@ -251,7 +251,16 @@ def load_local_dividend_frames(
         logger.warning(f"本地分红快照不可用，跳过除权事件: {exc}")
         return {}
 
+    from pathlib import Path  # noqa: PLC0415
+
+    dividend_path = getattr(store, 'dividend_path', None)
+    if dividend_path is not None and not Path(dividend_path).is_file():
+        logger.error(
+            f'[corporate-actions] 本地分红快照不存在: {dividend_path}；'
+            '回测将按「无除权事件」处理，现金分红/送转/配股全部缺失'
+        )
     frames: dict[str, pl.DataFrame] = {}
+    missing: list[str] = []
     for code in codes:
         if not code or is_index_code(code):
             continue
@@ -262,4 +271,11 @@ def load_local_dividend_frames(
             continue
         if frame is not None and not frame.is_empty():
             frames[code] = frame
+        else:
+            missing.append(code)
+    if missing:
+        logger.warning(
+            f'[corporate-actions] {len(missing)} 只标的未命中分红记录，'
+            f'回测按「无分红」处理（结果可能失真）；示例 {missing[:5]}'
+        )
     return frames

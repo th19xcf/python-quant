@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 单股票通达信数据/指标校准脚本。
@@ -27,9 +26,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data.data_manager import DataManager
 from src.data.tdx_handler import TdxHandler
-from src.tech_analysis.indicator_calculator import (calculate_ma_polars,
-                                                    calculate_macd_polars,
-                                                    calculate_rsi_polars)
+from src.tech_analysis.indicator_calculator import (
+    calculate_ma_polars,
+    calculate_macd_polars,
+    calculate_rsi_polars,
+)
 from src.utils.config import get_config
 
 

@@ -275,11 +275,21 @@ def _placeholder_rows(store_root: Path, as_of: date) -> list[dict[str, Any]]:
 
 
 def _benchmark_calendar(store_root: Path) -> np.ndarray | None:
-    for code in ('000001.SH', '000300.SH'):
-        days = _read_local_days(store_root, 'index', code)
-        if days.size:
-            return days
-    return None
+    """基准交易日（1970 起的天数），统一由 ``src.data.trading_calendar`` 提供。
+
+    只取权威段（真实指数交易日），不含日历末端的近似尾部；基准文件缺失时
+    返回 ``None``，与旧实现「无数据即不判定缺口」的语义保持一致。
+    """
+    from src.data.trading_calendar import get_calendar  # noqa: PLC0415
+
+    calendar = get_calendar(store_root)
+    days = calendar.authoritative_dates()
+    if not days:
+        return None
+    return np.array(
+        [np.datetime64(d.isoformat(), 'D').astype(np.int64) for d in days],
+        dtype=np.int64,
+    )
 
 
 def _stale_rows(

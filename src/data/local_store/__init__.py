@@ -14,6 +14,11 @@
 - ``python -m src.data.local_store build`` —— 构建/增量 CLI。
 """
 
+from src.data.local_store.paths import (
+    default_store_root,
+    freshness_artifacts_dir,
+    project_root,
+)
 from src.data.local_store.store import (
     LocalFactorStore,
     LocalQuoteStore,
@@ -29,6 +34,9 @@ __all__ = [
     'LocalFactorStore',
     'LocalQuoteStore',
     'resolve_store_root',
+    'default_store_root',
+    'freshness_artifacts_dir',
+    'project_root',
     'get_local_quote_store',
     'get_local_factor_store',
     'local_store_enabled',

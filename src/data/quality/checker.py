@@ -22,6 +22,7 @@ from typing import Any, Protocol, Sequence
 import polars as pl
 
 from src.data.quality.anomalies import find_anomalies
+from src.data.quality.exemptions import is_exempt
 from src.data.quality.rules import (
     NUMERIC_COLUMNS,
     RULES,
@@ -173,6 +174,7 @@ class QualityViolation:
     known_anomaly: bool = False
     anomaly_action: str | None = None
     anomaly_ids: tuple[str, ...] = ()
+    exempt: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -186,6 +188,7 @@ class QualityViolation:
             'known_anomaly': self.known_anomaly,
             'anomaly_action': self.anomaly_action,
             'anomaly_ids': list(self.anomaly_ids),
+            'exempt': self.exempt,
         }
 
 
@@ -206,6 +209,9 @@ class QualityReport:
     by_data_type: dict[str, int] = field(default_factory=dict)
     known_by_anomaly: dict[str, int] = field(default_factory=dict)
     unique_violation_rows: int = 0
+    #: 未登记为已知基线的 error 级违规数；--fail-on-error 只认这个数字
+    actionable_errors: int = 0
+    exempt_errors: int = 0
     report_files: dict[str, str] = field(default_factory=dict)
 
     def summary(self) -> dict[str, Any]:
@@ -223,6 +229,8 @@ class QualityReport:
             'by_severity': dict(sorted(self.by_severity.items())),
             'by_data_type': dict(sorted(self.by_data_type.items())),
             'known_anomaly_hits': dict(sorted(self.known_by_anomaly.items())),
+            'actionable_errors': self.actionable_errors,
+            'exempt_errors': self.exempt_errors,
         }
 
     def summary_text(self) -> str:
@@ -231,6 +239,8 @@ class QualityReport:
             f"symbols={self.symbols_scanned}",
             f"rows={self.rows_scanned}",
             f"violations={len(self.violations)}",
+            f"actionable_errors={self.actionable_errors}",
+            f"exempt_errors={self.exempt_errors}",
             f"elapsed={self.elapsed_s:.2f}s",
         ]
         if self.by_rule:
@@ -270,7 +280,7 @@ class QualityReport:
 
         fieldnames = [
             'ts_code', 'trade_date', 'rule_id', 'severity', 'field', 'value',
-            'detail', 'known_anomaly', 'anomaly_action', 'anomaly_ids',
+            'detail', 'known_anomaly', 'anomaly_action', 'anomaly_ids', 'exempt',
         ]
         with csv_path.open('w', encoding='utf-8', newline='') as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -313,12 +323,15 @@ class _Accumulator:
         default_factory=dict)
     symbols_scanned: int = 0
     rows_scanned: int = 0
+    actionable_errors: int = 0
+    exempt_errors: int = 0
 
     def add(self, data_type: str, ts_code: str, rule: Any,
             row: dict[str, Any], source_name: str) -> None:
         trade_date = coerce_date(row.get('trade_date'))
         hits = find_anomalies(ts_code, trade_date, context=source_name)
         anomaly_ids = tuple(item.anomaly_id for item in hits)
+        exempt = is_exempt(rule.rule_id, ts_code, trade_date)
         self.violations.append(QualityViolation(
             ts_code=ts_code,
             trade_date=trade_date,
@@ -330,7 +343,13 @@ class _Accumulator:
             known_anomaly=bool(hits),
             anomaly_action=hits[0].action if hits else None,
             anomaly_ids=anomaly_ids,
+            exempt=exempt,
         ))
+        if rule.severity == 'error':
+            if exempt:
+                self.exempt_errors += 1
+            else:
+                self.actionable_errors += 1
         self.by_rule[rule.rule_id] = self.by_rule.get(rule.rule_id, 0) + 1
         self.unique_keys.add((ts_code, trade_date))
         self.rule_unique_keys.setdefault(rule.rule_id, set()).add(
@@ -436,6 +455,8 @@ class QualityChecker:
             by_data_type=acc.by_data_type,
             known_by_anomaly=acc.known_by_anomaly,
             unique_violation_rows=len(acc.unique_keys),
+            actionable_errors=acc.actionable_errors,
+            exempt_errors=acc.exempt_errors,
         )
         if write_report:
             report.report_files = report.write(output_dir)

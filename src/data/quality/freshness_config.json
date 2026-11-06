@@ -259,7 +259,13 @@
           "column": "ts_code"
         }
       },
-      "note": "事件不定期，但不应连续一个季度无新增；来源 coverage.json 声明只覆盖 2025 年时会在报告里体现。"
+      "declaration": {
+        "path": "meta/events/coverage.json",
+        "end_field": "end",
+        "complete_field": "complete",
+        "max_lag_days": 30
+      },
+      "note": "事件不定期，但不应连续一个季度无新增；同时校验 coverage.json 的覆盖区间与 complete 声明，仅补几条近期记录不能消除断更。"
     },
     {
       "key": "names_json",

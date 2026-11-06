@@ -33,7 +33,7 @@ UI 中打开「策略回测」对话框 → 选股票代码 / 日期范围 / 策
 `data.allow_remote_sources` 默认为 `False`，`DataService` 在该开关关闭时只注册
 TDX、不发起任何网络请求（见 `src/data/services/data_service.py`）。只有显式设置
 `DATA__ALLOW_REMOTE_SOURCES=true`，才会按 `DataFetcher.register_source` 的注册顺序
-追加 BaoStock → AkShare，形成三源故障转移。
+追加 BaoStock / AkShare；远程源之间是并行竞速（首个成功即取消其余），不是串行 failover。
 
 | 数据源 | 类型 | 启动条件 | 依赖 |
 |---|---|---|---|
@@ -104,8 +104,8 @@ quant/
     ├── api/                     # 应用层 API（业务 API / 数据 API / 表现层 DTO）
     │
     ├── data/                    # 数据获取与管理
-    │   ├── managers/data_fetcher.py   # 多数据源故障转移（TDX → BaoStock → AkShare）
-    │   ├── async_data_manager.py      # 数据更新任务调度
+    │   ├── managers/data_fetcher.py   # 本地列存优先 → 数据源 → 远程库兜底
+    │   ├── async_data_manager.py      # asyncio 兼容壳，生产链路未接入（非任务调度器）
     │   ├── adj_factor_calculator.py   # 复权因子计算（Polars 向量化 + 配股公式）
     │   └── sources/                   # 数据源抽象基类
     │
@@ -140,7 +140,7 @@ README 旧版宣称 8 阶段，代码现状已完成/部分完成/待补齐，�
 | # | 阶段（原 README） | 现状 | 落地位置 |
 |---|---|---|---|
 | 1 | 基础框架搭建 | ✅ 已完成 | pydantic_settings Config、SQLAlchemy 模型、Polars 全量接管 Pandas |
-| 2 | 数据获取功能 | ✅ 已完成 | DataFetcher 多数据源故障转移、DB 双复权列（qfq/hfq）、adj_factor_calculator 含配股公式 |
+| 2 | 数据获取功能 | ✅ 已完成 | DataFetcher 本地 Parquet 列存优先 + 远程源并行竞速；复权由 `qfq_factor/hfq_factor` 在出口实时计算（DB 预计算 `qfq_*/hfq_*` 列已废弃）；adj_factor_calculator 含配股公式 |
 | 3 | 技术分析 | ✅ 已完成 | tech_analysis/ 20+ 指标（Trend/Oscillator/Volatility/Volume/MarketBreadth），指标插件化注册 |
 | 4 | UI 界面开发 | ✅ 已完成 | main_window + 4 个 mixin、pyqtgraph 图表、策略回测对话框 |
 | 5 | 量化分析集成 | ⚠️ 部分完成 | **已有**：BacktestEngine（单股）+ PortfolioBacktestEngine（多股组合）；**缺失**：QLib / Valuecell 未集成（独立 repo 体量，按 P2 规划排期） |
@@ -201,13 +201,32 @@ sell_cost =  max(5元, 成交额 × 0.05%) + 印花税 × 成交额 + 成交额 
 
 ### 数据复权
 
-回测内部统一使用后复权价（`adjustment_type='hfq'`），消除分红送转对收益率计算的干扰。DB 在 stock_daily 表中同时存储 `qfq_*` 和 `hfq_*` 两套列，data_fetcher 按请求类型写入 `open/high/low/close`。
+回测内部统一使用后复权价（`adjustment_type='hfq'`），消除分红送转对收益率计算的干扰。
+
+复权在**取数出口**由 `qfq_factor / hfq_factor` 实时作用于 `open/high/low/close`；DB 层预计算的 `qfq_* / hfq_*` 八列已整体废弃删除。因子存在两份：
+
+- **权威快照**：`data/local_store/factors/stock_adj_factor.parquet`（及 `stock_dividend.parquet`），由 `refresh-factors` / `rebuild-factors` 维护；
+- **行情内嵌副本**：每个 `quotes/**/{ts_code}.parquet` 的 `qfq_factor / hfq_factor` 列，仅为读侧加速，可能与权威快照漂移。
+
+读侧会用权威快照覆盖副本；因子存储未启用或快照缺失时不再静默通过，而是输出 warning。治理入口：
+
+```bash
+.\.venv\Scripts\python.exe -m src.data.local_store.build verify-quote-factors   # 只读一致性校验
+.\.venv\Scripts\python.exe -m src.data.local_store.build sync-quote-factors --dry-run  # 副本同步计划
+```
 
 ### 幸存者偏差
 
 数据源侧：Baostock / AKShare 自带退市股覆盖；TDX 本地行情文件不含退市股。
 代码侧：`DatabaseManager.list_stock_codes(include_delisted=False)` 可过滤退市股（默认 True 时全部返回）。
-**注意**：TDX 本地模式下，即便 `include_delisted=True`，也会因源文件缺失拿不到退市股数据——需切换到在线数据源才能彻底消除偏差。
+
+本地模式下还有一类「源文件仍在、但数据早已停更」的隐性退市股（实测 743 只停更标的，其中 285 只末行停在 `2019-09-17`）。治理方式：
+
+- `meta/universe/stale_status.parquet` 由 `python -m src.data.quality.stale_status` 依据 `meta/daily_index.parquet` 生成，逐标的登记 `is_stale / reason / action`；
+- `src.advice.universe.list_local_stock_codes()` 默认排除 `action='exclude'` 的标的（研究场景可传 `exclude_stale=False` 保留）；
+- 单票回测命中停更标的会输出 warning，提示区间末端可能是陈旧价格。
+
+**注意**：TDX 本地模式下，即便 `include_delisted=True`，也会因源文件缺失拿不到退市股数据——需切换到在线数据源才能彻底消除偏差；状态表只能消除「停更股被当成活跃股」这一类偏差。
 
 ---
 
@@ -219,6 +238,101 @@ sell_cost =  max(5元, 成交额 × 0.05%) + 印花税 × 成交额 + 成交额 
 cp .env.example .env
 # 编辑 .env 填入 MySQL 账号密码 + 通达信数据路径
 ```
+
+### 数据开关（`DATA__` 前缀，默认值 = 本地离线优先）
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `DATA__TDX_DATA_PATH` | `""` | 通达信 VIPDOC 根目录；本地 `.day` 兜底与列存构建的输入 |
+| `DATA__LOCAL_STORE_ENABLED` | `true` | 启用本地 Parquet 列存作为行情/因子/分红**主读取源** |
+| `DATA__LOCAL_STORE_PATH` | `data/local_store` | 列存根目录（相对项目根或绝对路径） |
+| `DATA__ALLOW_REMOTE_SOURCES` | `false` | 允许注册 BaoStock / AkShare 等远程源；**关闭时读侧零网络请求** |
+| `DATA__USE_SUBPROCESS_SOURCES` | `false` | 远程源放独立子进程执行，超时可强杀（灰度开关） |
+| `DATA__REMOTE_DATABASE_FALLBACK` | `false` | 本地列存与通达信都查不到时，是否回退远程 MySQL 读行情 |
+
+取数优先级（见 `DataFetcher`）：**缓存 → 本地列存 → 数据源（TDX 同步 5s；远程源并行竞速、首个成功即返回）→ 远程库兜底（仅上表最后一项显式打开时）**。因此默认配置下，画图与回测完全离线，不依赖公网 MySQL。
+
+### 数据治理命令
+
+```bash
+# 契约巡检（--fail-on-error 只认「未登记的 error」，已知源端瑕疵走精确豁免基线）
+.\.venv\Scripts\python.exe -m src.data.quality check --source local --fail-on-error
+# 登记/重建已知违规基线（必须写 --reason，且需 --confirm REBASELINE）
+.\.venv\Scripts\python.exe -m src.data.quality baseline --reason "..." --confirm REBASELINE --dry-run
+
+# 新鲜度巡检（含 coverage.json 覆盖区间与 complete 声明校验）
+.\.venv\Scripts\python.exe tools/data_freshness_check.py
+# 每日补数收尾已自动跑「换手率本地派生 → 异常台账刷新 → freshness」，报告落 artifacts/data_freshness/
+
+# 不可重建资产备份 + SHA256 校验（names.json / 分红快照 / ST 历史 / 豁免基线 …）
+.\.venv\Scripts\python.exe tools/backup_critical_assets.py --verify
+# 停更/退市状态表（推荐股票池默认消费）
+.\.venv\Scripts\python.exe -m src.data.quality.stale_status
+# 公告事件补数：默认只读计划，显式联网、显式入库
+.\.venv\Scripts\python.exe tools/backfill_events.py
+.\.venv\Scripts\python.exe tools/backfill_events.py --allow-remote            # 只抓分片
+.\.venv\Scripts\python.exe tools/backfill_events.py --import-only --commit    # 合并入库
+# 归档副本只读盘点（不删除/移动任何文件，输出重复组与可释放体积估算）
+.\.venv\Scripts\python.exe tools/cleanup_archives.py --output artifacts/archive_audit.json
+# 因子副本一致性治理（默认只读；--sync 不加 --commit 仍是 dry-run）
+.\.venv\Scripts\python.exe -m src.data.local_store.build factor-governance --fail-on-mismatch
+# 统一交易日历（优先本地基准指数真实交易日，缺失才退化工作日近似）
+.\.venv\Scripts\python.exe -m src.data.trading_calendar --start 2026-10-01 --end 2026-11-06
+# 扩展数据契约巡检（停复牌 / 行业 PIT / 指数成分历史；含覆盖过期判定）
+.\.venv\Scripts\python.exe -m src.data.quality.extended_contracts --fail-on-gap
+# 构建扩展契约产物（默认 dry-run；--commit 才落盘，指数成分需再加 --allow-remote）
+.\.venv\Scripts\python.exe -m src.data.quality.extended_builders all --allow-remote --commit
+# 换手率补数：优先本地派生（不联网、只补缺口、秒级完成）
+.\.venv\Scripts\python.exe -m src.data.local_store.build derive-turnover --commit
+# 每日补数收尾已自动执行上一步（--skip-derive-turnover 可关闭），此处仅用于手工补跑
+# 换手率事实表增量回补（走 baostock；仅在上游口径变更或交叉验证时使用）
+.\.venv\Scripts\python.exe -m src.data.local_store.build sync-turnover --workers 8
+```
+
+**换手率口径与来源**：`turn` 为百分数，可由 `volume` 与流通股本直接算出——
+`turn = volume(手) × 100 ÷ float_share(股) × 100`。2026-11-06 在 99.57 万行
+可比样本上与 baostock 上游值对齐（中位相对误差 0、p99 = 9e-6），因此
+`derive-turnover` 是日常增量的首选路径：无需登录上游、不覆盖既有行（按
+`(ts_code, trade_date)` anti join 只补缺口）、`source` 标
+`derived:quotes_volume+float_share`。`sync-turnover` 保留用于上游口径变更或
+交叉验证。
+
+该步骤已挂在 `build` 的**收尾链**上，顺序为「换手率本地派生 → 异常台账清单 →
+新鲜度巡检」：日线一写完就把当日缺口填掉，新鲜度巡检读到的就是补齐后的表，
+不会因为换手率滞后一个交易日而误报。派生本身幂等且无缺口时直接跳过，全历史
+扫描实测约 5.5 秒；需要临时关闭用 `build --skip-derive-turnover`。
+失败（如股本快照缺失）只告警，不改变退出码。
+
+**换手率表（`factors/stock_turnover.parquet`）的合并语义**：分块只含本次抓取窗口
+（`last_date + 1` 起），组装按 `(ts_code, trade_date)` 做 **upsert**——同一交易日以
+新数据为准，目标表其余历史原样保留。早期实现是按 `ts_code` 整段替换，与增量窗口
+组合会把该标的全部历史删掉（2026-11-06 曾把 1,780 万行削到 121 万行），已修复，
+由 `tests/test_turnover_assemble.py` 锁住语义；本地派生的「只补缺口」语义由
+`tests/test_turnover_derive.py` 锁住。
+
+**交易日历口径**：`src.data.trading_calendar` 是唯一来源，优先取本地基准指数
+`000001.SH` 的真实交易日（法定节假日自动排除，无需手工维护 holidays），
+仅在基准文件缺失时退化为「工作日 − 配置节假日」并输出 warning。
+`freshness.py`、`clean_set.py`、`tradable_universe.py`、`EventStore` 均复用它；
+权威日历末端之后的日期会用近似值补齐，并通过 `approx_from` 标记低置信度段。
+
+**外部数据契约现状**（`extended_builders.py` 生成，`extended_contracts.py` 巡检）：
+
+| 契约 | 产物 | 口径 | 状态 |
+|---|---|---|---|
+| 停复牌日表 | `meta/suspension/suspension_daily.parquet` | 交易日历 − 实际有 bar 的交易日；只登记停牌行 | `ready`（95.4 万行 / 4,300 只标的，`complete=true`） |
+| 行业 PIT 区间表 | `meta/industry_pit/industry_pit.parquet` | 对日快照做变更点抽取，不外推历史 | `partial`（快照仅 3 份，`complete=false`） |
+| 指数成分进出区间表 | `meta/index_membership/membership_intervals.parquet` | 每日抓中证官方成分快照后做进出差分 | `partial`（1 份快照，`complete=false`） |
+
+停牌表用 `confidence` 区分可信度：`high` 可用于「停牌不可买/不可卖」判断；
+`low` 来自 `stale_status` 已登记停更的标的（31.3 万行），只能用于「该日无成交」
+这类宽松判断。行业 PIT 与指数成分的 `complete=false` 是**如实声明**：前者只有
+最近几天快照，后者只有 1 份官方快照且首份快照的纳入日未知（`in_date_known=false`）。
+在补齐之前，「行业中性化」「指数成分内选股」的历史回测仍然不能被静默视为成立。
+覆盖声明的 `end` 超过 10 天未更新会让巡检从 `ready` 降级为 `partial`，
+避免「建过一次就永远就绪」。
+
+`data/local_store/`、`reports/`、`artifacts/`、`backups/` 均不入库；其中 `names.json`、`stock_dividend.parquet`、ST/行业历史快照、推荐状态、`meta/anomalies/quality_exemptions.csv` 等**不可由源端重建**，必须通过上述备份工具留档。
 
 ---
 

@@ -40,6 +40,7 @@ from typing import Any, Iterable, cast
 
 import polars as pl
 from loguru import logger
+from polars.exceptions import PolarsError
 
 from src.data.adj_factor_calculator import AdjFactorCalculator
 from src.data.local_store.session_guard import filter_intraday_rows, guarded_source_date
@@ -342,6 +343,33 @@ def _rebuild_target(
         source_mtime_ns=path.stat().st_mtime_ns)
 
 
+def _align_written_factor_copies(
+    quote_store: LocalQuoteStore,
+    factor_store: LocalFactorStore,
+    written_by_kind: dict[str, list[str]],
+) -> dict[str, Any]:
+    """把本次写入标的的行情内嵌因子副本对齐到权威快照。
+
+    增量补数追加的新行可能带着默认因子 1.0（尤其基金：源 ``.day`` 没有
+    因子列），而权威快照只到前一交易日。若不在同一次构建内对齐，行情副本
+    就会与快照漂移，直到有人手工跑 ``sync-quote-factors`` /
+    ``factor-governance``。只处理本次写入的标的，避免每次构建全市场重扫。
+    """
+    aligned: dict[str, Any] = {}
+    for kind, written_codes in written_by_kind.items():
+        try:
+            aligned[kind] = refresh_quote_factor_columns(
+                quote_store, factor_store, codes=written_codes, kind=kind)
+        except (OSError, ValueError, RuntimeError, PolarsError) as exc:
+            logger.warning(
+                f'[local-store] {kind} 因子副本对齐失败'
+                f'（{len(written_codes)} 只）：{exc}'
+            )
+    if aligned:
+        logger.info(f'[local-store] 构建收尾因子副本对齐：{aligned}')
+    return aligned
+
+
 def build(
     config: Any,
     quote_store: LocalQuoteStore,
@@ -377,6 +405,8 @@ def build(
     started = time.perf_counter()
     written_rows = 0
     written_files = 0
+    #: 本次实际写入的标的，用于收尾做因子副本对齐（不重扫全市场）
+    written_by_kind: dict[str, list[str]] = {}
     skipped = 0
     skipped_uptodate = 0
     total = len(targets)
@@ -422,6 +452,7 @@ def build(
                 continue
             written_rows += written
             written_files += 1
+            written_by_kind.setdefault(kind, []).append(ts_code)
         except (OSError, ValueError, RuntimeError) as exc:
             skipped += 1
             logger.warning(f'[local-store] 构建 {ts_code} 失败: {exc}')
@@ -433,6 +464,14 @@ def build(
                 f'{written_rows:,} 行，已用 {elapsed:.1f}s')
 
     quote_store.flush_meta()
+
+    # 增量补数追加的新行可能带着默认因子 1.0（尤其基金：源 .day 没有因子列），
+    # 而权威快照只到前一交易日。若不在同一次构建内对齐，行情内嵌副本就会
+    # 与快照漂移，直到有人手工跑 sync-quote-factors / factor-governance。
+    # 这里只处理本次写入的标的，避免每次构建全市场重扫。
+    factor_alignment = _align_written_factor_copies(
+        quote_store, factor_store, written_by_kind)
+
     elapsed = time.perf_counter() - started
     stats = quote_store.stats()
     quote_store.write_state({
@@ -462,6 +501,7 @@ def build(
         'files': written_files,
         'skipped': skipped,
         'skipped_uptodate': skipped_uptodate,
+        'factor_alignment': factor_alignment,
         'stats': stats,
     }
 
@@ -797,24 +837,191 @@ def refresh_factors(
 # ----------------------------------------------------------------------
 # CLI
 # ----------------------------------------------------------------------
-def _refresh_anomaly_lists_step(root: Path, *, skip: bool,
-                                dry_run: bool = False) -> dict[str, Any] | None:
-    """数据写入完成后的末步：刷新异常台账清单（非致命）。"""
-    if dry_run:
-        logger.info('dry-run：跳过异常台账清单刷新')
-        return None
-    if skip:
-        logger.info('已跳过异常台账清单刷新（--skip-anomaly-lists）')
-        return None
-    from src.data.quality.anomaly_lists import (  # noqa: PLC0415
-        refresh_anomaly_lists,
+def _freshness_check_step(root: Path, *, dry_run: bool = False) -> None:
+    """补数收尾：跑一次全量新鲜度巡检，落报告并对 warn/critical 告警。
+
+    只读 ``data/**``，报告写 ``artifacts/data_freshness``（已被 .gitignore
+    排除）。非致命：需要卡口时用 ``tools/data_freshness_check.py --fail-on``。
+    """
+    from src.data.local_store.paths import freshness_artifacts_dir  # noqa: PLC0415
+    from src.data.quality import freshness  # noqa: PLC0415
+
+    results = freshness.check_all(root)
+    summary = freshness.summarize(results)
+    logger.info(
+        f'[freshness] 收尾巡检: ok={summary["ok"]} warn={summary["warn"]} '
+        f'critical={summary["critical"]}'
+    )
+    for result in results:
+        if result.severity in ('warn', 'critical'):
+            logger.warning(
+                f'[freshness] {result.key} {result.severity}: '
+                f'{result.reasons[:2]}'
+            )
+    # 扩展数据契约（停复牌 / 行业 PIT / 指数成分历史）目前均为占位，
+    # 这里只把「未就绪」暴露在收尾日志里，不阻断构建、也不静默当成约束成立。
+    from src.data.quality.extended_contracts import check_contracts  # noqa: PLC0415
+
+    gaps = [item for item in check_contracts(root) if item['status'] != 'ready']
+    if gaps:
+        logger.warning(
+            f'[contracts] {len(gaps)} 项扩展数据契约未就绪：'
+            f'{[item["key"] for item in gaps]}；'
+            '相关业务约束（停牌可交易性/行业 PIT/指数成分历史）仍需人工复核'
+        )
+
+    if not dry_run:
+        today = datetime.now().date()
+        freshness.write_outputs(freshness_artifacts_dir(), results, today)
+
+
+def _factor_mismatch_totals(result: dict[str, Any]) -> tuple[int, int]:
+    codes = rows = 0
+    for stats in result.values():
+        if isinstance(stats, dict):
+            codes += int(stats.get('mismatch_codes', 0) or 0)
+            rows += int(stats.get('mismatch_rows', 0) or 0)
+    return codes, rows
+
+
+def _factor_governance_step(
+    quote_store: LocalQuoteStore,
+    factor_store: LocalFactorStore,
+    *,
+    sync: bool = False,
+    commit: bool = False,
+    fail_on_mismatch: bool = False,
+    json_output: bool = False,
+) -> int:
+    """半自动治理入口：只读校验 →（可选）同步 → 复验 → 可选门禁。
+
+    默认只做校验，不写任何文件；``--sync`` 不加 ``--commit`` 也只是 dry-run
+    计划。因子快照是唯一权威源，本入口只把行情内嵌副本对齐到快照，绝不
+    反向修改快照。
+    """
+    before = verify_quote_factor_consistency(quote_store, factor_store)
+    if 'error' in before:
+        logger.error(f'[factor-governance] 无法校验：{before["error"]}')
+        return 1
+    before_codes, before_rows = _factor_mismatch_totals(before)
+    logger.info(
+        f'[factor-governance] 校验：不一致标的 {before_codes} 只 / '
+        f'{before_rows:,} 行；明细 {before}'
     )
 
-    result = refresh_anomaly_lists(root)
-    if result['status'] != 'ok':
-        logger.warning(
-            f'异常台账清单刷新失败（不影响本次补数，退出码仍为 0）: '
-            f'{result["error"]}')
+    sync_stats: dict[str, Any] = {}
+    if sync and before_codes:
+        for kind, stats in before.items():
+            if not isinstance(stats, dict) or not stats.get('mismatch_codes'):
+                continue
+            sync_stats[kind] = refresh_quote_factor_columns(
+                quote_store, factor_store, kind=kind, dry_run=not commit)
+            logger.info(
+                f'[factor-governance] {kind} 副本同步'
+                f'{"（dry-run）" if not commit else ""}：{sync_stats[kind]}'
+            )
+    elif sync:
+        logger.info('[factor-governance] 无差异，跳过同步')
+
+    after = before
+    if sync and commit and before_codes:
+        after = verify_quote_factor_consistency(quote_store, factor_store)
+    after_codes, after_rows = _factor_mismatch_totals(after)
+    if sync and commit and before_codes:
+        logger.info(
+            f'[factor-governance] 复验：不一致标的 {after_codes} 只 / '
+            f'{after_rows:,} 行'
+        )
+
+    if json_output:
+        sys.stdout.write(json.dumps({
+            'before': before,
+            'sync': sync_stats,
+            'after': after,
+            'committed': bool(sync and commit),
+        }, ensure_ascii=False, indent=2) + '\n')
+
+    if fail_on_mismatch and after_codes:
+        logger.error(
+            f'[factor-governance] 门禁失败：仍有 {after_codes} 只标的的行情因子'
+            '副本与权威快照不一致；请执行 --sync --commit 后复验'
+        )
+        return 1
+    return 0
+
+
+def _derive_turnover_step(root: Path, *, skip: bool = False,
+                          dry_run: bool = False) -> dict[str, Any] | None:
+    """补数收尾：用本地行情派生换手率缺口（免上游、幂等、秒级）。
+
+    ``derive_turnover_local`` 按 ``(ts_code, trade_date)`` anti join 只补缺失行，
+    不覆盖既有值；无股本记录或 ``volume<=0``（停牌）自然跳过。因此可以无条件
+    挂在每日补数末尾——重复执行不会改变已有数据，也不会因为上游断供而失败。
+
+    非致命：股本快照缺失、parquet 读写异常时只告警，退出码仍为 0。
+    """
+    if skip:
+        logger.info('已跳过换手率本地派生（--skip-derive-turnover）')
+        return None
+
+    from src.data.local_store.turnover import (  # noqa: PLC0415
+        derive_turnover_local,
+    )
+
+    try:
+        result = derive_turnover_local(root, dry_run=dry_run)
+    except (OSError, ValueError, RuntimeError, PolarsError) as exc:
+        logger.warning(f'[turnover] 本地派生失败（不影响本次补数）: {exc}')
+        return None
+
+    gap = int(result.get('gap_rows') or 0)
+    if gap == 0:
+        logger.info('[turnover] 换手率无缺口，跳过派生')
+        return result
+
+    derived = int(result.get('derived_rows') or 0)
+    no_share = int(result.get('no_share_rows') or 0)
+    if dry_run:
+        logger.info(
+            f'[turnover] dry-run：缺口 {gap:,} 行，可派生 {derived:,} 行，'
+            f'无股本跳过 {no_share:,} 行')
+        return result
+    if not result.get('written'):
+        logger.info(
+            f'[turnover] 缺口 {gap:,} 行中无可派生行（无股本跳过 {no_share:,} 行）')
+        return result
+
+    added = int(result.get('rows_added') or 0)
+    codes = int(result.get('codes') or 0)
+    span = f'{result.get("date_min")}~{result.get("date_max")}'
+    logger.info(
+        f'[turnover] 本地派生换手率 {added:,} 行 / {codes} 只（{span}），'
+        f'表 {int(result.get("before_rows") or 0):,} → '
+        f'{int(result.get("after_rows") or 0):,} 行')
+    return result
+
+
+def _refresh_anomaly_lists_step(root: Path, *, skip: bool,
+                                dry_run: bool = False) -> dict[str, Any] | None:
+    """数据写入完成后的末步：刷新异常台账清单 + 新鲜度巡检（均非致命）。"""
+    result: dict[str, Any] | None = None
+    if dry_run:
+        logger.info('dry-run：跳过异常台账清单刷新')
+    elif skip:
+        logger.info('已跳过异常台账清单刷新（--skip-anomaly-lists）')
+    else:
+        from src.data.quality.anomaly_lists import (  # noqa: PLC0415
+            refresh_anomaly_lists,
+        )
+
+        result = refresh_anomaly_lists(root)
+        if result['status'] != 'ok':
+            logger.warning(
+                f'异常台账清单刷新失败（不影响本次补数，退出码仍为 0）: '
+                f'{result["error"]}')
+    # 新鲜度巡检是只读的，dry-run 也执行（但不落报告），保证每日补数后
+    # 断更类问题（例如公告事件停留在去年）能立刻在收尾日志里暴露。
+    _freshness_check_step(root, dry_run=dry_run)
     return result
 
 
@@ -839,6 +1046,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     build_cmd.add_argument('--dry-run', action='store_true', help='只统计不落盘')
     build_cmd.add_argument('--skip-anomaly-lists', action='store_true',
                            help='数据写入完成后不刷新异常台账清单（默认刷新）')
+    build_cmd.add_argument('--skip-derive-turnover', action='store_true',
+                           help='收尾不做换手率本地派生（默认用行情 volume + 流通股本补齐缺口）')
 
     factor_cmd = sub.add_parser(
         'refresh-factors', help='危险操作：用远程库整表覆盖本地快照（默认拒绝）')
@@ -883,6 +1092,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         'verify-quote-factors', help='全量核对行情副本与因子快照的一致性')
     verify_cmd.add_argument('--json', action='store_true', help='以 JSON 输出')
 
+    gov_cmd = sub.add_parser(
+        'factor-governance',
+        help='因子副本一致性治理：只读校验 →（可选）同步 → 复验 → 门禁')
+    gov_cmd.add_argument('--sync', action='store_true',
+                         help='对有差异的类型执行副本同步（不加 --commit 时仍是 dry-run）')
+    gov_cmd.add_argument('--commit', action='store_true',
+                         help='与 --sync 配合才真正改写行情 parquet')
+    gov_cmd.add_argument('--fail-on-mismatch', action='store_true',
+                         help='复验后仍有差异则返回非零退出码（可挂 CI）')
+    gov_cmd.add_argument('--json', action='store_true', help='以 JSON 输出校验结果')
+
     sub.add_parser('rescan-meta', help='从现有 Parquet 重建覆盖度元数据（不重算行情）')
     sub.add_parser('stats', help='查看列存规模')
 
@@ -898,6 +1118,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     turnover_cmd.add_argument('--no-resume', action='store_true',
                               help='忽略断点，从头开始')
     turnover_cmd.add_argument('--dry-run', action='store_true', help='只统计不落盘')
+
+    derive_cmd = sub.add_parser(
+        'derive-turnover',
+        help='用本地行情 volume + 流通股本派生换手率（免上游，只补缺失行）')
+    derive_cmd.add_argument('--start', default='', help='起始交易日 YYYY-MM-DD（含）')
+    derive_cmd.add_argument('--end', default='', help='结束交易日 YYYY-MM-DD（含）')
+    derive_cmd.add_argument('--codes', default='', help='逗号分隔的 ts_code 列表（默认全市场）')
+    derive_cmd.add_argument('--commit', action='store_true', help='真正写入（默认 dry-run）')
     return parser.parse_args(argv)
 
 
@@ -969,6 +1197,13 @@ def main(argv: list[str] | None = None) -> int:
                 logger.info(f'[{kind}] {stats}')
         return 0
 
+    if args.command == 'factor-governance':
+        return _factor_governance_step(
+            quote_store, factor_store,
+            sync=args.sync, commit=args.commit,
+            fail_on_mismatch=args.fail_on_mismatch,
+            json_output=args.json)
+
     if args.command == 'sync-turnover':
         from src.data.local_store.turnover import backfill_turnover  # noqa: PLC0415
 
@@ -979,6 +1214,18 @@ def main(argv: list[str] | None = None) -> int:
             resume=not args.no_resume, dry_run=args.dry_run,
             max_codes=args.max_codes)
         logger.info(f'换手率回补结果: {result}')
+        return 0
+
+    if args.command == 'derive-turnover':
+        from src.data.local_store.turnover import derive_turnover_local  # noqa: PLC0415
+
+        codes = [c.strip() for c in args.codes.split(',') if c.strip()] if args.codes else None
+        result = derive_turnover_local(
+            root,
+            start=date.fromisoformat(args.start) if args.start else None,
+            end=date.fromisoformat(args.end) if args.end else None,
+            codes=codes, dry_run=not args.commit)
+        logger.info(f'换手率本地派生结果: {result}')
         return 0
 
     if args.command == 'rescan-meta':
@@ -1006,6 +1253,11 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
     )
     logger.info(f'构建结果: {result}')
+    # 换手率派生必须在新鲜度巡检之前：巡检会读 factors/stock_turnover.parquet，
+    # 若先巡检后派生，刚刚补进来的当日数据仍会被判成「缺最新交易日」。
+    # dry-run 时照样跑一次只读统计，把缺口规模暴露在日志里。
+    _derive_turnover_step(
+        root, skip=args.skip_derive_turnover, dry_run=args.dry_run)
     _refresh_anomaly_lists_step(
         root, skip=args.skip_anomaly_lists, dry_run=args.dry_run)
     return 0

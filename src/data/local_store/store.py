@@ -40,6 +40,8 @@ from typing import Any, Dict, Iterable
 import polars as pl
 from loguru import logger
 
+from src.data.local_store.paths import resolve_store_root as _resolve_store_root
+
 STORE_VERSION = 1
 # 因子快照单文件可能达到千万行，不能像分红快照那样一次性 partition 进内存。
 # 采用「按 ts_code 谓词扫描 + 小容量 LRU」把常驻内存控制在几十 MB，
@@ -95,12 +97,12 @@ def remote_database_enabled(config: Any) -> bool:
 
 
 def resolve_store_root(config: Any) -> Path:
-    """解析本地列存根目录（相对路径以项目根为基准）。"""
-    raw = getattr(_data_settings(config), 'local_store_path', '') or 'data/local_store'
-    path = Path(str(raw))
-    if not path.is_absolute():
-        path = Path(__file__).resolve().parents[3] / path
-    return path
+    """解析本地列存根目录（相对路径以项目根为基准）。
+
+    实现已收口到 ``src.data.local_store.paths``；此处保留同名入口以兼容
+    ``from src.data.local_store.store import resolve_store_root`` 的既有调用方。
+    """
+    return _resolve_store_root(config)
 
 
 def _as_date(value: Any) -> date | None:
@@ -664,6 +666,20 @@ def _mtime_ns(path: Path) -> int | None:
         return None
 
 
+_FACTOR_STORE_DISABLED_WARNED = False
+
+
+def _warn_factor_store_disabled() -> None:
+    """因子存储整体未启用时只告警一次，避免逐标的刷屏。"""
+    global _FACTOR_STORE_DISABLED_WARNED
+    if _FACTOR_STORE_DISABLED_WARNED:
+        return
+    _FACTOR_STORE_DISABLED_WARNED = True
+    logger.warning(
+        '[local-store] 因子快照存储未启用，行情内嵌因子副本未经覆盖'
+        '（副本可能过期或恒为 1.0，复权结果不可靠）')
+
+
 def _overlay_factor_snapshot(
     frame: pl.DataFrame, ts_code: str, factor_store: LocalFactorStore | None,
 ) -> pl.DataFrame:
@@ -678,6 +694,7 @@ def _overlay_factor_snapshot(
     if 'qfq_factor' not in frame.columns and 'hfq_factor' not in frame.columns:
         return frame
     if factor_store is None or not factor_store.enabled:
+        _warn_factor_store_disabled()
         return frame
     snapshot = factor_store.factors(ts_code)
     if snapshot is None or snapshot.is_empty():

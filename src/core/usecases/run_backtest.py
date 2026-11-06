@@ -473,7 +473,16 @@ def _load_local_dividends(
             return {}
     try:
         from src.backtest.engine.corporate_actions import load_local_dividend_frames
-        return load_local_dividend_frames(codes, config)
+        frames = load_local_dividend_frames(codes, config)
+        if not frames and warnings_out is not None:
+            # 快照整体缺失/未命中不再静默：结果里必须能看到降级标记
+            warnings_out.append({
+                'stage': 'dividend_local_snapshot',
+                'severity': 'degraded',
+                'impact': '所有标的除权事件按「无事件」处理，现金分红/送转缺失',
+                'error': f'分红快照未命中任何标的（请求 {len(codes)} 只）',
+            })
+        return frames
     # 快照损坏/缺失依旧跑完回测，但结果必须标记 degraded
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"加载本地分红快照失败，跳过除权事件: {exc}")
@@ -639,6 +648,17 @@ def run_backtest(
     if data is None:
         raise ValueError("run_backtest: 必须传 data 或 ts_code")
 
+    # 单票回测由用户显式指定，不强制剔除退市股，但必须留下可观测提示：
+    # 停更标的在区间末端会用陈旧价格，直接采信收益会引入退市偏差。
+    if ts_code:
+        from src.data.quality.stale_status import is_stale_code  # noqa: PLC0415
+
+        if is_stale_code(ts_code):
+            logger.warning(
+                f'回测标的 {ts_code} 在停更状态表中标记为 exclude（退市/源端停更），'
+                '区间末端可能是陈旧价格；结论请结合退市偏差人工复核'
+            )
+
     # ---- 风控装配：显式优先；否则按单票/组合模式装配默认安全集 ----
     risk_engine, risk_profile = _assemble_risk_engine(
         risk_engine, enable_default_risk, data, ts_code, industry, industry_map,
@@ -660,6 +680,12 @@ def run_backtest(
             logger.warning(
                 "回测数据缺少 raw_open/raw_close 原始价列，已跳过除权记账，"
                 "避免与后复权价双重计入；如需记账请传入原始价数据")
+            data_warnings.append({
+                'stage': 'raw_price_columns',
+                'severity': 'degraded',
+                'impact': '撮合与涨跌停判定退化为后复权主列，除权记账已跳过',
+                'error': 'raw_open/raw_close 缺失',
+            })
     if dividends:
         kwargs.setdefault('dividends', dividends)
     kwargs.setdefault('dividend_tax_rate', dividend_tax_rate)

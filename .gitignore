@@ -130,14 +130,20 @@ config.ini
 # Quickstart 运行产物
 examples/output/
 
-# 审计产物（数据库清理与因子快照 CSV，约 75MB，属本地产物不入库）
+# 审计产物（回测/巡检报告，2026-11-06 实测约 1.8G，属本地产物不入库）
 reports/
 
 # 本地验证产物（UI 截图等一次性核对文件，不入库）
 artifacts/
 
-# 本地 Parquet 列存（行情/因子/分红，可由 CLI 重建，不入库）
+# 本地 Parquet 列存（行情/因子/分红，部分不可重建，见 tools/backup_critical_assets.py）
 data/local_store/
+
+# 不可重建资产的同盘备份副本（生产请把 --dest 指向另一块盘/另一台机器）
+backups/
+
+# 公告事件增量补数分片（tools/backfill_events.py 产出）
+research/events/data/backfill/
 
 # 本地临时脚本与基准/调试产物（一次性，不入库）
 tmp/

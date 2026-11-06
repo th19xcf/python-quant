@@ -34,6 +34,13 @@ Alembic 迁移；行情表保持 13 列契约不变。
 （``10001011 黑名单用户``），4 进程同样触发。故默认 ``workers=1``：单连接
 复用 + 每票 0.15s 节流，牺牲速度换取不被封禁。``workers>1`` 仍保留，但需
 自行承担被拉黑的风险。
+
+**首选本地派生（2026-11-06 起）**：``turn`` 可由 ``volume`` 与流通股本直接
+算出（``turn = volume × 10000 / float_share``，见 :func:`derive_turnover_local`），
+在 99.57 万行可比样本上与上游值中位相对误差 0、p99 = 9e-6，仅 1990 年代初
+（股本表缺早期记录）有偏差。因此 **日常增量补数应优先用
+``derive-turnover``**：不联网、不覆盖既有行、5 秒级完成；``sync-turnover``
+只在上游口径变更或需要交叉验证时使用。
 """
 
 from __future__ import annotations
@@ -51,12 +58,19 @@ from typing import Any, Iterable
 import polars as pl
 from loguru import logger
 
+from src.data.local_store.paths import default_store_root
 from src.data.sources import baostock_schema as schema
 from src.utils.code_converter import to_baostock_code
 from src.utils.exception_handler import handle_exception_with_retry
 from src.utils.exceptions import DataSourceConnectionError
 
 TURN_FIELDS = 'date,code,turn,tradestatus'
+#: 本地派生来源标记。turn 可由行情 volume 与流通股本算出，见
+#: :func:`derive_turnover_local`；该口径已实测等价于 baostock 上游值。
+TURN_DERIVED_SOURCE = 'derived:quotes_volume+float_share'
+#: 行情 ``volume`` 单位为「手」（1 手 = 100 股），``turn`` 存百分数。
+VOLUME_LOT_TO_SHARE = 100.0
+TURN_PERCENT = 100.0
 TURN_SCHEMA = {
     'ts_code': pl.Utf8,
     'trade_date': pl.Date,
@@ -78,9 +92,7 @@ _TURN_PATH: str | None = None
 # ----------------------------------------------------------------------
 # 路径与读取
 # ----------------------------------------------------------------------
-def default_store_root() -> Path:
-    """默认列存根目录（项目根/data/local_store）。"""
-    return Path(__file__).resolve().parents[3] / 'data' / 'local_store'
+# default_store_root() 由 src.data.local_store.paths 统一提供（避免 cwd 依赖）。
 
 
 def turnover_path(root: Path | str | None = None) -> Path:
@@ -512,16 +524,29 @@ def _write_failed_csv(path: Path, failed: list[dict[str, Any]]) -> None:
     os.replace(tmp, path)
 
 
-def _assemble(parts: list[Path], target: Path, replaced: set[str]) -> int | None:
-    """把分块合并进目标表（流式、原子替换），返回合并后总行数。"""
+def _assemble(parts: list[Path], target: Path, touched: set[str]) -> int | None:
+    """把分块**增量并入**目标表（流式、原子替换），返回合并后总行数。
+
+    历史实现是「按 ``ts_code`` 整段替换」：分块里出现的标的，目标表中的**全部
+    历史行**都会被丢掉。它原本假设分块总是含该标的完整历史，但任务生成是按
+    ``last_date + 1`` 增量切窗口的，两者一组合就把历史抹掉了——2026-11-06 那次
+    增量重建把 1,780 万行削成 121 万行，正是这个原因。
+
+    现在改为按 ``(ts_code, trade_date)`` 做 upsert：先用分块的键把目标表里
+    对应日期的行剔除（anti join），再整体并入分块，同一交易日以新数据为准，
+    目标表其余历史原样保留。``touched`` 只用于日志与回滚判断。
+    """
+    if not parts:
+        return None
     new_lazy = pl.concat([pl.scan_parquet(str(p)) for p in parts],
                          how='vertical_relaxed')
-    keep_lazy = None
-    if target.exists() and replaced:
-        keep_lazy = pl.scan_parquet(str(target)).filter(
-            ~pl.col('ts_code').is_in(sorted(replaced)))
-    source = (pl.concat([keep_lazy, new_lazy], how='vertical_relaxed')
-              if keep_lazy is not None else new_lazy)
+    if target.exists() and touched:
+        keys = new_lazy.select(['ts_code', 'trade_date']).unique()
+        base = pl.scan_parquet(str(target)).join(
+            keys, on=['ts_code', 'trade_date'], how='anti')
+        source = pl.concat([base, new_lazy], how='vertical_relaxed')
+    else:
+        source = new_lazy
     source = source.sort(['ts_code', 'trade_date'])
 
     tmp = target.with_suffix('.parquet.tmp')
@@ -784,3 +809,141 @@ def backfill_turnover(quote_store: Any, root: Path | str | None = None, *,
         'progress_path': str(progress_path),
         'failed_path': str(progress_path.with_name('failed.csv')),
     }
+
+
+# ----------------------------------------------------------------------
+# 本地派生（免上游）
+# ----------------------------------------------------------------------
+_SHARES_REL = ('meta', 'factors', 'stock_shares.parquet')
+
+
+def shares_path(root: Path | str | None = None) -> Path:
+    """股本快照路径（``meta/factors/stock_shares.parquet``）。"""
+    base = Path(root or default_store_root())
+    return base.joinpath(*_SHARES_REL)
+
+
+def derive_turnover_local(root: Path | str | None = None, *,
+                          start: date | None = None,
+                          end: date | None = None,
+                          codes: Iterable[str] | None = None,
+                          dry_run: bool = True) -> dict[str, Any]:
+    """用本地行情 ``volume`` 与流通股本派生换手率，只补缺失的 (票, 日)。
+
+    口径：``turn(%) = volume(手) × 100 ÷ float_share(股) × 100``。2026-11-06
+    实测：与 baostock 上游值在 99.57 万行样本上中位相对误差 0、p99 = 9e-6，
+    仅 1990 年代初（股本表缺早期记录）有偏差，因此可作为上游断供时的替代。
+
+    与 :func:`backfill_turnover` 的区别：不联网、不覆盖既有行（按
+    ``(ts_code, trade_date)`` anti join 只补缺口）、单进程毫秒级完成，
+    适合每日增量收尾。
+
+    Args:
+        root: 列存根目录，默认 ``default_store_root()``。
+        start: 起始交易日（含），None 表示不限。
+        end: 结束交易日（含），None 表示不限。
+        codes: 限定标的，None 表示行情目录下全部个股。
+        dry_run: 默认 True，只统计不落盘。
+
+    Returns:
+        dict: ``gap_rows`` / ``derived_rows`` / ``written`` / ``no_share_rows``
+        / ``by_date`` 等统计。
+    """
+    resolved = Path(root) if root else default_store_root()
+    target = turnover_path(resolved)
+    shares_file = shares_path(resolved)
+    if not shares_file.exists():
+        raise FileNotFoundError(f'股本快照缺失，无法本地派生换手率: {shares_file}')
+
+    shares = (pl.read_parquet(shares_file)
+              .select(['ts_code', 'effective_date', 'float_share'])
+              .filter(pl.col('float_share').is_not_null() & (pl.col('float_share') > 0))
+              .sort(['ts_code', 'effective_date']))
+
+    quote_glob = str(resolved / 'quotes' / 'stock' / '*' / '*.parquet')
+    quote_lf = (pl.scan_parquet(quote_glob)
+                .select(['ts_code', pl.col('date').alias('trade_date'), 'volume'])
+                .filter(pl.col('volume').is_not_null() & (pl.col('volume') > 0)))
+    if start is not None:
+        quote_lf = quote_lf.filter(pl.col('trade_date') >= start)
+    if end is not None:
+        quote_lf = quote_lf.filter(pl.col('trade_date') <= end)
+    if codes is not None:
+        wanted = [str(c).strip().upper() for c in codes if str(c).strip()]
+        if not wanted:
+            raise ValueError('codes 过滤后为空')
+        quote_lf = quote_lf.filter(pl.col('ts_code').is_in(wanted))
+
+    if target.exists():
+        exist_lf = pl.scan_parquet(str(target)).select(['ts_code', 'trade_date'])
+        gap_lf = quote_lf.join(exist_lf, on=['ts_code', 'trade_date'], how='anti')
+    else:
+        gap_lf = quote_lf
+
+    gap = gap_lf.collect().sort(['ts_code', 'trade_date'])
+    if gap.height == 0:
+        return {'gap_rows': 0, 'derived_rows': 0, 'written': False,
+                'target': str(target)}
+
+    # 两侧都已按 ts_code 排序；by 分组下 polars 无法自行校验有序性，显式关闭告警
+    merged = gap.join_asof(
+        shares, left_on='trade_date', right_on='effective_date', by='ts_code',
+        strategy='backward', check_sortedness=False)
+    no_share = merged.filter(pl.col('float_share').is_null()).height
+    derived = (merged.filter(pl.col('float_share').is_not_null())
+               .with_columns((pl.col('volume') * VOLUME_LOT_TO_SHARE * TURN_PERCENT
+                              / pl.col('float_share')).alias('turn'))
+               .filter(pl.col('turn') > 0))
+    stats: dict[str, Any] = {
+        'gap_rows': gap.height,
+        'derived_rows': derived.height,
+        'no_share_rows': no_share,
+        'dropped_nonpositive': merged.height - no_share - derived.height,
+        'codes': derived['ts_code'].n_unique() if derived.height else 0,
+        'target': str(target),
+    }
+    if derived.height:
+        by_date = derived.group_by('trade_date').len().sort('trade_date')
+        stats['date_min'] = str(by_date['trade_date'].min())
+        stats['date_max'] = str(by_date['trade_date'].max())
+        stats['by_date_tail'] = {str(r['trade_date']): r['len']
+                                 for r in by_date.tail(5).to_dicts()}
+    if dry_run or derived.height == 0:
+        stats['written'] = False
+        return stats
+
+    before_rows = (pl.scan_parquet(str(target)).select(pl.len()).collect().item()
+                   if target.exists() else 0)
+    new = derived.select([
+        'ts_code', 'trade_date', 'turn',
+        pl.lit(TURN_DERIVED_SOURCE).alias('source'),
+        pl.lit(datetime.now()).cast(pl.Datetime('us')).alias('fetched_at'),
+    ])
+    frames = [pl.scan_parquet(str(target))] if target.exists() else []
+    frames.append(new.lazy())
+    combined = pl.concat(frames, how='vertical_relaxed').sort(['ts_code', 'trade_date'])
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix('.parquet.tmp')
+    combined.sink_parquet(
+        str(tmp), compression='zstd', compression_level=3,
+        statistics=True, row_group_size=100_000)
+    os.replace(tmp, target)
+
+    after_rows = pl.scan_parquet(str(target)).select(pl.len()).collect().item()
+    expected = before_rows + new.height
+    stats.update({
+        'written': True,
+        'before_rows': before_rows,
+        'after_rows': after_rows,
+        'rows_added': after_rows - before_rows,
+    })
+    if after_rows != expected:
+        # anti join 已排除既有键，行数不符说明源表存在重复键，必须暴露
+        raise RuntimeError(
+            f'换手率派生写入行数异常：预期 {expected:,} 实际 {after_rows:,}')
+    logger.info(
+        f'[turnover] 本地派生完成：{new.height:,} 行 / {stats["codes"]} 只，'
+        f'表 {before_rows:,} → {after_rows:,} 行')
+    return stats
+

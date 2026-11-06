@@ -133,7 +133,12 @@ def normalize_yjyg(frame: pl.DataFrame, start: date, end: date) -> pl.DataFrame:
         if ts_code is None:
             continue
         rows.append({
-            'event_id': f'YJYG-{item["stock_code"]}-{item["report_date"]}',
+            # 同一标的同一报告期可能同时存在「预增」「预减」，以及隔一段时间
+            # 再发的修正/更新预告（公告日不同）。只按 report_date 作键会让多条
+            # 不同事件共用 event_id，下游按 event_id 去重时会误删。事件类型与
+            # 公告日必须一起进主键。
+            'event_id': (f'YJYG-{item["stock_code"]}-{item["report_date"]}'
+                         f'-{event_type}-{published:%Y%m%d}'),
             'ts_code': ts_code,
             'stock_code': item['stock_code'],
             'short_name': item['short_name'],

@@ -97,6 +97,7 @@ from typing import Any, Iterable, NamedTuple, Sequence
 import polars as pl
 from loguru import logger
 
+from src.data.local_store.paths import default_store_root, project_root
 from src.utils.code_converter import to_symbol, to_ts_code
 from src.utils.dates import as_date
 from src.utils.exception_handler import handle_exception_with_retry
@@ -161,14 +162,12 @@ class ShareSnapshot(NamedTuple):
 # ----------------------------------------------------------------------
 # 路径与读取
 # ----------------------------------------------------------------------
-def default_store_root() -> Path:
-    """默认列存根目录（项目根/data/local_store）。"""
-    return Path(__file__).resolve().parents[3] / 'data' / 'local_store'
-
-
 def default_work_dir() -> Path:
-    """采集中间件目录（项目根/tmp/stock_shares）。"""
-    return Path(__file__).resolve().parents[3] / 'tmp' / 'stock_shares'
+    """采集中间件目录（项目根/tmp/stock_shares）。
+
+    根目录统一由 ``src.data.local_store.paths.default_store_root`` 提供。
+    """
+    return project_root() / 'tmp' / 'stock_shares'
 
 
 def shares_path(root: Path | str | None = None) -> Path:

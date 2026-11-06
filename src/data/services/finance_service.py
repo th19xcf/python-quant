@@ -429,13 +429,16 @@ def _resolve_root(config: Any, store_root: Path | str | None) -> Path:
     if store_root:
         return Path(store_root)
     try:
-        from src.data.local_store.store import resolve_store_root  # noqa: PLC0415
+        from src.data.local_store.paths import resolve_store_root  # noqa: PLC0415
         from src.utils.config import get_config  # noqa: PLC0415
 
         return resolve_store_root(config if config is not None else get_config())
     except (OSError, ValueError, TypeError) as exc:
         logger.warning(f'[finance] 本地列存根目录解析失败，跳过本地数据: {exc}')
-        return Path('data/local_store')
+        # 用与项目根绑定的绝对路径兜底，不再依赖进程 cwd。
+        from src.data.local_store.paths import default_store_root  # noqa: PLC0415
+
+        return default_store_root()
 
 
 def _local_event_news(ts_code: str, root: Path, today: date) -> list[dict[str, Any]]:

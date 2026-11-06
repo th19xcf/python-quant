@@ -312,6 +312,13 @@ def import_file(path: Path | str, store_root: Path | str | None = None,
     if mode == 'append':
         existing = load_events(root)
         if not existing.is_empty():
+            duplicate_id_rows = existing.height - existing['event_id'].n_unique()
+            if duplicate_id_rows > 0:
+                logger.warning(
+                    f'[events] 现有事件表存在 {duplicate_id_rows} 行重复 event_id；'
+                    'append 会按 event_id 保留首条，重复行将被丢弃——'
+                    '若这些行本应是不同事件，说明上游 ID 生成缺少区分维度'
+                )
             incoming = pl.concat([existing, incoming], how='vertical_relaxed')
         incoming = incoming.unique(subset=['event_id'], keep='first',
                                    maintain_order=True)
@@ -371,6 +378,20 @@ class EventStore:
             'rows': self.events.height,
             'complete': False,
         }
+
+    def trading_dates(self, start: Any = None, end: Any = None) -> tuple[date, ...]:
+        """从统一交易日历取 ``[start, end]`` 的交易日，供 ``blocked_map`` 等使用。
+
+        事件模块不自己拼日历：口径与 freshness / clean_set / tradable_universe
+        一致（优先本地基准指数真实交易日）。``start`` 缺省取日历首日，
+        ``end`` 缺省取今天。
+        """
+        from src.data.trading_calendar import get_calendar  # noqa: PLC0415
+
+        calendar = get_calendar(self.store_root)
+        lo = _as_date(start) or (calendar.dates[0] if calendar.dates else date.today())
+        hi = _as_date(end) or date.today()
+        return calendar.between(lo, hi)
 
     @property
     def covered_range(self) -> tuple[date | None, date | None]:
@@ -463,7 +484,11 @@ class EventStore:
 def get_event_status(code: str, as_of: Any, *, trading_dates: Sequence[date],
                      store_root: Path | str | None = None,
                      cooldowns: dict[str, int] | None = None) -> dict[str, Any]:
-    """单标的冷却状态查询（``as_of`` 与交易日历必须显式传入）。"""
+    """单标的冷却状态查询（``as_of`` 与交易日历必须显式传入）。
+
+    交易日历可用 ``EventStore(store_root).trading_dates(start, end)`` 从统一
+    日历模块取得；这里保持强制显式传入，避免静默使用低置信度近似日历。
+    """
     if not trading_dates:
         raise ValueError('缺少交易日历，无法按交易日计算冷却窗口')
     store = EventStore(store_root, cooldowns)

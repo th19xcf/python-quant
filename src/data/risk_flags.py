@@ -103,6 +103,14 @@ def build_snapshot(
     snapshot_date = _as_date(as_of) or date.today()
     root = Path(store_root)
     names = _load_names(Path(names_path) if names_path else root / 'meta' / 'names.json')
+    if not names and not db_basic:
+        # fail-closed：全 UNKNOWN 的快照看起来"生成成功"，但会让下游把 ST 股
+        # 当非 ST 放行。宁可不落盘，让 freshness 巡检直接报 critical。
+        logger.error(
+            '[st] 名称码表为空且无 stock_basic 兜底，拒绝落盘全 UNKNOWN 的 ST '
+            f'快照（as_of={snapshot_date}）；请恢复 meta/names.json 后重试'
+        )
+        return pl.DataFrame()
     if codes is None:
         from src.data.local_store.store import LocalQuoteStore  # noqa: PLC0415
 

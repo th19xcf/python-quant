@@ -12,8 +12,10 @@
   ``artifacts/data_freshness``）。
 
 口径说明：
-- 交易日按「周一至周五」近似；法定节假日可通过配置 ``defaults.holidays``
-  排除，避免节假日误报；
+- 交易日统一走 ``src.data.trading_calendar``：优先取本地基准指数
+  ``000001.SH`` 的真实交易日（法定节假日自动排除）；基准文件缺失时退化为
+  「工作日 − 配置 ``defaults.holidays``」近似，并输出 warning。
+  纯内存调用（不传 store_root）仍用原工作日循环；
 - 超期倍数 = 距今天数（按 cadence.unit 计） / cadence.expected_interval；
 - ``warn_multiple`` 与 ``critical_multiple`` 全部来自配置，代码内不写死；
 - 覆盖占比 = 覆盖标的数 / 应有标的数，分母由配置声明；无分母的数据集只报
@@ -31,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
+from loguru import logger
 from polars.exceptions import PolarsError
 
 _UNIT_TRADING = 'trading_day'
@@ -64,6 +67,8 @@ class DatasetSpec:
     cadence: Cadence
     coverage: dict[str, Any]
     note: str
+    #: 可选覆盖声明校验：读取 coverage.json，防止「塞几条近期记录就判新鲜」
+    declaration: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -255,8 +260,24 @@ def _count_trading_days(
     latest: date,
     today: date,
     holidays: set[date],
+    *,
+    store_root: Path | None = None,
 ) -> int:
-    """统计 (latest, today] 内的工作日数，剔除配置节假日。"""
+    """统计 ``(latest, today]`` 内的交易日数。
+
+    给了列存根目录时统一走 :mod:`src.data.trading_calendar`（真实基准指数
+    日历，节假日无需人工维护）；该模块不可用或日期早于日历起点时退回原
+    「工作日 − 配置节假日」循环，保证纯内存巡检行为不变。
+    """
+    if store_root is not None and latest >= date(1990, 1, 1):
+        try:
+            from src.data.trading_calendar import get_calendar  # noqa: PLC0415
+
+            calendar = get_calendar(store_root, as_of=today, holidays=holidays)
+            return calendar.count(latest, today)
+        except (OSError, ValueError, TypeError, PolarsError, ImportError) as exc:
+            logger.debug(f'[freshness] 统一交易日历不可用，退回工作日近似: {exc}')
+
     count = 0
     cursor = latest + timedelta(days=1)
     while cursor <= today:
@@ -305,6 +326,7 @@ def parse_config(config: dict[str, Any]) -> list[DatasetSpec]:
                 cadence=_parse_cadence(dict(raw.get('cadence') or {}), key),
                 coverage=dict(raw.get('coverage') or {}),
                 note=str(raw.get('note', '')),
+                declaration=dict(raw.get('declaration') or {}),
             )
         )
     return specs
@@ -382,6 +404,49 @@ def _missing_result(
     )
 
 
+def _declaration_issues(root: Path, declaration: dict[str, Any],
+                        today: date) -> list[str]:
+    """校验覆盖声明文件；任一问题都是 critical，不能用新记录掩盖。
+
+    仅看 ``events.parquet`` 的最大 publish_time 会被「补几条近期事件」
+    轻易绕过，而覆盖区间仍停在去年。本函数把声明本身的完整性纳入巡检：
+    文件缺失、``complete=false``、声明终点滞后超过 ``max_lag_days``。
+    """
+    if not declaration:
+        return []
+    relative = str(declaration.get('path', ''))
+    if not relative:
+        return []
+    path = root / relative
+    if not path.is_file():
+        return [f'覆盖声明文件缺失: {relative}']
+    try:
+        with path.open(encoding='utf-8') as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError) as exc:
+        return [f'覆盖声明解析失败: {relative}: {exc}']
+    if not isinstance(payload, dict):
+        return [f'覆盖声明格式错误（非对象）: {relative}']
+
+    issues: list[str] = []
+    complete_field = str(declaration.get('complete_field', 'complete'))
+    if payload.get(complete_field) is False:
+        issues.append(f'覆盖声明 {complete_field}=false（{relative}）')
+    end_field = str(declaration.get('end_field', 'end'))
+    end = _coerce_date(payload.get(end_field))
+    if end is None:
+        issues.append(f'覆盖声明缺少 {end_field}: {relative}')
+    else:
+        max_lag = int(declaration.get('max_lag_days', 30))
+        lag = (today - end).days
+        if lag > max_lag:
+            issues.append(
+                f'覆盖声明止于 {end.isoformat()}，滞后 {lag} 天 > {max_lag} 天'
+                f'（{relative}）'
+            )
+    return issues
+
+
 def check_dataset(
     store_root: Path | str,
     spec: DatasetSpec,
@@ -392,6 +457,7 @@ def check_dataset(
     root = Path(store_root)
     today = today or date.today()
     holidays = holidays or set()
+    declaration_issues = _declaration_issues(root, spec.declaration, today)
     latest, source_label = _read_max(root, spec.source)
     covered = _count_distinct(root, spec.coverage.get('count'))
     expected = _expected_count(root, spec.coverage.get('expected'))
@@ -400,13 +466,16 @@ def check_dataset(
     )
 
     if latest is None:
-        return _missing_result(
+        result = _missing_result(
             spec, covered, expected, coverage_ratio, coverage_severity, source_label
         )
+        result.reasons.extend(declaration_issues)
+        return result
 
     lag_calendar = max(0, (today - latest).days)
     if spec.cadence.unit == _UNIT_TRADING:
-        lag_units = float(_count_trading_days(latest, today, holidays))
+        lag_units = float(_count_trading_days(
+            latest, today, holidays, store_root=root))
     else:
         lag_units = float(lag_calendar)
     ratio = lag_units / spec.cadence.expected_interval
@@ -432,6 +501,11 @@ def check_dataset(
             f'覆盖 {covered}/{expected}={coverage_ratio:.1%}，'
             f'低于下限 {float(spec.coverage.get("min_ratio", 0)):.1%}'
         )
+    if declaration_issues:
+        severity = 'critical'
+        if state == 'fresh':
+            state = 'coverage_lapsed'
+        reasons.extend(declaration_issues)
 
     return FreshnessResult(
         key=spec.key,

@@ -19,6 +19,7 @@ from loguru import logger
 
 from src.data.local_store.store import resolve_store_root
 from src.data.quality.code_migration import load_entity_index
+from src.data.quality.stale_status import stale_codes
 from src.utils.code_converter import is_fund_code, is_index_code
 
 INDUSTRY_SOURCE_BOARD = 'code_prefix_board'
@@ -38,11 +39,16 @@ class StockMeta:
     industry_source: str
 
 
-def list_local_stock_codes(config: Any, markets: Iterable[str] = ('sh', 'sz', 'bj')) -> list[str]:
+def list_local_stock_codes(config: Any, markets: Iterable[str] = ('sh', 'sz', 'bj'),
+                           exclude_stale: bool = True) -> list[str]:
     """扫描本地列存 ``quotes/stock`` 目录，返回可交易股票代码（升序）。
 
     直接按文件系统扫描而不是读 ``meta/daily_index.parquet``：并行构建期间
     元数据可能尚未 flush，但行情文件已落盘，扫描能保证股票池立即可用。
+
+    ``exclude_stale=True``（默认）会按 ``meta/universe/stale_status.parquet``
+    剔除停更/退市标的，避免陈旧价格与幸存者偏差进入推荐宇宙；研究场景需要
+    保留退市股时显式传 ``exclude_stale=False``。状态表缺失只告警、不过滤。
     """
     root = resolve_store_root(config)
     base = root / 'quotes' / 'stock'
@@ -60,6 +66,15 @@ def list_local_stock_codes(config: Any, markets: Iterable[str] = ('sh', 'sz', 'b
                 # 旧码已被同一实体的新码完整覆盖，读侧只保留新码
                 continue
             codes.append(code)
+    if exclude_stale:
+        excluded = stale_codes(root)
+        if excluded:
+            before = len(codes)
+            codes = [code for code in codes if code not in excluded]
+            logger.info(
+                f'[advice] 已排除 {before - len(codes)} 只停更/退市标的'
+                f'（状态表登记 {len(excluded)} 只），股票池剩 {len(codes)} 只'
+            )
     return sorted(set(codes))
 
 

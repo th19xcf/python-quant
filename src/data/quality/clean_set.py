@@ -384,10 +384,20 @@ class EligibilityEngine:
             self.codes[code] = info
 
     def _load_calendar(self) -> None:
-        cal = pl.read_parquet(
-            self.root / 'quotes/index/sh/000001.SH.parquet', columns=['date']
-        )['date'].unique().sort()
-        self.calendar = [d for d in cal.to_list() if d is not None]
+        """交易日历统一取自 ``src.data.trading_calendar`` 的权威段。
+
+        旧实现直接读 000001.SH，与 freshness/tradable_universe 的口径可能
+        不一致；这里只用 ``authoritative_dates()``（真实交易日），不把日历
+        末端的近似尾部计入「应有交易日」，避免虚增缺口率。
+        """
+        from src.data.trading_calendar import get_calendar  # noqa: PLC0415
+
+        calendar = get_calendar(self.root)
+        days = calendar.authoritative_dates()
+        if not days:
+            bound = self.as_of_date if self.as_of is not None else date.today()
+            days = tuple(d for d in calendar.dates if d <= bound)
+        self.calendar = list(days)
         self.calendar_ord = np.array([d.toordinal() for d in self.calendar], dtype=np.int64)
 
     def _load_quote_stats(self) -> None:

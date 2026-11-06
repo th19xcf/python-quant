@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 更新并校准 stock_dividend 数据。
@@ -252,7 +251,7 @@ def _pick_value(row: dict, keys: tuple[str, ...]):
 def _backfill_rights_issue_from_ak_pg(session, stocks: list[str] | None = None) -> dict:
     try:
         pg_df = ak.stock_pg_em()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - 第三方接口异常类型不受控，失败即跳过
         logger.warning(f"获取AkShare配股总表失败，跳过配股回填: {exc}")
         return {"matched": 0, "updated": 0, "unmatched": 0, "skipped_invalid": 0}
 

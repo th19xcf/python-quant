@@ -37,6 +37,8 @@ class LoadReport:
     rows: int = 0
     missing: list[str] = field(default_factory=list)
     skipped_short: list[str] = field(default_factory=list)
+    #: 缺复权因子/前收列、被 1.0 或 shift(1) 兜底的标的（价格基准不可信）
+    degraded: list[str] = field(default_factory=list)
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -46,6 +48,8 @@ class LoadReport:
             'missing': len(self.missing),
             'missing_examples': self.missing[:5],
             'skipped_short': len(self.skipped_short),
+            'degraded': len(self.degraded),
+            'degraded_examples': self.degraded[:5],
         }
 
 
@@ -132,6 +136,9 @@ class LocalPanelLoader:
             if raw is None or raw.is_empty():
                 report.missing.append(code)
                 continue
+            if any(column not in raw.columns
+                   for column in ('hfq_factor', 'qfq_factor', 'pre_close')):
+                report.degraded.append(code)
             frame = _normalize_frame(raw, code)
             if frame.is_empty():
                 report.missing.append(code)
@@ -145,6 +152,11 @@ class LocalPanelLoader:
                 continue
             frames.append(frame)
 
+        if report.degraded:
+            logger.warning(
+                f'[advice] {len(report.degraded)} 只标的缺少复权因子/前收列，'
+                f'已用 1.0 或 shift(1) 兜底，价格基准可能失真；'
+                f'示例 {report.degraded[:5]}')
         if not frames:
             logger.warning(
                 f"[advice] 本地列存没有可用行情：requested={report.requested}, "
