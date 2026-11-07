@@ -87,7 +87,18 @@ def build_stale_status(store_root: Path | str = DEFAULT_ROOT,
     known = [item for item in parsed if item is not None]
     if not known:
         raise ValueError('覆盖度索引没有任何有效 end 日期')
-    snapshot = as_of or max(known)
+    # 不能用 max(end) 当「今天」：只要有一只标的的源端多补了一天，其余
+    # 全部标的都会被判成停更（实测曾把 743 只放大成 9760 只）。以覆盖度
+    # 索引里出现次数最多的交易日作为全体基准；同频次时取较新的一天。
+    if as_of is not None:
+        snapshot = as_of
+    else:
+        snapshot = (
+            pl.DataFrame({'end': known})
+            .group_by('end').len()
+            .sort(['len', 'end'], descending=[True, True])
+            .row(0, named=True)['end']
+        )
 
     rows: list[dict[str, Any]] = []
     for item, end in zip(index.iter_rows(named=True), parsed, strict=False):

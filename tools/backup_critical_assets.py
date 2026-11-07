@@ -38,11 +38,39 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DEST = PROJECT_ROOT / 'backups' / 'critical_assets'
 
 #: 单个文件（相对项目根）
+#:
+#: 2026-11-07 扩充：此前只备份了 stock_dividend 一个因子快照，其余 5 个
+#: 权威快照丢失后只能靠 _backup/ 里的零散时间戳副本救回。这里把全部
+#: 「代码无法重建 / 重建代价高」的资产显式列全。
+#: 刻意排除：factors/_bench_last.parquet（基准临时产物）、
+#: meta/financials/batch_*.parquet（采集中间分片，可由 collect_financials 重建）、
+#: quotes/**（可由通达信 .day 重建，体积过大）。
 CRITICAL_FILES: tuple[str, ...] = (
-    'data/local_store/meta/names.json',
+    # 权威因子与事件快照（读侧 overlay 的唯一依据）
+    'data/local_store/factors/stock_adj_factor.parquet',
     'data/local_store/factors/stock_dividend.parquet',
+    'data/local_store/factors/fund_adj_factor.parquet',
+    'data/local_store/factors/fund_dividend.parquet',
+    'data/local_store/factors/fund_share_change.parquet',
+    'data/local_store/factors/stock_turnover.parquet',
+    'data/local_store/factors/meta.json',
+    'data/local_store/factors/fund_meta.json',
+    'data/local_store/factors/covered_codes.txt',
+    'data/local_store/factors/fund_covered_codes.txt',
+    # 元数据与码表
+    'data/local_store/meta/names.json',
+    'data/local_store/meta/daily_index.parquet',
+    'data/local_store/meta/state.json',
+    'data/local_store/meta/factors/stock_shares.parquet',
+    'data/local_store/meta/factors/stock_shares.meta.json',
     'data/local_store/meta/anomalies/quality_exemptions.csv',
     'data/local_store/meta/events/coverage.json',
+    # 财务三表与日频估值（最终表，不含采集分片）
+    'data/local_store/meta/financials/income.parquet',
+    'data/local_store/meta/financials/balance.parquet',
+    'data/local_store/meta/financials/cashflow.parquet',
+    'data/local_store/meta/financials/valuation_daily.parquet',
+    # 推荐状态
     'reports/advice/state/long.json',
     'reports/advice/state/mid.json',
     'reports/advice/state/short.json',
@@ -53,6 +81,14 @@ CRITICAL_DIRS: tuple[str, ...] = (
     'data/local_store/meta/st_status',
     'data/local_store/meta/industry',
     'data/local_store/meta/clean',
+    'data/local_store/meta/universe',
+    'data/local_store/meta/anomalies',
+    'data/local_store/meta/events',
+    'data/local_store/meta/suspension',
+    'data/local_store/meta/index_membership',
+    'data/local_store/meta/industry_pit',
+    'data/local_store/meta/st',
+    'data/local_store/factors/rebuild',
 )
 
 MANIFEST_NAME = 'manifest.json'

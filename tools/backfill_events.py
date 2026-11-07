@@ -152,6 +152,12 @@ def _import_shards(args: argparse.Namespace, shard_dir: Path,
     merged.write_parquet(merged_path)
     logger.info(f'合并 {len(paths)} 个分片 → {merged.height} 行')
 
+    # 补历史区间时，覆盖声明必须取「原声明 ∪ 本次补数区间」的并集。
+    # 直接把 args.end（历史年份）当 coverage_end 会写出 start>end 的声明，
+    # 让 2025-2026 的数据被误判为 unknown。
+    declared_start = min(s for s in (coverage_start, args.start) if s)
+    declared_end = max(s for s in (coverage_end, args.end) if s)
+
     events = _events_api()
     result = events.import_file(
         merged_path,
@@ -161,8 +167,8 @@ def _import_shards(args: argparse.Namespace, shard_dir: Path,
         complete=True,
         start=args.start,
         end=args.end,
-        coverage_start=coverage_start,
-        coverage_end=coverage_end,
+        coverage_start=declared_start,
+        coverage_end=declared_end,
     )
     _annotate_coverage(Path(args.store_root), args.keywords)
     logger.info(f'事件表更新完成: {result}')
@@ -248,7 +254,8 @@ def main(argv: list[str] | None = None) -> int:
         if not args.commit:
             logger.info('dry-run：加 --commit 才会写入事件表')
             return 0
-        return _import_shards(args, shard_dir, coverage_start, args.end)
+        return _import_shards(
+            args, shard_dir, coverage_start, declared_end)
 
     if not args.allow_remote:
         logger.info(

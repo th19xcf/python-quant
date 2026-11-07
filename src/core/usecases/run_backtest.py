@@ -29,6 +29,7 @@ Usage:
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import threading
 from collections.abc import Mapping
 from typing import Any, Callable, Dict, Union
@@ -495,6 +496,135 @@ def _load_local_dividends(
         return {}
 
 
+def _as_date(value: Any) -> Any:
+    """把 datetime 规整成 date，便于与 last_trade_date 比较。"""
+    return value.date() if isinstance(value, dt.datetime) else value
+
+
+def _infer_backtest_window(
+    data: Dict[str, pl.DataFrame],
+    start_date: str | None,
+    end_date: str | None,
+) -> tuple[Any, Any]:
+    """回测区间：显式参数优先，否则从传入面板推断（用于 PIT 停更过滤）。"""
+    start = dt.date.fromisoformat(start_date) if start_date else None
+    end = dt.date.fromisoformat(end_date) if end_date else None
+    mins: list[Any] = []
+    maxs: list[Any] = []
+    for panel in data.values():
+        if isinstance(panel, pl.DataFrame) and 'date' in panel.columns and panel.height:
+            mins.append(_as_date(panel['date'].min()))
+            maxs.append(_as_date(panel['date'].max()))
+    valid_mins = [v for v in mins if v is not None]
+    valid_maxs = [v for v in maxs if v is not None]
+    if start is None and valid_mins:
+        start = min(valid_mins)
+    if end is None and valid_maxs:
+        end = max(valid_maxs)
+    return start, end
+
+
+def _filter_stale_universe(
+    data: Union[pl.DataFrame, Dict[str, pl.DataFrame]],
+    strategies: Dict[str, BaseStrategy] | None,
+    enabled: bool,
+    warnings_out: list[dict],
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> tuple[
+    Union[pl.DataFrame, Dict[str, pl.DataFrame]],
+    Dict[str, BaseStrategy] | None,
+    dict | None,
+]:
+    """组合回测股票池：按停更/退市状态表做点时（PIT）过滤。
+
+    单票回测由调用方显式指定，不做强制过滤（原有 warning 保留）。
+    状态表带 ``last_trade_date`` 时启用 PIT 口径：只剔除「回测开始前已停更」
+    的标的。若用「当前是否停更」整段砍历史池，会把回测期结束后才退市的
+    公司提前剔掉，属于前视偏差；区间内停更的标的保留但记 warning。
+    状态表缺失或读取失败时 fail-open，但记为 degraded，避免静默放过。
+    """
+    if not enabled or not isinstance(data, dict) or not data:
+        return data, strategies, None
+    pit_cutoff: str | None = None
+    late_stale: list[str] = []
+    try:
+        from src.data.quality import stale_status as _stale  # noqa: PLC0415
+
+        frame = _stale.load_stale_status()
+        if frame is None:
+            warnings_out.append({
+                'stage': 'stale_universe_filter', 'severity': 'degraded',
+                'impact': '停更状态表缺失，组合回测未剔除退市/源端停更标的',
+                'error': f'missing: {_stale.status_path()}',
+            })
+            return data, strategies, None
+        excluded = _stale.stale_codes()
+        if 'last_trade_date' in frame.columns:
+            start, end = _infer_backtest_window(data, start_date, end_date)
+            rows = list(frame.filter(pl.col('action') == 'exclude').select(
+                ['ts_code', 'last_trade_date']).iter_rows(named=True))
+            if start is not None:
+                pit_cutoff = start.isoformat()
+                excluded = {
+                    row['ts_code'] for row in rows
+                    if row['last_trade_date'] is not None
+                    and _as_date(row['last_trade_date']) < start
+                }
+                late_stale = sorted(set(data) & {
+                    row['ts_code'] for row in rows
+                    if row['last_trade_date'] is not None
+                    and _as_date(row['last_trade_date']) >= start
+                    and (end is None or _as_date(row['last_trade_date']) < end)
+                })
+                if late_stale:
+                    warnings_out.append({
+                        'stage': 'stale_universe_filter', 'severity': 'warning',
+                        'impact': f'{len(late_stale)} 只标的在回测区间内停更，'
+                                  '停更后使用陈旧价格，收益需人工复核',
+                        'error': 'late_stale_codes: ' + ','.join(late_stale[:10]),
+                    })
+    except Exception as exc:  # noqa: BLE001
+        warnings_out.append({
+            'stage': 'stale_universe_filter', 'severity': 'degraded',
+            'impact': '停更状态表读取失败，组合回测未剔除退市/源端停更标的',
+            'error': f'{type(exc).__name__}: {exc}',
+        })
+        return data, strategies, None
+
+    removed = sorted(set(data) & excluded)
+    stats = {
+        'enabled': True,
+        'universe_before': len(data),
+        'universe_after': len(data) - len(removed),
+        'excluded_count': len(removed),
+        'excluded_codes': removed[:20],
+    }
+    if pit_cutoff:
+        stats['mode'] = 'pit'
+        stats['pit_cutoff'] = pit_cutoff
+        stats['late_stale_count'] = len(late_stale)
+        stats['late_stale_codes'] = late_stale[:20]
+    if not removed:
+        return data, strategies, stats
+
+    kept = {code: panel for code, panel in data.items() if code not in excluded}
+    if not kept:
+        raise ValueError(
+            '组合回测股票池经停更过滤后为空；如需保留退市股请传 exclude_stale=False'
+        )
+    if strategies:
+        strategies = {
+            code: strategy for code, strategy in strategies.items() if code in kept
+        }
+    logger.warning(
+        '组合回测已剔除 {} 只停更/退市标的（{} → {}），'
+        '避免幸存者偏差；可用 exclude_stale=False 显式关闭',
+        len(removed), len(data), len(kept),
+    )
+    return kept, strategies, stats
+
+
 def _run_portfolio_backtest(
     data: Dict[str, pl.DataFrame],
     strategies: Dict[str, BaseStrategy] | None,
@@ -573,6 +703,7 @@ def run_backtest(
     db_manager: Any = None,
     ts_codes: list[str] | None = None,
     apply_dividends: bool = True,
+    exclude_stale: bool = True,
     dividend_tax_rate: float = 0.0,
     rights_policy: str = 'partial',
     dividends: Mapping[str, pl.DataFrame] | None = None,
@@ -616,6 +747,10 @@ def run_backtest(
                        'abandon'（放弃配股）。
         dividends:      显式指定的除权除息事件表 {ts_code: DataFrame}，
                        传给 apply_dividends=False 时完全不做分红记账。
+        exclude_stale:  默认 True——组合回测按 meta/universe/stale_status.parquet
+                       整段剔除 action='exclude' 的停更/退市标的，并同步裁剪
+                       strategies；单票回测不强制过滤（保留 warning）。
+                       传 False 可显式保留退市股，用于幸存者偏差对照实验。
         oos_ratio:     样本外占比，默认 0.3（训练 70% / 样本外 30%）。
                        默认开启的理由：固定参数回测也常被拿来做决策，30% 的
                        留出段足以覆盖一轮信用/风格周期；传 0 可显式关闭。
@@ -647,6 +782,12 @@ def run_backtest(
 
     if data is None:
         raise ValueError("run_backtest: 必须传 data 或 ts_code")
+
+    # 组合回测股票池收口：剔除停更/退市标的，避免幸存者偏差。
+    # 必须在风控装配与 OOS 分段之前完成，保证 IS/OOS 使用同一池。
+    data, strategies, universe_filter = _filter_stale_universe(
+        data, strategies, exclude_stale, data_warnings, start_date, end_date,
+    )
 
     # 单票回测由用户显式指定，不强制剔除退市股，但必须留下可观测提示：
     # 停更标的在区间末端会用陈旧价格，直接采信收益会引入退市偏差。
@@ -727,6 +868,8 @@ def run_backtest(
         'degraded': degraded,
         'warnings': data_warnings,
     }
+    # 无条件写入：未应用过滤时为 None，调用方无需猜字段是否存在
+    result['data_quality']['universe_filter'] = universe_filter
     if degraded:
         # 降级会影响成交假设或权益口径，置信度必须与撮合内核的判定同步下调
         result['fill_confidence'] = 'low'

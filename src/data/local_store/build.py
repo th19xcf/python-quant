@@ -884,6 +884,61 @@ def _factor_mismatch_totals(result: dict[str, Any]) -> tuple[int, int]:
     return codes, rows
 
 
+def _factor_snapshot_gate(
+    factor_store: LocalFactorStore,
+    root: Path,
+    *,
+    allow_missing: bool = False,
+) -> int:
+    """``build`` 前置门禁：权威因子快照缺失时拒绝写入行情。
+
+    ``_factor_arrays`` 在「快照与分红表都缺失」时返回 ``(None, None)``，
+    调用方会把新写入行的 ``qfq_factor/hfq_factor`` 填成 1.0，把正确的
+    复权价悄悄改成未复权价，且构建当时不会报任何错。此处在写盘前拦住，
+    避免这类不可逆的历史数据污染。
+
+    同时提示快照末日落后于行情末日的情况（增量补数 + 新分红事件未进快照
+    会漏记除权），但不阻断：是否需要重算由人工判断。
+    """
+    required = {
+        'stock_adj_factor': factor_store.factor_path,
+        'stock_dividend': factor_store.dividend_path,
+        'fund_adj_factor': factor_store.fund_factor_path,
+    }
+    missing = [f'{name}: {path}' for name, path in required.items()
+               if not path.exists()]
+    if missing:
+        message = (
+            '权威因子快照缺失，拒绝构建：' + '；'.join(missing)
+            + '。请先恢复 data/local_store/factors/ 快照，或执行 '
+              'python -m src.data.local_store rebuild-factors；'
+              '确需无快照构建时加 --allow-missing-factors（复权因子将被填成 1.0）'
+        )
+        if allow_missing:
+            logger.warning(message + ' [已由 --allow-missing-factors 放行]')
+            return 0
+        logger.error(message)
+        return 1
+
+    try:
+        index = pl.read_parquet(
+            root / 'meta' / 'daily_index.parquet',
+            columns=['data_type', 'end'],
+        )
+        quote_end = index.filter(pl.col('data_type') == 'stock')['end'].max()
+        snap_end = pl.scan_parquet(str(factor_store.factor_path)).select(
+            pl.col('trade_date').max()).collect().item()
+        if snap_end is not None and quote_end is not None and snap_end < quote_end:
+            logger.warning(
+                f'[factor-gate] 个股因子快照末日 {snap_end} 早于行情末日 '
+                f'{quote_end}；若期间有新的除权除息事件，请先执行 '
+                'rebuild-factors 再补数，否则新增行会漏记除权'
+            )
+    except (OSError, ValueError, RuntimeError, PolarsError) as exc:
+        logger.warning(f'[factor-gate] 快照新鲜度检查失败（不阻断）：{exc}')
+    return 0
+
+
 def _factor_governance_step(
     quote_store: LocalQuoteStore,
     factor_store: LocalFactorStore,
@@ -1048,6 +1103,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                            help='数据写入完成后不刷新异常台账清单（默认刷新）')
     build_cmd.add_argument('--skip-derive-turnover', action='store_true',
                            help='收尾不做换手率本地派生（默认用行情 volume + 流通股本补齐缺口）')
+    build_cmd.add_argument('--allow-missing-factors', action='store_true',
+                           help='应急逃生：因子快照缺失时仍允许构建（会把复权因子填成 1.0，仅用于恢复快照）')
+    build_cmd.add_argument('--skip-factor-verify', action='store_true',
+                           help='收尾不做行情副本与因子快照的全量一致性门禁（默认做，失败返回非零）')
 
     factor_cmd = sub.add_parser(
         'refresh-factors', help='危险操作：用远程库整表覆盖本地快照（默认拒绝）')
@@ -1127,6 +1186,61 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     derive_cmd.add_argument('--codes', default='', help='逗号分隔的 ts_code 列表（默认全市场）')
     derive_cmd.add_argument('--commit', action='store_true', help='真正写入（默认 dry-run）')
     return parser.parse_args(argv)
+
+
+def _run_build_command(
+    args: argparse.Namespace,
+    config: Any,
+    quote_store: LocalQuoteStore,
+    factor_store: LocalFactorStore,
+    root: Path,
+) -> int:
+    """build 子命令：前置快照门禁 → 构建 → 收尾因子一致性复验。"""
+    # 快照缺失会把复权因子写成 1.0，必须在写盘前拦住。
+    # dry-run 不落盘，跳过门禁以便先看清计划规模。
+    if not args.dry_run:
+        gate_code = _factor_snapshot_gate(
+            factor_store, root,
+            allow_missing=args.allow_missing_factors,
+        )
+        if gate_code:
+            return gate_code
+
+    codes = [c for c in args.codes.split(',') if c.strip()] if args.codes else None
+    since = datetime.strptime(args.since, '%Y-%m-%d').date() if args.since else None
+    target_date = (
+        datetime.strptime(args.target_date, '%Y-%m-%d').date()
+        if args.target_date else None)
+    max_date = (
+        datetime.strptime(args.max_date, '%Y-%m-%d').date()
+        if args.max_date else None)
+    result = build(
+        config, quote_store, factor_store,
+        data_type=args.data_type, codes=codes, since=since,
+        incremental=args.incremental, target_date=target_date,
+        max_date=max_date, force_intraday=args.force_intraday,
+        dry_run=args.dry_run,
+    )
+    logger.info(f'构建结果: {result}')
+    # 换手率派生必须在新鲜度巡检之前：巡检会读 factors/stock_turnover.parquet，
+    # 若先巡检后派生，刚刚补进来的当日数据仍会被判成「缺最新交易日」。
+    # dry-run 时照样跑一次只读统计，把缺口规模暴露在日志里。
+    _derive_turnover_step(
+        root, skip=args.skip_derive_turnover, dry_run=args.dry_run)
+    _refresh_anomaly_lists_step(
+        root, skip=args.skip_anomaly_lists, dry_run=args.dry_run)
+    # 收尾门禁：确认行情内嵌副本与权威快照逐行一致（stock/index/fund 0/0/0）。
+    # 与 factor-governance 同口径，默认只读、失败即返回非零，避免静默漂移。
+    if (not args.dry_run and not args.skip_factor_verify
+            and _factor_governance_step(
+                quote_store, factor_store, fail_on_mismatch=True)):
+        logger.error(
+            '[local-store] build 收尾因子一致性门禁失败；'
+            '请执行 python -m src.data.local_store factor-governance '
+            '--sync --commit 后复验'
+        )
+        return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1235,32 +1349,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.info(f'元数据重建结果: {result}')
         return 0
 
-    codes = [c for c in args.codes.split(',') if c.strip()] if args.codes else None
-    since = None
-    if args.since:
-        since = datetime.strptime(args.since, '%Y-%m-%d').date()
-    target_date = (
-        datetime.strptime(args.target_date, '%Y-%m-%d').date()
-        if args.target_date else None)
-    max_date = (
-        datetime.strptime(args.max_date, '%Y-%m-%d').date()
-        if args.max_date else None)
-    result = build(
-        config, quote_store, factor_store,
-        data_type=args.data_type, codes=codes, since=since,
-        incremental=args.incremental, target_date=target_date,
-        max_date=max_date, force_intraday=args.force_intraday,
-        dry_run=args.dry_run,
-    )
-    logger.info(f'构建结果: {result}')
-    # 换手率派生必须在新鲜度巡检之前：巡检会读 factors/stock_turnover.parquet，
-    # 若先巡检后派生，刚刚补进来的当日数据仍会被判成「缺最新交易日」。
-    # dry-run 时照样跑一次只读统计，把缺口规模暴露在日志里。
-    _derive_turnover_step(
-        root, skip=args.skip_derive_turnover, dry_run=args.dry_run)
-    _refresh_anomaly_lists_step(
-        root, skip=args.skip_anomaly_lists, dry_run=args.dry_run)
-    return 0
+    return _run_build_command(args, config, quote_store, factor_store, root)
 
 
 if __name__ == '__main__':

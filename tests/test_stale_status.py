@@ -96,3 +96,22 @@ def test_universe_filters_stale_by_default(tmp_path) -> None:
     assert list_local_stock_codes(config, exclude_stale=False) == [
         '600000.SH', '600068.SH'
     ]
+
+
+def test_single_leading_code_does_not_mark_everyone_stale(tmp_path) -> None:
+    """回归：基准日取众数，不能用 max(end)。
+
+    实测曾因一只标的补到 11-06，把其余 9018 只 end=11-05 的标的全部
+    判成停更（743 → 9760），导致组合回测股票池几乎被清空。
+    """
+    root, _ = _make_store(tmp_path, {
+        '600000.SH': AS_OF,
+        '600001.SH': AS_OF,
+        '600002.SH': AS_OF,
+        '600003.SH': date(2026, 11, 6),   # 唯一领先一天的标的
+        '600068.SH': date(2021, 9, 13),   # 真正停更
+    })
+    frame = build_stale_status(root)
+    assert frame['detected_at'][0] == AS_OF
+    assert stale_codes(root) == {'600068.SH'}
+    assert int(frame['is_stale'].sum()) == 1
