@@ -164,10 +164,48 @@ def _fetch(bs, code: str, start: str, end: str) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=rs.fields) if rows else pd.DataFrame()
 
 
+def _anchor_before(traded: pd.DataFrame, frame: pd.DataFrame,
+                   day: pd.Timestamp) -> float | None:
+    """事件日之前最后一个有效收盘价（优先近 30 天内有成交的行）。"""
+    window = traded[(traded.index < day)
+                    & (traded.index >= day - pd.Timedelta(days=30))]
+    if not window.empty:
+        return float(window['close'].iloc[-1])
+    prev = frame[frame.index < day]
+    return float(prev['close'].iloc[-1]) if not prev.empty else None
+
+
+def _anchor_after(traded: pd.DataFrame, frame: pd.DataFrame,
+                  day: pd.Timestamp) -> float | None:
+    """事件日（含）之后第一个有效前收盘（优先近 30 天内有成交的行）。"""
+    window = traded[(traded.index >= day)
+                    & (traded.index <= day + pd.Timedelta(days=30))]
+    if not window.empty:
+        return float(window['preclose'].iloc[0])
+    after = frame[frame.index >= day]
+    return float(after['preclose'].iloc[0]) if not after.empty else None
+
+
 def _verify_code(bs, code: str, sub: pd.DataFrame, tol: float) -> dict:
-    """核验单只股票的全部配股事件。"""
-    start = (sub['ex_date'].min() - pd.Timedelta(days=30)).strftime('%Y-%m-%d')
-    end = (sub['ex_date'].max() + pd.Timedelta(days=5)).strftime('%Y-%m-%d')
+    """核验单只股票的全部配股事件。
+
+    ``sub`` 需要传**该股全部**除权事件（不只是配股行），因为同一除权日常被
+    不同来源拆成「配股」与「送股」两行，只有全部行参与合并才能还原标准除权价。
+
+    停牌期间行情源会给出成交量 0、价格不动的占位行，这类行既不是有效的前收
+    盘锚点，也不能当作除权生效日。因此两个锚点都优先取「有成交量」的交易日：
+    事件日之前最后一个有量收盘价作为 ``prev_close``，事件日（含）之后第一个
+    有量交易日的 ``preclose`` 作为除权参考价；近 30 天内无成交时退回相邻行，
+    保持与历史口径一致。
+    """
+    rights = sub[(sub['rights_issue_ratio'].fillna(0) > 0)
+                 | (sub['rights_issue_price'].fillna(0) > 0)]
+    if rights.empty:
+        return {'status': 'ok', 'events': []}
+    right_dates = rights['ex_date']
+    right_set = set(right_dates)
+    start = (right_dates.min() - pd.Timedelta(days=30)).strftime('%Y-%m-%d')
+    end = (right_dates.max() + pd.Timedelta(days=15)).strftime('%Y-%m-%d')
     try:
         frame = _fetch(bs, code, start, end)
     except Exception as exc:  # noqa: BLE001
@@ -177,28 +215,40 @@ def _verify_code(bs, code: str, sub: pd.DataFrame, tol: float) -> dict:
 
     frame['date'] = pd.to_datetime(frame['date'])
     frame = frame.set_index('date')
+    for col in ('close', 'preclose', 'volume'):
+        frame[col] = pd.to_numeric(frame[col], errors='coerce')
+    traded = frame[frame['volume'].fillna(0) > 0]
+
     events = []
-    for _, row in sub.iterrows():
+    # 同一除权日可能被不同来源拆成多行（配股/送股分行），核验前需先合并，
+    # 否则配股项与送股项各套一次前收，理论价必然对不上。
+    merged = []
+    for day, grp in sub.groupby('ex_date', sort=True):
+        ratio = float(grp['rights_issue_ratio'].fillna(0).sum())
+        amount = float((grp['rights_issue_price'].fillna(0)
+                        * grp['rights_issue_ratio'].fillna(0)).sum())
+        merged.append({
+            'ex_date': day,
+            'cash_div': float(grp['cash_div'].fillna(0).sum()),
+            'share_div': float(grp['share_div'].fillna(0).sum()),
+            'rights_issue_ratio': ratio,
+            'rights_issue_price': amount / ratio if ratio > 0 else 0.0,
+        })
+    for row in merged:
         day = row['ex_date']
+        if day not in right_set:
+            continue
         item = {'ex_date': str(day.date()), 'verified': False, 'rel_err': None}
-        if day in frame.index:
-            try:
-                preclose = float(frame.loc[day, 'preclose'])
-            except (TypeError, ValueError):
-                preclose = 0.0
-            prev = frame[frame.index < day]
-            if preclose > 0 and not prev.empty:
-                prev_close = float(prev['close'].iloc[-1])
-                if prev_close > 0:
-                    cash = float(row['cash_div'] or 0)
-                    share = float(row['share_div'] or 0)
-                    ratio = float(row['rights_issue_ratio'] or 0)
-                    price = float(row['rights_issue_price'] or 0)
-                    theo = ((prev_close - cash + price * ratio)
-                            / (1 + share + ratio))
-                    rel = abs(theo - preclose) / preclose
-                    item.update({'rel_err': round(rel, 6),
-                                 'verified': bool(rel < tol)})
+        preclose = _anchor_after(traded, frame, day)
+        prev_close = _anchor_before(traded, frame, day)
+        if (preclose is not None and prev_close is not None
+                and preclose > 0 and prev_close > 0):
+            theo = ((prev_close - row['cash_div']
+                     + row['rights_issue_price'] * row['rights_issue_ratio'])
+                    / (1 + row['share_div'] + row['rights_issue_ratio']))
+            rel = abs(theo - preclose) / preclose
+            item.update({'rel_err': round(rel, 6),
+                         'verified': bool(rel < tol)})
         events.append(item)
     return {'status': 'ok', 'events': events}
 
@@ -231,13 +281,13 @@ def main(argv: list[str] | None = None) -> int:
     store_root = root
 
     div = pd.read_parquet(store_root / 'factors' / 'stock_dividend.parquet')
+    div = div[div['ex_date'].notna()].copy()
+    div['ex_date'] = pd.to_datetime(div['ex_date'])
     ev = div[(div['rights_issue_ratio'] > 0) | (div['rights_issue_price'] > 0)]
-    ev = ev[ev['ex_date'].notna()].copy()
-    ev['ex_date'] = pd.to_datetime(ev['ex_date'])
     codes = ev['ts_code'].drop_duplicates().tolist()
     if args.limit:
         codes = codes[:args.limit]
-        ev = ev[ev['ts_code'].isin(codes)]
+    ev = ev[ev['ts_code'].isin(codes)]
     print(f'配股事件 {len(ev)} 个 / {len(codes)} 只')
 
     out_dir = store_root / 'meta' / 'anomalies'
@@ -270,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
 
         pending = [c for c in codes if c not in done]
         for index, code in enumerate(pending, 1):
-            done[code] = _verify_code(bs, code, ev[ev['ts_code'] == code], args.tol)
+            done[code] = _verify_code(bs, code, div[div['ts_code'] == code], args.tol)
             if index % 50 == 0 or index == len(pending):
                 prog_path.write_text(json.dumps(done, ensure_ascii=False),
                                      encoding='utf-8')

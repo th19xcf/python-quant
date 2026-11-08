@@ -147,6 +147,30 @@ def test_calculate_factors_cash_div_fix_overrides_original():
     assert dividends['cash_div'].to_list() == [0.0]
 
 
+def test_calculate_factors_merges_same_day_split_rows():
+    """同一除权日被拆成「配股」「送股」两行时按合并事件计算，不逐行连乘。"""
+    prices = pl.DataFrame({
+        'ts_code': ['000002.SZ'] * 2,
+        'trade_date': [date(1991, 5, 27), date(1991, 6, 8)],
+        'close': [11.29, 7.95],
+    })
+    dividends = pl.DataFrame({
+        'ts_code': ['000002.SZ'] * 2,
+        'ex_date': [date(1991, 6, 8)] * 2,
+        'cash_div': [0.0, 0.0],
+        'share_div': [0.0, 0.2],
+        'rights_issue_ratio': [0.5, 0.0],
+        'rights_issue_price': [4.4, 0.0],
+        'no_ex_rights': [False, False],
+    })
+
+    result = AdjFactorCalculator.calculate_factors(prices, dividends)
+
+    merged = (11.29 + 4.4 * 0.5) / (11.29 * (1 + 0.2 + 0.5))
+    assert result['qfq_factor'].to_list() == pytest.approx([merged, 1.0])
+    assert result['hfq_factor'].to_list() == pytest.approx([1.0, 1.0 / merged])
+
+
 def test_batch_prefetches_per_chunk_and_commits_once(monkeypatch):
     db = _FakeDB()
     calculator = AdjFactorCalculator(db, tdx_handler=None)

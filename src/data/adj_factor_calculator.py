@@ -69,6 +69,52 @@ def calc_dividend_event_factor(prev_close, cash_div, share_div,
     return factor
 
 
+def merge_same_day_events(divs: pl.DataFrame) -> pl.DataFrame:
+    """把同一除权日的多条事件合并成一条。
+
+    不同来源常把同一次权益分派拆成多行（如「配股」一行、「送股」一行），
+    逐行连乘会把配股项与送股项分别套在同一个前收上，结果偏离标准除权价：
+
+        (P + p*r)/(P*(1+r)) * 1/(1+s)  !=  (P + p*r)/(P*(1+s+r))
+
+    现金、送股比例、配股比例直接相加，配股价按配股比例加权；``ex_date``
+    缺失的行原样保留（后续会被过滤）。
+
+    Args:
+        divs: 事件帧，至少含 ``ex_date`` 与四个权益字段（缺失列按 0 处理）。
+
+    Returns:
+        按 ``ex_date`` 升序排列的事件帧，每日期至多一行。
+    """
+    cols = ('cash_div', 'share_div', 'rights_issue_ratio', 'rights_issue_price')
+    prepared = divs.with_columns([
+        (pl.col(c).cast(pl.Float64, strict=False).fill_null(0.0)
+         if c in divs.columns else pl.lit(0.0)).alias(c)
+        for c in cols
+    ])
+    if prepared.height < 2 or prepared['ex_date'].n_unique() == prepared.height:
+        return prepared
+    merged = (
+        prepared.group_by('ex_date', maintain_order=True)
+        .agg([
+            pl.col('cash_div').sum(),
+            pl.col('share_div').sum(),
+            pl.col('rights_issue_ratio').sum(),
+            (pl.col('rights_issue_price') * pl.col('rights_issue_ratio'))
+            .sum().alias('_rights_amount'),
+        ])
+        .with_columns(
+            pl.when(pl.col('rights_issue_ratio') > 0)
+            .then(pl.col('_rights_amount') / pl.col('rights_issue_ratio'))
+            .otherwise(pl.lit(0.0))
+            .alias('rights_issue_price')
+        )
+        .drop('_rights_amount')
+        .sort('ex_date')
+    )
+    return merged
+
+
 class AdjFactorCalculator:
     """
     复权因子计算器
@@ -324,6 +370,9 @@ class AdjFactorCalculator:
             pl.col('ex_date').cast(pl.Utf8).str.slice(0, 10) <= cutoff)
         if divs.is_empty():
             return MemoryOptimizer.optimize_dataframe(prices_df.with_columns(ones))
+        # 同一除权日被拆成多行（配股/送股分行）时必须先合并，否则配股项与
+        # 送股项各套一次前收，因子偏离标准除权价。
+        divs = merge_same_day_events(divs)
 
         trade_dates = prices_df['trade_date'].to_numpy()
         closes = prices_df['close'].to_numpy()
