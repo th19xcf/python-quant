@@ -58,6 +58,8 @@ EM_RETRY = 4
 
 SOURCE_EM_CLEAN = 'em_name_history_clean'
 SOURCE_CNINFO_DATED = 'cninfo_notice_dated'
+#: 本模块自己写入的覆盖来源；重建时不能拿它当「已覆盖」基准。
+SUPPLEMENT_SOURCES: frozenset[str] = frozenset({SOURCE_EM_CLEAN, SOURCE_CNINFO_DATED})
 
 FLAG_ST = st_history.FLAG_ST
 FLAG_STAR = st_history.FLAG_STAR
@@ -367,13 +369,25 @@ def _quote_window(store_root: Path, code: str) -> tuple[date, date] | None:
     return cov.start, cov.end
 
 
+def official_coverage(coverage: pl.DataFrame) -> pl.DataFrame:
+    """剔除本模块上次写入的补充覆盖，只留下官方/快照证据。
+
+    ``apply`` 之后的规范覆盖表会包含 supplement 行；若直接用它当「已覆盖」
+    基准，重跑 ``build_supplement`` 只会补增量并覆盖掉 supplement 表，
+    覆盖规模会逐次收缩。
+    """
+    if coverage.height == 0 or 'source' not in coverage.columns:
+        return coverage
+    return coverage.filter(~pl.col('source').is_in(sorted(SUPPLEMENT_SOURCES)))
+
+
 def _candidate_codes(root: Path, em: pl.DataFrame,
                      coverage: pl.DataFrame) -> list[dict[str, Any]]:
-    """池内无覆盖、且名称历史含 ST/PT 的标的（需要定日证据）。"""
+    """池内无官方覆盖、且名称历史含 ST/PT 的标的（需要定日证据）。"""
     from src.data.local_store.store import LocalQuoteStore  # noqa: PLC0415
 
     pool = LocalQuoteStore(root).codes('stock')
-    covered = set(coverage['ts_code'].to_list())
+    covered = set(official_coverage(coverage)['ts_code'].to_list())
     st_names = {row['secucode']: row for row in em.to_dicts()
                 if has_st_token(row['name']) or has_st_token(row['former_names'])}
     return [{'ts_code': code, **st_names[code]} for code in pool
@@ -538,6 +552,9 @@ def build_supplement(store_root: Path | str, *,
         raise RuntimeError('缺少东方财富曾用名缓存，先执行 sync-em')
     if coverage is None:
         raise RuntimeError('缺少 ST 覆盖表，先执行 st_history build')
+    # 「已覆盖」只认官方/快照证据：apply 后规范表含上次 supplement 行，
+    # 直接复用会让本次重算只剩增量，把 supplement 表覆盖成残缺版本。
+    coverage = official_coverage(coverage)
     from src.data.local_store.store import LocalQuoteStore  # noqa: PLC0415
 
     store = LocalQuoteStore(root)

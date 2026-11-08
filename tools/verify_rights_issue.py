@@ -2,7 +2,7 @@
 
 """用独立第二源核验配股事件参数。
 
-支持两个互相独立的核验源，任一通过即可解除该事件的「无第二源」存疑：
+支持三个互相独立的核验源，任一通过即可解除该事件的「无第二源」存疑：
 
 ``baostock``
     取除权日当日不复权 ``preclose``（已按除权调整的前收盘），与本地参数按
@@ -15,6 +15,12 @@
     直接解析通达信股本变迁库（``T0002/hq_cache/gbbq``，由 pytdx 解密），
     取 ``category=1``（除权除息）记录的配股价与配股比例，与本地参数逐事件
     直比。字段口径为「每 10 股」，比例需乘 10 后比较。
+
+``em``
+    东财 F10「分红融资」接口的配股明细（``pgmx``）：``ISSUE_PRICE`` 为配股价，
+    ``EVENT_EXPLAIN`` 形如「每10股配3股」，``EX_DIVIDEND_DATEE`` 为除权日。
+    与本地事件按除权日对齐后直比价格与比例，用于前两源缺记录或参数冲突的
+    老事件（1992-2004）。
 
 通过核验的事件写入 ``meta/anomalies/rights_issue_verified.csv``；
 ``refresh_anomaly_lists`` 生成存疑清单时会排除这些事件。一只股票的**全部**
@@ -38,11 +44,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 DEFAULT_TOL = 0.01
 DEFAULT_GBBQ_TOL = 0.02
@@ -50,26 +59,38 @@ PROGRESS_NAME = 'rights_verify_progress.json'
 
 SRC_BAOSTOCK = 'baostock_history_preclose_adjustflag3'
 SRC_GBBQ = 'tdx_gbbq_category1'
+SRC_EM = 'em_f10_pgmx'
+
+EM_URL = 'https://emweb.securities.eastmoney.com/PC_HSF10/BonusFinancing/PageAjax'
+EM_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+}
+EM_SLEEP = 0.3
+EM_RETRY = 3
+_PLAN_RATIO_RE = re.compile(r'每10股配([0-9.]+)股')
 
 # gbbq.market 编码 → 交易所后缀
 _MARKET_SUFFIX = {0: 'SZ', 1: 'SH', 2: 'BJ'}
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='配股事件第二源核验（baostock / gbbq）')
+    parser = argparse.ArgumentParser(description='配股事件第二源核验（baostock / gbbq / em）')
     parser.add_argument('--store-root', default='',
                         help='本地列存根目录（默认 data/local_store）')
     parser.add_argument('--source', default='baostock',
-                        choices=['baostock', 'gbbq', 'all'],
-                        help='核验源：baostock（默认）/ gbbq / all')
+                        choices=['baostock', 'gbbq', 'em', 'all'],
+                        help='核验源：baostock（默认）/ gbbq / em / all')
     parser.add_argument('--tol', type=float, default=DEFAULT_TOL,
-                        help=f'baostock 相对误差阈值（默认 {DEFAULT_TOL}）')
+                        help=f'baostock / em 相对误差阈值（默认 {DEFAULT_TOL}）')
     parser.add_argument('--gbbq-tol', type=float, default=DEFAULT_GBBQ_TOL,
                         help=f'gbbq 相对误差阈值（默认 {DEFAULT_GBBQ_TOL}）')
     parser.add_argument('--gbbq-path', default=None,
                         help='gbbq 文件路径（默认 $QUANT_TDX_ROOT/T0002/hq_cache/gbbq）')
     parser.add_argument('--limit', type=int, default=0,
                         help='只处理前 N 只（0=全部，调试用）')
+    parser.add_argument('--codes', default='',
+                        help='只核验指定代码（逗号分隔，如 000417.SZ,600601.SH）')
     parser.add_argument('--reset', action='store_true',
                         help='忽略断点进度，从头核验（仅 baostock）')
     return parser.parse_args(argv)
@@ -121,6 +142,87 @@ def _gbbq_rows(ev: pd.DataFrame, gbbq_path: Path, tol: float) -> list[dict] | No
     print(f'gbbq 匹配 {len(m)} 个事件，通过 {len(ok)} 个 / {ok["ts_code"].nunique()} 只')
     return [{'ts_code': r.ts_code, 'ex_date': r.ex_date.strftime('%Y-%m-%d'),
              'rel_err': r.rel_err} for r in ok.itertuples()]
+
+
+def _fetch_em_pgmx(code: str) -> list[dict]:
+    """抓取单只标的的东财 F10 配股明细（``pgmx``）。"""
+    symbol, market = code.split('.')
+    delay = 1.0
+    last = ''
+    for attempt in range(EM_RETRY + 1):
+        try:
+            resp = requests.get(EM_URL, params={'code': f'{market}{symbol}'},
+                                headers=EM_HEADERS, timeout=25)
+            payload = resp.json()
+            return list(payload.get('pgmx') or [])
+        except (requests.RequestException, ValueError) as exc:
+            last = f'{type(exc).__name__}: {exc}'
+        if attempt >= EM_RETRY:
+            break
+        time.sleep(delay)
+        delay *= 2
+    raise RuntimeError(f'东财配股明细抓取失败 {code}: {last}')
+
+
+def _parse_em_rows(rows: list[dict]) -> pd.DataFrame:
+    """东财 ``pgmx`` → ``ex_date / em_price / em_ratio``（比例已除 10）。"""
+    parsed = []
+    for item in rows:
+        ex_date = pd.to_datetime(str(item.get('EX_DIVIDEND_DATEE'))[:10], errors='coerce')
+        match = _PLAN_RATIO_RE.search(str(item.get('EVENT_EXPLAIN') or ''))
+        if pd.isna(ex_date) or not match:
+            continue
+        parsed.append({'ex_date': ex_date,
+                       'em_price': float(item.get('ISSUE_PRICE') or 0),
+                       'em_ratio': float(match.group(1)) / 10})
+    return pd.DataFrame(parsed, columns=['ex_date', 'em_price', 'em_ratio'])
+
+
+def _em_rows(ev: pd.DataFrame, tol: float) -> list[dict]:
+    """用东财 F10 配股明细逐事件核对配股价与配股比例。
+
+    本地同一除权日可能被拆成多行，先按除权日合并（比例相加、配股价按比例
+    加权）；东财一侧同样只保留除权日、配股价、每 10 股配股比例。
+    """
+    work = ev.copy()
+    work['_ratio'] = work['rights_issue_ratio'].fillna(0).astype(float)
+    work['_price'] = work['rights_issue_price'].fillna(0).astype(float)
+    work['_amount'] = work['_price'] * work['_ratio']
+    local = (work.groupby(['ts_code', 'ex_date'], as_index=False)
+             .agg(ratio=('_ratio', 'sum'), amount=('_amount', 'sum')))
+    local['price'] = local['amount'] / local['ratio'].where(local['ratio'] > 0)
+
+    matched, rows, fetched = 0, [], 0
+    for code, grp in local.groupby('ts_code', sort=True):
+        try:
+            pg = _fetch_em_pgmx(code)
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            continue
+        fetched += 1
+        ref = _parse_em_rows(pg).drop_duplicates(subset=['ex_date'])
+        if ref.empty:
+            continue
+        m = grp.merge(ref, on='ex_date', how='inner')
+        if m.empty:
+            continue
+        price_rel = (m['price'] - m['em_price']).abs() / m['em_price'].abs().clip(lower=1e-9)
+        ratio_rel = (m['ratio'] - m['em_ratio']).abs() / m['em_ratio'].abs().clip(lower=1e-9)
+        rel = pd.concat([price_rel, ratio_rel], axis=1).max(axis=1)
+        # 本地有值而东财为 0：该源无法佐证，视为不通过
+        rel = rel.mask(((m['price'] > 0) & (m['em_price'] <= 0))
+                       | ((m['ratio'] > 0) & (m['em_ratio'] <= 0)), float('inf'))
+        m = m.assign(rel_err=rel.round(6))
+        matched += len(m)
+        ok = m[m['rel_err'] < tol]
+        rows.extend({'ts_code': r.ts_code,
+                     'ex_date': r.ex_date.strftime('%Y-%m-%d'),
+                     'rel_err': r.rel_err} for r in ok.itertuples())
+        time.sleep(EM_SLEEP)
+
+    print(f'东财配股明细抓取 {fetched} 只，匹配 {matched} 个事件，'
+          f'通过 {len(rows)} 个 / {len({r["ts_code"] for r in rows})} 只')
+    return rows
 
 
 def _merge_verified(rows: list[dict], source: str, out_dir: Path) -> pd.DataFrame:
@@ -285,6 +387,9 @@ def main(argv: list[str] | None = None) -> int:
     div['ex_date'] = pd.to_datetime(div['ex_date'])
     ev = div[(div['rights_issue_ratio'] > 0) | (div['rights_issue_price'] > 0)]
     codes = ev['ts_code'].drop_duplicates().tolist()
+    if args.codes:
+        wanted = {c.strip().upper() for c in args.codes.split(',') if c.strip()}
+        codes = [c for c in codes if c in wanted]
     if args.limit:
         codes = codes[:args.limit]
     ev = ev[ev['ts_code'].isin(codes)]
@@ -299,6 +404,9 @@ def main(argv: list[str] | None = None) -> int:
         if rows is None:
             return 1
         _merge_verified(rows, SRC_GBBQ, out_dir)
+
+    if args.source in ('em', 'all'):
+        _merge_verified(_em_rows(ev, args.tol), SRC_EM, out_dir)
 
     if args.source == 'baostock' or args.source == 'all':
         try:

@@ -103,6 +103,42 @@ def test_plan_skips_snapshot_st_codes_with_clean_names():
     assert plan.unresolved[0]['reason'] == 'st_name_without_dated_event'
 
 
+def test_official_coverage_drops_previous_supplement_rows():
+    """重建基准不能把上次写入的 supplement 行当成官方覆盖。"""
+    coverage = _coverage([
+        {'ts_code': '600000.SH', 'coverage_start': date(1999, 11, 10),
+         'coverage_end': date(2026, 11, 6), 'source': 'merged', 'fetched_at': None},
+        {'ts_code': '600001.SH', 'coverage_start': date(1999, 11, 10),
+         'coverage_end': date(2026, 11, 6), 'source': N.SOURCE_EM_CLEAN,
+         'fetched_at': None},
+        {'ts_code': '600002.SH', 'coverage_start': date(1999, 11, 10),
+         'coverage_end': date(2026, 11, 6), 'source': N.SOURCE_CNINFO_DATED,
+         'fetched_at': None},
+    ])
+    kept = N.official_coverage(coverage)
+    assert kept['ts_code'].to_list() == ['600000.SH']
+    assert N.official_coverage(_coverage([])).height == 0
+
+
+def test_supplement_rebuild_is_idempotent():
+    """规范表已含上次 supplement 行时，重算仍覆盖同一批标的。"""
+    em = _em([
+        {'secucode': '600000.SH', 'name': '浦发银行', 'former_names': '',
+         'org_name': '', 'listing_date': date(1999, 11, 10)},
+    ])
+    merged = _coverage([
+        {'ts_code': '600000.SH', 'coverage_start': date(1999, 11, 10),
+         'coverage_end': date(2026, 11, 6), 'source': N.SOURCE_EM_CLEAN,
+         'fetched_at': None},
+        {'ts_code': '600004.SH', 'coverage_start': date(2003, 4, 28),
+         'coverage_end': date(2026, 11, 6), 'source': 'merged', 'fetched_at': None},
+    ])
+    windows = {'600000.SH': (date(1999, 11, 10), date(2026, 11, 6))}
+    plan = N.plan_supplement(em, N.official_coverage(merged), ['600000.SH'],
+                             windows, {}, today=date(2026, 11, 8))
+    assert [row['ts_code'] for row in plan.coverage] == ['600000.SH']
+
+
 def test_intervals_clamp_open_interval_to_last_tradable_day():
     segments = [(date(2025, 4, 30), '*st')]
     rows = N._intervals_from_segments('920680.BJ', segments, date(2025, 12, 24))
