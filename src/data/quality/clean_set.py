@@ -20,10 +20,11 @@
    - ``standard``  ：剔除结构性缺陷 + 当日 ST，容忍因子末端落后与历史缺口；
    - ``strict``    ：在 standard 之上再要求当日因子可用，并剔除除权事件存疑
                      （配股无第二源、跳变/事件不匹配、因子台账标记）。
-   strict 默认对全部基金挂 ``pending_fund_dividend``。可用
-   ``close_fund_dividend_pending_scope``（``none``/``etf``/``all``）按资产
-   子类放开：``etf`` 只放远程 ``fund_basic.fund_type='ETF'`` 的基金，名单
-   取不到时自动降级为 ``none``（宁严不宽）。
+   strict 默认只对非 ETF 基金挂 ``pending_fund_dividend``（默认 scope=``etf``）。
+   可用 ``close_fund_dividend_pending_scope``（``none``/``etf``/``all``）按资产
+   子类放开：``etf`` 只放 ``fund_basic.fund_type='ETF'`` 的基金；名单落本地
+   缓存 ``meta/clean/fund_etf_codes.txt``，缺失或超过 7 天才连远程库刷新，
+   刷新失败沿用旧缓存，两者都没有时降级为 ``none``（宁严不宽）。
 5. 本模块只读本地列存，产出写入 ``meta/clean/``，幂等可重跑。
 
 读侧用法::
@@ -94,13 +95,19 @@ def _pre_1993_break(info: CodeInfo, o: int) -> bool:
 
 #: 基金分红复权 pending 的开关范围：``none`` 保持现状（strict 剔除全部基金）；
 #: ``etf`` 只放开 ``fund_basic.fund_type='ETF'`` 的基金；``all`` 放开全部基金。
-#: 默认 ``none``。``etf`` 依赖远程库 fund_basic，取不到名单时降级为 ``none``
-#: （宁严不宽）。
+#: 默认 ``etf``。``etf`` 的名单优先读本地缓存，缓存缺失或过期才连远程库刷新，
+#: 刷新失败沿用旧缓存，两者都没有时降级为 ``none``（宁严不宽）。
 FUND_DIVIDEND_PENDING_SCOPES: tuple[str, ...] = ('all', 'etf', 'none')
 FUND_DIVIDEND_PENDING_SCOPE_ENV = 'QUANT_CLOSE_FUND_DIVIDEND_PENDING_SCOPE'
 #: 旧的布尔开关环境变量，保留兼容：真值映射 all，假值映射 none。
 FUND_DIVIDEND_PENDING_ENV = 'QUANT_CLOSE_FUND_DIVIDEND_PENDING'
 _TRUTHY = frozenset({'1', 'true', 'yes', 'on'})
+
+#: ETF 名单本地缓存（UTF-8、一行一个 ts_code）。回测只读该文件，避免每次
+#: 实例化都连远程 MySQL，也保证离线与联网跑出同一个 strict 池。
+FUND_ETF_CODES_CACHE = DEFAULT_ROOT / 'meta' / 'clean' / 'fund_etf_codes.txt'
+#: 缓存有效天数：过期后下次加载尝试连远程库刷新，失败则继续用旧缓存。
+FUND_ETF_CODES_TTL_DAYS = 7
 
 
 def _normalize_scope(value: str | None, *, strict: bool = True) -> str | None:
@@ -127,7 +134,7 @@ def _resolve_fund_pending_scope(
 
     优先级：显式 ``scope`` > 显式旧布尔 ``legacy``
     > 环境变量 ``QUANT_CLOSE_FUND_DIVIDEND_PENDING_SCOPE``
-    > 环境变量 ``QUANT_CLOSE_FUND_DIVIDEND_PENDING`` > 默认 ``none``。
+    > 环境变量 ``QUANT_CLOSE_FUND_DIVIDEND_PENDING`` > 默认 ``etf``。
     """
     explicit = _normalize_scope(scope)
     if explicit is not None:
@@ -141,7 +148,7 @@ def _resolve_fund_pending_scope(
     env_legacy = os.getenv(FUND_DIVIDEND_PENDING_ENV)
     if env_legacy is not None:
         return 'all' if env_legacy.strip().lower() in _TRUTHY else 'none'
-    return 'none'
+    return 'etf'
 
 
 def _fund_etf_codes_from_db() -> set[str]:
@@ -162,15 +169,61 @@ def _fund_etf_codes_from_db() -> set[str]:
         db_manager.disconnect()
 
 
-def _load_fund_etf_codes() -> set[str] | None:
-    """加载 ETF 名单；库不可用或为空时返回 None（由调用方降级为不放开）。"""
+def _read_fund_etf_cache(
+    path: Path | None = None,
+) -> tuple[set[str], float] | None:
+    """读取本地 ETF 名单缓存，返回 ``(代码集合, mtime)``；缺失或为空返回 None。"""
+    target = path or FUND_ETF_CODES_CACHE
     try:
-        return _fund_etf_codes_from_db() or None
-    # 兜底理由：离线/库不可用不应阻断 clean_set，etf 范围降级为 none
+        mtime = target.stat().st_mtime
+        text = target.read_text(encoding='utf-8')
+    except OSError:
+        return None
+    codes = {line.strip() for line in text.splitlines() if line.strip()}
+    return (codes, mtime) if codes else None
+
+
+def _write_fund_etf_cache(codes: set[str], path: Path | None = None) -> None:
+    """原子写入 ETF 名单缓存；写失败只告警，不阻断回测。"""
+    target = path or FUND_ETF_CODES_CACHE
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + '.tmp')
+        with open(tmp, 'w', encoding='utf-8', newline='\n') as fh:
+            fh.write('\n'.join(sorted(codes)) + '\n')
+        os.replace(tmp, target)
+    except OSError as exc:
+        logger.warning(f'[clean_set] ETF 名单缓存写入失败: {exc}')
+
+
+def _load_fund_etf_codes(ttl_days: float | None = None) -> set[str] | None:
+    """加载 ETF 名单。
+
+    优先读本地缓存；缓存缺失或超过 ``ttl_days`` 天（默认
+    ``FUND_ETF_CODES_TTL_DAYS``）才连远程库刷新，刷新结果回写缓存。
+    刷新失败时沿用仍可读的旧缓存；完全没有名单才返回 None 由调用方降级。
+    """
+    ttl = FUND_ETF_CODES_TTL_DAYS if ttl_days is None else ttl_days
+    cached = _read_fund_etf_cache()
+    if cached is not None:
+        codes, mtime = cached
+        if datetime.now().timestamp() - mtime <= ttl * 86400:
+            return codes
+    try:
+        fresh = _fund_etf_codes_from_db() or None
+    # 兜底理由：离线/库不可用不应阻断 clean_set，先退回旧缓存再降级
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            f'[clean_set] fund_basic 不可用，etf 范围降级为不放开: {exc}')
-        return None
+            f'[clean_set] fund_basic 不可用，尝试沿用本地缓存: {exc}')
+        fresh = None
+    if fresh:
+        _write_fund_etf_cache(fresh)
+        return fresh
+    if cached is not None:
+        logger.warning('[clean_set] 远程刷新失败，沿用过期 ETF 名单缓存')
+        return cached[0]
+    logger.warning('[clean_set] 无 ETF 名单缓存且远程不可用，etf 范围降级为不放开')
+    return None
 
 
 def _apply_scope_with_etf_codes(

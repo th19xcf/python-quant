@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from datetime import date
 from pathlib import Path
 
@@ -237,10 +239,10 @@ def test_fund_pending_switch_in_timeline() -> None:
 
 
 def test_close_fund_pending_flag_sources(monkeypatch) -> None:
-    """开关优先级：显式传参 > 环境变量 > 默认关闭。"""
+    """开关优先级：显式传参 > 环境变量 > 默认 etf。"""
     monkeypatch.delenv(FUND_DIVIDEND_PENDING_ENV, raising=False)
     monkeypatch.delenv(FUND_DIVIDEND_PENDING_SCOPE_ENV, raising=False)
-    assert _resolve_fund_pending_scope() == 'none'
+    assert _resolve_fund_pending_scope() == 'etf'
     assert _resolve_fund_pending_scope(None, True) == 'all'
     assert _resolve_fund_pending_scope(None, False) == 'none'
     assert _resolve_fund_pending_scope('etf', False) == 'etf'
@@ -287,11 +289,16 @@ def test_fund_pending_legacy_bool_maps_to_scope() -> None:
     assert engine.close_fund_dividend_pending is False
 
 
-def test_fund_pending_scope_degrades_without_etf_codes(monkeypatch) -> None:
-    """fund_basic 不可用或为空名单时，etf 范围降级为不放开。"""
+def test_fund_pending_scope_degrades_without_etf_codes(
+    monkeypatch, tmp_path
+) -> None:
+    """fund_basic 不可用且无缓存时，etf 范围降级为不放开。"""
     def boom() -> set[str]:
         raise RuntimeError('db down')
 
+    monkeypatch.setattr(
+        'src.data.quality.clean_set.FUND_ETF_CODES_CACHE',
+        tmp_path / 'missing.txt')
     monkeypatch.setattr(
         'src.data.quality.clean_set._fund_etf_codes_from_db', boom)
     assert _load_fund_etf_codes() is None
@@ -488,3 +495,56 @@ def test_date_and_code_helpers() -> None:
     assert _code_type('000300.SH') == 'index'
     assert _code_type('510300.SH') == 'fund'
     assert _code_type('600000.SH') == 'stock'
+
+
+def test_fund_etf_cache_fresh_skips_db(monkeypatch, tmp_path) -> None:
+    """缓存未过期时直接返回，不连远程库。"""
+    cache = tmp_path / 'fund_etf_codes.txt'
+    cache.write_text('510300.SH\n159915.SZ\n', encoding='utf-8')
+    monkeypatch.setattr(
+        'src.data.quality.clean_set.FUND_ETF_CODES_CACHE', cache)
+
+    def boom() -> set[str]:
+        raise AssertionError('缓存有效时不应连接远程库')
+
+    monkeypatch.setattr(
+        'src.data.quality.clean_set._fund_etf_codes_from_db', boom)
+    assert _load_fund_etf_codes() == {'510300.SH', '159915.SZ'}
+
+
+def test_fund_etf_cache_expired_refreshes_and_rewrites(
+    monkeypatch, tmp_path
+) -> None:
+    """缓存过期后连库刷新，并把新名单回写本地。"""
+    cache = tmp_path / 'fund_etf_codes.txt'
+    cache.write_text('510300.SH\n', encoding='utf-8')
+    stale = time.time() - 30 * 86400
+    os.utime(cache, (stale, stale))
+    monkeypatch.setattr(
+        'src.data.quality.clean_set.FUND_ETF_CODES_CACHE', cache)
+    monkeypatch.setattr(
+        'src.data.quality.clean_set._fund_etf_codes_from_db',
+        lambda: {'510300.SH', '588000.SH'})
+
+    assert _load_fund_etf_codes() == {'510300.SH', '588000.SH'}
+    assert cache.read_text(encoding='utf-8').split() == [
+        '510300.SH', '588000.SH']
+
+
+def test_fund_etf_cache_expired_falls_back_on_db_error(
+    monkeypatch, tmp_path
+) -> None:
+    """缓存过期且远程失败时沿用旧名单，不降级为 none。"""
+    cache = tmp_path / 'fund_etf_codes.txt'
+    cache.write_text('510300.SH\n', encoding='utf-8')
+    stale = time.time() - 30 * 86400
+    os.utime(cache, (stale, stale))
+    monkeypatch.setattr(
+        'src.data.quality.clean_set.FUND_ETF_CODES_CACHE', cache)
+
+    def boom() -> set[str]:
+        raise ConnectionError('offline')
+
+    monkeypatch.setattr(
+        'src.data.quality.clean_set._fund_etf_codes_from_db', boom)
+    assert _load_fund_etf_codes() == {'510300.SH'}
