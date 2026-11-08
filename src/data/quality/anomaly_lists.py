@@ -70,13 +70,22 @@ def _build_factor_tail_lag(di: pl.DataFrame, adj_path: Path,
 def _build_no_local_quote(di: pl.DataFrame, div: pl.DataFrame) -> pl.DataFrame:
     stock_codes = set(di.filter(pl.col('data_type') == 'stock')['ts_code'].to_list())
     codes = sorted(set(div['ts_code'].unique().to_list()) - stock_codes)
+    # 空列表时 Polars 会把 ts_code 推断成 Null，与右侧 str 连接键冲突；
+    # 显式声明 schema，让「清单变干净 → 0 行」也能正常落盘。
+    left = pl.DataFrame({'ts_code': codes}, schema={'ts_code': pl.Utf8})
     events = (div.filter(pl.col('ts_code').is_in(codes) &
                          pl.col('ex_date').is_not_null())
               .group_by('ts_code')
               .agg(pl.len().alias('events'),
                    pl.col('ex_date').max().alias('last_event')))
+    if events.is_empty():
+        events = pl.DataFrame(schema={
+            'ts_code': pl.Utf8,
+            'events': pl.UInt32,
+            'last_event': div.schema['ex_date'],
+        })
     empty_date = pl.lit(None, dtype=pl.Date)
-    return (pl.DataFrame({'ts_code': codes})
+    return (left
             .join(events, on='ts_code', how='left')
             .select(['ts_code', empty_date.alias('start'),
                      empty_date.alias('end'), 'events', 'last_event'])
@@ -95,10 +104,18 @@ def _build_source_stale(di: pl.DataFrame, latest: date) -> pl.DataFrame:
 
 
 def _build_placeholder_quote(root: Path) -> pl.DataFrame | None:
-    """扫描基金行情，识别价格恒为 1.0 的占位桩。
+    """扫描基金行情，识别源端「无行情」占位桩。
 
-    - 全序列 ``close == 1.0``：整段行情区间不可用，区间取 ``start..end``；
-    - 仅尾部连续 ``close == 1.0``：从第一根占位行起不可用。
+    判据是**三重条件** ``close == 1.0 且 volume == 0 且 amount == 0``。
+    只看 ``close == 1.0`` 会把新发基金面值 1 元误判成占位桩；而真实成交换手
+    不可能 ``volume == 0``，三个条件同时成立才确定是占位。
+
+    通达信对已退市/转型/长期无成交的 LOF，用 ``close=1.0, volume=0`` 表示
+    「该日无行情」（实测 ``163803.SZ`` 源端 1,456 行全是如此），本地只是
+    忠实复制，因此这些行**不可修、只能隔离**。
+
+    区间按**连续段**切分，一只标的多段就多行：早先只识别「全序列」与
+    「尾部连续」两种形态，会漏掉头部连续段与中间的分散段（实测漏 147 只）。
 
     基金行情目录不存在或无任何 parquet 时返回 ``None``，调用方跳过该清单并
     保留旧文件，避免把故障态写成空清单。
@@ -109,30 +126,50 @@ def _build_placeholder_quote(root: Path) -> pl.DataFrame | None:
     paths = sorted(fund_dir.rglob('*.parquet'))
     if not paths:
         return None
-    rows: list[tuple[str, date, date]] = []
+    rows: list[tuple[str, date, date, int, int, bool]] = []
     for path in paths:
-        frame = pl.read_parquet(path, columns=['date', 'close']).sort('date')
+        # 严格判据需要 volume/amount；早期落盘的基金文件可能只有 date/close，
+        # 此时退回「只看 close==1.0」的宽松判据，并标记为不可池级剔除，
+        # 避免因单只文件缺列把整份台账刷成 failed。
+        schema = pl.read_parquet_schema(path)
+        strict = {'volume', 'amount'} <= set(schema)
+        columns = (['date', 'close', 'volume', 'amount'] if strict
+                   else ['date', 'close'])
+        frame = pl.read_parquet(path, columns=columns).sort('date')
         if frame.is_empty():
             continue
+        if strict:
+            mask = ((pl.col('close') == 1.0)
+                    & (pl.col('volume') == 0)
+                    & (pl.col('amount') == 0))
+        else:
+            mask = pl.col('close') == 1.0
+        flags = frame.select(mask.alias('placeholder'))['placeholder'].to_list()
         dates = frame['date'].to_list()
-        closes = frame['close'].to_list()
-        if all(value == 1.0 for value in closes):
-            rows.append((path.stem, dates[0], dates[-1]))
-            continue
-        trailing = 0
-        for value in reversed(closes):
-            if value == 1.0:
-                trailing += 1
-            else:
-                break
-        if trailing:
-            rows.append((path.stem, dates[-trailing], dates[-1]))
-    return (
-        pl.DataFrame(rows, schema=['ts_code', 'start', 'end'], orient='row')
-        .sort('ts_code')
-        if rows else
-        pl.DataFrame(schema={'ts_code': pl.Utf8, 'start': pl.Date, 'end': pl.Date})
-    )
+        total = len(flags)
+        # 连续段切分：遇到 False 就结算前一段
+        start_idx: int | None = None
+        for index, flag in enumerate(flags):
+            if flag and start_idx is None:
+                start_idx = index
+            elif not flag and start_idx is not None:
+                seg = index - start_idx
+                rows.append((path.stem, dates[start_idx], dates[index - 1],
+                             seg, total, seg == total and strict))
+                start_idx = None
+        if start_idx is not None:
+            seg = total - start_idx
+            rows.append((path.stem, dates[start_idx], dates[-1],
+                         seg, total, seg == total and strict))
+    if not rows:
+        return pl.DataFrame(
+            schema={'ts_code': pl.Utf8, 'start': pl.Date, 'end': pl.Date,
+                    'rows': pl.Int64, 'total': pl.Int64, 'full': pl.Boolean})
+    return pl.DataFrame(
+        rows,
+        schema=['ts_code', 'start', 'end', 'rows', 'total', 'full'],
+        orient='row',
+    ).sort(['ts_code', 'start'])
 
 
 def _build_rights_issue(div: pl.DataFrame) -> pl.DataFrame:

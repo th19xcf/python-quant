@@ -29,6 +29,15 @@ _VIOLATION_SCHEMA = {
     'detail': pl.Utf8,
 }
 
+#: 1996 年起沪深统一周末休市，且 volume 统一按「手」计。此前（1991-1995）
+#: 深市确有周六/周日交易、volume 单位口径也不同，用现代规则扫这段历史
+#: 会产生约 7,316 条结构性误报。两条规则统一从该日起适用。
+HISTORICAL_RULE_START = date(1996, 1, 1)
+#: 数量级错位带宽：amount/(close*volume*100) 超出 [1/10, 10] 才判量纲错。
+#: 收盘价只是全天均价的代理，涨跌停/大幅波动日 ratio 落在 0.4~1.3 属
+#: 规则固有误差，不是数据错误。
+AMOUNT_DIMENSION_BAND = 10.0
+
 
 def empty_violations() -> pl.DataFrame:
     """返回带固定 schema 的空违规表，便于统一拼接。"""
@@ -91,13 +100,19 @@ RuleFunc = Callable[[pl.DataFrame, RuleContext], pl.DataFrame]
 
 @dataclass(frozen=True)
 class QualityRule:
-    """一条可执行的契约规则。"""
+    """一条可执行的契约规则。
+
+    ``price_semantics`` 标记该规则是否假定 OHLC 是**价格**。通达信的
+    涨跌/停板家数序列（见 :mod:`src.data.quality.semantics`）四列装的
+    是家数，价格类规则对它没有意义，巡检时按代码跳过，避免结构性误报。
+    """
 
     rule_id: str
     description: str
     severity: str
     data_types: tuple[str, ...]
     func: RuleFunc
+    price_semantics: bool = True
 
 
 # ----------------------------------------------------------------------
@@ -205,11 +220,19 @@ def rule_amount_dimension(frame: pl.DataFrame, ctx: RuleContext) -> pl.DataFrame
         return empty_violations()
     base = _finite('close') & _finite('volume') & (pl.col('close') > 0) & (pl.col('volume') > 0)
     ratio = pl.col('amount') / (pl.col('close') * pl.col('volume') * 100)
-    mask = base & (
-        pl.col('amount').is_null()
-        | (~pl.col('amount').is_finite())
-        | (pl.col('amount') <= 0)
-        | ((ratio - 1).abs() > ctx.amount_tolerance)
+    # 只抓数量级错位（源端把 volume 整体缩放 100 倍）；收盘价代理均价带来的
+    # 1 附近偏差不是数据错误，早年单位口径由 HISTORICAL_RULE_START 排除。
+    dimension_shift = ((ratio < 1 / AMOUNT_DIMENSION_BAND)
+                       | (ratio > AMOUNT_DIMENSION_BAND))
+    mask = (
+        (pl.col('date').cast(pl.Date) >= pl.lit(HISTORICAL_RULE_START))
+        & base
+        & (
+            pl.col('amount').is_null()
+            | (~pl.col('amount').is_finite())
+            | (pl.col('amount') <= 0)
+            | ((ratio - 1).abs() > ctx.amount_tolerance) & dimension_shift
+        )
     )
     return _build_violations(
         frame.filter(mask), 'amount', ratio,
@@ -219,6 +242,36 @@ def rule_amount_dimension(frame: pl.DataFrame, ctx: RuleContext) -> pl.DataFrame
             (pl.col('close') * pl.col('volume') * 100).cast(pl.Utf8),
         ], separator=''),
     )
+
+
+def rule_placeholder_bar(frame: pl.DataFrame, ctx: RuleContext) -> pl.DataFrame:
+    """源端「无行情」占位桩：``close=1.0`` 且 ``volume=0`` 且 ``amount=0``。
+
+    通达信对已退市/转型/长期无成交的 LOF 用 ``close=1.0, volume=0`` 表示
+    「该日无行情」（实测 ``163803.SZ`` 源端 1,456 行全如此），本地只是忠实
+    复制，因此**不可修、只能隔离**。
+
+    这三个条件必须同时成立：新发基金面值恰为 1 元但会有成交，真实净值 1.0
+    不会被误判。
+
+    一个连续占位段只报**首行**一条，避免整只假标的刷出上千条；完整区间见
+    ``meta/anomalies/placeholder_quote_codes.csv``。
+    """
+    del ctx
+    if not _guard_columns(frame, ('date', 'close', 'volume', 'amount')):
+        return empty_violations()
+    ordered = frame.sort('date')
+    mask = (
+        (pl.col('close') == 1.0)
+        & (pl.col('volume') == 0)
+        & (pl.col('amount') == 0)
+    )
+    seg_start = mask & ~mask.shift(1, fill_value=False)
+    bad = ordered.filter(seg_start)
+    return _build_violations(
+        bad, 'placeholder_bar', pl.col('close'),
+        pl.lit('close=1.0/volume=0/amount=0 的源端无行情占位段起点'
+               '（不可修，见 placeholder_quote_codes.csv）'))
 
 
 def rule_future_trade_date(frame: pl.DataFrame, ctx: RuleContext) -> pl.DataFrame:
@@ -232,11 +285,16 @@ def rule_future_trade_date(frame: pl.DataFrame, ctx: RuleContext) -> pl.DataFram
 
 
 def rule_weekend_trade_date(frame: pl.DataFrame, ctx: RuleContext) -> pl.DataFrame:
-    """A 股交易日不应落在周六/周日（早期周线混入时会产生此类行）。"""
+    """1996 年起 A 股交易日不应落在周六/周日。
+
+    1991-1993 深市确有周六（及个别周日）交易，属历史事实而非脏数据，
+    由 ``HISTORICAL_RULE_START`` 排除，避免 304 条结构性误报。
+    """
     del ctx
     if 'date' not in frame.columns:
         return empty_violations()
-    mask = pl.col('date').cast(pl.Date).dt.weekday().is_in([6, 7])
+    as_date = pl.col('date').cast(pl.Date)
+    mask = (as_date >= pl.lit(HISTORICAL_RULE_START)) & as_date.dt.weekday().is_in([6, 7])
     return _build_violations(
         frame.filter(mask), 'date', pl.lit(None, dtype=pl.Float64), _date_detail(),
     )
@@ -357,32 +415,43 @@ def rule_pct_chg_mismatch(frame: pl.DataFrame, ctx: RuleContext) -> pl.DataFrame
 
 #: 全部内置规则；新增规则只需在此追加，巡检与报告自动覆盖
 RULES: tuple[QualityRule, ...] = (
+    # 结构性规则：与 OHLC 的数值含义无关，统计指标序列也照样适用
     QualityRule('required_columns', '关键列存在且无空值', 'error',
-                ('stock', 'index'), rule_required_columns),
+                ('stock', 'index'), rule_required_columns,
+                price_semantics=False),
     QualityRule('price_non_positive', 'OHLC 为正数且有限', 'error',
-                ('stock', 'index'), rule_price_positive),
+                ('stock', 'index'), rule_price_positive,
+                price_semantics=False),
+    QualityRule('volume_invalid', 'volume 非负且有限', 'error',
+                ('stock', 'index'), rule_volume_invalid,
+                price_semantics=False),
+    QualityRule('future_trade_date', '交易日不晚于最新交易日', 'error',
+                ('stock', 'index'), rule_future_trade_date,
+                price_semantics=False),
+    QualityRule('weekend_trade_date', '交易日不落在周末', 'warning',
+                ('stock', 'index'), rule_weekend_trade_date,
+                price_semantics=False),
+    QualityRule('duplicate_key', '(ts_code, trade_date) 无重复', 'error',
+                ('stock', 'index'), rule_duplicate_key,
+                price_semantics=False),
+    # 价格语义规则：OHLC 必须是价格，涨跌/停板家数序列跳过
     QualityRule('high_lt_open_close', 'high >= max(open, close)', 'error',
                 ('stock', 'index'), rule_high_lt_max_open_close),
     QualityRule('low_gt_open_close', 'low <= min(open, close)', 'error',
                 ('stock', 'index'), rule_low_gt_min_open_close),
     QualityRule('high_lt_low', 'high >= low', 'error',
                 ('stock', 'index'), rule_high_lt_low),
-    QualityRule('volume_invalid', 'volume 非负且有限', 'error',
-                ('stock', 'index'), rule_volume_invalid),
     QualityRule('amount_dimension', 'amount/(close*volume*100) 量纲一致', 'warning',
                 ('stock',), rule_amount_dimension),
-    QualityRule('future_trade_date', '交易日不晚于最新交易日', 'error',
-                ('stock', 'index'), rule_future_trade_date),
-    QualityRule('weekend_trade_date', '交易日不落在周末', 'warning',
-                ('stock', 'index'), rule_weekend_trade_date),
-    QualityRule('duplicate_key', '(ts_code, trade_date) 无重复', 'error',
-                ('stock', 'index'), rule_duplicate_key),
     QualityRule('pre_close_mismatch', 'pre_close 与上一交易日收盘一致', 'warning',
                 ('stock', 'index'), rule_pre_close_mismatch),
     QualityRule('change_mismatch', 'change 可由 close/pre_close 复算', 'warning',
                 ('stock', 'index'), rule_change_mismatch),
     QualityRule('pct_chg_mismatch', 'pct_chg 可由 close/pre_close 复算', 'warning',
                 ('stock', 'index'), rule_pct_chg_mismatch),
+    # 仅基金：源端用 close=1.0/volume=0 表示「该日无行情」，属可判定坏数据
+    QualityRule('placeholder_bar', 'close=1.0 且 volume=0 的占位桩行情', 'warning',
+                ('fund',), rule_placeholder_bar),
 )
 
 

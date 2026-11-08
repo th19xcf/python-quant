@@ -605,6 +605,12 @@ class EligibilityEngine:
         self._load_factor_lag_list(self._read_anomaly_list('factor_tail_lag_codes.csv'))
         self._load_no_local_list(self._read_anomaly_list('no_local_quote_codes.csv'))
         self._load_rights_list(self._read_anomaly_list('rights_issue_codes.csv'))
+        # 价格恒为 1.0 的占位桩基金：数据本身无效，宁严不宽，整段不可准入
+        placeholder = self._read_anomaly_list('placeholder_quote_codes.csv')
+        self._placeholder_codes = (
+            {str(c) for c in placeholder['ts_code'].to_list()}
+            if placeholder is not None else set()
+        )
 
     def _load_stale_list(self, stale: pl.DataFrame | None) -> None:
         if stale is None:
@@ -729,11 +735,14 @@ class EligibilityEngine:
             self.snapshot_st = set()
 
     def _finalize_structural(self) -> None:
+        placeholder = getattr(self, '_placeholder_codes', set())
         for info in self.codes.values():
             # 无本地行情：后续检查无意义，直接短路
             if info.rows == 0 or not info.quote_dates.size:
                 info.structural.append('structural_no_local_quote')
                 continue
+            if info.ts_code in placeholder:
+                info.structural.append('structural_placeholder_quote')
             # 行情内容
             if (
                 info.invalid_ohlc or info.null_close or info.neg_values

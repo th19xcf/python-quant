@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sys
 from datetime import datetime
@@ -89,9 +90,29 @@ CRITICAL_DIRS: tuple[str, ...] = (
     'data/local_store/meta/industry_pit',
     'data/local_store/meta/st',
     'data/local_store/factors/rebuild',
+    # 2026-11-07 数据审计资产：手写对拍脚本、历史契约巡检快照、基线、
+    # 交付清单与核验报告、导入前事件表回滚副本。重跑只能得到当前状态，
+    # 历史证据不可重建；此前误放 tmp/，现归位到 reports/ 并纳入备份契约。
+    'reports/data_audit_2026-11-07',
+)
+
+#: 项目外的不可重建源数据：(相对通达信安装目录, 备份目录内相对键)。
+#: ``names.json`` 只能由这三份 .tnf 码表（tools/build_names_json.py）重建，
+#: 此前 D/E/F 三处均无副本，主机层面重建链不完整。用 QUANT_TDX_ROOT 覆盖
+#: 默认安装目录；备份键统一放 external/ 前缀，避免与项目内相对路径混淆。
+_TDX_ROOT = Path(os.environ.get('QUANT_TDX_ROOT', 'D:/zxzq'))
+EXTERNAL_ASSET_KEYS: tuple[tuple[str, str], ...] = (
+    ('T0002/hq_cache/shs.tnf', 'external/tdx_hq_cache/shs.tnf'),
+    ('T0002/hq_cache/szs.tnf', 'external/tdx_hq_cache/szs.tnf'),
+    ('T0002/hq_cache/bjs.tnf', 'external/tdx_hq_cache/bjs.tnf'),
 )
 
 MANIFEST_NAME = 'manifest.json'
+
+
+def external_assets() -> list[tuple[Path, str]]:
+    """展开项目外源数据清单，返回 (源绝对路径, 备份键)。"""
+    return [(_TDX_ROOT / source, key) for source, key in EXTERNAL_ASSET_KEYS]
 
 
 def _sha256(path: Path) -> str:
@@ -102,13 +123,13 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def collect_assets(root: Path) -> list[Path]:
-    """展开清单，返回存在的源文件绝对路径（稳定排序）。"""
-    found: set[Path] = set()
+def collect_assets(root: Path) -> list[tuple[Path, str]]:
+    """展开清单，返回 (源绝对路径, 备份键)，按备份键稳定排序。"""
+    found: dict[str, Path] = {}
     for relative in CRITICAL_FILES:
         path = root / relative
         if path.is_file():
-            found.add(path)
+            found[relative] = path
         else:
             logger.warning(f'不可重建资产缺失: {relative}')
     for relative in CRITICAL_DIRS:
@@ -116,14 +137,23 @@ def collect_assets(root: Path) -> list[Path]:
         if not directory.is_dir():
             logger.warning(f'不可重建资产目录缺失: {relative}')
             continue
-        found.update(path for path in directory.rglob('*') if path.is_file())
-    return sorted(found)
+        for path in directory.rglob('*'):
+            if path.is_file():
+                found[path.relative_to(root).as_posix()] = path
+    for path, key in external_assets():
+        if path.is_file():
+            found[key] = path
+        else:
+            logger.warning(f'外部不可重建资产缺失: {path}')
+    return sorted(((path, key) for key, path in found.items()),
+                  key=lambda item: item[1])
 
 
-def _entry(root: Path, path: Path) -> dict[str, Any]:
+def _entry(path: Path, key: str) -> dict[str, Any]:
     stat = path.stat()
     return {
-        'relative_path': path.relative_to(root).as_posix(),
+        'relative_path': key,
+        'source_path': str(path),
         'bytes': stat.st_size,
         'sha256': _sha256(path),
         'mtime': datetime.fromtimestamp(stat.st_mtime).isoformat(timespec='seconds'),
@@ -137,12 +167,11 @@ def backup(root: Path, dest: Path) -> dict[str, Any]:
         raise RuntimeError('没有找到任何不可重建资产，拒绝生成空备份')
     dest.mkdir(parents=True, exist_ok=True)
     entries: list[dict[str, Any]] = []
-    for path in assets:
-        relative = path.relative_to(root)
-        target = dest / relative
+    for path, key in assets:
+        target = dest / key
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
-        entries.append(_entry(root, path))
+        entries.append(_entry(path, key))
     payload = {
         'generated_at': datetime.now().isoformat(timespec='seconds'),
         'source_root': str(root),
@@ -166,7 +195,9 @@ def verify(root: Path, dest: Path) -> tuple[int, int, list[str]]:
     passed = 0
     for item in payload.get('files', []):
         relative = str(item['relative_path'])
-        source = root / relative
+        # 新 manifest 带 source_path（支持项目外源数据）；旧 manifest 回退到项目内路径
+        raw_source = item.get('source_path')
+        source = Path(raw_source) if raw_source else root / relative
         target = dest / relative
         if not target.is_file():
             problems.append(f'备份文件缺失: {relative}')
@@ -205,11 +236,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if failed else 0
 
     assets = collect_assets(root)
-    total = sum(path.stat().st_size for path in assets)
+    total = sum(path.stat().st_size for path, _ in assets)
     logger.info(f'不可重建资产 {len(assets)} 个文件，合计 {total / 1e6:.2f} MB → {dest}')
     if args.dry_run:
-        for path in assets:
-            logger.info(f'  {path.relative_to(root).as_posix()}')
+        for _, key in assets:
+            logger.info(f'  {key}')
         logger.info('dry-run：未复制')
         return 0
 

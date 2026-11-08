@@ -86,7 +86,8 @@ def _build_parser() -> argparse.ArgumentParser:
     check.add_argument('--all', action='store_true', help='全市场巡检（默认行为）')
     check.add_argument('--start', help='起始日期 YYYY-MM-DD，仅过滤违规行，不截断历史')
     check.add_argument('--end', help='结束日期 YYYY-MM-DD')
-    check.add_argument('--data-type', choices=('stock', 'index', 'all'), default='all')
+    check.add_argument('--data-type', choices=('stock', 'index', 'fund', 'all'),
+                       default='all')
     check.add_argument('--source', choices=('local', 'tdx'), default='local',
                        help='local=本地列存（默认）；tdx=通达信原始 .day')
     check.add_argument('--latest-trade-date', help='交易日上界，默认今天')
@@ -110,7 +111,8 @@ def _build_parser() -> argparse.ArgumentParser:
     baseline.add_argument('--output', default=str(DEFAULT_EXEMPTION_PATH),
                           help='基线文件输出路径')
     baseline.add_argument('--codes', help='逗号分隔的 ts_code；缺省为全市场')
-    baseline.add_argument('--data-type', choices=('stock', 'index', 'all'),
+    baseline.add_argument('--data-type',
+                          choices=('stock', 'index', 'fund', 'all'),
                           default='all')
     baseline.add_argument('--source', choices=('local', 'tdx'), default='local')
     baseline.add_argument('--latest-trade-date', help='交易日上界，默认今天')

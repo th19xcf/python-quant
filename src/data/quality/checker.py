@@ -29,6 +29,7 @@ from src.data.quality.rules import (
     RuleContext,
     empty_violations,
 )
+from src.data.quality.semantics import is_statistic_series
 from src.utils.code_converter import is_index_code, to_ts_code
 
 
@@ -212,6 +213,9 @@ class QualityReport:
     #: 未登记为已知基线的 error 级违规数；--fail-on-error 只认这个数字
     actionable_errors: int = 0
     exempt_errors: int = 0
+    #: 被识别为涨跌/停板家数统计指标、跳过价格类规则的代码与规则清单
+    statistic_series: list[str] = field(default_factory=list)
+    skipped_price_rules: list[str] = field(default_factory=list)
     report_files: dict[str, str] = field(default_factory=dict)
 
     def summary(self) -> dict[str, Any]:
@@ -231,6 +235,8 @@ class QualityReport:
             'known_anomaly_hits': dict(sorted(self.known_by_anomaly.items())),
             'actionable_errors': self.actionable_errors,
             'exempt_errors': self.exempt_errors,
+            'statistic_series': list(self.statistic_series),
+            'skipped_price_rules': list(self.skipped_price_rules),
         }
 
     def summary_text(self) -> str:
@@ -243,6 +249,10 @@ class QualityReport:
             f"exempt_errors={self.exempt_errors}",
             f"elapsed={self.elapsed_s:.2f}s",
         ]
+        if self.statistic_series:
+            parts.append(
+                f'statistic_series={len(self.statistic_series)}'
+                f'(skipped: {",".join(self.skipped_price_rules) or "none"})')
         if self.by_rule:
             detail = ', '.join(f'{k}={v}' for k, v in sorted(self.by_rule.items()))
             parts.append(f'by_rule[{detail}]')
@@ -325,6 +335,8 @@ class _Accumulator:
     rows_scanned: int = 0
     actionable_errors: int = 0
     exempt_errors: int = 0
+    #: 因「统计指标序列」语义而跳过的价格类规则（用于报告口径披露）
+    skipped_price_rules: set[str] = field(default_factory=set)
 
     def add(self, data_type: str, ts_code: str, rule: Any,
             row: dict[str, Any], source_name: str) -> None:
@@ -405,8 +417,13 @@ class QualityChecker:
             return
         acc.symbols_scanned += 1
         acc.rows_scanned += frame.height
+        statistic = is_statistic_series(ts_code)
         for rule in RULES:
             if data_type not in rule.data_types:
+                continue
+            # 涨跌/停板家数序列的 OHLC 装的是家数，价格类规则必然误报
+            if statistic and rule.price_semantics:
+                acc.skipped_price_rules.add(rule.rule_id)
                 continue
             bad = rule.func(frame, context)
             if bad.is_empty():
@@ -457,6 +474,10 @@ class QualityChecker:
             unique_violation_rows=len(acc.unique_keys),
             actionable_errors=acc.actionable_errors,
             exempt_errors=acc.exempt_errors,
+            statistic_series=sorted(
+                code for code in selected.get('index', [])
+                if is_statistic_series(code)),
+            skipped_price_rules=sorted(acc.skipped_price_rules),
         )
         if write_report:
             report.report_files = report.write(output_dir)

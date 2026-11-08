@@ -74,8 +74,29 @@ def test_filter_removes_stale_and_clips_strategies(monkeypatch, panel) -> None:
         'universe_after': 2,
         'excluded_count': 1,
         'excluded_codes': ['600000.SH'],
+        'placeholder_excluded_count': 0,
     }
     assert warnings == []
+
+
+def test_placeholder_quote_codes_are_excluded_even_when_not_stale(
+        monkeypatch, panel) -> None:
+    """占位桩基金不受 PIT 停更口径约束，必须无条件剔除。"""
+    from src.data.quality import quarantine
+
+    _patch_stale(monkeypatch, {'600000.SH'})
+    monkeypatch.setattr(quarantine, 'placeholder_codes',
+                        lambda *a, **k: frozenset({'300750.SZ'}))
+    strategies = {code: MagicMock() for code in panel}
+
+    data, kept_strategies, stats = rb._filter_stale_universe(
+        panel, strategies, True, [],
+    )
+
+    assert set(data) == {'000001.SZ'}
+    assert set(kept_strategies) == set(data)
+    assert stats['excluded_count'] == 2
+    assert stats['placeholder_excluded_count'] == 1
 
 
 def test_filter_disabled_keeps_everything(monkeypatch, panel) -> None:

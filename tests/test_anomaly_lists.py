@@ -31,13 +31,19 @@ def _make_store(root, *, stale_end: date = date(2019, 1, 1)) -> None:
         'source': ['akshare_pg'] * 3,
     }).write_parquet(root / 'factors' / 'stock_dividend.parquet')
     (root / 'quotes' / 'fund' / 'sz').mkdir(parents=True)
+    # 整只占位：close=1.0 且零成交（严格判据下 full=True）
     pl.DataFrame({
         'date': [date(2019, 9, 5), date(2019, 9, 17)],
         'close': [1.0, 1.0],
+        'volume': [0.0, 0.0],
+        'amount': [0.0, 0.0],
     }).write_parquet(root / 'quotes' / 'fund' / 'sz' / '160217.SZ.parquet')
+    # 尾部占位：前一行有真实成交
     pl.DataFrame({
         'date': [date(2026, 10, 30), date(2026, 11, 2), date(2026, 11, 3)],
         'close': [1.25, 1.0, 1.0],
+        'volume': [1000.0, 0.0, 0.0],
+        'amount': [1250.0, 0.0, 0.0],
     }).write_parquet(root / 'quotes' / 'fund' / 'sz' / '159041.SZ.parquet')
 
 

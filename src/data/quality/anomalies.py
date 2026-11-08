@@ -463,29 +463,29 @@ _BUILTIN_ANOMALIES: tuple[KnownAnomaly, ...] = (
         issue_type='placeholder_quote',
         action='avoid',
         reason=(
-            '96 只基金行情为占位桩：84 只全序列 close 恒为 1.0，12 只尾部连续 '
-            '1.0（161907.SZ 2,881 行中末 13 行、160603.SZ/160605.SZ 各末 1,533 行）。'
-            '价格序列无意义，任何收益率都是假的，禁止进入回测与推荐；'
-            '不是数据缺失，是可判定坏数据（close 严格等于 1.0）。'
+            '232 只基金行情含占位桩，合计 22,085 行 close=1.0/volume=0/amount=0：'
+            '84 只全序列占位（整只不可用）、135 只仅头部连续占位（上市初期无净值，'
+            '后期有真实行情）、12 只中间或分散占位、1 只尾部占位。'
+            '价格序列无意义，任何收益率都是假的，整只占位的 84 只禁止进入回测与推荐；'
+            '局部占位的另做行级剔除，避免误伤真实行情。'
+            '不是数据缺失，是可判定坏数据（close 严格等于 1.0 且零成交）。'
             '因子非 1 时会在事件日产生因子驱动的假 pct_chg：'
             '160217.SZ 4 行中 1 行 +40.68%（2019-09-17，qfq_factor 0.710852→1.0）；'
             '查“单日涨幅异常”前必须先排除本规则标的，否则会捞出一批幽灵。'
-            '交叉核对：84 只中 24 只有分红事件（177 条），事件落在行情区间内 18 只'
-            '（148 条），6 只事件全在区间外；12 只尾占位中 9 只有分红'
         ),
         source=(
-            '2026-11-04 副本线占位行情清单 + 本地基金行情逐只复算'
-            '（logs/fund_placeholder_quotes_20261104.csv 84 行；'
-            'logs/fund_placeholder_tail_20261104.csv 96 行）'
+            '2026-11-04 副本线占位行情清单；2026-11-07 改为「连续区间全量分段」'
+            '重算，判据加严为 close==1.0 且 volume==0 且 amount==0（只看 close '
+            '会把新发基金面值 1 元误判），识别标的 94 → 232 只'
         ),
         evidence=(
-            'logs/fund_placeholder_quotes_20261104.csv#84 只全序列 close==1.0；'
-            'logs/fund_placeholder_tail_20261104.csv#96 只含尾部占位（161907.SZ '
-            'rows=2881/trailing_ones=13/dividend_events=27）；'
-            'factor_non1_rows_in_range=行情区间内 qfq/hfq 任一非 1 的行数'
-            '（160217.SZ=4、160808.SZ=19）；'
-            'data/local_store/quotes/fund/sz/160217.SZ.parquet#2019-09-17 pct_chg=40.676318；'
-            '清单 data/local_store/meta/anomalies/placeholder_quote_codes.csv'
+            '旧判据只认「全序列」与「尾部连续」两种形态，漏掉头部连续段与中间'
+            '分散段共 147 只；'
+            'data/local_store/meta/anomalies/placeholder_quote_codes.csv'
+            '#249 个区间段 / 232 只 / 22,085 行，其中 full=True 84 只；'
+            '源端核对：163803.SZ 的 .day 1,456 行全为 close=1.0（源端即占位，'
+            '本地忠实复制，不可修）；'
+            '160603.SZ 源端 1,894 行中 1,578 行为占位、后段 close 0.9~1.101 为真实净值'
         ),
         detected_at=date(2026, 11, 4),
         severity='high',

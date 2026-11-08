@@ -68,6 +68,13 @@ def _placeholder_funds(root: Path) -> pl.DataFrame:
 
 
 def _coverage_gaps(root: Path, universe: set[str]) -> pl.DataFrame:
+    """登记代码覆盖缺口，并区分「真缺失」与「结构性无记录」。
+
+    ``universe - covered`` 只是集合差，并不等于采集失败：退市股本就不该
+    有最新利润表/估值；从未分红的次新股在事件型的 ``stock_dividend`` 里
+    也不会有记录。2026-11-07 复核据此补 ``missing_excluded`` / ``gap_kind``
+    / ``note``，避免把 132 只「从未分红」误读成待补数据缺口。
+    """
     datasets = {
         'financials_income': root / 'meta/financials/income.parquet',
         'valuation_daily': root / 'meta/financials/valuation_daily.parquet',
@@ -76,13 +83,42 @@ def _coverage_gaps(root: Path, universe: set[str]) -> pl.DataFrame:
         'stock_adj_factor': root / 'factors/stock_adj_factor.parquet',
         'stock_turnover': root / 'factors/stock_turnover.parquet',
     }
+    stale = root / 'meta' / 'universe' / 'stale_status.parquet'
+    excluded: set[str] = set()
+    if stale.is_file():
+        frame = pl.read_parquet(stale, columns=['ts_code', 'action'])
+        excluded = set(frame.filter(pl.col('action') == 'exclude')['ts_code'].to_list())
     rows = []
     for name, path in datasets.items():
         covered = _codes(path)
         missing = sorted(universe - covered)
+        n_excluded = sum(code in excluded for code in missing)
+        active = len(missing) - n_excluded
+        if not missing:
+            gap_kind, note = 'complete', ''
+        elif active == 0:
+            gap_kind = 'delisted_excluded'
+            note = '缺口标的全部在停更排除池（退市/长期停更），非采集缺失'
+        elif name == 'stock_dividend' and n_excluded <= 5:
+            gap_kind = 'likely_no_dividend_event'
+            note = (f'{active} 只在市标的在事件型分红表无记录，多为次新股/'
+                    '从未分红，不等于采集缺失；需补采的仅限确有过分红者')
+        elif name in ('stock_shares', 'stock_turnover') and n_excluded == 0:
+            gap_kind = 'likely_new_listing'
+            note = '多为新上市标的，尚无股本/换手记录，需上市后回补'
+        elif n_excluded / len(missing) >= 0.95:
+            gap_kind = 'mostly_delisted'
+            note = (f'{n_excluded}/{len(missing)} 为退市/停更标的；'
+                    f'仅 {active} 只在市标的需逐只核实是否为新增标的')
+        else:
+            gap_kind = 'needs_review'
+            note = f'混合缺口，{active} 只在市标的需逐只核实是否应补采'
         rows.append({
             'dataset': name, 'covered': len(universe & covered),
-            'missing': len(missing), 'sample_codes': ','.join(missing[:15]),
+            'missing': len(missing), 'missing_excluded': n_excluded,
+            'missing_active': active,
+            'gap_kind': gap_kind, 'note': note,
+            'sample_codes': ','.join(missing[:15]),
         })
     return pl.DataFrame(rows).sort('dataset')
 

@@ -25,6 +25,7 @@ from src.data.data_source_health import get_global_health_checker
 from src.data.local_store import get_local_quote_store, remote_database_enabled
 from src.data.local_store import metrics as route_metrics
 from src.data.managers.source_worker import call_source
+from src.data.quality.quarantine import drop_quarantined
 from src.data.tdx_day_parser import build_day_file_path, read_recent_records
 from src.utils.code_converter import is_fund_code, is_index_code, parse_code
 from src.utils.config import remote_sources_enabled
@@ -225,6 +226,9 @@ class DataFetcher:
             logger.debug(f"[local-store] {code} 未覆盖 {start_date}~{end_date}，回退",
                          **{"symbol": code, "source": "local_store", "hit": False})
         else:
+            # 源端无成交日 volume/amount 为 null 的坏行按台账剔除；单票回测
+            # 不走组合池的 PIT 停更过滤，必须在读侧挡住，否则脏行会直接进 DataFrame
+            frame = drop_quarantined(frame, code)
             # 与 TDX/远程源出口保持一致的内存压缩（pct_chg/change→Float32 等），
             # 保证同一标的在新旧路径下逐列数值完全一致
             frame = MemoryOptimizer.optimize_dataframe(frame, enable_sparse=True)
@@ -455,6 +459,7 @@ class DataFetcher:
                     elapsed_ms=(time.perf_counter() - started) * 1000)
                 pending.append(code)
                 continue
+            frame = drop_quarantined(frame, code)
             frame = MemoryOptimizer.optimize_dataframe(frame, enable_sparse=True)
             adjusted = self._apply_adjustment_with_pit(frame, adjustment_type, as_of, code)
             global_data_cache.set(adjusted, 'stock', code, start_date, end_date,

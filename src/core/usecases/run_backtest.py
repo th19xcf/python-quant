@@ -546,6 +546,11 @@ def _filter_stale_universe(
     """
     if not enabled or not isinstance(data, dict) or not data:
         return data, strategies, None
+    # 价格恒为 1.0 的占位桩基金不是「停更」而是「数据本身无效」，不受 PIT
+    # 窗口约束，必须无条件剔除；清单由 anomaly_lists 自动维护（含尾部占位）。
+    from src.data.quality.quarantine import placeholder_codes  # noqa: PLC0415
+
+    placeholder = placeholder_codes()
     pit_cutoff: str | None = None
     late_stale: list[str] = []
     try:
@@ -592,6 +597,8 @@ def _filter_stale_universe(
         })
         return data, strategies, None
 
+    # 占位桩不属于 PIT 停更口径，无条件并入剔除集合
+    excluded = set(excluded) | set(placeholder)
     removed = sorted(set(data) & excluded)
     stats = {
         'enabled': True,
@@ -599,6 +606,7 @@ def _filter_stale_universe(
         'universe_after': len(data) - len(removed),
         'excluded_count': len(removed),
         'excluded_codes': removed[:20],
+        'placeholder_excluded_count': len(set(data) & set(placeholder)),
     }
     if pit_cutoff:
         stats['mode'] = 'pit'

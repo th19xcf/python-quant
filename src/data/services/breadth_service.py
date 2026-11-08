@@ -103,6 +103,14 @@ def coverage_path(store_root: Path | str) -> Path:
 
 
 def _quotes_glob(store_root: Path | str) -> str:
+    """只扫个股行情：breadth 统计的是 A 股涨跌家数，指数/基金不参与。
+
+    2026-11-07 复核结论（避免后续误加过滤）：94 只 ``close=1.0`` 占位桩
+    全部是基金，不在本 glob 内；隔离台账里的 117 只虽是个股，但其坏行
+    ``volume`` 为 null，已被 ``_daily_from_quotes`` 的 ``volume > 0`` 挡掉。
+    因此这里无需再接 ``drop_quarantined``。若将来 glob 扩展到 fund/index，
+    必须同步接入行级隔离与占位桩剔除。
+    """
     return str(Path(store_root) / 'quotes' / 'stock' / '**' / '*.parquet')
 
 

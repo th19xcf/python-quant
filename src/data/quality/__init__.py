@@ -21,6 +21,11 @@ from src.data.quality.checker import (
     prepare_frame,
 )
 from src.data.quality.rules import RULES, QualityRule, RuleContext, rule_map
+from src.data.quality.semantics import (
+    STATISTIC_SERIES,
+    STATISTIC_SERIES_CODES,
+    is_statistic_series,
+)
 from src.data.quality.tradable_universe import (
     build_exclusions,
     exclusion_reasons,
@@ -37,6 +42,8 @@ __all__ = [
     'QualityViolation',
     'RULES',
     'RuleContext',
+    'STATISTIC_SERIES',
+    'STATISTIC_SERIES_CODES',
     'TdxFrameSource',
     'anomaly_action',
     'build_exclusions',
@@ -44,6 +51,7 @@ __all__ = [
     'exclusion_reasons',
     'find_anomalies',
     'is_known_anomaly',
+    'is_statistic_series',
     'is_tradable',
     'iter_anomalies',
     'load_exclusions',
