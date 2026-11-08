@@ -525,6 +525,75 @@ def test_fund_etf_snapshot_preferred(monkeypatch, tmp_path) -> None:
     assert _load_fund_etf_codes() == {'510300.SH'}
 
 
+def _write_dividend(root: Path, rows: list[dict]) -> None:
+    import polars as pl
+
+    target = root / 'factors'
+    target.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(rows).write_parquet(target / 'stock_dividend.parquet')
+
+
+def test_same_day_complementary_rows_are_not_duplicate(tmp_path) -> None:
+    """同日「配股」与「送股」来自两个源各记一半，属互补行，不是重复键。"""
+    root = tmp_path / 'store'
+    _write_dividend(root, [
+        {'ts_code': '000002.SZ', 'ex_date': date(1991, 6, 8), 'cash_div': 0.0,
+         'share_div': 0.0, 'rights_issue_ratio': 0.5, 'rights_issue_price': 4.4},
+        {'ts_code': '000002.SZ', 'ex_date': date(1991, 6, 8), 'cash_div': 0.0,
+         'share_div': 0.2, 'rights_issue_ratio': 0.0, 'rights_issue_price': None},
+    ])
+    engine = object.__new__(EligibilityEngine)
+    engine.root = root
+    engine._load_dividend_flags()
+    assert engine.dup_exdiv_codes == set()
+
+
+def test_same_day_overlapping_rows_are_duplicate(tmp_path) -> None:
+    """同日在两个源都记了现金分红 → 权益字段重叠，仍是重复键。"""
+    root = tmp_path / 'store'
+    _write_dividend(root, [
+        {'ts_code': '600000.SH', 'ex_date': date(2001, 6, 8), 'cash_div': 0.2,
+         'share_div': 0.0, 'rights_issue_ratio': 0.0, 'rights_issue_price': None},
+        {'ts_code': '600000.SH', 'ex_date': date(2001, 6, 8), 'cash_div': 0.2,
+         'share_div': 0.0, 'rights_issue_ratio': 0.0, 'rights_issue_price': None},
+    ])
+    engine = object.__new__(EligibilityEngine)
+    engine.root = root
+    engine._load_dividend_flags()
+    assert engine.dup_exdiv_codes == {'600000.SH'}
+
+
+def test_neutral_rights_event_is_not_jump_mismatch(tmp_path) -> None:
+    """配股价≈市价时理论因子为 1，不应算「事件与跳变不匹配」。"""
+    import polars as pl
+
+    root = tmp_path / 'store'
+    qdir = root / 'quotes' / 'stock' / 'sh'
+    qdir.mkdir(parents=True, exist_ok=True)
+    days = [date(2020, 1, 2), date(2020, 1, 3), date(2020, 1, 6)]
+    pl.DataFrame({
+        'date': days,
+        'close': [10.0, 10.0, 10.0],
+    }).write_parquet(qdir / '600000.SH.parquet')
+
+    engine = object.__new__(EligibilityEngine)
+    engine.root = root
+    info = make_code('600000.SH', quotes=days, market='sh')
+    events = pl.DataFrame([
+        {'ex_date': days[1], 'cash_div': 0.0, 'share_div': 0.0,
+         'rights_issue_ratio': 0.3, 'rights_issue_price': 10.0,
+         'no_ex_rights': False},
+        {'ex_date': days[2], 'cash_div': 1.0, 'share_div': 0.0,
+         'rights_issue_ratio': 0.0, 'rights_issue_price': None,
+         'no_ex_rights': False},
+    ])
+    missing = np.array([info.factor_dates[1], info.factor_dates[2]], dtype=np.int64)
+    kept = engine._drop_neutral_missing(
+        info, info.factor_dates, missing, events)
+    # 配股日被剔除，现金分红日仍要求有跳变
+    assert kept.tolist() == [info.factor_dates[2]]
+
+
 def test_fund_etf_cache_fresh_skips_db(monkeypatch, tmp_path) -> None:
     """缓存未过期时直接返回，不连远程库。"""
     cache = tmp_path / 'fund_etf_codes.txt'

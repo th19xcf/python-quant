@@ -60,6 +60,7 @@ import numpy as np
 import polars as pl
 from loguru import logger
 
+from src.data.adj_factor_calculator import calc_dividend_event_factor
 from src.data.quality.anomalies import iter_anomalies
 from src.data.quality.code_migration import load_entity_index
 from src.utils.code_converter import is_fund_code, is_index_code
@@ -614,7 +615,13 @@ class EligibilityEngine:
                 jumps = fd[1:][np.diff(hfq) != 0]
             else:
                 jumps = np.array([], dtype=np.int64)
-            ev = events.get(code, np.array([], dtype=np.int64))
+            ev_frame = events.get(code)
+            if ev_frame is not None and not ev_frame.is_empty():
+                ev = np.array(
+                    [d.toordinal() for d in ev_frame['ex_date'].to_list() if d],
+                    dtype=np.int64)
+            else:
+                ev = np.array([], dtype=np.int64)
             if ev.size:
                 pos = np.searchsorted(fd, ev, side='left')
                 valid = (pos > 0) & (pos < fd.size)
@@ -623,34 +630,103 @@ class EligibilityEngine:
                 expected = np.array([], dtype=np.int64)
             extra_jumps = np.setdiff1d(jumps, expected, assume_unique=False)
             missing_jumps = np.setdiff1d(expected, jumps, assume_unique=False)
+            if missing_jumps.size:
+                # 配股价≈市价、空事件行、no_ex_rights 等事件的理论因子恰为 1，
+                # 不算因子跳变，避免把「无台阶」误判为结构性缺陷。
+                missing_jumps = self._drop_neutral_missing(
+                    info, fd, missing_jumps, ev_frame)
             if extra_jumps.size:
                 info.mismatch_start = int(extra_jumps.min())
             elif missing_jumps.size:
                 info.mismatch_start = int(missing_jumps.min())
 
-    def _dividend_events(self) -> dict[str, np.ndarray]:
+    def _drop_neutral_missing(
+        self,
+        info: CodeInfo,
+        fd: np.ndarray,
+        missing: np.ndarray,
+        ev_frame: pl.DataFrame | None,
+    ) -> np.ndarray:
+        """剔除理论除权因子恰为 1 的事件（这类事件本就不产生因子台阶）。"""
+        if ev_frame is None or ev_frame.is_empty():
+            return missing
+        path = self.root / 'quotes' / info.data_type / info.market / f'{info.ts_code}.parquet'
+        if not path.is_file():
+            return missing
+        quote = pl.read_parquet(path, columns=['date', 'close'])
+        quote = quote.with_columns(pl.col('date').cast(pl.Date)).sort('date')
+        close_map = {
+            d.toordinal(): float(c)
+            for d, c in zip(quote['date'].to_list(), quote['close'].to_list(), strict=True)
+            if c is not None
+        }
+        miss = {int(x) for x in missing}
+        keep = set(miss)
+        for row in ev_frame.iter_rows(named=True):
+            ex = row['ex_date']
+            if ex is None:
+                continue
+            pos = int(np.searchsorted(fd, ex.toordinal(), side='left'))
+            if pos <= 0 or pos >= fd.size:
+                continue
+            hit = int(fd[pos])
+            if hit not in miss:
+                continue
+            prev_close = close_map.get(int(fd[pos - 1]))
+            if prev_close is None:
+                continue
+            if row.get('no_ex_rights'):
+                keep.discard(hit)
+                continue
+            factor = calc_dividend_event_factor(
+                prev_close, row.get('cash_div'), row.get('share_div'),
+                row.get('rights_issue_ratio'), row.get('rights_issue_price'))
+            if factor is None or abs(factor - 1.0) <= 1e-9:
+                keep.discard(hit)
+        return np.array(sorted(keep), dtype=np.int64)
+
+    def _dividend_events(self) -> dict[str, pl.DataFrame]:
         path = self.root / 'factors/stock_dividend.parquet'
         if not path.exists():
             return {}
-        div = pl.read_parquet(path, columns=['ts_code', 'ex_date'])
-        div = div.filter(pl.col('ex_date').is_not_null())
-        out: dict[str, np.ndarray] = {}
-        for g in div.partition_by('ts_code', maintain_order=True):
-            out[str(g['ts_code'][0])] = np.array(
-                [d.toordinal() for d in g['ex_date'].to_list()], dtype=np.int64
-            )
-        return out
+        div = pl.read_parquet(path).filter(pl.col('ex_date').is_not_null())
+        keep = [
+            c for c in (
+                'ex_date', 'cash_div', 'share_div', 'rights_issue_ratio',
+                'rights_issue_price', 'no_ex_rights')
+            if c in div.columns
+        ]
+        return {
+            str(g['ts_code'][0]): g.select(keep)
+            for g in div.partition_by('ts_code', maintain_order=True)
+        }
 
     def _load_dividend_flags(self) -> None:
         path = self.root / 'factors/stock_dividend.parquet'
         if not path.exists():
             return
         div = pl.read_parquet(path)
-        # 同代码同非空 ex_date 多行 → 结构性重复键
+        # 同代码同非空 ex_date 多行且权益字段互相重叠 → 结构性重复键。
+        # 互补行（如「配股」与「送股」同日、来自两个源各记一半）不是重复，
+        # 合并后由复权公式统一消费，故不计入重复键缺陷。
         dup = (
             div.filter(pl.col('ex_date').is_not_null())
-            .group_by(['ts_code', 'ex_date']).len()
-            .filter(pl.col('len') > 1)
+            .with_columns(
+                (pl.col('cash_div').fill_null(0) != 0).cast(pl.Int8).alias('_c'),
+                (pl.col('share_div').fill_null(0) != 0).cast(pl.Int8).alias('_s'),
+                (pl.col('rights_issue_ratio').fill_null(0) > 0).cast(pl.Int8).alias('_r'),
+            )
+            .group_by(['ts_code', 'ex_date'])
+            .agg(
+                pl.len().alias('_n'),
+                pl.col('_c').sum().alias('_cs'),
+                pl.col('_s').sum().alias('_ss'),
+                pl.col('_r').sum().alias('_rs'),
+            )
+            .filter(
+                (pl.col('_n') > 1)
+                & ((pl.col('_cs') > 1) | (pl.col('_ss') > 1) | (pl.col('_rs') > 1))
+            )
             .select('ts_code').unique()['ts_code'].to_list()
         )
         self.dup_exdiv_codes = set(dup)
@@ -676,6 +752,8 @@ class EligibilityEngine:
         self._load_factor_lag_list(self._read_anomaly_list('factor_tail_lag_codes.csv'))
         self._load_no_local_list(self._read_anomaly_list('no_local_quote_codes.csv'))
         self._load_rights_list(self._read_anomaly_list('rights_issue_codes.csv'))
+        # 基金源端假收盘（收盘价严重偏离 VWAP 且次日大幅跳空）：当日价格不可信
+        self._load_fake_bar_list(self._read_anomaly_list('fund_fake_bar_bars.csv'))
         # 价格恒为 1.0 的占位桩基金：数据本身无效，宁严不宽，整段不可准入
         placeholder = self._read_anomaly_list('placeholder_quote_codes.csv')
         self._placeholder_codes = (
@@ -719,6 +797,16 @@ class EligibilityEngine:
                 start=None, end=None, market=code.rsplit('.', 1)[-1].lower(),
             )
 
+    def _load_fake_bar_list(self, fake: pl.DataFrame | None) -> None:
+        """基金源端假收盘：仅剔除该日，不整段剔除标的。"""
+        if fake is None:
+            return
+        for row in fake.iter_rows(named=True):
+            info = self.codes.get(str(row['ts_code']))
+            if info is None or row.get('trade_date') is None:
+                continue
+            info.date_excl_standard.add(_as_date(row['trade_date']).toordinal())
+
     def _load_rights_list(self, rights: pl.DataFrame | None) -> None:
         if rights is None:
             return
@@ -740,7 +828,12 @@ class EligibilityEngine:
             if info is None:
                 continue
             if rec.issue_type == 'duplicate_ex_date':
-                info.structural.append('structural_duplicate_exdiv_key')
+                # 带明确日期的重复键只影响该日因子台阶（如 000002.SZ 1991-06-08
+                # 配股+送股同日的乘性近似），按日剔除；无日期的才按永久缺陷处理。
+                if rec.dates:
+                    info.date_excl_strict.update(d.toordinal() for d in rec.dates)
+                else:
+                    info.structural.append('structural_duplicate_exdiv_key')
             elif rec.issue_type == 'hfq_base_shift':
                 info.strict_static.append('structural_factor_base_shift')
             elif rec.issue_type in ('ohlc_bounds', 'weekend_trade_date'):
