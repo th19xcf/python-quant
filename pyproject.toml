@@ -94,6 +94,15 @@ optional = true
 lightgbm = "==4.6.0"
 scikit-learn = "^1.5"
 
+[tool.poetry.group.tdx]
+# 可选组：通达信本地数据解析（`poetry install --with tdx`）
+# 仅 tools/verify_rights_issue.py --source gbbq 需要；用于解密 hq_cache/gbbq
+# 权息库作为配股事件的独立核验源。默认安装不受影响。
+optional = true
+
+[tool.poetry.group.tdx.dependencies]
+pytdx = "==1.72"
+
 [[tool.poetry.source]]
 name = "mirrors"
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"

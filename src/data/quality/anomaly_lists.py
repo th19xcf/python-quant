@@ -172,13 +172,24 @@ def _build_placeholder_quote(root: Path) -> pl.DataFrame | None:
     ).sort(['ts_code', 'start'])
 
 
-def _build_rights_issue(div: pl.DataFrame) -> pl.DataFrame:
-    return (div.filter((pl.col('rights_issue_ratio') > 0) |
-                       (pl.col('rights_issue_price') > 0))
-            .filter(pl.col('ex_date').is_not_null())
-            .select(['ts_code', pl.col('ex_date').alias('start'),
-                     pl.col('ex_date').alias('end'), 'source'])
-            .unique(subset=['ts_code', 'start'])
+def _build_rights_issue(div: pl.DataFrame,
+                        verified: pl.DataFrame | None = None) -> pl.DataFrame:
+    """配股事件清单；``verified`` 中的事件已由独立价格源核实，不再视为存疑。"""
+    out = (div.filter((pl.col('rights_issue_ratio') > 0) |
+                      (pl.col('rights_issue_price') > 0))
+           .filter(pl.col('ex_date').is_not_null())
+           .select(['ts_code', pl.col('ex_date').alias('start'),
+                    pl.col('ex_date').alias('end'), 'source'])
+           .unique(subset=['ts_code', 'start'])
+           .sort(['ts_code', 'start']))
+    if verified is None or not verified.height:
+        return out
+    keys = verified.select(
+        ['ts_code', pl.col('ex_date').str.to_date().alias('start')]).unique()
+    return (out.join(keys.with_columns(pl.lit(True).alias('_verified')),
+                     on=['ts_code', 'start'], how='left')
+            .filter(pl.col('_verified').is_null())
+            .drop('_verified')
             .sort(['ts_code', 'start']))
 
 
@@ -219,12 +230,14 @@ def refresh_anomaly_lists(
         latest = (latest_raw if isinstance(latest_raw, date)
                   else date.fromisoformat(str(latest_raw)[:10]))
         cutoff = latest - timedelta(days=lag_days)
+        verified_path = root / 'meta' / 'anomalies' / 'rights_issue_verified.csv'
+        verified = (pl.read_csv(verified_path) if verified_path.exists() else None)
         frames = {
             'factor_tail_lag_codes.csv': _build_factor_tail_lag(
                 di, root / 'factors' / 'stock_adj_factor.parquet', cutoff),
             'no_local_quote_codes.csv': _build_no_local_quote(di, div),
             'source_stale_codes.csv': _build_source_stale(di, latest),
-            'rights_issue_codes.csv': _build_rights_issue(div),
+            'rights_issue_codes.csv': _build_rights_issue(div, verified),
         }
         placeholder = _build_placeholder_quote(root)
         if placeholder is not None:

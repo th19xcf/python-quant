@@ -584,14 +584,8 @@ class EligibilityEngine:
             .filter(pl.col('len') > 1)
             .select('ts_code').unique()['ts_code'].to_list()
         )
-        rights = div.filter(pl.col('rights_issue_ratio') > 0)
-        if rights.height:
-            first = rights.group_by('ts_code').agg(pl.col('ex_date').min().alias('d'))
-            for row in first.iter_rows(named=True):
-                if row['d'] is not None:
-                    info = self.codes.get(str(row['ts_code']))
-                    if info is not None:
-                        info.rights_start = row['d'].toordinal()
+        # rights_start 统一由 rights_issue_codes.csv 台账提供（该台账已排除
+        # 经第二源核验的配股事件），此处不再直接从因子表推算，避免绕过核验。
 
     def _read_anomaly_list(self, name: str) -> pl.DataFrame | None:
         path = self.root / 'meta' / 'anomalies' / name
