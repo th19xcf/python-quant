@@ -395,7 +395,7 @@ def _date(value: Any) -> date | None:
 
 
 def load_stock_basic(store_root: Path | str) -> pl.DataFrame:
-    """只读加载 stock_basic：优先数据库，其次本地 parquet 快照。"""
+    """只读加载 stock_basic：优先本地 parquet 快照，缺失时才查数据库。"""
     local = Path(store_root) / 'meta' / 'stock_basic.parquet'
     if local.is_file():
         frame = pl.read_parquet(local)

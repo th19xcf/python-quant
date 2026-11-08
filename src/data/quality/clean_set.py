@@ -106,6 +106,8 @@ _TRUTHY = frozenset({'1', 'true', 'yes', 'on'})
 #: ETF 名单本地缓存（UTF-8、一行一个 ts_code）。回测只读该文件，避免每次
 #: 实例化都连远程 MySQL，也保证离线与联网跑出同一个 strict 池。
 FUND_ETF_CODES_CACHE = DEFAULT_ROOT / 'meta' / 'clean' / 'fund_etf_codes.txt'
+#: 本地基金基础表快照；存在时优先于远程库与 txt 缓存。
+FUND_BASIC_SNAPSHOT = DEFAULT_ROOT / 'meta' / 'fund_basic.parquet'
 #: 缓存有效天数：过期后下次加载尝试连远程库刷新，失败则继续用旧缓存。
 FUND_ETF_CODES_TTL_DAYS = 7
 
@@ -169,6 +171,25 @@ def _fund_etf_codes_from_db() -> set[str]:
         db_manager.disconnect()
 
 
+def _fund_etf_codes_from_parquet(path: Path | None = None) -> set[str] | None:
+    """读本地 ``meta/fund_basic.parquet`` 的 ETF 代码；快照缺失返回 None。"""
+    target = path or FUND_BASIC_SNAPSHOT
+    if not target.is_file():
+        return None
+    try:
+        frame = pl.read_parquet(target, columns=['ts_code', 'fund_type'])
+    # 兜底理由：快照损坏时退回 txt 缓存与远程库，不阻断 clean_set
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f'[clean_set] fund_basic 快照读取失败: {exc}')
+        return None
+    codes = {
+        str(code).strip()
+        for code in frame.filter(pl.col('fund_type') == 'ETF')['ts_code'].to_list()
+        if code
+    }
+    return codes or None
+
+
 def _read_fund_etf_cache(
     path: Path | None = None,
 ) -> tuple[set[str], float] | None:
@@ -199,10 +220,13 @@ def _write_fund_etf_cache(codes: set[str], path: Path | None = None) -> None:
 def _load_fund_etf_codes(ttl_days: float | None = None) -> set[str] | None:
     """加载 ETF 名单。
 
-    优先读本地缓存；缓存缺失或超过 ``ttl_days`` 天（默认
-    ``FUND_ETF_CODES_TTL_DAYS``）才连远程库刷新，刷新结果回写缓存。
-    刷新失败时沿用仍可读的旧缓存；完全没有名单才返回 None 由调用方降级。
+    优先级：本地 ``meta/fund_basic.parquet`` 快照 > 本地 txt 缓存（未超过
+    ``ttl_days`` 天）> 远程库刷新并回写 txt。远程刷新失败时沿用旧缓存；
+    完全没有名单才返回 None 由调用方降级。
     """
+    snapshot = _fund_etf_codes_from_parquet()
+    if snapshot is not None:
+        return snapshot
     ttl = FUND_ETF_CODES_TTL_DAYS if ttl_days is None else ttl_days
     cached = _read_fund_etf_cache()
     if cached is not None:

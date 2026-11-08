@@ -329,8 +329,35 @@ def history_coverage(store_root: Path | str | None = None) -> dict[str, Any]:
     }
 
 
-def _db_basic() -> dict[str, tuple[str | None, str | None]]:
-    """从远程库读取 stock_basic 的 name/status（失败时返回空，不阻断）。"""
+def _basic_from_snapshot(
+    store_root: Path,
+) -> dict[str, tuple[str | None, str | None]]:
+    """从本地 ``meta/stock_basic.parquet`` 读取 name/status；缺失返回空。"""
+    target = Path(store_root) / 'meta' / 'stock_basic.parquet'
+    if not target.is_file():
+        return {}
+    try:
+        import polars as pl  # noqa: PLC0415
+
+        frame = pl.read_parquet(target, columns=['ts_code', 'name', 'status'])
+        return {
+            str(code): (name, status)
+            for code, name, status in frame.iter_rows()
+        }
+    # 兜底理由：快照损坏时回退远程库，不阻断 ST 快照生成
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f'[st] stock_basic 快照读取失败，回退远程: {exc}')
+        return {}
+
+
+def _db_basic(
+    store_root: Path | None = None,
+) -> dict[str, tuple[str | None, str | None]]:
+    """读取 stock_basic 的 name/status：优先本地快照，其次远程库。"""
+    if store_root is not None:
+        local = _basic_from_snapshot(store_root)
+        if local:
+            return local
     try:
         from sqlalchemy import text  # noqa: PLC0415
 
@@ -356,7 +383,7 @@ def _main(args: argparse.Namespace) -> int:
     store_root = Path(args.store_root) if args.store_root else \
         resolve_store_root(get_config())
     if args.command == 'refresh':
-        frame = build_snapshot(store_root, args.as_of, db_basic=_db_basic())
+        frame = build_snapshot(store_root, args.as_of, db_basic=_db_basic(store_root))
         counts = dict(frame.group_by('status').len().iter_rows())
         logger.info(f'[st] 快照分布: {counts}')
         logger.info(f'[st] 历史可回溯: {history_coverage(store_root)}')

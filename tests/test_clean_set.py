@@ -25,6 +25,14 @@ from src.data.quality.clean_set import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_fund_snapshot(monkeypatch, tmp_path):
+    """单测默认不读真实 meta/fund_basic.parquet，避免环境耦合。"""
+    monkeypatch.setattr(
+        'src.data.quality.clean_set.FUND_BASIC_SNAPSHOT',
+        tmp_path / 'missing_fund_basic.parquet')
+
+
 def make_code(
     ts_code: str,
     *,
@@ -495,6 +503,26 @@ def test_date_and_code_helpers() -> None:
     assert _code_type('000300.SH') == 'index'
     assert _code_type('510300.SH') == 'fund'
     assert _code_type('600000.SH') == 'stock'
+
+
+def test_fund_etf_snapshot_preferred(monkeypatch, tmp_path) -> None:
+    """存在本地 fund_basic.parquet 时只读快照，不连远程库。"""
+    import polars as pl
+
+    snapshot = tmp_path / 'fund_basic.parquet'
+    pl.DataFrame({
+        'ts_code': ['510300.SH', '161907.SZ'],
+        'fund_type': ['ETF', 'LOF'],
+    }).write_parquet(snapshot)
+    monkeypatch.setattr(
+        'src.data.quality.clean_set.FUND_BASIC_SNAPSHOT', snapshot)
+
+    def boom() -> set[str]:
+        raise AssertionError('快照存在时不应连接远程库')
+
+    monkeypatch.setattr(
+        'src.data.quality.clean_set._fund_etf_codes_from_db', boom)
+    assert _load_fund_etf_codes() == {'510300.SH'}
 
 
 def test_fund_etf_cache_fresh_skips_db(monkeypatch, tmp_path) -> None:

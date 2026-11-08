@@ -32,6 +32,29 @@ class IndexService:
         self._file_name_map: dict[str, str] = {}
         self._name_ts_code_map: dict[str, str] = {}
         self._normalized_ts_code_map: dict[str, str] = {}
+        self._local_basic_loaded = False
+        self._local_basic_cache: Any = None
+
+    def _local_basic(self) -> Any:
+        """本地 ``meta/index_basic.parquet`` 快照；缺失时返回 None。"""
+        if self._local_basic_loaded:
+            return self._local_basic_cache
+        self._local_basic_loaded = True
+        try:
+            from src.data.local_store.store import resolve_store_root  # noqa: PLC0415
+            from src.utils.config import get_config  # noqa: PLC0415
+
+            path = Path(resolve_store_root(get_config())) / 'meta' / 'index_basic.parquet'
+            if path.is_file():
+                import polars as pl  # noqa: PLC0415
+
+                self._local_basic_cache = pl.read_parquet(path)
+                logger.info(
+                    f"从本地快照加载了 {self._local_basic_cache.height} 条指数基础信息")
+        # 兜底理由：快照不可用时回退远程 index_basic，不阻断服务
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"读取本地 index_basic 快照失败: {exc}")
+        return self._local_basic_cache
 
     # ------------------------------------------------------------------
     # 指数名称 / ts_code 解析
@@ -46,6 +69,25 @@ class IndexService:
         file_name_map: dict[str, str] = {}
         name_ts_code_map: dict[str, str] = {}
         normalized_ts_code_map: dict[str, str] = {}
+
+        local = self._local_basic()
+        if local is not None:
+            for ts_code, name in local.select(['ts_code', 'name']).iter_rows():
+                if not ts_code or not name or not is_index_code(ts_code):
+                    continue
+                try:
+                    file_name = to_tdx_file_stem(ts_code)
+                except (TypeError, ValueError):
+                    continue
+                file_name_map[file_name] = name
+                name_ts_code_map[name] = ts_code
+                normalized_ts_code_map[self.normalize_index_name(name)] = ts_code
+            self._file_name_map = file_name_map
+            self._name_ts_code_map = name_ts_code_map
+            self._normalized_ts_code_map = normalized_ts_code_map
+            self._cache_time = now_ts
+            logger.info(f"从本地快照加载了 {len(file_name_map)} 个指数名称")
+            return
 
         try:
             if self._db_manager:
@@ -165,6 +207,16 @@ class IndexService:
     def _query_category_file_names(self, category: str) -> set[str]:
         """查询指定 category 的指数文件主名集合。数据库不可用时返回空集合。"""
         file_names: set[str] = set()
+        local = self._local_basic()
+        if local is not None:
+            import polars as pl  # noqa: PLC0415
+
+            codes = local.filter(
+                pl.col('category') == category)['ts_code'].to_list()
+            return {
+                name for name in (self._ts_code_to_file_name(c) for c in codes)
+                if name
+            }
         if not self._db_manager:
             return file_names
 
@@ -192,6 +244,16 @@ class IndexService:
     def _query_excluded_file_names(self) -> set[str]:
         """查询需要在沪/深指数总览中排除的创业板/科创板指数。"""
         file_names: set[str] = set()
+        local = self._local_basic()
+        if local is not None:
+            import polars as pl  # noqa: PLC0415
+
+            codes = local.filter(pl.col('category').is_in(
+                ['创业板', '科创板']))['ts_code'].to_list()
+            return {
+                name for name in (self._ts_code_to_file_name(c) for c in codes)
+                if name
+            }
         if not self._db_manager:
             return file_names
 

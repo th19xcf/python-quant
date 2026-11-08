@@ -6,6 +6,14 @@ import pytest
 
 from src.data.services.index_service import IndexService
 
+_REAL_LOCAL_BASIC = IndexService._local_basic
+
+
+@pytest.fixture(autouse=True)
+def _isolate_local_snapshot(monkeypatch):
+    """单测默认不读真实 data/local_store 快照，避免环境耦合。"""
+    monkeypatch.setattr(IndexService, '_local_basic', lambda self: None)
+
 
 def _write_day_file(path, close, preclose):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,3 +80,25 @@ def test_list_index_quotes_without_tdx_path():
     service = IndexService(None, db_manager=None)
 
     assert service.list_index_quotes() == []
+
+
+def test_local_basic_snapshot_preferred(monkeypatch, tmp_path):
+    """存在本地 index_basic.parquet 时优先用它解析名称与分类。"""
+    import polars as pl
+
+    from src.data.local_store import store as store_mod
+
+    (tmp_path / 'meta').mkdir()
+    pl.DataFrame({
+        'ts_code': ['000300.SH'],
+        'name': ['沪深300'],
+        'category': ['宽基指数'],
+    }).write_parquet(tmp_path / 'meta' / 'index_basic.parquet')
+    monkeypatch.setattr(
+        store_mod, 'resolve_store_root', lambda config: str(tmp_path))
+    monkeypatch.setattr(IndexService, '_local_basic', _REAL_LOCAL_BASIC)
+
+    service = IndexService(None, db_manager=None)
+
+    assert service.resolve_ts_code('沪深300') == '000300.SH'
+    assert service._query_category_file_names('宽基指数') == {'sh000300'}
