@@ -122,7 +122,7 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             st_status: ST 三态映射 {ts_code: True/False/None}，未给出的标的视为
                 未知，涨跌停按板块默认幅度判定，结果 st_unknown=True 且逐笔
                 fill_confidence=low（数据质量提示，不改变成交判定）
-            pending_ttl_days: 挂单最长顺延天数，超过即作废（默认 5 个交易日），
+            pending_ttl_days: 挂单最长顺延天数，超过即作废（默认 1 个交易日），
                 避免停牌标的复牌后仍按数日前的信号成交
             dividends: 标的 → 除权除息记录（列同 stock_dividend 表），
                 None/空表表示不记账分红；只在原始价口径下启用

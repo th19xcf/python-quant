@@ -67,8 +67,10 @@ PRICE_TICK = Decimal('0.01')
 CASH_EPS = 1e-6
 
 #: 挂单在标的无行情行时的默认存活天数：超过该天数仍未获得可撮合 bar
-#: 即作废，避免复牌后按数月前的信号成交
-DEFAULT_PENDING_TTL_DAYS = 5
+#: 即作废，避免复牌后按数日前的信号成交。
+#: 取 1 表示只容忍单日停牌（A 股 72% 的停牌段为 1 天），连续停牌 2 天以上
+#: 的挂单直接作废，与「当日委托当日有效」更接近。
+DEFAULT_PENDING_TTL_DAYS = 1
 
 #: ST 状态条目：
 #:   - bool / None：静态三态（None=未知）
@@ -855,7 +857,7 @@ class EventBacktestRunner:
                 - 只提供 ``generate_signal(universe_rows, index)`` 时按日兜底调用，
                   返回 {ts_code: 信号}，并计入 slow_path_strategies。
                 它产出的信号优先于同标的的单标的策略信号。
-            pending_ttl_days: 挂单在标的连续无行情行时的最大存活天数（默认 5），
+            pending_ttl_days: 挂单在标的连续无行情行时的最大存活天数（默认 1），
                 超过即作废（reason='pending_ttl'），避免复牌后按数月前信号成交。
 
         st_status 为 (标的名 → ST 三态) 映射：True=ST、False=明确非 ST、
