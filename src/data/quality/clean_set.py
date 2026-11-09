@@ -899,7 +899,7 @@ class EligibilityEngine:
             self.snapshot_st = set()
 
     def _finalize_structural(self) -> None:
-        placeholder = getattr(self, '_placeholder_codes', set())
+        placeholder: set[str] = getattr(self, '_placeholder_codes', set())
         for info in self.codes.values():
             # 无本地行情：后续检查无意义，直接短路
             if info.rows == 0 or not info.quote_dates.size:

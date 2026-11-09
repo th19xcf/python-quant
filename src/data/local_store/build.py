@@ -926,12 +926,16 @@ def _factor_snapshot_gate(
             columns=['data_type', 'end'],
         )
         quote_end = index.filter(pl.col('data_type') == 'stock')['end'].max()
+        quote_end_label = (
+            quote_end.decode('utf-8', errors='replace')
+            if isinstance(quote_end, bytes) else quote_end
+        )
         snap_end = pl.scan_parquet(str(factor_store.factor_path)).select(
             pl.col('trade_date').max()).collect().item()
         if snap_end is not None and quote_end is not None and snap_end < quote_end:
             logger.warning(
                 f'[factor-gate] 个股因子快照末日 {snap_end} 早于行情末日 '
-                f'{quote_end}；若期间有新的除权除息事件，请先执行 '
+                f'{quote_end_label}；若期间有新的除权除息事件，请先执行 '
                 'rebuild-factors 再补数，否则新增行会漏记除权'
             )
     except (OSError, ValueError, RuntimeError, PolarsError) as exc:
