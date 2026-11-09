@@ -173,5 +173,8 @@ tmp/
 research/events/data/announcement_event_level_car.csv
 research/events/data/announcements_partial.parquet
 
-# 事件合并中间件（由月度分片合并生成，可重建，不入库；月度分片 20xxxx.parquet 与原始件仍跟踪）
+# 事件合并中间件（由月度分片合并生成，可重建，不入库）
 research/events/data/*/_merged_for_import.parquet
+
+# 研究数据不入库：Git 只管代码、脚本、文档与小体积元数据，数据安全靠 G:\git\python-quant 镜像 + _backup 快照
+research/events/data/**/*.parquet
