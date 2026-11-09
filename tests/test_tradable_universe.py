@@ -269,3 +269,54 @@ def test_bad_ohlc_high_share_excludes_code_and_is_idempotent(tmp_path) -> None:
     assert aggregate['expected_rows'][0] == 10
     assert aggregate['missing_rows'][0] == 3
     assert is_tradable('000010.SH', date(2026, 1, 5), exclusions=exclusions) is False
+
+
+# ----------------------------------------------------------------------
+# strict 口径：通达信自编指数（880*/881*）的 internal_gap 只记录、不剔除
+# ----------------------------------------------------------------------
+def _exclusion_frame(items: list[dict]) -> pl.DataFrame:
+    base = {
+        'reason_text': '',
+        'last_trade_date': None,
+        'expected_rows': 0,
+        'actual_rows': 0,
+        'missing_rows': 0,
+        'severity': 'warn',
+        'detected_at': date(2026, 2, 1),
+    }
+    return pl.DataFrame([{**base, **item} for item in items], schema=EXCLUSION_SCHEMA)
+
+
+def test_strict_exempts_synthetic_index_internal_gap() -> None:
+    frame = _exclusion_frame([
+        {'ts_code': '880001.SH', 'asset_class': 'index', 'reason_code': 'internal_gap'},
+        {'ts_code': '881001.SH', 'asset_class': 'index', 'reason_code': 'internal_gap'},
+        {'ts_code': '000001.SH', 'asset_class': 'index', 'reason_code': 'internal_gap'},
+        {'ts_code': '399001.SZ', 'asset_class': 'index', 'reason_code': 'internal_gap'},
+        {'ts_code': '600000.SH', 'asset_class': 'stock', 'reason_code': 'internal_gap'},
+    ])
+    # 880/881 自编指数：strict 下不再因 internal_gap 被剔除
+    for code in ('880001.SH', '881001.SH'):
+        assert is_tradable(code, date(2026, 2, 1), exclusions=frame)
+        assert is_tradable(code, date(2026, 2, 1), strict=True, exclusions=frame)
+    # 真实指数与个股的 internal_gap 照旧生效
+    for code in ('000001.SH', '399001.SZ', '600000.SH'):
+        assert is_tradable(code, date(2026, 2, 1), exclusions=frame)
+        assert not is_tradable(code, date(2026, 2, 1), strict=True, exclusions=frame)
+
+
+def test_strict_keeps_other_warnings_on_synthetic_index() -> None:
+    frame = _exclusion_frame([
+        {'ts_code': '880001.SH', 'asset_class': 'index', 'reason_code': 'internal_gap'},
+        {'ts_code': '880001.SH', 'asset_class': 'index', 'reason_code': 'no_basic_info'},
+    ])
+    assert is_tradable('880001.SH', date(2026, 2, 1), exclusions=frame)
+    assert not is_tradable('880001.SH', date(2026, 2, 1), strict=True, exclusions=frame)
+
+
+def test_synthetic_index_prefix_requires_index_asset_class() -> None:
+    # 同前缀但非指数（异常数据）不享受豁免
+    frame = _exclusion_frame([
+        {'ts_code': '880001.SH', 'asset_class': 'stock', 'reason_code': 'internal_gap'},
+    ])
+    assert not is_tradable('880001.SH', date(2026, 2, 1), strict=True, exclusions=frame)

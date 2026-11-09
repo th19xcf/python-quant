@@ -15,7 +15,9 @@ from src.data.events import (
     STATUS_COOLING,
     STATUS_UNKNOWN,
     EventStore,
+    _coerce_events,
     cooldown_range,
+    dedup_events,
     get_event_status,
     import_file,
     load_coverage,
@@ -102,6 +104,138 @@ class TestImport:
         pl.DataFrame({'a': [1]}).write_csv(csv)
         with pytest.raises(ValueError, match='无法识别'):
             import_file(csv, tmp_path)
+
+
+def _normalized_csv(path: Path, rows: list[dict]) -> Path:
+    pl.DataFrame(rows).write_csv(path)
+    return path
+
+
+class TestAppendSafety:
+    """append 语义：既有行零丢失，30 日去重只在本次新批次内部生效。"""
+
+    def test_existing_rows_never_evicted(self, tmp_path):
+        seed = _normalized_csv(tmp_path / 'seed.csv', [{
+            'ts_code': '600000.SH', 'event_type': '并购重组',
+            'publish_time': '2024-01-02 16:00:00',
+            'title': '重组', 'event_id': 'e1',
+        }])
+        import_file(seed, tmp_path, source='test')
+
+        # 新批次里出现同一标的同一类型的更早公告（2023-11-01，距既有行 62 天，
+        # 不在 30 日窗口内），旧逻辑会在全表 30 日去重时把 2024-01-02 的既有行挤掉
+        batch = _normalized_csv(tmp_path / 'batch.csv', [{
+            'ts_code': '600000.SH', 'event_type': '并购重组',
+            'publish_time': '2023-11-01 16:00:00',
+            'title': '重组预案', 'event_id': 'e0',
+        }])
+        info = import_file(batch, tmp_path, mode='append', source='test')
+
+        frame = load_events(tmp_path)
+        ids = set(frame['event_id'].to_list())
+        assert ids == {'e0', 'e1'}
+        assert info['existing_affected'] == 0
+        # 既有行时间戳与标题一字未改
+        kept = frame.filter(pl.col('event_id') == 'e1').to_dicts()[0]
+        assert kept['publish_time'] == datetime(2024, 1, 2, 16, 0)
+        assert kept['title'] == '重组'
+
+    def test_dedup_only_inside_new_batch(self, tmp_path):
+        seed = _normalized_csv(tmp_path / 'seed.csv', [{
+            'ts_code': '000001.SZ', 'event_type': '监管处罚',
+            'publish_time': '2025-01-03 16:00:00',
+            'title': '处罚', 'event_id': 'e9',
+        }])
+        import_file(seed, tmp_path, source='test')
+
+        batch = _normalized_csv(tmp_path / 'batch.csv', [
+            {'ts_code': '600000.SH', 'event_type': '并购重组',
+             'publish_time': '2025-02-10 16:00:00',
+             'title': '重组', 'event_id': 'n1'},
+            {'ts_code': '600000.SH', 'event_type': '并购重组',
+             'publish_time': '2025-02-20 16:00:00',
+             'title': '重组进展', 'event_id': 'n2'},
+        ])
+        info = import_file(batch, tmp_path, mode='append', source='test')
+
+        frame = load_events(tmp_path)
+        assert frame.height == 2
+        assert set(frame['event_id'].to_list()) == {'e9', 'n1'}
+        assert info['added'] == 1
+        assert info['dropped_in_batch'] == 1
+
+    def test_repeated_import_is_idempotent(self, tmp_path):
+        csv = _normalized_csv(tmp_path / 'batch.csv', [{
+            'ts_code': '600000.SH', 'event_type': '并购重组',
+            'publish_time': '2025-02-10 16:00:00',
+            'title': '重组', 'event_id': 'n1',
+        }])
+        import_file(csv, tmp_path, source='test')
+        first = load_events(tmp_path)
+        info = import_file(csv, tmp_path, mode='append', source='test')
+        second = load_events(tmp_path)
+        assert first.equals(second)
+        assert info['added'] == 0
+        assert info['dropped_existing_conflict'] == 1
+
+    def test_dedup_is_order_independent(self):
+        """同一天多份同类型公告时，代表行不能随输入行序漂移。"""
+        rows = [
+            {'event_id': f'a{i}-600000', 'ts_code': '600000.SH',
+             'event_type': '股权激励',
+             'publish_time': datetime(2025, 3, 5, 16, 0),
+             'title': f'激励计划公告 {i}', 'source': 'test'}
+            for i in range(6)
+        ]
+        base = dedup_events(_coerce_events(pl.DataFrame(rows)))
+        for shift in range(1, 6):
+            rolled = rows[shift:] + rows[:shift]
+            frame = dedup_events(_coerce_events(pl.DataFrame(rolled)))
+            assert frame['event_id'].to_list() == base['event_id'].to_list()
+
+    def test_same_day_alternate_not_added_again(self, tmp_path):
+        """同日同类型但不同 art_code 的替代件，重复导入不得再次写入。"""
+        seed = _normalized_csv(tmp_path / 'seed.csv', [
+            {'ts_code': '600000.SH', 'event_type': '股权激励',
+             'publish_time': '2025-03-05 16:00:00',
+             'title': '激励计划草案', 'event_id': 'a1-600000'},
+        ])
+        import_file(seed, tmp_path, source='test')
+
+        # 同一事件的律所意见书（不同 art_code，同日同类型），应被 30 日窗口挡掉
+        batch = _normalized_csv(tmp_path / 'batch.csv', [
+            {'ts_code': '600000.SH', 'event_type': '股权激励',
+             'publish_time': '2025-03-05 16:00:00',
+             'title': '律所意见书', 'event_id': 'a2-600000'},
+        ])
+        info = import_file(batch, tmp_path, mode='append', source='test')
+
+        assert info['added'] == 0
+        assert info['dropped_near_existing'] == 1
+        assert info['existing_affected'] == 0
+        frame = load_events(tmp_path)
+        assert frame['event_id'].to_list() == ['a1-600000']
+
+    def test_dry_run_writes_nothing(self, tmp_path):
+        csv = _normalized_csv(tmp_path / 'batch.csv', [
+            {'ts_code': '600000.SH', 'event_type': '并购重组',
+             'publish_time': '2025-02-10 16:00:00',
+             'title': '重组', 'event_id': 'n1'},
+        ])
+        info = import_file(csv, tmp_path, mode='append', source='test',
+                           dry_run=True)
+        assert info['dry_run'] is True
+        assert info['added'] == 1
+        assert not (tmp_path / 'meta' / 'events' / 'events.parquet').exists()
+        assert load_events(tmp_path).is_empty()
+
+        import_file(csv, tmp_path, mode='append', source='test')
+        before = (tmp_path / 'meta' / 'events' / 'events.parquet').read_bytes()
+        preview = import_file(csv, tmp_path, mode='append', source='test',
+                              dry_run=True)
+        after = (tmp_path / 'meta' / 'events' / 'events.parquet').read_bytes()
+        assert before == after
+        assert preview['added'] == 0
 
 
 class TestCooldown:

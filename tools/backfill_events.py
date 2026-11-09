@@ -147,7 +147,13 @@ def _import_shards(args: argparse.Namespace, shard_dir: Path,
         logger.error('所有分片均为空，拒绝写入事件表')
         return 2
     merged = pl.concat(frames, how='vertical_relaxed')
-    merged = merged.unique(subset=['art_code', 'stock_code'], keep='first')
+    # maintain_order=True 必需：不加时 unique 的结果行序由哈希决定，
+    # 同一批分片在不同进程会得到不同的行序，进而让 30 日去重在不同 art_code
+    # 之间摇摆，表现为「同一批次重复导入却还能新增」。
+    merged = merged.unique(subset=['art_code', 'stock_code'], keep='first',
+                           maintain_order=True)
+    # 预演与真跑读同一个合并文件，保证预演结果与实跑一致；
+    # 该文件是审计产物，名字以 _ 开头，不会被后续 glob 当分片读入。
     merged_path = shard_dir / '_merged_for_import.parquet'
     merged.write_parquet(merged_path)
     logger.info(f'合并 {len(paths)} 个分片 → {merged.height} 行')
@@ -169,9 +175,21 @@ def _import_shards(args: argparse.Namespace, shard_dir: Path,
         end=args.end,
         coverage_start=declared_start,
         coverage_end=declared_end,
+        dry_run=args.dry_run,
     )
-    _annotate_coverage(Path(args.store_root), args.keywords)
-    logger.info(f'事件表更新完成: {result}')
+    logger.info(
+        '入库结果: '
+        f"dry_run={result['dry_run']} 表行数={result['rows']} "
+        f"既有行={result['existing_rows']} 源行={result['source_rows']} "
+        f"规范化后={result['batch_rows']} 将新增={result['added']} "
+        f"与既有重复跳过={result['dropped_existing_conflict']} "
+        f"与既有30日内重复跳过={result['dropped_near_existing']} "
+        f"批次内丢弃={result['dropped_in_batch']} "
+        f"既有行受影响={result['existing_affected']}"
+    )
+    if not args.dry_run:
+        _annotate_coverage(Path(args.store_root), args.keywords)
+    logger.info('事件表更新完成' if not args.dry_run else 'dry-run 完成，未写入')
     return 0
 
 
@@ -220,6 +238,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         help='不联网，只把现有分片导入生产事件表')
     parser.add_argument('--commit', action='store_true',
                         help='允许写入 events.parquet；--import-only 必须同时给出')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='预演：只计算将新增/将丢弃/既有行是否受影响，不写事件表')
     return parser
 
 
@@ -251,8 +271,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.import_only:
-        if not args.commit:
-            logger.info('dry-run：加 --commit 才会写入事件表')
+        if not args.commit and not args.dry_run:
+            logger.info('dry-run：加 --dry-run 预演统计，或加 --commit 真正写入事件表')
             return 0
         return _import_shards(
             args, shard_dir, coverage_start, declared_end)

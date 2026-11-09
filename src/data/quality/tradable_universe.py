@@ -19,7 +19,9 @@
 - ``placeholder_price``：价格恒为 1.0 的占位行情（全段 / 尾部），零收益假样本
 - ``stale_feed``：本地末行早于最近交易日（源端停更 / 退市）
 - ``no_quotes``：基础表有记录但本地无行情文件
-- ``internal_gap``：TDX 源有、本地缺的历史交易日
+- ``internal_gap``：本地缺历史交易日；含 TDX 对账缺口，以及指数在交易日历上
+  连续 ≥ 20 个交易日无 bar 的大段空洞（源端同样缺失时也登记，避免被
+  ``tdx_truncated`` 掩盖）
 - ``tdx_truncated``：TDX 源历史比本地短，禁止用 TDX 重建
 - ``no_basic_info``：本地有行情但基础表无记录（名称/行业等元数据缺失）
 - ``bad_price_jump``：未识别的孤立价格跳变（单日 |涨跌幅| > 50%）
@@ -88,7 +90,7 @@ REASON_TEXT: dict[str, str] = {
     'placeholder_price': '价格恒为 1.0 的占位行情，零收益假样本',
     'stale_feed': '本地末行早于最近交易日（源端停更/退市）',
     'no_quotes': '基础表有记录但本地无行情文件（按基础表取数会静默少截面）',
-    'internal_gap': 'TDX 源有、本地缺的历史交易日',
+    'internal_gap': '本地缺历史交易日（TDX 对账缺口或指数连续 ≥20 日空洞）',
     'tdx_truncated': 'TDX 源历史比本地短，重建会截断历史（禁止用 TDX 重建）',
     'no_basic_info': '本地有行情但基础表无记录（名称/行业等元数据缺失）',
     'bad_price_jump': '未识别的孤立价格跳变（单日涨跌幅绝对值 > 50%，疑似源端错误）',
@@ -125,11 +127,20 @@ PRICE_LIMIT_DATE = date(1996, 12, 16)
 #: 实测全量最高占比仅 5.62%（880006.SH），当前不会触发整只停用。
 BAD_OHLC_CODE_SHARE_LIMIT = 0.2
 
+#: 指数连续空洞判定阈值：本地指数序列在交易日历上连续缺失 >= 该交易日数。
+#: 只对指数启用：个股/基金的日历空洞大量来自长期停牌与退市，与数据缺失
+#: 不可区分；而指数每个交易日都应有 bar，连续大段缺失必为数据问题。
+CONTINUOUS_GAP_MIN_DAYS = 20
+
 #: 无论 ``as_of`` 都直接判定不可用的原因
 _BLOCKING_REASONS: frozenset[str] = frozenset({'placeholder_price', 'no_quotes'})
 #: ``strict=True`` 时额外剔除的历史缺口/元数据原因（tdx_truncated 只约束重建，
 #: 不影响本地数据可用性；bad_price_jump 只在跳变当天生效，不按标的长期剔除）
 _STRICT_WARNINGS: frozenset[str] = frozenset({'internal_gap', 'no_basic_info'})
+#: 通达信自编指数代码前缀（``880`` 板块指数 / ``881`` 行业指数）。这类指数不可投资，
+#: 历史序列在源端本身就不完整，``internal_gap`` 只作为记录保留，不参与 strict 剔除；
+#: 判定同时要求 ``asset_class='index'``，避免误伤同前缀的非指数标的。
+TDX_SYNTHETIC_INDEX_PREFIXES: tuple[str, ...] = ('880', '881')
 
 _LOCK = threading.RLock()
 _CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
@@ -144,6 +155,20 @@ _DAY_DTYPE = np.dtype([
     ('volume', '<u4'),
     ('reserved', '<u4'),
 ])
+
+
+def _strict_ignorable(reason: Mapping[str, Any]) -> bool:
+    """strict 口径下可忽略的原因行（仅通达信自编指数的 ``internal_gap``）。
+
+    判定依据全部取自清单自身的字段，可追溯、不依赖代码白名单：
+    ``reason_code == 'internal_gap'`` 且 ``asset_class == 'index'`` 且
+    ``ts_code`` 前三位命中 :data:`TDX_SYNTHETIC_INDEX_PREFIXES`。
+    """
+    return (
+        reason.get('reason_code') == 'internal_gap'
+        and reason.get('asset_class') == 'index'
+        and str(reason.get('ts_code', ''))[:3] in TDX_SYNTHETIC_INDEX_PREFIXES
+    )
 
 
 # ----------------------------------------------------------------------
@@ -363,8 +388,70 @@ def _basic_rows(
     return rows
 
 
+def _continuous_gap_rows(
+    store_root: Path, as_of: date,
+) -> tuple[list[dict[str, Any]], dict[str, set[int]]]:
+    """登记指数在交易日历上连续大段缺失的区间（每段一行）。
+
+    TDX 对账只能看到「TDX 有、本地缺」；当源端同样整段没有数据时，缺口会被
+    ``tdx_truncated`` 掩盖。这里改用权威交易日历直接比对本地指数序列，把
+    连续缺失 >= :data:`CONTINUOUS_GAP_MIN_DAYS` 个交易日、且两侧都有数据的
+    区间单独登记为 ``internal_gap``。
+
+    Returns:
+        ``(rows, covered)``：``covered`` 为 ``{ts_code: {缺失日}}``，供
+        :func:`_tdx_rows` 去重，避免同一空洞被登记两次。
+    """
+    calendar = _benchmark_calendar(store_root)
+    rows: list[dict[str, Any]] = []
+    covered: dict[str, set[int]] = {}
+    if calendar is None or calendar.size == 0:
+        return rows, covered
+    index_dir = store_root / 'quotes' / 'index'
+    if not index_dir.is_dir():
+        return rows, covered
+    for path in sorted(index_dir.rglob('*.parquet')):
+        ts_code = path.stem
+        local = _read_local_days(store_root, 'index', ts_code)
+        if local.size < 2:
+            continue
+        expected = calendar[(calendar >= local.min()) & (calendar <= local.max())]
+        missing = np.setdiff1d(expected, local)
+        if missing.size < CONTINUOUS_GAP_MIN_DAYS:
+            continue
+        positions = np.searchsorted(calendar, missing)
+        start = 0
+        for end in range(1, missing.size + 1):
+            if end < missing.size and positions[end] - positions[end - 1] == 1:
+                continue
+            length = end - start
+            if length >= CONTINUOUS_GAP_MIN_DAYS:
+                days = missing[start:end]
+                first = _date_of_epoch(int(days[0]))
+                last = _date_of_epoch(int(days[-1]))
+                before = _date_of_epoch(int(calendar[max(positions[start] - 1, 0)]))
+                rows.append({
+                    'ts_code': ts_code,
+                    'asset_class': 'index',
+                    'reason_code': 'internal_gap',
+                    'reason_text': (
+                        f'指数连续大段缺失：{first}~{last} 共 {length} 个交易日'
+                        '无 bar，缺口两侧均有数据'),
+                    'last_trade_date': before,
+                    'expected_rows': int(local.size + length),
+                    'actual_rows': int(local.size),
+                    'missing_rows': int(length),
+                    'severity': REASON_SEVERITY['internal_gap'],
+                    'detected_at': as_of,
+                })
+                covered.setdefault(ts_code, set()).update(int(x) for x in days)
+            start = end
+    return rows, covered
+
+
 def _tdx_rows(
     di: pl.DataFrame, store_root: Path, tdx_root: Path, as_of: date,
+    covered: Mapping[str, set[int]] | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     from src.data.local_store.build import discover_local_files
 
@@ -380,6 +467,9 @@ def _tdx_rows(
             continue
         local_end = int(local.max())
         missing = np.setdiff1d(tdx[tdx <= local_end], local)
+        if missing.size and covered and covered.get(ts_code):
+            # 已由连续空洞登记过的缺失日不再重复计入 TDX 对账行
+            missing = missing[~np.isin(missing, list(covered[ts_code]))]
         if missing.size:
             gap_rows.append({
                 'ts_code': ts_code,
@@ -757,6 +847,19 @@ def _coverage(di: pl.DataFrame, excluded: set[str]) -> dict[str, Any]:
     return result
 
 
+def _strict_excluded_codes(rows: pl.DataFrame) -> set[str]:
+    """按 :func:`is_tradable` 的 ``strict=True`` 口径汇总会被剔除的标的。"""
+    codes: set[str] = set()
+    for item in rows.iter_rows(named=True):
+        reason = item['reason_code']
+        if (reason in _BLOCKING_REASONS
+                or reason in ('stale_feed', 'bad_price_jump')
+                or (reason == 'bad_ohlc' and item['expected_rows'] > 1)
+                or (reason in _STRICT_WARNINGS and not _strict_ignorable(item))):
+            codes.add(item['ts_code'])
+    return codes
+
+
 def _summarize(
     rows: pl.DataFrame, di: pl.DataFrame, as_of: date,
     sources: Mapping[str, Any],
@@ -806,6 +909,7 @@ def _summarize(
             'block_only': _coverage(di, blocked),
             'all_reasons': _coverage(di, all_codes),
             'healthy_by_audit_definition': _coverage(di, healthy_codes),
+            'strict': _coverage(di, _strict_excluded_codes(rows)),
         },
         'price_jumps': dict(price_jumps) if price_jumps is not None else None,
         'sources': dict(sources),
@@ -846,7 +950,9 @@ def build_exclusions(
     if basic_tables is not None:
         rows.extend(_basic_rows(di, basic_tables, snapshot))
     if tdx_root is not None:
-        gap, short = _tdx_rows(di, root, _resolve_root(tdx_root), snapshot)
+        gap, covered = _continuous_gap_rows(root, snapshot)
+        rows.extend(gap)
+        gap, short = _tdx_rows(di, root, _resolve_root(tdx_root), snapshot, covered)
         rows.extend(gap)
         rows.extend(short)
     rows.extend(_bad_ohlc_rows(root, snapshot))
@@ -968,7 +1074,9 @@ def is_tradable(
     - ``stale_feed`` 仅在 ``as_of >= last_trade_date`` 时不可用（历史日期仍可用）；
     - ``bad_ohlc`` 默认只标记非法行、不影响整只票；仅当非法行占比超过
       :data:`BAD_OHLC_CODE_SHARE_LIMIT` 登记了整只停用汇总行时才不可用；
-    - ``internal_gap`` / ``no_basic_info`` 仅 ``strict=True`` 时不可用；
+    - ``internal_gap`` / ``no_basic_info`` 仅 ``strict=True`` 时不可用；其中通达信
+      自编指数（``880*`` / ``881*`` 板块与行业指数）的 ``internal_gap`` 只记录、
+      不剔除——这类指数不可投资、历史本身不完整；
     - ``tdx_truncated`` 只约束"禁止用 TDX 重建"，不影响本地数据可用性。
 
     Args:
@@ -988,4 +1096,8 @@ def is_tradable(
     if any(item['reason_code'] == 'bad_ohlc' and item['expected_rows'] > 1
            for item in reasons):
         return False
-    return not (strict and any(item['reason_code'] in _STRICT_WARNINGS for item in reasons))
+    strict_hits = [
+        item for item in reasons
+        if item['reason_code'] in _STRICT_WARNINGS and not _strict_ignorable(item)
+    ]
+    return not (strict and strict_hits)

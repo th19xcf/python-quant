@@ -250,7 +250,13 @@ class BT:
                     probe.append(c)
 
             eq_pre = self._mark(shares, cash, i_exec)
-            gate = self.gates[p.gate_ma][i_sig] if p.gate_low < 1.0 else 1.0
+            # 闸门序列为 0/1（收盘 > MA 记 1，否则 0）；线下暴露 = gate_low，线上 = 1。
+            # 旧实现只把 gate_low 当"是否启用闸门"的布尔开关，线下恒按 0 清仓，
+            # 导致 gate_low=0.5 与 0.0 结果完全相同（2026-11-09 修正）。
+            if p.gate_low < 1.0 and self.gates[p.gate_ma][i_sig] < 0.5:
+                gate = p.gate_low
+            else:
+                gate = 1.0
             lev = 1.0
             if p.vol_target > 0 and probe:
                 pv = self.port_vol(probe, [1.0] * len(probe), i_sig)

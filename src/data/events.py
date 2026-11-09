@@ -191,12 +191,17 @@ def _coerce_events(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def dedup_events(frame: pl.DataFrame) -> pl.DataFrame:
-    """同标的同类型 30 自然日内只保留最早一条（滤掉进展/结果类重复公告）。"""
+    """同标的同类型 30 自然日内只保留最早一条（滤掉进展/结果类重复公告）。
+
+    排序键必须带上 ``event_id`` 兜底：同一天常有多份同类型公告（如激励计划
+    草案与律所意见书），只按 ``publish_time`` 排序时「保留哪一条」取决于输入
+    行序，会让同一批次在不同进程选出不同的代表行，破坏重复导入的幂等性。
+    """
     if frame.is_empty():
         return frame
     records = sorted(frame.to_dicts(),
                      key=lambda item: (item['ts_code'], item['event_type'],
-                                       item['publish_time']))
+                                       item['publish_time'], item['event_id']))
     kept: list[dict[str, Any]] = []
     markers: dict[tuple[str, str], datetime] = {}
     for item in records:
@@ -208,6 +213,30 @@ def dedup_events(frame: pl.DataFrame) -> pl.DataFrame:
         markers[key] = item['publish_time']
         kept.append(item)
     return _coerce_events(pl.DataFrame(kept, infer_schema_length=None))
+
+
+def _drop_near_existing(batch: pl.DataFrame,
+                        existing: pl.DataFrame) -> pl.DataFrame:
+    """剔除与既有行同标的同类型且相距 ≤30 天的批次行。
+
+    既有行本身一条不动，这里只决定「新行要不要写进来」。没有这一步，
+    同一天的多份同类型公告（不同 ``art_code``）会在换一个代表行时被重复
+    追加，重复导入同一批次就不再幂等。
+    """
+    if batch.is_empty() or existing.is_empty():
+        return batch
+    window = timedelta(days=DEDUP_DAYS)
+    known: dict[tuple[str, str], list[datetime]] = {}
+    for ts_code, event_type, publish_time in existing.select(
+            'ts_code', 'event_type', 'publish_time').iter_rows():
+        known.setdefault((ts_code, event_type), []).append(publish_time)
+    keep: list[bool] = []
+    for ts_code, event_type, publish_time in batch.select(
+            'ts_code', 'event_type', 'publish_time').iter_rows():
+        times = known.get((ts_code, event_type)) or []
+        near = any(abs(publish_time - t) <= window for t in times)
+        keep.append(not near)
+    return batch.filter(pl.Series('_keep', keep))
 
 
 def load_events(store_root: Path | str) -> pl.DataFrame:
@@ -238,6 +267,17 @@ def _write_coverage(store_root: Path | str, frame: pl.DataFrame,
                     coverage_end: Any = None) -> dict[str, Any]:
     start_day = _as_date(coverage_start)
     end_day = _as_date(coverage_end)
+    # 保留既有声明里的附加字段（如分片审计口径），只覆盖本次能计算出的键，
+    # 避免一次入库把人工补充的可回溯性说明整体冲掉。
+    path = coverage_path(store_root)
+    payload: dict[str, Any] = {}
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding='utf-8'))
+            if isinstance(loaded, dict):
+                payload = loaded
+        except (OSError, ValueError) as exc:
+            logger.warning(f'[events] 覆盖声明读取失败，将整体重写: {exc}')
     if frame.is_empty():
         info: dict[str, Any] = {
             'source': source,
@@ -260,9 +300,9 @@ def _write_coverage(store_root: Path | str, frame: pl.DataFrame,
             'declared': bool(start_day and end_day),
             'updated_at': datetime.now().isoformat(timespec='seconds'),
         }
-    path = coverage_path(store_root)
+    payload.update(info)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(info, ensure_ascii=False, indent=2),
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                     encoding='utf-8')
     return info
 
@@ -290,8 +330,18 @@ def import_file(path: Path | str, store_root: Path | str | None = None,
                 mode: str = 'replace', source: str = 'cninfo',
                 complete: bool = True, start: Any = None,
                 end: Any = None, coverage_start: Any = None,
-                coverage_end: Any = None) -> dict[str, Any]:
+                coverage_end: Any = None,
+                dry_run: bool = False) -> dict[str, Any]:
     """导入离线事件文件；``mode='replace'`` 全量替换，``'append'`` 增量合并。
+
+    ``append`` 的去重语义（与早期版本不同，务必留意）：
+
+    - **既有行一律保留**：按 ``event_id`` 判定，既有记录不参与任何去重，
+      一条不删、一个字段不改；
+    - **30 日去重只在本次新批次内部生效**：新批次先剔除与既有行重复的
+      ``event_id``，再在批次内做同标的同类型 30 日去重，不与既有行比较——
+      因此补历史数据不会因为新出现的更早公告把既有行挤掉；
+    - ``dry_run=True`` 只计算不落盘，返回将新增、将丢弃与既有行受影响数。
 
     ``coverage_start/end`` 是**覆盖声明**（该区间内已完整抓取），与
     ``start/end``（记录过滤）分开：声明区间之外的日期一律按 ``unknown`` 处理。
@@ -309,6 +359,8 @@ def import_file(path: Path | str, store_root: Path | str | None = None,
     if incoming.is_empty():
         raise ValueError(f'事件文件没有可用记录: {file_path}')
 
+    stats: dict[str, Any] = {}
+    source_rows = raw.height
     if mode == 'append':
         existing = load_events(root)
         if not existing.is_empty():
@@ -319,19 +371,62 @@ def import_file(path: Path | str, store_root: Path | str | None = None,
                     'append 会按 event_id 保留首条，重复行将被丢弃——'
                     '若这些行本应是不同事件，说明上游 ID 生成缺少区分维度'
                 )
-            incoming = pl.concat([existing, incoming], how='vertical_relaxed')
-        incoming = incoming.unique(subset=['event_id'], keep='first',
-                                   maintain_order=True)
-        incoming = dedup_events(incoming)
+            existing_ids = set(existing['event_id'].to_list())
+            batch = incoming.filter(~pl.col('event_id').is_in(list(existing_ids)))
+        else:
+            batch = incoming
+        dropped_existing_conflict = incoming.height - batch.height
+        batch_after_conflict = batch.height
+        batch = _drop_near_existing(batch, existing)
+        dropped_near_existing = batch_after_conflict - batch.height
+        batch = batch.unique(subset=['event_id'], keep='first',
+                             maintain_order=True)
+        batch = dedup_events(batch)
+        stats = {
+            'existing_rows': existing.height,
+            'source_rows': source_rows,
+            'batch_rows': incoming.height,
+            'added': batch.height,
+            # 与既有行重复而跳过（既有行保留，新行不覆盖）
+            'dropped_existing_conflict': dropped_existing_conflict,
+            # 与既有行同标的同类型且相距 ≤30 天而跳过
+            'dropped_near_existing': dropped_near_existing,
+            # 批次内丢弃：标题/关键词过滤 + event_id 重复 + 30 日去重
+            'dropped_in_batch': source_rows - dropped_existing_conflict
+            - dropped_near_existing - batch.height,
+            'existing_affected': 0,
+        }
+        if batch.height:
+            merged = pl.concat([existing, batch], how='vertical_relaxed')
+        else:
+            merged = existing
+        if not existing.is_empty():
+            lost = set(existing['event_id'].to_list()) - set(merged['event_id'].to_list())
+            if lost:
+                raise RuntimeError(
+                    f'append 破坏了既有行（{len(lost)} 条 event_id 丢失），已中止写入')
+    else:
+        merged = incoming
+        stats = {'existing_rows': 0, 'source_rows': source_rows,
+                 'batch_rows': incoming.height, 'added': incoming.height,
+                 'dropped_existing_conflict': 0,
+                 'dropped_near_existing': 0,
+                 'dropped_in_batch': source_rows - incoming.height,
+                 'existing_affected': 0}
 
     path_out = events_path(root)
+    if dry_run:
+        logger.info(f'[events] dry-run：{mode} 将写入 {merged.height} 条（未落盘）→ {path_out}')
+        return {'rows': merged.height, 'mode': mode, 'coverage': None,
+                'source_format': kind, 'dry_run': True, **stats}
+
     path_out.parent.mkdir(parents=True, exist_ok=True)
-    incoming.write_parquet(path_out)
-    coverage = _write_coverage(root, incoming, source, complete,
+    merged.write_parquet(path_out)
+    coverage = _write_coverage(root, merged, source, complete,
                                coverage_start, coverage_end)
-    logger.info(f'[events] {mode} 导入 {incoming.height} 条 → {path_out}')
-    return {'rows': incoming.height, 'mode': mode, 'coverage': coverage,
-            'source_format': kind}
+    logger.info(f'[events] {mode} 导入 {merged.height} 条 → {path_out}')
+    return {'rows': merged.height, 'mode': mode, 'coverage': coverage,
+            'source_format': kind, 'dry_run': False, **stats}
 
 
 def _default_store_root() -> Path:
