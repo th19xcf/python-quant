@@ -163,6 +163,9 @@ research/events/data/backfill/
 # Agent 工作区记忆与会话状态（本地数据，不入库）
 .workbuddy/
 
+# 通达信码表本地副本（names.json 的重建来源，体积大且由 backup_critical_assets 单独备份，不入库）
+external/tdx_hq_cache/
+
 # 本地临时脚本与基准/调试产物（一次性，不入库）
 tmp/
 
