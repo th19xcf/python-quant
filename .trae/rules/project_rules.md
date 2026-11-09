@@ -96,6 +96,15 @@ print(f'synced {len(changed)} files, removed {len(deleted)} deleted')
 - **异常先报后动**：提交前若发现未预期的文件变更（比如不属于本次范围的 `M`/`??`），先如实报出，不要顺手带上。
 - **提交前必须自证可用**：提交前至少跑通本次改动相关的单测与静态检查（ruff/mypy）；若存在与本改动无关的既有失败项，必须在报告中单独列出并说明归属，不得笼统写成"全部通过"。
 
+## 备份仓库提交规范
+
+- **提交标题格式**：`type(scope): YYYY-M-D，中文描述`，日期紧跟冒号，用中文逗号与描述分隔，月、日不补零；示例 `chore(backup): 2026-11-9，同步 2026-11-09 数据质量、研究脚本与审计文档`
+- **正文每行同样以类型前缀开头**：格式 `type(scope): YYYY-M-D，中文描述`，逐行连续书写；标题与正文之间、正文各条目之间一律不插空行
+- **Commit message 文件必须无 BOM**：沿用源仓库既有约定，用 `.venv\Scripts\python.exe` 以 `open(p, 'w', encoding='utf-8', newline='\n')` 写临时文件后 `git commit -F <文件>`，提交前自检首 3 字节不为 `EF BB BF`
+- **职责归属**：备份仓库 `E:\git\python-quant` 的维护、提交与推送由助手负责；每次备份同步完成后直接提交并推送，不需要用户再提醒
+- **仓库形态与推送约定**：源仓库 `e:\code\python\quant` 仅本地、未配置任何远端，只做本地提交，不 fetch、不 push，也不要给它添加远端；备份仓库 `E:\git\python-quant` 是唯一关联 GitHub 的仓库（origin 指向 `th19xcf/python-quant`），其提交推送至该仓库自己的 `main`。两个仓库独立管理、互不约束，不需要跨库对齐或快进
+- **红线继承**：备份仓库只做增量 `copy2` 与「源端已删文件」的对位删除；禁止 `rmtree`、禁止碰其 `.git`、禁止 force push（`--force` / `--force-with-lease`）与任何改写历史的操作
+
 ## 备份同步规则
 
 - **每次执行 git 提交前，必须先把本次修改的文件同步到备份目录 `e:\git\python-quant\` 下对应的位置**（保持与仓库相同的相对路径结构）

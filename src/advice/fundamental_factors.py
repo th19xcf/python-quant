@@ -26,7 +26,7 @@ from typing import Any, Iterable
 
 import polars as pl
 
-from src.data.financials.store import read_table
+from src.data.financials.store import financials_dir, read_table
 from src.data.local_store.share_capital import read_shares
 
 
@@ -146,6 +146,55 @@ def _asof_join(left: pl.DataFrame, right: pl.DataFrame, left_on: str,
         check_sortedness=False)
 
 
+def _latest_period_per_announcement(view: pl.DataFrame) -> pl.DataFrame:
+    """同一 ``ann_date`` 有多期公告时，保留 ``end_date`` 最新的一期。
+
+    A 股年报与一季报常同日披露；若 ``join_asof`` 对并列 ann_date 取到较早的
+    报告期，TTM 会滞后一个季度。这里显式按 ``end_date`` 取最新报告期；若
+    ``end_date`` 也并列（极少，通常是同一报告期的重复行），保留排序后的最后
+    一版，以保证结果稳定可复现。
+    """
+    if view.is_empty():
+        return view
+    keys = ['ts_code', 'ann_date']
+    values = [name for name in view.columns if name not in keys]
+    return (view.sort([*keys, 'end_date'])
+            .group_by(keys, maintain_order=True)
+            .agg([pl.col(name).last() for name in values]))
+
+
+def _load_dividend_patch(store_root: Any, codes: list[str],
+                         start: date, end: date) -> pl.DataFrame:
+    """2018 年前股息率补丁（``dp``，百分数，与 ``dv_ratio`` 同量纲）。
+
+    原始 ``valuation_daily`` 的 ``dv_ratio`` 在 2018 年前全空；补丁由分红明细
+    按 PIT 口径回算，已在 2018-2020 与原表逐值对拍一致。仅用于补齐历史缺口。
+    """
+    path = financials_dir(store_root) / 'valuation_pre2018_patch.parquet'
+    if not path.exists():
+        return pl.DataFrame(schema={'ts_code': pl.Utf8, 'trade_date': pl.Date,
+                                    'dp': pl.Float64})
+    return (pl.scan_parquet(path)
+            .select('ts_code', 'trade_date', pl.col('dp').cast(pl.Float64))
+            .filter(pl.col('trade_date') < date(2018, 1, 1),
+                    pl.col('trade_date') >= start,
+                    pl.col('trade_date') <= end,
+                    pl.col('ts_code').is_in(codes))
+            .collect())
+
+
+def _apply_dividend_patch(valuation: pl.DataFrame,
+                          patch: pl.DataFrame) -> pl.DataFrame:
+    """把补丁并入 valuation 的 ``dv_ratio``；已有值一律不覆盖。"""
+    if valuation.is_empty() or patch.is_empty():
+        return valuation
+    joined = valuation.join(patch, on=['ts_code', 'trade_date'], how='left')
+    return joined.with_columns(
+        pl.when(pl.col('dv_ratio').is_null() & pl.col('dp').is_not_null())
+        .then(pl.col('dp')).otherwise(pl.col('dv_ratio'))
+        .alias('dv_ratio')).drop('dp')
+
+
 def build_fundamentals(panel: pl.DataFrame, valuation: pl.DataFrame,
                        shares: pl.DataFrame, income: pl.DataFrame,
                        balance: pl.DataFrame) -> pl.DataFrame:
@@ -184,6 +233,8 @@ def build_fundamentals(panel: pl.DataFrame, valuation: pl.DataFrame,
         else pl.DataFrame()
     balance_view = balance_metrics(balance) if not balance.is_empty() \
         else pl.DataFrame()
+    income_view = _latest_period_per_announcement(income_view)
+    balance_view = _latest_period_per_announcement(balance_view)
     base = _asof_join(base, income_view, 'date', 'ann_date')
     base = _asof_join(base, balance_view, 'date', 'ann_date')
 
@@ -239,6 +290,9 @@ def compute_fundamental_factors(panel: pl.DataFrame,
 
     valuation = read_table('valuation', store_root, codes=codes,
                            start=start, end=end)
+    if start < date(2018, 1, 1):
+        patch = _load_dividend_patch(store_root, codes, start, end)
+        valuation = _apply_dividend_patch(valuation, patch)
     income = read_table('income', store_root, codes=codes)
     balance = read_table('balance', store_root, codes=codes)
     shares = read_shares(columns=['ts_code', 'effective_date', 'float_share'])

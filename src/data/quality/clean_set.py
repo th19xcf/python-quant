@@ -63,6 +63,7 @@ from loguru import logger
 from src.data.adj_factor_calculator import calc_dividend_event_factor
 from src.data.quality.anomalies import iter_anomalies
 from src.data.quality.code_migration import load_entity_index
+from src.data.quality.suspension_union import SuspensionUnion, load_suspension_union
 from src.utils.code_converter import is_fund_code, is_index_code
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -373,6 +374,7 @@ class CodeInfo:
     suspected_st: bool = False
     date_excl_standard: set[int] = field(default_factory=set)
     date_excl_strict: set[int] = field(default_factory=set)
+    date_suspended: set[int] = field(default_factory=set)
 
 
 class EligibilityEngine:
@@ -381,6 +383,7 @@ class EligibilityEngine:
     #: 手工组装引擎（测试）时的默认值，避免未跑 __init__ 的属性缺失。
     close_fund_dividend_pending_scope: str = 'none'
     etf_codes: set[str] | None = None
+    suspension_union: SuspensionUnion | None = None
 
     @property
     def close_fund_dividend_pending(self) -> bool:
@@ -418,6 +421,7 @@ class EligibilityEngine:
         self._load_meta()
         self._load_calendar()
         self._load_quote_stats()
+        self._load_implied_suspension()
         self._load_factor_stats()
         self._load_dividend_flags()
         self._load_anomaly_lists()
@@ -797,6 +801,25 @@ class EligibilityEngine:
                 start=None, end=None, market=code.rsplit('.', 1)[-1].lower(),
             )
 
+    def _load_implied_suspension(self) -> None:
+        """并入「占位 bar 型停牌」日（volume/amount 为 NULL 且四价相等）。
+
+        与既有 ``suspension_daily``（缺口型）取并集后按日标记，判据语义不变，
+        只补上原先漏掉的日期；两表文件缺失时按空表处理，不阻断索引构建。
+        """
+        try:
+            union = load_suspension_union(self.root)
+        except Exception as exc:  # noqa: BLE001 - 缺表/坏表不应阻断准入索引
+            logger.warning(f'停牌并集加载失败，按仅缺口口径继续: {exc}')
+            self.suspension_union = None
+            return
+        self.suspension_union = union
+        for code, day in zip(union.frame['ts_code'], union.frame['trade_date'],
+                             strict=True):
+            info = self.codes.get(str(code))
+            if info is not None:
+                info.date_suspended.add(day.toordinal())
+
     def _load_fake_bar_list(self, fake: pl.DataFrame | None) -> None:
         """基金源端假收盘：仅剔除该日，不整段剔除标的。"""
         if fake is None:
@@ -976,6 +999,8 @@ class EligibilityEngine:
         if o > info.end_ord:
             return ['temporal_source_stopped']
         if not self._has_quote(info, o):
+            return ['temporal_gap_or_suspension']
+        if o in info.date_suspended:
             return ['temporal_gap_or_suspension']
         return []
 

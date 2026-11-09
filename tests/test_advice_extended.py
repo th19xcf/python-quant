@@ -325,6 +325,57 @@ def test_fundamentals_respect_ann_date_and_cap_ratios() -> None:
     assert after['ext_turnover_20'] == pytest.approx(0.01)
 
 
+def test_fundamentals_same_day_annual_and_q1_prefers_latest_period() -> None:
+    """年报与一季报同日披露时，TTM 取最新报告期（Q1），而不是较早的年报。"""
+    panel = pl.DataFrame({
+        'ts_code': ['000001.SZ'],
+        'date': [date(2023, 5, 10)],
+        'volume': [10_000.0],
+    })
+    valuation = pl.DataFrame({
+        'ts_code': ['000001.SZ'],
+        'trade_date': [date(2023, 5, 10)],
+        'total_mv': [1.0e10],
+        'circ_mv': [8.0e9],
+        'dv_ratio': [2.0],
+    })
+    shares = pl.DataFrame({
+        'ts_code': ['000001.SZ'],
+        'effective_date': [date(2020, 1, 1)],
+        'float_share': [100_000_000],
+    })
+    income = _statement_frame([
+        {'ts_code': '000001.SZ', 'end_date': date(2021, 12, 31),
+         'ann_date': date(2022, 3, 30), 'revenue': 400.0,
+         'parent_net_profit': 40.0, 'total_assets': None, 'total_equity': None},
+        {'ts_code': '000001.SZ', 'end_date': date(2022, 3, 31),
+         'ann_date': date(2022, 4, 28), 'revenue': 100.0,
+         'parent_net_profit': 10.0, 'total_assets': None, 'total_equity': None},
+        {'ts_code': '000001.SZ', 'end_date': date(2022, 12, 31),
+         'ann_date': date(2023, 4, 28), 'revenue': 500.0,
+         'parent_net_profit': 50.0, 'total_assets': None, 'total_equity': None},
+        {'ts_code': '000001.SZ', 'end_date': date(2023, 3, 31),
+         'ann_date': date(2023, 4, 28), 'revenue': 120.0,
+         'parent_net_profit': 12.0, 'total_assets': None, 'total_equity': None},
+    ])
+    balance = _statement_frame([
+        {'ts_code': '000001.SZ', 'end_date': date(2022, 12, 31),
+         'ann_date': date(2023, 4, 28), 'revenue': None,
+         'parent_net_profit': None, 'total_assets': 9.0e10,
+         'total_equity': 1.0e9},
+        {'ts_code': '000001.SZ', 'end_date': date(2023, 3, 31),
+         'ann_date': date(2023, 4, 28), 'revenue': None,
+         'parent_net_profit': None, 'total_assets': 9.5e10,
+         'total_equity': 1.2e9},
+    ])
+
+    row = build_fundamentals(panel, valuation, shares, income, balance).to_dicts()[0]
+    # 取 Q1 TTM：120 + 500 - 100 = 520；若误取年报则为 500
+    assert row['ff_sales_yield'] == pytest.approx(520.0 / 1.0e10)
+    assert row['ff_value_ep'] == pytest.approx((12.0 + 50.0 - 10.0) / 1.0e10)
+    assert row['ff_value_bp'] == pytest.approx(1.2e9 / 1.0e10)
+
+
 def _scored_panel(days: int = 140, codes: int = 40) -> pl.DataFrame:
     """分数 = -(未来 5 日收益)，刻意制造负 IC 以验证告警。"""
     rng = np.random.default_rng(7)

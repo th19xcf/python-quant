@@ -127,6 +127,21 @@ config.ini
 # Trae IDE 历史规划文档（与当前实现脱节，保留 rules/ 开发规则）
 .trae/documents/
 
+# docs/ 下的英文件名旧副本：均为同名中文文档的重复拷贝，2026-11-06 已整体移到
+# logs/migration_leftover_20261106/；上游 GitHub 备份仓库仍跟踪这些文件，每次
+# 从备份目录回拷会重复落到 docs/，故按精确路径忽略，防止再次被误入库
+/docs/analytics_validation_report.md
+/docs/architecture.md
+/docs/data_quality_audit_2026-11-03.md
+/docs/event_news_feasibility_report.md
+/docs/factor_lib_report.md
+/docs/fund_daily_constraints_review.md
+/docs/host_migration_inventory.md
+/docs/learning_phase1_report.md
+/docs/mootdx_feasibility_report.md
+/docs/tdx_calibration_guide.md
+/docs/vectorized_signal_benchmark.md
+
 # Quickstart 运行产物
 examples/output/
 
