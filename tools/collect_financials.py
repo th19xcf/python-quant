@@ -7,10 +7,14 @@
     .venv\\Scripts\\python.exe tools\\collect_financials.py --only statements
     .venv\\Scripts\\python.exe tools\\collect_financials.py --merge-only
     .venv\\Scripts\\python.exe tools\\collect_financials.py --valuation-limit 50
+    .venv\\Scripts\\python.exe tools\\collect_financials.py --only valuation --since 2026-11-07 --until 2026-11-09
 
 说明：
 - 默认采集 2016Q1 至最近一个已结束季度；
 - 分片落 ``data/local_store/meta/financials/parts``，中断后重跑自动续传；
+- ``--since``/``--until`` 为估值区间增量：只落区间内的行，已补完该区间的代码
+  按 ``progress.json`` 断点跳过，中断重跑不重写全历史；``--force`` 仍是全历史重写，
+  两者互斥；
 - 不写 MySQL、不改现有库结构。
 """
 
@@ -35,6 +39,7 @@ from src.data.financials.collector import (  # noqa: E402
 from src.data.financials.store import (  # noqa: E402
     coverage,
     financials_dir,
+    merge_parts,
 )
 from src.database.db_manager import DatabaseManager  # noqa: E402
 from src.database.models.stock import StockBasic  # noqa: E402
@@ -81,13 +86,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--force', action='store_true', help='忽略已有分片重采')
     parser.add_argument('--valuation-limit', type=int, default=0,
                         help='仅采前 N 只估值（调试用，0 表示全量）')
+    parser.add_argument('--since', default='',
+                        help='估值区间增量起点（含，YYYY-MM-DD）：只落该日之后的行，'
+                             '按 progress.json 断点续跑，不重写全历史')
+    parser.add_argument('--until', default='',
+                        help='估值区间增量终点（含，YYYY-MM-DD），仅与 --since 同用，'
+                             '缺省为今天')
     parser.add_argument('--merge-only', action='store_true', help='只合并现有分片')
     parser.add_argument('--no-merge', action='store_true', help='采集后不合并')
     return parser.parse_args()
 
 
+def parse_range(args: argparse.Namespace) -> tuple[date | None, date | None]:
+    """解析并校验 ``--since`` / ``--until``（与 ``--force`` 互斥）。"""
+    since = date.fromisoformat(args.since) if args.since else None
+    until = date.fromisoformat(args.until) if args.until else None
+    if args.force and since is not None:
+        raise SystemExit('--force 与 --since 语义冲突：--force 是全历史重写，'
+                         '--since 是区间增量')
+    if until is not None and since is None:
+        raise SystemExit('--until 需要与 --since 一起使用')
+    if since is not None and args.only not in {'valuation'}:
+        raise SystemExit('--since/--until 目前只支持 --only valuation')
+    if since is not None and until is not None and since > until:
+        raise SystemExit(f'--since({since}) 不能晚于 --until({until})')
+    return since, until
+
+
 def main() -> int:
     args = parse_args()
+    since, until = parse_range(args)
     started = time.perf_counter()
     store_root = PROJECT_ROOT / 'data' / 'local_store'
     config = Config()
@@ -126,7 +154,10 @@ def main() -> int:
     if args.only in {'all', 'valuation'}:
         codes = listed[:args.valuation_limit] if args.valuation_limit else listed
         results['valuation'] = collector.collect_valuation(
-            codes, force=args.force).__dict__
+            codes, force=args.force, since=since, until=until).__dict__
+        if since is not None and not args.no_merge:
+            # 区间增量只动估值表，合并也只重建 valuation_daily，不重写三表
+            results['merge'] = {'valuation': merge_parts('valuation', store_root)}
     if args.only == 'parent':
         results['parent'] = collector.backfill_parent_net_profit(periods).__dict__
     if args.only in {'all', 'merge', 'parent'} and not args.no_merge:

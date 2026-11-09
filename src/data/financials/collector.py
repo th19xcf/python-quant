@@ -183,18 +183,21 @@ class FinancialsCollector:
         path = self.base_dir / 'progress.json'
         if not path.exists():
             return {'statements': {}, 'ann_dates': [], 'bj_balance': [],
-                    'bj_statements': {}, 'valuation': [], 'updated_at': None}
+                    'bj_statements': {}, 'valuation': [], 'valuation_ranges': {},
+                    'updated_at': None}
         try:
             data = json.loads(path.read_text(encoding='utf-8'))
         except (OSError, ValueError) as exc:
             logger.warning(f'[financials] progress.json 读取失败，按空进度重启: {exc}')
             return {'statements': {}, 'ann_dates': [], 'bj_balance': [],
-                    'bj_statements': {}, 'valuation': [], 'updated_at': None}
+                    'bj_statements': {}, 'valuation': [], 'valuation_ranges': {},
+                    'updated_at': None}
         data.setdefault('statements', {})
         data.setdefault('ann_dates', [])
         data.setdefault('bj_balance', [])
         data.setdefault('bj_statements', {})
         data.setdefault('valuation', [])
+        data.setdefault('valuation_ranges', {})
         return data
 
     def _save_progress(self) -> None:
@@ -519,21 +522,78 @@ class FinancialsCollector:
     # ------------------------------------------------------------------
     # 日频估值
     # ------------------------------------------------------------------
-    def collect_valuation(self, codes: Sequence[str], *,
-                          force: bool = False, batch_size: int = 100) -> CollectResult:
-        """采集单票日频估值（``stock_value_em``），按批写分片。"""
-        started = time.perf_counter()
-        result = CollectResult(section='valuation')
-        done = set(self._progress.get('valuation', []))
-        for path in sorted(store.parts_dir('valuation', self.store_root).glob('*.parquet')):
+    def _valuation_resume_state(self, since: date | None, until: date | None,
+                                ) -> tuple[str | None, str, set[str]]:
+        """返回 ``(区间键, 分片前缀, 已完成代码)``；区间模式下只认同区间的分片。"""
+        batch_dir = store.parts_dir('valuation', self.store_root)
+        if since is None:
+            range_key, prefix = None, 'batch_'
+            done = set(self._progress.get('valuation', []))
+            source_files = sorted(batch_dir.glob('*.parquet'))
+        elif until is None:
+            raise ValueError('until 需要与 since 一起使用')
+        else:
+            range_key = f'{since.isoformat()}_{until.isoformat()}'
+            prefix = f'incr_{since:%Y%m%d}_'
+            ranges = self._progress.get('valuation_ranges', {})
+            if range_key not in ranges:
+                # 只保留当前区间的断点桶，避免 progress.json 随时间无限增长；
+                # 历史区间的分片本身（incr_YYYYMMDD_*.parquet）仍是可恢复依据
+                ranges = {range_key: []}
+                self._progress['valuation_ranges'] = ranges
+            done = set(ranges.get(range_key, []))
+            source_files = sorted(batch_dir.glob(f'{prefix}*.parquet'))
+        for path in source_files:
             try:
                 done.update(pl.read_parquet(path, columns=['ts_code'])
                             ['ts_code'].unique().to_list())
             except (OSError, pl.exceptions.PolarsError) as exc:
                 logger.warning(f'[financials] 估值分片读取失败 {path}: {exc}')
+        return range_key, prefix, done
+
+    def _mark_valuation_done(self, code: str, range_key: str | None) -> None:
+        if range_key is None:
+            self._mark_done('valuation', code)
+        else:
+            self._mark_done('valuation_ranges', code, sub=range_key)
+
+    @staticmethod
+    def _clip_valuation(frame: pl.DataFrame, since: date | None,
+                        until: date | None) -> pl.DataFrame:
+        """区间模式下只保留 ``since <= trade_date <= until``。"""
+        if since is None:
+            return frame
+        clipped = frame.filter(pl.col('trade_date') >= since)
+        return clipped if until is None else clipped.filter(pl.col('trade_date') <= until)
+
+    def collect_valuation(self, codes: Sequence[str], *,
+                          force: bool = False, batch_size: int = 100,
+                          since: date | None = None,
+                          until: date | None = None) -> CollectResult:
+        """采集单票日频估值（``stock_value_em``），按批写分片。
+
+        两种模式互斥：
+
+        - 默认 / ``force=True``：每票落全历史；``force`` 额外忽略断点重采全部代码；
+        - ``since``（可配 ``until``）：区间增量，只落 ``since <= trade_date <= until``
+          的行，断点记在 ``progress.json`` 的 ``valuation_ranges`` 下（按区间分桶），
+          已补完该区间的代码直接跳过，中断后重跑不会重写全历史。
+        """
+        if force and since is not None:
+            raise ValueError('force（全历史重写）与 since（区间增量）互斥')
+        if until is not None and since is None:
+            raise ValueError('until 需要与 since 一起使用')
+        if since is not None:
+            until = until or date.today()
+            if since > until:
+                raise ValueError(f'since({since}) 不能晚于 until({until})')
+
+        started = time.perf_counter()
+        result = CollectResult(section='valuation')
         batch_dir = store.parts_dir('valuation', self.store_root)
         batch_dir.mkdir(parents=True, exist_ok=True)
-        existing_batches = len(list(batch_dir.glob('*.parquet')))
+        range_key, prefix, done = self._valuation_resume_state(since, until)
+        existing_batches = len(list(batch_dir.glob(f'{prefix}*.parquet')))
         pending = [c for c in codes if force or c not in done]
 
         dividends = self._load_dividends()
@@ -549,7 +609,7 @@ class FinancialsCollector:
                 return code, None, error
             try:
                 frame = normalize_valuation(df, code, dividends)
-                return code, frame, None
+                return code, self._clip_valuation(frame, since, until), None
             # 兜底理由：单票字段异常记失败，不中断线程池
             except Exception as exc:  # noqa: BLE001
                 self._record_failure('valuation', ts_code=code, period='ALL',
@@ -562,7 +622,7 @@ class FinancialsCollector:
                 return
             frame = pl.concat(buffer, how='vertical_relaxed')
             batch_no += 1
-            path = batch_dir / f'batch_{batch_no:04d}.parquet'
+            path = batch_dir / f'{prefix}{batch_no:04d}.parquet'
             tmp = path.with_name(path.name + '.tmp')
             frame.write_parquet(tmp, compression='zstd', statistics=True)
             os.replace(tmp, path)
@@ -578,15 +638,18 @@ class FinancialsCollector:
                 if frame is None:
                     result.failed += 1
                     continue
-                buffer.append(frame)
                 result.rows += frame.height
-                self._mark_done('valuation', code)
+                if frame.height:
+                    buffer.append(frame)
+                self._mark_valuation_done(code, range_key)
                 if len(buffer) >= batch_size:
                     _flush()
         _flush()
         self._save_progress()
         result.elapsed_s = round(time.perf_counter() - started, 2)
         result.details['codes'] = len(pending)
+        if range_key is not None:
+            result.details['range'] = range_key
         return result
 
     def _write_part(self, table: str, name: str, frame: pl.DataFrame) -> None:

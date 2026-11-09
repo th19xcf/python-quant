@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 
-"""采集器规范化纯函数的单测（不发起网络请求）。"""
+"""采集器规范化纯函数与估值增量模式（不发起网络请求）。"""
 
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pandas as pd
 import polars as pl
 import pytest
 
-from src.data.financials import collector
+from src.data.financials import collector, store
 from src.data.financials.collector import (
+    FinancialsCollector,
     infer_ts_code,
     normalize_bulk_statement,
     normalize_valuation,
@@ -148,3 +150,115 @@ def test_bulk_mapping_covers_schema_columns() -> None:
         assert set(mapping.values()) <= set(
             __import__('src.data.financials.store', fromlist=['SCHEMAS'])
             .SCHEMAS[table]), table
+
+
+# ----------------------------------------------------------------------
+# 估值区间增量（--since / --until）
+# ----------------------------------------------------------------------
+def _fake_value_frame(dates: list[date]) -> pd.DataFrame:
+    return pd.DataFrame({
+        '数据日期': [d.isoformat() for d in dates],
+        '当日收盘价': [10.0] * len(dates),
+        'PE(TTM)': [20.0] * len(dates),
+        'PE(静)': [21.0] * len(dates),
+        '市净率': [2.0] * len(dates),
+        '市销率': [1.0] * len(dates),
+        '总市值': [1.0e8] * len(dates),
+        '流通市值': [9.0e7] * len(dates),
+    })
+
+
+def _patch_value_em(monkeypatch: pytest.MonkeyPatch, dates: list[date],
+                    calls: list[str]) -> None:
+    def fake(symbol: str = '', **_: object) -> pd.DataFrame:
+        calls.append(symbol)
+        return _fake_value_frame(dates)
+
+    monkeypatch.setattr(collector.ak, 'stock_value_em', fake)
+
+
+def test_collect_valuation_since_only_writes_rows_in_range(
+        tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    _patch_value_em(monkeypatch, [date(2026, 11, 6), date(2026, 11, 9)], calls)
+    c = FinancialsCollector(tmp_path, workers=1, valuation_interval=0.0)
+
+    result = c.collect_valuation(['600519.SH', '000001.SZ'],
+                                 since=date(2026, 11, 7), until=date(2026, 11, 9))
+
+    assert result.rows == 2
+    assert sorted(calls) == ['000001', '600519']
+    files = sorted(store.parts_dir('valuation', tmp_path).glob('incr_20261107_*.parquet'))
+    assert len(files) == 1
+    batch = pl.read_parquet(files[0])
+    assert batch.height == 2
+    assert batch['trade_date'].unique().to_list() == [date(2026, 11, 9)]
+
+
+def test_collect_valuation_since_skips_completed_codes(
+        tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    _patch_value_em(monkeypatch, [date(2026, 11, 6), date(2026, 11, 9)], calls)
+    codes = ['600519.SH', '000001.SZ']
+
+    first = FinancialsCollector(tmp_path, workers=1, valuation_interval=0.0)
+    first.collect_valuation(codes, since=date(2026, 11, 7), until=date(2026, 11, 9))
+    assert len(calls) == 2
+
+    calls.clear()
+    again = FinancialsCollector(tmp_path, workers=1, valuation_interval=0.0)
+    result = again.collect_valuation(codes, since=date(2026, 11, 7),
+                                     until=date(2026, 11, 9))
+    assert result.units == 0
+    assert calls == []
+    assert result.rows == 0
+
+    progress = json.loads(
+        (tmp_path / 'meta' / 'financials' / 'progress.json').read_text(encoding='utf-8'))
+    assert set(progress['valuation_ranges']['2026-11-07_2026-11-09']) == set(codes)
+
+
+def test_collect_valuation_since_resumes_from_parts(
+        tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """progress.json 丢失时，靠已有区间分片恢复断点，不重复写。"""
+    calls: list[str] = []
+    _patch_value_em(monkeypatch, [date(2026, 11, 6), date(2026, 11, 9)], calls)
+    codes = ['600519.SH', '000001.SZ']
+
+    FinancialsCollector(tmp_path, workers=1, valuation_interval=0.0).collect_valuation(
+        codes, since=date(2026, 11, 7), until=date(2026, 11, 9))
+    progress_path = tmp_path / 'meta' / 'financials' / 'progress.json'
+    progress_path.unlink()
+
+    calls.clear()
+    resume = FinancialsCollector(tmp_path, workers=1, valuation_interval=0.0)
+    result = resume.collect_valuation([*codes, '300750.SZ'], since=date(2026, 11, 7),
+                                      until=date(2026, 11, 9))
+
+    assert calls == ['300750']
+    assert result.units == 1
+    assert result.rows == 1
+    merged = store.merge_parts('valuation', tmp_path)
+    table = pl.read_parquet(store.table_path('valuation', tmp_path))
+    assert merged == 3
+    assert table.filter(pl.col('ts_code') == '300750.SZ').height == 1
+    assert table.select('ts_code', 'trade_date').is_duplicated().sum() == 0
+
+
+def test_collect_valuation_force_rewrites_history(
+        tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    _patch_value_em(monkeypatch, [date(2026, 11, 6), date(2026, 11, 9)], calls)
+
+    first = FinancialsCollector(tmp_path, workers=1, valuation_interval=0.0)
+    first.collect_valuation(['600519.SH'], since=date(2026, 11, 7),
+                            until=date(2026, 11, 9))
+    with pytest.raises(ValueError, match='互斥'):
+        first.collect_valuation(['600519.SH'], force=True, since=date(2026, 11, 7))
+
+    forced = FinancialsCollector(tmp_path, workers=1, valuation_interval=0.0)
+    result = forced.collect_valuation(['600519.SH'], force=True)
+    assert result.rows == 2  # force 落全历史
+    files = sorted(store.parts_dir('valuation', tmp_path).glob('batch_*.parquet'))
+    assert len(files) == 1
+    assert pl.read_parquet(files[0])['trade_date'].n_unique() == 2
