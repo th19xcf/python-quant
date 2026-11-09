@@ -122,6 +122,16 @@ _CLOSURE_SCHEMA = {'ts_code': pl.Utf8, 'close_date': pl.Date, 'evidence': pl.Utf
 _INTERVAL_CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
 _COVERAGE_CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
 
+#: tushare 重建表的列（与落盘文件严格一致）；它只有 ST 区间，没有覆盖窗口。
+_NEW_INTERVAL_SCHEMA = {
+    'ts_code': pl.Utf8, 'st_flag': pl.Boolean, 'start_date': pl.Date,
+    'end_date': pl.Date, 'st_type': pl.Utf8, 'source': pl.Utf8,
+}
+_NEW_INTERVAL_CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
+
+#: 回测读取开关：默认并入新表；设 0/false/off/no 时退回「只用旧表」。
+NEW_TABLE_ENV = 'QUANT_ST_HISTORY_NEW_TABLE'
+
 
 # ----------------------------------------------------------------------
 # 名称归一与分类
@@ -205,6 +215,11 @@ def intervals_path(store_root: Path | str) -> Path:
 
 def coverage_path(store_root: Path | str) -> Path:
     return st_dir(store_root) / 'st_coverage.parquet'
+
+
+def tushare_intervals_path(store_root: Path | str) -> Path:
+    """tushare ``namechange`` 重建表（与旧区间表并列，只做补充）。"""
+    return Path(store_root) / 'meta' / 'st_history.parquet'
 
 
 def coverage_json_path(store_root: Path | str) -> Path:
@@ -760,8 +775,16 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True) -> dict[
 
     intervals: list[dict[str, Any]] = []
     coverage: list[dict[str, Any]] = []
+    unknown_start: list[str] = []
     for code in sorted(all_codes):
-        listing = listings.get(code, date(1990, 1, 1))
+        listing = listings.get(code)
+        if listing is None:
+            # 上市日缺失：历史实现用 ``date(1990, 1, 1)`` 兜底，会把覆盖窗口
+            # 前移到 1990，方向偏乐观（凭空多出「已知非 ST」的年份）。现在
+            # 该标的不参与覆盖统计，只记为 unknown_start 供审计；当日快照
+            # 若判其为 ST，仍会由 ``_merge_snapshot`` 补锚点与覆盖。
+            unknown_start.append(code)
+            continue
         if code.endswith('.SZ'):
             prev_flag, changes = sz_changes.get(code, ('', []))
             timeline, delist = _build_timeline(
@@ -830,6 +853,8 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True) -> dict[
         'interval_rows': frame.height,
         'security_count': frame['ts_code'].n_unique(),
         'coverage_rows': coverage_frame.height,
+        'unknown_start_count': len(unknown_start),
+        'unknown_start_codes': unknown_start[:200],
         'snapshot_anchors': stats['anchors'],
         'snapshot_conflicts': len(conflicts),
         'snapshot_closed_intervals': stats['closes'],
@@ -842,6 +867,9 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True) -> dict[
         encoding='utf-8')
     logger.info(f'[st] 区间表已落盘: {intervals_path(root)}（{frame.height} 行 / '
                 f'{frame["ts_code"].n_unique()} 只）')
+    if unknown_start:
+        logger.warning(f'[st] {len(unknown_start)} 只标的上市日缺失，已排除出覆盖统计'
+                       f'（unknown_start，不再用 1990-01-01 兜底）')
     return summary
 
 
@@ -867,6 +895,17 @@ def load_intervals(store_root: Path | str) -> pl.DataFrame | None:
 
 def load_coverage(store_root: Path | str) -> pl.DataFrame | None:
     return _read_cached(coverage_path(store_root), _COVERAGE_CACHE, _COVERAGE_SCHEMA)
+
+
+def load_tushare_intervals(store_root: Path | str) -> pl.DataFrame | None:
+    return _read_cached(tushare_intervals_path(store_root), _NEW_INTERVAL_CACHE,
+                        _NEW_INTERVAL_SCHEMA)
+
+
+def new_table_enabled() -> bool:
+    """tushare 重建表是否参与回测读取（默认开启）。"""
+    value = os.environ.get(NEW_TABLE_ENV, '1').strip().lower()
+    return value not in ('0', 'false', 'off', 'no')
 
 
 @dataclass(frozen=True)
@@ -997,11 +1036,66 @@ def intervals_for_backtest(store_root: Path | str, codes: Iterable[str],
                 pieces.append({'start_date': seg_start, 'end_date': seg_end,
                                'is_st': True})
         result[code] = _carve_non_st(pieces, window_start, window_end)
+    if new_table_enabled():
+        _supplement_from_tushare(result, store_root, wanted, start_day, end_day)
     for item in result.values():
+        item.sort(key=lambda seg: seg['start_date'])
         for seg in item:
             seg['start_date'] = seg['start_date'].isoformat()
             seg['end_date'] = seg['end_date'].isoformat()
     return result
+
+
+def _subtract_window(start: date, end: date,
+                     window: tuple[date, date] | None) -> list[tuple[date, date]]:
+    """``[start, end]`` 去掉 ``window`` 后剩下的闭区间（旧表优先的口径）。"""
+    if start > end:
+        return []
+    if window is None:
+        return [(start, end)]
+    cov_start, cov_end = window
+    out: list[tuple[date, date]] = []
+    if start < cov_start:
+        out.append((start, min(end, cov_start - timedelta(days=1))))
+    if end > cov_end:
+        out.append((max(start, cov_end + timedelta(days=1)), end))
+    return [(left, right) for left, right in out if left <= right]
+
+
+def _supplement_from_tushare(result: dict[str, list[dict[str, Any]]],
+                             store_root: Path | str, wanted: set[str],
+                             start_day: date, end_day: date) -> int:
+    """把 tushare 重建表并入判定结果：**旧表覆盖的时段一律以旧表为准**。
+
+    - 旧表已有覆盖窗口的标的：只补窗口之外的 ST 区间（窗口内即使新表另有
+      说法也不采纳）——旧表是已验证的生产口径；
+    - 旧表完全没有覆盖的标的：只补 ``is_st=True`` 区间，不补非 ST，
+      未命中区间仍保持 unknown，避免凭空扩大「已知非 ST」；
+    - 返回新增的 ST 片段数。
+    """
+    new_intervals = load_tushare_intervals(store_root)
+    if new_intervals is None or new_intervals.height == 0 or not wanted:
+        return 0
+    coverage = load_coverage(store_root)
+    windows: dict[str, tuple[date, date]] = {}
+    if coverage is not None:
+        windows = {row['ts_code']: (row['coverage_start'], row['coverage_end'])
+                   for row in coverage.to_dicts()}
+    rows = new_intervals.filter(
+        pl.col('ts_code').is_in(list(wanted))
+        & pl.col('st_flag')
+        & (pl.col('start_date') <= end_day)
+        & ((pl.col('end_date').is_null()) | (pl.col('end_date') >= start_day)))
+    added = 0
+    for row in rows.to_dicts():
+        code = row['ts_code']
+        seg_start = max(start_day, row['start_date'])
+        seg_end = min(end_day, row['end_date'] or end_day)
+        pieces = result.setdefault(code, [])
+        for left, right in _subtract_window(seg_start, seg_end, windows.get(code)):
+            pieces.append({'start_date': left, 'end_date': right, 'is_st': True})
+            added += 1
+    return added
 
 
 def _carve_non_st(st_pieces: list[dict[str, Any]], window_start: date,
