@@ -70,7 +70,7 @@ _KLINE_COLUMN_MAP = {
 _DIVIDEND_COLUMNS = [
     'ts_code', 'symbol', 'name', 'dividend_year', 'report_date', 'record_date',
     'ex_date', 'pay_date', 'cash_div', 'share_div', 'total_div',
-    'rights_issue_price', 'rights_issue_ratio',
+    'rights_issue_price', 'rights_issue_ratio', 'cash_div_fix', 'share_div_fix',
 ]
 
 

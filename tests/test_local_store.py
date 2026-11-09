@@ -680,6 +680,70 @@ def test_refresh_factors_cold_start_writes_snapshot(tmp_path, monkeypatch):
     assert written.height == 1
 
 
+def test_dividend_fix_columns_survive_remote_refresh(tmp_path, monkeypatch):
+    """远程 refresh 全量重写分红快照后，cash_div_fix / share_div_fix 必须保留且生效。
+
+    守护两件事：
+    1. 结构上 ``_DIVIDEND_COLUMNS``（refresh 的 SELECT 列清单）必须覆盖两个
+       fix 列，且不得出现模型里不存在的列（否则 SELECT 直接报错或静默漏列）；
+    2. 行为上刷新后的快照仍带 fix 列，且 ``AdjFactorCalculator`` 会用 fix
+       覆盖原值（因子与修正前不同），避免一次日常 refresh 把人工修正抹掉。
+    """
+    from src.data.local_store.build import _DIVIDEND_COLUMNS
+    from src.database.models.stock import StockDividend
+
+    model_columns = set(StockDividend.__table__.columns.keys())
+    assert {'cash_div_fix', 'share_div_fix'} <= set(_DIVIDEND_COLUMNS)
+    assert set(_DIVIDEND_COLUMNS) <= model_columns
+
+    # 刷新前快照：只有原值列（模拟修正后又被远程全量重写的旧态）
+    _write_dividend_snapshot(tmp_path, [('600000.SH', date(2024, 1, 4), 0.46)])
+    _patch_remote_refresh(
+        monkeypatch,
+        pl.DataFrame({'ts_code': [], 'trade_date': [], 'qfq_factor': [],
+                      'hfq_factor': []}),
+        pl.DataFrame({
+            'ts_code': ['600000.SH'],
+            'symbol': ['600000'],
+            'name': ['浦发银行'],
+            'dividend_year': ['2016'],
+            'report_date': [date(2017, 3, 30)],
+            'record_date': [date(2017, 7, 7)],
+            'ex_date': [date(2024, 1, 4)],
+            'pay_date': [date(2024, 1, 10)],
+            'cash_div': [0.46],
+            'share_div': [0.0],
+            'total_div': [None],
+            'rights_issue_price': [0.0],
+            'rights_issue_ratio': [0.0],
+            'cash_div_fix': [2.97],
+            'share_div_fix': [None],
+        }),
+    )
+
+    refresh_factors(make_config(tmp_path), LocalFactorStore(tmp_path),
+                    allow_remote=True, force_overwrite=True,
+                    confirm='OVERWRITE-LOCAL-SNAPSHOT')
+
+    written = pl.read_parquet(tmp_path / 'factors' / 'stock_dividend.parquet')
+    assert {'cash_div_fix', 'share_div_fix'} <= set(written.columns)
+    assert written['cash_div'].to_list() == [0.46]
+    assert written['cash_div_fix'].to_list() == [2.97]
+
+    prices = pl.DataFrame({
+        'ts_code': ['600000.SH', '600000.SH'],
+        'trade_date': [date(2024, 1, 3), date(2024, 1, 4)],
+        'close': [20.0, 17.0],
+    })
+    fixed = AdjFactorCalculator.calculate_factors(prices, written)
+    # 用原值 0.46 算：factor=(20-0.46)/20=0.977；用 fix 2.97 算：0.8515
+    assert abs(fixed['qfq_factor'][0] - 0.8515) < 1e-9
+    assert abs(fixed['qfq_factor'][1] - 1.0) < 1e-12
+    raw = AdjFactorCalculator.calculate_factors(
+        prices, written.drop(['cash_div_fix', 'share_div_fix']))
+    assert abs(raw['qfq_factor'][0] - 0.977) < 1e-9
+
+
 def test_refresh_factors_crash_on_second_file_keeps_others_intact(
         tmp_path, monkeypatch):
     """三文件写入在第二个中断：旧分红表与旧 meta 不得被半截写入改坏。"""

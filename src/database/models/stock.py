@@ -171,6 +171,11 @@ class StockDividend(Base):
     rights_issue_price = Column(Float, comment="配股价")
     rights_issue_ratio = Column(Float, comment="配股比例")
 
+    # 人工修正列：非空时覆盖同名原始字段（原始值保留可追溯），
+    # 供复权因子计算使用，避免远程刷新把修正抹掉
+    cash_div_fix = Column(Float, nullable=True, comment="每股派现修正值(元)")
+    share_div_fix = Column(Float, nullable=True, comment="每股送转修正值(股)")
+
     created_at = Column(DateTime, default=datetime.now, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
 
