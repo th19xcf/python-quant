@@ -185,3 +185,6 @@ research/events/data/*/_merged_for_import.parquet
 
 # 研究数据不入库：Git 只管代码、脚本、文档与小体积元数据，数据安全靠 G:\git\python-quant 镜像 + _backup 快照
 research/events/data/**/*.parquet
+
+# 本地凭证目录（tushare token 等敏感信息，仅本机保存，禁止入库）
+.secrets/
