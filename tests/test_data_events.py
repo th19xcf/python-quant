@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date, datetime
 from pathlib import Path
 
@@ -109,6 +110,27 @@ class TestImport:
 def _normalized_csv(path: Path, rows: list[dict]) -> Path:
     pl.DataFrame(rows).write_csv(path)
     return path
+
+
+def _inject_write_crash(monkeypatch, *, fail_on_call: int = 1) -> None:
+    """让第 N 次 parquet 写入先落半截字节再抛异常，模拟写盘中断。"""
+    calls = {'count': 0}
+    original = pl.DataFrame.write_parquet
+
+    def _crashing(self, file, *args, **kwargs):
+        calls['count'] += 1
+        if calls['count'] == fail_on_call:
+            target = Path(file)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b'PARTIAL-PARQUET')
+            raise OSError(f'注入写盘中断（第 {calls["count"]} 次写入）')
+        return original(self, file, *args, **kwargs)
+
+    monkeypatch.setattr(pl.DataFrame, 'write_parquet', _crashing)
+
+
+def _leftover_tmp(directory: Path) -> list[str]:
+    return sorted(p.name for p in directory.iterdir() if p.name.endswith('.tmp'))
 
 
 class TestAppendSafety:
@@ -236,6 +258,35 @@ class TestAppendSafety:
         after = (tmp_path / 'meta' / 'events' / 'events.parquet').read_bytes()
         assert before == after
         assert preview['added'] == 0
+
+    def test_write_crash_keeps_existing_table(self, tmp_path, monkeypatch):
+        """append 写盘中断时，既有事件表的字节、行数与内容必须原样保留。"""
+        seed = _normalized_csv(tmp_path / 'seed.csv', [{
+            'ts_code': '600000.SH', 'event_type': '并购重组',
+            'publish_time': '2025-01-03 16:00:00',
+            'title': '重组', 'event_id': 'e1',
+        }])
+        import_file(seed, tmp_path, source='test')
+        target = tmp_path / 'meta' / 'events' / 'events.parquet'
+        before_bytes = target.read_bytes()
+        before_sha = hashlib.sha256(before_bytes).hexdigest()
+        before_frame = load_events(tmp_path)
+
+        batch = _normalized_csv(tmp_path / 'batch.csv', [{
+            'ts_code': '600000.SH', 'event_type': '监管处罚',
+            'publish_time': '2025-03-05 16:00:00',
+            'title': '处罚', 'event_id': 'e2',
+        }])
+        _inject_write_crash(monkeypatch, fail_on_call=1)
+        with pytest.raises(OSError, match='注入写盘中断'):
+            import_file(batch, tmp_path, mode='append', source='test')
+
+        assert target.read_bytes() == before_bytes
+        assert hashlib.sha256(target.read_bytes()).hexdigest() == before_sha
+        frame = load_events(tmp_path)
+        assert frame.height == before_frame.height
+        assert frame.equals(before_frame)
+        assert _leftover_tmp(target.parent) == []
 
 
 class TestCooldown:

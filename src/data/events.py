@@ -27,6 +27,8 @@ from typing import Any, Iterable, Sequence
 import polars as pl
 from loguru import logger
 
+from src.data.atomic_write import write_parquet_atomic
+
 RISK_EVENT_COOLDOWNS: dict[str, int] = {
     '并购重组': 20,
     '重大合同/中标': 5,
@@ -421,7 +423,7 @@ def import_file(path: Path | str, store_root: Path | str | None = None,
                 'source_format': kind, 'dry_run': True, **stats}
 
     path_out.parent.mkdir(parents=True, exist_ok=True)
-    merged.write_parquet(path_out)
+    write_parquet_atomic(merged, path_out)
     coverage = _write_coverage(root, merged, source, complete,
                                coverage_start, coverage_end)
     logger.info(f'[events] {mode} 导入 {merged.height} 条 → {path_out}')

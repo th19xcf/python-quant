@@ -570,6 +570,23 @@ def _patch_remote_refresh(monkeypatch, factors: pl.DataFrame, dividends: pl.Data
         lambda sql, conn: factors if 'stock_adj_factor' in sql else dividends)
 
 
+def _inject_parquet_write_crash(monkeypatch, *, fail_on_call: int) -> None:
+    """让第 N 次 parquet 写入先落半截字节再抛异常，模拟写盘中断。"""
+    calls = {'count': 0}
+    original = pl.DataFrame.write_parquet
+
+    def _crashing(self, file, *args, **kwargs):
+        calls['count'] += 1
+        if calls['count'] == fail_on_call:
+            target = Path(file)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b'PARTIAL-PARQUET')
+            raise OSError(f'注入写盘中断（第 {calls["count"]} 次写入）')
+        return original(self, file, *args, **kwargs)
+
+    monkeypatch.setattr(pl.DataFrame, 'write_parquet', _crashing)
+
+
 def test_refresh_factors_refuses_without_explicit_switches(tmp_path):
     """默认拒绝覆盖：缺 allow-remote / 缺 force-overwrite / 口令错误都中止。"""
     factor_store = LocalFactorStore(tmp_path)
@@ -661,6 +678,53 @@ def test_refresh_factors_cold_start_writes_snapshot(tmp_path, monkeypatch):
     assert meta['validation']['ok'] is True
     written = pl.read_parquet(tmp_path / 'factors' / 'stock_adj_factor.parquet')
     assert written.height == 1
+
+
+def test_refresh_factors_crash_on_second_file_keeps_others_intact(
+        tmp_path, monkeypatch):
+    """三文件写入在第二个中断：旧分红表与旧 meta 不得被半截写入改坏。"""
+    _write_dividend_snapshot(tmp_path, [
+        ('600000.SH', date(2024, 1, 4), 0.5),
+        ('600000.SH', date(2025, 1, 4), 0.6),
+    ])
+    _write_factor_snapshot(tmp_path, '600000.SH', [date(2024, 1, 2)], [0.9], [1.1])
+    factor_path = tmp_path / 'factors' / 'stock_adj_factor.parquet'
+    dividend_path = tmp_path / 'factors' / 'stock_dividend.parquet'
+    meta_path = tmp_path / 'factors' / 'meta.json'
+    meta_path.write_text('{"source": "previous"}', encoding='utf-8')
+    dividend_before = dividend_path.read_bytes()
+    meta_before = meta_path.read_bytes()
+
+    # 远程数据与本地快照一致（校验通过），确保能走到写盘阶段
+    _patch_remote_refresh(
+        monkeypatch,
+        pl.DataFrame({
+            'ts_code': ['600000.SH'], 'trade_date': [date(2024, 1, 2)],
+            'qfq_factor': [0.9], 'hfq_factor': [1.1],
+        }),
+        pl.DataFrame({
+            'ts_code': ['600000.SH', '600000.SH'],
+            'ex_date': [date(2024, 1, 4), date(2025, 1, 4)],
+            'cash_div': [0.5, 0.6], 'share_div': [0.0, 0.0],
+            'rights_issue_ratio': [0.0, 0.0],
+            'rights_issue_price': [0.0, 0.0],
+        }),
+    )
+    _inject_parquet_write_crash(monkeypatch, fail_on_call=2)
+
+    with pytest.raises(OSError, match='注入写盘中断'):
+        refresh_factors(make_config(tmp_path), LocalFactorStore(tmp_path),
+                        allow_remote=True, force_overwrite=True,
+                        confirm='OVERWRITE-LOCAL-SNAPSHOT')
+
+    # 第二个文件（分红）保持原字节：不得留下半截 parquet
+    assert dividend_path.read_bytes() == dividend_before
+    # 第三个文件（meta.json）还没轮到写，保持旧内容
+    assert meta_path.read_bytes() == meta_before
+    # 第一个文件已完整落盘（单文件原子），应是可读的新快照
+    assert pl.read_parquet(factor_path).height == 1
+    assert [p.name for p in (tmp_path / 'factors').iterdir()
+            if p.name.endswith('.tmp')] == []
 
 
 def test_validate_remote_overwrite_skips_when_snapshot_absent(tmp_path):

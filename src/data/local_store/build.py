@@ -43,6 +43,7 @@ from loguru import logger
 from polars.exceptions import PolarsError
 
 from src.data.adj_factor_calculator import AdjFactorCalculator
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.local_store.session_guard import filter_intraday_rows, guarded_source_date
 from src.data.local_store.store import (
     STORE_VERSION,
@@ -811,8 +812,13 @@ def refresh_factors(
         return planned
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    factors.write_parquet(factor_path, compression='zstd', statistics=True)
-    dividends.write_parquet(dividend_path, compression='zstd', statistics=True)
+    # 三个文件各自原子落盘（临时文件 → fsync → replace），单个文件不会写坏；
+    # 但它们之间没有真事务：中途失败可能留下「因子已更新、分红/meta 仍是旧值」
+    # 的跨文件不一致，需要重新执行一次 refresh-factors 收敛，不能当作已一致。
+    write_parquet_atomic(factors, factor_path, compression='zstd',
+                         statistics=True)
+    write_parquet_atomic(dividends, dividend_path, compression='zstd',
+                         statistics=True)
 
     meta = {
         'source': 'remote_mysql',
@@ -826,8 +832,8 @@ def refresh_factors(
         'updated_at': datetime.now().isoformat(timespec='seconds'),
         'version': STORE_VERSION,
     }
-    (out_dir / 'meta.json').write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
+    write_text_atomic(
+        json.dumps(meta, ensure_ascii=False, indent=2), out_dir / 'meta.json')
     logger.info(
         f'[local-store] 危险覆盖完成：{factors.height:,} / {dividends.height:,} 行，'
         f'耗时 {elapsed:.1f}s')

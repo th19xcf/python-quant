@@ -11,6 +11,7 @@
 
 import json
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -46,6 +47,21 @@ from src.data.risk_flags import (
 from src.data.risk_flags import (
     snapshot_path as st_snapshot_path,
 )
+
+
+def _inject_parquet_write_crash(monkeypatch) -> None:
+    """让下一次 parquet 写入先落半截字节再抛异常，模拟写盘中断。"""
+    def _crashing(self, file, *args, **kwargs):
+        target = Path(file)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b'PARTIAL-PARQUET')
+        raise OSError('注入写盘中断')
+
+    monkeypatch.setattr(pl.DataFrame, 'write_parquet', _crashing)
+
+
+def _leftover_tmp(directory: Path) -> list[str]:
+    return sorted(p.name for p in directory.iterdir() if p.name.endswith('.tmp'))
 
 
 @pytest.fixture()
@@ -214,3 +230,20 @@ def test_industry_snapshot_without_names_keeps_unknown(tmp_path):
     assert row['industry_l1'] == IND_UNKNOWN
     assert row['industry_l2'] == IND_UNKNOWN
     assert row['source'] == 'tdx_hq_cache'
+
+
+def test_st_snapshot_write_crash_keeps_previous_file(
+        tmp_path, names_file, monkeypatch):
+    """同日 ST 快照重写中断时，旧快照字节与内容必须原样保留。"""
+    target = st_snapshot_path(tmp_path, date(2026, 11, 3))
+    build_st(tmp_path, date(2026, 11, 3), names_path=names_file,
+             codes=['600000.SH'])
+    before = target.read_bytes()
+
+    _inject_parquet_write_crash(monkeypatch)
+    with pytest.raises(OSError, match='注入写盘中断'):
+        build_st(tmp_path, date(2026, 11, 3), names_path=names_file,
+                 codes=['600000.SH', '000669.SZ'])
+
+    assert target.read_bytes() == before
+    assert _leftover_tmp(target.parent) == []

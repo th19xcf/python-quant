@@ -33,6 +33,8 @@ from typing import Any
 import polars as pl
 from loguru import logger
 
+from src.data.atomic_write import write_parquet_atomic
+
 ST = 'st'
 NON_ST = 'non_st'
 UNKNOWN = 'unknown'
@@ -153,7 +155,7 @@ def build_snapshot(
         .otherwise(pl.col('is_st')).alias('is_st'))
     path = snapshot_path(root, snapshot_date)
     path.parent.mkdir(parents=True, exist_ok=True)
-    frame.write_parquet(path)
+    write_parquet_atomic(frame, path)
     logger.info(f'[st] ST 快照已落盘: {path}（{frame.height} 个标的）')
     return frame
 

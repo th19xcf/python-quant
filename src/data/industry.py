@@ -25,6 +25,8 @@ from typing import Any
 import polars as pl
 from loguru import logger
 
+from src.data.atomic_write import write_parquet_atomic
+
 UNKNOWN = 'unknown'
 SOURCE_TDX = 'tdx_hq_cache'
 SOURCE_MISSING = 'missing'
@@ -138,7 +140,7 @@ def build_snapshot(
     frame = pl.DataFrame(rows).with_columns(pl.lit(snapshot_date).alias('as_of'))
     path = snapshot_path(store_root, snapshot_date)
     path.parent.mkdir(parents=True, exist_ok=True)
-    frame.write_parquet(path)
+    write_parquet_atomic(frame, path)
     logger.info(f'[industry] 行业快照已落盘: {path}（{frame.height} 个标的）')
     return frame
 
