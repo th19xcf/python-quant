@@ -145,11 +145,18 @@ config.ini
 # Quickstart 运行产物
 examples/output/
 
-# 审计产物（回测/巡检报告，2026-11-06 实测约 1.8G，属本地产物不入库）
-reports/
+# 审计产物（回测/巡检报告，2026-11-06 实测约 1.8G，属本地产物不入库；只锚定仓库根，勿误伤 src/quant/reports 源码）
+/reports/
 
 # 本地验证产物（UI 截图等一次性核对文件，不入库）
 artifacts/
+
+# 已被正式工具取代的一次性修复脚本（本地保留，不入库）
+# 指数缺口补齐改由 tools/fill_index_daily_gaps.py，码表重建改由 tools/build_names_json.py
+scripts/add_399260.py
+scripts/check_399260.py
+scripts/correct_399967.py
+scripts/correct_index_names.py
 
 # 本地 Parquet 列存（行情/因子/分红，部分不可重建，见 tools/backup_critical_assets.py）
 data/local_store/
