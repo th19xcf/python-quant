@@ -45,7 +45,7 @@ import os
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 import requests
@@ -382,7 +382,8 @@ def build(store_root: Path | str, *, refresh: bool = False) -> dict[str, Any]:
     _write_atomic(frame, target)
 
     open_rows = frame.filter(pl.col('out_date').is_null()).height
-    manifest = {
+    per_code_counts = frame.group_by('ts_code').len()['len']
+    manifest: dict[str, Any] = {
         'dataset': DATASET,
         'source': '申万宏源研究 个股行业分类变动历史（SwClass2021）',
         'source_url': SW_URL,
@@ -396,9 +397,7 @@ def build(store_root: Path | str, *, refresh: bool = False) -> dict[str, Any]:
             'rows': frame.height,
             'codes': frame['ts_code'].n_unique(),
             'open_intervals': open_rows,
-            'events_per_code_max': int(
-                frame.group_by('ts_code').len()['len'].max()
-            ),
+            'events_per_code_max': int(cast(int, per_code_counts.max())),
         },
         'granularity': 'daily_effective_date',
         'granularity_note': (
@@ -666,7 +665,7 @@ def main(argv: list[str] | None = None) -> int:
     logger.info(
         f'[industry_pit] {frame.height} 行 / '
         f'{frame["ts_code"].n_unique()} 只 / '
-        f'{frame["in_date"].min()} → {frame["in_date"].max()}'
+        f'{str(frame["in_date"].min())} → {str(frame["in_date"].max())}'
     )
     return 0
 
