@@ -66,7 +66,10 @@ def parse_args():
     parser.add_argument('--backfill-fund-basic', action='store_true',
                         help='用本地通达信基金 .day 补齐 fund_basic/closed_fund_basic（离线，不猜名称与退市状态；配合 --dry-run）')
     parser.add_argument('--sync-stock-daily', action='store_true',
-                        help='用本地通达信 .day 补库 stock_daily（默认增量，离线可运行）')
+                        help='用通达信日线补库 stock_daily（默认增量：网络源优先，失败回退本地 .day）')
+    parser.add_argument('--source', default='auto', choices=['auto', 'local', 'mootdx'],
+                        help='配合 --sync-stock-daily：auto=网络优先→本地回退（默认）、'
+                             'local=只读本地 .day、mootdx=只走网络源')
     parser.add_argument('--sync-fund-daily', action='store_true',
                         help='用本地列存补库 fund_daily / closed_fund_daily（离线，幂等可续跑）')
     parser.add_argument('--sync-index-daily', action='store_true',
@@ -226,6 +229,7 @@ def _handle_sync_stock_daily_arg(config, args):
             since=since,
             max_date=max_date,
             progress_path=progress_file,
+            source=getattr(args, 'source', 'auto'),
         )
         logger.info(f"stock_daily 补库结果: {summary}")
     except (DataSourceException, *_STARTUP_ERRORS) as e:

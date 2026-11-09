@@ -6,10 +6,14 @@
 CLI 入口在 ``src/main.py``（``--sync-stock-daily``），可直接调用本模块。
 
 口径：
-- 只读本地通达信 ``.day`` 文件，不依赖任何远程数据源，离线可完整运行；
+- 取数源可切换（``source``）：``auto``（默认，网络源优先、失败回退本地
+  ``.day``）、``local``（只读本地）、``mootdx``（只走网络，便于对拍）；
+  网络源与本地 ``.day`` 的 5 日 OHLCV 对拍偏差 0/1458 字段，口径一致；
 - 唯一键 ``(ts_code, trade_date)`` 由 ``upsert_rows`` 命中，重复执行结果幂等；
 - 全量：按 TDX 全历史建行（已存在行被相同值覆盖）；增量：以库内每只股票
   最新交易日为水位，只补水位之后（保留紧邻水位的一根做 pre_close 种子）；
+  全量模式固定走本地 ``.day``（网络源按页取全历史代价过高，且股票池本身
+  由本地目录枚举）；
 - 价格/量纲沿用 TDX 解析契约：vol=手（个股股→手）、amount=元，
   与 DataFetcher / upsert 的单位契约一致，本模块不做任何二次换算。
 """
@@ -27,6 +31,7 @@ from loguru import logger
 from sqlalchemy import func
 
 from src.data.index_daily_fill import build_missing_rows
+from src.data.services.tdx_online_source import TdxOnlineClient, TdxOnlineError
 from src.data.tdx_day_parser import read_first_last_trade_date, read_recent_records
 from src.database.models.stock import StockDaily
 from src.database.upsert import upsert_rows
@@ -227,6 +232,35 @@ def _mark_progress(
     progress_codes.clear()
 
 
+def _build_rows(
+    ts_code: str,
+    records: Sequence[dict[str, Any]],
+    *,
+    watermarks: dict[str, date],
+    since: date | None,
+    max_date: date | None,
+) -> tuple[list[dict[str, Any]] | None, str]:
+    """把原始日线记录裁剪成待补行；返回 (行, 跳过原因)。"""
+    if max_date is not None:
+        records = [r for r in records if r['date'] <= max_date]
+    if not records:
+        return None, 'empty_file'
+
+    window, existing = _incremental_window(records, watermarks.get(ts_code))
+    if since is not None:
+        # 有界回填：保留 since 前一根作为 pre_close 种子并标记为既有，
+        # 保证首行的 pre_close/change/pct_chg 与全量口径一致。
+        seed = [r for r in window if r['date'] < since][-1:]
+        window = seed + [r for r in window if r['date'] >= since]
+        existing = list(existing) + [r['date'] for r in seed]
+        if len(window) == len(seed):
+            return None, 'no_new_rows'
+    rows = build_missing_rows(ts_code, window, existing)
+    if not rows:
+        return None, 'no_new_rows'
+    return rows, ''
+
+
 def _collect_rows(
     tdx_data_path: Path,
     ts_code: str,
@@ -261,24 +295,195 @@ def _collect_rows(
         logger.warning(f"{ts_code} 解析 {file_path} 失败，跳过: {e}")
         return None, 'read_failed'
 
-    if max_date is not None:
-        records = [r for r in records if r['date'] <= max_date]
-    if not records:
-        return None, 'empty_file'
+    return _build_rows(
+        ts_code, records, watermarks=watermarks, since=since, max_date=max_date)
 
-    window, existing = _incremental_window(records, watermarks.get(ts_code))
-    if since is not None:
-        # 有界回填：保留 since 前一根作为 pre_close 种子并标记为既有，
-        # 保证首行的 pre_close/change/pct_chg 与全量口径一致。
-        seed = [r for r in window if r['date'] < since][-1:]
-        window = seed + [r for r in window if r['date'] >= since]
-        existing = list(existing) + [r['date'] for r in seed]
-        if len(window) == len(seed):
-            return None, 'no_new_rows'
-    rows = build_missing_rows(ts_code, window, existing)
-    if not rows:
-        return None, 'no_new_rows'
-    return rows, ''
+
+def _online_records(
+    client: TdxOnlineClient,
+    ts_code: str,
+    *,
+    watermarks: dict[str, date],
+    since: date | None,
+    max_date: date | None = None,
+) -> list[dict[str, Any]]:
+    """取网络源原始日线；库内无水位且无 since 时无法保证历史覆盖，交给本地源。"""
+    anchor = watermarks.get(ts_code)
+    if since is not None and (anchor is None or since < anchor):
+        anchor = since
+    if anchor is None:
+        raise TdxOnlineError(
+            'no_watermark', '库内无水位，网络源无法保证全历史覆盖，改用本地 .day')
+    # 日历日数 >= 交易日数，留 5 根余量；单页最多 800 根，超出则交给本地全历史
+    end = min(date.today(), max_date) if max_date is not None else date.today()
+    needed = (end - anchor).days + 5
+    if needed > 800:
+        raise TdxOnlineError(
+            'range_too_large', f'需回补 {needed} 个自然日，超过网络源单页上限')
+    return [quote.as_record()
+            for quote in client.fetch_daily(ts_code, count=max(20, needed))]
+
+
+def _collect_rows_with_source(
+    tdx_data_path: Path,
+    ts_code: str,
+    *,
+    source: str,
+    client: TdxOnlineClient | None,
+    full: bool,
+    coverage: dict[str, tuple[date, date]],
+    watermarks: dict[str, date],
+    since: date | None,
+    max_date: date | None,
+) -> tuple[list[dict[str, Any]] | None, str, str, str]:
+    """按取数源构造待补行。
+
+    Returns:
+        (行, 跳过原因, 数据来源标记, 回退原因)
+        来源标记：``network`` / ``local`` / ``local_fallback`` / ``failed``
+        （网络单独失败或网络与本地均失败）。
+    """
+    if source == 'local' or full or client is None:
+        rows, reason = _collect_rows(
+            tdx_data_path, ts_code, full=full, coverage=coverage,
+            watermarks=watermarks, since=since, max_date=max_date)
+        return rows, reason, 'local', ''
+
+    try:
+        records = _online_records(
+            client, ts_code, watermarks=watermarks, since=since, max_date=max_date)
+    except TdxOnlineError as exc:
+        if source == 'mootdx':
+            return None, 'network_failed', 'failed', exc.reason
+        rows, reason = _collect_rows(
+            tdx_data_path, ts_code, full=full, coverage=coverage,
+            watermarks=watermarks, since=since, max_date=max_date)
+        if rows is None and reason in ('no_file', 'empty_file', 'read_failed'):
+            return None, 'source_failed', 'failed', exc.reason
+        return rows, reason, 'local_fallback', exc.reason
+
+    rows, reason = _build_rows(
+        ts_code, records, watermarks=watermarks, since=since, max_date=max_date)
+    return rows, reason, 'network', ''
+
+
+def _source_manifest_path(
+    progress_file: Path | None, mode: str, override: Path | str | None
+) -> Path:
+    if override is not None:
+        return Path(override)
+    parent = progress_file.parent if progress_file else Path('logs') / 'sync_progress'
+    return parent / f'stock_daily_sources_{mode}.json'
+
+
+def _account_source(
+    provenance_map: dict[str, str],
+    stats: dict[str, Any],
+    ts_code: str,
+    provenance: str,
+    fallback_reason: str,
+) -> None:
+    """按来源标记累计统计；回退原因按类型计数。"""
+    provenance_map[ts_code] = provenance
+    if provenance == 'network':
+        stats['network'] += 1
+    elif provenance == 'local_fallback':
+        stats['local_fallback'] += 1
+        reasons = stats['fallback_reasons']
+        reasons[fallback_reason] = reasons.get(fallback_reason, 0) + 1
+    elif provenance == 'failed':
+        stats['failed'] += 1
+    else:
+        stats['local'] += 1
+
+
+def _log_skip(ts_code: str, reason: str, provenance: str,
+              fallback_reason: str) -> None:
+    if provenance == 'local_fallback':
+        logger.warning(f'{ts_code} 网络源失败（{fallback_reason}），已回退本地 .day')
+    elif provenance == 'failed':
+        logger.error(
+            f'{ts_code} 网络源（{fallback_reason}）与本地源（{reason}）均失败')
+
+
+def _write_source_manifest(
+    progress_file: Path | None,
+    override: Path | str | None,
+    summary: dict[str, Any],
+    provenance_map: dict[str, str],
+    source: str,
+) -> str:
+    manifest = _source_manifest_path(progress_file, summary['mode'], override)
+    _write_progress(manifest, {
+        'generated_at': datetime.now().isoformat(timespec='seconds'),
+        'mode': summary['mode'],
+        'source_requested': source,
+        'source_effective': summary['source_effective'],
+        'source_stats': summary['source_stats'],
+        'per_code': provenance_map,
+    })
+    logger.info(
+        f"取数来源：网络 {summary['source_stats']['network']} 只，"
+        f"本地回退 {summary['source_stats']['local_fallback']} 只"
+        f"（{summary['source_stats']['fallback_reasons']}），"
+        f"本地 {summary['source_stats']['local']} 只，"
+        f"失败 {summary['source_stats']['failed']} 只；清单 {manifest}"
+    )
+    return str(manifest)
+
+
+def _load_resume_state(
+    progress_file: Path | None,
+    mode: str,
+    since: date | None,
+    max_date: date | None,
+) -> tuple[dict[str, Any], set[str]]:
+    """读取续跑进度；mode/since/max_date 不一致时忽略旧进度。"""
+    if progress_file is None:
+        return {}, set()
+    progress = _load_progress(progress_file)
+    if not progress:
+        return {}, set()
+    same_scope = (
+        progress.get('mode') == mode
+        and progress.get('since') == (since.isoformat() if since else None)
+        and progress.get('max_date') == (max_date.isoformat() if max_date else None)
+    )
+    if not same_scope:
+        logger.warning(
+            f'进度文件 {progress_file} 的 mode/since/max_date 与本次不一致，忽略旧进度')
+        return {}, set()
+    done = set(progress.get('done_codes') or [])
+    logger.info(f'读取进度 {progress_file}：已完成 {len(done)} 只，续跑')
+    return progress, done
+
+
+def _prepare_client(
+    source_effective: str, injected: TdxOnlineClient | None
+) -> tuple[TdxOnlineClient | None, bool]:
+    """返回 (客户端, 是否由本函数创建并负责关闭)。"""
+    if source_effective == 'local':
+        return injected, False
+    if injected is not None:
+        return injected, False
+    return TdxOnlineClient(), True
+
+
+def _log_periodic(index: int, total: int, summary: dict[str, Any]) -> None:
+    if index % 200 == 0:
+        logger.info(
+            f"进度 {index}/{total}（已处理 "
+            f"{summary['stocks_processed']} 只，行 {summary['rows']}）")
+
+
+def _raise_if_all_failed(codes: Sequence[str], summary: dict[str, Any]) -> None:
+    stats = summary['source_stats']
+    if codes and stats['failed'] == len(codes):
+        raise DataSourceException(
+            'stock_daily_fill',
+            f"网络源与本地 .day 均失败（{len(codes)} 只全部失败），"
+            f"回退原因：{stats['fallback_reasons']}",
+        )
 
 
 def fill_stock_daily(
@@ -293,8 +498,11 @@ def fill_stock_daily(
     batch_stocks: int = _BATCH_STOCKS,
     progress_path: Path | str | None = None,
     resume: bool = True,
+    source: str = 'auto',
+    online_client: TdxOnlineClient | None = None,
+    source_manifest_path: Path | str | None = None,
 ) -> dict[str, Any]:
-    """把本地 TDX 日线补入 ``stock_daily``。
+    """把 TDX 日线补入 ``stock_daily``。
 
     Args:
         config: 配置对象（读取 ``data.tdx_data_path``）
@@ -302,18 +510,24 @@ def fill_stock_daily(
         ts_codes: 显式股票池；None 时枚举本地全部股票（排除指数/基金）
         full: True 为全量（全历史），False 为增量（库内最新交易日之后）。
             全量模式下若库内已覆盖源端首末日期，则该股票视为已完成并跳过，
-            因此可断点续跑、重复执行幂等。
+            因此可断点续跑、重复执行幂等。全量固定走本地 ``.day``。
         dry_run: 只统计不写库
         since: 只写入不早于该日期的记录（用于库内水位缺失时的有界回填）
         max_date: 只写入不晚于该日期的记录（用于避开盘中未收盘 K 线）
         batch_stocks: 每批股票数
         progress_path: 断点续跑进度文件；None 用 ``logs/sync_progress/``
         resume: 是否读取已有进度跳过已完成股票（upsert 幂等，跳过只省时间）
+        source: ``auto``（默认，网络优先→本地回退）/ ``local`` / ``mootdx``
+        online_client: 可注入的网络源客户端（测试用）；None 时按需创建
+        source_manifest_path: 来源清单落盘路径；None 用进度目录
 
     Returns:
-        统计字典：模式、股票数、行数、新增/更新数、跳过原因分布。
+        统计字典：模式、股票数、行数、新增/更新数、跳过原因分布、取数来源统计。
     """
     from src.data.tdx_handler import TdxHandler
+
+    if source not in ('auto', 'local', 'mootdx'):
+        raise ValueError(f"source 只能是 auto/local/mootdx，收到 {source!r}")
 
     handler = TdxHandler(config, None)
     if not handler.available:
@@ -324,9 +538,12 @@ def fill_stock_daily(
 
     codes = sorted(set(ts_codes)) if ts_codes else default_stock_universe(config)
 
+    source_effective = 'local' if (full or source == 'local') else source
     summary: dict[str, Any] = {
         'mode': 'full' if full else 'incremental',
         'dry_run': dry_run,
+        'source': source,
+        'source_effective': source_effective,
         'stocks_total': len(codes),
         'stocks_processed': 0,
         'stocks_resumed': 0,
@@ -341,11 +558,26 @@ def fill_stock_daily(
             'read_failed': 0,
             'write_failed': 0,
             'already_complete': 0,
+            'network_failed': 0,
+            'source_failed': 0,
+        },
+        'source_stats': {
+            'network': 0,
+            'local': 0,
+            'local_fallback': 0,
+            'failed': 0,
+            'fallback_reasons': {},
         },
     }
     if not codes:
         logger.warning("stock_daily 补库：股票池为空，未执行任何操作")
         return summary
+
+    if full and source != 'local':
+        logger.warning('全量模式固定使用本地 .day（网络源仅用于增量），source=%s', source)
+
+    client, owns_client = _prepare_client(source_effective, online_client)
+    provenance_map: dict[str, str] = {}
 
     watermarks: dict[str, date] = {} if full else _latest_trade_dates(db_manager)
     coverage: dict[str, tuple[date, date]] = (
@@ -354,20 +586,9 @@ def fill_stock_daily(
     progress_file: Path | None = Path(progress_path) if progress_path else None
     progress: dict[str, Any] = {}
     done: set[str] = set()
-    if resume and not dry_run and progress_file is not None:
-        progress = _load_progress(progress_file)
-        same_scope = (
-            progress.get('mode') == summary['mode']
-            and progress.get('since') == (since.isoformat() if since else None)
-            and progress.get('max_date') == (
-                max_date.isoformat() if max_date else None)
-        )
-        if progress and not same_scope:
-            logger.warning(
-                f'进度文件 {progress_file} 的 mode/since/max_date 与本次不一致，忽略旧进度')
-        elif progress:
-            done = set(progress.get('done_codes') or [])
-            logger.info(f'读取进度 {progress_file}：已完成 {len(done)} 只，续跑')
+    if resume and not dry_run:
+        progress, done = _load_resume_state(
+            progress_file, summary['mode'], since, max_date)
 
     session = None if dry_run else db_manager.get_session()
     pending: list[dict[str, Any]] = []
@@ -380,10 +601,15 @@ def fill_stock_daily(
                 summary['stocks_resumed'] += 1
                 continue
 
-            rows, reason = _collect_rows(
+            rows, reason, provenance, fallback_reason = _collect_rows_with_source(
                 handler.tdx_data_path, ts_code,
-                full=full, coverage=coverage, watermarks=watermarks,
+                source=source_effective, client=client, full=full,
+                coverage=coverage, watermarks=watermarks,
                 since=since, max_date=max_date)
+
+            _account_source(provenance_map, summary['source_stats'],
+                            ts_code, provenance, fallback_reason)
+
             if rows is None:
                 summary['skipped_reasons'][reason] += 1
                 if reason == 'already_complete':
@@ -393,6 +619,8 @@ def fill_stock_daily(
                         _mark_progress(True, done, progress_codes, summary,
                                        progress, progress_file, dry_run,
                                        since, max_date)
+                else:
+                    _log_skip(ts_code, reason, provenance, fallback_reason)
                 continue
 
             pending.extend(rows)
@@ -407,24 +635,29 @@ def fill_stock_daily(
                 pending = []
                 pending_stocks = 0
 
-            if index % 200 == 0:
-                logger.info(
-                    f"进度 {index}/{len(codes)}（已处理 "
-                    f"{summary['stocks_processed']} 只，行 {summary['rows']}）")
+            _log_periodic(index, len(codes), summary)
 
         ok = _flush_batch(session, pending, summary, dry_run)
         _mark_progress(ok, done, progress_codes, summary, progress,
                        progress_file, dry_run, since, max_date)
 
+        if source_effective != 'local':
+            summary['source_manifest_path'] = _write_source_manifest(
+                progress_file, source_manifest_path, summary, provenance_map, source)
+
         logger.info(
             f"stock_daily 补库完成（{summary['mode']}"
-            f"{'，dry-run' if dry_run else ''}）："
+            f"{'，dry-run' if dry_run else ''}，source={source_effective}）："
             f"股票 {summary['stocks_total']} 只，覆盖 {summary['stocks_processed']} 只，"
             f"行 {summary['rows']}，新增 {summary['inserted']}，更新 {summary['updated']}，"
             f"跳过 {summary['skipped_reasons']}"
         )
         summary['progress_path'] = str(progress_file) if progress_file else ''
+
+        _raise_if_all_failed(codes, summary)
         return summary
     finally:
+        if owns_client and client is not None:
+            client.close()
         if session is not None:
             session.close()
