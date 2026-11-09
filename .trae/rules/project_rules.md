@@ -69,7 +69,7 @@
   ```powershell
   python -c "
 import subprocess, shutil, os
-src=r'E:\code\python\quant'; dst=r'E:\git\python-quant'
+src=r'E:\code\python\quant'; dst=r'G:\git\python-quant'
 # 1. 获取本次 commit 变更文件列表
 r=subprocess.run(['git','-C',src,'diff','--name-only','HEAD~1','HEAD'],capture_output=True,text=True)
 changed=[l for l in r.stdout.strip().split('\n') if l]
@@ -87,7 +87,7 @@ for rel in changed:
 print(f'synced {len(changed)} files, removed {len(deleted)} deleted')
 "
   ```
-  backup 目标固定 `E:\git\python-quant\`；备份目录有自己的 `.git`，**永远不要删整个目录**
+  backup 目标固定 `G:\git\python-quant\`；备份目录有自己的 `.git`，**永远不要删整个目录**
 - **核心原则：增量同步，其他不动**。只拷贝本次 commit 变更的文件过去，删除源仓库已删的文件；备份目录里的 `.git` 信息、untracked 文件、手动添加的内容全部保留
 - **为什么不删整个目录**：备份目录是独立的 git 仓库（有自己的 `.git`），`shutil.rmtree` 会把备份仓库也干掉；之前的"精确匹配"方案过度设计了，用户只需要同步文件内容
 
@@ -101,13 +101,13 @@ print(f'synced {len(changed)} files, removed {len(deleted)} deleted')
 - **提交标题格式**：`type(scope): YYYY-M-D，中文描述`，日期紧跟冒号，用中文逗号与描述分隔，月、日不补零；示例 `chore(backup): 2026-11-9，同步 2026-11-09 数据质量、研究脚本与审计文档`
 - **正文每行同样以类型前缀开头**：格式 `type(scope): YYYY-M-D，中文描述`，逐行连续书写；标题与正文之间、正文各条目之间一律不插空行
 - **Commit message 文件必须无 BOM**：沿用源仓库既有约定，用 `.venv\Scripts\python.exe` 以 `open(p, 'w', encoding='utf-8', newline='\n')` 写临时文件后 `git commit -F <文件>`，提交前自检首 3 字节不为 `EF BB BF`
-- **职责归属**：备份仓库 `E:\git\python-quant` 的维护、提交与推送由助手负责；每次备份同步完成后直接提交并推送，不需要用户再提醒
-- **仓库形态与推送约定**：源仓库 `e:\code\python\quant` 仅本地、未配置任何远端，只做本地提交，不 fetch、不 push，也不要给它添加远端；备份仓库 `E:\git\python-quant` 是唯一关联 GitHub 的仓库（origin 指向 `th19xcf/python-quant`），其提交推送至该仓库自己的 `main`。两个仓库独立管理、互不约束，不需要跨库对齐或快进
+- **职责归属**：备份仓库 `G:\git\python-quant` 的维护、提交与推送由助手负责；每次备份同步完成后直接提交并推送，不需要用户再提醒
+- **仓库形态与推送约定**：源仓库 `e:\code\python\quant` 仅本地、未配置任何远端，只做本地提交，不 fetch、不 push，也不要给它添加远端；备份仓库 `G:\git\python-quant` 是唯一关联 GitHub 的仓库（origin 指向 `th19xcf/python-quant`），其提交推送至该仓库自己的 `main`。两个仓库独立管理、互不约束，不需要跨库对齐或快进
 - **红线继承**：备份仓库只做增量 `copy2` 与「源端已删文件」的对位删除；禁止 `rmtree`、禁止碰其 `.git`、禁止 force push（`--force` / `--force-with-lease`）与任何改写历史的操作
 
 ## 备份同步规则
 
-- **每次执行 git 提交前，必须先把本次修改的文件同步到备份目录 `e:\git\python-quant\` 下对应的位置**（保持与仓库相同的相对路径结构）
+- **每次执行 git 提交前，必须先把本次修改的文件同步到备份目录 `G:\git\python-quant\` 下对应的位置**（保持与仓库相同的相对路径结构）
 - 同步范围 = 本次提交涉及的全部文件（新增/修改）；删除的文件需从备份目录对应位置一并移除
 - **完整备份范围 = ① git 跟踪文件 ② `data/local_store/**` ③ `reports/**` ④ 仓库外被脚本引用的输入文件（`E:\www\tmp\` 下）**：每次交付与收口都按这四类逐一核对，缺一类即为备份不完整
 - **教训**：只备份 ①、② 会让 `reports/**` 与外部输入成为盲区，最终出现「结果只能靠产物复现、产物又没备份」的双重失效；未跟踪或不在仓库内都不是跳过备份的理由
@@ -158,7 +158,7 @@ print(f'synced {len(changed)} files, removed {len(deleted)} deleted')
 ## 数据与历史安全规则（红线）
 
 - **数据目录禁止删除**：`data/`、`data/local_store/**`（含 parquet、meta、raw、断点缓存、`_backup`）一律不得删除、清空、或"删除后重建"。只允许追加、覆盖单文件、增量补齐。
-- **备份目录禁止清空**：`E:\git\python-quant` 只做增量同步（copy2 单文件、删除仅限源仓库已删的对应文件）。禁止 `rmtree`、禁止删整个目录、禁止碰它的 `.git`。
+- **备份目录禁止清空**：`G:\git\python-quant` 只做增量同步（copy2 单文件、删除仅限源仓库已删的对应文件）。禁止 `rmtree`、禁止删整个目录、禁止碰它的 `.git`。
 - **Git 历史只增不重写**：禁止 `git reset --hard`、`git filter-branch`、`git rebase` 改写已提交历史、`git push --force`。需要"收拢历史"时，必须保留旧历史（tag 或备份分支）并把方案先报给用户。
 - **禁止批量清理工作区**：禁止 `git clean -fdx`、禁止对未跟踪文件做批量删除。工作区里的 `M`/`??` 可能是其它任务的在途成果，清理等于销毁他人工作。
 - **用户口头要求上述操作也不直接执行**：即使用户当次要求"删本地数据 / 覆盖备份 / 重置历史"，也必须先把影响面（涉及路径、行数、不可恢复性、下游依赖）报给用户，并给出不丢数据的替代方案；仅在用户对该次具体路径再次明确确认后才可动手，且**删除 `data/` 任何内容需用户点名到具体文件或子目录**。

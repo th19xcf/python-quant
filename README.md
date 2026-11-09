@@ -340,7 +340,7 @@ cp .env.example .env
 
 - 依赖管理：Poetry；运行时直接依赖固定为 `==` 版本，`poetry.lock` 锁定全部传递依赖（不要在未更新锁文件的情况下手工 `pip install` 升级依赖，否则回测结果不可复现）
 - 可选依赖组：`dev`（pytest / ruff / mypy / black，默认安装）、`gpu`（cupy，`poetry install --with gpu`）；GPU 缺失时 `gpu_acceleration.py` 自动降级为 NumPy
-- 提交路径：项目目录 `e:\code\python\quant` 为 Git 仓库；每次提交前先同步备份目录 `E:\git\python-quant`（保持相同相对路径）
+- 提交路径：项目目录 `e:\code\python\quant` 为 Git 仓库；每次提交前先同步备份目录 `G:\git\python-quant`（保持相同相对路径）
 - 数据库迁移：Alembic（`.\.venv\Scripts\python.exe -m alembic upgrade head`；改表必须先 `alembic revision --autogenerate -m "..."` 生成脚本，禁止手写 DDL，`create_tables()` 内部已走 `alembic upgrade head`）
 - 测试：pytest 全量回归（`.\.venv\Scripts\python.exe -m pytest tests -q`）
 - 质量门禁（本地与 CI 一致）：

@@ -13,8 +13,8 @@ r"""不可重建数据资产备份 + SHA256 校验。
 
 典型用法::
 
-    python tools/backup_critical_assets.py --dest E:/git/python-quant-critical
-    python tools/backup_critical_assets.py --dest E:/git/python-quant-critical --verify
+    python tools/backup_critical_assets.py --dest G:/git/python-quant-critical
+    python tools/backup_critical_assets.py --dest G:/git/python-quant-critical --verify
     python tools/backup_critical_assets.py --dry-run   # 只看清单与体积
 
 生产环境请把 ``--dest`` 指向**另一块物理盘或另一台机器**；默认的
