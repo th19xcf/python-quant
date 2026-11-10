@@ -84,7 +84,6 @@ def test_recommendation_report_contains_stock_rows(report_env):
             'name': '贵州茅台',
             'industry': '食品饮料',
             'score': 88.5,
-            'expected_return': 12.3,
             'risk': '低',
         },
     ]
@@ -95,7 +94,9 @@ def test_recommendation_report_contains_stock_rows(report_env):
     assert '<table' in html
     assert '贵州茅台' in html
     assert '88.50' in html
-    assert '12.30%' in html
+    # 推荐报告不再展示「预期收益」列（core 不产出收益预测）
+    assert '预期收益' not in html
+    assert 'expected_return' not in html
 
 
 def test_factor_report_renders_validity_and_correlation_tables(report_env):
@@ -485,7 +486,6 @@ def test_stock_dialog_export_passes_real_recommendations(monkeypatch, qapp):
             'code': '600519.SH',
             'name': '贵州茅台',
             'score': 88.5,
-            'expected_return': 12.3,
             'risk': '低',
         }]
         dialog.export_report()

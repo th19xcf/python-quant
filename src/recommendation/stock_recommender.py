@@ -73,7 +73,6 @@ class StockRecommender:
             'risk_level': risk_level,
             'current_price': latest_data.get('close', 0),
             'industry': latest_data.get('industry', '未知'),
-            'expected_return': score * 100
         }
 
     def recommend_stocks(self, stocks_data: pl.DataFrame, top_n: int = 10, algorithm: str = "多因子选股",

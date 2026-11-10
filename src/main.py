@@ -68,8 +68,9 @@ def parse_args():
     parser.add_argument('--sync-stock-daily', action='store_true',
                         help='用通达信日线补库 stock_daily（默认增量：网络源优先，失败回退本地 .day）')
     parser.add_argument('--source', default='auto', choices=['auto', 'local', 'mootdx'],
-                        help='配合 --sync-stock-daily：auto=网络优先→本地回退（默认）、'
-                             'local=只读本地 .day、mootdx=只走网络源')
+                        help='配合 --sync-stock-daily：auto=网络优先→本地回退（默认，'
+                             'allow_remote_sources=false 时自动降级为 local 并提示）、'
+                             'local=只读本地 .day、mootdx=只走网络源（离线配置下拒绝执行）')
     parser.add_argument('--sync-fund-daily', action='store_true',
                         help='用本地列存补库 fund_daily / closed_fund_daily（离线，幂等可续跑）')
     parser.add_argument('--sync-index-daily', action='store_true',
@@ -247,11 +248,41 @@ def _handle_update_stock_arg(config):
         return True
 
 
+#: 离线配置下 ``--source auto`` 降级提示；显式打印，不静默回退
+OFFLINE_SOURCE_NOTICE = (
+    'data.allow_remote_sources=false，--source auto 已跳过远端源，'
+    '本次仅使用本地通达信 .day'
+)
+
+
+def resolve_fill_source(requested: str, allow_remote_sources: bool) -> tuple[str, bool]:
+    """解析 ``--source``：``auto`` 只在允许联网时保留，否则显式降级为 ``local``。
+
+    Returns:
+        (实际使用的 source, 是否发生了离线降级)
+    """
+    if requested == 'auto' and not allow_remote_sources:
+        return 'local', True
+    return requested, False
+
+
 def _handle_sync_stock_daily_arg(config, args):
     """处理 --sync-stock-daily：本地 TDX → stock_daily 离线补库。"""
     from src.data.services.stock_daily_fill import fill_stock_daily
 
     logger.info("检测到 --sync-stock-daily 参数，将执行 stock_daily 本地补库")
+
+    requested_source = getattr(args, 'source', 'auto')
+    allow_remote = remote_sources_enabled(config)
+    if requested_source == 'mootdx' and not allow_remote:
+        raise DataSourceException(
+            'stock_daily_fill',
+            'data.allow_remote_sources=false，--source mootdx 必须联网，已拒绝执行；'
+            '如需联网请先在配置中开启 allow_remote_sources',
+        )
+    source, remote_skipped = resolve_fill_source(requested_source, allow_remote)
+    if remote_skipped:
+        logger.warning(OFFLINE_SOURCE_NOTICE)
 
     db_manager = None
     try:
@@ -286,8 +317,10 @@ def _handle_sync_stock_daily_arg(config, args):
             since=since,
             max_date=max_date,
             progress_path=progress_file,
-            source=getattr(args, 'source', 'auto'),
+            source=source,
         )
+        summary['source_requested'] = requested_source
+        summary['remote_skipped'] = remote_skipped
         logger.info(f"stock_daily 补库结果: {summary}")
     except (DataSourceException, *_STARTUP_ERRORS) as e:
         logger.exception(f"stock_daily 补库失败: {e}")

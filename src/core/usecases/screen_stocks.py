@@ -194,7 +194,7 @@ def screen_stocks(
         stock_codes: 显式股票池；None 时用 stock_basic 按 ts_code 升序前 top_n*3 只。
 
     Returns:
-        List[Dict] —— 每只股票含 score / risk / expected_return / industry 等。
+        List[Dict] —— 每只股票含 score / risk / industry 等（不提供收益预测）。
     """
     if stocks_data is None:
         anchor = _coerce_date(today)

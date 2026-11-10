@@ -481,7 +481,6 @@ class ReportGenerator:
                     <td>{stock.get('name', '')}</td>
                     <td>{stock.get('industry', '')}</td>
                     <td>{stock.get('score', 0):.2f}</td>
-                    <td>{stock.get('expected_return', 0):.2f}%</td>
                     <td>{stock.get('risk', '中')}</td>
                 </tr>
                 """
@@ -495,7 +494,6 @@ class ReportGenerator:
                         <th>股票名称</th>
                         <th>行业</th>
                         <th>综合评分</th>
-                        <th>预期收益</th>
                         <th>风险评级</th>
                     </tr>
                     {stocks_html}
