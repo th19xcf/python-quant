@@ -6,12 +6,12 @@
 默认参数对齐 A 股现行规则（2023-08-28 起印花税降为 0.05%）：
 - 佣金双边 0.05%，单笔最低 5 元
 - 印花税卖出侧 0.05%（ETF/LOF 按品种豁免）
-- 过户费双边 0.002%（2015-08-01 起沪深统一）
+- 过户费双边 0.002%（2015-08-01 起沪深统一，ETF/LOF 豁免）
 - 滑点 0.02% 双边，可按流动性覆盖
 
 传入 ``trade_date`` 时按历史时间表取费率（印花税/过户费），避免用现行
 费率回测历史区间造成系统性成本偏差；不传时使用 ``COST_DEFAULTS`` 中的
-现行静态费率（过户费 0.002%，与时间表当日口径一致）。
+现行静态费率（过户费 0.002%，与时间表当日口径一致；ETF/LOF 恒为 0）。
 """
 
 from datetime import date, datetime
@@ -250,7 +250,14 @@ class CostModel:
         return 0.0
 
     def _transfer_fee_rate(self, trade_date: TradeDate, ts_code: str) -> float:
-        """按交易日与市场取过户费率；未传日期时沿用静态参数。"""
+        """按交易日与市场取过户费率；ETF/LOF 免过户费，未传日期时沿用静态参数。
+
+        ETF/LOF 的登记结算由基金自身承担，投资者买卖场内基金不缴过户费；
+        此前 2015-08-01 后对所有代码统一返回 0.002%，把基金也计了 0.2bp，
+        对一个 20 年、248 次调仓的 ETF 轮动策略累计约 0.24pp。
+        """
+        if self._is_fund(ts_code):
+            return 0.0
         day = _as_date(trade_date)
         if day is None:
             return self.params['transfer_fee_rate']

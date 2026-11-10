@@ -9,8 +9,9 @@
   且要求至少 252 个交易日历史（避免用未来流动性选池）；
 * 信号：12-1 动量 = 复权收盘价[t-21] / 复权收盘价[t-252] - 1；
 * 组合：动量前 5 名等权，月末收盘出信号、下一交易日**开盘**成交；
-* 成本：完整往返 0.154%，即单边 0.077%，按调仓换手率计
-  （全仓换股 turnover=2 → 成本 2×0.077%=0.154%）；
+* 成本：默认用逐笔 ``CostModel``（按 20 日 ADV 分档滑点、ETF 免印花税/过户费、
+  佣金双边 5bp）；``--cost-mode const`` 可切回旧的常数往返 0.154%（单边 0.077%）
+  口径，仅用于复跑对照；
 * 基准：同一时点合格池等权、同频调仓、同成本。
 
 复权：``close × qfq_factor``（基金因子快照 ``factors/fund_adj_factor.parquet``）。
@@ -18,9 +19,11 @@
 运行::
 
     .venv\\Scripts\\python.exe tools/etf_momentum_backtest.py
+    .venv\\Scripts\\python.exe tools/etf_momentum_backtest.py --cost-mode const --out-dir <对照目录>
 
-产物：``reports/etf_audit/momentum_nav.csv``、
-``reports/etf_audit/momentum_result.json``。不改生产代码、不写库、不提交 git。
+产物：``<out-dir>/momentum_nav_{universe}.csv``、
+``<out-dir>/momentum_result_{universe}.json``（默认 ``reports/etf_audit/``）。
+不改生产代码、不写库、不提交 git。
 """
 
 from __future__ import annotations
@@ -38,6 +41,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.backtest.costs.cost_model import CostModel  # noqa: E402
+
 STORE = PROJECT_ROOT / 'data' / 'local_store'
 QUOTES = STORE / 'quotes' / 'fund'
 FACTORS = STORE / 'factors'
@@ -47,8 +52,7 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 TOP_POOL = 30          # 时点流动性前 30
 HOLD_K = 5             # 持仓只数
-COST_ROUND_TRIP = 0.00154
-COST_SIDE = COST_ROUND_TRIP / 2.0
+COST_ROUND_TRIP = 0.00154   # 旧常数口径：完整往返 0.154%（单边 0.077%），仅 --cost-mode const 使用
 MIN_HISTORY = 252
 LOOKBACK_LONG = 252
 LOOKBACK_SKIP = 21
@@ -174,8 +178,40 @@ def build_month_ends(calendar: pd.DatetimeIndex) -> list[pd.Timestamp]:
     return list(s.groupby([s.index.year, s.index.month]).last().values)
 
 
+def per_trade_cost(target: dict, weights: dict, avg_amt, trade_date,
+                   cost_model: CostModel) -> float:
+    """逐笔成本：买/卖分开，按标的与 20 日 ADV 取分档费率。
+
+    买侧与卖侧分别按 ``max(Δw, 0)`` 拆分权重变化，费率为
+    ``CostModel.get_buy_cost_rate`` / ``get_sell_cost_rate``（佣金 + 过户费
+    + 印花税 + 分档滑点）。ETF 免印花税与过户费，实际只剩佣金 + 滑点。
+    """
+    buys = {c: max(target.get(c, 0.0) - weights.get(c, 0.0), 0.0)
+            for c in set(target) | set(weights)}
+    sells = {c: max(weights.get(c, 0.0) - target.get(c, 0.0), 0.0)
+             for c in set(target) | set(weights)}
+    cost = 0.0
+    for c, w in buys.items():
+        if w <= 0:
+            continue
+        adv = float(avg_amt.get(c)) if pd.notna(avg_amt.get(c)) else None
+        cost += w * cost_model.get_buy_cost_rate(
+            trade_date=trade_date, ts_code=c, adv20=adv)
+    for c, w in sells.items():
+        if w <= 0:
+            continue
+        adv = float(avg_amt.get(c)) if pd.notna(avg_amt.get(c)) else None
+        cost += w * cost_model.get_sell_cost_rate(
+            trade_date=trade_date, ts_code=c, adv20=adv)
+    return cost
+
+
 def run(pivot_close, pivot_open, pivot_amt, calendar, month_ends, k: int,
-        equal_weight_benchmark: bool) -> tuple[pd.Series, list[dict]]:
+        equal_weight_benchmark: bool, cost_mode: str = 'model',
+        cost_round_trip: float = COST_ROUND_TRIP,
+        cost_model: CostModel | None = None) -> tuple[pd.Series, list[dict]]:
+    if cost_mode not in ('model', 'const'):
+        raise ValueError(f'未知 cost_mode: {cost_mode!r}，只支持 model/const')
     nav = pd.Series(index=calendar, dtype=float)
     nav.iloc[0] = 1.0
     weights: dict[str, float] = {}
@@ -232,7 +268,12 @@ def run(pivot_close, pivot_open, pivot_amt, calendar, month_ends, k: int,
                 target = {c: 1.0 / len(picked) for c in picked} if picked else {}
             turnover = sum(abs(target.get(c, 0.0) - weights.get(c, 0.0))
                            for c in set(target) | set(weights))
-            cost = turnover * COST_SIDE
+            if cost_mode == 'const':
+                cost = turnover * (cost_round_trip / 2.0)
+            else:
+                if cost_model is None:
+                    cost_model = CostModel()
+                cost = per_trade_cost(target, weights, avg_amt, prev, cost_model)
             nav.iloc[i] = nav.iloc[i - 1] * (1.0 + overnight(prev, d, weights))
             nav.iloc[i] *= (1.0 - cost) * (1.0 + intraday(d, target))
             trades.append({
@@ -249,10 +290,14 @@ def run(pivot_close, pivot_open, pivot_amt, calendar, month_ends, k: int,
     return nav, trades
 
 
-def main(universe: str = 'equity') -> None:
+def main(universe: str = 'equity', cost_mode: str = 'model',
+         cost_round_trip: float = COST_ROUND_TRIP,
+         out_dir: Path | None = None) -> None:
+    out_dir = Path(out_dir) if out_dir is not None else OUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
     equity_only = universe == 'equity'
     codes, names = load_etf_codes(equity_only=equity_only)
-    print(f'[backtest] 标的池={universe}，ETF 代码数: {len(codes)}')
+    print(f'[backtest] 标的池={universe}，ETF 代码数: {len(codes)}，成本口径={cost_mode}')
     panel = load_panel(codes)
     print(f'[backtest] 面板行数: {panel.height if hasattr(panel, "height") else len(panel)}')
 
@@ -268,9 +313,11 @@ def main(universe: str = 'equity') -> None:
     month_ends = build_month_ends(calendar)
 
     nav_m, trades_m = run(pivot_close, pivot_open, pivot_amt, calendar, month_ends,
-                          HOLD_K, False)
+                          HOLD_K, False, cost_mode=cost_mode,
+                          cost_round_trip=cost_round_trip)
     nav_b, trades_b = run(pivot_close, pivot_open, pivot_amt, calendar, month_ends,
-                          HOLD_K, True)
+                          HOLD_K, True, cost_mode=cost_mode,
+                          cost_round_trip=cost_round_trip)
     # 起点：首个有合格池的调仓次日
     first = min(t['execute'] for t in trades_m)
     nav_m = nav_m[nav_m.index >= pd.Timestamp(first)].dropna()
@@ -295,7 +342,11 @@ def main(universe: str = 'equity') -> None:
         'repaired_split_days': int((panel['raw_ret'].abs() > JUMP_THRESHOLD).sum()),
         'params': {
             'top_pool_liquidity': TOP_POOL, 'hold_k': HOLD_K,
-            'cost_round_trip': COST_ROUND_TRIP,
+            'cost_mode': cost_mode,
+            'cost_model': ('逐笔 CostModel：佣金 5bp 双边 + ETF 免印花税/过户费 + '
+                           'ADV20 分档滑点 5/7/10bp'
+                           if cost_mode == 'model' else None),
+            'cost_round_trip': cost_round_trip if cost_mode == 'const' else None,
             'momentum': 'close_adj[t-21]/close_adj[t-252]-1',
             'execution': '月末收盘出信号，下一交易日开盘成交',
             'jump_repair': f'复权后单日 |收益|>{JUMP_THRESHOLD:.0%} 视为份额折算，收益记 0',
@@ -309,6 +360,10 @@ def main(universe: str = 'equity') -> None:
         'avg_turnover': round(float(np.mean([t['turnover'] for t in trades_m])), 3),
         'avg_cost_per_rebalance': round(
             float(np.mean([t['cost'] for t in trades_m])), 5),
+        'sum_cost_pct': round(
+            float(np.sum([t['cost'] for t in trades_m]) * 100), 4),
+        'cum_fee_pct': round(
+            float((1.0 - np.prod([1.0 - t['cost'] for t in trades_m])) * 100), 4),
         'pool_size_by_year': {int(k): float(v) for k, v in pool_by_year.items()},
     }
     # 年度收益
@@ -332,8 +387,8 @@ def main(universe: str = 'equity') -> None:
         c: names.get(c, '') for c in (trades_m[-1]['picked'] if trades_m else [])}
 
     pd.DataFrame({'momentum_k5': nav_m, 'equal_weight': nav_b}).to_csv(
-        OUT_DIR / f'momentum_nav_{universe}.csv', encoding='utf-8')
-    (OUT_DIR / f'momentum_result_{universe}.json').write_text(
+        out_dir / f'momentum_nav_{universe}.csv', encoding='utf-8')
+    (out_dir / f'momentum_result_{universe}.json').write_text(
         json.dumps(res, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps(res, ensure_ascii=False, indent=2))
 
@@ -342,5 +397,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--universe', choices=('equity', 'all'), default='equity',
                         help='equity=宽基/行业/跨境等权益 ETF（剔除债券/黄金/商品/货币）')
+    parser.add_argument('--cost-mode', choices=('model', 'const'), default='model',
+                        help='model=逐笔 CostModel（默认）；const=旧常数往返口径，仅作对照')
+    parser.add_argument('--cost-round-trip', type=float, default=COST_ROUND_TRIP,
+                        help=f'--cost-mode const 时的完整往返费率，默认 {COST_ROUND_TRIP}')
+    parser.add_argument('--out-dir', default=None,
+                        help=f'产物目录，默认 {OUT_DIR}')
     args = parser.parse_args()
-    main(args.universe)
+    main(args.universe, args.cost_mode, args.cost_round_trip, args.out_dir)

@@ -167,6 +167,11 @@ def test_cost_model_date_parsing_handles_third_party_timestamps():
     assert model._transfer_fee_rate(stamp, '000001.SZ') == 0.0
     assert model._stamp_tax_rate(datetime(2024, 1, 2), 'sell', '600000.SH') == 0.0005
     assert model._transfer_fee_rate(datetime(2024, 1, 2), '600000.SH') == 0.00002
+    # ETF/LOF 免过户费：2015 前后、有无日期、沪深两市都必须为 0
+    assert model._transfer_fee_rate(stamp, '510300.SH') == 0.0
+    assert model._transfer_fee_rate(stamp, '159915.SZ') == 0.0
+    assert model._transfer_fee_rate(datetime(2024, 1, 2), '510300.SH') == 0.0
+    assert model._transfer_fee_rate(None, '501000.SH') == 0.0
     assert model._stamp_tax_rate('not-a-date', 'sell', '600000.SH') == (
         COST_DEFAULTS['stamp_tax_rate'])
 

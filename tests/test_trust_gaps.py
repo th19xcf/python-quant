@@ -197,10 +197,10 @@ def test_cost_model_defaults_match_single_source():
     assert model.params == COST_DEFAULTS
     assert model.params['transfer_fee_rate'] == TRANSFER_FEE_RATE_UNIFIED == 0.00002
     # 不传 trade_date 也应扣满双边过户费，不能少扣一半。
-    # 现行口径（佣金 0.05%、ETF 免印花税、ADV≥1 亿滑点 5bp）：
-    # 50 + 0 + 2 + 50 = 102.0
+    # 现行口径（佣金 0.05%、ETF 免印花税与过户费、ADV≥1 亿滑点 5bp）：
+    # 50 + 0 + 0 + 50 = 100.0
     sell = model.calculate_sell_cost(10_000, 10.0, ts_code='510300.SH', adv20=2.0e8)
-    assert sell == pytest.approx(102.0)
+    assert sell == pytest.approx(100.0)
 
 
 def test_advice_trading_costs_reference_backtest_defaults():
