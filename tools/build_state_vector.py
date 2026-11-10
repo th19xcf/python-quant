@@ -9,6 +9,12 @@ r"""A 股市场状态向量日频表（``state_vector_daily``）。
 1. 估值位 ``val_earn_yield``：全 A 整体法盈利收益率 = Σ净利润TTM / Σ总市值（%）。
    本地**没有**全 A 整体法 PE 表，故由 ``meta/financials/valuation_daily.parquet``
    逐只 ``pe``（TTM）反推净利润再整体相加（降级口径，逐条写在 manifest）。
+   2026-11-11 起（``state_vector_v2``）对每日横截面的 ``ey = 1/pe`` 先做
+   ``VAL_EY_WINSOR_LOWER`` / ``VAL_EY_WINSOR_UPPER`` 分位缩尾再加权聚合：
+   ``earn_yield = Σ(total_mv × clip(1/pe, q_lo, q_hi)) / Σtotal_mv × 100``。
+   缩尾只截断「近零 pe」造成的极端 ``1/pe``（例如 pe=0.01 时 ey=100），
+   不剔除亏损股（``pe<0`` 的负收益仍按原值参与），也不改变覆盖率门槛。
+   未缩尾的旧口径保留在 ``val_earn_yield_unwinsor`` 列供对照，主列语义只表示缩尾口径。
 2. 情绪位 ``sent_ff_turnover``：全市场自由流通换手率 = Σ成交额 / Σ自由流通市值（%）。
    自由流通股本取 ``meta/factors/stock_shares.parquet`` 的 ``free_float_share_filled``，
    三态（raw / ffill_250d / excluded）分别处理，见 ``FREE_FLOAT_RULE``。
@@ -58,7 +64,15 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_STORE = ROOT / 'data' / 'local_store'
 
 #: 口径版本；任一口径项变化都必须 +1（写进 manifest，不写进文件名）
-METHOD_VERSION = 'state_vector_v1'
+METHOD_VERSION = 'state_vector_v2'
+
+#: 估值位缩尾参数：逐日横截面对 ``ey = 1/pe`` 做分位缩尾（1% / 99%）
+#: 目的：pe 趋近 0 时 ``1/pe`` 会放大到 ±数十倍，单只票即可支配整体法分子；
+#: 缩尾只截断这些极端值，不剔除亏损股、不改覆盖率门槛（2026-11-11 用户裁定「切」）
+VAL_EY_WINSOR_LOWER = 0.01
+VAL_EY_WINSOR_UPPER = 0.99
+#: 口径变更影响显著阈值（pp）：|缩尾 − 未缩尾| ≥ 该值的交易日打 ``val_earn_yield_winsor``
+VAL_WINSOR_FLAG_PP = 0.5
 
 #: 滚动分位窗口（有效交易日）≈ 5 年
 QUANTILE_WINDOW = 1250
@@ -103,6 +117,7 @@ _OUTPUT_COLUMNS = [
     'sent_ff_coverage', 'sent_ff_ffill_share',
     'val_n_codes', 'val_pe_coverage', 'sent_n_codes',
     'dims_available', 'dims_q_available',
+    'val_earn_yield_unwinsor', 'valuation_erp_unwinsor',
     'quality_flags',
 ]
 
@@ -140,6 +155,10 @@ QUALITY_FLAGS = {
     'val_source_switch': '盈利收益率存在单日口径跳变的换源日：自动派生（当日多数个股 pe 来源与上一'
                          '交易日不同）∪ 已知跳变日 2015-01-05 / 2018-01-02。原值保留不调整，'
                          '但相似态检索应剔除',
+    'val_earn_yield_winsor': '估值位口径变更标记：2026-11-11 起 val_earn_yield 改为逐日 ey=1/pe '
+                             '1%/99% 缩尾口径（state_vector_v2）。该标记只落在「缩尾使当日值与'
+                             '未缩尾旧口径相差 ≥ 0.5pp」的交易日，提示该日估值位读数对口径选择敏感；'
+                             '原始数值见对照列 val_earn_yield_unwinsor',
 }
 
 
@@ -258,21 +277,38 @@ def build_calendar(store: Path) -> list[date]:
 
 
 def load_valuation(store: Path) -> pl.DataFrame:
-    """逐日汇总估值表 → 整体法盈利收益率。
+    """逐日汇总估值表 → 整体法盈利收益率（逐日 ey 缩尾口径 + 未缩尾对照）。
 
     ``earnings_ttm = total_mv / pe``；只用 ``pe`` 非空的行，且分子分母取同一集合，
     避免「市值算进来、利润没算」的错配。``pe`` 含负值（亏损股），整体法按原值累加，
     不做剔除——剔除负值会系统性地把整体估值压低。
+
+    缩尾：逐日在横截面上对 ``ey = 1/pe`` 取 ``VAL_EY_WINSOR_LOWER`` /
+    ``VAL_EY_WINSOR_UPPER`` 分位，把 ``ey`` 截断到 ``[q_lo, q_hi]`` 后按总市值加权：
+    ``earn_w = total_mv × clip(ey, q_lo, q_hi)``，主列用 ``Σearn_w / Σtotal_mv``。
+    未缩尾的 ``Σ(total_mv/pe) / Σtotal_mv`` 写进对照列，供新旧口径逐日比较。
     """
-    frame = (pl.scan_parquet(store / 'meta' / 'financials' / 'valuation_daily.parquet')
-             .select(['ts_code', 'trade_date', 'pe', 'total_mv', 'circ_mv'])
-             .filter(pl.col('pe').is_not_null() & (pl.col('pe') != 0)
-                     & pl.col('total_mv').is_not_null())
-             .with_columns((pl.col('total_mv') / pl.col('pe')).alias('earn'))
-             .group_by('trade_date')
+    base = (pl.scan_parquet(store / 'meta' / 'financials' / 'valuation_daily.parquet')
+            .select(['ts_code', 'trade_date', 'pe', 'total_mv', 'circ_mv'])
+            .filter(pl.col('pe').is_not_null() & (pl.col('pe') != 0)
+                    & pl.col('total_mv').is_not_null())
+            .with_columns([
+                (pl.col('total_mv') / pl.col('pe')).alias('earn'),
+                (1.0 / pl.col('pe')).alias('ey'),
+                (pl.col('pe').abs() < 1.0).alias('_near_zero_pe'),
+            ]))
+    wins = base.with_columns([
+        pl.col('ey').quantile(VAL_EY_WINSOR_LOWER).over('trade_date').alias('_ey_lo'),
+        pl.col('ey').quantile(VAL_EY_WINSOR_UPPER).over('trade_date').alias('_ey_hi'),
+    ]).with_columns(
+        (pl.col('total_mv') * pl.col('ey').clip(pl.col('_ey_lo'), pl.col('_ey_hi')))
+        .alias('earn_w'))
+    frame = (wins.group_by('trade_date')
              .agg([
                  pl.col('total_mv').sum().alias('mv'),
                  pl.col('earn').sum().alias('earn'),
+                 pl.col('earn_w').sum().alias('earn_w'),
+                 pl.col('_near_zero_pe').sum().alias('n_near_zero_pe'),
                  pl.len().alias('n'),
              ])
              .sort('trade_date')
@@ -379,10 +415,17 @@ def attach_dimensions(panel: pl.DataFrame, store: Path) -> pl.DataFrame:
 
     panel = panel.with_columns([
         # 整体法盈利收益率(%)：Σ利润 / Σ市值；两处均为正且 pe 覆盖达标才算
+        # 主列 = 逐日 ey 缩尾口径（VALID 门槛同旧口径：覆盖率 + 聚合盈利为正）
+        pl.when((pl.col('mv') > 0) & (pl.col('earn_w') > 0)
+                & (pl.col('n') >= pl.col('n_row') * VAL_MIN_PE_COVERAGE))
+        .then(pl.col('earn_w') / pl.col('mv') * 100.0).otherwise(None)
+        .alias('val_earn_yield'),
+        # 对照列 = 未缩尾旧口径（state_vector_v1），门控与旧口径完全一致，
+        # 使新旧差额只来自缩尾这一项，不混入门槛变化
         pl.when((pl.col('mv') > 0) & (pl.col('earn') > 0)
                 & (pl.col('n') >= pl.col('n_row') * VAL_MIN_PE_COVERAGE))
         .then(pl.col('earn') / pl.col('mv') * 100.0).otherwise(None)
-        .alias('val_earn_yield'),
+        .alias('val_earn_yield_unwinsor'),
         pl.col('n').alias('val_n_codes'),
         pl.when(pl.col('n_row') > 0)
         .then(pl.col('n') / pl.col('n_row') * 100.0).otherwise(None)
@@ -408,6 +451,10 @@ def attach_dimensions(panel: pl.DataFrame, store: Path) -> pl.DataFrame:
         pl.when(pl.col('val_earn_yield').is_not_null() & pl.col('y10_pct').is_not_null())
         .then(pl.col('val_earn_yield') - pl.col('y10_pct')).otherwise(None)
         .alias('valuation_erp'),
+        pl.when(pl.col('val_earn_yield_unwinsor').is_not_null()
+                & pl.col('y10_pct').is_not_null())
+        .then(pl.col('val_earn_yield_unwinsor') - pl.col('y10_pct')).otherwise(None)
+        .alias('valuation_erp_unwinsor'),
     ])
     return attach_quality_flags(panel)
 
@@ -434,6 +481,11 @@ def attach_quality_flags(panel: pl.DataFrame) -> pl.DataFrame:
     conditions = [
         ('val_source_switch', pl.col('_src_switch') | pl.col('_known_switch')),
         ('val_pe_coverage_low', pl.col('_coverage_low')),
+        ('val_earn_yield_winsor',
+         pl.col('val_earn_yield').is_not_null()
+         & pl.col('val_earn_yield_unwinsor').is_not_null()
+         & ((pl.col('val_earn_yield') - pl.col('val_earn_yield_unwinsor')).abs()
+            >= VAL_WINSOR_FLAG_PP)),
     ]
     expr = pl.concat_str(
         [pl.when(cond).then(pl.lit(code)).otherwise(None) for code, cond in conditions],
@@ -652,7 +704,8 @@ def build(store: Path, *, chunk_size: int = DEFAULT_CHUNK_SIZE,
 
 
 def write_manifest(panel: pl.DataFrame, store: Path, stage: Path, *,
-                   chunk_size: int, codes: int, sens: list[dict[str, Any]]) -> Path:
+                   chunk_size: int, codes: int, sens: list[dict[str, Any]],
+                   caliber_change: dict[str, Any] | None = None) -> Path:
     target = target_path(store)
     q_valid = panel.filter(pl.col('dims_q_available') > 0)
     all_six = panel.filter(pl.col('dims_q_available') == 6)
@@ -678,19 +731,22 @@ def write_manifest(panel: pl.DataFrame, store: Path, stage: Path, *,
         'semantics': 'A 股市场状态向量日频表（六维原值 + 0~100 滚动分位），供相似态回溯作特征输入；'
                      '不做回测、不做检索',
         'method_version': METHOD_VERSION,
+        'caliber_change': caliber_change,
         'produced_by': 'tools/build_state_vector.py',
         'generated_at': datetime.now().isoformat(timespec='seconds'),
         'rows': panel.height,
         'date_range': [str(panel['date'].min()), str(panel['date'].max())],
         'columns': _OUTPUT_COLUMNS,
         'units': {
-            'val_earn_yield': '%（Σ净利润TTM / Σ总市值 × 100）',
+            'val_earn_yield': '%（Σ净利润TTM / Σ总市值 × 100；逐日 ey=1/pe 1%/99% 缩尾口径）',
+            'val_earn_yield_unwinsor': '%（同式但不对 ey 缩尾，state_vector_v1 旧口径对照）',
             'sent_ff_turnover': '%（Σ成交额 / Σ自由流通市值 × 100）',
             'breadth_ma20': '%（站上 MA20 的个股占比，原表已是 0~100）',
             'lev_margin_buy_ratio': '%（两市融资买入额 / 两市成交额 × 100）',
             'trend_er20': '0~1 无量纲（考夫曼效率系数）',
             'style_large_small_20d': 'pp（沪深300 20日收益率 − 中证1000 20日收益率，×100）',
-            'valuation_erp': 'pp（整体法盈利收益率 − 10Y 国债收益率，两者均已对齐为 %）',
+            'valuation_erp': 'pp（缩尾口径盈利收益率 − 10Y 国债收益率，两者均已对齐为 %）',
+            'valuation_erp_unwinsor': 'pp（未缩尾旧口径盈利收益率 − 10Y 国债收益率，仅作对照）',
             '*_q': '0~100 分位（滚动窗口内「有效值 ≤ 当日值」的占比 ×100）',
             'sent_ff_coverage': '%（自由流通市值 / 流通市值，同日同集合）',
             'val_pe_coverage': '%（当日 pe 非空标的数 / 当日估值表标的数）',
@@ -730,9 +786,25 @@ def write_manifest(panel: pl.DataFrame, store: Path, stage: Path, *,
                 'degrade_reason': '本地没有「全 A 整体法 PE」现成表；改为逐只 pe(TTM) 反推 '
                                   'earnings_ttm = total_mv / pe 再整体相加，等价于整体法 PE 的倒数，'
                                   '但依赖逐只 pe 的准确性',
-                'formula': 'earn_yield = Σ(total_mv/pe) / Σtotal_mv × 100，只对 pe 非空且非 0 '
-                           '的行求和，分子分母同集合',
-                'negative_earnings': '亏损股（pe<0）按原值参与累加，不剔除；剔除会让整体估值系统性偏低',
+                'formula': 'earn_yield = Σ(total_mv × clip(1/pe, q_lo, q_hi)) / Σtotal_mv × 100；'
+                           'q_lo/q_hi 为当日横截面 1%/99% 分位，只对 pe 非空且非 0 的行求和，'
+                           '分子分母同集合',
+                'winsor': {
+                    'target': 'ey = 1/pe（逐日横截面）',
+                    'lower_quantile': VAL_EY_WINSOR_LOWER,
+                    'upper_quantile': VAL_EY_WINSOR_UPPER,
+                    'why': 'pe 趋近 0 时 1/pe 放大到 ±数十倍，单只票即可支配整体法分子；'
+                           '2026-11-10 A/B 实测近零 pe（|pe|<1）在 3,357/5,053 天出现，'
+                           '平均 9.15 行/天、最多 33 行，贡献 Σearn 均值 −1.41%、最低 −6.68%，'
+                           '故对 ey 做分位缩尾，不改覆盖率门槛、不剔除亏损股',
+                    'comparison_column': 'val_earn_yield_unwinsor',
+                    'comparison_note': '对照列沿用 state_vector_v1 的未缩尾口径与同一门控，'
+                                       '主列语义只表示缩尾口径，不得混用',
+                    'flag': f'缩尾使当日值与未缩尾口径相差 ≥ {VAL_WINSOR_FLAG_PP}pp 的交易日'
+                            f'打 quality_flags=val_earn_yield_winsor',
+                },
+                'negative_earnings': '亏损股（pe<0）按原值参与累加，不剔除；缩尾只截断 ey 的'
+                                     '极端分位，不改变正负号',
                 'coverage_guard': f'当日 pe 覆盖率（pe 非空数 / 估值表标的数）低于 '
                                   f'{VAL_MIN_PE_COVERAGE:.0%} 时该维置 null——2011-01-04~2011-04-20 '
                                   f'是 baostock→本地重算的换源爬坡期，pe 覆盖从 0 升到 100%，'
@@ -816,6 +888,9 @@ def write_manifest(panel: pl.DataFrame, store: Path, stage: Path, *,
             '本表不改任何既有正式表，全部输入只读',
             '任一维数据不足时该维原值与分位均为 null，不做插值/向前填充/全样本回退',
             '北交所不进杠杆位分母；自由流通 excluded 的标的在情绪位同时退出分子分母',
+            'state_vector_v2（2026-11-11）：估值位主列改为逐日 ey=1/pe 1%/99% 缩尾口径，'
+            '分位随之重算；未缩尾旧口径保留在 val_earn_yield_unwinsor / valuation_erp_unwinsor '
+            '对照列，主列语义不得回退为未缩尾值',
             'valuation_erp 是估值位的第二种表述（盈利收益率 − 10Y 国债），同样给分位，'
             '但不计入 dims_available / dims_q_available，避免同一维被计两次',
             'quality_flags 非空的行建议在相似态检索中直接排除，含义见 quality_flags.values',
@@ -888,6 +963,110 @@ def _gaps(panel: pl.DataFrame) -> list[dict[str, Any]]:
     return out
 
 
+def _caliber_change_report(old: pl.DataFrame, new: pl.DataFrame, *,
+                           old_sha256: str | None,
+                           old_method_version: str | None) -> dict[str, Any]:
+    """新旧口径逐日对照（写进 manifest，作为 DG-11/DG-22 的留证）。
+
+    只在主列 ``val_earn_yield`` 两侧都非空的交易日上统计差值，避免把「门控差异
+    造成的 null」混进数值差；null 的增减单独列在 ``null_counts`` / ``null_days``。
+    """
+    keys = ['date', 'val_earn_yield', 'valuation_erp', 'val_earn_yield_q',
+            'valuation_erp_q', 'quality_flags']
+    common = [c for c in keys if c in old.columns and c in new.columns]
+    joined = old.select(common).join(
+        new.select(common), on='date', how='full', suffix='_new', coalesce=True)
+    both = joined.filter(pl.col('val_earn_yield').is_not_null()
+                         & pl.col('val_earn_yield_new').is_not_null())
+    diff = both.select(
+        (pl.col('val_earn_yield_new') - pl.col('val_earn_yield')).alias('d'))
+    abs_diff = diff.select(pl.col('d').abs())['d']
+    signed = diff['d']
+
+    def _q(series: pl.Series, p: float) -> float | None:
+        if series.len() == 0:
+            return None
+        value = series.quantile(p)
+        assert isinstance(value, (int, float)), f'分位结果非数值: {type(value)}'
+        return round(float(value), 6)
+
+    def _mean(series: pl.Series) -> float | None:
+        if series.len() == 0:
+            return None
+        value = series.mean()
+        assert isinstance(value, (int, float)), f'均值结果非数值: {type(value)}'
+        return round(float(value), 6)
+
+    # 最大差对应日期：在 both 上直接取
+    max_date = (both.with_columns(
+        (pl.col('val_earn_yield_new') - pl.col('val_earn_yield')).abs().alias('a'))
+        .sort('a', descending=True)['date'][0]) if both.height else None
+
+    qb = joined.filter(pl.col('val_earn_yield_q').is_not_null()
+                       & pl.col('val_earn_yield_q_new').is_not_null())
+    qdiff = (qb.select((pl.col('val_earn_yield_q_new') - pl.col('val_earn_yield_q'))
+                       .alias('q'))['q'])
+    qflip = int(((qb['val_earn_yield_q'] - 50.0)
+                 * (qb['val_earn_yield_q_new'] - 50.0) < 0).sum())
+    eq = joined.filter(pl.col('valuation_erp_q').is_not_null()
+                       & pl.col('valuation_erp_q_new').is_not_null())
+    eqdiff = eq.select((pl.col('valuation_erp_q_new') - pl.col('valuation_erp_q'))
+                       .alias('q'))['q']
+
+    null_counts = {}
+    for col in sorted(set(old.columns) | set(new.columns)):
+        before = int(old[col].is_null().sum()) if col in old.columns else None
+        after = int(new[col].is_null().sum()) if col in new.columns else None
+        null_counts[col] = {
+            'before': before,
+            'after': after,
+            'delta': (after - before) if before is not None and after is not None else None,
+        }
+
+    def _null_days(col: str) -> dict[str, list[str]]:
+        before = set(old.filter(pl.col(col).is_null())['date'].to_list())
+        after = set(new.filter(pl.col(col).is_null())['date'].to_list())
+        return {'gained_null': sorted(str(d) for d in after - before),
+                'lost_null': sorted(str(d) for d in before - after)}
+
+    return {
+        'from_method_version': old_method_version,
+        'to_method_version': METHOD_VERSION,
+        'winsor': {'target': 'ey = 1/pe（逐日横截面）',
+                   'lower_quantile': VAL_EY_WINSOR_LOWER,
+                   'upper_quantile': VAL_EY_WINSOR_UPPER},
+        'rows_before': old.height,
+        'rows_after': new.height,
+        'sha256_before': old_sha256,
+        'common_days': both.height,
+        'old_mean_pct': _mean(both['val_earn_yield']),
+        'new_mean_pct': _mean(both['val_earn_yield_new']),
+        'signed_mean_diff_pp': _mean(signed),
+        'abs_mean_diff_pp': _mean(abs_diff),
+        'abs_p50_diff_pp': _q(abs_diff, 0.50),
+        'abs_p90_diff_pp': _q(abs_diff, 0.90),
+        'abs_max_diff_pp': _q(abs_diff, 1.0),
+        'abs_max_diff_date': str(max_date) if max_date is not None else None,
+        'quantile_impact': {
+            'common_days': int(qb.height),
+            'val_earn_yield_q_abs_mean_pp': _mean(qdiff.abs()),
+            'val_earn_yield_q_abs_p90_pp': _q(qdiff.abs(), 0.90),
+            'val_earn_yield_q_abs_max_pp': _q(qdiff.abs(), 1.0),
+            'median_line_cross_days': qflip,
+            'median_line_cross_rate': (round(qflip / qb.height, 4) if qb.height else None),
+            'valuation_erp_q_abs_mean_pp': _mean(eqdiff.abs()),
+        },
+        'null_counts': null_counts,
+        'null_days': {'val_earn_yield': _null_days('val_earn_yield'),
+                      'valuation_erp': _null_days('valuation_erp')},
+        'flag_counts': {
+            'val_earn_yield_winsor': int(new.filter(
+                pl.col('quality_flags').fill_null('').str.contains(
+                    'val_earn_yield_winsor', literal=True)).height),
+        },
+    }
+
+
 def apply(panel: pl.DataFrame, store: Path, stage: Path, *,
           chunk_size: int, codes: int, sens: list[dict[str, Any]]) -> None:
     import sys
@@ -896,19 +1075,37 @@ def apply(panel: pl.DataFrame, store: Path, stage: Path, *,
     from src.data.atomic_write import write_parquet_atomic
 
     target = target_path(store)
+    old: pl.DataFrame | None = None
+    old_sha: str | None = None
+    old_version: str | None = None
     if target.is_file():
-        backup = (store / '_backup'
-                  / f'state_vector_{datetime.now():%Y%m%d_%H%M%S}'
-                  / 'state_vector_daily.parquet')
+        old = pl.read_parquet(target)
+        old_sha = _sha256(target)
+        if manifest_path(store).is_file():
+            try:
+                old_version = json.loads(
+                    manifest_path(store).read_text(encoding='utf-8')).get('method_version')
+            except json.JSONDecodeError:
+                old_version = None
+        backup_dir = (store / '_backup'
+                      / f'state_vector_{datetime.now():%Y%m%d_%H%M%S}')
+        backup = backup_dir / 'state_vector_daily.parquet'
         backup.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(target, backup)
-        logger.info(f'[state_vector] 旧表已备份 -> {backup}')
+        # DG-11：口径变更时把旧 manifest 一并留档，回滚可还原整套证据
+        if manifest_path(store).is_file():
+            shutil.copy2(manifest_path(store), backup_dir / 'manifest.json')
+        logger.info(f'[state_vector] 旧表与旧 manifest 已备份 -> {backup_dir}')
 
     write_parquet_atomic(panel, target)
     written = pl.read_parquet(target)
     assert written.height == panel.height, '落盘行数与候选不一致'
     assert written.equals(panel), '落盘内容与候选不一致'
-    path = write_manifest(panel, store, stage, chunk_size=chunk_size, codes=codes, sens=sens)
+    caliber = (_caliber_change_report(old, panel, old_sha256=old_sha,
+                                      old_method_version=old_version)
+               if old is not None else None)
+    path = write_manifest(panel, store, stage, chunk_size=chunk_size, codes=codes,
+                          sens=sens, caliber_change=caliber)
     logger.info(f'[state_vector] 已落正式路径 {target}（SHA256 {_sha256(target)[:16]}…）')
     logger.info(f'[state_vector] manifest -> {path}')
 
