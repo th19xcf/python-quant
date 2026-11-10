@@ -1,0 +1,15 @@
+{
+  "_schema": 2,
+  "_doc": "本地巡检任务登记。每项：name 任务名；artifacts 期望产物路径或 glob（相对仓库根或绝对路径）；timeout_minutes 超时阈值（分钟，用于判定说明）；process_match 可选，命令行子串，缺省则用全部白名单子进程。tasks 为空或本文件缺失时，巡检退化为扫 _staging/** 与 data/local_store/** 的最近 mtime。长任务结束后请及时移除对应条目，否则进程消失且产物不再变动会在两轮后判为 stalled。",
+  "tasks": [
+    {
+      "name": "baostock_val_pre2018",
+      "artifacts": [
+        "E:/www/tmp/baostock_val_pre2018/progress_w*.txt",
+        "E:/www/tmp/baostock_val_pre2018/bad_codes.txt"
+      ],
+      "timeout_minutes": 15,
+      "process_match": "shard_fetch.py"
+    }
+  ]
+}
