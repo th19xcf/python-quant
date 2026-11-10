@@ -759,26 +759,108 @@ def _latest_snapshot(store_root: Path | str) -> tuple[pl.DataFrame | None, date 
     return pl.read_parquet(path), day
 
 
+def _snapshot_series(store_root: Path | str,
+                     upto: date | None = None) -> list[tuple[pl.DataFrame, date]]:
+    """按日期升序返回 ``meta/st_status`` 下的快照（只取 ``<= upto`` 的日子）。
+
+    逐日合并的硬约束：每一天的区间状态只能由**不晚于该日**的快照决定。只取
+    最新一份快照会把后一日才知道的状态回推到前一日（11-10 的 ST 起点曾被推到
+    11-09，等于把今天的信息写成昨天的结论，回测里就是未来函数）。
+    """
+    dir_path = Path(store_root) / 'meta' / 'st_status'
+    if not dir_path.is_dir():
+        return []
+    series: list[tuple[pl.DataFrame, date]] = []
+    for path in sorted(dir_path.glob('st_status_*.parquet')):
+        digits = path.stem.split('_')[-1]
+        day = datetime.strptime(digits[:8], '%Y%m%d').date()
+        if upto is not None and day > upto:
+            continue
+        series.append((pl.read_parquet(path), day))
+    series.sort(key=lambda item: item[1])
+    return series
+
+
+def _close_snapshot_rows(rows: list[dict[str, Any]], code: str, snap_day: date,
+                         *, only_snapshot: bool
+                         ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """把覆盖 ``snap_day`` 的区间停在 ``snap_day - 1``，返回 ``(已闭合, 已丢弃)``。
+
+    ``only_snapshot=True`` 时只处理由快照锚定的区间（``unknown`` 不得动官方/
+    公告源产出的区间，也不得把区间延展到 unknown 当日）。
+
+    区间起算日恰好等于 ``snap_day`` 时，快照当日状态与区间起点直接矛盾：该区间
+    一个有效日期都覆盖不到，按快照为准整行丢弃，不落出 ``start > end`` 的空区间。
+    """
+    closed: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    for row in [item for item in rows if item['ts_code'] == code]:
+        if only_snapshot and row['source'] != SOURCE_SNAPSHOT:
+            continue
+        if row['end_date'] is not None and row['end_date'] < snap_day:
+            continue
+        if row['start_date'] >= snap_day:
+            rows.remove(row)
+            dropped.append(row)
+        else:
+            row['end_date'] = snap_day - timedelta(days=1)
+            closed.append(row)
+    return closed, dropped
+
+
 def _merge_snapshot(interval_frame: pl.DataFrame, coverage_frame: pl.DataFrame,
                     snapshot: pl.DataFrame, snap_day: date,
                     today: date) -> tuple[pl.DataFrame, pl.DataFrame, dict[str, Any]]:
-    """把快照当日状态并入区间表：缺区间则补锚点，冲突则以快照为准闭合。"""
+    """把快照当日状态并入区间表：缺区间则补锚点，冲突则以快照为准闭合。
+
+    调用方必须按快照日期升序逐日调用；``unknown`` 只闭合由快照锚定的开区间
+    （停在最后已知日），不延展、也不回填后一日状态。
+    """
     anchors = 0
     closes = 0
+    dropped_total = 0
     conflicts: list[dict[str, Any]] = []
     extra_coverage: list[dict[str, Any]] = []
     known = set(coverage_frame['ts_code'].to_list())
     rows = interval_frame.to_dicts()
     cov_rows = coverage_frame.to_dicts()
-    for item in snapshot.filter(pl.col('status') != STATUS_UNKNOWN).to_dicts():
+    for item in snapshot.to_dicts():
         code = str(item['code'])
+        status = item['status']
         flag = flag_from_name(item['name'])
-        if item['status'] == STATUS_ST and flag:
-            covering = [row for row in rows
-                        if row['ts_code'] == code and row['start_date'] <= snap_day
-                        and (row['end_date'] is None or row['end_date'] >= snap_day)]
-            if covering:
-                continue
+        if status == STATUS_UNKNOWN:
+            closed, _ = _close_snapshot_rows(rows, code, snap_day, only_snapshot=True)
+            for row in closed:
+                closes += 1
+                conflicts.append({
+                    'ts_code': code, 'snapshot': 'unknown', 'action': 'closed',
+                    'interval_flag': row['flag'],
+                    'interval_start': row['start_date'].isoformat()})
+            continue
+        if status not in (STATUS_ST, STATUS_NON_ST):
+            continue
+        if status == STATUS_NON_ST:
+            closed, dropped = _close_snapshot_rows(
+                rows, code, snap_day, only_snapshot=False)
+            for row in closed:
+                row['precision'] = PRECISION_SNAPSHOT
+                closes += 1
+                conflicts.append({
+                    'ts_code': code, 'snapshot': 'non_st', 'action': 'closed',
+                    'interval_flag': row['flag'],
+                    'interval_start': row['start_date'].isoformat()})
+            for row in dropped:
+                dropped_total += 1
+                conflicts.append({
+                    'ts_code': code, 'snapshot': 'non_st', 'action': 'dropped',
+                    'interval_flag': row['flag'],
+                    'interval_start': row['start_date'].isoformat()})
+            continue
+        # 以下 status == STATUS_ST
+        covering = [row for row in rows
+                    if row['ts_code'] == code and row['start_date'] <= snap_day
+                    and (row['end_date'] is None or row['end_date'] >= snap_day)]
+        if not covering and flag:
             rows.append({
                 'ts_code': code, 'start_date': snap_day, 'end_date': None,
                 'flag': flag, 'source': SOURCE_SNAPSHOT,
@@ -790,31 +872,17 @@ def _merge_snapshot(interval_frame: pl.DataFrame, coverage_frame: pl.DataFrame,
                     'ts_code': code, 'coverage_start': snap_day,
                     'coverage_end': today, 'source': SOURCE_SNAPSHOT,
                     'fetched_at': datetime.now()})
-            else:
-                for cov_row in cov_rows:
-                    if cov_row['ts_code'] == code:
-                        cov_row['coverage_start'] = min(cov_row['coverage_start'], snap_day)
-        elif item['status'] == STATUS_NON_ST:
-            for row in rows:
-                if row['ts_code'] != code:
-                    continue
-                if row['start_date'] <= snap_day and (row['end_date'] is None
-                                                      or row['end_date'] >= snap_day):
-                    row['end_date'] = snap_day - timedelta(days=1)
-                    row['precision'] = PRECISION_SNAPSHOT
-                    closes += 1
-                    conflicts.append({
-                        'ts_code': code, 'snapshot': 'non_st',
-                        'interval_flag': row['flag'],
-                        'interval_start': row['start_date'].isoformat()})
-        if item['status'] == STATUS_ST:
-            for cov_row in cov_rows:
-                if cov_row['ts_code'] == code and cov_row['source'] == 'em_name_history_clean' \
-                        and cov_row['coverage_start'] < snap_day:
-                    # 名称登记册的「从未 ST」负证据被当日快照推翻：
-                    # 只从快照日起算可知窗口，之前一律 unknown
-                    cov_row['coverage_start'] = snap_day
-                    cov_row['source'] = SOURCE_SNAPSHOT
+        for cov_row in cov_rows:
+            if cov_row['ts_code'] != code:
+                continue
+            if code in known and not covering and flag:
+                cov_row['coverage_start'] = min(cov_row['coverage_start'], snap_day)
+            if cov_row['source'] == 'em_name_history_clean' \
+                    and cov_row['coverage_start'] < snap_day:
+                # 名称登记册的「从未 ST」负证据被当日快照推翻：
+                # 只从快照日起算可知窗口，之前一律 unknown
+                cov_row['coverage_start'] = snap_day
+                cov_row['source'] = SOURCE_SNAPSHOT
     interval_frame = pl.DataFrame(rows, schema=_INTERVAL_SCHEMA)
     coverage_frame = pl.DataFrame(cov_rows, schema=_COVERAGE_SCHEMA)
     if extra_coverage:
@@ -822,7 +890,8 @@ def _merge_snapshot(interval_frame: pl.DataFrame, coverage_frame: pl.DataFrame,
             coverage_frame,
             pl.DataFrame(extra_coverage, schema=_COVERAGE_SCHEMA)], how='vertical')
     return interval_frame, coverage_frame, {
-        'anchors': anchors, 'closes': closes, 'conflicts': conflicts}
+        'anchors': anchors, 'closes': closes, 'dropped': dropped_total,
+        'conflicts': conflicts}
 
 
 def _local_codes(store_root: Path | str) -> list[str]:
@@ -1174,13 +1243,20 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
     if supp_intervals.height:
         interval_frame = pl.concat([interval_frame, supp_intervals], how='vertical_relaxed')
 
-    # 合并快照：当日真值锚点，防止公告缺失导致历史/当前状态错判
-    snapshot, snap_day = _latest_snapshot(root)
-    if apply_snapshot and snapshot is not None and snap_day is not None:
-        interval_frame, coverage_frame, stats = _merge_snapshot(
-            interval_frame, coverage_frame, snapshot, snap_day, today)
-    else:
-        stats = {'anchors': 0, 'closes': 0, 'conflicts': []}
+    # 合并快照：当日真值锚点，防止公告缺失导致历史/当前状态错判。
+    # 必须按快照日期升序逐日合并：某一天的状态只能由不晚于该日的快照决定，
+    # 否则后一日才知道的 ST 状态会被回推到前一日（未来函数）。
+    snapshots = _snapshot_series(root, upto=today) if apply_snapshot else []
+    stats: dict[str, Any] = {'anchors': 0, 'closes': 0, 'dropped': 0, 'conflicts': []}
+    snap_day: date | None = None
+    for snapshot, one_day in snapshots:
+        interval_frame, coverage_frame, one_stats = _merge_snapshot(
+            interval_frame, coverage_frame, snapshot, one_day, today)
+        stats['anchors'] += one_stats['anchors']
+        stats['closes'] += one_stats['closes']
+        stats['dropped'] += one_stats['dropped']
+        stats['conflicts'].extend(one_stats['conflicts'])
+        snap_day = one_day
     conflicts = stats['conflicts']
 
     frame = interval_frame.unique(
@@ -1222,6 +1298,7 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
         'snapshot_anchors': stats['anchors'],
         'snapshot_conflicts': len(conflicts),
         'snapshot_closed_intervals': stats['closes'],
+        'snapshot_dropped_intervals': stats['dropped'],
         'closure_fixed_intervals': closure_fixed,
         'supplement_interval_rows': supp_intervals.height,
         'supplement_coverage_rows': supp_coverage.height,
