@@ -43,6 +43,11 @@ PRICE_COLS = ['open', 'high', 'low', 'close']
 BASE_COLS = ['date', 'ts_code', *PRICE_COLS, 'pre_close', 'volume', 'amount']
 PANEL_COLS = [*BASE_COLS, 'hfq_factor', 'raw_open', 'raw_close', 'raw_high', 'raw_low']
 
+#: 流动性筛选回看交易日数（``pick_liquid_universe`` 的成交额中位数窗口）。
+#: 唯一真源在这里：``PanelRequest.liquidity_lookback``、``pick_liquid_universe``
+#: 的默认值、``src.quant.learning.data`` 的尾部成交额筛选都引用本常量。
+LIQUIDITY_LOOKBACK_DAYS = 250
+
 
 @dataclass(frozen=True, slots=True)
 class PanelRequest:
@@ -51,7 +56,7 @@ class PanelRequest:
     start: str = '2021-01-01'
     end: str = '2026-10-31'
     universe_size: int = 80
-    liquidity_lookback: int = 250
+    liquidity_lookback: int = LIQUIDITY_LOOKBACK_DAYS
     use_cache: bool = True
 
 
@@ -68,7 +73,7 @@ def _store() -> LocalQuoteStore:
 
 def pick_liquid_universe(
     size: int = 80,
-    lookback: int = 250,
+    lookback: int = LIQUIDITY_LOOKBACK_DAYS,
     store: LocalQuoteStore | None = None,
     use_cache: bool = True,
 ) -> list[str]:

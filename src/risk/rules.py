@@ -28,6 +28,24 @@ from typing import AbstractSet, Any, Dict, List, Mapping, Set, Tuple
 #: 风控 Order.qty 以“股”为单位；两者比较前必须统一为手。
 SHARES_PER_LOT = 100
 
+#: 风控默认阈值唯一真源。
+#:
+#: 规则类的构造默认值、``default_risk_engine()`` 的装配取值、回测/推荐里
+#: 读 ``limits[...]`` 的地方全部引用本表，禁止再写第二份字面量：
+#: 改一处必须全链路同步，否则同一份持仓在「回测入口」与「推荐入口」会得到
+#: 两个不同的判定结论。``src/risk/__init__.py`` 仅做重导出以保持既有导入路径。
+DEFAULT_RISK_LIMITS: Dict[str, float] = {
+    'max_position_weight': 0.10,
+    'max_industry_weight': 0.30,
+    'max_industry_hhi': 0.25,
+    'max_drawdown': 0.15,
+    'drawdown_window': 252,
+    'min_cash_reserve': 0.0,
+    'max_order_volume_ratio': 0.10,
+    'max_adv_participation': 0.10,
+    'adv_window': 20,
+}
+
 # ---------------------------------------------------------------------------
 # Order —— 待审查的候选下单请求
 # ---------------------------------------------------------------------------
@@ -342,12 +360,13 @@ class Rule(ABC):
 # ---------------------------------------------------------------------------
 
 class MaxPositionWeight(Rule):
-    """单票权重上限（默认 10%）。buy 时审查；sell 永远放行。"""
+    """单票权重上限（默认见 ``DEFAULT_RISK_LIMITS['max_position_weight']``）。buy 时审查；sell 永远放行。"""
 
     name = 'max_position_weight'
 
-    def __init__(self, limit: float = 0.10):
-        self.limit = limit
+    def __init__(self, limit: float | None = None):
+        self.limit = (DEFAULT_RISK_LIMITS['max_position_weight']
+                      if limit is None else limit)
 
     def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
         if order.side != 'buy':
@@ -370,12 +389,13 @@ class MaxPositionWeight(Rule):
 
 
 class MaxIndustryWeight(Rule):
-    """行业集中度上限（默认 30%）。buy 时审查。"""
+    """行业集中度上限（默认见 ``DEFAULT_RISK_LIMITS['max_industry_weight']``）。buy 时审查。"""
 
     name = 'max_industry_weight'
 
-    def __init__(self, limit: float = 0.30):
-        self.limit = limit
+    def __init__(self, limit: float | None = None):
+        self.limit = (DEFAULT_RISK_LIMITS['max_industry_weight']
+                      if limit is None else limit)
 
     def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
         if order.side != 'buy':
@@ -411,15 +431,18 @@ class MaxIndustryWeight(Rule):
 
 class MaxDrawdownCircuit(Rule):
     """
-    组合回撤熔断：当前回撤 > limit（默认 15%）时停止开新仓（buy 一律拒，sell 放行）。
+    组合回撤熔断：当前回撤 > limit 时停止开新仓（buy 一律拒，sell 放行）。
     sell 放行是为了允许在熔断时主动减仓。
+    默认值见 ``DEFAULT_RISK_LIMITS['max_drawdown']`` / ``['drawdown_window']``。
     """
 
     name = 'max_drawdown_circuit'
 
-    def __init__(self, limit: float = 0.15, window: int = 252):
-        self.limit = limit
-        self.window = window
+    def __init__(self, limit: float | None = None, window: int | None = None):
+        self.limit = (DEFAULT_RISK_LIMITS['max_drawdown']
+                      if limit is None else limit)
+        self.window = (int(DEFAULT_RISK_LIMITS['drawdown_window'])
+                       if window is None else window)
 
     def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
         if order.side != 'buy':
@@ -441,14 +464,16 @@ class MaxDrawdownCircuit(Rule):
 
 class MinCashReserve(Rule):
     """
-    现金约束：buy 后剩余现金不得低于 reserve（默认 0，即不允许透支/杠杆）。
+    现金约束：buy 后剩余现金不得低于 reserve（默认见
+    ``DEFAULT_RISK_LIMITS['min_cash_reserve']``，即不允许透支/杠杆）。
     sell 永远放行。
     """
 
     name = 'min_cash_reserve'
 
-    def __init__(self, reserve: float = 0.0):
-        self.reserve = reserve
+    def __init__(self, reserve: float | None = None):
+        self.reserve = (DEFAULT_RISK_LIMITS['min_cash_reserve']
+                        if reserve is None else reserve)
 
     def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
         if order.side != 'buy':
@@ -467,7 +492,7 @@ class MinCashReserve(Rule):
 class MaxIndustryHHI(Rule):
     """
     行业集中度 HHI（赫芬达尔指数）上限：buy 后 Σ(行业权重²) 不得超过 limit
-    （默认 0.25）。sell 永远放行。
+    （默认见 ``DEFAULT_RISK_LIMITS['max_industry_hhi']``）。sell 永远放行。
 
     与 MaxIndustryWeight 互补：前者管单一行业上限，本规则管整体离散度。
     现金不计入行业分子（行业权重分母与 MaxIndustryWeight 一致，为总资产）。
@@ -476,8 +501,9 @@ class MaxIndustryHHI(Rule):
 
     name = 'max_industry_hhi'
 
-    def __init__(self, limit: float = 0.25):
-        self.limit = limit
+    def __init__(self, limit: float | None = None):
+        self.limit = (DEFAULT_RISK_LIMITS['max_industry_hhi']
+                      if limit is None else limit)
 
     def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
         if order.side != 'buy':
@@ -548,6 +574,25 @@ class PriceLimitTradable(Rule):
         """涨跌停价四舍五入至最小变动价位 0.01（交易所口径）。"""
         return float(price.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
 
+    @classmethod
+    def _limits_for(cls, prev_close: float, pct: float) -> tuple[float, float]:
+        """按幅度算涨跌停价，返回 ``(涨停价, 跌停价)``。"""
+        prev = Decimal(str(prev_close))
+        ratio = Decimal(str(pct))
+        return (cls._round_to_tick(prev * (1 + ratio)),
+                cls._round_to_tick(prev * (1 - ratio)))
+
+    def price_limits(self, prev_close: float, sector: str) -> tuple[float, float] | None:
+        """对外暴露本轮实际使用的涨跌停价，供测试锚定具体数值。
+
+        ``sector`` 不在档位表中时返回 ``None``（与 :meth:`check` 的
+        fail-closed 判定一致），避免调用方误把「无档位」当成 0 幅度。
+        """
+        pct = self.limits.get(sector)
+        if pct is None:
+            return None
+        return self._limits_for(prev_close, pct)
+
     def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
         if order.prev_close is None:
             return RuleResult(
@@ -561,10 +606,7 @@ class PriceLimitTradable(Rule):
                 f"单票 {order.ts_code} 板块标签 {order.sector!r} 无法确定涨跌幅限制，拒绝"
             )
 
-        prev = Decimal(str(order.prev_close))
-        pct = Decimal(str(limit))
-        limit_up = self._round_to_tick(prev * (1 + pct))
-        limit_down = self._round_to_tick(prev * (1 - pct))
+        limit_up, limit_down = self._limits_for(order.prev_close, limit)
 
         if order.side == 'buy' and order.price >= limit_up:
             return RuleResult(
@@ -608,8 +650,9 @@ class MaxOrderVolumeRatio(Rule):
 
     name = 'max_order_volume_ratio'
 
-    def __init__(self, limit: float = 0.10):
-        self.limit = limit
+    def __init__(self, limit: float | None = None):
+        self.limit = (DEFAULT_RISK_LIMITS['max_order_volume_ratio']
+                      if limit is None else limit)
 
     def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
         if order.bar_volume is None or order.bar_volume <= 0:
@@ -641,9 +684,11 @@ class MaxAdvParticipation(Rule):
 
     name = 'max_adv_participation'
 
-    def __init__(self, limit: float = 0.10, window: int = 20):
-        self.limit = limit
-        self.window = window
+    def __init__(self, limit: float | None = None, window: int | None = None):
+        self.limit = (DEFAULT_RISK_LIMITS['max_adv_participation']
+                      if limit is None else limit)
+        self.window = (int(DEFAULT_RISK_LIMITS['adv_window'])
+                       if window is None else window)
 
     def check(self, order: Order, portfolio: Portfolio) -> RuleResult:
         if order.adv_volume is None or order.adv_volume <= 0:

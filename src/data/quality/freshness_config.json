@@ -3,7 +3,12 @@
   "description": "数据新鲜度检查registry：每类数据的权威新鲜度字段、正常更新频率与分级阈值。所有阈值只在此文件维护，代码内不写死。",
   "defaults": {
     "holidays": [],
-    "holiday_note": "交易日按周一至周五近似；如遇法定节假日，把日期以 YYYY-MM-DD 加入 holidays，避免误报超期。"
+    "holiday_note": "交易日按周一至周五近似；如遇法定节假日，把日期以 YYYY-MM-DD 加入 holidays，避免误报超期。",
+    "coverage": {
+      "min_ratio": 0.95,
+      "critical_ratio": 0.8,
+      "note": "覆盖门禁默认阈值唯一真源：条目未写 min_ratio/critical_ratio 时取这里的值；确需不同门槛必须在条目 coverage.why 写明理由，否则解析报错。"
+    }
   },
   "datasets": [
     {
@@ -35,9 +40,7 @@
           "kind": "latest_glob_distinct",
           "path_glob": "meta/st_status/st_status_*.parquet",
           "column": "code"
-        },
-        "min_ratio": 0.95,
-        "critical_ratio": 0.8
+        }
       },
       "note": "行情末日期来自 daily_index 元数据；覆盖分母取最新 ST 状态快照中的上市股票数。"
     },
@@ -65,7 +68,9 @@
           "path": "meta/daily_index.parquet",
           "filter": {"column": "data_type", "value": "index"},
           "column": "ts_code"
-        }
+        },
+        "gate": false,
+        "why": "指数没有稳定的「应有标的数」分母，只报覆盖数量、不计算占比，故不设占比门禁"
       },
       "note": "指数没有稳定的「应有标的数」分母，只报覆盖数量，不计算占比。"
     },
@@ -97,9 +102,7 @@
         "expected": {
           "kind": "file_lines",
           "path": "factors/fund_covered_codes.txt"
-        },
-        "min_ratio": 0.95,
-        "critical_ratio": 0.8
+        }
       },
       "note": "覆盖分母取因子侧基金代码清单 fund_covered_codes.txt。"
     },
@@ -130,9 +133,7 @@
           "kind": "latest_glob_distinct",
           "path_glob": "meta/st_status/st_status_*.parquet",
           "column": "code"
-        },
-        "min_ratio": 0.95,
-        "critical_ratio": 0.8
+        }
       },
       "note": "估值表按交易日更新，滞后于行情即视为落后。"
     },
@@ -163,9 +164,7 @@
           "kind": "latest_glob_distinct",
           "path_glob": "meta/st_status/st_status_*.parquet",
           "column": "code"
-        },
-        "min_ratio": 0.95,
-        "critical_ratio": 0.8
+        }
       },
       "note": "财务按公告日 ann_date 计新鲜度；披露季之间允许 1 个季度。"
     },
@@ -196,9 +195,7 @@
           "kind": "latest_glob_distinct",
           "path_glob": "meta/st_status/st_status_*.parquet",
           "column": "code"
-        },
-        "min_ratio": 0.95,
-        "critical_ratio": 0.8
+        }
       },
       "note": "与利润表同口径。"
     },
@@ -229,9 +226,7 @@
           "kind": "latest_glob_distinct",
           "path_glob": "meta/st_status/st_status_*.parquet",
           "column": "code"
-        },
-        "min_ratio": 0.95,
-        "critical_ratio": 0.8
+        }
       },
       "note": "与利润表同口径。"
     },
@@ -257,7 +252,9 @@
           "kind": "parquet_distinct",
           "path": "meta/events/events.parquet",
           "column": "ts_code"
-        }
+        },
+        "gate": false,
+        "why": "事件表按需写入，多数交易日没有新事件，只做存在性观测，不设占比门禁"
       },
       "declaration": {
         "path": "meta/events/coverage.json",
@@ -287,7 +284,9 @@
         "count": {
           "kind": "json_keys",
           "path": "meta/names.json"
-        }
+        },
+        "gate": false,
+        "why": "名称快照是单文件 JSON，覆盖 key 数只作观测，不参与占比判定"
       },
       "note": "names.json 内部无时间戳，只能取文件 mtime；覆盖数为键数（含股票/基金/指数/债券）。"
     },
@@ -318,9 +317,7 @@
           "path": "meta/daily_index.parquet",
           "filter": {"column": "data_type", "value": "stock"},
           "column": "ts_code"
-        },
-        "min_ratio": 0.95,
-        "critical_ratio": 0.8
+        }
       },
       "note": "表内无时间戳，只能取文件 mtime；新增上市/退市须一周内由 tools/build_stock_basic.py 重建。覆盖分母取 daily_index 的股票代码数，只用于兜住「行情已更新、基础表大面积缺行」这类粗粒度异常。"
     },
@@ -353,7 +350,8 @@
           "column": "code"
         },
         "min_ratio": 0.9,
-        "critical_ratio": 0.7
+        "critical_ratio": 0.7,
+        "why": "换手率来自独立派生表，停牌与次新股天然缺行，且不进入价格类结论，门槛比默认略松"
       },
       "note": "换手率因子依赖行情，正常应与行情同一交易日。"
     },
@@ -384,9 +382,7 @@
           "kind": "latest_glob_distinct",
           "path_glob": "meta/st_status/st_status_*.parquet",
           "column": "code"
-        },
-        "min_ratio": 0.95,
-        "critical_ratio": 0.8
+        }
       },
       "note": "复权因子快照应覆盖全部在库股票。"
     },
@@ -419,7 +415,8 @@
           "column": "code"
         },
         "min_ratio": 0.85,
-        "critical_ratio": 0.7
+        "critical_ratio": 0.7,
+        "why": "分红是稀疏事件，只在除权日对当事标的产生数据，按全市场口径统计覆盖率必然偏低"
       },
       "note": "用公告日而非未来除权日判断采集是否断更；分红本身不定期。"
     },
@@ -516,9 +513,7 @@
           "kind": "latest_glob_distinct",
           "path_glob": "meta/st_status/st_status_*.parquet",
           "column": "code"
-        },
-        "min_ratio": 0.95,
-        "critical_ratio": 0.8
+        }
       },
       "note": "股本变动不定期，但覆盖应接近全部在库股票。"
     },
@@ -590,9 +585,7 @@
           "path": "meta/daily_index.parquet",
           "filter": {"column": "data_type", "value": "stock"},
           "column": "ts_code"
-        },
-        "min_ratio": 0.95,
-        "critical_ratio": 0.8
+        }
       },
       "note": "状态快照应覆盖全部在库股票。"
     },
@@ -624,9 +617,7 @@
           "path": "meta/daily_index.parquet",
           "filter": {"column": "data_type", "value": "stock"},
           "column": "ts_code"
-        },
-        "min_ratio": 0.95,
-        "critical_ratio": 0.8
+        }
       },
       "note": "行业分类变化慢，允许 1 个交易日冗余。"
     }

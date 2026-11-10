@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.backtest.costs.cost_model import CostModel  # noqa: E402
+from src.backtest.costs.cost_model import COST_DEFAULTS, CostModel  # noqa: E402
 from src.backtest.strategies.base_strategy import BaseStrategy  # noqa: E402
 from src.backtest.strategies.ma_strategy import MAStrategy  # noqa: E402
 from src.core.usecases import run_backtest  # noqa: E402
@@ -205,11 +205,18 @@ def run_adv_capacity() -> None:
 
 
 def run_advice_cost() -> None:
-    old = 2 * 0.0003 + 0.001 + 2 * 0.001
-    new = 2 * 0.0003 + 0.0005 + 2 * 0.0002
+    # 改前口径快照：仅用于「改前 vs 改后」对照展示，不参与任何计算，
+    # 也不得被当作现行真源（现行真源是 COST_DEFAULTS）。
+    before = {'commission': 0.0003, 'stamp_tax': 0.001, 'impact': 0.001}
+    old = 2 * before['commission'] + before['stamp_tax'] + 2 * before['impact']
+    new = (2 * COST_DEFAULTS['commission_rate'] + COST_DEFAULTS['stamp_tax_rate']
+           + 2 * COST_DEFAULTS['slippage'])
     print('\n### 推荐侧成本口径统一（往返成本率）\n')
-    print(f'- 改前：佣金 2×0.03% + 印花税 0.1% + 冲击 2×0.1% = {old:.2%}')
-    print(f'- 改后：佣金 2×0.03% + 印花税 0.05% + 冲击 2×0.02% = {new:.2%}')
+    print(f'- 改前：佣金 2×{before["commission"]:.2%} + 印花税 {before["stamp_tax"]:.2%}'
+          f' + 冲击 2×{before["impact"]:.2%} = {old:.2%}')
+    print(f'- 改后：佣金 2×{COST_DEFAULTS["commission_rate"]:.2%}'
+          f' + 印花税 {COST_DEFAULTS["stamp_tax_rate"]:.2%}'
+          f' + 冲击 2×{COST_DEFAULTS["slippage"]:.2%} = {new:.2%}')
     print(f'- 每完成一次买入+卖出，净收益口径相差 {(old - new) * 100:.2f} 个百分点；'
           f'10 万元仓位约差 {(old - new) * 100_000:.0f} 元。')
 
