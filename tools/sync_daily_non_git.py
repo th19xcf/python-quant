@@ -118,9 +118,12 @@ SEED_DIRS: tuple[str, ...] = (
 )
 
 #: 任何范围都跳过的目录名 / 文件模式。
-#: ``_staging`` 已迁到仓库根（``<仓库根>/_staging``，见 ``src/data/staging.py``），
-#: 按目录名跳过同样适用于新位置；``data/local_store/_staging`` 若有历史残留也不再同步。
-SKIP_DIR_NAMES = frozenset({'_backup', '_staging', '__pycache__', '.ipynb_checkpoints'})
+#: 这里的范围常量只指向 ``data/local_store/`` 下的指定子目录、``external/tdx_hq_cache``
+#: 与 ``reports/``，**从不扫仓库根**，所以仓库根的 staging 候选区
+#: （``<仓库根>/_staging``，见 ``src/data/staging.py``）天然不会进入同步清单，
+#: 不需要在按目录名跳过的清单里再列 ``_staging``；回归断言见
+#: ``tests/test_p1_paths_and_archives.py::test_sync_scopes_never_touch_staging_root``。
+SKIP_DIR_NAMES = frozenset({'_backup', '__pycache__', '.ipynb_checkpoints'})
 SKIP_SUFFIXES = ('.tmp', '.temp', '.log')
 
 #: 目标端与源端 mtime 允许的抖动（秒）。FAT/网络盘时间戳精度较粗。

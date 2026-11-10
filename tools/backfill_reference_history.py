@@ -10,8 +10,8 @@ r"""P1 参考数据历史补采（AkShare，可续跑，默认只写 staging）�
 
 **重要**：这些源都不提供完整历史（停牌源端只保留近年、指数成分只有当日
 快照、退市股无行业变更记录）。试点/分批结果一律标 ``complete=false``，
-默认只落 ``artifacts/p1_backfill/reference/``；只有全量补齐并人工确认后
-才应 ``--commit`` 写进生产 ``meta/``，否则会让扩展契约误判数据已就绪。
+默认只落 ``_staging/p1_backfill/reference/``（仓库根，不在 ``data/`` 下）；只有全量
+补齐并人工确认后才应 ``--commit`` 写进生产 ``meta/``，否则会让扩展契约误判数据已就绪。
 
 用法::
 
@@ -37,8 +37,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.data.staging import staging_dir  # noqa: E402
+
 DEFAULT_ROOT = ROOT / 'data' / 'local_store'
-DEFAULT_STAGING = ROOT / 'artifacts' / 'p1_backfill' / 'reference'
+#: 候选目录统一由 ``src/data/staging.py`` 定义，不再另立一套 staging 根
+DEFAULT_STAGING = staging_dir('p1_backfill') / 'reference'
 INDEX_CODES = ('000300', '000905', '000852', '000016')
 
 

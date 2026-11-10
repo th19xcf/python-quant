@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,7 +20,9 @@ from src.data.local_store.paths import (
     resolve_store_root,
 )
 from src.data.local_store.store import resolve_store_root as legacy_resolve_store_root
+from src.data.staging import STAGING_ROOT, staging_dir
 from tools import cleanup_archives as archives
+from tools import sync_daily_non_git as daily_sync
 
 
 def test_paths_are_absolute_and_cwd_independent(tmp_path: Path,
@@ -120,3 +122,45 @@ def test_archive_aged_candidates(tmp_path: Path,
     assert target.exists()
     # 确保没有引入"时间"相关的隐式删除
     assert time.time() > stale
+
+
+def test_staging_root_is_outside_data_and_gitignored() -> None:
+    """staging 根必须在 data/ 之外，且被 .gitignore 覆盖。"""
+    root = project_root()
+    assert STAGING_ROOT == root / '_staging'
+    assert STAGING_ROOT.parent == root
+    assert not STAGING_ROOT.is_relative_to(root / 'data')
+    assert staging_dir('demo_20261110') == root / '_staging' / 'demo_20261110'
+    assert staging_dir('demo', day=date(2026, 11, 10), with_date=True) == \
+        root / '_staging' / 'demo_20261110'
+    assert '/_staging/' in (root / '.gitignore').read_text(encoding='utf-8')
+
+
+def test_sync_scopes_never_touch_staging_root(tmp_path: Path) -> None:
+    """每日同步清单不得收进仓库根 ``_staging/``，否则候选数据会被当正式数据同步。"""
+    store = tmp_path / 'data' / 'local_store'
+    (store / 'meta' / 'st_status').mkdir(parents=True)
+    (store / 'meta' / 'st_status' / 'a.parquet').write_bytes(b'x' * 8)
+    (store / 'meta' / 'names.json').write_text('{}', encoding='utf-8')
+    (store / 'quotes').mkdir(parents=True)
+    (store / 'quotes' / 'q.parquet').write_bytes(b'q' * 8)
+    staging = tmp_path / '_staging' / 'job_20261110'
+    staging.mkdir(parents=True)
+    (staging / 'candidate.parquet').write_bytes(b'y' * 8)
+    (tmp_path / 'reports' / 'audit').mkdir(parents=True)
+    (tmp_path / 'reports' / 'audit' / 'r.md').write_text('r', encoding='utf-8')
+
+    # 排除已不再依赖「按目录名跳过」，靠范围常量本身把仓库根挡在外面
+    assert '_staging' not in daily_sync.SKIP_DIR_NAMES
+
+    daily_rel = {item.relative for item in daily_sync.collect(tmp_path, 'daily')}
+    assert 'data/local_store/meta/st_status/a.parquet' in daily_rel
+    package_rel = {item.relative
+                   for item in daily_sync.collect(tmp_path, 'package', since=0.0)}
+    seed_rel = {item.relative for item in daily_sync.collect(tmp_path, 'seed')}
+    for scope, relatives in (('daily', daily_rel), ('package', package_rel),
+                             ('seed', seed_rel)):
+        assert relatives, scope
+        assert not [rel for rel in relatives if '_staging' in rel.split('/')], scope
+        assert not [rel for rel in relatives if rel.startswith('_staging/')], scope
+    assert 'data/local_store/quotes/q.parquet' in seed_rel

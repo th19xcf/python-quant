@@ -7,7 +7,8 @@ r"""补采停更/退市个股的尾部行情（AkShare，默认只落 staging）
 仍有零星交易（例如 000005.SZ 本地止于 2024-03-05，BaoStock 有到
 2024-04-26 的记录）。本工具只补 ``date > 本地末日`` 的新行，不覆盖历史。
 
-默认只把待合并分片写到 ``artifacts/p1_backfill/delisted_quotes/`` 并出报告；
+默认只把待合并分片写到 ``_staging/p1_backfill/delisted_quotes/``（仓库根，不在
+``data/`` 下）并出报告；
 ``--commit`` 才追加进 ``quotes/stock/**/*.parquet`` 并同步 daily_index。
 因子列按本地末行前向填充（退市后无新除权），commit 后应执行
 ``rescan-meta`` 与 ``verify-quote-factors`` 复验。
@@ -41,8 +42,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.data.staging import staging_dir  # noqa: E402
+
 DEFAULT_ROOT = ROOT / 'data' / 'local_store'
-DEFAULT_STAGING = ROOT / 'artifacts' / 'p1_backfill' / 'delisted_quotes'
+#: 候选目录统一由 ``src/data/staging.py`` 定义，不再另立一套 staging 根
+DEFAULT_STAGING = staging_dir('p1_backfill') / 'delisted_quotes'
 
 COLS = ['date', 'ts_code', 'open', 'high', 'low', 'close', 'pre_close',
         'volume', 'amount', 'pct_chg', 'change', 'qfq_factor', 'hfq_factor']
