@@ -29,6 +29,8 @@ from src.advice.daily_store import (
     load_daily_snapshot,
     usage_boundary,
 )
+from src.advice.latest_snapshot import write_latest_snapshot
+from src.advice.models import AdviceResult
 from src.advice.pipeline import AdviceEngine
 from src.advice.replay import run_replay
 from src.utils.config import get_config
@@ -42,24 +44,12 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _write_snapshot(result: dict, out_dir: Path, equity: float) -> Path:
+def _write_snapshot(result: AdviceResult, out_dir: Path, equity: float,
+                    generated_at: datetime | None = None) -> Path:
+    """写 ``latest.json``：与 GUI 共用 ``latest_snapshot`` 的同一套 schema。"""
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / 'latest.json'
-    payload = {
-        'usage_boundary': usage_boundary(),
-        'signal_date': result.get('signal_date', result['trade_date']),
-        'earliest_exec_date': result.get('earliest_exec_date'),
-        'exec_status': result.get('exec_status'),
-        'trade_date': result['trade_date'],
-        'generated_at': datetime.now().isoformat(timespec='seconds'),
-        'equity': equity,
-        'is_sample': False,
-        'tiers': result['tiers'],
-        'items': result['items'],
-    }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                    encoding='utf-8')
-    return path
+    return write_latest_snapshot(result, out_dir / 'latest.json', equity=equity,
+                                 generated_at=generated_at)
 
 
 def mark_observe_only(tiers: dict[str, dict]) -> dict[str, dict]:
@@ -103,13 +93,7 @@ def _run_generate(args: argparse.Namespace) -> int:
     summary['tiers'] = mark_observe_only(summary['tiers'])
     out_dir.joinpath('summary.json').write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
-    _write_snapshot(
-        {'trade_date': result.trade_date.isoformat(),
-         'signal_date': summary['signal_date'],
-         'earliest_exec_date': summary['earliest_exec_date'],
-         'exec_status': summary['exec_status'],
-         'tiers': summary['tiers'], 'items': result.to_dicts()},
-        out_dir, args.equity)
+    _write_snapshot(result, out_dir, args.equity)
     if OBSERVE_ONLY_TIERS.intersection(result.tiers):
         logger.warning('[advice] 短线档位仅观察（未通过样本外），输出已标记 observe_only')
     logger.info(

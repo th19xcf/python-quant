@@ -88,6 +88,28 @@ ACTION_LABELS = {
     DIRECTION_AVOID: 'AVOID',
 }
 
+
+def action_label(direction: str, disposition: str = 'active', *,
+                 expired: bool = False) -> str:
+    """动作标签的唯一实现：归档、``latest.json``、GUI 表格共用同一判据。
+
+    延后优先于过期——``deferred`` 行本就不该执行，标「延后」比标「已过期」更准确。
+    """
+    label = ACTION_LABELS.get(direction, direction)
+    if disposition == 'deferred':
+        return f'{label}(延后)'
+    if expired and direction in (DIRECTION_BUY, DIRECTION_SELL):
+        return f'{label}(已过期)'
+    return label
+
+
+def is_actionable(direction: str, disposition: str = 'active', *,
+                  expired: bool = False) -> bool:
+    """能否按「可买/可卖」使用：非延后、未过期、且方向为 BUY/SELL。"""
+    return (not expired and disposition != 'deferred'
+            and direction in (DIRECTION_BUY, DIRECTION_SELL))
+
+
 #: A 股开盘时间；生成时点已过该时刻且 earliest_exec_date 为当天 → expired
 MARKET_OPEN = time(9, 30)
 
@@ -198,11 +220,7 @@ def build_payload(result: AdviceResult,
             })
         items = []
         for rank, rec in enumerate(rows, start=1):
-            action = ACTION_LABELS.get(rec.direction, rec.direction)
-            if rec.disposition == 'deferred':
-                action = f'{action}(延后)'
-            elif expired and rec.direction in (DIRECTION_BUY, DIRECTION_SELL):
-                action = f'{action}(已过期)'
+            action = action_label(rec.direction, rec.disposition, expired=expired)
             items.append({
                 'signal_date': signal_day.isoformat(),
                 'earliest_exec_date': earliest_exec_date.isoformat(),
@@ -214,9 +232,8 @@ def build_payload(result: AdviceResult,
                 'direction': rec.direction,
                 'disposition': rec.disposition,
                 'action': action,
-                'actionable': bool(
-                    not expired and rec.disposition != 'deferred'
-                    and rec.direction in (DIRECTION_BUY, DIRECTION_SELL)),
+                'actionable': is_actionable(
+                    rec.direction, rec.disposition, expired=expired),
                 'defer_reason': rec.defer_reason,
                 'defer_until': (rec.defer_until.isoformat()
                                 if rec.defer_until else None),

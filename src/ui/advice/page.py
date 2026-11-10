@@ -424,6 +424,9 @@ class AdvicePage(QWidget):
         elif bundle.source == 'archive':
             self.fresh_label.setText('历史归档')
             self.fresh_label.setObjectName('freshBadge')
+        elif bundle.intraday:
+            self.fresh_label.setText('盘中生成 · 未落库')
+            self.fresh_label.setObjectName('freshBadge')
         elif bundle.is_stale:
             self.fresh_label.setText(f'数据落后 {bundle.data_lag_days} 天')
             self.fresh_label.setObjectName('freshBadge')
@@ -438,7 +441,10 @@ class AdvicePage(QWidget):
         items = self._tier_items()
         self.model.set_items(items)
         self._update_kpis(items)
-        self.result_label.setText(f'共 {len(items)} 条')
+        actionable = sum(1 for item in items if item.actionable)
+        deferred = sum(1 for item in items if item.disposition == 'deferred')
+        self.result_label.setText(
+            f'共 {len(items)} 条 · 可下单 {actionable} · 延后 {deferred}')
         self._update_view_state()
 
     def _tier_items(self) -> list:
@@ -450,10 +456,11 @@ class AdvicePage(QWidget):
         counts: dict[str, int] = {}
         for item in items:
             counts[item.direction] = counts.get(item.direction, 0) + 1
-        actionable = (counts.get('BUY', 0) + counts.get('SELL', 0)
-                      + counts.get('HOLD', 0))
+        # 可下单口径与后端一致：延后/过期不计入，避免把未成交当可下单
+        actionable = sum(1 for item in items if item.actionable)
         buy, sell = counts.get('BUY', 0), counts.get('SELL', 0)
         self._kpi['count'].set_value(str(actionable))
+        self._kpi['count'].set_caption('可下单数量（BUY/SELL）')
         self._kpi['flow'].set_value(f'{buy} / {sell}')
         summary: dict[str, Any] = {}
         if self._bundle is not None:

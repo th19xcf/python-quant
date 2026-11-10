@@ -33,6 +33,7 @@ def _dto(**overrides) -> DailyRecommendationDTO:
     base = dict(  # noqa: C408
         trade_date='2026-10-19', ts_code='600000.SH', name='浦发银行',
         direction='BUY', target_weight_pct=6.2, shares=12000, ref_price=9.87,
+        actionable=overrides.get('direction', 'BUY') in ('BUY', 'SELL'),
         horizon='短线', validity_days=20, confidence=0.86,
         top_factors='momentum_1m +0.42 | volume_momentum_20 +0.31 | atr_pct -0.12',
         risk_notes='行业口径为代码前缀近似；参考价可能跳空', industry='沪主板',

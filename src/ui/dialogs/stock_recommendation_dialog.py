@@ -136,14 +136,14 @@ class StockRecommendationDialog(QDialog):
         result_layout = QVBoxLayout()
 
         self.result_table = QTableWidget()
-        self.result_table.setColumnCount(6)
-        self.result_table.setHorizontalHeaderLabels(["排名", "股票代码", "股票名称", "综合评分", "预期收益", "风险评级"])
+        # core 只返回 score，没有收益预测字段；不再用 score*100 冒充「预期收益」
+        self.result_table.setColumnCount(5)
+        self.result_table.setHorizontalHeaderLabels(["排名", "股票代码", "股票名称", "综合评分", "风险评级"])
         self.result_table.setColumnWidth(0, 60)
         self.result_table.setColumnWidth(1, 100)
         self.result_table.setColumnWidth(2, 120)
         self.result_table.setColumnWidth(3, 100)
         self.result_table.setColumnWidth(4, 100)
-        self.result_table.setColumnWidth(5, 100)
         self.result_table.setStyleSheet("""
             QTableWidget {
                 background-color: #000000; color: #C0C0C0;
@@ -294,7 +294,6 @@ class StockRecommendationDialog(QDialog):
             rec = dict(rec)
             rec.setdefault('code', rec.get('stock_code', ''))
             rec.setdefault('name', rec.get('stock_name', ''))
-            rec.setdefault('expected_return', rec.get('score', 0) * 100)
             rec.setdefault('risk', rec.get('risk_level', '中'))
             normalized.append(rec)
         return normalized
@@ -327,11 +326,6 @@ class StockRecommendationDialog(QDialog):
             score_item = QTableWidgetItem(f"{score:.2f}")
             score_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.result_table.setItem(i, 3, score_item)
-            expected_return = stock.get('expected_return', 0)
-            return_item = QTableWidgetItem(f"{expected_return:.2f}%")
-            return_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            return_item.setForeground(QColor(255, 0, 0) if expected_return > 0 else QColor(0, 255, 0))
-            self.result_table.setItem(i, 4, return_item)
             risk = stock.get('risk', '中')
             risk_item = QTableWidgetItem(risk)
             if risk == '低':
@@ -340,7 +334,7 @@ class StockRecommendationDialog(QDialog):
                 risk_item.setForeground(QColor(255, 255, 0))
             else:
                 risk_item.setForeground(QColor(255, 0, 0))
-            self.result_table.setItem(i, 5, risk_item)
+            self.result_table.setItem(i, 4, risk_item)
 
     def export_report(self):
         if not self._recommendations:

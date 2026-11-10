@@ -69,6 +69,11 @@ def display_value(dto: DailyRecommendationDTO, column: int) -> str:
     if column == COL_NAME:
         return dto.name
     if column == COL_DIRECTION:
+        # 延后/过期必须显式区分，否则用户会把「本次未成交」当可下单
+        if dto.disposition == 'deferred':
+            return f'{dto.direction}(延后)'
+        if dto.exec_status == 'expired':
+            return f'{dto.direction}(已过期)'
         return dto.direction
     if column == COL_WEIGHT:
         return f'{dto.target_weight_pct:.1f}%'
@@ -174,7 +179,10 @@ class AdviceTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.TextAlignmentRole:
             return COLUMNS[column].align
         if role == Qt.ItemDataRole.ToolTipRole:
-            return f'{dto.ts_code} {dto.name}\n{dto.top_factors}\n{dto.risk_notes}'
+            state = '可下单' if dto.actionable else (
+                '延后未成交' if dto.disposition == 'deferred' else '不可下单')
+            return (f'{dto.ts_code} {dto.name}\n执行状态：{state}\n'
+                    f'{dto.top_factors}\n{dto.risk_notes}')
         if role == Qt.ItemDataRole.FontRole and COLUMNS[column].numeric:
             font = QFont('Consolas')
             font.setPointSize(9)

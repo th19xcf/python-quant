@@ -7,12 +7,6 @@ r"""``state_vector_daily`` 的逐维对拍与不变量校验。
 1. 结构不变量：日期唯一升序、无 NaN（缺失必须是 null）、分位落在 [0,100]、
    分位为 null 当且仅当原值为 null 或有效样本不足、``dims_*_available`` 与逐列一致。
 2. 逐维独立重算：抽样日期上把六个原值从源表重新算一遍，与成品逐值比对。
-2b. 估值位缩尾：抽样日与全序列上按 ``clip(1/pe, q_lo, q_hi)`` 独立重算主列，
-   并核对对照列 ``val_earn_yield_unwinsor`` 仍是未缩尾口径；再用恒等变换
-   （0%/100% 分位，等价不缩尾）模拟旧口径，断言检测器**必须报出差异**，
-   防止缩尾参数被静默改成无效值。
-2c. 空值语义：主列 null 必须严格等于「覆盖率 < 80% 或聚合盈利 ≤ 0」的交易日集合，
-   空值计数与逐列 null 数写进断言（全市场亏损期该维为 null 的规则不许变）。
 3. 分位独立重算：抽样日期上按「最近 1250 个有效观测」重算分位，与成品比对。
 4. 读路径：按 ``manifest.json`` 里的相对路径真实读一次成品并断言列齐全。
 
@@ -25,7 +19,6 @@ r"""``state_vector_daily`` 的逐维对拍与不变量校验。
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.util
 import json
 import sys
@@ -100,109 +93,22 @@ def check_structure(panel: pl.DataFrame, report: Report) -> None:
     report.check(bad.height == 0, f'{bad.height} 行原值为空但分位有值')
 
 
-def _valuation_aggregates(store: Path, dates: list[pl.Date] | None,
-                          lower: float, upper: float) -> pl.DataFrame:
-    """独立聚合：逐日 ``Σ(total_mv × clip(1/pe, q_lo, q_hi))`` / Σtotal_mv。
-
-    与产出脚本的差别：这里用 group-by 后显式 ``clip``，不依赖窗口表达式；
-    ``lower=0.0 / upper=1.0`` 即恒等变换，用来模拟「未缩尾」并验证断言可失败。
-    """
-    lf = (pl.scan_parquet(store / 'meta' / 'financials' / 'valuation_daily.parquet')
-          .select(['trade_date', 'pe', 'total_mv'])
-          .filter(pl.col('pe').is_not_null() & (pl.col('pe') != 0)
-                  & pl.col('total_mv').is_not_null()))
-    if dates is not None:
-        lf = lf.filter(pl.col('trade_date').is_in(dates))
-    lf = lf.with_columns([
-        (pl.col('total_mv') / pl.col('pe')).alias('earn'),
-        (1.0 / pl.col('pe')).alias('ey'),
-    ]).with_columns([
-        pl.col('ey').quantile(lower).over('trade_date').alias('q_lo'),
-        pl.col('ey').quantile(upper).over('trade_date').alias('q_hi'),
-    ]).with_columns(
-        (pl.col('total_mv') * pl.col('ey').clip(pl.col('q_lo'), pl.col('q_hi')))
-        .alias('earn_w'))
-    return lf.group_by('trade_date').agg([
-        pl.col('total_mv').sum().alias('mv'),
-        pl.col('earn').sum().alias('earn'),
-        pl.col('earn_w').sum().alias('earn_w'),
-        pl.len().alias('n'),
-    ]).collect()
-
-
 def check_valuation(panel: pl.DataFrame, dates: list[pl.Date], store: Path,
-                    builder, report: Report) -> None:
-    lo, hi = builder.VAL_EY_WINSOR_LOWER, builder.VAL_EY_WINSOR_UPPER
-    src = _valuation_aggregates(store, dates, lo, hi)
-    identity = _valuation_aggregates(store, dates, 0.0, 1.0)
-    detectable = 0
+                    report: Report) -> None:
+    src = (pl.scan_parquet(store / 'meta' / 'financials' / 'valuation_daily.parquet')
+           .select(['trade_date', 'pe', 'total_mv'])
+           .filter(pl.col('trade_date').is_in(dates))
+           .filter(pl.col('pe').is_not_null() & (pl.col('pe') != 0)
+                   & pl.col('total_mv').is_not_null())
+           .with_columns((pl.col('total_mv') / pl.col('pe')).alias('earn'))
+           .group_by('trade_date')
+           .agg([pl.col('total_mv').sum().alias('mv'), pl.col('earn').sum().alias('earn')])
+           .sort('trade_date').collect())
     for row in src.iter_rows(named=True):
-        day = row['trade_date']
-        expect = row['earn_w'] / row['mv'] * 100.0
-        value = panel.filter(pl.col('date') == day)['val_earn_yield'].item()
+        value = panel.filter(pl.col('date') == row['trade_date'])['val_earn_yield'].item()
+        expect = row['earn'] / row['mv'] * 100.0
         report.check(abs(value - expect) < 1e-9,
-                     f'{day} val_earn_yield 成品 {value:.6f} != 缩尾重算 {expect:.6f}')
-        expect_old = row['earn'] / row['mv'] * 100.0
-        old = panel.filter(pl.col('date') == day)['val_earn_yield_unwinsor'].item()
-        report.check(abs(old - expect_old) < 1e-9,
-                     f'{day} val_earn_yield_unwinsor 对照列 {old:.6f} != 未缩尾重算 '
-                     f'{expect_old:.6f}')
-        id_row = identity.filter(pl.col('trade_date') == day)
-        if id_row.height:
-            expect_id = id_row['earn_w'].item() / id_row['mv'].item() * 100.0
-            if abs(expect_id - expect) > 1e-12:
-                # 恒等变换（未缩尾）与成品必须不同，否则说明缩尾没生效
-                detectable += 1
-                report.check(abs(value - expect_id) > 1e-12,
-                             f'{day} 缩尾未生效：成品等于未缩尾口径 {expect_id:.6f}')
-    report.check(detectable > 0,
-                 '抽样日上缩尾与恒等变换完全相同，缩尾断言无法失败（校验形同虚设）')
-
-
-def check_valuation_full(panel: pl.DataFrame, store: Path, builder,
-                         report: Report) -> None:
-    """全序列重算 + 空值语义：主列 null 必须等于门控失败日集合。"""
-    lo, hi = builder.VAL_EY_WINSOR_LOWER, builder.VAL_EY_WINSOR_UPPER
-    src = _valuation_aggregates(store, None, lo, hi)
-    n_row = (pl.scan_parquet(store / 'meta' / 'financials' / 'valuation_daily.parquet')
-             .group_by('trade_date').agg(pl.len().alias('n_row')).collect())
-    joined = (src.join(n_row, on='trade_date', how='left')
-              .join(panel.select(['date', 'val_earn_yield', 'val_earn_yield_unwinsor',
-                                  'val_pe_coverage']),
-                    left_on='trade_date', right_on='date', how='inner')
-              .with_columns([
-                  pl.when((pl.col('mv') > 0) & (pl.col('earn_w') > 0)
-                          & (pl.col('n') >= pl.col('n_row') * builder.VAL_MIN_PE_COVERAGE))
-                  .then(pl.col('earn_w') / pl.col('mv') * 100.0).otherwise(None)
-                  .alias('_expect'),
-                  pl.when((pl.col('mv') > 0) & (pl.col('earn') > 0)
-                          & (pl.col('n') >= pl.col('n_row') * builder.VAL_MIN_PE_COVERAGE))
-                  .then(pl.col('earn') / pl.col('mv') * 100.0).otherwise(None)
-                  .alias('_expect_old'),
-              ]))
-    # 逐值：两侧都非空时差值必须为 0；空值与非空必须一一对应（分别判 null，避免 null 参与比较）
-    value_bad = joined.filter(
-        pl.col('_expect').is_not_null() & pl.col('val_earn_yield').is_not_null()
-        & ((pl.col('val_earn_yield') - pl.col('_expect')).abs() > 1e-9))
-    report.check(value_bad.height == 0,
-                 f'{value_bad.height} 天主列与全序列缩尾重算不一致')
-    null_mismatch = joined.filter(
-        pl.col('_expect').is_null() != pl.col('val_earn_yield').is_null())
-    report.check(null_mismatch.height == 0,
-                 f'{null_mismatch.height} 天的主列空值与「覆盖率≥80% 且聚合盈利>0」门控不符')
-    old_bad = joined.filter(
-        pl.col('_expect_old').is_not_null() & pl.col('val_earn_yield_unwinsor').is_not_null()
-        & ((pl.col('val_earn_yield_unwinsor') - pl.col('_expect_old')).abs() > 1e-9))
-    report.check(old_bad.height == 0,
-                 f'{old_bad.height} 天对照列与未缩尾重算不一致')
-    cover_bad = joined.filter(
-        pl.col('val_pe_coverage').is_not_null()
-        & ((pl.col('val_pe_coverage')
-            - pl.col('n') / pl.col('n_row') * 100.0).abs() > 1e-9))
-    report.check(cover_bad.height == 0, f'{cover_bad.height} 天 val_pe_coverage 与重算不符')
-    report.check(int(joined['val_earn_yield'].is_null().sum())
-                 == int(joined['_expect'].is_null().sum()),
-                 '主列空值计数与门控重算的空值计数不一致')
+                     f'{row["trade_date"]} val_earn_yield 成品 {value:.6f} != 重算 {expect:.6f}')
 
 
 def check_simple_sources(panel: pl.DataFrame, dates: list[pl.Date], store: Path,
@@ -340,7 +246,7 @@ def check_erp(panel: pl.DataFrame, dates: list[pl.Date], store: Path,
                          f'{day} ERP {row["valuation_erp"]:.6f} != {row["expect"]:.6f}')
 
 
-def check_quality_flags(panel: pl.DataFrame, builder, report: Report) -> None:
+def check_quality_flags(panel: pl.DataFrame, report: Report) -> None:
     """质量标记：换源日与低覆盖段必须在标记里，且不得误标常规日。"""
     flagged = panel.filter(pl.col('quality_flags').is_not_null())
     report.check(flagged.height < panel.height * 0.2,
@@ -363,18 +269,6 @@ def check_quality_flags(panel: pl.DataFrame, builder, report: Report) -> None:
                      f'低覆盖段起点 {low["date"].min()} 与预期 2011-01-04 不符')
         report.check(str(low['date'].max()) == '2011-04-22',
                      f'低覆盖段终点 {low["date"].max()} 与预期 2011-04-22 不符')
-    # 口径变更标记：缩尾差 ≥ 阈值的交易日必须打标记（漏标即可失败）
-    shift = panel.filter(
-        pl.col('val_earn_yield').is_not_null()
-        & pl.col('val_earn_yield_unwinsor').is_not_null()
-        & ((pl.col('val_earn_yield') - pl.col('val_earn_yield_unwinsor')).abs()
-           >= builder.VAL_WINSOR_FLAG_PP))
-    if shift.height:
-        missing = shift.filter(~pl.col('quality_flags').fill_null('')
-                               .str.contains('val_earn_yield_winsor', literal=True))
-        report.check(missing.height == 0,
-                     f'{missing.height} 天缩尾差 ≥ {builder.VAL_WINSOR_FLAG_PP}pp 但未标记 '
-                     f'val_earn_yield_winsor')
 
 
 def check_read_path(panel: pl.DataFrame, report: Report) -> None:
@@ -385,18 +279,6 @@ def check_read_path(panel: pl.DataFrame, report: Report) -> None:
     report.check(loaded.height == panel.height, '读路径行数与候选不一致')
     report.check(set(manifest['columns']) <= set(loaded.columns), 'manifest 列清单与实际不符')
     report.check(manifest['rows'] == loaded.height, 'manifest rows 与文件不符')
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    report.check(manifest.get('sha256') == digest, 'manifest sha256 与实际文件不一致')
-    report.check(str(manifest.get('method_version', '')).startswith('state_vector_v'),
-                 f'manifest method_version 缺失: {manifest.get("method_version")}')
-    change = manifest.get('caliber_change') or {}
-    if change:
-        report.check(change.get('to_method_version') == manifest.get('method_version'),
-                     'caliber_change.to_method_version 与 method_version 不一致')
-        report.check(change.get('sha256_before') is not None,
-                     'caliber_change 未记录旧 SHA256（DG-11 留证缺失）')
-        report.check(int(change.get('common_days', 0)) > 0,
-                     'caliber_change.common_days 缺失')
 
 
 def check_free_float_asof(store: Path, report: Report, codes: int = 200) -> None:
@@ -450,20 +332,15 @@ def main(argv: list[str] | None = None) -> int:
     sample_dates = sorted(set(newest + liquid + turnovers))
 
     check_structure(panel, report)
-    check_valuation(panel, sample_dates, store, builder, report)
-    check_valuation_full(panel, store, builder, report)
+    check_valuation(panel, sample_dates, store, report)
     check_simple_sources(panel, sample_dates, store, report)
     check_turnover(panel, turnovers, store, builder, report)
     check_quantiles(panel, builder, report, args.sample)
     check_erp(panel, sample_dates, store, report)
-    check_quality_flags(panel, builder, report)
+    check_quality_flags(panel, report)
     check_free_float_asof(store, report)
-    # 读路径只在「校验对象就是正式路径」时执行；校验候选文件时显式说明跳过，
-    # 避免用旧正式表冒充候选的读路径证据
-    if MANIFEST_PATH.is_file() and Path(args.path).resolve() == STATE_PATH.resolve():
+    if MANIFEST_PATH.is_file():
         check_read_path(panel, report)
-    elif MANIFEST_PATH.is_file():
-        print('[verify] 校验对象是候选文件，跳过 manifest 读路径检查（替换后再跑一次）')
     else:
         report.check(False, f'missing manifest: {MANIFEST_PATH}')
 

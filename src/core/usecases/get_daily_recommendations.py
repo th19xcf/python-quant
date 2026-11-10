@@ -13,19 +13,28 @@ UI、CLI 与后续服务端只依赖本模块返回的稳定 DTO，不直接接�
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any, Iterable
 
 from loguru import logger
 
-from src.advice.config import AdviceConfig, default_config
+from src.advice.config import (
+    AdviceConfig,
+    default_config,
+    default_output_tiers,
+)
 from src.advice.daily_store import (
+    action_label,
+    is_actionable,
     list_daily_snapshots,
     load_daily_snapshot,
+)
+from src.advice.latest_snapshot import (
+    load_latest_snapshot,
+    write_latest_snapshot,
 )
 from src.advice.pipeline import AdviceEngine
 from src.utils.code_converter import is_fund_code
@@ -33,7 +42,10 @@ from src.utils.code_converter import is_fund_code
 _FACTOR_RE = re.compile(r'(?P<label>.+?)\s+(?P<value>[+-]?\d+\.\d+)')
 
 TIER_LABELS = {'short': '短线', 'mid': '中线', 'long': '长线'}
-ALL_TIERS = ('short', 'mid', 'long')
+
+#: 收盘后生成时点，与 CLI 闸门（``advice/cli.py``）保持一致；
+#: 在此之前生成的面板仍停在上一交易日，不能当今日决策
+ADVICE_CLOSE = time(15, 30)
 
 
 @dataclass
@@ -61,6 +73,16 @@ class DailyRecommendationDTO:
     factor_contributions: list[dict[str, Any]] = field(default_factory=list)
     name_source: str = 'code'
     industry_source: str = 'code_prefix_board'
+    #: ``active``（本次可执行）或 ``deferred``（被换手上限延后，不可下单）
+    disposition: str = 'active'
+    #: 展示用动作标签，含「(延后)」「(已过期)」后缀，与归档同一实现
+    action: str = ''
+    #: 生成时点的执行状态：``pending`` / ``expired``
+    exec_status: str = 'pending'
+    #: 是否可按「可买/可卖」使用（唯一判据 ``daily_store.is_actionable``）
+    actionable: bool = False
+    defer_reason: str = ''
+    defer_until: str | None = None
 
     def to_row(self) -> dict[str, Any]:
         """表格展示用的扁平字典（列名与 UI 表格一一对应）。"""
@@ -68,6 +90,12 @@ class DailyRecommendationDTO:
             'ts_code': self.ts_code,
             'name': self.name,
             'direction': self.direction,
+            'disposition': self.disposition,
+            'action': self.action,
+            'exec_status': self.exec_status,
+            'actionable': self.actionable,
+            'defer_reason': self.defer_reason,
+            'defer_until': self.defer_until,
             'target_weight_pct': self.target_weight_pct,
             'shares': self.shares,
             'ref_price': self.ref_price,
@@ -98,6 +126,8 @@ class DailyRecommendationBundle:
     warnings: list[str] = field(default_factory=list)
     summary: dict[str, Any] = field(default_factory=dict)
     source: str = 'engine'
+    #: 是否在收盘前生成（面板仍是上一交易日，未写入每日归档）
+    intraday: bool = False
 
     def by_tier(self, tier: str) -> list[DailyRecommendationDTO]:
         if tier == 'all':
@@ -139,11 +169,26 @@ def _asset_type(ts_code: str) -> str:
 
 
 def _to_dto(row: dict[str, Any], tier: str) -> DailyRecommendationDTO:
+    direction = str(row.get('direction', 'HOLD'))
+    disposition = str(row.get('disposition') or 'active')
+    exec_status = str(row.get('exec_status') or 'pending')
+    expired = exec_status == 'expired'
+    actionable = row.get('actionable')
+    if not isinstance(actionable, bool):
+        actionable = is_actionable(direction, disposition, expired=expired)
     return DailyRecommendationDTO(
         trade_date=str(row.get('trade_date', '')),
         ts_code=str(row.get('ts_code', '')),
         name=str(row.get('name', row.get('ts_code', ''))),
-        direction=str(row.get('direction', 'HOLD')),
+        direction=direction,
+        disposition=disposition,
+        action=str(row.get('action') or action_label(
+            direction, disposition, expired=expired)),
+        exec_status=exec_status,
+        actionable=actionable,
+        defer_reason=str(row.get('defer_reason') or ''),
+        defer_until=(str(row['defer_until'])
+                     if row.get('defer_until') else None),
         target_weight_pct=float(row.get('target_weight_pct') or 0.0),
         shares=int(row.get('shares') or 0),
         ref_price=float(row.get('ref_price') or 0.0),
@@ -221,12 +266,10 @@ def load_archived_recommendations(trade_date: Any,
 
 
 def _load_snapshot(path: Path, horizon: str, equity: float) -> DailyRecommendationBundle | None:
-    if not path.is_file():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, ValueError) as exc:
-        logger.warning(f'[usecase] 推荐快照读取失败: {path}: {exc}')
+    payload = load_latest_snapshot(path)
+    if payload is None:
+        if path.is_file():
+            logger.warning(f'[usecase] 推荐快照读取失败: {path}')
         return None
     items = [_to_dto(row, str(row.get('tier', 'mid'))) for row in payload.get('items', [])]
     if horizon != 'all':
@@ -244,7 +287,7 @@ def _load_snapshot(path: Path, horizon: str, equity: float) -> DailyRecommendati
     except (TypeError, ValueError):
         pass
     lag = (date.today() - parsed_date).days if parsed_date else 0
-    warnings: list[str] = []
+    warnings: list[str] = list(payload.get('load_warnings') or [])
     if lag > 1:
         warnings.append(f'数据日期 {parsed_date} 已落后 {lag} 天，请重新生成')
     return DailyRecommendationBundle(
@@ -254,22 +297,6 @@ def _load_snapshot(path: Path, horizon: str, equity: float) -> DailyRecommendati
         summary=payload.get('tiers', {}), source='snapshot')
 
 
-def _save_snapshot(bundle: DailyRecommendationBundle, path: Path,
-                   summary: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        'trade_date': bundle.trade_date.isoformat() if bundle.trade_date else None,
-        'generated_at': bundle.generated_at.isoformat(timespec='seconds'),
-        'equity': bundle.equity,
-        'is_sample': bundle.is_sample,
-        'tiers': summary,
-        'items': [{**item.to_row(), 'factor_contributions': item.factor_contributions}
-                  for item in bundle.items],
-    }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                    encoding='utf-8')
-
-
 def get_daily_recommendations(trade_date: Any = None, horizon: str = 'short',
                               *, equity: float = 1_000_000.0,
                               refresh: bool = False,
@@ -277,7 +304,8 @@ def get_daily_recommendations(trade_date: Any = None, horizon: str = 'short',
                               store_root: Any = None,
                               state_dir: str | Path | None = None,
                               out_dir: str | Path | None = None,
-                              tiers: Iterable[str] | None = None) -> DailyRecommendationBundle:
+                              tiers: Iterable[str] | None = None,
+                              allow_intraday: bool = False) -> DailyRecommendationBundle:
     """获取每日推荐清单（UI 唯一入口）。
 
     Args:
@@ -285,6 +313,8 @@ def get_daily_recommendations(trade_date: Any = None, horizon: str = 'short',
         horizon: ``short``/``mid``/``long``/``all``，只返回对应档位。
         refresh: True 时忽略本地快照并重新生成。
         equity: 组合总资金，用于仓位与股数换算。
+        tiers: 生成档位；None 时与 CLI 一致，排除 ``OBSERVE_ONLY_TIERS``。
+        allow_intraday: True 时允许收盘前生成（仍会提示且不写每日归档）。
 
     返回结构化 DTO 列表与新鲜度元信息；没有数据时返回空列表而非抛异常，
     由 UI 显示空状态。
@@ -300,18 +330,28 @@ def get_daily_recommendations(trade_date: Any = None, horizon: str = 'short',
         if cached is not None and cached.items:
             return cached
 
+    # 未显式指定档位时：单档位视图只算该档，``all`` 与 CLI 一样排除仅观察档
+    tier_list = list(tiers) if tiers else (
+        [horizon] if horizon in TIER_LABELS else default_output_tiers())
+    intraday = bool(trade_date is None and not allow_intraday
+                    and datetime.now().time() < ADVICE_CLOSE)
     advice_config = config or default_config()
     engine = AdviceEngine(config=advice_config, store_root=store_root)
     result = engine.generate(
         as_of=trade_date, equity=equity,
-        tiers=list(tiers) if tiers else list(ALL_TIERS),
+        tiers=tier_list,
         state_dir=state_path,
-        daily_dir=output_dir / 'daily', persist_daily=True)
+        daily_dir=output_dir / 'daily',
+        persist_daily=not intraday)
     generated_at = datetime.now()
     lag = (date.today() - result.trade_date).days if result.trade_date else 0
     items = [_to_dto({**rec.to_row(), 'tier': key}, key)
              for key, advice in result.tiers.items() for rec in advice.rows]
     warnings: list[str] = []
+    if intraday:
+        warnings.append(
+            f'未到收盘后 {ADVICE_CLOSE:%H:%M}，本次为盘中生成（面板仍是上一交易日），'
+            '未写入每日归档，勿当作今日决策')
     if lag > 1:
         warnings.append(f'数据日期 {result.trade_date} 已落后 {lag} 天，请重新生成')
     if not items:
@@ -319,10 +359,11 @@ def get_daily_recommendations(trade_date: Any = None, horizon: str = 'short',
     bundle = DailyRecommendationBundle(
         items=items, trade_date=result.trade_date, generated_at=generated_at,
         data_lag_days=lag, is_sample=False, equity=equity, warnings=warnings,
-        summary=result.summary()['tiers'], source='engine')
+        summary=result.summary()['tiers'], source='engine', intraday=intraday)
     if horizon != 'all':
         bundle.items = [item for item in bundle.items if item.tier == horizon]
-    _save_snapshot(bundle, snapshot_path, result.summary()['tiers'])
+    write_latest_snapshot(result, snapshot_path, generated_at=generated_at,
+                          equity=equity)
     logger.info(
         f"[usecase] 推荐就绪: {result.trade_date}, {len(bundle.items)} 条, "
         f"档位={horizon}, 来源={'引擎' if bundle.source == 'engine' else '快照'}")

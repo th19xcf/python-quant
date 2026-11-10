@@ -43,6 +43,7 @@ from src.ui.advice.table_model import (
     COL_SHARES,
     COL_WEIGHT,
     DTO_ROLE,
+    display_value,
 )
 from src.ui.advice.tokens import TOKENS, DesignTokens, Palette
 
@@ -115,7 +116,7 @@ class AdviceItemDelegate(QStyledItemDelegate):
             self._draw_text(painter, rect, dto.name, self.tokens.font_family,
                             10, self._pal.text, Qt.AlignmentFlag.AlignLeft, bold=True)
         elif column == COL_DIRECTION:
-            self._draw_pill(painter, rect, dto.direction)
+            self._draw_pill(painter, rect, dto)
         elif column in (COL_WEIGHT, COL_SHARES, COL_PRICE):
             text = (f'{dto.target_weight_pct:.1f}%' if column == COL_WEIGHT
                     else f'{dto.shares:,}' if column == COL_SHARES
@@ -142,14 +143,19 @@ class AdviceItemDelegate(QStyledItemDelegate):
         elided = metrics.elidedText(text, Qt.TextElideMode.ElideRight, int(rect.width()))
         painter.drawText(rect, int(align | Qt.AlignmentFlag.AlignVCenter), elided)
 
-    def _draw_pill(self, painter: QPainter, rect: QRectF, direction: str) -> None:
-        fg, bg = _direction_colors(self._pal, direction)
+    def _draw_pill(self, painter: QPainter, rect: QRectF,
+                   dto: DailyRecommendationDTO) -> None:
+        # 文本与 display_value 同源：延后/过期带后缀，颜色区分不可下单
+        text = display_value(dto, COL_DIRECTION)
+        blocked = dto.disposition == 'deferred' or dto.exec_status == 'expired'
+        fg, bg = _direction_colors(
+            self._pal, 'AVOID' if blocked else dto.direction)
         font = QFont(self.tokens.font_family)
         font.setPointSizeF(8.5)
         font.setBold(True)
         painter.setFont(font)
         metrics = QFontMetrics(font)
-        width = metrics.horizontalAdvance(direction) + 22
+        width = metrics.horizontalAdvance(text) + 18
         height = 24
         pill = QRectF(rect.center().x() - width / 2,
                       rect.center().y() - height / 2, width, height)
@@ -157,7 +163,7 @@ class AdviceItemDelegate(QStyledItemDelegate):
         painter.setBrush(bg)
         painter.drawRoundedRect(pill, height / 2, height / 2)
         painter.setPen(fg)
-        painter.drawText(pill, int(Qt.AlignmentFlag.AlignCenter), direction)
+        painter.drawText(pill, int(Qt.AlignmentFlag.AlignCenter), text)
 
     def _draw_confidence(self, painter: QPainter, rect: QRectF,
                          dto: DailyRecommendationDTO) -> None:
@@ -649,6 +655,12 @@ class DetailPanel(QFrame):
         self.confidence_label.setObjectName('mutedLabel')
         layout.addWidget(self.confidence_label)
 
+        #: 执行状态：可下单 / 延后未成交 / 已过期，与表格 pill 同源判定
+        self.state_label = QLabel('')
+        self.state_label.setObjectName('mutedLabel')
+        self.state_label.setWordWrap(True)
+        layout.addWidget(self.state_label)
+
         self.metrics_grid = QGridLayout()
         self.metrics_grid.setHorizontalSpacing(12)
         self.metrics_grid.setVerticalSpacing(10)
@@ -710,6 +722,18 @@ class DetailPanel(QFrame):
             f'border: 1px solid {fg.name()}; border-radius: 11px;'
             'font-size: 11px; font-weight: 700;')
 
+    @staticmethod
+    def _state_text(dto: DailyRecommendationDTO) -> str:
+        """执行状态文案：延后/过期必须显式写「不可下单」。"""
+        if dto.disposition == 'deferred':
+            text = f'不可下单 · 延后至 {dto.defer_until or "下一交易日"}'
+            return f'{text}（{dto.defer_reason}）' if dto.defer_reason else text
+        if dto.exec_status == 'expired':
+            return '不可下单 · 信号已过期（T+1 开盘已过）'
+        if dto.actionable:
+            return '可下单 · T+1 开盘执行'
+        return '不可下单 · 非买卖方向'
+
     def set_dto(self, dto: DailyRecommendationDTO | None) -> None:
         if dto is None:
             self.name_label.setText('选择一行查看详情')
@@ -719,6 +743,7 @@ class DetailPanel(QFrame):
                 f'color: {self._pal.faint}; border: 1px solid '
                 f'{self._pal.border}; border-radius: 11px; font-size: 11px;')
             self.confidence_label.setText('置信度 —')
+            self.state_label.setText('')
             for value in self._metrics.values():
                 value.setText('—')
             self.factor_bars.set_contributions([])
@@ -734,6 +759,7 @@ class DetailPanel(QFrame):
         self.confidence_label.setText(
             f'置信度 {dto.confidence:.2f} · 综合分 {dto.score:+.2f} · '
             f'截面分位 {dto.score_percentile:.0%}')
+        self.state_label.setText(self._state_text(dto))
         self._metrics['weight'].setText(f'{dto.target_weight_pct:.1f}%')
         self._metrics['shares'].setText(f'{dto.shares:,}')
         self._metrics['price'].setText(f'{dto.ref_price:.2f}')
