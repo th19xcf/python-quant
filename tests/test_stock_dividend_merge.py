@@ -128,3 +128,33 @@ def test_duplicate_source_rows_deduped():
     final, stats, _ = merge_frames(_frame([]), new)
     assert final.height == 1
     assert stats['duplicate_source_rows'] == 1
+
+
+def test_extra_columns_preserved_through_merge():
+    """存量里的非 FINAL_SCHEMA 列（*_fix / no_ex_rights 等）必须原样带出。
+
+    2026-11-10 事故：采集脚本只按 FINAL_SCHEMA 重建表，一次采集把
+    cash_div_fix / share_div_fix / no_ex_rights 与 11 个派生列全部丢掉，
+    因子计算因缺列走 fill_null 兜底，静默退回未修正值。
+    """
+    ex = date(2024, 6, 20)
+    existing = _frame([_row('601258.SH', ex, 0.0, 0.56416)]).with_columns(
+        pl.lit(0.04).alias('cash_div_fix'),
+        pl.lit(0.0).alias('share_div_fix'),
+        pl.lit(False).alias('no_ex_rights'),
+        pl.lit('orig').alias('share_div_source'),
+        pl.lit(1.23).alias('total_div_est_all'),
+        pl.lit(ex, dtype=pl.Date).alias('est_effective_date'))
+    new = _frame([_row('600000.SH', date(2024, 7, 1), 0.3, 0.0,
+                       report_period=date(2023, 12, 31))])
+    final, _, _ = merge_frames(existing, new)
+
+    for col in ('cash_div_fix', 'share_div_fix', 'no_ex_rights',
+                'share_div_source', 'total_div_est_all', 'est_effective_date'):
+        assert col in final.columns, col
+    kept = final.filter(pl.col('ts_code') == '601258.SH')
+    assert kept['cash_div_fix'].to_list() == [pytest.approx(0.04)]
+    assert kept['share_div_source'].to_list() == ['orig']
+    assert kept['total_div_est_all'].to_list() == [pytest.approx(1.23)]
+    appended = final.filter(pl.col('ts_code') == '600000.SH')
+    assert appended['cash_div_fix'].to_list() == [None]

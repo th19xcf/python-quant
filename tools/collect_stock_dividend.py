@@ -178,8 +178,10 @@ def _prepare_existing(existing: pl.DataFrame) -> list[dict[str, Any]]:
         if col not in existing.columns:
             existing = existing.with_columns(
                 pl.lit(None, dtype=FINAL_SCHEMA[col]).alias(col))
-    existing = existing.select([pl.col(c).cast(FINAL_SCHEMA[c], strict=False)
-                                for c in FINAL_SCHEMA])
+    keep = list(FINAL_SCHEMA) + [c for c in existing.columns if c not in FINAL_SCHEMA]
+    existing = existing.select([
+        pl.col(c).cast(FINAL_SCHEMA[c], strict=False) if c in FINAL_SCHEMA else pl.col(c)
+        for c in keep])
     return existing.to_dicts()
 
 
@@ -239,6 +241,10 @@ class _Merger:
     """把新事件并入存量行，保留全部存量并记录同日金额冲突。"""
 
     def __init__(self, existing: pl.DataFrame) -> None:
+        # 存量里不属于 FINAL_SCHEMA 的列（*_fix 覆盖层、no_ex_rights、派生估测列等）
+        # 必须原样带出，否则采集一次就把这些列静默丢掉
+        self.extra_schema: dict[str, Any] = {
+            c: existing.schema[c] for c in existing.columns if c not in FINAL_SCHEMA}
         self.rows = _prepare_existing(existing)
         self.stats: dict[str, Any] = {
             'matched_by_ex': 0, 'matched_by_plan': 0,
@@ -385,7 +391,8 @@ class _Merger:
         self._plans(plans)
         for row in self.rows:
             row['total_div'] = None
-        final = pl.DataFrame([*self.rows, *self.appends], schema=FINAL_SCHEMA, strict=False)
+        final = pl.DataFrame([*self.rows, *self.appends],
+                             schema={**FINAL_SCHEMA, **self.extra_schema}, strict=False)
         final = final.sort(['ts_code', 'ex_date', 'report_period'], nulls_last=True)
         return final, self.stats, self.conflicts
 
@@ -605,7 +612,7 @@ def load_existing(path: Path) -> pl.DataFrame:
     return pl.read_parquet(path)
 
 
-def update_meta(out_path: Path, rows: int) -> None:
+def update_meta(out_path: Path, rows: int, columns: list[str] | None = None) -> None:
     meta_path = out_path.parent / 'meta.json'
     if not meta_path.exists():
         return
@@ -613,7 +620,7 @@ def update_meta(out_path: Path, rows: int) -> None:
     payload['dividend_rows'] = rows
     payload['dividend_updated_at'] = datetime.now().isoformat(timespec='seconds')
     payload['dividend_source'] = 'em_fhps_bulk+local_preserved'
-    payload['dividend_columns'] = list(FINAL_SCHEMA)
+    payload['dividend_columns'] = columns or list(FINAL_SCHEMA)
     tmp = meta_path.with_suffix('.json.tmp')
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                    encoding='utf-8', newline='\n')
@@ -743,7 +750,7 @@ def main(argv: list[str] | None = None) -> int:
     tmp = args.out.with_suffix('.parquet.tmp')
     final.write_parquet(tmp, compression='zstd', statistics=True)
     os.replace(tmp, args.out)
-    update_meta(args.out, final.height)
+    update_meta(args.out, final.height, final.columns)
     print(f'已写入 {args.out}：{final.height:,} 行（原 {existing.height:,} 行，'
           f'新增 {merge_stats["appended_same_day"] + merge_stats["appended_plan"]:,} 行）')
     return 0
