@@ -19,11 +19,28 @@ def test_classify_local_fund_symbol():
     assert _classify_local_fund_symbol('160130') == ('LOF', 'fund_basic')
     assert _classify_local_fund_symbol('184801') == ('LOF', 'fund_basic')
     assert _classify_local_fund_symbol('150001') == ('分级', 'fund_basic')
+    # 502 段：既有分级母/子份额（无名称时按段兜底为分级）
+    assert _classify_local_fund_symbol('502001') == ('分级', 'fund_basic')
     # 封闭式：无本地类型来源，只补基础表，不猜 fund_type
     assert _classify_local_fund_symbol('505888') == (None, 'closed_fund_basic')
     # 非基金代码段不猜测
     assert _classify_local_fund_symbol('600000') is None
     assert _classify_local_fund_symbol('399001') is None
+
+
+def test_classify_prefers_name_over_symbol_segment():
+    """502 段混有分级与整改后 LOF：有名称时名称优先。"""
+    assert _classify_local_fund_symbol('502001', '西部利得中证500等权重指数分级-A') == (
+        '分级', 'fund_basic')
+    assert _classify_local_fund_symbol('502036', '大成中证互联网金融指数分级') == (
+        '分级', 'fund_basic')
+    # 转型后的普通 LOF 与 ETF 联接基金必须保持 LOF，不能因为 502 段或名字带 ETF 改成 ETF
+    assert _classify_local_fund_symbol('502003', '易方达中证军工指数(LOF)-A') == (
+        'LOF', 'fund_basic')
+    assert _classify_local_fund_symbol('502056', '广发中证医疗ETF联接(LOF)-A') == (
+        'LOF', 'fund_basic')
+    assert _classify_local_fund_symbol('160119', '南方中证500ETF联接(LOF)-A') == (
+        'LOF', 'fund_basic')
 
 
 def test_fill_only_empty_fields_never_overwrites():

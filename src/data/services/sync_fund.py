@@ -234,20 +234,32 @@ def _delete_migrated_funds(session: Session, fund_stocks: list[Any],
     result['deleted_from_stock_basic'] = len(fund_stocks)
 
 
-def _classify_local_fund_symbol(symbol: str) -> tuple[str | None, str] | None:
-    """按代码段判定本地基金的类型与归属表，无法可靠判定返回 None。
+def _classify_local_fund_symbol(symbol: str, name: str | None = None,
+                                ) -> tuple[str | None, str] | None:
+    """判定本地基金的类型与归属表，无法可靠判定返回 None。
 
-    只做「代码段 → 类型」的确定性映射，不使用价格/名称推断：
+    名称可得时以名称优先（代码段无法区分同段内的分级与转型后 LOF）：
+    - 名称含「分级」→ 分级（母份额与 A/B 子份额同为分级，分子母靠名称后缀，
+      不新增词表值；见 2026-11-10 fund_type 核查）
+    - 名称含「联接」或「LOF」→ LOF（ETF 联接基金是 LOF 份额，不是 ETF）
+
+    名称缺失时按代码段兜底：
     - ETF：沪 51/52/56/58，深 159/158
-    - LOF：沪 501/502/506/508，深 16/18（REITs 沿用库内既有的 LOF 归类）
-    - 分级：深 150（历史分级基金代码段）
+    - LOF：沪 501/506/508，深 16/18（REITs 沿用库内既有的 LOF 归类）
+    - 分级：沪 502（502 段既有分级母/子份额，也有整改后的普通 LOF，故有名称时按名称判）
     - 封闭式：沪 500/505（无类型来源，仅补基础表，不猜 fund_type）
     """
+    text = (name or '').strip()
+    if text:
+        if '分级' in text:
+            return '分级', 'fund_basic'
+        if '联接' in text or 'LOF' in text.upper():
+            return 'LOF', 'fund_basic'
     if symbol.startswith(('51', '52', '56', '58')) or symbol.startswith(('159', '158')):
         return 'ETF', 'fund_basic'
-    if symbol.startswith(('501', '502', '506', '508', '16', '18')):
+    if symbol.startswith(('501', '506', '508', '16', '18')):
         return 'LOF', 'fund_basic'
-    if symbol.startswith('150'):
+    if symbol.startswith(('150', '502')):
         return '分级', 'fund_basic'
     if symbol.startswith(('500', '505')):
         return None, 'closed_fund_basic'
@@ -373,7 +385,7 @@ def _fill_fund_backfill_fields(fund: Any, symbol: str, market: str,
         fund.list_date = first
         changed = True
     if hasattr(fund, 'fund_type') and not fund.fund_type:
-        classified = _classify_local_fund_symbol(symbol)
+        classified = _classify_local_fund_symbol(symbol, getattr(fund, 'name', None))
         if classified and classified[0]:
             fund.fund_type = classified[0]
             changed = True
