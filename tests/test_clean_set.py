@@ -4,10 +4,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -15,6 +17,7 @@ import pytest
 from src.data.quality.clean_set import (
     FUND_DIVIDEND_PENDING_ENV,
     FUND_DIVIDEND_PENDING_SCOPE_ENV,
+    MAX_SOURCE_LAG_TRADING_DAYS,
     CodeInfo,
     EligibilityEngine,
     _apply_scope_with_etf_codes,
@@ -22,6 +25,8 @@ from src.data.quality.clean_set import (
     _code_type,
     _load_fund_etf_codes,
     _resolve_fund_pending_scope,
+    build_snapshot,
+    source_staleness,
 )
 
 
@@ -670,3 +675,132 @@ def test_fund_etf_cache_expired_falls_back_on_db_error(
     monkeypatch.setattr(
         'src.data.quality.clean_set._fund_etf_codes_from_db', boom)
     assert _load_fund_etf_codes() == {'510300.SH'}
+
+
+# ----------------------------------------------------------------------
+# 判定时点由数据决定 + 陈旧度 + strict 归零保护
+# ----------------------------------------------------------------------
+_TRADING = [date(2026, 11, 6), date(2026, 11, 9), date(2026, 11, 10)]
+
+
+def test_source_lag_one_trading_day_is_not_stopped() -> None:
+    """当日行情尚未落盘（滞后 1 个交易日）属正常取数窗口，不判停摆。"""
+    status = source_staleness(date(2026, 11, 9), date(2026, 11, 10), _TRADING)
+    assert MAX_SOURCE_LAG_TRADING_DAYS == 1
+    assert status['lag_trading_days'] == 1
+    assert status['source_stopped'] is False
+
+
+def test_source_lag_two_trading_days_is_stopped() -> None:
+    """滞后 2 个交易日才算真实停摆（11-06 → 11-09、11-10）。"""
+    status = source_staleness(date(2026, 11, 6), date(2026, 11, 10), _TRADING)
+    assert status['lag_trading_days'] == 2
+    assert status['source_stopped'] is True
+
+
+def test_as_of_defaults_to_data_last_not_system_day() -> None:
+    """缺省 as_of 取数据内最新交易日，而不是日历/系统当天。"""
+    info = make_code(
+        '000001.SZ',
+        end=date(2026, 11, 9),
+        quotes=[date(2026, 11, 6), date(2026, 11, 9)],
+    )
+    engine = make_engine([info], as_of=date(2026, 11, 3))
+    engine.calendar = list(_TRADING)
+    engine._calendar_all = tuple(_TRADING)
+    engine.as_of = None
+    engine.explicit_as_of = None
+
+    engine._resolve_dates()
+
+    assert engine.as_of == date(2026, 11, 9) == engine.data_last
+    assert engine.as_of != date.today()
+    assert engine.source_stopped is False
+    assert engine.eligible('000001.SZ', engine.as_of, 'strict')[0] is True
+
+    # 显式 as_of 保留原值，不静默改成数据末日
+    engine.explicit_as_of = date(2026, 11, 10)
+    engine._resolve_dates()
+    assert engine.as_of == date(2026, 11, 10)
+    assert engine.eligible('000001.SZ', engine.as_of, 'strict') == (
+        False, ['temporal_source_stopped'])
+
+
+def _fake_snapshot_engine(tmp_path: Path, strict_codes: int) -> type:
+    """只实现 build_snapshot 用到的接口，隔离真实数据。"""
+
+    class _FakeEngine:
+        def __init__(self, root=None, target_date=None, **kwargs) -> None:
+            self.root = tmp_path / 'store'
+            self.data_last = date(2026, 11, 9)
+            self.codes = {
+                '000001.SZ': SimpleNamespace(
+                    data_type='stock', rows=2,
+                    start=date(2026, 11, 6), end=date(2026, 11, 9)),
+            }
+
+        @property
+        def as_of_date(self) -> date:
+            return date(2026, 11, 10)
+
+        def layer_at(self, code: str, day: date | None = None) -> str:
+            return 'remaining'
+
+        def eligible(self, code: str, day: date, view: str):
+            if strict_codes:
+                return True, []
+            return False, ['temporal_source_stopped']
+
+        def timeline(self, start=None):
+            return [{'date': '2026-10-30', 'strict_stock': strict_codes,
+                     'standard_stock': strict_codes}]
+
+        def summary_at(self, day: date | None = None):
+            return {
+                'as_of': str(day),
+                'views': {
+                    v: {'codes': strict_codes, 'rows': strict_codes * 2}
+                    for v in ('full', 'standard', 'strict')
+                },
+            }
+
+    return _FakeEngine
+
+
+def test_strict_zero_guard_refuses_to_write(tmp_path, monkeypatch) -> None:
+    """strict 归零且上一快照显著非零时抛错，且不写出任何文件。"""
+    out = tmp_path / 'clean'
+    out.mkdir()
+    prev = out / 'summary_2026-11-09.json'
+    prev.write_text(
+        json.dumps({'views': {'strict': {'codes': 8352}}}), encoding='utf-8')
+    monkeypatch.setattr(
+        'src.data.quality.clean_set.EligibilityEngine',
+        _fake_snapshot_engine(tmp_path, 0))
+
+    with pytest.raises(RuntimeError, match='strict 归零疑似判定异常，已拒绝落盘'):
+        build_snapshot(tmp_path, as_of='2026-11-10', output_dir=out)
+
+    assert sorted(p.name for p in out.iterdir()) == ['summary_2026-11-09.json']
+    assert not (out / 'eligibility_2026-11-10.parquet').exists()
+    assert not (out / 'timeline_2026-11-10.csv').exists()
+    assert not (out / 'summary_2026-11-10.json').exists()
+
+
+def test_strict_nonzero_snapshot_is_written(tmp_path, monkeypatch) -> None:
+    """对照组：strict 非零时三份产物正常写出，证明上面的「未写出」不是空断言。"""
+    out = tmp_path / 'clean'
+    out.mkdir()
+    (out / 'summary_2026-11-09.json').write_text(
+        json.dumps({'views': {'strict': {'codes': 8352}}}), encoding='utf-8')
+    monkeypatch.setattr(
+        'src.data.quality.clean_set.EligibilityEngine',
+        _fake_snapshot_engine(tmp_path, 8352))
+
+    summary = build_snapshot(tmp_path, as_of='2026-11-10', output_dir=out)
+
+    assert summary['views']['strict']['codes'] == 8352
+    for name in ('eligibility_2026-11-10.parquet',
+                 'timeline_2026-11-10.csv',
+                 'summary_2026-11-10.json'):
+        assert (out / name).exists(), name

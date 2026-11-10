@@ -66,6 +66,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.adj_factor_calculator import calc_dividend_event_factor
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.quality.anomalies import iter_anomalies
 from src.data.quality.code_migration import load_entity_index
 from src.data.quality.suspension_union import SuspensionUnion, load_suspension_union
@@ -85,6 +86,15 @@ MIN_CROSS_SECTION = 300
 
 #: 月末采样中连续满足下限的月数
 MIN_STREAK_MONTHS = 12
+
+#: 数据源陈旧度容忍上限（交易日）。判定时点 ``as_of`` 改为由数据决定后，仍要
+#: 能识别真实停摆：数据最新日落后于日历最新交易日不超过该值，属正常取数窗口
+#: （当日行情尚未落盘），超过才判 ``stopped``。
+MAX_SOURCE_LAG_TRADING_DAYS = 1
+
+#: strict 归零保护阈值：上一快照 strict 只数超过该值而本次算得 0 时拒绝落盘，
+#: 避免「判定时点超前导致全市场停更」被当成正常结果静默写出。
+STRICT_ZERO_GUARD_MIN_PREV = 1000
 
 #: 1991-1992 年拆细/送转比例未能外部确认的代码：1993-01-01 之前不参与
 #: standard/strict（full 视图仅做数据检查，不受影响）。
@@ -336,6 +346,36 @@ def _ord(value: date | None) -> int | None:
     return value.toordinal() if value is not None else None
 
 
+def _source_lag_trading_days(
+    data_last: date | None,
+    calendar_latest: date | None,
+    trading_days: Iterable[date],
+) -> int:
+    """数据最新日到日历最新交易日之间的交易日数（半开区间 ``(data_last, latest]``）。"""
+    if data_last is None or calendar_latest is None or calendar_latest <= data_last:
+        return 0
+    return sum(1 for d in trading_days if data_last < d <= calendar_latest)
+
+
+def source_staleness(
+    data_last: date | None,
+    calendar_latest: date | None,
+    trading_days: Iterable[date],
+) -> dict[str, Any]:
+    """独立陈旧度检查：滞后超过容忍上限才判数据源停摆。
+
+    与 ``temporal_source_stopped``（逐标的、按评估日是否越过该标的最后一根
+    bar）相互独立：这里回答的是「全市场最新行情是否已经落后日历」。
+    """
+    lag = _source_lag_trading_days(data_last, calendar_latest, trading_days)
+    return {
+        'data_last': str(data_last) if data_last else None,
+        'calendar_latest': str(calendar_latest) if calendar_latest else None,
+        'lag_trading_days': lag,
+        'source_stopped': lag > MAX_SOURCE_LAG_TRADING_DAYS,
+    }
+
+
 def _code_type(ts_code: str) -> str:
     """按代码段推断类型；仅用于台账里没有类型字段的补充清单。"""
     if is_index_code(ts_code):
@@ -388,6 +428,13 @@ class EligibilityEngine:
     #: 手工组装引擎（测试）时的默认值，避免未跑 __init__ 的属性缺失。
     close_fund_dividend_pending_scope: str = 'none'
     etf_codes: set[str] | None = None
+    #: 数据最新交易日（各标的最新 bar 的最大值）、日历最新交易日与陈旧度。
+    data_last: date | None = None
+    calendar_latest: date | None = None
+    source_lag_days: int = 0
+    source_stopped: bool = False
+    explicit_as_of: date | None = None
+    _calendar_all: tuple[date, ...] = ()
     suspension_union: SuspensionUnion | None = None
 
     @property
@@ -422,9 +469,16 @@ class EligibilityEngine:
         self.codes: dict[str, CodeInfo] = {}
         self.calendar: list[date] = []
         self.calendar_ord = np.array([], dtype=np.int64)
-        self.as_of: date | None = _as_date(target_date) if target_date else None
+        self._calendar_all: tuple[date, ...] = ()
+        self.explicit_as_of: date | None = _as_date(target_date) if target_date else None
+        self.as_of: date | None = None
+        self.data_last: date | None = None
+        self.calendar_latest: date | None = None
+        self.source_lag_days: int = 0
+        self.source_stopped: bool = False
         self._load_meta()
         self._load_calendar()
+        self._resolve_dates()
         self._load_quote_stats()
         self._load_implied_suspension()
         self._load_factor_stats()
@@ -433,12 +487,50 @@ class EligibilityEngine:
         self._load_anomaly_records()
         self._load_st()
         self._finalize_structural()
-        if self.as_of is None:
-            self.as_of = self.calendar[-1]
         logger.debug(
             f'准入索引就绪: {len(self.codes)} 只, '
             f'日历 {self.calendar[0]} ~ {self.calendar[-1]}, as_of={self.as_of}'
         )
+
+    def _resolve_dates(self) -> None:
+        """确定判定时点 ``as_of``（由数据决定）与数据源陈旧度。
+
+        ``as_of`` 默认取数据内最新交易日，而不是系统当天：当日行情尚未落盘时
+        用系统日会把逐标的的「评估日越过最后一根 bar」判据放大成全市场停更。
+        调用方显式传入的 ``as_of`` 仍然保留，但记录来源并在超前于数据时告警。
+        """
+        ends = [i.end_ord for i in self.codes.values() if i.end_ord is not None]
+        self.data_last = date.fromordinal(max(ends)) if ends else None
+        calendar_all = self._calendar_all or tuple(self.calendar)
+        past = [d for d in calendar_all if d <= date.today()]
+        if past:
+            self.calendar_latest = past[-1]
+        elif self.calendar:
+            self.calendar_latest = self.calendar[-1]
+        status = source_staleness(self.data_last, self.calendar_latest, calendar_all)
+        self.source_lag_days = int(status['lag_trading_days'])
+        self.source_stopped = bool(status['source_stopped'])
+
+        if self.explicit_as_of is not None:
+            self.as_of = self.explicit_as_of
+            logger.info(
+                f'as_of 由调用方显式指定: {self.as_of}'
+                f'（行情最新日 {self.data_last}）')
+            if self.data_last is not None and self.as_of > self.data_last:
+                logger.warning(
+                    f'显式 as_of={self.as_of} 晚于行情最新日 {self.data_last}：'
+                    f'该日的 temporal_* 反映的是「当日行情缺失」，不是标的停更')
+        else:
+            self.as_of = self.data_last or (
+                self.calendar[-1] if self.calendar else None)
+            logger.info(
+                f'as_of 由数据决定: {self.as_of}'
+                f'（行情最新日 {self.data_last}，系统日 {date.today()}）')
+        if self.source_stopped:
+            logger.warning(
+                f'本地行情疑似停摆: 最新日 {self.data_last} 落后日历最新交易日 '
+                f'{self.calendar_latest} 共 {self.source_lag_days} 个交易日'
+                f'（容忍 {MAX_SOURCE_LAG_TRADING_DAYS} 个）')
 
     # ------------------------------------------------------------------
     # 加载
@@ -480,6 +572,7 @@ class EligibilityEngine:
         from src.data.trading_calendar import get_calendar  # noqa: PLC0415
 
         calendar = get_calendar(self.root)
+        self._calendar_all = tuple(calendar.dates)
         days = calendar.authoritative_dates()
         if not days:
             bound = self.as_of_date if self.as_of is not None else date.today()
@@ -1420,6 +1513,9 @@ class EligibilityEngine:
         strict_rows = views['strict']['rows']
         return {
             'as_of': str(d),
+            'freshness': source_staleness(
+                self.data_last, self.calendar_latest,
+                self._calendar_all or tuple(self.calendar)),
             'universe': {
                 'codes': len(self.codes),
                 'rows': total_rows,
@@ -1536,9 +1632,42 @@ def eligible_set(
 # 产物落盘
 # ----------------------------------------------------------------------
 def _atomic_write_json(path: Path, payload: Any) -> None:
-    tmp = path.with_suffix(path.suffix + '.tmp')
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), 'utf-8')
-    os.replace(tmp, path)
+    write_text_atomic(
+        json.dumps(payload, ensure_ascii=False, indent=2) + '\n', path)
+
+
+def _previous_strict_codes(out: Path, as_of: date) -> int | None:
+    """同目录中 ``as_of`` 之前最近一份 summary 的 strict 只数。"""
+    best: tuple[date, int] | None = None
+    for path in out.glob('summary_*.json'):
+        try:
+            day = date.fromisoformat(path.stem.split('_', 1)[1])
+        except ValueError:
+            continue
+        if day >= as_of:
+            continue
+        try:
+            payload = json.loads(path.read_text('utf-8'))
+            count = int(payload['views']['strict']['codes'])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if best is None or day > best[0]:
+            best = (day, count)
+    return best[1] if best is not None else None
+
+
+def _guard_strict_zero(out: Path, as_of: date, strict_codes: int,
+                       data_last: date | None) -> None:
+    """strict 归零而上一快照显著非零时拒绝落盘（判定异常不得静默写出）。"""
+    if strict_codes != 0:
+        return
+    prev = _previous_strict_codes(out, as_of)
+    if prev is None or prev <= STRICT_ZERO_GUARD_MIN_PREV:
+        return
+    raise RuntimeError(
+        f'strict 归零疑似判定异常，已拒绝落盘: as_of={as_of} strict=0，'
+        f'上一快照 strict={prev}；行情最新日={data_last}，'
+        f'请检查判定时点是否晚于数据末日')
 
 
 def build_snapshot(
@@ -1550,7 +1679,13 @@ def build_snapshot(
     close_fund_dividend_pending: bool | None = None,
     close_fund_dividend_pending_scope: str | None = None,
 ) -> dict[str, Any]:
-    """构建某日快照 + 月末时间序列 + 汇总，幂等覆盖 ``meta/clean/``。"""
+    """构建某日快照 + 月末时间序列 + 汇总，幂等覆盖 ``meta/clean/``。
+
+    ``as_of`` 缺省取数据内最新交易日（见 ``_resolve_dates``）。三份产物先全部
+    算完并通过 strict 归零保护，再逐个原子替换：parquet → csv → json，中途
+    失败会留下「前几份已更新、后几份仍是旧值」的跨文件不一致，重跑本函数即可
+    幂等修复（单文件原子，不是多文件事务）。
+    """
     engine = EligibilityEngine(
         root, target_date=as_of,
         close_fund_dividend_pending=close_fund_dividend_pending,
@@ -1578,15 +1713,9 @@ def build_snapshot(
                 'end': info.end,
             })
     snapshot = pl.DataFrame(rows)
-    snap_path = out / f'eligibility_{as_of_date}.parquet'
-    tmp = snap_path.with_suffix('.parquet.tmp')
-    snapshot.write_parquet(tmp)
-    os.replace(tmp, snap_path)
 
     timeline_rows = engine.timeline(start=timeline_start)
     timeline = pl.DataFrame(timeline_rows)
-    time_path = out / f'timeline_{as_of_date}.csv'
-    timeline.write_csv(time_path)
 
     summary = engine.summary_at(as_of_date)
     # 样本量下限：strict 股票池连续 12 个月 >= 300 的首个月
@@ -1617,13 +1746,22 @@ def build_snapshot(
             None
         ),
     }
+
+    snap_path = out / f'eligibility_{as_of_date}.parquet'
+    time_path = out / f'timeline_{as_of_date}.csv'
+    summary_path = out / f'summary_{as_of_date}.json'
     summary['outputs'] = {
         'snapshot': str(snap_path),
         'timeline': str(time_path),
     }
-    summary_path = out / f'summary_{as_of_date}.json'
+    _guard_strict_zero(
+        out, as_of_date, int(summary['views']['strict']['codes']),
+        engine.data_last)
+
+    write_parquet_atomic(snapshot, snap_path)
+    write_text_atomic(timeline.write_csv(), time_path)
     _atomic_write_json(summary_path, summary)
-    logger.info('洁净集快照已写入 %s', out)
+    logger.info(f'洁净集快照已写入 {out}')
     return summary
 
 
