@@ -1,39 +1,111 @@
 #!/usr/bin/env python3
 
 """
-GPU加速计算模块
-使用CuPy实现CUDA加速，支持OpenCL作为备选
+GPU 加速计算模块
+
+CUDA 设备探测 + CPU 回退。判定原则：**import 成功不等于可用**。
+`import cupy` 只能证明库装上了；驱动缺失、驱动与 cupy 编译时的 CUDA 版本不匹配、
+或机器上没有任何设备时，import 依然成功，但任何 kernel 调用都会在运行时抛
+CUDARuntimeError。因此可用性一律由 detect_gpu() 判定，探测失败必须静默回退 CPU。
 """
 
-from typing import Any, Dict, List
+import importlib
+from typing import Any, Dict, List, Tuple, cast
 
 import numpy as np
 import polars as pl
 
 from src.utils.logger import logger
 
-from .common_calculations import calculate_moving_average
-from .indicators.formulas import macd_exprs, rsi_expr
-from .indicators.trend import _sar_core
+# GPU 可用性原因码
+GPU_AVAILABLE_CODE = 'available'
+GPU_REASON_CUPY_MISSING = 'cupy_missing'
+GPU_REASON_NO_DEVICE = 'no_device'
+GPU_REASON_DRIVER_MISMATCH = 'driver_mismatch'
 
-# 尝试导入CuPy，如果不可用则使用NumPy作为备选
-try:
-    import cupy as cp
-    GPU_AVAILABLE = True
-    logger.info("CuPy可用，将使用GPU加速")
-except ImportError:
-    logger.info("CuPy不可用，将使用CPU计算")
+_GPU_REASON_TEXT = {
+    GPU_AVAILABLE_CODE: 'CuPy 可用且检测到 CUDA 设备，启用 GPU 加速',
+    GPU_REASON_CUPY_MISSING: 'CuPy 未安装，使用 CPU 计算',
+    GPU_REASON_NO_DEVICE: 'CuPy 已安装但未检测到 CUDA 设备，使用 CPU 计算',
+    GPU_REASON_DRIVER_MISMATCH: 'CuPy 已安装但 CUDA 驱动不可用或不匹配，使用 CPU 计算',
+}
+
+# OpenCL 可用性原因码
+OPENCL_REASON_PYOPENCL_MISSING = 'pyopencl_missing'
+OPENCL_REASON_NO_DEVICE = 'no_device'
+OPENCL_REASON_INIT_FAILED = 'init_failed'
+
+
+def _import_cupy():
+    """尝试导入 cupy，失败返回 None（不抛异常）。"""
+    try:
+        return importlib.import_module('cupy')
+    except ImportError:
+        return None
+
+
+def detect_gpu() -> Tuple[bool, str]:
+    """
+    探测 CUDA 设备是否真的可用。
+
+    Returns:
+        Tuple[bool, str]: (是否可用, 原因码)
+            原因码取值：available / cupy_missing / no_device / driver_mismatch
+    """
+    cupy = _import_cupy()
+    if cupy is None:
+        return False, GPU_REASON_CUPY_MISSING
+    try:
+        device_count = cupy.cuda.runtime.getDeviceCount()
+    # 兜底理由：驱动缺失或与 cupy 编译时的 CUDA 版本失配时此处抛 CUDARuntimeError，
+    # 一律按「驱动不可用」处理，不向上抛以免阻断启动
+    except Exception:  # noqa: BLE001
+        return False, GPU_REASON_DRIVER_MISMATCH
+    if device_count <= 0:
+        return False, GPU_REASON_NO_DEVICE
+    return True, GPU_AVAILABLE_CODE
+
+
+def detect_opencl() -> Tuple[bool, str]:
+    """
+    探测 OpenCL 是否存在可用的 GPU 设备。
+
+    与 detect_gpu 同理：`import pyopencl` 成功不代表有设备，必须实际枚举。
+
+    Returns:
+        Tuple[bool, str]: (是否可用, 原因码)
+    """
+    try:
+        pyopencl = importlib.import_module('pyopencl')
+    except ImportError:
+        return False, OPENCL_REASON_PYOPENCL_MISSING
+    try:
+        for platform in pyopencl.get_platforms():
+            if platform.get_devices(pyopencl.device_type.GPU):
+                return True, GPU_AVAILABLE_CODE
+    # 兜底理由：平台/驱动异常时按不可用处理，OpenCL 只是备选路径
+    except Exception:  # noqa: BLE001
+        return False, OPENCL_REASON_INIT_FAILED
+    return False, OPENCL_REASON_NO_DEVICE
+
+
+# 模块级 cp 仅用于 to_gpu / to_cpu 的类型判定与传输，不可作为可用性判据
+cp = _import_cupy()
+if cp is None:
     cp = np
-    GPU_AVAILABLE = False
 
-# 尝试导入PyOpenCL作为备选
 try:
     import pyopencl as cl
-    OPENCL_AVAILABLE = True
-    logger.info("OpenCL可用，将作为GPU加速备选")
 except ImportError:
-    logger.info("OpenCL不可用")
-    OPENCL_AVAILABLE = False
+    cl = None
+
+GPU_AVAILABLE, GPU_AVAILABLE_REASON = detect_gpu()
+OPENCL_AVAILABLE, OPENCL_AVAILABLE_REASON = detect_opencl()
+
+# 降级是多数部署机的常态，用 debug 避免每个进程启动都刷屏
+logger.debug(_GPU_REASON_TEXT[GPU_AVAILABLE_REASON])
+if not OPENCL_AVAILABLE:
+    logger.debug(f'OpenCL 不可用（{OPENCL_AVAILABLE_REASON}）')
 
 
 class GPUAccelerator:
@@ -46,6 +118,7 @@ class GPUAccelerator:
         初始化GPU加速器
         """
         self.gpu_available = GPU_AVAILABLE
+        self.gpu_unavailable_reason = None if GPU_AVAILABLE else GPU_AVAILABLE_REASON
         self.opencl_available = OPENCL_AVAILABLE
         self._opencl_context = None
         self._opencl_queue = None
@@ -65,9 +138,9 @@ class GPUAccelerator:
                 if devices:
                     self._opencl_context = cl.Context(devices)
                     self._opencl_queue = cl.CommandQueue(self._opencl_context)
-                    logger.info(f"OpenCL初始化成功，设备: {devices[0].name}")
+                    logger.debug(f"OpenCL初始化成功，设备: {devices[0].name}")
                 else:
-                    logger.info("未找到GPU设备，使用CPU设备")
+                    logger.debug("未找到GPU设备，使用CPU设备")
                     devices = platform.get_devices(cl.device_type.CPU)
                     if devices:
                         self._opencl_context = cl.Context(devices)
@@ -114,39 +187,75 @@ class GPUAccelerator:
             return cp.asnumpy(data)
         return data
 
+    # ------------------------------------------------------------------
+    # 计算入口
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_frame(**columns: np.ndarray) -> pl.DataFrame:
+        """
+        把 numpy 序列组装成 indicator_manager 需要的 OHLCV 帧。
+
+        合成索引列仅用于满足「首列为时间列」的约定（缓存键与结果合并都依赖它），
+        不参与指标计算。
+        """
+        length = len(next(iter(columns.values())))
+        # 显式标成 Dict[str, Any]：同一字典同时装 Series（索引列）与 ndarray（价格列）
+        data: Dict[str, Any] = {'date': pl.int_range(0, length, eager=True)}
+        for name, values in columns.items():
+            data[name] = np.asarray(values, dtype=np.float64)
+        return pl.DataFrame(data)
+
+    def _calculate_via_manager(
+        self, indicator_type: str, frame: pl.DataFrame, columns: List[str], **params
+    ) -> Dict[str, np.ndarray]:
+        """
+        经 global_indicator_manager 计算（与主路径同一入口、同一 dtype 归一）。
+
+        GPU 与 CPU 分支共用本实现：四个指标目前都没有真正的 GPU kernel，
+        两条分支的差别仅在于「是否被调用」，数值必须完全一致。将来接入 kernel 时，
+        只替换本方法内部的计算部分，入口与 dtype 归一保持不变。
+        """
+        # 延迟导入避免模块级循环依赖（indicator_manager 与 streaming_processor 互相引用）
+        from .indicator_manager import global_indicator_manager
+
+        result = global_indicator_manager.calculate_indicator(
+            frame, indicator_type, return_polars=True, **params
+        )
+        # 与 streaming_processor 主路径一致：统一 Float64，避免后续 concat dtype 抖动
+        result = result.with_columns([
+            pl.col(name).cast(pl.Float64)
+            for name, dtype in result.schema.items()
+            if dtype.is_float()
+        ])
+        return {name: result[name].to_numpy() for name in columns if name in result.columns}
+
     def calculate_ma_gpu(self, data: np.ndarray, windows: List[int]) -> Dict[str, np.ndarray]:
         """
         计算移动平均线（与 CPU 权威实现逐位一致）
 
-        MA 是 O(n) 滚动均值，GPU 无收益。历史上用 cp.convolve(mode='valid')
-        补 NaN 前缀，与权威实现 rolling_mean(min_samples=1) 的窗口边界口径不同
-        （首窗口 CPU 有值、GPU 为 NaN），且精度为 Float64。此处统一委托
-        common_calculations.calculate_moving_average，避免图表与回测数值分歧。
+        MA 是 O(n) 滚动均值，GPU 无收益；历史上用 cp.convolve(mode='valid') 补 NaN
+        前缀，与权威实现 rolling_mean(min_samples=1) 的窗口边界口径不同（首窗口 CPU
+        有值、GPU 为 NaN），且精度为 Float64。此处统一委托 indicator_manager。
 
         Args:
             data: 收盘价数据
             windows: 移动平均窗口列表
 
         Returns:
-            Dict[str, np.ndarray]: 各窗口的移动平均线结果（含首个窗口的默认列名）
+            Dict[str, np.ndarray]: 各窗口的移动平均线结果（含首个窗口的默认别名 ma）
         """
         if not windows:
             return {}
 
-        close = pl.Series('close', np.asarray(data, dtype=np.float64))
-        frame = calculate_moving_average(
-            pl.DataFrame({'close': close}).lazy(), 'close', list(windows)
-        )
-        result = frame.collect()
-
-        out = {f'ma{window}': result[f'ma{window}'].to_numpy() for window in windows}
-        # 与权威实现的默认列名对齐（首个窗口别名 ma）
-        out['ma'] = out[f'ma{windows[0]}']
-        return out
+        window_list = list(windows)
+        frame = self._build_frame(close=np.asarray(data, dtype=np.float64))
+        columns = [f'ma{window}' for window in window_list] + ['ma']
+        return self._calculate_via_manager('ma', frame, columns, windows=window_list)
 
     def calculate_macd_gpu(self, data: np.ndarray, fast_period: int, slow_period: int, signal_period: int) -> Dict[str, np.ndarray]:
         """
-        GPU加速计算MACD指标
+        计算MACD指标（与 CPU 权威实现逐位一致）
 
         Args:
             data: 收盘价数据
@@ -157,24 +266,17 @@ class GPUAccelerator:
         Returns:
             Dict[str, np.ndarray]: MACD指标结果
         """
-        # EMA / MACD 统一走共享公式层：先把 numpy 转为 Polars，
-        # 用标准 EMA 口径一次性算出三线，再转回 numpy
-        exprs = macd_exprs('close', fast_period, slow_period, signal_period)
-        result = pl.DataFrame({'close': np.asarray(data, dtype=np.float64)}).with_columns([
-            exprs['macd'].alias('macd'),
-            exprs['signal'].alias('macd_signal'),
-            exprs['hist'].alias('macd_hist'),
-        ])
-
-        return {
-            'macd': self.to_cpu(result['macd'].to_numpy()),
-            'macd_signal': self.to_cpu(result['macd_signal'].to_numpy()),
-            'macd_hist': self.to_cpu(result['macd_hist'].to_numpy()),
-        }
+        frame = self._build_frame(close=np.asarray(data, dtype=np.float64))
+        return self._calculate_via_manager(
+            'macd', frame, ['macd', 'macd_signal', 'macd_hist'],
+            fast_period=fast_period,
+            slow_period=slow_period,
+            signal_period=signal_period,
+        )
 
     def calculate_rsi_gpu(self, data: np.ndarray, window: int) -> np.ndarray:
         """
-        GPU加速计算RSI指标
+        计算RSI指标（与 CPU 权威实现逐位一致）
 
         Args:
             data: 收盘价数据
@@ -183,18 +285,19 @@ class GPUAccelerator:
         Returns:
             np.ndarray: RSI指标结果
         """
-        # RSI 统一走共享公式层：Polars 计算时种子行之前自然是 null，
-        # to_numpy 后转为 nan，与原「前 window-1 个无效」语义一致
-        result = (
-            pl.DataFrame({'close': np.asarray(data, dtype=np.float64)})
-            .with_columns(rsi_expr('close', window).alias('rsi'))['rsi']
-            .to_numpy()
+        frame = self._build_frame(close=np.asarray(data, dtype=np.float64))
+        result = self._calculate_via_manager(
+            'rsi', frame, [f'rsi{window}', 'rsi'], windows=[window]
         )
-        return self.to_cpu(result)
+        # cast 仅为类型层收敛：manager 恒定输出 rsi{N} 与默认别名 rsi，两者必然命中其一
+        return cast(np.ndarray, result.get(f'rsi{window}', result.get('rsi')))
 
     def calculate_sar_gpu(self, high: np.ndarray, low: np.ndarray, close: np.ndarray, af_step: float = 0.02, max_af: float = 0.2) -> np.ndarray:
         """
-        GPU加速计算SAR指标
+        计算SAR指标（与 CPU 权威实现逐位一致）
+
+        SAR 是状态机式顺序递推（依赖前一根 SAR/EP/AF/趋势方向），GPU 无收益；
+        此处统一委托 indicator_manager，避免另维护一份递推实现。
 
         Args:
             high: 最高价数据
@@ -206,13 +309,13 @@ class GPUAccelerator:
         Returns:
             np.ndarray: SAR指标结果
         """
-        # SAR 是状态机式顺序递推（依赖前一根 SAR/EP/AF/趋势方向），GPU 无收益；
-        # 直接复用 indicators/trend.py 中 Numba JIT 的 _sar_core
-        # （种子、限幅、反转、EP/AF 更新规则与本方法原逐行实现完全一致）
-        highs = np.ascontiguousarray(high, dtype=np.float64)
-        lows = np.ascontiguousarray(low, dtype=np.float64)
-        closes = np.ascontiguousarray(close, dtype=np.float64)
-        return _sar_core(highs, lows, closes, af_step, max_af)
+        frame = self._build_frame(
+            high=np.asarray(high, dtype=np.float64),
+            low=np.asarray(low, dtype=np.float64),
+            close=np.asarray(close, dtype=np.float64),
+        )
+        result = self._calculate_via_manager('sar', frame, ['sar'], af_step=af_step, max_af=max_af)
+        return result['sar']
 
 
 # 创建全局GPU加速器实例
@@ -239,7 +342,7 @@ def calculate_with_gpu(indicator_type: str, data: Dict[str, np.ndarray | None], 
         **kwargs: 计算参数
 
     Returns:
-        Dict[str, np.ndarray]: 计算结果
+        Dict[str, np.ndarray]: 计算结果；GPU 不可用时返回 None，由调用方回退主路径
     """
     if not global_gpu_accelerator.is_gpu_available():
         return None
