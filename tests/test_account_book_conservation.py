@@ -44,10 +44,12 @@ def _panel(days: int = 8, volume: float = 1_000_000.0) -> dict[str, pl.DataFrame
     })}
 
 
-def _run(signals: dict[int, str], capital: float, data=None):
+def _run(signals: dict[int, str], capital: float, data=None,
+         risk_gate_policy: str = "adv_gate"):
     data = data or _panel()
     engine = PortfolioBacktestEngine(data)
     engine.set_strategies({CODE: _FixedSignalStrategy(signals)})
+    engine.risk_gate_policy = risk_gate_policy
     return engine.run_backtest(initial_capital=capital)
 
 
@@ -74,9 +76,13 @@ def test_expired_insufficient_cash_releases_nothing():
 
 
 def test_expired_suspended_orders_do_not_leak():
-    """停牌（volume=0）→ 3 笔作废，现金与从未下单完全一致。"""
+    """停牌（volume=0）→ 3 笔作废，现金与从未下单完全一致。
+
+    整段停牌时 ADV 恒为 0，A1 的 ADV 闸门无从判定；本用例只验证账本守恒，
+    因此显式声明 risk_gate_policy='off'（停牌由撮合层逐笔拒单，不需要风控）。
+    """
     result = _run({0: "buy", 2: "buy", 4: "buy"}, 100_000.0,
-                  _panel(volume=0.0))
+                  _panel(volume=0.0), risk_gate_policy="off")
     _assert_conserved(result, 100_000.0, {"not_tradable"})
 
 

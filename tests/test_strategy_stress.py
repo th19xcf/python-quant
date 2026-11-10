@@ -52,7 +52,7 @@ def _stress_df(opens, closes, volumes=None):
 
 
 def test_consecutive_limit_down_blocks_sell_until_board_opens():
-    """连续跌停三日：卖单逐日作废，开板日才按开盘价成交。"""
+    """连续跌停三日：卖单保留 intent 逐日重试，开板日按开盘价成交。"""
     data = _stress_df(
         opens=[100.0, 100.0, 90.0, 81.0, 72.9, 75.0],
         closes=[100.0, 100.0, 90.0, 81.0, 72.9, 75.0],
@@ -60,8 +60,8 @@ def test_consecutive_limit_down_blocks_sell_until_board_opens():
     dates = data['date'].to_list()
 
     engine = BacktestEngine(data)
-    # 第 2/3/4 根 bar 生成的卖单分别在第 3/4/5 根开板执行
-    engine.set_strategy(_IndexSignalStrategy({0: 'buy', 2: 'sell', 3: 'sell', 4: 'sell'}))
+    # 第 2 根 bar 的卖单在 3/4 根跌停卖不出（保留 intent），第 5 根开板成交
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy', 2: 'sell'}))
     result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
 
     assert [t['signal'] for t in result['trades']] == ['buy', 'sell']
@@ -72,31 +72,58 @@ def test_consecutive_limit_down_blocks_sell_until_board_opens():
     assert abs(sell['price'] - 75.0) < 1e-9
     assert sell['shares'] == buy['shares']
 
-    # 连续跌停的两天必须留下作废记录，且不得出现 81/72.9 的成交价
-    expired = result['expired_orders']
-    assert [e['date'] for e in expired] == [dates[3], dates[4]]
-    assert {e['reason'] for e in expired} == {'not_tradable'}
-    assert all(e['side'] == 'sell' for e in expired)
+    # 跌停期间不再「当日作废」，而是逐日保留 intent 并把受阻原因记入
+    # blocked_orders（可统计「因跌停卖不出」），持仓不会被无声锁死
+    assert result['expired_orders'] == []
+    blocked = result['blocked_orders']
+    assert [b['date'] for b in blocked] == [dates[3], dates[4]]
+    assert {b['blocked_by'] for b in blocked} == {'limit_down'}
+    assert result['blocked_reason_counts'] == {'limit_down': 2}
     assert {t['price'] for t in result['trades']} == {100.0, 75.0}
 
 
+def test_limit_down_retention_exhausts_ttl_then_expires():
+    """跌停超过保留上限时作废，并在 expired_orders 标注 blocked_by。"""
+    data = _stress_df(
+        opens=[100.0, 100.0, 90.0, 81.0, 72.9, 65.61, 59.05],
+        closes=[100.0, 100.0, 90.0, 81.0, 72.9, 65.61, 59.05],
+    )
+    dates = data['date'].to_list()
+
+    engine = BacktestEngine(data)
+    engine.blocked_sell_ttl_days = 2
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy', 2: 'sell'}))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
+
+    # 只成交了买入；卖单在连续跌停 2 天后超限作废
+    assert [t['signal'] for t in result['trades']] == ['buy']
+    expired = result['expired_orders']
+    assert len(expired) == 1
+    assert expired[0]['reason'] == 'limit_locked_ttl'
+    assert expired[0]['blocked_by'] == 'limit_down'
+    assert expired[0]['blocked_days'] == 3
+    assert expired[0]['date'] == dates[5]
+    assert result['expired_reason_counts'] == {'limit_locked_ttl': 1}
+
+
 def test_long_suspension_expires_orders_then_resumes_trading():
-    """停牌三日：挂单逐日作废，复牌首日按开盘价成交。"""
+    """停牌三日：卖单保留 intent，复牌首日按开盘价成交。"""
     volumes = [1_000_000.0, 1_000_000.0, 0.0, 0.0, 0.0, 1_000_000.0]
     data = _stress_df(opens=[100.0] * 6, closes=[100.0] * 6, volumes=volumes)
     dates = data['date'].to_list()
 
     engine = BacktestEngine(data)
-    engine.set_strategy(_IndexSignalStrategy({0: 'buy', 2: 'sell', 3: 'sell', 4: 'sell'}))
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy', 2: 'sell'}))
     result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
 
     assert [t['signal'] for t in result['trades']] == ['buy', 'sell']
     assert result['trades'][0]['date'] == dates[1]
     assert result['trades'][1]['date'] == dates[5]
 
-    expired = result['expired_orders']
-    assert [e['date'] for e in expired] == [dates[3], dates[4]]
-    assert {e['reason'] for e in expired} == {'not_tradable'}
+    # 停牌期间保留 intent，受阻原因记为 suspended
+    assert result['expired_orders'] == []
+    assert [b['date'] for b in result['blocked_orders']] == [dates[3], dates[4]]
+    assert {b['blocked_by'] for b in result['blocked_orders']} == {'suspended'}
 
 
 def test_consecutive_one_line_limit_up_blocks_buy_until_opened():

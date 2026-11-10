@@ -23,6 +23,7 @@ from src.backtest.engine.execution_core import (
     EventBacktestRunner,
     ExecutionRules,
 )
+from src.backtest.engine.input_contract import BacktestInputContractError
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.backtest.strategies.ma_strategy import MAStrategy
@@ -153,8 +154,8 @@ def test_t_plus_one_open_price_and_lot_size():
 
 
 def test_limit_up_blocks_buy_and_limit_down_blocks_sell():
-    """开盘触及涨停不可买、触及跌停不可卖。"""
-    # 涨停：第 2 根 K 线开盘价相对前收 +10%，t 日买入信号无法成交
+    """开盘触及涨停不可买；触及跌停卖不出时保留 intent，次日继续卖。"""
+    # 涨停：第 2 根 K 线开盘价相对前收 +10%，t 日买入信号无法成交（买单不保留）
     up_df = _make_df(
         opens=[100.0, 110.0, 110.0],
         closes=[100.0, 110.0, 110.0],
@@ -163,8 +164,10 @@ def test_limit_up_blocks_buy_and_limit_down_blocks_sell():
     up_engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
     up_result = up_engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
     assert up_result['trades'] == []
+    assert up_result['expired_reason_counts'] == {'not_tradable': 1}
 
-    # 跌停：t=2 产生卖出信号，t=3 开盘相对前收 -10%，卖出无法成交
+    # 跌停：t=2 产生卖出信号，t=3 开盘相对前收 -10% 卖不出 → 保留 intent，
+    # t=4 恢复可成交后按开盘价 90 卖出（旧语义是当日作废、持仓被被动锁死）
     down_df = _make_df(
         opens=[100.0, 100.0, 100.0, 90.0, 90.0],
         closes=[100.0, 100.0, 100.0, 90.0, 90.0],
@@ -172,8 +175,12 @@ def test_limit_up_blocks_buy_and_limit_down_blocks_sell():
     down_engine = BacktestEngine(down_df)
     down_engine.set_strategy(_IndexSignalStrategy({0: 'buy', 2: 'sell'}))
     down_result = down_engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
-    assert len(down_result['trades']) == 1
-    assert down_result['trades'][0]['signal'] == 'buy'
+    assert [trade['signal'] for trade in down_result['trades']] == ['buy', 'sell']
+    sell = down_result['trades'][1]
+    assert sell['price'] == 90.0
+    # 「因跌停卖不出」必须可统计，且不能混进 expired_orders
+    assert down_result['blocked_reason_counts'] == {'limit_down': 1}
+    assert down_result['expired_reason_counts'] == {}
 
 
 def test_pending_order_expires_after_one_day():
@@ -294,7 +301,9 @@ def test_limit_check_uses_raw_prices_on_ex_dividend_day():
 
     sells = [t for t in result['trades'] if t['signal'] == 'sell']
     assert not sells, '除权日一字跌停（按原始价判定）不得放行卖出'
-    assert any(o['reason'] == 'not_tradable' for o in result['expired_orders'])
+    # 3b 语义：卖不出时保留 intent（不是当日作废），受阻原因按原始价判为跌停
+    assert result['blocked_reason_counts'] == {'limit_down': 1}
+    assert result['expired_reason_counts'] == {}
 
 
 def test_limit_check_uses_raw_prices_blocks_buy_on_ex_dividend_limit_up():
@@ -669,9 +678,12 @@ def test_high_low_relative_tolerance_covers_reweighting_error():
                              volume=1_000_000.0, ts_code='600000.SH') is True
 
 
-def test_fill_confidence_low_when_open_missing():
-    """缺陷 C 回归：任一标的缺 open 列 → fill_confidence=low，
-    且整次回测可正常执行（high≈low 退化路径被激活但不会崩）。"""
+def test_missing_open_column_raises_contract_error():
+    """审查 2.2/6.8 回归：open 是必需列，缺列不得回填 close 静默降级。
+
+    旧行为是「缺 open → 用 close 伪造成交价 + fill_confidence=low」，
+    等于无提示地改变成交价口径；现在必须在装配阶段直接抛错。
+    """
     days = 5
     dates = pd.date_range('2023-01-02', periods=days, freq='B')
     df_no_open = pl.DataFrame({
@@ -686,11 +698,9 @@ def test_fill_confidence_low_when_open_missing():
     portfolio = PortfolioBacktestEngine({'NOOPEN.SH': df_no_open, 'FULL.SH': df_full})
     portfolio.set_strategy('NOOPEN.SH', MAStrategy(short_window=1, long_window=3))
     portfolio.set_strategy('FULL.SH', MAStrategy(short_window=1, long_window=3))
-    result = portfolio.run_backtest(initial_capital=1_000_000.0)
 
-    assert result['fill_confidence'] == 'low'
-    # 完整列的标的 fill_confidence 不影响（整次回测按最弱的标的标 low）
-    assert result is not None
+    with pytest.raises(BacktestInputContractError, match='NOOPEN.SH.*open'):
+        portfolio.run_backtest(initial_capital=1_000_000.0)
 
 
 # ------------------------------------------------------------------
@@ -776,13 +786,14 @@ def test_open_none_prevents_close_fallback_execution():
     assert any(o['reason'] == 'price_missing' for o in result['expired_orders'])
 
 
-def test_open_none_col_existing_vs_col_missing_distinction():
-    """P0-2 边界：open 列整体缺失时，列被回填 close + fill_confidence=low；
-    open 列存在但值为 None 时，必须触发 price_missing 过期。"""
+def test_open_value_missing_vs_column_missing_distinction():
+    """缺列与缺值的处置必须分离：
+    - open 列整体缺失 → 契约错误（不得回填 close）；
+    - open 列存在但某 bar 为 None → price_missing 作废，其余用来判涨跌停。"""
     days = 3
     dates = pd.date_range('2023-01-02', periods=days, freq='B')
 
-    # 场景 A：open 列整体缺失 → 列回填 close，fill_confidence=low
+    # 场景 A：open 列整体缺失 → 抛契约错
     df_col_missing = pl.DataFrame({
         'date': dates,
         'high': [101.0] * days,
@@ -792,11 +803,9 @@ def test_open_none_col_existing_vs_col_missing_distinction():
     })
     engine = BacktestEngine(df_col_missing)
     engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
-    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH',
-                                 is_st=False)
-    assert result['fill_confidence'] == 'low'
-    # 列缺失 → open 回填 close → 用 close 成交（退化，但 fill_confidence 已提示）
-    assert result['trades'] != []
+    with pytest.raises(BacktestInputContractError, match='open'):
+        engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH',
+                            is_st=False)
 
     # 场景 B：open 列存在但 day1 为 None → 不成交，price_missing
     df_value_missing = pl.DataFrame({

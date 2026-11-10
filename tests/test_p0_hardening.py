@@ -132,7 +132,7 @@ def test_slippage_inputs_are_lagged_by_one_bar():
     data = _panel(days=4, amount=amounts, total_mv_yi=100.0)
     code = next(iter(data))
     runner = EventBacktestRunner(CostModel(), PerformanceAnalyzer())
-    _, cols = runner._prepare_universe(data, {code: _FixedSignalStrategy({})})
+    _, cols, _ = runner._prepare_universe(data, {code: _FixedSignalStrategy({})})
     adv20 = cols[code]['adv20']
 
     assert adv20[0] is None
@@ -277,14 +277,30 @@ def test_walk_forward_disabled_warns_and_is_recorded():
     assert enabled['leakage_guard']['walk_forward_disabled_warning'] is False
 
 
-def test_bare_engine_reports_disabled_risk_gate():
-    """裸用引擎也必须留下「未启用风控」的告警与结果标记。"""
+def test_bare_engine_auto_assembles_adv_gate():
+    """A1 回归：裸用引擎不得「未装配即全放行」，默认自动装 ADV 容量闸门。"""
     engine = _bare_engine()
-    with pytest.warns(RiskDisabledWarning):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
         result = engine.run_backtest()
+    assert not [w for w in caught if issubclass(w.category, RiskDisabledWarning)]
+    gate = result['risk_gate']
+    assert gate['enabled'] is True
+    assert gate['policy'] == 'adv_gate'
+    assert gate['assembled_by_default'] is True
+    assert gate['bypassed_orders'] == 0
+    assert set(gate['rules']) == {'max_order_volume_ratio', 'max_adv_participation'}
+    assert result['risk_summary'] is not None
+
+
+def test_explicit_off_policy_is_recorded_not_silent():
+    """显式 on_missing_risk='off' 才允许关闭风控，且放行笔数必须在结果里可查。"""
+    engine = _bare_engine()
+    engine.risk_gate_policy = 'off'
+    result = engine.run_backtest()
     gate = result['risk_gate']
     assert gate['enabled'] is False
-    assert gate['policy'] == 'warn'
+    assert gate['policy'] == 'off'
     assert gate['bypassed_orders'] >= 1
     assert gate['rules'] == []
     assert result['risk_summary'] is None
@@ -351,8 +367,10 @@ def test_failed_grid_combinations_are_counted_and_block_selection(monkeypatch):
 def test_dividend_snapshot_failure_marks_result_degraded(monkeypatch):
     """分红快照加载失败时必须在结果里标记 degraded 并下调置信度。"""
     data = _panel(days=6).copy()
+    # 复权价 10.0 / 原始价 9.09（因子≈1.1）：刻意让两者不同，
+    # 否则会被输入契约判为「复权因子恒为 1.0」而直接拒绝
     frame = data['600000.SH'].with_columns([
-        pl.lit(10.0).alias('raw_open'), pl.lit(10.0).alias('raw_close')])
+        pl.lit(9.09).alias('raw_open'), pl.lit(9.09).alias('raw_close')])
     data = {'600000.SH': frame}
 
     def boom(*_a, **_kw):

@@ -13,7 +13,25 @@ import polars as pl
 from loguru import logger
 
 from src.backtest.costs.cost_model import CostModel
+from src.backtest.engine.execution_core import DEFAULT_BLOCKED_SELL_TTL_DAYS
 from src.backtest.engine.holdout import FrameSplit, split_frame_with_purge
+from src.backtest.engine.input_contract import (
+    BAR_CONTRACT,
+    FACTOR_CONTRACT,
+    ROLE_ATR,
+    ROLE_CLOSE,
+    ROLE_DATE,
+    ROLE_HIGH,
+    ROLE_LOW,
+    ROLE_MACD,
+    ROLE_MACD_HIST,
+    ROLE_MACD_SIGNAL,
+    ROLE_RSI,
+    BacktestInputContractError,
+    FrameContract,
+    ma_column,
+    rsi_column,
+)
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.backtest.visualization.backtest_visualizer import BacktestVisualizer
@@ -28,6 +46,13 @@ class BaseBacktestEngine:
     回测引擎基类，封装数据转换、组件初始化等通用逻辑。
     子类仅需实现各自的回测主体逻辑。
     """
+
+    # 以下四项同时作为类级默认值：允许 `Engine.__new__(Engine)` 直接调用
+    # 指标预计算等纯函数（单测常用），不依赖 __init__ 是否执行过。
+    risk_gate_policy: str = 'adv_gate'
+    input_contract: FrameContract = BAR_CONTRACT
+    price_basis: str = 'auto'
+    blocked_sell_ttl_days: int = DEFAULT_BLOCKED_SELL_TTL_DAYS
 
     def __init__(self) -> None:
         """初始化通用组件（不含数据）。子类应先调用此方法，再处理数据。"""
@@ -45,12 +70,19 @@ class BaseBacktestEngine:
         self.industry = ''
         self.is_st: bool | None | List[Dict[str, Any]] = None
 
-        # 风控层：None 表示未装配规则。P0-3 起并非「静默全放行」：RiskGate
-        # 会按 risk_gate_policy 告警 / fail-closed，并把放行订单数写入结果。
+        # 风控层：None 表示未显式装配规则。A1 起不再「静默全放行」：
+        # risk_gate_policy='adv_gate'（默认）会由内核自动装配 ADV 容量规则，
+        # 'fail_closed' 直接抛错，'off' 才允许显式关闭对照实验。
         self.risk_engine: RiskEngine | None = None
-        #: 未装配规则时 RiskGate 的处置策略：'warn'（默认，保持历史成交口径）、
-        #: 'fail_closed'（生产路径建议，直接抛错）、'off'（显式静默对照实验）
-        self.risk_gate_policy: str = 'warn'
+        #: 未装配规则时 RiskGate 的处置策略：'adv_gate'（默认，自动装 ADV 闸门）、
+        #: 'fail_closed'（直接抛错）、'off'（显式关闭，仅对照实验）
+        self.risk_gate_policy: str = 'adv_gate'
+        #: 行情列契约：换数据源只改 input_contract，缺必需列即抛错
+        self.input_contract: FrameContract = BAR_CONTRACT
+        #: 价格口径：'auto' / 'adjusted' / 'raw'，见 input_contract
+        self.price_basis: str = 'auto'
+        #: 跌停/停牌卖不出时保留卖单 intent 的最大重试天数（3b）
+        self.blocked_sell_ttl_days: int = DEFAULT_BLOCKED_SELL_TTL_DAYS
         self.rejected_orders: List[Dict[str, Any]] = []   # 风控拒单日志
         self.expired_orders: List[Dict[str, Any]] = []    # 挂单作废日志
         self.overwritten_orders: List[Dict[str, Any]] = []  # 被新信号覆盖的挂单
@@ -163,13 +195,17 @@ class BaseBacktestEngine:
         """
         向量化预计算策略会用到的指标列，结果写入 DataFrame 供策略按列名读取
 
-        约定策略直接读以下列（如存在）：
+        列名一律取自 ``input_contract.FACTOR_CONTRACT``（换源/改命名只改契约）：
             ma_{short_window}, ma_{long_window}     趋势跟踪 / 多因子 MA
             macd, macd_signal, macd_hist            多因子 / MACD 策略
-            rsi                                     均值回归 / 多因子
-            rsi_{period}                            通用 RSI
+            rsi, rsi_{period}                       均值回归 / 多因子
+            atr                                     多因子
+
+        算完立即自检必需因子列；缺失即抛 ``BacktestInputContractError``，
+        避免策略读到 None 后恒返回 hold、回测静默空跑。
         """
-        close = pl.col('close')
+        close_col = self.input_contract.column(ROLE_CLOSE)
+        close = pl.col(close_col)
 
         short_w = int(strategy.params.get('short_window', 10))
         long_w = int(strategy.params.get('long_window', 20))
@@ -179,30 +215,53 @@ class BaseBacktestEngine:
 
         # 移动平均线（多策略共用），min_samples=window 使窗口未满的前 window-1 根
         # 为 null，策略读到 None 即 hold，避免 ma_20 = close[0] 之类的暖机污染值产生虚假信号
-        exprs.append(close.rolling_mean(window_size=short_w, min_samples=short_w).alias(f'ma_{short_w}'))
-        exprs.append(close.rolling_mean(window_size=long_w, min_samples=long_w).alias(f'ma_{long_w}'))
+        exprs.append(close.rolling_mean(window_size=short_w, min_samples=short_w).alias(ma_column(short_w)))
+        exprs.append(close.rolling_mean(window_size=long_w, min_samples=long_w).alias(ma_column(long_w)))
 
         # EMA / MACD：统一走共享公式层（标准 EMA 口径）
-        macd_dict = macd_exprs('close', 12, 26, 9)
+        macd_dict = macd_exprs(close_col, 12, 26, 9)
         exprs.extend([
-            macd_dict['macd'].alias('macd'),
-            macd_dict['signal'].alias('macd_signal'),
-            macd_dict['hist'].alias('macd_hist'),
+            macd_dict['macd'].alias(FACTOR_CONTRACT.column(ROLE_MACD)),
+            macd_dict['signal'].alias(FACTOR_CONTRACT.column(ROLE_MACD_SIGNAL)),
+            macd_dict['hist'].alias(FACTOR_CONTRACT.column(ROLE_MACD_HIST)),
         ])
 
         # RSI（支持自定义 period）：统一走共享公式层（Wilder 标准口径）
-        rsi = rsi_expr('close', rsi_w)
+        rsi = rsi_expr(close_col, rsi_w)
         exprs.extend([
-            rsi.alias('rsi'),
-            rsi.alias(f'rsi_{rsi_w}'),
+            rsi.alias(FACTOR_CONTRACT.column(ROLE_RSI)),
+            rsi.alias(rsi_column(rsi_w)),
         ])
 
         # ATR（多因子可能用到）：统一走共享公式层
-        exprs.append(atr_expr('high', 'low', 'close', 14).alias('atr'))
+        exprs.append(atr_expr(
+            self.input_contract.column(ROLE_HIGH),
+            self.input_contract.column(ROLE_LOW),
+            close_col, 14,
+        ).alias(FACTOR_CONTRACT.column(ROLE_ATR)))
 
-        if not exprs:
-            return df
-        return df.with_columns(exprs)
+        result = df.with_columns(exprs)
+        self._require_factor_columns(
+            result, (ma_column(short_w), ma_column(long_w)),
+            context=getattr(strategy, 'name', type(strategy).__name__),
+        )
+        return result
+
+    @staticmethod
+    def _require_factor_columns(df: pl.DataFrame, extra: tuple[str, ...],
+                                *, context: str) -> None:
+        """因子契约自检：必需因子列必须真的算出来了。"""
+        required = extra + tuple(
+            FACTOR_CONTRACT.column(role)
+            for role in (ROLE_MACD, ROLE_MACD_SIGNAL, ROLE_MACD_HIST,
+                         ROLE_RSI, ROLE_ATR)
+        )
+        missing = [name for name in required if name not in df.columns]
+        if missing:
+            raise BacktestInputContractError(
+                f'{context} 指标预计算缺少因子列 {missing}：'
+                '策略会读到 None 并恒返回 hold，回测将静默空跑'
+            )
 
     def _generate_param_combinations(self, param_ranges: Dict[str, List[float]]) -> List[Dict[str, float]]:
         """
@@ -365,9 +424,9 @@ class BaseBacktestEngine:
             'objective': objective,
         }
 
-    @staticmethod
-    def _slice_label(df: pl.DataFrame, column: str = 'date') -> str:
-        """取 DataFrame 指定列的起止日期标签（无该列时返回空串）。"""
+    def _slice_label(self, df: pl.DataFrame, column: str | None = None) -> str:
+        """取 DataFrame 日期列的起止标签（日期列名取自输入契约）。"""
+        column = column or self.input_contract.column(ROLE_DATE)
         if df.is_empty() or column not in df.columns:
             return ''
         first, last = df[column][0], df[column][-1]

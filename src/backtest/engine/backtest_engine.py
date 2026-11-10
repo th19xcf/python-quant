@@ -112,6 +112,9 @@ class BacktestEngine(BaseBacktestEngine):
             performance_analyzer=self.performance_analyzer,
             risk_engine=self.risk_engine,
             on_missing_risk=self.risk_gate_policy,
+            input_contract=self.input_contract,
+            price_basis=self.price_basis,
+            blocked_sell_ttl_days=self.blocked_sell_ttl_days,
         )
         result = runner.run(
             universe={code: self.pl_df},
@@ -561,6 +564,12 @@ class BacktestEngine(BaseBacktestEngine):
         engine_copy.set_strategy(strategy_copy)
         engine_copy.set_cost_model(self.cost_model)
         engine_copy.risk_engine = self.risk_engine
+        # 子回测必须与主回测同口径：风控策略/输入契约/价格口径全部透传，
+        # 否则 OOS 与全样本可能在不同风控闸门下比较
+        engine_copy.risk_gate_policy = self.risk_gate_policy
+        engine_copy.input_contract = self.input_contract
+        engine_copy.price_basis = self.price_basis
+        engine_copy.blocked_sell_ttl_days = self.blocked_sell_ttl_days
 
         # 与进程池路径同口径：ts_code/行业/ST 必须透传，否则涨跌停档位退化
         ctx = context or {}

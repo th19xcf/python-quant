@@ -39,6 +39,14 @@ from loguru import logger
 
 from src.backtest.engine.backtest_engine import BacktestEngine
 from src.backtest.engine.holdout import holdout_bounds
+from src.backtest.engine.input_contract import (
+    BAR_CONTRACT,
+    ROLE_DATE,
+    ROLE_RAW_CLOSE,
+    ROLE_RAW_OPEN,
+    ROLE_VOLUME,
+    validate_universe,
+)
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.data.quality.code_migration import load_entity_index
@@ -123,8 +131,11 @@ def _assemble_risk_engine(
     is_portfolio = isinstance(data, dict)
     codes = list(data.keys()) if isinstance(data, dict) else ([ts_code] if ts_code else [])
     frames = list(data.values()) if isinstance(data, dict) else ([data] if data is not None else [])
-    has_volume = bool(frames) and all(
-        frame is not None and 'volume' in frame.columns for frame in frames)
+    volume_column = BAR_CONTRACT.column(ROLE_VOLUME)
+    # volume 已是行情必需列（缺列由输入契约直接抛错），这里只做装配期预判：
+    # 空面板不参与判定，避免把"无数据"误算成"缺 volume"
+    has_volume = all(
+        frame is None or volume_column in frame.columns for frame in frames)
     notes: list[str] = []
 
     if not is_portfolio:
@@ -230,20 +241,24 @@ def _assemble_risk_engine(
 def _sorted_dates(data: Union[pl.DataFrame, Dict[str, pl.DataFrame]]) -> list[Any]:
     """提取数据覆盖的升序交易日（组合取各标的并集）。"""
     frames = list(data.values()) if isinstance(data, dict) else [data]
+    date_column = BAR_CONTRACT.column(ROLE_DATE)
     dates: set[Any] = set()
     for frame in frames:
-        if frame is not None and 'date' in frame.columns:
-            dates.update(frame['date'].drop_nulls().to_list())
+        if frame is not None and date_column in frame.columns:
+            dates.update(frame[date_column].drop_nulls().to_list())
     return sorted(dates, key=str)
 
 
 def _slice_data(data: Union[pl.DataFrame, Dict[str, pl.DataFrame]],
                 start: Any, end: Any) -> Union[pl.DataFrame, Dict[str, pl.DataFrame]]:
     """按日期闭区间裁剪数据；组合分支丢弃区间内无行情的标的。"""
+    date_column = BAR_CONTRACT.column(ROLE_DATE)
+
     def _filter(frame: pl.DataFrame) -> pl.DataFrame:
-        if 'date' not in frame.columns:
+        if date_column not in frame.columns:
             return frame
-        return frame.filter((pl.col('date') >= start) & (pl.col('date') <= end))
+        return frame.filter(
+            (pl.col(date_column) >= start) & (pl.col(date_column) <= end))
 
     if isinstance(data, dict):
         sliced = {code: _filter(frame) for code, frame in data.items()}
@@ -509,12 +524,14 @@ def _infer_backtest_window(
     """回测区间：显式参数优先，否则从传入面板推断（用于 PIT 停更过滤）。"""
     start = dt.date.fromisoformat(start_date) if start_date else None
     end = dt.date.fromisoformat(end_date) if end_date else None
+    date_column = BAR_CONTRACT.column(ROLE_DATE)
     mins: list[Any] = []
     maxs: list[Any] = []
     for panel in data.values():
-        if isinstance(panel, pl.DataFrame) and 'date' in panel.columns and panel.height:
-            mins.append(_as_date(panel['date'].min()))
-            maxs.append(_as_date(panel['date'].max()))
+        if (isinstance(panel, pl.DataFrame) and date_column in panel.columns
+                and panel.height):
+            mins.append(_as_date(panel[date_column].min()))
+            maxs.append(_as_date(panel[date_column].max()))
     valid_mins = [v for v in mins if v is not None]
     valid_maxs = [v for v in maxs if v is not None]
     if start is None and valid_mins:
@@ -642,6 +659,7 @@ def _run_portfolio_backtest(
     lot_size: int,
     industry_map: Dict[str, str] | None,
     kwargs: Dict[str, Any],
+    risk_gate_policy: str = 'adv_gate',
 ) -> Dict[str, Any]:
     """组合回测分支。"""
     strategies = strategies or {}
@@ -649,7 +667,13 @@ def _run_portfolio_backtest(
         raise ValueError("组合回测需要 strategies dict")
 
     engine = PortfolioBacktestEngine(data)
+    # 装配层显式声明输入契约与价格口径（内核不再持有列名归属）
+    engine.input_contract = BAR_CONTRACT
+    engine.price_basis = 'auto'
     engine.risk_engine = risk_engine
+    # enable_default_risk=False 是显式关闭，必须透传 'off'；
+    # 否则内核会按 A1 默认兜底装配 ADV 闸门，与"完全关闭"矛盾
+    engine.risk_gate_policy = risk_gate_policy
     engine.set_strategies(strategies)
 
     # 显式 st_status 参数优先；调用方 kwargs 里已有的同名参数不覆盖
@@ -673,13 +697,19 @@ def _run_single_backtest(
     lot_size: int,
     industry: str,
     kwargs: Dict[str, Any],
+    risk_gate_policy: str = 'adv_gate',
 ) -> Dict[str, Any]:
     """单票回测分支。"""
     if strategy is None:
         raise ValueError("单票回测需要 strategy")
 
     single_engine = BacktestEngine(data)
+    # 装配层显式声明输入契约与价格口径（内核不再持有列名归属）
+    single_engine.input_contract = BAR_CONTRACT
+    single_engine.price_basis = 'auto'
     single_engine.risk_engine = risk_engine
+    # enable_default_risk=False 是显式关闭，必须透传 'off'
+    single_engine.risk_gate_policy = risk_gate_policy
     single_engine.set_strategy(strategy)
 
     if 'is_st' not in kwargs:
@@ -791,6 +821,15 @@ def run_backtest(
     if data is None:
         raise ValueError("run_backtest: 必须传 data 或 ts_code")
 
+    # ---- 输入契约：装配层统一声明（缺必需列/列名不符/复权退化直接抛错）----
+    # 换数据源只改 src.backtest.engine.input_contract 的列映射；
+    # price_basis='auto'：带 raw_* 时按复权价校验退化，无 raw_* 视为原始价输入。
+    validate_universe(
+        data if isinstance(data, dict) else {ts_code or '__single__': data},
+        contract=BAR_CONTRACT, price_basis='auto',
+        context='run_backtest 行情 ',
+    )
+
     # 组合回测股票池收口：剔除停更/退市标的，避免幸存者偏差。
     # 必须在风控装配与 OOS 分段之前完成，保证 IS/OOS 使用同一池。
     data, strategies, universe_filter = _filter_stale_universe(
@@ -812,15 +851,21 @@ def run_backtest(
     risk_engine, risk_profile = _assemble_risk_engine(
         risk_engine, enable_default_risk, data, ts_code, industry, industry_map,
     )
+    # 只有显式 enable_default_risk=False 才是「完全关闭」；其余情况由内核
+    # A1 默认 ADV 闸门兜底（risk_engine 已装配时该策略不生效）
+    risk_gate_policy = 'off' if risk_engine is None else 'adv_gate'
 
     # ---- 除权除息：只读本地分红快照，运行时主路径不发远程查询 ----
     # 只有带原始价列（raw_open/raw_close）的数据才记账分红：主列是后复权价时
     # 再加现金分红就是双重计入，必须跳过
     if dividends is None and apply_dividends:
         frames = data if isinstance(data, dict) else ({ts_code: data} if ts_code else {})
+        raw_open_column = BAR_CONTRACT.column(ROLE_RAW_OPEN)
+        raw_close_column = BAR_CONTRACT.column(ROLE_RAW_CLOSE)
         raw_codes = [
             code for code, frame in frames.items()
-            if frame is not None and ('raw_open' in frame.columns or 'raw_close' in frame.columns)
+            if frame is not None and (
+                raw_open_column in frame.columns or raw_close_column in frame.columns)
         ]
         if raw_codes:
             dividends = _load_local_dividends(
@@ -863,10 +908,12 @@ def run_backtest(
             return _run_portfolio_backtest(
                 segment_data, _clone(strategies), risk_engine, st_status,
                 initial_capital, lot_size, industry_map, segment_kwargs,
+                risk_gate_policy=risk_gate_policy,
             )
         return _run_single_backtest(
             segment_data, _clone(strategy), risk_engine, st_status, ts_code,
             initial_capital, lot_size, industry, segment_kwargs,
+            risk_gate_policy=risk_gate_policy,
         )
 
     result = run_segment(data)

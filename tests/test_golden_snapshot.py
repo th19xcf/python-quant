@@ -48,6 +48,9 @@ RESULT_KEYS = (
     "data_quality", "risk_summary", "positions", "st_unknown_bars",
     "st_unknown_seen", "overwritten_orders", "filtered_signals",
     "slow_path_strategies",
+    # A1 / 3b 新增审计字段：风控兜底装配痕迹、跌停受阻记录与作废原因计数
+    "blocked_orders", "blocked_reason_counts", "expired_reason_counts",
+    "input_contract",
 )
 
 

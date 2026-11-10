@@ -37,7 +37,7 @@ from __future__ import annotations
 import bisect
 import heapq
 import math
-import warnings
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -54,11 +54,52 @@ from src.backtest.engine.corporate_actions import (
     CorporateAction,
     CorporateActionSchedule,
 )
+from src.backtest.engine.input_contract import (
+    BAR_CONTRACT,
+    ROLE_ADV20,
+    ROLE_ADV_VOLUME,
+    ROLE_AMOUNT,
+    ROLE_CATEGORY,
+    ROLE_CLOSE,
+    ROLE_DATE,
+    ROLE_HIGH,
+    ROLE_LOW,
+    ROLE_OPEN,
+    ROLE_RAW_CLOSE,
+    ROLE_RAW_OPEN,
+    ROLE_TOTAL_MV,
+    ROLE_TOTAL_MV_YI,
+    ROLE_VOLUME,
+    BacktestInputContractError,
+    FrameContract,
+    describe_contracts,
+    validate_universe,
+)
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
+from src.risk import DEFAULT_RISK_LIMITS
 from src.risk import Order as RiskOrder
 from src.risk import Portfolio as RiskPortfolio
-from src.risk import RiskEngine
+from src.risk import MaxAdvParticipation, MaxOrderVolumeRatio, RiskEngine
 from src.risk.rules import DrawdownTracker
+
+
+def adv_capacity_risk_engine() -> RiskEngine:
+    """A1 兜底规则集：调用方未装配风控时由内核自动装配。
+
+    只含「单日成交量占比」与「20 日 ADV 参与率」两条流动性规则：它们决定
+    单笔订单是否吃掉超过市场 1% / ADV 10% 的容量，是滑点被低估的直接来源；
+    不引入仓位/行业/回撤约束，避免顺手改变既有成交语义（审查要求 3b 只让
+    ADV 拒单/分档生效，不动成交价撮合与涨跌停判定）。
+
+    数据缺 volume / adv_volume 时由规则 fail-closed 拒单并写入
+    rejected_orders，不会静默放行。
+    """
+    limits = DEFAULT_RISK_LIMITS
+    return RiskEngine([
+        MaxOrderVolumeRatio(limits['max_order_volume_ratio']),
+        MaxAdvParticipation(
+            limits['max_adv_participation'], int(limits['adv_window'])),
+    ])
 
 #: A 股最小价格变动单位（1 分），交易所涨跌停价的取整单位
 PRICE_TICK = Decimal('0.01')
@@ -72,6 +113,13 @@ CASH_EPS = 1e-6
 #: 的挂单直接作废，与「当日委托当日有效」更接近。
 DEFAULT_PENDING_TTL_DAYS = 1
 
+#: 卖单因跌停/停牌卖不出时保留 intent 的最大重试天数（3b）。
+#: 旧语义是「当日不可成交即作废」，持仓被动锁死且无任何路径建模；新语义
+#: 把 TTL 消耗在受阻重试上：连续跌停期间逐日重试，超过本上限才作废，并在
+#: expired_orders 里写明 blocked_by='limit_down' / blocked_days。0 表示退回
+#: 旧语义（当日作废），供对照实验使用。
+DEFAULT_BLOCKED_SELL_TTL_DAYS = 5
+
 #: ST 状态条目：
 #:   - bool / None：静态三态（None=未知）
 #:   - List[dict]：时间区间列表，每项含 start_date / end_date / is_st，
@@ -84,15 +132,12 @@ _EMPTY_SUSPENDED: frozenset[str] = frozenset()
 
 
 class RiskDisabledWarning(UserWarning):
-    """风控闸门未装配时发出的告警。
+    """风控闸门被显式关闭时发出的告警（仅供对照实验使用）。
 
-    裸用 ``BacktestEngine(data).run_backtest()`` 时 ``risk_engine`` 默认为 None，
-    早期实现把所有订单无条件放行且不留下任何痕迹，回测净值可在完全无风控
-    约束下被当作"已通过风控"的结果使用。现在默认仍保持成交语义不变（避免
-    历史净值整体漂移），但每次回测必然：
-      1) 发一次 ``RiskDisabledWarning``；
-      2) 在结果的 ``risk_gate`` 字段记 ``enabled=False`` 与放行订单数；
-      3) 允许生产路径设 ``on_missing_risk='fail_closed'`` 直接抛错。
+    A1 修复后默认不再"未装配即放行"：``on_missing_risk`` 缺省为 ``'adv_gate'``，
+    内核自动装配 ADV 参与率/单日成交量上限两条流动性规则，风控始终生效；
+    只有调用方显式传 ``on_missing_risk='off'`` 才会完全跳过风控，此时
+    结果 ``risk_gate.policy='off'`` 与 ``bypassed_orders`` 会如实记录放行笔数。
     """
 
 
@@ -375,16 +420,37 @@ class ExecutionRules:
           同幅度；None（数据层无标记）与 False 都按板块规则（见
           resolve_limit_pct），未知状态只由结果的
           st_unknown / fill_confidence 标记，不再改变成交判定本身
+
+        判定逻辑只在 ``block_reason`` 里实现一份，本方法为其布尔投影，
+        保证「可成交判定」与「作废原因统计」不会出现两套口径。
+        """
+        return self.block_reason(
+            side, prev_close=prev_close, open_price=open_price, high=high,
+            low=low, close=close, volume=volume, ts_code=ts_code,
+            is_st=is_st, trade_date=trade_date,
+        ) is None
+
+    def block_reason(self, side: str, *, prev_close: float | None,
+                     open_price: float | None, high: float | None,
+                     low: float | None, close: float | None,
+                     volume: float | None, ts_code: str = '',
+                     is_st: bool | None = None,
+                     trade_date: date | None = None) -> str | None:
+        """不可成交的具体原因：'suspended' / 'limit_up' / 'limit_down' / None。
+
+        「因跌停卖不出」要让 ``expired_orders`` 可统计，必须区分跌停与停牌；
+        原因由与 ``is_tradable`` 完全相同的分支产生，不新增任何判定规则。
         """
         # 缺陷 A 修复：NaN / inf 穿过停牌检查，显式拦截
         if self._is_suspended(volume):
-            return False
+            return 'suspended'
 
         prev = _finite_float(prev_close)
         if prev is None or prev <= 0:
-            return True
+            return None
 
         limit = self.resolve_limit_pct(ts_code, is_st, trade_date=trade_date)
+        blocked = 'limit_up' if side == 'buy' else 'limit_down'
 
         open_number = _finite_float(open_price)
         if open_number is not None:
@@ -392,14 +458,18 @@ class ExecutionRules:
             # 原写法 (open_pct >= limit - 0.005) 的容差被放大 prev_close 倍，
             # 3 元股等价于允许 1.5% 偏差、200 元股允许 0.25% 偏差，
             # 结果是把 [limit-0.5%, limit) 的正常开盘价误当成封板双向拒绝。
-            return not self._limit_breached(
-                side, price=open_number, prev_close=prev, limit=limit)
+            if self._limit_breached(
+                    side, price=open_number, prev_close=prev, limit=limit):
+                return blocked
+            return None
 
         # 缺陷 B 修复：复权后 high / low 可能相差 1e-16，改用相对容差
         # 缺陷 C 修复：open_price 缺失时只退化到此分支，偏乐观
-        return not self._is_one_line_board_locked(
-            side, high=high, low=low, close=close,
-            prev_close=prev, limit=limit)
+        if self._is_one_line_board_locked(
+                side, high=high, low=low, close=close,
+                prev_close=prev, limit=limit):
+            return blocked
+        return None
 
     @staticmethod
     def _is_suspended(volume: float | None) -> bool:
@@ -673,45 +743,50 @@ class AccountBook:
         return snap
 
 
+class RiskAssemblyError(RuntimeError):
+    """风控无法成立时抛错（A1）：未装配规则且数据不足以执行 ADV 闸门。"""
+
+
 class RiskGate:
     """风控闸门：唯一的 RiskOrder 构造与 gate() 调用入口。"""
 
     #: ``risk_engine is None`` 时的处置策略：
-    #:   'warn'        保持放行，但告警 + 结果标记（默认，兼容历史净值口径）
-    #:   'fail_closed' 直接抛 RuntimeError，生产/实盘路径建议
-    #:   'off'         完全静默（仅供显式关闭的对照实验）
-    MISSING_POLICIES = ('warn', 'fail_closed', 'off')
+    #:   'adv_gate'    自动装配 ADV 容量规则（默认）——不再有"未装配即全放行"
+    #:   'fail_closed' 直接抛错，要求调用方显式装配
+    #:   'off'         完全跳过风控（仅供显式声明的对照实验）
+    MISSING_POLICIES = ('adv_gate', 'fail_closed', 'off')
 
     def __init__(self, risk_engine: RiskEngine | None,
                  industry_map: Dict[str, str] | None = None,
-                 on_missing: str = 'warn'):
+                 on_missing: str = 'adv_gate'):
         if on_missing not in self.MISSING_POLICIES:
             raise ValueError(
                 f"on_missing 必须是 {self.MISSING_POLICIES} 之一，实际 {on_missing!r}")
+        self.assembled_by_default = False
+        if risk_engine is None and on_missing == 'adv_gate':
+            # A1：默认放行改为默认装闸门。只装容量规则（单日成交量占比 +
+            # 20 日 ADV 参与率），不改变仓位/行业/回撤语义，避免把单票满仓
+            # 回测压成 0 成交。
+            risk_engine = adv_capacity_risk_engine()
+            self.assembled_by_default = True
         self.risk_engine = risk_engine
         self.industry_map = dict(industry_map or {})
         self.on_missing = on_missing
         #: 本次回测在「无风控」状态下放行的候选订单数（写入结果供审计）
         self.bypassed_orders = 0
-        self._warned = False
 
     def _handle_missing_risk(self, ts_code: str) -> None:
-        """无风控引擎时按策略处置一笔候选订单，返回 None 表示放行。"""
+        """无风控引擎时按策略处置一笔候选订单，返回 None 表示放行。
+
+        'off' 是调用方显式声明的对照实验开关，因此不再打告警；但每一笔
+        放行仍计入 ``bypassed_orders`` 并写入结果，事后可核对。
+        """
         self.bypassed_orders += 1
         if self.on_missing == 'fail_closed':
-            raise RuntimeError(
+            raise RiskAssemblyError(
                 f"风控闸门未装配规则（on_missing='fail_closed'），"
                 f"拒绝在无风控约束下继续撮合 {ts_code} 的订单"
             )
-        if self.on_missing == 'warn' and not self._warned:
-            self._warned = True
-            message = (
-                'risk_engine 未装配：本次回测的全部候选订单未经风控审查直接放行，'
-                '结果 risk_gate.enabled=False。生产路径请显式装配规则集，'
-                "或设置 on_missing_risk='fail_closed'。"
-            )
-            warnings.warn(message, RiskDisabledWarning, stacklevel=3)
-            logger.warning(message)
         return None
 
     def check(self, *, ts_code: str, side: str, qty: int, price: float,
@@ -812,6 +887,13 @@ class RunContext:
     code_days: Dict[str, List[int]] | None
     #: 除权事件最小堆 (ex_date, seq, code, event)
     corporate_action_heap: List[Tuple[Any, int, str, Any]]
+    # ---- 3b：跌停/停牌卖不出的卖单保留（intent 重试）----
+    #: 逐次受阻记录（date / ts_code / blocked_by / blocked_days）
+    blocked_orders: List[Dict[str, Any]]
+    #: 每个标的被保留卖单已连续受阻天数
+    blocked_days: Dict[str, int]
+    #: 每个标的当前受阻原因（'limit_down' / 'suspended'）
+    blocked_by: Dict[str, str]
 
 
 class EventBacktestRunner:
@@ -824,11 +906,31 @@ class EventBacktestRunner:
 
     def __init__(self, cost_model: CostModel, performance_analyzer: PerformanceAnalyzer,
                  risk_engine: RiskEngine | None = None,
-                 on_missing_risk: str = 'warn'):
+                 on_missing_risk: str = 'adv_gate',
+                 input_contract: FrameContract = BAR_CONTRACT,
+                 price_basis: str = 'auto',
+                 blocked_sell_ttl_days: int = DEFAULT_BLOCKED_SELL_TTL_DAYS):
+        """
+        Args:
+            risk_engine: 风控规则集。None 时按 ``on_missing_risk`` 处置：
+                'adv_gate'（默认）自动装配 ADV 容量规则，不再全放行。
+            on_missing_risk: 'adv_gate' / 'fail_closed' / 'off'。
+            input_contract: 行情列契约，缺必需列即抛
+                ``BacktestInputContractError``；换数据源只改契约列映射。
+            price_basis: 'auto' / 'adjusted' / 'raw'，见 ``input_contract``。
+            blocked_sell_ttl_days: 跌停/停牌卖不出时保留卖单 intent 的最大
+                重试天数（3b），0 退回「当日作废」旧语义。
+        """
+        if blocked_sell_ttl_days < 0:
+            raise ValueError(
+                f'blocked_sell_ttl_days 必须 ≥ 0，实际 {blocked_sell_ttl_days}')
         self.cost_model = cost_model
         self.performance_analyzer = performance_analyzer
         self.risk_engine = risk_engine
         self.on_missing_risk = on_missing_risk
+        self.input_contract = input_contract
+        self.price_basis = price_basis
+        self.blocked_sell_ttl_days = blocked_sell_ttl_days
 
     def run(self, universe: Dict[str, pl.DataFrame], strategies: Dict[str, Any],
             initial_capital: float = 1_000_000.0, lot_size: int = 100,
@@ -890,11 +992,8 @@ class EventBacktestRunner:
         # 空 universe / 无标的配置策略时 _prepare_universe 返回 None，提前返回
         if prepared_data is None:
             return {}
-        prepared, column_data = prepared_data
+        prepared, column_data, resolved_by_code = prepared_data
         codes = list(column_data.keys())
-
-        # 缺陷 C：整次回测任一标的缺 open 列 → 标记 fill_confidence 为 low
-        _open_missing = self._check_open_column(column_data)
 
         # ST 三态：True=ST、False=明确非 ST、未提供/区间外=未知（按板块默认判定）
         st_status, st_unknown = self._resolve_st_status(codes, st_status)
@@ -906,7 +1005,8 @@ class EventBacktestRunner:
             codes, strategies, prepared, column_data, portfolio_strategy)
 
         # 一次性建立按日期对齐的 (活跃标的, 行号) 平行数组，主循环按下标直取
-        day_codes, day_positions, sorted_dates = self._build_date_index(column_data)
+        day_codes, day_positions, sorted_dates = self._build_date_index(
+            column_data, self.input_contract.column(ROLE_DATE))
         # A11：只在存在数据空洞时构建行情日索引。全域覆盖（每个标的每天都
         # 有行情）时挂单必然在下一交易日撮合，不可能因 TTL 过期，索引、堆、
         # bisect 全部跳过，避免给最常见的完整面板增加 O(总 bar) 准备开销。
@@ -923,13 +1023,11 @@ class EventBacktestRunner:
         # A11：ST 区间只解析一次日期并预排序；重叠区间退回原线性路径
         st_intervals, st_starts = self._prepare_st_intervals(st_status)
 
-        # 各标的的列引用预先解析成元组，主循环内不再重复做 dict.get
+        # 各标的的列引用预先解析成元组，主循环内不再重复做 dict.get。
+        # 列名一律来自 input_contract（换源只改契约，内核不含列名字面量）。
         bar_columns = {
-            code: (cols['close'], cols.get('open'), cols.get('high'), cols.get('low'),
-                   cols.get('volume'), cols.get('raw_open'), cols.get('raw_close'),
-                   cols.get('adv_volume'), cols.get('adv20'),
-                   cols.get('total_mv_yi'), cols.get('category'))
-            for code, cols in column_data.items()
+            code: self._resolve_bar_series(column_data[code], resolved_by_code[code])
+            for code in codes
         }
 
         # P0-1：把「本次回测是否真的用了分档滑点」写进结果，杜绝静默兜底。
@@ -951,6 +1049,9 @@ class EventBacktestRunner:
             codes, strategies, initial_capital, industry_map, lot_size,
             portfolio_strategy,
         )
+        # A1：兜底装配了 ADV 容量规则时，必须确认 ADV 真的可用；否则闸门形同
+        # 虚设（每笔都因缺数拒单），与其让回测空跑，不如明确报错。
+        self._require_adv_inputs(gate, column_data)
         ctx = self._init_run_context(codes, rules, book, gate, lot_size,
                                      pending_ttl_days, corporate_actions,
                                      dividend_tax_rate, rights_policy,
@@ -970,9 +1071,44 @@ class EventBacktestRunner:
         return self._build_result(
             initial_capital=initial_capital, ctx=ctx,
             slow_path_strategies=slow_path_strategies,
-            open_missing=_open_missing, st_unknown=st_unknown,
+            st_unknown=st_unknown,
             st_unknown_bars=st_unknown_bars,
             result_meta=meta,
+        )
+
+    def _resolve_bar_series(
+        self, cols: Dict[str, list], resolved: Dict[str, str],
+    ) -> tuple:
+        """按契约解析出的列名取 bar 序列，顺序由调用方（_run_trading_loop）约定。"""
+        def get(role: str):
+            column = resolved.get(role)
+            return cols.get(column) if column else None
+
+        return (cols[resolved[ROLE_CLOSE]], get(ROLE_OPEN), get(ROLE_HIGH),
+                get(ROLE_LOW), get(ROLE_VOLUME), get(ROLE_RAW_OPEN),
+                get(ROLE_RAW_CLOSE),
+                # 以下四项是派生列，键名固定为语义角色（不是源列名）
+                cols.get(ROLE_ADV_VOLUME), cols.get(ROLE_ADV20),
+                cols.get(ROLE_TOTAL_MV_YI), cols.get(ROLE_CATEGORY))
+
+    def _require_adv_inputs(self, gate: RiskGate,
+                            column_data: Dict[str, Dict[str, list]]) -> None:
+        """A1：ADV 闸门生效但全市场没有可用 ADV 时，拒绝继续而不是空跑。"""
+        if not gate.assembled_by_default:
+            return
+        usable = any(
+            any(value is not None and value > 0
+                for value in (cols.get(ROLE_ADV_VOLUME) or ()))
+            for cols in column_data.values()
+        )
+        if usable:
+            return
+        raise RiskAssemblyError(
+            '风控未装配规则，内核已默认启用 ADV 容量闸门，但本次行情没有任何'
+            '标的提供可用 ADV（adv_volume 全为空/0）：无法执行 20 日 ADV 参与率'
+            '与单日成交量占比限制，拒绝在容量约束缺失下继续回测。'
+            '请提供 volume 列，或显式传 risk_engine，'
+            "或确认对照实验后设 on_missing_risk='off'"
         )
 
     @staticmethod
@@ -987,8 +1123,8 @@ class EventBacktestRunner:
         tiered: List[str] = []
         fallback: List[str] = []
         for code, cols in column_data.items():
-            adv20 = cols.get('adv20') or []
-            mv = cols.get('total_mv_yi') or []
+            adv20 = cols.get(ROLE_ADV20) or []
+            mv = cols.get(ROLE_TOTAL_MV_YI) or []
             is_fund = CostModel._is_fund(code)
             usable = any(v is not None and v > 0 for v in (adv20 if is_fund else mv))
             (tiered if usable else fallback).append(code)
@@ -1068,6 +1204,9 @@ class EventBacktestRunner:
             pending_scheduled_expiry={},
             code_days=code_days,
             corporate_action_heap=[],
+            blocked_orders=[],
+            blocked_days={},
+            blocked_by={},
         )
         if ctx.corporate_actions is not None:
             events_by_code = (
@@ -1085,12 +1224,16 @@ class EventBacktestRunner:
     def _prepare_universe(
         self, universe: Dict[str, pl.DataFrame], strategies: Dict[str, Any],
         portfolio_strategy: Any | None = None,
-    ) -> tuple[Dict[str, pl.DataFrame], Dict[str, Dict[str, list]]] | None:
+    ) -> tuple[Dict[str, pl.DataFrame], Dict[str, Dict[str, list]],
+               Dict[str, Dict[str, str]]] | None:
         """校验 universe 与策略配置，按日期排序并批量导出各列为 Python list。
 
         universe 为空或没有任何标的配置策略（且无组合级策略）时返回 None，
-        由调用方提前返回空结果；raw_open / raw_close 必须成对出现，否则直接
-        抛 ValueError。
+        由调用方提前返回空结果。
+
+        列契约在 ``input_contract`` 里统一声明：缺必需列、列名不符、
+        raw_open/raw_close 不成对、复权因子恒为 1.0 时一律抛
+        ``BacktestInputContractError``，不再回填 close 静默降级。
         """
         if not universe:
             logger.error("回测数据为空")
@@ -1101,77 +1244,69 @@ class EventBacktestRunner:
             logger.error("未设置策略")
             return None
 
+        # 契约校验放在任何计算之前：错误信息带标的与缺失列，避免算完才报
+        resolved_by_code = validate_universe(
+            universe, contract=self.input_contract,
+            price_basis=self.price_basis, context='行情输入 ',
+        )
         prepared = {code: self._ensure_sorted(universe[code]) for code in codes}
-        for code, df in prepared.items():
-            if ('raw_open' in df.columns) != ('raw_close' in df.columns):
-                raise ValueError(f"{code} 的 raw_open / raw_close 必须成对出现")
 
         column_data: Dict[str, Dict[str, list]] = {
             code: {name: df[name].to_list() for name in df.columns}
             for code, df in prepared.items()
         }
-        # ADV 列：20 日均成交量（手）。min_samples=1，避免上市初期整段为空；
-        # 缺 volume 列时保留 None，由 MaxAdvParticipation fail-closed。
+        # ADV 列：20 日均成交量（手）。min_samples=1，避免上市初期整段为空。
+        # 契约保证 volume 列存在；成交量为空/0 的 bar 由停牌判定与
+        # MaxAdvParticipation 逐笔拒单，不再有"缺列即跳过"的隐式路径。
         # 注意：风控用的是成交量（手），成本模型用的是成交额（元），两者量纲不同，
         # 因此下面单独构造 adv20（成交额）列，不能复用 adv_volume。
+        volume_col = self.input_contract.column(ROLE_VOLUME)
+        amount_col = self.input_contract.column(ROLE_AMOUNT)
+        mv_yi_col = self.input_contract.column(ROLE_TOTAL_MV_YI)
+        mv_col = self.input_contract.column(ROLE_TOTAL_MV)
+        category_col = self.input_contract.column(ROLE_CATEGORY)
         for code, df in prepared.items():
-            if 'volume' in df.columns:
-                adv = (
-                    df['volume'].cast(pl.Float64, strict=False)
-                    .rolling_mean(window_size=ExecutionRules.ADV_WINDOW, min_samples=1)
-                    .to_list()
-                )
-            else:
-                adv = [None] * df.height
-            column_data[code]['adv_volume'] = adv
+            adv = (
+                df[volume_col].cast(pl.Float64, strict=False)
+                .rolling_mean(window_size=ExecutionRules.ADV_WINDOW, min_samples=1)
+                .to_list()
+            )
+            column_data[code][ROLE_ADV_VOLUME] = adv
 
             # ---- 分档滑点输入（P0-1）----
             # 关键因果约束：订单在 t 日**开盘**成交，而 t 日 amount / total_mv
             # 要等当日收盘才知道。因此分档输入一律 shift(1)，只用 t-1 及之前
             # 的信息；否则等于用未来数据给成交成本定价（前视偏差）。
-            # 列不存在时**不创建占位列**：给 12.7M 行面板造 3 份 [None]*N
+            # 可选列不存在时**不创建占位列**：给 12.7M 行面板造 3 份 [None]*N
             # 纯属浪费；bar_columns 用 .get() 得到 None，热路径自动跳过。
-            if 'amount' in df.columns:
-                column_data[code]['adv20'] = (
-                    df['amount'].cast(pl.Float64, strict=False)
+            if amount_col in df.columns:
+                column_data[code][ROLE_ADV20] = (
+                    df[amount_col].cast(pl.Float64, strict=False)
                     .shift(1)
                     .rolling_mean(window_size=ExecutionRules.ADV_WINDOW, min_samples=1)
                     .to_list()
                 )
 
-            if 'total_mv_yi' in df.columns:
+            if mv_yi_col in df.columns:
                 # 调用方已按「亿元」口径提供，直接使用
-                mv_expr = pl.col('total_mv_yi').cast(pl.Float64, strict=False)
-                column_data[code]['total_mv_yi'] = (
+                mv_expr = pl.col(mv_yi_col).cast(pl.Float64, strict=False)
+                column_data[code][ROLE_TOTAL_MV_YI] = (
                     df.select(mv_expr.shift(1)).to_series().to_list())
-            elif 'total_mv' in df.columns:
+            elif mv_col in df.columns:
                 # 估值快照的 total_mv 常见单位是「元」；兼容已是「亿元」的输入：
                 # 量级 < 1e8 时视为亿元原样使用，否则按 1e8 换算。
-                mv_raw = pl.col('total_mv').cast(pl.Float64, strict=False)
+                mv_raw = pl.col(mv_col).cast(pl.Float64, strict=False)
                 mv_yi = (
                     pl.when(mv_raw >= 1e8).then(mv_raw / 1e8)
                     .otherwise(mv_raw)
                 )
-                column_data[code]['total_mv_yi'] = (
+                column_data[code][ROLE_TOTAL_MV_YI] = (
                     df.select(mv_yi.shift(1)).to_series().to_list())
 
             # category 是品种静态属性（如行业/主题 ETF），不是行情，无需滞后
-            if 'category' in df.columns:
-                column_data[code]['category'] = df['category'].to_list()
-        return prepared, column_data
-
-    @staticmethod
-    def _check_open_column(column_data: Dict[str, Dict[str, list]]) -> bool:
-        """返回是否有标的缺 open 列；缺失时按原文案告警（fill_confidence=low）。"""
-        _open_missing = any('open' not in cols for cols in column_data.values())
-        if _open_missing:
-            logger.warning(
-                "部分标的缺 open 列，开盘涨停判定将退化为 high≈low 路径，"
-                "成交假设偏乐观（fill_confidence=low）。"
-                "缺失标的: {}",
-                [c for c, cols in column_data.items() if 'open' not in cols],
-            )
-        return _open_missing
+            if category_col in df.columns:
+                column_data[code][ROLE_CATEGORY] = df[category_col].to_list()
+        return prepared, column_data, resolved_by_code
 
     @staticmethod
     def _resolve_st_status(
@@ -1367,7 +1502,8 @@ class EventBacktestRunner:
                 series = produced.get(code)
                 if series is None:
                     continue
-                expected = self._height(column_data[code])
+                expected = self._height(
+                    column_data[code], self.input_contract.column(ROLE_DATE))
                 values = list(series)
                 if len(values) != expected:
                     raise ValueError(
@@ -1383,11 +1519,16 @@ class EventBacktestRunner:
             )
 
         slow_path_strategies.append({'ts_code': '__portfolio__', 'strategy': name})
-        heights = {code: self._height(column_data[code]) for code in codes}
+        heights = {
+            code: self._height(column_data[code],
+                               self.input_contract.column(ROLE_DATE))
+            for code in codes
+        }
         # 原地改写调用方传入的字典，避免局部重绑定导致合并结果丢失
         for code in codes:
             signal_columns[code] = ['hold'] * heights[code]
-        day_codes, day_positions, sorted_dates = self._build_date_index(column_data)
+        day_codes, day_positions, sorted_dates = self._build_date_index(
+            column_data, self.input_contract.column(ROLE_DATE))
         for day_index in range(len(sorted_dates)):
             pos_by_code = dict(zip(day_codes[day_index], day_positions[day_index], strict=True))
             rows = {
@@ -1406,15 +1547,16 @@ class EventBacktestRunner:
                     signal_columns[code][pos] = signal
 
     @staticmethod
-    def _height(cols: Dict[str, list]) -> int:
-        """返回该标的的行数（优先用 date 列，缺失时用任一列）。"""
-        if 'date' in cols:
-            return len(cols['date'])
+    def _height(cols: Dict[str, list], date_column: str) -> int:
+        """返回该标的的行数（优先用契约声明的日期列，缺失时用任一列）。"""
+        if date_column in cols:
+            return len(cols[date_column])
         return len(next(iter(cols.values()), []))
 
     @staticmethod
     def _build_date_index(
         column_data: Dict[str, Dict[str, list]],
+        date_column: str,
     ) -> tuple[List[List[str]], List[List[int]], List[Any]]:
         """按日期建立对齐的 (活跃标的, 行号) 平行数组。
 
@@ -1427,7 +1569,7 @@ class EventBacktestRunner:
         codes_by_date: Dict[Any, List[str]] = {}
         positions_by_date: Dict[Any, List[int]] = {}
         for code, cols in column_data.items():
-            dates = cols['date']
+            dates = cols[date_column]
             positions: Dict[Any, int] = {}
             for index, day in enumerate(dates):
                 if day in positions:
@@ -1448,7 +1590,8 @@ class EventBacktestRunner:
     @staticmethod
     def _daily_suspended_codes(codes: List[str],
                                positions: List[int],
-                               column_data: Dict[str, Dict[str, list]]) -> Set[str]:
+                               column_data: Dict[str, Dict[str, list]],
+                               volume_column: str) -> Set[str]:
         """当日停牌集合：成交量为 None / NaN / inf / 非数值 / ≤0 的标的。
 
         positions 与 codes 按下标对齐，由 _build_date_index 预先生成；
@@ -1456,7 +1599,7 @@ class EventBacktestRunner:
         """
         suspended: Set[str] = set()
         for code, pos in zip(codes, positions, strict=True):
-            volume_col = column_data[code].get('volume')
+            volume_col = column_data[code].get(volume_column)
             volume = volume_col[pos] if volume_col is not None else None
             if ExecutionRules._is_suspended(volume):
                 suspended.add(code)
@@ -1555,6 +1698,8 @@ class EventBacktestRunner:
             })
         ctx.pending[code] = intent
         ctx.pending_age[code] = 0
+        # 新信号覆盖旧挂单时，旧挂单的「跌停卖不出」重试计数不应继承
+        EventBacktestRunner._clear_block_tracking(ctx, code)
         EventBacktestRunner._schedule_pending_expiry(ctx, code, day_index)
 
     @staticmethod
@@ -1597,10 +1742,16 @@ class EventBacktestRunner:
             ctx.pending[code] = None
             ctx.pending_age[code] = 0
             ctx.pending_scheduled_expiry.pop(code, None)
+            # 数据空洞到期：若该挂单同时处于「跌停卖不出」重试中，一并记录原因，
+            # 否则这类作废会以 pending_ttl 掩盖真实成因
+            blocked_by = ctx.blocked_by.get(code)
+            blocked_days = ctx.blocked_days.get(code, 0)
+            EventBacktestRunner._clear_block_tracking(ctx, code)
             EventBacktestRunner._append_expired(
                 ctx.expired_orders, date=trade_day,
                 side=intent.action, code=code,
                 reason='pending_ttl', fill_confidence='low',
+                blocked_by=blocked_by, blocked_days=blocked_days,
             )
 
     def _apply_corporate_actions(self, ctx: RunContext, trade_day: Any) -> None:
@@ -1666,7 +1817,8 @@ class EventBacktestRunner:
             # 未启用风控时该集合无消费方，避免给默认路径增加 O(N_symbols/日) 开销
             suspended_today = (
                 self._daily_suspended_codes(
-                    codes_today, positions_today, column_data)
+                    codes_today, positions_today, column_data,
+                    self.input_contract.column(ROLE_VOLUME))
                 if ctx.gate.risk_engine is not None else None
             )
 
@@ -1684,8 +1836,9 @@ class EventBacktestRunner:
                 # A24：行情值统一归一到有限 float，字符串/Decimal/NaN/inf 不再
                 # 在后续比较或费用计算中抛 TypeError
                 close_price = _finite_float(close_col[pos])
-                open_price = (
-                    _finite_float(open_col[pos]) if open_col is not None else close_price)
+                # open 是契约必需列，不再有「缺列回填 close」的降级路径；
+                # 值缺失（如除权日）保留 None，由 price_missing 显式作废
+                open_price = _finite_float(open_col[pos])
                 high = _finite_float(high_col[pos]) if high_col is not None else None
                 low = _finite_float(low_col[pos]) if low_col is not None else None
                 volume = _finite_float(volume_col[pos]) if volume_col is not None else None
@@ -1731,6 +1884,7 @@ class EventBacktestRunner:
                     )
                     self._execute_pending(
                         ctx, code=code, date=trade_day, bar=bar,
+                        day_index=day_index,
                     )
 
                 # 策略基于当日数据生成信号，延迟到该标的下一个交易日执行；
@@ -1757,7 +1911,7 @@ class EventBacktestRunner:
 
     def _build_result(
         self, *, initial_capital: float, ctx: RunContext,
-        slow_path_strategies: List[Dict[str, str]], open_missing: bool,
+        slow_path_strategies: List[Dict[str, str]],
         st_unknown: bool, st_unknown_bars: List[Tuple[str, Any]],
         result_meta: Dict[str, Any] | None,
     ) -> Dict[str, Any]:
@@ -1769,12 +1923,16 @@ class EventBacktestRunner:
         performance = self.performance_analyzer.analyze(equity_curve, ctx.trades)
 
         risk_summary = None
-        if self.risk_engine is not None:
+        # 用闸门里实际生效的规则集（可能为 A1 兜底装配），而非构造参数
+        effective_engine = ctx.gate.risk_engine
+        if effective_engine is not None:
             risk_summary = {
-                'rules': [r.name for r in self.risk_engine.rules],
+                'rules': [r.name for r in effective_engine.rules],
                 'total_rejected': len(ctx.rejected_orders),
+                # 用 format(**r) 而不是逐字段下标：拒单记录字段名是输出 schema，
+                # 与行情列名无关，不应在引擎内核留下取列式字面量
                 'reject_detail': [
-                    f"[{r['date']}] {r['side']} {r['ts_code']} qty={r['qty']} → {r['rule']}: {r['reason']}"
+                    '[{date}] {side} {ts_code} qty={qty} → {rule}: {reason}'.format(**r)
                     for r in ctx.rejected_orders
                 ],
             }
@@ -1791,6 +1949,9 @@ class EventBacktestRunner:
             'risk_gate': {
                 'enabled': ctx.gate.risk_engine is not None,
                 'policy': ctx.gate.on_missing,
+                # A1：True 表示规则集由内核兜底装配（ADV 容量闸门），
+                # 不是调用方显式传入
+                'assembled_by_default': ctx.gate.assembled_by_default,
                 'bypassed_orders': ctx.gate.bypassed_orders,
                 'rules': (
                     [r.name for r in ctx.gate.risk_engine.rules]
@@ -1798,6 +1959,13 @@ class EventBacktestRunner:
             },
             'rejected_orders': ctx.rejected_orders,
             'expired_orders': ctx.expired_orders,
+            # 作废原因计数：让「因跌停/停牌卖不出而作废」可直接统计
+            'expired_reason_counts': dict(
+                Counter(item.get('reason') for item in ctx.expired_orders)),
+            # 3b：跌停/停牌卖不出时的逐次受阻记录与原因计数
+            'blocked_orders': ctx.blocked_orders,
+            'blocked_reason_counts': dict(
+                Counter(item.get('blocked_by') for item in ctx.blocked_orders)),
             # A20：被新信号覆盖的挂单独立记账，不再混入 expired_orders
             'overwritten_orders': ctx.overwritten_orders,
             # A13：被持仓状态过滤、未形成委托的信号
@@ -1808,9 +1976,11 @@ class EventBacktestRunner:
             # 慢速路径标记：非空表示这些策略未实现 generate_signals_vectorized，
             # 信号走了逐 bar Python 调用；空列表表示全部走向量化路径
             'slow_path_strategies': slow_path_strategies,
-            # 缺陷 C：整次回测任一标的缺 open 列 → 开盘涨停判定退化，
-            # 成交假设偏乐观；ST 状态未知时同样整体偏乐观/保守不可全信
-            'fill_confidence': 'low' if (open_missing or st_unknown) else 'high',
+            # 契约摘要：本次回测实际使用的列契约（换源对照 / 审计用）
+            'input_contract': describe_contracts(),
+            # ST 状态未知时成交假设偏乐观/保守不可全信；open 列已由契约强制，
+            # 不再有"缺列回填 close"的降级路径
+            'fill_confidence': 'low' if st_unknown else 'high',
             # ST 状态是否未知：True 表示本次回测按板块默认幅度判定涨跌停，
             # 逐笔 fill_confidence 也相应为 low，调用方应据此解读成交假设
             'st_unknown': st_unknown,
@@ -1845,7 +2015,7 @@ class EventBacktestRunner:
     # ------------------------------------------------------------------
 
     def _execute_pending(self, ctx: RunContext, *, code: str, date: Any,
-                         bar: Bar) -> None:
+                         bar: Bar, day_index: int = -1) -> None:
         """执行该标的的挂单。
 
         订单生命周期语义（显式状态机，杜绝静默丢单）：
@@ -1853,7 +2023,12 @@ class EventBacktestRunner:
             - 进入本函数即消费挂单，当日有效：成交进 trades、被风控拦截进
               rejected_orders、其余不可成交情形一律作废并记入 expired_orders
               （already_holding / no_position / not_tradable / price_missing /
-              insufficient_cash / zero_order），不会残留到下一交易日。
+              insufficient_cash / zero_order），不会残留到下一交易日；
+            - 例外（3b）：卖单因跌停/停牌卖不出时不立即作废，而是保留 intent
+              逐日重试，最多 ``blocked_sell_ttl_days`` 天；期间每次受阻写入
+              ``blocked_orders``，超限作废时 ``expired_orders`` 带
+              ``reason='limit_locked_ttl'`` 与 ``blocked_by='limit_down'``，
+              使「因跌停卖不出」可被统计。
 
         is_st 为 None 表示 ST 状态未知：涨跌停按板块默认幅度判定（与明确
         非 ST 相同），该笔订单 fill_confidence 标记为 low，作为数据质量提示。
@@ -1880,6 +2055,12 @@ class EventBacktestRunner:
             exec_price=exec_price, trade_date=trade_day,
         )
         if reason is not None:
+            if reason == 'not_tradable' and self._retain_blocked_sell(
+                    ctx, intent=intent, code=code, date=date, bar=bar,
+                    trade_day=trade_day, day_index=day_index,
+                    order_confidence=order_confidence):
+                return
+            self._clear_block_tracking(ctx, code)
             self._append_expired(
                 ctx.expired_orders, date=date, side=intent.action, code=code,
                 reason=reason, fill_confidence=order_confidence,
@@ -1888,17 +2069,75 @@ class EventBacktestRunner:
 
         # A7：原 assert 在生产路径且 python -O 下被剥离；改为显式校验并作废
         if not self._is_valid_price(exec_price):
+            self._clear_block_tracking(ctx, code)
             self._append_expired(
                 ctx.expired_orders, date=date, side=intent.action, code=code,
                 reason='price_missing', fill_confidence=order_confidence,
             )
             return
 
+        self._clear_block_tracking(ctx, code)
         self._dispatch_order(
             ctx, intent=intent, code=code, date=date, bar=bar,
             exec_price=exec_price, order_confidence=order_confidence,
             trade_day=trade_day,
         )
+
+    @staticmethod
+    def _clear_block_tracking(ctx: RunContext, code: str) -> None:
+        """清理某标的的受阻重试状态（挂单已成交 / 已作废 / 已被新信号替换）。"""
+        ctx.blocked_days.pop(code, None)
+        ctx.blocked_by.pop(code, None)
+
+    def _retain_blocked_sell(
+        self, ctx: RunContext, *, intent: SignalIntent, code: str, date: Any,
+        bar: Bar, trade_day: date | None, day_index: int,
+        order_confidence: str,
+    ) -> bool:
+        """3b：卖单因跌停/停牌卖不出时保留 intent，返回是否已处理。
+
+        返回 True 表示「已保留（次日重试）」或「已按超限作废并记账」，
+        调用方不得再走通用作废分支（否则同一天重复记一笔 expired）。
+        ``blocked_sell_ttl_days=0`` 时直接返回 False，退回旧语义。
+        """
+        if self.blocked_sell_ttl_days <= 0 or intent.action != 'sell':
+            return False
+
+        check_open, check_prev, check_close = self._select_check_prices(
+            bar.open_price, bar.prev_close, bar.close,
+            bar.raw_open, bar.prev_close_raw, bar.raw_close)
+        detail = ctx.rules.block_reason(
+            intent.action, prev_close=check_prev, open_price=check_open,
+            high=bar.high, low=bar.low, close=check_close, volume=bar.volume,
+            ts_code=code, is_st=bar.is_st, trade_date=trade_day,
+        )
+        # 只接管「卖不出」的两种市场状态；其余不可成交原因照旧当日作废
+        if detail not in ('limit_down', 'suspended'):
+            return False
+
+        blocked_days = ctx.blocked_days.get(code, 0) + 1
+        ctx.blocked_orders.append({
+            'date': date, 'side': 'sell', 'ts_code': code,
+            'reason': 'sell_locked', 'blocked_by': detail,
+            'blocked_days': blocked_days,
+            'fill_confidence': order_confidence,
+        })
+        if blocked_days > self.blocked_sell_ttl_days:
+            self._clear_block_tracking(ctx, code)
+            self._append_expired(
+                ctx.expired_orders, date=date, side='sell', code=code,
+                reason='limit_locked_ttl', fill_confidence=order_confidence,
+                blocked_by=detail, blocked_days=blocked_days,
+            )
+            return True
+
+        # 保留 intent：次日行情 bar 继续尝试；同时重新登记数据空洞到期，
+        # 避免该标的此后长期无行情时挂单永久滞留
+        ctx.pending[code] = intent
+        ctx.blocked_days[code] = blocked_days
+        ctx.blocked_by[code] = detail
+        EventBacktestRunner._schedule_pending_expiry(ctx, code, day_index)
+        return True
 
     def _dispatch_order(
         self, ctx: RunContext, *, intent: SignalIntent, code: str, date: Any,
@@ -1942,13 +2181,23 @@ class EventBacktestRunner:
     @staticmethod
     def _append_expired(expired_orders: List[Dict[str, Any]], *, date: Any,
                         side: str, code: str, reason: str,
-                        fill_confidence: str, qty: int = 0) -> None:
-        """追加一条作废订单记录（字段与顺序固定，供对账使用）。"""
-        expired_orders.append({
+                        fill_confidence: str, qty: int = 0,
+                        blocked_by: str | None = None,
+                        blocked_days: int = 0) -> None:
+        """追加一条作废订单记录（字段与顺序固定，供对账使用）。
+
+        ``blocked_by`` / ``blocked_days`` 只在「卖单因跌停/停牌卖不出」
+        导致作废时写入，供 ``expired_reason_counts`` 之外再做原因归因。
+        """
+        record = {
             'date': date, 'side': side, 'ts_code': code,
             'reason': reason, 'qty': qty,
             'fill_confidence': fill_confidence,
-        })
+        }
+        if blocked_by is not None:
+            record['blocked_by'] = blocked_by
+            record['blocked_days'] = blocked_days
+        expired_orders.append(record)
 
     def _check_order_executable(
         self, *, code: str, intent: SignalIntent, position: int,
@@ -1991,8 +2240,7 @@ class EventBacktestRunner:
 
         # P0-2 修复：开盘价是集合竞价成交价。open_price 为 None（列存在但值缺失，
         # 如停牌复牌日、除权日）时，不能用 close 伪造成交价——回测不应发明价格。
-        # 列整体缺失时 open_price 已在主循环回填为 close_price + fill_confidence=low，
-        # 此处不会走到 None 分支。
+        # open 列整体缺失已由输入契约直接抛错，不会再走到"回填 close"的路径。
         if not self._is_valid_price(exec_price):
             return 'price_missing'
         return None
@@ -2165,9 +2413,9 @@ class EventBacktestRunner:
             'fill_confidence': order_confidence,
         })
 
-    @staticmethod
-    def _ensure_sorted(df: pl.DataFrame) -> pl.DataFrame:
-        """按日期升序，保证日期索引与执行顺序一致。"""
-        if 'date' in df.columns and not df['date'].is_sorted():
-            return df.sort('date')
+    def _ensure_sorted(self, df: pl.DataFrame) -> pl.DataFrame:
+        """按日期升序，保证日期索引与执行顺序一致（日期列名取自契约）。"""
+        date_column = self.input_contract.column(ROLE_DATE)
+        if date_column in df.columns and not df[date_column].is_sorted():
+            return df.sort(date_column)
         return df
