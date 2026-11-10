@@ -244,7 +244,8 @@ def _classify_local_fund_symbol(symbol: str, name: str | None = None,
     - 名称含「联接」或「LOF」→ LOF（ETF 联接基金是 LOF 份额，不是 ETF）
 
     名称缺失时按代码段兜底：
-    - ETF：沪 51/52/56/58，深 159/158
+    - ETF：沪 51/52/56/58/530/551，深 159/158（530=上证系列、551=科创债，
+      经 tushare fund_basic(market=E) 逐只核实，各 14/12 只）
     - LOF：沪 501/506/508，深 16/18（REITs 沿用库内既有的 LOF 归类）
     - 分级：沪 502（502 段既有分级母/子份额，也有整改后的普通 LOF，故有名称时按名称判）
     - 封闭式：沪 500/505（无类型来源，仅补基础表，不猜 fund_type）
@@ -255,7 +256,7 @@ def _classify_local_fund_symbol(symbol: str, name: str | None = None,
             return '分级', 'fund_basic'
         if '联接' in text or 'LOF' in text.upper():
             return 'LOF', 'fund_basic'
-    if symbol.startswith(('51', '52', '56', '58')) or symbol.startswith(('159', '158')):
+    if symbol.startswith(('51', '52', '56', '58', '530', '551')) or symbol.startswith(('159', '158')):
         return 'ETF', 'fund_basic'
     if symbol.startswith(('501', '506', '508', '16', '18')):
         return 'LOF', 'fund_basic'

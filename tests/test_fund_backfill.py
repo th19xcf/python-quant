@@ -14,6 +14,9 @@ def test_classify_local_fund_symbol():
     assert _classify_local_fund_symbol('588000') == ('ETF', 'fund_basic')
     assert _classify_local_fund_symbol('159915') == ('ETF', 'fund_basic')
     assert _classify_local_fund_symbol('158036') == ('ETF', 'fund_basic')
+    # 530=上证系列 ETF、551=科创债 ETF：tushare fund_basic(market=E) 各 14/12 只，均为 ETF
+    assert _classify_local_fund_symbol('530060') == ('ETF', 'fund_basic')
+    assert _classify_local_fund_symbol('551060') == ('ETF', 'fund_basic')
     assert _classify_local_fund_symbol('501000') == ('LOF', 'fund_basic')
     assert _classify_local_fund_symbol('508000') == ('LOF', 'fund_basic')
     assert _classify_local_fund_symbol('160130') == ('LOF', 'fund_basic')
