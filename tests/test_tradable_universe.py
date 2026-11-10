@@ -121,6 +121,11 @@ def test_build_is_idempotent(tmp_path) -> None:
     assert reasons['no_quotes'] == 1
     assert reasons['bad_price_jump'] == 1
     assert summary['price_jumps']['by_label']['data_error']['rows'] == 1
+    # 2026-11-10 起对外口径只保留 strict，旧键 healthy_by_audit_definition 不再输出
+    coverage = summary['coverage_after_exclusion']
+    assert 'strict' in coverage
+    assert 'healthy_by_audit_definition' not in coverage
+    assert set(coverage) == {'block_only', 'all_reasons', 'strict'}
 
 
 def test_is_tradable_boundaries(tmp_path) -> None:

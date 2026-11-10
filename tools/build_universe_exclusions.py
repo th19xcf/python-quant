@@ -81,11 +81,11 @@ def main() -> int:
         as_of=args.as_of,
     )
     logger.info(
-        '完成: {} 只标的有排除记录；block={} / all={}；健康覆盖率 {}%',
+        '完成: {} 只标的有排除记录；block={} / all={}；strict 覆盖率 {}%',
         summary['excluded_union']['all_reason_codes'],
         summary['excluded_union']['blocking_codes'],
         summary['excluded_union']['all_reason_codes'],
-        round(summary['coverage_after_exclusion']['healthy_by_audit_definition']
+        round(summary['coverage_after_exclusion']['strict']
               ['all']['code_retention'] * 100, 1),
     )
     return 0

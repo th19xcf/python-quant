@@ -891,9 +891,6 @@ def _summarize(
     blocked = set(rows.filter(pl.col('severity') == 'block')['ts_code'].to_list())
     all_codes = set(rows['ts_code'].to_list())
     multi = int(rows.group_by('ts_code').len().filter(pl.col('len') > 1).height)
-    healthy_codes = set(rows.filter(
-        pl.col('reason_code').is_in(['placeholder_price', 'stale_feed', 'internal_gap'])
-    )['ts_code'].to_list())
     return {
         'generated_as_of': as_of.isoformat(),
         'detected_at_rule': 'detected_at 取数据快照日，保证生成幂等',
@@ -908,7 +905,6 @@ def _summarize(
         'coverage_after_exclusion': {
             'block_only': _coverage(di, blocked),
             'all_reasons': _coverage(di, all_codes),
-            'healthy_by_audit_definition': _coverage(di, healthy_codes),
             'strict': _coverage(di, _strict_excluded_codes(rows)),
         },
         'price_jumps': dict(price_jumps) if price_jumps is not None else None,
@@ -978,11 +974,18 @@ def build_exclusions(
         lambda p: p.write_text(
             json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True),
             encoding='utf-8'))
+    # 审计参考值，非口径：2026-11-10 起对外口径统一为 strict，该值只用于与
+    # 历史报告（healthy_by_audit_definition，旧值 8,903/9,770）对照，不写入 JSON。
+    audit_codes = set(frame.filter(
+        pl.col('reason_code').is_in(['placeholder_price', 'stale_feed', 'internal_gap'])
+    )['ts_code'].to_list())
     logger.info(
-        '排除清单已生成: {} 行 / {} 只标的，健康(审计口径) {} 只',
+        '排除清单已生成: {} 行 / {} 只标的，strict 可交易 {}/{} 只；'
+        '审计参考值（非口径，不写 JSON）{} 只',
         frame.height, summary['excluded_union']['all_reason_codes'],
-        summary['coverage_after_exclusion']['healthy_by_audit_definition']['all']
-        ['remaining_codes'])
+        summary['coverage_after_exclusion']['strict']['all']['remaining_codes'],
+        summary['coverage_after_exclusion']['strict']['all']['total_codes'],
+        _coverage(di, audit_codes)['all']['remaining_codes'])
     return summary
 
 
