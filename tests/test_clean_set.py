@@ -18,6 +18,7 @@ from src.data.quality.clean_set import (
     FUND_DIVIDEND_PENDING_ENV,
     FUND_DIVIDEND_PENDING_SCOPE_ENV,
     MAX_SOURCE_LAG_TRADING_DAYS,
+    REASON_CATEGORY,
     CodeInfo,
     EligibilityEngine,
     _apply_scope_with_etf_codes,
@@ -804,3 +805,56 @@ def test_strict_nonzero_snapshot_is_written(tmp_path, monkeypatch) -> None:
                  'timeline_2026-11-10.csv',
                  'summary_2026-11-10.json'):
         assert (out / name).exists(), name
+
+
+def test_full_excludes_whole_file_placeholder() -> None:
+    """整只占位桩不进 full；同一输入下 standard/strict 结果不受影响。"""
+    days = [date(2026, 11, 2), date(2026, 11, 3)]
+    placeholder = make_code(
+        '160425.SZ', data_type='fund', quotes=days,
+        structural=['structural_placeholder_quote'])
+    normal = make_code('000001.SZ', quotes=days)
+    engine = make_engine([placeholder, normal])
+    engine._placeholder_full_codes = frozenset({'160425.SZ'})
+
+    assert engine.eligible('160425.SZ', '2026-11-03', 'full') == (
+        False, ['structural_placeholder_quote_full'])
+    assert engine.eligible('000001.SZ', '2026-11-03', 'full') == (True, [])
+    assert 'structural_placeholder_quote_full' not in engine.eligible_set(
+        '2026-11-03', 'full')
+
+    # 关掉 full 专用集合 = 改动前行为：strict/standard 逐只逐日完全一致
+    baseline = make_engine([placeholder, normal])
+    baseline._placeholder_full_codes = frozenset()
+    assert baseline.eligible('160425.SZ', '2026-11-03', 'full') == (True, [])
+    for day in days:
+        for tier in ('standard', 'strict'):
+            assert engine.eligible('160425.SZ', day, tier) == \
+                baseline.eligible('160425.SZ', day, tier)
+            assert engine.eligible('000001.SZ', day, tier) == \
+                baseline.eligible('000001.SZ', day, tier)
+    for tier in ('standard', 'strict'):
+        assert engine.eligible('160425.SZ', '2026-11-03', tier) == (
+            False, ['structural_placeholder_quote'])
+
+    # 原因词必须登记，否则 summary_at 的分类统计会静默漏掉
+    assert REASON_CATEGORY['structural_placeholder_quote_full'] == 'structural'
+
+
+def test_placeholder_full_codes_read_full_column(tmp_path) -> None:
+    """整只占位只取 ``full=true`` 的行，部分占位代码仍留在 standard/strict。"""
+    anomaly_dir = tmp_path / 'meta' / 'anomalies'
+    anomaly_dir.mkdir(parents=True)
+    (anomaly_dir / 'placeholder_quote_codes.csv').write_text(
+        'ts_code,start,end,rows,total,full\n'
+        '160425.SZ,2025-11-24,2026-11-09,83,83,true\n'
+        '161714.SZ,2020-02-26,2020-02-26,1,4145,false\n',
+        encoding='utf-8')
+
+    engine = object.__new__(EligibilityEngine)
+    engine.root = tmp_path
+    engine.codes = {}
+    engine._load_anomaly_lists()
+
+    assert engine._placeholder_full_codes == frozenset({'160425.SZ'})
+    assert engine._placeholder_codes == {'160425.SZ', '161714.SZ'}

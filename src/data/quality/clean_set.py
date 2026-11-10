@@ -21,7 +21,9 @@
    「确认非 ST」与「未知」区分开；需要收紧时由调用方自行判定，本模块不新增
    过滤口径。
 4. 三档视图：
-   - ``full``      ：当天有行情的全部标的，不做质量/ST过滤；
+   - ``full``      ：当天有行情的全部标的，不做质量/ST过滤；整只占位桩
+                     （``placeholder_quote_codes.csv`` 中 ``full=true``）除外——
+                     恒为 1.0 的平线不是数据，计入会让可用性视图虚高；
    - ``standard``  ：剔除结构性缺陷 + 当日 ST，容忍因子末端落后与历史缺口；
    - ``strict``    ：在 standard 之上再要求当日因子可用，并剔除除权事件存疑
                      （配股无第二源、跳变/事件不匹配、因子台账标记）。
@@ -291,6 +293,7 @@ STRUCTURAL_REASONS: dict[str, str] = {
     'structural_factor_base_shift': '后复权基期偏移台账标记（strict 口径）',
     'structural_date_anomaly': '当日命中已知源端异常行',
     'structural_pre_1993_break': '1991-1992 拆细比例未确认，1993 年前不参与回测',
+    'structural_placeholder_quote_full': '整只占位桩（全部行为 close=1.0/volume=0/amount=0），不计入 full',
 }
 
 TEMPORAL_REASONS: dict[str, str] = {
@@ -436,6 +439,10 @@ class EligibilityEngine:
     explicit_as_of: date | None = None
     _calendar_all: tuple[date, ...] = ()
     suspension_union: SuspensionUnion | None = None
+    #: 整只占位桩代码（``placeholder_quote_codes.csv`` 中 ``full=true``）：文件
+    #: 全部行都是占位，只影响 ``full`` 视图；standard/strict 仍由
+    #: ``structural_placeholder_quote`` 剔除，两者同源同一张清单。
+    _placeholder_full_codes: frozenset[str] = frozenset()
 
     @property
     def close_fund_dividend_pending(self) -> bool:
@@ -862,6 +869,15 @@ class EligibilityEngine:
             {str(c) for c in placeholder['ts_code'].to_list()}
             if placeholder is not None else set()
         )
+        # 整只占位（``full=true``）：该文件全部行都是占位桩，full 视图不再计入
+        # —— full 衡量「数据在不在」，恒为 1.0 的平线不是数据。
+        self._placeholder_full_codes = frozenset()
+        if placeholder is not None:
+            self._placeholder_full_codes = frozenset(
+                str(c) for c in placeholder.filter(
+                    pl.col('full').cast(pl.Utf8).str.to_lowercase() == 'true'
+                )['ts_code'].to_list()
+            )
 
     def _load_stale_list(self, stale: pl.DataFrame | None) -> None:
         if stale is None:
@@ -1144,6 +1160,12 @@ class EligibilityEngine:
         o = d.toordinal()
 
         if tier == 'full':
+            # 整只占位桩：文件全部行都是 close=1.0/volume=0/amount=0，
+            # 恒为 1.0 的平线不是数据，不计入「数据在不在」的 full 可用性。
+            # 判据与 standard/strict 的 structural_placeholder_quote 同源
+            # （同一张 placeholder_quote_codes.csv），仅在 full 档生效。
+            if info.ts_code in self._placeholder_full_codes:
+                return False, ['structural_placeholder_quote_full']
             reasons = self._availability_reasons(info, o)
             return (not reasons, reasons)
 
