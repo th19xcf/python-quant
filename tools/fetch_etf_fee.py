@@ -42,10 +42,10 @@ TARGET = STORE / 'meta' / 'multi_asset'
 
 POOL = STORE / 'meta' / 'multi_asset' / 'etf_pool.parquet'
 
-THROTTLE = 0.35  # 秒，单连接串行
+THROTTLE = 1.2  # 秒，单连接串行（`--throttle` 可覆盖）
 TIMEOUT = 25
 MAX_RETRY = 2
-ABORT_AFTER = 5  # 连续失败即停压
+ABORT_AFTER = 5  # 连续失败 / 连续空返回即停压
 
 UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
@@ -54,7 +54,7 @@ HEADERS = {'User-Agent': UA, 'Referer': 'https://fundf10.eastmoney.com/'}
 HISTORY_WINDOW_START = date(2023, 7, 3)   # 2023-07 降费轮次后的起点
 HISTORY_WINDOW_END = date(2026, 11, 9)    # 行情末行
 HISTORY_SCAN_SINCE = date(2021, 6, 1)     # 公告列表只取这之后的版本
-REPARSE_TAG = 'v3'                        # 解析口径版本号，改口径时递增
+REPARSE_TAG = 'v4'                        # 解析口径版本号，改口径时递增
 
 
 class StopCrawl(RuntimeError):
@@ -63,7 +63,7 @@ class StopCrawl(RuntimeError):
 
 _session = requests.Session()
 _session.headers.update(HEADERS)
-_counter = {'n': 0, 'fail_streak': 0}
+_counter = {'n': 0, 'fail_streak': 0, 'empty_streak': 0}
 
 
 def _get(url: str, *, binary: bool = False):
@@ -82,10 +82,20 @@ def _get(url: str, *, binary: bool = False):
             last_err = f'HTTP {resp.status_code}'
             continue
         if binary:
+            if not resp.content:
+                last_err = 'empty body'
+                continue
             return resp.content
         resp.encoding = resp.apparent_encoding or 'utf-8'
+        if not resp.text.strip():
+            last_err = 'empty body'
+            continue
         return resp.text
     _counter['fail_streak'] += 1
+    if last_err == 'empty body':
+        _counter['empty_streak'] += 1
+        if _counter['empty_streak'] >= ABORT_AFTER:
+            raise StopCrawl(f'连续 {_counter["empty_streak"]} 次空返回，停压')
     if _counter['fail_streak'] >= ABORT_AFTER:
         raise StopCrawl(f'连续 {_counter["fail_streak"]} 次失败，最后错误 {last_err}')
     raise RuntimeError(f'{url} 取数失败: {last_err}')
@@ -128,7 +138,7 @@ def parse_jjfl(html: str) -> dict[str, float | None]:
 
 
 _FEE_LABELS = [('mgmt', '管理费'), ('cust', '托管费'), ('sales', '销售服务费')]
-_FEE_ROW = (r'\s*(?:年费率|固定费率|固定比例|费率)?\s*[：:＝=]?\s*[-—–]?\s*'
+_FEE_ROW = (r'\s*(?:年费率|固定费率|固定比例|费率|率)?\s*[：:＝=]?\s*[-—–]?\s*'
             r'([0-9]+(?:\.[0-9]+)?)\s*%')
 
 
@@ -507,6 +517,14 @@ def summarize(df: pl.DataFrame) -> dict:
         return {'n': s.len(), 'min': round(s.min(), 4), 'median': round(s.median(), 4),
                 'max': round(s.max(), 4)}
 
+    def hist_cov(t: str) -> dict:
+        d = df.filter(pl.col('tier') == t)
+        return {'total': d.height,
+                'covered': d.filter(pl.col('history_basis').is_in(
+                    ['single_version', 'multi_version'])).height,
+                'multi': d.filter(pl.col('has_fee_history')).height,
+                'not_checked': d.filter(pl.col('history_basis') == 'not_checked').height}
+
     return {
         'rows': df.height,
         'tier_counts': df['tier'].value_counts().sort('tier').to_dicts(),
@@ -516,6 +534,7 @@ def summarize(df: pl.DataFrame) -> dict:
         'all_cross_check': df['cross_check_status'].value_counts().to_dicts(),
         'core_history_multi': core.filter(pl.col('has_fee_history')).height,
         'core_history_window_covered': core.filter(pl.col('history_window_covered')).height,
+        'history_coverage_by_tier': {t: hist_cov(t) for t in ['core', 'extend', 'delisted']},
         'burden_current_col': dist('burden_current_pct'),
         'burden_segmented_col': dist('burden_segmented_pct'),
         'burden_basis': core['burden_basis'].value_counts().to_dicts(),
@@ -554,7 +573,8 @@ def write_outputs(df: pl.DataFrame) -> None:
         'core_coverage': f"{summary['core_with_fee']}/{summary['core_total']}",
         'cross_check': summary['core_cross_check'],
         'history_window_start': HISTORY_WINDOW_START.isoformat(),
-        'history_scope': 'core 153 只 + 退市日 >= 2023-07-03 的 delisted 6 只',
+        'history_scope': 'core 153 只 + extend 330 只 + 退市日 >= 2023-07-03 的 delisted 6 只',
+        'history_coverage': summary['history_coverage_by_tier'],
         'parse_tag': REPARSE_TAG,
         'files': {p.name: {'bytes': p.stat().st_size, 'sha256': sha(p)}
                   for p in [pq, STAGING / 'etf_fee.csv', STAGING / 'etf_fee_gaps.csv',
@@ -602,7 +622,12 @@ def main() -> None:
     ap.add_argument('--limit', type=int, default=None)
     ap.add_argument('--codes', type=str, default=None,
                     help='逗号分隔的 ts_code，指定后 history 阶段只取这些标的')
+    ap.add_argument('--throttle', type=float, default=None,
+                    help='单请求间隔秒数，默认 1.2')
     args = ap.parse_args()
+    if args.throttle is not None:
+        global THROTTLE
+        THROTTLE = args.throttle
     codes = [c.strip() for c in args.codes.split(',') if c.strip()] if args.codes else None
     STAGING.mkdir(parents=True, exist_ok=True)
     RAW.mkdir(parents=True, exist_ok=True)
