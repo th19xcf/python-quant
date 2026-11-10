@@ -5,10 +5,14 @@
 `logs/data_changelog.csv` 记录 `data/local_store/**` 下每个数据文件"何时、被哪个任务、从哪个哈希改成了哪个哈希"。
 
 - **只追加，不改历史行**：已有行是事实记录，任何任务都不得回写、重排、去重或修正旧行；需要纠正时追加一条新记录并说明原因。
-- 表头固定且顺序不变：`run_id,timestamp,task,action,path,bytes,sha256,prev_sha256,operator`。
+- 表头固定且顺序不变：`run_id,timestamp,task,action,path,bytes,sha256,prev_sha256,operator,reason`（`reason` 为 2026-11-10 新增末列，历史行该列为空）。
 - `action` 仅取 `create|update|delete`；`create` 的 `prev_sha256` 留空；`update` / `delete` 必须填覆盖前哈希。
-- `path` 为 `data/local_store` 下的相对路径；`timestamp` 取文件实际写入时间（脚本回填时用源文件 mtime，不要用当前时间冒充）。
+- `path` 为 `data/local_store` 下的相对路径；2026-11-10 起新增行改用**仓库相对路径**（如 `reports/...`、`data/local_store/...`），以覆盖 `reports/**` 的删除；历史行保持原样不回写。
+- `reason` 记录本次变更的成因，`delete` 必填（例如「一次性临时产物，pytest 残留」）。
+- `timestamp` 取文件实际写入时间（脚本回填时用源文件 mtime，不要用当前时间冒充）。
 - `task` 取任务目录名；确实无法归属时写 `unattributed`，不要臆造任务名。
+
+**唯一写入入口**：`src/data/changelog.py`。批量删除 `reports/**` 或 `data/local_store/**` 时，删之前调 `record_delete(path=..., task=..., reason=...)`（或用 CLI `python -m src.data.changelog --action delete --path ... --task ... --reason ...`），字段与续行由该模块统一生成，不要再手写 CSV 行。
 
 ## 2. 任务收口时的追加要求
 
