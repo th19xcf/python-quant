@@ -83,6 +83,24 @@ _EXT_SOURCE = {
     'evidence': COV_SOURCE_SEGMENT_EVIDENCE,
 }
 
+#: 人工裁定输入 ``raw/reviewed_coverage.parquet`` 的列（窗口逐只裁定结论）。
+_REVIEWED_COVERAGE_SCHEMA = {
+    'ts_code': pl.Utf8,
+    'coverage_start': pl.Date,
+    'coverage_end': pl.Date,
+    'source': pl.Utf8,
+    'evidence': pl.Utf8,
+    'decided_at': pl.Date,
+}
+
+#: 写进 ``coverage.json`` 的重放层说明。
+COVERAGE_REPLAY_NOTE = (
+    'reviewed_coverage：人工裁定的覆盖窗口逐只结论，最高优先级，套用在快照合并与'
+    '证据下延之后；只命中表内列出的标的，不改深市/沪市默认口径。删掉该文件后重跑 '
+    'build_store 会退回常规构建口径（深市=上市日/行情首行，沪市/北交所='
+    'max(上市日, 2005-01-01) 再按最早 ST 段下延），故不要单独删除它。'
+)
+
 #: 写进 ``coverage.json`` 的窗口口径说明；放进 summary 是为了重建时说明不丢。
 WINDOW_EXTENDED_NOTE = (
     'coverage_ext_segment_*：窗口下界取「最早裁定 ST 段起点」，不是上市日；'
@@ -262,6 +280,11 @@ def reviewed_conflicts_path(store_root: Path | str) -> Path:
 def reviewed_pending_path(store_root: Path | str) -> Path:
     """人工裁定输入：证据不足、待外部证据的段。"""
     return raw_dir(store_root) / 'reviewed_pending.parquet'
+
+
+def reviewed_coverage_path(store_root: Path | str) -> Path:
+    """人工裁定输入：覆盖窗口逐只结论（最高优先级重放层，可重建、幂等）。"""
+    return raw_dir(store_root) / 'reviewed_coverage.parquet'
 
 
 def pending_review_path(store_root: Path | str) -> Path:
@@ -948,17 +971,96 @@ def _extend_coverage_to_evidence(
         'skipped': skipped}
 
 
+def _input_timestamp(store_root: Path | str, as_of: date) -> datetime:
+    """确定性构建时间戳：取输入缓存的最新 mtime（截到秒）。
+
+    覆盖窗口每次重建都会重写 ``fetched_at``；若用 ``datetime.now()``，同输入两次
+    重建会产出不同字节，无法做「重建结果 == 正式表、SHA256 相等」的对拍，也就
+    无法用校验发现"重跑一次就静默回退"。改取输入（``raw/``、``supplement/``、
+    ``meta/st_status/``）的最大 mtime：输入不变则时间戳不变。
+    """
+    root = Path(store_root)
+    stamps: list[float] = []
+    for base in (raw_dir(root), st_dir(root) / 'supplement', root / 'meta' / 'st_status'):
+        if not base.is_dir():
+            continue
+        for path in base.rglob('*.parquet'):
+            try:
+                stamps.append(path.stat().st_mtime)
+            except OSError:  # pragma: no cover - 文件被并发删除时忽略
+                continue
+    if not stamps:
+        return datetime.combine(as_of, datetime.min.time())
+    return datetime.fromtimestamp(max(stamps)).replace(microsecond=0)
+
+
+def apply_reviewed_coverage(coverage_frame: pl.DataFrame,
+                            store_root: Path | str, today: date,
+                            run_at: datetime) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """把覆盖窗口的逐只人工裁定结论作为**最高优先级覆盖层**并入。
+
+    与 :func:`apply_reviewed_conflicts` 同理：常规构建对深市按上市日/行情首行起算、
+    对沪市/北交所按 2005 年可信起点起算，人工裁定过的窗口（下界取最早裁定 ST 段
+    起点）必须能从固定输入重放，否则下一次 ``build_store`` 会把结论悄悄退回。
+    只命中表内列出的标的，未列出的标的**一个字段都不动**。
+    """
+    path = reviewed_coverage_path(store_root)
+    if not path.is_file():
+        return coverage_frame, {'applied': 0, 'appended': 0}
+    reviewed = pl.read_parquet(path)
+    missing = set(_REVIEWED_COVERAGE_SCHEMA) - set(reviewed.columns)
+    if missing:
+        raise ValueError(f'{path} 缺列: {sorted(missing)}')
+    patch = reviewed.select(['ts_code', 'coverage_start', 'coverage_end', 'source']) \
+        .unique(subset=['ts_code'], keep='last')
+    bad = patch.filter(
+        pl.col('coverage_start').is_null()
+        | (pl.col('coverage_end').is_not_null()
+           & (pl.col('coverage_end') < pl.col('coverage_start'))))
+    if bad.height:
+        raise ValueError(f'{path} 有 {bad.height} 行窗口非法: {bad.head(5).to_dicts()}')
+    known = set(coverage_frame['ts_code'].to_list())
+    appended_codes = sorted(set(patch['ts_code'].to_list()) - known)
+    merged = coverage_frame.join(patch, on='ts_code', how='left', suffix='_rev')
+    merged = merged.with_columns(
+        pl.coalesce([pl.col('coverage_start_rev'), pl.col('coverage_start')])
+        .alias('coverage_start'),
+        pl.coalesce([pl.col('coverage_end_rev'), pl.col('coverage_end')])
+        .alias('coverage_end'),
+        pl.coalesce([pl.col('source_rev'), pl.col('source')]).alias('source'),
+    ).drop(['coverage_start_rev', 'coverage_end_rev', 'source_rev'])
+    appended = pl.DataFrame(
+        [{'ts_code': row['ts_code'], 'coverage_start': row['coverage_start'],
+          'coverage_end': row['coverage_end'] if row['coverage_end'] is not None else today,
+          'source': row['source'], 'fetched_at': run_at}
+         for row in patch.filter(pl.col('ts_code').is_in(appended_codes)).to_dicts()]
+        if appended_codes else [],
+        schema=_COVERAGE_SCHEMA)
+    merged = pl.concat([merged, appended], how='vertical_relaxed') \
+        .unique(subset=['ts_code'], keep='last').sort('ts_code')
+    return merged, {'applied': patch.height, 'appended': len(appended_codes)}
+
+
 def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
-                output_dir: Path | str | None = None) -> dict[str, Any]:
+                output_dir: Path | str | None = None,
+                as_of: date | None = None,
+                apply_coverage_replay: bool = True) -> dict[str, Any]:
     """从原始缓存重建区间表与覆盖窗口（幂等，原子替换）。
 
     ``output_dir`` 用于把重建结果写到另一目录（如临时目录）做一致性对拍，
     默认原地写入 ``store_root``。
+
+    ``as_of`` 固定「今天」（默认 ``date.today()``）；``apply_coverage_replay``
+    控制是否套用 ``raw/reviewed_coverage.parquet`` 覆盖窗口重放层（默认开）。
+    覆盖窗口的 ``fetched_at`` 取输入缓存最新 mtime 而非 ``datetime.now()``，
+    因此同一批输入 + 同一个 ``as_of`` 重跑得到的 ``st_coverage.parquet`` 逐字节
+    相同，可直接与正式表做 SHA256 对拍。
     """
     root = Path(store_root)
     out_root = Path(output_dir) if output_dir is not None else root
     rdir = raw_dir(root)
-    today = date.today()
+    today = as_of or date.today()
+    run_at = _input_timestamp(root, today)
     sz_raw = _load_frame(rdir / 'sz_change_name.parquet', _RAW_SZ_SCHEMA)
     notices = _load_frame(rdir / 'cninfo_notices.parquet', _RAW_NOTICE_SCHEMA)
     if sz_raw.height == 0 and notices.height == 0:
@@ -1011,7 +1113,7 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
                 code, segments, cov_end, today, SOURCE_CNINFO))
         coverage.append({'ts_code': code, 'coverage_start': cov_start,
                          'coverage_end': cov_end, 'source': COV_SOURCE_MERGED,
-                         'fetched_at': datetime.now()})
+                         'fetched_at': run_at})
 
     interval_frame = pl.DataFrame(intervals, schema=_INTERVAL_SCHEMA)
     coverage_frame = pl.DataFrame(coverage, schema=_COVERAGE_SCHEMA)
@@ -1058,6 +1160,17 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
     # 否则这些段在回测侧会被窗口裁掉、等于合并不生效。
     coverage_frame, ext_stats = _extend_coverage_to_evidence(
         coverage_frame, frame, listing_evidence)
+    # 人工裁定的窗口结论作为最高优先级重放层：只命中表内标的，未列出的不动；
+    # 关闭时行为与旧版完全一致（深市按上市日、沪市/北交所按 2005 可信起点）。
+    if apply_coverage_replay:
+        coverage_frame, replay_stats = apply_reviewed_coverage(
+            coverage_frame, root, today, run_at)
+    else:
+        replay_stats = {'applied': 0, 'appended': 0}
+    # 覆盖窗口的 fetched_at 统一取确定性构建时间戳（同输入重跑逐字节一致），
+    # 来源信息保留在 source 列里，不靠时间戳区分。
+    coverage_frame = coverage_frame.with_columns(
+        pl.lit(run_at).alias('fetched_at')).sort('ts_code')
 
     _write_parquet_atomic(frame, intervals_path(out_root))
     _write_parquet_atomic(coverage_frame, coverage_path(out_root))
@@ -1085,6 +1198,11 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
         'coverage_extended_rows': ext_stats['changed'],
         'coverage_extended_by_source': ext_stats['by_source'],
         'coverage_extension_skipped': ext_stats['skipped'][:200],
+        'coverage_replay_applied': replay_stats['applied'],
+        'coverage_replay_appended': replay_stats['appended'],
+        'coverage_replay_enabled': bool(apply_coverage_replay),
+        'coverage_replay_note': COVERAGE_REPLAY_NOTE,
+        'deterministic_run_at': run_at.isoformat(timespec='seconds'),
         'window_extended_note': WINDOW_EXTENDED_NOTE,
     }
     coverage_json_path(out_root).write_text(
