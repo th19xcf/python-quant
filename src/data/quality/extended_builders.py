@@ -19,9 +19,13 @@ r"""外部依赖数据契约的本地构建器（停复牌 / 行业 PIT / 指数
   口径：对 ``meta/industry/industry_YYYYMMDD.parquet`` 日快照做变更点抽取，
   只写生效日与失效日。本地快照只有最近几天，故 ``complete=false``，契约
   如实保持 ``partial``。
-- **指数成分进出区间表** ``meta/index_membership/membership_intervals.parquet``
-  口径：每日抓一次中证指数官方成分快照（``snapshots/``），再对快照序列做
-  进出差分。首份快照的纳入日未知 -> ``in_date_known=false``，不假装知道。
+- **指数成分进出区间表** ``meta/index_members/membership_intervals.parquet``
+  口径：对 ``meta/index_members/index_weight_monthly.parquet``（tushare 月末
+  成分快照，6 只指数）按「在该期在册 / 不在册」的月度差分推出进出区间，
+  连续在册的合并为一段；首个观测期就在册的 ``in_date`` 取区间起点并标
+  ``in_date_known=false``（真实纳入日早于或等于该日），末次在册且仍在册的
+  ``out_date`` 留空。``meta/index_membership/snapshots/`` 的官方日快照只作
+  原始留档，不再参与派生（旧的两天快照差分表 out_date 全空，已废弃）。
 
 约定
 ====
@@ -66,6 +70,9 @@ _EXCHANGE_TO_MARKET = {
     '深圳证券交易所': 'SZ',
     '北京证券交易所': 'BJ',
 }
+#: 指数成分区间表的唯一权威源（tushare 月末成分快照）
+_WEIGHT_REL = 'meta/index_members/index_weight_monthly.parquet'
+_WEIGHT_SOURCE = 'tushare.index_weight'
 
 _SUSPENSION_SCHEMA: dict[str, Any] = {
     'ts_code': pl.String, 'trade_date': pl.Date, 'asset_class': pl.String,
@@ -112,14 +119,6 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n',
                    encoding='utf-8')
     os.replace(tmp, path)
-
-
-def _as_date(value: Any) -> date | None:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    return None
 
 
 def _quote_dates(path: Path) -> list[date]:
@@ -405,75 +404,89 @@ def _fetch_membership_snapshot(index_code: str) -> tuple[pl.DataFrame, date] | N
     }, orient='row'), snapshot_date
 
 
-def _load_membership_snapshots(
-    snapshot_dir: Path,
-) -> dict[date, dict[str, set[str]]]:
-    snapshots: dict[date, dict[str, set[str]]] = {}
-    if not snapshot_dir.is_dir():
-        return snapshots
-    for path in sorted(snapshot_dir.glob('snapshot_*.parquet')):
-        try:
-            frame = pl.read_parquet(path).select(
-                ['snapshot_date', 'index_code', 'ts_code'])
-        except (OSError, ValueError, TypeError, PolarsError) as exc:
-            logger.warning(f'成分快照不可读，跳过 {path.name}: {exc}')
+def _parse_yyyymmdd(raw: Any) -> date | None:
+    """``20261030`` / ``2026-10-30`` -> date；不可解析返回 None。"""
+    text = str(raw or '').strip().replace('-', '')
+    if len(text) != 8 or not text.isdigit():
+        return None
+    try:
+        return date(int(text[:4]), int(text[4:6]), int(text[6:]))
+    except ValueError:
+        return None
+
+
+def _normalize_index_code(raw: str) -> str:
+    """``000300.SH`` -> ``000300``；与契约表既有的指数代码口径保持一致。"""
+    head, _, tail = str(raw).partition('.')
+    return head if tail.upper() in ('SH', 'SZ', 'BJ', 'CSI') else str(raw)
+
+
+def _load_weight_panels(
+    path: Path,
+) -> tuple[dict[str, list[tuple[date, set[str]]]], int]:
+    """读 ``index_weight_monthly``，按指数返回按期排序的成分集合序列。"""
+    try:
+        frame = pl.read_parquet(
+            path, columns=['index_code', 'ts_code', 'trade_date'])
+    except (OSError, ValueError, TypeError, PolarsError) as exc:
+        raise ValueError(f'指数成分月度快照不可读 {path}: {exc}') from exc
+
+    panels: dict[str, dict[date, set[str]]] = {}
+    skipped = 0
+    for index_code, ts_code, raw_day in frame.iter_rows():
+        day = _parse_yyyymmdd(raw_day)
+        if day is None:
+            skipped += 1
             continue
-        for day, index_code, ts_code in frame.iter_rows():
-            resolved = _as_date(day)
-            if resolved is None:
-                continue
-            snapshots.setdefault(resolved, {}).setdefault(
-                str(index_code), set()).add(str(ts_code))
-    return snapshots
+        panels.setdefault(_normalize_index_code(index_code), {}).setdefault(
+            day, set()).add(str(ts_code))
+    return {code: sorted(periods.items()) for code, periods in panels.items()}, skipped
 
 
 def _intervals_for_index(
-    index_code: str, ordered: Sequence[tuple[date, dict[str, set[str]]]],
+    index_code: str, timeline: Sequence[tuple[date, set[str]]],
 ) -> list[tuple[Any, ...]]:
-    """对单只指数的快照序列做进出差分，返回区间行。"""
-    timeline = [(day, snapshot.get(index_code, set())) for day, snapshot in ordered]
+    """月度在册序列做进出差分：连续在册合并一段，末段仍在册则 out_date 为空。"""
+    dates = [day for day, _members in timeline]
     universe: set[str] = set()
     for _day, members in timeline:
         universe |= members
 
-    def _known(position: int) -> bool:
-        """前一份快照与当前快照相邻 -> 变更日可精确到当前快照日。"""
-        if position <= 0:
-            return False
-        return (timeline[position][0] - timeline[position - 1][0]).days == 1
-
     rows: list[tuple[Any, ...]] = []
     for ts_code in sorted(universe):
-        in_date: date | None = None
-        in_pos = 0
-        for pos, (day, members) in enumerate(timeline):
+        start: int | None = None
+        for pos, (_day, members) in enumerate(timeline):
             present = ts_code in members
-            if present:
-                if in_date is None:
-                    in_date, in_pos = day, pos
-                continue
-            if in_date is None:
-                continue
-            rows.append((
-                f'{index_code}:{ts_code}:{in_date:%Y%m%d}_{in_pos}', index_code,
-                ts_code, in_date, day, _known(in_pos), _known(pos), 'csindex',
-            ))
-            in_date = None
-        if in_date is not None:
-            rows.append((
-                f'{index_code}:{ts_code}:{in_date:%Y%m%d}_{in_pos}', index_code,
-                ts_code, in_date, None, _known(in_pos), False, 'csindex',
-            ))
+            if present and start is None:
+                start = pos
+            elif not present and start is not None:
+                rows.append(_interval_row(index_code, ts_code, dates, start, pos))
+                start = None
+        if start is not None:
+            rows.append(_interval_row(index_code, ts_code, dates, start, None))
     return rows
+
+
+def _interval_row(index_code: str, ts_code: str, dates: Sequence[date],
+                  start: int, stop: int | None) -> tuple[Any, ...]:
+    """``start`` 是首个在册期，``stop`` 是首个不在册期（None 表示仍在册）。"""
+    in_date = dates[start]
+    out_date = dates[stop] if stop is not None else None
+    # 首期就在册 -> 真实纳入日不晚于该期，只能左截断，不假装精确
+    in_date_known = start > 0
+    return (
+        f'{index_code}:{ts_code}:{in_date:%Y%m%d}', index_code, ts_code,
+        in_date, out_date, in_date_known, stop is not None, _WEIGHT_SOURCE,
+    )
 
 
 def build_index_membership(
     root: Path | str, *, indices: Iterable[tuple[str, str]] = DEFAULT_INDICES,
     allow_remote: bool = False, commit: bool = False,
 ) -> dict[str, Any]:
-    """抓取指数成分快照，并对快照序列做进出差分。"""
+    """由指数成分月度快照派生进出区间表（官方日快照仅作原始留档）。"""
     store = Path(root)
-    snapshot_dir = _path(store, 'index_membership').parent / 'snapshots'
+    snapshot_dir = store / 'meta' / 'index_membership' / 'snapshots'
     fetched = 0
     if allow_remote:
         for symbol, ts_code in indices:
@@ -488,31 +501,41 @@ def build_index_membership(
             fetched += 1
             logger.info(f'[extended] {ts_code} 成分 {frame.height} 只'
                         f'（{snapshot_date}）{"已落盘" if commit else "dry-run 未落盘"}')
-    elif not snapshot_dir.is_dir():
-        logger.warning('[extended] 未给 --allow-remote 且无本地成分快照，'
-                       '指数成分契约保持 missing')
 
-    snapshots = _load_membership_snapshots(snapshot_dir)
-    if not snapshots:
-        return {'dataset': 'index_membership', 'snapshots': 0, 'intervals': 0,
-                'fetched': fetched, 'committed': bool(commit)}
+    weight_path = store / _WEIGHT_REL
+    if not weight_path.is_file():
+        raise FileNotFoundError(
+            f'缺少指数成分月度快照，无法派生区间表: {weight_path}')
+    panels, skipped = _load_weight_panels(weight_path)
+    if not panels:
+        raise ValueError(f'{weight_path} 无有效 (指数, 期, 成分) 记录')
 
-    ordered = sorted(snapshots.items())
-    index_codes = sorted({code for snapshot in snapshots.values()
-                          for code in snapshot})
+    index_codes = sorted(panels)
     rows: list[tuple[Any, ...]] = []
+    period_counts: dict[str, int] = {}
     for index_code in index_codes:
-        rows.extend(_intervals_for_index(index_code, ordered))
+        timeline = panels[index_code]
+        period_counts[index_code] = len(timeline)
+        rows.extend(_intervals_for_index(index_code, timeline))
 
     frame = _frame(rows, _MEMBERSHIP_SCHEMA)
-    first_day, last_day = ordered[0][0], ordered[-1][0]
+    all_days = [day for timeline in panels.values() for day, _m in timeline]
+    first_day, last_day = min(all_days), max(all_days)
+    open_intervals = (int(frame.filter(pl.col('out_date').is_null()).height)
+                      if frame.height else 0)
+    censored = (int(frame.filter(~pl.col('in_date_known')).height)
+                if frame.height else 0)
     summary: dict[str, Any] = {
         'dataset': 'index_membership',
-        'snapshots': len(ordered),
+        'source': _WEIGHT_SOURCE,
+        'snapshots': len(all_days),
         'indices': len(index_codes),
+        'index_codes': index_codes,
+        'periods': period_counts,
         'intervals': frame.height,
-        'open_intervals': (int(frame.filter(pl.col('out_date').is_null()).height)
-                           if frame.height else 0),
+        'open_intervals': open_intervals,
+        'left_censored_intervals': censored,
+        'skipped_rows': skipped,
         'fetched': fetched,
         'start': first_day.isoformat(),
         'end': last_day.isoformat(),
@@ -524,28 +547,31 @@ def build_index_membership(
     _write_frame(_path(store, 'index_membership'), frame)
     _write_json(_coverage_path(store, 'index_membership'), {
         'dataset': 'index_membership',
-        'method': 'csindex_daily_snapshot_diff',
-        'authority': 'official_snapshot',
+        'method': 'monthly_weight_snapshot_diff',
+        'authority': 'tushare_index_weight',
+        'source': _WEIGHT_REL,
         'start': summary['start'],
         'end': summary['end'],
-        'complete': False,
+        'complete': True,
         'generated_at': datetime.now().isoformat(timespec='seconds'),
-        'snapshots': len(ordered),
+        'periods': period_counts,
         'indices': index_codes,
         'intervals': frame.height,
-        'incomplete_reason': (
-            f'只有 {len(ordered)} 份官方成分快照（{summary["start"]} 起）；'
-            '首份快照的纳入日未知，已标 in_date_known=false'
-        ),
+        'open_intervals': open_intervals,
+        'left_censored_intervals': censored,
+        'resolution': 'monthly',
         'caveats': [
-            'in_date 记录「首次观测到在成分内」的快照日，不等于真实纳入日；'
-            'in_date_known=false 表示纳入日只能界定在相邻快照之间',
-            '快照间断期间发生的进出无法定位到精确日期',
-            'PIT 查询早于 coverage.start 应返回空，禁止用最新成分回填历史',
+            '分辨率为月末最后交易日：in_date 是首个在册快照日，out_date 是'
+            '首个不在册快照日，真实调仓日落在相邻两个快照日之间',
+            'in_date_known=false 表示该票在面板首期已在册，真实纳入日不晚于该期'
+            '（左截断），下游据此判断是否可用于早期 PIT 查询',
+            'out_date 为空表示截至 coverage.end 仍在成分内，不等于永不退出',
+            '旧表 meta/index_membership/membership_intervals.parquet 由 2 天官方'
+            '快照差分得到、out_date 全空，已废弃，不再被契约读取',
         ],
     })
     logger.info(f'[extended] 指数成分区间表已落盘 {frame.height} 段，'
-                f'{len(ordered)} 份快照 / {len(index_codes)} 只指数')
+                f'{len(index_codes)} 只指数 / {len(all_days)} 期')
     return summary
 
 

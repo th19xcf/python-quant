@@ -322,13 +322,14 @@ cp .env.example .env
 |---|---|---|---|
 | 停复牌日表 | `meta/suspension/suspension_daily.parquet` | 交易日历 − 实际有 bar 的交易日；只登记停牌行 | `ready`（95.4 万行 / 4,300 只标的，`complete=true`） |
 | 行业 PIT 区间表 | `meta/industry_pit/industry_pit.parquet` | 对日快照做变更点抽取，不外推历史 | `partial`（快照仅 3 份，`complete=false`） |
-| 指数成分进出区间表 | `meta/index_membership/membership_intervals.parquet` | 每日抓中证官方成分快照后做进出差分 | `partial`（1 份快照，`complete=false`） |
+| 指数成分进出区间表 | `meta/index_members/membership_intervals.parquet` | 月度权重面板做在册/不在册差分，相邻同一状态合并成区间 | `ready`（7,935 行 / 6 个指数 / 2005-04-29 ~ 2026-10-30，`out_date` 非空 74.8%、左删失 1,986，`complete=true`） |
 
 停牌表用 `confidence` 区分可信度：`high` 可用于「停牌不可买/不可卖」判断；
 `low` 来自 `stale_status` 已登记停更的标的（31.3 万行），只能用于「该日无成交」
-这类宽松判断。行业 PIT 与指数成分的 `complete=false` 是**如实声明**：前者只有
-最近几天快照，后者只有 1 份官方快照且首份快照的纳入日未知（`in_date_known=false`）。
-在补齐之前，「行业中性化」「指数成分内选股」的历史回测仍然不能被静默视为成立。
+这类宽松判断。行业 PIT 的 `complete=false` 是**如实声明**：只有最近几天快照。
+指数成分表已改为月度权重面板差分，`complete=true`，但分辨率是月末最后交易日，
+真实调仓日落在相邻两个快照日之间，且面板首期就在册的标的记为 `in_date_known=false`（左删失）。
+在补齐之前，「行业中性化」的历史回测仍然不能被静默视为成立。
 覆盖声明的 `end` 超过 10 天未更新会让巡检从 `ready` 降级为 `partial`，
 避免「建过一次就永远就绪」。
 

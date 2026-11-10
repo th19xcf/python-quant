@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 
-"""从 tushare ``namechange`` 重建 ST 历史区间表（与现有落盘文件同 schema）。
+"""从 tushare ``namechange`` 重建 ST 名称变更区间（合并的输入，非权威表）。
 
 产物（默认只比对，``--apply`` 才写）::
 
-    data/local_store/meta/st_history.parquet
+    data/local_store/meta/st/raw/tushare_namechange_intervals.parquet
+
+**该文件不是权威 ST 区间表**：它只是 tushare 名称变更的原始汇总，由人工裁定
+后以 ``meta/st/raw/reviewed_conflicts.parquet`` 覆盖层并入
+``meta/st/st_intervals.parquet``（见 ``src.data.st_history.apply_reviewed_conflicts``）。
+不要直接读它做回测判定。
 
 schema（6 列，与 2026-11-09 落盘文件一致）::
 
@@ -59,7 +64,8 @@ if str(ROOT) not in sys.path:
 
 from src.data.atomic_write import write_parquet_atomic  # noqa: E402
 
-TARGET = ROOT / 'data' / 'local_store' / 'meta' / 'st_history.parquet'
+TARGET = (ROOT / 'data' / 'local_store' / 'meta' / 'st' / 'raw'
+          / 'tushare_namechange_intervals.parquet')
 BACKUP_DIR = ROOT / 'data' / 'local_store' / '_backup'
 RAW_DIR = ROOT / 'tmp' / 'st_namechange_raw'
 TOKEN_FILE = ROOT / '.secrets' / 'tushare_token.txt'
@@ -192,11 +198,12 @@ def _pro_api() -> Any:
     return ts.pro_api(token)
 
 
-def _fetch_page(pro: Any, offset: int) -> list[dict[str, Any]]:
+def _fetch_page(pro: Any, offset: int,
+                fields: Iterable[str] = RAW_FIELDS) -> list[dict[str, Any]]:
     last_exc: Exception | None = None
     for attempt in range(4):
         try:
-            frame = pro.namechange(fields=','.join(RAW_FIELDS),
+            frame = pro.namechange(fields=','.join(fields),
                                    limit=PAGE_LIMIT, offset=offset)
             if frame is None:
                 return []
@@ -211,9 +218,25 @@ def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
+def _page_covers(part: Path, fields: Iterable[str]) -> bool:
+    """缓存分片是否存在且已覆盖所需字段（缺列时需重拉该页）。"""
+    if not part.is_file():
+        return False
+    try:
+        return set(pl.read_parquet(part).columns) >= set(fields)
+    except Exception:  # noqa: BLE001  坏分片按缺失处理
+        return False
+
+
 def fetch_raw(cache_dir: Path, *, offline: bool = False,
-              refresh: bool = False) -> pl.DataFrame:
-    """抓取（或读缓存）全量名称变更史；返回原始 5 列。"""
+              refresh: bool = False,
+              fields: Iterable[str] = RAW_FIELDS) -> pl.DataFrame:
+    """抓取（或读缓存）全量名称变更史；默认返回原始 5 列。
+
+    ``fields`` 可放宽到 tushare ``namechange`` 的全部字段（如追加
+    ``ann_date``）；缓存分片缺列时会自动重拉该页，不会拿旧分片冒充。
+    """
+    wanted = tuple(fields)
     cache_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = cache_dir / 'manifest.json'
     manifest: dict[str, Any] = {}
@@ -224,7 +247,7 @@ def fetch_raw(cache_dir: Path, *, offline: bool = False,
     offset = 0
     while True:
         part = cache_dir / f'part-{offset:07d}.parquet'
-        if not refresh and part.is_file():
+        if not refresh and _page_covers(part, wanted):
             rows = pl.read_parquet(part).height
             pages.add(offset)
         else:
@@ -232,24 +255,27 @@ def fetch_raw(cache_dir: Path, *, offline: bool = False,
                 raise RuntimeError(f'离线模式缺少缓存分片: {part}')
             if pro is None:
                 pro = _pro_api()
-            records = _fetch_page(pro, offset)
+            records = _fetch_page(pro, offset, wanted)
             rows = len(records)
             if rows:
                 write_parquet_atomic(
-                    pl.DataFrame(records, schema=RAW_SCHEMA, strict=False), part)
+                    pl.DataFrame(records, schema=dict.fromkeys(wanted, pl.Utf8),
+                                 strict=False), part)
                 time.sleep(REQUEST_INTERVAL)
             pages.add(offset)
             _write_manifest(manifest_path, {
                 'pages': sorted(pages), 'page_size': PAGE_LIMIT,
+                'fields': list(wanted),
                 'fetched_at': datetime.now().isoformat(timespec='seconds')})
         if rows < PAGE_LIMIT:
             break
         offset += PAGE_LIMIT
     frames = [pl.read_parquet(path) for path in sorted(cache_dir.glob('part-*.parquet'))]
     raw = pl.concat(frames, how='vertical_relaxed') if frames \
-        else pl.DataFrame(schema=RAW_SCHEMA)
+        else pl.DataFrame(schema=dict.fromkeys(wanted, pl.Utf8))
     _write_manifest(manifest_path, {
         'pages': sorted(pages), 'page_size': PAGE_LIMIT, 'rows': raw.height,
+        'fields': list(wanted),
         'complete': True,
         'fetched_at': datetime.now().isoformat(timespec='seconds')})
     return raw

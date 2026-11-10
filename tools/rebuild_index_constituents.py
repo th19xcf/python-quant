@@ -5,10 +5,14 @@
   * 中证指数官网（csindex.com.cn）：现行成分文件 cons.xls、指数调样公告（正文内联名单或附件 PDF/XLS）
   * baostock：沪深300 / 中证500 的按日历史成分快照（中证1000 无此数据）
 
-产物：
-  data/local_store/meta/index_constituents/intervals.parquet
-  data/local_store/meta/index_constituents/manifest.json
-  data/local_store/meta/index_constituents/raw/**
+产物（重建证据，非权威表）：
+  data/local_store/meta/index_members/rebuild/intervals.parquet
+  data/local_store/meta/index_members/rebuild/manifest.json
+  data/local_store/meta/index_members/rebuild/raw/**
+
+权威成分区间表是 ``meta/index_members/membership_intervals.parquet``
+（由 ``index_weight_monthly`` 派生，见 ``src/data/quality/extended_builders.py``）；
+本脚本的输出只用于交叉校验其精度，不写权威路径，避免同一事实出现两份表示。
 
 用法：
   python tools/rebuild_index_constituents.py --phase fetch
@@ -33,7 +37,7 @@ import pandas as pd
 import requests
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT_DIR = ROOT / "data" / "local_store" / "meta" / "index_constituents"
+OUT_DIR = ROOT / "data" / "local_store" / "meta" / "index_members" / "rebuild"
 RAW_DIR = OUT_DIR / "raw"
 CONS_DIR = RAW_DIR / "csindex" / "cons"
 ANN_DIR = RAW_DIR / "csindex" / "announcements"
@@ -911,7 +915,7 @@ def main() -> None:
         }
 
     manifest = {
-        "dataset": "index_constituents",
+        "dataset": "index_members_rebuild",
         "generated_at": now_iso(),
         "method": {
             "000300": "baostock 月末成分快照 + 递归二分定位变更日（有效成分/全量）",

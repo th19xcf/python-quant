@@ -60,8 +60,15 @@ CRITICAL_FILES: tuple[str, ...] = (
     'data/local_store/factors/fund_covered_codes.txt',
     # 元数据与码表
     'data/local_store/meta/names.json',
+    # 名称历史（PIT 唯一权威表）+ 覆盖度声明；tushare 重建后需再跑
+    # tools/fix_name_history_end_dates.py 与 tools/infer_post_g_segments.py
+    'data/local_store/meta/name_history.parquet',
+    'data/local_store/meta/name_history_coverage.json',
     'data/local_store/meta/daily_index.parquet',
     'data/local_store/meta/state.json',
+    # 股票基础表：2026-11-10 前只有读取方、没有写入方（内容由一次性脚本拼出），
+    # 丢失无法重建；现由 tools/build_stock_basic.py 从本地行情重建，仍需备份
+    'data/local_store/meta/stock_basic.parquet',
     'data/local_store/meta/factors/stock_shares.parquet',
     'data/local_store/meta/factors/stock_shares.meta.json',
     'data/local_store/meta/anomalies/quality_exemptions.csv',
@@ -87,6 +94,8 @@ CRITICAL_DIRS: tuple[str, ...] = (
     'data/local_store/meta/events',
     'data/local_store/meta/suspension',
     'data/local_store/meta/index_membership',
+    # 指数成分权威表（index_weight_monthly + 派生的 membership_intervals）
+    'data/local_store/meta/index_members',
     'data/local_store/meta/industry_pit',
     'data/local_store/meta/st',
     'data/local_store/factors/rebuild',

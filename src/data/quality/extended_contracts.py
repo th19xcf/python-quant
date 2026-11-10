@@ -89,12 +89,18 @@ CONTRACTS: tuple[ContractSpec, ...] = (
     ContractSpec(
         key='index_membership',
         label='指数成分进出区间表',
-        path='meta/index_membership/membership_intervals.parquet',
+        # 唯一权威表示：由 ``meta/index_members/index_weight_monthly.parquet``
+        # （tushare 月末成分快照，6 指数，2009 起）按月差分派生，带真实 out_date。
+        # 旧 ``meta/index_membership/membership_intervals.parquet`` 是「仅 2 天
+        # 官方快照差分」的残件（out_date 全空），不再被本契约读取。
+        path='meta/index_members/membership_intervals.parquet',
         required_columns=('index_code', 'ts_code', 'in_date', 'out_date'),
         grain='(index_code, ts_code, in_date)',
-        coverage_path='meta/index_membership/coverage.json',
+        coverage_path='meta/index_members/coverage.json',
         source_candidates=('中证指数官网', '沪深交易所指数成分公告'),
         impact_if_missing='指数成分内选股用当前成分回测历史，引入成分股幸存者偏差',
+        # 源是月度快照，月末最后交易日到观察日天然可滞后近一个月
+        max_lag_days=40,
     ),
 )
 

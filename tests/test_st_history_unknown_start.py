@@ -27,19 +27,19 @@ def _write_quotes(root, code, first):
     store.flush_meta()
 
 
-def test_missing_listing_is_excluded_from_coverage(tmp_path):
-    """无上市日 → 记 unknown_start，不写覆盖行，更不得造出 1990 起的窗口。"""
+def test_missing_listing_uses_earliest_evidence_not_1990(tmp_path):
+    """无行情/上市日 → 以最早名称变更日为窗口起点，绝不用 1990 兜底。"""
     root = tmp_path / 'store'
     _seed_sz_raw(root)
 
     summary = st_history.build_store(root)
 
-    assert summary['unknown_start_count'] == 1
-    assert summary['unknown_start_codes'] == ['000001.SZ']
-    assert summary['coverage_rows'] == 0
-    assert summary['interval_rows'] == 0
+    assert summary['unknown_start_count'] == 0
     coverage = st_history.load_coverage(root)
-    assert coverage is not None and coverage.height == 0
+    assert coverage is not None and coverage.height == 1
+    row = coverage.to_dicts()[0]
+    assert row['coverage_start'] == date(2005, 6, 1)
+    assert row['coverage_start'] != date(1990, 1, 1)
 
 
 def test_known_listing_starts_at_listing_not_1990(tmp_path):

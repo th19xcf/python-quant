@@ -12,15 +12,19 @@ E:\\www\\tmp\\factor_eval_20261105\\evaluate.py）。
 - 评估辅助文件 ``metrics.json`` / ``factor_metrics.csv`` /
   ``factor_metrics.json`` / ``factor_corr.csv`` 写入工作目录
 
-历史行业口径：默认取 ``<store>/meta/industry`` 下最新的
-``industry_YYYYMMDD.parquet``；要复现 2026-11-05 的首版产物需显式传
+历史行业口径：与生产同源——调用 ``src.data.industry.load_snapshot`` 取
+「不晚于观察日的最新中国行业快照」（与实时选股同一选择器、同一排除规则），
+不再固定某一版快照。需要复现旧结果时显式传
 ``--industry-file .../industry_20261105.parquet``。
+
+注意 ``meta/industry/industry_20261105_v2.parquet`` 是历史候选版本，文件名
+日期后带 ``_v2`` 后缀，无法解析为日期，``load_snapshot`` 永远不会选中它；
+本脚本的 ``--industry-file`` 也不会自动回退到它，它不参与自动选择。
 """
 from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -38,6 +42,7 @@ from src.advice.fundamental_factors import (  # noqa: E402
     FUNDAMENTAL_COLUMNS,
     compute_fundamental_factors,
 )
+from src.data.industry import load_snapshot  # noqa: E402
 
 DATA_DIR = REPO_ROOT / 'data' / 'local_store'
 DEFAULT_WORK_DIR = REPO_ROOT / 'reports' / 'research_tmp'
@@ -74,14 +79,20 @@ def _require(path: Path, hint: str) -> Path:
     return path
 
 
-def latest_industry_file(store: Path) -> Path:
-    cands = sorted(
-        p for p in (store / 'meta' / 'industry').glob('industry_*.parquet')
-        if re.fullmatch(r'industry_\d{8}\.parquet', p.name))
-    if not cands:
+def load_industry_frame(
+    store: Path, as_of: object = None,
+) -> tuple[pl.DataFrame, str]:
+    """取行业截面，选片口径与生产（实时选股）完全一致。
+
+    走 ``src.data.industry.load_snapshot``：不晚于 ``as_of`` 的最新
+    ``industry_YYYYMMDD.parquet``。``industry_YYYYMMDD_vN.parquet`` 的日期
+    无法解析，天然被排除，因此 ``industry_20261105_v2`` 不参与自动选择。
+    """
+    frame, day = load_snapshot(store, as_of)
+    if frame is None or day is None:
         raise SystemExit(
-            f'未找到行业快照: {store / "meta" / "industry"}/industry_YYYYMMDD.parquet')
-    return cands[-1]
+            f'未找到可用行业快照: {store / "meta" / "industry"}')
+    return frame.select(['code', 'industry_l1']), day.isoformat()
 
 
 def winsorize(x: np.ndarray, lo: float = 0.01, hi: float = 0.99) -> np.ndarray:
@@ -225,8 +236,8 @@ def main() -> int:
     elig_path = _require(work_dir / 'eligible_monthly.parquet',
                          '请先运行 tools/research/prepare_monthly_samples.py')
     ind_path = (Path(args.industry_file).resolve()
-                if args.industry_file else latest_industry_file(store))
-    if not ind_path.exists():
+                if args.industry_file else None)
+    if ind_path is not None and not ind_path.exists():
         raise SystemExit(f'缺少行业快照: {ind_path}')
 
     pv = pl.read_parquet(pv_path)
@@ -238,8 +249,14 @@ def main() -> int:
         pl.col('float_share').is_not_null() & (pl.col('float_share') > 0)
     ).unique(subset=['ts_code', 'effective_date'], keep='last') \
      .sort(['ts_code', 'effective_date'])
-    ind = pl.read_parquet(ind_path, columns=['code', 'industry_l1']).rename(
-        {'code': 'ts_code', 'industry_l1': 'industry'})
+    if ind_path is not None:
+        ind = pl.read_parquet(ind_path, columns=['code', 'industry_l1']).rename(
+            {'code': 'ts_code', 'industry_l1': 'industry'})
+        logger.warning(f'[research] 行业截面显式指定: {ind_path.name}')
+    else:
+        ind, ind_day = load_industry_frame(store)
+        ind = ind.rename({'code': 'ts_code', 'industry_l1': 'industry'})
+        logger.warning(f'[research] 行业截面（与生产同源）: industry_{ind_day}')
 
     df = (pv.join(elig, on=['ts_code', 'date'], how='inner')
           .join(ind, on='ts_code', how='left')

@@ -158,6 +158,31 @@ def test_st_interval_is_asof_and_recovers_after_lifting() -> None:
     assert engine.eligible('600001.SH', '2025-06-02', 'strict') == (True, [])
 
 
+def test_unknown_st_window_is_admitted_with_pending_flag() -> None:
+    """窗口外 unknown 仍然可买，但要留 ``pending_st_history`` 诊断痕迹。"""
+    info = make_code(
+        '600010.SH',
+        start=date(2003, 1, 2),
+        end=date(2024, 6, 3),
+        quotes=[date(2003, 1, 2), date(2024, 6, 3)],
+    )
+    engine = make_engine([info])
+
+    # 2003-01-02 早于 st_default 起点（2005-01-01）→ unknown
+    ok, reasons = engine.eligible('600010.SH', '2003-01-02', 'standard')
+    assert ok is True
+    assert reasons == ['pending_st_history']
+    ok, reasons = engine.eligible('600010.SH', '2003-01-02', 'strict')
+    assert ok is True
+    assert reasons == ['pending_st_history']
+    # full 档不做 ST 判定，不带该标记
+    assert engine.eligible('600010.SH', '2003-01-02', 'full') == (True, [])
+
+    # 窗口内且未命中区间 → 确认非 ST，不带标记
+    assert engine.eligible('600010.SH', '2024-06-03', 'standard') == (True, [])
+    assert engine.eligible('600010.SH', '2024-06-03', 'strict') == (True, [])
+
+
 def test_suspected_st_is_marked_but_not_admitted_by_default() -> None:
     """疑似 ST 默认不参与 strict，开关打开后才剔除。"""
     info = make_code('600002.SH', quotes=[date(2024, 6, 3)])

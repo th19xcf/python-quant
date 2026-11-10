@@ -292,6 +292,39 @@
       "note": "names.json 内部无时间戳，只能取文件 mtime；覆盖数为键数（含股票/基金/指数/债券）。"
     },
     {
+      "key": "stock_basic",
+      "label": "股票基础信息表",
+      "category": "基础资料",
+      "freshness_field": "file_mtime",
+      "source": {
+        "kind": "file_mtime",
+        "path": "meta/stock_basic.parquet"
+      },
+      "cadence": {
+        "unit": "calendar_day",
+        "expected_interval": 7,
+        "warn_multiple": 2,
+        "critical_multiple": 4,
+        "label": "每周（自然日）"
+      },
+      "coverage": {
+        "count": {
+          "kind": "parquet_distinct",
+          "path": "meta/stock_basic.parquet",
+          "column": "ts_code"
+        },
+        "expected": {
+          "kind": "meta_distinct",
+          "path": "meta/daily_index.parquet",
+          "filter": {"column": "data_type", "value": "stock"},
+          "column": "ts_code"
+        },
+        "min_ratio": 0.95,
+        "critical_ratio": 0.8
+      },
+      "note": "表内无时间戳，只能取文件 mtime；新增上市/退市须一周内由 tools/build_stock_basic.py 重建。覆盖分母取 daily_index 的股票代码数，只用于兜住「行情已更新、基础表大面积缺行」这类粗粒度异常。"
+    },
+    {
       "key": "stock_turnover",
       "label": "个股换手率",
       "category": "因子",

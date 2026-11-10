@@ -57,7 +57,8 @@ DAILY_DIRS: tuple[str, ...] = (
     'data/local_store/meta/st',
     'data/local_store/meta/industry_pit',
     'data/local_store/meta/index_membership',
-    'data/local_store/meta/index_constituents',
+    # 指数成分权威表（index_weight_monthly + 派生的 membership_intervals）
+    'data/local_store/meta/index_members',
     # 人工维护/校准结论，两边各跑会分叉
     'data/local_store/meta/universe',
     'data/local_store/meta/pools',

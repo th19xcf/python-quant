@@ -14,7 +14,12 @@
      ``date`` 落入缺陷区间时剔除。
 3. **ST 按区间判定**：``meta/st/st_intervals.parquet`` 覆盖的区间命中当天
    即不可选；区间结束（摘帽）后自动回归。区间表未覆盖的日期返回
-   ``unknown``，默认放行并标记 pending，不编造历史状态。
+   ``unknown``，默认放行并在 ``eligible`` 返回的 flags 里标
+   ``pending_st_history``，不编造历史状态。
+   该 flag 是**纯诊断标记**：全仓没有任何过滤逻辑读取它，唯一落点是快照
+   ``meta/clean/eligibility_<as_of>.parquet`` 的 ``reasons`` 列，用来把
+   「确认非 ST」与「未知」区分开；需要收紧时由调用方自行判定，本模块不新增
+   过滤口径。
 4. 三档视图：
    - ``full``      ：当天有行情的全部标的，不做质量/ST过滤；
    - ``standard``  ：剔除结构性缺陷 + 当日 ST，容忍因子末端落后与历史缺口；
@@ -1057,10 +1062,14 @@ class EligibilityEngine:
         if avail:
             return False, avail
 
+        pending: list[str] = []
         if self.exclude_st:
             status = self._st_status(info, o)
             if status is True:
                 return False, ['st_confirmed']
+            if status is None:
+                # 窗口外 unknown：仍然放行（不改变可买行为），只留诊断痕迹
+                pending.append('pending_st_history')
             use_suspected = (
                 self.include_suspected_st if include_suspected_st is None
                 else include_suspected_st
@@ -1069,12 +1078,12 @@ class EligibilityEngine:
                 return False, ['st_suspected']
 
         if tier == 'standard':
-            return True, []
+            return True, pending
 
         strict_reasons = self._strict_reasons(info, o)
         if strict_reasons:
             return False, strict_reasons
-        return True, []
+        return True, pending
 
     def eligible_set(
         self,

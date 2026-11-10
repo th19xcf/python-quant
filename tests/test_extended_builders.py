@@ -157,46 +157,56 @@ def test_industry_pit_splits_on_change_points(tmp_path: Path) -> None:
     assert '不得用当前行业回填' in coverage['incomplete_reason']
 
 
-def _write_membership_snapshot(root: Path, day: date,
-                               members: dict[str, list[str]]) -> None:
-    rows = [{'index_code': index, 'ts_code': code, 'snapshot_date': day,
-             'source': 'csindex'}
-            for index, codes in members.items() for code in codes]
-    path = (root / 'meta' / 'index_membership' / 'snapshots'
-            / f'snapshot_{day:%Y%m%d}.parquet')
+def _write_index_weight(root: Path,
+                        panels: dict[str, dict[str, list[str]]]) -> None:
+    """写指数成分月度快照：``{指数: {期末日: [成分...]}}``。"""
+    rows = [{'index_code': index, 'ts_code': code, 'trade_date': day,
+             'weight': 1.0, 'source': 'tushare.index_weight', 'fetched_at': ''}
+            for index, periods in panels.items()
+            for day, codes in periods.items() for code in codes]
+    path = root / 'meta' / 'index_members' / 'index_weight_monthly.parquet'
     path.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(rows, schema={
-        'index_code': pl.String, 'ts_code': pl.String,
-        'snapshot_date': pl.Date, 'source': pl.String}).write_parquet(path)
+        'index_code': pl.String, 'ts_code': pl.String, 'trade_date': pl.String,
+        'weight': pl.Float64, 'source': pl.String,
+        'fetched_at': pl.String}).write_parquet(path)
 
 
-def test_membership_diff_marks_entry_and_exit(tmp_path: Path) -> None:
-    day1, day2 = date(2026, 11, 4), date(2026, 11, 5)
-    _write_membership_snapshot(tmp_path, day1, {'000300': ['600000.SH', '600001.SH']})
-    # 600001 退出、600002 新进
-    _write_membership_snapshot(tmp_path, day2, {'000300': ['600000.SH', '600002.SH']})
+def test_membership_monthly_diff_marks_entry_and_exit(tmp_path: Path) -> None:
+    day1, day2 = date(2026, 1, 30), date(2026, 2, 27)
+    _write_index_weight(tmp_path, {'000300.SH': {
+        '20260130': ['600000.SH', '600001.SH'],
+        # 600001 退出、600002 新进
+        '20260227': ['600000.SH', '600002.SH'],
+    }})
 
     summary = build_index_membership(tmp_path, allow_remote=False, commit=True)
-    assert summary['snapshots'] == 2
+    assert summary['indices'] == 1
     assert summary['intervals'] == 3
+    assert summary['index_codes'] == ['000300']
 
     frame = pl.read_parquet(
-        tmp_path / 'meta' / 'index_membership' / 'membership_intervals.parquet')
+        tmp_path / 'meta' / 'index_members' / 'membership_intervals.parquet')
     closed = frame.filter(pl.col('ts_code') == '600001.SH').row(0, named=True)
     assert closed['out_date'] == day2
     assert closed['out_date_known'] is True
-    # 首份快照里已存在 -> 真实纳入日未知；退出发生在相邻快照之间 -> 可精确
+    # 首期就在册 -> 真实纳入日不晚于该期（左截断）
     assert closed['in_date_known'] is False
 
     opened = frame.filter(pl.col('ts_code') == '600000.SH').row(0, named=True)
     assert opened['out_date'] is None
     assert opened['in_date'] == day1
-    # 首份快照里就在 -> 真实纳入日未知
     assert opened['in_date_known'] is False
 
+    entered = frame.filter(pl.col('ts_code') == '600002.SH').row(0, named=True)
+    assert entered['in_date'] == day2
+    assert entered['in_date_known'] is True
+    assert entered['out_date'] is None
+
     coverage = json.loads(
-        (tmp_path / 'meta' / 'index_membership' / 'coverage.json').read_text('utf-8'))
-    assert coverage['complete'] is False
+        (tmp_path / 'meta' / 'index_members' / 'coverage.json').read_text('utf-8'))
+    assert coverage['complete'] is True
+    assert coverage['resolution'] == 'monthly'
 
 
 def test_dry_run_writes_nothing(tmp_path: Path) -> None:
@@ -216,5 +226,6 @@ def test_cli_reports_missing_inputs(tmp_path: Path) -> None:
         build_suspension(tmp_path, as_of=date(2026, 11, 9))
     with pytest.raises(FileNotFoundError):
         build_industry_pit(tmp_path)
-    # 无本地快照且不联网 -> 不抛错、返回空计划
-    assert main(['membership', '--root', str(tmp_path), '--json']) == 0
+    # 无成分月度快照 -> 明确报缺源，而不是产出空表冒充就绪
+    with pytest.raises(FileNotFoundError):
+        main(['membership', '--root', str(tmp_path), '--json'])

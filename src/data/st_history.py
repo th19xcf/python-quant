@@ -18,12 +18,18 @@
 
 落盘位置（本地列存，不写数据库）::
 
-    data/local_store/meta/st/st_intervals.parquet   # 区间表
+    data/local_store/meta/st/st_intervals.parquet   # 区间表（含人工裁定覆盖层）
     data/local_store/meta/st/st_coverage.parquet    # 每标的状态可信窗口
     data/local_store/meta/st/coverage.json          # 全局覆盖说明
+    data/local_store/meta/st/pending_review.parquet # 证据不足待复核段
     data/local_store/meta/st/raw/*.parquet          # 原始抓取缓存（增量续跑）
+    data/local_store/meta/st/raw/reviewed_conflicts.parquet  # 人工裁定输入
+    data/local_store/meta/st/raw/reviewed_pending.parquet    # 裁定：证据不足
     data/local_store/meta/st/fetch_state.json       # 分年抓取完成状态
     logs/st_history/<run>/...                       # 原始响应留档
+
+人工裁定层（``reviewed_conflicts`` / ``reviewed_pending``）是**固定输入**而非抓取
+数据：``build_store`` 每次重建都会重新套用，避免重建把裁定结果悄悄回退。
 
 查询语义（与 ``risk_flags.get_st_status`` 对齐，硬红线）：
 
@@ -61,6 +67,30 @@ SOURCE_SZ_OFFICIAL = 'szse_change_name'
 SOURCE_CNINFO = 'cninfo_notice'
 SOURCE_SH_DELIST = 'sse_delist'
 SOURCE_SNAPSHOT = 'snapshot_anchor'
+SOURCE_REVIEWED = 'tushare_namechange_reviewed'
+
+#: coverage 的 ``source``：窗口由常规构建得出（未做证据下延）
+COV_SOURCE_MERGED = 'merged'
+#: coverage 的 ``source``：窗口下界取最早裁定 ST 段起点，行情存在性作佐证
+COV_SOURCE_SEGMENT_QUOTE = 'coverage_ext_segment_quote'
+#: coverage 的 ``source``：窗口下界取最早裁定 ST 段起点，上市日作佐证
+COV_SOURCE_SEGMENT_LISTING = 'coverage_ext_segment_listing'
+#: coverage 的 ``source``：窗口下界取最早裁定 ST 段起点，公告/名称史作佐证
+COV_SOURCE_SEGMENT_EVIDENCE = 'coverage_ext_segment_evidence'
+_EXT_SOURCE = {
+    'quote': COV_SOURCE_SEGMENT_QUOTE,
+    'listing': COV_SOURCE_SEGMENT_LISTING,
+    'evidence': COV_SOURCE_SEGMENT_EVIDENCE,
+}
+
+#: 写进 ``coverage.json`` 的窗口口径说明；放进 summary 是为了重建时说明不丢。
+WINDOW_EXTENDED_NOTE = (
+    'coverage_ext_segment_*：窗口下界取「最早裁定 ST 段起点」，不是上市日；'
+    '段前仍为 unknown。后缀 quote/listing/evidence 只表示「段起点不早于上市日」'
+    '这一佐证来源，不代表起算日等于上市日。行情存在 ≠ 名称非 ST。'
+    '理由是读侧对 unknown 区别对待（回测降低 fill_confidence 并记 st_unknown_bars，'
+    '建议侧 fail-closed 丢弃），不能凭空判非 ST。'
+)
 
 PRECISION_EXACT = 'exact'
 PRECISION_ANNOUNCEMENT = 'announcement'
@@ -100,10 +130,21 @@ _LIFT_STAR = re.compile(r'(?:撤销|撤消|解除)(?:.{0,8}?)(?:退市风险警�
 _LIFT_ST = re.compile(r'(?:撤销|撤消|解除)(?:.{0,8}?)(?:其他风险警示|其他特别处理|特别处理)')
 _LIFT_ANY = re.compile(r'(?:撤销|撤消|解除)(?:.{0,8}?)(?:风险警示)')
 
+#: 内部构造区间用的核心列（源数据 → 区间段）；落盘时再补证据列。
 _INTERVAL_SCHEMA = {
     'ts_code': pl.Utf8, 'start_date': pl.Date, 'end_date': pl.Date,
     'flag': pl.Utf8, 'source': pl.Utf8, 'precision': pl.Utf8,
     'fetched_at': pl.Datetime,
+}
+#: 落盘列（核心 7 列 + 人工裁定带来的证据列）。重建时按此 schema 输出，
+#: 避免新增列被截断。
+_INTERVAL_OUTPUT_SCHEMA = {
+    **_INTERVAL_SCHEMA, 'evidence': pl.Utf8, 'raw_fetched_at': pl.Datetime,
+}
+#: 人工裁定输入（``meta/st/raw/reviewed_conflicts.parquet``）的列。
+_REVIEWED_SCHEMA = {
+    **_INTERVAL_SCHEMA, 'evidence': pl.Utf8, 'raw_fetched_at': pl.Datetime,
+    'adjudication': pl.Utf8,
 }
 _COVERAGE_SCHEMA = {
     'ts_code': pl.Utf8, 'coverage_start': pl.Date, 'coverage_end': pl.Date,
@@ -122,15 +163,6 @@ _CLOSURE_SCHEMA = {'ts_code': pl.Utf8, 'close_date': pl.Date, 'evidence': pl.Utf
 _INTERVAL_CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
 _COVERAGE_CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
 
-#: tushare 重建表的列（与落盘文件严格一致）；它只有 ST 区间，没有覆盖窗口。
-_NEW_INTERVAL_SCHEMA = {
-    'ts_code': pl.Utf8, 'st_flag': pl.Boolean, 'start_date': pl.Date,
-    'end_date': pl.Date, 'st_type': pl.Utf8, 'source': pl.Utf8,
-}
-_NEW_INTERVAL_CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
-
-#: 回测读取开关：默认并入新表；设 0/false/off/no 时退回「只用旧表」。
-NEW_TABLE_ENV = 'QUANT_ST_HISTORY_NEW_TABLE'
 
 
 # ----------------------------------------------------------------------
@@ -218,8 +250,22 @@ def coverage_path(store_root: Path | str) -> Path:
 
 
 def tushare_intervals_path(store_root: Path | str) -> Path:
-    """tushare ``namechange`` 重建表（与旧区间表并列，只做补充）。"""
-    return Path(store_root) / 'meta' / 'st_history.parquet'
+    """tushare ``namechange`` 重建表：**合并的输入**，不是权威区间表。"""
+    return raw_dir(store_root) / 'tushare_namechange_intervals.parquet'
+
+
+def reviewed_conflicts_path(store_root: Path | str) -> Path:
+    """人工裁定输入：冲突段逐段裁定结论（最高优先级覆盖层）。"""
+    return raw_dir(store_root) / 'reviewed_conflicts.parquet'
+
+
+def reviewed_pending_path(store_root: Path | str) -> Path:
+    """人工裁定输入：证据不足、待外部证据的段。"""
+    return raw_dir(store_root) / 'reviewed_pending.parquet'
+
+
+def pending_review_path(store_root: Path | str) -> Path:
+    return st_dir(store_root) / 'pending_review.parquet'
 
 
 def coverage_json_path(store_root: Path | str) -> Path:
@@ -548,15 +594,30 @@ class _Timeline:
     source: str
 
 
-def _listing_dates(store_root: Path | str, codes: Iterable[str]) -> dict[str, date]:
+def _listing_dates(store_root: Path | str,
+                   codes: Iterable[str]) -> dict[str, tuple[date, str]]:
+    """每标的上市日与证据来源：``quote``（行情首行）/ ``listing``（上市日）。"""
     from src.data.local_store.store import LocalQuoteStore  # noqa: PLC0415
 
-    store = LocalQuoteStore(Path(store_root))
-    out: dict[str, date] = {}
+    root = Path(store_root)
+    store = LocalQuoteStore(root)
+    out: dict[str, tuple[date, str]] = {}
     for code in codes:
         cov = store.coverage('stock', code)
         if cov is not None:
-            out[code] = cov.start
+            out[code] = (cov.start, 'quote')
+    # 已退市标的的行情文件可能已被清理，但名称变更/公告记录仍要能重建区间：
+    # 缺行情覆盖时退回 stock_basic 的上市日，避免这些标的在重建时静默消失。
+    missing = [code for code in codes if code not in out]
+    basic_path = root / 'meta' / 'stock_basic.parquet'
+    if missing and basic_path.is_file():
+        basic = pl.read_parquet(basic_path, columns=['ts_code', 'list_date'])
+        listed = {row['ts_code']: row['list_date'] for row in basic.to_dicts()
+                  if row['list_date'] is not None}
+        for code in missing:
+            day = listed.get(code)
+            if day is not None:
+                out[code] = (day, 'listing')
     return out
 
 
@@ -754,9 +815,148 @@ def _load_supplement(store_root: Path | str) -> tuple[pl.DataFrame, pl.DataFrame
     return intervals, coverage
 
 
-def build_store(store_root: Path | str, *, apply_snapshot: bool = True) -> dict[str, Any]:
-    """从原始缓存重建区间表与覆盖窗口（幂等，原子替换）。"""
+def _with_output_columns(frame: pl.DataFrame) -> pl.DataFrame:
+    """补齐落盘列（``evidence`` / ``raw_fetched_at``），缺列时填 null。"""
+    for name, dtype in _INTERVAL_OUTPUT_SCHEMA.items():
+        if name not in frame.columns:
+            frame = frame.with_columns(pl.lit(None, dtype=dtype).alias(name))
+    return frame.select(list(_INTERVAL_OUTPUT_SCHEMA))
+
+
+def _merge_reviewed_contiguous(rows: pl.DataFrame) -> pl.DataFrame:
+    """裁定层内的连续性合并：同标的、同 flag、``end+1 == 下一段 start`` 合并。
+
+    只作用于人工裁定的新增段，**不动源端已产出的区间**。precision 取两者中
+    较弱的一档（合并后的段界由两份证据共同决定，宁严不宽）。
+    """
+    order = {PRECISION_EXACT: 0, PRECISION_ANNOUNCEMENT: 1, PRECISION_INFERRED: 2}
+    out: list[dict[str, Any]] = []
+    for row in rows.sort(['ts_code', 'start_date']).to_dicts():
+        prev = out[-1] if out else None
+        if (prev is not None and prev['ts_code'] == row['ts_code']
+                and prev['flag'] == row['flag'] and prev['end_date'] is not None
+                and row['start_date'] is not None
+                and prev['end_date'] + timedelta(days=1) == row['start_date']):
+            prev['end_date'] = row['end_date']
+            prev['evidence'] = ' ; '.join(
+                part for part in (prev['evidence'], row['evidence']) if part)
+            if order.get(row['precision'], 9) > order.get(prev['precision'], 9):
+                prev['precision'] = row['precision']
+            continue
+        out.append(dict(row))
+    return pl.DataFrame(out, schema=_REVIEWED_SCHEMA)
+
+
+def apply_reviewed_conflicts(frame: pl.DataFrame,
+                             store_root: Path | str) -> pl.DataFrame:
+    """把人工裁定输入作为**最高优先级覆盖层**并入区间表。
+
+    这是「合并结果可重建」的关键：重建时从原始源汇总出来的区间可能与人工
+    裁定结论冲突（旧表漏记、口径不同），必须再叠加这份固定输入，否则下一次
+    ``build_store`` 会把裁定结果悄悄回退。
+    """
+    path = reviewed_conflicts_path(store_root)
+    if not path.is_file():
+        return frame
+    reviewed = pl.read_parquet(path)
+    missing = set(_REVIEWED_SCHEMA) - set(reviewed.columns)
+    if missing:
+        raise ValueError(f'{path} 缺列: {sorted(missing)}')
+    rows = _merge_reviewed_contiguous(reviewed)
+    merged = pl.concat(
+        [_with_output_columns(frame),
+         _with_output_columns(rows.drop('adjudication'))],
+        how='vertical_relaxed')
+    return merged.unique(
+        subset=['ts_code', 'start_date', 'end_date', 'flag', 'source'], keep='last'
+    ).sort(['ts_code', 'start_date'])
+
+
+def _write_reviewed_pending(root: Path, out_root: Path) -> int:
+    """把「证据不足待复核」固定输入原样落到输出目录，重建后仍然存在。"""
+    source = reviewed_pending_path(root)
+    if not source.is_file():
+        return 0
+    pending = pl.read_parquet(source)
+    _write_parquet_atomic(pending, pending_review_path(out_root))
+    return pending.height
+
+
+def _first_evidence_dates(
+    sz_changes: dict[str, tuple[str, list[tuple[date, str]]]],
+    notice_events: dict[str, list[tuple[date, str, str]]],
+) -> dict[str, date]:
+    """每个标的最早一条名称变更/公告日期（上市日缺失时的区间起点兜底）。"""
+    out: dict[str, date] = {}
+    for code, (_, changes) in sz_changes.items():
+        if changes:
+            out[code] = changes[0][0]
+    for code, events in notice_events.items():
+        if events:
+            day = min(item[0] for item in events)
+            out[code] = min(out.get(code, day), day)
+    return out
+
+
+def _extend_coverage_to_evidence(
+    coverage_frame: pl.DataFrame, interval_frame: pl.DataFrame,
+    listings: dict[str, tuple[date, str]],
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """把早于可信起点的 ST 段纳入 coverage 窗口（下界取段起点）。
+
+    沪市/北交所按巨潮公告重建区间时，2005 年前公告不全，区间起点被
+    ``CNINFO_SAFE_START`` 截断；人工裁定补回的早期 ST 段因此落在 coverage
+    窗口之外，回测取不到。
+
+    **下界取最早裁定 ST 段的起点，而不是上市日**：读侧对 coverage 之外的
+    日期按 unknown 处理且区别对待（``src/advice/risk_filters.py`` fail-closed
+    剔除、回测 ``execution_core`` 记 ``st_unknown_bars`` 并降 fill_confidence），
+    若把下界下延到上市日，段前的日子会从 unknown 变成「已知非 ST」，凭空
+    放大确定性。上市日只用来佐证「段起点不早于上市」，不参与窗口取值。
+
+    仅对「确实存在早于窗口的 ST 段、且上市日不晚于段起点」的标的生效；
+    证据来源写进 ``source``，未生效的行保持原值，无证据的计入 ``skipped``。
+    """
+    first_st: dict[str, date] = {}
+    if interval_frame.height:
+        grouped = interval_frame.group_by('ts_code').agg(
+            pl.col('start_date').min().alias('first_st'))
+        first_st = {row['ts_code']: row['first_st'] for row in grouped.to_dicts()}
+    rows = coverage_frame.to_dicts()
+    by_source: dict[str, int] = {}
+    skipped: list[dict[str, Any]] = []
+    for row in rows:
+        code = row['ts_code']
+        start = first_st.get(code)
+        # 深市窗口本就以行情首行/上市日为起点，不存在 2005 截断
+        if code.endswith('.SZ') or start is None or start >= row['coverage_start']:
+            continue
+        info = listings.get(code)
+        if info is None or info[0] > start:
+            skipped.append({
+                'ts_code': code, 'first_st': start.isoformat(),
+                'coverage_start': row['coverage_start'].isoformat(),
+                'reason': 'no_listing_evidence' if info is None
+                else 'evidence_after_segment'})
+            continue
+        _, kind = info
+        row['coverage_start'] = start
+        row['source'] = _EXT_SOURCE[kind]
+        by_source[row['source']] = by_source.get(row['source'], 0) + 1
+    return pl.DataFrame(rows, schema=_COVERAGE_SCHEMA), {
+        'changed': sum(by_source.values()), 'by_source': by_source,
+        'skipped': skipped}
+
+
+def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
+                output_dir: Path | str | None = None) -> dict[str, Any]:
+    """从原始缓存重建区间表与覆盖窗口（幂等，原子替换）。
+
+    ``output_dir`` 用于把重建结果写到另一目录（如临时目录）做一致性对拍，
+    默认原地写入 ``store_root``。
+    """
     root = Path(store_root)
+    out_root = Path(output_dir) if output_dir is not None else root
     rdir = raw_dir(root)
     today = date.today()
     sz_raw = _load_frame(rdir / 'sz_change_name.parquet', _RAW_SZ_SCHEMA)
@@ -772,19 +972,29 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True) -> dict[
     all_codes = {code for code in
                  set(sz_changes) | set(notice_events) | set(local_codes) if code}
     listings = _listing_dates(root, all_codes)
+    # 终极兜底：既无行情覆盖、也不在 stock_basic 的标的（B 股/北交所个别代码），
+    # 用最早一条名称变更/公告日期作为区间起点，保证其 ST 区间重建不丢失。
+    evidence_start = _first_evidence_dates(sz_changes, notice_events)
 
     intervals: list[dict[str, Any]] = []
     coverage: list[dict[str, Any]] = []
+    listing_evidence: dict[str, tuple[date, str]] = {}
     unknown_start: list[str] = []
     for code in sorted(all_codes):
-        listing = listings.get(code)
-        if listing is None:
-            # 上市日缺失：历史实现用 ``date(1990, 1, 1)`` 兜底，会把覆盖窗口
-            # 前移到 1990，方向偏乐观（凭空多出「已知非 ST」的年份）。现在
-            # 该标的不参与覆盖统计，只记为 unknown_start 供审计；当日快照
-            # 若判其为 ST，仍会由 ``_merge_snapshot`` 补锚点与覆盖。
-            unknown_start.append(code)
-            continue
+        info = listings.get(code)
+        if info is None:
+            fallback = evidence_start.get(code)
+            if fallback is None:
+                # 上市日缺失：历史实现用 ``date(1990, 1, 1)`` 兜底，会把覆盖窗口
+                # 前移到 1990，方向偏乐观（凭空多出「已知非 ST」的年份）。现在
+                # 该标的不参与覆盖统计，只记为 unknown_start 供审计；当日快照
+                # 若判其为 ST，仍会由 ``_merge_snapshot`` 补锚点与覆盖。
+                unknown_start.append(code)
+                continue
+            listing, listing_kind = fallback, 'evidence'
+        else:
+            listing, listing_kind = info
+        listing_evidence[code] = (listing, listing_kind)
         if code.endswith('.SZ'):
             prev_flag, changes = sz_changes.get(code, ('', []))
             timeline, delist = _build_timeline(
@@ -800,7 +1010,7 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True) -> dict[
             intervals.extend(_segments_to_intervals(
                 code, segments, cov_end, today, SOURCE_CNINFO))
         coverage.append({'ts_code': code, 'coverage_start': cov_start,
-                         'coverage_end': cov_end, 'source': 'merged',
+                         'coverage_end': cov_end, 'source': COV_SOURCE_MERGED,
                          'fetched_at': datetime.now()})
 
     interval_frame = pl.DataFrame(intervals, schema=_INTERVAL_SCHEMA)
@@ -840,15 +1050,23 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True) -> dict[
     frame = interval_frame.unique(
         subset=['ts_code', 'start_date', 'end_date', 'flag', 'source'], keep='last'
     ).sort(['ts_code', 'start_date'])
+    # 人工裁定覆盖层必须在汇总之后套用：只补冲突段，不动源端已产出的区间值
+    frame = apply_reviewed_conflicts(frame, root)
     coverage_frame = coverage_frame.unique(subset=['ts_code'], keep='last') \
         .sort('ts_code')
+    # 裁定补回的早期 ST 段若早于沪市/北交所可信起点，把 coverage 下延到上市证据，
+    # 否则这些段在回测侧会被窗口裁掉、等于合并不生效。
+    coverage_frame, ext_stats = _extend_coverage_to_evidence(
+        coverage_frame, frame, listing_evidence)
 
-    _write_parquet_atomic(frame, intervals_path(root))
-    _write_parquet_atomic(coverage_frame, coverage_path(root))
+    _write_parquet_atomic(frame, intervals_path(out_root))
+    _write_parquet_atomic(coverage_frame, coverage_path(out_root))
+    pending_rows = _write_reviewed_pending(root, out_root)
     summary = {
         'built_at': datetime.now().isoformat(timespec='seconds'),
         'snapshot_date': snap_day.isoformat() if snap_day else None,
-        'sources': [SOURCE_SZ_OFFICIAL, SOURCE_CNINFO, SOURCE_SNAPSHOT],
+        'sources': [SOURCE_SZ_OFFICIAL, SOURCE_CNINFO, SOURCE_SNAPSHOT,
+                    SOURCE_REVIEWED],
         'sse_bse_safe_start': CNINFO_SAFE_START.isoformat(),
         'interval_rows': frame.height,
         'security_count': frame['ts_code'].n_unique(),
@@ -861,11 +1079,18 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True) -> dict[
         'closure_fixed_intervals': closure_fixed,
         'supplement_interval_rows': supp_intervals.height,
         'supplement_coverage_rows': supp_coverage.height,
+        'reviewed_interval_rows': int(
+            (frame['source'] == SOURCE_REVIEWED).sum()),
+        'pending_review_rows': pending_rows,
+        'coverage_extended_rows': ext_stats['changed'],
+        'coverage_extended_by_source': ext_stats['by_source'],
+        'coverage_extension_skipped': ext_stats['skipped'][:200],
+        'window_extended_note': WINDOW_EXTENDED_NOTE,
     }
-    coverage_json_path(root).write_text(
+    coverage_json_path(out_root).write_text(
         json.dumps({**summary, 'conflicts': conflicts[:200]}, ensure_ascii=False, indent=2),
         encoding='utf-8')
-    logger.info(f'[st] 区间表已落盘: {intervals_path(root)}（{frame.height} 行 / '
+    logger.info(f'[st] 区间表已落盘: {intervals_path(out_root)}（{frame.height} 行 / '
                 f'{frame["ts_code"].n_unique()} 只）')
     if unknown_start:
         logger.warning(f'[st] {len(unknown_start)} 只标的上市日缺失，已排除出覆盖统计'
@@ -895,17 +1120,6 @@ def load_intervals(store_root: Path | str) -> pl.DataFrame | None:
 
 def load_coverage(store_root: Path | str) -> pl.DataFrame | None:
     return _read_cached(coverage_path(store_root), _COVERAGE_CACHE, _COVERAGE_SCHEMA)
-
-
-def load_tushare_intervals(store_root: Path | str) -> pl.DataFrame | None:
-    return _read_cached(tushare_intervals_path(store_root), _NEW_INTERVAL_CACHE,
-                        _NEW_INTERVAL_SCHEMA)
-
-
-def new_table_enabled() -> bool:
-    """tushare 重建表是否参与回测读取（默认开启）。"""
-    value = os.environ.get(NEW_TABLE_ENV, '1').strip().lower()
-    return value not in ('0', 'false', 'off', 'no')
 
 
 @dataclass(frozen=True)
@@ -1036,66 +1250,12 @@ def intervals_for_backtest(store_root: Path | str, codes: Iterable[str],
                 pieces.append({'start_date': seg_start, 'end_date': seg_end,
                                'is_st': True})
         result[code] = _carve_non_st(pieces, window_start, window_end)
-    if new_table_enabled():
-        _supplement_from_tushare(result, store_root, wanted, start_day, end_day)
     for item in result.values():
         item.sort(key=lambda seg: seg['start_date'])
         for seg in item:
             seg['start_date'] = seg['start_date'].isoformat()
             seg['end_date'] = seg['end_date'].isoformat()
     return result
-
-
-def _subtract_window(start: date, end: date,
-                     window: tuple[date, date] | None) -> list[tuple[date, date]]:
-    """``[start, end]`` 去掉 ``window`` 后剩下的闭区间（旧表优先的口径）。"""
-    if start > end:
-        return []
-    if window is None:
-        return [(start, end)]
-    cov_start, cov_end = window
-    out: list[tuple[date, date]] = []
-    if start < cov_start:
-        out.append((start, min(end, cov_start - timedelta(days=1))))
-    if end > cov_end:
-        out.append((max(start, cov_end + timedelta(days=1)), end))
-    return [(left, right) for left, right in out if left <= right]
-
-
-def _supplement_from_tushare(result: dict[str, list[dict[str, Any]]],
-                             store_root: Path | str, wanted: set[str],
-                             start_day: date, end_day: date) -> int:
-    """把 tushare 重建表并入判定结果：**旧表覆盖的时段一律以旧表为准**。
-
-    - 旧表已有覆盖窗口的标的：只补窗口之外的 ST 区间（窗口内即使新表另有
-      说法也不采纳）——旧表是已验证的生产口径；
-    - 旧表完全没有覆盖的标的：只补 ``is_st=True`` 区间，不补非 ST，
-      未命中区间仍保持 unknown，避免凭空扩大「已知非 ST」；
-    - 返回新增的 ST 片段数。
-    """
-    new_intervals = load_tushare_intervals(store_root)
-    if new_intervals is None or new_intervals.height == 0 or not wanted:
-        return 0
-    coverage = load_coverage(store_root)
-    windows: dict[str, tuple[date, date]] = {}
-    if coverage is not None:
-        windows = {row['ts_code']: (row['coverage_start'], row['coverage_end'])
-                   for row in coverage.to_dicts()}
-    rows = new_intervals.filter(
-        pl.col('ts_code').is_in(list(wanted))
-        & pl.col('st_flag')
-        & (pl.col('start_date') <= end_day)
-        & ((pl.col('end_date').is_null()) | (pl.col('end_date') >= start_day)))
-    added = 0
-    for row in rows.to_dicts():
-        code = row['ts_code']
-        seg_start = max(start_day, row['start_date'])
-        seg_end = min(end_day, row['end_date'] or end_day)
-        pieces = result.setdefault(code, [])
-        for left, right in _subtract_window(seg_start, seg_end, windows.get(code)):
-            pieces.append({'start_date': left, 'end_date': right, 'is_st': True})
-            added += 1
-    return added
 
 
 def _carve_non_st(st_pieces: list[dict[str, Any]], window_start: date,
