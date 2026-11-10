@@ -9,6 +9,8 @@
 基础信息表（``fund_basic`` / ``index_basic`` / ``stock_basic``）不是日频，
 不套日期阈值：改为比较「行情目录里存在、基础表未登记的标的数」，
 0 为 ``ok``、``1 ~ BASE_INFO_WARN_MAX`` 为 ``warning``、更多为 ``error``。
+已决策的例外（如封闭式基金 505888.SH）登记在 ``KNOWN_BASE_INFO_EXCEPTIONS``，
+命中后判为 ``known_exception``：仍在明细里逐行列出，但不计入 warning / error。
 
 覆盖口径来自 ``docs/数据权威路径清单.md``：本模块的 ``TABLE_SPECS`` 每一条
 都必须在清单里登记，未登记即抛错（``_assert_doc_registered``）。
@@ -43,6 +45,15 @@ LAG_OK_MAX = 1
 LAG_WARN_MAX = 5
 #: 基础信息表允许的新增标的数上限（超过报 error）
 BASE_INFO_WARN_MAX = 5
+
+#: 已知且已决策的例外：行情里有、基础表故意不登记。
+#: 命中后仍逐行列出，但判为 ``known_exception``，不计入 warning / error。
+KNOWN_BASE_INFO_EXCEPTIONS: dict[str, dict[str, str]] = {
+    '505888.SH': {
+        'reason': '封闭式基金，全市场仅此 1 只，2019 年已退市；不为其在 fund_basic 建表记录',
+        'decided': '2026-11-10',
+    },
+}
 
 #: 权威行情目录（股票），其 ``date`` 最大值即「行情末日」
 QUOTES_ROOT = Path('quotes') / 'stock'
@@ -108,6 +119,10 @@ class FreshnessReport:
     @property
     def warnings(self) -> list[FreshnessRow]:
         return [row for row in self.rows if row.verdict == 'warning']
+
+    @property
+    def known_exceptions(self) -> list[FreshnessRow]:
+        return [row for row in self.rows if row.verdict == 'known_exception']
 
     @property
     def ok(self) -> bool:
@@ -182,8 +197,20 @@ def _base_info_row(store_root: Path, spec: TableSpec, quotes_end_date: date) -> 
     quoted = {item.stem for item in quotes_dir.rglob('*.parquet')} if quotes_dir.is_dir() else set()
     registered = set(pl.read_parquet(path, columns=['ts_code'])['ts_code'].to_list())
     missing = sorted(quoted - registered)
-    verdict = classify_missing(len(missing))
-    detail = '无新增标的' if not missing else f'新增未登记 {len(missing)} 只: ' + ', '.join(missing[:5])
+    known = [code for code in missing if code in KNOWN_BASE_INFO_EXCEPTIONS]
+    unknown = [code for code in missing if code not in KNOWN_BASE_INFO_EXCEPTIONS]
+    if not missing:
+        verdict, detail = 'ok', '无新增标的'
+    elif not unknown:
+        verdict = 'known_exception'
+        detail = f'已知例外 {len(known)} 只: ' + ', '.join(
+            f'{code}（{KNOWN_BASE_INFO_EXCEPTIONS[code]["reason"]}，决策 '
+            f'{KNOWN_BASE_INFO_EXCEPTIONS[code]["decided"]}）' for code in known)
+    else:
+        verdict = classify_missing(len(unknown))
+        detail = f'新增未登记 {len(unknown)} 只: ' + ', '.join(unknown[:5])
+        if known:
+            detail += f'；另有已知例外 {len(known)} 只: ' + ', '.join(known)
     return FreshnessRow(spec.label, spec.rel_path, spec.kind, None, quotes_end_date,
                         None, verdict, detail)
 
@@ -217,15 +244,34 @@ def collect_rows(store_root: Path, calendar: list[date],
 
 
 def _doc_paths(doc_text: str) -> set[str]:
-    """从权威清单里抽出反引号包裹的固定路径（忽略含通配/占位符的条目）。"""
+    """清单全文里反引号包裹的固定路径（用于登记校验，宽松匹配）。"""
     out: set[str] = set()
     for token in doc_text.split('`'):
         token = token.strip()
-        if '/' not in token or token.startswith('http') or '*' in token:
+        if '/' not in token or token.startswith('http') or ' ' in token:
             continue
-        if '{' in token or ' ' in token:
+        if '*' in token or '{' in token or '<' in token or token.startswith('['):
             continue
         out.add(token)
+    return out
+
+
+def _doc_formal_paths(doc_text: str) -> set[str]:
+    """只取表格「唯一正式路径」列，用于「尚未纳入自检」的提示清单。"""
+    out: set[str] = set()
+    for line in doc_text.splitlines():
+        if not line.lstrip().startswith('|'):
+            continue
+        cells = line.split('|')
+        if len(cells) < 4:
+            continue
+        for token in cells[2].split('`'):
+            token = token.strip()
+            if '/' not in token or token.startswith('http') or ' ' in token:
+                continue
+            if '*' in token or '{' in token or '<' in token or '_backup' in token:
+                continue
+            out.add(token)
     return out
 
 
@@ -237,9 +283,8 @@ def _assert_doc_registered(doc_path: Path) -> list[str]:
     if missing:
         raise ValueError('以下自检表未在权威清单登记: ' + ', '.join(missing))
     known = {spec.rel_path for spec in TABLE_SPECS}
-    return sorted(path for path in registered - known
-                  if path.endswith('.parquet')
-                  and '_backup' not in path and '<' not in path)
+    return sorted(path for path in _doc_formal_paths(text) - known
+                  if path.endswith('.parquet'))
 
 
 def run_check(store_root: Path, *, calendar: list[date] | None = None,
@@ -275,7 +320,8 @@ def format_report(report: FreshnessReport) -> str:
         lines.append('  '.join(str(line[i]).ljust(widths[i]) for i in range(5)) + f'  {line[5]}')
     lines.append('')
     lines.append(f'行情末日 {_fmt(report.quotes_end)}；'
-                 f'error {len(report.errors)} 条 / warning {len(report.warnings)} 条')
+                 f'error {len(report.errors)} 条 / warning {len(report.warnings)} 条 / '
+                 f'known_exception {len(report.known_exceptions)} 条')
     if report.doc_uncovered:
         lines.append(f'权威清单中尚未纳入自检的固定路径 {len(report.doc_uncovered)} 条: '
                      + ', '.join(report.doc_uncovered))

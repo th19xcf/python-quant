@@ -135,7 +135,7 @@ def test_base_info_uses_new_code_count_not_date_threshold(tmp_path):
     calendar = _biz_days(12)
     store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
                                    coverage_end=calendar[-1], event_end=calendar[-1])
-    _write_quotes_dir(store, 'fund', ['510300.SH', '505888.SH'])
+    _write_quotes_dir(store, 'fund', ['510300.SH', '506000.SH'])
 
     report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
 
@@ -143,7 +143,25 @@ def test_base_info_uses_new_code_count_not_date_threshold(tmp_path):
     assert row.data_end is None
     assert row.lag is None
     assert row.verdict == 'warning'
+    assert '506000.SH' in row.detail
+
+
+def test_known_exception_is_listed_but_not_counted_as_warning(tmp_path):
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    _write_quotes_dir(store, 'fund', ['510300.SH', '505888.SH'])
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'meta/fund_basic.parquet')
+    assert row.verdict == 'known_exception'
     assert '505888.SH' in row.detail
+    assert '封闭式基金' in row.detail
+    assert report.warnings == []
+    assert [item.rel_path for item in report.known_exceptions] == ['meta/fund_basic.parquet']
+    assert report.ok is True
+    assert 'known_exception 1 条' in fc.format_report(report)
 
 
 def test_unregistered_spec_raises(tmp_path):
