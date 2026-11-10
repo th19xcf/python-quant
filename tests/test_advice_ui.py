@@ -166,6 +166,15 @@ def test_filter_without_result_shows_empty_without_action(qapp):
     assert page.stack.currentWidget() is page.table_card
 
 
+def test_recommendation_dialog_does_not_fabricate_expected_return(qapp):
+    """core 只返回 score；GUI 不得再派生 score*100 的「预期收益」。"""
+    from src.ui.dialogs.stock_recommendation_dialog import StockRecommendationDialog
+    normalized = StockRecommendationDialog._normalize_recommendations(
+        [{'stock_code': '600000', 'stock_name': '浦发银行', 'score': 0.85}])
+    assert 'expected_return' not in normalized[0]
+    assert normalized[0]['code'] == '600000'
+
+
 def test_theme_switch_updates_palette_and_stylesheet(qapp):
     from src.ui.advice.page import AdvicePage
     from src.ui.advice.tokens import DARK, LIGHT
