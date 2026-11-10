@@ -1,4 +1,8 @@
-"""送转字段缺失扫描与回补单测：确认/无法解释/误报、只填空值、幂等。"""
+"""送转字段缺失扫描与回补单测：确认/无法解释/明确非送转、只填空值、幂等。
+
+2026-11-10 修订：档位不再作判据，非整档送转（10 送 5.91）改为确认；
+`false_positive` 更名为 `not_split`；新增配股 / 不除权 / 重复事件三条前置排除。
+"""
 
 import sys
 from datetime import date
@@ -59,31 +63,32 @@ def test_confirmed_detected_and_backfilled():
     row = out.filter(pl.col('ts_code') == '600000.SH').row(0, named=True)
     assert row['share_div'] == 0.2
     assert row['share_div_source'] == 'inferred_from_shares'
-    # 600000 与 600004 同时命中确认缺失
-    assert filled == 2
+    # 600000 / 600001 / 600004 三只同时命中确认缺失
+    assert filled == 3
 
 
-def test_off_grid_is_unresolved_and_not_backfilled():
+def test_non_round_split_ratio_is_confirmed():
     frame = _dividends()
     decisions = scan(frame, _shares())
     hit = [d for d in decisions if d['ts_code'] == '600001.SH']
     assert len(hit) == 1
-    # 50,300,600 → 80,028,254，隐含 10 送 5.91，不在 0.05 档位
-    assert hit[0]['category'] == 'unexplained'
-    assert hit[0]['inferred_share_div'] is None
-    out, filled = apply_backfill(frame, decisions)
+    # 50,300,600 → 80,028,254，隐含 10 送 5.91，不落 0.05 档但原因明确是送转
+    assert hit[0]['category'] == 'confirmed'
+    assert hit[0]['inferred_share_div'] == 0.591
+    out, _ = apply_backfill(frame, decisions)
     row = out.filter(pl.col('ts_code') == '600001.SH').row(0, named=True)
-    assert row['share_div'] == 0.0
-    assert row['share_div_source'] == 'orig'
-    assert filled == 2  # 仅 600000/600004 被回补
+    # 保留 6 位小数，不得写回 0.59
+    assert row['share_div'] == 0.591
+    assert row['share_div_source'] == 'inferred_from_shares'
 
 
-def test_false_positive_from_other_event_not_backfilled():
+def test_other_event_reason_is_not_split_and_not_backfilled():
     frame = _dividends()
     decisions = scan(frame, _shares())
     hit = [d for d in decisions if d['ts_code'] == '600002.SH']
     assert len(hit) == 1
-    assert hit[0]['category'] == 'false_positive'
+    assert hit[0]['category'] == 'not_split'
+    assert hit[0]['code'] == 'non_split_change'
     assert hit[0]['inferred_share_div'] is None
 
 
@@ -100,7 +105,8 @@ def test_non_null_value_is_never_overwritten():
     out, filled = apply_backfill(frame, decisions)
     row = out.row(0, named=True)
     assert row['share_div'] == 0.3
-    assert row['share_div_source'] == 'orig'
+    # 未回补行不得被顺手写 share_div_source
+    assert row['share_div_source'] is None
     assert filled == 0
 
 
@@ -115,7 +121,7 @@ def test_record_date_fallback_detects_missing_ex_date():
     row = out.filter(pl.col('ts_code') == '600004.SH').row(0, named=True)
     assert row['share_div'] == 0.2
     assert row['share_div_source'] == 'inferred_from_shares'
-    assert filled == 2  # 600000 与 600004 同时命中确认缺失
+    assert filled == 3  # 600000 / 600001 / 600004 同时命中确认缺失
 
 
 def test_multiple_same_day_share_events_are_unresolved():
@@ -148,7 +154,7 @@ def test_apply_twice_is_idempotent():
     shares = _shares()
     decisions = scan(frame, shares)
     once, filled = apply_backfill(frame, decisions)
-    assert filled == 2
+    assert filled == 3
     second = scan(once, shares)
     assert all(d['category'] != 'confirmed' for d in second)
     twice, filled_again = apply_backfill(once, second)
@@ -156,11 +162,68 @@ def test_apply_twice_is_idempotent():
     assert twice.equals(once)
 
 
-def test_classify_grid_boundaries():
-    # 0.05 档位接受，0.02 档位偏离 0.003 以内亦接受
+def test_classify_rules():
+    # 原因明确含送转即确认，档位不再参与判定
     assert classify(100, 105, '送股上市')['category'] == 'confirmed'
     assert classify(100, 120, '转增股上市')['category'] == 'confirmed'
-    # 1000 → 1187，隐含 10 送 1.87，非标准档位
-    assert classify(1000, 1187, '送股上市')['category'] == 'unexplained'
+    # 1000 → 1187，隐含 10 送 1.87，非整档但原因明确
+    assert classify(1000, 1187, '送股上市')['category'] == 'confirmed'
+    assert classify(1000, 1187, '送股上市')['inferred'] == 0.187
+    # 原因缺失 → 无法解释
+    assert classify(100, 120, None)['category'] == 'unexplained'
     # 股本未增加不判定
     assert classify(100, 100, '送股上市') is None
+
+
+def test_rights_issue_is_not_split():
+    frame = _dividends().with_columns(
+        pl.lit(0.3).alias('rights_issue_ratio'),
+        pl.lit(None, dtype=pl.Boolean).alias('no_ex_rights'))
+    decisions = scan(frame, _shares())
+    hit = [d for d in decisions if d['ts_code'] == '600000.SH']
+    assert hit and hit[0]['category'] == 'not_split'
+    assert hit[0]['code'] == 'rights_issue'
+
+
+def test_no_ex_rights_is_not_split():
+    frame = _dividends().with_columns(
+        pl.lit(0.0).alias('rights_issue_ratio'),
+        pl.lit(True).alias('no_ex_rights'))
+    decisions = scan(frame, _shares())
+    hit = [d for d in decisions if d['ts_code'] == '600000.SH']
+    assert hit and hit[0]['category'] == 'not_split'
+    assert hit[0]['code'] == 'no_ex_rights'
+
+
+def test_duplicate_event_is_excluded():
+    frame = pl.concat([
+        _dividends().filter(pl.col('ts_code') == '600000.SH'),
+        pl.DataFrame({
+            'ts_code': ['600000.SH'],
+            'ex_date': [date(2020, 6, 8)],
+            'record_date': [date(2020, 6, 1)],
+            'cash_div': [0.5],
+            'share_div': [0.2],
+        }),
+    ])
+    decisions = scan(frame, _shares())
+    assert len(decisions) == 1
+    assert decisions[0]['category'] == 'duplicate_event'
+    out, filled = apply_backfill(frame, decisions)
+    assert filled == 0
+    assert out.select(frame.columns).equals(frame)
+
+
+def test_restricted_stock_reason_is_not_split():
+    shares = pl.DataFrame({
+        'ts_code': ['600000.SH', '600000.SH'],
+        'effective_date': [date(2020, 1, 1), date(2020, 6, 8)],
+        'total_share': [100_000_000, 103_000_000],
+        'float_share': [80_000_000, 80_000_000],
+        'change_reason': ['首发上市', '限制性股票'],
+    })
+    frame = _dividends().filter(pl.col('ts_code') == '600000.SH')
+    decisions = scan(frame, shares)
+    assert len(decisions) == 1
+    assert decisions[0]['category'] == 'not_split'
+    assert decisions[0]['code'] == 'non_split_change'
