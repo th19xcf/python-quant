@@ -41,8 +41,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -53,6 +53,8 @@ from typing import Any, Iterable
 import polars as pl
 import requests
 from loguru import logger
+
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 
 FLAG_ST = 'st'
 FLAG_STAR = '*st'
@@ -391,10 +393,16 @@ def _load_frame(path: Path, schema: dict[str, Any]) -> pl.DataFrame:
 
 
 def _write_parquet_atomic(frame: pl.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix('.tmp.parquet')
-    frame.write_parquet(tmp)
-    os.replace(tmp, path)
+    """统一走 ``src.data.atomic_write``（临时文件 → fsync → os.replace）。"""
+    write_parquet_atomic(frame, path)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def sync_sources(store_root: Path | str, *, years: Iterable[int] | None = None,
@@ -1041,6 +1049,28 @@ def apply_reviewed_coverage(coverage_frame: pl.DataFrame,
     return merged, {'applied': patch.height, 'appended': len(appended_codes)}
 
 
+def _write_coverage_store(coverage_frame: pl.DataFrame, summary: dict[str, Any],
+                          out_root: Path, conflicts: list[dict[str, Any]]) -> dict[str, Any]:
+    """覆盖表的**唯一写入口**：parquet 落盘后立刻把其 SHA256 / 行数写进 json。
+
+    两个文件必须由同一个调用产出、同批落盘：任何外部脚本单独重写 parquet 都会让
+    :func:`coverage_meta_status` 报 ``sha_match=False``，不再出现「coverage.json
+    停在 14:17、st_coverage.parquet 已被 17:12 改写」这种无痕漂移。
+    """
+    target = coverage_path(out_root)
+    _write_parquet_atomic(coverage_frame, target)
+    stamped = {
+        **summary,
+        'coverage_rows': coverage_frame.height,
+        'coverage_sha256': _sha256_file(target),
+        'conflicts': conflicts[:200],
+    }
+    write_text_atomic(
+        json.dumps(stamped, ensure_ascii=False, indent=2),
+        coverage_json_path(out_root))
+    return stamped
+
+
 def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
                 output_dir: Path | str | None = None,
                 as_of: date | None = None,
@@ -1055,6 +1085,10 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
     覆盖窗口的 ``fetched_at`` 取输入缓存最新 mtime 而非 ``datetime.now()``，
     因此同一批输入 + 同一个 ``as_of`` 重跑得到的 ``st_coverage.parquet`` 逐字节
     相同，可直接与正式表做 SHA256 对拍。
+
+    ``st_coverage.parquet`` 与 ``coverage.json`` 只经 :func:`_write_coverage_store`
+    在同一处落盘，json 里带 ``coverage_sha256`` / ``coverage_rows``，可用
+    :func:`coverage_meta_status` 自证同源；外部脚本单独重写 parquet 会被检出。
     """
     root = Path(store_root)
     out_root = Path(output_dir) if output_dir is not None else root
@@ -1173,7 +1207,6 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
         pl.lit(run_at).alias('fetched_at')).sort('ts_code')
 
     _write_parquet_atomic(frame, intervals_path(out_root))
-    _write_parquet_atomic(coverage_frame, coverage_path(out_root))
     pending_rows = _write_reviewed_pending(root, out_root)
     summary = {
         'built_at': datetime.now().isoformat(timespec='seconds'),
@@ -1205,9 +1238,7 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
         'deterministic_run_at': run_at.isoformat(timespec='seconds'),
         'window_extended_note': WINDOW_EXTENDED_NOTE,
     }
-    coverage_json_path(out_root).write_text(
-        json.dumps({**summary, 'conflicts': conflicts[:200]}, ensure_ascii=False, indent=2),
-        encoding='utf-8')
+    summary = _write_coverage_store(coverage_frame, summary, out_root, conflicts)
     logger.info(f'[st] 区间表已落盘: {intervals_path(out_root)}（{frame.height} 行 / '
                 f'{frame["ts_code"].n_unique()} 只）')
     if unknown_start:
@@ -1407,6 +1438,47 @@ def coverage_summary(store_root: Path | str) -> dict[str, Any]:
         payload['first_coverage'] = str(coverage['coverage_start'].min())
         payload['last_coverage'] = str(coverage['coverage_end'].max())
     return payload
+
+
+def coverage_meta_status(store_root: Path | str) -> dict[str, Any]:
+    """校验 ``coverage.json`` 与 ``st_coverage.parquet`` 是否同源一致。
+
+    ``build_store`` 是唯一写入口：parquet 落盘后立刻取其 SHA256 写进 json。
+    ``sha_match`` / ``rows_match`` 任一为假，就说明有外部脚本绕过 ``build_store``
+    单独重写了其中一个文件（历史事故：parquet 于 17:12 被补丁脚本重写，json 仍
+    停在 14:17 且 ``coverage_replay_applied`` 为 null）。
+    """
+    root = Path(store_root)
+    json_path = coverage_json_path(root)
+    parquet_path = coverage_path(root)
+    status: dict[str, Any] = {
+        'json_present': json_path.is_file(),
+        'parquet_present': parquet_path.is_file(),
+        'ok': False,
+    }
+    if not status['json_present'] or not status['parquet_present']:
+        status['reason'] = 'missing_file'
+        return status
+    payload = json.loads(json_path.read_text(encoding='utf-8'))
+    declared_sha = payload.get('coverage_sha256')
+    declared_rows = payload.get('coverage_rows')
+    actual_sha = _sha256_file(parquet_path)
+    actual_rows = pl.read_parquet(parquet_path, columns=['ts_code']).height
+    status.update({
+        'built_at': payload.get('built_at'),
+        'coverage_replay_applied': payload.get('coverage_replay_applied'),
+        'coverage_replay_enabled': payload.get('coverage_replay_enabled'),
+        'declared_sha256': declared_sha,
+        'actual_sha256': actual_sha,
+        'sha_match': declared_sha == actual_sha,
+        'declared_rows': declared_rows,
+        'actual_rows': actual_rows,
+        'rows_match': declared_rows == actual_rows,
+    })
+    status['ok'] = bool(status['sha_match'] and status['rows_match'])
+    if not status['ok']:
+        status['reason'] = 'sha_mismatch' if not status['sha_match'] else 'rows_mismatch'
+    return status
 
 
 # ----------------------------------------------------------------------
@@ -1683,7 +1755,14 @@ def _cmd_verify(args: argparse.Namespace) -> int:
 def _cmd_stats(args: argparse.Namespace) -> int:
     root = _resolve_root(args)
     logger.info(f'[st] 覆盖信息: {coverage_summary(root)}')
-    return 0
+    meta = coverage_meta_status(root)
+    if meta.get('ok'):
+        logger.info(f'[st] 元数据一致性 ok: rows={meta["actual_rows"]} '
+                    f'sha256={meta["actual_sha256"]} built_at={meta["built_at"]} '
+                    f'replay_applied={meta["coverage_replay_applied"]}')
+        return 0
+    logger.error(f'[st] coverage.json 与 st_coverage.parquet 不一致: {meta}')
+    return 1
 
 
 def _cmd_resolve(args: argparse.Namespace) -> int:

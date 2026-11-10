@@ -1,5 +1,7 @@
 """覆盖窗口重放层：只命中裁定标的、可重建、同输入逐字节一致。"""
 
+import hashlib
+import json
 from datetime import date
 
 import polars as pl
@@ -65,6 +67,10 @@ def test_replay_can_be_switched_off(tmp_path):
     assert row['coverage_start'] == LISTING['000005.SZ']
     assert row['source'] == st_history.COV_SOURCE_MERGED
     assert summary['coverage_replay_applied'] == 0
+    payload = json.loads(
+        st_history.coverage_json_path(out).read_text(encoding='utf-8'))
+    assert payload['coverage_replay_applied'] == 0
+    assert payload['coverage_replay_enabled'] is False
 
 
 def test_replay_appends_code_missing_from_build(tmp_path):
@@ -97,3 +103,59 @@ def test_same_inputs_produce_identical_bytes(tmp_path):
     # 逐值相等（不是只有字节相等）
     assert pl.read_parquet(tmp_path / 'a' / 'meta' / 'st' / 'st_coverage.parquet').equals(
         pl.read_parquet(tmp_path / 'b' / 'meta' / 'st' / 'st_coverage.parquet'))
+
+
+def _sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_coverage_json_and_parquet_stamped_by_single_write_path(tmp_path):
+    """coverage.json 与 st_coverage.parquet 必须同批产出、互相对得上。"""
+    _seed(tmp_path, overlay=_overlay())
+    out = tmp_path / 'rebuild'
+    summary = st_history.build_store(
+        tmp_path, apply_snapshot=False, output_dir=out, as_of=date(2026, 11, 10))
+
+    parquet = st_history.coverage_path(out)
+    payload = json.loads(
+        st_history.coverage_json_path(out).read_text(encoding='utf-8'))
+    assert payload['coverage_sha256'] == _sha256(parquet)
+    assert payload['coverage_rows'] == pl.read_parquet(parquet).height
+    assert payload['coverage_replay_applied'] == summary['coverage_replay_applied'] == 1
+    assert payload['coverage_replay_applied'] is not None
+
+    status = st_history.coverage_meta_status(out)
+    assert status['ok'] is True
+    assert status['sha_match'] is True and status['rows_match'] is True
+
+
+def test_coverage_meta_detects_external_parquet_rewrite(tmp_path):
+    """绕过 build_store 单独重写 parquet：sha 或行数不符时必须报不一致。"""
+    _seed(tmp_path, overlay=_overlay())
+    out = tmp_path / 'rebuild'
+    st_history.build_store(tmp_path, apply_snapshot=False, output_dir=out,
+                           as_of=date(2026, 11, 10))
+    assert st_history.coverage_meta_status(out)['ok'] is True
+
+    parquet = st_history.coverage_path(out)
+    original = pl.read_parquet(parquet)
+    # 行数不变、只改一个值：只有 SHA256 能发现
+    tampered = original.with_columns(
+        pl.when(pl.col('ts_code') == '000005.SZ')
+        .then(pl.lit(date(2020, 1, 1)))
+        .otherwise(pl.col('coverage_end'))
+        .alias('coverage_end'))
+    assert tampered.height == original.height
+    assert tampered['coverage_end'].to_list() != original['coverage_end'].to_list()
+    tampered.write_parquet(parquet)
+
+    status = st_history.coverage_meta_status(out)
+    assert status['sha_match'] is False
+    assert status['rows_match'] is True
+    assert status['ok'] is False
+
+    # 行数被改也必须检出，不能只靠 sha
+    pl.concat([original, original.head(1)]).write_parquet(parquet)
+    status = st_history.coverage_meta_status(out)
+    assert status['rows_match'] is False
+    assert status['ok'] is False
