@@ -12,6 +12,7 @@
 """
 
 import contextlib
+import json
 import struct
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -24,6 +25,7 @@ from loguru import logger
 from src.data.adj_factor_calculator import AdjFactorCalculator
 from src.data.data_cache import global_data_cache
 from src.data.data_manager import DataManager
+from src.data.local_store import factor_rebuild as factor_rebuild_module
 from src.data.local_store import metrics as route_metrics
 from src.data.local_store import reset_local_stores
 from src.data.local_store.build import (
@@ -455,6 +457,131 @@ def test_rebuild_factors_matches_dividend_path(tmp_path):
     updated = rebuild_factors_from_local(
         quote_store, factor_store, codes=['600000.SH'], include_existing=True)
     assert updated['factor_codes'] == 2
+
+
+def _rebuild_fixture(store_root: Path, codes: tuple[str, ...]
+                     ) -> tuple[LocalQuoteStore, LocalFactorStore]:
+    """构造若干标的的本地行情列存，返回（行情库, 因子库）。"""
+    quote_store = LocalQuoteStore(store_root)
+    for code in codes:
+        quote_store.write_daily('stock', code, make_frame(rows=4, start=date(2024, 1, 2)),
+                                full=True, source_mtime_ns=1)
+    quote_store.flush_meta()
+    return quote_store, LocalFactorStore(store_root)
+
+
+def _rebuild_dir(store_root: Path) -> Path:
+    return Path(store_root) / 'factors' / 'rebuild'
+
+
+def _manifest(store_root: Path) -> dict:
+    return json.loads((_rebuild_dir(store_root) / 'manifest.json').read_text(encoding='utf-8'))
+
+
+def test_rebuild_resumes_when_parts_complete_but_manifest_unfinished(tmp_path, monkeypatch):
+    """合并完成、manifest 尚未记 completed 时中断：重启必须续跑，不得重采。
+
+    这条用例直接锁住收尾顺序（先 manifest 后删分块）：若把顺序改回「先清
+    分块再写 manifest」，中断后分块已不存在，重启只能全量重采，用例失败。
+    """
+    quote_store, factor_store = _rebuild_fixture(
+        tmp_path, ('600000.SH', '000001.SZ', '600519.SH', '000002.SZ'))
+    real_write_manifest = factor_rebuild_module._write_manifest
+
+    def _fail_on_completed(path, payload):
+        if payload.get('status') == 'completed':
+            raise OSError('模拟：manifest 收尾前进程中断')
+        return real_write_manifest(path, payload)
+
+    monkeypatch.setattr(factor_rebuild_module, '_write_manifest', _fail_on_completed)
+    with pytest.raises(OSError):
+        rebuild_factors_from_local(quote_store, factor_store, chunk_size=2)
+
+    parts = sorted(_rebuild_dir(tmp_path).glob('part_*.parquet'))
+    assert len(parts) == 2, '中断时不得提前删掉分块'
+    state = _manifest(tmp_path)
+    assert state['status'] == 'running' and state['completed_parts'] == [0, 1]
+
+    calls: list[int] = []
+
+    def _forbid_recompute(index, *args, **kwargs):
+        calls.append(index)
+        raise AssertionError(f'分块 {index} 已落盘，不应重采')
+
+    monkeypatch.setattr(factor_rebuild_module, '_write_manifest', real_write_manifest)
+    monkeypatch.setattr(factor_rebuild_module, '_process_chunk', _forbid_recompute)
+    result = rebuild_factors_from_local(
+        quote_store, factor_store, chunk_size=2, include_existing=True)
+
+    assert calls == []
+    assert result['factor_codes'] == 4
+    snapshot = pl.read_parquet(tmp_path / 'factors' / 'stock_adj_factor.parquet')
+    assert snapshot['ts_code'].n_unique() == 4
+    assert _manifest(tmp_path)['status'] == 'completed'
+    assert list(_rebuild_dir(tmp_path).glob('part_*.parquet')) == []
+
+
+def test_rebuild_resumes_from_recorded_parts_after_mid_loop_crash(tmp_path, monkeypatch):
+    """分块 0 已落盘、分块 1 计算中断：重启只补分块 1。"""
+    quote_store, factor_store = _rebuild_fixture(
+        tmp_path, ('600000.SH', '000001.SZ', '600519.SH', '000002.SZ'))
+    real_process = factor_rebuild_module._process_chunk
+
+    def _explode_on_second(index, *args, **kwargs):
+        if index == 1:
+            raise RuntimeError('模拟：分块 1 计算中断')
+        return real_process(index, *args, **kwargs)
+
+    monkeypatch.setattr(factor_rebuild_module, '_process_chunk', _explode_on_second)
+    with pytest.raises(RuntimeError):
+        rebuild_factors_from_local(quote_store, factor_store, chunk_size=2)
+    assert _manifest(tmp_path)['completed_parts'] == [0]
+
+    calls: list[int] = []
+
+    def _counting(index, *args, **kwargs):
+        calls.append(index)
+        return real_process(index, *args, **kwargs)
+
+    monkeypatch.setattr(factor_rebuild_module, '_process_chunk', _counting)
+    result = rebuild_factors_from_local(
+        quote_store, factor_store, chunk_size=2, include_existing=True)
+
+    assert calls == [1]
+    assert result['factor_codes'] == 4
+    snapshot = pl.read_parquet(tmp_path / 'factors' / 'stock_adj_factor.parquet')
+    assert snapshot['ts_code'].n_unique() == 4
+
+
+def test_rebuild_does_not_resume_across_chunk_size_change(tmp_path, monkeypatch):
+    """分块粒度变了必须重采：旧下标不能复用，否则会漏掉新布局里的标的。"""
+    codes = ('600000.SH', '000001.SZ', '600519.SH', '000002.SZ', '600036.SH')
+    quote_store, factor_store = _rebuild_fixture(tmp_path, codes)
+    real_process = factor_rebuild_module._process_chunk
+
+    def _explode_on_second(index, *args, **kwargs):
+        if index == 1:
+            raise RuntimeError('模拟：分块 1 计算中断')
+        return real_process(index, *args, **kwargs)
+
+    monkeypatch.setattr(factor_rebuild_module, '_process_chunk', _explode_on_second)
+    with pytest.raises(RuntimeError):
+        rebuild_factors_from_local(quote_store, factor_store, chunk_size=2)
+    assert len(list(_rebuild_dir(tmp_path).glob('part_*.parquet'))) == 1
+
+    calls: list[int] = []
+
+    def _counting(index, *args, **kwargs):
+        calls.append(index)
+        return real_process(index, *args, **kwargs)
+
+    monkeypatch.setattr(factor_rebuild_module, '_process_chunk', _counting)
+    rebuild_factors_from_local(
+        quote_store, factor_store, chunk_size=3, include_existing=True)
+
+    assert calls == [0, 1]
+    snapshot = pl.read_parquet(tmp_path / 'factors' / 'stock_adj_factor.parquet')
+    assert snapshot['ts_code'].n_unique() == len(codes)
 
 
 def _write_factor_snapshot(store_root: Path, code: str, dates: list[date],

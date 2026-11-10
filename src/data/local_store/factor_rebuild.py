@@ -10,6 +10,25 @@
   ``factors/stock_adj_factor.parquet``（原子替换），避免千万行级内存峰值；
 - 默认只补「快照里还没有的标的」：已存在的因子（例如远程已校准的 104 只）
   保持不变，避免与行情文件里内嵌的因子列出现口径漂移。
+
+**落盘顺序（勿调换）**：``分块落盘 → manifest 记 running → 合并出快照 →
+manifest 记 completed → 删分块``，与 ``src/data/local_store/turnover.py``
+的收尾顺序一致。
+
+跨文件一致性靠**顺序**保证，不靠 ``os.replace``——按 ``atomic_write`` 的约定，
+单文件替换原子，不等于多文件事务。这里维持的不变式是「manifest 记录为已完成
+的分块，在磁盘上一定真实存在」，因此任意中断点都能被
+:func:`_inspect_resume_state` 在启动时判定，不会被静默当成「没有断点」：
+
+- 清分块之前中断：manifest 与全部分块都完好 → 续跑；
+- 清分块之后中断：manifest 仍指向已删分块 → 判「分块缺失」后重采；
+- 合并前 / 合并中中断：manifest=running + 部分分块 → 只补缺失分块；
+- 合并完成但 manifest 未收尾：全部分块仍在 → 直接合并，**不重采**；
+- manifest 记 completed 之后、删分块未完成：分块只是残留 → 清理后按本次参数重建。
+
+已知边界：上述判定假设进程级中断（异常、Ctrl-C、OOM），``os.replace`` 之后
+目标文件即可见；断电这类「rename 未落盘」的场景不在覆盖范围内，最坏结果是
+一次多余的全量重采，不会产出错误数据。
 """
 
 from __future__ import annotations
@@ -145,6 +164,88 @@ def _clear_parts(rebuild_dir: Path) -> None:
             logger.warning(f'[factor-rebuild] 清理临时分块失败 {part}: {exc}')
 
 
+def _parts_on_disk(rebuild_dir: Path) -> dict[int, Path]:
+    """扫描磁盘上的分块，返回 ``{分块下标: 路径}``；文件名不合规的忽略。"""
+    parts: dict[int, Path] = {}
+    if not rebuild_dir.exists():
+        return parts
+    for path in rebuild_dir.glob(_PARTS_GLOB):
+        try:
+            parts[int(path.stem.rsplit('_', 1)[1])] = path
+        except (IndexError, ValueError):
+            continue
+    return parts
+
+
+def _inspect_resume_state(
+    rebuild_dir: Path,
+    state: dict[str, Any],
+    *,
+    codes_hash: str,
+    chunk_size: int,
+    total_parts: int,
+    resume: bool,
+) -> tuple[set[int], str]:
+    """启动时核对 manifest 记录与磁盘分块，返回（可复用分块, 处置动作）。
+
+    处置动作：
+
+    - ``resume``：manifest 与磁盘分块同属本批，续跑缺失分块；
+    - ``restart``：没有可用断点，旧分块作废后重采；
+    - ``assembled``：上一轮已把分块合并进快照（manifest=completed），
+      剩下的分块只是「删除动作没跑完」的残留，作废后按本次参数重来。
+
+    判定只看 manifest 记录的 ``completed_parts`` 与分块文件是否存在，不看
+    文件时间，因此「分块已写、manifest 未更新」这类错位一律按缺失处理，
+    不会被误当成已完成而漏算标的。
+    """
+    parts = _parts_on_disk(rebuild_dir)
+    if not state:
+        if parts:
+            logger.warning(
+                f'[factor-rebuild] manifest 缺失但发现 {len(parts)} 个残留分块，'
+                f'无法判定完整性，作废后重采')
+        return set(), 'restart'
+    status = state.get('status')
+    if status == 'completed':
+        if parts:
+            logger.info(
+                f'[factor-rebuild] 上一轮已合并落盘（manifest=completed），'
+                f'清理 {len(parts)} 个未删净的残留分块，按本次参数重建')
+        return set(), 'assembled'
+    if not resume:
+        return set(), 'restart'
+    if (state.get('codes_hash') != codes_hash
+            or int(state.get('chunk_size') or chunk_size) != chunk_size):
+        # 分块下标只在「同一批标的 + 同一分块粒度」下才有意义：换了粒度仍按
+        # 旧下标跳过，会把新布局里落在别的块上的标的漏掉，等于静默丢行。
+        logger.info('[factor-rebuild] 标的集合或分块粒度与上次不同，旧分块作废重采')
+        return set(), 'restart'
+    if status not in {'running', 'failed'}:
+        logger.warning(f'[factor-rebuild] manifest 状态未知（{status!r}），重采')
+        return set(), 'restart'
+
+    recorded = {int(idx) for idx in state.get('completed_parts') or []}
+    completed = recorded & set(parts)
+    lost = recorded - completed
+    if lost:
+        logger.warning(
+            f'[factor-rebuild] {len(lost)} 个已登记分块在磁盘上缺失，按缺失重采')
+    orphans = set(parts) - recorded
+    if orphans:
+        logger.info(
+            f'[factor-rebuild] {len(orphans)} 个分块未登记（写入后 manifest 未更新），'
+            f'将被重新计算覆盖')
+    if completed and len(completed) >= total_parts:
+        logger.info(
+            f'[factor-rebuild] 检测到分块完整但 manifest 未收尾'
+            f'（{len(completed)}/{total_parts}），直接合并，不重采')
+    else:
+        logger.info(
+            f'[factor-rebuild] 断点续跑：已完成 {len(completed)}/{total_parts} 个分块')
+    return completed, 'resume'
+
+
 def _write_part(part_path: Path, frame: pl.DataFrame) -> None:
     tmp = part_path.with_suffix('.parquet.tmp')
     frame.write_parquet(
@@ -258,20 +359,11 @@ def rebuild_factors_from_local(
     chunks = [candidates[i:i + chunk_size] for i in range(0, len(candidates), chunk_size)]
 
     state = _load_manifest(manifest_path)
-    completed: set[int] = set()
-    resuming = (
-        resume
-        and state.get('codes_hash') == codes_hash
-        and state.get('status') in {'running', 'failed'}
-    )
-    if resuming:
-        completed = {
-            int(idx) for idx in state.get('completed_parts', [])
-            if (rebuild_dir / f'part_{int(idx):05d}.parquet').exists()
-        }
-        logger.info(
-            f'[factor-rebuild] 断点续跑：已完成 {len(completed)}/{len(chunks)} 个分块')
-    else:
+    completed, action = _inspect_resume_state(
+        rebuild_dir, state, codes_hash=codes_hash, chunk_size=chunk_size,
+        total_parts=len(chunks), resume=resume)
+    if action != 'resume':
+        # 旧分块不属于本次这批量（换批 / 换分块粒度 / 上一轮已合并），先作废
         _clear_parts(rebuild_dir)
 
     _write_manifest(manifest_path, {
@@ -282,7 +374,7 @@ def rebuild_factors_from_local(
         'total_codes': len(candidates),
         'total_parts': len(chunks),
         'completed_parts': sorted(completed),
-        'started_at': state.get('started_at') if resuming else
+        'started_at': state.get('started_at') if action == 'resume' else
         datetime.now().isoformat(timespec='seconds'),
     })
 
@@ -309,7 +401,7 @@ def rebuild_factors_from_local(
             'total_codes': len(candidates),
             'total_parts': len(chunks),
             'completed_parts': sorted(completed),
-            'started_at': state.get('started_at') if resuming else
+            'started_at': state.get('started_at') if action == 'resume' else
             datetime.now().isoformat(timespec='seconds'),
         })
         if (index + 1) % 5 == 0 or index == len(chunks) - 1:
@@ -373,14 +465,19 @@ def rebuild_factors_from_local(
     tmp_meta.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
     os.replace(tmp_meta, meta_path)
 
-    _clear_parts(rebuild_dir)
+    # 收尾顺序不可调换（对照 turnover.py 的收尾）：先记 completed，再删分块。
+    # 反过来的话，两步之间中断会留下「分块已删、manifest 仍 running」，
+    # 重启时无从判定分块是否完整，只能全量重采；按现在这个顺序，中断最多
+    # 留下几个没删掉的分块，下次启动按 manifest 的 completed 识别为残留并清理。
     _write_manifest(manifest_path, {
         'version': STORE_VERSION,
         'status': 'completed',
         'codes_hash': codes_hash,
+        'chunk_size': chunk_size,
         'completed_parts': sorted(completed),
         'total_parts': len(chunks),
     })
+    _clear_parts(rebuild_dir)
     logger.info(
         f'[factor-rebuild] 完成：新增 {len(written_codes)} 只 / {rows_added:,} 行，'
         f'快照共 {len(final_codes)} 只，耗时 {elapsed:.1f}s，'
