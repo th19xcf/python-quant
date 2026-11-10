@@ -14,6 +14,7 @@ import polars as pl
 from loguru import logger
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from src.data.dividend_effective import apply_effective_columns, drop_non_ex_rights
 from src.database.db_manager import DatabaseManager
 from src.database.models.stock import StockAdjFactor, StockDaily, StockDividend
 from src.database.upsert import upsert_rows
@@ -199,6 +200,10 @@ class AdjFactorCalculator:
             'share_div': [float(d.share_div or 0) for d in dividends],
             'rights_issue_ratio': [float(d.rights_issue_ratio or 0) for d in dividends],
             'rights_issue_price': [float(d.rights_issue_price or 0) for d in dividends],
+            # 修正列必须带出，否则有效层退化回原始列（601258.SH 2019-12-30 即
+            # 原始 share_div=0.56416、修正 0）。这里保留 None 语义，不填 0。
+            'cash_div_fix': [d.cash_div_fix for d in dividends],
+            'share_div_fix': [d.share_div_fix for d in dividends],
         }
 
         return pl.DataFrame(data)
@@ -345,19 +350,18 @@ class AdjFactorCalculator:
         # no_ex_rights：分红表保留原始事件行（share_div 原样不动），但该事件
         # 不参与除权因子计算（典型场景：退市/重整转增用于抵债，原股东不获得、
         # 原始价不除权）。标记列缺省视为 False，不影响既有调用方。
-        if not divs.is_empty() and 'no_ex_rights' in divs.columns:
-            divs = divs.filter(~pl.col('no_ex_rights').fill_null(False))
+        divs = drop_non_ex_rights(
+            divs, expect=(), context='AdjFactorCalculator.calculate_factors')
         if divs.is_empty():
             return MemoryOptimizer.optimize_dataframe(prices_df.with_columns(ones))
         # *_fix：修正列非空时覆盖同名字段（原始 share_div/cash_div 保留在快照里
-        # 可追溯）。优先级写死为 no_ex_rights（剔除） > *_fix > 原值；列缺省时
-        # 保持既有调用方行为不变。修正只影响事件聚积，不触碰 as_of 截断与 PIT 回滚。
-        if 'share_div_fix' in divs.columns and 'share_div' in divs.columns:
-            divs = divs.with_columns(
-                pl.col('share_div_fix').fill_null(pl.col('share_div')).alias('share_div'))
-        if 'cash_div_fix' in divs.columns and 'cash_div' in divs.columns:
-            divs = divs.with_columns(
-                pl.col('cash_div_fix').fill_null(pl.col('cash_div')).alias('cash_div'))
+        # 可追溯）。优先级写死为 no_ex_rights（剔除） > *_fix > 原值。
+        # 取值实现收口在 src.data.dividend_effective，与撮合层共用同一套语义。
+        # 本函数是纯数值函数，入参可能来自基金/债券分红表（无 *_fix 列），
+        # 故 expect=() 不做契约判定；契约强制放在帧进入计算层的边界
+        # （撮合 schedule 构建、因子快照重建、通达信分红读取）。
+        divs = apply_effective_columns(
+            divs, expect=(), context='AdjFactorCalculator.calculate_factors')
 
         # 事件截断：晚于行情末行（或 as_of）的事件不参与计算。
         # searchsorted(side='left') 对这类事件会返回 pos == N，若不截断会被广播到
@@ -529,6 +533,8 @@ class AdjFactorCalculator:
                 StockDividend.share_div,
                 StockDividend.rights_issue_ratio,
                 StockDividend.rights_issue_price,
+                StockDividend.cash_div_fix,
+                StockDividend.share_div_fix,
             )
             .filter(StockDividend.ts_code.in_(ts_codes))
             .order_by(StockDividend.ts_code, StockDividend.ex_date)
@@ -539,6 +545,7 @@ class AdjFactorCalculator:
                 'ts_code': pl.String, 'ex_date': pl.Date,
                 'cash_div': pl.Float64, 'share_div': pl.Float64,
                 'rights_issue_ratio': pl.Float64, 'rights_issue_price': pl.Float64,
+                'cash_div_fix': pl.Float64, 'share_div_fix': pl.Float64,
             })
         # 数值列统一转 float，避免 0/None 的 int 与小数混列导致 polars 推断失败
         return pl.DataFrame({
@@ -548,6 +555,9 @@ class AdjFactorCalculator:
             'share_div': [float(r[3] or 0) for r in rows],
             'rights_issue_ratio': [float(r[4] or 0) for r in rows],
             'rights_issue_price': [float(r[5] or 0) for r in rows],
+            # 修正列保留 None（不填 0），否则「无修正」与「修正为 0」不可区分
+            'cash_div_fix': [None if r[6] is None else float(r[6]) for r in rows],
+            'share_div_fix': [None if r[7] is None else float(r[7]) for r in rows],
         })
 
     def _get_prices_bulk(self, ts_codes: List[str],

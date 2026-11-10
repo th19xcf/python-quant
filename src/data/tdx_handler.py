@@ -357,6 +357,12 @@ class TdxHandler(DataSourceBase):
                     share_div=row.get('share_div'),
                     rights_issue_ratio=row.get('rights_issue_ratio'),
                     rights_issue_price=row.get('rights_issue_price'),
+                    # 修正列与不除权标记必须原样带出，否则有效层在传递中丢失：
+                    # 601258.SH 2019-12-30 原始 share_div=0.56416、修正为 0，
+                    # 只带原始列会让通达信复权按 56.4% 送转计算。
+                    cash_div_fix=row.get('cash_div_fix'),
+                    share_div_fix=row.get('share_div_fix'),
+                    no_ex_rights=row.get('no_ex_rights'),
                 )
                 for row in local.filter(pl.col('ex_date').is_not_null()).to_dicts()
             ]
@@ -468,12 +474,25 @@ class TdxHandler(DataSourceBase):
                 d.rights_issue_price if d.rights_issue_price is not None else 0.0
                 for d in dividends
             ],
+            # 有效层：修正列非空时覆盖原始列。DB 回退路径的 ORM 对象含这两个
+            # 字段（stock_dividend 表有），本地快照路径由 _load_dividend_records 带出。
+            'cash_div_fix': [getattr(d, 'cash_div_fix', None) for d in dividends],
+            'share_div_fix': [getattr(d, 'share_div_fix', None) for d in dividends],
         }, schema_overrides={
             'cash_div': pl.Float64,
             'share_div': pl.Float64,
             'rights_issue_ratio': pl.Float64,
             'rights_issue_price': pl.Float64,
+            'cash_div_fix': pl.Float64,
+            'share_div_fix': pl.Float64,
         })
+        # no_ex_rights 只存在于本地快照（stock_dividend 表无该列），全为 None 时
+        # 不加列，避免把「表里没有这个标记」伪装成「没有任何不除权事件」。
+        no_ex_rights = [getattr(d, 'no_ex_rights', None) for d in dividends]
+        if any(value is not None for value in no_ex_rights):
+            dividends_df = dividends_df.with_columns(
+                pl.Series('no_ex_rights', [bool(v) if v is not None else False
+                                           for v in no_ex_rights], dtype=pl.Boolean))
 
         result = AdjFactorCalculator.calculate_factors(prices_df, dividends_df)
         if result is None or result.is_empty():

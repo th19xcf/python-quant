@@ -23,6 +23,7 @@ from src.backtest.engine.corporate_actions import (
     CorporateActionSchedule,
 )
 from src.backtest.strategies.base_strategy import BaseStrategy
+from src.data.dividend_effective import DividendSchemaError
 
 ZERO_COST = CostModel(overrides={
     'commission_rate': 0.0,
@@ -46,14 +47,14 @@ class _IndexSignalStrategy(BaseStrategy):
         return self.signals.get(index, 'hold')
 
 
-def _make_df(opens, closes, volumes=None) -> pl.DataFrame:
-    """构造单标日线；索引 0 = 2023-01-02（工作日序列）。
+def _make_df(opens, closes, volumes=None, start='2023-01-02') -> pl.DataFrame:
+    """构造单标日线；索引 0 = ``start``（工作日序列）。
 
     信号在 T 日收盘产生、T+1 开盘成交，因此「索引 0 买入」对应
     「索引 1 开盘成交」，除权日按业务日序列对齐。
     """
     days = len(closes)
-    dates = pd.date_range('2023-01-02', periods=days, freq='B')
+    dates = pd.date_range(start, periods=days, freq='B')
     opens = np.asarray(opens, dtype=float)
     closes = np.asarray(closes, dtype=float)
     high = np.maximum(opens, closes) * 1.005
@@ -70,17 +71,20 @@ def _make_df(opens, closes, volumes=None) -> pl.DataFrame:
     })
 
 
-def _div_frame(events: list[dict]) -> pl.DataFrame:
-    """构造 stock_dividend 快照同构的分红记录。"""
+def _div_frame(events: list[dict], code: str = CODE) -> pl.DataFrame:
+    """构造 stock_dividend 快照同构的分红记录（含有效层的三列契约列）。"""
     rows = []
     for event in events:
         rows.append({
-            'ts_code': CODE,
+            'ts_code': code,
             'ex_date': event['ex_date'],
             'cash_div': event.get('cash_div', 0.0),
             'share_div': event.get('share_div', 0.0),
             'rights_issue_ratio': event.get('rights_issue_ratio', 0.0),
             'rights_issue_price': event.get('rights_issue_price', 0.0),
+            'cash_div_fix': event.get('cash_div_fix'),
+            'share_div_fix': event.get('share_div_fix'),
+            'no_ex_rights': event.get('no_ex_rights', False),
         })
     return pl.DataFrame(rows)
 
@@ -93,12 +97,12 @@ def _buy_trade(result) -> dict:
 
 
 def _run(data: pl.DataFrame, *, dividends, capital=1200.0, buy_index=0,
-         tax_rate=0.0, rights_policy='partial'):
+         tax_rate=0.0, rights_policy='partial', ts_code=CODE):
     engine = BacktestEngine(data)
     engine.cost_model = ZERO_COST
     engine.set_strategy(_IndexSignalStrategy({buy_index: 'buy'}))
     return engine.run_backtest(
-        initial_capital=capital, ts_code=CODE,
+        initial_capital=capital, ts_code=ts_code,
         dividends=dividends, dividend_tax_rate=tax_rate,
         rights_policy=rights_policy,
     )
@@ -338,3 +342,85 @@ def test_invalid_rights_policy_is_rejected():
     data = _make_df(opens=[10.0, 10.0], closes=[10.0, 10.0])
     with pytest.raises(ValueError):
         _run(data, rights_policy='ignore', dividends=None)
+
+
+# ----------------------------------------------------------------------
+# 有效层（*_fix 覆盖原始列、no_ex_rights 剔除）回归
+# 真实数据：601258.SH 2019-12-30 原始 cash_div=0.0 / share_div=0.56416，
+# 修正 cash_div_fix=0.04 / share_div_fix=0.0。修复前撮合层只读原始列，
+# 记了 56.4% 送转、漏记 0.04 元派现，权益永久虚增且不报错。
+# ----------------------------------------------------------------------
+
+FIX_CODE = '601258.SH'
+
+
+def _fix_case_frame() -> pl.DataFrame:
+    """601258.SH 2019-12-30 那一行的原样快照（含修正层）。"""
+    return _div_frame([{
+        'ex_date': date(2019, 12, 30),
+        'cash_div': 0.0,
+        'share_div': 0.56416,
+        'cash_div_fix': 0.04,
+        'share_div_fix': 0.0,
+    }], code=FIX_CODE)
+
+
+def test_schedule_uses_fix_layer_instead_of_raw_columns():
+    """撮合排程读有效层：送转归零、派现取修正值。"""
+    schedule = CorporateActionSchedule.from_frames({FIX_CODE: _fix_case_frame()})
+    events = schedule.events_for(FIX_CODE)
+    assert len(events) == 1
+    assert events[0].share_ratio == 0.0          # 修复前为 0.56416
+    assert events[0].cash_per_share == pytest.approx(0.04)   # 修复前为 0.0
+
+
+def test_engine_does_not_credit_phantom_share_dividend():
+    """端到端：601258.SH 除权日不得凭空多出 56.4% 股份。"""
+    # 索引 0/1/2 = 2019-12-26 / 27 / 30，除权日 2019-12-30 落在索引 2
+    data = _make_df(
+        opens=[10.0, 10.0, 8.0, 8.0],
+        closes=[10.0, 10.0, 8.0, 8.0],
+        start='2019-12-26',
+    )
+    result = _run(
+        data, dividends={FIX_CODE: _fix_case_frame()},
+        ts_code=FIX_CODE,
+    )
+
+    assert result['positions'] == {FIX_CODE: 100}          # 修复前为 156
+    assert result['dividend_cash_total'] == pytest.approx(4.0)   # 修复前为 0.0
+
+
+def test_no_ex_rights_event_is_excluded():
+    """no_ex_rights=True（重整转增抵债）不向原股东分配，撮合必须剔除。"""
+    frame = _div_frame([{
+        'ex_date': date(2023, 1, 4),
+        'cash_div': 0.0,
+        'share_div': 2.6466,
+        'no_ex_rights': True,
+    }])
+    schedule = CorporateActionSchedule.from_frames({CODE: frame})
+    assert schedule.events_for(CODE) == ()
+
+
+def test_missing_effective_columns_raises():
+    """缺 *_fix / no_ex_rights 列是数据契约违约，不得静默退回原始列。"""
+    frame = pl.DataFrame([{
+        'ts_code': CODE,
+        'ex_date': date(2023, 1, 4),
+        'cash_div': 1.0,
+        'share_div': 0.0,
+    }])
+    with pytest.raises(DividendSchemaError) as exc:
+        CorporateActionSchedule.from_frames({CODE: frame})
+    message = str(exc.value)
+    assert 'cash_div_fix' in message and 'no_ex_rights' in message
+    assert CODE in message
+
+
+def test_missing_fix_column_only_is_not_silently_raw():
+    """只缺某一列也要报错，不允许挑出存在的列静默降级。"""
+    frame = _div_frame([{'ex_date': date(2023, 1, 4), 'cash_div': 1.0}]).drop(
+        'share_div_fix')
+    with pytest.raises(DividendSchemaError):
+        CorporateActionSchedule.from_frames({CODE: frame})

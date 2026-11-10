@@ -46,6 +46,15 @@
 （列与 ``stock_dividend`` 表一致），运行时主路径不发起远程查询；
 指数无分红/送转，按 ``is_index_code`` 显式排除。
 
+取值口径（与复权因子层必须一致）
+--------------------------------
+读的是**有效层**，不是原始列：``cash_div_fix`` / ``share_div_fix`` 非空时覆盖
+``cash_div`` / ``share_div``，``no_ex_rights=True`` 的事件整行剔除。取值统一走
+``src.data.dividend_effective``，撮合与 ``AdjFactorCalculator`` 共用同一实现，
+禁止两处各写一遍 ``fill_null``。缺 ``*_fix`` / ``no_ex_rights`` 列即契约违约，
+直接抛 ``DividendSchemaError``——601258.SH 2019-12-30（原始 ``share_div=0.56416``、
+修正为 0）曾因撮合层静默读原始列而虚增 56.4% 权益，且不报错。
+
 同日多笔除权事件
 ----------------
 同一标的同一除权日若有多条记录，按经济口径**加总**（现金分红相加、送转
@@ -85,6 +94,10 @@ from typing import Any, Dict
 import polars as pl
 from loguru import logger
 
+from src.data.dividend_effective import (
+    apply_effective_columns,
+    drop_non_ex_rights,
+)
 from src.utils.code_converter import is_index_code
 
 #: 合法的配股现金不足处置策略
@@ -166,8 +179,12 @@ class CorporateActionSchedule:
     def from_frames(cls, frames: Mapping[str, pl.DataFrame] | None) -> CorporateActionSchedule:
         """从「标的 → 分红记录 DataFrame」构建事件表。
 
-        列与 ``stock_dividend`` 表一致；缺失的可选列按 0 处理。指数代码直接
-        跳过（指数没有分红/送转，库里同号指数记录与个股同源）。
+        列与 ``stock_dividend`` 表一致，且必须是**有效层**：``cash_div_fix`` /
+        ``share_div_fix`` 非空时覆盖原始列、``no_ex_rights=True`` 的事件剔除。
+        缺这些列时抛 ``DividendSchemaError``，不静默退回原始列（否则 601258.SH
+        2019-12-30 会按原始 ``share_div=0.56416`` 记 56.4% 送转，权益永久虚增）。
+
+        指数代码直接跳过（指数没有分红/送转，库里同号指数记录与个股同源）。
         """
         if not frames:
             return cls({})
@@ -175,15 +192,20 @@ class CorporateActionSchedule:
         for code, frame in frames.items():
             if frame is None or frame.is_empty() or is_index_code(code):
                 continue
-            events = cls._parse_frame(frame)
+            events = cls._parse_frame(frame, code)
             if events:
                 parsed[code] = events
         return cls(parsed)
 
     @staticmethod
-    def _parse_frame(frame: pl.DataFrame) -> tuple[CorporateAction, ...]:
+    def _parse_frame(frame: pl.DataFrame, code: str = '') -> tuple[CorporateAction, ...]:
         """解析单标的分红记录，按 ex_date 合并同日多笔事件。"""
         if 'ex_date' not in frame.columns:
+            return ()
+        context = f'撮合除权事件[{code}]' if code else '撮合除权事件'
+        frame = apply_effective_columns(frame, context=context)
+        frame = drop_non_ex_rights(frame, context=context)
+        if frame.is_empty():
             return ()
         optional = ('cash_div', 'share_div', 'rights_issue_ratio', 'rights_issue_price')
         columns = ['ex_date'] + [col for col in optional if col in frame.columns]

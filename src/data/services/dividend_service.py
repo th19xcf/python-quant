@@ -9,6 +9,7 @@
 
 from typing import Any
 
+from src.data.dividend_effective import apply_effective_columns
 from src.utils.code_converter import to_ts_code
 from src.utils.logger import logger
 
@@ -86,6 +87,12 @@ class DividendService:
         df = self._data_manager.get_stock_dividend(ts_code)
         rows: list[dict[str, Any]] = []
         if df is not None and not df.is_empty():
+            # 有效层：``*_fix`` 非空时覆盖原始列，与撮合/复权因子层同一口径。
+            # 601258.SH 2019-12-30 原始 share_div=0.56416、修正为 0，修复前提示框
+            # 会显示「每10股送转 5.64 股」。
+            # 展示层不做缺列强制（expect=()）：远程回退帧可能没有修正列，缺列时
+            # 按原始值显示，不让整块分红标记直接消失。
+            df = apply_effective_columns(df, expect=(), context='GUI 分红标记')
             available = [c for c in _DIVIDEND_COLUMNS if c in df.columns]
             rows = df.select(available).to_dicts()
         self._dividend_cache[ts_code] = rows
