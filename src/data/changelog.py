@@ -12,11 +12,13 @@
 约定（与 `logs/data_changelog.README.md` 一致）：只追加，不改历史行；`action` 只取
 `create|update|delete`；`delete` 必须给出删除前的 `sha256`，`prev_sha256` 可留空。
 
-两条硬约束（2026-11-10 修复）：
+三条硬约束（2026-11-10 修复）：
 1. **列升级只改首行表头**：历史行按字节原样保留，列数不足的旧行由读侧 `read_events`
    补空容错，不允许把 9,821 行历史整行重写。
 2. **同事件幂等**：同一 `action + path + task` 在 `DEFAULT_DEDUPE_WINDOW_SECONDS` 内重复调用
    只落一条，返回里带 `duplicate="true"`；窗口传 0 或 None 可关闭。
+3. **哈希格式校验**：`sha256` 必须 64 位十六进制，落库统一小写；`delete` 不允许留空。
+   截断哈希（如 16 位）会被拒绝，避免写入永远对不上任何文件的记录。
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ import argparse
 import csv
 import hashlib
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -42,6 +45,7 @@ FIELDS = [
     "reason",
 ]
 ACTIONS = ("create", "update", "delete")
+SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 DEFAULT_DEDUPE_WINDOW_SECONDS = 300.0
 TS_FORMATS = ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S")
 
@@ -64,6 +68,23 @@ def file_sha256(path: str | os.PathLike[str], chunk: int = 4 << 20) -> str:
                 break
             h.update(block)
     return h.hexdigest()
+
+
+def normalize_sha256(value: str, *, action: str) -> str:
+    """校验 sha256：必须 64 位十六进制，落库统一小写；`delete` 必须给出哈希。
+
+    长度不符 / 含非十六进制字符 / 截断一律抛错，避免写入永远对不上文件的记录。
+    """
+    text = (value or "").strip()
+    if not text:
+        if action == "delete":
+            raise ValueError(
+                f"delete 必须给出删除前的 sha256（期望 64 位十六进制，实际 {len(text)} 位）"
+            )
+        return ""
+    if not SHA256_RE.match(text):
+        raise ValueError(f"sha256 期望 64 位十六进制，实际 {len(text)} 位：{text!r}")
+    return text.lower()
 
 
 def _header_fields(csv_path: Path) -> list[str]:
@@ -173,6 +194,7 @@ def append_event(
         raise ValueError(f"action 只能是 {ACTIONS}，收到 {action!r}")
     if not path or os.path.isabs(path):
         raise ValueError("path 必须是仓库内相对路径")
+    sha256 = normalize_sha256(sha256, action=action)
     target = Path(csv_file) if csv_file else changelog_path()
 
     target.parent.mkdir(parents=True, exist_ok=True)

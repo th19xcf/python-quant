@@ -166,3 +166,49 @@ def test_record_delete_reads_size_and_hash(tmp_path, monkeypatch):
     assert row["bytes"] == str(len(b"payload"))
     assert row["sha256"] == file_sha256(target)
     assert row["path"] == "reports/gone.parquet"
+
+
+def test_rejects_short_sha256(tmp_path):
+    """16 位短哈希必须被拒，且不落盘——否则写进去的记录永远对不上任何文件。"""
+    csv_file = tmp_path / "c.csv"
+    with pytest.raises(ValueError, match="期望 64 位十六进制，实际 16 位"):
+        append_event(
+            action="update",
+            path="reports/a",
+            task="t",
+            reason="r",
+            sha256="0" * 16,
+            size_bytes=1,
+            csv_file=csv_file,
+        )
+    assert not csv_file.exists()
+
+
+def test_rejects_non_hex_sha256(tmp_path):
+    csv_file = tmp_path / "c.csv"
+    with pytest.raises(ValueError, match="期望 64 位十六进制，实际 64 位"):
+        append_event(
+            action="create",
+            path="reports/a",
+            task="t",
+            reason="r",
+            sha256="g" * 64,
+            size_bytes=1,
+            csv_file=csv_file,
+        )
+    assert not csv_file.exists()
+
+
+def test_uppercase_sha256_normalized_to_lower(tmp_path):
+    csv_file = tmp_path / "c.csv"
+    row = append_event(
+        action="create",
+        path="reports/a",
+        task="t",
+        reason="r",
+        sha256="A" * 64,
+        size_bytes=1,
+        csv_file=csv_file,
+    )
+    assert row["sha256"] == "a" * 64
+    assert _rows(csv_file)[0]["sha256"] == "a" * 64
