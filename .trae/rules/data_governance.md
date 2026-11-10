@@ -29,13 +29,13 @@
 
 ## 二、候选隔离与原子替换
 
-- **DG-5** 候选数据只能存在于 `data/local_store/_staging/<任务>_<日期>/`，不得写在正式文件同目录。
-  依据：`_staging/` 下已有 `backfill_20190917`、`research_rebuild_20261109`、`delisted_backfill_20261109` 等按任务命名的先例。
+- **DG-5** 候选数据只能存在于 `_staging/<任务>_<日期>/`（仓库根，**不在** `data/` 之下；权威定义见 `src/data/staging.py`），不得写在正式文件同目录。
+  依据：该根已在 `.gitignore` 中、不进入任何取数/回测/展示链路；`_staging/` 下已有 `backfill_20190917`、`research_rebuild_20261109`、`delisted_backfill_20261109`、`turnover_local_parts` 等按任务命名的先例。
+  反例（已退役）：曾用 `data/local_store/_staging/`，因长在 `data/` 底下，不得不为它单开一条删除例外，等于削弱「`data/` 一律不删」。2026-11-10 已整体迁至仓库根，原路径不再使用，也不要再往里写。
 - **DG-6** 禁止在正式目录留下 `*_candidate.parquet`、`*.new`、`*.bak` 这类过渡文件。
   反例：过渡文件会被下一次取数按通配命中，半成品直接进入正式结论。
 - **DG-7** staging 内必须有可断点记录的进度文件（`progress.csv` / `progress.json` 或等价物）与失败清单（`failed.csv`）；中断后必须从断点续跑，禁止从零重跑。
-- **DG-8** 校验通过后的目标状态只有一种：正式文件已是新内容，且本次任务的候选目录已不存在。
-  说明：这是「数据与历史安全规则（红线）」中「`data/` 禁止删除」的**唯一窄例外**，仅限 `_staging/<本次任务>/`；其它任何 `data/local_store/**` 文件仍不得删除。
+  说明：DG-8 已于 2026-11-10 随 staging 根目录迁出 `data/` 而**整条取消**——当时那条「`_staging/<本次任务>/` 是 `data/` 禁止删除的唯一窄例外」的条款已无存在必要。现在 `data/` 恢复为真正一律不删（与「数据与历史安全规则（红线）」一致，无任何例外）；本次任务候选目录的清理仍照做，但按 `_staging/` 归属处理，不再借用 `data/` 的例外条款。
 - **DG-9** 覆盖正式文件必须走 `src/data/atomic_write.py` 的 `write_parquet_atomic` / `write_text_atomic`（临时文件 → fsync → `os.replace`），禁止直接 `write_parquet` 覆盖。
   依据：该模块文档写明「写一半失败时目标文件保持原样」。
 - **DG-10** 不得把多个文件的替换当成一个事务。`os.replace` 只保证单文件原子；跨文件更新必须显式说明顺序、失败残留状态与回滚方式。

@@ -118,6 +118,8 @@ SEED_DIRS: tuple[str, ...] = (
 )
 
 #: 任何范围都跳过的目录名 / 文件模式。
+#: ``_staging`` 已迁到仓库根（``<仓库根>/_staging``，见 ``src/data/staging.py``），
+#: 按目录名跳过同样适用于新位置；``data/local_store/_staging`` 若有历史残留也不再同步。
 SKIP_DIR_NAMES = frozenset({'_backup', '_staging', '__pycache__', '.ipynb_checkpoints'})
 SKIP_SUFFIXES = ('.tmp', '.temp', '.log')
 

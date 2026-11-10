@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# staging 候选工作区（在 data/ 之外，不进入任何取数链路）
+/_staging/
+
 # Distribution / packaging
 .Python
 build/

@@ -46,7 +46,7 @@ MySQL ``stock_basic`` 是「库现在长什么样」，不是正确性依据：�
 
 产出方式
 ========
-默认只写候选表到 ``data/local_store/_staging/stock_basic_<时间戳>/``，**不碰**
+默认只写候选表到 ``_staging/stock_basic_<时间戳>/``（仓库根，不在 ``data/`` 下），**不碰**
 ``meta/stock_basic.parquet``；目录内含 ``manifest.json``（行数、状态分布、
 各列依据、证据来源、新旧 SHA256）。``--promote`` 才执行正式替换：
 ``copy2`` 备份原文件到 ``_backup/stock_basic_<时间戳>/`` → 写
@@ -81,6 +81,7 @@ import polars as pl  # noqa: E402
 
 from src.data.atomic_write import write_parquet_atomic  # noqa: E402
 from src.data.local_store.store import resolve_store_root  # noqa: E402
+from src.data.staging import staging_dir  # noqa: E402
 from src.utils.config import get_config  # noqa: E402
 
 #: 导出列（前 5 列与现有文件同名同序，其余为可解释的补充信息）
@@ -685,7 +686,7 @@ def main(argv: list[str] | None = None) -> int:
         print('\n[--no-write] 未落盘')
         return 0
 
-    staging = store_root / '_staging' / f'stock_basic_{datetime.now():%Y%m%d_%H%M%S}'
+    staging = staging_dir(f'stock_basic_{datetime.now():%Y%m%d_%H%M%S}')
     staging.mkdir(parents=True, exist_ok=False)
     write_parquet_atomic(candidate, staging / 'stock_basic.parquet')
     manifest = _manifest(candidate, quotes, calendar, suspended, dropped,

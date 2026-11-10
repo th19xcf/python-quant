@@ -101,7 +101,7 @@ description: 本地数据治理的可执行流程：缺口定位、来源校验�
 
 目标：不动正式文件，产出一份可验收的候选。
 
-- 目录：`data/local_store/_staging/<任务>_<YYYYMMDD>/`，任务名用英文短标识（先例：`backfill_20190917`、`research_rebuild_20261109`）
+- 目录：`_staging/<任务>_<YYYYMMDD>/`（**仓库根**，不在 `data/` 之下；权威常量见 `src/data/staging.py` 的 `STAGING_ROOT` / `staging_dir()`），任务名用英文短标识（先例：`backfill_20190917`、`research_rebuild_20261109`）
 - 写盘：单文件一律 `src/data/atomic_write.py` 的 `write_parquet_atomic` / `write_text_atomic`
 - 断点：每完成一只 / 一块就落 `progress.csv` 或 `progress.json`；失败项落 `failed.csv`，含原因
 - 分片：保留逐只或逐块 parquet，便于局部重跑；不要只留一个合并后的大文件
@@ -159,7 +159,7 @@ description: 本地数据治理的可执行流程：缺口定位、来源校验�
 1. 备份：把将被覆盖的正式文件 `copy2` 到 `logs/<任务>_<日期>/` 或 `_backup/<语义>_<日期>/`，记录旧 SHA256
 2. 退役旧表：若整表被取代，把旧目录整体**移动**进 `_backup/`，给移动前后 SHA256 一致证明（DG-13）
 3. 替换：用 `write_parquet_atomic` 落正式路径，禁止直接覆盖
-4. 清理候选：删除本次 `_staging/<任务>_<日期>/`（仅限本次任务目录）
+4. 清理候选：删除本次 `_staging/<任务>_<日期>/`（仓库根，仅限本次任务目录；`_staging` 根本身保留）
 5. 记账：写同目录 `manifest.json`，至少含 `version`、`status`、口径哈希（`codes_hash` 一类）、上游 mtime、行数、只数、`updated_at`
 6. 登记路径：在 `docs/数据权威路径清单.md` 登记「语义 / 唯一正式路径 / 消费者 / 为什么是它」，被取代的旧路径写进「已废弃路径」表（含移入位置与 SHA256）；不可重建资产同步进 `tools/backup_critical_assets.py` 的 `CRITICAL_FILES` / `CRITICAL_DIRS`，外部依赖数据同步进 `extended_contracts.py` 契约
 7. 汇报：改了哪些文件、哪些行、哪些标的、新旧 SHA256、验收结论、回滚命令
@@ -175,13 +175,15 @@ description: 本地数据治理的可执行流程：缺口定位、来源校验�
 
 **停手条件**：需要删除的目录不是本次 `_staging/` 任务目录；或替换后下游读数与预期不一致。
 
+> 2026-11-10 起 `_staging/` 已迁出 `data/`（原 `data/local_store/_staging/` 不再使用），因此「删除本次 `_staging/<任务>/`」不再需要 `data/` 的删除例外——`data/` 恢复为一律不删（DG-8 已整条取消）。
+
 ---
 
 ## 全流程停手条件
 
 判定口径与 DG-29 一致（三类：不可逆操作、外部条件不具备、改口径且无实测证据），这里只列数据侧的具体触发信号。出现以下任一，先报不先做：
 
-- 需要删除 `data/` 下非本次 staging 的任何内容
+- 需要删除 `data/` 下任何内容（`data/` 已无任何删除例外，staging 也已不在其中）
 - 需要改写 Git 历史、清空或覆盖备份目录、批量清理工作区
 - 源端无数据 / 限流 / 封禁 / 无权限，且降速无法解决
 - 需要改变口径：把推导换成外部源、调 `strict` 名单、改复权口径、放宽容差、改准入阈值
@@ -223,7 +225,7 @@ description: 本地数据治理的可执行流程：缺口定位、来源校验�
 
 7. **候选文件留在正式目录**
    现象：`*_candidate.parquet`、`*.new` 留在正式目录，下一次取数按通配命中半成品。
-   正确：候选只放 `_staging/`，验收后删目录（DG-5、DG-6、DG-8）。
+   正确：候选只放仓库根 `_staging/`，验收后删目录（DG-5、DG-6）。
 
 8. **用库与本地差异反推「本地错了」**
    现象：一看到库里数不一样就改本地，结果把正确值改成错误值。
