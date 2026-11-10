@@ -79,7 +79,7 @@ sys.path.insert(0, str(ROOT))
 
 import polars as pl  # noqa: E402
 
-from src.data.atomic_write import write_parquet_atomic  # noqa: E402
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
 from src.data.local_store.store import resolve_store_root  # noqa: E402
 from src.data.staging import staging_dir  # noqa: E402
 from src.utils.config import get_config  # noqa: E402
@@ -500,6 +500,94 @@ def compare(candidate: pl.DataFrame, other: pl.DataFrame) -> dict[str, Any]:
     }
 
 
+def merge_with_existing(
+    candidate: pl.DataFrame, existing: pl.DataFrame,
+) -> tuple[pl.DataFrame, list[dict[str, str]], dict[str, int]]:
+    """以候选为基、现有正式表兜底，避免重建时抹掉本地既有非空值。
+
+    候选由本地行情/公告证据推导，冲突时以候选为准；候选为空而现有非空的单元格
+    保留现有值；现有表独有的代码整行追加，不因重建丢行。
+    """
+    extra = [name for name in existing.columns if name not in candidate.columns]
+    if extra:
+        raise RuntimeError(f'现有 stock_basic 含候选没有的列 {extra}，拒绝合并以免丢列')
+
+    existing_map = {row['ts_code']: row for row in existing.to_dicts()}
+    diffs: list[dict[str, str]] = []
+    counters = {
+        'fill_from_existing': 0, 'conflict_keep_candidate': 0,
+        'append_from_existing': 0,
+    }
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in candidate.to_dicts():
+        code = row['ts_code']
+        seen.add(code)
+        old = existing_map.get(code)
+        if old:
+            for field in candidate.columns:
+                new_value, old_value = row.get(field), old.get(field)
+                if new_value is None and old_value is not None:
+                    row[field] = old_value
+                    counters['fill_from_existing'] += 1
+                    diffs.append({
+                        'ts_code': code, 'field': field, 'candidate_value': '',
+                        'existing_value': str(old_value), 'action': 'fill_from_existing',
+                        'reason': '候选为空、现有表有值，保留现有值',
+                    })
+                elif (new_value is not None and old_value is not None
+                      and new_value != old_value):
+                    counters['conflict_keep_candidate'] += 1
+                    diffs.append({
+                        'ts_code': code, 'field': field,
+                        'candidate_value': str(new_value),
+                        'existing_value': str(old_value),
+                        'action': 'conflict_keep_candidate',
+                        'reason': '候选由本地行情/公告证据推导，冲突时以候选为准',
+                    })
+        rows.append(row)
+
+    for code, old in existing_map.items():
+        if code in seen:
+            continue
+        rows.append({name: old.get(name) for name in candidate.columns})
+        counters['append_from_existing'] += 1
+        diffs.append({
+            'ts_code': code, 'field': '*', 'candidate_value': '',
+            'existing_value': code, 'action': 'append_from_existing',
+            'reason': '候选未覆盖该代码，整行保留现有值',
+        })
+
+    merged = pl.DataFrame(rows, schema=candidate.schema)
+    return merged, diffs, counters
+
+
+def _merge_into_existing(
+    candidate: pl.DataFrame, target: Path,
+) -> tuple[pl.DataFrame, list[dict[str, str]], dict[str, int]]:
+    """把候选与现有正式表做兜底合并，并断言行数、代码集与空值数都不退化。"""
+    if not target.is_file():
+        return candidate, [], {}
+    existing = pl.read_parquet(target)
+    if existing.is_empty():
+        return candidate, [], {}
+
+    _print_one('候选 vs 现有 meta/stock_basic.parquet', compare(candidate, existing))
+    before_nulls = {name: int(existing[name].null_count()) for name in existing.columns}
+    merged, diffs, counters = merge_with_existing(candidate, existing)
+    after_nulls = {name: int(merged[name].null_count()) for name in existing.columns}
+    for name, old in before_nulls.items():
+        if after_nulls.get(name, 0) > old:
+            raise RuntimeError(
+                f'合并现有表后 {name} 空值增加: {old} -> {after_nulls[name]}')
+    if merged.height < existing.height:
+        raise RuntimeError(f'合并后行数减少: 现有 {existing.height} -> {merged.height}')
+    if not set(existing['ts_code']) <= set(merged['ts_code']):
+        raise RuntimeError('合并后丢失现有 ts_code')
+    print('现有表兜底合并: ' + str(counters))
+    return merged, diffs, counters
+
+
 def _sample(codes: list[str], limit: int = 12) -> str:
     head = ', '.join(codes[:limit])
     return f'{head}{" …" if len(codes) > limit else ""}' if codes else '-'
@@ -608,7 +696,12 @@ def _promote(staging: Path, target: Path, store_root: Path, manifest: dict[str, 
     old_sha = _sha256(backup)
     new_sha = _sha256(staging / 'stock_basic.parquet')
     if old_sha == new_sha:
-        raise RuntimeError('候选与原文件字节相同，无需替换')
+        # 日常收口会反复调用，无变化时保持幂等：不替换、不留备份副本
+        shutil.rmtree(staging)
+        backup.unlink(missing_ok=True)
+        backup_dir.rmdir()
+        print('候选与原文件字节相同，无需替换（幂等返回）')
+        return
     manifest = {**manifest, 'promoted_at': datetime.now().isoformat(timespec='seconds'),
                 'target_sha256': new_sha, 'previous_sha256': old_sha,
                 'previous_backup': str(backup)}
@@ -661,9 +754,8 @@ def main(argv: list[str] | None = None) -> int:
           f"{_sample(candidate.filter(pl.col('board').is_null())['ts_code'].to_list())}")
 
     target = store_root / 'meta' / 'stock_basic.parquet'
-    existing = pl.read_parquet(target) if target.is_file() else pl.DataFrame()
-    if not existing.is_empty():
-        _print_one('候选 vs 现有 meta/stock_basic.parquet', compare(candidate, existing))
+    candidate, merge_diffs, merge_counts = _merge_into_existing(candidate, target)
+
     if args.compare_db:
         db = _load_db_basic()
         if db is not None:
@@ -689,9 +781,19 @@ def main(argv: list[str] | None = None) -> int:
     staging = staging_dir(f'stock_basic_{datetime.now():%Y%m%d_%H%M%S}')
     staging.mkdir(parents=True, exist_ok=False)
     write_parquet_atomic(candidate, staging / 'stock_basic.parquet')
+    if merge_diffs:
+        write_text_atomic(
+            pl.DataFrame(merge_diffs, schema={
+                'ts_code': pl.String, 'field': pl.String, 'candidate_value': pl.String,
+                'existing_value': pl.String, 'action': pl.String, 'reason': pl.String,
+            }).write_csv(),
+            staging / 'merge_existing_diff.csv',
+        )
     manifest = _manifest(candidate, quotes, calendar, suspended, dropped,
                          evidence_source, target, tcode_decisions)
     manifest['sha256'] = _sha256(staging / 'stock_basic.parquet')
+    if merge_counts:
+        manifest['merge_with_existing'] = merge_counts
     (staging / 'manifest.json').write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f'\n候选表已写入: {staging / "stock_basic.parquet"}')

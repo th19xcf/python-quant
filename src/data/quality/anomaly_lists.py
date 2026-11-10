@@ -103,12 +103,56 @@ def _build_source_stale(di: pl.DataFrame, latest: date) -> pl.DataFrame:
             .sort(['data_type', 'ts_code']))
 
 
+def _merge_constant_price_runs(
+    flags: list[bool],
+    close: list[float],
+    volume: list[float],
+    amount: list[float],
+) -> list[bool]:
+    """把「无成交 + 价格恒定 + 量级不符」的连续段并入占位标记。"""
+    total = len(flags)
+    traded = [c for c, v in zip(close, volume, strict=True) if v and v > 0]
+    if total == 0 or not traded:
+        return flags
+    low, high = min(traded), max(traded)
+    merged = list(flags)
+    index = 0
+    while index < total:
+        if volume[index] != 0 or amount[index] != 0:
+            index += 1
+            continue
+        end = index
+        while (end + 1 < total and volume[end + 1] == 0
+               and amount[end + 1] == 0 and close[end + 1] == close[index]):
+            end += 1
+        price = close[index]
+        mismatched = price > high * 3 or (low > 0 and price < low / 3)
+        if end > index and mismatched:
+            for pos in range(index, end + 1):
+                merged[pos] = True
+        index = end + 1
+    return merged
+
+
 def _build_placeholder_quote(root: Path) -> pl.DataFrame | None:
     """扫描基金行情，识别源端「无行情」占位桩。
 
     判据是**三重条件** ``close == 1.0 且 volume == 0 且 amount == 0``。
     只看 ``close == 1.0`` 会把新发基金面值 1 元误判成占位桩；而真实成交换手
     不可能 ``volume == 0``，三个条件同时成立才确定是占位。
+
+    第二判据处理 ``close`` 不是 1.0 的同类伪数据：连续段内 ``volume`` 与
+    ``amount`` 全为 0、``close`` 恒定，且该常数价跳出本标的**有成交**行的
+    价格区间 3 倍以上。实测命中 3 只 12 段 414 行（``163001.SZ`` 上市前
+    2004-03-22~2006 共 390 行 ``close=100.0``；``160806.SZ`` 2009 年 10 段
+    ``99.9~105.4``；``160314.SZ`` 2008-01-08~09 两行 ``102.2``），而这三只
+    的真实成交价都在 0.5~2.3 元量级。
+
+    加量级约束是因为「无成交 + 价格恒定」本身不足以判伪：真实停牌/极低
+    流动性标的也会出现同价零成交连续段（实测 ``510070.SH`` 2020-06-29~
+    08-12 共 33 行 ``2.177``，属真实停牌），但它们的常数价落在自身成交
+    区间内。没有任何真实成交的标的（如只有净值序列的 ``160603.SZ``）不适用
+    第二判据——没有基线可比，硬套会把整条净值序列误判成占位。
 
     通达信对已退市/转型/长期无成交的 LOF，用 ``close=1.0, volume=0`` 表示
     「该日无行情」（实测 ``163803.SZ`` 源端 1,456 行全是如此），本地只是
@@ -145,6 +189,10 @@ def _build_placeholder_quote(root: Path) -> pl.DataFrame | None:
         else:
             mask = pl.col('close') == 1.0
         flags = frame.select(mask.alias('placeholder'))['placeholder'].to_list()
+        if strict:
+            flags = _merge_constant_price_runs(
+                flags, frame['close'].to_list(),
+                frame['volume'].to_list(), frame['amount'].to_list())
         dates = frame['date'].to_list()
         total = len(flags)
         # 连续段切分：遇到 False 就结算前一段

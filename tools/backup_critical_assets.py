@@ -69,6 +69,13 @@ CRITICAL_FILES: tuple[str, ...] = (
     # 股票基础表：2026-11-10 前只有读取方、没有写入方（内容由一次性脚本拼出），
     # 丢失无法重建；现由 tools/build_stock_basic.py 从本地行情重建，仍需备份
     'data/local_store/meta/stock_basic.parquet',
+    # 基金/ETF 基础表：含逐只取证后的名称、上市日、退市状态（commit ccd96ea 8f5f1a5），
+    # 库值只会被合并式 **补齐空值**，取证值不可由 MySQL 反向重建
+    'data/local_store/meta/fund_basic.parquet',
+    'data/local_store/meta/fund_basic.manifest.json',
+    # 指数基础表：2026-11-10 由 1,333 扩到 1,335 行（新增 000985.SH / 000922.SH），
+    # 表内 base_point 全空、无重建脚本可还原，丢失只能靠本备份
+    'data/local_store/meta/index_basic.parquet',
     'data/local_store/meta/factors/stock_shares.parquet',
     'data/local_store/meta/factors/stock_shares.meta.json',
     'data/local_store/meta/anomalies/quality_exemptions.csv',
@@ -78,6 +85,11 @@ CRITICAL_FILES: tuple[str, ...] = (
     'data/local_store/meta/financials/balance.parquet',
     'data/local_store/meta/financials/cashflow.parquet',
     'data/local_store/meta/financials/valuation_daily.parquet',
+    # 宏观/资金输入：仓库内无驻留采集脚本，只能由外部接口（中债/交易所/东财）
+    # 一次性抓取得到，丢失不可本地重建；`source` 列分段口径见同目录 manifest.json
+    'data/local_store/meta/macro/cn_treasury_yield_10y.parquet',
+    'data/local_store/meta/macro/cn_market_margin_daily.parquet',
+    'data/local_store/meta/macro/manifest.json',
     # 推荐状态
     'reports/advice/state/long.json',
     'reports/advice/state/mid.json',

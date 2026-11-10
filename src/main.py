@@ -141,6 +141,51 @@ def _display_plugins(plugin_manager):
         logger.info(f"  - {plugin_info['name']} (v{plugin_info['version']}) - {plugin_info['description']}")
 
 
+def _run_local_stock_basic_builder() -> bool:
+    """本地收口：用本地行情/公告证据重建 stock_basic（合并式，不整表覆盖）。
+
+    该重建耗时与行情文件数成正比，放在 ``--update-stock`` 末尾执行；
+    失败时向上抛出，避免「库里更新了、本地没更新」被静默放过。
+    """
+    import subprocess
+
+    script = Path(__file__).resolve().parents[1] / 'tools' / 'build_stock_basic.py'
+    if not script.is_file():
+        logger.warning(f"未找到本地 stock_basic 重建脚本: {script}")
+        return False
+    proc = subprocess.run(
+        [sys.executable, str(script), '--promote'],
+        cwd=str(script.parents[1]), capture_output=True, text=True, timeout=1800,
+    )
+    if proc.stdout:
+        logger.info(proc.stdout.strip())
+    if proc.returncode != 0:
+        logger.error(f"本地 stock_basic 重建失败: {proc.stderr.strip()}")
+        raise RuntimeError('stock_basic 本地重建失败，见上方日志')
+    return True
+
+
+def _enforce_freshness(config) -> None:
+    """每日收口：本地正式表落后行情超过阈值即非零退出，避免静默陈旧。
+
+    与 ``--update-*`` 同处执行：更新完只写 MySQL 的旁路、却没跑本地入口时，
+    这里会当场报 error，而不是等下一个人发现表停在旧日期。
+    """
+    from src.data.local_store.paths import resolve_store_root
+    from src.data.quality.freshness_check import format_report, run_check
+
+    try:
+        report = run_check(resolve_store_root(config))
+    except (FileNotFoundError, ValueError) as check_error:
+        logger.error(f"数据新鲜度自检无法执行: {check_error}")
+        raise SystemExit(1) from check_error
+    logger.info("数据新鲜度自检:\n" + format_report(report))
+    if not report.ok:
+        stale = ', '.join(row.rel_path for row in report.errors)
+        logger.error(f"数据新鲜度自检未通过（error 级）: {stale}")
+        raise SystemExit(1)
+
+
 def _handle_update_stock_arg(config):
     """处理股票更新参数
 
@@ -181,8 +226,20 @@ def _handle_update_stock_arg(config):
                 "data.allow_remote_sources=false，跳过 AkShare ETF 基本信息补全"
             )
 
-        db_manager.cleanup()
-        logger.info("数据库资源已清理")
+        # 本地优先：stock_basic 迁移与 ETF 补全都可能改到 fund_basic，落库后合并导出
+        try:
+            from src.data.services.local_first_basic import export_fund_basic
+
+            export_result = export_fund_basic(config, db_manager)
+            logger.info(
+                f"fund_basic 本地合并导出: {export_result['counters']}，"
+                f"差异 {export_result['diff_rows']} 条 -> {export_result['diff_csv']}"
+            )
+        finally:
+            db_manager.cleanup()
+            logger.info("数据库资源已清理")
+
+        _run_local_stock_basic_builder()
         return True
 
     except _STARTUP_ERRORS as db_e:
@@ -307,8 +364,19 @@ def _handle_update_index_arg(config):
             logger.warning(f"创建数据库表时发生错误: {table_e}")
 
         sync_tdx_index_to_database(config, db_manager)
-        db_manager.cleanup()
-        logger.info("数据库资源已清理")
+
+        # 本地优先：库同步成功后，按单元格合并导出到本地正式 parquet（不整表覆盖）
+        try:
+            from src.data.services.local_first_basic import export_index_basic
+
+            export_result = export_index_basic(config, db_manager)
+            logger.info(
+                f"index_basic 本地合并导出: {export_result['counters']}，"
+                f"差异 {export_result['diff_rows']} 条 -> {export_result['diff_csv']}"
+            )
+        finally:
+            db_manager.cleanup()
+            logger.info("数据库资源已清理")
         return True
 
     except _STARTUP_ERRORS as db_e:
@@ -480,6 +548,7 @@ def main():
 
         if args.update_stock:
             _handle_update_stock_arg(config)
+            _enforce_freshness(config)
             return
 
         if args.sync_stock_daily:
@@ -496,10 +565,12 @@ def main():
 
         if args.update_index:
             _handle_update_index_arg(config)
+            _enforce_freshness(config)
             return
 
         if args.update_fund:
             _handle_update_fund_arg(config)
+            _enforce_freshness(config)
             return
 
         if args.backfill_fund_basic:

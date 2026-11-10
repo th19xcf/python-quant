@@ -78,6 +78,39 @@ def test_refresh_lists_is_idempotent_and_covers_all_categories(tmp_path) -> None
         name: item['sha256'] for name, item in first['files'].items()}
 
 
+def test_constant_price_run_flagged_but_halt_price_untouched(tmp_path) -> None:
+    """常量价 + 零成交的连续段按价格量级区分伪数据与真实停牌。"""
+    store = tmp_path / 'store'
+    _make_store(store)
+    # 伪数据：真实成交价 1.0，随后 4 行 close 恒 100.0 且零成交 → 应判为占位
+    pl.DataFrame({
+        'date': [date(2010, 1, 4), date(2010, 1, 5), date(2010, 1, 6),
+                 date(2010, 1, 7), date(2010, 1, 8), date(2010, 1, 11),
+                 date(2010, 1, 12)],
+        'close': [1.0, 1.0, 1.0, 100.0, 100.0, 100.0, 100.0],
+        'volume': [100.0, 100.0, 100.0, 0.0, 0.0, 0.0, 0.0],
+        'amount': [100.0, 100.0, 100.0, 0.0, 0.0, 0.0, 0.0],
+    }).write_parquet(store / 'quotes' / 'fund' / 'sz' / '160300.SZ.parquet')
+    # 真实停牌：close 恒 2.177 且零成交，但价格在正常区间内 → 不应判为占位
+    pl.DataFrame({
+        'date': [date(2020, 6, 29), date(2020, 6, 30), date(2020, 7, 1),
+                 date(2020, 7, 2), date(2020, 7, 3), date(2020, 7, 6)],
+        'close': [2.177] * 6,
+        'volume': [100.0, 100.0, 100.0, 0.0, 0.0, 0.0],
+        'amount': [217.7, 217.7, 217.7, 0.0, 0.0, 0.0],
+    }).write_parquet(store / 'quotes' / 'fund' / 'sz' / '510070.SH.parquet')
+
+    result = refresh_anomaly_lists(store, list_dir=tmp_path / 'lists')
+    assert result['status'] == 'ok'
+    placeholder = pl.read_csv(tmp_path / 'lists' / 'placeholder_quote_codes.csv')
+    codes = placeholder['ts_code'].to_list()
+    assert '510070.SH' not in codes
+    row = placeholder.filter(pl.col('ts_code') == '160300.SZ').row(0, named=True)
+    assert (str(row['start']), str(row['end'])) == ('2010-01-07', '2010-01-12')
+    assert int(row['rows']) == 4
+    assert bool(row['full']) is False
+
+
 def test_refresh_lists_failure_is_non_fatal(tmp_path) -> None:
     store = tmp_path / 'store'
     _make_store(store)

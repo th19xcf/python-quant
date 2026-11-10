@@ -453,6 +453,11 @@ def sync_stock_fund_to_fund_basic(config: Any, db_manager: Any) -> dict[str, Any
 
         session.commit()
 
+        # 本地优先：落库成功后，按单元格合并导出到本地正式 parquet（不整表覆盖）
+        from src.data.services.local_first_basic import export_fund_basic
+
+        result['local_export'] = export_fund_basic(config, db_manager)
+
     except (DataSaveError, DataSourceException) as e:
         logger.exception(f"基金迁移失败: {e}")
         if session:

@@ -75,6 +75,14 @@ def test_update_stock_cli_does_not_construct_remote_handler_when_disabled(monkey
     monkeypatch.setattr(main_module, 'DatabaseManager', lambda _config: _FakeDB())
     monkeypatch.setattr(main_module, 'sync_tdx_stock_to_database',
                         lambda config, db_manager: None)
+    # 本地优先收口（合并导出 + stock_basic 重建）会读写真实数据文件，
+    # 本用例只校验远程源门禁，故一并隔离；两者的自身行为由各自用例覆盖
+    import src.data.services.local_first_basic as local_first_module
+
+    monkeypatch.setattr(local_first_module, 'export_fund_basic',
+                        lambda *_args, **_kwargs: {'counters': {}, 'diff_rows': 0,
+                                                   'diff_csv': ''})
+    monkeypatch.setattr(main_module, '_run_local_stock_basic_builder', lambda: True)
 
     import src.data.akshare_handler as akshare_module
 
