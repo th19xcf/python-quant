@@ -62,7 +62,7 @@ from src.data.name_consistency import name_at_frame  # noqa: E402
 
 TARGET = ROOT / 'data' / 'local_store' / 'meta' / 'name_history.parquet'
 COVERAGE = ROOT / 'data' / 'local_store' / 'meta' / 'name_history_coverage.json'
-BACKUP_ROOT = ROOT / 'data' / 'local_store' / 'meta' / '_backup'
+BACKUP_ROOT = ROOT / '_backup' / 'meta'
 REPORT_ROOT = ROOT / 'reports'
 
 POST_G_START = date(2006, 10, 9)

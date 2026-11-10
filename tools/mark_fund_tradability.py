@@ -156,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     if {'is_tradable', 'tradable_reason'} <= set(basic.columns) and frame.equals(basic):
         logger.info('[fund_tradability] 标记无变化，跳过写盘')
         return 0
-    backup_dir = root / '_backup' / (
+    backup_dir = ROOT / '_backup' / (
         'fund_basic_tradability_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
     backup_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(basic_path, backup_dir / basic_path.name)

@@ -59,7 +59,7 @@ from src.data.name_consistency import build_tables  # noqa: E402
 
 TARGET = ROOT / 'data' / 'local_store' / 'meta' / 'name_history.parquet'
 COVERAGE = ROOT / 'data' / 'local_store' / 'meta' / 'name_history_coverage.json'
-BACKUP_DIR = ROOT / 'data' / 'local_store' / 'meta' / '_backup'
+BACKUP_DIR = ROOT / '_backup' / 'meta'
 REPORT_ROOT = ROOT / 'reports'
 
 SOURCE = 'tushare_namechange'

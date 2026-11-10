@@ -33,6 +33,8 @@ from pathlib import Path
 from loguru import logger
 
 ROOT = Path(__file__).resolve().parents[1]
+#: 回滚快照统一根（仓库根 ``_backup/`` 下按数据层分子目录，DG-11/DG-13 路径口径）
+BACKUP_ROOT = ROOT / '_backup'
 sys.path.insert(0, str(ROOT))
 
 from src.data.industry import resolve_tdx_cache_dir  # noqa: E402
@@ -143,8 +145,11 @@ def dump_names(names: dict[str, str]) -> str:
     return json.dumps(names, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
 
 
-def write_names(path: Path, names: dict[str, str], store_root: Path) -> bool:
-    """写盘；内容相同时不动文件，覆盖前先备份到 ``_backup``。
+def write_names(path: Path, names: dict[str, str],
+                backup_root: Path | None = None) -> bool:
+    """写盘；内容相同时不动文件，覆盖前先备份到根 ``_backup``。
+
+    ``backup_root`` 缺省为模块级 ``BACKUP_ROOT``；单测可传入临时目录隔离。
 
     Returns:
         True 表示发生了写入，False 表示内容已一致、未改动。
@@ -155,7 +160,7 @@ def write_names(path: Path, names: dict[str, str], store_root: Path) -> bool:
         if current == text:
             logger.info(f'[names] 内容一致，跳过写入: {path}')
             return False
-        backup_dir = Path(store_root) / '_backup'
+        backup_dir = Path(backup_root) if backup_root else BACKUP_ROOT
         backup_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         backup = backup_dir / f'names.{stamp}.json'
@@ -235,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
     print('对齐: ' + ('是（新增/缺失/变更均为 0）' if aligned else '否（见上方差异）'))
 
     if not args.dry_run:
-        write_names(output, final, store_root)
+        write_names(output, final)
     return 0
 
 

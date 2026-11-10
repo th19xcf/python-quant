@@ -240,10 +240,10 @@ def promote(store_root: Path, candidate: pl.DataFrame, stage: Path,
     """把旧表整体移入 ``_backup/`` 后原子写入新表（DG-11）。"""
     target = store_root / REL_PATH
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    backup_dir = store_root / '_backup' / f'fund_corporate_actions_20190918plus_{stamp}'
+    backup_dir = ROOT / '_backup' / f'fund_corporate_actions_20190918plus_{stamp}'
     backup_dir.mkdir(parents=True, exist_ok=True)
 
-    proof: dict[str, Any] = {'backup_dir': str(backup_dir.relative_to(store_root.parent.parent))}
+    proof: dict[str, Any] = {'backup_dir': str(backup_dir.relative_to(ROOT))}
     if target.is_file():
         before = sha256_of(target)
         backup = backup_dir / target.name

@@ -689,7 +689,7 @@ def _manifest(candidate: pl.DataFrame, quotes: pl.DataFrame, calendar: pl.Series
 
 def _promote(staging: Path, target: Path, store_root: Path, manifest: dict[str, Any]) -> None:
     """备份原文件 → 写正式 manifest → 同盘 rename 原子替换 → 删候选目录。"""
-    backup_dir = store_root / '_backup' / f'stock_basic_{datetime.now():%Y%m%d_%H%M%S}'
+    backup_dir = ROOT / '_backup' / f'stock_basic_{datetime.now():%Y%m%d_%H%M%S}'
     backup_dir.mkdir(parents=True, exist_ok=True)
     backup = backup_dir / target.name
     shutil.copy2(target, backup)
