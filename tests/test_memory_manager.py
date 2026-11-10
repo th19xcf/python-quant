@@ -111,8 +111,63 @@ def test_take_snapshot_collects_garbage_before_snapshot(monkeypatch):
     monkeypatch.setattr(
         memory_manager_module.tracemalloc, 'take_snapshot', lambda: SimpleNamespace()
     )
+    # tracemalloc 现已默认关闭，本用例测的是「快照流程」，需显式声明前置条件
+    monkeypatch.setattr(
+        memory_manager_module.tracemalloc, 'is_tracing', lambda: True
+    )
 
     manager._take_memory_snapshot()
 
     assert calls == [False]
     assert len(manager.memory_snapshots) == 1
+
+
+def test_take_snapshot_degrades_to_no_data_without_tracemalloc(monkeypatch):
+    """tracemalloc 未运行时，快照只降级为「无数据」：不报错、不写快照、不触发 GC"""
+    manager = MemoryManager()
+    calls = []
+    manager._collect_garbage = lambda force=False: calls.append(force)
+    monkeypatch.setattr(
+        memory_manager_module.tracemalloc, 'is_tracing', lambda: False
+    )
+
+    manager._take_memory_snapshot()
+
+    assert calls == [], "无跟踪时不应进入 GC/裁剪分支"
+    assert manager.memory_snapshots == []
+
+
+def test_default_construct_keeps_tracemalloc_off(monkeypatch):
+    """默认（未设 QUANT_MEM_TRACE）构造 MemoryManager 不得开启 tracemalloc"""
+    import tracemalloc
+
+    monkeypatch.delenv(memory_manager_module.MEM_TRACE_ENV, raising=False)
+    was_tracing = tracemalloc.is_tracing()
+    if was_tracing:
+        tracemalloc.stop()
+    try:
+        manager = MemoryManager()
+        assert manager.tracemalloc_enabled is False
+        assert not tracemalloc.is_tracing(), (
+            "MemoryManager 默认构造不应开启 tracemalloc（会拖慢全部 Python 分配）")
+    finally:
+        if was_tracing:
+            tracemalloc.start()
+
+
+def test_env_var_enables_tracemalloc(monkeypatch):
+    """QUANT_MEM_TRACE=1 时必须显式开回跟踪，保证诊断能力不被永久关闭"""
+    import tracemalloc
+
+    monkeypatch.setenv(memory_manager_module.MEM_TRACE_ENV, '1')
+    was_tracing = tracemalloc.is_tracing()
+    if was_tracing:
+        tracemalloc.stop()
+    try:
+        manager = MemoryManager()
+        assert manager.tracemalloc_enabled is True
+        assert tracemalloc.is_tracing()
+    finally:
+        tracemalloc.stop()
+        if was_tracing:
+            tracemalloc.start()

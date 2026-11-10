@@ -18,6 +18,17 @@ from typing import Any, Dict, List
 import psutil
 from loguru import logger
 
+#: 显式开启 ``tracemalloc`` 的环境变量。默认不开启：``tracemalloc`` 会给进程内
+#: 每一次 Python 分配插桩，实测把回测热路径拖慢 3.5×、分配密集型路径拖慢 9.3×，
+#: 而 parquet/向量化部分（Rust 侧分配）完全不受益。内存总量监控走 psutil，不需要它。
+MEM_TRACE_ENV = 'QUANT_MEM_TRACE'
+_TRUTHY = {'1', 'true', 'yes', 'on'}
+
+
+def mem_trace_requested() -> bool:
+    """判断是否通过环境变量显式要求开启 ``tracemalloc`` 跟踪。"""
+    return os.environ.get(MEM_TRACE_ENV, '').strip().lower() in _TRUTHY
+
 
 def _get_caches() -> tuple[Any, Any]:
     """延迟导入缓存单例，避免 utils 在导入期反向依赖 data / tech_analysis。"""
@@ -65,13 +76,18 @@ class MemoryManager:
         self._growth_streaks: Dict[str, int] = {}
         self._growth_totals: Dict[str, int] = {}
 
-        # 启动tracemalloc
-        try:
-            tracemalloc.start()
-            self.tracemalloc_enabled = True
-            logger.info("内存跟踪已启动")
-        except RuntimeError as e:
-            logger.warning(f"启动内存跟踪失败: {e}")
+        # tracemalloc 默认关闭，仅在显式设置 QUANT_MEM_TRACE=1 时开启。
+        # 关闭后只是拿不到 `_take_memory_snapshot` 的分配明细，内存总量、
+        # 阈值判定、缓存回收、GC 冷却全部走 psutil，功能不降级为报错。
+        if mem_trace_requested():
+            try:
+                tracemalloc.start()
+                self.tracemalloc_enabled = True
+                logger.info(f"内存跟踪已启动（{MEM_TRACE_ENV}=1）")
+            except RuntimeError as e:
+                logger.warning(f"启动内存跟踪失败: {e}")
+        else:
+            logger.debug(f"内存跟踪未启用（设置 {MEM_TRACE_ENV}=1 可开启分配明细）")
 
     def get_memory_usage(self) -> Dict[str, Any]:
         """
@@ -237,7 +253,14 @@ class MemoryManager:
     def _take_memory_snapshot(self) -> None:
         """
         拍摄内存快照
+
+        ``tracemalloc`` 未运行时（默认状态）直接跳过并返回「无数据」：
+        快照属于旁路观测，缺失不影响内存阈值判定、缓存回收与 GC 冷却，
+        因此不能抛错、也不应刷 ERROR 日志。
         """
+        if not tracemalloc.is_tracing():
+            logger.debug("tracemalloc 未运行，跳过内存快照")
+            return
         try:
             # 先回收一次垃圾（受 gc_min_interval 冷却），避免把已断开引用的
             # 瞬时对象算成泄漏；再裁剪 linecache，减少 stdlib 缓存干扰

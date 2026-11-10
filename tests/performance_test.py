@@ -19,6 +19,7 @@ from __future__ import annotations
 import statistics
 import sys
 import time
+import tracemalloc
 from typing import Any
 
 import numpy as np
@@ -28,34 +29,35 @@ import pytest
 
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.ma_strategy import MAStrategy
+from src.utils.memory_manager import MEM_TRACE_ENV
 
 SEED = 20261106
 REPEAT = 3
 SMALL_CODES, LARGE_CODES, DAYS = 2, 20, 1000
 SMALL_BARS, LARGE_BARS = SMALL_CODES * DAYS, LARGE_CODES * DAYS
 
-#: 阈值取自 2026-11-06 本地实测（venv Python 3.14.9）：
-#: 小负载 0.0124s / 2k bar、大负载 0.1014s / 20k bar，
-#: a≈0.0025s、b≈4.95 µs/bar。绝对阈值留 3~20 倍余量，
-#: 更敏感的跨机器判定交给下方「每 bar 开销 / 校准循环」比值。
+#: 阈值取自关闭 ``tracemalloc`` 后的本地实测（venv Python 3.14.9，2026-11-10）：
+#: b ≈ 4.75 µs/bar（进程内 5 次 min/median/max = 4.745/4.774/4.814，CV 0.5%）。
+#: 绝对阈值 8.0 µs/bar 留约 1.6 倍余量；更敏感的跨机器判定交给下方
+#: 「每 bar 开销 / 校准循环」比值。
 MAX_FIXED_OVERHEAD_S = 0.05
-MAX_US_PER_BAR = 15.0
+MAX_US_PER_BAR = 8.0
 MAX_WALL_SECONDS = 3.0
 MAX_BAR_TO_CALIBRATION_RATIO = 300.0
 
-#: 全量 ``pytest tests --cov=src`` 会话里被测代码明显变慢（实测 b 从
-#: 单独运行的 4.24~4.67 → 全量会话的 16.87~18.38 µs/bar）。放大不只来自
-#: coverage：单独跑 ``--cov`` 时仍只有 4.67 µs/bar，说明主因是长会话累积的
-#: 进程状态（GC/缓存/内存），插桩只是叠加因素。因此对**两条绝对阈值**做
-#: 有限归一，系数取 2.0 而非按放大倍数给足（收紧，不放水）：
-#:   - 无插桩：15 µs/bar、0.05s（对 4.24 µs/bar 有 3.5× 余量）
-#:   - 插桩：30 µs/bar、0.10s（对 17.35 µs/bar 有 1.7× 余量）
-#: 另两条判据（墙钟上限、每 bar / 校准循环比值）**不乘系数**，保持严格。
-#: 实测三种环境下注入 +150ms 固定开销与 +20 µs/bar 均会被拦截，见
-#: reports/audit_2026-11-06/verify_perf_gate.py 与同目录注入探针。
+#: 历史读数（17.45 → 25.71 → 18.5 µs/bar）长期偏高且无法与代码变更对应，
+#: 2026-11-10 定位到唯一主因：``src/utils/memory_manager.py`` 的模块级单例在
+#: ``__init__`` 里无条件 ``tracemalloc.start()``，全量收集一旦 import 它，
+#: 整个进程的每次 Python 分配都被插桩。同进程因果验证：
+#:   tracemalloc 开 16.114 µs/bar → stop() 后 4.599 µs/bar（3.5×）
+#: 排除项：``gc.disable()`` 仅 1.03×，不是主因。
+#: 因此本门禁新增硬前置：``tracemalloc`` 处于运行状态时直接 fail，不再
+#: 用放宽阈值去迁就环境。tracemalloc 现已默认关闭，仅在 ``QUANT_MEM_TRACE=1``
+#: 时开启（见 ``MemoryManager``）。
 #:
-#: 检测方式必须覆盖两种插桩实现：coverage 7.x 在 Python 3.14 默认使用
-#: ``sys.monitoring`` (SysMonitor)，不再调用 ``sys.settrace``，此时
+#: ``TRACE_SLOWDOWN_FACTOR`` 仅用于 ``--cov`` 插桩场景（与 tracemalloc 无关）：
+#: 检测方式必须覆盖两种插桩实现，coverage 7.x 在 Python 3.14 默认使用
+#: ``sys.monitoring`` (SysMonitor)，不再调 ``sys.settrace``，此时
 #: ``sys.gettrace()`` 仍为 ``None``；旧版本 / 其他 profile 工具才走 trace 钩子。
 TRACE_SLOWDOWN_FACTOR = 2.0
 
@@ -88,6 +90,20 @@ def _calibration_per_iteration(iterations: int = 200_000) -> float:
     if acc < 0:  # 防止循环被优化掉
         raise AssertionError("校准循环未执行")
     return elapsed / iterations
+
+
+def _assert_mem_trace_off() -> None:
+    """性能门禁的前置条件：``tracemalloc`` 不得处于运行状态。
+
+    ``tracemalloc`` 会给进程内每一次 Python 分配插桩，实测把回测热路径从
+    4.599 拖到 16.114 µs/bar（3.5×）。在这种环境下测出来的数只反映插桩强度，
+    不反映代码速度，因此直接判失败而不是放宽阈值。
+    """
+    if tracemalloc.is_tracing():
+        pytest.fail(
+            "检测到 tracemalloc 正在运行，性能读数会被放大 3.5×，拒绝判定。"
+            f"请确认未设置 {MEM_TRACE_ENV}=1，且没有模块在导入期调用 "
+            "tracemalloc.start()（历史主因见 src/utils/memory_manager.py）。")
 
 
 def _make_panel(ncodes: int, days: int, seed: int) -> dict[str, pl.DataFrame]:
@@ -130,6 +146,7 @@ def _median_seconds(data: dict[str, pl.DataFrame]) -> float:
 @pytest.mark.perf
 def test_backtest_fixed_and_per_bar_cost_gate():
     """分别约束固定开销 a 与每 bar 开销 b；任一退化都会让本用例失败。"""
+    _assert_mem_trace_off()
     small = _make_panel(SMALL_CODES, DAYS, SEED)
     large = _make_panel(LARGE_CODES, DAYS, SEED + 1)
 
@@ -155,6 +172,27 @@ def test_backtest_fixed_and_per_bar_cost_gate():
         f"相对机器算力的每 bar 开销退化: {ratio:.1f} > "
         f"{MAX_BAR_TO_CALIBRATION_RATIO}")
     assert per_bar_us > 0, "测量无效：大负载与小负载耗时未分离"
+
+
+@pytest.mark.perf
+def test_gate_rejects_running_tracemalloc():
+    """反向用例：tracemalloc 运行时，门禁前置检查必须直接失败。
+
+    该用例证明上面那道防线真的能拦人——如果哪天又有人在导入期
+    ``tracemalloc.start()``，门禁不会静默给出虚高读数，而是报错。
+    """
+    already_tracing = tracemalloc.is_tracing()
+    if not already_tracing:
+        tracemalloc.start(1)
+    try:
+        assert tracemalloc.is_tracing(), "本用例需要 tracemalloc 处于运行状态"
+        with pytest.raises(pytest.fail.Exception, match="tracemalloc 正在运行"):
+            _assert_mem_trace_off()
+    finally:
+        # 只回收自己启动的跟踪，避免把外部已开的状态关掉
+        if not already_tracing:
+            tracemalloc.stop()
+    assert not tracemalloc.is_tracing(), "用例结束必须恢复到未跟踪状态"
 
 
 @pytest.mark.perf

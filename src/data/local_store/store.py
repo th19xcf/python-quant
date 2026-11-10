@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 import threading
@@ -38,15 +39,47 @@ from pathlib import Path
 from typing import Any, Dict, Iterable
 
 import polars as pl
+import psutil
 from loguru import logger
 
 from src.data.local_store.paths import resolve_store_root as _resolve_store_root
 
 STORE_VERSION = 1
 # 因子快照单文件可能达到千万行，不能像分红快照那样一次性 partition 进内存。
-# 采用「按 ts_code 谓词扫描 + 小容量 LRU」把常驻内存控制在几十 MB，
-# 同时借助 parquet 行组统计（文件按 ts_code 排序）跳过无关数据块。
-_FACTOR_LRU_MAX = 128
+# 采用「按 ts_code 谓词扫描 + 自适应 LRU」，借助 parquet 行组统计
+# （文件按 ts_code 排序）跳过无关数据块。
+#
+# 容量按**可用内存**自适应，不按标的数固定：
+# - 单票因子帧实测约 140 KB（7,006 行 × 3 列）/ 常驻 RSS 约 0.18 MB；
+# - 全市场 5,818 只全缓存约 1.05 GB，固定 128 会在全市场遍历时 100% 抖动
+#   （实测命中退化为冷缺失，命中 0.185 ms vs 冷缺失 1.76 ms）；
+# - 因此预算取可用内存的 10%，再夹在 [128, 8192] 之间：小内存机器退回
+#   小容量（宁可抖动也不吃满内存），大内存机器可覆盖全部标的。
+_FACTOR_LRU_MIN = 128
+_FACTOR_LRU_MAX = 8192
+_FACTOR_LRU_BUDGET_RATIO = 0.10
+_FACTOR_FRAME_BYTES = 180 * 1024
+# mtime 新鲜度检查的最小间隔（秒）：Windows 上单次 stat() 约 0.18 ms，
+# 是 LRU 命中总成本（0.185 ms）的 99%，不能每次命中都 stat。
+_FACTOR_MTIME_TTL = 2.0
+
+
+@functools.lru_cache(maxsize=1)
+def factor_lru_capacity() -> int:
+    """按可用内存自适应计算因子 LRU 容量（进程内只算一次）。
+
+    判定依据是**可用内存**而非标的数：单票帧大小基本恒定，容量直接由
+    「可用内存 × 10% ÷ 单帧占用」得出，再用 ``[_FACTOR_LRU_MIN, _FACTOR_LRU_MAX]``
+    夹紧。标的数只作为天然上界（槽位多于标的数纯属浪费内存）。
+    """
+    try:
+        available = psutil.virtual_memory().available
+    # 兜底理由：容量探测失败时退回保守下限，不应影响读取本身
+    except Exception:  # noqa: BLE001
+        return _FACTOR_LRU_MIN
+    budget = available * _FACTOR_LRU_BUDGET_RATIO
+    return max(_FACTOR_LRU_MIN, min(_FACTOR_LRU_MAX, int(budget // _FACTOR_FRAME_BYTES)))
+
 
 _META_SCHEMA = {
     'ts_code': pl.Utf8,
@@ -486,8 +519,8 @@ class LocalFactorStore:
     """复权因子与分红本地快照（只读）。
 
     因子快照按 ``(ts_code, trade_date)`` 升序落盘：读单票时用谓词扫描
-    （parquet 行组统计可跳过无关块）+ 小容量 LRU，避免把千万行整表
-    ``partition_by`` 进内存；分红快照只有几万行，仍整表分组常驻。
+    （parquet 行组统计可跳过无关块）+ 按可用内存自适应的 LRU，避免把千万行
+    整表 ``partition_by`` 进内存；分红快照只有几万行，仍整表分组常驻。
     """
 
     _FACTOR_COLUMNS = ('trade_date', 'qfq_factor', 'hfq_factor')
@@ -509,6 +542,8 @@ class LocalFactorStore:
         self._fund_factor_file_mtime: int | None = None
         self._dividend_rows: dict[str, pl.DataFrame] | None = None
         self._fund_dividend_rows: dict[str, pl.DataFrame] | None = None
+        # 快照文件 mtime 的 TTL 缓存：{路径: (检查时刻, mtime)}，避免每次命中都 stat()
+        self._mtime_checks: dict[Path, tuple[float, int | None]] = {}
         self._lock = threading.RLock()
 
     @property
@@ -552,13 +587,45 @@ class LocalFactorStore:
                     self._fund_dividend_path, 'ts_code')
             return self._fund_dividend_rows
 
+    def _cached_mtime(self, path: Path) -> int | None:
+        """读取快照文件 mtime（同一路径每 ``_FACTOR_MTIME_TTL`` 秒最多 stat 一次）。
+
+        命中路径上的 ``stat()`` 在 Windows 上约 0.18 ms，占单次命中总成本
+        （0.185 ms）的 99%；全市场遍历 5,818 只时等于白花 1 s 以上。快照重建
+        是低频事件，且同进程重建会在写完时调用 :meth:`invalidate`，这里的
+        TTL 只是跨进程重建时的兜底。文件不存在返回 None。
+        """
+        now = time.monotonic()
+        cached = self._mtime_checks.get(path)
+        if cached is not None and now - cached[0] < _FACTOR_MTIME_TTL:
+            return cached[1]
+        try:
+            mtime: int | None = path.stat().st_mtime_ns
+        except OSError:
+            mtime = None
+        self._mtime_checks[path] = (now, mtime)
+        return mtime
+
+    def invalidate(self) -> None:
+        """丢弃全部快照内存视图（快照被同进程重建后立即调用）。
+
+        只清实例内缓存，不动磁盘文件；下次读取会重新 stat 并重建 LazyFrame。
+        """
+        with self._lock:
+            self._mtime_checks.clear()
+            self._factor_cache.clear()
+            self._factor_lazy = None
+            self._factor_file_mtime = None
+            self._fund_factor_cache.clear()
+            self._fund_factor_lazy = None
+            self._fund_factor_file_mtime = None
+            self._dividend_rows = None
+            self._fund_dividend_rows = None
+
     def _factor_frame(self, ts_code: str) -> pl.DataFrame | None:
         """按代码读取因子片段（LRU 缓存；快照文件被重建后自动失效）。"""
-        if not self._factor_path.exists():
-            return None
-        try:
-            file_mtime = self._factor_path.stat().st_mtime_ns
-        except OSError:
+        file_mtime = self._cached_mtime(self._factor_path)
+        if file_mtime is None:
             return None
         with self._lock:
             if self._factor_file_mtime != file_mtime:
@@ -583,7 +650,8 @@ class LocalFactorStore:
 
         with self._lock:
             self._factor_cache[ts_code] = result
-            while len(self._factor_cache) > _FACTOR_LRU_MAX:
+            capacity = factor_lru_capacity()
+            while len(self._factor_cache) > capacity:
                 self._factor_cache.popitem(last=False)
         return result
 
@@ -603,11 +671,8 @@ class LocalFactorStore:
     def _fund_factor_frame(self, ts_code: str) -> pl.DataFrame | None:
         """按代码读取基金因子片段（LRU 缓存；文件重建后自动失效）。"""
         path = self._fund_factor_path
-        if not path.exists():
-            return None
-        try:
-            file_mtime = path.stat().st_mtime_ns
-        except OSError:
+        file_mtime = self._cached_mtime(path)
+        if file_mtime is None:
             return None
         with self._lock:
             if self._fund_factor_file_mtime != file_mtime:
@@ -631,7 +696,8 @@ class LocalFactorStore:
 
         with self._lock:
             self._fund_factor_cache[ts_code] = result
-            while len(self._fund_factor_cache) > _FACTOR_LRU_MAX:
+            capacity = factor_lru_capacity()
+            while len(self._fund_factor_cache) > capacity:
                 self._fund_factor_cache.popitem(last=False)
         return result
 

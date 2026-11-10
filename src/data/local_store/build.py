@@ -819,6 +819,8 @@ def refresh_factors(
                          statistics=True)
     write_parquet_atomic(dividends, dividend_path, compression='zstd',
                          statistics=True)
+    # 快照已原子替换：丢弃同进程内的旧 LRU / LazyFrame / mtime 结论
+    factor_store.invalidate()
 
     meta = {
         'source': 'remote_mysql',

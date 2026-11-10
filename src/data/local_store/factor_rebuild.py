@@ -334,6 +334,9 @@ def rebuild_factors_from_local(
 
     replaced = set(written_codes)
     total_rows = _assemble(parts, factor_store.factor_path, replaced)
+    # 快照已原子替换：立即丢弃同进程内的旧 LRU / LazyFrame / mtime 结论，
+    # 否则后续对齐核对会在 TTL 窗口内读到重建前的因子。
+    factor_store.invalidate()
     final_codes = (existing - replaced) | replaced
     _write_sidecar(factor_store, final_codes)
 

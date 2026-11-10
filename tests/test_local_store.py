@@ -37,6 +37,7 @@ from src.data.local_store.session_guard import filter_intraday_rows
 from src.data.local_store.store import (
     LocalFactorStore,
     LocalQuoteStore,
+    factor_lru_capacity,
     refresh_quote_factor_columns,
     verify_quote_factor_consistency,
 )
@@ -489,6 +490,58 @@ def test_read_daily_uses_factor_snapshot_instead_of_stale_copy(tmp_path):
     assert reader.read_file('stock', '600000.SH')['qfq_factor'].to_list() == [1.0] * 5
     fixed = reader.read_file('stock', '600000.SH', with_factors=True)
     assert fixed['qfq_factor'].to_list() == [0.9, 0.9, 0.9, 1.0, 1.0]
+
+
+def test_factor_lru_skips_stat_on_hit_and_capacity_is_bounded(tmp_path, monkeypatch):
+    """因子 LRU 命中路径不再逐次 stat()，容量按可用内存自适应且有上下限。"""
+    _write_factor_snapshot(tmp_path, '600000.SH', [date(2024, 1, 2), date(2024, 1, 3)],
+                           [1.0, 1.0], [1.0, 1.0])
+    factor_store = LocalFactorStore(tmp_path)
+
+    stats: list[Path] = []
+    real_stat = Path.stat
+
+    def counting_stat(self, *args, **kwargs):
+        stats.append(self)
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'stat', counting_stat)
+    first = factor_store.factors('600000.SH')
+    after_first = len(stats)
+    second = factor_store.factors('600000.SH')
+
+    assert after_first >= 1  # 首次读取必须探一次 mtime
+    assert len(stats) == after_first  # TTL 内命中不再 stat
+    assert first is not None and first.equals(second)
+
+    capacity = factor_lru_capacity()
+    assert 128 <= capacity <= 8192
+
+
+def test_factor_invalidate_picks_up_rebuilt_snapshot(tmp_path):
+    """同进程重建快照后 invalidate() 必须立刻看到新值（不等 TTL）。"""
+    _write_factor_snapshot(tmp_path, '600000.SH', [date(2024, 1, 2)],
+                           [0.5], [1.0])
+    factor_store = LocalFactorStore(tmp_path)
+    assert factor_store.factors('600000.SH')['qfq_factor'].to_list() == [0.5]
+
+    _write_factor_snapshot(tmp_path, '600000.SH', [date(2024, 1, 2)],
+                           [0.8], [1.0])
+    factor_store.invalidate()
+    assert factor_store.factors('600000.SH')['qfq_factor'].to_list() == [0.8]
+
+
+def test_factor_mtime_ttl_fallback_sees_cross_process_rebuild(tmp_path, monkeypatch):
+    """跨进程重建（无人调用 invalidate）在 TTL 到期后也必须被感知。"""
+    _write_factor_snapshot(tmp_path, '600000.SH', [date(2024, 1, 2)],
+                           [0.5], [1.0])
+    factor_store = LocalFactorStore(tmp_path)
+    assert factor_store.factors('600000.SH')['qfq_factor'].to_list() == [0.5]
+
+    monkeypatch.setattr('src.data.local_store.store._FACTOR_MTIME_TTL', 0.0)
+    _write_factor_snapshot(tmp_path, '600000.SH', [date(2024, 1, 2)],
+                           [0.8], [1.0])
+    assert factor_store.factors('600000.SH')['qfq_factor'].to_list() == [0.8]
 
 
 def test_sync_quote_factors_aligns_copy_then_verify_is_zero(tmp_path):
