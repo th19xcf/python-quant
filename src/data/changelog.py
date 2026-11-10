@@ -11,6 +11,12 @@
 
 约定（与 `logs/data_changelog.README.md` 一致）：只追加，不改历史行；`action` 只取
 `create|update|delete`；`delete` 必须给出删除前的 `sha256`，`prev_sha256` 可留空。
+
+两条硬约束（2026-11-10 修复）：
+1. **列升级只改首行表头**：历史行按字节原样保留，列数不足的旧行由读侧 `read_events`
+   补空容错，不允许把 9,821 行历史整行重写。
+2. **同事件幂等**：同一 `action + path + task` 在 `DEFAULT_DEDUPE_WINDOW_SECONDS` 内重复调用
+   只落一条，返回里带 `duplicate="true"`；窗口传 0 或 None 可关闭。
 """
 
 from __future__ import annotations
@@ -36,6 +42,8 @@ FIELDS = [
     "reason",
 ]
 ACTIONS = ("create", "update", "delete")
+DEFAULT_DEDUPE_WINDOW_SECONDS = 300.0
+TS_FORMATS = ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S")
 
 
 def repo_root() -> Path:
@@ -58,27 +66,91 @@ def file_sha256(path: str | os.PathLike[str], chunk: int = 4 << 20) -> str:
     return h.hexdigest()
 
 
-def _upgrade_header(csv_path: Path) -> None:
-    """把 9 列旧表头原地升级为 10 列（补空 reason），历史值一个不改。
-
-    走「临时文件 + os.replace」，失败时原文件保持不动；行数不守恒直接抛错。
-    """
+def _header_fields(csv_path: Path) -> list[str]:
+    """只读首行，取当前表头的列名（文件不存在或为空时返回标准表头）。"""
+    if not csv_path.exists():
+        return list(FIELDS)
     with open(csv_path, encoding="utf-8", newline="") as f:
-        rows = list(csv.reader(f))
-    if not rows or rows[0] == FIELDS:
+        first = f.readline()
+    if not first.strip():
+        return list(FIELDS)
+    return next(csv.reader([first.rstrip("\r\n")]))
+
+
+def _upgrade_header(csv_path: Path) -> None:
+    """只改写首行表头（9 列 → 10 列），其后的历史行按字节原样拷贝。
+
+    走「临时文件 + os.replace」，失败时原文件保持不动。
+    """
+    raw = csv_path.read_bytes()
+    if not raw:
         return
-    if rows[0] != FIELDS[:-1]:
-        raise ValueError(f"表头与预期不符，拒绝改写：{rows[0]}")
-    body = [r + [""] for r in rows[1:] if r]
+    pos = raw.find(b"\n")
+    first, rest = (raw, b"") if pos < 0 else (raw[: pos + 1], raw[pos + 1 :])
+    header = next(csv.reader([first.decode("utf-8").rstrip("\r\n")]))
+    if header == FIELDS:
+        return
+    if header != FIELDS[:-1]:
+        raise ValueError(f"表头与预期不符，拒绝改写：{header}")
+    ending = b"\r\n" if first.endswith(b"\r\n") else b"\n"
     tmp = csv_path.with_suffix(".csv.tmp")
-    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-        w = csv.writer(f, lineterminator="\n")
-        w.writerow(FIELDS)
-        w.writerows(body)
-    if len(body) != len(rows) - 1:
-        tmp.unlink(missing_ok=True)
-        raise ValueError("行数不守恒，已放弃升级")
+    tmp.write_bytes(",".join(FIELDS).encode("utf-8") + ending + rest)
     os.replace(tmp, csv_path)
+
+
+def read_events(csv_file: str | os.PathLike[str] | None = None) -> list[dict[str, str]]:
+    """读取台账全部记录；列数不足的旧行按当前表头补空串，不抛错。"""
+    target = Path(csv_file) if csv_file else changelog_path()
+    if not target.exists():
+        return []
+    events: list[dict[str, str]] = []
+    with open(target, encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+        if not header:
+            return []
+        for cells in reader:
+            if not cells:
+                continue
+            cells = (cells + [""] * len(header))[: len(header)]
+            events.append(dict(zip(header, cells, strict=True)))
+    return events
+
+
+def _parse_ts(text: str) -> float | None:
+    text = (text or "").strip()
+    if not text:
+        return None
+    for fmt in TS_FORMATS:
+        try:
+            return time.mktime(time.strptime(text, fmt))
+        except ValueError:
+            continue
+    return None
+
+
+def _find_recent_duplicate(
+    target: Path,
+    *,
+    action: str,
+    path: str,
+    task: str,
+    window_seconds: float,
+    ref_ts: float,
+) -> dict[str, str] | None:
+    if window_seconds <= 0 or not target.exists():
+        return None
+    for event in read_events(target):
+        if (event.get("action"), event.get("path"), event.get("task")) != (
+            action,
+            path,
+            task,
+        ):
+            continue
+        ts = _parse_ts(event.get("timestamp", ""))
+        if ts is not None and abs(ref_ts - ts) <= window_seconds:
+            return event
+    return None
 
 
 def append_event(
@@ -94,8 +166,9 @@ def append_event(
     run_id: str | None = None,
     timestamp: str | None = None,
     csv_file: str | os.PathLike[str] | None = None,
+    dedupe_window_seconds: float | None = DEFAULT_DEDUPE_WINDOW_SECONDS,
 ) -> dict[str, str]:
-    """追加一条台账记录并返回该行。`path` 用仓库相对路径。"""
+    """追加一条台账记录并返回该行；窗口内重复事件不落盘，返回已有行 + `duplicate="true"`。"""
     if action not in ACTIONS:
         raise ValueError(f"action 只能是 {ACTIONS}，收到 {action!r}")
     if not path or os.path.isabs(path):
@@ -121,9 +194,26 @@ def append_event(
         "operator": operator,
         "reason": reason,
     }
+
+    if dedupe_window_seconds is not None and dedupe_window_seconds > 0:
+        ref_ts = _parse_ts(row["timestamp"]) or time.time()
+        dup = _find_recent_duplicate(
+            target,
+            action=row["action"],
+            path=row["path"],
+            task=row["task"],
+            window_seconds=dedupe_window_seconds,
+            ref_ts=ref_ts,
+        )
+        if dup is not None:
+            return {**dup, "duplicate": "true"}
+
+    width = len(_header_fields(target))
+    values = [row[k] for k in FIELDS][:width]
+    values += [""] * (width - len(values))
     with open(target, "a", encoding="utf-8", newline="\n") as f:
-        csv.writer(f, lineterminator="\n").writerow([row[k] for k in FIELDS])
-    return row
+        csv.writer(f, lineterminator="\n").writerow(values)
+    return {**row, "duplicate": "false"}
 
 
 def record_delete(
@@ -133,7 +223,7 @@ def record_delete(
     reason: str,
     sha256: str | None = None,
     size_bytes: int | None = None,
-    **kwargs: str,
+    **kwargs: object,
 ) -> dict[str, str]:
     """删除事件入口：删之前调用，自动取当前字节数与 SHA256。"""
     abs_path = repo_root() / path
@@ -148,7 +238,7 @@ def record_delete(
         reason=reason,
         sha256=sha256,
         size_bytes=size_bytes,
-        **kwargs,
+        **kwargs,  # type: ignore[arg-type]
     )
 
 
@@ -162,6 +252,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--prev-sha256", default="")
     ap.add_argument("--bytes", type=int, default=None)
     ap.add_argument("--operator", default="system")
+    ap.add_argument(
+        "--dedupe-window",
+        type=float,
+        default=DEFAULT_DEDUPE_WINDOW_SECONDS,
+        help="同 action+path+task 的幂等窗口（秒），0 表示关闭",
+    )
+    ap.add_argument("--no-dedupe", action="store_true", help="等价于 --dedupe-window 0")
     args = ap.parse_args(argv)
 
     size_bytes = args.bytes
@@ -179,8 +276,11 @@ def main(argv: list[str] | None = None) -> int:
         size_bytes=size_bytes,
         prev_sha256=args.prev_sha256,
         operator=args.operator,
+        dedupe_window_seconds=0 if args.no_dedupe else args.dedupe_window,
     )
     sys.stdout.write(",".join(row[k] for k in FIELDS) + "\n")
+    if row.get("duplicate") == "true":
+        sys.stdout.write("duplicate=true（窗口内已存在，未重复写入）\n")
     return 0
 
 

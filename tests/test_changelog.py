@@ -6,12 +6,31 @@ import csv
 
 import pytest
 
-from src.data.changelog import FIELDS, append_event, file_sha256, record_delete
+from src.data.changelog import (
+    FIELDS,
+    append_event,
+    file_sha256,
+    read_events,
+    record_delete,
+)
+
+OLD_HEADER = FIELDS[:-1]
+OLD_ROWS = [
+    ["r1", "2026-11-05T01:00:00", "t1", "create", "quotes/a.parquet", "10", "h", "", "system"],
+    ["r2", "2026-11-05T02:00:00", "t1", "update", "quotes/a.parquet", "12", "h2", "h", "system"],
+]
 
 
 def _rows(path):
     with open(path, encoding="utf-8", newline="") as f:
         return list(csv.DictReader(f))
+
+
+def _write_old_format(csv_file) -> None:
+    with open(csv_file, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(OLD_HEADER)
+        w.writerows(OLD_ROWS)
 
 
 def test_append_event_writes_all_fields(tmp_path):
@@ -26,6 +45,7 @@ def test_append_event_writes_all_fields(tmp_path):
         csv_file=csv_file,
     )
     assert row["reason"] == "一次性临时产物"
+    assert row["duplicate"] == "false"
     rows = _rows(csv_file)
     assert len(rows) == 1
     assert list(rows[0].keys()) == FIELDS
@@ -33,14 +53,12 @@ def test_append_event_writes_all_fields(tmp_path):
     assert rows[0]["bytes"] == "123"
 
 
-def test_upgrade_old_header_keeps_rows_and_values(tmp_path):
+def test_upgrade_keeps_history_bytes_identical(tmp_path):
+    """列升级只改首行：历史行必须逐字节不变，diff 里只允许出现表头与新行。"""
     csv_file = tmp_path / "data_changelog.csv"
-    old = ["run_id", "timestamp", "task", "action", "path", "bytes", "sha256", "prev_sha256", "operator"]
-    with open(csv_file, "w", encoding="utf-8", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(old)
-        w.writerow(["r1", "2026-11-05T01:00:00", "t1", "create", "quotes/a.parquet", "10", "h", "", "system"])
-        w.writerow(["r2", "2026-11-05T02:00:00", "t1", "update", "quotes/a.parquet", "12", "h2", "h", "system"])
+    _write_old_format(csv_file)
+    before = csv_file.read_bytes().splitlines(keepends=True)
+    history_bytes = before[1:]
 
     append_event(
         action="delete",
@@ -52,12 +70,80 @@ def test_upgrade_old_header_keeps_rows_and_values(tmp_path):
         csv_file=csv_file,
     )
 
-    rows = _rows(csv_file)
-    assert len(rows) == 3
-    assert rows[0]["path"] == "quotes/a.parquet"
-    assert rows[0]["reason"] == ""
-    assert rows[1]["prev_sha256"] == "h"
-    assert rows[2]["reason"] == "r"
+    after = csv_file.read_bytes().splitlines(keepends=True)
+    assert after[1 : 1 + len(history_bytes)] == history_bytes
+    assert after[0].decode("utf-8").rstrip("\r\n") == ",".join(FIELDS)
+    # 历史行仍是 9 列，只有新追加的一行为 10 列
+    assert len(next(csv.reader([after[1].decode("utf-8")]))) == 9
+    assert len(next(csv.reader([after[-1].decode("utf-8")]))) == len(FIELDS)
+
+
+def test_read_events_pads_short_rows(tmp_path):
+    csv_file = tmp_path / "data_changelog.csv"
+    _write_old_format(csv_file)
+    csv_file.write_bytes(
+        (",".join(FIELDS) + "\n").encode()
+        + csv_file.read_bytes().split(b"\n", 1)[1]
+    )
+    events = read_events(csv_file)
+    assert len(events) == 2
+    assert events[0]["path"] == "quotes/a.parquet"
+    assert events[0]["reason"] == ""
+    assert events[1]["prev_sha256"] == "h"
+
+
+def test_duplicate_within_window_written_once(tmp_path):
+    csv_file = tmp_path / "data_changelog.csv"
+    kwargs = {
+        "action": "delete",
+        "path": "data/local_store/x.parquet",
+        "task": "cleanup",
+        "reason": "残留",
+        "sha256": "c" * 64,
+        "size_bytes": 7,
+        "csv_file": csv_file,
+        "timestamp": "2026-11-10T15:50:38",
+    }
+    first = append_event(**kwargs)
+    second = append_event(**kwargs)
+
+    assert first["duplicate"] == "false"
+    assert second["duplicate"] == "true"
+    assert second["sha256"] == kwargs["sha256"]
+    assert len(read_events(csv_file)) == 1
+
+
+def test_duplicate_outside_window_written_again(tmp_path):
+    csv_file = tmp_path / "data_changelog.csv"
+    base = {
+        "action": "delete",
+        "path": "data/local_store/x.parquet",
+        "task": "cleanup",
+        "reason": "残留",
+        "sha256": "d" * 64,
+        "size_bytes": 7,
+        "csv_file": csv_file,
+    }
+    append_event(**base, timestamp="2026-11-10T10:00:00")
+    later = append_event(**base, timestamp="2026-11-10T10:06:00")
+    assert later["duplicate"] == "false"
+    assert len(read_events(csv_file)) == 2
+
+
+def test_dedupe_can_be_disabled(tmp_path):
+    csv_file = tmp_path / "data_changelog.csv"
+    base = {
+        "action": "delete",
+        "path": "data/local_store/x.parquet",
+        "task": "cleanup",
+        "reason": "残留",
+        "sha256": "e" * 64,
+        "size_bytes": 7,
+        "csv_file": csv_file,
+    }
+    append_event(**base, dedupe_window_seconds=0)
+    append_event(**base, dedupe_window_seconds=0)
+    assert len(read_events(csv_file)) == 2
 
 
 def test_rejects_bad_action_and_absolute_path(tmp_path):
