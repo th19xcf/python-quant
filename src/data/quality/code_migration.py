@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 import threading
@@ -44,6 +43,8 @@ from typing import Any, Iterable
 
 import polars as pl
 from loguru import logger
+
+from src.data.atomic_write import write_parquet_atomic
 
 MAPPING_REL = Path('meta') / 'code_migration.parquet'
 UNRESOLVED_REL = Path('meta') / 'code_migration_unresolved.csv'
@@ -766,10 +767,7 @@ def build_mapping(sources: Sources, *,
 
 
 def _write_atomic(frame: pl.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix('.tmp.parquet')
-    frame.write_parquet(tmp)
-    os.replace(tmp, path)
+    write_parquet_atomic(frame, path)
 
 
 def build_and_write(store_root: Path | str) -> dict[str, Any]:

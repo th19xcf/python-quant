@@ -31,7 +31,7 @@ r"""外部依赖数据契约的本地构建器（停复牌 / 行业 PIT / 指数
 ====
 - 全部默认 **dry-run**，``--commit`` 才写 ``data/**``；联网还需
   ``--allow-remote``。
-- 写入一律 ``.tmp`` + ``os.replace``，产物与覆盖声明同时落盘。
+- 写入一律走 ``atomic_write``（临时文件 → fsync → 替换），产物与覆盖声明同时落盘。
 - 只新增 ``meta/`` 下的派生文件，不改行情/因子等原始资产。
 """
 
@@ -39,8 +39,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -50,6 +50,7 @@ import polars as pl
 from loguru import logger
 from polars.exceptions import PolarsError
 
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.local_store.paths import default_store_root
 from src.data.quality.extended_contracts import CONTRACTS
 from src.data.trading_calendar import get_calendar
@@ -65,6 +66,8 @@ DEFAULT_INDICES: tuple[tuple[str, str], ...] = (
     ('000852', '000852.SH'),
     ('000016', '000016.SH'),
 )
+#: 指数成分快照抓取的串行间隔（秒）：单连接、逐只请求，失败即停。
+_REMOTE_MIN_INTERVAL_SECONDS = 2.0
 _EXCHANGE_TO_MARKET = {
     '上海证券交易所': 'SH',
     '深圳证券交易所': 'SZ',
@@ -107,18 +110,12 @@ def _frame(rows: list[tuple[Any, ...]], schema: dict[str, Any]) -> pl.DataFrame:
 
 
 def _write_frame(path: Path, frame: pl.DataFrame) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + '.tmp')
-    frame.write_parquet(tmp)
-    os.replace(tmp, path)
+    write_parquet_atomic(frame, path)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + '.tmp')
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n',
-                   encoding='utf-8')
-    os.replace(tmp, path)
+    write_text_atomic(
+        json.dumps(payload, ensure_ascii=False, indent=2) + '\n', path)
 
 
 def _quote_dates(path: Path) -> list[date]:
@@ -489,10 +486,15 @@ def build_index_membership(
     snapshot_dir = store / 'meta' / 'index_membership' / 'snapshots'
     fetched = 0
     if allow_remote:
-        for symbol, ts_code in indices:
+        for position, (symbol, ts_code) in enumerate(indices):
+            if position:
+                # 单连接串行 + 节流：不并发、不连发
+                time.sleep(_REMOTE_MIN_INTERVAL_SECONDS)
             result = _fetch_membership_snapshot(symbol)
             if result is None:
-                continue
+                # 限流/超时/空表一律不再压后续指数，直接停手
+                logger.error(f'[extended] {ts_code} 成分抓取中断，停止后续远程请求')
+                break
             frame, snapshot_date = result
             path = snapshot_dir / (
                 f'snapshot_{ts_code.replace(".", "_")}_{snapshot_date:%Y%m%d}.parquet')

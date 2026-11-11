@@ -27,6 +27,7 @@ import calendar
 import html
 import json
 import math
+import random
 import re
 import threading
 import time
@@ -47,6 +48,9 @@ PAGE_SIZE = 30
 MAX_PAGES_PER_CHUNK = 400
 WORKERS = 2
 REQUEST_SLEEP = 0.25
+# 每个 (关键词, 区间) 开始前的随机抖动上限（秒），仅用于打散请求节奏、降低被限流概率，
+# 不用于任何安全用途。0 表示不抖动。
+REQUEST_JITTER = 0.0
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
     'Referer': 'http://www.cninfo.com.cn/new/commonUrl?url=disclosure/list/notice',
@@ -137,13 +141,25 @@ def fetch_cninfo_chunk(keyword: str, start: str, end: str) -> tuple[list[dict[st
         def _page(page: int) -> list[dict[str, Any]]:
             page_params = dict(params)
             page_params['pageNum'] = str(page)
-            time.sleep(REQUEST_SLEEP)
-            return _cninfo_records(_cninfo_get(page_params), keyword)
+            # 源端会间歇性返回 HTTP 200 + 空 announcements（实测 202112 股权激励
+            # 第 2/4/7/10~14 页均为空），只靠重试 HTTP 层抓不到，会把整页静默丢掉。
+            # 这里按「该页应有条数」判空重试，仍空则返回空并靠末尾告警暴露。
+            expected = min(PAGE_SIZE, total - (page - 1) * PAGE_SIZE)
+            for attempt in range(4):
+                time.sleep(REQUEST_SLEEP * (attempt + 1))
+                rows = _cninfo_records(_cninfo_get(page_params), keyword)
+                if rows or expected <= 0:
+                    return rows
+                logger.warning('巨潮空页重试 keyword={} 页={} 第{}次', keyword, page, attempt + 1)
+            return []
 
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             futures = [pool.submit(_page, page) for page in range(2, pages + 1)]
             for future in as_completed(futures):
                 records.extend(future.result())
+    if len(records) < total:
+        logger.warning('巨潮记录数不足 keyword={} 区间={}~{} total_hits={} records={}',
+                       keyword, start, end, total, len(records))
     return records, total
 
 
@@ -228,6 +244,8 @@ def fetch_keyword(keyword: str, start: str, end: str, source: str) -> tuple[list
     total = 0
     fetcher = fetch_cninfo_chunk if source == 'cninfo' else fetch_em_chunk
     for chunk_start, chunk_end in _quarter_chunks(start, end):
+        if REQUEST_JITTER > 0:
+            time.sleep(random.uniform(0, REQUEST_JITTER))  # noqa: S311
         chunk_records, chunk_total = fetcher(keyword, chunk_start, chunk_end)
         records.extend(chunk_records)
         total += chunk_total

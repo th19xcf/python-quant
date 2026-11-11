@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -45,6 +44,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.adj_factor_calculator import AdjFactorCalculator
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.local_store.store import (
     STORE_VERSION,
     LocalFactorStore,
@@ -91,11 +91,8 @@ def existing_factor_codes(factor_store: LocalFactorStore) -> set[str]:
 
 def _write_sidecar(factor_store: LocalFactorStore, codes: Iterable[str]) -> None:
     path = _sidecar_path(factor_store)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = '\n'.join(sorted(codes)) + ('\n' if codes else '')
-    tmp = path.with_suffix('.txt.tmp')
-    tmp.write_text(payload, encoding='utf-8', newline='\n')
-    os.replace(tmp, path)
+    write_text_atomic(payload, path)
 
 
 def _compute_code_factors(code: str, quote_store: LocalQuoteStore,
@@ -145,12 +142,9 @@ def _load_manifest(path: Path) -> dict[str, Any]:
 
 
 def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(payload)
     payload['updated_at'] = datetime.now().isoformat(timespec='seconds')
-    tmp = path.with_suffix('.json.tmp')
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
-    os.replace(tmp, path)
+    write_text_atomic(json.dumps(payload, ensure_ascii=False, indent=2), path)
 
 
 def _clear_parts(rebuild_dir: Path) -> None:
@@ -247,11 +241,9 @@ def _inspect_resume_state(
 
 
 def _write_part(part_path: Path, frame: pl.DataFrame) -> None:
-    tmp = part_path.with_suffix('.parquet.tmp')
-    frame.write_parquet(
-        tmp, compression='zstd', compression_level=3,
+    write_parquet_atomic(
+        frame, part_path, compression='zstd', compression_level=3,
         statistics=True, row_group_size=100_000)
-    os.replace(tmp, part_path)
 
 
 def _assemble(parts: list[Path], target: Path, replaced: set[str]) -> int | None:
@@ -267,11 +259,9 @@ def _assemble(parts: list[Path], target: Path, replaced: set[str]) -> int | None
     )
     source = source.sort(['ts_code', 'trade_date'])
 
-    tmp = target.with_suffix('.parquet.tmp')
-    source.sink_parquet(
-        str(tmp), compression='zstd', compression_level=3,
+    write_parquet_atomic(
+        source, target, compression='zstd', compression_level=3,
         statistics=True, row_group_size=100_000)
-    os.replace(tmp, target)
     try:
         return int(pl.scan_parquet(str(target)).select(pl.len()).collect().item())
     except (OSError, ValueError, TypeError) as exc:
@@ -461,9 +451,7 @@ def rebuild_factors_from_local(
         'quote_factor_refresh': quote_refresh,
     }
     meta_path = factor_store.root / 'factors' / 'meta.json'
-    tmp_meta = meta_path.with_suffix('.json.tmp')
-    tmp_meta.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
-    os.replace(tmp_meta, meta_path)
+    write_text_atomic(json.dumps(meta, ensure_ascii=False, indent=2), meta_path)
 
     # 收尾顺序不可调换（对照 turnover.py 的收尾）：先记 completed，再删分块。
     # 反过来的话，两步之间中断会留下「分块已删、manifest 仍 running」，

@@ -224,7 +224,7 @@ class DividendMarkerItem(GraphicsObject):
                 x_min, x_max = view_range[0]
                 y_min, y_max = view_range[1]
                 return QRectF(x_min, y_min, x_max - x_min, y_max - y_min)
-        except Exception as e:
+        except Exception as e:  # 绘制阶段视图可能已销毁，退回默认矩形保证绘画不崩
             logger.debug(f"获取视图范围失败，使用默认值: {e}", exc_info=True)
         return QRectF(0, 0, 1000, 1000)
 

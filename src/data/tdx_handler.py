@@ -24,6 +24,29 @@ from src.utils.code_converter import (
 )
 
 
+class InvalidDateArgument(ValueError):
+    """日期参数非法（空值以外不可解析的取值）。
+
+    单独成类是为了与「文件解析失败」区分：本异常必须向上抛出，
+    不能被取数层的兜底 ``except ValueError`` 吞成一张空表。
+    """
+
+
+def _parse_optional_date(value: str | None, field: str) -> date | None:
+    """把 ``YYYY-MM-DD`` 解析成 ``date``；``None`` / 空串表示开放区间端点。
+
+    与 ``LocalQuoteStore._as_date`` 口径一致：空值不是错误，而是「不限下界/上界」。
+    非空但格式非法时抛 ``InvalidDateArgument``，不得静默退化成「无数据」。
+    """
+    if value is None or str(value).strip() == '':
+        return None
+    try:
+        return datetime.strptime(str(value).strip(), '%Y-%m-%d').date()
+    except ValueError as exc:
+        raise InvalidDateArgument(
+            f'{field} 日期格式非法: {value!r}（应为 YYYY-MM-DD 或留空表示不限）') from exc
+
+
 def _is_valid_tdx_stock_code(code, market: str | None = None) -> bool:
     """验证通达信文件名中的代码是否有效。
 
@@ -652,14 +675,15 @@ class TdxHandler(DataSourceBase):
             # 转换为LazyFrame
             lazy_df = df.lazy()
 
-            # 转换start_date和end_date为date对象
-            start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
-            end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+            # 转换start_date和end_date为date对象；空值表示开放区间
+            start_dt = _parse_optional_date(start_date, 'start_date')
+            end_dt = _parse_optional_date(end_date, 'end_date')
 
-            # 使用Lazy API过滤日期范围内的数据
-            lazy_df = lazy_df.filter(
-                (pl.col('date') >= start_dt) & (pl.col('date') <= end_dt)
-            )
+            # 使用Lazy API过滤日期范围内的数据（开放端点不参与过滤）
+            if start_dt is not None:
+                lazy_df = lazy_df.filter(pl.col('date') >= start_dt)
+            if end_dt is not None:
+                lazy_df = lazy_df.filter(pl.col('date') <= end_dt)
 
             # 复权统一由 DataFetcher._apply_adjustment 在数据出口处理：
             # 此处只把复权因子对齐到 K 线日期，不再生成 qfq_*/hfq_* 预计算价格列，
@@ -671,7 +695,9 @@ class TdxHandler(DataSourceBase):
             logger.info(f"成功获取股票 {stock_code} 的K线数据，返回LazyFrame")
             return lazy_df
 
-        except (OSError, ValueError) as e:
+        except InvalidDateArgument:
+            raise
+        except (OSError, ValueError, RuntimeError) as e:
             logger.exception(f"获取股票 {stock_code} 的K线数据失败: {e}")
             return pl.LazyFrame({})
 
@@ -691,10 +717,10 @@ class TdxHandler(DataSourceBase):
             pl.DataFrame: 归一化后的K线数据
         """
         try:
-            # 多取一段前置数据，保证区间首根K线能拿到真实的昨收
-            start_dt = datetime.strptime(start_date, '%Y-%m-%d').date()
-            end_dt = datetime.strptime(end_date, '%Y-%m-%d').date()
-            fetch_start = (start_dt - timedelta(days=30)).strftime('%Y-%m-%d')
+            # 多取一段前置数据，保证区间首根K线能拿到真实的昨收；起点为空表示不限
+            start_dt = _parse_optional_date(start_date, 'start_date')
+            end_dt = _parse_optional_date(end_date, 'end_date')
+            fetch_start = (start_dt - timedelta(days=30)).strftime('%Y-%m-%d') if start_dt else ''
 
             # get_kline_data 返回 LazyFrame，含 date/open/high/low/close/volume/amount
             # 以及 qfq_factor/hfq_factor 列
@@ -726,9 +752,11 @@ class TdxHandler(DataSourceBase):
                 .otherwise(None).alias('pct_chg'),
             ])
 
-            # 丢弃为补齐昨收而多取的前置数据
-            df = df.filter(
-                (pl.col('date') >= start_dt) & (pl.col('date') <= end_dt))
+            # 丢弃为补齐昨收而多取的前置数据（开放端点不参与裁剪）
+            if start_dt is not None:
+                df = df.filter(pl.col('date') >= start_dt)
+            if end_dt is not None:
+                df = df.filter(pl.col('date') <= end_dt)
 
             # tdx 列名已为标准名，成交量单位为"手"
             column_map = {
@@ -742,8 +770,10 @@ class TdxHandler(DataSourceBase):
                 volume_unit='hand', date_format=None, include_factors=True,
             )
 
-        # 兜底理由：本地文件解析异常不可预知，失败返回空表
-        except Exception as e:  # noqa: BLE001
+        except InvalidDateArgument:
+            raise
+        # 兜底理由：本地文件 IO/解析异常不可预知，失败返回空表；参数错误已在上方抛出
+        except (OSError, ValueError, RuntimeError) as e:
             logger.warning(f"tdx get_stock_data({ts_code}) 失败: {e}")
             return pl.DataFrame()
 
@@ -769,9 +799,9 @@ class TdxHandler(DataSourceBase):
             pl.DataFrame: 归一化后的指数K线数据
         """
         try:
-            start_dt = datetime.strptime(start_date, '%Y-%m-%d').date()
-            end_dt = datetime.strptime(end_date, '%Y-%m-%d').date()
-            fetch_start = (start_dt - timedelta(days=30)).strftime('%Y-%m-%d')
+            start_dt = _parse_optional_date(start_date, 'start_date')
+            end_dt = _parse_optional_date(end_date, 'end_date')
+            fetch_start = (start_dt - timedelta(days=30)).strftime('%Y-%m-%d') if start_dt else ''
 
             lazy_df = self.get_kline_data(ts_code, fetch_start, end_date, adjust='none')
             if lazy_df is None:
@@ -793,8 +823,10 @@ class TdxHandler(DataSourceBase):
                 .then((pl.col('close') / pl.col('pre_close') - 1) * 100)
                 .otherwise(None).alias('pct_chg'),
             ])
-            df = df.filter(
-                (pl.col('date') >= start_dt) & (pl.col('date') <= end_dt))
+            if start_dt is not None:
+                df = df.filter(pl.col('date') >= start_dt)
+            if end_dt is not None:
+                df = df.filter(pl.col('date') <= end_dt)
 
             column_map = {
                 'date': 'date', 'open': 'open', 'high': 'high', 'low': 'low',
@@ -806,7 +838,9 @@ class TdxHandler(DataSourceBase):
                 volume_unit='hand', date_format=None, include_factors=True,
             )
 
-        # 兜底理由：本地文件解析异常不可预知，失败返回空表
-        except Exception as e:  # noqa: BLE001
+        except InvalidDateArgument:
+            raise
+        # 兜底理由：本地文件 IO/解析异常不可预知，失败返回空表；参数错误已在上方抛出
+        except (OSError, ValueError, RuntimeError) as e:
             logger.warning(f"tdx get_index_data({ts_code}) 失败: {e}")
             return pl.DataFrame()

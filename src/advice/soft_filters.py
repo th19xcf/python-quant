@@ -25,6 +25,8 @@ def apply_soft_filter(frame: pl.DataFrame,
 
     条件：
     - 均线多头：``ma20_gap > 0`` 且 ``ma60_gap > 0``；
+      若 ``config.ma20_floor`` 非空，改为「``ma60_gap > 0`` 或
+      ``ma20_gap >= ma20_floor``」（方案 D，考察反转票能否进池）；
     - 量能：``volume_momentum_20 >= 截面 q60``；
     - 波动：``atr_pct <= 截面 q80``；
     - RSI：``q10 <= rsi_14 <= q90``。
@@ -38,10 +40,12 @@ def apply_soft_filter(frame: pl.DataFrame,
 
     conditions: list[tuple[str, pl.Expr]] = []
     if config.ma_trend_required:
-        conditions.append((
-            '均线非多头',
-            (pl.col('ma20_gap') > 0) & (pl.col('ma60_gap') > 0),
-        ))
+        if config.ma20_floor is None:
+            trend = (pl.col('ma20_gap') > 0) & (pl.col('ma60_gap') > 0)
+        else:
+            trend = ((pl.col('ma60_gap') > 0)
+                     | (pl.col('ma20_gap') >= config.ma20_floor))
+        conditions.append(('均线非多头', trend))
     conditions.append((
         '量能不足',
         pl.col('volume_momentum_20') >= _quantile('volume_momentum_20',

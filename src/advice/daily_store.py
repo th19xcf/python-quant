@@ -25,7 +25,6 @@ confidence / industry``。
 from __future__ import annotations
 
 import json
-import os
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -37,6 +36,7 @@ from src.advice.models import (
     DIRECTION_SELL,
     AdviceResult,
 )
+from src.data.atomic_write import write_text_atomic
 
 #: ``ref_price`` 的口径：推荐日收盘价（未复权）
 REF_PRICE_BASIS = 'close'
@@ -239,6 +239,8 @@ def build_payload(result: AdviceResult,
                                 if rec.defer_until else None),
                 'score': round(float(rec.score), 4),
                 'score_percentile': round(float(rec.score_percentile), 4),
+                'limit_up_risk': bool(rec.limit_up_risk),
+                'limit_up_basis': rec.limit_up_basis,
                 'top_factors': ' | '.join(
                     f'{name} {value:+.2f}' for name, value in rec.top_factors[:3]),
                 'risk_notes': '；'.join(rec.risk_notes),
@@ -283,13 +285,9 @@ def save_daily_snapshot(result: AdviceResult, daily_dir: Path | str,
                         exec_date_basis: str | None = None) -> Path:
     """原子写入当日归档；同日重跑覆盖同一文件（幂等）。"""
     path = snapshot_path(daily_dir, result.trade_date)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = build_payload(result, generated_at, earliest_exec_date,
                             exec_date_basis)
-    tmp = path.with_suffix('.json.tmp')
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                   encoding='utf-8')
-    os.replace(tmp, path)
+    write_text_atomic(json.dumps(payload, ensure_ascii=False, indent=2), path)
     return path
 
 

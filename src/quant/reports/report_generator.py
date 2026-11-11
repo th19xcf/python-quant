@@ -390,6 +390,24 @@ class ReportGenerator:
         total_return = result.get('total_return', 0)
         performance = "良好" if total_return > 0 else "不佳"
         suggestion = "继续优化参数以提高收益" if total_return > 0 else "重新评估策略逻辑"
+        # 数据质量告警：列存落后源端时仍出结果，但报告必须显式标注
+        stale_data = (result.get('data_quality') or {}).get('stale_data') or []
+        quality_block = ''
+        if stale_data:
+            rows = ''.join(
+                f"<tr><td>{item.get('ts_code', '')}</td>"
+                f"<td>{item.get('local_last_trade_date', '')}</td>"
+                f"<td>{item.get('source_last_trade_date', '')}</td>"
+                f"<td>{item.get('lag_days', 0)}</td></tr>"
+                for item in stale_data)
+            quality_block = f"""
+                <h2>数据质量告警</h2>
+                <p>以下标的的本地列存落后于源端，本次回测基于滞后的列存数据：</p>
+                <table class="info-table">
+                    <tr><th>标的</th><th>列存末行</th><th>源端末行</th><th>落后天数</th></tr>
+                    {rows}
+                </table>
+"""
         body = f"""
                 <h2>基本信息</h2>
                 <table class="info-table">
@@ -442,7 +460,7 @@ class ReportGenerator:
                         <div class="metric-value">{result.get('win_rate', 0):.2f}%</div>
                     </div>
                 </div>
-
+{quality_block}
                 <h2>结论与建议</h2>
                 <p>根据回测结果，该策略在测试期间表现{performance}。建议{suggestion}。</p>
 """

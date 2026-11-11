@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+import importlib
+import subprocess
+import sys
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -624,3 +627,65 @@ def test_st_interval_bisect_matches_linear_reference():
     ]}
     prepared2, _ = EventBacktestRunner._prepare_st_intervals(overlapping)
     assert '000001.SZ' not in prepared2  # 重叠 → 主循环回退线性语义
+
+
+def test_shared_fetcher_close_releases_and_is_idempotent(monkeypatch):
+    """P1-4：长驻取数资源必须能被显式释放，且重复调用不抛错、不重复释放。
+
+    ``close_shared_data_fetcher`` 此前全仓 0 调用点：DataFetcher 的线程池/
+    子进程池与 DatabaseManager 的会话只能靠进程退出兜底，测试进程内多次
+    回测会一直占着连接与线程。本用例锁定释放契约本身，退出钩子的接线由
+    下一个用例以子进程端到端验证。
+    """
+    # 包 __init__ 把 run_backtest 导出成同名函数，必须取模块对象而非包的属性
+    rb = importlib.import_module('src.core.usecases.run_backtest')
+
+    released: list[str] = []
+
+    class _FakeFetcher:
+        def close(self) -> None:
+            released.append('fetcher')
+
+    class _FakeDb:
+        def disconnect(self) -> None:
+            released.append('db')
+
+    monkeypatch.setattr(rb, '_shared_fetcher', _FakeFetcher())
+    monkeypatch.setattr(rb, '_shared_db_manager', _FakeDb())
+
+    rb.close_shared_data_fetcher()
+    assert released == ['fetcher', 'db']
+    assert rb._shared_fetcher is None
+    assert rb._shared_db_manager is None
+
+    # 可重复调用：资源已置空，再调一次不得抛错也不得重复释放
+    rb.close_shared_data_fetcher()
+    assert released == ['fetcher', 'db']
+
+
+def test_shared_fetcher_is_released_at_interpreter_exit():
+    """P1-4：退出钩子必须真的挂在 atexit 上，进程退出时释放长驻资源。
+
+    子进程内只导入用例模块、塞入假单例，不做任何显式 close；若没有
+    ``atexit.register(close_shared_data_fetcher)``，两个释放标记都不会出现。
+    """
+    script = (
+        'import importlib\n'
+        "rb = importlib.import_module('src.core.usecases.run_backtest')\n"
+        'class _F:\n'
+        '    def close(self):\n'
+        "        print('FETCHER_CLOSED')\n"
+        'class _D:\n'
+        '    def disconnect(self):\n'
+        "        print('DB_CLOSED')\n"
+        'rb._shared_fetcher = _F()\n'
+        'rb._shared_db_manager = _D()\n'
+    )
+    root = Path(__file__).resolve().parents[1]
+    proc = subprocess.run(
+        [sys.executable, '-c', script],
+        capture_output=True, text=True, cwd=str(root), timeout=180,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert 'FETCHER_CLOSED' in proc.stdout
+    assert 'DB_CLOSED' in proc.stdout

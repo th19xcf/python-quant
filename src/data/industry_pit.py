@@ -41,7 +41,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -50,6 +49,8 @@ from typing import Any, cast
 import polars as pl
 import requests
 from loguru import logger
+
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 
 SW_URL = (
     'https://www.swsresearch.com/swindex/pdf/SwClass2021/'
@@ -96,20 +97,12 @@ def raw_dir(store_root: Path | str) -> Path:
 
 
 def _write_atomic(frame: pl.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix('.tmp.parquet')
-    frame.write_parquet(tmp)
-    os.replace(tmp, path)
+    write_parquet_atomic(frame, path)
 
 
 def _write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix('.tmp.json')
-    tmp.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-        encoding='utf-8',
-    )
-    os.replace(tmp, path)
+    write_text_atomic(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str), path)
 
 
 def _sha256(path: Path) -> str:

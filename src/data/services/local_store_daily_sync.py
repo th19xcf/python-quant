@@ -24,7 +24,6 @@ CLI 入口在 ``src/main.py``：``--sync-fund-daily`` / ``--sync-index-daily``�
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Sequence
 from datetime import date, datetime
 from pathlib import Path
@@ -32,6 +31,7 @@ from typing import Any
 
 from loguru import logger
 
+from src.data.atomic_write import write_text_atomic
 from src.data.index_daily_fill import build_missing_rows
 from src.data.local_store.store import LocalQuoteStore, get_local_quote_store
 from src.data.services.sync_fund import _classify_local_fund_symbol
@@ -72,11 +72,7 @@ def _load_progress(path: Path) -> dict[str, Any]:
 
 def _write_progress(path: Path, payload: dict[str, Any]) -> None:
     """原子写进度文件（tmp + replace），避免中断时留下半个 JSON。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix('.json.tmp')
-    tmp.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
-    os.replace(tmp, path)
+    write_text_atomic(json.dumps(payload, ensure_ascii=False, indent=2), path)
 
 
 def _fund_table_for(ts_code: str, unclassified: list[str]) -> str:

@@ -150,8 +150,7 @@ class FundSection:
                     try:
                         global_task_manager.task_completed.disconnect(on_task_completed)
                         global_task_manager.task_progress.disconnect(on_task_progress)
-                    except Exception as exc:
-                        # 信号可能已被其他路径断开，重复解绑失败可忽略
+                    except Exception as exc:  # 信号可能已被其他路径断开，重复解绑失败不影响结果
                         logger.debug(f"解绑任务信号失败: {exc}")
 
             def on_task_progress(task_id, current, total):
@@ -159,7 +158,7 @@ class FundSection:
                     return
                 try:
                     window.market_progress_bar.setValue(int((current / total) * 100))
-                except Exception as e:
+                except Exception as e:  # 进度条更新失败只影响 UI 反馈，不阻断任务回调
                     logger.debug(f"更新市场进度条失败: {e}", exc_info=True)
 
             global_task_manager.task_completed.connect(on_task_completed)

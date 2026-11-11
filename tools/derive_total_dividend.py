@@ -45,7 +45,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import shutil
 import sys
 from datetime import datetime
@@ -58,7 +57,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.data.atomic_write import write_parquet_atomic  # noqa: E402
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
 from src.data.dividend_effective import (  # noqa: E402
     apply_effective_columns,
     drop_non_ex_rights,
@@ -403,11 +402,8 @@ def file_sha256(path: Path) -> str:
 
 
 def write_report(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + '.tmp')
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-                   encoding='utf-8', newline='\n')
-    os.replace(tmp, path)
+    write_text_atomic(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str), path)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Sequence, Tuple
+from typing import Dict, Mapping, Sequence, Tuple
 
 import polars as pl
 
@@ -51,6 +51,38 @@ ROLE_MACD_SIGNAL = 'macd_signal'
 ROLE_MACD_HIST = 'macd_hist'
 ROLE_RSI = 'rsi'
 ROLE_ATR = 'atr'
+
+# ---------------------------------------------------------------------------
+# 财务/估值层语义角色
+#
+# 这些列名不是凭契约起的名：``src/advice/fundamental_factors.py`` 的
+# ``build_fundamentals`` 真实读取的就是下面这些（valuation/shares 直接
+# ``select``，income/balance 经 ``ttm_from_cumulative`` / ``balance_metrics``
+# 与 ``_dedupe_period`` 读取 ts_code / end_date / ann_date）。
+# ---------------------------------------------------------------------------
+ROLE_TS_CODE = 'ts_code'
+ROLE_TRADE_DATE = 'trade_date'
+ROLE_EFFECTIVE_DATE = 'effective_date'
+ROLE_END_DATE = 'end_date'
+ROLE_ANN_DATE = 'ann_date'
+ROLE_CIRC_MV = 'circ_mv'
+ROLE_DV_RATIO = 'dv_ratio'
+ROLE_FLOAT_SHARE = 'float_share'
+ROLE_REVENUE = 'revenue'
+ROLE_PARENT_NET_PROFIT = 'parent_net_profit'
+ROLE_TOTAL_ASSETS = 'total_assets'
+ROLE_TOTAL_EQUITY = 'total_equity'
+
+# ---------------------------------------------------------------------------
+# 输出侧记录键名
+#
+# 回测产物（成交 / 拒单 / 过滤信号 / 权益曲线 / 除权日志 / ST 审计）也是
+# 跨模块契约，输出键与输入列名同等对待：只在这里声明一次，引擎内不再写
+# 'date' / 'side' / 'ts_code' 裸字符串。
+# ---------------------------------------------------------------------------
+OUT_DATE = 'date'
+OUT_SIDE = 'side'
+OUT_TS_CODE = 'ts_code'
 
 #: 价格口径：'auto' 缺省按「有 raw_* 即成对复权」推断；'adjusted' 强制要求
 #: 复权价不等于原始价；'raw' 显式声明原始层消费方，跳过复权退化校验
@@ -163,7 +195,9 @@ BAR_CONTRACT = FrameContract('bar', (
     ColumnSpec(ROLE_RAW_CLOSE, 'raw_close', False, 'hfq 出口原始收盘价'),
 ))
 
-#: 因子契约：指标预计算的产物，策略读取前必须存在
+#: 因子契约：指标预计算的产物，策略读取前必须存在。
+#: ma_short / ma_long 声明的 ma_10 / ma_20 只是默认窗口，实际列由
+#: ``validate_factor_frame(ma_columns=...)`` 按策略参数覆盖（ma_5 等）。
 FACTOR_CONTRACT = FrameContract('factor', (
     ColumnSpec(ROLE_MA_SHORT, ma_column(10), True, '短期均线（参数化，见 ma_column）'),
     ColumnSpec(ROLE_MA_LONG, ma_column(20), True, '长期均线（参数化，见 ma_column）'),
@@ -174,18 +208,66 @@ FACTOR_CONTRACT = FrameContract('factor', (
     ColumnSpec(ROLE_ATR, 'atr', True, 'ATR（默认周期 14）'),
 ))
 
-#: 财务/估值契约：只被成本分档消费，因此不是回测的必需列
-FINANCIAL_CONTRACT = FrameContract('financial', (
-    ColumnSpec(ROLE_TOTAL_MV, 'total_mv', False, '总市值（元）'),
-    ColumnSpec(ROLE_TOTAL_MV_YI, 'total_mv_yi', False, '总市值（亿元）'),
-    ColumnSpec(ROLE_AMOUNT, 'amount', False, '成交额（元），作为流动性代理'),
+#: 财务/估值层契约：四张源表各自独立，列以
+#: ``src/advice/fundamental_factors.py::build_fundamentals`` 的真实读取为准。
+#: 空帧（确实无数据但 schema 齐全）允许通过，缺列一律抛错。
+VALUATION_CONTRACT = FrameContract('valuation', (
+    ColumnSpec(ROLE_TS_CODE, 'ts_code', True, '标的代码'),
+    ColumnSpec(ROLE_TRADE_DATE, 'trade_date', True, '估值日'),
+    ColumnSpec(ROLE_TOTAL_MV, 'total_mv', True, '总市值（元），ff_size 分母'),
+    ColumnSpec(ROLE_CIRC_MV, 'circ_mv', True, '流通市值（元），优先于 total_mv'),
+    ColumnSpec(ROLE_DV_RATIO, 'dv_ratio', True, '股息率（百分数），ff_div_yield'),
 ))
 
-#: 装配层需要一次性声明的全部契约
-ENGINE_CONTRACTS = (BAR_CONTRACT, FACTOR_CONTRACT, FINANCIAL_CONTRACT)
+SHARES_CONTRACT = FrameContract('shares', (
+    ColumnSpec(ROLE_TS_CODE, 'ts_code', True, '标的代码'),
+    ColumnSpec(ROLE_EFFECTIVE_DATE, 'effective_date', True, '股本生效日（as-of 连接键）'),
+    ColumnSpec(ROLE_FLOAT_SHARE, 'float_share', True, '流通股本（股），换手率分母'),
+))
+
+INCOME_CONTRACT = FrameContract('income', (
+    ColumnSpec(ROLE_TS_CODE, 'ts_code', True, '标的代码'),
+    ColumnSpec(ROLE_END_DATE, 'end_date', True, '报告期'),
+    ColumnSpec(ROLE_ANN_DATE, 'ann_date', True, '公告日（可见性 as-of 键）'),
+    ColumnSpec(ROLE_REVENUE, 'revenue', True, '营业收入（累计），ff_sales_yield'),
+    ColumnSpec(ROLE_PARENT_NET_PROFIT, 'parent_net_profit', True,
+               '归母净利润（累计），ff_value_ep'),
+))
+
+BALANCE_CONTRACT = FrameContract('balance', (
+    ColumnSpec(ROLE_TS_CODE, 'ts_code', True, '标的代码'),
+    ColumnSpec(ROLE_END_DATE, 'end_date', True, '报告期'),
+    ColumnSpec(ROLE_ANN_DATE, 'ann_date', True, '公告日（可见性 as-of 键）'),
+    ColumnSpec(ROLE_TOTAL_ASSETS, 'total_assets', True, '总资产，ff_investment 同比'),
+    ColumnSpec(ROLE_TOTAL_EQUITY, 'total_equity', True, '归母净资产，ff_value_bp'),
+))
+
+#: 财务层契约集合（按表名索引，供 ``validate_financial_frames`` 使用）
+FINANCIAL_CONTRACTS: Tuple[FrameContract, ...] = (
+    VALUATION_CONTRACT, SHARES_CONTRACT, INCOME_CONTRACT, BALANCE_CONTRACT,
+)
+
+#: 全部输入契约的唯一注册入口：帧名 → 契约。
+#: 这里只登记、不复制列定义——列的唯一真源仍是上面各 ``*_CONTRACT``；
+#: 新增一类输入必须同时登记到这里，否则 ``contract_for`` 取不到。
+ENGINE_CONTRACTS: Dict[str, FrameContract] = {
+    contract.name: contract
+    for contract in (BAR_CONTRACT, FACTOR_CONTRACT, *FINANCIAL_CONTRACTS)
+}
 
 _PRICE_ROLES = (ROLE_OPEN, ROLE_HIGH, ROLE_LOW, ROLE_CLOSE)
 _PAIR_ROLES = (ROLE_RAW_OPEN, ROLE_RAW_CLOSE)
+
+
+def contract_for(name: str) -> FrameContract:
+    """按帧名取契约（``ENGINE_CONTRACTS`` 是唯一查表入口）。"""
+    try:
+        return ENGINE_CONTRACTS[name]
+    except KeyError as exc:
+        raise KeyError(
+            f'未登记的输入契约 {name!r}；已登记 {sorted(ENGINE_CONTRACTS)}。'
+            '新增输入类型请先在 input_contract.py 定义契约并登记到 ENGINE_CONTRACTS'
+        ) from exc
 
 
 def describe_contracts() -> Dict[str, Dict[str, object]]:
@@ -199,7 +281,7 @@ def describe_contracts() -> Dict[str, Dict[str, object]]:
                 item.role: item.column for item in contract.columns if not item.required
             },
         }
-        for contract in ENGINE_CONTRACTS
+        for contract in ENGINE_CONTRACTS.values()
     }
 
 
@@ -246,18 +328,98 @@ def validate_universe(
     return resolved_by_code
 
 
-def validate_factor_frame(frame: pl.DataFrame, *, context: str = '') -> None:
-    """校验指标预计算后的因子列（策略读取前调用，缺列即抛错）。"""
-    resolved = FACTOR_CONTRACT.resolve_columns(frame.columns)
-    missing_values = [
-        role for role, column in resolved.items()
-        if role != ROLE_ATR and frame[column].is_not_null().sum() == 0
+#: 因子列全空判定的最短帧长：MACD 慢线为 26 日，短于该长度的帧里长周期
+#: 均线与 MACD 本来就可能全空（min_samples 未满），不能判为"预计算未生效"
+FACTOR_WARMUP_ROWS = 26
+
+
+def _ma_window(column: str) -> int | None:
+    """从 ``ma_{window}`` 列名解析窗口；非均线列返回 None。"""
+    if column.startswith('ma_') and column[3:].isdigit():
+        return int(column[3:])
+    return None
+
+
+def validate_factor_frame(
+    frame: pl.DataFrame,
+    *,
+    ma_columns: Sequence[str] = (),
+    context: str = '',
+) -> None:
+    """校验指标预计算后的因子列（策略读取前调用，缺列或整列全空即抛错）。
+
+    Args:
+        frame: ``_precompute_indicators`` 的产物；
+        ma_columns: 本次策略实际使用的均线列（如 ``ma_5`` / ``ma_20``），
+            替代契约里 ma_10 / ma_20 的默认窗口；其余必需列仍由
+            ``FACTOR_CONTRACT`` 声明，不存在第二份列清单；
+        context: 出错时前缀（策略名），便于定位是哪个策略的读取挂了。
+
+    为什么不能只查列存在：策略读到全 None 会恒返回 hold，回测静默空跑，
+    结果看起来正常但完全没有信号。因此列存在 + （帧长足以暖机时）非全空
+    两项都查。
+    """
+    default_ma_columns = {FACTOR_CONTRACT.column(ROLE_MA_SHORT),
+                          FACTOR_CONTRACT.column(ROLE_MA_LONG)}
+    required = [
+        spec.column for spec in FACTOR_CONTRACT.columns
+        if spec.required and not (ma_columns and spec.column in default_ma_columns)
     ]
-    if missing_values:
+    required.extend(ma_columns)
+
+    missing = [name for name in required if name not in frame.columns]
+    if missing:
         raise BacktestInputContractError(
-            f'{context} 因子列全为空：{missing_values}；'
-            '指标预计算未生效（策略会恒返回 hold，回测静默空跑）'
+            f'{context} 指标预计算缺少因子列 {missing}：'
+            '策略会读到 None 并恒返回 hold，回测将静默空跑'
         )
+
+    if frame.height < FACTOR_WARMUP_ROWS:
+        return
+
+    atr_column = FACTOR_CONTRACT.column(ROLE_ATR)
+    empty: list[str] = []
+    for name in required:
+        if name == atr_column:
+            continue
+        window = _ma_window(name)
+        if window is not None and frame.height < window:
+            continue
+        if frame[name].is_not_null().sum() == 0:
+            empty.append(name)
+    if empty:
+        raise BacktestInputContractError(
+            f'{context} 因子列全为空 {empty}：指标预计算未生效'
+            '（策略会恒返回 hold，回测静默空跑）'
+        )
+
+
+def validate_financial_frames(
+    frames: Mapping[str, pl.DataFrame], *, context: str = '',
+) -> Dict[str, Dict[str, str]]:
+    """校验财务/估值源表列契约，返回 {表名: {角色: 列名}}。
+
+    Args:
+        frames: 键必须是已登记的表名（valuation / shares / income / balance），
+            未登记的表名直接 ``KeyError``，避免"校验了但没校验到"；
+        context: 出错时前缀。
+
+    空帧允许通过（schema 齐全、确实没有数据由上层分支处理），缺列即抛
+    ``BacktestInputContractError``：否则 polars 会在 ``select`` 处抛
+    ``ColumnNotFoundError``，既看不出是哪张表的哪一列契约被破坏，也无法一次
+    报全所有缺失列。
+    """
+    resolved: Dict[str, Dict[str, str]] = {}
+    for name, frame in frames.items():
+        contract = contract_for(name)
+        if not isinstance(frame, pl.DataFrame):
+            raise BacktestInputContractError(
+                f'{context}{name} 不是 polars DataFrame（{type(frame).__name__}）')
+        try:
+            resolved[name] = contract.resolve_columns(frame.columns)
+        except BacktestInputContractError as exc:
+            raise BacktestInputContractError(f'{context}{exc}') from exc
+    return resolved
 
 
 # ---------------------------------------------------------------------------

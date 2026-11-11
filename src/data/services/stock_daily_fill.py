@@ -21,7 +21,6 @@ CLI 入口在 ``src/main.py``（``--sync-stock-daily``），可直接调用本�
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Sequence
 from datetime import date, datetime
 from pathlib import Path
@@ -30,6 +29,7 @@ from typing import Any
 from loguru import logger
 from sqlalchemy import func
 
+from src.data.atomic_write import write_text_atomic
 from src.data.index_daily_fill import build_missing_rows
 from src.data.services.tdx_online_source import TdxOnlineClient, TdxOnlineError
 from src.data.tdx_day_parser import read_first_last_trade_date, read_recent_records
@@ -141,11 +141,7 @@ def _load_progress(path: Path) -> dict[str, Any]:
 
 def _write_progress(path: Path, payload: dict[str, Any]) -> None:
     """原子写进度文件（tmp + replace）。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix('.json.tmp')
-    tmp.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
-    os.replace(tmp, path)
+    write_text_atomic(json.dumps(payload, ensure_ascii=False, indent=2), path)
 
 
 def _incremental_window(records: Sequence[dict[str, Any]],

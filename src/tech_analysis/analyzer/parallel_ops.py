@@ -10,6 +10,7 @@ import pandas as pd
 import polars as pl
 from loguru import logger
 
+from src.utils.dataframe_columns import resolve_date_column
 from src.utils.event_bus import EventType, publish
 from src.utils.frame_adapter import to_output, to_polars
 
@@ -27,8 +28,7 @@ from ..indicator_registry import global_indicator_registry
 def _load_breadth_for_frame(df: pl.DataFrame) -> pl.DataFrame | None:
     """按主帧日期范围加载本地 breadth 快照（含 10 个交易日预热）。"""
     try:
-        date_col = 'date' if 'date' in df.columns else (
-            'trade_date' if 'trade_date' in df.columns else None)
+        date_col = resolve_date_column(df.columns)
         if date_col is None or df.height == 0:
             return None
         from src.data.services.breadth_service import get_breadth

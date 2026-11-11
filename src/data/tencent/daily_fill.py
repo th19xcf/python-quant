@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-import os
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -30,6 +29,7 @@ from typing import Any, Iterable, Sequence, cast
 import polars as pl
 from loguru import logger
 
+from src.data.atomic_write import write_parquet_atomic
 from src.data.local_store.store import (
     _META_SCHEMA,
     STORE_VERSION,
@@ -166,10 +166,8 @@ def refresh_meta(store: LocalQuoteStore,
     if not rows:
         return 0
     frame = pl.DataFrame(rows, schema_overrides=_META_SCHEMA).sort(['data_type', 'ts_code'])
-    store.meta_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = store.meta_path.with_suffix('.parquet.tmp')
-    frame.write_parquet(tmp, compression='zstd', statistics=True)
-    os.replace(tmp, store.meta_path)
+    write_parquet_atomic(frame, store.meta_path, compression='zstd',
+                         statistics=True)
     return frame.height
 
 

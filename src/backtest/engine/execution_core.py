@@ -9,7 +9,9 @@
     单票 = 一个标的 + 全部初始资金
     组合 = 多标的 + 等权分配
 
-A 股交易语义只允许在本模块修改，禁止在具体引擎里再写一份：
+A 股交易语义只允许在本模块修改，禁止在具体引擎里再写一份
+（涨跌停幅度与可交易性判定已下沉到 ``src.risk.execution_rules``，
+本模块只调用，不再自带一份实现）：
 
     1. t 日收盘后生成的信号，延迟到 t+1 日以开盘价成交（避免未来函数）
     2. 买入股数按 lot_size（默认 100 股）整数倍向下取整
@@ -41,7 +43,6 @@ from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import ROUND_HALF_UP, Decimal
 from types import MappingProxyType
 from typing import Any, Dict, List, NamedTuple, Set, Tuple, TypedDict, TypeIs
 
@@ -56,6 +57,9 @@ from src.backtest.engine.corporate_actions import (
 )
 from src.backtest.engine.input_contract import (
     BAR_CONTRACT,
+    OUT_DATE,
+    OUT_SIDE,
+    OUT_TS_CODE,
     ROLE_ADV20,
     ROLE_ADV_VOLUME,
     ROLE_AMOUNT,
@@ -76,10 +80,15 @@ from src.backtest.engine.input_contract import (
     validate_universe,
 )
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
-from src.risk import DEFAULT_RISK_LIMITS
+from src.risk import (
+    DEFAULT_RISK_LIMITS,
+    MaxAdvParticipation,
+    MaxOrderVolumeRatio,
+    RiskEngine,
+)
 from src.risk import Order as RiskOrder
 from src.risk import Portfolio as RiskPortfolio
-from src.risk import MaxAdvParticipation, MaxOrderVolumeRatio, RiskEngine
+from src.risk.execution_rules import ExecutionRules, finite_float
 from src.risk.rules import DrawdownTracker
 
 
@@ -100,9 +109,6 @@ def adv_capacity_risk_engine() -> RiskEngine:
         MaxAdvParticipation(
             limits['max_adv_participation'], int(limits['adv_window'])),
     ])
-
-#: A 股最小价格变动单位（1 分），交易所涨跌停价的取整单位
-PRICE_TICK = Decimal('0.01')
 
 #: 现金/持仓记账的浮点容差（仅吸收乘加误差）
 CASH_EPS = 1e-6
@@ -166,21 +172,6 @@ def to_trade_date(value: Any) -> date | None:
     return None
 
 
-def _finite_float(value: Any) -> float | None:
-    """把行情值归一为有限 float；None / NaN / inf / 非数值一律返回 None。
-
-    回测数据可能混入 Decimal、字符串或 numpy 标量，直接参与比较或
-    math.isfinite 会抛 TypeError；统一在入口处归一，后续热路径只处理 float。
-    """
-    if value is None:
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
-
-
 @dataclass(frozen=True, slots=True)
 class SignalIntent:
     """一条归一化后的委托意图。
@@ -232,281 +223,6 @@ class SlippageInputs(TypedDict):
     adv20: float | None
     total_mv_yi: float | None
     category: str | None
-
-
-class ExecutionRules:
-    """A 股撮合规则：涨跌停幅度推导 + 当日可交易性判定。"""
-
-    #: ADV 窗口（交易日）：容量规则统一按 20 日均成交量估算
-    ADV_WINDOW = 20
-
-    #: 价格空间比较的浮点噪声容差（单位：元）。只用于吸收双精度乘法误差
-    #: （约 1e-14 量级），不是"允许多涨半个百分点"的业务容差——原实现在比率
-    #: 空间直接减 0.005，等于放大了 prev_close 倍，会把涨幅落在
-    #: [limit-0.5%, limit) 的开盘价系统性误判为封板不可成交。
-    PRICE_EPS = 1e-9
-
-    #: ST/*ST 及"ST 状态未知"时的涨跌停幅度
-    ST_LIMIT_PCT = 0.05
-
-    #: 无法从证券代码推导时的兜底涨跌停幅度（主板默认）
-    DEFAULT_LIMIT_PCT = 0.10
-
-    #: 创业板注册制改革正式实施日：此前创业板涨跌停幅度为 10%，当日起放宽为 20%。
-    #: 历史回测必须按交易日落到改革前后分别取阈值，否则改革前固定用 20% 会把
-    #: 实际已封板（>+10%）的开盘价误判为可成交，系统性虚增收益。
-    CHINEXT_REG_DATE = date(2020, 8, 24)
-
-    #: 显式代码段表：(代码前缀元组, 涨跌停幅度, 板块名)，按顺序匹配、最长前缀优先。
-    #: 900/200 沪深的 B 股必须显式列出为 10%——否则 900xxx 会被更早的北交所
-    #: 判定吞掉，30% 阈值等于取消 B 股的涨跌停约束。
-    BOARD_RULES = (
-        (('688', '689'), 0.20, 'STAR'),        # 科创板（689 为 CDR 段）
-        (('300', '301'), 0.20, 'CHINEXT'),     # 创业板：注册制后 20%，改革前需按 trade_date 回退 10%
-        (('900',), 0.10, 'SH_B'),              # 沪市 B 股
-        (('200',), 0.10, 'SZ_B'),              # 深市 B 股
-    )
-
-    #: 无交易所后缀时的北交所号段兜底。不再使用 '4'/'8'/'9' 宽泛前缀：
-    #: '9' 会误伤 900xxx 沪市 B 股，'8'/'4' 会误伤新三板/老三板代码。
-    #: 920 为北交所新号段（如 920001.BJ），代码段会随时间新增，后缀判定更可靠。
-    BJ_PREFIXES = ('83', '87', '88', '920')
-
-    def __init__(self, lot_size: int = 100):
-        self.lot_size = lot_size
-
-    @staticmethod
-    def _resolve_board_limit_pct(ts_code: str, trade_date: date | None) -> float:
-        """按证券代码与交易日推导该板块常规（非 ST）涨跌停幅度。
-
-        统一以 ts_code 为唯一标识符（A22：不再同时接收 code 与 ts_code），
-        代码段由 ts_code 内部派生。
-
-        判定顺序固定：北交所 → 创业板（含注册制改革日切换）→ BOARD_RULES
-        显式号段（科创板 / B 股）→ 主板兜底。
-        """
-        ts_code = (ts_code or '').strip().upper()
-        code = ts_code.split('.')[0]
-        if not code:
-            return ExecutionRules.DEFAULT_LIMIT_PCT
-
-        # 北交所：交易所后缀最可靠（代码段会新增），无后缀时用显式号段兜底
-        if ts_code.endswith('.BJ'):
-            return 0.30
-        if code.startswith(ExecutionRules.BJ_PREFIXES):
-            return 0.30
-
-        # 创业板注册制改革前按 10%，改革日及之后按 20%
-        if code.startswith(('300', '301')):
-            if trade_date is not None and trade_date < ExecutionRules.CHINEXT_REG_DATE:
-                return 0.10
-            return 0.20
-
-        for prefixes, pct, _board in ExecutionRules.BOARD_RULES:
-            if code.startswith(prefixes):
-                return pct
-
-        return ExecutionRules.DEFAULT_LIMIT_PCT
-
-    @staticmethod
-    def resolve_limit_pct(ts_code: str = '', is_st: bool | None = None,
-                          trade_date: date | None = None,
-                          listing_date: date | None = None) -> float:
-        """
-        按交易日 → 板块常规幅度 → ST 状态的顺序推导涨跌停幅度（唯一真源）。
-
-        规则（判断顺序：交易日期 → 板块及当时有效制度 → ST 状态）：
-        - 先按代码与交易日推导板块常规幅度：主板 10%、科创板 20%、
-          创业板改革前（< 2020-08-24）10% / 改革日起 20%、北交所 30%、
-          沪深 B 股 10%；
-        - 再叠加 ST 状态：只有常规幅度为 10% 的板块（主板、B 股、改革前
-          创业板）的 ST 股票才收窄到 5%；常规幅度为 20%/30% 的板块（改革后
-          创业板、科创板、北交所）其风险警示股票涨跌幅与正常股票一致，不另
-          设 5%——这与 A 股现行风险警示规则一致；
-        - ``is_st=None``（数据层未提供 ST 标识）按板块常规幅度判定，未知状态
-          只体现为结果里的 st_unknown=True / fill_confidence=low，不改变成交
-          判定本身。
-
-        ``listing_date`` 预留用于新股上市首日不限涨跌幅的判定，当前数据层未
-        提供，暂未启用；参数先固化以便未来接入 (code, listing_date) 维表时无需
-        改动签名。
-        """
-        ts_code = (ts_code or '').strip().upper()
-        if not ts_code.split('.')[0]:
-            return ExecutionRules.DEFAULT_LIMIT_PCT
-
-        regular = ExecutionRules._resolve_board_limit_pct(ts_code, trade_date)
-
-        # 仅常规幅度为 10% 的板块，ST 才收窄到 5%；
-        # 20%/30% 板块（改革后创业板、科创板、北交所）的 ST 股票与普通股同幅度
-        if is_st and regular == 0.10:
-            return ExecutionRules.ST_LIMIT_PCT
-        return regular
-
-    @staticmethod
-    def resolve_sector(ts_code: str = '', is_st: bool | None = None,
-                       trade_date: date | None = None) -> str:
-        """
-        推导风控侧板块标签（Order.sector 取值），与 resolve_limit_pct 同源。
-
-        PriceLimitTradable 按 sector 查涨跌停档位，因此标签必须满足：
-        ``PriceLimitTradable.DEFAULT_LIMITS[sector] == resolve_limit_pct(...)``。
-        只有常规幅度为 10% 的板块（主板 / B 股 / 改革前创业板）的 ST 股票
-        才映射为 'ST'（5%），20%/30% 板块的 ST 与普通股同档，沿用板块标签。
-
-        无法识别的代码统一按主板（10%）——与 resolve_limit_pct 的兜底一致。
-        """
-        ts_code = (ts_code or '').strip().upper()
-        code = ts_code.split('.')[0]
-        if not code:
-            return '主板'
-
-        regular = ExecutionRules._resolve_board_limit_pct(ts_code, trade_date)
-        if is_st and regular == ExecutionRules.DEFAULT_LIMIT_PCT:
-            return 'ST'
-
-        if ts_code.endswith('.BJ') or code.startswith(ExecutionRules.BJ_PREFIXES):
-            return '北交所'
-        for prefixes, _pct, board in ExecutionRules.BOARD_RULES:
-            if code.startswith(prefixes):
-                if board == 'STAR':
-                    return '科创板'
-                if board == 'CHINEXT':
-                    # 注册制改革前的创业板常规幅度为 10%，按主板档位审查
-                    return '创业板' if regular == 0.20 else '主板'
-                # B 股（SH_B / SZ_B）在风控侧按主板 10% 口径
-                return '主板'
-        return '主板'
-
-    @staticmethod
-    def resolve_limit_price(prev_close: float, limit: float, side: str) -> float:
-        """按交易所规则计算涨跌停价：round(prev_close × (1±limit), 2)（四舍五入到分）。
-
-        两个关键点：
-
-        - 先转 Decimal 再相乘。二进制浮点下 10.03×1.1 = 11.033000000000001，
-          10.05×1.1 = 11.054999999999998，直接用浮点乘积再 round 会在 .005
-          边界上少取一分（算出 11.05，交易所公布 11.06），一字板因此被误判
-          可成交、系统性虚增收益；
-        - 用 ROUND_HALF_UP 而非内置 round()（银行家舍入，.5 向偶数靠拢），
-          与交易所"四舍五入"口径一致。
-
-        Args:
-            prev_close: 前收盘价（原始价，非复权价）
-            limit: 涨跌停幅度（如 0.10 / 0.20）
-            side: 'buy' 取涨停价，'sell' 取跌停价
-        """
-        base = Decimal(str(prev_close))
-        pct = Decimal(str(limit))
-        factor = Decimal('1') + pct if side == 'buy' else Decimal('1') - pct
-        return float((base * factor).quantize(PRICE_TICK, rounding=ROUND_HALF_UP))
-
-    def is_tradable(self, side: str, *, prev_close: float | None, open_price: float | None,
-                    high: float | None, low: float | None, close: float | None,
-                    volume: float | None, ts_code: str = '',
-                    is_st: bool | None = None,
-                    trade_date: date | None = None) -> bool:
-        """
-        指定交易方向在某一天是否可成交。
-
-        - 停牌（成交量为 0 / NaN / inf / 非数值）一律不可交易
-        - 有开盘价时：开盘即涨停不可买、开盘即跌停不可卖
-          （覆盖一字板 + 开盘封板后盘中打开两种情形）
-        - 无开盘价时退化为 high ≈ low（相对容差）的一字板判断，
-          此时只做 close 涨跌停判定（偏乐观），调用侧应确保 open 列存在
-        - 首根 K 线没有前收盘价，只做停牌判断
-        - is_st=True 时，常规幅度为 10% 的板块（主板、B 股、改革前创业板）
-          收窄为 5%，20%/30% 板块（改革后创业板、科创板、北交所）与普通股
-          同幅度；None（数据层无标记）与 False 都按板块规则（见
-          resolve_limit_pct），未知状态只由结果的
-          st_unknown / fill_confidence 标记，不再改变成交判定本身
-
-        判定逻辑只在 ``block_reason`` 里实现一份，本方法为其布尔投影，
-        保证「可成交判定」与「作废原因统计」不会出现两套口径。
-        """
-        return self.block_reason(
-            side, prev_close=prev_close, open_price=open_price, high=high,
-            low=low, close=close, volume=volume, ts_code=ts_code,
-            is_st=is_st, trade_date=trade_date,
-        ) is None
-
-    def block_reason(self, side: str, *, prev_close: float | None,
-                     open_price: float | None, high: float | None,
-                     low: float | None, close: float | None,
-                     volume: float | None, ts_code: str = '',
-                     is_st: bool | None = None,
-                     trade_date: date | None = None) -> str | None:
-        """不可成交的具体原因：'suspended' / 'limit_up' / 'limit_down' / None。
-
-        「因跌停卖不出」要让 ``expired_orders`` 可统计，必须区分跌停与停牌；
-        原因由与 ``is_tradable`` 完全相同的分支产生，不新增任何判定规则。
-        """
-        # 缺陷 A 修复：NaN / inf 穿过停牌检查，显式拦截
-        if self._is_suspended(volume):
-            return 'suspended'
-
-        prev = _finite_float(prev_close)
-        if prev is None or prev <= 0:
-            return None
-
-        limit = self.resolve_limit_pct(ts_code, is_st, trade_date=trade_date)
-        blocked = 'limit_up' if side == 'buy' else 'limit_down'
-
-        open_number = _finite_float(open_price)
-        if open_number is not None:
-            # 价格空间比较：涨跌停价 = round(prev_close × (1±limit), 2) 后直接比较。
-            # 原写法 (open_pct >= limit - 0.005) 的容差被放大 prev_close 倍，
-            # 3 元股等价于允许 1.5% 偏差、200 元股允许 0.25% 偏差，
-            # 结果是把 [limit-0.5%, limit) 的正常开盘价误当成封板双向拒绝。
-            if self._limit_breached(
-                    side, price=open_number, prev_close=prev, limit=limit):
-                return blocked
-            return None
-
-        # 缺陷 B 修复：复权后 high / low 可能相差 1e-16，改用相对容差
-        # 缺陷 C 修复：open_price 缺失时只退化到此分支，偏乐观
-        if self._is_one_line_board_locked(
-                side, high=high, low=low, close=close,
-                prev_close=prev, limit=limit):
-            return blocked
-        return None
-
-    @staticmethod
-    def _is_suspended(volume: float | None) -> bool:
-        """成交量为 None / NaN / inf / 非数值 / ≤0 视为停牌，不可交易。"""
-        number = _finite_float(volume)
-        return number is None or number <= 0
-
-    def _limit_breached(self, side: str, *, price: float,
-                        prev_close: float, limit: float) -> bool:
-        """该方向在给定价格是否已触及涨跌停：buy 触涨停、sell 触跌停。
-
-        涨跌停价必须按交易所规则取整到分（见 resolve_limit_price），
-        直接比较浮点乘积会把一字板误判为可成交。
-        """
-        if side == 'buy':
-            return price >= self.resolve_limit_price(prev_close, limit, 'buy') - self.PRICE_EPS
-        if side == 'sell':
-            return price <= self.resolve_limit_price(prev_close, limit, 'sell') + self.PRICE_EPS
-        return False
-
-    def _is_one_line_board_locked(
-        self, side: str, *, high: float | None, low: float | None,
-        close: float | None, prev_close: float, limit: float,
-    ) -> bool:
-        """无有效开盘价时的退化判定：high≈low（相对容差）且 close 已触板。
-
-        high / low / close 任一缺失或非数值时不做封板判定（视为可交易）。
-        """
-        high_number = _finite_float(high)
-        low_number = _finite_float(low)
-        close_number = _finite_float(close)
-        if high_number is None or low_number is None or close_number is None:
-            return False
-        if abs(high_number - low_number) / prev_close >= 1e-6:
-            return False
-        return self._limit_breached(side, price=close_number,
-                                    prev_close=prev_close, limit=limit)
 
 
 class AccountBook:
@@ -568,7 +284,7 @@ class AccountBook:
 
     def mark(self, code: str, price: float | None) -> None:
         """更新盯市价（收盘后调用），同时维护增量权益。"""
-        number = _finite_float(price)
+        number = finite_float(price)
         if number is None or number <= 0:
             return
         old = self.last_prices.get(code)
@@ -652,7 +368,7 @@ class AccountBook:
         position = self.position(code)
         baseline = self.last_prices.get(code)
         record: Dict[str, Any] = {
-            'ts_code': code,
+            OUT_TS_CODE: code,
             'shares_before': position,
             'cash_per_share': cash_per_share,
             'share_ratio': share_ratio,
@@ -831,9 +547,9 @@ class RiskGate:
 
         _, rule_name, reason = gate.rejected[0]
         return {
-            'date': trade_date,
-            'side': side,
-            'ts_code': ts_code,
+            OUT_DATE: trade_date,
+            OUT_SIDE: side,
+            OUT_TS_CODE: ts_code,
             'qty': qty,
             'price': price,
             'rule': rule_name,
@@ -1444,7 +1160,7 @@ class EventBacktestRunner:
                 continue
 
             strategy_name = getattr(strategy, 'name', None) or type(strategy).__name__
-            slow_path_strategies.append({'ts_code': code, 'strategy': strategy_name})
+            slow_path_strategies.append({OUT_TS_CODE: code, 'strategy': strategy_name})
             if vec is not None:
                 # BaseStrategy 的逐行兜底实现，语义等价于下方的鸭子类型适配
                 signal_columns[code] = vec(prepared[code]).to_list()
@@ -1518,7 +1234,7 @@ class EventBacktestRunner:
                 f"组合级策略 {name} 缺少 generate_signals_vectorized 或 generate_signal"
             )
 
-        slow_path_strategies.append({'ts_code': '__portfolio__', 'strategy': name})
+        slow_path_strategies.append({OUT_TS_CODE: '__portfolio__', 'strategy': name})
         heights = {
             code: self._height(column_data[code],
                                self.input_contract.column(ROLE_DATE))
@@ -1628,13 +1344,13 @@ class EventBacktestRunner:
         if action not in ('buy', 'sell'):
             return None
 
-        fraction = _finite_float(signal.get('fraction', 1.0))
+        fraction = finite_float(signal.get('fraction', 1.0))
         if fraction is None or not 0 < fraction <= 1:
             raise ValueError(f"信号 fraction 必须在 (0, 1]，实际 {signal.get('fraction')!r}")
 
         target = signal.get('target_weight')
         if target is not None:
-            target = _finite_float(target)
+            target = finite_float(target)
             if target is None or not 0 <= target <= 1:
                 raise ValueError(
                     f"信号 target_weight 必须在 [0, 1]，实际 {signal.get('target_weight')!r}"
@@ -1678,13 +1394,13 @@ class EventBacktestRunner:
         position = ctx.book.position(code)
         if intent.action == 'buy' and position > 0 and not intent.explicit:
             ctx.filtered_signals.append({
-                'date': date, 'ts_code': code, 'side': 'buy',
+                OUT_DATE: date, OUT_TS_CODE: code, OUT_SIDE: 'buy',
                 'reason': 'already_holding', 'qty': 0,
             })
             return
         if intent.action == 'sell' and position == 0:
             ctx.filtered_signals.append({
-                'date': date, 'ts_code': code, 'side': 'sell',
+                OUT_DATE: date, OUT_TS_CODE: code, OUT_SIDE: 'sell',
                 'reason': 'no_position', 'qty': 0,
             })
             return
@@ -1692,7 +1408,7 @@ class EventBacktestRunner:
         old = ctx.pending.get(code)
         if old is not None and old != intent:
             ctx.overwritten_orders.append({
-                'date': date, 'side': old.action, 'ts_code': code,
+                OUT_DATE: date, OUT_SIDE: old.action, OUT_TS_CODE: code,
                 'reason': 'overwritten', 'qty': 0,
                 'replaced_by': intent.action,
             })
@@ -1784,7 +1500,7 @@ class EventBacktestRunner:
                 tax_rate=ctx.dividend_tax_rate,
                 rights_policy=ctx.rights_policy,
             )
-            record.update({'date': trade_day, 'ex_date': event.ex_date})
+            record.update({OUT_DATE: trade_day, 'ex_date': event.ex_date})
             ctx.corporate_action_log.append(record)
 
     def _run_trading_loop(
@@ -1835,19 +1551,19 @@ class EventBacktestRunner:
                  adv_col, adv20_col, mv_yi_col, category_col) = bar_columns[code]
                 # A24：行情值统一归一到有限 float，字符串/Decimal/NaN/inf 不再
                 # 在后续比较或费用计算中抛 TypeError
-                close_price = _finite_float(close_col[pos])
+                close_price = finite_float(close_col[pos])
                 # open 是契约必需列，不再有「缺列回填 close」的降级路径；
                 # 值缺失（如除权日）保留 None，由 price_missing 显式作废
-                open_price = _finite_float(open_col[pos])
-                high = _finite_float(high_col[pos]) if high_col is not None else None
-                low = _finite_float(low_col[pos]) if low_col is not None else None
-                volume = _finite_float(volume_col[pos]) if volume_col is not None else None
+                open_price = finite_float(open_col[pos])
+                high = finite_float(high_col[pos]) if high_col is not None else None
+                low = finite_float(low_col[pos]) if low_col is not None else None
+                volume = finite_float(volume_col[pos]) if volume_col is not None else None
                 adv_volume = (
-                    _finite_float(adv_col[pos]) if adv_col is not None else None)
+                    finite_float(adv_col[pos]) if adv_col is not None else None)
                 raw_open = (
-                    _finite_float(raw_open_col[pos]) if raw_open_col is not None else None)
+                    finite_float(raw_open_col[pos]) if raw_open_col is not None else None)
                 raw_close = (
-                    _finite_float(raw_close_col[pos]) if raw_close_col is not None else None)
+                    finite_float(raw_close_col[pos]) if raw_close_col is not None else None)
 
                 # 区间模式走预排序 + 二分（A11）；静态三态与重叠区间走原线性路径。
                 # 无区间表时热路径只多一次 bool 判断，不增加 dict 查找。
@@ -1875,9 +1591,9 @@ class EventBacktestRunner:
                         adv_volume=adv_volume,
                         # 分档输入只在真正要撮合的 bar 上求值；列不存在时
                         # 整段开销为 0，避免给无分档数据的回测增加热路径负担
-                        adv20=(_finite_float(adv20_col[pos])
+                        adv20=(finite_float(adv20_col[pos])
                                if adv20_col is not None else None),
-                        total_mv_yi=(_finite_float(mv_yi_col[pos])
+                        total_mv_yi=(finite_float(mv_yi_col[pos])
                                      if mv_yi_col is not None else None),
                         category=(category_col[pos]
                                   if category_col is not None else None),
@@ -1905,7 +1621,7 @@ class EventBacktestRunner:
                 ctx.book.mark(code, raw_close if raw_close is not None else close_price)
 
             # A10：total_equity 改为增量维护，O(1)
-            ctx.equity_curve.append({'date': trade_day, 'equity': ctx.book.total_equity()})
+            ctx.equity_curve.append({OUT_DATE: trade_day, 'equity': ctx.book.total_equity()})
 
         return st_unknown_seen, ctx.st_unknown_bars
 
@@ -1986,7 +1702,7 @@ class EventBacktestRunner:
             'st_unknown': st_unknown,
             # A14：逐条 (标的, 日期) 审计记录，替代单一全局 bool 的信息丢失
             'st_unknown_bars': [
-                {'ts_code': code, 'date': day} for code, day in st_unknown_bars
+                {OUT_TS_CODE: code, OUT_DATE: day} for code, day in st_unknown_bars
             ],
             # 除权除息逐笔记账日志：现金分红、送转股数、配股认购/放弃，
             # 未传事件表时为空列表（与修复前结果结构保持兼容）
@@ -2117,7 +1833,7 @@ class EventBacktestRunner:
 
         blocked_days = ctx.blocked_days.get(code, 0) + 1
         ctx.blocked_orders.append({
-            'date': date, 'side': 'sell', 'ts_code': code,
+            OUT_DATE: date, OUT_SIDE: 'sell', OUT_TS_CODE: code,
             'reason': 'sell_locked', 'blocked_by': detail,
             'blocked_days': blocked_days,
             'fill_confidence': order_confidence,
@@ -2175,7 +1891,7 @@ class EventBacktestRunner:
         价格（涨跌停/成交价计算都要求有限正数），避免下游为通过类型检查再做
         多余判空；运行时仍是同一布尔判定，行为不变。
         """
-        number = _finite_float(price)
+        number = finite_float(price)
         return number is not None and number > 0
 
     @staticmethod
@@ -2190,7 +1906,7 @@ class EventBacktestRunner:
         导致作废时写入，供 ``expired_reason_counts`` 之外再做原因归因。
         """
         record = {
-            'date': date, 'side': side, 'ts_code': code,
+            OUT_DATE: date, OUT_SIDE: side, OUT_TS_CODE: code,
             'reason': reason, 'qty': qty,
             'fill_confidence': fill_confidence,
         }
@@ -2334,7 +2050,7 @@ class EventBacktestRunner:
             )
             return
         ctx.trades.append({
-            'date': date,
+            OUT_DATE: date,
             'stock_code': code,
             'signal': 'buy',
             'price': exec_price,
@@ -2400,7 +2116,7 @@ class EventBacktestRunner:
             )
             return
         ctx.trades.append({
-            'date': date,
+            OUT_DATE: date,
             'stock_code': code,
             'signal': 'sell',
             'price': exec_price,

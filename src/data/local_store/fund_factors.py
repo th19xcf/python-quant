@@ -48,7 +48,6 @@ from __future__ import annotations
 import argparse
 import bisect
 import json
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
@@ -59,6 +58,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.adj_factor_calculator import AdjFactorCalculator
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.local_store.store import (
     LocalFactorStore,
     LocalQuoteStore,
@@ -203,9 +203,7 @@ def fetch_dividend_events(
         if raw is None or len(raw) == 0:
             continue
         frame = pl.from_pandas(raw)
-        tmp = cache_path.with_suffix('.parquet.tmp')
-        frame.write_parquet(tmp)
-        os.replace(tmp, cache_path)
+        write_parquet_atomic(frame, cache_path)
         frames.append(frame)
 
     if not frames:
@@ -273,9 +271,7 @@ def fetch_share_change_events(
                     logger.info(
                         f'[fund] 份额折算进度 {index}/{len(pending)}，'
                         f'已用 {time.perf_counter() - started:.1f}s')
-        tmp = path.with_suffix('.json.tmp')
-        tmp.write_text(json.dumps(cache, ensure_ascii=False), encoding='utf-8')
-        os.replace(tmp, path)
+        write_text_atomic(json.dumps(cache, ensure_ascii=False), path)
 
     fetched_at = datetime.now()
     records: list[dict[str, Any]] = []
@@ -470,12 +466,9 @@ def rebuild_fund_factors(
 
     merged = pl.concat(frames, how='vertical_relaxed').sort(['ts_code', 'trade_date'])
     target = root / 'factors' / FUND_FACTOR_FILENAME
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix('.parquet.tmp')
-    merged.write_parquet(
-        tmp, compression='zstd', compression_level=3,
+    write_parquet_atomic(
+        merged, target, compression='zstd', compression_level=3,
         statistics=True, row_group_size=100_000)
-    os.replace(tmp, target)
 
     covered = sorted({str(code) for code in merged['ts_code'].unique().to_list()})
     sidecar = root / 'factors' / FUND_COVERED_SIDECAR
@@ -511,9 +504,7 @@ def rebuild_fund_factors(
         },
     }
     meta_path = root / 'factors' / FUND_META_FILENAME
-    tmp_meta = meta_path.with_suffix('.json.tmp')
-    tmp_meta.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
-    os.replace(tmp_meta, meta_path)
+    write_text_atomic(json.dumps(meta, ensure_ascii=False, indent=2), meta_path)
     logger.info(
         f'[fund] 因子重建完成：{len(covered)} 只 / {merged.height:,} 行，'
         f'耗时 {meta["elapsed_s"]}s')
@@ -592,10 +583,8 @@ def build_fund_store(
         (share_changes, FUND_SHARE_CHANGE_FILENAME, SHARE_CHANGE_COLUMNS),
     ):
         path = root / 'factors' / name
-        tmp = path.with_suffix('.parquet.tmp')
-        frame.select(columns).write_parquet(
-            tmp, compression='zstd', statistics=True)
-        os.replace(tmp, path)
+        write_parquet_atomic(
+            frame.select(columns), path, compression='zstd', statistics=True)
         if not frame.is_empty():
             log_root.mkdir(parents=True, exist_ok=True)
             frame.select(columns).write_csv(log_root / f'{path.stem}_new.csv')

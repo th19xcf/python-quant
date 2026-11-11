@@ -20,7 +20,6 @@ from __future__ import annotations
 import csv
 import json
 import math
-import os
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -35,6 +34,7 @@ import polars as pl
 import requests
 from loguru import logger
 
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.financials import store
 
 EM_DATACENTER_URL = 'https://datacenter-web.eastmoney.com/api/data/v1/get'
@@ -204,11 +204,9 @@ class FinancialsCollector:
         with self._progress_lock:
             payload = dict(self._progress)
             payload['updated_at'] = datetime.now().isoformat(timespec='seconds')
-            self.base_dir.mkdir(parents=True, exist_ok=True)
-            tmp = self.progress_path.with_suffix('.json.tmp')
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                           encoding='utf-8')
-            os.replace(tmp, self.progress_path)
+            write_text_atomic(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                self.progress_path)
 
     def _mark_done(self, section: str, key: str, sub: str | None = None) -> None:
         """只更新内存进度；落盘由调用方按批触发，避免每票写 JSON。"""
@@ -338,10 +336,7 @@ class FinancialsCollector:
         })
         frame = frame.filter(pl.col('symbol') != '').unique(
             subset=['symbol'], keep='last').sort('symbol')
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + '.tmp')
-        frame.write_parquet(tmp, compression='zstd', statistics=True)
-        os.replace(tmp, path)
+        write_parquet_atomic(frame, path, compression='zstd', statistics=True)
         self._mark_done('ann_dates', period_end.strftime('%Y%m%d'))
         self._save_progress()
         logger.info(f'[financials] 公告日映射 {period}: {frame.height:,} 只')
@@ -623,9 +618,7 @@ class FinancialsCollector:
             frame = pl.concat(buffer, how='vertical_relaxed')
             batch_no += 1
             path = batch_dir / f'{prefix}{batch_no:04d}.parquet'
-            tmp = path.with_name(path.name + '.tmp')
-            frame.write_parquet(tmp, compression='zstd', statistics=True)
-            os.replace(tmp, path)
+            write_parquet_atomic(frame, path, compression='zstd', statistics=True)
             logger.info(f'[financials] 估值分片 {path.name}: {frame.height:,} 行')
             buffer = []
             self._save_progress()
@@ -656,10 +649,7 @@ class FinancialsCollector:
         """原子写分片（自动对齐 schema；空帧也落盘以标记完成）。"""
         aligned = store.coerce_schema(frame, table.split('_')[0])
         path = self._part_path(table, name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + '.tmp')
-        aligned.write_parquet(tmp, compression='zstd', statistics=True)
-        os.replace(tmp, path)
+        write_parquet_atomic(aligned, path, compression='zstd', statistics=True)
 
     def _load_dividends(self) -> dict[str, pl.DataFrame] | None:
         """读取本地分红快照，用于计算股息率（只读，不修改该文件）。

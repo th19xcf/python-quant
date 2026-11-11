@@ -92,14 +92,15 @@ def test_generate_exec_status_tracks_generated_at(tmp_path):
     assert expired.summary()['exec_status'] == 'expired'
 
 
-def test_limit_up_candidate_becomes_avoid(tmp_path, monkeypatch):
+def test_limit_up_candidate_kept_and_marked(tmp_path, monkeypatch):
+    """T 日涨停不再拦成 AVOID：条目保留为 BUY，并带 limit_up_risk 标注。"""
     monkeypatch.setattr(pipeline_module, 'run_ic_monitor', _no_gate_monitor)
     codes = _codes()
     root = build_store(tmp_path / 'local_store', codes,
                        end=date(2026, 6, 30), days=320)
     # 当前口径动量类因子 direction=-1（动量越低分越高）。合成数据里涨停标的
     # 若走默认上涨趋势会排到最差分位、进不了候选池；改成"下跌趋势 + 最后一日
-    # 涨停"，让它成为最低动量 → 最高分位，才能真正验证"涨停候选 → AVOID"。
+    # 涨停"，让它成为最低动量 → 最高分位，才能真正验证"涨停仍保留 + 标注"。
     write_stock(root, codes[-1],
                 business_dates(date(2026, 6, 30), 320),
                 base=8.0, trend=-0.02, limit_up_last=True)
@@ -109,9 +110,13 @@ def test_limit_up_candidate_becomes_avoid(tmp_path, monkeypatch):
                              state_dir=tmp_path / 'state',
                              persist_state=False)
     frame = result.to_frame()
-    avoids = frame.filter(frame['direction'] == 'AVOID')
-    assert avoids.height >= 1
-    assert any('涨停' in text for text in avoids['risk_notes'].to_list())
+    rows = frame.filter(frame['ts_code'] == codes[-1])
+    assert rows.height >= 1
+    assert rows['direction'][0] == DIRECTION_BUY
+    assert bool(rows['limit_up_risk'][0]) is True
+    assert '涨停价' in rows['limit_up_basis'][0]
+    assert any('次日可能买不进' in text for text in rows['risk_notes'].to_list())
+    assert frame.filter(frame['direction'] == DIRECTION_AVOID).height == 0
 
 
 def test_state_persisted_and_held_next_run(tmp_path):

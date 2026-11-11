@@ -227,11 +227,7 @@ def _write_fund_etf_cache(codes: set[str], path: Path | None = None) -> None:
     """原子写入 ETF 名单缓存；写失败只告警，不阻断回测。"""
     target = path or FUND_ETF_CODES_CACHE
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(target.name + '.tmp')
-        with open(tmp, 'w', encoding='utf-8', newline='\n') as fh:
-            fh.write('\n'.join(sorted(codes)) + '\n')
-        os.replace(tmp, target)
+        write_text_atomic('\n'.join(sorted(codes)) + '\n', target)
     except OSError as exc:
         logger.warning(f'[clean_set] ETF 名单缓存写入失败: {exc}')
 
@@ -588,8 +584,13 @@ class EligibilityEngine:
         self.calendar_ord = np.array([d.toordinal() for d in self.calendar], dtype=np.int64)
 
     def _load_quote_stats(self) -> None:
-        glob = str(self.root / 'quotes' / '**' / '*.parquet')
-        scan = pl.scan_parquet(glob).select(
+        # 只扫洁净集覆盖的三类资产：quotes/futures 用交易所原生列名
+        # （trade_date / vol），混进通配会在 schema 合并阶段直接报错。
+        globs = [
+            str(self.root / 'quotes' / data_type / '**' / '*.parquet')
+            for data_type in DATA_TYPES
+        ]
+        scan = pl.scan_parquet(globs).select(
             ['ts_code', 'date', 'open', 'high', 'low', 'close', 'volume']
         )
         null_any = (

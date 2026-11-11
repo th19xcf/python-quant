@@ -58,6 +58,7 @@ from typing import Any, Iterable
 import polars as pl
 from loguru import logger
 
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.local_store.paths import default_store_root
 from src.data.sources import baostock_schema as schema
 from src.utils.code_converter import to_baostock_code
@@ -295,24 +296,6 @@ def _canonical_code(ts_code: str) -> str:
         return str(ts_code)
 
 
-def attach_turnover(frame: pl.DataFrame, ts_code: str,
-                    root: Path | str | None = None) -> pl.DataFrame:
-    """把真实换手率按日期左连接到行情帧（列名 ``turn``）。
-
-    兼容旧调用：帧内有 ``volume`` 时走分级来源（股本反算优先），
-    否则退化为只读已落库 baostock turn。
-    """
-    if frame.is_empty() or 'date' not in frame.columns:
-        return frame
-    if 'volume' in frame.columns:
-        return attach_turn(frame, ts_code, root).collect()
-    turn = read_turnover(ts_code, root)
-    if turn is None or turn.is_empty():
-        return frame
-    return frame.join(
-        turn.rename({'trade_date': 'date'}), on='date', how='left')
-
-
 # ----------------------------------------------------------------------
 # 上游拉取（进程内）
 # ----------------------------------------------------------------------
@@ -477,18 +460,13 @@ def _parts_dir(root: Path) -> Path:
 
 
 def _write_part(path: Path, frame: pl.DataFrame) -> None:
-    tmp = path.with_suffix('.parquet.tmp')
-    frame.write_parquet(
-        tmp, compression='zstd', compression_level=3,
+    write_parquet_atomic(
+        frame, path, compression='zstd', compression_level=3,
         statistics=True, row_group_size=100_000)
-    os.replace(tmp, path)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix('.json.tmp')
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
-    os.replace(tmp, path)
+    write_text_atomic(json.dumps(payload, ensure_ascii=False, indent=2), path)
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -502,26 +480,20 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 def _write_progress_csv(path: Path, rows: dict[str, str], failed: list[dict[str, Any]]) -> None:
     """每批刷新进度：已完成票的最新日期 + 失败清单。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
     lines = ['code,last_date']
     lines += [f'{code},{last}' for code, last in sorted(rows.items())]
-    tmp = path.with_suffix('.csv.tmp')
-    tmp.write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')
-    os.replace(tmp, path)
+    write_text_atomic('\n'.join(lines) + '\n', path)
     _write_failed_csv(path.with_name('failed.csv'), failed)
 
 
 def _write_failed_csv(path: Path, failed: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     lines = ['code,start,end,error,retries_used']
     lines += [
         f'{item["code"]},{item.get("start", "")},{item.get("end", "")},'
         f'"{str(item.get("error", "")).replace(chr(34), chr(39))}",{item.get("retries_used", 0)}'
         for item in failed
     ]
-    tmp = path.with_suffix('.csv.tmp')
-    tmp.write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')
-    os.replace(tmp, path)
+    write_text_atomic('\n'.join(lines) + '\n', path)
 
 
 def _assemble(parts: list[Path], target: Path, touched: set[str]) -> int | None:
@@ -549,11 +521,9 @@ def _assemble(parts: list[Path], target: Path, touched: set[str]) -> int | None:
         source = new_lazy
     source = source.sort(['ts_code', 'trade_date'])
 
-    tmp = target.with_suffix('.parquet.tmp')
-    source.sink_parquet(
-        str(tmp), compression='zstd', compression_level=3,
+    write_parquet_atomic(
+        source, target, compression='zstd', compression_level=3,
         statistics=True, row_group_size=100_000)
-    os.replace(tmp, target)
     try:
         return int(pl.scan_parquet(str(target)).select(pl.len()).collect().item())
     except (OSError, ValueError, TypeError) as exc:
@@ -923,12 +893,9 @@ def derive_turnover_local(root: Path | str | None = None, *,
     frames.append(new.lazy())
     combined = pl.concat(frames, how='vertical_relaxed').sort(['ts_code', 'trade_date'])
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix('.parquet.tmp')
-    combined.sink_parquet(
-        str(tmp), compression='zstd', compression_level=3,
+    write_parquet_atomic(
+        combined, target, compression='zstd', compression_level=3,
         statistics=True, row_group_size=100_000)
-    os.replace(tmp, target)
 
     after_rows = pl.scan_parquet(str(target)).select(pl.len()).collect().item()
     expected = before_rows + new.height

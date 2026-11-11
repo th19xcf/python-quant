@@ -48,55 +48,6 @@ def merge_used_windows(indicator_windows: Dict[str, Set[int]]) -> Set[int]:
     return merged
 
 
-def add_default_column_names(lazy_df: pl.LazyFrame, indicator: str, window: int, columns: List[str]) -> pl.LazyFrame:  # noqa: C901
-    """
-    为指标添加默认列名
-
-    Args:
-        lazy_df: Polars LazyFrame
-        indicator: 指标类型
-        window: 窗口大小
-        columns: 需要添加默认名的列名列表
-
-    Returns:
-        pl.LazyFrame: 添加了默认列名的LazyFrame
-    """
-    if indicator not in ['ma', 'rsi', 'kdj', 'wr', 'boll', 'macd', 'dmi', 'cci', 'roc', 'mtm', 'obv', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'cr', 'abi', 'adl', 'adr', 'obos']:
-        return lazy_df
-
-    aliases = []
-    for col in columns:
-        # 根据指标类型添加不同的默认列名
-        if indicator == 'kdj' and window == 14:
-            if col == f'k{window}':
-                aliases.append(pl.col(col).alias('k'))
-            elif col == f'd{window}':
-                aliases.append(pl.col(col).alias('d'))
-            elif col == f'j{window}':
-                aliases.append(pl.col(col).alias('j'))
-        elif indicator == 'wr' and len(columns) >= 1:
-            if col == columns[0]:
-                aliases.append(pl.col(col).alias('wr'))
-                aliases.append(pl.col(col).alias('wr1'))
-            elif len(columns) >= 2 and col == columns[1]:
-                aliases.append(pl.col(col).alias('wr2'))
-        elif indicator == 'boll' and len(columns) >= 3:
-            if col == columns[0]:
-                aliases.append(pl.col(col).alias('mb'))
-            elif col == columns[1]:
-                aliases.append(pl.col(col).alias('up'))
-            elif col == columns[2]:
-                aliases.append(pl.col(col).alias('dn'))
-        elif indicator in ['dmi', 'cci', 'vr', 'psy', 'trix', 'brar', 'asi', 'emv', 'mcst', 'cr']:
-            # 直接使用指标名作为默认列名
-            aliases.append(pl.col(col).alias(col.split('_')[0] if '_' in col else col))
-
-    if aliases:
-        lazy_df = lazy_df.with_columns(aliases)
-
-    return lazy_df
-
-
 def get_indicator_params(**params: Any) -> Dict[str, Dict[str, Any]]:
     """
     获取所有指标的参数配置

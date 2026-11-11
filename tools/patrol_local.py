@@ -41,6 +41,11 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.data.atomic_write import write_text_atomic  # noqa: E402
+
 DEFAULT_CONFIG = ROOT / "config" / "patrol_targets.json"
 DEFAULT_STATUS = ROOT / "logs" / "patrol_status.json"
 DEFAULT_ALERTS = ROOT / "logs" / "patrol_alerts.log"
@@ -534,10 +539,8 @@ def run(
         "alerts": alerts,
     }
 
-    status_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = status_path.with_suffix(status_path.suffix + ".tmp")
-    tmp.write_text(json.dumps(status_doc, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, status_path)
+    write_text_atomic(
+        json.dumps(status_doc, ensure_ascii=False, indent=2), status_path)
 
     if alerts:
         alerts_path.parent.mkdir(parents=True, exist_ok=True)

@@ -8,6 +8,8 @@
 import polars as pl
 from loguru import logger
 
+from src.utils.dataframe_columns import resolve_date_column
+
 from ..common_calculations import add_default_columns, calculate_moving_average
 from ..utils import to_float32
 
@@ -180,8 +182,7 @@ def calculate_hsl(lazy_df: pl.LazyFrame, float_share: float | None = None,
         pl.LazyFrame: 含 ``hsl`` / ``hsl_ma5`` / ``hsl_ma10`` / ``hsl_source``
     """
     names = lazy_df.collect_schema().names()
-    date_key = 'date' if 'date' in names else (
-        'trade_date' if 'trade_date' in names else None)
+    date_key = resolve_date_column(names)
 
     turn_expr: pl.Expr | None = None
     if 'turn' in names:

@@ -25,13 +25,14 @@
 
 from __future__ import annotations
 
-import os
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
 import polars as pl
 from loguru import logger
+
+from src.data.atomic_write import write_parquet_atomic
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_STORE_ROOT = PROJECT_ROOT / 'data' / 'local_store'
@@ -129,11 +130,6 @@ def parts_dir(table: str, store_root: Path | str | None = None) -> Path:
     return financials_dir(store_root) / 'parts' / table
 
 
-def schema_of(table: str) -> dict[str, Any]:
-    """返回表的列与类型定义。"""
-    return dict(SCHEMAS[table])
-
-
 def as_date(value: Any) -> date | None:
     """把 str/date/datetime 统一成 ``date``（无法解析返回 None）。"""
     if value is None or value == '':
@@ -164,11 +160,9 @@ def coerce_schema(frame: pl.DataFrame, table: str) -> pl.DataFrame:
 
 
 def _atomic_write(frame: pl.DataFrame, path: Path) -> None:
-    """原子写：先写 ``*.tmp`` 再替换，避免中断留下半个文件。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + '.tmp')
-    frame.write_parquet(tmp, compression='zstd', compression_level=3, statistics=True)
-    os.replace(tmp, path)
+    """原子写：临时文件 → fsync → 替换，避免中断留下半个文件。"""
+    write_parquet_atomic(
+        frame, path, compression='zstd', compression_level=3, statistics=True)
 
 
 def write_table(frame: pl.DataFrame, table: str,
@@ -320,11 +314,8 @@ def merge_parts(table: str, store_root: Path | str | None = None,
     plan = combined.with_columns(exprs).select(list(SCHEMAS[table])).unique(
         subset=key, keep='last').sort(key)
     dest = table_path(table, store_root)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_name(dest.name + '.tmp')
     try:
-        plan.sink_parquet(tmp, compression='zstd', statistics=True)
-        os.replace(tmp, dest)
+        write_parquet_atomic(plan, dest, compression='zstd', statistics=True)
         rows = pl.scan_parquet(str(dest)).select(pl.len()).collect().item()
     # 兜底理由：流式引擎不支持 unique/sort 时退回内存合并（表本身可控）
     except (pl.exceptions.PolarsError, NotImplementedError):

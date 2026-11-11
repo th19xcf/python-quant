@@ -4,7 +4,7 @@
 
 定位：交易日收盘后把横截面因子打分转成可人工执行的建议清单。
 本包只产出建议，不承担实盘下单；撮合约束复用
-``src.backtest.engine.execution_core.ExecutionRules``，不在推荐层重复实现。
+``src.risk.execution_rules.ExecutionRules``，不在推荐层重复实现。
 
 对外入口：
 - ``AdviceEngine.generate``：生成当日三档榜单；

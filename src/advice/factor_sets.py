@@ -38,14 +38,20 @@ STYLE_FACTORS: dict[str, tuple[ExtendedFactor, ...]] = {
     'trend': (
         ExtendedFactor('qlib_rsqr20', '20日趋势拟合度', 'trend', 1.0),
         ExtendedFactor('qlib_rsqr10', '10日趋势拟合度', 'trend', 1.0),
-        ExtendedFactor('gtja_003', '方向动量(gtja003)', 'trend', 1.0),
+        # 方向 -1：与公开公式一致（实现无偏差），但 OOS IC 显著为负
+        # （h=60 −0.0684），按实证方向取反，见 docs/因子方向冲突诊断_2026-11-11.md §10。
+        ExtendedFactor('gtja_003', '方向动量(gtja003)', 'trend', -1.0),
     ),
     'momentum': (
-        ExtendedFactor('gtja_024', '5日动量(gtja024)', 'momentum', 1.0),
+        # 方向 -1：与公开公式一致（SMA 递推 α=M/N 已核对），OOS IC 显著为负
+        # （h=60 −0.0929），按实证方向取反，见同上 §10。
+        ExtendedFactor('gtja_024', '5日动量(gtja024)', 'momentum', -1.0),
         ExtendedFactor('a101_024', '100日动量阈值', 'momentum', 1.0),
     ),
     'volatility': (
-        ExtendedFactor('gtja_010', '下行波动(gtja010)', 'volatility', 1.0),
+        # 方向 -1：与公开公式一致，OOS IC 显著为负（h=60 −0.0868；改用原始价
+        # 仍为 −0.0722），按实证方向取反，见同上 §10。
+        ExtendedFactor('gtja_010', '下行波动(gtja010)', 'volatility', -1.0),
     ),
     'volume': (
         ExtendedFactor('a101_012', '量价反转', 'volume', 1.0),

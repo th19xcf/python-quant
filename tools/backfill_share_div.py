@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import sys
 from datetime import datetime
@@ -55,6 +54,11 @@ from typing import Any
 import polars as pl
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.data.atomic_write import write_text_atomic  # noqa: E402
+
 DEFAULT_DIV = PROJECT_ROOT / 'data/local_store/factors/stock_dividend.parquet'
 DEFAULT_SHARES = PROJECT_ROOT / 'data/local_store/meta/factors/stock_shares.parquet'
 DEFAULT_BACKUP = PROJECT_ROOT / '_backup'
@@ -357,11 +361,8 @@ def backup_file(path: Path, backup_dir: Path) -> Path:
 
 
 def write_report(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + '.tmp')
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-                   encoding='utf-8', newline='\n')
-    os.replace(tmp, path)
+    write_text_atomic(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str), path)
 
 
 def main(argv: list[str] | None = None) -> int:

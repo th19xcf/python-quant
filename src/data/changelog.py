@@ -32,6 +32,8 @@ import sys
 import time
 from pathlib import Path
 
+from src.data.atomic_write import write_bytes_atomic
+
 FIELDS = [
     "run_id",
     "timestamp",
@@ -101,7 +103,7 @@ def _header_fields(csv_path: Path) -> list[str]:
 def _upgrade_header(csv_path: Path) -> None:
     """只改写首行表头（9 列 → 10 列），其后的历史行按字节原样拷贝。
 
-    走「临时文件 + os.replace」，失败时原文件保持不动。
+    走 ``write_bytes_atomic``（临时文件 → fsync → 替换），失败时原文件保持不动。
     """
     raw = csv_path.read_bytes()
     if not raw:
@@ -114,9 +116,8 @@ def _upgrade_header(csv_path: Path) -> None:
     if header != FIELDS[:-1]:
         raise ValueError(f"表头与预期不符，拒绝改写：{header}")
     ending = b"\r\n" if first.endswith(b"\r\n") else b"\n"
-    tmp = csv_path.with_suffix(".csv.tmp")
-    tmp.write_bytes(",".join(FIELDS).encode("utf-8") + ending + rest)
-    os.replace(tmp, csv_path)
+    write_bytes_atomic(
+        ",".join(FIELDS).encode("utf-8") + ending + rest, csv_path)
 
 
 def read_events(csv_file: str | os.PathLike[str] | None = None) -> list[dict[str, str]]:

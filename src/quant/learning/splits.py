@@ -10,8 +10,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 from src.quant.learning.config import WalkForwardConfig, WalkForwardWindow
 
 
@@ -54,14 +52,3 @@ def make_walk_forward_windows(n_dates: int,
         index += 1
         train_end += config.test_size
     return windows
-
-
-def date_index_map(dates: Sequence[object]) -> dict[object, int]:
-    """构造 交易日 → 全局索引 的映射。"""
-    return {day: i for i, day in enumerate(dates)}
-
-
-def indices_for_window(window: WalkForwardWindow) -> tuple[range, range]:
-    """返回 (训练行索引范围, 测试行索引范围)，均已按 purge 截断。"""
-    return range(window.train_start, window.purged_train_end), range(
-        window.test_start, window.test_end)

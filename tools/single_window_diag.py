@@ -50,7 +50,7 @@ from src.advice.factor_eval import (  # noqa: E402
     build_composite,
     simulate_fixed_hold,
 )
-from src.backtest.engine.execution_core import ExecutionRules  # noqa: E402
+from src.risk.execution_rules import ExecutionRules  # noqa: E402
 
 MARKET_COLUMNS = (
     'date', 'ts_code', 'ret', 'close', 'volume', 'next_tradable',

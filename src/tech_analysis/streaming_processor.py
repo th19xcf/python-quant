@@ -249,16 +249,5 @@ class RealTimeDataProcessor:
             del self.streaming_processors[name]
 
 
-global_realtime_processor = RealTimeDataProcessor()
-
-
 def create_streaming_processor(indicators: List[str], **kwargs) -> StreamingProcessor:
     return StreamingProcessor(indicators, **kwargs)
-
-
-def process_realtime_data(data: pl.DataFrame, processor_name: str, batch_size: int = 1) -> pl.DataFrame | None:
-    if processor_name not in global_realtime_processor.streaming_processors:
-        processor = StreamingProcessor(['ma', 'macd', 'rsi'])
-        global_realtime_processor.register_processor(processor_name, processor)
-        global_realtime_processor.batch_size = batch_size
-    return global_realtime_processor.process(data, processor_name)

@@ -22,7 +22,6 @@ mtime 懒加载：
 from __future__ import annotations
 
 import hashlib
-import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,7 @@ from typing import Any
 import polars as pl
 from loguru import logger
 
+from src.data.atomic_write import write_text_atomic
 from src.data.quality.anomalies import ANOMALY_LIST_DIR
 
 #: 因子末端落后的“近期”窗口（天）：窗口内视为当次增量未覆盖，窗口外归入
@@ -38,10 +38,8 @@ DEFAULT_LAG_DAYS = 30
 
 
 def _write_atomic(path: Path, frame: pl.DataFrame) -> None:
-    """先写临时文件再替换，避免台账读取到半个 CSV。"""
-    tmp = path.with_name(f'{path.name}.tmp')
-    frame.write_csv(tmp, include_header=True)
-    os.replace(tmp, path)
+    """临时文件 → fsync → 替换，避免台账读取到半个 CSV。"""
+    write_text_atomic(frame.write_csv(include_header=True), path)
 
 
 def _sha256(path: Path) -> str:

@@ -30,8 +30,10 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import csv
 import json
 import sys
+import time
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -109,29 +111,91 @@ def _empty_frame() -> pl.DataFrame:
     return pl.DataFrame(schema=_RAW_SCHEMA)
 
 
+def _append_row(path: Path, row: dict[str, Any], header: list[str]) -> None:
+    """向断点日志追加一行（首行写表头，文件不存在时创建）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fresh = not path.is_file()
+    with path.open('a', encoding='utf-8', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=header, extrasaction='ignore')
+        if fresh:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+PROGRESS_HEADER = ['month', 'start', 'end', 'status', 'rows', 'total_hits',
+                   'elapsed_s', 'finished_at']
+FAILED_HEADER = ['month', 'start', 'end', 'error', 'failed_at']
+
+
 def _fetch_shards(args: argparse.Namespace, chunks: list[tuple[str, str]],
                   shard_dir: Path) -> list[Path]:
+    """按月抓取分片；分片原子写，逐月记 progress.csv，失败即停压。
+
+    断点语义：分片文件存在即视为该月已完成（``--force`` 可重抓）；
+    任何一个月抛错都写 ``failed.csv`` 并**立即停止**，不跳到下个月硬重试——
+    巨潮的错误多为限速/封禁，继续加压只会延长恢复时间。
+    """
+    from src.data.atomic_write import write_parquet_atomic  # noqa: PLC0415
+
     module = _load_fetcher()
     module.WORKERS = max(1, args.workers)
     module.REQUEST_SLEEP = max(0.05, args.sleep)
+    module.REQUEST_JITTER = max(0.0, args.jitter)
     shard_dir.mkdir(parents=True, exist_ok=True)
+    progress_path = Path(args.progress_csv) if args.progress_csv \
+        else shard_dir / 'progress.csv'
+    failed_path = Path(args.failed_csv) if args.failed_csv \
+        else shard_dir / 'failed.csv'
     written: list[Path] = []
     for start, end in chunks:
         target = _shard_path(shard_dir, start)
         if target.is_file() and not args.force:
+            rows = pl.read_parquet(target).height
             logger.info(f'分片已存在，跳过: {target.name}（{start} ~ {end}）')
+            _append_row(progress_path, {
+                'month': target.stem, 'start': start, 'end': end,
+                'status': 'exists', 'rows': rows, 'total_hits': '',
+                'elapsed_s': '', 'finished_at': '',
+            }, PROGRESS_HEADER)
             written.append(target)
             continue
-        logger.info(f'抓取分片 {start} ~ {end} source={args.source}')
-        frame, _meta = module.fetch_announcements(
-            start, end, tuple(args.keywords), args.source, partial_path=None,
-        )
-        if frame.is_empty():
-            frame = _empty_frame()
-        frame.write_parquet(target)
-        logger.info(f'分片落盘 {target.name}: {frame.height} 行')
+        started = time.time()
+        try:
+            logger.info(f'抓取分片 {start} ~ {end} source={args.source}')
+            frame, meta = module.fetch_announcements(
+                start, end, tuple(args.keywords), args.source, partial_path=None,
+            )
+            if frame.is_empty():
+                frame = _empty_frame()
+            write_parquet_atomic(frame, target, compression='zstd')
+        except Exception as exc:
+            _append_row(failed_path, {
+                'month': target.stem, 'start': start, 'end': end,
+                'error': f'{type(exc).__name__}: {exc}',
+                'failed_at': _now(),
+            }, FAILED_HEADER)
+            _append_row(progress_path, {
+                'month': target.stem, 'start': start, 'end': end,
+                'status': 'failed', 'rows': '', 'total_hits': '',
+                'elapsed_s': round(time.time() - started, 1), 'finished_at': '',
+            }, PROGRESS_HEADER)
+            logger.error(f'分片 {target.name} 失败，已写入 failed.csv 并停止抓取: {exc}')
+            raise
+        hits = sum(value.get('total_hits', 0) for value in meta.values()
+                   if isinstance(value, dict))
+        _append_row(progress_path, {
+            'month': target.stem, 'start': start, 'end': end, 'status': 'ok',
+            'rows': frame.height, 'total_hits': hits,
+            'elapsed_s': round(time.time() - started, 1), 'finished_at': _now(),
+        }, PROGRESS_HEADER)
+        logger.info(f'分片落盘 {target.name}: {frame.height} 行 '
+                    f'(命中 {hits}，耗时 {round(time.time() - started, 1)}s)')
         written.append(target)
     return written
+
+
+def _now() -> str:
+    return time.strftime('%Y-%m-%d %H:%M:%S')
 
 
 def _import_shards(args: argparse.Namespace, shard_dir: Path,
@@ -229,7 +293,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--keywords', nargs='*', default=list(DEFAULT_KEYWORDS))
     parser.add_argument('--workers', type=int, default=2)
     parser.add_argument('--sleep', type=float, default=0.25)
+    parser.add_argument('--jitter', type=float, default=0.0,
+                        help='每个 (关键词, 区间) 前的随机抖动上限秒数，默认 0（关闭）')
     parser.add_argument('--shard-dir', default=str(DEFAULT_SHARD_DIR))
+    parser.add_argument('--progress-csv', default=None,
+                        help='断点日志路径，缺省 <shard-dir>/progress.csv')
+    parser.add_argument('--failed-csv', default=None,
+                        help='失败清单路径，缺省 <shard-dir>/failed.csv')
     parser.add_argument('--store-root', default=str(DEFAULT_STORE_ROOT))
     parser.add_argument('--allow-remote', action='store_true',
                         help='显式允许联网抓取；不给则只打印计划')

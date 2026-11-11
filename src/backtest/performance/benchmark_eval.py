@@ -23,60 +23,6 @@ import polars as pl
 MIN_MONTHS = 12
 
 
-def equal_weight_market_returns(
-        panel: pl.DataFrame, *, close_col: str = 'close_hfq',
-        ret_col: str | None = None) -> pl.DataFrame:
-    """等权全市场日收益。
-
-    Args:
-        panel: 含 ``date / ts_code`` 的行情面板。
-        close_col: 复权收盘价列名（``ret_col`` 为空时使用）。
-        ret_col: 已算好的逐标的日收益列名；给出时直接按日取均值。
-
-    Returns:
-        DataFrame，列 ``date / ew_ret``（``ret_col`` 为空时另带 ``n_codes``）。
-    """
-    if ret_col is not None:
-        return (
-            panel.select(['date', 'ts_code', ret_col])
-            .drop_nulls([ret_col])
-            .group_by('date')
-            .agg(pl.col(ret_col).mean().alias('ew_ret'), pl.len().alias('n_codes'))
-            .sort('date')
-        )
-
-    # 与 regimes.market_series 完全同一套聚合（逐标的 shift 收益 → 按日均值）
-    from src.quant.learning.regimes import market_series
-
-    if close_col != 'close_hfq':
-        panel = panel.rename({close_col: 'close_hfq'})
-    return market_series(panel).select(['date', pl.col('mkt_ret').alias('ew_ret'), 'n_codes'])
-
-
-def cap_weighted_market_returns(
-        panel: pl.DataFrame, *, weight_col: str = 'total_mv',
-        close_col: str = 'close_hfq') -> pl.DataFrame:
-    """市值加权全市场日收益：用前一交易日权重，避免用当日市值引入未来信息。"""
-    priced = (
-        panel.select(['date', 'ts_code', close_col, weight_col])
-        .sort(['ts_code', 'date'])
-        .with_columns(
-            (pl.col(close_col) / pl.col(close_col).shift(1).over('ts_code') - 1.0).alias('__ret'),
-            pl.col(weight_col).shift(1).over('ts_code').alias('__w'),
-        )
-        .drop_nulls(['__ret', '__w'])
-        .filter(pl.col('__w') > 0)
-    )
-    return (
-        priced.group_by('date')
-        .agg(
-            ((pl.col('__ret') * pl.col('__w')).sum() / pl.col('__w').sum()).alias('mw_ret'),
-            pl.len().alias('n_codes'),
-        )
-        .sort('date')
-    )
-
-
 def information_ratio(excess_returns: Iterable[float], *,
                       periods_per_year: int = 12) -> float:
     """IR = 年化超额 / 超额波动（月度序列默认 12 期/年）。"""

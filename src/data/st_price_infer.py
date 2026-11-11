@@ -67,8 +67,8 @@ from typing import Any, Iterable
 import polars as pl
 from loguru import logger
 
-from src.backtest.engine.execution_core import ExecutionRules
 from src.data import st_history
+from src.risk.execution_rules import ExecutionRules
 
 FLAG_SUSPECTED = 'suspected_st'
 SOURCE_PRICE = 'price_inference'

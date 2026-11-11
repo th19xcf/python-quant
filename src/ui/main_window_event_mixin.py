@@ -125,7 +125,7 @@ class MainWindowEventMixin:
             from src.ui.task_manager import global_task_manager
             global_task_manager.shutdown(wait_ms=800)
             logger.info("任务管理器已关闭")
-        except Exception as e:
+        except Exception as e:  # 关窗清理失败不得阻断退出流程
             logger.error(f"关闭任务管理器时出错: {e}")
 
         # 停止内存监控（daemon 线程，超时即放弃等待，不阻断退出）
@@ -133,7 +133,7 @@ class MainWindowEventMixin:
             from src.utils.memory_manager import global_memory_manager
             global_memory_manager.stop_monitoring()
             logger.info("内存监控已停止")
-        except Exception as e:
+        except Exception as e:  # 关窗清理失败不得阻断退出流程
             logger.error(f"停止内存监控时出错: {e}")
 
         # 调用父类的关闭方法

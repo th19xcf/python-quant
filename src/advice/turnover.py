@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from src.advice.config import AdviceConfig, TierConfig, TradingCosts
+from src.advice.config import AdviceConfig, TierConfig
 
 
 def expected_edge(percentile: float, tier: TierConfig) -> float:
@@ -160,14 +160,3 @@ def apply_turnover_cap(intents: list[TradeIntent], equity: float,
 
     return TurnoverPlan(admitted=admitted, deferred=deferred,
                         gross_notional=gross, budget=budget)
-
-
-def load_state_payload(payload: dict[str, Any] | None,
-                       costs: TradingCosts) -> dict[str, Any]:
-    """兼容旧状态文件：缺失字段时补齐，避免跨版本读取崩溃。"""
-    if not payload:
-        return {'holdings': [], 'last_trade_date': None}
-    payload.setdefault('holdings', [])
-    payload.setdefault('last_trade_date', None)
-    payload.setdefault('costs', costs.round_trip_rate)
-    return payload

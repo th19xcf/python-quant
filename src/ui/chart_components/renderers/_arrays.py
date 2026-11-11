@@ -41,15 +41,3 @@ def as_f64(s: pl.Series, start: int = 0, length: int | None = None) -> np.ndarra
     arr = s.to_numpy()
     # 已保证 Float64 + 单 chunk → to_numpy 返回零拷贝视图
     return arr
-
-
-def as_any(s: pl.Series, start: int = 0, length: int | None = None) -> np.ndarray:
-    """泛化 helper：按源 dtype to_numpy，不做 Float64 强转。
-
-    用于那些不要求 float64 的路径（如 volume/amount 原始显示）。
-    """
-    if length is not None:
-        s = s.slice(start, length)
-    if s.n_chunks() > 1:
-        s = s.rechunk()
-    return s.to_numpy()

@@ -15,6 +15,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+#: 「历史是否足够」的统一门槛。
+#: 单票最少历史行数（推荐侧）与训练窗最少有效截面期数（学习侧）共用，
+#: 避免同一个 60 在多个模块各写一遍后各自漂移。
+MIN_HISTORY_ROWS = 60
+
 
 @dataclass(frozen=True)
 class WalkForwardConfig:
@@ -42,7 +47,7 @@ class WalkForwardConfig:
     test_size: int = 126
     embargo: int = 20
     expanding: bool = False
-    min_train_dates: int = 60
+    min_train_dates: int = MIN_HISTORY_ROWS
     min_test_dates: int = 20
     n_quantiles: int = 5
     top_fraction: float = 0.2

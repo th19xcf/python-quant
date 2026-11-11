@@ -29,9 +29,10 @@ import polars as pl
 from loguru import logger
 
 from src.backtest.costs.cost_model import CostModel
-from src.backtest.engine.execution_core import ExecutionRules, to_trade_date
+from src.backtest.engine.execution_core import to_trade_date
 from src.quant.factor_lib import ops as o
 from src.quant.factor_lib.evaluate import cost_rates, forward_returns, rebalance_dates
+from src.risk.execution_rules import ExecutionRules
 
 C = pl.col
 

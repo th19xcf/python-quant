@@ -21,10 +21,10 @@ import polars as pl
 from loguru import logger
 
 from src.backtest.costs.cost_model import CostModel
-from src.backtest.engine.execution_core import ExecutionRules
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.quant.learning.config import SchemeMetrics, WalkForwardConfig
 from src.quant.learning.labels import LABEL_COL
+from src.risk.execution_rules import ExecutionRules
 
 
 def _spearman(values_a: Sequence[float], values_b: Sequence[float]) -> float:

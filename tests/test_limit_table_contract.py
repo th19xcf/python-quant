@@ -14,8 +14,8 @@ import datetime as dt
 
 import pytest
 
-from src.backtest.engine.execution_core import ExecutionRules
 from src.risk import PriceLimitTradable
+from src.risk.execution_rules import ExecutionRules
 
 CHINEXT_REFORM = dt.date(2020, 8, 24)
 AFTER_REFORM = dt.date(2026, 1, 5)

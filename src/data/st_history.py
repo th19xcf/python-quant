@@ -55,6 +55,7 @@ import requests
 from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
+from src.utils.dataframe_columns import resolve_date_column
 
 FLAG_ST = 'st'
 FLAG_STAR = '*st'
@@ -267,11 +268,6 @@ def intervals_path(store_root: Path | str) -> Path:
 
 def coverage_path(store_root: Path | str) -> Path:
     return st_dir(store_root) / 'st_coverage.parquet'
-
-
-def tushare_intervals_path(store_root: Path | str) -> Path:
-    """tushare ``namechange`` 重建表：**合并的输入**，不是权威区间表。"""
-    return raw_dir(store_root) / 'tushare_namechange_intervals.parquet'
 
 
 def reviewed_conflicts_path(store_root: Path | str) -> Path:
@@ -1679,8 +1675,7 @@ def _trading_dates(root: Path, start: date, end: date) -> list[date]:
     def _dates(frame: pl.DataFrame | None) -> list[date]:
         if frame is None:
             return []
-        column = 'date' if 'date' in frame.columns else (
-            'trade_date' if 'trade_date' in frame.columns else None)
+        column = resolve_date_column(frame.columns)
         if column is None:
             return []
         values = [value if isinstance(value, date) else _as_date(value)

@@ -75,7 +75,6 @@ def test_parse_args_defaults(monkeypatch):
 
     args = main_module.parse_args()
 
-    assert args.init_db is False
     assert args.update_stock is False
     assert args.update_index is False
     assert args.update_fund is False
@@ -83,7 +82,6 @@ def test_parse_args_defaults(monkeypatch):
 
 
 @pytest.mark.parametrize(('flag', 'attribute'), [
-    ('--init-db', 'init_db'),
     ('--update-stock', 'update_stock'),
     ('--update-index', 'update_index'),
     ('--update-fund', 'update_fund'),

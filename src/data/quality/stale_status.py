@@ -22,13 +22,14 @@ r"""停更 / 退市标的权威状态表。
 
 from __future__ import annotations
 
-import os
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 from loguru import logger
+
+from src.data.atomic_write import write_parquet_atomic
 
 #: 项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -121,10 +122,7 @@ def build_stale_status(store_root: Path | str = DEFAULT_ROOT,
     frame = pl.DataFrame(rows, schema=STATUS_SCHEMA).sort(['asset_class', 'ts_code'])
 
     target = status_path(root)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + '.tmp')
-    frame.write_parquet(tmp)
-    os.replace(tmp, target)
+    write_parquet_atomic(frame, target)
     _CACHE.pop(str(target), None)
     stale_count = int(frame['is_stale'].sum())
     logger.info(

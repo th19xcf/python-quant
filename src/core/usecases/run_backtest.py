@@ -28,6 +28,7 @@ Usage:
 
 from __future__ import annotations
 
+import atexit
 import copy
 import datetime as dt
 import threading
@@ -65,6 +66,31 @@ _shared_fetcher: Any = None
 _shared_db_manager: Any = None
 
 
+def _register_builtin_sources(fetcher: Any, config: Any, db: Any) -> None:
+    """给直接构造的 DataFetcher 注册内置数据源。
+
+    常规入口走 ``DataService``，注册发生在 ``_init_builtin_datasources``；
+    本模块自己 new 的 DataFetcher 不经过那里，若不显式注册，候选源为空，
+    本地列存一旦判 stale 就没有通达信可回退，会被误报成「文件无数据」。
+    注册规则与 DataService 一致：远程开关关闭时只注册本地通达信。
+    """
+    from src.utils.config import remote_sources_enabled
+
+    specs = [('src.data.tdx_handler', 'TdxHandler')]
+    if remote_sources_enabled(config):
+        specs.extend([
+            ('src.data.baostock_handler', 'BaostockHandler'),
+            ('src.data.akshare_handler', 'AkShareHandler'),
+        ])
+    for module_path, class_name in specs:
+        try:
+            module = __import__(module_path, fromlist=[class_name])
+            fetcher.register_source(getattr(module, class_name)(config, db))
+        # 兜底理由：单个数据源初始化失败不影响其余源（与 DataService 同口径）
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"内置数据源 {class_name} 初始化失败: {exc}")
+
+
 def _get_shared_data_fetcher() -> tuple[Any, Any]:
     """获取（或懒创建）进程内长驻的 ``(DataFetcher, DatabaseManager)``。"""
     global _shared_fetcher, _shared_db_manager
@@ -78,6 +104,7 @@ def _get_shared_data_fetcher() -> tuple[Any, Any]:
             db.connect()
             _shared_db_manager = db
             _shared_fetcher = DataFetcher(db.config, db_manager=db)
+            _register_builtin_sources(_shared_fetcher, db.config, db)
         return _shared_fetcher, _shared_db_manager
 
 
@@ -92,6 +119,13 @@ def close_shared_data_fetcher() -> None:
         fetcher.close()
     if db is not None:
         db.disconnect()
+
+
+# 长驻资源不随单次回测释放（每次释放就让线程池/连接池反复重建，正是本模块
+# 引入单例要解决的问题），因此唯一的释放点是进程退出：注册退出钩子后，
+# DataFetcher 的线程池/子进程池与 DatabaseManager 的连接会话在解释器关闭前
+# 被真正回收。close_shared_data_fetcher 可重复调用，重复注册也无副作用。
+atexit.register(close_shared_data_fetcher)
 
 
 def _assemble_risk_engine(
@@ -364,8 +398,14 @@ def _prepare_backtest_data(
     data: Union[pl.DataFrame, Dict[str, pl.DataFrame]] | None,
     db_manager: Any,
     ts_codes: list[str] | None = None,
+    stale_out: list[dict] | None = None,
 ) -> tuple[Union[pl.DataFrame, Dict[str, pl.DataFrame]] | None, Any]:
-    """数据准备：data 已提供时直接返回；否则按需取数并返回可复用的 db 句柄。"""
+    """数据准备：data 已提供时直接返回；否则按需取数并返回可复用的 db 句柄。
+
+    ``stale_out`` 收集「本地列存滞后于源端」的告警（每标的含是否 stale、
+    列存末行交易日、源端末行交易日、落后天数），由调用方写入回测结果，
+    确保 GUI / CLI / 报告都能看到这批数据是滞后的。
+    """
     db = db_manager
     if data is not None or not (ts_code or ts_codes):
         return data, db
@@ -381,18 +421,25 @@ def _prepare_backtest_data(
         if not db.is_connected():
             db.connect()
         fetcher = DataFetcher(db.config, db_manager=db)
+        # 显式注入的 db 不经过共享实例，同样要注册内置源，否则无法回退通达信
+        _register_builtin_sources(fetcher, db.config, db)
+
+    def _drain_stale(payload: Any) -> Any:
+        if stale_out is not None:
+            stale_out.extend(notice.to_dict() for notice in fetcher.drain_stale_notices())
+        return payload
+
     if ts_codes:
         # 组合/横截面一次加载面板，避免逐票重复路由
         # 同一实体的旧码已被新码完整覆盖时先去重，避免同一只票重复计入
         codes = load_entity_index().dedupe(ts_codes)
-        return fetcher.get_stock_batch(
+        return _drain_stale(fetcher.get_stock_batch(
             codes, start_date or '', end_date or '', adjustment_type='hfq',
-        ), db
-    data = fetcher.get_stock_data(
+        )), db
+    return _drain_stale(fetcher.get_stock_data(
         ts_code, start_date or '', end_date or '',
         adjustment_type='hfq',
-    )
-    return data, db
+    )), db
 
 
 def _load_st_status(
@@ -724,6 +771,20 @@ def _run_single_backtest(
     )
 
 
+def _attach_stale_quality(result: Dict[str, Any], stale_notices: list[dict]) -> None:
+    """把本地列存滞后告警写入结果 ``data_quality``，并留一条 WARNING。
+
+    不改变是否出结果，但必须让 GUI / CLI / HTML 报告都能读到这批数据是滞后的。
+    """
+    result['data_quality']['stale'] = bool(stale_notices)
+    result['data_quality']['stale_data'] = stale_notices
+    if stale_notices:
+        logger.warning(
+            "本次回测有 {} 只标的使用了滞后列存数据（详见 data_quality.stale_data）",
+            len(stale_notices),
+        )
+
+
 def run_backtest(
     ts_code: str | None = None,
     start_date: str | None = None,
@@ -808,8 +869,10 @@ def run_backtest(
         raise ValueError(f"oos_ratio 必须在 [0, 1) 内，实际 {oos_ratio}")
 
     # ---- 数据准备 + ST 时间维表 ----
+    stale_notices: list[dict] = []
     data, db = _prepare_backtest_data(
         ts_code, start_date, end_date, data, db_manager, ts_codes,
+        stale_out=stale_notices,
     )
     # P0-4：所有数据降级事件统一收集，最终写入结果 data_quality
     data_warnings: list[dict] = []
@@ -925,6 +988,7 @@ def run_backtest(
     }
     # 无条件写入：未应用过滤时为 None，调用方无需猜字段是否存在
     result['data_quality']['universe_filter'] = universe_filter
+    _attach_stale_quality(result, stale_notices)
     if degraded:
         # 降级会影响成交假设或权益口径，置信度必须与撮合内核的判定同步下调
         result['fill_confidence'] = 'low'

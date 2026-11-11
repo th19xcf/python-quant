@@ -11,6 +11,7 @@ from typing import Any
 import polars as pl
 
 from src.tech_analysis.technical_analyzer import TechnicalAnalyzer
+from src.utils.dataframe_columns import resolve_date_column
 
 
 def calculate_indicators_for_period(df: pl.DataFrame, ts_code: str | None = None) -> pl.DataFrame:
@@ -37,8 +38,7 @@ def calculate_indicators_for_period(df: pl.DataFrame, ts_code: str | None = None
 def _load_breadth(df: pl.DataFrame) -> pl.DataFrame | None:
     """按数据日期范围加载本地 breadth 快照（与 UI 共用同一来源）。"""
     try:
-        date_col = 'date' if 'date' in df.columns else (
-            'trade_date' if 'trade_date' in df.columns else None)
+        date_col = resolve_date_column(df.columns)
         if date_col is None or df.height == 0:
             return None
         from src.data.services.breadth_service import get_breadth

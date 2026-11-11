@@ -49,13 +49,38 @@ def test_normal_stock_eligible():
     assert any('ST状态未知' in note for note in result.notes)
 
 
-def test_one_word_limit_up_blocks_buy():
+def test_one_word_limit_up_kept_and_marked():
+    """T 日一字涨停：条目保留（ok=True），只标注 limit_up_risk。"""
     tier = _tier()
     row = _row(raw_prev_close=10.0, raw_open=11.0, raw_high=11.0,
                raw_low=11.0, raw_close=11.0)
     result = check_eligibility(row, tier, _config(tier), 'buy')
-    assert not result.ok
-    assert '涨停' in result.blocked_reason
+    assert result.ok, result.blocked_reason
+    assert result.limit_up_risk is True
+    # 依据必须写明触发价与涨停价（主板 10% → 11.00）
+    assert '涨停价 11.00' in result.limit_up_basis
+    assert '一字板' in result.limit_up_basis
+    assert any('次日可能买不进' in note for note in result.notes)
+
+
+def test_intraday_limit_up_kept_and_marked():
+    """盘中触板收盘涨停：同样保留并标注，形态写「盘中触板」。"""
+    tier = _tier()
+    row = _row(raw_prev_close=10.0, raw_open=10.4, raw_high=11.0,
+               raw_low=10.3, raw_close=11.0)
+    result = check_eligibility(row, tier, _config(tier), 'buy')
+    assert result.ok, result.blocked_reason
+    assert result.limit_up_risk is True
+    assert '盘中触板' in result.limit_up_basis
+
+
+def test_non_limit_up_not_marked():
+    tier = _tier()
+    result = check_eligibility(_row(raw_close=10.5, raw_high=10.6),
+                               tier, _config(tier), 'buy')
+    assert result.ok, result.blocked_reason
+    assert result.limit_up_risk is False
+    assert result.limit_up_basis == ''
 
 
 def test_limit_down_blocks_sell():

@@ -21,7 +21,6 @@ import argparse
 import csv
 import hashlib
 import json
-import os
 import shutil
 import sys
 from datetime import date, datetime
@@ -35,6 +34,7 @@ from loguru import logger
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from src.data.atomic_write import write_text_atomic  # noqa: E402
 from src.data.local_store.build import discover_local_files  # noqa: E402
 from src.data.local_store.store import LocalFactorStore, LocalQuoteStore  # noqa: E402
 from src.data.tdx_day_parser import parse_day_file  # noqa: E402
@@ -242,10 +242,7 @@ def inventory() -> pl.DataFrame:
 # 补数
 # ----------------------------------------------------------------------
 def _atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + '.tmp')
-    tmp.write_text(text, encoding='utf-8', newline='\n')
-    os.replace(tmp, path)
+    write_text_atomic(text, path)
 
 
 def _backup(kind: str, code: str, path: Path, day_tag: str) -> Path:

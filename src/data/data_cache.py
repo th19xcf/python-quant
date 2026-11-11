@@ -14,6 +14,7 @@ import polars as pl
 from loguru import logger
 
 from src.utils.cache_entry import TimestampedCacheEntryMixin
+from src.utils.dataframe_columns import resolve_date_column
 
 # 定义缓存键和值的类型变量
 K = TypeVar('K')
@@ -263,8 +264,7 @@ class DataCache:
         Returns:
             Optional[pl.DataFrame]: 裁剪结果；无日期列时返回 None
         """
-        date_col = 'date' if 'date' in df.columns else (
-            'trade_date' if 'trade_date' in df.columns else None)
+        date_col = resolve_date_column(df.columns)
         if date_col is None:
             return None
 

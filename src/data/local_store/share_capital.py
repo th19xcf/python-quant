@@ -85,7 +85,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import threading
 import time
 from collections import OrderedDict
@@ -97,6 +96,7 @@ from typing import Any, Iterable, NamedTuple, Sequence
 import polars as pl
 from loguru import logger
 
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.local_store.paths import default_store_root, project_root
 from src.utils.code_converter import to_symbol, to_ts_code
 from src.utils.dates import as_date
@@ -257,13 +257,10 @@ def write_shares(frame: pl.DataFrame, root: Path | str | None = None, *,
                  write_meta: bool = True) -> Path:
     """原子写入事实表（排序 + zstd + 行组统计），可选同步写列说明。"""
     path = shares_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
     prepared = _normalize_frame(frame).sort(['ts_code', 'effective_date'])
-    tmp = path.with_suffix('.parquet.tmp')
-    prepared.write_parquet(
-        tmp, compression='zstd', compression_level=3,
+    write_parquet_atomic(
+        prepared, path, compression='zstd', compression_level=3,
         statistics=True, row_group_size=100_000)
-    os.replace(tmp, path)
     if write_meta:
         _write_meta(path, prepared)
     return path
@@ -766,10 +763,7 @@ def load_dividend_events(root: Path | str | None = None,
 
 
 def _write_part(path: Path, frame: pl.DataFrame) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix('.parquet.tmp')
-    _normalize_frame(frame).write_parquet(tmp, compression='zstd')
-    os.replace(tmp, path)
+    write_parquet_atomic(_normalize_frame(frame), path, compression='zstd')
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -782,10 +776,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix('.json.tmp')
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding='utf-8')
-    os.replace(tmp, path)
+    write_text_atomic(json.dumps(payload, ensure_ascii=False, indent=1), path)
 
 
 def _write_failed_csv(path: Path, failed: Sequence[dict[str, Any]]) -> None:
@@ -974,10 +965,7 @@ def _write_meta(path: Path, frame: pl.DataFrame) -> None:
         'sources': by_source,
     }
     meta_path = path.with_name(SHARES_META_FILENAME)
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = meta_path.with_suffix('.json.tmp')
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding='utf-8')
-    os.replace(tmp, meta_path)
+    write_text_atomic(json.dumps(payload, ensure_ascii=False, indent=1), meta_path)
 
 
 def coverage_report(universe: Sequence[str], root: Path | str | None = None) -> dict[str, Any]:

@@ -32,7 +32,7 @@ from src.advice.extended_factors import (
 from src.advice.fundamental_factors import FUNDAMENTAL_CANDIDATES
 from src.backtest.costs.cost_model import CostModel
 from src.quant.factor_lib.registry import get_spec
-from src.quant.learning.config import WalkForwardConfig
+from src.quant.learning.config import MIN_HISTORY_ROWS, WalkForwardConfig
 from src.quant.learning.splits import make_walk_forward_windows
 
 MIN_PAIRS = 30
@@ -500,7 +500,7 @@ def _walk_forward_windows(dates: list[date],
         train_size=max(int(config.train_months * 21), config.horizon + 1),
         test_size=max(int(config.test_months * 21), 1),
         embargo=config.embargo,
-        min_train_dates=60,
+        min_train_dates=MIN_HISTORY_ROWS,
         min_test_dates=20,
     )
     bounds: list[tuple[date, date, date, date]] = []
@@ -700,7 +700,7 @@ def simulate_fixed_hold(frame: pl.DataFrame, config: SimConfig) -> tuple[pl.Data
     可成交性：次日开盘相对当日原始收盘的涨跌停以内且次日 volume>0；
     涨跌停幅度用 ``ExecutionRules.resolve_limit_pct``（ST 未知按板块常规幅度）。
     """
-    from src.backtest.engine.execution_core import ExecutionRules
+    from src.risk.execution_rules import ExecutionRules
 
     rules = ExecutionRules()
     cost_model = config.make_cost_model()

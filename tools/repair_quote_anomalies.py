@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from collections import defaultdict
 from datetime import date, datetime
@@ -57,6 +56,11 @@ import polars as pl
 from loguru import logger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.data.atomic_write import write_parquet_atomic  # noqa: E402
+
 DEFAULT_ROOT = PROJECT_ROOT / 'data' / 'local_store'
 
 #: 可就地修复的规则
@@ -245,9 +249,7 @@ def _repair_frame(frame: pl.DataFrame,
 
 
 def _write_atomic(path: Path, frame: pl.DataFrame) -> None:
-    tmp = path.with_suffix('.parquet.tmp')
-    frame.write_parquet(tmp, compression='zstd', statistics=True)
-    os.replace(tmp, path)
+    write_parquet_atomic(frame, path, compression='zstd', statistics=True)
 
 
 def _build_quarantine(violations: Path, targets: dict[str, dict[str, set[date]]],

@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import threading
 from collections.abc import Iterable, Mapping
 from datetime import date, datetime
@@ -51,6 +50,7 @@ import numpy as np
 import polars as pl
 from loguru import logger
 
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.utils.code_converter import to_ts_code
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -975,13 +975,11 @@ def build_exclusions(
         'price_jumps_detail': str(out_dir / PRICE_JUMPS_FILE),
     }
     summary = _summarize(frame, di, snapshot, sources, jump_report)
-    _write_atomic(out_dir / EXCLUSIONS_FILE, lambda p: frame.write_parquet(p))
-    _write_atomic(out_dir / PRICE_JUMPS_FILE, lambda p: jump_detail.write_parquet(p))
-    _write_atomic(
-        out_dir / SUMMARY_FILE,
-        lambda p: p.write_text(
-            json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding='utf-8'))
+    write_parquet_atomic(frame, out_dir / EXCLUSIONS_FILE)
+    write_parquet_atomic(jump_detail, out_dir / PRICE_JUMPS_FILE)
+    write_text_atomic(
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True),
+        out_dir / SUMMARY_FILE)
     # 审计参考值，非口径：2026-11-10 起对外口径统一为 strict，该值只用于与
     # 历史报告（healthy_by_audit_definition，旧值 8,903/9,770）对照，不写入 JSON。
     audit_codes = set(frame.filter(
@@ -995,12 +993,6 @@ def build_exclusions(
         summary['coverage_after_exclusion']['strict']['all']['total_codes'],
         _coverage(di, audit_codes)['all']['remaining_codes'])
     return summary
-
-
-def _write_atomic(path: Path, writer: Any) -> None:
-    tmp = path.with_suffix(path.suffix + '.tmp')
-    writer(tmp)
-    os.replace(tmp, path)
 
 
 # ----------------------------------------------------------------------

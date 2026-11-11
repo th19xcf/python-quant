@@ -346,6 +346,18 @@ class StrategyBacktestDialog(QDialog):
             if risk_summary['total_rejected'] > 5:
                 text += f"       ... 还有 {risk_summary['total_rejected'] - 5} 笔\n"
 
+        # 数据滞后告警：列存落后源端时仍出结果，但必须让用户看到
+        stale_data = (result.get('data_quality') or {}).get('stale_data') or []
+        if stale_data:
+            text += "\n【数据滞后】以下标的的本地列存落后于源端，结果基于滞后数据:\n"
+            for item in stale_data[:5]:
+                text += (f"       {item.get('ts_code', '')} 列存至 "
+                         f"{item.get('local_last_trade_date', '')}，源端至 "
+                         f"{item.get('source_last_trade_date', '')}，"
+                         f"落后 {item.get('lag_days', 0)} 天\n")
+            if len(stale_data) > 5:
+                text += f"       ... 还有 {len(stale_data) - 5} 只\n"
+
         self.result_text.setText(text)
 
     def export_report(self):

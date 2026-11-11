@@ -29,6 +29,7 @@ from src.data.quality.quarantine import drop_quarantined
 from src.data.tdx_day_parser import build_day_file_path, read_recent_records
 from src.utils.code_converter import is_fund_code, is_index_code, parse_code
 from src.utils.config import remote_sources_enabled
+from src.utils.dataframe_columns import resolve_date_column
 from src.utils.date_utils import parse_date
 from src.utils.exceptions import DataSourceException
 from src.utils.memory_optimizer import MemoryOptimizer
@@ -66,6 +67,32 @@ class _SourceAttempts:
 
 
 
+@dataclass(frozen=True)
+class StaleNotice:
+    """本地列存滞后于源端时的可观测告警。
+
+    ``is_stale`` 判据本身不变（源端末行交易日 > 列存末行交易日），本结构只负责
+    把「哪只标的、两边各到哪天、落后多少天」结构化带出来，供 GUI / CLI /
+    回测报告直接读取，而不是只写一行日志。
+    """
+
+    ts_code: str
+    data_type: str
+    local_last: date | None
+    source_last: date | None
+    lag_days: int
+
+    def to_dict(self) -> dict:
+        return {
+            'ts_code': self.ts_code,
+            'data_type': self.data_type,
+            'is_stale': True,
+            'local_last_trade_date': self.local_last.isoformat() if self.local_last else None,
+            'source_last_trade_date': self.source_last.isoformat() if self.source_last else None,
+            'lag_days': self.lag_days,
+        }
+
+
 class DataFetcher:
     """
     数据获取模块，负责从多个数据源获取数据
@@ -100,6 +127,38 @@ class DataFetcher:
         self._process_executor = None
         # 子进程池的创建/终止锁：超时终止与并发取数会同时访问池
         self._process_lock = threading.Lock()
+        # 本地列存滞后告警：按 (data_type, ts_code) 去重，由调用方 drain 走
+        self._stale_notices: dict[tuple[str, str], StaleNotice] = {}
+
+    def drain_stale_notices(self) -> List[StaleNotice]:
+        """取走并清空本次取数累积的列存滞后告警（供回测结果/报告消费）。"""
+        notices = list(self._stale_notices.values())
+        self._stale_notices.clear()
+        return notices
+
+    def peek_stale_notices(self) -> List[StaleNotice]:
+        """查看当前累积的列存滞后告警，不清空。"""
+        return list(self._stale_notices.values())
+
+    def _record_stale_notice(self, data_type: str, code: str,
+                             local_last: date | None,
+                             source_last: date | None) -> StaleNotice:
+        """登记一条滞后告警并写 WARNING 日志（同一标的多次取数只留一条）。"""
+        lag_days = ((source_last - local_last).days
+                    if local_last is not None and source_last is not None else 0)
+        notice = StaleNotice(
+            ts_code=code, data_type=data_type,
+            local_last=local_last, source_last=source_last, lag_days=lag_days,
+        )
+        self._stale_notices[(data_type, code)] = notice
+        logger.warning(
+            "本地列存滞后于源端，已按列存数据返回（不阻断）",
+            **{"symbol": code, "data_type": data_type, "is_stale": True,
+               "local_last_trade_date": notice.to_dict()['local_last_trade_date'],
+               "source_last_trade_date": notice.to_dict()['source_last_trade_date'],
+               "lag_days": lag_days},
+        )
+        return notice
 
     def register_source(self, source):
         """
@@ -203,19 +262,43 @@ class DataFetcher:
 
     def _get_data_from_local_store(self, data_type: str, code: str,
                                    start_date: str, end_date: str,
-                                   frequency: str) -> pl.DataFrame | None:
-        """从本地列存读取；未覆盖 / 源端已更新 / 未启用时返回 None。"""
+                                   frequency: str,
+                                   declined: List[str] | None = None) -> pl.DataFrame | None:
+        """从本地列存读取；未覆盖 / 源端已更新 / 未启用时返回 None。
+
+        ``declined`` 用于回传放弃原因（目前是 ``'stale'``），供上层把
+        「列存落后于源端」与「源端解析失败」「文件不存在」区分开。
+        """
         store = self._local_store_instance()
         if store is None or not store.enabled:
             return None
 
         started = time.perf_counter()
-        # 源 .day 比构建设备更新 → 本地存量落后，回退 TDX 而不是返回旧数据
-        if store.is_stale(data_type, code, self._tdx_source_path(data_type, code)):
-            route_metrics.record(route_metrics.ROUTE_LOCAL, hit=False,
+        # 源 .day 比列存新 → 判 stale。判据与阈值不变，但不再硬失败：
+        # 直接返回列存数据，同时登记可观测告警（哪只、两边各到哪天、落后几天）。
+        source_path = self._tdx_source_path(data_type, code)
+        if store.is_stale(data_type, code, source_path):
+            frame = store.read_daily(data_type, code, start_date, end_date, frequency)
+            coverage = store.coverage(data_type, code)
+            local_last = coverage.end if coverage is not None else None
+            source_last = None
+            if source_path is not None and source_path.exists():
+                try:
+                    from src.data.tdx_day_parser import read_first_last_trade_date
+
+                    _, source_last = read_first_last_trade_date(source_path)
+                # 兜底理由：源端末行读不到只影响告警里的日期字段，不影响是否返回列存
+                except (OSError, ValueError) as exc:  # noqa: BLE001
+                    logger.debug(f'[local-store] {code} 源端末行读取失败: {exc}')
+            self._record_stale_notice(data_type, code, local_last, source_last)
+            route_metrics.record(route_metrics.ROUTE_LOCAL,
+                                 hit=frame is not None and not frame.is_empty(),
                                  elapsed_ms=(time.perf_counter() - started) * 1000)
-            logger.info(f"[local-store] {code} 源文件已更新，回退通达信",
-                        **{"symbol": code, "source": "local_store", "hit": False})
+            if frame is not None and not frame.is_empty():
+                return frame
+            # 列存在该区间没有可用数据时才放弃，转数据源兜底
+            if declined is not None:
+                declined.append('stale')
             return None
 
         frame = store.read_daily(data_type, code, start_date, end_date, frequency)
@@ -333,8 +416,9 @@ class DataFetcher:
             return converted
 
         # 1) 本地列存（主路径，零公网往返）
+        local_declined: List[str] = []
         local_data = self._get_data_from_local_store(
-            'stock', stock_code, start_date, end_date, frequency)
+            'stock', stock_code, start_date, end_date, frequency, local_declined)
         if local_data is not None and not local_data.is_empty():
             adjusted = self._apply_adjustment_with_pit(
                 local_data, adjustment_type, as_of, stock_code)
@@ -343,7 +427,9 @@ class DataFetcher:
             return adjusted
 
         # 2) 数据源（通达信本地 .day 兜底；数据源一般不支持 as_of，直接传 None）
-        data = self._get_data_from_sources('stock', stock_code, start_date, end_date, frequency, adjustment_type)
+        data = self._get_data_from_sources('stock', stock_code, start_date, end_date,
+                                           frequency, adjustment_type,
+                                           local_declined=local_declined)
 
         if not data.is_empty():
             data = self._apply_adjustment(data, adjustment_type, as_of=None)
@@ -504,15 +590,17 @@ class DataFetcher:
             return converted
 
         # 1) 本地列存（主路径）
+        local_declined: List[str] = []
         local_data = self._get_data_from_local_store(
-            'index', index_code, start_date, end_date, frequency)
+            'index', index_code, start_date, end_date, frequency, local_declined)
         if local_data is not None and not local_data.is_empty():
             global_data_cache.set(local_data, 'index', index_code, start_date, end_date,
                                 **cache_params)
             return local_data
 
         # 2) 数据源（通达信本地 .day 兜底）
-        data = self._get_data_from_sources('index', index_code, start_date, end_date, frequency)
+        data = self._get_data_from_sources('index', index_code, start_date, end_date,
+                                           frequency, local_declined=local_declined)
         if not data.is_empty():
             global_data_cache.set(data, 'index', index_code, start_date, end_date,
                                 **cache_params)
@@ -572,8 +660,9 @@ class DataFetcher:
             return converted
 
         # 1) 本地列存（主路径，零公网往返）
+        local_declined: List[str] = []
         local_data = self._get_data_from_local_store(
-            'fund', fund_code, start_date, end_date, frequency)
+            'fund', fund_code, start_date, end_date, frequency, local_declined)
         if local_data is not None and not local_data.is_empty():
             adjusted = self._apply_adjustment_with_pit(
                 local_data, adjustment_type, as_of, fund_code)
@@ -583,7 +672,8 @@ class DataFetcher:
 
         # 2) 数据源（通达信本地 .day 兜底；数据源路径不支持 as_of，固定 None）
         data = self._get_data_from_sources(
-            'fund', fund_code, start_date, end_date, frequency, adjustment_type)
+            'fund', fund_code, start_date, end_date, frequency, adjustment_type,
+            local_declined=local_declined)
         if not data.is_empty():
             data = self._apply_adjustment(data, adjustment_type, as_of=None)
             source_cache_params = dict(cache_params)
@@ -918,7 +1008,7 @@ class DataFetcher:
             return df
 
         # 本地列存帧用 date 列，远程库帧用 trade_date；统一转 Datetime 比较。
-        date_col = 'trade_date' if 'trade_date' in df.columns else 'date'
+        date_col = resolve_date_column(df.columns, prefer='trade_date')
         date_series = df[date_col]
         if date_series.dtype in (pl.Date, pl.Datetime):
             trade_dates = date_series.cast(pl.Datetime).to_numpy()
@@ -986,21 +1076,35 @@ class DataFetcher:
     @staticmethod
     def _raise_local_only_unavailable(type_name: str, code: str, data_type: str,
                                       local_file: Path | None, *,
-                                      file_missing: bool) -> None:
+                                      file_missing: bool,
+                                      reason: str = 'no_data') -> None:
         """远程禁用且本地取不到数据时抛出可展示的结构化异常。
 
         UI 调用方（后台任务）会把异常转成 `task_error` 展示，因此不能再像
         以往那样静默返回空表——用户会误以为"该标的本就没有数据"。
+
+        ``reason`` 区分四种成因，避免把「源端更新后回退失败」「文件解析失败」
+        统一报成「无数据」而误导定位：
+        ``file_missing`` / ``stale`` / ``parse_failed`` / ``no_sources``。
         """
         if local_file is None:
             detail = "本地通达信数据路径未配置或代码无法解析，且远程已禁用"
         elif file_missing:
             detail = f"本地无此文件且远程已禁用: {local_file}"
+            reason = 'file_missing'
+        elif reason == 'stale':
+            detail = f"本地列存落后于源端且回退通达信后仍未取到数据: {local_file}"
+        elif reason == 'parse_failed':
+            detail = f"本地通达信文件解析失败且远程已禁用: {local_file}"
+        elif reason == 'no_sources':
+            detail = ("没有已注册的数据源（远程已禁用）："
+                      f"本地列存未覆盖且无法回退通达信: {local_file}")
         else:
             detail = f"本地通达信文件无数据且远程已禁用: {local_file}"
         logger.error(f"无法获取{type_name}{code}数据（{detail}）",
                      **{"symbol": code, "data_type": data_type,
-                        "local_file": str(local_file) if local_file else None})
+                        "local_file": str(local_file) if local_file else None,
+                        "reason": reason})
         raise DataSourceException(
             source='TdxHandler',
             message=f"获取{type_name}{code}失败：{detail}",
@@ -1008,11 +1112,13 @@ class DataFetcher:
                 'code': code,
                 'data_type': data_type,
                 'local_file': str(local_file) if local_file else None,
+                'reason': reason,
                 'remote_sources_enabled': False,
             },
         )
 
-    def _get_data_from_sources(self, data_type: str, code: str, start_date: str, end_date: str, frequency: str, adjustment_type: str = 'hfq') -> pl.DataFrame:
+    def _get_data_from_sources(self, data_type: str, code: str, start_date: str, end_date: str, frequency: str, adjustment_type: str = 'hfq',
+                               local_declined: List[str] | None = None) -> pl.DataFrame:
         """
         从多个数据源获取数据（优化版）
 
@@ -1029,6 +1135,8 @@ class DataFetcher:
             end_date: 结束日期
             frequency: 数据频率
             adjustment_type: 复权类型
+            local_declined: 本地列存放弃原因（``'stale'`` 表示源端比列存新），
+                用于把失败原因归到「源端更新」而不是笼统的「无数据」
 
         Returns:
             pl.DataFrame: 数据
@@ -1039,6 +1147,14 @@ class DataFetcher:
         type_name = {'stock': '股票', 'index': '指数', 'fund': '基金'}.get(data_type, data_type)
         remote_allowed = self._remote_sources_allowed()
         local_file = self._local_day_file_path(code)
+
+        def _local_failure_reason() -> str:
+            """把「为什么本地取不到」翻译成可区分的 reason。"""
+            if local_declined and 'stale' in local_declined:
+                return 'stale'
+            if attempts.all_failed:
+                return 'parse_failed'
+            return 'no_data'
 
         # 远程禁用：本地 .day 路径是确定的，缺失即立即失败，
         # 不进入任何源调用（避免 5s 本地超时与 10s/15s 远程超时）。
@@ -1051,7 +1167,8 @@ class DataFetcher:
         if not candidates:
             if not remote_allowed:
                 self._raise_local_only_unavailable(
-                    type_name, code, data_type, local_file, file_missing=False)
+                    type_name, code, data_type, local_file, file_missing=False,
+                    reason='no_sources')
             logger.warning(f"没有可用的数据源来获取{data_type}数据")
             return pl.DataFrame()
 
@@ -1097,7 +1214,8 @@ class DataFetcher:
         if not remote_allowed:
             # 远程禁用：本地取不到数据就是终态，显式报错，不静默返回空表
             self._raise_local_only_unavailable(
-                type_name, code, data_type, local_file, file_missing=False)
+                type_name, code, data_type, local_file, file_missing=False,
+                reason=_local_failure_reason())
 
         self._raise_if_all_sources_failed(attempts, type_name, code, data_type)
         logger.warning(f"无法从任何数据源获取{type_name}{code}数据",

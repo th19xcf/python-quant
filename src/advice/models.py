@@ -21,7 +21,7 @@ OUTPUT_COLUMNS = (
     'disposition',
     'target_weight_pct', 'shares', 'ref_price', 'horizon', 'validity_days',
     'confidence', 'top_factors', 'risk_notes', 'industry', 'industry_source',
-    'score', 'score_percentile',
+    'score', 'score_percentile', 'limit_up_risk', 'limit_up_basis',
 )
 
 
@@ -52,6 +52,10 @@ class Recommendation:
     defer_reason: str = ''
     #: 预计可执行日（仅 ``disposition='deferred'`` 时填写）
     defer_until: date | None = None
+    #: T 日涨停：不拦截，只标注次日可能买不进（能否成交由撮合层判定）
+    limit_up_risk: bool = False
+    #: 涨停判定依据（涨停价 / 幅度 / 触板形态）
+    limit_up_basis: str = ''
 
     def to_row(self) -> dict[str, Any]:
         """转为 CSV 友好的扁平字典（百分比字段按百分数输出）。"""
@@ -76,6 +80,8 @@ class Recommendation:
             'industry_source': self.industry_source,
             'score': round(float(self.score), 4),
             'score_percentile': round(float(self.score_percentile), 4),
+            'limit_up_risk': bool(self.limit_up_risk),
+            'limit_up_basis': self.limit_up_basis,
         }
 
 

@@ -507,8 +507,7 @@ class EventBus:
         for monitor in monitors:
             try:
                 monitor(event_type, signal_name, *args, **kwargs)
-            except Exception as e:
-                # 忽略监控器执行错误
+            except Exception as e:  # noqa: BLE001 — 监控器是旁路观察者，其异常不能影响事件发布
                 logger.exception(f"事件监控器执行错误: {e}")
 
     def get_all_signals(self) -> List[str]:
@@ -682,11 +681,6 @@ def publish_async(signal_name: str, **kwargs: Any) -> bool:
 def get_signal(signal_name: str) -> Any:
     """便捷获取信号函数"""
     return event_bus.get_signal(signal_name)
-
-
-def get_event_bus() -> EventBus:
-    """获取事件总线实例"""
-    return event_bus
 
 
 def shutdown_event_bus() -> None:

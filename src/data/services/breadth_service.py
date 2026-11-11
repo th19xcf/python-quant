@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import bisect
 import json
-import os
 import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -36,9 +35,10 @@ from typing import Any, Iterable
 import polars as pl
 from loguru import logger
 
-from src.backtest.engine.execution_core import ExecutionRules
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.quality.code_migration import load_entity_index
 from src.data.st_history import load_intervals
+from src.risk.execution_rules import ExecutionRules
 
 #: 快照口径版本号；口径变化时必须改版本，触发全量重建
 BREADTH_VERSION = 'breadth_v1'
@@ -115,10 +115,7 @@ def _quotes_glob(store_root: Path | str) -> str:
 
 
 def _write_parquet_atomic(frame: pl.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix('.tmp.parquet')
-    frame.write_parquet(tmp)
-    os.replace(tmp, path)
+    write_parquet_atomic(frame, path)
 
 
 # ----------------------------------------------------------------------
@@ -364,9 +361,8 @@ def _write_snapshot(root: Path, frame: pl.DataFrame) -> None:
         'rolling_window': ROLLING_WINDOW,
         'note': '本地日线收盘口径；MySQL market_breadth 为盘中实时快照，不可作为收盘日频广度来源',
     }
-    tmp = coverage_path(root).with_suffix('.json.tmp')
-    tmp.write_text(json.dumps(coverage, ensure_ascii=False, indent=2), encoding='utf-8')
-    os.replace(tmp, coverage_path(root))
+    write_text_atomic(
+        json.dumps(coverage, ensure_ascii=False, indent=2), coverage_path(root))
     _SNAPSHOT_CACHE[str(path)] = (path.stat().st_mtime_ns, frame)
 
 

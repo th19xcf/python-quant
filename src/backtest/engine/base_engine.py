@@ -27,10 +27,10 @@ from src.backtest.engine.input_contract import (
     ROLE_MACD_HIST,
     ROLE_MACD_SIGNAL,
     ROLE_RSI,
-    BacktestInputContractError,
     FrameContract,
     ma_column,
     rsi_column,
+    validate_factor_frame,
 )
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.backtest.strategies.base_strategy import BaseStrategy
@@ -241,27 +241,12 @@ class BaseBacktestEngine:
         ).alias(FACTOR_CONTRACT.column(ROLE_ATR)))
 
         result = df.with_columns(exprs)
-        self._require_factor_columns(
-            result, (ma_column(short_w), ma_column(long_w)),
+        validate_factor_frame(
+            result,
+            ma_columns=(ma_column(short_w), ma_column(long_w)),
             context=getattr(strategy, 'name', type(strategy).__name__),
         )
         return result
-
-    @staticmethod
-    def _require_factor_columns(df: pl.DataFrame, extra: tuple[str, ...],
-                                *, context: str) -> None:
-        """因子契约自检：必需因子列必须真的算出来了。"""
-        required = extra + tuple(
-            FACTOR_CONTRACT.column(role)
-            for role in (ROLE_MACD, ROLE_MACD_SIGNAL, ROLE_MACD_HIST,
-                         ROLE_RSI, ROLE_ATR)
-        )
-        missing = [name for name in required if name not in df.columns]
-        if missing:
-            raise BacktestInputContractError(
-                f'{context} 指标预计算缺少因子列 {missing}：'
-                '策略会读到 None 并恒返回 hold，回测将静默空跑'
-            )
 
     def _generate_param_combinations(self, param_ranges: Dict[str, List[float]]) -> List[Dict[str, float]]:
         """

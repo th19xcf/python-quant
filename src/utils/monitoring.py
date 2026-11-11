@@ -12,7 +12,6 @@ src.utils.memory_manager.MemoryManager 实际承担（main.py 启动时开启）
 import threading
 import time
 from collections import defaultdict, deque
-from collections.abc import Callable
 from typing import Any, Dict
 
 from loguru import logger
@@ -287,48 +286,6 @@ class MonitoringSystem:
 
 # 创建全局监控系统实例
 global_monitoring_system = MonitoringSystem()
-
-
-# 监控装饰器
-def monitor_data_source(func: Callable[..., Any]) -> Callable[..., Any]:
-    """
-    数据源监控装饰器
-    """
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        source_name = args[0].__class__.__name__ if args else "unknown"
-        start_time = time.time()
-        success = True
-
-        try:
-            result = func(*args, **kwargs)
-        except Exception:
-            success = False
-            raise
-        finally:
-            response_time = time.time() - start_time
-            global_monitoring_system.record_data_source_request(source_name, response_time, success)
-
-        return result
-
-    return wrapper
-
-
-def monitor_cache(func: Callable[..., Any]) -> Callable[..., Any]:
-    """
-    缓存监控装饰器
-    """
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        result = func(*args, **kwargs)
-
-        # 假设第一个参数是缓存实例
-        if args and hasattr(args[0], 'get_stats'):
-            cache_name = args[0].__class__.__name__
-            stats = args[0].get_stats()
-            global_monitoring_system.update_cache_stats(cache_name, stats)
-
-        return result
-
-    return wrapper
 
 
 def log_cache_stats() -> None:

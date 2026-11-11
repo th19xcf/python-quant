@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from src.backtest.costs.cost_model import COST_DEFAULTS
+from src.quant.learning.config import MIN_HISTORY_ROWS
 
 
 @dataclass(frozen=True)
@@ -159,6 +160,10 @@ class SoftFilterConfig:
 
     enabled: bool = True
     ma_trend_required: bool = True
+    #: 均线多头口径：``None`` = 现行「ma20_gap>0 且 ma60_gap>0」；
+    #: 给数值（如 0.0 / -0.01 / -0.02）则改为「ma60_gap>0 或 ma20_gap>=该值」，
+    #: 即方案 D 的「MA60 多头 或 MA20 偏离不小于 −ε」。默认 None 保持原行为。
+    ma20_floor: float | None = None
     volume_quantile: float = 0.60
     atr_quantile: float = 0.80
     rsi_low: float = 0.10
@@ -220,10 +225,10 @@ TIER_PRESETS: dict[str, TierConfig] = {
         max_atr_pct=0.070,
         min_amount=2.0e7,
         factors=(
-            FactorSpec('momentum_1m', '1月动量', 0.30),
-            FactorSpec('volume_momentum_20', '20日量能', 0.20),
-            FactorSpec('ma20_gap', '偏离20日线', 0.20),
-            FactorSpec('rsi_14', 'RSI(14)', 0.10),
+            FactorSpec('momentum_1m', '1月动量', 0.30, direction=-1.0),
+            FactorSpec('volume_momentum_20', '20日量能', 0.20, direction=-1.0),
+            FactorSpec('ma20_gap', '偏离20日线', 0.20, direction=-1.0),
+            FactorSpec('rsi_14', 'RSI(14)', 0.10, direction=-1.0),
             FactorSpec('atr_pct', 'ATR占比', 0.20, direction=-1.0),
         ),
         note=('短线档位未通过样本外验证：实测年化单边换手约 11.2x，'
@@ -245,10 +250,10 @@ TIER_PRESETS: dict[str, TierConfig] = {
         max_atr_pct=0.050,
         min_amount=3.0e7,
         factors=(
-            FactorSpec('momentum_3m', '3月动量', 0.30),
-            FactorSpec('momentum_6m', '6月动量', 0.15),
-            FactorSpec('trend_slope_60', '60日趋势', 0.20),
-            FactorSpec('sharpe_ratio_20', '20日夏普', 0.15),
+            FactorSpec('momentum_3m', '3月动量', 0.30, direction=-1.0),
+            FactorSpec('momentum_6m', '6月动量', 0.15, direction=-1.0),
+            FactorSpec('trend_slope_60', '60日趋势', 0.20, direction=-1.0),
+            FactorSpec('sharpe_ratio_20', '20日夏普', 0.15, direction=-1.0),
             FactorSpec('volatility_20', '20日波动率', 0.20, direction=-1.0),
         ),
     ),
@@ -268,10 +273,10 @@ TIER_PRESETS: dict[str, TierConfig] = {
         max_atr_pct=0.040,
         min_amount=5.0e7,
         factors=(
-            FactorSpec('momentum_6m', '6月动量', 0.25),
-            FactorSpec('momentum_12m', '12月动量', 0.25),
-            FactorSpec('trend_slope_60', '60日趋势', 0.20),
-            FactorSpec('sharpe_ratio_20', '20日夏普', 0.20),
+            FactorSpec('momentum_6m', '6月动量', 0.25, direction=-1.0),
+            FactorSpec('momentum_12m', '12月动量', 0.25, direction=-1.0),
+            FactorSpec('trend_slope_60', '60日趋势', 0.20, direction=-1.0),
+            FactorSpec('sharpe_ratio_20', '20日夏普', 0.20, direction=-1.0),
             FactorSpec('max_drawdown_20', '20日回撤', 0.10),
         ),
     ),
@@ -288,7 +293,7 @@ class AdviceConfig:
     turnover: TurnoverConfig = field(default_factory=TurnoverConfig)
     risk: RiskFilterConfig = field(default_factory=RiskFilterConfig)
     #: 单票最少历史行数（不足则 AVOID）
-    min_history_rows: int = 60
+    min_history_rows: int = MIN_HISTORY_ROWS
     #: 单票最低参考价（过滤仙股）
     min_price: float = 1.0
     #: 每个档位最多输出多少条 AVOID 观察项

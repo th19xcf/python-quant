@@ -26,6 +26,7 @@ from typing import Any, Iterable
 
 import polars as pl
 
+from src.backtest.engine.input_contract import validate_financial_frames
 from src.data.financials.store import financials_dir, read_table
 from src.data.local_store.share_capital import read_shares
 
@@ -203,11 +204,25 @@ def build_fundamentals(panel: pl.DataFrame, valuation: pl.DataFrame,
     Args:
         panel: 至少含 ``ts_code / date / volume``；
         valuation: ``ts_code / trade_date / total_mv / circ_mv / dv_ratio``；
-        shares: ``ts_code / effective_date / float_share / total_share``；
+        shares: ``ts_code / effective_date / float_share``
+            （``total_share`` 不在读取范围内，契约不要求）；
         income / balance: 财务三表原始行（含 ``ann_date``）。
     Returns:
         原面板 + :data:`FUNDAMENTAL_COLUMNS`（顺序与输入一致）。
+
+    Raises:
+        BacktestInputContractError: 任一源表缺必需列（列契约见
+            ``src/backtest/engine/input_contract.py`` 的 valuation / shares /
+            income / balance 四张表）。空帧允许通过，缺列不允许——否则
+            polars 会在 ``select`` 处抛 ``ColumnNotFoundError``，既无法一次
+            报全缺失列，也看不出是哪张表的契约被破坏。
     """
+    validate_financial_frames(
+        {'valuation': valuation, 'shares': shares,
+         'income': income, 'balance': balance},
+        context='build_fundamentals ',
+    )
+
     base = (panel.select(['ts_code', 'date', 'volume'])
             .with_row_index('_row').sort(['ts_code', 'date']))
 

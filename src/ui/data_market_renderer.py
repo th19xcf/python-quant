@@ -193,5 +193,5 @@ class MarketTableRenderer:
                 item.setForeground(QColor(0, 255, 0))
             else:
                 item.setForeground(QColor(200, 200, 200))
-        except Exception as e:
+        except Exception as e:  # 单元格着色失败只影响颜色，不能中断整表渲染
             logger.debug(f"设置涨跌单元格颜色失败: {e}", exc_info=True)

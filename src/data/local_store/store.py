@@ -29,7 +29,6 @@ from __future__ import annotations
 import contextlib
 import functools
 import json
-import os
 import threading
 import time
 from collections import OrderedDict
@@ -42,6 +41,7 @@ import polars as pl
 import psutil
 from loguru import logger
 
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.local_store.paths import resolve_store_root as _resolve_store_root
 
 STORE_VERSION = 1
@@ -450,11 +450,9 @@ class LocalQuoteStore:
         if frame.is_empty():
             return 0
         path = self.quote_path(data_type, ts_code)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix('.parquet.tmp')
-        frame.sort('date').write_parquet(
-            tmp, compression='zstd', compression_level=3, statistics=True)
-        os.replace(tmp, path)
+        write_parquet_atomic(
+            frame.sort('date'), path, compression='zstd',
+            compression_level=3, statistics=True)
 
         rows = frame.height
         first = frame['date'].min()
@@ -492,9 +490,8 @@ class LocalQuoteStore:
             return
         frame = pl.DataFrame(rows, schema_overrides=_META_SCHEMA).sort(
             ['data_type', 'ts_code'])
-        tmp = self.meta_path.with_suffix('.parquet.tmp')
-        frame.write_parquet(tmp, compression='zstd', statistics=True)
-        os.replace(tmp, self.meta_path)
+        write_parquet_atomic(frame, self.meta_path, compression='zstd',
+                             statistics=True)
 
     def write_state(self, payload: dict[str, Any]) -> None:
         """写构建状态（版本/时间/数据源），供排障与幂等判断。"""
@@ -502,9 +499,8 @@ class LocalQuoteStore:
         payload = dict(payload)
         payload.setdefault('version', STORE_VERSION)
         payload.setdefault('updated_at', datetime.now().isoformat(timespec='seconds'))
-        tmp = self.state_path.with_suffix('.json.tmp')
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
-        os.replace(tmp, self.state_path)
+        write_text_atomic(
+            json.dumps(payload, ensure_ascii=False, indent=2), self.state_path)
 
     def read_state(self) -> dict[str, Any]:
         if not self.state_path.exists():

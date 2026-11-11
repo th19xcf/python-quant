@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
+import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -34,6 +34,14 @@ from typing import Any
 import polars as pl
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.data.atomic_write import (  # noqa: E402
+    write_parquet_atomic,
+    write_text_atomic,
+)
+
 DEFAULT_OUT = PROJECT_ROOT / 'data/local_store/factors/stock_dividend.parquet'
 DEFAULT_CACHE = PROJECT_ROOT / 'data/local_store/factors/rebuild/stock_dividend_parts'
 DEFAULT_REPORT = PROJECT_ROOT / 'reports/stock_dividend_20261105'
@@ -157,10 +165,8 @@ def fetch_period(
             if raw is None or len(raw) == 0:
                 return pl.DataFrame(schema=FINAL_SCHEMA), None
             frame = normalize_period(raw, period, start_date)
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            tmp = cache_path.with_suffix('.parquet.tmp')
-            frame.write_parquet(tmp, compression='zstd', statistics=True)
-            os.replace(tmp, cache_path)
+            write_parquet_atomic(
+                frame, cache_path, compression='zstd', statistics=True)
             return frame, None
         except Exception as exc:  # noqa: BLE001
             last_error = f'{type(exc).__name__}: {exc}'
@@ -503,10 +509,7 @@ def cninfo_table(code: str, cache_dir: Path) -> pl.DataFrame:
         pl.col('派息日').cast(pl.Date, strict=False).cast(pl.Utf8).alias('pay_date'),
         pl.col('实施方案公告日期').cast(pl.Date, strict=False).alias('notice_date'),
     ]).drop_nulls('ex_date')
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = cache_path.with_suffix('.parquet.tmp')
-    out.write_parquet(tmp, compression='zstd', statistics=True)
-    os.replace(tmp, cache_path)
+    write_parquet_atomic(out, cache_path, compression='zstd', statistics=True)
     return out
 
 
@@ -599,11 +602,8 @@ def frame_stats(frame: pl.DataFrame) -> dict[str, Any]:
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + '.tmp')
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-                   encoding='utf-8', newline='\n')
-    os.replace(tmp, path)
+    write_text_atomic(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str), path)
 
 
 def load_existing(path: Path) -> pl.DataFrame:
@@ -621,10 +621,7 @@ def update_meta(out_path: Path, rows: int, columns: list[str] | None = None) -> 
     payload['dividend_updated_at'] = datetime.now().isoformat(timespec='seconds')
     payload['dividend_source'] = 'em_fhps_bulk+local_preserved'
     payload['dividend_columns'] = columns or list(FINAL_SCHEMA)
-    tmp = meta_path.with_suffix('.json.tmp')
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                   encoding='utf-8', newline='\n')
-    os.replace(tmp, meta_path)
+    write_text_atomic(json.dumps(payload, ensure_ascii=False, indent=2), meta_path)
 
 
 def select_as_of(
@@ -747,9 +744,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0
 
-    tmp = args.out.with_suffix('.parquet.tmp')
-    final.write_parquet(tmp, compression='zstd', statistics=True)
-    os.replace(tmp, args.out)
+    write_parquet_atomic(final, args.out, compression='zstd', statistics=True)
     update_meta(args.out, final.height, final.columns)
     print(f'已写入 {args.out}：{final.height:,} 行（原 {existing.height:,} 行，'
           f'新增 {merge_stats["appended_same_day"] + merge_stats["appended_plan"]:,} 行）')

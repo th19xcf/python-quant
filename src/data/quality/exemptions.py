@@ -28,12 +28,14 @@ fail-closed 行为，不会静默放行。
 from __future__ import annotations
 
 import csv
-import os
+import io
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any, Iterable
+
+from src.data.atomic_write import write_text_atomic
 
 #: 项目根目录（src/data/quality/ -> 上溯 3 层）
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -118,23 +120,21 @@ def write_exemptions(records: Iterable[ExemptionRecord],
                      path: Path | str = DEFAULT_EXEMPTION_PATH) -> int:
     """去重排序后原子写入基线文件，返回落盘条数。"""
     target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
     unique = {record.key: record for record in records}
     ordered = sorted(unique.values(), key=lambda item: item.key)
-    tmp = target.with_name(target.name + '.tmp')
-    with tmp.open('w', encoding='utf-8', newline='') as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(FIELDNAMES))
-        writer.writeheader()
-        for record in ordered:
-            writer.writerow({
-                'rule_id': record.rule_id,
-                'ts_code': record.ts_code,
-                'trade_date': record.trade_date,
-                'reason': record.reason,
-                'created_at': record.created_at,
-                'expires': record.expires,
-            })
-    os.replace(tmp, target)
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=list(FIELDNAMES))
+    writer.writeheader()
+    for record in ordered:
+        writer.writerow({
+            'rule_id': record.rule_id,
+            'ts_code': record.ts_code,
+            'trade_date': record.trade_date,
+            'reason': record.reason,
+            'created_at': record.created_at,
+            'expires': record.expires,
+        })
+    write_text_atomic(buffer.getvalue(), target)
     return len(ordered)
 
 

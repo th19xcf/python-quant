@@ -15,7 +15,7 @@ from src.advice.pipeline import AdviceEngine
 from src.advice.portfolio import Allocation
 from src.advice.replay import _ReplayTier
 from src.advice.universe import build_meta
-from src.backtest.engine.execution_core import ExecutionRules
+from src.risk.execution_rules import ExecutionRules
 
 CODE = '000001.SZ'
 DATES = [date(2026, 11, 2), date(2026, 11, 3), date(2026, 11, 4)]

@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -49,6 +48,7 @@ import requests
 from loguru import logger
 
 from src.data import st_history
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 
 EM_URL = 'https://datacenter.eastmoney.com/securities/api/data/v1/get'
 EM_REPORT = 'RPT_F10_ORG_BASICINFO'
@@ -141,10 +141,7 @@ def candidate_notice_dir(store_root: Path | str) -> Path:
 
 
 def _write_atomic(frame: pl.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix('.tmp.parquet')
-    frame.write_parquet(tmp)
-    os.replace(tmp, path)
+    write_parquet_atomic(frame, path)
 
 
 def _write_text(path: Path, text: str) -> None:

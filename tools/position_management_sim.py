@@ -156,7 +156,7 @@ def simulate_staged(frame: pl.DataFrame, cfg: StagedConfig, *,  # noqa: C901
     日内状态机包含退出/加仓/建仓/估值四段独立分支，拆分后仍集中在同一闭包内
     以共享现金与持仓状态；圈复杂度以 noqa 标注，避免为拆而拆引入参数传递噪声。
     """
-    from src.backtest.engine.execution_core import ExecutionRules
+    from src.risk.execution_rules import ExecutionRules
 
     rules = ExecutionRules()
     from src.backtest.costs.cost_model import CostModel

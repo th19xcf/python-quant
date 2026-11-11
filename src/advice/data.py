@@ -20,6 +20,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.local_store.store import LocalQuoteStore, resolve_store_root
+from src.quant.learning.config import MIN_HISTORY_ROWS
 
 _PANEL_COLUMNS = (
     'date', 'ts_code', 'open', 'high', 'low', 'close', 'volume', 'amount',
@@ -112,7 +113,7 @@ class LocalPanelLoader:
     """本地日线面板加载器（多标的一次拼装）。"""
 
     def __init__(self, config: Any, store: LocalQuoteStore | None = None,
-                 min_rows: int = 60) -> None:
+                 min_rows: int = MIN_HISTORY_ROWS) -> None:
         self.config = config
         self.root = resolve_store_root(config)
         self.store = store or LocalQuoteStore(self.root, enabled=True)

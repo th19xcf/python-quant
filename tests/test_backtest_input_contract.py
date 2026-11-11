@@ -21,7 +21,13 @@ from src.backtest.engine import execution_core
 from src.backtest.engine.backtest_engine import BacktestEngine
 from src.backtest.engine.input_contract import (
     BAR_CONTRACT,
+    ENGINE_CONTRACTS,
+    FACTOR_CONTRACT,
     BacktestInputContractError,
+    contract_for,
+    ma_column,
+    validate_factor_frame,
+    validate_financial_frames,
     validate_universe,
 )
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
@@ -138,6 +144,163 @@ def test_result_records_input_contract():
     bar = result['input_contract']['bar']
     assert bar['required']['date'] == BAR_CONTRACT.column('date')
     assert bar['required']['volume'] == BAR_CONTRACT.column('volume')
+
+
+# ---------------------------------------------------------------------------
+# 1b. P1-2：因子契约与财务契约必须真的挂在读路径上
+# ---------------------------------------------------------------------------
+
+
+def _factor_frame(days: int = 30, **extra) -> pl.DataFrame:
+    """构造一帧"预计算已完成"的因子表（均线/ MACD / RSI / ATR 全部有值）。"""
+    base = _frame(days=days)
+    columns = {
+        ma_column(10): np.full(days, 10.0),
+        ma_column(20): np.full(days, 10.0),
+        'macd': np.full(days, 0.1),
+        'macd_signal': np.full(days, 0.05),
+        'macd_hist': np.full(days, 0.05),
+        'rsi': np.full(days, 50.0),
+        'atr': np.full(days, 0.2),
+    }
+    columns.update(extra)
+    return base.with_columns([pl.Series(name, value) for name, value in columns.items()])
+
+
+def test_factor_contract_rejects_missing_column():
+    """缺任一必需因子列必须抛错（此前 validate_factor_frame 全仓 0 调用点）。"""
+    frame = _factor_frame().drop('macd')
+    with pytest.raises(BacktestInputContractError, match='macd'):
+        validate_factor_frame(frame, context='测试策略 ')
+
+
+def test_factor_contract_accepts_complete_frame():
+    """列齐全且非全空时不得误报（正向用例）。"""
+    validate_factor_frame(_factor_frame(), context='测试策略 ')
+
+
+def test_factor_contract_honours_parameterised_ma_columns():
+    """策略用 ma_5 / ma_20 时，契约不得再要求默认的 ma_10。"""
+    frame = _factor_frame().drop(ma_column(10)).with_columns(
+        pl.Series(ma_column(5), np.full(30, 10.0)))
+    with pytest.raises(BacktestInputContractError, match=ma_column(10)):
+        validate_factor_frame(frame)  # 不传实际窗口 → 按契约默认列检查
+    validate_factor_frame(frame, ma_columns=(ma_column(5), ma_column(20)))
+
+
+def test_factor_contract_rejects_all_null_column():
+    """列在但整列为空 = 预计算未生效，必须与缺列同样抛错。"""
+    frame = _factor_frame().with_columns(
+        pl.Series('macd', [None] * 30, dtype=pl.Float64))
+    with pytest.raises(BacktestInputContractError, match='全为空'):
+        validate_factor_frame(frame)
+
+
+def test_precompute_indicators_enforces_factor_contract(monkeypatch):
+    """校验必须挂在真实读路径上：预计算产出全空 RSI 时，回测入口直接抛错。"""
+    from src.backtest.engine import base_engine
+
+    monkeypatch.setattr(
+        base_engine, 'rsi_expr',
+        lambda *args, **kwargs: pl.lit(None, dtype=pl.Float64))
+
+    engine = BacktestEngine(_frame(days=30))
+    with pytest.raises(BacktestInputContractError, match='rsi'):
+        engine._precompute_indicators(_frame(days=30), _OneShotBuy())
+
+    # 正向：未破坏的公式层不抛错，且列真的算出来了
+    monkeypatch.undo()
+    result = engine._precompute_indicators(_frame(days=30), _OneShotBuy())
+    for column in ('macd', 'macd_signal', 'macd_hist', 'rsi',
+                   'atr', ma_column(10), ma_column(20)):
+        assert column in result.columns
+
+
+def _financial_frames() -> dict[str, pl.DataFrame]:
+    dates = pd.date_range('2023-01-02', periods=3, freq='B').date
+    return {
+        'valuation': pl.DataFrame({
+            'ts_code': ['000001.SZ'] * 3,
+            'trade_date': list(dates),
+            'total_mv': [1.0e10] * 3,
+            'circ_mv': [8.0e9] * 3,
+            'dv_ratio': [2.0] * 3,
+        }),
+        'shares': pl.DataFrame({
+            'ts_code': ['000001.SZ'],
+            'effective_date': [dates[0]],
+            'float_share': [100_000_000],
+        }),
+        'income': pl.DataFrame({
+            'ts_code': ['000001.SZ'],
+            'end_date': [dates[0]],
+            'ann_date': [dates[0]],
+            'revenue': [500.0],
+            'parent_net_profit': [50.0],
+        }),
+        'balance': pl.DataFrame({
+            'ts_code': ['000001.SZ'],
+            'end_date': [dates[0]],
+            'ann_date': [dates[0]],
+            'total_assets': [9.0e10],
+            'total_equity': [1.0e9],
+        }),
+    }
+
+
+def test_financial_contracts_match_real_read_columns():
+    """财务契约登记的列必须与 build_fundamentals 真实读取一致，不得凭名猜。"""
+    assert contract_for('valuation').required_roles() == (
+        'ts_code', 'trade_date', 'total_mv', 'circ_mv', 'dv_ratio')
+    assert contract_for('shares').required_roles() == (
+        'ts_code', 'effective_date', 'float_share')
+    assert contract_for('income').required_roles() == (
+        'ts_code', 'end_date', 'ann_date', 'revenue', 'parent_net_profit')
+    assert contract_for('balance').required_roles() == (
+        'ts_code', 'end_date', 'ann_date', 'total_assets', 'total_equity')
+
+
+def test_financial_contracts_reject_missing_column():
+    frames = _financial_frames()
+    frames['valuation'] = frames['valuation'].drop('dv_ratio')
+    with pytest.raises(BacktestInputContractError, match='dv_ratio'):
+        validate_financial_frames(frames, context='测试 ')
+
+
+def test_financial_contracts_accept_complete_and_empty_frames():
+    """正向：列齐全不抛；空行但有 schema 的帧同样不抛（"没有数据"不是"缺列"）。"""
+    frames = _financial_frames()
+    validate_financial_frames(frames)
+    empty = {name: frame.clear() for name, frame in frames.items()}
+    validate_financial_frames(empty)
+    assert all(frame.height == 0 for frame in empty.values())
+
+
+def test_build_fundamentals_enforces_financial_contract():
+    """校验必须落在财务因子的真实入口：缺列直接抛契约错误，而不是走到 select 才炸。"""
+    from src.advice.fundamental_factors import build_fundamentals
+
+    frames = _financial_frames()
+    panel = pl.DataFrame({
+        'ts_code': ['000001.SZ'] * 3,
+        'date': sorted(frames['valuation']['trade_date'].to_list()),
+        'volume': [10_000.0] * 3,
+    })
+    frames['valuation'] = frames['valuation'].drop('circ_mv')
+    with pytest.raises(BacktestInputContractError, match='circ_mv'):
+        build_fundamentals(
+            panel, frames['valuation'], frames['shares'],
+            frames['income'], frames['balance'])
+
+
+def test_engine_contracts_is_the_single_registry():
+    """ENGINE_CONTRACTS 是唯一注册入口：已登记全部帧类型，且不复制列定义。"""
+    assert set(ENGINE_CONTRACTS) == {
+        'bar', 'factor', 'valuation', 'shares', 'income', 'balance'}
+    assert contract_for('bar') is BAR_CONTRACT
+    assert contract_for('factor') is FACTOR_CONTRACT
+    with pytest.raises(KeyError, match='未登记'):
+        contract_for('financial')  # 旧的、零消费者的财务契约已退役，不保留别名
 
 
 # ---------------------------------------------------------------------------

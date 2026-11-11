@@ -59,7 +59,6 @@ def parse_args():
     解析命令行参数
     """
     parser = argparse.ArgumentParser(description='中国股市量化分析系统')
-    parser.add_argument('--init-db', action='store_true', help='初始化数据库表')
     parser.add_argument('--update-stock', action='store_true', help='从通达信数据源同步股票信息到数据库')
     parser.add_argument('--update-index', action='store_true', help='以通达信指数代码为基准更新 index_basic（Baostock/AkShare 补全）')
     parser.add_argument('--update-fund', action='store_true', help='将 stock_basic 中基金迁移到 fund_basic 并补全信息')

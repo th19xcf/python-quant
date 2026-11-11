@@ -21,14 +21,19 @@ from src.backtest.engine.backtest_engine import BacktestEngine
 from src.backtest.engine.execution_core import (
     AccountBook,
     EventBacktestRunner,
-    ExecutionRules,
 )
-from src.backtest.engine.input_contract import BacktestInputContractError
+from src.backtest.engine.input_contract import (
+    OUT_DATE,
+    OUT_SIDE,
+    OUT_TS_CODE,
+    BacktestInputContractError,
+)
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.backtest.strategies.ma_strategy import MAStrategy
 from src.core.usecases import run_backtest
 from src.risk import MaxPositionWeight, PriceLimitTradable, RiskEngine
+from src.risk.execution_rules import ExecutionRules
 from src.risk.rules import DrawdownTracker, MaxDrawdownCircuit, Portfolio
 
 
@@ -254,6 +259,21 @@ def test_expired_orders_are_audited():
     result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH')
     assert result['trades'] == []
     assert [o['reason'] for o in result['expired_orders']] == ['not_tradable']
+
+
+def test_output_records_use_declared_contract_keys():
+    """输出记录的键名与 input_contract 的 OUT_* 声明一致，不再写裸字符串。"""
+    engine = BacktestEngine(_make_df(opens=[100.0] * 4, closes=[100.0] * 4))
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    trade = engine.run_backtest(
+        initial_capital=1_000_000.0, ts_code='600000.SH')['trades'][0]
+    assert OUT_DATE in trade
+
+    engine = BacktestEngine(_make_df(opens=[100.0] * 4, closes=[100.0] * 4))
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    expired = engine.run_backtest(
+        initial_capital=5_000.0, ts_code='600000.SH')['expired_orders'][0]
+    assert {OUT_DATE, OUT_SIDE, OUT_TS_CODE} <= set(expired)
 
 
 def test_small_order_steps_down_one_lot_instead_of_expiring():
@@ -657,6 +677,48 @@ def test_limit_price_rounded_to_cent_by_exchange_rule():
     # 一字跌停 9.03 不可卖，9.04 仍可卖
     assert rules.is_tradable('sell', open_price=9.03, close=9.03, **down_kw) is False
     assert rules.is_tradable('sell', open_price=9.04, close=9.04, **down_kw) is True
+
+
+def test_limit_price_numeric_anchors_cover_every_board():
+    """P1-5：四类档位的涨跌停价必须落到具体数值（== 比较），不能只断言布尔放行。
+
+    此前全库只有「11.00 处不可买」这类布尔断言，``PRICE_TICK`` 从 1 分改成
+    0.1 分、``ROUND_HALF_UP`` 改成 DOWN、或档位整体偏移 5 分，用例照样全绿，
+    而组合收益会系统性偏低且不报错。这里按「代码 + ST 状态 → 幅度 → 价格」
+    整条链路取精确值：幅度错、取整错、最小变动单位错，任一环节都会变红。
+    """
+    from datetime import date
+
+    # (ts_code, is_st, trade_date, prev_close, 期望幅度, 期望涨停价, 期望跌停价)
+    cases = [
+        # 主板 10%：10.00 → 11.00 / 9.00
+        ('600000.SH', False, date(2023, 6, 1), 10.00, 0.10, 11.00, 9.00),
+        # 主板 .005 边界：10.05×1.1=11.055 → 11.06（四舍五入进位），×0.9=9.045 → 9.05
+        ('000001.SZ', False, date(2023, 6, 1), 10.05, 0.10, 11.06, 9.05),
+        # 创业板注册制后 20%：10.00 → 12.00 / 8.00
+        ('300750.SZ', False, date(2023, 6, 1), 10.00, 0.20, 12.00, 8.00),
+        # 创业板注册制改革前（<2020-08-24）仍为 10%：10.00 → 11.00 / 9.00
+        ('300750.SZ', False, date(2019, 6, 3), 10.00, 0.10, 11.00, 9.00),
+        # 科创板 20%：10.00 → 12.00 / 8.00
+        ('688981.SH', False, date(2023, 6, 1), 10.00, 0.20, 12.00, 8.00),
+        # 科创板 ST 与普通股同档（20%），不收窄到 5%
+        ('688981.SH', True, date(2023, 6, 1), 10.00, 0.20, 12.00, 8.00),
+        # 主板 ST 收窄到 5%：10.00 → 10.50 / 9.50
+        ('600000.SH', True, date(2023, 6, 1), 10.00, 0.05, 10.50, 9.50),
+        # ST 的 .005 边界：10.05×1.05=10.5525 → 10.55，×0.95=9.5475 → 9.55
+        ('600000.SH', True, date(2023, 6, 1), 10.05, 0.05, 10.55, 9.55),
+    ]
+    for ts_code, is_st, trade_date, prev_close, pct, want_up, want_down in cases:
+        got_pct = ExecutionRules.resolve_limit_pct(
+            ts_code, is_st=is_st, trade_date=trade_date,
+        )
+        assert got_pct == pct, f'{ts_code} st={is_st} {trade_date}: 幅度 {got_pct} != {pct}'
+        up = ExecutionRules.resolve_limit_price(prev_close, got_pct, 'buy')
+        down = ExecutionRules.resolve_limit_price(prev_close, got_pct, 'sell')
+        assert (up, down) == (want_up, want_down), (
+            f'{ts_code} st={is_st} prev_close={prev_close}: '
+            f'涨跌停价 {(up, down)} != {(want_up, want_down)}'
+        )
 
 
 def test_high_low_relative_tolerance_covers_reweighting_error():

@@ -1,0 +1,397 @@
+{
+  "_notice": "这是时点快照，不是新的配置真源。配置真源仍是 src/advice/config.py；本文件只用于冻结评测对照口径，任何参数改动必须改 config.py 后重新导出，禁止反向以本文件覆盖 config.py。",
+  "_generated_at": "2026-11-11T14:41:40",
+  "_git_commit": "af0b37a6080854967dc21ad220956bc7f6d7034e",
+  "_git_dirty": true,
+  "_protocol": {
+    "version": "v1",
+    "eval_start": "2022-01-01",
+    "eval_end": "2026-10-31",
+    "is_start": "2015-01-05",
+    "is_end": "2021-12-31",
+    "hold_main": 60,
+    "hold_controls": [
+      5,
+      20
+    ],
+    "cost_round_trip": 0.00724,
+    "cost_breakdown": "佣金 5bp×2 + 印花税 5bp(卖出) + 过户费 0.2bp×2 + 市值分档滑点(bp 级取中值凑整)",
+    "top_k": 15,
+    "min_history_rows": 250,
+    "universe": 800,
+    "universe_seed": 20261111,
+    "universe_note": "全市场分层抽样 800 只（按成交额十分位等比例，固定 seed 20261111）；股票池来自 list_local_stock_codes，已排除状态表登记的 236 只停更/退市标的，v1 存在幸存者偏差，对基线与候选同等生效",
+    "rebalance": "每 hold 个交易日一期，非重叠，逐期复利",
+    "entry": "T 日收盘打分，T+1 开盘等权买入；涨停/停牌跳过（不顺延）",
+    "exit": "T+1+hold 开盘卖出；跌停/停牌跳过（不顺延）",
+    "score": "各档 zscore 加权（config 权重×方向），缺失按剩余权重归一，不填 0",
+    "risk_filters": "v1 不含 ST/事件过滤（基线与候选同等生效，不引入相对偏差）"
+  },
+  "config": {
+    "factor_set": "extended",
+    "normalization": "zscore",
+    "min_history_rows": 60,
+    "min_price": 1.0,
+    "max_avoid_rows": 10,
+    "tiers": {
+      "short": {
+        "label": "短线",
+        "lookback_days": 120,
+        "min_hold_days": 5,
+        "confirm_days": 2,
+        "validity_days": 20,
+        "buy_percentile": 0.92,
+        "sell_percentile": 0.35,
+        "max_positions": 12,
+        "edge_scale": 0.04,
+        "signal_decay": 0.2,
+        "max_volatility": 0.8,
+        "max_atr_pct": 0.07,
+        "min_amount": 20000000.0,
+        "factors": {
+          "momentum_1m": {
+            "label": "1月动量",
+            "weight": 0.06,
+            "direction": -1.0
+          },
+          "volume_momentum_20": {
+            "label": "20日量能",
+            "weight": 0.04000000000000001,
+            "direction": -1.0
+          },
+          "ma20_gap": {
+            "label": "偏离20日线",
+            "weight": 0.04000000000000001,
+            "direction": -1.0
+          },
+          "rsi_14": {
+            "label": "RSI(14)",
+            "weight": 0.020000000000000004,
+            "direction": -1.0
+          },
+          "atr_pct": {
+            "label": "ATR占比",
+            "weight": 0.04000000000000001,
+            "direction": -1.0
+          },
+          "qlib_rsqr20": {
+            "label": "20日趋势拟合度",
+            "weight": 0.049999999999999996,
+            "direction": 1.0
+          },
+          "qlib_rsqr10": {
+            "label": "10日趋势拟合度",
+            "weight": 0.049999999999999996,
+            "direction": 1.0
+          },
+          "gtja_003": {
+            "label": "方向动量(gtja003)",
+            "weight": 0.049999999999999996,
+            "direction": 1.0
+          },
+          "gtja_024": {
+            "label": "5日动量(gtja024)",
+            "weight": 0.1,
+            "direction": 1.0
+          },
+          "a101_024": {
+            "label": "100日动量阈值",
+            "weight": 0.1,
+            "direction": 1.0
+          },
+          "gtja_010": {
+            "label": "下行波动(gtja010)",
+            "weight": 0.15,
+            "direction": 1.0
+          },
+          "a101_012": {
+            "label": "量价反转",
+            "weight": 0.075,
+            "direction": 1.0
+          },
+          "ff_amihud_60": {
+            "label": "Amihud非流动性",
+            "weight": 0.075,
+            "direction": 1.0
+          },
+          "a101_020": {
+            "label": "开盘跳空反转",
+            "weight": 0.1,
+            "direction": 1.0
+          },
+          "a101_042": {
+            "label": "VWAP折价",
+            "weight": 0.016666666666666666,
+            "direction": 1.0
+          },
+          "gtja_012": {
+            "label": "VWAP偏离(gtja012)",
+            "weight": 0.016666666666666666,
+            "direction": 1.0
+          },
+          "gtja_041": {
+            "label": "VWAP动量(gtja041)",
+            "weight": 0.016666666666666666,
+            "direction": 1.0
+          }
+        }
+      },
+      "mid": {
+        "label": "中线",
+        "lookback_days": 250,
+        "min_hold_days": 20,
+        "confirm_days": 3,
+        "validity_days": 60,
+        "buy_percentile": 0.9,
+        "sell_percentile": 0.3,
+        "max_positions": 15,
+        "edge_scale": 0.08,
+        "signal_decay": 0.5,
+        "max_volatility": 0.6,
+        "max_atr_pct": 0.05,
+        "min_amount": 30000000.0,
+        "factors": {
+          "momentum_3m": {
+            "label": "3月动量",
+            "weight": 0.09,
+            "direction": -1.0
+          },
+          "momentum_6m": {
+            "label": "6月动量",
+            "weight": 0.045,
+            "direction": -1.0
+          },
+          "trend_slope_60": {
+            "label": "60日趋势",
+            "weight": 0.06,
+            "direction": -1.0
+          },
+          "sharpe_ratio_20": {
+            "label": "20日夏普",
+            "weight": 0.045,
+            "direction": -1.0
+          },
+          "volatility_20": {
+            "label": "20日波动率",
+            "weight": 0.06,
+            "direction": -1.0
+          },
+          "qlib_rsqr20": {
+            "label": "20日趋势拟合度",
+            "weight": 0.049999999999999996,
+            "direction": 1.0
+          },
+          "qlib_rsqr10": {
+            "label": "10日趋势拟合度",
+            "weight": 0.049999999999999996,
+            "direction": 1.0
+          },
+          "gtja_003": {
+            "label": "方向动量(gtja003)",
+            "weight": 0.049999999999999996,
+            "direction": 1.0
+          },
+          "gtja_024": {
+            "label": "5日动量(gtja024)",
+            "weight": 0.075,
+            "direction": 1.0
+          },
+          "a101_024": {
+            "label": "100日动量阈值",
+            "weight": 0.075,
+            "direction": 1.0
+          },
+          "gtja_010": {
+            "label": "下行波动(gtja010)",
+            "weight": 0.15,
+            "direction": 1.0
+          },
+          "a101_012": {
+            "label": "量价反转",
+            "weight": 0.05,
+            "direction": 1.0
+          },
+          "ff_amihud_60": {
+            "label": "Amihud非流动性",
+            "weight": 0.05,
+            "direction": 1.0
+          },
+          "a101_020": {
+            "label": "开盘跳空反转",
+            "weight": 0.1,
+            "direction": 1.0
+          },
+          "a101_042": {
+            "label": "VWAP折价",
+            "weight": 0.016666666666666666,
+            "direction": 1.0
+          },
+          "gtja_012": {
+            "label": "VWAP偏离(gtja012)",
+            "weight": 0.016666666666666666,
+            "direction": 1.0
+          },
+          "gtja_041": {
+            "label": "VWAP动量(gtja041)",
+            "weight": 0.016666666666666666,
+            "direction": 1.0
+          }
+        }
+      },
+      "long": {
+        "label": "长线",
+        "lookback_days": 500,
+        "min_hold_days": 60,
+        "confirm_days": 5,
+        "validity_days": 240,
+        "buy_percentile": 0.88,
+        "sell_percentile": 0.25,
+        "max_positions": 15,
+        "edge_scale": 0.15,
+        "signal_decay": 0.8,
+        "max_volatility": 0.5,
+        "max_atr_pct": 0.04,
+        "min_amount": 50000000.0,
+        "factors": {
+          "momentum_6m": {
+            "label": "6月动量",
+            "weight": 0.0875,
+            "direction": -1.0
+          },
+          "momentum_12m": {
+            "label": "12月动量",
+            "weight": 0.0875,
+            "direction": -1.0
+          },
+          "trend_slope_60": {
+            "label": "60日趋势",
+            "weight": 0.06999999999999999,
+            "direction": -1.0
+          },
+          "sharpe_ratio_20": {
+            "label": "20日夏普",
+            "weight": 0.06999999999999999,
+            "direction": -1.0
+          },
+          "max_drawdown_20": {
+            "label": "20日回撤",
+            "weight": 0.034999999999999996,
+            "direction": 1.0
+          },
+          "qlib_rsqr20": {
+            "label": "20日趋势拟合度",
+            "weight": 0.049999999999999996,
+            "direction": 1.0
+          },
+          "qlib_rsqr10": {
+            "label": "10日趋势拟合度",
+            "weight": 0.049999999999999996,
+            "direction": 1.0
+          },
+          "gtja_003": {
+            "label": "方向动量(gtja003)",
+            "weight": 0.049999999999999996,
+            "direction": 1.0
+          },
+          "gtja_024": {
+            "label": "5日动量(gtja024)",
+            "weight": 0.1,
+            "direction": 1.0
+          },
+          "a101_024": {
+            "label": "100日动量阈值",
+            "weight": 0.1,
+            "direction": 1.0
+          },
+          "gtja_010": {
+            "label": "下行波动(gtja010)",
+            "weight": 0.1,
+            "direction": 1.0
+          },
+          "a101_012": {
+            "label": "量价反转",
+            "weight": 0.025,
+            "direction": 1.0
+          },
+          "ff_amihud_60": {
+            "label": "Amihud非流动性",
+            "weight": 0.025,
+            "direction": 1.0
+          },
+          "a101_020": {
+            "label": "开盘跳空反转",
+            "weight": 0.05,
+            "direction": 1.0
+          },
+          "a101_042": {
+            "label": "VWAP折价",
+            "weight": 0.03333333333333333,
+            "direction": 1.0
+          },
+          "gtja_012": {
+            "label": "VWAP偏离(gtja012)",
+            "weight": 0.03333333333333333,
+            "direction": 1.0
+          },
+          "gtja_041": {
+            "label": "VWAP动量(gtja041)",
+            "weight": 0.03333333333333333,
+            "direction": 1.0
+          }
+        }
+      }
+    },
+    "constraints": {
+      "max_single_weight": 0.08,
+      "max_industry_weight": 0.25,
+      "cash_buffer": 0.1,
+      "lot_size": 100,
+      "adv_pct": 0.1,
+      "normalize_iterations": 12,
+      "uncapped_industry_buckets": [
+        "unknown"
+      ]
+    },
+    "costs": {
+      "commission_rate": 0.0005,
+      "stamp_duty_rate": 0.0005,
+      "impact_rate": 0.0002,
+      "min_commission": 5.0
+    },
+    "turnover": {
+      "min_hold_days_override": null,
+      "max_turnover_per_rebalance": 0.2,
+      "cost_threshold_multiple": 1.0,
+      "min_entry_edge_multiple": 1.0
+    },
+    "risk": {
+      "st_enabled": true,
+      "st_unknown_policy": "drop",
+      "industry_enabled": true,
+      "event_enabled": true,
+      "event_unknown_policy": "keep",
+      "event_cooldown": [
+        [
+          "并购重组",
+          20
+        ],
+        [
+          "重大合同/中标",
+          5
+        ],
+        [
+          "监管处罚",
+          5
+        ]
+      ]
+    },
+    "soft_filter": {
+      "enabled": true,
+      "ma_trend_required": true,
+      "volume_quantile": 0.6,
+      "atr_quantile": 0.8,
+      "rsi_low": 0.1,
+      "rsi_high": 0.9
+    }
+  }
+}
