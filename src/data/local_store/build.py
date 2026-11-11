@@ -782,6 +782,70 @@ def validate_remote_overwrite(
     return stats
 
 
+def _attach_local_only_columns(
+    snapshot: pl.DataFrame | None,
+    remote: pl.DataFrame,
+) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """把只存在于本地快照的列按事件身份回接到远端帧。
+
+    远端 MySQL ``stock_dividend`` 只有 ``_DIVIDEND_COLUMNS`` 那 15 列，
+    整表覆盖会把本地增量列（``cash_div_diluted`` / ``source`` / ``*_fix`` 等）
+    一起丢掉。这里按 ``(ts_code, ex_date)`` + 同日第 k 个事件对齐：两侧都先按
+    ``(cash_div, share_div)`` 排序再取组内序号，避免同日多笔分红错位。
+
+    未命中行的增量列只能为 null；若某个原本非空的本地值没能回接（计数下降），
+    直接报错而不是静默丢值（DG-31：未命中必须写回原值或报错）。
+    """
+    stats: dict[str, Any] = {'columns': [], 'matched_rows': 0, 'unmatched_rows': 0}
+    if snapshot is None or snapshot.is_empty():
+        return remote, stats
+    extra = [c for c in snapshot.columns if c not in remote.columns]
+    if not extra:
+        return remote, stats
+    stats['columns'] = extra
+
+    key = ['ts_code', 'ex_date']
+    # 同日多笔分红时用「事件自身可观测字段」排序后再取组内序号；只按 cash/share
+    # 排序会在并列值上落到不确定顺序，导致增量列错位。sort 全部加 maintain_order
+    # 保证同源数据两侧顺序一致。ex_date 为空的行（已公告未除权）同样要保留，
+    # 故 join 时开 nulls_equal，否则这些行的增量列会被判成未命中。
+    order = [*key] + [c for c in ('cash_div', 'share_div', 'report_date', 'pay_date')
+                      if c in snapshot.columns and c in remote.columns]
+    snap = (snapshot.sort(order, nulls_last=True, maintain_order=True)
+            .with_columns(pl.int_range(pl.len()).over(key).alias('_ord')))
+    left = (remote.sort(order, nulls_last=True, maintain_order=True)
+            .with_columns(pl.int_range(pl.len()).over(key).alias('_ord')))
+    # 组内序号对齐只在「同一 (ts_code, ex_date) 下两侧行数一致」时成立：远端少了
+    # 行会让后面的行整体前移，增量列虽非空却挂到了别的事件上（静默错位）。故先守住
+    # 本地行数不多于远端行数；远端新增事件不受影响（那些行增量列为空即正确）。
+    lost = (snap.group_by(key).len()
+            .join(left.group_by(key).len(), on=key, how='left',
+                  suffix='_remote', nulls_equal=True)
+            .filter(pl.col('len').fill_null(0) > pl.col('len_remote').fill_null(0)))
+    if lost.height:
+        raise RuntimeError(
+            f'{lost.height} 个 (ts_code, ex_date) 组合在远端行数少于本地，'
+            f'按事件对齐会错位，已中止覆盖（{", ".join(extra)} 会挂到错误事件）')
+    attached = left.join(
+        snap.select([*key, '_ord', pl.lit(True).alias('_hit'), *extra]),
+        on=[*key, '_ord'], how='left', nulls_equal=True)
+    matched = int(attached['_hit'].fill_null(False).sum())
+    stats['matched_rows'] = matched
+    stats['unmatched_rows'] = attached.height - matched
+    for col in extra:
+        before = int(snapshot[col].is_not_null().sum())
+        after = int(attached[col].is_not_null().sum())
+        if after < before:
+            raise RuntimeError(
+                f'本地增量列 {col} 有 {before - after} 个非空值无法回接到远端行，'
+                '已中止覆盖（避免静默丢值）')
+
+    # 保持快照既有列顺序，避免同一语义的表因一次覆盖而改变 schema 布局
+    ordered = [c for c in snapshot.columns if c in attached.columns]
+    ordered += [c for c in remote.columns if c not in set(ordered)]
+    return attached.select(ordered), stats
+
+
 def refresh_factors(
     config: Any,
     factor_store: LocalFactorStore,
@@ -858,6 +922,14 @@ def refresh_factors(
             return planned
         raise RuntimeError(message)
 
+    # 校验通过后才回接本地增量列：远端表没有 cash_div_diluted / source / *_fix，
+    # 整表覆盖会把它们清空；回接失败会直接报错，不会静默丢值。
+    local_snapshot = (pl.read_parquet(factor_store.dividend_path)
+                      if factor_store.dividend_path.exists() else None)
+    dividends, preserved = _attach_local_only_columns(local_snapshot, dividends)
+    planned['preserved_local_columns'] = preserved
+    planned['dividends'] = dividends.height
+
     if dry_run:
         logger.info(
             f'[dry-run] 校验通过：因子 {factors.height:,} 行 / 分红 {dividends.height:,} 行')
@@ -885,6 +957,7 @@ def refresh_factors(
         'elapsed_s': round(elapsed, 3),
         'updated_at': datetime.now().isoformat(timespec='seconds'),
         'version': STORE_VERSION,
+        'preserved_local_columns': preserved,
     }
     write_text_atomic(
         json.dumps(meta, ensure_ascii=False, indent=2), out_dir / 'meta.json')
