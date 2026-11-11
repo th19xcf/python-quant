@@ -1090,6 +1090,8 @@ def apply(panel: pl.DataFrame, store: Path, stage: Path, *,
         backup_dir = (ROOT / '_backup'
                       / f'state_vector_{datetime.now():%Y%m%d_%H%M%S}')
         backup = backup_dir / 'state_vector_daily.parquet'
+        # 备份位唯一化：同一路径被两次快照复用会互相覆盖，已存在即报错（DG-11 执行细则）
+        assert not backup_dir.exists(), f'备份目录已存在，禁止复用: {backup_dir}'
         backup.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(target, backup)
         # DG-11：口径变更时把旧 manifest 一并留档，回滚可还原整套证据

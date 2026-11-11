@@ -8,7 +8,9 @@ E:\\www\\tmp\\factor_eval2_20261105\\compute.py）。
 - ``roe_stability``: 过去 8 季 ROE_TTM 的均值 / 标准差
 - ``sue``          : (Q_t - Q_{t-4}) / std(过去 8 季季节差分)
 
-财报可见性一律 ``ann_date <= T``；同一报告期取**最早**公告的一版。
+财报可见性一律 ``ann_date <= T``；同一报告期多版本时取**当时可见的最新公告版**
+（更正/重述以最新一版为准），与 ``store.latest_announced_as_of``、
+``fundamental_factors._dedupe_period`` 口径一致。
 
 输入：``<output-dir>/analysis_monthly.parquet``（可用 ``--base`` 覆盖）。
 输出：``<output-dir>/new_factors.parquet``，覆盖信息写工作目录 ``coverage.json``。
@@ -38,13 +40,21 @@ def _require(path: Path, hint: str) -> Path:
 
 # ---------------------------------------------------------------- 财务公用
 def first_period(frame: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
-    """同一 (ts_code, end_date) 只保留 ann_date 最早的一版。"""
+    """同一 (ts_code, end_date) 只保留 ann_date 最新的一版（更正/重述覆盖旧版）。
+
+    PIT 口径：任意时点 T 可见的是 ``ann_date <= T`` 中公告日最新的一版；
+    ``ann_date`` 同时是可见性门槛，故取最新版不会引入前视。与
+    ``store.latest_announced_as_of``、``fundamental_factors._dedupe_period`` 一致。
+
+    函数名保留 ``first_period``（按报告期取一行），语义已从「最早公告版」
+    统一为「最新公告版」。
+    """
     return (
         frame.filter(pl.col('ann_date').is_not_null())
         .sort(['ts_code', 'end_date', 'ann_date'])
         .group_by(['ts_code', 'end_date'], maintain_order=True)
-        .agg([pl.col('ann_date').first(),
-              *(pl.col(c).first() for c in cols)])
+        .agg([pl.col('ann_date').last(),
+              *(pl.col(c).last() for c in cols)])
     )
 
 
