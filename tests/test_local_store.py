@@ -22,6 +22,7 @@ import polars as pl
 import pytest
 from loguru import logger
 
+import src.data.local_store.build as build_module
 from src.data.adj_factor_calculator import AdjFactorCalculator
 from src.data.data_cache import global_data_cache
 from src.data.data_manager import DataManager
@@ -457,6 +458,70 @@ def test_rebuild_factors_matches_dividend_path(tmp_path):
     updated = rebuild_factors_from_local(
         quote_store, factor_store, codes=['600000.SH'], include_existing=True)
     assert updated['factor_codes'] == 2
+
+
+def test_factor_alignment_runs_when_flush_meta_fails(tmp_path, monkeypatch):
+    """flush_meta 抛错时因子副本对齐仍必须执行（2026-11-11 16:25 事故回归）。"""
+    tdx = tmp_path / 'tdx'
+    _write_day_file(tdx, 'sh', '600000', _RECS)
+    store_root = tmp_path / 'store'
+    store = LocalQuoteStore(store_root)
+    factor_store = LocalFactorStore(store_root)
+    cfg = _build_config(tdx, store_root)
+
+    aligned: list[dict] = []
+
+    def boom(self):  # noqa: ANN001
+        raise RuntimeError('could not append value: datetime dtype conflict')
+
+    monkeypatch.setattr(LocalQuoteStore, 'flush_meta', boom)
+    monkeypatch.setattr(
+        build_module, '_align_written_factor_copies',
+        lambda qs, fs, written: aligned.append(dict(written)) or {})
+
+    stats = build(cfg, store, factor_store, data_type='stock')
+
+    assert stats['meta_error'] and 'dtype conflict' in stats['meta_error']
+    assert aligned, 'flush_meta 失败后 _align_written_factor_copies 未被调用'
+    assert aligned[0].get('stock') == ['600000.SH']
+
+
+def test_full_build_snapshots_quotes_dir_before_overwrite(tmp_path):
+    """全量重建前把现有 quotes/ 移入 _backup，不就地覆盖（DG-11）。"""
+    tdx = tmp_path / 'tdx'
+    _write_day_file(tdx, 'sh', '600000', _RECS)
+    store_root = tmp_path / 'store'
+    store = LocalQuoteStore(store_root)
+    factor_store = LocalFactorStore(store_root)
+    cfg = _build_config(tdx, store_root)
+
+    # 首次全量：quotes/ 尚不存在，不应产生空快照
+    build(cfg, store, factor_store, data_type='stock')
+    assert not list((store_root / '_backup').glob('quotes_*'))
+
+    modified = [*_RECS, ('20240104', 10.5, 11.0, 10.4, 10.8, 130, 1404)]
+    _write_day_file(tdx, 'sh', '600000', modified)
+    build(cfg, store, factor_store, data_type='stock')
+
+    snaps = sorted((store_root / '_backup').glob('quotes_*'))
+    assert len(snaps) == 1
+    assert (snaps[0] / 'stock' / 'sh' / '600000.SH.parquet').exists()
+    assert store.coverage('stock', '600000.SH').end == date(2024, 1, 4)
+
+
+def test_resolve_incremental_defaults_to_incremental():
+    """裸 build 默认增量；只有显式 --all 才进全量。"""
+    assert build_module._resolve_incremental(
+        all_=False, codes=None, since=None, incremental=False) is True
+    assert build_module._resolve_incremental(
+        all_=True, codes=None, since=None, incremental=False) is False
+    assert build_module._resolve_incremental(
+        all_=False, codes=['600000.SH'], since=None, incremental=False) is False
+    assert build_module._resolve_incremental(
+        all_=False, codes=None, since=date(2024, 1, 1), incremental=False) is False
+    with pytest.raises(ValueError):
+        build_module._resolve_incremental(
+            all_=True, codes=['600000.SH'], since=None, incremental=False)
 
 
 def _rebuild_fixture(store_root: Path, codes: tuple[str, ...]

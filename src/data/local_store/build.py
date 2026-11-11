@@ -32,6 +32,7 @@
 
 import argparse
 import json
+import shutil
 import sys
 import time
 from datetime import date, datetime
@@ -433,6 +434,10 @@ def build(
             'dry_run': True,
         }
 
+    if not (incremental or codes or since):
+        # 全量重建会就地覆盖正式文件，DG-11 要求先留可回滚快照。
+        _snapshot_quotes_dir(quote_store, data_type)
+
     for index, (kind, ts_code, path) in enumerate(targets, start=1):
         try:
             if incremental and not _target_is_stale(
@@ -464,7 +469,47 @@ def build(
                 f'[local-store] 进度 {index}/{total}，已写 {written_files} 文件 / '
                 f'{written_rows:,} 行，已用 {elapsed:.1f}s')
 
-    quote_store.flush_meta()
+    # 覆盖度元数据写失败不得中断后续收尾：2026-11-11 16:25 的全量重建正是
+    # 在 flush_meta 抛错后直接崩掉，导致因子副本对齐被整段跳过，633 只基金
+    # 的 qfq/hfq 退化为 1.0。收尾逻辑见 ``_finalize_build``。
+    return _finalize_build(
+        config, quote_store, factor_store, written_by_kind,
+        written_files=written_files, written_rows=written_rows,
+        skipped=skipped, skipped_uptodate=skipped_uptodate,
+        data_type=data_type, codes=codes, since=since,
+        incremental=incremental, target_date=target_date, started=started)
+
+
+def _finalize_build(
+    config: Any,
+    quote_store: LocalQuoteStore,
+    factor_store: LocalFactorStore,
+    written_by_kind: dict[str, list[str]],
+    *,
+    written_files: int,
+    written_rows: int,
+    skipped: int,
+    skipped_uptodate: int,
+    data_type: str,
+    codes: list[str] | None,
+    since: date | None,
+    incremental: bool,
+    target_date: date | None,
+    started: float,
+) -> dict[str, Any]:
+    """写盘后的收尾：元数据、因子副本对齐、状态与复验。
+
+    三项收尾互相隔离，任一项失败都要把错误回报出去但不得短路后面几项——
+    元数据问题不能连带让因子副本对齐（数据层）静默跳过。
+    """
+    meta_error: str | None = None
+    try:
+        quote_store.flush_meta()
+    except (OSError, ValueError, RuntimeError, TypeError, PolarsError) as exc:
+        meta_error = f'{type(exc).__name__}: {exc}'
+        logger.error(
+            f'[local-store] flush_meta 失败（{meta_error}），'
+            f'继续执行因子副本对齐；事后请跑 rescan-meta 修复覆盖度元数据')
 
     # 增量补数追加的新行可能带着默认因子 1.0（尤其基金：源 .day 没有因子列），
     # 而权威快照只到前一交易日。若不在同一次构建内对齐，行情内嵌副本就会
@@ -475,18 +520,23 @@ def build(
 
     elapsed = time.perf_counter() - started
     stats = quote_store.stats()
-    quote_store.write_state({
-        'last_build': 'incremental' if (codes or since or incremental) else 'full',
-        'data_type': data_type,
-        'symbols': stats['symbols'],
-        'rows': stats['rows'],
-        'files': stats['files'],
-        'disk_bytes': stats['disk_bytes'],
-        'elapsed_s': round(elapsed, 3),
-        'skipped': skipped,
-        'skipped_uptodate': skipped_uptodate,
-        'target_date': target_date.isoformat() if target_date else None,
-    })
+    state_error: str | None = None
+    try:
+        quote_store.write_state({
+            'last_build': 'incremental' if (codes or since or incremental) else 'full',
+            'data_type': data_type,
+            'symbols': stats['symbols'],
+            'rows': stats['rows'],
+            'files': stats['files'],
+            'disk_bytes': stats['disk_bytes'],
+            'elapsed_s': round(elapsed, 3),
+            'skipped': skipped,
+            'skipped_uptodate': skipped_uptodate,
+            'target_date': target_date.isoformat() if target_date else None,
+        })
+    except (OSError, ValueError, RuntimeError, TypeError) as exc:
+        state_error = f'{type(exc).__name__}: {exc}'
+        logger.error(f'[local-store] 构建状态写入失败：{state_error}')
     logger.info(
         f'[local-store] 构建完成：{written_files} 文件 / {written_rows:,} 行，'
         f'跳过已最新 {skipped_uptodate} 个，耗时 {elapsed:.1f}s，'
@@ -503,6 +553,8 @@ def build(
         'skipped': skipped,
         'skipped_uptodate': skipped_uptodate,
         'factor_alignment': factor_alignment,
+        'meta_error': meta_error,
+        'state_error': state_error,
         'stats': stats,
     }
 
@@ -1096,14 +1148,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog='python -m src.data.local_store')
     sub = parser.add_subparsers(dest='command', required=True)
 
-    build_cmd = sub.add_parser('build', help='构建/增量更新本地行情列存')
-    build_cmd.add_argument('--all', action='store_true', help='全市场全量重建（默认）')
+    build_cmd = sub.add_parser(
+        'build', help='构建/增量更新本地行情列存（不指定模式时默认增量）')
+    mode_group = build_cmd.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        '--all', action='store_true',
+        help='全市场全量重建（必须显式指定；开始前会把现有 quotes/ 整体移入 _backup/）')
+    mode_group.add_argument(
+        '--incremental', action='store_true',
+        help='只重建源 .day 末行日期比本地新的标的（不指定任何模式时的默认行为）')
     build_cmd.add_argument('--codes', default='', help='逗号分隔的 ts_code 列表')
     build_cmd.add_argument('--since', default='', help='只更新该日期之后的记录（YYYY-MM-DD）')
     build_cmd.add_argument('--data-type', default='all',
                            choices=['all', 'stock', 'index', 'fund'])
-    build_cmd.add_argument('--incremental', action='store_true',
-                           help='只重建源 .day 末行日期比本地新的标的')
     build_cmd.add_argument('--target-date', default='',
                            help='构建后校验本地末行是否到达该日期（YYYY-MM-DD）')
     build_cmd.add_argument('--max-date', default='',
@@ -1200,6 +1257,71 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _resolve_incremental(
+    *,
+    all_: bool,
+    codes: list[str] | None,
+    since: date | None,
+    incremental: bool,
+) -> bool:
+    """把 CLI 的模式开关解析成 ``build(incremental=...)``。
+
+    ``--all`` 是唯一进入全量重建的开关（全量会先整体移动 quotes/ 到
+    ``_backup/``）；``--codes`` / ``--since`` 是定向重建；三者都不给时
+    **默认为增量**，避免裸 ``build`` 静默触发全市场就地覆盖。
+    """
+    if all_ and (codes or since):
+        raise ValueError('--all 不能与 --codes / --since 同时使用')
+    return incremental or not (all_ or codes or since)
+
+
+def _snapshot_quotes_dir(
+    quote_store: LocalQuoteStore, data_type: str = 'all',
+) -> Path | None:
+    """全量重建前把现有行情目录复制一份到 ``_backup/quotes_<日期>/``。
+
+    DG-11 要求派生数据替换前必须留可回滚快照。这里用 ``copy2`` 递归复制
+    而不是 ``move``：全量重建会与本地既有文件做合并（``_merge_source_with_
+    existing``，用于保留源端没有的回补行），把正式目录移走会让合并基准丢失。
+    目标已存在时追加序号，绝不覆盖既有快照；``data_type != 'all'`` 时只
+    快照该类型的子目录。
+    """
+    quotes_root = quote_store.root / 'quotes'
+    if not quotes_root.is_dir():
+        return None
+    # 正式布局是 <repo>/data/local_store，此时 _backup 落在仓库根；
+    # 其它（例如测试用的临时 store）就落在 store 根下，绝不塞进 quotes/。
+    store_root = quote_store.root
+    repo_root = (
+        store_root.parent.parent
+        if store_root.parent.name.lower() == 'data' else store_root)
+    base = repo_root / '_backup' / f'quotes_{date.today():%Y%m%d}'
+    if data_type == 'all':
+        if not any(quotes_root.iterdir()):
+            return None
+        target = base
+        seq = 1
+        while target.exists():
+            target = base.with_name(f'quotes_{date.today():%Y%m%d}_{seq}')
+            seq += 1
+        source = quotes_root
+    else:
+        source = quotes_root / data_type
+        if not source.is_dir() or not any(source.iterdir()):
+            return None
+        target = base / data_type
+        seq = 1
+        while target.exists():
+            target = base / f'{data_type}_{seq}'
+            seq += 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(source, target, copy_function=shutil.copy2)
+    logger.warning(
+        f'[local-store] 全量重建前已把现有行情目录复制到快照：{target}；'
+        f'回滚方式：把该目录内容 copy2 回 {source} 并复跑 rescan-meta')
+    return target
+
+
 def _run_build_command(
     args: argparse.Namespace,
     config: Any,
@@ -1220,6 +1342,14 @@ def _run_build_command(
 
     codes = [c for c in args.codes.split(',') if c.strip()] if args.codes else None
     since = datetime.strptime(args.since, '%Y-%m-%d').date() if args.since else None
+    try:
+        incremental = _resolve_incremental(
+            all_=args.all, codes=codes, since=since, incremental=args.incremental)
+    except ValueError as exc:
+        logger.error(f'[local-store] 模式冲突：{exc}')
+        return 2
+    if not (args.all or codes or since or args.incremental):
+        logger.info('[local-store] 未指定模式，按增量构建（全量重建请显式加 --all）')
     target_date = (
         datetime.strptime(args.target_date, '%Y-%m-%d').date()
         if args.target_date else None)
@@ -1229,7 +1359,7 @@ def _run_build_command(
     result = build(
         config, quote_store, factor_store,
         data_type=args.data_type, codes=codes, since=since,
-        incremental=args.incremental, target_date=target_date,
+        incremental=incremental, target_date=target_date,
         max_date=max_date, force_intraday=args.force_intraday,
         dry_run=args.dry_run,
     )
@@ -1250,6 +1380,14 @@ def _run_build_command(
             '[local-store] build 收尾因子一致性门禁失败；'
             '请执行 python -m src.data.local_store factor-governance '
             '--sync --commit 后复验'
+        )
+        return 1
+    if result.get('meta_error') or result.get('state_error'):
+        logger.error(
+            f'[local-store] 构建已完成但元数据写入失败：'
+            f'meta_error={result.get("meta_error")} '
+            f'state_error={result.get("state_error")}；'
+            f'请执行 python -m src.data.local_store rescan-meta 修复覆盖度元数据'
         )
         return 1
     return 0
