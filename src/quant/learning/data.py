@@ -21,9 +21,14 @@ from src.alpha.calculator.alpha_calculator import calculate_factors_cross_sectio
 from src.data.local_store.store import LocalQuoteStore
 from src.data.quality.code_migration import load_entity_index
 from src.quant.factor_lib.data import LIQUIDITY_LOOKBACK_DAYS
+from src.quant.learning.config import ADV_COL, TOTAL_MV_YI_COL
+from src.risk.execution_rules import ExecutionRules
 
 PRICE_COLUMNS = ('open', 'high', 'low', 'close')
 FACTOR_TYPES = ('price_momentum', 'volatility', 'volume', 'technical', 'risk')
+
+#: 总市值的唯一正式来源（见 docs/数据权威路径清单.md「估值」）。
+VALUATION_PATH = ('meta', 'financials', 'valuation_daily.parquet')
 
 # 因子列：覆盖动量、波动、量能、技术形态、风险五类，保持报告可读性
 DEFAULT_FACTOR_COLS: tuple[str, ...] = (
@@ -186,6 +191,63 @@ def compute_factors(panel: pl.DataFrame,
     return panel.with_columns([result[col].cast(pl.Float64) for col in available])
 
 
+def attach_cost_inputs(panel: pl.DataFrame, root: Path) -> pl.DataFrame:
+    """并入分档滑点所需的两列：``adv20``（成交额，元）与 ``total_mv_yi``（亿元）。
+
+    口径与回测内核 ``execution_core._prepare_universe`` 一致，一律只使用
+    **t-1 及之前**的信息：订单在 t 日开盘成交，而 t 日成交额与收盘市值要等
+    当日收盘才知道，直接用当日值等于给成本定价时偷看未来。
+
+    - ``adv20`` = 前一交易日起算的 20 日成交额滚动均值（``min_samples=1``，
+      只让上市首日为空）；
+    - ``total_mv_yi`` = 前一交易日的 ``total_mv``（元）/ 1e8，来源为权威估值
+      表 ``meta/financials/valuation_daily.parquet``。
+
+    估值表缺失、或某标的某日无估值行时保留 null，由 ``CostModel`` 按小盘
+    30bp 兜底——不插值、不前填、不用行情反推市值。
+    """
+    if panel.is_empty():
+        return panel
+    frame = panel.sort(['ts_code', 'date'])
+    if 'amount' in frame.columns:
+        frame = frame.with_columns(
+            pl.col('amount').cast(pl.Float64).shift(1)
+            .rolling_mean(window_size=ExecutionRules.ADV_WINDOW, min_samples=1)
+            .over('ts_code').alias(ADV_COL))
+
+    path = root.joinpath('data', 'local_store', *VALUATION_PATH)
+    if not path.is_file():
+        logger.warning(f'估值表缺失，total_mv_yi 全部留空并按小盘档计费: {path}')
+        return frame
+    valuation = (
+        pl.scan_parquet(path)
+        .select(['ts_code', 'trade_date', 'total_mv'])
+        .filter(pl.col('ts_code').is_in(frame['ts_code'].unique().to_list()))
+        .collect()
+        .rename({'trade_date': 'date'})
+        .with_columns(
+            pl.when(pl.col('total_mv') > 0)
+            .then(pl.col('total_mv') / 1e8)
+            .otherwise(pl.lit(None, dtype=pl.Float64))
+            .alias(TOTAL_MV_YI_COL))
+        .select(['ts_code', 'date', TOTAL_MV_YI_COL])
+    )
+    joined = frame.join(valuation, on=['ts_code', 'date'], how='left')
+    return joined.with_columns(
+        pl.col(TOTAL_MV_YI_COL).shift(1).over('ts_code')
+        .alias(TOTAL_MV_YI_COL))
+
+
+def cost_input_coverage(panel: pl.DataFrame) -> Dict[str, int]:
+    """成本分档输入的非空行数，用于报告里说明「按档位计费 vs 兜底档」。"""
+    return {
+        'total_mv_yi_notnull': (int(panel[TOTAL_MV_YI_COL].is_not_null().sum())
+                                if TOTAL_MV_YI_COL in panel.columns else 0),
+        'adv20_notnull': (int(panel[ADV_COL].is_not_null().sum())
+                          if ADV_COL in panel.columns else 0),
+    }
+
+
 def load_learning_dataset(root: Path, start: date, end: date,
                           limit: int = 600,
                           factor_cols: Sequence[str] = DEFAULT_FACTOR_COLS,
@@ -199,6 +261,7 @@ def load_learning_dataset(root: Path, start: date, end: date,
         (pl.col('close') * pl.col('hfq_factor')).alias('close_hfq'),
     ])
     panel = compute_factors(panel, factor_cols)
+    panel = attach_cost_inputs(panel, root)
     scope: Dict[str, object] = {
         'asset': asset,
         'codes': panel['ts_code'].n_unique(),
@@ -206,6 +269,7 @@ def load_learning_dataset(root: Path, start: date, end: date,
         'start': str(panel['date'].min()),
         'end': str(panel['date'].max()),
         'factors': [col for col in factor_cols if col in panel.columns],
+        **cost_input_coverage(panel),
     }
     logger.info(
         f'学习数据集就绪: {scope["codes"]} 只标的 / {scope["rows"]} 行 / '

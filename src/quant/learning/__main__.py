@@ -13,7 +13,11 @@ from pathlib import Path
 from loguru import logger
 
 from src.quant.learning.config import WalkForwardConfig
-from src.quant.learning.data import DEFAULT_FACTOR_COLS, load_learning_dataset
+from src.quant.learning.data import (
+    DEFAULT_FACTOR_COLS,
+    cost_input_coverage,
+    load_learning_dataset,
+)
 from src.quant.learning.report import render_report
 from src.quant.learning.walk_forward import build_learning_report
 
@@ -74,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
         scope['start'] = str(panel['date'].min())
         scope['rows'] = panel.height
         scope['codes'] = panel['ts_code'].n_unique()
+        scope.update(cost_input_coverage(panel))
 
     report = build_learning_report(
         panel, DEFAULT_FACTOR_COLS, config,

@@ -10,7 +10,11 @@ import numpy as np
 import polars as pl
 import pytest
 
-from src.quant.learning.config import WalkForwardConfig
+from src.quant.learning.config import (
+    ADV_COL,
+    TOTAL_MV_YI_COL,
+    WalkForwardConfig,
+)
 from src.quant.learning.evaluator import (
     ic_stats,
     quantile_analysis,
@@ -171,6 +175,29 @@ def test_portfolio_simulation_executes_next_open() -> None:
     assert result['trades'] >= 1
     assert len(result['equity_curve']) > 0
     assert result['performance']['annual_return'] != 0 or result['total_return']
+
+
+def test_cost_uses_tiered_market_cap() -> None:
+    """接线后按总市值档位计滑点，缺列才退回小盘 30bp 兜底档。"""
+    config = WalkForwardConfig(horizon=3, train_size=40, test_size=10,
+                               embargo=3, min_train_dates=10, min_test_dates=5,
+                               top_fraction=0.3)
+    base = add_adjusted_prices(_synthetic_panel(n_codes=12, n_days=60))
+    frame = base.select(['date', 'ts_code', 'momentum_1m']).rename(
+        {'momentum_1m': 'score'})
+    fallback = simulate_long_only(base, frame, config)
+    assert fallback['trades'] >= 1
+    assert fallback['slippage_bp_counts'] == {30: fallback['trades']}
+
+    tiered_panel = base.with_columns([
+        pl.lit(800.0).alias(TOTAL_MV_YI_COL),   # 大盘档：15bp
+        pl.lit(5.0e8).alias(ADV_COL),
+    ])
+    tiered = simulate_long_only(tiered_panel, frame, config)
+    assert tiered['trades'] == fallback['trades']
+    assert set(tiered['slippage_bp_counts']) == {15}
+    assert tiered['total_cost'] < fallback['total_cost']
+    assert tiered['slippage_bp_counts'][15] == tiered['trades']
 
 
 def test_prepare_panel_adds_regime_and_labels() -> None:

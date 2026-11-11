@@ -19,6 +19,17 @@ def _pct(value: float, digits: int = 2) -> str:
     return f'{value:.{digits}f}%'
 
 
+def _cost_input_line(scope: Dict[str, object]) -> str:
+    """成本分档输入的覆盖率：说明滑点按标的档位计，而非一律兜底档。"""
+    rows = scope.get('rows') or 0
+    adv = scope.get('adv20_notnull')
+    cap = scope.get('total_mv_yi_notnull')
+    if adv is None or cap is None or not rows:
+        return '未接线（滑点按兜底档计）'
+    return (f'adv20 非空 {adv} 行 / total_mv_yi 非空 {cap} 行（共 {rows} 行，'
+            f'缺失按兜底档计）')
+
+
 def _table(headers: List[str], rows: List[List[str]]) -> List[str]:
     lines = ['| ' + ' | '.join(headers) + ' |',
              '|' + '|'.join(['---'] * len(headers)) + '|']
@@ -277,6 +288,7 @@ def render_report(report: LearningReport, generated_on: date | None = None) -> s
             ['分层数', str(config.n_quantiles)],
             ['组合选股比例', _pct(config.top_fraction * 100, 1)],
             ['窗口模式', '扩展窗' if config.expanding else '滚动窗'],
+            ['成本分档输入', _cost_input_line(report.data_scope)],
         ]),
         '',
         '## 2. L2 因子权重学习（样本外）',

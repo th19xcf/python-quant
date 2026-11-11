@@ -7,7 +7,8 @@
 - 等权做多截面得分最高的 ``top_fraction``；
 - 停牌（成交量缺失/为 0）与开盘涨跌停不可成交，退出受阻时最多顺延
   ``max_exit_delay`` 个交易日，之后按最新收盘价强制退出；
-- 交易成本统一走项目 ``CostModel``，绩效统一走 ``PerformanceAnalyzer``。
+- 交易成本统一走项目 ``CostModel``，并按 ``adv20`` / ``total_mv_yi`` 分档计滑点
+  （缺列时退回兜底档），绩效统一走 ``PerformanceAnalyzer``。
 """
 
 from __future__ import annotations
@@ -22,7 +23,12 @@ from loguru import logger
 
 from src.backtest.costs.cost_model import CostModel
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
-from src.quant.learning.config import SchemeMetrics, WalkForwardConfig
+from src.quant.learning.config import (
+    ADV_COL,
+    TOTAL_MV_YI_COL,
+    SchemeMetrics,
+    WalkForwardConfig,
+)
 from src.quant.learning.labels import LABEL_COL
 from src.risk.execution_rules import ExecutionRules
 
@@ -148,7 +154,10 @@ def _build_bars(panel: pl.DataFrame, codes: Set[str],
                 start: date, end: date) -> Dict[str, Dict[date, Dict[str, Any]]]:
     """构造 code -> date -> bar 的查询表，仅覆盖评估区间。"""
     columns = ['ts_code', 'date', 'open', 'high', 'low', 'close', 'pre_close',
-               'volume', 'open_hfq', 'close_hfq']
+               'volume', 'open_hfq', 'close_hfq', ADV_COL, TOTAL_MV_YI_COL]
+    # 分档滑点输入是可选列：早期面板（或只用行情构造的测试面板）没有时
+    # 不建占位列，成本退回 CostModel 的兜底档。
+    columns = [col for col in columns if col in panel.columns]
     sub = panel.filter(
         pl.col('ts_code').is_in(list(codes))
         & (pl.col('date') >= start)
@@ -158,6 +167,13 @@ def _build_bars(panel: pl.DataFrame, codes: Set[str],
     for row in sub.iter_rows(named=True):
         bars.setdefault(row['ts_code'], {})[row['date']] = row
     return bars
+
+
+def _empty_result() -> Dict[str, Any]:
+    """无有效样本时的空结果，字段与正常返回保持一致。"""
+    return {'equity_curve': [], 'turnover': 0.0, 'performance': {},
+            'trades': 0, 'total_cost': 0.0, 'delayed_exits': 0,
+            'forced_exits': 0, 'null_cap_trades': 0, 'slippage_bp_counts': {}}
 
 
 def simulate_long_only(  # noqa: C901 - 事件循环共享可变状态，见下方说明
@@ -171,17 +187,21 @@ def simulate_long_only(  # noqa: C901 - 事件循环共享可变状态，见下�
 ) -> Dict[str, Any]:
     """样本外等权多头组合模拟，返回权益曲线、换手与绩效。
 
+    成本走 ``CostModel`` 的分档滑点：若面板带 ``adv20`` / ``total_mv_yi``
+    （见 ``data.attach_cost_inputs``），按标的实际档位计费；缺列或该日为空
+    时退回兜底档（个股小盘 30bp）。
+
     事件循环同时维护「信号 → T+1 建仓 → 持有期退出 → 盯市」四段状态，
     拆分后仍需共享可变状态；mccabe 会把闭包复杂度计入父函数，故此处豁免。
     """
     if score_frame.is_empty():
-        return {'equity_curve': [], 'turnover': 0.0, 'performance': {}, 'trades': 0}
+        return _empty_result()
 
     valid = score_frame.filter(pl.col(score_col).is_finite())
     sections = _cross_sections(valid)
     signal_dates = sorted(sections)
     if not signal_dates:
-        return {'equity_curve': [], 'turnover': 0.0, 'performance': {}, 'trades': 0}
+        return _empty_result()
 
     calendar = panel['date'].unique().sort().to_list()
     calendar_index = {day: i for i, day in enumerate(calendar)}
@@ -211,6 +231,11 @@ def simulate_long_only(  # noqa: C901 - 事件循环共享可变状态，见下�
     equity_curve: List[Dict[str, Any]] = []
     pending_entry: List[str] = []
     trade_count = 0
+    total_cost = 0.0
+    delayed_exits = 0
+    forced_exits = 0
+    null_cap_trades = 0
+    slippage_bp_counts: Dict[int, int] = {}
 
     def tradable(code: str, day: date, side: str) -> bool:
         bar = bars.get(code, {}).get(day)
@@ -237,9 +262,30 @@ def simulate_long_only(  # noqa: C901 - 事件循环共享可变状态，见下�
         value = bar.get(column)
         return float(value) if value is not None else None
 
+    def cost_of(code: str, day: date, shares: float, price: float,
+                side: str) -> float:
+        """按标的当日可得的 t-1 分档输入计费（纯函数，不记账）。"""
+        bar = bars.get(code, {}).get(day) or {}
+        calculator = (costs.calculate_buy_cost if side == 'buy'
+                      else costs.calculate_sell_cost)
+        return calculator(shares, price, day, code,
+                          adv20=bar.get(ADV_COL),
+                          total_mv_yi=bar.get(TOTAL_MV_YI_COL))
+
+    def record_trade(code: str, day: date, fee: float) -> None:
+        """只在成交确认后记账：累计成本、滑点档分布与市值缺失笔数（审计用）。"""
+        nonlocal total_cost, null_cap_trades
+        total_cost += fee
+        bar = bars.get(code, {}).get(day) or {}
+        if bar.get(TOTAL_MV_YI_COL) is None:
+            null_cap_trades += 1
+        bp = int(round(costs.slippage_rate(
+            code, bar.get(ADV_COL), bar.get(TOTAL_MV_YI_COL)) * 1e4))
+        slippage_bp_counts[bp] = slippage_bp_counts.get(bp, 0) + 1
+
     def settle_exits(day_index: int, day: date) -> None:
         """开盘处理到期退出；受阻则顺延，超期按收盘价强制退出。"""
-        nonlocal cash, trade_count
+        nonlocal cash, trade_count, delayed_exits, forced_exits
         for code in list(holdings.keys()):
             item = holdings[code]
             if day_index < item['exit_index']:
@@ -249,8 +295,9 @@ def simulate_long_only(  # noqa: C901 - 事件循环共享可变状态，见下�
                 price = price_of(code, day, 'open_hfq')
                 if price is not None and price > 0:
                     shares = item['shares']
-                    cash += shares * price - costs.calculate_sell_cost(
-                        shares, price, day, code)
+                    fee = cost_of(code, day, shares, price, 'sell')
+                    cash += shares * price - fee
+                    record_trade(code, day, fee)
                     trade_count += 1
                     executed = True
             if executed:
@@ -260,11 +307,15 @@ def simulate_long_only(  # noqa: C901 - 事件循环共享可变状态，见下�
                 price = price_of(code, day, 'close_hfq') or last_close.get(code)
                 if price is not None and price > 0:
                     shares = item['shares']
-                    cash += shares * price - costs.calculate_sell_cost(
-                        shares, price, day, code)
+                    fee = cost_of(code, day, shares, price, 'sell')
+                    cash += shares * price - fee
+                    record_trade(code, day, fee)
                     trade_count += 1
+                    forced_exits += 1
                     last_close.pop(code, None)
                     holdings.pop(code, None)
+            else:
+                delayed_exits += 1
 
     def open_entries(day_index: int, day: date) -> None:
         """以前一日收盘信号在本日开盘建仓（T+1），现金等权分配。"""
@@ -279,10 +330,11 @@ def simulate_long_only(  # noqa: C901 - 事件循环共享可变状态，见下�
                 continue
             shares = allocation / price
             total = shares * price
-            fee = costs.calculate_buy_cost(shares, price, day, code)
+            fee = cost_of(code, day, shares, price, 'buy')
             if total + fee > cash:
                 continue
             cash -= total + fee
+            record_trade(code, day, fee)
             holdings[code] = {
                 'shares': shares,
                 'entry_index': day_index,
@@ -323,6 +375,11 @@ def simulate_long_only(  # noqa: C901 - 事件循环共享可变状态，见下�
         'turnover': turnover_from_sets(sets),
         'performance': performance,
         'trades': trade_count,
+        'total_cost': total_cost,
+        'delayed_exits': delayed_exits,
+        'forced_exits': forced_exits,
+        'null_cap_trades': null_cap_trades,
+        'slippage_bp_counts': slippage_bp_counts,
     }
 
 

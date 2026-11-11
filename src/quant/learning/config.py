@@ -20,6 +20,13 @@ from typing import Any
 #: 避免同一个 60 在多个模块各写一遍后各自漂移。
 MIN_HISTORY_ROWS = 60
 
+#: 分档滑点输入列（与回测内核 ``execution_core`` 的 ROLE_ADV20 /
+#: ROLE_TOTAL_MV_YI 同语义）：均为 **t 日交易可用的 t-1 信息**。
+#: ``ADV_COL`` 是前 20 个交易日成交额均值（元）；
+#: ``TOTAL_MV_YI_COL`` 是前一交易日总市值（亿元）。
+ADV_COL = 'adv20'
+TOTAL_MV_YI_COL = 'total_mv_yi'
+
 
 @dataclass(frozen=True)
 class WalkForwardConfig:
