@@ -9,7 +9,10 @@
 - IR = mean(IC) / std(IC)（不做年化，便于跨窗口比较）；
 - 多重检验：对每个因子的 IC t 检验 p 值做 Benjamini-Hochberg 校正；
 - 稳定性：因子截面前 20% 排名在 t 与 t-1 的截面相关（抽样日期计算）；
-- 分组：每日按因子分 5 组，统计各组未来收益均值与多空（G5-G1）。
+- 分组：每日按因子分 N 组（``EvalConfig.n_groups``，默认 5），统计各组未来收益均值
+  与多空（G5-G1）；单调性 = 每日 N 点 Spearman 的跨日均值，门槛 ``min_monotonic``
+  必须与 ``n_groups`` 成对给出（同一阈值在不同 N 下含义不同，量级依据见
+  ``docs/因子单调性门槛配置_2026-11-11.md``）。
 
 注意：本模块只做研究评估，不写入生产配置。
 """
@@ -39,6 +42,11 @@ MIN_PAIRS = 30
 MIN_COVERAGE = 0.80
 MIN_ABS_IC = 0.010
 MIN_IR = 0.15
+#: 分组数：单调性是「N 个组收益」的 Spearman，门槛必须与它成对给出。
+DEFAULT_N_GROUPS = 5
+#: 单调性硬筛下限。当前为 0.0 即「不做单调性硬筛」，只要求方向为正；
+#: 本口径（每日 N 点 Spearman 的跨日均值）实测上限很低，见
+#: docs/因子单调性门槛配置_2026-11-11.md，收紧门槛前必须先看该文档的量级证据。
 MIN_MONOTONIC = 0.0
 MAX_OTHER = 12
 CORR_LIMIT = 0.80
@@ -118,7 +126,10 @@ class EvalConfig:
     min_coverage: float = MIN_COVERAGE
     min_abs_ic: float = MIN_ABS_IC
     min_ir: float = MIN_IR
+    #: 单调性门槛；``n_groups`` 不同则同一数值含义不同，两者必须成对调整
     min_monotonic: float = MIN_MONOTONIC
+    #: 每日分组数（单调性的样本点数），与 ``min_monotonic`` 绑定
+    n_groups: int = DEFAULT_N_GROUPS
     corr_limit: float = CORR_LIMIT
     bh_alpha: float = BH_ALPHA
     max_per_style: int = 8
@@ -127,6 +138,12 @@ class EvalConfig:
     max_other: int = MAX_OTHER
     top_k: int = 20
     hold_days: int = 20
+
+    def __post_init__(self) -> None:
+        if self.n_groups < 2:  # noqa: PLR2004
+            raise ValueError(f'n_groups 必须 ≥ 2，当前 {self.n_groups}')
+        if not -1.0 <= self.min_monotonic <= 1.0:
+            raise ValueError(f'min_monotonic 必须落在 [-1, 1]，当前 {self.min_monotonic}')
 
 
 @dataclass
@@ -227,7 +244,8 @@ def _coverage(frame: pl.DataFrame, factor: str) -> float:
     return _as_float(shares['cov'].mean())
 
 
-def _buckets(frame: pl.DataFrame, factor: str, label: str, n_groups: int = 5) -> pl.DataFrame:
+def _buckets(frame: pl.DataFrame, factor: str, label: str,
+             n_groups: int = DEFAULT_N_GROUPS) -> pl.DataFrame:
     """每日按因子分 n 组，返回组号与未来收益（用于单调性）。"""
     valid = frame.filter(pl.col(factor).is_not_null() & pl.col(label).is_not_null())
     return (
@@ -240,7 +258,7 @@ def _buckets(frame: pl.DataFrame, factor: str, label: str, n_groups: int = 5) ->
 
 
 def _monotonic_stats(frame: pl.DataFrame, factor: str, label: str,
-                     n_groups: int = 5) -> tuple[float, float]:
+                     n_groups: int = DEFAULT_N_GROUPS) -> tuple[float, float]:
     groups = _buckets(frame, factor, label, n_groups)
     per_date = groups.group_by('date').agg(
         pl.col('ret').sort_by('bucket').alias('rets'),
@@ -301,14 +319,15 @@ def bh_qvalues(p_values: list[float]) -> list[float]:
 
 def evaluate_factor(frame: pl.DataFrame, factor: str, style: str, direction: float,
                     horizon: int, sample_dates: list[date],
-                    label: str | None = None) -> FactorMetrics:
-    """单因子单窗口指标（IC 已按方向对齐）。"""
+                    label: str | None = None,
+                    n_groups: int = DEFAULT_N_GROUPS) -> FactorMetrics:
+    """单因子单窗口指标（IC 已按方向对齐；``n_groups`` 决定单调性的分组数）。"""
     label = label or f'fwd_{horizon}'
     ic = _rank_ic(frame, factor, label)
     mean, std, ir, positive, t_stat, p_value = _ic_stats(ic)
     signed_mean = direction * mean
     signed_ir = direction * ir
-    monotonic, long_short = _monotonic_stats(frame, factor, label)
+    monotonic, long_short = _monotonic_stats(frame, factor, label, n_groups)
     if direction < 0:
         monotonic = -monotonic
         long_short = -long_short
@@ -349,7 +368,8 @@ def _direction_of(factor: str, ic_mean: float) -> float:
 
 
 def evaluate_candidates(frame: pl.DataFrame, factors: list[str], horizon: int,
-                        sample_dates: list[date]) -> list[FactorMetrics]:
+                        sample_dates: list[date],
+                        n_groups: int = DEFAULT_N_GROUPS) -> list[FactorMetrics]:
     """批量评估并在同一批次内做 BH 校正。"""
     label = f'fwd_{horizon}'
     metrics: list[FactorMetrics] = []
@@ -363,7 +383,7 @@ def evaluate_candidates(frame: pl.DataFrame, factors: list[str], horizon: int,
             expression = ''
         metrics.append(evaluate_factor(
             frame, factor, style_of(factor, expression), direction, horizon,
-            sample_dates, label))
+            sample_dates, label, n_groups))
     q_values = bh_qvalues([item.p_value for item in metrics])
     for item, q in zip(metrics, q_values, strict=True):
         item.q_value = q
@@ -536,7 +556,8 @@ def walk_forward(frame: pl.DataFrame, factors: list[str], config: EvalConfig,
         if train['date'].n_unique() < 60 or test['date'].n_unique() < 20:  # noqa: PLR2004
             continue
         corr = correlation_matrix(train, factors, sample_dates)
-        train_metrics = evaluate_candidates(train, factors, config.horizon, sample_dates)
+        train_metrics = evaluate_candidates(train, factors, config.horizon,
+                                            sample_dates, config.n_groups)
         selected = select_metrics(train_metrics, train, corr, config)
         names = [item.factor for item in selected]
         weights = (selection_weights(selected, baseline_weights, new_share)
@@ -545,7 +566,8 @@ def walk_forward(frame: pl.DataFrame, factors: list[str], config: EvalConfig,
             results.append(WindowResult(
                 train_start, train_end, test_start, test_end, weights=weights))
             continue
-        test_metrics = evaluate_candidates(test, names, config.horizon, sample_dates)
+        test_metrics = evaluate_candidates(test, names, config.horizon,
+                                           sample_dates, config.n_groups)
         test_ics = [item.ic_mean for item in test_metrics]
         test_mons = [item.monotonic for item in test_metrics]
         test_ls = [item.long_short for item in test_metrics]
@@ -842,7 +864,7 @@ def ic_monitor(rolling_ic: pl.Series, threshold: float = 0.0,
 
 
 __all__ = [
-    'EvalConfig', 'FactorMetrics', 'SimConfig', 'WindowResult',
+    'DEFAULT_N_GROUPS', 'EvalConfig', 'FactorMetrics', 'SimConfig', 'WindowResult',
     'add_forward_returns', 'bh_qvalues', 'build_composite',
     'correlation_matrix', 'evaluate_candidates', 'ic_monitor',
     'select_metrics', 'simulate_fixed_hold', 'walk_forward',

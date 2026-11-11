@@ -362,6 +362,11 @@ def main(argv: list[str] | None = None) -> int:
                         help='失效监控：窗口 IC 均值阈值')
     parser.add_argument('--monitor-windows', type=int, default=3,
                         help='失效监控：连续 N 个窗口低于阈值/为负即告警')
+    parser.add_argument('--n-groups', type=int, default=5,
+                        help='单调性分组数（与 --min-mono 绑定，默认 5）')
+    parser.add_argument('--min-mono', type=float, default=0.0,
+                        help='单调性硬筛下限（默认 0.0 即不硬筛；收紧前先看 '
+                             'docs/因子单调性门槛配置_2026-11-11.md 的量级证据）')
     parser.add_argument('--no-cache', action='store_true')
     parser.add_argument('--out-dir', default='',
                         help='输出目录（默认 reports/eval_daily_advice）')
@@ -371,7 +376,8 @@ def main(argv: list[str] | None = None) -> int:
     config = EvalConfig(start=args.start, end=args.end,
                         universe_size=args.universe, hold_days=args.hold[0],
                         horizon=args.horizon, embargo=args.embargo,
-                        top_k=args.top_k)
+                        top_k=args.top_k, n_groups=args.n_groups,
+                        min_monotonic=args.min_mono)
     cost_overrides = _cost_overrides(args)
 
     tag = f'strat{args.universe}s{args.seed}'
@@ -396,7 +402,8 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     full_by_h: dict[int, list] = {}
     for horizon in config.horizons:
-        metrics = evaluate_candidates(matrix, factors, horizon, sample_dates)
+        metrics = evaluate_candidates(matrix, factors, horizon, sample_dates,
+                                      config.n_groups)
         full_by_h[horizon] = metrics
         _print_metrics(metrics)
         pl.DataFrame([item.__dict__ for item in metrics]).write_csv(
@@ -408,7 +415,9 @@ def main(argv: list[str] | None = None) -> int:
     cache_key = {
         'start': args.start, 'end': args.end, 'universe': args.universe,
         'seed': args.seed, 'horizon': config.horizon, 'embargo': config.embargo,
-        'n_factors': len(factors), 'factors': sorted(factors), 'version': 5,
+        'n_factors': len(factors), 'factors': sorted(factors),
+        'n_groups': config.n_groups, 'min_monotonic': config.min_monotonic,
+        'version': 6,
     }
     cache_path = out_dir / 'windows_cache.pkl'
     windows = None

@@ -33,6 +33,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--end', default='2026-10-31', help='结束日期')
     parser.add_argument('--horizon', type=int, default=20, help='持有期（交易日）')
     parser.add_argument('--groups', type=int, default=5, help='分层数量')
+    parser.add_argument('--tier-a-mono', type=float, default=0.6,
+                        help='A 档单调性门槛（须与 --groups 绑定，默认 0.6 对应 5 分组）')
+    parser.add_argument('--tier-b-mono', type=float, default=0.4,
+                        help='B 档单调性门槛（默认 0.4 对应 5 分组）')
+    parser.add_argument('--tier-a-icir', type=float, default=1.0,
+                        help='A 档 |ICIR 年化| 下限')
+    parser.add_argument('--tier-b-icir', type=float, default=0.5,
+                        help='B 档 |ICIR 年化| 下限')
+    parser.add_argument('--tier-a-t', type=float, default=2.0, help='A 档 t 值下限')
+    parser.add_argument('--tier-b-t', type=float, default=1.5, help='B 档 t 值下限')
     parser.add_argument('--min-names', type=int, default=15, help='每日最少标的数')
     parser.add_argument('--categories', nargs='*', default=None,
                         help='只跑指定大类：alpha101 gtja191 alpha158 famafrench technical')
@@ -72,6 +82,13 @@ def run(args: argparse.Namespace) -> dict:
     config = evaluate.EvalConfig(
         horizon=args.horizon, n_groups=args.groups, min_names=args.min_names,
     )
+    tiers = report.TierConfig(
+        n_groups=args.groups,
+        a=report.TierRule(args.tier_a_icir, args.tier_a_t, args.tier_a_mono),
+        b=report.TierRule(args.tier_b_icir, args.tier_b_t, args.tier_b_mono),
+        c=report.TierRule(0.0, 1.0, 0.0),
+    )
+    report.check_tier_groups(tiers, config.n_groups)
     metrics = evaluate.evaluate_all(values.frame, trimmed, config, specs)
 
     dates = evaluate.rebalance_dates(trimmed, args.horizon)
@@ -80,7 +97,7 @@ def run(args: argparse.Namespace) -> dict:
 
     specs_all = all_specs()
     selected = report.select_recommendations(metrics, clusters, specs_all)
-    headline = report.build_headline(selected)
+    headline = report.build_headline(selected, tiers)
     registered = len(specs_all)
     computable = sum(1 for spec in specs_all if spec.computable)
     registry_headline = (
@@ -90,9 +107,9 @@ def run(args: argparse.Namespace) -> dict:
     )
 
     report.write_registry(specs_all, registry_headline)
-    report.write_evaluation(metrics, headline)
+    report.write_evaluation(metrics, headline, n_groups=args.groups)
     report.write_clusters(clusters, headline)
-    recommend_path = report.write_recommendation(selected, headline)
+    recommend_path = report.write_recommendation(selected, headline, tiers)
 
     strategy_frame = None
     strategy_headline = None
@@ -124,12 +141,13 @@ def run(args: argparse.Namespace) -> dict:
             'kept': len(clusters.kept),
             'dropped': len(clusters.dropped),
         },
+        'tiers': tiers.as_dict(),
         'elapsed_sec': elapsed,
         'report_dir': str(report.REPORT_DIR),
         'recommendation': str(recommend_path),
     }
     summary_path = report.write_summary(
-        metrics, clusters, selected, meta, strategy_frame, headline,
+        metrics, clusters, selected, meta, strategy_frame, headline, tiers,
     )
     meta['summary'] = str(summary_path)
     report.write_meta(meta)

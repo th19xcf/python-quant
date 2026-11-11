@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from collections.abc import Iterable
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import polars as pl
@@ -27,10 +28,80 @@ from src.quant.factor_lib.registry import FactorSpec
 
 REPORT_DIR = Path(__file__).resolve().parents[3] / 'reports' / 'factor_lib'
 
-#: 建议清单的分级阈值
-TIER_A = {'abs_icir_annual': 1.0, 't_stat': 2.0, 'monotonicity': 0.6}
-TIER_B = {'abs_icir_annual': 0.5, 't_stat': 1.5, 'monotonicity': 0.4}
-TIER_C = {'abs_icir_annual': 0.0, 't_stat': 1.0, 'monotonicity': 0.0}
+#: 单调性定义标识：与 ``evaluate._monotonicity`` 一致——先按组汇总全期平均收益，
+#: 再对「组序号 vs 组均值」做一次 Spearman。与 ``src.advice.factor_eval`` 的
+#: 「每日 N 点 Spearman 再跨日平均」不是同一个统计量，换定义必须同时换门槛。
+MONO_DEFINITION = 'pooled_group_means'
+
+
+@dataclass(frozen=True, slots=True)
+class TierRule:
+    """单档门槛。"""
+
+    abs_icir_annual: float
+    t_stat: float
+    monotonicity: float
+
+
+@dataclass(frozen=True, slots=True)
+class TierConfig:
+    """分级门槛，以及与它绑定的分组数与单调性定义。
+
+    ``n_groups`` 必须等于本次评估的 ``evaluate.EvalConfig.n_groups``：单调性是
+    「N 个组均值」的 Spearman，N 不同时同一数值的含义不同，二者必须成对给出
+    （一致性校验见 :func:`check_tier_groups`）。
+    """
+
+    n_groups: int
+    a: TierRule
+    b: TierRule
+    c: TierRule
+    definition: str = MONO_DEFINITION
+
+    def __post_init__(self) -> None:
+        if self.n_groups < 2:  # noqa: PLR2004
+            raise ValueError(f'n_groups 必须 ≥ 2，当前 {self.n_groups}')
+        for name, rule in (('A', self.a), ('B', self.b), ('C', self.c)):
+            if not -1.0 <= rule.monotonicity <= 1.0:
+                raise ValueError(
+                    f'{name} 档单调性门槛必须落在 [-1, 1]，当前 {rule.monotonicity}')
+        if not self.a.monotonicity >= self.b.monotonicity >= self.c.monotonicity:
+            raise ValueError('A/B/C 三档的单调性门槛必须逐档递减')
+
+    def as_dict(self) -> dict[str, object]:
+        """可写入 run_meta.json 的纯字典（保证换配置可复现）。"""
+        return {'n_groups': self.n_groups, 'definition': self.definition,
+                'A': asdict(self.a), 'B': asdict(self.b), 'C': asdict(self.c)}
+
+    def describe(self) -> str:
+        """报告里展示的分级规则原文（含分组数与口径，避免与评估口径脱节）。"""
+        return (f'A = |ICIR年化|≥{self.a.abs_icir_annual:.2f} 且 '
+                f't≥{self.a.t_stat:.1f} 且单调性≥{self.a.monotonicity:.2f}；'
+                f'B = |ICIR年化|≥{self.b.abs_icir_annual:.2f} 且 '
+                f't≥{self.b.t_stat:.1f} 且单调性≥{self.b.monotonicity:.2f}；'
+                f'C = t≥{self.c.t_stat:.1f}；D = 其余。'
+                f'（{self.n_groups} 分组，单调性口径 {self.definition}）')
+
+
+def default_tiers(n_groups: int = 5) -> TierConfig:
+    """默认门槛：与旧版逐值一致（A 0.6 / B 0.4），只把分组数显式带出。"""
+    return TierConfig(n_groups=n_groups,
+                      a=TierRule(1.0, 2.0, 0.6),
+                      b=TierRule(0.5, 1.5, 0.4),
+                      c=TierRule(0.0, 1.0, 0.0))
+
+
+#: 旧版行为的等价默认值（5 分组、A 0.6 / B 0.4）
+DEFAULT_TIERS = default_tiers()
+
+
+def check_tier_groups(tiers: TierConfig, n_groups: int) -> None:
+    """门槛标定用的分组数必须等于本次评估的分组数，否则门槛失去含义。"""
+    if tiers.n_groups != n_groups:
+        raise ValueError(
+            f'分级门槛按 {tiers.n_groups} 分组标定，但本次评估用 {n_groups} 分组；'
+            '请用 default_tiers(n_groups) 或显式构造匹配的 TierConfig')
+
 
 #: 策略内部名 → 中文标签
 STRATEGY_LABELS = {
@@ -64,18 +135,18 @@ def _headline_block(headline: str | None) -> list[str]:
     return [f'> **一句话结论**：{headline}', '']
 
 
-def tier_of(row: dict) -> str:
-    """按 |ICIR 年化| / t 值 / 单调性给因子分级。"""
+def tier_of(row: dict, tiers: TierConfig = DEFAULT_TIERS) -> str:
+    """按 |ICIR 年化| / t 值 / 单调性给因子分级（门槛与分组数见 ``tiers``）。"""
     abs_icir = abs(float(row['icir_annual']))
-    if (abs_icir >= TIER_A['abs_icir_annual']
-            and float(row['t_stat']) >= TIER_A['t_stat']
-            and float(row['monotonicity']) >= TIER_A['monotonicity']):
+    if (abs_icir >= tiers.a.abs_icir_annual
+            and float(row['t_stat']) >= tiers.a.t_stat
+            and float(row['monotonicity']) >= tiers.a.monotonicity):
         return 'A-优先纳入'
-    if (abs_icir >= TIER_B['abs_icir_annual']
-            and float(row['t_stat']) >= TIER_B['t_stat']
-            and float(row['monotonicity']) >= TIER_B['monotonicity']):
+    if (abs_icir >= tiers.b.abs_icir_annual
+            and float(row['t_stat']) >= tiers.b.t_stat
+            and float(row['monotonicity']) >= tiers.b.monotonicity):
         return 'B-可纳入'
-    if float(row['t_stat']) >= TIER_C['t_stat']:
+    if float(row['t_stat']) >= tiers.c.t_stat:
         return 'C-观察'
     return 'D-噪音'
 
@@ -119,7 +190,8 @@ def write_registry(specs: list[FactorSpec], headline: str | None = None) -> Path
     return out / '因子登记表.md'
 
 
-def write_evaluation(metrics: pl.DataFrame, headline: str | None = None) -> Path:
+def write_evaluation(metrics: pl.DataFrame, headline: str | None = None,
+                     n_groups: int = 5) -> Path:
     """写分层回测指标（CSV + Markdown，按 |ICIR 年化| 排序）。"""
     out = ensure_dir()
     metrics.write_csv(out / 'factor_eval.csv')
@@ -130,7 +202,7 @@ def write_evaluation(metrics: pl.DataFrame, headline: str | None = None) -> Path
         if 'error' in metrics.columns else pl.DataFrame()
 
     parts = ['# 因子分层回测结果', '', *_headline_block(headline),
-             '口径：T+1 开盘成交、持有 20 日、非重叠调仓、5 分组等权、'
+             f'口径：T+1 开盘成交、持有 20 日、非重叠调仓、{n_groups} 分组等权、'
              '双边成本（佣金+过户费+滑点+印花税），因子已按登记方向统一取向。', '',
              f'- 有效因子：{valid.height}',
              f'- 失败/样本不足因子：{failures.height}', '',
@@ -202,14 +274,15 @@ def select_recommendations(
     return selected
 
 
-def build_headline(selected: list[tuple[FactorSpec, dict]]) -> str:
+def build_headline(selected: list[tuple[FactorSpec, dict]],
+                   tiers: TierConfig = DEFAULT_TIERS) -> str:
     """生成大白话「一句话结论」：赚钱/亏钱、哪些能用、哪些是噪音。"""
-    counts = Counter(tier_of(row) for _spec, row in selected)
+    counts = Counter(tier_of(row, tiers) for _spec, row in selected)
     usable = counts['A-优先纳入'] + counts['B-可纳入']
     watch = counts['C-观察']
     noise = counts['D-噪音']
     top = [spec.name for spec, row in selected
-           if tier_of(row) in ('A-优先纳入', 'B-可纳入')]
+           if tier_of(row, tiers) in ('A-优先纳入', 'B-可纳入')]
     names = '、'.join(top[:5])
     if usable == 0:
         verdict = '照这套因子做多空基本不赚钱'
@@ -240,6 +313,7 @@ def build_strategy_headline(frame: pl.DataFrame) -> str:
 
 def write_recommendation(
     selected: list[tuple[FactorSpec, dict]], headline: str | None = None,
+    tiers: TierConfig = DEFAULT_TIERS,
 ) -> Path:
     """生成生产建议清单（CSV + Markdown）。"""
     out = ensure_dir()
@@ -250,7 +324,7 @@ def write_recommendation(
             direction = ('+' if float(row['mean_ic']) > 0 else '-') + '（样本内）'
         rows_out.append({
             'factor': spec.name,
-            'tier': tier_of(row),
+            'tier': tier_of(row, tiers),
             'category': spec.category,
             'direction': direction,
             'status': spec.status,
@@ -275,8 +349,7 @@ def write_recommendation(
              f'- B 可纳入：{counts["B-可纳入"]} 个',
              f'- C 观察：{counts["C-观察"]} 个',
              f'- D 噪音（t 值 < 1）：{counts["D-噪音"]} 个', '',
-             '分级规则：A = |ICIR年化|≥1.0 且 t≥2.0 且单调性≥0.6；'
-             'B = |ICIR年化|≥0.5 且 t≥1.5 且单调性≥0.4；C = t≥1.0；D = 其余。', '',
+             f'分级规则：{tiers.describe()}', '',
              _md_table(
                  ['因子', '分级', '大类', '方向', '状态', '均值IC', 'ICIR年化', 't值',
                   '单调性', '换手', '净多空累计', '公式'],
@@ -323,15 +396,16 @@ def write_summary(
     meta: dict,
     strategy_frame: pl.DataFrame | None = None,
     headline: str | None = None,
+    tiers: TierConfig = DEFAULT_TIERS,
 ) -> Path:
     """写汇总报告（结论前置，技术细节随后）。"""
     out = ensure_dir()
     panel_meta = meta.get('panel', {})
     dim = meta.get('dimension_check', {})
-    counts = Counter(tier_of(row) for _spec, row in selected)
+    counts = Counter(tier_of(row, tiers) for _spec, row in selected)
     usable = [(s, r) for s, r in selected
-              if tier_of(r) in ('A-优先纳入', 'B-可纳入')]
-    watch = [(s, r) for s, r in selected if tier_of(r) == 'C-观察']
+              if tier_of(r, tiers) in ('A-优先纳入', 'B-可纳入')]
+    watch = [(s, r) for s, r in selected if tier_of(r, tiers) == 'C-观察']
     usable.sort(key=lambda item: abs(float(item[1]['icir_annual'])), reverse=True)
 
     def row_of(spec: FactorSpec, row: dict) -> list[str]:
@@ -361,7 +435,7 @@ def write_summary(
         f'- 区间：{panel_meta.get("start", "-")} ~ {panel_meta.get("end", "-")}，'
         f'{panel_meta.get("trading_days", "-")} 个交易日，{panel_meta.get("rows", "-")} 行',
         '- 价格：后复权（hfq_factor）；停牌与开盘涨跌停不可成交；T+1 开盘建仓；'
-        '持有 20 日、每 20 个交易日非重叠调仓；5 分组等权',
+        f'持有 20 日、每 20 个交易日非重叠调仓；{tiers.n_groups} 分组等权',
         f'- 成本：买 {meta.get("cost", {}).get("buy", "-")}，'
         f'卖 {meta.get("cost", {}).get("sell", "-")}（含佣金/过户费/印花税/滑点）',
         '- 量纲自检：amount/(原始收盘价×volume×100) 的 '
@@ -440,9 +514,15 @@ def write_meta(payload: dict) -> Path:
 
 
 __all__ = [
+    'DEFAULT_TIERS',
+    'MONO_DEFINITION',
     'REPORT_DIR',
+    'TierConfig',
+    'TierRule',
     'build_headline',
     'build_strategy_headline',
+    'check_tier_groups',
+    'default_tiers',
     'ensure_dir',
     'select_recommendations',
     'tier_of',
