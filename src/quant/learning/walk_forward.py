@@ -150,7 +150,8 @@ def _combo_excess_by_date(prepared: pl.DataFrame, factor_z: str,
         if cross.height < 5:
             continue
         size = max(1, int(round(cross.height * 0.2)))
-        ranked = cross.sort(factor_z, descending=sign > 0).head(size)
+        ranked = cross.sort(factor_z, descending=sign > 0,
+                            nulls_last=True).head(size)
         top_mean = float(np.nanmean(ranked[LABEL_COL].to_numpy().astype(float)))
         all_mean = float(np.nanmean(cross[LABEL_COL].to_numpy().astype(float)))
         result[key[0]] = top_mean - all_mean

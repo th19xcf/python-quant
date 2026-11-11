@@ -64,6 +64,11 @@ def normalize_features(panel: pl.DataFrame, factor_cols: Sequence[str],
 
     每一步都只用同一交易日的数据，因此可以在整个面板上一次性预计算，
     不会把未来信息带入训练窗。输出列名为 ``{factor}{suffix}``。
+
+    缺失保持 null：因子原值为空的行不参与标准化，输出同样为 null。当日有效
+    样本不足 2 个（``std`` 不可计算）或截面毫无离散度（所有值相同、``std == 0``）
+    时 z 分值同样没有定义，也输出 null。这两类情况若填 0，等于把「没有数据」
+    伪装成「截面中性」，下游 Rank IC、分层与排序都会把它当成有效观测。
     """
     if not factor_cols:
         return panel
@@ -77,8 +82,15 @@ def normalize_features(panel: pl.DataFrame, factor_cols: Sequence[str],
         pct = pl.when(count > 1).then((rank - 1) / (count - 1)).otherwise(0.5)
         mean = pct.mean().over('date')
         std = pct.std().over('date')
-        z = pl.when(std > 0).then((pct - mean) / std).otherwise(0.0)
-        exprs.append(z.fill_null(0.0).cast(pl.Float64).alias(f'{col}{suffix}'))
+        z = (pl.when(std.is_null() | (std == 0.0))
+             .then(pl.lit(None, dtype=pl.Float64))
+             .otherwise((pct - mean) / std))
+        exprs.append(
+            pl.when(pl.col(col).is_null())
+            .then(pl.lit(None, dtype=pl.Float64))
+            .otherwise(z)
+            .cast(pl.Float64)
+            .alias(f'{col}{suffix}'))
     return panel.with_columns(exprs)
 
 
