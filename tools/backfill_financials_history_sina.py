@@ -74,13 +74,16 @@ SINA_URL = ('https://quotes.sina.cn/cn/api/openapi.php/'
 SOURCE_TAG = 'sina:getFinanceReport2022:consolidated'
 ANN_SOURCE = 'sina_publish'
 HISTORY_CUTOFF = date(2010, 1, 1)          # 只落这一天之前的报告期
-# 各表正式写入的报告期窗口下界（含）。窗口外即使源端有值也不落盘：
-# - 现金流量表 1990–1997 按任务书明确不补（准则 1998 年才要求编制）；
-#   实测源端仍有 9 行（7 只）、属个别公司的追溯披露，未纳入。
-# - 利润表/资产负债表下界 1990-01-01：实测另有 3 行 1989-12-31（000001.SZ、600603.SH），
-#   早于本次声明范围，未纳入。
+# 各表正式写入的报告期窗口下界（含），**按报表分别声明，不设统一开关**。
+# 两边性质不同，混在一个开关里迟早会把不该放的放进来：
+# - 现金流量表下界 1996-01-01：原判定「1998 年前结构性不存在」是错的，实测源端确有
+#   1996–1997 共 9 行 / 7 只（000563.SZ、000900.SZ、000921.SZ、600181.SH、600207.SH、
+#   600217.SH、601857.SH），属个别公司追溯披露。2026-11-11 裁定补入（数据已在分片
+#   缓存内，零额外请求）。分片缓存实测无 1996 年前的行，故该下界即「只放 1996–1997」。
+# - 利润表/资产负债表下界保持 1990-01-01：1989-12-31 共 4 行（000001.SZ、600603.SH）
+#   早于本次数据集声明起点，属干净的窗口边界，继续排除。
 WINDOW_FLOOR = {'income': date(1990, 1, 1), 'balance': date(1990, 1, 1),
-                'cashflow': date(1998, 1, 1)}
+                'cashflow': date(1996, 1, 1)}
 STAGING = PROJECT_ROOT / '_staging' / 'financials_history_20261111'
 PARTS = STAGING / 'parts'
 PROGRESS = STAGING / 'progress.csv'
@@ -757,13 +760,23 @@ def apply_netprofit() -> int:
     return 0
 
 
-def apply_pre2010() -> int:
-    """把 1990–2009 候选行追加进三张正式表（只增行，不改任何存量单元格）。"""
+def apply_pre2010(only: str | None = None,
+                  end_before: date | None = None) -> int:
+    """把 1990–2009 候选行追加进三张正式表（只增行，不改任何存量单元格）。
+
+    ``only`` / ``end_before`` 用于把一次运行收窄到指定报表 / 报告期，
+    便于在已落盘后只补某一小段（如现金流量表 1996–1997 的 9 行）；
+    此时证据文件另存 ``pre2010_evidence_{only}.md``，不覆盖全量证据。
+    """
     from src.data.atomic_write import write_parquet_atomic
 
+    scope = STATEMENT_CN.get(only, '') if only else ''
+    if end_before is not None:
+        scope = f'{scope}<{end_before}'
     lines = ['# 1990–2009 三表补行证据', '',
+             *([f'> **本次范围收窄：{scope}**', ''] if scope else []),
              f'生成时间：{datetime.now():%Y-%m-%d %H:%M:%S}', '']
-    for statement in MAPPING:
+    for statement in ([only] if only else list(MAPPING)):
         cand_path = STAGING / f'{statement}_pre2010.parquet'
         if not cand_path.exists():
             print(f'[{statement}] 无候选，跳过')
@@ -771,7 +784,12 @@ def apply_pre2010() -> int:
         src = store.table_path(statement)
         old = pl.read_parquet(src)
         old_sha = _sha256(src)
-        cand = pl.read_parquet(cand_path).select(old.columns)
+        cand = pl.read_parquet(cand_path)
+        if end_before is not None:
+            cand = cand.filter(pl.col('end_date') < end_before)
+        cand = cand.select(old.columns)
+        if cand.height == 0:
+            raise AssertionError(f'{statement}: 收窄后候选 0 行，拒绝空跑')
         backup = _backup(statement, src)
 
         overlap = old.select('ts_code', 'end_date').join(
@@ -815,7 +833,9 @@ def apply_pre2010() -> int:
                 raise AssertionError(f'{statement}.{column}: 空值数 {before}+{added} != {after}')
         lines += ['', f'空值计数已逐列校验：改后 = 改前 + 新增行空值（{statement}）。', '']
     text = '\n'.join(lines) + '\n'
-    (STAGING / 'pre2010_evidence.md').write_text(text, encoding='utf-8')
+    evidence = (STAGING / f'pre2010_evidence_{only}.md' if only
+                else STAGING / 'pre2010_evidence.md')
+    evidence.write_text(text, encoding='utf-8')
     print(text)
     return 0
 
@@ -850,7 +870,10 @@ def coverage() -> int:
     target_cells = {
         'balance': range(1990, 2010),
         'income': range(1990, 2010),
-        'cashflow': range(1998, 2010),   # 1990–1997 结构性不存在，不在目标内
+        # 现金流 1990–1997 不在 52 格目标内：1996–1997 的 9 行属追溯披露，
+        # 已于 2026-11-11 补入正式表（原「1998 年前结构性不存在」判定有误）；
+        # 1990–1995 实测源端无任何行。
+        'cashflow': range(1998, 2010),
     }
     for statement in ('balance', 'income', 'cashflow'):
         meta = old['metrics'][statement]
@@ -891,8 +914,10 @@ def coverage() -> int:
                     verdict = '❌ 仍为空'
             elif year == 2010:
                 verdict = '边界年（存量起点）'
+            elif a > 0:
+                verdict = '不在 52 格目标内（1996–1997 追溯披露，已补）'
             else:
-                verdict = '不在目标（结构性不存在）'
+                verdict = '不在 52 格目标内（源端无行）'
             lines.append(f'| {year} | {d} | {b} | {a} | {before_rows.get(key, 0)} | '
                          f'{after_rows.get(year, 0)} | {verdict} |')
         lines.append('')
@@ -916,6 +941,10 @@ def main() -> int:
     group.add_argument('--selftest', action='store_true', help='自测空值断言')
     group.add_argument('--coverage', action='store_true',
                        help='输出标的 × 年份 × 报表 覆盖变化表')
+    parser.add_argument('--statement', choices=sorted(MAPPING), default=None,
+                        help='与 --apply-pre2010 合用，把范围收窄到单张报表')
+    parser.add_argument('--end-before', type=date.fromisoformat, default=None,
+                        help='与 --apply-pre2010 合用，只落 end_date 早于该日期的候选行')
     parser.add_argument('--limit', type=int, default=None, help='只采前 N 只（冒烟用）')
     parser.add_argument('--dry-run', action='store_true',
                         help='跑完断言与证据但不写盘、不备份')
@@ -933,7 +962,7 @@ def main() -> int:
     if args.apply_netprofit:
         return apply_netprofit()
     if args.apply_pre2010:
-        return apply_pre2010()
+        return apply_pre2010(args.statement, args.end_before)
     if args.coverage:
         return coverage()
     return selftest()
