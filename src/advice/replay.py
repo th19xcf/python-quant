@@ -41,7 +41,7 @@ from src.advice.turnover import (
     update_holding,
 )
 from src.advice.universe import build_meta, list_local_stock_codes, load_name_map
-from src.backtest.engine.execution_core import ExecutionRules
+from src.risk.execution_rules import ExecutionRules
 from src.utils.config import get_config
 
 #: 新旧回放可比性说明（代码常量，随每次写盘自动带上，避免生成文件被覆盖后丢失）
@@ -716,7 +716,6 @@ def run_replay(config: AdviceConfig | None = None, store_root: Any = None,
     for tier in selected:
         scored = attach_score(
             factors, tier,
-            missing_policy='reweight' if extended else 'fill_zero',
             min_history_rows=advice_config.min_history_rows)
         if extended and advice_config.soft_filter.enabled:
             from src.advice.soft_filters import apply_soft_filter

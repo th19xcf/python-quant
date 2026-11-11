@@ -36,11 +36,13 @@ class VolatilityFactors(PartitionAware):
         计算波动率因子
 
         Args:
-            **params: 计算参数
+            **params: 计算参数；``fill_missing=False`` 时窗口不足保留 null
+                （推荐链路使用），默认 True 保持原口径
 
         Returns:
             pl.DataFrame: 包含计算结果的DataFrame
         """
+        self.fill_missing = bool(params.get('fill_missing', True))
         # 计算各种波动率因子
         self._calculate_atr()
         self._calculate_historical_volatility()
@@ -58,8 +60,8 @@ class VolatilityFactors(PartitionAware):
         # ATR 统一走共享公式层（Wilder 标准口径），
         # shift(1) 保留「不使用当日数据」的防未来函数语义
         self.data = self.data.with_columns([
-            self._p(atr_expr('high', 'low', 'close', 14).shift(1)).fill_null(0.0).cast(cdt, strict=False).alias('atr_14'),
-            self._p(atr_expr('high', 'low', 'close', 21).shift(1)).fill_null(0.0).cast(cdt, strict=False).alias('atr_21')
+            self._fill(self._p(atr_expr('high', 'low', 'close', 14).shift(1))).cast(cdt, strict=False).alias('atr_14'),
+            self._fill(self._p(atr_expr('high', 'low', 'close', 21).shift(1))).cast(cdt, strict=False).alias('atr_21')
         ])
 
     def _calculate_historical_volatility(self):
@@ -83,8 +85,8 @@ class VolatilityFactors(PartitionAware):
 
         # 添加到DataFrame
         self.data = self.data.with_columns([
-            self._p(volatility_20).fill_null(0.0).cast(cdt, strict=False).alias('volatility_20'),
-            self._p(volatility_60).fill_null(0.0).cast(cdt, strict=False).alias('volatility_60')
+            self._fill(self._p(volatility_20)).cast(cdt, strict=False).alias('volatility_20'),
+            self._fill(self._p(volatility_60)).cast(cdt, strict=False).alias('volatility_60')
         ])
 
     def _calculate_garman_klass_volatility(self):
@@ -107,8 +109,8 @@ class VolatilityFactors(PartitionAware):
         # 计算20日和60日移动平均（前N日均值，不含当日）
         gk = pl.col('_gk_volatility')
         self.data = self.data.with_columns([
-            self._p(gk.rolling_mean(20).shift(1) * _SQRT_252).fill_null(0.0).cast(cdt, strict=False).alias('gk_volatility_20'),
-            self._p(gk.rolling_mean(60).shift(1) * _SQRT_252).fill_null(0.0).cast(cdt, strict=False).alias('gk_volatility_60')
+            self._fill(self._p(gk.rolling_mean(20).shift(1) * _SQRT_252)).cast(cdt, strict=False).alias('gk_volatility_20'),
+            self._fill(self._p(gk.rolling_mean(60).shift(1) * _SQRT_252)).cast(cdt, strict=False).alias('gk_volatility_60')
         ])
         self.data = self.data.drop('_gk_volatility')
 

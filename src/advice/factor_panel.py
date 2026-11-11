@@ -33,8 +33,11 @@ SCORE_COLUMNS = (
 def compute_factor_panel(panel: pl.DataFrame, extended: bool = False) -> pl.DataFrame:
     """在本地行情面板上计算因子，并追加推荐层衍生列。
 
-    ``extended=True`` 时额外计算 6 类扩展因子（只算启用的列），并保留缺失值
-    供打分层按可用权重归一；``extended=False`` 保持原 12 因子填 0 行为。
+    窗口不足或数据缺失的因子一律保留 null，不填 0：填 0 会把「没有数据」
+    变成截面里的极端值（新股 / 停牌股靠缺失拿到最高分）。缺失由打分层
+    ``attach_score`` 按有效因子集重新归一权重处理。
+
+    ``extended=True`` 时额外计算 6 类扩展因子（只算启用的列）。
 
     输入必须包含 ``date/ts_code/open/high/low/close/volume/amount``，
     其中价格已由加载器统一为后复权价。输出按 ``(ts_code, date)`` 升序。
@@ -48,7 +51,7 @@ def compute_factor_panel(panel: pl.DataFrame, extended: bool = False) -> pl.Data
 
     frame = panel.sort(['ts_code', 'date'])
     frame = calculate_factors_cross_sectional(
-        frame, list(FACTOR_GROUPS), code_col='ts_code')
+        frame, list(FACTOR_GROUPS), code_col='ts_code', fill_missing=False)
 
     partition = 'ts_code'
     close = pl.col('close')
@@ -62,6 +65,10 @@ def compute_factor_panel(panel: pl.DataFrame, extended: bool = False) -> pl.Data
         (close / ma60 - 1.0).alias('ma60_gap'),
         (ma20 / ma60 - 1.0).alias('trend_slope_60'),
         (pl.col('atr_14') / close).alias('atr_pct'),
+        # ret_20 与 price_momentum 的 momentum_1m 公式完全相同（close/close[-20]-1）。
+        # 当前三档权重都没有同时使用两者，因此不构成重复计权；保留该列是给
+        # 研究侧（analog_lookup / prepare_monthly_samples）取用。已知重复登记见
+        # docs/因子链路门禁与缺失值修复_2026-11-11.md，改动任一侧需同步该文。
         (close / close.shift(20).over(partition) - 1.0).alias('ret_20'),
         amount_ma20.alias('amount_ma20'),
         (amount_ma20 + 1.0).log().alias('liquidity_log'),
@@ -82,9 +89,13 @@ def compute_factor_panel(panel: pl.DataFrame, extended: bool = False) -> pl.Data
         frame = frame.drop('pre_close')
     else:
         frame = frame.with_columns([
-            pl.col(column).cast(pl.Float64, strict=False).fill_null(0.0).fill_nan(0.0)
-            for column in score_cols
+            pl.col(column).cast(pl.Float64, strict=False) for column in score_cols
         ])
+    # 只做类型/缺失归一：NaN 视为缺失转 null，不再 fill_null(0.0)
+    frame = frame.with_columns([
+        pl.col(column).cast(pl.Float64, strict=False).fill_nan(None)
+        for column in score_cols
+    ])
     logger.info(
         f"[advice] 因子面板完成: {frame.height} 行 × "
         f"{frame[partition].n_unique()} 标的 × {len(score_cols)} 因子列"

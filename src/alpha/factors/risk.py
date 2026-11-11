@@ -34,11 +34,13 @@ class RiskFactors(PartitionAware):
         计算风险因子
 
         Args:
-            **params: 计算参数
+            **params: 计算参数；``fill_missing=False`` 时窗口不足保留 null
+                （推荐链路使用），默认 True 保持原口径
 
         Returns:
             pl.DataFrame: 包含计算结果的DataFrame
         """
+        self.fill_missing = bool(params.get('fill_missing', True))
         # 计算各种风险因子
         self._calculate_beta()
         self._calculate_max_drawdown()
@@ -59,6 +61,17 @@ class RiskFactors(PartitionAware):
             .otherwise(0.0)
         )
 
+    def _missing_as_null(self, expr: pl.Expr, anchor: pl.Expr) -> pl.Expr:
+        """窗口不足时保留 null 而不是 0（``fill_missing=False``）。
+
+        anchor 是判定窗口是否可用的中间量（如 rolling_max / rolling_std），
+        它为空即代表窗口未满；填 0 会把「没有数据」变成截面里的极端值。
+        """
+        if self.fill_missing:
+            return expr
+        return pl.when(anchor.is_null()).then(
+            pl.lit(None, dtype=pl.Float64)).otherwise(expr)
+
     def _calculate_beta(self):
         """
         计算Beta系数
@@ -77,6 +90,7 @@ class RiskFactors(PartitionAware):
             .then(cov / var)
             .otherwise(0.0)
         )
+        beta = self._missing_as_null(beta, var)
 
         # 添加到DataFrame
         self.data = self.data.with_columns(
@@ -98,6 +112,7 @@ class RiskFactors(PartitionAware):
             .then((trough - peak) / peak)
             .otherwise(0.0)
         )
+        max_drawdown = self._missing_as_null(max_drawdown, peak)
 
         # 添加到DataFrame
         self.data = self.data.with_columns(
@@ -119,6 +134,7 @@ class RiskFactors(PartitionAware):
             .then(mean_return / std_return * _SQRT_252)
             .otherwise(0.0)
         )
+        sharpe_ratio = self._missing_as_null(sharpe_ratio, std_return)
 
         # 添加到DataFrame
         self.data = self.data.with_columns(
@@ -149,6 +165,7 @@ class RiskFactors(PartitionAware):
             .then(neg_var.sqrt() * _SQRT_252)
             .otherwise(0.0)
         )
+        downside_risk = self._missing_as_null(downside_risk, neg_count)
 
         # 添加到DataFrame
         self.data = self.data.with_columns(

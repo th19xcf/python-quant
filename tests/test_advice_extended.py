@@ -112,8 +112,7 @@ def test_reweight_missing_is_not_zero_and_short_history_masked() -> None:
     frame = _synthetic_panel(days=100, codes=6)
     tier = default_config().tiers['mid']
     frame = _frame_with_tier_columns(frame, tier)
-    scored = attach_score(frame, tier, missing_policy='reweight',
-                          min_history_rows=60)
+    scored = attach_score(frame, tier, min_history_rows=60)
     latest = scored.filter(pl.col('date') == frame['date'].max())
     assert latest['score'].is_not_null().sum() >= 1
     # 历史不足的票被置空，不参与打分
@@ -126,7 +125,7 @@ def test_reweight_missing_is_not_zero_and_short_history_masked() -> None:
     one = frame.with_columns(
         pl.when((pl.col('ts_code') == target) & (pl.col('date') == latest_date))
         .then(None).otherwise(pl.col(column)).alias(column))
-    scored_one = attach_score(one, tier, missing_policy='reweight')
+    scored_one = attach_score(one, tier)
     last = scored_one.filter((pl.col('date') == latest_date)
                              & (pl.col('ts_code') == target))
     assert last['score'][0] is not None
@@ -141,7 +140,7 @@ def test_attach_score_reports_missing_extended_columns() -> None:
                if spec.column not in frame.columns]
     assert missing
     with pytest.raises(ValueError) as exc:
-        attach_score(frame, tier, missing_policy='reweight')
+        attach_score(frame, tier)
     message = str(exc.value)
     assert '缺少因子列' in message
     for column in missing:
@@ -152,15 +151,13 @@ def test_score_uses_no_future_data() -> None:
     frame = _synthetic_panel(days=80, codes=5)
     tier = default_config().tiers['mid']
     frame = _frame_with_tier_columns(frame, tier)
-    original = attach_score(frame, tier, missing_policy='reweight',
-                            min_history_rows=60)
+    original = attach_score(frame, tier, min_history_rows=60)
     cutoff = frame['date'].unique().sort()[60]
     mutated = frame.with_columns(
         pl.when(pl.col('date') > cutoff)
         .then(pl.col('close') * 3.0)
         .otherwise(pl.col('close')).alias('close'))
-    changed = attach_score(mutated, tier, missing_policy='reweight',
-                           min_history_rows=60)
+    changed = attach_score(mutated, tier, min_history_rows=60)
     before = original.filter(pl.col('date') <= cutoff).sort(['ts_code', 'date'])
     after = changed.filter(pl.col('date') <= cutoff).sort(['ts_code', 'date'])
     assert np.allclose(before['score'].to_numpy(), after['score'].to_numpy(),

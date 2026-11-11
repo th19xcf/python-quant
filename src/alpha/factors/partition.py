@@ -19,6 +19,10 @@ class PartitionAware:
     """为因子类提供可选的分区求值能力"""
 
     partition_by: str | None = None
+    #: 窗口不足产生的 null 是否填 0。
+    #: 默认 True 保持既有行为；推荐链路传 False，让缺失保持 null，
+    #: 由打分层按有效因子集重新归一权重（缺失不参与打分）。
+    fill_missing: bool = True
 
     def __init__(self, data: pl.DataFrame, partition_by: str | None = None):
         """
@@ -38,3 +42,7 @@ class PartitionAware:
         不能在 .over() 之后再叠加跨行算子，否则窗口会跨标的边界。
         """
         return expr.over(self.partition_by) if self.partition_by else expr
+
+    def _fill(self, expr: pl.Expr) -> pl.Expr:
+        """窗口不足的缺失值：fill_missing=True 时填 0，否则保留 null。"""
+        return expr.fill_null(0.0) if self.fill_missing else expr

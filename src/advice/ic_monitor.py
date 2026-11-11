@@ -168,6 +168,27 @@ def run_ic_monitor(scored: pl.DataFrame, tier: str, *, trade_date: date,
     return snapshot
 
 
+def ic_gate_decision(snapshot: dict[str, Any]) -> tuple[bool, str]:
+    """把 IC 监控判定转成出单门禁。
+
+    ``failed=true`` 时返回 ``(True, 原因)``：调用方必须跳过本期新建仓
+    （不产出 BUY），只保留已持仓的持有/卖出管理。这是最保守且可解释的
+    处置——已有持仓仍需按风控退出，但不再用失效档位去开新仓。
+
+    其余情况（含"样本不足"）返回 ``(False, '')``，不拦截出单。
+    """
+    status = snapshot.get('status') or {}
+    if not status.get('failed'):
+        return False, ''
+    recent = snapshot.get('recent_ic') or []
+    tail = '、'.join(f'{value:+.3f}' for value in recent) if recent else '无'
+    return True, (
+        f"IC门禁触发：{snapshot.get('tier', '?')}·"
+        f"{snapshot.get('horizon_days', '?')}日 RankIC 近窗均值 {tail} 全部失效"
+        f"（{status.get('reason', '')}），本期不出新建仓建议，"
+        f"仅保留持仓的持有/卖出管理")
+
+
 def monitor_note(snapshot: dict[str, Any]) -> str:
     """把监控结果压成一条可写进推荐清单的备注。"""
     status = snapshot['status']
@@ -184,6 +205,7 @@ __all__ = [
     'DEFAULT_THRESHOLD',
     'DEFAULT_WINDOW_DAYS',
     'TIER_HORIZON',
+    'ic_gate_decision',
     'monitor_note',
     'rolling_ic_series',
     'run_ic_monitor',

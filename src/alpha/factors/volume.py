@@ -31,11 +31,13 @@ class VolumeFactors(PartitionAware):
         计算成交量因子
 
         Args:
-            **params: 计算参数
+            **params: 计算参数；``fill_missing=False`` 时窗口不足保留 null
+                （推荐链路使用），默认 True 保持原口径
 
         Returns:
             pl.DataFrame: 包含计算结果的DataFrame
         """
+        self.fill_missing = bool(params.get('fill_missing', True))
         # 计算各种成交量因子
         self._calculate_volume_change()
         self._calculate_volume_momentum()
@@ -82,8 +84,8 @@ class VolumeFactors(PartitionAware):
 
         # 添加到DataFrame
         self.data = self.data.with_columns([
-            self._p(volume_momentum_10).fill_null(0.0).cast(vdt, strict=False).alias('volume_momentum_10'),
-            self._p(volume_momentum_20).fill_null(0.0).cast(vdt, strict=False).alias('volume_momentum_20')
+            self._fill(self._p(volume_momentum_10)).cast(vdt, strict=False).alias('volume_momentum_10'),
+            self._fill(self._p(volume_momentum_20)).cast(vdt, strict=False).alias('volume_momentum_20')
         ])
 
     def _calculate_on_balance_volume(self):
@@ -129,10 +131,11 @@ class VolumeFactors(PartitionAware):
         # 计算量价配合度（前20日窗口，不含当日；窗口内方差为0时与原实现一致为NaN）
         idx = pl.int_range(pl.len())
         corr = pl.rolling_corr(vol, price_change, window_size=20).shift(1)
+        warmup_fill = 0.0 if self.fill_missing else pl.lit(None, dtype=pl.Float64)
         volume_price_correlation = (
             pl.when(idx >= 20)
             .then(corr.fill_null(float('nan')))
-            .otherwise(0.0)
+            .otherwise(warmup_fill)
         )
 
         # 计算成交量加权价格（窗口 max(0, i-20):i，不含当日）

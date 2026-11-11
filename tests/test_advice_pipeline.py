@@ -9,6 +9,7 @@ from pathlib import Path
 
 from _advice_synth import build_store, business_dates, write_st_snapshot, write_stock
 
+from src.advice import pipeline as pipeline_module
 from src.advice.config import default_config
 from src.advice.daily_store import load_daily_snapshot, snapshot_path
 from src.advice.models import (
@@ -24,6 +25,18 @@ from src.advice.universe import list_local_stock_codes
 
 def _codes() -> list[str]:
     return [f'6000{index:02d}.SH' for index in range(20)]
+
+
+def _no_gate_monitor(scored, tier, *, trade_date):  # noqa: ARG001
+    """测试注入：IC 门禁不拦截。
+
+    合成行情的方向与 IC 符号跟真实数据无关，本用例只验证与 IC 无关的
+    处置逻辑（涨停 → AVOID、换手上限延后），因此显式跳过门禁。
+    IC 门禁本身的用例见 ``test_advice_ic_gate.py``。
+    """
+    return {'tier': tier, 'horizon_days': 5, 'window_days': 20,
+            'recent_ic': [0.01, 0.01, 0.01],
+            'status': {'failed': False, 'reason': '测试注入：不拦截'}}
 
 
 def test_generate_advice_schema_and_directions(tmp_path):
@@ -79,11 +92,17 @@ def test_generate_exec_status_tracks_generated_at(tmp_path):
     assert expired.summary()['exec_status'] == 'expired'
 
 
-def test_limit_up_candidate_becomes_avoid(tmp_path):
+def test_limit_up_candidate_becomes_avoid(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline_module, 'run_ic_monitor', _no_gate_monitor)
     codes = _codes()
     root = build_store(tmp_path / 'local_store', codes,
-                       end=date(2026, 6, 30), days=320,
-                       with_limit_up=codes[-1])
+                       end=date(2026, 6, 30), days=320)
+    # 当前口径动量类因子 direction=-1（动量越低分越高）。合成数据里涨停标的
+    # 若走默认上涨趋势会排到最差分位、进不了候选池；改成"下跌趋势 + 最后一日
+    # 涨停"，让它成为最低动量 → 最高分位，才能真正验证"涨停候选 → AVOID"。
+    write_stock(root, codes[-1],
+                business_dates(date(2026, 6, 30), 320),
+                base=8.0, trend=-0.02, limit_up_last=True)
     engine = AdviceEngine(config=default_config('legacy'), store_root=root)
     result = engine.generate(as_of=date(2026, 6, 30), equity=2_000_000,
                              tiers=['short'], codes=codes,
@@ -160,8 +179,9 @@ def test_merge_duplicate_rows_priority():
     }
 
 
-def test_deferred_buys_are_written_to_archive(tmp_path):
+def test_deferred_buys_are_written_to_archive(tmp_path, monkeypatch):
     """换手上限延后的买入必须进入归档，并标 disposition=deferred。"""
+    monkeypatch.setattr(pipeline_module, 'run_ic_monitor', _no_gate_monitor)
     # 100 只标的 → 短线档前 8% 约 9 只达买入线，总买入额超过 20% 单边预算。
     # 价格刻意压低在 10~20 元，避免高价导致整手股数向下取整为 0。
     codes = [f'6000{index:03d}.SH' for index in range(100)]

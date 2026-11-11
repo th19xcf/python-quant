@@ -29,7 +29,7 @@ from src.advice.daily_store import (
 from src.advice.data import LocalPanelLoader, panel_trading_dates
 from src.advice.eligibility import EligibilityResult, check_eligibility
 from src.advice.factor_panel import compute_factor_panel
-from src.advice.ic_monitor import monitor_note, run_ic_monitor
+from src.advice.ic_monitor import ic_gate_decision, monitor_note, run_ic_monitor
 from src.advice.models import (
     DIRECTION_AVOID,
     DIRECTION_BUY,
@@ -262,18 +262,19 @@ class AdviceEngine:
         soft_enabled = extended and self.config.soft_filter.enabled
         for tier in selected:
             scored = attach_score(
-                factors, tier,
-                missing_policy='reweight' if extended else 'fill_zero',
-                min_history_rows=self.config.min_history_rows)
+                factors, tier, min_history_rows=self.config.min_history_rows)
             if soft_enabled:
                 from src.advice.soft_filters import apply_soft_filter
 
                 scored = apply_soft_filter(scored, self.config.soft_filter)
+            # IC 门禁必须在出单前判定：failed=true 时本期不出新建仓
+            monitor = run_ic_monitor(scored, tier.key, trade_date=trade_date)
+            blocked, gate_reason = ic_gate_decision(monitor)
             state = self.load_state(state_path, tier.key)
             advice, new_state = self._run_tier(
                 scored, trade_date, meta, tier, float(equity), state,
-                trading_dates, report.summary(), risk, earliest_exec)
-            monitor = run_ic_monitor(scored, tier.key, trade_date=trade_date)
+                trading_dates, report.summary(), risk, earliest_exec,
+                block_new_buys=blocked, gate_reason=gate_reason)
             advice.notes.append(monitor_note(monitor))
             result.tiers[tier.key] = advice
             if persist_state:
@@ -292,6 +293,8 @@ class AdviceEngine:
                   coverage: dict[str, Any],
                   risk: RiskContext,
                   earliest_exec: date | None = None,
+                  block_new_buys: bool = False,
+                  gate_reason: str = '',
                   ) -> tuple[TierAdvice, dict[str, HoldingState]]:
         latest = scored.filter(pl.col('date') == trade_date)
         if latest.is_empty():
@@ -314,15 +317,19 @@ class AdviceEngine:
             ] + ([tier.note] if tier.note else []))
 
         # 1) 候选池：软筛选 + 分数达标 + 可交易 + 成本门槛
+        #    IC 门禁触发时清空候选池：本期不出新建仓，只保留持仓的持有/卖出管理
         candidates: list[tuple[dict, Candidate, Any]] = []
         avoid_rows: list[tuple[dict, Any]] = []
+        if block_new_buys:
+            advice.notes.append(gate_reason)
         if 'soft_pass' in scored.columns:
             latest = scored.filter(pl.col('date') == trade_date)
             passed = latest.filter(pl.col('soft_pass')).height
             advice.notes.append(f"软筛选通过 {passed}/{latest.height}（仅 extended）")
         ranked = sorted(rows, key=lambda entry: entry.get('score_percentile') or 0.0,
                         reverse=True)
-        for entry in ranked:
+        loop_entries = [] if block_new_buys else ranked
+        for entry in loop_entries:
             code = str(entry['ts_code'])
             if entry.get('soft_pass') is False:
                 if len(avoid_rows) < self.config.max_avoid_rows:
@@ -534,6 +541,7 @@ class AdviceEngine:
         stats_local = {key: risk.counts[key] - count_start.get(key, 0)
                        for key in risk.counts}
         stats_local['row_merge_dropped'] = len(advice.row_merge)
+        stats_local['ic_gate_blocked'] = 1 if block_new_buys else 0
         advice.filter_stats = stats_local
         advice.filter_audit = list(risk.audit[audit_start:])
         advice.notes.extend(

@@ -38,11 +38,13 @@ class PriceMomentumFactors(PartitionAware):
         计算价格动量因子
 
         Args:
-            **params: 计算参数
+            **params: 计算参数；``fill_missing=False`` 时窗口不足保留 null
+                （推荐链路使用），默认 True 保持原口径
 
         Returns:
             pl.DataFrame: 包含计算结果的DataFrame
         """
+        self.fill_missing = bool(params.get('fill_missing', True))
         # 计算各种动量因子
         self._calculate_momentum()
         self._calculate_rsi_momentum()
@@ -69,10 +71,10 @@ class PriceMomentumFactors(PartitionAware):
 
         # 添加到DataFrame
         self.data = self.data.with_columns([
-            self._p(momentum_1m).fill_null(0.0).cast(cdt, strict=False).alias('momentum_1m'),
-            self._p(momentum_3m).fill_null(0.0).cast(cdt, strict=False).alias('momentum_3m'),
-            self._p(momentum_6m).fill_null(0.0).cast(cdt, strict=False).alias('momentum_6m'),
-            self._p(momentum_12m).fill_null(0.0).cast(cdt, strict=False).alias('momentum_12m')
+            self._fill(self._p(momentum_1m)).cast(cdt, strict=False).alias('momentum_1m'),
+            self._fill(self._p(momentum_3m)).cast(cdt, strict=False).alias('momentum_3m'),
+            self._fill(self._p(momentum_6m)).cast(cdt, strict=False).alias('momentum_6m'),
+            self._fill(self._p(momentum_12m)).cast(cdt, strict=False).alias('momentum_12m')
         ])
 
     def _calculate_rsi_momentum(self):
@@ -84,8 +86,8 @@ class PriceMomentumFactors(PartitionAware):
         # RSI 统一走共享公式层（Wilder 标准口径）
         # 添加到DataFrame
         self.data = self.data.with_columns([
-            self._p(shared_rsi_expr('close', 14)).fill_null(0.0).cast(cdt, strict=False).alias('rsi_14'),
-            self._p(shared_rsi_expr('close', 21)).fill_null(0.0).cast(cdt, strict=False).alias('rsi_21')
+            self._fill(self._p(shared_rsi_expr('close', 14))).cast(cdt, strict=False).alias('rsi_14'),
+            self._fill(self._p(shared_rsi_expr('close', 21))).cast(cdt, strict=False).alias('rsi_21')
         ])
 
     def _calculate_macd_momentum(self):
@@ -97,9 +99,9 @@ class PriceMomentumFactors(PartitionAware):
         # MACD 统一走共享公式层（标准 EMA 口径）
         exprs = macd_exprs('close', 12, 26, 9)
         self.data = self.data.with_columns([
-            self._p(exprs['macd']).fill_null(0.0).cast(cdt, strict=False).alias('macd'),
-            self._p(exprs['signal']).fill_null(0.0).cast(cdt, strict=False).alias('macd_signal'),
-            self._p(exprs['hist']).fill_null(0.0).cast(cdt, strict=False).alias('macd_hist'),
+            self._fill(self._p(exprs['macd'])).cast(cdt, strict=False).alias('macd'),
+            self._fill(self._p(exprs['signal'])).cast(cdt, strict=False).alias('macd_signal'),
+            self._fill(self._p(exprs['hist'])).cast(cdt, strict=False).alias('macd_hist'),
         ])
 
     def _calculate_stochastic_momentum(self):
