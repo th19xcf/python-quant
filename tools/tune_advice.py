@@ -95,7 +95,7 @@ LEDGER_COLUMNS = [
     'hold', 'segment', 'params_delta', 'net_annualized', 'net_total',
     'win_rate', 'turnover_annual', 'max_drawdown',
     'delta_net_annualized', 'delta_win_rate', 'delta_turnover',
-    'delta_max_drawdown', 'n_periods', 'cumulative_attempts',
+    'delta_max_drawdown', 'n_periods', 'cumulative_attempts', 'purpose',
 ]
 
 

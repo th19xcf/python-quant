@@ -4,15 +4,17 @@
   "_git_commit": "3daf1e79c2cc1baf657850cbd15506f3403b2ab1",
   "_git_dirty": true,
   "_protocol": {
-    "version": "v1",
+    "version": "v2",
+    "protocol_updated_at": "2026-11-11T18:20:00",
+    "protocol_update_note": "主检验口径由 h=60 改为 h=20：2020 年起 h=20 有 81 个独立样本、h=60 只有 26 个；IC 随期限单调上升不存在衰减，期限应由成本决定（成本后极值 short 40 / mid 20 / long 20）。h=60 降为稳健性检验，h=5 保留短周期对照。理由详见 docs/策略调优纪律_2026-11-11.md §1.1。",
     "eval_start": "2022-01-01",
     "eval_end": "2026-10-31",
     "is_start": "2015-01-05",
     "is_end": "2021-12-31",
-    "hold_main": 60,
+    "hold_main": 20,
     "hold_controls": [
       5,
-      20
+      60
     ],
     "cost_round_trip": 0.00724,
     "cost_breakdown": "佣金 5bp×2 + 印花税 5bp(卖出) + 过户费 0.2bp×2 + 市值分档滑点；满仓全额往返 0.724%，按本期实际换手比例摊销",
