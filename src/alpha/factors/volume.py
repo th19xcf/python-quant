@@ -54,11 +54,12 @@ class VolumeFactors(PartitionAware):
         vol = pl.col('volume')
         prev = vol.shift(1)
 
-        # 计算成交量变化率（volume[i-1] <= 0 或首行为 0，与原实现一致）
+        # 计算成交量变化率（volume[i-1] <= 0 时无定义；fill_missing=False 保留 null）
         volume_change = (
             pl.when(prev > 0)
             .then((vol - prev) / prev)
-            .otherwise(0.0)
+            .otherwise(0.0 if self.fill_missing
+                       else pl.lit(None, dtype=pl.Float64))
         )
         self.data = self.data.with_columns(
             self._p(volume_change).cast(vdt, strict=False).alias('volume_change')
@@ -67,8 +68,8 @@ class VolumeFactors(PartitionAware):
         # 计算5日和20日平均成交量变化率（前N日均值，不含当日）
         vc = pl.col('volume_change')
         self.data = self.data.with_columns([
-            self._p(vc.rolling_mean(5).shift(1)).fill_null(0.0).cast(vdt, strict=False).alias('volume_change_5'),
-            self._p(vc.rolling_mean(20).shift(1)).fill_null(0.0).cast(vdt, strict=False).alias('volume_change_20')
+            self._fill(self._p(vc.rolling_mean(5).shift(1))).cast(vdt, strict=False).alias('volume_change_5'),
+            self._fill(self._p(vc.rolling_mean(20).shift(1))).cast(vdt, strict=False).alias('volume_change_20')
         ])
 
     def _calculate_volume_momentum(self):
@@ -108,8 +109,8 @@ class VolumeFactors(PartitionAware):
         # 计算OBV的10日和20日移动平均（前N日均值，不含当日）
         self.data = self.data.with_columns([
             self._p(obv).cast(vdt, strict=False).alias('obv'),
-            self._p(obv.rolling_mean(10).shift(1)).fill_null(0.0).cast(vdt, strict=False).alias('obv_ma10'),
-            self._p(obv.rolling_mean(20).shift(1)).fill_null(0.0).cast(vdt, strict=False).alias('obv_ma20')
+            self._fill(self._p(obv.rolling_mean(10).shift(1))).cast(vdt, strict=False).alias('obv_ma10'),
+            self._fill(self._p(obv.rolling_mean(20).shift(1))).cast(vdt, strict=False).alias('obv_ma20')
         ])
 
     def _calculate_volume_price_relationship(self):
@@ -121,11 +122,12 @@ class VolumeFactors(PartitionAware):
         close = pl.col('close')
         prev_close = close.shift(1)
 
-        # 计算价格变化
+        # 计算价格变化（首行无前收，无定义；fill_missing=False 保留 null）
         price_change = (
             pl.when(prev_close.is_not_null())
             .then((close - prev_close) / prev_close)
-            .otherwise(0.0)
+            .otherwise(0.0 if self.fill_missing
+                       else pl.lit(None, dtype=pl.Float64))
         )
 
         # 计算量价配合度（前20日窗口，不含当日；窗口内方差为0时与原实现一致为NaN）
@@ -146,7 +148,8 @@ class VolumeFactors(PartitionAware):
         volume_weighted_price = (
             pl.when(volume_sum > 0)
             .then(weighted_sum / volume_sum)
-            .otherwise(0.0)
+            .otherwise(0.0 if self.fill_missing
+                       else pl.lit(None, dtype=pl.Float64))
         )
 
         # 添加到DataFrame

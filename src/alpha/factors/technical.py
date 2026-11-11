@@ -39,6 +39,7 @@ class TechnicalFactors(PartitionAware):
             pl.DataFrame: 包含计算结果的DataFrame
         """
         # 计算各种技术指标因子
+        self.fill_missing = bool(params.get('fill_missing', True))
         self._calculate_bollinger_bands()
         self._calculate_moving_average_crossovers()
         self._calculate_relative_strength()
@@ -63,11 +64,11 @@ class TechnicalFactors(PartitionAware):
 
         # 添加到DataFrame
         self.data = self.data.with_columns([
-            self._p(ma20).fill_null(0.0).cast(cdt, strict=False).alias('bollinger_ma20'),
-            self._p(upper_band).fill_null(0.0).cast(cdt, strict=False).alias('bollinger_upper'),
-            self._p(lower_band).fill_null(0.0).cast(cdt, strict=False).alias('bollinger_lower'),
-            self._p(bollinger_width).fill_null(0.0).cast(cdt, strict=False).alias('bollinger_width'),
-            self._p(bollinger_position).fill_null(0.0).cast(cdt, strict=False).alias('bollinger_position')
+            self._fill(self._p(ma20)).cast(cdt, strict=False).alias('bollinger_ma20'),
+            self._fill(self._p(upper_band)).cast(cdt, strict=False).alias('bollinger_upper'),
+            self._fill(self._p(lower_band)).cast(cdt, strict=False).alias('bollinger_lower'),
+            self._fill(self._p(bollinger_width)).cast(cdt, strict=False).alias('bollinger_width'),
+            self._fill(self._p(bollinger_position)).cast(cdt, strict=False).alias('bollinger_position')
         ])
 
     def _calculate_moving_average_crossovers(self):
@@ -78,12 +79,13 @@ class TechnicalFactors(PartitionAware):
         close = pl.col('close')
         idx = pl.int_range(pl.len())
 
-        # 计算不同周期的移动平均线（前N日均值，不含当日；与原实现一致仅在 i>=60 处非零）
+        # 计算不同周期的移动平均线（前N日均值，不含当日；i<60 处按 fill_missing 决定补 0 或留 null）
         def ma(period: int) -> pl.Expr:
             return (
                 pl.when(idx >= 60)
                 .then(close.rolling_mean(period).shift(1))
-                .otherwise(0.0)
+                .otherwise(0.0 if self.fill_missing
+                           else pl.lit(None, dtype=pl.Float64))
             )
 
         self.data = self.data.with_columns([
@@ -121,16 +123,15 @@ class TechnicalFactors(PartitionAware):
         """
         cdt = self.data['close'].dtype
 
-        # 计算RSI（共享公式层，Wilder 标准口径；前 13 行为 null，随后 fill_null 补 0）
+        # 计算RSI（共享公式层，Wilder 标准口径；前 13 行为 null，按 fill_missing 补 0 或留 null）
         rsi_raw = shared_rsi_expr('close', 14)
 
-        # 计算RSI动量（i>=28 处为 rsi_14[i] - rsi_14[i-14]，之前为0；
-        # rsi_raw 在 i<14 处为 null，相减后仍为 null，fill_null(0) 与原实现一致）
-        rsi_momentum = (rsi_raw - rsi_raw.shift(14)).fill_null(0.0)
+        # 计算RSI动量（i>=28 处为 rsi_14[i] - rsi_14[i-14]，之前为 null，按 fill_missing 处理）
+        rsi_momentum = self._fill(rsi_raw - rsi_raw.shift(14))
 
         # 添加到DataFrame
         self.data = self.data.with_columns([
-            self._p(rsi_raw).fill_null(0.0).cast(cdt, strict=False).alias('rsi_14'),
+            self._fill(self._p(rsi_raw)).cast(cdt, strict=False).alias('rsi_14'),
             self._p(rsi_momentum).cast(cdt, strict=False).alias('rsi_momentum')
         ])
 
