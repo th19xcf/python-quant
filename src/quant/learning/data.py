@@ -164,6 +164,9 @@ def compute_factors(panel: pl.DataFrame,
 
     原始 OHLC 始终保留，因子计算用临时视图替换为后复权价，保证量化口径
     与回测/因子模块一致，同时不破坏涨跌停判定所需的原始价格。
+
+    缺失一律保留 null（``fill_missing=False``）：预热期样本若填 0，会在
+    截面排序里被当成极端因子值而不是「没有数据」。
     """
     if panel.is_empty():
         return panel
@@ -174,7 +177,8 @@ def compute_factors(panel: pl.DataFrame,
         pl.col('close_hfq').alias('close'),
     ])
     result = calculate_factors_cross_sectional(
-        adjusted, list(factor_types), code_col='ts_code')
+        adjusted, list(factor_types), code_col='ts_code',
+        fill_missing=False)
     available = [col for col in factor_cols if col in result.columns]
     absent = [col for col in factor_cols if col not in result.columns]
     if absent:
