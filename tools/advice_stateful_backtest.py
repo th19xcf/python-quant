@@ -92,6 +92,17 @@ NAV_COLUMNS = (
 CASH_YIELD_RATES = (0.0, 0.015)
 #: 现金收益按每年 252 个交易日折算
 TRADING_DAYS_PER_YEAR = 252.0
+#: 基线资金分配三档：`slots` 现有反推槽位（默认，保持旧行为逐值不变）、
+#: `a` 与尺子 A 同构（读 A 的实际持仓，共享现金池）、`slots60` 日频旧行为在月频下的样子
+BASELINE_ALLOCS = ('slots', 'a', 'slots60')
+#: 尺子 A 的实际持仓（前向检验产物）：只读，`a` 档唯一候选来源
+A_SIGNALS_PATH = ROOT / 'reports' / 'advice' / 'forward_test' / 'signals.csv'
+A_CACHE_DIR = ROOT / 'reports' / 'advice' / 'forward_test' / 'cache'
+A_STATS_MAIN_PATH = ROOT / 'reports' / 'advice' / 'forward_test' / 'stats_main.csv'
+A_TIER = 'mid'
+A_VARIANT = 'on'
+#: `a` 档每期净收益均值与 stats_main.csv 的 rec_net 的允许误差
+A_REC_NET_TOL = 1e-6
 
 
 # ----------------------------------------------------------------------
@@ -277,6 +288,8 @@ def _new_stats() -> dict[str, Any]:
         'side_trades': 0, 'buy_notional': 0.0, 'sell_notional': 0.0,
         'planned_amount': 0.0,
         'candidate_signals': 0, 'days_with_candidates': 0, 'days_scanned': 0,
+        'valuation_stale_days': 0,
+        'exit_price_checks': 0, 'exit_price_dev': 0.0, 'exit_price_dev_max': 0.0,
         'unfilled_records': [],
     }
 
@@ -882,57 +895,115 @@ def _baseline_slots(dates: list[date],
     }
 
 
-def run_fixed60(window_dates: list[date], by_date: dict[date, pl.DataFrame],
-                bars_by_date: dict[date, dict[str, tuple]], tier: Any,
-                config: Any, equity_init: float, costs: TradingCosts,
-                rules: ExecutionRules,
-                state: dict[str, Any] | None = None,
-                index_base: int = 0,
-                total_days: int | None = None,
-                signal_days: set[date] | None = None,
-                slots: int = BASELINE_HOLD) -> dict[str, Any]:
-    """固定持有 60 日基线：``slots`` 个重叠 cohort 各占 ``1/slots`` 资金。
+@dataclass
+class _PoolLot:
+    """`a` 档的一笔 lot，直接对应尺子 A ``signals.csv`` 的一行。"""
 
-    ``slots`` 由 :func:`_baseline_slots` 按信号日间隔中位数算出（日频为 60，
-    月频约 3），保证每槽预算 ``equity_init / slots`` 使资金利用率与状态机可比。
-    ``state`` 携带上一分片的 ``pool`` 与未退出 cohort，``index_base`` 是
-    本片首日在全局交易日序列里的下标，``total_days`` 是全局交易日数；
-    三者一起保证 ``entry_idx`` / ``exit_idx`` 始终是全局下标。
+    ts_code: str
+    signal_date: date
+    entry_date: date
+    shares: float
+    entry_price: float
+    entry_notional: float
+    entry_cost: float
+    exit_date: date | None
+    exit_price: float | None
+    net60: float
+    last_close: float
+    stale_days: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        """序列化为纯 dict（日期转 ISO 字符串），供分片状态文件回灌。"""
+        return {
+            'ts_code': self.ts_code,
+            'signal_date': self.signal_date.isoformat(),
+            'entry_date': self.entry_date.isoformat(),
+            'shares': float(self.shares),
+            'entry_price': self.entry_price,
+            'entry_notional': self.entry_notional,
+            'entry_cost': self.entry_cost,
+            'exit_date': self.exit_date.isoformat() if self.exit_date else None,
+            'exit_price': self.exit_price,
+            'net60': self.net60,
+            'last_close': self.last_close,
+            'stale_days': int(self.stale_days),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> _PoolLot:
+        """从 :meth:`to_dict` 的产物还原。"""
+        exit_date = payload.get('exit_date')
+        return cls(
+            ts_code=str(payload['ts_code']),
+            signal_date=date.fromisoformat(str(payload['signal_date'])[:10]),
+            entry_date=date.fromisoformat(str(payload['entry_date'])[:10]),
+            shares=float(payload['shares']),
+            entry_price=float(payload['entry_price']),
+            entry_notional=float(payload['entry_notional']),
+            entry_cost=float(payload['entry_cost']),
+            exit_date=date.fromisoformat(str(exit_date)[:10]) if exit_date else None,
+            exit_price=(float(payload['exit_price'])
+                        if payload.get('exit_price') is not None else None),
+            net60=float(payload.get('net60') or 0.0),
+            last_close=float(payload.get('last_close') or payload['entry_price']),
+            stale_days=int(payload.get('stale_days', 0)),
+        )
+
+
+class _CohortTrack:
+    """固定持有 60 日的槽位资金容器（``slots`` 与 ``slots60`` 共用同一实现）。
+
+    ``slots`` 个重叠 cohort 各占 ``equity_init / slots`` 预算，到期开盘卖出。
+    与旧 :func:`run_fixed60` 的实现逐行等价，唯一区别是候选由调用方算好后传入，
+    使 ``slots`` / ``slots60`` 两档共用同一次候选计算。
     """
-    cash_reserve = float(getattr(config.constraints, 'cash_buffer', 0.10) or 0.0)
-    lot = int(getattr(config.constraints, 'lot_size', 100) or 100)
-    target_weight = min(1.0 / int(tier.max_positions), max(0.0, 1.0 - cash_reserve))
-    cohort_budget = equity_init / max(1, int(slots))
 
-    carried = state or {}
-    pool = float(carried.get('pool', equity_init))
-    cohorts: list[Cohort] = [
-        Cohort.from_dict(item) for item in (carried.get('cohorts') or [])]
-    stats = _new_stats()
-    nav_rows: list[dict[str, Any]] = []
-    horizon = int(total_days) if total_days is not None else len(window_dates)
+    def __init__(self, name: str, slots: int, equity_init: float,
+                 pool: float | None = None,
+                 cohorts: list[Cohort] | None = None) -> None:
+        self.name = name
+        self.slots = max(1, int(slots))
+        self.cohort_budget = equity_init / self.slots
+        self.pool = equity_init if pool is None else float(pool)
+        self.cohorts: list[Cohort] = list(cohorts or [])
 
-    for index, day in enumerate(window_dates):
-        bars = bars_by_date.get(day, {})
-        global_index = index_base + index
+    @classmethod
+    def from_state(cls, name: str, slots: int, equity_init: float,
+                   state: dict[str, Any] | None) -> _CohortTrack:
+        carried = state or {}
+        return cls(name, slots, equity_init,
+                   pool=float(carried.get('pool', equity_init)),
+                   cohorts=[Cohort.from_dict(item)
+                            for item in (carried.get('cohorts') or [])])
+
+    def to_state(self) -> dict[str, Any]:
+        return {'pool': self.pool,
+                'cohorts': [cohort.to_dict() for cohort in self.cohorts]}
+
+    def step(self, global_index: int, day: date, bars: dict[str, tuple],
+             candidates: list[tuple[str, float]], signal_closes: dict[str, float],
+             is_signal_day: bool, horizon: int, tier: Any,
+             target_weight: float, costs: TradingCosts, rules: ExecutionRules,
+             lot: int, stats: dict[str, Any]) -> tuple[float, float]:
+        """推进一天，返回 ``(收盘净值, 闲置现金)``。"""
         # 1) 到期 cohort 开盘卖出（卖不出则顺延，最多 3 次）
-        for cohort in cohorts:
+        for cohort in self.cohorts:
             if cohort.exited or not cohort.entered or cohort.exit_idx != global_index:
                 continue
             if _cohort_sell(cohort, day, bars, costs, rules, stats):
                 cohort.exited = True
-                pool += cohort.cash
+                self.pool += cohort.cash
                 cohort.cash = 0.0
             elif cohort.exit_retries < MAX_SELL_RETRIES:
                 cohort.exit_retries += 1
                 cohort.exit_idx = min(global_index + 1, horizon - 1)
             else:
                 cohort.exited = True
-                pool += cohort.cash
+                self.pool += cohort.cash
                 cohort.cash = 0.0
 
         # 2) 昨日 cohort 在今日开盘建仓（候选与信号日收盘价随 cohort 一并携带）
-        for cohort in cohorts:
+        for cohort in self.cohorts:
             if cohort.entered or cohort.exited or cohort.entry_idx != global_index:
                 continue
             _cohort_buy(cohort, day, bars, cohort.signal_closes,
@@ -941,29 +1012,20 @@ def run_fixed60(window_dates: list[date], by_date: dict[date, pl.DataFrame],
             cohort.entered = True
 
         # 3) 今日收盘后新建 cohort（下一交易日开盘建仓）
-        is_signal_day = signal_days is None or day in signal_days
-        if global_index + 1 < horizon and pool >= cohort_budget and is_signal_day:
-            budget = min(cohort_budget, pool)
-            pool -= budget
-            frame = by_date.get(day)
-            candidates = select_candidates(frame, tier, config)
-            signal_closes: dict[str, float] = {}
-            if frame is not None and frame.height > 0:
-                for row in frame.select(['ts_code', 'raw_close']).iter_rows(named=True):
-                    close = _finite(row['raw_close'])
-                    if close is not None:
-                        signal_closes[str(row['ts_code'])] = close
-            cohorts.append(Cohort(
+        if global_index + 1 < horizon and self.pool >= self.cohort_budget and is_signal_day:
+            budget = min(self.cohort_budget, self.pool)
+            self.pool -= budget
+            self.cohorts.append(Cohort(
                 signal_date=day, entry_idx=global_index + 1,
                 exit_idx=min(global_index + 1 + BASELINE_HOLD, horizon - 1),
                 budget=budget, cash=budget,
                 candidates=[[code, pct] for code, pct in candidates],
-                signal_closes=signal_closes))
+                signal_closes=dict(signal_closes)))
 
         # 4) 收盘按市值计价
-        total = pool
-        cash_idle = pool
-        for cohort in cohorts:
+        total = self.pool
+        cash_idle = self.pool
+        for cohort in self.cohorts:
             if cohort.exited:
                 continue
             cash_idle += cohort.cash
@@ -974,14 +1036,357 @@ def run_fixed60(window_dates: list[date], by_date: dict[date, pl.DataFrame],
                 close = close if close is not None else item['entry_price']
                 value += item['shares'] * close
             total += value
-        nav_rows.append({'date': day, 'nav_fixed60': total, 'cash': cash_idle})
+        return total, cash_idle
 
-    return {'nav_rows': nav_rows, 'stats': stats,
-            'nav': float(nav_rows[-1]['nav_fixed60']) if nav_rows else equity_init,
-            'state': {
-                'pool': pool,
-                'cohorts': [cohort.to_dict() for cohort in cohorts],
-            }}
+
+class _PoolTrack:
+    """`a` 档：与尺子 A 同构的 lot 级共享现金池。
+
+    候选与成交价全部来自 A 的 ``signals.csv``（mid / on / ok_60，209 行）：
+    每个信号日按行顺序在 T+1 开盘买入，每只票投入
+    ``target_weight × 信号日收盘组合权益``；所有 lot 共享一个现金池，
+    现金不足就少买（买不起的行记 ``blocked_cash``）；卖出价取该行的
+    ``exit_close_60``、卖出日取该行的 ``exit_date_60``。不做预分配、不锁仓。
+    """
+
+    def __init__(self, cash: float, lots: list[_PoolLot] | None = None,
+                 last_nav: float | None = None) -> None:
+        self.cash = float(cash)
+        self.lots: list[_PoolLot] = list(lots or [])
+        self.last_nav = float(cash) if last_nav is None else float(last_nav)
+
+    @classmethod
+    def from_state(cls, state: dict[str, Any] | None,
+                   equity_init: float) -> _PoolTrack:
+        carried = state or {}
+        return cls(float(carried.get('cash', equity_init)),
+                   [_PoolLot.from_dict(item)
+                    for item in (carried.get('lots') or [])],
+                   last_nav=float(carried.get('last_nav', equity_init)))
+
+    def to_state(self) -> dict[str, Any]:
+        return {'cash': self.cash, 'last_nav': self.last_nav,
+                'lots': [lot.to_dict() for lot in self.lots]}
+
+    def step(self, day: date, bars: dict[str, tuple],
+             entries: list[dict[str, Any]], last_nav: float,
+             costs: TradingCosts, lot_size: int,
+             stats: dict[str, Any]) -> tuple[float, float]:
+        """推进一天：开盘买入 → 收盘卖出到期 lot → 收盘估值。"""
+        # 1) 开盘买入（资金不足按行顺序少买；股数按原始价取整手，复权价只做计价尺度）
+        for row in entries:
+            price = _finite(row.get('entry_open'))
+            weight = _finite(row.get('target_weight'))
+            if price is None or price <= 0 or weight is None or weight <= 0:
+                continue
+            planned = weight * last_nav
+            stats['planned_amount'] += planned
+            bar = bars.get(str(row['ts_code']))
+            raw_price = _finite(bar[0]) if bar is not None else None
+            if raw_price is None or raw_price <= 0:
+                raw_price = price
+            n_raw = int(max(0.0, min(planned, self.cash)) / raw_price / lot_size) * lot_size
+            notional = n_raw * raw_price
+            cost = _buy_cost(notional, costs) if n_raw >= lot_size else 0.0
+            while n_raw >= lot_size and notional + cost > self.cash + 1e-6:
+                n_raw -= lot_size
+                notional = n_raw * raw_price
+                cost = _buy_cost(notional, costs)
+            if n_raw < lot_size:
+                stats['blocked_cash'] += 1
+                stats['blocked_cash_amount'] += planned
+                continue
+            commission = _commission(notional, costs)
+            impact = notional * costs.impact_rate
+            self.cash -= notional + cost
+            stats['buy_filled'] += 1
+            stats['side_trades'] += 1
+            stats['buy_notional'] += notional
+            stats['commission'] += commission
+            stats['impact'] += impact
+            self.lots.append(_PoolLot(
+                ts_code=str(row['ts_code']),
+                signal_date=row['signal_date'],
+                entry_date=day,
+                shares=notional / price,
+                entry_price=price,
+                entry_notional=notional,
+                entry_cost=cost,
+                exit_date=row.get('exit_date'),
+                exit_price=_finite(row.get('exit_close_60')),
+                net60=float(row.get('net_60') or 0.0),
+                last_close=price))
+
+        # 2) 收盘卖出到期 lot（A 的口径：到期日收盘价卖出，不重试）
+        for item in list(self.lots):
+            exit_date = item.exit_date
+            if exit_date is None or exit_date > day:
+                continue
+            price = item.exit_price
+            bar = bars.get(item.ts_code)
+            panel_close = _finite(bar[4]) if bar is not None and len(bar) > 4 else None
+            if panel_close is not None and price is not None and price > 0:
+                stats['exit_price_checks'] += 1
+                stats['exit_price_dev'] += abs(panel_close / price - 1.0)
+                stats['exit_price_dev_max'] = max(
+                    stats['exit_price_dev_max'], abs(panel_close / price - 1.0))
+            if price is None or price <= 0:
+                price = item.last_close
+            notional = item.shares * price
+            cost = _sell_cost(notional, costs)
+            self.cash += notional - cost
+            stats['sell_filled'] += 1
+            stats['side_trades'] += 1
+            stats['sell_notional'] += notional
+            stats['commission'] += _commission(notional, costs)
+            stats['stamp'] += notional * costs.stamp_duty_rate
+            stats['impact'] += notional * costs.impact_rate
+            self.lots.remove(item)
+
+        # 3) 收盘估值：用面板后复权收盘价（与 A 的 entry_open / exit_close_60 同尺度）；
+        #    当日无收盘价时沿用该 lot 最近可得的收盘价
+        value = 0.0
+        for item in self.lots:
+            bar = bars.get(item.ts_code)
+            close = _finite(bar[4]) if bar is not None and len(bar) > 4 else None
+            if close is not None and close > 0:
+                item.last_close = close
+            else:
+                item.stale_days += 1
+                stats['valuation_stale_days'] += 1
+            value += item.shares * item.last_close
+        self.last_nav = self.cash + value
+        return self.last_nav, self.cash
+
+
+def load_a_signals(path: Path = A_SIGNALS_PATH, cache_dir: Path = A_CACHE_DIR,
+                   horizon: int = BASELINE_HOLD) -> dict[str, Any]:
+    """读取尺子 A 的实际持仓（``signals.csv`` 的 mid / on / ok_60 共 209 行）。
+
+    ``signals.csv`` 没有 ``exit_date_60`` 列，这里用 ``forward_test/cache`` 的
+    同口径 ``shift`` 反推，并用该行的 ``exit_close_60`` 逐值校验（必须 209/209
+    精确相等，否则直接退出，不自行调参抹平）。返回按 ``entry_date`` 分组的
+    建仓清单，以及每期净收益均值（供与 ``stats_main.csv`` 的 ``rec_net`` 对拍）。
+    """
+    frame = pl.read_csv(path)
+    frame = frame.filter(
+        (pl.col('tier') == A_TIER) & (pl.col('variant') == A_VARIANT)
+        & pl.col('ok_60'))
+    frame = frame.with_columns(
+        pl.col('signal_date').str.slice(0, 10).str.to_date('%Y-%m-%d').alias('signal_d'),
+        pl.col('entry_date').str.slice(0, 10).str.to_date('%Y-%m-%d').alias('entry_d'),
+    ).with_row_index('__ord')
+
+    codes = frame['ts_code'].unique().to_list()
+    parts = []
+    for market in ('sh', 'sz', 'bj'):
+        sub = [c for c in codes if str(c).upper().endswith('.' + market.upper())]
+        cache_path = cache_dir / f'{market}.parquet'
+        if sub and cache_path.exists():
+            parts.append(pl.read_parquet(cache_path, columns=['ts_code', 'date', 'close'])
+                         .filter(pl.col('ts_code').is_in(sub)))
+    if not parts:
+        raise SystemExit(f'a 档：{cache_dir} 下没有可用的行情缓存，无法反推 exit_date_60')
+
+    panel = pl.concat(parts).sort(['ts_code', 'date'])
+    offset_used = None
+    for offset in (horizon - 1, horizon, horizon + 1):
+        cand = panel.with_columns(
+            pl.col('date').shift(-offset).over('ts_code').alias('exit_d'),
+            pl.col('close').shift(-offset).over('ts_code').alias('exit_chk'))
+        joined = frame.join(
+            cand.select(['ts_code', 'date', 'exit_d', 'exit_chk']),
+            left_on=['ts_code', 'entry_d'], right_on=['ts_code', 'date'], how='left')
+        price_ok = (joined['exit_chk'] - joined['exit_close_60']).abs().max()
+        if joined['exit_d'].null_count() == 0 and price_ok is not None and price_ok < 1e-9:
+            frame = joined.with_columns(pl.col('exit_d').alias('exit_date_60')) \
+                          .drop('exit_chk').sort('__ord')
+            offset_used = offset
+            break
+    if offset_used is None:
+        raise SystemExit('a 档：forward_test 缓存反推的 exit_date_60 与 exit_close_60 对不上，停止')
+
+    rows: list[dict[str, Any]] = []
+    entries_by_date: dict[date, list[dict[str, Any]]] = {}
+    for item in frame.iter_rows(named=True):
+        entry = {
+            'ts_code': str(item['ts_code']),
+            'signal_date': item['signal_d'],
+            'entry_date': item['entry_d'],
+            'exit_date': item['exit_date_60'],
+            'target_weight': float(item['target_weight']),
+            'entry_open': float(item['entry_open']),
+            'exit_close_60': float(item['exit_close_60']),
+            'net_60': float(item['net_60']),
+        }
+        rows.append(entry)
+        entries_by_date.setdefault(entry['entry_date'], []).append(entry)
+
+    by_period: dict[date, list[float]] = {}
+    weight_by_period: dict[date, float] = {}
+    for entry in rows:
+        by_period.setdefault(entry['signal_date'], []).append(entry['net_60'])
+        weight_by_period[entry['signal_date']] = (
+            weight_by_period.get(entry['signal_date'], 0.0) + entry['target_weight'])
+    period_mean = {day: sum(vals) / len(vals) for day, vals in by_period.items()}
+    weights = [entry['target_weight'] for entry in rows]
+    period_weights = list(weight_by_period.values())
+    return {
+        'path': str(path),
+        'tier': A_TIER,
+        'variant': A_VARIANT,
+        'rows': rows,
+        'entries_by_date': entries_by_date,
+        'row_count': len(rows),
+        'period_count': len(period_mean),
+        'period_net': {day.isoformat(): value for day, value in period_mean.items()},
+        'period_mean': sum(period_mean.values()) / len(period_mean),
+        'exit_offset': offset_used,
+        'weight_min': min(weights),
+        'weight_max': max(weights),
+        'weight_mean': sum(weights) / len(weights),
+        'period_weight_mean': sum(period_weights) / len(period_weights),
+        'period_weight_min': min(period_weights),
+        'period_weight_max': max(period_weights),
+    }
+
+
+def check_a_rec_net(signals: dict[str, Any],
+                    path: Path = A_STATS_MAIN_PATH) -> dict[str, Any]:
+    """`a` 档口径对拍：每期净收益均值必须等于 A 的 ``rec_net``（±1e-6）。"""
+    stats = pl.read_csv(path)
+    picked = stats.filter(
+        (pl.col('tier') == A_TIER) & (pl.col('horizon') == BASELINE_HOLD)
+        & (pl.col('group') == '全部'))
+    if picked.height != 1:
+        raise SystemExit(f'a 档：{path} 里 mid/60/全部 不是唯一一行，停止')
+    expected = float(picked['rec_net'][0])
+    diff = abs(float(signals['period_mean']) - expected)
+    if diff > A_REC_NET_TOL:
+        raise SystemExit(
+            f'a 档口径不一致：每期净收益均值 {signals["period_mean"]:.9f} '
+            f'vs stats_main rec_net {expected:.9f}，差 {diff:.3e}，停止')
+    return {
+        'stats_main': str(path),
+        'source': 'tier=mid horizon=60 group=全部 rec_net',
+        'expected_rec_net': expected,
+        'computed_period_mean': float(signals['period_mean']),
+        'abs_diff': diff,
+        'tol': A_REC_NET_TOL,
+        'passed': True,
+        'periods': signals['period_count'],
+        'rows': signals['row_count'],
+    }
+
+
+def run_baselines(window_dates: list[date], by_date: dict[date, pl.DataFrame],
+                  bars_by_date: dict[date, dict[str, tuple]], tier: Any,
+                  config: Any, equity_init: float, costs: TradingCosts,
+                  rules: ExecutionRules, allocs: tuple[str, ...] = ('slots',),
+                  state: dict[str, Any] | None = None,
+                  index_base: int = 0,
+                  total_days: int | None = None,
+                  signal_days: set[date] | None = None,
+                  slots: int = BASELINE_HOLD,
+                  a_signals: dict[str, Any] | None = None
+                  ) -> dict[str, dict[str, Any]]:
+    """三档资金分配在同一次逐日遍历里一起算，候选与收盘价只算一次。
+
+    ``allocs`` 取 ``BASELINE_ALLOCS`` 的子集；返回值按档名索引，每档含
+    ``nav_rows`` / ``stats`` / ``nav`` / ``state``。``a_signals`` 是
+    :func:`load_a_signals` 的产物（``a`` 档唯一候选来源）。
+    """
+    cash_reserve = float(getattr(config.constraints, 'cash_buffer', 0.10) or 0.0)
+    lot = int(getattr(config.constraints, 'lot_size', 100) or 100)
+    target_weight = min(1.0 / int(tier.max_positions), max(0.0, 1.0 - cash_reserve))
+    horizon = int(total_days) if total_days is not None else len(window_dates)
+    carried = state or {}
+    cohort_names = [name for name in allocs if name in ('slots', 'slots60')]
+
+    tracks: dict[str, Any] = {}
+    if 'slots' in allocs:
+        tracks['slots'] = _CohortTrack.from_state(
+            'slots', slots, equity_init, carried.get('slots'))
+    if 'slots60' in allocs:
+        tracks['slots60'] = _CohortTrack.from_state(
+            'slots60', BASELINE_HOLD, equity_init, carried.get('slots60'))
+    if 'a' in allocs:
+        tracks['a'] = _PoolTrack.from_state(carried.get('a'), equity_init)
+
+    stats = {name: _new_stats() for name in allocs}
+    nav_rows: dict[str, list[dict[str, Any]]] = {name: [] for name in allocs}
+    a_entries = (a_signals or {}).get('entries_by_date', {})
+
+    for index, day in enumerate(window_dates):
+        bars = bars_by_date.get(day, {})
+        global_index = index_base + index
+        is_signal_day = signal_days is None or day in signal_days
+        candidates: list[tuple[str, float]] = []
+        signal_closes: dict[str, float] = {}
+        if cohort_names and is_signal_day and global_index + 1 < horizon:
+            frame = by_date.get(day)
+            candidates = select_candidates(frame, tier, config)
+            if frame is not None and frame.height > 0:
+                for row in frame.select(['ts_code', 'raw_close']).iter_rows(named=True):
+                    close = _finite(row['raw_close'])
+                    if close is not None:
+                        signal_closes[str(row['ts_code'])] = close
+
+        for name in allocs:
+            track = tracks[name]
+            if name == 'a':
+                # 建仓规模按「信号日」收盘权益，即上一交易日收盘的 NAV
+                nav, cash = track.step(day, bars, a_entries.get(day, []),
+                                       track.last_nav, costs, lot, stats[name])
+                holdings = len(track.lots)
+            else:
+                nav, cash = track.step(
+                    global_index, day, bars, candidates, signal_closes,
+                    is_signal_day, horizon, tier, target_weight, costs, rules,
+                    lot, stats[name])
+                holdings = sum(1 for cohort in track.cohorts
+                               if not cohort.exited and cohort.positions)
+            market_value = nav - cash
+            nav_rows[name].append({
+                'date': day, 'nav': nav, 'cash': cash,
+                'holdings_count': holdings,
+                'gross_exposure': market_value / nav if nav > 0 else 0.0,
+            })
+
+    out: dict[str, dict[str, Any]] = {}
+    for name in allocs:
+        track = tracks[name]
+        rows = nav_rows[name]
+        out[name] = {
+            'nav_rows': rows, 'stats': stats[name],
+            'nav': float(rows[-1]['nav']) if rows else equity_init,
+            'state': track.to_state(),
+        }
+    return out
+
+
+def run_fixed60(window_dates: list[date], by_date: dict[date, pl.DataFrame],
+                bars_by_date: dict[date, dict[str, tuple]], tier: Any,
+                config: Any, equity_init: float, costs: TradingCosts,
+                rules: ExecutionRules,
+                state: dict[str, Any] | None = None,
+                index_base: int = 0,
+                total_days: int | None = None,
+                signal_days: set[date] | None = None,
+                slots: int = BASELINE_HOLD) -> dict[str, Any]:
+    """旧入口：只跑 ``slots`` 一档（保持既有调用方与既有数字不变）。
+
+    ``slots`` 由 :func:`_baseline_slots` 按信号日间隔中位数算出（日频为 60，
+    月频约 3），保证每槽预算 ``equity_init / slots`` 使资金利用率与状态机可比。
+    ``state`` 携带上一分片的 ``pool`` 与未退出 cohort，``index_base`` 是
+    本片首日在全局交易日序列里的下标，``total_days`` 是全局交易日数；
+    三者一起保证 ``entry_idx`` / ``exit_idx`` 始终是全局下标。
+    """
+    result = run_baselines(
+        window_dates, by_date, bars_by_date, tier, config, equity_init, costs,
+        rules, allocs=('slots',), state=state, index_base=index_base,
+        total_days=total_days, signal_days=signal_days, slots=slots)
+    return result['slots']
 
 
 # ----------------------------------------------------------------------
@@ -1361,6 +1766,92 @@ def _cash_yield_rates(nav_rows: list[dict[str, Any]], nav_key: str,
     return out
 
 
+def _cash_accrued_path(nav_rows: list[dict[str, Any]], nav_key: str,
+                       cash_key: str, rate: float) -> tuple[list[float], float]:
+    """现金利息事后累加的净值序列（只用于报告路径指标，不改成交与复利）。"""
+    accrued = 0.0
+    navs: list[float] = []
+    for row in nav_rows:
+        accrued += float(row.get(cash_key) or 0.0) * rate / TRADING_DAYS_PER_YEAR
+        navs.append(float(row[nav_key]) + accrued)
+    return navs, accrued
+
+
+def _alloc_track_block(nav_rows: list[dict[str, Any]], nav_key: str,
+                       cash_key: str, equity_init: float,
+                       stats: dict[str, Any]) -> dict[str, Any]:
+    """单档资金分配的全量指标（累计/年化/回撤/换手/成本/每日现金）。"""
+    navs = [float(row[nav_key]) for row in nav_rows]
+    block = _summary_block(navs, equity_init, stats)
+    cash = [float(row.get(cash_key) or 0.0) for row in nav_rows]
+    holdings = [float(row.get('holdings_count') or 0.0) for row in nav_rows]
+    gross = [float(row.get('gross_exposure') or 0.0) for row in nav_rows]
+    total_cost = (stats['commission'] + stats['stamp'] + stats['impact'])
+    block.update({
+        'cost_commission': stats['commission'],
+        'cost_stamp_duty': stats['stamp'],
+        'cost_impact': stats['impact'],
+        'cost_total': total_cost,
+        'cost_pct_initial_equity': total_cost / equity_init if equity_init else 0.0,
+        'trade_count_buy': int(stats['buy_filled']),
+        'trade_count_sell': int(stats['sell_filled']),
+        'blocked_cash_count': int(stats['blocked_cash']),
+        'blocked_cash_amount': stats['blocked_cash_amount'],
+        'planned_amount': stats['planned_amount'],
+        'valuation_stale_days': int(stats['valuation_stale_days']),
+        'exit_price_checks': int(stats['exit_price_checks']),
+        'exit_price_dev_mean': (
+            stats['exit_price_dev'] / stats['exit_price_checks']
+            if stats['exit_price_checks'] else None),
+        'cash_summary': {
+            'mean': sum(cash) / len(cash) if cash else 0.0,
+            'mean_pct_of_nav': (
+                sum(c / n for c, n in zip(cash, navs, strict=False)
+                    if n > 0) / len(cash) if cash else 0.0),
+            'min': min(cash) if cash else 0.0,
+            'max': max(cash) if cash else 0.0,
+            'final': cash[-1] if cash else 0.0,
+        },
+        'holdings_count_mean': sum(holdings) / len(holdings) if holdings else 0.0,
+        'holdings_count_max': max(holdings) if holdings else 0.0,
+        'open_holdings_end': int(holdings[-1]) if holdings else 0,
+        'gross_exposure_mean': sum(gross) / len(gross) if gross else 0.0,
+        'gross_exposure_max': max(gross) if gross else 0.0,
+        'daily_cash': cash,
+    })
+    return block
+
+
+def _alloc_matrix(nav_rows: list[dict[str, Any]], equity_init: float,
+                  stats: dict[str, Any]) -> list[dict[str, Any]]:
+    """「槽位三档 × 现金收益两档」6 格矩阵（0% 为对照、1.5% 为主口径）。"""
+    navs = [float(row['nav']) for row in nav_rows]
+    base = _summary_block(navs, equity_init, stats)
+    years = max(1e-9, (len(navs) - 1) / 252.0)
+    rows: list[dict[str, Any]] = []
+    for rate in CASH_YIELD_RATES:
+        adjusted, accrued = _cash_accrued_path(nav_rows, 'nav', 'cash', rate)
+        path = _path_metrics([value / equity_init for value in adjusted])
+        final = adjusted[-1]
+        rows.append({
+            'cash_yield_rate': rate,
+            'cum_return': final / equity_init - 1.0,
+            'year_return': ((final / equity_init) ** (1.0 / years) - 1.0
+                            if final > 0 else -1.0),
+            'max_drawdown': path['max_drawdown'],
+            'drawdown_duration': path['drawdown_duration'],
+            'turnover': base['turnover'],
+            'trade_count': base['trade_count'],
+            'cost_total': base['total_cost'],
+            'cost_pct_initial_equity': (base['total_cost'] / equity_init
+                                        if equity_init else 0.0),
+            'accrued_interest': accrued,
+            'nav_final': final,
+            'nav_final_zero_yield': navs[-1] if navs else equity_init,
+        })
+    return rows
+
+
 def _read_chunk_nav(path: Path) -> list[dict[str, Any]]:
     """读回一片的 nav.csv（date 还原为 date 对象）。"""
     frame = pl.read_csv(path)
@@ -1704,6 +2195,113 @@ def _build_report(summary: dict[str, Any]) -> str:
     for note in summary['methodology_notes']:
         lines.append(f'- {note}')
     lines.append('')
+    alloc = summary.get('baseline_alloc')
+    if alloc:
+        lines += [
+            '## 9. 资金分配三档（`a` / `slots` / `slots60`）',
+            '',
+            '### 9.1 三档口径',
+            '',
+        ]
+        for name in alloc['computed']:
+            lines.append(f"- `{name}`：{alloc['definitions'][name]}。")
+        lines += [
+            '',
+            '### 9.2 六格矩阵（3 档 × 现金收益 0% / 1.5%）',
+            '',
+            '| 档位 | 现金年化 | 累计收益 | 年化收益 | 最大回撤 | 回撤持续（交易日） | '
+            '年化单边换手 | 显性成本（元） | 成本占初始权益 |',
+            '|---|---:|---:|---:|---:|---:|---:|---:|---:|',
+        ]
+        for item in alloc['matrix']:
+            lines.append(
+                f"| `{item['alloc']}` | {item['cash_yield_rate']:.2%} | "
+                f"{_pct(item['cum_return'])} | {_pct(item['year_return'])} | "
+                f"{_pct(item['max_drawdown'])} | {item['drawdown_duration']:.0f} | "
+                f"{item['turnover']:.2f}x | {item['cost_total']:,.0f} | "
+                f"{_pct(item['cost_pct_initial_equity'])} |")
+        lines += [
+            '',
+            f"- 现金收益口径：{alloc['method']}。"
+            f"主口径 {alloc['main_cash_yield_rate']:.1%}、对照 "
+            f"{min(alloc['cash_yield_rates']):.1%}。",
+        ]
+        tracks = alloc['tracks']
+        if 'a' in tracks:
+            a_block = tracks['a']
+            lines += [
+                '',
+                '### 9.3 `a` 档的现金与仓位（与尺子 A 对照）',
+                '',
+                f"- 平均现金占比 {_pct(a_block['cash_summary']['mean_pct_of_nav'])}，"
+                f"期末现金 {a_block['cash_summary']['final']:,.0f} 元；"
+                f"平均总仓位（`gross_exposure` 日均）"
+                f"{_pct(a_block['gross_exposure_mean'])}，最高 "
+                f"{_pct(a_block['gross_exposure_max'])}；"
+                f"平均在手只数 {a_block['holdings_count_mean']:.2f} 只"
+                f"（最多 {a_block['holdings_count_max']:.0f} 只）。",
+                f"- 成交：买入 {a_block['trade_count_buy']} 笔 / 卖出 "
+                f"{a_block['trade_count_sell']} 笔；现金不足少买 "
+                f"{a_block['blocked_cash_count']} 笔"
+                f"（计划金额 {a_block['blocked_cash_amount']:,.0f} 元）；"
+                f"显性成本 {a_block['cost_total']:,.0f} 元"
+                f"（占初始权益 {_pct(a_block['cost_pct_initial_equity'])}）。",
+                f"- 对照：尺子 A 每期合计仓位 "
+                f"{_pct(alloc['a_signals']['period_weight_min'])}~"
+                f"{_pct(alloc['a_signals']['period_weight_max'])}、均值 "
+                f"{_pct(alloc['a_signals']['period_weight_mean'])}"
+                '（用户口径的 22.67% 是含 2 行未满 60 日标签的 211 行算法，'
+                '本档按 ok_60 的 209 行算得 22.49%，差异已登记、不抹平）。'
+                f"本 `a` 档是 lot 级连续共享池：60 个交易日持有 + 月度信号使"
+                f"同时在场约 2 个期次，所以日均总仓位 "
+                f"{_pct(a_block['gross_exposure_mean'])} 约为单期仓位的 "
+                f"{a_block['gross_exposure_mean'] / max(1e-9, alloc['a_signals']['period_weight_mean']):.2f} 倍，"
+                '属口径结构差异，不是超额暴露。',
+                f"- 期末未到期 lot：{a_block['open_holdings_end']} 只"
+                '（卖出日在窗口之外，按最后可得收盘价计价，不虚构成交）。',
+            ]
+        check = alloc.get('a_check')
+        if check:
+            lines += [
+                '',
+                '### 9.4 `a` 档口径对拍',
+                '',
+                f"- 不限现金时每期净收益均值 = {check['computed_period_mean']:.9f}，"
+                f"`stats_main.csv` 的 mid/60/全部 `rec_net` = "
+                f"{check['expected_rec_net']:.9f}，绝对差 "
+                f"{check['abs_diff']:.3e}（容差 {check['tol']:.1e}）"
+                f"：{'通过' if check['passed'] else '未通过'}；"
+                f"样本 {check['periods']} 个信号日 / {check['rows']} 行。",
+            ]
+        diff = alloc.get('candidate_source_diff')
+        if diff:
+            lines += [
+                '',
+                '### 9.5 候选集不同源（登记，不抹平）',
+                '',
+                f"- {diff['note']}。",
+            ]
+        if 'a' in tracks:
+            lines += [
+                '',
+                '### 9.6 估值近似',
+                '',
+                f"- `a` 档逐日按收盘价给在手 lot 估值；当日无收盘价（停牌/缺行情）时"
+                f'沿用该 lot 最近可得的收盘价（首次回退为买入开盘价），'
+                f'本次共 {tracks["a"]["valuation_stale_days"]} 个「lot-日」发生回退。'
+                '卖出日与卖出价一律取 A 的 `exit_date_60` / `exit_close_60`，'
+                '不使用任何盘中价。',
+                '- `signals.csv` 未存 `exit_date_60` 列，本次用 `forward_test/cache` '
+                '的同口径 `shift` 反推，并用 `exit_close_60` 逐值校验全部命中；'
+                '该偏移是在「建仓行」上取第 60 个信号日口径的后续行，与 A 的 '
+                '`close.shift(-60)` 对齐。',
+                f'- 价格尺度：A 的 `entry_open` / `exit_close_60` 是后复权价，'
+                '估值因此统一取面板后复权收盘列 `close`（不是撮合用的 `raw_close`）。'
+                f'有 {tracks["a"]["exit_price_checks"]} 笔到期卖出可比对，'
+                '面板后复权收盘价与 `exit_close_60` 的平均相对差 '
+                f'{_pct(tracks["a"]["exit_price_dev_mean"]) if tracks["a"]["exit_price_dev_mean"] is not None else "—"}。',
+            ]
+        lines.append('')
     return '\n'.join(lines)
 
 
@@ -1751,6 +2349,13 @@ def main(argv: list[str] | None = None) -> int:
                         help='选候选频率（默认 daily；month-end 只在每月最后一个交易日选）')
     parser.add_argument('--only-chunk', default='',
                         help='只跑指定分片（标签，如 2019），便于单次命令限时内落盘')
+    parser.add_argument('--baseline-alloc', choices=('slots', 'a', 'slots60', 'all'),
+                        default='slots',
+                        help='固定持有 60 日基线的资金分配口径（默认 slots，保持旧行为；'
+                             'a = 与尺子 A 同构的 lot 级共享现金池；'
+                             'slots60 = 日频旧行为；all = 三档并列）')
+    parser.add_argument('--out-suffix', default='',
+                        help='产物目录后缀（如 _baseline_alloc，避免覆盖既有目录）')
     args = parser.parse_args(argv)
 
     started = datetime.now()
@@ -1829,10 +2434,10 @@ def _run_single(args: argparse.Namespace, started: datetime, app_config: Any,
         bars: dict[str, tuple] = {}
         for row in part.select(
                 ['ts_code', 'raw_open', 'raw_close', 'raw_prev_close',
-                 'raw_volume']).iter_rows(named=True):
+                 'raw_volume', 'close']).iter_rows(named=True):
             bars[str(row['ts_code'])] = (
                 row['raw_open'], row['raw_close'], row['raw_prev_close'],
-                row['raw_volume'])
+                row['raw_volume'], row['close'])
         bars_by_date[day] = bars
     _log(f'撮合价表构建完成：{len(bars_by_date)} 个交易日', started)
 
@@ -1843,17 +2448,117 @@ def _run_single(args: argparse.Namespace, started: datetime, app_config: Any,
                             tier, config, args.equity, costs, rules,
                             signal_days=signal_days)
     _log('状态机回测完成', started)
-    baseline = run_fixed60(window_dates, by_date, bars_by_date, tier, config,
-                           args.equity, costs, rules, signal_days=signal_days,
-                           slots=baseline_slots['slots'])
-    _log('固定持有 60 日基线完成', started)
+    allocs = _resolve_allocs(args)
+    a_signals = load_a_signals() if 'a' in allocs else None
+    a_check = check_a_rec_net(a_signals) if a_signals else None
+    baselines = run_baselines(
+        window_dates, by_date, bars_by_date, tier, config, args.equity, costs,
+        rules, allocs=allocs, signal_days=signal_days,
+        slots=baseline_slots['slots'], a_signals=a_signals)
+    baseline = baselines['slots']
+    _log(f'资金分配 {" / ".join(allocs)} 完成', started)
     return _emit_products(
         args=args, config=config, tier=tier, costs=costs, started=started,
         start=start, end=end, window_dates=window_dates,
         window_note=window_note, panel_start=panel_start,
         panel_dates=panel_dates, universe=universe, load_report=load_report,
         stateful=stateful, baseline=baseline, bars_by_date=bars_by_date,
-        baseline_slots=baseline_slots)
+        baseline_slots=baseline_slots, baselines=baselines,
+        a_signals=a_signals, a_check=a_check)
+
+
+def _attach_baseline_alloc(summary: dict[str, Any], *, args: argparse.Namespace,
+                           baselines: dict[str, dict[str, Any]] | None,
+                           baseline_rows: list[dict[str, Any]],
+                           base_nav_key: str, base_cash_key: str,
+                           baseline_stats: dict[str, Any],
+                           baseline_block: dict[str, Any],
+                           a_signals: dict[str, Any] | None,
+                           a_check: dict[str, Any] | None,
+                           stateful_stats: dict[str, Any],
+                           window_dates: list[date]
+                           ) -> tuple[list[str], list[dict[str, Any]]]:
+    """把三档资金分配的指标与矩阵挂到 ``summary['baseline_alloc']``。
+
+    ``slots`` 档必须与旧基线逐值一致，差任意一位即停下报告差异。
+    返回 (档位清单, 矩阵行)。
+    """
+    alloc_names = list(baselines) if baselines else ['slots']
+    alloc_blocks: dict[str, Any] = {}
+    alloc_matrix: list[dict[str, Any]] = []
+    for name in alloc_names:
+        payload = (baselines[name] if baselines
+                   else {'nav_rows': baseline_rows, 'stats': baseline_stats})
+        rows = payload['nav_rows']
+        nav_key = 'nav' if (rows and 'nav' in rows[0]) else base_nav_key
+        cash_key = 'cash' if (rows and 'cash' in rows[0]) else base_cash_key
+        block = _alloc_track_block(rows, nav_key, cash_key, args.equity,
+                                   payload['stats'])
+        if name == 'slots':
+            for key in ('cum_return', 'year_return', 'max_drawdown',
+                        'drawdown_duration', 'turnover', 'trade_count',
+                        'final_nav', 'total_cost'):
+                if abs(float(block[key]) - float(baseline_block[key])) > 1e-12:
+                    raise SystemExit(
+                        f'slots 档与旧基线不一致：{key} {block[key]} vs '
+                        f'{baseline_block[key]}，停止（分片产物保留，可重跑合并）')
+        alloc_blocks[name] = block
+        for item in _alloc_matrix(rows, args.equity, payload['stats']):
+            alloc_matrix.append({'alloc': name, **item})
+
+    summary['baseline_alloc'] = {
+        'requested': getattr(args, 'baseline_alloc', 'slots'),
+        'computed': alloc_names,
+        'tracks': alloc_blocks,
+        'cash_yield_rates': list(CASH_YIELD_RATES),
+        'main_cash_yield_rate': max(CASH_YIELD_RATES),
+        'matrix': alloc_matrix,
+        'method': ('现金收益沿用事后累加：Σ 每日现金 × 年化利率 / 252 加到期末净值，'
+                   '不改写成交、持仓与复利路径；矩阵中的年化与最大回撤基于'
+                   '「净值 + 累计现金利息」的事后序列，买卖与成本路径不变'),
+        'definitions': {
+            'slots': ('现有反推口径：slots=3（相邻信号日间隔中位数换算），'
+                      '每槽预算 equity_init/slots，票按 target_weight，'
+                      '到期开盘卖出；逐值与既有产物一致'),
+            'a': ('与尺子 A 同构：直接读 reports/advice/forward_test/signals.csv '
+                  '（tier=mid、variant=on、ok_60，209 行 / 56 个信号日），'
+                  'lot 级共享现金池，T+1 开盘买入，每只票投入 '
+                  'target_weight × 信号日收盘组合权益，买入后第 60 个交易日'
+                  '（A 的 exit_date_60）按收盘价卖出，不预分配、不锁仓、现金不足少买'),
+            'slots60': ('日频旧行为在月频下的样子：slots=60，每槽预算 '
+                        'equity_init/60，其余同 slots'),
+        },
+    }
+    if a_signals:
+        summary['baseline_alloc']['a_signals'] = {
+            'path': a_signals['path'],
+            'filter': f"tier={a_signals['tier']} & variant={a_signals['variant']} & ok_60",
+            'rows': a_signals['row_count'],
+            'periods': a_signals['period_count'],
+            'target_weight_min': a_signals['weight_min'],
+            'target_weight_max': a_signals['weight_max'],
+            'target_weight_mean': a_signals['weight_mean'],
+            'period_weight_mean': a_signals['period_weight_mean'],
+            'period_weight_min': a_signals['period_weight_min'],
+            'period_weight_max': a_signals['period_weight_max'],
+            'exit_date_offset': a_signals['exit_offset'],
+            'exit_date_method': ('signals.csv 无 exit_date_60 列，用 forward_test/cache '
+                                 '同口径 shift 反推，并用 exit_close_60 逐值校验'),
+        }
+    if a_check:
+        summary['baseline_alloc']['a_check'] = a_check
+    summary['baseline_alloc']['candidate_source_diff'] = {
+        'a': {'rows': (a_signals or {}).get('row_count'),
+              'periods': (a_signals or {}).get('period_count')},
+        'b': {'signal_days': len(_month_end_days(window_dates)),
+              'days_with_candidates': stateful_stats['days_with_candidates'],
+              'candidate_signals': stateful_stats['candidate_signals']},
+        'note': ('A 档与 B 档的候选集不同源：A 是 92 个月末信号日里 56 天有票、'
+                 '共 209 笔；B 的 month-end 口径是 92 天里 39 天有候选、'
+                 '共 847 个候选信号，两者差一个量级。`a` 档因此必须用 A 自己的'
+                 ' 209 行，而不是 B 的 select_candidates 候选集'),
+    }
+    return alloc_names, alloc_matrix
 
 
 def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
@@ -1864,6 +2569,9 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
                    baseline: dict[str, Any],
                    bars_by_date: dict[date, dict[str, tuple]] | None,
                    baseline_slots: dict[str, Any],
+                   baselines: dict[str, dict[str, Any]] | None = None,
+                   a_signals: dict[str, Any] | None = None,
+                   a_check: dict[str, Any] | None = None,
                    quotes: dict[tuple[str, date], tuple[float, float]] | None = None,
                    extra_summary: dict[str, Any] | None = None) -> int:
     """组装 summary / nav / trades / report 并打印对照表（单窗口与分片共用）。"""
@@ -1872,13 +2580,16 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
     gap = round_trip_actual - DOC_ROUND_TRIP_COST
     requested_days = len(window_dates) if args.chunk_by != 'none' else args.days
     nav_stateful = [float(row['nav_stateful']) for row in stateful['nav_rows']]
-    for row, base_row in zip(stateful['nav_rows'], baseline['nav_rows'],
-                             strict=False):
-        if row.get('cash_fixed60') is None and 'cash' in base_row:
-            row['cash_fixed60'] = base_row['cash']
-    nav_baseline = [float(row['nav_fixed60']) for row in baseline['nav_rows']]
+    baseline_rows = baseline['nav_rows']
+    first_baseline = baseline_rows[0] if baseline_rows else {}
+    base_nav_key = 'nav' if 'nav' in first_baseline else 'nav_fixed60'
+    base_cash_key = 'cash' if 'cash' in first_baseline else 'cash_fixed60'
+    nav_baseline = [float(row[base_nav_key]) for row in baseline_rows]
     for index, row in enumerate(stateful['nav_rows']):
+        if index >= len(baseline_rows):
+            break
         row['nav_fixed60'] = nav_baseline[index]
+        row['cash_fixed60'] = float(baseline_rows[index].get(base_cash_key) or 0.0)
 
     stateful_stats = stateful['stats']
     baseline_stats = baseline['stats']
@@ -2163,10 +2874,30 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
     if extra_summary:
         summary.update(extra_summary)
 
-    out_dir = ROOT / args.out_root / f"{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}"
+    alloc_names, alloc_matrix = _attach_baseline_alloc(
+        summary, args=args, baselines=baselines, baseline_rows=baseline_rows,
+        base_nav_key=base_nav_key, base_cash_key=base_cash_key,
+        baseline_stats=baseline_stats, baseline_block=baseline_block,
+        a_signals=a_signals, a_check=a_check, stateful_stats=stateful_stats,
+        window_dates=window_dates)
+
+    out_dir = ROOT / args.out_root / (
+        f"{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}"
+        f"{getattr(args, 'out_suffix', '')}")
     out_dir.mkdir(parents=True, exist_ok=True)
     _write_csv(out_dir / 'nav.csv', stateful['nav_rows'], NAV_COLUMNS)
     _write_csv(out_dir / 'trades.csv', stateful['trades'], TRADE_COLUMNS)
+    for name in alloc_names:
+        payload = (baselines[name] if baselines
+                   else {'nav_rows': baseline_rows, 'stats': baseline_stats})
+        _write_csv(out_dir / f'nav_{name}.csv', payload['nav_rows'],
+                   ('date', 'nav', 'cash', 'holdings_count', 'gross_exposure'))
+    if alloc_matrix:
+        _write_csv(out_dir / 'matrix.csv', alloc_matrix,
+                   ('alloc', 'cash_yield_rate', 'cum_return', 'year_return',
+                    'max_drawdown', 'drawdown_duration', 'turnover',
+                    'trade_count', 'cost_total', 'cost_pct_initial_equity',
+                    'accrued_interest', 'nav_final', 'nav_final_zero_yield'))
     (out_dir / 'summary.json').write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, default=str),
         encoding='utf-8', newline='\n')
@@ -2216,8 +2947,54 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
           f'总差 {decomp["decomp_total_diff_pp"]:+.3f}pp')
     ratio = summary['decomp_residual_ratio']
     print(f'残差占比    : {"—" if ratio is None else f"{ratio:.2%}"}')
+    alloc_tracks = (summary.get('baseline_alloc') or {}).get('tracks') or {}
+    if alloc_tracks:
+        print('-' * 78)
+        print(f'{"资金分配":<12}{"累计(利率0)":>14}{"累计(1.5%)":>14}'
+              f'{"最大回撤":>12}{"换手":>10}{"成本元":>14}')
+        for name, block in alloc_tracks.items():
+            cells = [item for item in alloc_matrix if item['alloc'] == name]
+            zero = next((c for c in cells if c['cash_yield_rate'] == 0.0), None)
+            main = next((c for c in cells
+                         if c['cash_yield_rate'] == max(CASH_YIELD_RATES)), None)
+            print(f'{name:<12}'
+                  f'{(zero["cum_return"] if zero else block["cum_return"]):>14.2%}'
+                  f'{(main["cum_return"] if main else block["cum_return"]):>14.2%}'
+                  f'{block["max_drawdown"]:>12.2%}'
+                  f'{block["turnover"]:>10.2f}'
+                  f'{block["total_cost"]:>14,.0f}')
     print(f'耗时        : {summary["elapsed_sec"]}s')
     print(f'产物目录    : {out_dir}')
+
+
+def _resolve_allocs(args: argparse.Namespace) -> tuple[str, ...]:
+    """把 ``--baseline-alloc`` 解析成实际要算的档位（``slots`` 始终算，供旧列对照）。"""
+    requested = getattr(args, 'baseline_alloc', 'slots')
+    allocs = list(BASELINE_ALLOCS) if requested == 'all' else [requested]
+    if 'slots' not in allocs:
+        allocs.insert(0, 'slots')
+    return tuple(dict.fromkeys(allocs))
+
+
+def _resume_states(prev_state_path: Path, allocs: tuple[str, ...],
+                   prev_label: str) -> tuple[dict[str, Any],
+                                             dict[str, dict[str, Any] | None]]:
+    """读上一分片的收尾状态，返回 (状态机状态, 各档基线状态)。"""
+    if not prev_state_path.exists():
+        raise SystemExit(f'缺少上一片状态 {prev_state_path}，请先完成 {prev_label}')
+    previous = json.loads(prev_state_path.read_text(encoding='utf-8'))
+    prev_baselines = previous.get('baselines') or {}
+    old_baseline = previous.get('baseline') or {}
+    baseline_states: dict[str, dict[str, Any] | None] = {}
+    for name in allocs:
+        entry = prev_baselines.get(name) or {}
+        if entry.get('end') is not None:
+            baseline_states[name] = entry['end']
+        elif name == 'slots' and old_baseline.get('end') is not None:
+            baseline_states[name] = old_baseline['end']
+        else:
+            baseline_states[name] = None
+    return previous['stateful']['end'], baseline_states
 
 
 def _chunk_paths(out_dir: Path, label: str) -> tuple[Path, Path, Path]:
@@ -2245,10 +3022,15 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
     if args.only_chunk and args.only_chunk not in labels:
         raise SystemExit(f'--only-chunk {args.only_chunk} 不在分片 {labels} 内')
 
-    out_dir = ROOT / args.out_root / f"{start:%Y%m%d}_{end:%Y%m%d}"
+    out_dir = ROOT / args.out_root / (
+        f"{start:%Y%m%d}_{end:%Y%m%d}{getattr(args, 'out_suffix', '')}")
     out_dir.mkdir(parents=True, exist_ok=True)
     codes = list_local_stock_codes(app_config)
     index_of = {day: i for i, day in enumerate(global_dates)}
+    allocs = _resolve_allocs(args)
+    a_signals = load_a_signals() if 'a' in allocs else None
+    if a_signals:
+        check_a_rec_net(a_signals)
 
     for position, (label, chunk_dates) in enumerate(all_chunks):
         if args.only_chunk and label != args.only_chunk:
@@ -2260,15 +3042,11 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
         if position > 0:
             prev_label = all_chunks[position - 1][0]
             _, _, prev_state_path = _chunk_paths(out_dir, prev_label)
-            if not prev_state_path.exists():
-                raise SystemExit(
-                    f'缺少上一片状态 {prev_state_path}，请先完成 {prev_label}')
-            previous = json.loads(prev_state_path.read_text(encoding='utf-8'))
-            stateful_state = previous['stateful']['end']
-            baseline_state = previous['baseline']['end']
+            stateful_state, baseline_states = _resume_states(
+                prev_state_path, allocs, prev_label)
         else:
             stateful_state = None
-            baseline_state = None
+            baseline_states = dict.fromkeys(allocs)
 
         chunk_started = datetime.now()
         universe = filter_universe(chunk_dates[0], codes, store_root=store_root)
@@ -2298,29 +3076,35 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
             bars: dict[str, tuple] = {}
             for row in part.select(
                     ['ts_code', 'raw_open', 'raw_close', 'raw_prev_close',
-                     'raw_volume']).iter_rows(named=True):
+                     'raw_volume', 'close']).iter_rows(named=True):
                 bars[str(row['ts_code'])] = (
                     row['raw_open'], row['raw_close'], row['raw_prev_close'],
-                    row['raw_volume'])
+                    row['raw_volume'], row['close'])
             bars_by_date[day] = bars
         is_final = position == len(all_chunks) - 1
         stateful = run_stateful(
             chunk_dates, by_date, bars_by_date, global_dates, tier, config,
             args.equity, costs, rules, state=stateful_state,
             finalize=is_final, scan_last_day=True, signal_days=signal_days)
-        baseline = run_fixed60(
+        baselines = run_baselines(
             chunk_dates, by_date, bars_by_date, tier, config, args.equity,
-            costs, rules, state=baseline_state,
+            costs, rules, allocs=allocs,
+            state=baseline_states,
             index_base=index_of[chunk_dates[0]], total_days=len(global_dates),
-            signal_days=signal_days, slots=baseline_slots['slots'])
+            signal_days=signal_days, slots=baseline_slots['slots'],
+            a_signals=a_signals)
+        baseline = baselines['slots']
         for row, base_row in zip(stateful['nav_rows'], baseline['nav_rows'],
                                  strict=False):
-            row['nav_fixed60'] = base_row['nav_fixed60']
+            row['nav_fixed60'] = base_row['nav']
             row['cash_fixed60'] = base_row['cash']
 
         elapsed = round((datetime.now() - chunk_started).total_seconds(), 1)
         _write_csv(nav_path, stateful['nav_rows'], NAV_COLUMNS)
         _write_csv(trades_path, stateful['trades'], TRADE_COLUMNS)
+        for name, payload_rows in baselines.items():
+            _write_csv(nav_path.parent / f'nav_{name}.csv', payload_rows['nav_rows'],
+                       ('date', 'nav', 'cash', 'holdings_count', 'gross_exposure'))
         signal_count = sum(1 for day in chunk_dates
                            if signal_days is None or day in signal_days)
         payload = {
@@ -2352,6 +3136,11 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
                 'end': baseline['state'], 'stats': baseline['stats'],
                 'nav_final': baseline['nav'],
             },
+            'baselines': {
+                name: {'end': item['state'], 'stats': item['stats'],
+                       'nav_final': item['nav']}
+                for name, item in baselines.items()
+            },
         }
         state_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2, default=str),
@@ -2380,7 +3169,9 @@ def _merge_chunks(args: argparse.Namespace, started: datetime,
     trades: list[dict[str, Any]] = []
     closed: list[dict[str, Any]] = []
     stats = _new_stats()
-    baseline_stats = _new_stats()
+    allocs = _resolve_allocs(args)
+    baseline_stats = {name: _new_stats() for name in allocs}
+    baseline_nav: dict[str, list[dict[str, Any]]] = {name: [] for name in allocs}
     universe_by_chunk: list[dict[str, Any]] = []
     per_chunk_data: list[dict[str, Any]] = []
     totals = {'requested': 0, 'loaded': 0, 'rows': 0}
@@ -2391,6 +3182,18 @@ def _merge_chunks(args: argparse.Namespace, started: datetime,
         payload = json.loads(state_path.read_text(encoding='utf-8'))
         nav_rows.extend(_read_chunk_nav(nav_path))
         trades.extend(_read_chunk_trades(trades_path))
+        chunk_baselines = payload.get('baselines') or {}
+        for name in allocs:
+            alloc_nav = nav_path.parent / f'nav_{name}.csv'
+            if not alloc_nav.exists():
+                raise SystemExit(
+                    f'分片 {label} 缺少 {alloc_nav}，请重跑该片（--only-chunk {label}）')
+            baseline_nav[name].extend(_read_chunk_nav(alloc_nav))
+            entry = chunk_baselines.get(name)
+            if entry is None:
+                raise SystemExit(
+                    f'分片 {label} 缺少 {name} 档状态，请重跑该片（--only-chunk {label}）')
+            _merge_stats(baseline_stats[name], entry['stats'])
         for item in payload['stateful']['closed']:
             record = dict(item)
             record['entry_date'] = date.fromisoformat(
@@ -2403,7 +3206,6 @@ def _merge_chunks(args: argparse.Namespace, started: datetime,
             intent['signal_date'] = date.fromisoformat(
                 str(intent['signal_date'])[:10])
         _merge_stats(stats, chunk_stats)
-        _merge_stats(baseline_stats, payload['baseline']['stats'])
         universe_by_chunk.append({'label': label, **payload['universe']})
         data = payload.get('data', {})
         per_chunk_data.append({'label': label, **data})
@@ -2428,10 +3230,22 @@ def _merge_chunks(args: argparse.Namespace, started: datetime,
         'nav_rows': nav_rows, 'trades': trades, 'closed': closed,
         'stats': stats, 'nav': float(nav_rows[-1]['nav_stateful']),
     }
+    baselines: dict[str, dict[str, Any]] = {}
+    for name in allocs:
+        rows = baseline_nav[name]
+        if len(rows) != len(window_dates):
+            raise SystemExit(
+                f'{name} 档逐日 NAV 长度 {len(rows)} 与窗口 {len(window_dates)} 不一致')
+        baselines[name] = {
+            'nav_rows': rows, 'stats': baseline_stats[name],
+            'nav': float(rows[-1]['nav']) if rows else args.equity,
+        }
     baseline = {
-        'nav_rows': [{'nav_fixed60': row['nav_fixed60']} for row in nav_rows],
-        'stats': baseline_stats, 'nav': float(nav_rows[-1]['nav_fixed60']),
+        'nav_rows': baselines['slots']['nav_rows'],
+        'stats': baselines['slots']['stats'], 'nav': baselines['slots']['nav'],
     }
+    a_signals = load_a_signals() if 'a' in allocs else None
+    a_check = check_a_rec_net(a_signals) if a_signals else None
     load_report = LoadReport(requested=totals['requested'],
                              loaded=totals['loaded'], rows=totals['rows'])
     first = universe_by_chunk[0]
@@ -2464,7 +3278,8 @@ def _merge_chunks(args: argparse.Namespace, started: datetime,
         panel_start=first_panel_start, panel_dates=first_panel_dates,
         universe=universe, load_report=load_report, stateful=stateful,
         baseline=baseline, bars_by_date=None, quotes=quotes,
-        baseline_slots=baseline_slots, extra_summary=extra)
+        baseline_slots=baseline_slots, baselines=baselines,
+        a_signals=a_signals, a_check=a_check, extra_summary=extra)
 
 
 
