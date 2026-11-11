@@ -310,7 +310,7 @@ def export_baseline(path: Path | None = None) -> Path:
     """导出当前配置为基线快照 JSON（文件头标注「时点快照，非配置真源」）。"""
     today = date.today().isoformat()
     path = path or ROOT / 'docs' / f'策略参数基线_{today}.json'
-    payload = {
+    payload: dict[str, Any] = {
         '_notice': (
             '这是时点快照，不是新的配置真源。配置真源仍是 src/advice/config.py；'
             '本文件只用于冻结评测对照口径，任何参数改动必须改 config.py 后重新导出，'
@@ -352,16 +352,17 @@ def load_factor_panel(universe: int, start: str, end: str,
     if cache.is_file() and not no_cache:
         logger.info(f'[panel] 读缓存 {cache}')
         frame = pl.read_parquet(cache)
-        info = {'cached': True, 'rows': frame.height,
-                'symbols': frame['ts_code'].n_unique()}
+        info: dict[str, Any] = {'cached': True, 'rows': frame.height,
+                                'symbols': frame['ts_code'].n_unique()}
     else:
         from tools.eval_daily_advice import strat_universe
 
         info = strat_universe(universe, start, end, PROTOCOL['universe_seed'])
-        logger.info(f'[panel] 构建 {len(info["codes"])} 只 {start}~{end}')
+        codes = [str(code) for code in (info.get('codes') or [])]
+        logger.info(f'[panel] 构建 {len(codes)} 只 {start}~{end}')
         panel = load_panel(PanelRequest(start=start, end=end,
                                         universe_size=universe, use_cache=True),
-                           codes=info['codes'])
+                           codes=codes)
         compat = panel.with_columns([
             pl.col('amount').alias('raw_amount'),
             pl.col('volume').alias('raw_volume'),
@@ -581,16 +582,27 @@ def _metric_block(result: dict[str, Any]) -> dict[str, float]:
         'max_drawdown')}
 
 
+def _is_tuning(row: dict[str, str]) -> bool:
+    """是否计入 Bonferroni 分母：只算 tuning。
+
+    历史行没有 purpose 列（或为空），那些都是调优试验，按 tuning 处理；
+    verify / diagnostic 属复算与体检，不应放大分母。
+    """
+    return (row.get('purpose') or '').strip().lower() in ('', 'tuning')
+
+
 def _append_ledger(row: dict[str, Any]) -> int:
-    """追加一行试验记录，返回累计尝试次数（含本行）。"""
+    """追加一行试验记录，返回累计尝试次数（只计 tuning，含本行若为 tuning）。"""
     LEDGER_DIR.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, str]] = []
     if LEDGER_PATH.is_file():
         with LEDGER_PATH.open('r', encoding='utf-8', newline='') as handle:
             rows = list(csv.DictReader(handle))
-    cumulative = len(rows) + 1
     record = {key: str(row.get(key, '')) for key in LEDGER_COLUMNS}
     record['experiment_id'] = str(row['experiment_id'])
+    cumulative = sum(1 for r in rows if _is_tuning(r))
+    if _is_tuning(record):
+        cumulative += 1
     record['cumulative_attempts'] = str(cumulative)
     rows.append(record)
     with LEDGER_PATH.open('w', encoding='utf-8', newline='') as handle:
@@ -635,8 +647,10 @@ def cmd_ledger(_args: argparse.Namespace) -> int:
     with LEDGER_PATH.open('r', encoding='utf-8', newline='') as handle:
         rows = list(csv.DictReader(handle))
     print(f'累计试验表: {LEDGER_PATH}')
-    print(f'累计尝试次数: {len(rows)}（Bonferroni α=0.05/{len(rows)} = '
-          f'{0.05 / max(len(rows), 1):.5f}）')
+    tuning = [r for r in rows if _is_tuning(r)]
+    print(f'累计尝试次数: {len(tuning)}（只计 purpose=tuning；另有 '
+          f'{len(rows) - len(tuning)} 条 verify/diagnostic 不计入 Bonferroni 分母）')
+    print(f'Bonferroni α=0.05/{max(len(tuning), 1)} = {0.05 / max(len(tuning), 1):.5f}')
     print(f'{"id":<18}{"label":<40}{"hold":>5}{"净年化":>10}{"期胜率":>8}{"Δ净年化":>10}')
     for row in rows[-10:]:
         identity = (row.get('experiment_id') or '')[:18]
