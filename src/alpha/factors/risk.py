@@ -51,14 +51,14 @@ class RiskFactors(PartitionAware):
 
     def _returns_expr(self) -> pl.Expr:
         """
-        收益率表达式，首行为0与原实现一致
+        收益率表达式：首行无前收，收益不存在，保持 null（不写 0）
         """
         close = pl.col('close')
         prev_close = close.shift(1)
         return (
             pl.when(prev_close.is_not_null())
             .then((close - prev_close) / prev_close)
-            .otherwise(0.0)
+            .otherwise(pl.lit(None, dtype=pl.Float64))
         )
 
     def _missing_as_null(self, expr: pl.Expr, anchor: pl.Expr) -> pl.Expr:
@@ -88,7 +88,7 @@ class RiskFactors(PartitionAware):
         beta = (
             pl.when(var > 0)
             .then(cov / var)
-            .otherwise(0.0)
+            .otherwise(pl.lit(None, dtype=pl.Float64))
         )
         beta = self._missing_as_null(beta, var)
 
@@ -110,7 +110,7 @@ class RiskFactors(PartitionAware):
         max_drawdown = (
             pl.when(peak > 0)
             .then((trough - peak) / peak)
-            .otherwise(0.0)
+            .otherwise(pl.lit(None, dtype=pl.Float64))
         )
         max_drawdown = self._missing_as_null(max_drawdown, peak)
 
@@ -132,7 +132,7 @@ class RiskFactors(PartitionAware):
         sharpe_ratio = (
             pl.when(std_return > 0)
             .then(mean_return / std_return * _SQRT_252)
-            .otherwise(0.0)
+            .otherwise(pl.lit(None, dtype=pl.Float64))
         )
         sharpe_ratio = self._missing_as_null(sharpe_ratio, std_return)
 
