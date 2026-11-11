@@ -121,6 +121,13 @@ def neutralize(data,
 
     仅支持单个连续暴露的一元回归；多因子回归不在本函数范围内。
 
+    .. deprecated::
+        请改用 ``src.alpha.cross_section.preprocess.neutralize_industry_mv``。
+        本函数是「行业内去均值 + 日期中心化暴露回归」的两步投影，**不等于**
+        「行业饱和哑变量 + 暴露」的联合 OLS 残差（漏掉暴露的行业内变异）；
+        实测两者在真实面板上的最大差达 1.08 个标准差。保留本函数只为排查对照，
+        等 16 项调用点替换完成后删除，见 ``docs/因子预处理管线_2026-11-11.md``。
+
     Args:
         industry_col: 行业列名
         exposure_col: 连续暴露列名（如对数市值）

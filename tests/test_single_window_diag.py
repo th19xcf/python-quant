@@ -71,7 +71,8 @@ def test_brinson_handles_zero_port_weight():
 def test_build_style_panel_cross_section_zero_mean():
     rows = []
     for day in (dt.date(2024, 1, 2), dt.date(2024, 1, 3)):
-        for index in range(12):
+        # 管道 min_obs=30：单期样本不足会置 null，故截面取 40 只
+        for index in range(40):
             row = {'date': day, 'ts_code': f'{index:06d}.SZ'}
             for offset, column in enumerate(STYLE_SOURCE, start=1):
                 row[column] = float(index * offset + 1)

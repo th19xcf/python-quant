@@ -13,8 +13,12 @@
 - sue           标准化盈余意外，方向 +1（可用起点 2018-07）
 - turnover_20 未加入：正交化后仅 +0.066，已被现有簇吸收。
 
-处理链：行业 + 市值中性化（FWL）→ 1%/99% winsorize → z-score → 截断 ±3
+处理链：走 ``src.alpha.cross_section.preprocess.run_pipeline``
+（MAD k=3 去极值 → 标准化 zscore → 行业 + lnMV 联合 OLS 中性化，不再二次截断）
 → 方向统一 → 等权/ICIR 加权（按当月实际可用因子归一）→ 总分。
+顺序固定为「先标准化后中性化」，行业均值按 ``(date, ind_code)`` 分组；
+原私有实现 ``_neutralize`` 用 ``over("ind_code")`` 缺 ``date`` 分组，
+等于拿跨期行业均值去均值，已随本次替换废止。
 PIT 股息覆写必须排在标准化/中性化之前；缺失因子不回填、不使用未来值；
 MIN_FACTORS=3，当月可用因子不足 3 个的股票不打分。
 
@@ -35,11 +39,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import polars as pl
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.alpha.cross_section.preprocess import run_pipeline  # noqa: E402
+
 DATA_DIR = REPO_ROOT / "data" / "local_store"
 RESEARCH_INPUTS = DATA_DIR / "meta" / "research_inputs"
 DEFAULT_ANALYSIS = RESEARCH_INPUTS / "analysis_monthly.parquet"
@@ -66,32 +76,11 @@ ICIR_MIN = 12
 W_LO, W_HI = 0.1, 0.4
 
 
-def _neutralize(df: pl.DataFrame, col: str) -> pl.Series:
-    """行业 + ln_mv 中性化残差（FWL）。"""
-    f = pl.col(col).cast(pl.Float64)
-    x = pl.col("ln_mv").cast(pl.Float64)
-    f_dm = f - f.mean().over("ind_code")
-    x_dm = x - x.mean().over("ind_code")
-    beta = (f_dm * x_dm).sum().over("date") / (x_dm * x_dm).sum().over("date")
-    return (f_dm - beta * x_dm).alias(col)
-
-
-def _zscore(df: pl.DataFrame, col: str) -> pl.Series:
-    x = pl.col(col).cast(pl.Float64)
-    lo = x.quantile(0.01).over("date")
-    hi = x.quantile(0.99).over("date")
-    xw = x.clip(lo, hi)
-    mu = xw.mean().over("date")
-    sd = xw.std().over("date")
-    z = pl.when(sd > 0).then((xw - mu) / sd).otherwise(None)
-    return z.clip(-3.0, 3.0).alias(col)
-
-
-def _spearman_ic(df: pl.DataFrame, col: str) -> pl.DataFrame:
+def _spearman_ic(df: pl.DataFrame, col: str, alias: str) -> pl.DataFrame:
     """逐月 rank IC（因子 vs fwd_ret），仅用于 ICIR 权重，不含未来数据。"""
     d = df.filter(pl.col(col).is_not_null() & pl.col("fwd_ret").is_not_null())
     return d.group_by("date").agg(
-        pl.corr(pl.col(col).rank(), pl.col("fwd_ret").rank()).alias(f"ic_{col}")
+        pl.corr(pl.col(col).rank(), pl.col("fwd_ret").rank()).alias(alias)
     ).sort("date")
 
 
@@ -150,17 +139,18 @@ def build_signals(analysis: Path = DEFAULT_ANALYSIS,
         .then(pl.col("div_yield_pit") / 100.0)
         .otherwise(pl.col("ff_div_yield")).alias("ff_div_yield"))
 
-    # 中性化 + 标准化（保留未中性化副本用于覆盖率披露）
-    for c in FACTORS:
-        df = df.with_columns(_neutralize(df, c))
-    for c in FACTORS:
-        df = df.with_columns(_zscore(df, c).alias(f"z_{c}"))
+    # 预处理走唯一管线（先标准化后中性化）；原始因子列保留，供覆盖率披露
+    pre = run_pipeline(df, list(FACTORS), by="date", industry_col="ind_code",
+                       mv_col="ln_mv")
+    df = pre.frame.with_columns([
+        pl.col(pre.columns[c]).alias(f"z_{c}") for c in FACTORS
+    ])
     df = df.with_columns([(pl.col(f"z_{c}") * s).alias(f"d_{c}") for c, s in FACTORS.items()])
 
-    # IC 序列（中性化因子 vs 未来 1 月收益）
+    # IC 序列（中性化残差 vs 未来 1 月收益）
     ics = []
     for c in FACTORS:
-        ics.append(_spearman_ic(df, c))
+        ics.append(_spearman_ic(df, f"z_{c}", f"ic_{c}"))
     ic = ics[0]
     for x in ics[1:]:
         ic = ic.join(x, on="date", how="full", coalesce=True)
@@ -210,6 +200,14 @@ def build_signals(analysis: Path = DEFAULT_ANALYSIS,
     df = df.with_columns(
         pl.when(pl.col("n_factor") >= MIN_FACTORS).then(a2_num / a2_den).otherwise(None)
         .alias("score_a2"))
+
+    # 合成侧 ±3 截断：管线不再截断单因子残差，点质量因子（ff_div_yield）在 MAD
+    # 退化月份会产生 |z|>5 的残差，传导到总分后最大 13.98。三臂对照
+    # （_staging/preprocess_replace_20261111/ab_arms.json）显示该截断对
+    # |RankIC| / ICIR / 单调性 / Q5-Q1 逐值无影响（截断只压缩尾部量级、不改秩），
+    # 因此只作为量级护栏，不改变排序口径。
+    df = df.with_columns([pl.col(c).clip(-3.0, 3.0).alias(c)
+                          for c in ("score_a", "score_a2")])
 
     vals = (
         pl.read_parquet(valuation)

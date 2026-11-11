@@ -50,6 +50,7 @@ from src.advice.factor_eval import (  # noqa: E402
     build_composite,
     simulate_fixed_hold,
 )
+from src.alpha.cross_section.preprocess import standardize, winsorize_mad  # noqa: E402
 from src.risk.execution_rules import ExecutionRules  # noqa: E402
 
 MARKET_COLUMNS = (
@@ -106,31 +107,25 @@ def load_matrix(path: Path, windows: dict[str, Any]) -> pl.DataFrame:
     return add_forward_returns(frame, (20,)).sort(['date', 'ts_code'])
 
 
-def _zscore_expr(name: str, alias: str) -> pl.Expr:
-    """截面 1/99 winsorize + z-score；缺失/无波动记 0（截面均值）。"""
-    lo = pl.col(name).quantile(0.01, interpolation='linear').over('date')
-    hi = pl.col(name).quantile(0.99, interpolation='linear').over('date')
-    clipped = pl.col(name).clip(lo, hi)
-    mean = clipped.mean().over('date')
-    std = clipped.std().over('date')
-    return (
-        pl.when(std.is_not_null() & (std > 1e-9))
-        .then((clipped - mean) / std)
-        .otherwise(0.0)
-        .clip(-3.0, 3.0)
-        .fill_null(0.0)
-        .alias(alias)
-    )
-
-
 def build_style_panel(frame: pl.DataFrame) -> pl.DataFrame:
-    """构造 6 类风格暴露的截面 z 值（价值为 4 个分量的等权 z 均值）。"""
-    exprs = [_zscore_expr(src, dst) for src, dst in STYLE_SOURCE.items()]
-    exprs += [_zscore_expr(name, f'__z_{name}') for name in VALUE_COMPONENTS]
-    with_z = frame.with_columns(exprs)
+    """构造 6 类风格暴露的截面 z 值（价值为 4 个分量的等权 z 均值）。
+
+    预处理走唯一管线的两步：``winsorize_mad``（MAD k=3）+ ``standardize``
+    （zscore）。缺失与常数截面一律保持 null，不再 ``otherwise(0.0)`` /
+    ``fill_null(0.0)``：那会把「没有数据」当成截面均值参与归因回归。
+    回归侧若拿到 null，按截面均值 0 处理（见 :func:`_day_data`），与
+    :func:`_lookup_arrays` 的「缺失记 0」同口径。
+    """
+    sources = list(dict.fromkeys([*STYLE_SOURCE, *VALUE_COMPONENTS]))
+    win, _ = winsorize_mad(frame, sources, by='date', suffix='__win')
+    std, _ = standardize(win, [f'{name}__win' for name in sources], by='date',
+                         suffix='__z')
+    renamed = [(dst, f'{src}__win__z') for src, dst in STYLE_SOURCE.items()]
+    renamed += [(f'__z_{name}', f'{name}__win__z') for name in VALUE_COMPONENTS]
+    out = std.with_columns([pl.col(source).alias(target) for target, source in renamed])
     value = pl.mean_horizontal(
         *[f'__z_{name}' for name in VALUE_COMPONENTS])
-    return with_z.with_columns(value.alias('style_value')).select(
+    return out.with_columns(value.alias('style_value')).select(
         ['date', 'ts_code', *STYLE_COLUMNS])
 
 
@@ -356,7 +351,10 @@ def _day_data(frame: pl.DataFrame, styles: pl.DataFrame,
         out[key] = {
             'codes': group['ts_code'].to_numpy(),
             'ret': group['ret'].to_numpy(dtype=float),
-            'z': group[list(STYLE_COLUMNS)].to_numpy(dtype=float),
+            # 风格 z 的 null（因子缺失/常数截面）在回归里按截面均值 0 处理，
+            # 与 _lookup_arrays 的「缺失记 0」同口径
+            'z': np.nan_to_num(group[list(STYLE_COLUMNS)].to_numpy(dtype=float),
+                               nan=0.0, posinf=0.0, neginf=0.0),
             'industry': group['industry'].to_numpy(),
         }
     return out
