@@ -5,6 +5,7 @@ r"""每日推荐一键入口：行情 → 因子 → 打分 → IC 门禁 → �
 一条命令完成「读当日数据 → 出清单」，组合的是既有链路，不另造平行逻辑：
 
 - 数据更新（可选 ``--update``）：直接调 ``python -m src.data.local_store.build build``；
+  默认增量（``--incremental``），只有 ``--full-update`` 才全量（``--all``）；
 - 选池（新增）：``src.advice.universe.list_local_stock_codes`` → ``src.data.universe_filter.filter_universe``
   （ST / 停牌 / 次新 / 面值 / 流动性 / 板块 / 旧码 / 复牌首日等，逐类剔除计数，阈值只在
   ``UniverseFilterConfig``）；规则说明见 ``docs/每日推荐筛选与判断清单.md``；
@@ -208,10 +209,19 @@ def print_data_status(fresh: dict[str, Any]) -> None:
         print(f'  [提示] {item.get("label")}({item.get("severity")}) {detail}')
 
 
-def run_local_update(since: str | None) -> int:
-    """复用既有列存构建入口做增量更新（不另写取数逻辑）。"""
+def run_local_update(since: str | None, *, full: bool = False) -> int:
+    """复用既有列存构建入口做增量更新（不另写取数逻辑）。
+
+    默认走 ``--incremental``：只有显式 ``--full-update`` 才传 ``--all``。
+    日更语义是补当日，不允许在探测不到最新交易日时隐式退化为全量重写。
+    """
     command = [sys.executable, '-m', 'src.data.local_store.build', 'build']
-    command += ['--since', since] if since else ['--all']
+    if full:
+        command += ['--all']
+    elif since:
+        command += ['--since', since]
+    else:
+        command += ['--incremental']
     print('数据更新: ' + ' '.join(command))
     completed = subprocess.run(command, cwd=str(ROOT), check=False)
     return completed.returncode
@@ -549,7 +559,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None, *,
          engine_factory: Callable[[Any], Any] | None = None,
          freshness_probe: Callable[[Path, Path, date], dict[str, Any]] | None = None,
-         update_runner: Callable[[str | None], int] | None = None,
+         update_runner: Callable[..., int] | None = None,
          universe_builder: Callable[[Any, Path, date], tuple[date, Any]] | None = None,
          ) -> int:
     args = _build_parser().parse_args(argv)
@@ -565,11 +575,16 @@ def main(argv: list[str] | None = None, *,
         args.store_root, args.freshness_config, reference)
     if args.update:
         since = None if args.full_update else (fresh.get('latest') or None)
-        code = (update_runner or run_local_update)(since)
+        code = (update_runner or run_local_update)(since, full=args.full_update)
         if code != 0:
             print(f'数据更新失败（退出码 {code}），已中止出单')
             return EXIT_UPDATE_FAILED
-        update_command = ('build --all' if since is None else f'build --since {since}')
+        if args.full_update:
+            update_command = 'build --all'
+        elif since:
+            update_command = f'build --since {since}'
+        else:
+            update_command = 'build --incremental'
         fresh = (freshness_probe or probe_freshness)(
             args.store_root, args.freshness_config, reference)
 

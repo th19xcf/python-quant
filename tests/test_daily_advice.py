@@ -22,6 +22,7 @@ from tools.daily_advice import (
     EXIT_OK,
     EXIT_STALE,
     main,
+    run_local_update,
 )
 
 AS_OF = date(2026, 11, 9)
@@ -190,6 +191,77 @@ def test_available_counts_series_written_and_idempotent(tmp_path: Path) -> None:
     assert row['all_gates_pass'] == '0'  # noqa: S105
     assert row['new'] == '0' and row['hold'] == '15'
     assert row['rules_version'] == RULES_VERSION
+
+
+def test_update_without_since_uses_incremental(monkeypatch) -> None:
+    """``--update`` 探测不到最新交易日时走 ``--incremental``，不得隐式全量重写。"""
+    calls: list[list[str]] = []
+
+    class _Done:
+        returncode = 0
+
+    def fake_run(command, **_kwargs):  # noqa: ANN001
+        calls.append(list(command))
+        return _Done()
+
+    monkeypatch.setattr('tools.daily_advice.subprocess.run', fake_run)
+    assert run_local_update(None) == 0
+    assert calls[0][-1] == '--incremental'
+    assert '--all' not in calls[0]
+
+
+def test_update_with_since_keeps_since_argument(monkeypatch) -> None:
+    """显式日期仍原样传 ``--since <日期>``，行为不变。"""
+    calls: list[list[str]] = []
+
+    class _Done:
+        returncode = 0
+
+    def fake_run(command, **_kwargs):  # noqa: ANN001
+        calls.append(list(command))
+        return _Done()
+
+    monkeypatch.setattr('tools.daily_advice.subprocess.run', fake_run)
+    assert run_local_update('2026-11-06') == 0
+    assert calls[0][-2:] == ['--since', '2026-11-06']
+
+
+def test_update_full_flag_passes_all(monkeypatch) -> None:
+    """``--full-update`` 是唯一仍会传 ``--all`` 的入口。"""
+    calls: list[list[str]] = []
+
+    class _Done:
+        returncode = 0
+
+    def fake_run(command, **_kwargs):  # noqa: ANN001
+        calls.append(list(command))
+        return _Done()
+
+    monkeypatch.setattr('tools.daily_advice.subprocess.run', fake_run)
+    assert run_local_update(None, full=True) == 0
+    assert calls[0][-1] == '--all'
+
+
+def test_update_flag_wires_mode_to_runner(tmp_path: Path) -> None:
+    """``main --update`` 把 (since, full) 原样交给 runner：默认非全量。"""
+    captured: list[tuple[str | None, bool]] = []
+
+    def runner(since: str | None, *, full: bool = False) -> int:
+        captured.append((since, full))
+        return 0
+
+    def run(argv: list[str]) -> int:
+        return main(argv,
+                    freshness_probe=lambda *_: _fresh(),
+                    update_runner=runner,
+                    engine_factory=_engine(False, [_row('600000.SH', 'BUY')]),
+                    universe_builder=lambda *_: (AS_OF, _universe(['600000.SH'])))
+
+    base = ['--as-of', AS_OF.isoformat(), '--out-root', str(tmp_path / 'reports'),
+            '--store-root', str(tmp_path / 'store'), '--update']
+    assert run(base) == EXIT_OK
+    assert run([*base, '--full-update']) == EXIT_OK
+    assert captured == [('2026-11-06', False), (None, True)]
 
 
 if __name__ == '__main__':
