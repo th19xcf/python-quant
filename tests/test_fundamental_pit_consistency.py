@@ -7,8 +7,8 @@
 一、回归锁定（当前已正确，改坏就红）
 - ``store.latest_announced_as_of`` 只认 ``ann_date <= as_of``，``ann_date`` 为空永不可见；
 - 同一 ``ann_date`` 有多期公告时取 ``end_date`` 最新的一期；
-- 同一报告期多版本时，``fundamental_factors`` 取最新公告版、``build_new_factors`` 取最早公告版
-  （两条口径各自明确，锁死其定义，避免有人顺手改成另一条而不自知）；
+- 同一报告期多版本时，``store`` / ``fundamental_factors`` / ``build_new_factors`` 均取
+  「截至 t 的最新公告版」（``build_new_factors.first_period`` 原为最早版，已统一）；
 - 单版本数据（当前正式表的实际形态）上三者逐值等价；
 - 正式表 ``ann_date`` 无空值且不早于 ``end_date``；``ann_date == end_date`` 的占位行全部
   落在 2009-12-31 之前且全部来自 ``sina_publish``。
@@ -115,10 +115,10 @@ class TestStorePointInTime:
 
 
 # ---------------------------------------------------------------------------
-# 一、回归锁定：两条去重口径的定义
+# 一、回归锁定：三条去重口径的定义
 # ---------------------------------------------------------------------------
 class TestVersionSelectionConventions:
-    """同报告期多版本：ff 取最新公告、bnf 取最早公告。两条定义都锁死。"""
+    """同报告期多版本：三条口径统一取「截至 t 的最新公告版」。"""
 
     ROWS = [
         ('000001.SZ', '2020-09-30', '2020-10-28', 100.0),   # 原始公告
@@ -131,11 +131,40 @@ class TestVersionSelectionConventions:
         assert got['ann_date'][0] == dt.date(2021, 4, 30)
         assert got['parent_net_profit'][0] == 130.0
 
-    def test_build_new_factors_keeps_earliest_version(self):
-        got = bnf.first_period(_income_frame(self.ROWS), ['parent_net_profit'])
-        assert got.height == 1
-        assert got['ann_date'][0] == dt.date(2020, 10, 28)
-        assert got['parent_net_profit'][0] == 100.0
+    def test_build_new_factors_keeps_latest_version(self):
+        """``build_new_factors.first_period`` 的口径已统一为「最新公告版」。
+
+        原名 ``test_build_new_factors_keeps_earliest_version``，锁的是旧的
+        ``.first()`` 实现；现按新实现锁死两条：
+        - 不截断时取 ``ann_date`` 更新的一版（2021-04-30 / 130.0）；
+        - 截断到 t=2020-12-31（与 ``points_at`` 的 ``pub_date <= t`` 同语义）后，
+          ``ann_date`` 更晚的那一版不可见，只能取 2020-10-28 / 100.0。
+        """
+        full = bnf.first_period(_income_frame(self.ROWS), ['parent_net_profit'])
+        assert full.height == 1
+        assert full['ann_date'][0] == dt.date(2021, 4, 30)
+        assert full['parent_net_profit'][0] == 130.0
+
+        before = bnf.first_period(
+            _income_frame(self.ROWS).filter(pl.col('ann_date') <= dt.date(2020, 12, 31)),
+            ['parent_net_profit'])
+        assert before.height == 1
+        assert before['ann_date'][0] == dt.date(2020, 10, 28)
+        assert before['parent_net_profit'][0] == 100.0
+
+    def test_three_paths_agree_on_latest_version(self, tmp_path):
+        """同一多版本构造输入下，三条口径必须取到同一个 ``ann_date`` 与同一个值。"""
+        frame = _income_frame(self.ROWS)
+        store.write_table(frame, 'income', tmp_path)
+        a = store.latest_announced_as_of('000001.SZ', '2021-05-01', 'income', tmp_path)
+        b = ff._dedupe_period(frame, ['parent_net_profit'])
+        c = bnf.first_period(frame, ['parent_net_profit'])
+        expected_date = dt.date(2021, 4, 30)
+        assert (a['ann_date'], a['parent_net_profit']) == (expected_date, 130.0)
+        assert b['ann_date'].to_list() == [expected_date]
+        assert b['parent_net_profit'].to_list() == [130.0]
+        assert c['ann_date'].to_list() == [expected_date]
+        assert c['parent_net_profit'].to_list() == [130.0]
 
     def test_store_returns_latest_version_at_panel_level(self, tmp_path):
         store.write_table(_income_frame(self.ROWS), 'income', tmp_path)
