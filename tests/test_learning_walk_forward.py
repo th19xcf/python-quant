@@ -13,6 +13,7 @@ import pytest
 from src.quant.learning.config import (
     ADV_COL,
     TOTAL_MV_YI_COL,
+    CarryConfig,
     WalkForwardConfig,
 )
 from src.quant.learning.evaluator import (
@@ -185,7 +186,7 @@ def test_cost_uses_tiered_market_cap() -> None:
     base = add_adjusted_prices(_synthetic_panel(n_codes=12, n_days=60))
     frame = base.select(['date', 'ts_code', 'momentum_1m']).rename(
         {'momentum_1m': 'score'})
-    fallback = simulate_long_only(base, frame, config)
+    fallback = simulate_long_only(base, frame, config, carry=None)
     assert fallback['trades'] >= 1
     assert fallback['slippage_bp_counts'] == {30: fallback['trades']}
 
@@ -193,7 +194,7 @@ def test_cost_uses_tiered_market_cap() -> None:
         pl.lit(800.0).alias(TOTAL_MV_YI_COL),   # 大盘档：15bp
         pl.lit(5.0e8).alias(ADV_COL),
     ])
-    tiered = simulate_long_only(tiered_panel, frame, config)
+    tiered = simulate_long_only(tiered_panel, frame, config, carry=None)
     assert tiered['trades'] == fallback['trades']
     assert set(tiered['slippage_bp_counts']) == {15}
     assert tiered['total_cost'] < fallback['total_cost']
@@ -231,3 +232,96 @@ def test_learning_report_smoke() -> None:
     assert report.param_schemes
     assert report.factor_metrics
     assert all(item.n_periods > 0 for item in report.weight_schemes)
+
+
+def _carry_inputs(n_codes: int = 16, n_days: int = 90
+                  ) -> tuple[pl.DataFrame, pl.DataFrame, WalkForwardConfig]:
+    """固定排名的合成面板：名单不换手，只考察承接与差额交易机制。"""
+    config = WalkForwardConfig(horizon=3, train_size=40, test_size=10,
+                               embargo=3, min_train_dates=10, min_test_dates=5,
+                               top_fraction=0.25)
+    panel = add_adjusted_prices(_synthetic_panel(n_codes=n_codes, n_days=n_days))
+    codes = panel['ts_code'].unique().sort().to_list()
+    scores = pl.DataFrame({'ts_code': codes,
+                           'score': [float(-index) for index in range(len(codes))]})
+    panel = panel.join(scores, on='ts_code')
+    frame = panel.select(['date', 'ts_code', 'score'])
+    return panel, frame, config
+
+
+def _mean_cash_ratio(result: dict) -> float:
+    periods = result['carry_periods']
+    ratios = [row['cash_after'] / row['equity_open']
+              for row in periods if row['equity_open'] > 0]
+    return float(np.mean(ratios)) if ratios else 0.0
+
+
+def test_carry_default_on_and_legacy_escape_hatch() -> None:
+    panel, frame, config = _carry_inputs()
+    default = simulate_long_only(panel, frame, config)
+    legacy = simulate_long_only(panel, frame, config, carry=None)
+    assert default['carry_periods']
+    assert 'carry_periods' not in legacy
+    assert default['trades'] < legacy['trades']
+    assert default['total_cost'] < legacy['total_cost']
+
+
+def test_carry_reduces_turnover_and_cost() -> None:
+    panel, frame, config = _carry_inputs()
+    base = simulate_long_only(panel, frame, config, carry=None)
+    carry = simulate_long_only(panel, frame, config, carry=CarryConfig())
+    assert carry['trades'] < base['trades']
+    assert carry['total_cost'] < base['total_cost']
+    assert 0 < carry['b2_turnover'] < 1
+    assert carry['holdings_mean'] > 0
+    periods = carry['carry_periods']
+    assert periods[0]['retained'] == 0
+    assert periods[1]['retained'] == periods[1]['targets']
+    assert periods[1]['exited'] == 0
+    assert _mean_cash_ratio(carry) < 0.05
+
+
+def test_carry_target_weights_are_balanced() -> None:
+    panel, frame, config = _carry_inputs()
+    carry = simulate_long_only(panel, frame, config, carry=CarryConfig())
+    first = carry['carry_periods'][0]
+    values = list(first['holdings_value'].values())
+    assert len(values) == first['targets']
+    assert max(values) / min(values) < 1.1
+
+
+def test_carry_keep_mode_trades_less_than_target_mode() -> None:
+    panel, frame, config = _carry_inputs()
+    keep = simulate_long_only(
+        panel, frame, config, carry=CarryConfig(weight_mode='keep'))
+    target = simulate_long_only(panel, frame, config, carry=CarryConfig())
+    assert keep['trades'] <= target['trades']
+
+
+def test_carry_buffer_lowers_name_turnover() -> None:
+    panel, frame, config = _carry_inputs()
+    plain = simulate_long_only(panel, frame, config, carry=CarryConfig())
+    buffered = simulate_long_only(
+        panel, frame, config, carry=CarryConfig(buffer_fraction=0.5))
+    assert buffered['turnover'] <= plain['turnover']
+
+
+def test_carry_full_investment_has_no_more_cash_drag() -> None:
+    panel, frame, config = _carry_inputs()
+    normal = simulate_long_only(panel, frame, config, carry=CarryConfig())
+    forced = simulate_long_only(
+        panel, frame, config, carry=CarryConfig(invest_residual=True))
+    assert _mean_cash_ratio(forced) <= _mean_cash_ratio(normal)
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'weight_mode': 'unknown'},
+    {'convergence': 0.0},
+    {'convergence': 1.5},
+    {'buffer_fraction': -0.1},
+    {'tolerance': 1.0},
+    {'lot_size': 0},
+])
+def test_carry_config_validation(kwargs: dict) -> None:
+    with pytest.raises(ValueError):
+        CarryConfig(**kwargs)

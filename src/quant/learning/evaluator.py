@@ -25,7 +25,9 @@ from src.backtest.costs.cost_model import CostModel
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.quant.learning.config import (
     ADV_COL,
+    DEFAULT_CARRY,
     TOTAL_MV_YI_COL,
+    CarryConfig,
     SchemeMetrics,
     WalkForwardConfig,
 )
@@ -184,6 +186,7 @@ def simulate_long_only(  # noqa: C901 - 事件循环共享可变状态，见下�
     initial_capital: float = 1_000_000.0,
     max_exit_delay: int = 5,
     cost_model: CostModel | None = None,
+    carry: CarryConfig | None = DEFAULT_CARRY,
 ) -> Dict[str, Any]:
     """样本外等权多头组合模拟，返回权益曲线、换手与绩效。
 
@@ -191,9 +194,21 @@ def simulate_long_only(  # noqa: C901 - 事件循环共享可变状态，见下�
     （见 ``data.attach_cost_inputs``），按标的实际档位计费；缺列或该日为空
     时退回兜底档（个股小盘 30bp）。
 
+    默认 ``carry=DEFAULT_CARRY`` 启用持仓承接模式（λ=1、无缓冲带，见 ``carry``
+    模块），返回字典在原字段之外追加 ``b2_turnover`` / ``carry_periods`` 等明细。
+    需要复现整仓清仓旧口径时显式传 ``carry=None``，此时走下方原有函数体，
+    行为与返回值与历史版本完全一致。
+
     事件循环同时维护「信号 → T+1 建仓 → 持有期退出 → 盯市」四段状态，
     拆分后仍需共享可变状态；mccabe 会把闭包复杂度计入父函数，故此处豁免。
     """
+    if carry is not None:
+        from src.quant.learning.carry import simulate_carry
+        return simulate_carry(
+            panel, score_frame, config, carry, score_col=score_col,
+            initial_capital=initial_capital, max_exit_delay=max_exit_delay,
+            cost_model=cost_model)
+
     if score_frame.is_empty():
         return _empty_result()
 
@@ -385,14 +400,15 @@ def simulate_long_only(  # noqa: C901 - 事件循环共享可变状态，见下�
 
 def evaluate_scheme(name: str, frame: pl.DataFrame, panel: pl.DataFrame,
                     config: WalkForwardConfig, score_col: str = 'score',
-                    notes: str = '') -> SchemeMetrics:
-    """对一个样本外打分公司计算全套指标。"""
+                    notes: str = '',
+                    carry: CarryConfig | None = DEFAULT_CARRY) -> SchemeMetrics:
+    """对一个样本外打分公司计算全套指标；``carry`` 透传给组合模拟器。"""
     if frame.is_empty():
         return SchemeMetrics(name=name, notes=notes or '无有效样本')
     stats = ic_stats(frame, score_col)
     quantiles, monotonicity, long_short = quantile_analysis(
         frame, score_col, config.n_quantiles)
-    simulation = simulate_long_only(panel, frame, config, score_col)
+    simulation = simulate_long_only(panel, frame, config, score_col, carry=carry)
     performance = simulation['performance']
     result = SchemeMetrics(
         name=name,
