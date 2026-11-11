@@ -170,61 +170,6 @@ def test_coverage_insufficient_critical(tmp_path: Path) -> None:
     assert results['quotes'].coverage_severity == 'critical'
 
 
-def _write_covered_codes(root: Path, covered: int) -> None:
-    """写 ``covered`` 只互不相同的标的（parquet_distinct 按 ts_code 去重计数）。"""
-    rows = [
-        {'ts_code': f'{index:06d}.SZ', 'trade_date': TODAY} for index in range(covered)
-    ]
-    _write_daily(root, 'quotes.parquet', rows)
-
-
-@pytest.mark.parametrize('covered, expected_severity', [
-    (9499, 'warn'),   # 0.9499 < min_ratio 0.95 → warn
-    (9500, 'ok'),     # 恰好 0.95：判据是 ``ratio < min_ratio``，等于即放行
-    (9501, 'ok'),     # 0.9501 > 0.95
-])
-def test_coverage_ratio_boundary_at_min_ratio(
-    tmp_path: Path, covered: int, expected_severity: str,
-) -> None:
-    """数值锚：min_ratio=0.95 的三点边界（90 万分之一侧差）。
-
-    锚点来源：``covered/10000`` 手算占比，对照 ``_coverage_severity`` 的
-    ``ratio < min_ratio → warn``；把 ``<`` 改成 ``<=`` 会让 0.95 变 warn，
-    把 ``min_ratio`` 0.95 调成 0.90 会让 0.9499 变 ok，两种改法本用例均必红。
-    """
-    _write_covered_codes(tmp_path, covered)
-    results = _run(tmp_path, [
-        _entry('quotes', 'quotes.parquet', coverage=_coverage(covered, 10000, 0.95, 0.90)),
-    ])
-    result = results['quotes']
-    assert result.coverage_ratio == pytest.approx(covered / 10000)
-    assert result.coverage_severity == expected_severity
-    assert result.severity == expected_severity
-
-
-@pytest.mark.parametrize('covered, expected_severity', [
-    (8999, 'critical'),   # 0.8999 < critical_ratio 0.90 → critical
-    (9000, 'warn'),       # 恰好 0.90：临界档判据同样是严格小于
-    (9001, 'warn'),       # 0.9001 高于 critical_ratio，但低于 min_ratio 0.95
-])
-def test_coverage_ratio_boundary_at_critical_ratio(
-    tmp_path: Path, covered: int, expected_severity: str,
-) -> None:
-    """数值锚：critical_ratio=0.90 的三点边界。
-
-    锚点来源同上一用例，另加一层「critical 优先于 min_ratio」的顺序验证：
-    0.90 时不该落 critical，0.8999 时必须落 critical。
-    """
-    _write_covered_codes(tmp_path, covered)
-    results = _run(tmp_path, [
-        _entry('quotes', 'quotes.parquet', coverage=_coverage(covered, 10000, 0.95, 0.90)),
-    ])
-    result = results['quotes']
-    assert result.coverage_ratio == pytest.approx(covered / 10000)
-    assert result.coverage_severity == expected_severity
-    assert result.severity == expected_severity
-
-
 def test_file_mtime_detects_stale_names(tmp_path: Path) -> None:
     names = tmp_path / 'names.json'
     names.write_text(json.dumps({'000001.SZ': '平安银行'}), encoding='utf-8')

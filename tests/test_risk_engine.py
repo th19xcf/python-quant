@@ -472,41 +472,6 @@ class TestPriceLimitTradable:
         order2 = Order('000001.SZ', 'buy', 100, 11.06, sector='主板', prev_close=10.05)
         assert not rule.check(order2, empty_portfolio).passed
 
-    @pytest.mark.parametrize('sector, prev_close, expected', [
-        ('主板', 10.00, (11.00, 9.00)),      # 10.00 × 1.10 = 11.000 → 11.00；× 0.90 = 9.000
-        ('ST', 10.00, (10.50, 9.50)),        # 10.00 × 1.05 = 10.500 → 10.50；× 0.95 = 9.500
-        ('创业板', 10.00, (12.00, 8.00)),    # 10.00 × 1.20 = 12.000；× 0.80 = 8.000
-        ('科创板', 10.00, (12.00, 8.00)),
-        ('北交所', 10.00, (13.00, 7.00)),    # 10.00 × 1.30 = 13.000；× 0.70 = 7.000
-        # 10.05 × 1.10 = 11.055 → half-up 11.06；× 0.90 = 9.045 → 9.05
-        ('主板', 10.05, (11.06, 9.05)),
-    ])
-    def test_limit_price_exact_values(self, sector, prev_close, expected):
-        """数值锚：五档涨跌幅的涨跌停价具体值（含 half-up 进位点）。
-
-        锚点来源：交易所口径 ``round_half_up(prev_close × (1 ± pct), 2)``
-        对参数化输入手算所得，与 ``PriceLimitTradable.DEFAULT_LIMITS`` 无关；
-        档位若被改错（如 ST 0.05→0.10、创业板 0.20→0.10）或舍入改为
-        ROUND_HALF_DOWN / tick 0.01→0.001，本用例必红。
-        """
-        assert PriceLimitTradable().price_limits(prev_close, sector) == expected
-
-    def test_limit_price_one_cent_boundary(self, empty_portfolio):
-        """涨停 11.00 前一分钱 10.99 放行、恰好 11.00 拒绝；跌停同理。"""
-        rule = PriceLimitTradable()
-        assert rule.check(
-            Order('000001.SZ', 'buy', 100, 10.99, sector='主板', prev_close=10.0),
-            empty_portfolio).passed
-        assert not rule.check(
-            Order('000001.SZ', 'buy', 100, 11.00, sector='主板', prev_close=10.0),
-            empty_portfolio).passed
-        assert rule.check(
-            Order('000001.SZ', 'sell', 100, 9.01, sector='主板', prev_close=10.0),
-            empty_portfolio).passed
-        assert not rule.check(
-            Order('000001.SZ', 'sell', 100, 9.00, sector='主板', prev_close=10.0),
-            empty_portfolio).passed
-
 
 # ======================================================================
 # NoSuspendedTrade

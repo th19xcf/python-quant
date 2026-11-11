@@ -67,7 +67,7 @@ from src.data.dividend_effective import (  # noqa: E402
 
 DEFAULT_DIV = PROJECT_ROOT / 'data/local_store/factors/stock_dividend.parquet'
 DEFAULT_SHARES = PROJECT_ROOT / 'data/local_store/meta/factors/stock_shares.parquet'
-DEFAULT_BACKUP = PROJECT_ROOT / '_backup'
+DEFAULT_BACKUP = PROJECT_ROOT / 'data/local_store/_backup'
 DEFAULT_REPORT = (
     PROJECT_ROOT / 'reports/dividend_derived_20261110/total_div_effective.json')
 

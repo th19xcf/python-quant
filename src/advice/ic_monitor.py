@@ -24,13 +24,12 @@ from typing import Any
 import polars as pl
 from loguru import logger
 
-from src.advice.factor_eval import MIN_PAIRS, _rank_ic, ic_monitor
+from src.advice.factor_eval import _rank_ic, ic_monitor
 
 DEFAULT_WINDOW_DAYS = 20
 DEFAULT_CONSECUTIVE = 3
 DEFAULT_THRESHOLD = 0.0
-# ``MIN_PAIRS``（单窗口最少有效样本对）唯一真源在 ``src.advice.factor_eval``，
-# 此处只重导出：监控与评估若各写一份，同一窗口一边判「样本不足」一边判「失效」。
+MIN_PAIRS = 30
 #: 尾部不满窗口至少要有半个窗口的天数才参与判定，避免 1~2 天的残窗误报
 DEFAULT_MIN_DAYS: int | None = None
 

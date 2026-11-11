@@ -20,7 +20,6 @@ from loguru import logger
 from src.alpha.calculator.alpha_calculator import calculate_factors_cross_sectional
 from src.data.local_store.store import LocalQuoteStore
 from src.data.quality.code_migration import load_entity_index
-from src.quant.factor_lib.data import LIQUIDITY_LOOKBACK_DAYS
 
 PRICE_COLUMNS = ('open', 'high', 'low', 'close')
 FACTOR_TYPES = ('price_momentum', 'volatility', 'volume', 'technical', 'risk')
@@ -149,7 +148,7 @@ def _filter_liquidity(panel: pl.DataFrame, fraction: float) -> pl.DataFrame:
         return panel
     recent = (
         panel.group_by('ts_code')
-        .agg(pl.col('amount').tail(LIQUIDITY_LOOKBACK_DAYS).mean().alias('recent_amount'))
+        .agg(pl.col('amount').tail(250).mean().alias('recent_amount'))
         .sort('recent_amount', descending=True)
     )
     keep = max(1, int(round(recent.height * fraction)))

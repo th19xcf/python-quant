@@ -63,13 +63,13 @@ def test_archive_report_is_readonly_and_detects_duplicates(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(archives, 'PROJECT_ROOT', tmp_path)
 
-    backup = tmp_path / '_backup'
+    backup = tmp_path / 'data' / 'local_store' / '_backup'
     backup.mkdir(parents=True)
     (backup / 'a.parquet').write_bytes(b'same-content' * 8)
     (backup / 'b.parquet').write_bytes(b'same-content' * 8)
     (backup / 'c.parquet').write_bytes(b'other-content' * 5)
 
-    scan_dirs = archives.expand_scans(['_backup'], tmp_path)
+    scan_dirs = archives.expand_scans(['data/local_store/_backup'], tmp_path)
     assert len(scan_dirs) == 1
 
     report = archives.build_report(

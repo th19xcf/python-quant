@@ -24,7 +24,7 @@
   ``tdx_truncated`` 掩盖）
 - ``tdx_truncated``：TDX 源历史比本地短，禁止用 TDX 重建
 - ``no_basic_info``：本地有行情但基础表无记录（名称/行业等元数据缺失）
-- ``bad_price_jump``：未识别的孤立价格跳变（单日 |涨跌幅| > ``JUMP_THRESHOLD``）
+- ``bad_price_jump``：未识别的孤立价格跳变（单日 |涨跌幅| > 50%）
 - ``bad_ohlc``：该行 OHLC 非法（high<low / high<max(开,收) / low>min(开,收) /
   非正价格），下游 ATR、筹码峰等计算需跳过该行；按行登记，不整只排除
 
@@ -86,10 +86,6 @@ REASON_SEVERITY: dict[str, str] = {
     'bad_ohlc': 'warn',
 }
 
-#: 价格跳变判定阈值（单日 |close/pre_close - 1| 超过该值即进入分类流程）。
-#: 扫描判据、报告 threshold 文案、REASON_TEXT 文案统一引用本常量。
-JUMP_THRESHOLD = 0.5
-
 REASON_TEXT: dict[str, str] = {
     'placeholder_price': '价格恒为 1.0 的占位行情，零收益假样本',
     'stale_feed': '本地末行早于最近交易日（源端停更/退市）',
@@ -97,9 +93,7 @@ REASON_TEXT: dict[str, str] = {
     'internal_gap': '本地缺历史交易日（TDX 对账缺口或指数连续 ≥20 日空洞）',
     'tdx_truncated': 'TDX 源历史比本地短，重建会截断历史（禁止用 TDX 重建）',
     'no_basic_info': '本地有行情但基础表无记录（名称/行业等元数据缺失）',
-    'bad_price_jump': (
-        f'未识别的孤立价格跳变（单日涨跌幅绝对值 > {JUMP_THRESHOLD:.0%}，疑似源端错误）'
-    ),
+    'bad_price_jump': '未识别的孤立价格跳变（单日涨跌幅绝对值 > 50%，疑似源端错误）',
     'bad_ohlc': '该行 OHLC 非法，下游计算需跳过该行',
 }
 
@@ -560,7 +554,7 @@ def _scan_jump_records(
             ratio_all = np.zeros_like(close)
             np.divide(close, pre_close, out=ratio_all, where=valid)
             ratio_all -= 1
-            candidates = np.flatnonzero(valid & (np.abs(ratio_all) > JUMP_THRESHOLD))
+            candidates = np.flatnonzero(valid & (np.abs(ratio_all) > 0.5))
             for i in candidates:
                 records.append(_jump_record(
                     asset_class, code, dates, close, pre_close, qfq, hfq,
@@ -611,7 +605,7 @@ def _jump_record(
 def _price_jumps(
     store_root: Path, as_of: date,
 ) -> tuple[list[dict[str, Any]], pl.DataFrame, dict[str, Any]]:
-    """扫描全历史日线，分类 ``|close/pre_close - 1| > JUMP_THRESHOLD`` 的跳变行。
+    """扫描全历史日线，分类 ``|close/pre_close - 1| > 0.5`` 的跳变行。
 
     Returns:
         (仅 data_error 的排除行, 全部跳变明细, 报告汇总)
@@ -806,9 +800,7 @@ def _jump_report(
     data_error = detail.filter(pl.col('label') == 'data_error') if detail.height else detail
     return {
         'generated_as_of': as_of.isoformat(),
-        'threshold': (
-            f'|close/pre_close - 1| > {JUMP_THRESHOLD}（排除 pre_close<=0 的首日行）'
-        ),
+        'threshold': '|close/pre_close - 1| > 0.5（排除 pre_close<=0 的首日行）',
         'total_rows': detail.height,
         'total_codes': detail['ts_code'].n_unique() if detail.height else 0,
         'by_label': by_label,

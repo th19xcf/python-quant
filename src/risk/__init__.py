@@ -23,7 +23,6 @@
 """
 
 from src.risk.rules import (
-    DEFAULT_RISK_LIMITS,
     GateResult,
     MaxAdvParticipation,
     MaxDrawdownCircuit,
@@ -41,8 +40,18 @@ from src.risk.rules import (
     RuleResult,
 )
 
-# ``DEFAULT_RISK_LIMITS`` 唯一定义在 ``src.risk.rules``（规则类默认值同源），
-# 这里只做重导出，保持 ``from src.risk import DEFAULT_RISK_LIMITS`` 的既有用法。
+#: 默认阈值（与任务约定一致；单票/小组合由装配层做必要放宽并记录）
+DEFAULT_RISK_LIMITS = {
+    'max_position_weight': 0.10,
+    'max_industry_weight': 0.30,
+    'max_industry_hhi': 0.25,
+    'max_drawdown': 0.15,
+    'drawdown_window': 252,
+    'min_cash_reserve': 0.0,
+    'max_order_volume_ratio': 0.10,
+    'max_adv_participation': 0.10,
+    'adv_window': 20,
+}
 
 
 def default_risk_engine(*, position_limit: float | None = None,

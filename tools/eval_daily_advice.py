@@ -68,7 +68,6 @@ from src.advice.fundamental_factors import (  # noqa: E402
     compute_fundamental_factors,
 )
 from src.advice.universe import list_local_stock_codes  # noqa: E402
-from src.backtest.costs.cost_model import COST_DEFAULTS  # noqa: E402
 from src.data.local_store import get_local_quote_store  # noqa: E402
 from src.quant.factor_lib.compute import compute_all  # noqa: E402
 from src.quant.factor_lib.data import PanelRequest, load_panel  # noqa: E402
@@ -347,13 +346,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--horizon', type=int, default=20)
     parser.add_argument('--top-k', type=int, default=20)
     parser.add_argument('--commission', type=float, default=None,
-                        help='覆盖回测内核佣金率；留空用 CostModel 默认 '
-                             f'{COST_DEFAULTS["commission_rate"]}')
+                        help='覆盖回测内核佣金率；留空用 CostModel 默认 0.0003')
     parser.add_argument('--stamp-duty', type=float, default=None,
                         help='覆盖印花税率；留空按 CostModel 历史时间表')
     parser.add_argument('--slippage', type=float, default=None,
-                        help='覆盖滑点；留空用 CostModel 默认 '
-                             f'{COST_DEFAULTS["slippage"]}')
+                        help='覆盖滑点；留空用 CostModel 默认 0.0002')
     parser.add_argument('--stress', action='store_true',
                         help='压力对照：在基准成本上把滑点×2')
     parser.add_argument('--embargo', type=int, default=20,

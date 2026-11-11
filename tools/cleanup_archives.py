@@ -2,7 +2,7 @@
 
 r"""归档副本盘点（**严格只读，不删除、不移动、不重命名任何文件**）。
 
-项目里仓库根 ``_backup/`` 约 6.3GB、``reports`` 约 1.8GB，其中大量是
+项目里 ``data/local_store/_backup`` 约 575MB、``reports`` 约 1.8GB，其中大量是
 历次重建留下的快照与 pytest 临时目录。直接 ``rm`` 风险很高：名称码表、
 分红快照、ST/行业历史快照等都属于**不可重建资产**，必须先确认备份可用。
 
@@ -21,7 +21,7 @@ r"""归档副本盘点（**严格只读，不删除、不移动、不重命名�
     python tools/cleanup_archives.py                         # 摘要打印
     python tools/cleanup_archives.py --output artifacts/archive_audit.json
     python tools/cleanup_archives.py --no-hash               # 跳过哈希，仅统计
-    python tools/cleanup_archives.py --scan _backup --scan reports/audit_2026-11-06
+    python tools/cleanup_archives.py --scan data/local_store/_backup --scan reports/audit_2026-11-06
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 #: 默认扫描范围（相对项目根）；``*`` 交给 glob 展开。
 DEFAULT_SCANS: tuple[str, ...] = (
-    '_backup',
+    'data/local_store/_backup',
     'reports/audit_*',
     'reports/*_2026*',
 )

@@ -96,18 +96,18 @@ def test_write_is_idempotent_and_backs_up_before_overwrite(tmp_path: Path) -> No
     target = tmp_path / 'meta' / 'names.json'
     names = {'600000.SH': '浦发银行'}
 
-    assert write_names(target, names, tmp_path / '_backup') is True
+    assert write_names(target, names, tmp_path) is True
     first = target.read_text(encoding='utf-8')
-    assert write_names(target, names, tmp_path / '_backup') is False
+    assert write_names(target, names, tmp_path) is False
     assert target.read_text(encoding='utf-8') == first
     assert not (tmp_path / '_backup').exists()
 
     target.write_text('{"600000.SH":"旧名称"}', encoding='utf-8')
-    assert write_names(target, names, tmp_path / '_backup') is True
+    assert write_names(target, names, tmp_path) is True
     backups = list((tmp_path / '_backup').glob('names.*.json'))
     assert len(backups) == 1
     # 再写一次内容一致，不应产生第二份备份
-    assert write_names(target, names, tmp_path / '_backup') is False
+    assert write_names(target, names, tmp_path) is False
     assert len(list((tmp_path / '_backup').glob('names.*.json'))) == 1
 
 

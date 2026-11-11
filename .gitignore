@@ -6,9 +6,6 @@ __pycache__/
 # staging 候选工作区（在 data/ 之外，不进入任何取数链路）
 /_staging/
 
-# 回滚快照根（在 data/ 之外，不进入任何取数链路；data/ 只放正式数据）
-/_backup/
-
 # Distribution / packaging
 .Python
 build/

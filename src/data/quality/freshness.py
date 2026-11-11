@@ -302,48 +302,11 @@ def _parse_cadence(raw: dict[str, Any], key: str) -> Cadence:
     return Cadence(unit, interval, warn, critical, str(raw.get('label', '') or ''))
 
 
-def _parse_coverage(
-    raw: dict[str, Any], defaults: dict[str, Any], key: str,
-) -> dict[str, Any]:
-    """解析 coverage 段，并把未写的阈值落回 ``defaults.coverage``。
-
-    口径：阈值唯一真源是配置根节点 ``defaults.coverage``；条目只在确实需要
-    不同门槛时才写 ``min_ratio`` / ``critical_ratio``，且必须用 ``why``（或
-    既有的 ``note``）写明理由，否则视为「改默认忘同步」的漂移直接报错。
-    """
-    coverage = dict(raw or {})
-    if not coverage:
-        # 没有 coverage 段 = 该数据集不做覆盖门禁，不要凭空套默认阈值
-        return {}
-    if coverage.get('gate') is False:
-        # 显式声明「只观测数量、不做占比门禁」的条目（多因缺少稳定分母）
-        return coverage
-    default_coverage = dict((defaults or {}).get('coverage') or {})
-    for name in ('min_ratio', 'critical_ratio'):
-        explicit = coverage.get(name)
-        fallback = default_coverage.get(name)
-        if explicit is None:
-            if fallback is not None:
-                coverage[name] = fallback
-            continue
-        if fallback is not None and float(explicit) != float(fallback):
-            reason = str(coverage.get('why') or coverage.get('note') or '').strip()
-            if not reason:
-                raise ValueError(
-                    f'{key}: coverage.{name}={explicit} 与默认 {fallback} 不同，'
-                    '必须在 coverage.why 里写明独立取值的理由'
-                )
-    return coverage
-
-
 def parse_config(config: dict[str, Any]) -> list[DatasetSpec]:
     """把原始 JSON 配置解析成数据集规格列表。"""
     datasets = config.get('datasets')
     if not isinstance(datasets, list) or not datasets:
         raise ValueError('配置缺少非空 datasets 列表')
-    defaults = config.get('defaults') or {}
-    if not isinstance(defaults, dict):
-        raise TypeError('配置 defaults 必须是对象')
     specs: list[DatasetSpec] = []
     seen: set[str] = set()
     for raw in datasets:
@@ -361,7 +324,7 @@ def parse_config(config: dict[str, Any]) -> list[DatasetSpec]:
                 freshness_field=str(raw.get('freshness_field', '')),
                 source=dict(raw.get('source') or {}),
                 cadence=_parse_cadence(dict(raw.get('cadence') or {}), key),
-                coverage=_parse_coverage(dict(raw.get('coverage') or {}), defaults, key),
+                coverage=dict(raw.get('coverage') or {}),
                 note=str(raw.get('note', '')),
                 declaration=dict(raw.get('declaration') or {}),
             )

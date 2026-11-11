@@ -1087,7 +1087,7 @@ def apply(panel: pl.DataFrame, store: Path, stage: Path, *,
                     manifest_path(store).read_text(encoding='utf-8')).get('method_version')
             except json.JSONDecodeError:
                 old_version = None
-        backup_dir = (ROOT / '_backup'
+        backup_dir = (store / '_backup'
                       / f'state_vector_{datetime.now():%Y%m%d_%H%M%S}')
         backup = backup_dir / 'state_vector_daily.parquet'
         backup.parent.mkdir(parents=True, exist_ok=True)

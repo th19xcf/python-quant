@@ -47,7 +47,7 @@ JUMPS = UNIVERSE / 'universe_price_jumps.parquet'
 INVENTORY = UNIVERSE / 'internal_gap_inventory.csv'
 PROGRESS = UNIVERSE / 'internal_gap_fix_progress.json'
 FAILED = UNIVERSE / 'internal_gap_fix_failed.csv'
-BACKUP_ROOT = ROOT / '_backup' / 'internal_gap_fix'
+BACKUP_ROOT = STORE / '_backup' / 'internal_gap_fix'
 BATCH = 50
 # 因子比对容差（file 内嵌副本 vs 因子快照）
 FACTOR_TOL = 1e-9
