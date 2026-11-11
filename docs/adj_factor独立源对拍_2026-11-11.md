@@ -698,7 +698,7 @@ SHA256：`48f00596…` → `790981b9ffab77fc6bfa6c25de9c12fe1ba5bfe8e2e9e92c759c
 
 标签受影响行按年份拆分：**2020 年 1 行、2024 年 2 行、2025 年 1 行、2026 年 1 行**。受影响样本判定为「21 交易日前向窗口跨过该事件日」的样本；因子受影响行判定为 `trade_date < ex_date`。证据见 `_staging/adj_factor_crosscheck_20261111/round2_diluted_impact.json`。
 
-**落点**：字段定义已写入 `data/local_store/factors/meta.json` 的 `dividend_schema.cash_div_diluted`，并在 `docs/数据权威路径清单.md` 的「分红（个股）」条目补充字段说明。注意该列是**本地派生字段**，两个整表重采入口都不含此列——`src/data/local_store/build.py` 的 `_DIVIDEND_COLUMNS` 远程覆盖路径、`tools/collect_stock_dividend.py` 的 `DEFAULT_OUT` 全量重采；若执行这两类重采，`cash_div_diluted` 会丢失（同时也会覆盖本轮 12 起修正值），需在重采后重跑 `round2_fix_dividend.py` 的等价脚本补回。
+**落点**：字段定义已写入 `data/local_store/factors/meta.json` 的 `dividend_schema.cash_div_diluted`，并在 `docs/数据权威路径清单.md` 的「分红（个股）」条目补充字段说明。该列是**本地派生字段**，远端 MySQL `stock_dividend` 无此列，两条重采路径与它的关系并不相同：`src/data/local_store/build.py` 的 `_DIVIDEND_COLUMNS` 远程覆盖路径**曾按固定 15 列清单整表覆盖、会连同 `source` / `*_fix` 等共 19 列一起丢掉**，已于 `d979943` 修复——写盘前按 `(ts_code, ex_date)` + 组内序号回接本地增量列，并以「本地行数多于远端即报错」「增量列非空计数下降即报错」两道守卫兜底；`tools/collect_stock_dividend.py` 是**合并式**重建（`_Merger.extra_schema` 与 `_prepare_existing` 显式保留快照中的扩展列），实测**不丢列**、无需修改。
 
 ### 13.8 边界
 
