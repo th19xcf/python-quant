@@ -233,17 +233,18 @@ def a101_019(panel: pl.DataFrame) -> pl.Series:
 
 
 @factor('a101_020', 'alpha101',
-         '(-1 * rank(open - delay(high, 1))) * rank(open - delay(close, 1)) * '
-         'rank(open - delay(low, 1))',
-         'open, high, low, close', '-', SOURCE.format(tag='Alpha#20'), lookback=2)
+         '-1 * rank((open - delay(high, 1)) * (open - delay(close, 1)) * '
+         '(open - delay(low, 1)))',
+         'open, high, low, close', '+', SOURCE.format(tag='Alpha#20'), lookback=2,
+         note='F1 按论文公式重写后 OOS IC 由 −0.0337 转 +0.0444，标记随之更正')
 def a101_020(panel: pl.DataFrame) -> pl.Series:
+    # 论文是「先乘三个 gap 再 rank」；旧实现写成三个 rank 相乘（rank 不可交换），
+    # 已于 2026-11-11 按论文重写，见 docs/因子方向冲突诊断_2026-11-11.md §14。
     frame = o.stage(panel,
                     g1=C('open') - o.delay(C('high'), 1),
                     g2=C('open') - o.delay(C('close'), 1),
                     g3=C('open') - o.delay(C('low'), 1))
-    frame = o.stage(frame, r1=o.rank_cs(C('g1')), r2=o.rank_cs(C('g2')),
-                    r3=o.rank_cs(C('g3')))
-    return o.out(frame, -1.0 * C('r1') * C('r2') * C('r3'))
+    return o.out(frame, -1.0 * o.rank_cs(C('g1') * C('g2') * C('g3')))
 
 
 # ----------------------------------------------------------------------
