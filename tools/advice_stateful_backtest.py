@@ -986,8 +986,8 @@ def _cost_by_size(stats: dict[str, Any], costs: TradingCosts) -> dict[str, Any]:
             'round_trip_impact_bps': 2.0 * costs.impact_rate * 1e4,
             'notional_per_trade': size,
         }
-    out['scaling'] = ('线性缩放：impact_rate 恒定（COST_DEFAULTS["slippage"]），'
-                      '总冲击成本 = 成交边数 × 单笔规模 × impact_rate；'
+    out['scaling'] = ('线性缩放：impact_rate 恒定（按文档 0.724% 往返反解出的 '
+                      '28.5bp/边），总冲击成本 = 成交边数 × 单笔规模 × impact_rate；'
                       '真实市场冲击随规模非线性上升，本表只用于同口径横向比较')
     return out
 
