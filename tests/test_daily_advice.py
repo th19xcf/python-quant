@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import dataclass, field
 from datetime import date
@@ -11,7 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from src.data.universe_filter import UniverseFilterConfig, UniverseFilterResult
+from src.data.universe_filter import (
+    RULES_VERSION,
+    UniverseFilterConfig,
+    UniverseFilterResult,
+)
 from tools.daily_advice import (
     EXIT_NO_DATA,
     EXIT_OK,
@@ -150,6 +155,41 @@ def test_empty_panel_reports_insufficient_data(tmp_path: Path) -> None:
                 engine_factory=_engine(False, []),
                 universe_builder=lambda *_: (AS_OF, _universe(['600000.SH'])))
     assert code == EXIT_NO_DATA
+
+
+def test_available_counts_series_written_and_idempotent(tmp_path: Path) -> None:
+    """可买只数序列：按 (信号日, 档位) 落 CSV，重复跑同一日不重复追加。"""
+    out = tmp_path / 'reports'
+    stats = {'ic_gate_blocked': 0, 'funnel_panel_rows': 4965,
+             'funnel_soft_pass': 241, 'funnel_score_pass': 498,
+             'funnel_candidates': 0, 'funnel_buys': 0, 'funnel_holds': 15,
+             'funnel_sells': 0, 'funnel_avoid': 10}
+    advice = FakeAdvice(label='中期', candidates=0, turnover=0.0,
+                        filter_stats=stats, notes=[],
+                        rows=[_row('600000.SH', 'HOLD')])
+    result = FakeResult(signal_date=AS_OF, trade_date=AS_OF,
+                        earliest_exec_date=AS_OF, exec_status='待次日开盘',
+                        exec_date_basis='T+1 开盘', equity=1_000_000.0,
+                        tiers={'mid': advice})
+    def factory(config):  # noqa: ARG001
+        return type('E', (), {'generate': lambda self, **kw: result})()
+    for _ in range(2):
+        code = main(['--as-of', AS_OF.isoformat(), '--out-root', str(out),
+                     '--store-root', str(tmp_path / 'store')],
+                    freshness_probe=lambda *_: _fresh(),
+                    engine_factory=factory,
+                    universe_builder=lambda *_: (AS_OF, _universe(['600000.SH'])))
+        assert code == EXIT_OK
+    rows = list(csv.DictReader((out / 'available_counts.csv').open(
+        encoding='utf-8', newline='')))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row['signal_date'] == '2026-11-09' and row['tier'] == 'mid'
+    assert row['universe_kept'] == '1'
+    assert row['score_pass'] == '498'  # noqa: S105
+    assert row['all_gates_pass'] == '0'  # noqa: S105
+    assert row['new'] == '0' and row['hold'] == '15'
+    assert row['rules_version'] == RULES_VERSION
 
 
 if __name__ == '__main__':

@@ -30,6 +30,8 @@ r"""每日推荐一键入口：行情 → 因子 → 打分 → IC 门禁 → �
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import subprocess
 import sys
@@ -69,6 +71,74 @@ ROTATION_NOTE = (
     '卖出确认日与单次换手上限约束，绝大多数标的在持有期内只会显示「维持」。'
     '只有「退出」与「新进」才对应本次需要处理的交易，且仍受 20% 单边换手上限。'
 )
+
+#: 可买只数时间序列：按 (信号日, 档位) 追加，判断空仓是市场状态还是规则冲突
+COUNT_FILENAME = 'available_counts.csv'
+COUNT_COLUMNS = (
+    'signal_date', 'tier', 'universe_kept', 'panel_rows', 'soft_pass',
+    'score_pass', 'all_gates_pass', 'new', 'hold', 'exit', 'avoid',
+    'ic_gate_blocked', 'rules_version', 'generated_at',
+)
+
+
+def count_rows(result: Any, universe: Any, *,
+               generated_at: datetime) -> list[dict[str, str]]:
+    """把一次运行的分层计数摊平成 (信号日 × 档位) 的一行行记录。
+
+    逐级口径：``universe_kept`` 选池后只数 → ``panel_rows`` 当日有行情的只数
+    → ``soft_pass`` 软筛选通过 → ``score_pass`` 分数达买入分位 → ``all_gates_pass``
+    同时过分数、可交易、成本、风控与事件冷却 → ``new/hold/exit`` 最终清单方向计数。
+
+    判读方法：若 ``score_pass`` 高而 ``all_gates_pass`` 长期为 0，是规则自相矛盾；
+    若两者都低，是市场状态（如全市场多头排列占比极低）。
+    """
+    version = getattr(universe, 'version', '')
+    kept = getattr(universe, 'kept_count', len(getattr(universe, 'kept', [])))
+    rows: list[dict[str, str]] = []
+    for tier_key, advice in sorted(result.tiers.items()):
+        stats = getattr(advice, 'filter_stats', {}) or {}
+        rows.append({
+            'signal_date': result.trade_date.isoformat(),
+            'tier': tier_key,
+            'universe_kept': str(kept),
+            'panel_rows': str(stats.get('funnel_panel_rows', 0)),
+            'soft_pass': str(stats.get('funnel_soft_pass', 0)),
+            'score_pass': str(stats.get('funnel_score_pass', 0)),
+            'all_gates_pass': str(stats.get('funnel_candidates', 0)),
+            'new': str(stats.get('funnel_buys', 0)),
+            'hold': str(stats.get('funnel_holds', 0)),
+            'exit': str(stats.get('funnel_sells', 0)),
+            'avoid': str(stats.get('funnel_avoid', 0)),
+            'ic_gate_blocked': str(stats.get('ic_gate_blocked', 0)),
+            'rules_version': str(version),
+            'generated_at': generated_at.isoformat(timespec='seconds'),
+        })
+    return rows
+
+
+def write_available_counts(out_root: Path, result: Any, universe: Any, *,
+                           generated_at: datetime) -> Path:
+    """按 (信号日, 档位) 幂等追加「可买只数」序列，返回 CSV 路径。"""
+    from src.data.atomic_write import write_text_atomic  # noqa: PLC0415
+
+    path = out_root / COUNT_FILENAME
+    existing: list[dict[str, str]] = []
+    if path.is_file():
+        with path.open('r', encoding='utf-8', newline='') as handle:
+            existing = list(csv.DictReader(handle))
+    fresh = count_rows(result, universe, generated_at=generated_at)
+    keys = {(row['signal_date'], row['tier']) for row in fresh}
+    merged = [row for row in existing
+              if (row.get('signal_date'), row.get('tier')) not in keys] + fresh
+    merged.sort(key=lambda row: (row.get('signal_date') or '',
+                                 row.get('tier') or ''))
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=COUNT_COLUMNS,
+                            extrasaction='ignore')
+    writer.writeheader()
+    writer.writerows(merged)
+    write_text_atomic(buffer.getvalue(), path)
+    return path
 
 
 def _parse_date(value: str) -> date:
@@ -165,14 +235,19 @@ def gate_text(advice: Any, row: Any) -> str:
     """单条记录的门禁结论：IC 门禁 / 风控拦截 / 换手延后 / 通过。"""
     blocked = bool(advice.filter_stats.get('ic_gate_blocked'))
     if row.disposition == 'deferred':
-        return f'换手上限延后至 {row.defer_until}：{row.defer_reason}'
-    if row.direction == 'AVOID':
+        text = f'换手上限延后至 {row.defer_until}：{row.defer_reason}'
+    elif row.direction == 'AVOID':
         reasons = [note for note in row.risk_notes if note.startswith('剔除原因')]
         detail = reasons[0] if reasons else (row.risk_notes[0] if row.risk_notes else '未通过门槛')
-        return f'拦截：{detail}'
-    if blocked:
-        return 'IC门禁拦截新建仓；本条为持仓管理'
-    return '通过（ST / 事件冷却 / 行业上限 / 流动性）'
+        text = f'拦截：{detail}'
+    elif blocked:
+        text = 'IC门禁拦截新建仓；本条为持仓管理'
+    else:
+        text = '通过（ST / 事件冷却 / 行业上限 / 流动性）'
+    if getattr(row, 'limit_up_risk', False):
+        basis = getattr(row, 'limit_up_basis', '') or 'T日已涨停'
+        text = f'{text}；涨停风险（{basis}，次日可能买不进）'
+    return text
 
 
 def _factor_text(row: Any) -> str:
@@ -359,6 +434,8 @@ def _payload(result: Any, fresh: dict[str, Any], *, stale_override: bool,
                     'top_factors': [f'{name} {value:+.2f}'
                                     for name, value in row.top_factors[:3]],
                     'gate': gate_text(advice, row),
+                    'limit_up_risk': bool(getattr(row, 'limit_up_risk', False)),
+                    'limit_up_basis': getattr(row, 'limit_up_basis', ''),
                     'horizon': row.horizon, 'validity_days': row.validity_days,
                     'defer_until': str(row.defer_until) if row.defer_until else None,
                 }
@@ -401,8 +478,9 @@ def print_console(result: Any, fresh: dict[str, Any], stale_override: bool,
         for group in GROUP_ORDER + ('新进(延后)', '退出(延后)'):
             rows = [row for row in advice.rows if group_of(row) == group]
             for row in rows:
+                mark = '[涨停]' if getattr(row, 'limit_up_risk', False) else ''
                 print(f'  {group:<6} {row.ts_code:<12} {row.name:<8} '
-                      f'得分 {row.score:.3f}/{row.score_percentile:.2f}  '
+                      f'{mark:<6} 得分 {row.score:.3f}/{row.score_percentile:.2f}  '
                       f'{row.direction:<5} {_factor_text(row)[:40]:<40} '
                       f'{gate_text(advice, row)[:44]}')
     print()
@@ -527,11 +605,16 @@ def main(argv: list[str] | None = None, *,
 
     trade_dir = args.out_root / f'{result.trade_date:%Y%m%d}'
     trade_dir.mkdir(parents=True, exist_ok=True)
+    counts_path = write_available_counts(args.out_root, result, universe,
+                                         generated_at=generated_at)
     markdown = render_markdown(result, fresh, tiers=config.tiers,
                                stale_override=bool(fresh.get('blocking')),
                                generated_at=generated_at,
                                update_command=update_command,
                                universe=universe)
+    markdown += (f'\n> 可买只数时间序列：`{counts_path}`'
+                 f'（按信号日 × 档位幂等追加；`score_pass` 高而 `all_gates_pass`'
+                 f' 长期为 0 说明规则冲突，两者都低说明是市场状态）\n')
     md_path = trade_dir / 'daily_advice.md'
     md_path.write_text(markdown, encoding='utf-8')
     json_path = trade_dir / 'daily_advice.json'
@@ -544,6 +627,7 @@ def main(argv: list[str] | None = None, *,
     print_console(result, fresh, bool(fresh.get('blocking')), universe)
     print(f'清单: {md_path}')
     print(f'结构: {json_path}')
+    print(f'可买只数序列: {counts_path}')
     return EXIT_OK
 
 

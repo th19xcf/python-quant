@@ -12,6 +12,8 @@ import polars as pl
 from src.data.universe_filter import (
     DOC_PATH,
     RULE_BOARD,
+    RULE_DELISTED,
+    RULE_DELISTING,
     RULE_FINANCIAL_RISK,
     RULE_ILLIQUID,
     RULE_LOW_CIRC_MV,
@@ -101,6 +103,18 @@ def _write_st_intervals(root: Path, codes: list[str], start: date,
         directory / 'st_intervals.parquet')
 
 
+def _write_stock_basic(root: Path,
+                       rows: list[tuple[str, str, date | None]]) -> None:
+    """`meta/stock_basic.parquet`：退市判定的唯一数据源（status + delist_date）。"""
+    (root / 'meta').mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({
+        'ts_code': [row[0] for row in rows],
+        'name': [row[0] for row in rows],
+        'status': [row[1] for row in rows],
+        'delist_date': [row[2] for row in rows],
+    }).write_parquet(root / 'meta' / 'stock_basic.parquet')
+
+
 def _setup(root: Path, codes: list[str], *,
            starts: dict[str, date] | None = None) -> None:
     _write_index(root, DATES)
@@ -183,6 +197,33 @@ def test_board_rules(tmp_path: Path) -> None:
     keep_bse = filter_universe(AS_OF, codes, store_root=tmp_path,
                                config=UniverseFilterConfig(include_bse=True))
     assert '920001.BJ' in keep_bse.kept
+
+
+def test_delisting_rules(tmp_path: Path) -> None:
+    """退市判定只认 stock_basic：已退市 / 整理期 / 正常三态。"""
+    codes = ['600960.SH', '600961.SH', '600962.SH', '600963.SH']
+    _setup(tmp_path, codes)
+    _write_stock_basic(tmp_path, [
+        ('600960.SH', 'D', DATES[-5]),                  # 已退市（delist_date 早于 as_of）
+        ('600961.SH', 'L', AS_OF + timedelta(days=10)),  # 整理期（剩余 ≈7 个交易日 ≤30）
+        ('600962.SH', 'L', None),                        # 正常在市
+        ('600963.SH', 'L', AS_OF + timedelta(days=400)),  # 远期退市公告，不在整理期
+    ])
+    result = filter_universe(AS_OF, codes, store_root=tmp_path)
+    assert result.dropped[RULE_DELISTED] == ['600960.SH']
+    assert result.dropped[RULE_DELISTING] == ['600961.SH']
+    assert result.kept == ['600962.SH', '600963.SH']
+    assert result.unknowns['delist'] == 0
+
+
+def test_delisted_without_date_is_dropped(tmp_path: Path) -> None:
+    """status=D 但 delist_date 为空，同样按已退市剔除（fail-closed）。"""
+    codes = ['600970.SH']
+    _setup(tmp_path, codes)
+    _write_stock_basic(tmp_path, [('600970.SH', 'D', None)])
+    result = filter_universe(AS_OF, codes, store_root=tmp_path)
+    assert result.dropped[RULE_DELISTED] == ['600970.SH']
+    assert result.kept == []
 
 
 def test_superseded_code(tmp_path: Path) -> None:

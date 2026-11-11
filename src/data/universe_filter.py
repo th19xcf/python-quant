@@ -19,8 +19,11 @@ T+1 开盘价判定能否成交。涨跌停拒单见
 
 已知的过滤边界（不在本模块实现，调用方需知晓）
 --------------------------------------------
-- 涨跌停 / 一字板：``src/advice/eligibility.py`` 在「可推荐性」阶段按 T 日
-  涨停拦截买入，属投资建议层口径，不是本模块的选池规则；
+- 涨跌停 / 一字板：``src/advice/eligibility.py`` 对 T 日涨停只做
+  ``limit_up_risk`` 标注（不拦截），成交判定在撮合层；
+- 退市整理板：只认 ``meta/stock_basic.parquet`` 的 ``status`` 与 ``delist_date``，
+  不再用简称含「退」的字符串匹配。**数据缺口**：当前该表对整理期标的尚未回填
+  ``delist_date``（status 仍为 ``L``），这类标的在表中没有退市痕迹，会漏剔；
 - 财务类「审计非标」：本地无审计意见字段（``financials_pit`` 四张表都没有
   ``audit_opinion`` 一类列），**无数据支撑，未实现**；净资产为负与连续两年
   亏损已按公告日实现，但默认关闭。
@@ -60,12 +63,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ROOT = PROJECT_ROOT / 'data' / 'local_store'
 
 #: 规则版本号：清单文件与每日输出都打印它，便于事后核对「这批名单按哪版规则筛出」
-RULES_VERSION = '2026-11-11.1'
+RULES_VERSION = '2026-11-11.2'
 #: 规则说明文档（随每日输出一起打印路径）
 DOC_PATH = 'docs/每日推荐筛选与判断清单.md'
 
 # 逐类剔除码（顺序即判定顺序：命中第一条即停，计数互斥）
 RULE_BOARD = 'board'
+RULE_DELISTED = 'delisted'
+RULE_DELISTING = 'delisting_period'
 RULE_SUPERSEDED = 'superseded_code'
 RULE_NOT_LISTED = 'not_listed_today'
 RULE_ST = 'st'
@@ -81,6 +86,8 @@ RULE_FINANCIAL_RISK = 'financial_risk'
 
 RULE_ORDER: tuple[str, ...] = (
     RULE_BOARD,
+    RULE_DELISTED,
+    RULE_DELISTING,
     RULE_SUPERSEDED,
     RULE_NOT_LISTED,
     RULE_ST,
@@ -96,7 +103,9 @@ RULE_ORDER: tuple[str, ...] = (
 )
 
 RULE_LABELS: dict[str, str] = {
-    RULE_BOARD: '板块（B股/退市整理板/老三板/北交所开关）',
+    RULE_BOARD: '板块（B股/老三板/北交所/科创/创业开关）',
+    RULE_DELISTED: '已退市（stock_basic.status=D 且 delist_date ≤ as_of）',
+    RULE_DELISTING: '退市整理期（距 delist_date ≤ N 个交易日）',
     RULE_SUPERSEDED: '旧码/迁移码（由新码承载）',
     RULE_NOT_LISTED: '当日不在市（未上市或已退市）',
     RULE_ST: 'ST/*ST/退市风险警示',
@@ -152,6 +161,9 @@ class UniverseFilterConfig:
     # --- 板块 ---
     exclude_b_share: bool = True
     exclude_delisting_period: bool = True
+    exclude_delisted: bool = True
+    #: 退市整理期判定窗口：距 delist_date 剩余不超过 N 个交易日
+    delisting_window_trading_days: int = 30
     exclude_old_three_board: bool = True
     include_bse: bool = False
     include_star: bool = True
@@ -226,6 +238,10 @@ class UniverseFilterResult:
                 'include_bse': self.config.include_bse,
                 'include_star': self.config.include_star,
                 'include_chinext': self.config.include_chinext,
+                'exclude_delisted': self.config.exclude_delisted,
+                'exclude_delisting_period': self.config.exclude_delisting_period,
+                'delisting_window_trading_days':
+                    self.config.delisting_window_trading_days,
                 'enable_circ_mv_floor': self.config.enable_circ_mv_floor,
                 'min_circ_mv': (self.config.min_circ_mv
                                 if self.config.enable_circ_mv_floor else None),
@@ -307,18 +323,28 @@ def _load_listing_spans(root: Path) -> dict[str, tuple[date | None, date | None]
     return spans
 
 
-def _load_names(root: Path) -> dict[str, str]:
-    """本地名称快照（仅用于识别退市整理板简称后缀「退」）。"""
-    path = root / 'meta' / 'names.json'
+def _load_stock_basic(root: Path) -> dict[str, tuple[str | None, date | None]]:
+    """``meta/stock_basic.parquet`` 的退市字段：``code → (status, delist_date)``。
+
+    退市整理板不再用简称含「退」这类字符串匹配，只认这份表的
+    ``status``（``L``/``D``）与 ``delist_date``。
+    """
+    path = root / 'meta' / 'stock_basic.parquet'
     if not path.is_file():
         return {}
     try:
-        payload = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
+        frame = pl.read_parquet(path, columns=['ts_code', 'status', 'delist_date'])
+    except (OSError, pl.exceptions.PolarsError):
         return {}
-    if not isinstance(payload, dict):
-        return {}
-    return {str(key).upper(): str(value) for key, value in payload.items() if value}
+    basic: dict[str, tuple[str | None, date | None]] = {}
+    for row in frame.to_dicts():
+        status = row.get('status')
+        delist_day = row.get('delist_date')
+        basic[str(row['ts_code']).upper()] = (
+            str(status).strip().upper() if status else None,
+            delist_day if isinstance(delist_day, date) else None,
+        )
+    return basic
 
 
 def _read_quotes(store: Any, code: str, start: date) -> pl.DataFrame | None:
@@ -447,7 +473,7 @@ def filter_universe(as_of: Any, codes: Iterable[str], *,
 
     dropped: dict[str, list[str]] = {rule: [] for rule in RULE_ORDER}
     unknowns: dict[str, int] = {'st': 0, 'listing': 0, 'amount': 0,
-                                'circ_mv': 0, 'financial': 0}
+                                'circ_mv': 0, 'financial': 0, 'delist': 0}
 
     from src.data.local_store.store import LocalQuoteStore  # noqa: PLC0415
     from src.data.trading_calendar import get_calendar  # noqa: PLC0415
@@ -455,7 +481,7 @@ def filter_universe(as_of: Any, codes: Iterable[str], *,
     calendar = get_calendar(root, as_of=day)
     entity_index = load_entity_index(root)
     spans = _load_listing_spans(root)
-    names = _load_names(root) if cfg.exclude_delisting_period else {}
+    basic = _load_stock_basic(root)
     union = load_suspension_union(root) if cfg.enable_suspension_filter else None
     window = _trading_window(calendar, day, cfg.suspension_window)
     prev_day = calendar.previous(day, inclusive=False)
@@ -463,7 +489,7 @@ def filter_universe(as_of: Any, codes: Iterable[str], *,
     survivors = _apply_static_rules(
         ordered, cfg=cfg, day=day, calendar=calendar, window=window,
         prev_day=prev_day, union=union, entity_index=entity_index,
-        spans=spans, names=names, root=root, dropped=dropped, unknowns=unknowns)
+        spans=spans, basic=basic, root=root, dropped=dropped, unknowns=unknowns)
     kept = _apply_quote_rules(
         survivors, cfg=cfg, day=day, calendar=calendar,
         store=LocalQuoteStore(root), dropped=dropped, unknowns=unknowns)
@@ -490,7 +516,8 @@ def _apply_static_rules(
     ordered: list[str], *, cfg: UniverseFilterConfig, day: date,
     calendar: Any, window: tuple[date, ...], prev_day: date | None,
     union: SuspensionUnion | None, entity_index: Any,
-    spans: dict[str, tuple[date | None, date | None]], names: dict[str, str],
+    spans: dict[str, tuple[date | None, date | None]],
+    basic: dict[str, tuple[str | None, date | None]],
     root: Path, dropped: dict[str, list[str]], unknowns: dict[str, int],
 ) -> list[str]:
     """板块 / 旧码 / 在市 / ST / 停牌 / 复牌首日 / 次新：不读行情即可判定。"""
@@ -499,7 +526,7 @@ def _apply_static_rules(
         reason = _static_drop_reason(
             code, cfg=cfg, day=day, calendar=calendar, window=window,
             prev_day=prev_day, union=union, entity_index=entity_index,
-            spans=spans, names=names, root=root, unknowns=unknowns)
+            spans=spans, basic=basic, root=root, unknowns=unknowns)
         if reason is None:
             survivors.append(code)
         else:
@@ -507,12 +534,36 @@ def _apply_static_rules(
     return survivors
 
 
-def _board_reason(code: str, cfg: UniverseFilterConfig,
-                  names: dict[str, str]) -> str | None:
-    """板块类剔除：退市整理板（简称含「退」）/ B股 / 老三板 / 北交所开关。"""
-    if cfg.exclude_delisting_period and '退' in names.get(code, ''):
-        return RULE_BOARD
+def _board_reason(code: str, cfg: UniverseFilterConfig) -> str | None:
+    """板块类剔除：B股 / 老三板 / 北交所开关 / 科创·创业开关（纯代码段判定）。"""
     return RULE_BOARD if _board_excluded(board_of(code), cfg) else None
+
+
+def _delisting_reason(code: str, cfg: UniverseFilterConfig, day: date,
+                      basic: dict[str, tuple[str | None, date | None]],
+                      calendar: Any,
+                      unknowns: dict[str, int]) -> str | None:
+    """退市类剔除：已退市 / 退市整理期，只认 ``stock_basic`` 的 status 与 delist_date。
+
+    - 已退市：``status == 'D'`` 且 ``delist_date`` 为空或不晚于 ``day``；
+    - 退市整理期：``delist_date`` 晚于 ``day``，且剩余交易日不超过
+      ``delisting_window_trading_days``（默认 30，与交易所整理期长度一致）。
+    """
+    if not (cfg.exclude_delisted or cfg.exclude_delisting_period):
+        return None
+    info = basic.get(code)
+    if info is None:
+        unknowns['delist'] += 1
+        return None
+    status, delist_day = info
+    if (cfg.exclude_delisted and status == 'D'
+            and (delist_day is None or delist_day <= day)):
+        return RULE_DELISTED
+    if cfg.exclude_delisting_period and delist_day is not None and delist_day > day:
+        window = cfg.delisting_window_trading_days
+        if window <= 0 or calendar.count(day, delist_day) <= window:
+            return RULE_DELISTING
+    return None
 
 
 def _state_drop_reason(code: str, *, cfg: UniverseFilterConfig, day: date,
@@ -541,11 +592,15 @@ def _static_drop_reason(
     code: str, *, cfg: UniverseFilterConfig, day: date, calendar: Any,
     window: tuple[date, ...], prev_day: date | None,
     union: SuspensionUnion | None, entity_index: Any,
-    spans: dict[str, tuple[date | None, date | None]], names: dict[str, str],
+    spans: dict[str, tuple[date | None, date | None]],
+    basic: dict[str, tuple[str | None, date | None]],
     root: Path, unknowns: dict[str, int],
 ) -> str | None:
     """按 RULE_ORDER 依次判定，返回首个命中的剔除码（互斥计数）。"""
-    reason = _board_reason(code, cfg, names)
+    reason = _board_reason(code, cfg)
+    if reason is not None:
+        return reason
+    reason = _delisting_reason(code, cfg, day, basic, calendar, unknowns)
     if reason is not None:
         return reason
     if cfg.exclude_superseded and entity_index.is_superseded(code):

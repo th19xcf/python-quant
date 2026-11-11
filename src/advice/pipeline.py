@@ -316,6 +316,18 @@ class AdviceEngine:
                 f"{coverage.get('requested', 0)} 标的",
             ] + ([tier.note] if tier.note else []))
 
+        # 可买只数漏斗：逐级计数写进 filter_stats，供「每日可买只数」时间序列核对
+        funnel: dict[str, int] = {
+            'funnel_panel_rows': len(rows),
+            'funnel_soft_pass': len(rows),
+            'funnel_score_pass': 0,
+            'funnel_candidates': 0,
+            'funnel_buys': 0,
+            'funnel_holds': 0,
+            'funnel_sells': 0,
+            'funnel_avoid': 0,
+        }
+
         # 1) 候选池：软筛选 + 分数达标 + 可交易 + 成本门槛
         #    IC 门禁触发时清空候选池：本期不出新建仓，只保留持仓的持有/卖出管理
         candidates: list[tuple[dict, Candidate, Any]] = []
@@ -325,9 +337,13 @@ class AdviceEngine:
         if 'soft_pass' in scored.columns:
             latest = scored.filter(pl.col('date') == trade_date)
             passed = latest.filter(pl.col('soft_pass')).height
+            funnel['funnel_soft_pass'] = passed
             advice.notes.append(f"软筛选通过 {passed}/{latest.height}（仅 extended）")
         ranked = sorted(rows, key=lambda entry: entry.get('score_percentile') or 0.0,
                         reverse=True)
+        funnel['funnel_score_pass'] = sum(
+            1 for entry in rows
+            if float(entry.get('score_percentile') or 0.0) >= tier.buy_percentile)
         loop_entries = [] if block_new_buys else ranked
         for entry in loop_entries:
             code = str(entry['ts_code'])
@@ -376,6 +392,7 @@ class AdviceEngine:
                     avoid_rows.append((entry, eligibility))
 
         best_pct = candidates[0][1].score_percentile if candidates else None
+        funnel['funnel_candidates'] = len(candidates)
 
         # 2) 持仓决策：最小持有期 + 确认日 + 成本门槛
         decisions: dict[str, HoldingDecision] = {}
@@ -542,6 +559,12 @@ class AdviceEngine:
                        for key in risk.counts}
         stats_local['row_merge_dropped'] = len(advice.row_merge)
         stats_local['ic_gate_blocked'] = 1 if block_new_buys else 0
+        for direction, key in ((DIRECTION_BUY, 'funnel_buys'),
+                               (DIRECTION_HOLD, 'funnel_holds'),
+                               (DIRECTION_SELL, 'funnel_sells'),
+                               (DIRECTION_AVOID, 'funnel_avoid')):
+            funnel[key] = sum(1 for rec in advice.rows if rec.direction == direction)
+        stats_local.update(funnel)
         advice.filter_stats = stats_local
         advice.filter_audit = list(risk.audit[audit_start:])
         advice.notes.extend(
@@ -600,6 +623,9 @@ class AdviceEngine:
             extra = f'{extra}；{tier.note}'
         common['risk_notes'] = self._risk_notes(
             eligibility, common['industry_source'], extra)
+        # T 日涨停不拦截，只把「次日可能买不进」随条目带出（成交由撮合层判定）
+        common['limit_up_risk'] = bool(getattr(eligibility, 'limit_up_risk', False))
+        common['limit_up_basis'] = getattr(eligibility, 'limit_up_basis', '')
         return Recommendation(**common)
 
     def _sell_row(self, row: dict, holding: HoldingState, decision: HoldingDecision,
