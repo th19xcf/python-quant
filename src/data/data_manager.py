@@ -19,6 +19,7 @@ import polars as pl
 from loguru import logger
 
 from src.api.data_api import IDataProcessor, IDataProvider
+from src.data.local_store.expectation import MissingLocalDataError
 from src.data.services.data_service import DataService
 from src.utils.code_converter import is_index_code
 from src.utils.memory_optimizer import MemoryOptimizer
@@ -71,6 +72,23 @@ class DataManager(DataService):
             logger.warning(f"异步数据管理器初始化失败: {e}")
             self.async_data_manager = None
 
+    def _local_dividend_frame(self, ts_code: str) -> pl.DataFrame | None:
+        """读本地分红快照；列存已启用却整体缺快照时抛错，其余异常回退数据库。"""
+        try:
+            from src.data.local_store import get_local_factor_store
+
+            store = get_local_factor_store(getattr(self, 'config', None))
+            if getattr(store, 'enabled', False) and not store.has_dividend_snapshot():
+                raise MissingLocalDataError(
+                    f'本地分红快照不存在: {store.root}/factors/stock_dividend.parquet；'
+                    '本地列存已启用却读不到分红，拒绝静默回退数据库（DG-27）')
+            return store.dividends(ts_code)
+        except MissingLocalDataError:
+            raise
+        except (ImportError, OSError, ValueError, TypeError) as exc:
+            logger.warning(f"读取本地分红快照失败，回退数据库: {exc}")
+            return None
+
     def get_stock_dividend(self, ts_code: str) -> pl.DataFrame:
         """
         获取股票分红配股数据
@@ -91,15 +109,11 @@ class DataManager(DataService):
             logger.debug(f"{ts_code} 为指数代码，无分红数据")
             return pl.DataFrame()
 
-        # 本地分红快照优先：命中即零公网往返，列与 stock_dividend 表一致
-        try:
-            from src.data.local_store import get_local_factor_store
-
-            local = get_local_factor_store(
-                getattr(self, 'config', None)).dividends(ts_code)
-        except (ImportError, OSError, ValueError, TypeError) as exc:
-            logger.debug(f"读取本地分红快照失败，回退数据库: {exc}")
-            local = None
+        # 本地分红快照优先：命中即零公网往返，列与 stock_dividend 表一致。
+        # 列存已启用时快照缺失/不可读必须显式失败：此前这里只记一句 debug 就
+        # 回退数据库，路径写错会伪装成「本地未命中」，查库拿到旧值后长期歪掉
+        # （DG-27：不得把未接线当成无数据）。
+        local = self._local_dividend_frame(ts_code)
         if local is not None and not local.is_empty():
             try:
                 return MemoryOptimizer.optimize_dataframe(local.clone())

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Protocol, Sequence
 
 import polars as pl
+from loguru import logger
 
 from src.data.quality.anomalies import find_anomalies
 from src.data.quality.exemptions import is_exempt
@@ -451,6 +452,17 @@ class QualityChecker:
                 self._scan_symbol(data_type, ts_code, context, start_date, end_date, acc)
 
         elapsed = time.perf_counter() - started
+        # 空扫描必须喊出来：源路径指向错误目录时 selected 为空，报告会以
+        # 「0 只标的、0 违规」收场，看起来像「数据全部合格」（DG-27）。
+        if acc.symbols_scanned == 0:
+            logger.error(
+                f'[quality] 本次质检扫描 0 只标的（源 {self._source.name}，'
+                f'类型 {list(requested_types)}）；此情形下「零问题」不代表数据正常，'
+                '请检查源路径是否指向正确目录')
+        elif acc.missing:
+            logger.warning(
+                f'[quality] {len(acc.missing)} 只标的在源 {self._source.name} 中'
+                f'读不到数据（明细见报告 missing_symbols）: {acc.missing[:5]}')
         report = QualityReport(
             source=self._source.name,
             scope={

@@ -569,6 +569,12 @@ def audit_factors(store: Any, factor_store: Any, output_dir: Path | str = 'logs'
     index_codes = {path.stem for path in _quote_files(root, 'index')}
     fund_codes = {path.stem for path in _quote_files(root, 'fund')}
     fund_files = _quote_files(root, 'fund')
+    if not (stock_codes or index_codes or fund_codes):
+        # 因子表在、行情一张都没有：只可能是根目录指错（搬迁漏改 / 配置拼错），
+        # 否则审计会给出「0 只标的、零差异」的假通过。
+        raise FileNotFoundError(
+            f'本地行情目录为空（未扫到任何 parquet）: {root}/quotes；'
+            '因子审计在此情形下没有样本，请检查 store root 是否指向正确目录')
 
     dividends = (
         pl.read_parquet(dividend_path)

@@ -42,6 +42,7 @@ import psutil
 from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
+from src.data.local_store.expectation import check_quote_file
 from src.data.local_store.paths import resolve_store_root as _resolve_store_root
 
 STORE_VERSION = 1
@@ -185,6 +186,7 @@ class LocalQuoteStore:
         self.factor_store = factor_store
         self._meta: Dict[tuple[str, str], dict[str, Any]] = {}
         self._meta_mtime: int | None = None
+        self._meta_missing_warned = False
         self._lock = threading.RLock()
 
     def factor_snapshot_store(self) -> LocalFactorStore:
@@ -218,6 +220,13 @@ class LocalQuoteStore:
         if not self.meta_path.exists():
             # 不能清空内存：write_daily 逐标的调用本函数，元数据文件尚未落盘时
             # 清空会把前几个标的的条目丢掉（首次构建即触发）。
+            # 但根目录已存在、元数据却缺席，说明构建未收尾或路径不对，必须留痕。
+            if self.root.is_dir() and not self._meta_missing_warned:
+                logger.warning(
+                    f'[local-store] 覆盖度元数据不存在: {self.meta_path}；'
+                    f'根目录 {self.root} 存在但缺少 meta/daily_index.parquet，'
+                    '本进程内所有 coverage 判定都会返回 None')
+                self._meta_missing_warned = True
             self._meta_mtime = None
             return self._meta
         mtime = self.meta_path.stat().st_mtime_ns
@@ -392,14 +401,22 @@ class LocalQuoteStore:
     # ------------------------------------------------------------------
     def read_daily(self, data_type: str, ts_code: str, start: Any, end: Any,
                    frequency: str = '1d') -> pl.DataFrame | None:
-        """按区间读取日线；未构建/未覆盖返回 None（调用方回退 TDX）。"""
+        """按区间读取日线；预期为空返回 None，理应存在却读不到则抛错。
+
+        缺失分级见 :mod:`src.data.local_store.expectation`：未上市 / 已退市 /
+        请求区间与已构建覆盖区间无交集 → ``warn`` + ``None``（调用方回退 TDX）；
+        上市期内且 ``daily_index`` 声明有覆盖 → 抛 ``MissingLocalDataError``，
+        不再让路径写错或搬迁漏改静默变成「该标的没数据」。
+        """
         if not self.enabled or frequency != '1d':
             return None
-        if not self.covers(data_type, ts_code, start, end):
-            return None
         path = self.quote_path(data_type, ts_code)
-        if not path.exists():
-            logger.warning(f"[local-store] 元数据存在但文件缺失: {path}")
+        # 先查文件再查覆盖度：路径整体写错时 daily_index 也读不到，
+        # 若先判 covers() 会直接返回 None，把故障伪装成「未构建」。
+        check_quote_file(
+            path, store_root=self.root, data_type=data_type,
+            ts_code=ts_code, start=start, end=end)
+        if not self.covers(data_type, ts_code, start, end):
             return None
 
         start_dt = _as_date(start)
@@ -409,6 +426,13 @@ class LocalQuoteStore:
             frame = frame.filter(pl.col('date') >= start_dt)
         if end_dt is not None:
             frame = frame.filter(pl.col('date') <= end_dt)
+        if frame.is_empty():
+            # 文件在、覆盖度也说得通，但区间内一行没有：只可能是停牌或数据缺口。
+            # 停牌不在文件级缺失判定里（停牌期间文件仍在），故此处只告警不抛错。
+            logger.warning(
+                f"[local-store] 区间内无行情行（停牌或缺口）: {path} "
+                f'{start}~{end}；调用方按空数据处理')
+            return None
         return _overlay_factor_snapshot(frame, ts_code, self.factor_snapshot_store())
 
     def read_file(self, data_type: str, ts_code: str,
@@ -418,9 +442,19 @@ class LocalQuoteStore:
         ``with_factors=True`` 时用因子快照覆盖内嵌副本；纯扫描场景（流动性
         筛选、日期序列、增量合并比对）保持默认 False，避免为每只标的都做
         一次因子查询。
+
+        文件缺失时按 ``daily_index`` / 上市状态分级：预期为空记 ``debug`` 后
+        返回 None；``daily_index`` 声明有覆盖却读不到则抛 ``MissingLocalDataError``。
+        根目录不存在按「尚未构建」处理（首次构建本就如此），但会留一条 ``warn``，
+        避免路径写错时整条采集链路无声跑空。
         """
         path = self.quote_path(data_type, ts_code)
-        if not path.exists():
+        if not path.is_file():
+            # 批量扫描场景，预期为空的逐票告警会淹没日志，故降为 debug；
+            # 「理应存在」仍然抛错。
+            check_quote_file(
+                path, store_root=self.root, data_type=data_type,
+                ts_code=ts_code, quiet=True, require_root=False)
             return None
         frame = pl.read_parquet(path)
         if not with_factors:
@@ -429,12 +463,23 @@ class LocalQuoteStore:
 
     def read_daily_batch(self, data_type: str, codes: list[str], start: Any, end: Any,
                          frequency: str = '1d') -> dict[str, pl.DataFrame]:
-        """批量读取（一次调用内完成多票切片，供组合回测/横截面使用）。"""
+        """批量读取（一次调用内完成多票切片，供组合回测/横截面使用）。
+
+        缺失标的仍不进返回值，但会汇总成一条 ``warn``，避免横截面样本在
+        无声中缩小（此前缺失标的既不进 dict 也不留痕）。
+        """
         out: dict[str, pl.DataFrame] = {}
+        missing: list[str] = []
         for code in codes:
             frame = self.read_daily(data_type, code, start, end, frequency)
             if frame is not None and not frame.is_empty():
                 out[code] = frame
+            else:
+                missing.append(code)
+        if missing:
+            logger.warning(
+                f'[local-store] {data_type} 批量读取 {len(missing)}/{len(codes)} 只无数据'
+                f'（含预期为空；明细见上方的分级日志）: {missing[:5]}')
         return out
 
     # ------------------------------------------------------------------
@@ -503,11 +548,17 @@ class LocalQuoteStore:
             json.dumps(payload, ensure_ascii=False, indent=2), self.state_path)
 
     def read_state(self) -> dict[str, Any]:
+        """读取构建状态；文件不存在属正常（首次构建），但根目录已存在时留痕。"""
         if not self.state_path.exists():
+            if self.root.is_dir():
+                logger.debug(
+                    f'[local-store] 状态文件不存在: {self.state_path}；'
+                    '若是既有列存，说明构建未收尾或路径不对')
             return {}
         try:
             return json.loads(self.state_path.read_text(encoding='utf-8'))
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            logger.warning(f'[local-store] 状态文件损坏，按空状态处理: {self.state_path}: {exc}')
             return {}
 
 
@@ -563,7 +614,17 @@ class LocalFactorStore:
             or self._fund_factor_path.exists() or self._fund_dividend_path.exists())
 
     def _partition(self, path: Path, key: str) -> dict[str, pl.DataFrame]:
+        """把整表按代码分组；文件缺失记 ``warn`` 后返回空表。
+
+        不在这一层抛错：构建流程按「行情 → 分红 → 因子」分批产出，中途调用
+        本函数时快照本来就可能尚未生成，抛错会让首次构建整体失败。是否致命
+        由消费方判断——``DataManager.get_dividends`` 与回测撮合层在文件缺失
+        时会显式抛 ``MissingLocalDataError``。
+        """
         if not path.exists():
+            logger.warning(
+                f'[local-store] 快照文件不存在，按空表返回: {path}；'
+                f'根目录 {self.root} 已启用（构建未完成或路径不对）')
             return {}
         frame = pl.read_parquet(path)
         if frame.is_empty() or key not in frame.columns:
@@ -656,6 +717,10 @@ class LocalFactorStore:
 
         个股/指数走 ``stock_adj_factor.parquet``；该文件中没有的代码再回退到
         ``fund_adj_factor.parquet``（基金与个股共用同一口径的因子列）。
+
+        快照缺失返回 None 并留痕，不抛错：覆盖层（``_overlay_factor_snapshot``）
+        在构建过程中本来就可能尚未产出因子表，抛错会让首次构建整体失败；
+        因子缺失的可见性由覆盖层的 ``warn`` 承担。
         """
         if not self.enabled:
             return None
@@ -701,15 +766,29 @@ class LocalFactorStore:
         """返回单标的分红记录（列与 ``stock_dividend`` 表一致）。
 
         基金代码在个股分红快照中没有记录时，回退到 ``fund_dividend.parquet``。
+
+        某只标的无分红记录是正常语义（本来就没分红），返回 None。
+        快照整体缺失同样返回 None，只留 ``warn``——构建流程中途调用本函数时
+        分红表可能尚未产出。需要「缺了就不能继续」的消费方（取数入口、回测
+        撮合）先查 :meth:`has_dividend_snapshot` 再决定是否抛错。
         """
         if not self.enabled:
             return None
+        if not self.has_dividend_snapshot():
+            logger.warning(
+                f'[local-store] 分红快照均不存在: {self._dividend_path} / '
+                f'{self._fund_dividend_path}；按无分红返回 None')
+            return None
         frame = self._load_dividends().get(ts_code)
-        if frame is None or frame.is_empty():
+        if (frame is None or frame.is_empty()):
             frame = self._load_fund_dividends().get(ts_code)
         if frame is None or frame.is_empty():
             return None
         return frame
+
+    def has_dividend_snapshot(self) -> bool:
+        """个股/基金分红快照是否至少存在一份（消费方据此决定缺失是否致命）。"""
+        return self._dividend_path.exists() or self._fund_dividend_path.exists()
 
     def meta(self) -> dict[str, Any]:
         path = self.root / 'factors' / 'meta.json'

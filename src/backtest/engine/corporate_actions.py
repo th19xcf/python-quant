@@ -273,14 +273,16 @@ def load_local_dividend_frames(
         logger.warning(f"本地分红快照不可用，跳过除权事件: {exc}")
         return {}
 
-    from pathlib import Path  # noqa: PLC0415
+    from src.data.local_store.expectation import MissingLocalDataError  # noqa: PLC0415
 
-    dividend_path = getattr(store, 'dividend_path', None)
-    if dividend_path is not None and not Path(dividend_path).is_file():
-        logger.error(
+    if getattr(store, 'enabled', False) and not store.has_dividend_snapshot():
+        dividend_path = getattr(store, 'dividend_path', None)
+        # 本地列存已启用却没有任何分红快照：回测若按「无除权事件」继续，
+        # 现金分红与送转全部缺失，收益会被系统性虚增（601258.SH 一类问题的
+        # 另一种形态）。此处直接失败，而不是告警后继续。
+        raise MissingLocalDataError(
             f'[corporate-actions] 本地分红快照不存在: {dividend_path}；'
-            '回测将按「无除权事件」处理，现金分红/送转/配股全部缺失'
-        )
+            '本地列存已启用，回测不能按「无除权事件」继续')
     frames: dict[str, pl.DataFrame] = {}
     missing: list[str] = []
     for code in codes:
