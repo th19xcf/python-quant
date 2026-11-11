@@ -214,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     sha_before = _sha256(src)
-    backup_dir = root / '_backup' / f'stock_shares_{date.today():%Y%m%d}'
+    backup_dir = PROJECT_ROOT / '_backup' / f'stock_shares_{date.today():%Y%m%d}'
     backup_dir.mkdir(parents=True, exist_ok=True)
     backup = backup_dir / src.name
     if not backup.exists():

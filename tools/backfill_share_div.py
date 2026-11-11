@@ -57,7 +57,7 @@ import polars as pl
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DIV = PROJECT_ROOT / 'data/local_store/factors/stock_dividend.parquet'
 DEFAULT_SHARES = PROJECT_ROOT / 'data/local_store/meta/factors/stock_shares.parquet'
-DEFAULT_BACKUP = PROJECT_ROOT / 'data/local_store/_backup'
+DEFAULT_BACKUP = PROJECT_ROOT / '_backup'
 DEFAULT_REPORT = PROJECT_ROOT / 'reports/stock_dividend_20261105/share_div_backfill.json'
 
 SPLIT_WORDS = ('送股', '转增', '送转')

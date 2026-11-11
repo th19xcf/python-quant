@@ -189,9 +189,9 @@ def _read_existing_dates(path: Path) -> list[date] | None:
             if d is not None]
 
 
-def _backup(path: Path, store_root: Path) -> Path:
+def _backup(path: Path) -> Path:
     """覆盖前把原文件复制到 ``_backup/trading_calendar/``，不删除任何历史副本。"""
-    backup_dir = store_root / '_backup' / 'trading_calendar'
+    backup_dir = ROOT / '_backup' / 'trading_calendar'
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     backup = backup_dir / f'{path.stem}.{stamp}{path.suffix}'
@@ -226,7 +226,7 @@ def write_outputs(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     if parquet_path.is_file() and not same_parquet:
-        logger.info(f'[calendar] 原文件已备份: {_backup(parquet_path, store_root)}')
+        logger.info(f'[calendar] 原文件已备份: {_backup(parquet_path)}')
     if not same_parquet:
         tmp = parquet_path.with_name(parquet_path.name + '.tmp')
         frame.write_parquet(tmp)

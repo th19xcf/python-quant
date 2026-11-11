@@ -58,7 +58,7 @@ from src.data.local_store.fund_factors import (  # noqa: E402
 STORE = PROJECT_ROOT / 'data' / 'local_store'
 QUOTES = STORE / 'quotes' / 'fund'
 FACTORS = STORE / 'factors'
-BACKUP = STORE / '_backup'
+BACKUP = PROJECT_ROOT / '_backup'
 ANOMALIES = STORE / 'meta' / 'anomalies'
 OUT_DIR = PROJECT_ROOT / 'reports' / 'etf_audit'
 OUT_DIR.mkdir(parents=True, exist_ok=True)

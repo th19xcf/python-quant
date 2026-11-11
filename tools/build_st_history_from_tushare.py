@@ -66,7 +66,7 @@ from src.data.atomic_write import write_parquet_atomic  # noqa: E402
 
 TARGET = (ROOT / 'data' / 'local_store' / 'meta' / 'st' / 'raw'
           / 'tushare_namechange_intervals.parquet')
-BACKUP_DIR = ROOT / 'data' / 'local_store' / '_backup'
+BACKUP_DIR = ROOT / '_backup'
 RAW_DIR = ROOT / 'tmp' / 'st_namechange_raw'
 TOKEN_FILE = ROOT / '.secrets' / 'tushare_token.txt'
 

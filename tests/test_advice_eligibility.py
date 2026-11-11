@@ -93,3 +93,77 @@ def test_high_volatility_blocked():
     result = check_eligibility(_row(volatility_20=0.9), tier, _config(tier), 'buy')
     assert not result.ok
     assert '波动率' in result.blocked_reason
+
+
+# ----------------------------------------------------------------------
+# 阈值边界：恰好等于阈值放行、差 1 单位拒绝。
+# 现行口径是「上限含等号」（实现用严格的 ``<`` / ``>`` 比较），因此
+# 「等于上限」必须放行；把 ``<`` 改成 ``<=``（或 ``>`` 改成 ``>=``）本组必红。
+# 锚点来源：阈值本身取自 HTTP 层可读的 ``TierConfig`` / ``AdviceConfig`` 字段
+# （min_amount=2e7、lookback_days=120、max_volatility=0.5、max_atr_pct=0.2、
+# min_price=1.0），阻断原因里的数字由实现按实测输入格式化，非人工估算。
+# ----------------------------------------------------------------------
+
+def test_min_amount_at_threshold_passes():
+    tier = _tier(min_amount=2e7)
+    result = check_eligibility(_row(amount_ma20=2e7), tier, _config(tier), 'buy')
+    assert result.ok, result.blocked_reason
+
+
+def test_min_amount_one_yuan_below_threshold_blocked():
+    tier = _tier(min_amount=2e7)
+    result = check_eligibility(_row(amount_ma20=2e7 - 1), tier, _config(tier), 'buy')
+    assert not result.ok
+    assert result.blocked_reason == '20日均成交额不足(2000万)'
+
+
+def test_history_rows_at_lookback_passes():
+    tier = _tier(lookback_days=120)
+    result = check_eligibility(_row(history_rows=120), tier, _config(tier), 'buy')
+    assert result.ok, result.blocked_reason
+
+
+def test_history_rows_one_below_lookback_blocked():
+    tier = _tier(lookback_days=120)
+    result = check_eligibility(_row(history_rows=119), tier, _config(tier), 'buy')
+    assert not result.ok
+    assert result.blocked_reason == '历史不足119日<120日'
+
+
+def test_volatility_at_max_passes():
+    tier = _tier(max_volatility=0.5)
+    result = check_eligibility(_row(volatility_20=0.5), tier, _config(tier), 'buy')
+    assert result.ok, result.blocked_reason
+
+
+def test_volatility_above_max_blocked():
+    tier = _tier(max_volatility=0.5)
+    result = check_eligibility(_row(volatility_20=0.5001), tier, _config(tier), 'buy')
+    assert not result.ok
+    assert result.blocked_reason == '20日波动率50%超限'
+
+
+def test_atr_pct_at_max_passes():
+    tier = _tier(max_atr_pct=0.2)
+    result = check_eligibility(_row(atr_pct=0.2), tier, _config(tier), 'buy')
+    assert result.ok, result.blocked_reason
+
+
+def test_atr_pct_above_max_blocked():
+    tier = _tier(max_atr_pct=0.2)
+    result = check_eligibility(_row(atr_pct=0.2001), tier, _config(tier), 'buy')
+    assert not result.ok
+    assert result.blocked_reason == 'ATR占比20.0%超限'
+
+
+def test_min_price_at_threshold_passes():
+    tier = _tier()
+    result = check_eligibility(_row(raw_close=1.0), tier, _config(tier), 'buy')
+    assert result.ok, result.blocked_reason
+
+
+def test_min_price_below_threshold_blocked():
+    tier = _tier()
+    result = check_eligibility(_row(raw_close=0.99), tier, _config(tier), 'buy')
+    assert not result.ok
+    assert result.blocked_reason == '股价0.99<1.00'

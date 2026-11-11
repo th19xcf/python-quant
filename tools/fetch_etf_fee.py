@@ -601,7 +601,7 @@ def apply_staging() -> None:
              'etf_fee_summary.json', 'etf_fee.manifest.json']
     exist = [n for n in names if (TARGET / n).exists()]
     if exist:
-        backup = STORE / 'meta' / '_backup' / f'multi_asset_fee_{datetime.now():%Y%m%d_%H%M%S}'
+        backup = ROOT / '_backup' / 'meta' / f'multi_asset_fee_{datetime.now():%Y%m%d_%H%M%S}'
         backup.mkdir(parents=True, exist_ok=True)
         for n in exist:
             shutil.copy2(TARGET / n, backup / n)
