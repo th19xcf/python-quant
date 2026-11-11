@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""状态机口径回测（尺子 B：可执行性），与「固定持有 60 个交易日」基线并列输出。
+"""状态机口径回测（尺子 B：可执行性），与「固定持有 N 个交易日」基线并列输出。
+
+N 由 ``--hold-days`` 指定（默认 60），同时决定基线到期日、等价槽位数、
+四块分解的早卖/晚卖分界与未成交反事实的持有期。
 
 口径定义见 ``docs/评价指标体系_2026-11-11.md`` §2：
 
@@ -7,8 +10,8 @@
 * 持仓走生产链路同一套卖出规则（``src/advice/turnover.py`` 的
   ``update_holding`` / ``entry_allowed`` / ``apply_turnover_cap``）；
 * 成交一律 **T+1 开盘**，用 T+1 开盘价与用 T 日收盘价推出的涨跌停价判定可行性；
-* 基线：同一批信号、同一软筛、同一 T+1 开盘买入，固定持有 60 个交易日后开盘卖出，
-  用 60 个重叠 cohort 各占 1/60 资金滚动。
+* 基线：同一批信号、同一软筛、同一 T+1 开盘买入，固定持有 ``hold_days`` 个交易日后开盘卖出，
+  用 ``hold_days`` 个重叠 cohort 各占 ``1/hold_days`` 资金滚动。
 
 产物写入 ``reports/advice/stateful/<起止日>/`` 下的 ``nav.csv`` / ``trades.csv`` /
 ``summary.json`` / ``report.md``，不改任何既有文件、不写 ``data/``。
@@ -61,8 +64,8 @@ from src.data.universe_filter import filter_universe  # noqa: E402
 from src.risk.execution_rules import ExecutionRules  # noqa: E402
 from src.utils.config import get_config  # noqa: E402
 
-#: 基线固定持有交易日数（文档 §2.2）
-BASELINE_HOLD = 60
+#: 基线固定持有交易日数的默认值（文档 §2.2）；实际值由 ``--hold-days`` 指定
+DEFAULT_HOLD_DAYS = 60
 #: 文档冻结的往返成本常数（与 tools/tune_advice.py 的 PROTOCOL 同一数）
 DOC_ROUND_TRIP_COST = 0.00724
 #: 0.724% 的分项（往返）：佣金 5bp×2 + 印花税 5bp（卖出）+ 过户费 0.2bp×2，
@@ -218,7 +221,7 @@ class Position:
 
 @dataclass
 class Cohort:
-    """基线的 1/60 资金 cohort。"""
+    """基线的 1/slots 资金 cohort。"""
 
     signal_date: date
     entry_idx: int
@@ -788,7 +791,7 @@ def run_stateful(window_dates: list[date], by_date: dict[date, pl.DataFrame],
 
 
 # ----------------------------------------------------------------------
-# 基线：60 个重叠 cohort，固定持有 60 个交易日
+# 基线：hold_days 个重叠 cohort，固定持有 hold_days 个交易日
 # ----------------------------------------------------------------------
 def _cohort_buy(cohort: Cohort, day: date, bars: dict[str, tuple],
                 signal_closes: dict[str, float],
@@ -866,16 +869,17 @@ def _cohort_sell(cohort: Cohort, day: date, bars: dict[str, tuple],
 
 
 def _baseline_slots(dates: list[date],
-                    signal_days: set[date] | None) -> dict[str, Any]:
-    """把固定持有 60 日基线换算成等价资金槽位数。
+                    signal_days: set[date] | None,
+                    hold_days: int = DEFAULT_HOLD_DAYS) -> dict[str, Any]:
+    """把固定持有 ``hold_days`` 日基线换算成等价资金槽位数。
 
-    基线原设计是「日频信号 + 60 个重叠 cohort 各占 1/60」，换成月频信号后
-    同时存活的 cohort 只剩约 3 个，若仍按 1/60 分配会把 98.9% 的资金闲置，
-    净值几乎不动，与状态机不可比。这里按相邻信号日的交易日间隔中位数
-    反推等价槽位：``slots = max(1, round(BASELINE_HOLD / spacing_days))``，
+    基线原设计是「日频信号 + 每个信号日一个重叠 cohort、各占 1/hold_days」，
+    换成月频信号后同时存活的 cohort 只剩约 3 个，若仍按 1/hold_days 分配会把
+    绝大部分资金闲置，净值几乎不动，与状态机不可比。这里按相邻信号日的交易日
+    间隔中位数反推等价槽位：``slots = max(1, round(hold_days / spacing_days))``，
     使 ``cohort_budget × slots ≈ equity_init``，两口径资金利用率一致。
 
-    日频信号（``signal_days is None``）取 ``spacing_days=1`` → ``slots=60``，
+    日频信号（``signal_days is None``）取 ``spacing_days=1`` → ``slots=hold_days``，
     与旧行为逐值一致，跨片与单窗口共用同一算法。
     """
     if signal_days is None:
@@ -886,9 +890,10 @@ def _baseline_slots(dates: list[date],
         gaps = [right - left for left, right in zip(positions, positions[1:],
                                                    strict=False) if right > left]
         spacing_all = max(1, int(round(statistics.median(gaps)))) if gaps else 1
-    slots = max(1, int(round(BASELINE_HOLD / spacing_all)))
+    slots = max(1, int(round(hold_days / spacing_all)))
     return {
         'slots': slots,
+        'hold_days': int(hold_days),
         'spacing_days': spacing_all,
         'spacing_samples': len(gaps),
         'cohort_budget_fraction': 1.0 / slots,
@@ -908,7 +913,7 @@ class _PoolLot:
     entry_cost: float
     exit_date: date | None
     exit_price: float | None
-    net60: float
+    net_hold: float
     last_close: float
     stale_days: int = 0
 
@@ -924,7 +929,7 @@ class _PoolLot:
             'entry_cost': self.entry_cost,
             'exit_date': self.exit_date.isoformat() if self.exit_date else None,
             'exit_price': self.exit_price,
-            'net60': self.net60,
+            'net_hold': self.net_hold,
             'last_close': self.last_close,
             'stale_days': int(self.stale_days),
         }
@@ -944,34 +949,37 @@ class _PoolLot:
             exit_date=date.fromisoformat(str(exit_date)[:10]) if exit_date else None,
             exit_price=(float(payload['exit_price'])
                         if payload.get('exit_price') is not None else None),
-            net60=float(payload.get('net60') or 0.0),
+            net_hold=float(payload.get('net_hold') or 0.0),
             last_close=float(payload.get('last_close') or payload['entry_price']),
             stale_days=int(payload.get('stale_days', 0)),
         )
 
 
 class _CohortTrack:
-    """固定持有 60 日的槽位资金容器（``slots`` 与 ``slots60`` 共用同一实现）。
+    """固定持有 ``hold_days`` 日的槽位资金容器（``slots`` 与 ``slots60`` 共用同一实现）。
 
-    ``slots`` 个重叠 cohort 各占 ``equity_init / slots`` 预算，到期开盘卖出。
-    与旧 :func:`run_fixed60` 的实现逐行等价，唯一区别是候选由调用方算好后传入，
-    使 ``slots`` / ``slots60`` 两档共用同一次候选计算。
+    ``slots`` 个重叠 cohort 各占 ``equity_init / slots`` 预算，持有 ``hold_days``
+    个交易日后开盘卖出。与旧 :func:`run_fixed60` 的实现逐行等价，唯一区别是
+    候选由调用方算好后传入，使 ``slots`` / ``slots60`` 两档共用同一次候选计算。
     """
 
     def __init__(self, name: str, slots: int, equity_init: float,
+                 hold_days: int = DEFAULT_HOLD_DAYS,
                  pool: float | None = None,
                  cohorts: list[Cohort] | None = None) -> None:
         self.name = name
         self.slots = max(1, int(slots))
+        self.hold_days = max(1, int(hold_days))
         self.cohort_budget = equity_init / self.slots
         self.pool = equity_init if pool is None else float(pool)
         self.cohorts: list[Cohort] = list(cohorts or [])
 
     @classmethod
     def from_state(cls, name: str, slots: int, equity_init: float,
-                   state: dict[str, Any] | None) -> _CohortTrack:
+                   state: dict[str, Any] | None,
+                   hold_days: int = DEFAULT_HOLD_DAYS) -> _CohortTrack:
         carried = state or {}
-        return cls(name, slots, equity_init,
+        return cls(name, slots, equity_init, hold_days,
                    pool=float(carried.get('pool', equity_init)),
                    cohorts=[Cohort.from_dict(item)
                             for item in (carried.get('cohorts') or [])])
@@ -1017,7 +1025,7 @@ class _CohortTrack:
             self.pool -= budget
             self.cohorts.append(Cohort(
                 signal_date=day, entry_idx=global_index + 1,
-                exit_idx=min(global_index + 1 + BASELINE_HOLD, horizon - 1),
+                exit_idx=min(global_index + 1 + self.hold_days, horizon - 1),
                 budget=budget, cash=budget,
                 candidates=[[code, pct] for code, pct in candidates],
                 signal_closes=dict(signal_closes)))
@@ -1042,11 +1050,11 @@ class _CohortTrack:
 class _PoolTrack:
     """`a` 档：与尺子 A 同构的 lot 级共享现金池。
 
-    候选与成交价全部来自 A 的 ``signals.csv``（mid / on / ok_60，209 行）：
+    候选与成交价全部来自 A 的 ``signals.csv``（mid / on / ok_<hold_days>，209 行）：
     每个信号日按行顺序在 T+1 开盘买入，每只票投入
     ``target_weight × 信号日收盘组合权益``；所有 lot 共享一个现金池，
     现金不足就少买（买不起的行记 ``blocked_cash``）；卖出价取该行的
-    ``exit_close_60``、卖出日取该行的 ``exit_date_60``。不做预分配、不锁仓。
+    ``exit_close_<hold_days>``、卖出日取该行反推出的 ``exit_date``。不做预分配、不锁仓。
     """
 
     def __init__(self, cash: float, lots: list[_PoolLot] | None = None,
@@ -1113,8 +1121,8 @@ class _PoolTrack:
                 entry_notional=notional,
                 entry_cost=cost,
                 exit_date=row.get('exit_date'),
-                exit_price=_finite(row.get('exit_close_60')),
-                net60=float(row.get('net_60') or 0.0),
+                exit_price=_finite(row.get('exit_close')),
+                net_hold=float(row.get('net_hold') or 0.0),
                 last_close=price))
 
         # 2) 收盘卖出到期 lot（A 的口径：到期日收盘价卖出，不重试）
@@ -1143,7 +1151,7 @@ class _PoolTrack:
             stats['impact'] += notional * costs.impact_rate
             self.lots.remove(item)
 
-        # 3) 收盘估值：用面板后复权收盘价（与 A 的 entry_open / exit_close_60 同尺度）；
+        # 3) 收盘估值：用面板后复权收盘价（与 A 的 entry_open / exit_close_hold 同尺度）；
         #    当日无收盘价时沿用该 lot 最近可得的收盘价
         value = 0.0
         for item in self.lots:
@@ -1160,18 +1168,28 @@ class _PoolTrack:
 
 
 def load_a_signals(path: Path = A_SIGNALS_PATH, cache_dir: Path = A_CACHE_DIR,
-                   horizon: int = BASELINE_HOLD) -> dict[str, Any]:
-    """读取尺子 A 的实际持仓（``signals.csv`` 的 mid / on / ok_60 共 209 行）。
+                   hold_days: int = DEFAULT_HOLD_DAYS) -> dict[str, Any]:
+    """读取尺子 A 的实际持仓（``signals.csv`` 的 mid / on / ok_<hold_days> 共 209 行）。
 
-    ``signals.csv`` 没有 ``exit_date_60`` 列，这里用 ``forward_test/cache`` 的
-    同口径 ``shift`` 反推，并用该行的 ``exit_close_60`` 逐值校验（必须 209/209
-    精确相等，否则直接退出，不自行调参抹平）。返回按 ``entry_date`` 分组的
-    建仓清单，以及每期净收益均值（供与 ``stats_main.csv`` 的 ``rec_net`` 对拍）。
+    ``signals.csv`` 没有 ``exit_date`` 列，这里用 ``forward_test/cache`` 的
+    同口径 ``shift`` 反推，并用该行的 ``exit_close_<hold_days>`` 逐值校验
+    （必须 209/209 精确相等，否则直接退出，不自行调参抹平）。返回按
+    ``entry_date`` 分组的建仓清单，以及每期净收益均值（供与
+    ``stats_main.csv`` 对应 horizon 的 ``rec_net`` 对拍）。
     """
+    hold = int(hold_days)
+    exit_price_col = f'exit_close_{hold}'
+    net_col = f'net_{hold}'
+    ok_col = f'ok_{hold}'
     frame = pl.read_csv(path)
+    missing = [name for name in (exit_price_col, net_col, ok_col)
+               if name not in frame.columns]
+    if missing:
+        raise SystemExit(
+            f'a 档：{path} 缺少列 {missing}，无法按 hold_days={hold} 建 lot，停止')
     frame = frame.filter(
         (pl.col('tier') == A_TIER) & (pl.col('variant') == A_VARIANT)
-        & pl.col('ok_60'))
+        & pl.col(ok_col))
     frame = frame.with_columns(
         pl.col('signal_date').str.slice(0, 10).str.to_date('%Y-%m-%d').alias('signal_d'),
         pl.col('entry_date').str.slice(0, 10).str.to_date('%Y-%m-%d').alias('entry_d'),
@@ -1186,25 +1204,26 @@ def load_a_signals(path: Path = A_SIGNALS_PATH, cache_dir: Path = A_CACHE_DIR,
             parts.append(pl.read_parquet(cache_path, columns=['ts_code', 'date', 'close'])
                          .filter(pl.col('ts_code').is_in(sub)))
     if not parts:
-        raise SystemExit(f'a 档：{cache_dir} 下没有可用的行情缓存，无法反推 exit_date_60')
+        raise SystemExit(f'a 档：{cache_dir} 下没有可用的行情缓存，无法反推 exit_date')
 
     panel = pl.concat(parts).sort(['ts_code', 'date'])
     offset_used = None
-    for offset in (horizon - 1, horizon, horizon + 1):
+    for offset in (hold - 1, hold, hold + 1):
         cand = panel.with_columns(
             pl.col('date').shift(-offset).over('ts_code').alias('exit_d'),
             pl.col('close').shift(-offset).over('ts_code').alias('exit_chk'))
         joined = frame.join(
             cand.select(['ts_code', 'date', 'exit_d', 'exit_chk']),
             left_on=['ts_code', 'entry_d'], right_on=['ts_code', 'date'], how='left')
-        price_ok = (joined['exit_chk'] - joined['exit_close_60']).abs().max()
+        price_ok = (joined['exit_chk'] - joined[exit_price_col]).abs().max()
         if joined['exit_d'].null_count() == 0 and price_ok is not None and price_ok < 1e-9:
-            frame = joined.with_columns(pl.col('exit_d').alias('exit_date_60')) \
+            frame = joined.with_columns(pl.col('exit_d').alias('exit_date')) \
                           .drop('exit_chk').sort('__ord')
             offset_used = offset
             break
     if offset_used is None:
-        raise SystemExit('a 档：forward_test 缓存反推的 exit_date_60 与 exit_close_60 对不上，停止')
+        raise SystemExit(
+            f'a 档：forward_test 缓存反推的 exit_date 与 {exit_price_col} 对不上，停止')
 
     rows: list[dict[str, Any]] = []
     entries_by_date: dict[date, list[dict[str, Any]]] = {}
@@ -1213,11 +1232,11 @@ def load_a_signals(path: Path = A_SIGNALS_PATH, cache_dir: Path = A_CACHE_DIR,
             'ts_code': str(item['ts_code']),
             'signal_date': item['signal_d'],
             'entry_date': item['entry_d'],
-            'exit_date': item['exit_date_60'],
+            'exit_date': item['exit_date'],
             'target_weight': float(item['target_weight']),
             'entry_open': float(item['entry_open']),
-            'exit_close_60': float(item['exit_close_60']),
-            'net_60': float(item['net_60']),
+            'exit_close': float(item[exit_price_col]),
+            'net_hold': float(item[net_col]),
         }
         rows.append(entry)
         entries_by_date.setdefault(entry['entry_date'], []).append(entry)
@@ -1225,7 +1244,7 @@ def load_a_signals(path: Path = A_SIGNALS_PATH, cache_dir: Path = A_CACHE_DIR,
     by_period: dict[date, list[float]] = {}
     weight_by_period: dict[date, float] = {}
     for entry in rows:
-        by_period.setdefault(entry['signal_date'], []).append(entry['net_60'])
+        by_period.setdefault(entry['signal_date'], []).append(entry['net_hold'])
         weight_by_period[entry['signal_date']] = (
             weight_by_period.get(entry['signal_date'], 0.0) + entry['target_weight'])
     period_mean = {day: sum(vals) / len(vals) for day, vals in by_period.items()}
@@ -1242,6 +1261,8 @@ def load_a_signals(path: Path = A_SIGNALS_PATH, cache_dir: Path = A_CACHE_DIR,
         'period_net': {day.isoformat(): value for day, value in period_mean.items()},
         'period_mean': sum(period_mean.values()) / len(period_mean),
         'exit_offset': offset_used,
+        'hold_days': hold,
+        'exit_price_column': exit_price_col,
         'weight_min': min(weights),
         'weight_max': max(weights),
         'weight_mean': sum(weights) / len(weights),
@@ -1253,13 +1274,14 @@ def load_a_signals(path: Path = A_SIGNALS_PATH, cache_dir: Path = A_CACHE_DIR,
 
 def check_a_rec_net(signals: dict[str, Any],
                     path: Path = A_STATS_MAIN_PATH) -> dict[str, Any]:
-    """`a` 档口径对拍：每期净收益均值必须等于 A 的 ``rec_net``（±1e-6）。"""
+    """`a` 档口径对拍：每期净收益均值必须等于 A 对应 horizon 的 ``rec_net``（±1e-6）。"""
+    hold = int(signals['hold_days'])
     stats = pl.read_csv(path)
     picked = stats.filter(
-        (pl.col('tier') == A_TIER) & (pl.col('horizon') == BASELINE_HOLD)
+        (pl.col('tier') == A_TIER) & (pl.col('horizon') == hold)
         & (pl.col('group') == '全部'))
     if picked.height != 1:
-        raise SystemExit(f'a 档：{path} 里 mid/60/全部 不是唯一一行，停止')
+        raise SystemExit(f'a 档：{path} 里 mid/{hold}/全部 不是唯一一行，停止')
     expected = float(picked['rec_net'][0])
     diff = abs(float(signals['period_mean']) - expected)
     if diff > A_REC_NET_TOL:
@@ -1268,7 +1290,7 @@ def check_a_rec_net(signals: dict[str, Any],
             f'vs stats_main rec_net {expected:.9f}，差 {diff:.3e}，停止')
     return {
         'stats_main': str(path),
-        'source': 'tier=mid horizon=60 group=全部 rec_net',
+        'source': f'tier=mid horizon={hold} group=全部 rec_net',
         'expected_rec_net': expected,
         'computed_period_mean': float(signals['period_mean']),
         'abs_diff': diff,
@@ -1287,7 +1309,8 @@ def run_baselines(window_dates: list[date], by_date: dict[date, pl.DataFrame],
                   index_base: int = 0,
                   total_days: int | None = None,
                   signal_days: set[date] | None = None,
-                  slots: int = BASELINE_HOLD,
+                  slots: int = DEFAULT_HOLD_DAYS,
+                  hold_days: int = DEFAULT_HOLD_DAYS,
                   a_signals: dict[str, Any] | None = None
                   ) -> dict[str, dict[str, Any]]:
     """三档资金分配在同一次逐日遍历里一起算，候选与收盘价只算一次。
@@ -1306,10 +1329,10 @@ def run_baselines(window_dates: list[date], by_date: dict[date, pl.DataFrame],
     tracks: dict[str, Any] = {}
     if 'slots' in allocs:
         tracks['slots'] = _CohortTrack.from_state(
-            'slots', slots, equity_init, carried.get('slots'))
+            'slots', slots, equity_init, carried.get('slots'), hold_days)
     if 'slots60' in allocs:
         tracks['slots60'] = _CohortTrack.from_state(
-            'slots60', BASELINE_HOLD, equity_init, carried.get('slots60'))
+            'slots60', hold_days, equity_init, carried.get('slots60'), hold_days)
     if 'a' in allocs:
         tracks['a'] = _PoolTrack.from_state(carried.get('a'), equity_init)
 
@@ -1373,19 +1396,21 @@ def run_fixed60(window_dates: list[date], by_date: dict[date, pl.DataFrame],
                 index_base: int = 0,
                 total_days: int | None = None,
                 signal_days: set[date] | None = None,
-                slots: int = BASELINE_HOLD) -> dict[str, Any]:
+                slots: int = DEFAULT_HOLD_DAYS,
+                hold_days: int = DEFAULT_HOLD_DAYS) -> dict[str, Any]:
     """旧入口：只跑 ``slots`` 一档（保持既有调用方与既有数字不变）。
 
-    ``slots`` 由 :func:`_baseline_slots` 按信号日间隔中位数算出（日频为 60，
-    月频约 3），保证每槽预算 ``equity_init / slots`` 使资金利用率与状态机可比。
-    ``state`` 携带上一分片的 ``pool`` 与未退出 cohort，``index_base`` 是
-    本片首日在全局交易日序列里的下标，``total_days`` 是全局交易日数；
-    三者一起保证 ``entry_idx`` / ``exit_idx`` 始终是全局下标。
+    ``slots`` 由 :func:`_baseline_slots` 按信号日间隔中位数与 ``hold_days`` 算出
+    （日频为 hold_days，月频约 3），保证每槽预算 ``equity_init / slots``
+    使资金利用率与状态机可比。``state`` 携带上一分片的 ``pool`` 与未退出 cohort，
+    ``index_base`` 是本片首日在全局交易日序列里的下标，``total_days`` 是全局
+    交易日数；三者一起保证 ``entry_idx`` / ``exit_idx`` 始终是全局下标。
     """
     result = run_baselines(
         window_dates, by_date, bars_by_date, tier, config, equity_init, costs,
         rules, allocs=('slots',), state=state, index_base=index_base,
-        total_days=total_days, signal_days=signal_days, slots=slots)
+        total_days=total_days, signal_days=signal_days, slots=slots,
+        hold_days=hold_days)
     return result['slots']
 
 
@@ -1470,13 +1495,14 @@ def _lookup_quote(bars_by_date: dict[date, dict[str, tuple]] | None,
     return _finite(bar[0]), _finite(bar[1])
 
 
-def _unfilled_hold60(intent: dict[str, Any], index_of: dict[date, int],
-                     window_dates: list[date], costs: TradingCosts,
-                     quote: Any) -> tuple[float, float] | None:
-    """未成交买入意图的 60 日反事实：返回 ``(r_hold60, planned_amount)``。
+def _unfilled_hold(intent: dict[str, Any], index_of: dict[date, int],
+                   window_dates: list[date], costs: TradingCosts,
+                   quote: Any, hold_days: int = DEFAULT_HOLD_DAYS
+                   ) -> tuple[float, float] | None:
+    """未成交买入意图的 ``hold_days`` 日反事实：返回 ``(r_hold, planned_amount)``。
 
-    T+1 开盘买入、持有到 T+1+60 收盘卖出，扣与实盘同一套成本；
-    缺 T+1 开盘价、缺 60 日后收盘或越界时返回 None（由调用方计入跳过数）。
+    T+1 开盘买入、持有到 T+1+hold_days 收盘卖出，扣与实盘同一套成本；
+    缺 T+1 开盘价、缺 hold_days 日后收盘或越界时返回 None（由调用方计入跳过数）。
     四桶分解与 ``unfilled_diagnosis`` 共用本函数，保证两处口径逐值一致。
     """
     entry_idx = index_of.get(intent['signal_date'])
@@ -1488,20 +1514,20 @@ def _unfilled_hold60(intent: dict[str, Any], index_of: dict[date, int],
     if entry_price is None or entry_price <= 0:
         signal_pair = quote(intent['ts_code'], intent['signal_date'])
         entry_price = signal_pair[1] if signal_pair is not None else None
-    target_idx = entry_idx + 1 + BASELINE_HOLD
+    target_idx = entry_idx + 1 + int(hold_days)
     if entry_price is None or target_idx >= len(window_dates):
         return None
     target_pair = quote(intent['ts_code'], window_dates[target_idx])
-    close60 = target_pair[1] if target_pair is not None else None
-    if close60 is None or close60 <= 0:
+    exit_close = target_pair[1] if target_pair is not None else None
+    if exit_close is None or exit_close <= 0:
         return None
     planned = float(intent['notional'])
     shares = planned / entry_price
     entry_cost = _buy_cost(planned, costs)
-    exit_notional = shares * close60
-    r_hold60 = (exit_notional - _sell_cost(exit_notional, costs)) / (
+    exit_notional = shares * exit_close
+    r_hold = (exit_notional - _sell_cost(exit_notional, costs)) / (
         planned + entry_cost) - 1.0
-    return r_hold60, planned
+    return r_hold, planned
 
 
 def _decompose(closed: list[dict[str, Any]],
@@ -1513,12 +1539,16 @@ def _decompose(closed: list[dict[str, Any]],
                quotes: dict[tuple[str, date], tuple[float, float]] | None = None,
                turnover_stateful: float = 0.0,
                turnover_baseline: float = 0.0,
+               hold_days: int = DEFAULT_HOLD_DAYS,
                ) -> dict[str, Any]:
     """按文档 §2.2 做四桶分解，残差原样输出，不调平。
 
     ``quotes`` 供分片合并阶段使用（按需从本地列存取 ``(open, close)``），
-    非空时优先于 ``bars_by_date``。
+    非空时优先于 ``bars_by_date``。``hold_days`` 是基线的固定持有交易日数，
+    同时作为早卖/晚卖分界与未成交反事实的持有期。
     """
+    hold = int(hold_days)
+
     def quote(code: str, day: date) -> tuple[float, float] | None:
         return _lookup_quote(bars_by_date, quotes, code, day)
 
@@ -1532,22 +1562,22 @@ def _decompose(closed: list[dict[str, Any]],
         if entry_idx is None:
             unavailable += 1
             continue
-        target_idx = entry_idx + BASELINE_HOLD
+        target_idx = entry_idx + hold
         if target_idx >= len(window_dates):
             unavailable += 1
             continue
         pair = quote(item['ts_code'], window_dates[target_idx])
-        close60 = pair[1] if pair is not None else None
-        if close60 is None or close60 <= 0:
+        exit_close = pair[1] if pair is not None else None
+        if exit_close is None or exit_close <= 0:
             unavailable += 1
             continue
         outlay = item['entry_notional'] + item['entry_cost']
-        exit_notional = item['shares'] * close60
-        r_hold60 = (exit_notional - _sell_cost(exit_notional, costs)) / outlay - 1.0
-        delta_pp = (item['r_actual'] - r_hold60) * item['entry_notional'] / equity_init * 100.0
-        if item['days_held'] < BASELINE_HOLD:
+        exit_notional = item['shares'] * exit_close
+        r_hold = (exit_notional - _sell_cost(exit_notional, costs)) / outlay - 1.0
+        delta_pp = (item['r_actual'] - r_hold) * item['entry_notional'] / equity_init * 100.0
+        if item['days_held'] < hold:
             early += delta_pp
-        elif item['days_held'] > BASELINE_HOLD:
+        elif item['days_held'] > hold:
             late += delta_pp
         else:
             exact += 1
@@ -1555,13 +1585,13 @@ def _decompose(closed: list[dict[str, Any]],
     unfilled_pp = 0.0
     unfilled_skipped = 0
     for intent in unfilled:
-        counterfactual = _unfilled_hold60(
-            intent, index_of, window_dates, costs, quote)
+        counterfactual = _unfilled_hold(
+            intent, index_of, window_dates, costs, quote, hold)
         if counterfactual is None:
             unfilled_skipped += 1
             continue
-        r_hold60, planned = counterfactual
-        unfilled_pp += -r_hold60 * planned / equity_init * 100.0
+        r_hold, planned = counterfactual
+        unfilled_pp += -r_hold * planned / equity_init * 100.0
 
     decomp_cost = -(cost_stateful - cost_baseline) / equity_init * 100.0
     cost_diff_pp = (cost_baseline - cost_stateful) / equity_init * 100.0
@@ -1576,11 +1606,12 @@ def _decompose(closed: list[dict[str, Any]],
         'decomp_total_diff_pp': total_diff,
         'decomp_residual_ratio': (residual / total_diff) if abs(total_diff) > 1e-12 else None,
         'decomp_detail': {
+            'hold_days': hold,
             'closed_positions': len(closed),
-            'closed_exact_60d_into_residual': exact,
-            'closed_without_60d_target': unavailable,
+            'closed_exact_hold_into_residual': exact,
+            'closed_without_hold_target': unavailable,
             'unfilled_intents_seen': len(unfilled),
-            'unfilled_without_60d_target': unfilled_skipped,
+            'unfilled_without_hold_target': unfilled_skipped,
             'cost_bucket': {
                 'cost_stateful_total': cost_stateful,
                 'cost_baseline_total': cost_baseline,
@@ -1597,7 +1628,8 @@ def _decompose(closed: list[dict[str, Any]],
                 '两口径仓位规模与现金缓冲不同'
                 '（状态机按 1/max_positions 建仓，基线按 baseline_slots.cohort_budget 分槽）',
                 '未投资现金的时间价值按 0 计',
-                '持有期跨越窗口边界（窗口末买入无 60 日后收盘，已单独计数）',
+                '持有期跨越窗口边界'
+                f'（窗口末买入无 {hold} 日后收盘，已单独计数）',
             ],
         },
     }
@@ -1609,14 +1641,16 @@ def _unfilled_diagnosis(unfilled: list[dict[str, Any]],
                         quotes: dict[tuple[str, date], tuple[float, float]] | None,
                         costs: TradingCosts, equity_init: float,
                         planned_total: float,
-                        decomp_unfilled: float | None = None) -> dict[str, Any]:
-    """未成交买入意图诊断：笔数、金额占比、拦截原因、60 日反事实与集中度。
+                        decomp_unfilled: float | None = None,
+                        hold_days: int = DEFAULT_HOLD_DAYS) -> dict[str, Any]:
+    """未成交买入意图诊断：笔数、金额占比、拦截原因、``hold_days`` 日反事实与集中度。
 
-    反事实与四桶分解共用 :func:`_unfilled_hold60`，因此各意图贡献之和
+    反事实与四桶分解共用 :func:`_unfilled_hold`，因此各意图贡献之和
     必须与 ``decomp_unfilled`` 逐值一致（``reconciles_with_decomp`` 自证）。
     ``planned_total`` 取「已进撮合的买入意图计划金额 + 被换手上限截断的金额」，
     即全部买入意图的计划金额；分母口径写进 ``planned_total_formula``。
     """
+    hold = int(hold_days)
     index_of = {day: i for i, day in enumerate(window_dates)}
 
     def quote(code: str, day: date) -> tuple[float, float] | None:
@@ -1634,19 +1668,19 @@ def _unfilled_diagnosis(unfilled: list[dict[str, Any]],
         planned_sum += planned
         blocked_counts[reason] = blocked_counts.get(reason, 0) + 1
         blocked_amounts[reason] = blocked_amounts.get(reason, 0.0) + planned
-        counterfactual = _unfilled_hold60(
-            intent, index_of, window_dates, costs, quote)
+        counterfactual = _unfilled_hold(
+            intent, index_of, window_dates, costs, quote, hold)
         if counterfactual is None:
             skipped += 1
             continue
-        r_hold60, planned_cf = counterfactual
+        r_hold, planned_cf = counterfactual
         evaluable.append({
             'ts_code': str(intent['ts_code']),
             'signal_date': intent['signal_date'].isoformat(),
             'blocked': reason,
             'planned_amount': planned_cf,
-            'r_hold60': r_hold60,
-            'contribution_pp': -r_hold60 * planned_cf / equity_init * 100.0,
+            'r_hold': r_hold,
+            'contribution_pp': -r_hold * planned_cf / equity_init * 100.0,
         })
 
     ranked = sorted(evaluable, key=lambda item: abs(item['contribution_pp']),
@@ -1656,15 +1690,16 @@ def _unfilled_diagnosis(unfilled: list[dict[str, Any]],
     top5_abs = sum(abs(item['contribution_pp']) for item in top5)
     signed_sum = sum(item['contribution_pp'] for item in evaluable)
     weighted_base = sum(item['planned_amount'] for item in evaluable)
-    mean_r = (sum(item['r_hold60'] for item in evaluable) / len(evaluable)
+    mean_r = (sum(item['r_hold'] for item in evaluable) / len(evaluable)
               if evaluable else None)
     weighted_mean_r = (
-        sum(item['r_hold60'] * item['planned_amount'] for item in evaluable)
+        sum(item['r_hold'] * item['planned_amount'] for item in evaluable)
         / weighted_base if weighted_base > 0 else None)
     return {
+        'hold_days': hold,
         'unfilled_intents': len(unfilled),
         'unfilled_intents_evaluable': len(evaluable),
-        'unfilled_without_60d_target': skipped,
+        'unfilled_without_hold_target': skipped,
         'planned_amount': planned_sum,
         'planned_pct_of_all_buy_planned': (
             planned_sum / planned_total if planned_total > 0 else None),
@@ -1676,8 +1711,8 @@ def _unfilled_diagnosis(unfilled: list[dict[str, Any]],
         'blocked_reason_note': (
             '买入意图的拦截原因；跌停只发生在卖出侧，故 limit_down 恒为 0，'
             '卖出侧跌停见 blocked_limit_down'),
-        'mean_r_hold60': mean_r,
-        'mean_r_hold60_weighted': weighted_mean_r,
+        'mean_r_hold': mean_r,
+        'mean_r_hold_weighted': weighted_mean_r,
         'contribution_pp': signed_sum,
         'top5': top5,
         'top5_abs_share': (top5_abs / total_abs) if total_abs > 0 else None,
@@ -1894,23 +1929,26 @@ def _load_quotes(days_by_code: dict[str, set[date]],
 def _decompose_quotes(closed: list[dict[str, Any]],
                       unfilled: list[dict[str, Any]],
                       window_dates: list[date],
-                      store_root: Path) -> dict[tuple[str, date], tuple[float, float]]:
+                      store_root: Path,
+                      hold_days: int = DEFAULT_HOLD_DAYS
+                      ) -> dict[tuple[str, date], tuple[float, float]]:
     """收集四桶分解需要的 (代码, 日期) 对并一次读齐行情。"""
+    hold = int(hold_days)
     index_of = {day: i for i, day in enumerate(window_dates)}
     days_by_code: dict[str, set[date]] = {}
     for item in closed:
         entry_idx = index_of.get(item['entry_date'])
-        if entry_idx is None or entry_idx + BASELINE_HOLD >= len(window_dates):
+        if entry_idx is None or entry_idx + hold >= len(window_dates):
             continue
         days_by_code.setdefault(item['ts_code'], set()).add(
-            window_dates[entry_idx + BASELINE_HOLD])
+            window_dates[entry_idx + hold])
     for intent in unfilled:
         entry_idx = index_of.get(intent['signal_date'])
         if entry_idx is None or entry_idx + 1 >= len(window_dates):
             continue
         days_by_code.setdefault(intent['ts_code'], set()).update({
             window_dates[entry_idx + 1], intent['signal_date']})
-        target_idx = entry_idx + 1 + BASELINE_HOLD
+        target_idx = entry_idx + 1 + hold
         if target_idx < len(window_dates):
             days_by_code[intent['ts_code']].add(window_dates[target_idx])
     return _load_quotes(days_by_code, store_root)
@@ -1943,6 +1981,7 @@ def _pp(value: Any) -> str:
 
 def _build_report(summary: dict[str, Any]) -> str:
     """生成中文 report.md。"""
+    hold = int(summary.get('hold_days', DEFAULT_HOLD_DAYS))
     cmp_block = summary['comparison']
     stateful = cmp_block['stateful']
     fixed = cmp_block['fixed60']
@@ -1995,15 +2034,15 @@ def _build_report(summary: dict[str, Any]) -> str:
         + f"，列名 {', '.join(summary['data']['price_columns'])}（未复权撮合价）",
         f"- 基线资金槽位：`baseline_slots.slots` = {summary['baseline_slots']['slots']}"
         f"（相邻信号日间隔中位数 {summary['baseline_slots']['spacing_days']} 个交易日，"
-        f"按 {BASELINE_HOLD} 日固定持有换算），每槽预算 "
+        f"按 {hold} 日固定持有换算），每槽预算 "
         f"{summary['baseline_slots']['cohort_budget']:,.0f} 元"
         f"（占初始权益 {_pct(summary['baseline_slots']['cohort_budget_fraction'])}）。"
-        '这样处理是为了让「固定持有 60 日」与状态机在同一资金利用率下可比：'
-        '日频信号下 slots=60 即旧行为，月频信号下不再把绝大部分资金闲置。',
+        f'这样处理是为了让「固定持有 {hold} 日」与状态机在同一资金利用率下可比：'
+        f'日频信号下 slots={hold} 即旧行为，月频信号下不再把绝大部分资金闲置。',
         '',
         '## 2. 净值对照',
         '',
-        '| 指标 | 状态机 | 固定持有 60 日 |',
+        f'| 指标 | 状态机 | 固定持有 {hold} 日 |',
         '|---|---:|---:|',
         f"| 累计收益 | {_pct(stateful['cum_return'])} | {_pct(fixed['cum_return'])} |",
         f"| 年化收益 | {_pct(stateful['year_return'])} | {_pct(fixed['year_return'])} |",
@@ -2087,8 +2126,8 @@ def _build_report(summary: dict[str, Any]) -> str:
         '',
         '| 桶 | 贡献 |',
         '|---|---:|',
-        f"| `decomp_early_exit`（早卖 <60 日） | {_pp(summary['decomp_early_exit'])} |",
-        f"| `decomp_late_exit`（晚卖 >60 日） | {_pp(summary['decomp_late_exit'])} |",
+        f"| `decomp_early_exit`（早卖 <{hold} 日） | {_pp(summary['decomp_early_exit'])} |",
+        f"| `decomp_late_exit`（晚卖 >{hold} 日） | {_pp(summary['decomp_late_exit'])} |",
         f"| `decomp_unfilled`（未成交） | {_pp(summary['decomp_unfilled'])} |",
         f"| `decomp_cost`（成本之差） | {_pp(summary['decomp_cost'])} |",
         f"| **四桶之和** | "
@@ -2099,10 +2138,13 @@ def _build_report(summary: dict[str, Any]) -> str:
         f"残差占比：**{_pct(summary['decomp_residual_ratio'])}**。{residual_text}",
         '',
         f"分解覆盖：已平仓 {summary['decomp_detail']['closed_positions']} 笔，"
-        f"其中实际持有恰为 60 日 {summary['decomp_detail']['closed_exact_60d_into_residual']} 笔"
+        f"其中实际持有恰为 {hold} 日 "
+        f"{summary['decomp_detail']['closed_exact_hold_into_residual']} 笔"
         '（按文档无对应桶，计入残差）；'
-        f"窗口末买入缺 60 日后收盘 {summary['decomp_detail']['closed_without_60d_target']} 笔、"
-        f"未成交意图缺 60 日后收盘 {summary['decomp_detail']['unfilled_without_60d_target']} 笔，"
+        f"窗口末买入缺 {hold} 日后收盘 "
+        f"{summary['decomp_detail']['closed_without_hold_target']} 笔、"
+        f"未成交意图缺 {hold} 日后收盘 "
+        f"{summary['decomp_detail']['unfilled_without_hold_target']} 笔，"
         '均如实排除并在此登记。',
         '',
         '### 4.1 未成交买入意图诊断',
@@ -2111,8 +2153,8 @@ def _build_report(summary: dict[str, Any]) -> str:
     diag = summary['unfilled_diagnosis']
     lines += [
         f"- 未成交买入意图 {diag['unfilled_intents']} 笔"
-        f"（其中可做 60 日反事实 {diag['unfilled_intents_evaluable']} 笔，"
-        f"缺 60 日后收盘 {diag['unfilled_without_60d_target']} 笔）；"
+        f"（其中可做 {hold} 日反事实 {diag['unfilled_intents_evaluable']} 笔，"
+        f"缺 {hold} 日后收盘 {diag['unfilled_without_hold_target']} 笔）；"
         f"计划金额 {diag['planned_amount']:,.0f} 元，占全部买入意图计划金额 "
         f"{_pct(diag['planned_pct_of_all_buy_planned'])}"
         f"（分母 {diag['planned_total']:,.0f} 元，口径：{diag['planned_total_formula']}）；",
@@ -2123,9 +2165,9 @@ def _build_report(summary: dict[str, Any]) -> str:
         f"资金不足 `cash` = {diag['blocked_reasons']['cash']} 笔、"
         f"换手上限 `turnover_cap` = {diag['blocked_reasons']['turnover_cap']} 笔"
         f"（{diag['blocked_reason_note']}）；",
-        f"- 60 日反事实收益均值：简单均值 "
-        f"{_pct(diag['mean_r_hold60'])}，按计划金额加权 "
-        f"{_pct(diag['mean_r_hold60_weighted'])}；"
+        f"- {hold} 日反事实收益均值：简单均值 "
+        f"{_pct(diag['mean_r_hold'])}，按计划金额加权 "
+        f"{_pct(diag['mean_r_hold_weighted'])}；"
         f"累计贡献 {_pp(diag['contribution_pp'])}，"
         f"与 §4 `decomp_unfilled` 对账"
         f"{'一致' if diag['reconciles_with_decomp'] else '不一致'}"
@@ -2135,7 +2177,7 @@ def _build_report(summary: dict[str, Any]) -> str:
         f"{_pp(diag['top5_signed_pp'])}；"
         + '；'.join(
             f"{item['ts_code']}（{item['blocked']}，"
-            f"r60={_pct(item['r_hold60'])}，{_pp(item['contribution_pp'])}）"
+            f"r_hold={_pct(item['r_hold'])}，{_pp(item['contribution_pp'])}）"
             for item in diag['top5']) + '。',
         '',
         '## 5. 规则打空率结论',
@@ -2250,10 +2292,11 @@ def _build_report(summary: dict[str, Any]) -> str:
                 f"{_pct(alloc['a_signals']['period_weight_min'])}~"
                 f"{_pct(alloc['a_signals']['period_weight_max'])}、均值 "
                 f"{_pct(alloc['a_signals']['period_weight_mean'])}"
-                '（用户口径的 22.67% 是含 2 行未满 60 日标签的 211 行算法，'
-                '本档按 ok_60 的 209 行算得 22.49%，差异已登记、不抹平）。'
-                f"本 `a` 档是 lot 级连续共享池：60 个交易日持有 + 月度信号使"
-                f"同时在场约 2 个期次，所以日均总仓位 "
+                '（用户口径的 22.67% 是 h=60、含 2 行未满持有期标签的 211 行算法；'
+                f"本档按 ok_{hold} 的 {alloc['a_signals']['rows']} 行算得 "
+                f"{_pct(alloc['a_signals']['period_weight_mean'])}，差异已登记、不抹平）。"
+                f"本 `a` 档是 lot 级连续共享池：{hold} 个交易日持有 + 月度信号使"
+                f"同时在场可跨多个期次，所以日均总仓位 "
                 f"{_pct(a_block['gross_exposure_mean'])} 约为单期仓位的 "
                 f"{a_block['gross_exposure_mean'] / max(1e-9, alloc['a_signals']['period_weight_mean']):.2f} 倍，"
                 '属口径结构差异，不是超额暴露。',
@@ -2267,7 +2310,7 @@ def _build_report(summary: dict[str, Any]) -> str:
                 '### 9.4 `a` 档口径对拍',
                 '',
                 f"- 不限现金时每期净收益均值 = {check['computed_period_mean']:.9f}，"
-                f"`stats_main.csv` 的 mid/60/全部 `rec_net` = "
+                f"`stats_main.csv` 的 mid/{hold}/全部 `rec_net` = "
                 f"{check['expected_rec_net']:.9f}，绝对差 "
                 f"{check['abs_diff']:.3e}（容差 {check['tol']:.1e}）"
                 f"：{'通过' if check['passed'] else '未通过'}；"
@@ -2289,16 +2332,16 @@ def _build_report(summary: dict[str, Any]) -> str:
                 f"- `a` 档逐日按收盘价给在手 lot 估值；当日无收盘价（停牌/缺行情）时"
                 f'沿用该 lot 最近可得的收盘价（首次回退为买入开盘价），'
                 f'本次共 {tracks["a"]["valuation_stale_days"]} 个「lot-日」发生回退。'
-                '卖出日与卖出价一律取 A 的 `exit_date_60` / `exit_close_60`，'
+                f'卖出日与卖出价一律取 A 的 `exit_date` / `exit_close_{hold}`，'
                 '不使用任何盘中价。',
-                '- `signals.csv` 未存 `exit_date_60` 列，本次用 `forward_test/cache` '
-                '的同口径 `shift` 反推，并用 `exit_close_60` 逐值校验全部命中；'
-                '该偏移是在「建仓行」上取第 60 个信号日口径的后续行，与 A 的 '
-                '`close.shift(-60)` 对齐。',
-                f'- 价格尺度：A 的 `entry_open` / `exit_close_60` 是后复权价，'
+                f'- `signals.csv` 未存 `exit_date` 列，本次用 `forward_test/cache` '
+                f'的同口径 `shift` 反推，并用 `exit_close_{hold}` 逐值校验全部命中；'
+                f'该偏移是在「建仓行」上取第 {hold} 个交易日口径的后续行，与 A 的 '
+                f'`close.shift(-{hold})` 对齐。',
+                f'- 价格尺度：A 的 `entry_open` / `exit_close_{hold}` 是后复权价，'
                 '估值因此统一取面板后复权收盘列 `close`（不是撮合用的 `raw_close`）。'
                 f'有 {tracks["a"]["exit_price_checks"]} 笔到期卖出可比对，'
-                '面板后复权收盘价与 `exit_close_60` 的平均相对差 '
+                f'面板后复权收盘价与 `exit_close_{hold}` 的平均相对差 '
                 f'{_pct(tracks["a"]["exit_price_dev_mean"]) if tracks["a"]["exit_price_dev_mean"] is not None else "—"}。',
             ]
         lines.append('')
@@ -2349,14 +2392,19 @@ def main(argv: list[str] | None = None) -> int:
                         help='选候选频率（默认 daily；month-end 只在每月最后一个交易日选）')
     parser.add_argument('--only-chunk', default='',
                         help='只跑指定分片（标签，如 2019），便于单次命令限时内落盘')
+    parser.add_argument('--hold-days', type=int, default=DEFAULT_HOLD_DAYS,
+                        help='基线固定持有交易日数（默认 60）：同时决定基线到期日、'
+                             '等价槽位数、四块分解的早卖/晚卖分界与未成交反事实持有期')
     parser.add_argument('--baseline-alloc', choices=('slots', 'a', 'slots60', 'all'),
                         default='slots',
-                        help='固定持有 60 日基线的资金分配口径（默认 slots，保持旧行为；'
+                        help='固定持有基线的资金分配口径（默认 slots，保持旧行为；'
                              'a = 与尺子 A 同构的 lot 级共享现金池；'
                              'slots60 = 日频旧行为；all = 三档并列）')
     parser.add_argument('--out-suffix', default='',
                         help='产物目录后缀（如 _baseline_alloc，避免覆盖既有目录）')
     args = parser.parse_args(argv)
+    if args.hold_days < 1:
+        raise SystemExit(f'--hold-days 必须 ≥ 1，收到 {args.hold_days}')
 
     started = datetime.now()
     app_config = get_config()
@@ -2443,18 +2491,19 @@ def _run_single(args: argparse.Namespace, started: datetime, app_config: Any,
 
     signal_days = (_month_end_days(window_dates)
                    if args.signal_mode == 'month-end' else None)
-    baseline_slots = _baseline_slots(window_dates, signal_days)
+    baseline_slots = _baseline_slots(window_dates, signal_days, args.hold_days)
     stateful = run_stateful(window_dates, by_date, bars_by_date, all_dates,
                             tier, config, args.equity, costs, rules,
                             signal_days=signal_days)
     _log('状态机回测完成', started)
     allocs = _resolve_allocs(args)
-    a_signals = load_a_signals() if 'a' in allocs else None
+    a_signals = load_a_signals(hold_days=args.hold_days) if 'a' in allocs else None
     a_check = check_a_rec_net(a_signals) if a_signals else None
     baselines = run_baselines(
         window_dates, by_date, bars_by_date, tier, config, args.equity, costs,
         rules, allocs=allocs, signal_days=signal_days,
-        slots=baseline_slots['slots'], a_signals=a_signals)
+        slots=baseline_slots['slots'], hold_days=args.hold_days,
+        a_signals=a_signals)
     baseline = baselines['slots']
     _log(f'资金分配 {" / ".join(allocs)} 完成', started)
     return _emit_products(
@@ -2484,6 +2533,8 @@ def _attach_baseline_alloc(summary: dict[str, Any], *, args: argparse.Namespace,
     返回 (档位清单, 矩阵行)。
     """
     alloc_names = list(baselines) if baselines else ['slots']
+    hold_days = int(getattr(args, 'hold_days', DEFAULT_HOLD_DAYS))
+    slots_doc = summary['baseline_slots']
     alloc_blocks: dict[str, Any] = {}
     alloc_matrix: list[dict[str, Any]] = []
     for name in alloc_names:
@@ -2517,22 +2568,29 @@ def _attach_baseline_alloc(summary: dict[str, Any], *, args: argparse.Namespace,
                    '不改写成交、持仓与复利路径；矩阵中的年化与最大回撤基于'
                    '「净值 + 累计现金利息」的事后序列，买卖与成本路径不变'),
         'definitions': {
-            'slots': ('现有反推口径：slots=3（相邻信号日间隔中位数换算），'
+            'slots': (f'现有反推口径：slots={slots_doc["slots"]}'
+                      f'（相邻信号日间隔中位数 {slots_doc["spacing_days"]} 日，'
+                      f'按 hold_days={hold_days} 换算），'
                       '每槽预算 equity_init/slots，票按 target_weight，'
                       '到期开盘卖出；逐值与既有产物一致'),
             'a': ('与尺子 A 同构：直接读 reports/advice/forward_test/signals.csv '
-                  '（tier=mid、variant=on、ok_60，209 行 / 56 个信号日），'
+                  f'（tier=mid、variant=on、ok_{hold_days}，'
+                  f'{a_signals["row_count"] if a_signals else 0} 行 / '
+                  f'{a_signals["period_count"] if a_signals else 0} 个信号日），'
                   'lot 级共享现金池，T+1 开盘买入，每只票投入 '
-                  'target_weight × 信号日收盘组合权益，买入后第 60 个交易日'
-                  '（A 的 exit_date_60）按收盘价卖出，不预分配、不锁仓、现金不足少买'),
-            'slots60': ('日频旧行为在月频下的样子：slots=60，每槽预算 '
-                        'equity_init/60，其余同 slots'),
+                  'target_weight × 信号日收盘组合权益，'
+                  f'买入后第 {hold_days} 个交易日'
+                  f'（A 的 exit_close_{hold_days}）按收盘价卖出，'
+                  '不预分配、不锁仓、现金不足少买'),
+            'slots60': (f'日频旧行为在月频下的样子：slots={hold_days}，每槽预算 '
+                        f'equity_init/{hold_days}，其余同 slots'),
         },
     }
     if a_signals:
         summary['baseline_alloc']['a_signals'] = {
             'path': a_signals['path'],
-            'filter': f"tier={a_signals['tier']} & variant={a_signals['variant']} & ok_60",
+            'filter': (f"tier={a_signals['tier']} & variant={a_signals['variant']} "
+                       f"& ok_{hold_days}"),
             'rows': a_signals['row_count'],
             'periods': a_signals['period_count'],
             'target_weight_min': a_signals['weight_min'],
@@ -2542,8 +2600,8 @@ def _attach_baseline_alloc(summary: dict[str, Any], *, args: argparse.Namespace,
             'period_weight_min': a_signals['period_weight_min'],
             'period_weight_max': a_signals['period_weight_max'],
             'exit_date_offset': a_signals['exit_offset'],
-            'exit_date_method': ('signals.csv 无 exit_date_60 列，用 forward_test/cache '
-                                 '同口径 shift 反推，并用 exit_close_60 逐值校验'),
+            'exit_date_method': ('signals.csv 无 exit_date 列，用 forward_test/cache '
+                                 f'同口径 shift 反推，并用 exit_close_{hold_days} 逐值校验'),
         }
     if a_check:
         summary['baseline_alloc']['a_check'] = a_check
@@ -2553,10 +2611,12 @@ def _attach_baseline_alloc(summary: dict[str, Any], *, args: argparse.Namespace,
         'b': {'signal_days': len(_month_end_days(window_dates)),
               'days_with_candidates': stateful_stats['days_with_candidates'],
               'candidate_signals': stateful_stats['candidate_signals']},
-        'note': ('A 档与 B 档的候选集不同源：A 是 92 个月末信号日里 56 天有票、'
-                 '共 209 笔；B 的 month-end 口径是 92 天里 39 天有候选、'
-                 '共 847 个候选信号，两者差一个量级。`a` 档因此必须用 A 自己的'
-                 ' 209 行，而不是 B 的 select_candidates 候选集'),
+        'note': ('A 档与 B 档的候选集不同源：A 是月末信号日里有票的行、'
+                 f"共 {(a_signals or {}).get('row_count')} 笔；B 的 month-end 口径是"
+                 f" {len(_month_end_days(window_dates))} 天里"
+                 f" {stateful_stats['days_with_candidates']} 天有候选、"
+                 f"共 {stateful_stats['candidate_signals']} 个候选信号，两者差一个量级。"
+                 '`a` 档因此必须用 A 自己的信号行，而不是 B 的 select_candidates 候选集'),
     }
     return alloc_names, alloc_matrix
 
@@ -2575,6 +2635,7 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
                    quotes: dict[tuple[str, date], tuple[float, float]] | None = None,
                    extra_summary: dict[str, Any] | None = None) -> int:
     """组装 summary / nav / trades / report 并打印对照表（单窗口与分片共用）。"""
+    hold_days = int(getattr(args, 'hold_days', DEFAULT_HOLD_DAYS))
     round_trip_actual = costs.round_trip_rate
     round_trip_recomputed = _round_trip_rate(costs)
     gap = round_trip_actual - DOC_ROUND_TRIP_COST
@@ -2603,13 +2664,14 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
         baseline_block['total_cost'], stateful['nav'], baseline['nav'],
         quotes=quotes,
         turnover_stateful=stateful_block['turnover'],
-        turnover_baseline=baseline_block['turnover'])
+        turnover_baseline=baseline_block['turnover'],
+        hold_days=hold_days)
     planned_total = (stateful_stats['planned_amount']
                      + stateful_stats['blocked_turnover_cap_amount'])
     unfilled_diag = _unfilled_diagnosis(
         stateful_stats['unfilled_records'], window_dates, bars_by_date,
         quotes, costs, args.equity, planned_total,
-        decomp_unfilled=decomp['decomp_unfilled'])
+        decomp_unfilled=decomp['decomp_unfilled'], hold_days=hold_days)
 
     delay_hist = {str(key): int(value)
                   for key, value in sorted(stateful_stats['delay_hist'].items())}
@@ -2639,7 +2701,7 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
         'ST 状态：选池阶段已用 get_st_status 按 T 日剔除 ST；撮合层 '
         'check_eligibility 未传 st_status（记 unknown，仅提示不拦截），'
         '未知状态没有被当成「非 ST」用于放行。',
-        '窗口末 60 个交易日内买入的持仓没有「买入后第 60 个交易日收盘」'
+        f'窗口末 {hold_days} 个交易日内买入的持仓没有「买入后第 {hold_days} 个交易日收盘」'
         '（本地数据止于 2026-11-09），该部分不计入四桶并在 decomp_detail 单独计数，'
         '残差因此偏大——未用未来数据补齐。',
         '窗口期末仍未平仓的持仓在 nav.csv 按最后一个交易日收盘价估值，'
@@ -2662,9 +2724,10 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
         '与逐日切片重算结果完全一致；逐日循环只做门槛判定与撮合。',
         '状态机持仓的当日分位缺失（停牌/无有效因子）时按 0.0 处理，'
         '即视为最弱信号，卖出被撮合层拦截时继续持有并重试。',
-        '基线 cohort 按信号日间隔换算槽位：默认日频信号下每交易日起一个、共 60 个，'
-        '各占初始权益的 1/60（旧行为）；月频信号下按相邻信号日间隔中位数反推 '
-        'slots（约 3）并令每槽预算 = 初始权益 / slots，'
+        f'基线 cohort 按信号日间隔换算槽位：默认日频信号下每交易日起一个、'
+        f'共 {hold_days} 个，各占初始权益的 1/{hold_days}（旧行为）；'
+        '月频信号下按相邻信号日间隔中位数反推 '
+        'slots 并令每槽预算 = 初始权益 / slots，'
         '使两口径资金利用率可比，具体数值见 summary.baseline_slots。',
         '年化按 252 个交易日折算；换手为单边年化（买卖成交额之和 / 2 / 平均净值 / 年）。',
         '候选稀疏的根因是方向相反：mid 档扩展因子的 direction 全为 -1'
@@ -2699,6 +2762,7 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
             'factor_count': len(tier.factors),
         },
         'initial_equity': args.equity,
+        'hold_days': hold_days,
         'cash_reserve': cash_reserve,
         'cash_reserve_source': 'config.constraints.cash_buffer',
         'target_weight': target_weight,
@@ -2840,17 +2904,18 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
         },
         'baseline_slots': {
             'slots': baseline_slots['slots'],
+            'hold_days': hold_days,
             'spacing_days': baseline_slots['spacing_days'],
             'spacing_samples': baseline_slots['spacing_samples'],
             'cohort_budget': args.equity / max(1, baseline_slots['slots']),
             'cohort_budget_fraction': baseline_slots['cohort_budget_fraction'],
             'signal_mode': args.signal_mode,
             'formula': ('spacing_days = 相邻信号日交易日间隔中位数；'
-                        'slots = max(1, round(BASELINE_HOLD / spacing_days))；'
+                        'slots = max(1, round(hold_days / spacing_days))；'
                         'cohort_budget = equity_init / slots'),
-            'purpose': ('让「固定持有 60 日」与状态机在同一资金利用率下可比；'
-                        '日频信号下 slots=60 即旧行为，月频信号下不再把绝大部分'
-                        '资金闲置'),
+            'purpose': (f'让「固定持有 {hold_days} 日」与状态机在同一资金利用率下可比；'
+                        f'日频信号下 slots={hold_days} 即旧行为，月频信号下不再把'
+                        '绝大部分资金闲置'),
         },
         'cost_bucket': decomp['decomp_detail']['cost_bucket'],
         'unfilled_diagnosis': unfilled_diag,
@@ -2914,10 +2979,10 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
           f'每槽 {summary["baseline_slots"]["cohort_budget"]:,.0f} 元')
     print(f'未成交诊断  : {unfilled_diag["unfilled_intents"]} 笔 | 计划金额占比 '
           f'{_pct(unfilled_diag["planned_pct_of_all_buy_planned"])} | '
-          f'60日反事实均值 {_pct(unfilled_diag["mean_r_hold60"])} | '
+          f'{hold_days}日反事实均值 {_pct(unfilled_diag["mean_r_hold"])} | '
           f'top5 占 {_pct(unfilled_diag["top5_abs_share"])}')
     print('-' * 78)
-    print(f'{"指标":<20}{"状态机":>16}{"固定持有60日":>18}')
+    print(f'{"指标":<20}{"状态机":>16}{"固定持有" + str(hold_days) + "日":>18}')
     for label, key in (('累计收益', 'cum_return'), ('年化收益', 'year_return'),
                        ('最大回撤', 'max_drawdown'), ('年化单边换手', 'turnover')):
         left = stateful_block[key]
@@ -2977,12 +3042,19 @@ def _resolve_allocs(args: argparse.Namespace) -> tuple[str, ...]:
 
 
 def _resume_states(prev_state_path: Path, allocs: tuple[str, ...],
-                   prev_label: str) -> tuple[dict[str, Any],
-                                             dict[str, dict[str, Any] | None]]:
+                   prev_label: str,
+                   hold_days: int = DEFAULT_HOLD_DAYS
+                   ) -> tuple[dict[str, Any],
+                              dict[str, dict[str, Any] | None]]:
     """读上一分片的收尾状态，返回 (状态机状态, 各档基线状态)。"""
     if not prev_state_path.exists():
         raise SystemExit(f'缺少上一片状态 {prev_state_path}，请先完成 {prev_label}')
     previous = json.loads(prev_state_path.read_text(encoding='utf-8'))
+    cached_hold = int(previous.get('hold_days', DEFAULT_HOLD_DAYS))
+    if cached_hold != int(hold_days):
+        raise SystemExit(
+            f'{prev_label} 分片按 hold_days={cached_hold} 生成，本次 {hold_days}，'
+            '续跑会拼接不同持有期的 cohort，停止（请换目录或去掉 --resume 重跑）')
     prev_baselines = previous.get('baselines') or {}
     old_baseline = previous.get('baseline') or {}
     baseline_states: dict[str, dict[str, Any] | None] = {}
@@ -3016,7 +3088,7 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
         raise SystemExit(f'窗口内没有交易日：{start}~{end}')
     signal_days = (_month_end_days(global_dates)
                    if args.signal_mode == 'month-end' else None)
-    baseline_slots = _baseline_slots(global_dates, signal_days)
+    baseline_slots = _baseline_slots(global_dates, signal_days, args.hold_days)
     all_chunks = _year_chunks(global_dates)
     labels = [label for label, _ in all_chunks]
     if args.only_chunk and args.only_chunk not in labels:
@@ -3028,7 +3100,7 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
     codes = list_local_stock_codes(app_config)
     index_of = {day: i for i, day in enumerate(global_dates)}
     allocs = _resolve_allocs(args)
-    a_signals = load_a_signals() if 'a' in allocs else None
+    a_signals = load_a_signals(hold_days=args.hold_days) if 'a' in allocs else None
     if a_signals:
         check_a_rec_net(a_signals)
 
@@ -3037,13 +3109,19 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
             continue
         nav_path, trades_path, state_path = _chunk_paths(out_dir, label)
         if args.resume and state_path.exists() and nav_path.exists():
+            cached = json.loads(state_path.read_text(encoding='utf-8'))
+            if int(cached.get('hold_days', DEFAULT_HOLD_DAYS)) != args.hold_days:
+                raise SystemExit(
+                    f'[chunk {label}] 缓存 hold_days='
+                    f'{cached.get("hold_days", DEFAULT_HOLD_DAYS)} 与本次 '
+                    f'{args.hold_days} 不同，停止（换目录或去掉 --resume）')
             print(f'[chunk {label}] 已完成，跳过（resume）', flush=True)
             continue
         if position > 0:
             prev_label = all_chunks[position - 1][0]
             _, _, prev_state_path = _chunk_paths(out_dir, prev_label)
             stateful_state, baseline_states = _resume_states(
-                prev_state_path, allocs, prev_label)
+                prev_state_path, allocs, prev_label, args.hold_days)
         else:
             stateful_state = None
             baseline_states = dict.fromkeys(allocs)
@@ -3092,6 +3170,7 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
             state=baseline_states,
             index_base=index_of[chunk_dates[0]], total_days=len(global_dates),
             signal_days=signal_days, slots=baseline_slots['slots'],
+            hold_days=args.hold_days,
             a_signals=a_signals)
         baseline = baselines['slots']
         for row, base_row in zip(stateful['nav_rows'], baseline['nav_rows'],
@@ -3117,6 +3196,7 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
             'panel_start': panel_start.isoformat(),
             'panel_dates': [day.isoformat() for day in panel_dates],
             'signal_mode': args.signal_mode,
+            'hold_days': args.hold_days,
             'signal_days': signal_count,
             'finalized': is_final,
             'elapsed_sec': elapsed,
@@ -3225,7 +3305,7 @@ def _merge_chunks(args: argparse.Namespace, started: datetime,
             '分片拼合后的交易日序列与全局日历不一致：'
             f'{len(window_dates)} vs {len(global_dates)}')
     quotes = _decompose_quotes(closed, stats['unfilled_records'],
-                               window_dates, store_root)
+                               window_dates, store_root, args.hold_days)
     stateful = {
         'nav_rows': nav_rows, 'trades': trades, 'closed': closed,
         'stats': stats, 'nav': float(nav_rows[-1]['nav_stateful']),
@@ -3244,7 +3324,7 @@ def _merge_chunks(args: argparse.Namespace, started: datetime,
         'nav_rows': baselines['slots']['nav_rows'],
         'stats': baselines['slots']['stats'], 'nav': baselines['slots']['nav'],
     }
-    a_signals = load_a_signals() if 'a' in allocs else None
+    a_signals = load_a_signals(hold_days=args.hold_days) if 'a' in allocs else None
     a_check = check_a_rec_net(a_signals) if a_signals else None
     load_report = LoadReport(requested=totals['requested'],
                              loaded=totals['loaded'], rows=totals['rows'])
