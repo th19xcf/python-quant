@@ -87,6 +87,21 @@ PROTOCOL: dict[str, Any] = {
     'risk_filters': 'v1 不含 ST/事件过滤（基线与候选同等生效，不引入相对偏差）',
 }
 
+# ----------------------------------------------------------------------
+# Bonferroni 分母 = 事先声明的「计划预算」，不是「实际已用次数」。
+#
+# 用已用次数当分母等于每做一次试验就放宽一次门槛（N 涨、α* 跟着涨），
+# 做得越多门槛越低，是 p-hacking 的典型形式，会系统性制造假阳性。
+# 正确口径：α* 恒按声明预算计算，与已用次数无关；已用次数只用于展示进度，
+# 超出预算时告警（应停止新增试验），而**不是**把分母改大或改小。
+#
+# 声明值见 docs/寻优路线图_2026-11-11.md §1.1：N=20 → α*=0.0025 → t*≈3.10。
+# ----------------------------------------------------------------------
+PLANNED_TRIALS = 20
+FAMILY_ALPHA = 0.05
+PLANNED_ALPHA = FAMILY_ALPHA / PLANNED_TRIALS
+PLANNED_T_CRIT = 3.10
+
 LEDGER_DIR = ROOT / 'reports' / 'strategy_tuning'
 LEDGER_PATH = LEDGER_DIR / 'experiments.csv'
 CACHE_DIR = ROOT / 'tmp' / 'strategy_tuning'
@@ -583,16 +598,25 @@ def _metric_block(result: dict[str, Any]) -> dict[str, float]:
 
 
 def _is_tuning(row: dict[str, str]) -> bool:
-    """是否计入 Bonferroni 分母：只算 tuning。
+    """是否为一次调优试验（用于统计「已用次数」，不用于算门槛）。
 
     历史行没有 purpose 列（或为空），那些都是调优试验，按 tuning 处理；
-    verify / diagnostic 属复算与体检，不应放大分母。
+    verify / diagnostic 属复算与体检，既不计入门槛，也不计入进度。
     """
     return (row.get('purpose') or '').strip().lower() in ('', 'tuning')
 
 
+def _budget_warning(used: int) -> str:
+    """已用次数超出计划预算时的告警；分母仍固定为计划预算。"""
+    if used <= PLANNED_TRIALS:
+        return ''
+    return (f'[warn] 已用 tuning 次数 {used} 超过计划预算 N={PLANNED_TRIALS}：'
+            f'应停止新增试验。Bonferroni 分母仍固定为 N={PLANNED_TRIALS}，'
+            f'不会自动放大到 {used}（边做边改门槛即 p-hacking）。')
+
+
 def _append_ledger(row: dict[str, Any]) -> int:
-    """追加一行试验记录，返回累计尝试次数（只计 tuning，含本行若为 tuning）。"""
+    """追加一行试验记录，返回已用 tuning 次数（仅进度，作 Bonferroni 分母的是计划预算）。"""
     LEDGER_DIR.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, str]] = []
     if LEDGER_PATH.is_file():
@@ -600,16 +624,16 @@ def _append_ledger(row: dict[str, Any]) -> int:
             rows = list(csv.DictReader(handle))
     record = {key: str(row.get(key, '')) for key in LEDGER_COLUMNS}
     record['experiment_id'] = str(row['experiment_id'])
-    cumulative = sum(1 for r in rows if _is_tuning(r))
+    used = sum(1 for r in rows if _is_tuning(r))
     if _is_tuning(record):
-        cumulative += 1
-    record['cumulative_attempts'] = str(cumulative)
+        used += 1
+    record['cumulative_attempts'] = str(used)
     rows.append(record)
     with LEDGER_PATH.open('w', encoding='utf-8', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=LEDGER_COLUMNS)
         writer.writeheader()
         writer.writerows(rows)
-    return cumulative
+    return used
 
 
 def print_protocol() -> None:
@@ -641,16 +665,20 @@ def _fmt_ledger_pct(row: dict[str, str], key: str, width: int) -> str:
 
 
 def cmd_ledger(_args: argparse.Namespace) -> int:
+    print(f'计划预算 N={PLANNED_TRIALS} → α*={PLANNED_ALPHA:.4f} → '
+          f't*≈{PLANNED_T_CRIT:.2f}（用于显著性门槛，与已用次数无关）')
     if not LEDGER_PATH.is_file():
-        print('累计试验表尚不存在（累计尝试次数 = 0）')
+        print('累计试验表尚不存在；已用 tuning 次数 0（仅作进度，不参与门槛计算）')
         return 0
     with LEDGER_PATH.open('r', encoding='utf-8', newline='') as handle:
         rows = list(csv.DictReader(handle))
     print(f'累计试验表: {LEDGER_PATH}')
-    tuning = [r for r in rows if _is_tuning(r)]
-    print(f'累计尝试次数: {len(tuning)}（只计 purpose=tuning；另有 '
-          f'{len(rows) - len(tuning)} 条 verify/diagnostic 不计入 Bonferroni 分母）')
-    print(f'Bonferroni α=0.05/{max(len(tuning), 1)} = {0.05 / max(len(tuning), 1):.5f}')
+    used = sum(1 for r in rows if _is_tuning(r))
+    print(f'已用 tuning 次数 {used}（仅作进度，不参与门槛计算；另有 '
+          f'{len(rows) - used} 条 verify/diagnostic 不计入）')
+    warning = _budget_warning(used)
+    if warning:
+        print(warning)
     print(f'{"id":<18}{"label":<40}{"hold":>5}{"净年化":>10}{"期胜率":>8}{"Δ净年化":>10}')
     for row in rows[-10:]:
         identity = (row.get('experiment_id') or '')[:18]
@@ -729,7 +757,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         return 0
 
     main = results[str(holds[0])]
-    cumulative = _append_ledger({
+    used = _append_ledger({
         'experiment_id': started.strftime('%Y%m%dT%H%M%S'),
         'timestamp': started.isoformat(timespec='seconds'),
         'label': args.label,
@@ -749,10 +777,15 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         'delta_max_drawdown': main['delta']['max_drawdown'],
         'n_periods': main['n_periods'],
     })
-    print(f'已记入 {LEDGER_PATH}；累计尝试次数 = {cumulative}'
-          f'（Bonferroni α=0.05/{cumulative} = {0.05 / cumulative:.5f}）')
+    print(f'计划预算 N={PLANNED_TRIALS} → α*={PLANNED_ALPHA:.4f} → '
+          f't*≈{PLANNED_T_CRIT:.2f}（用于显著性门槛，与已用次数无关）')
+    print(f'已记入 {LEDGER_PATH}；已用 tuning 次数 {used}（仅作进度，不参与门槛计算）')
+    warning = _budget_warning(used)
+    if warning:
+        print(warning)
     out = LEDGER_DIR / f'eval_{started.strftime("%Y%m%dT%H%M%S")}.json'
-    summary['cumulative_attempts'] = cumulative
+    summary['cumulative_attempts'] = used
+    summary['planned_trials'] = PLANNED_TRIALS
     summary['elapsed_sec'] = round((datetime.now() - started).total_seconds(), 1)
     out.write_text(json.dumps(summary, ensure_ascii=False, indent=2),
                    encoding='utf-8', newline='\n')
