@@ -1,0 +1,86 @@
+{
+  "fwd": "fwd_20_oo",
+  "h": 20,
+  "n_checks": 12,
+  "n_pass": 12,
+  "cases": [
+    {
+      "check": "turnover_20: 取向超额 == 原始 Q1 超额（并列容差 0.1 bp）",
+      "pass": true,
+      "detail": "64.8938 vs 64.9069（差 1.31e-02 bp）"
+    },
+    {
+      "check": "turnover_20: 取向超额 != 原始 Q5 超额取反",
+      "pass": true,
+      "detail": "差 25.6431 bp（旧公式 90.5369）"
+    },
+    {
+      "check": "turnover_20: 取向换手 == 原始 Q1 换手（并列容差 0.0005）",
+      "pass": true,
+      "detail": "0.326071 vs 0.326059"
+    },
+    {
+      "check": "turnover_20/oriented: 恒等式 q5_excess == Q5组均值-全池",
+      "pass": true,
+      "detail": "残差 1.42e-14 bp"
+    },
+    {
+      "check": "turnover_20/raw: 恒等式 q5_excess == Q5组均值-全池",
+      "pass": true,
+      "detail": "残差 0.00e+00 bp"
+    },
+    {
+      "check": "turnover_20: |spread| 取向前后相同（并列容差 0.1 bp）",
+      "pass": true,
+      "detail": "155.3730 vs -155.4439"
+    },
+    {
+      "factor": "turnover_20",
+      "q5_excess_bp_oriented": 64.89381128192068,
+      "q1_excess_bp_raw": 64.90693924701287,
+      "old_formula_excess_bp": 90.53694360511656,
+      "turnover_q5_monthly_oriented": 0.3260707602786639,
+      "turnover_q1_raw": 0.3260586995781668,
+      "holdings_q5": 714.8881118881119
+    },
+    {
+      "check": "v_skew_60: 取向超额 == 原始 Q1 超额（并列容差 0.1 bp）",
+      "pass": true,
+      "detail": "26.7378 vs 26.7863（差 4.85e-02 bp）"
+    },
+    {
+      "check": "v_skew_60: 取向超额 ≈ 原始 Q5 超额取反",
+      "pass": true,
+      "detail": "差 0.0894 bp（旧公式 26.6484）"
+    },
+    {
+      "check": "v_skew_60: 取向换手 == 原始 Q1 换手（并列容差 0.0005）",
+      "pass": true,
+      "detail": "0.462924 vs 0.463017"
+    },
+    {
+      "check": "v_skew_60/oriented: 恒等式 q5_excess == Q5组均值-全池",
+      "pass": true,
+      "detail": "残差 7.11e-15 bp"
+    },
+    {
+      "check": "v_skew_60/raw: 恒等式 q5_excess == Q5组均值-全池",
+      "pass": true,
+      "detail": "残差 3.55e-15 bp"
+    },
+    {
+      "check": "v_skew_60: |spread| 取向前后相同（并列容差 0.1 bp）",
+      "pass": true,
+      "detail": "53.3693 vs -53.4347"
+    },
+    {
+      "factor": "v_skew_60",
+      "q5_excess_bp_oriented": 26.737784991311962,
+      "q1_excess_bp_raw": 26.786325104677186,
+      "old_formula_excess_bp": 26.648423740074332,
+      "turnover_q5_monthly_oriented": 0.46292407700078614,
+      "turnover_q1_raw": 0.46301748149838906,
+      "holdings_q5": 714.8951048951049
+    }
+  ]
+}
