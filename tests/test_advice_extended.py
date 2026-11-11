@@ -87,6 +87,8 @@ def test_legacy_switch_keeps_original_factors() -> None:
 
 def test_extended_columns_compute_without_error() -> None:
     panel = _synthetic_panel(days=300, codes=5)
+    panel = panel.with_columns(
+        (pl.col('close') / pl.col('close').shift(1).over('ts_code') - 1.0).alias('ret'))
     frame = compute_extended_candidates(panel)
     for column in enabled_extended_columns():
         assert column in frame.columns
@@ -506,6 +508,93 @@ def test_ui_segmented_control_hides_short() -> None:
     keys = [item[0] for item in SegmentedControl.ITEMS]
     assert keys == ['mid', 'long']
     assert 'short' not in keys
+
+
+def _hfq_panel(days: int = 120, codes: int = 4) -> pl.DataFrame:
+    """构造后复权 close + 故意错位的 pre_close：两者不在同一价格空间。"""
+    rows = []
+    base = date(2025, 1, 2)
+    for code_index in range(codes):
+        hfq = 10.0 + code_index
+        for day in range(days):
+            prev_hfq = hfq
+            drift = float(np.cos(day / 9.0 + code_index) * 0.015)
+            hfq = max(1.0, hfq * (1.0 + drift))
+            rows.append({
+                'date': (base + timedelta(days=day)).isoformat(),
+                'ts_code': f'{code_index:06d}.SZ',
+                'open': hfq,
+                'high': hfq * 1.01,
+                'low': hfq * 0.99,
+                'close': hfq,
+                # 后复权前收的一半，模拟「未复权 pre_close 配后复权 close」的混空间
+                'pre_close': prev_hfq * 0.5,
+                'raw_prev_close': prev_hfq * 0.5,
+                'raw_close': hfq * 0.5,
+                'volume': 1_000_000.0,
+                'amount': hfq * 1_000_000.0,
+            })
+    return pl.DataFrame(rows)
+
+
+def test_extended_uses_hfq_ret_when_injected() -> None:
+    """注入后复权 ret 时，ff_amihud_60 必须等于 close/delay(close,1) 口径。"""
+    panel = _hfq_panel()
+    injected = panel.with_columns(
+        (pl.col('close') / pl.col('close').shift(1).over('ts_code') - 1.0).alias('ret'))
+    got = compute_extended_candidates(injected, columns=('ff_amihud_60',))
+    expect = injected.with_columns(
+        (((pl.col('close') / pl.col('close').shift(1).over('ts_code') - 1.0).abs())
+         / pl.col('amount')).rolling_mean(60).over('ts_code').alias('_expect'))
+    got_last = got.sort(['ts_code', 'date']).group_by('ts_code').last().sort('ts_code')
+    exp_last = expect.sort(['ts_code', 'date']).group_by('ts_code').last().sort('ts_code')
+    got_vals = got_last['ff_amihud_60'].to_numpy() * 1e-8
+    exp_vals = exp_last['_expect'].to_numpy()
+    assert np.allclose(got_vals, exp_vals, rtol=1e-9, equal_nan=True)
+
+
+def test_extended_raises_without_ret() -> None:
+    """缺 ret 必须抛错，不允许回落到 close/pre_close 的混空间算法。"""
+    with pytest.raises(ValueError, match='缺后复权 ret，拒绝用 pre_close 回落'):
+        compute_extended_candidates(_hfq_panel(), columns=('ff_amihud_60',))
+
+
+def test_pre_close_fallback_would_produce_different_values() -> None:
+    """人造反例：若按旧写法用 close/pre_close，数值必然与正确口径不同（证明断言有牙）。"""
+    panel = _hfq_panel()
+    injected = panel.with_columns(
+        (pl.col('close') / pl.col('close').shift(1).over('ts_code') - 1.0).alias('ret'))
+    new = compute_extended_candidates(injected, columns=('ff_amihud_60',))
+    old_style = panel.with_columns(
+        (((pl.col('close') / pl.col('pre_close') - 1.0).abs())
+         / pl.col('amount')).rolling_mean(60).over('ts_code').alias('_old'))
+    new_last = new.sort(['ts_code', 'date']).group_by('ts_code').last().sort('ts_code')
+    old_last = old_style.sort(['ts_code', 'date']).group_by('ts_code').last().sort('ts_code')
+    new_vals = new_last['ff_amihud_60'].to_numpy() * 1e-8
+    old_vals = old_last['_old'].to_numpy()
+    assert not np.allclose(new_vals, old_vals, rtol=1e-6, equal_nan=False)
+    assert np.nanmedian(np.abs(old_vals / new_vals)) > 1.0
+
+
+def test_mixed_space_ret_diverges_from_true_returns() -> None:
+    """口径可分辨性：混空间 ret 的 mean|ret| 必须明显偏离真实日收益。"""
+    panel = _hfq_panel(days=200, codes=6)
+    stats = panel.with_columns([
+        (pl.col('close') / pl.col('close').shift(1).over('ts_code') - 1.0)
+        .alias('ret_true'),
+        (pl.col('close') / pl.col('pre_close') - 1.0).alias('ret_mixed'),
+    ]).select([
+        pl.col('ret_true').abs().mean().alias('mean_abs_true'),
+        pl.col('ret_mixed').abs().mean().alias('mean_abs_mixed'),
+        (pl.col('ret_true') < 0).mean().alias('share_neg_true'),
+        (pl.col('ret_mixed') < 0).mean().alias('share_neg_mixed'),
+    ]).row(0, named=True)
+    # 人造面板把 pre_close 设为后复权前收的一半 → 混空间 |ret| 被放大到 ~1 倍以上
+    assert stats['mean_abs_mixed'] > 2.0 * stats['mean_abs_true']
+    assert stats['mean_abs_mixed'] > 0.5
+    # 混空间口径下「涨」的行占绝对多数：真实收益应接近对半
+    assert stats['share_neg_mixed'] < 0.1
+    assert 0.3 < stats['share_neg_true'] < 0.7
 
 
 if __name__ == '__main__':

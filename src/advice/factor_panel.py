@@ -79,14 +79,15 @@ def compute_factor_panel(panel: pl.DataFrame, extended: bool = False) -> pl.Data
     if extended:
         from src.advice.factor_sets import enabled_extended_columns
 
-        compat = frame.with_columns([
-            pl.col('raw_prev_close').alias('pre_close')
-            if 'raw_prev_close' in frame.columns else pl.col('close').shift(1).over(
-                'ts_code').alias('pre_close'),
-        ])
+        # 扩展因子统一用后复权日收益 ret = close/delay(close,1) - 1（close 已后复权）。
+        # 不得改用 close/raw_prev_close：后者把后复权收盘与未复权前收相除，
+        # 得到的是跨空间收益（实测 mean|ret| 达 386%，约为真实日收益的 180 倍）。
+        compat = frame.with_columns(
+            (pl.col('close') / pl.col('close').shift(1).over('ts_code') - 1.0)
+            .alias('ret'))
         frame = compute_extended_candidates(
             compat, columns=enabled_extended_columns(), mask_invalid=True)
-        frame = frame.drop('pre_close')
+        frame = frame.drop([c for c in ('ret', 'pre_close') if c in frame.columns])
     else:
         frame = frame.with_columns([
             pl.col(column).cast(pl.Float64, strict=False) for column in score_cols

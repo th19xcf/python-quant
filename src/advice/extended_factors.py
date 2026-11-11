@@ -230,12 +230,16 @@ def compute_extended_candidates(panel: pl.DataFrame, columns: tuple[str, ...] | 
     if 'seq' not in frame.columns:
         frame = frame.with_columns(
             pl.int_range(0, pl.len()).over('ts_code').cast(pl.Float64).alias('seq'))
+    if 'ret' not in frame.columns:
+        raise ValueError(
+            'compute_extended_candidates 缺后复权 ret，拒绝用 pre_close 回落。'
+            '调用方必须显式注入 ret = close/delay(close,1) - 1（close 为后复权）。'
+            '后复权 close 与未复权 pre_close 相除得到的是跨空间收益'
+            '（实测 mean|ret| 达 386%、约真实日收益的 180 倍），'
+            '会让 ff_amihud_60 / gtja_010 等因子整体失真。')
     if 'pre_close' not in frame.columns:
         frame = frame.with_columns(
             pl.col('close').shift(1).over('ts_code').alias('pre_close'))
-    if 'ret' not in frame.columns:
-        frame = frame.with_columns(
-            (pl.col('close') / pl.col('pre_close') - 1.0).alias('ret'))
     if 'vwap' not in frame.columns:
         factor = (pl.col('close') / pl.col('raw_close')
                   if 'raw_close' in frame.columns else pl.lit(1.0))

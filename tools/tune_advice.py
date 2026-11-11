@@ -59,16 +59,17 @@ from src.quant.factor_lib.data import PanelRequest, load_panel  # noqa: E402
 from src.risk.execution_rules import ExecutionRules  # noqa: E402
 
 # ----------------------------------------------------------------------
-# 冻结口径（v1）。改这里等于改口径，必须同时升 PROTOCOL_VERSION 并写新文档。
+# 冻结口径（v2，2026-11-11 主口径 h=60 → h=20）。
+# 改这里等于改口径，必须同时升 version 并写新文档。
 # ----------------------------------------------------------------------
 PROTOCOL: dict[str, Any] = {
-    'version': 'v1',
+    'version': 'v2',
     'eval_start': '2022-01-01',
     'eval_end': '2026-10-31',
     'is_start': '2015-01-05',
     'is_end': '2021-12-31',
-    'hold_main': 60,
-    'hold_controls': [5, 20],
+    'hold_main': 20,
+    'hold_controls': [5, 60],
     'cost_round_trip': 0.00724,
     'cost_breakdown': ('佣金 5bp×2 + 印花税 5bp(卖出) + 过户费 0.2bp×2 + 市值分档滑点；'
                        '满仓全额往返 0.724%，按本期实际换手比例摊销'),
@@ -499,13 +500,13 @@ def run_periods(scored: pl.DataFrame, dates: list[date], hold: int,
         net_period = (1.0 + gross_period) * (1.0 - cost * period_fraction) - 1.0
         period_equity = equity * (1.0 + net_period)
         for offset in range(1, hold):
-            day = dates[entry_i + offset]
-            day_rows = by_date.get(day, {})
+            bar_day = dates[entry_i + offset]
+            day_rows = by_date.get(bar_day, {})
             closes = {code: (float(day_rows[code]['close'])
                              if code in day_rows and day_rows[code].get('close')
                              else np.nan) for code in picks}
             gross = _portfolio_gross(picks, base_open, closes, top_k)
-            curve.append({'date': day.isoformat(),
+            curve.append({'date': bar_day.isoformat(),
                           'equity': equity * (1.0 + gross)})
         curve.append({'date': exit_day.isoformat(), 'equity': period_equity})
 
@@ -613,6 +614,20 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fmt_ledger_pct(row: dict[str, str], key: str, width: int) -> str:
+    """格式化账本里的百分比列：空值/非数字按缺失显示并告警，不静默填 0。"""
+    identity = row.get('experiment_id') or '<无 id>'
+    raw = (row.get(key) or '').strip()
+    if not raw:
+        print(f'  [warn] {identity}: {key} 缺失，显示为 —（不填 0）')
+        return f'{"—":>{width}}'
+    try:
+        return f'{float(raw):>{width}.2%}'
+    except ValueError:
+        print(f'  [warn] {identity}: {key}={raw!r} 不是数字，显示为 —（不填 0）')
+        return f'{"—":>{width}}'
+
+
 def cmd_ledger(_args: argparse.Namespace) -> int:
     if not LEDGER_PATH.is_file():
         print('累计试验表尚不存在（累计尝试次数 = 0）')
@@ -624,10 +639,12 @@ def cmd_ledger(_args: argparse.Namespace) -> int:
           f'{0.05 / max(len(rows), 1):.5f}）')
     print(f'{"id":<18}{"label":<40}{"hold":>5}{"净年化":>10}{"期胜率":>8}{"Δ净年化":>10}')
     for row in rows[-10:]:
-        print(f'{row["experiment_id"]:<18}{row["label"][:38]:<40}'
-              f'{row["hold"]:>5}{float(row["net_annualized"]):>10.2%}'
-              f'{float(row["win_rate"]):>8.1%}'
-              f'{float(row["delta_net_annualized"]):>10.2%}')
+        identity = (row.get('experiment_id') or '')[:18]
+        label = (row.get('label') or '')[:38]
+        print(f'{identity:<18}{label:<40}{(row.get("hold") or ""):>5}'
+              f'{_fmt_ledger_pct(row, "net_annualized", 10)}'
+              f'{_fmt_ledger_pct(row, "win_rate", 8)}'
+              f'{_fmt_ledger_pct(row, "delta_net_annualized", 10)}')
     return 0
 
 

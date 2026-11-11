@@ -167,7 +167,10 @@ def compute_price_candidates(df: pl.DataFrame) -> pl.DataFrame:
         raw_close.alias('raw_close'),
     ]).drop('hfq_factor')
 
-    # 12 个在用 extended 因子（生产同口径）
+    # 12 个在用 extended 因子（生产同口径）：必须先注入后复权 ret，
+    # 不得用 close/pre_close 回落（pre_close 与后复权 close 不在同一空间）
+    df = df.with_columns(
+        (pl.col('close') / pl.col('close').shift(1).over(g) - 1.0).alias('ret'))
     df = compute_extended_candidates(df, columns=tuple(EXTENDED_12))
     df = df.sort([g, 'date'])
 
