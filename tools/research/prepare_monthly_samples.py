@@ -81,6 +81,51 @@ def load_one(path: Path) -> pl.DataFrame:
     ]).sort('date')
 
 
+def suspension_aware_forward_returns(daily: pl.DataFrame) -> pl.DataFrame:
+    """计算与 ``daily`` 行对齐的 ``fwd_ret`` / ``fwd_ret_21c``。
+
+    窗口到期仍在停牌时（第 21 根 bar 的 ``volume`` 为空或 0），不把窗口内的
+    0 收益占位 bar 当作收益，改用其后第 21 根**真实成交** bar 的累计涨跌补足；
+    不足 21 根真实 bar 时保留原值（无后续可观测路径，不臆造收益）。
+
+    判据取 ``volume == 0`` 这一层：T8 实测 62 行全部命中 ``volume==0`` 且四价相等，
+    而 ``meta/suspension/implied_suspension.parquet`` 只覆盖其中 18 行，不足以
+    单独作为判据。
+    """
+    base = daily.select([
+        pl.col('ts_code'),
+        pl.col('date'),
+        pl.col('open'),
+        pl.col('close'),
+        (pl.col('volume').is_null() | (pl.col('volume') <= 0)).alias('_ph'),
+    ]).with_columns([
+        pl.col('open').shift(-1).over('ts_code').alias('_entry'),
+        pl.col('close').shift(-1).over('ts_code').alias('_entry_c'),
+        pl.col('close').shift(-21).over('ts_code').alias('_close21'),
+        pl.col('_ph').shift(-21).over('ts_code').alias('_end_ph'),
+        pl.col('_ph').not_().cast(pl.Int32).cum_sum().over('ts_code')
+        .alias('_rank'),
+    ])
+    real = (base.filter(~pl.col('_ph'))
+            .select(['ts_code', pl.col('_rank').alias('_target'),
+                     pl.col('close').alias('_exit')]))
+    base = base.with_columns((pl.col('_rank') + 21).alias('_target'))
+    base = base.join(real, on=['ts_code', '_target'], how='left',
+                     maintain_order='left')
+    fixed = pl.col('_end_ph').fill_null(False) & pl.col('_exit').is_not_null()
+    return base.select([
+        'ts_code', 'date',
+        pl.when(fixed & pl.col('_entry').is_not_null())
+        .then(pl.col('_exit') / pl.col('_entry') - 1.0)
+        .otherwise(pl.col('_close21') / pl.col('_entry') - 1.0)
+        .alias('fwd_ret'),
+        pl.when(fixed & pl.col('_entry_c').is_not_null())
+        .then(pl.col('_exit') / pl.col('_entry_c') - 1.0)
+        .otherwise(pl.col('_close21') / pl.col('_entry_c') - 1.0)
+        .alias('fwd_ret_21c'),
+    ])
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description='构建 PIT 月末价量样本（阶段 1/3）')
     p.add_argument('--store', type=Path, default=DATA_DIR, help='本地数据根目录')
@@ -125,13 +170,10 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001
                 print(f'[WARN] 跳过 {fp.name}: {exc}', flush=True)
         daily = pl.concat(frames, how='vertical_relaxed').sort(['ts_code', 'date'])
-        daily = daily.with_columns([
-            (pl.int_range(pl.len()).over('ts_code') + 1).alias('hist_seq'),
-            (pl.col('close').shift(-21).over('ts_code')
-             / pl.col('open').shift(-1).over('ts_code') - 1.0).alias('fwd_ret'),
-            (pl.col('close').shift(-21).over('ts_code')
-             / pl.col('close').shift(-1).over('ts_code') - 1.0).alias('fwd_ret_21c'),
-        ])
+        labels = suspension_aware_forward_returns(daily)
+        daily = daily.hstack(labels.select(['fwd_ret', 'fwd_ret_21c']))
+        daily = daily.with_columns(
+            (pl.int_range(pl.len()).over('ts_code') + 1).alias('hist_seq'))
         fac = compute_factor_panel(daily, extended=False)
         fac = fac.filter(pl.col('date').is_in(list(mset)))
         fac = fac.select([c for c in keep if c in fac.columns])
