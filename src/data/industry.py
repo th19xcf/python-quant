@@ -34,6 +34,8 @@ _MARKETS = {'0': 'SZ', '1': 'SH', '2': 'BJ'}
 _NAME_FILES = ('tdxzs.cfg', 'tdxzs3.cfg')
 
 _SNAPSHOT_CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
+#: 目录扫描结果缓存：``{目录: (目录 mtime_ns, [(日期, 路径)])}``
+_FILES_CACHE: dict[str, tuple[int, list[tuple[date, Path]]]] = {}
 
 
 def resolve_tdx_cache_dir(tdx_data_path: str | Path) -> Path:
@@ -146,15 +148,31 @@ def build_snapshot(
 
 
 def _snapshot_files(store_root: Path | str) -> list[tuple[date, Path]]:
+    """列出 ``meta/industry`` 下的日快照文件，按目录 mtime 缓存。
+
+    调用方是**按标的**查询（``RiskContext._industry_map`` 每日数千次），
+    每次都 glob 一遍目录会占掉推荐单日成本的两成以上。目录内新增/删除文件
+    必然改变目录 mtime，据此失效即可；文件内容变化由 ``load_snapshot`` 的
+    文件级 mtime 校验负责，两者互不替代。
+    """
     dir_path = Path(store_root) / 'meta' / 'industry'
     if not dir_path.is_dir():
         return []
+    try:
+        mtime = dir_path.stat().st_mtime_ns
+    except OSError:
+        return []
+    cached = _FILES_CACHE.get(str(dir_path))
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
     files: list[tuple[date, Path]] = []
     for path in dir_path.glob('industry_*.parquet'):
         day = _as_date(path.stem.split('_', 1)[1])
         if day is not None:
             files.append((day, path))
-    return sorted(files)
+    files.sort()
+    _FILES_CACHE[str(dir_path)] = (mtime, files)
+    return files
 
 
 def load_snapshot(
