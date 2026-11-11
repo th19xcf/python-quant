@@ -21,13 +21,9 @@ T+1 开盘价判定能否成交。涨跌停拒单见
 --------------------------------------------
 - 涨跌停 / 一字板：``src/advice/eligibility.py`` 对 T 日涨停只做
   ``limit_up_risk`` 标注（不拦截），成交判定在撮合层；
-- 退市整理板：**双路取并集**，两路都只读 ``as_of`` 当日及之前可见的事实：
-  ① ``meta/stock_basic.parquet`` 的 ``status == 'D'`` 且 ``delist_date ≤ as_of``；
-  ② ``meta/name_history.parquet`` 的 **PIT 简称**（``start_date ≤ as_of ≤ end_date``）
-  含「退」即判整理期。第 ② 路解决「整理期标的 ``status`` 仍是 ``L``、``delist_date``
-  未回填」的漏剔（如 ``002731.SZ``），不像旧实现那样拿**当前**简称倒推历史，
-  因此没有前视。**数据缺口**：``name_history`` 对 2023~2025 部分退市标的缺「退」
-  段（详见 ``docs/每日推荐筛选与判断清单.md``），这类标的退回只用第 ① 路判定；
+- 退市整理板：只认 ``meta/stock_basic.parquet`` 的 ``status`` 与 ``delist_date``，
+  不再用简称含「退」的字符串匹配。**数据缺口**：当前该表对整理期标的尚未回填
+  ``delist_date``（status 仍为 ``L``），这类标的在表中没有退市痕迹，会漏剔；
 - 财务类「审计非标」：本地无审计意见字段（``financials_pit`` 四张表都没有
   ``audit_opinion`` 一类列），**无数据支撑，未实现**；净资产为负与连续两年
   亏损已按公告日实现，但默认关闭。
@@ -59,7 +55,6 @@ from typing import Any, Iterable
 import polars as pl
 from loguru import logger
 
-from src.data.name_consistency import NAME_HISTORY as NAME_HISTORY_REL
 from src.data.quality.code_migration import load_entity_index
 from src.data.quality.suspension_union import SuspensionUnion, load_suspension_union
 from src.data.risk_flags import get_st_status
@@ -68,7 +63,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ROOT = PROJECT_ROOT / 'data' / 'local_store'
 
 #: 规则版本号：清单文件与每日输出都打印它，便于事后核对「这批名单按哪版规则筛出」
-RULES_VERSION = '2026-11-11.3'
+RULES_VERSION = '2026-11-11.2'
 #: 规则说明文档（随每日输出一起打印路径）
 DOC_PATH = 'docs/每日推荐筛选与判断清单.md'
 
@@ -110,7 +105,7 @@ RULE_ORDER: tuple[str, ...] = (
 RULE_LABELS: dict[str, str] = {
     RULE_BOARD: '板块（B股/老三板/北交所/科创/创业开关）',
     RULE_DELISTED: '已退市（stock_basic.status=D 且 delist_date ≤ as_of）',
-    RULE_DELISTING: '退市整理期（PIT 简称含「退」或距 delist_date ≤ N 个交易日）',
+    RULE_DELISTING: '退市整理期（距 delist_date ≤ N 个交易日）',
     RULE_SUPERSEDED: '旧码/迁移码（由新码承载）',
     RULE_NOT_LISTED: '当日不在市（未上市或已退市）',
     RULE_ST: 'ST/*ST/退市风险警示',
@@ -169,9 +164,6 @@ class UniverseFilterConfig:
     exclude_delisted: bool = True
     #: 退市整理期判定窗口：距 delist_date 剩余不超过 N 个交易日
     delisting_window_trading_days: int = 30
-    #: 退市整理期第二路：按 as_of 取 PIT 历史简称，含标记字即判整理期
-    enable_name_based_delisting: bool = True
-    delisting_name_marker: str = '退'
     exclude_old_three_board: bool = True
     include_bse: bool = False
     include_star: bool = True
@@ -250,9 +242,6 @@ class UniverseFilterResult:
                 'exclude_delisting_period': self.config.exclude_delisting_period,
                 'delisting_window_trading_days':
                     self.config.delisting_window_trading_days,
-                'enable_name_based_delisting':
-                    self.config.enable_name_based_delisting,
-                'delisting_name_marker': self.config.delisting_name_marker,
                 'enable_circ_mv_floor': self.config.enable_circ_mv_floor,
                 'min_circ_mv': (self.config.min_circ_mv
                                 if self.config.enable_circ_mv_floor else None),
@@ -337,7 +326,8 @@ def _load_listing_spans(root: Path) -> dict[str, tuple[date | None, date | None]
 def _load_stock_basic(root: Path) -> dict[str, tuple[str | None, date | None]]:
     """``meta/stock_basic.parquet`` 的退市字段：``code → (status, delist_date)``。
 
-    这是退市判定的第 ① 路：``status``（``L``/``D``）与 ``delist_date``。
+    退市整理板不再用简称含「退」这类字符串匹配，只认这份表的
+    ``status``（``L``/``D``）与 ``delist_date``。
     """
     path = root / 'meta' / 'stock_basic.parquet'
     if not path.is_file():
@@ -355,56 +345,6 @@ def _load_stock_basic(root: Path) -> dict[str, tuple[str | None, date | None]]:
             delist_day if isinstance(delist_day, date) else None,
         )
     return basic
-
-
-def _load_name_history(root: Path) -> dict[str, tuple[tuple[date, date | None, str], ...]]:
-    """``meta/name_history.parquet`` 的 PIT 简称区间，``code → ((start, end, name), ...)``。
-
-    退市判定的第 ② 路数据源。与 :mod:`src.data.name_consistency` 同一正式路径，
-    只是预先按代码分组，避免逐票扫全表。``end_date`` 为空表示该段尚未收尾
-    （当前 155 个含「退」段全部如此，所以只看 ``start_date`` 是否已生效）。
-    """
-    path = root / NAME_HISTORY_REL
-    if not path.is_file():
-        return {}
-    try:
-        frame = pl.read_parquet(
-            path, columns=['ts_code', 'name', 'start_date', 'end_date'])
-    except (OSError, pl.exceptions.PolarsError):
-        return {}
-    spans: dict[str, list[tuple[date, date | None, str]]] = {}
-    for row in frame.to_dicts():
-        start = row.get('start_date')
-        if not isinstance(start, date):
-            continue
-        end = row.get('end_date')
-        spans.setdefault(str(row['ts_code']).upper(), []).append(
-            (start, end if isinstance(end, date) else None,
-             str(row.get('name') or '')))
-    return {code: tuple(sorted(items)) for code, items in spans.items()}
-
-
-def _pit_name_has_marker(
-        code: str, day: date,
-        history: dict[str, tuple[tuple[date, date | None, str], ...]],
-        cfg: UniverseFilterConfig, unknowns: dict[str, int]) -> bool:
-    """``day`` 当日生效的 PIT 简称是否含整理期标记（默认「退」）。
-
-    两端闭区间、同日取 ``start_date`` 更晚的后段，与
-    :func:`src.data.name_consistency.name_at_frame` 同口径。历史表完全没有
-    该代码时记一次 ``unknowns['delist_name']``，不用当前简称兜底。
-    """
-    spans = history.get(code)
-    if not spans:
-        unknowns['delist_name'] += 1
-        return False
-    marker = cfg.delisting_name_marker
-    best: tuple[date, str] | None = None
-    for start, end, name in spans:
-        if start <= day and (end is None or day <= end):
-            if best is None or start >= best[0]:
-                best = (start, name)
-    return best is not None and bool(marker) and marker in best[1]
 
 
 def _read_quotes(store: Any, code: str, start: date) -> pl.DataFrame | None:
@@ -533,8 +473,7 @@ def filter_universe(as_of: Any, codes: Iterable[str], *,
 
     dropped: dict[str, list[str]] = {rule: [] for rule in RULE_ORDER}
     unknowns: dict[str, int] = {'st': 0, 'listing': 0, 'amount': 0,
-                                'circ_mv': 0, 'financial': 0, 'delist': 0,
-                                'delist_name': 0}
+                                'circ_mv': 0, 'financial': 0, 'delist': 0}
 
     from src.data.local_store.store import LocalQuoteStore  # noqa: PLC0415
     from src.data.trading_calendar import get_calendar  # noqa: PLC0415
@@ -543,7 +482,6 @@ def filter_universe(as_of: Any, codes: Iterable[str], *,
     entity_index = load_entity_index(root)
     spans = _load_listing_spans(root)
     basic = _load_stock_basic(root)
-    history = _load_name_history(root)
     union = load_suspension_union(root) if cfg.enable_suspension_filter else None
     window = _trading_window(calendar, day, cfg.suspension_window)
     prev_day = calendar.previous(day, inclusive=False)
@@ -551,8 +489,7 @@ def filter_universe(as_of: Any, codes: Iterable[str], *,
     survivors = _apply_static_rules(
         ordered, cfg=cfg, day=day, calendar=calendar, window=window,
         prev_day=prev_day, union=union, entity_index=entity_index,
-        spans=spans, basic=basic, history=history, root=root,
-        dropped=dropped, unknowns=unknowns)
+        spans=spans, basic=basic, root=root, dropped=dropped, unknowns=unknowns)
     kept = _apply_quote_rules(
         survivors, cfg=cfg, day=day, calendar=calendar,
         store=LocalQuoteStore(root), dropped=dropped, unknowns=unknowns)
@@ -581,7 +518,6 @@ def _apply_static_rules(
     union: SuspensionUnion | None, entity_index: Any,
     spans: dict[str, tuple[date | None, date | None]],
     basic: dict[str, tuple[str | None, date | None]],
-    history: dict[str, tuple[tuple[date, date | None, str], ...]],
     root: Path, dropped: dict[str, list[str]], unknowns: dict[str, int],
 ) -> list[str]:
     """板块 / 旧码 / 在市 / ST / 停牌 / 复牌首日 / 次新：不读行情即可判定。"""
@@ -590,8 +526,7 @@ def _apply_static_rules(
         reason = _static_drop_reason(
             code, cfg=cfg, day=day, calendar=calendar, window=window,
             prev_day=prev_day, union=union, entity_index=entity_index,
-            spans=spans, basic=basic, history=history, root=root,
-            unknowns=unknowns)
+            spans=spans, basic=basic, root=root, unknowns=unknowns)
         if reason is None:
             survivors.append(code)
         else:
@@ -606,36 +541,28 @@ def _board_reason(code: str, cfg: UniverseFilterConfig) -> str | None:
 
 def _delisting_reason(code: str, cfg: UniverseFilterConfig, day: date,
                       basic: dict[str, tuple[str | None, date | None]],
-                      history: dict[str, tuple[tuple[date, date | None, str], ...]],
                       calendar: Any,
                       unknowns: dict[str, int]) -> str | None:
-    """退市类剔除：双路取并集，命中任一即剔。
+    """退市类剔除：已退市 / 退市整理期，只认 ``stock_basic`` 的 status 与 delist_date。
 
-    - 第 ① 路（``stock_basic``）：
-      * 已退市：``status == 'D'`` 且 ``delist_date`` 为空或不晚于 ``day``；
-      * 整理期：``delist_date`` 晚于 ``day``，且剩余交易日不超过
-        ``delisting_window_trading_days``（默认 30，与交易所整理期长度一致）。
-    - 第 ② 路（``name_history`` 的 PIT 简称）：``day`` 当日生效简称含「退」
-      → 判整理期。用于 ``status`` 仍是 ``L``、``delist_date`` 未回填的标的
-      （如 ``002731.SZ``），只取当日已生效的段，无前视。
+    - 已退市：``status == 'D'`` 且 ``delist_date`` 为空或不晚于 ``day``；
+    - 退市整理期：``delist_date`` 晚于 ``day``，且剩余交易日不超过
+      ``delisting_window_trading_days``（默认 30，与交易所整理期长度一致）。
     """
     if not (cfg.exclude_delisted or cfg.exclude_delisting_period):
         return None
     info = basic.get(code)
     if info is None:
         unknowns['delist'] += 1
-    else:
-        status, delist_day = info
-        if (cfg.exclude_delisted and status == 'D'
-                and (delist_day is None or delist_day <= day)):
-            return RULE_DELISTED
-        if cfg.exclude_delisting_period and delist_day is not None and delist_day > day:
-            window = cfg.delisting_window_trading_days
-            if window <= 0 or calendar.count(day, delist_day) <= window:
-                return RULE_DELISTING
-    if (cfg.exclude_delisting_period and cfg.enable_name_based_delisting
-            and _pit_name_has_marker(code, day, history, cfg, unknowns)):
-        return RULE_DELISTING
+        return None
+    status, delist_day = info
+    if (cfg.exclude_delisted and status == 'D'
+            and (delist_day is None or delist_day <= day)):
+        return RULE_DELISTED
+    if cfg.exclude_delisting_period and delist_day is not None and delist_day > day:
+        window = cfg.delisting_window_trading_days
+        if window <= 0 or calendar.count(day, delist_day) <= window:
+            return RULE_DELISTING
     return None
 
 
@@ -667,14 +594,13 @@ def _static_drop_reason(
     union: SuspensionUnion | None, entity_index: Any,
     spans: dict[str, tuple[date | None, date | None]],
     basic: dict[str, tuple[str | None, date | None]],
-    history: dict[str, tuple[tuple[date, date | None, str], ...]],
     root: Path, unknowns: dict[str, int],
 ) -> str | None:
     """按 RULE_ORDER 依次判定，返回首个命中的剔除码（互斥计数）。"""
     reason = _board_reason(code, cfg)
     if reason is not None:
         return reason
-    reason = _delisting_reason(code, cfg, day, basic, history, calendar, unknowns)
+    reason = _delisting_reason(code, cfg, day, basic, calendar, unknowns)
     if reason is not None:
         return reason
     if cfg.exclude_superseded and entity_index.is_superseded(code):

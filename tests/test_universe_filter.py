@@ -115,18 +115,6 @@ def _write_stock_basic(root: Path,
     }).write_parquet(root / 'meta' / 'stock_basic.parquet')
 
 
-def _write_name_history(
-        root: Path, rows: list[tuple[str, str, date, date | None]]) -> None:
-    """`meta/name_history.parquet`：PIT 历史简称（退市判定第 ② 路）。"""
-    (root / 'meta').mkdir(parents=True, exist_ok=True)
-    pl.DataFrame({
-        'ts_code': [row[0] for row in rows],
-        'name': [row[1] for row in rows],
-        'start_date': [row[2] for row in rows],
-        'end_date': [row[3] for row in rows],
-    }).write_parquet(root / 'meta' / 'name_history.parquet')
-
-
 def _setup(root: Path, codes: list[str], *,
            starts: dict[str, date] | None = None) -> None:
     _write_index(root, DATES)
@@ -226,41 +214,6 @@ def test_delisting_rules(tmp_path: Path) -> None:
     assert result.dropped[RULE_DELISTING] == ['600961.SH']
     assert result.kept == ['600962.SH', '600963.SH']
     assert result.unknowns['delist'] == 0
-
-
-def test_delisting_dual_path(tmp_path: Path) -> None:
-    """双路并集：已退市 / 整理期（PIT 简称含退）/ 正常 / D 无日期 fail-closed。
-
-    另附一条「简称在未来才变退」的反例，证明第 ② 路只认 ``as_of`` 当日已生效段，
-    不拿当前简称倒推历史（无前视）。
-    """
-    codes = ['600980.SH', '600981.SH', '600982.SH', '600983.SH', '600984.SH']
-    _setup(tmp_path, codes)
-    _write_stock_basic(tmp_path, [
-        ('600980.SH', 'D', DATES[-5]),   # ① 已退市（delist_date 早于 as_of）
-        ('600981.SH', 'L', None),        # ② 整理期：只有 PIT 简称能识别
-        ('600982.SH', 'L', None),        # ③ 正常
-        ('600983.SH', 'D', None),        # ④ status=D 无 delist_date → fail-closed
-        ('600984.SH', 'L', None),        # ⑤ 简称未来才变「退」→ 当日不得命中
-    ])
-    _write_name_history(tmp_path, [
-        ('600981.SH', 'ST某某', date(2025, 1, 1), date(2026, 10, 22)),
-        ('600981.SH', '某某退', date(2026, 10, 23), None),
-        ('600982.SH', '某某股份', date(2025, 1, 1), None),
-        ('600984.SH', '某某科技', date(2025, 1, 1), None),
-        ('600984.SH', '某某退', date(2026, 12, 1), None),
-    ])
-    result = filter_universe(AS_OF, codes, store_root=tmp_path)
-    assert result.dropped[RULE_DELISTED] == ['600980.SH', '600983.SH']
-    assert result.dropped[RULE_DELISTING] == ['600981.SH']
-    assert result.kept == ['600982.SH', '600984.SH']
-    assert result.unknowns['delist_name'] == 0
-
-    off = filter_universe(
-        AS_OF, codes, store_root=tmp_path,
-        config=UniverseFilterConfig(enable_name_based_delisting=False))
-    assert off.dropped[RULE_DELISTING] == []
-    assert '600981.SH' in off.kept
 
 
 def test_delisted_without_date_is_dropped(tmp_path: Path) -> None:
