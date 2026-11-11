@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import statistics
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -851,6 +852,36 @@ def _cohort_sell(cohort: Cohort, day: date, bars: dict[str, tuple],
     return True
 
 
+def _baseline_slots(dates: list[date],
+                    signal_days: set[date] | None) -> dict[str, Any]:
+    """把固定持有 60 日基线换算成等价资金槽位数。
+
+    基线原设计是「日频信号 + 60 个重叠 cohort 各占 1/60」，换成月频信号后
+    同时存活的 cohort 只剩约 3 个，若仍按 1/60 分配会把 98.9% 的资金闲置，
+    净值几乎不动，与状态机不可比。这里按相邻信号日的交易日间隔中位数
+    反推等价槽位：``slots = max(1, round(BASELINE_HOLD / spacing_days))``，
+    使 ``cohort_budget × slots ≈ equity_init``，两口径资金利用率一致。
+
+    日频信号（``signal_days is None``）取 ``spacing_days=1`` → ``slots=60``，
+    与旧行为逐值一致，跨片与单窗口共用同一算法。
+    """
+    if signal_days is None:
+        spacing_all = 1
+        gaps: list[int] = []
+    else:
+        positions = [index for index, day in enumerate(dates) if day in signal_days]
+        gaps = [right - left for left, right in zip(positions, positions[1:],
+                                                   strict=False) if right > left]
+        spacing_all = max(1, int(round(statistics.median(gaps)))) if gaps else 1
+    slots = max(1, int(round(BASELINE_HOLD / spacing_all)))
+    return {
+        'slots': slots,
+        'spacing_days': spacing_all,
+        'spacing_samples': len(gaps),
+        'cohort_budget_fraction': 1.0 / slots,
+    }
+
+
 def run_fixed60(window_dates: list[date], by_date: dict[date, pl.DataFrame],
                 bars_by_date: dict[date, dict[str, tuple]], tier: Any,
                 config: Any, equity_init: float, costs: TradingCosts,
@@ -858,9 +889,12 @@ def run_fixed60(window_dates: list[date], by_date: dict[date, pl.DataFrame],
                 state: dict[str, Any] | None = None,
                 index_base: int = 0,
                 total_days: int | None = None,
-                signal_days: set[date] | None = None) -> dict[str, Any]:
-    """60 个重叠 cohort 各占 1/60 资金，固定持有 60 个交易日。
+                signal_days: set[date] | None = None,
+                slots: int = BASELINE_HOLD) -> dict[str, Any]:
+    """固定持有 60 日基线：``slots`` 个重叠 cohort 各占 ``1/slots`` 资金。
 
+    ``slots`` 由 :func:`_baseline_slots` 按信号日间隔中位数算出（日频为 60，
+    月频约 3），保证每槽预算 ``equity_init / slots`` 使资金利用率与状态机可比。
     ``state`` 携带上一分片的 ``pool`` 与未退出 cohort，``index_base`` 是
     本片首日在全局交易日序列里的下标，``total_days`` 是全局交易日数；
     三者一起保证 ``entry_idx`` / ``exit_idx`` 始终是全局下标。
@@ -868,7 +902,7 @@ def run_fixed60(window_dates: list[date], by_date: dict[date, pl.DataFrame],
     cash_reserve = float(getattr(config.constraints, 'cash_buffer', 0.10) or 0.0)
     lot = int(getattr(config.constraints, 'lot_size', 100) or 100)
     target_weight = min(1.0 / int(tier.max_positions), max(0.0, 1.0 - cash_reserve))
-    cohort_budget = equity_init / BASELINE_HOLD
+    cohort_budget = equity_init / max(1, int(slots))
 
     carried = state or {}
     pool = float(carried.get('pool', equity_init))
@@ -1031,6 +1065,40 @@ def _lookup_quote(bars_by_date: dict[date, dict[str, tuple]] | None,
     return _finite(bar[0]), _finite(bar[1])
 
 
+def _unfilled_hold60(intent: dict[str, Any], index_of: dict[date, int],
+                     window_dates: list[date], costs: TradingCosts,
+                     quote: Any) -> tuple[float, float] | None:
+    """未成交买入意图的 60 日反事实：返回 ``(r_hold60, planned_amount)``。
+
+    T+1 开盘买入、持有到 T+1+60 收盘卖出，扣与实盘同一套成本；
+    缺 T+1 开盘价、缺 60 日后收盘或越界时返回 None（由调用方计入跳过数）。
+    四桶分解与 ``unfilled_diagnosis`` 共用本函数，保证两处口径逐值一致。
+    """
+    entry_idx = index_of.get(intent['signal_date'])
+    if entry_idx is None or entry_idx + 1 >= len(window_dates):
+        return None
+    entry_day = window_dates[entry_idx + 1]
+    entry_pair = quote(intent['ts_code'], entry_day)
+    entry_price = entry_pair[0] if entry_pair is not None else None
+    if entry_price is None or entry_price <= 0:
+        signal_pair = quote(intent['ts_code'], intent['signal_date'])
+        entry_price = signal_pair[1] if signal_pair is not None else None
+    target_idx = entry_idx + 1 + BASELINE_HOLD
+    if entry_price is None or target_idx >= len(window_dates):
+        return None
+    target_pair = quote(intent['ts_code'], window_dates[target_idx])
+    close60 = target_pair[1] if target_pair is not None else None
+    if close60 is None or close60 <= 0:
+        return None
+    planned = float(intent['notional'])
+    shares = planned / entry_price
+    entry_cost = _buy_cost(planned, costs)
+    exit_notional = shares * close60
+    r_hold60 = (exit_notional - _sell_cost(exit_notional, costs)) / (
+        planned + entry_cost) - 1.0
+    return r_hold60, planned
+
+
 def _decompose(closed: list[dict[str, Any]],
                unfilled: list[dict[str, Any]],
                window_dates: list[date], bars_by_date: dict[date, dict[str, tuple]] | None,
@@ -1038,6 +1106,8 @@ def _decompose(closed: list[dict[str, Any]],
                cost_stateful: float, cost_baseline: float,
                nav_stateful: float, nav_baseline: float,
                quotes: dict[tuple[str, date], tuple[float, float]] | None = None,
+               turnover_stateful: float = 0.0,
+               turnover_baseline: float = 0.0,
                ) -> dict[str, Any]:
     """按文档 §2.2 做四桶分解，残差原样输出，不调平。
 
@@ -1080,34 +1150,16 @@ def _decompose(closed: list[dict[str, Any]],
     unfilled_pp = 0.0
     unfilled_skipped = 0
     for intent in unfilled:
-        entry_idx = index_of.get(intent['signal_date'])
-        if entry_idx is None or entry_idx + 1 >= len(window_dates):
+        counterfactual = _unfilled_hold60(
+            intent, index_of, window_dates, costs, quote)
+        if counterfactual is None:
             unfilled_skipped += 1
             continue
-        entry_day = window_dates[entry_idx + 1]
-        entry_pair = quote(intent['ts_code'], entry_day)
-        entry_price = entry_pair[0] if entry_pair is not None else None
-        if entry_price is None or entry_price <= 0:
-            signal_pair = quote(intent['ts_code'], intent['signal_date'])
-            entry_price = signal_pair[1] if signal_pair is not None else None
-        target_idx = entry_idx + 1 + BASELINE_HOLD
-        if entry_price is None or target_idx >= len(window_dates):
-            unfilled_skipped += 1
-            continue
-        target_pair = quote(intent['ts_code'], window_dates[target_idx])
-        close60 = target_pair[1] if target_pair is not None else None
-        if close60 is None or close60 <= 0:
-            unfilled_skipped += 1
-            continue
-        planned = float(intent['notional'])
-        shares = planned / entry_price
-        entry_cost = _buy_cost(planned, costs)
-        exit_notional = shares * close60
-        r_hold60 = (exit_notional - _sell_cost(exit_notional, costs)) / (
-            planned + entry_cost) - 1.0
+        r_hold60, planned = counterfactual
         unfilled_pp += -r_hold60 * planned / equity_init * 100.0
 
     decomp_cost = -(cost_stateful - cost_baseline) / equity_init * 100.0
+    cost_diff_pp = (cost_baseline - cost_stateful) / equity_init * 100.0
     total_diff = (nav_stateful - nav_baseline) / equity_init * 100.0
     residual = total_diff - (early + late + unfilled_pp + decomp_cost)
     return {
@@ -1124,12 +1176,110 @@ def _decompose(closed: list[dict[str, Any]],
             'closed_without_60d_target': unavailable,
             'unfilled_intents_seen': len(unfilled),
             'unfilled_without_60d_target': unfilled_skipped,
+            'cost_bucket': {
+                'cost_stateful_total': cost_stateful,
+                'cost_baseline_total': cost_baseline,
+                'turnover_stateful': turnover_stateful,
+                'turnover_baseline': turnover_baseline,
+                'cost_diff_baseline_minus_stateful': cost_baseline - cost_stateful,
+                'cost_diff_pp': cost_diff_pp,
+                'decomp_cost_pp': decomp_cost,
+                'matches_decomp_cost': abs(cost_diff_pp - decomp_cost) <= 1e-9,
+                'formula': ('decomp_cost = (基线成本 − 状态机成本) / 初始权益 × 100；'
+                            '成本差为正表示状态机更省'),
+            },
             'residual_sources': [
-                '两口径仓位规模与现金缓冲不同（状态机按 1/max_positions 建仓，基线每 cohort 独立 1/60）',
+                '两口径仓位规模与现金缓冲不同'
+                '（状态机按 1/max_positions 建仓，基线按 baseline_slots.cohort_budget 分槽）',
                 '未投资现金的时间价值按 0 计',
                 '持有期跨越窗口边界（窗口末买入无 60 日后收盘，已单独计数）',
             ],
         },
+    }
+
+
+def _unfilled_diagnosis(unfilled: list[dict[str, Any]],
+                        window_dates: list[date],
+                        bars_by_date: dict[date, dict[str, tuple]] | None,
+                        quotes: dict[tuple[str, date], tuple[float, float]] | None,
+                        costs: TradingCosts, equity_init: float,
+                        planned_total: float,
+                        decomp_unfilled: float | None = None) -> dict[str, Any]:
+    """未成交买入意图诊断：笔数、金额占比、拦截原因、60 日反事实与集中度。
+
+    反事实与四桶分解共用 :func:`_unfilled_hold60`，因此各意图贡献之和
+    必须与 ``decomp_unfilled`` 逐值一致（``reconciles_with_decomp`` 自证）。
+    ``planned_total`` 取「已进撮合的买入意图计划金额 + 被换手上限截断的金额」，
+    即全部买入意图的计划金额；分母口径写进 ``planned_total_formula``。
+    """
+    index_of = {day: i for i, day in enumerate(window_dates)}
+
+    def quote(code: str, day: date) -> tuple[float, float] | None:
+        return _lookup_quote(bars_by_date, quotes, code, day)
+
+    blocked_counts = {'limit_up': 0, 'limit_down': 0, 'suspended': 0,
+                      'no_quote': 0, 'cash': 0, 'turnover_cap': 0}
+    blocked_amounts = dict.fromkeys(blocked_counts, 0.0)
+    evaluable: list[dict[str, Any]] = []
+    planned_sum = 0.0
+    skipped = 0
+    for intent in unfilled:
+        reason = str(intent.get('blocked', 'unknown'))
+        planned = float(intent.get('notional') or 0.0)
+        planned_sum += planned
+        blocked_counts[reason] = blocked_counts.get(reason, 0) + 1
+        blocked_amounts[reason] = blocked_amounts.get(reason, 0.0) + planned
+        counterfactual = _unfilled_hold60(
+            intent, index_of, window_dates, costs, quote)
+        if counterfactual is None:
+            skipped += 1
+            continue
+        r_hold60, planned_cf = counterfactual
+        evaluable.append({
+            'ts_code': str(intent['ts_code']),
+            'signal_date': intent['signal_date'].isoformat(),
+            'blocked': reason,
+            'planned_amount': planned_cf,
+            'r_hold60': r_hold60,
+            'contribution_pp': -r_hold60 * planned_cf / equity_init * 100.0,
+        })
+
+    ranked = sorted(evaluable, key=lambda item: abs(item['contribution_pp']),
+                    reverse=True)
+    total_abs = sum(abs(item['contribution_pp']) for item in evaluable)
+    top5 = ranked[:5]
+    top5_abs = sum(abs(item['contribution_pp']) for item in top5)
+    signed_sum = sum(item['contribution_pp'] for item in evaluable)
+    weighted_base = sum(item['planned_amount'] for item in evaluable)
+    mean_r = (sum(item['r_hold60'] for item in evaluable) / len(evaluable)
+              if evaluable else None)
+    weighted_mean_r = (
+        sum(item['r_hold60'] * item['planned_amount'] for item in evaluable)
+        / weighted_base if weighted_base > 0 else None)
+    return {
+        'unfilled_intents': len(unfilled),
+        'unfilled_intents_evaluable': len(evaluable),
+        'unfilled_without_60d_target': skipped,
+        'planned_amount': planned_sum,
+        'planned_pct_of_all_buy_planned': (
+            planned_sum / planned_total if planned_total > 0 else None),
+        'planned_total': planned_total,
+        'planned_total_formula': (
+            '已进撮合的买入意图计划金额 + 被换手上限截断金额'),
+        'blocked_reasons': blocked_counts,
+        'blocked_reason_amounts': blocked_amounts,
+        'blocked_reason_note': (
+            '买入意图的拦截原因；跌停只发生在卖出侧，故 limit_down 恒为 0，'
+            '卖出侧跌停见 blocked_limit_down'),
+        'mean_r_hold60': mean_r,
+        'mean_r_hold60_weighted': weighted_mean_r,
+        'contribution_pp': signed_sum,
+        'top5': top5,
+        'top5_abs_share': (top5_abs / total_abs) if total_abs > 0 else None,
+        'top5_signed_pp': sum(item['contribution_pp'] for item in top5),
+        'reconciles_with_decomp': (
+            None if decomp_unfilled is None
+            else abs(signed_sum - decomp_unfilled) <= 1e-6),
     }
 
 
@@ -1220,6 +1370,12 @@ def _read_chunk_nav(path: Path) -> list[dict[str, Any]]:
         item['date'] = date.fromisoformat(str(row['date'])[:10])
         rows.append(item)
     return rows
+
+
+def _read_chunk_trades(path: Path) -> list[dict[str, Any]]:
+    """读回一片的 trades.csv（续跑时按约定从落盘产物取成交明细）。"""
+    frame = pl.read_csv(path)
+    return [dict(row) for row in frame.iter_rows(named=True)]
 
 
 def _load_quotes(days_by_code: dict[str, set[date]],
@@ -1335,12 +1491,24 @@ def _build_report(summary: dict[str, Any]) -> str:
         f"现金缓冲 {summary['cash_reserve']:.0%}"
         f"（取自 {summary['cash_reserve_source']}）；单票上限 "
         f"{summary['target_weight']:.2%}",
-        f"- 选池：窗口起点 {summary['universe']['as_of']} 的 "
-        f"`filter_universe` 结果 {summary['universe']['kept']}/"
-        f"{summary['universe']['input']} 只（规则版本 "
-        f"{summary['universe']['version']}）",
-        f"- 面板：{summary['data']['loaded']} 只 / {summary['data']['rows']} 行，"
-        f"列名 {', '.join(summary['data']['price_columns'])}（未复权撮合价）",
+        (f"- 选池：每个分片首日重算 `filter_universe` 并片内固定，各片结果见 "
+         f"`summary.universe_by_chunk`（首片 {summary['universe']['kept']}/"
+         f"{summary['universe']['input']} 只）")
+        if summary.get('universe_by_chunk') else
+        (f"- 选池：窗口起点 {summary['universe']['as_of']} 的 "
+         f"`filter_universe` 结果 {summary['universe']['kept']}/"
+         f"{summary['universe']['input']} 只（规则版本 "
+         f"{summary['universe']['version']}）"),
+        f"- 面板：{summary['data']['loaded']} 只 / {summary['data']['rows']} 行"
+        + ('（分片累计行数）' if summary.get('chunking') else '')
+        + f"，列名 {', '.join(summary['data']['price_columns'])}（未复权撮合价）",
+        f"- 基线资金槽位：`baseline_slots.slots` = {summary['baseline_slots']['slots']}"
+        f"（相邻信号日间隔中位数 {summary['baseline_slots']['spacing_days']} 个交易日，"
+        f"按 {BASELINE_HOLD} 日固定持有换算），每槽预算 "
+        f"{summary['baseline_slots']['cohort_budget']:,.0f} 元"
+        f"（占初始权益 {_pct(summary['baseline_slots']['cohort_budget_fraction'])}）。"
+        '这样处理是为了让「固定持有 60 日」与状态机在同一资金利用率下可比：'
+        '日频信号下 slots=60 即旧行为，月频信号下不再把绝大部分资金闲置。',
         '',
         '## 2. 净值对照',
         '',
@@ -1393,6 +1561,18 @@ def _build_report(summary: dict[str, Any]) -> str:
         f"{summary['cost_by_size']['500k']['impact_cost_total']:,.0f} / "
         f"{summary['cost_by_size']['2000k']['impact_cost_total']:,.0f} 元"
         f"（{summary['cost_by_size']['scaling']}）",
+        f"- 两口径成本绝对值：`cost_stateful_total` = "
+        f"{summary['cost_bucket']['cost_stateful_total']:,.0f} 元，"
+        f"`cost_baseline_total` = "
+        f"{summary['cost_bucket']['cost_baseline_total']:,.0f} 元；"
+        f"年化单边换手 `turnover_stateful` = "
+        f"{summary['cost_bucket']['turnover_stateful']:.2f}x，"
+        f"`turnover_baseline` = {summary['cost_bucket']['turnover_baseline']:.2f}x；"
+        f"成本差（基线 − 状态机）= "
+        f"{summary['cost_bucket']['cost_diff_baseline_minus_stateful']:,.0f} 元，"
+        f"折合 {_pp(summary['cost_bucket']['cost_diff_pp'])}，"
+        f"等于「两口径成本差 / 初始权益」，与 §4 的 `decomp_cost` 同值"
+        f"（自检{'通过' if summary['cost_bucket']['matches_decomp_cost'] else '未通过'}）。",
         '',
         '### 3.4 规则打空率',
         '',
@@ -1433,6 +1613,39 @@ def _build_report(summary: dict[str, Any]) -> str:
         f"窗口末买入缺 60 日后收盘 {summary['decomp_detail']['closed_without_60d_target']} 笔、"
         f"未成交意图缺 60 日后收盘 {summary['decomp_detail']['unfilled_without_60d_target']} 笔，"
         '均如实排除并在此登记。',
+        '',
+        '### 4.1 未成交买入意图诊断',
+        '',
+    ]
+    diag = summary['unfilled_diagnosis']
+    lines += [
+        f"- 未成交买入意图 {diag['unfilled_intents']} 笔"
+        f"（其中可做 60 日反事实 {diag['unfilled_intents_evaluable']} 笔，"
+        f"缺 60 日后收盘 {diag['unfilled_without_60d_target']} 笔）；"
+        f"计划金额 {diag['planned_amount']:,.0f} 元，占全部买入意图计划金额 "
+        f"{_pct(diag['planned_pct_of_all_buy_planned'])}"
+        f"（分母 {diag['planned_total']:,.0f} 元，口径：{diag['planned_total_formula']}）；",
+        f"- 拦截原因分布：涨停 `limit_up` = {diag['blocked_reasons']['limit_up']} 笔、"
+        f"跌停 `limit_down` = {diag['blocked_reasons']['limit_down']} 笔、"
+        f"停牌 `suspended` = {diag['blocked_reasons']['suspended']} 笔、"
+        f"无行情 `no_quote` = {diag['blocked_reasons']['no_quote']} 笔、"
+        f"资金不足 `cash` = {diag['blocked_reasons']['cash']} 笔、"
+        f"换手上限 `turnover_cap` = {diag['blocked_reasons']['turnover_cap']} 笔"
+        f"（{diag['blocked_reason_note']}）；",
+        f"- 60 日反事实收益均值：简单均值 "
+        f"{_pct(diag['mean_r_hold60'])}，按计划金额加权 "
+        f"{_pct(diag['mean_r_hold60_weighted'])}；"
+        f"累计贡献 {_pp(diag['contribution_pp'])}，"
+        f"与 §4 `decomp_unfilled` 对账"
+        f"{'一致' if diag['reconciles_with_decomp'] else '不一致'}"
+        f"（{_pp(summary['decomp_unfilled'])}）；",
+        f"- 集中度：按 |贡献| 取 top5，合计占全部未成交意图绝对贡献的 "
+        f"{_pct(diag['top5_abs_share'])}，top5 带符号合计 "
+        f"{_pp(diag['top5_signed_pp'])}；"
+        + '；'.join(
+            f"{item['ts_code']}（{item['blocked']}，"
+            f"r60={_pct(item['r_hold60'])}，{_pp(item['contribution_pp'])}）"
+            for item in diag['top5']) + '。',
         '',
         '## 5. 规则打空率结论',
         '',
@@ -1625,19 +1838,22 @@ def _run_single(args: argparse.Namespace, started: datetime, app_config: Any,
 
     signal_days = (_month_end_days(window_dates)
                    if args.signal_mode == 'month-end' else None)
+    baseline_slots = _baseline_slots(window_dates, signal_days)
     stateful = run_stateful(window_dates, by_date, bars_by_date, all_dates,
                             tier, config, args.equity, costs, rules,
                             signal_days=signal_days)
     _log('状态机回测完成', started)
     baseline = run_fixed60(window_dates, by_date, bars_by_date, tier, config,
-                           args.equity, costs, rules, signal_days=signal_days)
+                           args.equity, costs, rules, signal_days=signal_days,
+                           slots=baseline_slots['slots'])
     _log('固定持有 60 日基线完成', started)
     return _emit_products(
         args=args, config=config, tier=tier, costs=costs, started=started,
         start=start, end=end, window_dates=window_dates,
         window_note=window_note, panel_start=panel_start,
         panel_dates=panel_dates, universe=universe, load_report=load_report,
-        stateful=stateful, baseline=baseline, bars_by_date=bars_by_date)
+        stateful=stateful, baseline=baseline, bars_by_date=bars_by_date,
+        baseline_slots=baseline_slots)
 
 
 def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
@@ -1647,6 +1863,7 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
                    load_report: Any, stateful: dict[str, Any],
                    baseline: dict[str, Any],
                    bars_by_date: dict[date, dict[str, tuple]] | None,
+                   baseline_slots: dict[str, Any],
                    quotes: dict[tuple[str, date], tuple[float, float]] | None = None,
                    extra_summary: dict[str, Any] | None = None) -> int:
     """组装 summary / nav / trades / report 并打印对照表（单窗口与分片共用）。"""
@@ -1655,6 +1872,10 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
     gap = round_trip_actual - DOC_ROUND_TRIP_COST
     requested_days = len(window_dates) if args.chunk_by != 'none' else args.days
     nav_stateful = [float(row['nav_stateful']) for row in stateful['nav_rows']]
+    for row, base_row in zip(stateful['nav_rows'], baseline['nav_rows'],
+                             strict=False):
+        if row.get('cash_fixed60') is None and 'cash' in base_row:
+            row['cash_fixed60'] = base_row['cash']
     nav_baseline = [float(row['nav_fixed60']) for row in baseline['nav_rows']]
     for index, row in enumerate(stateful['nav_rows']):
         row['nav_fixed60'] = nav_baseline[index]
@@ -1669,7 +1890,15 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
         stateful['closed'], stateful_stats['unfilled_records'], window_dates,
         bars_by_date, costs, args.equity, stateful_block['total_cost'],
         baseline_block['total_cost'], stateful['nav'], baseline['nav'],
-        quotes=quotes)
+        quotes=quotes,
+        turnover_stateful=stateful_block['turnover'],
+        turnover_baseline=baseline_block['turnover'])
+    planned_total = (stateful_stats['planned_amount']
+                     + stateful_stats['blocked_turnover_cap_amount'])
+    unfilled_diag = _unfilled_diagnosis(
+        stateful_stats['unfilled_records'], window_dates, bars_by_date,
+        quotes, costs, args.equity, planned_total,
+        decomp_unfilled=decomp['decomp_unfilled'])
 
     delay_hist = {str(key): int(value)
                   for key, value in sorted(stateful_stats['delay_hist'].items())}
@@ -1722,8 +1951,10 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
         '与逐日切片重算结果完全一致；逐日循环只做门槛判定与撮合。',
         '状态机持仓的当日分位缺失（停牌/无有效因子）时按 0.0 处理，'
         '即视为最弱信号，卖出被撮合层拦截时继续持有并重试。',
-        '基线 cohort 每个交易日起一个，各占初始权益的 1/60，'
-        '持有满 60 个交易日后在开盘卖出；cohort 之间不共享持仓、不重算信号。',
+        '基线 cohort 按信号日间隔换算槽位：默认日频信号下每交易日起一个、共 60 个，'
+        '各占初始权益的 1/60（旧行为）；月频信号下按相邻信号日间隔中位数反推 '
+        'slots（约 3）并令每槽预算 = 初始权益 / slots，'
+        '使两口径资金利用率可比，具体数值见 summary.baseline_slots。',
         '年化按 252 个交易日折算；换手为单边年化（买卖成交额之和 / 2 / 平均净值 / 年）。',
         '候选稀疏的根因是方向相反：mid 档扩展因子的 direction 全为 -1'
         '（偏好低动量、低波动、低回撤），而软筛要求 ma20_gap>0 且 ma60_gap>0'
@@ -1896,6 +2127,22 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
             'stateful': stateful_block,
             'fixed60': baseline_block,
         },
+        'baseline_slots': {
+            'slots': baseline_slots['slots'],
+            'spacing_days': baseline_slots['spacing_days'],
+            'spacing_samples': baseline_slots['spacing_samples'],
+            'cohort_budget': args.equity / max(1, baseline_slots['slots']),
+            'cohort_budget_fraction': baseline_slots['cohort_budget_fraction'],
+            'signal_mode': args.signal_mode,
+            'formula': ('spacing_days = 相邻信号日交易日间隔中位数；'
+                        'slots = max(1, round(BASELINE_HOLD / spacing_days))；'
+                        'cohort_budget = equity_init / slots'),
+            'purpose': ('让「固定持有 60 日」与状态机在同一资金利用率下可比；'
+                        '日频信号下 slots=60 即旧行为，月频信号下不再把绝大部分'
+                        '资金闲置'),
+        },
+        'cost_bucket': decomp['decomp_detail']['cost_bucket'],
+        'unfilled_diagnosis': unfilled_diag,
         'lookahead_notes': lookahead_notes,
         'methodology_notes': methodology_notes,
         'elapsed_sec': round((datetime.now() - started).total_seconds(), 1),
@@ -1931,6 +2178,13 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
           f'{("（" + window_note + "）") if window_note else ""}')
     print(f'选池        : {start} 当日 {universe.kept_count}/{universe.input_count}')
     print(f'面板        : {load_report.loaded} 只 / {load_report.rows} 行')
+    print(f'基线槽位    : slots={summary["baseline_slots"]["slots"]} | '
+          f'相邻信号日中位间隔 {summary["baseline_slots"]["spacing_days"]} 日 | '
+          f'每槽 {summary["baseline_slots"]["cohort_budget"]:,.0f} 元')
+    print(f'未成交诊断  : {unfilled_diag["unfilled_intents"]} 笔 | 计划金额占比 '
+          f'{_pct(unfilled_diag["planned_pct_of_all_buy_planned"])} | '
+          f'60日反事实均值 {_pct(unfilled_diag["mean_r_hold60"])} | '
+          f'top5 占 {_pct(unfilled_diag["top5_abs_share"])}')
     print('-' * 78)
     print(f'{"指标":<20}{"状态机":>16}{"固定持有60日":>18}')
     for label, key in (('累计收益', 'cum_return'), ('年化收益', 'year_return'),
@@ -1985,6 +2239,7 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
         raise SystemExit(f'窗口内没有交易日：{start}~{end}')
     signal_days = (_month_end_days(global_dates)
                    if args.signal_mode == 'month-end' else None)
+    baseline_slots = _baseline_slots(global_dates, signal_days)
     all_chunks = _year_chunks(global_dates)
     labels = [label for label, _ in all_chunks]
     if args.only_chunk and args.only_chunk not in labels:
@@ -2057,7 +2312,7 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
             chunk_dates, by_date, bars_by_date, tier, config, args.equity,
             costs, rules, state=baseline_state,
             index_base=index_of[chunk_dates[0]], total_days=len(global_dates),
-            signal_days=signal_days)
+            signal_days=signal_days, slots=baseline_slots['slots'])
         for row, base_row in zip(stateful['nav_rows'], baseline['nav_rows'],
                                  strict=False):
             row['nav_fixed60'] = base_row['nav_fixed60']
@@ -2112,14 +2367,14 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
         return 0
     return _merge_chunks(args, started, app_config, store_root, config, tier,
                          costs, rules, start, end, global_dates, labels,
-                         out_dir)
+                         out_dir, baseline_slots)
 
 
 def _merge_chunks(args: argparse.Namespace, started: datetime,
                   app_config: Any, store_root: Path, config: Any, tier: Any,
                   costs: TradingCosts, rules: ExecutionRules, start: date,
                   end: date, global_dates: list[date], labels: list[str],
-                  out_dir: Path) -> int:
+                  out_dir: Path, baseline_slots: dict[str, Any]) -> int:
     """拼合各分片产物，在全区间重算指标并写出汇总产物。"""
     nav_rows: list[dict[str, Any]] = []
     trades: list[dict[str, Any]] = []
@@ -2132,11 +2387,10 @@ def _merge_chunks(args: argparse.Namespace, started: datetime,
     first_panel_start = start
     first_panel_dates: list[date] = []
     for position, label in enumerate(labels):
-        nav_path, _, state_path = _chunk_paths(out_dir, label)
+        nav_path, trades_path, state_path = _chunk_paths(out_dir, label)
         payload = json.loads(state_path.read_text(encoding='utf-8'))
         nav_rows.extend(_read_chunk_nav(nav_path))
-        for item in payload['stateful']['trades']:
-            trades.append(item)
+        trades.extend(_read_chunk_trades(trades_path))
         for item in payload['stateful']['closed']:
             record = dict(item)
             record['entry_date'] = date.fromisoformat(
@@ -2153,8 +2407,11 @@ def _merge_chunks(args: argparse.Namespace, started: datetime,
         universe_by_chunk.append({'label': label, **payload['universe']})
         data = payload.get('data', {})
         per_chunk_data.append({'label': label, **data})
-        for key in totals:
-            totals[key] += int(data.get(key, 0) or 0)
+        totals['requested'] = max(totals['requested'],
+                                  int(data.get('requested', 0) or 0))
+        totals['loaded'] = max(totals['loaded'],
+                               int(data.get('loaded', 0) or 0))
+        totals['rows'] += int(data.get('rows', 0) or 0)
         if position == 0:
             first_panel_start = date.fromisoformat(payload['panel_start'])
             first_panel_dates = [date.fromisoformat(item)
@@ -2188,7 +2445,8 @@ def _merge_chunks(args: argparse.Namespace, started: datetime,
             'labels': labels,
             'chunks': per_chunk_data,
             'note': ('每片首日重算 filter_universe 并片内固定；状态与基线持仓'
-                     '跨片续接，只有最后一片做期末估值收尾'),
+                     '跨片续接，只有最后一片做期末估值收尾；'
+                     'data.requested/loaded 取各片最大值，data.rows 为各片累计'),
         },
         'signal_days': {
             'mode': args.signal_mode,
@@ -2206,7 +2464,7 @@ def _merge_chunks(args: argparse.Namespace, started: datetime,
         panel_start=first_panel_start, panel_dates=first_panel_dates,
         universe=universe, load_report=load_report, stateful=stateful,
         baseline=baseline, bars_by_date=None, quotes=quotes,
-        extra_summary=extra)
+        baseline_slots=baseline_slots, extra_summary=extra)
 
 
 
