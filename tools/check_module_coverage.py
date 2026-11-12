@@ -76,7 +76,12 @@ def check(coverage_json: Path, gates: dict[str, float]) -> list[tuple[str, int, 
     for module, threshold in gates.items():
         covered, total = aggregate(files, module)
         actual = percent(covered, total)
-        rows.append((module, covered, total, actual, threshold, actual + 1e-9 >= threshold))
+        # 分母为 0 说明报告里没有任何文件落在该模块前缀下：路径写错、
+        # 目录改名、或 pytest 根本没收集到该目录的用例。此时 ``percent``
+        # 按约定返回 100.0，若直接比较就会把「一条都没测」判成「全达标」，
+        # 正是门槛要防的那种静默通过，故显式判为不达标。
+        rows.append((module, covered, total, actual, threshold,
+                     total > 0 and actual + 1e-9 >= threshold))
     return rows
 
 
@@ -96,8 +101,9 @@ def main(argv: list[str] | None = None) -> int:
     failed = False
     for module, covered, total, actual, threshold, ok in rows:
         flag = 'PASS' if ok else 'FAIL'
+        measured = f'{actual:6.2f}%' if total else '   n/a  '
         print(f'[coverage-gate] {flag} {module:<24} {covered:>6}/{total:<6} '
-              f'= {actual:6.2f}%  门槛 {threshold:.0f}%')
+              f'= {measured}  门槛 {threshold:.0f}%')
         failed = failed or not ok
     return 1 if failed else 0
 
