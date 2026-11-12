@@ -835,20 +835,33 @@ class EventBacktestRunner:
 
         ETF/LOF 看 ``adv20``（成交额，元），个股看 ``total_mv_yi``（市值，亿元）。
         两者都缺的标的会走 cost_model 的兜底档，必须显式列出而不是静默通过。
+        另单独列出冲击成本的 ADV 覆盖情况（V-36）：``adv20`` 同时是
+        ``impact_coef`` 的参与率分母，缺列的标的冲击项恒为 0，不能靠日志发现。
         """
         tiered: List[str] = []
         fallback: List[str] = []
+        impact_covered: List[str] = []
+        impact_missing: List[str] = []
         for code, cols in column_data.items():
             adv20 = cols.get(ROLE_ADV20) or []
             mv = cols.get(ROLE_TOTAL_MV_YI) or []
             is_fund = CostModel._is_fund(code)
             usable = any(v is not None and v > 0 for v in (adv20 if is_fund else mv))
             (tiered if usable else fallback).append(code)
+            has_adv = any(v is not None and v > 0 for v in adv20)
+            (impact_covered if has_adv else impact_missing).append(code)
         return {
             'tiered_symbols': tiered,
             'fallback_symbols': fallback,
             'tiered_count': len(tiered),
             'fallback_count': len(fallback),
+            'impact_adv20_symbols': impact_covered,
+            'impact_missing_symbols': impact_missing,
+            'impact_note': ('冲击成本参与率分母 = adv20（20 日均成交额，元，lag1）；'
+                            'impact_coef 默认 0，为 0 时本项恒为 0、结果不受影响'),
+            'impact_missing_note': (
+                '这些标的缺 adv20（面板无 amount 列或整段为空）：冲击项恒为 0，'
+                '按 CostModel.impact_rate 的既定选择不抛错' if impact_missing else None),
             'input_columns': ['adv20 (amount, 元, shift 1)',
                               'total_mv_yi (总市值, 亿元, shift 1)',
                               'category (品种标签)'],
@@ -2005,6 +2018,17 @@ class EventBacktestRunner:
             'total_mv_yi': bar.total_mv_yi,
             'category': bar.category,
         }
+        # V-36：冲击成本的参与率分母 = 20 日均成交额（元，t-1），即 bar.adv20。
+        # 此前该列只喂给分档滑点、从未作为 adv_amount 进成本模型，于是
+        # CostModel._participation 永远拿到 None、impact_rate 恒为 0，
+        # ``impact_coef`` 取任何非零值都不改变回测结果（参数形同死码）。
+        # 量纲：adv20 是成交额（元），与成交价 × 股数同量纲；adv_volume 是
+        # 成交量（手），只给风控容量规则用，不能拿来当 adv_amount。
+        # adv20 缺失/为 0 时 CostModel._participation 返回 None → 冲击项为
+        # 精确 0（不抛错，见 CostModel.impact_rate 注释）。
+        adv_amount = bar.adv20
+        # 注意：费率估算面前还算不出成交额，因而 get_buy_cost_rate 不含冲击项；
+        # 下方「逐手回退」用的是 calculate_buy_cost 的实际成本，会兜住这部分差额。
         cost_rate = ctx.cost_model.get_buy_cost_rate(
             trade_date=date, ts_code=code, **slip_inputs)
 
@@ -2024,7 +2048,8 @@ class EventBacktestRunner:
         # 按实际成本逐手回退，而不是整笔静默作废
         while shares > 0:
             buy_cost = ctx.cost_model.calculate_buy_cost(
-                shares, exec_price, trade_date=date, ts_code=code, **slip_inputs)
+                shares, exec_price, trade_date=date, ts_code=code,
+                adv_amount=adv_amount, **slip_inputs)
             total_pay = shares * exec_price + buy_cost
             if total_pay <= available + CASH_EPS:
                 break
@@ -2038,7 +2063,8 @@ class EventBacktestRunner:
             return
 
         buy_cost = ctx.cost_model.calculate_buy_cost(
-            shares, exec_price, trade_date=date, ts_code=code, **slip_inputs)
+            shares, exec_price, trade_date=date, ts_code=code,
+            adv_amount=adv_amount, **slip_inputs)
         rejection = ctx.gate.check(
             ts_code=code, side='buy', qty=shares, price=exec_price,
             trade_date=date, book=book, equity_curve=ctx.equity_curve,
@@ -2105,8 +2131,11 @@ class EventBacktestRunner:
             'total_mv_yi': bar.total_mv_yi,
             'category': bar.category,
         }
+        # V-36：与买入侧同源，bar.adv20（20 日均成交额，元）即冲击成本的
+        # 参与率分母；缺失/为 0 时冲击项精确为 0（见 CostModel.impact_rate）。
         sell_cost = ctx.cost_model.calculate_sell_cost(
-            shares, exec_price, trade_date=date, ts_code=code, **slip_inputs)
+            shares, exec_price, trade_date=date, ts_code=code,
+            adv_amount=bar.adv20, **slip_inputs)
         rejection = ctx.gate.check(
             ts_code=code, side='sell', qty=shares, price=exec_price,
             trade_date=date, book=book, equity_curve=ctx.equity_curve,

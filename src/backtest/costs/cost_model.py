@@ -14,6 +14,7 @@
 现行静态费率（过户费 0.002%，与时间表当日口径一致；ETF/LOF 恒为 0）。
 """
 
+import math
 from datetime import date, datetime
 from typing import Any, Dict, Tuple, Union
 
@@ -47,6 +48,10 @@ COST_DEFAULTS: Dict[str, float] = {
     'stamp_tax_rate': 0.0005,        # 印花税（仅卖出，2023-08-28 起 0.05%）
     'transfer_fee_rate': TRANSFER_FEE_RATE_UNIFIED,  # 过户费（双边 0.002%）
     'slippage': 0.0002,              # 滑点（双边，未分档时的兜底值）
+    # 冲击成本系数：impact = impact_coef × sqrt(成交额 / ADV 成交额)，默认 0（关闭）。
+    # 为 0 时 calculate_buy_cost / calculate_sell_cost 的返回值与引入本项之前逐位相同；
+    # 打开前须先出敏感性表，禁止直接改默认值（改的是收益口径）。
+    'impact_coef': 0.0,
 }
 
 #: ETF/LOF 滑点分档：按 20 日 ADV（元）从高到低取第一档。
@@ -98,7 +103,7 @@ class CostModel:
         Args:
             overrides: 自定义参数，会覆盖默认值。可选键：
                        commission_rate / min_commission / stamp_tax_rate /
-                       transfer_fee_rate / slippage
+                       transfer_fee_rate / slippage / impact_coef
         """
         self.params = dict(COST_DEFAULTS)
         if overrides:
@@ -114,12 +119,15 @@ class CostModel:
                            trade_date: TradeDate = None, ts_code: str = '',
                            adv20: float | None = None,
                            total_mv_yi: float | None = None,
-                           category: str | None = None) -> float:
+                           category: str | None = None,
+                           adv_amount: float | None = None) -> float:
         """
         买入侧成本（佣金 + 过户费 + 滑点）；2008-09-19 前印花税双边征收时含税。
 
         trade_date 传入时按历史时间表取印花税/过户费；未传时沿用静态参数。
         adv20 / total_mv_yi / category 传入时按分档滑点计费（见 ``slippage_rate``）。
+        adv_amount（20 日平均成交额，元）传入时额外叠加冲击成本，系数
+        ``impact_coef`` 默认 0，故不传或默认值时结果与引入冲击项之前逐位相同。
         """
         commission_rate = self.params['commission_rate']
         min_commission = self.params['min_commission']
@@ -128,7 +136,8 @@ class CostModel:
         commission = max(amount * commission_rate, min_commission)
         transfer = amount * self._transfer_fee_rate(trade_date, ts_code)
         tax = amount * self._stamp_tax_rate(trade_date, side='buy', ts_code=ts_code)
-        slip = amount * self.slippage_rate(ts_code, adv20, total_mv_yi, category)
+        slip = amount * (self.slippage_rate(ts_code, adv20, total_mv_yi, category)
+                         + self.impact_rate(self._participation(amount, adv_amount)))
 
         return commission + transfer + tax + slip
 
@@ -136,13 +145,16 @@ class CostModel:
                             trade_date: TradeDate = None, ts_code: str = '',
                             adv20: float | None = None,
                             total_mv_yi: float | None = None,
-                            category: str | None = None) -> float:
+                            category: str | None = None,
+                            adv_amount: float | None = None) -> float:
         """
         卖出侧成本（佣金 + 印花税 + 过户费 + 滑点）。
 
         trade_date 传入时按历史时间表取印花税/过户费；2010 年卖出印花税
         应为 0.1%（2008-09-19 至 2023-08-27），而不是现行 0.05%。
         ETF/LOF 按品种豁免印花税（见 ``_is_fund``）。
+        adv_amount 语义同 ``calculate_buy_cost``：系数 ``impact_coef`` 默认 0，
+        不传时结果与引入冲击项之前逐位相同。
         """
         commission_rate = self.params['commission_rate']
         min_commission = self.params['min_commission']
@@ -151,7 +163,8 @@ class CostModel:
         commission = max(amount * commission_rate, min_commission)
         tax = amount * self._stamp_tax_rate(trade_date, side='sell', ts_code=ts_code)
         transfer = amount * self._transfer_fee_rate(trade_date, ts_code)
-        slip = amount * self.slippage_rate(ts_code, adv20, total_mv_yi, category)
+        slip = amount * (self.slippage_rate(ts_code, adv20, total_mv_yi, category)
+                         + self.impact_rate(self._participation(amount, adv_amount)))
 
         return commission + tax + transfer + slip
 
@@ -229,6 +242,39 @@ class CostModel:
             if total_mv_yi >= floor:
                 return rate
         return STOCK_SLIPPAGE_TIERS_YI[-1][1]
+
+    def impact_rate(self, participation: float | None) -> float:
+        """冲击成本费率：``impact_coef × sqrt(参与率)``，默认系数 0 时恒为 0。
+
+        参与率 = 本笔成交额 / 该标的 20 日平均成交额（均为元），由调用方通过
+        ``adv_amount`` 注入。本方法只做纯计算，不解析标的、不读行情；系数为 0
+        或参与率缺失/非正时返回精确的 0.0，保证既有回测结果逐位不变。
+
+        明确选择（``impact_coef > 0`` 但 ``adv_amount`` 为 None 时的行为）：
+        **返回 0，不抛错**。理由：ADV 成交额缺失属于数据覆盖问题（新上市
+        初期、长期停牌后首日、面板没有 ``amount`` 列），抛错会让整次回测因
+        个别标的缺列而整体失败，而冲击项本身是可选叠加项；缺失即视为该笔
+        不启用冲击成本。这不是静默失效：``execution_core`` 已把 ``adv20``
+        作为 adv_amount 无条件传入，缺失只可能来自行情面板本身没有
+        ``amount`` 列，而该情形由回测结果的 ``slippage_inputs`` /
+        ``cost_inputs`` 审计字段（``impact_missing_symbols`` +
+        ``impact_missing_note``）显式列出。
+        """
+        coef = float(self.params.get('impact_coef') or 0.0)
+        if coef <= 0.0 or participation is None or not (participation > 0.0):
+            return 0.0
+        return coef * math.sqrt(participation)
+
+    @staticmethod
+    def _participation(amount: float, adv_amount: float | None) -> float | None:
+        """成交额占 20 日均额的比例；未提供 ADV 成交额时返回 None（不启用冲击项）。
+
+        返回 None 而非抛错是刻意的：``impact_rate(None) == 0.0``，使「缺 ADV」
+        与「系数为 0」两种情形都落在精确 0 上（见 ``impact_rate`` 的说明）。
+        """
+        if adv_amount is None or not (adv_amount > 0):
+            return None
+        return amount / adv_amount
 
     # ------------------------------------------------------------------
     # 历史费率解析
