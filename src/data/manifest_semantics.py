@@ -7,11 +7,11 @@
 
 SEMANTICS: dict[str, dict[str, str]] = {
     "factors/manifest.json": {
-        "authority": "各表在 docs/数据权威路径清单.md 各有唯一正式路径登记行：个股复权因子 L72、基金复权因子 L73、个股换手率 L74、基金分红事件 L75、基金份额折算与分拆 L76、个股分红 L37；本文件只是这些正式表的目录级记账，不替代其中任何一张。",
+        "authority": "各表在 docs/数据权威路径清单.md 各有唯一正式路径登记行：个股复权因子 L74、基金复权因子 L75、个股换手率 L76、基金分红事件 L77、基金份额折算与分拆 L78、个股分红 L37；本文件只是这些正式表的目录级记账，不替代其中任何一张。",
         "source": "由 src/data/factors_manifest.py 生成：MANIFEST_NAME 常量 L34、_SUB_MANIFESTS L54、写点 write_text_atomic L213-L214（目标路径 L209）；逐文件 rows / cols / codes / 日期区间与上游 quotes 及 meta/factors/stock_shares 的 mtime 全部读磁盘实测、不推算（模块 docstring L3-L9）。六张表的字段说明见同目录 meta.json 与 fund_meta.json。"
     },
     "meta/anomalies/manifest.json": {
-        "authority": "清单 L70（隔离行清单是唯一运行期隔离清单，命中即从因子与回测样本剔除，禁止调用点临时写死名单）、L92（占位行情代码清单）；本目录 CSV 台账是这两份正式清单的明细，不自立权威。",
+        "authority": "清单 L70（隔离行清单是唯一运行期隔离清单，命中即从因子与回测样本剔除，禁止调用点临时写死名单）、L91（占位行情代码清单）；本目录 CSV 台账是这两份正式清单的明细，不自立权威。",
         "dataset": "本目录承载两类运行期异常台账：隔离行清单 quarantine_rows.parquet（一行 = 一个被隔离的 (标的, 交易日)，判据与来源逐行记录）与占位行情代码清单 placeholder_quote_codes.csv，以及 fund_fake_bar_bars.csv 等明细台账；逐文件 rows / sha256 见 files 段。",
         "source": "隔离行由 tools/repair_quote_anomalies.py 产出（隔离表路径 L266、写调用 _write_atomic L270；判据 docstring L41-L50：源端 volume 与 amount 全为 null 的坏行移出正式行情）；占位行情代码清单的读侧常量在 src/data/quality/quarantine.py:29-30（QUARANTINE_FILE / PLACEHOLDER_FILE）；本 manifest 无代码写点，人工维护。",
         "semantics": "隔离行只从因子与回测样本中剔除，不修改行情原值（清单 L70 原文）；禁止在调用点临时写死代码名单。清单与明细台账是同一判据的不同视图，明细不得反过来当数据源。"
@@ -43,10 +43,10 @@ SEMANTICS: dict[str, dict[str, str]] = {
         "semantics": "一行 = 一只指数；合并式导出只补本地空值，base_point 全空是库侧同样为空的已知事实，不得填 0 或按其它指数推算（清单 L23 原文）；库中若出现该列值，导出会报错要求显式决策列类型。"
     },
     "meta/index_members/manifest.json": {
-        "authority": "清单 L55（指数成分月度权重面板是成分进出差分的唯一上游来源，成分区间只能由该面板推出）、L24（成分区间表为正式表，out_date 有真值、带 in_date_known 左删失标记；旧 index_membership 表已废弃）。"
+        "authority": "清单 L57（指数成分月度权重面板是成分进出差分的唯一上游来源，成分区间只能由该面板推出）、L24（成分区间表为正式表，out_date 有真值、带 in_date_known 左删失标记；旧 index_membership 表已废弃）。"
     },
     "meta/industry_pit/manifest.json": {
-        "semantics": "本目录三张表口径不同、互不替代：industry_pit_sw.parquet 是申万 PIT 正式表（清单 L57，按 in_date / out_date 组织，申万与通达信行业不得混用）；industry_pit.parquet 是通达信近 6 日快照视图（清单 L58，非正式 PIT，禁止 as-of 早于 2026-11-03 回溯）；industry_change_pit.parquet 是变更事件与增量断点表（清单 L59，是事件流不是分类事实表）。三表均由 src/data/industry_pit.py 写出（manifest_path L88、produced_by L456）。"
+        "semantics": "本目录三张表口径不同、互不替代：industry_pit_sw.parquet 是申万 PIT 正式表（清单 L59，按 in_date / out_date 组织，申万与通达信行业不得混用）；industry_pit.parquet 是通达信近 6 日快照视图（清单 L60，非正式 PIT，禁止 as-of 早于 2026-11-03 回溯）；industry_change_pit.parquet 是变更事件与增量断点表（清单 L61，是事件流不是分类事实表）。三表均由 src/data/industry_pit.py 写出（manifest_path L88、produced_by L456）。"
     },
     "meta/macro/cn_bond_index.manifest.json": {
         "authority": "清单 L47：唯一债券原生指数表（3 指数 × 6,215 日）；一律取财富指数「总值」段，净价与全价不得替代。"
@@ -81,16 +81,16 @@ SEMANTICS: dict[str, dict[str, str]] = {
         "source": "由 tools/build_etf_equity_pool.py 重建（docstring L3-L35；输出文件名固定不带版本号，符合 DG-4；默认输出路径 L322-323、CSV 写入 _write_csv L346、--as-of 解析 L304-305、--check 逐列比对 L334-335）；输入为 meta/names.json、quotes/fund、fund_share_change、fund_dividend 与 meta/anomalies/fund_fake_bar_bars.csv（L23、L30）。本 manifest 无代码写点：docstring L35 声称写 manifest.json，但脚本内无对应实现，as_of / built_at / previous / regen 等字段由 2026-11-12 正名与重出时人工登记。"
     },
     "meta/st/raw/reviewed_conflicts.manifest.json": {
-        "authority": "清单 L66：唯一不可再生人工裁定输入，运行期直接读取并合并进 st_intervals 与 st_coverage；丢失即口径丢失，故不进 _staging/、不得重建。",
+        "authority": "清单 L68：唯一不可再生人工裁定输入，运行期直接读取并合并进 st_intervals 与 st_coverage；丢失即口径丢失，故不进 _staging/、不得重建。",
         "dataset": "三张人工裁定输入：reviewed_conflicts.parquet（冲突取舍）、reviewed_coverage.parquet（覆盖窗口逐只结论）、reviewed_pending.parquet（证据不足结论）；逐文件 rows / sha256 见 files。",
         "source": "人工录入，无采集脚本；运行期由 src/data/st_history.py 读取：reviewed_conflicts_path L274-276、reviewed_pending_path L279-281、reviewed_coverage_path L284-286，合并点为 apply_reviewed_conflicts L953（调用 L1269）与 apply_reviewed_coverage L1077（调用 L1279）。",
-        "semantics": "一行 = 一次人工裁定；reviewed_coverage 优先级最高，套用在快照合并与延伸之上（st_history.py:102）。三张表是固定输入而不是抓取产物：重跑 ST 构建不会重新生成它们，因此不得删除、不得迁进 _staging/（清单 L66）。"
+        "semantics": "一行 = 一次人工裁定；reviewed_coverage 优先级最高，套用在快照合并与延伸之上（st_history.py:102）。三张表是固定输入而不是抓取产物：重跑 ST 构建不会重新生成它们，因此不得删除、不得迁进 _staging/（清单 L68）。"
     },
     "meta/st/supplement/manifest.json": {
-        "authority": "清单 L65：唯一正式区间之外的人工补充层，合并顺序为补充层覆盖正式层；替换时整目录按 DG-11 移入 _backup/。",
+        "authority": "清单 L67：唯一正式区间之外的人工补充层，合并顺序为补充层覆盖正式层；替换时整目录按 DG-11 移入 _backup/。",
         "dataset": "补充区间表 supplement_intervals.parquet 与补充覆盖表 supplement_coverage.parquet（2 个区间；覆盖行数逐次变化，以 files 段实测 rows 为准）；逐文件 rows / sha256 见 files。",
         "source": "由 src/data/st_name_history.py 写出：manifest 路径常量 L27、supplement_intervals_path L131-133、写点 L729-731（区间表 / 覆盖表 / unresolved.csv 原子写）、files 段记账 L750-754、manifest 写点 L759；读侧合并顺序在 src/data/st_history.py:912（读 supplement_intervals.parquet）。",
-        "semantics": "一行 = 一个补充 ST 区间或一条补充覆盖结论；合并优先级为「补充层覆盖正式层」，用于承载正式层未覆盖但已取证的段（清单 L65）；替换时整目录按 DG-11 移入 _backup/。"
+        "semantics": "一行 = 一个补充 ST 区间或一条补充覆盖结论；合并优先级为「补充层覆盖正式层」，用于承载正式层未覆盖但已取证的段（清单 L67）；替换时整目录按 DG-11 移入 _backup/。"
     },
     "meta/state/manifest.json": {
         "authority": "清单 L42：六维状态向量唯一日频特征表；估值位因无独立全 A PE 表故降级为 valuation_daily 反推；分位窗口 1,250 日满窗才给值。",
@@ -101,7 +101,7 @@ SEMANTICS: dict[str, dict[str, str]] = {
         "authority": "清单 L15：唯一交易所口径法定上市日；产出方 tools/build_stock_basic.py；重建与现有表合并式兜底，不整表覆盖。",
         "dataset": "stock_basic.parquet：一只证券一行，含 list_date / delist_date / name / exchange 等字段，保留退市股；逐文件 rows / cols / sha256 见 files。",
         "source": "由 tools/build_stock_basic.py 重建（docstring L3-L12 是逐列推导依据表；产出路径 L50；_manifest L735、_promote L787-802 写 promoted_at 与回退信息）；只用本地已验证资产推导（行情首末行、名称快照、公告与退市证据、通达信 .day），不以 MySQL 为准（DG-16 / DG-17）。",
-        "semantics": "一行 = 一只证券的上市 / 退市事实；list_date 是交易所口径法定上市日，与 listing_intervals 的行情实测首行不等价（清单 L79）；重建与现有表合并式兜底：候选空值保留现有值、现有独有代码整行保留，不整表覆盖（清单 L15）。"
+        "semantics": "一行 = 一只证券的上市 / 退市事实；list_date 是交易所口径法定上市日，与 listing_intervals 的行情实测首行不等价（清单 L81）；重建与现有表合并式兜底：候选空值保留现有值、现有独有代码整行保留，不整表覆盖（清单 L15）。"
     },
     "meta/universe/layers/manifest.json": {
         "authority": "清单 L16-L21 逐层登记 L0~L5（L0 保留退市股、L1 上市满 120 交易日、L2 停牌取两表并集、L3 只认 st_intervals 区间版、L4 前 20 日成交额均值 ≥ 2,000 万、L5 取 universe_filter 默认准入）；六层逐级收窄，不得跨层替代。",
@@ -122,9 +122,9 @@ SEMANTICS: dict[str, dict[str, str]] = {
         "semantics": "一行 = 一个交易日；amount_fix 逐日记成交额的替换来源，不代表当日另有一套价格；价格争议日已按两源一致换成腾讯，未在价格上留混源标记（清单 L40）。"
     },
     "quotes/manifest.json": {
-        "authority": "清单 L52（股票日线唯一层）、L53（场内基金日线）、L54（指数日线 1,335 文件与 index_basic 1,335 行逐一对应）；本文件只描述覆盖，不是数据本身。",
-        "dataset": "quotes 目录覆盖声明：股票 / 场内基金 / 指数三类日线的文件数、行数与日期区间；声明 10,784 文件 / 25,912,277 行（清单 L52），逐目录明细见 files。",
-        "source": "股票日线由 src/data/local_store/build.py 构建（清单 L52 称其为股票日线唯一构建入口）；场内基金与指数分别见清单 L53 / L54。本文件无代码写点，人工维护；实测 25,912,281 行与声明差 4 行，属陈旧登记（清单 L52 原文）。"
+        "authority": "清单 L54（股票日线唯一层）、L55（场内基金日线）、L56（指数日线 1,335 文件与 index_basic 1,335 行逐一对应）；本文件只描述覆盖，不是数据本身。",
+        "dataset": "quotes 目录覆盖声明：股票 / 场内基金 / 指数三类日线的文件数、行数与日期区间；声明 10,784 文件 / 25,912,277 行（清单 L54），逐目录明细见 files。",
+        "source": "股票日线由 src/data/local_store/build.py 构建（清单 L54 称其为股票日线唯一构建入口）；场内基金与指数分别见清单 L55 / L56。本文件无代码写点，人工维护；实测 25,912,281 行与声明差 4 行，属陈旧登记（清单 L54 原文）。"
     }
 }
 
