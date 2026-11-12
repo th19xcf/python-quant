@@ -59,6 +59,40 @@ SOURCE = 'chinabond:bond_china_yield'
 THROTTLE = 1.3
 RATE_LIMIT_HINTS = ('频率', '超过', 'limit', 'too many', 'forbidden')
 
+#: 已定性但按 DG-16 / DG-18 不得改写的可疑段，随 manifest 一并产出，供下游排除。
+#: 2008-01-02~2008-10-16 的 7Y 恒为 4.0000：同窗口其它期限 117~188 个不同取值、
+#: 同批国债 7Y 有 189 个不同取值、191/197 个交易日 5Y>7Y，且源端缺数用空表示 →
+#: 判定为源端缺数填充（占位哨兵）。118 行负利差全部由该段派生，不是真实信用利差。
+SUSPECT_SEGMENTS = [
+    {
+        'tenor_years': 7.0,
+        'tenor': '7年',
+        'start': '2008-01-02',
+        'end': '2008-10-16',
+        'rows': 197,
+        'value': 4.0,
+        'verdict': 'source_placeholder',
+        'label': '源端缺数填充（占位哨兵），不是真实报价',
+        'evidence': {
+            'unique_values_7y_in_window': 1,
+            'unique_values_other_tenors_in_window': {'3月': 186, '6月': 188, '1年': 153,
+                                                     '3年': 117, '5年': 118},
+            'curve_shape_violations': '191/197 个交易日 5Y>7Y（正常信用曲线应右上倾斜）',
+            'treasury_7y_unique_in_window': '197 天中 189 个不同取值，同批响应国债曲线正常，'
+                                            '排除取数与解析链路故障',
+            'negative_spread_rows_vs_treasury_7y': 118,
+            'negative_spread_min_pp': -0.4044,
+            'missing_marker_control': '同窗口源端 10Y / 30Y 返回空、melt 后缺行（各 0 行），'
+                                      '即源端用空表示缺数；非空且恒定只能是填充',
+            'recovery': '2008-10-17 起恢复真实报价（首值 4.0351）',
+        },
+        'consumer_action': '派生层（信用利差、期限利差）使用该 7Y 段时必须整段排除或显式标记；'
+                           '由该段派生的 118 行负利差不是真实信用利差',
+        'note': '不修改已入库原始观测（DG-16 / DG-18：无独立第二源可对拍）；'
+                '定性依据见 2026-11-12/data-lineage/outputs/b1_slice5_bond_fix.md §3',
+    },
+]
+
 
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -253,6 +287,7 @@ def build(apply: bool) -> int:
             'note': '同一次接口调用返回两条曲线，国债曲线逐值一致即证明同一批响应、同一口径',
         },
         'known_gaps': '接口仅返回中短票AAA；AA/AA+/企业债需 chinamoney 收盘曲线接口（bond_china_close_return，月度分页、约 720 次请求），本次未采',
+        'suspect_segments': SUSPECT_SEGMENTS,
         'sha256': _sha256(out),
     }
     apply_semantics(manifest, 'meta/macro/cn_credit_yield_curve.manifest.json')
