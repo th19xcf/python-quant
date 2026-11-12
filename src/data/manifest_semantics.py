@@ -60,7 +60,7 @@ SEMANTICS: dict[str, dict[str, str]] = {
     "meta/macro/manifest.json": {
         "authority": "本目录各表在清单分别登记：10 年期国债收益率 L31、沪深两融日频汇总 L32、债券指数 L47、国债曲线 L48、信用曲线 L49；本文件是目录级汇总说明，不替代其中任何一张。",
         "dataset": "宏观目录聚合，逐表语义在 files 段区分：10 年期国债到期收益率（清单 L31）、沪深两融日频汇总（L32）、债券指数（L47）、国债收益率曲线（L48）、信用债收益率曲线（L49）。",
-        "source": "cn_treasury_yield_10y 走 tools/build_state_vector.py 的上游采集链，数据源分段为 chinabond:bond_china_yield 与 eastmoney:bond_zh_us_rate（清单 L31）；cn_market_margin_daily 由 stock_margin_sse / macro_china_market_margin_sz / stock_margin_szse 回填并以 source 列逐行标记（清单 L32）；债券指数与两条曲线由 tools/build_cn_bond_tables.py 产出（写点 L145-146、两份 manifest L182-185），采集入口 tools/fetch_cn_bond_data.py（INDEX_CATEGORIES L43、YIELD_YEARS L46、THROTTLE L48）。本文件无代码写点，人工维护。"
+        "source": "cn_treasury_yield_10y 走 tools/build_state_vector.py 的上游采集链，数据源分段为 chinabond:bond_china_yield 与 eastmoney:bond_zh_us_rate（清单 L31）；cn_market_margin_daily 由 stock_margin_sse / macro_china_market_margin_sz / stock_margin_szse 回填并以 source 列逐行标记（清单 L32）；债券指数与国债曲线由 tools/build_cn_bond_tables.py 产出（写点 L145-146、两份 manifest L182-185），信用曲线由 tools/build_credit_yield_curve.py 产出（原 _staging/gap_close_20261111/build_credit_curve.py 已收拢），采集入口 tools/fetch_cn_bond_data.py（INDEX_CATEGORIES L46、YIELD_YEARS L49、THROTTLE L54，增量参数 --since）。本文件无代码写点，人工维护。"
     },
     "meta/multi_asset/etf_fee.manifest.json": {
         "authority": "清单 L36：唯一逐只 ETF 费率表；core 153 只三方核对一致、502 只一致加 16 只单源；销售服务费仅 159003.SZ 有值，不填 0。",

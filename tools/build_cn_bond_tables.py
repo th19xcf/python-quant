@@ -33,7 +33,7 @@ from pathlib import Path
 
 import polars as pl
 
-from src.data.atomic_write import write_parquet_atomic
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 
 ROOT = Path(__file__).resolve().parents[1]
 STORE = ROOT / 'data' / 'local_store'
@@ -183,8 +183,8 @@ def main(argv: list[str] | None = None) -> int:
     for name, manifest in (('cn_bond_index', idx_manifest),
                            ('cn_treasury_yield_curve', yld_manifest)):
         apply_semantics(manifest, f'meta/macro/{name}.manifest.json')
-        (MACRO / f'{name}.manifest.json').write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+        write_text_atomic(json.dumps(manifest, ensure_ascii=False, indent=2),
+                          MACRO / f'{name}.manifest.json')
     print('落盘完成:', MACRO / 'cn_bond_index.parquet', MACRO / 'cn_treasury_yield_curve.parquet')
     return 0
 
