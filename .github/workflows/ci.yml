@@ -31,5 +31,16 @@ jobs:
         run: poetry run ruff check src tests
       - name: Type check
         run: poetry run mypy src
+      # CI 与本地不同源：checkout 不含 data/local_store（本地列存不入库），一部分用例按
+      # 既有 skipif 跳过、另有 2 个模块因未装 alphalens/quantstats 被 importorskip 跳过，
+      # 因此 CI 覆盖语句必然少于本地。2026-11-12 按 CI 条件实测：本地 68.25%，CI 67.65%，
+      # 缺口 503 条语句全部可归因到「这些行在 CI 上没被执行到」，不是测试变少：
+      #   行情分片缺失 11 例→61 条 | meta 正式表缺失 17 例→24 条
+      #   MySQL 不可达 5 例→113 条 | 派生表缺失 1 例→0 条
+      #   可选依赖未装 17 例→308 条（两模块 CI 不 import，分母同时少 317 条）
+      #   同用例因数据缺失走不到的分支 0 例→24 条
+      # 故显式给 CI 专属门槛，与 CI 实际运行条件匹配：实测 67.65，留 1.65pp 平台差缓冲。
+      # 不写这条时 pyproject 的 fail_under=63 在 CI 上会留出 4.65pp 的静默回落空间；
+      # pyproject 的 63 仍是本地门槛，保持不动（命令行参数优先级高于配置文件）。
       - name: Test with coverage gate
-        run: poetry run pytest --cov=src --cov-report=term-missing
+        run: poetry run pytest --cov=src --cov-report=term-missing --cov-fail-under=66
