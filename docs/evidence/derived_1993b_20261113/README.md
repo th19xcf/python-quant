@@ -38,9 +38,9 @@
 
 bytes 变化（供复核编码差异）：adj 12,880,456 → 11,113,361（row group 182 → 144）；turnover 147,399,890 → 147,399,167；suspension 1,908,438 → 2,055,685（row group 8 → 12）；listing_intervals 94,802 → 94,803；breadth 135,580 → 135,009；breadth_ma 330,498 → 330,498；state 738,060 → 738,063；000016 234,243 → 234,200；daily_index 143,461 → 143,509。
 
-> 第 1 行旧 SHA 以**备份副本实测** `b2e872f8…` 为准；`_staging/derived_1993b_20261113/progress.csv` 与 `layer1_after_sha.json` 记的 `581ca66a…` 同盘无任何副本，判定为记账不一致（已单列取证，不在此展开）。
+> 第 1 行旧 SHA 以**备份副本实测** `b2e872f8…` 为准（bytes 12,880,456、18,129,902 行）。台账中另见的 `581ca66a…` 是 `rebuild-factors` 的**中间态**：`layer1_finalize.py` 在 20:39:44 覆写之后才取 SHA，它对应 18,129,892 行 / 12,895,161 B（比原文件少 10 行、多 14,705 B）。该中间态可由「正式表 + 22 行前置缺口」逐字节复现，复算命令 `_staging/derived_1993b_20261113/forensic_adj_factor_sha.py`（实测输出「与 581ca66a 相同: True」）；台账已按此口径改名为 `rebuild_intermediate_sha`，不再与原文件混记。
 >
-> 第 11 行新 SHA 为本任务验收时刻的实测值 `02fda62b…`（同一内容副本：`_staging/derived_1993b_20261113/state_vector_daily_candidate.parquet`，bytes 738,063、SHA 恰为 `02fda62b…`）。**2026-11-12 21:43:24 另一路任务 `_staging/state_margin_patch_20261112/` 在该表追加 `lev_margin` 维（dims 5→6）**，此后磁盘文件 SHA 变为 `6a2cc6533f3979599e8029f6a7c1848003f794b6e881e89cc525d443c8aef189`（bytes 仍 738,063、行数仍 8,825），该改动不属本任务，本目录不把它计入本次重建结果。
+> 第 11 行新 SHA 为本任务验收时刻的实测值 `02fda62b…`（同一内容副本：`_staging/derived_1993b_20261113/state_vector_daily_candidate.parquet`，bytes 738,063、SHA 恰为 `02fda62b…`）。该表在验收后由**另一路任务** `_staging/state_margin_patch_20261112/` 连续改写（`2026-11-12 21:43:24` 追加 `lev_margin` 维后为 `6a2cc653…`、`21:48` 再改为 `35c859ac…`、bytes 738,059），不属本任务，本目录只记自己的验收值，不跟踪他路后续版本，最新值以磁盘为准。
 
 ## 2. 6 层 universe 前后对照
 
@@ -94,8 +94,8 @@ Get-Content _staging\derived_1993b_20261113\layer6_turnover.json -Raw
 
 ## 5. 边界声明
 
-1. `meta/financials/valuation_daily.parquet` **本次未动**：`pe/pb/total_mv/circ_mv/close` 均为联网财务源字段，按 DG-16 / DG-17 / DG-19 不得用本地行情推导修正；该表仍含 34 行 `1993-05-01/02` 且 `close` 与本地行情错开一个交易日，另按只读判定处理，不属本次重建范围。
+1. `meta/financials/valuation_daily.parquet` **本次未动**：`pe/pb/total_mv/circ_mv/close` 均为联网财务源字段，按 DG-16 / DG-17 / DG-19 不得用本地行情推导修正。该表 17 只标的 132,095 行中有 131,614 行与本地行情**同交易日逐值相等**（131,649 行可比，一致率 99.973%），错位只集中在 `1993-05-01`~`1993-05-06`：34 行落在非交易日 `05-01/02`（17 只 × 2）、34 行 `05-04/05-05` 的值等于行情次一交易日、另有 `000014.SZ 1993-05-03` 1 行 29.80 对行情 29.90。合计 69 行，非「整表错开一个交易日」，未动，另按只读判定处理。
 2. `meta/universe/universe_exclusions` 只复核了行情派生四类（`price_jump` / `suspended` / `delisting` / `st` 依赖口径），`no_quotes` / `no_basic_info` / `internal_gap` / `tdx_truncated` 四类仍指向联网库与 TDX 源，本次未核未动。
-3. `factors/stock_adj_factor.parquet` 旧 SHA 以备份副本实测为准（`b2e872f8…`），台账中 `581ca66a…` 为记账不一致，已单列取证。
+3. `factors/stock_adj_factor.parquet` 旧 SHA 以备份副本实测为准（`b2e872f8…`，12,880,456 B / 18,129,902 行）；台账里的 `581ca66a…` 是 `rebuild-factors` 中间态（18,129,892 行 / 12,895,161 B），复算命令 `_staging/derived_1993b_20261113/forensic_adj_factor_sha.py`，本目录第 1 行不采用该值。
 4. 000001.SZ 的 22 个交易日因子缺口（G-107）未并入本次修复，仍按既有登记留待单独处理。
-5. `meta/state/state_vector_daily.parquet` 在本任务验收后（2026-11-12 21:43:24）被另一路任务 `_staging/state_margin_patch_20261112/` 追加 `lev_margin` 维（dims 5→6，SHA `6a2cc653…`），行数与 bytes 不变；本目录第 11 行记录的是本任务自己的验收结果，两者不得混算。
+5. `meta/state/state_vector_daily.parquet` 在本任务验收后被另一路任务 `_staging/state_margin_patch_20261112/` 连续改写（21:43:24 `6a2cc653…`、21:48 `35c859ac…`，bytes 738,059，行数 8,825 未变）；本目录第 11 行记录的是本任务自己的验收结果（`02fda62b…`），两者不得混算。
