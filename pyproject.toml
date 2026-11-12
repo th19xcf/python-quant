@@ -282,8 +282,17 @@ skip_covered = true
 # 由 tools/check_module_coverage.py 读取并判定，CI 与本地同一条命令。
 # 数值只允许上调：达标的模块按实测值登记，未达标的模块不得为了让门禁变绿而调低。
 [tool.coverage-gates]
-modules = { "src/risk" = 85 }
-# 2026-11-12 实测（本地 2736 passed，pytest --cov=src 口径）：
-#   src/risk               478/503  = 95.03%  → 已登记 85
-#   src/backtest          1850/2192 = 84.40%  → 差 14 行到位，待决（不登记，避免门禁立刻红）
-#   src/data/local_store  1832/3034 = 60.38%  → 差 747 行，待决
+modules = { "src/backtest" = 85, "src/risk" = 85 }
+# 2026-11-12 实测（全量 `pytest --cov=src`，本地 2,857 passed，与 CI 同一条命令口径）：
+#   src/backtest           1946/2192 = 88.78%  → 已登记 85（余量 82 行 / 3.78pp）
+#   src/risk                478/503  = 95.03%  → 已登记 85
+#   src/data/local_store   2128/3045 = 69.89%  → 未登记，待办。
+#       缺口集中在 build.py 264 / turnover.py 263 / share_capital.py 230 /
+#       store.py 73 行；补到 85% 还需再多覆盖 460 行。另开一轮补测试，
+#       达标那一刻再单独登记——把 69.89% 落成门槛等于把「关键链路裸奔」
+#       写成合规数字，比不设门槛更危险。
+# 关于分母：登记 src/backtest 时，costs/cost_model.py 尚有一笔他路未提交改动
+# （impact_coef 默认值 0.0 → 0.015）。那是「一行赋值换一行赋值」加注释，不改变
+# 可执行语句数，因此 2192 这个分母与 1946 这个分子都不受其是否落库影响。
+# 数值只允许上调：某模块实测回落时先补测试，不允许下调门槛、排除文件或
+# 用没有断言强度的用例把数字抬上去。

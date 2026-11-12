@@ -19,9 +19,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / 'pyproject.toml'
 CI_WORKFLOW = REPO_ROOT / '.github' / 'workflows' / 'ci.yml'
 
-# 已登记门槛的模块 → 门槛值。数值锚定 2026-11-12 实测（src/risk 95.03%），
-# 只允许上调；新增模块必须先实测达标，不允许为了让门禁变绿而调低。
-EXPECTED_MODULE_GATES = {'src/risk': 85}
+# 已登记门槛的模块 → 门槛值。数值锚定 2026-11-12 实测（src/backtest 86.54%、
+# src/risk 95.03%），只允许上调；新增模块必须先实测达标，不允许为了让门禁变绿而调低。
+EXPECTED_MODULE_GATES = {'src/backtest': 85, 'src/risk': 85}
 
 
 def _pyproject() -> dict:
@@ -75,14 +75,21 @@ def test_aggregate_uses_statements_and_module_prefix_only(tmp_path):
 def test_gate_passes_at_threshold(tmp_path):
     """恰好等于门槛即通过（85.00% 不得判红）"""
     cov = tmp_path / 'coverage.json'
-    _write_coverage_json(cov, {'src\\risk\\rules.py': _summary(85, 100)})
+    _write_coverage_json(cov, {
+        'src\\risk\\rules.py': _summary(85, 100),
+        # 其余已登记模块也要在场：缺文件会被判成「n/a → 不达标」
+        'src\\backtest\\engine\\base_engine.py': _summary(10, 10),
+    })
     assert gate.main(['--coverage-json', str(cov), '--pyproject', str(PYPROJECT)]) == 0
 
 
 def test_gate_fails_below_threshold(tmp_path, capsys):
     """低于门槛必须退出 1 并打出分子分母"""
     cov = tmp_path / 'coverage.json'
-    _write_coverage_json(cov, {'src\\risk\\rules.py': _summary(84, 100)})
+    _write_coverage_json(cov, {
+        'src\\risk\\rules.py': _summary(84, 100),
+        'src\\backtest\\engine\\base_engine.py': _summary(10, 10),
+    })
     assert gate.main(['--coverage-json', str(cov), '--pyproject', str(PYPROJECT)]) == 1
     out = capsys.readouterr().out
     assert 'FAIL src/risk' in out
@@ -103,3 +110,18 @@ def test_gate_fails_when_report_missing(tmp_path):
     """覆盖率报告缺失时必须退出 1，不能被当成「全达标」"""
     assert gate.main(['--coverage-json', str(tmp_path / 'nope.json'),
                       '--pyproject', str(PYPROJECT)]) == 1
+
+
+def test_gate_fails_when_module_not_present_in_report(tmp_path, capsys):
+    """登记了门槛但报告里一条文件都没命中时必须判红。
+
+    这是「路径写错 / 目录改名 / 用例没收集到」的静默通过形态：分母为 0 时
+    百分比按约定是 100.0，直接比大小就会显示 PASS，等于门槛根本没生效。
+    """
+    cov = tmp_path / 'coverage.json'
+    # 只有 src/risk 的文件，src/backtest 一条都没有
+    _write_coverage_json(cov, {'src\\risk\\rules.py': _summary(100, 100)})
+    assert gate.main(['--coverage-json', str(cov), '--pyproject', str(PYPROJECT)]) == 1
+    out = capsys.readouterr().out
+    assert 'FAIL src/backtest' in out
+    assert 'n/a' in out
