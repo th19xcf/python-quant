@@ -1,0 +1,59 @@
+{
+ "task": "turnover_sign_fix_20261112",
+ "started_at": "2026-11-12T15:12:51",
+ "steps": {
+  "backup_copy": {
+   "status": "done",
+   "old_sha256": "f60866e20cd52eb64e5348c4e1b67fb16acf6957308035f541c212803ff27de2",
+   "copy_sha256": "f60866e20cd52eb64e5348c4e1b67fb16acf6957308035f541c212803ff27de2",
+   "copy_equals_src": true
+  },
+  "code_change": {
+   "status": "done",
+   "file": "tools/research/build_new_factors.py",
+   "commit": "588bd62",
+   "note": "build_turnover 去负、docstring 补约定"
+  },
+  "rebuild": {
+   "status": "done",
+   "rows": 567541,
+   "cols": 6,
+   "sha256": "9da7de408b5bfb3ca6b75de72e4027f76c23f0b049310e4fbd0866ce1e20b21d"
+  },
+  "verify_dg20": {
+   "status": "done",
+   "evidence": "verify_dg20.json",
+   "max_abs_diff": 0.0,
+   "other_changed": 0,
+   "sample_failed": 0
+  },
+  "backup_and_replace": {
+   "status": "done",
+   "backup": "_backup/meta/new_factors_signfix_20261112/new_factors.parquet",
+   "evidence": "replace_record.json"
+  },
+  "manifest": {
+   "status": "done",
+   "file": "data/local_store/meta/research_inputs/manifest.json",
+   "key": "sign_fix_20261112"
+  },
+  "comment_fix": {
+   "status": "done",
+   "file": "_staging/factor_oos_verify_20261111/run_oos.py",
+   "note": "非 Git 跟踪（_staging 已 ignore），仅本地"
+  },
+  "guard_test": {
+   "status": "done",
+   "file": "tests/test_turnover_20_sign_guard.py",
+   "red_proof": "旧表 rho=-0.999990 FAILED",
+   "green": "2 passed"
+  },
+  "commit": {
+   "status": "done",
+   "hash": "588bd62cdefd61de025e03951b2af1546d958085",
+   "files": 2
+  }
+ },
+ "note": "DG-7 断点文件；构建完成后追加 build/verify/replace 三段",
+ "finished_at": "2026-11-12T15:18:32"
+}

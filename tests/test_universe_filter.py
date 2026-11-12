@@ -53,6 +53,11 @@ def _write_index(root: Path, dates: list[date]) -> None:
     pl.DataFrame({'date': dates,
                   'close': [3000.0] * len(dates)}).write_parquet(
         directory / '000001.SH.parquet')
+    # 日历要求台账存在（DG-2 不回落单指数）；一行不影响本夹具日期的 closed。
+    ledger = root / 'meta' / 'trading_calendar' / 'session_ledger.parquet'
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({'date': [date(2099, 1, 3)], 'status': ['closed']},
+                 schema={'date': pl.Date, 'status': pl.String}).write_parquet(ledger)
 
 
 def _write_daily_index(root: Path, spans: dict[str, tuple[date, date]]) -> None:

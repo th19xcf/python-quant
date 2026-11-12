@@ -1,0 +1,35 @@
+{
+ "synced": [
+  {
+   "path": "tools/research/build_new_factors.py",
+   "sha": "23509eabccc703e5eef0938b0434c6ebaead334dc32ac80e38f9ff1f1eb6ae68",
+   "bytes": 20500,
+   "dst_match": true
+  },
+  {
+   "path": "tests/test_turnover_20_sign_guard.py",
+   "sha": "0694e6858135471dfed9d13954d3fb6f7e31b941356efdda6512cc463f580260",
+   "bytes": 3294,
+   "dst_match": true
+  },
+  {
+   "path": "data/local_store/meta/research_inputs/new_factors.parquet",
+   "sha": "9da7de408b5bfb3ca6b75de72e4027f76c23f0b049310e4fbd0866ce1e20b21d",
+   "bytes": 8000137,
+   "dst_match": true
+  },
+  {
+   "path": "data/local_store/meta/research_inputs/manifest.json",
+   "sha": "0fc085e1dffa06644126db02336205a8e182a706052ccc91c0d1178a494e0619",
+   "bytes": 8793,
+   "dst_match": true
+  },
+  {
+   "path": "_backup/meta/new_factors_signfix_20261112/new_factors.parquet",
+   "sha": "f60866e20cd52eb64e5348c4e1b67fb16acf6957308035f541c212803ff27de2",
+   "bytes": 7999280,
+   "dst_match": true
+  }
+ ],
+ "skipped": []
+}

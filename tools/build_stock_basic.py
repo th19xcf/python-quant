@@ -206,8 +206,9 @@ def scan_quotes(store_root: Path) -> pl.DataFrame:
 def load_trade_calendar(store_root: Path) -> pl.Series:
     """交易日历取 ``src/data/trading_calendar.py`` 的**权威段**。
 
-    权威段 = 本地基准指数 ``000001.SH`` 的实际交易日，由该模块统一提供；尾部
-    工作日近似段（``authoritative_end`` 之后）不取，避免把尚未验证的日期当交易日。
+    权威段 = 5 个基准指数（``BENCHMARK_CODES``）实际日期的并集，再并入
+    ``meta/trading_calendar/session_ledger.parquet`` 的 session 行、剔掉其 closed 行；
+    尾部工作日近似段（``authoritative_end`` 之后）不取，避免把尚未验证的日期当交易日。
 
     原实现取 ``meta/breadth/`` 下的逐日宽度表，使 L1 名录反向依赖 L2 派生表：任何
     一次宽度重算都会改变 ``status`` / ``latest_trade_date``，触发下游整链返工。该表
@@ -217,7 +218,7 @@ def load_trade_calendar(store_root: Path) -> pl.Series:
     dates = calendar.authoritative_dates()
     if not dates:
         raise RuntimeError(
-            '基准指数交易日历不可用：quotes/index/**/000001.SH.parquet 缺失或为空，'
+            '基准指数交易日历不可用：quotes/index/** 下 5 个成员指数均缺失或为空，'
             '拒绝退化为工作日近似（会让 status 判定失真）')
     return pl.Series('trade_date', list(dates), dtype=pl.Date)
 

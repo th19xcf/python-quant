@@ -91,7 +91,15 @@ UPSTREAM_FILES = (
     'meta/code_migration.parquet',
     'meta/pools/etf_equity_pool.csv',
     'quotes/index/sh/000001.SH.parquet',
+    'quotes/index/sz/399001.SZ.parquet',
+    'quotes/index/sz/399002.SZ.parquet',
+    'quotes/index/sz/399003.SZ.parquet',
+    'quotes/index/sh/000300.SH.parquet',
+    'meta/trading_calendar/session_ledger.parquet',
 )
+
+#: 行级非交易日 bar 判定表（G-112）：网格外 bar 必须逐行在此表有裁定，否则报错。
+G112_VERDICT_REL = Path('docs') / 'evidence' / 'g112_nontrading_bars' / 'nontrading_bars_verdict.csv'
 
 
 def _sha256(path: Path) -> str:
@@ -171,11 +179,14 @@ def _build_grid(
 
 def _quote_panel(
     root: Path, dates: list[date], universe: set[str], as_of: date,
+    *, orphans: list[tuple[str, date]] | None = None,
 ) -> pl.DataFrame:
     """读取本地个股日线，返回 (cal_idx, ts_code, amount, traded) 面板。
 
     只接受「bar 日期 == 该 cal_idx 对应交易日」的精确匹配；非交易日 bar
     （1991-1993 存在周六/周日 bar）不向相邻交易日映射，直接丢弃。
+    传入 ``orphans`` 时把被丢弃的 ``(ts_code, date)`` 逐行记入，供
+    ``_assert_orphan_bars`` 强制核对——日历缺一天会在这里被摊开而不是静默消失。
     """
     cal_array = np.array(dates, dtype='datetime64[D]')
     files = sorted((root / 'quotes' / 'stock').glob('*/*.parquet'))
@@ -203,6 +214,9 @@ def _quote_panel(
         if cal_array.size:
             matched &= cal_array[np.clip(cal_idx, 0, cal_array.size - 1)] == day_values
         if not matched.all():
+            if orphans is not None:
+                dropped = frame.filter(~pl.Series('_keep', matched))
+                orphans.extend((code, d) for d in dropped['date'].to_list())
             frame = frame.filter(pl.Series('_keep', matched))
             cal_idx = cal_idx[matched]
         if frame.is_empty():
@@ -224,6 +238,51 @@ def _quote_panel(
     panel = pl.concat(parts, how='vertical_relaxed')
     # 同一 (交易日, 代码) 只保留一行，避免下游 left join 放大网格
     return panel.unique(subset=['cal_idx', 'ts_code'], keep='first', maintain_order=True)
+
+
+def _assert_orphan_bars(orphans: list[tuple[str, date]]) -> dict[str, Any]:
+    """网格外 bar 的强制核对（C7）：日历缺一天必须报错，不许静默丢弃。
+
+    两类硬错误：
+    ① 网格外 bar 落在**工作日** —— 日历丢了真实交易日（阶段一 A1 的形态）；
+    ② 网格外 bar 未在 G-112 逐行判定表登记 —— 未经裁定的观测被丢弃。
+    周末且已裁定的 bar 允许丢弃，计数与日期写进 manifest，供逐代对比。
+    """
+    if not orphans:
+        return {'rows': 0, 'dates': [], 'keep_rows': 0, 'drop_rows': 0,
+                'weekday_dates': [], 'unregistered_rows': 0}
+    orphan_dates = sorted({day for _, day in orphans})
+    weekday = [d for d in orphan_dates if d.weekday() < 5]
+    if weekday:
+        raise SystemExit(
+            f'[layers] 网格外 bar 落在工作日 {len(weekday)} 天：'
+            f'{[d.isoformat() for d in weekday[:10]]} —— 交易日历缺交易日，先修日历再构建'
+        )
+    verdict_path = PROJECT_ROOT / G112_VERDICT_REL
+    if not verdict_path.is_file():
+        raise SystemExit(f'[layers] 判定表缺失 {verdict_path}，网格外 bar 无从裁定')
+    verdict = pl.read_csv(verdict_path).with_columns(
+        pl.col('date').str.to_date())
+    verdict_map = dict(zip(
+        zip(verdict['ts_code'].to_list(), verdict['date'].to_list(), strict=False),
+        verdict['verdict'].to_list(), strict=False))
+    unregistered = [key for key in orphans if key not in verdict_map]
+    if unregistered:
+        sample = [f'{code}@{day.isoformat()}' for code, day in unregistered[:10]]
+        raise SystemExit(
+            f'[layers] 网格外 bar 有 {len(unregistered)} 行未在 G-112 判定表登记：'
+            f'{sample} —— 先裁定再构建'
+        )
+    verdicts = [verdict_map[key] for key in orphans]
+    return {
+        'rows': len(orphans),
+        'dates': [d.isoformat() for d in orphan_dates],
+        'keep_rows': sum(1 for v in verdicts if v == 'keep'),
+        'drop_rows': sum(1 for v in verdicts if v == 'drop'),
+        'weekday_dates': [],
+        'unregistered_rows': 0,
+        'verdict_table': str(G112_VERDICT_REL),
+    }
 
 
 def _expand_intervals(
@@ -396,7 +455,8 @@ def _snapshot_comparison(grid: pl.DataFrame, root: Path, dates: list[date],
 
 def _manifest(root: Path, staging: Path, outputs: dict[str, Path],
               summary: dict, transitions: dict, snapshot: dict,
-              end: date, stats: dict, panel: pl.DataFrame) -> dict:
+              end: date, stats: dict, panel: pl.DataFrame,
+              orphan_stats: dict) -> dict:
     upstream = {}
     for rel in UPSTREAM_FILES:
         path = root / rel
@@ -429,11 +489,13 @@ def _manifest(root: Path, staging: Path, outputs: dict[str, Path],
             'min_amount': MIN_AMOUNT,
             'delisting_window_trading_days': DELISTING_WINDOW_TRADING_DAYS,
             'pool_rules': POOL_RULES,
-            'calendar': 'src/data/trading_calendar.py（基准 000001.SH，权威末日）',
+            'calendar': 'src/data/trading_calendar.py（四指数并集 + session_ledger 例外，权威末日）',
         },
         'sources': {
             'stock_domain': 'meta/stock_basic.parquet（list_date/delist_date）',
-            'calendar': 'quotes/index/sh/000001.SH.parquet',
+            'calendar': 'quotes/index/{sh/000001.SH,sz/399001.SZ,sz/399002.SZ,'
+                        'sz/399003.SZ,sh/000300.SH}.parquet 并集 + '
+                        'meta/trading_calendar/session_ledger.parquet',
             'quotes': 'quotes/stock/**/*.parquet（date/volume/amount）',
             'suspension': 'meta/suspension/suspension_daily.parquet + implied_suspension.parquet',
             'st_interval': 'meta/st/st_intervals.parquet（区间版，非快照）',
@@ -455,6 +517,10 @@ def _manifest(root: Path, staging: Path, outputs: dict[str, Path],
             'codes_without_local_quotes_note': (
                 'L0 域内但本地 quotes/stock 无行情文件，L2 起无法进入；'
                 '均为已退市老股，属数据覆盖缺口，未用占位值补齐'),
+            'orphan_bars': orphan_stats,
+            'orphan_bars_note': (
+                '网格外 bar = 日期不在交易日历内、被 _quote_panel 丢弃的行；'
+                '必须全部落在周末且已在 G-112 判定表登记（keep 行被丢弃属日历缺口）'),
         },
         'upstream': upstream,
         'files': files,
@@ -521,8 +587,14 @@ def main(argv: list[str] | None = None) -> int:
     logger.info(f'[layers] L0 网格 {grid.height:,} 行 / {stats["codes"]} 只 / 截至 {end}')
 
     universe = set(grid['ts_code'].unique().to_list())
-    panel = _quote_panel(root, dates, universe, end)
-    logger.info(f'[layers] 行情面板 {panel.height:,} 行')
+    orphans: list[tuple[str, date]] = []
+    panel = _quote_panel(root, dates, universe, end, orphans=orphans)
+    orphan_stats = _assert_orphan_bars(orphans)
+    logger.info(
+        f'[layers] 行情面板 {panel.height:,} 行；网格外 bar {orphan_stats["rows"]} 行 / '
+        f'{len(orphan_stats["dates"])} 天（keep {orphan_stats["keep_rows"]} / '
+        f'drop {orphan_stats["drop_rows"]}）'
+    )
 
     traded = panel.filter(pl.col('traded')).select(['cal_idx', 'ts_code']).unique()
     union = load_suspension_union(root)
@@ -622,7 +694,7 @@ def main(argv: list[str] | None = None) -> int:
     summary, by_year, transitions = _counts(grid, dates)
     snapshot = _snapshot_comparison(grid, root, dates, st_keys)
     manifest = _manifest(root, staging, outputs, summary, transitions,
-                         snapshot, end, stats, panel)
+                         snapshot, end, stats, panel, orphan_stats)
     from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
     apply_semantics(manifest, 'meta/universe/layers/manifest.json')
     (staging / 'manifest.json').write_text(

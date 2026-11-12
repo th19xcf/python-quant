@@ -6,10 +6,14 @@ from datetime import date
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools.build_universe_layers import _quote_panel  # noqa: E402
+from tools.build_universe_layers import (  # noqa: E402
+    _assert_orphan_bars,
+    _quote_panel,
+)
 
 
 def _store(tmp_path: Path, days: list[date], volumes: list[float],
@@ -67,3 +71,40 @@ def test_bar_after_calendar_end_is_dropped(tmp_path: Path) -> None:
     panel = _quote_panel(root, dates, {'000001.SZ'}, date(1991, 10, 8))
     assert panel.height == 1
     assert panel['cal_idx'].max() < len(dates)
+
+
+def test_dropped_bars_are_recorded_as_orphans(tmp_path: Path) -> None:
+    """被丢弃的网格外 bar 必须逐行记入 orphans，而不是无声消失。"""
+    root = _store(
+        tmp_path,
+        [date(1991, 9, 27), date(1991, 9, 29), date(1991, 9, 30)],
+        [10.0, 30.0, 5.0],
+        [1000.0, 3000.0, 500.0],
+    )
+    orphans: list[tuple[str, date]] = []
+    _quote_panel(root, [date(1991, 9, 27), date(1991, 9, 30)],
+                 {'000001.SZ'}, date(1991, 9, 30), orphans=orphans)
+    assert orphans == [('000001.SZ', date(1991, 9, 29))]
+
+
+def test_orphan_guard_rejects_weekday_bar() -> None:
+    """网格外 bar 落在工作日 = 日历缺交易日，必须报错而不是丢弃。"""
+    with pytest.raises(SystemExit) as excinfo:
+        _assert_orphan_bars([('000001.SZ', date(1993, 5, 3))])
+    assert '工作日' in str(excinfo.value)
+
+
+def test_orphan_guard_rejects_unregistered_weekend_bar() -> None:
+    """周末 bar 但未在 G-112 判定表登记，必须先裁定再构建。"""
+    with pytest.raises(SystemExit) as excinfo:
+        _assert_orphan_bars([('999999.SZ', date(1991, 4, 6))])
+    assert '未在 G-112 判定表登记' in str(excinfo.value)
+
+
+def test_orphan_guard_accepts_registered_weekend_bar() -> None:
+    """已裁定的周末 bar 允许丢弃，但计数必须如实统计（keep 行 = 日历缺口代价）。"""
+    stats = _assert_orphan_bars([('000001.SZ', date(1991, 4, 6))])
+    assert stats['rows'] == 1
+    assert stats['dates'] == ['1991-04-06']
+    assert stats['keep_rows'] == 1
+    assert stats['drop_rows'] == 0

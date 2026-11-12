@@ -39,6 +39,11 @@ def _write_index(root: Path, days: tuple[date, ...] = TRADING_DAYS) -> None:
     path = root / 'quotes' / 'index' / 'sh' / '000001.SH.parquet'
     path.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame({'date': list(days)}, schema={'date': pl.Date}).write_parquet(path)
+    # 日历要求台账存在（DG-2 不回落单指数）；夹具放一行不影响 TRADING_DAYS 的 closed。
+    ledger = root / 'meta' / 'trading_calendar' / 'session_ledger.parquet'
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({'date': [date(2026, 11, 7)], 'status': ['closed']},
+                 schema={'date': pl.Date, 'status': pl.String}).write_parquet(ledger)
 
 
 def _write_quotes(root: Path, ts_code: str, days: tuple[date, ...],

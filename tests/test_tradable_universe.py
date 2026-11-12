@@ -73,6 +73,11 @@ def _make_store(root: Path) -> None:
                   'qfq_factor': [1.0] * len(dates),
                   'hfq_factor': [1.0] * len(dates)}).write_parquet(
         root / 'quotes' / 'fund' / 'sh' / '510000.SH.parquet')
+    # 日历要求台账存在（DG-2 不回落单指数）；一行不影响本夹具日期的 closed。
+    ledger = root / 'meta' / 'trading_calendar' / 'session_ledger.parquet'
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({'date': [date(2099, 1, 3)], 'status': ['closed']},
+                 schema={'date': pl.Date, 'status': pl.String}).write_parquet(ledger)
 
     jump_dates = dates + [date(2026, 1, 12)]
     jump_close = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3.0]

@@ -1,0 +1,24 @@
+{
+ "formal_before": {
+  "sha256": "f60866e20cd52eb64e5348c4e1b67fb16acf6957308035f541c212803ff27de2",
+  "bytes": 7999280,
+  "inode": 562949953850018
+ },
+ "staging_new": {
+  "sha256": "9da7de408b5bfb3ca6b75de72e4027f76c23f0b049310e4fbd0866ce1e20b21d",
+  "bytes": 8000137
+ },
+ "backup_after_move": {
+  "sha256": "f60866e20cd52eb64e5348c4e1b67fb16acf6957308035f541c212803ff27de2",
+  "bytes": 7999280,
+  "inode": 562949953850018
+ },
+ "move_sha_equal": true,
+ "formal_absent_after_move": true,
+ "formal_after": {
+  "sha256": "9da7de408b5bfb3ca6b75de72e4027f76c23f0b049310e4fbd0866ce1e20b21d",
+  "bytes": 8000137,
+  "rows": 567541
+ },
+ "byte_identical_to_staging": true
+}

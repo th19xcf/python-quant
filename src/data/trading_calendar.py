@@ -18,6 +18,18 @@ r"""统一 A 股交易日历（本地基准指数为权威来源）。
 口径收口到一处：**以本地基准指数的实际交易日为权威**，只有在基准文件
 缺失/不可读时才退化为「工作日 − 配置节假日」近似，并显式暴露退化状态。
 
+口径（方案 B，2026-11-13）
+==========================
+日期集 = ``∪ BENCHMARK_CODES``（5 个指数）的实际日期 ``∪`` 台账
+``status=session`` ``−`` 台账 ``status=closed``。
+
+台账 ``meta/trading_calendar/session_ledger.parquet`` 只登记「指数并集给不出的
+裁定」——1991 深市周六开市、1992 上游漏输出的 session、基金净值占位周末、
+1992-02-01 未决日，共 73 行；普通交易日由并集规则给出，不落表。台账缺失时
+直接报错，不回落成「只读 000001.SH」。日期级与行级职责分开：该 ``(ts_code, date)``
+bar 是否可用另由 ``docs/evidence/g112_nontrading_bars/nontrading_bars_verdict.csv``
+裁定——**日历含该日 ≠ 该 bar 有效**。
+
 约定
 ====
 - ``count(start, end)`` 统计半开区间 ``(start, end]`` 的交易日数——与
@@ -49,8 +61,12 @@ from polars.exceptions import PolarsError
 
 from src.data.local_store.paths import default_store_root
 
-#: 权威日历候选（按顺序取第一个有数据的基准指数）。
-BENCHMARK_CODES: tuple[str, ...] = ('000001.SH', '000300.SH')
+#: 权威日历成员指数（取**并集**，不再「第一个非空就停」）。
+#: 单取 000001.SH 会漏掉深市 1991 年的周六 session 与 1992 年上游漏输出日。
+BENCHMARK_CODES: tuple[str, ...] = (
+    '000001.SH', '399001.SZ', '399002.SZ', '399003.SZ', '000300.SH')
+#: 日期级例外台账（唯一一份裁定；普通交易日不落表）。见 tools/build_session_ledger.py。
+SESSION_LEDGER_REL = Path('meta') / 'trading_calendar' / 'session_ledger.parquet'
 #: 近似日历的起点（覆盖沪深交易所开市）。
 FALLBACK_START = date(1990, 1, 1)
 #: 近似尾部向前延伸的天数（覆盖未来一年的巡检/回测窗口）。
@@ -58,7 +74,7 @@ FUTURE_HORIZON_DAYS = 366
 #: 节假日配置沿用 freshness registry，避免维护两份节假日清单。
 HOLIDAY_CONFIG = Path(__file__).parent / 'quality' / 'freshness_config.json'
 
-_CACHE: dict[tuple[str, int, int, str], TradingCalendar] = {}
+_CACHE: dict[tuple[str, tuple[int, ...], int, str], TradingCalendar] = {}
 
 
 def _as_date(value: Any) -> date | None:
@@ -167,18 +183,44 @@ class TradingCalendar:
         return self.dates[index] if index < len(self.dates) else None
 
 
+def _read_session_ledger(root: Path) -> tuple[tuple[date, ...], tuple[date, ...]]:
+    """读取台账的 ``(session_dates, closed_dates)``。
+
+    台账是日期级例外的唯一裁定（DG-1）。缺失或为空时直接报错，**不回落**成
+    「只读 000001.SH」：那会让 1991 深市周六 session 与 1992 上游漏输出日
+    静默消失，正是 2026-11 阶段一缺陷的形态（DG-2）。
+    """
+    path = root / SESSION_LEDGER_REL
+    if not path.is_file():
+        raise RuntimeError(f'交易日台账缺失或为空: {path}')
+    try:
+        frame = pl.read_parquet(path, columns=['date', 'status'])
+    except (OSError, ValueError, TypeError, PolarsError) as exc:
+        raise RuntimeError(f'交易日台账不可读: {path}: {exc}') from exc
+    if frame.is_empty():
+        raise RuntimeError(f'交易日台账缺失或为空: {path}')
+
+    def _pick(status: str) -> tuple[date, ...]:
+        picked = {_as_date(v) for v, s in
+                  zip(frame['date'].to_list(), frame['status'].to_list(), strict=False)
+                  if s == status}
+        return tuple(sorted(d for d in picked if d is not None))
+
+    return _pick('session'), _pick('closed')
+
+
 def _build(root: Path, as_of: date,
            holidays: frozenset[date]) -> TradingCalendar:
     horizon = as_of + timedelta(days=FUTURE_HORIZON_DAYS)
-    index_dates: tuple[date, ...] = ()
-    source_code = ''
+    members: list[str] = []
+    union: set[date] = set()
     for code in BENCHMARK_CODES:
-        index_dates = _read_index_dates(root, code)
-        if index_dates:
-            source_code = code
-            break
+        dates = _read_index_dates(root, code)
+        if dates:
+            members.append(code)
+            union.update(dates)
 
-    if not index_dates:
+    if not union:
         logger.warning(
             '[calendar] 本地基准指数日历不可用，退化为「工作日 − 配置节假日」近似；'
             '节假日漏配会直接导致新鲜度/缺口统计偏差'
@@ -191,17 +233,25 @@ def _build(root: Path, as_of: date,
             holidays=holidays,
         )
 
-    tail_start = index_dates[-1] + timedelta(days=1)
+    sessions, closed = _read_session_ledger(root)
+    # 台账 closed 优先级最高：即便指数当日有 bar 也剔除；session 补齐并集缺口。
+    merged = sorted((union | set(sessions)) - set(closed))
+    if not merged:
+        raise RuntimeError('交易日台账排除后日历为空，检查 status=closed 是否误标')
+
+    authoritative_end = merged[-1]
+    tail_start = authoritative_end + timedelta(days=1)
     tail = _weekday_dates(tail_start, horizon, holidays)
     if tail:
         logger.debug(
-            f'[calendar] 权威日历止于 {index_dates[-1].isoformat()}，'
-            f'其后 {len(tail)} 个工作日为近似值（source={source_code}）'
+            f'[calendar] 权威日历止于 {authoritative_end.isoformat()}，'
+            f'其后 {len(tail)} 个工作日为近似值'
+            f'（union={len(members)} 指数 + 台账 {len(sessions) + len(closed)} 行）'
         )
     return TradingCalendar(
-        dates=index_dates + tail,
-        source=f'local_index:{source_code}',
-        authoritative_end=index_dates[-1],
+        dates=tuple(merged) + tail,
+        source=f'local_index:union({len(members)})+ledger{len(sessions) + len(closed)}',
+        authoritative_end=authoritative_end,
         approx_from=tail_start if tail else None,
         holidays=holidays,
     )
@@ -219,7 +269,10 @@ def get_calendar(root: Path | str | None = None, *, as_of: date | None = None,
     for code in BENCHMARK_CODES:
         path = _index_path(root_path, code)
         stamps.append(path.stat().st_mtime_ns if path.is_file() else -1)
-    key = (str(root_path), max(stamps), today.toordinal(),
+    ledger = root_path / SESSION_LEDGER_REL
+    # 台账必须进 key：它与指数同目录、常常更晚写入，只取 max(stamps) 会漏失效。
+    stamps.append(ledger.stat().st_mtime_ns if ledger.is_file() else -1)
+    key = (str(root_path), tuple(stamps), today.toordinal(),
            ','.join(sorted(d.isoformat() for d in hs)))
     if not refresh and key in _CACHE:
         return _CACHE[key]

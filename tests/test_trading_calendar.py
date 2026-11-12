@@ -36,10 +36,22 @@ def _clear_cache() -> None:
     reset_calendar_cache()
 
 
+def _write_ledger(root: Path, sessions: tuple[date, ...] = (),
+                  closed: tuple[date, ...] = (date(2026, 10, 3),)) -> Path:
+    """最小台账夹具：默认只放一行 closed（周六占位），不影响 INDEX_DATES。"""
+    path = root / 'meta' / 'trading_calendar' / 'session_ledger.parquet'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = ([{'date': d, 'status': 'session'} for d in sessions]
+            + [{'date': d, 'status': 'closed'} for d in closed])
+    pl.DataFrame(rows, schema={'date': pl.Date, 'status': pl.String}).write_parquet(path)
+    return path
+
+
 def _write_index(root: Path, days: tuple[date, ...]) -> Path:
     path = root / 'quotes' / 'index' / 'sh' / '000001.SH.parquet'
     path.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame({'date': list(days)}, schema={'date': pl.Date}).write_parquet(path)
+    _write_ledger(root)
     return path
 
 
@@ -47,7 +59,7 @@ def test_local_index_is_authoritative_and_excludes_holidays(tmp_path: Path) -> N
     _write_index(tmp_path, INDEX_DATES)
     cal = get_calendar(tmp_path, as_of=date(2026, 11, 6))
 
-    assert cal.source == 'local_index:000001.SH'
+    assert cal.source == 'local_index:union(1)+ledger1'
     assert cal.is_authoritative
     assert cal.authoritative_end == date(2026, 11, 5)
     assert cal.authoritative_dates() == INDEX_DATES
