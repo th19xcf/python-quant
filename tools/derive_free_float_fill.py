@@ -53,6 +53,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
+from src.data.manifest_refresh import refresh_manifest_files  # noqa: E402
 
 WINDOW = 250
 BASE_COLUMNS: tuple[str, ...] = (
@@ -291,6 +292,11 @@ def main(argv: list[str] | None = None) -> int:
     reread = pl.read_parquet(src)
     check(reread, base)
     print(f'sha256 旧={sha_before} 新={sha_after} 备份={backup}')
+
+    # 与本脚本的派生列同步回写 manifest：只改统计字段，人工登记项原样保留。
+    refreshed = refresh_manifest_files(
+        root / 'meta' / 'factors' / 'manifest.json', root, [src], required=True)
+    print(f'manifest 已按磁盘回写: {refreshed}')
 
     if meta_path.is_file():
         meta = json.loads(meta_path.read_text(encoding='utf-8'))

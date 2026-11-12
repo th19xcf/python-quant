@@ -64,6 +64,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
+from src.data.manifest_refresh import refresh_manifest_files  # noqa: E402
 from src.data.staging import staging_dir  # noqa: E402
 from tools.derive_free_float_fill import BASE_COLUMNS, clip_filled_to_float, derive  # noqa: E402
 from tools.derive_free_float_fill import check as derive_check  # noqa: E402
@@ -412,6 +413,12 @@ def cmd_apply(table: pl.DataFrame, planned: pl.DataFrame, stats: dict[str, int],
     derive_check(reread, base)
     if reread.height != table.height:
         raise AssertionError('落盘后行数变化')
+
+    # 写盘收尾必须回写同目录 manifest：否则 parquet 已换、files 段停在旧行数 /
+    # 旧 SHA256，manifest_tool --check 读到过期登记（此前靠人手补）。
+    refreshed = refresh_manifest_files(
+        root / 'meta' / 'factors' / 'manifest.json', root, [src], required=True)
+    print(f'[apply] manifest 已按磁盘回写: {refreshed}')
 
     work = staging_dir(TASK, with_date=True)
     work.mkdir(parents=True, exist_ok=True)
