@@ -15,6 +15,10 @@ mtime 懒加载：
 设计约束：
 - **只读数据文件**，不修改任何行情/因子/分红值；
 - **幂等**：内容确定（排序稳定），重复执行覆盖旧文件，SHA 不变；
+- ``placeholder_quote_codes.csv`` 是「派生 ∪ 人工补登」混合件：刷新时保留
+  ``fund_pseudo_registry.json`` 的 ``kinds`` 里已登记、但本次派生不出的段
+  （``nav_series`` / ``post_delist`` 在派生判据下永远产不出来），仅当该段已从
+  ``kinds`` 删除时才视为人工退役、不再复现；
 - **非致命**：任何异常只记 warning 并返回 ``status='failed'``，不抛给调用方；
 - 返回耗时与各文件行数，供日常补数耗时表引用。
 """
@@ -22,6 +26,7 @@ mtime 懒加载：
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -239,6 +244,84 @@ def _build_rights_issue(div: pl.DataFrame,
             .sort(['ts_code', 'start']))
 
 
+def _registered_span_keys(registry: Path) -> set[str] | None:
+    """读 ``fund_pseudo_registry.json`` 的 ``kinds`` 键（``code|start|end``）。
+
+    缺失或不可解析时返回 ``None``：此时无法区分「人工补登」与「人工退役」，
+    调用方必须退化为纯派生并留 warning，不得把两者一起当退役删掉。
+    """
+    if not registry.is_file():
+        logger.warning(f'基金伪数据类别侧车缺失，按纯派生覆盖: {registry}')
+        return None
+    try:
+        data = json.loads(registry.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(f'基金伪数据类别侧车不可读，按纯派生覆盖: {registry} ({exc})')
+        return None
+    return {str(key) for key in (data.get('kinds') or {})}
+
+
+#: 台账 CSV 的显式类型：``concat`` 要求两侧 dtype 完全一致，不靠推断。
+_SPAN_SCHEMA = {
+    'ts_code': pl.Utf8, 'start': pl.Date, 'end': pl.Date,
+    'rows': pl.Int64, 'total': pl.Int64, 'full': pl.Boolean,
+}
+
+
+def _span_key_expr() -> pl.Expr:
+    return pl.concat_str([
+        pl.col('ts_code'), pl.lit('|'),
+        pl.col('start').cast(pl.Utf8), pl.lit('|'),
+        pl.col('end').cast(pl.Utf8)])
+
+
+def _merge_registered_spans(
+    derived: pl.DataFrame, target: Path, registry: Path
+) -> tuple[pl.DataFrame, dict[str, int]]:
+    """派生结果 ∪ 保留「``kinds`` 已登记但本次派生不出」的段。
+
+    ``placeholder_quote_codes.csv`` 同时承载派生段与人工补登段：上市前净值序列
+    (``nav_series``) 与退市后结转 (``post_delist``) 在 :func:`_build_placeholder_quote`
+    的判据下永远产不出来，整份覆盖会静默丢掉它们（2026-11-12 实测一次覆盖丢
+    219 段 / 3,090 行）。保留判据只看 ``kinds``：仍登记则保留原
+    ``rows/total/full``，已从 ``kinds`` 删除则视为人工退役、不再复现。
+    """
+    stats = {'derived': derived.height, 'preserved': 0, 'retired': 0,
+             'registry_only': 0}
+    keys = _registered_span_keys(registry)
+    if keys is None:
+        return derived, stats
+    if not target.is_file():
+        stats['registry_only'] = len(keys)
+        return derived, stats
+    try:
+        existing = pl.read_csv(target, schema_overrides=_SPAN_SCHEMA)
+    except Exception as exc:  # noqa: BLE001 - 坏台账不应阻断其余四份清单
+        logger.warning(f'旧台账不可解析，按纯派生覆盖: {target} ({exc})')
+        stats['registry_only'] = len(keys)
+        return derived, stats
+    if not keys:
+        logger.warning(f'kinds 为空，无法判定登记段，按纯派生覆盖: {registry}')
+        return derived, stats
+
+    existing = existing.with_columns(_span_key_expr().alias('_key'))
+    derived_keys = set(
+        derived.select(_span_key_expr().alias('_key'))['_key'].to_list())
+    registered = existing.filter(pl.col('_key').is_in(sorted(keys)))
+    if derived_keys:
+        keep = registered.filter(~pl.col('_key').is_in(sorted(derived_keys)))
+    else:
+        keep = registered
+    merged = pl.concat(
+        [derived.select(derived.columns), keep.select(derived.columns)],
+        how='vertical').sort(['ts_code', 'start'])
+    kept_keys = set(keep['_key'].to_list())
+    stats['preserved'] = keep.height
+    stats['retired'] = existing.height - registered.height
+    stats['registry_only'] = len(keys - derived_keys - kept_keys)
+    return merged, stats
+
+
 def refresh_anomaly_lists(
     store_root: str | Path,
     *,
@@ -286,18 +369,26 @@ def refresh_anomaly_lists(
             'rights_issue_codes.csv': _build_rights_issue(div, verified),
         }
         placeholder = _build_placeholder_quote(root)
+        span_stats: dict[str, int] = {}
         if placeholder is not None:
+            placeholder, span_stats = _merge_registered_spans(
+                placeholder,
+                out_dir / 'placeholder_quote_codes.csv',
+                root / 'meta' / 'anomalies' / 'fund_pseudo_registry.json')
             frames['placeholder_quote_codes.csv'] = placeholder
         out_dir.mkdir(parents=True, exist_ok=True)
         for name, frame in frames.items():
             path = out_dir / name
             _write_atomic(path, frame)
-            result['files'][name] = {
+            entry = {
                 'rows': frame.height,
                 'codes': frame['ts_code'].n_unique(),
                 'sha256': _sha256(path),
                 'path': str(path),
             }
+            if name == 'placeholder_quote_codes.csv':
+                entry.update(span_stats)
+            result['files'][name] = entry
         result['status'] = 'ok'
         result['latest_trade_date'] = str(latest)
         result['lag_cutoff'] = str(cutoff)

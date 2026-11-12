@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import polars as pl
@@ -119,3 +120,78 @@ def test_refresh_lists_failure_is_non_fatal(tmp_path) -> None:
     result = refresh_anomaly_lists(store, list_dir=blocked)
     assert result['status'] == 'failed'
     assert result['error']
+
+
+def _span_keys(frame: pl.DataFrame) -> set[tuple[str, str, str]]:
+    return {
+        (str(r['ts_code']), str(r['start']), str(r['end']))
+        for r in frame.iter_rows(named=True)
+    }
+
+
+def test_refresh_preserves_registered_spans_not_derivable(tmp_path) -> None:
+    """``kinds`` 已登记但本次派生不出的段不得被覆盖。
+
+    人工补登的 ``nav_series``（上市前净值序列）与 ``post_delist``（退市后结转）
+    在 ``_build_placeholder_quote`` 的判据下永远产不出来，整份覆盖会静默丢掉它们。
+    """
+    store = tmp_path / 'store'
+    _make_store(store)
+    lists = tmp_path / 'lists'
+    lists.mkdir()
+    # 上一版台账：1 段人工补登（派生不出）+ 1 段已退役（不在 kinds 里）
+    (lists / 'placeholder_quote_codes.csv').write_text(
+        'ts_code,start,end,rows,total,full\n'
+        '160311.SZ,2007-05-08,2007-05-11,4,16,false\n'
+        '999999.SZ,2010-01-04,2010-01-05,2,2,false\n',
+        encoding='utf-8')
+    registry_dir = store / 'meta' / 'anomalies'
+    registry_dir.mkdir(parents=True)
+    (registry_dir / 'fund_pseudo_registry.json').write_text(json.dumps({
+        'kinds': {
+            '159041.SZ|2026-11-02|2026-11-03': 'placeholder',
+            '160217.SZ|2019-09-05|2019-09-17': 'placeholder',
+            '160311.SZ|2007-05-08|2007-05-11': 'nav_series',
+        },
+    }), encoding='utf-8')
+
+    result = refresh_anomaly_lists(store, list_dir=lists)
+
+    assert result['status'] == 'ok'
+    rows = pl.read_csv(lists / 'placeholder_quote_codes.csv')
+    keys = _span_keys(rows)
+    # 人工补登段仍在，且原值未被改写
+    kept = rows.filter(pl.col('ts_code') == '160311.SZ')
+    assert kept.height == 1
+    kept_row = kept.row(0, named=True)
+    assert (str(kept_row['start']), str(kept_row['end'])) == (
+        '2007-05-08', '2007-05-11')
+    assert (int(kept_row['rows']), int(kept_row['total']),
+            bool(kept_row['full'])) == (4, 16, False)
+    # 派生段照常刷新
+    assert ('159041.SZ', '2026-11-02', '2026-11-03') in keys
+    assert ('160217.SZ', '2019-09-05', '2019-09-17') in keys
+    # 未在 kinds 登记的段（人工退役）不得复现
+    assert ('999999.SZ', '2010-01-04', '2010-01-05') not in keys
+    stats = result['files']['placeholder_quote_codes.csv']
+    assert (stats['derived'], stats['preserved'], stats['retired']) == (2, 1, 1)
+
+
+def test_refresh_keeps_derived_only_when_registry_missing(tmp_path) -> None:
+    """侧车类别表缺失时无法判定登记情况，退化为纯派生并留 warning。"""
+    store = tmp_path / 'store'
+    _make_store(store)
+    lists = tmp_path / 'lists'
+    lists.mkdir()
+    (lists / 'placeholder_quote_codes.csv').write_text(
+        'ts_code,start,end,rows,total,full\n'
+        '160311.SZ,2007-05-08,2007-05-11,4,16,false\n',
+        encoding='utf-8')
+
+    result = refresh_anomaly_lists(store, list_dir=lists)
+
+    assert result['status'] == 'ok'
+    stats = result['files']['placeholder_quote_codes.csv']
+    assert stats['preserved'] == 0
+    keys = _span_keys(pl.read_csv(lists / 'placeholder_quote_codes.csv'))
+    assert ('160311.SZ', '2007-05-08', '2007-05-11') not in keys

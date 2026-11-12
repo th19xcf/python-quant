@@ -450,7 +450,11 @@ class EligibilityEngine:
     #: 基金伪数据行级门控（``fund_pseudo_registry.json`` 的区间类别）：按
     #: ``(ts_code) -> {trade_date.toordinal()}`` 展开。默认开启（数据正确性
     #: 优先），``gate_pseudo_rows=False`` 复现旧口径做对照。
-    _pseudo_ordinals: dict[str, frozenset[int]] = field(default_factory=dict)
+    #: 本类不是 dataclass，``field(default_factory=dict)`` 在这里只会留下
+    #: ``dataclasses.Field`` 哨兵，手工组装（未跑 ``__init__``）的引擎读它会
+    #: AttributeError；用类级空映射兜底，``_load_pseudo_gate`` 三处都是整体
+    #: 赋值、无原地写，故共享该空映射无副作用。
+    _pseudo_ordinals: dict[str, frozenset[int]] = {}
     #: 门控装载状态：``on`` / ``off`` / ``missing:<原因>``，随索引一起可见，
     #: 避免「侧车缺失 ⇒ 静默当成全是真实数据」。
     pseudo_gate_status: str = 'off'
