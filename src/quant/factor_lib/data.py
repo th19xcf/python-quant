@@ -19,10 +19,14 @@
       vwap = amount / (volume * 100) 为当日成交均价（元/股，原始价空间），
       再乘 hfq_factor 转到复权空间；
     - ret = close / delay(close, 1) - 1（后复权收益，已含分红再投资效应）；
-    - 默认只保留**交易日历内**的 bar（``PanelRequest.calendar_filter``，默认开）。
-      非交易日 bar 只存在于 1991-1993 的 16 只标的，本身不携带信息，却会让面板
-      多出日历外日期，污染 ``ret`` / ``seq`` / ``next_tradable`` 等按行派生列。
-      日历取不到或为空时不过滤（宁可不过滤也不清空面板），关掉开关即回到旧口径。
+    - 默认**不按**交易日历过滤（``PanelRequest.calendar_filter``，默认关），
+      即照抄行情行，与 2026-11-12 之前的口径一致。显式开启后按白名单剔除
+      已证伪的周末行：白名单收录 1991 年 50 个周六的 173 行 + 1992-02-01 的
+      2 行（共 175 行，已证实为真实成交），只剔除其余 45 行（1993 年 6 行
+      周六 + 39 行周日）。逐行裁定见
+      ``docs/evidence/g112_nontrading_bars/nontrading_bars_verdict.csv``。
+      ``calendar_filter_mode='all'`` 会连 175 行真实成交一起丢掉。
+      日历或白名单取不到时不过滤（宁可不过滤也不清空面板）。
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ import json
 import time
 from dataclasses import dataclass
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 from typing import cast
 
@@ -63,12 +68,54 @@ class PanelRequest:
     universe_size: int = 80
     liquidity_lookback: int = LIQUIDITY_LOOKBACK_DAYS
     use_cache: bool = True
-    #: 是否只保留交易日历内的 bar。**默认开 = 行为已变更**：关掉即回到
-    #: 2026-11-12 之前「照抄行情行」的口径。非交易日 bar 仅存在于 1991-1993
-    #: 的 16 只标的（因子表 220 行 / 换手表 219 行），不影响 2019 年后的回测
-    #: 结论，但会让面板行数与交易日数对不上，进而污染按行计算的派生列。
-    #: 日历取不到或为空时**不做过滤**（宁可不过滤也不静默清空面板）。
-    calendar_filter: bool = True
+    #: 是否按交易日历过滤 bar。**默认关**：行为与 2026-11-12 之前一致，
+    #: 不改变既有回测值。开启后按 ``calendar_filter_mode`` 决定口径。
+    calendar_filter: bool = False
+    #: ``'whitelist'``（默认）：只剔除白名单之外的日历外行——白名单是 175 行
+    #: 已证实为真实成交的 1991-1993 深市周六 bar（1991 年 50 个周六 173 行 +
+    #: 1992-02-01 2 行），被剔除的只有 45 行（1993 年 6 行周六 + 39 行周日）。
+    #: 逐行裁定见 ``docs/evidence/g112_nontrading_bars/nontrading_bars_verdict.csv``。
+    #: ``'all'``：剔除全部日历外行（220 行），**会连 175 行真实观测一起丢掉**，
+    #: 只在明确知道后果时使用。
+    calendar_filter_mode: str = 'whitelist'
+
+
+#: 支持的日历过滤口径
+CALENDAR_FILTER_MODES = ('whitelist', 'all')
+
+#: 非交易日 bar 逐行裁定表（220 行，Git 跟踪，非 ``data/``）。
+#: ``verdict == 'keep'`` 的 175 行即白名单；判据与实测见
+#: ``2026-11-12/g112-nontrading-bars/outputs/非交易日bar真伪定性_2026-11-12.md``。
+NONTRADING_WHITELIST_PATH = (
+    Path(__file__).resolve().parents[3]
+    / 'docs' / 'evidence' / 'g112_nontrading_bars' / 'nontrading_bars_verdict.csv'
+)
+
+
+@lru_cache(maxsize=1)
+def nontrading_bar_whitelist() -> frozenset[tuple[str, date]] | None:
+    """读逐行裁定表，取「标的 + 日期」精确枚举的白名单。
+
+    Returns:
+        frozenset: 175 行已证实为真实成交的周末 bar；文件读不到、缺列或没有
+        ``keep`` 行时返回 ``None``，调用方据此跳过过滤——宁可不过滤，也不把
+        175 行真实观测误删。
+    """
+    try:
+        frame = pl.read_csv(NONTRADING_WHITELIST_PATH, try_parse_dates=True)
+        keep = frame.filter(pl.col('verdict') == 'keep')
+        pairs = frozenset(
+            (str(code), day) for code, day in keep.select(['ts_code', 'date']).rows()
+        )
+    # 兜底理由：白名单是过滤的减损项，读不到时保持旧口径优于误删真实成交
+    except (OSError, pl.exceptions.PolarsError, TypeError) as exc:
+        logger.warning(f'非交易日 bar 白名单不可用（{NONTRADING_WHITELIST_PATH}）：{exc}；'
+                       '本面板不做日历过滤（保持旧口径）')
+        return None
+    if not pairs:
+        logger.warning('非交易日 bar 白名单为空，本面板不做日历过滤（保持旧口径）')
+        return None
+    return pairs
 
 
 def _trading_dates(store: LocalQuoteStore) -> list[date] | None:
@@ -93,11 +140,34 @@ def resolve_trading_dates(request: PanelRequest, store: LocalQuoteStore) -> list
     return _trading_dates(store)
 
 
-def filter_to_calendar(frame: pl.DataFrame, trading_dates: list[date] | None) -> pl.DataFrame:
-    """只保留 ``date`` 落在 ``trading_dates`` 内的行；``None`` / 空列表时原样返回。"""
+def filter_to_calendar(
+    frame: pl.DataFrame,
+    trading_dates: list[date] | None,
+    mode: str = 'whitelist',
+    whitelist: frozenset[tuple[str, date]] | None = None,
+) -> pl.DataFrame:
+    """按 ``mode`` 剔除日历外 bar；``trading_dates`` 为空或 ``None`` 时原样返回。
+
+    - ``'whitelist'``：保留「日期在日历内」或「``(ts_code, date)`` 命中白名单」
+      的行；白名单取不到时整帧返回（不误删真实观测）。
+    - ``'all'``：只保留日历内行，220 行日历外 bar 全部丢弃。
+    """
     if not trading_dates:
         return frame
-    return frame.filter(pl.col('date').is_in(trading_dates))
+    if mode not in CALENDAR_FILTER_MODES:
+        raise ValueError(
+            f'未知的 calendar_filter_mode: {mode!r}，只支持 {CALENDAR_FILTER_MODES}'
+        )
+    keep = pl.col('date').is_in(trading_dates)
+    if mode == 'all':
+        return frame.filter(keep)
+    pairs = nontrading_bar_whitelist() if whitelist is None else whitelist
+    if not pairs:
+        return frame
+    keep = keep | pl.struct('ts_code', 'date').is_in(
+        [{'ts_code': code, 'date': day} for code, day in pairs]
+    )
+    return frame.filter(keep)
 
 
 def _cache_dir() -> Path:
@@ -193,7 +263,10 @@ def load_panel(request: PanelRequest | None = None, codes: list[str] | None = No
     factor_version = '0'
     if factor_store.factor_path.exists():
         factor_version = str(factor_store.factor_path.stat().st_mtime_ns)
-    calendar_tag = '_cal' if trading_dates is not None else ''
+    calendar_tag = (
+        '' if trading_dates is None
+        else f'_cal_{request.calendar_filter_mode}'
+    )
     cache_path = _cache_dir() / (
         f'panel_{len(codes)}_{request.start}_{request.end}_{factor_version}{calendar_tag}.parquet'
     )
@@ -213,7 +286,7 @@ def load_panel(request: PanelRequest | None = None, codes: list[str] | None = No
             & (pl.col('date') <= pl.lit(request.end).str.to_date())
         )
         rows_before = sliced.height
-        sliced = filter_to_calendar(sliced, trading_dates)
+        sliced = filter_to_calendar(sliced, trading_dates, request.calendar_filter_mode)
         dropped += rows_before - sliced.height
         if sliced.is_empty():
             missing.append(code)
@@ -221,7 +294,7 @@ def load_panel(request: PanelRequest | None = None, codes: list[str] | None = No
         frames.append(_adjust(sliced))
 
     if dropped:
-        logger.info(f'日历过滤剔除 {dropped} 行非交易日 bar（calendar_filter=True）')
+        logger.info(f'日历过滤（mode={request.calendar_filter_mode}）剔除 {dropped} 行日历外 bar')
 
     if not frames:
         raise RuntimeError('面板为空：所选标的在目标区间均无行情，请检查本地列存')
@@ -332,12 +405,15 @@ def panel_summary(panel: pl.DataFrame) -> dict[str, object]:
 
 __all__ = [
     'BASE_COLS',
+    'CALENDAR_FILTER_MODES',
+    'NONTRADING_WHITELIST_PATH',
     'PANEL_COLS',
     'PRICE_COLS',
     'PanelRequest',
     'dimension_check',
     'filter_to_calendar',
     'load_panel',
+    'nontrading_bar_whitelist',
     'panel_summary',
     'pick_liquid_universe',
     'resolve_trading_dates',

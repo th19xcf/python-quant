@@ -198,8 +198,14 @@ def test_headline_is_plain_conclusion_first():
 
 
 # ---------------------------------------------------------------------------
-# G-112：非交易日 bar 的分层过滤（读取侧按交易日历过滤，默认开）
+# G-112：非交易日 bar 的读取侧过滤（默认关；开启时按 175 行白名单保留真实成交）
 # ---------------------------------------------------------------------------
+_EVIDENCE = (
+    Path(__file__).resolve().parents[1]
+    / 'docs' / 'evidence' / 'g112_nontrading_bars' / 'nontrading_bars_verdict.csv'
+)
+
+
 def _weekend_frame() -> tuple[pl.DataFrame, list[date]]:
     """含周末行的小面板：2021-01-04（周一）..2021-01-10（周日），共 7 行。"""
     dates = _dates(date(2021, 1, 4), 7)
@@ -212,19 +218,47 @@ def _weekend_frame() -> tuple[pl.DataFrame, list[date]]:
     return frame, [day for day in dates if day.weekday() < 5]
 
 
+def _verdict_rows() -> tuple[pl.DataFrame, pl.DataFrame]:
+    """读 220 行逐行裁定表，返回（全部行, keep 行）。"""
+    table = pl.read_csv(_EVIDENCE, try_parse_dates=True)
+    return table, table.filter(pl.col('verdict') == 'keep')
+
+
+def _weekday_calendar(start: date, end: date) -> list[date]:
+    """构造工作日日历（等价于权威日历在这些年份的取值：全历史周末 bar = 0）。"""
+    days: list[date] = []
+    day = start
+    while day <= end:
+        if day.weekday() < 5:
+            days.append(day)
+        day += timedelta(days=1)
+    return days
+
+
+def _frame_from_verdict(table: pl.DataFrame) -> pl.DataFrame:
+    return table.select([
+        pl.col('ts_code'),
+        pl.col('date'),
+        pl.col('volume').cast(pl.Float64).alias('close'),
+        pl.col('volume').cast(pl.Float64),
+    ])
+
+
 class _StubStore:
     """只为 `_trading_dates(store.root)` 提供 root 的最小桩。"""
 
     root = Path('unused')
 
 
-def test_panel_request_calendar_filter_defaults_on():
-    """默认开 = 行为已变更；必须显式关闭才回到旧口径。"""
-    assert data.PanelRequest().calendar_filter is True
+def test_panel_request_calendar_filter_defaults_off():
+    """默认关 = 回到 2026-11-12 之前的「照抄行情行」口径，不改变既有回测值。"""
+    request = data.PanelRequest()
+    assert request.calendar_filter is False
+    assert request.calendar_filter_mode == 'whitelist'
 
 
 def test_calendar_filter_switch_off_keeps_every_row_bitwise():
-    """开关关闭：不取日历、不过滤，逐值与原帧完全一致（等价于回到 A）。"""
+    """开关关闭：不取日历、不过滤，逐值与原帧完全一致（等价于方案 A）。"""
     frame, _trading = _weekend_frame()
     request = data.PanelRequest(calendar_filter=False)
     # 关闭时不得触碰日历文件（store=None 也不应报错）
@@ -234,8 +268,74 @@ def test_calendar_filter_switch_off_keeps_every_row_bitwise():
     assert out['close'].to_list() == frame['close'].to_list()
 
 
-def test_calendar_filter_on_drops_exactly_non_trading_rows():
-    """开关开启：周末行全部剔除，交易日行逐值保留。"""
+def test_calendar_filter_whitelist_keeps_175_and_drops_45():
+    """开启 + 白名单：175 行真实成交逐值保留，45 行被剔除（逐行核对）。"""
+    table, keep = _verdict_rows()
+    drop = table.filter(pl.col('verdict') == 'drop')
+    assert (table.height, keep.height, drop.height) == (220, 175, 45)
+
+    frame = _frame_from_verdict(table)
+    out = data.filter_to_calendar(
+        frame, _weekday_calendar(date(1991, 1, 1), date(1993, 12, 31)), mode='whitelist',
+    )
+
+    keep_keys = set(map(tuple, keep.select(['ts_code', 'date']).rows()))
+    drop_keys = set(map(tuple, drop.select(['ts_code', 'date']).rows()))
+    out_keys = set(map(tuple, out.select(['ts_code', 'date']).rows()))
+    assert out.height == 175
+    assert out_keys == keep_keys
+    assert set(map(tuple, frame.select(['ts_code', 'date']).rows())) - out_keys == drop_keys
+    # 逐值核对：保留下来的行与原帧同键同行完全一致
+    assert out.sort(['ts_code', 'date']).equals(
+        frame.join(keep.select(['ts_code', 'date']), on=['ts_code', 'date'], how='semi')
+        .sort(['ts_code', 'date'])
+    )
+
+
+def test_calendar_filter_all_mode_drops_all_220():
+    """全剔除模式：220 行全部丢弃（会把 175 行真实成交一起丢掉）。"""
+    table, keep = _verdict_rows()
+    frame = _frame_from_verdict(table)
+    out = data.filter_to_calendar(
+        frame, _weekday_calendar(date(1991, 1, 1), date(1993, 12, 31)), mode='all',
+    )
+    assert keep.height == 175  # 白名单本身不因模式变化
+    assert out.height == 0
+
+
+def test_whitelist_enumerates_only_proven_rows():
+    """白名单按「标的 + 日期」精确枚举：只含 G1/G2，不含 G3（周六）/G4（周日）。"""
+    pairs = data.nontrading_bar_whitelist()
+    assert pairs is not None
+    assert len(pairs) == 175
+    assert all(code.endswith('.SZ') for code, _day in pairs)
+    assert all(day.weekday() == 5 for _code, day in pairs)
+    assert ('000001.SZ', date(1991, 4, 6)) in pairs
+    assert ('000009.SZ', date(1992, 2, 1)) in pairs
+    # G3：1993 年周六，来源残留待核，必须排除
+    assert ('000012.SZ', date(1993, 6, 5)) not in pairs
+    # G4：周日，制度上不成立且无第三证据，必须排除
+    assert ('000001.SZ', date(1991, 9, 29)) not in pairs
+
+
+def test_whitelist_unavailable_falls_back_to_no_filter(monkeypatch, tmp_path):
+    """白名单读不到：不抛错、不过滤（宁可不过滤也不误删 175 行真实成交）。"""
+    monkeypatch.setattr(data, 'NONTRADING_WHITELIST_PATH', tmp_path / 'missing.csv')
+    data.nontrading_bar_whitelist.cache_clear()
+    try:
+        assert data.nontrading_bar_whitelist() is None
+        table, _keep = _verdict_rows()
+        frame = _frame_from_verdict(table)
+        out = data.filter_to_calendar(
+            frame, _weekday_calendar(date(1991, 1, 1), date(1993, 12, 31)),
+        )
+        assert out.height == frame.height
+    finally:
+        data.nontrading_bar_whitelist.cache_clear()
+
+
+def test_calendar_filter_drops_unknown_weekend_rows():
+    """开启 + 白名单：不在白名单的周末行（如 2021 年）照常剔除。"""
     frame, trading = _weekend_frame()
     out = data.filter_to_calendar(frame, trading)
     assert out.height == len(trading) == 5
@@ -254,7 +354,8 @@ def test_calendar_filter_falls_back_when_calendar_raises(monkeypatch):
         raise RuntimeError('calendar missing')
 
     monkeypatch.setattr(data, 'get_calendar', _boom)
-    dates = data.resolve_trading_dates(data.PanelRequest(), _StubStore())  # type: ignore[arg-type]
+    request = data.PanelRequest(calendar_filter=True)
+    dates = data.resolve_trading_dates(request, _StubStore())  # type: ignore[arg-type]
     assert dates is None
     assert data.filter_to_calendar(frame, dates).equals(frame)
 
@@ -263,6 +364,7 @@ def test_calendar_filter_falls_back_when_calendar_empty(monkeypatch):
     """日历为空：同上，宁可不过滤也不静默清空面板。"""
     frame, _trading = _weekend_frame()
     monkeypatch.setattr(data, 'get_calendar', lambda _root: SimpleNamespace(dates=[]))
-    dates = data.resolve_trading_dates(data.PanelRequest(), _StubStore())  # type: ignore[arg-type]
+    request = data.PanelRequest(calendar_filter=True)
+    dates = data.resolve_trading_dates(request, _StubStore())  # type: ignore[arg-type]
     assert dates is None
     assert data.filter_to_calendar(frame, dates).height == frame.height
