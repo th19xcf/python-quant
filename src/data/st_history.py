@@ -1079,6 +1079,91 @@ def _input_timestamp(store_root: Path | str, as_of: date) -> datetime:
     return datetime.fromtimestamp(max(stamps)).replace(microsecond=0)
 
 
+_NULL_ASSERTED_COVERAGE_COLUMNS: tuple[str, ...] = ('coverage_start', 'coverage_end')
+
+
+def _null_counts(frame: pl.DataFrame) -> dict[str, int]:
+    return {col: int(frame[col].null_count()) for col in _NULL_ASSERTED_COVERAGE_COLUMNS}
+
+
+def _no_replay_stats(frame: pl.DataFrame) -> dict[str, Any]:
+    """未应用覆盖层时的「零变化」统计：键集与 ``assert_replay_preserves_nulls`` 一致。"""
+    nulls = _null_counts(frame)
+    return {
+        'applied': 0, 'appended': 0,
+        'null_counts_before': nulls,
+        'null_counts_after': dict(nulls),
+        'null_counts_appended': dict.fromkeys(_NULL_ASSERTED_COVERAGE_COLUMNS, 0),
+        'non_null_to_null_rows': dict.fromkeys(_NULL_ASSERTED_COVERAGE_COLUMNS, 0),
+        'untouched_rows': frame.height,
+    }
+
+
+def assert_replay_preserves_nulls(before: pl.DataFrame, after: pl.DataFrame,
+                                  patch_codes: set[str],
+                                  appended: pl.DataFrame) -> dict[str, Any]:
+    """覆盖层写回的后置断言（DG-31）：未命中的行不得被写成 null。
+
+    历史事故：``coalesce`` 少了兜底时 5,824 行 ``coverage_start`` 被写成 null，而当时
+    的断言用「改动行数 != 裁定行数」，null 参与比较得 null 被过滤，断言空过。所以
+    这里不看「改动了几行」，只核三件事：
+
+    ① 行数守恒：``after`` 行数 = ``before`` 行数 + ``appended`` 行数；
+    ② 空值守恒：逐列 ``after`` 的 null 数 = ``before`` 的 null 数 + ``appended`` 的 null 数，
+       且全表「非空 → 空」的翻转数必须为 0（这就是「空值 0 → N」的判据）；
+    ③ 未命中行逐值不变：``patch_codes`` 之外的标的，两列必须与 ``before`` 逐值相等。
+
+    断言失败直接抛 ``AssertionError``，不允许带空值的表落盘。
+    """
+    cols = _NULL_ASSERTED_COVERAGE_COLUMNS
+    before_nulls = _null_counts(before)
+    after_nulls = _null_counts(after)
+    appended_nulls = _null_counts(appended)
+
+    # ① 行数守恒
+    if after.height != before.height + appended.height:
+        raise AssertionError(
+            f'覆盖层写回行数不守恒: {before.height} + {appended.height} != {after.height}')
+
+    # ② 空值计数守恒（逐列，含 appended 自身贡献的 null）
+    for col in cols:
+        expected = before_nulls[col] + appended_nulls[col]
+        if after_nulls[col] != expected:
+            raise AssertionError(
+                f'覆盖层写回把 {col} 的空值从 {before_nulls[col]}（+appended '
+                f'{appended_nulls[col]}）改成了 {after_nulls[col]}')
+
+    common = before.select(['ts_code', *cols]).join(
+        after.select(['ts_code', *cols]), on='ts_code', how='inner', suffix='_after')
+    flipped = {col: int(common.filter(
+        pl.col(col).is_not_null() & pl.col(f'{col}_after').is_null()).height)
+        for col in cols}
+    for col, count in flipped.items():
+        if count:
+            raise AssertionError(
+                f'覆盖层写回把 {count} 行 {col} 从非空写成 null（DG-31 兜底缺失）')
+
+    # ③ 未命中行逐值不变
+    known = sorted(patch_codes)
+    untouched_before = before.filter(~pl.col('ts_code').is_in(known)).sort('ts_code')
+    untouched_after = after.filter(~pl.col('ts_code').is_in(known)).sort('ts_code')
+    if untouched_before.height != untouched_after.height:
+        raise AssertionError(
+            f'未命中行数变化: {untouched_before.height} -> {untouched_after.height}')
+    for col in cols:
+        if not untouched_before[col].equals(untouched_after[col]):
+            diff = int((untouched_before[col] != untouched_after[col]).sum())
+            raise AssertionError(f'未命中标的的 {col} 被改写（{diff} 行）')
+
+    return {
+        'null_counts_before': before_nulls,
+        'null_counts_after': after_nulls,
+        'null_counts_appended': appended_nulls,
+        'non_null_to_null_rows': flipped,
+        'untouched_rows': untouched_before.height,
+    }
+
+
 def apply_reviewed_coverage(coverage_frame: pl.DataFrame,
                             store_root: Path | str, today: date,
                             run_at: datetime) -> tuple[pl.DataFrame, dict[str, Any]]:
@@ -1091,7 +1176,7 @@ def apply_reviewed_coverage(coverage_frame: pl.DataFrame,
     """
     path = reviewed_coverage_path(store_root)
     if not path.is_file():
-        return coverage_frame, {'applied': 0, 'appended': 0}
+        return coverage_frame, _no_replay_stats(coverage_frame)
     reviewed = pl.read_parquet(path)
     missing = set(_REVIEWED_COVERAGE_SCHEMA) - set(reviewed.columns)
     if missing:
@@ -1123,7 +1208,9 @@ def apply_reviewed_coverage(coverage_frame: pl.DataFrame,
         schema=_COVERAGE_SCHEMA)
     merged = pl.concat([merged, appended], how='vertical_relaxed') \
         .unique(subset=['ts_code'], keep='last').sort('ts_code')
-    return merged, {'applied': patch.height, 'appended': len(appended_codes)}
+    stats = assert_replay_preserves_nulls(
+        coverage_frame, merged, set(patch['ts_code'].to_list()), appended)
+    return merged, {'applied': patch.height, 'appended': len(appended_codes), **stats}
 
 
 def _write_coverage_store(coverage_frame: pl.DataFrame, summary: dict[str, Any],
@@ -1366,7 +1453,7 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
         coverage_frame, replay_stats = apply_reviewed_coverage(
             coverage_frame, root, today, run_at)
     else:
-        replay_stats = {'applied': 0, 'appended': 0}
+        replay_stats = _no_replay_stats(coverage_frame)
     # 覆盖窗口的 fetched_at 统一取确定性构建时间戳（同输入重跑逐字节一致），
     # 来源信息保留在 source 列里，不靠时间戳区分。
     coverage_frame = coverage_frame.with_columns(
@@ -1405,6 +1492,15 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
         'deterministic_run_at': run_at.isoformat(timespec='seconds'),
         'window_extended_note': WINDOW_EXTENDED_NOTE,
     }
+    if apply_coverage_replay:
+        # DG-31 举证：写回前后各自 null 数、未命中行数、非空→空翻转数，随 json 一并留档
+        summary['coverage_replay_null_check'] = {
+            'before': replay_stats['null_counts_before'],
+            'after': replay_stats['null_counts_after'],
+            'appended': replay_stats['null_counts_appended'],
+            'non_null_to_null_rows': replay_stats['non_null_to_null_rows'],
+            'untouched_rows': replay_stats['untouched_rows'],
+        }
     summary = _write_coverage_store(coverage_frame, summary, out_root, conflicts)
     _refresh_manifest_after_write(root, out_root)
     logger.info(f'[st] 区间表已落盘: {intervals_path(out_root)}（{frame.height} 行 / '

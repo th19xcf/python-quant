@@ -5,6 +5,7 @@ import json
 from datetime import date
 
 import polars as pl
+import pytest
 
 from src.data import st_history
 
@@ -159,3 +160,79 @@ def test_coverage_meta_detects_external_parquet_rewrite(tmp_path):
     status = st_history.coverage_meta_status(out)
     assert status['rows_match'] is False
     assert status['ok'] is False
+
+
+def _cov(rows):
+    return pl.DataFrame(
+        [{'ts_code': code, 'coverage_start': start, 'coverage_end': end,
+          'source': 'merged', 'fetched_at': None}
+         for code, start, end in rows],
+        schema=st_history._COVERAGE_SCHEMA)
+
+
+def test_replay_records_null_counts_in_coverage_json(tmp_path):
+    """写回前后各自 null 数、未命中行数、非空→空翻转数必须随 json 留档。"""
+    _seed(tmp_path, overlay=_overlay())
+    out = tmp_path / 'rebuild'
+    st_history.build_store(tmp_path, apply_snapshot=False, output_dir=out,
+                           as_of=date(2026, 11, 10))
+
+    payload = json.loads(
+        st_history.coverage_json_path(out).read_text(encoding='utf-8'))
+    check = payload['coverage_replay_null_check']
+    assert check['before'] == {'coverage_start': 0, 'coverage_end': 0}
+    assert check['after'] == {'coverage_start': 0, 'coverage_end': 0}
+    assert check['appended'] == {'coverage_start': 0, 'coverage_end': 0}
+    assert check['non_null_to_null_rows'] == {'coverage_start': 0, 'coverage_end': 0}
+    # 000006.SZ 未列入裁定表，必须被计入「未命中行」并逐值保持不变
+    assert check['untouched_rows'] == 1
+
+
+def test_null_guard_fails_when_unmatched_row_is_nulled():
+    """反例自测：未命中行的 coverage_start 被写成 null → 断言必须失败（0 -> N）。"""
+    before = _cov([('000005.SZ', date(2015, 1, 5), None),
+                   ('000006.SZ', date(2014, 6, 1), None)])
+    after = before.with_columns(
+        pl.when(pl.col('ts_code') == '000006.SZ')
+        .then(pl.lit(None, dtype=pl.Date))
+        .otherwise(pl.col('coverage_start'))
+        .alias('coverage_start'))
+
+    with pytest.raises(AssertionError, match='空值'):
+        st_history.assert_replay_preserves_nulls(
+            before, after, {'000005.SZ'}, _cov([]))
+
+
+def test_null_guard_fails_when_nulls_move_between_matched_rows():
+    """反例自测：null 总数不变、只是换了一行也必须失败（不能只看计数）。"""
+    before = _cov([('000005.SZ', date(2015, 1, 5), None),
+                   ('000006.SZ', None, date(2020, 1, 1))])
+    after = _cov([('000005.SZ', None, None),
+                  ('000006.SZ', date(2014, 6, 1), date(2020, 1, 1))])
+
+    with pytest.raises(AssertionError, match='非空写成 null'):
+        st_history.assert_replay_preserves_nulls(
+            before, after, {'000005.SZ', '000006.SZ'}, _cov([]))
+
+
+def test_null_guard_fails_when_unmatched_value_changes():
+    """反例自测：未命中行没变 null 但值被改写，同样必须失败。"""
+    before = _cov([('000005.SZ', date(2015, 1, 5), None),
+                   ('000006.SZ', date(2014, 6, 1), None)])
+    after = _cov([('000005.SZ', date(2015, 1, 5), None),
+                  ('000006.SZ', date(2014, 6, 2), None)])
+
+    with pytest.raises(AssertionError, match='未命中标的'):
+        st_history.assert_replay_preserves_nulls(
+            before, after, {'000005.SZ'}, _cov([]))
+
+
+def test_null_guard_fails_when_row_count_not_conserved():
+    """反例自测：after 少了行（吞行）也必须失败。"""
+    before = _cov([('000005.SZ', date(2015, 1, 5), None),
+                   ('000006.SZ', date(2014, 6, 1), None)])
+    after = before.head(1)
+
+    with pytest.raises(AssertionError, match='行数不守恒'):
+        st_history.assert_replay_preserves_nulls(
+            before, after, {'000005.SZ'}, _cov([]))
