@@ -7,12 +7,17 @@ r"""自由流通口径派生列：``free_float_share_filled`` / ``free_float_sou
 「有过值、后来某条记录漏披露」。直接 ffill 会把早已失效的股本沿用至今，
 直接删除又会丢掉近一年内正常换手的样本。
 
-口径（用户 2026-11-10 裁定，②+①）：
+口径（用户 2026-11-10 裁定，②+①；2026-11-13 补截断）：
 
 * ``raw``        —— 该记录 ``free_float_share`` 非空，直接取原值；
 * ``ffill_250d`` —— 该记录为空，且上一非空记录距该记录 ``effective_date``
   不超过 250 个交易日，沿用上一非空值；
 * ``excluded``   —— 无上一非空记录，或超过 250 个交易日，下游按剔除处理。
+
+继承值必须再按语义上界收敛：自由流通股本是流通股本的子集，因此
+``free_float_share_filled = min(继承值, 当期 float_share)``。不加这一步时
+549 行 ffill 继承会越过上界（最大 +857%，详见 ``b1_slice7_fix.md`` §4）；
+截断只动派生列，原 ``free_float_share`` 一个字节不动。
 
 原 8 列一个字节不动，只在末尾追加两列。窗口取 250 的理由见
 ``stock_shares.meta.json`` 的 ``free_float_fill.window_rationale``。
@@ -25,6 +30,9 @@ r"""自由流通口径派生列：``free_float_share_filled`` / ``free_float_sou
 
     python tools/derive_free_float_fill.py            # 派生并落盘
     python tools/derive_free_float_fill.py --dry-run  # 只打统计，不写
+
+``check()`` 校验 ``free_float_share_filled <= float_share``，额度固定为 0：
+截断已在 :func:`derive` 内完成，任何越界都说明派生逻辑被改坏，直接失败。
 """
 
 from __future__ import annotations
@@ -69,8 +77,13 @@ def _store_root(root: Path | None) -> Path:
     return default_store_root()
 
 
-def derive(frame: pl.DataFrame, calendar: list[date], window: int = WINDOW) -> pl.DataFrame:
-    """在 8 列事实表末尾追加两列派生列（不改动原列）。"""
+def derive(frame: pl.DataFrame, calendar: list[date], window: int = WINDOW, *,
+           clip: bool = True) -> pl.DataFrame:
+    """在 8 列事实表末尾追加两列派生列（不改动原列）。
+
+    ``clip=True``（默认）把继承值收敛到 ``min(继承值, float_share)``；
+    ``clip=False`` 只做原始 ffill，供 ``fill_free_float_shares`` 统计截断行数。
+    """
     missing = [c for c in BASE_COLUMNS if c not in frame.columns]
     if missing:
         raise ValueError(f'股本表缺少基础列: {missing}')
@@ -121,11 +134,51 @@ def derive(frame: pl.DataFrame, calendar: list[date], window: int = WINDOW) -> p
 
     out = ordered.sort('_rid').select(
         list(BASE_COLUMNS) + list(DERIVED_COLUMNS))
+    if clip:
+        out, _ = clip_filled_to_float(out)
     return out
 
 
+def clip_filled_to_float(derived: pl.DataFrame) -> tuple[pl.DataFrame, int]:
+    """把派生列 ``free_float_share_filled`` 越界的值截断到当期 ``float_share``。
+
+    未命中行显式写回原值（``otherwise(原值)`` 兜底，DG-31）；原列
+    ``free_float_share`` 不参与，``free_float_source`` 三态也不变。
+    """
+    over = (
+        pl.col('free_float_share_filled').is_not_null()
+        & pl.col('float_share').is_not_null()
+        & (pl.col('free_float_share_filled') > pl.col('float_share'))
+    )
+    hits = derived.filter(over).height
+    if hits == 0:
+        return derived, 0
+    clipped = derived.with_columns(
+        pl.when(over).then(pl.col('float_share'))
+        .otherwise(pl.col('free_float_share_filled'))
+        .alias('free_float_share_filled'))
+    return clipped, hits
+
+
+def filled_gt_float_rows(out: pl.DataFrame) -> pl.DataFrame:
+    """``free_float_share_filled`` 非空且严格大于同行 ``float_share`` 的行。
+
+    语义上界：自由流通股本不可能超过流通股本。原值层（``free_float_share``）
+    在采集时已被 ``<= float_share`` 规则约束，但 ffill 继承会让「上一报告期
+    的自由流通股本」落到「本期流通股本已下降」的行上，因此必须单独校验。
+    """
+    return out.filter(
+        pl.col('free_float_share_filled').is_not_null()
+        & pl.col('float_share').is_not_null()
+        & (pl.col('free_float_share_filled') > pl.col('float_share')))
+
+
 def check(out: pl.DataFrame, source: pl.DataFrame) -> None:
-    """行数守恒 / 原列逐值不变 / 三态与取值互斥。"""
+    """行数守恒 / 原列逐值不变 / 三态与取值互斥 / filled 不越 float 上界。
+
+    上界额度固定为 0：截断已在 :func:`derive` 内完成，任何越界都说明派生
+    逻辑被改坏，直接失败（DG-26 不放宽断言）。
+    """
     if out.height != source.height:
         raise AssertionError(f'行数变化 {out.height} != {source.height}')
     if not out.select(list(BASE_COLUMNS)).equals(source.select(list(BASE_COLUMNS))):
@@ -140,6 +193,15 @@ def check(out: pl.DataFrame, source: pl.DataFrame) -> None:
         raise AssertionError('三态与填充值不互斥：excluded 必须恰好对应 filled 为空')
     if out['free_float_source'].value_counts()['count'].sum() != source.height:
         raise AssertionError('三态计数之和 != 行数')
+    violations = filled_gt_float_rows(out)
+    if violations.height > 0:
+        worst = violations.sort(
+            (pl.col('free_float_share_filled') / pl.col('float_share')),
+            descending=True).head(3).select(
+            ['ts_code', 'effective_date', 'free_float_share_filled', 'float_share'])
+        raise AssertionError(
+            f'free_float_share_filled > float_share 违例 {violations.height} 行'
+            f'（允许额度 0）；样例 {worst.to_dicts()}')
 
 
 def _meta_payload(meta: dict, stats: dict, backup: Path, sha_before: str,
@@ -149,8 +211,9 @@ def _meta_payload(meta: dict, stats: dict, backup: Path, sha_before: str,
     meta['rows'] = stats['rows']
     cols = dict(meta.get('columns', {}))
     cols['free_float_share_filled'] = (
-        '自由流通股本填充值（股）；仅在 free_float_source=raw/ffill_250d 时非空，'
-        'excluded 时为 NULL。原 free_float_share 不受影响')
+        f'自由流通股本填充值（股）；仅在 free_float_source=raw/ffill_{WINDOW}d 时非空，'
+        'excluded 时为 NULL。继承值已按语义上界截断到当期 float_share'
+        '（自由流通 ⊆ 流通）；原 free_float_share 不受影响')
     cols['free_float_source'] = (
         f'自由流通口径归属：raw=源端直接披露；ffill_{WINDOW}d=该记录为空且上一非空记录在 '
         f'{WINDOW} 个交易日内，沿用上一非空值；excluded=无上一非空值或超过 {WINDOW} 交易日，'
@@ -159,7 +222,7 @@ def _meta_payload(meta: dict, stats: dict, backup: Path, sha_before: str,
     meta['free_float_fill'] = {
         'window_trading_days': WINDOW,
         'rule': (f'仅空记录且上一非空记录距该记录 effective_date <= {WINDOW} 个交易日时填充；'
-                 '超窗/无前值落 excluded'),
+                 '超窗/无前值落 excluded；继承值超过当期 float_share 时截断到 float_share'),
         'window_rationale': (
             '空值行 gap 分位 p50=74 / p75=133 / p90=291 / p99=1332 个交易日（max 3015）：'
             '250 落在 p75~p90 之间，可覆盖约 88% 的可填缺口'
@@ -206,7 +269,8 @@ def main(argv: list[str] | None = None) -> int:
     stats = {'rows': out.height, 'raw_rows': counts.get('raw', 0),
              f'ffill_{WINDOW}d_rows': counts.get(f'ffill_{WINDOW}d', 0),
              'excluded_rows': counts.get('excluded', 0),
-             'null_rows_total': out['free_float_share'].null_count()}
+             'null_rows_total': out['free_float_share'].null_count(),
+             'filled_gt_float_rows': filled_gt_float_rows(out).height}
     print(f'行数 {out.height}（守恒）  三态 {stats}')
 
     if args.dry_run:
