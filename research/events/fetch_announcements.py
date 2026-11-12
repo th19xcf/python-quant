@@ -51,6 +51,21 @@ REQUEST_SLEEP = 0.25
 # 每个 (关键词, 区间) 开始前的随机抖动上限（秒），仅用于打散请求节奏、降低被限流概率，
 # 不用于任何安全用途。0 表示不抖动。
 REQUEST_JITTER = 0.0
+#: 空响应（``totalRecordNum=0``）的最大尝试次数（含首次）。
+#: 实测（2026-11-12）：同一 keyword+区间在不同时刻会返回 309 与 0 两种结果，
+#: 因此「0」不能直接当「源端确实没有」。
+EMPTY_RETRIES = 4
+#: 空响应重试的指数退避基数与上限（秒）
+EMPTY_BACKOFF_BASE = 2.0
+EMPTY_BACKOFF_CAP = 30.0
+#: 空响应重试耗尽后的默认处置：False = 抛错（不静默落空表），True = 只告警
+ALLOW_EMPTY = False
+
+
+class CninfoEmptyResponseError(RuntimeError):
+    """巨潮返回 ``totalRecordNum=0``，重试耗尽仍无法与「源端确实没有」区分。"""
+
+
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
     'Referer': 'http://www.cninfo.com.cn/new/commonUrl?url=disclosure/list/notice',
@@ -127,14 +142,80 @@ def _cninfo_records(payload: dict[str, Any], keyword: str) -> list[dict[str, Any
     return records
 
 
-def fetch_cninfo_chunk(keyword: str, start: str, end: str) -> tuple[list[dict[str, Any]], int]:
+def _cninfo_total(payload: Any) -> int:
+    """从响应里取 ``totalRecordNum``；取不到或类型不对时返回 0。"""
+    if not isinstance(payload, dict):
+        return 0
+    try:
+        return int(payload.get('totalRecordNum') or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _cninfo_empty_reason(payload: Any) -> str:
+    """返回「空响应」的结构异常原因；结构正常时返回空字符串。
+
+    结构正常（``totalRecordNum`` 与 ``announcements`` 都在）的 0 与结构异常
+    （非 dict、缺键、类型错）分开报告：后者只能判定为链路/接口异常，
+    前者才可能是源端确实没有。
+    """
+    if not isinstance(payload, dict):
+        return f'payload_not_dict:{type(payload).__name__}'
+    if 'totalRecordNum' not in payload:
+        return 'missing_totalRecordNum'
+    if 'announcements' not in payload:
+        return 'missing_announcements'
+    raw = payload.get('totalRecordNum')
+    if raw is not None:
+        try:
+            int(raw)
+        except (TypeError, ValueError):
+            return f'totalRecordNum_not_int:{raw!r}'
+    return ''
+
+
+def fetch_cninfo_chunk(keyword: str, start: str, end: str,
+                       allow_empty: bool | None = None) -> tuple[list[dict[str, Any]], int]:
+    """抓一个 (关键词, 区间) 的全部公告。
+
+    ``totalRecordNum=0`` 视为**不可信的空响应**：按 ``EMPTY_RETRIES`` 次、
+    指数退避（``EMPTY_BACKOFF_BASE`` 起、``EMPTY_BACKOFF_CAP`` 封顶）重试。
+    重试耗尽后默认抛 :class:`CninfoEmptyResponseError`，不静默返回空表；
+    ``allow_empty=True``（或模块常量 ``ALLOW_EMPTY=True``）才降级为告警。
+    """
     params = {
         'pageNum': '1', 'pageSize': str(PAGE_SIZE), 'column': 'szse', 'tabName': 'fulltext',
         'plate': '', 'stock': '', 'searchkey': keyword, 'secid': '', 'category': '', 'trade': '',
         'seDate': f'{start}~{end}', 'sortName': '', 'sortType': '', 'isHLtitle': 'true',
     }
-    first = _cninfo_get(params)
-    total = int(first.get('totalRecordNum') or 0)
+    first: dict[str, Any] | None = None
+    total = 0
+    reasons: list[str] = []
+    delays: list[float] = []
+    for attempt in range(EMPTY_RETRIES):
+        payload = _cninfo_get(params)
+        total = _cninfo_total(payload)
+        if total > 0:
+            first = payload
+            break
+        reasons.append(_cninfo_empty_reason(payload) or 'totalRecordNum=0')
+        delay = min(EMPTY_BACKOFF_CAP, EMPTY_BACKOFF_BASE * (2 ** attempt))
+        delays.append(delay)
+        logger.warning(
+            '巨潮空响应 keyword={} 区间={}~{} 第{}/{}次 totalRecordNum={} 结构={} 退避={}s',
+            keyword, start, end, attempt + 1, EMPTY_RETRIES, total,
+            _cninfo_empty_reason(payload) or 'normal', delay)
+        if attempt + 1 < EMPTY_RETRIES:
+            time.sleep(delay)
+    if first is None:
+        detail = (f'keyword={keyword} 区间={start}~{end} 尝试={EMPTY_RETRIES}次 '
+                  f'退避={delays} 原因={reasons}')
+        accept_empty = ALLOW_EMPTY if allow_empty is None else allow_empty
+        if accept_empty:
+            logger.warning('巨潮空响应重试耗尽，按「源端确实没有」接受: {}', detail)
+            return [], 0
+        logger.error('巨潮空响应重试耗尽，按失败处理（不落空表）: {}', detail)
+        raise CninfoEmptyResponseError(detail)
     pages = min(MAX_PAGES_PER_CHUNK, math.ceil(total / PAGE_SIZE))
     records = _cninfo_records(first, keyword)
     if pages > 1:
@@ -239,25 +320,30 @@ def fetch_em_chunk(keyword: str, start: str, end: str) -> tuple[list[dict[str, A
     return records, total
 
 
-def fetch_keyword(keyword: str, start: str, end: str, source: str) -> tuple[list[dict[str, Any]], int]:
+def fetch_keyword(keyword: str, start: str, end: str, source: str,
+                  allow_empty: bool | None = None) -> tuple[list[dict[str, Any]], int]:
     records: list[dict[str, Any]] = []
     total = 0
-    fetcher = fetch_cninfo_chunk if source == 'cninfo' else fetch_em_chunk
     for chunk_start, chunk_end in _quarter_chunks(start, end):
         if REQUEST_JITTER > 0:
             time.sleep(random.uniform(0, REQUEST_JITTER))  # noqa: S311
-        chunk_records, chunk_total = fetcher(keyword, chunk_start, chunk_end)
+        if source == 'cninfo':
+            chunk_records, chunk_total = fetch_cninfo_chunk(
+                keyword, chunk_start, chunk_end, allow_empty=allow_empty)
+        else:
+            chunk_records, chunk_total = fetch_em_chunk(keyword, chunk_start, chunk_end)
         records.extend(chunk_records)
         total += chunk_total
     return records, total
 
 
 def fetch_announcements(start: str, end: str, keywords: tuple[str, ...],
-                        source: str = 'cninfo', partial_path: Path | None = None) -> tuple[pl.DataFrame, dict[str, Any]]:
+                        source: str = 'cninfo', partial_path: Path | None = None,
+                        allow_empty: bool | None = None) -> tuple[pl.DataFrame, dict[str, Any]]:
     all_records: list[dict[str, Any]] = []
     meta: dict[str, Any] = {'source': source}
     for keyword in keywords:
-        records, total = fetch_keyword(keyword, start, end, source)
+        records, total = fetch_keyword(keyword, start, end, source, allow_empty=allow_empty)
         all_records.extend(records)
         meta[keyword] = {'total_hits': total, 'records': len(records)}
         logger.info('公告关键词 {}: total_hits={} records={}', keyword, total, len(records))
