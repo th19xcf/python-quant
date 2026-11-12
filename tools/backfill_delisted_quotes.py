@@ -42,6 +42,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.data.atomic_write import write_parquet_atomic  # noqa: E402
 from src.data.staging import staging_dir  # noqa: E402
 
 DEFAULT_ROOT = ROOT / 'data' / 'local_store'
@@ -219,7 +220,7 @@ def run(
                 summary['validation_problems'][code] = problems
                 continue
             shard = staging / f'{code}.parquet'
-            rows.write_parquet(shard)
+            write_parquet_atomic(rows, shard)
             summary['codes_with_new_rows'] += 1
             summary['new_rows'] += rows.height
             summary['per_code'].append({
@@ -230,7 +231,8 @@ def run(
                 merged = pl.concat([local, rows.select(local.columns)],
                                    how='vertical_relaxed').unique(
                     subset=['date'], keep='last').sort('date')
-                merged.write_parquet(path, compression='zstd', statistics=True)
+                write_parquet_atomic(
+                    merged, path, compression='zstd', statistics=True)
         except Exception as exc:  # noqa: BLE001
             summary['failed_codes'].append(f'{code}: {type(exc).__name__}: {exc}')
         if sleep:
@@ -264,7 +266,7 @@ def commit_from_staging(root: Path, staging: Path) -> dict[str, Any]:
         frame = pl.concat([local, added.select(local.columns)],
                           how='vertical_relaxed').unique(
             subset=['date'], keep='last').sort('date')
-        frame.write_parquet(path, compression='zstd', statistics=True)
+        write_parquet_atomic(frame, path, compression='zstd', statistics=True)
         merged_codes.append({
             'code': code, 'rows_before': local.height,
             'rows_after': frame.height, 'added': added.height,
@@ -308,7 +310,7 @@ def normalize_committed_precision(
                 pl.when(fixable).then(derived)
                 .otherwise(pl.col('pct_chg')).alias('pct_chg')
             )
-            frame.write_parquet(path, compression='zstd', statistics=True)
+            write_parquet_atomic(frame, path, compression='zstd', statistics=True)
             # 同步修正 staging 分片，避免日后 --from-staging --commit 把舍入值写回。
             if {'pct_chg', 'close', 'pre_close'} <= set(shard_frame.columns):
                 shard_derived = (
@@ -318,7 +320,7 @@ def normalize_committed_precision(
                     pl.when(pl.col('pre_close') > 0).then(shard_derived)
                     .otherwise(pl.col('pct_chg')).alias('pct_chg')
                 )
-                shard_frame.write_parquet(shard)
+                write_parquet_atomic(shard_frame, shard)
         details.append({
             'code': code, 'rows': target.height,
             'mismatched_rows': mismatched,
