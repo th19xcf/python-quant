@@ -270,12 +270,19 @@ def stage_price(max_stocks: int | None = None, batch: int = 300) -> None:
 # 2. 财务类因子（PIT）
 # ---------------------------------------------------------------------------
 def first_period(frame: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
-    """同一 (ts_code, end_date) 只保留 ann_date 最早的一版。"""
+    """同一 (ts_code, end_date) 只保留 ``ann_date`` 最新的一版（更正/重述覆盖旧版）。
+
+    PIT 口径：任意时点 T 可见的是 ``ann_date <= T`` 中公告日最新的一版；
+    ``ann_date`` 同时是可见性门槛，取最新版不会引入前视。与
+    ``build_new_factors.first_period`` / ``store.latest_announced_as_of`` /
+    ``fundamental_factors._dedupe_period`` / ``research_candidates._first_period``
+    一致（函数名 ``first`` 为历史命名，实际语义是「时点可见的最新版」）。
+    """
     return (
         frame.filter(pl.col('ann_date').is_not_null())
         .sort(['ts_code', 'end_date', 'ann_date'])
         .group_by(['ts_code', 'end_date'], maintain_order=True)
-        .agg([pl.col('ann_date').first(), *(pl.col(c).first() for c in cols)])
+        .agg([pl.col('ann_date').last(), *(pl.col(c).last() for c in cols)])
     )
 
 
