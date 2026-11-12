@@ -220,7 +220,10 @@ def inventory() -> pl.DataFrame:
 
     frame = pl.DataFrame(rows, infer_schema_length=None)
     INVENTORY.parent.mkdir(parents=True, exist_ok=True)
-    frame.write_csv(INVENTORY)
+    write_text_atomic(frame.write_csv(), INVENTORY)
+    from src.data.manifest_refresh import refresh_manifest_files  # noqa: PLC0415
+
+    refresh_manifest_files(UNIVERSE / 'manifest.json', STORE, [INVENTORY])
     amp = frame.filter(pl.col('eligible'))
     print(f'盘点: {frame.height} 只; 可补 {amp.height} 只 / '
           f'{int(amp["missing_count"].sum())} 行; '

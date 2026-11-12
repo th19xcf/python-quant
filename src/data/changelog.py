@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import io
 import os
 import re
 import sys
@@ -290,8 +291,19 @@ def append_event(
         width = len(_header_fields(target))
         values = [row[k] for k in FIELDS][:width]
         values += [""] * (width - len(values))
+        # 先序列化再校验再落盘：字段含逗号/换行/引号时 csv.writer 会自动加引号，
+        # 这里回读一遍确认列数等于表头宽度，避免留下「11 列的坏行」等下次核对方发现。
+        buffer = io.StringIO()
+        csv.writer(buffer, lineterminator="\n").writerow(values)
+        line = buffer.getvalue()
+        cells = next(csv.reader([line]))
+        if len(cells) != width:
+            raise ValueError(
+                f"台账行结构异常：表头 {width} 列，序列化后 {len(cells)} 列；"
+                f"字段含未转义的逗号/换行（task={task!r}）"
+            )
         with open(target, "a", encoding="utf-8", newline="\n") as f:
-            csv.writer(f, lineterminator="\n").writerow(values)
+            f.write(line)
     return {**row, "duplicate": "false"}
 
 

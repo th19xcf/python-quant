@@ -79,10 +79,14 @@ def file_facts(path: Path) -> dict[str, Any]:
         facts['columns'] = list(lazy.collect_schema().names())
         facts['rows'] = int(lazy.select(pl.len()).collect().item())
     elif suffix in ('.csv', '.tsv'):
-        with path.open('r', encoding='utf-8', newline='') as handle:
-            lines = handle.read().splitlines()
-        facts['columns'] = [c.strip() for c in lines[0].split(',')] if lines else []
-        facts['rows'] = max(len(lines) - 1, 0)
+        # 按 csv 模块逐条记录计数：字段内含换行/引号时行数与列数才与消费方一致，
+        # 与 tools/manifest_tool.py::_csv_data_rows 同口径（首行视为表头）。
+        import csv  # noqa: PLC0415
+
+        with path.open('r', encoding='utf-8-sig', newline='') as handle:
+            records = list(csv.reader(handle))
+        facts['columns'] = [c.strip() for c in records[0]] if records else []
+        facts['rows'] = max(len(records) - 1, 0)
     return facts
 
 

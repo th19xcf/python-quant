@@ -124,6 +124,10 @@ def build_stale_status(store_root: Path | str = DEFAULT_ROOT,
     target = status_path(root)
     write_parquet_atomic(frame, target)
     _CACHE.pop(str(target), None)
+    # 写盘后按磁盘实测回写同目录 manifest；临时 store（测试）没有 manifest 时静默跳过
+    from src.data.manifest_refresh import refresh_manifest_files  # noqa: PLC0415
+
+    refresh_manifest_files(target.parent / 'manifest.json', root, [target])
     stale_count = int(frame['is_stale'].sum())
     logger.info(
         f'[stale-status] {target} 已生成: {frame.height} 标的, '

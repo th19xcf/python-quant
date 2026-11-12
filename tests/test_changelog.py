@@ -315,3 +315,31 @@ def test_uppercase_sha256_normalized_to_lower(tmp_path):
     )
     assert row["sha256"] == "a" * 64
     assert _rows(csv_file)[0]["sha256"] == "a" * 64
+
+
+def test_reason_with_comma_newline_quote_roundtrips(tmp_path):
+    """reason 含逗号/换行/双引号时落盘再读回必须逐字相等，且每行列数恒等于表头。
+
+    背景：2026-11-13 台账第 10365 行（task=b2s2_breadth_rebuild）的 reason 里
+    「6,819 天」的逗号未加引号，整行被解析成 11 列，check_changelog 直接判 FAIL。
+    """
+    csv_file = tmp_path / "data_changelog.csv"
+    reason = '全量重建：口径 6,819 天；备注 "双引号" 与 单引号\n第二行内容'
+    append_event(
+        action="update",
+        path="factors/breadth_daily.parquet",
+        task="roundtrip",
+        reason=reason,
+        sha256="b" * 64,
+        size_bytes=4096,
+        csv_file=csv_file,
+    )
+
+    rows = _rows(csv_file)
+    assert len(rows) == 1
+    assert rows[0]["reason"] == reason
+
+    with open(csv_file, encoding="utf-8", newline="") as f:
+        parsed = list(csv.reader(f))
+    assert all(len(cells) == len(FIELDS) for cells in parsed), parsed
+    assert len(parsed) == 2  # 表头 + 1 条记录，字段内换行不得额外成行
