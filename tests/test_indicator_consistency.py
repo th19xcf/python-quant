@@ -451,3 +451,144 @@ def test_hsl_prefers_real_turnover_and_falls_back_per_row():
         'estimated'}
 
 
+# ---------------------------------------------------------------------------
+# 布林带「位置」两套口径的守护用例（2026-11-12 审计结论固化）
+#
+# 为什么不统一成一种口径：两处都不是标准 %B，且各自只有一个消费者——
+# A 侧（alpha）只进 src/quant/learning/data.py，先 1%/99% 截尾再转截面百分位
+# 与 z 分，绝对量级不入模型；B 侧（factor_lib）只进因子库评估报告与
+# tools/eval_daily_advice.py 的 IC/分层筛选。两侧均无绝对阈值消费者，
+# 强行对齐只会改动已冻结的 walk-forward 基线与历史报告，收益为零。
+# 因此这里钉的是「已确认的语义」，不是「某个想要的值」。
+# ---------------------------------------------------------------------------
+
+# 确定序列：线性趋势 + 7 日周期扰动，不用随机数，跨平台逐位可复现。
+_BOLL_PATTERN = (0.0, 1.0, 2.0, 3.0, 2.0, 1.0, 0.0)
+
+
+def _boll_close_series(n: int = 60) -> np.ndarray:
+    """返回 n 根确定的收盘价序列（用于布林带口径断言）。"""
+    return np.array(
+        [100.0 + 0.5 * i + _BOLL_PATTERN[i % 7] for i in range(n)], dtype=float)
+
+
+def _rolling_mean_std(close: np.ndarray, window: int):
+    """独立参考实现：返回 (均值, ddof=0 标准差, ddof=1 标准差)，前 window-1 行为 nan。"""
+    mean = np.full(close.size, np.nan)
+    std0 = np.full(close.size, np.nan)
+    std1 = np.full(close.size, np.nan)
+    for i in range(window - 1, close.size):
+        chunk = close[i - window + 1:i + 1]
+        mean[i] = chunk.mean()
+        std0[i] = chunk.std(ddof=0)
+        std1[i] = chunk.std(ddof=1)
+    return mean, std0, std1
+
+
+def test_alpha_bollinger_position_is_centered_deviation():
+    """A 侧 bollinger_position = (close - MA_{t-1}) / (4·STD_{t-1})，中心 0。
+
+    分母是 upper_{t-1} - lower_{t-1} = 4·STD_{t-1}，均线与标准差都错位一期、
+    标准差用 ddof=0。它不是标准 %B（``(close-lower)/(upper-lower)``，0~1 有界），
+    而是 ``%B_{t-1} - 0.5``：带内约 ±0.5、带外无界。任何把它改成标准 %B、
+    去掉 shift 或换掉 ddof 的改动都会让本用例变红。
+    """
+    from src.alpha.factors.technical import TechnicalFactors
+
+    close = _boll_close_series()
+    df = pl.DataFrame({
+        'open': close, 'high': close, 'low': close, 'close': close,
+        'volume': np.full(close.size, 1_000_000.0),
+    })
+    factors = TechnicalFactors(df)
+    factors.fill_missing = False          # 保留缺失，便于断言预热期
+    factors._calculate_bollinger_bands()
+    got = factors.data['bollinger_position'].to_numpy()
+
+    mean, std0, _ = _rolling_mean_std(close, 20)
+    mean_prev = np.concatenate(([np.nan], mean[:-1]))
+    std_prev = np.concatenate(([np.nan], std0[:-1]))
+    expected = (close - mean_prev) / (4.0 * std_prev)
+
+    np.testing.assert_allclose(
+        got, expected, rtol=0, atol=1e-12, equal_nan=True,
+        err_msg='bollinger_position 不等于 (close-MA_{t-1})/(4·STD_{t-1})')
+
+    # 手算锚点：i=20 与 i=59 的期望值（由参考实现逐位算出）
+    np.testing.assert_allclose(got[20], 0.3080910901345086, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(got[59], 0.578802908325829, rtol=0, atol=1e-12)
+
+    # 满窗 19 行 + 错位 1 行 → 前 20 行为缺失（fill_missing=False 时不填充）
+    assert np.isnan(got[:20]).all(), '预热期应为前 20 行缺失'
+    assert np.isfinite(got[20]), '第 21 行应为首个有效值'
+
+    # 与标准 %B 的固定关系：%B_{t-1} - 0.5，说明它是 0 中心而非 0~1 有界
+    pctb_prev = (close - (mean_prev - 2.0 * std_prev)) / (4.0 * std_prev)
+    np.testing.assert_allclose(got, pctb_prev - 0.5, rtol=0, atol=1e-12)
+
+
+def test_factor_lib_boll_pos_uses_contemporaneous_ddof1_std():
+    """B 侧 tech_boll_pos_20 = (close - MA_t) / (2·STD_t)，ddof=1 且不 shift。
+
+    与 A 侧是不同口径：窗口含当日、标准差为样本标准差，满窗即有效，
+    因此前 19 行为缺失、第 20 行即首个有效值（A 侧是前 20 行）。
+    """
+    from src.quant.factor_lib.factors import load_all
+    from src.quant.factor_lib.registry import get_spec
+
+    load_all()
+    close = _boll_close_series()
+    panel = pl.DataFrame({'ts_code': ['T.SH'] * close.size, 'close': close})
+    expr = get_spec('tech_boll_pos_20').builder(panel)
+    got = panel.with_columns(expr.alias('pos'))['pos'].to_numpy()
+
+    mean, _, std1 = _rolling_mean_std(close, 20)
+    expected = (close - mean) / (2.0 * std1)
+    np.testing.assert_allclose(
+        got, expected, rtol=0, atol=1e-12, equal_nan=True,
+        err_msg='tech_boll_pos_20 不等于 (close-MA_t)/(2·STD_t)')
+
+    # 手算锚点：i=19 与 i=59 的期望值（由参考实现逐位算出）
+    np.testing.assert_allclose(got[19], 0.6775775475917871, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(got[59], 0.9695299326983806, rtol=0, atol=1e-12)
+
+    assert np.isnan(got[:19]).all(), 'B 侧应为前 19 行缺失（无 shift）'
+    assert np.isfinite(got[19]), '第 20 行应为首个有效值'
+
+
+def test_boll_position_two_conventions_are_not_two_times():
+    """A 侧与 B 侧不构成 2 倍关系，任何「对齐」都会让本用例变红。
+
+    实测基线（同一确定序列、40 个配对行）：``|2*A - B| < 1e-6`` 命中 0 行，
+    最小差值 0.0533；全市场真实数据上 1e-6 容差命中率同样为 0.0%。
+    差异来源是窗口错位一期（t-1 带 vs t 带）与 ddof=0/1，不是单纯的系数。
+    """
+    from src.alpha.factors.technical import TechnicalFactors
+    from src.quant.factor_lib.factors import load_all
+    from src.quant.factor_lib.registry import get_spec
+
+    load_all()
+    close = _boll_close_series()
+    df = pl.DataFrame({
+        'open': close, 'high': close, 'low': close, 'close': close,
+        'volume': np.full(close.size, 1_000_000.0),
+    })
+    factors = TechnicalFactors(df)
+    factors.fill_missing = False
+    factors._calculate_bollinger_bands()
+    alpha = factors.data['bollinger_position'].to_numpy()
+
+    panel = pl.DataFrame({'ts_code': ['T.SH'] * close.size, 'close': close})
+    lib_expr = get_spec('tech_boll_pos_20').builder(panel)
+    lib = panel.with_columns(lib_expr.alias('pos'))['pos'].to_numpy()
+
+    paired = ~np.isnan(alpha) & ~np.isnan(lib)
+    assert int(paired.sum()) == 40, f'配对行数应为 40，实际 {int(paired.sum())}'
+    diff = np.abs(2.0 * alpha[paired] - lib[paired])
+    assert int((diff < 1e-6).sum()) == 0, (
+        '两侧出现了 2 倍关系，说明某一侧的口径被改成了另一侧')
+    assert float(diff.min()) > 1e-2, (
+        f'两侧差异过小（最小 {diff.min():.6g}），疑似口径被对齐')
+
+
+

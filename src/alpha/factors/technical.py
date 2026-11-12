@@ -49,7 +49,23 @@ class TechnicalFactors(PartitionAware):
 
     def _calculate_bollinger_bands(self):
         """
-        计算布林带因子
+        计算布林带因子。
+
+        口径（2026-11-12 审计确认，勿按「标准 %B」理解）：
+        - 均线与标准差均为 20 日窗口**错位一期**（``shift(1)``），即用 t-1 及
+          之前的收盘价算带、与 t 日收盘价比，不含当日；
+        - 标准差为总体标准差 ``ddof=0``（与 ``np.std`` 一致），不同于
+          ``src/quant/factor_lib`` 的样本标准差 ``ddof=1``；
+        - 满窗 19 行 + 错位 1 行，前 20 行本为缺失，``fill_missing=True``
+          （默认）时被 ``_fill`` 写成 0.0，0.0 落在带中心而非下轨。
+
+        ``bollinger_position`` 的真实语义是 ``(close - MA_{t-1}) / (4·STD_{t-1})``：
+        **不是**标准 ``%B = (close - lower) / (upper - lower)``（0~1 有界），
+        而是以 0 为中心的偏离度——带内约 ±0.5，带外无界（实测 −4.48~+2.10）。
+        它与 ``src/quant/factor_lib/factors/technical.py`` 的
+        ``tech_boll_pos_20 = (close - MA_t) / (2·STD_t)`` 同属「中心 0」口径但
+        窗口错位与 ddof 都不同，**不构成 2 倍关系**（实测 ``alpha*2 == lib``
+        在 1e-6 容差下命中率 0%）；两者无绝对阈值消费者，不要求统一。
         """
         cdt = self.data['close'].dtype
         close = pl.col('close')
@@ -60,6 +76,8 @@ class TechnicalFactors(PartitionAware):
         upper_band = ma20 + 2.0 * std20
         lower_band = ma20 - 2.0 * std20
         bollinger_width = (upper_band - lower_band) / ma20
+        # 分母 upper-lower = 4·std_{t-1}，故结果中心 0、带内约 ±0.5；
+        # 不是 0~1 的标准 %B，别按 %B 阈值（如 0.8 贴下/上轨）解读。
         bollinger_position = (close - ma20) / (upper_band - lower_band)
 
         # 添加到DataFrame
