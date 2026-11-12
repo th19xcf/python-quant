@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date
 
 import polars as pl
 import pytest
 
 from tools.derive_free_float_fill import (
+    _snapshot_backup,
     check,
     clip_filled_to_float,
     derive,
@@ -179,3 +181,43 @@ def test_plan_fill_no_source_vs_unmatched() -> None:
     planned = plan_fill(table, em)
     assert planned['action'].to_list() == ['no_source', 'unmatched']
     assert planned['free_after'].to_list() == [None, None]
+
+
+# ----------------------------------------------------------------------
+# 改前快照：同一天多次运行各自留档，不覆盖、不误判失败
+# ----------------------------------------------------------------------
+def test_snapshot_backup_keeps_each_run_of_the_same_day(tmp_path) -> None:
+    """同日两次写入不同内容 → 两份快照并存；第三次写相同内容 → 不新增文件。"""
+    root = tmp_path / '_backup'
+    src = tmp_path / 'stock_shares.parquet'
+
+    src.write_bytes(b'v1')
+    sha1 = hashlib.sha256(b'v1').hexdigest()
+    first = _snapshot_backup(src, sha1, backup_root=root)
+    assert first.name == 'stock_shares.parquet'
+    assert first.read_bytes() == b'v1'
+
+    src.write_bytes(b'v2')
+    sha2 = hashlib.sha256(b'v2').hexdigest()
+    second = _snapshot_backup(src, sha2, backup_root=root)
+    assert second != first
+    assert second.name == f'stock_shares_{sha2[:8]}.parquet'
+    assert second.read_bytes() == b'v2'
+    assert first.read_bytes() == b'v1'  # 旧快照未被覆盖
+
+    third = _snapshot_backup(src, sha2, backup_root=root)
+    assert third == second
+    assert sorted(p.name for p in first.parent.iterdir()) == sorted(
+        [first.name, second.name])
+
+
+def test_snapshot_backup_reuses_identical_snapshot(tmp_path) -> None:
+    """同名快照内容与改前一致时直接复用，不重复拷贝、不产生第二个文件。"""
+    root = tmp_path / '_backup'
+    src = tmp_path / 'stock_shares.parquet'
+    src.write_bytes(b'v1')
+    sha1 = hashlib.sha256(b'v1').hexdigest()
+    first = _snapshot_backup(src, sha1, backup_root=root)
+    again = _snapshot_backup(src, sha1, backup_root=root)
+    assert again == first
+    assert len(list(first.parent.iterdir())) == 1

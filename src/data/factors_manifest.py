@@ -74,10 +74,18 @@ _FILE_EXTRA: dict[str, dict[str, Any]] = {
             'turn 为百分数（0.1979 表示 0.1979%）。同一列含两套来源语义，按 source 列区分，'
             '禁止直接混用比对：source=baostock 256,639 行（1.42%，含 2026-11-13 回补的 '
             '18 只退市标的）是上游 baostock 日线原始 turn；'
-            'source=derived:quotes_volume+float_share 17,866,332 行（98.58%）'
+            'source=derived:quotes_volume+float_share 17,866,334 行（98.58%）'
             '由本地派生 volume(手)×100×100÷float_share 算出。两者在可比样本上相对差 '
             'p99=8.2%、max=106%，属上游口径差异而非错值，不得用本地口径重算覆盖 baostock 行；'
-            '跨来源比较须按 source 分层，混比会把口径差异误判为坏值。'),
+            '跨来源比较须按 source 分层，混比会把口径差异误判为坏值。'
+            'turn_source 是读取侧档位（attach_turn 的派生标签，不是本表列）：'
+            'float_share=该票在股本表里有 ≥2 条带流通股本的有效记录，按 K 线日期 asof 逐日取值；'
+            'float_share_static=只有 1 条有效记录（上市前行 float_share 为空，被 '
+            'read_float_share_series 过滤掉），直接用该单一值覆盖全部 K 线、不区分生效日——'
+            '因此仅在「全部 K 线都不早于该生效日」时与 asof 口径逐值等价，存在更早 K 线时会用'
+            '未来股本回算，属该档的已知边界（本例 688827.SH 唯一有效记录为 2026-10-29 '
+            'float=12,877,616，首根 K 线 2026-11-10，两行均为 float_share_static 且与 asof 同值；'
+            '表内 44 只单记录标的同档）；无股本序列时 turn_source 回落 stored 的 source（如 baostock）。'),
     },
 }
 

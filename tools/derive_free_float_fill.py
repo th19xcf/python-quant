@@ -240,6 +240,32 @@ def _meta_payload(meta: dict, stats: dict, backup: Path, sha_before: str,
     return meta
 
 
+def _snapshot_backup(src: Path, sha_before: str,
+                     backup_root: Path | None = None) -> Path:
+    """把改前文件留一份快照并返回快照路径。
+
+    目录按运行日命名（``_backup/<stem>_<YYYYMMDD>/``）。同一天多次运行时：
+
+    * 同名快照不存在 → ``copy2`` 落到 ``<name>``；
+    * 同名快照已存在且 SHA 相同 → 直接复用（幂等，不产生新文件）；
+    * 同名快照已存在但 SHA 不同 → 落到 ``<stem>_<sha8><suffix>``，既不覆盖
+      旧快照，也不把「当天第二次运行」误判成备份失败。
+    """
+    root = Path(backup_root) if backup_root is not None else PROJECT_ROOT / '_backup'
+    backup_dir = root / f'{src.stem}_{date.today():%Y%m%d}'
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup = backup_dir / src.name
+    if backup.exists():
+        if _sha256(backup) == sha_before:
+            return backup
+        backup = backup_dir / f'{src.stem}_{sha_before[:8]}{src.suffix}'
+    if not backup.exists():
+        shutil.copy2(src, backup)
+    if _sha256(backup) != sha_before:
+        raise RuntimeError(f'备份校验失败: {backup} 的 SHA256 与改前文件不一致')
+    return backup
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='派生自由流通口径两列')
     parser.add_argument('--root', default=None, help='local_store 根目录（默认按项目定位）')
@@ -279,13 +305,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     sha_before = _sha256(src)
-    backup_dir = PROJECT_ROOT / '_backup' / f'stock_shares_{date.today():%Y%m%d}'
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    backup = backup_dir / src.name
-    if not backup.exists():
-        shutil.copy2(src, backup)
-    if _sha256(backup) != sha_before:
-        raise RuntimeError('备份校验失败')
+    backup = _snapshot_backup(src, sha_before)
 
     write_parquet_atomic(out, src)
     sha_after = _sha256(src)
