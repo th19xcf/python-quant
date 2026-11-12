@@ -8,7 +8,8 @@
 SEMANTICS: dict[str, dict[str, str]] = {
     "factors/manifest.json": {
         "authority": "各表在 docs/数据权威路径清单.md 各有唯一正式路径登记行：个股复权因子 L74、基金复权因子 L75、个股换手率 L76、基金分红事件 L77、基金份额折算与分拆 L78、个股分红 L37；本文件只是这些正式表的目录级记账，不替代其中任何一张。",
-        "source": "由 src/data/factors_manifest.py 生成：MANIFEST_NAME 常量 L34、_SUB_MANIFESTS L54、写点 write_text_atomic L213-L214（目标路径 L209）；逐文件 rows / cols / codes / 日期区间与上游 quotes 及 meta/factors/stock_shares 的 mtime 全部读磁盘实测、不推算（模块 docstring L3-L9）。六张表的字段说明见同目录 meta.json 与 fund_meta.json。"
+        "source": "由 src/data/factors_manifest.py 生成：MANIFEST_NAME 常量 L34、_SUB_MANIFESTS L54、写点 write_text_atomic L213-L214（目标路径 L209）；逐文件 rows / cols / codes / 日期区间与上游 quotes 及 meta/factors/stock_shares 的 mtime 全部读磁盘实测、不推算（模块 docstring L3-L9）。六张表的字段说明见同目录 meta.json 与 fund_meta.json。",
+        "source_semantics": "fund_adj_factor 的历史段与新增段同为价格隐含（步长取自交易所除权参考价，等价于「因子步长 = 上一收盘 / 除权参考价」）；事件隐含（akshare 分红金额、份额拆分比例）只作旁证，不参与因子构造——分级子份额的拆分比例与交易所除权参考价既不同日也不同幅，2026-11-13 已实测 225 个跳变日「比例口径与参考价口径相反」，故 150xxx / 502xxx 一律按参考价口径。2026-11-13 补 11-10 / 11-11 尾部 4,456 行采用只追加：历史行逐值未动（改动行数 0），新增行步长恒 1.0（缺口内无除权事件）；缺口内有现金分红除权日的 6 只（159118.SZ / 159545.SZ / 515450.SH / 520810.SH / 560020.SH / 560070.SH）整只挂起、未追加，待补独立除权参考价后再补。"
     },
     "meta/anomalies/manifest.json": {
         "authority": "清单 L70（隔离行清单是唯一运行期隔离清单，命中即从因子与回测样本剔除，禁止调用点临时写死名单）、L91（占位行情代码清单）；本目录 CSV 台账是这两份正式清单的明细，不自立权威。",

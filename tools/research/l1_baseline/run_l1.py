@@ -143,8 +143,9 @@ def index_long(dates: list[date]) -> pl.DataFrame:
     rows_c: list[str] = []
     rows_i: list[str] = []
     for d in dates:
+        # 半开区间 [in_date, out_date)：out_date 当日已不在册（官方快照 20/20 校准）
         sub = iv.filter((pl.col('in_date') <= d)
-                        & (pl.col('out_date').is_null() | (pl.col('out_date') >= d)))
+                        & (pl.col('out_date').is_null() | (pl.col('out_date') > d)))
         rows_d.extend([d] * sub.height)
         rows_c.extend(sub['ts_code'].to_list())
         rows_i.extend(sub['index_code'].to_list())

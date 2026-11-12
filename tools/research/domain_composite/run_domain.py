@@ -92,9 +92,10 @@ def domain_members(dates: list[date]) -> dict[str, pl.DataFrame]:
         rows: list[date] = []
         codes: list[str] = []
         for d in dates:
+            # 半开区间 [in_date, out_date)：out_date 当日已不在册（官方快照 20/20 校准）
             sub = iv.filter((pl.col('index_code') == code)
                             & (pl.col('in_date') <= d)
-                            & (pl.col('out_date').is_null() | (pl.col('out_date') >= d)))
+                            & (pl.col('out_date').is_null() | (pl.col('out_date') > d)))
             rows.extend([d] * sub.height)
             codes.extend(sub['ts_code'].to_list())
         out[name] = pl.DataFrame({'date': rows, 'ts_code': codes},

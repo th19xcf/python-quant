@@ -26,6 +26,31 @@ RECORD_SIZE = 32
 STOCK_PRICE_DIVISOR = 100.0
 FUND_PRICE_DIVISOR = 1000.0
 
+# 成交量字段为 uint32。当「股 / 份」计数超过 2^32-1 时，通达信改按「手」存储，
+# 于是同一列里混着两种单位。识别判据（个股与基金共用同一套量级判据，**不按基金 /
+# 股票分叉**），两个条件必须同时成立才判为「已是手」：
+#   ① 量级已到溢出边界：raw × 100 > 2^32-1 × 0.995。
+#      按「股 / 份」解读已放不下 uint32，只能本来就是手。留 0.5% 余量是因为
+#      通达信在份值逼近上限时就提前切换单位（实测 sh513060 4,290,563,100 /
+#      4,294,967,295 = 99.90%）；而没有量级闸门时，1990 年代那些反算≈100 但
+#      量级仅几十万股的行（如 sz000001 1995-11-17 raw=4,600）会被全部误判。
+#   ② 反算比值：amount / (close × raw) ≈ 100。
+#      真实数据只有 1（股/份）与 100（手）两个簇，阈值 50 拉开余量；
+#      close 或 raw 为 0 时按「不是手」处理。
+_UINT32_MAX = 2 ** 32 - 1
+_HAND_IMPLIED_RATIO = 50.0
+_HAND_MAGNITUDE_RATIO = 0.995
+
+# 允许按「手」还原的成交量口径：A 股个股（沪深北）与基金。
+# 指数（sh000*/sz399* 及通达信自编 880xxx/999xxx 板块指数）、国债逆回购
+# （sh204*/sz131*）等的 amount 语义不同（成分股加总 / 回购金额），反算比值
+# 会大面积假命中，故一律不套该规则，维持原口径。
+_A_SHARE_PREFIX = {
+    'sh': ('6', '9'),      # 沪市主板/科创板 + 900 B 股
+    'sz': ('0', '2', '3'),  # 深市主板/创业板 + 200 B 股
+    'bj': ('4', '8', '9'),
+}
+
 # 32 字节定长记录的 numpy 结构化布局（与真实 .day 文件逐字段一致）
 _DAY_DTYPE = np.dtype([
     ('date', '<u4'),      # YYYYMMDD
@@ -70,6 +95,50 @@ def is_fund_file(file_path) -> bool:
 def price_divisor(file_path) -> float:
     """返回该 .day 文件价格字段的缩放因子（个股/指数 100，基金 1000）。"""
     return FUND_PRICE_DIVISOR if is_fund_file(file_path) else STOCK_PRICE_DIVISOR
+
+
+def is_a_share_stock(file_path) -> bool:
+    """按文件名判断是否为 A 股个股（沪深北，含 B 股，不含指数/回购/板块指数）。
+
+    只用于给成交量「按手还原」划定适用段：指数（sh000*/sz399*/自编 999xxx）、
+    国债逆回购（sh204*/sz131*）的成交额语义与个股不同，反算比值会假命中，
+    必须排除在判据之外。
+    """
+    name = Path(file_path).stem.lower()
+    if len(name) != 8 or name[:2] not in _A_SHARE_PREFIX:
+        return False
+    if is_index_file(file_path):
+        return False
+    body = name[2:]
+    if body.startswith('999'):
+        return False
+    return body[0] in _A_SHARE_PREFIX[name[:2]]
+
+
+def _resolve_volume(raw_vol, close, amount, *, volume_in_hand: bool,
+                    allow_hand_unit: bool):
+    """把成交量原始 uint32 还原为「手」。
+
+    三种口径按优先级判定：
+    1. 指数文件（``volume_in_hand``）原值就是手，直接保留；
+    2. 不在判据适用段（指数/板块指数/回购等）按「股/份 ÷ 100」；
+    3. 个股与基金走同一套量级判据：同时满足「raw×100 已到 uint32 溢出边界」
+       与「成交额反算≈100」，说明原值已是手（见文件头常量注释），原样保留；
+       否则仍按「股/份 ÷ 100」。
+    """
+    if volume_in_hand:
+        return raw_vol.astype(np.int64)
+    if not allow_hand_unit:
+        return raw_vol / 100.0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        implied = np.where(
+            (close > 0) & (raw_vol > 0),
+            amount / (close * raw_vol), 0.0)
+    is_hand = (
+        (implied > _HAND_IMPLIED_RATIO)
+        & (raw_vol * 100.0 > _UINT32_MAX * _HAND_MAGNITUDE_RATIO)
+    )
+    return np.where(is_hand, raw_vol, raw_vol / 100.0)
 
 
 @dataclass(frozen=True)
@@ -143,15 +212,16 @@ def _decode_dates_small(values) -> np.ndarray:
 
 
 def _decode_records(content: bytes, volume_in_hand: bool,
-                    price_div: float = STOCK_PRICE_DIVISOR) -> Dict[str, Any]:
+                    price_div: float = STOCK_PRICE_DIVISOR,
+                    allow_hand_unit: bool = False) -> Dict[str, Any]:
     """
     向量化解码整段 32 字节定长记录。
 
     与旧版逐记录 struct.unpack + strptime 的输出语义完全一致：
     日期为 datetime.date、价格按 ``price_div`` 缩放（个股/指数 100、基金 1000）、
     成交额为 float32 原值宽化到 float64、
-    成交量个股/基金除以 100（股/份→手）、指数原样（手）；
-    基金极少数「手」单位行按成交额反算单独识别。
+    成交量统一输出「手」：指数原样（本就是手），个股/基金按量级判据识别
+    原值是否已被通达信写成手（见 ``_resolve_volume``），未命中则 ÷100。
     """
     arr = np.frombuffer(content, dtype=_DAY_DTYPE)
     if len(arr) <= _SMALL_DECODE_THRESHOLD:
@@ -165,20 +235,9 @@ def _decode_records(content: bytes, volume_in_hand: bool,
     }
     amount = arr['amount'].astype(np.float64)
     raw_vol = arr['volume'].astype(np.float64)
-
-    if price_div == FUND_PRICE_DIVISOR:
-        # 基金成交量绝大多数按「份」存储（÷100 得到手）；极少数巨量行
-        # （全量 281 万行中约 0.37 万行、66 个标的）因份值超过 uint32 上限
-        # 被通达信改写为「手」。用成交额反算识别：amount/(close*raw) ≈ 100
-        # 说明原值已是手，直接保留；≈1 说明是份，除以 100。阈值取 50 以
-        # 拉开两个真实簇（1 与 100）之间的判定余量。
-        with np.errstate(divide='ignore', invalid='ignore'):
-            implied = np.where(
-                (price['close'] > 0) & (raw_vol > 0),
-                amount / (price['close'] * raw_vol), 0.0)
-        volume = np.where(implied > 50.0, raw_vol, raw_vol / 100.0)
-    else:
-        volume = raw_vol.astype(np.int64) if volume_in_hand else raw_vol / 100.0
+    volume = _resolve_volume(
+        raw_vol, price['close'], amount,
+        volume_in_hand=volume_in_hand, allow_hand_unit=allow_hand_unit)
 
     return {
         'date': dates,
@@ -214,7 +273,8 @@ def read_recent_records(file_path, count: int | None = None,
         volume_in_hand = is_index_file(path)
 
     content = _load_content(path, count)
-    cols = _decode_records(content, volume_in_hand, price_divisor(path))
+    cols = _decode_records(content, volume_in_hand, price_divisor(path),
+                           allow_hand_unit=is_fund_file(path) or is_a_share_stock(path))
     keys = tuple(cols.keys())
     return [dict(zip(keys, row, strict=False)) for row in zip(*(cols[k] for k in keys), strict=False)]
 
@@ -237,7 +297,8 @@ def parse_day_file(file_path, max_days: int | None = None) -> pl.DataFrame:
 
     # 批量解析：numpy frombuffer 一次解码，直接按列构建 DataFrame，避免逐记录建字典
     cols = _decode_records(_load_content(path, max_days), is_index_file(path),
-                           price_divisor(path))
+                           price_divisor(path),
+                           allow_hand_unit=is_fund_file(path) or is_a_share_stock(path))
     return pl.DataFrame({
         'date': cols['date'].tolist(),
         'open': cols['open'],

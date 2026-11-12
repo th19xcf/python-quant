@@ -82,6 +82,7 @@ import polars as pl  # noqa: E402
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
 from src.data.local_store.store import resolve_store_root  # noqa: E402
 from src.data.staging import staging_dir  # noqa: E402
+from src.data.trading_calendar import get_calendar  # noqa: E402
 from src.utils.config import get_config  # noqa: E402
 
 #: 导出列（前 5 列与现有文件同名同序，其余为可解释的补充信息）
@@ -203,11 +204,22 @@ def scan_quotes(store_root: Path) -> pl.DataFrame:
 
 
 def load_trade_calendar(store_root: Path) -> pl.Series:
-    """交易日历取 ``meta/breadth/breadth_daily.parquet``（本地按行情聚合出的逐日表）。"""
-    path = Path(store_root) / 'meta' / 'breadth' / 'breadth_daily.parquet'
-    if not path.is_file():
-        raise RuntimeError(f'找不到交易日历: {path}')
-    return pl.read_parquet(path, columns=['trade_date'])['trade_date'].sort()
+    """交易日历取 ``src/data/trading_calendar.py`` 的**权威段**。
+
+    权威段 = 本地基准指数 ``000001.SH`` 的实际交易日，由该模块统一提供；尾部
+    工作日近似段（``authoritative_end`` 之后）不取，避免把尚未验证的日期当交易日。
+
+    原实现取 ``meta/breadth/`` 下的逐日宽度表，使 L1 名录反向依赖 L2 派生表：任何
+    一次宽度重算都会改变 ``status`` / ``latest_trade_date``，触发下游整链返工。该表
+    还混有 1991–1993 的非交易日 bar（63 天），本身不适合作日历。
+    """
+    calendar = get_calendar(store_root)
+    dates = calendar.authoritative_dates()
+    if not dates:
+        raise RuntimeError(
+            '基准指数交易日历不可用：quotes/index/**/000001.SH.parquet 缺失或为空，'
+            '拒绝退化为工作日近似（会让 status 判定失真）')
+    return pl.Series('trade_date', list(dates), dtype=pl.Date)
 
 
 def load_names(store_root: Path) -> dict[str, str]:

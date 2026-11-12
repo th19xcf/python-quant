@@ -461,6 +461,7 @@ def _tdx_rows(
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     from src.data.local_store.build import discover_local_files
 
+    calendar = _benchmark_calendar(store_root)
     local_codes = {(item['data_type'], item['ts_code']) for item in di.iter_rows(named=True)}
     gap_rows: list[dict[str, Any]] = []
     short_rows: list[dict[str, Any]] = []
@@ -472,7 +473,14 @@ def _tdx_rows(
         if local.size == 0 or tdx.size == 0:
             continue
         local_end = int(local.max())
-        missing = np.setdiff1d(tdx[tdx <= local_end], local)
+        tdx_upto = tdx[tdx <= local_end]
+        if calendar is not None and calendar.size:
+            # 非交易日的 TDX bar 不构成「本地缺口」。通达信早期历史的日期字段存在错位：
+            # 1993-05-01（周六）/ 1993-05-02（周日）会写出 bar，同时漏掉 05-03（周一）、
+            # 05-06（周四）。不过滤会把本地正确的缺失判成 internal_gap，再经 strict 口径
+            # 把 000001.SZ、000002.SZ 这类主板标的误移出可交易池。
+            tdx_upto = tdx_upto[np.isin(tdx_upto, calendar)]
+        missing = np.setdiff1d(tdx_upto, local)
         if missing.size and covered and covered.get(ts_code):
             # 已由连续空洞登记过的缺失日不再重复计入 TDX 对账行
             missing = missing[~np.isin(missing, list(covered[ts_code]))]

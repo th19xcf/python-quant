@@ -3,7 +3,7 @@
 E:\\www\\tmp\\factor_eval2_20261105\\compute.py）。
 
 因子：
-- ``turnover_20``  : 20 日真实换手率均值取负（越高换手、未来收益越差）
+- ``turnover_20``  : 20 日真实换手率均值，落盘**正原值**（越高换手越活跃）
 - ``accruals``     : (归母净利TTM - 经营现金流TTM) / 总资产
 - ``roe_stability``: 过去 8 季 ROE_TTM 的均值 / 标准差
 - ``sue``          : (Q_t - Q_{t-4}) / std(过去 8 季季节差分)
@@ -110,6 +110,22 @@ def max_pub(cols: list[str]) -> pl.Expr:
 # ---------------------------------------------------------------- 换手率
 def build_turnover(store: Path, mdates: list[date], turn_start: date,
                    batch: int) -> pl.DataFrame:
+    """20 日真实换手率均值（月末快照），落盘**正原值**。
+
+    为什么取正：换手率本身是「值越大越活跃」的无量纲正量，符号（高换手偏空）
+    属于经济方向、应由元数据承载，不能靠数据里的负号表达。同一语义在
+    ``src/advice/fundamental_factors.py`` 的 ``ext_turnover_20`` 就是存正原值、
+    用 ``FundamentalCandidate('ext_turnover_20', 'volume', '20日均真实换手率', -1.0)``
+    的 ``direction=-1.0`` 表达方向；本函数现与之同号，两表可按列名安全合并。
+
+    负号曾经在哪：2026-11-12 之前本函数落盘 ``(-_turn20).alias('turnover_20')``，
+    与 ``ext_turnover_20`` 精确互为相反数（实测 ρ = -0.99999888、值域精确镜像）。
+    该列当时全仓零读取点，故改符号不影响任何既有结论；若将来有消费者需要方向，
+    请在读取侧按 ``direction=-1`` 处理，不要再对数据列取负。
+
+    口径：``turn = volume(手)·100 / float_share(股)`` →
+    ``rolling_mean(turn, 20, min_samples=15)``。
+    """
     shares = pl.read_parquet(
         store / 'meta/factors/stock_shares.parquet',
         columns=['ts_code', 'effective_date', 'float_share'])
@@ -151,7 +167,7 @@ def build_turnover(store: Path, mdates: list[date], turn_start: date,
             .over('ts_code').alias('_turn20'))
         parts.append(daily.filter(pl.col('date').is_in(list(mset)))
                      .select(['ts_code', 'date',
-                              (-pl.col('_turn20')).alias('turnover_20')]))
+                              pl.col('_turn20').alias('turnover_20')]))
         print(f'  turnover batch {i // batch + 1}/'
               f'{(len(files) - 1) // batch + 1}', flush=True)
         del daily, frames

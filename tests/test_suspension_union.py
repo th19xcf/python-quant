@@ -7,11 +7,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.data.quality.clean_set import CodeInfo, EligibilityEngine  # noqa: E402
-from src.data.quality.suspension_union import load_suspension_union  # noqa: E402
+from src.data.quality.suspension_union import (  # noqa: E402
+    load_suspension_union,
+    verify_quarantine_alignment,
+)
 
 
 def _write_store(root: Path, gap: pd.DataFrame, implied: pd.DataFrame) -> Path:
@@ -112,3 +116,46 @@ def test_rebutted_gap_row_is_not_suspended(tmp_path: Path) -> None:
     assert union.is_suspended('300280.SZ', date(2022, 6, 7)) is False
     assert len(union.frame) == 1
     assert union.stats['rows'] == 1
+
+
+def _write_quarantine(root: Path, pairs: list[tuple[str, str]]) -> None:
+    """按正式表结构写隔离台账：trade_date 是字符串（与 implied 的 Date 类型不同）。"""
+    meta = root / 'meta' / 'anomalies'
+    meta.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({
+        'ts_code': [p[0] for p in pairs],
+        'trade_date': [p[1] for p in pairs],
+        'rule_ids': ['required_columns,volume_invalid'] * len(pairs),
+    }).to_parquet(meta / 'quarantine_rows.parquet', index=False)
+
+
+def test_quarantine_alignment_passes_on_equal_keysets(tmp_path: Path) -> None:
+    """键集相等即通过；两表 trade_date 类型不同（Date vs str）也必须能对上。"""
+    pairs = [('300280.SZ', '2022-06-07'), ('000001.SZ', '2022-06-08')]
+    store = _write_store(tmp_path, _frame([]), _frame(pairs))
+    _write_quarantine(store, pairs)
+    stats = verify_quarantine_alignment(store)
+    assert stats == {'implied_rows': 2, 'quarantine_rows': 2,
+                     'only_implied': 0, 'only_quarantine': 0}
+
+
+def test_quarantine_alignment_fails_when_keysets_drift(tmp_path: Path) -> None:
+    """任意一侧多出一行即必须失败：分叉会让坏行被当成停牌、或坏行回流行情读侧。"""
+    store = _write_store(tmp_path, _frame([]),
+                         _frame([('300280.SZ', '2022-06-07'), ('000001.SZ', '2022-06-08')]))
+    _write_quarantine(store, [('300280.SZ', '2022-06-07')])
+    with pytest.raises(ValueError, match='键集不等'):
+        verify_quarantine_alignment(store)
+
+    store2 = _write_store(tmp_path / 'rev', _frame([]),
+                          _frame([('300280.SZ', '2022-06-07')]))
+    _write_quarantine(store2, [('300280.SZ', '2022-06-07'), ('000001.SZ', '2022-06-08')])
+    with pytest.raises(ValueError, match='仅 quarantine 1 行'):
+        verify_quarantine_alignment(store2)
+
+
+def test_quarantine_alignment_fails_when_one_side_missing(tmp_path: Path) -> None:
+    """只有一侧存在即无法校验，必须报错而不是当成空表通过。"""
+    store = _write_store(tmp_path, _frame([]), _frame([('300280.SZ', '2022-06-07')]))
+    with pytest.raises(ValueError, match='另一侧缺失'):
+        verify_quarantine_alignment(store)

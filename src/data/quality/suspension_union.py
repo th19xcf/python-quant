@@ -27,6 +27,10 @@ SUSPENSION_FILES = (
     ('implied_bar', 'implied_suspension.parquet'),
 )
 
+#: 隔离行清单：与 ``implied_suspension`` 同源同批行（源端 volume/amount 双 NULL），
+#: 但语义是「读侧剔除」而不是「判为停牌」，因此是独立正式路径，不是重复登记。
+QUARANTINE_FILE = ('meta', 'anomalies', 'quarantine_rows.parquet')
+
 
 class SuspensionUnion:
     """``(ts_code, trade_date)`` 停牌并集，提供 O(1) 判定。"""
@@ -102,3 +106,48 @@ def load_suspension_union(store_root: str | Path | None = None) -> SuspensionUni
               .agg(lambda s: s.iloc[0] if s.nunique() == 1 else 'both'))
     merged = merged.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
     return SuspensionUnion(merged)
+
+
+def verify_quarantine_alignment(store_root: str | Path | None = None) -> dict[str, int]:
+    """校验 ``implied_suspension`` 与 ``quarantine_rows`` 的键集相等。
+
+    两表同源（源端 ``volume``/``amount`` 双 NULL 的行）但语义不同：前者进停牌并集
+    做可交易性判定，后者进行情读侧做坏行剔除。二者由不同脚本各自产出、互不联动，
+    任何一侧单独重放都会让键集分叉——坏行被当成停牌，或坏行回流行情读侧，两种都
+    不报错，只会让回测样本静默偏移。故此处显式校验，键集不等即抛错。
+
+    Args:
+        store_root: 列存根目录，默认 ``data/local_store``。
+
+    Returns:
+        ``{'implied_rows', 'quarantine_rows', 'only_implied', 'only_quarantine'}``，
+        键集相等时后两项均为 0。
+
+    Raises:
+        ValueError: 键集不等，或两表只有一侧存在（无法校验）。
+    """
+    store = Path(store_root) if store_root is not None else DEFAULT_STORE
+    implied = _read(store / 'meta' / 'suspension' / 'implied_suspension.parquet')
+    quarantine = _read(store.joinpath(*QUARANTINE_FILE))
+    if (implied is None) != (quarantine is None):
+        present = 'implied_suspension' if implied is not None else 'quarantine_rows'
+        raise ValueError(f'隔离台账对齐校验失败：只有 {present} 存在，另一侧缺失')
+    if implied is None or quarantine is None:
+        return {'implied_rows': 0, 'quarantine_rows': 0,
+                'only_implied': 0, 'only_quarantine': 0}
+
+    implied_keys = set(zip(implied['ts_code'], implied['trade_date'], strict=True))
+    quarantine_keys = set(zip(quarantine['ts_code'], quarantine['trade_date'], strict=True))
+    only_implied = implied_keys - quarantine_keys
+    only_quarantine = quarantine_keys - implied_keys
+    if only_implied or only_quarantine:
+        raise ValueError(
+            '隔离台账对齐校验失败：implied_suspension 与 quarantine_rows 键集不等 '
+            f'(implied {len(implied_keys)} 行 / quarantine {len(quarantine_keys)} 行；'
+            f'仅 implied {len(only_implied)} 行，仅 quarantine {len(only_quarantine)} 行)。'
+            f'样例 仅 implied={sorted(only_implied)[:5]}；'
+            f'仅 quarantine={sorted(only_quarantine)[:5]}'
+        )
+    return {'implied_rows': len(implied_keys), 'quarantine_rows': len(quarantine_keys),
+            'only_implied': 0, 'only_quarantine': 0}
+

@@ -9,6 +9,7 @@ import json
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -325,3 +326,98 @@ def test_synthetic_index_prefix_requires_index_asset_class() -> None:
         {'ts_code': '880001.SH', 'asset_class': 'stock', 'reason_code': 'internal_gap'},
     ])
     assert not is_tradable('880001.SH', date(2026, 2, 1), strict=True, exclusions=frame)
+
+
+# ----------------------------------------------------------------------
+# TDX 对账：只有交易日历内的 bar 才构成「本地缺口」
+# ----------------------------------------------------------------------
+def _write_tdx_day(path: Path, days: list[date]) -> None:
+    """按通达信 32 字节 lday 布局写日期字段（其余字段留零）。"""
+    from src.data.quality.tradable_universe import _DAY_DTYPE  # noqa: PLC0415
+
+    raw = np.zeros(len(days), dtype=_DAY_DTYPE)
+    raw['date'] = [int(d.strftime('%Y%m%d')) for d in days]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw.tofile(path)
+
+
+def _patch_calendar(monkeypatch, days: list[date]) -> None:
+    import src.data.quality.tradable_universe as tu  # noqa: PLC0415
+
+    calendar = np.array(
+        [np.datetime64(d.isoformat(), 'D').astype(np.int64) for d in days],
+        dtype=np.int64,
+    )
+    monkeypatch.setattr(tu, '_benchmark_calendar', lambda _root: calendar)
+
+
+def _tdx_store(tmp_path: Path, local_days: list[date]) -> Path:
+    """最小列存：单只 600000.SH 的行情 + daily_index。"""
+    store = tmp_path / 'store'
+    (store / 'meta').mkdir(parents=True)
+    pl.DataFrame({
+        'ts_code': ['600000.SH'], 'data_type': ['stock'],
+        'rows': [len(local_days)], 'start': [local_days[0]], 'end': [local_days[-1]],
+    }).write_parquet(store / 'meta' / 'daily_index.parquet')
+    closes = [10.0] * len(local_days)
+    path = store / 'quotes' / 'stock' / 'sh' / '600000.SH.parquet'
+    path.parent.mkdir(parents=True)
+    pl.DataFrame({
+        'date': local_days, 'open': closes, 'high': closes, 'low': closes,
+        'close': closes, 'pre_close': [None] + closes[:-1],
+        'qfq_factor': [1.0] * len(local_days), 'hfq_factor': [1.0] * len(local_days),
+    }).write_parquet(path)
+    return store
+
+
+#: 2026-01-05(一) ~ 01-09(五) + 01-12(一)：跨一个周末的 6 个交易日
+TRADING = [date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7),
+           date(2026, 1, 8), date(2026, 1, 9), date(2026, 1, 12)]
+#: 2026-01-10(六) / 01-11(日)
+WEEKEND = [date(2026, 1, 10), date(2026, 1, 11)]
+
+
+def test_tdx_bars_on_non_trading_days_are_not_internal_gap(
+        tmp_path, monkeypatch) -> None:
+    """TDX 写在周末（非交易日）的 bar 不得计成「本地缺口」。
+
+    现实成因：通达信早期日期错位，1993-05-01（周六）/05-02（周日）写出 bar，
+    同时漏掉 05-03、05-06；不过滤会把 000001.SZ、000002.SZ 误判 internal_gap，
+    再经 strict 口径移出可交易池。这里把两根周末 bar 放在本地区间内部，
+    与真实形态一致（本地 04-30 与 05-03 之间恰好夹着那两根）。
+    """
+    store = _tdx_store(tmp_path, TRADING)
+    tdx_root = tmp_path / 'tdx'
+    _write_tdx_day(tdx_root / 'sh' / 'lday' / 'sh600000.day',
+                   [d for d in TRADING if d < WEEKEND[0]] + WEEKEND
+                   + [d for d in TRADING if d > WEEKEND[1]])
+    _patch_calendar(monkeypatch, TRADING)
+
+    out = tmp_path / 'universe'
+    build_exclusions(store, tdx_root=tdx_root, output_dir=out, as_of=date(2026, 2, 1))
+    exclusions = load_exclusions(out)
+    gaps = exclusions.filter((pl.col('reason_code') == 'internal_gap')
+                             & (pl.col('ts_code') == '600000.SH'))
+    assert gaps.height == 0
+    assert is_tradable('600000.SH', date(2026, 1, 6), strict=True,
+                       exclusions=exclusions)
+
+
+def test_tdx_missing_real_trading_day_still_flagged(
+        tmp_path, monkeypatch) -> None:
+    """日历内的真实缺口仍必须登记（防止过滤把真缺口一起吞掉）。"""
+    local_days = [d for d in TRADING if d != date(2026, 1, 7)]
+    store = _tdx_store(tmp_path, local_days)
+    tdx_root = tmp_path / 'tdx'
+    _write_tdx_day(tdx_root / 'sh' / 'lday' / 'sh600000.day', TRADING)
+    _patch_calendar(monkeypatch, TRADING)
+
+    out = tmp_path / 'universe'
+    build_exclusions(store, tdx_root=tdx_root, output_dir=out, as_of=date(2026, 2, 1))
+    exclusions = load_exclusions(out)
+    gaps = exclusions.filter((pl.col('reason_code') == 'internal_gap')
+                             & (pl.col('ts_code') == '600000.SH'))
+    assert gaps.height == 1
+    assert gaps['missing_rows'][0] == 1
+    assert gaps['expected_rows'][0] == 6
+    assert gaps['last_trade_date'][0] == date(2026, 1, 12)

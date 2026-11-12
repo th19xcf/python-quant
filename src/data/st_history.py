@@ -300,6 +300,11 @@ def coverage_json_path(store_root: Path | str) -> Path:
     return st_dir(store_root) / 'coverage.json'
 
 
+def st_manifest_path(store_root: Path | str) -> Path:
+    """本目录的 manifest（DG-3 登记载体，files 段由 build_store 落盘后回写）。"""
+    return st_dir(store_root) / 'manifest.json'
+
+
 def raw_dir(store_root: Path | str) -> Path:
     return st_dir(store_root) / 'raw'
 
@@ -1143,6 +1148,82 @@ def _write_coverage_store(coverage_frame: pl.DataFrame, summary: dict[str, Any],
     return stamped
 
 
+# manifest files 段里由 build_store 写盘、因而必须回写的正式表 → 候选日期列
+_MANIFEST_DATE_COLUMNS: dict[str, tuple[str, str]] = {
+    'st_coverage.parquet': ('coverage_start', 'coverage_end'),
+    'st_intervals.parquet': ('start_date', 'end_date'),
+}
+
+
+def _manifest_entry(path: Path, rel: str) -> dict[str, Any]:
+    """按磁盘实测生成一条 files 记录（DG-3：rows / bytes / sha256 / 列清单）。"""
+    frame = pl.read_parquet(path)
+    entry: dict[str, Any] = {
+        'path': rel,
+        'rows': frame.height,
+        'bytes': path.stat().st_size,
+        'sha256': _sha256_file(path),
+        'columns': frame.columns,
+    }
+    date_cols = _MANIFEST_DATE_COLUMNS.get(path.name)
+    if date_cols:
+        parts = []
+        for col in date_cols:
+            low, high = str(frame[col].min()), str(frame[col].max())
+            parts.append(f"'{col}': ['{low}', '{high}']")
+        entry['date_range_note'] = (
+            '区间/多时间列，无单一日期列，不登记 date_range；'
+            '候选实测：{' + ', '.join(parts) + '}')
+    return entry
+
+
+def refresh_manifest_files(store_root: Path | str,
+                           written: Iterable[Path]) -> list[str]:
+    """把本次写盘的正式表按磁盘实测回写进 ``meta/st/manifest.json`` 的 files 段。
+
+    没有 manifest 的目录（测试临时 store）直接跳过：不凭空造一份带 authority /
+    semantics 的登记文件。除 files 段外其余键原样保留；被回写的条目按磁盘重算
+    rows / bytes / sha256 / columns / 日期区间，本次未写盘的表（如
+    st_price_inferred.parquet）不受影响。返回实际回写的相对路径。
+
+    历史缺陷：build_store 只写 parquet 与 coverage.json、从不回写本 manifest，
+    2026-11-12 那次重建后 files 段一直停在旧行数 / 旧 SHA256。
+    """
+    root = Path(store_root)
+    target = st_manifest_path(root)
+    if not target.is_file():
+        return []
+    payload = json.loads(target.read_text(encoding='utf-8'))
+    entries = payload.get('files')
+    if not isinstance(entries, list):
+        return []
+    refreshed: list[str] = []
+    for path in written:
+        rel = path.relative_to(root).as_posix()
+        entry = _manifest_entry(path, rel)
+        for index, old in enumerate(entries):
+            if isinstance(old, dict) and old.get('path') == rel:
+                entries[index] = entry
+                break
+        else:
+            entries.append(entry)
+        refreshed.append(rel)
+    if not refreshed:
+        return []
+    write_text_atomic(json.dumps(payload, ensure_ascii=False, indent=2), target)
+    return refreshed
+
+
+def _refresh_manifest_after_write(root: Path, out_root: Path) -> None:
+    """同目录写入才算「正式表已换」：output_dir 对拍运行不碰本目录 manifest。"""
+    if out_root.resolve() != root.resolve():
+        return
+    refreshed = refresh_manifest_files(
+        out_root, [intervals_path(out_root), coverage_path(out_root)])
+    if refreshed:
+        logger.info(f'[st] manifest files 段已按磁盘回写: {refreshed}')
+
+
 def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
                 output_dir: Path | str | None = None,
                 as_of: date | None = None,
@@ -1161,6 +1242,12 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
     ``st_coverage.parquet`` 与 ``coverage.json`` 只经 :func:`_write_coverage_store`
     在同一处落盘，json 里带 ``coverage_sha256`` / ``coverage_rows``，可用
     :func:`coverage_meta_status` 自证同源；外部脚本单独重写 parquet 会被检出。
+
+    同目录写入（``output_dir`` 缺省）时，落盘后还会调用
+    :func:`refresh_manifest_files` 把 ``st_intervals.parquet`` 与
+    ``st_coverage.parquet`` 的 rows / bytes / sha256 回写进
+    ``meta/st/manifest.json`` 的 files 段——否则 parquet 已换、manifest 停在
+    旧行数，``manifest_tool --check`` 与人工核对都会读到过期登记。
     """
     root = Path(store_root)
     out_root = Path(output_dir) if output_dir is not None else root
@@ -1319,6 +1406,7 @@ def build_store(store_root: Path | str, *, apply_snapshot: bool = True,
         'window_extended_note': WINDOW_EXTENDED_NOTE,
     }
     summary = _write_coverage_store(coverage_frame, summary, out_root, conflicts)
+    _refresh_manifest_after_write(root, out_root)
     logger.info(f'[st] 区间表已落盘: {intervals_path(out_root)}（{frame.height} 行 / '
                 f'{frame["ts_code"].n_unique()} 只）')
     if unknown_start:
