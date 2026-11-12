@@ -8,7 +8,7 @@
     meta/financials/balance.parquet
     meta/financials/cashflow.parquet
     meta/financials/valuation_daily.parquet
-    meta/financials/ann_date/{period}.parquet               # 公告日映射分片
+    meta/financials/ann_date_map.parquet                    # 公告日映射（键 period, symbol）
 
 采集分片与断点**不在** ``data/`` 之下（DG-5）：落在仓库根
 ``_staging/financials_parts_<YYYYMMDD>/``，见 :func:`parts_root`::
@@ -26,8 +26,8 @@
 
 ``ann_date`` 分段来源（已知缺陷 G-090，只读禁令）：
 - **1990–2009 段的公告日只存在于三表自身的 ``ann_date`` 列**（值）+ ``ann_date_source``
-  列（来源标记，全部为 ``sina_publish``），没有独立文件、也没有对应分片；
-  ``meta/financials/ann_date/`` 下 67 个 ``{period}.parquet`` 从 ``20100331`` 起，
+  列（来源标记，全部为 ``sina_publish``），没有独立文件；
+  ``meta/financials/ann_date_map.parquet`` 的 ``period`` 从 ``2010-03-31`` 起，
   **对 pre-2010 零覆盖**，不是三表 ``ann_date`` 的唯一来源。
 - 两段不同源：pre-2010 为新浪 ``publish_date`` 直写，2010+ 为 EM
   ``RPT_LICO_FN_CPD`` 的 ``NOTICE_DATE`` 经公告日映射表落盘；pre-2010 还存在
@@ -127,6 +127,19 @@ _KEY_COLUMNS: dict[str, tuple[str, ...]] = {
     'valuation': ('ts_code', 'trade_date'),
 }
 
+#: 公告日映射合并表（``meta/financials/ann_date_map.parquet``）的 schema。
+#: 键 ``(period, symbol)``；``period`` 即原分片文件名解析出的报告期末。
+#: 该表只是 2010+ 的公告日采集缓存，不是三表 ``ann_date`` 的唯一来源。
+ANN_DATE_MAP_SCHEMA: dict[str, Any] = {
+    'period': pl.Date,
+    'symbol': pl.Utf8,
+    'ann_date': pl.Date,
+    'update_date': pl.Date,
+    'parent_net_profit': pl.Float64,
+}
+
+ANN_DATE_MAP_KEY: tuple[str, ...] = ('period', 'symbol')
+
 
 def financials_dir(store_root: Path | str | None = None) -> Path:
     """返回财务事实表目录（``<store_root>/meta/financials``）。"""
@@ -169,6 +182,55 @@ def parts_dir(table: str, store_root: Path | str | None = None) -> Path:
     return parts_root(store_root) / table
 
 
+def ann_date_map_path(store_root: Path | str | None = None) -> Path:
+    """公告日映射合并表的唯一正式路径。"""
+    return financials_dir(store_root) / 'ann_date_map.parquet'
+
+
+def read_ann_date_map(period_end: Any,
+                      store_root: Path | str | None = None) -> pl.DataFrame:
+    """读取合并表中某一报告期的公告日映射，列与旧分片一致（不含 ``period``）。
+
+    表不存在返回空帧（schema 同上），由调用方决定是否联网重采。
+    """
+    schema = {name: dtype for name, dtype in ANN_DATE_MAP_SCHEMA.items()
+              if name != 'period'}
+    empty = pl.DataFrame(schema=schema)
+    path = ann_date_map_path(store_root)
+    if not path.exists():
+        return empty
+    period = as_date(period_end)
+    if period is None:
+        raise ValueError(f'period 无法解析为日期: {period_end!r}')
+    frame = pl.read_parquet(path).filter(pl.col('period') == period)
+    return frame.select(list(schema)).sort('symbol')
+
+
+def upsert_ann_date_map(frame: pl.DataFrame,
+                        store_root: Path | str | None = None) -> int:
+    """把若干报告期的映射并入合并表，按 ``(period, symbol)`` 覆盖，返回总行数。
+
+    单文件原子替换（``write_parquet_atomic``）；未出现在 ``frame`` 里的报告期
+    原样保留，因此可逐期增量补齐。
+    """
+    aligned = _align(frame, ANN_DATE_MAP_SCHEMA)
+    if aligned.is_empty():
+        path = ann_date_map_path(store_root)
+        return (pl.scan_parquet(str(path)).select(pl.len()).collect().item()
+                if path.exists() else 0)
+    periods = aligned['period'].unique().to_list()
+    path = ann_date_map_path(store_root)
+    if path.exists():
+        existing = pl.read_parquet(path)
+        existing = existing.filter(~pl.col('period').is_in(periods))
+        aligned = pl.concat([_align(existing, ANN_DATE_MAP_SCHEMA), aligned],
+                            how='vertical_relaxed')
+    aligned = aligned.unique(subset=list(ANN_DATE_MAP_KEY), keep='last').sort(
+        list(ANN_DATE_MAP_KEY))
+    _atomic_write(aligned, path)
+    return aligned.height
+
+
 def as_date(value: Any) -> date | None:
     """把 str/date/datetime 统一成 ``date``（无法解析返回 None）。"""
     if value is None or value == '':
@@ -186,9 +248,8 @@ def as_date(value: Any) -> date | None:
     return None
 
 
-def coerce_schema(frame: pl.DataFrame, table: str) -> pl.DataFrame:
-    """把任意来源的帧对齐到目标 schema（缺列补 null，列序固定）。"""
-    schema = SCHEMAS[table]
+def _align(frame: pl.DataFrame, schema: dict[str, Any]) -> pl.DataFrame:
+    """把帧对齐到给定 schema（缺列补 null，列序固定）。"""
     exprs: list[pl.Expr] = []
     for name, dtype in schema.items():
         if name in frame.columns:
@@ -196,6 +257,11 @@ def coerce_schema(frame: pl.DataFrame, table: str) -> pl.DataFrame:
         else:
             exprs.append(pl.lit(None, dtype=dtype).alias(name))
     return frame.with_columns(exprs).select(list(schema))
+
+
+def coerce_schema(frame: pl.DataFrame, table: str) -> pl.DataFrame:
+    """把任意来源的帧对齐到目标 schema（缺列补 null，列序固定）。"""
+    return _align(frame, SCHEMAS[table])
 
 
 def _atomic_write(frame: pl.DataFrame, path: Path) -> None:
