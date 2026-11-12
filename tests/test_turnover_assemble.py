@@ -80,5 +80,32 @@ def test_first_build_without_target(tmp_path: Path) -> None:
     assert pl.read_parquet(target).height == 2
 
 
+def test_target_exists_with_empty_touched_keeps_history(tmp_path: Path) -> None:
+    """目标表存在 + ``touched`` 为空时，仍必须走 anti-join 保留底表。
+
+    2026-11-06 的清表事故触发条件就是这个组合：旧实现在 ``touched`` 为空时
+    跳过 anti-join 与底表，直接用分块整体替换正式表。现实现不看 ``touched``，
+    本用例锁住该语义，兜底一旦回归即失败。
+    """
+    target = tmp_path / 'stock_turnover.parquet'
+    _frame([
+        ('600000.SH', date(2026, 11, 2), 1.0),
+        ('600000.SH', date(2026, 11, 3), 1.1),
+        ('000001.SZ', date(2026, 11, 3), 2.0),
+    ]).write_parquet(target)
+    part = tmp_path / 'part_00000.parquet'
+    _frame([('600000.SH', date(2026, 11, 4), 1.2)]).write_parquet(part)
+
+    rows = _assemble([part], target, set())
+
+    assert rows == 4
+    frame = pl.read_parquet(target)
+    assert frame.height == 4
+    assert sorted(frame['ts_code'].unique().to_list()) == ['000001.SZ', '600000.SH']
+    kept = frame.filter(pl.col('ts_code') == '600000.SH').sort('trade_date')
+    assert kept['trade_date'].to_list() == [
+        date(2026, 11, 2), date(2026, 11, 3), date(2026, 11, 4)]
+
+
 def test_empty_parts_is_noop(tmp_path: Path) -> None:
     assert _assemble([], tmp_path / 'stock_turnover.parquet', set()) is None

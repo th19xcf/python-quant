@@ -42,7 +42,10 @@ _ROLES: dict[str, tuple[str, str]] = {
     'stock_dividend.parquet': (
         '个股分红事件表（因子重建的上游事件源）',
         'python tools/collect_stock_dividend.py'),
-    'stock_turnover.parquet': ('个股换手率派生表', 'python -m src.data.local_store sync-turnover'),
+    'stock_turnover.parquet': (
+        '个股换手率派生表',
+        'python -m src.data.local_store sync-turnover（baostock 回补）'
+        ' + derive-turnover（本地派生，98.95% 行）'),
     'fund_adj_factor.parquet': (
         '基金复权因子快照',
         'src/data/local_store/fund_factors.py::rebuild_fund_factors'),
@@ -64,6 +67,18 @@ _ROLES: dict[str, tuple[str, str]] = {
         ' + tools/reconcile_p2_metadata.py（修正计数）'),
 }
 _SUB_MANIFESTS = (Path('rebuild') / MANIFEST_NAME,)
+#: 逐文件附加语义键（写入 files 段对应条目）；未列出的文件不加。
+_FILE_EXTRA: dict[str, dict[str, Any]] = {
+    'stock_turnover.parquet': {
+        'source_semantics': (
+            'turn 为百分数（0.1979 表示 0.1979%）。同一列含两套来源语义，按 source 列区分，'
+            '禁止直接混用比对：source=baostock 189,419 行（1.05%）是上游 baostock 日线'
+            '原始 turn；source=derived:quotes_volume+float_share 17,866,332 行（98.95%）'
+            '由本地派生 volume(手)×100×100÷float_share 算出。两者在可比样本上相对差 '
+            'p99=8.2%、max=106%，属上游口径差异而非错值，不得用本地口径重算覆盖 baostock 行；'
+            '跨来源比较须按 source 分层，混比会把口径差异误判为坏值。'),
+    },
+}
 
 
 def _sha256(path: Path) -> str:
@@ -142,6 +157,19 @@ def _upstream(store_root: Path) -> dict[str, Any]:
     return payload
 
 
+def _existing_corrections(root: Path) -> list[dict[str, Any]]:
+    """沿用现有 manifest 的 ``corrections`` 台账（重建不丢历史修正记录）。"""
+    path = root / 'factors' / MANIFEST_NAME
+    if not path.is_file():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return []
+    corrections = payload.get('corrections')
+    return corrections if isinstance(corrections, list) else []
+
+
 def collect_factors_manifest(
     store_root: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -170,6 +198,7 @@ def collect_factors_manifest(
             role, producer = _ROLES.get(path.name, ('未登记语义', '未登记产出方'))
             files[path.name]['semantics'] = role
             files[path.name]['produced_by'] = producer
+            files[path.name].update(_FILE_EXTRA.get(path.name, {}))
 
     sub_manifests = []
     for sub_relative in _SUB_MANIFESTS:
@@ -182,7 +211,7 @@ def collect_factors_manifest(
                 'mtime': _mtime(path),
             })
 
-    return {
+    payload: dict[str, Any] = {
         'dataset': 'factors',
         'version': 1,
         'status': 'completed',
@@ -213,6 +242,10 @@ def collect_factors_manifest(
             'scope': '仅 factors/ 顶层；rebuild/ 为任务进度目录，见 sub_manifests',
         },
     }
+    corrections = _existing_corrections(root)
+    if corrections:
+        payload['corrections'] = corrections
+    return payload
 
 
 def write_factors_manifest(store_root: str | Path | None = None) -> Path:
