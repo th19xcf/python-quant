@@ -35,7 +35,9 @@ manifests = {}
 for p in LS.rglob("*manifest*.json"):
     try:
         d = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
+    # 坏 JSON / 非 UTF-8 / 权限不足都归 OSError 或 ValueError（JSONDecodeError、
+    # UnicodeDecodeError 均继承 ValueError）；单份 manifest 坏了只跳过它，不影响整表盘点。
+    except (OSError, ValueError):  # noqa: S112
         continue
     if isinstance(d, dict) and d.get("path"):
         key = str(d["path"]).replace("data/local_store/", "").replace("\\", "/")
@@ -50,7 +52,10 @@ for p in sorted(LS.rglob("*.parquet")):
         meta = pq.ParquetFile(p).metadata
         nrows = meta.num_rows
         cols = meta.schema.names
-    except Exception:
+    # pyarrow 的异常族跨版本不稳定（ArrowInvalid / ArrowIOError /
+    # ArrowNotImplementedError 等，部分不继承 OSError/ValueError），
+    # 窄化会把原本只降级该行的坏文件变成整表盘点中断，故保留宽捕获。
+    except Exception:  # noqa: BLE001
         nrows, cols = None, []
     m = manifests.get(rel) or manifests.get(rel.replace(".parquet", "")) or {}
     stem = p.name.replace(".parquet", "")
@@ -112,7 +117,9 @@ fut_rows = 0
 for p in fut_files:
     try:
         fut_rows += pq.ParquetFile(p).metadata.num_rows
-    except Exception:
+    # 同上一处：pyarrow 异常族不稳定；读不到就少算该文件的行数，
+    # 只影响「futures 聚合行数」的下界，不影响表清单本身。
+    except Exception:  # noqa: BLE001, S110
         pass
 families.append(
     {

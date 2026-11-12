@@ -76,6 +76,18 @@ def manifest_registry(manifest: Path, store: Path) -> set[str]:
     return out
 
 
+def classify_level(manifest: Path, registered: bool, writes_manifest: bool) -> str:
+    """按模块 docstring 的四段判定链给严重度：C / B / ok / A。
+
+    与原先内联的 if-elif 链逐分支等价，只是把判定从 ``main`` 里提出来。
+    """
+    if not manifest.is_file():
+        return 'C'
+    if not registered:
+        return 'B'
+    return 'ok' if writes_manifest else 'A'
+
+
 def main() -> None:
     index = store_files()
     rows: list[dict[str, object]] = []
@@ -97,21 +109,13 @@ def main() -> None:
                     if len(hits) != 1:
                         continue
                     target = hits[0]
-                    rel_dir = target.parent.relative_to(STORE).as_posix()
                     manifest = target.parent / 'manifest.json'
                     registered = False
                     if manifest.is_file():
                         registered = any(
                             Path(r).name == target.name
                             for r in manifest_registry(manifest, STORE))
-                    if not manifest.is_file():
-                        level = 'C'
-                    elif not registered:
-                        level = 'B'
-                    elif has_manifest_write:
-                        level = 'ok'
-                    else:
-                        level = 'A'
+                    level = classify_level(manifest, registered, has_manifest_write)
                     rows.append({
                         'file': path.relative_to(ROOT).as_posix(),
                         'line': idx + 1,

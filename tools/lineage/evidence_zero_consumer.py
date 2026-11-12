@@ -71,7 +71,10 @@ hits: dict[str, list[dict]] = {k: [] for k in TOKENS}
 for p in iter_files():
     try:
         txt = p.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
+    # errors="ignore" 已消掉解码异常，剩下的唯一来源是文件系统 OSError（权限/占用/消失）。
+    # continue 是本通道的设计意图：单个文件读不到不应中断整体取证；本脚本不走 logger，
+    # 免得把告警混进 stdout 的固定报告格式。
+    except OSError:  # noqa: S112
         continue
     if not any(t in txt for t in TOKENS.values()):
         continue
@@ -98,7 +101,7 @@ for rf in registry_files:
         continue
     txt = p.read_text(encoding="utf-8", errors="ignore")
     registry[rf] = {
-        tok: [i for i, l in enumerate(txt.split("\n"), 1) if tok in l]
+        tok: [i for i, line in enumerate(txt.split("\n"), 1) if tok in line]
         for tok in TOKENS.values()
     }
 
@@ -109,7 +112,8 @@ for p in (ROOT / "data" / "local_store").rglob("*manifest*.json"):
     man_count += 1
     try:
         txt = p.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
+    # 同通道 2：errors="ignore" 之后只剩 OSError；单份 manifest 读不到即跳过。
+    except OSError:  # noqa: S112
         continue
     rel = str(p.relative_to(ROOT)).replace("\\", "/")
     for key, tok in TOKENS.items():

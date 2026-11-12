@@ -71,7 +71,7 @@ def match_text(text: str) -> list[tuple[str, str]]:
 
 
 class Env:
-    def __init__(self, parent: "Env | None" = None) -> None:
+    def __init__(self, parent: Env | None = None) -> None:
         self.map: dict[str, ast.AST] = {}
         self.parent = parent
 
@@ -94,6 +94,19 @@ def collect_env(node: ast.AST, env: Env) -> None:
             env.map[stmt.target.id] = stmt.value
         elif isinstance(stmt, ast.withitem):
             pass
+
+
+def _eval_call(node: ast.Call, env: Env, depth: int) -> tuple[str, bool]:
+    """求值 ``Path(...) / 'a' / f'{x}'`` 这类调用与拼路径。"""
+    f = node.func
+    name = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+    if name in {"joinpath", "join"}:
+        parts = [evaluate(a, env, depth + 1) for a in node.args]
+        return "/".join(p[0].strip("/") for p in parts), all(p[1] for p in parts)
+    if name in {"Path", "str", "resolve", "absolute", "expanduser", "with_suffix"}:
+        if node.args:
+            return evaluate(node.args[0], env, depth + 1)
+    return f"<call:{name}>", False
 
 
 def evaluate(node: ast.AST, env: Env, depth: int = 0) -> tuple[str, bool]:
@@ -123,20 +136,71 @@ def evaluate(node: ast.AST, env: Env, depth: int = 0) -> tuple[str, bool]:
                 ok = ok and k
         return "".join(parts), ok
     if isinstance(node, ast.Call):
-        f = node.func
-        name = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
-        if name in {"joinpath", "join"}:
-            parts = [evaluate(a, env, depth + 1) for a in node.args]
-            return "/".join(p[0].strip("/") for p in parts), all(p[1] for p in parts)
-        if name in {"Path", "str", "resolve", "absolute", "expanduser", "with_suffix"}:
-            if node.args:
-                return evaluate(node.args[0], env, depth + 1)
-        return f"<call:{name}>", False
-    if isinstance(node, ast.Call):
-        return "<call>", False
+        return _eval_call(node, env, depth)
     if isinstance(node, ast.Subscript):
         return evaluate(node.value, env, depth + 1)
     return "<expr>", False
+
+
+def _call_name(node: ast.Call) -> str:
+    f = node.func
+    return f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
+
+
+def _scan_func(
+    fn: ast.AST, mod: Env, origin: str, func: str,
+) -> tuple[list[dict], list[dict]]:
+    """扫一个函数体内的读/写调用点，返回 (writes, reads)。"""
+    fenv = Env(mod)
+    collect_env(fn, fenv)
+    writes: list[dict] = []
+    reads: list[dict] = []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_name(node)
+        if name not in WRITE_FUNCS and name not in READ_FUNCS:
+            continue
+        args = [evaluate(a, fenv) for a in node.args[:4]]
+        kw = [evaluate(k.value, fenv) for k in node.keywords if k.arg]
+        rec = {
+            "line": node.lineno,
+            "func": func,
+            "call": name,
+            "paths": [a[0] for a in args + kw],
+            "complete": all(a[1] for a in args + kw),
+            "origin": origin,
+        }
+        (writes if name in WRITE_FUNCS else reads).append(rec)
+    return writes, reads
+
+
+def _scan_module(
+    tree: ast.Module, mod: Env, origin: str,
+) -> tuple[list[dict], list[dict]]:
+    """扫模块级（非函数/类）语句里的读/写调用点。"""
+    writes: list[dict] = []
+    reads: list[dict] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.Call):
+                continue
+            name = _call_name(sub)
+            if name not in WRITE_FUNCS and name not in READ_FUNCS:
+                continue
+            args = [evaluate(a, mod) for a in sub.args[:4]]
+            rec = {
+                "line": sub.lineno,
+                "func": "<module>",
+                "call": name,
+                "paths": [a[0] for a in args],
+                "complete": all(a[1] for a in args),
+                "origin": origin,
+            }
+            (writes if name in WRITE_FUNCS else reads).append(rec)
+    return writes, reads
 
 
 def scan_file(path: Path, origin: str) -> dict:
@@ -147,62 +211,25 @@ def scan_file(path: Path, origin: str) -> dict:
         return {"error": "syntax"}
     mod = Env()
     collect_env(tree, mod)
-    writes: list[dict] = []
-    reads: list[dict] = []
 
-    def visit_func(fn: ast.AST, stack: list[str]) -> None:
-        fenv = Env(mod)
-        collect_env(fn, fenv)
-        for node in ast.walk(fn):
-            if isinstance(node, ast.Call):
-                f = node.func
-                name = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
-                if name in WRITE_FUNCS or name in READ_FUNCS:
-                    args = [evaluate(a, fenv) for a in node.args[:4]]
-                    kw = [evaluate(k.value, fenv) for k in node.keywords if k.arg]
-                    rec = {
-                        "line": node.lineno,
-                        "func": stack[-1] if stack else "<module>",
-                        "call": name,
-                        "paths": [a[0] for a in args + kw],
-                        "complete": all(a[1] for a in args + kw),
-                        "origin": origin,
-                    }
-                    (writes if name in WRITE_FUNCS else reads).append(rec)
-
+    targets: list[tuple[ast.AST, str]] = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            visit_func(node, [node.name])
-        elif isinstance(node, ast.ClassDef):
+            targets.append((node, node.name))
+        elif isinstance(node, (ast.ClassDef, ast.If, ast.Try)):
             for sub in node.body:
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    visit_func(sub, [node.name, sub.name])
-        elif isinstance(node, ast.If):
-            for sub in node.body:
-                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    visit_func(sub, [sub.name])
-        elif isinstance(node, ast.Try):
-            for sub in node.body:
-                if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    visit_func(sub, [sub.name])
-    # 模块级调用
-    for node in tree.body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Call):
-                    f = sub.func
-                    name = f.attr if isinstance(f, ast.Attribute) else (f.id if isinstance(f, ast.Name) else "")
-                    if name in WRITE_FUNCS or name in READ_FUNCS:
-                        args = [evaluate(a, mod) for a in sub.args[:4]]
-                        rec = {
-                            "line": sub.lineno,
-                            "func": "<module>",
-                            "call": name,
-                            "paths": [a[0] for a in args],
-                            "complete": all(a[1] for a in args),
-                            "origin": origin,
-                        }
-                        (writes if name in WRITE_FUNCS else reads).append(rec)
+                    targets.append((sub, sub.name))
+
+    writes: list[dict] = []
+    reads: list[dict] = []
+    for fn, name in targets:
+        func_writes, func_reads = _scan_func(fn, mod, origin, name)
+        writes += func_writes
+        reads += func_reads
+    module_writes, module_reads = _scan_module(tree, mod, origin)
+    writes += module_writes
+    reads += module_reads
     return {"writes": writes, "reads": reads}
 
 

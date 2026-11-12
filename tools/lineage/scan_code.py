@@ -87,12 +87,8 @@ def table_catalog() -> dict[str, dict]:
     return tables
 
 
-def scan_py(path: Path) -> dict:
-    src = path.read_text(encoding="utf-8", errors="ignore")
-    try:
-        tree = ast.parse(src)
-    except SyntaxError:
-        return {"error": "syntax"}
+def _collect_consts(tree: ast.Module) -> dict[str, str]:
+    """模块顶层「字符串常量赋值」，用于把路径变量还原成字面量。"""
     consts: dict[str, str] = {}
     for node in tree.body:
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -104,49 +100,65 @@ def scan_py(path: Path) -> dict:
                 for t in targets:
                     if isinstance(t, ast.Name):
                         consts[t.id] = val.value
+    return consts
+
+
+class _CallVisitor(ast.NodeVisitor):
+    """收集读写调用点；``stack`` 只用来回填调用点所在的函数名。"""
+
+    def __init__(self, reads: list[dict], writes: list[dict]) -> None:
+        self.reads = reads
+        self.writes = writes
+        self.stack: list[str] = []
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.stack.append(node.name)
+        self.generic_visit(node)
+        self.stack.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+    def _call_name(self, node: ast.Call) -> str:
+        f = node.func
+        if isinstance(f, ast.Attribute):
+            return f.attr
+        if isinstance(f, ast.Name):
+            return f.id
+        return ""
+
+    def _arg_repr(self, node: ast.AST) -> str:
+        try:
+            return ast.unparse(node)
+        # ast.unparse 对极深表达式可能抛 RecursionError（RuntimeError 子类），
+        # 也可能抛 TypeError；这里只是给参数生成文本，兜底成占位串即可。
+        except Exception:  # noqa: BLE001
+            return "<unparse-fail>"
+
+    def visit_Call(self, node: ast.Call) -> None:
+        name = self._call_name(node)
+        if name in WRITE_FUNCS or name in READ_FUNCS:
+            rec = {
+                "line": node.lineno,
+                "func": self.stack[-1] if self.stack else "<module>",
+                "call": name,
+                "args": [self._arg_repr(a) for a in node.args[:3]],
+                "kwargs": {k.arg: self._arg_repr(k.value) for k in node.keywords if k.arg},
+            }
+            (self.writes if name in WRITE_FUNCS else self.reads).append(rec)
+        self.generic_visit(node)
+
+
+def scan_py(path: Path) -> dict:
+    src = path.read_text(encoding="utf-8", errors="ignore")
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return {"error": "syntax"}
+    consts = _collect_consts(tree)
 
     reads: list[dict] = []
     writes: list[dict] = []
-
-    class V(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.stack: list[str] = []
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            self.stack.append(node.name)
-            self.generic_visit(node)
-            self.stack.pop()
-
-        visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
-
-        def _call_name(self, node: ast.Call) -> str:
-            f = node.func
-            if isinstance(f, ast.Attribute):
-                return f.attr
-            if isinstance(f, ast.Name):
-                return f.id
-            return ""
-
-        def _arg_repr(self, node: ast.AST) -> str:
-            try:
-                return ast.unparse(node)
-            except Exception:
-                return "<unparse-fail>"
-
-        def visit_Call(self, node: ast.Call) -> None:
-            name = self._call_name(node)
-            if name in WRITE_FUNCS or name in READ_FUNCS:
-                rec = {
-                    "line": node.lineno,
-                    "func": self.stack[-1] if self.stack else "<module>",
-                    "call": name,
-                    "args": [self._arg_repr(a) for a in node.args[:3]],
-                    "kwargs": {k.arg: self._arg_repr(k.value) for k in node.keywords if k.arg},
-                }
-                (writes if name in WRITE_FUNCS else reads).append(rec)
-            self.generic_visit(node)
-
-    V().visit(tree)
+    _CallVisitor(reads, writes).visit(tree)
     # 所有字符串字面量（用于路径命中）
     lits = []
     for node in ast.walk(tree):

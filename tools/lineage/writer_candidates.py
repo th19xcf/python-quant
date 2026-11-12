@@ -74,15 +74,16 @@ TEXT = {}
 for p in ALL:
     try:
         TEXT[p] = p.read_text(encoding="utf-8", errors="ignore").split("\n")
-    except Exception:
+    # errors="ignore" 之后只剩 OSError；单个文件读不到即跳过，不中断候选扫描。
+    except OSError:  # noqa: S110
         pass
 
 result = {}
 for table, stem in STEMS.items():
     hits = []
     for p, lines in TEXT.items():
-        for i, l in enumerate(lines):
-            if stem not in l:
+        for i, line in enumerate(lines):
+            if stem not in line:
                 continue
             window = lines[max(0, i - 14) : i + 14]
             wr = [
@@ -92,7 +93,7 @@ for table, stem in STEMS.items():
             ]
             if wr:
                 rel = str(p.relative_to(ROOT)).replace("\\", "/")
-                hits.append({"file": rel, "line": i + 1, "src": l.strip()[:110], "write_near": wr[:3]})
+                hits.append({"file": rel, "line": i + 1, "src": line.strip()[:110], "write_near": wr[:3]})
                 break
     result[table] = hits
 
