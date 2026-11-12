@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import shutil
 import sys
@@ -57,6 +58,9 @@ from typing import Any
 import polars as pl
 from loguru import logger
 from polars.exceptions import PolarsError
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.data.atomic_write import write_text_atomic  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -230,13 +234,39 @@ def build_rows(
 
 
 def _write_csv(rows: list[dict[str, str]], target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + '.tmp')
-    with open(tmp, 'w', encoding='utf-8', newline='') as fh:
-        writer = csv.DictWriter(fh, fieldnames=COLUMNS, lineterminator='\n')
-        writer.writeheader()
-        writer.writerows(rows)
-    tmp.replace(target)
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=COLUMNS, lineterminator='\n')
+    writer.writeheader()
+    writer.writerows(rows)
+    write_text_atomic(buffer.getvalue(), target)
+
+
+def _assert_no_transitional_suffix(target: Path, repo_root: Path = ROOT) -> None:
+    """DG-6：正式层（``data/local_store/**``）内禁止出现 ``.bak`` / ``.new`` / ``_candidate`` 过渡文件。
+
+    目标路径不在正式层时直接返回（如 ``--output`` 指到 ``_staging/``）。
+    """
+    store = (repo_root / 'data' / 'local_store').resolve()
+    resolved = target.resolve()
+    try:
+        resolved.relative_to(store)
+    except ValueError:
+        return
+    name = resolved.name
+    banned = name.endswith(('.bak', '.new')) or '_candidate' in resolved.stem
+    assert not banned, (
+        f'DG-6：正式层禁止过渡文件，实际目标 {resolved}；'
+        '快照请落仓库根 _backup/，候选请落 _staging/')
+
+
+def _snapshot_dir(target: Path, repo_root: Path = ROOT) -> Path:
+    """覆盖正式文件前的回滚快照目录（DG-11：仓库根 ``_backup/``，按原数据层分子目录）。"""
+    store = (repo_root / 'data' / 'local_store').resolve()
+    try:
+        layer = target.resolve().relative_to(store).parent
+    except ValueError:
+        layer = Path()
+    return repo_root / '_backup' / layer / f'{target.stem}_{date.today():%Y%m%d}'
 
 
 def _compare(rows: list[dict[str, str]], target: Path) -> int:
@@ -307,10 +337,12 @@ def main(argv: list[str] | None = None) -> int:
         print('dry-run：未写盘（加 --apply 执行）')
         return 0
 
+    _assert_no_transitional_suffix(target)
     if target.is_file():
-        backup = target.with_suffix(target.suffix + '.bak')
-        shutil.copy2(target, backup)
-        logger.info(f'[etf_pool] 原文件备份: {backup}')
+        snap = _snapshot_dir(target) / target.name
+        snap.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(target, snap)
+        logger.info(f'[etf_pool] 覆盖前快照（DG-11）: {snap}')
     _write_csv(rows, target)
     logger.info(f'[etf_pool] 已写入 {len(rows)} 行: {target}')
     return 0
