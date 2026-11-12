@@ -153,7 +153,11 @@ print(f'synced {len(changed)} files, removed {len(deleted)} deleted')
 - **遇阻塞立即报，不许硬等**：出现限速、封禁、接口为空、外部依赖缺失、口径歧义时，第一时间报告阻塞点与影响，不得静默重试或擅自放宽要求。
 - **静默即视为停滞**：超过 15 分钟没有任何进展汇报的任务，主控按超时规则发状态询问；连续两次询问仍无实质进展，按「先催后接管、从断点续跑」处理。
 - **同一仓库提交必须串行**：`git add` / `git commit` 天然互斥，两条任务并发提交必然撞共享 index，会把他方文件混进本次提交。提交前先确认没有其它任务正在提交；无法确认时用隔离索引（`GIT_INDEX_FILE` 指向临时文件）并在报告中写明，禁止在共享 index 上并发提交。
-- **提交范围必须自证**：提交后立即用 `git show --stat HEAD` 或 `git diff-tree --no-commit-id --name-only -r HEAD` 复核本次 HEAD 的文件清单，与预期清单逐一比对；发现多出文件立即回退重做，不得事后补一句"混入了"了事。
+- **提交范围必须自证**：提交后立即用 `git show --stat HEAD` 或 `git diff-tree --no-commit-id --name-only -r HEAD` 复核本次 HEAD 的文件清单，与预期清单逐一比对；发现多出文件立即回退重做，不得事后补一句"混入了"了事。同文件并行编辑另按下列三条判定：
+  ① **先串行或按 hunk 暂存**：隔离索引 `GIT_INDEX_FILE` 只隔离索引文件、**不隔离工作区**，`git add <整个文件>` 暂存的是工作区当前内容，同一文件里他路的在途 hunk 会一并入账。同一路径被两路并行编辑时，必须先串行（等对方提交完再改），或按 hunk 单独构造 blob（`git diff -- <file>` 摘出本路 hunk → 基于 `HEAD:<file>` 应用 → `git hash-object -w` → `git update-index --cacheinfo`），禁止直接 `git add <整个文件>`。
+  ② **必须做 hunk 级核对**：`git show --stat HEAD` 与 `git diff-tree --name-only` 只给文件名与统计行，看不出同文件内的混入。提交后必须对每个改动文件执行 `git diff HEAD~1 -- <file>`，逐个 hunk 确认属于本路。
+  ③ **发现混入且已推送：不回滚、不 amend**：改写历史属红线，已推送的一律不回滚、不 amend、不 force push；如实记账并在下一笔提交正文写明"上一笔 `<hash>` 混入他路 hunk（文件 / 内容 / 来源 / 时点）"，保留可追溯链。
+  依据：2026-11-12 `29dad43`（ann_date 合并那笔）提交 `docs/数据权威路径清单.md` 时，把另一路在同一文件里的在途改动（ETF 权益池正名的 L35 一行）一并带进了库；根因即隔离索引不隔离工作区、`git add` 整文件暂存。
 
 ## 决策授权规则（带建议即执行）
 
