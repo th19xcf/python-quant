@@ -57,11 +57,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.data.atomic_write import write_parquet_atomic  # noqa: E402
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
 from src.data.name_consistency import name_at_frame  # noqa: E402
 
 TARGET = ROOT / 'data' / 'local_store' / 'meta' / 'name_history.parquet'
 COVERAGE = ROOT / 'data' / 'local_store' / 'meta' / 'name_history_coverage.json'
+MANIFEST = ROOT / 'data' / 'local_store' / 'meta' / 'name_history.manifest.json'
 BACKUP_ROOT = ROOT / '_backup' / 'meta'
 REPORT_ROOT = ROOT / 'reports'
 
@@ -178,6 +179,29 @@ def update_coverage(frame: pl.DataFrame, target: Path,
     return payload
 
 
+def update_manifest(frame: pl.DataFrame, target: Path, step: str) -> dict[str, Any]:
+    """把 manifest 的 rows / bytes / sha256 对齐到当前文件（DG-4）。
+
+    ``build_name_history.py`` 只登记自己那一步的产物，本步骤改写同一个 parquet，
+    不回写就会留下与磁盘不符的 manifest。
+    """
+    payload: dict[str, Any] = {}
+    if MANIFEST.is_file():
+        payload = json.loads(MANIFEST.read_text(encoding='utf-8'))
+    payload.update({
+        'rows': frame.height,
+        'bytes': target.stat().st_size,
+        'sha256': _sha256(target),
+        'generated_at': datetime.now().isoformat(timespec='seconds'),
+    })
+    steps = [item for item in payload.get('post_steps', []) if item != step]
+    payload['post_steps'] = [*steps, step]
+    write_text_atomic(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str) + '\n',
+        MANIFEST)
+    return payload
+
+
 def _parse_args(argv: Iterable[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='为 G 股改残留标的新增 post-G 名称段（推断）')
@@ -266,6 +290,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             'report': str(report_dir / 'post_g_report.json'),
         })
         report['coverage_sha256'] = coverage['target_sha256']
+        report['manifest_sha256'] = update_manifest(
+            disk, target, 'tools/infer_post_g_segments.py')['sha256']
     elif COVERAGE.is_file():
         applied = json.loads(COVERAGE.read_text(encoding='utf-8')) \
             .get('inferred_segments')

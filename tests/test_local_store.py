@@ -370,6 +370,62 @@ def test_rescan_meta_rebuilds_from_parquet(tmp_path):
     assert cov.end == date(2024, 1, 4)
 
 
+def test_source_start_flags_mixed_source_rows(tmp_path):
+    """G-139：``source_start`` 记源 ``.day`` 首行，本地起点更早即判混合来源。
+
+    断言直接落在「非 None + 日期相等」上：列缺失、写成 null、或判定恒 False
+    都会让本用例失败。
+    """
+    store = LocalQuoteStore(tmp_path)
+    # 纯 TDX 产物：本地起点 == 源 .day 首行
+    store.write_daily('stock', '600000.SH', make_frame(rows=3, start=date(2024, 1, 2)),
+                      full=True, source_mtime_ns=1, source_start=date(2024, 1, 2))
+    # 混合来源：本地多出早于源首行的行（000004.SZ 形态：1991 段来自外部导入）
+    store.write_daily('stock', '000004.SZ', make_frame(rows=5, start=date(2024, 1, 2)),
+                      full=True, source_mtime_ns=1, source_start=date(2024, 1, 4))
+    store.flush_meta()
+
+    frame = pl.read_parquet(tmp_path / 'meta' / 'daily_index.parquet')
+    assert 'source_start' in frame.columns
+    assert frame.filter(pl.col('ts_code') == '000004.SZ')['source_start'][0] == date(2024, 1, 4)
+
+    mixed = LocalQuoteStore(tmp_path).coverage('stock', '000004.SZ')
+    assert mixed.source_start == date(2024, 1, 4)
+    assert mixed.is_mixed_source()
+    pure = LocalQuoteStore(tmp_path).coverage('stock', '600000.SH')
+    assert pure.source_start == date(2024, 1, 2)
+    assert not pure.is_mixed_source()
+
+    # 未记录 source_start（历史行）不得被误判为混合来源
+    store.write_daily('stock', '000001.SZ', make_frame(rows=3, start=date(2024, 3, 1)),
+                      full=False)
+    store.flush_meta()
+    legacy = LocalQuoteStore(tmp_path).coverage('stock', '000001.SZ')
+    assert legacy.source_start is None
+    assert not legacy.is_mixed_source()
+
+
+def test_build_and_rescan_record_source_start_from_day_file(tmp_path):
+    """``_rebuild_target`` 与 ``rescan_meta`` 两处都按 ``.day`` 首行落 ``source_start``。"""
+    tdx = tmp_path / 'tdx'
+    _write_day_file(tdx, 'sh', '600000', _RECS)  # 首行 2024-01-02
+    store_root = tmp_path / 'store'
+    store = LocalQuoteStore(store_root)
+    factor_store = LocalFactorStore(store_root)
+    build(_build_config(tdx, store_root), store, factor_store, data_type='stock')
+
+    cov = store.coverage('stock', '600000.SH')
+    assert cov.source_start == date(2024, 1, 2)  # 构建路径；写成 null 时失败
+    assert not cov.is_mixed_source()
+
+    store.meta_path.unlink()
+    fresh = LocalQuoteStore(store_root)
+    fresh.rescan_meta(tdx)
+    rescanned = fresh.coverage('stock', '600000.SH')
+    assert rescanned.source_start == date(2024, 1, 2)  # 重建路径
+    assert not rescanned.is_mixed_source()
+
+
 def test_verify_target_classifies_source_missing_target(tmp_path):
     """源文件缺目标日时归为 source_stale，而不是本地漏建。"""
     tdx = tmp_path / 'tdx'

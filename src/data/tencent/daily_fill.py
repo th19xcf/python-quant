@@ -162,6 +162,9 @@ def refresh_meta(store: LocalQuoteStore,
                 if old.get('source_mtime_ns') is not None
                 else _tdx_mtime(tdx_path, current.ts_code)
             ),
+            # 本链路只补腾讯尾部，不改 TDX 起点，故沿用原值；不写这一格会让
+            # pl.DataFrame(..., schema_overrides=_META_SCHEMA) 把全表该列填成 null。
+            'source_start': old.get('source_start'),
         })
     if not rows:
         return 0

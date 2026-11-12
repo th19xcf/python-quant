@@ -292,7 +292,7 @@ def test_repo_sample_eleven_deviations() -> None:
     inventory = [QUOTES_STOCK, ST_STATUS, INDUSTRY_SNAP, ST_COVERAGE, ST_INTERVALS, ST_RAW,
                  FINANCIALS3, ETF_FEE, ETF_POOL, NAME_HISTORY, FUTURES_MULTI]
     quotes = _edges(lw.detect_writers(QUOTES_STOCK, sites, inventory=inventory))
-    assert ('src/data/local_store/store.py', 510) in quotes, '漏边：quote_path 经 write_daily 落盘'
+    assert ('src/data/local_store/store.py', 527) in quotes, '漏边：quote_path 经 write_daily 落盘'
     for false_positive in [('src/data/industry.py', 146),
                            ('src/data/local_store/share_capital.py', 261),
                            ('src/data/quality/extended_builders.py', 121),

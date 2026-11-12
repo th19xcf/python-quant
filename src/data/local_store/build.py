@@ -360,6 +360,11 @@ def _rebuild_target(
     原样保留；``blocked`` 用于把被挡行回传给调用方统计，缺省不记。
     """
     fresh = build_frame(kind, ts_code, path, factor_store)
+    # 源 ``.day`` 首行日期（TDX 起点）：在 since / 日历过滤**之前**取，代表源文件
+    # 本身的第一行。落进 ``daily_index.source_start``，供下游判定「本地起点早于
+    # TDX 起点」的混合来源文件（G-139：000004.SZ 112 行来自一次性外部导入）。
+    # 零额外 IO：``build_frame`` 已把整个 ``.day`` 读成帧。
+    source_start = fresh['date'].min() if not fresh.is_empty() else None
     fresh = filter_intraday_rows(fresh, force=force_intraday)
     if max_date is not None:
         fresh = fresh.filter(pl.col('date') <= max_date)
@@ -400,7 +405,8 @@ def _rebuild_target(
         fresh = DataSourceBase._fill_kline_nulls(_derive_price_change(fresh))
     return quote_store.write_daily(
         kind, ts_code, fresh, full=full,
-        source_mtime_ns=path.stat().st_mtime_ns)
+        source_mtime_ns=path.stat().st_mtime_ns,
+        source_start=source_start)
 
 
 def _align_written_factor_copies(

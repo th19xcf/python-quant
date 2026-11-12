@@ -1,0 +1,35 @@
+{
+ "G-055": {
+  "env_token_present": false,
+  "config_files_mentioning_tushare": []
+ },
+ "G-057": {
+  "akshare_version": "1.20.21",
+  "total_functions": 1126,
+  "index_constituent_functions": [
+   "index_component_sw",
+   "index_stock_cons",
+   "index_stock_cons_csindex",
+   "index_stock_cons_sina",
+   "index_stock_cons_weight_csindex",
+   "index_stock_info",
+   "index_us_stock_sina",
+   "sw_index_third_cons"
+  ],
+  "bond_index_functions": [
+   "bond_available_index_cbond",
+   "bond_cb_index_jsl",
+   "bond_composite_index_cbond",
+   "bond_index_general_cbond",
+   "bond_new_composite_index_cbond",
+   "bond_treasury_index_cbond"
+  ],
+  "cn_bond_index_member_function": [
+   "bond_available_index_cbond",
+   "bond_composite_index_cbond",
+   "bond_index_general_cbond",
+   "bond_new_composite_index_cbond",
+   "bond_treasury_index_cbond"
+  ]
+ }
+}

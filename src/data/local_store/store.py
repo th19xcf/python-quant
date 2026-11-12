@@ -102,6 +102,10 @@ _META_SCHEMA = {
     'full': pl.Boolean,
     # 构建时源 .day 文件的 mtime，用于判断源端是否已更新
     'source_mtime_ns': pl.Int64,
+    # 源 .day 文件的**首行日期**（TDX 起点）。``start < source_start`` 说明该文件
+    # 含早于 TDX 起点的行（一次性外部导入），即混合来源，不能算作纯 TDX 产物。
+    # 与 ``source_mtime_ns`` 不同：后者只记源文件 mtime，与行来源无关。
+    'source_start': pl.Date,
 }
 
 _LOCK = threading.RLock()
@@ -178,6 +182,11 @@ class Coverage:
     built_at: datetime | None
     full: bool = True
     source_mtime_ns: int | None = None
+    source_start: date | None = None
+
+    def is_mixed_source(self) -> bool:
+        """是否混合来源：本地起点早于源 ``.day`` 首行，说明存在非 TDX 行。"""
+        return self.source_start is not None and self.start < self.source_start
 
 
 class LocalQuoteStore:
@@ -263,6 +272,7 @@ class LocalQuoteStore:
             built_at=row.get('built_at'),
             full=bool(row.get('full', True)),
             source_mtime_ns=row.get('source_mtime_ns'),
+            source_start=_as_date(row.get('source_start')),
         )
 
     def covers(self, data_type: str, ts_code: str, start: Any, end: Any) -> bool:
@@ -347,12 +357,14 @@ class LocalQuoteStore:
                         continue
                     full = True
                     source_mtime_ns = None
+                    source_start = None
                     if tdx_path is not None:
                         source = tdx_path / market / 'lday' / f'{market}{ts_code.split(".")[0]}.day'
                         if source.exists():
                             source_mtime_ns = source.stat().st_mtime_ns
                             source_first, _ = read_first_last_trade_date(source)
                             if source_first is not None:
+                                source_start = source_first
                                 full = start <= source_first
                     rebuilt[(data_type, ts_code)] = {
                         'ts_code': ts_code,
@@ -366,6 +378,7 @@ class LocalQuoteStore:
                         'version': STORE_VERSION,
                         'full': full,
                         'source_mtime_ns': source_mtime_ns,
+                        'source_start': source_start,
                     }
                     by_type[data_type] = by_type.get(data_type, 0) + 1
 
@@ -493,11 +506,15 @@ class LocalQuoteStore:
     # ------------------------------------------------------------------
     def write_daily(self, data_type: str, ts_code: str, frame: pl.DataFrame,
                     full: bool = True, source_mtime_ns: int | None = None,
+                    source_start: date | None = None,
                     allow_extra_columns: bool = False) -> int:
         """写入单标的行情并刷新元数据，返回写入行数。
 
         ``full=False`` 表示这是增量片段（前缀不完整），此时 ``covers`` 会对
         早于存量起点的请求返回 False，强制回退通达信，避免残缺前缀被当完整数据。
+
+        ``source_start`` 为源 ``.day`` 首行日期；写入值早于它即说明该文件含
+        非 TDX 行（混合来源），供下游按 ``Coverage.is_mixed_source`` 判定。
 
         正式库写入前校验行情 schema（列集合 / 顺序 / dtype）；确需额外列的
         调用点显式传 ``allow_extra_columns=True`` 并在调用处写明理由。
@@ -530,6 +547,7 @@ class LocalQuoteStore:
                 'version': STORE_VERSION,
                 'full': full,
                 'source_mtime_ns': source_mtime_ns,
+                'source_start': source_start,
             }
         return rows
 
@@ -976,7 +994,8 @@ def refresh_quote_factor_columns(
         quote_store.write_daily(
             kind, code, fixed,
             full=cov.full if cov is not None else True,
-            source_mtime_ns=cov.source_mtime_ns if cov is not None else None)
+            source_mtime_ns=cov.source_mtime_ns if cov is not None else None,
+            source_start=cov.source_start if cov is not None else None)
 
     if not dry_run and changed_codes:
         quote_store.flush_meta()
