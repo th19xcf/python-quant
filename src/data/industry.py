@@ -26,6 +26,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic
+from src.data.snapshot_manifest import write_snapshot_manifest
 
 UNKNOWN = 'unknown'
 SOURCE_TDX = 'tdx_hq_cache'
@@ -144,7 +145,44 @@ def build_snapshot(
     path.parent.mkdir(parents=True, exist_ok=True)
     write_parquet_atomic(frame, path)
     logger.info(f'[industry] 行业快照已落盘: {path}（{frame.height} 个标的）')
+    write_manifest(store_root)
     return frame
+
+
+#: 目录级 manifest 的登记内容（``files`` / 汇总由 :func:`write_manifest` 实测填充）。
+_MANIFEST_PAYLOAD = {
+    'prefix': 'industry_',
+    'dataset': 'industry_snapshot_series',
+    'semantics': (
+        '日期快照序列：正式路径为通配模式 industry_<YYYYMMDD>.parquet；'
+        '单份是通达信行业分类的当日截面，按日期累积、只增不重写，'
+        '历史日期无法补生成；不是行业 PIT，历史行业归属须走 '
+        'meta/industry_pit/ 的区间表'
+    ),
+    'source': '通达信本地 cfg（tdxhy.cfg 分类 + tdxzs.cfg/tdxzs3.cfg 名称）解析的当日行业分类',
+    'authority': (
+        'docs/数据权威路径清单.md 登记的通配口径 '
+        'meta/industry/industry_<YYYYMMDD>.parquet；选择函数为 '
+        'src/data/industry.py::load_snapshot（取文件名日期不晚于 as_of 的最新一份）'
+    ),
+    'path_pattern': 'meta/industry/industry_<YYYYMMDD>.parquet',
+    'consumers': [
+        'src/data/industry.py::load_snapshot（as_of 不晚于目标日的最新一份）',
+        'src/advice/risk_filters.py:26 推荐/风控逐日行业分散度上限',
+        'src/data/services/finance_service.py:839 get_industry',
+        'src/data/quality/extended_builders.py:266-281 整族读入，抽取 '
+        'meta/industry_pit/industry_pit.parquet',
+        'tools/research/build_analysis_monthly.py:91 研究侧同一选择函数',
+        'tools/single_window_diag.py:764 --industry 默认指向 industry_20261104.parquet',
+    ],
+    'produced_by': 'src/data/industry.py::build_snapshot',
+}
+
+
+def write_manifest(store_root: Path | str) -> Path:
+    """重算 ``meta/industry/manifest.json``（只写 manifest，不重建任何快照）。"""
+    root = Path(store_root)
+    return write_snapshot_manifest(root, root / 'meta' / 'industry', **_MANIFEST_PAYLOAD)
 
 
 def _snapshot_files(store_root: Path | str) -> list[tuple[date, Path]]:

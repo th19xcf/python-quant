@@ -34,6 +34,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic
+from src.data.snapshot_manifest import write_snapshot_manifest
 
 ST = 'st'
 NON_ST = 'non_st'
@@ -157,7 +158,46 @@ def build_snapshot(
     path.parent.mkdir(parents=True, exist_ok=True)
     write_parquet_atomic(frame, path)
     logger.info(f'[st] ST 快照已落盘: {path}（{frame.height} 个标的）')
+    write_manifest(root)
     return frame
+
+
+#: 目录级 manifest 的登记内容（``files`` / 汇总由 :func:`write_manifest` 实测填充）。
+_MANIFEST_PAYLOAD = {
+    'prefix': 'st_status_',
+    'dataset': 'st_status_snapshot_series',
+    'semantics': (
+        '日期快照序列：正式路径为通配模式 st_status_<YYYYMMDD>.parquet；'
+        '单份是名称前缀派生的当日 ST 三态截面，按日期累积、只增不重写，'
+        '历史日期无法补生成；历史 ST 判定须走 meta/st/st_intervals.parquet '
+        '区间表，本族只作当日横截面'
+    ),
+    'source': (
+        '本地名称快照 meta/names.json 派生；本地无名称时用远程 stock_basic 兜底'
+        '（已退市判 unknown）'
+    ),
+    'authority': (
+        'docs/数据权威路径清单.md 登记的通配口径 '
+        'meta/st_status/st_status_<YYYYMMDD>.parquet；选择函数为 '
+        'src/data/risk_flags.py::load_snapshot（取文件名日期不晚于 as_of 的最新一份）'
+    ),
+    'path_pattern': 'meta/st_status/st_status_<YYYYMMDD>.parquet',
+    'consumers': [
+        'src/data/risk_flags.py::load_snapshot（as_of 不晚于目标日的最新一份）',
+        'src/data/st_history.py:765-784 _snapshot_series 逐日升序读全族（防未来函数）',
+        'src/advice/risk_filters.py:34 load_st_snapshot',
+        'src/data/quality/clean_set.py:1036 硬编码 st_status_20261103.parquet（已登记缺陷）',
+        'src/data/quality/freshness_config.json:41 latest_glob_distinct 取最新一份',
+        'tools/build_universe_layers.py:324 取最新一份做 L3 对拍',
+    ],
+    'produced_by': 'src/data/risk_flags.py::build_snapshot',
+}
+
+
+def write_manifest(store_root: Path | str) -> Path:
+    """重算 ``meta/st_status/manifest.json``（只写 manifest，不重建任何快照）。"""
+    root = Path(store_root)
+    return write_snapshot_manifest(root, root / 'meta' / 'st_status', **_MANIFEST_PAYLOAD)
 
 
 def _snapshot_files(store_root: Path | str) -> list[tuple[date, Path]]:

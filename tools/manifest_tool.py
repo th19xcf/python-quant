@@ -93,13 +93,139 @@ def looks_data_file(name: str) -> bool:
 
 
 def is_placeholder(text: str) -> bool:
-    return '{' in text or '}' in text or '*' in text
+    """``{name}`` / ``<YYYYMMDD>`` / ``*.parquet`` 这类通配模板不是真实路径。
+
+    ``<...>`` 与 ``{...}`` 一样是「日期快照族」的路径模板写法（如
+    ``meta/st_status/st_status_<YYYYMMDD>.parquet``），磁盘上不存在同名文件，
+    按真实路径核对只会得到假 ``file_missing``。
+    """
+    return any(token in text for token in ('{', '}', '*', '<', '>'))
 
 
 def human(n: Any) -> str:
     if isinstance(n, int):
         return f'{n:,}'
     return str(n)
+
+
+# --------------------------------------------------------------------------- #
+# 非数据集产物（manifest 自声明 artifact_kind=non_dataset）与三条守门
+# --------------------------------------------------------------------------- #
+# 判定口径（硬约束，不靠目录名 / 字段缺失去猜）：
+#   ① manifest 必须自己写 ``"artifact_kind": "non_dataset"``；
+#   ② 三条守门逐条实测，全过才算「非数据集产物」，任一条不过即仍旧计入语义未登记：
+#      ① 无读取方      —— 全仓 src/ 与 tools/ 的 .py 里没有该路径/该目录的字面量；
+#      ② 不在链路上    —— src/ 与 config/ 的 py/json/yaml/toml 里没有该字面量；
+#      ③ 权威清单登记  —— docs/数据权威路径清单.md 存在同时含「非数据资产」与本路径的行。
+# 说明：① 用严格字面量匹配，不做「像不像读点」的猜测，宁可错杀不可放水——被备份/
+# 镜像清单提到的路径本就在备份链路里，按本条不得标为非数据集。
+NON_DATASET_KIND = 'non_dataset'
+NON_DATASET_DOC = Path('docs') / '数据权威路径清单.md'
+NON_DATASET_DOC_TAG = '非数据资产'
+CODE_DIRS = ('src', 'tools')
+CODE_EXTS = ('.py',)
+CHAIN_DIRS = ('src', 'config')
+CHAIN_EXTS = ('.py', '.json', '.yaml', '.yml', '.toml')
+
+
+class TextCache:
+    """同一次核对内按路径缓存文件正文，避免反复读同一批源码。"""
+
+    def __init__(self) -> None:
+        self._items: dict[str, str] = {}
+
+    def text(self, path: Path) -> str:
+        key = str(path).lower()
+        if key not in self._items:
+            try:
+                self._items[key] = path.read_text(encoding='utf-8', errors='ignore')
+            except OSError:
+                self._items[key] = ''
+        return self._items[key]
+
+
+_TEXT_CACHE = TextCache()
+
+
+@dataclass
+class NonDatasetCheck:
+    """一份 manifest 的非数据集声明与三条守门实测结果。"""
+
+    declared: bool = False
+    purpose: str | None = None
+    gate_pass: dict[str, bool] = field(default_factory=dict)
+    gate_evidence: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def qualified(self) -> bool:
+        return self.declared and bool(self.gate_pass) and all(self.gate_pass.values())
+
+    @property
+    def failed_gates(self) -> list[str]:
+        return [k for k, ok in self.gate_pass.items() if not ok]
+
+
+def _iter_text_files(root: Path, dirs: Iterable[str], exts: Iterable[str]) -> Iterable[Path]:
+    for name in dirs:
+        base = root / name
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob('*')):
+            if path.is_file() and path.suffix.lower() in tuple(exts):
+                yield path
+
+
+def _scan_tokens(root: Path, dirs: Iterable[str], exts: Iterable[str],
+                 tokens: list[str], cache: TextCache) -> list[str]:
+    hits: list[str] = []
+    for path in _iter_text_files(root, dirs, exts):
+        text = cache.text(path)
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if any(tok and tok in line for tok in tokens):
+                shown = path.relative_to(root).as_posix()
+                hits.append(f'{shown}:{lineno}')
+    return hits
+
+
+def verify_non_dataset(root: Path, manifest_rel: str, data: dict[str, Any],
+                       cache: TextCache) -> NonDatasetCheck:
+    """按 manifest 自己的声明核三条守门；未声明则原样返回（不猜）。"""
+    check = NonDatasetCheck(declared=str(data.get('artifact_kind', '')).strip() == NON_DATASET_KIND)
+    if not check.declared:
+        return check
+    declared = data.get('non_dataset')
+    declared = declared if isinstance(declared, dict) else {}
+    check.purpose = str(declared.get('purpose', '')).strip() or None
+
+    parent = Path(manifest_rel).parent.as_posix()
+    tokens = [manifest_rel]
+    if Path(manifest_rel).name == 'manifest.json' and parent.count('/') >= 1:
+        tokens.append(parent)   # 目录级 manifest 按目录判定，避免只查一个文件名
+
+    # 扫描根必须是仓库根：src/ 与 tools/ 都在仓库根下，不在 data/local_store 里。
+    repo = root.parents[1] if len(root.parents) > 1 else root
+    hits = _scan_tokens(repo, CODE_DIRS, CODE_EXTS, tokens, cache)
+    check.gate_pass['① 无读取方'] = not hits
+    check.gate_evidence['① 无读取方'] = ('零引用' if not hits
+                                         else f'{len(hits)} 处：' + '；'.join(hits[:5]))
+
+    chain = _scan_tokens(repo, CHAIN_DIRS, CHAIN_EXTS, tokens, cache)
+    check.gate_pass['② 不在取数/回测/展示链路'] = not chain
+    check.gate_evidence['② 不在取数/回测/展示链路'] = ('零引用' if not chain
+                                                      else f'{len(chain)} 处：' + '；'.join(chain[:5]))
+
+    doc = repo / NON_DATASET_DOC
+    line_no = None
+    if doc.is_file():
+        for idx, line in enumerate(cache.text(doc).splitlines(), 1):
+            if NON_DATASET_DOC_TAG in line and any(tok in line for tok in tokens):
+                line_no = idx
+                break
+    check.gate_pass['③ 权威清单登记为非数据资产'] = line_no is not None
+    check.gate_evidence['③ 权威清单登记为非数据资产'] = (
+        f'{NON_DATASET_DOC.as_posix()}:L{line_no}' if line_no is not None
+        else f'{NON_DATASET_DOC.as_posix()} 无同时含「{NON_DATASET_DOC_TAG}」与本路径的登记行')
+    return check
 
 
 # --------------------------------------------------------------------------- #
@@ -199,6 +325,7 @@ class ManifestResult:
     issues: list[Issue] = field(default_factory=list)
     missing_semantics: list[str] = field(default_factory=list)
     ok_records: int = 0
+    non_dataset: NonDatasetCheck | None = None
 
     @property
     def bad(self) -> int:
@@ -292,7 +419,6 @@ def collect_records(data: dict[str, Any], manifest_dir: Path, root: Path) -> lis
                             records.append(Record(f'{label}[{idx}]', explicit,
                                                   bare_name_path(explicit) or resolve(explicit, root),
                                                   item))
-                    visit(value[0], label, depth + 1)
                 elif isinstance(value, str) and value.lower().endswith('.parquet') \
                         and not is_placeholder(value) and ('/' in value or '\\' in value):
                     text = value.replace('\\', '/')
@@ -621,6 +747,10 @@ def check_manifest(path: Path, root: Path, cache: FactsCache) -> ManifestResult:
         k for k in SEMANTIC_KEYS
         if k not in data or str(data[k]).strip() in ('', '未登记', 'TBD')
     ]
+    result.non_dataset = verify_non_dataset(root, rel, data, _TEXT_CACHE)
+    if result.non_dataset.qualified:
+        # 三条守门全过才允许按「非数据集产物」计；否则语义项照旧保留。
+        result.missing_semantics = []
     return result
 
 
@@ -631,6 +761,23 @@ def _print_issues(result: ManifestResult, limit: int) -> None:
         print(f'    - {issue.kind:18s} {issue.target}: {issue.detail}')
     if len(shown) > limit:
         print(f'    … 另有 {len(shown) - limit} 条（--json 导出完整明细）')
+
+
+def print_non_dataset(declared: list[ManifestResult]) -> None:
+    """打印自声明为非数据集产物的 manifest 及其三条守门实测结果。"""
+    if not declared:
+        return
+    print('非数据集产物声明（artifact_kind=non_dataset，三条守门逐条实测，未过即仍计入语义未登记）')
+    for result in declared:
+        nd = result.non_dataset
+        if nd is None:
+            continue
+        print(f'  {result.rel:52s} {"通过" if nd.qualified else "未通过"}')
+        for name, ok in nd.gate_pass.items():
+            print(f'      {"PASS" if ok else "FAIL"} {name}：{nd.gate_evidence.get(name, "")}')
+        if nd.purpose:
+            print(f'      用途：{nd.purpose}')
+    print('')
 
 
 def render(results: list[ManifestResult], gaps: dict[str, dict[str, list[str]]],
@@ -706,12 +853,17 @@ def render(results: list[ManifestResult], gaps: dict[str, dict[str, list[str]]],
             print(f'  {result.rel:52s} 缺 {", ".join(result.missing_semantics)}')
         print('')
 
+    declared = [r for r in results if r.non_dataset is not None and r.non_dataset.declared]
+    print_non_dataset(declared)
+
     bad = total_issues + gap_no_manifest + gap_not_located - unverifiable
     verdict = 'PASS' if bad == 0 else 'FAIL'
+    passed_nd = sum(1 for r in declared if r.non_dataset is not None and r.non_dataset.qualified)
     print(f'结论: {verdict}  manifest {len(results)} 份 / 文件记录 {human(total_records)} 条 / '
           f'不一致 {human(total_issues - unresolved - unverifiable)} 条 / '
           f'无法定位 {unresolved} 条 / 无 manifest {human(gap_no_manifest)} 个 / '
-          f'未定位 {human(gap_not_located)} 个 / 语义未登记 {human(missing_sem)} 项')
+          f'未定位 {human(gap_not_located)} 个 / 语义未登记 {human(missing_sem)} 项 / '
+          f'非数据集声明 {len(declared)} 份（通过 {passed_nd}）')
 
     if json_path is not None:
         payload = {
@@ -723,6 +875,13 @@ def render(results: list[ManifestResult], gaps: dict[str, dict[str, list[str]]],
                     'ok_records': r.ok_records,
                     'issues': [i.__dict__ for i in r.issues],
                     'missing_semantics': r.missing_semantics,
+                    'non_dataset': (None if r.non_dataset is None or not r.non_dataset.declared else {
+                        'declared': True,
+                        'qualified': r.non_dataset.qualified,
+                        'purpose': r.non_dataset.purpose,
+                        'gates': r.non_dataset.gate_pass,
+                        'evidence': r.non_dataset.gate_evidence,
+                    }),
                 }
                 for r in results
             ],
