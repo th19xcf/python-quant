@@ -209,7 +209,7 @@ def compare_with_old(new: pl.DataFrame, old: pl.DataFrame) -> dict[str, Any]:
     }
 
 
-def write_diff(new: pl.DataFrame, old: pl.DataFrame, stage: Path) -> Path:
+def diff_rows(new: pl.DataFrame, old: pl.DataFrame) -> list[dict[str, Any]]:
     rows = []
     new_keys = {(r['ts_code'], r['date']): r['gap'] for r in new.iter_rows(named=True)}
     old_keys = {(r['ts_code'], r['date']): r['gap'] for r in old.iter_rows(named=True)}
@@ -227,6 +227,11 @@ def write_diff(new: pl.DataFrame, old: pl.DataFrame, stage: Path) -> Path:
                      'old_gap': '' if old_gap is None else str(round(old_gap, 10)),
                      'new_gap': '' if new_gap is None else str(round(new_gap, 10)),
                      'status': status, 'reason': reason})
+    return rows
+
+
+def write_diff(new: pl.DataFrame, old: pl.DataFrame, stage: Path) -> Path:
+    rows = diff_rows(new, old)
     path = stage / 'old_vs_new_diff.csv'
     schema = dict.fromkeys(('ts_code', 'date', 'old_gap', 'new_gap', 'status', 'reason'),
                            pl.String)
@@ -347,6 +352,14 @@ def main(argv: list[str] | None = None) -> int:
     print('与旧表对拍:', stats)
 
     stage = staging_dir('ca_rebuild', with_date=True)
+    if args.no_write:
+        # --no-write 的语义是「不落盘」：建目录、写 diff/summary 都必须跳过，
+        # 对拍明细改在内存里算完只打印状态计数。
+        rows = diff_rows(candidate, old)
+        counts = {status: sum(1 for r in rows if r['status'] == status)
+                  for status in ('consistent', 'inconsistent', 'old_only', 'new_only')}
+        print('逐行对拍（--no-write 不落盘）:', counts)
+        return 0
     stage.mkdir(parents=True, exist_ok=True)
     diff_path = write_diff(candidate, old, stage)
     print('逐行对拍 ->', diff_path)
@@ -355,8 +368,6 @@ def main(argv: list[str] | None = None) -> int:
                     'scope_start': CA_SCOPE_START.isoformat()},
                    ensure_ascii=False, indent=2) + '\n', stage / 'summary.json')
 
-    if args.no_write:
-        return 0
     if not args.promote:
         print('未加 --promote，仅生成候选与对拍，不动正式表')
         return 0

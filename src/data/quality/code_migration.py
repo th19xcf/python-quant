@@ -44,7 +44,7 @@ from typing import Any, Iterable
 import polars as pl
 from loguru import logger
 
-from src.data.atomic_write import write_parquet_atomic
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 
 MAPPING_REL = Path('meta') / 'code_migration.parquet'
 UNRESOLVED_REL = Path('meta') / 'code_migration_unresolved.csv'
@@ -801,6 +801,42 @@ def build_and_write(store_root: Path | str) -> dict[str, Any]:
     return summary
 
 
+def refresh_manifest(store_root: Path | str) -> dict[str, Any]:
+    """按磁盘上的映射表重算 manifest，不重建、不改任何数据行。
+
+    追加式补录（例如 2026-11-09 的退市标的回填）不走
+    :func:`build_and_write`，``mappings`` / ``by_confidence`` / ``integrity``
+    会停在补录前：2026-11-13 实测表已 25 行而 manifest 仍记 15 行，
+    完整性三项也只校验了 15 对。此处一律以表为准重算，并保留原有其余字段。
+    """
+    root = Path(store_root)
+    mapping = load_mapping(root)
+    path = manifest_path(root)
+    previous: dict[str, Any] = {}
+    if path.is_file():
+        try:
+            previous = json.loads(path.read_text(encoding='utf-8'))
+        except json.JSONDecodeError:
+            previous = {}
+    integrity = validate_mapping(mapping)
+    summary = {
+        **previous,
+        'built_at': datetime.now().isoformat(timespec='seconds'),
+        'mappings': mapping.height,
+        'by_confidence': dict(mapping.group_by('confidence').len().iter_rows()),
+        'by_segment': dict(mapping.with_columns(
+            pl.col('old_ts_code').str.slice(0, 2).alias('seg'))
+            .group_by('seg').len().iter_rows()),
+        'integrity': integrity,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_text_atomic(
+        json.dumps(summary, ensure_ascii=False, default=str, indent=2) + '\n', path)
+    logger.info(f'[code-migration] manifest 重算 {mapping.height} 条，'
+                f'完整性 {integrity["ok"]}')
+    return summary
+
+
 def verify(store_root: Path | str, *, sample: int = 20) -> dict[str, Any]:
     """逐条抽样证据 + 完整性检查，结果写 manifest 旁的 verify.json。"""
     root = Path(store_root)
@@ -836,7 +872,9 @@ def verify(store_root: Path | str, *, sample: int = 20) -> dict[str, Any]:
                   pl.col('old_ts_code').str.slice(0, 2).alias('seg'))
                   .group_by('seg').len().iter_rows()),
               'integrity': integrity, 'sampled': details, 'sample_size': len(details)}
-    out = root / 'meta' / 'code_migration_verify.json'
+    # 2026-11-12 起校验报告属一次性审计证据，写仓库 docs/evidence（store_root 的祖父目录）
+    out = root.parents[1] / 'docs' / 'evidence' / 'code_migration_verify' / 'code_migration_verify.json'
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, ensure_ascii=False, default=str, indent=2),
                    encoding='utf-8')
     return result
@@ -847,12 +885,16 @@ def main() -> int:
     parser.add_argument('--store-root', default=None)
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('build', help='扫描本地来源并重建映射表')
+    sub.add_parser('refresh-manifest', help='按现有映射表重算 manifest（不改数据行）')
     verify_cmd = sub.add_parser('verify', help='抽样证据与完整性校验')
     verify_cmd.add_argument('--sample', type=int, default=20)
     args = parser.parse_args()
     root = Path(args.store_root) if args.store_root else _default_root()
     if args.command == 'build':
         summary = build_and_write(root)
+        sys.stdout.write(json.dumps(summary, ensure_ascii=False, indent=2, default=str) + '\n')
+    elif args.command == 'refresh-manifest':
+        summary = refresh_manifest(root)
         sys.stdout.write(json.dumps(summary, ensure_ascii=False, indent=2, default=str) + '\n')
     else:
         result = verify(root, sample=args.sample)
