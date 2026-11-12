@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import contextlib
+import socket
 
 import polars as pl
 import pytest
@@ -21,6 +22,27 @@ from src.database.db_manager import DatabaseManager
 from src.plugin.plugin_manager import PluginManager
 from src.utils.config import Config
 from src.utils.exceptions import DataSourceException
+
+
+def _mysql_reachable() -> bool:
+    """探测配置里的 MySQL 是否可连。
+
+    该模块整体依赖真实库：fixture 里直接 ``db_manager.connect()``，CI 的运行器
+    没有 MySQL 服务，若不先探测会在每种用例上抛 ``OperationalError(2003)``，
+    既不是被测代码的缺陷，也会把整条流水线判红。
+    """
+    database = Config().database
+    try:
+        with socket.create_connection((database.host, database.port), timeout=1.0):
+            return True
+    except OSError:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    not _mysql_reachable(),
+    reason='需要可连接的 MySQL（未配置数据库服务的环境整体跳过）',
+)
 
 
 @pytest.fixture(scope="module")

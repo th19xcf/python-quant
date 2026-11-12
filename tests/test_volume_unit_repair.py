@@ -19,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QUOTE_DIR = REPO_ROOT / 'data' / 'local_store' / 'quotes' / 'stock'
@@ -41,6 +42,13 @@ INVERSE_INVALID_ROWS = (
 )
 #: 修复的目标筛选区间（比值 = (amount/close)/(volume*100)）
 SELECT_LO, SELECT_HI = 90.0, 110.0
+
+#: 这些判据直接读行情分片；CI 的 checkout 不含 `data/`（本地列存不入库），
+#: 无分片时整模块跳过，而不是把 FileNotFoundError 记成被测代码的缺陷。
+pytestmark = pytest.mark.skipif(
+    not QUOTE_DIR.is_dir(),
+    reason=f'缺少本地行情分片目录 {QUOTE_DIR}（data/local_store 不入库）',
+)
 
 
 def _path(code: str) -> Path:
