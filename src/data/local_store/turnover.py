@@ -88,7 +88,7 @@ _LRU_MAX = 128
 # baostock 日线最早可取日期（早于该日查询会报错）
 _BAOSTOCK_MIN_DATE = date(1990, 12, 19)
 
-_TURN_CACHE: OrderedDict[str, pl.DataFrame | None] = OrderedDict()
+_TURN_CACHE: OrderedDict[tuple[str, tuple[str, ...]], pl.DataFrame | None] = OrderedDict()
 _TURN_LAZY: pl.LazyFrame | None = None
 _TURN_MTIME: int | None = None
 _TURN_PATH: str | None = None
@@ -107,6 +107,9 @@ def turnover_path(root: Path | str | None = None) -> Path:
 def read_turnover(ts_code: str, root: Path | str | None = None,
                   columns: Iterable[str] = ('trade_date', 'turn')) -> pl.DataFrame | None:
     """按代码读取换手率片段（LRU 缓存，文件重建后自动失效）。
+
+    缓存键为 ``(ts_code, columns)``：同一标的的不同列集合必须各缓存一份，
+    否则先读窄列会污染后续宽列调用（返回缺列帧）。
 
     Returns:
         pl.DataFrame | None: 列 ``trade_date/turn``（升序）；无记录返回 None。
@@ -128,9 +131,10 @@ def read_turnover(ts_code: str, root: Path | str | None = None,
         _TURN_MTIME = mtime
         _TURN_PATH = path_key
 
-    cached = _TURN_CACHE.get(ts_code)
-    if cached is not None or ts_code in _TURN_CACHE:
-        _TURN_CACHE.move_to_end(ts_code)
+    key = (ts_code, tuple(columns))
+    cached = _TURN_CACHE.get(key)
+    if cached is not None or key in _TURN_CACHE:
+        _TURN_CACHE.move_to_end(key)
         return cached
 
     lazy = _TURN_LAZY
@@ -138,7 +142,7 @@ def read_turnover(ts_code: str, root: Path | str | None = None,
         return None
     frame = lazy.filter(pl.col('ts_code') == ts_code).select(list(columns)).collect()
     result: pl.DataFrame | None = None if frame.is_empty() else frame.sort('trade_date')
-    _TURN_CACHE[ts_code] = result
+    _TURN_CACHE[key] = result
     while len(_TURN_CACHE) > _LRU_MAX:
         _TURN_CACHE.popitem(last=False)
     return result

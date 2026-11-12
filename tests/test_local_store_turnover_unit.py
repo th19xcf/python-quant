@@ -163,6 +163,26 @@ def test_read_turnover_missing_cache_and_lru(tmp_path):
     assert len(turn_module._TURN_CACHE) <= turn_module._LRU_MAX
 
 
+def test_read_turnover_cache_key_includes_columns(tmp_path):
+    """同一标的先窄列后宽列必须各取各的列（缓存键含 columns）。"""
+    _write_turnover(
+        tmp_path, [('000001.SZ', d, float(i)) for i, d in enumerate(_DATES)])
+
+    narrow = read_turnover('000001.SZ', tmp_path, columns=('trade_date', 'turn'))
+    assert narrow is not None
+    assert narrow.columns == ['trade_date', 'turn']
+
+    wide = read_turnover(
+        '000001.SZ', tmp_path, columns=('trade_date', 'turn', 'source'))
+    assert wide is not None
+    assert wide.columns == ['trade_date', 'turn', 'source']
+
+    # 反向再取窄列：不能被宽列缓存污染
+    again = read_turnover('000001.SZ', tmp_path, columns=('trade_date', 'turn'))
+    assert again is not None
+    assert again.columns == ['trade_date', 'turn']
+
+
 def test_read_float_share_series_paths(tmp_path, monkeypatch):
     assert read_float_share_series('000001.SZ', tmp_path) is None
 

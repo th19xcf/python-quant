@@ -72,8 +72,9 @@ _FILE_EXTRA: dict[str, dict[str, Any]] = {
     'stock_turnover.parquet': {
         'source_semantics': (
             'turn 为百分数（0.1979 表示 0.1979%）。同一列含两套来源语义，按 source 列区分，'
-            '禁止直接混用比对：source=baostock 189,419 行（1.05%）是上游 baostock 日线'
-            '原始 turn；source=derived:quotes_volume+float_share 17,866,332 行（98.95%）'
+            '禁止直接混用比对：source=baostock 256,639 行（1.42%，含 2026-11-13 回补的 '
+            '18 只退市标的）是上游 baostock 日线原始 turn；'
+            'source=derived:quotes_volume+float_share 17,866,332 行（98.58%）'
             '由本地派生 volume(手)×100×100÷float_share 算出。两者在可比样本上相对差 '
             'p99=8.2%、max=106%，属上游口径差异而非错值，不得用本地口径重算覆盖 baostock 行；'
             '跨来源比较须按 source 分层，混比会把口径差异误判为坏值。'),
