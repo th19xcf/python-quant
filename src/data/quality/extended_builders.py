@@ -517,8 +517,9 @@ def build_index_membership(
     """由指数成分月度快照派生进出区间表（官方日快照仅作原始留档）。"""
     store = Path(root)
     snapshot_dir = staging_dir_for_store(store, 'index_membership_snapshots_20261112')
-    # 续跑点与 snapshots/ 平级：快照目录被 tools 的 *.parquet glob 消费
-    progress_path = store / 'meta' / 'index_membership' / _FETCH_PROGRESS_NAME
+    # 续跑点是缓存态，与快照同落 staging（2026-11-12 按 DG-32 迁出正式层）；
+    # 扩展名 .json，不会被快照目录的 *.parquet glob 当成一份成分快照。
+    progress_path = snapshot_dir / _FETCH_PROGRESS_NAME
     index_list = list(indices)
     fetched = 0
     completed: list[str] = []

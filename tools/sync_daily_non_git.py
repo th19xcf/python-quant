@@ -56,7 +56,6 @@ DAILY_DIRS: tuple[str, ...] = (
     # 外部抓取的历史 PIT 证据，重抓只会得到「当前修订」
     'data/local_store/meta/st',
     'data/local_store/meta/industry_pit',
-    'data/local_store/meta/index_membership',
     # 指数成分权威表（index_weight_monthly + 派生的 membership_intervals）
     'data/local_store/meta/index_members',
     # 人工维护/校准结论，两边各跑会分叉

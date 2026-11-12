@@ -112,7 +112,6 @@ CRITICAL_DIRS: tuple[str, ...] = (
     'data/local_store/meta/anomalies',
     'data/local_store/meta/events',
     'data/local_store/meta/suspension',
-    'data/local_store/meta/index_membership',
     # 指数成分权威表（index_weight_monthly + 派生的 membership_intervals）
     'data/local_store/meta/index_members',
     'data/local_store/meta/industry_pit',

@@ -18,6 +18,7 @@ from src.data.quality.extended_builders import (
     main,
 )
 from src.data.quality.extended_contracts import check_contracts
+from src.data.staging import staging_dir_for_store
 from src.data.trading_calendar import reset_calendar_cache
 
 # 连续 6 个工作日（2026-11-02 周一 ~ 11-09 周一，跳过周末）
@@ -251,7 +252,8 @@ def test_remote_fetch_break_records_skipped_and_stops(
     assert summary['remote_failed'] == '000905.SH'
     assert summary['remote_skipped'] == ['000852.SH', '000016.SH']
 
-    progress_path = (tmp_path / 'meta' / 'index_membership'
+    progress_path = (staging_dir_for_store(tmp_path,
+                                           'index_membership_snapshots_20261112')
                      / 'fetch_progress.json')
     progress = json.loads(progress_path.read_text('utf-8'))
     assert progress['completed'] == ['000300.SH']
