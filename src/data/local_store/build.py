@@ -45,6 +45,7 @@ from polars.exceptions import PolarsError
 
 from src.data.adj_factor_calculator import AdjFactorCalculator
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
+from src.data.factors_manifest import write_factors_manifest
 from src.data.local_store.session_guard import filter_intraday_rows, guarded_source_date
 from src.data.local_store.store import (
     STORE_VERSION,
@@ -996,6 +997,9 @@ def refresh_factors(
     }
     write_text_atomic(
         json.dumps(meta, ensure_ascii=False, indent=2), out_dir / 'meta.json')
+    # 三个文件均已落盘后再回写目录级 manifest（单文件原子、多文件非事务，
+    # 回写放在最后，避免中途失败时登记指向半更新状态）。
+    write_factors_manifest(factor_store.root)
     logger.info(
         f'[local-store] 危险覆盖完成：{factors.height:,} / {dividends.height:,} 行，'
         f'耗时 {elapsed:.1f}s')

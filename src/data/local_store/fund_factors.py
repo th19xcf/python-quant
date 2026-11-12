@@ -59,6 +59,7 @@ from loguru import logger
 
 from src.data.adj_factor_calculator import AdjFactorCalculator
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
+from src.data.factors_manifest import write_factors_manifest
 from src.data.local_store.store import (
     LocalFactorStore,
     LocalQuoteStore,
@@ -511,6 +512,9 @@ def rebuild_fund_factors(
     }
     meta_path = root / 'factors' / FUND_META_FILENAME
     write_text_atomic(json.dumps(meta, ensure_ascii=False, indent=2), meta_path)
+    # 写盘收尾：factors/ 下这几个文件的 rows/bytes/sha256 必须按磁盘实测回写，
+    # 否则 manifest 停在旧值，manifest_tool --check 判不一致。
+    write_factors_manifest(root)
     logger.info(
         f'[fund] 因子重建完成：{len(covered)} 只 / {merged.height:,} 行，'
         f'耗时 {meta["elapsed_s"]}s')

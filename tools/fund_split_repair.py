@@ -49,6 +49,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data.adj_factor_calculator import AdjFactorCalculator  # noqa: E402
 from src.data.atomic_write import write_parquet_atomic  # noqa: E402
+from src.data.factors_manifest import write_factors_manifest  # noqa: E402
 from src.data.local_store.fund_factors import (  # noqa: E402
     FUND_FACTOR_MAX,
     FUND_SHARE_CHANGE_FILENAME,
@@ -357,6 +358,8 @@ def apply_repair() -> dict[str, Any]:
     write_parquet_atomic(
         merged_all, FACTOR_PATH, compression='zstd', compression_level=3,
         statistics=True, row_group_size=100_000)
+    # 写盘收尾：修复后行数 / SHA256 已变，目录级 manifest 必须按磁盘重算。
+    write_factors_manifest(STORE)
 
     detail = pl.DataFrame(detail_rows, schema={
         'ts_code': pl.Utf8, 'trade_date': pl.Utf8, 'field': pl.Utf8,

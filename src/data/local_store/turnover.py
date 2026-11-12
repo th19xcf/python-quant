@@ -61,6 +61,7 @@ import polars as pl
 from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
+from src.data.factors_manifest import write_factors_manifest
 from src.data.local_store.paths import default_store_root
 from src.data.quote_schema import assert_formal_quote_glob_schema
 from src.data.sources import baostock_schema as schema
@@ -546,6 +547,9 @@ def _assemble(parts: list[Path], target: Path, touched: set[str]) -> int | None:
     write_parquet_atomic(
         source, target, compression='zstd', compression_level=3,
         statistics=True, row_group_size=100_000)
+    # 写盘收尾：正式表已原子替换，目录级 manifest 必须按磁盘实测同步，
+    # 否则 rows/bytes/sha256 停在旧值，--check 判不一致。
+    write_factors_manifest(target.parent.parent)
     try:
         return int(pl.scan_parquet(str(target)).select(pl.len()).collect().item())
     except (OSError, ValueError, TypeError) as exc:
@@ -989,6 +993,8 @@ def derive_turnover_local(root: Path | str | None = None, *,
         # anti join 已排除既有键，行数不符说明源表存在重复键，必须暴露
         raise RuntimeError(
             f'换手率派生写入行数异常：预期 {expected:,} 实际 {after_rows:,}')
+    # 行数守恒通过后才回写 manifest：写坏了不把错误行数登记成正式值。
+    write_factors_manifest(target.parent.parent)
     logger.info(
         f'[turnover] 本地派生完成：{new.height:,} 行 / {stats["codes"]} 只，'
         f'表 {before_rows:,} → {after_rows:,} 行')

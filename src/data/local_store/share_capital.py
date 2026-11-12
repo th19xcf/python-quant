@@ -98,6 +98,7 @@ from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.local_store.paths import default_store_root, project_root
+from src.data.manifest_refresh import refresh_manifest_files
 from src.utils.code_converter import to_symbol, to_ts_code
 from src.utils.dates import as_date
 from src.utils.exception_handler import handle_exception_with_retry
@@ -263,6 +264,10 @@ def write_shares(frame: pl.DataFrame, root: Path | str | None = None, *,
         statistics=True, row_group_size=100_000)
     if write_meta:
         _write_meta(path, prepared)
+    # 写盘收尾：meta/factors/manifest.json 必须按磁盘实测回写（rows/bytes/sha256），
+    # 否则股本表已换、登记停在旧值，--check 判不一致。
+    refresh_manifest_files(
+        path.parent / 'manifest.json', _root(root), [path], required=True)
     return path
 
 
