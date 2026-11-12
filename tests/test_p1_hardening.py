@@ -279,11 +279,14 @@ class TestDatabaseTls:
 class TestStatefulBacktestSurface:
     """V-05：3,466 行巨文件的动线约束——只允许追加函数，禁止新增类
 
-    棘轮上限取 5 的理由：``tools/advice_stateful_backtest.py`` 现有的 5 个顶层类
-    （``Position`` / ``Cohort`` / ``_PoolLot`` / ``_CohortTrack`` / ``_PoolTrack``）
-    全部是该脚本私有的数据容器，语义已定、没有继续增长的正当理由；新增的有状态
-    封装应落到 ``src/advice/`` 而不是继续堆在脚本里。因此上限等于当前值，任何新增
-    类都会立即判红——这不是随手取的数，而是「只减不增」的棘轮基线。
+    棘轮上限 5 是**按现状锚定**，不是结构常数：它就是
+    ``tools/advice_stateful_backtest.py`` 现有的 5 个顶层类（``Position`` /
+    ``Cohort`` / ``_PoolLot`` / ``_CohortTrack`` / ``_PoolTrack``，均为脚本私有
+    数据容器）。取当前值构成「只减不增」的基线，因此任何新增类都会立即判红。
+
+    调大这个数字之前必须先回答一个问题：新类为什么不放到 ``src/advice/``？
+    有状态封装应在那里按域拆分，本脚本只做编排与报告输出。确属脚本私有、且无法
+    下沉时，才连同文档与报告一起上调，不允许为了让用例变绿顺手改数字。
     """
 
     _TOOL_PATH = Path(__file__).resolve().parents[1] / 'tools' / 'advice_stateful_backtest.py'
