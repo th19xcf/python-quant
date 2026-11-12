@@ -22,8 +22,10 @@ import polars as pl
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QUOTE_DIR = REPO_ROOT / 'data' / 'local_store' / 'quotes' / 'stock'
+#: 19 行修复的留痕证据（DG-32：证据进 docs/evidence/，不再在行情分片里加标记列）
+EVIDENCE = REPO_ROOT / 'docs' / 'evidence' / 'volume_unit_repair_20261112' / 'rows.csv'
 
-#: 2015 后已修复的 7 只（`basis` 标记的 19 行分布在这 7 个文件里）
+#: 2015 后已修复的 7 只（19 行分布在这 7 个文件里）
 FIXED_CODES = ('000725.SZ', '600010.SH', '600157.SH', '600221.SH',
                '601288.SH', '601868.SH', '601988.SH')
 BASIS = 'inferred_from_amount_close'
@@ -75,23 +77,35 @@ def amount_close_inverse_valid(close: float, vwap: float,
 
 
 def _fixed_rows() -> pl.DataFrame:
-    rows = []
-    for code in FIXED_CODES:
-        d = _read(code).filter(pl.col('basis') == BASIS)
-        if d.height:
-            rows.append(d.select(['ts_code', 'date', 'volume', 'amount', 'close']))
-    return pl.concat(rows) if rows else pl.DataFrame()
+    """19 行修复记录：日期/只数取自证据文件，值回读行情分片对拍。"""
+    evidence = pl.read_csv(EVIDENCE).with_columns(
+        pl.col('date').str.to_date())
+    parts = []
+    for code, grp in evidence.group_by('ts_code', maintain_order=True):
+        raw = _read(code[0])
+        joined = grp.select(['date', 'volume_new']).join(raw, on='date', how='inner')
+        parts.append(joined.select([
+            pl.lit(code[0]).alias('ts_code'), 'date',
+            pl.col('volume').alias('volume'), 'volume_new', 'amount', 'close']))
+    return pl.concat(parts) if parts else pl.DataFrame()
 
 
-def test_basis_marks_exactly_19_rows_in_7_codes():
+def test_evidence_marks_exactly_19_rows_in_7_codes():
     d = _fixed_rows()
-    assert d.height == 19, f'basis 标记行数 {d.height} != 19'
+    assert d.height == 19, f'证据 19 行与行情对上的只有 {d.height} 行'
     assert d['ts_code'].n_unique() == 7
-    # 未修复行不得被打上 basis（DG-31：不许把整表刷成一个来源标记）
+    # 证据记的修复值与行情里的现值必须逐行一致，否则证据与数据已经脱节
+    mismatched = [(r['ts_code'], str(r['date']), r['volume'], r['volume_new'])
+                  for r in d.iter_rows(named=True) if r['volume'] != r['volume_new']]
+    assert not mismatched, f'证据与行情现值不一致: {mismatched}'
+    # 修复标记不再落在行情分片里（DG-32：证据归 docs/evidence/，数据表保持统一 schema）
     for code in FIXED_CODES:
-        raw = _read(code)
-        assert raw.filter(pl.col('basis') == BASIS).height == \
-            d.filter(pl.col('ts_code') == code).height
+        assert 'basis' not in _read(code).columns, f'{code} 仍带 basis 列'
+    # 每个文件的证据行数必须与证据文件自身分组一致（防止 join 少配）
+    ev = pl.read_csv(EVIDENCE)
+    for code in FIXED_CODES:
+        assert (d.filter(pl.col('ts_code') == code).height
+                == ev.filter(pl.col('ts_code') == code).height), f'{code} 证据行未全部落到行情'
 
 
 def test_repaired_rows_satisfy_round_lot_residual():
