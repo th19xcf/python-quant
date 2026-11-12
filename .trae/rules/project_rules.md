@@ -106,7 +106,8 @@ print(f'synced {len(changed)} files, removed {len(deleted)} deleted')
 - **职责归属**：备份仓库 `G:\git\python-quant` 的维护、提交与推送由助手负责；每次备份同步完成后直接提交并推送，不需要用户再提醒
 - **仓库形态与推送约定**：源仓库 `e:\code\python\quant` 仅本地、未配置任何远端，只做本地提交，不 fetch、不 push，也不要给它添加远端；备份仓库 `G:\git\python-quant` 是唯一关联 GitHub 的仓库（origin 指向 `th19xcf/python-quant`），其提交推送至该仓库自己的 `main`。两个仓库独立管理、互不约束，不需要跨库对齐或快进
 - **红线继承**：备份仓库只做增量 `copy2` 与「源端已删文件」的对位删除；禁止 `rmtree`、禁止碰其 `.git`、禁止 force push（`--force` / `--force-with-lease`）与任何改写历史的操作
-- **推送遇 127.0.0.1 代理报错先按代理未启动处理**：现象是 `git push` 报 `Failed to connect to github.com:443 over proxy 127.0.0.1`；根因是全局 `.gitconfig` 里 `http.proxy=http://127.0.0.1:10808` 指向本地代理，代理未启动时就连不上，而环境变量 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 为空，并不是它们在起作用。处置：推送统一用 `git -c http.proxy= -c https.proxy= push origin main` 临时清空代理直连；**不要**为绕过而改全局配置，也不要删掉那条代理配置（用户开代理时仍要用）。判别：若清空代理后仍失败，才按真实网络故障处理（`Test-NetConnection github.com -Port 443`）
+- **推送失败先判别代理与直连，再决定是否清空代理（2026-11-12 修订）**：现象是 `git push` 报 `Failed to connect to github.com:443 over proxy 127.0.0.1` 或 `Recv failure: Connection was reset`；起作用的始终是全局 `.gitconfig` 里那条 `http.proxy=http://127.0.0.1:10808`，环境变量 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 为空，与它们无关。处置顺序固定为「先测后决策」：① 各测一次 `Test-NetConnection 127.0.0.1 -Port 10808 -InformationLevel Quiet` 与 `Test-NetConnection github.com -Port 443 -InformationLevel Quiet`；② 代理在跑（10808 = True）且直连不通（443 = False）→ **保持默认代理配置重试**，不要清空代理；③ 代理没跑（10808 = False）→ 才临时清空代理直连，`git -c http.proxy= -c https.proxy= push origin main`；④ 两个端口都通或都不通 → 按真实网络故障处理，查代理软件与出口网络，不得反复重试。**不要**为绕过而改全局配置，也不要删掉那条代理配置（用户开代理时仍要用）；不 force push。
+  依据：2026-11-12 实测——`127.0.0.1:10808` 探测 **True**（代理在跑）、`github.com:443` 直连探测 **False**（直连不通）；清空代理后 push 报 `Recv failure: Connection was reset`，恢复默认代理配置后同一笔 push 成功（`922bd19..289254d main -> main`）。旧写法「统一清空代理直连」在本机现有网络下必然失败，故改为按探测结果分支。
 
 ## 备份同步规则
 

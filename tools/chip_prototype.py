@@ -1,8 +1,9 @@
 """筹码分布（筹码峰）B 档原型试画：静态 VAP vs 衰减 VAP。
 
-依赖说明：本脚本出图走 PySide6/Qt，不需要 matplotlib；同目录的
-`tools/chip_layout_mockup.py` 依赖 matplotlib，出图时需临时安装
-（`pip install matplotlib`），项目常规依赖中未包含它。
+依赖说明：本脚本出图走 PySide6/Qt，不需要 matplotlib。原同目录的
+`tools/chip_layout_mockup.py`（依赖 matplotlib 出排版示意图的脚本）已于
+2026-11-12 移出仓库，如需重现排版效果，可用 `git show 0ea36e9:tools/chip_layout_mockup.py`
+从历史取回。
 
 定位：形状验证原型，不是生产实现。只读
 `data/local_store/quotes/stock/{sh,sz,bj}/*.parquet`，不写库、不改生产模块。

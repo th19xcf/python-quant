@@ -202,3 +202,27 @@ research/events/data/**/*.parquet
 
 # 外部输入白名单镜像目录（只存在于备份仓库，存放 E:\www\tmp 被引用的子集，仅靠镜像保障）
 _external_inputs/
+
+# 2026-11-12 清理：以下 22 个路径已取消 Git 跟踪，磁盘一律保留，留存靠 G:\git\python-quant 镜像保障
+/data/local_store/meta/anomalies/manifest.json
+/docs/screenshots/advice_dark.png
+/docs/screenshots/advice_light.png
+/docs/screenshots/advice_empty.png
+/docs/策略参数基线_2026-11-11.json
+/research/mootdx/mootdx_coverage.py
+/research/mootdx/mootdx_minute_probe.py
+/research/mootdx/mootdx_probe_funcs.py
+/research/mootdx/mootdx_probe_servers.py
+/research/mootdx/mootdx_scan_all.py
+/research/mootdx/mootdx_stability.py
+/research/mootdx/mootdx_probe_servers.json
+/research/mootdx/mootdx_scan_all.json
+/scripts/analytics_validation.py
+/scripts/analyze_dividend_full.py
+/scripts/analyze_factor_detail.py
+/scripts/verify_data_20261104.py
+/scripts/verify_gap_sina.py
+/scripts/verify_zero_event_codes.py
+/scripts/smoke_risk_filters.py
+/scripts/verify_advice_backtest.py
+/scripts/correct_stock_basic.py
