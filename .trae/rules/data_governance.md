@@ -85,6 +85,12 @@
   行数守恒、改动行数、逐值对拍这类断言，必须同时校验空值计数：改动前后各自的 null 数、未命中行是否被写成 null；禁止只用 `!=` / `==` 与 null 组合这类会静默为假的比较作为通过条件。
   断言必须能对「空值从 0 变成 N」这一情形失败，即断言本身要有自测或反例验证。
   反例：2026-11-10 ST coverage 写回 64 行裁定时 `pl.coalesce` 无兜底，5,824 行 `coverage_start` 被写成 null；断言用「改动行数 `!=` 裁定行数」比较，null 参与比较得 null 被过滤，断言空过，含 5,824 个空值的表被当作合格产物落盘，并对外报了「行数守恒、改动行数恰等于目标」。
+- **DG-33** 绕过 `write_parquet_atomic` + `flush_meta` 的旁路改写（回滚 `copy2`、按行 prune、就地修数）落盘后，必须在同一轮把索引与 manifest 回写到位（该文件的 `rows` / `bytes` / `sha256` / `file_size`）；缺这一步即判该次修数未完成。
+  依据：`meta/daily_index.parquet` 是覆盖度判定的唯一来源——`LocalQuoteStore.coverage()` 只读该表，从不 stat `quotes/**/*.parquet`；`file_size` 只在 `write_daily()` 里取一次 `stat().st_size`，由 `flush_meta()` 落盘并重写 `daily_index.manifest.json` 的 `rows` / `bytes` / `sha256`。`shutil.copy2` 保留原 mtime，所以「mtime 没变」永远证明不了索引没过期；`tools/manifest_tool.py --check` 只核对 manifest 登记的那一个文件（`bytes` / `rows` / `sha256` / `columns` / `date_range`），核不到 `daily_index` 里逐行的 `file_size`，索引漂移在 `--check` 下是静默的。
+  反例：2026-11-13 `000004.SZ` 行情文件已修成 246,860 B，索引仍停在 246,902，只能单独回填这一格（见 `meta/daily_index.manifest.json` 的 `notes` G-139），且 `built_at` 仍为 2026-11-11 16:58:56，正是「只补索引字段、没走 `flush_meta`」的痕迹；同类存量另有 252 行 `file_size` 与磁盘不符（−2,685 B ~ +611 B，合计 +39,335 B），G-045 还遗留 11 行 `rows` / `start` / `end` 陈旧（其中 10 行 `built_at` 早于行情文件 mtime，如 `000904.SH` 20:49:23 vs 11-10 15:50、差 928 行）。
+- **DG-34** 含运行时字段的表，SHA256 不能证明内容等价：manifest 的 `generated_at`、表内的 `built_at` / `fetched_at` / `source_mtime_ns` 每次重算都会变，SHA 不等不得推出内容有变，SHA 相等也不得推出同口径一致。
+  依据：`meta/daily_index.parquet` 的 `built_at` 每次 `flush_meta()` 都写新值、`source_mtime_ns` 记源 `.day` 的 mtime；`meta/st/st_price_inferred.parquet`、`factors/stock_turnover.parquet`、`meta/name_history.parquet` 的 `fetched_at` 每次重建都写新抓取时刻，同输入重跑字节必然不同。现行绕开方式有两条：① 让时间戳确定化——`st_history._input_timestamp()` 取输入缓存最大 mtime 而非 `datetime.now()`，同输入重跑逐字节一致，SHA 对拍才有意义；② 按业务主键 join 逐值比对——G-045 验收用 `eq_missing` 逐元素证明未改动的 9,761 行全等，SHA 仅作「落的是这份文件」的身份记录。`manifest_tool.py --check` 只比整文件 `bytes` / `rows` / `sha256` / `columns`，属文件身份校验，不能替代内容等价。
+  反例：`docs/evidence/data_lineage_governance_20261113/b2_slice4_check.md` 记 `name_history.parquet` 字节数与改前相同、仅 `fetched_at` 变化，SHA 由 `7e29fdaa…` 变为 `fd13515e…`，按 SHA 判会误判「内容变了」；反向地，为对齐 `fetched_at` 把它置空或回填后再比 SHA，也不代表口径一致——G-080 方案记录按生产 merge 语义取「最后非空」会把 17.97M 行的抓取时间整体改成后片时间，等于伪造来源时间。判等价必须按 `(ts_code, date)` 这类业务主键 join 逐列对比，并单独报改动前后空值计数与「既有非空值被改动数」（须为 0，与 DG-31 同源）。
 
 ## 六、范围与采集
 
