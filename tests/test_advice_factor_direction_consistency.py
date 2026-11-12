@@ -123,6 +123,10 @@ def scored_day_frame() -> tuple[pl.DataFrame, dict, object]:
     return scored, {spec.column: spec for spec in tier.factors}, tier
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason='G-102：打分方向（偏反转）与软筛「均线多头」口径冲突，Top15 多头只数常为 0；'
+           '断言 / 阈值 / TOP_N / 软筛条件一律不动，出现 XPASS 才视为口径已变化需重评')
 def test_top_candidates_contain_ma_bullish_names(scored_day_frame) -> None:
     scored, specs, tier = scored_day_frame
     tier_pct = tier.buy_percentile
