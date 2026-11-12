@@ -16,6 +16,8 @@
   以文件名为键时的同目录相对路径）。
 * **逐文件核对**：``rows``（parquet 元数据）、``bytes``（``os.stat``）、
   ``sha256``（1 MiB 分块）、``columns`` / ``cols``、``date_range``（仅在登记时）。
+* **sha256 大小写**：比较时两侧统一小写，登记值含 ``A-F`` 不判不一致，只额外报一条
+  ``sha256_format`` 格式告警并单独计数；格式问题不静默，也不把一致的数据判成不一致。
 * **汇总恒等**：顶层 ``files`` / ``rows`` / ``bytes`` 与逐文件求和恒等；
   ``universe.<kind>`` 与其 ``markets_detail`` 三项各自恒等。
 * **只报不猜**：语义项（``dataset`` / ``source`` / ``authority`` /
@@ -362,8 +364,8 @@ def column_min_max(path: Path, column: str) -> tuple[str, str] | None:
 # --------------------------------------------------------------------------- #
 @dataclass
 class Issue:
-    kind: str          # bytes / rows / sha256 / columns / cols / date_range /
-                       # file_missing / unresolved_locator / summary / parse_error
+    kind: str          # bytes / rows / sha256 / sha256_format / columns / cols /
+                       # date_range / file_missing / unresolved_locator / summary / parse_error
     target: str        # 文件相对路径或汇总块名
     detail: str
 
@@ -374,6 +376,10 @@ class Record:
     raw_path: str | None
     resolved: Path | None
     fields: dict[str, Any]
+
+
+#: 不计入「不一致」的类别：无法定位、不可核对、以及仅格式不规范（已按小写比较判一致）。
+NON_FAILING_KINDS = ('unresolved_locator', 'rows_unverifiable', 'sha256_format')
 
 
 @dataclass
@@ -388,11 +394,19 @@ class ManifestResult:
 
     @property
     def bad(self) -> int:
-        return sum(1 for i in self.issues if i.kind not in ('unresolved_locator', 'rows_unverifiable'))
+        return sum(1 for i in self.issues if i.kind not in NON_FAILING_KINDS)
 
     @property
     def unresolved(self) -> int:
         return sum(1 for i in self.issues if i.kind == 'unresolved_locator')
+
+    @property
+    def unverifiable(self) -> int:
+        return sum(1 for i in self.issues if i.kind == 'rows_unverifiable')
+
+    @property
+    def format_alerts(self) -> int:
+        return sum(1 for i in self.issues if i.kind == 'sha256_format')
 
 
 # --------------------------------------------------------------------------- #
@@ -552,8 +566,12 @@ def check_record(record: Record, root: Path, cache: FactsCache) -> list[Issue]:
     want_sha = record.fields.get('sha256')
     if isinstance(want_sha, str) and len(want_sha) == 64:
         actual = facts.sha()
-        if actual != want_sha:
+        if actual is not None and actual.lower() != want_sha.lower():
             issues.append(Issue('sha256', shown, f'登记 {want_sha[:12]}… vs 磁盘 {str(actual)[:12]}…'))
+        elif want_sha != want_sha.lower():
+            issues.append(Issue(
+                'sha256_format', shown,
+                f'登记值含大写 hex（{want_sha[:12]}…），已按小写比较判定一致；写入方应统一小写'))
 
     want_cols = record.fields.get('columns')
     if isinstance(want_cols, list) and facts.columns is not None:
@@ -734,11 +752,16 @@ def covered_paths(results: Iterable[ManifestResult], root: Path) -> set[str]:
 
 
 def coverage_gaps(results: list[ManifestResult], root: Path) -> dict[str, dict[str, list[str]]]:
-    """未被任何 record 定位的 parquet，按「目录是否本身有 manifest」分两类。
+    """未被任何 record 定位的数据文件，按类型与「目录是否本身有 manifest」分类。
 
-    ``no_manifest``：该目录下没有任何 manifest 文件（完全没登记）。
-    ``not_located``：目录里有 manifest，但它没有指向这个文件（含只写了统计值
-    却没写可定位路径的 manifest）。
+    ``no_manifest``：parquet 且该目录下没有任何 manifest 文件（完全没登记）。
+    ``not_located``：parquet 且目录里有 manifest，但它没有指向这个文件（含只写了
+    统计值却没写可定位路径的 manifest）。
+    ``no_manifest_nonparquet``：**非 parquet** 数据文件（CSV / JSON / TXT 等）且未被
+    任何 record 定位。它不是失败项，只用于照亮盲区——早期枚举写成
+    ``rglob('*.parquet')``，非 parquet 永远进不了统计，于是那类始终显示 0（G-106
+    同类缺陷：枚举口径把一类对象排除在外）。等逐个判定「该补 manifest 还是该迁走」
+    之后，再决定是否升级为失败。
 
     ``quotes/`` 不享受整段豁免：早期口径假设「quotes 由一份汇总 manifest 覆盖」，
     但 ``quotes/manifest.json`` 只有目录级汇总、没有逐文件 record，整段跳过会让
@@ -747,13 +770,20 @@ def coverage_gaps(results: list[ManifestResult], root: Path) -> dict[str, dict[s
     """
     covered = covered_paths(results, root)
     manifest_dirs = {path.parent.resolve() for path in discover(root)}
-    gaps: dict[str, dict[str, list[str]]] = {'no_manifest': {}, 'not_located': {}}
-    for path in sorted(root.rglob('*.parquet')):
+    gaps: dict[str, dict[str, list[str]]] = {
+        'no_manifest': {}, 'not_located': {}, 'no_manifest_nonparquet': {}}
+    for path in sorted(root.rglob('*')):
+        if not path.is_file() or path.name.endswith('manifest.json'):
+            continue
         rel = path.relative_to(root).as_posix()
         if str(path.resolve()).lower() in covered:
             continue
+        directory = path.parent.relative_to(root).as_posix()
+        if path.suffix.lower() != '.parquet':
+            gaps['no_manifest_nonparquet'].setdefault(directory, []).append(rel)
+            continue
         bucket = 'not_located' if path.parent.resolve() in manifest_dirs else 'no_manifest'
-        gaps[bucket].setdefault(path.parent.relative_to(root).as_posix(), []).append(rel)
+        gaps[bucket].setdefault(directory, []).append(rel)
     return gaps
 
 
@@ -842,29 +872,44 @@ def print_non_dataset(declared: list[ManifestResult]) -> None:
     print('')
 
 
+def _print_format_alerts(results: list[ManifestResult]) -> None:
+    """打印 sha256 大写写法告警：这些条目已按小写比较判一致，只提示格式不规范。"""
+    print('sha256 格式告警（大写 hex，已按小写比较判定一致；只报不改）')
+    for result in results:
+        for issue in result.issues:
+            if issue.kind == 'sha256_format':
+                print(f'  {result.rel}  {issue.target}: {issue.detail}')
+
+
 def render(results: list[ManifestResult], gaps: dict[str, dict[str, list[str]]],
            max_details: int, json_path: Path | None,
            coverage_checked: bool = True) -> int:
     total_records = sum(len(r.records) for r in results)
     total_issues = sum(len(r.issues) for r in results)
     unresolved = sum(r.unresolved for r in results)
-    unverifiable = sum(1 for r in results for i in r.issues if i.kind == 'rows_unverifiable')
+    unverifiable = sum(r.unverifiable for r in results)
+    format_alerts = sum(r.format_alerts for r in results)
     gap_no_manifest = sum(len(v) for v in gaps.get('no_manifest', {}).values())
     gap_not_located = sum(len(v) for v in gaps.get('not_located', {}).values())
+    gap_nonparquet = sum(len(v) for v in gaps.get('no_manifest_nonparquet', {}).values())
     missing_sem = sum(len(r.missing_semantics) for r in results)
 
     def failing(result: ManifestResult) -> list[Issue]:
-        return [i for i in result.issues if i.kind != 'rows_unverifiable']
+        return [i for i in result.issues if i.kind not in NON_FAILING_KINDS]
 
     print('manifest 核对（只读）')
     print(f'  根目录                  : {store_root()}')
     print(f'  manifest 份数           : {len(results)}')
     print(f'  文件记录                : {human(total_records)}（无法定位 {unresolved}）')
-    print(f'  不一致条目              : {human(total_issues - unresolved - unverifiable)}')
+    print(f'  不一致条目              : {human(total_issues - unresolved - unverifiable - format_alerts)}')
+    print(f'  sha256 格式告警         : {human(format_alerts)} 条（大写 hex，已按小写比较判定一致；写入方应统一小写）')
     print(f'  无 manifest 的 parquet  : {human(gap_no_manifest)} 个 / '
           f'{len(gaps.get("no_manifest", {}))} 个目录')
     print(f'  有 manifest 但未定位    : {human(gap_not_located)} 个 / '
           f'{len(gaps.get("not_located", {}))} 个目录')
+    print(f'  未登记的非 parquet 文件 : {human(gap_nonparquet)} 个 / '
+          f'{len(gaps.get("no_manifest_nonparquet", {}))} 个目录'
+          '（非失败：只照明，不计入不一致与退出码）')
     print('')
 
     ordered = [r for r in results if failing(r)]
@@ -880,9 +925,14 @@ def render(results: list[ManifestResult], gaps: dict[str, dict[str, list[str]]],
     for result in results:
         print(f'  {result.rel:52s} {len(result.records):5d} {result.ok_records:5d} '
               f'{result.bad:6d} {result.unresolved:8d} '
-              f'{len(result.issues) - len(failing(result)):8d} '
+              f'{result.unverifiable:8d} '
               f'{len(result.missing_semantics):10d}')
     print('')
+
+    formats = [r for r in results if r.format_alerts]
+    if formats:
+        _print_format_alerts(formats)
+        print('')
 
     rest = ordered[1:]
     if rest:
@@ -894,13 +944,15 @@ def render(results: list[ManifestResult], gaps: dict[str, dict[str, list[str]]],
     if not coverage_checked:
         print('（已按 --only 过滤：本次未做全库覆盖率统计）')
         print('')
-    for bucket, title in (('no_manifest', '完全无 manifest 的目录（只报不改）'),
-                          ('not_located', '目录有 manifest 但未定位该文件（只报不改）')):
+    for bucket, title, unit in (
+            ('no_manifest', '完全无 manifest 的目录（只报不改）', 'parquet'),
+            ('not_located', '目录有 manifest 但未定位该文件（只报不改）', 'parquet'),
+            ('no_manifest_nonparquet', '未被任何 record 定位的非 parquet 文件（只报不改，非失败）', '文件')):
         block = gaps.get(bucket, {})
         if not block or not coverage_checked:
             continue
         count = sum(len(v) for v in block.values())
-        print(f'{title}：{count} 个 parquet / {len(block)} 个目录')
+        print(f'{title}：{count} 个 {unit} / {len(block)} 个目录')
         for directory in sorted(block):
             files = block[directory]
             shown = ', '.join(f.split('/')[-1] for f in files[:6])
@@ -918,13 +970,16 @@ def render(results: list[ManifestResult], gaps: dict[str, dict[str, list[str]]],
     declared = [r for r in results if r.non_dataset is not None and r.non_dataset.declared]
     print_non_dataset(declared)
 
-    bad = total_issues + gap_no_manifest + gap_not_located - unverifiable
+    bad = total_issues + gap_no_manifest + gap_not_located - unverifiable - format_alerts
     verdict = 'PASS' if bad == 0 else 'FAIL'
     passed_nd = sum(1 for r in declared if r.non_dataset is not None and r.non_dataset.qualified)
     print(f'结论: {verdict}  manifest {len(results)} 份 / 文件记录 {human(total_records)} 条 / '
-          f'不一致 {human(total_issues - unresolved - unverifiable)} 条 / '
+          f'不一致 {human(total_issues - unresolved - unverifiable - format_alerts)} 条 / '
+          f'sha256 格式告警 {human(format_alerts)} 条 / '
           f'无法定位 {unresolved} 条 / 无 manifest {human(gap_no_manifest)} 个 / '
-          f'未定位 {human(gap_not_located)} 个 / 语义未登记 {human(missing_sem)} 项 / '
+          f'未定位 {human(gap_not_located)} 个 / '
+          f'非 parquet 未登记 {human(gap_nonparquet)} 个（非失败，不计入退出码）/ '
+          f'语义未登记 {human(missing_sem)} 项 / '
           f'非数据集声明 {len(declared)} 份（通过 {passed_nd}）')
 
     if json_path is not None:
@@ -986,8 +1041,8 @@ def main(argv: list[str] | None = None) -> int:
     cache = FactsCache()
     results = [check_manifest(path, root, cache) for path in manifests]
     scoped = bool(args.only)
-    gaps = ({'no_manifest': {}, 'not_located': {}} if scoped
-            else coverage_gaps(results, root))
+    gaps = ({'no_manifest': {}, 'not_located': {}, 'no_manifest_nonparquet': {}}
+            if scoped else coverage_gaps(results, root))
     json_path = Path(args.json_path) if args.json_path else None
     return render(results, gaps, args.max_details, json_path, coverage_checked=not scoped)
 
