@@ -69,6 +69,9 @@ DEFAULT_STORE = ROOT / 'data' / 'local_store'
 #: 口径版本；任一口径项变化都必须 +1（写进 manifest，不写进文件名）
 METHOD_VERSION = 'breadth_ma_v1'
 
+#: 同目录 ``breadth_daily.parquet`` 首次补登进本 manifest 的日期（只作记账，不随重建变化）
+REGISTERED_DATE = '2026-11-12'
+
 #: 均线窗口
 MA_WINDOWS = (20, 60, 120)
 #: 250 日新高新低窗口
@@ -450,6 +453,50 @@ def assemble(parts: pl.DataFrame) -> pl.DataFrame:
     return out.sort('date')
 
 
+def _sibling_tables(store: Path) -> dict:
+    """同目录 ``breadth_daily.parquet`` 的逐文件记账（与本表互不覆盖）。
+
+    该表由 ``src/data/services/breadth_service.py::refresh`` 维护，本脚本
+    不读它（独立取数链），但 manifest 归本脚本整份重写，必须一并登记，
+    否则每跑一次就抹掉这条记账。
+    """
+    directory = Path(store) / 'meta' / 'breadth'
+    daily = directory / 'breadth_daily.parquet'
+    files: list[dict] = []
+    if daily.is_file():
+        frame = pl.read_parquet(daily)
+        entry = {
+            'path': str(daily.relative_to(ROOT)).replace('\\', '/'),
+            'semantics': '全市场涨跌家数、涨跌停家数、250 日新高新低与 ADL 的逐日表，一行 = 一个交易日',
+            'produced_by': 'src/data/services/breadth_service.py::refresh'
+                           '（python -m src.data.local_store build 收口调用）',
+            'rows': frame.height,
+            'cols': frame.width,
+            'columns': list(frame.columns),
+            'date_range': [str(frame['trade_date'].min()), str(frame['trade_date'].max())],
+            'bytes': daily.stat().st_size,
+            'sha256': _sha256(daily),
+            'state_file': 'data/local_store/meta/breadth/coverage.json',
+            'registered_at': REGISTERED_DATE,
+            'registered_reason': '补登：本 manifest 此前只描述 breadth_ma_daily.parquet，'
+                                 '同目录 breadth_daily.parquet 无目录级记账'
+                                 '（其自身状态只有 coverage.json，无 SHA）',
+        }
+        coverage = directory / 'coverage.json'
+        if coverage.is_file():
+            meta = json.loads(coverage.read_text(encoding='utf-8'))
+            entry['coverage'] = {
+                key: meta.get(key) for key in
+                ('version', 'first_trade_date', 'last_trade_date', 'rows', 'built_at')
+            }
+        files.append(entry)
+    return {
+        'note': '同目录另有一张由 breadth_service.py 维护的逐日宽度表；与本表语义不同、互不覆盖'
+                '（本表不读它，属独立取数链），本条只作目录级记账',
+        'files': files,
+    }
+
+
 def write_manifest(
     daily: pl.DataFrame, store: Path, stage: Path, *, chunk_size: int, codes: int,
     failed_rows: list[dict[str, str]],
@@ -509,6 +556,7 @@ def write_manifest(
         ],
         'sha256': _sha256(target),
         'bytes': target.stat().st_size,
+        'sibling_tables': _sibling_tables(store),
     }
     path = manifest_path(store)
     tmp = path.with_suffix('.json.tmp')
