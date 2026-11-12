@@ -71,6 +71,13 @@ HEADERS = {
     'Referer': 'http://www.cninfo.com.cn/new/commonUrl?url=disclosure/list/notice',
     'X-Requested-With': 'XMLHttpRequest',
 }
+EM_HEADERS = {
+    # 东财公告接口按来源站点校验 Referer/UA，沿用巨潮那套会返回 567（HTML 挑战页）
+    'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                   '(KHTML, like Gecko) Chrome/126.0 Safari/537.36'),
+    'Referer': 'https://data.eastmoney.com/notices/',
+    'Accept': 'application/json, text/plain, */*',
+}
 _THREAD_LOCAL = threading.local()
 
 
@@ -248,7 +255,8 @@ def _em_get(params: dict[str, Any], retries: int = 5) -> dict[str, Any]:
     last_error: Exception | None = None
     for attempt in range(retries):
         try:
-            response = _session().get(EM_API, params=params, timeout=25)
+            response = _session().get(EM_API, params=params, headers=EM_HEADERS,
+                                      timeout=25)
             response.raise_for_status()
             return response.json()
         except Exception as exc:  # noqa: BLE001 - 网络层重试必须兜底
