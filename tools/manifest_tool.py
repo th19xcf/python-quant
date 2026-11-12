@@ -739,14 +739,17 @@ def coverage_gaps(results: list[ManifestResult], root: Path) -> dict[str, dict[s
     ``no_manifest``：该目录下没有任何 manifest 文件（完全没登记）。
     ``not_located``：目录里有 manifest，但它没有指向这个文件（含只写了统计值
     却没写可定位路径的 manifest）。
+
+    ``quotes/`` 不享受整段豁免：早期口径假设「quotes 由一份汇总 manifest 覆盖」，
+    但 ``quotes/manifest.json`` 只有目录级汇总、没有逐文件 record，整段跳过会让
+    「无侧车 manifest 的分片」永远显示 0，单分片被静默改写时无人发现（G-106）。
+    现在与其它子树一视同仁，逐目录判定。
     """
     covered = covered_paths(results, root)
     manifest_dirs = {path.parent.resolve() for path in discover(root)}
     gaps: dict[str, dict[str, list[str]]] = {'no_manifest': {}, 'not_located': {}}
     for path in sorted(root.rglob('*.parquet')):
         rel = path.relative_to(root).as_posix()
-        if rel.startswith('quotes/'):
-            continue  # quotes 由一份汇总 manifest 覆盖，不参与逐目录判定
         if str(path.resolve()).lower() in covered:
             continue
         bucket = 'not_located' if path.parent.resolve() in manifest_dirs else 'no_manifest'
