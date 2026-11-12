@@ -27,7 +27,8 @@ r"""外部依赖数据契约的本地构建器（停复牌 / 行业 PIT / 指数
   成分快照，6 只指数）按「在该期在册 / 不在册」的月度差分推出进出区间，
   连续在册的合并为一段；首个观测期就在册的 ``in_date`` 取区间起点并标
   ``in_date_known=false``（真实纳入日早于或等于该日），末次在册且仍在册的
-  ``out_date`` 留空。``meta/index_membership/snapshots/`` 的官方日快照只作
+  ``out_date`` 留空。官方日快照（2026-11-12 按 DG-32 迁到
+  ``_staging/index_membership_snapshots_20261112/``）只作
   原始留档，不再参与派生（旧的两天快照差分表 out_date 全空，已废弃）。
 
 约定
@@ -56,6 +57,7 @@ from polars.exceptions import PolarsError
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.local_store.paths import default_store_root
 from src.data.quality.extended_contracts import CONTRACTS
+from src.data.staging import staging_dir_for_store
 from src.data.trading_calendar import get_calendar
 
 _SPEC = {spec.key: spec for spec in CONTRACTS}
@@ -514,7 +516,7 @@ def build_index_membership(
 ) -> dict[str, Any]:
     """由指数成分月度快照派生进出区间表（官方日快照仅作原始留档）。"""
     store = Path(root)
-    snapshot_dir = store / 'meta' / 'index_membership' / 'snapshots'
+    snapshot_dir = staging_dir_for_store(store, 'index_membership_snapshots_20261112')
     # 续跑点与 snapshots/ 平级：快照目录被 tools 的 *.parquet glob 消费
     progress_path = store / 'meta' / 'index_membership' / _FETCH_PROGRESS_NAME
     index_list = list(indices)

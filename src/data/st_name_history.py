@@ -18,9 +18,9 @@
   其余保持 ``unknown``；
 - 点时正确：覆盖窗口从上市日（行情首日）开始，到行情末日为止；公告事件只在
   生效日之后进入区间；
-- 幂等 + 断点续跑：东方财富按页缓存（``raw/em_pages/page_XXXX.parquet``），
-  巨潮按标的缓存（``raw/candidate_notices/<code>.parquet``），重跑跳过已完成
-  单元；失败清单单独落 CSV；
+- 幂等 + 断点续跑：东方财富按页缓存（``_staging/st_em_pages_cache_20261112/page_XXXX.parquet``），
+  巨潮按标的缓存（``_staging/st_candidate_notices_cache_20261112/<code>.parquet``），重跑跳过已完成
+  单元；失败清单单独落 CSV（两处缓存按 DG-32 落在仓库根 ``_staging/``，不入正式层）；
 - 只写本地 parquet，不动 MySQL：
   ``meta/st/supplement/supplement_intervals.parquet``
   ``meta/st/supplement/supplement_coverage.parquet``
@@ -35,6 +35,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import time
@@ -49,6 +50,7 @@ from loguru import logger
 
 from src.data import st_history
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
+from src.data.staging import staging_dir_for_store
 
 EM_URL = 'https://datacenter.eastmoney.com/securities/api/data/v1/get'
 EM_REPORT = 'RPT_F10_ORG_BASICINFO'
@@ -129,7 +131,8 @@ def em_state_path(store_root: Path | str) -> Path:
 
 
 def em_page_dir(store_root: Path | str) -> Path:
-    return Path(store_root) / 'meta' / 'st' / 'raw' / 'em_pages'
+    """东财曾用名分页缓存。无运行期消费者（同批 parquet 已汇总），按 DG-32 落 ``_staging``。"""
+    return staging_dir_for_store(store_root, 'st_em_pages_cache_20261112')
 
 
 def em_raw_path(store_root: Path | str) -> Path:
@@ -137,11 +140,45 @@ def em_raw_path(store_root: Path | str) -> Path:
 
 
 def candidate_notice_dir(store_root: Path | str) -> Path:
-    return Path(store_root) / 'meta' / 'st' / 'raw' / 'candidate_notices'
+    """候选标的公告缓存。无运行期消费者，按 DG-32 落 ``_staging``。"""
+    return staging_dir_for_store(store_root, 'st_candidate_notices_cache_20261112')
 
 
 def _write_atomic(frame: pl.DataFrame, path: Path) -> None:
     write_parquet_atomic(frame, path)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _parquet_entry(
+    path: Path, root: Path, *, date_column: str | None = None,
+    end_column: str | None = None,
+) -> dict[str, Any]:
+    """supplement 目录逐文件记账（DG-3：rows / bytes / sha256 / 列清单 / 日期区间）。"""
+    frame = pl.read_parquet(path)
+    entry: dict[str, Any] = {
+        'path': str(path.relative_to(root)).replace('\\', '/'),
+        'rows': frame.height,
+        'cols': len(frame.columns),
+        'columns': frame.columns,
+        'bytes': path.stat().st_size,
+        'sha256': _sha256(path),
+    }
+    if date_column is not None:
+        entry['date_column'] = date_column
+        entry['date_range'] = [
+            str(frame[date_column].min()), str(frame[date_column].max())]
+    if end_column is not None:
+        entry['end_column'] = end_column
+        entry['end_date_range'] = [
+            str(frame[end_column].min()), str(frame[end_column].max())]
+    return entry
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -587,6 +624,12 @@ def build_supplement(store_root: Path | str, *,
         'unresolved_by_reason': _count_reason(plan.unresolved),
         'supplement_interval_rows': interval_frame.height,
         'supplement_coverage_rows': coverage_frame.height,
+        'files': [
+            _parquet_entry(supplement_intervals_path(root), root,
+                           date_column='start_date', end_column='end_date'),
+            _parquet_entry(supplement_coverage_path(root), root,
+                           date_column='coverage_start', end_column='coverage_end'),
+        ],
     }
     _write_text(manifest_path(root), json.dumps(summary, ensure_ascii=False, indent=2))
     logger.info(f'[st-names] supplement 已生成: {supplement_coverage_path(root)}'

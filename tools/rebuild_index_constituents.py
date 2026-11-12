@@ -781,7 +781,7 @@ def membership_on(records: list[dict], day: date) -> set[str]:
 def validate(records_by_index: dict[str, list[dict]], events: list[Event],
              end_day: date) -> dict:
     report = {"snapshot_checks": [], "sample_checks": [], "warnings": []}
-    snap_dir = ROOT / "data/local_store/meta/index_membership/snapshots"
+    snap_dir = ROOT / "_staging/index_membership_snapshots_20261112"  # 2026-11-12 按 DG-32 迁出正式层
     for f in sorted(snap_dir.glob("*.parquet")):
         m = re.search(r"(\d{8})\.parquet$", f.name)
         if not m:

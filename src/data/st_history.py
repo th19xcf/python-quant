@@ -21,7 +21,7 @@
     data/local_store/meta/st/st_intervals.parquet   # 区间表（含人工裁定覆盖层）
     data/local_store/meta/st/st_coverage.parquet    # 每标的状态可信窗口
     data/local_store/meta/st/coverage.json          # 全局覆盖说明
-    data/local_store/meta/st/pending_review.parquet # 证据不足待复核段
+    _staging/st_pending_review_20261112/pending_review.parquet  # 证据不足待复核段（DG-32 已迁出正式层）
     data/local_store/meta/st/raw/*.parquet          # 原始抓取缓存（增量续跑）
     data/local_store/meta/st/raw/reviewed_conflicts.parquet  # 人工裁定输入
     data/local_store/meta/st/raw/reviewed_pending.parquet    # 裁定：证据不足
@@ -55,6 +55,7 @@ import requests
 from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
+from src.data.staging import staging_dir_for_store
 from src.utils.dataframe_columns import resolve_date_column
 
 FLAG_ST = 'st'
@@ -286,7 +287,13 @@ def reviewed_coverage_path(store_root: Path | str) -> Path:
 
 
 def pending_review_path(store_root: Path | str) -> Path:
-    return st_dir(store_root) / 'pending_review.parquet'
+    """「证据不足待复核」诊断副本的落点。
+
+    它只是固定输入 ``raw/reviewed_pending.parquet`` 的只读拷贝，全仓无运行期
+    消费者；按 DG-32 不再写入正式层，统一落 ``_staging/st_pending_review_20261112/``
+    （2026-11-12 迁出，源 ``raw/reviewed_pending.parquet`` 原地不动）。
+    """
+    return staging_dir_for_store(store_root, 'st_pending_review_20261112') / 'pending_review.parquet'
 
 
 def coverage_json_path(store_root: Path | str) -> Path:

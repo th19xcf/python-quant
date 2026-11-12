@@ -301,7 +301,8 @@ def phase_validate() -> None:
         }
 
     # 5. 与现有 2 天快照比对（tushare 仅月末，日期通常不重叠 → 记录最近日期差异）
-    snap_dir = ROOT / "data" / "local_store" / "meta" / "index_membership" / "snapshots"
+    #    快照无运行期消费者，2026-11-12 按 DG-32 由 meta/index_membership 迁出正式层。
+    snap_dir = ROOT / "_staging" / "index_membership_snapshots_20261112"
     for f in sorted(snap_dir.glob("*.parquet")):
         stem = f.stem.split("_")
         if len(stem) < 4:

@@ -538,26 +538,6 @@
       "note": "由本地行情派生，应与行情同一天；落后一天即提示重算。"
     },
     {
-      "key": "clean_eligibility",
-      "label": "洁净集准入快照",
-      "category": "衍生指标",
-      "freshness_field": "as_of",
-      "source": {
-        "kind": "latest_glob_max",
-        "path_glob": "meta/clean/eligibility_*.parquet",
-        "column": "as_of"
-      },
-      "cadence": {
-        "unit": "trading_day",
-        "expected_interval": 1,
-        "warn_multiple": 1,
-        "critical_multiple": 3,
-        "label": "每交易日"
-      },
-      "coverage": {},
-      "note": "按快照文件的 as_of 判断；文件名日期与 as_of 不一致时以 as_of 为准。"
-    },
-    {
       "key": "st_status",
       "label": "ST 状态快照",
       "category": "状态快照",

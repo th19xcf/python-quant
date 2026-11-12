@@ -453,6 +453,12 @@ def build(store_root: Path | str, *, refresh: bool = False) -> dict[str, Any]:
         'source_url': SW_URL,
         'authority': 'publisher',
         'method': 'official_change_history_effective_date',
+        'produced_by': 'src/data/industry_pit.py',
+        'rows': frame.height,
+        'bytes': target.stat().st_size,
+        'codes': frame['ts_code'].n_unique(),
+        'columns': frame.columns,
+        'date_range': [str(frame['in_date'].min()), str(frame['in_date'].max())],
         'fetched_at': datetime.now().isoformat(timespec='seconds'),
         'source_last_modified': last_modified,
         'coverage': {

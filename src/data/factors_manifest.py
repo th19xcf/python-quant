@@ -124,6 +124,7 @@ def _upstream(store_root: Path) -> dict[str, Any]:
             'bytes': shares.stat().st_size,
             'sha256': _sha256(shares),
             'mtime': _mtime(shares),
+            'rows': int(pl.scan_parquet(str(shares)).select(pl.len()).collect().item()),
         }
     return payload
 

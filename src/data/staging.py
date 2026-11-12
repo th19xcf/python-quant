@@ -33,3 +33,14 @@ def staging_dir(task: str, *, day: date | None = None, with_date: bool = False) 
     """
     name = f'{task}_{(day or date.today()):%Y%m%d}' if with_date else task
     return STAGING_ROOT / name
+
+
+def staging_dir_for_store(store_root: Path | str, task: str) -> Path:
+    """按列存根目录推导 staging 落点：``<store_root>``（``<仓库>/data/local_store``）上溯两级。
+
+    用途：生产者写出的「无运行期消费者的留档 / 缓存」不再落正式层（DG-32），
+    统一改落仓库根 ``_staging/<task>``。按 ``store_root`` 推导而不是取模块级
+    ``STAGING_ROOT``，测试用临时根时落点随临时根走，不污染仓库 ``_staging``。
+    先例：``src/data/industry_pit.py::raw_dir``。
+    """
+    return Path(store_root).resolve().parents[1] / '_staging' / task

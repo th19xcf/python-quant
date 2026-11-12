@@ -26,7 +26,7 @@ EXPECTED_KEYS = (
     'events', 'names_json', 'stock_basic', 'stock_turnover',
     'stock_adj_factor', 'stock_dividend', 'fund_dividend',
     'fund_share_change', 'stock_shares', 'breadth_daily',
-    'clean_eligibility', 'st_status', 'industry',
+    'st_status', 'industry',
 )
 
 THRESHOLD_FIELDS = ('min_ratio', 'critical_ratio')

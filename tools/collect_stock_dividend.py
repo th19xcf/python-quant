@@ -41,9 +41,11 @@ from src.data.atomic_write import (  # noqa: E402
     write_parquet_atomic,
     write_text_atomic,
 )
+from src.data.staging import STAGING_ROOT  # noqa: E402
 
 DEFAULT_OUT = PROJECT_ROOT / 'data/local_store/factors/stock_dividend.parquet'
-DEFAULT_CACHE = PROJECT_ROOT / 'data/local_store/factors/rebuild/stock_dividend_parts'
+#: 分页采集断点缓存。无运行期消费者，按 DG-32 落仓库根 ``_staging/``（2026-11-12 迁出正式层）。
+DEFAULT_CACHE = STAGING_ROOT / 'stock_dividend_parts_20261112'
 DEFAULT_REPORT = PROJECT_ROOT / 'reports/stock_dividend_20261105'
 SOURCE_NAME = 'em_fhps_bulk'
 # 交易所除权参考价校验用的本地行情根目录与现金容差
