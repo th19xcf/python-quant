@@ -70,6 +70,12 @@ def test_reconcile_commit_records_fund_meta_update(store_env):
     gaps = _rows_for(ledger, 'data/local_store/meta/anomalies/coverage_gaps.parquet')
     assert gaps == [], '退役表 coverage_gaps.parquet 不得被 --commit 重新写出'
 
+    # placeholder_codes.parquet 同批退役（零读侧，已按 DG-13 迁
+    # _backup/meta/anomalies_placeholder_codes_20261112/），--commit 不得再写出。
+    placeholders = _rows_for(
+        ledger, 'data/local_store/meta/anomalies/placeholder_codes.parquet')
+    assert placeholders == [], '退役表 placeholder_codes.parquet 不得被 --commit 重新写出'
+
 
 def test_trading_calendar_records_coverage_json(store_env):
     _, store, ledger = store_env

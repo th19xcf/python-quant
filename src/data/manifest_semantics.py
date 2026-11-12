@@ -11,10 +11,10 @@ SEMANTICS: dict[str, dict[str, str]] = {
         "source": "由 src/data/factors_manifest.py 生成：MANIFEST_NAME 常量 L34、_SUB_MANIFESTS L54、写点 write_text_atomic L213-L214（目标路径 L209）；逐文件 rows / cols / codes / 日期区间与上游 quotes 及 meta/factors/stock_shares 的 mtime 全部读磁盘实测、不推算（模块 docstring L3-L9）。六张表的字段说明见同目录 meta.json 与 fund_meta.json。"
     },
     "meta/anomalies/manifest.json": {
-        "authority": "清单 L68（隔离行清单是唯一运行期隔离清单，命中即从因子与回测样本剔除，禁止调用点临时写死名单）、L69（占位代码清单）；本目录 CSV 台账是这两份正式清单的明细，不自立权威。",
-        "dataset": "本目录承载两类运行期异常台账：隔离行清单 quarantine_rows.parquet（一行 = 一个被隔离的 (标的, 交易日)，判据与来源逐行记录）与占位代码清单 placeholder_codes.parquet，以及 fund_fake_bar_bars.csv 等明细台账；逐文件 rows / sha256 见 files 段。",
-        "source": "隔离行由 tools/repair_quote_anomalies.py 产出（隔离表路径 L266、写调用 _write_atomic L270；判据 docstring L41-L50：源端 volume 与 amount 全为 null 的坏行移出正式行情）；占位代码清单的读侧常量在 src/data/quality/quarantine.py:29-30（QUARANTINE_FILE / PLACEHOLDER_FILE）；本 manifest 无代码写点，人工维护。",
-        "semantics": "隔离行只从因子与回测样本中剔除，不修改行情原值（清单 L68 原文）；禁止在调用点临时写死代码名单。CSV 明细与 parquet 清单是同一判据的两种视图，明细不得反过来当数据源。"
+        "authority": "清单 L70（隔离行清单是唯一运行期隔离清单，命中即从因子与回测样本剔除，禁止调用点临时写死名单）、L92（占位行情代码清单）；本目录 CSV 台账是这两份正式清单的明细，不自立权威。",
+        "dataset": "本目录承载两类运行期异常台账：隔离行清单 quarantine_rows.parquet（一行 = 一个被隔离的 (标的, 交易日)，判据与来源逐行记录）与占位行情代码清单 placeholder_quote_codes.csv，以及 fund_fake_bar_bars.csv 等明细台账；逐文件 rows / sha256 见 files 段。",
+        "source": "隔离行由 tools/repair_quote_anomalies.py 产出（隔离表路径 L266、写调用 _write_atomic L270；判据 docstring L41-L50：源端 volume 与 amount 全为 null 的坏行移出正式行情）；占位行情代码清单的读侧常量在 src/data/quality/quarantine.py:29-30（QUARANTINE_FILE / PLACEHOLDER_FILE）；本 manifest 无代码写点，人工维护。",
+        "semantics": "隔离行只从因子与回测样本中剔除，不修改行情原值（清单 L70 原文）；禁止在调用点临时写死代码名单。清单与明细台账是同一判据的不同视图，明细不得反过来当数据源。"
     },
     "meta/breadth/manifest.json": {
         "authority": "清单 L28（市场宽度由本地 quotes/stock 逐日计算，MySQL market_breadth 只是旁路导出）、L29（breadth_ma_daily 与 breadth_daily 语义不同，不得互相替代）。",
@@ -73,7 +73,7 @@ SEMANTICS: dict[str, dict[str, str]] = {
     },
     "meta/multi_asset/manifest.json": {
         "authority": "清单 L34：多资产 ETF 候选池为唯一正式表（795 行 = 518 in_scope + 277 out_of_scope，不含外部补数）；同目录另有期货主力连续 L44、换月事件 L45、合约清单 L46、ETF 费率 L36、单合约日线 L43，各自独立登记。",
-        "dataset": "多资产 ETF 候选池：etf_pool.parquet（795 行 = 518 in_scope + 277 out_of_scope）、可读副本 etf_gap_detail.csv 与 etf_event_gaps.csv、统计 summary.json；逐文件 rows / sha256 见 files。",
+        "dataset": "多资产 ETF 候选池：etf_pool.parquet（795 行 = 518 in_scope + 277 out_of_scope）、可读副本 etf_gap_detail.csv 与 etf_event_gaps.csv；逐文件 rows / sha256 见 files。",
         "source": "由 tools/build_multi_asset_etf_pool.py 产出（产物清单 docstring L5-L11、manifest dict L570、写入 L603）；输入为 fund_basic、quotes/fund、fund_adj_factor 与交易日历，不含外部补数（清单 L34）。"
     },
     "meta/pools/manifest.json": {
@@ -105,7 +105,7 @@ SEMANTICS: dict[str, dict[str, str]] = {
     },
     "meta/universe/layers/manifest.json": {
         "authority": "清单 L16-L21 逐层登记 L0~L5（L0 保留退市股、L1 上市满 120 交易日、L2 停牌取两表并集、L3 只认 st_intervals 区间版、L4 前 20 日成交额均值 ≥ 2,000 万、L5 取 universe_filter 默认准入）；六层逐级收窄，不得跨层替代。",
-        "dataset": "L0~L5 六层布尔长表（l0_all_history ~ l5_pool）、counts_by_year.csv 与 st_snapshot_vs_interval.json；一行 = 一个 (date, ts_code) 在某层的成员布尔值（清单 L16-L21）。",
+        "dataset": "L0~L5 六层布尔长表（l0_all_history ~ l5_pool）与 counts_by_year.csv；一行 = 一个 (date, ts_code) 在某层的成员布尔值（清单 L16-L21）。",
         "source": "由 tools/build_universe_layers.py 产出（层定义 docstring L7-L16、_manifest L381、写入 L601-603）；L5 准入规则取 src/data/universe_filter.py 的 UniverseFilterConfig 默认值（docstring L16；类定义 L148、阈值默认值 L155-L186），阈值与窗口写进 parameters。",
         "semantics": "六层是同一域逐级收窄而不是并列口径：L1 剔除次新（120 交易日）、L2 要求当日有成交且不在停牌并集、L3 只认 st_intervals 区间版并剔退市整理期、L4 前 20 日成交额均值 ≥ 2,000 万、L5 套板块准入；跨层替代会改变样本域（清单 L16-L21）。"
     },

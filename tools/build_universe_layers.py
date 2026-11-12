@@ -18,8 +18,9 @@ r"""构建股票池分层矩阵 L0–L5（``(date, ts_code, in_layer)`` 布尔�
 输出
 ====
 候选先写 ``<仓库根>/_staging/universe_layers_20261111/``，``--apply`` 才用原子写
-提升到 ``<store>/meta/universe/layers/``；同目录写 ``manifest.json``、
-``counts_by_year.csv`` 与 ``st_snapshot_vs_interval.json``。路径不带版本号。
+提升到 ``<store>/meta/universe/layers/``；同目录写 ``manifest.json`` 与
+``counts_by_year.csv``。``st_snapshot_vs_interval.json`` 是 ST 快照对区间版的
+一次性核对证据，落 ``docs/evidence/st_snapshot_vs_interval/`` 随 Git 留存。路径不带版本号。
 
 复现::
 
@@ -442,7 +443,8 @@ def _manifest(root: Path, staging: Path, outputs: dict[str, Path],
         },
         'counts': summary,
         'transitions': transitions,
-        'st_snapshot_vs_interval': snapshot,
+        # 2026-11-13：ST 快照对区间版的核对结果只落 docs/evidence/
+        # st_snapshot_vs_interval/（见 _promote），不再进正式层 manifest。
         'build_stats': {
             'grid_rows': stats['rows'],
             'codes': stats['codes'],
@@ -488,8 +490,14 @@ def _promote(root: Path, staging: Path, outputs: dict[str, Path]) -> None:
         write_bytes_atomic(path.read_bytes(), target)
         if _sha256(target) != _sha256(path):
             raise RuntimeError(f'{layer} 提升后 SHA256 不一致')
-    for name in ('manifest.json', 'counts_by_year.csv', 'st_snapshot_vs_interval.json'):
+    for name in ('manifest.json', 'counts_by_year.csv'):
         write_bytes_atomic((staging / name).read_bytes(), target_dir / name)
+    # 2026-11-12 起 ST 快照对区间版的核对结果属一次性审计证据，落 docs/evidence
+    # 随 Git 留存，不再写正式层（DG-32 入层三问第①问不成立：无运行期消费者）
+    evidence = PROJECT_ROOT / 'docs' / 'evidence' / 'st_snapshot_vs_interval'
+    evidence.mkdir(parents=True, exist_ok=True)
+    write_bytes_atomic((staging / 'st_snapshot_vs_interval.json').read_bytes(),
+                       evidence / 'st_snapshot_vs_interval.json')
     logger.info(f'[layers] 正式路径 {target_dir} 已写入（{len(outputs)} 个 parquet）')
 
 

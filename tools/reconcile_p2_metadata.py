@@ -3,10 +3,11 @@
 r"""P2 元数据对齐与瑕疵台账（不改动任何行情文件）。
 
 1. 修正 ``factors/fund_meta.json`` 里与实际文件不符的行数/代码数；
-2. 登记基金 ``close=1.0`` 占位桩，供回测显式排除；
-3. 登记各数据集的代码覆盖缺口，避免「缺数据」被误读成「因子为零」。
+2. 审计基金 ``close=1.0`` 占位桩（只进报告，不写正式层；运行期排除读
+   ``meta/anomalies/placeholder_quote_codes.csv``）；
+3. 审计各数据集的代码覆盖缺口（只进报告；coverage_gaps 正式表已退役）。
 
-默认 dry-run 只出报告；``--commit`` 才写 meta 与 fund_meta.json。
+默认 dry-run 只出报告；``--commit`` 只写修正后的 fund_meta.json。
 
 用法::
 
@@ -29,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
+from src.data.atomic_write import write_text_atomic  # noqa: E402
 
 DEFAULT_ROOT = ROOT / 'data' / 'local_store'
 DEFAULT_REPORT = ROOT / 'artifacts' / 'p2_reconcile' / 'report.json'
@@ -153,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--store-root', type=Path, default=DEFAULT_ROOT)
     parser.add_argument('--report', type=Path, default=DEFAULT_REPORT)
     parser.add_argument('--commit', action='store_true',
-                        help='写入台账与修正后的 fund_meta.json')
+                        help='写入修正后的 fund_meta.json（占位桩与覆盖率只出报告）')
     args = parser.parse_args(argv)
     root = args.store_root
 
@@ -177,9 +178,9 @@ def main(argv: list[str] | None = None) -> int:
                                       default=str), encoding='utf-8')
 
     if args.commit:
-        anomaly_dir = root / 'meta' / 'anomalies'
-        anomaly_dir.mkdir(parents=True, exist_ok=True)
-        write_parquet_atomic(placeholders, anomaly_dir / 'placeholder_codes.parquet')
+        # 2026-11-13：placeholder_codes.parquet 已退役（迁 _backup/meta/
+        # anomalies_placeholder_codes_20261112/，DG-13），本脚本不再写盘；
+        # 占位桩审计只留在报告中（report['placeholder_funds'] / '_sample'）。
         write_text_atomic(
             json.dumps(meta['payload'], ensure_ascii=False, indent=2) + '\n',
             meta['path'])

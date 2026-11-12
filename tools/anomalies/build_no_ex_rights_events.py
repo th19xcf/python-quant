@@ -1,4 +1,4 @@
-"""产出 ``data/local_store/meta/anomalies/no_ex_rights_events.csv``（除权事件异常台账）。
+"""产出 ``docs/evidence/no_ex_rights_events/no_ex_rights_events.csv``（除权事件异常台账）。
 
 ## 判定规则（显式化）
 
@@ -51,7 +51,8 @@ import polars as pl
 
 REPO = Path(__file__).resolve().parents[2]
 STORE = REPO / 'data' / 'local_store'
-LEDGER = STORE / 'meta' / 'anomalies' / 'no_ex_rights_events.csv'
+# 2026-11-12 起台账属一次性核对证据，落 docs/evidence 随 Git 留存，不再写正式层
+LEDGER = REPO / 'docs' / 'evidence' / 'no_ex_rights_events' / 'no_ex_rights_events.csv'
 BK_DIV = REPO / 'logs' / 'no_ex_rights_fix_20261105' / 'factors' / 'stock_dividend.parquet'
 SHARES = STORE / 'meta' / 'factors' / 'stock_shares.parquet'
 STAGING = REPO / '_staging' / 'backfill_20190917' / 'new'
