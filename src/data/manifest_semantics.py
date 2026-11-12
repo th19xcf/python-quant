@@ -8,22 +8,22 @@
 SEMANTICS: dict[str, dict[str, str]] = {
     "factors/manifest.json": {
         "authority": "各表在 docs/数据权威路径清单.md 各有唯一正式路径登记行：个股复权因子 L72、基金复权因子 L73、个股换手率 L74、基金分红事件 L75、基金份额折算与分拆 L76、个股分红 L37；本文件只是这些正式表的目录级记账，不替代其中任何一张。",
-        "source": "由 src/data/factors_manifest.py 生成：MANIFEST_NAME 常量 L34、_SUB_MANIFESTS L54、写入点 L209；逐文件 rows / cols / codes / 日期区间与上游 quotes 及 meta/factors/stock_shares 的 mtime 全部读磁盘实测、不推算（模块 docstring L3-L9）。六张表的字段说明见同目录 meta.json 与 fund_meta.json。"
+        "source": "由 src/data/factors_manifest.py 生成：MANIFEST_NAME 常量 L34、_SUB_MANIFESTS L54、写点 write_text_atomic L213-L214（目标路径 L209）；逐文件 rows / cols / codes / 日期区间与上游 quotes 及 meta/factors/stock_shares 的 mtime 全部读磁盘实测、不推算（模块 docstring L3-L9）。六张表的字段说明见同目录 meta.json 与 fund_meta.json。"
     },
     "meta/anomalies/manifest.json": {
         "authority": "清单 L68（隔离行清单是唯一运行期隔离清单，命中即从因子与回测样本剔除，禁止调用点临时写死名单）、L69（占位代码清单）；本目录 CSV 台账是这两份正式清单的明细，不自立权威。",
         "dataset": "本目录承载两类运行期异常台账：隔离行清单 quarantine_rows.parquet（一行 = 一个被隔离的 (标的, 交易日)，判据与来源逐行记录）与占位代码清单 placeholder_codes.parquet，以及 fund_fake_bar_bars.csv 等明细台账；逐文件 rows / sha256 见 files 段。",
-        "source": "隔离行由 tools/repair_quote_anomalies.py 产出（写点 L266；判据 docstring L41-L50：源端 volume 与 amount 全为 null 的坏行移出正式行情）；占位代码清单的读侧常量在 src/data/quality/quarantine.py:29-30（QUARANTINE_FILE / PLACEHOLDER_FILE）；本 manifest 无代码写点，人工维护。",
+        "source": "隔离行由 tools/repair_quote_anomalies.py 产出（隔离表路径 L266、写调用 _write_atomic L270；判据 docstring L41-L50：源端 volume 与 amount 全为 null 的坏行移出正式行情）；占位代码清单的读侧常量在 src/data/quality/quarantine.py:29-30（QUARANTINE_FILE / PLACEHOLDER_FILE）；本 manifest 无代码写点，人工维护。",
         "semantics": "隔离行只从因子与回测样本中剔除，不修改行情原值（清单 L68 原文）；禁止在调用点临时写死代码名单。CSV 明细与 parquet 清单是同一判据的两种视图，明细不得反过来当数据源。"
     },
     "meta/breadth/manifest.json": {
         "authority": "清单 L28（市场宽度由本地 quotes/stock 逐日计算，MySQL market_breadth 只是旁路导出）、L29（breadth_ma_daily 与 breadth_daily 语义不同，不得互相替代）。",
         "dataset": "两张语义不同的日频表：breadth_daily（涨跌家数、涨停跌停家数、新高新低）与 breadth_ma_daily（站上 MA20 / MA60 / MA120 的标的占比）；逐文件 rows / cols / sha256 见 files。",
-        "source": "breadth_daily 由 src/data/services/breadth_service.py 的 refresh 写出（写点 L355；口径 docstring L5-L12：成交额 > 0 且 pre_close 非空、涨跌停按 round_half_up(pre_close × (1 ± limit_pct), 2)、新股首日不计入）；breadth_ma_daily 由 tools/build_breadth_ma.py 产出（manifest_path L120-121，均线口径见 docstring L19 起）。"
+        "source": "breadth_daily 由 src/data/services/breadth_service.py 的 refresh 写出（写调用 _write_parquet_atomic L353；口径 docstring L5-L14：成交额 > 0 且 pre_close 非空、涨跌停按 round_half_up(pre_close × (1 ± limit_pct), 2)、新股首日不计入）；breadth_ma_daily 由 tools/build_breadth_ma.py 产出（manifest_path L120-121，均线口径见 docstring L19 起）。"
     },
     "meta/financials/manifest.json": {
         "authority": "清单 L38（财报到 PIT 是唯一带 ann_date 可见性 API 的事实表，meta/financials_pit/ 是原始采集副本、无消费者）、L27（财报公告日映射单表是唯一公告日映射载体）、L26（valuation_daily 为日频估值唯一落盘表）。",
-        "source": "三张事实表 income / balance / cashflow 由 src/data/financials/store.py 承担 PIT 可见性（latest_announced_as_of 与 latest_announced_panel L217-260，读路径 L117-125）；2010-03-31 起走东财批量接口、1990–2009 由新浪 CompanyFinanceService.getFinanceReport2022 补齐，source 列逐行标记（清单 L38）。公告日映射单表由 collector.py:281 fetch_ann_date_map 与 store.py:185-232 维护（清单 L27）；本 manifest 无代码写点，人工维护。"
+        "source": "三张事实表 income / balance / cashflow 由 src/data/financials/store.py 承担 PIT 可见性（latest_announced_as_of L316、latest_announced_panel L340，读路径 L117-125）；2010-03-31 起走东财批量接口、1990–2009 由新浪 CompanyFinanceService.getFinanceReport2022 补齐，source 列逐行标记（清单 L38）。公告日映射单表由 collector.py:258 fetch_ann_date_map 与 store.py:185-222 维护（清单 L27）；本 manifest 无代码写点，人工维护。"
     },
     "meta/fund_basic.manifest.json": {
         "authority": "清单 L22：唯一本地正式表；MySQL fund_basic 只作合并式补空来源，禁止整表覆盖。",
@@ -78,7 +78,7 @@ SEMANTICS: dict[str, dict[str, str]] = {
     },
     "meta/pools/manifest.json": {
         "authority": "清单 L35：唯一 ETF 分层清单（tier=full 1,338 只 / std3y 677 只 / pool 138 只，共 2,153 行）；2026-11-12 由 etf_equity_pool_20261104.csv 正名，as_of 2026-11-04、built_at 2026-11-12。",
-        "source": "由 tools/build_etf_equity_pool.py 重建（docstring L3-L35；输出文件名固定不带版本号，符合 DG-4；--as-of、口径、行数与 SHA256 记入本 manifest，写点 L307-L323）；输入为 meta/names.json、quotes/fund、fund_share_change、fund_dividend 与 meta/anomalies/fund_fake_bar_bars.csv（L23、L30）。"
+        "source": "由 tools/build_etf_equity_pool.py 重建（docstring L3-L35；输出文件名固定不带版本号，符合 DG-4；默认输出路径 L322-323、CSV 写入 _write_csv L346、--as-of 解析 L304-305、--check 逐列比对 L334-335）；输入为 meta/names.json、quotes/fund、fund_share_change、fund_dividend 与 meta/anomalies/fund_fake_bar_bars.csv（L23、L30）。本 manifest 无代码写点：docstring L35 声称写 manifest.json，但脚本内无对应实现，as_of / built_at / previous / regen 等字段由 2026-11-12 正名与重出时人工登记。"
     },
     "meta/st/raw/reviewed_conflicts.manifest.json": {
         "authority": "清单 L66：唯一不可再生人工裁定输入，运行期直接读取并合并进 st_intervals 与 st_coverage；丢失即口径丢失，故不进 _staging/、不得重建。",
@@ -106,7 +106,7 @@ SEMANTICS: dict[str, dict[str, str]] = {
     "meta/universe/layers/manifest.json": {
         "authority": "清单 L16-L21 逐层登记 L0~L5（L0 保留退市股、L1 上市满 120 交易日、L2 停牌取两表并集、L3 只认 st_intervals 区间版、L4 前 20 日成交额均值 ≥ 2,000 万、L5 取 universe_filter 默认准入）；六层逐级收窄，不得跨层替代。",
         "dataset": "L0~L5 六层布尔长表（l0_all_history ~ l5_pool）、counts_by_year.csv 与 st_snapshot_vs_interval.json；一行 = 一个 (date, ts_code) 在某层的成员布尔值（清单 L16-L21）。",
-        "source": "由 tools/build_universe_layers.py 产出（层定义 docstring L7-L16、_manifest L381、写入 L601-603）；L5 准入规则取 src/data/universe_filter.py 的 UniverseFilterConfig 默认值（docstring L12、L16），阈值与窗口写进 parameters。",
+        "source": "由 tools/build_universe_layers.py 产出（层定义 docstring L7-L16、_manifest L381、写入 L601-603）；L5 准入规则取 src/data/universe_filter.py 的 UniverseFilterConfig 默认值（docstring L16；类定义 L148、阈值默认值 L155-L186），阈值与窗口写进 parameters。",
         "semantics": "六层是同一域逐级收窄而不是并列口径：L1 剔除次新（120 交易日）、L2 要求当日有成交且不在停牌并集、L3 只认 st_intervals 区间版并剔退市整理期、L4 前 20 日成交额均值 ≥ 2,000 万、L5 套板块准入；跨层替代会改变样本域（清单 L16-L21）。"
     },
     "quotes/index/sh/000922.SH.manifest.json": {
