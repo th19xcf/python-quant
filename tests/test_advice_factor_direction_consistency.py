@@ -128,6 +128,17 @@ def scored_day_frame() -> tuple[pl.DataFrame, dict, object]:
     reason='G-102：打分方向（偏反转）与软筛「均线多头」口径冲突，Top15 多头只数常为 0；'
            '断言 / 阈值 / TOP_N / 软筛条件一律不动，出现 XPASS 才视为口径已变化需重评')
 def test_top_candidates_contain_ma_bullish_names(scored_day_frame) -> None:
+    """守护：打分方向与软筛「均线多头」同向 —— 长期红是产品口径冲突，不是代码缺陷。
+
+    红色成因：打分（动量/趋势子分）偏反转，而软筛要求 `ma20_gap>0 & ma60_gap>0`，
+    两者口径互相拉扯，Top15 多头只数在部分信号日必然为 0。
+
+    解决途径只有两条：补打分维度，或改软筛条件口径。**不得**用调阈值、降 `TOP_N`
+    或删用例的方式让它变绿。
+
+    本用例挂 `xfail(strict=True)`：一旦它真的通过，pytest 会报 XPASS 并判为失败，
+    即「G-102 口径冲突已被真正修好」的主动提醒，需回来重评缺口与断言。
+    """
     scored, specs, tier = scored_day_frame
     tier_pct = tier.buy_percentile
     soft = default_config().soft_filter
