@@ -163,6 +163,32 @@ def _factor_arrays(
     return result['qfq_factor'], result['hfq_factor']
 
 
+def _derive_price_change(frame: pl.DataFrame) -> pl.DataFrame:
+    """按正式口径重算 ``pre_close / change / pct_chg``（输入须按 ``date`` 升序）。
+
+    口径：``pre_close = close.shift(1) × (qfq_factor.shift(1) / qfq_factor)``；
+    无因子列（指数、基金）时退化为 ``close.shift(1)``。首行（无前一日）
+    ``pre_close`` 为 null，``pct_chg`` 在 ``pre_close`` 为 0/nulls 时为 null。
+
+    同一个函数在 ``build_frame``（源端序列）与合并后（正式表序列）两处复用，
+    保证两条路径的公式只有一份。
+    """
+    if frame.is_empty():
+        return frame
+    if 'qfq_factor' in frame.columns and 'hfq_factor' in frame.columns:
+        pre_close = pl.col('close').shift(1) * (
+            pl.col('qfq_factor').shift(1) / pl.col('qfq_factor'))
+    else:
+        pre_close = pl.col('close').shift(1)
+    return frame.with_columns([
+        pre_close.alias('pre_close'),
+        (pl.col('close') - pre_close).alias('change'),
+        pl.when(pre_close.is_not_null() & (pre_close != 0))
+        .then((pl.col('close') / pre_close - 1) * 100)
+        .otherwise(None).alias('pct_chg'),
+    ])
+
+
 def build_frame(
     data_type: str,
     ts_code: str,
@@ -191,18 +217,7 @@ def build_frame(
             qfq.alias('qfq_factor'),
             hfq.alias('hfq_factor'),
         ])
-        pre_close = pl.col('close').shift(1) * (
-            pl.col('qfq_factor').shift(1) / pl.col('qfq_factor'))
-    else:
-        pre_close = pl.col('close').shift(1)
-
-    frame = frame.with_columns(pre_close.alias('pre_close'))
-    frame = frame.with_columns([
-        (pl.col('close') - pl.col('pre_close')).alias('change'),
-        pl.when(pl.col('pre_close').is_not_null() & (pl.col('pre_close') != 0))
-        .then((pl.col('close') / pl.col('pre_close') - 1) * 100)
-        .otherwise(None).alias('pct_chg'),
-    ])
+    frame = _derive_price_change(frame)
     return DataSourceBase._normalize_kline(
         frame,
         column_map=_KLINE_COLUMN_MAP,
@@ -340,6 +355,26 @@ def _rebuild_target(
         quote_store, kind, ts_code, fresh, since)
     if fresh.is_empty():
         return None
+    # 合并后按正式表序列重算派生列：源端 ``.day`` 并不保证是本地历史的超集，
+    # 缺行时 ``build_frame`` 的 ``shift(1)`` 只看得到源端序列，会把 ``pre_close``
+    # 指到 t-2 甚至跨年（880581.SH 源端比本地少 1,087 行）。2026-11-11 18:07 的
+    # 增量构建正是因此把 2026-11-10 修好的 3 行 ``pre_close`` 又抹回旧值
+    # （见 docs/行情重写核查_2026-11-11.md）。合并后的序列才是「前一日」的正确定义。
+    #
+    # 基金显式跳过：基金 ``qfq_factor`` 恒为 1.0，除权调整全部落在 ``hfq_factor``
+    # 上；源端停更后的回补行 ``pre_close`` 由基金侧链路按除权口径写入。实测口径差
+    # 329 行 / 183 只，例 161911.SZ 2019-09-24：前收 1.014，hfq_factor
+    # 1.461617→1.488043，pre_close 0.996 = 1.014×1.461617/1.488043。按
+    # ``close.shift(1)`` 重算会把这批正常的除权昨收改回原始昨收、change/pct_chg
+    # 同步失真——那是另一套口径，不是本函数要修的对象。
+    #
+    # 收尾必须复用构建路径同一套空值兜底（``_fill_kline_nulls``：派生列 null →
+    # 0.0）。合并序列首行没有前一日，重算会得到 null；若不兜底，就等于把每只
+    # 标的的首行 ``pre_close/change/pct_chg`` 从存量里的 0.0 静默改成 null
+    # （DG-31 记的正是这类「空值从 0 变成 N」）。这里不是新口径，是 ``build_frame``
+    # 里 ``_normalize_kline`` 第 7 步的同一行为。
+    if kind in ('stock', 'index'):
+        fresh = DataSourceBase._fill_kline_nulls(_derive_price_change(fresh))
     return quote_store.write_daily(
         kind, ts_code, fresh, full=full,
         source_mtime_ns=path.stat().st_mtime_ns)

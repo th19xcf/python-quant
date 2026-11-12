@@ -1130,6 +1130,99 @@ def test_full_rebuild_keeps_backfilled_superset_rows(tmp_path):
         date(2023, 12, 29), date(2024, 1, 2), date(2024, 1, 3)]
 
 
+def test_post_merge_pre_close_uses_merged_series(tmp_path):
+    """源端缺行时，合并后的 ``pre_close`` 必须取正式表前一行而非源端前一行。
+
+    复现 880581.SH 形态：源端比本地少一行（本地回补了 2024-01-04），
+    增量重建时若只在源端序列上 ``shift(1)``，2024-01-05 的 ``pre_close``
+    会落到 01-03（10.5）；正确值应是合并序列里的 01-04 收盘（10.0）。
+    """
+    tdx = tmp_path / 'tdx'
+    store_root = tmp_path / 'store'
+    _write_day_file(tdx, 'sh', '880581', _RECS)
+    store = LocalQuoteStore(store_root)
+    factor_store = LocalFactorStore(store_root)
+    cfg = _build_config(tdx, store_root)
+
+    build(cfg, store, factor_store, data_type='index')
+    assert store.read_file('index', '880581.SH').height == 2
+
+    # 本地回补 01-04（源端没有这一行）；该行收盘 10.0，与源端 01-03 的 10.5 不同
+    _add_backfilled_row(store, 'index', '880581.SH', date(2024, 1, 4))
+    assert store.read_file('index', '880581.SH').height == 3
+
+    # 源端前进到 01-05，触发增量重建
+    _write_day_file(tdx, 'sh', '880581', [*_RECS, ('20240105', 11.0, 11.2, 10.9, 11.0, 140, 1540)])
+    stats = build(cfg, store, factor_store, data_type='index', incremental=True)
+    assert stats['symbols'] == 1
+
+    frame = store.read_file('index', '880581.SH').sort('date')
+    assert frame['date'].to_list() == [
+        date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4), date(2024, 1, 5)]
+    row = frame.filter(pl.col('date') == date(2024, 1, 5)).to_dicts()[0]
+    # 合并序列前一行是本地回补的 01-04（close=10.0），不是源端 01-03（10.5）
+    assert row['pre_close'] == 10.0
+    assert row['change'] == 1.0
+    # 回补行自身的 pre_close 也按合并序列补齐（01-03 收盘 10.5）
+    backfilled = frame.filter(pl.col('date') == date(2024, 1, 4)).to_dicts()[0]
+    assert backfilled['pre_close'] == 10.5
+
+
+def test_fund_pre_close_is_not_recomputed(tmp_path):
+    """基金的 ``pre_close`` 走除权口径，合并后重算必须跳过。
+
+    基金 ``qfq_factor`` 恒为 1.0、除权调整全在 ``hfq_factor`` 上，回补行
+    ``pre_close`` 由基金侧链路按除权口径写入（161911.SZ 2019-09-24 即
+    1.014×1.461617/1.488043=0.996）。若按 ``close.shift(1)`` 重算，这条
+    正常的除权昨收会被改回原始昨收 1.020。
+    """
+    tdx = tmp_path / 'tdx'
+    store_root = tmp_path / 'store'
+    _write_day_file(tdx, 'sz', '161911', [
+        ('20240102', 1.014, 1.02, 1.01, 1.014, 100, 101.4),
+        ('20240103', 1.014, 1.03, 1.01, 1.02, 110, 112.2),
+    ])
+    store = LocalQuoteStore(store_root)
+    factor_store = LocalFactorStore(store_root)
+    cfg = _build_config(tdx, store_root)
+
+    build(cfg, store, factor_store, data_type='fund')
+    frame = store.read_file('fund', '161911.SZ')
+    assert frame.height == 2
+
+    # 回补 01-04（源端没有），pre_close 按除权口径写 0.996
+    last = frame.sort('date').tail(1).to_dicts()[0]
+    backfilled = dict(last)
+    backfilled.update({
+        'date': date(2024, 1, 4),
+        'pre_close': 0.996,
+        'change': last['close'] - 0.996,
+        'pct_chg': (last['close'] / 0.996 - 1) * 100,
+    })
+    merged = (pl.concat([frame, pl.DataFrame([backfilled], schema=frame.schema)],
+                        how='vertical_relaxed')
+              .unique(subset=['date'], keep='last').sort('date'))
+    store.write_daily('fund', '161911.SZ', merged, full=True, source_mtime_ns=1)
+    store.flush_meta()
+    assert store.read_file('fund', '161911.SZ').height == 3
+
+    # 源端前进到 01-05（仍然没有 01-04），触发增量重建
+    _write_day_file(tdx, 'sz', '161911', [
+        ('20240102', 1.014, 1.02, 1.01, 1.014, 100, 101.4),
+        ('20240103', 1.014, 1.03, 1.01, 1.02, 110, 112.2),
+        ('20240105', 1.02, 1.05, 1.02, 1.05, 130, 136.5),
+    ])
+    stats = build(cfg, store, factor_store, data_type='fund', incremental=True)
+    assert stats['symbols'] == 1
+
+    final = store.read_file('fund', '161911.SZ').sort('date')
+    assert final['date'].to_list() == [
+        date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4), date(2024, 1, 5)]
+    row = final.filter(pl.col('date') == date(2024, 1, 4)).to_dicts()[0]
+    assert row['pre_close'] == 0.996
+    assert row['pre_close'] != 1.02
+
+
 def test_incremental_rebuild_keeps_backfilled_superset_rows(tmp_path):
     """增量重建（源端前进）同样不得裁掉本地更早的补入行。"""
     tdx = tmp_path / 'tdx'
