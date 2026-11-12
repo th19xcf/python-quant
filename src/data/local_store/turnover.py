@@ -20,8 +20,9 @@
   统计可直接跳过无关数据块（与 ``stock_adj_factor`` 同一套读法）。
 - 全市场约 2.8 千万行、约 100~200 MB，与因子快照同级；不按年/按市场分区，
   因为读侧是按票查询、写侧是一次性回补+增量，分区只会增加路径复杂度。
-- 回补期间先写分块 ``factors/turnover_parts/part_XXXXX.parquet``（每 200 只
-  一个文件），全部完成后流式合并成单文件；中断后重跑只补未完成分块，
+- 回补期间先写分块 ``_staging/turnover_parts/part_XXXXX.parquet``（每 200 只
+  一个文件，2026-11-12 按 DG-32 由 ``factors/turnover_parts/`` 迁出正式层），
+  全部完成后流式合并成单文件；中断后重跑只补未完成分块，
   不会反复重写千万行单文件。
 
 **不写 stock_daily / 不改 MySQL 表结构**：换手率是独立事实表，避免再走一次
@@ -62,6 +63,7 @@ from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.local_store.paths import default_store_root
 from src.data.quote_schema import assert_formal_quote_glob_schema
 from src.data.sources import baostock_schema as schema
+from src.data.staging import staging_dir_for_store
 from src.utils.code_converter import to_baostock_code
 from src.utils.exception_handler import handle_exception_with_retry
 from src.utils.exceptions import DataSourceConnectionError
@@ -457,7 +459,16 @@ def _worker_task(payload: dict[str, Any]) -> dict[str, Any]:
 # 回补编排
 # ----------------------------------------------------------------------
 def _parts_dir(root: Path) -> Path:
-    return root / 'factors' / 'turnover_parts'
+    """分块缓存目录（断点续跑用）。
+
+    分块只在一次运行结束时才合并进 ``factors/stock_turnover.parquet``，所以这里
+    必须是一个**跨运行稳定**的落点：目录名不带运行日，中断后隔天重跑仍能按
+    ``manifest.json`` 的 ``completed_parts`` 续跑；带日期会让每次重跑都从零
+    重抓（违反 DG-7）。
+    2026-11-12 按 DG-32 由 ``factors/turnover_parts/`` 迁出正式层，落仓库根
+    ``_staging/turnover_parts/``；代码里只保留任务名，路径由 store_root 运行时推导。
+    """
+    return staging_dir_for_store(root, 'turnover_parts')
 
 
 def _write_part(path: Path, frame: pl.DataFrame) -> None:

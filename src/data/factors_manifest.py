@@ -10,9 +10,10 @@ manifest，覆盖信息只散落在 ``meta.json`` / ``fund_meta.json`` 与各文
 
 口径边界：
 
-- 只统计 ``factors/`` **顶层**文件；``rebuild/`` 与 ``turnover_parts/``
-  是任务进度目录（DG-5 的 staging 语义），其 ``manifest.json`` 单列在
-  ``sub_manifests``，不当作数据文件。
+- 只统计 ``factors/`` **顶层**文件；``rebuild/`` 是任务进度目录（DG-5 的
+  staging 语义），其 ``manifest.json`` 单列在 ``sub_manifests``，不当作数据文件。
+  ``turnover_parts/`` 已于 2026-11-12 按 DG-32 迁到仓库根 ``_staging/turnover_parts/``，
+  不再属于本目录，故不再登记。
 - 写盘一律走 :func:`src.data.atomic_write.write_text_atomic`（DG-9）。
 - 本模块只读数据文件，不修改任何 parquet / csv 内容。
 """
@@ -50,7 +51,7 @@ _ROLES: dict[str, tuple[str, str]] = {
     'meta.json': ('个股因子构建状态（最近一次 rebuild 的统计与哈希）', 'rebuild-factors 收尾'),
     'fund_meta.json': ('基金因子构建状态', 'tools/build_fund_corporate_actions.py'),
 }
-_SUB_MANIFESTS = (Path('rebuild') / MANIFEST_NAME, Path('turnover_parts') / MANIFEST_NAME)
+_SUB_MANIFESTS = (Path('rebuild') / MANIFEST_NAME,)
 
 
 def _sha256(path: Path) -> str:
@@ -197,7 +198,7 @@ def collect_factors_manifest(
         },
         'method': {
             'write': 'write_text_atomic（临时文件 → fsync → os.replace），单文件原子',
-            'scope': '仅 factors/ 顶层；rebuild/ 与 turnover_parts/ 为任务进度目录，见 sub_manifests',
+            'scope': '仅 factors/ 顶层；rebuild/ 为任务进度目录，见 sub_manifests',
         },
     }
 
