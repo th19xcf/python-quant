@@ -158,7 +158,13 @@ def build_suspension(
     asset_classes: Sequence[str] = DEFAULT_ASSET_CLASSES,
     commit: bool = False,
 ) -> dict[str, Any]:
-    """由「交易日历 − 实际 bar 日」派生停复牌日表（只写停牌行）。"""
+    """由「交易日历 − 实际 bar 日」派生停复牌日表（只写停牌行）。
+
+    本表**只含停牌行**：``is_suspended`` 恒为 ``True``、不会出现 ``False`` 行，
+    查询时「无记录」等价于「当日有 bar」。这不是缺数据——全网格判定由消费方
+    自行左连接后 ``fill_null(False)`` 得到（见 ``tools/build_universe_layers.py``
+    的 L2 可交易层与 ``src/data/quality/suspension_union.py``）。
+    """
     store = Path(root)
     index_path = store / 'meta' / 'daily_index.parquet'
     if not index_path.is_file():

@@ -226,7 +226,13 @@ def test_remote_fetch_break_records_skipped_and_stops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """第 2 只指数失败即停：记下被跳过的指数与续跑起点，后续指数不再请求。"""
-    _write_index_weight(tmp_path, {'000300.SH': {'20260130': ['600000.SH']}})
+    # store 必须嵌两层再给 staging_dir_for_store 上溯：它取 store.parents[1] 当仓库根
+    # （真实形态 data/local_store -> 仓库根）。若直接拿 tmp_path 当 store，parents[1]
+    # 是 pytest 的 temp 基目录、跨运行复用，上一轮残留的 fetch_progress.json 会让本轮
+    # 续跑直接跳过 000300。嵌到 tmp_path/repo/data/local_store 后落点回到 tmp_path 内，
+    # 推导链仍是生产代码那一条，不 patch 任何符号。
+    store = tmp_path / 'repo' / 'data' / 'local_store'
+    _write_index_weight(store, {'000300.SH': {'20260130': ['600000.SH']}})
     calls: list[str] = []
 
     def _fake_fetch(symbol: str):
@@ -246,13 +252,13 @@ def test_remote_fetch_break_records_skipped_and_stops(
     monkeypatch.setattr(
         'src.data.quality.extended_builders.time.sleep', lambda _seconds: None)
 
-    summary = build_index_membership(tmp_path, allow_remote=True, commit=True)
+    summary = build_index_membership(store, allow_remote=True, commit=True)
     # 第 2 只失败后立即停手，第 3/4 只根本没有被请求
     assert calls == ['000300', '000905']
     assert summary['remote_failed'] == '000905.SH'
     assert summary['remote_skipped'] == ['000852.SH', '000016.SH']
 
-    progress_path = (staging_dir_for_store(tmp_path,
+    progress_path = (staging_dir_for_store(store,
                                            'index_membership_snapshots_20261112')
                      / 'fetch_progress.json')
     progress = json.loads(progress_path.read_text('utf-8'))
@@ -264,7 +270,7 @@ def test_remote_fetch_break_records_skipped_and_stops(
 
     # 再跑一次：按续跑记录从失败那只开始，不再重抓已完成的 000300
     calls.clear()
-    again = build_index_membership(tmp_path, allow_remote=True, commit=True)
+    again = build_index_membership(store, allow_remote=True, commit=True)
     assert calls == ['000905']
     assert again['resume_from'] == '000905.SH'
 

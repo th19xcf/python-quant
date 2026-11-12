@@ -42,5 +42,25 @@ def staging_dir_for_store(store_root: Path | str, task: str) -> Path:
     统一改落仓库根 ``_staging/<task>``。按 ``store_root`` 推导而不是取模块级
     ``STAGING_ROOT``，测试用临时根时落点随临时根走，不污染仓库 ``_staging``。
     先例：``src/data/industry_pit.py::raw_dir``。
+
+    **调用约定（本函数不校验，传错不报错）**：``store_root`` 必须是
+    ``<仓库根>/data/local_store`` 这种「两级深」的层级——函数固定取
+    ``parents[1]`` 当仓库根，只对这张形态成立。传浅了（例如直接把
+    ``<临时目录>/某个测试目录`` 当 store）不会抛错，而是**静默把 staging 写到
+    意料之外的目录**：``parents[1]`` 可能落在跨运行常驻的上级目录里，
+    续跑记录（``progress.json`` / ``fetch_progress.json`` 之类）就会跨用例、
+    跨运行互相污染；``test_extended_builders.py`` 的
+    ``test_remote_fetch_break_records_skipped_and_stops`` 正是这样被残留的
+    ``fetch_progress.json`` 让续跑跳过首只指数而失败。
+
+    正确::
+
+        repo / 'data' / 'local_store'
+        # -> repo / '_staging' / '<task>'          （parents[1] 就是 repo）
+
+    错误（少一层；落点跑到常驻的 base，而不是 run0 或 test_x0 之下）::
+
+        base / 'run0' / 'test_x0'
+        # -> base / '_staging' / '<task>'          （parents[1] 是 base）
     """
     return Path(store_root).resolve().parents[1] / '_staging' / task

@@ -2,23 +2,37 @@
 
 r"""P1 参考数据历史补采（AkShare，可续跑，默认只写 staging）。
 
-三个 target：
+两个 target：
 
 * ``industry``    —— 巨潮按代码的历史行业分类变更，构造 PIT 区间；
-* ``suspension``  —— 按交易日的权威停复牌公告；
-* ``membership``  —— 中证指数当日成分快照（累积后差分可得进出区间）。
+* ``suspension``  —— 按交易日的权威停复牌公告（公告原文，**只产原始证据**，
+  不支持 ``--commit``）。
 
-**重要**：这些源都不提供完整历史（停牌源端只保留近年、指数成分只有当日
-快照、退市股无行业变更记录）。试点/分批结果一律标 ``complete=false``，
-默认只落 ``_staging/p1_backfill/reference/``（仓库根，不在 ``data/`` 下）；只有全量
+**重要**：这些源都不提供完整历史（停牌源端只保留近年、退市股无行业变更记录）。
+试点/分批结果一律标 ``complete=false``，默认只落
+``_staging/p1_backfill/reference/``（仓库根，不在 ``data/`` 下）；只有全量
 补齐并人工确认后才应 ``--commit`` 写进生产 ``meta/``，否则会让扩展契约误判数据已就绪。
 
 用法::
 
     python tools/backfill_reference_history.py --target industry --limit 50
     python tools/backfill_reference_history.py --target suspension --limit 20
-    python tools/backfill_reference_history.py --target membership
     python tools/backfill_reference_history.py --target industry --commit   # 全量确认后
+
+``suspension`` 不接受 ``--commit``（2026-11-12）：它抓的是百度公告原文
+（``trade_date/ts_code/suspend_time/resume_time/reason/announce_date``），
+缺 ``is_suspended`` 列、粒度是「公告事件」而不是「交易日状态」，与正式表
+``meta/suspension/suspension_daily.parquet``（由行情缺口派生的停牌日行，
+``derived_from_quote_gap``）不是同一语义；直接写入 ``official_suspension.parquet``
+会让扩展契约误读成停牌日表已就绪。故只落
+``_staging/p1_backfill/reference/``，正式落点未定。
+
+已退役 target ``membership``（2026-11-12）：中证当日成分快照与
+``meta/index_members/`` 的权威区间表属同一语义的两种表示（DG-1），
+且该 target 从未 ``--commit`` 过（报告 ``committed=false``）、全仓零调用方，
+其正式落点 ``meta/index_membership/membership_snapshots.parquet`` 从未落盘
+（该目录内的两份 coverage json 亦已按 DG-13 退役）；保留该 key 只会在
+一次 ``--commit`` 时复活已退役目录，故整套删除。
 """
 
 from __future__ import annotations
@@ -43,7 +57,6 @@ from src.data.staging import staging_dir  # noqa: E402
 DEFAULT_ROOT = ROOT / 'data' / 'local_store'
 #: 候选目录统一由 ``src/data/staging.py`` 定义，不再另立一套 staging 根
 DEFAULT_STAGING = staging_dir('p1_backfill') / 'reference'
-INDEX_CODES = ('000300', '000905', '000852', '000016')
 
 
 def _ts_code(raw: str, exchange: str | None = None) -> str:
@@ -158,61 +171,20 @@ def collect_suspension(root: Path, limit: int, sleep: float) -> tuple[pl.DataFra
     }
 
 
-def collect_membership(sleep: float) -> tuple[pl.DataFrame, dict]:
-    import socket  # noqa: PLC0415
-
-    import akshare as ak  # noqa: PLC0415
-
-    # 中证接口偶发无响应且 akshare 未暴露 timeout；全局 socket 超时兜底，
-    # 否则单个指数就能把整个补采脚本挂住（实测曾卡死 8 分钟）。
-    socket.setdefaulttimeout(20)
-    frames, failed = [], []
-    for index_code in INDEX_CODES:
-        try:
-            raw = ak.index_stock_cons_csindex(symbol=index_code)
-            if raw is None or len(raw) == 0:
-                continue
-            df = pl.from_pandas(raw)
-            frames.append(df)
-        except Exception as exc:  # noqa: BLE001
-            failed.append(f'{index_code}: {type(exc).__name__}')
-        if sleep:
-            time.sleep(sleep)
-    if not frames:
-        return pl.DataFrame(), {'indices': list(INDEX_CODES), 'failed': failed}
-    merged = pl.concat(frames, how='vertical_relaxed')
-    out = merged.select([
-        pl.col('日期').cast(pl.Date).alias('trade_date'),
-        pl.col('指数代码').cast(pl.Utf8).alias('index_code'),
-        pl.col('成分券代码').map_elements(
-            lambda v: _ts_code(v), return_dtype=pl.Utf8).alias('ts_code'),
-        pl.col('成分券名称').cast(pl.Utf8).alias('name'),
-        pl.lit('csindex:index_stock_cons_csindex').alias('source'),
-    ]).unique(subset=['trade_date', 'index_code', 'ts_code'], keep='first').sort(
-        ['index_code', 'trade_date', 'ts_code'])
-    return out, {
-        'indices': out['index_code'].unique().to_list(),
-        'rows': out.height, 'date_min': str(out['trade_date'].min()),
-        'date_max': str(out['trade_date'].max()), 'failed': failed,
-    }
-
-
 NAMES = {
     'industry': 'industry_change_pit',
     'suspension': 'official_suspension',
-    'membership': 'membership_snapshots',
 }
+#: 正式落点：只有 ``industry`` 有（``suspension`` 只产原始证据，无正式落点）
 PRODUCTION = {
     'industry': Path('meta/industry_pit/industry_change_pit.parquet'),
-    'suspension': Path('meta/suspension/official_suspension.parquet'),
-    'membership': Path('meta/index_membership/membership_snapshots.parquet'),
 }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='P1 参考数据历史补采（可续跑）')
     parser.add_argument('--target', required=True,
-                        choices=['industry', 'suspension', 'membership'])
+                        choices=['industry', 'suspension'])
     parser.add_argument('--store-root', type=Path, default=DEFAULT_ROOT)
     parser.add_argument('--staging', type=Path, default=DEFAULT_STAGING)
     parser.add_argument('--limit', type=int, default=50,
@@ -222,12 +194,16 @@ def main(argv: list[str] | None = None) -> int:
                         help='写入生产 meta 目录（全量补齐并确认后才应使用）')
     args = parser.parse_args(argv)
 
+    # 无正式落点的 target 必须在抓数之前拒绝，避免白跑一遍网络再报错
+    if args.commit and args.target not in PRODUCTION:
+        parser.error(
+            f'--target {args.target} 不支持 --commit：'
+            '本 target 只产原始证据，落 `_staging/p1_backfill/reference/`')
+
     if args.target == 'industry':
         frame, stats = collect_industry(args.store_root, args.limit, args.sleep)
-    elif args.target == 'suspension':
-        frame, stats = collect_suspension(args.store_root, args.limit, args.sleep)
     else:
-        frame, stats = collect_membership(args.sleep)
+        frame, stats = collect_suspension(args.store_root, args.limit, args.sleep)
 
     args.staging.mkdir(parents=True, exist_ok=True)
     target = args.staging / f'{NAMES[args.target]}.parquet'
