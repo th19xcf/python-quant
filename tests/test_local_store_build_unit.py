@@ -607,6 +607,25 @@ def test_attach_local_only_columns_restores_extra_values():
     assert out['source'].to_list() == ['local:a', 'local:b']
 
 
+def test_attach_local_only_columns_keeps_all_non_null_values():
+    """远端行数不少于本地时，本地非空增量值必须 100% 回接（零丢失）。"""
+    extra_row = pl.DataFrame({
+        'ts_code': ['600000.SH'], 'ex_date': [date(2020, 6, 1)],
+        'cash_div': [0.5], 'share_div': [0.0],
+        'report_date': [date(2019, 12, 31)], 'pay_date': [date(2020, 6, 10)],
+    })
+    snapshot = pl.concat([_dividend_rows(), extra_row]).with_columns(
+        pl.Series('source', ['a', 'b', None]))
+    remote = pl.concat([_dividend_rows(), extra_row])
+
+    out, stats = _attach_local_only_columns(snapshot, remote)
+
+    assert stats['matched_rows'] == 3
+    assert stats['unmatched_rows'] == 0
+    assert out['source'].is_not_null().sum() == 2
+    assert set(out['source'].drop_nulls().to_list()) == {'a', 'b'}
+
+
 def test_attach_local_only_columns_aborts_when_remote_rows_fewer():
     """远端同日事件行数少于本地会让增量列错位，必须报错而不是静默搬值。"""
     snapshot = pl.concat([

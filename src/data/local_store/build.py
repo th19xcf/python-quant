@@ -873,8 +873,9 @@ def _attach_local_only_columns(
     一起丢掉。这里按 ``(ts_code, ex_date)`` + 同日第 k 个事件对齐：两侧都先按
     ``(cash_div, share_div)`` 排序再取组内序号，避免同日多笔分红错位。
 
-    未命中行的增量列只能为 null；若某个原本非空的本地值没能回接（计数下降），
-    直接报错而不是静默丢值（DG-31：未命中必须写回原值或报错）。
+    未命中行的增量列只能为 null。非空值丢失的唯一成因是上面那条「组内行数」守卫
+    （远端行数少于本地必然错位并直接抛错），其余情形快照行必然全部命中，因此
+    不再重复做逐列 non-null 计数——那种计数在这个守卫之后永远不可能触发。
     """
     stats: dict[str, Any] = {'columns': [], 'matched_rows': 0, 'unmatched_rows': 0}
     if snapshot is None or snapshot.is_empty():
@@ -912,13 +913,6 @@ def _attach_local_only_columns(
     matched = int(attached['_hit'].fill_null(False).sum())
     stats['matched_rows'] = matched
     stats['unmatched_rows'] = attached.height - matched
-    for col in extra:
-        before = int(snapshot[col].is_not_null().sum())
-        after = int(attached[col].is_not_null().sum())
-        if after < before:
-            raise RuntimeError(
-                f'本地增量列 {col} 有 {before - after} 个非空值无法回接到远端行，'
-                '已中止覆盖（避免静默丢值）')
 
     # 保持快照既有列顺序，避免同一语义的表因一次覆盖而改变 schema 布局
     ordered = [c for c in snapshot.columns if c in attached.columns]

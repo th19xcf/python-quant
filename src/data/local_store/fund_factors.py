@@ -187,10 +187,8 @@ def fetch_dividend_events(
 ) -> pl.DataFrame:
     """抓取并汇总全市场基金现金分红事件（AkShare ``fund_fh_em``）。
 
-    注意：``years`` 传空列表（``[]``）与不传等价——内部分支写的是
-    ``years or range(2004, 今年 + 1)``，空列表会回落成**全量年份**抓取，
-    而不是「不抓任何年份」。需要零年份时请显式传 ``[0]`` 之类不可能的年份，
-    或在上层拦住空列表。
+    ``years`` 为 ``None`` 时抓 2004 年至今年全部年份；传空列表（``[]``）表示
+    不抓任何年份，直接返回空表，不会回落成全量抓取。
     """
     import akshare as ak  # noqa: PLC0415 - 延迟导入，避免测试与离线场景加载远程库
 
@@ -199,7 +197,9 @@ def fetch_dividend_events(
     fetched_at = datetime.now()
     frames: list[pl.DataFrame] = []
 
-    for year in years or range(2004, date.today().year + 1):
+    target_years = (range(2004, date.today().year + 1)
+                    if years is None else years)
+    for year in target_years:
         cache_path = cache_root / f'fh_{year}.parquet'
         if cache_path.exists() and not refresh:
             frames.append(pl.read_parquet(cache_path))
@@ -222,8 +222,7 @@ def fetch_dividend_events(
         pl.concat(frames, how='diagonal_relaxed'), fetched_at)
 
 
-def _fetch_one_share_change(symbol: str,
-                            cache: dict[str, Any]) -> tuple[str, Any, float]:
+def _fetch_one_share_change(symbol: str) -> tuple[str, Any, float]:
     import akshare as ak  # noqa: PLC0415
 
     t0 = time.perf_counter()
@@ -269,7 +268,7 @@ def fetch_share_change_events(
     started = time.perf_counter()
     if pending:
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = [pool.submit(_fetch_one_share_change, sym, cache)
+            futures = [pool.submit(_fetch_one_share_change, sym)
                        for sym in pending]
             for index, fut in enumerate(as_completed(futures), 1):
                 sym, rows, elapsed = fut.result()

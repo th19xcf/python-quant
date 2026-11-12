@@ -206,7 +206,7 @@ def read_shares(ts_code: str | None = None, root: Path | str | None = None,
         _SHARES_LAZY[path_key] = state
     lazy = state[1]
 
-    cache_key = f'{path_key}|{ts_code}'
+    cache_key = f'{path_key}|{ts_code}|{",".join(selected)}'
     cached = _SHARES_CACHE.get(cache_key)
     if cached is not None or cache_key in _SHARES_CACHE:
         _SHARES_CACHE.move_to_end(cache_key)
@@ -841,6 +841,7 @@ def collect_shares(universe: Sequence[str], *, root: Path | str | None = None,
         chunk_status.clear()
         failed.clear()
 
+    today = date.today()
     for index in range(total_chunks):
         key = f'{index:05d}'
         part_path = parts_dir / f'part_{key}.parquet'
@@ -849,7 +850,6 @@ def collect_shares(universe: Sequence[str], *, root: Path | str | None = None,
         chunk = codes[index * chunk_size:(index + 1) * chunk_size]
         frames: list[pl.DataFrame] = []
         chunk_failed: list[dict[str, Any]] = []
-        today = date.today()
         fetched_at = datetime.now()
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             futures = {

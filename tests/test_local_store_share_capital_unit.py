@@ -122,7 +122,7 @@ def test_read_shares_cache_and_lru(tmp_path):
     # 未知代码缓存 None
     assert read_shares('999999.SH', root) is None
     assert read_shares('999999.SH', root) is None
-    # 只取指定列（换独立文件避开按 ts_code 缓存）
+    # 只取指定列
     subset_root = tmp_path / 'subset'
     write_shares(_frame([_row('600000.SH', date(2020, 1, 1), 100)]),
                  subset_root, write_meta=False)
@@ -144,6 +144,25 @@ def test_read_shares_cache_and_lru(tmp_path):
     for row in many:
         read_shares(row['ts_code'], other_root)
     assert len(share_module._SHARES_CACHE) <= share_module._LRU_MAX
+
+
+def test_read_shares_cache_key_includes_columns(tmp_path):
+    """同一文件的不同列请求必须分开缓存，不能返回上一份列集合。"""
+    root = tmp_path / 'root'
+    write_shares(_frame([
+        _row('600000.SH', date(2020, 1, 1), 100, 80),
+        _row('600000.SH', date(2021, 1, 1), 200, 160),
+    ]), root, write_meta=False)
+    narrow_cols = ['ts_code', 'effective_date', 'total_share']
+
+    full = read_shares('600000.SH', root)
+    narrow = read_shares('600000.SH', root, columns=narrow_cols)
+    assert full is not None and narrow is not None
+    assert full.columns == list(SHARE_COLUMNS)
+    assert narrow.columns == narrow_cols
+    # 反向再各取一次：两个方向都不能被对方的缓存污染
+    assert read_shares('600000.SH', root, columns=narrow_cols).equals(narrow)
+    assert read_shares('600000.SH', root).equals(full)
 
 
 def test_read_shares_stat_oserror(tmp_path, monkeypatch):
@@ -671,6 +690,29 @@ def test_write_helpers(tmp_path):
     _write_failed_csv(tmp_path / 'empty.csv', [])
     assert (tmp_path / 'empty.csv').read_text(
         encoding='utf-8').splitlines() == ['ts_code,error,stage']
+
+
+def test_collect_shares_reads_today_once_per_run(tmp_path, monkeypatch):
+    """采集日每轮只取一次：多分块共享同一 today，不在循环内反复读系统日期。"""
+    work = tmp_path / 'work'
+    calls: list[int] = []
+
+    class _CountingDate(date):
+        @classmethod
+        def today(cls):
+            calls.append(1)
+            return date(2026, 1, 5)
+
+    def fake_task(ts_code, *_a, **_k):
+        return _frame([_row(ts_code, date(2020, 1, 1), 100, 80)]), 'ok'
+
+    monkeypatch.setattr(share_module, 'date', _CountingDate)
+    monkeypatch.setattr(share_module, '_collect_task', fake_task)
+    out = collect_shares(['A', 'B'], work_dir=work, snapshot={},
+                         dividend_events={}, workers=1, chunk_size=1,
+                         throttle=0.0)
+    assert out['ok'] == 2
+    assert len(calls) == 1
 
 
 def test_collect_shares_chunks_resume_and_failures(tmp_path, monkeypatch):

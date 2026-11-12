@@ -226,6 +226,26 @@ def test_fetch_dividend_events_cache_and_empty(tmp_path, monkeypatch):
     assert empty.columns == list(fund_module.DIVIDEND_COLUMNS)
 
 
+def test_fetch_dividend_events_empty_years_fetches_nothing(tmp_path, monkeypatch):
+    """``years=[]`` 表示不抓任何年份，不得回落成全量年份抓取。"""
+    calls: list[str] = []
+
+    def fund_fh_em(year=None):
+        calls.append(str(year))
+        return pd.DataFrame({
+            '基金代码': ['510050'],
+            '除息日期': ['2024-01-03'],
+            '权益登记日': ['2024-01-02'],
+            '分红': [0.15],
+        })
+
+    _install_akshare(monkeypatch, fund_fh_em=fund_fh_em)
+    out = fetch_dividend_events([], cache_dir=tmp_path / 'empty-years')
+    assert calls == []
+    assert out.is_empty()
+    assert out.columns == list(fund_module.DIVIDEND_COLUMNS)
+
+
 def test_fetch_share_change_events_parses_and_caches(tmp_path, monkeypatch):
     monkeypatch.setattr(fund_module.time, 'sleep', lambda _s: None)
     good = pd.DataFrame({
@@ -274,12 +294,29 @@ def test_fetch_share_change_events_corrupt_cache_and_empty(tmp_path, monkeypatch
     assert out.columns == list(fund_module.SHARE_CHANGE_COLUMNS)
 
 
+def test_fetch_share_change_events_worker_takes_only_symbol(tmp_path, monkeypatch):
+    """抓取函数只接收 symbol；多传一个无用的 cache 形参会让替身签名失配。"""
+    seen: list[tuple[str, tuple]] = []
+
+    def fake(symbol, *args):
+        seen.append((symbol, args))
+        return symbol, [{'拆分折算日': '2024-01-03',
+                         '拆分折算比例': '1:0.5',
+                         '拆分类型': '份额折算'}], 0.0
+
+    monkeypatch.setattr(fund_module, '_fetch_one_share_change', fake)
+    out = fetch_share_change_events(
+        ['510880.SH'], cache_path=tmp_path / 'splits.json', max_workers=1)
+    assert seen == [('510880', ())]
+    assert out.height == 1
+
+
 def test_fetch_one_share_change_success_and_failure(monkeypatch):
     monkeypatch.setattr(fund_module.time, 'sleep', lambda _s: None)
     _install_akshare(
         monkeypatch,
         fund_open_fund_info_em=lambda **_k: pd.DataFrame({'a': [1]}))
-    sym, rows, elapsed = _fetch_one_share_change('510880', {})
+    sym, rows, elapsed = _fetch_one_share_change('510880')
     assert sym == '510880'
     assert rows == [{'a': 1}]
     assert elapsed >= 0
@@ -291,7 +328,7 @@ def test_fetch_one_share_change_success_and_failure(monkeypatch):
         raise ValueError('down')
 
     _install_akshare(monkeypatch, fund_open_fund_info_em=boom)
-    sym, rows, _ = _fetch_one_share_change('159915', {})
+    sym, rows, _ = _fetch_one_share_change('159915')
     assert sym == '159915'
     assert 'ValueError: down' in rows['error']
     assert attempts['n'] == 3
