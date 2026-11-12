@@ -12,6 +12,7 @@ from src.data.changelog import (
     file_sha256,
     read_events,
     record_delete,
+    record_move,
 )
 
 OLD_HEADER = FIELDS[:-1]
@@ -146,12 +147,114 @@ def test_dedupe_can_be_disabled(tmp_path):
     assert len(read_events(csv_file)) == 2
 
 
-def test_rejects_bad_action_and_absolute_path(tmp_path):
+def test_rejects_bad_action_and_out_of_repo_absolute_path(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.data.changelog.repo_root", lambda: tmp_path)
     csv_file = tmp_path / "c.csv"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="action 只能是"):
         append_event(action="remove", path="reports/a", task="t", reason="r", sha256="x", size_bytes=1, csv_file=csv_file)
-    with pytest.raises(ValueError):
-        append_event(action="delete", path=r"E:\code\python\quant\reports\a", task="t", reason="r", sha256="x", size_bytes=1, csv_file=csv_file)
+    with pytest.raises(ValueError, match="无法相对化为仓库内路径"):
+        append_event(
+            action="delete",
+            path=r"C:\Windows\System32\drivers\etc\hosts",
+            task="t", reason="r", sha256="x" * 64, size_bytes=1, csv_file=csv_file,
+        )
+
+
+def test_move_action_rejected_with_hint(tmp_path):
+    csv_file = tmp_path / "c.csv"
+    with pytest.raises(ValueError, match="record_move"):
+        append_event(
+            action="move", path="reports/a", task="t", reason="r",
+            sha256="", size_bytes=None, csv_file=csv_file,
+        )
+    assert not csv_file.exists()
+
+
+def test_path_normalized_to_repo_relative_forward_slash(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.data.changelog.repo_root", lambda: tmp_path)
+    csv_file = tmp_path / "c.csv"
+    row = append_event(
+        action="create",
+        path=str(tmp_path / "data" / "local_store" / "x.parquet"),
+        task="t", reason="r", sha256="a" * 64, size_bytes=1, csv_file=csv_file,
+    )
+    assert row["path"] == "data/local_store/x.parquet"
+
+    row2 = append_event(
+        action="update",
+        path=r"data\local_store\y.parquet",
+        task="t", reason="r", sha256="b" * 64, size_bytes=2, csv_file=csv_file,
+        dedupe_window_seconds=0,
+    )
+    assert row2["path"] == "data/local_store/y.parquet"
+
+
+def test_unknown_bytes_written_as_empty_not_minus_one(tmp_path):
+    csv_file = tmp_path / "c.csv"
+    row = append_event(
+        action="update", path="reports/a", task="t", reason="r",
+        sha256="a" * 64, size_bytes=None, csv_file=csv_file,
+    )
+    assert row["bytes"] == ""
+    assert _rows(csv_file)[0]["bytes"] == ""
+    with pytest.raises(ValueError, match="不要传负数哨兵值"):
+        append_event(
+            action="update", path="reports/b", task="t", reason="r",
+            sha256="b" * 64, size_bytes=-1, csv_file=csv_file,
+        )
+    assert len(_rows(csv_file)) == 1
+
+
+def test_record_move_splits_into_delete_and_create(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.data.changelog.repo_root", lambda: tmp_path)
+    src = tmp_path / "data" / "local_store" / "old.parquet"
+    dst = tmp_path / "data" / "local_store" / "new.parquet"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"same-content")
+    dst.write_bytes(b"same-content")
+    csv_file = tmp_path / "logs" / "data_changelog.csv"
+
+    rows = record_move(
+        src_path="data/local_store/old.parquet",
+        dst_path="data/local_store/new.parquet",
+        task="move_task",
+        reason="改名为语义口径",
+        csv_file=csv_file,
+    )
+
+    assert [r["action"] for r in rows] == ["delete", "create"]
+    stored = _rows(csv_file)
+    assert [r["action"] for r in stored] == ["delete", "create"]
+    assert {r["action"] for r in stored} <= {"create", "update", "delete"}
+    assert stored[0]["path"] == "data/local_store/old.parquet"
+    assert stored[1]["path"] == "data/local_store/new.parquet"
+    assert stored[1]["prev_sha256"] == stored[0]["sha256"]
+    assert stored[1]["sha256"] == file_sha256(dst)
+
+
+def test_refuses_to_append_after_truncated_tail(tmp_path):
+    csv_file = tmp_path / "c.csv"
+    csv_file.write_bytes((",".join(FIELDS) + "\n").encode() + b"r1,2026-11-12T00:00:00,t,create,reports/a,1,")
+    before = csv_file.read_bytes()
+    with pytest.raises(ValueError, match="末行未以换行结尾"):
+        append_event(
+            action="create", path="reports/a", task="t", reason="r",
+            sha256="a" * 64, size_bytes=1, csv_file=csv_file,
+        )
+    assert csv_file.read_bytes() == before
+
+
+def test_output_is_lf_utf8_without_bom(tmp_path):
+    csv_file = tmp_path / "c.csv"
+    append_event(
+        action="create", path="reports/中文.parquet", task="t", reason="r",
+        sha256="a" * 64, size_bytes=1, csv_file=csv_file,
+    )
+    raw = csv_file.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    assert b"\r" not in raw
+    assert raw.endswith(b"\n")
+    raw.decode("utf-8")
 
 
 def test_record_delete_reads_size_and_hash(tmp_path, monkeypatch):
