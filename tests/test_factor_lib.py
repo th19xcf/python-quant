@@ -198,7 +198,11 @@ def test_headline_is_plain_conclusion_first():
 
 
 # ---------------------------------------------------------------------------
-# G-112：非交易日 bar 的读取侧过滤（默认关；开启时按 175 行白名单保留真实成交）
+# G-112：非交易日 bar 的读取侧过滤（默认关；开启时按裁定表 keep 行白名单保留真实成交）
+#
+# 白名单行数不写死：一律从 ``nontrading_bars_verdict.csv`` 实读后比对，
+# 并校验「keep + drop = 全表行数」的守恒关系。改判（如 1991-09-29 由
+# drop 改判 keep）只需改裁定表，不必再来改这两个数字。
 # ---------------------------------------------------------------------------
 _EVIDENCE = (
     Path(__file__).resolve().parents[1]
@@ -219,7 +223,7 @@ def _weekend_frame() -> tuple[pl.DataFrame, list[date]]:
 
 
 def _verdict_rows() -> tuple[pl.DataFrame, pl.DataFrame]:
-    """读 220 行逐行裁定表，返回（全部行, keep 行）。"""
+    """读逐行裁定表，返回（全部行, keep 行）。"""
     table = pl.read_csv(_EVIDENCE, try_parse_dates=True)
     return table, table.filter(pl.col('verdict') == 'keep')
 
@@ -268,11 +272,15 @@ def test_calendar_filter_switch_off_keeps_every_row_bitwise():
     assert out['close'].to_list() == frame['close'].to_list()
 
 
-def test_calendar_filter_whitelist_keeps_175_and_drops_45():
-    """开启 + 白名单：175 行真实成交逐值保留，45 行被剔除（逐行核对）。"""
+def test_calendar_filter_whitelist_keeps_every_keep_row():
+    """开启 + 白名单：裁定表 keep 行逐值保留，drop 行全部剔除（逐行核对）。
+
+    行数一律从裁定表实读：``keep + drop == 全表行数`` 是守恒关系，改判只改 CSV。
+    """
     table, keep = _verdict_rows()
     drop = table.filter(pl.col('verdict') == 'drop')
-    assert (table.height, keep.height, drop.height) == (220, 175, 45)
+    assert keep.height + drop.height == table.height
+    assert 0 < keep.height < table.height
 
     frame = _frame_from_verdict(table)
     out = data.filter_to_calendar(
@@ -282,7 +290,7 @@ def test_calendar_filter_whitelist_keeps_175_and_drops_45():
     keep_keys = set(map(tuple, keep.select(['ts_code', 'date']).rows()))
     drop_keys = set(map(tuple, drop.select(['ts_code', 'date']).rows()))
     out_keys = set(map(tuple, out.select(['ts_code', 'date']).rows()))
-    assert out.height == 175
+    assert out.height == keep.height
     assert out_keys == keep_keys
     assert set(map(tuple, frame.select(['ts_code', 'date']).rows())) - out_keys == drop_keys
     # 逐值核对：保留下来的行与原帧同键同行完全一致
@@ -292,34 +300,42 @@ def test_calendar_filter_whitelist_keeps_175_and_drops_45():
     )
 
 
-def test_calendar_filter_all_mode_drops_all_220():
-    """全剔除模式：220 行全部丢弃（会把 175 行真实成交一起丢掉）。"""
+def test_calendar_filter_all_mode_drops_every_row():
+    """全剔除模式：全表行数全部丢弃（会把 keep 行真实成交一起丢掉）。"""
     table, keep = _verdict_rows()
     frame = _frame_from_verdict(table)
     out = data.filter_to_calendar(
         frame, _weekday_calendar(date(1991, 1, 1), date(1993, 12, 31)), mode='all',
     )
-    assert keep.height == 175  # 白名单本身不因模式变化
+    assert 0 < keep.height < table.height  # 白名单本身不因模式变化
     assert out.height == 0
 
 
 def test_whitelist_enumerates_only_proven_rows():
-    """白名单按「标的 + 日期」精确枚举：只含 G1/G2，不含 G3（周六）/G4（周日）。"""
+    """白名单按「标的 + 日期」精确枚举：与裁定表 keep 行集合完全一致。"""
     pairs = data.nontrading_bar_whitelist()
+    table, keep = _verdict_rows()
     assert pairs is not None
-    assert len(pairs) == 175
+    keep_keys = set(map(tuple, keep.select(['ts_code', 'date']).rows()))
+    assert set(pairs) == keep_keys
     assert all(code.endswith('.SZ') for code, _day in pairs)
-    assert all(day.weekday() == 5 for _code, day in pairs)
+    # 白名单允许周六与周日：是否准入只看裁定表 verdict，不按星期几推断
+    assert {day.weekday() for _code, day in pairs} <= {5, 6}
     assert ('000001.SZ', date(1991, 4, 6)) in pairs
     assert ('000009.SZ', date(1992, 2, 1)) in pairs
     # G3：1993 年周六，来源残留待核，必须排除
     assert ('000012.SZ', date(1993, 6, 5)) not in pairs
-    # G4：周日，制度上不成立且无第三证据，必须排除
-    assert ('000001.SZ', date(1991, 9, 29)) not in pairs
+    # 1991-09-29 与 1992-02-02 等周日已按 C / B 级证据由 drop 改判 keep，须在白名单内
+    assert ('000001.SZ', date(1991, 9, 29)) in pairs
+    assert ('000001.SZ', date(1992, 2, 2)) in pairs
+    # 守恒：裁定表 drop 行一个都不得进白名单（行数不写死，随裁定表变动）
+    drop_keys = set(map(tuple, table.filter(pl.col('verdict') == 'drop')
+                        .select(['ts_code', 'date']).rows()))
+    assert drop_keys and not (drop_keys & set(pairs))
 
 
 def test_whitelist_unavailable_falls_back_to_no_filter(monkeypatch, tmp_path):
-    """白名单读不到：不抛错、不过滤（宁可不过滤也不误删 175 行真实成交）。"""
+    """白名单读不到：不抛错、不过滤（宁可不过滤也不误删真实成交行）。"""
     monkeypatch.setattr(data, 'NONTRADING_WHITELIST_PATH', tmp_path / 'missing.csv')
     data.nontrading_bar_whitelist.cache_clear()
     try:

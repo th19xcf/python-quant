@@ -71,11 +71,12 @@ class PanelRequest:
     #: 是否按交易日历过滤 bar。**默认关**：行为与 2026-11-12 之前一致，
     #: 不改变既有回测值。开启后按 ``calendar_filter_mode`` 决定口径。
     calendar_filter: bool = False
-    #: ``'whitelist'``（默认）：只剔除白名单之外的日历外行——白名单是 175 行
-    #: 已证实为真实成交的 1991-1993 深市周六 bar（1991 年 50 个周六 173 行 +
-    #: 1992-02-01 2 行），被剔除的只有 45 行（1993 年 6 行周六 + 39 行周日）。
+    #: ``'whitelist'``（默认）：只剔除白名单之外的日历外行——白名单 = 裁定表
+    #: ``verdict == 'keep'`` 的全部行（行数以 CSV 为准，不在代码里写死；
+    #: 2026-11-13 为 214 行），被剔除的只剩裁定表 ``verdict == 'drop'`` 的行
+    #: （2026-11-13 为 6 行，即 G3 的 ``000012.SZ`` 1993 年周六孤例）。
     #: 逐行裁定见 ``docs/evidence/g112_nontrading_bars/nontrading_bars_verdict.csv``。
-    #: ``'all'``：剔除全部日历外行（220 行），**会连 175 行真实观测一起丢掉**，
+    #: ``'all'``：剔除全部日历外行（220 行），**会连真实观测一起丢掉**，
     #: 只在明确知道后果时使用。
     calendar_filter_mode: str = 'whitelist'
 
@@ -97,9 +98,9 @@ def nontrading_bar_whitelist() -> frozenset[tuple[str, date]] | None:
     """读逐行裁定表，取「标的 + 日期」精确枚举的白名单。
 
     Returns:
-        frozenset: 175 行已证实为真实成交的周末 bar；文件读不到、缺列或没有
-        ``keep`` 行时返回 ``None``，调用方据此跳过过滤——宁可不过滤，也不把
-        175 行真实观测误删。
+        frozenset: 裁定表中全部 ``keep`` 行（标的 + 日期）的白名单；文件读不到、缺列或
+        没有 ``keep`` 行时返回 ``None``，调用方据此跳过过滤——宁可不过滤，也不把
+        已证实为真实成交的观测误删。行数以裁定表为准，不在本模块写死。
     """
     try:
         frame = pl.read_csv(NONTRADING_WHITELIST_PATH, try_parse_dates=True)
