@@ -1,0 +1,54 @@
+{
+ "sha256": "720A7467017921144C95DC189F6E04798DC19936126B7B3E3A2FF161747E6E07",
+ "bytes": 181722,
+ "lines": 441,
+ "sec3_rows": 123,
+ "distinct_ids": 123,
+ "missing_numbers": [],
+ "duplicate_numbers": [],
+ "verdict_distribution": {
+  "已修": 42,
+  "接受偏差": 31,
+  "待核实": 20,
+  "不可补": 16,
+  "可补": 7,
+  "待采": 6,
+  "已退役": 1
+ },
+ "unmapped": [],
+ "class_actual": {
+  "A": 30,
+  "B": 5,
+  "C": 4,
+  "D": 16,
+  "E": 12,
+  "F": 5,
+  "G": 6,
+  "H": 13,
+  "I": 7,
+  "J": 3,
+  "K": 21,
+  "—": 1
+ },
+ "class_declared": {
+  "A": 30,
+  "B": 5,
+  "C": 4,
+  "D": 16,
+  "E": 12,
+  "F": 5,
+  "G": 6,
+  "H": 13,
+  "I": 7,
+  "J": 3,
+  "K": 21
+ },
+ "class_mismatch": {
+  "—": [
+   null,
+   1
+  ]
+ },
+ "declared_total": 122,
+ "actual_total_excluding_reserved": 122
+}
