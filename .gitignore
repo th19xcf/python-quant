@@ -198,3 +198,6 @@ research/events/data/**/*.parquet
 
 # 任务交付工作目录（2026-11-12 起）：整体不入库，审计报告归档进 docs/，其余文件靠 G:\git\python-quant 镜像保障
 2026-11-12/
+
+# 外部输入白名单镜像目录（只存在于备份仓库，存放 E:\www\tmp 被引用的子集，仅靠镜像保障）
+_external_inputs/
