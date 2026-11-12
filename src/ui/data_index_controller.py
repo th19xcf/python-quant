@@ -113,8 +113,8 @@ class IndexDataController:
                 global_task_manager.task_progress.disconnect(on_task_progress)
                 global_task_manager.task_completed.disconnect(on_task_completed)
                 global_task_manager.task_error.disconnect(on_task_error)
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                logger.debug(f"大盘板块任务成功回调断开信号失败（未连接或已销毁）: {type(exc).__name__}: {exc}")
 
             if not isinstance(result, dict) or "success" not in result:
                 logger.error(
@@ -145,8 +145,8 @@ class IndexDataController:
                 global_task_manager.task_progress.disconnect(on_task_progress)
                 global_task_manager.task_completed.disconnect(on_task_completed)
                 global_task_manager.task_error.disconnect(on_task_error)
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                logger.debug(f"大盘任务失败收尾断开信号失败（未连接或已销毁）: {type(exc).__name__}: {exc}")
 
             self.window._clear_market_table_display()
             self.window.statusBar().showMessage(f"Error: {error_message}", 5000)
@@ -243,8 +243,8 @@ class IndexDataController:
             try:
                 global_task_manager.task_completed.disconnect(on_task_completed)
                 global_task_manager.task_error.disconnect(on_task_error)
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                logger.debug(f"指数任务成功回调断开信号失败（未连接或已销毁）: {type(exc).__name__}: {exc}")
 
             if not isinstance(result, dict) or "success" not in result:
                 logger.error(
@@ -283,8 +283,8 @@ class IndexDataController:
             try:
                 global_task_manager.task_completed.disconnect(on_task_completed)
                 global_task_manager.task_error.disconnect(on_task_error)
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                logger.debug(f"K 线任务失败收尾断开信号失败（未连接或已销毁）: {type(exc).__name__}: {exc}")
 
             self.window._clear_kline_display()
             self.window.statusBar().showMessage(f"加载失败: {error_message}", 5000)

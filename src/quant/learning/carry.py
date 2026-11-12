@@ -18,6 +18,15 @@
   下期再收敛；减仓受阻本期跳过；退出受阻进入顺延队列。
 
 成本一律按实际成交名义额走 ``CostModel``，与整仓清仓模式同源。
+
+与 ``src/backtest/engine/execution_core.py`` 的关系（务必按字面理解）：
+本模块的 ``_CarryEngine``（``simulate_carry``）是**独立实现的逐日循环**，
+**不复用** execution_core 的 T+1 建仓时点、分档滑点、整手取整与
+``max_exit_delay`` 退出顺延口径；整手由本模块 ``_lot_floor`` 自行计算。
+两侧是两套独立循环，互不跟随，修改任何一侧的成本、时点或整手语义时
+必须同步核对另一侧，不能假设等价。2026-11-11 ``a30ce18`` 起，
+``evaluator.simulate_long_only`` 在默认 ``carry=DEFAULT_CARRY`` 时
+直接委托本模块，即学习侧默认路径就是 ``_CarryEngine``。
 """
 
 from __future__ import annotations

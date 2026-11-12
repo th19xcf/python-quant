@@ -125,14 +125,14 @@ class ChartEventBinder:
             try:
                 if hasattr(widget.scene(), 'sigMouseMoved') and hasattr(widget.scene().sigMouseMoved, 'disconnect'):
                     widget.scene().sigMouseMoved.disconnect()
-            except (OSError, RuntimeError):
-                pass
+            except (OSError, RuntimeError) as exc:
+                logger.debug(f"断开 sigMouseMoved 失败（未连接或控件已销毁）: {type(exc).__name__}: {exc}")
 
             try:
                 if hasattr(widget.scene(), 'sigMouseClicked') and hasattr(widget.scene().sigMouseClicked, 'disconnect'):
                     widget.scene().sigMouseClicked.disconnect()
-            except (OSError, RuntimeError):
-                pass
+            except (OSError, RuntimeError) as exc:
+                logger.debug(f"断开 sigMouseClicked 失败（未连接或控件已销毁）: {type(exc).__name__}: {exc}")
 
     def _bind_range_sync_events(self):
         """绑定范围同步事件"""

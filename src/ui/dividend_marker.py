@@ -75,8 +75,8 @@ class DividendMarkerItem(GraphicsObject):
                             try:
                                 dt = kline_date.astype('datetime64[D]').item()
                                 kline_date = dt.date() if hasattr(dt, 'date') else dt
-                            except (OSError, RuntimeError, ValueError):
-                                pass
+                            except (OSError, RuntimeError, ValueError) as exc:
+                                logger.debug(f"K 线日期 datetime64 转换失败，保留原值: {type(exc).__name__}: {exc}")
                         elif isinstance(kline_date, str):
                             # 处理字符串类型日期
                             with contextlib.suppress(OSError, RuntimeError, ValueError):

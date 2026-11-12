@@ -633,5 +633,5 @@ class AdvicePage(QWidget):
         if callable(status):
             try:
                 status().showMessage(message, 3000)
-            except (AttributeError, RuntimeError):
-                pass
+            except (AttributeError, RuntimeError) as exc:
+                logger.debug(f'[advice] 状态栏提示失败（host 无 statusBar 或已销毁）: {type(exc).__name__}: {exc}')

@@ -201,6 +201,16 @@ def simulate_long_only(  # noqa: C901 - 事件循环共享可变状态，见下�
 
     事件循环同时维护「信号 → T+1 建仓 → 持有期退出 → 盯市」四段状态，
     拆分后仍需共享可变状态；mccabe 会把闭包复杂度计入父函数，故此处豁免。
+
+    与 ``src/backtest/engine/execution_core.py`` 的关系（务必按字面理解）：
+    本函数与 ``carry.py::_CarryEngine`` 都是**独立实现的逐日循环**，
+    **不复用** execution_core 的 T+1 建仓时点、分档滑点、整手取整与
+    ``max_exit_delay`` 退出顺延口径；两侧是两套独立循环，互不跟随，
+    修改任何一侧的成本、时点或整手语义时必须同步核对另一侧，不能假设等价。
+    2026-11-11 ``a30ce18`` 起，默认 ``carry=DEFAULT_CARRY`` 时本函数
+    直接委托 ``carry.py::simulate_carry``（``_CarryEngine``），
+    学习侧默认路径已不在本函数体内；本函数体只服务 ``carry=None`` 的
+    整仓清仓旧口径。
     """
     if carry is not None:
         from src.quant.learning.carry import simulate_carry

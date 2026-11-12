@@ -36,9 +36,9 @@ def _apply_adaptive_y_range(plot_widget: Any, values: np.ndarray, padding: float
     try:
         plot_widget.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
         plot_widget.setAutoVisible(y=True)
-    except (AttributeError, TypeError):
+    except (AttributeError, TypeError) as exc:
         # 兜底：不支持自适应的测试桩/旧控件沿用上面的显式范围
-        pass
+        logger.debug(f"启用 Y 轴自适应失败，沿用显式范围: {type(exc).__name__}: {exc}")
 
 
 class OscillatorRenderMixin:
