@@ -32,8 +32,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from src.data.financials import store
 from src.advice import fundamental_factors as ff
+from src.data.financials import store
 
 ROOT = Path(__file__).resolve().parents[1]
 FIN = ROOT / 'data' / 'local_store' / 'meta' / 'financials'

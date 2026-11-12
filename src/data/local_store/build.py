@@ -491,7 +491,7 @@ def _finalize_build(
     skipped: int,
     skipped_uptodate: int,
     data_type: str,
-    codes: list[str] | None,
+    codes: Iterable[str] | None,
     since: date | None,
     incremental: bool,
     target_date: date | None,

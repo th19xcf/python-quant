@@ -796,7 +796,7 @@ class EventBacktestRunner:
         self, cols: Dict[str, list], resolved: Dict[str, str],
     ) -> tuple:
         """按契约解析出的列名取 bar 序列，顺序由调用方（_run_trading_loop）约定。"""
-        def get(role: str):
+        def get(role: str) -> list | None:
             column = resolved.get(role)
             return cols.get(column) if column else None
 

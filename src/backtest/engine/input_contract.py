@@ -465,7 +465,7 @@ def _check_price_basis(
         raise BacktestInputContractError(
             f'{label}close 与 raw_close 没有任何同时非空的行，无法校验复权口径')
     diff = (pair['adjusted'] - pair['raw']).abs().max()
-    if diff is not None and float(diff) == 0.0:
+    if isinstance(diff, (int, float)) and float(diff) == 0.0:
         raise BacktestInputContractError(
             f'{label}复权价与原始价完全相同（{pair.height} 行逐值相等）：'
             '复权因子恒为 1.0，等价于未复权价参与信号/收益计算。'

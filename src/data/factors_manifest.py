@@ -160,11 +160,11 @@ def collect_factors_manifest(
             files[path.name]['produced_by'] = producer
 
     sub_manifests = []
-    for relative in _SUB_MANIFESTS:
-        path = factors_dir / relative
+    for sub_relative in _SUB_MANIFESTS:
+        path = factors_dir / sub_relative
         if path.is_file():
             sub_manifests.append({
-                'path': str(Path('factors') / relative).replace('\\', '/'),
+                'path': str(Path('factors') / sub_relative).replace('\\', '/'),
                 'bytes': path.stat().st_size,
                 'sha256': _sha256(path),
                 'mtime': _mtime(path),

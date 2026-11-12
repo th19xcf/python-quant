@@ -20,7 +20,7 @@
 import argparse
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import polars as pl
 from loguru import logger
@@ -150,7 +150,20 @@ def build_snapshot(
 
 
 #: 目录级 manifest 的登记内容（``files`` / 汇总由 :func:`write_manifest` 实测填充）。
-_MANIFEST_PAYLOAD = {
+class _ManifestPayload(TypedDict):
+    """``write_snapshot_manifest`` 的关键字参数集（逐键声明，避免 ``**`` 展开被放宽）。"""
+
+    prefix: str
+    dataset: str
+    semantics: str
+    source: str
+    authority: str
+    path_pattern: str
+    consumers: list[str]
+    produced_by: str
+
+
+_MANIFEST_PAYLOAD: _ManifestPayload = {
     'prefix': 'industry_',
     'dataset': 'industry_snapshot_series',
     'semantics': (

@@ -1009,6 +1009,10 @@ class DataFetcher:
 
         # 本地列存帧用 date 列，远程库帧用 trade_date；统一转 Datetime 比较。
         date_col = resolve_date_column(df.columns, prefer='trade_date')
+        if date_col is None:
+            raise ValueError(
+                '前复权快照缺少日期列：既没有 date 也没有 trade_date，'
+                f'实得列 {df.columns}')
         date_series = df[date_col]
         if date_series.dtype in (pl.Date, pl.Datetime):
             trade_dates = date_series.cast(pl.Datetime).to_numpy()

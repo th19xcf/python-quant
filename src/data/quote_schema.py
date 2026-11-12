@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import glob as _glob
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable
 
 import polars as pl
 
@@ -141,7 +141,7 @@ def assert_quote_schema(
             f'{data_type} 行情 schema 不符合契约：' + '；'.join(problems))
 
 
-def _expand_paths(paths: str | Sequence[str | Path]) -> list[Path]:
+def _expand_paths(paths: str | Iterable[str | Path]) -> list[Path]:
     if isinstance(paths, (str, Path)):
         text = str(paths)
         if any(ch in text for ch in '*?['):
@@ -151,7 +151,7 @@ def _expand_paths(paths: str | Sequence[str | Path]) -> list[Path]:
 
 
 def assert_quote_glob_schema(
-    data_type: str, paths: str | Sequence[str | Path],
+    data_type: str, paths: str | Iterable[str | Path],
 ) -> None:
     """断言一组行情分片逐文件 schema 一致且符合契约（读取侧闸门）。
 

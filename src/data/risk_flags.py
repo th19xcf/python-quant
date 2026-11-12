@@ -28,7 +28,7 @@ import json
 import re
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import polars as pl
 from loguru import logger
@@ -163,7 +163,24 @@ def build_snapshot(
 
 
 #: 目录级 manifest 的登记内容（``files`` / 汇总由 :func:`write_manifest` 实测填充）。
-_MANIFEST_PAYLOAD = {
+class _ManifestPayload(TypedDict):
+    """``write_snapshot_manifest`` 的关键字参数集。
+
+    用 TypedDict 而不是 ``dict[str, ...]``：后者 ``**`` 展开会把每个键都宽成
+    ``str | list[str]``，既丢了逐键类型，也掩盖 consumers 的真实元素类型。
+    """
+
+    prefix: str
+    dataset: str
+    semantics: str
+    source: str
+    authority: str
+    path_pattern: str
+    consumers: list[str]
+    produced_by: str
+
+
+_MANIFEST_PAYLOAD: _ManifestPayload = {
     'prefix': 'st_status_',
     'dataset': 'st_status_snapshot_series',
     'semantics': (
