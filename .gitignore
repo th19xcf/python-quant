@@ -114,7 +114,8 @@ Thumbs.db
 
 # Logs
 logs/*
-!logs/data_changelog.csv
+# 数据变更台账自 2026-11-12 移出 Git 跟踪：只增不减，改由 E: 与 G: 双盘镜像保障，禁止再入库
+/logs/data_changelog.csv
 !logs/data_changelog.README.md
 *.log
 

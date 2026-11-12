@@ -26,6 +26,12 @@
 - **DG-3** 权威路径的唯一清单是 `docs/数据权威路径清单.md`。新增或迁移正式路径必须在该文档登记（语义 / 唯一正式路径 / 消费者 / 为什么是它），并把被取代的旧路径写进「已废弃路径」表；未登记即视为没有正式路径。不可重建资产另需进入 `CRITICAL_FILES` / `CRITICAL_DIRS`，派生数据另需写同目录 `manifest.json`。
 - **DG-4** 正式路径不得带版本号；版本、口径哈希、上游 mtime、行数、只数写进同目录 `manifest.json`。
   依据：项目记忆「路径固定不带版本号」；反例 `meta/industry/industry_20261105_v2.parquet` 因 `_v2` 后缀无法解析成日期、永不被自动选中，已移入 `_backup` 退役。
+- **DG-32** `data/local_store/` 只存放「运行时被消费、语义唯一」的正式数据；「需要备份」「怕丢」「暂时没处放」一律不得作为进入该层的理由。
+  三层归属唯一：正式数据 → `data/local_store/`（配 `manifest.json` 并登记权威路径清单）；体积小且需长期可追溯的证据与小输入 → 进 Git（`docs/evidence/<主题>/`，该目录随 `docs/**` 由 Git 跟踪与镜像，不另行登记权威路径清单）；可重算的中间产物与断点 → `_staging/<任务>_<日期>/`。
+  入层三问，任一为否即不得入：① `src/` 或 `tools/` 中存在真实消费者；② 同语义不存在第二份；③ 丢了能说清重建路径，或本身不可重建且必须长期保留（不可重建且需长期保留的，另按 DG-3 登记 `CRITICAL_FILES` / `CRITICAL_DIRS`）。
+  采集与构建的中间态不得落在 `data/local_store/` 正式目录内：财务采集分片、重建断点、临时研究面板一律走 `_staging/`。
+  依据：2026-11-12 审计实测——`meta/financials/parts/` 下 1,285 个采集分片 / 1.38 GB 落在正式目录；`factors/_bench_last.parquet` 96 MB 零代码引用；`factors` 整层无 `manifest.json`；同期 14 类在用数据未登记权威路径清单。该层同时存在「该进的没进」与「不该进的进了」两类缺陷。
+  反例：把 15 KB 的审计输入 CSV 放进 `data/local_store/meta/anomalies/inputs/`，理由是「它需要备份」——备份需求不构成数据语义，该件应进 `docs/evidence/` 由 Git 承担留存。
 
 ## 二、候选隔离与原子替换
 
