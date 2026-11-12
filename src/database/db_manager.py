@@ -60,15 +60,21 @@ class DatabaseManager:
                 query={"charset": db_config.charset},
             )
 
-            self.engine = create_engine(
-                connection_url,
-                pool_size=db_config.pool_size,
-                max_overflow=db_config.max_overflow,
-                pool_timeout=db_config.pool_timeout,
-                pool_recycle=db_config.pool_recycle,
-                pool_pre_ping=True,
-                echo=False
-            )
+            # 传输层加密：只有显式配置 MySQL CA 证书（DATABASE__SSL_CA）时才把
+            # ssl 参数交给驱动；留空时 create_engine 的实参集合与引入该开关之前逐字相同
+            engine_kwargs: dict[str, Any] = {
+                'pool_size': db_config.pool_size,
+                'max_overflow': db_config.max_overflow,
+                'pool_timeout': db_config.pool_timeout,
+                'pool_recycle': db_config.pool_recycle,
+                'pool_pre_ping': True,
+                'echo': False,
+            }
+            ssl_ca = getattr(db_config, 'ssl_ca', '')
+            if ssl_ca:
+                engine_kwargs['connect_args'] = {'ssl': {'ca': ssl_ca}}
+
+            self.engine = create_engine(connection_url, **engine_kwargs)
 
             # 创建会话工厂
             self.Session = scoped_session(sessionmaker(bind=self.engine))

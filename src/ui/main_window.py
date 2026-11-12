@@ -48,6 +48,19 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
                  MainWindowDrawingMixin, QMainWindow):
     """
     主窗口类，参考通达信软件界面设计
+
+    MRO 约束（2026-11-12 显式化，勿随意调整基类顺序）：
+
+    1. 基类顺序即方法解析顺序，**同名方法由更靠前的 mixin 胜出**；调换两个
+       mixin 的相对顺序会静默改变 ``super()`` 链上的实际执行体，且不会被 mypy
+       或任何测试发现。
+    2. 顺序固定为：``Navigation → ChartInteraction → Candlestick →
+       IndicatorWindow → Dividend → Advice → Ui → Event → Drawing``；
+       该顺序由 ``tests/test_ui_smoke.py`` 的棘轮用例守护，调整时必须同步改用例
+       并说明理由。
+    3. ``QMainWindow`` **必须放在最后**：它是真正的 Qt 基类，所有 mixin 都只在
+       ``super()`` 之前插入行为；一旦排到 mixin 前面，mixin 里的同名钩子
+       （如 ``closeEvent`` / ``keyPressEvent``）会被 Qt 基类实现遮蔽而静默失效。
     """
 
     def __init__(self, config, data_manager, plugin_manager=None):

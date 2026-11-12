@@ -41,6 +41,9 @@ class DatabaseSettings(BaseSettings):
     password: str = Field(default="", description="数据库密码")
     database: str = Field(default="stock_quant", description="数据库名称")
     charset: str = Field(default="utf8mb4", description="数据库字符集")
+    # 传输层加密开关：给出 CA 证书路径即启用 TLS，留空则维持明文内网连接
+    # （默认留空，不改变既有部署行为；接实盘资金接口前必须配置）
+    ssl_ca: str = Field(default="", description="MySQL TLS CA 证书路径，空表示不启用 TLS")
     pool_size: int = Field(default=10, description="连接池大小")
     max_overflow: int = Field(default=10, description="连接池溢出上限（池满后最多再开临时连接数）")
     pool_timeout: int = Field(default=30, description="池满后获取连接的最大等待秒数，超时抛 QueuePool 上限错误")
@@ -367,6 +370,7 @@ CONFIG_DOCUMENTATION = r"""
 | DATABASE__PASSWORD | "" | 数据库密码 | 字符串 |
 | DATABASE__DATABASE | stock_quant | 数据库名称 | 字符串 |
 | DATABASE__CHARSET | utf8mb4 | 数据库字符集 | 字符串 |
+| DATABASE__SSL_CA | "" | MySQL TLS CA 证书路径；留空不启用 TLS（内网明文），接实盘前必须配置 | 字符串 |
 | DATABASE__POOL_SIZE | 10 | 连接池大小 | 大于0 |
 | DATABASE__MAX_OVERFLOW | 10 | 连接池溢出上限（池满后可再开的临时连接数） | 大于等于0 |
 | DATABASE__POOL_TIMEOUT | 30 | 池满后获取连接的最大等待秒数 | 大于0 |

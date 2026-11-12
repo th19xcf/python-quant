@@ -6,12 +6,20 @@ P1 加固项回归测试
 - R5 连接池显式上限（max_overflow / pool_timeout 配置与校验）
 - R7 插件加载前的名称与路径校验
 - R8 任务超时真正返回（不再被 ThreadPoolExecutor.shutdown(wait=True) 阻塞）+ 协作式取消
+- V-20 MySQL TLS 仅在显式配置 CA 时启用（默认实参逐字不变）
+- V-05 状态机回测工具的类数棘轮（只允许追加函数，禁止新增类）
 """
 
+import ast
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import sqlalchemy
 
+from src.database import db_manager as db_manager_module
+from src.database.db_manager import DatabaseManager
 from src.plugin.plugin_manager import PluginManager, is_safe_module_name
 from src.ui.task_manager import TaskManager, TaskRunner
 from src.utils.config import DatabaseSettings
@@ -197,6 +205,102 @@ class TestTaskRunnerSignalDispatch:
         assert runner.cancel_event.is_set()
         assert '超时' in seen['error'][1]
         assert seen['finished'] == 'to-1'
+
+
+class TestDatabaseTls:
+    """V-20：MySQL 传输层加密只在显式配置 CA 时启用，默认实参逐字不变"""
+
+    # 引入 TLS 开关之前 create_engine 收到的实参集合，逐键写死：
+    # 默认路径必须与它完全相等（不是「差不多」，而是键集合与取值都相同）
+    _ENGINE_KWARGS_WITHOUT_TLS = {
+        'pool_size': 10,
+        'max_overflow': 10,
+        'pool_timeout': 30,
+        'pool_recycle': 3600,
+        'pool_pre_ping': True,
+        'echo': False,
+    }
+
+    def _connect_and_capture(self, monkeypatch, db_settings):
+        """用真实 sqlite 引擎顶替 mysql 引擎，只为截获 create_engine 的实参"""
+        captured: dict = {}
+
+        def fake_create_engine(url, **kwargs):
+            captured['url'] = url
+            captured.update(kwargs)
+            return sqlalchemy.create_engine('sqlite://')
+
+        monkeypatch.setattr(db_manager_module, 'create_engine', fake_create_engine)
+        manager = DatabaseManager(SimpleNamespace(database=db_settings))
+        assert manager.connect() is not None
+        return manager, captured
+
+    def test_ssl_ca_default_is_empty(self):
+        """开关默认关闭：由字段声明决定，不依赖 .env 或系统环境变量"""
+        assert DatabaseSettings.model_fields['ssl_ca'].default == ''
+
+    def test_empty_ssl_ca_keeps_engine_kwargs_identical(self, monkeypatch):
+        """留空时 create_engine 实参必须与改前逐字相同（不得出现 connect_args / ssl）"""
+        settings = DatabaseSettings(
+            ssl_ca='',
+            pool_size=10,
+            max_overflow=10,
+            pool_timeout=30,
+            pool_recycle=3600,
+        )
+        manager, captured = self._connect_and_capture(monkeypatch, settings)
+        try:
+            kwargs = {k: v for k, v in captured.items() if k != 'url'}
+            assert kwargs == self._ENGINE_KWARGS_WITHOUT_TLS
+            assert 'connect_args' not in kwargs
+            assert not any('ssl' in str(k) for k in kwargs)
+        finally:
+            manager.disconnect()
+
+    def test_ssl_ca_passed_through_as_driver_arg(self, monkeypatch):
+        """配置 CA 时只增量多出 connect_args，其余实参不变"""
+        ca_path = 'C:/certs/mysql-ca.pem'
+        settings = DatabaseSettings(
+            ssl_ca=ca_path,
+            pool_size=10,
+            max_overflow=10,
+            pool_timeout=30,
+            pool_recycle=3600,
+        )
+        manager, captured = self._connect_and_capture(monkeypatch, settings)
+        try:
+            kwargs = {k: v for k, v in captured.items() if k != 'url'}
+            assert kwargs.pop('connect_args') == {'ssl': {'ca': ca_path}}
+            assert kwargs == self._ENGINE_KWARGS_WITHOUT_TLS
+        finally:
+            manager.disconnect()
+
+
+class TestStatefulBacktestSurface:
+    """V-05：3,466 行巨文件的动线约束——只允许追加函数，禁止新增类
+
+    棘轮上限取 5 的理由：``tools/advice_stateful_backtest.py`` 现有的 5 个顶层类
+    （``Position`` / ``Cohort`` / ``_PoolLot`` / ``_CohortTrack`` / ``_PoolTrack``）
+    全部是该脚本私有的数据容器，语义已定、没有继续增长的正当理由；新增的有状态
+    封装应落到 ``src/advice/`` 而不是继续堆在脚本里。因此上限等于当前值，任何新增
+    类都会立即判红——这不是随手取的数，而是「只减不增」的棘轮基线。
+    """
+
+    _TOOL_PATH = Path(__file__).resolve().parents[1] / 'tools' / 'advice_stateful_backtest.py'
+    _MAX_CLASSES = 5
+
+    def test_top_level_class_count_does_not_grow(self):
+        tree = ast.parse(self._TOOL_PATH.read_text(encoding='utf-8'))
+        classes = [node.name for node in tree.body if isinstance(node, ast.ClassDef)]
+        assert len(classes) <= self._MAX_CLASSES, (
+            f'禁止在 {self._TOOL_PATH.name} 新增类（当前 {len(classes)} 个: {classes}），'
+            '新的有状态封装请下沉到 src/advice/'
+        )
+
+    def test_module_header_states_the_constraint(self):
+        """动线约束必须写在模块头，改文件的人第一屏就能看到"""
+        header = self._TOOL_PATH.read_text(encoding='utf-8')[:3000]
+        assert '禁止新增类' in header
 
 
 class TestTaskManagerLifecycle:

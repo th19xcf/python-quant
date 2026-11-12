@@ -19,6 +19,41 @@ def _find_menu_action(window, name):
     raise AssertionError(f'菜单项不存在: {name}')
 
 
+# MainWindow 的 mixin 顺序即方法解析顺序：同名方法由更靠前者胜出，调换顺序会
+# 静默改变 super() 链上的实际执行体。这里把顺序钉死成棘轮，任何重排都必须
+# 同步修改本清单并在提交说明里写清理由。
+EXPECTED_MIXIN_ORDER = (
+    'MainWindowNavigationMixin',
+    'MainWindowChartInteractionMixin',
+    'MainWindowCandlestickMixin',
+    'MainWindowIndicatorWindowMixin',
+    'MainWindowDividendMixin',
+    'MainWindowAdviceMixin',
+    'MainWindowUiMixin',
+    'MainWindowEventMixin',
+    'MainWindowDrawingMixin',
+)
+
+
+def test_main_window_bases_order_is_pinned():
+    """V-09：9 个 mixin 的相对顺序不得静默变化"""
+    from src.ui.main_window import MainWindow
+
+    bases = [base.__name__ for base in MainWindow.__bases__]
+    assert bases == [*EXPECTED_MIXIN_ORDER, 'QMainWindow']
+
+
+def test_qmainwindow_must_be_last_base():
+    """V-09：QMainWindow 必须在所有 mixin 之后，否则 mixin 钩子被 Qt 基类遮蔽"""
+    from src.ui.main_window import MainWindow
+
+    mro = [cls.__name__ for cls in MainWindow.__mro__]
+    assert len(mro) == len(set(mro)), 'MRO 中出现重复类，继承结构已损坏'
+    qt_index = mro.index('QMainWindow')
+    for mixin_name in EXPECTED_MIXIN_ORDER:
+        assert mro.index(mixin_name) < qt_index, f'{mixin_name} 被排到 QMainWindow 之后'
+
+
 def test_unimplemented_menu_items_are_disabled_with_tooltip(qapp, tmp_path):
     """未接实现的菜单项必须置灰并标注「未实现」，不得看起来可点。"""
     from src.ui.main_window import MainWindow
