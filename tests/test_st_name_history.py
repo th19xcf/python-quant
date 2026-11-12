@@ -1,6 +1,6 @@
 """补充 ST 名称历史模块的离线单测（不联网）。"""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import polars as pl
 
@@ -141,8 +141,11 @@ def test_supplement_rebuild_is_idempotent():
 
 def test_intervals_clamp_open_interval_to_last_tradable_day():
     segments = [(date(2025, 4, 30), '*st')]
-    rows = N._intervals_from_segments('920680.BJ', segments, date(2025, 12, 24))
+    rows = N._intervals_from_segments(
+        '920680.BJ', segments, date(2025, 12, 24),
+        fetched_at=datetime(2025, 12, 24), quote_last=date(2026, 11, 11))
     assert rows[0]['end_date'] == date(2025, 12, 24)
+    assert rows[0]['fetched_at'] == datetime(2025, 12, 24)
 
 
 def test_event_date_prefers_title_deadline():

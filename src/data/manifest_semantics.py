@@ -88,8 +88,8 @@ SEMANTICS: dict[str, dict[str, str]] = {
     },
     "meta/st/supplement/manifest.json": {
         "authority": "清单 L65：唯一正式区间之外的人工补充层，合并顺序为补充层覆盖正式层；替换时整目录按 DG-11 移入 _backup/。",
-        "dataset": "补充区间表 supplement_intervals.parquet 与补充覆盖表 supplement_coverage.parquet（2 个区间 / 2,336 行覆盖）；逐文件 rows / sha256 见 files。",
-        "source": "由 src/data/st_name_history.py 写出：manifest 路径常量 L27、supplement_intervals_path L113-114、写点 L610、_parquet_entry 记账 L628；读侧合并顺序在 src/data/st_history.py:912（读 supplement_intervals.parquet）。",
+        "dataset": "补充区间表 supplement_intervals.parquet 与补充覆盖表 supplement_coverage.parquet（2 个区间；覆盖行数逐次变化，以 files 段实测 rows 为准）；逐文件 rows / sha256 见 files。",
+        "source": "由 src/data/st_name_history.py 写出：manifest 路径常量 L27、supplement_intervals_path L131-133、写点 L729-731（区间表 / 覆盖表 / unresolved.csv 原子写）、files 段记账 L750-754、manifest 写点 L759；读侧合并顺序在 src/data/st_history.py:912（读 supplement_intervals.parquet）。",
         "semantics": "一行 = 一个补充 ST 区间或一条补充覆盖结论；合并优先级为「补充层覆盖正式层」，用于承载正式层未覆盖但已取证的段（清单 L65）；替换时整目录按 DG-11 移入 _backup/。"
     },
     "meta/state/manifest.json": {

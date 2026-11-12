@@ -30,6 +30,23 @@
 
 ``st_history.build_store`` 会把 supplement 并入规范表，三态语义不变：只把原来
 的 ``unknown`` 变成有证据的 ``non_st`` / ``st``。
+
+可复现（2026-11-12 起）：``fetched_at`` 不再取 ``datetime.now()``，改取**对应证据
+文件的 mtime**（名称登记册 → ``em_org_basic.parquet``；定日区间 → 该标的公告
+缓存分片），``built_at`` 取这些证据时刻的最大值；``today`` 默认取**行情末日**
+而不是 ``date.today()``。同一批输入重跑，三件产物逐字节相同。
+
+写盘事务（DG-10，单文件原子不等于多文件事务）：``build`` 一次写 4 个文件，固定
+顺序为 **快照 → 区间表 → 覆盖表 → unresolved.csv → manifest.json**。manifest 最后
+写，它是"本次构建已完成"的提交标记：
+
+- 快照之前失败：正式层零改动，无需回滚；
+- 区间表/覆盖表已换、csv 未换：manifest 仍是旧值，``manifest_tool --check``
+  会报 sha256 不一致，据此可判定处于中间态；
+- csv 已换、manifest 写失败：同上，manifest 的 ``unresolved`` 计数与磁盘 csv
+  行数不等即可检出；
+- 回滚方式：把 ``_backup/st_supplement_<日期>/`` 下的 4 个文件 ``copy2`` 回
+  ``meta/st/supplement/`` 即可回到上一版，快照与原文逐字节相同（SHA256 相等）。
 """
 
 from __future__ import annotations
@@ -38,6 +55,7 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -182,8 +200,63 @@ def _parquet_entry(
 
 
 def _write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding='utf-8')
+    """文本/CSV/json 一律原子写（DG-9）；裸 ``write_text`` 会在半途失败时留下半截文件。"""
+    write_text_atomic(text, path)
+
+
+def _write_csv(frame: pl.DataFrame, path: Path) -> None:
+    """DataFrame → CSV 也走原子写，避免 ``unresolved.csv`` 中断后只剩半张表。"""
+    write_text_atomic(frame.write_csv(), path)
+
+
+def _file_stamp(path: Path) -> datetime:
+    """确定性时刻：证据文件的 mtime（截到秒）。
+
+    ``fetched_at`` 用它而不是 ``datetime.now()``——否则同一批输入重跑会产出不同
+    字节，manifest 里的 sha256 每次都不一样，等于放弃"重跑结果可对拍"。
+    """
+    return datetime.fromtimestamp(path.stat().st_mtime).replace(microsecond=0)
+
+
+def _repo_root(store_root: Path) -> Path:
+    """正式布局 ``<repo>/data/local_store`` → 仓库根；其它（测试临时 store）就地。"""
+    return store_root.parent.parent \
+        if store_root.parent.name.lower() == 'data' else store_root
+
+
+def _snapshot_paths(store_root: Path, paths: list[Path], label: str) -> Path | None:
+    """DG-11：覆盖正式文件前，把现有版本整体快照到仓库根 ``_backup/<label>_<日期>/``。
+
+    用 ``copy2`` 复制而不是移动（同 ``local_store/build.py::_snapshot_quotes_dir``）：
+    移动会让构建失败时正式目录缺位，而快照已经能提供完整回滚能力。目标已存在时
+    追加序号，绝不覆盖既有快照；同内容重复快照同样另起序号，不做内容去重。
+    """
+    existing = [path for path in paths if path.is_file()]
+    if not existing:
+        return None
+    base = _repo_root(store_root) / '_backup' / f'{label}_{date.today():%Y%m%d}'
+    target = base
+    seq = 1
+    while target.exists():
+        target = base.with_name(f'{label}_{date.today():%Y%m%d}_{seq}')
+        seq += 1
+    target.mkdir(parents=True, exist_ok=True)
+    for path in existing:
+        shutil.copy2(path, target / path.name)
+    return target
+
+
+def _csv_entry(path: Path, root: Path) -> dict[str, Any]:
+    """CSV 逐文件记账（DG-3）：``unresolved.csv`` 也必须进 manifest 的 files 段。"""
+    frame = pl.read_csv(path, infer_schema_length=0)
+    return {
+        'path': str(path.relative_to(root)).replace('\\', '/'),
+        'rows': frame.height,
+        'cols': len(frame.columns),
+        'columns': frame.columns,
+        'bytes': path.stat().st_size,
+        'sha256': _sha256(path),
+    }
 
 
 def _as_date(value: Any) -> date | None:
@@ -267,14 +340,21 @@ def _segments_from_events(rows: Iterable[dict[str, Any]]) -> list[tuple[date, st
 
 
 def _intervals_from_segments(ts_code: str, segments: list[tuple[date, str]],
-                             coverage_end: date) -> list[dict[str, Any]]:
+                             coverage_end: date, *, fetched_at: datetime,
+                             quote_last: date | None = None) -> list[dict[str, Any]]:
+    """事件段 → 区间行。
+
+    ``quote_last`` 是本轮行情末日（默认等于 ``coverage_end`` 的上界）：退市标的
+    ``coverage_end < quote_last`` 时用它判「行情已终止」，不再读 ``date.today()``，
+    否则同一批输入隔天重跑会产出不同区间。
+    """
     rows: list[dict[str, Any]] = []
     for index, (start, flag) in enumerate(segments):
         if flag not in (FLAG_ST, FLAG_STAR):
             continue
         nxt = segments[index + 1][0] if index + 1 < len(segments) else None
         end = nxt - timedelta(days=1) if nxt else None
-        if end is None and coverage_end < date.today():
+        if end is None and (quote_last or coverage_end) > coverage_end:
             # 仍开放但行情已终止（退市）：区间止于最后一个可交易日的状态可知边界
             end = coverage_end
         if end is not None and end > coverage_end:
@@ -282,7 +362,7 @@ def _intervals_from_segments(ts_code: str, segments: list[tuple[date, str]],
         rows.append({
             'ts_code': ts_code, 'start_date': start, 'end_date': end, 'flag': flag,
             'source': SOURCE_CNINFO_DATED, 'precision': st_history.PRECISION_ANNOUNCEMENT,
-            'fetched_at': datetime.now(),
+            'fetched_at': fetched_at,
         })
     return rows
 
@@ -378,7 +458,7 @@ def sync_em_names(store_root: Path | str, *, force: bool = False,
     failure_frame = pl.DataFrame(
         failures, schema={'page': pl.Int64, 'error': pl.Utf8}) if failures \
         else pl.DataFrame(schema={'page': pl.Int64, 'error': pl.Utf8})
-    failure_frame.write_csv(Path(root) / 'meta' / 'st' / 'em_failures.csv')
+    _write_csv(failure_frame, Path(root) / 'meta' / 'st' / 'em_failures.csv')
     return {'pages': pages, 'completed': len(done), 'written': written,
             'rows': combined.height, 'failures': failures,
             'complete': len(done) >= pages}
@@ -506,7 +586,7 @@ def sync_candidates(store_root: Path | str, *, force: bool = False,
         else pl.DataFrame(schema={'ts_code': pl.Utf8, 'stage': pl.Utf8,
                                   'window_start': pl.Date, 'window_end': pl.Date,
                                   'error': pl.Utf8, 'retries': pl.Int64})
-    failure_frame.write_csv(Path(root) / 'meta' / 'st' / 'candidate_failures.csv')
+    _write_csv(failure_frame, Path(root) / 'meta' / 'st' / 'candidate_failures.csv')
     return {'candidates': len(candidates), 'fetched': fetched,
             'cached': len(list(ndir.glob('*.parquet'))), 'failures': failures}
 
@@ -528,10 +608,20 @@ def plan_supplement(em: pl.DataFrame, coverage: pl.DataFrame,
                     pool: Iterable[str], quote_windows: dict[str, tuple[date, date]],
                     notices: dict[str, list[dict[str, Any]]], *,
                     today: date | None = None,
-                    snapshot_st: set[str] | None = None) -> SupplementPlan:
-    """按证据生成补充覆盖；无证据一律不写（保持 unknown）。"""
+                    snapshot_st: set[str] | None = None,
+                    em_stamp: datetime | None = None,
+                    notice_stamps: dict[str, datetime] | None = None,
+                    quote_last: date | None = None) -> SupplementPlan:
+    """按证据生成补充覆盖；无证据一律不写（保持 unknown）。
+
+    ``em_stamp`` / ``notice_stamps`` 是**证据文件时刻**，写进 ``fetched_at``；缺省时退到
+    ``today`` 零点，保证纯函数在无外部输入时也能确定性产出。
+    """
     today = today or date.today()
     snapshot_st = snapshot_st or set()
+    notice_stamps = notice_stamps or {}
+    fallback_stamp = datetime.combine(today, datetime.min.time())
+    registry_stamp = em_stamp or fallback_stamp
     covered = set(coverage['ts_code'].to_list())
     plan = SupplementPlan()
     for code in pool:
@@ -556,7 +646,7 @@ def plan_supplement(em: pl.DataFrame, coverage: pl.DataFrame,
                 and code not in snapshot_st:
             plan.coverage.append({
                 'ts_code': code, 'coverage_start': start, 'coverage_end': end,
-                'source': SOURCE_EM_CLEAN, 'fetched_at': datetime.now(),
+                'source': SOURCE_EM_CLEAN, 'fetched_at': registry_stamp,
             })
             plan.clean += 1
             continue
@@ -567,10 +657,14 @@ def plan_supplement(em: pl.DataFrame, coverage: pl.DataFrame,
                 'former_names': former, 'evidence': name})
             plan.skipped += 1
             continue
-        plan.intervals.extend(_intervals_from_segments(code, segments, end))
+        plan.intervals.extend(_intervals_from_segments(
+            code, segments, end,
+            fetched_at=notice_stamps.get(code, registry_stamp),
+            quote_last=quote_last))
         plan.coverage.append({
             'ts_code': code, 'coverage_start': segments[0][0], 'coverage_end': end,
-            'source': SOURCE_CNINFO_DATED, 'fetched_at': datetime.now(),
+            'source': SOURCE_CNINFO_DATED,
+            'fetched_at': notice_stamps.get(code, registry_stamp),
         })
         plan.dated += 1
     return plan
@@ -578,7 +672,12 @@ def plan_supplement(em: pl.DataFrame, coverage: pl.DataFrame,
 
 def build_supplement(store_root: Path | str, *,
                      today: date | None = None) -> dict[str, Any]:
-    """读取缓存 → 生成 supplement 表与未决清单（不写规范表）。"""
+    """读取缓存 → 生成 supplement 表与未决清单（不写规范表）。
+
+    ``today`` 缺省取**行情末日**（而不是 ``date.today()``）：覆盖窗口的上界本来就
+    是 ``min(个股行情末日, 构建日)``，取行情末日既让窗口推进到最新可证日期，也让
+    隔天重跑得到同一批字节。写盘顺序与失败残留见模块 docstring「写盘事务」。
+    """
     root = Path(store_root)
     em = _load_em(root)
     coverage = st_history.load_coverage(root)
@@ -595,26 +694,49 @@ def build_supplement(store_root: Path | str, *,
     pool = store.codes('stock')
     quote_windows = {code: (cov.start, cov.end) for code in pool
                      if (cov := store.coverage('stock', code)) is not None}
-    notices = {path.stem: pl.read_parquet(path).to_dicts()
-               for path in candidate_notice_dir(root).glob('*.parquet')}
+    if not quote_windows:
+        raise RuntimeError('行情池为空，无法确定覆盖窗口')
+    quote_last = max(end for _, end in quote_windows.values())
+    cutoff = today or quote_last
+    notice_files = {path.stem: path
+                    for path in candidate_notice_dir(root).glob('*.parquet')}
+    notices = {code: pl.read_parquet(path).to_dicts()
+               for code, path in notice_files.items()}
+    em_stamp = _file_stamp(em_raw_path(root))
+    notice_stamps = {code: _file_stamp(path) for code, path in notice_files.items()}
     snapshot, _ = st_history._latest_snapshot(root)
     snapshot_st = set(snapshot.filter(pl.col('status') == st_history.STATUS_ST)['code']
                       .to_list()) if snapshot is not None else set()
     plan = plan_supplement(em, coverage, pool, quote_windows, notices,
-                           today=today, snapshot_st=snapshot_st)
+                           today=cutoff, snapshot_st=snapshot_st,
+                           em_stamp=em_stamp, notice_stamps=notice_stamps,
+                           quote_last=quote_last)
 
     interval_frame = pl.DataFrame(plan.intervals, schema=_INTERVAL_SCHEMA) \
         if plan.intervals else pl.DataFrame(schema=_INTERVAL_SCHEMA)
     coverage_frame = pl.DataFrame(plan.coverage, schema=_COVERAGE_SCHEMA) \
         if plan.coverage else pl.DataFrame(schema=_COVERAGE_SCHEMA)
-    _write_atomic(interval_frame, supplement_intervals_path(root))
-    _write_atomic(coverage_frame, supplement_coverage_path(root))
     unresolved = pl.DataFrame(plan.unresolved) if plan.unresolved else pl.DataFrame(
         schema={'ts_code': pl.Utf8, 'reason': pl.Utf8, 'former_names': pl.Utf8,
                 'evidence': pl.Utf8})
-    unresolved.write_csv(unresolved_path(root))
+
+    # 写盘事务（DG-10）：快照 → 区间表 → 覆盖表 → csv → manifest（最后写，作提交标记）
+    snapshot_dir = _snapshot_paths(
+        root, [supplement_intervals_path(root), supplement_coverage_path(root),
+               unresolved_path(root), manifest_path(root)], 'st_supplement')
+    if snapshot_dir is not None:
+        logger.info(f'[st-names] 覆盖前已快照旧版 supplement：{snapshot_dir}')
+    _write_atomic(interval_frame, supplement_intervals_path(root))
+    _write_atomic(coverage_frame, supplement_coverage_path(root))
+    _write_csv(unresolved, unresolved_path(root))
+
+    run_at = max([em_stamp, *notice_stamps.values()])
     summary = {
-        'built_at': datetime.now().isoformat(timespec='seconds'),
+        'built_at': run_at.isoformat(timespec='seconds'),
+        'built_at_basis': '上游证据文件 mtime 最大值（确定性，非运行时刻）',
+        'quote_last_date': quote_last.isoformat(),
+        'quote_codes': len(quote_windows),
+        'coverage_cutoff': cutoff.isoformat(),
         'em_rows': em.height,
         'pool': len(pool),
         'uncovered_before': len([c for c in pool if c not in set(coverage['ts_code'])]),
@@ -629,13 +751,15 @@ def build_supplement(store_root: Path | str, *,
                            date_column='start_date', end_column='end_date'),
             _parquet_entry(supplement_coverage_path(root), root,
                            date_column='coverage_start', end_column='coverage_end'),
+            _csv_entry(unresolved_path(root), root),
         ],
     }
     from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
     apply_semantics(summary, 'meta/st/supplement/manifest.json')
     _write_text(manifest_path(root), json.dumps(summary, ensure_ascii=False, indent=2))
     logger.info(f'[st-names] supplement 已生成: {supplement_coverage_path(root)}'
-                f'（覆盖 +{plan.clean + plan.dated} / 未决 {summary["unresolved"]}）')
+                f'（覆盖 +{plan.clean + plan.dated} / 未决 {summary["unresolved"]} / '
+                f'行情末日 {quote_last}）')
     return summary
 
 
@@ -651,8 +775,19 @@ def _count_reason(rows: list[dict[str, Any]]) -> dict[str, int]:
 # 规范化：把 supplement 并入 st_history 规范表
 # ----------------------------------------------------------------------
 def apply_supplement(store_root: Path | str) -> dict[str, Any]:
-    """重建 st_history 规范表（build_store 会自动并入 supplement）。"""
-    summary = st_history.build_store(store_root)
+    """重建 st_history 规范表（build_store 会自动并入 supplement）。
+
+    DG-11：``build_store`` 会整表重写 ``meta/st/st_intervals.parquet``、
+    ``meta/st/st_coverage.parquet``（另含 ``coverage.json``），覆盖前先把这三件
+    快照到仓库根 ``_backup/st_build_store_<日期>/``，失败可直接 copy2 回滚。
+    """
+    root = Path(store_root)
+    snapshot_dir = _snapshot_paths(
+        root, [st_history.intervals_path(root), st_history.coverage_path(root),
+               st_history.coverage_json_path(root)], 'st_build_store')
+    if snapshot_dir is not None:
+        logger.info(f'[st-names] apply 前已快照旧版区间/覆盖表：{snapshot_dir}')
+    summary = st_history.build_store(root)
     logger.info(f'[st-names] 规范表已重建: {summary}')
     return summary
 
