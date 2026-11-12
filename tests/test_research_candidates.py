@@ -203,6 +203,48 @@ def test_ttm_null_when_annual_report_announced_after_quarter():
     assert r['q_roe_ttm'] is None
 
 
+def test_restatement_uses_latest_announced_version():
+    """同一 (ts_code, end_date) 有更正公告时取 ann_date 最新的一版，TTM 随之重算。
+
+    口径与 ``build_new_factors.first_period`` / ``store.latest_announced_as_of`` /
+    ``fundamental_factors._dedupe_period`` 一致：更正/重述覆盖旧版。
+    """
+    rows = [
+        # 2021Q1 与 2021 年报，作为 TTM 的扣减项与加回项
+        {'ts_code': '000001.SZ', 'end_date': date(2021, 3, 31),
+         'ann_date': date(2021, 4, 28), 'revenue': 80.0, 'gross_profit': 32.0,
+         'parent_net_profit': 8.0, 'total_assets': 1000.0,
+         'total_equity': 500.0, 'operating_cf': 6.0},
+        {'ts_code': '000001.SZ', 'end_date': date(2021, 12, 31),
+         'ann_date': date(2022, 3, 30), 'revenue': 400.0, 'gross_profit': 160.0,
+         'parent_net_profit': 40.0, 'total_assets': 1000.0,
+         'total_equity': 500.0, 'operating_cf': 32.0},
+        # 2022Q1 原公告
+        {'ts_code': '000001.SZ', 'end_date': date(2022, 3, 31),
+         'ann_date': date(2022, 4, 28), 'revenue': 100.0, 'gross_profit': 40.0,
+         'parent_net_profit': 10.0, 'total_assets': 1000.0,
+         'total_equity': 500.0, 'operating_cf': 8.0},
+        # 2022Q1 更正公告（营收 100→130、归母 10→13、经营现金流 8→10.4）
+        {'ts_code': '000001.SZ', 'end_date': date(2022, 3, 31),
+         'ann_date': date(2022, 8, 30), 'revenue': 130.0, 'gross_profit': 52.0,
+         'parent_net_profit': 13.0, 'total_assets': 1000.0,
+         'total_equity': 500.0, 'operating_cf': 10.4},
+    ]
+    inc, bal, cf = _frames_from_rows(rows)
+    rep = build_pit_reports(inc, bal, cf)
+
+    q1 = rep.filter(pl.col('end_date') == date(2022, 3, 31))
+    assert q1.height == 1, '同一报告期的两个公告版本必须先合并为一行'
+    r = q1.row(0, named=True)
+    assert r['ann_date'] == date(2022, 8, 30)
+    # 取最新版：130 + 400 − 80 = 450；取最早版会是 100 + 400 − 80 = 420
+    assert r['revenue__ttm'] == pytest.approx(450.0)
+    assert r['parent_net_profit__ttm'] == pytest.approx(45.0)
+    assert r['operating_cf__ttm'] == pytest.approx(36.4)
+    assert r['q_roe_ttm'] == pytest.approx(45.0 / 500.0)
+    assert r['q_gross_margin'] == pytest.approx(0.4)
+
+
 # ---------------------------------------------------------------------------
 # 财务时效守卫（方案 B24）：陈旧值不得冒充当期
 # ---------------------------------------------------------------------------
