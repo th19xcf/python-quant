@@ -145,6 +145,10 @@ extend-exclude = '''
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 根目录加入 sys.path：CI 用 `poetry run pytest`（控制台脚本）启动，cwd 不会自动进
+# sys.path，tests 里的 `import src.*` 会 ModuleNotFoundError('src') 而在收集期全灭；
+# 本机惯用 `python -m pytest` 会把 cwd 塞进 sys.path[0]，因而掩盖了这个问题。
+pythonpath = ["."]
 # 默认套件排除墙钟性能门禁（-m perf），避免机器负载波动导致假红；
 # 性能回归请显式执行 `pytest -m perf`。
 addopts = "-q -m 'not perf'"

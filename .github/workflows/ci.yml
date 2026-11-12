@@ -6,7 +6,9 @@ on:
 
 jobs:
   quality:
-    runs-on: ubuntu-latest
+    # 钉死 24.04：ubuntu-latest 正在向 26.04 迁移（runner-images#14748），
+    # 依赖面会随标签漂移；当前复现与验证证据都建立在 24.04 上。
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       QT_QPA_PLATFORM: offscreen
@@ -29,17 +31,18 @@ jobs:
         run: poetry run ruff check src tests
       - name: Type check
         run: poetry run mypy src
-      - name: Collect-only diagnostics
+      - name: Failure probe diagnostics
         if: always()
         run: |
           set +e
-          poetry run python -c "import PySide6.QtWidgets" > /tmp/pyside6.txt 2>&1
-          imp=$(tail -3 /tmp/pyside6.txt | tr '\n' '|')
-          out=$(poetry run pytest --collect-only -q 2>&1)
-          echo "$out" | head -60
-          errs=$(echo "$out" | grep -E '^E   |^ERROR ' | sort -u | head -20 | tr '\n' '|')
-          echo "::error title=pyside6-import::${imp}"
-          echo "::error title=collect-errors::${errs}"
+          out=$(poetry run pytest --cov=src --cov-report=term-missing 2>&1)
+          echo "$out" | tail -30
+          uniq=$(echo "$out" | grep -E '^E   ' | sort -u | head -6 | tr '\n' '|')
+          ids=$(echo "$out" | grep -E '^(FAILED|ERROR) ' | head -30 | tr '\n' '|')
+          summ=$(echo "$out" | grep -E '[0-9]+ (passed|failed)' | tail -1 | tr '\n' '|')
+          echo "::error title=uniq-errors::${uniq}"
+          echo "::error title=nodeids::${ids}"
+          echo "::error title=summary::${summ}"
           exit 0
       - name: Test with coverage gate
         run: poetry run pytest --cov=src --cov-report=term-missing
