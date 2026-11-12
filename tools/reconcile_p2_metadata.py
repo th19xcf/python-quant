@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.data.atomic_write import write_parquet_atomic  # noqa: E402
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
 
 DEFAULT_ROOT = ROOT / 'data' / 'local_store'
 DEFAULT_REPORT = ROOT / 'artifacts' / 'p2_reconcile' / 'report.json'
@@ -181,9 +181,9 @@ def main(argv: list[str] | None = None) -> int:
         anomaly_dir.mkdir(parents=True, exist_ok=True)
         write_parquet_atomic(placeholders, anomaly_dir / 'placeholder_codes.parquet')
         write_parquet_atomic(gaps, anomaly_dir / 'coverage_gaps.parquet')
-        meta['path'].write_text(
+        write_text_atomic(
             json.dumps(meta['payload'], ensure_ascii=False, indent=2) + '\n',
-            encoding='utf-8')
+            meta['path'])
 
     print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
     return 0

@@ -58,7 +58,7 @@ from polars.exceptions import PolarsError
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.data.atomic_write import write_parquet_atomic  # noqa: E402
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
 from src.data.trading_calendar import (  # noqa: E402
     BENCHMARK_CODES,
     configured_holidays,
@@ -232,9 +232,7 @@ def write_outputs(
         write_parquet_atomic(frame, parquet_path)
         logger.info(f'[calendar] 已写入 {len(frame)} 个交易日: {parquet_path}')
     if not same_coverage:
-        tmp_json = coverage_path.with_name(coverage_path.name + '.tmp')
-        tmp_json.write_text(text, encoding='utf-8', newline='\n')
-        tmp_json.replace(coverage_path)
+        write_text_atomic(text, coverage_path)
         logger.info(f'[calendar] coverage 已写入: {coverage_path}')
     return True
 
