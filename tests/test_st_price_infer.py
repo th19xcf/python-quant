@@ -123,6 +123,7 @@ def test_query_semantics(tmp_path) -> None:
         'end_date': date(2000, 12, 1), 'flag': spi.FLAG_SUSPECTED,
         'source': spi.SOURCE_PRICE, 'confidence': spi.CONF_LOW,
         'evidence': '{}', 'fetched_at': datetime.now(),
+        'excluded_s_share': False,
     }], schema=spi._PRICE_SCHEMA).write_parquet(spi.price_path(root))
 
     hit = spi.suspected_status_at(root, 'TEST.SZ', date(2000, 8, 1))
@@ -195,3 +196,135 @@ def test_open_ended_interval_evidence_end_is_null() -> None:
     evidence = json.loads(row['evidence'])
     assert evidence['end'] is None
     assert evidence['days'] == sum(1 for day in days if day >= row['start_date'])
+
+
+# ----------------------------------------------------------------------
+# 未股改 S 股：与 ST 同受 ±5% 约束，不得判成疑似 ST
+# ----------------------------------------------------------------------
+def test_s_share_name_classification() -> None:
+    """``S+`` 是未股改；``ST``/``*ST``/``SST``/``S*ST`` 归风险警示，不能当 S 证据。"""
+    assert spi.is_s_share_name('S东湖新')
+    assert spi.is_s_share_name('S上石化')
+    assert spi.is_s_share_name(' S钱江水 ')
+    assert not spi.is_s_share_name('ST哈药')
+    assert not spi.is_s_share_name('*ST哈药')
+    assert not spi.is_s_share_name('SST哈药')
+    assert not spi.is_s_share_name('S*ST哈药')
+    assert not spi.is_s_share_name('哈药股份')
+    assert not spi.is_s_share_name('G皖维')
+    assert not spi.is_s_share_name(None)
+
+
+def _write_s_sources(root, history_rows, em_rows) -> None:
+    """落一份最小 ``name_history`` + 东财曾用名，供 S 区间表构建用。"""
+    hist_dir = root / 'meta'
+    hist_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(history_rows, schema={'ts_code': pl.Utf8, 'name': pl.Utf8,
+                                      'start_date': pl.Date, 'end_date': pl.Date}
+                 ).write_parquet(hist_dir / 'name_history.parquet')
+    em_dir = root / 'meta' / 'st' / 'raw'
+    em_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(em_rows, schema={'secucode': pl.Utf8, 'name': pl.Utf8,
+                                 'former_names': pl.Utf8}
+                 ).write_parquet(em_dir / 'em_org_basic.parquet')
+
+
+def test_s_share_intervals_cover_history_and_em_gap(tmp_path) -> None:
+    """主源给区间；``name_history`` 漏记 S 段时用「前后同名的唯一空档」补。"""
+    root = tmp_path / 'store'
+    _write_s_sources(
+        root,
+        [
+            # 主源：name_history 直接有 S 行
+            {'ts_code': '600688.SH', 'name': 'S上石化',
+             'start_date': date(2006, 10, 9), 'end_date': date(2013, 8, 19)},
+            # 漏洞：2006-10-09~2007-09-10 缺 S 段，前后都叫「西藏药业」
+            {'ts_code': '600211.SH', 'name': '西藏药业',
+             'start_date': date(1999, 7, 21), 'end_date': date(2006, 10, 8)},
+            {'ts_code': '600211.SH', 'name': '西藏药业',
+             'start_date': date(2007, 9, 10), 'end_date': None},
+            # 两个空档：无法定性，必须进 unresolved 不猜
+            {'ts_code': '600999.SH', 'name': '某公司',
+             'start_date': date(2000, 1, 1), 'end_date': date(2002, 1, 1)},
+            {'ts_code': '600999.SH', 'name': '某公司',
+             'start_date': date(2003, 1, 1), 'end_date': date(2004, 1, 1)},
+            {'ts_code': '600999.SH', 'name': '某公司',
+             'start_date': date(2005, 1, 1), 'end_date': date(2006, 1, 1)},
+        ],
+        [
+            {'secucode': '600688.SH', 'name': '上石化', 'former_names': '上海石化→S上石化'},
+            {'secucode': '600211.SH', 'name': '西藏药业', 'former_names': '西藏药业→S藏药业'},
+            {'secucode': '600999.SH', 'name': '某公司', 'former_names': '某公司→S某公司'},
+            {'secucode': '600777.SH', 'name': '某无缺口', 'former_names': '某无缺口'},
+        ])
+    frame, stats = spi.load_s_share_intervals(root)
+    got = {(row['ts_code'], row['name']): (row['start_date'], row['end_date'],
+                                          row['source']) for row in frame.to_dicts()}
+    assert got[('600688.SH', 'S上石化')] == (date(2006, 10, 9), date(2013, 8, 19),
+                                            spi.SOURCE_S_NAME_HISTORY)
+    assert got[('600211.SH', 'S藏药业')] == (date(2006, 10, 9), date(2007, 9, 9),
+                                            spi.SOURCE_S_EM_GAP)
+    assert stats['em_gap_filled'] == ['600211.SH']
+    assert stats['unresolved_ambiguous_gap'] == ['600999.SH']
+    assert stats['em_available'] is True
+
+
+def test_empty_s_table_restores_suspected_flag(tmp_path) -> None:
+    """反例自测：S 区间表置空后，原来被排除的段必须重新算成疑似 ST。
+
+    证明排除逻辑真的在起作用，而不是「本来就不判」。
+    """
+    suspected = pl.DataFrame([{
+        'ts_code': '600211.SH', 'start_date': date(2006, 12, 21),
+        'end_date': date(2007, 8, 2), 'flag': spi.FLAG_SUSPECTED,
+        'source': spi.SOURCE_PRICE, 'confidence': '',
+        'evidence': '{}', 'fetched_at': datetime.now(),
+        'excluded_s_share': False,
+    }], schema=spi._PRICE_SCHEMA)
+    coverage = {'600211.SH': (date(1997, 1, 1), date(2100, 1, 1))}
+    s_frame = pl.DataFrame([{
+        'ts_code': '600211.SH', 'start_date': date(2006, 10, 9),
+        'end_date': date(2007, 9, 10), 'name': 'S藏药业',
+        'source': spi.SOURCE_S_EM_GAP,
+    }], schema=spi._S_SHARE_SCHEMA)
+
+    counters = {'excluded_s_share_intervals': 0, 's_partial_overlap_intervals': 0}
+    marked = spi._apply_s_exclusion(suspected, s_frame, counters)
+    assert marked['excluded_s_share'].to_list() == [True]
+    assert marked['excluded_s_share'].null_count() == 0
+    assert counters['excluded_s_share_intervals'] == 1
+    annotated, compare = spi._annotate(marked, {}, coverage)
+    assert compare['metrics']['suspected_intervals'] == 0
+    assert compare['metrics']['excluded_s_share_intervals'] == 1
+    assert compare['classes']['suspected_only'] == []
+    # confidence 仍按原有规则给出（既有列逐值不变）
+    assert annotated['confidence'].to_list() == [spi.CONF_LOW]
+
+    # 反例：S 区间表置空 → 同一段必须重新计入疑似
+    empty = spi._S_SHARE_SCHEMA
+    counters_zero = {'excluded_s_share_intervals': 0, 's_partial_overlap_intervals': 0}
+    restored = spi._apply_s_exclusion(suspected, pl.DataFrame(schema=empty), counters_zero)
+    assert restored['excluded_s_share'].to_list() == [False]
+    _, compare_restored = spi._annotate(restored, {}, coverage)
+    assert compare_restored['metrics']['suspected_intervals'] == 1
+    assert compare_restored['metrics']['excluded_s_share_intervals'] == 0
+
+
+def test_partial_overlap_is_not_excluded() -> None:
+    """跨 S 区间边界的段价格证据混源，保留为疑似并单独计数。"""
+    suspected = pl.DataFrame([{
+        'ts_code': '600211.SH', 'start_date': date(2006, 1, 1),
+        'end_date': date(2007, 8, 2), 'flag': spi.FLAG_SUSPECTED,
+        'source': spi.SOURCE_PRICE, 'confidence': '',
+        'evidence': '{}', 'fetched_at': datetime.now(),
+        'excluded_s_share': False,
+    }], schema=spi._PRICE_SCHEMA)
+    s_frame = pl.DataFrame([{
+        'ts_code': '600211.SH', 'start_date': date(2006, 10, 9),
+        'end_date': date(2007, 9, 10), 'name': 'S藏药业',
+        'source': spi.SOURCE_S_EM_GAP,
+    }], schema=spi._S_SHARE_SCHEMA)
+    counters = {'excluded_s_share_intervals': 0, 's_partial_overlap_intervals': 0}
+    marked = spi._apply_s_exclusion(suspected, s_frame, counters)
+    assert marked['excluded_s_share'].to_list() == [False]
+    assert counters['s_partial_overlap_intervals'] == 1

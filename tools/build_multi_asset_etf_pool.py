@@ -7,7 +7,7 @@ r"""构建多资产（境内权益 / 利率债 / 黄金 / 商品）ETF 候选池
 - ``data/local_store/meta/multi_asset/etf_pool.parquet``：一只标的一行
 - ``data/local_store/meta/multi_asset/etf_gap_detail.csv``：中间断档逐段明细
 - ``data/local_store/meta/multi_asset/etf_event_gaps.csv``：未登记除权事件明细
-- ``data/local_store/meta/multi_asset/summary.json``：分档计数与统一起点
+- ``docs/evidence/summary/summary.json``：分档计数与统一起点（一次性证据，随 Git 留存）
 - ``data/local_store/meta/multi_asset/manifest.json``：行数 / 口径 / SHA256
 
 候选先写 ``_staging/multi_asset_etf_20261110/``，校验通过后原子替换。
@@ -562,11 +562,15 @@ def apply_staging(paths: dict[str, Path], summary: dict[str, Any]) -> dict[str, 
                       TARGET_DIR / 'etf_pool.csv', encoding='utf-8-sig')
     for key, name in (('gap', 'etf_gap_detail.csv'), ('event', 'etf_event_gaps.csv')):
         write_text_atomic(paths[key].read_text(encoding='utf-8'), TARGET_DIR / name)
+    # 2026-11-12 起分档汇总是一次性口径证据，落 docs/evidence 随 Git 留存，
+    # 不进正式层、不列进 manifest 的 files（DG-32 入层三问第①问不成立）
+    evidence = ROOT / 'docs' / 'evidence' / 'summary'
+    evidence.mkdir(parents=True, exist_ok=True)
     write_text_atomic(
-        json.dumps(summary, ensure_ascii=False, indent=2), TARGET_DIR / 'summary.json')
+        json.dumps(summary, ensure_ascii=False, indent=2), evidence / 'summary.json')
 
     files = ['etf_pool.parquet', 'etf_pool.csv', 'etf_gap_detail.csv',
-             'etf_event_gaps.csv', 'summary.json']
+             'etf_event_gaps.csv']
     manifest: dict[str, Any] = {
         'path': 'data/local_store/meta/multi_asset/',
         'semantics': '多资产（境内权益/利率债/黄金/商品）ETF 候选池与数据口径',

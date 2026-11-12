@@ -42,10 +42,37 @@
   ``resolve_limit_pct`` 逐日推导后切分。
 - 停牌/长期无成交：第 4 条独立拦截，计入 ``rejected_illiquid``。
 
+为什么必须排除「未股改 S 股」
+-----------------------------
+A 股 ±5% 涨跌幅有**两个**来源：ST/\\*ST 风险警示，以及未完成股权分置改革的
+「S 股」（简称前加 ``S``）。两者在行情上完全同形——都是「被 5% 的墙压住」，
+只看价格无法区分。2026-11-13 的 B4-b 裁定实测：1,443 段疑似区间中有 29 段
+完全落在 S 股区间内、且与确证 ST 零重叠，全部是 S 制度造成的假阳性。
+
+因此本模块按简称另建一张 **S 简称区间表**（不落独立正式文件，每次运行由
+:func:`load_s_share_intervals` 现算，避免新增未登记的数据路径）：
+
+1. 主源 ``meta/name_history.parquet``：简称以 ``S`` 开头、且不是
+   ``ST``/``*ST``/``SST``/``S*ST`` 的区间（``SST`` 同时含风险警示，属 ST，
+   不得排除）；
+2. 补源 ``meta/st/raw/em_org_basic.parquet`` 的 ``former_names``（东财 F10
+   曾用名）：该源只有名字序列、没有日期。当某标的出现过 S 名而
+   ``name_history`` 没有对应 S 行时，取「前后同名的唯一空档」作为该 S 区间
+   ——``name_history`` 漏记 S 段时会留下这样的空洞（实测 600211 缺
+   ``S藏药业``、600283 缺 ``S钱江水``）。空档不唯一或不存在时**不猜**，
+   记入 ``s_share.unresolved_codes``。
+
+命中后在产物里标 ``excluded_s_share=True``（**不改** ``flag``，仍是
+``suspected_st``），统计口径与消费方一律以该列为准：只有
+``excluded_s_share=False`` 才是「真判疑似 ST」。只做「完全落袋」判定——跨
+S 区间边界的段价格证据混源、无法归因，保留为疑似并计入
+``s_partial_overlap_intervals``。
+
 落盘
 ----
-``{store_root}/meta/st/st_price_inferred.parquet``（``flag='suspected_st'``）+
-``price_inference.json``（规则参数、命中统计、与确证区间的对拍结果）。
+``{store_root}/meta/st/st_price_inferred.parquet``（``flag='suspected_st'``，
+另有 ``excluded_s_share`` 列）+ ``price_inference.json``（规则参数、命中统计、
+S 简称区间表摘要、与确证区间的对拍结果）。
 确证区间表 ``st_intervals.parquet`` 只读，不修改。
 
 查询
@@ -76,6 +103,9 @@ SOURCE_PRICE = 'price_inference'
 CONF_HIGH = 'high'
 CONF_LOW = 'low'
 
+SOURCE_S_NAME_HISTORY = 'name_history'
+SOURCE_S_EM_GAP = 'em_former_names_gap'
+
 WINDOW = 120
 CAP_TOL = 0.056          # 5% 上限 + 0.6% 容差
 TOUCH_MIN = 0.045        # 贴近 5% 的「触碰」阈值
@@ -90,6 +120,11 @@ _PRICE_SCHEMA = {
     'ts_code': pl.Utf8, 'start_date': pl.Date, 'end_date': pl.Date,
     'flag': pl.Utf8, 'source': pl.Utf8, 'confidence': pl.Utf8,
     'evidence': pl.Utf8, 'fetched_at': pl.Datetime,
+    'excluded_s_share': pl.Boolean,
+}
+_S_SHARE_SCHEMA = {
+    'ts_code': pl.Utf8, 'start_date': pl.Date, 'end_date': pl.Date,
+    'name': pl.Utf8, 'source': pl.Utf8,
 }
 _PRICE_CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
 
@@ -124,6 +159,163 @@ def _read_cached(path: Path, cache: dict[str, tuple[int, pl.DataFrame]],
 
 def load_price_inferred(store_root: Path | str) -> pl.DataFrame | None:
     return _read_cached(price_path(store_root), _PRICE_CACHE, _PRICE_SCHEMA)
+
+
+# ----------------------------------------------------------------------
+# S 简称区间表（未股改 S 股同样受 ±5% 约束，必须与 ST 区分）
+# ----------------------------------------------------------------------
+def is_s_share_name(name: Any) -> bool:
+    """简称是否属于「未股改 S 股」：以 ``S`` 开头，但不是风险警示类。
+
+    ``ST`` / ``*ST`` 是风险警示；``SST`` / ``S*ST`` 同时含「未股改」与
+    「风险警示」两个标记，**优先级归 ST**——它们确实处于风险警示期，
+    不能作为「只是 S 股制度」的证据。
+    """
+    text = str(name or '').strip().upper()
+    if not text:
+        return False
+    if text.startswith(('ST', '*ST', 'SST', 'S*ST')):
+        return False
+    return text.startswith('S')
+
+
+def _em_former_s_names(store_root: Path | str) -> tuple[dict[str, str], bool]:
+    """东财 F10 曾用名里的 S 名，``code → 第一个 S 名``；第二个返回值表示源是否存在。"""
+    from src.data.st_name_history import em_raw_path  # noqa: PLC0415
+
+    path = em_raw_path(store_root)
+    if not path.is_file():
+        logger.warning(f'[st-price] 缺少东财曾用名原始件 {path}，'
+                       'S 简称区间表只能由 name_history 单源构建')
+        return {}, False
+    frame = pl.read_parquet(path, columns=['secucode', 'former_names'])
+    out: dict[str, str] = {}
+    for row in frame.to_dicts():
+        names = [part.strip() for part in str(row['former_names'] or '').split('→')
+                 if part.strip()]
+        hits = [name for name in names if is_s_share_name(name)]
+        if hits:
+            out[str(row['secucode'])] = hits[0]
+    return out, True
+
+
+def _same_name_gaps(history: list[dict[str, Any]]
+                    ) -> list[tuple[date, date]]:
+    """``name_history`` 里「前后同名、中间断开」的空洞区间。
+
+    ``tushare namechange`` 漏记某段简称时会留下这种空洞：前一条的
+    ``end_date`` 与后一条的 ``start_date`` 之间存在空隙，而两条名称相同。
+    """
+    gaps: list[tuple[date, date]] = []
+    for prev, nxt in zip(history, history[1:], strict=False):
+        if prev['end_date'] is None or prev['name'] != nxt['name']:
+            continue
+        begin = prev['end_date'] + timedelta(days=1)
+        stop = nxt['start_date'] - timedelta(days=1)
+        if stop >= begin:
+            gaps.append((begin, stop))
+    return gaps
+
+
+def load_s_share_intervals(store_root: Path | str
+                           ) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """构建 S 简称区间表（现算，不落独立正式文件）。
+
+    返回 ``(区间表, 统计)``。区间表列见 :data:`_S_SHARE_SCHEMA`；
+    统计含各源命中数、无法定日期的标的清单，写进 ``price_inference.json``。
+    """
+    history_path = Path(store_root) / 'meta' / 'name_history.parquet'
+    if not history_path.is_file():
+        raise RuntimeError(f'缺少名称历史表 {history_path}，无法构建 S 简称区间表；'
+                           'S 股与 ST 无法区分时不允许静默产出（DG-27）')
+    history = pl.read_parquet(history_path, columns=['ts_code', 'name',
+                                                     'start_date', 'end_date'])
+    rows: list[dict[str, Any]] = []
+    for row in history.to_dicts():
+        if is_s_share_name(row['name']):
+            rows.append({'ts_code': row['ts_code'], 'start_date': row['start_date'],
+                         'end_date': row['end_date'], 'name': row['name'],
+                         'source': SOURCE_S_NAME_HISTORY})
+    covered = {row['ts_code'] for row in rows}
+    em_names, em_available = _em_former_s_names(store_root)
+    by_code: dict[str, list[dict[str, Any]]] = {}
+    for row in history.to_dicts():
+        by_code.setdefault(row['ts_code'], []).append(row)
+    for items in by_code.values():
+        items.sort(key=lambda item: item['start_date'])
+
+    gap_filled: list[str] = []
+    no_gap: list[str] = []
+    ambiguous: list[str] = []
+    for code, s_name in sorted(em_names.items()):
+        if code in covered:
+            continue
+        gaps = _same_name_gaps(by_code.get(code, []))
+        if len(gaps) == 1:
+            gap_filled.append(code)
+            rows.append({'ts_code': code, 'start_date': gaps[0][0],
+                         'end_date': gaps[0][1], 'name': s_name,
+                         'source': SOURCE_S_EM_GAP})
+        elif not gaps:
+            no_gap.append(code)
+        else:
+            ambiguous.append(code)
+    frame = (pl.DataFrame(rows, schema=_S_SHARE_SCHEMA) if rows
+             else pl.DataFrame(schema=_S_SHARE_SCHEMA))
+    stats = {
+        'name_history_rows': int((frame['source'] == SOURCE_S_NAME_HISTORY).sum())
+        if frame.height else 0,
+        'em_available': em_available,
+        'em_gap_filled': gap_filled,
+        'unresolved_codes': sorted(no_gap + ambiguous),
+        'unresolved_no_gap': sorted(no_gap),
+        'unresolved_ambiguous_gap': sorted(ambiguous),
+    }
+    return frame, stats
+
+
+def _apply_s_exclusion(frame: pl.DataFrame, s_intervals: pl.DataFrame,
+                       counters: dict[str, int]) -> pl.DataFrame:
+    """标记「完全落在 S 简称区间内」的疑似段（``excluded_s_share=True``）。
+
+    只加列、不改 ``flag``：``flag`` 仍是 ``suspected_st``，是否计入统计与
+    是否被消费方采信一律看这一列。跨 S 区间边界的段价格证据混源、无法归因，
+    保留为疑似并计入 ``s_partial_overlap_intervals``。
+    """
+    if frame.height == 0:
+        return frame.with_columns(pl.lit(False).alias('excluded_s_share'))
+    spans: dict[str, list[tuple[date, date | None]]] = {}
+    for item in s_intervals.to_dicts():
+        spans.setdefault(item['ts_code'], []).append(
+            (item['start_date'], item['end_date']))
+    far = date(2100, 1, 1)
+    flags: list[bool] = []
+    for row in frame.to_dicts():
+        start = row['start_date']
+        stop = row['end_date'] or far
+        excluded = False
+        partial = False
+        for s_start, s_end in spans.get(row['ts_code'], []):
+            s_stop = s_end or far
+            if min(stop, s_stop) < max(start, s_start):
+                continue
+            if start >= s_start and stop <= s_stop:
+                excluded = True
+            else:
+                partial = True
+        flags.append(excluded)
+        if excluded:
+            counters['excluded_s_share_intervals'] += 1
+        elif partial:
+            counters['s_partial_overlap_intervals'] += 1
+    marked = frame.with_columns(
+        pl.Series('excluded_s_share', flags, dtype=pl.Boolean))
+    nulls = int(marked['excluded_s_share'].null_count())
+    if nulls:
+        # 兜底：未命中任何分支时不允许落成 null（DG-31）
+        raise RuntimeError(f'excluded_s_share 出现 {nulls} 个空值，'
+                           'S 区间匹配存在未覆盖分支')
+    return marked
 
 
 # ----------------------------------------------------------------------
@@ -279,6 +471,7 @@ def _infer_code(ts_code: str, frame: pl.DataFrame | None, counters: dict[str, in
                 'confidence': '',
                 'evidence': '',
                 'fetched_at': datetime.now(),
+                'excluded_s_share': False,
             })
     merged = _merge_rows(rows)
     # evidence 必须在合并之后按最终区间重算：合并会把相邻段接起来、改写 end_date，
@@ -416,18 +609,26 @@ def _annotate(suspected: pl.DataFrame,
 
     覆盖窗口外的疑似区间（如沪市 2005 年前的推测）无法用名称源验证，单独计数，
     不计入误判率——否则会把「无法验证」当成「误判」。
+
+    ``excluded_s_share=True`` 的段（S 股制度造成的假阳性）仍照常计算
+    ``confidence``（保持既有列逐值不变），但**不进任何统计与分类**：它们的
+    成因不是 ST，计入会把精确率与召回率一起带偏。
     """
     rows = suspected.to_dicts()
     classes: dict[str, Any] = {'both': [], 'confirmed_only': [],
                                'suspected_only': [], 'unverified': []}
     suspected_total = suspected_overlap = suspected_validated = 0
     suspected_validated_overlap = 0
+    excluded_intervals = 0
     for row in rows:
         code = row['ts_code']
         items = confirmed.get(code, [])
         overlap = sum(_overlap(row['start_date'], row['end_date'], start, end)
                       for start, end, _flag in items)
         row['confidence'] = CONF_HIGH if overlap else CONF_LOW
+        if row.get('excluded_s_share'):
+            excluded_intervals += 1
+            continue
         start_day = row['start_date']
         end_day = min(row['end_date'] or date.today(), date.today())
         days = (end_day - start_day).days + 1
@@ -458,9 +659,10 @@ def _annotate(suspected: pl.DataFrame,
                                     'overlap_days': overlap})
 
     matched_confirmed = 0
+    kept = [row for row in rows if not row.get('excluded_s_share')]
     for code, items in confirmed.items():
         for start, end, flag in items:
-            hits = [row for row in rows if row['ts_code'] == code
+            hits = [row for row in kept if row['ts_code'] == code
                     and _overlap(row['start_date'], row['end_date'], start, end)]
             if hits:
                 matched_confirmed += 1
@@ -469,7 +671,8 @@ def _annotate(suspected: pl.DataFrame,
                     {'ts_code': code, 'start': str(start),
                      'end': str(end) if end else '', 'flag': flag})
     metrics = {
-        'suspected_intervals': len(rows),
+        'suspected_intervals': len(kept),
+        'excluded_s_share_intervals': excluded_intervals,
         'confirmed_intervals': matched_confirmed + len(classes['confirmed_only']),
         'both_intervals': len(classes['both']),
         'confirmed_only_intervals': len(classes['confirmed_only']),
@@ -550,12 +753,14 @@ def run(store_root: Path | str, *, codes: Iterable[str] | None = None,
         raise RuntimeError('确证区间表不存在，先执行 python -m src.data.st_history build')
     coverage_map = {row['ts_code']: (row['coverage_start'], row['coverage_end'])
                     for row in coverage.to_dicts()} if coverage is not None else {}
+    s_intervals, s_stats = load_s_share_intervals(root)
 
     counters = {
         'codes_total': len(code_list), 'no_quotes': 0, 'not_inferable': 0,
         'windows_total': 0, 'windows_flagged': 0, 'rejected_breach': 0,
         'rejected_few_touch': 0, 'rejected_low_amp': 0, 'rejected_illiquid': 0,
         'exdiv_false_removed': 0, 'neg_only_intervals': 0,
+        'excluded_s_share_intervals': 0, 's_partial_overlap_intervals': 0,
     }
     rows: list[dict[str, Any]] = []
     for index, code in enumerate(code_list):
@@ -572,6 +777,7 @@ def run(store_root: Path | str, *, codes: Iterable[str] | None = None,
 
     suspected = pl.DataFrame(rows, schema=_PRICE_SCHEMA) if rows else pl.DataFrame(
         schema=_PRICE_SCHEMA)
+    suspected = _apply_s_exclusion(suspected, s_intervals, counters)
     confirmed = _confirmed_by_code(intervals)
     annotated, compare = _annotate(suspected, confirmed, coverage_map)
     _write_atomic(annotated, price_path(root))
@@ -585,6 +791,7 @@ def run(store_root: Path | str, *, codes: Iterable[str] | None = None,
         'min_run': MIN_RUN,
         'counters': counters,
         'metrics': compare['metrics'],
+        's_share': _s_share_summary(annotated, s_intervals, s_stats),
         'miss_reasons': misses,
         'classes': {
             'both': len(compare['classes']['both']),
@@ -595,7 +802,8 @@ def run(store_root: Path | str, *, codes: Iterable[str] | None = None,
             'suspected_only_samples': compare['classes']['suspected_only'][:60],
         },
         'early_fill': fills,
-        'suspected_codes': annotated['ts_code'].n_unique() if annotated.height else 0,
+        'suspected_codes': (annotated.filter(pl.col('excluded_s_share').not_())['ts_code']
+                            .n_unique() if annotated.height else 0),
     }
     summary_path(root).write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
@@ -612,15 +820,45 @@ def run(store_root: Path | str, *, codes: Iterable[str] | None = None,
     return summary
 
 
+def _s_share_summary(annotated: pl.DataFrame, s_intervals: pl.DataFrame,
+                     stats: dict[str, Any]) -> dict[str, Any]:
+    """把 S 简称区间表与本次被排除的段写进 JSON，供事后复核。"""
+    name_by_code: dict[str, str] = {}
+    for item in s_intervals.to_dicts():
+        name_by_code.setdefault(item['ts_code'], item['name'])
+    detail = []
+    if annotated.height:
+        for row in annotated.filter(pl.col('excluded_s_share')).to_dicts():
+            detail.append({
+                'ts_code': row['ts_code'],
+                'start': str(row['start_date']),
+                'end': str(row['end_date']) if row['end_date'] else '',
+                's_name': name_by_code.get(row['ts_code'], ''),
+            })
+    return {
+        'interval_rows': s_intervals.height,
+        'interval_codes': s_intervals['ts_code'].n_unique() if s_intervals.height else 0,
+        'name_history_rows': stats['name_history_rows'],
+        'em_gap_rows': int((s_intervals['source'] == SOURCE_S_EM_GAP).sum())
+        if s_intervals.height else 0,
+        'em_available': stats['em_available'],
+        'unresolved_codes': stats['unresolved_codes'],
+        'excluded_intervals': len(detail),
+        'detail': detail,
+    }
+
+
 def _early_fill(suspected: pl.DataFrame,
                 confirmed: dict[str, list[tuple[date, date | None, str]]]) -> dict[str, Any]:
     """统计「行情推断比名称源多补出的早年标的」。"""
     cutoff = st_history.CNINFO_SAFE_START
-    codes = suspected['ts_code'].n_unique() if suspected.height else 0
+    kept = (suspected.filter(pl.col('excluded_s_share').not_())
+            if suspected.height else suspected)
+    codes = kept['ts_code'].n_unique() if kept.height else 0
     no_record = set()
     earlier = set()
     early_codes = set()
-    for row in suspected.to_dicts():
+    for row in kept.to_dicts():
         items = confirmed.get(row['ts_code'], [])
         if not items:
             no_record.add(row['ts_code'])
@@ -642,7 +880,8 @@ def suspected_status_at(store_root: Path | str, code: str, as_of: Any) -> st_his
     target = st_history._normalize(code)  # noqa: SLF001
     hits = frame.filter(
         (pl.col('ts_code') == target) & (pl.col('start_date') <= day)
-        & ((pl.col('end_date').is_null()) | (pl.col('end_date') >= day)))
+        & ((pl.col('end_date').is_null()) | (pl.col('end_date') >= day))
+        & pl.col('excluded_s_share').not_())
     if hits.height == 0:
         return None
     row = hits.sort('start_date').to_dicts()[-1]
@@ -663,7 +902,8 @@ def suspected_intervals_for_backtest(store_root: Path | str, codes: Iterable[str
     rows = frame.filter(
         pl.col('ts_code').is_in(list(wanted))
         & (pl.col('start_date') <= end_day)
-        & ((pl.col('end_date').is_null()) | (pl.col('end_date') >= start_day)))
+        & ((pl.col('end_date').is_null()) | (pl.col('end_date') >= start_day))
+        & pl.col('excluded_s_share').not_())
     out: dict[str, list[dict[str, Any]]] = {}
     for row in rows.sort('start_date').to_dicts():
         out.setdefault(row['ts_code'], []).append({
@@ -709,7 +949,8 @@ def samples(store_root: Path | str, pairs: list[tuple[str, str, str]] | None = N
         c_start_day = st_history._as_date(c_start)  # noqa: SLF001
         c_end_day = st_history._as_date(c_end)  # noqa: SLF001
         hits = [] if suspected is None else [
-            row for row in suspected.filter(pl.col('ts_code') == code).to_dicts()
+            row for row in suspected.filter(
+                (pl.col('ts_code') == code) & pl.col('excluded_s_share').not_()).to_dicts()
             if c_start_day and _overlap(row['start_date'], row['end_date'],
                                         c_start_day, c_end_day or date.today())]
         if not hits:
@@ -744,7 +985,7 @@ def samples(store_root: Path | str, pairs: list[tuple[str, str, str]] | None = N
     negatives_out: list[dict[str, Any]] = []
     for code in negatives or ['600000.SH', '600519.SH', '000333.SZ']:
         neg_hits = 0 if suspected is None else suspected.filter(
-            pl.col('ts_code') == code).height
+            (pl.col('ts_code') == code) & pl.col('excluded_s_share').not_()).height
         negatives_out.append({'ts_code': code, 'suspected_intervals': neg_hits})
     errors = [row['start_error_td'] for row in rows if row.get('start_error_td') is not None]
     gaps = [row['end_gap_td'] for row in rows if row.get('end_gap_td') is not None]
