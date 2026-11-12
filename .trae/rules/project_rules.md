@@ -130,6 +130,8 @@ print(f'synced {len(changed)} files, removed {len(deleted)} deleted')
 - **Git 跟踪文件的镜像以源仓 HEAD 的 blob 为准，不得直接 `copy2` 工作区文件（2026-11-12 起）**：镜像前逐路径比对 `git -C <源仓> hash-object <path>` 与 `git -C <源仓> rev-parse HEAD:<path>`，不等即说明该文件工作区有未提交改动（可能是他路在途成果），此时**跳过该文件**并在同步清单里记为「跳过（工作区≠HEAD）」，等源仓提交后再补镜像；确需同步时按 `git -C <源仓> show HEAD:<path>` 的内容写盘，不写工作区版本。非 Git 跟踪对象（`data/local_store/**`、`_backup/**`、`reports/**`、`logs/**` 等）不受本条约束，仍按磁盘 `copy2`。
   依据：备份仓 `2360fc4` 与 `3c17590` 的 message 自述「镜像的是工作区最新内容，其中另含他人未提交的 G-091 行，不由本任务提交」——源仓 HEAD 尚未含 G-091 时备份仓已先落库，等于把他路在途内容写进第二仓库；若源仓事后改写或放弃该改动，备份侧将成为唯一持有者且永不与 HEAD 对齐。2026-11-12 全量核对：796 个共同跟踪文件 blob 差 0，该次偏差已随源仓提交自然收敛，但成因是做法而非一次性事故。
   判定句：镜像后任一 Git 跟踪文件若 `git -C <源仓> rev-parse HEAD:<path>` ≠ `git -C <备份仓> rev-parse HEAD:<path>`（且源仓工作区该文件无未提交改动），即判该文件镜像不合格。
+- **备份仓存在「仅在其侧有意义」的文件，核对「只在备份仓」清单时必须先剔除（2026-11-12 起）**：`.github/workflows/**` 与 GitHub 专属配置（Actions workflow、分支保护、Issue/PR 模板等）只在关联 GitHub 的备份仓里生效；源仓纯本地、未配置远端、从不运行 Actions，因此这类路径「只出现在备份仓」属正常形态，**不得当作陈旧镜像删除**。判定句：核对「只在备份仓」条目前先按本清单剔除，剔除后仍存的差额才按「源仓已删未同步」处理。
+  依据：`.github/workflows/ci.yml` 在源仓 `log --all`、`log --all --diff-filter=D`、`rev-list --all --objects` 三处均零记录，从未在源仓存在过；2026-11-12 曾被初判为「唯一真正陈旧镜像」，实为源仓侧无 Actions 语义的正常差异，且该 workflow 在备份仓确在运行（GitHub Actions 已 381 次），删除等于推翻 CI 本身。
 - 备份同步完成后，再按上述 Git 提交规则请用户确认并提交
 
 ## 任务调度与超时处理规则
