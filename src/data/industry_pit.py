@@ -19,7 +19,7 @@ r"""申万官方行业分类历史 → 个股行业 PIT 区间表。
 - ``meta/industry_pit/industry_pit_sw.parquet``  区间表
 - ``meta/industry_pit/manifest.json``             源、时间、覆盖、粒度、缺口
 - ``meta/industry_pit/validation.json``           验证结果（抽样/全量比对/频率/覆盖）
-- ``meta/industry_pit/raw/``                      原始响应留档
+- ``_staging/industry_pit_20261112/raw/``          原始响应留档（采集中间态，DG-32）
 
 字段约定：
 
@@ -93,7 +93,8 @@ def validation_path(store_root: Path | str) -> Path:
 
 
 def raw_dir(store_root: Path | str) -> Path:
-    return pit_dir(store_root) / 'raw'
+    """原始响应留档目录（采集中间态）：按 DG-32 落仓库根 ``_staging/industry_pit_20261112/raw``。"""
+    return Path(store_root).resolve().parents[1] / '_staging' / 'industry_pit_20261112' / 'raw'
 
 
 def _write_atomic(frame: pl.DataFrame, path: Path) -> None:
