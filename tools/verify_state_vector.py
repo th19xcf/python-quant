@@ -244,16 +244,22 @@ def check_simple_sources(panel: pl.DataFrame, dates: list[pl.Date], store: Path,
 def check_turnover(panel: pl.DataFrame, dates: list[pl.Date], store: Path,
                    builder, report: Report) -> None:
     """情绪位独立重算：同集合的 Σ成交额 / Σ(自由流通股本 × 收盘)；顺带用同一批
-    沪深成交额重算杠杆位。"""
+    沪深成交额重算杠杆位。
+
+    两融表缺当日行时只记一条失败项并跳过该日杠杆位比对，不中断其余检查
+    （DG-31：取数必须有显式兜底，不得让「某天缺数」放大成「整轮零证据」）。
+    """
     glob = str(store / 'quotes' / 'stock' / '**' / '*.parquet')
     frame = (pl.scan_parquet(glob)
              .filter(pl.col('date').cast(pl.Date).is_in(dates))
              .select(['date', 'ts_code', 'close', 'volume', 'amount'])
              .collect())
     shares = builder.load_shares(store)
+    margin_path = store / 'meta' / 'macro' / 'cn_market_margin_daily.parquet'
     margin = pl.read_parquet(
-        store / 'meta' / 'macro' / 'cn_market_margin_daily.parquet',
-        columns=['date', 'fin_buy']).group_by('date').agg(pl.col('fin_buy').sum())
+        margin_path, columns=['date', 'fin_buy']).group_by('date').agg(pl.col('fin_buy').sum())
+    margin_last = margin['date'].max() if margin.height else None
+    margin_last_text = '空表' if margin_last is None else str(margin_last)
     parts = []
     for day in dates:
         sub = frame.filter(pl.col('date') == day)
@@ -269,7 +275,14 @@ def check_turnover(panel: pl.DataFrame, dates: list[pl.Date], store: Path,
         report.check(n_codes == row['n_ff'],
                      f'{row["date"]} sent_n_codes {n_codes} != 重算 {row["n_ff"]}')
 
-        fin_buy = margin.filter(pl.col('date') == row['date'])['fin_buy'].item()
+        fin_buy_rows = margin.filter(pl.col('date') == row['date'])
+        if fin_buy_rows.height != 1:
+            report.check(False,
+                         f'{row["date"]} 两融表无当日行：{margin_path}'
+                         f'（该表末行日期 {margin_last_text}，共 {margin.height} 个交易日）；'
+                         f'该日杠杆位未校验，其余检查继续')
+            continue
+        fin_buy = fin_buy_rows['fin_buy'].item()
         lev = panel.filter(pl.col('date') == row['date'])['lev_margin_buy_ratio'].item()
         if fin_buy is None:
             report.check(lev is None, f'{row["date"]} 两融缺失但杠杆位有值')
