@@ -1,0 +1,17 @@
+ts_code,ex_date,kind,local_cash,remote_cash,quote_start,disposition,reason,action_on_source_table
+160603.SZ,2003-12-01,missing_local,,0.01,2004-05-10,closed:pre_quote_start,第二源事件 2003-12-01 早于本地行情起点 2004-05-10；无行情可复权，拒绝回写源表,none
+160603.SZ,2003-12-15,missing_local,,0.015,2004-05-10,closed:pre_quote_start,第二源事件 2003-12-15 早于本地行情起点 2004-05-10；无行情可复权，拒绝回写源表,none
+163807.SZ,2009-07-09,missing_remote,0.03,,2009-02-23,closed:remote_coverage_gap,本地权威快照有值、第二源该基金分红详情历史覆盖有限；全市场 0 金额冲突，保留本地值,none
+163807.SZ,2010-01-19,missing_remote,0.04,,2009-02-23,closed:remote_coverage_gap,本地权威快照有值、第二源该基金分红详情历史覆盖有限；全市场 0 金额冲突，保留本地值,none
+163807.SZ,2010-12-08,missing_remote,0.12,,2009-02-23,closed:remote_coverage_gap,本地权威快照有值、第二源该基金分红详情历史覆盖有限；全市场 0 金额冲突，保留本地值,none
+163807.SZ,2014-01-17,missing_remote,0.07,,2009-02-23,closed:remote_coverage_gap,本地权威快照有值、第二源该基金分红详情历史覆盖有限；全市场 0 金额冲突，保留本地值,none
+163807.SZ,2015-01-19,missing_remote,0.145,,2009-02-23,closed:remote_coverage_gap,本地权威快照有值、第二源该基金分红详情历史覆盖有限；全市场 0 金额冲突，保留本地值,none
+163807.SZ,2016-01-19,missing_remote,0.45,,2009-02-23,closed:remote_coverage_gap,本地权威快照有值、第二源该基金分红详情历史覆盖有限；全市场 0 金额冲突，保留本地值,none
+163807.SZ,2017-01-18,missing_remote,0.002,,2009-02-23,closed:remote_coverage_gap,本地权威快照有值、第二源该基金分红详情历史覆盖有限；全市场 0 金额冲突，保留本地值,none
+163807.SZ,2018-01-16,missing_remote,0.145,,2009-02-23,closed:remote_coverage_gap,本地权威快照有值、第二源该基金分红详情历史覆盖有限；全市场 0 金额冲突，保留本地值,none
+163807.SZ,2020-04-09,missing_remote,0.2036,,2009-02-23,closed:remote_coverage_gap,本地权威快照有值、第二源该基金分红详情历史覆盖有限；全市场 0 金额冲突，保留本地值,none
+163807.SZ,2021-04-14,missing_remote,0.5421,,2009-02-23,closed:remote_coverage_gap,本地权威快照有值、第二源该基金分红详情历史覆盖有限；全市场 0 金额冲突，保留本地值,none
+163807.SZ,2022-04-14,missing_remote,0.5024,,2009-02-23,closed:remote_coverage_gap,本地权威快照有值、第二源该基金分红详情历史覆盖有限；全市场 0 金额冲突，保留本地值,none
+163807.SZ,2023-03-24,missing_remote,0.0677,,2009-02-23,closed:remote_coverage_gap,本地权威快照有值、第二源该基金分红详情历史覆盖有限；全市场 0 金额冲突，保留本地值,none
+508020.SH,2016-04-14,missing_local,,0.05,2026-04-22,closed:pre_quote_start,第二源事件 2016-04-14 早于本地行情起点 2026-04-22；无行情可复权，拒绝回写源表,none
+508020.SH,2026-09-30,missing_remote,0.5241,,2026-04-22,closed:local_factor_self_consistent,除息前收盘 5.29、每份 0.5241 → 比值 0.9009，与落库 qfq_factor=0.901076 自洽；第二源只是缺该事件,none

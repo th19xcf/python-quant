@@ -1,0 +1,5 @@
+{
+  "close_fund_dividend_pending_scope": "etf",
+  "updated_at": "2026-11-08T19:00:42",
+  "note": "现网口径：strict 档放开 fund_basic ETF（1,693 只），LOF/REIT 仍 pending；持久化以避免按文档默认重建时口径漂移"
+}

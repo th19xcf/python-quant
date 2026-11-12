@@ -1,0 +1,37 @@
+{
+  "dataset": "industry_change_pit",
+  "method": "cninfo_industry_change_events",
+  "authority": "third_party_aggregated",
+  "source": "akshare:stock_industry_change_cninfo（巨潮资讯行业分类变更）",
+  "generated_at": "2026-11-08T21:23:12",
+  "start": "1990-01-29",
+  "end": "2026-11-06",
+  "complete": false,
+  "scanned_codes": 5813,
+  "codes_with_events": 5579,
+  "codes_without_events": 234,
+  "fetch_failed": 0,
+  "intervals": 54763,
+  "open_intervals": 45854,
+  "standards": {
+    "恒生行业分类": 147,
+    "新财富行业分类标准": 3457,
+    "证监会行业分类标准（2012）": 6331,
+    "巨潮行业分类标准(旧)": 3821,
+    "中证行业分类标准": 6570,
+    "中证行业分类标准(旧)": 4695,
+    "申银万国行业分类标准(旧)": 7672,
+    "全球行业分类标准（GICS）": 14,
+    "申银万国行业分类标准": 6851,
+    "中国上市公司协会上市公司行业分类标准": 5726,
+    "巨潮行业分类标准": 7220,
+    "证监会行业分类标准（2001）": 2259
+  },
+  "incomplete_reason": "巨潮按代码返回的是「行业分类变更事件」，未发生变更的标准、退市股与早年缺失记录无法补齐；且多套分类标准并存，与生产链路的通达信 T 代码树不是同一口径",
+  "caveats": [
+    "本表为独立口径的 PIT 历史，禁止与 meta/industry_pit/industry_pit.parquet（通达信 T 代码树）混用或在同一次中性化里拼接",
+    "每行带 standard 字段，消费方必须显式选定一套分类标准，否则同一标的会同时命中多个行业",
+    "end_date=null 表示开放区间，不代表已确认至今仍有效；巨潮不提供「分类确认日」，请勿当作交易所权威公告",
+    "历史查询早于本表 start 应返回空，禁止用当前行业回填"
+  ]
+}

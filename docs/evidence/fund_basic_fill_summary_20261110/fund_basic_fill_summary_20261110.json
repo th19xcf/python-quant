@@ -1,0 +1,23 @@
+{
+  "run_at": "2026-11-10T17:30:00",
+  "source": "tushare.fund_basic",
+  "rows": 2618,
+  "sha_before": "9e5aed5bca160536caf2789deba0a5f0ac7c55752a8e42fccabdb8e938e3e7e4",
+  "sha_candidate": "173d0c5516e27164640fff69abed9cee933a5afb94cc38a2b23830da5648f27a",
+  "name_filled": 335,
+  "name_left_null": 17,
+  "list_date_fixed": 4,
+  "status_to_D": 13,
+  "status_left_null": 20,
+  "changed_rows": 348,
+  "status_dist_before": {
+    "None": 33,
+    "D": 331,
+    "L": 2254
+  },
+  "status_dist_after": {
+    "None": 20,
+    "D": 344,
+    "L": 2254
+  }
+}

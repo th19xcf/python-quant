@@ -1,0 +1,309 @@
+{
+  "mappings": 15,
+  "by_confidence": {
+    "low": 4,
+    "medium": 2,
+    "high": 9
+  },
+  "by_segment": {
+    "83": 7,
+    "30": 1,
+    "60": 4,
+    "00": 3
+  },
+  "integrity": {
+    "pairs": 15,
+    "two_targets": [],
+    "self_loops": [],
+    "cycles": [],
+    "ok": true
+  },
+  "sampled": [
+    {
+      "old_ts_code": "000022.SZ",
+      "new_ts_code": "001872.SZ",
+      "name": {
+        "old": "深赤湾A",
+        "new": "招商港口"
+      },
+      "dates": {
+        "old_list": "1993-05-05",
+        "old_delist": "",
+        "new_list": "1993-05-05"
+      },
+      "quotes": {
+        "old": null,
+        "new": "1992-05-05~2026-11-03"
+      },
+      "confidence": "high",
+      "evidence": "法人名称一致(招商局港口集团股份有限公司)；曾用名交集(G深赤湾/深赤湾A)；上市日期一致且一旧一新；旧代码无本地行情；满足依据2/3"
+    },
+    {
+      "old_ts_code": "000043.SZ",
+      "new_ts_code": "001914.SZ",
+      "name": {
+        "old": "中航善达",
+        "new": "招商积余"
+      },
+      "dates": {
+        "old_list": "1994-09-28",
+        "old_delist": "2019-12-16",
+        "new_list": "1994-09-28"
+      },
+      "quotes": {
+        "old": "1994-09-28~2019-12-13",
+        "new": "1994-09-28~2026-11-03"
+      },
+      "confidence": "high",
+      "evidence": "法人名称一致(招商局积余产业运营服务股份有限公司)；曾用名交集(G深南光/中航善达/中航地产)；上市日期一致且一旧一新；行情重叠9208天(新代码回填历史)；满足依据2/3"
+    },
+    {
+      "old_ts_code": "000765.SZ",
+      "new_ts_code": "001267.SZ",
+      "name": {
+        "old": "*ST华信",
+        "new": "汇绿生态"
+      },
+      "dates": {
+        "old_list": "1997-11-03",
+        "old_delist": "",
+        "new_list": "2021-11-17"
+      },
+      "quotes": {
+        "old": null,
+        "new": "2021-11-17~2026-11-03"
+      },
+      "confidence": "medium",
+      "evidence": "法人名称一致(汇绿生态科技集团股份有限公司)；日期先后(旧始1997-11-03→新始2021-11-17)；旧代码无本地行情；满足依据2/3"
+    },
+    {
+      "old_ts_code": "300114.SZ",
+      "new_ts_code": "302132.SZ",
+      "name": {
+        "old": "中航电测",
+        "new": "中航成飞"
+      },
+      "dates": {
+        "old_list": "2010-08-27",
+        "old_delist": "2025-02-17",
+        "new_list": "2010-08-27"
+      },
+      "quotes": {
+        "old": "2010-08-27~2019-09-17",
+        "new": null
+      },
+      "confidence": "high",
+      "evidence": "法人名称一致(中航成飞股份有限公司)；曾用名交集(中航电测)；上市日期一致且一旧一新；满足依据2/3"
+    },
+    {
+      "old_ts_code": "600087.SH",
+      "new_ts_code": "601975.SH",
+      "name": {
+        "old": "退市长油",
+        "new": "招商南油"
+      },
+      "dates": {
+        "old_list": "1997-06-12",
+        "old_delist": "",
+        "new_list": "2019-01-08"
+      },
+      "quotes": {
+        "old": null,
+        "new": "2019-01-08~2026-11-03"
+      },
+      "confidence": "high",
+      "evidence": "法人名称一致(招商局南京油运股份有限公司)；曾用名交集(长航油运)；日期先后(旧始1997-06-12→新始2019-01-08)；旧代码无本地行情；满足依据2/3"
+    },
+    {
+      "old_ts_code": "600849.SH",
+      "new_ts_code": "601607.SH",
+      "name": {
+        "old": "上药转换",
+        "new": "上海医药"
+      },
+      "dates": {
+        "old_list": "1994-03-24",
+        "old_delist": "",
+        "new_list": "1994-03-24"
+      },
+      "quotes": {
+        "old": null,
+        "new": "1994-03-24~2026-11-03"
+      },
+      "confidence": "high",
+      "evidence": "法人名称一致(上海医药集团股份有限公司)；曾用名交集(上海医药)；上市日期一致且一旧一新；旧代码无本地行情；满足依据2/3"
+    },
+    {
+      "old_ts_code": "601268.SH",
+      "new_ts_code": "601399.SH",
+      "name": {
+        "old": "*ST二重",
+        "new": "国机重装"
+      },
+      "dates": {
+        "old_list": "2010-02-02",
+        "old_delist": "",
+        "new_list": "2020-06-08"
+      },
+      "quotes": {
+        "old": null,
+        "new": "2020-06-08~2026-11-03"
+      },
+      "confidence": "medium",
+      "evidence": "法人名称一致(国机重型装备集团股份有限公司)；日期先后(旧始2010-02-02→新始2020-06-08)；旧代码无本地行情；满足依据2/3"
+    },
+    {
+      "old_ts_code": "601313.SH",
+      "new_ts_code": "601360.SH",
+      "name": {
+        "old": "江南嘉捷",
+        "new": "三六零"
+      },
+      "dates": {
+        "old_list": "2012-01-16",
+        "old_delist": "",
+        "new_list": "2012-01-16"
+      },
+      "quotes": {
+        "old": null,
+        "new": "2012-01-16~2026-11-03"
+      },
+      "confidence": "high",
+      "evidence": "法人名称一致(三六零安全科技股份有限公司)；曾用名交集(江南嘉捷)；上市日期一致且一旧一新；旧代码无本地行情；满足依据2/3"
+    },
+    {
+      "old_ts_code": "832023.BJ",
+      "new_ts_code": "920023.BJ",
+      "name": {
+        "old": null,
+        "new": "*ST田野"
+      },
+      "dates": {
+        "old_list": "None",
+        "old_delist": "",
+        "new_list": "2023-02-02"
+      },
+      "quotes": {
+        "old": null,
+        "new": "2023-02-02~2026-11-03"
+      },
+      "confidence": "low",
+      "evidence": "曾用名交集(田野股份)；旧代码无本地行情；满足依据1/3"
+    },
+    {
+      "old_ts_code": "832317.BJ",
+      "new_ts_code": "688287.SH",
+      "name": {
+        "old": "观典防务",
+        "new": "退市观典"
+      },
+      "dates": {
+        "old_list": "2015-04-15",
+        "old_delist": "",
+        "new_list": "2022-05-25"
+      },
+      "quotes": {
+        "old": null,
+        "new": "2022-05-25~2026-05-22"
+      },
+      "confidence": "high",
+      "evidence": "法人名称一致(观典防务技术股份有限公司)；曾用名交集(观典防务)；日期先后(旧始2015-04-15→新始2022-05-25)；旧代码无本地行情；满足依据2/3"
+    },
+    {
+      "old_ts_code": "833874.BJ",
+      "new_ts_code": "301192.SZ",
+      "name": {
+        "old": "泰祥股份",
+        "new": "泰祥股份"
+      },
+      "dates": {
+        "old_list": "2015-10-19",
+        "old_delist": "",
+        "new_list": "2022-08-11"
+      },
+      "quotes": {
+        "old": null,
+        "new": "2022-08-11~2026-11-03"
+      },
+      "confidence": "high",
+      "evidence": "法人名称一致(十堰市泰祥实业股份有限公司)；简称一致(泰祥股份)；日期先后(旧始2015-10-19→新始2022-08-11)；旧代码无本地行情；满足依据2/3"
+    },
+    {
+      "old_ts_code": "833994.BJ",
+      "new_ts_code": "301321.SZ",
+      "name": {
+        "old": "翰博高新",
+        "new": "翰博高新"
+      },
+      "dates": {
+        "old_list": "2015-11-06",
+        "old_delist": "",
+        "new_list": "2022-08-18"
+      },
+      "quotes": {
+        "old": null,
+        "new": "2022-08-18~2026-11-03"
+      },
+      "confidence": "high",
+      "evidence": "法人名称一致(翰博高新材料(合肥)股份有限公司)；简称一致(翰博高新)；日期先后(旧始2015-11-06→新始2022-08-18)；旧代码无本地行情；满足依据2/3"
+    },
+    {
+      "old_ts_code": "835305.BJ",
+      "new_ts_code": "920305.BJ",
+      "name": {
+        "old": null,
+        "new": "云创退"
+      },
+      "dates": {
+        "old_list": "None",
+        "old_delist": "",
+        "new_list": "2021-08-26"
+      },
+      "quotes": {
+        "old": null,
+        "new": "2021-08-26~2026-04-29"
+      },
+      "confidence": "low",
+      "evidence": "曾用名交集(云创数据)；旧代码无本地行情；满足依据1/3"
+    },
+    {
+      "old_ts_code": "835670.BJ",
+      "new_ts_code": "920670.BJ",
+      "name": {
+        "old": null,
+        "new": "数字人"
+      },
+      "dates": {
+        "old_list": "None",
+        "old_delist": "",
+        "new_list": "2020-12-08"
+      },
+      "quotes": {
+        "old": null,
+        "new": "2020-12-08~2026-11-03"
+      },
+      "confidence": "low",
+      "evidence": "曾用名交集(数字人)；旧代码无本地行情；满足依据1/3"
+    },
+    {
+      "old_ts_code": "839680.BJ",
+      "new_ts_code": "920680.BJ",
+      "name": {
+        "old": null,
+        "new": "广道退"
+      },
+      "dates": {
+        "old_list": "None",
+        "old_delist": "",
+        "new_list": "2021-11-15"
+      },
+      "quotes": {
+        "old": null,
+        "new": "2021-11-15~2025-12-24"
+      },
+      "confidence": "low",
+      "evidence": "曾用名交集(*ST广道/广道数字)；旧代码无本地行情；满足依据1/3"
+    }
+  ],
+  "sample_size": 15
+}

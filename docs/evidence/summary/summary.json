@@ -1,0 +1,72 @@
+{
+  "as_of": "2026-11-09",
+  "classes": {
+    "equity": {
+      "core": 124,
+      "earliest_start": "2005-02-23",
+      "latest_start": "2023-11-01",
+      "latest_start_days_to_asof": 732,
+      "representative": {
+        "code": "510050.SH",
+        "name": "上证50ETF华夏",
+        "start": "2005-02-23",
+        "adv_60d": 1672997504.0
+      }
+    },
+    "bond": {
+      "core": 12,
+      "earliest_start": "2013-03-25",
+      "latest_start": "2023-06-13",
+      "latest_start_days_to_asof": 825,
+      "representative": {
+        "code": "511010.SH",
+        "name": "国债ETF国泰",
+        "start": "2013-03-25",
+        "adv_60d": 3465045376.0
+      }
+    },
+    "gold": {
+      "core": 10,
+      "earliest_start": "2013-07-29",
+      "latest_start": "2022-04-07",
+      "latest_start_days_to_asof": 1113,
+      "representative": {
+        "code": "518880.SH",
+        "name": "黄金ETF华安",
+        "start": "2013-07-29",
+        "adv_60d": 4037764352.0
+      }
+    },
+    "commodity": {
+      "core": 3,
+      "earliest_start": "2019-12-05",
+      "latest_start": "2020-01-17",
+      "latest_start_days_to_asof": 1648,
+      "representative": {
+        "code": "159981.SZ",
+        "name": "能源化工ETF建信",
+        "start": "2020-01-17",
+        "adv_60d": 904741856.0
+      }
+    }
+  },
+  "total_rows": 795,
+  "in_scope_rows": 518,
+  "out_of_scope_rows": 277,
+  "tier_counts": {
+    "core": 153,
+    "extend": 330,
+    "watch": 0,
+    "delisted": 35
+  },
+  "all_core_latest_start": "2023-11-01",
+  "all_core_days_to_asof": 732,
+  "representative_start": "2020-01-17",
+  "representative_days_to_asof": 1648,
+  "representative_codes": {
+    "equity": "510050.SH",
+    "bond": "511010.SH",
+    "gold": "518880.SH",
+    "commodity": "159981.SZ"
+  }
+}

@@ -1,0 +1,167 @@
+{
+  "scope": "fund_basic.status=D 第二源待查剩余清单",
+  "updated_at": "2026-11-10T14:26:06",
+  "resolved": 331,
+  "resolved_breakdown": {
+    "tushare_delist_date": 323,
+    "tushare_due_date_only": 8
+  },
+  "count": 16,
+  "rule": "tushare fund_basic(market=E) 无该代码记录，东财/新浪当前名录亦无；证据不足，保持 null；165809.SZ 因公告证据指向「转型」而非退市，已移出本清单，单列 transformed",
+  "rows": [
+    {
+      "ts_code": "160417.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 63,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "160640.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 2,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "160808.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 19,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "161207.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 511,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "161223.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 2,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "161718.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 2,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "161719.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 2,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "161819.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 21,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "161826.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 2,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "162413.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 2,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "164819.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 2,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "164820.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 2,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "164821.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 2,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "164907.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 2,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "165707.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 30,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    },
+    {
+      "ts_code": "168201.SZ",
+      "fund_type": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 2,
+      "reason": "末行 2019-09-17 < 2024-01-01，且东财/新浪当前名录均无"
+    }
+  ],
+  "transformed": [
+    {
+      "ts_code": "165809.SZ",
+      "fund_type_now": "LOF",
+      "status_now": null,
+      "last_bar": "2019-09-17",
+      "rows": 2,
+      "classification": "transformed",
+      "classification_cn": "转型（分级基金转型为普通债券指数基金，非退市）",
+      "basis": "公告标题明确写「原东吴中证可转换债券指数分级证券投资基金转型」，属存续转型而非终止上市/清算",
+      "announcements": [
+        {
+          "date": "2021-03-31",
+          "title": "东吴中证可转换债券指数证券投资基金(原东吴中证可转换债券指数分级证券投资基金转型)2020年年度报告摘要",
+          "source": "fund_announcement_report_em（东财基金公告-定期报告）"
+        },
+        {
+          "date": "2021-03-31",
+          "title": "东吴中证可转换债券指数证券投资基金(原东吴中证可转换债券指数分级证券投资基金转型)2020年年度报告",
+          "source": "fund_announcement_report_em（东财基金公告-定期报告）"
+        }
+      ],
+      "status_effect": "不改 status（仍为 null），本次仅归档分类"
+    }
+  ],
+  "transformed_count": 1
+}

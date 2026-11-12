@@ -1,0 +1,8 @@
+ts_code,ex_date,kind,share_div_original,cash_div_original,prev_close,event_close,gap_pct,baostock_preclose,basis,detected_at
+603603.SH,2022-12-23,dividend_event,1.32676,0.0,4.89,4.69,-4.09,4.89,原始价未按该送转比例除权（当日收盘/前收与事件前连续），判定为重整/转增不除权；原始 share_div 保留、仅置 no_ex_rights=true,2026-11-05
+603555.SH,2021-06-09,dividend_event,1.5,0.0,2.75,2.79,1.4545,2.75,原始价未按该送转比例除权（当日收盘/前收与事件前连续），判定为重整/转增不除权；原始 share_div 保留、仅置 no_ex_rights=true,2026-11-05
+600306.SH,2023-12-26,dividend_event,0.85,0.0,11.98,8.55,-28.6311,8.14,比例失真按实测 f 修正：share_div_fix=0.471744（前收 11.98 / baostock preclose 8.14 − 1，原始值未四舍五入计算）；原始 share_div 0.85 保留、no_ex_rights 改回 false,2026-11-05
+600225.SH,2021-12-22,dividend_event,2.64663,0.0,3.26,3.23,-0.9202,3.26,原始价未按该送转比例除权（当日收盘/前收与事件前连续），判定为重整/转增不除权；原始 share_div 保留、仅置 no_ex_rights=true,2026-11-05
+601258.SH,2019-12-30,dividend_event,0.56416,0.0,1.46,1.45,-0.6849,1.42,送转不生效 + 补漏记现金 0.04：share_div_fix=0.0、cash_div_fix=0.04（前收 1.46 − 0.04 = baostock preclose 1.42）；原始 share_div 0.56416 / cash_div 0 保留、no_ex_rights 改回 false,2026-11-05
+300116.SZ,2020-03-31,share_change_no_dividend_row,,,2.0,1.89,-5.5,2.0,股本表有“转增股上市”，分红表无对应除权事件；当日原始价无除权跳空，判定为重整转增不除权，不补事件行，仅入异常清单,2026-11-05
+300362.SZ,2021-06-15,share_change_no_dividend_row,,,1.49,1.49,0.0,1.49,股本表有“转增股上市”，分红表无对应除权事件；当日原始价无除权跳空，判定为重整转增不除权，不补事件行，仅入异常清单,2026-11-05

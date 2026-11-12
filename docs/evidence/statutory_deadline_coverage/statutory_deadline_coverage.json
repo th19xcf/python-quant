@@ -1,0 +1,40 @@
+{
+  "tables": {
+    "income": {
+      "rows": 277022,
+      "deadline_rows": 1220,
+      "deadline_pct": 0.4404,
+      "real_notice_rows": 275802,
+      "ann_date_null": 0,
+      "ann_date_before_period": 0,
+      "deadline_before_period": 0,
+      "period_start": "2010-03-31"
+    },
+    "balance": {
+      "rows": 268124,
+      "deadline_rows": 1252,
+      "deadline_pct": 0.4669,
+      "real_notice_rows": 266872,
+      "ann_date_null": 0,
+      "ann_date_before_period": 0,
+      "deadline_before_period": 0,
+      "period_start": "2010-03-31"
+    },
+    "cashflow": {
+      "rows": 276625,
+      "deadline_rows": 1236,
+      "deadline_pct": 0.4468,
+      "real_notice_rows": 275389,
+      "ann_date_null": 0,
+      "ann_date_before_period": 0,
+      "deadline_before_period": 0,
+      "period_start": "2010-03-31"
+    }
+  },
+  "total_rows": 821771,
+  "deadline_rows": 3708,
+  "deadline_pct": 0.4512,
+  "invariant": "statutory_deadline 只把可见日推到法定最晚日，ann_date >= end_date 恒成立，只晚可见不早可见",
+  "before_2010_backfill": 2558,
+  "changed_reason": "2010Q1-2015Q4 三表补齐后按同一口径重算，旧台账 2,558 条已过时"
+}

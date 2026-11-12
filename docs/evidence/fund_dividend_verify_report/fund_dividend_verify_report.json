@@ -1,0 +1,26 @@
+{
+  "generated_at": "2026-11-08T19:18:21",
+  "source_local": "akshare:fund_fh_em",
+  "source_remote": "akshare:fund_open_fund_info_em/分红送配详情",
+  "local_rows_total": 3413,
+  "local_codes_total": 435,
+  "scoped_codes": 435,
+  "remote_codes_ok": 435,
+  "remote_codes_failed": 0,
+  "remote_rows": 3403,
+  "verified_rows": 3413,
+  "matched": 3400,
+  "match_rate_of_scoped": 0.9961910342806914,
+  "amount_conflict": 0,
+  "missing_remote": 13,
+  "missing_local": 3,
+  "unverified": 0,
+  "abs_tol": 1e-06,
+  "note": "第二源按基金逐只查询，历史覆盖与批量接口不同；missing_remote 不等于本地数据错误，missing_local 才是疑似漏采。金额冲突需人工裁决，本工具不回写 fund_dividend.parquet。",
+  "outputs": {
+    "verified": "D:\\code\\python\\quant\\data\\local_store\\meta\\anomalies\\fund_dividend_verified.csv",
+    "conflicts": "D:\\code\\python\\quant\\data\\local_store\\meta\\anomalies\\fund_dividend_conflicts.csv",
+    "report": "D:\\code\\python\\quant\\data\\local_store\\meta\\anomalies\\fund_dividend_verify_report.json",
+    "report_archive": "D:\\code\\python\\quant\\reports\\data_audit_2026-11-08\\fund_dividend_verify_report.json"
+  }
+}

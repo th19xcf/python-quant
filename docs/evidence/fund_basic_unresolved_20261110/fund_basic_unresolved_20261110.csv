@@ -1,0 +1,47 @@
+ts_code,field,reason
+160417.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+160640.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+160808.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+161207.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+161223.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+161718.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+161719.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+161819.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+161826.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+162413.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+164819.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+164820.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+164821.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+164907.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+165707.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+165809.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+168201.SZ,name,TDX 名称快照/名称史/tushare fund_basic/东财名录均无
+160217.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+160224.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+160417.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+160640.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+160808.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+161207.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+161223.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+161718.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+161719.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+161819.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+161826.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+162413.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+164809.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+164819.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+164820.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+164821.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+164907.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+165707.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+165809.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+168201.SZ,status,tushare 无记录；首根 bar 为 0 成交量占位（G-004~G-012），不得据此推退市
+160425.SZ,list_date,tushare list_date 为空；首根 bar 为 0 成交量占位，不能反推上市日
+160646.SZ,list_date,tushare list_date 为空；首根 bar 为 0 成交量占位，不能反推上市日
+160727.SZ,list_date,tushare list_date 为空；首根 bar 为 0 成交量占位，不能反推上市日
+161730.SZ,list_date,tushare list_date 为空；首根 bar 为 0 成交量占位，不能反推上市日
+161838.SZ,list_date,tushare list_date 为空；首根 bar 为 0 成交量占位，不能反推上市日
+164212.SZ,list_date,tushare list_date 为空；首根 bar 为 0 成交量占位，不能反推上市日
+164826.SZ,list_date,tushare list_date 为空；首根 bar 为 0 成交量占位，不能反推上市日
+166109.SZ,list_date,tushare list_date 为空；首根 bar 为 0 成交量占位，不能反推上市日
+169108.SZ,list_date,tushare list_date 为空；首根 bar 为 0 成交量占位，不能反推上市日
