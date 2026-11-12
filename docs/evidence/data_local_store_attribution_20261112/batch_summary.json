@@ -1,0 +1,55 @@
+{
+  "baseline": {
+    "at": "2026-11-12 12:15:59",
+    "files": 11303,
+    "bytes": 2412384475,
+    "source": "2026-11-12/data-inventory/work/layer_stats_20261112.json"
+  },
+  "current": {
+    "files": 10969,
+    "bytes": 2029045851
+  },
+  "removed": 347,
+  "added_net": 13,
+  "identity": "11303 - 347 + 13 = 10969",
+  "batches": {
+    "financials_pit": {
+      "count": 4,
+      "bytes": 367868990,
+      "bad": 0
+    },
+    "index_constituents": {
+      "count": 118,
+      "bytes": 9753377,
+      "bad": 0
+    },
+    "industry_pit/raw": {
+      "count": 3,
+      "bytes": 1371445,
+      "bad": 0
+    },
+    "B 类批量": {
+      "count": 150,
+      "bytes": 3545325,
+      "bad": 0
+    },
+    "financials 断点遗留": {
+      "count": 2,
+      "bytes": 240220,
+      "bad": 0
+    },
+    "turnover_parts": {
+      "count": 3,
+      "bytes": 69497,
+      "bad": 0
+    },
+    "ann_date 分片": {
+      "count": 67,
+      "bytes": 4388854,
+      "bad": 0
+    }
+  },
+  "added_note": "13 个净新增无法逐定点名：12:15 基线只记总量未留清单；可由恒等式反推，且字节侧自洽（移出 387,237,708 B、总量差 -383,338,624 B，净增 3,899,084 B）。不影响「无丢失」结论。",
+  "csv_sha256": "25F9B6353816EE4F8CC8CA10CDFF83739E431318A57A0A7C076EE9605B862E23",
+  "csv_rows": 347
+}
