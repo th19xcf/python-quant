@@ -184,7 +184,13 @@ def fetch_dividend_events(
     cache_dir: Path | str = 'tmp/fund_cache',
     refresh: bool = False,
 ) -> pl.DataFrame:
-    """抓取并汇总全市场基金现金分红事件（AkShare ``fund_fh_em``）。"""
+    """抓取并汇总全市场基金现金分红事件（AkShare ``fund_fh_em``）。
+
+    注意：``years`` 传空列表（``[]``）与不传等价——内部分支写的是
+    ``years or range(2004, 今年 + 1)``，空列表会回落成**全量年份**抓取，
+    而不是「不抓任何年份」。需要零年份时请显式传 ``[0]`` 之类不可能的年份，
+    或在上层拦住空列表。
+    """
     import akshare as ak  # noqa: PLC0415 - 延迟导入，避免测试与离线场景加载远程库
 
     cache_root = Path(cache_dir)
@@ -605,11 +611,33 @@ def verify_reversibility(
     *,
     tolerance: float = 1e-12,
 ) -> dict[str, Any]:
-    """事件→因子→复权价→反推原始价，返回最大相对误差。"""
+    """事件→因子→复权价→反推原始价，返回最大相对误差。
+
+    校验口径（DG-31：校验器必须能失败）：先用**事件表独立重算**期望因子，
+    再用快照因子把复权价还原成原始价，与行情原始价比。若快照因子被篡改或
+    与事件表不一致，还原价会偏离原始价，``max_relative_error > tolerance``
+    即判失败。旧实现用同一个因子先乘后除（``close*qfq/qfq``）恒等于
+    ``close``，任何输入都通过，等于没有校验。
+    """
     root = Path(store_root)
     quote_store = LocalQuoteStore(root, enabled=True)
     factor_path = root / 'factors' / FUND_FACTOR_FILENAME
     factors = pl.read_parquet(factor_path) if factor_path.exists() else pl.DataFrame()
+    dividend_path = root / 'factors' / FUND_DIVIDEND_FILENAME
+    split_path = root / 'factors' / FUND_SHARE_CHANGE_FILENAME
+    dividends = (pl.read_parquet(dividend_path)
+                 if dividend_path.exists() else pl.DataFrame())
+    share_changes = (pl.read_parquet(split_path)
+                     if split_path.exists() else pl.DataFrame())
+    div_by_code = {
+        str(group['ts_code'][0]): group
+        for group in dividends.partition_by('ts_code')
+    } if not dividends.is_empty() else {}
+    split_by_code = {
+        str(group['ts_code'][0]): group
+        for group in share_changes.partition_by('ts_code')
+    } if not share_changes.is_empty() else {}
+
     max_error = 0.0
     checked_rows = 0
     checked_codes: list[str] = []
@@ -618,12 +646,31 @@ def verify_reversibility(
         snap = factors.filter(pl.col('ts_code') == code)
         if frame is None or frame.is_empty() or snap.is_empty():
             continue
-        merged = frame.select(['date', 'close']).join(
-            snap.select(['trade_date', 'qfq_factor']),
-            left_on='date', right_on='trade_date', how='left').sort('date')
-        merged = merged.with_columns(
-            pl.col('qfq_factor').fill_null(1.0).cast(pl.Float64))
-        qfq_close = merged['close'].cast(pl.Float64) * merged['qfq_factor']
+        prices = frame.select([
+            pl.lit(code).alias('ts_code'),
+            pl.col('date').alias('trade_date'),
+            pl.col('close').cast(pl.Float64),
+        ]).sort('trade_date')
+        events = prepare_events_for_code(
+            code, prices['trade_date'].to_list(),
+            div_by_code.get(code), split_by_code.get(code))
+        if events.is_empty():
+            expected = prices.with_columns(
+                pl.lit(1.0).alias('qfq_factor')).select(
+                    ['trade_date', 'qfq_factor'])
+        else:
+            expected = AdjFactorCalculator.calculate_factors(
+                prices, events, max_factor=FUND_FACTOR_MAX).select(
+                    ['trade_date', 'qfq_factor'])
+        merged = prices.join(expected, on='trade_date', how='left').join(
+            snap.select(['trade_date', 'qfq_factor']).rename(
+                {'qfq_factor': 'snapshot_qfq'}),
+            on='trade_date', how='left').sort('trade_date')
+        merged = merged.with_columns([
+            pl.col('qfq_factor').fill_null(1.0).cast(pl.Float64),
+            pl.col('snapshot_qfq').fill_null(1.0).cast(pl.Float64),
+        ])
+        qfq_close = merged['close'].cast(pl.Float64) * merged['snapshot_qfq']
         restored = qfq_close / merged['qfq_factor']
         raw = merged['close'].cast(pl.Float64)
         rel = ((restored - raw).abs() / raw.abs().clip(1e-300)).max()
@@ -655,7 +702,8 @@ def verify_gap_digestion(
     quote_store = LocalQuoteStore(root, enabled=True)
     factor_path = root / 'factors' / FUND_FACTOR_FILENAME
     if not factor_path.exists() or dividends.is_empty():
-        return {'events': 0, 'before_over_1pct': 0, 'after_over_2pct': 0}
+        return {'events_checked': 0, 'before_over_1pct': 0,
+                'after_over_2pct': 0, 'samples': []}
     factors = pl.read_parquet(factor_path)
 
     checked = 0

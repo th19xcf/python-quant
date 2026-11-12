@@ -716,7 +716,7 @@ def _load_snapshot_columns(path: Path, columns: list[str]) -> pl.DataFrame | Non
         return None
     try:
         frame = pl.read_parquet(path)
-    except (OSError, ValueError) as exc:  # 损坏的快照不应阻塞校验，交给上层决定
+    except (OSError, ValueError, PolarsError) as exc:  # 损坏的快照不应阻塞校验，交给上层决定
         logger.warning(f'读取本地快照失败，按无快照校验：{path} -> {exc}')
         return None
     return frame.select([c for c in columns if c in frame.columns])

@@ -519,13 +519,18 @@ def _assemble(parts: list[Path], target: Path, touched: set[str]) -> int | None:
 
     现在改为按 ``(ts_code, trade_date)`` 做 upsert：先用分块的键把目标表里
     对应日期的行剔除（anti join），再整体并入分块，同一交易日以新数据为准，
-    目标表其余历史原样保留。``touched`` 只用于日志与回滚判断。
+    目标表其余历史原样保留。``touched`` 只用于日志与回滚判断，不参与「是否
+    保留底表」的判定——目标表存在就一律走 anti-join 安全路径。
+
+    旧实现在 ``touched`` 为空时（例如续跑状态里 ``completed_parts`` 有、
+    ``completed`` 映射缺失）会跳过 anti-join 与底表，直接用分块整体替换正式
+    表，等于静默清掉全部历史；该兜底已移除，必须保留底表。
     """
     if not parts:
         return None
     new_lazy = pl.concat([pl.scan_parquet(str(p)) for p in parts],
                          how='diagonal_relaxed')
-    if target.exists() and touched:
+    if target.exists():
         keys = new_lazy.select(['ts_code', 'trade_date']).unique()
         base = pl.scan_parquet(str(target)).join(
             keys, on=['ts_code', 'trade_date'], how='anti')
