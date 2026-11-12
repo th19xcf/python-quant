@@ -463,7 +463,8 @@ def publish(cand: pl.DataFrame, *, yes: bool = False, stamp: str | None = None,
         return {'dry_run': True, **{k: v for k, v in plan.items() if k != 'frame'}}
 
     stamp = stamp or datetime.now().strftime('%Y%m%d_%H%M%S')
-    backup = backup_root / f'market_margin_{stamp}' / 'meta' / 'macro'
+    # DG-13 路径口径：meta/ 层快照落 _backup/meta/<语义>_<日期>/
+    backup = backup_root / 'meta' / f'macro_margin_{stamp}'
     assert not backup.exists(), f'备份目录已存在，禁止复用: {backup}'
     backup.mkdir(parents=True)
 
