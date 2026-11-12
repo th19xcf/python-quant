@@ -99,7 +99,15 @@ NAV_COLUMNS = (
     'holdings_count', 'gross_exposure',
 )
 #: 逐码候选清单列（G-067）：与 ``stats['candidate_signals']`` 一一对应
-CANDIDATE_COLUMNS = ('trade_date', 'ts_code', 'score_percentile', 'reason')
+#: ``score`` 为原始打分（同日横截面排序前的值），``score_percentile`` 为横截面分位；
+#: 二者同时落盘后，跨 run 对账才能复算「阈值判据」而不只是比总数。
+CANDIDATE_COLUMNS = ('trade_date', 'ts_code', 'score', 'score_percentile',
+                     'reason')
+#: 信号评估诊断列（``--dump-eval``）：把决策日全截面的门槛判定逐码留痕，
+#: 用于回答「某只标的为何没进候选」。
+EVAL_COLUMNS = ('trade_date', 'ts_code', 'score', 'score_percentile',
+                'pct_ok', 'soft_pass', 'eligibility_ok', 'entry_ok',
+                'selected', 'reject_reason')
 #: 现金收益敏感性两档年化利率（事后累加，不重跑复利路径）
 CASH_YIELD_RATES = (0.0, 0.015)
 #: 现金收益按每年 252 个交易日折算
@@ -316,8 +324,8 @@ def _log(stage: str, started: datetime) -> None:
 # 选股信号
 # ----------------------------------------------------------------------
 def select_candidates(frame: pl.DataFrame, tier: Any, config: Any,
-                      ) -> list[tuple[str, float]]:
-    """当日截面 → (代码, 分位) 候选，按分位降序。
+                      ) -> list[tuple[str, float, float | None]]:
+    """当日截面 → (代码, 分位, 原始 score) 候选，按分位降序。
 
     门槛顺序与生产链路一致：分位达标 → 软筛 → 硬性可推荐性
     （``check_eligibility``）→ 买入成本门槛（``entry_allowed``）。
@@ -325,7 +333,7 @@ def select_candidates(frame: pl.DataFrame, tier: Any, config: Any,
     """
     if frame is None or frame.height == 0:
         return []
-    out: list[tuple[str, float]] = []
+    out: list[tuple[str, float, float | None]] = []
     for row in frame.iter_rows(named=True):
         percentile = _finite(row.get('score_percentile'))
         if percentile is None or percentile < tier.buy_percentile:
@@ -337,7 +345,7 @@ def select_candidates(frame: pl.DataFrame, tier: Any, config: Any,
         allowed, _reason = entry_allowed(percentile, tier, config)
         if not allowed:
             continue
-        out.append((str(row['ts_code']), percentile))
+        out.append((str(row['ts_code']), percentile, _finite(row.get('score'))))
     out.sort(key=lambda item: item[1], reverse=True)
     return out
 
@@ -350,15 +358,61 @@ def candidate_reason(tier: Any, config: Any) -> str:
         + ['eligibility_ok', 'entry_allowed'])
 
 
-def candidate_records_for_day(candidates: list[tuple[str, float]], day: date,
-                              reason: str) -> list[dict[str, Any]]:
+def candidate_records_for_day(candidates: list[tuple[str, float, float | None]],
+                              day: date, reason: str) -> list[dict[str, Any]]:
     """当日候选 → 逐码记录（与 ``stats['candidate_signals']`` 一条对一条）。"""
     return [{
         'trade_date': day,
         'ts_code': code,
+        'score': '' if score is None else round(float(score), 6),
         'score_percentile': round(float(percentile), 6),
         'reason': reason,
-    } for code, percentile in candidates]
+    } for code, percentile, score in candidates]
+
+
+def evaluate_cross_section(frame: pl.DataFrame, tier: Any,
+                           config: Any) -> list[dict[str, Any]]:
+    """决策日全截面逐码门槛判定（``--dump-eval`` 诊断用，不参与撮合）。
+
+    与 :func:`select_candidates` 使用同一组判定函数与同一顺序，只把每一步的
+    布尔结果留痕，用于回答「某只标的为何没进候选」（分位跌破 / 软筛剔除 /
+    不可推荐 / 买入成本门槛）。
+    """
+    if frame is None or frame.height == 0:
+        return []
+    out: list[dict[str, Any]] = []
+    for row in frame.iter_rows(named=True):
+        percentile = _finite(row.get('score_percentile'))
+        pct_ok = percentile is not None and percentile >= tier.buy_percentile
+        soft_ok = (not config.soft_filter.enabled) or bool(row.get('soft_pass'))
+        elig_ok = check_eligibility(row, tier, config, side='buy').ok
+        entry_ok = bool(pct_ok and entry_allowed(percentile, tier, config)[0])
+        selected = bool(pct_ok and soft_ok and elig_ok and entry_ok)
+        if not pct_ok:
+            reject = 'pct_below_threshold'
+        elif not soft_ok:
+            reject = 'soft_filter'
+        elif not elig_ok:
+            reject = 'eligibility'
+        elif not entry_ok:
+            reject = 'entry_cost'
+        else:
+            reject = ''
+        out.append({
+            'trade_date': row['date'],
+            'ts_code': str(row['ts_code']),
+            'score': '' if row.get('score') is None else round(
+                float(row['score']), 6),
+            'score_percentile': '' if percentile is None else round(
+                percentile, 6),
+            'pct_ok': pct_ok,
+            'soft_pass': bool(row.get('soft_pass')),
+            'eligibility_ok': elig_ok,
+            'entry_ok': entry_ok,
+            'selected': selected,
+            'reject_reason': reject,
+        })
+    return out
 
 
 def percentile_map(frame: pl.DataFrame) -> dict[str, float]:
@@ -619,7 +673,7 @@ def _plan_buys(candidates: list[tuple[str, float]], positions: dict[str, Positio
     intents: list[TradeIntent] = []
     details: dict[str, dict[str, Any]] = {}
     free_slots = max(0, max_positions - len(positions))
-    for code, percentile in candidates:
+    for code, percentile, _score in candidates:
         if len(intents) >= free_slots:
             break
         if code in positions or code in pending_codes:
@@ -683,7 +737,8 @@ def run_stateful(window_dates: list[date], by_date: dict[date, pl.DataFrame],
                  state: dict[str, Any] | None = None,
                  finalize: bool = True,
                  scan_last_day: bool = False,
-                 signal_days: set[date] | None = None) -> dict[str, Any]:
+                 signal_days: set[date] | None = None,
+                 eval_dump: bool = False) -> dict[str, Any]:
     """逐日推进的状态机回测。
 
     ``state`` 为上一分片的期末状态（现金 / 持仓 / 待买待卖意图）；分片模式下
@@ -722,6 +777,8 @@ def run_stateful(window_dates: list[date], by_date: dict[date, pl.DataFrame],
     #: 逐码候选清单（G-067）：与 ``stats['candidate_signals']`` 逐条对应，
     #: 供分片落盘 ``candidates.csv``；不参与撮合，也不进 stats。
     candidate_records: list[dict[str, Any]] = []
+    #: 决策日全截面门槛判定（``eval_dump`` 为 True 时才有内容）
+    eval_records: list[dict[str, Any]] = []
 
     for index, day in enumerate(window_dates):
         bars = bars_by_date.get(day, {})
@@ -756,11 +813,13 @@ def run_stateful(window_dates: list[date], by_date: dict[date, pl.DataFrame],
 
         frame = by_date.get(day)
         if signal_days is not None and day not in signal_days:
-            candidates: list[tuple[str, float]] = []
+            candidates: list[tuple[str, float, float | None]] = []
         else:
             candidates = select_candidates(frame, tier, config)
             stats['days_scanned'] += 1
             stats['candidate_signals'] += len(candidates)
+            if eval_dump:
+                eval_records.extend(evaluate_cross_section(frame, tier, config))
             if candidates:
                 stats['days_with_candidates'] += 1
                 candidate_records.extend(
@@ -814,6 +873,7 @@ def run_stateful(window_dates: list[date], by_date: dict[date, pl.DataFrame],
         'nav_rows': nav_rows, 'trades': trades, 'closed': closed,
         'stats': stats,
         'candidates': candidate_records,
+        'signal_eval': eval_records,
         'nav': float(nav_rows[-1]['nav_stateful']) if nav_rows else equity_init,
         'state': {
             'cash': cash,
@@ -2028,6 +2088,13 @@ def _write_csv(path: Path, rows: list[dict[str, Any]],
     frame.write_csv(path)
 
 
+def _write_signal_eval(dump: bool, directory: Path,
+                       records: list[dict[str, Any]]) -> None:
+    """``--dump-eval`` 时落盘决策日全截面门槛判定（诊断产物，不进撮合）。"""
+    if dump:
+        _write_csv(directory / 'signal_eval.csv', records, EVAL_COLUMNS)
+
+
 def _pct(value: Any) -> str:
     number = _finite(value)
     return '—' if number is None else f'{number * 100:.2f}%'
@@ -2461,6 +2528,9 @@ def main(argv: list[str] | None = None) -> int:
                              'slots60 = 日频旧行为；all = 三档并列）')
     parser.add_argument('--out-suffix', default='',
                         help='产物目录后缀（如 _baseline_alloc，避免覆盖既有目录）')
+    parser.add_argument('--dump-eval', action='store_true',
+                        help='额外落盘决策日全截面门槛判定 signal_eval.csv'
+                             '（诊断用，回答某只标的为何没进候选）')
     args = parser.parse_args(argv)
     if args.hold_days < 1:
         raise SystemExit(f'--hold-days 必须 ≥ 1，收到 {args.hold_days}')
@@ -2553,7 +2623,7 @@ def _run_single(args: argparse.Namespace, started: datetime, app_config: Any,
     baseline_slots = _baseline_slots(window_dates, signal_days, args.hold_days)
     stateful = run_stateful(window_dates, by_date, bars_by_date, all_dates,
                             tier, config, args.equity, costs, rules,
-                            signal_days=signal_days)
+                            signal_days=signal_days, eval_dump=args.dump_eval)
     _log('状态机回测完成', started)
     allocs = _resolve_allocs(args)
     a_signals = load_a_signals(hold_days=args.hold_days) if 'a' in allocs else None
@@ -3015,6 +3085,7 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
     if stateful.get('candidates') is not None:
         _write_csv(out_dir / 'candidates.csv', stateful['candidates'],
                    CANDIDATE_COLUMNS)
+    _write_signal_eval(args.dump_eval, out_dir, stateful['signal_eval'])
     for name in alloc_names:
         payload = (baselines[name] if baselines
                    else {'nav_rows': baseline_rows, 'stats': baseline_stats})
@@ -3235,7 +3306,8 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
         stateful = run_stateful(
             chunk_dates, by_date, bars_by_date, global_dates, tier, config,
             args.equity, costs, rules, state=stateful_state,
-            finalize=is_final, scan_last_day=True, signal_days=signal_days)
+            finalize=is_final, scan_last_day=True, signal_days=signal_days,
+            eval_dump=args.dump_eval)
         baselines = run_baselines(
             chunk_dates, by_date, bars_by_date, tier, config, args.equity,
             costs, rules, allocs=allocs,
@@ -3255,6 +3327,8 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
         _write_csv(trades_path, stateful['trades'], TRADE_COLUMNS)
         # 逐码候选清单（G-067）：与 stats['candidate_signals'] 逐条对应
         _write_csv(candidates_path, stateful['candidates'], CANDIDATE_COLUMNS)
+        _write_signal_eval(args.dump_eval, candidates_path.parent,
+                           stateful['signal_eval'])
         for name, payload_rows in baselines.items():
             _write_csv(nav_path.parent / f'nav_{name}.csv', payload_rows['nav_rows'],
                        ('date', 'nav', 'cash', 'holdings_count', 'gross_exposure'))

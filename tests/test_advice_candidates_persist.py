@@ -25,9 +25,10 @@ def _tier_config(soft: bool = True) -> tuple[SimpleNamespace, SimpleNamespace]:
 
 
 def test_candidate_records_one_to_one_with_signals(tmp_path: Path) -> None:
-    """内存候选 N 条 → 落盘 N 行，字段逐条相等。"""
+    """内存候选 N 条 → 落盘 N 行，字段逐条相等（含原始 score）。"""
     tier, config = _tier_config()
-    candidates = [('600519.SH', 0.9912345), ('000001.SZ', 0.9501)]
+    candidates = [('600519.SH', 0.9912345, 12.345678),
+                  ('000001.SZ', 0.9501, None)]
     day = date(2026, 11, 4)
     stats = {'candidate_signals': 0}
     stats['candidate_signals'] += len(candidates)   # 与 run_stateful 同段计数
@@ -36,10 +37,11 @@ def test_candidate_records_one_to_one_with_signals(tmp_path: Path) -> None:
         candidates, day, candidate_reason(tier, config))
     assert len(records) == stats['candidate_signals']
     assert records[0]['reason'] == 'pct>=0.95;soft_pass;eligibility_ok;entry_allowed'
-    for (code, pct), row in zip(candidates, records, strict=True):
+    for (code, pct, score), row in zip(candidates, records, strict=True):
         assert row['ts_code'] == code
         assert row['trade_date'] == day
         assert row['score_percentile'] == round(float(pct), 6)
+        assert row['score'] == ('' if score is None else round(score, 6))
 
     path = tmp_path / 'candidates.csv'
     _write_csv(path, records, CANDIDATE_COLUMNS)
@@ -48,6 +50,10 @@ def test_candidate_records_one_to_one_with_signals(tmp_path: Path) -> None:
     for row, got in zip(records, back, strict=True):
         assert got['ts_code'] == row['ts_code']
         assert str(got['trade_date'])[:10] == row['trade_date'].isoformat()
+        if row['score'] == '':
+            assert got['score'] == ''
+        else:
+            assert abs(float(got['score']) - float(row['score'])) < 1e-12
         assert abs(float(got['score_percentile'])
                    - row['score_percentile']) < 1e-12
         assert got['reason'] == row['reason']
@@ -68,7 +74,8 @@ def test_row_count_mismatch_aborts(tmp_path: Path) -> None:
     """DG-31 反例：少写一行/多算一个信号必须被对拍拦住，不能空过。"""
     tier, config = _tier_config()
     records = candidate_records_for_day(
-        [('600519.SH', 0.99)], date(2026, 11, 4), candidate_reason(tier, config))
+        [('600519.SH', 0.99, 8.5)], date(2026, 11, 4),
+        candidate_reason(tier, config))
     path = tmp_path / 'candidates.csv'
     _write_csv(path, records, CANDIDATE_COLUMNS)
     recorded = len(_read_chunk_candidates(path))
