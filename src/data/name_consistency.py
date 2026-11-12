@@ -56,6 +56,7 @@ TABLES = ('names_json_vs_stock_basic', 'name_history_vs_stock_basic',
 #: 调用方要能一眼看出「公告直证」还是「推断」，不接受裸名称字符串。
 PRECISION: dict[str, str] = {
     'tushare_namechange': '公告直证',
+    'sz_change_name': '公告直证（深交所简称变更表；只补 tushare 无记录的代码）',
     'inferred:strip_G': '最低（推断，非公告直证）',
 }
 PRECISION_UNMATCHED = '无匹配段'

@@ -15,6 +15,14 @@
 上市日仍以 ``stock_basic.list_date`` 为准。三者只做对账，不互相覆盖——
 详见 ``src/data/name_consistency.py``。
 
+补充源
+======
+tushare ``namechange`` 对个别代码迁移旧码一条记录都没有（G-134：``000043.SZ``、
+``300114.SZ``），这类代码用深交所简称变更原始件 ``meta/st/raw/sz_change_name.parquet``
+补段，``source='sz_change_name'``。**只对 tushare 名下 0 行的代码生效**，已有代码
+一行不动；首段回溯到 ``list_date``，末段收口到 ``delist_date``；上市首日的行情端
+标记（``N`` / ``C`` / ``XD`` / ``XR`` / ``DR``）不写成简称；事件链不自洽即跳过不猜。
+
 数据链路
 ========
 复用 ``tools/build_st_history_from_tushare.py`` 的分页拉取与
@@ -34,7 +42,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import date, datetime
+import unicodedata
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -64,6 +73,14 @@ BACKUP_DIR = ROOT / '_backup' / 'meta'
 REPORT_ROOT = ROOT / 'reports'
 
 SOURCE = 'tushare_namechange'
+#: 深交所简称变更原始件（相对 ``data/local_store``）。**只补 tushare 名下 0 行的代码**
+#: （G-134：``000043.SZ`` / ``300114.SZ`` 在 tushare ``namechange`` 里一条都没有）。
+SZ_RAW = 'meta/st/raw/sz_change_name.parquet'
+SOURCE_SZ = 'sz_change_name'
+SZ_REASON = '深交所简称变更表'
+#: 行情端当日临时标记：出现在 ``name_prev`` 时不是简称，不写入区间表
+#: （与 ``src/data/name_consistency.py`` 的 ``_MARKET_PREFIXES`` 同义）
+_MARKET_MARKERS = ('XD', 'XR', 'DR', 'N', 'C')
 #: tushare ``namechange`` 全字段；比 ST 重建多取 ``ann_date``（现有落盘文件有这一列）
 FIELDS = ('ts_code', 'name', 'start_date', 'end_date', 'ann_date', 'change_reason')
 SCHEMA: dict[str, Any] = {
@@ -118,6 +135,119 @@ def normalize(raw: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, int]]:
     frame = pl.DataFrame(rows, schema=SCHEMA, strict=False).sort(
         ['ts_code', 'start_date', 'end_date'], nulls_last=True)
     return frame, dropped
+
+
+def _nfkc(value: Any) -> str:
+    """全角转半角 + 去空白。
+
+    深交所件写「深南光Ａ」「G 深南光」，tushare 写「深南光A」「G深南光」；
+    不归一就等于给同一只票的同一天造出两个不同简称（G-134）。
+    """
+    text = unicodedata.normalize('NFKC', str(value if value is not None else ''))
+    return ''.join(text.split())
+
+
+def _split_market_marker(name: str) -> tuple[str, bool]:
+    for prefix in _MARKET_MARKERS:
+        if name.startswith(prefix) and len(name) > len(prefix):
+            return name[len(prefix):], True
+    return name, False
+
+
+def sz_segments(events: list[dict[str, Any]], list_date: date,
+                delist_date: date | None) -> tuple[list[tuple[str, date, date | None]] | None, str | None]:
+    """深交所变更事件 → ``[(name, start, end)]``；链不自洽时返回 ``(None, 原因)``，不猜。
+
+    口径：
+    ① 首段名取首个事件的 ``name_prev``（上市时简称）并回溯到 ``list_date``；
+    ② 若 ``name_prev`` 带行情端标记（``N`` / ``C`` / ``XD`` / ``XR`` / ``DR``），
+       它不是简称，首段改用同事件的 ``name_new``，该事件不单独成段——否则会写出
+       「N中航电」并与新码 ``302132.SZ`` 同名日期的「中航电测」打架；
+    ③ 每个事件以 ``change_date`` 起新段，段尾 = 后继段起点 - 1 天；
+    ④ 末段收口到 ``stock_basic.delist_date``（退市股不延伸到今天）。
+    """
+    rows = sorted(events, key=lambda item: item['change_date'])
+    for prev, nxt in zip(rows, rows[1:], strict=False):
+        if _nfkc(prev['name_new']) != _nfkc(nxt['name_prev']):
+            return None, 'inconsistent_chain'
+    head, marked = _split_market_marker(_nfkc(rows[0]['name_prev']))
+    if marked:
+        head = _nfkc(rows[0]['name_new'])
+        rows = rows[1:]
+    segments: list[list[Any]] = [[head, list_date]]
+    for item in rows:
+        day = item['change_date']
+        if day <= segments[-1][1]:
+            # 同日改名：不产生零长段，同名日以新名覆盖
+            segments[-1][0] = _nfkc(item['name_new'])
+            continue
+        segments.append([_nfkc(item['name_new']), day])
+    closed: list[tuple[str, date, date | None]] = []
+    for current, following in zip(segments, segments[1:], strict=False):
+        closed.append((current[0], current[1], following[1] - timedelta(days=1)))
+    last_name, last_start = segments[-1]
+    if delist_date is not None and delist_date < last_start:
+        return None, 'delist_before_last_segment'
+    closed.append((last_name, last_start, delist_date))
+    return closed, None
+
+
+def sz_supplement(store: Path, existing: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """深交所简称变更表补段：**只补 tushare 一条都没有的代码**。
+
+    ``existing`` 是 tushare 归一化结果；已在其中的代码一律不动（避免覆盖公告直证），
+    空 ``code`` / ``stock_basic`` 缺该码 / 事件链不自洽的一律跳过并计数，不猜。
+    """
+    stats: dict[str, Any] = {
+        'source': SOURCE_SZ, 'raw_path': str(store / SZ_RAW),
+        'codes': 0, 'segments': 0, 'skipped_empty_code': 0,
+        'skipped_no_stock_basic': 0, 'skipped_no_list_date': 0,
+        'skipped_inconsistent_chain': 0, 'skipped_delist_before_last_segment': 0,
+        'added': [],
+    }
+    raw_path = store / SZ_RAW
+    basic_path = store / 'meta' / 'stock_basic.parquet'
+    if not raw_path.is_file() or not basic_path.is_file():
+        stats['missing_input'] = True
+        return pl.DataFrame(schema=SCHEMA), stats
+    raw = pl.read_parquet(raw_path)
+    basic = pl.read_parquet(basic_path, columns=['ts_code', 'list_date', 'delist_date'])
+    window = {item['ts_code']: (item['list_date'], item['delist_date'])
+              for item in basic.to_dicts()}
+    known = set(existing['ts_code'].to_list())
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in raw.to_dicts():
+        code = _clean_text(item.get('code'))
+        if not code:
+            stats['skipped_empty_code'] += 1
+            continue
+        if code in known:
+            continue
+        grouped.setdefault(code, []).append(item)
+    now = datetime.now()
+    rows: list[dict[str, Any]] = []
+    for code in sorted(grouped):
+        if code not in window:
+            stats['skipped_no_stock_basic'] += 1
+            continue
+        list_date, delist_date = window[code]
+        if list_date is None:
+            stats['skipped_no_list_date'] += 1
+            continue
+        segments, reason = sz_segments(grouped[code], list_date, delist_date)
+        if segments is None:
+            stats[f'skipped_{reason}'] = stats.get(f'skipped_{reason}', 0) + 1
+            continue
+        stats['codes'] += 1
+        for name, start, end in segments:
+            rows.append({
+                'ts_code': code, 'name': name, 'start_date': start, 'end_date': end,
+                'ann_date': None, 'change_reason': SZ_REASON,
+                'source': SOURCE_SZ, 'fetched_at': now,
+            })
+            stats['added'].append([code, name, str(start), str(end)])
+    stats['segments'] = len(rows)
+    return pl.DataFrame(rows, schema=SCHEMA, strict=False), stats
 
 
 def _stats(frame: pl.DataFrame) -> dict[str, Any]:
@@ -192,9 +322,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     raw = fetch_raw(Path(args.cache_dir), offline=args.offline,
                     refresh=args.refresh, fields=FIELDS)
     frame, dropped = normalize(raw)
+    store = target.parents[1]  # data/local_store
+    sz_frame, sz_stats = sz_supplement(store, frame)
+    if sz_frame.height:
+        frame = pl.concat([frame, sz_frame], how='vertical_relaxed').sort(
+            ['ts_code', 'start_date', 'end_date'], nulls_last=True)
     report: dict[str, Any] = {
         'raw_rows': raw.height,
         'dropped': dropped,
+        'sz_supplement': sz_stats,
         'built': _stats(frame),
     }
     if frame.height == 0:
@@ -203,7 +339,6 @@ def main(argv: Iterable[str] | None = None) -> int:
         return 2
 
     report['diff_vs_existing'] = compare_with_existing(frame, target)
-    store = target.parents[1]  # data/local_store
     report['reconcile'] = {
         name: table.group_by('category').len().sort('category').to_dicts()
         for name, table in build_tables(store).items()
@@ -214,12 +349,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         write_parquet_atomic(frame, target)
         coverage = {
             'dataset': 'name_history',
-            'source': SOURCE,
+            'source': f'{SOURCE}+{SOURCE_SZ}',
+            'source_note': (
+                f'{SOURCE} 为主源；{SOURCE_SZ} 只补 tushare 名下 0 行的代码，'
+                '首段回溯到 stock_basic.list_date，末段收口到 delist_date'),
             'authority_for': '历史简称（PIT）；当前简称以 meta/names.json 为准',
             'generated_at': datetime.now().isoformat(timespec='seconds'),
             'cache_dir': str(args.cache_dir),
             'raw_rows': raw.height,
             'dedup_dropped': dropped,
+            'sz_supplement': {k: v for k, v in sz_stats.items() if k != 'added'},
+            'sz_supplement_rows': sz_stats['added'],
             **_stats(frame),
             'target_sha256': _sha256(target),
             'backup': str(backup) if backup else None,
@@ -234,7 +374,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         manifest = {
             'dataset': 'name_history',
             'semantics': 'A 股历史简称区间表，每行一个 [start_date, end_date) 简称段',
-            'source': SOURCE,
+            'source': f'{SOURCE}+{SOURCE_SZ}',
+            'source_note': (
+                f'{SOURCE} 为主源；{SOURCE_SZ} 只补 tushare 名下 0 行的代码'),
             'authority': '历史简称以本表为准；当前简称以 meta/names.json 为准',
             'path': 'meta/name_history.parquet',
             'produced_by': 'tools/build_name_history.py',
