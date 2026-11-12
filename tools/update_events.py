@@ -385,7 +385,7 @@ def main() -> int:
     if args.dry_run:
         preview = events.import_file(
             merged_path,
-            store_root=store_root, mode='append',
+            store_root=store_root, mode='append', source='cninfo',
             start=days[0].isoformat(), end=days[-1].isoformat(),
             coverage_start=coverage['start'], coverage_end=coverage['end'],
             dry_run=True)
@@ -409,7 +409,7 @@ def main() -> int:
 
     result = events.import_file(
         merged_path,
-        store_root=store_root, mode='append',
+        store_root=store_root, mode='append', source='cninfo',
         start=days[0].isoformat(), end=days[-1].isoformat(),
         coverage_start=coverage['start'], coverage_end=coverage['end'])
     after = events.load_events(store_root)

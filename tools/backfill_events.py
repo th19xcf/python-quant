@@ -51,6 +51,10 @@ DEFAULT_KEYWORDS = (
     '减持', '增持', '股权激励', '中标', '重大合同',
     '处罚', '立案', '重组', '并购', '分红',
 )
+#: ``--source`` 是采集**通道**（cninfo / eastmoney），不是行级来源标记；
+#: 通道 → 行级 source 的映射固定在这里，入库时显式传给 ``import_file``，
+#: 避免东财通道抓来的公告被兜底标成 ``cninfo``（DG-19）。
+CHANNEL_SOURCE = {'cninfo': 'cninfo', 'eastmoney': 'em_ann'}
 _RAW_SCHEMA = {
     'keyword': pl.Utf8,
     'art_code': pl.Utf8,
@@ -258,7 +262,7 @@ def _import_shards(args: argparse.Namespace, shard_dir: Path,
         merged_path,
         store_root=args.store_root,
         mode='append',
-        source=args.source,
+        source=CHANNEL_SOURCE[args.source],
         complete=True,
         start=args.start,
         end=args.end,

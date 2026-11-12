@@ -54,19 +54,19 @@ def _raw_frame() -> pl.DataFrame:
 
 class TestNormalize:
     def test_keyword_and_title_filters(self):
-        events = normalize_announcements(_raw_frame())
+        events = normalize_announcements(_raw_frame(), source='cninfo')
         assert set(events['event_type'].to_list()) == {
             '并购重组', '重大合同/中标', '监管处罚', '减持'}
         # 第 5 条与第 1 条同类型同标的，30 日内去重丢弃
         assert events.height == 4
 
     def test_follow_up_announcement_dropped(self):
-        events = normalize_announcements(_raw_frame())
+        events = normalize_announcements(_raw_frame(), source='cninfo')
         ids = events['event_id'].to_list()
         assert 'a5-600000' not in ids
 
     def test_ts_code_converted(self):
-        events = normalize_announcements(_raw_frame())
+        events = normalize_announcements(_raw_frame(), source='cninfo')
         assert set(events['ts_code'].to_list()) == {'600000.SH'}
 
 

@@ -8,6 +8,8 @@
 - 覆盖声明：``{store_root}/meta/events/coverage.json``（导入区间与完整性）；
 - 导入：支持证券公告原始表（``keyword/stock_code/display_time``）与已规范化表
   （``ts_code/event_type/publish_time``），CSV / Parquet 均可；
+- 逐行来源标记：``source`` 列的合法取值见 ``EVENT_SOURCES``，新增来源须先在那里登记，
+  禁止采集脚本自由拼写（DG-19：混源必须逐行可追溯）；
 - 运行时只读本地 parquet，**禁止联网**（项目硬约束）。
 
 事件冷却口径：公告日 T，冷却区间 ``[T+1, T+N]``，N 为该事件类型的交易日数。
@@ -34,6 +36,13 @@ RISK_EVENT_COOLDOWNS: dict[str, int] = {
     '重大合同/中标': 5,
     '监管处罚': 5,
 }
+
+#: ``events.parquet`` 里 ``source`` 列的全部合法取值（逐行来源标记，DG-19）。
+#: 新增来源必须先在此登记，禁止采集脚本自由拼写：
+#:   cninfo  —— 巨潮 hisAnnouncement，默认口径；未传 source 时按它兜底
+#:   em_yjyg —— 东方财富业绩预告独立通道（业绩预增/预减），非公告检索
+#:   em_ann  —— 东方财富公告口径补数（2021-10 股权激励；title 检索宽于巨潮 searchkey）
+EVENT_SOURCES: tuple[str, ...] = ('cninfo', 'em_yjyg', 'em_ann')
 
 KEYWORD_TO_TYPE = {
     '减持': '减持',
@@ -152,8 +161,14 @@ def empty_events() -> pl.DataFrame:
 
 def normalize_announcements(
     frame: pl.DataFrame, start: Any = None, end: Any = None,
+    source: str | None = None,
 ) -> pl.DataFrame:
-    """把原始公告表规范化为事件表（同一标的同类型 30 自然日内只留最早一条）。"""
+    """把原始公告表规范化为事件表（同一标的同类型 30 自然日内只留最早一条）。
+
+    ``source`` 是调用方声明的行级来源标记（DG-19）。取值优先级：记录自带的
+    ``source`` 键 > 调用方传入的 ``source``；**两者都没有直接抛错**，不兜底成
+    ``cninfo``——否则用东财通道抓来的公告会被错标成巨潮口径。
+    """
     if frame.is_empty():
         return empty_events()
     need = {'keyword', 'stock_code', 'display_time'}
@@ -162,9 +177,10 @@ def normalize_announcements(
         raise ValueError(f'原始公告表缺少列: {sorted(missing)}')
     start_day = _as_date(start)
     end_day = _as_date(end)
+    default_source = str(source).strip() if source else ''
 
     rows: list[dict[str, Any]] = []
-    for item in frame.to_dicts():
+    for position, item in enumerate(frame.to_dicts(), 1):
         event_type = KEYWORD_TO_TYPE.get(str(item.get('keyword') or ''))
         if event_type is None:
             continue
@@ -186,13 +202,19 @@ def normalize_announcements(
         ts_code = _to_ts_code(item.get('stock_code'))
         if ts_code is None:
             continue
+        row_source = str(item.get('source') or '').strip() or default_source
+        if not row_source:
+            raise ValueError(
+                f'公告记录缺少来源标记且调用方未传 source（第 {position} 条，'
+                f"art_code={item.get('art_code')}，stock_code={item.get('stock_code')}）；"
+                '禁止兜底成 cninfo，请显式传入 cninfo / em_ann / em_yjyg')
         rows.append({
             'event_id': f"{item.get('art_code') or ''}-{item.get('stock_code')}",
             'ts_code': ts_code,
             'event_type': event_type,
             'publish_time': published,
             'title': title,
-            'source': str(item.get('source') or 'cninfo'),
+            'source': row_source,
         })
     return dedup_events(_coerce_events(pl.DataFrame(rows, infer_schema_length=None)
                                        if rows else empty_events()))
@@ -383,8 +405,27 @@ def load_coverage(store_root: Path | str) -> dict[str, Any]:
         return {}
 
 
+def _recompute_source(frame: pl.DataFrame) -> str:
+    """按表内实测重算字段级来源串（DG-19）：``cninfo=181110|em_yjyg=4543|em_ann=97``。
+
+    顺序固定：先按 :data:`EVENT_SOURCES` 的登记顺序，未登记的取值按字典序追加在后；
+    缺的类不出现。空表返回空串；存在空 ``source`` 时直接报错，不静默丢行。
+    """
+    if frame.is_empty():
+        return ''
+    if 'source' not in frame.columns:
+        raise ValueError('事件表缺少 source 列，无法重算字段级来源标记（DG-19）')
+    counts = dict(frame.group_by('source').len().iter_rows())
+    if None in counts:
+        raise ValueError(
+            f'事件表存在 {counts[None]} 行 source 为空，无法写成字段级来源标记（DG-19）')
+    ordered = [key for key in EVENT_SOURCES if key in counts]
+    ordered += sorted(key for key in counts if key not in EVENT_SOURCES)
+    return '|'.join(f'{key}={counts[key]}' for key in ordered)
+
+
 def _write_coverage(store_root: Path | str, frame: pl.DataFrame,
-                    source: str, complete: bool,
+                    complete: bool,
                     coverage_start: Any = None,
                     coverage_end: Any = None) -> dict[str, Any]:
     start_day = _as_date(coverage_start)
@@ -400,9 +441,19 @@ def _write_coverage(store_root: Path | str, frame: pl.DataFrame,
                 payload = loaded
         except (OSError, ValueError) as exc:
             logger.warning(f'[events] 覆盖声明读取失败，将整体重写: {exc}')
+    # ``source`` 一律按表内实测重算，不用调用方参数整值覆盖：多来源表必须写成
+    # 字段级串，否则一次 import 就会把 cninfo=…|em_ann=… 冲成单值（DG-19）。
+    previous_source = str(payload.get('source') or '')
+    recomputed = _recompute_source(frame) or previous_source
+    if frame.is_empty():
+        logger.warning('[events] 覆盖声明写入时事件表为空，source 沿用既有声明')
+    elif previous_source and previous_source != recomputed:
+        logger.warning(
+            f'[events] coverage.source 与表内实测不一致，按实测重写: '
+            f'旧={previous_source} 新={recomputed}')
     if frame.is_empty():
         info: dict[str, Any] = {
-            'source': source,
+            'source': recomputed,
             'start': start_day.isoformat() if start_day else None,
             'end': end_day.isoformat() if end_day else None,
             'rows': 0,
@@ -414,7 +465,7 @@ def _write_coverage(store_root: Path | str, frame: pl.DataFrame,
         start_value = start_day or _as_date(data_start)
         end_value = end_day or _as_date(data_end)
         info = {
-            'source': source,
+            'source': recomputed,
             'start': start_value.isoformat() if start_value else None,
             'end': end_value.isoformat() if end_value else None,
             'rows': frame.height,
@@ -426,7 +477,8 @@ def _write_coverage(store_root: Path | str, frame: pl.DataFrame,
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                     encoding='utf-8')
-    return info
+    # 差异只回传给调用方，不写进 coverage.json 污染声明
+    return {**info, 'source_previous': previous_source}
 
 
 def _read_source(path: Path) -> pl.DataFrame:
@@ -449,12 +501,17 @@ def _detect_format(columns: Iterable[str]) -> str:
 
 
 def import_file(path: Path | str, store_root: Path | str | None = None,
-                mode: str = 'replace', source: str = 'cninfo',
+                mode: str = 'replace', source: str | None = None,
                 complete: bool = True, start: Any = None,
                 end: Any = None, coverage_start: Any = None,
                 coverage_end: Any = None,
                 dry_run: bool = False) -> dict[str, Any]:
     """导入离线事件文件；``mode='replace'`` 全量替换，``'append'`` 增量合并。
+
+    ``source`` 是行级来源标记（DG-19），**必须由调用方显式声明**（``cninfo`` /
+    ``em_ann`` / ``em_yjyg``）：原始公告表没有 ``source`` 列、已规范化表缺该列时
+    都用它填充，两者都没有直接抛错，不兜底成 ``cninfo``。已规范化表自带
+    ``source`` 列时以表内值为准，``source`` 参数不覆盖既有标记。
 
     ``append`` 的去重语义（与早期版本不同，务必留意）：
 
@@ -475,8 +532,14 @@ def import_file(path: Path | str, store_root: Path | str | None = None,
     raw = _read_source(file_path)
     kind = _detect_format(raw.columns)
     if kind == 'raw':
-        incoming = normalize_announcements(raw, start, end)
+        incoming = normalize_announcements(raw, start, end, source=source)
     else:
+        if 'source' not in raw.columns:
+            if not source:
+                raise ValueError(
+                    '已规范化事件表缺少 source 列且调用方未传 source；'
+                    '禁止兜底成 cninfo，请显式传入 cninfo / em_ann / em_yjyg')
+            raw = raw.with_columns(pl.lit(source).alias('source'))
         incoming = dedup_events(_coerce_events(raw))
     if incoming.is_empty():
         raise ValueError(f'事件文件没有可用记录: {file_path}')
@@ -544,7 +607,7 @@ def import_file(path: Path | str, store_root: Path | str | None = None,
 
     path_out.parent.mkdir(parents=True, exist_ok=True)
     write_parquet_atomic(merged, path_out)
-    coverage = _write_coverage(root, merged, source, complete,
+    coverage = _write_coverage(root, merged, complete,
                                coverage_start, coverage_end)
     logger.info(f'[events] {mode} 导入 {merged.height} 条 → {path_out}')
     return {'rows': merged.height, 'mode': mode, 'coverage': coverage,
