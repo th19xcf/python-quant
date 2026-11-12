@@ -101,6 +101,14 @@ CRITICAL_FILES: tuple[str, ...] = (
     'external/tdx_hq_cache/shs.tnf',
     'external/tdx_hq_cache/szs.tnf',
     'external/tdx_hq_cache/bjs.tnf',
+    # 公告原始采集件（2026-11-12 补，DG-32 入层三问 ③ 尾句）：`research/events/data/`
+    # 整体不是正式数据路径，但这两份是外部源（巨潮/东财）的一次性原始抓取，
+    # 重抓的字节不可复现；真实消费者在 tools 侧（backfill_events.py:205/210 读
+    # backfill/ 分片、update_events.py:188/231 读日更分片，两者最终写
+    # data/local_store/meta/events/events.parquet）。零 src/ 消费者、不进正式层，
+    # 第二份留存由 G:\git\python-quant 镜像承担。
+    'research/events/data/announcements_raw.parquet',
+    'research/events/data/yjyg_raw.parquet',
 )
 
 #: 整目录（相对项目根），保留目录内相对结构
@@ -124,6 +132,14 @@ CRITICAL_DIRS: tuple[str, ...] = (
     # 数据新鲜度与归档审计留痕（2026-11-12 补）：内容可由脚本重算，
     # 但重算要跑全链路脚本且历史值会变，留一份成本仅 0.6 MB。
     'artifacts',
+    # 公告原始采集分片（2026-11-12 补）：83 个月度分片 + 日更分片 + 36 个补数分片，
+    # 合计 122 文件 / 8,978,792 B，外部源不可重放（源端会变、翻页截断、响应为空）；
+    # 补数分片的生成脚本已不在仓库，尤其不可重建。目录条目按整目录收录，会连带
+    # 3 个可重算的 `_merged_for_import.parquet` 与 1 个 `_audit.json`（合计约 1.09 MB），
+    # 属收录范围的包含关系，不单列。该树零 src/ 消费者，不是正式路径，见
+    # docs/数据权威路径清单.md「research/events/data/ 整体不是正式数据路径」条。
+    'research/events/data/backfill',
+    'research/events/data/backfill_supplement',
 )
 
 #: 项目外的不可重建源数据：(相对通达信安装目录, 备份目录内相对键)。
