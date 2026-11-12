@@ -31,18 +31,5 @@ jobs:
         run: poetry run ruff check src tests
       - name: Type check
         run: poetry run mypy src
-      - name: Failure probe diagnostics
-        if: always()
-        run: |
-          set +e
-          out=$(poetry run pytest --cov=src --cov-report=term-missing 2>&1)
-          echo "$out" | tail -30
-          uniq=$(echo "$out" | grep -E '^E   ' | sort -u | head -6 | tr '\n' '|')
-          ids=$(echo "$out" | grep -E '^(FAILED|ERROR) ' | head -30 | tr '\n' '|')
-          summ=$(echo "$out" | grep -E '[0-9]+ (passed|failed)' | tail -1 | tr '\n' '|')
-          echo "::error title=uniq-errors::${uniq}"
-          echo "::error title=nodeids::${ids}"
-          echo "::error title=summary::${summ}"
-          exit 0
       - name: Test with coverage gate
         run: poetry run pytest --cov=src --cov-report=term-missing
