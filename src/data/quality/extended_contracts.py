@@ -7,8 +7,10 @@ r"""外部依赖数据契约占位（停复牌 / 行业 PIT / 指数成分历史
 回测与选股里有几条约束被**隐式假设**成立，但项目并没有对应的权威本地数据：
 
 - 「停牌不可买」——没有停复牌日表，撮合引擎只能按有行情即认为可交易；
-- 「行业中性化 / 分组回测」——`meta/industry/` 只有近期日快照，没有按生效日
-  的 PIT 区间表，用当前行业回填历史会引入前视偏差；
+- 「行业中性化 / 分组回测」——`meta/industry/` 只有近期日快照；按生效日的
+  PIT 区间表另有申万官方来源 `meta/industry_pit/industry_pit_sw.parquet`
+  （`in_date`/`out_date`），契约已改挂该表；同目录的 `industry_pit.parquet`
+  是通达信近期快照视图，不得用于历史回溯；
 - 「指数成分内选股」——没有成分进出区间，用当前成分回测历史会有成分股
   幸存者偏差。
 
@@ -76,15 +78,24 @@ CONTRACTS: tuple[ContractSpec, ...] = (
     ContractSpec(
         key='industry_pit',
         label='行业分类 PIT 区间表',
+        # 唯一可回溯的行业来源：申万官方分类变动表（`in_date`/`out_date` 区间）。
+        # 同目录的 `industry_pit.parquet` 是通达信 T 代码树，由本地 6 份日快照
+        # 做变更点抽取而来（2026-11-03 起、`end_date` 全空），实质是近期快照
+        # 视图，已降级为非正式 PIT，不得作为本契约的产物。
         # 独立目录：`meta/industry/` 下的 `industry_*.parquet` 是日快照，
-        # 被 freshness 的 latest_glob 直接读取（依赖 as_of 列）。PIT 区间表
-        # 列名不同，放在同目录同前缀会污染快照巡检。
-        path='meta/industry_pit/industry_pit.parquet',
-        required_columns=('ts_code', 'effective_date', 'industry_code', 'level'),
-        grain='(ts_code, effective_date, level)',
-        coverage_path='meta/industry_pit/coverage.json',
-        source_candidates=('申万/中信行业分类历史', '巨潮资讯'),
-        impact_if_missing='行业中性化与分组回测用当前行业回填历史，引入前视偏差',
+        # 被 freshness 的 latest_glob 直接读取（依赖 as_of 列）。
+        path='meta/industry_pit/industry_pit_sw.parquet',
+        required_columns=('ts_code', 'industry_l1', 'in_date', 'out_date'),
+        grain='(ts_code, in_date)',
+        coverage_path='meta/industry_pit/industry_pit_sw_coverage.json',
+        source_candidates=('申万宏源研究个股行业分类变动历史', '巨潮资讯'),
+        impact_if_missing=(
+            '行业中性化与分组回测将失去唯一可回溯的行业归属，'
+            '只能用当前行业回填历史，引入前视偏差'),
+        # max_lag_days 不显式放宽：`industry_pit_sw` 由手工 CLI
+        # `python -m src.data.industry_pit build` 更新，仓库内没有日更调度，
+        # 上游发布节奏未确认（登记见 docs/数据缺口登记.md）。宁可让滞后告警
+        # 继续响，也不为消警把阈值调宽。
     ),
     ContractSpec(
         key='index_membership',

@@ -15,10 +15,13 @@ r"""外部依赖数据契约的本地构建器（停复牌 / 行业 PIT / 指数
   口径：``交易日历 − 该标的实际有 bar 的交易日``。通达信 ``.day`` 不为停牌日
   生成记录，缺口即停牌；但与源端漏数不可区分，故给出 ``confidence``。
   区间取每只标的自身的 ``[首个 bar, 末个 bar]``，可声明 ``complete=true``。
-- **行业 PIT 区间表** ``meta/industry_pit/industry_pit.parquet``
+- **行业近期快照视图** ``meta/industry_pit/industry_pit.parquet``（非正式 PIT）
   口径：对 ``meta/industry/industry_YYYYMMDD.parquet`` 日快照做变更点抽取，
   只写生效日与失效日。本地快照只有最近几天，故 ``complete=false``，契约
-  如实保持 ``partial``。
+  如实保持 ``partial``。**该表只是「近期快照视图」：`end_date` 全空、
+  `effective_date` 只落在首份快照日起，禁止用它做 as-of 早于首份快照的历史
+  回溯**；行业历史回溯的唯一正式来源是 ``meta/industry_pit/industry_pit_sw.parquet``
+  （申万区间表，契约 ``industry_pit`` 已改挂该表）。
 - **指数成分进出区间表** ``meta/index_members/membership_intervals.parquet``
   口径：对 ``meta/index_members/index_weight_monthly.parquet``（tushare 月末
   成分快照，6 只指数）按「在该期在册 / 不在册」的月度差分推出进出区间，
@@ -277,7 +280,12 @@ def _industry_snapshots(root: Path) -> list[tuple[date, Path]]:
 
 
 def build_industry_pit(root: Path | str, *, commit: bool = False) -> dict[str, Any]:
-    """把行业日快照抽成 PIT 区间（只在变更点切段，不做历史外推）。"""
+    """把行业日快照抽成「近期快照视图」（只在变更点切段，不做历史外推）。
+
+    产物不是可回溯的正式 PIT：`end_date` 全空、`effective_date` 只落在首份
+    本地快照日起，as-of 早于该日必须返回空；历史行业回溯一律走
+    ``meta/industry_pit/industry_pit_sw.parquet``（申万区间表）。
+    """
     store = Path(root)
     snapshots = _industry_snapshots(store)
     if not snapshots:
@@ -337,11 +345,16 @@ def build_industry_pit(root: Path | str, *, commit: bool = False) -> dict[str, A
     if not commit:
         return summary
 
-    _write_frame(_path(store, 'industry_pit'), frame)
-    _write_json(_coverage_path(store, 'industry_pit'), {
+    # 契约已改挂申万区间表 `industry_pit_sw.parquet`，产物路径不能再从
+    # `_SPEC` 取，否则本构建器会把「近期快照视图」写到申万正式表上。
+    artifact = store / 'meta' / 'industry_pit' / 'industry_pit.parquet'
+    coverage_path = store / 'meta' / 'industry_pit' / 'coverage.json'
+    _write_frame(artifact, frame)
+    _write_json(coverage_path, {
         'dataset': 'industry_pit',
         'method': 'snapshot_change_points',
-        'authority': 'derived',
+        # 非正式 PIT：只有首份快照起的近期视图，禁止 as-of 回溯
+        'authority': 'recent_snapshot_view（近期快照视图，禁止 as-of 回溯）',
         'start': summary['start'],
         'end': summary['end'],
         # 只有最近若干天快照，之前的历史行业未知，不得声明完整
