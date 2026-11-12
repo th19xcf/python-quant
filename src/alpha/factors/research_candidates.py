@@ -178,6 +178,18 @@ FINANCIAL_CANDIDATES = ['q_roe_ttm', 'q_roa_ttm', 'q_gross_margin',
                         'g_revenue_yoy', 'g_profit_yoy', 'g_sue',
                         'v_ep', 'v_cfp', 'v_sp']
 
+#: 财务时效守卫（方案 B24）：截面日 t 匹配到的报告 ``end_date`` 距 t 超过该
+#: 月数即判陈旧，相关财务候选与 TTM 原始值一律置 null，不用旧值冒充当期。
+#: 置 ``None`` 关闭守卫（仅用于反证用例与历史口径复现）。
+MAX_FIN_STALENESS_MONTHS = 24
+
+#: 守卫作用对象：9 个财务候选 + 3 个 TTM 原始值（v_ep/v_cfp/v_sp 由它们派生）。
+_STALE_GUARD_COLS = [
+    'q_roe_ttm', 'q_roa_ttm', 'q_gross_margin', 'q_asset_turnover',
+    'q_accruals', 'q_ocf_to_profit', 'g_revenue_yoy', 'g_profit_yoy', 'g_sue',
+    'parent_net_profit__ttm', 'revenue__ttm', 'operating_cf__ttm',
+]
+
 
 # ---------------------------------------------------------------------------
 # 价格类
@@ -398,13 +410,17 @@ def build_pit_reports(income: pl.DataFrame,
 
 def compute_financial_candidates(cross: pl.DataFrame,
                                  reports: pl.DataFrame,
-                                 valuation: pl.DataFrame) -> pl.DataFrame:
+                                 valuation: pl.DataFrame,
+                                 max_staleness_months: int | None
+                                 = MAX_FIN_STALENESS_MONTHS) -> pl.DataFrame:
     """把报告级财务候选按 PIT 对齐到 (date, ts_code) 截面。
 
     Args:
         cross: 含 date, ts_code 的截面索引。
         reports: ``build_pit_reports`` 的输出。
         valuation: 含 ts_code, trade_date, total_mv 的日估值。
+        max_staleness_months: 报告 ``end_date`` 距截面日超过该月数即置 null；
+            ``None`` 关闭守卫（仅反证用例使用）。
 
     Returns:
         date, ts_code + FINANCIAL_CANDIDATES。
@@ -412,6 +428,13 @@ def compute_financial_candidates(cross: pl.DataFrame,
     c = cross.select(['ts_code', 'date']).unique().sort(['ts_code', 'date'])
     j = c.join_asof(reports, left_on='date', right_on='ann_date', by='ts_code',
                     strategy='backward')
+    if max_staleness_months is not None:
+        stale = pl.col('end_date').is_null() | (
+            pl.col('date')
+            > pl.col('end_date').dt.offset_by(f'{max_staleness_months}mo'))
+        j = j.with_columns([
+            pl.when(stale).then(None).otherwise(pl.col(name)).alias(name)
+            for name in _STALE_GUARD_COLS])
     val = valuation.select(['ts_code', 'trade_date', 'total_mv']) \
         .sort(['ts_code', 'trade_date'])
     j = j.sort(['ts_code', 'date']).join_asof(
@@ -435,8 +458,11 @@ def compute_all_candidates(panel: pl.DataFrame,
                            market_returns: pl.DataFrame,
                            cross: pl.DataFrame,
                            reports: pl.DataFrame,
-                           valuation: pl.DataFrame) -> pl.DataFrame:
+                           valuation: pl.DataFrame,
+                           max_staleness_months: int | None
+                           = MAX_FIN_STALENESS_MONTHS) -> pl.DataFrame:
     """价格类 + 财务类候选合并（调用方自行决定是否使用）。"""
     price = compute_price_candidates(panel, market_returns)
-    fin = compute_financial_candidates(cross, reports, valuation)
+    fin = compute_financial_candidates(cross, reports, valuation,
+                                       max_staleness_months)
     return price.join(fin, on=['date', 'ts_code'], how='left')

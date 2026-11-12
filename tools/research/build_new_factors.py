@@ -31,6 +31,11 @@ DATA_DIR = REPO_ROOT / 'data' / 'local_store'
 DEFAULT_WORK_DIR = REPO_ROOT / 'reports' / 'research_tmp'
 DEFAULT_OUTPUT_DIR = DATA_DIR / 'meta' / 'research_inputs'
 
+#: 财务数据时效守卫（方案 B24）：月末 T 上所选「最近一期」报告的 ``end_date``
+#: 距 T 超过该月数即判为陈旧，置 null，不允许把旧值当当期值外推。
+#: 置 ``None`` 关闭守卫（仅用于反证用例与历史口径复现）。
+MAX_FIN_STALENESS_MONTHS = 24
+
 
 def _require(path: Path, hint: str) -> Path:
     if not path.exists():
@@ -221,39 +226,69 @@ def sue_table(income: pl.DataFrame) -> pl.DataFrame:
     return q.select(['ts_code', 'end_date', 'pub_date', '_single', '_d'])
 
 
+def _apply_staleness(frame: pl.DataFrame, col: str, t: date,
+                     max_months: int | None) -> pl.DataFrame:
+    """按「最近一期 end_date 距 t 的月数」截断：超过上限即置 null。
+
+    ``max_months=None`` 表示关闭守卫，原值原样返回（用于反证用例）。
+    ``_end`` 为本次实际取用的那期报告的 ``end_date``；缺失时同样置 null。
+    """
+    if max_months is None:
+        return frame
+    deadline = pl.col('_end').dt.offset_by(f'{max_months}mo')
+    keep = pl.col('_end').is_not_null() & (pl.lit(t).cast(pl.Date) <= deadline)
+    return frame.with_columns(
+        pl.when(keep).then(pl.col(col)).otherwise(None).alias(col))
+
+
 def points_at(t: date, acc: pl.DataFrame | None, roe: pl.DataFrame | None,
-              sue: pl.DataFrame | None) -> pl.DataFrame:
+              sue: pl.DataFrame | None,
+              max_staleness_months: int | None = MAX_FIN_STALENESS_MONTHS
+              ) -> pl.DataFrame:
     """在月末 T 上取「截至 T 已公告」的三因子截面值。
 
     - 应计：T 时已公告的最近一期；
     - ROE 稳定性：T 时已公告的最近 8 期，至少 6 期有效；
     - SUE：T 时已公告的最近 8 个季节差分（至少 6 个有效），分子为最近一期。
 
+    三者统一带时效守卫：最近一期 ``end_date`` 距 T 超过
+    ``max_staleness_months`` 个月即判陈旧并置 null，禁止旧值冒充当期
+    （见 ``MAX_FIN_STALENESS_MONTHS``）。
+
     生产与截断审计共用本函数，保证两条路径口径完全一致。
     """
     parts: list[pl.DataFrame] = []
 
     if acc is not None:
-        parts.append(
+        parts.append(_apply_staleness(
             acc.filter(pl.col('pub_date') <= t)
             .sort(['ts_code', 'end_date'])
             .group_by('ts_code', maintain_order=True)
-            .agg(pl.col('accruals').drop_nulls().last()))
+            .agg(pl.col('accruals').drop_nulls().last().alias('accruals'),
+                 pl.col('end_date')
+                 .filter(pl.col('accruals').is_not_null())
+                 .last().alias('_end')),
+            'accruals', t, max_staleness_months).drop('_end'))
 
     if roe is not None:
         r8 = roe.filter(pl.col('pub_date') <= t) \
             .sort(['ts_code', 'end_date']) \
             .group_by('ts_code', maintain_order=True) \
-            .agg(pl.col('_roe').drop_nulls().tail(8).alias('_v'))
-        parts.append(
+            .agg(pl.col('_roe').drop_nulls().tail(8).alias('_v'),
+                 pl.col('end_date')
+                 .filter(pl.col('_roe').is_not_null())
+                 .last().alias('_end'))
+        parts.append(_apply_staleness(
             r8.explode('_v').group_by('ts_code', maintain_order=True).agg([
                 pl.col('_v').count().alias('_n'),
                 pl.col('_v').mean().alias('_m'),
-                pl.col('_v').std().alias('_s')])
+                pl.col('_v').std().alias('_s'),
+                pl.col('_end').first().alias('_end')])
             .with_columns(
                 pl.when((pl.col('_n') >= 6) & (pl.col('_s') > 0))
                 .then(pl.col('_m') / pl.col('_s')).otherwise(None)
-                .alias('roe_stability'))
+                .alias('roe_stability')),
+            'roe_stability', t, max_staleness_months)
             .select(['ts_code', 'roe_stability']))
 
     if sue is not None:
@@ -261,17 +296,22 @@ def points_at(t: date, acc: pl.DataFrame | None, roe: pl.DataFrame | None,
             .sort(['ts_code', 'end_date']) \
             .group_by('ts_code', maintain_order=True) \
             .agg(pl.col('_d').drop_nulls().tail(8).alias('_v'),
-                 pl.col('_d').drop_nulls().last().alias('_cur'))
-        parts.append(
+                 pl.col('_d').drop_nulls().last().alias('_cur'),
+                 pl.col('end_date')
+                 .filter(pl.col('_d').is_not_null())
+                 .last().alias('_end'))
+        parts.append(_apply_staleness(
             s8.explode('_v').group_by('ts_code', maintain_order=True).agg([
                 pl.col('_v').count().alias('_n'),
                 pl.col('_v').std().alias('_s'),
-                pl.col('_cur').first().alias('_cur')])
+                pl.col('_cur').first().alias('_cur'),
+                pl.col('_end').first().alias('_end')])
             .with_columns(
                 pl.when((pl.col('_n') >= 6) & (pl.col('_s') > 0)
                         & (pl.col('_cur').is_not_null()))
                 .then(pl.col('_cur') / pl.col('_s')).otherwise(None)
-                .alias('sue'))
+                .alias('sue')),
+            'sue', t, max_staleness_months)
             .select(['ts_code', 'sue']))
 
     out = parts[0]
@@ -281,7 +321,9 @@ def points_at(t: date, acc: pl.DataFrame | None, roe: pl.DataFrame | None,
 
 
 def build_financials(store: Path, base: pl.DataFrame,
-                     mdates: list[date]) -> pl.DataFrame:
+                     mdates: list[date],
+                     max_staleness_months: int | None
+                     = MAX_FIN_STALENESS_MONTHS) -> pl.DataFrame:
     income = pl.read_parquet(store / 'meta/financials/income.parquet',
                              columns=['ts_code', 'end_date', 'ann_date',
                                       'parent_net_profit'])
@@ -297,7 +339,7 @@ def build_financials(store: Path, base: pl.DataFrame,
     sue = sue_table(income)
 
     # 逐月末取「截至 T 已公告」的值；生产与审计共用 points_at。
-    frames = [points_at(t, acc, roe, sue) for t in mdates]
+    frames = [points_at(t, acc, roe, sue, max_staleness_months) for t in mdates]
     fin = pl.concat(frames, how='vertical_relaxed')
 
     return base.join(fin, on=['ts_code', 'date'], how='left') \

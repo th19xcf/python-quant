@@ -201,3 +201,112 @@ def test_ttm_null_when_annual_report_announced_after_quarter():
     r = rep.filter(pl.col('end_date') == date(2021, 3, 31)).row(0, named=True)
     assert r['revenue__ttm'] is None
     assert r['q_roe_ttm'] is None
+
+
+# ---------------------------------------------------------------------------
+# 财务时效守卫（方案 B24）：陈旧值不得冒充当期
+# ---------------------------------------------------------------------------
+def _frames_from_rows(rows: list[dict]):
+    base = pl.DataFrame(rows)
+    inc = base.select(['ts_code', 'end_date', 'ann_date', 'revenue',
+                       'gross_profit', 'parent_net_profit'])
+    bal = base.select(['ts_code', 'end_date', 'ann_date', 'total_assets',
+                       'total_equity'])
+    cf = base.select(['ts_code', 'end_date', 'ann_date', 'operating_cf'])
+    return inc, bal, cf
+
+
+def _stale_frames():
+    """只给 2009 年报一期：截面日 2021-06-30 时它已陈旧 11 年。"""
+    return _frames_from_rows([
+        {'ts_code': '000001.SZ', 'end_date': date(2009, 12, 31),
+         'ann_date': date(2010, 1, 20), 'revenue': 100.0, 'gross_profit': 40.0,
+         'parent_net_profit': 10.0, 'total_assets': 1000.0,
+         'total_equity': 500.0, 'operating_cf': 8.0},
+    ])
+
+
+def _fresh_frames():
+    """2020 年报，公告日 2021-03-30：截面日 2021-06-30 距报告期 6 个月，窗口内。"""
+    return _frames_from_rows([
+        {'ts_code': '000001.SZ', 'end_date': date(2020, 12, 31),
+         'ann_date': date(2021, 3, 30), 'revenue': 400.0, 'gross_profit': 160.0,
+         'parent_net_profit': 40.0, 'total_assets': 1000.0,
+         'total_equity': 500.0, 'operating_cf': 32.0},
+    ])
+
+
+def _stale_cross(day: date) -> pl.DataFrame:
+    return pl.DataFrame({'ts_code': ['000001.SZ'], 'date': [day]})
+
+
+def _stale_valuation(day: date) -> pl.DataFrame:
+    return pl.DataFrame({'ts_code': ['000001.SZ'], 'trade_date': [day],
+                         'total_mv': [1e9]})
+
+
+def test_staleness_guard_off_propagates_2009_value():
+    """反证：关掉守卫时，2010 年的旧值会一路前推到 2021-06-30（红）。"""
+    inc, bal, cf = _stale_frames()
+    rep = build_pit_reports(inc, bal, cf)
+    day = date(2021, 6, 30)
+    out = compute_financial_candidates(
+        _stale_cross(day), rep, _stale_valuation(day), max_staleness_months=None)
+    r = out.row(0, named=True)
+    assert r['q_accruals'] == pytest.approx((10.0 - 8.0) / 1000.0)
+    assert r['q_roe_ttm'] == pytest.approx(10.0 / 500.0)
+    assert r['q_gross_margin'] == pytest.approx(40.0 / 100.0)
+
+
+def test_staleness_guard_on_nulls_out_2009_value():
+    """守卫（24 个月）开启后，同一截面不再拿 2009 年的值（绿）。"""
+    inc, bal, cf = _stale_frames()
+    rep = build_pit_reports(inc, bal, cf)
+    day = date(2021, 6, 30)
+    out = compute_financial_candidates(
+        _stale_cross(day), rep, _stale_valuation(day), max_staleness_months=24)
+    r = out.row(0, named=True)
+    for name in FINANCIAL_CANDIDATES:
+        assert r[name] is None, name
+
+
+def test_staleness_guard_keeps_fresh_report():
+    """守卫不得误杀：截面距报告期 6 个月时必须保留，且数值可手算。"""
+    inc, bal, cf = _fresh_frames()
+    rep = build_pit_reports(inc, bal, cf)
+    day = date(2021, 6, 30)
+    out = compute_financial_candidates(
+        _stale_cross(day), rep, _stale_valuation(day), max_staleness_months=24)
+    r = out.row(0, named=True)
+    assert r['q_roe_ttm'] == pytest.approx(40.0 / 500.0)
+    assert r['q_accruals'] == pytest.approx((40.0 - 32.0) / 1000.0)
+
+
+def test_points_at_guard_off_and_on():
+    """build_new_factors.points_at 同一守卫的反证与正证。"""
+    bnf = _load_build_new_factors()
+    acc = pl.DataFrame({
+        'ts_code': ['000001.SZ'], 'end_date': [date(2009, 12, 31)],
+        'pub_date': [date(2010, 1, 20)], 'accruals': [0.123]})
+    t = date(2021, 6, 30)
+    off = bnf.points_at(t, acc, None, None, max_staleness_months=None)
+    assert off.row(0, named=True)['accruals'] == pytest.approx(0.123)
+    on = bnf.points_at(t, acc, None, None, max_staleness_months=24)
+    assert on.row(0, named=True)['accruals'] is None
+    # 默认参数即守卫开启，防止调用方漏传
+    assert bnf.points_at(t, acc, None, None).row(0, named=True)['accruals'] is None
+    # 窗口内（23 个月）必须保留
+    near = bnf.points_at(date(2011, 11, 30), acc, None, None,
+                         max_staleness_months=24)
+    assert near.row(0, named=True)['accruals'] == pytest.approx(0.123)
+
+
+def _load_build_new_factors():
+    import importlib.util
+    from pathlib import Path
+    path = (Path(__file__).resolve().parents[1]
+            / 'tools' / 'research' / 'build_new_factors.py')
+    spec = importlib.util.spec_from_file_location('_bnf_staleness', path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
