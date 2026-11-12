@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-r"""重建 ETF 权益池清单 ``meta/pools/etf_equity_pool_<YYYYMMDD>.csv``。
+r"""重建 ETF 权益池清单 ``meta/pools/etf_equity_pool.csv``。
 
 背景
 ====
@@ -31,7 +31,9 @@ r"""重建 ETF 权益池清单 ``meta/pools/etf_equity_pool_<YYYYMMDD>.csv``。
 
 更新时机
 ========
-随基金行情与分红/份额事件更新后重跑；文件名为 ``--as-of`` 日期，历史版本保留。
+随基金行情与分红/份额事件更新后重跑；输出文件名固定 ``etf_equity_pool.csv``（DG-4：正式路径
+不带版本号），``--as-of`` 与重算口径、行数、SHA256 记进同目录 ``manifest.json``，历史快照不再
+靠文件名区分。
 
 用法::
 
@@ -272,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--as-of', default='',
                         help='快照日 YYYY-MM-DD（默认取 510300.SH 末根 bar）')
     parser.add_argument('--output', default='',
-                        help='输出 CSV（默认 <store>/meta/pools/etf_equity_pool_<as_of>.csv）')
+                        help='输出 CSV（默认 <store>/meta/pools/etf_equity_pool.csv）')
     parser.add_argument('--min-adv', type=float, default=1e8)
     parser.add_argument('--adv-window', type=int, default=120)
     parser.add_argument('--min-years', type=int, default=3)
@@ -288,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
             columns=['date'],
         )['date'].max()
     target = (Path(args.output) if args.output else
-              root / 'meta' / 'pools' / f'etf_equity_pool_{as_of:%Y%m%d}.csv')
+              root / 'meta' / 'pools' / 'etf_equity_pool.csv')
 
     rows = build_rows(
         root, as_of, min_adv=args.min_adv,

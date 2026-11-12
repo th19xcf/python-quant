@@ -88,7 +88,7 @@ UPSTREAM_FILES = (
     'meta/st/st_coverage.parquet',
     'meta/name_history.parquet',
     'meta/code_migration.parquet',
-    'meta/pools/etf_equity_pool_20261104.csv',
+    'meta/pools/etf_equity_pool.csv',
     'quotes/index/sh/000001.SH.parquet',
 )
 
