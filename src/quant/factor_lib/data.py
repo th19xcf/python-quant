@@ -18,7 +18,11 @@
     - volume 单位 = 手（100 股），amount 单位 = 元，
       vwap = amount / (volume * 100) 为当日成交均价（元/股，原始价空间），
       再乘 hfq_factor 转到复权空间；
-    - ret = close / delay(close, 1) - 1（后复权收益，已含分红再投资效应）。
+    - ret = close / delay(close, 1) - 1（后复权收益，已含分红再投资效应）；
+    - 默认只保留**交易日历内**的 bar（``PanelRequest.calendar_filter``，默认开）。
+      非交易日 bar 只存在于 1991-1993 的 16 只标的，本身不携带信息，却会让面板
+      多出日历外日期，污染 ``ret`` / ``seq`` / ``next_tradable`` 等按行派生列。
+      日历取不到或为空时不过滤（宁可不过滤也不清空面板），关掉开关即回到旧口径。
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from loguru import logger
 from src.data.local_store.store import LocalQuoteStore, get_local_quote_store
 from src.data.managers.data_fetcher import DataFetcher
 from src.data.quality.code_migration import load_entity_index
+from src.data.trading_calendar import get_calendar
 from src.utils.config import get_config
 
 #: 面板必需列
@@ -58,6 +63,41 @@ class PanelRequest:
     universe_size: int = 80
     liquidity_lookback: int = LIQUIDITY_LOOKBACK_DAYS
     use_cache: bool = True
+    #: 是否只保留交易日历内的 bar。**默认开 = 行为已变更**：关掉即回到
+    #: 2026-11-12 之前「照抄行情行」的口径。非交易日 bar 仅存在于 1991-1993
+    #: 的 16 只标的（因子表 220 行 / 换手表 219 行），不影响 2019 年后的回测
+    #: 结论，但会让面板行数与交易日数对不上，进而污染按行计算的派生列。
+    #: 日历取不到或为空时**不做过滤**（宁可不过滤也不静默清空面板）。
+    calendar_filter: bool = True
+
+
+def _trading_dates(store: LocalQuoteStore) -> list[date] | None:
+    """取交易日历日期列表；取不到或为空返回 ``None``（调用方据此跳过过滤）。"""
+    try:
+        calendar = get_calendar(store.root)
+        dates = list(calendar.dates)
+    # 兜底理由：日历不可用时宁可不过滤，也不能把面板静默清空
+    except Exception:  # noqa: BLE001
+        logger.warning('交易日历不可用，本面板不做日历过滤（保持旧口径）')
+        return None
+    if not dates:
+        logger.warning('交易日历为空，本面板不做日历过滤（保持旧口径）')
+        return None
+    return dates
+
+
+def resolve_trading_dates(request: PanelRequest, store: LocalQuoteStore) -> list[date] | None:
+    """按开关决定是否取日历：关闭时直接返回 ``None``，不触碰日历文件。"""
+    if not request.calendar_filter:
+        return None
+    return _trading_dates(store)
+
+
+def filter_to_calendar(frame: pl.DataFrame, trading_dates: list[date] | None) -> pl.DataFrame:
+    """只保留 ``date`` 落在 ``trading_dates`` 内的行；``None`` / 空列表时原样返回。"""
+    if not trading_dates:
+        return frame
+    return frame.filter(pl.col('date').is_in(trading_dates))
 
 
 def _cache_dir() -> Path:
@@ -147,17 +187,22 @@ def load_panel(request: PanelRequest | None = None, codes: list[str] | None = No
     codes = load_entity_index(store.root).dedupe(codes)
 
     factor_store = store.factor_snapshot_store()
+    # 日历先取：取不到时整条链路退化为「不过滤」，缓存键也随之退化为旧口径，
+    # 避免把「无过滤」的结果写进「已过滤」的缓存位（反之亦然）。
+    trading_dates = resolve_trading_dates(request, store)
     factor_version = '0'
     if factor_store.factor_path.exists():
         factor_version = str(factor_store.factor_path.stat().st_mtime_ns)
+    calendar_tag = '_cal' if trading_dates is not None else ''
     cache_path = _cache_dir() / (
-        f'panel_{len(codes)}_{request.start}_{request.end}_{factor_version}.parquet'
+        f'panel_{len(codes)}_{request.start}_{request.end}_{factor_version}{calendar_tag}.parquet'
     )
     if request.use_cache and cache_path.exists():
         return _with_derived(pl.read_parquet(cache_path))
 
     frames: list[pl.DataFrame] = []
     missing: list[str] = []
+    dropped = 0
     for code in codes:
         frame = store.read_file('stock', code, with_factors=True)
         if frame is None or frame.is_empty():
@@ -167,10 +212,16 @@ def load_panel(request: PanelRequest | None = None, codes: list[str] | None = No
             (pl.col('date') >= pl.lit(request.start).str.to_date())
             & (pl.col('date') <= pl.lit(request.end).str.to_date())
         )
+        rows_before = sliced.height
+        sliced = filter_to_calendar(sliced, trading_dates)
+        dropped += rows_before - sliced.height
         if sliced.is_empty():
             missing.append(code)
             continue
         frames.append(_adjust(sliced))
+
+    if dropped:
+        logger.info(f'日历过滤剔除 {dropped} 行非交易日 bar（calendar_filter=True）')
 
     if not frames:
         raise RuntimeError('面板为空：所选标的在目标区间均无行情，请检查本地列存')
@@ -285,7 +336,9 @@ __all__ = [
     'PRICE_COLS',
     'PanelRequest',
     'dimension_check',
+    'filter_to_calendar',
     'load_panel',
     'panel_summary',
     'pick_liquid_universe',
+    'resolve_trading_dates',
 ]

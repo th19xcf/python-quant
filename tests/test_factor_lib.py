@@ -1,6 +1,8 @@
 """因子库回归测试：量纲口径、T+1 收益、分层评估、冗余聚类与窗口算子。"""
 
 from datetime import date, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -193,3 +195,74 @@ def test_headline_is_plain_conclusion_first():
     assert not text.startswith(('a101', 'gtja', 'qlib', 'ff_', 'IC'))
     assert '赚钱' in text
     assert '噪音' in text
+
+
+# ---------------------------------------------------------------------------
+# G-112：非交易日 bar 的分层过滤（读取侧按交易日历过滤，默认开）
+# ---------------------------------------------------------------------------
+def _weekend_frame() -> tuple[pl.DataFrame, list[date]]:
+    """含周末行的小面板：2021-01-04（周一）..2021-01-10（周日），共 7 行。"""
+    dates = _dates(date(2021, 1, 4), 7)
+    frame = pl.DataFrame({
+        'date': dates,
+        'ts_code': ['000001.SZ'] * 7,
+        'close': [10.0 + index for index in range(7)],
+        'volume': [1000.0] * 7,
+    })
+    return frame, [day for day in dates if day.weekday() < 5]
+
+
+class _StubStore:
+    """只为 `_trading_dates(store.root)` 提供 root 的最小桩。"""
+
+    root = Path('unused')
+
+
+def test_panel_request_calendar_filter_defaults_on():
+    """默认开 = 行为已变更；必须显式关闭才回到旧口径。"""
+    assert data.PanelRequest().calendar_filter is True
+
+
+def test_calendar_filter_switch_off_keeps_every_row_bitwise():
+    """开关关闭：不取日历、不过滤，逐值与原帧完全一致（等价于回到 A）。"""
+    frame, _trading = _weekend_frame()
+    request = data.PanelRequest(calendar_filter=False)
+    # 关闭时不得触碰日历文件（store=None 也不应报错）
+    assert data.resolve_trading_dates(request, None) is None  # type: ignore[arg-type]
+    out = data.filter_to_calendar(frame, None)
+    assert out.equals(frame)
+    assert out['close'].to_list() == frame['close'].to_list()
+
+
+def test_calendar_filter_on_drops_exactly_non_trading_rows():
+    """开关开启：周末行全部剔除，交易日行逐值保留。"""
+    frame, trading = _weekend_frame()
+    out = data.filter_to_calendar(frame, trading)
+    assert out.height == len(trading) == 5
+    dropped = sorted(set(frame['date'].to_list()) - set(out['date'].to_list()))
+    assert dropped == [date(2021, 1, 9), date(2021, 1, 10)]
+    assert out['close'].to_list() == [
+        frame.filter(pl.col('date') == day)['close'].item() for day in trading
+    ]
+
+
+def test_calendar_filter_falls_back_when_calendar_raises(monkeypatch):
+    """日历取不到：不抛错、不过滤，面板不被清空。"""
+    frame, _trading = _weekend_frame()
+
+    def _boom(_root):  # noqa: ANN001
+        raise RuntimeError('calendar missing')
+
+    monkeypatch.setattr(data, 'get_calendar', _boom)
+    dates = data.resolve_trading_dates(data.PanelRequest(), _StubStore())  # type: ignore[arg-type]
+    assert dates is None
+    assert data.filter_to_calendar(frame, dates).equals(frame)
+
+
+def test_calendar_filter_falls_back_when_calendar_empty(monkeypatch):
+    """日历为空：同上，宁可不过滤也不静默清空面板。"""
+    frame, _trading = _weekend_frame()
+    monkeypatch.setattr(data, 'get_calendar', lambda _root: SimpleNamespace(dates=[]))
+    dates = data.resolve_trading_dates(data.PanelRequest(), _StubStore())  # type: ignore[arg-type]
+    assert dates is None
+    assert data.filter_to_calendar(frame, dates).height == frame.height
