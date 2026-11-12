@@ -1,0 +1,109 @@
+{
+ "stamp": "20261112_220105",
+ "backup": "E:\\code\\python\\quant\\_backup\\valuation_daily_1993b_20261112_220105\\valuation_daily.parquet",
+ "sha256_before": "3bbc27fa4ebc587baa8ab663f50a6e522609dcc690b5ba802242044bc8d82428",
+ "bytes_before": 642179742,
+ "rows_before": 17969137,
+ "rows_deleted": 34,
+ "rows_after": 17969103,
+ "sha256_after": "ad6a6b31dbef4c88c4c96b8e55cb6f7e6784c9524942ad40ee8f91a3aba81c7d",
+ "bytes_after": 642217157,
+ "keys_removed": 34,
+ "keys_added": 0,
+ "non_target_changed_rows": 0,
+ "null_counts": {
+  "ts_code": {
+   "before": 0,
+   "after": 0,
+   "deleted_rows_null": 0,
+   "nonnull_before": 17969137,
+   "nonnull_after": 17969103
+  },
+  "trade_date": {
+   "before": 0,
+   "after": 0,
+   "deleted_rows_null": 0,
+   "nonnull_before": 17969137,
+   "nonnull_after": 17969103
+  },
+  "close": {
+   "before": 0,
+   "after": 0,
+   "deleted_rows_null": 0,
+   "nonnull_before": 17969137,
+   "nonnull_after": 17969103
+  },
+  "pe": {
+   "before": 713026,
+   "after": 712992,
+   "deleted_rows_null": 34,
+   "nonnull_before": 17256111,
+   "nonnull_after": 17256111
+  },
+  "pe_static": {
+   "before": 4587959,
+   "after": 4587925,
+   "deleted_rows_null": 34,
+   "nonnull_before": 13381178,
+   "nonnull_after": 13381178
+  },
+  "pb": {
+   "before": 1982588,
+   "after": 1982554,
+   "deleted_rows_null": 34,
+   "nonnull_before": 15986549,
+   "nonnull_after": 15986549
+  },
+  "ps": {
+   "before": 4450098,
+   "after": 4450064,
+   "deleted_rows_null": 34,
+   "nonnull_before": 13519039,
+   "nonnull_after": 13519039
+  },
+  "dv_ratio": {
+   "before": 4247822,
+   "after": 4247788,
+   "deleted_rows_null": 34,
+   "nonnull_before": 13721315,
+   "nonnull_after": 13721315
+  },
+  "total_mv": {
+   "before": 0,
+   "after": 0,
+   "deleted_rows_null": 0,
+   "nonnull_before": 17969137,
+   "nonnull_after": 17969103
+  },
+  "circ_mv": {
+   "before": 3,
+   "after": 3,
+   "deleted_rows_null": 0,
+   "nonnull_before": 17969134,
+   "nonnull_after": 17969100
+  },
+  "source": {
+   "before": 0,
+   "after": 0,
+   "deleted_rows_null": 0,
+   "nonnull_before": 17969137,
+   "nonnull_after": 17969103
+  },
+  "fetched_at": {
+   "before": 0,
+   "after": 0,
+   "deleted_rows_null": 0,
+   "nonnull_before": 17969137,
+   "nonnull_after": 17969103
+  }
+ },
+ "manifest_sha256_before": "919e00bb0ca0fc9d3b5f66658b6b4f2f23aac5d1834fc9a8fa87a801c6f1b2b3",
+ "manifest_sha256_after": "c427fff22d26a7071b02387117b5b02c9000e41a30e2fa61b8a92cf74e972154",
+ "dg23": {
+  "table_path": "E:\\code\\python\\quant\\data\\local_store\\meta\\financials\\valuation_daily.parquet",
+  "latest_valuation_rows": 5812,
+  "codes": 5812,
+  "as_of_1993_05_02_000001_date": "1993-04-30",
+  "as_of_1993_05_02_000001_close": 58.8
+ }
+}
