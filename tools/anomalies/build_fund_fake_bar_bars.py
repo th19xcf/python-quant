@@ -4,7 +4,8 @@
 
 1. **候选集**：单日涨幅 ≥ 9.9%、且为「孤立脉冲」的 ETF bar。该候选表
    ``etf_audit_spike_isolated.csv`` 由 2026-11-05 的一次性取证脚本产出，**原始扫描脚本未留档**，
-   因此候选集的生成条件只能按已归档结果回放，无法在本脚本内重算。
+   因此候选集的生成条件只能按已归档结果回放，无法在本脚本内重算。两份取证输入已归档到
+   ``docs/evidence/etf_fakebar_20261112/``（随 Git 跟踪）。
 2. **分类**（``etf_fakebar_classification.csv`` 的 ``sub_class`` 列）：以「次日开盘跳空」为强证据：
    - ``next_open_gap_pct <= -4`` → ``源端假收盘（次日跳空低开≥4%）``
    - ``|next_open_gap_pct| <= 3.2`` → ``真实行情``
@@ -50,8 +51,8 @@ import polars as pl
 REPO = Path(__file__).resolve().parents[2]
 STORE = REPO / 'data' / 'local_store'
 LEDGER = STORE / 'meta' / 'anomalies' / 'fund_fake_bar_bars.csv'
-CANDIDATES = Path(r'E:\www\tmp\etf_audit_spike_isolated.csv')
-CLASSIFICATION = Path(r'E:\www\tmp\etf_fakebar_classification.csv')
+CANDIDATES = REPO / 'docs' / 'evidence' / 'etf_fakebar_20261112' / 'etf_audit_spike_isolated.csv'
+CLASSIFICATION = REPO / 'docs' / 'evidence' / 'etf_fakebar_20261112' / 'etf_fakebar_classification.csv'
 BENCH = ['000300.SH', '000001.SH', '000688.SH', '399001.SZ', '399006.SZ']
 DETECTED_AT = '2026-11-05'
 COLUMNS = ['ts_code', 'trade_date', 'close', 'vwap', 'next_open_gap_pct', 'index_benchmark',
@@ -107,14 +108,17 @@ def fmt(v: float, nd: int) -> str:
     return str(round(float(v), nd))
 
 
-def build() -> tuple[pl.DataFrame, list[str], int]:
-    if not CANDIDATES.exists() or not CLASSIFICATION.exists():
+def build(candidates: Path = CANDIDATES,
+          classification: Path = CLASSIFICATION) -> tuple[pl.DataFrame, list[str], int]:
+    if not candidates.exists() or not classification.exists():
         raise SystemExit(
-            f'缺少归档取证输入：{CANDIDATES} / {CLASSIFICATION}\n'
-            '这两个文件是 2026-11-05 取证产物，原始扫描脚本未留档，无法由本地行情重算候选集。')
-    with CLASSIFICATION.open(encoding='utf-8') as f:
+            f'缺少归档取证输入：{candidates} / {classification}\n'
+            '这两个文件是 2026-11-05 取证产物，原始扫描脚本未留档，无法由本地行情重算候选集。\n'
+            '默认位置 docs/evidence/etf_fakebar_20261112/；如需指向其他副本用 '
+            '--candidates / --classification 覆盖。')
+    with classification.open(encoding='utf-8') as f:
         cls = {r['ts_code'] + r['date']: r for r in csv.DictReader(f)}
-    with CANDIDATES.open(encoding='utf-8') as f:
+    with candidates.open(encoding='utf-8') as f:
         cand = list(csv.DictReader(f))
     bench = bench_returns()
 
@@ -191,8 +195,12 @@ def compare(df: pl.DataFrame) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--write', action='store_true', help='覆盖写台账（默认只比对）')
+    ap.add_argument('--candidates', type=Path, default=CANDIDATES,
+                    help=f'候选集 CSV（默认 {CANDIDATES.relative_to(REPO)}）')
+    ap.add_argument('--classification', type=Path, default=CLASSIFICATION,
+                    help=f'分类表 CSV（默认 {CLASSIFICATION.relative_to(REPO)}）')
     args = ap.parse_args()
-    df, rounding, _ = build()
+    df, rounding, _ = build(args.candidates, args.classification)
     print(df.select(['ts_code', 'trade_date', 'close', 'vwap', 'next_open_gap_pct',
                      'index_benchmark', 'index_return_pct']))
     for r in rounding:
