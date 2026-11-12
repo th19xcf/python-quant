@@ -389,12 +389,67 @@ def latest_valuation(as_of: Any = None, codes: Iterable[str] | None = None,
     return result.unique(subset=['ts_code', 'trade_date'], keep='last').sort('ts_code')
 
 
+#: 合并顺序辅助列：分片下标，只在 ``merge_parts`` 内部存在，不落盘
+_ORDER_COLUMN = '__merge_ord'
+
+#: 估值 ``source`` 的字段级语法（DG-19）：(列名, 串里使用的段名) 及规范顺序。
+#: 注意段名与列名不总是一致：``dv_ratio`` 的段名是 ``dv``、``total_mv`` 是 ``mv``。
+_SOURCE_SEGMENT_FIELDS: tuple[tuple[str, str], ...] = (
+    ('close', 'close'), ('pe', 'pe'), ('pe_static', 'pe_static'), ('pb', 'pb'),
+    ('ps', 'ps'), ('dv_ratio', 'dv'), ('total_mv', 'mv'), ('circ_mv', 'circ_mv'))
+
+
+def _merge_agg_exprs(table: str) -> list[pl.Expr]:
+    """``merge_parts`` 的分组聚合式：逐字段「最后非空」+ ``source`` 按字段跟随。
+
+    修复 G-080：旧实现用 ``unique(keep='last')`` 整行取最后一片，只要最后一片
+    该列为空，历史非空值就被降级为 null，``source`` 串也随整行被替换。这里改为
+    逐列取「最后一个非空值」，并让字段级 ``source`` 段跟着该字段的来源行走：
+    新值为空时字段与它的 ``source`` 段都保持原值。
+
+    ``source`` 三种形态的处置：
+    - 能解析出 ``field=来源`` 段（估值）→ 按 :data:`_SOURCE_SEGMENT_FIELDS`
+      顺序重组成 ``close=…|pe=…|pb=…``，只保留确有来源的字段段；
+    - 整串无 ``=`` 段（三表的 ``local:…`` 这类整体来源）→ 退化为「最后非空整串」；
+    - 字段有值但该行走的 ``source`` 缺这个段 → 只保留值、不造来源段（不猜测）。
+    """
+    key = set(_KEY_COLUMNS[table])
+    schema = SCHEMAS[table]
+    aggs: list[pl.Expr] = [
+        pl.col(name).drop_nulls().last().alias(name)
+        for name in schema if name not in key and name != 'source'
+    ]
+    if 'source' not in schema:
+        return aggs
+    fields = [(col, seg_key) for col, seg_key in _SOURCE_SEGMENT_FIELDS
+              if col in schema and col not in key]
+    fallback = pl.col('source').drop_nulls().last()
+    if not fields:
+        aggs.append(fallback.alias('source'))
+        return aggs
+    segments: list[pl.Expr] = []
+    for column, seg_key in fields:
+        seg = (pl.when(pl.col(column).is_not_null())
+               .then(pl.col('source').str.extract(rf'(?:^|\|){seg_key}=([^|]*)', 1))
+               .drop_nulls().last())
+        segments.append(
+            pl.when(seg.is_not_null())
+            .then(pl.concat_str([pl.lit(f'{seg_key}='), seg]))
+            .alias(f'__seg_{column}'))
+    merged = pl.concat_str(segments, separator='|', ignore_nulls=True)
+    aggs.append(pl.when(merged.is_null() | (merged == '')).then(fallback)
+                .otherwise(merged).alias('source'))
+    return aggs
+
+
 def merge_parts(table: str, store_root: Path | str | None = None,
                 extra_dirs: Iterable[Path | str] = ()) -> int:
     """合并分片为最终事实表（懒扫描 + sink，避免整表进内存）。
 
-    同一主键保留最后写入的分片（分片按报告期/批次顺序传入，
-    因此后采的更正公告会覆盖先采的旧版本）。
+    同主键按分片顺序合并，但不是整行 last-wins：每个字段取「最后一个非空值」，
+    字段级 ``source`` 段随该字段的来源行走（见 :func:`_merge_agg_exprs`）。
+    这样后来采到的「只有部分列为空」的分片不会把历史非空值抹掉（G-080）。
+    行数、键集合与 ``sort(key)`` 排序语义与旧实现一致。
     """
     search_dirs = [parts_dir(table, store_root)]
     search_dirs.extend(Path(p) for p in extra_dirs)
@@ -407,7 +462,11 @@ def merge_parts(table: str, store_root: Path | str | None = None,
     if not files:
         logger.warning(f'[financials] {table} 没有可合并的分片')
         return 0
-    frames = [pl.scan_parquet(f) for f in files]
+    frames = [
+        pl.scan_parquet(f).with_columns(
+            pl.lit(i, dtype=pl.UInt32).alias(_ORDER_COLUMN))
+        for i, f in enumerate(files)
+    ]
     combined = pl.concat(frames, how='diagonal_relaxed')
     names = combined.collect_schema().names()
     exprs: list[pl.Expr] = [
@@ -416,13 +475,18 @@ def merge_parts(table: str, store_root: Path | str | None = None,
         for name, dtype in SCHEMAS[table].items()
     ]
     key = list(_KEY_COLUMNS[table])
-    plan = combined.with_columns(exprs).select(list(SCHEMAS[table])).unique(
-        subset=key, keep='last').sort(key)
+    plan = (combined.with_columns(exprs)
+            .select([*SCHEMAS[table], _ORDER_COLUMN])
+            .sort([*key, _ORDER_COLUMN])
+            .group_by(key, maintain_order=True)
+            .agg(_merge_agg_exprs(table))
+            .select(list(SCHEMAS[table]))
+            .sort(key))
     dest = table_path(table, store_root)
     try:
         write_parquet_atomic(plan, dest, compression='zstd', statistics=True)
         rows = pl.scan_parquet(str(dest)).select(pl.len()).collect().item()
-    # 兜底理由：流式引擎不支持 unique/sort 时退回内存合并（表本身可控）
+    # 兜底理由：流式引擎不支持 group_by 聚合/sort 时退回内存合并（表本身可控）
     except (pl.exceptions.PolarsError, NotImplementedError):
         merged = plan.collect()
         _atomic_write(merged, dest)

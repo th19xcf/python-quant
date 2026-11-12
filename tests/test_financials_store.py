@@ -140,6 +140,94 @@ def test_latest_valuation_as_of(tmp_path: Path) -> None:
     assert rows['000001.SZ']['trade_date'] == date(2026, 11, 4)
 
 
+def test_merge_parts_keeps_non_null_when_new_row_is_null(tmp_path: Path) -> None:
+    """G-080：新分片该列为空时不得把历史非空值降级为 null。"""
+    base = {
+        'ts_code': ['600519.SH'], 'end_date': [date(2025, 12, 31)],
+        'ann_date': [date(2026, 3, 28)], 'ann_date_source': ['em_notice'],
+        'source': ['em'], 'fetched_at': [datetime(2026, 11, 4)],
+        'revenue': [200.0], 'net_profit': [20.0],
+    }
+    store.write_table(pl.DataFrame(base), 'income', tmp_path)
+    # 后采分片只有 net_profit，revenue 为空
+    later = {**base, 'source': ['sina'], 'revenue': [None], 'net_profit': [25.0]}
+    part_dir = store.parts_dir('income', tmp_path)
+    part_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(later).write_parquet(part_dir / '20251231_late.parquet')
+
+    # 反例自测：旧实现（整行 last-wins）确实会把 revenue 抹成 null，
+    # 说明下面的断言不是空过。
+    legacy = pl.concat([
+        pl.read_parquet(store.table_path('income', tmp_path)),
+        pl.read_parquet(part_dir / '20251231_late.parquet'),
+    ], how='diagonal_relaxed').unique(subset=['ts_code', 'end_date'], keep='last')
+    assert legacy['revenue'][0] is None
+    assert legacy['net_profit'][0] == 25.0
+
+    rows = store.merge_parts('income', tmp_path)
+    assert rows == 1
+    frame = store.read_table('income', tmp_path)
+    assert frame.height == 1
+    assert frame['revenue'][0] == 200.0       # 旧非空值保留
+    assert frame['net_profit'][0] == 25.0     # 新非空值覆盖
+    assert frame['source'][0] == 'sina'
+
+
+def test_merge_parts_field_level_source_follows_value(tmp_path: Path) -> None:
+    """G-080：逐字段来源串随该字段的来源行走，缺段不猜、值的掉档不发生。"""
+    base = pl.DataFrame({
+        'ts_code': ['600519.SH'], 'trade_date': [date(2026, 11, 4)],
+        'close': [1500.0], 'pe': [20.0], 'pb': [8.0], 'dv_ratio': [3.0],
+        'source': ['pe=em|pb=em|dv=daily_basic'],
+        'fetched_at': [datetime(2026, 11, 4)],
+    })
+    store.write_table(base, 'valuation', tmp_path)
+    part_dir = store.parts_dir('valuation', tmp_path)
+    part_dir.mkdir(parents=True, exist_ok=True)
+    # 新分片：只有 pb 更新且其 source 只带 pb 段；pe 为空
+    pl.DataFrame({
+        'ts_code': ['600519.SH'], 'trade_date': [date(2026, 11, 4)],
+        'pb': [8.6], 'source': ['pb=em_v2'],
+        'fetched_at': [datetime(2026, 11, 5)],
+    }).write_parquet(part_dir / 'batch_late.parquet')
+
+    # 反例自测：旧实现会把 pe/dv_ratio 抹成 null、source 整串换成 pb=em_v2
+    legacy = pl.concat([
+        pl.read_parquet(store.table_path('valuation', tmp_path)),
+        pl.read_parquet(part_dir / 'batch_late.parquet'),
+    ], how='diagonal_relaxed').unique(
+        subset=['ts_code', 'trade_date'], keep='last')
+    assert legacy['pe'][0] is None and legacy['dv_ratio'][0] is None
+    assert legacy['source'][0] == 'pb=em_v2'
+
+    assert store.merge_parts('valuation', tmp_path) == 1
+    frame = store.read_table('valuation', tmp_path)
+    row = frame.to_dicts()[0]
+    assert row['pe'] == 20.0 and row['dv_ratio'] == 3.0 and row['pb'] == 8.6
+    # 段级跟随：pe/dv 保持原来源，pb 换成新来源，缺段的 close 不凭空造段
+    assert row['source'] == 'pe=em|pb=em_v2|dv=daily_basic'
+
+
+def test_merge_parts_source_without_segments_falls_back(tmp_path: Path) -> None:
+    """G-080：整串无 ``=`` 段（三表 ``local:…`` 形态）退化为「最后非空整串」。"""
+    base = {
+        'ts_code': ['600519.SH'], 'end_date': [date(2025, 12, 31)],
+        'ann_date': [date(2026, 3, 28)], 'ann_date_source': ['em_notice'],
+        'source': ['local:em_income'], 'fetched_at': [datetime(2026, 11, 4)],
+        'revenue': [200.0],
+    }
+    store.write_table(pl.DataFrame(base), 'income', tmp_path)
+    part_dir = store.parts_dir('income', tmp_path)
+    part_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({**base, 'source': ['local:em_income_v2'],
+                  'revenue': [210.0]}).write_parquet(part_dir / '20251231.parquet')
+
+    assert store.merge_parts('income', tmp_path) == 1
+    row = store.read_table('income', tmp_path).to_dicts()[0]
+    assert row['revenue'] == 210.0
+    assert row['source'] == 'local:em_income_v2'
+
+
 def test_coverage_reports_counts(store_root: Path) -> None:
     info = store.coverage('income', store_root)
     assert info['rows'] == 3

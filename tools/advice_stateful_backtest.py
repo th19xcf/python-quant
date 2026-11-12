@@ -91,6 +91,8 @@ NAV_COLUMNS = (
     'date', 'nav_stateful', 'nav_fixed60', 'cash', 'cash_fixed60',
     'holdings_count', 'gross_exposure',
 )
+#: 逐码候选清单列（G-067）：与 ``stats['candidate_signals']`` 一一对应
+CANDIDATE_COLUMNS = ('trade_date', 'ts_code', 'score_percentile', 'reason')
 #: 现金收益敏感性两档年化利率（事后累加，不重跑复利路径）
 CASH_YIELD_RATES = (0.0, 0.015)
 #: 现金收益按每年 252 个交易日折算
@@ -331,6 +333,25 @@ def select_candidates(frame: pl.DataFrame, tier: Any, config: Any,
         out.append((str(row['ts_code']), percentile))
     out.sort(key=lambda item: item[1], reverse=True)
     return out
+
+
+def candidate_reason(tier: Any, config: Any) -> str:
+    """候选命中理由（G-067）：能进候选即已同时过四道门槛。"""
+    return ';'.join(
+        [f'pct>={tier.buy_percentile:g}']
+        + (['soft_pass'] if config.soft_filter.enabled else [])
+        + ['eligibility_ok', 'entry_allowed'])
+
+
+def candidate_records_for_day(candidates: list[tuple[str, float]], day: date,
+                              reason: str) -> list[dict[str, Any]]:
+    """当日候选 → 逐码记录（与 ``stats['candidate_signals']`` 一条对一条）。"""
+    return [{
+        'trade_date': day,
+        'ts_code': code,
+        'score_percentile': round(float(percentile), 6),
+        'reason': reason,
+    } for code, percentile in candidates]
 
 
 def percentile_map(frame: pl.DataFrame) -> dict[str, float]:
@@ -691,6 +712,9 @@ def run_stateful(window_dates: list[date], by_date: dict[date, pl.DataFrame],
     trades: list[dict[str, Any]] = []
     closed: list[dict[str, Any]] = []
     nav_rows: list[dict[str, Any]] = []
+    #: 逐码候选清单（G-067）：与 ``stats['candidate_signals']`` 逐条对应，
+    #: 供分片落盘 ``candidates.csv``；不参与撮合，也不进 stats。
+    candidate_records: list[dict[str, Any]] = []
 
     for index, day in enumerate(window_dates):
         bars = bars_by_date.get(day, {})
@@ -732,6 +756,9 @@ def run_stateful(window_dates: list[date], by_date: dict[date, pl.DataFrame],
             stats['candidate_signals'] += len(candidates)
             if candidates:
                 stats['days_with_candidates'] += 1
+                candidate_records.extend(
+                    candidate_records_for_day(candidates, day,
+                                              candidate_reason(tier, config)))
         all_pct = percentile_map(frame)
         best_pct = candidates[0][1] if candidates else None
         equity = nav
@@ -779,6 +806,7 @@ def run_stateful(window_dates: list[date], by_date: dict[date, pl.DataFrame],
     return {
         'nav_rows': nav_rows, 'trades': trades, 'closed': closed,
         'stats': stats,
+        'candidates': candidate_records,
         'nav': float(nav_rows[-1]['nav_stateful']) if nav_rows else equity_init,
         'state': {
             'cash': cash,
@@ -1904,6 +1932,30 @@ def _read_chunk_trades(path: Path) -> list[dict[str, Any]]:
     return [dict(row) for row in frame.iter_rows(named=True)]
 
 
+def _read_chunk_candidates(path: Path) -> list[dict[str, Any]]:
+    """读回一片的 candidates.csv（G-067 逐码候选清单，用于与内存计数对拍）。"""
+    try:
+        frame = pl.read_csv(path)
+    except pl.exceptions.NoDataError:  # 该片零候选时只有表头
+        return []
+    return [dict(row) for row in frame.iter_rows(named=True)]
+
+
+def verify_candidate_rows(label: str, recorded: int, expected: int) -> None:
+    """G-067 对拍：落盘行数必须等于该片内存计数，不等即中止。"""
+    if recorded != expected:
+        raise SystemExit(
+            f'分片 {label} 的 candidates.csv 有 {recorded} 行，'
+            f'与该片 candidate_signals={expected} 不一致')
+
+
+def warn_legacy_candidates(label: str, candidates_path: Path) -> None:
+    """旧分片（G-067 改造前）没有 candidates.csv：只提示，不补写。"""
+    if not candidates_path.exists():
+        print(f'[chunk {label}] 注意：该片为 G-067 改造前的旧产物，'
+              f'无 candidates.csv（不补写、向前生效）', flush=True)
+
+
 def _load_quotes(days_by_code: dict[str, set[date]],
                  store_root: Path) -> dict[tuple[str, date], tuple[float, float]]:
     """按需从本地列存读 ``(open, close)``（未复权，与面板 raw_* 同源）。"""
@@ -2952,6 +3004,10 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
     out_dir.mkdir(parents=True, exist_ok=True)
     _write_csv(out_dir / 'nav.csv', stateful['nav_rows'], NAV_COLUMNS)
     _write_csv(out_dir / 'trades.csv', stateful['trades'], TRADE_COLUMNS)
+    # 单次全区间跑法也落逐码候选清单（G-067）；分片跑法由各片自行落盘
+    if stateful.get('candidates') is not None:
+        _write_csv(out_dir / 'candidates.csv', stateful['candidates'],
+                   CANDIDATE_COLUMNS)
     for name in alloc_names:
         payload = (baselines[name] if baselines
                    else {'nav_rows': baseline_rows, 'stats': baseline_stats})
@@ -3076,6 +3132,13 @@ def _chunk_paths(out_dir: Path, label: str) -> tuple[Path, Path, Path]:
     return base / 'nav.csv', base / 'trades.csv', base / 'chunk_state.json'
 
 
+def _chunk_candidates_path(out_dir: Path, label: str) -> Path:
+    """逐码候选清单落点：``chunks/<label>/candidates.csv``（G-067）。"""
+    base = out_dir / 'chunks' / label
+    base.mkdir(parents=True, exist_ok=True)
+    return base / 'candidates.csv'
+
+
 def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
                  store_root: Path, config: Any, tier: Any, costs: TradingCosts,
                  rules: ExecutionRules) -> int:
@@ -3108,6 +3171,7 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
         if args.only_chunk and label != args.only_chunk:
             continue
         nav_path, trades_path, state_path = _chunk_paths(out_dir, label)
+        candidates_path = _chunk_candidates_path(out_dir, label)
         if args.resume and state_path.exists() and nav_path.exists():
             cached = json.loads(state_path.read_text(encoding='utf-8'))
             if int(cached.get('hold_days', DEFAULT_HOLD_DAYS)) != args.hold_days:
@@ -3116,6 +3180,7 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
                     f'{cached.get("hold_days", DEFAULT_HOLD_DAYS)} 与本次 '
                     f'{args.hold_days} 不同，停止（换目录或去掉 --resume）')
             print(f'[chunk {label}] 已完成，跳过（resume）', flush=True)
+            warn_legacy_candidates(label, candidates_path)
             continue
         if position > 0:
             prev_label = all_chunks[position - 1][0]
@@ -3181,6 +3246,8 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
         elapsed = round((datetime.now() - chunk_started).total_seconds(), 1)
         _write_csv(nav_path, stateful['nav_rows'], NAV_COLUMNS)
         _write_csv(trades_path, stateful['trades'], TRADE_COLUMNS)
+        # 逐码候选清单（G-067）：与 stats['candidate_signals'] 逐条对应
+        _write_csv(candidates_path, stateful['candidates'], CANDIDATE_COLUMNS)
         for name, payload_rows in baselines.items():
             _write_csv(nav_path.parent / f'nav_{name}.csv', payload_rows['nav_rows'],
                        ('date', 'nav', 'cash', 'holdings_count', 'gross_exposure'))
@@ -3211,6 +3278,8 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
                 'end': stateful['state'], 'stats': stateful['stats'],
                 'trades': stateful['trades'], 'closed': stateful['closed'],
                 'nav_final': stateful['nav'],
+                'candidates': len(stateful['candidates']),
+                'candidates_file': 'candidates.csv',
             },
             'baseline': {
                 'end': baseline['state'], 'stats': baseline['stats'],
@@ -3255,6 +3324,9 @@ def _merge_chunks(args: argparse.Namespace, started: datetime,
     universe_by_chunk: list[dict[str, Any]] = []
     per_chunk_data: list[dict[str, Any]] = []
     totals = {'requested': 0, 'loaded': 0, 'rows': 0}
+    #: 逐片候选清单行数审计（G-067）：落盘行数 vs 该片 candidate_signals
+    candidates_total = 0
+    candidates_by_chunk: dict[str, int] = {}
     first_panel_start = start
     first_panel_dates: list[date] = []
     for position, label in enumerate(labels):
@@ -3286,6 +3358,18 @@ def _merge_chunks(args: argparse.Namespace, started: datetime,
             intent['signal_date'] = date.fromisoformat(
                 str(intent['signal_date'])[:10])
         _merge_stats(stats, chunk_stats)
+        # G-067 对拍：落盘 candidates.csv 行数必须等于该片内存计数
+        chunk_candidates = nav_path.parent / 'candidates.csv'
+        expected_signals = int(chunk_stats.get('candidate_signals', 0) or 0)
+        if chunk_candidates.exists():
+            recorded = len(_read_chunk_candidates(chunk_candidates))
+            verify_candidate_rows(label, recorded, expected_signals)
+            candidates_by_chunk[label] = recorded
+            candidates_total += recorded
+        elif expected_signals:
+            print(f'[chunk {label}] 旧产物无 candidates.csv：'
+                  f'{expected_signals} 个候选只保留计数（G-067 向前生效）',
+                  flush=True)
         universe_by_chunk.append({'label': label, **payload['universe']})
         data = payload.get('data', {})
         per_chunk_data.append({'label': label, **data})
@@ -3349,7 +3433,21 @@ def _merge_chunks(args: argparse.Namespace, started: datetime,
             'note': ('month-end 只统计自然月最后一个交易日；'
                      'month_end_days 含窗口首尾不完整月份'),
         },
+        'candidate_records': {
+            'total': candidates_total,
+            'by_chunk': candidates_by_chunk,
+            'file': 'chunks/<label>/candidates.csv',
+            'note': ('逐码候选清单（G-067）：一行 = 某决策日的一个候选信号，'
+                     '列为 trade_date / ts_code / score_percentile / reason；'
+                     'total 与 funnel.candidate_signals 逐片对拍，不一致即中止；'
+                     'G-067 改造前的旧分片无此文件，只保留计数'),
+        },
     }
+    if len(candidates_by_chunk) == len(labels) and \
+            candidates_total != stats['candidate_signals']:
+        raise SystemExit(
+            f'候选清单总数 {candidates_total} 与汇总 candidate_signals='
+            f'{stats["candidate_signals"]} 不一致（G-067 对拍）')
     return _emit_products(
         args=args, config=config, tier=tier, costs=costs, started=started,
         start=start, end=end, window_dates=window_dates,
