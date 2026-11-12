@@ -74,6 +74,45 @@ _EMPTY_SCHEMA = {
     'source': pl.String,
 }
 
+# 代理事件表（G-070 定增 / G-071 限售解禁）：落点 meta/events/proxy/，
+# 由 _staging/event_proxy_events_20261112/build_tables.py 从 stock_shares 派生。
+EQUITY_ISSUE_PROXY_FILENAME = 'equity_issue_proxy.parquet'
+UNLOCK_PROXY_FILENAME = 'unlock_proxy.parquet'
+
+EQUITY_ISSUE_PROXY_SCHEMA: dict[str, type[pl.DataType]] = {
+    'ts_code': pl.String,
+    'event_date': pl.Date,
+    'change_reason': pl.String,
+    'signal': pl.String,
+    'has_concurrent_reason': pl.Boolean,
+    'total_share': pl.Int64,
+    'total_share_prev': pl.Int64,
+    'issued_shares': pl.Int64,
+    'issued_ratio_prev': pl.Float64,
+    'delta_branch': pl.String,
+    'event_kind': pl.String,
+    'basis': pl.String,
+    'source_data': pl.String,
+}
+
+UNLOCK_PROXY_SCHEMA: dict[str, type[pl.DataType]] = {
+    'ts_code': pl.String,
+    'event_date': pl.Date,
+    'change_reason': pl.String,
+    'primary_reason': pl.String,
+    'float_share': pl.Int64,
+    'float_share_prev': pl.Int64,
+    'total_share': pl.Int64,
+    'total_share_prev': pl.Int64,
+    'unlock_shares': pl.Int64,
+    'unlock_ratio_total': pl.Float64,
+    'float_delta_branch': pl.String,
+    'is_equity_incentive': pl.Boolean,
+    'event_kind': pl.String,
+    'basis': pl.String,
+    'source_data': pl.String,
+}
+
 
 def events_path(store_root: Path | str) -> Path:
     return Path(store_root) / 'meta' / 'events' / 'events.parquet'
@@ -250,6 +289,87 @@ def load_events(store_root: Path | str) -> pl.DataFrame:
     except (OSError, ValueError) as exc:
         logger.warning(f'[events] 事件表读取失败，按无数据处理: {path}: {exc}')
         return empty_events()
+
+
+def load_equity_issue_events(store_root: Path | str) -> pl.DataFrame:
+    """读取定增代理事件表 ``{store_root}/meta/events/proxy/equity_issue_proxy.parquet``。
+
+    **代理口径，不是发行公告事件**：事件日取 ``stock_shares.effective_date``
+    （增发股份上市日，通常比发行结果公告滞后约 1~4 周），新增股本由
+    ``total_share`` 相邻行差分得到；**不区分定向增发与公开增发**（含新三板），
+    不含发行规模、发行价与预案日。每行的 ``event_kind`` / ``basis`` 已写死口径，
+    下游不得把本表当「定增公告」使用。
+
+    只读：不加工、不过滤、不排序。文件缺失或 schema 不符时直接抛错，
+    不返回空表——空表会被下游误判为「期间内没有定增事件」。
+    """
+    path = Path(store_root) / 'meta' / 'events' / 'proxy' / EQUITY_ISSUE_PROXY_FILENAME
+    if not path.is_file():
+        raise FileNotFoundError(
+            f'定增代理事件表缺失: {path}；该表由 '
+            '_staging/event_proxy_events_20261112/build_tables.py 生成，'
+            '未生成前不得按「无事件」处理')
+    frame = pl.read_parquet(path)
+    missing = [name for name in EQUITY_ISSUE_PROXY_SCHEMA
+               if name not in frame.columns]
+    if missing:
+        raise ValueError(f'定增代理事件表缺列 {missing}，文件: {path}')
+    mismatched = [f'{name}={frame.schema[name]}' for name, dtype
+                  in EQUITY_ISSUE_PROXY_SCHEMA.items()
+                  if type(frame.schema[name]) is not dtype]
+    if mismatched:
+        raise ValueError(f'定增代理事件表列类型不符 {mismatched}，文件: {path}')
+    blank = frame.select(
+        (pl.col('event_kind').is_null()
+         | (pl.col('event_kind').str.len_chars() == 0)
+         | pl.col('basis').is_null()
+         | (pl.col('basis').str.len_chars() == 0)).sum()).item()
+    if blank:
+        raise ValueError(
+            f'定增代理事件表有 {blank} 行 event_kind/basis 为空（口径未写死），'
+            f'文件: {path}')
+    return frame
+
+
+def load_unlock_events(store_root: Path | str) -> pl.DataFrame:
+    """读取限售解禁代理事件表 ``{store_root}/meta/events/proxy/unlock_proxy.parquet``。
+
+    **代理口径，不是解禁公告事件**：事件日取 ``stock_shares.effective_date``
+    （限售股上市流通日），解禁股数由 ``float_share`` 相邻行差分得到；
+    **不区分解禁与新增限售**，差分未命中时按分支留空（``prev_value_null``）
+    或为负（``negative``，股份性质变更/回购注销等），不得自行截断成正值。
+
+    双计风险：``is_equity_incentive`` 为真的行同时属于股权激励限售股上市，
+    与 ``ev_equity_incentive`` 类因子叠加会重复计入，组合使用前须去重。
+
+    只读：不加工、不过滤、不排序。文件缺失或 schema 不符时直接抛错，
+    不返回空表——空表会被下游误判为「期间内没有解禁事件」。
+    """
+    path = Path(store_root) / 'meta' / 'events' / 'proxy' / UNLOCK_PROXY_FILENAME
+    if not path.is_file():
+        raise FileNotFoundError(
+            f'限售解禁代理事件表缺失: {path}；该表由 '
+            '_staging/event_proxy_events_20261112/build_tables.py 生成，'
+            '未生成前不得按「无事件」处理')
+    frame = pl.read_parquet(path)
+    missing = [name for name in UNLOCK_PROXY_SCHEMA if name not in frame.columns]
+    if missing:
+        raise ValueError(f'限售解禁代理事件表缺列 {missing}，文件: {path}')
+    mismatched = [f'{name}={frame.schema[name]}' for name, dtype
+                  in UNLOCK_PROXY_SCHEMA.items()
+                  if type(frame.schema[name]) is not dtype]
+    if mismatched:
+        raise ValueError(f'限售解禁代理事件表列类型不符 {mismatched}，文件: {path}')
+    blank = frame.select(
+        (pl.col('event_kind').is_null()
+         | (pl.col('event_kind').str.len_chars() == 0)
+         | pl.col('basis').is_null()
+         | (pl.col('basis').str.len_chars() == 0)).sum()).item()
+    if blank:
+        raise ValueError(
+            f'限售解禁代理事件表有 {blank} 行 event_kind/basis 为空（口径未写死），'
+            f'文件: {path}')
+    return frame
 
 
 def load_coverage(store_root: Path | str) -> dict[str, Any]:
