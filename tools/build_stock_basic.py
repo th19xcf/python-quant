@@ -896,6 +896,8 @@ def main(argv: list[str] | None = None) -> int:
     manifest['sha256'] = _sha256(staging / 'stock_basic.parquet')
     if merge_counts:
         manifest['merge_with_existing'] = merge_counts
+    from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
+    apply_semantics(manifest, 'meta/stock_basic.manifest.json')
     (staging / 'manifest.json').write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f'\n候选表已写入: {staging / "stock_basic.parquet"}')

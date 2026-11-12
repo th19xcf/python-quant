@@ -351,6 +351,8 @@ def _export_basic(
             'staging': str(stage.relative_to(PROJECT_ROOT)),
         },
     }
+    from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
+    apply_semantics(manifest, spec.manifest_path.as_posix())
     write_text_atomic(
         json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', manifest_path)
     result['sha256'] = sha

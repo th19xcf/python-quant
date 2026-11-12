@@ -631,6 +631,8 @@ def build_supplement(store_root: Path | str, *,
                            date_column='coverage_start', end_column='coverage_end'),
         ],
     }
+    from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
+    apply_semantics(summary, 'meta/st/supplement/manifest.json')
     _write_text(manifest_path(root), json.dumps(summary, ensure_ascii=False, indent=2))
     logger.info(f'[st-names] supplement 已生成: {supplement_coverage_path(root)}'
                 f'（覆盖 +{plan.clean + plan.dated} / 未决 {summary["unresolved"]}）')

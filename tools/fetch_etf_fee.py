@@ -580,6 +580,8 @@ def write_outputs(df: pl.DataFrame) -> None:
                   for p in [pq, STAGING / 'etf_fee.csv', STAGING / 'etf_fee_gaps.csv',
                             STAGING / 'etf_fee_summary.json']},
     }
+    from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
+    apply_semantics(manifest, 'meta/multi_asset/etf_fee.manifest.json')
     write_text_atomic(json.dumps(manifest, ensure_ascii=False, indent=2),
                       STAGING / 'etf_fee.manifest.json')
     print(json.dumps(summary, ensure_ascii=False, indent=2)[:2000])

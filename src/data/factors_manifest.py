@@ -208,6 +208,8 @@ def write_factors_manifest(store_root: str | Path | None = None) -> Path:
     root = Path(store_root) if store_root is not None else default_store_root()
     target = root / 'factors' / MANIFEST_NAME
     payload = collect_factors_manifest(root)
+    from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
+    apply_semantics(payload, 'factors/manifest.json')
     write_text_atomic(
         json.dumps(payload, ensure_ascii=False, indent=2) + '\n', target)
     return target

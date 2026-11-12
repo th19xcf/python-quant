@@ -562,6 +562,8 @@ def write_manifest(
         'bytes': target.stat().st_size,
         'sibling_tables': _sibling_tables(store),
     }
+    from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
+    apply_semantics(payload, 'meta/breadth/manifest.json')
     path = manifest_path(store)
     tmp = path.with_suffix('.json.tmp')
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')

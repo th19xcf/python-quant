@@ -600,6 +600,8 @@ def main(argv: list[str] | None = None) -> int:
     snapshot = _snapshot_comparison(grid, root, dates, st_keys)
     manifest = _manifest(root, staging, outputs, summary, transitions,
                          snapshot, end, stats, panel)
+    from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
+    apply_semantics(manifest, 'meta/universe/layers/manifest.json')
     (staging / 'manifest.json').write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
     by_year.write_csv(staging / 'counts_by_year.csv')

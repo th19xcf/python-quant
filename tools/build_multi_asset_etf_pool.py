@@ -599,6 +599,8 @@ def apply_staging(paths: dict[str, Path], summary: dict[str, Any]) -> dict[str, 
             'sha256': _sha256(target),
             'bytes': target.stat().st_size,
         }
+    from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
+    apply_semantics(manifest, 'meta/multi_asset/manifest.json')
     write_text_atomic(
         json.dumps(manifest, ensure_ascii=False, indent=2), TARGET_DIR / 'manifest.json')
     return manifest

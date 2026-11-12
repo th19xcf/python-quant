@@ -299,6 +299,8 @@ def promote(store_root: Path, candidate: pl.DataFrame, stage: Path,
                         'adj_prev', 'adj_now', 'source'],
         },
     }
+    from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
+    apply_semantics(manifest, 'meta/fund_corporate_actions_2019plus.manifest.json')
     write_text_atomic(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', manifest_path)
     return proof
 

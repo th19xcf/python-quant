@@ -904,6 +904,8 @@ def write_manifest(panel: pl.DataFrame, store: Path, stage: Path, *,
         'bytes': target.stat().st_size,
     }
     payload['gaps'] = _gaps(panel)
+    from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
+    apply_semantics(payload, 'meta/state/manifest.json')
     path = manifest_path(store)
     _write_json(payload, path)
     return path

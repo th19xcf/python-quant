@@ -349,6 +349,8 @@ def main(argv: list[str] | None = None) -> int:
         'sha256': hashes,
         'verify': 'python tools/build_futures_continuous.py',
     }
+    from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
+    apply_semantics(manifest, 'meta/multi_asset/futures_manifest.json')
     (OUT_DIR / 'futures_manifest.json').write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f'落盘完成：{written} 个合约文件 + 3 张元数据表')

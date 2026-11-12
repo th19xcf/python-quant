@@ -179,8 +179,10 @@ def main(argv: list[str] | None = None) -> int:
         'path': 'meta/macro/cn_treasury_yield_curve.parquet',
         'sha256': _sha256(MACRO / 'cn_treasury_yield_curve.parquet'),
     }
+    from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
     for name, manifest in (('cn_bond_index', idx_manifest),
                            ('cn_treasury_yield_curve', yld_manifest)):
+        apply_semantics(manifest, f'meta/macro/{name}.manifest.json')
         (MACRO / f'{name}.manifest.json').write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
     print('落盘完成:', MACRO / 'cn_bond_index.parquet', MACRO / 'cn_treasury_yield_curve.parquet')

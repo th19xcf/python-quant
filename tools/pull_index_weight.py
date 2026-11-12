@@ -278,6 +278,8 @@ def phase_build() -> None:
         manifest["membership_intervals"] = membership
     manifest["total_rows"] = int(len(df))
     manifest["total_periods"] = int(df["trade_date"].nunique())
+    from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
+    apply_semantics(manifest, 'meta/index_members/manifest.json')
     merged = _merge_manifest(previous, manifest)
     preserved = sorted(set(previous) - set(manifest))
     if preserved:

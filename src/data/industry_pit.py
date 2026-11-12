@@ -505,6 +505,8 @@ def build(store_root: Path | str, *, refresh: bool = False) -> dict[str, Any]:
         },
         'sha256': _sha256(target),
     }
+    from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
+    apply_semantics(manifest, 'meta/industry_pit/manifest.json')
     _write_json(manifest_path(store_root), manifest)
     logger.info(
         f'[industry_pit] 已落盘 {target}（{frame.height} 行 / '
