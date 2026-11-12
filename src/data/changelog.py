@@ -5,20 +5,31 @@
 本模块把写入收敛到一个函数，并提供删除事件的便捷入口，避免再各写各的。
 
 字段：run_id,timestamp,task,action,path,bytes,sha256,prev_sha256,operator,reason
-- `path` 一律用**仓库相对路径**（`data/local_store/...`、`reports/...`），新增行不再使用
-  「相对 data/local_store」的旧写法；历史行保持原样，不做回写。
+- `path` 一律用**仓库相对路径 + 正斜杠**（`data/local_store/...`、`reports/...`）。绝对路径
+  若落在仓库内会被相对化，落在仓库外直接抛错；反斜杠会被归一为正斜杠。无法相对化时
+  绝不写半截。历史行保持原样，不做回写。
+- `bytes` 为**数值字符串**；大小未知时写**空字段**，禁止写 `-1` 之类的哨兵值（会让
+  `sum()` / `mean()` 得到负数污染）。
+- `action` 只取 `create|update|delete`，越界值直接抛错。`move` 不作为一种落库取值：
+  用 :func:`record_move` 拆成 `delete`（源）+ `create`（目标）两行，`create` 行的
+  `prev_sha256` 填源文件哈希，从而保留「同一内容从哪移到哪」的 linkage。
+  选择拆行而不是新增 `dst_path` 列的理由：不改变 10 列结构，读侧无需为旧文件做
+  列数分支，每条记录仍然只有**一个**可校验的 64 位哈希。
 - `reason` 是 2026-11-10 新增的末位列，用于记录删除/覆盖的成因；历史行该列为空。
+- 行尾固定 LF、UTF-8 无 BOM。
 
-约定（与 `logs/data_changelog.README.md` 一致）：只追加，不改历史行；`action` 只取
-`create|update|delete`；`delete` 必须给出删除前的 `sha256`，`prev_sha256` 可留空。
+约定（与 `logs/data_changelog.README.md` 一致）：只追加，不改历史行；`delete` 必须给出
+删除前的 `sha256`，`prev_sha256` 可留空。
 
-三条硬约束（2026-11-10 修复）：
+四条硬约束：
 1. **列升级只改首行表头**：历史行按字节原样保留，列数不足的旧行由读侧 `read_events`
    补空容错，不允许把 9,821 行历史整行重写。
 2. **同事件幂等**：同一 `action + path + task` 在 `DEFAULT_DEDUPE_WINDOW_SECONDS` 内重复调用
    只落一条，返回里带 `duplicate="true"`；窗口传 0 或 None 可关闭。
 3. **哈希格式校验**：`sha256` 必须 64 位十六进制，落库统一小写；`delete` 不允许留空。
    截断哈希（如 16 位）会被拒绝，避免写入永远对不上任何文件的记录。
+4. **追加前校验末行完整**：文件最后一个字节必须是 `\n`，否则拒绝追加（防止在上次
+   写一半的残行后面继续拼接，造出永远无法解析的混合行）。
 """
 
 from __future__ import annotations
@@ -32,7 +43,7 @@ import sys
 import time
 from pathlib import Path
 
-from src.data.atomic_write import write_bytes_atomic
+from src.data.atomic_write import suspend_changelog_recording, write_bytes_atomic
 
 FIELDS = [
     "run_id",
@@ -59,6 +70,43 @@ def repo_root() -> Path:
 
 def changelog_path() -> Path:
     return repo_root() / "logs" / "data_changelog.csv"
+
+
+def normalize_repo_path(path: str | os.PathLike[str]) -> str:
+    """把路径规范成「仓库相对 + 正斜杠」。
+
+    - 反斜杠归一为正斜杠；
+    - 仓库内的绝对路径转成相对路径；
+    - 仓库外 / 指向仓库根 / 含换行的路径直接抛错，绝不落半截记录。
+    """
+    raw = str(path).strip()
+    if not raw:
+        raise ValueError("path 不能为空")
+    if "\n" in raw or "\r" in raw:
+        raise ValueError(f"path 含换行，疑似把描述写进了 path：{raw!r}")
+    root = os.path.abspath(str(repo_root()))
+    candidate = raw if os.path.isabs(raw) else os.path.join(root, raw)
+    try:
+        rel = os.path.relpath(os.path.abspath(candidate), root)
+    except ValueError as exc:  # Windows 跨盘符
+        raise ValueError(f"path 无法相对化为仓库内路径：{raw!r}") from exc
+    if rel in (os.curdir, os.pardir) or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
+        raise ValueError(f"path 无法相对化为仓库内路径：{raw!r}")
+    return rel.replace(os.sep, "/")
+
+
+def _assert_tail_intact(csv_path: Path) -> None:
+    """追加前确认末行完整：文件最后一个字节必须是 ``\\n``。"""
+    if not csv_path.exists() or csv_path.stat().st_size == 0:
+        return
+    with open(csv_path, "rb") as f:
+        f.seek(-1, os.SEEK_END)
+        last = f.read(1)
+    if last != b"\n":
+        raise ValueError(
+            "台账末行未以换行结尾（疑似上次写入被截断），拒绝追加；"
+            "请先人工核对并补全末行，不得在残行后继续拼接"
+        )
 
 
 def file_sha256(path: str | os.PathLike[str], chunk: int = 4 << 20) -> str:
@@ -115,9 +163,9 @@ def _upgrade_header(csv_path: Path) -> None:
         return
     if header != FIELDS[:-1]:
         raise ValueError(f"表头与预期不符，拒绝改写：{header}")
-    ending = b"\r\n" if first.endswith(b"\r\n") else b"\n"
-    write_bytes_atomic(
-        ",".join(FIELDS).encode("utf-8") + ending + rest, csv_path)
+    with suspend_changelog_recording():
+        write_bytes_atomic(
+            ",".join(FIELDS).encode("utf-8") + b"\n" + rest, csv_path)
 
 
 def read_events(csv_file: str | os.PathLike[str] | None = None) -> list[dict[str, str]]:
@@ -182,7 +230,7 @@ def append_event(
     task: str,
     reason: str,
     sha256: str,
-    size_bytes: int,
+    size_bytes: int | None,
     prev_sha256: str = "",
     operator: str = "system",
     run_id: str | None = None,
@@ -192,50 +240,58 @@ def append_event(
 ) -> dict[str, str]:
     """追加一条台账记录并返回该行；窗口内重复事件不落盘，返回已有行 + `duplicate="true"`。"""
     if action not in ACTIONS:
-        raise ValueError(f"action 只能是 {ACTIONS}，收到 {action!r}")
-    if not path or os.path.isabs(path):
-        raise ValueError("path 必须是仓库内相对路径")
+        hint = "；move 请用 record_move（拆成 delete + create 两行）" if action == "move" else ""
+        raise ValueError(f"action 只能是 {ACTIONS}，收到 {action!r}{hint}")
+    path = normalize_repo_path(path)
+    if size_bytes is not None:
+        if isinstance(size_bytes, bool) or not isinstance(size_bytes, int):
+            raise TypeError(f"size_bytes 必须是 int 或 None，收到 {type(size_bytes).__name__}")
+        if size_bytes < 0:
+            raise ValueError("bytes 大小未知时传 None（写空字段），不要传负数哨兵值")
     sha256 = normalize_sha256(sha256, action=action)
     target = Path(csv_file) if csv_file else changelog_path()
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        _upgrade_header(target)
-    else:
-        with open(target, "w", encoding="utf-8", newline="\n") as f:
-            csv.writer(f, lineterminator="\n").writerow(FIELDS)
+    # 台账写盘全程关闭埋点：即便将来把追加改成 atomic 写，也不会自我递归记账
+    with suspend_changelog_recording():
+        if target.exists():
+            _assert_tail_intact(target)
+            _upgrade_header(target)
+        else:
+            with open(target, "w", encoding="utf-8", newline="\n") as f:
+                csv.writer(f, lineterminator="\n").writerow(FIELDS)
 
-    row = {
-        "run_id": run_id or f"run_{time.strftime('%Y%m%d_%H%M%S')}",
-        "timestamp": timestamp or time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "task": task,
-        "action": action,
-        "path": path.replace("\\", "/"),
-        "bytes": str(size_bytes),
-        "sha256": sha256,
-        "prev_sha256": prev_sha256,
-        "operator": operator,
-        "reason": reason,
-    }
+        row = {
+            "run_id": run_id or f"run_{time.strftime('%Y%m%d_%H%M%S')}",
+            "timestamp": timestamp or time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "task": task,
+            "action": action,
+            "path": path,
+            "bytes": "" if size_bytes is None else str(size_bytes),
+            "sha256": sha256,
+            "prev_sha256": prev_sha256,
+            "operator": operator,
+            "reason": reason,
+        }
 
-    if dedupe_window_seconds is not None and dedupe_window_seconds > 0:
-        ref_ts = _parse_ts(row["timestamp"]) or time.time()
-        dup = _find_recent_duplicate(
-            target,
-            action=row["action"],
-            path=row["path"],
-            task=row["task"],
-            window_seconds=dedupe_window_seconds,
-            ref_ts=ref_ts,
-        )
-        if dup is not None:
-            return {**dup, "duplicate": "true"}
+        if dedupe_window_seconds is not None and dedupe_window_seconds > 0:
+            ref_ts = _parse_ts(row["timestamp"]) or time.time()
+            dup = _find_recent_duplicate(
+                target,
+                action=row["action"],
+                path=row["path"],
+                task=row["task"],
+                window_seconds=dedupe_window_seconds,
+                ref_ts=ref_ts,
+            )
+            if dup is not None:
+                return {**dup, "duplicate": "true"}
 
-    width = len(_header_fields(target))
-    values = [row[k] for k in FIELDS][:width]
-    values += [""] * (width - len(values))
-    with open(target, "a", encoding="utf-8", newline="\n") as f:
-        csv.writer(f, lineterminator="\n").writerow(values)
+        width = len(_header_fields(target))
+        values = [row[k] for k in FIELDS][:width]
+        values += [""] * (width - len(values))
+        with open(target, "a", encoding="utf-8", newline="\n") as f:
+            csv.writer(f, lineterminator="\n").writerow(values)
     return {**row, "duplicate": "false"}
 
 
@@ -249,6 +305,7 @@ def record_delete(
     **kwargs: object,
 ) -> dict[str, str]:
     """删除事件入口：删之前调用，自动取当前字节数与 SHA256。"""
+    path = normalize_repo_path(path)
     abs_path = repo_root() / path
     if size_bytes is None:
         size_bytes = os.path.getsize(abs_path)
@@ -265,15 +322,76 @@ def record_delete(
     )
 
 
+def record_move(
+    *,
+    src_path: str,
+    dst_path: str,
+    task: str,
+    reason: str,
+    src_sha256: str | None = None,
+    dst_sha256: str | None = None,
+    src_size_bytes: int | None = None,
+    dst_size_bytes: int | None = None,
+    **kwargs: object,
+) -> list[dict[str, str]]:
+    """移动/改名事件入口：拆成 `delete`（源）+ `create`（目标）两行。
+
+    两条记录不是跨行事务（``os.replace`` 只保证单文件原子）：若第二行写入失败，
+    第一行的 delete 记录已落盘；调用方应保留产物并重试 `create` 一行，不得回滚历史行。
+    """
+    src = normalize_repo_path(src_path)
+    dst = normalize_repo_path(dst_path)
+    if src == dst:
+        raise ValueError(f"move 的源与目标相同：{src}")
+    src_abs = repo_root() / src
+    dst_abs = repo_root() / dst
+    if src_size_bytes is None:
+        src_size_bytes = os.path.getsize(src_abs)
+    if src_sha256 is None:
+        src_sha256 = file_sha256(src_abs)
+    if dst_size_bytes is None:
+        dst_size_bytes = os.path.getsize(dst_abs)
+    if dst_sha256 is None:
+        dst_sha256 = file_sha256(dst_abs)
+
+    kwargs.pop("prev_sha256", None)
+    deleted = append_event(
+        action="delete",
+        path=src,
+        task=task,
+        reason=reason,
+        sha256=src_sha256,
+        size_bytes=src_size_bytes,
+        **kwargs,  # type: ignore[arg-type]
+    )
+    created = append_event(
+        action="create",
+        path=dst,
+        task=task,
+        reason=reason,
+        sha256=dst_sha256,
+        size_bytes=dst_size_bytes,
+        prev_sha256=src_sha256,
+        **kwargs,  # type: ignore[arg-type]
+    )
+    return [deleted, created]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="向 logs/data_changelog.csv 追加一条变更记录")
-    ap.add_argument("--action", required=True, choices=ACTIONS)
+    ap.add_argument(
+        "--action",
+        required=True,
+        choices=[*ACTIONS, "move"],
+        help="move 表示移动/改名，会拆成 delete（源）+ create（目标）两行",
+    )
     ap.add_argument("--path", required=True, help="仓库相对路径，如 reports/xxx/panel.parquet")
+    ap.add_argument("--dst-path", default="", help="--action move 时的目标路径")
     ap.add_argument("--task", required=True)
     ap.add_argument("--reason", required=True)
     ap.add_argument("--sha256", default="")
     ap.add_argument("--prev-sha256", default="")
-    ap.add_argument("--bytes", type=int, default=None)
+    ap.add_argument("--bytes", type=int, default=None, help="字节数；未知时留空，不要传 -1")
     ap.add_argument("--operator", default="system")
     ap.add_argument(
         "--dedupe-window",
@@ -284,26 +402,45 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-dedupe", action="store_true", help="等价于 --dedupe-window 0")
     args = ap.parse_args(argv)
 
-    size_bytes = args.bytes
-    sha = args.sha256
-    if size_bytes is None:
-        size_bytes = os.path.getsize(repo_root() / args.path)
-    if not sha:
-        sha = file_sha256(repo_root() / args.path)
-    row = append_event(
-        action=args.action,
-        path=args.path,
-        task=args.task,
-        reason=args.reason,
-        sha256=sha,
-        size_bytes=size_bytes,
-        prev_sha256=args.prev_sha256,
-        operator=args.operator,
-        dedupe_window_seconds=0 if args.no_dedupe else args.dedupe_window,
-    )
-    sys.stdout.write(",".join(row[k] for k in FIELDS) + "\n")
-    if row.get("duplicate") == "true":
-        sys.stdout.write("duplicate=true（窗口内已存在，未重复写入）\n")
+    dedupe = 0 if args.no_dedupe else args.dedupe_window
+    if args.action == "move":
+        if not args.dst_path:
+            ap.error("--action move 必须同时给出 --dst-path")
+        rows = record_move(
+            src_path=args.path,
+            dst_path=args.dst_path,
+            task=args.task,
+            reason=args.reason,
+            prev_sha256=args.prev_sha256,
+            operator=args.operator,
+            dedupe_window_seconds=dedupe,
+        )
+    else:
+        rel = normalize_repo_path(args.path)
+        size_bytes = args.bytes
+        sha = args.sha256
+        if size_bytes is None:
+            size_bytes = os.path.getsize(repo_root() / rel)
+        if not sha:
+            sha = file_sha256(repo_root() / rel)
+        rows = [
+            append_event(
+                action=args.action,
+                path=rel,
+                task=args.task,
+                reason=args.reason,
+                sha256=sha,
+                size_bytes=size_bytes,
+                prev_sha256=args.prev_sha256,
+                operator=args.operator,
+                dedupe_window_seconds=dedupe,
+            )
+        ]
+
+    for row in rows:
+        sys.stdout.write(",".join(row[k] for k in FIELDS) + "\n")
+        if row.get("duplicate") == "true":
+            sys.stdout.write("duplicate=true（窗口内已存在，未重复写入）\n")
     return 0
 
 
