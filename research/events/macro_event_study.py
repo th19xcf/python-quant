@@ -2,15 +2,15 @@
 
 """宏观/主题事件 → 板块映射的事件研究试点。
 
-输入：
-- ``data/macro_events.csv``：人工整理的可回溯宏观事件清单（每条带官方来源）；
-- ``data/event_sector_map.csv``：事件类型 × 板块标签 × 行业 ETF 的映射知识表；
-- ``data/sector_etf_universe.csv``：ETF 代码与本地列存类型。
+输入（证据层，DG-32：手写知识表随 Git 长期可追溯）：
+- ``docs/evidence/research_events_20261103/macro_events.csv``：人工整理的可回溯宏观事件清单（每条带官方来源）；
+- ``docs/evidence/research_events_20261103/event_sector_map.csv``：事件类型 × 板块标签 × 行业 ETF 的映射知识表；
+- ``docs/evidence/research_events_20261103/sector_etf_universe.csv``：ETF 代码与本地列存类型。
 
 输出：
-- ``data/macro_event_level_car.csv``：事件 × 板块 × 窗口的事件级 CAR；
-- ``data/macro_event_summary.csv``：事件类型 × 板块 × 窗口的均值/t 值/胜率/牛熊分段；
-- ``data/macro_mapping_verdict.csv``：映射是否经得起检验的结论表。
+- ``_staging/research_events_20261103/derived/macro_event_level_car.csv``：事件 × 板块 × 窗口的事件级 CAR；
+- ``docs/evidence/research_events_20261103/macro_event_summary.csv``：事件类型 × 板块 × 窗口的均值/t 值/胜率/牛熊分段；
+- ``docs/evidence/research_events_20261103/macro_mapping_verdict.csv``：映射是否经得起检验的结论表。
 
 口径：估计窗 [-120,-20]，事件窗 [-5,+20]，市场模型（alpha/beta OLS），
 建仓价统一为事件日 0 的开盘价；事件日 0 默认取发布日期之后的下一个交易日，
@@ -36,6 +36,11 @@ from event_study_core import (
 from loguru import logger
 
 DATA_DIR = Path(__file__).resolve().parent / 'data'
+ROOT = Path(__file__).resolve().parents[2]
+#: 证据层（DG-32）：三个手写知识表与结论表，随 docs/** 进 Git
+EVIDENCE_DIR = ROOT / 'docs' / 'evidence' / 'research_events_20261103'
+#: 候选层（DG-5）：事件级 CAR 等可重算中间产物
+STAGING_DIR = ROOT / '_staging' / 'research_events_20261103' / 'derived'
 HORIZONS = (0, 1, 5, 20)
 
 
@@ -135,9 +140,9 @@ def build_verdict(summary: pl.DataFrame) -> pl.DataFrame:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='宏观事件 → 板块映射事件研究')
-    parser.add_argument('--events', default=str(DATA_DIR / 'macro_events.csv'))
-    parser.add_argument('--mapping', default=str(DATA_DIR / 'event_sector_map.csv'))
-    parser.add_argument('--universe', default=str(DATA_DIR / 'sector_etf_universe.csv'))
+    parser.add_argument('--events', default=str(EVIDENCE_DIR / 'macro_events.csv'))
+    parser.add_argument('--mapping', default=str(EVIDENCE_DIR / 'event_sector_map.csv'))
+    parser.add_argument('--universe', default=str(EVIDENCE_DIR / 'sector_etf_universe.csv'))
     args = parser.parse_args()
 
     events = _read_str_csv(Path(args.events))
@@ -153,9 +158,11 @@ def main() -> None:
     summary = summarize(level, ['event_type', 'sector_tag', 'etf_code', 'expected_direction'], HORIZONS)
     verdict = build_verdict(summary)
 
-    write_csv(level, DATA_DIR / 'macro_event_level_car.csv')
-    write_csv(summary, DATA_DIR / 'macro_event_summary.csv')
-    write_csv(verdict, DATA_DIR / 'macro_mapping_verdict.csv')
+    STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+    write_csv(level, STAGING_DIR / 'macro_event_level_car.csv')
+    write_csv(summary, EVIDENCE_DIR / 'macro_event_summary.csv')
+    write_csv(verdict, EVIDENCE_DIR / 'macro_mapping_verdict.csv')
     logger.info('事件级 {} 行，汇总 {} 行，结论 {} 行', level.height, summary.height, verdict.height)
     logger.info('映射结论分布:\n{}', verdict['verdict'].value_counts().to_pandas().to_string(index=False))
 

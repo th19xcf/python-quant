@@ -184,12 +184,10 @@ external/tdx_hq_cache/
 tmp/
 
 # 研究中间产物（可由 research/events 脚本重建，体积大）
-research/events/data/announcement_event_level_car.csv
-research/events/data/macro_event_level_car.csv
-research/events/data/announcements_partial.parquet
-
-# 事件合并中间件（由月度分片合并生成，可重建，不入库）
-research/events/data/*/_merged_for_import.parquet
+# 2026-11-12 起：中间派生、断点与全量 CSV 副本改落 _staging/<任务>/（见第 7 行 /_staging/），
+# 原先针对 research/events/data/ 下 announcement_event_level_car.* / macro_event_level_car.csv /
+# announcements_partial.parquet / */_merged_for_import.parquet 的四条规则已随文件迁出而删除。
+# 证据层（结论表、手写知识表、采集台账）改落 docs/evidence/research_events_20261103/，随 docs/** 入库。
 
 # 研究数据不入库：Git 只管代码、脚本、文档与小体积元数据，数据安全靠 G:\git\python-quant 镜像 + _backup 快照
 research/events/data/**/*.parquet

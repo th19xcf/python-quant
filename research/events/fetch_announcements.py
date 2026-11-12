@@ -15,15 +15,17 @@
 产出：
 - ``research/events/data/announcements_raw.parquet``
 - ``research/events/data/yjyg_raw.parquet``
-- ``research/events/data/fetch_meta.json``
-- 断点记录（DG-7）：``_staging/events_announcements/progress.json``（已完成 chunk）
-  与 ``_staging/events_announcements/failed.csv``（失败 chunk）
+- ``docs/evidence/research_events_20261103/fetch_meta.json``（采集台账，证据层 DG-32）
+- 断点记录（DG-7）：``_staging/events_announcements/progress.json``（已完成 chunk）、
+  ``_staging/events_announcements/failed.csv``（失败 chunk）与
+  ``_staging/events_announcements/announcements_partial.parquet``（已抓记录，续跑读回）
 
 本脚本只用于可行性试点，不接入生产推荐流程。
 
-**续跑口径**：不传 ``--restart`` 时，启动先读回 ``announcements_partial.parquet``
-里的既有记录、再读 ``progress.json`` 跳过已完成的 ``(关键词, 季度区间)`` chunk，
-中断后从断点续抓而不是从零重抓。断点目录只含任务名、不带运行日（DG-5 续跑口径）：
+**续跑口径**：不传 ``--restart`` 时，启动先读回
+``_staging/events_announcements/announcements_partial.parquet`` 里的既有记录、再读
+``progress.json`` 跳过已完成的 ``(关键词, 季度区间)`` chunk，中断后从断点续抓而不是
+从零重抓。断点目录只含任务名、不带运行日（DG-5 续跑口径）：
 带日期的目录会让跨天中断的已完成 chunk 全部作废。
 """
 
@@ -50,6 +52,8 @@ import requests
 from loguru import logger
 
 DATA_DIR = Path(__file__).resolve().parent / 'data'
+#: 证据层（DG-32）：采集台账，体积小、需随 Git 长期可追溯
+EVIDENCE_DIR = Path(__file__).resolve().parents[2] / 'docs' / 'evidence' / 'research_events_20261103'
 EM_API = 'https://np-anotice-stock.eastmoney.com/api/security/ann'
 CNINFO_API = 'http://www.cninfo.com.cn/new/hisAnnouncement/query'
 DEFAULT_KEYWORDS = ('减持', '增持', '股权激励', '中标', '重大合同', '处罚', '立案', '重组', '并购', '分红')
@@ -582,10 +586,11 @@ def main() -> None:
     WORKERS, REQUEST_SLEEP = max(1, args.workers), max(0.05, args.sleep)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
     started = time.time()
     announcements, meta = fetch_announcements(
         args.start, args.end, tuple(args.keywords), args.source,
-        partial_path=DATA_DIR / 'announcements_partial.parquet',
+        partial_path=_staging_root() / 'announcements_partial.parquet',
         resume=not args.restart)
     announcements.write_parquet(DATA_DIR / 'announcements_raw.parquet')
     logger.info('公告落盘 {} 行 → announcements_raw.parquet', announcements.height)
@@ -602,7 +607,7 @@ def main() -> None:
         'yjyg_rows': yjyg.height,
         'elapsed_seconds': round(time.time() - started, 1),
     })
-    (DATA_DIR / 'fetch_meta.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
+    (EVIDENCE_DIR / 'fetch_meta.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
     logger.info('抓取完成，耗时 {} 秒', meta['elapsed_seconds'])
 
 

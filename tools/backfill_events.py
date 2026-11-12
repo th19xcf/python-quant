@@ -9,9 +9,11 @@ r"""公告事件增量补数：把 research 采集脚本接到生产事件表。
 且巨潮/东财接口有限流，因此**本脚本不会擅自联网、也不会擅自改写事件表**：
 
 - 默认只打印待补区间与分片计划（纯只读）；
-- ``--allow-remote`` 才按自然月分片抓取，落到
-  ``research/events/data/backfill/YYYYMM.parquet``，已存在的分片自动跳过
-  （断点续传）；
+- ``--allow-remote`` 才按自然月分片抓取，原始分片落到
+  ``research/events/data/backfill/YYYYMM.parquet``（原始采集件原地保留），
+  已存在的分片自动跳过（断点续传）；断点 ``progress.csv`` / ``failed.csv``
+  与合并件 ``_merged_<分片目录名>_for_import.parquet`` 落
+  ``_staging/events_backfill/``（DG-5/DG-7：断点与可重算中间件不进研究数据目录）；
 - ``--import-only --commit`` 才把分片合并并用
   ``src.data.events.import_file(mode='append')`` 写入生产事件表，
   同时把 ``coverage.json`` 的覆盖终点推进到本次补到的日期。
@@ -75,6 +77,19 @@ def _events_api() -> Any:
     from src.data import events  # noqa: PLC0415
 
     return events
+
+
+def _staging_dir(store_root: Path) -> Path:
+    """断点与合并件落点：``<store_root>`` 上溯两级 + ``_staging/events_backfill``。
+
+    按 ``store_root`` 推导（``src.data.staging.staging_dir_for_store``）而不是写死
+    仓库根；任务名不带运行日，保证跨月续跑命中同一目录（DG-5 续跑口径）。
+    """
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from src.data.staging import staging_dir_for_store  # noqa: PLC0415
+
+    return staging_dir_for_store(store_root, 'events_backfill')
 
 
 def _read_coverage(store_root: Path) -> dict[str, Any]:
@@ -142,10 +157,15 @@ def _fetch_shards(args: argparse.Namespace, chunks: list[tuple[str, str]],
     module.REQUEST_SLEEP = max(0.05, args.sleep)
     module.REQUEST_JITTER = max(0.0, args.jitter)
     shard_dir.mkdir(parents=True, exist_ok=True)
+    staging = _staging_dir(Path(args.store_root))
+    staging.mkdir(parents=True, exist_ok=True)
     progress_path = Path(args.progress_csv) if args.progress_csv \
-        else shard_dir / 'progress.csv'
+        else staging / 'progress.csv'
     failed_path = Path(args.failed_csv) if args.failed_csv \
-        else shard_dir / 'failed.csv'
+        else staging / 'failed.csv'
+    # DG-7：失败清单即使本轮零失败也要有文件（表头先行），否则收口时无法证明「无失败」
+    if not failed_path.is_file():
+        failed_path.write_text(','.join(FAILED_HEADER) + '\n', encoding='utf-8')
     written: list[Path] = []
     for start, end in chunks:
         target = _shard_path(shard_dir, start)
@@ -218,9 +238,12 @@ def _import_shards(args: argparse.Namespace, shard_dir: Path,
     # 之间摇摆，表现为「同一批次重复导入却还能新增」。
     merged = merged.unique(subset=['art_code', 'stock_code'], keep='first',
                            maintain_order=True)
-    # 预演与真跑读同一个合并文件，保证预演结果与实跑一致；
-    # 该文件是审计产物，名字以 _ 开头，不会被后续 glob 当分片读入。
-    merged_path = shard_dir / '_merged_for_import.parquet'
+    # 预演与真跑读同一个合并文件，保证预演结果与实跑一致。
+    # 文件名带分片目录名：backfill/ 与 backfill_supplement/ 都跑本脚本，
+    # 用同名文件会互相覆盖，且事后无法判断某次导入读的是哪一份。
+    staging = _staging_dir(Path(args.store_root))
+    staging.mkdir(parents=True, exist_ok=True)
+    merged_path = staging / f'_merged_{shard_dir.name}_for_import.parquet'
     write_parquet_atomic(merged, merged_path)
     logger.info(f'合并 {len(paths)} 个分片 → {merged.height} 行')
 

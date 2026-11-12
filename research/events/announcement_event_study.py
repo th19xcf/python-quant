@@ -2,11 +2,11 @@
 
 """公告事件研究试点：事件类型 → 后续股价超额收益。
 
-输入：``data/announcements_raw.parquet`` + ``data/yjyg_raw.parquet``；
-输出：``data/announcement_events_normalized.parquet``、
-``data/announcement_event_level_car.csv``、
-``data/announcement_event_summary.csv``（市场模型）、
-``data/announcement_event_summary_ma.csv``（市场调整，beta=1 对照）。
+输入：``research/events/data/announcements_raw.parquet`` + ``yjyg_raw.parquet``（原始件原地保留）；
+输出：中间产物落 ``_staging/research_events_20261103/derived/``
+（``announcement_events_normalized.parquet``、``announcement_event_level_car.csv``），
+结论落 ``docs/evidence/research_events_20261103/``
+（``announcement_event_summary.csv`` 市场模型、``announcement_event_summary_ma.csv`` 市场调整 beta=1 对照）。
 
 口径：
 - 估计窗 [-120,-20]，事件窗 [-5,+20]，基准为沪深 300；
@@ -42,6 +42,10 @@ from event_study_core import (  # noqa: E402
 from src.utils.code_converter import parse_code  # noqa: E402
 
 DATA_DIR = Path(__file__).resolve().parent / 'data'
+#: 证据层（DG-32）：小体积、需随 Git 长期可追溯的结论表与手写知识表
+EVIDENCE_DIR = ROOT / 'docs' / 'evidence' / 'research_events_20261103'
+#: 候选层（DG-5）：可重算的中间派生产物，落仓库根 ``_staging``（根定义见 src/data/staging.py）
+STAGING_DIR = ROOT / '_staging' / 'research_events_20261103' / 'derived'
 HORIZONS = (0, 1, 5, 20)
 DEDUP_DAYS = 30
 
@@ -199,19 +203,21 @@ def main() -> None:
         events = pl.concat([events, normalize_yjyg(yjyg, start, end)], how='diagonal_relaxed')
     events = dedup_events(events)
     logger.info('规范化后事件 {} 条，类型分布 {}', events.height, events['event_type'].value_counts().to_dicts())
-    events.write_parquet(DATA_DIR / 'announcement_events_normalized.parquet')
+    STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+    events.write_parquet(STAGING_DIR / 'announcement_events_normalized.parquet')
 
     level = compute_all(events)
     if level.height == 0:
         logger.error('没有事件可计算 CAR，请先运行 fetch_announcements.py')
         return
-    level.write_parquet(DATA_DIR / 'announcement_event_level_car.parquet')
-    write_csv(level, DATA_DIR / 'announcement_event_level_car.csv')
+    level.write_parquet(STAGING_DIR / 'announcement_event_level_car.parquet')
+    write_csv(level, STAGING_DIR / 'announcement_event_level_car.csv')
 
     summary = summarize(level, ['event_type'], HORIZONS)
     summary_ma = summarize(level, ['event_type'], HORIZONS, value_template='car_ma{h}')
-    write_csv(summary, DATA_DIR / 'announcement_event_summary.csv')
-    write_csv(summary_ma, DATA_DIR / 'announcement_event_summary_ma.csv')
+    write_csv(summary, EVIDENCE_DIR / 'announcement_event_summary.csv')
+    write_csv(summary_ma, EVIDENCE_DIR / 'announcement_event_summary_ma.csv')
     logger.info('事件级 {} 行，汇总 {} 行', level.height, summary.height)
     logger.info('汇总:\n{}', summary.to_pandas().to_string(index=False))
 

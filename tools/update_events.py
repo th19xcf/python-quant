@@ -10,8 +10,9 @@ HTTP 200 + 空 ``announcements``，``totalRecordNum`` 还计重复行）。本�
 已验证过的「按自然日 + 判空重试 + 同日多轮收敛」固化成一条可重复命令：
 
 - 单连接串行、逐关键词带节流，同刻只压一条外部采集；
-- 每个自然日的分片原子写，``progress.csv`` / ``failed.csv`` 留断点，
-  重跑自动跳过已有分片（``--force`` 可重抓）；
+- 每个自然日的分片原子写（分片落 ``research/events/data/backfill/daily/``，
+  断点 ``progress.csv`` / ``failed.csv`` 与合并件落 ``_staging/events_daily/``，
+  DG-5/DG-7），重跑自动跳过已有分片（``--force`` 可重抓）；
 - 入库走 ``src.data.events.import_file(mode='append')``：既有行一条不改，
   30 日去重按既定口径；
 - **覆盖声明 ``coverage.json`` 的 start/end 一律原样传递**，绝不由数据
@@ -79,6 +80,19 @@ def _events_api() -> Any:
     from src.data import events  # noqa: PLC0415
 
     return events
+
+
+def _staging_dir(store_root: Path) -> Path:
+    """断点与合并件落点：``<store_root>`` 上溯两级 + ``_staging/events_daily``。
+
+    按 ``store_root`` 推导（``src.data.staging.staging_dir_for_store``）而不是写死
+    仓库根，测试用临时根时落点随临时根走。任务名不带运行日，保证跨天续跑命中同一目录。
+    """
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from src.data.staging import staging_dir_for_store  # noqa: PLC0415
+
+    return staging_dir_for_store(store_root, 'events_daily')
 
 
 def _append_row(path: Path, row: dict[str, Any], header: list[str]) -> None:
@@ -179,8 +193,13 @@ def fetch_days(args: argparse.Namespace, days: list[date],
     fetcher.REQUEST_SLEEP = max(0.05, args.sleep)
     fetcher.REQUEST_JITTER = 0.0
     shard_dir.mkdir(parents=True, exist_ok=True)
-    progress = shard_dir / 'progress.csv'
-    failed = shard_dir / 'failed.csv'
+    staging = _staging_dir(Path(args.store_root))
+    staging.mkdir(parents=True, exist_ok=True)
+    progress = staging / 'progress.csv'
+    failed = staging / 'failed.csv'
+    # DG-7：失败清单即使本轮零失败也要有文件（表头先行），否则收口时无法证明「无失败」
+    if not failed.is_file():
+        failed.write_text(','.join(FAILED_HEADER) + '\n', encoding='utf-8')
     written: list[Path] = []
     for day in days:
         target = shard_dir / f'{day:%Y%m%d}.parquet'
@@ -223,7 +242,8 @@ def fetch_days(args: argparse.Namespace, days: list[date],
     return written
 
 
-def _merge(shard_dir: Path, paths: list[Path], days: list[date]) -> pl.DataFrame:
+def _merge(shard_dir: Path, paths: list[Path], days: list[date],
+           staging: Path) -> tuple[pl.DataFrame, Path]:
     from src.data.atomic_write import write_parquet_atomic  # noqa: PLC0415
 
     frames = []
@@ -232,16 +252,16 @@ def _merge(shard_dir: Path, paths: list[Path], days: list[date]) -> pl.DataFrame
         if not frame.is_empty():
             frames.append(frame)
     if not frames:
-        return pl.DataFrame(schema=_RAW_SCHEMA)
+        return pl.DataFrame(schema=_RAW_SCHEMA), staging / '_merged_empty.parquet'
     merged = pl.concat(frames, how='vertical_relaxed')
     # maintain_order=True：行序不能由哈希决定，否则 30 日去重会在同日不同
     # art_code 之间摇摆，表现为「同一批分片重复导入还能新增」。
     merged = merged.unique(subset=['art_code', 'stock_code'], keep='first',
                            maintain_order=True)
-    target = shard_dir / f'_merged_{days[0]:%Y%m%d}_{days[-1]:%Y%m%d}.parquet'
+    target = staging / f'_merged_{days[0]:%Y%m%d}_{days[-1]:%Y%m%d}.parquet'
     write_parquet_atomic(merged, target)
     logger.info(f'合并 {len(frames)} 个日分片 → {merged.height} 行 → {target.name}')
-    return merged
+    return merged, target
 
 
 def _compare_existing(before: pl.DataFrame, after: pl.DataFrame) -> dict[str, int]:
@@ -342,6 +362,8 @@ def main() -> int:
         logger.error('覆盖声明缺失 start/end，拒绝入库（先跑 tools/backfill_events.py）')
         return 2
     shard_dir = Path(args.shard_dir)
+    staging = _staging_dir(store_root)
+    staging.mkdir(parents=True, exist_ok=True)
 
     paths: list[Path] = []
     incomplete: list[str] = []
@@ -356,13 +378,13 @@ def main() -> int:
     else:
         paths = fetch_days(args, days, shard_dir)
 
-    merged = _merge(shard_dir, paths, days)
+    merged, merged_path = _merge(shard_dir, paths, days, staging)
     if merged.is_empty():
         logger.error('没有可导入的公告记录')
         return 2
     if args.dry_run:
         preview = events.import_file(
-            shard_dir / f'_merged_{days[0]:%Y%m%d}_{days[-1]:%Y%m%d}.parquet',
+            merged_path,
             store_root=store_root, mode='append',
             start=days[0].isoformat(), end=days[-1].isoformat(),
             coverage_start=coverage['start'], coverage_end=coverage['end'],
@@ -386,7 +408,7 @@ def main() -> int:
     logger.info(f'回滚快照 {backup_dir}（SHA {before_sha[:12]}）')
 
     result = events.import_file(
-        shard_dir / f'_merged_{days[0]:%Y%m%d}_{days[-1]:%Y%m%d}.parquet',
+        merged_path,
         store_root=store_root, mode='append',
         start=days[0].isoformat(), end=days[-1].isoformat(),
         coverage_start=coverage['start'], coverage_end=coverage['end'])

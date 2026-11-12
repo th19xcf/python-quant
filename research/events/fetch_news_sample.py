@@ -5,9 +5,9 @@
 只做一次快照 + 有限翻页，不跑长期爬虫、不引入任何凭证、不落库全文。
 判定维度：是否能直连、时间戳精度、是否有原文链接、返回条数与稳定性。
 
-输出：
-- ``data/news_source_sample.csv``：样本条目（来源/时间/标题/链接/正文长度）；
-- ``data/news_source_probe.json``：各来源的可直连、精度、链接、条数结论。
+输出（证据层，DG-32）：
+- ``docs/evidence/research_events_20261103/news_source_sample.csv``：样本条目（来源/时间/标题/链接/正文长度）；
+- ``docs/evidence/research_events_20261103/news_source_probe.json``：各来源的可直连、精度、链接、条数结论。
 """
 
 from __future__ import annotations
@@ -25,6 +25,8 @@ import requests
 from loguru import logger
 
 DATA_DIR = Path(__file__).resolve().parent / 'data'
+#: 证据层（DG-32）：一次性探针结论，体积小、需随 Git 长期可追溯
+EVIDENCE_DIR = Path(__file__).resolve().parents[2] / 'docs' / 'evidence' / 'research_events_20261103'
 UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 SAMPLES: list[dict[str, Any]] = []
 PROBE: dict[str, Any] = {}
@@ -144,7 +146,7 @@ def probe_research_reports() -> None:
 
 
 def main() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
     started = time.time()
     probe_akshare_news()
     probe_cls_raw()
@@ -153,8 +155,8 @@ def main() -> None:
     PROBE['elapsed_seconds'] = round(time.time() - started, 1)
 
     frame = pl.DataFrame(SAMPLES, infer_schema_length=1000)
-    frame.write_csv(DATA_DIR / 'news_source_sample.csv')
-    (DATA_DIR / 'news_source_probe.json').write_text(
+    frame.write_csv(EVIDENCE_DIR / 'news_source_sample.csv')
+    (EVIDENCE_DIR / 'news_source_probe.json').write_text(
         json.dumps(PROBE, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
     logger.info('新闻源探测完成:\n{}', json.dumps(PROBE, ensure_ascii=False, indent=2, default=str))
 
