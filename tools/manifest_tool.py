@@ -14,7 +14,8 @@
 * **路径解析**：manifest 内登记的路径一律相对 ``data/local_store``；同时兼容
   历史写法（带 ``data/local_store/`` 前缀、Windows 绝对路径、``files`` 字典
   以文件名为键时的同目录相对路径）。
-* **逐文件核对**：``rows``（parquet 元数据）、``bytes``（``os.stat``）、
+* **逐文件核对**：``rows``（parquet 元数据；CSV 为「首行表头之外的数据行数」）、
+  ``bytes``（``os.stat``）、
   ``sha256``（1 MiB 分块）、``columns`` / ``cols``、``date_range``（仅在登记时）。
 * **sha256 大小写**：比较时两侧统一小写，登记值含 ``A-F`` 不判不一致，只额外报一条
   ``sha256_format`` 格式告警并单独计数；格式问题不静默，也不把一致的数据判成不一致。
@@ -34,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
 import hashlib
 import json
 import os
@@ -322,8 +324,11 @@ class FactsCache:
         facts = FileFacts(path=path, exists=exists, is_file=is_file)
         if is_file:
             facts.bytes = path.stat().st_size
-            if path.suffix.lower() == '.parquet':
+            suffix = path.suffix.lower()
+            if suffix == '.parquet':
                 facts.rows, facts.columns = _parquet_meta(path)
+            elif suffix == '.csv':
+                facts.rows = _csv_data_rows(path)
         self._items[key] = facts
         return facts
 
@@ -344,6 +349,21 @@ def _parquet_meta(path: Path) -> tuple[int | None, list[str] | None]:
         return meta.metadata.num_rows, list(meta.schema_arrow.names)
     except Exception:  # noqa: BLE001 - 损坏或不支持的 parquet 只让该条核对降级
         return None, None
+
+
+def _csv_data_rows(path: Path) -> int | None:
+    """CSV 数据行数：首行视为表头，按 ``csv`` 模块逐条记录计数（字段内换行不算新行）。
+
+    解不开（非 UTF-8 文本 / 非法 CSV）返回 ``None``，交回调用方按「不可核对」处理，
+    不猜行数。表头假设与项目内 CSV 台账的写出口径一致（均由 DataFrame / csv.writer
+    带头写出）；差一行会以 ``rows`` 不一致的形式显式报出，不会静默通过。
+    """
+    try:
+        with open(path, encoding='utf-8-sig', newline='') as handle:
+            total = sum(1 for _ in csv.reader(handle))
+    except (UnicodeDecodeError, csv.Error, OSError):
+        return None
+    return max(total - 1, 0)
 
 
 def column_min_max(path: Path, column: str) -> tuple[str, str] | None:
@@ -545,12 +565,12 @@ def self_describing_record(data: dict[str, Any], root: Path) -> Record | None:
 # 单项核对
 # --------------------------------------------------------------------------- #
 def _rows_unverifiable_issue(record: Record, shown: str) -> Issue:
-    """非 parquet 台账登记了 rows：写了原因算已声明，没写就是待解释的噪声。"""
+    """登记了 rows 但磁盘行数取不到：写了原因算已声明，没写就是待解释的噪声。"""
     reason = record.fields.get('rows_unverifiable_reason')
     if isinstance(reason, str) and reason.strip():
         return Issue('rows_unverifiable_declared', shown, f'已声明不可核对：{reason.strip()}')
     return Issue('rows_unverifiable', shown,
-                 '登记了 rows，但该文件不是 parquet，无法核对；'
+                 '登记了 rows，但该文件既不是 parquet 也不是可解码的 CSV，取不到磁盘行数；'
                  '若确实无法核对，请在条目里写 rows_unverifiable_reason 说明原因')
 
 

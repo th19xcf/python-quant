@@ -447,7 +447,9 @@ def build(store_root: Path | str, *, refresh: bool = False) -> dict[str, Any]:
 
     open_rows = frame.filter(pl.col('out_date').is_null()).height
     per_code_counts = frame.group_by('ts_code').len()['len']
+    relative = Path(target).resolve().relative_to(Path(store_root).resolve()).as_posix()
     manifest: dict[str, Any] = {
+        'path': relative,
         'dataset': DATASET,
         'source': '申万宏源研究 个股行业分类变动历史（SwClass2021）',
         'source_url': SW_URL,
