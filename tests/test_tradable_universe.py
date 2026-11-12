@@ -421,3 +421,32 @@ def test_tdx_missing_real_trading_day_still_flagged(
     assert gaps['missing_rows'][0] == 1
     assert gaps['expected_rows'][0] == 6
     assert gaps['last_trade_date'][0] == date(2026, 1, 12)
+
+
+# ----------------------------------------------------------------------
+# manifest 漏登记：必须报错，不得静默跳过
+# ----------------------------------------------------------------------
+def test_manifest_missing_registration_raises(tmp_path) -> None:
+    """写盘产物未在 manifest 登记时必须报错（DG-3）。
+
+    回归点：``refresh_manifest_files`` 默认 ``required=False``，找不到登记条目时
+    ``continue`` 静默放过，``universe_exclusions.json`` 因此长期进不了 ``files``。
+    这里只登记两张 parquet、故意漏掉 JSON 汇总，断言构建直接失败。
+    """
+    store = tmp_path / 'store'
+    _make_store(store)
+    out = store / 'meta' / 'universe'
+    out.mkdir(parents=True)
+    (out / 'manifest.json').write_text(json.dumps({
+        'dataset': 'test',
+        'files': [
+            {'path': f'meta/universe/{EXCLUSIONS_FILE}',
+             'rows': 0, 'bytes': 0, 'sha256': ''},
+            {'path': f'meta/universe/{PRICE_JUMPS_FILE}',
+             'rows': 0, 'bytes': 0, 'sha256': ''},
+        ],
+    }, ensure_ascii=False), encoding='utf-8')
+
+    with pytest.raises(RuntimeError, match=SUMMARY_FILE):
+        build_exclusions(store, basic_tables=BASIC_TABLES, output_dir=out,
+                         as_of=date(2026, 2, 1))

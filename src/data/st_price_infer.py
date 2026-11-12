@@ -102,6 +102,10 @@ def summary_path(store_root: Path | str) -> Path:
     return Path(store_root) / 'meta' / 'st' / 'price_inference.json'
 
 
+def manifest_path(store_root: Path | str) -> Path:
+    return Path(store_root) / 'meta' / 'st' / 'manifest.json'
+
+
 def _read_cached(path: Path, cache: dict[str, tuple[int, pl.DataFrame]],
                  schema: dict[str, Any]) -> pl.DataFrame | None:
     if not path.is_file():
@@ -257,11 +261,7 @@ def _infer_code(ts_code: str, frame: pl.DataFrame | None, counters: dict[str, in
         counters['exdiv_false_removed'] += int(stats['exdiv'] or 0)
 
         absret = sub['absret'].fill_null(0.0).to_list()
-        ret = sub['ret'].fill_null(0.0).to_list()
-        amp = sub['amp'].fill_null(0.0).to_list()
-        valid = sub['valid'].fill_null(0.0).to_list()
         breach = sub['breach'].to_list()
-        amounts = sub['amount'].fill_null(0.0).to_list()
         local_dates = sub['date'].to_list()
         flags = sub['flag'].to_list()
 
@@ -270,9 +270,6 @@ def _infer_code(ts_code: str, frame: pl.DataFrame | None, counters: dict[str, in
             new_end = _trim_tail(new_start, new_end, absret)
             if new_end - new_start + 1 < MIN_RUN:
                 continue
-            segment = range(new_start, new_end + 1)
-            evidence = _evidence(segment, absret, ret, amp, valid, amounts, breach,
-                                 local_dates[new_start], local_dates[new_end])
             rows.append({
                 'ts_code': ts_code,
                 'start_date': local_dates[new_start],
@@ -280,12 +277,18 @@ def _infer_code(ts_code: str, frame: pl.DataFrame | None, counters: dict[str, in
                 'flag': FLAG_SUSPECTED,
                 'source': SOURCE_PRICE,
                 'confidence': '',
-                'evidence': json.dumps(evidence, ensure_ascii=False, default=str),
+                'evidence': '',
                 'fetched_at': datetime.now(),
             })
-            if evidence['touch_neg'] >= 3 and evidence['touch_pos'] == 0:
-                counters['neg_only_intervals'] += 1
-    return _merge_rows(rows)
+    merged = _merge_rows(rows)
+    # evidence 必须在合并之后按最终区间重算：合并会把相邻段接起来、改写 end_date，
+    # 若沿用合并前的段内统计，就会出现 evidence['end'] 早于 end_date 的矛盾证据。
+    for row in merged:
+        evidence = _evidence_frame(df, row['start_date'], row['end_date'])
+        row['evidence'] = json.dumps(evidence, ensure_ascii=False, default=str)
+        if evidence['touch_neg'] >= 3 and evidence['touch_pos'] == 0:
+            counters['neg_only_intervals'] += 1
+    return merged
 
 
 def _refine(span_start: int, span_end: int, breach: list[bool]) -> tuple[int, int]:
@@ -324,22 +327,34 @@ def _trim_tail(begin: int, end: int, absret: list[float]) -> int:
     return end
 
 
-def _evidence(segment: range, absret: list[float], ret: list[float],
-              amp: list[float], valid: list[float], amounts: list[float],
-              breach: list[bool], start: date, end: date) -> dict[str, Any]:
-    values = [absret[index] for index in segment]
-    touch_indices = [index for index in segment if TOUCH_MIN <= absret[index] < CAP_TOL]
+def _evidence_frame(df: pl.DataFrame, start: date,
+                    end: date | None) -> dict[str, Any]:
+    """按最终区间（合并 / 收尾之后）从整段行情重算 evidence。
+
+    ``end`` 为空表示「延伸到本地最后一根 bar」：统计窗口取到最后一根 bar，
+    证据里的 ``end`` 同为空，保证 ``evidence['end'] == end_date`` 恒成立。
+    """
+    stop = end if end is not None else df['date'][-1]
+    window = df.filter((pl.col('date') >= start) & (pl.col('date') <= stop))
+    absret = window['absret'].fill_null(0.0).to_list()
+    ret = window['ret'].fill_null(0.0).to_list()
+    amp = window['amp'].fill_null(0.0).to_list()
+    valid = window['valid'].fill_null(0.0).to_list()
+    amounts = window['amount'].fill_null(0.0).to_list()
+    breach = window['breach'].to_list()
+    touch_indices = [index for index, value in enumerate(absret)
+                     if TOUCH_MIN <= value < CAP_TOL]
     return {
-        'days': len(values),
-        'max_absret': round(max(values), 4),
+        'days': len(absret),
+        'max_absret': round(max(absret), 4),
         'touch_days': len(touch_indices),
         'touch_neg': sum(1 for index in touch_indices if ret[index] < 0),
         'touch_pos': sum(1 for index in touch_indices if ret[index] > 0),
-        'amp_median': round(statistics.median(amp[index] for index in segment), 4),
-        'valid_ratio': round(statistics.mean(valid[index] for index in segment), 4),
-        'amount_median': round(statistics.median(amounts[index] for index in segment), 2),
-        'breach_inside': sum(1 for index in segment if breach[index]),
-        'start': str(start), 'end': str(end),
+        'amp_median': round(statistics.median(amp), 4),
+        'valid_ratio': round(statistics.mean(valid), 4),
+        'amount_median': round(statistics.median(amounts), 2),
+        'breach_inside': sum(1 for value in breach if value),
+        'start': str(start), 'end': None if end is None else str(end),
     }
 
 
@@ -584,6 +599,13 @@ def run(store_root: Path | str, *, codes: Iterable[str] | None = None,
     }
     summary_path(root).write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
+    # 写盘后按磁盘实测回写同目录 manifest；required=True 要求两个文件都已登记，
+    # 漏登记时报错而不是静默跳过（DG-3）。
+    from src.data.manifest_refresh import refresh_manifest_files  # noqa: PLC0415
+
+    refresh_manifest_files(
+        manifest_path(root), root,
+        [price_path(root), summary_path(root)], required=True)
     logger.info(f'[st-price] 疑似区间 {annotated.height} 段 / '
                 f'{summary["suspected_codes"]} 只；日级验证精确率 '
                 f'{compare["metrics"]["validated_day_precision"]:.3f}')

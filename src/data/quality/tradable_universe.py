@@ -988,12 +988,14 @@ def build_exclusions(
     write_text_atomic(
         json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True),
         out_dir / SUMMARY_FILE)
-    # 写盘后按磁盘实测回写同目录 manifest；输出到 _staging（无 manifest）时静默跳过
+    # 写盘后按磁盘实测回写同目录 manifest；required=True 要求三项都已登记，
+    # 漏登记即报错（DG-3），不再静默跳过。
     from src.data.manifest_refresh import refresh_manifest_files  # noqa: PLC0415
 
     refresh_manifest_files(
         out_dir / 'manifest.json', root,
-        [out_dir / EXCLUSIONS_FILE, out_dir / PRICE_JUMPS_FILE, out_dir / SUMMARY_FILE])
+        [out_dir / EXCLUSIONS_FILE, out_dir / PRICE_JUMPS_FILE, out_dir / SUMMARY_FILE],
+        required=True)
     # 审计参考值，非口径：2026-11-10 起对外口径统一为 strict，该值只用于与
     # 历史报告（healthy_by_audit_definition，旧值 8,903/9,770）对照，不写入 JSON。
     audit_codes = set(frame.filter(
