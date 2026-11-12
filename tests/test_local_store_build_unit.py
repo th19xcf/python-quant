@@ -51,6 +51,7 @@ from src.data.local_store.build import (
     refresh_factors,
     verify_incremental_target,
 )
+from src.data.local_store.session_guard import filter_nontrading_rows
 from src.data.local_store.store import LocalFactorStore, LocalQuoteStore
 
 _DATES = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
@@ -352,6 +353,108 @@ def test_merge_source_with_existing_since_without_existing_marks_incomplete(
         store, 'stock', '600000.SH', fresh, since=_DATES[1])
     assert merged.height == 2
     assert full is False
+
+
+# ----------------------------------------------------------------------
+# 非交易日过滤（落盘前）
+# ----------------------------------------------------------------------
+# 合成日历：2024-01-02/03/04 为交易日，01-06 周六、01-07 周日、
+# 01-08 周一但不在日历内（模拟法定假日口径——周一也可能不是交易日）。
+_CAL = frozenset({date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)})
+_MIXED = [date(2024, 1, 2), date(2024, 1, 6), date(2024, 1, 3),
+          date(2024, 1, 7), date(2024, 1, 4), date(2024, 1, 8)]
+
+
+def test_filter_nontrading_rows_drops_only_dates_outside_calendar():
+    """日历外的日期（含周一假日）被挡，合法行逐值不变，行数差等于被挡日期数。"""
+    frame = _quote_frame(_MIXED)
+
+    out, blocked = filter_nontrading_rows(frame, _CAL)
+
+    assert out.height == 3
+    assert blocked == (date(2024, 1, 6), date(2024, 1, 7), date(2024, 1, 8))
+    assert frame.height - out.height == len(blocked)
+    legal = frame.filter(pl.col('date').is_in(list(_CAL))).sort('date')
+    assert out.sort('date').equals(legal)
+
+
+def test_filter_nontrading_rows_keeps_all_rows_when_all_dates_legal():
+    """全合法输入必须一行不少、逐值不变。"""
+    frame = _quote_frame(_DATES)
+
+    out, blocked = filter_nontrading_rows(frame, _CAL)
+
+    assert blocked == ()
+    assert out.height == frame.height == 3
+    assert out.equals(frame)
+
+
+def test_filter_nontrading_rows_passes_through_without_calendar():
+    """日历不可用（None / 空集）时原样放行，不能把整帧静默清空。"""
+    frame = _quote_frame(_DATES)
+
+    for calendar in (None, frozenset()):
+        out, blocked = filter_nontrading_rows(frame, calendar)
+        assert blocked == ()
+        assert out.equals(frame)
+
+
+def _mixed_day_records():
+    """两条真实交易日 + 两条周末占位行（价格=成交量前值、volume=0）。"""
+    return [
+        ('20240102', 10.0, 10.5, 9.5, 10.0, 100.0, 1000.0),
+        ('20240103', 10.5, 11.0, 10.0, 10.5, 101.0, 1000.0),
+        ('20240106', 10.5, 10.5, 10.5, 10.5, 0.0, 0.0),
+        ('20240107', 10.5, 10.5, 10.5, 10.5, 0.0, 0.0),
+    ]
+
+
+def test_rebuild_target_blocks_nontrading_rows_before_write(tmp_path):
+    """端到端：源 .day 含 2024-01-06/07 时，落盘帧里没有它们，其余行逐值不变。"""
+    path = _write_day(tmp_path / 'tdx', 'sh', '600000', _mixed_day_records())
+    root = _store_root(tmp_path)
+    store, factor_store = LocalQuoteStore(root), LocalFactorStore(root)
+    blocked: list[tuple[str, date]] = []
+
+    written = _rebuild_target(
+        store, factor_store, 'stock', '600000.SH', path,
+        since=None, max_date=None, force_intraday=False,
+        calendar_dates=_CAL, blocked=blocked)
+
+    assert written == 2
+    written_frame = store.read_file('stock', '600000.SH')
+    assert written_frame is not None
+    assert written_frame['date'].to_list() == [date(2024, 1, 2), date(2024, 1, 3)]
+    # 其余行逐值不变：与「直接从源 .day 解析出的合法行」完全一致。
+    expected = build_frame(
+        'stock', '600000.SH', path, factor_store).filter(
+            pl.col('date').is_in([date(2024, 1, 2), date(2024, 1, 3)]))
+    assert written_frame.select(expected.columns).equals(expected)
+    # 行数差等于被挡日期数，且被挡日期如实回传。
+    assert len(_mixed_day_records()) - written == len(blocked) == 2
+    assert blocked == [('600000.SH', date(2024, 1, 6)),
+                       ('600000.SH', date(2024, 1, 7))]
+
+
+def test_rebuild_target_without_calendar_writes_nontrading_rows(tmp_path):
+    """对照组：同一份源不传日历（等于过滤失效）时必须写出 4 行。
+
+    这条与上一条互为反例——若 ``_rebuild_target`` 里的日历过滤被误删或失效，
+    ``test_rebuild_target_blocks_nontrading_rows_before_write`` 的
+    ``written == 2`` 会变成 4 而失败，本条的 4 行则保持不变。
+    """
+    path = _write_day(tmp_path / 'tdx', 'sh', '600000', _mixed_day_records())
+    root = _store_root(tmp_path)
+    store, factor_store = LocalQuoteStore(root), LocalFactorStore(root)
+
+    written = _rebuild_target(
+        store, factor_store, 'stock', '600000.SH', path,
+        since=None, max_date=None, force_intraday=False, calendar_dates=None)
+
+    assert written == 4
+    written_frame = store.read_file('stock', '600000.SH')
+    assert written_frame is not None
+    assert date(2024, 1, 6) in written_frame['date'].to_list()
 
 
 # ----------------------------------------------------------------------

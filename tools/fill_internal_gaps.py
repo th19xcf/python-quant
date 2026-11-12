@@ -36,6 +36,10 @@ sys.path.insert(0, str(ROOT))
 
 from src.data.atomic_write import write_text_atomic  # noqa: E402
 from src.data.local_store.build import discover_local_files  # noqa: E402
+from src.data.local_store.session_guard import (  # noqa: E402
+    filter_nontrading_rows,
+    store_calendar_dates,
+)
 from src.data.local_store.store import LocalFactorStore, LocalQuoteStore  # noqa: E402
 from src.data.tdx_day_parser import parse_day_file  # noqa: E402
 
@@ -329,12 +333,21 @@ def _patch_chain(merged: pl.DataFrame, inserted: list[date]) -> pl.DataFrame:
 def _fill_one(
     kind: str, code: str, tdx_path: Path, local: pl.DataFrame,
     factor_store: LocalFactorStore, store: LocalQuoteStore, day_tag: str,
+    calendar_dates: frozenset[date] | None = None,
 ) -> dict[str, Any]:
     tdx = parse_day_file(tdx_path)
     tdx = tdx.unique(subset=['date'], keep='last').sort('date')
+    # 源端 .day 对无成交标的写自然日占位行（含周末与法定假日）。本工具只补
+    # 「TDX 有、本地没有」的日期，若不过滤就会把这类行当成缺口补进去。
+    tdx, blocked_dates = filter_nontrading_rows(tdx, calendar_dates)
+    if blocked_dates:
+        logger.warning(
+            f'[fill-gaps] {code} 源端含 {len(blocked_dates)} 个非交易日'
+            f'（{", ".join(d.isoformat() for d in blocked_dates[:5])}），已排除')
     if tdx.is_empty() or tdx.height <= local.height:
         return {'status': 'skipped', 'rows': 0, 'reason': 'tdx_not_longer',
-                'tdx_rows': tdx.height, 'local_rows': local.height}
+                'tdx_rows': tdx.height, 'local_rows': local.height,
+                'nontrading_blocked': len(blocked_dates)}
     local_end = local['date'][-1]
     local_dates = local['date'].to_list()
     missing = [d for d in tdx['date'].to_list() if d <= local_end and d not in local_dates]
@@ -375,6 +388,7 @@ def _fill_one(
                       source_mtime_ns=tdx_path.stat().st_mtime_ns)
     return {'status': 'ok', 'rows': len(missing), 'tdx_rows': tdx.height,
             'local_rows_before': local.height,
+            'nontrading_blocked': len(blocked_dates),
             'segments_detail': [f'{a.isoformat()}~{b.isoformat()}'
                                 for a, b in _segments(missing)][:6],
             'segments': len(_segments(missing)),
@@ -427,6 +441,7 @@ def fill(reset: bool = False, codes: list[str] | None = None) -> dict[str, Any]:
                if state['completed'].get(r['ts_code'], {}).get('status')
                not in ('ok', 'skipped')]
     print(f'待处理 {len(pending)} / {gaps.height} 只（已完成 {len(state["completed"])}）')
+    calendar_dates = store_calendar_dates(STORE)
 
     processed = 0
     run_rows = 0
@@ -441,7 +456,7 @@ def fill(reset: bool = False, codes: list[str] | None = None) -> dict[str, Any]:
             else:
                 local = pl.read_parquet(path).sort('date')
                 result = _fill_one(kind, code, tdx_path, local, factor_store,
-                                   store, day_tag)
+                                   store, day_tag, calendar_dates)
                 if result['status'] == 'failed':
                     _log_failed(kind, code, json.dumps(result, ensure_ascii=False))
         except Exception as exc:  # noqa: BLE001 - 单只失败不阻断整批

@@ -46,7 +46,12 @@ from polars.exceptions import PolarsError
 from src.data.adj_factor_calculator import AdjFactorCalculator
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.factors_manifest import write_factors_manifest
-from src.data.local_store.session_guard import filter_intraday_rows, guarded_source_date
+from src.data.local_store.session_guard import (
+    filter_intraday_rows,
+    filter_nontrading_rows,
+    guarded_source_date,
+    store_calendar_dates,
+)
 from src.data.local_store.store import (
     STORE_VERSION,
     LocalFactorStore,
@@ -344,12 +349,29 @@ def _rebuild_target(
     since: date | None,
     max_date: date | None,
     force_intraday: bool,
+    calendar_dates: frozenset[date] | None = None,
+    blocked: list[tuple[str, date]] | None = None,
 ) -> int | None:
-    """重建单标的并返回写入行数；源记录为空时返回 None。"""
+    """重建单标的并返回写入行数；源记录为空时返回 None。
+
+    ``calendar_dates`` 非空时，源端新帧里日期不在交易日历内的行会在合并前
+    被丢弃（TDX 对无成交标的写 ``close=1.0`` 的自然日占位行，含周末与法定
+    假日）。这里只挡源端新行，存量行仍由 ``_merge_source_with_existing``
+    原样保留；``blocked`` 用于把被挡行回传给调用方统计，缺省不记。
+    """
     fresh = build_frame(kind, ts_code, path, factor_store)
     fresh = filter_intraday_rows(fresh, force=force_intraday)
     if max_date is not None:
         fresh = fresh.filter(pl.col('date') <= max_date)
+    fresh, blocked_dates = filter_nontrading_rows(fresh, calendar_dates)
+    if blocked_dates:
+        head = ', '.join(d.isoformat() for d in blocked_dates[:5])
+        more = '…' if len(blocked_dates) > 5 else ''
+        logger.warning(
+            f'[local-store] {ts_code} 源端含 {len(blocked_dates)} 个非交易日'
+            f'（{head}{more}），已挡在落盘前')
+        if blocked is not None:
+            blocked.extend((ts_code, d) for d in blocked_dates)
     if fresh.is_empty():
         return None
     fresh, full = _merge_source_with_existing(
@@ -443,6 +465,11 @@ def build(
     started = time.perf_counter()
     written_rows = 0
     written_files = 0
+    #: 交易日历只取一次：源端 ``.day`` 对无成交标的写自然日占位行（含周末与
+    #: 法定假日），必须挡在落盘前；日历不可用时为 None，此时放行不拦。
+    calendar_dates = store_calendar_dates(quote_store.root)
+    #: 本次被挡下的（标的, 日期），用于构建统计与日志
+    nontrading_blocked: list[tuple[str, date]] = []
     #: 本次实际写入的标的，用于收尾做因子副本对齐（不重扫全市场）
     written_by_kind: dict[str, list[str]] = {}
     skipped = 0
@@ -488,7 +515,8 @@ def build(
                 continue
             written = _rebuild_target(
                 quote_store, factor_store, kind, ts_code, path,
-                since=since, max_date=max_date, force_intraday=force_intraday)
+                since=since, max_date=max_date, force_intraday=force_intraday,
+                calendar_dates=calendar_dates, blocked=nontrading_blocked)
             if written is None:
                 skipped += 1
                 continue
@@ -508,12 +536,22 @@ def build(
     # 覆盖度元数据写失败不得中断后续收尾：2026-11-11 16:25 的全量重建正是
     # 在 flush_meta 抛错后直接崩掉，导致因子副本对齐被整段跳过，633 只基金
     # 的 qfq/hfq 退化为 1.0。收尾逻辑见 ``_finalize_build``。
+    nontrading = {
+        'rows': len(nontrading_blocked),
+        'codes': len({code for code, _ in nontrading_blocked}),
+        'dates': sorted({day for _, day in nontrading_blocked}),
+    }
+    if nontrading['rows']:
+        logger.warning(
+            f'[local-store] 本次构建挡下非交易日行 {nontrading["rows"]:,} 行 / '
+            f'{nontrading["codes"]} 只 / {len(nontrading["dates"])} 个日期')
     return _finalize_build(
         config, quote_store, factor_store, written_by_kind,
         written_files=written_files, written_rows=written_rows,
         skipped=skipped, skipped_uptodate=skipped_uptodate,
         data_type=data_type, codes=codes, since=since,
-        incremental=incremental, target_date=target_date, started=started)
+        incremental=incremental, target_date=target_date, started=started,
+        nontrading=nontrading)
 
 
 def _finalize_build(
@@ -532,12 +570,14 @@ def _finalize_build(
     incremental: bool,
     target_date: date | None,
     started: float,
+    nontrading: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """写盘后的收尾：元数据、因子副本对齐、状态与复验。
 
     三项收尾互相隔离，任一项失败都要把错误回报出去但不得短路后面几项——
     元数据问题不能连带让因子副本对齐（数据层）静默跳过。
     """
+    nontrading = nontrading or {'rows': 0, 'codes': 0, 'dates': []}
     meta_error: str | None = None
     try:
         quote_store.flush_meta()
@@ -569,6 +609,9 @@ def _finalize_build(
             'skipped': skipped,
             'skipped_uptodate': skipped_uptodate,
             'target_date': target_date.isoformat() if target_date else None,
+            'nontrading_blocked_rows': nontrading['rows'],
+            'nontrading_blocked_dates': [
+                d.isoformat() for d in nontrading['dates']],
         })
     except (OSError, ValueError, RuntimeError, TypeError) as exc:
         state_error = f'{type(exc).__name__}: {exc}'
@@ -588,6 +631,7 @@ def _finalize_build(
         'files': written_files,
         'skipped': skipped,
         'skipped_uptodate': skipped_uptodate,
+        'nontrading_blocked': nontrading,
         'factor_alignment': factor_alignment,
         'meta_error': meta_error,
         'state_error': state_error,
