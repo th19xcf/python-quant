@@ -214,7 +214,7 @@ def test_collect_valuation_since_skips_completed_codes(
     assert result.rows == 0
 
     progress = json.loads(
-        (tmp_path / 'meta' / 'financials' / 'progress.json').read_text(encoding='utf-8'))
+        (store.parts_root(tmp_path) / 'progress.json').read_text(encoding='utf-8'))
     assert set(progress['valuation_ranges']['2026-11-07_2026-11-09']) == set(codes)
 
 
@@ -227,7 +227,7 @@ def test_collect_valuation_since_resumes_from_parts(
 
     FinancialsCollector(tmp_path, workers=1, valuation_interval=0.0).collect_valuation(
         codes, since=date(2026, 11, 7), until=date(2026, 11, 9))
-    progress_path = tmp_path / 'meta' / 'financials' / 'progress.json'
+    progress_path = store.parts_root(tmp_path) / 'progress.json'
     progress_path.unlink()
 
     calls.clear()

@@ -8,12 +8,16 @@
     meta/financials/balance.parquet
     meta/financials/cashflow.parquet
     meta/financials/valuation_daily.parquet
-    meta/financials/parts/{statement}/{period}.parquet      # 采集分片
-    meta/financials/parts/{statement}_bj/{ts_code}.parquet  # 北交所单票分片
-    meta/financials/parts/valuation/{batch}.parquet
     meta/financials/ann_date/{period}.parquet               # 公告日映射分片
-    meta/financials/progress.json
-    meta/financials/failed.csv
+
+采集分片与断点**不在** ``data/`` 之下（DG-5）：落在仓库根
+``_staging/financials_parts_<YYYYMMDD>/``，见 :func:`parts_root`::
+
+    _staging/financials_parts_<YYYYMMDD>/{income,balance,cashflow}/{period}.parquet
+    _staging/financials_parts_<YYYYMMDD>/{income,balance,cashflow}_bj/{ts_code}.parquet
+    _staging/financials_parts_<YYYYMMDD>/valuation/{batch}.parquet
+    _staging/financials_parts_<YYYYMMDD>/progress.json
+    _staging/financials_parts_<YYYYMMDD>/failed.csv
 
 点时口径（硬约束）：
 - 可见性一律以 ``ann_date`` 判定，**不允许**用 ``end_date`` 代替；
@@ -33,9 +37,11 @@ import polars as pl
 from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic
+from src.data.staging import STAGING_ROOT, staging_dir
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_STORE_ROOT = PROJECT_ROOT / 'data' / 'local_store'
+PARTS_TASK = 'financials_parts'
 STATEMENTS = ('income', 'balance', 'cashflow')
 
 _COMMON_SCHEMA: dict[str, Any] = {
@@ -123,11 +129,31 @@ def table_path(table: str, store_root: Path | str | None = None) -> Path:
     return financials_dir(store_root) / f'{filename}.parquet'
 
 
+def parts_root(store_root: Path | str | None = None) -> Path:
+    """采集任务目录（DG-5）：仓库根 ``_staging/financials_parts_<YYYYMMDD>/``。
+
+    分片与断点（``progress.json`` / ``failed.csv``）都落在该目录，**不再写进**
+    ``data/local_store/meta/financials/``：正式层只保留合并后的四张事实表。
+
+    跨日续跑：已存在任一 ``financials_parts_*`` 时复用最新一个，避免第二天启动
+    时看不到昨天的分片而重复采集；要开新任务须先把旧目录移走。
+    自定义 ``store_root``（测试）时落在该根下的 ``_staging``，不写进真实仓库。
+    """
+    root = DEFAULT_STORE_ROOT if store_root is None else Path(store_root)
+    base = STAGING_ROOT if root.resolve() == DEFAULT_STORE_ROOT.resolve() else root / '_staging'
+    existing = sorted(p for p in base.glob(f'{PARTS_TASK}_*') if p.is_dir())
+    if existing:
+        return existing[-1]
+    if base == STAGING_ROOT:
+        return staging_dir(PARTS_TASK, with_date=True)
+    return base / f'{PARTS_TASK}_{date.today():%Y%m%d}'
+
+
 def parts_dir(table: str, store_root: Path | str | None = None) -> Path:
     """返回某张事实表的分片目录（采集器使用，允许 ``balance_bj`` 等变体）。"""
     if not table:
         raise ValueError('table 不能为空')
-    return financials_dir(store_root) / 'parts' / table
+    return parts_root(store_root) / table
 
 
 def as_date(value: Any) -> date | None:

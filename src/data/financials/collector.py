@@ -167,20 +167,20 @@ class FinancialsCollector:
 
     @property
     def progress_path(self) -> Path:
-        return self.base_dir / 'progress.json'
+        return store.parts_root(self.store_root) / 'progress.json'
 
     @property
     def failed_path(self) -> Path:
-        return self.base_dir / 'failed.csv'
+        return store.parts_root(self.store_root) / 'failed.csv'
 
     def _part_path(self, table: str, name: str) -> Path:
-        return self.base_dir / 'parts' / table / f'{name}.parquet'
+        return store.parts_dir(table, self.store_root) / f'{name}.parquet'
 
     def _ann_path(self, period: str) -> Path:
         return self.base_dir / 'ann_date' / f'{period}.parquet'
 
     def _load_progress(self) -> dict[str, Any]:
-        path = self.base_dir / 'progress.json'
+        path = self.progress_path
         if not path.exists():
             return {'statements': {}, 'ann_dates': [], 'bj_balance': [],
                     'bj_statements': {}, 'valuation': [], 'valuation_ranges': {},
@@ -231,7 +231,7 @@ class FinancialsCollector:
             'message': str(error).replace('\n', ' ')[:500],
         }
         with self._lock:
-            self.base_dir.mkdir(parents=True, exist_ok=True)
+            self.failed_path.parent.mkdir(parents=True, exist_ok=True)
             exists = self.failed_path.exists()
             with self.failed_path.open('a', encoding='utf-8', newline='') as fh:
                 writer = csv.DictWriter(fh, fieldnames=list(row))
