@@ -94,6 +94,13 @@ CRITICAL_FILES: tuple[str, ...] = (
     'reports/advice/state/long.json',
     'reports/advice/state/mid.json',
     'reports/advice/state/short.json',
+    # 通达信码表缓存（2026-11-12 补）：`meta/names.json` 的唯一重建来源
+    # （tools/build_names_json.py:3-12）。`.tnf` 无法从网络重下，且
+    # `EXTERNAL_ASSET_KEYS` 指向的 D:/zxzq 在本机不可达，项目内 `external/`
+    # 这一份就是唯一现存副本，必须进不可重建清单。
+    'external/tdx_hq_cache/shs.tnf',
+    'external/tdx_hq_cache/szs.tnf',
+    'external/tdx_hq_cache/bjs.tnf',
 )
 
 #: 整目录（相对项目根），保留目录内相对结构
@@ -115,6 +122,9 @@ CRITICAL_DIRS: tuple[str, ...] = (
     # 交付清单与核验报告、导入前事件表回滚副本。重跑只能得到当前状态，
     # 历史证据不可重建；此前误放 tmp/，现归位到 reports/ 并纳入备份契约。
     'reports/data_audit_2026-11-07',
+    # 数据新鲜度与归档审计留痕（2026-11-12 补）：内容可由脚本重算，
+    # 但重算要跑全链路脚本且历史值会变，留一份成本仅 0.6 MB。
+    'artifacts',
 )
 
 #: 项目外的不可重建源数据：(相对通达信安装目录, 备份目录内相对键)。
