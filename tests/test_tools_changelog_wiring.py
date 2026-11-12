@@ -65,8 +65,10 @@ def test_reconcile_commit_records_fund_meta_update(store_env):
     assert rows[0]['bytes'] == str((factors / 'fund_meta.json').stat().st_size)
     assert rows[0]['sha256'] == changelog.file_sha256(factors / 'fund_meta.json')
 
+    # coverage_gaps.parquet 已按 DG-32 退役（零读侧、内容已在 report.json 的
+    # coverage_gaps 段），--commit 不得再把它写回正式层，台账也不得出现该路径。
     gaps = _rows_for(ledger, 'data/local_store/meta/anomalies/coverage_gaps.parquet')
-    assert len(gaps) == 1 and gaps[0]['action'] == 'create'
+    assert gaps == [], '退役表 coverage_gaps.parquet 不得被 --commit 重新写出'
 
 
 def test_trading_calendar_records_coverage_json(store_env):

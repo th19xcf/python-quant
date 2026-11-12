@@ -180,7 +180,6 @@ def main(argv: list[str] | None = None) -> int:
         anomaly_dir = root / 'meta' / 'anomalies'
         anomaly_dir.mkdir(parents=True, exist_ok=True)
         write_parquet_atomic(placeholders, anomaly_dir / 'placeholder_codes.parquet')
-        write_parquet_atomic(gaps, anomaly_dir / 'coverage_gaps.parquet')
         write_text_atomic(
             json.dumps(meta['payload'], ensure_ascii=False, indent=2) + '\n',
             meta['path'])
