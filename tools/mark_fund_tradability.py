@@ -46,6 +46,8 @@ from typing import Any
 import polars as pl
 from loguru import logger
 
+from src.data.atomic_write import write_parquet_atomic
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -160,9 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         'fund_basic_tradability_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
     backup_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(basic_path, backup_dir / basic_path.name)
-    tmp = basic_path.with_name(basic_path.name + '.tmp')
-    frame.write_parquet(tmp)
-    tmp.replace(basic_path)
+    write_parquet_atomic(frame, basic_path)
     logger.info(f'[fund_tradability] 已写入 {frame.height} 行: {basic_path}')
     logger.info(f'[fund_tradability] 原文件备份: {backup_dir}')
     return 0

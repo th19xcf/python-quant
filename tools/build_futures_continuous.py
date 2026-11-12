@@ -39,6 +39,8 @@ from pathlib import Path
 
 import polars as pl
 
+from src.data.atomic_write import write_parquet_atomic
+
 ROOT = Path(__file__).resolve().parents[1]
 STORE = ROOT / 'data' / 'local_store'
 STAGING = ROOT / '_staging' / 'multi_asset_tier2_20261110'
@@ -300,9 +302,9 @@ def main(argv: list[str] | None = None) -> int:
             dst.write_bytes(f.read_bytes())
             written += 1
     # 2) 元数据表
-    contracts.write_parquet(OUT_DIR / 'futures_contracts.parquet')
-    cont.write_parquet(OUT_DIR / 'futures_continuous.parquet')
-    rolls.write_parquet(OUT_DIR / 'futures_roll_events.parquet')
+    write_parquet_atomic(contracts, OUT_DIR / 'futures_contracts.parquet')
+    write_parquet_atomic(cont, OUT_DIR / 'futures_continuous.parquet')
+    write_parquet_atomic(rolls, OUT_DIR / 'futures_roll_events.parquet')
     for name in ('futures_contracts.parquet', 'futures_continuous.parquet',
                  'futures_roll_events.parquet'):
         hashes[name] = _sha256(OUT_DIR / name)

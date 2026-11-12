@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.data.atomic_write import write_parquet_atomic  # noqa: E402
 from src.data.staging import staging_dir  # noqa: E402
 
 DEFAULT_ROOT = ROOT / 'data' / 'local_store'
@@ -231,11 +232,11 @@ def main(argv: list[str] | None = None) -> int:
     args.staging.mkdir(parents=True, exist_ok=True)
     target = args.staging / f'{NAMES[args.target]}.parquet'
     if not frame.is_empty():
-        frame.write_parquet(target, compression='zstd', statistics=True)
+        write_parquet_atomic(frame, target, compression='zstd', statistics=True)
     if args.commit and not frame.is_empty():
         prod = args.store_root / PRODUCTION[args.target]
         prod.parent.mkdir(parents=True, exist_ok=True)
-        frame.write_parquet(prod, compression='zstd', statistics=True)
+        write_parquet_atomic(frame, prod, compression='zstd', statistics=True)
 
     report = {
         'generated_at': datetime.now().isoformat(timespec='seconds'),

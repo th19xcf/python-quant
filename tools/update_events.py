@@ -224,6 +224,8 @@ def fetch_days(args: argparse.Namespace, days: list[date],
 
 
 def _merge(shard_dir: Path, paths: list[Path], days: list[date]) -> pl.DataFrame:
+    from src.data.atomic_write import write_parquet_atomic  # noqa: PLC0415
+
     frames = []
     for path in sorted(paths):
         frame = pl.read_parquet(path)
@@ -237,7 +239,7 @@ def _merge(shard_dir: Path, paths: list[Path], days: list[date]) -> pl.DataFrame
     merged = merged.unique(subset=['art_code', 'stock_code'], keep='first',
                            maintain_order=True)
     target = shard_dir / f'_merged_{days[0]:%Y%m%d}_{days[-1]:%Y%m%d}.parquet'
-    merged.write_parquet(target)
+    write_parquet_atomic(merged, target)
     logger.info(f'合并 {len(frames)} 个日分片 → {merged.height} 行 → {target.name}')
     return merged
 

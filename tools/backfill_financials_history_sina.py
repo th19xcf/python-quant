@@ -494,7 +494,7 @@ def build() -> int:
         key = ['ts_code', 'end_date', 'ann_date']
         frame = frame.unique(subset=key, keep='last').sort(['ts_code', 'end_date'])
         out = STAGING / f'{statement}_pre2010.parquet'
-        frame.write_parquet(out, compression='zstd')
+        write_parquet_atomic(frame, out, compression='zstd')
         print(f'[{statement}] pre2010 {frame.height:,} 行 → {out}')
         if statement != 'income':
             continue
@@ -505,7 +505,7 @@ def build() -> int:
                 .unique(subset=['ts_code', 'end_date'], keep='last')
                 .sort(['ts_code', 'end_date']))
         nf = STAGING / 'net_profit_full.parquet'
-        full.write_parquet(nf, compression='zstd')
+        write_parquet_atomic(full, nf, compression='zstd')
         counts = full.group_by('net_profit_flag').len().sort('net_profit_flag')
         print(f'[income] 2010+ 净利润映射 {full.height:,} 行 → {nf}')
         for row in counts.iter_rows(named=True):

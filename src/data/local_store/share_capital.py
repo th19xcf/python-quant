@@ -661,7 +661,7 @@ def fetch_market_snapshot(*, cache_dir: Path | str | None = None,
         frame = pl.from_pandas(raw, include_index=False).select(
             ['代码', '最新价', '总市值', '流通市值'])
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        frame.write_parquet(cache_path)
+        write_parquet_atomic(frame, cache_path)
 
     result: dict[str, tuple[int, int | None]] = {}
     for row in frame.to_dicts():

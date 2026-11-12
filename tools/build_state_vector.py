@@ -619,6 +619,8 @@ def _append_failed(path: Path, rows: list[tuple[str, str]]) -> None:
 
 def build(store: Path, *, chunk_size: int = DEFAULT_CHUNK_SIZE,
           rebuild: bool = False) -> tuple[pl.DataFrame, Path]:
+    from src.data.atomic_write import write_parquet_atomic  # noqa: PLC0415
+
     stage = staging_dir()
     parts = stage / 'parts'
     parts.mkdir(parents=True, exist_ok=True)
@@ -659,7 +661,7 @@ def build(store: Path, *, chunk_size: int = DEFAULT_CHUNK_SIZE,
         result = process_chunk(frame, shares) if frame is not None else None
         if result is None or result.height == 0:
             result = _empty_part()
-        result.select(_PART_COLUMNS).write_parquet(part)
+        write_parquet_atomic(result.select(_PART_COLUMNS), part)
         _append_failed(failed_path, failures)
         _append_progress(progress_path, {
             'chunk': index,
@@ -700,7 +702,7 @@ def build(store: Path, *, chunk_size: int = DEFAULT_CHUNK_SIZE,
     panel = add_quantiles(panel)
 
     out = stage / 'state_vector_daily.parquet'
-    panel.write_parquet(out)
+    write_parquet_atomic(panel, out)
     logger.info(f'[state_vector] 候选完成 {panel.height} 行 -> {out}')
     return panel, stage
 

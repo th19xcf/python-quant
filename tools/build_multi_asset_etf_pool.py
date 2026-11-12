@@ -526,9 +526,11 @@ def _write_csv(rows: list[dict[str, Any]], path: Path, columns: list[str],
 
 def write_staging(frame: pl.DataFrame, gap_detail: list[dict[str, Any]],
                   event_detail: list[dict[str, Any]], summary: dict[str, Any]) -> dict[str, Path]:
+    from src.data.atomic_write import write_parquet_atomic  # noqa: PLC0415
+
     STAGING.mkdir(parents=True, exist_ok=True)
     pool_path = STAGING / 'etf_pool.parquet'
-    frame.write_parquet(pool_path, compression='zstd')
+    write_parquet_atomic(frame, pool_path, compression='zstd')
     pool_csv = STAGING / 'etf_pool.csv'
     _write_csv(frame.to_dicts(), pool_csv, frame.columns, encoding='utf-8-sig')
     gap_path = STAGING / 'etf_gap_detail.csv'

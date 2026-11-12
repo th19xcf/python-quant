@@ -336,6 +336,8 @@ def _config_payload(store: Path) -> dict[str, Any]:
 def build(
     store: Path, *, chunk_size: int = DEFAULT_CHUNK_SIZE, rebuild: bool = False,
 ) -> tuple[pl.DataFrame, Path]:
+    from src.data.atomic_write import write_parquet_atomic  # noqa: PLC0415
+
     stage = staging_dir()
     parts = stage / 'parts'
     parts.mkdir(parents=True, exist_ok=True)
@@ -391,11 +393,11 @@ def build(
                                 drop_codes=drop)
                   if frame is not None else None)
         if result is not None and result.height:
-            result.select(_PART_COLUMNS).write_parquet(part)
+            write_parquet_atomic(result.select(_PART_COLUMNS), part)
             valid = int(result['n_valid'].sum())
         else:
             valid = 0
-            _empty_part().write_parquet(part)
+            write_parquet_atomic(_empty_part(), part)
         _append_failed(failed_path, failures)
         _append_progress(progress_path, {
             'chunk': index,
@@ -416,7 +418,7 @@ def build(
     merged = pl.read_parquet(parts_files)
     daily = assemble(merged)
     out = stage / 'breadth_ma_daily.parquet'
-    daily.write_parquet(out)
+    write_parquet_atomic(daily, out)
     logger.info(f'[breadth_ma] 候选完成 {daily.height} 行 -> {out}')
     return daily, stage
 

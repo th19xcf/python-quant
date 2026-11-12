@@ -68,6 +68,7 @@ import polars as pl
 from loguru import logger
 
 from src.data import st_history
+from src.data.atomic_write import write_parquet_atomic
 from src.risk.execution_rules import ExecutionRules
 
 FLAG_SUSPECTED = 'suspected_st'
@@ -514,10 +515,7 @@ def _miss_reasons(missed: list[dict[str, Any]], store: Any) -> dict[str, int]:
 
 
 def _write_atomic(frame: pl.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + '.tmp')
-    frame.write_parquet(tmp)
-    tmp.replace(path)
+    write_parquet_atomic(frame, path)
 
 
 def run(store_root: Path | str, *, codes: Iterable[str] | None = None,

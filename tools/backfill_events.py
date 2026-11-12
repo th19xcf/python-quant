@@ -200,6 +200,8 @@ def _now() -> str:
 
 def _import_shards(args: argparse.Namespace, shard_dir: Path,
                    coverage_start: str, coverage_end: str) -> int:
+    from src.data.atomic_write import write_parquet_atomic  # noqa: PLC0415
+
     paths = sorted(path for path in shard_dir.glob('*.parquet')
                    if not path.name.startswith('_'))
     if not paths:
@@ -219,7 +221,7 @@ def _import_shards(args: argparse.Namespace, shard_dir: Path,
     # 预演与真跑读同一个合并文件，保证预演结果与实跑一致；
     # 该文件是审计产物，名字以 _ 开头，不会被后续 glob 当分片读入。
     merged_path = shard_dir / '_merged_for_import.parquet'
-    merged.write_parquet(merged_path)
+    write_parquet_atomic(merged, merged_path)
     logger.info(f'合并 {len(paths)} 个分片 → {merged.height} 行')
 
     # 补历史区间时，覆盖声明必须取「原声明 ∪ 本次补数区间」的并集。

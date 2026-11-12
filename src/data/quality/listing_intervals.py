@@ -31,6 +31,8 @@ from typing import Any
 import polars as pl
 from loguru import logger
 
+from src.data.atomic_write import write_parquet_atomic
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ROOT = PROJECT_ROOT / 'data' / 'local_store'
 OUTPUT_RELATIVE = Path('meta/universe/listing_intervals.parquet')
@@ -72,9 +74,7 @@ def write_listing_intervals(store_root: Path | str = DEFAULT_ROOT) -> Path:
     target = root / OUTPUT_RELATIVE
     target.parent.mkdir(parents=True, exist_ok=True)
     frame = build_listing_intervals(root)
-    tmp = target.with_suffix('.parquet.tmp')
-    frame.write_parquet(tmp, compression='zstd', statistics=True)
-    tmp.replace(target)
+    write_parquet_atomic(frame, target, compression='zstd', statistics=True)
     return target
 
 

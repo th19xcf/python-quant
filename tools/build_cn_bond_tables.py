@@ -33,6 +33,8 @@ from pathlib import Path
 
 import polars as pl
 
+from src.data.atomic_write import write_parquet_atomic
+
 ROOT = Path(__file__).resolve().parents[1]
 STORE = ROOT / 'data' / 'local_store'
 STAGING = ROOT / '_staging' / 'multi_asset_tier2_20261110' / 'cbond'
@@ -140,8 +142,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     MACRO.mkdir(parents=True, exist_ok=True)
-    idx.write_parquet(MACRO / 'cn_bond_index.parquet')
-    yld.write_parquet(MACRO / 'cn_treasury_yield_curve.parquet')
+    write_parquet_atomic(idx, MACRO / 'cn_bond_index.parquet')
+    write_parquet_atomic(yld, MACRO / 'cn_treasury_yield_curve.parquet')
 
     now = datetime.now().isoformat(timespec='seconds')
     idx_manifest = {

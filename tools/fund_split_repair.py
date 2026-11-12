@@ -48,6 +48,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data.adj_factor_calculator import AdjFactorCalculator  # noqa: E402
+from src.data.atomic_write import write_parquet_atomic  # noqa: E402
 from src.data.local_store.fund_factors import (  # noqa: E402
     FUND_FACTOR_MAX,
     FUND_SHARE_CHANGE_FILENAME,
@@ -278,9 +279,8 @@ def _append_missing_events() -> dict[str, Any]:
             [c for c in SHARE_CHANGE_COLUMNS if c in addition.columns])
         merged = pl.concat([frame, addition], how='vertical_relaxed').sort(
             ['ts_code', 'ex_date'])
-        tmp = SHARE_PATH.with_suffix('.parquet.tmp')
-        merged.write_parquet(tmp, compression='zstd', statistics=True)
-        tmp.replace(SHARE_PATH)
+        write_parquet_atomic(merged, SHARE_PATH, compression='zstd',
+                             statistics=True)
     return {'added_events': len(new_rows),
             'events': [{k: str(v) for k, v in row.items()} for row in new_rows]}
 
@@ -354,11 +354,9 @@ def apply_repair() -> dict[str, Any]:
     kept = old_factors.filter(~pl.col('ts_code').is_in(REPAIR_CODES))
     merged_all = pl.concat([kept, *new_parts], how='vertical_relaxed').sort(
         ['ts_code', 'trade_date'])
-    tmp = FACTOR_PATH.with_suffix('.parquet.tmp')
-    merged_all.write_parquet(
-        tmp, compression='zstd', compression_level=3,
+    write_parquet_atomic(
+        merged_all, FACTOR_PATH, compression='zstd', compression_level=3,
         statistics=True, row_group_size=100_000)
-    tmp.replace(FACTOR_PATH)
 
     detail = pl.DataFrame(detail_rows, schema={
         'ts_code': pl.Utf8, 'trade_date': pl.Utf8, 'field': pl.Utf8,

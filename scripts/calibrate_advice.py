@@ -41,6 +41,7 @@ from src.advice.pipeline import AdviceEngine, _StoreConfig
 from src.advice.replay import _ReplayTier
 from src.advice.scoring import attach_score
 from src.advice.universe import build_meta, list_local_stock_codes, load_name_map
+from src.data.atomic_write import write_parquet_atomic
 from src.utils.config import get_config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -88,7 +89,7 @@ def prepare(store_root: Path, cache_dir: Path, symbols: int) -> dict[str, Any]:
     factors = compute_factor_panel(panel)
     cache_dir.mkdir(parents=True, exist_ok=True)
     factor_path = cache_dir / 'factor_panel.parquet'
-    factors.write_parquet(factor_path)
+    write_parquet_atomic(factors, factor_path)
     info = {
         'symbols_requested': symbols,
         'universe_size': len(codes),
