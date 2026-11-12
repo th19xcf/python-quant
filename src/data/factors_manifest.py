@@ -43,13 +43,25 @@ _ROLES: dict[str, tuple[str, str]] = {
         '个股分红事件表（因子重建的上游事件源）',
         'python tools/collect_stock_dividend.py'),
     'stock_turnover.parquet': ('个股换手率派生表', 'python -m src.data.local_store sync-turnover'),
-    'fund_adj_factor.parquet': ('基金复权因子快照', 'tools/build_fund_corporate_actions.py'),
-    'fund_dividend.parquet': ('场内基金分红事件表', 'tools/build_fund_corporate_actions.py'),
-    'fund_share_change.parquet': ('场内基金份额折算 / 分拆事件表', 'tools/build_fund_corporate_actions.py'),
+    'fund_adj_factor.parquet': (
+        '基金复权因子快照',
+        'src/data/local_store/fund_factors.py::rebuild_fund_factors'),
+    'fund_dividend.parquet': (
+        '场内基金分红事件表',
+        'src/data/local_store/fund_factors.py::build_fund_store'),
+    'fund_share_change.parquet': (
+        '场内基金份额折算 / 分拆事件表',
+        'src/data/local_store/fund_factors.py::build_fund_store'
+        ' + tools/fund_split_repair.py（追加缺失事件）'),
     'covered_codes.txt': ('个股因子快照已覆盖标的清单（sidecar）', 'rebuild-factors 收尾'),
-    'fund_covered_codes.txt': ('基金因子快照已覆盖标的清单（sidecar）', 'tools/build_fund_corporate_actions.py'),
+    'fund_covered_codes.txt': (
+        '基金因子快照已覆盖标的清单（sidecar）',
+        'src/data/local_store/fund_factors.py::rebuild_fund_factors'),
     'meta.json': ('个股因子构建状态（最近一次 rebuild 的统计与哈希）', 'rebuild-factors 收尾'),
-    'fund_meta.json': ('基金因子构建状态', 'tools/build_fund_corporate_actions.py'),
+    'fund_meta.json': (
+        '基金因子构建状态',
+        'src/data/local_store/fund_factors.py::rebuild_fund_factors'
+        ' + tools/reconcile_p2_metadata.py（修正计数）'),
 }
 _SUB_MANIFESTS = (Path('rebuild') / MANIFEST_NAME,)
 

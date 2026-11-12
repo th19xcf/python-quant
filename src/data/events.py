@@ -302,6 +302,70 @@ def _drop_near_existing(batch: pl.DataFrame,
     return batch.filter(pl.Series('_keep', keep))
 
 
+def _row_key(item: dict[str, Any]) -> tuple:
+    return tuple(item[column] for column in EVENT_COLUMNS)
+
+
+def _assert_replace_conservation(
+    existing: pl.DataFrame, incoming: pl.DataFrame, merged: pl.DataFrame,
+) -> dict[str, int]:
+    """``mode='replace'`` 落盘前的三项守恒断言（DG-31），不通过直接抛错。
+
+    三项断言都不是「看起来合理」的自证，而是能对具体错误失败：
+
+    1. **行数守恒**：写盘行数必须等于待写行数；存量行必须被完整归入
+       「保留未改 / 保留但改值 / 被替换掉」三类，三类之和必须等于存量行数。
+       漏算任何一类（例如只统计 ``event_id`` 交集就当年守恒）即报错。
+    2. **改动行数**：同 ``event_id`` 的既有行若内容被改写，逐行计入
+       ``existing_modified``；该计数直接回填 ``stats['existing_affected']``，
+       不再写死 0。
+    3. **null 计数**：写盘后各列空值数必须等于待写数据空值数（写路径不得
+       凭空造 null），且不得多于存量空值数——**空值从 0 变成 N 在这里必然
+       失败**，正是 DG-31 反例中 ``pl.coalesce`` 无兜底那类缺陷的拦截点。
+
+    返回三类存量行的计数，供调用方写进返回统计。
+    """
+    if merged.height != incoming.height:
+        raise RuntimeError(
+            f'replace 写盘行数不守恒：待写 {incoming.height} 行，实际 {merged.height} 行')
+
+    merged_keys: dict[str, list[tuple]] = {}
+    for item in merged.to_dicts():
+        merged_keys.setdefault(item['event_id'], []).append(_row_key(item))
+    retained = modified = replaced_out = 0
+    for item in existing.to_dicts():
+        matches = merged_keys.get(item['event_id']) or []
+        if not matches:
+            replaced_out += 1
+        elif _row_key(item) in matches:
+            retained += 1
+        else:
+            modified += 1
+    if retained + modified + replaced_out != existing.height:
+        raise RuntimeError(
+            f'replace 存量行不守恒：存量 {existing.height} 行，'
+            f'保留 {retained} + 改值 {modified} + 替换掉 {replaced_out} '
+            f'= {retained + modified + replaced_out} 行')
+
+    null_incoming = incoming.null_count()
+    null_merged = merged.null_count()
+    null_existing = existing.null_count()
+    for column in EVENT_COLUMNS:
+        incoming_nulls = int(null_incoming[column][0])
+        merged_nulls = int(null_merged[column][0])
+        if merged_nulls != incoming_nulls:
+            raise RuntimeError(
+                f'replace 写路径为 {column} 造出了空值：待写 {incoming_nulls} 行空，'
+                f'写盘 {merged_nulls} 行空')
+        existing_nulls = int(null_existing[column][0])
+        if merged_nulls > existing_nulls:
+            raise RuntimeError(
+                f'replace 使 {column} 的空值从 {existing_nulls} 行增加到 '
+                f'{merged_nulls} 行（空值从 0 变成 N 即判定为写回缺陷）')
+    return {'existing_retained': retained, 'existing_modified': modified,
+            'existing_replaced_out': replaced_out}
+
+
 def load_events(store_root: Path | str) -> pl.DataFrame:
     path = events_path(store_root)
     if not path.is_file():
@@ -591,13 +655,27 @@ def import_file(path: Path | str, store_root: Path | str | None = None,
                 raise RuntimeError(
                     f'append 破坏了既有行（{len(lost)} 条 event_id 丢失），已中止写入')
     else:
+        # replace 是整表替换：存量行不会被保留，但必须逐类记账——
+        # 「保留未改 + 保留改值 + 被替换掉 = 存量行数」由守恒断言强制（DG-31）。
+        existing = load_events(root)
         merged = incoming
-        stats = {'existing_rows': 0, 'source_rows': source_rows,
+        conservation = _assert_replace_conservation(existing, incoming, merged)
+        if conservation['existing_replaced_out']:
+            logger.warning(
+                f'[events] replace 将丢弃 {conservation["existing_replaced_out"]} 条'
+                f'存量行（存量 {existing.height} 行 → 写盘 {merged.height} 行）')
+        if conservation['existing_modified']:
+            logger.warning(
+                f'[events] replace 改写了 {conservation["existing_modified"]} 条'
+                '既有行的内容')
+        stats = {'existing_rows': existing.height, 'source_rows': source_rows,
                  'batch_rows': incoming.height, 'added': incoming.height,
                  'dropped_existing_conflict': 0,
                  'dropped_near_existing': 0,
                  'dropped_in_batch': source_rows - incoming.height,
-                 'existing_affected': 0}
+                 'existing_affected': conservation['existing_modified'],
+                 'existing_retained': conservation['existing_retained'],
+                 'existing_replaced_out': conservation['existing_replaced_out']}
 
     path_out = events_path(root)
     if dry_run:

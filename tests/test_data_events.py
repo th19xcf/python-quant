@@ -16,6 +16,7 @@ from src.data.events import (
     STATUS_COOLING,
     STATUS_UNKNOWN,
     EventStore,
+    _assert_replace_conservation,
     _coerce_events,
     cooldown_range,
     dedup_events,
@@ -359,3 +360,81 @@ class TestCooldown:
         assert date(2025, 1, 3) not in blocked
         assert date(2025, 1, 10) in blocked
         assert date(2025, 1, 13) not in blocked
+
+
+class TestReplaceConservation:
+    """replace 分支的守恒断言（DG-31）：行数 / 改动行数 / 空值计数。"""
+
+    def test_replace_accounts_for_every_existing_row(self, tmp_path: Path):
+        seed = _normalized_csv(tmp_path / 'seed.csv', [
+            {'ts_code': '600000.SH', 'event_type': '并购重组',
+             'publish_time': '2025-01-03 16:00:00',
+             'title': '重组', 'event_id': 'e1'},
+            {'ts_code': '000001.SZ', 'event_type': '监管处罚',
+             'publish_time': '2025-03-05 16:00:00',
+             'title': '处罚', 'event_id': 'e2'},
+        ])
+        import_file(seed, tmp_path, source='test')
+        # e1 内容改写，e2 被替换掉，e3 为新增
+        replacement = _normalized_csv(tmp_path / 'new.csv', [
+            {'ts_code': '600000.SH', 'event_type': '并购重组',
+             'publish_time': '2025-01-03 16:00:00',
+             'title': '重组（修订）', 'event_id': 'e1'},
+            {'ts_code': '600051.SH', 'event_type': '减持',
+             'publish_time': '2025-04-01 16:00:00',
+             'title': '减持', 'event_id': 'e3'},
+        ])
+        info = import_file(replacement, tmp_path, mode='replace', source='test')
+        assert info['existing_rows'] == 2
+        assert info['existing_retained'] == 0
+        assert info['existing_affected'] == 1
+        assert info['existing_replaced_out'] == 1
+        assert info['rows'] == 2
+        frame = load_events(tmp_path)
+        assert set(frame['event_id'].to_list()) == {'e1', 'e3'}
+        assert frame.filter(pl.col('event_id') == 'e1')['title'][0] == '重组（修订）'
+
+    def test_replace_matches_dry_run_counts(self, tmp_path: Path):
+        seed = _normalized_csv(tmp_path / 'seed.csv', [{
+            'ts_code': '600000.SH', 'event_type': '并购重组',
+            'publish_time': '2025-01-03 16:00:00',
+            'title': '重组', 'event_id': 'e1'}])
+        import_file(seed, tmp_path, source='test')
+        preview = import_file(seed, tmp_path, mode='replace', source='test',
+                              dry_run=True)
+        assert preview['existing_retained'] == 1
+        assert preview['existing_affected'] == 0
+        assert load_events(tmp_path).height == 1
+
+    def test_null_count_assertion_fails_when_write_path_makes_nulls(self):
+        """反例自测：写路径把 0 个空值变成 N 个，断言必须真的抛错（DG-31）。"""
+        existing = _coerce_events(pl.DataFrame({
+            'ts_code': ['600000.SH'], 'event_type': ['并购重组'],
+            'publish_time': [datetime(2025, 1, 3, 16, 0)],
+            'title': ['重组'], 'source': ['test'], 'event_id': ['e1'],
+        }))
+        incoming = existing.clone()
+        # 先证明未篡改时通过
+        _assert_replace_conservation(existing, incoming, incoming.clone())
+        # 反例一：待写数据没有空值，写盘帧凭空造出 null（pl.coalesce 无兜底）
+        tampered = incoming.with_columns(pl.lit(None, dtype=pl.String).alias('title'))
+        with pytest.raises(RuntimeError, match='为 title 造出了空值'):
+            _assert_replace_conservation(existing, incoming, tampered)
+        # 反例二：待写数据自带 null，替换后既有行空值从 0 变成 1
+        with_null = incoming.with_columns(pl.lit(None, dtype=pl.String).alias('title'))
+        with pytest.raises(RuntimeError, match='空值从 0 行增加到 1 行'):
+            _assert_replace_conservation(existing, with_null, with_null.clone())
+
+    def test_row_conservation_assertion_fails_on_lost_rows(self):
+        existing = _coerce_events(pl.DataFrame({
+            'ts_code': ['600000.SH', '000001.SZ'], 'event_type': ['并购重组', '减持'],
+            'publish_time': [datetime(2025, 1, 3, 16, 0), datetime(2025, 3, 5, 16, 0)],
+            'title': ['重组', '减持'], 'source': ['test', 'test'],
+            'event_id': ['e1', 'e2'],
+        }))
+        incoming = existing.head(1)
+        # 写盘帧凭空多出一行 → 行数不守恒
+        with pytest.raises(RuntimeError, match='写盘行数不守恒'):
+            _assert_replace_conservation(existing, incoming,
+                                        pl.concat([incoming, incoming]))
+
