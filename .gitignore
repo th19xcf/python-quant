@@ -194,3 +194,6 @@ research/events/data/**/*.parquet
 
 # 本地凭证目录（tushare token 等敏感信息，仅本机保存，禁止入库）
 .secrets/
+
+# 任务交付工作目录（2026-11-12 起）：整体不入库，审计报告归档进 docs/，其余文件靠 G:\git\python-quant 镜像保障
+2026-11-12/
