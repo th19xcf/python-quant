@@ -38,6 +38,8 @@
 - **DG-5** 候选数据只能存在于 `_staging/<任务>_<日期>/`（仓库根，**不在** `data/` 之下；权威定义见 `src/data/staging.py`），不得写在正式文件同目录。
   依据：该根已在 `.gitignore` 中、不进入任何取数/回测/展示链路；`_staging/` 下已有 `backfill_20190917`、`research_rebuild_20261109`、`delisted_backfill_20261109`、`turnover_local_parts` 等按任务命名的先例。
   反例（已退役）：曾用 `data/local_store/_staging/`，因长在 `data/` 底下，不得不为它单开一条删除例外，等于削弱「`data/` 一律不删」。2026-11-10 已整体迁至仓库根，原路径不再使用，也不要再往里写。
+  续跑口径（2026-11-12 补）：可续跑任务的分块缓存落点必须**跨运行稳定**——代码内只留任务名、由 `staging_dir_for_store()` 运行时推导，不得带运行日或版本号；只有一次性产物才允许带日期。
+  依据：`factors/turnover_parts` 迁出实测——分块只在一次运行结束时才合并进正式表，续跑依赖同目录 `manifest.json` 的 `completed_parts`；目录名带运行日会让跨天中断的已抓分块全部作废、从零重抓，直接违反 DG-7。
 - **DG-6** 禁止在正式目录留下 `*_candidate.parquet`、`*.new`、`*.bak` 这类过渡文件。
   反例：过渡文件会被下一次取数按通配命中，半成品直接进入正式结论。
 - **DG-7** staging 内必须有可断点记录的进度文件（`progress.csv` / `progress.json` 或等价物）与失败清单（`failed.csv`）；中断后必须从断点续跑，禁止从零重跑。
