@@ -42,6 +42,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.backtest.costs.cost_model import CostModel  # noqa: E402
+from src.data.quality.fund_price_basis import filter_tradable  # noqa: E402
 
 STORE = PROJECT_ROOT / 'data' / 'local_store'
 QUOTES = STORE / 'quotes' / 'fund'
@@ -89,8 +90,13 @@ def load_etf_codes(equity_only: bool = True) -> tuple[list[str], dict]:
     return codes, names
 
 
-def load_panel(codes: list[str]) -> pd.DataFrame:
-    """返回长表 date/ts_code/adj_open/adj_close/amount。"""
+def load_panel(codes: list[str], pseudo_gate: bool = True) -> pd.DataFrame:
+    """返回长表 date/ts_code/adj_open/adj_close/amount。
+
+    ``pseudo_gate`` 默认开启：按 ``meta/anomalies`` 侧车剔除净值序列 / 占位桩 /
+    折算残留行（这些行没有可交易价格，`amount=0` 却会进复权收益）；
+    置 ``False`` 可复现旧口径做对照。
+    """
     factors = pl.read_parquet(FACTORS / 'fund_adj_factor.parquet').select(
         ['ts_code', 'trade_date', 'qfq_factor'])
     factors = factors.filter(pl.col('ts_code').is_in(codes))
@@ -104,6 +110,7 @@ def load_panel(codes: list[str]) -> pd.DataFrame:
             continue
         q = pl.read_parquet(path).select(
             ['date', 'ts_code', 'open', 'close', 'amount', 'volume'])
+        q = filter_tradable(q, STORE, code, enabled=pseudo_gate)
         q = q.with_columns(pl.col('date').cast(pl.Date).alias('trade_date'))
         f = factor_by_code.get((code,))
         if f is not None:
@@ -292,13 +299,13 @@ def run(pivot_close, pivot_open, pivot_amt, calendar, month_ends, k: int,
 
 def main(universe: str = 'equity', cost_mode: str = 'model',
          cost_round_trip: float = COST_ROUND_TRIP,
-         out_dir: Path | None = None) -> None:
+         out_dir: Path | None = None, pseudo_gate: bool = True) -> None:
     out_dir = Path(out_dir) if out_dir is not None else OUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     equity_only = universe == 'equity'
     codes, names = load_etf_codes(equity_only=equity_only)
     print(f'[backtest] 标的池={universe}，ETF 代码数: {len(codes)}，成本口径={cost_mode}')
-    panel = load_panel(codes)
+    panel = load_panel(codes, pseudo_gate=pseudo_gate)
     print(f'[backtest] 面板行数: {panel.height if hasattr(panel, "height") else len(panel)}')
 
     # 复权收益合理性检查
@@ -403,5 +410,8 @@ if __name__ == '__main__':
                         help=f'--cost-mode const 时的完整往返费率，默认 {COST_ROUND_TRIP}')
     parser.add_argument('--out-dir', default=None,
                         help=f'产物目录，默认 {OUT_DIR}')
+    parser.add_argument('--no-pseudo-gate', dest='pseudo_gate', action='store_false',
+                        help='关闭基金伪数据行级门控，复现旧口径（对照用）')
     args = parser.parse_args()
-    main(args.universe, args.cost_mode, args.cost_round_trip, args.out_dir)
+    main(args.universe, args.cost_mode, args.cost_round_trip, args.out_dir,
+         args.pseudo_gate)

@@ -72,6 +72,10 @@ from src.data.adj_factor_calculator import calc_dividend_event_factor
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.quality.anomalies import iter_anomalies
 from src.data.quality.code_migration import load_entity_index
+from src.data.quality.fund_price_basis import (
+    PseudoRegistryError,
+    load_spans,
+)
 from src.data.quality.suspension_union import SuspensionUnion, load_suspension_union
 from src.data.quote_schema import QUOTE_COLUMNS, assert_formal_quote_glob_schema
 from src.data.staging import staging_dir_for_store
@@ -293,6 +297,7 @@ STRUCTURAL_REASONS: dict[str, str] = {
     'structural_date_anomaly': '当日命中已知源端异常行',
     'structural_pre_1993_break': '1991-1992 拆细比例未确认，1993 年前不参与回测',
     'structural_placeholder_quote_full': '整只占位桩（全部行为 close=1.0/volume=0/amount=0），不计入 full',
+    'structural_pseudo_quote_row': '当日命中基金伪数据行（净值序列 / 占位桩 / 折算残留）',
 }
 
 TEMPORAL_REASONS: dict[str, str] = {
@@ -442,6 +447,13 @@ class EligibilityEngine:
     #: 全部行都是占位，只影响 ``full`` 视图；standard/strict 仍由
     #: ``structural_placeholder_quote`` 剔除，两者同源同一张清单。
     _placeholder_full_codes: frozenset[str] = frozenset()
+    #: 基金伪数据行级门控（``fund_pseudo_registry.json`` 的区间类别）：按
+    #: ``(ts_code) -> {trade_date.toordinal()}`` 展开。默认开启（数据正确性
+    #: 优先），``gate_pseudo_rows=False`` 复现旧口径做对照。
+    _pseudo_ordinals: dict[str, frozenset[int]] = field(default_factory=dict)
+    #: 门控装载状态：``on`` / ``off`` / ``missing:<原因>``，随索引一起可见，
+    #: 避免「侧车缺失 ⇒ 静默当成全是真实数据」。
+    pseudo_gate_status: str = 'off'
 
     @property
     def close_fund_dividend_pending(self) -> bool:
@@ -462,8 +474,10 @@ class EligibilityEngine:
         include_suspected_st: bool = False,
         close_fund_dividend_pending: bool | None = None,
         close_fund_dividend_pending_scope: str | None = None,
+        gate_pseudo_rows: bool = True,
     ) -> None:
         self.root = Path(root) if root else DEFAULT_ROOT
+        self.gate_pseudo_rows = gate_pseudo_rows
         self.exclude_st = exclude_st
         self.include_suspected_st = include_suspected_st
         scope = _resolve_fund_pending_scope(
@@ -490,6 +504,7 @@ class EligibilityEngine:
         self._load_factor_stats()
         self._load_dividend_flags()
         self._load_anomaly_lists()
+        self._load_pseudo_gate()
         self._load_anomaly_records()
         self._load_st()
         self._finalize_structural()
@@ -886,6 +901,36 @@ class EligibilityEngine:
                 )['ts_code'].to_list()
             )
 
+    def _load_pseudo_gate(self) -> None:
+        """装载基金伪数据行级门控（``meta/anomalies`` 两份侧车）。
+
+        ``placeholder_quote_codes.csv`` 只给区间、``fund_pseudo_registry.json``
+        给逐区间类别，两者缺任一都无法判定「这一行属于哪一类伪数据」。侧车
+        缺失时不抛错也不静默放行，而是把状态记进 :attr:`pseudo_gate_status`
+        （``missing:<原因>``）并在日志里报 error，供调用方核对；判定接口本身
+        （:mod:`src.data.quality.fund_price_basis`）对这种缺失是直接抛错的。
+        """
+        if not self.gate_pseudo_rows:
+            self.pseudo_gate_status = 'off'
+            self._pseudo_ordinals = {}
+            return
+        try:
+            spans = load_spans(self.root)
+        except PseudoRegistryError as exc:
+            self.pseudo_gate_status = f'missing:{exc}'
+            self._pseudo_ordinals = {}
+            logger.error(f'基金伪数据门控未装载，按旧口径放行: {exc}')
+            return
+        ordinals: dict[str, set[int]] = {}
+        for code, items in spans.items():
+            days: set[int] = set()
+            for span in items:
+                start = span.start.toordinal()
+                days.update(range(start, span.end.toordinal() + 1))
+            ordinals[code] = days
+        self._pseudo_ordinals = {c: frozenset(d) for c, d in ordinals.items()}
+        self.pseudo_gate_status = 'on'
+
     def _load_stale_list(self, stale: pl.DataFrame | None) -> None:
         if stale is None:
             return
@@ -1165,6 +1210,12 @@ class EligibilityEngine:
             return False, ['unknown_code']
         d = _as_date(trade_date)
         o = d.toordinal()
+
+        # 基金伪数据行级门控：净值序列 / 占位桩 / 折算残留三类行都没有可交易价格，
+        # 任一档位都不得准入。清单装载失败时 ``_pseudo_ordinals`` 为空、走旧口径，
+        # 状态见 ``pseudo_gate_status``。
+        if info.data_type == 'fund' and o in self._pseudo_ordinals.get(info.ts_code, ()):
+            return False, ['structural_pseudo_quote_row']
 
         if tier == 'full':
             # 整只占位桩：文件全部行都是 close=1.0/volume=0/amount=0，

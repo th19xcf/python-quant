@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import math
+import os
+import sys
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -25,6 +27,11 @@ import numpy as np
 import polars as pl
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.data.quality.fund_price_basis import filter_tradable  # noqa: E402
+
 STORE_ROOT = ROOT / 'data' / 'local_store'
 HORIZONS = (0, 1, 5, 20)
 EST_START = -120
@@ -44,13 +51,30 @@ class PriceSeries:
     adj_close: np.ndarray
 
 
+def pseudo_gate_enabled() -> bool:
+    """基金伪数据行级门控开关，默认开启。
+
+    ``FUND_PSEUDO_GATE=0`` 关闭，用于复现旧口径做对照。
+    """
+    raw = os.environ.get('FUND_PSEUDO_GATE', '1').strip().lower()
+    return raw not in ('0', 'false', 'off', 'no')
+
+
 def load_price_series(ts_code: str, kind: str = 'stock') -> PriceSeries | None:
-    """从本地列存读取后复权价格序列，缺失或有效样本不足时返回 None。"""
+    """从本地列存读取后复权价格序列，缺失或有效样本不足时返回 None。
+
+    ``kind='fund'`` 时按 ``meta/anomalies`` 侧车剔除伪数据行（净值序列 /
+    占位桩 / 折算残留）：这些行的 ``open/close`` 不是成交价，进了收益序列会
+    直接污染事件窗的均值与方差。侧车缺失时由门控模块抛错，不静默放行。
+    """
     symbol, market = ts_code.split('.')[0], ts_code.split('.')[-1].lower()
     path = STORE_ROOT / 'quotes' / kind / market / f'{symbol}.{market.upper()}.parquet'
     if not path.exists():
         return None
     frame = pl.read_parquet(path, columns=['date', 'open', 'close', 'hfq_factor'])
+    if kind == 'fund':
+        frame = filter_tradable(frame, STORE_ROOT, ts_code,
+                                enabled=pseudo_gate_enabled())
     frame = frame.drop_nulls(['date', 'open', 'close', 'hfq_factor'])
     frame = frame.filter((pl.col('open') > 0) & (pl.col('close') > 0))
     if frame.height < 40:
