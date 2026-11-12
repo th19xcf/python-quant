@@ -43,4 +43,9 @@ jobs:
       # 不写这条时 pyproject 的 fail_under=63 在 CI 上会留出 4.65pp 的静默回落空间；
       # pyproject 的 63 仍是本地门槛，保持不动（命令行参数优先级高于配置文件）。
       - name: Test with coverage gate
-        run: poetry run pytest --cov=src --cov-report=term-missing --cov-fail-under=66
+        run: poetry run pytest --cov=src --cov-report=term-missing --cov-report=json:coverage.json --cov-fail-under=66
+      # 模块级门槛（V-13）：全局 66 不动，关键模块另设 ≥85% 独立门槛，
+      # 防止「整体达标、关键链路裸奔」。门槛值登记在 pyproject.toml
+      # [tool.coverage-gates]，本地与 CI 用同一个脚本判定。
+      - name: Module coverage gates
+        run: poetry run python tools/check_module_coverage.py --coverage-json coverage.json

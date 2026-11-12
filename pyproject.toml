@@ -276,3 +276,14 @@ source = ["src"]
 fail_under = 63
 show_missing = true
 skip_covered = true
+
+# 模块级覆盖率门槛（V-13）：全局 fail_under（本地 63 / CI 66）保持不变，
+# 关键链路另设 ≥85% 的独立门槛，避免被其它目录的高覆盖率稀释。
+# 由 tools/check_module_coverage.py 读取并判定，CI 与本地同一条命令。
+# 数值只允许上调：达标的模块按实测值登记，未达标的模块不得为了让门禁变绿而调低。
+[tool.coverage-gates]
+modules = { "src/risk" = 85 }
+# 2026-11-12 实测（本地 2736 passed，pytest --cov=src 口径）：
+#   src/risk               478/503  = 95.03%  → 已登记 85
+#   src/backtest          1850/2192 = 84.40%  → 差 14 行到位，待决（不登记，避免门禁立刻红）
+#   src/data/local_store  1832/3034 = 60.38%  → 差 747 行，待决
