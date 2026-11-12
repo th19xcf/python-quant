@@ -114,11 +114,14 @@ def human(n: Any) -> str:
 # 判定口径（硬约束，不靠目录名 / 字段缺失去猜）：
 #   ① manifest 必须自己写 ``"artifact_kind": "non_dataset"``；
 #   ② 三条守门逐条实测，全过才算「非数据集产物」，任一条不过即仍旧计入语义未登记：
-#      ① 无读取方      —— 全仓 src/ 与 tools/ 的 .py 里没有该路径/该目录的字面量；
-#      ② 不在链路上    —— src/ 与 config/ 的 py/json/yaml/toml 里没有该字面量；
-#      ③ 权威清单登记  —— docs/数据权威路径清单.md 存在同时含「非数据资产」与本路径的行。
-# 说明：① 用严格字面量匹配，不做「像不像读点」的猜测，宁可错杀不可放水——被备份/
-# 镜像清单提到的路径本就在备份链路里，按本条不得标为非数据集。
+#      ① 无数据消费读取 —— src/ 与 tools/ 的 .py 里没有该路径/该目录的「消费型」字面量；
+#         备份/镜像工具为登记或搬运路径而出现的字面量不算消费（见 MIRROR_TOOL_PATHS）；
+#      ② 不在链路上      —— src/ 与 config/ 的 py/json/yaml/toml 里没有该字面量；
+#      ③ 权威清单登记    —— docs/数据权威路径清单.md 的「非数据资产」小节内，有按路径精确
+#         匹配的登记行（全文出现关键词不算）；目录级 manifest 比目录，单文件比去后缀路径；
+#      ④ 已声明用途      —— 类别必填项：manifest 的 non_dataset.purpose 非空。
+# 说明：① 用严格字面量匹配，不做「像不像读点」的猜测；只把「备份/镜像类工具的路径
+# 登记」显式排除，且必须在输出里列出被排除的命中行，宁可错杀不可放水。
 NON_DATASET_KIND = 'non_dataset'
 NON_DATASET_DOC = Path('docs') / '数据权威路径清单.md'
 NON_DATASET_DOC_TAG = '非数据资产'
@@ -126,6 +129,19 @@ CODE_DIRS = ('src', 'tools')
 CODE_EXTS = ('.py',)
 CHAIN_DIRS = ('src', 'config')
 CHAIN_EXTS = ('.py', '.json', '.yaml', '.yml', '.toml')
+#: 备份 / 镜像 / 跨机同步工具：命中这些文件的字面量只是「路径登记」，不是数据消费。
+MIRROR_TOOL_PATHS = frozenset({
+    'tools/backup_critical_assets.py',
+    'tools/sync_daily_non_git.py',
+})
+
+# 已知误伤（记录在案，按裁决不细化到「只认真读行」）：
+# ``meta/code_migration_manifest.json`` 的 ① 判 FAIL，命中行是 ``code_migration.py:27`` 的
+# 模块文档字符串（列举产出物）与 ``:51`` 的 ``MANIFEST_REL`` 路径常量，二者都不是「读该
+# manifest 的内容」；该文件真实的数据读取是 ``:115-126 load_mapping`` 读
+# ``meta/code_migration.parquet``。所以它不是「无读取方的操作产物」，而是「真数据集的配套
+# manifest」，处理方式是补语义而不是剔除。保留误伤的理由：误差方向是「少剔除」，不会让
+# 未登记数虚假变小。
 
 
 class TextCache:
@@ -187,6 +203,34 @@ def _scan_tokens(root: Path, dirs: Iterable[str], exts: Iterable[str],
     return hits
 
 
+def _non_dataset_rows(doc_text: str) -> list[tuple[int, str]]:
+    """取出「非数据资产」小节内的表格行 (行号, 原文)；小节外的行一律不算。"""
+    rows: list[tuple[int, str]] = []
+    in_section = False
+    for lineno, line in enumerate(doc_text.splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            in_section = NON_DATASET_DOC_TAG in stripped
+            continue
+        if in_section and stripped.startswith('|'):
+            rows.append((lineno, stripped))
+    return rows
+
+
+def _registered_path_token(manifest_rel: str) -> str:
+    """登记行里应当出现的路径：目录级 manifest 取目录，单文件 manifest 取去掉 .[manifest.]json 的路径。"""
+    path = Path(manifest_rel)
+    if path.name == 'manifest.json':
+        return path.parent.as_posix()
+    name = path.name
+    for suffix in ('.manifest.json', '.json'):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    parent = path.parent.as_posix()
+    return name if parent == '.' else f'{parent}/{name}'
+
+
 def verify_non_dataset(root: Path, manifest_rel: str, data: dict[str, Any],
                        cache: TextCache) -> NonDatasetCheck:
     """按 manifest 自己的声明核三条守门；未声明则原样返回（不猜）。"""
@@ -198,16 +242,23 @@ def verify_non_dataset(root: Path, manifest_rel: str, data: dict[str, Any],
     check.purpose = str(declared.get('purpose', '')).strip() or None
 
     parent = Path(manifest_rel).parent.as_posix()
+    name = Path(manifest_rel).name
     tokens = [manifest_rel]
-    if Path(manifest_rel).name == 'manifest.json' and parent.count('/') >= 1:
+    if name == 'manifest.json' and parent.count('/') >= 1:
         tokens.append(parent)   # 目录级 manifest 按目录判定，避免只查一个文件名
+    else:
+        tokens.append(name)     # 单文件 manifest 再按文件名判一次，兼容 Path('meta')/'x.json' 拼法
 
     # 扫描根必须是仓库根：src/ 与 tools/ 都在仓库根下，不在 data/local_store 里。
     repo = root.parents[1] if len(root.parents) > 1 else root
     hits = _scan_tokens(repo, CODE_DIRS, CODE_EXTS, tokens, cache)
-    check.gate_pass['① 无读取方'] = not hits
-    check.gate_evidence['① 无读取方'] = ('零引用' if not hits
-                                         else f'{len(hits)} 处：' + '；'.join(hits[:5]))
+    mirror = [h for h in hits if h.split(':')[0] in MIRROR_TOOL_PATHS]
+    consume = [h for h in hits if h.split(':')[0] not in MIRROR_TOOL_PATHS]
+    check.gate_pass['① 无数据消费读取'] = not consume
+    detail = '零引用' if not consume else f'{len(consume)} 处：' + '；'.join(consume[:5])
+    if mirror:
+        detail += f'（另 {len(mirror)} 处为备份/镜像登记，不计入：' + '；'.join(mirror[:5]) + '）'
+    check.gate_evidence['① 无数据消费读取'] = detail
 
     chain = _scan_tokens(repo, CHAIN_DIRS, CHAIN_EXTS, tokens, cache)
     check.gate_pass['② 不在取数/回测/展示链路'] = not chain
@@ -215,16 +266,24 @@ def verify_non_dataset(root: Path, manifest_rel: str, data: dict[str, Any],
                                                       else f'{len(chain)} 处：' + '；'.join(chain[:5]))
 
     doc = repo / NON_DATASET_DOC
+    token = _registered_path_token(manifest_rel)
+    needles = (f'`data/local_store/{token}/`', f'`data/local_store/{token}`')
     line_no = None
-    if doc.is_file():
-        for idx, line in enumerate(cache.text(doc).splitlines(), 1):
-            if NON_DATASET_DOC_TAG in line and any(tok in line for tok in tokens):
-                line_no = idx
-                break
+    rows = _non_dataset_rows(cache.text(doc)) if doc.is_file() else []
+    for no, row in rows:
+        if any(needle in row for needle in needles):
+            line_no = no
+            break
     check.gate_pass['③ 权威清单登记为非数据资产'] = line_no is not None
     check.gate_evidence['③ 权威清单登记为非数据资产'] = (
-        f'{NON_DATASET_DOC.as_posix()}:L{line_no}' if line_no is not None
-        else f'{NON_DATASET_DOC.as_posix()} 无同时含「{NON_DATASET_DOC_TAG}」与本路径的登记行')
+        f'{NON_DATASET_DOC.as_posix()}:L{line_no}（「{NON_DATASET_DOC_TAG}」节内按路径精确匹配）'
+        if line_no is not None
+        else f'「{NON_DATASET_DOC_TAG}」节内无 `data/local_store/{token}` 的登记行（全文关键词命中不算）')
+
+    # 类别必填项：非数据集产物必须在 manifest 里写清用途，否则无法判断「它是什么操作产物」。
+    check.gate_pass['④ 已声明用途（non_dataset 必填）'] = bool(check.purpose)
+    check.gate_evidence['④ 已声明用途（non_dataset 必填）'] = (
+        check.purpose or 'non_dataset.purpose 缺失，按类别必填项判不合格')
     return check
 
 
