@@ -40,12 +40,16 @@ LATEST_KEYS: tuple[str, ...] = (
     'is_sample', 'ref_price_basis', 'execution_basis', 'notes', 'tiers', 'items',
 )
 
-#: 单条推荐字段全集
+#: 单条推荐字段全集（= ``models.OUTPUT_COLUMNS`` 的导出列 + 快照侧补充字段）
 ITEM_KEYS: tuple[str, ...] = (
     'trade_date', 'ts_code', 'name', 'name_source', 'direction', 'disposition',
     'target_weight_pct', 'shares', 'ref_price', 'horizon', 'validity_days',
     'confidence', 'top_factors', 'risk_notes', 'industry', 'industry_source',
-    'score', 'score_percentile', 'tier', 'tier_label', 'rank', 'signal_date',
+    'score', 'score_percentile',
+    # T 日涨停标注：由 Recommendation.to_row() 产出、属单条推荐输出项，
+    # 不是 tiers 汇总字段，也不在顶层
+    'limit_up_risk', 'limit_up_basis',
+    'tier', 'tier_label', 'rank', 'signal_date',
     'earliest_exec_date', 'exec_status', 'action', 'actionable',
     'defer_reason', 'defer_until',
 )

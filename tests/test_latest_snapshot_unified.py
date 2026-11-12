@@ -20,7 +20,12 @@ from src.advice.latest_snapshot import (
     build_latest_payload,
     load_latest_snapshot,
 )
-from src.advice.models import AdviceResult, Recommendation, TierAdvice
+from src.advice.models import (
+    OUTPUT_COLUMNS,
+    AdviceResult,
+    Recommendation,
+    TierAdvice,
+)
 from src.core.usecases.get_daily_recommendations import (
     DailyRecommendationBundle,
     _to_dto,
@@ -104,6 +109,19 @@ def _compare(report: list[str], left: dict, right: dict,
         report.append(f'  差异 {key}: CLI={flat_left.get(key, "<缺失>")!r} '
                       f'GUI={flat_right.get(key, "<缺失>")!r}')
     return len(keys), len(keys) - len(diffs), len(diffs)
+
+
+# ------------------------------------------------- schema 字段集完整性
+def test_item_keys_cover_every_export_column():
+    """``ITEM_KEYS`` 必须覆盖推荐导出的每一列。
+
+    ``limit_up_risk`` / ``limit_up_basis`` 由 ``Recommendation.to_row()`` 产出、
+    已进 ``OUTPUT_COLUMNS``，经 ``build_latest_payload`` 原样写进 ``items[]``；
+    旧集合没跟上时快照 schema 就少两个输出项，读侧按 ``ITEM_KEYS`` 判会
+    把真实字段当成未知键。
+    """
+    missing = sorted(set(OUTPUT_COLUMNS) - set(ITEM_KEYS))
+    assert not missing, f'ITEM_KEYS 缺导出列：{missing}'
 
 
 # ------------------------------------------------- CLI 与 GUI 逐字段比对

@@ -177,6 +177,22 @@ def test_golden_snapshot_matches() -> None:
     assert not report, f"golden 快照不一致：\n{report}"
 
 
+def test_baseline_input_contract_tracks_registry() -> None:
+    """基线里的 ``input_contract`` 必须等于当前引擎的实际摘要。
+
+    该字段是 ``describe_contracts()`` 的产物，只随契约注册表变；注册表改了
+    基线没重生成即在此失败（``e868a13`` 把财务契约拆成 valuation/shares/
+    income/balance 四张表后漏重生成，正是这条红）。
+    """
+    actual = _field_digests(_capture())
+    stale = {
+        scene: (fields["input_contract"], actual[scene]["input_contract"])
+        for scene, fields in sorted(_baseline()["fields"].items())
+        if fields["input_contract"] != actual[scene]["input_contract"]
+    }
+    assert not stale, f'基线 input_contract 已过期（expected, actual）：{stale}'
+
+
 def test_golden_is_deterministic() -> None:
     """同一 commit 连跑两次字段摘要必须一致（不依赖哈希随机化）。"""
     assert _field_digests(_capture()) == _field_digests(_capture())
