@@ -247,10 +247,16 @@ def test_real_registry_spans() -> None:
     assert fpb.is_pseudo(root, '163503.SZ', _D(2007, 10, 16),
                          kinds=('converted_leftover',))
     assert not fpb.is_pseudo(root, '163503.SZ', _D(2007, 10, 17))
-    # 全库合计必须等于 CSV 登记的 23,038 行（侧车覆盖 232 只，不止 5 只焦点基金）
+    # 510070.SH：最后真实成交 2020-06-24、文件止于 2020-08-12，尾段 33 行 close≡2.177
+    # 为退市后结转（非真实停牌），2026-11-12 已补登
+    assert fpb.is_pseudo(root, '510070.SH', _D(2020, 7, 1))
+    # 全库合计 = CSV 登记的 25,770 行（2026-11-12 补登 130 段 / 2,732 行后；
+    # 侧车覆盖不止 5 只焦点基金），并与 registry 自述的 registered_rows_after 对账
     spans_all = fpb.load_spans(root)
     total = sum(s.rows for spans in spans_all.values() for s in spans)
-    assert total == 23038, total
+    assert total == 25770, total
+    registry = json.loads((root / 'meta' / 'anomalies' / fpb.JSON_NAME).read_text(encoding='utf-8'))
+    assert registry['registered_rows_after'] == total, (registry['registered_rows_after'], total)
     # 5 只焦点基金合计 2,748 行（G-062~G-066 的行级精确复算值）
     focus = ('160311.SZ', '160314.SZ', '160603.SZ', '163302.SZ', '163503.SZ')
     focus_rows = sum(s.rows for code in focus for s in spans_all.get(code, []))
