@@ -19,6 +19,7 @@ from src.advice.latest_snapshot import (
     LATEST_KEYS,
     build_latest_payload,
     load_latest_snapshot,
+    normalize_latest_payload,
 )
 from src.advice.models import (
     OUTPUT_COLUMNS,
@@ -232,6 +233,21 @@ def test_legacy_snapshot_degrades_instead_of_raising(tmp_path):
     assert bundle.items[1].actionable is False
     assert any('补齐' in warning or '缺' in warning
                for warning in bundle.warnings)
+
+
+def test_unparseable_signal_warns_instead_of_silent_pass():
+    """signal 解析不了时必须留 warning；改前是裸 ``except: pass``，本用例会红。"""
+    from loguru import logger
+
+    messages: list[str] = []
+    handler_id = logger.add(lambda m: messages.append(m.record['message']), level='WARNING')
+    try:
+        payload = normalize_latest_payload({'signal_date': '2026-13-99', 'items': []})
+    finally:
+        logger.remove(handler_id)
+
+    assert payload['earliest_exec_date'] is None
+    assert any('无法解析为日期' in m for m in messages), messages
 
 
 # ------------------------------------------------- 延后票不得显示为可下单

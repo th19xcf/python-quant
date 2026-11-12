@@ -703,8 +703,8 @@ def backfill_turnover(quote_store: Any, root: Path | str | None = None, *,
         for stale in parts_dir.glob(_PARTS_GLOB):
             try:
                 stale.unlink()
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.warning(f'[turnover] 清理残留分块失败，该分块会被重新计算: {stale}: {exc}')
 
     started = time.perf_counter()
     rows_added = 0
@@ -772,8 +772,8 @@ def backfill_turnover(quote_store: Any, root: Path | str | None = None, *,
     for part in parts:
         try:
             part.unlink()
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning(f'[turnover] 合并后删除分块失败，需人工清理: {part}: {exc}')
 
     logger.info(
         f'[turnover] 完成：{len(completed_codes)} 只 / {rows_added:,} 行新增，'

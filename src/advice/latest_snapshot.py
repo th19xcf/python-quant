@@ -17,6 +17,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from src.advice.config import OBSERVE_ONLY_TIERS
 from src.advice.daily_store import (
     EXECUTION_BASIS,
@@ -215,8 +217,8 @@ def _normalize_dates(payload: dict[str, Any], warnings: list[str]) -> None:
         try:
             earliest_day, default_basis = next_trading_day(
                 date.fromisoformat(str(signal)[:10]))
-        except ValueError:
-            pass
+        except ValueError as exc:
+            logger.warning(f'旧快照 signal={signal!r} 无法解析为日期，earliest_exec_date 未能推导: {exc}')
         else:
             earliest = earliest_day.isoformat()
             basis = basis or default_basis

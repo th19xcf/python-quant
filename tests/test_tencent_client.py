@@ -16,6 +16,7 @@ import pytest
 import src.data.tencent.__main__ as cli
 import src.data.tencent.client as client_module
 import src.data.tencent.daily_fill as fill_module
+from src.data import rate_limit as rate_limit_module
 from src.data.tencent.client import (
     MAX_MINUTE_BARS,
     RateLimiter,
@@ -51,7 +52,7 @@ def test_rate_limiter_rejects_negative_interval() -> None:
 
 
 def test_rate_limiter_retries_then_succeeds(monkeypatch) -> None:
-    monkeypatch.setattr(client_module.time, 'sleep', lambda _seconds: None)
+    monkeypatch.setattr(rate_limit_module.time, 'sleep', lambda _seconds: None)
     calls: list[int] = []
 
     def flaky() -> str:
@@ -66,7 +67,7 @@ def test_rate_limiter_retries_then_succeeds(monkeypatch) -> None:
 
 
 def test_rate_limiter_raises_last_error(monkeypatch) -> None:
-    monkeypatch.setattr(client_module.time, 'sleep', lambda _seconds: None)
+    monkeypatch.setattr(rate_limit_module.time, 'sleep', lambda _seconds: None)
 
     def always_fail() -> str:
         raise TencentError('持续失败')

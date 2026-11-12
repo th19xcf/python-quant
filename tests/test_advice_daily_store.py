@@ -123,3 +123,22 @@ def test_usage_boundary_reads_replay_summary(tmp_path):
 
     empty = usage_boundary(tmp_path / 'missing')
     assert 'replay_summary.json' in empty['validation']
+
+
+def test_usage_boundary_warns_when_replay_summary_unreadable(tmp_path):
+    """回放摘要读不出来时必须留 warning；改前是裸 ``except: pass``，本用例会红。"""
+    from loguru import logger
+
+    path = tmp_path / 'reports' / 'advice' / 'backtest' / 'replay_summary.json'
+    path.parent.mkdir(parents=True)
+    path.write_text('{not json', encoding='utf-8')
+
+    messages: list[str] = []
+    handler_id = logger.add(lambda m: messages.append(m.record['message']), level='WARNING')
+    try:
+        text = usage_boundary(tmp_path)['validation']
+    finally:
+        logger.remove(handler_id)
+
+    assert 'replay_summary.json' in text, '读取失败仍要退回默认文案'
+    assert any('回放摘要读取失败' in m for m in messages), messages

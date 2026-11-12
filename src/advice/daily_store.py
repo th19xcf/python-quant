@@ -29,6 +29,8 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
+from loguru import logger
+
 from src.advice.models import (
     DIRECTION_AVOID,
     DIRECTION_BUY,
@@ -69,8 +71,8 @@ def usage_boundary(project_root: Path | None = None) -> dict[str, Any]:
             window = f'{start}~{end}' if start and end else ''
             validation = (f'3 个月回放净收益（{window}）：{returns}；'
                           '没有样本外 / walk-forward 组合验证')
-    except (OSError, ValueError, TypeError, KeyError):
-        pass
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        logger.warning(f'回放摘要读取失败，验证口径退回默认文案: {REPLAY_SUMMARY_REL}: {exc}')
     return {
         'confidence': ('0.30/0.40/0.25 因子权重合成的启发式分数，不是概率、'
                        '未经概率校准，不能解读为“赚钱概率”'),

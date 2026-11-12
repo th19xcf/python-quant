@@ -432,6 +432,63 @@ def test_subprocess_isolation_timeout_terminates_workers():
     logger.info(f"  [PASS] test_subprocess_isolation_timeout_terminates_workers  耗时={elapsed:.2f}s")
 
 
+def test_abort_process_pool_warns_on_terminate_and_join_failure():
+    """子进程收尾失败不得无声：终止/回收失败必须落 warning 并带 pid。
+
+    改前两处都是 ``logger.debug``，WARNING 级捕获不到，本用例会红。
+    """
+    fetcher = make_fetcher()
+
+    class _FakeProc:
+        pid = 4321
+
+        def is_alive(self):
+            return True
+
+        def terminate(self):
+            raise OSError('拒绝访问')
+
+        def join(self, timeout=None):
+            raise RuntimeError('回收超时')
+
+    class _FakePool:
+        _processes = {1: _FakeProc()}
+
+        def shutdown(self, wait=False, cancel_futures=False):
+            pass
+
+    fetcher._process_executor = _FakePool()
+    messages: list[str] = []
+    handler_id = logger.add(lambda m: messages.append(m.record['message']), level='WARNING')
+    try:
+        fetcher._abort_process_pool()
+    finally:
+        logger.remove(handler_id)
+
+    assert any('终止子进程失败' in m and 'pid=4321' in m for m in messages), messages
+    assert any('回收子进程失败' in m and 'pid=4321' in m for m in messages), messages
+
+
+def test_unregistered_source_does_not_raise_keyerror(monkeypatch):
+    """候选源未登记能力时按「非本地」处理，不得抛 KeyError。
+
+    改前 ``self._source_capabilities[s]['is_local']`` 是硬索引，缺键直接 KeyError。
+    """
+    fetcher = make_fetcher()
+    unregistered = MagicMock(name="Unregistered")
+    unregistered.name = "Unregistered"
+    unregistered.is_local = False
+
+    monkeypatch.setattr(fetcher, '_remote_sources_allowed', lambda: True)
+    monkeypatch.setattr(fetcher, '_local_day_file_path', lambda code: None)
+    monkeypatch.setattr(fetcher, '_get_candidate_sources', lambda data_type: [unregistered])
+    monkeypatch.setattr(fetcher, '_try_remote_sources_parallel', lambda *a, **k: pl.DataFrame())
+
+    out = fetcher._get_data_from_sources("stock", "000001.SZ", "20240101", "20241231", "1d")
+    assert out.is_empty()
+    assert fetcher._source_capabilities == {}, '不得为缺键源偷偷补登记'
+
+
 if __name__ == "__main__":
     logger.info("== data_fetcher 优化烟测 ==")
     test_local_priority_returns_immediately()

@@ -1175,11 +1175,15 @@ class DataFetcher:
         # 逐源记账：区分「源故障」与「源正常但无该标的数据」
         attempts = _SourceAttempts()
 
-        # 分离本地与远程
-        local_sources = [s for s in candidates if self._source_capabilities[s]['is_local']]
+        # 分离本地与远程：未登记能力的源按「非本地」处理，与 _get_candidate_sources
+        # 的 .get 口径一致，缺键不抛 KeyError
+        local_sources = [
+            s for s in candidates
+            if self._source_capabilities.get(s, {}).get('is_local', False)]
         # 远程开关关闭时直接清空远程候选：不调度、不发网络请求
         remote_sources = (
-            [s for s in candidates if not self._source_capabilities[s]['is_local']]
+            [s for s in candidates
+             if not self._source_capabilities.get(s, {}).get('is_local', False)]
             if remote_allowed else []
         )
 
@@ -1525,7 +1529,7 @@ class DataFetcher:
                     proc.terminate()
             # 兜底理由：单个进程终止失败不阻断其余
             except Exception as e:  # noqa: BLE001
-                logger.debug(f"终止子进程失败（忽略）: {e}")
+                logger.warning(f"终止子进程失败（pid={getattr(proc, 'pid', 'unknown')}）: {e}")
                 continue
 
         try:
@@ -1539,7 +1543,7 @@ class DataFetcher:
                 proc.join(timeout=2)
             # 兜底理由：join 失败不影响主流程
             except Exception as e:  # noqa: BLE001
-                logger.debug(f"回收子进程失败（忽略）: {e}")
+                logger.warning(f"回收子进程失败（pid={getattr(proc, 'pid', 'unknown')}）: {e}")
                 continue
 
         logger.warning("远程数据源子进程池因超时被终止并重建")

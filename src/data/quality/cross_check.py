@@ -19,13 +19,13 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from threading import Lock
 from typing import Any, Callable, Protocol, Sequence
 
 import polars as pl
 from loguru import logger
 
 from src.data.quality.checker import prepare_frame
+from src.data.rate_limit import RateLimiter
 from src.utils.code_converter import is_index_code
 
 #: 对拍字段；派生列（pre_close/change/pct_chg）由各源自行计算，口径差异大，不纳入
@@ -59,51 +59,6 @@ class RemoteAdapter(Protocol):
 
     def fetch(self, ts_code: str, start: date, end: date) -> pl.DataFrame:
         ...
-
-
-class RateLimiter:
-    """串行限速 + 指数退避。
-
-    空结果不重试（"无数据"不是瞬时错误），异常才按退避策略重试。
-    """
-
-    def __init__(self, min_interval: float, max_retries: int,
-                 backoff_base: float, max_delay: float) -> None:
-        if min_interval < 0:
-            raise ValueError('min_interval 不能为负')
-        self.min_interval = float(min_interval)
-        self.max_retries = int(max_retries)
-        self.backoff_base = float(backoff_base)
-        self.max_delay = float(max_delay)
-        self._last_call = 0.0
-        self._lock = Lock()
-
-    def _wait_turn(self) -> None:
-        with self._lock:
-            elapsed = time.monotonic() - self._last_call
-            if elapsed < self.min_interval:
-                time.sleep(self.min_interval - elapsed)
-            self._last_call = time.monotonic()
-
-    def call(self, func: Callable[..., pl.DataFrame], *args: Any, **kwargs: Any) -> pl.DataFrame:
-        last_error: Exception | None = None
-        for attempt in range(self.max_retries + 1):
-            self._wait_turn()
-            try:
-                return func(*args, **kwargs)
-            except Exception as exc:  # noqa: BLE001 - 第三方 SDK 异常类型不可预知
-                last_error = exc
-                if attempt >= self.max_retries:
-                    break
-                delay = min(self.max_delay, self.backoff_base * (2 ** attempt))
-                logger.warning(
-                    f'远程源请求失败（第 {attempt + 1} 次），{delay:.1f}s 后重试: {exc}')
-                time.sleep(delay)
-        # 防御性分支：循环结束后理论上必有异常记录；用显式异常替代 assert，
-        # 避免 python -O 下 assert 被剥离后 raise None 变成难以定位的错误。
-        if last_error is None:  # pragma: no cover
-            raise RuntimeError('重试结束但未记录到异常')
-        raise last_error
 
 
 class BaostockAdapter:

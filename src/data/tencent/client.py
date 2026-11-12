@@ -31,14 +31,14 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 import urllib.error
 import urllib.request
-from typing import Any, Callable
+from typing import Any
 
 import polars as pl
 from loguru import logger
 
+from src.data.rate_limit import RateLimiter
 from src.utils.code_converter import to_tdx_file_stem
 
 _DAILY_URL = (
@@ -100,54 +100,13 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
-class RateLimiter:
-    """跨线程共享的最小请求间隔 + 指数退避重试。
-
-    全局限速（而非每线程一份）才能真正确保对端看到的总 QPS 受控；
-    实测当前不限流，但接口策略随时可能变化。
-    """
-
-    def __init__(self, min_interval: float = 0.05, max_retries: int = 3,
-                 backoff_base: float = 1.0, max_backoff: float = 8.0) -> None:
-        if min_interval < 0:
-            raise ValueError('min_interval 不能为负')
-        self.min_interval = float(min_interval)
-        self.max_retries = int(max_retries)
-        self.backoff_base = float(backoff_base)
-        self.max_backoff = float(max_backoff)
-        self._lock = threading.Lock()
-        self._last_call = 0.0
-        self.calls = 0
-        self.retries = 0
-
-    def _wait_turn(self) -> None:
-        with self._lock:
-            elapsed = time.monotonic() - self._last_call
-            if elapsed < self.min_interval:
-                time.sleep(self.min_interval - elapsed)
-            self._last_call = time.monotonic()
-            self.calls += 1
-
-    def call(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        last_error: Exception | None = None
-        for attempt in range(self.max_retries + 1):
-            self._wait_turn()
-            try:
-                return func(*args, **kwargs)
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError,
-                    TencentError) as exc:
-                last_error = exc
-                if attempt >= self.max_retries:
-                    break
-                delay = min(self.max_backoff, self.backoff_base * (2 ** attempt))
-                self.retries += 1
-                logger.warning(
-                    f'[tencent] 请求失败（第 {attempt + 1} 次），{delay:.1f}s 后重试: {exc}')
-                time.sleep(delay)
-        # 防御性分支：显式异常替代 assert，避免 python -O 下被剥离。
-        if last_error is None:  # pragma: no cover
-            raise RuntimeError('重试结束但未记录到异常')
-        raise last_error
+def _tencent_limiter(min_interval: float, max_retries: int) -> RateLimiter:
+    """腾讯客户端的限速口径：只重试网络/解析类异常，日志前缀保留 ``[tencent]``。"""
+    return RateLimiter(
+        min_interval=min_interval, max_retries=max_retries,
+        retry_on=(urllib.error.URLError, TimeoutError, json.JSONDecodeError, TencentError),
+        log_prefix='[tencent] ',
+    )
 
 
 class TencentClient:
@@ -157,7 +116,7 @@ class TencentClient:
                  max_retries: int = 3, headers: dict[str, str] | None = None) -> None:
         self.timeout = float(timeout)
         self.headers = dict(_HEADERS if headers is None else headers)
-        self.limiter = RateLimiter(min_interval=min_interval, max_retries=max_retries)
+        self.limiter = _tencent_limiter(min_interval, max_retries)
         self._state_lock = threading.Lock()
         self._consecutive_failures = 0
 

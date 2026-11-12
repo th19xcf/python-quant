@@ -11,6 +11,10 @@
 - 北交所无批量利润表/现金流量表，按单票 ``stock_profit_sheet_by_report_em`` /
   ``stock_cash_flow_sheet_by_report_em`` 拉取；资产负债表有 ``stock_zcfz_bj_em``；
 - 估值走 ``stock_value_em`` 单票日频（约 2018 年起），线程池 + 全局限速；
+- 公告日映射落单表 ``meta/financials/ann_date_map.parquet``（键 ``(period, symbol)``），
+  逐报告期增量 upsert。该表**只是 2010+ 的公告日采集缓存**，不是三表公告日的
+  唯一来源：1990–2009 段的公告日只存在于三表自身的 ``ann_date`` 列，本表对
+  pre-2010 零覆盖（见 ``store.py`` 模块文档的 G-090 说明）；
 - 幂等 + 断点续跑：每期/每票先落 ``parts`` 分片，``progress.json`` 记进度，
   失败写 ``failed.csv``；重跑只补缺口。
 """
@@ -36,6 +40,7 @@ from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.financials import store
+from src.data.rate_limit import RateLimiter
 
 EM_DATACENTER_URL = 'https://datacenter-web.eastmoney.com/api/data/v1/get'
 REPORT_NAME_YJBB = 'RPT_LICO_FN_CPD'
@@ -122,26 +127,6 @@ class CollectResult:
     details: dict[str, Any] = field(default_factory=dict)
 
 
-class _RateLimiter:
-    """线程安全的最小请求间隔控制。"""
-
-    def __init__(self, min_interval: float) -> None:
-        self._min_interval = max(0.0, min_interval)
-        self._lock = threading.Lock()
-        self._last = 0.0
-
-    def wait(self) -> None:
-        if self._min_interval <= 0:
-            return
-        with self._lock:
-            now = time.monotonic()
-            sleep_for = self._min_interval - (now - self._last)
-            if sleep_for > 0:
-                time.sleep(sleep_for)
-                now += sleep_for
-            self._last = now
-
-
 class FinancialsCollector:
     """财务事实表采集器（幂等、可断点续跑）。"""
 
@@ -152,8 +137,8 @@ class FinancialsCollector:
         self.store_root = Path(store_root) if store_root is not None else store.DEFAULT_STORE_ROOT
         self.workers = max(1, int(workers))
         self.retry = retry or RetryPolicy()
-        self._valuation_limiter = _RateLimiter(valuation_interval)
-        self._request_limiter = _RateLimiter(request_interval)
+        self._valuation_limiter = RateLimiter(valuation_interval, log_prefix='[financials] 估值')
+        self._request_limiter = RateLimiter(request_interval, log_prefix='[financials] 接口')
         self._lock = threading.Lock()
         self._progress_lock = threading.Lock()
         self._progress = self._load_progress()
@@ -175,9 +160,6 @@ class FinancialsCollector:
 
     def _part_path(self, table: str, name: str) -> Path:
         return store.parts_dir(table, self.store_root) / f'{name}.parquet'
-
-    def _ann_path(self, period: str) -> Path:
-        return self.base_dir / 'ann_date' / f'{period}.parquet'
 
     def _load_progress(self) -> dict[str, Any]:
         path = self.progress_path
@@ -277,22 +259,29 @@ class FinancialsCollector:
                            ) -> dict[str, tuple[date, date | None, float | None]]:
         """按报告期拉取 ``SECURITY_CODE -> (NOTICE_DATE, UPDATE_DATE, 归母净利润)``。
 
-        结果落 ``ann_date/{period}.parquet``，重跑直接复用；``force=True`` 时
-        重新拉取（用于补齐旧缓存缺失的归母净利润列）。
+        先读合并表 ``meta/financials/ann_date_map.parquet``（键 ``(period, symbol)``）
+        里该报告期的切片，命中即复用；未命中则分页拉取东方财富接口，再按
+        ``(period, symbol)`` 增量 upsert 回同一张表。``force=True`` 时重新拉取
+        （用于补齐旧缓存缺失的归母净利润列）。断点仍记在
+        ``_staging/financials_parts_<YYYYMMDD>/progress.json`` 的 ``ann_dates``，
+        不写回 ``meta/financials/`` 正式层（DG-32）。
+
+        语义边界：本表是 **2010-03-31 起的公告日采集缓存**，不是三表公告日的
+        唯一来源；1990–2009 段的公告日只存在于 ``income.parquet`` /
+        ``balance.parquet`` / ``cashflow.parquet`` 自身的 ``ann_date`` 列，
+        本表对 pre-2010 零覆盖。
         """
         period = period_end.strftime('%Y-%m-%d')
-        path = self._ann_path(period_end.strftime('%Y%m%d'))
-        if path.exists():
-            frame = pl.read_parquet(path)
-            has_parent = 'parent_net_profit' in frame.columns
-            # 旧缓存可能缺归母净利润列，此时即使未 force 也要重拉补齐
-            if not force and has_parent:
-                return {
-                    str(row['symbol']): (
-                        row['ann_date'], row['update_date'],
-                        row.get('parent_net_profit'))
-                    for row in frame.to_dicts()
-                }
+        cached = store.read_ann_date_map(period_end, self.store_root)
+        has_parent = 'parent_net_profit' in cached.columns
+        # 旧缓存可能缺归母净利润列，此时即使未 force 也要重拉补齐
+        if not force and not cached.is_empty() and has_parent:
+            return {
+                str(row['symbol']): (
+                    row['ann_date'], row['update_date'],
+                    row['parent_net_profit'])
+                for row in cached.to_dicts()
+            }
 
         rows: list[dict[str, Any]] = []
         page = 1
@@ -329,17 +318,19 @@ class FinancialsCollector:
             return {}
 
         frame = pl.DataFrame({
+            'period': pl.Series([period_end] * len(rows), dtype=pl.Date),
             'symbol': [str(r.get('SECURITY_CODE') or '').zfill(6) for r in rows],
             'ann_date': [store.as_date(r.get('NOTICE_DATE')) for r in rows],
             'update_date': [store.as_date(r.get('UPDATE_DATE')) for r in rows],
             'parent_net_profit': [to_float(r.get('PARENT_NETPROFIT')) for r in rows],
         })
         frame = frame.filter(pl.col('symbol') != '').unique(
-            subset=['symbol'], keep='last').sort('symbol')
-        write_parquet_atomic(frame, path, compression='zstd', statistics=True)
+            subset=['period', 'symbol'], keep='last').sort('symbol')
+        total = store.upsert_ann_date_map(frame, self.store_root)
         self._mark_done('ann_dates', period_end.strftime('%Y%m%d'))
         self._save_progress()
-        logger.info(f'[financials] 公告日映射 {period}: {frame.height:,} 只')
+        logger.info(f'[financials] 公告日映射 {period}: {frame.height:,} 只'
+                    f'（合并表 {total:,} 行）')
         return {
             str(row['symbol']): (row['ann_date'], row['update_date'],
                                  row['parent_net_profit'])

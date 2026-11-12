@@ -256,8 +256,9 @@ def load_archived_recommendations(trade_date: Any,
     generated_at = datetime.now()
     try:
         generated_at = datetime.fromisoformat(str(payload.get('generated_at')))
-    except (TypeError, ValueError):
-        pass
+    except (TypeError, ValueError) as exc:
+        logger.warning(f'[usecase] 归档快照 generated_at 解析失败，按当前时间处理: '
+                       f'{payload.get("generated_at")!r}: {exc}')
     return DailyRecommendationBundle(
         items=items, trade_date=parsed, generated_at=generated_at,
         data_lag_days=0, equity=float(payload.get('equity') or 1_000_000.0),
@@ -284,8 +285,9 @@ def _load_snapshot(path: Path, horizon: str, equity: float) -> DailyRecommendati
     generated_at = datetime.now()
     try:
         generated_at = datetime.fromisoformat(str(payload.get('generated_at')))
-    except (TypeError, ValueError):
-        pass
+    except (TypeError, ValueError) as exc:
+        logger.warning(f'[usecase] 快照 generated_at 解析失败，按当前时间处理: '
+                       f'{payload.get("generated_at")!r}: {exc}')
     lag = (date.today() - parsed_date).days if parsed_date else 0
     warnings: list[str] = list(payload.get('load_warnings') or [])
     if lag > 1:

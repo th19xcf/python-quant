@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from datetime import date
 
@@ -11,6 +12,7 @@ import pandas as pd
 import polars as pl
 import pytest
 
+from src.data import rate_limit
 from src.data.financials import collector, store
 from src.data.financials.collector import (
     FinancialsCollector,
@@ -20,6 +22,110 @@ from src.data.financials.collector import (
     periods_between,
     statutory_deadline,
 )
+
+
+def test_collector_shares_single_rate_limiter_implementation() -> None:
+    """财务采集不得再自带限流实现；间隔默认值（0.15 / 0.25 秒）保持不变。"""
+    assert collector.RateLimiter is rate_limit.RateLimiter
+    params = inspect.signature(FinancialsCollector.__init__).parameters
+    assert params['valuation_interval'].default == 0.15
+    assert params['request_interval'].default == 0.25
+
+
+# ----------------------------------------------------------------------
+# 公告日映射：单表 + 逐期 upsert
+# ----------------------------------------------------------------------
+class _FakeResponse:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, object]:
+        return {'success': True, 'result': {'pages': 1, 'data': self._rows}}
+
+
+def _ann_row(code: str, notice: str, profit: float = 1.0e8) -> dict[str, object]:
+    return {'SECURITY_CODE': code, 'NOTICE_DATE': notice,
+            'UPDATE_DATE': '2026-10-31', 'PARENT_NETPROFIT': profit}
+
+
+def test_ann_date_map_upsert_keeps_other_periods(tmp_path) -> None:
+    first = pl.DataFrame({
+        'period': [date(2025, 3, 31), date(2025, 3, 31)],
+        'symbol': ['600519', '000001'],
+        'ann_date': [date(2025, 4, 29), date(2025, 4, 28)],
+        'update_date': [date(2026, 4, 30), date(2026, 4, 30)],
+        'parent_net_profit': [1.0, 2.0],
+    })
+    assert store.upsert_ann_date_map(first, tmp_path) == 2
+
+    second = pl.DataFrame({
+        'period': [date(2025, 6, 30)],
+        'symbol': ['600519'],
+        'ann_date': [date(2025, 8, 29)],
+        'update_date': [date(2026, 8, 30)],
+        'parent_net_profit': [3.0],
+    })
+    assert store.upsert_ann_date_map(second, tmp_path) == 3
+
+    table = pl.read_parquet(store.ann_date_map_path(tmp_path))
+    assert table.columns == list(store.ANN_DATE_MAP_SCHEMA)
+    assert table.height == 3
+    assert table.select('period', 'symbol').is_duplicated().sum() == 0
+
+    # 同 (period, symbol) 重写为最新值，其余期次不动
+    replaced = second.with_columns(pl.lit(9.0).alias('parent_net_profit'))
+    assert store.upsert_ann_date_map(replaced, tmp_path) == 3
+    table = pl.read_parquet(store.ann_date_map_path(tmp_path))
+    hit = table.filter(pl.col('period') == date(2025, 6, 30))
+    assert hit['parent_net_profit'].to_list() == [9.0]
+    assert table.filter(pl.col('period') == date(2025, 3, 31)).height == 2
+
+
+def test_fetch_ann_date_map_writes_single_table_and_reuses_cache(
+        tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = [_ann_row('600519', '2025-10-30'), _ann_row('000001', '2025-10-28')]
+    calls: list[dict[str, object]] = []
+
+    def fake_get(_url: str, params: dict[str, object] | None = None, **_):
+        calls.append(dict(params or {}))
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr(collector.requests, 'get', fake_get)
+    c = FinancialsCollector(tmp_path, workers=1, request_interval=0.0)
+    mapped = c.fetch_ann_date_map(date(2025, 9, 30))
+
+    assert mapped['600519'][0] == date(2025, 10, 30)
+    assert mapped['000001'][2] == 1.0e8
+    assert len(calls) == 1
+    path = store.ann_date_map_path(tmp_path)
+    table = pl.read_parquet(path)
+    assert table.height == 2
+    assert table['period'].unique().to_list() == [date(2025, 9, 30)]
+
+    # 合并表命中后不再联网
+    def boom(*_args, **_kwargs):
+        raise AssertionError('命中合并表不应发起网络请求')
+
+    monkeypatch.setattr(collector.requests, 'get', boom)
+    again = FinancialsCollector(tmp_path, workers=1, request_interval=0.0)
+    assert again.fetch_ann_date_map(date(2025, 9, 30))['600519'][0] == date(2025, 10, 30)
+
+
+def test_fetch_ann_date_map_progress_in_staging(tmp_path,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = [_ann_row('600519', '2025-10-30')]
+    monkeypatch.setattr(collector.requests, 'get',
+                        lambda *_a, **_k: _FakeResponse(payload))
+    FinancialsCollector(tmp_path, workers=1,
+                        request_interval=0.0).fetch_ann_date_map(date(2025, 9, 30))
+
+    progress = json.loads(
+        (store.parts_root(tmp_path) / 'progress.json').read_text(encoding='utf-8'))
+    assert progress['ann_dates'] == ['20250930']
+    assert not (tmp_path / 'meta' / 'financials' / 'progress.json').exists()
 
 
 def test_statutory_deadline() -> None:
