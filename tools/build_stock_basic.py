@@ -135,6 +135,45 @@ def clean_name(raw: str | None) -> str | None:
     return text
 
 
+def name_guard_reason(new_name: Any, old_name: Any) -> str | None:
+    """守卫一 / 二：返回需要保留表内原值的理由，``None`` 表示允许覆盖。
+
+    守卫一（截断名不覆盖）：新名更短、且是表内原名的前缀 → 判为通达信 4 字截断。
+    守卫二（前缀剔除后的异常值）：清洗后为空、只剩当日标记、或长度 < 2 → 不覆盖。
+    """
+    if new_name is None:
+        return None
+    cleaned = str(new_name).strip()
+    if not cleaned:
+        return '守卫二：清洗后为空，保留表内原值'
+    if cleaned in MARKET_PREFIXES:
+        return '守卫二：清洗后只剩当日标记，保留表内原值'
+    if len(cleaned) < 2:
+        return '守卫二：清洗后长度异常（<2 字符），保留表内原值'
+    if old_name is not None:
+        old = str(old_name)
+        if len(cleaned) < len(old) and old.startswith(cleaned):
+            return (f'守卫一：候选名「{cleaned}」是表内「{old}」的前缀且更短，'
+                    '判为截断，保留表内原值')
+    return None
+
+
+#: 守卫三固定不动的列：官方摘牌日得以下游仍在按官方日期判退市
+DELIST_CHAIN_FIELDS: tuple[str, ...] = (
+    'list_date_basis', 'delist_date', 'delist_date_basis', 'date_precision')
+
+
+def pins_official_delist(new_row: dict[str, Any], old_row: dict[str, Any]) -> bool:
+    """守卫三：表内退市日来自官方清单且晚于末根 bar 时，保持官方值不动。"""
+    old_date = old_row.get('delist_date')
+    if old_date is None or old_row.get('delist_date_basis') != 'official_delist':
+        return False
+    new_date = new_row.get('delist_date')
+    return (new_date is not None
+            and new_row.get('delist_date_basis') == 'quote_last_bar'
+            and new_date < old_date)
+
+
 def scan_quotes(store_root: Path) -> pl.DataFrame:
     """扫描 ``quotes/stock`` 全部行情文件，取代码、首末 bar 日期与 bar 数。
 
@@ -501,12 +540,18 @@ def compare(candidate: pl.DataFrame, other: pl.DataFrame) -> dict[str, Any]:
 
 
 def merge_with_existing(
-    candidate: pl.DataFrame, existing: pl.DataFrame,
+    candidate: pl.DataFrame, existing: pl.DataFrame, *, guards: bool = True,
 ) -> tuple[pl.DataFrame, list[dict[str, str]], dict[str, int]]:
     """以候选为基、现有正式表兜底，避免重建时抹掉本地既有非空值。
 
     候选由本地行情/公告证据推导，冲突时以候选为准；候选为空而现有非空的单元格
     保留现有值；现有表独有的代码整行追加，不因重建丢行。
+
+    ``guards=True`` 时启用三道覆盖守卫，命中即保留现有值并记 ``guard_keep_existing``：
+
+    - 守卫一：候选名更短且是现有名前缀（通达信 4 字截断）→ 不覆盖；
+    - 守卫二：候选名清洗后为空 / 只剩当日标记 / 长度 < 2 → 不覆盖；
+    - 守卫三：现有 ``delist_date`` 来自官方清单且晚于末根 bar → 整条日期链不动。
     """
     extra = [name for name in existing.columns if name not in candidate.columns]
     if extra:
@@ -516,7 +561,7 @@ def merge_with_existing(
     diffs: list[dict[str, str]] = []
     counters = {
         'fill_from_existing': 0, 'conflict_keep_candidate': 0,
-        'append_from_existing': 0,
+        'append_from_existing': 0, 'guard_keep_existing': 0,
     }
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -525,6 +570,19 @@ def merge_with_existing(
         seen.add(code)
         old = existing_map.get(code)
         if old:
+            if guards and pins_official_delist(row, old):
+                counters['guard_keep_existing'] += 1
+                diffs.append({
+                    'ts_code': code, 'field': 'delist_date',
+                    'candidate_value': str(row.get('delist_date')),
+                    'existing_value': str(old.get('delist_date')),
+                    'action': 'guard_keep_existing',
+                    'reason': (f'守卫三：官方摘牌日 {old.get("delist_date")} 晚于末根 bar '
+                               f'{row.get("delist_date")}，保持官方值不动（日期链 4 列不覆盖）'),
+                })
+                for field in DELIST_CHAIN_FIELDS:
+                    if old.get(field) is not None:
+                        row[field] = old.get(field)
             for field in candidate.columns:
                 new_value, old_value = row.get(field), old.get(field)
                 if new_value is None and old_value is not None:
@@ -535,6 +593,27 @@ def merge_with_existing(
                         'existing_value': str(old_value), 'action': 'fill_from_existing',
                         'reason': '候选为空、现有表有值，保留现有值',
                     })
+                elif (guards and field == 'name' and new_value is not None
+                      and old_value is not None and new_value != old_value):
+                    reason = name_guard_reason(new_value, old_value)
+                    if reason is None:
+                        counters['conflict_keep_candidate'] += 1
+                        diffs.append({
+                            'ts_code': code, 'field': field,
+                            'candidate_value': str(new_value),
+                            'existing_value': str(old_value),
+                            'action': 'conflict_keep_candidate',
+                            'reason': '候选由本地行情/公告证据推导，冲突时以候选为准',
+                        })
+                    else:
+                        row[field] = old_value
+                        counters['guard_keep_existing'] += 1
+                        diffs.append({
+                            'ts_code': code, 'field': field,
+                            'candidate_value': str(new_value),
+                            'existing_value': str(old_value),
+                            'action': 'guard_keep_existing', 'reason': reason,
+                        })
                 elif (new_value is not None and old_value is not None
                       and new_value != old_value):
                     counters['conflict_keep_candidate'] += 1
@@ -563,7 +642,7 @@ def merge_with_existing(
 
 
 def _merge_into_existing(
-    candidate: pl.DataFrame, target: Path,
+    candidate: pl.DataFrame, target: Path, *, guards: bool = True,
 ) -> tuple[pl.DataFrame, list[dict[str, str]], dict[str, int]]:
     """把候选与现有正式表做兜底合并，并断言行数、代码集与空值数都不退化。"""
     if not target.is_file():
@@ -574,7 +653,7 @@ def _merge_into_existing(
 
     _print_one('候选 vs 现有 meta/stock_basic.parquet', compare(candidate, existing))
     before_nulls = {name: int(existing[name].null_count()) for name in existing.columns}
-    merged, diffs, counters = merge_with_existing(candidate, existing)
+    merged, diffs, counters = merge_with_existing(candidate, existing, guards=guards)
     after_nulls = {name: int(merged[name].null_count()) for name in existing.columns}
     for name, old in before_nulls.items():
         if after_nulls.get(name, 0) > old:
@@ -586,6 +665,24 @@ def _merge_into_existing(
         raise RuntimeError('合并后丢失现有 ts_code')
     print('现有表兜底合并: ' + str(counters))
     return merged, diffs, counters
+
+
+def _print_merge_diffs(diffs: list[dict[str, str]]) -> None:
+    """干跑用：逐条列出合并阶段会被改动的行，守卫跳过单独成组。"""
+    changed = [d for d in diffs if d['action'] == 'conflict_keep_candidate']
+    guarded = [d for d in diffs if d['action'] == 'guard_keep_existing']
+    appended = [d for d in diffs if d['action'] == 'append_from_existing']
+    print(f'\n[干跑] 会被改写的单元格 {len(changed)} 个:')
+    for item in sorted(changed, key=lambda d: (d['field'], d['ts_code'])):
+        print(f"  {item['ts_code']} {item['field']}: "
+              f"「{item['existing_value']}」→「{item['candidate_value']}」")
+    print(f'\n[干跑] 被守卫拦下、保持原值的单元格 {len(guarded)} 个:')
+    for item in sorted(guarded, key=lambda d: (d['ts_code'], d['field'])):
+        print(f"  {item['ts_code']} {item['field']}: 保留「{item['existing_value']}」"
+              f"（候选「{item['candidate_value']}」）— {item['reason']}")
+    if appended:
+        print(f'\n[干跑] 现有表独有、将整行追加的代码 {len(appended)} 个: '
+              f"{_sample([d['ts_code'] for d in appended])}")
 
 
 def _sample(codes: list[str], limit: int = 12) -> str:
@@ -723,6 +820,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--compare-db', action='store_true', help='额外与 MySQL 对拍（仅作差异说明）')
     parser.add_argument('--promote', action='store_true',
                         help='写候选后立即备份并原子替换正式文件，再删除候选目录')
+    parser.add_argument('--no-guards', action='store_true',
+                        help='诊断用：关闭三道覆盖守卫（截断名/异常名/官方摘牌日），'
+                             '正常情况下不要使用')
     args = parser.parse_args(argv)
 
     cfg = get_config()
@@ -754,7 +854,8 @@ def main(argv: list[str] | None = None) -> int:
           f"{_sample(candidate.filter(pl.col('board').is_null())['ts_code'].to_list())}")
 
     target = store_root / 'meta' / 'stock_basic.parquet'
-    candidate, merge_diffs, merge_counts = _merge_into_existing(candidate, target)
+    candidate, merge_diffs, merge_counts = _merge_into_existing(
+        candidate, target, guards=not args.no_guards)
 
     if args.compare_db:
         db = _load_db_basic()
@@ -775,6 +876,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"覆盖={item['covered']} → {item['action']}")
 
     if args.no_write:
+        _print_merge_diffs(merge_diffs)
         print('\n[--no-write] 未落盘')
         return 0
 
