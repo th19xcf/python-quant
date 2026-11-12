@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -156,6 +157,41 @@ def load_all() -> pd.DataFrame:
     return out
 
 
+def membership_manifest_block() -> dict | None:
+    """同目录 membership_intervals.parquet 的逐文件记账（存在才登记）。
+
+    该表由 tools/rebuild_index_constituents.py 从本目录月末快照推导，
+    不是本脚本产物；但目录级 manifest 归本脚本重写，必须一并登记，
+    否则每跑一次 --phase build 就把条目抹掉。
+    """
+    path = OUT_DIR / "membership_intervals.parquet"
+    if not path.exists():
+        return None
+    df = pd.read_parquet(path)
+    block = {
+        "path": "meta/index_members/membership_intervals.parquet",
+        "semantics": "由月末快照推导的成分区间表，一行 = 一个 (指数, 标的, 纳入→剔除) 区间；"
+                     "in_date/out_date 精度受快照粒度限制，见 in_date_known/out_date_known",
+        "produced_by": "tools/rebuild_index_constituents.py",
+        "rows": int(len(df)),
+        "cols": int(df.shape[1]),
+        "columns": [str(c) for c in df.columns],
+        "bytes": path.stat().st_size,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "registered_at": "2026-11-12",
+        "registered_reason": "补登：该表与本 manifest 描述的 index_weight_monthly 同目录且被成分 PIT 消费，"
+                             "此前只有目录级 coverage/total_rows，缺本文件条目",
+    }
+    if "ts_code" in df.columns:
+        block["codes"] = int(df["ts_code"].nunique())
+    for col, key in (("in_date", "in_date_range"), ("out_date", "out_date_range")):
+        if col in df.columns:
+            series = pd.to_datetime(df[col], errors="coerce").dropna()
+            if len(series):
+                block[key] = [str(series.min().date()), str(series.max().date())]
+    return block
+
+
 def phase_build() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     df = load_all()
@@ -190,9 +226,12 @@ def phase_build() -> None:
         },
         "raw_cache": str(RAW_DIR.relative_to(ROOT)).replace("\\", "/"),
         "coverage": coverage,
-        "total_rows": int(len(df)),
-        "total_periods": int(df["trade_date"].nunique()),
     }
+    membership = membership_manifest_block()
+    if membership is not None:
+        manifest["membership_intervals"] = membership
+    manifest["total_rows"] = int(len(df))
+    manifest["total_periods"] = int(df["trade_date"].nunique())
     (OUT_DIR / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     log.info("主表写入 %s：%d 行，%d 期", out_path, len(df), manifest["total_periods"])

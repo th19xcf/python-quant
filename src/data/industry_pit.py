@@ -113,6 +113,76 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+#: 同目录其他口径 parquet 的语义与产出方（2026-11-12 补登，避免 manifest 只记 sw 一张）。
+_SIBLING_SPECS: dict[str, tuple[str, str, str]] = {
+    'industry_pit.parquet': (
+        '通达信 T 代码树行业 PIT 快照，与申万 SW2021 不同源、不同代码体系，禁止与 sw 表混用',
+        'src/data/quality/extended_builders.py::build_industry_pit',
+        'effective_date',
+    ),
+    'industry_change_pit.parquet': (
+        '行业分类变动历史（长表，含 standard 列区分口径），一行 = 一个 (标的, 行业, 生效区间)',
+        'src/data/quality/extended_builders.py::build_industry_pit',
+        'effective_date',
+    ),
+}
+
+
+def _sibling_inventory(
+    store_root: Path | str, target: Path,
+) -> dict[str, Any]:
+    """同目录其他口径 parquet 的逐文件记账，按磁盘现值统计。
+
+    本 manifest 的 ``dataset`` / ``coverage`` / ``sha256`` 只描述
+    ``industry_pit_sw.parquet``；这里补登同目录另两张不同口径的表，
+    避免目录级 manifest 覆盖不全。
+    """
+    directory = pit_dir(store_root)
+    files: list[dict[str, Any]] = []
+    for name, (semantics, produced_by, date_column) in _SIBLING_SPECS.items():
+        path = directory / name
+        if not path.is_file() or path.resolve() == target.resolve():
+            continue
+        lazy = pl.scan_parquet(str(path))
+        names = list(lazy.collect_schema().names())
+        entry: dict[str, Any] = {
+            'path': f'data/local_store/meta/industry_pit/{name}',
+            'semantics': semantics,
+            'produced_by': produced_by,
+            'rows': int(lazy.select(pl.len()).collect().item()),
+            'cols': len(names),
+            'columns': names,
+            'bytes': path.stat().st_size,
+            'sha256': _sha256(path),
+        }
+        if 'ts_code' in names:
+            entry['codes'] = int(
+                lazy.select(pl.col('ts_code').n_unique()).collect().item())
+        for column, key in ((date_column, 'date_range'),
+                            ('end_date', 'end_date_range')):
+            if column not in names:
+                continue
+            low, high = lazy.select(
+                pl.col(column).min().alias('low'),
+                pl.col(column).max().alias('high'),
+            ).collect().row(0)
+            if key == 'date_range':
+                entry['date_column'] = column
+            entry[key] = [
+                None if low is None else str(low),
+                None if high is None else str(high),
+            ]
+        files.append(entry)
+    return {
+        'note': (
+            '同目录下另有不同口径的行业表，不属于本 manifest 的 '
+            'dataset/coverage/sha256（那三项只描述 industry_pit_sw.parquet）；'
+            '逐文件如实记账，不改数据'
+        ),
+        'files': files,
+    }
+
+
 def normalize_ts_code(raw: Any) -> str:
     """6 位代码 → ``ts_code``；北交所 43/83/87/88/92 段单列。"""
     code = str(raw).strip().split('.')[0].zfill(6)
@@ -424,6 +494,7 @@ def build(store_root: Path | str, *, refresh: bool = False) -> dict[str, Any]:
         'files': {
             'parquet': str(target),
             'raw': [str(p) for p in sorted(raw.glob('*')) if p.is_file()],
+            'sibling_parquet': _sibling_inventory(store_root, target),
         },
         'sha256': _sha256(target),
     }

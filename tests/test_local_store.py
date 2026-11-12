@@ -12,6 +12,7 @@
 """
 
 import contextlib
+import hashlib
 import json
 import struct
 from datetime import date, datetime, timedelta
@@ -458,6 +459,14 @@ def test_rebuild_factors_matches_dividend_path(tmp_path):
     updated = rebuild_factors_from_local(
         quote_store, factor_store, codes=['600000.SH'], include_existing=True)
     assert updated['factor_codes'] == 2
+
+    # 收口必须顺带写出目录级 manifest（DG-3），且记账值与磁盘现值一致
+    manifest = json.loads((factor_dir / 'manifest.json').read_text(encoding='utf-8'))
+    entry = manifest['files']['stock_adj_factor.parquet']
+    assert entry['rows'] == snapshot.height
+    assert entry['codes'] == snapshot['ts_code'].n_unique()
+    assert entry['sha256'] == hashlib.sha256(
+        (factor_dir / 'stock_adj_factor.parquet').read_bytes()).hexdigest()
 
 
 def test_factor_alignment_runs_when_flush_meta_fails(tmp_path, monkeypatch):

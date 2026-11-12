@@ -45,6 +45,7 @@ from loguru import logger
 
 from src.data.adj_factor_calculator import AdjFactorCalculator
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
+from src.data.factors_manifest import write_factors_manifest
 from src.data.local_store.store import (
     STORE_VERSION,
     LocalFactorStore,
@@ -466,6 +467,10 @@ def rebuild_factors_from_local(
         'total_parts': len(chunks),
     })
     _clear_parts(rebuild_dir)
+    # 目录级 manifest 收尾：factors/ 的逐文件 SHA256 / 行数 / 区间记账，
+    # 必须在快照与 sidecar 都已落盘之后刷新，否则记的是上一版文件的哈希。
+    factors_manifest_path = write_factors_manifest(factor_store.root)
+    logger.info(f'[factor-rebuild] 已刷新 {factors_manifest_path}')
     logger.info(
         f'[factor-rebuild] 完成：新增 {len(written_codes)} 只 / {rows_added:,} 行，'
         f'快照共 {len(final_codes)} 只，耗时 {elapsed:.1f}s，'
