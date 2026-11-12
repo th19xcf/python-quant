@@ -152,7 +152,9 @@ def quotes_end(store_root: Path) -> date | None:
     root = store_root / QUOTES_ROOT
     if not root.is_dir():
         return None
-    found = pl.scan_parquet(str(root / '**' / '*.parquet')).select(
+    # 只取 date：投影子集读取，多余列不应让新鲜度检查整体失败
+    found = pl.scan_parquet(
+        str(root / '**' / '*.parquet'), extra_columns='ignore').select(
         pl.col('date').max()).collect().item()
     return found
 

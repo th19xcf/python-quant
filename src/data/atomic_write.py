@@ -39,17 +39,27 @@ def write_parquet_atomic(
     compression_level: int | None = None,
     statistics: Any = True,
     row_group_size: int | None = None,
+    allow_extra_columns: bool = False,
 ) -> None:
     """原子写 parquet：落临时文件、``fsync`` 后替换目标。
 
     ``frame`` 为 ``LazyFrame`` 时走 ``sink_parquet`` 流式落盘，避免把千万行
     中间结果 collect 回内存；两者走同一套临时文件与 fsync 收尾。
 
+    目标落在正式库 ``data/local_store/quotes/**`` 时，写盘前强制校验行情
+    schema（列集合 / 顺序 / dtype）：这是绕过 store API 的修复脚本唯一会被
+    拦住的地方。确需额外列的调用点显式传 ``allow_extra_columns=True`` 并
+    在调用处写明理由，不得整体关闭闸门。
+
     ``polars`` 延迟导入：只用 :func:`write_text_atomic` /
     :func:`write_bytes_atomic` 的轻量脚本（如巡检）不必为此拉起 polars。
     """
     import polars as pl
 
+    from src.data.quote_schema import assert_formal_quote_schema
+
+    assert_formal_quote_schema(
+        path, frame, allow_extra_columns=allow_extra_columns)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_path(target)

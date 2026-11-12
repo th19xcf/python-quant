@@ -165,7 +165,8 @@ def _local_max_date(store_root: Path | str) -> date | None:
                 return value if isinstance(value, date) else date.fromisoformat(str(value)[:10])
         except (OSError, ValueError, pl.exceptions.PolarsError) as exc:
             logger.warning(f'[breadth] 读取 daily_index 失败，回退扫描行情: {exc}')
-    lf = pl.scan_parquet(_quotes_glob(store_root))
+    # 只取 date：投影子集读取，多余列不应让整条链路失败
+    lf = pl.scan_parquet(_quotes_glob(store_root), extra_columns='ignore')
     value = lf.select(pl.col('date').max()).collect().item()
     return _as_date(value)
 

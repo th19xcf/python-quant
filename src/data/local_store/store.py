@@ -44,6 +44,11 @@ from loguru import logger
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.local_store.expectation import check_quote_file
 from src.data.local_store.paths import resolve_store_root as _resolve_store_root
+from src.data.quote_schema import (
+    QUOTE_COLUMNS,
+    assert_formal_quote_glob_schema,
+    assert_formal_quote_schema,
+)
 
 STORE_VERSION = 1
 # 因子快照单文件可能达到千万行，不能像分红快照那样一次性 partition 进内存。
@@ -486,18 +491,25 @@ class LocalQuoteStore:
     # 写入（构建器调用，原子替换）
     # ------------------------------------------------------------------
     def write_daily(self, data_type: str, ts_code: str, frame: pl.DataFrame,
-                    full: bool = True, source_mtime_ns: int | None = None) -> int:
+                    full: bool = True, source_mtime_ns: int | None = None,
+                    allow_extra_columns: bool = False) -> int:
         """写入单标的行情并刷新元数据，返回写入行数。
 
         ``full=False`` 表示这是增量片段（前缀不完整），此时 ``covers`` 会对
         早于存量起点的请求返回 False，强制回退通达信，避免残缺前缀被当完整数据。
+
+        正式库写入前校验行情 schema（列集合 / 顺序 / dtype）；确需额外列的
+        调用点显式传 ``allow_extra_columns=True`` 并在调用处写明理由。
         """
         if frame.is_empty():
             return 0
         path = self.quote_path(data_type, ts_code)
+        assert_formal_quote_schema(
+            path, frame, allow_extra_columns=allow_extra_columns)
         write_parquet_atomic(
             frame.sort('date'), path, compression='zstd',
-            compression_level=3, statistics=True)
+            compression_level=3, statistics=True,
+            allow_extra_columns=allow_extra_columns)
 
         rows = frame.height
         first = frame['date'].min()
@@ -998,6 +1010,10 @@ def verify_quote_factor_consistency(
             result[kind] = {'files': 0, 'rows': 0, 'mismatch_codes': 0,
                             'mismatch_rows': 0}
             continue
+        # 正式库先断言 schema 与契约一致，再投影到校验所需列
+        if kind in QUOTE_COLUMNS:
+            assert_formal_quote_glob_schema(
+                quote_store.root, kind, [str(p) for p in files])
         quotes = pl.scan_parquet([str(p) for p in files]).select(
             ['ts_code', 'date', 'qfq_factor', 'hfq_factor']).collect().sort(
             ['ts_code', 'date'])

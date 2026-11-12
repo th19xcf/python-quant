@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from src.data.managers.data_fetcher import DataFetcher  # noqa: E402
+from src.data.quote_schema import assert_formal_quote_glob_schema  # noqa: E402
 
 # 输入（只读，不是产物）
 BASE = ROOT / '_staging/factor_candidates_20261111/base_rebal.parquet'
@@ -66,6 +67,8 @@ def main() -> None:
     print(f'调仓日需求 {sum(p.height for p in plan.values())} 行，'
           f'需要行情日 {len(needed)} 个', flush=True)
 
+    # 正式库先断言 schema 与契约一致，再投影到研究所需列
+    assert_formal_quote_glob_schema(ROOT / 'data' / 'local_store', 'stock', STOCK_GLOB)
     px = (pl.scan_parquet(STOCK_GLOB)
           .select(['date', 'ts_code', 'open', 'high', 'low', 'close', 'hfq_factor'])
           .filter(pl.col('date').is_in(needed))

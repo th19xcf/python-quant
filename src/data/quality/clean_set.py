@@ -17,7 +17,8 @@
    ``unknown``，默认放行并在 ``eligible`` 返回的 flags 里标
    ``pending_st_history``，不编造历史状态。
    该 flag 是**纯诊断标记**：全仓没有任何过滤逻辑读取它，唯一落点是快照
-   ``meta/clean/eligibility_<as_of>.parquet`` 的 ``reasons`` 列，用来把
+   ``_staging/clean_snapshots_20261112/eligibility_<as_of>.parquet`` 的 ``reasons`` 列
+   （该快照无运行期消费者，2026-11-12 按 DG-32 迁出正式层），用来把
    「确认非 ST」与「未知」区分开；需要收紧时由调用方自行判定，本模块不新增
    过滤口径。
 4. 三档视图：
@@ -72,6 +73,8 @@ from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.quality.anomalies import iter_anomalies
 from src.data.quality.code_migration import load_entity_index
 from src.data.quality.suspension_union import SuspensionUnion, load_suspension_union
+from src.data.quote_schema import QUOTE_COLUMNS, assert_formal_quote_glob_schema
+from src.data.staging import staging_dir_for_store
 from src.utils.code_converter import is_fund_code, is_index_code
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -586,10 +589,13 @@ class EligibilityEngine:
     def _load_quote_stats(self) -> None:
         # 只扫洁净集覆盖的三类资产：quotes/futures 用交易所原生列名
         # （trade_date / vol），混进通配会在 schema 合并阶段直接报错。
-        globs = [
-            str(self.root / 'quotes' / data_type / '**' / '*.parquet')
-            for data_type in DATA_TYPES
-        ]
+        # 正式库先断言各资产 schema 与契约一致，再投影；临时夹具放行。
+        globs = []
+        for data_type in DATA_TYPES:
+            one = str(self.root / 'quotes' / data_type / '**' / '*.parquet')
+            if data_type in QUOTE_COLUMNS:
+                assert_formal_quote_glob_schema(self.root, data_type, one)
+            globs.append(one)
         scan = pl.scan_parquet(globs).select(
             ['ts_code', 'date', 'open', 'high', 'low', 'close', 'volume']
         )
@@ -1715,7 +1721,10 @@ def build_snapshot(
         close_fund_dividend_pending_scope=close_fund_dividend_pending_scope,
     )
     as_of_date = engine.as_of_date
-    out = Path(output_dir) if output_dir else (engine.root / 'meta' / 'clean')
+    # 快照三件套（eligibility/timeline/summary）无运行期消费者，仅供查看：
+    # 按 DG-32 默认落 ``_staging/clean_snapshots_20261112/``，不再写正式层。
+    out = (Path(output_dir) if output_dir else
+           staging_dir_for_store(engine.root, 'clean_snapshots_20261112'))
     out.mkdir(parents=True, exist_ok=True)
 
     rows = []

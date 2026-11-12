@@ -60,6 +60,7 @@ from loguru import logger
 
 from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.local_store.paths import default_store_root
+from src.data.quote_schema import assert_formal_quote_glob_schema
 from src.data.sources import baostock_schema as schema
 from src.utils.code_converter import to_baostock_code
 from src.utils.exception_handler import handle_exception_with_retry
@@ -511,12 +512,12 @@ def _assemble(parts: list[Path], target: Path, touched: set[str]) -> int | None:
     if not parts:
         return None
     new_lazy = pl.concat([pl.scan_parquet(str(p)) for p in parts],
-                         how='vertical_relaxed')
+                         how='diagonal_relaxed')
     if target.exists() and touched:
         keys = new_lazy.select(['ts_code', 'trade_date']).unique()
         base = pl.scan_parquet(str(target)).join(
             keys, on=['ts_code', 'trade_date'], how='anti')
-        source = pl.concat([base, new_lazy], how='vertical_relaxed')
+        source = pl.concat([base, new_lazy], how='diagonal_relaxed')
     else:
         source = new_lazy
     source = source.sort(['ts_code', 'trade_date'])
@@ -831,6 +832,8 @@ def derive_turnover_local(root: Path | str | None = None, *,
               .sort(['ts_code', 'effective_date']))
 
     quote_glob = str(resolved / 'quotes' / 'stock' / '*' / '*.parquet')
+    # 正式库先断言 schema 与契约一致，再投影到换手率所需列
+    assert_formal_quote_glob_schema(resolved, 'stock', quote_glob)
     quote_lf = (pl.scan_parquet(quote_glob)
                 .select(['ts_code', pl.col('date').alias('trade_date'), 'volume'])
                 .filter(pl.col('volume').is_not_null() & (pl.col('volume') > 0)))

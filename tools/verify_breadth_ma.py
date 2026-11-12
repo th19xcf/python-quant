@@ -112,7 +112,9 @@ def recompute(store: Path, dates: list[date]) -> tuple[dict[date, dict], dict[da
     """独立实现：逐只读文件、按自身有效 bar 算 MA，返回逐日计数与逐日样本明细。"""
     from src.data.quality.code_migration import load_entity_index
 
-    calendar = (pl.scan_parquet(store / 'quotes' / 'stock' / '**' / '*.parquet')
+    # 只取 date：投影子集读取，多余列不应让校验脚本失败
+    calendar = (pl.scan_parquet(
+        store / 'quotes' / 'stock' / '**' / '*.parquet', extra_columns='ignore')
                 .select(pl.col('date').cast(pl.Date)).unique().sort('date').collect()
                 ['date'].to_list())
     meta = _load_meta(store)
@@ -338,10 +340,12 @@ def main(argv: list[str] | None = None) -> int:
                    [int(v) for v in tail['new_low_250_breadth'].to_list()],
                    [int(v) for v in tail['new_low_250'].to_list()], same_lo))
 
-    calendar = cast(list[date], pl.scan_parquet(store / 'quotes' / 'stock' / '**' / '*.parquet')
+    calendar = cast(list[date], pl.scan_parquet(
+        store / 'quotes' / 'stock' / '**' / '*.parquet', extra_columns='ignore')
                     .select(pl.col('date').cast(pl.Date)).unique().sort('date').collect()
                     ['date'].to_list())
-    active = set(pl.scan_parquet(store / 'quotes' / 'stock' / '**' / '*.parquet')
+    active = set(pl.scan_parquet(
+        store / 'quotes' / 'stock' / '**' / '*.parquet', extra_columns='ignore')
                  .select(['date', 'volume']).filter(pl.col('volume') > 0)
                  .select(pl.col('date').cast(pl.Date)).unique().collect()['date'].to_list())
     expected = [d for d in calendar if lo <= d <= hi and d in active]

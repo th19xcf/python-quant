@@ -271,7 +271,9 @@ def _empty_part() -> pl.DataFrame:
 def build_calendar(store: Path) -> list[date]:
     """交易日历 = 个股行情里实际出现过的全部日期（升序去重），与 breadth_ma 同口径。"""
     glob = str(store / 'quotes' / 'stock' / '**' / '*.parquet')
-    frame = (pl.scan_parquet(glob).select(pl.col('date').cast(pl.Date))
+    # 只取 date：投影子集读取，多余列不应让日历构建失败
+    frame = (pl.scan_parquet(glob, extra_columns='ignore')
+             .select(pl.col('date').cast(pl.Date))
              .unique().sort('date').collect())
     return frame['date'].to_list()
 

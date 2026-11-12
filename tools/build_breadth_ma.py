@@ -139,7 +139,9 @@ def build_calendar(store: Path) -> list[date]:
     以免把未来日期当历史。
     """
     glob = str(store / 'quotes' / 'stock' / '**' / '*.parquet')
-    frame = (pl.scan_parquet(glob).select(pl.col('date').cast(pl.Date))
+    # 只取 date：投影子集读取，多余列不应让日历构建失败
+    frame = (pl.scan_parquet(glob, extra_columns='ignore')
+             .select(pl.col('date').cast(pl.Date))
              .unique().sort('date').collect())
     return frame['date'].to_list()
 
