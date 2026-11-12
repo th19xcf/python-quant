@@ -48,10 +48,16 @@ COST_DEFAULTS: Dict[str, float] = {
     'stamp_tax_rate': 0.0005,        # 印花税（仅卖出，2023-08-28 起 0.05%）
     'transfer_fee_rate': TRANSFER_FEE_RATE_UNIFIED,  # 过户费（双边 0.002%）
     'slippage': 0.0002,              # 滑点（双边，未分档时的兜底值）
-    # 冲击成本系数：impact = impact_coef × sqrt(成交额 / ADV 成交额)，默认 0（关闭）。
-    # 为 0 时 calculate_buy_cost / calculate_sell_cost 的返回值与引入本项之前逐位相同；
-    # 打开前须先出敏感性表，禁止直接改默认值（改的是收益口径）。
-    'impact_coef': 0.0,
+    # 冲击成本系数：impact = impact_coef × sqrt(成交额 / ADV 成交额)。
+    # 默认 0.015 是 2026-11-12 的**显式口径决定**，不是随手取的数：
+    # 依据同日的系数扫描（36 次运行）——1 亿档策略收益翻负点 coef≈0.099、
+    # 1,000 万档≈0.298；0.015 仅为翻负点的 1/6.6~1/20，而默认 0（旧口径）
+    # 的偏乐观幅度实测为 100 万~1,000 万档 0.2~2.0 pp、1 亿档 1.8~6.0 pp。
+    # 参与率分母由回测内核传入的 bar.adv20（20 日均成交额，元，lag1）给出；
+    # ADV 缺失的标的冲击项为 0（见 impact_rate）。改这个默认值等于改全部
+    # 历史回测的收益口径：再动之前必须有新一轮翻负点实测与用户显式批准，
+    # 且 trading 侧要给 report/golden 基线同步留证（V-36 决策记录）。
+    'impact_coef': 0.015,
 }
 
 #: ETF/LOF 滑点分档：按 20 日 ADV（元）从高到低取第一档。

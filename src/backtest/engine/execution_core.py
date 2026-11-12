@@ -858,7 +858,9 @@ class EventBacktestRunner:
             'impact_adv20_symbols': impact_covered,
             'impact_missing_symbols': impact_missing,
             'impact_note': ('冲击成本参与率分母 = adv20（20 日均成交额，元，lag1）；'
-                            'impact_coef 默认 0，为 0 时本项恒为 0、结果不受影响'),
+                            '默认 impact_coef=0.015，显式传 0 时该项恒为 0（复现旧口径）；'
+                            '默认不取 0 是因为零冲击会把收益系统性高估 0.2~6.0 pp'
+                            '（2026-11-12 系数扫描，翻负点 1 亿档≈0.099 / 1,000 万档≈0.298）'),
             'impact_missing_note': (
                 '这些标的缺 adv20（面板无 amount 列或整段为空）：冲击项恒为 0，'
                 '按 CostModel.impact_rate 的既定选择不抛错' if impact_missing else None),

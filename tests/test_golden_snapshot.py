@@ -11,6 +11,23 @@
 
 本测试**只读**，不修改 ``src/``。生成/更新基线（仅在确认结果正确后）：
     ./.venv/Scripts/python.exe tests/test_golden_snapshot.py save
+
+基线变更记录（每次重生成必须在此登记，避免后人把有意变更当成漂移）：
+- **2026-11-12 重新基线（impact_coef 默认值 0.0 → 0.015）**：依据同日冲击成本
+  系数扫描（36 次运行）与用户的显式口径决定（V-35 决策材料：1 亿档翻负点
+  coef≈0.099、1,000 万档≈0.298，0.015 取 1/6.6~1/20）。影响面已逐字段核对：
+  ① 五个场景的 ``cost_inputs`` 哈希全变——来自 ``execution_core`` 新增的
+  ``impact_adv20_symbols`` / ``impact_missing_symbols`` / ``impact_note`` /
+  ``impact_missing_note`` 四个审计键（新增字段，既有键值未变）；
+  ② 仅 ``tiered_4x120`` / ``tiered_partial_4x120``（面板自带 ``adv20``）的
+  ``trades`` / ``positions`` / ``equity_curve`` / ``final_equity`` /
+  ``performance`` 变化，方向为成本上升（17,180.97 → 22,416.24 与
+  11,557.51 → 14,595.41）、净值下降；成交笔数（27 / 19）、成交日期与信号、
+  风控拒单/挂单作废均未变。另三个场景（无 ``amount`` / 无 ``adv20``）除
+  ``cost_inputs`` 外逐字段完全一致。逐笔 ``shares`` 少 1~2 个整手是买入
+  「可负担股数」估算不含冲击项、由逐手回退兜底所致。
+  显式 ``impact_coef=0.0`` 时仍与 2026-11-06 的原始基线逐位相同，该不变量由
+  ``tests/test_cost_impact.py`` 独立守护。
 """
 from __future__ import annotations
 
