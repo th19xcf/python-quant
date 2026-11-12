@@ -340,7 +340,8 @@ cp .env.example .env
 ## 开发约定
 
 - 依赖管理：Poetry；运行时直接依赖固定为 `==` 版本，`poetry.lock` 锁定全部传递依赖（不要在未更新锁文件的情况下手工 `pip install` 升级依赖，否则回测结果不可复现）
-- 可选依赖组：`dev`（pytest / ruff / mypy / black，默认安装）、`gpu`（cupy，`poetry install --with gpu`）；GPU 缺失时 `gpu_acceleration.py` 自动降级为 NumPy
+- 可选依赖组：`dev`（pytest / ruff / mypy / black，默认安装）、`gpu`（`cupy-cuda12x`，`poetry install --with gpu`）；GPU 缺失时 `gpu_acceleration.py` 自动降级为 NumPy
+- `gpu` 组是「运行时依赖固定 `==`」的唯一例外写法：PyPI 的 `cupy` 14.2.0 只发布 sdist（`cupy-14.2.0.tar.gz`，无任何 wheel），Windows + cp314 无法安装，因此声明变体分发 `cupy-cuda12x = "==14.2.0"`（提供 `cp314-cp314-win_amd64.whl`，`import cupy` 名称不变）；CUDA 13.x 环境把依赖名换成 `cupy-cuda13x = "==14.2.0"` 即可，代码无需改动
 - 提交路径：项目目录 `e:\code\python\quant` 为 Git 仓库；每次提交前先同步备份目录 `G:\git\python-quant`（保持相同相对路径）
 - 数据库迁移：Alembic（`.\.venv\Scripts\python.exe -m alembic upgrade head`；改表必须先 `alembic revision --autogenerate -m "..."` 生成脚本，禁止手写 DDL，`create_tables()` 内部已走 `alembic upgrade head`）
 - 测试：pytest 全量回归（`.\.venv\Scripts\python.exe -m pytest tests -q`）

@@ -48,6 +48,11 @@ scipy = "==1.18.1"
 # 系统监控（src/utils/memory_manager.py 运行时依赖，不可放入 dev 组）
 psutil = "==7.2.2"
 alembic = "==1.20.1"
+# PDF 表格抽取（tools/fetch_etf_fee.py 抽 ETF 产品资料概要费率表、
+# tools/rebuild_index_constituents.py 抽指数成分调整公告，均为正式数据产出）。
+# 两处都是函数内 import 且无 ImportError 兜底：缺包时一支直接抛栈，
+# 另一支被 except Exception 吞成 errors 记录，比崩更危险，故按 == 钉在 main 组。
+pdfplumber = "==0.11.10"
 
 [tool.poetry.group.dev.dependencies]
 # 测试
@@ -76,7 +81,11 @@ baostock = "==0.9.4"
 optional = true
 
 [tool.poetry.group.gpu.dependencies]
-cupy = "*"
+# Pin 变体分发而不是 cupy 裸名：PyPI 的 cupy 14.2.0 只发布 sdist
+# （cupy-14.2.0.tar.gz，无任何 wheel），Windows + cp314 只能源码编译 CUDA 扩展、
+# 实际装不上；cupy-cuda12x 14.2.0 提供 cp314-cp314-win_amd64.whl，
+# 且 import 名仍是 cupy，代码侧无需改动。CUDA 13.x 环境可换 cupy-cuda13x。
+cupy-cuda12x = "==14.2.0"
 
 [tool.poetry.group.analytics]
 # 可选组：只读分析层（Alphalens 因子评估 + QuantStats 绩效 tearsheet）
@@ -106,6 +115,12 @@ optional = true
 
 [tool.poetry.group.tdx.dependencies]
 pytdx = "==1.72"
+# research/mootdx/ 下的通达信服务器探测脚本直接 import mootdx / tdxpy。
+# mootdx 同时是 httpx(<0.26.0) / tenacity(<9.0.0) / prettytable 的唯一入口：
+# 不声明它，这些传递包就永远进不了 poetry.lock，.venv 与 lock 会持续漂移。
+# 只服务研究探针，不进 main；且 tenacity 与 httpx 受 mootdx 上界约束，不可升级。
+mootdx = "==0.11.7"
+tdxpy = "==0.2.7"
 
 [[tool.poetry.source]]
 name = "mirrors"
