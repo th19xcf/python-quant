@@ -412,6 +412,12 @@ def _merge_agg_exprs(table: str) -> list[pl.Expr]:
       顺序重组成 ``close=…|pe=…|pb=…``，只保留确有来源的字段段；
     - 整串无 ``=`` 段（三表的 ``local:…`` 这类整体来源）→ 退化为「最后非空整串」；
     - 字段有值但该行走的 ``source`` 缺这个段 → 只保留值、不造来源段（不猜测）。
+
+    字段值为空时（含 ``none`` 段）：沿用组内「最后一条声明了该字段段」的那条
+    ``source`` 里**该字段自己的段**（G-080 第二段实测：不沿用会让 2,282,126 行的
+    ``dv=none`` 等显式「无来源」标记、287,879 行空值字段的来源声明丢失）。
+    只沿用已存在的段，不新造、不跨字段挪用；段顺序仍按规范序；
+    组内没有任何段的整串形态照旧原样保留，不会被拼出段。
     """
     key = set(_KEY_COLUMNS[table])
     schema = SCHEMAS[table]
@@ -429,9 +435,16 @@ def _merge_agg_exprs(table: str) -> list[pl.Expr]:
         return aggs
     segments: list[pl.Expr] = []
     for column, seg_key in fields:
-        seg = (pl.when(pl.col(column).is_not_null())
-               .then(pl.col('source').str.extract(rf'(?:^|\|){seg_key}=([^|]*)', 1))
-               .drop_nulls().last())
+        pattern = rf'(?:^|\|){seg_key}=([^|]*)'
+        from_value_row = (pl.when(pl.col(column).is_not_null())
+                          .then(pl.col('source').str.extract(pattern, 1))
+                          .drop_nulls().last())
+        # 字段值为空：沿用组内「最后一条声明了该字段段」的声明（含 ``none``），
+        # 只取本字段自己的段，不新造、不跨字段挪用
+        from_last_declaration = pl.col('source').str.extract(pattern, 1).drop_nulls().last()
+        seg = (pl.when(pl.col(column).is_not_null().any())
+               .then(from_value_row)
+               .otherwise(from_last_declaration))
         segments.append(
             pl.when(seg.is_not_null())
             .then(pl.concat_str([pl.lit(f'{seg_key}='), seg]))

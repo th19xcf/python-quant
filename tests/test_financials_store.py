@@ -233,3 +233,153 @@ def test_coverage_reports_counts(store_root: Path) -> None:
     assert info['rows'] == 3
     assert info['codes'] == 1
     assert info['ann_date_null'] == 1
+
+
+# ----------------------------------------------------------------------
+# G-080 第二段：字段值为空时沿用「最后一条非空 source 声明」里已有的段
+# ----------------------------------------------------------------------
+def _legacy_aggs(table: str) -> list[pl.Expr]:
+    """修补前语义：段只从「该字段非空的那一行」取，空值字段一律丢段。"""
+    key = set(store._KEY_COLUMNS[table])
+    schema = store.SCHEMAS[table]
+    aggs = [pl.col(n).drop_nulls().last().alias(n)
+            for n in schema if n not in key and n != 'source']
+    segs = []
+    for column, seg_key in store._SOURCE_SEGMENT_FIELDS:
+        if column not in schema or column in key:
+            continue
+        seg = (pl.when(pl.col(column).is_not_null())
+               .then(pl.col('source').str.extract(rf'(?:^|\|){seg_key}=([^|]*)', 1))
+               .drop_nulls().last())
+        segs.append(pl.when(seg.is_not_null())
+                    .then(pl.concat_str([pl.lit(f'{seg_key}='), seg]))
+                    .alias(f'__legacy_{column}'))
+    merged = pl.concat_str(segs, separator='|', ignore_nulls=True)
+    aggs.append(pl.when(merged.is_null() | (merged == ''))
+                .then(pl.col('source').drop_nulls().last()).otherwise(merged).alias('source'))
+    return aggs
+
+
+def _legacy_row(paths: list[Path], table: str = 'valuation') -> dict:
+    """用修补前的聚合式复算同一批输入，作为反例基准。"""
+    frames = [pl.scan_parquet(str(p)).with_columns(
+        pl.lit(i, dtype=pl.UInt32).alias(store._ORDER_COLUMN)) for i, p in enumerate(paths)]
+    combined = pl.concat(frames, how='diagonal_relaxed')
+    names = combined.collect_schema().names()
+    exprs = [pl.col(n).cast(d, strict=False).alias(n) if n in names
+             else pl.lit(None, dtype=d) for n, d in store.SCHEMAS[table].items()]
+    key = list(store._KEY_COLUMNS[table])
+    return (combined.with_columns(exprs)
+            .select([*store.SCHEMAS[table], store._ORDER_COLUMN])
+            .sort([*key, store._ORDER_COLUMN])
+            .group_by(key, maintain_order=True).agg(_legacy_aggs(table))
+            .select(list(store.SCHEMAS[table])).collect().to_dicts()[0])
+
+
+def _write_valuation_pair(tmp_path: Path, base: dict, late: dict) -> tuple[Path, Path]:
+    store.write_table(pl.DataFrame(base), 'valuation', tmp_path)
+    part_dir = store.parts_dir('valuation', tmp_path)
+    part_dir.mkdir(parents=True, exist_ok=True)
+    late_path = part_dir / 'batch_late.parquet'
+    pl.DataFrame(late).write_parquet(late_path)
+    return store.table_path('valuation', tmp_path), late_path
+
+
+def test_merge_parts_keeps_null_field_segment_from_last_declaration(tmp_path: Path) -> None:
+    """① 新值为 null 且旧声明有 ``dv=none`` → 该段保留。"""
+    base = {
+        'ts_code': ['600519.SH'], 'trade_date': [date(2026, 11, 4)],
+        'close': [1500.0], 'pe': [20.0], 'pb': [8.0], 'dv_ratio': [None],
+        'total_mv': [1e8],
+        'source': ['pe=baostock|pb=baostock|dv=none|mv=local:close+mv'],
+        'fetched_at': [datetime(2026, 11, 4)],
+    }
+    late = {**base, 'total_mv': [1.2e8], 'fetched_at': [datetime(2026, 11, 5)]}
+    formal_path, late_path = _write_valuation_pair(tmp_path, base, late)
+
+    legacy = _legacy_row([formal_path, late_path])
+    assert legacy['source'] == 'pe=baostock|pb=baostock|mv=local:close+mv'  # 旧实现丢段
+
+    assert store.merge_parts('valuation', tmp_path) == 1
+    row = store.read_table('valuation', tmp_path).to_dicts()[0]
+    assert row['dv_ratio'] is None
+    assert row['total_mv'] == 1.2e8
+    assert row['source'] == 'pe=baostock|pb=baostock|dv=none|mv=local:close+mv'
+
+
+def test_merge_parts_does_not_fabricate_missing_segment(tmp_path: Path) -> None:
+    """② 组内没有任何一条声明写过该字段段 → 结果也无该段（不新造）。"""
+    base = {
+        'ts_code': ['600519.SH'], 'trade_date': [date(2026, 11, 4)],
+        'close': [1500.0], 'pe': [20.0], 'pb': [8.0], 'dv_ratio': [None],
+        'total_mv': [1e8],
+        'source': ['pe=baostock|pb=baostock|mv=local:close+mv'],
+        'fetched_at': [datetime(2026, 11, 4)],
+    }
+    late = {**base, 'total_mv': [1.2e8], 'fetched_at': [datetime(2026, 11, 5)]}
+    formal_path, late_path = _write_valuation_pair(tmp_path, base, late)
+
+    # 反例自测：组内确实一条 dv 段都没有，说明「无 dv 段」不是空过，
+    # 而是「本来就没有可沿用的段，代码也没新造」。
+    borrowed = pl.concat([pl.read_parquet(formal_path), pl.read_parquet(late_path)],
+                         how='diagonal_relaxed').select(
+        pl.col('source').str.extract(r'(?:^|\|)dv=([^|]*)', 1).drop_nulls().first()).item()
+    assert borrowed is None
+    assert _legacy_row([formal_path, late_path])['source'] == (
+        'pe=baostock|pb=baostock|mv=local:close+mv')
+
+    assert store.merge_parts('valuation', tmp_path) == 1
+    row = store.read_table('valuation', tmp_path).to_dicts()[0]
+    assert row['dv_ratio'] is None
+    assert 'dv=' not in row['source']
+    assert row['source'] == 'pe=baostock|pb=baostock|mv=local:close+mv'
+
+
+def test_merge_parts_segment_order_is_canonical(tmp_path: Path) -> None:
+    """③ 多字段段按规范序输出，与输入串里的书写顺序无关。"""
+    base = {
+        'ts_code': ['600519.SH'], 'trade_date': [date(2026, 11, 4)],
+        'close': [1500.0], 'pe': [None], 'pb': [8.0], 'dv_ratio': [None],
+        'total_mv': [1e8],
+        'source': ['mv=local:close+mv|pb=baostock|dv=none'],
+        'fetched_at': [datetime(2026, 11, 4)],
+    }
+    late = {**base, 'pb': [None], 'close': [None], 'total_mv': [1.2e8],
+            'fetched_at': [datetime(2026, 11, 5)],
+            'source': ['mv=local:close+mv_v2|pb=baostock|dv=none']}
+    formal_path, late_path = _write_valuation_pair(tmp_path, base, late)
+    assert base['source'][0].startswith('mv=')          # 输入顺序是乱的
+
+    legacy = _legacy_row([formal_path, late_path])
+    assert legacy['source'] == 'pb=baostock|mv=local:close+mv_v2'  # 旧实现丢 dv=none
+
+    assert store.merge_parts('valuation', tmp_path) == 1
+    row = store.read_table('valuation', tmp_path).to_dicts()[0]
+    assert row['pb'] == 8.0 and row['total_mv'] == 1.2e8
+    assert row['source'] == 'pb=baostock|dv=none|mv=local:close+mv_v2'
+
+
+def test_merge_parts_degenerate_source_not_rewritten(tmp_path: Path) -> None:
+    """④ 整串退化形态（无 ``=`` 段）原样保留，不拼出空段或伪造段。"""
+    base = {
+        'ts_code': ['600519.SH'], 'trade_date': [date(2026, 11, 4)],
+        'close': [1500.0], 'pe': [20.0], 'pb': [8.0], 'dv_ratio': [None],
+        'total_mv': [1e8], 'source': ['akshare:stock_value_em'],
+        'fetched_at': [datetime(2026, 11, 4)],
+    }
+    late = {**base, 'total_mv': [1.2e8], 'fetched_at': [datetime(2026, 11, 5)]}
+    formal_path, late_path = _write_valuation_pair(tmp_path, base, late)
+
+    # 反例自测：不看守卫就地为空值字段拼段，会得到无来源的 ``pe=`` 空段
+    fabricated = pl.DataFrame({'source': ['akshare:stock_value_em']}).select(
+        pl.concat_str([pl.lit('pe='),
+                       pl.col('source').str.extract(r'(?:^|\|)pe=([^|]*)', 1)
+                       .fill_null('')], separator='')).item()
+    assert fabricated == 'pe='
+    assert _legacy_row([formal_path, late_path])['source'] == 'akshare:stock_value_em'
+
+    assert store.merge_parts('valuation', tmp_path) == 1
+    row = store.read_table('valuation', tmp_path).to_dicts()[0]
+    assert row['total_mv'] == 1.2e8
+    assert row['source'] == 'akshare:stock_value_em'
+
