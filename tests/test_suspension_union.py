@@ -97,3 +97,18 @@ def test_missing_files_are_tolerated(tmp_path: Path) -> None:
     union = load_suspension_union(tmp_path)
     assert len(union.frame) == 0
     assert union.is_suspended('300280.SZ', date(2022, 6, 7)) is False
+
+
+def test_rebutted_gap_row_is_not_suspended(tmp_path: Path) -> None:
+    """is_suspended=false 的留档行（缺口候选被真实 bar 推翻）不进停牌并集。"""
+    gap = pd.DataFrame({
+        'ts_code': ['300280.SZ', '300280.SZ'],
+        'trade_date': pd.to_datetime(['2022-06-06', '2022-06-07']),
+        'is_suspended': [True, False],
+    })
+    store = _write_store(tmp_path, gap, _frame([]))
+    union = load_suspension_union(store)
+    assert union.is_suspended('300280.SZ', date(2022, 6, 6)) is True
+    assert union.is_suspended('300280.SZ', date(2022, 6, 7)) is False
+    assert len(union.frame) == 1
+    assert union.stats['rows'] == 1

@@ -3,7 +3,9 @@
 两套来源
 --------
 - ``meta/suspension/suspension_daily.parquet``：由「交易日历 − 实际有 bar」反推，
-  只登记**没有 K 线**的停牌日（``derived_from_quote_gap``）。
+  只登记**没有 K 线**的停牌日（``derived_from_quote_gap``）。2026-11-12 起该表
+  允许保留 ``is_suspended=false`` 的留档行（缺口候选被真实 bar 推翻），并集只采纳
+  ``is_suspended != False`` 的行。
 - ``meta/suspension/implied_suspension.parquet``：源端在停牌期仍写出 K 线，
   但 ``volume/amount`` 为 NULL、四价相等，属**占位 bar**；这类日期不在上一张表里。
 
@@ -63,7 +65,16 @@ class SuspensionUnion:
 def _read(path: Path) -> pd.DataFrame | None:
     if not path.is_file():
         return None
-    df = pd.read_parquet(path, columns=['ts_code', 'trade_date'])
+    import pyarrow.parquet as pq  # noqa: PLC0415 - 仅在此处需要探测列
+
+    columns = ['ts_code', 'trade_date']
+    if 'is_suspended' in pq.read_schema(path).names:
+        columns.append('is_suspended')
+    df = pd.read_parquet(path, columns=columns)
+    if 'is_suspended' in df.columns:
+        # 只采纳判定为停牌的行；is_suspended=false 是「缺口候选被真实 bar 推翻」的
+        # 留档行（2026-11-12 起），不得进入停牌并集。空值按停牌处理（历史行为不变）。
+        df = df[df['is_suspended'].fillna(True).astype(bool)]
     df['ts_code'] = df['ts_code'].astype(str)
     df['trade_date'] = pd.to_datetime(df['trade_date']).dt.date
     return df.drop_duplicates(['ts_code', 'trade_date'])

@@ -171,7 +171,11 @@ def _build_grid(
 def _quote_panel(
     root: Path, dates: list[date], universe: set[str], as_of: date,
 ) -> pl.DataFrame:
-    """读取本地个股日线，返回 (cal_idx, ts_code, amount, traded) 面板。"""
+    """读取本地个股日线，返回 (cal_idx, ts_code, amount, traded) 面板。
+
+    只接受「bar 日期 == 该 cal_idx 对应交易日」的精确匹配；非交易日 bar
+    （1991-1993 存在周六/周日 bar）不向相邻交易日映射，直接丢弃。
+    """
     cal_array = np.array(dates, dtype='datetime64[D]')
     files = sorted((root / 'quotes' / 'stock').glob('*/*.parquet'))
     parts: list[pl.DataFrame] = []
@@ -191,6 +195,17 @@ def _quote_panel(
             continue
         day_values = frame['date'].to_numpy().astype('datetime64[D]')
         cal_idx = np.searchsorted(cal_array, day_values)
+        # searchsorted 默认 side='left' 会把非交易日 bar 顶到下一个交易日
+        # （1991-09-29 周日 bar -> 09-30），再配合下方 keep='first' 去重，
+        # 真 09-30 bar 反被丢弃。这里只保留日期精确落在日历上的 bar。
+        matched = cal_idx < cal_array.size
+        if cal_array.size:
+            matched &= cal_array[np.clip(cal_idx, 0, cal_array.size - 1)] == day_values
+        if not matched.all():
+            frame = frame.filter(pl.Series('_keep', matched))
+            cal_idx = cal_idx[matched]
+        if frame.is_empty():
+            continue
         frame = frame.with_columns(
             pl.Series('cal_idx', cal_idx, dtype=pl.Int32),
             pl.lit(code).alias('ts_code'),
