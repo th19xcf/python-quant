@@ -159,6 +159,41 @@ def test_parquet_atomic_supports_lazy_frame(tmp_path):
     assert pl.read_parquet(target).equals(expected)
 
 
+def test_text_atomic_rejects_reversed_args(tmp_path):
+    """``(text, path)`` 写成 ``(path, text)`` 时必须在建目录/落盘前抛错。
+
+    2026-11-12 实际踩过：parquet 已落盘，随后 ``write_text_atomic(MANIFEST, json)``
+    因参数颠倒把 manifest 写成目录，正式 manifest 未更新。
+    """
+    target = tmp_path / 'manifest.json'
+    with pytest.raises(TypeError, match='顺序疑似颠倒'):
+        write_text_atomic(target, '{"rows": 1}')
+    with pytest.raises(TypeError, match='顺序疑似颠倒'):
+        write_text_atomic('{"rows": 1}\n', '{\n  "rows": 1\n}')
+    assert not target.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_bytes_atomic_rejects_reversed_args(tmp_path):
+    """二进制写入同样拦「path 放首位」与「文本放到 path 位」。"""
+    target = tmp_path / 'events.csv'
+    with pytest.raises(TypeError, match='顺序疑似颠倒'):
+        write_bytes_atomic(target, b'a,b\n')
+    with pytest.raises(TypeError, match='顺序疑似颠倒'):
+        write_bytes_atomic('a,b\n1,2\n', 'a,b\n1,2\n' * 100)
+    assert not target.exists()
+
+
+def test_normal_calls_still_pass_guard(tmp_path):
+    """正常调用不受守卫影响：Path / str 两种目标、文本 / 字节两种载荷都能写。"""
+    write_text_atomic('{"rows": 1}', tmp_path / 'a.json')
+    write_text_atomic('x,y\n', str(tmp_path / 'b.csv'))
+    write_bytes_atomic(b'x,y\n', tmp_path / 'c.csv')
+    write_bytes_atomic(b'x,y\n', str(tmp_path / 'd.csv'))
+    assert (tmp_path / 'a.json').read_text(encoding='utf-8') == '{"rows": 1}'
+    assert (tmp_path / 'd.csv').read_bytes() == b'x,y\n'
+
+
 def test_atomic_write_survives_power_loss(tmp_path, monkeypatch):
     """对照组（新路径）：fsync 先于 replace，断电模型下新内容完好。"""
     target = tmp_path / 'atomic.parquet'

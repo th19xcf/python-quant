@@ -33,6 +33,37 @@ def _fsync(path: Path) -> None:
         os.fsync(handle.fileno())
 
 
+#: path 位收到字符串时的长度上限；超过即判「文本写到了 path 位」
+_GUARD_PATH_MAX = 512
+
+
+def _require_write_args(kind: str, payload: object, path: object) -> None:
+    """写盘前防呆：参数顺序写反时立刻抛错，不建目录、不落临时文件。
+
+    只做 O(1) 的形态判定，不猜内容语义，因此对既有调用点零影响：
+
+    - 载荷位类型不对（``write_text_atomic`` 首位收到 ``Path``、
+      ``write_bytes_atomic`` 首位收到 ``str``/``Path``）即判顺序写反；
+    - 目标位收到 ``str`` 但含换行或超长，说明「文本被写到了 path 位」。
+    """
+    expected = 'str' if kind == 'text' else 'bytes'
+    ok_payload = (isinstance(payload, str) if kind == 'text'
+                  else isinstance(payload, (bytes, bytearray, memoryview)))
+    if not ok_payload:
+        raise TypeError(
+            f'write_{kind}_atomic 参数顺序疑似颠倒：第 1 个参数应为 {expected}，'
+            f'实际收到 {type(payload).__name__}；签名是 '
+            f'write_{kind}_atomic(payload, path)')
+    if not isinstance(path, (str, Path)):
+        raise TypeError(
+            f'write_{kind}_atomic 参数顺序疑似颠倒：第 2 个参数应为 Path/str，'
+            f'实际收到 {type(path).__name__}（像是把载荷写到了 path 位）')
+    if isinstance(path, str) and ('\n' in path or len(path) > _GUARD_PATH_MAX):
+        raise TypeError(
+            f'write_{kind}_atomic 参数顺序疑似颠倒：path 位收到的是文本'
+            f'（长度 {len(path)}，含换行={chr(10) in path}）')
+
+
 def write_parquet_atomic(
     frame: pl.DataFrame | pl.LazyFrame, path: Path | str, *,
     compression: Any = 'zstd',
@@ -83,6 +114,7 @@ def write_parquet_atomic(
 
 def write_bytes_atomic(payload: bytes, path: Path | str) -> None:
     """原子写二进制：落临时文件、``fsync`` 后替换目标。"""
+    _require_write_args('bytes', payload, path)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_path(target)
@@ -101,6 +133,7 @@ def write_text_atomic(
     text: str, path: Path | str, *, encoding: str = 'utf-8',
 ) -> None:
     """原子写文本：落临时文件、``fsync`` 后替换目标。"""
+    _require_write_args('text', text, path)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_path(target)
