@@ -7,6 +7,11 @@
 - 仅源侧存在 → ``copy2`` 补齐，并逐文件 SHA256 校验；
 - 仅备份侧存在 → **只输出清单，绝不删除**。
 
+字节码产物（``__pycache__`` 目录下的任何文件、``*.pyc``、``*.pyo``）不参与集合差：
+两侧都不计入存量与补缺，也不进「仅备份存在」清单。依据是项目规则「比对与 ``copy2``
+一律跳过 ``__pycache__/``、``*.pyc``、``*.pyo``」——这类文件由解释器重新生成，进备份
+只占体积、并会在完整性核对里制造假差异（实测备份侧曾因此累积 12 个目录 / 66 个 ``.pyc``）。
+
 红线约束：本模块不含任何删除实现（无 ``unlink`` / ``remove`` / ``rmtree``），也不调用
 git-clean 之类的外部清理命令。备份侧独有文件意味着「源侧已删、备份侧还在」，
 必须由人工核对是否为唯一副本后另行裁定，工具不得替代该判断。
@@ -29,6 +34,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DST = Path(r'G:\git\python-quant')
 DEFAULT_SUBDIRS = ('data/local_store', 'reports')
+EXCLUDED_DIR = '__pycache__'
+EXCLUDED_SUFFIXES = ('.pyc', '.pyo')
+
+
+def is_bytecode_artifact(rel: str) -> bool:
+    """相对路径（posix）是否属于字节码产物：``__pycache__`` 目录内，或 ``.pyc`` / ``.pyo``。"""
+    if EXCLUDED_DIR in rel.split('/'):
+        return True
+    return rel.lower().endswith(EXCLUDED_SUFFIXES)
 
 
 def sha256(path: Path) -> str:
@@ -41,10 +55,18 @@ def sha256(path: Path) -> str:
 
 
 def rel_files(root: Path) -> set[str]:
-    """返回 root 下所有文件的相对路径（posix 分隔）。"""
+    """返回 root 下所有文件的相对路径（posix 分隔），跳过字节码产物。"""
     if not root.is_dir():
         return set()
-    return {p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}
+    out: set[str] = set()
+    for path in root.rglob('*'):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        if is_bytecode_artifact(rel):
+            continue
+        out.add(rel)
+    return out
 
 
 @dataclass
