@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# ===========================================================================
+# pre-commit 钩子：暂存区守卫（S-08 前半）
+#
+# 做两件事，任一件不通过即退出非零、阻断本次提交：
+#   1. 拒收误入暂存区的构建产物 / 冲突残留：*.pyc、*.tmp、*.orig、*.rej
+#   2. 对暂存区内新增/修改的 *.py 跑 `ruff check`（不自动修复，只报错拦截）
+#
+# 检查对象是暂存区路径清单（`git diff --cached --diff-filter=ACMR`），
+# 但 ruff 读取的是这些路径的工作区内容；若同一文件存在「只暂存了一部分
+# hunk」的情况，ruff 看到的是完整工作区版本，不是暂存快照。
+#
+# ---------------------------------------------------------------------------
+# 安装（在仓库根执行一次，本机全局生效于该仓库）：
+#     git config core.hooksPath scripts/git-hooks
+#   校验：
+#     git config --get core.hooksPath     # 应输出 scripts/git-hooks
+#
+# 绕过（仅限明确知道自己在做什么的单次提交）：
+#     git commit --no-verify
+#     git commit -n
+#
+# 卸载（恢复 git 默认从 .git/hooks 读取）：
+#     git config --unset core.hooksPath
+#   校验：
+#     git config --get core.hooksPath     # 应无输出且退出码为 1
+#
+# ---------------------------------------------------------------------------
+# 离线测试开关：
+#     SKIP_RUFF=1 git commit ...   只跑第 1 步（文件类型拒收），不跑 ruff
+#   用于在没有 .venv / ruff 的环境里验证拒收逻辑；不设置时默认真跑 ruff，
+#   且 ruff 找不到会报错退出，绝不静默跳过。
+#
+# 依赖：bash（Git for Windows 自带）与仓库 `.venv` 中的 ruff。
+# 可执行位：POSIX 环境需要 chmod +x；该位已随提交记录（100755）。
+# ===========================================================================
+set -u
+
+die() {
+    echo "[pre-commit] $*" >&2
+    exit 1
+}
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || die "不在 git 仓库内，无法定位仓库根"
+cd "$ROOT" || die "无法进入仓库根：$ROOT"
+
+# ---------------------------------------------------------------------------
+# 第 0 步：收集暂存区文件（NUL 分隔，避免中文/空格路径被转义或截断）
+# ---------------------------------------------------------------------------
+staged=()
+while IFS= read -r -d '' path; do
+    staged+=("$path")
+done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+
+if [ ${#staged[@]} -eq 0 ]; then
+    echo "[pre-commit] 暂存区无新增/修改文件，跳过"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# 第 1 步：拒收构建产物与冲突残留
+# ---------------------------------------------------------------------------
+bad=()
+for path in "${staged[@]}"; do
+    case "$path" in
+        *.pyc|*.tmp|*.orig|*.rej) bad+=("$path") ;;
+    esac
+done
+
+if [ ${#bad[@]} -gt 0 ]; then
+    echo "[pre-commit] 拒绝提交：暂存区含不应入库的文件（${#bad[@]} 个）" >&2
+    printf '[pre-commit]   %s\n' "${bad[@]}" >&2
+    echo "[pre-commit] 处理：git restore --staged <文件>；若属应忽略类型，补进 .gitignore" >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 第 2 步：对暂存区 Python 文件跑 ruff check
+# ---------------------------------------------------------------------------
+py=()
+for path in "${staged[@]}"; do
+    case "$path" in
+        *.py) [ -f "$path" ] && py+=("$path") ;;
+    esac
+done
+
+if [ ${#py[@]} -eq 0 ]; then
+    echo "[pre-commit] 暂存区无 Python 文件，跳过 ruff"
+    exit 0
+fi
+
+if [ "${SKIP_RUFF:-0}" = "1" ]; then
+    echo "[pre-commit] SKIP_RUFF=1：跳过 ruff，放行 ${#py[@]} 个 Python 文件"
+    exit 0
+fi
+
+# 优先用仓库 .venv 的 python 跑 ruff 模块（不经 PATH，避免用到全局 ruff）
+# 在 Windows 上 python.exe 可能没有 +x 位，故用 -f 判断存在而非 -x
+PYTHON=""
+for candidate in ".venv/Scripts/python.exe" ".venv/bin/python"; do
+    if [ -f "$candidate" ] && "$candidate" -m ruff --version >/dev/null 2>&1; then
+        PYTHON="$candidate"
+        break
+    fi
+done
+
+[ -n "$PYTHON" ] || die "找不到可用的 ruff：尝试过 .venv/Scripts/python.exe 与 .venv/bin/python 的 -m ruff，均失败。请先执行 poetry install（或 pip install ruff），本钩子不会静默跳过检查。"
+
+echo "[pre-commit] ruff check：${#py[@]} 个 Python 文件（$("$PYTHON" -m ruff --version)）"
+if ! "$PYTHON" -m ruff check --no-cache --force-exclude -- "${py[@]}"; then
+    echo "[pre-commit] ruff 检查未通过，已阻断提交。修复后可重试；确需跳过用 git commit --no-verify" >&2
+    exit 1
+fi
+
+echo "[pre-commit] 通过：文件类型与 ruff 检查均无问题"
+exit 0
