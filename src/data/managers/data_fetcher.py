@@ -24,7 +24,7 @@ from src.data.data_cache import global_data_cache
 from src.data.data_source_health import get_global_health_checker
 from src.data.local_store import get_local_quote_store, remote_database_enabled
 from src.data.local_store import metrics as route_metrics
-from src.data.managers.source_worker import call_source
+from src.data.managers.source_worker import call_source, init_worker
 from src.data.quality.quarantine import drop_quarantined
 from src.data.tdx_day_parser import build_day_file_path, read_recent_records
 from src.utils.code_converter import is_fund_code, is_index_code, parse_code
@@ -1508,6 +1508,8 @@ class DataFetcher:
                 pool = ProcessPoolExecutor(
                     max_workers=workers,
                     mp_context=multiprocessing.get_context('spawn'),
+                    initializer=init_worker,
+                    initargs=(self.config,),
                 )
                 self._process_executor = pool
             return pool
@@ -1564,7 +1566,6 @@ class DataFetcher:
                 'handler': f"{type(source).__module__}:{type(source).__name__}",
                 'method': method_name,
                 'kwargs': kwargs,
-                'config': self.config,
             }
             future = pool.submit(call_source, payload)
             future.add_done_callback(self._consume_late_result)

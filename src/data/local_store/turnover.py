@@ -52,6 +52,7 @@ import os
 import time
 from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -636,6 +637,119 @@ def _run_chunk_inline(chunk: list[dict[str, Any]]
     return frames, done, failures
 
 
+def _select_universe(quote_store: Any, codes: Iterable[str] | None,
+                     max_codes: int | None) -> list[str]:
+    """按标的白名单与调试上限裁剪待回补的个股列表。"""
+    universe = list(quote_store.codes('stock'))
+    if codes is not None:
+        wanted = {c.strip().upper() for c in codes if c.strip()}
+        universe = [c for c in universe if c in wanted]
+    if max_codes is not None:
+        universe = universe[:max_codes]
+    return universe
+
+
+def _cleanup_stale_parts(parts_dir: Path) -> None:
+    """非续跑时清理上次残留分块（这些分块会被重新计算）。"""
+    for stale in parts_dir.glob(_PARTS_GLOB):
+        try:
+            stale.unlink()
+        except OSError as exc:
+            logger.warning(f'[turnover] 清理残留分块失败，该分块会被重新计算: {stale}: {exc}')
+
+
+def _load_resume_state(parts_dir: Path, manifest_path: Path, codes_hash: str,
+                       resume: bool, total_chunks: int) -> tuple[bool, set[int], dict[str, str],
+                                                                 list[dict[str, Any]], dict[str, Any]]:
+    """加载断点状态并校正已完成分块；非续跑时清理残留分块。
+
+    Returns:
+        (resuming, completed_parts, completed_codes, failed_items, state)
+    """
+    state = _load_json(manifest_path)
+    completed_parts: set[int] = set()
+    resuming = (resume and state.get('codes_hash') == codes_hash
+                and state.get('status') in {'running', 'failed'})
+    completed_codes: dict[str, str] = dict(state.get('completed') or {}) if resuming else {}
+    failed_items: list[dict[str, Any]] = list(state.get('failed') or []) if resuming else []
+    if resuming:
+        completed_parts = {
+            int(idx) for idx in state.get('completed_parts', [])
+            if (parts_dir / f'part_{int(idx):05d}.parquet').exists()}
+        logger.info(f'[turnover] 断点续跑：已完成 {len(completed_parts)}/{total_chunks} 分块，'
+                    f'已有 {len(completed_codes)} 只')
+    else:
+        _cleanup_stale_parts(parts_dir)
+    return resuming, completed_parts, completed_codes, failed_items, state
+
+
+@dataclass
+class _TurnoverRun:
+    """一次回补的运行态（分块、断点、进度与累计量）。"""
+
+    chunks: list[list[dict[str, Any]]]
+    parts_dir: Path
+    manifest_path: Path
+    progress_path: Path
+    codes_hash: str
+    chunk_size: int
+    total_codes: int
+    started: float
+    completed_parts: set[int]
+    completed_codes: dict[str, str]
+    failed_items: list[dict[str, Any]]
+    resuming: bool
+    state_started_at: Any
+    rows_added: int = 0
+    written_codes: int = 0
+
+
+def _run_turnover_chunks(run: _TurnoverRun, workers: int) -> None:
+    """逐分块抓取、落盘并写进度；上游熔断时停在当前分块并保留已落盘结果。"""
+    for index, chunk in enumerate(run.chunks):
+        if index in run.completed_parts:
+            continue
+        frames, done, failures = (_run_chunk_inline(chunk) if workers <= 1
+                                  else _run_chunk(chunk, workers))
+        run.completed_codes.update(done)
+        run.failed_items.extend(failures)
+        run.written_codes += len(done)
+
+        if frames:
+            part_frame = pl.concat(frames, how='vertical_relaxed').sort(
+                ['ts_code', 'trade_date'])
+            _write_part(run.parts_dir / f'part_{index:05d}.parquet', part_frame)
+            run.rows_added += part_frame.height
+        blocked = bool(_SESSION.get('blocked'))
+        # 熔断时本批未跑完，不能标记 complete，否则重跑会跳过未抓的票
+        if not blocked:
+            run.completed_parts.add(index)
+
+        _write_json(run.manifest_path, {
+            'status': 'running',
+            'codes_hash': run.codes_hash,
+            'chunk_size': run.chunk_size,
+            'total_codes': run.total_codes,
+            'total_parts': len(run.chunks),
+            'completed_parts': sorted(run.completed_parts),
+            # 每批落盘一次进度（票 -> 最新日期），中断后可精确续跑
+            'completed': run.completed_codes,
+            'failed': run.failed_items,
+            'started_at': (run.state_started_at if run.resuming
+                           else datetime.now().isoformat(timespec='seconds')),
+        })
+        _write_progress_csv(run.progress_path, run.completed_codes, run.failed_items)
+        elapsed = time.perf_counter() - run.started
+        logger.info(
+            f'[turnover] 进度 {index + 1}/{len(run.chunks)} 分块，'
+            f'已完成 {run.written_codes}/{run.total_codes} 只 / {run.rows_added:,} 行，'
+            f'失败 {len(run.failed_items)} 只，已用 {elapsed:.1f}s')
+        if blocked:
+            logger.error(f'[turnover] 上游熔断，停在分块 {index}/{len(run.chunks)}，'
+                         f'已落盘 {run.written_codes} 只，重跑将断点续跑')
+            break
+
+
 def backfill_turnover(quote_store: Any, root: Path | str | None = None, *,
                       codes: Iterable[str] | None = None,
                       chunk_size: int = 200,
@@ -662,12 +776,7 @@ def backfill_turnover(quote_store: Any, root: Path | str | None = None, *,
     manifest_path = parts_dir / 'manifest.json'
     progress_path = parts_dir / 'progress.csv'
 
-    universe = list(quote_store.codes('stock'))
-    if codes is not None:
-        wanted = {c.strip().upper() for c in codes if c.strip()}
-        universe = [c for c in universe if c in wanted]
-    if max_codes is not None:
-        universe = universe[:max_codes]
+    universe = _select_universe(quote_store, codes, max_codes)
 
     last_dates = _existing_last_dates(target)
     tasks, skipped_no_quotes = _build_tasks(quote_store, universe, last_dates)
@@ -687,84 +796,32 @@ def backfill_turnover(quote_store: Any, root: Path | str | None = None, *,
         '\n'.join(sorted(t['code'] for t in tasks)).encode('utf-8')).hexdigest()
     chunks = [tasks[i:i + chunk_size] for i in range(0, len(tasks), chunk_size)]
 
-    state = _load_json(manifest_path)
-    completed_parts: set[int] = set()
-    resuming = (resume and state.get('codes_hash') == codes_hash
-                and state.get('status') in {'running', 'failed'})
-    completed_codes: dict[str, str] = dict(state.get('completed') or {}) if resuming else {}
-    failed_items: list[dict[str, Any]] = list(state.get('failed') or []) if resuming else []
-    if resuming:
-        completed_parts = {
-            int(idx) for idx in state.get('completed_parts', [])
-            if (parts_dir / f'part_{int(idx):05d}.parquet').exists()}
-        logger.info(f'[turnover] 断点续跑：已完成 {len(completed_parts)}/{len(chunks)} 分块，'
-                    f'已有 {len(completed_codes)} 只')
-    else:
-        for stale in parts_dir.glob(_PARTS_GLOB):
-            try:
-                stale.unlink()
-            except OSError as exc:
-                logger.warning(f'[turnover] 清理残留分块失败，该分块会被重新计算: {stale}: {exc}')
+    resuming, completed_parts, completed_codes, failed_items, state = _load_resume_state(
+        parts_dir, manifest_path, codes_hash, resume, len(chunks))
 
-    started = time.perf_counter()
-    rows_added = 0
-    written_codes = len(completed_codes)
+    run = _TurnoverRun(
+        chunks=chunks, parts_dir=parts_dir, manifest_path=manifest_path,
+        progress_path=progress_path, codes_hash=codes_hash, chunk_size=chunk_size,
+        total_codes=len(tasks), started=time.perf_counter(),
+        completed_parts=completed_parts, completed_codes=completed_codes,
+        failed_items=failed_items, resuming=resuming,
+        state_started_at=state.get('started_at'),
+        written_codes=len(completed_codes),
+    )
+    _run_turnover_chunks(run, workers)
 
-    for index, chunk in enumerate(chunks):
-        if index in completed_parts:
-            continue
-        frames, done, failures = (_run_chunk_inline(chunk) if workers <= 1
-                                  else _run_chunk(chunk, workers))
-        completed_codes.update(done)
-        failed_items.extend(failures)
-        written_codes += len(done)
-
-        if frames:
-            part_frame = pl.concat(frames, how='vertical_relaxed').sort(
-                ['ts_code', 'trade_date'])
-            _write_part(parts_dir / f'part_{index:05d}.parquet', part_frame)
-            rows_added += part_frame.height
-        blocked = bool(_SESSION.get('blocked'))
-        # 熔断时本批未跑完，不能标记 complete，否则重跑会跳过未抓的票
-        if not blocked:
-            completed_parts.add(index)
-
-        _write_json(manifest_path, {
-            'status': 'running',
-            'codes_hash': codes_hash,
-            'chunk_size': chunk_size,
-            'total_codes': len(tasks),
-            'total_parts': len(chunks),
-            'completed_parts': sorted(completed_parts),
-            # 每批落盘一次进度（票 -> 最新日期），中断后可精确续跑
-            'completed': completed_codes,
-            'failed': failed_items,
-            'started_at': state.get('started_at') if resuming else
-            datetime.now().isoformat(timespec='seconds'),
-        })
-        _write_progress_csv(progress_path, completed_codes, failed_items)
-        elapsed = time.perf_counter() - started
-        logger.info(
-            f'[turnover] 进度 {index + 1}/{len(chunks)} 分块，'
-            f'已完成 {written_codes}/{len(tasks)} 只 / {rows_added:,} 行，'
-            f'失败 {len(failed_items)} 只，已用 {elapsed:.1f}s')
-        if blocked:
-            logger.error(f'[turnover] 上游熔断，停在分块 {index}/{len(chunks)}，'
-                         f'已落盘 {written_codes} 只，重跑将断点续跑')
-            break
-
-    parts = [parts_dir / f'part_{idx:05d}.parquet' for idx in sorted(completed_parts)
+    parts = [parts_dir / f'part_{idx:05d}.parquet' for idx in sorted(run.completed_parts)
              if (parts_dir / f'part_{idx:05d}.parquet').exists()]
-    total_rows = _assemble(parts, target, set(completed_codes)) if parts else None
+    total_rows = _assemble(parts, target, set(run.completed_codes)) if parts else None
 
-    elapsed = time.perf_counter() - started
+    elapsed = time.perf_counter() - run.started
     _write_json(manifest_path, {
-        'status': 'completed' if not failed_items else 'completed_with_failures',
+        'status': 'completed' if not run.failed_items else 'completed_with_failures',
         'codes_hash': codes_hash,
-        'completed_parts': sorted(completed_parts),
+        'completed_parts': sorted(run.completed_parts),
         'total_parts': len(chunks),
-        'completed_codes': len(completed_codes),
-        'failed_codes': len(failed_items),
+        'completed_codes': len(run.completed_codes),
+        'failed_codes': len(run.failed_items),
         'elapsed_s': round(elapsed, 3),
         'updated_at': datetime.now().isoformat(timespec='seconds'),
     })
@@ -776,16 +833,16 @@ def backfill_turnover(quote_store: Any, root: Path | str | None = None, *,
             logger.warning(f'[turnover] 合并后删除分块失败，需人工清理: {part}: {exc}')
 
     logger.info(
-        f'[turnover] 完成：{len(completed_codes)} 只 / {rows_added:,} 行新增，'
+        f'[turnover] 完成：{len(run.completed_codes)} 只 / {run.rows_added:,} 行新增，'
         f'合并后 {total_rows if total_rows is not None else 0:,} 行，'
-        f'失败 {len(failed_items)} 只，耗时 {elapsed:.1f}s')
+        f'失败 {len(run.failed_items)} 只，耗时 {elapsed:.1f}s')
     return {
         'codes': len(tasks),
-        'codes_written': len(completed_codes),
-        'rows_added': rows_added,
+        'codes_written': len(run.completed_codes),
+        'rows_added': run.rows_added,
         'total_rows': total_rows,
-        'failed': len(failed_items),
-        'failed_codes': [item['code'] for item in failed_items[:20]],
+        'failed': len(run.failed_items),
+        'failed_codes': [item['code'] for item in run.failed_items[:20]],
         'skipped_no_quotes': skipped_no_quotes,
         'elapsed_s': round(elapsed, 3),
         'progress_path': str(progress_path),

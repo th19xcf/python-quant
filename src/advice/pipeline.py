@@ -287,7 +287,7 @@ class AdviceEngine:
                                 exec_date_basis=exec_basis)
         return result
 
-    def _run_tier(self, scored: pl.DataFrame, trade_date: date,  # noqa: C901
+    def _run_tier(self, scored: pl.DataFrame, trade_date: date,
                   meta: dict[str, Any], tier: Any, equity: float,
                   state: dict[str, HoldingState], trading_dates: list[date],
                   coverage: dict[str, Any],
@@ -296,6 +296,7 @@ class AdviceEngine:
                   block_new_buys: bool = False,
                   gate_reason: str = '',
                   ) -> tuple[TierAdvice, dict[str, HoldingState]]:
+        """单档位闭环：候选筛选 → 持仓决策 → 仓位分配 → 换手上限 → 组装清单。"""
         latest = scored.filter(pl.col('date') == trade_date)
         if latest.is_empty():
             return TierAdvice(tier=tier.key, label=tier.label,
@@ -328,73 +329,128 @@ class AdviceEngine:
             'funnel_avoid': 0,
         }
 
-        # 1) 候选池：软筛选 + 分数达标 + 可交易 + 成本门槛
-        #    IC 门禁触发时清空候选池：本期不出新建仓，只保留持仓的持有/卖出管理
+        candidates, avoid_rows, ranked = self._scan_candidates(
+            scored, rows, trade_date, meta, tier, state, risk,
+            block_new_buys, gate_reason, funnel, advice.notes)
+        best_pct = candidates[0][1].score_percentile if candidates else None
+        funnel['funnel_candidates'] = len(candidates)
+
+        decisions, exits, remaining, existing_value = self._decide_holdings(
+            state, by_code, trade_date, trading_dates, tier, best_pct)
+        alloc_by_code = self._plan_allocations(
+            candidates, equity, tier, remaining, existing_value)
+        plan, admitted_sells, admitted_buys = self._apply_turnover(
+            state, exits, decisions, by_code, alloc_by_code, equity)
+
+        new_state = self._assemble_rows(
+            advice, candidates, avoid_rows, plan, alloc_by_code,
+            admitted_sells, admitted_buys, state, by_code, decisions, exits,
+            meta, tier, equity, stats, earliest_exec)
+        self._fill_stats(advice, plan, ranked, candidates, avoid_rows, equity,
+                         count_start, audit_start, funnel, risk, block_new_buys)
+        return advice, new_state
+
+    def _scan_candidates(
+        self,
+        scored: pl.DataFrame,
+        rows: list[dict],
+        trade_date: date,
+        meta: dict[str, Any],
+        tier: Any,
+        state: dict[str, HoldingState],
+        risk: RiskContext,
+        block_new_buys: bool,
+        gate_reason: str,
+        funnel: dict[str, int],
+        notes: list[str],
+    ) -> tuple[list[tuple[dict, Candidate, Any]], list[tuple[dict, Any]],
+               list[dict]]:
+        """按软筛选 + 分数达标 + 可交易 + 成本门槛扫出候选池、回避行与排序全量行。"""
         candidates: list[tuple[dict, Candidate, Any]] = []
         avoid_rows: list[tuple[dict, Any]] = []
         if block_new_buys:
-            advice.notes.append(gate_reason)
+            notes.append(gate_reason)
         if 'soft_pass' in scored.columns:
             latest = scored.filter(pl.col('date') == trade_date)
             passed = latest.filter(pl.col('soft_pass')).height
             funnel['funnel_soft_pass'] = passed
-            advice.notes.append(f"软筛选通过 {passed}/{latest.height}（仅 extended）")
+            notes.append(f"软筛选通过 {passed}/{latest.height}（仅 extended）")
         ranked = sorted(rows, key=lambda entry: entry.get('score_percentile') or 0.0,
                         reverse=True)
         funnel['funnel_score_pass'] = sum(
             1 for entry in rows
             if float(entry.get('score_percentile') or 0.0) >= tier.buy_percentile)
+        # IC 门禁触发时清空候选池：本期不出新建仓，只保留持仓的持有/卖出管理
         loop_entries = [] if block_new_buys else ranked
         for entry in loop_entries:
-            code = str(entry['ts_code'])
-            if entry.get('soft_pass') is False:
-                if len(avoid_rows) < self.config.max_avoid_rows:
-                    reason = str(entry.get('soft_reason') or '软筛选未通过')
-                    avoid_rows.append((entry, EligibilityResult(
-                        False, [f'软筛选:{reason}'], f'软筛选不通过：{reason}')))
-                continue
-            if code in state:
-                continue
-            percentile = float(entry.get('score_percentile') or 0.0)
-            if percentile >= tier.buy_percentile:
-                verdict = risk.evaluate(code, trade_date)
-                st_status = risk.st_status(code, trade_date)
-                eligibility = check_eligibility(
-                    entry, tier, self.config, 'buy', st_status=st_status)
-                if not eligibility.ok and len(avoid_rows) < self.config.max_avoid_rows:
-                    avoid_rows.append((entry, eligibility))
-                    continue
-                if not verdict.ok:
-                    if len(avoid_rows) < self.config.max_avoid_rows:
-                        avoid_rows.append((entry, EligibilityResult(
-                            False, [verdict.reason], verdict.reason)))
-                    continue
-                if eligibility.ok:
-                    ok_edge, reason = entry_allowed(percentile, tier, self.config)
-                    if ok_edge:
-                        stock_meta = meta.get(code)
-                        candidates.append((entry, Candidate(
-                            ts_code=code,
-                            score_percentile=percentile,
-                            price=float(entry.get('raw_close') or 0.0),
-                            industry=stock_meta.industry if stock_meta else '未知',
-                            industry_source=(stock_meta.industry_source
-                                             if stock_meta else INDUSTRY_SOURCE_BOARD),
-                            adv_amount=float(entry.get('amount_ma20') or 0.0),
-                        ), eligibility))
-                    elif len(avoid_rows) < self.config.max_avoid_rows:
-                        avoid_rows.append((entry, eligibility))
-            elif percentile >= tier.buy_percentile - 0.05:
-                eligibility = check_eligibility(
-                    entry, tier, self.config, 'buy',
-                    st_status=risk.st_status(code, trade_date))
-                if not eligibility.ok and len(avoid_rows) < self.config.max_avoid_rows:
-                    avoid_rows.append((entry, eligibility))
+            candidate, avoid = self._evaluate_buy_entry(
+                entry, trade_date, tier, state, risk, meta)
+            if candidate is not None:
+                candidates.append((entry, candidate[0], candidate[1]))
+            elif avoid is not None and len(avoid_rows) < self.config.max_avoid_rows:
+                avoid_rows.append((entry, avoid))
+        return candidates, avoid_rows, ranked
 
-        best_pct = candidates[0][1].score_percentile if candidates else None
-        funnel['funnel_candidates'] = len(candidates)
+    def _evaluate_buy_entry(
+        self,
+        entry: dict,
+        trade_date: date,
+        tier: Any,
+        state: dict[str, HoldingState],
+        risk: RiskContext,
+        meta: dict[str, Any],
+    ) -> tuple[tuple[Candidate, Any] | None, Any | None]:
+        """评估单个标的的买入资格，返回 (候选, 资格) 或 (None, 回避原因)，互斥。"""
+        code = str(entry['ts_code'])
+        if entry.get('soft_pass') is False:
+            reason = str(entry.get('soft_reason') or '软筛选未通过')
+            return None, EligibilityResult(
+                False, [f'软筛选:{reason}'], f'软筛选不通过：{reason}')
+        if code in state:
+            return None, None
+        percentile = float(entry.get('score_percentile') or 0.0)
+        if percentile >= tier.buy_percentile:
+            verdict = risk.evaluate(code, trade_date)
+            st_status = risk.st_status(code, trade_date)
+            eligibility = check_eligibility(
+                entry, tier, self.config, 'buy', st_status=st_status)
+            if not eligibility.ok:
+                return None, eligibility
+            if not verdict.ok:
+                return None, EligibilityResult(
+                    False, [verdict.reason], verdict.reason)
+            ok_edge, _reason = entry_allowed(percentile, tier, self.config)
+            if not ok_edge:
+                return None, eligibility
+            stock_meta = meta.get(code)
+            return (Candidate(
+                ts_code=code,
+                score_percentile=percentile,
+                price=float(entry.get('raw_close') or 0.0),
+                industry=stock_meta.industry if stock_meta else '未知',
+                industry_source=(stock_meta.industry_source
+                                 if stock_meta else INDUSTRY_SOURCE_BOARD),
+                adv_amount=float(entry.get('amount_ma20') or 0.0),
+            ), eligibility), None
+        if percentile >= tier.buy_percentile - 0.05:
+            eligibility = check_eligibility(
+                entry, tier, self.config, 'buy',
+                st_status=risk.st_status(code, trade_date))
+            if not eligibility.ok:
+                return None, eligibility
+        return None, None
 
-        # 2) 持仓决策：最小持有期 + 确认日 + 成本门槛
+    def _decide_holdings(
+        self,
+        state: dict[str, HoldingState],
+        by_code: dict[str, dict],
+        trade_date: date,
+        trading_dates: list[date],
+        tier: Any,
+        best_pct: float | None,
+    ) -> tuple[dict[str, HoldingDecision], dict[str, HoldingDecision],
+               dict[str, HoldingState], float]:
+        """逐持仓求持有/卖出决策，返回决策表、离场集合、留存持仓与留存市值。"""
         decisions: dict[str, HoldingDecision] = {}
         for code, holding in state.items():
             row = by_code.get(code)
@@ -427,8 +483,17 @@ class AdviceEngine:
             holding.shares * float(by_code[code]['raw_close'])
             for code, holding in remaining.items()
             if code in by_code and by_code[code].get('raw_close'))
+        return decisions, exits, remaining, existing_value
 
-        # 3) 新开仓分配（受可用资金、档位持仓数与单票/行业上限约束）
+    def _plan_allocations(
+        self,
+        candidates: list[tuple[dict, Candidate, Any]],
+        equity: float,
+        tier: Any,
+        remaining: dict[str, HoldingState],
+        existing_value: float,
+    ) -> dict[str, Any]:
+        """按可用资金、档位持仓数与单票/行业上限给候选分配目标权重。"""
         slots = max(0, tier.max_positions - len(remaining))
         available = max(0.0, equity * (1.0 - self.config.constraints.cash_buffer)
                         - existing_value)
@@ -437,9 +502,18 @@ class AdviceEngine:
                                constraints, max_positions=slots)
         allocations = _rescale(allocations, available, equity,
                                self.config.constraints.lot_size)
-        alloc_by_code = {item.ts_code: item for item in allocations}
+        return {item.ts_code: item for item in allocations}
 
-        # 4) 换手上限
+    def _apply_turnover(
+        self,
+        state: dict[str, HoldingState],
+        exits: dict[str, HoldingDecision],
+        decisions: dict[str, HoldingDecision],
+        by_code: dict[str, dict],
+        alloc_by_code: dict[str, Any],
+        equity: float,
+    ) -> tuple[Any, set[str], set[str]]:
+        """构造买卖意图并套用单次换手上限，返回计划与放行的卖出/买入集合。"""
         intents: list[TradeIntent] = []
         for code, holding in state.items():
             if code in exits:
@@ -457,8 +531,60 @@ class AdviceEngine:
                           if intent.side == 'sell'}
         admitted_buys = {intent.ts_code for intent in plan.admitted
                          if intent.side == 'buy'}
+        return plan, admitted_sells, admitted_buys
 
-        # 5) 组装清单
+    def _assemble_rows(
+        self,
+        advice: TierAdvice,
+        candidates: list[tuple[dict, Candidate, Any]],
+        avoid_rows: list[tuple[dict, Any]],
+        plan: Any,
+        alloc_by_code: dict[str, Any],
+        admitted_sells: set[str],
+        admitted_buys: set[str],
+        state: dict[str, HoldingState],
+        by_code: dict[str, dict],
+        decisions: dict[str, HoldingDecision],
+        exits: dict[str, HoldingDecision],
+        meta: dict[str, Any],
+        tier: Any,
+        equity: float,
+        stats: dict | None,
+        earliest_exec: date | None,
+    ) -> dict[str, HoldingState]:
+        """组装当日清单：持仓行、放行买入、延后买入、回避行，并按 (档位,代码) 合并。"""
+        new_state = self._append_holding_rows(
+            advice, state, by_code, decisions, exits, admitted_sells,
+            meta, tier, equity, stats, earliest_exec)
+        new_state.update(self._append_buy_rows(
+            advice, candidates, alloc_by_code, admitted_buys, meta, tier, stats))
+        self._append_deferred_buys(
+            advice, plan, alloc_by_code, candidates, meta, tier, stats, earliest_exec)
+        self._append_avoid_rows(advice, avoid_rows, meta, tier, stats)
+
+        # 同日同档按 (档位, 代码) 合并；冲突优先级 BUY > SELL > HOLD > AVOID
+        advice.rows, advice.row_merge = merge_duplicate_rows(advice.rows)
+        if advice.row_merge:
+            advice.notes.append(
+                f'行合并：按 (档位,代码) 去掉 {len(advice.row_merge)} 条重复行'
+                f'（优先级 BUY>SELL>HOLD>AVOID）')
+        return new_state
+
+    def _append_holding_rows(
+        self,
+        advice: TierAdvice,
+        state: dict[str, HoldingState],
+        by_code: dict[str, dict],
+        decisions: dict[str, HoldingDecision],
+        exits: dict[str, HoldingDecision],
+        admitted_sells: set[str],
+        meta: dict[str, Any],
+        tier: Any,
+        equity: float,
+        stats: dict | None,
+        earliest_exec: date | None,
+    ) -> dict[str, HoldingState]:
+        """写入持仓的持有/卖出/延后卖出三行，并返回新的持仓状态表。"""
         new_state: dict[str, HoldingState] = {}
         for code, holding in state.items():
             row = by_code.get(code)
@@ -491,7 +617,20 @@ class AdviceEngine:
                     entry_date=holding.entry_date, entry_price=holding.entry_price,
                     smoothed_percentile=decision.smoothed_percentile,
                     sell_confirm=decision.sell_confirm)
+        return new_state
 
+    def _append_buy_rows(
+        self,
+        advice: TierAdvice,
+        candidates: list[tuple[dict, Candidate, Any]],
+        alloc_by_code: dict[str, Any],
+        admitted_buys: set[str],
+        meta: dict[str, Any],
+        tier: Any,
+        stats: dict | None,
+    ) -> dict[str, HoldingState]:
+        """写入换手上限放行的买入行，并返回新增的持仓状态表。"""
+        new_state: dict[str, HoldingState] = {}
         for code, item in alloc_by_code.items():
             if code not in admitted_buys:
                 continue
@@ -499,18 +638,29 @@ class AdviceEngine:
                 (entry for entry in candidates if entry[1].ts_code == code), None)
             if match is None:
                 continue
-            row, candidate, eligibility = match
+            row, _candidate, eligibility = match
             ref_price = float(row.get('raw_close') or item.price)
             advice.rows.append(self._buy_row(
                 row, item, eligibility, meta, tier, ref_price, stats))
             new_state[code] = HoldingState(
-                ts_code=code, shares=item.shares, entry_date=trade_date,
+                ts_code=code, shares=item.shares, entry_date=advice.trade_date,
                 entry_price=ref_price,
                 smoothed_percentile=float(row.get('score_percentile') or 0.0),
                 sell_confirm=0)
+        return new_state
 
-        # 5b) 被换手上限延后的买入也必须写入归档（disposition=deferred），
-        #     否则归档与当日实际建议集合不一致。
+    def _append_deferred_buys(
+        self,
+        advice: TierAdvice,
+        plan: Any,
+        alloc_by_code: dict[str, Any],
+        candidates: list[tuple[dict, Candidate, Any]],
+        meta: dict[str, Any],
+        tier: Any,
+        stats: dict | None,
+        earliest_exec: date | None,
+    ) -> None:
+        """把被换手上限延后的买入写成 disposition=deferred 的归档行。"""
         for intent in plan.deferred:
             if intent.side != 'buy':
                 continue
@@ -522,7 +672,7 @@ class AdviceEngine:
                 None)
             if match is None:
                 continue
-            row, candidate, eligibility = match
+            row, _candidate, eligibility = match
             ref_price = float(row.get('raw_close') or deferred_item.price)
             rec = self._buy_row(
                 row, deferred_item, eligibility, meta, tier, ref_price, stats)
@@ -533,16 +683,33 @@ class AdviceEngine:
                 f'本次未成交：{rec.defer_reason}；预计 {earliest_exec} 可再排')
             advice.rows.append(rec)
 
+    def _append_avoid_rows(
+        self,
+        advice: TierAdvice,
+        avoid_rows: list[tuple[dict, Any]],
+        meta: dict[str, Any],
+        tier: Any,
+        stats: dict | None,
+    ) -> None:
+        """把候选池阶段的回避记录写成交付归档行。"""
         for row, eligibility in avoid_rows:
             advice.rows.append(self._avoid_row(row, eligibility, meta, tier, stats))
 
-        # 5c) 同日同档按 (档位, 代码) 合并；冲突优先级 BUY > SELL > HOLD > AVOID
-        advice.rows, advice.row_merge = merge_duplicate_rows(advice.rows)
-        if advice.row_merge:
-            advice.notes.append(
-                f'行合并：按 (档位,代码) 去掉 {len(advice.row_merge)} 条重复行'
-                f'（优先级 BUY>SELL>HOLD>AVOID）')
-
+    def _fill_stats(
+        self,
+        advice: TierAdvice,
+        plan: Any,
+        ranked: list[dict],
+        candidates: list[tuple[dict, Candidate, Any]],
+        avoid_rows: list[tuple[dict, Any]],
+        equity: float,
+        count_start: dict[str, int],
+        audit_start: int,
+        funnel: dict[str, int],
+        risk: RiskContext,
+        block_new_buys: bool,
+    ) -> None:
+        """结算组合指标、剔除计数、方向漏斗与风控备注。"""
         advice.invested = sum(
             rec.target_weight for rec in advice.rows
             if rec.disposition != 'deferred') * equity
@@ -570,7 +737,6 @@ class AdviceEngine:
         advice.notes.extend(
             risk.notes(self.config.constraints.max_industry_weight,
                        counts=stats_local))
-        return advice, new_state
 
     # ------------------------------------------------------------------
     # 行构造

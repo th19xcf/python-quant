@@ -406,7 +406,139 @@ def _normalize_codes(codes: Iterable[str] | None) -> set[str] | None:
     return wanted
 
 
-def fill_daily_gap(  # noqa: C901 - 单次批处理编排，拆分会割裂参数与统计口径
+@dataclass
+class _FillJob:
+    """单标的抓取作业的共享上下文（供线程池内的 :func:`_fetch_one` 只读使用）。"""
+
+    quote_store: LocalQuoteStore
+    client: TencentClient
+    latest: date
+    since: date | None
+    meta_rows: dict[tuple[str, str], dict[str, Any]]
+    stop: bool = False
+
+
+def _resolve_tdx_path(config: Any) -> Path | None:
+    """解析通达信数据根目录；未配置或不是目录时返回 None。"""
+    raw = getattr(getattr(config, 'data', None), 'tdx_data_path', '') or ''
+    path = Path(str(raw)) if raw else None
+    return path if path is not None and path.is_dir() else None
+
+
+def _filter_candidates(coverages: dict[tuple[str, str], QuoteCoverage],
+                       data_types: Sequence[str],
+                       wanted: set[str] | None) -> list[QuoteCoverage]:
+    """按资产类型与标的白名单过滤本地覆盖记录。"""
+    allowed = set(data_types)
+    return [
+        cov for cov in coverages.values()
+        if cov.data_type in allowed
+        and (wanted is None or cov.ts_code.upper() in wanted)
+    ]
+
+
+def _split_by_gap(behind: Sequence[QuoteCoverage], latest: date,
+                  max_gap_days: int | None) -> tuple[list[QuoteCoverage], list[QuoteCoverage]]:
+    """把落后标的拆成「待补」与「长期停更/退市跳过」两组，两组均按 (类型, 代码) 排序。"""
+    if max_gap_days is not None and max_gap_days > 0:
+        skipped = sorted(
+            (cov for cov in behind if (latest - cov.end).days > max_gap_days),
+            key=lambda cov: (cov.data_type, cov.ts_code))
+        stale = sorted(
+            (cov for cov in behind if (latest - cov.end).days <= max_gap_days),
+            key=lambda cov: (cov.data_type, cov.ts_code))
+        return stale, skipped
+    return sorted(behind, key=lambda cov: (cov.data_type, cov.ts_code)), []
+
+
+def _run_guard(client: TencentClient, stale: Sequence[QuoteCoverage],
+               tdx_path: Path | None, sample_size: int) -> dict[str, Any]:
+    """写前抽样对拍腾讯原始价与 TDX，返回闸门结果字典。"""
+    logger.info('[tencent-fill] 写前抽样对拍（腾讯原始价 vs TDX）...')
+    guard = guard_sample(client, stale, tdx_path, sample_size=sample_size)
+    guard['skipped'] = False
+    logger.info(
+        f'[tencent-fill] 闸门: overlap={guard["overlap_rows"]} '
+        f'max_price_abs={guard["max_price_abs"]:.4f} '
+        f'max_amount_rel={guard["max_amount_rel"]:.2e}')
+    return guard
+
+
+def _fetch_one(cov: QuoteCoverage,
+               job: _FillJob) -> tuple[str, int, QuoteCoverage | None]:
+    """抓取单标的缺失区间并增量合并写回列存，返回 (状态, 新增行数, 新覆盖度)。"""
+    if job.stop:
+        return 'aborted', 0, None
+    count = _estimated_count(cov.end, job.latest)
+    remote = job.client.fetch_daily(cov.ts_code, count=count)
+    if remote.is_empty():
+        return 'no_new', 0, None
+    remote = remote.filter(
+        (pl.col('date') > cov.end) & (pl.col('date') <= job.latest))
+    if job.since is not None:
+        remote = remote.filter(pl.col('date') >= job.since)
+    remote = _sanitize(remote)
+    if remote.is_empty():
+        return 'no_new', 0, None
+    existing = job.quote_store.read_file(cov.data_type, cov.ts_code)
+    if existing is None or existing.is_empty():
+        return 'no_local', 0, None
+    fresh = build_new_rows(remote, existing, cov.ts_code)
+    merged = merge_incremental(existing, fresh)
+    if merged.is_empty():
+        return 'no_new', 0, None
+    old_meta = job.meta_rows.get((cov.data_type, cov.ts_code), {})
+    job.quote_store.write_daily(
+        cov.data_type, cov.ts_code, merged,
+        full=bool(old_meta.get('full', True)),
+        source_mtime_ns=old_meta.get('source_mtime_ns'))
+    new_cov = QuoteCoverage(
+        ts_code=cov.ts_code, data_type=cov.data_type, rows=merged.height,
+        start=cast(date, merged['date'].min()), end=cast(date, merged['date'].max()),
+        file_size=job.quote_store.quote_path(cov.data_type, cov.ts_code).stat().st_size)
+    return 'ok', fresh.height, new_cov
+
+
+def _fetch_and_merge(job: _FillJob, stale: Sequence[QuoteCoverage], workers: int,
+                     started: float) -> tuple[dict[tuple[str, str], QuoteCoverage],
+                                             dict[str, dict[str, int]],
+                                             list[str], list[str]]:
+    """并发抓取全部待补标的并汇总，返回 (更新覆盖表, 分类统计, 失败码, 无新增码)。"""
+    updated: dict[tuple[str, str], QuoteCoverage] = {}
+    by_type: dict[str, dict[str, int]] = {}
+    failed: list[str] = []
+    no_new: list[str] = []
+    processed = 0
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = {pool.submit(_fetch_one, cov, job): cov for cov in stale}
+        for future in as_completed(futures):
+            processed += 1
+            try:
+                status, added, new_cov = future.result()
+            except (TencentError, OSError, ValueError, pl.exceptions.PolarsError) as exc:
+                failed.append(futures[future].ts_code)
+                logger.warning(f'[tencent-fill] {futures[future].ts_code} 补数失败: {exc}')
+                status, added, new_cov = 'failed', 0, None
+            if status == 'ok' and new_cov is not None:
+                updated[(new_cov.data_type, new_cov.ts_code)] = new_cov
+                bucket = by_type.setdefault(new_cov.data_type, {'symbols': 0, 'rows': 0})
+                bucket['symbols'] += 1
+                bucket['rows'] += added
+            elif status == 'no_new':
+                no_new.append(futures[future].ts_code)
+            if job.client.consecutive_failures() >= _MAX_CONSECUTIVE_FAILURES and not job.stop:
+                job.stop = True
+                logger.error(
+                    f'[tencent-fill] 连续失败 {job.client.consecutive_failures()} 次，中止本轮')
+            if processed % 200 == 0 or processed == len(stale):
+                logger.info(
+                    f'[tencent-fill] 进度 {processed}/{len(stale)}，'
+                    f'已补 {sum(v["rows"] for v in by_type.values()):,} 行，'
+                    f'耗时 {time.perf_counter() - started:.1f}s')
+    return updated, by_type, failed, no_new
+
+
+def fill_daily_gap(
     config: Any,
     quote_store: LocalQuoteStore,
     client: TencentClient,
@@ -442,32 +574,17 @@ def fill_daily_gap(  # noqa: C901 - 单次批处理编排，拆分会割裂参�
     """
     started = time.perf_counter()
     root = quote_store.root
-    tdx_raw = getattr(getattr(config, 'data', None), 'tdx_data_path', '') or ''
-    tdx_path = Path(str(tdx_raw)) if tdx_raw else None
-    if tdx_path is not None and not tdx_path.is_dir():
-        tdx_path = None
+    tdx_path = _resolve_tdx_path(config)
 
     logger.info('[tencent-fill] 扫描本地列存覆盖度 ...')
     coverages = scan_quote_files(root)
     logger.info(f'[tencent-fill] 本地标的 {len(coverages)} 个')
 
     wanted = _normalize_codes(codes)
-    candidates = [
-        cov for key, cov in coverages.items()
-        if cov.data_type in set(data_types)
-        and (wanted is None or cov.ts_code.upper() in wanted)
-    ]
+    candidates = _filter_candidates(coverages, data_types, wanted)
     latest = latest_trade_date or resolve_latest_trade_date(client)
     behind = [cov for cov in candidates if cov.end < latest]
-    skipped_gap: list[QuoteCoverage] = []
-    if max_gap_days is not None and max_gap_days > 0:
-        too_old = [cov for cov in behind if (latest - cov.end).days > max_gap_days]
-        skipped_gap = too_old
-        stale = sorted(
-            (cov for cov in behind if (latest - cov.end).days <= max_gap_days),
-            key=lambda cov: (cov.data_type, cov.ts_code))
-    else:
-        stale = sorted(behind, key=lambda cov: (cov.data_type, cov.ts_code))
+    stale, skipped_gap = _split_by_gap(behind, latest, max_gap_days)
     if max_symbols is not None:
         stale = stale[:max(0, int(max_symbols))]
 
@@ -495,13 +612,7 @@ def fill_daily_gap(  # noqa: C901 - 单次批处理编排，拆分会割裂参�
 
     guard: dict[str, Any] = {'ok': True, 'skipped': True}
     if guard_sample_size > 0:
-        logger.info('[tencent-fill] 写前抽样对拍（腾讯原始价 vs TDX）...')
-        guard = guard_sample(client, stale, tdx_path, sample_size=guard_sample_size)
-        guard['skipped'] = False
-        logger.info(
-            f'[tencent-fill] 闸门: overlap={guard["overlap_rows"]} '
-            f'max_price_abs={guard["max_price_abs"]:.4f} '
-            f'max_amount_rel={guard["max_amount_rel"]:.2e}')
+        guard = _run_guard(client, stale, tdx_path, guard_sample_size)
         if not guard['ok'] and not force:
             logger.error('[tencent-fill] 一致性不达标，按契约拒绝写入（可 --force 覆盖）')
             base_stats.update({
@@ -513,72 +624,10 @@ def fill_daily_gap(  # noqa: C901 - 单次批处理编排，拆分会割裂参�
             })
             return base_stats
 
-    updated: dict[tuple[str, str], QuoteCoverage] = {}
-    by_type: dict[str, dict[str, int]] = {}
-    failed: list[str] = []
-    no_new: list[str] = []
-    stop = False
-    processed = 0
-    meta_rows = read_meta_rows(quote_store)
-
-    def handle(cov: QuoteCoverage) -> tuple[str, int, QuoteCoverage | None]:
-        if stop:
-            return 'aborted', 0, None
-        count = _estimated_count(cov.end, latest)
-        remote = client.fetch_daily(cov.ts_code, count=count)
-        if remote.is_empty():
-            return 'no_new', 0, None
-        remote = remote.filter(
-            (pl.col('date') > cov.end) & (pl.col('date') <= latest))
-        if since is not None:
-            remote = remote.filter(pl.col('date') >= since)
-        remote = _sanitize(remote)
-        if remote.is_empty():
-            return 'no_new', 0, None
-        existing = quote_store.read_file(cov.data_type, cov.ts_code)
-        if existing is None or existing.is_empty():
-            return 'no_local', 0, None
-        fresh = build_new_rows(remote, existing, cov.ts_code)
-        merged = merge_incremental(existing, fresh)
-        if merged.is_empty():
-            return 'no_new', 0, None
-        old_meta = meta_rows.get((cov.data_type, cov.ts_code), {})
-        quote_store.write_daily(
-            cov.data_type, cov.ts_code, merged,
-            full=bool(old_meta.get('full', True)),
-            source_mtime_ns=old_meta.get('source_mtime_ns'))
-        new_cov = QuoteCoverage(
-            ts_code=cov.ts_code, data_type=cov.data_type, rows=merged.height,
-            start=cast(date, merged['date'].min()), end=cast(date, merged['date'].max()),
-            file_size=quote_store.quote_path(cov.data_type, cov.ts_code).stat().st_size)
-        return 'ok', fresh.height, new_cov
-
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = {pool.submit(handle, cov): cov for cov in stale}
-        for future in as_completed(futures):
-            processed += 1
-            try:
-                status, added, new_cov = future.result()
-            except (TencentError, OSError, ValueError, pl.exceptions.PolarsError) as exc:
-                failed.append(futures[future].ts_code)
-                logger.warning(f'[tencent-fill] {futures[future].ts_code} 补数失败: {exc}')
-                status, added, new_cov = 'failed', 0, None
-            if status == 'ok' and new_cov is not None:
-                updated[(new_cov.data_type, new_cov.ts_code)] = new_cov
-                bucket = by_type.setdefault(new_cov.data_type, {'symbols': 0, 'rows': 0})
-                bucket['symbols'] += 1
-                bucket['rows'] += added
-            elif status == 'no_new':
-                no_new.append(futures[future].ts_code)
-            if client.consecutive_failures() >= _MAX_CONSECUTIVE_FAILURES and not stop:
-                stop = True
-                logger.error(
-                    f'[tencent-fill] 连续失败 {client.consecutive_failures()} 次，中止本轮')
-            if processed % 200 == 0 or processed == len(stale):
-                logger.info(
-                    f'[tencent-fill] 进度 {processed}/{len(stale)}，'
-                    f'已补 {sum(v["rows"] for v in by_type.values()):,} 行，'
-                    f'耗时 {time.perf_counter() - started:.1f}s')
+    job = _FillJob(
+        quote_store=quote_store, client=client, latest=latest,
+        since=since, meta_rows=read_meta_rows(quote_store))
+    updated, by_type, failed, no_new = _fetch_and_merge(job, stale, workers, started)
 
     refreshed = dict(coverages)
     refreshed.update(updated)

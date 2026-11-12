@@ -49,6 +49,20 @@ class SubprocessHangSource:
         return pl.DataFrame()
 
 
+class SubprocessConfigProbe:
+    """子进程隔离测试源：回传构造时拿到的 config.data.probe_marker"""
+
+    name = "SubprocessConfigProbe"
+    is_local = False
+
+    def __init__(self, config, db_manager):
+        self.config = config
+
+    def get_index_data(self, **kwargs):
+        marker = getattr(getattr(self.config, 'data', None), 'probe_marker', 'MISSING')
+        return pl.DataFrame({"marker": [str(marker)]})
+
+
 def make_fetcher():
     cfg = MagicMock()
     cfg.data.max_workers = 5
@@ -400,6 +414,26 @@ def test_subprocess_isolation_returns_data():
     assert not out.is_empty(), "子进程应返回数据"
     assert out.height == 3
     logger.info("  [PASS] test_subprocess_isolation_returns_data  子进程取数正常")
+
+
+def test_subprocess_config_injected_by_initializer():
+    """config 由池 initializer 注入子进程，不再随每次 payload 传递"""
+    fetcher = make_process_fetcher()
+    fetcher.config.data.probe_marker = 's45-ok'
+    src = SubprocessConfigProbe(None, None)
+    fetcher.register_source(src)
+    keys = _enable_isolation(SubprocessConfigProbe)
+    try:
+        out = fetcher._try_remote_sources_parallel(
+            [src], "index", "000001.SH", "20240101", "20241231", "1d", "hfq",
+            per_source_timeout=5,
+        )
+    finally:
+        data_fetcher_module._PROCESS_ISOLATED_HANDLERS.difference_update(keys)
+        fetcher._abort_process_pool()
+
+    assert out.height == 1, "子进程应返回探针数据"
+    assert out["marker"][0] == "s45-ok", f"config 未注入子进程，实得 {out['marker'][0]}"
 
 
 def test_subprocess_isolation_timeout_terminates_workers():

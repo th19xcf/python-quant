@@ -1637,21 +1637,8 @@ class EventBacktestRunner:
         total_return = (final_equity - initial_capital) / initial_capital * 100
 
         performance = self.performance_analyzer.analyze(equity_curve, ctx.trades)
-
-        risk_summary = None
-        # 用闸门里实际生效的规则集（可能为 A1 兜底装配），而非构造参数
-        effective_engine = ctx.gate.risk_engine
-        if effective_engine is not None:
-            risk_summary = {
-                'rules': [r.name for r in effective_engine.rules],
-                'total_rejected': len(ctx.rejected_orders),
-                # 用 format(**r) 而不是逐字段下标：拒单记录字段名是输出 schema，
-                # 与行情列名无关，不应在引擎内核留下取列式字面量
-                'reject_detail': [
-                    '[{date}] {side} {ts_code} qty={qty} → {rule}: {reason}'.format(**r)
-                    for r in ctx.rejected_orders
-                ],
-            }
+        risk_summary = self._build_risk_summary(ctx)
+        risk_gate = self._build_risk_gate(ctx)
 
         result: Dict[str, Any] = {
             'initial_capital': initial_capital,
@@ -1661,18 +1648,7 @@ class EventBacktestRunner:
             'equity_curve': equity_curve,
             'performance': performance,
             'risk_summary': risk_summary,
-            # P0-3：风控是否真正生效必须能从结果直接读出，不允许"放行但无痕"
-            'risk_gate': {
-                'enabled': ctx.gate.risk_engine is not None,
-                'policy': ctx.gate.on_missing,
-                # A1：True 表示规则集由内核兜底装配（ADV 容量闸门），
-                # 不是调用方显式传入
-                'assembled_by_default': ctx.gate.assembled_by_default,
-                'bypassed_orders': ctx.gate.bypassed_orders,
-                'rules': (
-                    [r.name for r in ctx.gate.risk_engine.rules]
-                    if ctx.gate.risk_engine is not None else []),
-            },
+            'risk_gate': risk_gate,
             'rejected_orders': ctx.rejected_orders,
             'expired_orders': ctx.expired_orders,
             # 作废原因计数：让「因跌停/停牌卖不出而作废」可直接统计
@@ -1715,6 +1691,43 @@ class EventBacktestRunner:
         if result_meta:
             result.update(result_meta)
 
+        self._log_completion(ctx, total_return, risk_summary)
+        return result
+
+    def _build_risk_summary(self, ctx: RunContext) -> Dict[str, Any] | None:
+        """汇总生效风控的规则集与逐笔拒单明细；风控未启用时返回 None。"""
+        # 用闸门里实际生效的规则集（可能为 A1 兜底装配），而非构造参数
+        effective_engine = ctx.gate.risk_engine
+        if effective_engine is None:
+            return None
+        return {
+            'rules': [r.name for r in effective_engine.rules],
+            'total_rejected': len(ctx.rejected_orders),
+            # 用 format(**r) 而不是逐字段下标：拒单记录字段名是输出 schema，
+            # 与行情列名无关，不应在引擎内核留下取列式字面量
+            'reject_detail': [
+                '[{date}] {side} {ts_code} qty={qty} → {rule}: {reason}'.format(**r)
+                for r in ctx.rejected_orders
+            ],
+        }
+
+    def _build_risk_gate(self, ctx: RunContext) -> Dict[str, Any]:
+        """组装 risk_gate 摘要：是否启用、缺失口径、是否兜底装配、放行笔数与规则名。"""
+        engine = ctx.gate.risk_engine
+        return {
+            # P0-3：风控是否真正生效必须能从结果直接读出，不允许"放行但无痕"
+            'enabled': engine is not None,
+            'policy': ctx.gate.on_missing,
+            # A1：True 表示规则集由内核兜底装配（ADV 容量闸门），
+            # 不是调用方显式传入
+            'assembled_by_default': ctx.gate.assembled_by_default,
+            'bypassed_orders': ctx.gate.bypassed_orders,
+            'rules': [r.name for r in engine.rules] if engine is not None else [],
+        }
+
+    def _log_completion(self, ctx: RunContext, total_return: float,
+                        risk_summary: Dict[str, Any] | None) -> None:
+        """输出回测完成日志：总收益率与拒单/作废/过滤/未启用放行的计数。"""
         logger.info(
             f"回测完成: 总收益率 = {total_return:.2f}%"
             + (f" | 风控拒单 {len(ctx.rejected_orders)} 笔" if risk_summary else "")
@@ -1724,7 +1737,6 @@ class EventBacktestRunner:
             + (f" | [警告] 风控未启用，放行 {ctx.gate.bypassed_orders} 笔"
                if ctx.gate.risk_engine is None and ctx.gate.bypassed_orders else "")
         )
-        return result
 
     # ------------------------------------------------------------------
     # 撮合

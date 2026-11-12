@@ -1344,18 +1344,65 @@ class EligibilityEngine:
                 return name
         return 'remaining'
 
-    def summary_at(self, trade_date: str | date | None = None) -> dict[str, Any]:  # noqa: C901
+    def summary_at(self, trade_date: str | date | None = None) -> dict[str, Any]:
         """静态快照统计：三档只数/行数、分层、剔除原因、年份分布。
 
-        这里按报告口径顺序列出全部统计项，拆成多个小函数会打断“同一份
-        快照必须同源”的阅读路径，因此保留单函数并对圈复杂度做显式豁免。
+        各统计段由独立助手按 ``as_of`` 计算（``_summary_membership`` 等），
+        本方法只负责按报告口径顺序装配返回字典；全部助手共享同一个
+        ``d`` 与同一份代码清单，保证同一份快照同源。
         """
         d = _as_date(trade_date) if trade_date else self.as_of_date
         o = d.toordinal()
 
-        def rows_of(codes: Iterable[str]) -> int:
-            return sum(self.codes[c].rows for c in codes)
+        all_codes, view_codes, view_reasons, multi_reason_set = \
+            self._summary_membership(d)
+        views = self._summary_views(view_codes)
+        layers = self._summary_layers(all_codes, d)
+        reason_summary = self._summary_reasons(view_reasons)
+        vs_full = self._summary_vs_full(view_codes['full'], d)
+        matrix = self._summary_intersection_matrix(all_codes, d)
+        defect_breakdown = self._summary_defect_breakdown(all_codes, o)
+        st_active, st_active_with_quote = self._summary_st_counts(o)
+        year_dist = self._summary_year_dist(all_codes, view_codes['strict'])
+        universe = self._summary_universe()
 
+        total_rows = sum(i.rows for i in self.codes.values())
+        strict_rows = views['strict']['rows']
+        return {
+            'as_of': str(d),
+            'freshness': source_staleness(
+                self.data_last, self.calendar_latest,
+                self._calendar_all or tuple(self.calendar)),
+            'universe': universe,
+            'views': views,
+            'layers': layers,
+            'reasons': reason_summary,
+            'vs_full': vs_full,
+            'intersection_matrix': matrix,
+            'defect_breakdown': defect_breakdown,
+            'st_active_at_as_of': st_active,
+            'st_active_with_quote_at_as_of': st_active_with_quote,
+            'st_intervals_ongoing_codes': sum(
+                1 for i in self.codes.values() if i.st_intervals
+            ),
+            'multi_reason_codes': len(multi_reason_set),
+            'strict_year_distribution': year_dist,
+            'strict_rows_pct': (strict_rows / total_rows) if total_rows else 0.0,
+        }
+
+    # ------------------------------------------------------------------
+    # summary_at 的统计段助手：每个助手只算一个统计项，输入同一份 as_of
+    # 与代码清单，保证同一份快照同源。
+    # ------------------------------------------------------------------
+    def _rows_of(self, codes: Iterable[str]) -> int:
+        """统计给定代码集合的行情行数合计。"""
+        return sum(self.codes[c].rows for c in codes)
+
+    def _summary_membership(
+        self, d: date,
+    ) -> tuple[list[str], dict[str, list[str]],
+               dict[str, dict[str, set[str]]], set[str]]:
+        """逐标的逐视图求值，得到各视图入选清单、命中原因与 strict 多原因集。"""
         all_codes = list(self.codes)
         view_codes: dict[str, list[str]] = {v: [] for v in VIEWS}
         view_reasons: dict[str, dict[str, set[str]]] = {
@@ -1373,13 +1420,16 @@ class EligibilityEngine:
                             view_reasons[view][reason].add(code)
                     if view == 'strict' and len(reasons) > 1:
                         multi_reason_set.add(code)
+        return all_codes, view_codes, view_reasons, multi_reason_set
 
+    def _summary_views(self, view_codes: dict[str, list[str]]) -> dict[str, Any]:
+        """三档视图的只数、行数与分类型构成。"""
         views: dict[str, Any] = {}
         for view in VIEWS:
             codes = view_codes[view]
             views[view] = {
                 'codes': len(codes),
-                'rows': rows_of(codes),
+                'rows': self._rows_of(codes),
                 'by_type': {
                     t: {
                         'codes': sum(1 for c in codes if self.codes[c].data_type == t),
@@ -1389,20 +1439,22 @@ class EligibilityEngine:
                     for t in DATA_TYPES
                 },
             }
+        return views
 
-        # 分层（互斥）
+    def _summary_layers(self, all_codes: list[str], d: date) -> dict[str, Any]:
+        """互斥分层的只数、行数、起止日期与分类型构成。"""
         layer_codes: dict[str, list[str]] = {
             'data_defect': [], 'st': [], 'div_doubt': [], 'pending': [], 'remaining': []
         }
         for code in all_codes:
             layer_codes[self.layer_at(code, d)].append(code)
-        layers = {}
+        layers: dict[str, Any] = {}
         for name, codes in layer_codes.items():
             starts = [s for c in codes if (s := self.codes[c].start) is not None]
             ends = [e for c in codes if (e := self.codes[c].end) is not None]
             layers[name] = {
                 'codes': len(codes),
-                'rows': rows_of(codes),
+                'rows': self._rows_of(codes),
                 'start': str(min(starts)) if starts else None,
                 'end': str(max(ends)) if ends else None,
                 'by_type': {
@@ -1418,8 +1470,12 @@ class EligibilityEngine:
                     for t in DATA_TYPES
                 },
             }
+        return layers
 
-        # 剔除原因分类
+    def _summary_reasons(
+        self, view_reasons: dict[str, dict[str, set[str]]],
+    ) -> dict[str, Any]:
+        """按视图与原因分类汇总被剔除标的数。"""
         reason_summary: dict[str, Any] = {}
         for view in VIEWS:
             by_cat: dict[str, dict[str, int]] = {}
@@ -1427,10 +1483,11 @@ class EligibilityEngine:
                 cat = REASON_CATEGORY[reason]
                 by_cat.setdefault(cat, {})[reason] = len(hit_codes)
             reason_summary[view] = by_cat
+        return reason_summary
 
-        # 相对 full（当日有行情）的剔除口径：只统计 full 内部被剔的标的，
-        # 避免把"停更/无本地行情"这些 full 本来就没有的标的重复计入。
-        full_set = set(view_codes['full'])
+    def _summary_vs_full(self, full_codes: list[str], d: date) -> dict[str, Any]:
+        """相对 full（当日有行情）的剔除口径，只统计 full 内部被剔的标的。"""
+        full_set = set(full_codes)
         vs_full: dict[str, Any] = {}
         for view in VS_FULL_VIEWS:
             counts: dict[str, int] = {}
@@ -1450,15 +1507,23 @@ class EligibilityEngine:
                 'multi_reason_codes': multi,
                 'reasons': counts,
             }
+        return vs_full
 
-        # 交集矩阵：缺陷 / ST / 除权存疑 / 基金 pending 可同时命中
+    def _summary_intersection_matrix(
+        self, all_codes: list[str], d: date,
+    ) -> dict[str, int]:
+        """缺陷 / ST / 除权存疑 / 基金 pending 的命中组合计数。"""
         matrix: dict[str, int] = {}
         for code in all_codes:
             hits = self._layer_hits(code, d)
             key = '+'.join(sorted(hits)) if hits else 'none'
             matrix[key] = matrix.get(key, 0) + 1
+        return matrix
 
-        # 缺陷原因命中面（含重叠，独立计数）
+    def _summary_defect_breakdown(
+        self, all_codes: list[str], o: int,
+    ) -> dict[str, int]:
+        """缺陷原因命中面（含重叠，独立计数）。"""
         defect_breakdown = {
             'no_local_quote': 0,
             'source_stopped_at_as_of': 0,
@@ -1494,7 +1559,10 @@ class EligibilityEngine:
                 defect_breakdown['pre_1993_break'] += 1
             if o in info.date_excl_standard or o in info.date_excl_strict:
                 defect_breakdown['date_anomaly_at_as_of'] += 1
+        return defect_breakdown
 
+    def _summary_st_counts(self, o: int) -> tuple[int, int]:
+        """as_of 当日 ST 生效只数，以及其中同时有行情的只数。"""
         st_active = sum(
             1 for info in self.codes.values()
             if info.st_intervals and self._st_status(info, o) is True
@@ -1504,78 +1572,63 @@ class EligibilityEngine:
             if info.st_intervals and self._has_quote(info, o)
             and self._st_status(info, o) is True
         )
+        return st_active, st_active_with_quote
 
-        # strict 年份分布（按行情起始年）
-        def year_bucket(year: int) -> str:
-            if year <= 1994:
-                return '<=1994'
-            if year <= 1999:
-                return '1995-1999'
-            if year <= 2004:
-                return '2000-2004'
-            if year <= 2009:
-                return '2005-2009'
-            if year <= 2014:
-                return '2010-2014'
-            if year <= 2019:
-                return '2015-2019'
-            if year <= 2024:
-                return '2020-2024'
-            return '2025+'
-
+    def _summary_year_dist(
+        self, all_codes: list[str], strict_codes: list[str],
+    ) -> dict[str, dict[str, int]]:
+        """按行情起始年分桶的股票只数（full 与 strict 对照）。"""
         buckets = ['<=1994', '1995-1999', '2000-2004', '2005-2009',
                    '2010-2014', '2015-2019', '2020-2024', '2025+']
-        year_dist = {
-            b: {'full': 0, 'strict': 0} for b in buckets
-        }
-        strict_set = set(view_codes['strict'])
+        year_dist = {b: {'full': 0, 'strict': 0} for b in buckets}
+        strict_set = set(strict_codes)
         for code in all_codes:
             info = self.codes[code]
             if info.data_type != 'stock' or info.start is None:
                 continue
-            b = year_bucket(info.start.year)
+            b = self._year_bucket(info.start.year)
             year_dist[b]['full'] += 1
             if code in strict_set:
                 year_dist[b]['strict'] += 1
+        return year_dist
 
-        total_rows = sum(i.rows for i in self.codes.values())
-        strict_rows = views['strict']['rows']
+    def _summary_universe(self) -> dict[str, Any]:
+        """全量池的只数、行数与分类型构成（不受视图过滤影响）。"""
         return {
-            'as_of': str(d),
-            'freshness': source_staleness(
-                self.data_last, self.calendar_latest,
-                self._calendar_all or tuple(self.calendar)),
-            'universe': {
-                'codes': len(self.codes),
-                'rows': total_rows,
-                'by_type': {
-                    t: {
-                        'codes': sum(1 for i in self.codes.values() if i.data_type == t),
-                        'rows': sum(i.rows for i in self.codes.values() if i.data_type == t),
-                    } for t in DATA_TYPES
-                },
-                'no_local_quote_codes': sum(
-                    1 for i in self.codes.values()
-                    if 'structural_no_local_quote' in i.structural
-                ),
-                'null_exdiv_duplicate_codes': len(getattr(self, 'null_exdiv_dup_codes', set())),
-                'suspected_st_codes': len(getattr(self, 'suspected_st', set())),
+            'codes': len(self.codes),
+            'rows': sum(i.rows for i in self.codes.values()),
+            'by_type': {
+                t: {
+                    'codes': sum(1 for i in self.codes.values() if i.data_type == t),
+                    'rows': sum(i.rows for i in self.codes.values() if i.data_type == t),
+                } for t in DATA_TYPES
             },
-            'views': views,
-            'layers': layers,
-            'reasons': reason_summary,
-            'vs_full': vs_full,
-            'intersection_matrix': matrix,
-            'defect_breakdown': defect_breakdown,
-            'st_active_at_as_of': st_active,
-            'st_active_with_quote_at_as_of': st_active_with_quote,
-            'st_intervals_ongoing_codes': sum(
-                1 for i in self.codes.values() if i.st_intervals
+            'no_local_quote_codes': sum(
+                1 for i in self.codes.values()
+                if 'structural_no_local_quote' in i.structural
             ),
-            'multi_reason_codes': len(multi_reason_set),
-            'strict_year_distribution': year_dist,
-            'strict_rows_pct': (strict_rows / total_rows) if total_rows else 0.0,
+            'null_exdiv_duplicate_codes': len(getattr(self, 'null_exdiv_dup_codes', set())),
+            'suspected_st_codes': len(getattr(self, 'suspected_st', set())),
         }
+
+    @staticmethod
+    def _year_bucket(year: int) -> str:
+        """把行情起始年映射到报告用的年份桶。"""
+        if year <= 1994:
+            return '<=1994'
+        if year <= 1999:
+            return '1995-1999'
+        if year <= 2004:
+            return '2000-2004'
+        if year <= 2009:
+            return '2005-2009'
+        if year <= 2014:
+            return '2010-2014'
+        if year <= 2019:
+            return '2015-2019'
+        if year <= 2024:
+            return '2020-2024'
+        return '2025+'
 
 
 def include_suspected_check(engine: EligibilityEngine, info: CodeInfo) -> bool:
