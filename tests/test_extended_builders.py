@@ -221,7 +221,54 @@ def test_dry_run_writes_nothing(tmp_path: Path) -> None:
     assert not (tmp_path / 'meta' / 'suspension').exists()
 
 
+def test_remote_fetch_break_records_skipped_and_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """第 2 只指数失败即停：记下被跳过的指数与续跑起点，后续指数不再请求。"""
+    _write_index_weight(tmp_path, {'000300.SH': {'20260130': ['600000.SH']}})
+    calls: list[str] = []
+
+    def _fake_fetch(symbol: str):
+        calls.append(symbol)
+        if symbol == '000905':
+            return None
+        frame = pl.DataFrame(
+            [{'index_code': symbol, 'ts_code': '600000.SH',
+              'snapshot_date': date(2026, 1, 30), 'source': 'csindex'}],
+            schema={'index_code': pl.String, 'ts_code': pl.String,
+                    'snapshot_date': pl.Date, 'source': pl.String})
+        return frame, date(2026, 1, 30)
+
+    monkeypatch.setattr(
+        'src.data.quality.extended_builders._fetch_membership_snapshot',
+        _fake_fetch)
+    monkeypatch.setattr(
+        'src.data.quality.extended_builders.time.sleep', lambda _seconds: None)
+
+    summary = build_index_membership(tmp_path, allow_remote=True, commit=True)
+    # 第 2 只失败后立即停手，第 3/4 只根本没有被请求
+    assert calls == ['000300', '000905']
+    assert summary['remote_failed'] == '000905.SH'
+    assert summary['remote_skipped'] == ['000852.SH', '000016.SH']
+
+    progress_path = (tmp_path / 'meta' / 'index_membership'
+                     / 'fetch_progress.json')
+    progress = json.loads(progress_path.read_text('utf-8'))
+    assert progress['completed'] == ['000300.SH']
+    assert progress['failed'] == '000905.SH'
+    assert progress['skipped'] == ['000852.SH', '000016.SH']
+    assert progress['next_index'] == '000905.SH'
+    assert progress['complete'] is False
+
+    # 再跑一次：按续跑记录从失败那只开始，不再重抓已完成的 000300
+    calls.clear()
+    again = build_index_membership(tmp_path, allow_remote=True, commit=True)
+    assert calls == ['000905']
+    assert again['resume_from'] == '000905.SH'
+
+
 def test_cli_reports_missing_inputs(tmp_path: Path) -> None:
+
     with pytest.raises(FileNotFoundError):
         build_suspension(tmp_path, as_of=date(2026, 11, 9))
     with pytest.raises(FileNotFoundError):

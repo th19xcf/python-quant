@@ -68,6 +68,9 @@ DEFAULT_INDICES: tuple[tuple[str, str], ...] = (
 )
 #: 指数成分快照抓取的串行间隔（秒）：单连接、逐只请求，失败即停。
 _REMOTE_MIN_INTERVAL_SECONDS = 2.0
+#: 远程抓取的跳过清单 / 续跑指针文件名（与 ``snapshots/`` 平级，不进快照目录：
+#: 快照目录被 ``*.parquet`` glob 消费，续跑点混进去会被当成一份成分快照）。
+_FETCH_PROGRESS_NAME = 'fetch_progress.json'
 _EXCHANGE_TO_MARKET = {
     '上海证券交易所': 'SH',
     '深圳证券交易所': 'SZ',
@@ -477,6 +480,21 @@ def _interval_row(index_code: str, ts_code: str, dates: Sequence[date],
     )
 
 
+def _resume_index(path: Path, order: Sequence[str]) -> str | None:
+    """读上次中断留下的续跑指针；无记录、已完成或指针不在清单内都返回 None。"""
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text('utf-8'))
+    except (OSError, ValueError) as exc:
+        logger.warning(f'[extended] 续跑记录不可读，忽略 {path}: {exc}')
+        return None
+    if payload.get('complete'):
+        return None
+    next_index = payload.get('next_index')
+    return next_index if next_index in order else None
+
+
 def build_index_membership(
     root: Path | str, *, indices: Iterable[tuple[str, str]] = DEFAULT_INDICES,
     allow_remote: bool = False, commit: bool = False,
@@ -484,16 +502,37 @@ def build_index_membership(
     """由指数成分月度快照派生进出区间表（官方日快照仅作原始留档）。"""
     store = Path(root)
     snapshot_dir = store / 'meta' / 'index_membership' / 'snapshots'
+    # 续跑点与 snapshots/ 平级：快照目录被 tools 的 *.parquet glob 消费
+    progress_path = store / 'meta' / 'index_membership' / _FETCH_PROGRESS_NAME
+    index_list = list(indices)
     fetched = 0
+    completed: list[str] = []
+    skipped_remote: list[str] = []
+    failed_index: str | None = None
+    resume_from: str | None = None
     if allow_remote:
-        for position, (symbol, ts_code) in enumerate(indices):
+        order = [ts_code for _symbol, ts_code in index_list]
+        start = 0
+        if commit:
+            # 只认上一次中断留下的next_index，完整跑完的记录不触发续跑
+            resume_from = _resume_index(progress_path, order)
+            if resume_from is not None:
+                start = order.index(resume_from)
+                logger.info(f'[extended] 按续跑记录从 {resume_from} 开始，'
+                            f'跳过已完成的前 {start} 只')
+        for position in range(start, len(index_list)):
+            symbol, ts_code = index_list[position]
             if position:
                 # 单连接串行 + 节流：不并发、不连发
                 time.sleep(_REMOTE_MIN_INTERVAL_SECONDS)
             result = _fetch_membership_snapshot(symbol)
             if result is None:
                 # 限流/超时/空表一律不再压后续指数，直接停手
-                logger.error(f'[extended] {ts_code} 成分抓取中断，停止后续远程请求')
+                skipped_remote = order[position + 1:]
+                failed_index = ts_code
+                logger.error(f'[extended] {ts_code} 成分抓取中断，停止后续远程请求；'
+                             f'已完成 {len(completed)} 只，跳过 {len(skipped_remote)} 只，'
+                             f'下次从 {ts_code} 继续')
                 break
             frame, snapshot_date = result
             path = snapshot_dir / (
@@ -501,8 +540,24 @@ def build_index_membership(
             if commit:
                 _write_frame(path, frame)
             fetched += 1
+            completed.append(ts_code)
             logger.info(f'[extended] {ts_code} 成分 {frame.height} 只'
                         f'（{snapshot_date}）{"已落盘" if commit else "dry-run 未落盘"}')
+        if commit:
+            _write_json(progress_path, {
+                'dataset': 'index_membership',
+                'stage': 'remote_fetch',
+                'generated_at': datetime.now().isoformat(timespec='seconds'),
+                'indices_total': len(index_list),
+                'resume_from': resume_from,
+                'completed': completed,
+                'failed': failed_index,
+                'skipped': skipped_remote,
+                'next_index': failed_index,
+                'complete': failed_index is None,
+                'caveat': 'skipped 为因上一只失败而未发起的指数，'
+                          'next_index 是失败的那只、也是下次续跑起点',
+            })
 
     weight_path = store / _WEIGHT_REL
     if not weight_path.is_file():
@@ -539,6 +594,9 @@ def build_index_membership(
         'left_censored_intervals': censored,
         'skipped_rows': skipped,
         'fetched': fetched,
+        'remote_failed': failed_index,
+        'remote_skipped': skipped_remote,
+        'resume_from': resume_from,
         'start': first_day.isoformat(),
         'end': last_day.isoformat(),
         'committed': bool(commit),
