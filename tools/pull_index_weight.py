@@ -192,8 +192,42 @@ def membership_manifest_block() -> dict | None:
     return block
 
 
+MANIFEST_PATH = OUT_DIR / "manifest.json"
+
+
+def _load_existing_manifest() -> dict:
+    """读现有 manifest 作为合并基底；读不出来就报错，绝不静默整文件重写。"""
+    if not MANIFEST_PATH.exists():
+        return {}
+    try:
+        data = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"现有 manifest 无法读取（{MANIFEST_PATH}：{exc}）；"
+            "人工补登字段与 files 段无法判定，拒绝整文件重写"
+        ) from exc
+    if not isinstance(data, dict):
+        raise TypeError(
+            f"现有 manifest 顶层不是对象（{type(data).__name__}）：{MANIFEST_PATH}；拒绝整文件重写"
+        )
+    return data
+
+
+def _merge_manifest(previous: dict, fresh: dict) -> dict:
+    """以现有 manifest 为基底，只刷新工具能算出的字段。
+
+    工具只拥有 `fresh` 里出现的键；`previous` 独有的键（人工补登的 `files`、
+    `registered_at` 等）原样保留，不删不改。算不出来的字段宁可留着旧值，
+    也不静默丢。
+    """
+    merged = dict(previous)
+    merged.update(fresh)
+    return merged
+
+
 def phase_build() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    previous = _load_existing_manifest()
     df = load_all()
     out_path = OUT_DIR / "index_weight_monthly.parquet"
     df.to_parquet(out_path, index=False)
@@ -232,9 +266,13 @@ def phase_build() -> None:
         manifest["membership_intervals"] = membership
     manifest["total_rows"] = int(len(df))
     manifest["total_periods"] = int(df["trade_date"].nunique())
-    (OUT_DIR / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    log.info("主表写入 %s：%d 行，%d 期", out_path, len(df), manifest["total_periods"])
+    merged = _merge_manifest(previous, manifest)
+    preserved = sorted(set(previous) - set(manifest))
+    if preserved:
+        log.info("manifest 合并：保留工具未管理的键 %s", preserved)
+    MANIFEST_PATH.write_text(
+        json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    log.info("主表写入 %s：%d 行，%d 期", out_path, len(df), merged["total_periods"])
 
 
 def phase_validate() -> None:
