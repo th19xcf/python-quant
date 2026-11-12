@@ -755,37 +755,39 @@ def _segments_to_intervals(code: str, segments: list[tuple[date, str]], coverage
     return rows
 
 
+def _snapshot_days(store_root: Path | str, upto: date | None = None) -> list[date]:
+    """``meta/st_status`` 正式表内 ``<= upto`` 的快照日（升序）。"""
+    from src.data import risk_flags  # noqa: PLC0415
+
+    days = risk_flags.snapshot_days(store_root)
+    return [day for day in days if upto is None or day <= upto]
+
+
 def _latest_snapshot(store_root: Path | str) -> tuple[pl.DataFrame | None, date | None]:
-    dir_path = Path(store_root) / 'meta' / 'st_status'
-    files = sorted(path for path in dir_path.glob('st_status_*.parquet')) \
-        if dir_path.is_dir() else []
-    if not files:
+    from src.data import risk_flags  # noqa: PLC0415
+
+    days = _snapshot_days(store_root)
+    if not days:
         return None, None
-    path = files[-1]
-    digits = path.stem.split('_')[-1]
-    day = datetime.strptime(digits[:8], '%Y%m%d').date()
-    return pl.read_parquet(path), day
+    return risk_flags.load_snapshot(store_root, days[-1])
 
 
 def _snapshot_series(store_root: Path | str,
                      upto: date | None = None) -> list[tuple[pl.DataFrame, date]]:
-    """按日期升序返回 ``meta/st_status`` 下的快照（只取 ``<= upto`` 的日子）。
+    """按日期升序返回 ``meta/st_status`` 的各层快照（只取 ``<= upto`` 的日子）。
 
     逐日合并的硬约束：每一天的区间状态只能由**不晚于该日**的快照决定。只取
     最新一份快照会把后一日才知道的状态回推到前一日（11-10 的 ST 起点曾被推到
     11-09，等于把今天的信息写成昨天的结论，回测里就是未来函数）。
     """
-    dir_path = Path(store_root) / 'meta' / 'st_status'
-    if not dir_path.is_dir():
-        return []
+    from src.data import risk_flags  # noqa: PLC0415
+
     series: list[tuple[pl.DataFrame, date]] = []
-    for path in sorted(dir_path.glob('st_status_*.parquet')):
-        digits = path.stem.split('_')[-1]
-        day = datetime.strptime(digits[:8], '%Y%m%d').date()
-        if upto is not None and day > upto:
+    for day in _snapshot_days(store_root, upto):
+        frame, got = risk_flags.load_snapshot(store_root, day)
+        if frame is None or got != day:
             continue
-        series.append((pl.read_parquet(path), day))
-    series.sort(key=lambda item: item[1])
+        series.append((frame, day))
     return series
 
 

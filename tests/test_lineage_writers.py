@@ -26,8 +26,8 @@ sys.path.insert(0, str(ROOT))
 from tools import lineage_writers as lw  # noqa: E402
 
 QUOTES_STOCK = 'data/local_store/quotes/stock/{sh,sz,bj}/<code>.parquet'
-ST_STATUS = 'data/local_store/meta/st_status/st_status_<YYYYMMDD>.parquet'
-INDUSTRY_SNAP = 'data/local_store/meta/industry/industry_<YYYYMMDD>.parquet'
+ST_STATUS = 'data/local_store/meta/st_status/st_status_history.parquet'
+INDUSTRY_SNAP = 'data/local_store/meta/industry/industry_history.parquet'
 ST_COVERAGE = 'data/local_store/meta/st/st_coverage.parquet'
 ST_INTERVALS = 'data/local_store/meta/st/st_intervals.parquet'
 ST_RAW = 'data/local_store/meta/st/raw/<name>.parquet'
@@ -65,7 +65,7 @@ def test_mention_only_is_not_a_writer(tmp_path: Path) -> None:
 
             def load_industry_snapshot(root):
                 """读取 meta/industry/industry_YYYYMMDD.parquet，只读不写。"""
-                return root / 'meta' / 'industry' / 'industry_20260101.parquet'
+                return root / 'meta' / 'industry' / 'industry_history.parquet'
         ''',
         'tools/notes.py': '''
             """st_status / st_coverage 的口径说明，本文不落盘。"""
@@ -110,11 +110,11 @@ def test_resolved_helper_target_goes_to_its_own_table(tmp_path: Path) -> None:
     sites = _scan(tmp_path, {'src/data/risk_flags.py': '''
         from src.data.atomic_write import write_parquet_atomic
 
-        def snapshot_path(root, trade_date):
-            return root / 'meta' / 'st_status' / f'st_status_{trade_date}.parquet'
+        def snapshot_path(root):
+            return root / 'meta' / 'st_status' / 'st_status_history.parquet'
 
-        def save(store, frame, trade_date):
-            path = snapshot_path(store, trade_date)
+        def save(store, frame):
+            path = snapshot_path(store)
             write_parquet_atomic(frame, path)
     '''})
     assert _files(lw.detect_writers(ST_STATUS, sites)) == {'src/data/risk_flags.py'}
@@ -293,16 +293,16 @@ def test_repo_sample_eleven_deviations() -> None:
                  FINANCIALS3, ETF_FEE, ETF_POOL, NAME_HISTORY, FUTURES_MULTI]
     quotes = _edges(lw.detect_writers(QUOTES_STOCK, sites, inventory=inventory))
     assert ('src/data/local_store/store.py', 527) in quotes, '漏边：quote_path 经 write_daily 落盘'
-    for false_positive in [('src/data/industry.py', 146),
+    for false_positive in [('src/data/industry.py', 157),
                            ('src/data/local_store/share_capital.py', 261),
                            ('src/data/quality/extended_builders.py', 121),
-                           ('src/data/risk_flags.py', 159),
+                           ('src/data/risk_flags.py', 253),
                            ('src/data/services/breadth_service.py', 118)]:
         assert false_positive not in quotes, f'假阳性仍在：{false_positive}'
 
-    assert ('src/data/risk_flags.py', 159) in _edges(
+    assert ('src/data/risk_flags.py', 253) in _edges(
         lw.detect_writers(ST_STATUS, sites, inventory=inventory)), '漏边：st_status'
-    assert ('src/data/industry.py', 146) in _edges(
+    assert ('src/data/industry.py', 157) in _edges(
         lw.detect_writers(INDUSTRY_SNAP, sites, inventory=inventory)), '漏边：industry_snap'
     assert ('src/data/st_history.py', 405) in _edges(
         lw.detect_writers(ST_COVERAGE, sites, inventory=inventory)), '漏边：st_coverage'

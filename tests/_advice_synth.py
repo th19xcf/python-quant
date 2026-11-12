@@ -75,10 +75,10 @@ def build_store(root: Path, codes: list[str], end: date, days: int = 320,
 
 
 def write_st_snapshot(root: Path, codes: list[str], day: date) -> None:
-    """写入全量 non_st 快照，供合成测试通过 fail-closed 的 ST 检查。"""
-    path = root / 'meta' / 'st_status' / f'st_status_{day:%Y%m%d}.parquet'
+    """写入全量 non_st 快照（并入单表 history），供合成测试通过 fail-closed 的 ST 检查。"""
+    path = root / 'meta' / 'st_status' / 'st_status_history.parquet'
     path.parent.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame({
+    frame = pl.DataFrame({
         'code': codes,
         'name': codes,
         'status': ['non_st'] * len(codes),
@@ -86,4 +86,8 @@ def write_st_snapshot(root: Path, codes: list[str], day: date) -> None:
         'reason': [''] * len(codes),
         'as_of': [day] * len(codes),
         'is_st': [False] * len(codes),
-    }).write_parquet(path)
+    })
+    if path.is_file():
+        frame = pl.concat([pl.read_parquet(path).filter(pl.col('as_of') != day), frame],
+                          how='vertical')
+    frame.sort(['as_of', 'code']).write_parquet(path)

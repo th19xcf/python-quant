@@ -395,12 +395,13 @@ def _counts(grid: pl.DataFrame, dates: list[date]) -> tuple[dict, pl.DataFrame, 
 
 def _snapshot_comparison(grid: pl.DataFrame, root: Path, dates: list[date],
                          st_keys: pl.DataFrame) -> dict:
-    """L3 区间版 vs 快照版（st_status_<最新>.parquet）差异（只比 ST，不含整理期）。"""
-    snapshot_files = sorted((root / 'meta' / 'st_status').glob('st_status_*.parquet'))
-    snapshot_file = snapshot_files[-1] if snapshot_files else None
-    if snapshot_file is None:
+    """L3 区间版 vs 快照版（st_status_history 的最大 as_of 层）差异（只比 ST，不含整理期）。"""
+    from src.data import risk_flags  # noqa: PLC0415
+
+    snap, snap_day = risk_flags.load_snapshot(root)
+    if snap is None or snap_day is None:
         return {'available': False, 'reason': 'no_snapshot'}
-    snap = pl.read_parquet(snapshot_file, columns=['code', 'is_st'])
+    snap = snap.select(['code', 'is_st'])
     st_codes = snap.filter(pl.col('is_st') == True)['code'].unique().to_list()  # noqa: E712
     unknown_codes = snap.filter(pl.col('is_st').is_null())['code'].unique().to_list()
     year_map = {i: d.year for i, d in enumerate(dates)}
@@ -433,7 +434,8 @@ def _snapshot_comparison(grid: pl.DataFrame, root: Path, dates: list[date],
 
     return {
         'available': True,
-        'snapshot_file': snapshot_file.name,
+        'snapshot_file': risk_flags.snapshot_path(root).name,
+        'snapshot_as_of': snap_day.isoformat(),
         'snapshot_st_codes': len(st_codes),
         'snapshot_unknown_codes': len(unknown_codes),
         'l2_rows': l2.height,

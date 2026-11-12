@@ -27,7 +27,7 @@ TRADING = [date(2025, 1, 6), date(2025, 1, 7), date(2025, 1, 8),
 
 
 def _write_st(root, rows) -> None:
-    path = root / 'meta' / 'st_status' / f'st_status_{DAY:%Y%m%d}.parquet'
+    path = root / 'meta' / 'st_status' / 'st_status_history.parquet'
     path.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame({
         'code': [row[0] for row in rows],
@@ -41,7 +41,7 @@ def _write_st(root, rows) -> None:
 
 
 def _write_industry(root, rows) -> None:
-    path = root / 'meta' / 'industry' / f'industry_{DAY:%Y%m%d}.parquet'
+    path = root / 'meta' / 'industry' / 'industry_history.parquet'
     path.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame({
         'code': [row[0] for row in rows],

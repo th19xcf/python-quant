@@ -14,12 +14,11 @@ E:\\www\\tmp\\factor_eval_20261105\\evaluate.py）。
 
 历史行业口径：与生产同源——调用 ``src.data.industry.load_snapshot`` 取
 「不晚于观察日的最新中国行业快照」（与实时选股同一选择器、同一排除规则），
-不再固定某一版快照。需要复现旧结果时显式传
-``--industry-file .../industry_20261105.parquet``。
+不再固定某一版快照。需要复现旧结果时显式传 ``--industry-file`` 指向
+``meta/industry/industry_history.parquet``，脚本取表内 ``as_of`` 最大那一层。
 
-注意 ``meta/industry/industry_20261105_v2.parquet`` 是历史候选版本，文件名
-日期后带 ``_v2`` 后缀，无法解析为日期，``load_snapshot`` 永远不会选中它；
-本脚本的 ``--industry-file`` 也不会自动回退到它，它不参与自动选择。
+注意 ``industry_YYYYMMDD_vN.parquet`` 一类版本副本已于 2026-11-13 按 DG-4 /
+DG-13 退役移入 ``_backup/``，本脚本不再有任何回退到它们的路径。
 """
 from __future__ import annotations
 
@@ -84,9 +83,9 @@ def load_industry_frame(
 ) -> tuple[pl.DataFrame, str]:
     """取行业截面，选片口径与生产（实时选股）完全一致。
 
-    走 ``src.data.industry.load_snapshot``：不晚于 ``as_of`` 的最新
-    ``industry_YYYYMMDD.parquet``。``industry_YYYYMMDD_vN.parquet`` 的日期
-    无法解析，天然被排除，因此 ``industry_20261105_v2`` 不参与自动选择。
+    走 ``src.data.industry.load_snapshot``：单表 ``industry_history.parquet``
+    中不晚于 ``as_of`` 的最新 ``as_of`` 层。历史日期文件族已于 2026-11-13
+    按 G-098 并入该单表，无任何按文件名解析日期的分支。
     """
     frame, day = load_snapshot(store, as_of)
     if frame is None or day is None:
@@ -250,13 +249,16 @@ def main() -> int:
     ).unique(subset=['ts_code', 'effective_date'], keep='last') \
      .sort(['ts_code', 'effective_date'])
     if ind_path is not None:
-        ind = pl.read_parquet(ind_path, columns=['code', 'industry_l1']).rename(
+        ind = pl.read_parquet(ind_path, columns=['code', 'industry_l1', 'as_of'])
+        ind = ind.filter(pl.col('as_of') == ind['as_of'].max()).rename(
             {'code': 'ts_code', 'industry_l1': 'industry'})
         logger.warning(f'[research] 行业截面显式指定: {ind_path.name}')
     else:
         ind, ind_day = load_industry_frame(store)
         ind = ind.rename({'code': 'ts_code', 'industry_l1': 'industry'})
-        logger.warning(f'[research] 行业截面（与生产同源）: industry_{ind_day}')
+        logger.warning(
+            f'[research] 行业截面（与生产同源）: industry_history.parquet '
+            f'as_of={ind_day}')
 
     df = (pv.join(elig, on=['ts_code', 'date'], how='inner')
           .join(ind, on='ts_code', how='left')

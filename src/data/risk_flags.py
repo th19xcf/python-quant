@@ -73,9 +73,13 @@ def status_from_name(name: Any) -> str:
     return ST if _ST_PREFIX.match(text) else NON_ST
 
 
-def snapshot_path(store_root: Path | str, as_of: date) -> Path:
-    return Path(store_root) / 'meta' / 'st_status' \
-        / f'st_status_{as_of:%Y%m%d}.parquet'
+#: 正式路径的文件名：单表按 ``as_of`` 纵向累积，路径不带日期（DG-4）
+HISTORY_NAME = 'st_status_history.parquet'
+
+
+def snapshot_path(store_root: Path | str) -> Path:
+    """ST 快照正式路径（唯一一份，取哪一天由 ``as_of`` 列决定）。"""
+    return Path(store_root) / 'meta' / 'st_status' / HISTORY_NAME
 
 
 def _load_names(path: Path) -> dict[str, str]:
@@ -154,10 +158,10 @@ def build_snapshot(
     frame = frame.with_columns(
         pl.when(pl.col('status') == UNKNOWN).then(None)
         .otherwise(pl.col('is_st')).alias('is_st'))
-    path = snapshot_path(root, snapshot_date)
+    path = snapshot_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_parquet_atomic(frame, path)
-    logger.info(f'[st] ST 快照已落盘: {path}（{frame.height} 个标的）')
+    _upsert_history(frame, path)
+    logger.info(f'[st] ST 快照已并入 {path}（as_of={snapshot_date}，{frame.height} 个标的）')
     write_manifest(root)
     return frame
 
@@ -182,32 +186,32 @@ class _ManifestPayload(TypedDict):
 
 _MANIFEST_PAYLOAD: _ManifestPayload = {
     'prefix': 'st_status_',
-    'dataset': 'st_status_snapshot_series',
+    'dataset': 'st_status_history',
     'semantics': (
-        '日期快照序列：正式路径为通配模式 st_status_<YYYYMMDD>.parquet；'
-        '单份是名称前缀派生的当日 ST 三态截面，按日期累积、只增不重写，'
-        '历史日期无法补生成；历史 ST 判定须走 meta/st/st_intervals.parquet '
-        '区间表，本族只作当日横截面'
+        '单表日期快照序列：每行是「某标的某日的 ST 三态截面」，'
+        '按 as_of 纵向累积、只增不重写；正式路径不带日期，取哪一天一律由 '
+        'as_of 列决定。历史 ST 判定须走 meta/st/st_intervals.parquet 区间表，'
+        '本表只作当日横截面核对'
     ),
     'source': (
         '本地名称快照 meta/names.json 派生；本地无名称时用远程 stock_basic 兜底'
         '（已退市判 unknown）'
     ),
     'authority': (
-        'docs/数据权威路径清单.md 登记的通配口径 '
-        'meta/st_status/st_status_<YYYYMMDD>.parquet；选择函数为 '
-        'src/data/risk_flags.py::load_snapshot（取文件名日期不晚于 as_of 的最新一份）'
+        'docs/数据权威路径清单.md 登记的 meta/st_status/st_status_history.parquet；'
+        '选择函数 src/data/risk_flags.py::load_snapshot（取 as_of 不晚于目标日的'
+        '最大 as_of 那一层）'
     ),
-    'path_pattern': 'meta/st_status/st_status_<YYYYMMDD>.parquet',
+    'path_pattern': 'meta/st_status/st_status_history.parquet',
     'consumers': [
-        'src/data/risk_flags.py::load_snapshot（as_of 不晚于目标日的最新一份）',
-        'src/data/st_history.py:765-784 _snapshot_series 逐日升序读全族（防未来函数）',
-        'src/advice/risk_filters.py:34 load_st_snapshot',
-        'src/data/quality/clean_set.py:1036 硬编码 st_status_20261103.parquet（已登记缺陷）',
-        'src/data/quality/freshness_config.json:41 latest_glob_distinct 取最新一份',
-        'tools/build_universe_layers.py:324 取最新一份做 L3 对拍',
+        'src/data/risk_flags.py::load_snapshot / snapshot_days（as_of 不晚于目标日）',
+        'src/data/st_history.py::_snapshot_series 按 as_of 升序逐层读（防未来函数）',
+        'src/advice/risk_filters.py load_st_snapshot',
+        'src/data/quality/clean_set.py 取 as_of == 2026-11-03 那一层（已登记陈旧截面缺陷）',
+        'src/data/quality/freshness_config.json 的 latest_as_of_distinct / parquet_max',
+        'tools/build_universe_layers.py::_snapshot_comparison 取最大 as_of 做 L3 对拍',
     ],
-    'produced_by': 'src/data/risk_flags.py::build_snapshot',
+    'produced_by': 'src/data/risk_flags.py::build_snapshot（按 as_of 覆盖同日后合并落盘）',
 }
 
 
@@ -217,20 +221,13 @@ def write_manifest(store_root: Path | str) -> Path:
     return write_snapshot_manifest(root, root / 'meta' / 'st_status', **_MANIFEST_PAYLOAD)
 
 
-def _snapshot_files(store_root: Path | str) -> list[tuple[date, Path]]:
-    dir_path = Path(store_root) / 'meta' / 'st_status'
-    if not dir_path.is_dir():
-        return []
-    files: list[tuple[date, Path]] = []
-    for path in dir_path.glob('st_status_*.parquet'):
-        day = _as_date(path.stem.split('_')[-1])
-        if day is not None:
-            files.append((day, path))
-    return sorted(files)
-
-
-def _read_snapshot(path: Path) -> pl.DataFrame:
-    stat = path.stat()
+def _read_history(store_root: Path | str) -> pl.DataFrame | None:
+    """读整张 history 表（按文件 mtime 缓存）；表不存在返回 ``None``。"""
+    path = snapshot_path(store_root)
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
     cached = _SNAPSHOT_CACHE.get(str(path))
     if cached is not None and cached[0] == stat.st_mtime_ns:
         return cached[1]
@@ -239,16 +236,37 @@ def _read_snapshot(path: Path) -> pl.DataFrame:
     return frame
 
 
+def snapshot_days(store_root: Path | str) -> list[date]:
+    """表内已有的快照日（升序）；无表或全空返回空列表。"""
+    frame = _read_history(store_root)
+    if frame is None or frame.height == 0:
+        return []
+    return sorted(day for day in frame['as_of'].unique().to_list() if day is not None)
+
+
+def _upsert_history(frame: pl.DataFrame, path: Path) -> None:
+    """把当日快照按 ``as_of`` 覆盖式并入单表（同一 as_of 重跑不重复累积）。"""
+    as_of = frame['as_of'][0]
+    if path.is_file():
+        existing = pl.read_parquet(path).filter(pl.col('as_of') != as_of)
+        frame = pl.concat([existing, frame], how='vertical')
+    write_parquet_atomic(frame.sort(['as_of', 'code']), path)
+
+
 def load_snapshot(
     store_root: Path | str, as_of: Any = None,
 ) -> tuple[pl.DataFrame | None, date | None]:
-    """取不晚于 ``as_of`` 的最新 ST 快照；早于首份快照返回 ``(None, None)``。"""
+    """取 ``as_of`` 不晚于目标日的最大一层快照；早于首层返回 ``(None, None)``。"""
     target = _as_date(as_of) or date.today()
-    files = [item for item in _snapshot_files(store_root) if item[0] <= target]
-    if not files:
+    frame = _read_history(store_root)
+    if frame is None or frame.height == 0:
         return None, None
-    day, path = files[-1]
-    return _read_snapshot(path), day
+    days = [day for day in frame.filter(pl.col('as_of') <= target)['as_of']
+            .unique().to_list() if day is not None]
+    if not days:
+        return None, None
+    day = max(days)
+    return frame.filter(pl.col('as_of') == day), day
 
 
 def get_st_status_detail(
@@ -347,14 +365,16 @@ def get_st_intervals(
                       'start': item['start_date'], 'end': item['end_date']}
                     for item in historical]
     series: list[tuple[date, str]] = []
-    for day, path in _snapshot_files(store_root):
-        if (start_day is not None and day < start_day) \
-                or (end_day is not None and day > end_day):
-            continue
-        frame = _read_snapshot(path)
-        rows = frame.filter(pl.col('code') == target).to_dicts()
-        if rows:
-            series.append((day, rows[0]['status']))
+    history_frame = _read_history(store_root)
+    if history_frame is not None:
+        for day in snapshot_days(store_root):
+            if (start_day is not None and day < start_day) \
+                    or (end_day is not None and day > end_day):
+                continue
+            rows = history_frame.filter(
+                (pl.col('as_of') == day) & (pl.col('code') == target)).to_dicts()
+            if rows:
+                series.append((day, rows[0]['status']))
     intervals: list[dict[str, Any]] = []
     for day, status in series:
         if intervals and intervals[-1]['status'] == status:
@@ -374,15 +394,15 @@ def history_coverage(store_root: Path | str | None = None) -> dict[str, Any]:
         from src.utils.config import get_config  # noqa: PLC0415
 
         store_root = resolve_store_root(get_config())
-    files = _snapshot_files(store_root)
+    days = snapshot_days(store_root)
     from src.data import st_history  # noqa: PLC0415
 
     hist = st_history.coverage_summary(store_root)
     return {
         'backfillable': bool(hist.get('available')),
-        'snapshots': len(files),
-        'first_snapshot': files[0][0].isoformat() if files else None,
-        'last_snapshot': files[-1][0].isoformat() if files else None,
+        'snapshots': len(days),
+        'first_snapshot': days[0].isoformat() if days else None,
+        'last_snapshot': days[-1].isoformat() if days else None,
         'history': hist,
         'note': '历史日期由区间表判定；无记录的标的仍返回 unknown，不做非 ST 默认',
     }

@@ -276,3 +276,35 @@ def test_invalid_config_rejected() -> None:
         parse_config({'datasets': [_entry('bad', 'x.parquet', warn=3, critical=3)]})
     with pytest.raises(ValueError):
         parse_config({'datasets': [_entry('bad', 'x.parquet', unit='unknown')]})
+
+
+def test_latest_as_of_distinct_counts_only_the_latest_layer(tmp_path: Path) -> None:
+    """最新层内的去重标的数，不是全历史并集。
+
+    构造：000003.SZ 只存在于旧层（模拟已退市，历史表里留痕、最新截面里没有）。
+    正确口径给 2；退回 parquet_distinct（全历史并集）会数成 3，本用例即变红。
+    """
+    pl.DataFrame([
+        {'code': '000001.SZ', 'as_of': date(2026, 11, 3)},
+        {'code': '000002.SZ', 'as_of': date(2026, 11, 3)},
+        {'code': '000003.SZ', 'as_of': date(2026, 11, 3)},
+        {'code': '000001.SZ', 'as_of': date(2026, 11, 4)},
+        {'code': '000002.SZ', 'as_of': date(2026, 11, 4)},
+    ]).write_parquet(tmp_path / 'history.parquet')
+    coverage = {
+        'count': {'kind': 'latest_as_of_distinct', 'path': 'history.parquet',
+                  'as_of_column': 'as_of', 'column': 'code'},
+        'expected': {'kind': 'fixed', 'value': 2},
+        'min_ratio': 0.9,
+        'critical_ratio': 0.5,
+    }
+    latest = _run(tmp_path, [_entry('history', 'history.parquet', column='as_of',
+                                    coverage=coverage)])['history']
+    assert latest.covered_count == 2
+    assert latest.coverage_ratio == pytest.approx(1.0)
+
+    coverage['count'] = {'kind': 'parquet_distinct', 'path': 'history.parquet',
+                         'column': 'code'}
+    union = _run(tmp_path, [_entry('history', 'history.parquet', column='as_of',
+                                   coverage=coverage)])['history']
+    assert union.covered_count == 3

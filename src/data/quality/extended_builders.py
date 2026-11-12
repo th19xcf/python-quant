@@ -269,22 +269,15 @@ def build_suspension(
     return summary
 
 
-def _industry_snapshots(root: Path) -> list[tuple[date, Path]]:
-    """``industry_YYYYMMDD[_vN].parquet`` -> [(日期, 路径)]，同日取最后写入。"""
-    directory = root / 'meta' / 'industry'
-    if not directory.is_dir():
+def _industry_snapshots(root: Path) -> list[tuple[date, pl.DataFrame]]:
+    """``industry_history.parquet`` -> [(as_of, 该层截面)]，按 as_of 升序。"""
+    path = root / 'meta' / 'industry' / 'industry_history.parquet'
+    if not path.is_file():
         return []
-    by_day: dict[date, Path] = {}
-    for path in sorted(directory.glob('industry_*.parquet')):
-        token = path.stem.split('_', 1)[1][:8]
-        try:
-            day = datetime.strptime(token, '%Y%m%d').date()
-        except ValueError:
-            continue
-        current = by_day.get(day)
-        if current is None or path.stat().st_mtime_ns >= current.stat().st_mtime_ns:
-            by_day[day] = path
-    return sorted(by_day.items())
+    frame = pl.read_parquet(path, columns=[
+        'code', 'industry_l1', 'industry_l2', 'industry_code', 'source', 'as_of'])
+    days = sorted(day for day in frame['as_of'].unique().to_list() if day is not None)
+    return [(day, frame.filter(pl.col('as_of') == day)) for day in days]
 
 
 def build_industry_pit(root: Path | str, *, commit: bool = False) -> dict[str, Any]:
@@ -297,16 +290,10 @@ def build_industry_pit(root: Path | str, *, commit: bool = False) -> dict[str, A
     store = Path(root)
     snapshots = _industry_snapshots(store)
     if not snapshots:
-        raise FileNotFoundError('meta/industry 下没有 industry_YYYYMMDD.parquet 快照')
+        raise FileNotFoundError('meta/industry/industry_history.parquet 不存在或为空')
 
     history: dict[str, list[tuple[date, str, str, str, str]]] = {}
-    for day, path in snapshots:
-        try:
-            frame = pl.read_parquet(path, columns=[
-                'code', 'industry_l1', 'industry_l2', 'industry_code', 'source'])
-        except (OSError, ValueError, TypeError, PolarsError) as exc:
-            logger.warning(f'行业快照不可读，跳过 {path.name}: {exc}')
-            continue
+    for day, frame in snapshots:
         for row in frame.iter_rows(named=True):
             raw_code = str(row['industry_code'] or 'unknown')
             if raw_code == 'unknown' or not raw_code.startswith('T'):

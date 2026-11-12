@@ -1082,9 +1082,13 @@ class EligibilityEngine:
                 and self.codes[code].data_type == 'stock'
                 and not self.codes[code].st_intervals
             }
-        snapshot = self.root / 'meta/st_status/st_status_20261103.parquet'
+        # 截面钉在 2026-11-03 那一层（见缺口 G-148）：迁移只做路径去日期化，
+        # 取哪一天由 as_of 列决定，行为逐行不变。「钉了一个陈旧截面」本身是
+        # 独立缺陷，已单独登记，不在迁移里顺手改。
+        snapshot = self.root / 'meta/st_status/st_status_history.parquet'
         if snapshot.exists():
-            snap = pl.read_parquet(snapshot)
+            snap = pl.read_parquet(snapshot).filter(
+                pl.col('as_of') == date(2026, 11, 3))
             self.snapshot_st = set(
                 snap.filter(pl.col('status') == 'st')['code'].to_list()
             )

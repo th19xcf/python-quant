@@ -85,18 +85,19 @@ add(id="st_raw", cn="ST 判定原始证据（9 件：公告/名称变更/机构�
     inputs=[], registered=True, rebuildable="不可从本地重算（外部证据）",
     second_copy="有：G: 镜像", reconciled="逐条见 docs/证据链",
     defects="7 张无 manifest（G-095）", gaps=["G-095"], in_progress=False)
-add(id="st_status", cn="ST 状态日快照（7 份带日期文件）", layer="L0", klass="base",
-    path="data/local_store/meta/st_status/st_status_<YYYYMMDD>.parquet",
-    rows=None, files=7, writer_primary="未定位到常规写入口",
+add(id="st_status", cn="ST 状态日快照（单表 history，按 as_of 累积）", layer="L0", klass="base",
+    path="data/local_store/meta/st_status/st_status_history.parquet",
+    rows=40401, files=1, writer_primary="src/data/risk_flags.py::build_snapshot",
     inputs=[], registered=True, rebuildable="需外部源重抓", second_copy="有：G: 镜像",
     reconciled="st_intervals 与其做过快照对照（layers manifest 内 st_snapshot_vs_interval.json）",
-    defects="日期文件名多版本并存；clean_set 曾硬编码 20261103（G-098）", gaps=["G-098"], in_progress=False)
-add(id="industry_snap", cn="行业归属日快照（7 份带日期文件）", layer="L0", klass="base",
-    path="data/local_store/meta/industry/industry_<YYYYMMDD>.parquet",
-    rows=None, files=7, writer_primary="未定位到常规写入口",
+    defects="仍有一处按 as_of == 2026-11-03 取固定截面（clean_set，已登记缺口）", gaps=[], in_progress=False)
+add(id="industry_snap", cn="行业归属日快照（单表 history，按 as_of 累积）", layer="L0", klass="base",
+    path="data/local_store/meta/industry/industry_history.parquet",
+    rows=40401, files=1, writer_primary="src/data/industry.py::build_snapshot",
     inputs=[], registered=True, rebuildable="需外部源重抓", second_copy="有：G: 镜像",
     reconciled="industry_pit 构建时与其对拍（派生层侧）",
-    defects="日期文件名多版本并存（同 G-098 一类）", gaps=["G-098"], in_progress=False)
+    defects="有一处按 as_of == 2026-11-04 取固定截面（single_window_diag，已登记缺口）",
+    gaps=[], in_progress=False)
 add(id="index_weight", cn="指数成分权重月表（外部）", layer="L0", klass="base",
     path="data/local_store/meta/index_members/index_weight_monthly.parquet",
     rows=None, writer_primary="外部接口拉取脚本（tools/ 下），未逐行核实",

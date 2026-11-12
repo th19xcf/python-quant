@@ -103,7 +103,7 @@ def test_build_st_snapshot_three_states(tmp_path, names_file):
     assert rows['000004.SZ']['reason'] == 'delisted'
     assert rows['000004.SZ']['is_st'] is None
     assert rows['000005.SZ']['status'] == UNKNOWN
-    assert st_snapshot_path(tmp_path, date(2026, 11, 3)).is_file()
+    assert st_snapshot_path(tmp_path).is_file()
     assert frame['as_of'].unique().to_list() == [date(2026, 11, 3)]
 
 
@@ -197,7 +197,7 @@ def test_industry_snapshot_and_api(tmp_path, industry_cache):
     assert rows['000002.SZ']['industry_l1'] == IND_UNKNOWN
     assert rows['000002.SZ']['source'] == 'missing'
     assert rows['999999.SH']['industry_l2'] == IND_UNKNOWN
-    assert industry_snapshot_path(tmp_path, date(2026, 11, 3)).is_file()
+    assert industry_snapshot_path(tmp_path).is_file()
 
     kw = {'store_root': tmp_path}
     got = get_industry('600000.SH', date(2026, 11, 3), **kw)
@@ -235,7 +235,7 @@ def test_industry_snapshot_without_names_keeps_unknown(tmp_path):
 def test_st_snapshot_write_crash_keeps_previous_file(
         tmp_path, names_file, monkeypatch):
     """同日 ST 快照重写中断时，旧快照字节与内容必须原样保留。"""
-    target = st_snapshot_path(tmp_path, date(2026, 11, 3))
+    target = st_snapshot_path(tmp_path)
     build_st(tmp_path, date(2026, 11, 3), names_path=names_file,
              codes=['600000.SH'])
     before = target.read_bytes()

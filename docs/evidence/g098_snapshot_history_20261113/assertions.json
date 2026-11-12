@@ -1,0 +1,662 @@
+{
+  "st_status": {
+    "sources": {
+      "files": [
+        {
+          "path": "data/local_store/meta/st_status/st_status_20261103.parquet",
+          "day": "2026-11-03",
+          "rows": 5654,
+          "bytes": 49683,
+          "sha256": "6d10a8776520bbb87483b7ec652d49a353396ff94174f6921f5fac42629f7af4",
+          "columns": [
+            "code",
+            "name",
+            "status",
+            "source",
+            "reason",
+            "as_of",
+            "is_st"
+          ]
+        },
+        {
+          "path": "data/local_store/meta/st_status/st_status_20261104.parquet",
+          "day": "2026-11-04",
+          "rows": 5655,
+          "bytes": 49705,
+          "sha256": "9c87ddfde8d18eb0e47828ea0deeb24be6fae3ee566d8c0c38c0f10ababc17b9",
+          "columns": [
+            "code",
+            "name",
+            "status",
+            "source",
+            "reason",
+            "as_of",
+            "is_st"
+          ]
+        },
+        {
+          "path": "data/local_store/meta/st_status/st_status_20261105.parquet",
+          "day": "2026-11-05",
+          "rows": 5812,
+          "bytes": 51034,
+          "sha256": "7741effd248d52693396018f8c9e0cbb1c2cf15944b835e441aecdacd97679d9",
+          "columns": [
+            "code",
+            "name",
+            "status",
+            "source",
+            "reason",
+            "as_of",
+            "is_st"
+          ]
+        },
+        {
+          "path": "data/local_store/meta/st_status/st_status_20261106.parquet",
+          "day": "2026-11-06",
+          "rows": 5812,
+          "bytes": 51036,
+          "sha256": "d8180a1266d3c3a518b80ef8b60a52f94f6ab6760f5767e7790297073b75cf42",
+          "columns": [
+            "code",
+            "name",
+            "status",
+            "source",
+            "reason",
+            "as_of",
+            "is_st"
+          ]
+        },
+        {
+          "path": "data/local_store/meta/st_status/st_status_20261109.parquet",
+          "day": "2026-11-09",
+          "rows": 5818,
+          "bytes": 50902,
+          "sha256": "0c690676bf5e43f91d92984d221eaddb8d6edc3b1a169eba5245bd1f0f96243d",
+          "columns": [
+            "code",
+            "name",
+            "status",
+            "source",
+            "reason",
+            "as_of",
+            "is_st"
+          ]
+        },
+        {
+          "path": "data/local_store/meta/st_status/st_status_20261110.parquet",
+          "day": "2026-11-10",
+          "rows": 5818,
+          "bytes": 50845,
+          "sha256": "8e6d5466de69f9e825d0f73c53b168b670b3f8b8e02dc516157dcd55dfa42737",
+          "columns": [
+            "code",
+            "name",
+            "status",
+            "source",
+            "reason",
+            "as_of",
+            "is_st"
+          ]
+        },
+        {
+          "path": "data/local_store/meta/st_status/st_status_20261112.parquet",
+          "day": "2026-11-12",
+          "rows": 5832,
+          "bytes": 51060,
+          "sha256": "32dbc6ec4306aaf50553af473d943a29f67f7c78e3f443ea0aa31699d0d61d2f",
+          "columns": [
+            "code",
+            "name",
+            "status",
+            "source",
+            "reason",
+            "as_of",
+            "is_st"
+          ]
+        }
+      ],
+      "schema": [
+        "code",
+        "name",
+        "status",
+        "source",
+        "reason",
+        "as_of",
+        "is_st"
+      ],
+      "total_rows": 40401
+    },
+    "conservation": {
+      "sum_source_rows": 40401,
+      "merged_rows": 40401,
+      "delta": 0,
+      "per_day": [
+        {
+          "day": "2026-11-03",
+          "source_rows": 5654,
+          "merged_rows": 5654
+        },
+        {
+          "day": "2026-11-04",
+          "source_rows": 5655,
+          "merged_rows": 5655
+        },
+        {
+          "day": "2026-11-05",
+          "source_rows": 5812,
+          "merged_rows": 5812
+        },
+        {
+          "day": "2026-11-06",
+          "source_rows": 5812,
+          "merged_rows": 5812
+        },
+        {
+          "day": "2026-11-09",
+          "source_rows": 5818,
+          "merged_rows": 5818
+        },
+        {
+          "day": "2026-11-10",
+          "source_rows": 5818,
+          "merged_rows": 5818
+        },
+        {
+          "day": "2026-11-12",
+          "source_rows": 5832,
+          "merged_rows": 5832
+        }
+      ]
+    },
+    "value_compare": {
+      "per_file": [
+        {
+          "file": "st_status_20261103.parquet",
+          "day": "2026-11-03",
+          "rows": 5654,
+          "nulls_src": 232,
+          "nulls_merged": 232,
+          "value_changed_non_null": 0
+        },
+        {
+          "file": "st_status_20261104.parquet",
+          "day": "2026-11-04",
+          "rows": 5655,
+          "nulls_src": 232,
+          "nulls_merged": 232,
+          "value_changed_non_null": 0
+        },
+        {
+          "file": "st_status_20261105.parquet",
+          "day": "2026-11-05",
+          "rows": 5812,
+          "nulls_src": 233,
+          "nulls_merged": 233,
+          "value_changed_non_null": 0
+        },
+        {
+          "file": "st_status_20261106.parquet",
+          "day": "2026-11-06",
+          "rows": 5812,
+          "nulls_src": 233,
+          "nulls_merged": 233,
+          "value_changed_non_null": 0
+        },
+        {
+          "file": "st_status_20261109.parquet",
+          "day": "2026-11-09",
+          "rows": 5818,
+          "nulls_src": 238,
+          "nulls_merged": 238,
+          "value_changed_non_null": 0
+        },
+        {
+          "file": "st_status_20261110.parquet",
+          "day": "2026-11-10",
+          "rows": 5818,
+          "nulls_src": 239,
+          "nulls_merged": 239,
+          "value_changed_non_null": 0
+        },
+        {
+          "file": "st_status_20261112.parquet",
+          "day": "2026-11-12",
+          "rows": 5832,
+          "nulls_src": 252,
+          "nulls_merged": 252,
+          "value_changed_non_null": 0
+        }
+      ]
+    },
+    "probes": {
+      "days": [
+        "2026-11-03",
+        "2026-11-04",
+        "2026-11-05",
+        "2026-11-06",
+        "2026-11-09",
+        "2026-11-10",
+        "2026-11-12"
+      ],
+      "latest_day": "2026-11-12",
+      "latest_rows": 5832,
+      "probes": [
+        {
+          "day": "2026-11-03",
+          "code": "000001.SZ",
+          "row_equals_source": true
+        },
+        {
+          "day": "2026-11-12",
+          "code": "000001.SZ",
+          "row_equals_source": true
+        }
+      ]
+    },
+    "candidate": {
+      "path": "E:\\code\\python\\quant\\_staging\\g098_snapshot_history_20261113\\st_status\\st_status_history.parquet",
+      "rows": 40401,
+      "bytes": 109210,
+      "sha256": "388296f13facec3b6c75fa2de6d535d2c4d17cdb74ef00a2fda9cc2735493570"
+    },
+    "moved": [
+      {
+        "name": "manifest.json",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\st_status\\manifest.json",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\st_status_20261113\\manifest.json",
+        "sha256": "7b225ecaaa74a37fa2ce68fd7f1303a81e0cb6e59745a6886aeaf28b7a7f4a20",
+        "bytes": 4561,
+        "inode": 1407374883589456
+      },
+      {
+        "name": "st_status_20261103.parquet",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\st_status\\st_status_20261103.parquet",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\st_status_20261113\\st_status_20261103.parquet",
+        "sha256": "6d10a8776520bbb87483b7ec652d49a353396ff94174f6921f5fac42629f7af4",
+        "bytes": 49683,
+        "inode": 562949953446917
+      },
+      {
+        "name": "st_status_20261104.parquet",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\st_status\\st_status_20261104.parquet",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\st_status_20261113\\st_status_20261104.parquet",
+        "sha256": "9c87ddfde8d18eb0e47828ea0deeb24be6fae3ee566d8c0c38c0f10ababc17b9",
+        "bytes": 49705,
+        "inode": 562949953446918
+      },
+      {
+        "name": "st_status_20261105.parquet",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\st_status\\st_status_20261105.parquet",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\st_status_20261113\\st_status_20261105.parquet",
+        "sha256": "7741effd248d52693396018f8c9e0cbb1c2cf15944b835e441aecdacd97679d9",
+        "bytes": 51034,
+        "inode": 562949953446919
+      },
+      {
+        "name": "st_status_20261106.parquet",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\st_status\\st_status_20261106.parquet",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\st_status_20261113\\st_status_20261106.parquet",
+        "sha256": "d8180a1266d3c3a518b80ef8b60a52f94f6ab6760f5767e7790297073b75cf42",
+        "bytes": 51036,
+        "inode": 562949953662058
+      },
+      {
+        "name": "st_status_20261109.parquet",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\st_status\\st_status_20261109.parquet",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\st_status_20261113\\st_status_20261109.parquet",
+        "sha256": "0c690676bf5e43f91d92984d221eaddb8d6edc3b1a169eba5245bd1f0f96243d",
+        "bytes": 50902,
+        "inode": 1970324837126750
+      },
+      {
+        "name": "st_status_20261110.parquet",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\st_status\\st_status_20261110.parquet",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\st_status_20261113\\st_status_20261110.parquet",
+        "sha256": "8e6d5466de69f9e825d0f73c53b168b670b3f8b8e02dc516157dcd55dfa42737",
+        "bytes": 50845,
+        "inode": 562949953756238
+      },
+      {
+        "name": "st_status_20261112.parquet",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\st_status\\st_status_20261112.parquet",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\st_status_20261113\\st_status_20261112.parquet",
+        "sha256": "32dbc6ec4306aaf50553af473d943a29f67f7c78e3f443ea0aa31699d0d61d2f",
+        "bytes": 51060,
+        "inode": 1407374883589455
+      }
+    ],
+    "formal": {
+      "path": "E:\\code\\python\\quant\\data\\local_store\\meta\\st_status\\st_status_history.parquet",
+      "bytes": 109210,
+      "sha256": "388296f13facec3b6c75fa2de6d535d2c4d17cdb74ef00a2fda9cc2735493570"
+    },
+    "manifest": "E:\\code\\python\\quant\\data\\local_store\\meta\\st_status\\manifest.json",
+    "manifest_sha256": "63f110a8824a8d321dab2e398a1923b9eb081b1265a154b1dd526eae2b0e4b61"
+  },
+  "industry": {
+    "sources": {
+      "files": [
+        {
+          "path": "data/local_store/meta/industry/industry_20261103.parquet",
+          "day": "2026-11-03",
+          "rows": 5654,
+          "bytes": 23028,
+          "sha256": "855db29b05b2ba348efeaa4a500a7d8edf3f41a9d64dd0db95ffd1765d52930c",
+          "columns": [
+            "code",
+            "industry_l1",
+            "industry_l2",
+            "industry_code",
+            "source",
+            "as_of"
+          ]
+        },
+        {
+          "path": "data/local_store/meta/industry/industry_20261104.parquet",
+          "day": "2026-11-04",
+          "rows": 5655,
+          "bytes": 23041,
+          "sha256": "8b56207ab4ac5b6418759f07af3985ab97eb3001aaff39cd71c081d6622887e8",
+          "columns": [
+            "code",
+            "industry_l1",
+            "industry_l2",
+            "industry_code",
+            "source",
+            "as_of"
+          ]
+        },
+        {
+          "path": "data/local_store/meta/industry/industry_20261105.parquet",
+          "day": "2026-11-05",
+          "rows": 5812,
+          "bytes": 23649,
+          "sha256": "9f95e1786a560b51c23df354299b9d48399b9246dbc82adca0879fb1681c7793",
+          "columns": [
+            "code",
+            "industry_l1",
+            "industry_l2",
+            "industry_code",
+            "source",
+            "as_of"
+          ]
+        },
+        {
+          "path": "data/local_store/meta/industry/industry_20261106.parquet",
+          "day": "2026-11-06",
+          "rows": 5812,
+          "bytes": 23649,
+          "sha256": "5b7649b6cbbd205a18b69aed9260ee89772e92de45d530a839f626e1e825612e",
+          "columns": [
+            "code",
+            "industry_l1",
+            "industry_l2",
+            "industry_code",
+            "source",
+            "as_of"
+          ]
+        },
+        {
+          "path": "data/local_store/meta/industry/industry_20261109.parquet",
+          "day": "2026-11-09",
+          "rows": 5818,
+          "bytes": 23492,
+          "sha256": "78a11c5c3431f63d32af1965ea28c5d793651daf5809ff5539bef4dbeb487eb3",
+          "columns": [
+            "code",
+            "industry_l1",
+            "industry_l2",
+            "industry_code",
+            "source",
+            "as_of"
+          ]
+        },
+        {
+          "path": "data/local_store/meta/industry/industry_20261110.parquet",
+          "day": "2026-11-10",
+          "rows": 5818,
+          "bytes": 23492,
+          "sha256": "ba4fa3c0a39ad0ae074679008c41d30299b0ba29d3be6e378a43eaa8a9108c0e",
+          "columns": [
+            "code",
+            "industry_l1",
+            "industry_l2",
+            "industry_code",
+            "source",
+            "as_of"
+          ]
+        },
+        {
+          "path": "data/local_store/meta/industry/industry_20261112.parquet",
+          "day": "2026-11-12",
+          "rows": 5832,
+          "bytes": 23544,
+          "sha256": "97d38f67ce1568e19d602abba57ecef2db40260ae5f4587a83a659037ecfea27",
+          "columns": [
+            "code",
+            "industry_l1",
+            "industry_l2",
+            "industry_code",
+            "source",
+            "as_of"
+          ]
+        }
+      ],
+      "schema": [
+        "code",
+        "industry_l1",
+        "industry_l2",
+        "industry_code",
+        "source",
+        "as_of"
+      ],
+      "total_rows": 40401
+    },
+    "conservation": {
+      "sum_source_rows": 40401,
+      "merged_rows": 40401,
+      "delta": 0,
+      "per_day": [
+        {
+          "day": "2026-11-03",
+          "source_rows": 5654,
+          "merged_rows": 5654
+        },
+        {
+          "day": "2026-11-04",
+          "source_rows": 5655,
+          "merged_rows": 5655
+        },
+        {
+          "day": "2026-11-05",
+          "source_rows": 5812,
+          "merged_rows": 5812
+        },
+        {
+          "day": "2026-11-06",
+          "source_rows": 5812,
+          "merged_rows": 5812
+        },
+        {
+          "day": "2026-11-09",
+          "source_rows": 5818,
+          "merged_rows": 5818
+        },
+        {
+          "day": "2026-11-10",
+          "source_rows": 5818,
+          "merged_rows": 5818
+        },
+        {
+          "day": "2026-11-12",
+          "source_rows": 5832,
+          "merged_rows": 5832
+        }
+      ]
+    },
+    "value_compare": {
+      "per_file": [
+        {
+          "file": "industry_20261103.parquet",
+          "day": "2026-11-03",
+          "rows": 5654,
+          "nulls_src": 0,
+          "nulls_merged": 0,
+          "value_changed_non_null": 0
+        },
+        {
+          "file": "industry_20261104.parquet",
+          "day": "2026-11-04",
+          "rows": 5655,
+          "nulls_src": 0,
+          "nulls_merged": 0,
+          "value_changed_non_null": 0
+        },
+        {
+          "file": "industry_20261105.parquet",
+          "day": "2026-11-05",
+          "rows": 5812,
+          "nulls_src": 0,
+          "nulls_merged": 0,
+          "value_changed_non_null": 0
+        },
+        {
+          "file": "industry_20261106.parquet",
+          "day": "2026-11-06",
+          "rows": 5812,
+          "nulls_src": 0,
+          "nulls_merged": 0,
+          "value_changed_non_null": 0
+        },
+        {
+          "file": "industry_20261109.parquet",
+          "day": "2026-11-09",
+          "rows": 5818,
+          "nulls_src": 0,
+          "nulls_merged": 0,
+          "value_changed_non_null": 0
+        },
+        {
+          "file": "industry_20261110.parquet",
+          "day": "2026-11-10",
+          "rows": 5818,
+          "nulls_src": 0,
+          "nulls_merged": 0,
+          "value_changed_non_null": 0
+        },
+        {
+          "file": "industry_20261112.parquet",
+          "day": "2026-11-12",
+          "rows": 5832,
+          "nulls_src": 0,
+          "nulls_merged": 0,
+          "value_changed_non_null": 0
+        }
+      ]
+    },
+    "probes": {
+      "days": [
+        "2026-11-03",
+        "2026-11-04",
+        "2026-11-05",
+        "2026-11-06",
+        "2026-11-09",
+        "2026-11-10",
+        "2026-11-12"
+      ],
+      "latest_day": "2026-11-12",
+      "latest_rows": 5832,
+      "probes": [
+        {
+          "day": "2026-11-03",
+          "code": "000001.SZ",
+          "row_equals_source": true
+        },
+        {
+          "day": "2026-11-12",
+          "code": "000001.SZ",
+          "row_equals_source": true
+        }
+      ]
+    },
+    "candidate": {
+      "path": "E:\\code\\python\\quant\\_staging\\g098_snapshot_history_20261113\\industry\\industry_history.parquet",
+      "rows": 40401,
+      "bytes": 71901,
+      "sha256": "c263de72829cfe63272833287079996aeeca5409f1e618a798190378cb7acad1"
+    },
+    "moved": [
+      {
+        "name": "industry_20261103.parquet",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\industry\\industry_20261103.parquet",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\industry_20261113\\industry_20261103.parquet",
+        "sha256": "855db29b05b2ba348efeaa4a500a7d8edf3f41a9d64dd0db95ffd1765d52930c",
+        "bytes": 23028,
+        "inode": 562949953446819
+      },
+      {
+        "name": "industry_20261104.parquet",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\industry\\industry_20261104.parquet",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\industry_20261113\\industry_20261104.parquet",
+        "sha256": "8b56207ab4ac5b6418759f07af3985ab97eb3001aaff39cd71c081d6622887e8",
+        "bytes": 23041,
+        "inode": 562949953446820
+      },
+      {
+        "name": "industry_20261105.parquet",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\industry\\industry_20261105.parquet",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\industry_20261113\\industry_20261105.parquet",
+        "sha256": "9f95e1786a560b51c23df354299b9d48399b9246dbc82adca0879fb1681c7793",
+        "bytes": 23649,
+        "inode": 562949953446821
+      },
+      {
+        "name": "industry_20261106.parquet",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\industry\\industry_20261106.parquet",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\industry_20261113\\industry_20261106.parquet",
+        "sha256": "5b7649b6cbbd205a18b69aed9260ee89772e92de45d530a839f626e1e825612e",
+        "bytes": 23649,
+        "inode": 562949953662059
+      },
+      {
+        "name": "industry_20261109.parquet",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\industry\\industry_20261109.parquet",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\industry_20261113\\industry_20261109.parquet",
+        "sha256": "78a11c5c3431f63d32af1965ea28c5d793651daf5809ff5539bef4dbeb487eb3",
+        "bytes": 23492,
+        "inode": 1970324837126752
+      },
+      {
+        "name": "industry_20261110.parquet",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\industry\\industry_20261110.parquet",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\industry_20261113\\industry_20261110.parquet",
+        "sha256": "ba4fa3c0a39ad0ae074679008c41d30299b0ba29d3be6e378a43eaa8a9108c0e",
+        "bytes": 23492,
+        "inode": 562949953756239
+      },
+      {
+        "name": "industry_20261112.parquet",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\industry\\industry_20261112.parquet",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\industry_20261113\\industry_20261112.parquet",
+        "sha256": "97d38f67ce1568e19d602abba57ecef2db40260ae5f4587a83a659037ecfea27",
+        "bytes": 23544,
+        "inode": 1407374883589458
+      },
+      {
+        "name": "manifest.json",
+        "from": "E:\\code\\python\\quant\\data\\local_store\\meta\\industry\\manifest.json",
+        "to": "E:\\code\\python\\quant\\_backup\\meta\\industry_20261113\\manifest.json",
+        "sha256": "4f5f8247c259104437db2232725fbdc163a1cb3fd099b6fb5197b327701e98b5",
+        "bytes": 4520,
+        "inode": 1407374883589459
+      }
+    ],
+    "formal": {
+      "path": "E:\\code\\python\\quant\\data\\local_store\\meta\\industry\\industry_history.parquet",
+      "bytes": 71901,
+      "sha256": "c263de72829cfe63272833287079996aeeca5409f1e618a798190378cb7acad1"
+    },
+    "manifest": "E:\\code\\python\\quant\\data\\local_store\\meta\\industry\\manifest.json",
+    "manifest_sha256": "32362683c0d7c580775ac2e7fff007b149b0ea3d81869c67c122e2f740145d71"
+  }
+}

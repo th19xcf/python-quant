@@ -99,8 +99,8 @@ def looks_data_file(name: str) -> bool:
 def is_placeholder(text: str) -> bool:
     """``{name}`` / ``<YYYYMMDD>`` / ``*.parquet`` 这类通配模板不是真实路径。
 
-    ``<...>`` 与 ``{...}`` 一样是「日期快照族」的路径模板写法（如
-    ``meta/st_status/st_status_<YYYYMMDD>.parquet``），磁盘上不存在同名文件，
+    ``<...>`` 与 ``{...}`` 一样是「按标的/分区拆分」的路径模板写法（如
+    ``quotes/stock/<code>.parquet``），磁盘上不存在同名文件，
     按真实路径核对只会得到假 ``file_missing``。
     """
     return any(token in text for token in ('{', '}', '*', '<', '>'))

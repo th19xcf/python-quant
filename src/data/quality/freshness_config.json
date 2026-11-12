@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "数据新鲜度检查registry：每类数据的权威新鲜度字段、正常更新频率与分级阈值。所有阈值只在此文件维护，代码内不写死。",
+  "description": "数据新鲜度检查registry：每类数据的权威新鲜度字段、正常更新频率与分级阈值。所有阈值只在此文件维护，代码内不写死。覆盖统计的两种「最新」口径必须分清：latest_glob_distinct 取 glob 中 mtime 最新那一份文件内的去重数，口径是「最新文件」；latest_as_of_distinct 取单表内 as_of 最大那一层的去重数，口径是「最新数据」。两者在「日期文件族」下恰好同值，一旦改成单表 history 就不再等价——全历史并集或 parquet_distinct 会把已退市代码也算进来，使覆盖率虚高，故状态快照族一律用 latest_as_of_distinct。",
   "defaults": {
     "holidays": [],
     "holiday_note": "交易日按周一至周五近似；如遇法定节假日，把日期以 YYYY-MM-DD 加入 holidays，避免误报超期。",
@@ -37,8 +37,9 @@
           "column": "ts_code"
         },
         "expected": {
-          "kind": "latest_glob_distinct",
-          "path_glob": "meta/st_status/st_status_*.parquet",
+          "kind": "latest_as_of_distinct",
+          "path": "meta/st_status/st_status_history.parquet",
+          "as_of_column": "as_of",
           "column": "code"
         }
       },
@@ -130,8 +131,9 @@
           "column": "ts_code"
         },
         "expected": {
-          "kind": "latest_glob_distinct",
-          "path_glob": "meta/st_status/st_status_*.parquet",
+          "kind": "latest_as_of_distinct",
+          "path": "meta/st_status/st_status_history.parquet",
+          "as_of_column": "as_of",
           "column": "code"
         }
       },
@@ -161,8 +163,9 @@
           "column": "ts_code"
         },
         "expected": {
-          "kind": "latest_glob_distinct",
-          "path_glob": "meta/st_status/st_status_*.parquet",
+          "kind": "latest_as_of_distinct",
+          "path": "meta/st_status/st_status_history.parquet",
+          "as_of_column": "as_of",
           "column": "code"
         }
       },
@@ -192,8 +195,9 @@
           "column": "ts_code"
         },
         "expected": {
-          "kind": "latest_glob_distinct",
-          "path_glob": "meta/st_status/st_status_*.parquet",
+          "kind": "latest_as_of_distinct",
+          "path": "meta/st_status/st_status_history.parquet",
+          "as_of_column": "as_of",
           "column": "code"
         }
       },
@@ -223,8 +227,9 @@
           "column": "ts_code"
         },
         "expected": {
-          "kind": "latest_glob_distinct",
-          "path_glob": "meta/st_status/st_status_*.parquet",
+          "kind": "latest_as_of_distinct",
+          "path": "meta/st_status/st_status_history.parquet",
+          "as_of_column": "as_of",
           "column": "code"
         }
       },
@@ -345,8 +350,9 @@
           "column": "ts_code"
         },
         "expected": {
-          "kind": "latest_glob_distinct",
-          "path_glob": "meta/st_status/st_status_*.parquet",
+          "kind": "latest_as_of_distinct",
+          "path": "meta/st_status/st_status_history.parquet",
+          "as_of_column": "as_of",
           "column": "code"
         },
         "min_ratio": 0.9,
@@ -379,8 +385,9 @@
           "column": "ts_code"
         },
         "expected": {
-          "kind": "latest_glob_distinct",
-          "path_glob": "meta/st_status/st_status_*.parquet",
+          "kind": "latest_as_of_distinct",
+          "path": "meta/st_status/st_status_history.parquet",
+          "as_of_column": "as_of",
           "column": "code"
         }
       },
@@ -410,8 +417,9 @@
           "column": "ts_code"
         },
         "expected": {
-          "kind": "latest_glob_distinct",
-          "path_glob": "meta/st_status/st_status_*.parquet",
+          "kind": "latest_as_of_distinct",
+          "path": "meta/st_status/st_status_history.parquet",
+          "as_of_column": "as_of",
           "column": "code"
         },
         "min_ratio": 0.85,
@@ -510,8 +518,9 @@
           "column": "ts_code"
         },
         "expected": {
-          "kind": "latest_glob_distinct",
-          "path_glob": "meta/st_status/st_status_*.parquet",
+          "kind": "latest_as_of_distinct",
+          "path": "meta/st_status/st_status_history.parquet",
+          "as_of_column": "as_of",
           "column": "code"
         }
       },
@@ -543,8 +552,8 @@
       "category": "状态快照",
       "freshness_field": "as_of",
       "source": {
-        "kind": "latest_glob_max",
-        "path_glob": "meta/st_status/st_status_*.parquet",
+        "kind": "parquet_max",
+        "path": "meta/st_status/st_status_history.parquet",
         "column": "as_of"
       },
       "cadence": {
@@ -556,8 +565,9 @@
       },
       "coverage": {
         "count": {
-          "kind": "latest_glob_distinct",
-          "path_glob": "meta/st_status/st_status_*.parquet",
+          "kind": "latest_as_of_distinct",
+          "path": "meta/st_status/st_status_history.parquet",
+          "as_of_column": "as_of",
           "column": "code"
         },
         "expected": {
@@ -567,7 +577,7 @@
           "column": "ts_code"
         }
       },
-      "note": "状态快照应覆盖全部在库股票。"
+      "note": "状态快照应覆盖全部在库股票。计数取 st_status_history.parquet 内 as_of 最大那一层的去重 code 数（latest_as_of_distinct），不是全历史并集。"
     },
     {
       "key": "industry",
@@ -575,8 +585,8 @@
       "category": "状态快照",
       "freshness_field": "as_of",
       "source": {
-        "kind": "latest_glob_max",
-        "path_glob": "meta/industry/industry_*.parquet",
+        "kind": "parquet_max",
+        "path": "meta/industry/industry_history.parquet",
         "column": "as_of"
       },
       "cadence": {
@@ -588,8 +598,9 @@
       },
       "coverage": {
         "count": {
-          "kind": "latest_glob_distinct",
-          "path_glob": "meta/industry/industry_*.parquet",
+          "kind": "latest_as_of_distinct",
+          "path": "meta/industry/industry_history.parquet",
+          "as_of_column": "as_of",
           "column": "code"
         },
         "expected": {
@@ -599,7 +610,7 @@
           "column": "ts_code"
         }
       },
-      "note": "行业分类变化慢，允许 1 个交易日冗余。"
+      "note": "行业分类变化慢，允许 1 个交易日冗余。计数取 industry_history.parquet 内 as_of 最大那一层的去重 code 数（latest_as_of_distinct），不是全历史并集。"
     }
   ]
 }

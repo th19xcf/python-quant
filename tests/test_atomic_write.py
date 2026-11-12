@@ -50,7 +50,7 @@ def test_industry_snapshot_write_crash_keeps_previous_file(
     cache = tmp_path / 'hq_cache'
     _write_cfg(cache)
     day = date(2026, 11, 3)
-    target = snapshot_path(tmp_path, day)
+    target = snapshot_path(tmp_path)
     build_snapshot(tmp_path, cache, day, codes=['600000.SH'])
     before = target.read_bytes()
 

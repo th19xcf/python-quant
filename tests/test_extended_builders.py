@@ -126,14 +126,19 @@ def test_suspension_marks_stale_codes_low_confidence(tmp_path: Path) -> None:
 
 
 def _write_industry_snapshot(root: Path, day: date, rows: list[tuple[str, str]]) -> None:
-    path = root / 'meta' / 'industry' / f'industry_{day:%Y%m%d}.parquet'
+    """把某一天的行业截面并入单表 history（同 as_of 覆盖，与生产者语义一致）。"""
+    path = root / 'meta' / 'industry' / 'industry_history.parquet'
     path.parent.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame(
+    frame = pl.DataFrame(
         [{'code': code, 'industry_l1': 'TDX 金融' if l1.startswith('T01') else 'TDX 信息',
           'industry_l2': f'二级{l1[:5]}', 'industry_code': l1,
           'source': 'tdx_hq_cache', 'as_of': day}
          for code, l1 in rows]
-    ).write_parquet(path)
+    )
+    if path.is_file():
+        frame = pl.concat([pl.read_parquet(path).filter(pl.col('as_of') != day), frame],
+                          how='vertical')
+    frame.sort(['as_of', 'code']).write_parquet(path)
 
 
 def test_industry_pit_splits_on_change_points(tmp_path: Path) -> None:

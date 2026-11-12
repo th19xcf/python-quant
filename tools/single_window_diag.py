@@ -129,9 +129,19 @@ def build_style_panel(frame: pl.DataFrame) -> pl.DataFrame:
         ['date', 'ts_code', *STYLE_COLUMNS])
 
 
-def load_industry(path: Path) -> pl.DataFrame:
-    """读取行业映射；列名统一为 ``ts_code`` / ``industry``。"""
-    frame = pl.read_parquet(path).select(
+def load_industry(path: Path, as_of: str | None = None) -> pl.DataFrame:
+    """读取行业映射；列名统一为 ``ts_code`` / ``industry``。
+
+    从 ``industry_history.parquet`` 取 ``as_of == as_of`` 那一层；``as_of`` 缺省
+    取表内最大 as_of。诊断窗是冻结的，取哪一层会改变行业暴露，故显式记录来源日
+    （默认钉在 2026-11-04 那一层，属陈旧截面，见缺口 G-148）。
+    """
+    frame = pl.read_parquet(path)
+    if 'as_of' in frame.columns:
+        target = as_of or str(frame['as_of'].max())[:10]
+        frame = frame.filter(pl.col('as_of') == date.fromisoformat(target))
+        logger.info(f'[diag] 行业截面 as_of={target}')
+    frame = frame.select(
         pl.col('code').alias('ts_code'), pl.col('industry_l1').alias('industry'))
     return frame.unique(subset=['ts_code'], keep='first')
 
@@ -559,7 +569,7 @@ def run(args: argparse.Namespace) -> int:
     windows = load_windows(Path(args.windows))
     matrix = load_matrix(Path(args.matrix), windows)
     styles = build_style_panel(matrix)
-    industry = load_industry(Path(args.industry))
+    industry = load_industry(Path(args.industry), args.industry_as_of)
     logger.info(f'[diag] 矩阵 {matrix.height} 行 × {len(matrix.columns)} 列，'
                 f'{matrix["ts_code"].n_unique()} 只，{matrix["date"].n_unique()} 日')
     logger.info(f'[diag] 行业映射 {industry.height} 条')
@@ -761,7 +771,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--windows', default=str(
         ROOT / 'tmp/kelly_fixed_matrix/windows_frozen_500.json'))
     parser.add_argument('--industry', default=str(
-        ROOT / 'data/local_store/meta/industry/industry_20261104.parquet'))
+        ROOT / 'data/local_store/meta/industry/industry_history.parquet'))
+    parser.add_argument('--industry-as-of', default='2026-11-04',
+                        help='取 industry_history 的哪一层；默认钉在迁移前所用的 '
+                             'industry_20261104 截面日期，保证归因结果逐值不变')
     parser.add_argument('--index', nargs='*', default=[
         str(ROOT / 'data/local_store/quotes/index/sh/000300.SH.parquet'),
         str(ROOT / 'data/local_store/quotes/index/sh/000905.SH.parquet')])

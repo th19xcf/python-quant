@@ -27,10 +27,14 @@ def _seed(root, snapshots):
 
     snap_dir = root / 'meta' / 'st_status'
     snap_dir.mkdir(parents=True, exist_ok=True)
-    for day, rows in snapshots.items():
+    layers = [
         pl.DataFrame(rows, schema={'code': pl.Utf8, 'name': pl.Utf8,
-                                   'status': pl.Utf8}).write_parquet(
-            snap_dir / f'st_status_{day.strftime("%Y%m%d")}.parquet')
+                                   'status': pl.Utf8}).with_columns(
+            pl.lit(day).alias('as_of'))
+        for day, rows in snapshots.items()
+    ]
+    pl.concat(layers, how='vertical').sort(['as_of', 'code']).write_parquet(
+        snap_dir / 'st_status_history.parquet')
 
 
 def _build(root, out):

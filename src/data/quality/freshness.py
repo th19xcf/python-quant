@@ -226,6 +226,25 @@ def _count_distinct(root: Path, spec: dict[str, Any] | None) -> int | None:
             return None
         with path.open(encoding='utf-8') as handle:
             return sum(1 for line in handle if line.strip())
+    if kind == 'latest_as_of_distinct':
+        # 「最新数据」口径：先在单表内取 as_of 最大那一层，再在该层内数去重标的。
+        # 与 latest_glob_distinct（「最新文件」口径）互不替代：单表 history 下
+        # parquet_distinct 会退化成全历史并集，把已退市代码也算进来使覆盖率虚高。
+        path = root / str(spec['path'])
+        if not path.is_file():
+            return None
+        as_of_column = str(spec.get('as_of_column', 'as_of'))
+        column = str(spec['column'])
+        latest = _parquet_max(path, as_of_column, spec.get('filter'))
+        if latest is None:
+            return None
+        frame = _select_parquet(
+            path,
+            [column],
+            {'column': as_of_column, 'value': latest},
+            pl.col(column).n_unique().alias('_count'),
+        )
+        return int(frame['_count'][0]) if frame.height else None
     if kind == 'latest_glob_distinct':
         latest_path = _latest_file(root, str(spec['path_glob']))
         if latest_path is None:

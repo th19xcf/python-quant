@@ -13,8 +13,8 @@
 通达信行业编码为树形：``T01`` 一级（TDX 能源）、``T0101`` 二级（煤炭）、
 ``T010101`` 三级；因此一级取前 3 位、二级取前 5 位。
 
-落盘路径：``{store_root}/meta/industry/industry_YYYYMMDD.parquet``，
-按日期分文件保存，便于将来做点位回溯；查询取不晚于 ``as_of`` 的最新一份。
+落盘路径：``{store_root}/meta/industry/industry_history.parquet``，单表按
+``as_of`` 纵向累积（路径不带日期，DG-4）；查询取不晚于 ``as_of`` 的最大一层。
 """
 
 import argparse
@@ -35,8 +35,8 @@ _MARKETS = {'0': 'SZ', '1': 'SH', '2': 'BJ'}
 _NAME_FILES = ('tdxzs.cfg', 'tdxzs3.cfg')
 
 _SNAPSHOT_CACHE: dict[str, tuple[int, pl.DataFrame]] = {}
-#: 目录扫描结果缓存：``{目录: (目录 mtime_ns, [(日期, 路径)])}``
-_FILES_CACHE: dict[str, tuple[int, list[tuple[date, Path]]]] = {}
+#: 正式路径的文件名：单表按 ``as_of`` 纵向累积，路径不带日期（DG-4）
+HISTORY_NAME = 'industry_history.parquet'
 
 
 def resolve_tdx_cache_dir(tdx_data_path: str | Path) -> Path:
@@ -102,10 +102,9 @@ def _levels(industry_code: str, names: dict[str, str]) -> tuple[str, str]:
     return l1, l2
 
 
-def snapshot_path(store_root: Path | str, as_of: date) -> Path:
-    """单日行业快照路径。"""
-    return Path(store_root) / 'meta' / 'industry' \
-        / f'industry_{as_of:%Y%m%d}.parquet'
+def snapshot_path(store_root: Path | str) -> Path:
+    """行业快照正式路径（唯一一份，取哪一天由 ``as_of`` 列决定）。"""
+    return Path(store_root) / 'meta' / 'industry' / HISTORY_NAME
 
 
 def build_snapshot(
@@ -141,12 +140,21 @@ def build_snapshot(
                 'industry_code': UNKNOWN, 'source': SOURCE_MISSING,
             })
     frame = pl.DataFrame(rows).with_columns(pl.lit(snapshot_date).alias('as_of'))
-    path = snapshot_path(store_root, snapshot_date)
+    path = snapshot_path(store_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_parquet_atomic(frame, path)
-    logger.info(f'[industry] 行业快照已落盘: {path}（{frame.height} 个标的）')
+    _upsert_history(frame, path)
+    logger.info(f'[industry] 行业快照已并入 {path}（as_of={snapshot_date}，{frame.height} 个标的）')
     write_manifest(store_root)
     return frame
+
+
+def _upsert_history(frame: pl.DataFrame, path: Path) -> None:
+    """把当日快照按 ``as_of`` 覆盖式并入单表（同一 as_of 重跑不重复累积）。"""
+    as_of = frame['as_of'][0]
+    if path.is_file():
+        existing = pl.read_parquet(path).filter(pl.col('as_of') != as_of)
+        frame = pl.concat([existing, frame], how='vertical')
+    write_parquet_atomic(frame.sort(['as_of', 'code']), path)
 
 
 #: 目录级 manifest 的登记内容（``files`` / 汇总由 :func:`write_manifest` 实测填充）。
@@ -165,30 +173,29 @@ class _ManifestPayload(TypedDict):
 
 _MANIFEST_PAYLOAD: _ManifestPayload = {
     'prefix': 'industry_',
-    'dataset': 'industry_snapshot_series',
+    'dataset': 'industry_history',
     'semantics': (
-        '日期快照序列：正式路径为通配模式 industry_<YYYYMMDD>.parquet；'
-        '单份是通达信行业分类的当日截面，按日期累积、只增不重写，'
-        '历史日期无法补生成；不是行业 PIT，历史行业归属须走 '
-        'meta/industry_pit/ 的区间表'
+        '单表日期快照序列：每行是「某标的某日的通达信行业分类」，'
+        '按 as_of 纵向累积、只增不重写；正式路径不带日期。'
+        '不是行业 PIT，历史行业归属仍须走 meta/industry_pit/ 区间表'
     ),
     'source': '通达信本地 cfg（tdxhy.cfg 分类 + tdxzs.cfg/tdxzs3.cfg 名称）解析的当日行业分类',
     'authority': (
-        'docs/数据权威路径清单.md 登记的通配口径 '
-        'meta/industry/industry_<YYYYMMDD>.parquet；选择函数为 '
-        'src/data/industry.py::load_snapshot（取文件名日期不晚于 as_of 的最新一份）'
+        'docs/数据权威路径清单.md 登记的 meta/industry/industry_history.parquet；'
+        '选择函数 src/data/industry.py::load_snapshot（取 as_of 不晚于目标日的'
+        '最大 as_of 那一层）'
     ),
-    'path_pattern': 'meta/industry/industry_<YYYYMMDD>.parquet',
+    'path_pattern': 'meta/industry/industry_history.parquet',
     'consumers': [
-        'src/data/industry.py::load_snapshot（as_of 不晚于目标日的最新一份）',
-        'src/advice/risk_filters.py:26 推荐/风控逐日行业分散度上限',
-        'src/data/services/finance_service.py:839 get_industry',
-        'src/data/quality/extended_builders.py:266-281 整族读入，抽取 '
+        'src/data/industry.py::load_snapshot / snapshot_days（as_of 不晚于目标日）',
+        'src/advice/risk_filters.py 推荐/风控逐日行业分散度上限',
+        'src/data/services/finance_service.py get_industry',
+        'src/data/quality/extended_builders.py::_industry_snapshots 逐层抽取 '
         'meta/industry_pit/industry_pit.parquet',
-        'tools/research/build_analysis_monthly.py:91 研究侧同一选择函数',
-        'tools/single_window_diag.py:764 --industry 默认指向 industry_20261104.parquet',
+        'tools/research/build_analysis_monthly.py 研究侧同一选择函数',
+        'tools/single_window_diag.py --industry 默认取 as_of == 2026-11-04 那一层',
     ],
-    'produced_by': 'src/data/industry.py::build_snapshot',
+    'produced_by': 'src/data/industry.py::build_snapshot（按 as_of 覆盖同日后合并落盘）',
 }
 
 
@@ -198,50 +205,48 @@ def write_manifest(store_root: Path | str) -> Path:
     return write_snapshot_manifest(root, root / 'meta' / 'industry', **_MANIFEST_PAYLOAD)
 
 
-def _snapshot_files(store_root: Path | str) -> list[tuple[date, Path]]:
-    """列出 ``meta/industry`` 下的日快照文件，按目录 mtime 缓存。
+def _read_history(store_root: Path | str) -> pl.DataFrame | None:
+    """读整张 history 表并按文件 mtime 缓存；表不存在返回 ``None``。
 
     调用方是**按标的**查询（``RiskContext._industry_map`` 每日数千次），
-    每次都 glob 一遍目录会占掉推荐单日成本的两成以上。目录内新增/删除文件
-    必然改变目录 mtime，据此失效即可；文件内容变化由 ``load_snapshot`` 的
-    文件级 mtime 校验负责，两者互不替代。
+    每次都整表读盘会占掉推荐单日成本的两成以上；history 是唯一一份文件，
+    文件内容一变 mtime 必变，据此失效即可，不需要再扫目录。
     """
-    dir_path = Path(store_root) / 'meta' / 'industry'
-    if not dir_path.is_dir():
-        return []
+    path = snapshot_path(store_root)
     try:
-        mtime = dir_path.stat().st_mtime_ns
+        stat = path.stat()
     except OSError:
-        return []
-    cached = _FILES_CACHE.get(str(dir_path))
-    if cached is not None and cached[0] == mtime:
+        return None
+    cached = _SNAPSHOT_CACHE.get(str(path))
+    if cached is not None and cached[0] == stat.st_mtime_ns:
         return cached[1]
-    files: list[tuple[date, Path]] = []
-    for path in dir_path.glob('industry_*.parquet'):
-        day = _as_date(path.stem.split('_', 1)[1])
-        if day is not None:
-            files.append((day, path))
-    files.sort()
-    _FILES_CACHE[str(dir_path)] = (mtime, files)
-    return files
+    frame = pl.read_parquet(path)
+    _SNAPSHOT_CACHE[str(path)] = (stat.st_mtime_ns, frame)
+    return frame
+
+
+def snapshot_days(store_root: Path | str) -> list[date]:
+    """表内已有的快照日（升序）；无表或全空返回空列表。"""
+    frame = _read_history(store_root)
+    if frame is None or frame.height == 0:
+        return []
+    return sorted(day for day in frame['as_of'].unique().to_list() if day is not None)
 
 
 def load_snapshot(
     store_root: Path | str, as_of: Any = None,
 ) -> tuple[pl.DataFrame | None, date | None]:
-    """取不晚于 ``as_of`` 的最新行业快照；无可用快照返回 ``(None, None)``。"""
+    """取 ``as_of`` 不晚于目标日的最大一层行业快照；无可用层返回 ``(None, None)``。"""
     target = _as_date(as_of) or date.today()
-    files = [item for item in _snapshot_files(store_root) if item[0] <= target]
-    if not files:
+    frame = _read_history(store_root)
+    if frame is None or frame.height == 0:
         return None, None
-    day, path = files[-1]
-    stat = path.stat()
-    cached = _SNAPSHOT_CACHE.get(str(path))
-    if cached is not None and cached[0] == stat.st_mtime_ns:
-        return cached[1], day
-    frame = pl.read_parquet(path)
-    _SNAPSHOT_CACHE[str(path)] = (stat.st_mtime_ns, frame)
-    return frame, day
+    days = [day for day in frame.filter(pl.col('as_of') <= target)['as_of']
+            .unique().to_list() if day is not None]
+    if not days:
+        return None, None
+    day = max(days)
+    return frame.filter(pl.col('as_of') == day), day
 
 
 def get_industry(
