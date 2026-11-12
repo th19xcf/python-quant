@@ -95,6 +95,8 @@ print(f'synced {len(changed)} files, removed {len(deleted)} deleted')
 - **只提交自洽的一组**：一次提交只含一个逻辑闭合的改动；在跑任务的中间态不入库；工作区有其它未完成改动时**只 `git add` 本次相关文件，禁止 `git add -A` / `git add .`**。
 - **异常先报后动**：提交前若发现未预期的文件变更（比如不属于本次范围的 `M`/`??`），先如实报出，不要顺手带上。
 - **提交前必须自证可用**：提交前至少跑通本次改动相关的单测与静态检查（ruff/mypy）；若存在与本改动无关的既有失败项，必须在报告中单独列出并说明归属，不得笼统写成"全部通过"。
+- **隔离索引提交后必须回填共享索引**（判定句：`GIT_INDEX_FILE` 提交的同一轮收尾必须执行 `git read-tree HEAD`，缺这一步即判定为未完成）：隔离索引写的是临时索引文件，共享 `.git/index` 从头到尾不刷新，会一直停在提交前的旧树，此后 `git status` 把「索引里的旧版本 vs 工作区」显示成成片的假 `MM`。合格判据三条，须同时满足——① 在**新的一条** shell 命令里执行 `git read-tree HEAD`（`GIT_INDEX_FILE` 是同进程环境变量，与提交写在同一条命令里会把它一起带过去，回填的是临时索引而不是共享索引）；② `git ls-files -s <path>` 的 blob 与 `git rev-parse HEAD:<path>` 相等；③ `git status --short` 中不再出现与本次提交无关的 `MM`。
+  依据（实测，可复算）：11-11 全天提交 122 个（`git log --since="2026-11-11 00:00:00" --until="2026-11-12 00:00:00" --format=%H | wc -l`），叠加当日 10 次 `reset: moving to HEAD` 与多条空 message 的 HEAD 更新，共享索引最终停在祖先版本——11-12 盘点时 20 项里有 16 项是假 `MM`，其工作区内容与 HEAD 逐字节相同（`git hash-object` == `git rev-parse HEAD:<path>`），索引 blob 可在祖先提交中逐一找到；11-12 09:54:56 / 09:55:22 / 09:55:45 三笔隔离索引提交（`7b087b2` / `281e79c` / `7850f5c`）后当场复现同一签名，新命令执行 `git read-tree HEAD` 后索引重写为 83,332 字节、`git status --short` 只剩真实改动。
 
 ## 备份仓库提交规范
 
