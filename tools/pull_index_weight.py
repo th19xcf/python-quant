@@ -26,9 +26,21 @@ from pathlib import Path
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT_DIR = ROOT / "data" / "local_store" / "meta" / "index_members"
+STORE_ROOT = ROOT / "data" / "local_store"
+OUT_DIR = STORE_ROOT / "meta" / "index_members"
 RAW_DIR = ROOT / "tmp" / "index_weight_raw"
 TOKEN_FILE = ROOT / ".secrets" / "tushare_token.txt"
+#: 官方日快照（2026-11-12 按 DG-32 迁出正式层）在 staging 下的任务名
+SNAPSHOT_TASK = "index_membership_snapshots_20261112"
+
+sys.path.insert(0, str(ROOT))
+from src.data.staging import staging_dir_for_store  # noqa: E402
+
+
+def snapshot_dir(store_root: Path | None = None) -> Path:
+    """官方日快照目录：随 store 根推导，临时 store 不会写到仓库 ``_staging``。"""
+    return staging_dir_for_store(store_root or STORE_ROOT, SNAPSHOT_TASK)
+
 
 # 起点为「已用年度探测确认为空」的上一月：更早月份不再请求，避免无谓开销
 INDICES = {
@@ -340,7 +352,7 @@ def phase_validate() -> None:
 
     # 5. 与现有 2 天快照比对（tushare 仅月末，日期通常不重叠 → 记录最近日期差异）
     #    快照无运行期消费者，2026-11-12 按 DG-32 由 meta/index_membership 迁出正式层。
-    snap_dir = ROOT / "_staging" / "index_membership_snapshots_20261112"
+    snap_dir = snapshot_dir()
     for f in sorted(snap_dir.glob("*.parquet")):
         stem = f.stem.split("_")
         if len(stem) < 4:

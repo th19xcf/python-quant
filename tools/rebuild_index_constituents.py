@@ -28,6 +28,7 @@ import io
 import json
 import logging
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -37,11 +38,23 @@ import pandas as pd
 import requests
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT_DIR = ROOT / "data" / "local_store" / "meta" / "index_members" / "rebuild"
+STORE_ROOT = ROOT / "data" / "local_store"
+OUT_DIR = STORE_ROOT / "meta" / "index_members" / "rebuild"
 RAW_DIR = OUT_DIR / "raw"
 CONS_DIR = RAW_DIR / "csindex" / "cons"
 ANN_DIR = RAW_DIR / "csindex" / "announcements"
 BS_DIR = RAW_DIR / "baostock"
+#: 官方日快照（2026-11-12 按 DG-32 迁出正式层）在 staging 下的任务名
+SNAPSHOT_TASK = "index_membership_snapshots_20261112"
+
+sys.path.insert(0, str(ROOT))
+from src.data.staging import staging_dir_for_store  # noqa: E402
+
+
+def snapshot_dir(store_root: Path | None = None) -> Path:
+    """官方日快照目录：随 store 根推导，临时 store 不会写到仓库 ``_staging``。"""
+    return staging_dir_for_store(store_root or STORE_ROOT, SNAPSHOT_TASK)
+
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -779,9 +792,9 @@ def membership_on(records: list[dict], day: date) -> set[str]:
 
 
 def validate(records_by_index: dict[str, list[dict]], events: list[Event],
-             end_day: date) -> dict:
+             end_day: date, store_root: Path | None = None) -> dict:
     report = {"snapshot_checks": [], "sample_checks": [], "warnings": []}
-    snap_dir = ROOT / "_staging/index_membership_snapshots_20261112"  # 2026-11-12 按 DG-32 迁出正式层
+    snap_dir = snapshot_dir(store_root)  # 2026-11-12 按 DG-32 迁出正式层
     for f in sorted(snap_dir.glob("*.parquet")):
         m = re.search(r"(\d{8})\.parquet$", f.name)
         if not m:
