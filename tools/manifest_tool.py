@@ -608,7 +608,6 @@ def check_manifest(path: Path, root: Path, cache: FactsCache) -> ManifestResult:
                 'unresolved_locator', rel,
                 '登记了 rows/bytes/sha256，但没有任何可定位的数据文件 path'))
 
-    seen = set()
     for record in records:
         issues = check_record(record, root, cache)
         result.records.append(record)
@@ -616,12 +615,12 @@ def check_manifest(path: Path, root: Path, cache: FactsCache) -> ManifestResult:
             result.issues.extend(issues)
         else:
             result.ok_records += 1
-        target = record.resolved if record.raw_path is None else resolve(record.raw_path, root)
-        if target is not None:
-            seen.add(str(target).lower())
 
     result.issues.extend(check_summaries(data, root, cache))
-    result.missing_semantics = [k for k in SEMANTIC_KEYS if k not in data]
+    result.missing_semantics = [
+        k for k in SEMANTIC_KEYS
+        if k not in data or str(data[k]).strip() in ('', '未登记', 'TBD')
+    ]
     return result
 
 

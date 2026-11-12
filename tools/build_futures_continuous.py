@@ -324,6 +324,17 @@ def main(argv: list[str] | None = None) -> int:
             'continuous': cont.height,
             'roll_events': rolls.height,
         },
+        'files': [
+            {'path': f'meta/multi_asset/{name}',
+             'rows': frame.height,
+             'bytes': (OUT_DIR / name).stat().st_size,
+             'sha256': hashes[name]}
+            for name, frame in (
+                ('futures_contracts.parquet', contracts),
+                ('futures_continuous.parquet', cont),
+                ('futures_roll_events.parquet', rolls),
+            )
+        ],
         'coverage': summary['per_variety'],
         'roll_stat': summary['roll_stat'],
         'rule': {

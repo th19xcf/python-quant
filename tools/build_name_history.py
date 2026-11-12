@@ -54,11 +54,12 @@ from build_st_history_from_tushare import (  # noqa: E402
     fetch_raw,
 )
 
-from src.data.atomic_write import write_parquet_atomic  # noqa: E402
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic  # noqa: E402
 from src.data.name_consistency import build_tables  # noqa: E402
 
 TARGET = ROOT / 'data' / 'local_store' / 'meta' / 'name_history.parquet'
 COVERAGE = ROOT / 'data' / 'local_store' / 'meta' / 'name_history_coverage.json'
+MANIFEST = ROOT / 'data' / 'local_store' / 'meta' / 'name_history.manifest.json'
 BACKUP_DIR = ROOT / '_backup' / 'meta'
 REPORT_ROOT = ROOT / 'reports'
 
@@ -230,9 +231,27 @@ def main(argv: Iterable[str] | None = None) -> int:
         COVERAGE.write_text(
             json.dumps(coverage, ensure_ascii=False, indent=2, default=str),
             encoding='utf-8')
+        manifest = {
+            'dataset': 'name_history',
+            'semantics': 'A 股历史简称区间表，每行一个 [start_date, end_date) 简称段',
+            'source': SOURCE,
+            'authority': '历史简称以本表为准；当前简称以 meta/names.json 为准',
+            'path': 'meta/name_history.parquet',
+            'produced_by': 'tools/build_name_history.py',
+            'generated_at': datetime.now().isoformat(timespec='seconds'),
+            'rows': frame.height,
+            'bytes': target.stat().st_size,
+            'sha256': _sha256(target),
+            'columns': list(frame.columns),
+            'date_range_note': '区间表含 start_date/end_date 两列，无单一日期列，故不登记 date_range',
+        }
+        write_text_atomic(
+            json.dumps(manifest, ensure_ascii=False, indent=2, default=str) + '\n',
+            MANIFEST)
         report['written'] = {
             'target': str(target), 'rows': frame.height,
             'sha256': _sha256(target), 'coverage': str(COVERAGE),
+            'manifest': str(MANIFEST),
             'backup': str(backup) if backup else None,
         }
     report['report_path'] = str(write_build_report(report, date.today()))

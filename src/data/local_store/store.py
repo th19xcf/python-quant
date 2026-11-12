@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import hashlib
 import json
 import threading
 import time
@@ -549,6 +550,31 @@ class LocalQuoteStore:
             ['data_type', 'ts_code'])
         write_parquet_atomic(frame, self.meta_path, compression='zstd',
                              statistics=True)
+        self._write_meta_manifest(frame)
+
+    def _write_meta_manifest(self, frame: pl.DataFrame) -> None:
+        """为 ``meta/daily_index.parquet`` 落 manifest：行数 / 字节 / sha256 / 列。
+
+        覆盖区间不登记 ``date_range``：本表 ``start`` 与 ``end`` 分两列，
+        单一日期列表达不了「最早起始 ~ 最晚结束」，改用 ``coverage`` 记录。
+        """
+        manifest_path = self.meta_path.with_name('daily_index.manifest.json')
+        payload = {
+            'dataset': 'daily_index',
+            'semantics': '逐标的覆盖度索引：行情首末交易日、行数与源 mtime，按 data_type 混装 stock/fund/index',
+            'source': '扫 quotes/** 现有 parquet 的首末交易日与行数重建，不重算行情',
+            'authority': '覆盖度口径以本表为准；行情本身以 quotes/** parquet 为准',
+            'path': 'meta/daily_index.parquet',
+            'produced_by': 'src/data/local_store/store.py::LocalQuoteStore.flush_meta',
+            'generated_at': datetime.now().isoformat(timespec='seconds'),
+            'rows': frame.height,
+            'bytes': self.meta_path.stat().st_size,
+            'sha256': hashlib.sha256(self.meta_path.read_bytes()).hexdigest(),
+            'columns': list(frame.columns),
+            'coverage': [str(frame['start'].min()), str(frame['end'].max())],
+        }
+        write_text_atomic(
+            json.dumps(payload, ensure_ascii=False, indent=2), manifest_path)
 
     def write_state(self, payload: dict[str, Any]) -> None:
         """写构建状态（版本/时间/数据源），供排障与幂等判断。"""

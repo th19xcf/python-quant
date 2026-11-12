@@ -160,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
                             str(idx.filter(pl.col('index_name') == name)['date'].max())]
                      for name in idx['index_name'].unique().to_list()},
         'rule': 'indicator=财富, period=总值；净价/全价指数不含票息，不入表',
+        'path': 'meta/macro/cn_bond_index.parquet',
         'sha256': _sha256(MACRO / 'cn_bond_index.parquet'),
     }
     yld_manifest = {
@@ -175,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
         'cross_check_10y': {'overlap_days': overlap, 'max_abs_diff_pp': round(max_diff, 8),
                             'against': 'meta/macro/cn_treasury_yield_10y.parquet'},
         'known_gaps': '接口仅提供 3M/6M/1Y/3Y/5Y/7Y/10Y/30Y；2Y/4Y/15Y/20Y/50Y 不提供（G-040）',
+        'path': 'meta/macro/cn_treasury_yield_curve.parquet',
         'sha256': _sha256(MACRO / 'cn_treasury_yield_curve.parquet'),
     }
     for name, manifest in (('cn_bond_index', idx_manifest),
