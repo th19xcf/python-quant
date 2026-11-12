@@ -379,7 +379,8 @@ class Record:
 
 
 #: 不计入「不一致」的类别：无法定位、不可核对、以及仅格式不规范（已按小写比较判一致）。
-NON_FAILING_KINDS = ('unresolved_locator', 'rows_unverifiable', 'sha256_format')
+NON_FAILING_KINDS = ('unresolved_locator', 'rows_unverifiable', 'rows_unverifiable_declared',
+                     'sha256_format')
 
 
 @dataclass
@@ -403,6 +404,10 @@ class ManifestResult:
     @property
     def unverifiable(self) -> int:
         return sum(1 for i in self.issues if i.kind == 'rows_unverifiable')
+
+    @property
+    def unverifiable_declared(self) -> int:
+        return sum(1 for i in self.issues if i.kind == 'rows_unverifiable_declared')
 
     @property
     def format_alerts(self) -> int:
@@ -539,6 +544,16 @@ def self_describing_record(data: dict[str, Any], root: Path) -> Record | None:
 # --------------------------------------------------------------------------- #
 # 单项核对
 # --------------------------------------------------------------------------- #
+def _rows_unverifiable_issue(record: Record, shown: str) -> Issue:
+    """非 parquet 台账登记了 rows：写了原因算已声明，没写就是待解释的噪声。"""
+    reason = record.fields.get('rows_unverifiable_reason')
+    if isinstance(reason, str) and reason.strip():
+        return Issue('rows_unverifiable_declared', shown, f'已声明不可核对：{reason.strip()}')
+    return Issue('rows_unverifiable', shown,
+                 '登记了 rows，但该文件不是 parquet，无法核对；'
+                 '若确实无法核对，请在条目里写 rows_unverifiable_reason 说明原因')
+
+
 def check_record(record: Record, root: Path, cache: FactsCache) -> list[Issue]:
     path = record.resolved
     if path is None:
@@ -559,7 +574,7 @@ def check_record(record: Record, root: Path, cache: FactsCache) -> list[Issue]:
     want_rows = record.fields.get('rows')
     if isinstance(want_rows, int):
         if facts.rows is None:
-            issues.append(Issue('rows_unverifiable', shown, '登记了 rows，但该文件不是 parquet，无法核对'))
+            issues.append(_rows_unverifiable_issue(record, shown))
         elif facts.rows != want_rows:
             issues.append(Issue('rows', shown, f'登记 {human(want_rows)} vs 磁盘 {human(facts.rows)}'))
 
@@ -888,6 +903,7 @@ def render(results: list[ManifestResult], gaps: dict[str, dict[str, list[str]]],
     total_issues = sum(len(r.issues) for r in results)
     unresolved = sum(r.unresolved for r in results)
     unverifiable = sum(r.unverifiable for r in results)
+    declared_unverifiable = sum(r.unverifiable_declared for r in results)
     format_alerts = sum(r.format_alerts for r in results)
     gap_no_manifest = sum(len(v) for v in gaps.get('no_manifest', {}).values())
     gap_not_located = sum(len(v) for v in gaps.get('not_located', {}).values())
@@ -901,7 +917,10 @@ def render(results: list[ManifestResult], gaps: dict[str, dict[str, list[str]]],
     print(f'  根目录                  : {store_root()}')
     print(f'  manifest 份数           : {len(results)}')
     print(f'  文件记录                : {human(total_records)}（无法定位 {unresolved}）')
-    print(f'  不一致条目              : {human(total_issues - unresolved - unverifiable - format_alerts)}')
+    print(f'  不一致条目              : {human(total_issues - unresolved - unverifiable - declared_unverifiable - format_alerts)}')
+    print(f'  不可核对且未声明原因    : {human(unverifiable)} 条')
+    print(f'  已声明不可核对          : {human(declared_unverifiable)} 条（原因见各 manifest 的 '
+          'rows_unverifiable_reason，仍核 bytes/sha256）')
     print(f'  sha256 格式告警         : {human(format_alerts)} 条（大写 hex，已按小写比较判定一致；写入方应统一小写）')
     print(f'  无 manifest 的 parquet  : {human(gap_no_manifest)} 个 / '
           f'{len(gaps.get("no_manifest", {}))} 个目录')
@@ -970,11 +989,12 @@ def render(results: list[ManifestResult], gaps: dict[str, dict[str, list[str]]],
     declared = [r for r in results if r.non_dataset is not None and r.non_dataset.declared]
     print_non_dataset(declared)
 
-    bad = total_issues + gap_no_manifest + gap_not_located - unverifiable - format_alerts
+    bad = (total_issues + gap_no_manifest + gap_not_located
+           - unverifiable - declared_unverifiable - format_alerts)
     verdict = 'PASS' if bad == 0 else 'FAIL'
     passed_nd = sum(1 for r in declared if r.non_dataset is not None and r.non_dataset.qualified)
     print(f'结论: {verdict}  manifest {len(results)} 份 / 文件记录 {human(total_records)} 条 / '
-          f'不一致 {human(total_issues - unresolved - unverifiable - format_alerts)} 条 / '
+          f'不一致 {human(total_issues - unresolved - unverifiable - declared_unverifiable - format_alerts)} 条 / '
           f'sha256 格式告警 {human(format_alerts)} 条 / '
           f'无法定位 {unresolved} 条 / 无 manifest {human(gap_no_manifest)} 个 / '
           f'未定位 {human(gap_not_located)} 个 / '
