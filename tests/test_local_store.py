@@ -14,6 +14,7 @@
 import contextlib
 import hashlib
 import json
+import os
 import struct
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -659,15 +660,17 @@ def test_rebuild_does_not_resume_across_chunk_size_change(tmp_path, monkeypatch)
 
 
 def _write_factor_snapshot(store_root: Path, code: str, dates: list[date],
-                           qfq: list[float], hfq: list[float]) -> None:
+                           qfq: list[float], hfq: list[float]) -> Path:
     factor_dir = Path(store_root) / 'factors'
     factor_dir.mkdir(parents=True, exist_ok=True)
+    path = factor_dir / 'stock_adj_factor.parquet'
     pl.DataFrame({
         'ts_code': [code] * len(dates),
         'trade_date': dates,
         'qfq_factor': qfq,
         'hfq_factor': hfq,
-    }).write_parquet(factor_dir / 'stock_adj_factor.parquet')
+    }).write_parquet(path)
+    return path
 
 
 def test_read_daily_uses_factor_snapshot_instead_of_stale_copy(tmp_path):
@@ -733,15 +736,26 @@ def test_factor_invalidate_picks_up_rebuilt_snapshot(tmp_path):
 
 
 def test_factor_mtime_ttl_fallback_sees_cross_process_rebuild(tmp_path, monkeypatch):
-    """跨进程重建（无人调用 invalidate）在 TTL 到期后也必须被感知。"""
-    _write_factor_snapshot(tmp_path, '600000.SH', [date(2024, 1, 2)],
-                           [0.5], [1.0])
+    """跨进程重建（无人调用 invalidate）在 TTL 到期后也必须被感知。
+
+    失效信号是快照文件的 ``st_mtime_ns``，所以本用例必须保证「重建」这一步真的
+    推进了 mtime。两次 ``write_parquet`` 若落在同一文件系统时间戳刻度内，或写入
+    工具保留了原时间戳，缓存按设计不会失效，用例就会假红（实测复现：
+    `2026-11-12/ci-status/outputs/收集期失败定位_libGL.md` 的 D 类一节）。
+    这里显式把 mtime 推到首个时间戳之后（+2 s 覆盖 FAT 的 2 s 粒度），
+    把用例的成立条件收在「mtime 变化 ⇒ 感知重建」这一点上。
+    """
+    path = _write_factor_snapshot(tmp_path, '600000.SH', [date(2024, 1, 2)],
+                                  [0.5], [1.0])
+    first_mtime = path.stat().st_mtime_ns
     factor_store = LocalFactorStore(tmp_path)
     assert factor_store.factors('600000.SH')['qfq_factor'].to_list() == [0.5]
 
     monkeypatch.setattr('src.data.local_store.store._FACTOR_MTIME_TTL', 0.0)
     _write_factor_snapshot(tmp_path, '600000.SH', [date(2024, 1, 2)],
                            [0.8], [1.0])
+    bumped = first_mtime + 2_000_000_000
+    os.utime(path, ns=(bumped, bumped))
     assert factor_store.factors('600000.SH')['qfq_factor'].to_list() == [0.8]
 
 
