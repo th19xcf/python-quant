@@ -1,0 +1,103 @@
+{
+  "old": {
+    "rows": 14034,
+    "sha256": "256efef8f5ae2014968b2b2807100951bd5f26b2cf05c6e13596261af2e2f847",
+    "bytes": 194354,
+    "nulls": {
+      "ts_code": 0,
+      "name": 0,
+      "start_date": 0,
+      "end_date": 5923,
+      "ann_date": 95,
+      "change_reason": 0,
+      "source": 0,
+      "fetched_at": 0
+    }
+  },
+  "new": {
+    "rows": 14035,
+    "sha256": "b434b9fe7365a1b3a4d0e7711a959cebdde1861910837f72093461e1a3dad9b9",
+    "bytes": 194378,
+    "nulls": {
+      "ts_code": 0,
+      "name": 0,
+      "start_date": 0,
+      "end_date": 5923,
+      "ann_date": 96,
+      "change_reason": 0,
+      "source": 0,
+      "fetched_at": 0
+    }
+  },
+  "diff": {
+    "key_unique": true,
+    "rows_only_old": 0,
+    "rows_only_new": 1,
+    "changed_non_null": {
+      "name": 0,
+      "ann_date": 0,
+      "change_reason": 0,
+      "source": 0
+    },
+    "null_injected": {
+      "name": 0,
+      "ann_date": 0,
+      "change_reason": 0,
+      "source": 0
+    },
+    "problems": [],
+    "joined_rows": 14035,
+    "common_rows": 14034
+  },
+  "added_rows": [
+    {
+      "ts_code": "001914.SZ",
+      "name": "深南光A",
+      "start_date": "2006-10-09",
+      "end_date": "2007-11-29",
+      "ann_date": null,
+      "change_reason": "旧码事件按登记映射沿用（000043.SZ）",
+      "source": "carried_from:000043.SZ",
+      "fetched_at": "2026-11-13 15:00:12.130238"
+    }
+  ],
+  "added_row_expected": true,
+  "assert_self_test": {
+    "null_injection_detected": true,
+    "value_change_detected": true
+  },
+  "contiguity": [
+    {
+      "code": "000043.SZ",
+      "segments": 5,
+      "first_start": "1994-09-28",
+      "last_end": "2019-12-13",
+      "issues": []
+    },
+    {
+      "code": "001914.SZ",
+      "segments": 6,
+      "first_start": "1994-09-28",
+      "last_end": "None",
+      "issues": []
+    },
+    {
+      "code": "000043.SZ",
+      "segments": 5,
+      "first_start": "1994-09-28",
+      "last_end": "2019-12-13",
+      "issues": []
+    }
+  ],
+  "manifest": {
+    "rows": 14035,
+    "bytes": 194378,
+    "sha256": "b434b9fe7365a1b3a4d0e7711a959cebdde1861910837f72093461e1a3dad9b9",
+    "rows_match": true,
+    "bytes_match": true,
+    "sha_match": true,
+    "code_carry_map": {
+      "001914.SZ": "000043.SZ"
+    }
+  }
+}

@@ -14,7 +14,13 @@ from pathlib import Path
 
 import polars as pl
 
-from tools.build_name_history import SCHEMA, sz_segments, sz_supplement
+from src.data.name_consistency import PRECISION_CARRIED, precision_of
+from tools.build_name_history import (
+    SCHEMA,
+    carried_code_segments,
+    sz_segments,
+    sz_supplement,
+)
 
 BASIC = {'ts_code': pl.Utf8, 'list_date': pl.Date, 'delist_date': pl.Date}
 CHANGE = {'code': pl.Utf8, 'change_date': pl.Date,
@@ -136,3 +142,69 @@ def test_supplement_is_deterministic(tmp_path: Path) -> None:
 
     assert first.select('ts_code', 'name', 'start_date', 'end_date').rows() == \
         second.select('ts_code', 'name', 'start_date', 'end_date').rows()
+
+
+def _segment(code: str, name: str, start: date, end: date | None,
+             source: str = 'tushare_namechange') -> dict:
+    return {'ts_code': code, 'name': name, 'start_date': start, 'end_date': end,
+            'ann_date': None, 'change_reason': '', 'source': source,
+            'fetched_at': datetime(2026, 11, 13)}
+
+
+def _pair_frame(old_extra: tuple[date, date] | None = None) -> pl.DataFrame:
+    """G-146 fixture：新码 5 段，旧码 5 段（可选把空洞段替换成给定区间）。"""
+    new_rows = [
+        _segment('001914.SZ', '深南光A', date(1994, 9, 28), date(2006, 4, 10)),
+        _segment('001914.SZ', 'G深南光', date(2006, 4, 11), date(2006, 10, 8)),
+        _segment('001914.SZ', '中航地产', date(2007, 11, 30), date(2018, 5, 31)),
+        _segment('001914.SZ', '中航善达', date(2018, 6, 1), date(2019, 12, 15)),
+        _segment('001914.SZ', '招商积余', date(2019, 12, 16), None),
+    ]
+    gap = old_extra or (date(2006, 10, 9), date(2007, 11, 29))
+    old_rows = [
+        _segment('000043.SZ', '深南光A', date(1994, 9, 28), date(2006, 4, 10)),
+        _segment('000043.SZ', 'G深南光', date(2006, 4, 11), date(2006, 10, 8)),
+        _segment('000043.SZ', '深南光A', gap[0], gap[1]),
+        _segment('000043.SZ', '中航地产', date(2007, 11, 30), date(2018, 5, 31)),
+        _segment('000043.SZ', '中航善达', date(2018, 6, 1), date(2019, 12, 13)),
+    ]
+    return pl.DataFrame(new_rows + old_rows, schema=SCHEMA, strict=False)
+
+
+def test_code_carry_fills_only_the_registered_gap() -> None:
+    frame = _pair_frame()
+    extra, stats = carried_code_segments(
+        frame, {'001914.SZ': '000043.SZ'})
+
+    assert stats['segments'] == 1
+    # 旧码 3 段与新码既有段同日历区间（重复）；末段 2019-12-13 与新码 2019-12-15 错位
+    assert stats['skipped_duplicate'] == 3
+    assert stats['skipped_outside_gap'] == 1
+    assert stats['added'] == [[
+        '001914.SZ', '深南光A', '2006-10-09', '2007-11-29',
+        'carried_from:000043.SZ']]
+    assert extra.select('ts_code', 'name', 'start_date', 'end_date').rows() == [
+        ('001914.SZ', '深南光A', date(2006, 10, 9), date(2007, 11, 29))]
+    assert set(extra['source'].unique()) == {'carried_from:000043.SZ'}
+
+
+def test_code_carry_never_overlaps_existing_segments() -> None:
+    # 旧码段跨过空洞右边界（伸进「中航地产」），必须整段跳过而不是截断写入
+    frame = _pair_frame((date(2006, 10, 9), date(2008, 1, 31)))
+    extra, stats = carried_code_segments(frame, {'001914.SZ': '000043.SZ'})
+
+    assert extra.height == 0 and stats['segments'] == 0
+    assert stats['skipped_duplicate'] == 3
+    assert stats['skipped_outside_gap'] == 2
+
+
+def test_code_carry_skips_when_new_code_absent() -> None:
+    frame = _pair_frame()
+    extra, stats = carried_code_segments(frame, {'999999.SZ': '000043.SZ'})
+
+    assert extra.height == 0 and stats['skipped_no_new_code'] == 1
+
+
+def test_carried_source_has_registered_precision() -> None:
+    assert precision_of('carried_from:000043.SZ') == PRECISION_CARRIED
+    assert precision_of('unknown_source') == '未登记来源（需核实）'

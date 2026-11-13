@@ -23,6 +23,17 @@ tushare ``namechange`` 对个别代码迁移旧码一条记录都没有（G-134�
 一行不动；首段回溯到 ``list_date``，末段收口到 ``delist_date``；上市首日的行情端
 标记（``N`` / ``C`` / ``XD`` / ``XR`` / ``DR``）不写成简称；事件链不自洽即跳过不猜。
 
+代码变更沿用（G-146）
+====================
+tushare 与深交所简称变更表都只把 2006-10-09 那次改名登记在旧码 ``000043.SZ``
+名下，新码 ``001914.SZ`` 因此缺 2006-10-09~2007-11-29 的「深南光A」段。本脚本按
+:data:`CARRIED_CODE_MAP` 里**已登记的一对**代码把旧码事件段沿用给新码，
+``source='carried_from:<旧码>'``（字段级来源，不整行打笼统标签）。
+
+只沿用「落在新码既有段空洞内、且与既有段无重叠」的段，既有行一行不动；**不做
+「旧码事件自动沿用」的通用逻辑**，新加一对必须先取证并登记（见
+``docs/数据权威路径清单.md``「名称历史的精度分层」与 ``meta/code_migration.parquet``）。
+
 数据链路
 ========
 复用 ``tools/build_st_history_from_tushare.py`` 的分页拉取与
@@ -78,6 +89,14 @@ SOURCE = 'tushare_namechange'
 SZ_RAW = 'meta/st/raw/sz_change_name.parquet'
 SOURCE_SZ = 'sz_change_name'
 SZ_REASON = '深交所简称变更表'
+#: **已登记的「同一主体代码变更」映射（新码 → 旧码），只允许这里列出的对**。
+#: 取证与登记见 ``docs/数据权威路径清单.md`` 的「名称历史的精度分层」；映射本身
+#: 以 ``meta/code_migration.parquet`` 为唯一正式来源（``000043.SZ → 001914.SZ``，
+#: ``confidence=high``）。新增一对必须先取证并登记，禁止按代码前缀或尾号推定。
+CARRIED_CODE_MAP: dict[str, str] = {'001914.SZ': '000043.SZ'}
+#: 沿用段的 ``source`` 前缀；完整取值 ``carried_from:<旧码>``，逐字段可追溯
+CARRIED_SOURCE_PREFIX = 'carried_from:'
+CARRIED_REASON = '旧码事件按登记映射沿用'
 #: 行情端当日临时标记：出现在 ``name_prev`` 时不是简称，不写入区间表
 #: （与 ``src/data/name_consistency.py`` 的 ``_MARKET_PREFIXES`` 同义）
 _MARKET_MARKERS = ('XD', 'XR', 'DR', 'N', 'C')
@@ -250,6 +269,75 @@ def sz_supplement(store: Path, existing: pl.DataFrame) -> tuple[pl.DataFrame, di
     return pl.DataFrame(rows, schema=SCHEMA, strict=False), stats
 
 
+def carried_code_segments(
+        frame: pl.DataFrame,
+        mapping: dict[str, str] | None = None) -> tuple[pl.DataFrame, dict[str, Any]]:
+    """按**已登记**的代码变更映射，把旧码事件段沿用给新码（G-146）。
+
+    口径（DG-18 / DG-31）：
+    ① 只处理 :data:`CARRIED_CODE_MAP` 里登记的对，不做「旧码事件自动沿用」；
+    ② 只补空洞——旧码段必须整段落在新码两条既有段之间的空档内，且与新码既有段
+       零重叠、零乱序；落在空档外（与新码已有段重叠）一律跳过并计数；
+    ③ 未命中任何分支时**跳过并计数**，不写 null、不猜；
+    ④ 沿用段 ``source='carried_from:<旧码>'``，逐行可追溯到具体旧码。
+    """
+    pairs = CARRIED_CODE_MAP if mapping is None else mapping
+    stats: dict[str, Any] = {
+        'pairs': len(pairs), 'segments': 0, 'added': [],
+        'skipped_no_new_code': 0, 'skipped_no_old_code': 0,
+        'skipped_open_gap': 0, 'skipped_outside_gap': 0, 'skipped_duplicate': 0,
+    }
+    now = datetime.now()
+    rows: list[dict[str, Any]] = []
+    existing = set(zip(frame['ts_code'].to_list(), frame['start_date'].to_list(),
+                       frame['end_date'].to_list(), strict=False))
+    for new_code, old_code in pairs.items():
+        new_rows = frame.filter(pl.col('ts_code') == new_code).sort(
+            ['start_date', 'end_date'], nulls_last=True)
+        old_rows = frame.filter(pl.col('ts_code') == old_code).sort(
+            ['start_date', 'end_date'], nulls_last=True)
+        if new_rows.height == 0:
+            stats['skipped_no_new_code'] += 1
+            continue
+        if old_rows.height == 0:
+            stats['skipped_no_old_code'] += 1
+            continue
+        gaps: list[tuple[date, date]] = []
+        items = new_rows.to_dicts()
+        for prev, nxt in zip(items, items[1:], strict=False):
+            if prev['end_date'] is None:
+                # 开区间之后不存在可补空洞，后续旧码段一律不能沿用
+                stats['skipped_open_gap'] += 1
+                break
+            gaps.append((prev['end_date'] + timedelta(days=1),
+                         nxt['start_date'] - timedelta(days=1)))
+        for item in old_rows.to_dicts():
+            start, end = item['start_date'], item['end_date']
+            if start is None or end is None:
+                stats['skipped_outside_gap'] += 1
+                continue
+            if (new_code, start, end) in existing:
+                stats['skipped_duplicate'] += 1
+                continue
+            if not any(gap_start <= start and end <= gap_end
+                       for gap_start, gap_end in gaps):
+                stats['skipped_outside_gap'] += 1
+                continue
+            existing.add((new_code, start, end))
+            rows.append({
+                'ts_code': new_code, 'name': item['name'],
+                'start_date': start, 'end_date': end,
+                'ann_date': item['ann_date'],
+                'change_reason': f'{CARRIED_REASON}（{old_code}）',
+                'source': f'{CARRIED_SOURCE_PREFIX}{old_code}',
+                'fetched_at': now,
+            })
+            stats['added'].append([new_code, item['name'], str(start), str(end),
+                                   f'{CARRIED_SOURCE_PREFIX}{old_code}'])
+    stats['segments'] = len(rows)
+    return pl.DataFrame(rows, schema=SCHEMA, strict=False), stats
+
+
 def _stats(frame: pl.DataFrame) -> dict[str, Any]:
     """验收三项 + 覆盖度：行数 / 只数 / 开区间只数。"""
     if frame.height == 0:
@@ -327,10 +415,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     if sz_frame.height:
         frame = pl.concat([frame, sz_frame], how='vertical_relaxed').sort(
             ['ts_code', 'start_date', 'end_date'], nulls_last=True)
+    carry_frame, carry_stats = carried_code_segments(frame)
+    if carry_frame.height:
+        frame = pl.concat([frame, carry_frame], how='vertical_relaxed').sort(
+            ['ts_code', 'start_date', 'end_date'], nulls_last=True)
     report: dict[str, Any] = {
         'raw_rows': raw.height,
         'dropped': dropped,
         'sz_supplement': sz_stats,
+        'code_carry': carry_stats,
         'built': _stats(frame),
     }
     if frame.height == 0:
@@ -349,10 +442,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         write_parquet_atomic(frame, target)
         coverage = {
             'dataset': 'name_history',
-            'source': f'{SOURCE}+{SOURCE_SZ}',
+            'source': f'{SOURCE}+{SOURCE_SZ}+{CARRIED_SOURCE_PREFIX}<旧码>',
             'source_note': (
                 f'{SOURCE} 为主源；{SOURCE_SZ} 只补 tushare 名下 0 行的代码，'
-                '首段回溯到 stock_basic.list_date，末段收口到 delist_date'),
+                '首段回溯到 stock_basic.list_date，末段收口到 delist_date；'
+                f'{CARRIED_SOURCE_PREFIX}<旧码> 只按已登记的一对代码沿用空洞段'),
             'authority_for': '历史简称（PIT）；当前简称以 meta/names.json 为准',
             'generated_at': datetime.now().isoformat(timespec='seconds'),
             'cache_dir': str(args.cache_dir),
@@ -360,6 +454,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             'dedup_dropped': dropped,
             'sz_supplement': {k: v for k, v in sz_stats.items() if k != 'added'},
             'sz_supplement_rows': sz_stats['added'],
+            'code_carry': {k: v for k, v in carry_stats.items() if k != 'added'},
+            'code_carry_rows': carry_stats['added'],
+            'code_carry_map': dict(CARRIED_CODE_MAP),
             **_stats(frame),
             'target_sha256': _sha256(target),
             'backup': str(backup) if backup else None,
@@ -374,9 +471,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         manifest = {
             'dataset': 'name_history',
             'semantics': 'A 股历史简称区间表，每行一个 [start_date, end_date) 简称段',
-            'source': f'{SOURCE}+{SOURCE_SZ}',
+            'source': f'{SOURCE}+{SOURCE_SZ}+{CARRIED_SOURCE_PREFIX}<旧码>',
             'source_note': (
-                f'{SOURCE} 为主源；{SOURCE_SZ} 只补 tushare 名下 0 行的代码'),
+                f'{SOURCE} 为主源；{SOURCE_SZ} 只补 tushare 名下 0 行的代码；'
+                f'{CARRIED_SOURCE_PREFIX}<旧码> 为按已登记代码变更映射沿用的旧码事件段'),
             'authority': '历史简称以本表为准；当前简称以 meta/names.json 为准',
             'path': 'meta/name_history.parquet',
             'produced_by': 'tools/build_name_history.py',
@@ -385,6 +483,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             'bytes': target.stat().st_size,
             'sha256': _sha256(target),
             'columns': list(frame.columns),
+            'code_carry_map': dict(CARRIED_CODE_MAP),
             'date_range_note': '区间表含 start_date/end_date 两列，无单一日期列，故不登记 date_range',
         }
         write_text_atomic(

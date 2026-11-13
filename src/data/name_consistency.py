@@ -59,13 +59,20 @@ PRECISION: dict[str, str] = {
     'sz_change_name': '公告直证（深交所简称变更表；只补 tushare 无记录的代码）',
     'inferred:strip_G': '最低（推断，非公告直证）',
 }
+#: 字段级沿用来源（``carried_from:<旧码>``）：旧码事件按**已登记**的代码变更映射
+#: 沿用给新码（G-146），事件本身是公告直证，但需同时看 `source` 里的旧码追溯。
+PRECISION_CARRIED = '公告直证（旧码事件按登记代码变更映射沿用）'
+CARRIED_SOURCE_PREFIX = 'carried_from:'
 PRECISION_UNMATCHED = '无匹配段'
 PRECISION_UNKNOWN = '未登记来源（需核实）'
 
 
 def precision_of(source: Any) -> str:
     """``source`` → 精度档；未登记的来源按「需核实」处理，不默认当公告直证。"""
-    return PRECISION.get(str(source), PRECISION_UNKNOWN)
+    text = str(source)
+    if text.startswith(CARRIED_SOURCE_PREFIX):
+        return PRECISION_CARRIED
+    return PRECISION.get(text, PRECISION_UNKNOWN)
 
 
 def is_inferred(source: Any) -> bool:
