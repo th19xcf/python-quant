@@ -1,140 +1,58 @@
 # 项目工作规则
 
+> 历史实测反例、逐次提交哈希、一次性事故经过与备份基线件数/字节数已迁至 `docs/数据治理判例与基线_2026-11-13.md`（下称「判例」），规则内只留判定句 + 一句依据 + 判例锚点。判定语义与迁出前等价，逐条对照见判例 §八。
+
 ## Git 提交规则
 
-- **用户已授权免确认提交**：提交前无需再向用户确认，直接完成「变更文件备份同步 → SHA256 校验 → `git commit` → 输出 5 块提交报告」全流程
-- 提交前仍需整理待提交内容（文件清单、拟定 commit message、备份同步状态），整理结果随提交报告一并输出，供用户事后复核
-- 用户当场明确提出异议或要求暂缓的，以用户指令为准
-- **Commit message 必须使用中文**：标题与正文描述统一使用中文，仅保留约定式提交的类型前缀（feat/fix/refactor/perf/chore 等）与 scope 为英文，格式为 `type(scope): 中文描述`
-- **Commit message 不得包含空行**：标题行与正文之间、正文各条目之间均不插入空行；条目紧接标题下一行开始，逐行连续书写（不使用 `git commit -m "标题\n\n正文"` 这种带空行的写法）
-- **Commit message 文件必须无 BOM**：禁止用 PowerShell 5.1 的 `Set-Content -Encoding utf8` 写消息文件（其 `utf8` 即 UTF-8 带 BOM，会写入 `EF BB BF`，且 `git commit -F` / `git stripspace` 不会自动清理）；统一用 `.venv\Scripts\python.exe` 以 `open(p, 'w', encoding='utf-8', newline='\n')` 写临时文件后 `git commit -F <文件>`，或无 Python 时用 `[System.IO.File]::WriteAllText($p, $msg, (New-Object System.Text.UTF8Encoding($false)))`；提交前可自检首 3 字节不为 `EF BB BF`
-- **每次执行 git commit 后，必须立即在聊天窗口输出完整的提交信息**，固定包含以下 5 块：
-
----
-
-### Commit 输出模板（严格按此格式）
-
-# ✅ Commit 完成（`<short_hash>`）
-
-## 1. Commit 哈希
-| 类型 | 值 |
-|---|---|
-| **短哈希** | `<short_hash>` |
-| **长哈希** | `<long_hash>` |
-
----
-
-## 2. 完整 Commit Message
-
-```text
-<verbatim 原样输出 git log -1 --format="%B" HEAD>
-```
-
----
-
-## 3. 文件变更统计 + 清单
-
-**统计**: `<git diff --stat HEAD~1 HEAD 第一行>`
-
-> 注：必须取双提交形式（`HEAD~1 HEAD`，等价 `HEAD^ HEAD`）的第一行。单参数的 `git diff HEAD~1` 比的是「上个提交 ↔ 工作区」，会把他路在途改动一并列进来，不能代表本次提交内容（2026-11-13 实测：该写法把他人 23 条 `M` 列成「本次变更」，而本次实际只有 `.gitignore` 1 个文件）。
-
-| 状态 | 文件 | 变化 |
-|---|---|---|
-| **A**（新增） | `path/to/file.py` | +37 |
-| **M**（修改） | `path/to/file.py` | +110 |
-| **R**（重命名） | `old/path.py` → `new/path.py` | 100% rename |
-| **R+M**（重命名+改） | `old/path.py` → `new/path.py` | +重写（80%） |
-| **D**（删除） | `path/to/file.py` | -228 |
-
----
-
-## 4. 工作区状态（`git status --short`）
-
-```text
-(clean —— 无未提交变更)  或直接粘贴命令输出
-```
-
----
-
-## 5. 备份同步确认
-✅ `<backup_cmd> → 目标路径`  
-✅ `<backup_cmd> → 目标路径`  
-✅ 关键文件 SHA256 **全部一致**（列出 3~5 个代表性文件名）
-
----
-
-### 注意事项
-- **Commit message 必须原样输出**：从 `git log -1 --format="%B"` 取，不做任何二次格式化（不要加"标题""正文"标签，不要改缩进）
-- **第 2 块（完整 Commit Message）输出格式固定**：只用一个 `text` 代码块（` ```text ` 起始、` ``` ` 结束）直接贴原文，块内不加任何标签或缩进；**严禁把整个 5 块模板再包进外层代码块**——嵌套围栏会让聊天窗口把消息内容渲染吞掉
-- **不要伪造输出**：所有数值、哈希、文件状态都必须来自 `git` 的真实输出
-- **备份方式**：只同步本次 commit 的变更文件到备份目录，**不删目录、不碰 .git**，命令为：
-  ```powershell
-  python -c "
-import subprocess, shutil, os
-src=r'E:\code\python\quant'; dst=r'G:\git\python-quant'
-# 1. 获取本次 commit 变更文件列表
-r=subprocess.run(['git','-C',src,'diff','--name-only','HEAD~1','HEAD'],capture_output=True,text=True)
-changed=[l for l in r.stdout.strip().split('\n') if l]
-# 2. 获取被删除的文件列表
-r2=subprocess.run(['git','-C',src,'diff','--name-only','--diff-filter=D','HEAD~1','HEAD'],capture_output=True,text=True)
-deleted=set(l for l in r2.stdout.strip().split('\n') if l)
-# 3. 同步修改/新增
-for rel in changed:
-    s=os.path.join(src,rel); d=os.path.join(dst,rel)
-    if os.path.isfile(s):
-        os.makedirs(os.path.dirname(d),exist_ok=True)
-        shutil.copy2(s,d)
-    elif rel in deleted and os.path.exists(d):
-        os.remove(d)
-print(f'synced {len(changed)} files, removed {len(deleted)} deleted')
-"
-  ```
-  backup 目标固定 `G:\git\python-quant\`；备份目录有自己的 `.git`，**永远不要删整个目录**
-- **核心原则：增量同步，其他不动**。只拷贝本次 commit 变更的文件过去，删除源仓库已删的文件；备份目录里的 `.git` 信息、untracked 文件、手动添加的内容全部保留
-- **为什么不删整个目录**：备份目录是独立的 git 仓库（有自己的 `.git`），`shutil.rmtree` 会把备份仓库也干掉；之前的"精确匹配"方案过度设计了，用户只需要同步文件内容
-
-- **按情况自行提交并备份**：用户已授权，无需人工确认。一组改动自洽（同一逻辑变更、测试通过）时，直接执行「备份同步 → SHA256 校验 → 中文无空行无 BOM 提交 → 输出 5 块提交报告」全流程。
-- **只提交自洽的一组**：一次提交只含一个逻辑闭合的改动；在跑任务的中间态不入库；工作区有其它未完成改动时**只 `git add` 本次相关文件，禁止 `git add -A` / `git add .`**。
-- **异常先报后动**：提交前若发现未预期的文件变更（比如不属于本次范围的 `M`/`??`），先如实报出，不要顺手带上。
-- **提交前必须自证可用**：提交前至少跑通本次改动相关的单测与静态检查（ruff/mypy）；若存在与本改动无关的既有失败项，必须在报告中单独列出并说明归属，不得笼统写成"全部通过"。
-- **隔离索引提交后必须回填共享索引**（判定句：`GIT_INDEX_FILE` 提交的同一轮收尾必须执行 `git read-tree HEAD`，缺这一步即判定为未完成）：隔离索引写的是临时索引文件，共享 `.git/index` 从头到尾不刷新，会一直停在提交前的旧树，此后 `git status` 把「索引里的旧版本 vs 工作区」显示成成片的假 `MM`。合格判据三条，须同时满足——① 在**新的一条** shell 命令里执行 `git read-tree HEAD`（`GIT_INDEX_FILE` 是同进程环境变量，与提交写在同一条命令里会把它一起带过去，回填的是临时索引而不是共享索引）；② `git ls-files -s <path>` 的 blob 与 `git rev-parse HEAD:<path>` 相等；③ `git status --short` 中不再出现与本次提交无关的 `MM`。
-  依据（实测，可复算）：11-11 全天提交 122 个（`git log --since="2026-11-11 00:00:00" --until="2026-11-12 00:00:00" --format=%H | wc -l`），叠加当日 10 次 `reset: moving to HEAD` 与多条空 message 的 HEAD 更新，共享索引最终停在祖先版本——11-12 盘点时 20 项里有 16 项是假 `MM`，其工作区内容与 HEAD 逐字节相同（`git hash-object` == `git rev-parse HEAD:<path>`），索引 blob 可在祖先提交中逐一找到；11-12 09:54:56 / 09:55:22 / 09:55:45 三笔隔离索引提交（`7b087b2` / `281e79c` / `7850f5c`）后当场复现同一签名，新命令执行 `git read-tree HEAD` 后索引重写为 83,332 字节、`git status --short` 只剩真实改动。
-- **隔离索引用前必须先种子化**（判定句：`GIT_INDEX_FILE` 指向的新索引在首次 `update-index` 之前必须先 `git read-tree <目标父提交>` 种子化；未种子化即等于把未列入的路径全部记为删除）：空索引不是「干净索引」，而是一棵空树，`update-index` 只加进本路文件，`commit` 就把整棵树换成只有这几个文件，其余路径在该笔提交的树里全部变成删除——工作区不动，`git status` 事后才炸。合格判据两条，须同时满足——① `update-index` 之前已在同一轮执行 `git read-tree <父提交>`（通常就是 `HEAD`），把临时索引初始化为完整树；② 提交前跑 `git diff --cached --stat <父提交>` 核对变更文件数，必须与本次预期清单一致，明显多于预期即停，不得先提交再看。
-  依据（实测，可复算）：2026-11-12 提交 G-093 登记行时，`GIT_INDEX_FILE` 指向空索引直接 `update-index --cacheinfo` 后 `commit`，该笔 `633294c` 记为 `791 files changed, 240400 deletions(-)`，790 个文件在树中被误删（工作区未受影响）；随即以 `633294c^` 的完整树重建索引、只替换缺口表一个 blob，前向修复提交 `184997c` 记 `790 files changed, 240400 insertions(+)`，`git diff --stat 633294c^ HEAD` = 1 file changed, 1 insertion；全程未 reset、未 amend、未改写历史，`633294c` 留在历史中可追溯。
-- **种子化基准必须是提交那一刻的父提交，提交单元内三连并提交前复核，提交后自证文件清单**（判定句：隔离索引提交必须按同一顺序执行五步——① `before = git rev-parse HEAD`；② `git read-tree $before`；③ `update-index` 加入本路文件；④ `git diff --cached --stat $before` 核对文件数，只应是本次预期清单；⑤ 提交前复取 `after = git rev-parse HEAD`，`before != after` 即**整体重做、不提交**。提交后 `git diff-tree -r --name-only HEAD` 的文件清单必须与预期逐一相符，多出文件立即按前向修复处理，不得 amend 或 reset）：上一段只要求「用前种子化」，没覆盖「种子化之后、提交之前 HEAD 被别人推进」这一形态——此时临时索引的树仍基于旧 HEAD，提交会把这段时间他路新落的文件在树里回退，工作区看起来一切正常，只有 `git show --stat` / `diff-tree` 才暴露。**「脚本开头取一次 `HEAD` 存着用」是禁止写法**：中间任何一个进程提交，那次 `read-tree` 的树就立刻过期，后续 `update-index` 与 `commit` 都在一个已经漂移的基准上操作；同样禁止「发现 `before != after` 后只重新 `read-tree <新 HEAD>` 接着提交」——重新种子化到提交之间仍可能再插进他路提交，等于在一个已经漂过的时间窗里继续赌，只有整体重做（丢弃临时索引、从取基准重新走五步）才能把窗口关掉。**提交脚本打印成功之前必须自证 `git rev-parse HEAD` 与 `before` 不等**（本次实测反例：2026-11-13 `2350903` 那笔首次尝试漏了 `hash-object -w`，`git commit` 报 `invalid object 100644 …`、HEAD 停在 `1b1c550` 没动，脚本却未校验退出码、无条件打印了 `COMMITTED`；`commit` 没报错或报错后脚本继续往下走，都不等于新提交存在，只有「`git rev-parse HEAD` ≠ `before`」这条断言能堵住这种假成功）。
-  依据（实测，可复算）：2026-11-12 `d07764c`（补布林带语义注释与 BOLL 用例）的隔离索引在其父提交 `563c0d9` 落库之前已从旧 HEAD 种子化，提交树因此回退 5 个文件（`src/data/local_store/store.py`、`tools/build_cn_bond_tables.py`、`tools/build_futures_continuous.py`、`tools/build_name_history.py`、`tools/manifest_tool.py`），该笔提交记为 7 files changed, 166 insertions(+), 64 deletions(-)；因工作区内容与 `563c0d9` 逐字节相同（`git diff 563c0d9 --stat -- <5 文件>` 为空）才未丢成果，随后由 `74e2a77` 按 `563c0d9` 的 blob 写回树完成前向修复，`git diff 563c0d9 HEAD` 只剩 2 个文件。同轮 `8105d04` 已改用提交前实时取基准（`before` 在五步开头取、提交前复取 `after` 比对，不一致即整体重做），属正确形态，可与上面这笔反例对照阅读。
+- **用户已授权免确认提交**：提交前无需再向用户确认，直接完成「变更文件备份同步 → SHA256 校验 → `git commit` → 输出 5 块提交报告」全流程。
+- 提交前仍需整理待提交内容（文件清单、拟定 commit message、备份同步状态），随提交报告一并输出，供用户事后复核。
+- 用户当场明确提出异议或要求暂缓的，以用户指令为准。
+- **Commit message 必须使用中文**：标题与正文统一中文，仅约定式提交类型前缀（feat/fix/refactor/perf/chore 等）与 scope 为英文，格式 `type(scope): 中文描述`。
+- **Commit message 不得包含空行**：标题与正文之间、正文各条目之间都不插空行，条目紧接标题下一行连续书写；禁止 `git commit -m "标题\n\n正文"` 这种带空行的写法。
+- **Commit message 文件必须无 BOM**：禁止 PowerShell 5.1 的 `Set-Content -Encoding utf8`（其 utf8 带 BOM，`git commit -F` / `git stripspace` 不清理）；统一用 `.venv\Scripts\python.exe` 以 `open(p,'w',encoding='utf-8',newline='\n')` 写临时文件后 `git commit -F`，无 Python 时用 `UTF8Encoding($false)` 写；提交前自检首 3 字节不为 `EF BB BF`。
+- **每次 git commit 后必须立即在聊天窗口输出 5 块**：①短/长哈希 ②完整 commit message ③文件变更统计与清单 ④`git status --short` ⑤备份同步确认（含 3~5 个代表性文件 SHA256 一致）。完整排版模板见判例 §1.1。
+  - ③ 的统计行必须取 `git diff --stat HEAD~1 HEAD`（双提交形式，等价 `HEAD^ HEAD`）第一行；单参数 `git diff HEAD~1` 比的是「上个提交 ↔ 工作区」，不得使用。
+  - ② 只用一个 ```text 代码块原样贴 `git log -1 --format="%B"` 的输出，不加任何标签、不改缩进；严禁把整个 5 块模板再包进外层代码块。
+  - 所有数值、哈希、文件状态必须来自 `git` 真实输出，禁止伪造。
+- **备份方式**：只同步本次 commit 变更的文件到 `G:\git\python-quant\`（保持相对路径结构），源端已删的从备份侧对位删除；**不删目录、不碰 .git**。同步脚本见判例 §1.2。
+- **核心原则：增量同步，其他不动**：只拷贝本次变更文件 + 对位删除；备份目录里的 `.git`、untracked 文件、手工添加内容全部保留，禁止 `shutil.rmtree`（理由见判例 §1.3）。
+- **按情况自行提交并备份**：一组改动自洽（同一逻辑变更、测试通过）时，直接执行「备份同步 → SHA256 校验 → 中文无空行无 BOM 提交 → 输出 5 块提交报告」全流程。
+- **只提交自洽的一组**：一次提交只含一个逻辑闭合的改动；在跑任务的中间态不入库；工作区有其它未完成改动时只 `git add` 本次相关文件，禁止 `git add -A` / `git add .`。
+- **异常先报后动**：提交前发现不属于本次范围的 `M`/`??`，先如实报出，不要顺手带上。
+- **提交前必须自证可用**：至少跑通本次改动相关的单测与静态检查（ruff/mypy）；与本改动无关的既有失败项须在报告中单独列出并说明归属，不得笼统写成「全部通过」。
+- **隔离索引提交后必须回填共享索引**（`GIT_INDEX_FILE` 提交的同一轮收尾必须执行 `git read-tree HEAD`，缺这一步即判该次提交未完成）：三条判据须同时满足——① 在**新的一条** shell 命令里执行 `git read-tree HEAD`（`GIT_INDEX_FILE` 是同进程环境变量，写在同一命令里回填的是临时索引）；② `git ls-files -s <path>` 的 blob 与 `git rev-parse HEAD:<path>` 相等；③ `git status --short` 不再出现与本次提交无关的 `MM`。依据与实测见判例 §2.1。
+- **隔离索引用前必须先种子化**（`GIT_INDEX_FILE` 指向的新索引在首次 `update-index` 之前必须先 `git read-tree <目标父提交>`；未种子化即等于把未列入的路径全部记为删除）：① `read-tree` 与 `update-index` 在同一轮完成，把临时索引初始化为完整树；② 提交前跑 `git diff --cached --stat <父提交>` 核对变更文件数，必须与本次预期清单一致，明显多于预期即停，不得先提交再看。依据与实测见判例 §2.2。
+- **种子化基准必须是提交那一刻的父提交**（隔离索引提交固定五步：① `before = git rev-parse HEAD`；② `git read-tree $before`；③ `update-index` 加入本路文件；④ `git diff --cached --stat $before` 核对文件数只应是本次预期清单；⑤ 提交前复取 `after = git rev-parse HEAD`，`before != after` 即**整体重做、不提交**）：
+  - 禁止「脚本开头取一次 HEAD 存着用」；也禁止「发现 `before != after` 后只重新 `read-tree <新 HEAD>` 接着提交」——只有整体重做（丢弃临时索引、从取基准重新走五步）才算把窗口关掉。
+  - 提交脚本打印成功之前必须自证 `git rev-parse HEAD` 与 `before` 不等；`git commit` 没报错或报错后脚本继续往下走，都不等于新提交存在。
+  - 提交后 `git diff-tree -r --name-only HEAD` 的文件清单必须与预期逐一相符，多出文件立即按前向修复处理，不得 amend 或 reset。依据与三条反例见判例 §2.3。
 
 ## 备份仓库提交规范
 
-- **提交标题格式**：`type(scope): YYYY-M-D，中文描述`，日期紧跟冒号，用中文逗号与描述分隔，月、日不补零；示例 `chore(backup): 2026-11-9，同步 2026-11-09 数据质量、研究脚本与审计文档`
-- **正文每行同样以类型前缀开头**：格式 `type(scope): YYYY-M-D，中文描述`，逐行连续书写；标题与正文之间、正文各条目之间一律不插空行
-- **Commit message 文件必须无 BOM**：沿用源仓库既有约定，用 `.venv\Scripts\python.exe` 以 `open(p, 'w', encoding='utf-8', newline='\n')` 写临时文件后 `git commit -F <文件>`，提交前自检首 3 字节不为 `EF BB BF`
-- **职责归属**：备份仓库 `G:\git\python-quant` 的维护、提交与推送由助手负责；每次备份同步完成后直接提交并推送，不需要用户再提醒
-- **仓库形态与推送约定**：源仓库 `e:\code\python\quant` 仅本地、未配置任何远端，只做本地提交，不 fetch、不 push，也不要给它添加远端；备份仓库 `G:\git\python-quant` 是唯一关联 GitHub 的仓库（origin 指向 `th19xcf/python-quant`），其提交推送至该仓库自己的 `main`。两个仓库独立管理、互不约束，不需要跨库对齐或快进
-- **红线继承**：备份仓库只做增量 `copy2` 与「源端已删文件」的对位删除；禁止 `rmtree`、禁止碰其 `.git`、禁止 force push（`--force` / `--force-with-lease`）与任何改写历史的操作
-- **推送失败先判别代理与直连，再决定是否清空代理（2026-11-12 修订）**：现象是 `git push` 报 `Failed to connect to github.com:443 over proxy 127.0.0.1` 或 `Recv failure: Connection was reset`；起作用的始终是全局 `.gitconfig` 里那条 `http.proxy=http://127.0.0.1:10808`，环境变量 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 为空，与它们无关。处置顺序固定为「先测后决策」：① 各测一次 `Test-NetConnection 127.0.0.1 -Port 10808 -InformationLevel Quiet` 与 `Test-NetConnection github.com -Port 443 -InformationLevel Quiet`；② 代理在跑（10808 = True）且直连不通（443 = False）→ **保持默认代理配置重试**，不要清空代理；③ 代理没跑（10808 = False）→ 才临时清空代理直连，`git -c http.proxy= -c https.proxy= push origin main`；④ 两个端口都通或都不通 → 按真实网络故障处理，查代理软件与出口网络，不得反复重试。**不要**为绕过而改全局配置，也不要删掉那条代理配置（用户开代理时仍要用）；不 force push。
-  依据：2026-11-12 实测——`127.0.0.1:10808` 探测 **True**（代理在跑）、`github.com:443` 直连探测 **False**（直连不通）；清空代理后 push 报 `Recv failure: Connection was reset`，恢复默认代理配置后同一笔 push 成功（`922bd19..289254d main -> main`）。旧写法「统一清空代理直连」在本机现有网络下必然失败，故改为按探测结果分支。
+- **提交标题格式**：`type(scope): YYYY-M-D，中文描述`，日期紧跟冒号、用中文逗号与描述分隔，月、日不补零（示例见判例 §3.1）。
+- **正文每行同样以类型前缀开头**，格式同上，逐行连续书写；标题与正文之间、正文各条目之间一律不插空行。
+- **Commit message 文件必须无 BOM**：写法同「Git 提交规则」，提交前自检首 3 字节不为 `EF BB BF`。
+- **职责归属**：备份仓库 `G:\git\python-quant` 的维护、提交与推送由助手负责；每次备份同步完成后直接提交并推送，不需要用户再提醒。
+- **仓库形态与推送约定**：源仓库 `e:\code\python\quant` 仅本地、未配置任何远端，只做本地提交，不 fetch、不 push、不加远端；备份仓库是唯一关联 GitHub 的仓库（origin 指向 `th19xcf/python-quant`），提交推送至其自己的 `main`。两仓独立管理、互不约束，不做跨库对齐或快进。
+- **红线继承**：备份仓库只做增量 `copy2` 与「源端已删文件」的对位删除；禁止 `rmtree`、禁止碰其 `.git`、禁止 force push（`--force` / `--force-with-lease`）与任何改写历史的操作。
+- **推送失败先判别代理与直连（先测后决策）**：起作用的始终是 `.gitconfig` 里的 `http.proxy`，与环境变量无关。① 各测一次 `Test-NetConnection 127.0.0.1 -Port 10808 -InformationLevel Quiet` 与 `Test-NetConnection github.com -Port 443 -InformationLevel Quiet`；② 10808=True 且 443=False → 保持默认代理配置重试，不清空代理；③ 10808=False → 才临时 `git -c http.proxy= -c https.proxy= push origin main`；④ 两个都通或都不通 → 按真实网络故障处理，查代理软件与出口网络，不得反复重试。禁止改全局配置或删那条代理配置；不 force push。实测见判例 §3.1。
 
 ## 备份同步规则
 
-- **每次执行 git 提交前，必须先把本次修改的文件同步到备份目录 `G:\git\python-quant\` 下对应的位置**（保持与仓库相同的相对路径结构）
-- 同步范围 = 本次提交涉及的全部文件（新增/修改）；删除的文件需从备份目录对应位置一并移除
-- **完整备份范围 = ① git 跟踪文件 ② `data/local_store/**` 与仓库根 `_backup/**` ③ `reports/**` ④ 仓库外被脚本引用的输入文件（`E:\www\tmp\` 下）**：每次交付与收口都按这四类逐一核对，缺一类即为备份不完整
-- **教训**：只备份 ①、② 会让 `reports/**` 与外部输入成为盲区，最终出现「结果只能靠产物复现、产物又没备份」的双重失效；未跟踪或不在仓库内都不是跳过备份的理由
-- **`data/local_store/**` 与 `reports/**` 一律按「相对路径集合求差」做全量镜像，禁止按 `mtime` 或「今天」筛选**：按日期筛选会让历史文件永久缺席（实测曾缺 1,591 个 / 13.9%，含 `_backup/` 回滚快照），每次须先求集合差补齐缺失文件，再做全量逐文件 SHA256 比对
-- **`research/events/data/**` 必须纳入「每次收口必查」范围（2026-11-12 起）**：该子树自 2026-11-09 `232a1ae` 用 `git rm --cached` 撤出跟踪后，`G:` 镜像是它唯一的第二份拷贝，缺一个文件就等于只有单盘。核对口径同 `data/local_store/**`：整棵按相对路径集合求差 + 大小差 + 逐文件 SHA256，缺失或不一致一律从源侧单向 `copy2` 补齐，禁止反向覆盖源文件。基线：2026-11-12 实测缺 87 个（`backfill/` 83 个月度分片、`backfill/daily/` 3 个、`announcements_partial.parquet`），补齐后源/备均 142 个、三类差异 0
-- **`backups/**` 与 `_backup/**` 同级纳入镜像（2026-11-12 起）**：这里是 `CRITICAL_FILES` / `CRITICAL_DIRS` 的快照，落点统一为主镜像根 `G:\git\python-quant\backups\`，**不再单开 `python-quant-critical` 一类旁支落点**，避免再出现一处会被遗忘的目录。基线：401 个文件 / 933.6 MB，集合差、大小差、逐文件 SHA256 三项均为 0
-- **`logs/**` 改数前数据快照只做镜像、源侧不搬迁（2026-11-12 起）**：具体为 `logs/*_backup_*/**` 与 `logs/valuation_dv_fix_20261105/**`（后者目录名不含 `_backup_`，但同属改数前快照，必须一并算入）。镜像到 `G:\git\python-quant\logs\` 对应相对路径，禁止为了复用 `_backup/**` 通道而移动这 1.7 万个文件。基线：17,315 个 / 2,955.7 MB，三项差异 0
-- **`logs/data_changelog.csv` 单列一类镜像对象，不得只靠 `logs/**` 通配兜底（2026-11-12 起）**：该文件已于 2026-11-12 由 `git rm --cached` 移出 Git 跟踪（只增不减，每提交一次即在历史中多存一份约 1.95 MB 快照），移出后 `G:` 镜像就是它唯一的第二份拷贝。每次收口必须单独核对它的 SHA256、字节数与行数，按「集合差 + 大小差 + 逐文件 SHA256」与源侧比对，两侧任一缺失或任一指标不等即判备份不完整，禁止因为「它不在 `logs/*_backup_*` 里」而跳过。基线（2026-11-12）：1,945,970 B / 10,270 行 / SHA256 `FF6163E76A389DA8D4E0BF4B71EF6A2CED720206DF127C852DCDD2E199367A45`
-- **`E:\www\tmp` 按引用白名单镜像，不是全量镜像（2026-11-12 起）**：以全仓代码、配置、文档里出现的 `E:\www\tmp` 字面量为准生成清单，只把被引用的文件与目录 `copy2` 到 `G:\git\python-quant\_external_inputs\www_tmp\<相对路径>`，禁止整体搬 6.1 GB；文档叙述里出现的裸根 `E:\www\tmp` 不算目录级引用。基线：190 条引用 / 101 个路径 / 6,905 个文件 / 587.8 MB，三项差异 0
-- **任务交付工作目录（形如 `2026-11-12/**`）同样按 `reports/**` 同级纳入镜像比对（2026-11-12 起）**：这类目录整体 `.gitignore` 不入库，其中值得长期留存的报告另存一份进 `docs/` 纳入 Git，其余脚本、中间产物与审计工作文件只有 `G:` 镜像一份，每次收口须按集合差 + 大小差 + 逐文件 SHA256 核对；比对与 `copy2` 一律跳过 `__pycache__/`、`*.pyc`、`*.pyo`（字节每次重新生成，留着会制造假差异）。基线：2026-11-12 目录 45 个文件、三类差异 0
-- **`reports/**` 只做本地镜像、不进 Git 跟踪（2026-11-12 起，与 `data/local_store/**`、`_backup/**` 同级处理）**：源码仓库 `.gitignore` 已锚定 `/reports/`；备份仓库取消跟踪后追加 `/reports/`，**磁盘文件一律保留**，历史提交中的文件**不改写**。取消跟踪不减少镜像义务，三棵子树仍按上一条求集合差并逐文件 SHA256 比对
-- **Git 跟踪文件的镜像以源仓 HEAD 的 blob 为准，不得直接 `copy2` 工作区文件（2026-11-12 起）**：镜像前逐路径比对 `git -C <源仓> hash-object <path>` 与 `git -C <源仓> rev-parse HEAD:<path>`，不等即说明该文件工作区有未提交改动（可能是他路在途成果），此时**跳过该文件**并在同步清单里记为「跳过（工作区≠HEAD）」，等源仓提交后再补镜像；确需同步时按 `git -C <源仓> show HEAD:<path>` 的内容写盘，不写工作区版本。非 Git 跟踪对象（`data/local_store/**`、`_backup/**`、`reports/**`、`logs/**` 等）不受本条约束，仍按磁盘 `copy2`。
-  依据：备份仓 `2360fc4` 与 `3c17590` 的 message 自述「镜像的是工作区最新内容，其中另含他人未提交的 G-091 行，不由本任务提交」——源仓 HEAD 尚未含 G-091 时备份仓已先落库，等于把他路在途内容写进第二仓库；若源仓事后改写或放弃该改动，备份侧将成为唯一持有者且永不与 HEAD 对齐。2026-11-12 全量核对：796 个共同跟踪文件 blob 差 0，该次偏差已随源仓提交自然收敛，但成因是做法而非一次性事故。
-  判定句：镜像后任一 Git 跟踪文件若 `git -C <源仓> rev-parse HEAD:<path>` ≠ `git -C <备份仓> rev-parse HEAD:<path>`（且源仓工作区该文件无未提交改动），即判该文件镜像不合格。
-- **备份仓存在「仅在其侧有意义」的文件，核对「只在备份仓」清单时必须先剔除（2026-11-12 起）**：`.github/workflows/**` 与 GitHub 专属配置（Actions workflow、分支保护、Issue/PR 模板等）只在关联 GitHub 的备份仓里生效；源仓纯本地、未配置远端、从不运行 Actions，因此这类路径「只出现在备份仓」属正常形态，**不得当作陈旧镜像删除**。判定句：核对「只在备份仓」条目前先按本清单剔除，剔除后仍存的差额才按「源仓已删未同步」处理。
-  依据：`.github/workflows/ci.yml` 在源仓 `log --all`、`log --all --diff-filter=D`、`rev-list --all --objects` 三处均零记录，从未在源仓存在过；2026-11-12 曾被初判为「唯一真正陈旧镜像」，实为源仓侧无 Actions 语义的正常差异，且该 workflow 在备份仓确在运行（GitHub Actions 已 381 次），删除等于推翻 CI 本身。
-- 备份同步完成后，再按上述 Git 提交规则请用户确认并提交
+- **每次执行 git 提交前，必须先把本次修改的文件同步到 `G:\git\python-quant\` 下对应的位置**（保持与仓库相同的相对路径结构）。
+- **同步范围** = 本次提交涉及的全部文件（新增/修改）；源端删除的文件须从备份目录对应位置一并移除。
+- **完整备份范围 = 四类，缺一类即为备份不完整**：① git 跟踪文件 ② `data/local_store/**` 与仓库根 `_backup/**` ③ `reports/**` ④ 仓库外被脚本引用的输入文件（`E:\www\tmp\` 下）。未跟踪或不在仓库内都不是跳过备份的理由。
+- **`data/local_store/**` 与 `reports/**` 一律按「相对路径集合求差」做全量镜像**，禁止按 `mtime` 或「今天」筛选；每次先求集合差补齐缺失文件，再做全量逐文件 SHA256 比对。反例见判例 §4.1。
+- **`research/events/data/**` 必须纳入「每次收口必查」**：该子树已由 `git rm --cached` 撤出跟踪，`G:` 镜像是唯一第二份拷贝，缺一个文件即等于只有单盘；核对口径同上一类（整棵集合差 + 大小差 + 逐文件 SHA256），缺失或不一致一律从源侧单向 `copy2` 补齐，禁止反向覆盖源文件。基线见判例 §4.2。
+- **`backups/**` 与 `_backup/**` 同级纳入镜像**：`CRITICAL_FILES` / `CRITICAL_DIRS` 快照统一落主镜像根 `G:\git\python-quant\backups\`，不再单开 `python-quant-critical` 一类旁支落点。基线见判例 §4.3。
+- **`logs/**` 改数前数据快照只做镜像、源侧不搬迁**：范围为 `logs/*_backup_*/**` 与 `logs/valuation_dv_fix_20261105/**`（目录名不含 `_backup_` 但同属改数前快照，必须一并算入），镜像到 `G:\git\python-quant\logs\` 对应相对路径；禁止为复用 `_backup/**` 通道而移动这批文件。基线见判例 §4.4。
+- **`logs/data_changelog.csv` 单列一类镜像对象，不得只靠 `logs/**` 通配兜底**：该文件已 `git rm --cached` 移出跟踪，`G:` 镜像即它唯一的第二份拷贝；每次收口必须单独核对它的 SHA256、字节数与行数，按「集合差 + 大小差 + 逐文件 SHA256」与源侧比对，任一缺失或任一指标不等即判备份不完整。基线见判例 §4.5。
+- **`E:\www\tmp` 按引用白名单镜像，不是全量镜像**：以全仓代码、配置、文档里出现的 `E:\www\tmp` 字面量为准生成清单，只把被引用的文件与目录 `copy2` 到 `G:\git\python-quant\_external_inputs\www_tmp\<相对路径>`，禁止整体搬 6.1 GB；文档叙述里出现的裸根 `E:\www\tmp` 不算目录级引用。基线见判例 §4.6。
+- **任务交付工作目录（形如 `2026-11-12/**`）按 `reports/**` 同级纳入镜像比对**：这类目录整体不入库，值得长期留存的报告另存一份进 `docs/` 纳入 Git，其余脚本与中间产物只有 `G:` 镜像一份；每次收口按集合差 + 大小差 + 逐文件 SHA256 核对。比对与 `copy2` 一律跳过 `__pycache__/`、`*.pyc`、`*.pyo`。基线见判例 §4.7。
+- **`reports/**` 只做本地镜像、不进 Git 跟踪**（与 `data/local_store/**`、`_backup/**` 同级处理）：源仓 `.gitignore` 已锚定 `/reports/`，备份仓取消跟踪后同样追加 `/reports/`；磁盘文件一律保留，历史提交不改写。取消跟踪不减少镜像义务，仍按集合差 + 逐文件 SHA256 比对。
+- **Git 跟踪文件的镜像以源仓 HEAD 的 blob 为准，不得直接 `copy2` 工作区文件**：镜像前逐路径比对 `git -C <源仓> hash-object <path>` 与 `git -C <源仓> rev-parse HEAD:<path>`，不等即跳过该文件并在同步清单记为「跳过（工作区≠HEAD）」，待源仓提交后补镜像；确需同步时按 `git show HEAD:<path>` 的内容写盘。非 Git 跟踪对象（`data/local_store/**`、`_backup/**`、`reports/**`、`logs/**` 等）不受本条约束，仍按磁盘 `copy2`。判定句：镜像后任一 Git 跟踪文件若 `rev-parse HEAD:<path>` 在源仓与备份仓不等（且源仓工作区该文件无未提交改动），即判该文件镜像不合格。依据见判例 §4.8。
+- **核对「只在备份仓」清单前必须先剔除 `.github/workflows/**` 与 GitHub 专属配置**（Actions workflow、分支保护、Issue/PR 模板等）：这类路径只在关联 GitHub 的备份仓生效，源仓无远端、不跑 Actions，「只出现在备份仓」属正常形态，不得当作陈旧镜像删除；剔除后仍存的差额才按「源仓已删未同步」处理。依据见判例 §4.9。
+- 备份同步完成后，再按上述 Git 提交规则请用户确认并提交。
 
 ## 任务调度与超时处理规则
 
@@ -158,17 +76,16 @@ print(f'synced {len(changed)} files, removed {len(deleted)} deleted')
 - **网络采集限流**：外部数据源采集类任务同时不超过 2 条，单连接串行 + 节流。出现限速、封禁、连续超时等信号时立即降并发并如实报告，不得加压重试。
 - **冲突优先于速度**：两条任务会写同一文件、同一目录产物或同一 Git 工作区状态时，必须串行或合并为一条，不得为提速改成并发写。
 - **验证不通过先停后报**：不得为了推进而放宽断言、下调阈值、删除用例或忽略失败项。先定位原因、如实上报，再决定换源、缩范围或回滚。
-- **`_staging` 断点是收口硬条件（2026-11-12 起，只约束新任务）**：新开的采集 / 构建类任务，`_staging/<任务>_<日期>/` 下必须**同时**存在 `progress.csv` / `progress.json`（或等价可机读进度文件）与 `failed.csv`，缺任意一个即判定该任务未完成，不得报收口；收口回执里要点明这两条路径。**历史任务一律不追溯补**：2026-11-12 实测 152 个 `_staging` 顶层项中 128 项两者皆无（明细见 `docs/数据缺口登记_正式表_2026-11-12.md` G-088），那批按当时口径产生，不回填、不补建——补建等于制造假进度文件，比缺断点更危险。本条只对此后新开的任务生效。
+- **`_staging` 断点是收口硬条件（只约束新任务）**：新开的采集 / 构建类任务，`_staging/<任务>_<日期>/` 下必须**同时**存在 `progress.csv` / `progress.json`（或等价可机读进度文件）与 `failed.csv`，缺任意一个即判定该任务未完成，不得报收口；收口回执里要点明这两条路径。**历史任务一律不追溯补**——补建等于制造假进度文件，比缺断点更危险（存量见判例 §5.1）。本条只对此后新开的任务生效。
 - **派任务时必须写明阶段性汇报要求**：每次下派任务，都要在指令里明确要求对方主动回阶段性进展，而不是等主控来问。没写这一条，就等于允许对方长时间静默。
 - **阶段性汇报节点与格式**：每个明确里程碑（数据盘点完成、实现完成、验证完成、提交完成）各回一条，一句话即可：已完成什么 / 当前在哪步 / 下一步是什么 / 预计还要多久。单个步骤预计超过 10 分钟，中途必须给一次进展。
 - **遇阻塞立即报，不许硬等**：出现限速、封禁、接口为空、外部依赖缺失、口径歧义时，第一时间报告阻塞点与影响，不得静默重试或擅自放宽要求。
 - **静默即视为停滞**：超过 15 分钟没有任何进展汇报的任务，主控按超时规则发状态询问；连续两次询问仍无实质进展，按「先催后接管、从断点续跑」处理。
 - **同一仓库提交必须串行**：`git add` / `git commit` 天然互斥，两条任务并发提交必然撞共享 index，会把他方文件混进本次提交。提交前先确认没有其它任务正在提交；无法确认时用隔离索引（`GIT_INDEX_FILE` 指向临时文件）并在报告中写明，禁止在共享 index 上并发提交。
-- **提交范围必须自证**：提交后立即用 `git show --stat HEAD` 或 `git diff-tree --no-commit-id --name-only -r HEAD` 复核本次 HEAD 的文件清单，与预期清单逐一比对；发现多出文件立即回退重做，不得事后补一句"混入了"了事。同文件并行编辑另按下列三条判定：
-  ① **先串行或按 hunk 暂存**：隔离索引 `GIT_INDEX_FILE` 只隔离索引文件、**不隔离工作区**，`git add <整个文件>` 暂存的是工作区当前内容，同一文件里他路的在途 hunk 会一并入账。同一路径被两路并行编辑时，必须先串行（等对方提交完再改），或按 hunk 单独构造 blob（`git diff -- <file>` 摘出本路 hunk → 基于 `HEAD:<file>` 应用 → `git hash-object -w` → `git update-index --cacheinfo`），禁止直接 `git add <整个文件>`。
-  ② **必须做 hunk 级核对**：`git show --stat HEAD` 与 `git diff-tree --name-only` 只给文件名与统计行，看不出同文件内的混入。提交后必须对每个改动文件执行 `git diff HEAD~1 -- <file>`，逐个 hunk 确认属于本路。
+- **提交范围必须自证**：提交后立即用 `git show --stat HEAD` 或 `git diff-tree --no-commit-id --name-only -r HEAD` 复核本次 HEAD 的文件清单，与预期清单逐一比对；发现多出文件立即回退重做，不得事后补一句"混入了"了事。同文件并行编辑另按下列三条判定（依据见判例 §5.2）：
+  ① **先串行或按 hunk 暂存**：隔离索引只隔离索引文件、**不隔离工作区**，`git add <整个文件>` 会把同一文件里他路的在途 hunk 一并入账。同一路径被两路并行编辑时必须先串行（等对方提交完再改），或按 hunk 单独构造 blob（`git diff -- <file>` 摘本路 hunk → 基于 `HEAD:<file>` 应用 → `git hash-object -w` → `git update-index --cacheinfo`），禁止直接 `git add <整个文件>`。
+  ② **必须做 hunk 级核对**：`git show --stat HEAD` 与 `diff-tree --name-only` 只给文件名，看不出同文件内混入；提交后必须对每个改动文件执行 `git diff HEAD~1 -- <file>`，逐个 hunk 确认属于本路。
   ③ **发现混入且已推送：不回滚、不 amend**：改写历史属红线，已推送的一律不回滚、不 amend、不 force push；如实记账并在下一笔提交正文写明"上一笔 `<hash>` 混入他路 hunk（文件 / 内容 / 来源 / 时点）"，保留可追溯链。
-  依据：2026-11-12 `29dad43`（ann_date 合并那笔）提交 `docs/数据权威路径清单.md` 时，把另一路在同一文件里的在途改动（ETF 权益池正名的 L35 一行）一并带进了库；根因即隔离索引不隔离工作区、`git add` 整文件暂存。
 
 ## 上下文与 token 成本规则
 
@@ -209,14 +126,14 @@ print(f'synced {len(changed)} files, removed {len(deleted)} deleted')
 ## 巡检规则（本地脚本执行，默认挂起，模型按需读取）
 
 - **默认不执行，已挂起**：巡检脚本 `tools/patrol_local.py` 已入库，但**当前挂起、不自动运行**，计划任务 `quant_patrol_10min` **未创建**。需要时人工执行一轮：`.venv\Scripts\python.exe tools\patrol_local.py`，结果照旧覆盖写 `logs/patrol_status.json`、异常时追加 `logs/patrol_alerts.log`。
-- **挂起原因（如实记录）**：执行会话是**非提权会话**，无 Task Scheduler 写权限，`schtasks /create` 与 `Register-ScheduledTask` 均返回 `Access is denied`；`schtasks /query /tn quant_patrol_10min` 返回 `The system cannot find the file specified`，即任务**未创建**。`Get-Service Schedule` 实测 Running / Automatic，调度服务本身正常，纯属权限不足，不是服务故障。
+- **挂起原因**：执行会话是非提权会话，无 Task Scheduler 写权限，注册计划任务被拒（`Access is denied`）；调度服务本身正常，纯属权限不足，不是服务故障。实测见判例 §六。
 - **恢复方式两种，恢复前不要自行尝试**：① 管理员 PowerShell 注册计划任务——`schtasks /create /tn "quant_patrol_10min" /tr '"\<仓库\>\.venv\Scripts\python.exe" "\<仓库\>\tools\patrol_local.py" --quiet' /sc minute /mo 10 /f`；② 改成登录自启的常驻循环脚本（启动项 / `pythonw` 拉起，内部 `time.sleep(600)` 循环）。调度最小粒度 10 分钟，不要尝试更短间隔。两种方式都须由用户明确指示后才动，禁止再尝试绕过权限提权。
 - **脚本成本与边界**：只读系统状态、进程 CPU 时间与文件元数据，不调用任何模型、不写 `data/`、不删除任何文件，单轮模型 token 成本为 **0**。
 - **脚本产出两个文件**：`logs/patrol_status.json`（每轮覆盖写，含 `checked_at`、每个任务的判定与支撑数字）；`logs/patrol_alerts.log`（只在 `stalled` 时追加，正常时文件都不创建）。
 - **判定是多信号、按可靠性排序的**，任一单条都不足以下结论：① `progress.json` / `manifest.json` 的计数变化（最强，DG-7 本就要求 `_staging/` 下有断点进度文件）；② 登记产物的 mtime 与大小；③ 任意子进程（`python` / `git` / `node` / `powershell` / `cmd` / `schtasks` 等，不限 python）的 CPU 时间增长；④ 会话最后更新时间（读得到就报，读不到标 `unavailable`，不伪造）。
 - **判 `stalled` 的门槛**：只有信号 ①② 都可用、且三项硬信号连续两轮都不动才允许判 `stalled`；信号 ①② 缺登记或读不到时，即使进程状态异常也只能判 `unknown`。**不得**把「`python.exe` 进程不存在」单独当吊死判据——模型会话纯读文件、改文件、推理的时段本来就没有子进程，而这段时间往往最耗时。
 - **任务登记**：`config/patrol_targets.json` 的 `tasks` 每项登记任务名、期望产物（路径或 glob，可为绝对路径）、`timeout_minutes`，可选 `process_match`（命令行子串）。清单缺失或为空时脚本退化为扫 `_staging/**` 与 `data/local_store/**` 的最近 mtime，并在结果里标 `degraded=true`。长任务结束后必须及时移除对应条目，否则进程消失且产物不再变动会在两轮后判 `stalled`。
-- **模型侧按需读取，没有定时唤醒**：只在三处读 `logs/patrol_status.json`——① 用户发消息时；② 子会话回报时；③ 每日 16:10 那批任务里。每次只读这一个文件（常态 10~40 KB），读完整份再判定，不逐条回溯会话正文；token 成本约一次 3k~8k 输入，随 `tasks` 条目数线性增长。**脚本挂起期间该文件不会自动刷新，读取时必须先看 `checked_at` 判断新鲜度，不得当作实时状态**；`checked_at` 距今超过 15 分钟就视为过期，只能作为背景参考。
+- **模型侧按需读取，没有定时唤醒**：只在三处读 `logs/patrol_status.json`——① 用户发消息时；② 子会话回报时；③ 每日 16:10 那批任务里。每次只读这一个文件，读完整份再判定，不逐条回溯会话正文。**脚本挂起期间该文件不会自动刷新，读取时必须先看 `checked_at` 判断新鲜度，不得当作实时状态**；`checked_at` 距今超过 15 分钟即视为过期，只能作为背景参考。
 - **有 alert 才处置，无 alert 就静默**：`logs/patrol_alerts.log` 非空时，按 `stalled` 条目先催（只问卡在哪步、有无外部阻塞、还要多久），确认卡死才另起接管，且必须从断点续跑、先声明文件归属；alert 为空则不打扰用户。
 - **巡检不得越权**：脚本侧与模型侧都不得删除任何数据、不清空或覆盖备份目录、不重置 Git 历史、不批量清理工作区、不改任何代码、不自行开新任务、不替用户做决定。脚本侧另有静态用例守护（`tests/test_patrol_local.py::test_module_has_no_delete_calls`）。
 - **可随时调整**：频率、开关由用户一句话决定；暂停或删除计划任务不等于终止在跑的子会话，不得表述为"已停止"。
