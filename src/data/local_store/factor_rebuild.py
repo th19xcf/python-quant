@@ -52,6 +52,7 @@ from src.data.local_store.store import (
     LocalQuoteStore,
     refresh_quote_factor_columns,
 )
+from src.data.trading_calendar import filter_nontrading_bars
 
 _FACTOR_SCHEMA = {
     'ts_code': pl.Utf8,
@@ -107,6 +108,8 @@ def _compute_code_factors(code: str, quote_store: LocalQuoteStore,
         pl.col('date').alias('trade_date'),
         pl.col('close').cast(pl.Float64),
     ]).sort('trade_date')
+    # G-112：派生层落盘前剔除非交易日 bar（原始 quotes 不动；裁定表 keep 行保留）
+    prices = filter_nontrading_bars(prices, factor_store.root)
 
     dividends = factor_store.dividends(code)
     if dividends is not None and not dividends.is_empty() and 'ex_date' in dividends.columns:

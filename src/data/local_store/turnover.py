@@ -66,6 +66,7 @@ from src.data.local_store.paths import default_store_root
 from src.data.quote_schema import assert_formal_quote_glob_schema
 from src.data.sources import baostock_schema as schema
 from src.data.staging import staging_dir_for_store
+from src.data.trading_calendar import filter_nontrading_bars
 from src.utils.code_converter import to_baostock_code
 from src.utils.exception_handler import handle_exception_with_retry
 from src.utils.exceptions import DataSourceConnectionError
@@ -934,7 +935,8 @@ def derive_turnover_local(root: Path | str | None = None, *,
     else:
         gap_lf = quote_lf
 
-    gap = gap_lf.collect().sort(['ts_code', 'trade_date'])
+    # G-112：派生层生成时按日历剔除非交易日 bar（原始 quotes 不动）
+    gap = filter_nontrading_bars(gap_lf.collect().sort(['ts_code', 'trade_date']), resolved)
     if gap.height == 0:
         return {'gap_rows': 0, 'derived_rows': 0, 'written': False,
                 'target': str(target)}

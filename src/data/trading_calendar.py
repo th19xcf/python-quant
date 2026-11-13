@@ -286,6 +286,64 @@ def reset_calendar_cache() -> None:
     _CACHE.clear()
 
 
+#: G-112 行级裁定表（``keep`` = 真实成交、``drop`` = 剔除；日历含该日 ≠ 该 bar 有效）。
+NONTRADING_VERDICT_REL = (
+    Path('docs') / 'evidence' / 'g112_nontrading_bars' / 'nontrading_bars_verdict.csv')
+_VERDICT_LOADED = False
+_VERDICT_KEEP: frozenset[tuple[str, date]] | None = None
+
+
+def nontrading_bar_keep() -> frozenset[tuple[str, date]] | None:
+    """读 G-112 裁定表的 ``keep`` 集合；表不可读时返回 ``None``（调用方跳过过滤）。"""
+    global _VERDICT_LOADED, _VERDICT_KEEP
+    if _VERDICT_LOADED:
+        return _VERDICT_KEEP
+    path = Path(__file__).resolve().parents[2] / NONTRADING_VERDICT_REL
+    _VERDICT_LOADED = True
+    try:
+        frame = pl.read_csv(path, try_parse_dates=True)
+        keep = frame.filter(pl.col('verdict') == 'keep')
+        pairs = {(str(c), _as_date(d)) for c, d in
+                 zip(keep['ts_code'].to_list(), keep['date'].to_list(), strict=False)}
+        _VERDICT_KEEP = frozenset((c, d) for c, d in pairs if d is not None)
+    except (OSError, ValueError, TypeError, PolarsError) as exc:
+        logger.warning(f'[calendar] 行级裁定表不可读，派生层不做行级过滤: {path}: {exc}')
+        _VERDICT_KEEP = None
+    return _VERDICT_KEEP
+
+
+def filter_nontrading_bars(frame: pl.DataFrame, root: Path | str | None = None, *,
+                           code_col: str = 'ts_code',
+                           date_col: str = 'trade_date') -> pl.DataFrame:
+    """派生层落盘前按日历剔除非交易日 bar（G-112：原始层不动，派生层清洗）。
+
+    保留「``date`` 在日历内」或「``(code, date)`` 在裁定表 ``keep`` 集合内」的行；
+    日历或裁定表不可用时原样返回（fail-open，不误删真实成交）。
+    """
+    if frame.is_empty() or date_col not in frame.columns:
+        return frame
+    keep = nontrading_bar_keep()
+    if keep is None:
+        return frame
+    try:
+        calendar_dates = list(get_calendar(root).dates)
+    except (RuntimeError, OSError, ValueError, PolarsError) as exc:
+        logger.warning(f'[calendar] 日历不可用，跳过派生层非交易日过滤: {exc}')
+        return frame
+    marked = frame.with_row_index('__cal_row')
+    inside = marked.filter(pl.col(date_col).is_in(calendar_dates))
+    outside = marked.filter(~pl.col(date_col).is_in(calendar_dates))
+    if outside.is_empty() or code_col not in frame.columns:
+        return frame
+    keep_df = pl.DataFrame({code_col: [c for c, _ in keep],
+                            date_col: [d for _, d in keep]})
+    kept = outside.join(keep_df, on=[code_col, date_col], how='semi')
+    dropped = outside.height - kept.height
+    if dropped:
+        logger.info(f'[calendar] 派生层剔除日历外 bar {dropped} 行（原始层不动）')
+    return pl.concat([inside, kept]).sort('__cal_row').drop('__cal_row')
+
+
 def count_trading_days(start: date, end: date,
                        root: Path | str | None = None, **kwargs: Any) -> int:
     """``(start, end]`` 的交易日数。"""

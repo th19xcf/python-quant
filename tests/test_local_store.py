@@ -46,6 +46,11 @@ from src.data.local_store.store import (
     refresh_quote_factor_columns,
     verify_quote_factor_consistency,
 )
+from src.data.local_store.turnover import (
+    derive_turnover_local,
+    shares_path,
+    turnover_path,
+)
 from src.data.managers.data_fetcher import DataFetcher
 
 _RECS = [
@@ -524,6 +529,48 @@ def test_rebuild_factors_matches_dividend_path(tmp_path):
     assert entry['codes'] == snapshot['ts_code'].n_unique()
     assert entry['sha256'] == hashlib.sha256(
         (factor_dir / 'stock_adj_factor.parquet').read_bytes()).hexdigest()
+
+
+def test_derived_layer_strips_non_trading_bars(tmp_path):
+    """G-112：派生层生成时按日历剔除非交易日 bar，原始行情一个字节不动。"""
+    trading = [date(2024, 1, 2) + timedelta(days=i) for i in range(4)]
+    weekend = date(2024, 1, 6)  # 周六，不在 get_calendar 的日期集内
+
+    def _row(day, close):  # noqa: ANN001, ANN202
+        return {'date': day, 'open': close, 'high': close, 'low': close,
+                'close': close, 'volume': 1000.0, 'amount': 10000.0,
+                'qfq_factor': 1.0, 'hfq_factor': 1.0}
+
+    quote_store = LocalQuoteStore(tmp_path)
+    quote_store.write_daily(
+        'stock', '000012.SZ',
+        pl.DataFrame([_row(d, 10.0) for d in trading] + [_row(weekend, 20.0)]),
+        full=True, source_mtime_ns=1)
+    quote_store.flush_meta()
+    quote_file = tmp_path / 'quotes' / 'stock' / 'sz' / '000012.SZ.parquet'
+    # 换手率派生按文件扫描，需带上 ts_code 列
+    pl.read_parquet(quote_file).with_columns(
+        pl.lit('000012.SZ').alias('ts_code')).write_parquet(quote_file)
+
+    factor_dir = tmp_path / 'factors'
+    factor_dir.mkdir(parents=True)
+    factor_store = LocalFactorStore(tmp_path)
+    rebuild_factors_from_local(quote_store, factor_store)
+
+    snapshot = pl.read_parquet(factor_dir / 'stock_adj_factor.parquet')
+    assert set(snapshot['trade_date']) == set(trading)
+
+    shares = shares_path(tmp_path)
+    shares.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({'ts_code': ['000012.SZ'], 'effective_date': [date(2020, 1, 1)],
+                  'float_share': [10_000_000]}).write_parquet(shares)
+    result = derive_turnover_local(tmp_path, dry_run=False)
+    assert result['rows_added'] == len(trading)
+    turnover = pl.read_parquet(turnover_path(tmp_path))
+    assert set(turnover['trade_date']) == set(trading)
+
+    # 原始层不动：周末 bar 仍在 quotes 文件里
+    assert weekend in set(pl.read_parquet(quote_file)['date'])
 
 
 def test_factor_alignment_runs_when_flush_meta_fails(tmp_path, monkeypatch):
