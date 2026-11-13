@@ -304,7 +304,7 @@ def test_repo_sample_eleven_deviations() -> None:
         lw.detect_writers(ST_STATUS, sites, inventory=inventory)), '漏边：st_status'
     assert ('src/data/industry.py', 157) in _edges(
         lw.detect_writers(INDUSTRY_SNAP, sites, inventory=inventory)), '漏边：industry_snap'
-    assert ('src/data/st_history.py', 405) in _edges(
+    assert ('src/data/st_history.py', 406) in _edges(
         lw.detect_writers(ST_COVERAGE, sites, inventory=inventory)), '漏边：st_coverage'
 
     futures = _edges(lw.detect_writers(FUTURES_MULTI, sites, inventory=inventory))
