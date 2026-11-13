@@ -1,0 +1,14 @@
+{
+  "schema": "baseline_pv_val_equal_weight/v1",
+  "head": "f9a2a9b",
+  "script": {"path": "tools/baseline_pv_val_equal_weight.py", "sha256": "74810dd08fb021bbd09fe99803896bc0c764329e81dd9f54119c5e2d4ceca427"},
+  "command": ".venv\\Scripts\\python.exe tools\\baseline_pv_val_equal_weight.py --slippage 0 10 20 --impact-report --save-equity _staging\\baseline_pv_val_equal_weight_equity.csv",
+  "capital": 1000000000,
+  "data": {"price_basis": "hfq出信号/原始价成交/分红入池", "used": 5664, "excluded": 168, "excluded_reason": "复权因子恒为1.0（复权价=原始价），含早年退市票，未改数据仅剔除"},
+  "cost": {"commission": "万2.5双边, 最低5元", "stamp_tax": "卖出固定千1", "stamp_tax_note": "引擎历史表2023-08-28起0.05%，固定千1使此后高估约5bp/卖出", "transfer_fee": "引擎默认未清零", "impact_coef": 0.015},
+  "metrics_10bp": {"annual": 0.0728243, "max_drawdown": -0.6396426, "max_dd_date": "2018-10-18", "turnover_two_way": 0.7936290, "cost_share_of_gross": 0.025778, "cost_bps": 22.6432, "final_equity": 3270536458.89, "trades": 765112, "scaled_buy_orders": 503922, "avg_buy_scale": 0.577865, "insufficient_cash": 43341, "commission_est": 7736993.31, "commission_share_of_cost": 0.12878},
+  "tiers": {"0bp": {"annual": 0.0736822, "dd": -0.6390638, "cost_share": 0.014414, "cost_bps": 12.6434}, "10bp": {"annual": 0.0728243, "dd": -0.6396426, "cost_share": 0.025778, "cost_bps": 22.6432}, "20bp": {"annual": 0.0719757, "dd": -0.6402346, "cost_share": 0.037111, "cost_bps": 32.6430}},
+  "impact_10bp": {"cost": 11270398.24, "bps_of_turnover": 4.2477, "annual_drag": 0.000337, "annual_without_impact": 0.0732496},
+  "equity_series": "_staging/baseline_pv_val_equal_weight_equity.csv",
+  "known_limitations": ["两腿再平衡：卖腿月末前一交易日收盘信号、月末开盘成交；买腿月末收盘信号、次日开盘成交", "1%现金缓冲，权重合计0.99", "剔除168只复权因子恒1标的，存在轻微幸存者偏差"]
+}
