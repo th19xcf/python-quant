@@ -200,50 +200,75 @@ def _flat_panel(codes, days: int = 12, base: float = 10.0,
     return panel
 
 
-def _invested_ratio(result: dict, panel: Dict[str, pl.DataFrame]) -> float:
-    """期末持仓市值 ÷ 期末权益（总仓位）。"""
-    market_value = sum(
-        qty * float(panel[code]['close'][-1])
-        for code, qty in result['positions'].items()
-    )
-    return market_value / result['final_equity']
-
-
 def test_pooled_cash_express_equal_weight_full_investment():
-    """池模式可表达「全市场等权、T 收盘信号 T+1 开盘成交」且接近满仓。
+    """池模式可表达「全市场等权、月度再平衡、T 收盘信号 T+1 开盘成交」。
 
+    5 只标的每 20 个交易日收盘出一次目标权重信号，次一交易日开盘执行：
+    首月建仓，之后把领涨标的减到目标权重、其余补到目标权重。
     对照：同一份等权目标权重在逐票桶模式（默认）下只能投出 1/N 仓位——
-    每个桶按自身权益 20 万 × 0.198 建仓，这正是本次新增池模式要解决的
+    每个桶按自身权益 20 万 × 0.199 建仓，这正是本次新增池模式要解决的
     表达力缺口。
     """
     codes = ['600000.SH', '000001.SZ', '300001.SZ', '600036.SH', '000002.SZ']
-    panel = _flat_panel(codes)
-    script = {3: {'action': 'buy', 'target_weight': 0.99 / len(codes)}}
-    capital = 1_000_000.0
+    rising = codes[0]
+    days = 65
+    dates = pd.date_range('2023-01-02', periods=days, freq='B')
+    drifts = [0.003, -0.001, 0.0005, 0.0002, 0.001]
+    panel: Dict[str, pl.DataFrame] = {}
+    for code, drift in zip(codes, drifts, strict=False):
+        close = 10.0 * np.cumprod(np.full(days, 1.0 + drift))
+        panel[code] = pl.DataFrame({
+            'date': dates, 'open': close, 'high': close * 1.001,
+            'low': close * 0.999, 'close': close,
+            'volume': np.full(days, 1_000_000.0),
+        })
 
+    weight = 0.995 / len(codes)
+    build = {19: {'action': 'buy', 'target_weight': weight}}
+    # 首月全部建仓；再平衡月领涨标的减到目标权重，其余标的买入到目标权重
+    scripts = {
+        code: {**build, 39: {'action': 'buy', 'target_weight': weight},
+               59: {'action': 'buy', 'target_weight': weight}}
+        for code in codes[1:]
+    }
+    scripts[rising] = {**build,
+                       39: {'action': 'sell', 'target_weight': weight},
+                       59: {'action': 'sell', 'target_weight': weight}}
+
+    capital = 1_000_000.0
     pooled = PortfolioBacktestEngine(panel)
-    pooled.set_strategies({code: _ScriptedStrategy(script) for code in codes})
+    pooled.set_strategies({code: _ScriptedStrategy(scripts[code]) for code in codes})
     pooled_result = pooled.run_backtest(initial_capital=capital, pooled_cash=True)
 
-    # T 日（下标 3）收盘出信号，必须在下标 4 的开盘价成交
-    open_by_date = {
-        code: dict(zip(df['date'].to_list(), df['open'].to_list(), strict=False))
-        for code, df in panel.items()
-    }
-    trade_days = panel[codes[0]]['date'].to_list()
-    assert len(pooled_result['trades']) == len(codes)
-    for trade in pooled_result['trades']:
-        assert trade['date'] == trade_days[4]
-        assert trade['price'] == pytest.approx(open_by_date[trade['stock_code']][trade['date']])
+    def _ratio(result: dict) -> float:
+        market_value = sum(qty * float(panel[code]['close'][-1])
+                           for code, qty in result['positions'].items())
+        return market_value / result['final_equity']
 
-    pooled_ratio = _invested_ratio(pooled_result, panel)
+    trade_days = panel[codes[0]]['date'].to_list()
+    execution_days = {trade_days[20], trade_days[40], trade_days[60]}
+    assert {t['date'] for t in pooled_result['trades']} == execution_days, \
+        'T 日收盘信号必须只在 T+1 开盘成交，且月内不得有额外成交'
+
+    first_month = [t for t in pooled_result['trades'] if t['date'] == trade_days[20]]
+    assert {t['stock_code'] for t in first_month} == set(codes)
+    assert all(t['signal'] == 'buy' for t in first_month)
+
+    for day in (trade_days[40], trade_days[60]):
+        sells = [t for t in pooled_result['trades']
+                 if t['date'] == day and t['stock_code'] == rising]
+        assert len(sells) == 1 and sells[0]['signal'] == 'sell', '再平衡月应把领涨标的减到目标权重'
+        assert 0 < sells[0]['shares'] < sells[0]['position'] + sells[0]['shares']
+
+    pooled_ratio = _ratio(pooled_result)
     assert pooled_ratio > 0.95, f'池模式总仓位 {pooled_ratio:.4f} 未接近满仓'
 
     legacy = PortfolioBacktestEngine(panel)
-    legacy.set_strategies({code: _ScriptedStrategy(script) for code in codes})
+    legacy.set_strategies({code: _ScriptedStrategy(scripts[code]) for code in codes})
     legacy_result = legacy.run_backtest(initial_capital=capital)
-    legacy_ratio = _invested_ratio(legacy_result, panel)
+    legacy_ratio = _ratio(legacy_result)
     assert legacy_ratio < 0.30, f'逐票桶模式总仓位 {legacy_ratio:.4f} 不符合 1/N 预期'
+
 
 
 def test_pooled_rebalance_skips_limit_up_limit_down_and_suspension():
