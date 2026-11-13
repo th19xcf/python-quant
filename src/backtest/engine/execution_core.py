@@ -663,6 +663,11 @@ class RunContext:
     blocked_days: Dict[str, int]
     #: 每个标的当前受阻原因（'limit_down' / 'suspended'）
     blocked_by: Dict[str, str]
+    # ---- 池模式：同开盘跨标的资金预分配（只作用于 target_weight 买单）----
+    #: 因组合现金不足而被同一比例缩量、且实际成交的买单笔数
+    scaled_buy_orders: int
+    #: 上述买单缩放比例之和（avg_buy_scale = 本值 / scaled_buy_orders）
+    buy_scale_sum: float
 
 
 class EventBacktestRunner:
@@ -998,6 +1003,8 @@ class EventBacktestRunner:
             blocked_orders=[],
             blocked_days={},
             blocked_by={},
+            scaled_buy_orders=0,
+            buy_scale_sum=0.0,
         )
         if ctx.corporate_actions is not None:
             events_by_code = (
@@ -1616,6 +1623,14 @@ class EventBacktestRunner:
             # 现在只弹出当日到期的堆条目，空槽完全不参与。
             self._expire_due_pending(ctx, day_index, trade_day)
 
+            # 池模式：同日跨标的资金预分配。只在 combo 现金池下对 target_weight
+            # 买单生成缺口预算，买入腿推迟到全部卖出腿执行完之后按统一比例缩量，
+            # 避免前序买单按代码序先吃光现金、后序买单整笔作废（等权被破坏）。
+            # 非池模式返回 None，主循环与信号记账顺序保持改动前的单趟路径。
+            pooled_desired = self._prescan_pooled_target_buys(
+                ctx, codes_today, positions_today, bar_columns)
+            deferred_buys: List[Tuple[str, int, Bar]] = []
+
             for code, pos in zip(codes_today, positions_today, strict=True):
                 # 内联 _extract_bar_prices：热路径少一次函数调用与 6 次 dict.get
                 # （列引用已在 run() 中按标的一次性解析为 bar_columns[code] 元组）
@@ -1653,6 +1668,12 @@ class EventBacktestRunner:
                     ctx.st_unknown_bars.append((code, trade_day))
 
                 pending_intent = ctx.pending.get(code)
+                # 池模式 target_weight 买单：本笔推迟到全部卖出腿执行后统一缩量。
+                # 信号记账也随之推迟（_execute_pending 会清空挂单槽位，若先记
+                # 次日信号再执行今日买单，会把新挂单误清成 None）。
+                defer_buy = (pending_intent is not None
+                             and pooled_desired is not None
+                             and code in pooled_desired)
                 if pending_intent is not None:
                     bar = Bar(
                         open_price=open_price, high=high, low=low,
@@ -1671,17 +1692,21 @@ class EventBacktestRunner:
                         category=(category_col[pos]
                                   if category_col is not None else None),
                     )
-                    self._execute_pending(
-                        ctx, code=code, date=trade_day, bar=bar,
-                        day_index=day_index,
-                    )
+                    if defer_buy:
+                        deferred_buys.append((code, pos, bar))
+                    else:
+                        self._execute_pending(
+                            ctx, code=code, date=trade_day, bar=bar,
+                            day_index=day_index,
+                        )
 
                 # 策略基于当日数据生成信号，延迟到该标的下一个交易日执行；
                 # 信号已在主循环前按行序批量生成，此处仅按下标查表
-                self._record_signal(
-                    ctx, code=code, date=trade_day, pos=pos,
-                    signal_columns=signal_columns, day_index=day_index,
-                )
+                if not defer_buy:
+                    self._record_signal(
+                        ctx, code=code, date=trade_day, pos=pos,
+                        signal_columns=signal_columns, day_index=day_index,
+                    )
 
                 # close 缺失 / NaN / inf / ≤0 时，挂单已在 _execute_pending 里过期；
                 # 此处不更新 prev_close / book.mark，保留上一个有效值
@@ -1693,10 +1718,81 @@ class EventBacktestRunner:
                 # A16：有原始价时按原始价盯市，与原始价成交的现金记账保持同一口径
                 ctx.book.mark(code, raw_close if raw_close is not None else close_price)
 
+            # 全部卖出腿执行完之后再下 deferred 买单：按池余额 / 总缺口统一缩量
+            if deferred_buys:
+                self._execute_deferred_pooled_buys(
+                    ctx, deferred=deferred_buys, desired=pooled_desired or {},
+                    date=trade_day, day_index=day_index,
+                    signal_columns=signal_columns)
+
             # A10：total_equity 改为增量维护，O(1)
             ctx.equity_curve.append({OUT_DATE: trade_day, 'equity': ctx.book.total_equity()})
 
         return st_unknown_seen, ctx.st_unknown_bars
+
+    def _prescan_pooled_target_buys(
+        self, ctx: RunContext, codes: List[str], positions: List[int],
+        bar_columns: Dict[str, tuple],
+    ) -> Dict[str, float] | None:
+        """池模式同日预扫描：算出当日 target_weight 买单各自的缺口预算。
+
+        只收集 ``action='buy'`` 且带 ``target_weight`` 的挂单，按当日开盘
+        成交价计算 ``desired_i = max(0, 目标市值 - 已持仓市值)``；目标市值的
+        权益基数取当日撮合开始前的组合总权益（同日唯一，不随代码序漂移）。
+        返回 {code: desired}；无符合条件的买单或非池模式时返回 None，
+        主循环保持改动前的单趟路径（逐位不变）。
+        """
+        if not ctx.book.pooled_cash:
+            return None
+        equity_basis = ctx.book.total_equity()
+        desired: Dict[str, float] = {}
+        for code, pos in zip(codes, positions, strict=True):
+            intent = ctx.pending.get(code)
+            if (intent is None or intent.action != 'buy'
+                    or intent.target_weight is None):
+                continue
+            _close, open_col, _high, _low, _vol, raw_open_col = bar_columns[code][:6]
+            price = (finite_float(raw_open_col[pos])
+                     if raw_open_col is not None else None)
+            if price is None or price <= 0:
+                price = finite_float(open_col[pos]) if open_col is not None else None
+            # 成交价缺失的买单交给原路径按 price_missing 作废，不参与资金分配
+            if price is None or price <= 0:
+                continue
+            gap = (equity_basis * intent.target_weight
+                   - ctx.book.position(code) * price)
+            if gap > 0:
+                desired[code] = gap
+        return desired or None
+
+    def _execute_deferred_pooled_buys(
+        self, ctx: RunContext, *, deferred: List[Tuple[str, int, Bar]],
+        desired: Dict[str, float], date: Any, day_index: int,
+        signal_columns: Dict[str, list],
+    ) -> None:
+        """卖出腿执行完后，按统一缩放比例逐笔下池模式 target_weight 买单。
+
+        ``scale = min(1, 池现金 / 总缺口)``：同一开盘内全部标的共用同一比例，
+        只缩量、不整笔丢弃；每笔预算 = ``desired_i * scale``。缩量且实际成交
+        的订单计入 ``scaled_buy_orders`` / ``buy_scale_sum``（结果 avg_buy_scale）。
+        每笔执行后立即记账当日信号，保持「先执行今日挂单、再登记次日信号」。
+        """
+        total_desired = sum(desired.get(code, 0.0) for code, _pos, _bar in deferred)
+        scale = (min(1.0, ctx.book.total_cash / total_desired)
+                 if total_desired > 0 else 1.0)
+        for code, pos, bar in deferred:
+            trades_before = len(ctx.trades)
+            self._execute_pending(
+                ctx, code=code, date=date, bar=bar, day_index=day_index,
+                budget_override=desired.get(code, 0.0) * scale,
+            )
+            self._record_signal(
+                ctx, code=code, date=date, pos=pos,
+                signal_columns=signal_columns, day_index=day_index,
+            )
+            if scale < 1.0 and len(ctx.trades) > trades_before:
+                ctx.scaled_buy_orders += 1
+                ctx.buy_scale_sum += scale
 
     def _build_result(
         self, *, initial_capital: float, ctx: RunContext,
@@ -1761,6 +1857,13 @@ class EventBacktestRunner:
                 float(item.get('cash_dividend', 0.0)) for item in ctx.corporate_action_log
             ),
         }
+        if ctx.book.pooled_cash:
+            # 池模式同日资金预分配的缩量统计。这两个键只在池模式下出现：
+            # 非池默认路径的结果键集合必须与改动前逐位一致（序列化 SHA 相等）。
+            result['scaled_buy_orders'] = ctx.scaled_buy_orders
+            result['avg_buy_scale'] = (
+                ctx.buy_scale_sum / ctx.scaled_buy_orders
+                if ctx.scaled_buy_orders else 1.0)
         if result_meta:
             result.update(result_meta)
 
@@ -1816,7 +1919,8 @@ class EventBacktestRunner:
     # ------------------------------------------------------------------
 
     def _execute_pending(self, ctx: RunContext, *, code: str, date: Any,
-                         bar: Bar, day_index: int = -1) -> None:
+                         bar: Bar, day_index: int = -1,
+                         budget_override: float | None = None) -> None:
         """执行该标的的挂单。
 
         订单生命周期语义（显式状态机，杜绝静默丢单）：
@@ -1881,7 +1985,7 @@ class EventBacktestRunner:
         self._dispatch_order(
             ctx, intent=intent, code=code, date=date, bar=bar,
             exec_price=exec_price, order_confidence=order_confidence,
-            trade_day=trade_day,
+            trade_day=trade_day, budget_override=budget_override,
         )
 
     @staticmethod
@@ -1943,7 +2047,7 @@ class EventBacktestRunner:
     def _dispatch_order(
         self, ctx: RunContext, *, intent: SignalIntent, code: str, date: Any,
         bar: Bar, exec_price: float, order_confidence: str,
-        trade_day: date | None,
+        trade_day: date | None, budget_override: float | None = None,
     ) -> None:
         """按买/卖方向派发已通过可成交校验的订单。"""
         # 风控闸门所需上下文：原始价口径前收盘（交易所涨跌停定义在原始价上）
@@ -1958,6 +2062,7 @@ class EventBacktestRunner:
                 ctx, code=code, date=date, bar=bar, exec_price=exec_price,
                 intent=intent, order_confidence=order_confidence,
                 prev_close=risk_prev_close, sector=sector,
+                budget_override=budget_override,
             )
             return
 
@@ -2062,6 +2167,7 @@ class EventBacktestRunner:
         self, ctx: RunContext, *, code: str, date: Any, bar: Bar,
         exec_price: float, intent: SignalIntent, order_confidence: str,
         prev_close: float | None, sector: str,
+        budget_override: float | None = None,
     ) -> None:
         """买入执行：按目标仓位/资金比例估算整手、逐手回退成本、风控、记账。
 
@@ -2072,6 +2178,10 @@ class EventBacktestRunner:
         池模式下 ``cash.get(code)`` 直接读共享现金池（见 ``PooledCash``），
         ``target_weight`` 的权益基数同步换成组合总权益，才能表达
         「全市场单账户等权、月度再平衡」；逐票桶模式保持桶内权益不变。
+
+        ``budget_override``：池模式同日预分配给出的预算（已含统一缩放比例），
+        非 None 时直接作为买入预算，不再按本笔执行时点的组合权益重算，
+        保证同一开盘内各标的预算口径一致；其余路径保持原计算。
         """
         book = ctx.book
         available = book.cash.get(code, 0.0)
@@ -2096,7 +2206,10 @@ class EventBacktestRunner:
         cost_rate = ctx.cost_model.get_buy_cost_rate(
             trade_date=date, ts_code=code, **slip_inputs)
 
-        if intent.target_weight is not None:
+        if budget_override is not None:
+            # 池模式同日预分配：预算 = desired_i × 当日统一缩放比例
+            budget = budget_override
+        elif intent.target_weight is not None:
             held = book.position(code)
             bucket_equity = (
                 book.total_equity() if book.pooled_cash

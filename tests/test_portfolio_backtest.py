@@ -271,6 +271,38 @@ def test_pooled_cash_express_equal_weight_full_investment():
 
 
 
+def test_pooled_same_open_buys_scale_uniformly_under_cash_shortage():
+    """池模式同开盘等权建仓资金不足：所有标的同一比例缩量，不整笔丢弃。
+
+    4 只标的同日发 target_weight=0.3（合计 1.2 倍权益），现金只够 5/6。
+    旧实现按代码序前序买单先吃光现金、后序买单整笔作废；修复后应在买单入口
+    预扫描总缺口，卖出腿执行完后按 min(1, 池现金/总缺口) 统一缩量。
+    """
+    codes = ['600000.SH', '000001.SZ', '300001.SZ', '600036.SH']
+    panel = _flat_panel(codes, days=6)
+    weight = 0.3
+    engine = PortfolioBacktestEngine(panel)
+    engine.set_strategies(
+        {code: _ScriptedStrategy({0: {'action': 'buy', 'target_weight': weight}})
+         for code in codes})
+    capital = 1_000_000.0
+    result = engine.run_backtest(initial_capital=capital, pooled_cash=True)
+
+    trade_day = panel[codes[0]]['date'].to_list()[1]
+    buys = [t for t in result['trades'] if t['date'] == trade_day]
+    assert {t['stock_code'] for t in buys} == set(codes)
+    assert all(t['signal'] == 'buy' for t in buys)
+    # 同一开盘、同一价格：缩量比例唯一 → 各标的股数完全一致（无代码序偏置）
+    assert len({t['shares'] for t in buys}) == 1
+    assert [o for o in result['expired_orders'] if o['side'] == 'buy'] == []
+    # 比例 = 池现金 / 总缺口 = 1 / (4 × 0.3)
+    assert result['scaled_buy_orders'] == len(codes)
+    assert result['avg_buy_scale'] == pytest.approx(
+        1.0 / (weight * len(codes)), abs=1e-12)
+    invested = sum(t['shares'] * t['price'] for t in buys)
+    assert invested >= capital * 0.98, '缩量后仍应接近满仓，不得只投出前序买单'
+
+
 def test_pooled_rebalance_skips_limit_up_limit_down_and_suspension():
     """池模式调仓同样受 A 股约束：涨停不可买、跌停不可卖、停牌不调仓。"""
     codes = ['600000.SH', '000001.SZ', '300001.SZ', '600036.SH']
