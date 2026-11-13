@@ -25,7 +25,7 @@
     data/local_store/meta/st/raw/*.parquet          # 原始抓取缓存（增量续跑）
     data/local_store/meta/st/raw/reviewed_conflicts.parquet  # 人工裁定输入
     data/local_store/meta/st/raw/reviewed_pending.parquet    # 裁定：证据不足
-    data/local_store/meta/st/fetch_state.json       # 分年抓取完成状态
+    _staging/st_history_fetch/fetch_state.json     # 分年抓取完成状态（DG-7 续跑断点，不入正式层）
     logs/st_history/<run>/...                       # 原始响应留档
 
 人工裁定层（``reviewed_conflicts`` / ``reviewed_pending``）是**固定输入**而非抓取
@@ -310,7 +310,8 @@ def raw_dir(store_root: Path | str) -> Path:
 
 
 def state_path(store_root: Path | str) -> Path:
-    return st_dir(store_root) / 'fetch_state.json'
+    """抓取续跑断点。按 DG-7 落仓库根 ``_staging/st_history_fetch/``（稳定任务名，不带运行日）。"""
+    return staging_dir_for_store(store_root, 'st_history_fetch') / 'fetch_state.json'
 
 
 # ----------------------------------------------------------------------
@@ -469,7 +470,9 @@ def sync_sources(store_root: Path | str, *, years: Iterable[int] | None = None,
         notices = notices.unique(subset=['notice_id'], keep='last').sort(['publish_date', 'notice_id'])
     _write_parquet_atomic(notices, rdir / 'cninfo_notices.parquet')
     state['updated_at'] = datetime.now().isoformat(timespec='seconds')
-    state_path(root).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+    state_file = state_path(root)
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
     report['notice_rows'] = notices.height
     (archive / 'manifest.json').write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')

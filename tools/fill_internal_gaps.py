@@ -4,8 +4,8 @@
 只做一件事：TDX 有、本地 parquet 没有的历史交易日，按本地 schema 追加行。
 - 不改任何已有行；TDX 比本地短的标的（tdx_truncated）一律跳过；
 - 同一只票重复执行不产生重复行（按 (ts_code, date) 去重，重跑写入 0 行）；
-- 执行前把原分片备份到 ``data/local_store/_backup/internal_gap_fix/<日期>/``；
-- 每 50 只落一次进度，中断后从断点续跑。
+- 执行前把原分片备份到仓库根 ``_backup/internal_gap_fix/<日期>/``；
+- 每 50 只落一次进度，中断后从断点续跑（断点在 ``_staging/internal_gap_fix/``）。
 
 用法::
 
@@ -41,6 +41,7 @@ from src.data.local_store.session_guard import (  # noqa: E402
     store_calendar_dates,
 )
 from src.data.local_store.store import LocalFactorStore, LocalQuoteStore  # noqa: E402
+from src.data.staging import staging_dir_for_store  # noqa: E402
 from src.data.tdx_day_parser import parse_day_file  # noqa: E402
 
 STORE = ROOT / 'data' / 'local_store'
@@ -49,8 +50,10 @@ UNIVERSE = STORE / 'meta' / 'universe'
 EXCLUSIONS = UNIVERSE / 'universe_exclusions.parquet'
 JUMPS = UNIVERSE / 'universe_price_jumps.parquet'
 INVENTORY = UNIVERSE / 'internal_gap_inventory.csv'
-PROGRESS = UNIVERSE / 'internal_gap_fix_progress.json'
-FAILED = UNIVERSE / 'internal_gap_fix_failed.csv'
+# 续跑断点按 DG-7 落仓库根 ``_staging/`` 的稳定任务名目录（不带运行日）
+STAGING = staging_dir_for_store(STORE, 'internal_gap_fix')
+PROGRESS = STAGING / 'internal_gap_fix_progress.json'
+FAILED = STAGING / 'internal_gap_fix_failed.csv'
 BACKUP_ROOT = ROOT / '_backup' / 'internal_gap_fix'
 BATCH = 50
 # 因子比对容差（file 内嵌副本 vs 因子快照）

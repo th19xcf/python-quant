@@ -53,6 +53,12 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:  # 直接以脚本运行（python tools/...）时仓库根不在 sys.path
+    sys.path.insert(0, str(ROOT))
+
+from src.data.staging import staging_dir_for_store  # noqa: E402
+
 DEFAULT_TOL = 0.01
 DEFAULT_GBBQ_TOL = 0.02
 PROGRESS_NAME = 'rights_verify_progress.json'
@@ -415,7 +421,9 @@ def main(argv: list[str] | None = None) -> int:
             print('缺少 baostock，请安装可选依赖后重试', file=sys.stderr)
             return 1
 
-        prog_path = out_dir / PROGRESS_NAME
+        prog_dir = staging_dir_for_store(store_root, 'rights_verify')
+        prog_dir.mkdir(parents=True, exist_ok=True)
+        prog_path = prog_dir / PROGRESS_NAME
         done: dict = {}
         if prog_path.exists() and not args.reset:
             done = json.loads(prog_path.read_text(encoding='utf-8'))

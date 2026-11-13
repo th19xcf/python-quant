@@ -26,7 +26,8 @@
   ``meta/st/supplement/supplement_coverage.parquet``
   ``meta/st/supplement/manifest.json``
   ``meta/st/supplement/unresolved.csv``
-  ``meta/st/em_state.json``
+  ``_staging/st_em_names/{em_state.json,em_failures.csv}``（抓取断点，DG-7 不入正式层）
+  ``_staging/st_candidate_state/{candidate_state.json,candidate_failures.csv}``（同上）
 
 ``st_history.build_store`` 会把 supplement 并入规范表，三态语义不变：只把原来
 的 ``unknown`` 变成有证据的 ``non_st`` / ``st``。
@@ -145,7 +146,23 @@ def unresolved_path(store_root: Path | str) -> Path:
 
 
 def em_state_path(store_root: Path | str) -> Path:
-    return Path(store_root) / 'meta' / 'st' / 'em_state.json'
+    """东财曾用名抓取断点。按 DG-7 落 ``_staging/st_em_names/``（稳定任务名，不带运行日）。"""
+    return staging_dir_for_store(store_root, 'st_em_names') / 'em_state.json'
+
+
+def em_failures_path(store_root: Path | str) -> Path:
+    """东财曾用名抓取失败清单，与 ``em_state.json`` 同域（DG-7）。"""
+    return staging_dir_for_store(store_root, 'st_em_names') / 'em_failures.csv'
+
+
+def candidate_state_path(store_root: Path | str) -> Path:
+    """候选标的公告抓取断点。按 DG-7 落 ``_staging/st_candidate_state/``（不带运行日）。"""
+    return staging_dir_for_store(store_root, 'st_candidate_state') / 'candidate_state.json'
+
+
+def candidate_failures_path(store_root: Path | str) -> Path:
+    """候选标的公告抓取失败清单，与 ``candidate_state.json`` 同域（DG-7）。"""
+    return staging_dir_for_store(store_root, 'st_candidate_state') / 'candidate_failures.csv'
 
 
 def em_page_dir(store_root: Path | str) -> Path:
@@ -458,7 +475,7 @@ def sync_em_names(store_root: Path | str, *, force: bool = False,
     failure_frame = pl.DataFrame(
         failures, schema={'page': pl.Int64, 'error': pl.Utf8}) if failures \
         else pl.DataFrame(schema={'page': pl.Int64, 'error': pl.Utf8})
-    _write_csv(failure_frame, Path(root) / 'meta' / 'st' / 'em_failures.csv')
+    _write_csv(failure_frame, em_failures_path(root))
     return {'pages': pages, 'completed': len(done), 'written': written,
             'rows': combined.height, 'failures': failures,
             'complete': len(done) >= pages}
@@ -521,7 +538,7 @@ def sync_candidates(store_root: Path | str, *, force: bool = False,
     ndir = candidate_notice_dir(root)
     ndir.mkdir(parents=True, exist_ok=True)
     state: dict[str, Any] = {}
-    state_file = Path(root) / 'meta' / 'st' / 'candidate_state.json'
+    state_file = candidate_state_path(root)
     if state_file.is_file() and not force:
         state = json.loads(state_file.read_text(encoding='utf-8'))
 
@@ -586,7 +603,7 @@ def sync_candidates(store_root: Path | str, *, force: bool = False,
         else pl.DataFrame(schema={'ts_code': pl.Utf8, 'stage': pl.Utf8,
                                   'window_start': pl.Date, 'window_end': pl.Date,
                                   'error': pl.Utf8, 'retries': pl.Int64})
-    _write_csv(failure_frame, Path(root) / 'meta' / 'st' / 'candidate_failures.csv')
+    _write_csv(failure_frame, candidate_failures_path(root))
     return {'candidates': len(candidates), 'fetched': fetched,
             'cached': len(list(ndir.glob('*.parquet'))), 'failures': failures}
 
