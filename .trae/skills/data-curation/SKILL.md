@@ -5,8 +5,8 @@ description: 本地数据治理的可执行流程：缺口定位、来源校验�
 
 # data-curation：数据治理六阶段
 
-本技能只写**怎么做**。判定红线（禁止项、必须项、证据门槛）见 `.trae/rules/data_governance.md`，出现冲突以规则层为准。
-涉及提交、备份同步、并发调度、超时处理时，按 `.trae/rules/project_rules.md` 对应章节执行，本技能不重复。
+本技能只写**怎么做**。判定红线（禁止项、必须项、证据门槛）见 `.trae/rules/00-core.md` 与 `.trae/rules/data-governance-detail.md`，出现冲突以规则层为准。
+涉及提交、备份同步、并发调度、超时处理时，按 `.trae/rules/00-core.md`、`.trae/rules/git-backup.md`、`.trae/rules/task-scheduling.md` 对应章节执行，本技能不重复。
 
 ## 适用场景
 
@@ -103,9 +103,9 @@ description: 本地数据治理的可执行流程：缺口定位、来源校验�
 
 - 目录：`_staging/<任务>_<YYYYMMDD>/`（**仓库根**，不在 `data/` 之下；权威常量见 `src/data/staging.py` 的 `STAGING_ROOT` / `staging_dir()`），任务名用英文短标识（先例：`backfill_20190917`、`research_rebuild_20261109`）
 - 写盘：单文件一律 `src/data/atomic_write.py` 的 `write_parquet_atomic` / `write_text_atomic`
-- 断点：每完成一只 / 一块就落 `progress.csv` 或 `progress.json`；失败项落 `failed.csv`，含原因
+- 断点：按 DG-7 三条判定（预计 ≥10 分钟 + 跨运行续跑 + 含外部采集）时，每完成一只 / 一块就落 `progress.csv` 或 `progress.json`；失败项落 `failed.csv`，含原因；改前备份与 SHA256 台账任何任务都不得省
 - 分片：保留逐只或逐块 parquet，便于局部重跑；不要只留一个合并后的大文件
-- 采集：串行与节流口径见 `project_rules.md`「任务调度与超时处理规则」的「网络采集限流」条，本文不重复；数据侧只补一条：返回空先区分「源端没有」与「链路未接线」
+- 采集：串行与节流口径见 `task-scheduling.md`「网络采集限流」条，本文不重复；数据侧只补一条：返回空先区分「源端没有」与「链路未接线」
 - 来源标记：外部来源的字段必须逐字段标记（先例：`source` 列写成 `pe=<来源>|pb=<来源>|...`）
 
 **验收证据**
@@ -207,12 +207,12 @@ description: 本地数据治理的可执行流程：缺口定位、来源校验�
 3. **并发 `git commit` 撞共享 index**
    现象：自己只 add 了 A 文件，提交里却混进他人 B 文件。
    正确：提交前确认无人正在提交；无法确认时用 `GIT_INDEX_FILE` 指向临时索引，并在报告中写明。
-   依据：`project_rules.md`「任务调度与超时处理规则」的「同一仓库提交必须串行」。
+   依据：`task-scheduling.md`「同一仓库提交必须串行」。
 
 4. **按 mtime 或「今天」筛选备份**
    现象：历史文件永久缺席，越备越少，且每次都「看起来成功」。
    正确：按相对路径集合求差，补齐差额后逐文件 SHA256 比对。
-   依据：实测缺口数字与判定见 `data_governance.md` DG-28。
+   依据：实测缺口数字与判定见 `data-governance-detail.md` DG-28。
 
 5. **先提交后验证**
    现象：HEAD 里已有未验证数据，回滚要动 Git 历史，成本翻倍。
