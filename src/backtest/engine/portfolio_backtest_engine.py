@@ -110,6 +110,7 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
                      dividends: Mapping[str, pl.DataFrame] | None = None,
                      dividend_tax_rate: float = 0.0,
                      rights_policy: str = 'partial',
+                     pooled_cash: bool = False,
                      **params: Any) -> Dict[str, Any]:
         """
         运行组合回测
@@ -128,6 +129,10 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
                 None/空表表示不记账分红；只在原始价口径下启用
             dividend_tax_rate: 现金分红税率（0~1），默认 0
             rights_policy: 配股现金不足处置，'partial'（默认）或 'abandon'
+            pooled_cash: 是否使用组合级共享现金池，默认 False（逐票等额分桶，
+                与既有结果逐位一致）。True 时初始资金一次性入池、卖出回款 /
+                分红 / 配股写池，target_weight 相对组合总权益计算，用于
+                「全市场单账户等权、月度再平衡」这类需要跨标的划转的策略
 
         Returns:
             Dict[str, Any]: 回测结果
@@ -176,6 +181,7 @@ class PortfolioBacktestEngine(BaseBacktestEngine):
             corporate_actions=schedule,
             dividend_tax_rate=dividend_tax_rate,
             rights_policy=rights_policy,
+            pooled_cash=pooled_cash,
         )
 
         self.trades = result.get('trades', [])

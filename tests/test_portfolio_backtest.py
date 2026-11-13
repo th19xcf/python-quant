@@ -4,12 +4,16 @@
 测试组合回测功能
 """
 
+from typing import Any, Dict
+
 import numpy as np
 import pandas as pd
 import polars as pl
+import pytest
 from loguru import logger
 
 from src.backtest.engine.portfolio_backtest_engine import PortfolioBacktestEngine
+from src.backtest.strategies.base_strategy import BaseStrategy
 from src.backtest.strategies.ma_strategy import MAStrategy
 from src.backtest.strategies.macd_strategy import MACDStrategy
 
@@ -160,6 +164,238 @@ def test_portfolio_backtest_precomputes_indicators():
     assert set(equity_dates) == set(dates)
 
 
+class _ScriptedStrategy(BaseStrategy):
+    """按 bar 下标输出显式信号的策略，用于精确控制调仓日与目标权重。"""
+
+    def __init__(self, script: Dict[int, Any]):
+        super().__init__('scripted')
+        self.script = dict(script)
+
+    def generate_signal(self, data, index):  # noqa: ANN001
+        return self.script.get(index)
+
+    def generate_signals_vectorized(self, df: pl.DataFrame) -> pl.Series:
+        return pl.Series(
+            'signal', [self.script.get(i) for i in range(df.height)], dtype=pl.Object)
+
+
+def _flat_panel(codes, days: int = 12, base: float = 10.0,
+                overrides: Dict[str, Dict[str, list]] | None = None
+                ) -> Dict[str, pl.DataFrame]:
+    """确定性面板：默认价格逐 bar 微升（open==close），可按标的覆盖整列。"""
+    dates = pd.date_range('2023-01-02', periods=days, freq='B')
+    panel: Dict[str, pl.DataFrame] = {}
+    for code in codes:
+        close = np.array([base + 0.01 * i for i in range(days)])
+        columns = {
+            'date': dates,
+            'open': close.copy(),
+            'high': close * 1.001,
+            'low': close * 0.999,
+            'close': close,
+            'volume': np.full(days, 1_000_000.0),
+        }
+        columns.update((overrides or {}).get(code, {}))
+        panel[code] = pl.DataFrame(columns)
+    return panel
+
+
+def _invested_ratio(result: dict, panel: Dict[str, pl.DataFrame]) -> float:
+    """期末持仓市值 ÷ 期末权益（总仓位）。"""
+    market_value = sum(
+        qty * float(panel[code]['close'][-1])
+        for code, qty in result['positions'].items()
+    )
+    return market_value / result['final_equity']
+
+
+def test_pooled_cash_express_equal_weight_full_investment():
+    """池模式可表达「全市场等权、T 收盘信号 T+1 开盘成交」且接近满仓。
+
+    对照：同一份等权目标权重在逐票桶模式（默认）下只能投出 1/N 仓位——
+    每个桶按自身权益 20 万 × 0.198 建仓，这正是本次新增池模式要解决的
+    表达力缺口。
+    """
+    codes = ['600000.SH', '000001.SZ', '300001.SZ', '600036.SH', '000002.SZ']
+    panel = _flat_panel(codes)
+    script = {3: {'action': 'buy', 'target_weight': 0.99 / len(codes)}}
+    capital = 1_000_000.0
+
+    pooled = PortfolioBacktestEngine(panel)
+    pooled.set_strategies({code: _ScriptedStrategy(script) for code in codes})
+    pooled_result = pooled.run_backtest(initial_capital=capital, pooled_cash=True)
+
+    # T 日（下标 3）收盘出信号，必须在下标 4 的开盘价成交
+    open_by_date = {
+        code: dict(zip(df['date'].to_list(), df['open'].to_list(), strict=False))
+        for code, df in panel.items()
+    }
+    trade_days = panel[codes[0]]['date'].to_list()
+    assert len(pooled_result['trades']) == len(codes)
+    for trade in pooled_result['trades']:
+        assert trade['date'] == trade_days[4]
+        assert trade['price'] == pytest.approx(open_by_date[trade['stock_code']][trade['date']])
+
+    pooled_ratio = _invested_ratio(pooled_result, panel)
+    assert pooled_ratio > 0.95, f'池模式总仓位 {pooled_ratio:.4f} 未接近满仓'
+
+    legacy = PortfolioBacktestEngine(panel)
+    legacy.set_strategies({code: _ScriptedStrategy(script) for code in codes})
+    legacy_result = legacy.run_backtest(initial_capital=capital)
+    legacy_ratio = _invested_ratio(legacy_result, panel)
+    assert legacy_ratio < 0.30, f'逐票桶模式总仓位 {legacy_ratio:.4f} 不符合 1/N 预期'
+
+
+def test_pooled_rebalance_skips_limit_up_limit_down_and_suspension():
+    """池模式调仓同样受 A 股约束：涨停不可买、跌停不可卖、停牌不调仓。"""
+    codes = ['600000.SH', '000001.SZ', '300001.SZ', '600036.SH']
+    a, b, c, d = codes
+    days = 12
+    flat = [10.0] * days
+    overrides = {
+        # A：调仓日开盘 +10% → 涨停不可买
+        a: {'open': flat[:4] + [11.0] + [10.9] * (days - 5),
+            'close': flat[:4] + [10.9] * (days - 4),
+            'high': flat[:4] + [11.0] + [10.9] * (days - 5),
+            'low': flat[:4] + [10.9] * (days - 4)},
+        # B：调仓日成交量为 0 → 停牌不可交易
+        b: {'volume': [1_000_000.0] * 4 + [0.0] + [1_000_000.0] * (days - 5)},
+        # D：调仓日开盘 -10% → 跌停不可卖（卖单保留，次日重试）
+        d: {'open': flat[:4] + [9.0] + [9.0] * (days - 5),
+            'close': flat[:4] + [9.0] * (days - 4),
+            'high': flat[:4] + [9.0] * (days - 4),
+            'low': flat[:4] + [9.0] * (days - 4)},
+    }
+    panel = _flat_panel(codes, days=days, overrides=overrides)
+    first = {0: {'action': 'buy', 'target_weight': 0.24}}
+    second = {
+        3: {'action': 'buy', 'target_weight': 0.24},
+    }
+    script_by_code = {code: {**first, **second} for code in codes}
+    # C/D 在第二次调仓时减到目标权重 0（清仓）；A/B 仍按 0.24 加仓
+    script_by_code[c] = {**first, 3: {'action': 'sell', 'target_weight': 0.0}}
+    script_by_code[d] = {**first, 3: {'action': 'sell', 'target_weight': 0.0}}
+
+    engine = PortfolioBacktestEngine(panel)
+    engine.set_strategies(
+        {code: _ScriptedStrategy(script) for code, script in script_by_code.items()})
+    result = engine.run_backtest(initial_capital=1_000_000.0, pooled_cash=True)
+
+    trade_days = panel[a]['date'].to_list()
+    rebalance_day = trade_days[4]
+
+    first_day_buys = [t for t in result['trades'] if t['date'] == trade_days[1]]
+    assert {t['stock_code'] for t in first_day_buys} == set(codes)
+
+    rebalance_trades = [t for t in result['trades'] if t['date'] == rebalance_day]
+    # 调仓日只有 C 的清仓成交：A 涨停买不进、B 停牌不调仓、D 跌停卖不出
+    assert {t['stock_code'] for t in rebalance_trades} == {c}
+    assert rebalance_trades[0]['signal'] == 'sell'
+    assert rebalance_trades[0]['position'] == 0
+    assert {o['ts_code'] for o in result['blocked_orders']} == {d}
+    assert result['blocked_orders'][0]['blocked_by'] == 'limit_down'
+    assert result['blocked_orders'][0]['date'] == rebalance_day
+
+    reasons = {(o['ts_code'], o['side']): o['reason']
+               for o in result['expired_orders'] if o['date'] == rebalance_day}
+    assert reasons[(a, 'buy')] == 'not_tradable'
+    assert reasons[(b, 'buy')] == 'not_tradable'
+    assert b not in {t['stock_code'] for t in rebalance_trades}
+
+    # 跌停卖单次日重试成交（未被静默丢弃）
+    retry_sells = [t for t in result['trades']
+                   if t['stock_code'] == d and t['signal'] == 'sell']
+    assert len(retry_sells) == 1
+    assert retry_sells[0]['date'] == trade_days[5]
+
+
+def test_pooled_sell_to_target_weight_trims_overweight():
+    """sell + target_weight 把超配标的减到目标权重（不是清仓）。"""
+    codes = ['600000.SH', '000001.SZ']
+    rising, flat = codes
+    days = 12
+    panel = _flat_panel(codes, days=days, overrides={
+        rising: {
+            'open': [10.0] * 4 + [20.0] * (days - 4),
+            'close': [10.0] * 4 + [20.0] * (days - 4),
+            'high': [10.0] * 4 + [20.0] * (days - 4),
+            'low': [10.0] * 4 + [20.0] * (days - 4),
+        },
+    })
+    engine = PortfolioBacktestEngine(panel)
+    engine.set_strategies({
+        rising: _ScriptedStrategy({
+            0: {'action': 'buy', 'target_weight': 0.5},
+            5: {'action': 'sell', 'target_weight': 0.5},
+        }),
+        flat: _ScriptedStrategy({0: {'action': 'buy', 'target_weight': 0.5}}),
+    })
+    result = engine.run_backtest(initial_capital=1_000_000.0, pooled_cash=True)
+
+    trade_days = panel[rising]['date'].to_list()
+    sells = [t for t in result['trades']
+             if t['stock_code'] == rising and t['signal'] == 'sell']
+    assert len(sells) == 1
+    assert sells[0]['date'] == trade_days[6]
+    bought = next(t for t in result['trades']
+                  if t['stock_code'] == rising and t['signal'] == 'buy')
+    assert 0 < sells[0]['shares'] < bought['shares'], '目标权重减仓不应清仓'
+
+    residual_weight = (sells[0]['position'] * 20.0) / result['final_equity']
+    assert residual_weight == pytest.approx(0.5, abs=0.03)
+
+
+def test_pooled_cash_conserved_against_trade_cashflow():
+    """池模式资金守恒：现金 + 持仓市值 = 初始资金 + 盈亏 − 成本。"""
+    codes = ['600000.SH', '000001.SZ', '300001.SZ']
+    panel = _flat_panel(codes, days=16)
+    script = {
+        0: {'action': 'buy', 'target_weight': 0.32},
+        8: {'action': 'buy', 'target_weight': 0.32},
+        12: {'action': 'sell', 'target_weight': 0.1},
+    }
+    engine = PortfolioBacktestEngine(panel)
+    engine.set_strategies({code: _ScriptedStrategy(script) for code in codes})
+    capital = 1_000_000.0
+    result = engine.run_backtest(initial_capital=capital, pooled_cash=True)
+
+    trades = result['trades']
+    buy_notional = sum(t['price'] * t['shares'] for t in trades if t['signal'] == 'buy')
+    sell_notional = sum(t['price'] * t['shares'] for t in trades if t['signal'] == 'sell')
+    total_cost = sum(t['cost'] for t in trades)
+    market_value = sum(
+        qty * float(panel[code]['close'][-1])
+        for code, qty in result['positions'].items()
+    )
+    # 现金按成交流水独立复算（不使用账本内部状态）
+    cash = capital + sell_notional - buy_notional - total_cost
+    pnl = market_value + sell_notional - buy_notional
+
+    assert result['final_equity'] == pytest.approx(cash + market_value, abs=1e-6)
+    assert cash + market_value == pytest.approx(capital + pnl - total_cost, abs=1e-6)
+    assert total_cost > 0
+
+
+def test_default_mode_matches_explicit_pooled_false():
+    """pooled_cash=False 是默认路径：显式传入必须与不传逐位一致。"""
+    panel = _flat_panel(['600000.SH', '000001.SZ'])
+    script = {0: {'action': 'buy', 'target_weight': 0.5},
+              6: {'action': 'sell', 'fraction': 0.5}}
+
+    def _run(**kwargs):
+        engine = PortfolioBacktestEngine(panel)
+        engine.set_strategies({code: _ScriptedStrategy(script) for code in panel})
+        return engine.run_backtest(initial_capital=1_000_000.0, **kwargs)
+
+    default_result = _run()
+    explicit_result = _run(pooled_cash=False)
+    assert default_result['trades'] == explicit_result['trades']
+    assert default_result['equity_curve'] == explicit_result['equity_curve']
+    assert default_result['positions'] == explicit_result['positions']
+    assert default_result['final_equity'] == explicit_result['final_equity']
+
+
 if __name__ == "__main__":
     test_portfolio_backtest()
     test_portfolio_backtest_precomputes_indicators()
+

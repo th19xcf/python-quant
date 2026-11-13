@@ -24,7 +24,8 @@ A 股交易语义只允许在本模块修改，禁止在具体引擎里再写一
        没有 raw_* 列时退化为使用主列价
     7. 信号既可以是 'buy'/'sell'/'hold' 字符串（全仓进/全仓出），也可以是
        {'action': 'buy'|'sell', 'fraction': 0~1, 'target_weight': 0~1}
-       映射（分批建仓 / 金字塔加仓 / 部分减仓）
+       映射（分批建仓 / 金字塔加仓 / 部分减仓）；买卖两侧都接受
+       target_weight：买入加到目标权重，卖出把超配部分减到目标权重
     8. 除权除息（分红 / 送转 / 配股）只在原始价口径下记账：每个交易日撮合前
        按 ex_date 把现金分红计入现金、送转计入股数、配股扣减现金，权益始终为
        现金 + Σ(股数 × 原始收盘价)。信号/指标用的后复权价已含分红，禁止再
@@ -40,7 +41,7 @@ import bisect
 import heapq
 import math
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from types import MappingProxyType
@@ -225,10 +226,48 @@ class SlippageInputs(TypedDict):
     category: str | None
 
 
+class PooledCash(MutableMapping[str, float]):
+    """池模式现金视图：任意标的的读取/写入都落在同一个现金池上。
+
+    只在 ``AccountBook(pooled_cash=True)`` 下使用，目的是让既有的
+    ``book.cash[code]`` / ``book.cash.get(code)`` 读取契约保持不变（可负担
+    股数估算、成交记录、风控快照都不必区分模式），同时把「卖出回款、分红、
+    配股只能回到本票桶」改成组合级共享资金。
+
+    语义：``get`` / ``__getitem__`` 返回池余额，``__setitem__`` 把池余额
+    覆盖为该值（账本内的 ``cash[code] += x`` 等价于池余额加 x）。
+    """
+
+    __slots__ = ('_balance',)
+
+    def __init__(self, balance: float = 0.0) -> None:
+        self._balance = float(balance)
+
+    def __getitem__(self, key: str) -> float:
+        return self._balance
+
+    def __setitem__(self, key: str, value: float) -> None:
+        self._balance = float(value)
+
+    def __delitem__(self, key: str) -> None:
+        self._balance = 0.0
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(())
+
+    def __len__(self) -> int:
+        return 0
+
+    def get(self, key: str, default: float | None = None) -> float | None:
+        return self._balance
+
+
 class AccountBook:
     """
-    账户账本：按标的拆分现金桶（组合等权分配），持仓、最新价与权益估值统一在此维护。
+    账户账本：持仓、最新价与权益估值统一在此维护。
 
+    默认按标的拆分现金桶（组合等权分配）；``pooled_cash=True`` 时全部资金
+    合成单一现金池（见 ``PooledCash``），用于表达单账户跨标的调仓。
     单票回测只有一个现金桶，等价于原来的全局 current_capital。
 
     权益为增量维护：每次 buy/sell/mark 只更新变化量，total_equity() 为 O(1)
@@ -236,14 +275,28 @@ class AccountBook:
     """
 
     def __init__(self, initial_capital: float, codes: List[str],
-                 industry_map: Dict[str, str] | None = None):
+                 industry_map: Dict[str, str] | None = None,
+                 pooled_cash: bool = False):
+        """
+        Args:
+            pooled_cash: False（默认）按标的等额切分独立现金桶，行为与此前
+                完全一致；True 时初始资金一次性入池，``cash.get(code)`` 读池，
+                卖出回款 / 分红 / 配股写池，可表达「全市场单账户等权、
+                月度再平衡」这类需要跨标的划转资金的组合策略。
+        """
         self.codes = list(codes)
         self.industry_map = dict(industry_map or {})
-        per_code = initial_capital / len(self.codes) if self.codes else 0.0
-        self.cash: Dict[str, float] = dict.fromkeys(self.codes, per_code)
+        self.pooled_cash = bool(pooled_cash)
+        if self.pooled_cash:
+            self.cash: MutableMapping[str, float] = PooledCash(initial_capital)
+            equity = float(initial_capital)
+        else:
+            per_code = initial_capital / len(self.codes) if self.codes else 0.0
+            self.cash = dict.fromkeys(self.codes, per_code)
+            equity = float(sum(self.cash.values()))
         self.positions: Dict[str, int] = dict.fromkeys(self.codes, 0)
         self.last_prices: Dict[str, float] = {}
-        self._equity: float = float(sum(self.cash.values()))
+        self._equity: float = equity
         # 回撤增量跟踪：snapshot 时只消费新增 bar，避免每笔订单重扫整条曲线
         self._drawdown = DrawdownTracker()
 
@@ -253,7 +306,7 @@ class AccountBook:
         # 累计 0.047s / 0.175s ≈ 27%）。这些字典在账本内都是原地更新、从不
         # 整体重新绑定，因此用 MappingProxyType 暴露只读实时视图是等价且安全的：
         # gate() 同步执行、用完即弃，快照对象本身也可复用。
-        self._cash_total: float = float(sum(self.cash.values()))
+        self._cash_total: float = equity
         self._risk_positions: Dict[str, int] = {}
         self._snapshot = RiskPortfolio(
             positions=MappingProxyType(self._risk_positions),
@@ -657,7 +710,8 @@ class EventBacktestRunner:
             pending_ttl_days: int = DEFAULT_PENDING_TTL_DAYS,
             corporate_actions: CorporateActionSchedule | None = None,
             dividend_tax_rate: float = 0.0,
-            rights_policy: str = 'partial') -> Dict[str, Any]:
+            rights_policy: str = 'partial',
+            pooled_cash: bool = False) -> Dict[str, Any]:
         """
         执行回测并返回结果字典。
 
@@ -677,6 +731,10 @@ class EventBacktestRunner:
                 它产出的信号优先于同标的的单标的策略信号。
             pending_ttl_days: 挂单在标的连续无行情行时的最大存活天数（默认 1），
                 超过即作废（reason='pending_ttl'），避免复牌后按数月前信号成交。
+            pooled_cash: 是否使用组合级共享现金池（默认 False，逐票等额分桶）。
+                True 时初始资金一次性入池，卖出回款/分红/配股回到池中，
+                目标权重相对组合总权益计算，用于「全市场单账户等权、
+                月度再平衡」这类需要跨标的划转资金的组合策略。
 
         st_status 为 (标的名 → ST 三态) 映射：True=ST、False=明确非 ST、
         未出现在映射中=状态未知。未知标的涨跌停按板块默认幅度判定（与
@@ -763,7 +821,7 @@ class EventBacktestRunner:
 
         rules, book, gate = self._create_execution_context(
             codes, strategies, initial_capital, industry_map, lot_size,
-            portfolio_strategy,
+            portfolio_strategy, pooled_cash=pooled_cash,
         )
         # A1：兜底装配了 ADV 容量规则时，必须确认 ADV 真的可用；否则闸门形同
         # 虚设（每笔都因缺数拒单），与其让回测空跑，不如明确报错。
@@ -883,7 +941,8 @@ class EventBacktestRunner:
     def _create_execution_context(self, codes: List[str], strategies: Dict[str, Any],
                                   initial_capital: float, industry_map: Any,
                                   lot_size: int,
-                                  portfolio_strategy: Any | None) -> tuple[ExecutionRules, AccountBook, RiskGate]:
+                                  portfolio_strategy: Any | None,
+                                  pooled_cash: bool = False) -> tuple[ExecutionRules, AccountBook, RiskGate]:
         """创建撮合规则、账户账本与风控闸门。"""
         rules = ExecutionRules(lot_size=lot_size)
         # 现金桶只分配给会产生活跃信号的标的：universe 里加载了但没配策略的
@@ -895,7 +954,8 @@ class EventBacktestRunner:
             active_codes = list(codes)
         else:
             active_codes = [c for c in codes if c in strategies]
-        book = AccountBook(initial_capital, active_codes, industry_map)
+        book = AccountBook(initial_capital, active_codes, industry_map,
+                           pooled_cash=pooled_cash)
         gate = RiskGate(self.risk_engine, industry_map, self.on_missing_risk)
         return rules, book, gate
 
@@ -1342,7 +1402,7 @@ class EventBacktestRunner:
 
         字符串 'buy'/'sell' 为状态型信号（explicit=False）；映射
         {'action': 'buy'|'sell', 'fraction': 0~1, 'target_weight': 0~1}
-        为显式意图（explicit=True），允许加仓与部分减仓（A12）。
+        为显式意图（explicit=True），允许加仓、部分减仓与减到目标权重（A12）。
         """
         if isinstance(signal, SignalIntent):
             return signal
@@ -1370,8 +1430,6 @@ class EventBacktestRunner:
                 raise ValueError(
                     f"信号 target_weight 必须在 [0, 1]，实际 {signal.get('target_weight')!r}"
                 )
-            if action == 'sell':
-                raise ValueError('target_weight 只适用于 buy 信号')
 
         return SignalIntent(action, fraction, target, explicit=True)
 
@@ -2008,8 +2066,12 @@ class EventBacktestRunner:
         """买入执行：按目标仓位/资金比例估算整手、逐手回退成本、风控、记账。
 
         A12：``fraction`` 控制本次使用该桶可用现金的比例（默认 1.0 全仓），
-        ``target_weight`` 控制买入后该标的市值占桶内权益的目标比例，
+        ``target_weight`` 控制买入后该标的市值占权益的目标比例，
         因而可在持仓上继续加仓（金字塔建仓）。
+
+        池模式下 ``cash.get(code)`` 直接读共享现金池（见 ``PooledCash``），
+        ``target_weight`` 的权益基数同步换成组合总权益，才能表达
+        「全市场单账户等权、月度再平衡」；逐票桶模式保持桶内权益不变。
         """
         book = ctx.book
         available = book.cash.get(code, 0.0)
@@ -2036,7 +2098,9 @@ class EventBacktestRunner:
 
         if intent.target_weight is not None:
             held = book.position(code)
-            bucket_equity = available + held * exec_price
+            bucket_equity = (
+                book.total_equity() if book.pooled_cash
+                else available + held * exec_price)
             target_value = bucket_equity * intent.target_weight
             budget = target_value - held * exec_price
         else:
@@ -2045,6 +2109,9 @@ class EventBacktestRunner:
 
         affordable = (
             budget / (exec_price * (1 + cost_rate)) if exec_price > 0 else 0.0)
+        # 目标权重已满足（budget ≤ 0）时应成为零单而不是负股数：池模式月度
+        # 再平衡会持续对已达权重的标的重发 target_weight 买单。
+        affordable = max(affordable, 0.0)
         shares = int(affordable // ctx.lot_size) * ctx.lot_size
         # 费率估算不含 min_commission 下限，小单实际成本可能超估算：
         # 按实际成本逐手回退，而不是整笔静默作废
@@ -2109,14 +2176,34 @@ class EventBacktestRunner:
         exec_price: float, intent: SignalIntent, order_confidence: str,
         prev_close: float | None, sector: str,
     ) -> None:
-        """卖出执行：按 fraction 计算卖出股数（默认清仓），风控通过后记账。
+        """卖出执行：按 fraction / target_weight 计算卖出股数，风控通过后记账。
 
         A12：``fraction`` 控制本次卖出占当前持仓的比例；部分卖出按整手向下取整，
         fraction=1.0 全数卖出（含零股），与原有全仓卖出语义一致。
+
+        ``target_weight`` 为「减仓到目标权重」：按当前市值超出
+        ``权益基数 × target_weight`` 的部分卖出，target_weight=0 等价清仓。
+        权益基数与 ``_execute_buy`` 同源——池模式取组合总权益，逐票桶模式取
+        该票桶权益（现金 + 持仓市值）。
         """
         book = ctx.book
         position = book.position(code)
-        if intent.fraction >= 1.0:
+        if intent.target_weight is not None:
+            equity_basis = (
+                book.total_equity() if book.pooled_cash
+                else book.cash.get(code, 0.0) + position * exec_price)
+            target_value = equity_basis * intent.target_weight
+            if target_value <= 0:
+                # 目标归零：含零股全数卖出，与 fraction=1.0 同口径
+                shares = position
+            else:
+                excess_value = position * exec_price - target_value
+                shares = (
+                    int(math.floor(excess_value / exec_price / ctx.lot_size
+                                   + CASH_EPS)) * ctx.lot_size
+                    if excess_value > 0 else 0)
+                shares = min(shares, position)
+        elif intent.fraction >= 1.0:
             shares = position
         else:
             shares = int((position * intent.fraction) // ctx.lot_size) * ctx.lot_size
