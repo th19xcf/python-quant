@@ -26,10 +26,10 @@ alwaysApply: true
 - **提交流程与报告格式**：提交前必读 `git-backup.md`（免确认、5 块报告、备份、备份仓）。
 - **Commit message 必须中文**：标题与正文统一中文，仅类型前缀（feat/fix/refactor/perf/chore 等）与 scope 为英文，格式 `type(scope): 中文描述`；标题与正文之间、正文各条目之间不得有空行，条目紧接标题下一行连续书写，禁止 `git commit -m "标题\n\n正文"`。
 - **Commit message 文件必须无 BOM**：禁用 PowerShell 5.1 `Set-Content -Encoding utf8`（带 BOM，`git commit -F` / `stripspace` 不清理）；用 `.venv\Scripts\python.exe` 以 `open(p,'w',encoding='utf-8',newline='\n')` 写临时文件后 `git commit -F`，无 Python 时用 `UTF8Encoding($false)`；提交前自检首 3 字节不为 `EF BB BF`。
-- **提交范围必须自证**：提交后立即用 `git show --stat HEAD` 或 `git diff-tree --no-commit-id --name-only -r HEAD` 复核 HEAD 清单，与预期逐一比对；多出文件立即回退重做，不得事后补「混入了」了事；同文件并行编辑按 `task-scheduling.md` 三条。
+- **提交范围必须自证**：多出文件立即回退重做，不得事后补「混入了」了事；同文件并行编辑按 `task-scheduling.md` 三条。
 - **隔离索引回填**（`GIT_INDEX_FILE` 提交的同一轮必须执行 `git read-tree HEAD`，缺此步即判该次提交未完成）：① 在**新的一条** shell 命令里执行（`GIT_INDEX_FILE` 是同进程环境变量，同命令里回填的是临时索引）；② `git status --short` 不再出现与本次提交无关的 `MM`。`ls-files` + `rev-parse` 双查已取消。见判例 §2.1。
 - **隔离索引五步（种子化 + 基准必须是提交那一刻的父提交）**：① `before = git rev-parse HEAD`；② `git read-tree $before`（新索引首次 `update-index` 前必须种子化，否则未列入路径记为删除；两步同一轮完成）；③ `update-index` 加入本路文件；④ `git diff --cached --stat $before` 核对变更文件数须与预期清单一致，明显多于预期即停，不得先提交再看；⑤ 复取 `after`，`before != after` 即**整体重做、不提交**。禁止脚本开头取一次 HEAD 留着用，也禁止只重新 `read-tree <新 HEAD>` 接着提交——只有整体重做（丢弃临时索引、重走五步）才算关窗；打印成功前须自证 HEAD 与 `before` 不等（`git commit` 没报错不等于新提交存在）。提交后清单自证见上条，多出文件前向修复，不得 amend 或 reset。见判例 §2.2、§2.3。
-- **提交前先清点共享暂存**：提交前必须看一眼 `git diff --cached --name-only`，与本次预期清单逐一比对；出现清单外的条目，先对这些路径执行 `git reset -- <path>` 取消暂存（不动工作区），再提交。多会话并行期间禁止 `git add -A` / `git add .` 等不带路径限定的隐式暂存，也不得在提交前保留他人暂存——否则一个普通 `git commit` 就会把别人的删除一并带进去，规则文件凭空消失。提交后仍按「提交范围必须自证」复核 `git show --stat HEAD`，多出即前向修复。
+- **提交前清点共享暂存、提交后复核清单**：细则见 `git-backup.md`。
 
 ## 四、上下文与 token 成本规则
 
