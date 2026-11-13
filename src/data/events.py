@@ -42,7 +42,8 @@ RISK_EVENT_COOLDOWNS: dict[str, int] = {
 #:   cninfo  —— 巨潮 hisAnnouncement，默认口径；未传 source 时按它兜底
 #:   em_yjyg —— 东方财富业绩预告独立通道（业绩预增/预减），非公告检索
 #:   em_ann  —— 东方财富公告口径补数（2021-10 股权激励；title 检索宽于巨潮 searchkey）
-EVENT_SOURCES: tuple[str, ...] = ('cninfo', 'em_yjyg', 'em_ann')
+#:   tushare —— tushare ``repurchase`` 股票回购（2011-01~2026-11 按月补数，event_type=回购）
+EVENT_SOURCES: tuple[str, ...] = ('cninfo', 'em_yjyg', 'em_ann', 'tushare')
 
 KEYWORD_TO_TYPE = {
     '减持': '减持',
