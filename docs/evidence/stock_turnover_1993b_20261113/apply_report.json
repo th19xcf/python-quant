@@ -1,0 +1,101 @@
+{
+  "mode": "apply(补完)",
+  "sha256_before": "7d7e9eba8f0c8c6dcce04cc60555e1cad23f8b3e2facdd11daa3e56465dcdcb4",
+  "bytes_before": 147991117,
+  "sha256_after": "3188c23f7963f04a38a552be3720d6e664fdcd9b7cc94263a3f3a6599e442c3c",
+  "bytes_after": 147991052,
+  "targets": {
+    "window_rows": 277,
+    "window_codes": 71,
+    "window_turn_nulls": 0,
+    "window_source_dist": {
+      "derived:quotes_volume+float_share": 269,
+      "baostock": 8
+    },
+    "derived_rows": 269,
+    "derived_same_day_ok": 205,
+    "derived_mismatch": 64,
+    "derived_mismatch_codes": 16,
+    "calc_null_rows": 0,
+    "ratio_exact_0p2": 32,
+    "hit_calc_next": 32,
+    "dates": {
+      "1993-05-03": 16,
+      "1993-05-04": 16,
+      "1993-05-05": 16,
+      "1993-05-06": 16
+    },
+    "codes16": [
+      "000006.SZ",
+      "000007.SZ",
+      "000008.SZ",
+      "000011.SZ",
+      "000012.SZ",
+      "000014.SZ",
+      "000016.SZ",
+      "000018.SZ",
+      "000019.SZ",
+      "000020.SZ",
+      "000501.SZ",
+      "000502.SZ",
+      "000503.SZ",
+      "000504.SZ",
+      "000506.SZ",
+      "000507.SZ"
+    ],
+    "unit_rel_max": 1.2237655265145975e-05,
+    "unit_rel_p50": 0.0
+  },
+  "apply": {
+    "rows_before": 18122973,
+    "rows_after": 18122973,
+    "nulls_before": {
+      "ts_code": 0,
+      "trade_date": 0,
+      "turn": 0,
+      "source": 0,
+      "fetched_at": 0
+    },
+    "nulls_after": {
+      "ts_code": 0,
+      "trade_date": 0,
+      "turn": 0,
+      "source": 0,
+      "fetched_at": 0
+    },
+    "changed_rows": 64,
+    "changed_keys_equal": true,
+    "existing_nonnull_changed_outside_target": 0,
+    "new_vs_calc_rel_max": 0.0,
+    "new_turn_range": [
+      0.3343753606008791,
+      3.8620504562533546
+    ],
+    "old_turn_range": [
+      0.06687507212017582,
+      3.8620504562533546
+    ],
+    "order_preserved": true
+  },
+  "manifest": {
+    "manifest_sha256": "6d5b0786d84e581a0facb7ac11c8cc9e9356a90e5b1e8abd8f206390d837688a",
+    "manifest_bytes": 17598,
+    "turnover_bytes_before": 147991117,
+    "turnover_bytes_after": 147991052,
+    "date_range": [
+      "1990-12-19",
+      "2026-11-11"
+    ],
+    "rows": 18122973,
+    "codes": 5832
+  },
+  "backup": {
+    "parquet": "E:\\code\\python\\quant\\_backup\\factors_turnover_g125_20261113\\stock_turnover.parquet",
+    "manifest": "E:\\code\\python\\quant\\_backup\\factors_turnover_g125_20261113\\manifest.json",
+    "sha256": {
+      "stock_turnover.parquet": "7d7e9eba8f0c8c6dcce04cc60555e1cad23f8b3e2facdd11daa3e56465dcdcb4",
+      "manifest.json": "6ae7b339887b2a58c863e631acad7b9cce6ca707e92973a145b03d318c4cf254"
+    }
+  },
+  "note": "首次 --apply 在建表后写 manifest 时失败（update_manifest 读了已移走的正式路径），本脚本按同一断言集补完 manifest 并复验"
+}

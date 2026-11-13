@@ -1,0 +1,172 @@
+{
+  "read_turnover::000018.SZ": [
+    {
+      "date": "1993-05-03",
+      "turn": 0.37083333333333335,
+      "source": "derived:quotes_volume+float_share"
+    },
+    {
+      "date": "1993-05-04",
+      "turn": 1.0666666666666667,
+      "source": "derived:quotes_volume+float_share"
+    },
+    {
+      "date": "1993-05-05",
+      "turn": 0.9083333333333333,
+      "source": "derived:quotes_volume+float_share"
+    },
+    {
+      "date": "1993-05-06",
+      "turn": 1.5166666666666666,
+      "source": "derived:quotes_volume+float_share"
+    },
+    {
+      "date": "1993-05-07",
+      "turn": 1.6875,
+      "source": "derived:quotes_volume+float_share"
+    }
+  ],
+  "attach_turn::000018.SZ": [
+    {
+      "date": "1993-05-03",
+      "turn": 0.37083333333333335,
+      "turn_source": "float_share",
+      "volume": 445.0
+    },
+    {
+      "date": "1993-05-04",
+      "turn": 1.0666666666666667,
+      "turn_source": "float_share",
+      "volume": 1280.0
+    },
+    {
+      "date": "1993-05-05",
+      "turn": 0.9083333333333333,
+      "turn_source": "float_share",
+      "volume": 1090.0
+    },
+    {
+      "date": "1993-05-06",
+      "turn": 1.5166666666666666,
+      "turn_source": "float_share",
+      "volume": 1820.0
+    },
+    {
+      "date": "1993-05-07",
+      "turn": 1.6875,
+      "turn_source": "float_share",
+      "volume": 2025.0
+    }
+  ],
+  "chip_api::000018.SZ": [
+    {
+      "date": "1993-05-03",
+      "turn": 0.37083333333333335
+    },
+    {
+      "date": "1993-05-04",
+      "turn": 1.0666666666666667
+    },
+    {
+      "date": "1993-05-05",
+      "turn": 0.9083333333333333
+    },
+    {
+      "date": "1993-05-06",
+      "turn": 1.5166666666666666
+    },
+    {
+      "date": "1993-05-07",
+      "turn": 1.6875
+    }
+  ],
+  "read_turnover::000502.SZ": [
+    {
+      "date": "1993-05-03",
+      "turn": 0.8937213426308613,
+      "source": "derived:quotes_volume+float_share"
+    },
+    {
+      "date": "1993-05-04",
+      "turn": 1.465985601548646,
+      "source": "derived:quotes_volume+float_share"
+    },
+    {
+      "date": "1993-05-05",
+      "turn": 1.7273902630296094,
+      "source": "derived:quotes_volume+float_share"
+    },
+    {
+      "date": "1993-05-06",
+      "turn": 3.504235462015077,
+      "source": "derived:quotes_volume+float_share"
+    },
+    {
+      "date": "1993-05-07",
+      "turn": 3.0520760475615183,
+      "source": "derived:quotes_volume+float_share"
+    }
+  ],
+  "attach_turn::000502.SZ": [
+    {
+      "date": "1993-05-03",
+      "turn": 0.8937213426308613,
+      "turn_source": "float_share",
+      "volume": 1265.0
+    },
+    {
+      "date": "1993-05-04",
+      "turn": 1.465985601548646,
+      "turn_source": "float_share",
+      "volume": 2075.0
+    },
+    {
+      "date": "1993-05-05",
+      "turn": 1.7273902630296094,
+      "turn_source": "float_share",
+      "volume": 2445.0
+    },
+    {
+      "date": "1993-05-06",
+      "turn": 3.504235462015077,
+      "turn_source": "float_share",
+      "volume": 4960.0
+    },
+    {
+      "date": "1993-05-07",
+      "turn": 3.0520760475615183,
+      "turn_source": "float_share",
+      "volume": 4320.0
+    }
+  ],
+  "chip_api::000502.SZ": [
+    {
+      "date": "1993-05-03",
+      "turn": 0.8937213426308613
+    },
+    {
+      "date": "1993-05-04",
+      "turn": 1.465985601548646
+    },
+    {
+      "date": "1993-05-05",
+      "turn": 1.7273902630296094
+    },
+    {
+      "date": "1993-05-06",
+      "turn": 3.504235462015077
+    },
+    {
+      "date": "1993-05-07",
+      "turn": 3.0520760475615183
+    }
+  ],
+  "window": {
+    "rows": 277,
+    "turn_nulls": 0,
+    "source_dist": {
+      "baostock": 8,
+      "derived:quotes_volume+float_share": 269
+    }
+  }
+}

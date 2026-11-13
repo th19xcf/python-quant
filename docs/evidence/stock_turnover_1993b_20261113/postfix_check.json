@@ -1,0 +1,65 @@
+{
+  "post_window": {
+    "rows": 277,
+    "derived": 269,
+    "derived_mismatch_after": 0,
+    "derived_calc_null": 0,
+    "max_rel_after": 0.0,
+    "codes_mismatch": 0
+  },
+  "g124_rows": 57,
+  "intersection_g124_g125": 0,
+  "g125_has_000043": 0,
+  "g125_year_range": [
+    "1993-05-03",
+    "1993-05-06"
+  ],
+  "g124_year_range": [
+    "2019-09-18",
+    "2019-12-13"
+  ],
+  "corrections": [
+    {
+      "idx": 0,
+      "kind": "adj_factor_backfill_and_date_relabel",
+      "applied_at": "2026-11-12T14:25:31.836119+00:00"
+    },
+    {
+      "idx": 1,
+      "kind": "turnover_unit_100x_fix",
+      "applied_at": "2026-11-12T16:57:32.463938+00:00"
+    },
+    {
+      "idx": 2,
+      "kind": "delisted_turnover_backfill",
+      "applied_at": "2026-11-12T17:11:28.058970+00:00"
+    },
+    {
+      "idx": 3,
+      "kind": "turnover_b_class_100x_fix",
+      "applied_at": "2026-11-12T17:18:04.012522+00:00"
+    },
+    {
+      "idx": 4,
+      "kind": "turnover_1993_05_shift_rebuild",
+      "applied_at": "2026-11-13T03:36:57.859661+00:00"
+    }
+  ],
+  "turnover_entry": {
+    "rows": 18122973,
+    "bytes": 147991052,
+    "sha256": "3188c23f7963f04a38a552be3720d6e664fdcd9b7cc94263a3f3a6599e442c3c",
+    "codes": 5832,
+    "date_range": [
+      "1990-12-19",
+      "2026-11-11"
+    ],
+    "mtime": "2026-11-13T11:36:11"
+  },
+  "changelog_tail": [
+    "run_20261113_011052,2026-11-13T01:10:52,apply_baostock_backfill,update,data/local_store/factors/stock_turnover.parquet,147990732,944312230e0d8d09272b6b4339dd6993fe4cc292e78b30878050d3ec592b7536,aa35895956cc466b306864945b9f2af4966df0f766cbd1f8685da6ed1acbc628,system,自动记账（parquet 原子写盘）",
+    "run_20261113_011735,2026-11-13T01:17:35,b_class_fix,update,data/local_store/factors/stock_turnover.parquet,147990714,337087bff75013e61ecb74381ec3df121c16d51d04f0f9904eac1e761c8aed62,944312230e0d8d09272b6b4339dd6993fe4cc292e78b30878050d3ec592b7536,system,自动记账（parquet 原子写盘）",
+    "run_20261113_012723,2026-11-13T01:27:23,-c,update,data/local_store/factors/stock_turnover.parquet,147991117,7d7e9eba8f0c8c6dcce04cc60555e1cad23f8b3e2facdd11daa3e56465dcdcb4,337087bff75013e61ecb74381ec3df121c16d51d04f0f9904eac1e761c8aed62,system,自动记账（parquet 原子写盘）",
+    "run_20261113_113612,2026-11-13T11:36:12,build_fix_1993b,create,data/local_store/factors/stock_turnover.parquet,147991052,3188c23f7963f04a38a552be3720d6e664fdcd9b7cc94263a3f3a6599e442c3c,,system,自动记账（parquet 原子写盘）"
+  ]
+}

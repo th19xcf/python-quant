@@ -1,0 +1,62 @@
+{
+  "window": [
+    "1993-05-03",
+    "1993-05-06"
+  ],
+  "rows": 277,
+  "codes": 71,
+  "turn_nulls": 0,
+  "source_dist": {
+    "derived:quotes_volume+float_share": 269,
+    "baostock": 8
+  },
+  "codes_no_shares": [
+    "600656.SH"
+  ],
+  "codes_no_quotes": [],
+  "joined_rows": 273,
+  "turn_null_rows": 0,
+  "hit_same": 205,
+  "hit_next": 32,
+  "bad_same": 68,
+  "bad_codes": 17,
+  "bad_hit_next": 32,
+  "bad_src": {
+    "baostock": 4,
+    "derived:quotes_volume+float_share": 64
+  },
+  "bad_ratio_same_min": 0.19999999999999998,
+  "bad_ratio_same_max": 2.901369863013699,
+  "cls_win_rows": 64,
+  "cls_win_codes": 16,
+  "keys_equal_cls_vs_bad": false,
+  "keys_equal_cls_vs_derived_bad": true,
+  "only_cls": [],
+  "only_bad": [
+    "('000001.SZ', datetime.date(1993, 5, 3))",
+    "('000001.SZ', datetime.date(1993, 5, 4))",
+    "('000001.SZ', datetime.date(1993, 5, 5))",
+    "('000001.SZ', datetime.date(1993, 5, 6))"
+  ],
+  "codes16": [
+    "000006.SZ",
+    "000007.SZ",
+    "000008.SZ",
+    "000011.SZ",
+    "000012.SZ",
+    "000014.SZ",
+    "000016.SZ",
+    "000018.SZ",
+    "000019.SZ",
+    "000020.SZ",
+    "000501.SZ",
+    "000502.SZ",
+    "000503.SZ",
+    "000504.SZ",
+    "000506.SZ",
+    "000507.SZ"
+  ],
+  "tdx_has": [],
+  "tdx_dir_files": 431,
+  "tdx_dir_exists": true
+}
