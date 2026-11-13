@@ -1,6 +1,6 @@
 {
-  "schema": "baseline_pv_val_equal_weight/v1+v2",
-  "usage": "v1=策略对比对照；v2=改进构造对照",
+  "schema": "baseline_pv_val_equal_weight/v1+v2+v3",
+  "usage": "v1=策略对比对照；v2=改进构造对照；v3=剔高波+次新（现基线）",
   "head": "f9a2a9b",
   "script": {"path": "tools/baseline_pv_val_equal_weight.py", "sha256": "74810dd08fb021bbd09fe99803896bc0c764329e81dd9f54119c5e2d4ceca427"},
   "command": ".venv\\Scripts\\python.exe tools\\baseline_pv_val_equal_weight.py --slippage 10 --impact-report",
@@ -14,12 +14,12 @@
     "boundary": "市值中性化后换手4.92x、净端-1.68pp，只在简单构造下成立，不得外推为通用低波策略",
     "head": "6074270",
     "script": {"path": "tools/factor_lowvol_checks.py", "sha256": "4a6d403c9af8a0e9a79ce8c1e3e1a3a8fd52ba3d3bd28dc8c42857dc96eb8026"},
-    "command": ".venv\\Scripts\\python.exe tools\\factor_lowvol_checks.py",
-    "m10bp": {"annual": 0.08466, "max_drawdown": -0.61219, "turnover_two_way": 2.087, "cost_share_of_gross": 0.0706, "cost_bps": 28.86, "cost_note": "同v1口径，v1折22.64bp"},
+    "m10bp": {"annual": 0.08466, "max_drawdown": -0.61219, "turnover_two_way": 2.087, "cost_share_of_gross": 0.0706, "cost_bps": 28.86},
     "seg_cols": ["annual", "dd", "turnover", "cost_share"],
     "seg": {"2010-2016": [0.144983, -0.490774, 1.7806, 0.0324], "2017-2026": [0.042937, -0.456334, 2.2009, 0.1131]},
     "real_tax": {"annual": 0.085087, "dd": -0.611926, "turn": 2.0853, "cost_share": 0.0658, "cut": [0.101926, 0.0551], "bias": "固定千1高估年化0.013pp、2023后0.065pp"}
   },
   "real_tax_script": {"p": "tools/factor_tax_regime.py", "sha": "5d250676fd55fcb423c6ea4e41a493deee6b4a496e6b49eb818b1e24b997009b", "def": "印花税2023-08-28后0.05%(卖)；过户费2015-08前沪0.06%、2015-08~2022-04双边0.002%、之后0.001%"},
-  "real_tax": {"annual": 0.072943, "dd": -0.639623, "turn": 0.8124, "cost_share": 0.0257, "cut": [0.102151, 0.0181], "bias": "固定千1高估年化0.005pp、2023后0.025pp"}
+  "real_tax": {"annual": 0.072943, "dd": -0.639623, "turn": 0.8124, "cost_share": 0.0257, "cut": [0.102151, 0.0181], "bias": "固定千1高估年化0.005pp、2023后0.025pp"},
+  "v3": {"def": "月频剔60日波动率最高20%+上市不满250交易日次新，其余等权，口径同v1", "script": {"path": "tools/factor_exclusion_combo.py", "sha256": "6c3ceff4f3ebcc52e40c4c932b371c6ed02000b7201988410a3f59583ace1073"}, "m10bp": {"annual": 0.091312, "max_drawdown": -0.610785, "turnover_two_way": 1.9962, "cost_share_of_gross": 0.0623}, "vs": {"v1_annual": 0.018439, "v2_annual": 0.006652, "v1_seg": [0.010167, 0.023793]}, "verdict": "增量≥0.5pp、两段皆正、换手1.996x≤2.5x，三条全过"}
 }
