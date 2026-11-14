@@ -33,7 +33,7 @@ import hashlib
 import html
 import json
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -61,6 +61,7 @@ STATUS_MAP = {
     'aborted': ('失败', 'fail'),
     'stopped': ('已停止', 'stop'),
     'cancelled': ('已停止', 'stop'),
+    'incomplete': ('未完成', 'fail'),
 }
 
 LIST_CSS = r"""
@@ -558,6 +559,12 @@ def render_detail(run: Dict[str, Any], idx: int) -> str:
     ])
 
     extras = []
+    if run['metrics'] is None:
+        extras.append(
+            '<div class="detail-panel full"><h4>未完成说明</h4>'
+            f'<div class="kv" style="grid-template-columns:auto 1fr"><dt>状态</dt><dd>{esc(status)} · '
+            '该 run 无 metrics.json，行内指标不作结论；净值取增量文件（partial），仅用于核对进度。</dd>'
+            '</div></div>')
     if progress:
         pctv = progress.get('percent')
         mw = progress.get('metrics_window') or {}
@@ -622,6 +629,53 @@ def render_row(run: Dict[str, Any], idx: int) -> str:
     ) + render_detail(run, idx)
 
 
+def scan_unindexed_runs(base_dir: Path, indexed: set) -> List[Dict[str, Any]]:
+    """补出「目录在、index.json 没有」的 run，避免残缺 run 在清单里隐形。
+
+    判定依据：下划线开头目录（如 ``_fixtures``）是夹具，不显示；其余目录按
+    ``progress.json`` 的 ``status`` 归类（stopped → 已停止、failed → 失败、
+    running → 进行中），两者皆无则记为 incomplete（未完成）。这类 run 没有
+    ``metrics.json``，行内指标显示「未记录」，净值取 ``daily_nav.partial.csv``。
+    """
+    out: List[Dict[str, Any]] = []
+    for run_dir in sorted(base_dir.iterdir()):
+        if not run_dir.is_dir() or run_dir.name.startswith('_') or run_dir.name in indexed:
+            continue
+        spec = read_json(run_dir / 'spec.json')
+        progress = read_json(run_dir / 'progress.json')
+        metrics = read_json(run_dir / 'metrics.json')
+        raw = str((progress or {}).get('status') or '').lower()
+        status = raw or ('ok' if metrics else 'incomplete')
+        window = (progress or {}).get('metrics_window') or {}
+        period = (spec or {}).get('period') or {'start': window.get('start'),
+                                               'end': window.get('end')}
+        started_at = (progress or {}).get('started_at') or datetime.fromtimestamp(
+            run_dir.stat().st_mtime).isoformat(timespec='seconds')
+        meta = {
+            'run_id': run_dir.name,
+            'name': (spec or {}).get('name') or run_dir.name,
+            'created_at': started_at,
+            'status': status,
+            'relative_dir': run_dir.name,
+            'dir': run_dir.as_posix(),
+            'period': period,
+            'metrics': {},
+        }
+        nav_name = 'daily_nav.csv' if (run_dir / 'daily_nav.csv').exists() else 'daily_nav.partial.csv'
+        out.append({
+            'index': meta,
+            'spec': spec,
+            'metrics': metrics,
+            'progress': progress,
+            'recipe': (run_dir / 'recipe.txt').read_text(encoding='utf-8', errors='replace')
+            if (run_dir / 'recipe.txt').exists() else '',
+            'log_tail': tail_log(run_dir / 'run.log'),
+            'summary': recipe_summary(spec) if spec else '未完成（无 spec 快照）',
+            'nav': load_nav(run_dir / nav_name, period.get('start'), period.get('end')),
+        })
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description='回测运行清单页生成器（单文件 HTML）')
     ap.add_argument('--runs', default=str(backtest_runs_dir() / 'index.json'),
@@ -665,10 +719,13 @@ def main() -> None:
         runs.append(package)
 
     runs.sort(key=lambda r: str(r['index'].get('created_at') or ''), reverse=True)
+    indexed_ids = {str(r['index'].get('run_id') or '') for r in runs}
+    runs.extend(scan_unindexed_runs(base_dir, indexed_ids))
+    runs.sort(key=lambda r: str(r['index'].get('created_at') or ''), reverse=True)
     if args.dashboard_pattern:
         for run in runs:
             rid = str(run['index'].get('run_id') or '')
-            if rid:
+            if rid and run['metrics']:
                 run['dashboard_url'] = args.dashboard_pattern.replace('{run_id}', rid)
 
     rows = []

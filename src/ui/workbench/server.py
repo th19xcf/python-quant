@@ -30,6 +30,7 @@ import traceback
 import webbrowser
 from collections import deque
 from datetime import date, datetime
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -675,6 +676,17 @@ def dashboard_page_html(run_id: str) -> bytes:
     run_dir = RUNS_DIR / run_id
     if not run_dir.is_dir():
         return f'<h1>未找到运行</h1><p>{run_id}</p>'.encode('utf-8')
+    if not (run_dir / 'metrics.json').exists():
+        progress = read_json(run_dir / 'progress.json') or {}
+        status = progress.get('status') or 'incomplete'
+        return (
+            '<h1>该运行未完成</h1>'
+            f'<p>{escape(run_id)} · 状态 {escape(str(status))} · '
+            f'进度 {progress.get("percent", 0)}% · 当前 '
+            f'{escape(str(progress.get("current_date") or "未记录"))}</p>'
+            '<p>无 metrics.json，不生成看板；进度与增量净值见运行清单该行展开。</p>'
+            '<p><a href="/">← 返回运行清单</a></p>'
+        ).encode()
     files = ['metrics.json', 'daily_nav.csv', 'spec.json']
     key = tuple((run_dir / f).stat().st_mtime if (run_dir / f).exists() else 0 for f in files)
     with _cache_lock:
