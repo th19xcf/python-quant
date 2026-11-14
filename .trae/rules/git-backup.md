@@ -12,6 +12,7 @@ description: 备份镜像四类范围与集合差口径、备份仓提交与推�
   - ③ 的统计行必须取 `git diff --stat HEAD~1 HEAD`（双提交形式，等价 `HEAD^ HEAD`）第一行；单参数 `git diff HEAD~1` 比的是「上个提交 ↔ 工作区」，不得使用。
   - ② 只用一个 ```text 代码块原样贴 `git log -1 --format="%B"` 的输出，不加任何标签、不改缩进；严禁把整个 5 块模板再包进外层代码块。
   - 所有数值、哈希、文件状态必须来自 `git` 真实输出，禁止伪造。
+- **隔离索引五步（种子化 + 基准必须是提交那一刻的父提交）**：① `before = git rev-parse HEAD`；② `git read-tree $before`（新索引首次 `update-index` 前必须种子化，否则未列入路径记为删除；两步同一轮完成）；③ `update-index` 加入本路文件；④ `git diff --cached --stat $before` 核对变更文件数须与预期清单一致，明显多于预期即停，不得先提交再看；⑤ 复取 `after`，`before != after` 即**整体重做、不提交**。禁止脚本开头取一次 HEAD 留着用，也禁止只重新 `read-tree <新 HEAD>` 接着提交——只有整体重做（丢弃临时索引、重走五步）才算关窗；打印成功前须自证 HEAD 与 `before` 不等（`git commit` 没报错不等于新提交存在）。提交后清单自证见上条，多出文件前向修复，不得 amend 或 reset。见判例 §2.2、§2.3。
 - **提交前清点共享暂存、提交后复核清单**：提交前必须看一眼 `git diff --cached --name-only`，与本次预期清单逐一比对；出现清单外的条目，先对这些路径执行 `git reset -- <path>` 取消暂存（不动工作区），再提交。多会话并行期间禁止 `git add -A` / `git add .` 等不带路径限定的隐式暂存，也不得在提交前保留他人暂存——否则一个普通 `git commit` 就会把别人的删除一并带进去，规则文件凭空消失。提交后立即用 `git show --stat HEAD` 或 `git diff-tree --no-commit-id --name-only -r HEAD` 复核 HEAD 清单，与预期逐一比对，多出即前向修复，不得 amend 或 reset。
 - **备份方式**：只同步本次 commit 变更的文件到 `G:\git\python-quant\`（保持相对路径结构），源端已删的从备份侧对位删除；**不删目录、不碰 .git**。同步脚本见判例 §1.2。
 - **核心原则：增量同步，其他不动**：只拷贝本次变更文件 + 对位删除；备份目录里的 `.git`、untracked 文件、手工添加内容全部保留，禁止 `shutil.rmtree`（理由见判例 §1.3）。
