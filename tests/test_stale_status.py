@@ -115,3 +115,29 @@ def test_single_leading_code_does_not_mark_everyone_stale(tmp_path) -> None:
     assert frame['detected_at'][0] == AS_OF
     assert stale_codes(root) == {'600068.SH'}
     assert int(frame['is_stale'].sum()) == 1
+
+
+def test_negative_lag_is_signed_not_clamped_to_zero(tmp_path) -> None:
+    """反例自测：末行晚于基准日必须记 -1，不能记 0。
+
+    旧实现 ``max(0, (snapshot - end).days)`` 会把「领先 1 天」写成 0，
+    与真正「刚好同步」的标的不可区分（2026-11-13 实测 300237.SZ end=11-06、
+    基准 11-05，lag 被记 0）。本用例在旧实现下必然失败，用来守住 DG-31。
+    """
+    root, _ = _make_store(tmp_path, {
+        '600000.SH': AS_OF,
+        '600001.SH': AS_OF,
+        '600002.SH': AS_OF,
+        '600003.SH': date(2026, 11, 6),   # 领先基准 1 天
+        '600004.SH': date(2026, 11, 8),   # 领先基准 3 天
+    })
+    frame = build_stale_status(root, AS_OF)
+    by_code = {row['ts_code']: row for row in frame.iter_rows(named=True)}
+    assert by_code['600003.SH']['lag_calendar_days'] == -1
+    assert by_code['600004.SH']['lag_calendar_days'] == -3
+    assert by_code['600000.SH']['lag_calendar_days'] == 0
+    # 领先标的不得被判成停更
+    assert not by_code['600003.SH']['is_stale']
+    assert stale_codes(root) == set()
+    # 负 lag 若被钳成 0，上述三条会同时失效；这里再加一条分布断言防回归
+    assert frame.filter(pl.col('lag_calendar_days') < 0).height == 2

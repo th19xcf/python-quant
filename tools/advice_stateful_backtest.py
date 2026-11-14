@@ -1122,7 +1122,7 @@ class _CohortTrack:
                 signal_date=day, entry_idx=global_index + 1,
                 exit_idx=min(global_index + 1 + self.hold_days, horizon - 1),
                 budget=budget, cash=budget,
-                candidates=[[code, pct] for code, pct in candidates],
+                candidates=[[code, pct] for code, pct, _score in candidates],
                 signal_closes=dict(signal_closes)))
 
         # 4) 收盘按市值计价
@@ -3085,7 +3085,7 @@ def _emit_products(*, args: argparse.Namespace, config: Any, tier: Any,
     if stateful.get('candidates') is not None:
         _write_csv(out_dir / 'candidates.csv', stateful['candidates'],
                    CANDIDATE_COLUMNS)
-    _write_signal_eval(args.dump_eval, out_dir, stateful['signal_eval'])
+    _write_signal_eval(args.dump_eval, out_dir, stateful.get('signal_eval') or [])
     for name in alloc_names:
         payload = (baselines[name] if baselines
                    else {'nav_rows': baseline_rows, 'stats': baseline_stats})

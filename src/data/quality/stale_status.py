@@ -12,7 +12,9 @@ r"""停更 / 退市标的权威状态表。
 
 - 输入 ``meta/daily_index.parquet``（实测与磁盘 9,761 个文件完全一致）；
 - 输出 ``meta/universe/stale_status.parquet``，全量 9,761 行，带
-  ``is_stale / action / stale_batch / lag_calendar_days``；
+  ``is_stale / action / stale_batch / lag_calendar_days``；其中
+  ``lag_calendar_days`` 是相对基准日的**有符号**日历差（末行晚于基准日为负，
+  不再钳成 0）；
 - 读侧 :func:`stale_codes` 返回应排除代码集合，供
   :func:`src.advice.universe.list_local_stock_codes` 使用；
 - 状态表缺失时只告警、返回空集合（fail-open，不阻断业务）。
@@ -112,7 +114,11 @@ def build_stale_status(store_root: Path | str = DEFAULT_ROOT,
             'market': str(item['market']),
             'last_trade_date': end,
             'last_rows': int(item['rows'] or 0),
-            'lag_calendar_days': max(0, (snapshot - end).days),
+            # 有符号日历差：末行晚于基准日（源端比基准更新）记负数。
+            # 曾用 max(0, ...) 钳成 0，把「领先 N 天」伪装成「恰好同步」
+            # （2026-11-13 实测 300237.SZ end=11-06 / 基准 11-05，lag 被记 0），
+            # 与 DG-31「不得静默归零掩盖真实差异」冲突；负值本身是有效信息。
+            'lag_calendar_days': (snapshot - end).days,
             'is_stale': stale,
             'stale_batch': 'tdx_2019_09_17' if end == TDX_FREEZE_DATE else '',
             'reason': 'stale_feed' if stale else '',
