@@ -107,6 +107,27 @@ class Registry:
     def describe(self) -> List[Dict[str, Any]]:
         return [self._entries[k].describe() for k in self.names()]
 
+    def export(self) -> List[Dict[str, Any]]:
+        """只读导出：名字、参数类型/范围/必填性，供前端词表使用。"""
+        out = []
+        for name in self.names():
+            entry = self._entries[name]
+            out.append({
+                'name': name,
+                'doc': entry.doc,
+                'params': [{
+                    'name': p.name,
+                    'kind': p.kind.__name__,
+                    'required': p.default is _REQUIRED,
+                    'default': None if p.default is _REQUIRED else p.default,
+                    'minimum': p.minimum,
+                    'maximum': p.maximum,
+                    'choices': list(p.choices) if p.choices is not None else None,
+                } for p in entry.params],
+            })
+        return out
+
+
 
 def _check_value(label: str, name: str, p: Param, value: Any) -> Any:
     if p.kind is int:

@@ -43,6 +43,36 @@ FACTOR_EXAMPLES = [
 KEYWORDS = ('名称', '说明', '区间', '股票池', '剔除', '因子', '调仓', '成本', '资金',
             '随机种子')
 
+# 因子注册名 → 配方中的中文写法（前端与解析器共用这一份）
+FACTOR_LABELS = {'vol': '波动率', 'bp': 'BP', 'ep': 'EP'}
+
+# 剔除条件注册名 → 配方行模板；{参数:percent} 表示按百分数书写
+CONDITION_RECIPE = {
+    'exclude_vol_high_pct': '剔除 波动率 最高 {pct:percent}，窗口 {window} 个交易日，最少 {min_names} 只',
+    'exclude_new_listing': '剔除 上市天数 少于 {min_trading_days}',
+    'exclude_bp_expensive_pct': '剔除 BP 最贵 {pct:percent}，最少 {min_names} 只',
+    'exclude_st': '剔除 ST',
+    'exclude_low_liquidity_pct': '剔除 成交额 最低 {pct:percent}，窗口 {window} 个交易日',
+    'exclude_pe_negative_or_expensive_pct': '剔除 PE 为负，或高于 {upper_quantile:percent} 分位',
+}
+
+# 参数注册名 → 表单中文标签
+PARAM_LABELS = {
+    'window': '窗口（交易日）',
+    'pct': '比例（%）',
+    'min_names': '最少只数',
+    'min_trading_days': '最少上市交易日',
+    'upper_quantile': '分位（%）',
+}
+
+# 以百分数填写、存储为小数的参数
+PERCENT_PARAMS = ('pct', 'upper_quantile')
+
+# 该集合内的 pct 必须写成 1/n（n=2~20），与 compute.unit_fraction_buckets 同源
+UNIT_FRACTION_CONDITIONS = ('exclude_vol_high_pct', 'exclude_bp_expensive_pct')
+UNIT_FRACTION_RANGE = (2, 20)
+
+
 
 def parse_recipe_file(path: Path) -> Dict[str, Any]:
     path = Path(path)
@@ -312,7 +342,7 @@ def _parse_factor(rest: str, lineno: int) -> Dict[str, Any]:
             f'第 {lineno} 行：因子写法无法识别 {parts[0]!r}；'
             f'可用写法：{" | ".join(FACTOR_EXAMPLES)}')
     word, buckets = match.group(1).upper(), int(match.group(2))
-    name = {'波动率': 'vol', 'BP': 'bp', 'EP': 'ep'}[word]
+    name = {label: key for key, label in FACTOR_LABELS.items()}[word]
     params: Dict[str, Any] = {'window': 60} if name == 'vol' else {}
     action = bucket = None
     for clause in parts[1:]:

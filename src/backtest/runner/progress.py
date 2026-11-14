@@ -179,6 +179,24 @@ class ProgressReporter:
         os.replace(tmp, self._progress_path)
 
 
+    def stop(self) -> None:
+        """用户停止：落盘 status=stopped，保留 daily_nav.partial.csv 供续跑排查。"""
+        if not self.enabled:
+            return
+        if self._nav_handle is not None:
+            self._nav_handle.close()
+            self._nav_handle = None
+        self._write_progress('stopped')
+        import json
+        payload = json.loads(self._progress_path.read_text(encoding='utf-8'))
+        payload['error'] = '用户停止：未完成，partial 净值保留在 run 目录'
+        payload['nav_partial_policy'] = 'kept_on_stop'
+        tmp = self._progress_path.with_name(self._progress_path.name + '.tmp')
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n',
+                       encoding='utf-8', newline='\n')
+        os.replace(tmp, self._progress_path)
+
+
 class _ProgressCurve(list):
     """list 子类：追加权益点时同步给观察者，其余行为与 list 完全一致。"""
 

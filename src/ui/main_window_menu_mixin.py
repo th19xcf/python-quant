@@ -8,6 +8,8 @@ from PySide6.QtCore import QSize
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QPushButton
 
+from src.utils.logger import logger
+
 
 class MainWindowMenuMixin:
     """主窗口菜单栏与工具栏构建。
@@ -78,6 +80,7 @@ class MainWindowMenuMixin:
         # 量化分析菜单
         quant_menu = menu_bar.addMenu("量化分析")
         self.add_menu_actions(quant_menu, [
+            ("回测工作台", self.open_quant_workbench),
             ("策略回测", self.action_manager.on_strategy_backtest),
             ("股票推荐", self.action_manager.on_stock_recommendation),
             ("因子分析", self.action_manager.on_factor_analysis),
@@ -137,6 +140,7 @@ class MainWindowMenuMixin:
             "自动交易": "🤖",
 
             # 量化分析菜单图标
+            "回测工作台": "🧪",
             "策略回测": "📊",
             "股票推荐": "⭐",
             "因子分析": "🔍",
@@ -172,6 +176,25 @@ class MainWindowMenuMixin:
             else:
                 action.triggered.connect(callback)
             menu.addAction(action)
+
+    def open_quant_workbench(self):
+        """打开「回测工作台」标签页（新建回测 / 运行队列 / 结果看板 / 运行清单）。
+
+        标签页内嵌本地回环页面，与浏览器通道共用同一份视图与队列；
+        重复点击只切回已存在的标签页，不会新起第二个。
+        """
+        tab = getattr(self, 'quant_workbench_tab', None)
+        if tab is None:
+            from src.ui.workbench.tab import create_workbench_tab
+
+            tab = create_workbench_tab(self.tab_widget)
+            if tab is None:
+                self.statusBar().showMessage('回测工作台不可用：当前环境缺少 QtWebEngine', 5000)
+                return
+            self.quant_workbench_tab = tab
+            self.tab_widget.addTab(tab, '回测工作台')
+        self.tab_widget.setCurrentWidget(tab)
+        self.statusBar().showMessage('回测工作台：新建回测 / 运行队列 / 结果看板 / 运行清单', 3000)
 
     def create_tool_bar(self):
         """

@@ -146,6 +146,12 @@ def main(argv=None) -> int:
         reporter.finish(payload['metrics'])
         entry = records.index_entry(payload, run_dir, runs_dir)
         index_path = records.update_index(runs_dir, entry)
+    except KeyboardInterrupt:
+        reporter.stop()
+        logger.warning('run 已停止：{}', run_dir.name)
+        print(f'已停止：{records.rel(run_dir)}（partial 净值保留在 run 目录，正式数据未改）',
+              file=sys.stderr)
+        return 130
     except Exception as exc:  # noqa: BLE001  失败也要落 progress 现场并保留增量净值
         reporter.fail(f'{type(exc).__name__}: {exc}')
         logger.exception('run 失败：{}', run_dir.name)

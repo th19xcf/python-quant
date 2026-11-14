@@ -91,6 +91,9 @@ def parse_args():
     parser.add_argument('--skip-anomaly-lists', action='store_true',
                         help='数据写入完成后不刷新异常台账清单（默认刷新；失败不影响补数）')
     parser.add_argument('--plugins', action='store_true', help='显示已加载的插件')
+    parser.add_argument('--workbench', action='store_true',
+                        help='只启动回测工作台的浏览器通道（仅绑 127.0.0.1，打印地址）；'
+                             '桌面通道仍是默认行为，入口在菜单「量化分析 → 回测工作台」')
     return parser.parse_args()
 
 
@@ -553,6 +556,14 @@ def _cleanup_system(plugin_manager, db_manager):
     config_manager.stop_watching()
     logger.info("配置热加载功能已停止")
 
+    # 回测工作台：停当前回测、关回环服务、清临时目录（未启动时为空操作）
+    try:
+        from src.ui.workbench.server import shutdown as workbench_shutdown
+
+        workbench_shutdown()
+    except Exception as workbench_error:  # noqa: BLE001
+        logger.warning(f"回测工作台收尾失败: {workbench_error}")
+
     shutdown_event_bus()
     logger.info("事件总线已关闭")
 
@@ -577,6 +588,12 @@ def main():
         if args.plugins:
             _display_plugins(plugin_manager)
             return
+
+        if args.workbench:
+            # 浏览器通道：只起回测工作台服务（仅绑 127.0.0.1），不开桌面窗口
+            from src.ui.workbench.server import run_browser_channel
+
+            return run_browser_channel()
 
         if args.update_stock:
             _handle_update_stock_arg(config)
@@ -614,6 +631,16 @@ def main():
             return
 
         data_manager = _initialize_data_manager(config, plugin_manager)
+
+        # QtWebEngine 必须先于 QApplication 就绪（共享 GL 上下文），否则内嵌工作台标签页
+        # 会在创建时被 Chromium 拒绝；缺 QtWebEngine 时只降级该标签页，不影响主界面。
+        from PySide6.QtCore import QCoreApplication, Qt
+
+        QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
+        try:
+            import PySide6.QtWebEngineWidgets  # noqa: F401
+        except Exception as webengine_error:  # noqa: BLE001
+            logger.warning(f"QtWebEngine 不可用，回测工作台标签页将不可用: {webengine_error}")
 
         app = QApplication(sys.argv)
         app.setApplicationName("中国股市量化分析系统")
