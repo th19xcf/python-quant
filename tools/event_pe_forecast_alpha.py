@@ -9,9 +9,12 @@
 - 公告日 T 的下一交易日开盘买入，等权持有 20 / 60 个交易日，到期开盘卖出；
   不做空、不加杠杆；开盘一字涨停（open/pre_close−1 ≥ 9.5%）视为买不进，剔除。
 - 组合口径：每个事件建仓时投入等额资金（初始 1 单位），持有期内不调仓，日收益
-  按当前市值加权 Σ(v·r)/Σv，避免日频等权再平衡的波动收割溢价；成本沿用 v1 默认：
-  滑点 10bp、买卖各 2.5bp 佣金、卖出 0.1% 印花。
+  按当前市值加权 Σ(v·r)/Σv，避免日频等权再平衡的波动收割溢价。
+- 成本按既有实测口径 `cost_bps=22.6432`（成本/双边成交额，源自 v1 基线）
+  在买卖两侧按当日成交仓位占比各计提 22.64bps，不另设假设。
 - 后复权价（close/open × hfq_factor）；事件自 2010 年起，无因子预热需求。
+- 判定用超额口径：两档日收益减等权全市场买入持有日收益得超额序列，与 v3 超额
+  序列比相关（Pearson/Spearman），门槛「超额相关 <0.5 且扣成本后超额年化 >3%」。
 
 输出：两档年化、最大回撤、Calmar、Sharpe、年换手、事件笔数，与 v3 日收益的
 Pearson/Spearman 相关、与等权全市场基准的 Pearson 相关。结论写入
@@ -29,7 +32,7 @@ import sys
 from bisect import bisect_left
 from datetime import date
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import polars as pl
@@ -50,8 +53,8 @@ DOCS_JSON = r.DOCS_JSON
 HORIZONS = (20, 60)
 POSITIVE = '业绩预增'
 LIMIT_OPEN = 0.095
-ENTRY_COST = 0.00125
-EXIT_COST = 0.00225
+COST_BPS = 22.6432          # 既有口径：基线 v1 实测 cost_bps（成本/双边成交额）
+COST_RATE = COST_BPS / 1e4
 
 
 def load_events() -> Tuple[List[str], List[np.datetime64]]:
@@ -126,7 +129,11 @@ def build_windows(codes, anns, quotes, cal_np: np.ndarray):
 
 
 def simulate(windows, quotes, cal_np: np.ndarray, h: int):
-    """等权建仓、持有到期、不调仓：每日组合收益 = Σ(v·r)/Σv，v 为各仓位当前市值。"""
+    """等权建仓、持有到期、不调仓：每日组合收益 = Σ(v·r)/Σv，v 为各仓位当前市值。
+
+    返回到手毛收益 daily（未扣成本）、当日成本拖累 cost（按成交仓位占比提 22.64bps）、
+    扣成本后净值 eq，以及平均/最大同时持仓数。
+    """
     deltas = np.zeros(len(cal_np) + 1)
     for _i0, _i1, _c, g0 in windows:
         deltas[g0] += 1
@@ -134,26 +141,32 @@ def simulate(windows, quotes, cal_np: np.ndarray, h: int):
     count = np.cumsum(deltas)[:len(cal_np)]
     num = np.zeros(len(cal_np))
     den = np.zeros(len(cal_np))
+    cnum = np.zeros(len(cal_np))
     for i0, i1, code, _g0 in windows:
         dts, op, cl, _pre = quotes[code]
         v = 1.0
         for j in range(i0, i1 + 1):
             gi = int(np.searchsorted(cal_np, dts[j]))
             if j == i0:
-                r = cl[j] / op[j] - 1 - ENTRY_COST
+                r = cl[j] / op[j] - 1
+                cnum[gi] += v * COST_RATE
             elif j == i1:
-                r = op[j] / cl[j - 1] - 1 - EXIT_COST
+                r = op[j] / cl[j - 1] - 1
+                cnum[gi] += v * COST_RATE
             else:
                 r = cl[j] / cl[j - 1] - 1
             num[gi] += v * r
             den[gi] += v
             v *= (1.0 + r)
-    daily = np.divide(num, den, out=np.zeros_like(num), where=den > 0)
+    gross = np.divide(num, den, out=np.zeros_like(num), where=den > 0)
+    cost = np.divide(cnum, den, out=np.zeros_like(cnum), where=den > 0)
+    daily = gross - cost
     eq = np.cumprod(1.0 + daily)
-    return daily, np.concatenate([[1.0], eq]), float(count.mean()), int(count.max())
+    return (daily, cost, np.concatenate([[1.0], eq]),
+            float(count.mean()), int(count.max()))
 
 
-def curve_stats(days: List[date], eq: np.ndarray) -> Dict[str, float]:
+def curve_stats(days: List[date], eq: np.ndarray) -> Dict[str, Any]:
     ret = eq[1:] / eq[:-1] - 1
     years = (days[-1] - days[0]).days / 365.25
     annual = float(eq[-1] ** (1 / years) - 1)
@@ -178,6 +191,15 @@ def corr(a: Dict[date, float], b: Dict[date, float]) -> Dict[str, float]:
             'days': len(common)}
 
 
+def excess_stats(daily: Dict[date, float], ew: Dict[date, float]) -> tuple:
+    """日收益减等权全市场基准得超额序列，返回（超额统计、超额序列 dict）。"""
+    excess = {d: v - ew[d] for d, v in daily.items() if d in ew}
+    days = sorted(excess)
+    vals = np.array([excess[d] for d in days])
+    eq = np.concatenate([[1.0], np.cumprod(1.0 + vals)])
+    return curve_stats([days[0]] + days, eq), excess
+
+
 def main() -> None:
     codes, anns = load_events()
     cal, cal_np = global_calendar()
@@ -190,6 +212,7 @@ def main() -> None:
     ew_days = [date.fromisoformat(str(x)) for x in ew_df['date'].to_list()]
     ew_eq = ew_df['equity'].to_numpy().astype(float)
     ew = {ew_days[i]: float(ew_eq[i] / ew_eq[i - 1] - 1) for i in range(1, len(ew_days))}
+    v3_excess = {d: v - ew[d] for d, v in v3.items() if d in ew}
 
     out: Dict[str, object] = {
         '口径': {
@@ -197,17 +220,21 @@ def main() -> None:
             '去重': '同一标的同一公告日重复按 source=tushare 优先',
             '预热': '无（事件自 2010 年起，价格直接用后复权，不需因子预热）',
             '复权': '后复权（open/close × hfq_factor）',
-            '持有期口径': '公告日次一交易日开盘买入，持有 20 / 60 个交易日后开盘卖出；等权固定仓位、不调仓',
-            '成本': '滑点10bp、买卖各2.5bp佣金、卖出0.1%印花（v1 默认）',
+            '持有期口径': '公告日次一交易日开盘买入，持有 20 / 60 个交易日后开盘卖出；等权建仓、持有期内不调仓',
+            '成本': '既有 cost_bps=22.6432（成本/双边成交额，源自基线 v1 实测），买卖两侧按当日成交仓位占比各计提',
+            '净年化': 'annual 为扣成本后净年化；成本年拖累 ≈ 日均成本×252',
+            '超额口径': '两档日收益减等权全市场买入持有日收益；相关性与 v3 超额日收益（v3−等权）比',
             '剔除': {'无行情': skipped['no_quote'], '开盘一字涨停': skipped['limit_open'],
                      '区间不足': skipped['no_exit']},
-            '门槛': '与 v3 日收益相关 <0.5 且独立 Calmar ≥0.2',
+            '门槛': '超额相关（对 v3 超额日收益）<0.5 且扣成本后超额年化 >3%',
         },
         '结果': {},
     }
+    results: Dict[str, Dict[str, Any]] = {}
+    out['结果'] = results
 
     for h in HORIZONS:
-        daily, eq, mean_pos, max_pos = simulate(windows[h], quotes, cal_np, h)
+        daily, cost, eq, mean_pos, max_pos = simulate(windows[h], quotes, cal_np, h)
         stats = curve_stats(cal, eq)
         stats['events'] = len(windows[h])
         stats['avg_positions'] = round(mean_pos, 1)
@@ -215,13 +242,27 @@ def main() -> None:
         stats['turnover_two_way'] = round(len(windows[h]) * 2
                                           / max(mean_pos, 1e-9)
                                           / max(stats['years'], 1e-9), 3)
+        stats['cost_drag_annual'] = round(float(np.mean(cost)) * 252, 6)
         series = {cal[i]: float(daily[i]) for i in range(len(daily))}
         stats['vs_v3'] = corr(series, v3)
         stats['vs_等权全市场'] = corr(series, ew)
-        stats['通过'] = bool(stats['vs_v3']['pearson'] < 0.5
-                            and (stats['calmar'] or 0) >= 0.2)
+        ex_stats, excess = excess_stats(series, ew)
+        ex_stats['vs_v3_超额'] = corr(excess, v3_excess)
+        stats['超额'] = ex_stats
+        stats['通过'] = bool(ex_stats['vs_v3_超额']['pearson'] < 0.5
+                            and ex_stats['annual'] > 0.03)
         out['结果'][f'持有{h}日'] = stats
         print(f'EVENT {h} ' + json.dumps(stats, ensure_ascii=False), flush=True)
+
+    parts, passed = [], True
+    for h in HORIZONS:
+        s = results[f'持有{h}日']
+        e = s['超额']
+        parts.append(f"持有{h}日净年化 {s['annual']:.2%}、超额年化 {e['annual']:.2%}、"
+                     f"超额回撤 {e['max_drawdown']:.2%}、超额Calmar {e['calmar']}、"
+                     f"超额相关 {e['vs_v3_超额']['pearson']:.3f}")
+        passed = passed and s['通过']
+    out['结论'] = ('可进组合：' if passed else '不进组合：') + '；'.join(parts)
 
     doc = json.loads(DOCS_JSON.read_text(encoding='utf-8'))
     doc['事件驱动_业绩预告_2026-11-14'] = out
