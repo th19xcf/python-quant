@@ -30,6 +30,9 @@
     python tools/daily_update.py --start 2026-11-12 --end 2026-11-13
     # 日更 apply（采集 + 本地构建 + 校验）
     python tools/daily_update.py --start 2026-11-12 --end 2026-11-13 --apply --allow-remote
+    # 日更 apply 后顺带出 v3 目标持仓清单（只出清单与台账，不下单）
+    python tools/daily_update.py --start 2026-11-12 --end 2026-11-13 --apply --allow-remote \
+        --target-holdings --capital 1000000000
     # 补数（按代码清单；缺口先落 _staging/<批次>/ 再一次 apply）
     python tools/daily_update.py --codes 600000.SH,000001.SZ --end 2026-11-13 \
         --batch gap_20261113 --apply --allow-remote
@@ -562,6 +565,24 @@ def _build_plan(args: argparse.Namespace) -> _Plan:
                  range_label=f'{(args.start or "全部")}~{latest}', marker_ts=marker_ts)
 
 
+def _run_target_holdings(trade_day: date, capital: float) -> int:
+    """日更收尾后顺带生成 v3 目标持仓清单（独立子进程，只读消费、不改日更结果）。"""
+    script = ROOT / 'tools' / 'target_holdings.py'
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script), '--date', trade_day.isoformat(),
+             '--capital', str(capital)],
+            cwd=str(ROOT), check=False)
+    # 兜底理由：清单生成是可选旁路，任何异常都只告警，不影响日更原有退出码
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('[daily] 目标持仓清单生成异常（日更结果不受影响）：{}', exc)
+        return 1
+    if proc.returncode != 0:
+        logger.warning('[daily] 目标持仓清单生成返回非零 {}（日更结果不受影响）',
+                       proc.returncode)
+    return proc.returncode
+
+
 def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
     root = plan.root
     batch = args.batch or f'daily_{plan.latest.strftime("%Y%m%d")}'
@@ -614,6 +635,8 @@ def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
     })
     print(_format(plan.range_label, len(changed), len(plan.plan_quote), report['added'],
                   report['deleted'], len(report['problems']), digest[:12], apply=True))
+    if args.target_holdings:
+        _run_target_holdings(plan.latest, args.capital)
     failed = int(fill_stats.get('failed_symbols') or 0)
     return 0 if (code == 0 and not report['problems'] and not failed) else 1
 
@@ -637,6 +660,11 @@ def main(argv: list[str] | None = None) -> int:
                         help='显式允许联网采集（缺省只跑本地构建与校验）')
     parser.add_argument('--verbose', action='store_true',
                         help='打开 INFO/DEBUG 过程日志（缺省静默，只留一行状态与告警）')
+    parser.add_argument('--target-holdings', action='store_true',
+                        help='apply 成功后顺带生成 v3 每日目标持仓清单（只读消费，'
+                             '失败不改日更原有退出码）')
+    parser.add_argument('--capital', type=float, default=1e9,
+                        help='目标持仓清单的资金规模（元，仅 --target-holdings 生效）')
     args = parser.parse_args(argv)
 
     logger.remove()
