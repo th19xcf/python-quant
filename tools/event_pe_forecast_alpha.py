@@ -22,10 +22,13 @@ Pearson/Spearman 相关、与等权全市场基准的 Pearson 相关。结论写
 
 用法
 ----
-    .venv\\Scripts\\python.exe tools\\event_pe_forecast_alpha.py
+    .venv\\Scripts\\python.exe tools\\event_pe_forecast_alpha.py               # 原超额测度
+    .venv\\Scripts\\python.exe tools\\event_pe_forecast_alpha.py --step tail   # ① 尾部剔除
+    .venv\\Scripts\\python.exe tools\\event_pe_forecast_alpha.py --step combine # ② 80/20 组合
 """
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import sys
@@ -50,6 +53,7 @@ QUOTES = ROOT / 'data/local_store/quotes/stock/**/*.parquet'
 EW_CACHE = ROOT / '_staging/_ew_buyhold_cache.csv'
 V3 = ROOT / '_staging/equity_v3_excl_vol_new_2026-11-14.csv'
 DOCS_JSON = r.DOCS_JSON
+SECTION = '事件驱动_业绩预告_2026-11-14'
 HORIZONS = (20, 60)
 POSITIVE = '业绩预增'
 LIMIT_OPEN = 0.095
@@ -200,7 +204,123 @@ def excess_stats(daily: Dict[date, float], ew: Dict[date, float]) -> tuple:
     return curve_stats([days[0]] + days, eq), excess
 
 
+def trade_rets(windows, quotes) -> np.ndarray:
+    """单笔毛收益：次日开盘买入、到期开盘卖出的价格变动（成本两侧对称，不影响排序）。"""
+    out = np.empty(len(windows))
+    for i, (i0, i1, code, _g) in enumerate(windows):
+        op = quotes[code][1]
+        out[i] = op[i1] / op[i0] - 1.0
+    return out
+
+
+def run_tail(cal, cal_np, quotes, windows, skipped, v3_excess, ew) -> None:
+    """① 尾部剔除检验：按单笔收益降序剔除最赚钱的 1% / 5%，重算指标。"""
+    block: Dict[str, Any] = {
+        '口径': {
+            '剔除方式': '按单笔毛收益（次日开盘买、到期开盘卖）降序剔除最赚钱的 1% / 5% 交易，其余原样持有；不换样本区间',
+            '成本': '既有 cost_bps=22.6432（成本/双边成交额），买卖两侧按当日成交仓位占比各计提',
+            '预热': '无（事件自 2010 年起，价格直接用后复权，不需因子预热）',
+            '复权': '后复权（open/close × hfq_factor）',
+            '持有期口径': '公告日次一交易日开盘买入，持有 20 / 60 个交易日后开盘卖出；等权建仓、持有期内不调仓',
+            '剔除计数': {'无行情': skipped['no_quote'], '开盘一字涨停': skipped['limit_open'],
+                         '区间不足': skipped['no_exit']},
+        },
+        '结果': {},
+    }
+    results: Dict[str, Dict[str, Any]] = {}
+    for h in HORIZONS:
+        rets = trade_rets(windows[h], quotes)
+        row: Dict[str, Any] = {}
+        for label, frac in (('剔除1%', 0.01), ('剔除5%', 0.05)):
+            k = int(len(rets) * frac)
+            drop = set(np.argsort(-rets)[:k].tolist())
+            keep = [w for i, w in enumerate(windows[h]) if i not in drop]
+            daily, _cost, eq, mean_pos, max_pos = simulate(keep, quotes, cal_np, h)
+            st = curve_stats(cal, eq)
+            series = {cal[i]: float(daily[i]) for i in range(len(daily))}
+            ex_stats, excess = excess_stats(series, ew)
+            st['events'] = len(keep)
+            st['剔除笔数'] = k
+            st['avg_positions'] = round(mean_pos, 1)
+            st['超额'] = {'annual': ex_stats['annual'],
+                          'max_drawdown': ex_stats['max_drawdown'],
+                          'calmar': ex_stats['calmar'],
+                          'vs_v3_超额': corr(excess, v3_excess)}
+            row[label] = st
+            print(f'TAIL {h} {label} ' + json.dumps(st, ensure_ascii=False), flush=True)
+        results[f'持有{h}日'] = row
+    block['结果'] = results
+    parts, alive = [], True
+    for h in HORIZONS:
+        row = results[f'持有{h}日']
+        one, five = row['剔除1%'], row['剔除5%']
+        parts.append(f"持有{h}日剔除1%后净年化 {one['annual']:.2%}、超额年化 "
+                     f"{one['超额']['annual']:.2%}、超额回撤 {one['超额']['max_drawdown']:.2%}、"
+                     f"超额Calmar {one['超额']['calmar']}；剔除5%后超额年化 "
+                     f"{five['超额']['annual']:.2%}、超额Calmar {five['超额']['calmar']}")
+        alive = alive and one['超额']['annual'] > 0.03
+    block['结论'] = ('不依赖少数极端赢家：' if alive else '依赖少数极端赢家：') + '；'.join(parts)
+
+    doc = json.loads(DOCS_JSON.read_text(encoding='utf-8'))
+    doc[SECTION]['尾部剔除'] = block
+    DOCS_JSON.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding='utf-8')
+    print('WROTE ' + DOCS_JSON.name + ' 尾部剔除', flush=True)
+
+
+def run_combine(cal, cal_np, quotes, windows, v3, ew) -> None:
+    """② 组合层实测：v3 与事件 20 / 60 日档各按 80/20 合成日收益（同一口径一次跑完）。"""
+    block: Dict[str, Any] = {
+        '口径': {
+            '权重': 'v3 0.8 + 事件 20 日档 0.2、v3 0.8 + 事件 60 日档 0.2，日收益线性合成，仅此一档不扫参数',
+            '再平衡': '日频固定权重合成（隐含每日再平衡），未额外计再平衡成本；两腿各自成本已含',
+            '成本': '既有 cost_bps=22.6432（成本/双边成交额），事件腿买卖两侧各计提；v3 沿用原净值',
+            '预热': '无（两腿自 2010-01-05 起同区间，事件腿无需因子预热）',
+            '复权': '后复权（事件腿 open/close × hfq_factor；v3 原口径）',
+            '持有期口径': '事件腿公告日次一交易日开盘买入、持有 20 / 60 个交易日后开盘卖出；v3 月频调仓',
+        },
+        '结果': {},
+    }
+    results: Dict[str, Any] = {}
+    for h in HORIZONS:
+        daily, _cost, _eq, _mp, _xp = simulate(windows[h], quotes, cal_np, h)
+        ev = {cal[i]: float(daily[i]) for i in range(len(daily))}
+        common = sorted(set(ev) & set(v3))
+
+        def curve(seq, days) -> Dict[str, Any]:
+            vals = np.array(seq)
+            eq = np.concatenate([[1.0], np.cumprod(1.0 + vals)])
+            return curve_stats([days[0]] + days, eq)
+
+        comb = curve([0.8 * v3[d] + 0.2 * ev[d] for d in common], common)
+        base = curve([v3[d] for d in common], common)
+        comb['days'] = len(common)
+        base['days'] = len(common)
+        results[f'事件{h}日'] = {'组合': comb, 'v3对照': base}
+        print(f'COMBINE {h} ' + json.dumps({'组合': comb, 'v3对照': base}, ensure_ascii=False),
+              flush=True)
+    block['结果'] = results
+
+    notes = []
+    for h in HORIZONS:
+        c = results[f'事件{h}日']['组合']
+        b = results[f'事件{h}日']['v3对照']
+        notes.append(f"事件{h}日 80/20：年化 {c['annual']:.2%}、回撤 {c['max_drawdown']:.2%}、"
+                     f"Calmar {c['calmar']}、Sharpe {c['sharpe']}；v3 同区间 {b['annual']:.2%}、"
+                     f"{b['max_drawdown']:.2%}、{b['calmar']}、{b['sharpe']}")
+    block['结论'] = ('事件20日档不进组合（尾部剔除后归零，本组仅作反例留存）；'
+                     '事件60日档仅作小权重试验：') + '；'.join(notes)
+
+    doc = json.loads(DOCS_JSON.read_text(encoding='utf-8'))
+    doc[SECTION]['组合层_80_20'] = block
+    DOCS_JSON.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding='utf-8')
+    print('WROTE ' + DOCS_JSON.name + ' 组合层_80_20', flush=True)
+
+
 def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--step', choices=('alpha', 'tail', 'combine'), default='alpha',
+                    help='alpha=原超额测度；tail=①尾部剔除；combine=②80/20 组合合成')
+    args = ap.parse_args()
     codes, anns = load_events()
     cal, cal_np = global_calendar()
     quotes = load_quotes(sorted(set(codes)))
@@ -213,6 +333,13 @@ def main() -> None:
     ew_eq = ew_df['equity'].to_numpy().astype(float)
     ew = {ew_days[i]: float(ew_eq[i] / ew_eq[i - 1] - 1) for i in range(1, len(ew_days))}
     v3_excess = {d: v - ew[d] for d, v in v3.items() if d in ew}
+
+    if args.step == 'tail':
+        run_tail(cal, cal_np, quotes, windows, skipped, v3_excess, ew)
+        return
+    if args.step == 'combine':
+        run_combine(cal, cal_np, quotes, windows, v3, ew)
+        return
 
     out: Dict[str, object] = {
         '口径': {
@@ -265,7 +392,7 @@ def main() -> None:
     out['结论'] = ('可进组合：' if passed else '不进组合：') + '；'.join(parts)
 
     doc = json.loads(DOCS_JSON.read_text(encoding='utf-8'))
-    doc['事件驱动_业绩预告_2026-11-14'] = out
+    doc[SECTION] = out
     DOCS_JSON.write_text(json.dumps(doc, ensure_ascii=False, indent=1),
                          encoding='utf-8')
     print('WROTE ' + DOCS_JSON.name, flush=True)
