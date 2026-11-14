@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""回测运行清单页生成器：读 `_staging/backtest_runs/` 运行记录 → 单文件 HTML。
+"""回测运行清单页生成器：读运行记录根（``data/local_store/backtest_runs/``）→ 单文件 HTML。
 
 只读消费侧工具：不跑回测、不改任何 run 目录与 data/，只把既有记录渲染成清单页。
 
@@ -22,7 +22,7 @@
 用法
 ----
     .venv\\Scripts\\python.exe tools\\backtest_run_index_page.py \\
-        --runs _staging\\backtest_runs\\index.json \\
+        --runs data\\local_store\\backtest_runs\\index.json \\
         --dashboard 回测结果看板_价量估值等权_2026-11-14.html \\
         --out docs\\回测运行清单_2026-11-14.html
 """
@@ -43,6 +43,8 @@ for _p in (ROOT, ROOT / 'tools'):
         sys.path.insert(0, str(_p))
 
 from backtest_result_dashboard import CSS_TEXT, PALETTE  # 共用同一套视觉变量与色板
+
+from src.data.local_store.paths import backtest_runs_dir  # 运行记录根的唯一来源
 
 PAGE_SIZE = 50
 LOG_TAIL_LINES = 12
@@ -622,7 +624,8 @@ def render_row(run: Dict[str, Any], idx: int) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description='回测运行清单页生成器（单文件 HTML）')
-    ap.add_argument('--runs', default='_staging/backtest_runs/index.json', help='index.json 路径')
+    ap.add_argument('--runs', default=str(backtest_runs_dir() / 'index.json'),
+                    help='index.json 路径（默认取 data/local_store/backtest_runs）')
     ap.add_argument('--out', help='输出 HTML 路径')
     ap.add_argument('--title', default='回测运行清单')
     ap.add_argument('--dashboard', default='回测结果看板_价量估值等权_2026-11-14.html',

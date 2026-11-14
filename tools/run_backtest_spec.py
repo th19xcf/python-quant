@@ -40,6 +40,7 @@ from src.backtest.runner import spec as spec_mod
 from src.backtest.runner.errors import SpecError
 from src.backtest.runner.progress import ProgressReporter
 from src.backtest.runner.registry import CONDITIONS, FACTORS
+from src.data.local_store.paths import backtest_runs_dir
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,8 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--parse-only', action='store_true',
                         help='只解析并打印规格摘要与剔除链顺序，不跑回测')
     parser.add_argument('--apply', action='store_true', help='实跑并写运行记录')
-    parser.add_argument('--runs-dir', type=Path, default=Path('_staging/backtest_runs'),
-                        help='运行记录根目录（默认 _staging/backtest_runs）')
+    parser.add_argument('--runs-dir', type=Path, default=backtest_runs_dir(),
+                        help='运行记录根目录（默认 data/local_store/backtest_runs）')
     parser.add_argument('--no-progress', action='store_true',
                         help='关闭 progress.json 与净值增量文件（默认开启）')
     parser.add_argument('--list-registry', action='store_true',

@@ -76,7 +76,9 @@ SIDE_OUTPUTS = (
 )
 #: 构建收尾会整目录重写的台账（内容随行情变动，逐件白名单不现实）。
 SIDE_PREFIXES = ('meta/anomalies/', 'factors/rebuild/')
-SKIP_DIRS = {'_backup', '__pycache__'}
+#: 增量清点跳过 ``backtest_runs``：回测运行记录是结果归档（json/csv/log 与索引），
+#: 不是数据表，日更既不产出也不消费它，计入会让「本次新增文件」混入非数据资产。
+SKIP_DIRS = {'_backup', '__pycache__', 'backtest_runs'}
 
 
 # ----------------------------------------------------------------------

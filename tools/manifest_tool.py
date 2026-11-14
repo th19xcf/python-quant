@@ -802,6 +802,10 @@ def coverage_gaps(results: list[ManifestResult], root: Path) -> dict[str, dict[s
     但 ``quotes/manifest.json`` 只有目录级汇总、没有逐文件 record，整段跳过会让
     「无侧车 manifest 的分片」永远显示 0，单分片被静默改写时无人发现（G-106）。
     现在与其它子树一视同仁，逐目录判定。
+
+    ``backtest_runs/`` 整段跳过：回测运行记录（spec 快照、metrics、净值 CSV、日志、
+    索引）是结果归档而非数据表，按定义没有 manifest，计入只会长期刷
+    ``no_manifest_nonparquet`` 噪声。
     """
     covered = covered_paths(results, root)
     manifest_dirs = {path.parent.resolve() for path in discover(root)}
@@ -811,6 +815,8 @@ def coverage_gaps(results: list[ManifestResult], root: Path) -> dict[str, dict[s
         if not path.is_file() or path.name.endswith('manifest.json'):
             continue
         rel = path.relative_to(root).as_posix()
+        if rel.startswith('backtest_runs/'):
+            continue
         if str(path.resolve()).lower() in covered:
             continue
         directory = path.parent.relative_to(root).as_posix()

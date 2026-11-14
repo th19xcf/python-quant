@@ -1,6 +1,8 @@
 """运行记录：可复现四要素、run 目录、根索引。
 
-run 目录与索引一律落在 ``_staging/`` 下，不写 ``docs/``、不写 ``data/``。
+run 目录与索引落在正式层 ``data/local_store/backtest_runs/``（结果资产，随数据
+一并镜像备份），不写 ``docs/``。路径唯一来源为
+:func:`src.data.local_store.paths.backtest_runs_dir`。
 """
 from __future__ import annotations
 
@@ -12,12 +14,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from src.data.local_store.paths import backtest_runs_dir
+
 from .errors import SpecError
 
 ROOT = Path(__file__).resolve().parents[3]
 DAILY_INDEX_PARQUET = ROOT / 'data/local_store/meta/daily_index.parquet'
 DAILY_INDEX_MANIFEST = ROOT / 'data/local_store/meta/daily_index.manifest.json'
 RUNNER_DIR = ROOT / 'src/backtest/runner'
+DEFAULT_RUNS_DIR = backtest_runs_dir()
+DEFAULT_INDEX_PATH = DEFAULT_RUNS_DIR / 'index.json'
 INDEX_SCHEMA = 'backtest_run_index/v1'
 
 

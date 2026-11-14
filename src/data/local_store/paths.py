@@ -25,6 +25,9 @@ DEFAULT_STORE_PATH = 'data/local_store'
 DEFAULT_FRESHNESS_ARTIFACTS = 'artifacts/data_freshness'
 #: 不可重建资产备份目录（相对项目根，已被 .gitignore 排除）。
 DEFAULT_BACKUP_DIR = 'backups/critical_assets'
+#: 回测运行记录根（结果资产，随 ``data/local_store`` 一并镜像备份且被 .gitignore 覆盖）。
+#: 写侧 runner、读侧工作台与清单页都从这里取，不再各写一份字符串。
+DEFAULT_BACKTEST_RUNS = 'data/local_store/backtest_runs'
 
 
 def project_root() -> Path:
@@ -35,6 +38,15 @@ def project_root() -> Path:
 def default_store_root() -> Path:
     """默认列存根目录（项目根/data/local_store），与 cwd 无关。"""
     return project_root() / DEFAULT_STORE_PATH
+
+
+def backtest_runs_dir() -> Path:
+    """回测运行记录根目录（项目根/data/local_store/backtest_runs）。
+
+    该目录放 run 归档资产（spec 快照、metrics、净值、日志、索引），不是数据表，
+    不参与日更与 manifest 盘点；读写两侧唯一来源见本函数。
+    """
+    return project_root() / DEFAULT_BACKTEST_RUNS
 
 
 def artifacts_dir(*parts: str) -> Path:

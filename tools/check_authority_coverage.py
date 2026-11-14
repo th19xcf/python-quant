@@ -35,7 +35,9 @@ def collect_groups(store: Path) -> dict[str, dict]:
     groups: dict[str, dict] = {}
     for p in store.rglob("*.parquet"):
         rel = p.relative_to(store).as_posix()
-        if rel.startswith(("_staging/", "_backup/")):
+        # backtest_runs/ 是回测运行结果归档（spec/metrics/nav/日志/索引），不是数据表，
+        # 不参与权威路径覆盖度盘点（与 _staging/、_backup/ 同为非表子树）。
+        if rel.startswith(("_staging/", "_backup/", "backtest_runs/")):
             continue
         parts = rel.split("/")
         if parts[0] == "quotes" and len(parts) == 4:

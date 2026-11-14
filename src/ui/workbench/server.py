@@ -14,7 +14,7 @@
 --------
 - 只监听 127.0.0.1（端口由系统分配，对用户隐藏），不连外网。
 - 同一时刻只跑一个真实回测，其余排队；停止只中断子进程并保留 partial 文件。
-- 不改引擎、不改 ``data/local_store``、不改成本默认值。
+- 不改引擎、不改 ``data/local_store`` 行情与元数据、不改成本默认值。
 """
 from __future__ import annotations
 
@@ -39,7 +39,9 @@ for _p in (ROOT, ROOT / 'tools'):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-RUNS_DIR = ROOT / '_staging' / 'backtest_runs'
+from src.data.local_store.paths import backtest_runs_dir  # 运行记录根的唯一来源
+
+RUNS_DIR = backtest_runs_dir()
 INDEX_PATH = RUNS_DIR / 'index.json'
 RUNNER = ROOT / 'tools' / 'run_backtest_spec.py'
 DASH_TOOL = ROOT / 'tools' / 'backtest_result_dashboard.py'
