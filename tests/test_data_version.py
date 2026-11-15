@@ -5,6 +5,7 @@ from datetime import date
 
 import polars as pl
 
+from src.backtest.runner import records as run_records
 from src.data import data_version as dv
 
 
@@ -119,3 +120,58 @@ def test_stamp_rebuilt_only_marks_changed_tables(tmp_path):
     assert stamped == ['meta/multi_asset/etf_pool.parquet']
     payload = json.loads((store / dv.DERIVED_FILE).read_text(encoding='utf-8'))
     assert list(payload['tables']) == ['meta/multi_asset/etf_pool.parquet']
+
+
+def test_store_data_basis_unknown_when_ledger_missing(tmp_path):
+    store = _build_store(tmp_path)
+    basis = run_records.store_data_basis(store)
+    assert basis['status'] == 'unknown'
+    assert basis['version'] is None
+
+    dv.record_version(store)
+    basis = run_records.store_data_basis(store)
+    assert basis['status'] == 'recorded'
+    assert basis['version'].startswith('dv-20261113-')
+    assert basis['data_as_of'] == '2026-11-13'
+
+
+def test_read_run_data_basis_priority_and_unknown(tmp_path):
+    run_dir = tmp_path / 'run'
+    run_dir.mkdir()
+    empty = run_records.read_run_data_basis(run_dir)
+    assert empty['status'] == 'unknown' and empty['source'] == 'none'
+
+    (run_dir / 'progress.json').write_text(
+        json.dumps({'data_basis': {'status': 'recorded', 'version': 'dv-p'}}), encoding='utf-8')
+    assert run_records.read_run_data_basis(run_dir)['source'] == 'progress.json'
+
+    (run_dir / 'data_basis.json').write_text(
+        json.dumps({'status': 'bound', 'version': 'dv-b', 'evidence': 'e'}), encoding='utf-8')
+    assert run_records.read_run_data_basis(run_dir)['source'] == 'data_basis.json'
+
+    metrics = {'data_basis': {'status': 'recorded', 'version': 'dv-m'}}
+    assert run_records.read_run_data_basis(run_dir, metrics)['version'] == 'dv-m'
+
+
+def test_bind_run_requires_evidence_and_records_ledger_check(tmp_path):
+    store = _build_store(tmp_path)
+    recorded = dv.record_version(store)
+    run_dir = tmp_path / 'run'
+    run_dir.mkdir()
+
+    try:
+        run_records.bind_run_data_basis(run_dir, version=recorded['version'],
+                                        evidence='', store_root=store)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('缺证据必须拒绝绑定')
+
+    entry = run_records.bind_run_data_basis(
+        run_dir, version=recorded['version'],
+        evidence='metrics.repro.data_version.parquet_sha256 与当日 manifest 一致',
+        store_root=store)
+    assert entry['ledger_check'] == 'current'
+    assert entry['digest'] == recorded['digest']
+    assert (run_dir / run_records.RUN_BASIS_FILE).is_file()
+    assert run_records.read_run_data_basis(run_dir)['source'] == run_records.RUN_BASIS_FILE

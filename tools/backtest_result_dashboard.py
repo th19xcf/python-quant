@@ -1222,6 +1222,19 @@ def render_sources(payload: Dict[str, Any], json_path: Path,
 
 # ---------------------------------------------------------------- 主流程
 
+def read_current_data_version() -> str | None:
+    """只读当前基础表数据版本（meta/data_version.json）；读不到返回 None。"""
+    path = ROOT / 'data/local_store' / 'meta' / 'data_version.json'
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    current = payload.get('current') if isinstance(payload, dict) else None
+    if isinstance(current, dict) and current.get('version'):
+        return str(current['version'])
+    return None
+
+
 def series_for_js(series: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [{'id': s['id'], 'name': s['name'], 'color': s['color'], 'ddcolor': s['ddcolor'],
              'dates': s['dates'], 'equity': s['equity']} for s in series]
@@ -1304,7 +1317,15 @@ def main() -> None:
         meta_bits.append(f'区间 <b>{first_date} ~ {last_date}</b>')
     if capital:
         meta_bits.append(f'初始资金 <b>{float(capital) / 1e8:g} 亿</b>')
-    meta_bits.append(f'数据版本 sha256 <b>{json_sha}</b> · 指标冻结 <b>{mtime_text(json_path)}</b>')
+    basis = payload.get('data_basis') if isinstance(payload.get('data_basis'), dict) else {}
+    basis_version = basis.get('version')
+    current_version = read_current_data_version()
+    if basis_version:
+        stale = '（基于旧版数据）' if current_version and current_version != basis_version else ''
+        meta_bits.append(f'数据版本 <b>{basis_version}</b>{stale}')
+    else:
+        meta_bits.append('数据版本 <b>未标记</b>')
+    meta_bits.append(f'指标文件 sha256 <b>{json_sha}</b> · 指标冻结 <b>{mtime_text(json_path)}</b>')
     if csv_meta:
         meta_bits.append(f'净值冻结 <b>{mtime_text(csv_meta[0]["path"])}</b>')
     meta_html = ''.join(f'<span>{b}</span>' for b in meta_bits)

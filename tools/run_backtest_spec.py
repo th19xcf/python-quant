@@ -110,6 +110,8 @@ def main(argv=None) -> int:
     except Exception as exc:  # noqa: BLE001  采集失败即拒绝产出不可复现的 run
         print(f'错误：无法采集可复现信息：{exc}', file=sys.stderr)
         return 2
+    # 只读台账当前版本；取不到就 unknown，不猜、不阻断回测。
+    data_basis = records.store_data_basis()
     run_id = records.make_run_id(spec['name'], repro['code_head']['full'])
     run_dir = runs_dir / run_id
     plan = {
@@ -123,6 +125,8 @@ def main(argv=None) -> int:
         'factor': spec['_resolved']['factor'],
         'progress': not args.no_progress,
         'repro': repro,
+        'data_basis': {k: data_basis.get(k) for k in
+                       ('status', 'version', 'data_as_of', 'source')},
         'spec_sha256': recipe_mod.spec_sha256(spec),
         'registry': {'factors': FACTORS.names(), 'conditions': CONDITIONS.names()},
     }
@@ -138,12 +142,13 @@ def main(argv=None) -> int:
         suffix += 1
     run_dir.mkdir(parents=True)
     sink = logger.add(run_dir / 'run.log', level='INFO', encoding='utf-8')
-    reporter = ProgressReporter(run_dir, enabled=not args.no_progress)
+    reporter = ProgressReporter(run_dir, enabled=not args.no_progress,
+                                data_basis=data_basis)
     logger.info('run 开始：{}（配方/规格 {}）', run_dir.name, records.rel(source_path))
     try:
         result = pipeline.execute(spec, reporter)
         payload = records.write_run(run_dir, spec_bytes, result, repro, spec,
-                                    recipe_bytes)
+                                    recipe_bytes, data_basis=data_basis)
         reporter.finish(payload['metrics'])
         entry = records.index_entry(payload, run_dir, runs_dir)
         index_path = records.update_index(runs_dir, entry)
@@ -173,6 +178,8 @@ def main(argv=None) -> int:
                     ('annual', 'max_drawdown', 'turnover_two_way',
                      'cost_share_of_gross', 'rebalances')},
         'timing': payload.get('timing', {}),
+        'data_basis': {k: payload.get('data_basis', {}).get(k) for k in
+                       ('status', 'version', 'data_as_of', 'source')},
         'spec_sha256': repro['spec_sha256'],
         'recipe_sha256': repro['recipe_sha256'],
         'code_head': repro['code_head']['short'],

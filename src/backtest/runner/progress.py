@@ -54,11 +54,17 @@ def _provisional(points: List[Tuple[date, float]]) -> Dict[str, Any]:
 
 class ProgressReporter:
     def __init__(self, run_dir: Path, enabled: bool = True,
-                 every_days: int = 250, every_seconds: float = 5.0):
+                 every_days: int = 250, every_seconds: float = 5.0,
+                 data_basis: Dict[str, Any] | None = None):
         self.run_dir = run_dir
         self.enabled = enabled
         self.every_days = every_days
         self.every_seconds = every_seconds
+        #: 启动时只读取到的数据版本标记；原样落进 progress.json，供运行中与清单核对。
+        self.data_basis = dict(data_basis) if isinstance(data_basis, dict) else {
+            'status': 'unknown', 'version': None,
+            'note': '运行启动时未采集数据版本',
+        }
         self.total_days = 0
         self.processed = 0
         self.points: List[Tuple[date, float]] = []
@@ -118,6 +124,7 @@ class ProgressReporter:
             'processed_days': self.processed,
             'total_days': self.total_days,
             'percent': round(percent, 2),
+            'data_basis': self.data_basis,
             'metrics_window': _provisional(self.points),
         }
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -142,6 +149,7 @@ class ProgressReporter:
             'processed_days': self.processed,
             'total_days': self.total_days,
             'percent': 100.0 if self.total_days else 0.0,
+            'data_basis': self.data_basis,
             'metrics_window': {
                 'provisional': False,
                 'annual': metrics.get('annual'),

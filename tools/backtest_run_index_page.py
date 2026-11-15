@@ -44,7 +44,12 @@ for _p in (ROOT, ROOT / 'tools'):
 
 from backtest_result_dashboard import CSS_TEXT, PALETTE  # 共用同一套视觉变量与色板
 
-from src.data.local_store.paths import backtest_runs_dir  # 运行记录根的唯一来源
+from src.backtest.runner.records import read_run_data_basis  # 版本标记读取口径唯一来源
+from src.data.data_version import load_current  # 当前基础表版本（只读）
+from src.data.local_store.paths import (  # 运行记录根与列存根的唯一来源
+    backtest_runs_dir,
+    default_store_root,
+)
 
 PAGE_SIZE = 50
 LOG_TAIL_LINES = 12
@@ -145,6 +150,13 @@ LIST_CSS = r"""
     font-family:var(--mono);font-size:10px;border:1px solid var(--v2);color:var(--v2);
     border-radius:4px;padding:0 4px;margin-left:4px;
   }
+  .vtag{
+    font-size:10px;border:1px solid var(--line);color:var(--faint);
+    border-radius:4px;padding:0 4px;margin-left:4px;white-space:nowrap;
+  }
+  .vtag.ok{color:var(--pos);border-color:var(--pos)}
+  .vtag.stale{color:var(--v2);border-color:var(--v2)}
+  .vtag.muted{color:var(--faint)}
   pre.logtail{
     margin:8px 0 0;padding:9px 11px;background:var(--panel);border:1px solid var(--line);
     border-radius:9px;font-family:var(--mono);font-size:11px;line-height:1.6;color:var(--muted);
@@ -204,7 +216,7 @@ LIST_TEMPLATE = r"""<!DOCTYPE html>
       <table class="runs">
         <thead><tr>
           <th>运行</th><th>日期时间</th><th>配方摘要</th><th>年化</th><th>最大回撤</th>
-          <th>年换手</th><th>成本占比</th><th>状态</th><th>数据版本</th>
+          <th>年换手</th><th>成本占比</th><th>状态</th><th>数据版本（台账）</th>
         </tr></thead>
         <tbody id="rows">{{ROWS}}</tbody>
       </table>
@@ -501,6 +513,43 @@ def esc(v: Any) -> str:
     return html.escape(str(v), quote=True)
 
 
+def short_version(v: Any) -> str:
+    """``dv-20261113-ba1e90f429d5`` → ``dv-20261113-ba1e90``（完整值放 title）。"""
+    text = str(v or '')
+    parts = text.split('-')
+    if len(parts) >= 3:
+        return '-'.join(parts[:-1]) + '-' + parts[-1][:6]
+    return text
+
+
+def basis_state(basis: Dict[str, Any], current: Dict[str, Any] | None) -> str:
+    """版本标记与当前台账的关系：current / stale / unverifiable / unknown。"""
+    version = (basis or {}).get('version')
+    if not version:
+        return 'unknown'
+    if not current:
+        return 'unverifiable'
+    return 'current' if current.get('version') == version else 'stale'
+
+
+BASIS_LABEL = {
+    'current': ('ok', '最新'),
+    'stale': ('stale', '基于旧版数据'),
+    'unverifiable': ('muted', '无法比对'),
+    'unknown': ('muted', '未标记'),
+}
+
+
+def version_cell(basis: Dict[str, Any], current: Dict[str, Any] | None) -> str:
+    state = basis_state(basis, current)
+    css, label = BASIS_LABEL[state]
+    version = (basis or {}).get('version')
+    body = (f'<span class="hash8" title="{esc(version)}">{esc(short_version(version))}</span>'
+            if version else '<span class="muted">—</span>')
+    return (f'<td class="num" data-label="数据版本（台账）">{body}'
+            f'<span class="vtag {css}">{label}</span></td>')
+
+
 def fmt_dt(s: Optional[str]) -> str:
     if not s:
         return '未记录'
@@ -547,16 +596,30 @@ def render_detail(run: Dict[str, Any], idx: int) -> str:
     code = ((repro.get('code_head') or {}).get('full') or run['index'].get('code_head') or '')
     script = repro.get('script') or {}
     data = repro.get('data_version') or {}
-    repro_rows = kv_rows([
+    basis = run.get('basis') or {}
+    state = basis_state(basis, run.get('current'))
+    css, label = BASIS_LABEL[state]
+    if basis.get('version'):
+        basis_html = (f'<span class="hash8">{esc(basis["version"])}</span>'
+                      f'<span class="vtag {css}">{label}</span>')
+    else:
+        basis_html = f'<span class="vtag {css}">{label}</span>'
+    repro_items = [
         ('代码 HEAD', f'<span class="hash8">{esc(short(code, 12))}</span>' +
                       (f' <span class="muted">{esc(str(code)[12:])}</span>' if code and len(str(code)) > 12 else '')),
         ('脚本 sha256', (f'{esc(script.get("path", ""))} · <span class="hash8">{esc(short(script.get("sha256"), 16))}</span>'
                         if script.get('sha256') else f'<span class="hash8">{esc(short(run["index"].get("script_sha256"), 16))}</span>')),
-        ('数据版本', f'<span class="hash8">{esc(short(data.get("parquet_sha256") or run["index"].get("data_version_sha256"), 16))}</span>'),
+        ('数据版本（台账）', basis_html),
+        ('数据基准日', basis.get('data_as_of') or '未记录'),
+        ('版本标记来源', basis.get('source') or '未记录'),
+        ('行情摘要 sha256', f'<span class="hash8">{esc(short(data.get("parquet_sha256") or run["index"].get("data_version_sha256"), 16))}</span>'),
         ('数据清单', f'{esc(data.get("manifest", "未记录"))} · <span class="hash8">{esc(short(data.get("manifest_sha256"), 12))}</span>'),
         ('配方 sha256', f'<span class="hash8">{esc(short(repro.get("recipe_sha256") or run["index"].get("recipe_sha256"), 16))}</span>'),
         ('规格 sha256', f'<span class="hash8">{esc(short(repro.get("spec_sha256") or run["index"].get("spec_sha256"), 16))}</span>'),
-    ])
+    ]
+    if basis.get('evidence'):
+        repro_items.append(('绑定证据', basis['evidence']))
+    repro_rows = kv_rows(repro_items)
 
     extras = []
     if run['metrics'] is None:
@@ -608,7 +671,8 @@ def render_row(run: Dict[str, Any], idx: int) -> str:
     status = status_of(meta, run['progress'])
     cls = status_class(meta, run['progress'])
     search = ' '.join([str(meta.get('name') or ''), str(meta.get('created_at') or ''),
-                       str(meta.get('run_id') or ''), status])
+                       str(meta.get('run_id') or ''), status,
+                       str((run.get('basis') or {}).get('version') or '')])
     name_html = esc(meta.get("name") or "未记录")
     if run.get('dashboard_url'):
         name_html = f'<a class="rlink" href="{esc(run["dashboard_url"])}">{name_html}</a>'
@@ -623,13 +687,13 @@ def render_row(run: Dict[str, Any], idx: int) -> str:
         f'<td class="num" data-label="年换手">{num(metrics.get("turnover_two_way"), "x")}</td>'
         f'<td class="num" data-label="成本占比">{pct(metrics.get("cost_share_of_gross"))}</td>'
         f'<td data-label="状态"><span class="status {cls}">{esc(status)}</span></td>'
-        f'<td class="num hash8" data-label="数据版本" title="{esc(meta.get("data_version_sha256") or "")}">'
-        f'{esc(short(meta.get("data_version_sha256")))}</td>'
+        f'{version_cell(run.get("basis") or {}, run.get("current"))}'
         '</tr>'
     ) + render_detail(run, idx)
 
 
-def scan_unindexed_runs(base_dir: Path, indexed: set) -> List[Dict[str, Any]]:
+def scan_unindexed_runs(base_dir: Path, indexed: set,
+                        current: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
     """补出「目录在、index.json 没有」的 run，避免残缺 run 在清单里隐形。
 
     判定依据：下划线开头目录（如 ``_fixtures``）是夹具，不显示；其余目录按
@@ -672,6 +736,8 @@ def scan_unindexed_runs(base_dir: Path, indexed: set) -> List[Dict[str, Any]]:
             'log_tail': tail_log(run_dir / 'run.log'),
             'summary': recipe_summary(spec) if spec else '未完成（无 spec 快照）',
             'nav': load_nav(run_dir / nav_name, period.get('start'), period.get('end')),
+            'basis': read_run_data_basis(run_dir, metrics, progress),
+            'current': current,
         })
     return out
 
@@ -696,6 +762,8 @@ def main() -> None:
     if not runs_meta:
         raise SystemExit(f'index.json 中没有 runs：{index_path}')
     base_dir = index_path.parent
+    # 当前基础表版本：只读台账；缺失时各 run 标「无法比对」，不假装最新。
+    current = load_current(default_store_root())
 
     runs: List[Dict[str, Any]] = []
     for meta in runs_meta:
@@ -715,12 +783,14 @@ def main() -> None:
             'log_tail': tail_log(run_dir / 'run.log'),
             'summary': recipe_summary(spec),
             'nav': load_nav(run_dir / 'daily_nav.csv', period.get('start'), period.get('end')),
+            'basis': read_run_data_basis(run_dir, metrics, progress),
+            'current': current,
         }
         runs.append(package)
 
     runs.sort(key=lambda r: str(r['index'].get('created_at') or ''), reverse=True)
     indexed_ids = {str(r['index'].get('run_id') or '') for r in runs}
-    runs.extend(scan_unindexed_runs(base_dir, indexed_ids))
+    runs.extend(scan_unindexed_runs(base_dir, indexed_ids, current))
     runs.sort(key=lambda r: str(r['index'].get('created_at') or ''), reverse=True)
     if args.dashboard_pattern:
         for run in runs:
@@ -739,7 +809,8 @@ def main() -> None:
             'nav': run['nav'],
             'search': ' '.join([str(run['index'].get('name') or ''),
                                 str(run['index'].get('created_at') or ''),
-                                str(run['index'].get('run_id') or '')]),
+                                str(run['index'].get('run_id') or ''),
+                                str((run.get('basis') or {}).get('version') or '')]),
         })
 
     counts: Dict[str, int] = {}
@@ -749,9 +820,12 @@ def main() -> None:
     dist = ' / '.join(f'{k} {v}' for k, v in sorted(counts.items()))
     index_sha = hashlib.sha256(index_path.read_bytes()).hexdigest()[:8]
     first_nav = next((r for r in runs if r['nav']), None)
+    states = [basis_state(r.get('basis') or {}, current) for r in runs]
     meta_bits = [
+        f'当前数据版本 <b>{esc(current["version"]) if current else "未记录"}</b>',
         f'运行 <b>{len(runs)}</b> 条',
         f'状态 <b>{esc(dist)}</b>',
+        f'旧版数据 <b>{states.count("stale")}</b> 条 · 未标记 <b>{states.count("unknown")}</b> 条',
         f'索引更新 <b>{esc(fmt_dt(index.get("updated_at")))}</b>',
         f'索引 sha256 <b>{index_sha}</b>',
     ]
@@ -763,8 +837,9 @@ def main() -> None:
                '<a href="#runs">运行列表</a>']
     source_note = (f'索引：{index_path.relative_to(ROOT).as_posix() if index_path.is_relative_to(ROOT) else index_path} · '
                    f'sha256 <span class="hash">{index_sha}</span> · 更新 {fmt_dt(index.get("updated_at"))}<br>'
-                   f'各 run 目录只读读取 spec.json / recipe.txt / metrics.json / daily_nav.csv / run.log / progress.json；'
-                   '缺失字段显示「未记录」，未做任何补算。')
+                   f'各 run 目录只读读取 spec.json / recipe.txt / metrics.json / daily_nav.csv / run.log / progress.json / '
+                   f'data_basis.json；数据版本与 meta/data_version.json 当前版本比对，'
+                   '不一致标「基于旧版数据」，缺失标「未标记」；缺失字段显示「未记录」，未做任何补算。')
 
     html_text = LIST_TEMPLATE
     html_text = html_text.replace('{{TITLE}}', args.title)
