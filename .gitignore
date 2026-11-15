@@ -231,3 +231,6 @@ _external_inputs/
 /scripts/smoke_risk_filters.py
 /scripts/verify_advice_backtest.py
 /scripts/correct_stock_basic.py
+
+# 收尾提交消息临时文件（提交流程落在仓库根，不入库）
+/.commit_msg_tmp.txt
