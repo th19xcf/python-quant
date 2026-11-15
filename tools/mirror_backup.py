@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """备份镜像：只增不删。
 
-备份范围四类中的 ② ``data/local_store/**`` 与 ③ ``reports/**`` 按「相对路径集合差」
+备份范围四类中的 ② ``data/local_store/**``、``_backup/snapshots/**`` 与 ③ ``reports/**`` 按「相对路径集合差」
 做镜像，判定口径：
 
 - 仅源侧存在 → ``copy2`` 补齐，并逐文件 SHA256 校验；
@@ -40,7 +40,7 @@ if str(ROOT) not in sys.path:
 
 from tools.backup_root import BackupRootError, resolve_backup_root  # noqa: E402
 
-DEFAULT_SUBDIRS = ('data/local_store', 'reports')
+DEFAULT_SUBDIRS = ('data/local_store', 'reports', '_backup/snapshots')
 EXCLUDED_DIR = '__pycache__'
 EXCLUDED_SUFFIXES = ('.pyc', '.pyo')
 

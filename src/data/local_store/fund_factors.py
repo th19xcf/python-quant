@@ -538,7 +538,7 @@ def build_fund_store(
     years: Iterable[int] | None = None,
     codes: Sequence[str] | None = None,
     cache_dir: Path | str = 'tmp/fund_cache',
-    log_dir: Path | str = 'logs/fund_factor_20261104',
+    log_dir: Path | str = '_backup/snapshots/fund_factor_20261104',
     refresh: bool = False,
     dry_run: bool = False,
     skip_fetch: bool = False,
@@ -800,7 +800,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--store-root', default='data/local_store')
     parser.add_argument('--cache-dir', default='tmp/fund_cache')
-    parser.add_argument('--log-dir', default='logs/fund_factor_20261104')
+    parser.add_argument('--log-dir', default='_backup/snapshots/fund_factor_20261104')
     parser.add_argument('--years', default='2004-2026')
     parser.add_argument('--codes', default='',
                         help='逗号分隔的 ts_code，仅处理这些标的')
