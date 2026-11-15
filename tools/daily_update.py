@@ -8,6 +8,7 @@
     2. 回填 daily_index + manifest  LocalQuoteStore.flush_meta()（采集写盘后立即回填）
     3. 通达信增量构建 + 换手派生 + 异常清单  python -m src.data.local_store build build
        市场宽度增量补齐（行情末根未前进时不落盘） src.data.services.breadth_service.refresh
+    3b. 全市场日频估值增量（本地末日次日起补到目标日） tools/collect_financials.py --only valuation
     4. ST 区间表按交易日刷新        src.data.risk_flags refresh + src.data.st_history build
     5. 名录每日检查（每天检查一次，有变更才落盘；体检按最后检查日期判） src.main --update-fund / --update-index
     6. 候选池周更（超过 N 天未重建才跑） tools/build_multi_asset_etf_pool.py --apply
@@ -30,9 +31,9 @@
     - ``quotes/manifest.json`` 是人工维护的全市场总账（仓库内无产者，含
       futures 口径），本入口只做只读对账（universe 分市场求和 == universe
       合计），不代写数值；该件与磁盘的偏差按 WARN 打印实测差额。
-    - 第 3 步的市场宽度增量与第 4/5/6/9 步是旁路：任一步失败只告警，不改日更
-      原有退出码，也不改主表校验口径。候选池是筛选结果（视图层），不承担
-      数据完整性；被排除标的的行情/分红由保鲜体检的全集判据负责。
+    - 第 3 步的市场宽度增量、第 3b 步的估值增量与第 4/5/6/9 步是旁路：任一步失败
+      只告警，不改日更原有退出码，也不改主表校验口径。候选池是筛选结果（视图层），
+      不承担数据完整性；被排除标的的行情/分红由保鲜体检的全集判据负责。
 
 用法::
 
@@ -57,7 +58,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -89,7 +90,8 @@ SIDE_OUTPUTS = (
     'factors/covered_codes.txt',
 )
 #: 构建收尾会整目录重写的台账（内容随行情变动，逐件白名单不现实）。
-SIDE_PREFIXES = ('meta/anomalies/', 'factors/rebuild/')
+SIDE_PREFIXES = ('meta/anomalies/', 'factors/rebuild/',
+                 'meta/financials/parts/valuation/')
 #: ST 区间表日更（risk_flags refresh + st_history build）会写的件。
 AUX_ST_OUTPUTS = (
     'meta/st/st_intervals.parquet',
@@ -98,6 +100,11 @@ AUX_ST_OUTPUTS = (
     'meta/st/manifest.json',
     'meta/st_status/st_status_history.parquet',
     'meta/st_status/manifest.json',
+)
+#: 估值日更会写的件（最终表 + 断点；分片按 ``meta/financials/parts/valuation/`` 前缀计入）。
+AUX_VALUATION_OUTPUTS = (
+    'meta/financials/valuation_daily.parquet',
+    'meta/financials/parts/progress.json',
 )
 #: 名录周更会写的件（首件用于判断距上次刷新是否超过阈值）。
 AUX_BASIC_OUTPUTS = {
@@ -446,6 +453,49 @@ def _run_pool_refresh(plan: _Plan, args: argparse.Namespace) -> str:
     return (f'[候选池] as_of {as_of} | 池内 {len(after)} 只 | 新入池 {entered} / 出池 {exited} | '
             f'按规则排除 {excluded} 只（{with_reason} 条带原因与评估日期，见 '
             'etf_pool_excluded.json）')
+
+
+def _valuation_last_date(root: Path) -> date | None:
+    """读估值表末日（只读一列）；文件缺失或读取失败返回 None。"""
+    path = root / 'meta' / 'financials' / 'valuation_daily.parquet'
+    if not path.is_file():
+        return None
+    try:
+        value = pl.read_parquet(path, columns=['trade_date'])['trade_date'].max()
+    except (OSError, pl.exceptions.PolarsError):
+        return None
+    return value if isinstance(value, date) else None
+
+
+def _run_valuation(plan: _Plan, args: argparse.Namespace) -> str:
+    """全市场日频估值增量：从本地末日次日起补到目标交易日；失败只告警。
+
+    区间桶为 ``[本地末日+1, 目标日]``，源端当日未更新时本次落 0 行、末日不动，
+    次日 ``until`` 变化即换新桶重试，不会把未采到的日期永久标记完成。
+    """
+    if args.skip_valuation:
+        logger.info('[daily] 已跳过估值刷新（--skip-valuation）')
+        return ''
+    if not args.allow_remote:
+        logger.warning('[daily] 未加 --allow-remote：跳过估值增量，只跑本地步骤')
+        return '[估值] 未允许联网，跳过（只告警，不影响日更结果）'
+    last = _valuation_last_date(plan.root)
+    if last is None:
+        logger.warning('[daily] 估值表缺失，无法确定增量起点，本轮不采集')
+        return '[估值] 表缺失，未采集（只告警，不影响日更结果）'
+    since = last + timedelta(days=1)
+    if since > plan.latest:
+        return f'[估值] 末日 {last} 已覆盖目标日 {plan.latest}，无需采集'
+    code = _run_module(
+        [sys.executable, str(ROOT / 'tools' / 'collect_financials.py'),
+         '--only', 'valuation', '--since', since.isoformat(),
+         '--until', plan.latest.isoformat()], '全市场估值增量')
+    after = _valuation_last_date(plan.root)
+    if code != 0 or after is None or after < plan.latest:
+        logger.warning('[daily] 估值增量未完成（返回 {}，末日 {}），只告警', code, after)
+        return ('[估值] 增量未完成（只告警，不影响日更结果）'
+                f' | 末日 {after or "-"}')
+    return f'[估值] 末日 {after} | 覆盖 {last}→{after}'
 
 
 def _run_breadth(plan: _Plan) -> str:
@@ -810,6 +860,7 @@ def _build_plan(args: argparse.Namespace) -> _Plan:
     for rel in list(expected):
         expected.add(Path(rel).with_suffix('.manifest.json').as_posix())
     expected.update(SIDE_OUTPUTS)
+    expected.update(AUX_VALUATION_OUTPUTS)
     expected |= _aux_expected(root, args.basic_refresh_days, args.pool_refresh_days)
     tdx_root = getattr(config.data, 'tdx_data_path', None)
     tdx_stale = _tdx_stale(root, Path(tdx_root) if tdx_root else None, coverage, codes)
@@ -877,6 +928,8 @@ def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
     if code != 0:
         logger.error('[daily] 本地构建返回非零：{}', code)
 
+    # 全市场日频估值增量（行情入库后补到目标日）；失败只告警
+    valuation_line = _run_valuation(plan, args)
     # 新增旁路：市场宽度增量补齐；失败只告警
     breadth_line = _run_breadth(plan)
     # 新增旁路：ST 区间表按交易日刷新、名录按周更阈值刷新；失败只告警
@@ -915,6 +968,8 @@ def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
         print(pool_line)
     if breadth_line:
         print(breadth_line)
+    if valuation_line:
+        print(valuation_line)
     print(_run_freshness(root))
     print(_run_version(root, changed))
     if args.target_holdings:
@@ -949,6 +1004,8 @@ def main(argv: list[str] | None = None) -> int:
                         help='目标持仓清单的资金规模（元，仅 --target-holdings 生效）')
     parser.add_argument('--skip-st-refresh', action='store_true',
                         help='跳过 ST 区间表日更（risk_flags refresh + st_history build）')
+    parser.add_argument('--skip-valuation', action='store_true',
+                        help='跳过全市场日频估值增量（collect_financials.py --only valuation）')
     parser.add_argument('--skip-basic-refresh', action='store_true',
                         help='跳过 fund_basic / index_basic 名录每日检查')
     parser.add_argument('--basic-refresh-days', type=int, default=DEFAULT_BASIC_REFRESH_DAYS,
