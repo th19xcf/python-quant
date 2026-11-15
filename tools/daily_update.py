@@ -7,10 +7,13 @@
     1. 采集 + 写行情 parquet        src.data.tencent.daily_fill.fill_daily_gap(workers=1)
     2. 回填 daily_index + manifest  LocalQuoteStore.flush_meta()（采集写盘后立即回填）
     3. 通达信增量构建 + 换手派生 + 异常清单  python -m src.data.local_store build build
-    4. 登记回写                     src.data.manifest_refresh.refresh_manifest_files
-    5. 校验                         逐件 rows/bytes/sha256 与 manifest 一致、
+    4. ST 区间表按交易日刷新        src.data.risk_flags refresh + src.data.st_history build
+    5. 名录周更（超过 N 天未刷新才跑） src.main --update-fund / --update-index
+    6. 登记回写                     src.data.manifest_refresh.refresh_manifest_files
+    7. 校验                         逐件 rows/bytes/sha256 与 manifest 一致、
                                     同级 manifest 汇总字段对账、
                                     mtime 晚于开工标记的文件与预期清单求差为 0
+    8. 保鲜体检                      src.data.quality.freshness_check --summary（一行状态）
 
 口径与边界::
 
@@ -23,6 +26,8 @@
     - ``quotes/manifest.json`` 是人工维护的全市场总账（仓库内无产者，含
       futures 口径），本入口只做只读对账（universe 分市场求和 == universe
       合计），不代写数值；该件与磁盘的偏差按 WARN 打印实测差额。
+    - 第 4/5/8 步是新增旁路：任一步失败只告警，不改日更原有退出码，
+      也不改主表校验口径。
 
 用法::
 
@@ -79,6 +84,22 @@ SIDE_OUTPUTS = (
 )
 #: 构建收尾会整目录重写的台账（内容随行情变动，逐件白名单不现实）。
 SIDE_PREFIXES = ('meta/anomalies/', 'factors/rebuild/')
+#: ST 区间表日更（risk_flags refresh + st_history build）会写的件。
+AUX_ST_OUTPUTS = (
+    'meta/st/st_intervals.parquet',
+    'meta/st/st_coverage.parquet',
+    'meta/st/coverage.json',
+    'meta/st/manifest.json',
+    'meta/st_status/st_status_history.parquet',
+    'meta/st_status/manifest.json',
+)
+#: 名录周更会写的件（首件用于判断距上次刷新是否超过阈值）。
+AUX_BASIC_OUTPUTS = {
+    'fund': ('meta/fund_basic.parquet', 'meta/fund_basic.manifest.json'),
+    'index': ('meta/index_basic.parquet', 'meta/index_basic.manifest.json'),
+}
+#: 名录默认刷新周期（自然日）
+DEFAULT_BASIC_REFRESH_DAYS = 7
 #: 增量清点跳过 ``backtest_runs``：回测运行记录是结果归档（json/csv/log 与索引），
 #: 不是数据表，日更既不产出也不消费它，计入会让「本次新增文件」混入非数据资产。
 SKIP_DIRS = {'_backup', '__pycache__', 'backtest_runs'}
@@ -272,6 +293,91 @@ def _run_fill(config: Any, store: LocalQuoteStore, latest: date, *,
         max_gap_days=max_gap_days)
 
 
+def _run_module(cmd: list[str], label: str) -> int:
+    """跑一个独立子进程，输出透传到 stderr，返回退出码。"""
+    logger.info('[daily] {}：{}', label, ' '.join(cmd[1:]))
+    proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
+                          encoding='utf-8', errors='replace')
+    for stream in (proc.stdout, proc.stderr):
+        if stream:
+            sys.stderr.write(stream if stream.endswith('\n') else stream + '\n')
+    return proc.returncode
+
+
+def _age_days(path: Path) -> int | None:
+    """文件距今天数（按本地日期）；文件不存在返回 None。"""
+    if not path.is_file():
+        return None
+    return (date.today() - date.fromtimestamp(path.stat().st_mtime)).days
+
+
+def _basic_due(root: Path, refresh_days: int) -> dict[str, tuple[str, str]]:
+    """距上次刷新超过 ``refresh_days`` 天的名录（文件缺失也算到期）。"""
+    due: dict[str, tuple[str, str]] = {}
+    for key, rels in AUX_BASIC_OUTPUTS.items():
+        age = _age_days(root / rels[0])
+        if age is None or age >= refresh_days:
+            due[key] = rels
+    return due
+
+
+def _aux_expected(root: Path, refresh_days: int) -> set[str]:
+    """新增旁路会写的件，并入日更预期清单（只作白名单，不强制必须出现）。"""
+    expected = set(AUX_ST_OUTPUTS)
+    for key, rels in _basic_due(root, refresh_days).items():
+        expected.update(rels)
+    return expected
+
+
+def _run_aux_refresh(plan: _Plan, args: argparse.Namespace) -> dict[str, Any]:
+    """ST 区间表日更 + 名录周更；任何失败只告警，不改日更结果。"""
+    root = plan.root
+    store_args = ['--store-root', str(root)]
+    result: dict[str, Any] = {}
+    if not args.skip_st_refresh:
+        snapshot = _run_module(
+            [sys.executable, '-m', 'src.data.risk_flags', 'refresh',
+             '--as-of', plan.latest.isoformat(), *store_args], 'ST 快照刷新')
+        build = None
+        if snapshot == 0:
+            build = _run_module(
+                [sys.executable, '-m', 'src.data.st_history', *store_args, 'build'],
+                'ST 区间表重建')
+        if snapshot != 0 or build not in (0, None):
+            logger.warning('[daily] ST 区间表日更未完成（快照 {} / 重建 {}），只告警',
+                           snapshot, build)
+        result['st'] = {'snapshot_rc': snapshot, 'build_rc': build}
+    if not args.skip_basic_refresh:
+        for key, rels in _basic_due(root, args.basic_refresh_days).items():
+            flag = '--update-fund' if key == 'fund' else '--update-index'
+            before = (root / rels[0]).stat().st_mtime if (root / rels[0]).is_file() else None
+            code = _run_module([sys.executable, '-m', 'src.main', flag],
+                               f'{key}_basic 名录刷新')
+            after = (root / rels[0]).stat().st_mtime if (root / rels[0]).is_file() else None
+            refreshed = after is not None and (before is None or after > before)
+            if code != 0 or not refreshed:
+                logger.warning('[daily] {} 名录刷新未生效（返回 {}，刷新时间未推进），只告警',
+                               key, code)
+            result[key] = {'rc': code, 'refreshed': refreshed}
+    else:
+        logger.info('[daily] 已跳过名录周更（逐表按 {} 天阈值触发）', args.basic_refresh_days)
+    return result
+
+
+def _run_freshness(root: Path) -> str:
+    """日更收尾跑一次保鲜体检，返回单行状态（失败只告警）。"""
+    cmd = [sys.executable, '-m', 'src.data.quality.freshness_check', '--summary',
+           '--store-root', str(root)]
+    proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
+                          encoding='utf-8', errors='replace')
+    if proc.returncode not in (0, 1):
+        logger.warning('[daily] 保鲜体检异常（返回 {}）：{}', proc.returncode,
+                       (proc.stderr or '').strip()[:300])
+        return '[保鲜] 体检未完成（只告警，不影响日更结果）'
+    line = (proc.stdout or '').strip().splitlines()
+    return line[-1] if line else '[保鲜] 无输出'
+
+
 def _run_build(*, since: date | None, end: date | None,
                codes: set[str] | None) -> int:
     cmd = [sys.executable, '-m', 'src.data.local_store', 'build']
@@ -283,13 +389,7 @@ def _run_build(*, since: date | None, end: date | None,
         cmd += ['--incremental']
     if end is not None:
         cmd += ['--max-date', end.isoformat()]
-    logger.info('[daily] 本地构建：{}', ' '.join(cmd[1:]))
-    proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
-                          encoding='utf-8', errors='replace')
-    for stream in (proc.stdout, proc.stderr):
-        if stream:
-            sys.stderr.write(stream if stream.endswith('\n') else stream + '\n')
-    return proc.returncode
+    return _run_module(cmd, '本地构建')
 
 
 def _tdx_stale(root: Path, tdx_path: Path | None,
@@ -542,6 +642,7 @@ def _build_plan(args: argparse.Namespace) -> _Plan:
     for rel in list(expected):
         expected.add(Path(rel).with_suffix('.manifest.json').as_posix())
     expected.update(SIDE_OUTPUTS)
+    expected |= _aux_expected(root, args.basic_refresh_days)
     tdx_root = getattr(config.data, 'tdx_data_path', None)
     tdx_stale = _tdx_stale(root, Path(tdx_root) if tdx_root else None, coverage, codes)
     expected |= tdx_stale
@@ -608,6 +709,9 @@ def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
     if code != 0:
         logger.error('[daily] 本地构建返回非零：{}', code)
 
+    # 新增旁路：ST 区间表按交易日刷新、名录按周更阈值刷新；失败只告警
+    _run_aux_refresh(plan, args)
+
     changed = _walk(root, plan.marker_ts)
     logger.info('[daily] 改动 {} 件，回写 manifest 登记 {} 条',
                 len(changed), _refresh(root, changed))
@@ -635,6 +739,7 @@ def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
     })
     print(_format(plan.range_label, len(changed), len(plan.plan_quote), report['added'],
                   report['deleted'], len(report['problems']), digest[:12], apply=True))
+    print(_run_freshness(root))
     if args.target_holdings:
         _run_target_holdings(plan.latest, args.capital)
     failed = int(fill_stats.get('failed_symbols') or 0)
@@ -665,6 +770,12 @@ def main(argv: list[str] | None = None) -> int:
                              '失败不改日更原有退出码）')
     parser.add_argument('--capital', type=float, default=1e9,
                         help='目标持仓清单的资金规模（元，仅 --target-holdings 生效）')
+    parser.add_argument('--skip-st-refresh', action='store_true',
+                        help='跳过 ST 区间表日更（risk_flags refresh + st_history build）')
+    parser.add_argument('--skip-basic-refresh', action='store_true',
+                        help='跳过 fund_basic / index_basic 名录周更')
+    parser.add_argument('--basic-refresh-days', type=int, default=DEFAULT_BASIC_REFRESH_DAYS,
+                        help='名录距上次刷新超过该天数才刷新（默认 7）')
     args = parser.parse_args(argv)
 
     logger.remove()

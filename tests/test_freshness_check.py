@@ -1,14 +1,18 @@
 """数据新鲜度自检回归测试。
 
-覆盖三条判定：
+覆盖判定：
 1. 滞后 1 个交易日不报错；
 2. 滞后 6 个交易日报 error 且命令行退出码非零；
-3. 正式表缺失报 error，而不是静默跳过。
+3. 正式表缺失报 error，而不是静默跳过；
+4. 行情有而名录无 / 行情有而估值无；
+5. 名录刷新日期陈旧、事件表滞后、ST 区间水位滞后；
+6. 正常时只输出一行汇总。
 
 另覆盖基础信息表的「新增标的」口径与权威清单登记校验。
 """
 
-from datetime import date, timedelta
+import os
+from datetime import date, datetime, time, timedelta
 
 import polars as pl
 import pytest
@@ -57,6 +61,12 @@ def _write_doc(tmp_path, skip: str = '') -> object:
     return doc
 
 
+def _touch(path, day: date) -> None:
+    """把文件刷新日期固定到指定日（名录陈旧判定用）。"""
+    stamp = datetime.combine(day, time(12, 0)).timestamp()
+    os.utime(path, (stamp, stamp))
+
+
 def _build_store(tmp_path, *, daily_end: date, coverage_end: date, event_end: date):
     store = tmp_path / 'local_store'
     calendar = _biz_days(12)
@@ -68,9 +78,23 @@ def _build_store(tmp_path, *, daily_end: date, coverage_end: date, event_end: da
     _write_date_table(store / 'meta' / 'st' / 'st_coverage.parquet', 'coverage_end', coverage_end)
     _write_date_table(store / 'meta' / 'multi_asset' / 'etf_pool.parquet',
                       'coverage_end', coverage_end)
+    valuation = store / 'meta' / 'financials' / 'valuation_daily.parquet'
+    valuation.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({'ts_code': ['600000.SH'], 'trade_date': [daily_end]}).write_parquet(valuation)
+    events = store / 'meta' / 'events' / 'events.parquet'
+    events.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({'event_id': ['e1'], 'ts_code': ['600000.SH'],
+                  'publish_time': [datetime.combine(event_end, time(9, 0))]}).write_parquet(events)
+    coverage = store / 'meta' / 'st' / 'coverage.json'
+    coverage.write_text(f'{{"snapshot_date": "{coverage_end.isoformat()}"}}', encoding='utf-8')
+    pl.DataFrame({'code': ['600000.SH'], 'start_date': [daily_end],
+                  'end_date': [None]}).write_parquet(store / 'meta' / 'st' / 'st_intervals.parquet')
     _write_basic(store / 'meta' / 'fund_basic.parquet', ['510300.SH'])
     _write_basic(store / 'meta' / 'index_basic.parquet', ['000001.SH'])
     _write_basic(store / 'meta' / 'stock_basic.parquet', ['600000.SH'])
+    for rel in ('meta/fund_basic.parquet', 'meta/index_basic.parquet',
+                'meta/stock_basic.parquet'):
+        _touch(store / rel, daily_end)
     _write_quotes_dir(store, 'fund', ['510300.SH'])
     _write_quotes_dir(store, 'index', ['000001.SH'])
     return store, calendar
@@ -140,10 +164,81 @@ def test_base_info_uses_new_code_count_not_date_threshold(tmp_path):
     report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
 
     row = _row(report, 'meta/fund_basic.parquet')
-    assert row.data_end is None
-    assert row.lag is None
+    assert row.data_end == calendar[-1]
+    assert row.lag == 0
+    assert row.gap == 1
     assert row.verdict == 'warning'
     assert '506000.SH' in row.detail
+
+
+def test_base_info_stale_refresh_date_reports_warning(tmp_path):
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    _touch(store / 'meta' / 'index_basic.parquet', calendar[-8])
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'meta/index_basic.parquet')
+    assert row.data_end == calendar[-8]
+    assert row.lag == 7
+    assert row.verdict == 'warning'
+    assert '刷新日期' in row.detail
+
+
+def test_valuation_missing_active_code_reports_warning(tmp_path):
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    pl.DataFrame({'ts_code': ['600000.SH'], 'trade_date': [calendar[-1]]}).write_parquet(
+        store / 'meta' / 'financials' / 'valuation_daily.parquet')
+    _write_quotes(store, '000001.SZ', calendar)
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'meta/financials/valuation_daily.parquet')
+    assert row.gap == 1
+    assert row.verdict == 'warning'
+    assert '000001.SZ' in row.detail
+
+
+def test_event_lag_uses_calendar_days(tmp_path):
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1] - timedelta(days=100))
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'meta/events/events.parquet')
+    assert row.lag == 100
+    assert row.verdict == 'error'
+
+
+def test_st_interval_watermark_lag_reports_error(tmp_path):
+    calendar = _biz_days(12)
+    stale = calendar[-7]
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    (store / 'meta' / 'st' / 'coverage.json').write_text(
+        f'{{"snapshot_date": "{stale.isoformat()}"}}', encoding='utf-8')
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'meta/st/st_intervals.parquet')
+    assert row.lag == 6
+    assert row.verdict == 'error'
+
+
+def test_summary_is_single_line_when_normal(tmp_path):
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    summary = fc.format_summary(report)
+    assert '\n' not in summary
+    assert summary.startswith('[保鲜]')
+    assert '全部正常' in summary
 
 
 def test_known_exception_is_listed_but_not_counted_as_warning(tmp_path):
