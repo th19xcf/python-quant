@@ -1,6 +1,6 @@
 # ST 覆盖窗口：口径、重放层与可复现重建
 
-生成时间：2026-11-10　　关联：`reports/st_g1_conflicts_20261110/coverage_drift64.md`
+生成时间：2026-11-10　　关联：`docs/evidence/st_g1_conflicts_20261110/coverage_drift64.md`
 
 ## 一、为什么要有重放层
 
