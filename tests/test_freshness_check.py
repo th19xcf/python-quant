@@ -46,6 +46,12 @@ def _write_basic(path, codes: list[str]) -> None:
     pl.DataFrame({'ts_code': codes}).write_parquet(path)
 
 
+def _write_fund_basic(path, rows: list[tuple[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({'ts_code': [row[0] for row in rows],
+                  'fund_type': [row[1] for row in rows]}).write_parquet(path)
+
+
 def _write_quotes_dir(store, kind: str, codes: list[str]) -> None:
     for code in codes:
         path = store / 'quotes' / kind / 'sh' / f'{code}.parquet'
@@ -76,8 +82,9 @@ def _build_store(tmp_path, *, daily_end: date, coverage_end: date, event_end: da
     _write_date_table(store / 'meta' / 'breadth' / 'breadth_daily.parquet',
                       'trade_date', daily_end)
     _write_date_table(store / 'meta' / 'st' / 'st_coverage.parquet', 'coverage_end', coverage_end)
-    _write_date_table(store / 'meta' / 'multi_asset' / 'etf_pool.parquet',
-                      'coverage_end', coverage_end)
+    pool = store / 'meta' / 'multi_asset' / 'etf_pool.parquet'
+    pool.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({'ts_code': ['510300.SH'], 'coverage_end': [coverage_end]}).write_parquet(pool)
     valuation = store / 'meta' / 'financials' / 'valuation_daily.parquet'
     valuation.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame({'ts_code': ['600000.SH'], 'trade_date': [daily_end]}).write_parquet(valuation)
@@ -95,6 +102,9 @@ def _build_store(tmp_path, *, daily_end: date, coverage_end: date, event_end: da
     for rel in ('meta/fund_basic.parquet', 'meta/index_basic.parquet',
                 'meta/stock_basic.parquet'):
         _touch(store / rel, daily_end)
+    # 事件表的滞后基准是文件刷新日期，必须把 mtime 固定到 event_end
+    for rel in ('factors/stock_dividend.parquet', 'meta/events/events.parquet'):
+        _touch(store / rel, event_end)
     _write_quotes_dir(store, 'fund', ['510300.SH'])
     _write_quotes_dir(store, 'index', ['000001.SH'])
     return store, calendar
@@ -202,16 +212,62 @@ def test_valuation_missing_active_code_reports_warning(tmp_path):
     assert '000001.SZ' in row.detail
 
 
-def test_event_lag_uses_calendar_days(tmp_path):
+def test_event_stale_refresh_file_reports_error(tmp_path):
     calendar = _biz_days(12)
+    old = calendar[-1] - timedelta(days=100)
     store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
-                                   coverage_end=calendar[-1], event_end=calendar[-1] - timedelta(days=100))
+                                   coverage_end=calendar[-1], event_end=old)
 
     report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
 
     row = _row(report, 'meta/events/events.parquet')
     assert row.lag == 100
     assert row.verdict == 'error'
+
+
+def test_event_old_data_but_fresh_file_is_ok(tmp_path):
+    """连续无公告是合法状态：事件末日很旧，但表已随日更刷新就不算缺口。"""
+    calendar = _biz_days(12)
+    old = calendar[-1] - timedelta(days=100)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=old)
+    _touch(store / 'meta' / 'events' / 'events.parquet', calendar[-1])
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'meta/events/events.parquet')
+    assert row.refresh_date == calendar[-1]
+    assert row.lag == 0
+    assert row.verdict == 'ok'
+
+
+def test_pool_stale_coverage_reports_warning(tmp_path):
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-5], event_end=calendar[-1])
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'meta/multi_asset/etf_pool.parquet')
+    assert row.lag == 4
+    assert row.verdict == 'warning'
+
+
+def test_pool_missing_quoted_etf_reports_warning(tmp_path):
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    _write_fund_basic(store / 'meta' / 'fund_basic.parquet',
+                      [('510300.SH', 'ETF'), ('159001.SZ', 'ETF')])
+    _touch(store / 'meta' / 'fund_basic.parquet', calendar[-1])
+    _write_quotes_dir(store, 'fund', ['510300.SH', '159001.SZ'])
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'meta/multi_asset/etf_pool.parquet')
+    assert row.gap == 1
+    assert row.verdict == 'warning'
+    assert '159001.SZ' in row.detail
 
 
 def test_st_interval_watermark_lag_reports_error(tmp_path):

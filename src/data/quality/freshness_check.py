@@ -6,15 +6,19 @@
 - ``LAG_OK_MAX+1 ~ LAG_WARN_MAX``：``warning``
 - ``> LAG_WARN_MAX``：``error``，命令行以非零退出码结束
 
-按 ``kind`` 分五种口径：
+按 ``kind`` 分七种口径：
 
 - ``daily``：日频表，按 ``trade_date`` 等日期列与行情末日比交易日滞后；
-- ``event``：事件表，``lag_unit='calendar'`` 时按自然日比（30/90 天）；
+- ``event``：事件表，按**文件刷新日期**判是否跟上日更（事件本身稀疏，
+  连续几天无公告属合法状态，不能拿事件末日当缺口）；``lag_unit='calendar'``
+  时按自然日比（30/90 天）；
 - ``coverage``：覆盖窗口表，按 ``coverage_end`` 比交易日滞后；
 - ``base_info``：名录，同时判「行情有而名录无」（未登记标的数）与
   「名录日期陈旧」（文件刷新日期距行情末日超过一周）；
 - ``valuation``：估值表，除日期滞后外再判「行情有而估值无」
   （行情末日仍在交易的标的在当日估值截面中缺失的条数）；
+- ``pool``：候选池，判覆盖末日滞后，并比对 ``fund_basic`` 中有行情但未入池
+  的标的数（派生表成分漏收）；
 - ``st_watermark``：ST 区间表，以 ``meta/st/coverage.json`` 的
   ``snapshot_date`` 为构建水位，水位落后即区间表没跟上日更。
 
@@ -54,6 +58,7 @@ KIND_EVENT = 'event'
 KIND_COVERAGE = 'coverage'
 KIND_BASE_INFO = 'base_info'
 KIND_VALUATION = 'valuation'
+KIND_POOL = 'pool'
 KIND_ST_WATERMARK = 'st_watermark'
 
 #: 0~1 个交易日滞后属正常取数窗口
@@ -117,7 +122,7 @@ TABLE_SPECS: tuple[TableSpec, ...] = (
               quotes_dir='quotes/stock'),
     TableSpec('ST 区间', 'meta/st/st_intervals.parquet', KIND_ST_WATERMARK),
     TableSpec('ST 覆盖窗口', 'meta/st/st_coverage.parquet', KIND_COVERAGE, 'coverage_end'),
-    TableSpec('多资产 ETF 候选池', 'meta/multi_asset/etf_pool.parquet', KIND_COVERAGE,
+    TableSpec('多资产 ETF 候选池', 'meta/multi_asset/etf_pool.parquet', KIND_POOL,
               'coverage_end'),
 )
 
@@ -136,6 +141,8 @@ class FreshnessRow:
     detail: str = ''
     #: 缺口：日期型表为缺失交易日/自然日数，名录与估值表为缺失标的数
     gap: int | None = None
+    #: 事件表的文件刷新日期（判定滞后的基准；事件末日只作说明）
+    refresh_date: date | None = None
 
 
 @dataclass
@@ -383,11 +390,32 @@ def _st_watermark_row(store_root: Path, spec: TableSpec, quotes_end_date: date,
 
 def _date_row(spec: TableSpec, path: Path, quotes_end_date: date,
               calendar: list[date]) -> FreshnessRow:
-    """日期型表：按 ``lag_unit`` 求与行情末日的滞后。"""
+    """日期型表：按 ``lag_unit`` 求与行情末日的滞后。
+
+    事件表（``KIND_EVENT``）的滞后基准是**文件刷新日期**，不是事件末日：
+    连续几天没有新公告是合法状态，只有「表没再刷新」才是缺口。
+    """
     data_end = table_data_end(path, spec.date_column or '')
     if data_end is None:
         return FreshnessRow(spec.label, spec.rel_path, spec.kind, None, quotes_end_date,
                             None, 'error', f'日期列为空或不存在: {spec.date_column}')
+    if spec.kind == KIND_EVENT:
+        refresh = _file_date(path)
+        if refresh is None:
+            return FreshnessRow(spec.label, spec.rel_path, spec.kind, data_end,
+                                quotes_end_date, None, 'error', '文件刷新日期不可读')
+        if spec.lag_unit == 'calendar':
+            lag = max((quotes_end_date - refresh).days, 0)
+            verdict = classify_calendar_lag(lag)
+            detail = (f'事件末日 {_fmt(data_end)}；表刷新 {_fmt(refresh)}，'
+                      f'滞后 {lag} 个自然日')
+        else:
+            lag = count_lag(calendar, refresh, quotes_end_date)
+            verdict = classify_lag(lag if lag is not None else 0)
+            detail = (f'事件末日 {_fmt(data_end)}；表刷新 {_fmt(refresh)}，'
+                      f'滞后 {lag} 个交易日')
+        return FreshnessRow(spec.label, spec.rel_path, spec.kind, data_end, quotes_end_date,
+                            lag, verdict, detail, gap=lag, refresh_date=refresh)
     if spec.lag_unit == 'calendar':
         lag = max((quotes_end_date - data_end).days, 0)
         verdict = classify_calendar_lag(lag)
@@ -398,6 +426,36 @@ def _date_row(spec: TableSpec, path: Path, quotes_end_date: date,
         detail = f'滞后 {lag} 个交易日' if lag else '无滞后'
     return FreshnessRow(spec.label, spec.rel_path, spec.kind, data_end, quotes_end_date,
                         lag, verdict, detail, gap=lag)
+
+
+def _pool_row(store_root: Path, spec: TableSpec, quotes_end_date: date,
+              calendar: list[date]) -> FreshnessRow:
+    """候选池：覆盖末日滞后 + ``fund_basic`` 中有行情但未入池的标的数。"""
+    path = store_root / spec.rel_path
+    frame = pl.read_parquet(path, columns=['ts_code', spec.date_column or 'coverage_end'])
+    data_end = frame[spec.date_column or 'coverage_end'].max()
+    if not isinstance(data_end, date):
+        return FreshnessRow(spec.label, spec.rel_path, spec.kind, None, quotes_end_date,
+                            None, 'error', f'日期列为空或不存在: {spec.date_column}')
+    lag = count_lag(calendar, data_end, quotes_end_date)
+    verdict = classify_lag(lag if lag is not None else 0)
+    detail = f'池覆盖 {_fmt(data_end)}，滞后 {lag} 个交易日'
+
+    gap = None
+    basic_path = store_root / 'meta' / 'fund_basic.parquet'
+    quotes_dir = store_root / 'quotes' / 'fund'
+    if basic_path.is_file() and quotes_dir.is_dir():
+        basic = pl.read_parquet(basic_path)
+        if 'fund_type' in basic.columns:
+            eligible = set(basic.filter(pl.col('fund_type') == 'ETF')['ts_code'].to_list())
+            quoted = {item.stem for item in quotes_dir.rglob('*.parquet')}
+            missing = sorted((eligible & quoted) - set(frame['ts_code'].to_list()))
+            gap = len(missing)
+            if missing:
+                detail += f'；fund_basic ETF 有行情但未入池 {gap} 只（{missing[0]} 等）'
+                verdict = _worst(verdict, 'warning')
+    return FreshnessRow(spec.label, spec.rel_path, spec.kind, data_end, quotes_end_date,
+                        lag, verdict, detail, gap=gap)
 
 
 def collect_rows(store_root: Path, calendar: list[date],
@@ -418,6 +476,8 @@ def collect_rows(store_root: Path, calendar: list[date],
             rows.append(_valuation_row(store_root, spec, quotes_end_date, calendar))
         elif spec.kind == KIND_ST_WATERMARK:
             rows.append(_st_watermark_row(store_root, spec, quotes_end_date, calendar))
+        elif spec.kind == KIND_POOL:
+            rows.append(_pool_row(store_root, spec, quotes_end_date, calendar))
         else:
             rows.append(_date_row(spec, path, quotes_end_date, calendar))
     return rows
@@ -564,6 +624,7 @@ def main(argv: list[str] | None = None) -> int:
             'rows': [{'label': row.label, 'path': row.rel_path,
                       'data_end': _fmt(row.data_end), 'quotes_end': _fmt(row.quotes_end),
                       'lag': row.lag, 'gap': row.gap, 'verdict': row.verdict,
+                      'refresh_date': _fmt(row.refresh_date),
                       'detail': row.detail}
                      for row in report.rows],
             'doc_uncovered': report.doc_uncovered,
