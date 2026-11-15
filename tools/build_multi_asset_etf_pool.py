@@ -639,6 +639,13 @@ def apply_staging(paths: dict[str, Path], summary: dict[str, Any]) -> dict[str, 
     apply_semantics(manifest, 'meta/multi_asset/manifest.json')
     write_text_atomic(
         json.dumps(manifest, ensure_ascii=False, indent=2), TARGET_DIR / 'manifest.json')
+    try:
+        from src.data.data_version import stamp_derived  # noqa: PLC0415
+        stamp_derived(STORE, 'meta/multi_asset/etf_pool.parquet',
+                      files=[f'meta/multi_asset/{name}' for name in files],
+                      note='build_multi_asset_etf_pool --apply')
+    except Exception as exc:  # noqa: BLE001 - 版本标记失败不影响本次重建
+        logger.warning(f'[multi_asset] 派生表版本标记失败（不影响本次重建）：{exc}')
     return manifest
 
 

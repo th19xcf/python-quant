@@ -502,7 +502,11 @@ def _run_version(root: Path, changed) -> str:
     """
     try:
         from src.data.data_version import (
-            audit_derived, format_audit_line, record_version, stamp_rebuilt)
+            audit_derived,
+            format_audit_line,
+            record_version,
+            stamp_rebuilt,
+        )
         record_version(root)
         stamped = stamp_rebuilt(root, changed)
         return f'{format_audit_line(audit_derived(root))} | 本次标记派生 {len(stamped)} 张'
