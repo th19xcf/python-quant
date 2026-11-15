@@ -1,0 +1,110 @@
+{
+ "stock_basic": {
+  "rows": 5813,
+  "codes": 5813,
+  "start": "1990-12-10",
+  "end": "2026-11-06",
+  "dup_key": 0
+ },
+ "stock_daily": {
+  "rows": 5113860,
+  "codes": 5812,
+  "start": "1990-12-20",
+  "end": "2026-11-09",
+  "dup_key": 0,
+  "per_code": {
+   "p50": 204,
+   "p95": 6554,
+   "min": 2,
+   "max": 8513
+  }
+ },
+ "stock_adj_factor": {
+  "rows": 698961,
+  "codes": 104,
+  "start": "1991-01-02",
+  "end": "2026-04-16",
+  "dup_key": 0,
+  "per_code": {
+   "p50": 6889,
+   "p95": 8095,
+   "min": 2696,
+   "max": 8375
+  }
+ },
+ "stock_dividend": {
+  "rows": 53982,
+  "codes": 5376,
+  "start": "1991-02-26",
+  "end": "2026-07-09",
+  "dup_key": 1719,
+  "per_code": {
+   "p50": 8,
+   "p95": 25,
+   "min": 1,
+   "max": 49
+  }
+ },
+ "index_basic": {
+  "rows": 1333,
+  "codes": 1333,
+  "start": "1991-04-04",
+  "end": "2024-08-20",
+  "dup_key": 0
+ },
+ "index_daily": {
+  "rows": 494583,
+  "codes": 117,
+  "start": "1990-12-19",
+  "end": "2026-11-03",
+  "dup_key": 0,
+  "per_code": {
+   "p50": 4128,
+   "p95": 7569,
+   "min": 569,
+   "max": 8755
+  }
+ },
+ "market_breadth": {
+  "rows": 38,
+  "start": "2025-12-22",
+  "end": "2026-02-13",
+  "dup_key": 0
+ },
+ "fund_basic": {
+  "rows": 2618,
+  "codes": 2618,
+  "start": "2004-03-22",
+  "end": "2026-11-06",
+  "dup_key": 0
+ },
+ "fund_daily": {
+  "rows": 2891259,
+  "codes": 2614,
+  "start": "2004-03-22",
+  "end": "2026-11-03",
+  "dup_key": 0,
+  "per_code": {
+   "p50": 982,
+   "p95": 2989,
+   "min": 2,
+   "max": 5301
+  }
+ },
+ "stock_status_history": {
+  "rows": 0,
+  "codes": 0,
+  "start": null,
+  "end": null,
+  "dup_key": 0,
+  "per_code": {}
+ },
+ "stock_minute": {
+  "rows": 0,
+  "codes": 0,
+  "start": null,
+  "end": null,
+  "dup_key": 0,
+  "per_code": {}
+ }
+}

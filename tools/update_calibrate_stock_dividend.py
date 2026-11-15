@@ -67,24 +67,46 @@ def _clean_negative_values(session) -> int:
     return updated
 
 
+# 判重键的分红字段：同一 (ts_code, ex_date) 下现金分红、送转股、配股各自独立，
+# 只按代码+除权日成组会把合法的同日多笔分红当成重复删掉，并连带改坏复权因子。
+_DIVIDEND_KEY_FIELDS = (
+    'cash_div',
+    'share_div',
+    'total_div',
+    'rights_issue_price',
+    'rights_issue_ratio',
+)
+
+
+def _equality_condition(field: str, value):
+    column = getattr(StockDividend, field)
+    # SQL 的 ``= NULL`` 恒不成立，空值必须走 IS NULL 才能命中同一组
+    return column.is_(None) if value is None else column == value
+
+
 def _dedupe_by_ex_date(session) -> int:
+    """按 ``(ts_code, ex_date, 分红字段)`` 去重，``ex_date`` 为空的行不参与唯一性判定。"""
+    key_fields = ('ts_code', 'ex_date', *_DIVIDEND_KEY_FIELDS)
+    key_columns = [getattr(StockDividend, field) for field in key_fields]
+
     deleted = 0
     duplicate_groups = (
-        session.query(
-            StockDividend.ts_code,
-            StockDividend.ex_date,
-            func.count(StockDividend.id).label("cnt"),
-        )
+        session.query(*key_columns, func.count(StockDividend.id).label("cnt"))
         .filter(StockDividend.ex_date.isnot(None))
-        .group_by(StockDividend.ts_code, StockDividend.ex_date)
+        .group_by(*key_columns)
         .having(func.count(StockDividend.id) > 1)
         .all()
     )
 
-    for ts_code, ex_date, _ in duplicate_groups:
+    for group in duplicate_groups:
+        key_values = tuple(group)[:-1]
+        conditions = [
+            _equality_condition(field, value)
+            for field, value in zip(key_fields, key_values, strict=True)
+        ]
         rows = (
             session.query(StockDividend)
-            .filter_by(ts_code=ts_code, ex_date=ex_date)
+            .filter(and_(*conditions))
             .order_by(StockDividend.updated_at.desc(), StockDividend.id.desc())
             .all()
         )

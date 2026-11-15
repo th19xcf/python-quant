@@ -1,0 +1,34 @@
+{
+ "ann_date_map_dup_symbol_period": 0,
+ "ann_date_map_codes": 11695,
+ "stock_codes_no_dividend": 151,
+ "stock_codes_no_event": 14,
+ "stock_codes_no_valuation": 20,
+ "stock_codes_no_st_interval": 4802,
+ "stale_by_class": {
+  "fund": 385,
+  "stock": 258,
+  "index": 53
+ },
+ "stale_last_date_max": "2026-11-11",
+ "db_local_same_row": {
+  "db": [
+   "600000.SH",
+   "2026-11-09",
+   "10.1",
+   "521739.0",
+   "524028000.0"
+  ],
+  "db_vol": 521739.0,
+  "db_amount": 524028000.0,
+  "local_volume": 521739.28,
+  "local_amount": 524028064.0,
+  "vol_ratio_db_to_local": 0.9999994633334871
+ },
+ "db_index_unit": {
+  "db_vol": 536848407.0,
+  "db_amount": 810829283328.0,
+  "local_volume": 536848407.0,
+  "local_amount": 810829283328.0
+ }
+}

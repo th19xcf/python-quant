@@ -127,17 +127,13 @@ def local_store_enabled(config: Any) -> bool:
 
 
 def remote_database_enabled(config: Any) -> bool:
-    """是否允许读侧回退远程 MySQL。
+    """是否允许读侧回退远程 MySQL（缺字段即不读库）。
 
-    ``DataSettings`` 显式默认 False；缺少该字段的历史轻量配置按 True 处理，
-    保持既有调用方（测试/脚本）行为不变。
+    ``DataSettings`` 默认 False；配置对象缺该字段（轻量测试配置、历史脚本）
+    同样按 False 处理——未显式声明就不读库，避免静默回退到停滞的 MySQL 镜像。
     """
     settings = _data_settings(config)
-    sentinel = object()
-    value = getattr(settings, 'remote_database_fallback', sentinel)
-    if value is sentinel:
-        return True
-    return bool(value)
+    return getattr(settings, 'remote_database_fallback', False) is True
 
 
 def resolve_store_root(config: Any) -> Path:

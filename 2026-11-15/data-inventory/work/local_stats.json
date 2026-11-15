@@ -1,0 +1,450 @@
+{
+ "calendar": {
+  "sessions": 8821,
+  "first": "1990-12-19",
+  "latest": "2026-11-13",
+  "ledger_rows": 74
+ },
+ "basic": {
+  "stock_basic": {
+   "rows": 5916,
+   "codes": 5916,
+   "dup_key": 0,
+   "start": "1990-12-19",
+   "end": "2026-11-10",
+   "status": {
+    "L": 5580,
+    "D": 336
+   },
+   "delist_filled": 336
+  },
+  "fund_basic": {
+   "rows": 2618,
+   "codes": 2618,
+   "dup_key": 0,
+   "start": "2004-03-22",
+   "end": "2026-11-06",
+   "status": {
+    "L": 2254,
+    "D": 361
+   }
+  },
+  "index_basic": {
+   "rows": 1335,
+   "codes": 1335,
+   "dup_key": 0,
+   "start": "1991-04-04",
+   "end": "2025-01-20"
+  }
+ },
+ "factors": {
+  "stock_adj_factor": {
+   "rows": 18141030,
+   "codes": 5832,
+   "start": "1990-12-19 00:00:00",
+   "end": "2026-11-13 00:00:00",
+   "dup_key": 0,
+   "per_code": {
+    "p50": 2424,
+    "p95": 7155,
+    "min": 4,
+    "max": 8629,
+    "n": 5832
+   }
+  },
+  "fund_adj_factor": {
+   "rows": 2983791,
+   "codes": 2621,
+   "start": "2004-03-22 00:00:00",
+   "end": "2026-11-13 00:00:00",
+   "dup_key": 0,
+   "per_code": {
+    "p50": 1041,
+    "p95": 3005,
+    "min": 2,
+    "max": 5309,
+    "n": 2621
+   }
+  },
+  "stock_turnover": {
+   "rows": 18134111,
+   "codes": 5832,
+   "start": "1990-12-19 00:00:00",
+   "end": "2026-11-13 00:00:00",
+   "dup_key": 0,
+   "per_code": {
+    "p50": 2424,
+    "p95": 7155,
+    "min": 4,
+    "max": 8629,
+    "n": 5832
+   }
+  },
+  "stock_shares": {
+   "rows": 166286,
+   "codes": 5814,
+   "start": "1979-02-23 00:00:00",
+   "end": "2026-11-06 00:00:00",
+   "dup_key": 0,
+   "per_code": {
+    "p50": 22,
+    "p95": 70,
+    "min": 2,
+    "max": 683,
+    "n": 5814
+   }
+  },
+  "stock_dividend": {
+   "rows": 60071,
+   "codes": 5681,
+   "start": "1991-02-26",
+   "end": "2026-11-19",
+   "dup_key": 90,
+   "per_code": {
+    "p50": 9,
+    "p95": 26,
+    "min": 1,
+    "max": 50,
+    "n": 5681
+   },
+   "total_div_nonzero": 0,
+   "total_div_null": 60071,
+   "total_div_sum": 0.0,
+   "cash_div_nonzero": 56174
+  },
+  "fund_dividend": {
+   "rows": 3413,
+   "codes": 435,
+   "start": "2004-02-03",
+   "end": "2026-11-11",
+   "dup_key": 0,
+   "per_code": {
+    "p50": 4,
+    "p95": 28,
+    "min": 1,
+    "max": 103,
+    "n": 435
+   }
+  }
+ },
+ "financials": {
+  "balance": {
+   "rows": 330299,
+   "codes": 5840,
+   "start": "1990-06-30 00:00:00",
+   "end": "2026-09-30 00:00:00",
+   "dup_key": 0,
+   "per_code": {
+    "p50": 47,
+    "p95": 114,
+    "min": 3,
+    "max": 123,
+    "n": 5840
+   }
+  },
+  "income": {
+   "rows": 344703,
+   "codes": 5899,
+   "start": "1990-06-30 00:00:00",
+   "end": "2026-09-30 00:00:00",
+   "dup_key": 0,
+   "per_code": {
+    "p50": 49,
+    "p95": 114,
+    "min": 1,
+    "max": 123,
+    "n": 5899
+   }
+  },
+  "cashflow": {
+   "rows": 328708,
+   "codes": 5836,
+   "start": "1996-12-31 00:00:00",
+   "end": "2026-09-30 00:00:00",
+   "dup_key": 0,
+   "per_code": {
+    "p50": 49,
+    "p95": 104,
+    "min": 5,
+    "max": 106,
+    "n": 5836
+   }
+  },
+  "valuation_daily": {
+   "rows": 17980262,
+   "codes": 5812,
+   "start": "1990-12-19 00:00:00",
+   "end": "2026-11-13 00:00:00",
+   "dup_key": 0,
+   "per_code": {
+    "p50": 2409,
+    "p95": 7160,
+    "min": 6,
+    "max": 8633,
+    "n": 5812
+   }
+  },
+  "ann_date_map": {
+   "rows": 427685,
+   "codes": 11695,
+   "start": "2010-04-08 00:00:00",
+   "end": "2026-11-04 00:00:00",
+   "dup_key": 60791,
+   "per_code": {
+    "p50": 30,
+    "p95": 67,
+    "min": 2,
+    "max": 67,
+    "n": 11695
+   }
+  }
+ },
+ "events": {
+  "rows": 323654,
+  "codes": 6313,
+  "start": "2010-01-04 00:00:00",
+  "end": "2026-11-13 00:00:00",
+  "dup_key": 0,
+  "per_code": {
+   "p50": 46,
+   "p95": 116,
+   "min": 1,
+   "max": 190,
+   "n": 6313
+  },
+  "type_counts": {
+   "减持": 61115,
+   "业绩预增": 61098,
+   "分红送转": 43656,
+   "业绩预减": 43506,
+   "回购": 37843,
+   "并购重组": 25323,
+   "增持": 16131,
+   "股权激励": 12851
+  },
+  "year_counts": {
+   "2010": 3361,
+   "2011": 3812,
+   "2012": 5513,
+   "2013": 6146,
+   "2014": 6621,
+   "2015": 19088,
+   "2016": 19532,
+   "2017": 21259,
+   "2018": 26217,
+   "2019": 24851,
+   "2020": 27187,
+   "2021": 26767,
+   "2022": 28064,
+   "2023": 26561,
+   "2024": 28146,
+   "2025": 27853,
+   "2026": 22676
+  }
+ },
+ "st": {
+  "intervals_rows": 2304,
+  "intervals_codes": 1085,
+  "start": "1998-04-28",
+  "end": "2026-11-10",
+  "flag_counts": {
+   "*st": 1359,
+   "st": 945
+  },
+  "coverage_rows": 5890,
+  "coverage_codes": 5890,
+  "status_rows": 46233,
+  "status_codes": 5832
+ },
+ "breadth": {
+  "rows": 8825,
+  "start": "1990-12-19",
+  "end": "2026-11-13",
+  "dup_key": 0
+ },
+ "known": {
+  "placeholder_const1_funds": 83,
+  "placeholder_const1_zero_vol": 83,
+  "placeholder_const1_rows": 13733,
+  "stale_codes": 696,
+  "no_quote_stock_codes": 84,
+  "quote_not_in_basic_stock": 0,
+  "factor_tail_codes": 0,
+  "factor_tail_rows": 0,
+  "total_div_nonzero": 0,
+  "event_years": {
+   "2010": 3361,
+   "2011": 3812,
+   "2012": 5513,
+   "2013": 6146,
+   "2014": 6621,
+   "2015": 19088,
+   "2016": 19532,
+   "2017": 21259,
+   "2018": 26217,
+   "2019": 24851,
+   "2020": 27187,
+   "2021": 26767,
+   "2022": 28064,
+   "2023": 26561,
+   "2024": 28146,
+   "2025": 27853,
+   "2026": 22676
+  },
+  "st_no_record_stocks": 4838,
+  "placeholder_quote_codes_rows": 535,
+  "source_stale_codes_rows": 682,
+  "factor_tail_lag_codes_rows": 0,
+  "no_local_quote_codes_rows": 0
+ },
+ "cross": {
+  "stock_quote_not_in_basic": 0,
+  "basic_no_quote": 84,
+  "fund_quote_not_in_basic": 4,
+  "fund_basic_no_quote": 0,
+  "index_quote_not_in_basic": 0,
+  "index_basic_no_quote": 0,
+  "stock_quote_no_factor": 0,
+  "factor_no_quote": 0,
+  "dividend_no_basic": 0,
+  "valuation_no_basic": 0,
+  "event_no_basic": 443,
+  "st_no_basic": 7,
+  "valuation_codes": 5812
+ },
+ "freshness": {
+  "stock_daily": {
+   "latest": "2026-11-13",
+   "lag_sessions": 0
+  },
+  "fund_daily": {
+   "latest": "2026-11-13",
+   "lag_sessions": 0
+  },
+  "index_daily": {
+   "latest": "2026-11-13",
+   "lag_sessions": 0
+  },
+  "stock_adj_factor": {
+   "latest": "2026-11-13 00:00:00",
+   "lag_sessions": 0
+  },
+  "fund_adj_factor": {
+   "latest": "2026-11-13 00:00:00",
+   "lag_sessions": 0
+  },
+  "stock_dividend": {
+   "latest": "2026-11-19",
+   "lag_sessions": 0
+  },
+  "valuation_daily": {
+   "latest": "2026-11-13 00:00:00",
+   "lag_sessions": 0
+  },
+  "balance": {
+   "latest": "2026-09-30 00:00:00",
+   "lag_sessions": 27
+  },
+  "income": {
+   "latest": "2026-09-30 00:00:00",
+   "lag_sessions": 27
+  },
+  "cashflow": {
+   "latest": "2026-09-30 00:00:00",
+   "lag_sessions": 27
+  },
+  "events": {
+   "latest": "2026-11-13 00:00:00",
+   "lag_sessions": 0
+  },
+  "st_intervals": {
+   "latest": "2026-11-10",
+   "lag_sessions": 3
+  },
+  "breadth": {
+   "latest": "2026-11-13",
+   "lag_sessions": 0
+  }
+ },
+ "latest_trading_day": "2026-11-13",
+ "quotes": {
+  "stock": {
+   "files": 5832,
+   "rows": 18141036,
+   "codes": 5832,
+   "start": "1990-12-19",
+   "end": "2026-11-13",
+   "dup_dates": 0,
+   "per_code": {
+    "p50": 2424,
+    "p95": 7155,
+    "min": 4,
+    "max": 8629,
+    "n": 5832
+   },
+   "gap_rows": 582449,
+   "gap_codes": 3416,
+   "gap_p50": {
+    "p50": 109,
+    "p95": 552,
+    "min": 1,
+    "max": 2497,
+    "n": 3416
+   },
+   "miss_sidecar": 0
+  },
+  "fund": {
+   "files": 2622,
+   "rows": 2983793,
+   "codes": 2622,
+   "start": "2004-03-22",
+   "end": "2026-11-13",
+   "dup_dates": 0,
+   "per_code": {
+    "p50": 1040,
+    "p95": 3004,
+    "min": 2,
+    "max": 5309,
+    "n": 2622
+   },
+   "gap_rows": 404148,
+   "gap_codes": 912,
+   "gap_p50": {
+    "p50": 118,
+    "p95": 1710,
+    "min": 1,
+    "max": 3609,
+    "n": 912
+   },
+   "miss_sidecar": 0,
+   "const1_codes": 83,
+   "const1_zero_vol": 83,
+   "const1_rows": 13733
+  },
+  "index": {
+   "files": 1335,
+   "rows": 4652411,
+   "codes": 1335,
+   "start": "1990-12-19",
+   "end": "2026-11-13",
+   "dup_dates": 0,
+   "per_code": {
+    "p50": 3852,
+    "p95": 5211,
+    "min": 60,
+    "max": 8763,
+    "n": 1335
+   },
+   "gap_rows": 108052,
+   "gap_codes": 296,
+   "gap_p50": {
+    "p50": 45,
+    "p95": 1233,
+    "min": 1,
+    "max": 2313,
+    "n": 296
+   },
+   "miss_sidecar": 0
+  }
+ }
+}

@@ -1,0 +1,475 @@
+{
+ "mysql_version": "8.0.22",
+ "tables": {
+  "stock_basic": {
+   "est_rows": 5538,
+   "mb": 1.7,
+   "n_cols": 12,
+   "columns": [
+    "id",
+    "ts_code",
+    "symbol",
+    "name",
+    "area",
+    "industry",
+    "market",
+    "list_date",
+    "delist_date",
+    "status",
+    "created_at",
+    "updated_at"
+   ],
+   "indexes": {
+    "PRIMARY": [
+     [
+      "id",
+      1
+     ]
+    ],
+    "ts_code": [
+     [
+      "ts_code",
+      1
+     ]
+    ]
+   }
+  },
+  "stock_daily": {
+   "est_rows": 4965879,
+   "mb": 975.1,
+   "n_cols": 16,
+   "columns": [
+    "id",
+    "ts_code",
+    "trade_date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "pre_close",
+    "change",
+    "pct_chg",
+    "vol",
+    "amount",
+    "qfq_factor",
+    "hfq_factor",
+    "created_at",
+    "updated_at"
+   ],
+   "indexes": {
+    "PRIMARY": [
+     [
+      "id",
+      1
+     ]
+    ],
+    "uq_stock_daily_ts_code_trade_date": [
+     [
+      "ts_code",
+      1
+     ],
+     [
+      "trade_date",
+      2
+     ]
+    ],
+    "idx_stock_daily_trade_date": [
+     [
+      "trade_date",
+      1
+     ]
+    ],
+    "idx_stock_daily_ts_code_trade_date": [
+     [
+      "ts_code",
+      1
+     ],
+     [
+      "trade_date",
+      2
+     ]
+    ]
+   }
+  },
+  "stock_adj_factor": {
+   "est_rows": 696234,
+   "mb": 74.7,
+   "n_cols": 7,
+   "columns": [
+    "id",
+    "ts_code",
+    "trade_date",
+    "qfq_factor",
+    "hfq_factor",
+    "created_at",
+    "updated_at"
+   ],
+   "indexes": {
+    "PRIMARY": [
+     [
+      "id",
+      1
+     ]
+    ],
+    "uq_stock_adj_factor_ts_code_trade_date": [
+     [
+      "ts_code",
+      1
+     ],
+     [
+      "trade_date",
+      2
+     ]
+    ],
+    "idx_stock_adj_factor_trade_date": [
+     [
+      "trade_date",
+      1
+     ]
+    ],
+    "idx_stock_adj_factor_ts_code_trade_date": [
+     [
+      "ts_code",
+      1
+     ],
+     [
+      "trade_date",
+      2
+     ]
+    ]
+   }
+  },
+  "stock_dividend": {
+   "est_rows": 53766,
+   "mb": 8.5,
+   "n_cols": 18,
+   "columns": [
+    "id",
+    "ts_code",
+    "symbol",
+    "name",
+    "dividend_year",
+    "report_date",
+    "record_date",
+    "ex_date",
+    "pay_date",
+    "cash_div",
+    "share_div",
+    "total_div",
+    "rights_issue_price",
+    "rights_issue_ratio",
+    "created_at",
+    "updated_at",
+    "cash_div_fix",
+    "share_div_fix"
+   ],
+   "indexes": {
+    "PRIMARY": [
+     [
+      "id",
+      1
+     ]
+    ],
+    "idx_stock_dividend_dividend_year": [
+     [
+      "dividend_year",
+      1
+     ]
+    ],
+    "idx_stock_dividend_ts_code": [
+     [
+      "ts_code",
+      1
+     ]
+    ]
+   }
+  },
+  "index_basic": {
+   "est_rows": 1333,
+   "mb": 0.2,
+   "n_cols": 14,
+   "columns": [
+    "id",
+    "ts_code",
+    "name",
+    "market",
+    "publisher",
+    "index_type",
+    "category",
+    "base_date",
+    "base_point",
+    "list_date",
+    "weight_rule",
+    "desc",
+    "created_at",
+    "updated_at"
+   ],
+   "indexes": {
+    "PRIMARY": [
+     [
+      "id",
+      1
+     ]
+    ],
+    "ts_code": [
+     [
+      "ts_code",
+      1
+     ]
+    ]
+   }
+  },
+  "index_daily": {
+   "est_rows": 491191,
+   "mb": 66.1,
+   "n_cols": 14,
+   "columns": [
+    "id",
+    "ts_code",
+    "trade_date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "pre_close",
+    "change",
+    "pct_chg",
+    "vol",
+    "amount",
+    "created_at",
+    "updated_at"
+   ],
+   "indexes": {
+    "PRIMARY": [
+     [
+      "id",
+      1
+     ]
+    ],
+    "uq_index_daily_ts_code_trade_date": [
+     [
+      "ts_code",
+      1
+     ],
+     [
+      "trade_date",
+      2
+     ]
+    ]
+   }
+  },
+  "market_breadth": {
+   "est_rows": 38,
+   "mb": 0.0,
+   "n_cols": 11,
+   "columns": [
+    "id",
+    "trade_date",
+    "up_count",
+    "down_count",
+    "flat_count",
+    "total_count",
+    "up_rate",
+    "down_rate",
+    "market_type",
+    "created_at",
+    "updated_at"
+   ],
+   "indexes": {
+    "PRIMARY": [
+     [
+      "id",
+      1
+     ]
+    ],
+    "trade_date": [
+     [
+      "trade_date",
+      1
+     ]
+    ]
+   }
+  },
+  "fund_basic": {
+   "est_rows": 2618,
+   "mb": 0.4,
+   "n_cols": 11,
+   "columns": [
+    "id",
+    "ts_code",
+    "symbol",
+    "name",
+    "fund_type",
+    "market",
+    "list_date",
+    "delist_date",
+    "status",
+    "created_at",
+    "updated_at"
+   ],
+   "indexes": {
+    "PRIMARY": [
+     [
+      "id",
+      1
+     ]
+    ],
+    "ts_code": [
+     [
+      "ts_code",
+      1
+     ]
+    ]
+   }
+  },
+  "fund_daily": {
+   "est_rows": 2876869,
+   "mb": 347.0,
+   "n_cols": 14,
+   "columns": [
+    "id",
+    "ts_code",
+    "trade_date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "pre_close",
+    "change",
+    "pct_chg",
+    "vol",
+    "amount",
+    "created_at",
+    "updated_at"
+   ],
+   "indexes": {
+    "PRIMARY": [
+     [
+      "id",
+      1
+     ]
+    ],
+    "uk_fund_daily_code_date": [
+     [
+      "ts_code",
+      1
+     ],
+     [
+      "trade_date",
+      2
+     ]
+    ],
+    "idx_fund_daily_trade_date": [
+     [
+      "trade_date",
+      1
+     ]
+    ]
+   }
+  },
+  "stock_status_history": {
+   "est_rows": 0,
+   "mb": 0.0,
+   "n_cols": 8,
+   "columns": [
+    "id",
+    "ts_code",
+    "start_date",
+    "end_date",
+    "is_st",
+    "source",
+    "created_at",
+    "updated_at"
+   ],
+   "indexes": {
+    "PRIMARY": [
+     [
+      "id",
+      1
+     ]
+    ],
+    "idx_stock_status_history_ts_code_start": [
+     [
+      "ts_code",
+      1
+     ],
+     [
+      "start_date",
+      2
+     ]
+    ],
+    "idx_stock_status_history_range": [
+     [
+      "start_date",
+      1
+     ],
+     [
+      "end_date",
+      2
+     ]
+    ]
+   }
+  },
+  "stock_minute": {
+   "est_rows": 2,
+   "mb": 0.1,
+   "n_cols": 12,
+   "columns": [
+    "id",
+    "ts_code",
+    "trade_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "vol",
+    "amount",
+    "freq",
+    "created_at",
+    "updated_at"
+   ],
+   "indexes": {
+    "PRIMARY": [
+     [
+      "id",
+      1
+     ]
+    ],
+    "uq_stock_minute_ts_code_freq_trade_time": [
+     [
+      "ts_code",
+      1
+     ],
+     [
+      "freq",
+      2
+     ],
+     [
+      "trade_time",
+      3
+     ]
+    ],
+    "idx_stock_minute_trade_time": [
+     [
+      "trade_time",
+      1
+     ]
+    ],
+    "idx_stock_minute_ts_code_freq_trade_time": [
+     [
+      "ts_code",
+      1
+     ],
+     [
+      "freq",
+      2
+     ],
+     [
+      "trade_time",
+      3
+     ]
+    ]
+   }
+  }
+ }
+}
