@@ -17,6 +17,10 @@ gate = importlib.import_module('tools.daily_data_gate')
 GOOD_FACTORS = {'passed': True, 'mismatch_codes': {'stock': 0, 'index': 0, 'fund': 0}}
 GOOD_FRESHNESS = {'passed': True, 'ok': 10, 'warn': 9, 'critical': 0}
 GOOD_BACKUP = {'passed': True, 'dests': {'backups': {'passed': True}}}
+GOOD_SUMMARY = {'passed': True, 'tables': 13, 'errors': [], 'warnings': []}
+GOOD_AUDIT = {'passed': True, 'version': 'dv-20261113-000000000000',
+              'counts': {'ok': 4, 'stale': 0, 'unstamped': 0, 'missing': 0},
+              'missing': [], 'stale': []}
 TODAY = dt.date(2026, 11, 7)
 EXPECTED_CODES = 10000
 
@@ -24,12 +28,16 @@ EXPECTED_CODES = 10000
 @pytest.fixture
 def mocked_checks(monkeypatch):
     state = {'factors': GOOD_FACTORS, 'freshness': GOOD_FRESHNESS,
-             'backup': GOOD_BACKUP}
+             'backup': GOOD_BACKUP, 'summary': GOOD_SUMMARY,
+             'audit': GOOD_AUDIT}
 
     monkeypatch.setattr(gate, '_check_factors', lambda root: state['factors'])
     monkeypatch.setattr(
         gate, '_check_freshness',
         lambda root, cfg, today: state['freshness'])
+    monkeypatch.setattr(gate, '_check_freshness_summary', lambda root: state['summary'])
+    monkeypatch.setattr(gate, '_check_version_audit',
+                        lambda root, record=True: state['audit'])
     monkeypatch.setattr(gate, '_check_backups', lambda dests: state['backup'])
     return state
 
@@ -37,7 +45,56 @@ def mocked_checks(monkeypatch):
 def test_all_green_passes(mocked_checks) -> None:
     report = gate.run_gate(today=dt.date(2026, 11, 7))
     assert report['passed'] is True
-    assert set(report['checks']) == {'factor_consistency', 'freshness', 'backup'}
+    assert set(report['checks']) == {
+        'factor_consistency', 'freshness', 'freshness_summary',
+        'version_audit', 'backup'}
+
+
+def test_freshness_summary_error_fails(mocked_checks) -> None:
+    """13 行体检出 error 即失败（与 ``freshness_check --summary`` 同判据）。"""
+    mocked_checks['summary'] = {
+        'passed': False, 'tables': 13, 'errors': ['meta/financials/valuation_daily.parquet'],
+        'warnings': [],
+    }
+    assert gate.run_gate(today=dt.date(2026, 11, 7))['passed'] is False
+
+
+def test_version_audit_missing_table_fails(mocked_checks) -> None:
+    """派生表文件缺失即失败；``stale`` 只记录、不阻断。"""
+    mocked_checks['audit'] = {
+        'passed': False, 'version': 'dv-20261113-000000000000',
+        'counts': {'ok': 3, 'stale': 0, 'unstamped': 0, 'missing': 1},
+        'missing': ['meta/state/state_vector_daily.parquet'], 'stale': [],
+    }
+    assert gate.run_gate(today=dt.date(2026, 11, 7))['passed'] is False
+
+    mocked_checks['audit'] = {
+        'passed': True, 'version': 'dv-20261113-000000000000',
+        'counts': {'ok': 3, 'stale': 1, 'unstamped': 0, 'missing': 0},
+        'missing': [], 'stale': ['meta/state/state_vector_daily.parquet'],
+    }
+    assert gate.run_gate(today=dt.date(2026, 11, 7))['passed'] is True
+
+
+def test_version_audit_reads_real_module(monkeypatch) -> None:
+    """真跑一次封装：把 ``audit_derived`` 换成三态，核验分档映射。"""
+    from src.data import data_version as dv
+
+    monkeypatch.setattr(dv, 'audit_derived', lambda root: {
+        'current': {'version': 'dv-20261113-abcdefabcdef'},
+        'rows': [
+            {'table': 'a.parquet', 'status': 'ok'},
+            {'table': 'b.parquet', 'status': 'stale'},
+            {'table': 'c.parquet', 'status': 'missing'},
+        ],
+        'counts': {'ok': 1, 'stale': 1, 'unstamped': 0, 'missing': 1},
+    })
+    result = gate._check_version_audit(Path('.'), record=False)
+    assert result['passed'] is False
+    assert result['recorded_version'] is None
+    assert result['missing'] == ['c.parquet']
+    assert result['stale'] == ['b.parquet']
+    assert result['counts']['missing'] == 1
 
 
 def test_factor_mismatch_fails(mocked_checks) -> None:
@@ -102,6 +159,10 @@ def test_cli_returns_one_on_failure(mocked_checks, tmp_path: Path) -> None:
 def real_freshness(monkeypatch):
     monkeypatch.setattr(gate, '_check_factors', lambda root: GOOD_FACTORS)
     monkeypatch.setattr(gate, '_check_backups', lambda dests: GOOD_BACKUP)
+    # 体检 13 行与版本审计都依赖真实 ``data/local_store``，合成仓库下按好结果短路
+    monkeypatch.setattr(gate, '_check_freshness_summary', lambda root: GOOD_SUMMARY)
+    monkeypatch.setattr(gate, '_check_version_audit',
+                        lambda root, record=True: GOOD_AUDIT)
 
 
 def _write_store(root: Path, covered: int) -> None:

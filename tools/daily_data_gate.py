@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
 
-r"""每日数据只读巡检门禁（不写 ``data/**``、不触发采集或构建）。
+r"""每日数据巡检门禁（不改任何数据表、不触发采集或构建）。
 
-把三条最容易「静默失效」的链路收成一个退出码，供每日定时任务调用：
+唯一写入：``meta/data_version.json`` 版本台账——第 5 项在同 digest 时不写，
+版本变化才追加一条；``--no-record-version`` 可退回纯只读。
+
+把五条最容易「静默失效」的链路收成一个退出码，供每日定时任务调用：
 
 1. **因子一致性**：行情内嵌 qfq/hfq 副本 vs 权威快照，要求
    stock/index/fund 的 ``mismatch_codes`` 全为 0；
 2. **新鲜度**：``freshness_config.json`` 登记的数据集不得出现 critical
    （warn 只记录、不阻断：滞后 1 个交易日是常态）；
 3. **关键资产备份**：``backup_critical_assets.py`` 的 manifest 必须存在且
-   sha256 全部匹配，防止快照再次整体丢失后无处可恢复。
+   sha256 全部匹配，防止快照再次整体丢失后无处可恢复；
+4. **保鲜体检（13 行汇总）**：``freshness_check`` 的 12 张登记表 + 行情全集
+   巡检，出现 ``error`` 即失败、``warning`` 只记录——与
+   ``python -m src.data.quality.freshness_check --summary`` 同一判据；
+5. **版本记录 + 派生表版本审计**：先 ``ensure_current`` 补记当日基础表版本
+   （同 digest 不写），再 ``audit_derived``；派生表文件缺失即失败，
+   ``stale`` / ``unstamped`` 只记录（与 ``python tools/data_version.py audit``
+   同一判据，不触发任何重建）。
 
 输出 JSON 报告到 ``artifacts/data_gate/``；任一项失败返回 1。
 
@@ -80,6 +90,50 @@ def _check_freshness(store_root: Path, config_path: Path, today: date) -> dict[s
     }
 
 
+def _check_freshness_summary(store_root: Path) -> dict[str, Any]:
+    """保鲜体检 13 行汇总（与 ``freshness_check --summary`` 同判据）。"""
+    from src.data.quality.freshness_check import run_check  # noqa: PLC0415
+
+    try:
+        report = run_check(store_root)
+    except (FileNotFoundError, ValueError) as exc:
+        return {'passed': False, 'error': f'{type(exc).__name__}: {exc}'}
+    return {
+        'passed': report.ok,
+        'tables': len(report.rows),
+        'universe': report.universe,
+        'errors': [row.rel_path for row in report.errors],
+        'warnings': [row.rel_path for row in report.warnings],
+    }
+
+
+def _check_version_audit(store_root: Path, record: bool = True) -> dict[str, Any]:
+    """版本记录 + 派生表版本审计（与 ``tools/data_version.py`` 同判据，不重建）。
+
+    ``record=True`` 时先 ``ensure_current``：台账缺失或磁盘版本已变才追加一版
+    （同 digest 不写），保证 ``audit`` 比的是当日基础表版本。全流程只写
+    ``meta/data_version.json``，不碰任何数据表。
+    """
+    from src.data.data_version import audit_derived, ensure_current  # noqa: PLC0415
+
+    try:
+        recorded = ensure_current(store_root, note='daily gate').get('version') if record else None
+        result = audit_derived(store_root)
+    except Exception as exc:  # noqa: BLE001
+        return {'passed': False, 'error': f'{type(exc).__name__}: {exc}'}
+    counts = result['counts']
+    return {
+        'passed': counts['missing'] == 0,
+        'recorded_version': recorded,
+        'version': result['current']['version'],
+        'counts': counts,
+        'missing': [row['table'] for row in result['rows']
+                    if row['status'] == 'missing'],
+        'stale': [row['table'] for row in result['rows']
+                  if row['status'] == 'stale'],
+    }
+
+
 def _check_backups(dests: list[Path]) -> dict[str, Any]:
     sys.path.insert(0, str(ROOT / 'tools'))
     try:
@@ -114,12 +168,15 @@ def run_gate(
     today: date | None = None,
     backup_dests: list[Path] | None = None,
     skip_backup_check: bool = False,
+    record_version: bool = True,
 ) -> dict[str, Any]:
     """执行全部检查，返回结构化报告（由 CLI 决定退出码与落盘）。"""
     today = today or date.today()
     checks: dict[str, Any] = {
         'factor_consistency': _check_factors(store_root),
         'freshness': _check_freshness(store_root, config_path, today),
+        'freshness_summary': _check_freshness_summary(store_root),
+        'version_audit': _check_version_audit(store_root, record=record_version),
     }
     if skip_backup_check:
         checks['backup'] = {'passed': True, 'skipped': True, 'dests': {}}
@@ -146,6 +203,8 @@ def _build_parser() -> argparse.ArgumentParser:
                         help='备份目录，可重复；缺省用项目内 backups/critical_assets')
     parser.add_argument('--skip-backup-check', action='store_true',
                         help='跳过备份 manifest 校验')
+    parser.add_argument('--no-record-version', action='store_true',
+                        help='只审计不记录：不写 meta/data_version.json（默认会先补记一版）')
     return parser
 
 
@@ -157,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         today=args.today,
         backup_dests=args.backup_dest,
         skip_backup_check=args.skip_backup_check,
+        record_version=not args.no_record_version,
     )
     args.out_dir.mkdir(parents=True, exist_ok=True)
     out_path = args.out_dir / f'gate_{report["as_of"].replace("-", "")}.json'
@@ -172,6 +232,19 @@ def main(argv: list[str] | None = None) -> int:
         elif name == 'freshness':
             print(f'  [{mark}] 新鲜度 ok={item.get("ok")} warn={item.get("warn")} '
                   f'critical={item.get("critical")}')
+        elif name == 'freshness_summary':
+            print(f'  [{mark}] 保鲜体检 表 {item.get("tables")} 行 error '
+                  f'{len(item.get("errors") or [])} / warning '
+                  f'{len(item.get("warnings") or [])}'
+                  + (f' 错: {item["errors"]}' if item.get('errors') else '')
+                  + (f' 异常: {item["error"]}' if item.get('error') else ''))
+        elif name == 'version_audit':
+            counts = item.get('counts') or {}
+            print(f'  [{mark}] 版本审计 {item.get("version")} 派生 ok '
+                  f'{counts.get("ok")} / 落后 {counts.get("stale")} / '
+                  f'未标记 {counts.get("unstamped")} / 缺失 {counts.get("missing")}'
+                  + (f' 缺: {item["missing"]}' if item.get('missing') else '')
+                  + (f' 异常: {item["error"]}' if item.get('error') else ''))
         else:
             print(f'  [{mark}] 备份校验 {item.get("dests") or item.get("skipped")}')
     print(f'报告: {out_path}')
