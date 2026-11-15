@@ -6,8 +6,20 @@
 - ``LAG_OK_MAX+1 ~ LAG_WARN_MAX``：``warning``
 - ``> LAG_WARN_MAX``：``error``，命令行以非零退出码结束
 
-按 ``kind`` 分七种口径：
+三层分工
+========
+- **数据层（全集）**：``universe`` 口径对 ``quotes/{stock,fund,index}`` 里**每只
+  有行情的标的**生效，不按候选池过滤；行情文件未进入 ``meta/daily_index.parquet``
+  或末根断裂且未登记 ``meta/universe/stale_status.parquet`` 都算缺口。被候选池
+  流动性规则排除的标的同样要有行情、估值、分红不中断的结论。
+- **表级**：``daily`` / ``event`` / ``coverage`` / ``base_info`` / ``valuation`` /
+  ``st_watermark`` 逐表判，基准一律是全集行情末日。
+- **视图层**：``pool`` 只判候选池这个视图是否新鲜（覆盖末日滞后、池内标的是否
+  有行情），最多 ``warning``，绝不升级为 ``error``；未入池不等于数据缺口。
 
+按 ``kind`` 分八种口径：
+
+- ``universe``：数据层全集（行情目录标的数、日更缺口计划登记、未登记断裂）；
 - ``daily``：日频表，按 ``trade_date`` 等日期列与行情末日比交易日滞后；
 - ``event``：事件表，按**文件刷新日期**判是否跟上日更（事件本身稀疏，
   连续几天无公告属合法状态，不能拿事件末日当缺口）；``lag_unit='calendar'``
@@ -17,8 +29,7 @@
   「名录日期陈旧」（文件刷新日期距行情末日超过一周）；
 - ``valuation``：估值表，除日期滞后外再判「行情有而估值无」
   （行情末日仍在交易的标的在当日估值截面中缺失的条数）；
-- ``pool``：候选池，判覆盖末日滞后，并比对 ``fund_basic`` 中有行情但未入池
-  的标的数（派生表成分漏收）；
+- ``pool``：**视图层**，只判候选池覆盖末日滞后与池内标的缺行情，不判未入池；
 - ``st_watermark``：ST 区间表，以 ``meta/st/coverage.json`` 的
   ``snapshot_date`` 为构建水位，水位落后即区间表没跟上日更。
 
@@ -60,6 +71,12 @@ KIND_BASE_INFO = 'base_info'
 KIND_VALUATION = 'valuation'
 KIND_POOL = 'pool'
 KIND_ST_WATERMARK = 'st_watermark'
+KIND_UNIVERSE = 'universe'
+
+#: 数据层全集口径：这三类行情目录里的每只标的都必须进入日更缺口计划。
+UNIVERSE_KINDS = ('stock', 'fund', 'index')
+#: 已定性的停更台账（数据源无新增/退市），登记在此的标的断裂不算缺口。
+STALE_STATUS_PATH = Path('meta') / 'universe' / 'stale_status.parquet'
 
 #: 0~1 个交易日滞后属正常取数窗口
 LAG_OK_MAX = 1
@@ -114,6 +131,8 @@ TABLE_SPECS: tuple[TableSpec, ...] = (
               'trade_date', coverage_dir='quotes/stock'),
     TableSpec('公告事件', 'meta/events/events.parquet', KIND_EVENT, 'publish_time',
               lag_unit='calendar'),
+    TableSpec('基金分红', 'factors/fund_dividend.parquet', KIND_DAILY, 'ex_date',
+              lag_unit='calendar'),
     TableSpec('基金基础信息', 'meta/fund_basic.parquet', KIND_BASE_INFO,
               quotes_dir='quotes/fund'),
     TableSpec('指数基础信息', 'meta/index_basic.parquet', KIND_BASE_INFO,
@@ -152,6 +171,12 @@ class FreshnessReport:
     quotes_end: date | None
     rows: list[FreshnessRow] = field(default_factory=list)
     doc_uncovered: list[str] = field(default_factory=list)
+    #: 数据层全集：各行情目录的标的数（stock / fund / index）
+    universe: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def universe_total(self) -> int:
+        return sum(self.universe.values())
 
     @property
     def errors(self) -> list[FreshnessRow]:
@@ -428,49 +453,130 @@ def _date_row(spec: TableSpec, path: Path, quotes_end_date: date,
                         lag, verdict, detail, gap=lag)
 
 
+def universe_files(store_root: Path) -> dict[str, set[str]]:
+    """各行情目录下的标的集合（数据层全集口径）。"""
+    out: dict[str, set[str]] = {}
+    for kind in UNIVERSE_KINDS:
+        root = store_root / 'quotes' / kind
+        out[kind] = {item.stem for item in root.rglob('*.parquet')} if root.is_dir() else set()
+    return out
+
+
+def _universe_row(store_root: Path, quotes_end_date: date,
+                  calendar: list[date], files: dict[str, set[str]] | None = None
+                  ) -> FreshnessRow:
+    """数据层全集：行情目录里的每只标的都必须进入日更缺口计划。
+
+    判据对**全市场有行情的标的**生效，不按候选池过滤：
+    - 行情文件未登记 ``meta/daily_index.parquet`` → 日更缺口计划看不到它，算缺口；
+    - 末根落后超过 ``LAG_WARN_MAX`` 个交易日且未登记停更台账 → 数据断裂算缺口。
+    已登记 ``meta/universe/stale_status.parquet`` 的停更（数据源无新增/退市）属已知
+    合法状态，只报数量、不计缺口。
+    """
+    counts: dict[str, int] = {}
+    file_map = files if files is not None else universe_files(store_root)
+    for kind in UNIVERSE_KINDS:
+        counts[kind] = len(file_map.get(kind, ()))
+    total = sum(counts.values())
+
+    registered: set[tuple[str, str]] = set()
+    ends: dict[tuple[str, str], date] = {}
+    index_path = store_root / 'meta' / 'daily_index.parquet'
+    if index_path.is_file():
+        frame = pl.read_parquet(index_path, columns=['ts_code', 'data_type', 'end'])
+        for row in frame.iter_rows(named=True):
+            key = (row['data_type'], row['ts_code'])
+            registered.add(key)
+            if isinstance(row['end'], date):
+                ends[key] = row['end']
+    unregistered = sorted(f'{kind}/{code}' for kind in UNIVERSE_KINDS
+                          for code in file_map.get(kind, ())
+                          if (kind, code) not in registered) if registered else []
+
+    known_stale: set[tuple[str, str]] = set()
+    stale_path = store_root / STALE_STATUS_PATH
+    if stale_path.is_file():
+        stale = pl.read_parquet(stale_path, columns=['ts_code', 'asset_class', 'is_stale'])
+        known_stale = {(row['asset_class'], row['ts_code'])
+                       for row in stale.iter_rows(named=True) if row['is_stale']}
+
+    breaks: list[tuple[str, str, date, int]] = []
+    for (kind, code), end in ends.items():
+        if kind not in UNIVERSE_KINDS:
+            continue
+        lag = count_lag(calendar, end, quotes_end_date)
+        if lag is not None and lag > LAG_WARN_MAX and (kind, code) not in known_stale:
+            breaks.append((kind, code, end, lag))
+    breaks.sort(key=lambda item: item[3], reverse=True)
+
+    gap = len(unregistered) + len(breaks)
+    verdict = _worst(classify_missing(len(unregistered)), classify_missing(len(breaks)))
+    detail = (f'全集 {total:,} 只（股票 {counts["stock"]:,} / 基金 {counts["fund"]:,} / '
+              f'指数 {counts["index"]:,}）；已知停更 {len(known_stale):,} 只'
+              f'（stale_status 登记，不计缺口）；未登记断裂 {len(breaks)} 只')
+    if not registered:
+        detail += '；daily_index 不可读，跳过登记校验'
+    if unregistered:
+        detail += f'；行情文件未进入日更缺口计划 {len(unregistered)} 只: ' + ', '.join(
+            unregistered[:5])
+    if breaks:
+        detail += '；断裂: ' + ', '.join(
+            f'{code}(末根 {_fmt(end)}，滞后 {lag})' for _kind, code, end, lag in breaks[:5])
+    return FreshnessRow('行情全集', 'quotes/{stock,fund,index}', KIND_UNIVERSE,
+                        quotes_end_date, quotes_end_date, 0, verdict, detail, gap=gap)
+
+
 def _pool_row(store_root: Path, spec: TableSpec, quotes_end_date: date,
               calendar: list[date]) -> FreshnessRow:
-    """候选池：覆盖末日滞后 + ``fund_basic`` 中有行情但未入池的标的数。"""
+    """候选池：**视图层**只判「视图是否新鲜」，不承担数据完整性判据。
+
+    池是流动性筛选结果，未入池不等于数据有缺口；被排除标的的行情/分红由数据层
+    全集判据负责。这里只判覆盖末日滞后（最多 warning）与池内标的缺行情。
+    """
     path = store_root / spec.rel_path
     frame = pl.read_parquet(path, columns=['ts_code', spec.date_column or 'coverage_end'])
     data_end = frame[spec.date_column or 'coverage_end'].max()
     if not isinstance(data_end, date):
         return FreshnessRow(spec.label, spec.rel_path, spec.kind, None, quotes_end_date,
                             None, 'error', f'日期列为空或不存在: {spec.date_column}')
-    lag = count_lag(calendar, data_end, quotes_end_date)
-    verdict = classify_lag(lag if lag is not None else 0)
-    detail = f'池覆盖 {_fmt(data_end)}，滞后 {lag} 个交易日'
+    lag = count_lag(calendar, data_end, quotes_end_date) or 0
+    # 视图层单独一档：过期只提示刷新视图，绝不升级为 error
+    verdict = 'ok' if lag <= LAG_OK_MAX else 'warning'
+    detail = f'视图覆盖 {_fmt(data_end)}，滞后 {lag} 个交易日'
 
-    gap = None
-    basic_path = store_root / 'meta' / 'fund_basic.parquet'
+    in_pool = set(frame['ts_code'].to_list())
     quotes_dir = store_root / 'quotes' / 'fund'
-    if basic_path.is_file() and quotes_dir.is_dir():
-        basic = pl.read_parquet(basic_path)
-        if 'fund_type' in basic.columns:
-            eligible = set(basic.filter(pl.col('fund_type') == 'ETF')['ts_code'].to_list())
-            quoted = {item.stem for item in quotes_dir.rglob('*.parquet')}
-            absent = (eligible & quoted) - set(frame['ts_code'].to_list())
-            # 入池口径排除（权益 ETF watch 档，见 etf_pool_excluded.json）不计缺口：
-            # 该清单由构建脚本与池同轮产出，缺文件时按全量未入池计缺口（fail-closed）
-            waived: set[str] = set()
-            excluded_path = store_root / 'meta' / 'multi_asset' / 'etf_pool_excluded.json'
-            if excluded_path.is_file():
-                waived = set(json.loads(excluded_path.read_text(encoding='utf-8')).get('codes') or [])
-            missing = sorted(absent - waived)
-            gap = len(missing)
-            if waived:
-                detail += f'；按入池口径排除 {len(waived & absent)} 只（权益 watch 档）'
-            if missing:
-                detail += f'；fund_basic ETF 有行情但未入池 {gap} 只（{missing[0]} 等）'
-                verdict = _worst(verdict, 'warning')
+    quoted = {item.stem for item in quotes_dir.rglob('*.parquet')} if quotes_dir.is_dir() else set()
+    missing = sorted(in_pool - quoted)
+    gap = len(missing)
+    if missing:
+        detail += f'；池内无行情 {gap} 只（{missing[0]} 等）'
+        verdict = _worst(verdict, 'warning')
+
+    excluded_count = 0
+    excluded_path = store_root / 'meta' / 'multi_asset' / 'etf_pool_excluded.json'
+    if excluded_path.is_file():
+        try:
+            payload = json.loads(excluded_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            payload = {}
+        codes = payload.get('codes') or []
+        excluded_count = int(payload.get('count') or len(codes))
+        detail += f'；池内 {len(in_pool)} 只，按入池规则排除 {excluded_count} 只' \
+                  '（原因与评估日期见 etf_pool_excluded.json）'
     return FreshnessRow(spec.label, spec.rel_path, spec.kind, data_end, quotes_end_date,
                         lag, verdict, detail, gap=gap)
 
 
 def collect_rows(store_root: Path, calendar: list[date],
-                 quotes_end_date: date) -> list[FreshnessRow]:
-    """按 ``TABLE_SPECS`` 逐表求「数据末日 / 行情末日 / 滞后 / 缺口 / 判定」。"""
-    rows: list[FreshnessRow] = []
+                 quotes_end_date: date,
+                 files: dict[str, set[str]] | None = None) -> list[FreshnessRow]:
+    """按 ``TABLE_SPECS`` 逐表求「数据末日 / 行情末日 / 滞后 / 缺口 / 判定」。
+
+    首行固定是数据层「行情全集」判据：完整性口径对全市场有行情的标的生效，
+    不按候选池过滤；候选池只是视图层的一档。
+    """
+    rows: list[FreshnessRow] = [_universe_row(store_root, quotes_end_date, calendar, files)]
     for spec in TABLE_SPECS:
         if spec.kind == KIND_BASE_INFO:
             rows.append(_base_info_row(store_root, spec, quotes_end_date, calendar))
@@ -546,7 +652,10 @@ def run_check(store_root: Path, *, calendar: list[date] | None = None,
         from src.data.trading_calendar import get_calendar
 
         calendar = list(get_calendar(store_root, as_of=end).authoritative_dates())
-    report = FreshnessReport(quotes_end=end, rows=collect_rows(store_root, calendar, end))
+    universe = universe_files(store_root)
+    report = FreshnessReport(quotes_end=end,
+                             rows=collect_rows(store_root, calendar, end, universe),
+                             universe={kind: len(items) for kind, items in universe.items()})
     if doc_path is not None and doc_path.is_file():
         report.doc_uncovered = _assert_doc_registered(doc_path)
     return report
@@ -596,6 +705,7 @@ def format_summary(report: FreshnessReport) -> str:
     parts = [
         '[保鲜]',
         f'行情末日 {_fmt(report.quotes_end)}',
+        f'全集 {report.universe_total:,} 只',
         f'表 {len(report.rows)}',
         f'最大滞后 {report.max_lag} 天',
         f'error {len(report.errors)} / warning {len(report.warnings)}',
@@ -630,6 +740,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps({
             'quotes_end': _fmt(report.quotes_end),
+            'universe': report.universe,
             'rows': [{'label': row.label, 'path': row.rel_path,
                       'data_end': _fmt(row.data_end), 'quotes_end': _fmt(row.quotes_end),
                       'lag': row.lag, 'gap': row.gap, 'verdict': row.verdict,

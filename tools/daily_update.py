@@ -9,11 +9,12 @@
     3. 通达信增量构建 + 换手派生 + 异常清单  python -m src.data.local_store build build
     4. ST 区间表按交易日刷新        src.data.risk_flags refresh + src.data.st_history build
     5. 名录周更（超过 N 天未刷新才跑） src.main --update-fund / --update-index
-    6. 登记回写                     src.data.manifest_refresh.refresh_manifest_files
-    7. 校验                         逐件 rows/bytes/sha256 与 manifest 一致、
+    6. 候选池周更（超过 N 天未重建才跑） tools/build_multi_asset_etf_pool.py --apply
+    7. 登记回写                     src.data.manifest_refresh.refresh_manifest_files
+    8. 校验                         逐件 rows/bytes/sha256 与 manifest 一致、
                                     同级 manifest 汇总字段对账、
                                     mtime 晚于开工标记的文件与预期清单求差为 0
-    8. 保鲜体检                      src.data.quality.freshness_check --summary（一行状态）
+    9. 保鲜体检                      src.data.quality.freshness_check --summary（一行状态）
 
 口径与边界::
 
@@ -26,8 +27,9 @@
     - ``quotes/manifest.json`` 是人工维护的全市场总账（仓库内无产者，含
       futures 口径），本入口只做只读对账（universe 分市场求和 == universe
       合计），不代写数值；该件与磁盘的偏差按 WARN 打印实测差额。
-    - 第 4/5/8 步是新增旁路：任一步失败只告警，不改日更原有退出码，
-      也不改主表校验口径。
+    - 第 4/5/6/9 步是新增旁路：任一步失败只告警，不改日更原有退出码，
+      也不改主表校验口径。候选池是筛选结果（视图层），不承担数据完整性；
+      被排除标的的行情/分红由保鲜体检的全集判据负责。
 
 用法::
 
@@ -60,6 +62,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import polars as pl  # noqa: E402
 from loguru import logger  # noqa: E402
 
 from src.data.local_store.paths import default_store_root  # noqa: E402
@@ -100,6 +103,17 @@ AUX_BASIC_OUTPUTS = {
 }
 #: 名录默认刷新周期（自然日）
 DEFAULT_BASIC_REFRESH_DAYS = 7
+#: 候选池周更会写的件（首件用于判断距上次重建是否超过阈值）。
+AUX_POOL_OUTPUTS = (
+    'meta/multi_asset/etf_pool.parquet',
+    'meta/multi_asset/etf_pool.csv',
+    'meta/multi_asset/etf_gap_detail.csv',
+    'meta/multi_asset/etf_event_gaps.csv',
+    'meta/multi_asset/etf_pool_excluded.json',
+    'meta/multi_asset/manifest.json',
+)
+#: 候选池默认重建周期（自然日）
+DEFAULT_POOL_REFRESH_DAYS = 7
 #: 增量清点跳过 ``backtest_runs``：回测运行记录是结果归档（json/csv/log 与索引），
 #: 不是数据表，日更既不产出也不消费它，计入会让「本次新增文件」混入非数据资产。
 SKIP_DIRS = {'_backup', '__pycache__', 'backtest_runs'}
@@ -321,12 +335,76 @@ def _basic_due(root: Path, refresh_days: int) -> dict[str, tuple[str, str]]:
     return due
 
 
-def _aux_expected(root: Path, refresh_days: int) -> set[str]:
+def _aux_expected(root: Path, refresh_days: int,
+                  pool_refresh_days: int = DEFAULT_POOL_REFRESH_DAYS) -> set[str]:
     """新增旁路会写的件，并入日更预期清单（只作白名单，不强制必须出现）。"""
     expected = set(AUX_ST_OUTPUTS)
     for key, rels in _basic_due(root, refresh_days).items():
         expected.update(rels)
+    if _pool_due(root, pool_refresh_days):
+        expected.update(AUX_POOL_OUTPUTS)
     return expected
+
+
+def _pool_due(root: Path, refresh_days: int) -> bool:
+    """候选池距上次重建是否已到周更阈值（文件缺失也算到期）。"""
+    age = _age_days(root / AUX_POOL_OUTPUTS[0])
+    return age is None or age >= refresh_days
+
+
+def _pool_codes(path: Path) -> set[str]:
+    """候选池当前成分（用于重建前后对比进出）。"""
+    if not path.is_file():
+        return set()
+    try:
+        return set(pl.read_parquet(path, columns=['ts_code'])['ts_code'].to_list())
+    except (OSError, pl.exceptions.PolarsError):
+        return set()
+
+
+def _excluded_codes(root: Path) -> tuple[int, int]:
+    """排除清单：返回（排除只数，带原因与评估日期的条目数）。"""
+    path = root / 'meta' / 'multi_asset' / 'etf_pool_excluded.json'
+    if not path.is_file():
+        return 0, 0
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return 0, 0
+    return int(payload.get('count') or len(payload.get('codes') or [])), len(
+        payload.get('items') or [])
+
+
+def _run_pool_refresh(plan: _Plan, args: argparse.Namespace) -> str:
+    """候选池按周重建：到期才跑，输出一行进出变动；失败只告警。"""
+    root = plan.root
+    if args.skip_pool_refresh:
+        logger.info('[daily] 已跳过候选池重建（--skip-pool-refresh）')
+        return ''
+    if not _pool_due(root, args.pool_refresh_days):
+        logger.info('[daily] 候选池未到期（阈值 {} 天），本轮不重建', args.pool_refresh_days)
+        return ''
+    pool_path = root / AUX_POOL_OUTPUTS[0]
+    before = _pool_codes(pool_path)
+    code = _run_module(
+        [sys.executable, str(ROOT / 'tools' / 'build_multi_asset_etf_pool.py'), '--apply'],
+        '候选池重建')
+    after = _pool_codes(pool_path)
+    if code != 0 or not after:
+        logger.warning('[daily] 候选池重建未完成（返回 {}），只告警', code)
+        return '[候选池] 重建未完成（只告警，不影响日更结果）'
+    entered = len(after - before) if before else 0
+    exited = len(before - after) if before else 0
+    excluded, with_reason = _excluded_codes(root)
+    as_of = '-'
+    try:
+        as_of = str(pl.read_parquet(pool_path, columns=['coverage_end'])['coverage_end']
+                    .max())[:10]
+    except (OSError, pl.exceptions.PolarsError):
+        pass
+    return (f'[候选池] as_of {as_of} | 池内 {len(after)} 只 | 新入池 {entered} / 出池 {exited} | '
+            f'按规则排除 {excluded} 只（{with_reason} 条带原因与评估日期，见 '
+            'etf_pool_excluded.json）')
 
 
 def _run_aux_refresh(plan: _Plan, args: argparse.Namespace) -> dict[str, Any]:
@@ -642,7 +720,7 @@ def _build_plan(args: argparse.Namespace) -> _Plan:
     for rel in list(expected):
         expected.add(Path(rel).with_suffix('.manifest.json').as_posix())
     expected.update(SIDE_OUTPUTS)
-    expected |= _aux_expected(root, args.basic_refresh_days)
+    expected |= _aux_expected(root, args.basic_refresh_days, args.pool_refresh_days)
     tdx_root = getattr(config.data, 'tdx_data_path', None)
     tdx_stale = _tdx_stale(root, Path(tdx_root) if tdx_root else None, coverage, codes)
     expected |= tdx_stale
@@ -711,6 +789,8 @@ def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
 
     # 新增旁路：ST 区间表按交易日刷新、名录按周更阈值刷新；失败只告警
     _run_aux_refresh(plan, args)
+    # 候选池按周重建（派生视图，不承担数据完整性）；失败只告警
+    pool_line = _run_pool_refresh(plan, args)
 
     changed = _walk(root, plan.marker_ts)
     logger.info('[daily] 改动 {} 件，回写 manifest 登记 {} 条',
@@ -739,6 +819,8 @@ def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
     })
     print(_format(plan.range_label, len(changed), len(plan.plan_quote), report['added'],
                   report['deleted'], len(report['problems']), digest[:12], apply=True))
+    if pool_line:
+        print(pool_line)
     print(_run_freshness(root))
     if args.target_holdings:
         _run_target_holdings(plan.latest, args.capital)
@@ -776,6 +858,10 @@ def main(argv: list[str] | None = None) -> int:
                         help='跳过 fund_basic / index_basic 名录周更')
     parser.add_argument('--basic-refresh-days', type=int, default=DEFAULT_BASIC_REFRESH_DAYS,
                         help='名录距上次刷新超过该天数才刷新（默认 7）')
+    parser.add_argument('--skip-pool-refresh', action='store_true',
+                        help='跳过多资产 ETF 候选池周更')
+    parser.add_argument('--pool-refresh-days', type=int, default=DEFAULT_POOL_REFRESH_DAYS,
+                        help='候选池距上次重建超过该天数才重建（默认 7）')
     args = parser.parse_args(argv)
 
     logger.remove()

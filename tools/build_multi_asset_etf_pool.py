@@ -401,6 +401,7 @@ def build(as_of: date) -> tuple[pl.DataFrame, list[dict[str, Any]], list[dict[st
                 'ts_code': code, 'name': name, 'tier': tier,
                 'adv_60d': adv60, 'listed_days': listed_days,
                 'reason': 'equity_watch_no_candidate',
+                'evaluated_at': as_of.isoformat(),
             })
             continue
         if instrument == 'LOF':
@@ -458,6 +459,8 @@ def build(as_of: date) -> tuple[pl.DataFrame, list[dict[str, Any]], list[dict[st
         'criteria': '权益 ETF 且（adv_60d < 20,000,000 或上市不足 365 天）',
         'count': len(excluded),
         'codes': sorted(item['ts_code'] for item in excluded),
+        'evaluated_at': as_of.isoformat(),
+        'items': sorted(excluded, key=lambda item: item['ts_code']),
     }
     return frame, gap_detail, event_detail, summary
 
@@ -581,6 +584,8 @@ def apply_staging(paths: dict[str, Path], summary: dict[str, Any]) -> dict[str, 
         'criteria': summary['excluded_by_rule']['criteria'],
         'count': summary['excluded_by_rule']['count'],
         'codes': summary['excluded_by_rule']['codes'],
+        'evaluated_at': summary['excluded_by_rule']['evaluated_at'],
+        'items': summary['excluded_by_rule']['items'],
     }
     write_text_atomic(json.dumps(excluded_doc, ensure_ascii=False, indent=2),
                       TARGET_DIR / 'etf_pool_excluded.json')

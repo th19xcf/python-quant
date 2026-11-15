@@ -60,6 +60,23 @@ def _write_quotes_dir(store, kind: str, codes: list[str]) -> None:
         pl.DataFrame({'date': [date(2026, 11, 9)]}).write_parquet(path)
 
 
+def _write_daily_index(store, rows: list[tuple[str, str, date]]) -> None:
+    """数据层全集登记表：行情文件必须在这里，日更缺口计划才看得见。"""
+    path = store / 'meta' / 'daily_index.parquet'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({'ts_code': [row[0] for row in rows],
+                  'data_type': [row[1] for row in rows],
+                  'end': [row[2] for row in rows]}).write_parquet(path)
+
+
+def _write_stale_status(store, rows: list[tuple[str, str, bool]]) -> None:
+    path = store / 'meta' / 'universe' / 'stale_status.parquet'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({'ts_code': [row[0] for row in rows],
+                  'asset_class': [row[1] for row in rows],
+                  'is_stale': [row[2] for row in rows]}).write_parquet(path)
+
+
 def _write_doc(tmp_path, skip: str = '') -> object:
     paths = [spec.rel_path for spec in fc.TABLE_SPECS if spec.rel_path != skip]
     body = '\n'.join(f'| 语义 | `{path}` | 消费者 | 理由 |' for path in paths)
@@ -108,6 +125,11 @@ def _build_store(tmp_path, *, daily_end: date, coverage_end: date, event_end: da
         _touch(store / rel, event_end)
     _write_quotes_dir(store, 'fund', ['510300.SH'])
     _write_quotes_dir(store, 'index', ['000001.SH'])
+    _write_date_table(store / 'factors' / 'fund_dividend.parquet', 'ex_date', daily_end)
+    _write_daily_index(store, [('600000.SH', 'stock', daily_end),
+                               ('510300.SH', 'fund', daily_end),
+                               ('000001.SH', 'index', daily_end)])
+    _write_stale_status(store, [])
     return store, calendar
 
 
@@ -163,7 +185,7 @@ def test_missing_table_reports_error_instead_of_skipping(tmp_path):
     row = _row(report, 'meta/breadth/breadth_daily.parquet')
     assert row.verdict == 'error'
     assert '正式表不存在' in row.detail
-    assert len(report.rows) == len(fc.TABLE_SPECS)
+    assert len(report.rows) == len(fc.TABLE_SPECS) + 1
 
 
 def test_base_info_uses_new_code_count_not_date_threshold(tmp_path):
@@ -242,6 +264,65 @@ def test_event_old_data_but_fresh_file_is_ok(tmp_path):
     assert row.verdict == 'ok'
 
 
+def test_universe_covers_full_market_and_counts(tmp_path):
+    """数据层按全集：行情目录里每只标的都计入，并报全集只数。"""
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    assert report.universe == {'stock': 1, 'fund': 1, 'index': 1}
+    assert report.universe_total == 3
+    row = _row(report, 'quotes/{stock,fund,index}')
+    assert row.kind == fc.KIND_UNIVERSE
+    assert row.verdict == 'ok'
+    assert '全集 3 只' in row.detail
+    assert '合集' not in row.detail
+
+
+def test_excluded_code_data_break_is_caught(tmp_path):
+    """未被池收录的标的一旦行情断裂，数据层全集判据仍要抓到。"""
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    # 159001.SZ 不在候选池，但属于全市场 ETF；其末根停在 9 个交易日前
+    _write_quotes_dir(store, 'fund', ['510300.SH', '159001.SZ'])
+    _write_daily_index(store, [('600000.SH', 'stock', calendar[-1]),
+                               ('510300.SH', 'fund', calendar[-1]),
+                               ('159001.SZ', 'fund', calendar[-10]),
+                               ('000001.SH', 'index', calendar[-1])])
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    assert '159001.SZ' not in _row(report, 'meta/multi_asset/etf_pool.parquet').detail
+    row = _row(report, 'quotes/{stock,fund,index}')
+    assert row.verdict == 'warning'
+    assert row.gap == 1
+    assert '159001.SZ' in row.detail
+    assert '未登记断裂 1 只' in row.detail
+
+
+def test_registered_stale_is_not_a_break(tmp_path):
+    """已登记停更台账（数据源无新增/退市）的断裂属已知合法状态，不计缺口。"""
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    _write_quotes_dir(store, 'fund', ['510300.SH', '159001.SZ'])
+    _write_daily_index(store, [('600000.SH', 'stock', calendar[-1]),
+                               ('510300.SH', 'fund', calendar[-1]),
+                               ('159001.SZ', 'fund', calendar[-10]),
+                               ('000001.SH', 'index', calendar[-1])])
+    _write_stale_status(store, [('159001.SZ', 'fund', True)])
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'quotes/{stock,fund,index}')
+    assert row.verdict == 'ok'
+    assert row.gap == 0
+    assert '已知停更 1 只' in row.detail
+
+
 def test_pool_stale_coverage_reports_warning(tmp_path):
     calendar = _biz_days(12)
     store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
@@ -254,14 +335,14 @@ def test_pool_stale_coverage_reports_warning(tmp_path):
     assert row.verdict == 'warning'
 
 
-def test_pool_missing_quoted_etf_reports_warning(tmp_path):
+def test_pool_member_without_quotes_reports_warning(tmp_path):
+    """视图层只判池内标的是否有行情；未入池不算缺口。"""
     calendar = _biz_days(12)
     store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
                                    coverage_end=calendar[-1], event_end=calendar[-1])
-    _write_fund_basic(store / 'meta' / 'fund_basic.parquet',
-                      [('510300.SH', 'ETF'), ('159001.SZ', 'ETF')])
-    _touch(store / 'meta' / 'fund_basic.parquet', calendar[-1])
-    _write_quotes_dir(store, 'fund', ['510300.SH', '159001.SZ'])
+    pl.DataFrame({'ts_code': ['510300.SH', '159001.SZ'],
+                  'coverage_end': [calendar[-1]] * 2}).write_parquet(
+        store / 'meta' / 'multi_asset' / 'etf_pool.parquet')
 
     report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
 
@@ -271,8 +352,8 @@ def test_pool_missing_quoted_etf_reports_warning(tmp_path):
     assert '159001.SZ' in row.detail
 
 
-def test_pool_waived_by_rule_is_not_a_gap(tmp_path):
-    """按入池口径排除（权益 watch 档）的标的只登记不判缺口（反例：清单缺失时仍报 warning）。"""
+def test_pool_excluded_by_rule_is_not_a_gap(tmp_path):
+    """按入池规则排除的标的只登记原因与评估日期，不计入数据缺口。"""
     calendar = _biz_days(12)
     store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
                                    coverage_end=calendar[-1], event_end=calendar[-1])
@@ -282,15 +363,18 @@ def test_pool_waived_by_rule_is_not_a_gap(tmp_path):
     _write_quotes_dir(store, 'fund', ['510300.SH', '159001.SZ'])
     excluded = store / 'meta' / 'multi_asset' / 'etf_pool_excluded.json'
     excluded.write_text(json.dumps(
-        {'rule': 'equity_watch_no_candidate', 'count': 1, 'codes': ['159001.SZ']}),
-        encoding='utf-8')
+        {'rule': 'equity_watch_no_candidate', 'count': 1, 'codes': ['159001.SZ'],
+         'evaluated_at': calendar[-1].isoformat(),
+         'items': [{'ts_code': '159001.SZ', 'reason': 'equity_watch_no_candidate',
+                    'evaluated_at': calendar[-1].isoformat()}]}), encoding='utf-8')
 
     report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
 
     row = _row(report, 'meta/multi_asset/etf_pool.parquet')
     assert row.gap == 0
     assert row.verdict == 'ok'
-    assert '按入池口径排除 1 只' in row.detail
+    assert '按入池规则排除 1 只' in row.detail
+    assert '159001.SZ' not in row.detail.split('按入池规则排除')[0]
 
 
 def test_st_interval_watermark_lag_reports_error(tmp_path):
@@ -317,6 +401,7 @@ def test_summary_is_single_line_when_normal(tmp_path):
     summary = fc.format_summary(report)
     assert '\n' not in summary
     assert summary.startswith('[保鲜]')
+    assert '全集 3 只' in summary
     assert '全部正常' in summary
 
 
@@ -325,6 +410,10 @@ def test_known_exception_is_listed_but_not_counted_as_warning(tmp_path):
     store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
                                    coverage_end=calendar[-1], event_end=calendar[-1])
     _write_quotes_dir(store, 'fund', ['510300.SH', '505888.SH'])
+    _write_daily_index(store, [('600000.SH', 'stock', calendar[-1]),
+                               ('510300.SH', 'fund', calendar[-1]),
+                               ('505888.SH', 'fund', calendar[-1]),
+                               ('000001.SH', 'index', calendar[-1])])
 
     report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
 
