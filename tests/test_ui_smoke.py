@@ -112,9 +112,11 @@ def test_main_window_constructs_with_empty_market_table(qapp, tmp_path):
 
     window = MainWindow(config, data_manager)
     try:
-        assert window.tab_widget.count() == 5
+        assert window.tab_widget.count() == 6
         assert window.advice_page is not None
         assert window.market_trend_page is not None
+        assert window.industry_heat_page is not None
+        assert window.tab_widget.tabText(window.tab_widget.count() - 1) == '行业热度'
         assert window.stock_table.columnCount() == 13
         # 示例假数据已移除，启动时行情表应为空
         assert window.stock_table.rowCount() == 0
