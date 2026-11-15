@@ -79,7 +79,7 @@ class FinalizeError(RuntimeError):
 
 @dataclass(frozen=True)
 class Change:
-    """一条工作区改动：``status`` 取 A/M/D，``path`` 为相对仓库根的 posix 路径。"""
+    """一条工作区改动：``status`` 取 A/M/D/?，``path`` 为相对仓库根的 posix 路径。"""
 
     status: str
     path: str
@@ -117,10 +117,12 @@ def _nul_items(text: str) -> list[str]:
 
 
 def _status_letter(code: str) -> str:
-    """把 porcelain 的两位状态码归一成 A/M/D。"""
+    """把 porcelain 的两位状态码归一成 A/M/D/?（? 表示未跟踪，与已 add 的 A 区分）。"""
+    if code == '??':
+        return '?'
     if 'D' in code:
         return 'D'
-    if 'A' in code or code == '??':
+    if 'A' in code:
         return 'A'
     return 'M'
 
@@ -132,7 +134,7 @@ def list_changes() -> list[Change]:
     ).stdout
     changes = [Change(_status_letter(item[:2]), item[3:]) for item in _nul_items(tracked)]
     untracked = _git(['ls-files', '--others', '--exclude-standard', '-z']).stdout
-    changes.extend(Change('A', path) for path in _nul_items(untracked))
+    changes.extend(Change('?', path) for path in _nul_items(untracked))
     return changes
 
 
