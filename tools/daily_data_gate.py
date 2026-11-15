@@ -19,7 +19,8 @@ r"""每日数据巡检门禁（不改任何数据表、不触发采集或构建�
 5. **版本记录 + 派生表版本审计**：先 ``ensure_current`` 补记当日基础表版本
    （同 digest 不写），再 ``audit_derived``；派生表文件缺失即失败，
    ``stale`` / ``unstamped`` 只记录（与 ``python tools/data_version.py audit``
-   同一判据，不触发任何重建）。
+   同一判据，不触发任何重建）。同一表在上一份 ``gate_*.json`` 里也 ``stale``
+   时打印「连续两次落后」并写入 ``stale_two_days``，仍只记录。
 
 输出 JSON 报告到 ``artifacts/data_gate/``；任一项失败返回 1。
 
@@ -107,7 +108,44 @@ def _check_freshness_summary(store_root: Path) -> dict[str, Any]:
     }
 
 
-def _check_version_audit(store_root: Path, record: bool = True) -> dict[str, Any]:
+def _previous_gate_report(out_dir: Path, today: date) -> Path | None:
+    """取最近一份「today 之前」的门禁报告（``gate_YYYYMMDD.json``）。"""
+    best: tuple[date, Path] | None = None
+    if not out_dir.is_dir():
+        return None
+    for path in out_dir.glob('gate_*.json'):
+        try:
+            day = datetime.strptime(path.stem.split('_', 1)[1], '%Y%m%d').date()
+        except (IndexError, ValueError):
+            continue
+        if day >= today:
+            continue
+        if best is None or day > best[0]:
+            best = (day, path)
+    return best[1] if best else None
+
+
+def _persistent_stale(stale_now: list[str], today: date,
+                      out_dir: Path) -> dict[str, Any]:
+    """同一派生表在上一份门禁报告里也 ``stale`` → 报「连续两日未消」。
+
+    只读历史报告，不写盘、不改判定：命中项仅记录，仍不阻断门禁。
+    """
+    previous = _previous_gate_report(out_dir, today)
+    if previous is None:
+        return {'compared_with': None, 'tables': []}
+    try:
+        payload = json.loads(previous.read_text(encoding='utf-8'))
+        before = payload['checks']['version_audit'].get('stale') or []
+    except (OSError, KeyError, TypeError, ValueError):
+        return {'compared_with': previous.name, 'tables': [], 'error': '上一份报告不可读'}
+    return {'compared_with': previous.name,
+            'tables': sorted(set(stale_now) & {str(name) for name in before})}
+
+
+def _check_version_audit(store_root: Path, record: bool = True,
+                         today: date | None = None,
+                         out_dir: Path | None = None) -> dict[str, Any]:
     """版本记录 + 派生表版本审计（与 ``tools/data_version.py`` 同判据，不重建）。
 
     ``record=True`` 时先 ``ensure_current``：台账缺失或磁盘版本已变才追加一版
@@ -122,6 +160,7 @@ def _check_version_audit(store_root: Path, record: bool = True) -> dict[str, Any
     except Exception as exc:  # noqa: BLE001
         return {'passed': False, 'error': f'{type(exc).__name__}: {exc}'}
     counts = result['counts']
+    stale = [row['table'] for row in result['rows'] if row['status'] == 'stale']
     return {
         'passed': counts['missing'] == 0,
         'recorded_version': recorded,
@@ -129,8 +168,9 @@ def _check_version_audit(store_root: Path, record: bool = True) -> dict[str, Any
         'counts': counts,
         'missing': [row['table'] for row in result['rows']
                     if row['status'] == 'missing'],
-        'stale': [row['table'] for row in result['rows']
-                  if row['status'] == 'stale'],
+        'stale': stale,
+        'stale_two_days': _persistent_stale(
+            stale, today or date.today(), out_dir or DEFAULT_OUT_DIR),
     }
 
 
@@ -169,6 +209,7 @@ def run_gate(
     backup_dests: list[Path] | None = None,
     skip_backup_check: bool = False,
     record_version: bool = True,
+    out_dir: Path = DEFAULT_OUT_DIR,
 ) -> dict[str, Any]:
     """执行全部检查，返回结构化报告（由 CLI 决定退出码与落盘）。"""
     today = today or date.today()
@@ -176,7 +217,8 @@ def run_gate(
         'factor_consistency': _check_factors(store_root),
         'freshness': _check_freshness(store_root, config_path, today),
         'freshness_summary': _check_freshness_summary(store_root),
-        'version_audit': _check_version_audit(store_root, record=record_version),
+        'version_audit': _check_version_audit(
+            store_root, record=record_version, today=today, out_dir=out_dir),
     }
     if skip_backup_check:
         checks['backup'] = {'passed': True, 'skipped': True, 'dests': {}}
@@ -217,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         backup_dests=args.backup_dest,
         skip_backup_check=args.skip_backup_check,
         record_version=not args.no_record_version,
+        out_dir=args.out_dir,
     )
     args.out_dir.mkdir(parents=True, exist_ok=True)
     out_path = args.out_dir / f'gate_{report["as_of"].replace("-", "")}.json'
@@ -240,10 +283,14 @@ def main(argv: list[str] | None = None) -> int:
                   + (f' 异常: {item["error"]}' if item.get('error') else ''))
         elif name == 'version_audit':
             counts = item.get('counts') or {}
+            two_days = item.get('stale_two_days') or {}
             print(f'  [{mark}] 版本审计 {item.get("version")} 派生 ok '
                   f'{counts.get("ok")} / 落后 {counts.get("stale")} / '
                   f'未标记 {counts.get("unstamped")} / 缺失 {counts.get("missing")}'
                   + (f' 缺: {item["missing"]}' if item.get('missing') else '')
+                  + (f' 连续两次落后: {two_days["tables"]}'
+                     f'（对比 {two_days["compared_with"]}）'
+                     if two_days.get('tables') else '')
                   + (f' 异常: {item["error"]}' if item.get('error') else ''))
         else:
             print(f'  [{mark}] 备份校验 {item.get("dests") or item.get("skipped")}')

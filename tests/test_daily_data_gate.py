@@ -37,7 +37,7 @@ def mocked_checks(monkeypatch):
         lambda root, cfg, today: state['freshness'])
     monkeypatch.setattr(gate, '_check_freshness_summary', lambda root: state['summary'])
     monkeypatch.setattr(gate, '_check_version_audit',
-                        lambda root, record=True: state['audit'])
+                        lambda root, **kwargs: state['audit'])
     monkeypatch.setattr(gate, '_check_backups', lambda dests: state['backup'])
     return state
 
@@ -89,12 +89,43 @@ def test_version_audit_reads_real_module(monkeypatch) -> None:
         ],
         'counts': {'ok': 1, 'stale': 1, 'unstamped': 0, 'missing': 1},
     })
-    result = gate._check_version_audit(Path('.'), record=False)
+    result = gate._check_version_audit(Path('.'), record=False, today=TODAY)
     assert result['passed'] is False
     assert result['recorded_version'] is None
     assert result['missing'] == ['c.parquet']
     assert result['stale'] == ['b.parquet']
     assert result['counts']['missing'] == 1
+
+
+def _write_gate_report(out_dir: Path, day: str, stale: list[str]) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f'gate_{day}.json'
+    path.write_text(json.dumps({'checks': {'version_audit': {'stale': stale}}}),
+                    encoding='utf-8')
+    return path
+
+
+def test_persistent_stale_hits_two_consecutive_runs(tmp_path: Path) -> None:
+    """同一派生表在上一份报告里也 stale → 报「连续两日未消」。"""
+    _write_gate_report(tmp_path, '20261113', ['a.parquet'])
+    _write_gate_report(tmp_path, '20261114', ['a.parquet', 'b.parquet'])
+    result = gate._persistent_stale(['b.parquet', 'c.parquet'],
+                                    dt.date(2026, 11, 15), tmp_path)
+    assert result['compared_with'] == 'gate_20261114.json'
+    assert result['tables'] == ['b.parquet']
+
+
+def test_persistent_stale_ignores_same_day_report(tmp_path: Path) -> None:
+    """当天的报告不算「上一日」，缺上一日时只报空。"""
+    _write_gate_report(tmp_path, '20261107', ['a.parquet'])
+    result = gate._persistent_stale(['a.parquet'], TODAY, tmp_path)
+    assert result['compared_with'] is None
+    assert result['tables'] == []
+
+
+def test_persistent_stale_no_previous_dir(tmp_path: Path) -> None:
+    result = gate._persistent_stale(['a.parquet'], TODAY, tmp_path / 'missing')
+    assert result == {'compared_with': None, 'tables': []}
 
 
 def test_factor_mismatch_fails(mocked_checks) -> None:
@@ -162,7 +193,7 @@ def real_freshness(monkeypatch):
     # 体检 13 行与版本审计都依赖真实 ``data/local_store``，合成仓库下按好结果短路
     monkeypatch.setattr(gate, '_check_freshness_summary', lambda root: GOOD_SUMMARY)
     monkeypatch.setattr(gate, '_check_version_audit',
-                        lambda root, record=True: GOOD_AUDIT)
+                        lambda root, **kwargs: GOOD_AUDIT)
 
 
 def _write_store(root: Path, covered: int) -> None:
