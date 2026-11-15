@@ -21,6 +21,7 @@ from tools.single_window_diag import (
     brinson_contrib,
     build_style_panel,
     decompose_excess,
+    load_industry,
 )
 
 
@@ -107,3 +108,29 @@ def test_drop_one_annualized_matches_compounding():
     assert abs(value - (product ** (252.0 / 875.0) - 1.0)) < 1e-12
     dropped = _drop_one_annualized(returns, drop=0)
     assert dropped < value
+
+
+def test_load_industry_takes_latest_layer_not_after_target(tmp_path):
+    """G-148：缺省取「不晚于目标日的最大 as_of 层」，不再钉死固定日期。"""
+    rows = []
+    layers = {
+        dt.date(2026, 11, 3): ['银行', '地产'],
+        dt.date(2026, 11, 10): ['银行', '地产'],
+        dt.date(2026, 11, 12): ['电子', '地产'],
+    }
+    for as_of, industries in layers.items():
+        for code, industry in zip(('000001.SZ', '000002.SZ'), industries,
+                                  strict=True):
+            rows.append({'as_of': as_of, 'code': code,
+                         'industry_l1': industry})
+    path = tmp_path / 'industry_history.parquet'
+    pl.DataFrame(rows).write_parquet(path)
+
+    got = load_industry(path, not_after=dt.date(2026, 11, 11))
+    assert set(got['industry'].to_list()) == {'银行', '地产'}
+
+    explicit = load_industry(path, as_of='2026-11-12')
+    assert set(explicit['industry'].to_list()) == {'电子', '地产'}
+
+    latest = load_industry(path)
+    assert set(latest['industry'].to_list()) == {'电子', '地产'}

@@ -1082,18 +1082,30 @@ class EligibilityEngine:
                 and self.codes[code].data_type == 'stock'
                 and not self.codes[code].st_intervals
             }
-        # 截面钉在 2026-11-03 那一层（见缺口 G-148）：迁移只做路径去日期化，
-        # 取哪一天由 as_of 列决定，行为逐行不变。「钉了一个陈旧截面」本身是
-        # 独立缺陷，已单独登记，不在迁移里顺手改。
+        # 截面取「不晚于判定时点的最大 as_of 层」（G-148）：不再钉死固定日期，
+        # 表内无早于时点的层时退化为最早层并告警。
         snapshot = self.root / 'meta/st_status/st_status_history.parquet'
+        self.snapshot_st: set[str] = set()
         if snapshot.exists():
-            snap = pl.read_parquet(snapshot).filter(
-                pl.col('as_of') == date(2026, 11, 3))
-            self.snapshot_st = set(
-                snap.filter(pl.col('status') == 'st')['code'].to_list()
-            )
-        else:
-            self.snapshot_st = set()
+            snap = pl.read_parquet(snapshot)
+            cutoff = self.as_of or date.today()
+            layers = sorted(d for d in snap['as_of'].unique().to_list()
+                            if d is not None)
+            eligible = [d for d in layers if d <= cutoff]
+            if eligible:
+                layer_day = eligible[-1]
+            elif layers:
+                layer_day = layers[0]
+                logger.warning(
+                    f'ST 快照无早于 {cutoff} 的层，退化为最早层 {layer_day}')
+            else:
+                layer_day = None
+            if layer_day is not None:
+                self.snapshot_st = set(
+                    snap.filter((pl.col('as_of') == layer_day)
+                                & (pl.col('status') == 'st'))['code'].to_list()
+                )
+                logger.info(f'ST 快照层 as_of={layer_day}（判定时点 {cutoff}）')
 
     def _finalize_structural(self) -> None:
         placeholder: set[str] = getattr(self, '_placeholder_codes', set())
