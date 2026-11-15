@@ -449,8 +449,17 @@ def _pool_row(store_root: Path, spec: TableSpec, quotes_end_date: date,
         if 'fund_type' in basic.columns:
             eligible = set(basic.filter(pl.col('fund_type') == 'ETF')['ts_code'].to_list())
             quoted = {item.stem for item in quotes_dir.rglob('*.parquet')}
-            missing = sorted((eligible & quoted) - set(frame['ts_code'].to_list()))
+            absent = (eligible & quoted) - set(frame['ts_code'].to_list())
+            # 入池口径排除（权益 ETF watch 档，见 etf_pool_excluded.json）不计缺口：
+            # 该清单由构建脚本与池同轮产出，缺文件时按全量未入池计缺口（fail-closed）
+            waived: set[str] = set()
+            excluded_path = store_root / 'meta' / 'multi_asset' / 'etf_pool_excluded.json'
+            if excluded_path.is_file():
+                waived = set(json.loads(excluded_path.read_text(encoding='utf-8')).get('codes') or [])
+            missing = sorted(absent - waived)
             gap = len(missing)
+            if waived:
+                detail += f'；按入池口径排除 {len(waived & absent)} 只（权益 watch 档）'
             if missing:
                 detail += f'；fund_basic ETF 有行情但未入池 {gap} 只（{missing[0]} 等）'
                 verdict = _worst(verdict, 'warning')

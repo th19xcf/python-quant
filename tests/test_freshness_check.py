@@ -11,6 +11,7 @@
 另覆盖基础信息表的「新增标的」口径与权威清单登记校验。
 """
 
+import json
 import os
 from datetime import date, datetime, time, timedelta
 
@@ -268,6 +269,28 @@ def test_pool_missing_quoted_etf_reports_warning(tmp_path):
     assert row.gap == 1
     assert row.verdict == 'warning'
     assert '159001.SZ' in row.detail
+
+
+def test_pool_waived_by_rule_is_not_a_gap(tmp_path):
+    """按入池口径排除（权益 watch 档）的标的只登记不判缺口（反例：清单缺失时仍报 warning）。"""
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    _write_fund_basic(store / 'meta' / 'fund_basic.parquet',
+                      [('510300.SH', 'ETF'), ('159001.SZ', 'ETF')])
+    _touch(store / 'meta' / 'fund_basic.parquet', calendar[-1])
+    _write_quotes_dir(store, 'fund', ['510300.SH', '159001.SZ'])
+    excluded = store / 'meta' / 'multi_asset' / 'etf_pool_excluded.json'
+    excluded.write_text(json.dumps(
+        {'rule': 'equity_watch_no_candidate', 'count': 1, 'codes': ['159001.SZ']}),
+        encoding='utf-8')
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'meta/multi_asset/etf_pool.parquet')
+    assert row.gap == 0
+    assert row.verdict == 'ok'
+    assert '按入池口径排除 1 只' in row.detail
 
 
 def test_st_interval_watermark_lag_reports_error(tmp_path):

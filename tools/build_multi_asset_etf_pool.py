@@ -264,6 +264,8 @@ def build(as_of: date) -> tuple[pl.DataFrame, list[dict[str, Any]], list[dict[st
     rows: list[dict[str, Any]] = []
     gap_detail: list[dict[str, Any]] = []
     event_detail: list[dict[str, Any]] = []
+    #: 按口径排除的标的（当前只有「权益 ETF watch 档」），供保鲜体检扣除后判实质缺口
+    excluded: list[dict[str, Any]] = []
 
     for record in basic.filter(pl.col('fund_type') == 'ETF').iter_rows(named=True):
         code = record['ts_code']
@@ -395,6 +397,11 @@ def build(as_of: date) -> tuple[pl.DataFrame, list[dict[str, Any]], list[dict[st
         in_scope = asset_class in {'equity', 'bond', 'gold', 'commodity'}
         if asset_class == 'equity' and tier == 'watch':
             # 权益 ETF 数量过多，watch 档（成交额<2,000 万或上市<1 年）不进候选
+            excluded.append({
+                'ts_code': code, 'name': name, 'tier': tier,
+                'adv_60d': adv60, 'listed_days': listed_days,
+                'reason': 'equity_watch_no_candidate',
+            })
             continue
         if instrument == 'LOF':
             in_scope = False
@@ -446,6 +453,12 @@ def build(as_of: date) -> tuple[pl.DataFrame, list[dict[str, Any]], list[dict[st
     event_detail = [row for row in event_detail if row['ts_code'] in kept]
 
     summary = _summary(frame, calendar, as_of)
+    summary['excluded_by_rule'] = {
+        'rule': 'equity_watch_no_candidate',
+        'criteria': '权益 ETF 且（adv_60d < 20,000,000 或上市不足 365 天）',
+        'count': len(excluded),
+        'codes': sorted(item['ts_code'] for item in excluded),
+    }
     return frame, gap_detail, event_detail, summary
 
 
@@ -562,6 +575,15 @@ def apply_staging(paths: dict[str, Path], summary: dict[str, Any]) -> dict[str, 
                       TARGET_DIR / 'etf_pool.csv', encoding='utf-8-sig')
     for key, name in (('gap', 'etf_gap_detail.csv'), ('event', 'etf_event_gaps.csv')):
         write_text_atomic(paths[key].read_text(encoding='utf-8'), TARGET_DIR / name)
+    excluded_doc = {
+        'as_of': summary['as_of'],
+        'rule': summary['excluded_by_rule']['rule'],
+        'criteria': summary['excluded_by_rule']['criteria'],
+        'count': summary['excluded_by_rule']['count'],
+        'codes': summary['excluded_by_rule']['codes'],
+    }
+    write_text_atomic(json.dumps(excluded_doc, ensure_ascii=False, indent=2),
+                      TARGET_DIR / 'etf_pool_excluded.json')
     # 2026-11-12 起分档汇总是一次性口径证据，落 docs/evidence 随 Git 留存，
     # 不进正式层、不列进 manifest 的 files（DG-32 入层三问第①问不成立）
     evidence = ROOT / 'docs' / 'evidence' / 'summary'
@@ -570,7 +592,7 @@ def apply_staging(paths: dict[str, Path], summary: dict[str, Any]) -> dict[str, 
         json.dumps(summary, ensure_ascii=False, indent=2), evidence / 'summary.json')
 
     files = ['etf_pool.parquet', 'etf_pool.csv', 'etf_gap_detail.csv',
-             'etf_event_gaps.csv']
+             'etf_event_gaps.csv', 'etf_pool_excluded.json']
     manifest: dict[str, Any] = {
         'path': 'data/local_store/meta/multi_asset/',
         'semantics': '多资产（境内权益/利率债/黄金/商品）ETF 候选池与数据口径',
@@ -597,9 +619,14 @@ def apply_staging(paths: dict[str, Path], summary: dict[str, Any]) -> dict[str, 
     }
     for name in files:
         target = TARGET_DIR / name
+        if name.endswith('.parquet'):
+            row_count = pl.read_parquet(target).height
+        elif name == 'etf_pool_excluded.json':
+            row_count = excluded_doc['count']
+        else:
+            row_count = sum(1 for _ in open(target, encoding='utf-8-sig')) - 1
         manifest['files'][name] = {
-            'rows': pl.read_parquet(target).height if name.endswith('.parquet') else
-                    sum(1 for _ in open(target, encoding='utf-8-sig')) - 1,
+            'rows': row_count,
             'sha256': _sha256(target),
             'bytes': target.stat().st_size,
         }
