@@ -8,13 +8,15 @@
     2. 回填 daily_index + manifest  LocalQuoteStore.flush_meta()（采集写盘后立即回填）
     3. 通达信增量构建 + 换手派生 + 异常清单  python -m src.data.local_store build build
     4. ST 区间表按交易日刷新        src.data.risk_flags refresh + src.data.st_history build
-    5. 名录周更（超过 N 自然日未刷新才跑；体检按 5 交易日 + 2 缓冲对齐） src.main --update-fund / --update-index
+    5. 名录每日检查（每天检查一次，有变更才落盘；体检按最后检查日期判） src.main --update-fund / --update-index
     6. 候选池周更（超过 N 天未重建才跑） tools/build_multi_asset_etf_pool.py --apply
     7. 登记回写                     src.data.manifest_refresh.refresh_manifest_files
     8. 校验                         逐件 rows/bytes/sha256 与 manifest 一致、
                                     同级 manifest 汇总字段对账、
                                     mtime 晚于开工标记的文件与预期清单求差为 0
     9. 保鲜体检                      src.data.quality.freshness_check --summary（一行状态）
+   10. 数据版本台账                  记录基础表版本、给本次重建的派生表打标记
+                                    src.data.data_version（失败只告警，不改数据）
 
 口径与边界::
 
@@ -101,8 +103,8 @@ AUX_BASIC_OUTPUTS = {
     'fund': ('meta/fund_basic.parquet', 'meta/fund_basic.manifest.json'),
     'index': ('meta/index_basic.parquet', 'meta/index_basic.manifest.json'),
 }
-#: 名录默认刷新周期（自然日，约 5 个交易日；体检告警线 7 交易日、两周转红）
-DEFAULT_BASIC_REFRESH_DAYS = 7
+#: 名录默认检查周期（自然日）：每天检查一次，有变更才落盘；体检按最后检查日期判
+DEFAULT_BASIC_REFRESH_DAYS = 1
 #: 候选池周更会写的件（首件用于判断距上次重建是否超过阈值）。
 AUX_POOL_OUTPUTS = (
     'meta/multi_asset/etf_pool.parquet',
@@ -325,11 +327,43 @@ def _age_days(path: Path) -> int | None:
     return (date.today() - date.fromtimestamp(path.stat().st_mtime)).days
 
 
+def _basic_checked_age(root: Path, rels: tuple[str, str]) -> int | None:
+    """距上次「检查」的天数：优先 manifest 的 ``last_checked_at``。
+
+    名录每日检查、有变更才落盘，无变更时 parquet 的 mtime 不动；若按 mtime 判
+    到期，会把「今天已检查过」误当成「没检查过」而重复跑。
+    """
+    manifest = root / rels[1]
+    if manifest.is_file():
+        try:
+            payload = json.loads(manifest.read_text(encoding='utf-8'))
+            value = payload.get('last_checked_at')
+            if isinstance(value, str):
+                return (date.today() - date.fromisoformat(value[:10])).days
+        except (OSError, ValueError):
+            pass
+    return _age_days(root / rels[0])
+
+
+def _basic_check_record(root: Path, rels: tuple[str, str]) -> dict[str, Any]:
+    """读名录 manifest 的最近一次检查记录（检查日期与是否有变更）。"""
+    manifest = root / rels[1]
+    if not manifest.is_file():
+        return {}
+    try:
+        payload = json.loads(manifest.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    record = dict(payload.get('last_check') or {})
+    record['last_checked_at'] = payload.get('last_checked_at')
+    return record
+
+
 def _basic_due(root: Path, refresh_days: int) -> dict[str, tuple[str, str]]:
-    """距上次刷新超过 ``refresh_days`` 天的名录（文件缺失也算到期）。"""
+    """距上次检查超过 ``refresh_days`` 天的名录（文件缺失也算到期）。"""
     due: dict[str, tuple[str, str]] = {}
     for key, rels in AUX_BASIC_OUTPUTS.items():
-        age = _age_days(root / rels[0])
+        age = _basic_checked_age(root, rels)
         if age is None or age >= refresh_days:
             due[key] = rels
     return due
@@ -428,17 +462,21 @@ def _run_aux_refresh(plan: _Plan, args: argparse.Namespace) -> dict[str, Any]:
     if not args.skip_basic_refresh:
         for key, rels in _basic_due(root, args.basic_refresh_days).items():
             flag = '--update-fund' if key == 'fund' else '--update-index'
-            before = (root / rels[0]).stat().st_mtime if (root / rels[0]).is_file() else None
             code = _run_module([sys.executable, '-m', 'src.main', flag],
-                               f'{key}_basic 名录刷新')
-            after = (root / rels[0]).stat().st_mtime if (root / rels[0]).is_file() else None
-            refreshed = after is not None and (before is None or after > before)
-            if code != 0 or not refreshed:
-                logger.warning('[daily] {} 名录刷新未生效（返回 {}，刷新时间未推进），只告警',
+                               f'{key}_basic 名录检查')
+            record = _basic_check_record(root, rels)
+            checked_today = (str(record.get('last_checked_at') or '')[:10]
+                             == date.today().isoformat())
+            changed = bool(record.get('changed'))
+            if code != 0 or not checked_today:
+                logger.warning('[daily] {} 名录检查未完成（返回 {}，检查日期未推进），只告警',
                                key, code)
-            result[key] = {'rc': code, 'refreshed': refreshed}
+            else:
+                logger.info('[daily] {} 名录检查完成：{}', key,
+                            '有变更已落盘' if changed else '无变更未落盘')
+            result[key] = {'rc': code, 'checked': checked_today, 'changed': changed}
     else:
-        logger.info('[daily] 已跳过名录周更（逐表按 {} 天阈值触发）', args.basic_refresh_days)
+        logger.info('[daily] 已跳过名录检查（逐表按 {} 天阈值触发）', args.basic_refresh_days)
     return result
 
 
@@ -454,6 +492,23 @@ def _run_freshness(root: Path) -> str:
         return '[保鲜] 体检未完成（只告警，不影响日更结果）'
     line = (proc.stdout or '').strip().splitlines()
     return line[-1] if line else '[保鲜] 无输出'
+
+
+def _run_version(root: Path, changed) -> str:
+    """记录数据版本，并给本次重建的派生表打「基于哪版数据」标记。
+
+    只写 ``meta/data_version.json`` 与 ``meta/derived_versions.json``，不改数据、
+    不触发任何重建或重跑；失败只告警，不影响日更结果。
+    """
+    try:
+        from src.data.data_version import (
+            audit_derived, format_audit_line, record_version, stamp_rebuilt)
+        record_version(root)
+        stamped = stamp_rebuilt(root, changed)
+        return f'{format_audit_line(audit_derived(root))} | 本次标记派生 {len(stamped)} 张'
+    except Exception as exc:  # noqa: BLE001 - 标记失败不能反噬日更
+        logger.warning('[daily] 数据版本记录失败（只告警）：{}', exc)
+        return '[版本] 记录未完成（只告警，不影响日更结果）'
 
 
 def _run_build(*, since: date | None, end: date | None,
@@ -822,6 +877,7 @@ def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
     if pool_line:
         print(pool_line)
     print(_run_freshness(root))
+    print(_run_version(root, changed))
     if args.target_holdings:
         _run_target_holdings(plan.latest, args.capital)
     failed = int(fill_stats.get('failed_symbols') or 0)
@@ -855,9 +911,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--skip-st-refresh', action='store_true',
                         help='跳过 ST 区间表日更（risk_flags refresh + st_history build）')
     parser.add_argument('--skip-basic-refresh', action='store_true',
-                        help='跳过 fund_basic / index_basic 名录周更')
+                        help='跳过 fund_basic / index_basic 名录每日检查')
     parser.add_argument('--basic-refresh-days', type=int, default=DEFAULT_BASIC_REFRESH_DAYS,
-                        help='名录距上次刷新超过该自然日数才刷新（默认 7，约 5 个交易日）')
+                        help='名录距上次检查超过该自然日数才检查（默认 1，即每天检查）')
     parser.add_argument('--skip-pool-refresh', action='store_true',
                         help='跳过多资产 ETF 候选池周更')
     parser.add_argument('--pool-refresh-days', type=int, default=DEFAULT_POOL_REFRESH_DAYS,

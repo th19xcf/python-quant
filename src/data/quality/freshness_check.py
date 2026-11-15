@@ -26,7 +26,9 @@
   时按自然日比（30/90 天）；
 - ``coverage``：覆盖窗口表，按 ``coverage_end`` 比交易日滞后；
 - ``base_info``：名录，同时判「行情有而名录无」（未登记标的数）与
-  「名录日期陈旧」（文件刷新日期距行情末日超过一周）；
+  「名录日期陈旧」（**最后检查日期**距行情末日的交易日数：名录每日检查、
+  有变更才落盘，无变更时 parquet mtime 不动，因此按 manifest 的
+  ``last_checked_at`` 判，无该字段才回退 mtime）；
 - ``valuation``：估值表，除日期滞后外再判「行情有而估值无」
   （行情末日仍在交易的标的在当日估值截面中缺失的条数）；
 - ``pool``：**视图层**，只判候选池覆盖末日滞后与池内标的缺行情，不判未入池；
@@ -306,6 +308,27 @@ def _file_date(path: Path) -> date | None:
         return None
 
 
+def _checked_date(path: Path) -> date | None:
+    """名录的「最后检查日期」：manifest 的 ``last_checked_at``。
+
+    名录每日检查、有变更才落盘，无变更时 parquet 的 mtime 长期不动，因此新鲜度
+    必须按检查日期判，否则会天天误报陈旧；没有该字段时回退到文件 mtime。
+    """
+    manifest = path.with_name(path.stem + '.manifest.json')
+    if manifest.is_file():
+        try:
+            payload = json.loads(manifest.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            payload = {}
+        value = payload.get('last_checked_at')
+        if isinstance(value, str):
+            try:
+                return date.fromisoformat(value[:10])
+            except ValueError:
+                pass
+    return _file_date(path)
+
+
 def _write_date(path: Path) -> date | None:
     """行情文件末根日期；只用于估值缺失标的的二次确认。"""
     try:
@@ -343,11 +366,17 @@ def _base_info_row(store_root: Path, spec: TableSpec, quotes_end_date: date,
         if known:
             missing_detail += f'；另有已知例外 {len(known)} 只: ' + ', '.join(known)
 
-    data_end = _file_date(path)
+    built = _file_date(path)
+    data_end = _checked_date(path)
     lag = count_lag(calendar, data_end, quotes_end_date)
     stale_verdict = classify_base_info_lag(lag if lag is not None else 0)
-    stale_detail = (f'刷新日期 {_fmt(data_end)}，滞后 {lag} 个交易日'
-                    if data_end is not None else '刷新日期不可读')
+    if data_end is None:
+        stale_detail = '最后检查日期不可读'
+    else:
+        stale_detail = f'最后检查 {_fmt(data_end)}'
+        if built is not None and built != data_end:
+            stale_detail += f'（上次落盘 {_fmt(built)}）'
+        stale_detail += f'，滞后 {lag} 个交易日'
     return FreshnessRow(
         spec.label, spec.rel_path, spec.kind, data_end, quotes_end_date, lag,
         _worst(missing_verdict, stale_verdict),

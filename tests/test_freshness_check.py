@@ -205,7 +205,7 @@ def test_base_info_uses_new_code_count_not_date_threshold(tmp_path):
 
 
 def test_base_info_weekly_refresh_is_not_a_warning(tmp_path):
-    """正常周更（7 自然日 ≈ 5 交易日）不误报。"""
+    """滞后仍在 5+2 告警线内（含正常周更窗口）不误报。"""
     calendar = _biz_days(12)
     store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
                                    coverage_end=calendar[-1], event_end=calendar[-1])
@@ -217,7 +217,7 @@ def test_base_info_weekly_refresh_is_not_a_warning(tmp_path):
     assert row.data_end == calendar[-6]
     assert row.lag == 5
     assert row.verdict == 'ok'
-    assert '刷新日期' in row.detail
+    assert '最后检查' in row.detail
     assert '滞后 5 个交易日' in row.detail
 
 
@@ -234,7 +234,7 @@ def test_base_info_beyond_buffer_reports_warning(tmp_path):
     assert row.data_end == calendar[-9]
     assert row.lag == 8
     assert row.verdict == 'warning'
-    assert '刷新日期' in row.detail
+    assert '最后检查' in row.detail
 
 
 def test_base_info_over_two_weeks_reports_error(tmp_path):
@@ -251,6 +251,27 @@ def test_base_info_over_two_weeks_reports_error(tmp_path):
     assert row.lag == 11
     assert row.verdict == 'error'
     assert report.ok is False
+
+
+def test_base_info_freshness_uses_last_checked_date_not_mtime(tmp_path):
+    """每日检查无变更时 mtime 不动，新鲜度必须按 manifest 的最后检查日期判。"""
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    _touch(store / 'meta' / 'index_basic.parquet', calendar[-12])
+    manifest = store / 'meta' / 'index_basic.manifest.json'
+    manifest.write_text(
+        json.dumps({'last_checked_at': f'{calendar[-1].isoformat()}T09:30:00'}),
+        encoding='utf-8')
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'meta/index_basic.parquet')
+    assert row.data_end == calendar[-1]
+    assert row.lag == 0
+    assert row.verdict == 'ok'
+    assert '最后检查' in row.detail
+    assert '上次落盘' in row.detail
 
 
 def test_valuation_missing_active_code_reports_warning(tmp_path):

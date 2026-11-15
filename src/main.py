@@ -406,9 +406,10 @@ def _handle_update_index_arg(config):
 
             export_result = export_index_basic(config, db_manager)
             logger.info(
-                f"index_basic 本地合并导出: {export_result['counters']}，"
-                f"差异 {export_result['diff_rows']} 条 -> {export_result['diff_csv']}"
-            )
+                f"index_basic 本地检查: changed={export_result.get('changed')}，"
+                f"差异 {export_result.get('diff_rows', 0)} 条"
+                + (f" -> {export_result['diff_csv']}"
+                   if export_result.get('diff_csv') else '（无变更未落盘）'))
         finally:
             db_manager.cleanup()
             logger.info("数据库资源已清理")

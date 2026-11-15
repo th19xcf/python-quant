@@ -12,6 +12,17 @@
 
 未命中任何分支时写回原值；同时校验「改写前后各列空值数不增加」，避免
 ``coalesce`` 一类无兜底表达式把本地值写成 null（DG-31）。
+
+每日检查、有变才落盘
+====================
+名录改为每日检查后，避免「远端没变也天天整表重写」：
+
+1. 先取**轻量快照**（库侧行数 + 最大 ``updated_at``）与 manifest 上次记录比对，
+   一致即视为无变更，不拉全量、不写正式表，只更新 ``last_checked_at``；
+2. 快照不一致才做全量合并，并用**内容指纹**（按 ``ts_code`` 排序后逐行哈希）
+   与本地比对——行数相同但成分变化同样能识别；
+3. 无变更时不写 parquet（mtime 不动），检查日期单独记在 manifest 的
+   ``last_checked_at``，保鲜体检按它判新鲜度。
 """
 
 from __future__ import annotations
@@ -97,6 +108,44 @@ def _sha256(path: Path) -> str:
     with open(path, 'rb') as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b''):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_manifest(path: Path) -> dict[str, Any]:
+    """读现有 manifest；缺失或不可解析时返回空字典（后续按新建处理）。"""
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        logger.warning(f'现有 manifest 无法解析，将被覆盖: {path}')
+        return {}
+
+
+def _remote_snapshot(db_manager: Any, model: Any) -> dict[str, Any]:
+    """轻量快照：库侧行数与最大 ``updated_at``，用于判断是否需要全量拉取。"""
+    from sqlalchemy import func  # noqa: PLC0415
+
+    session = db_manager.get_session()
+    try:
+        rows, max_updated = session.query(
+            func.count(), func.max(model.updated_at)).one()
+    finally:
+        session.close()
+    return {
+        'rows': int(rows or 0),
+        'max_updated_at': None if max_updated is None else str(max_updated),
+    }
+
+
+def content_digest(frame: pl.DataFrame) -> str:
+    """整表内容指纹：按 ``ts_code`` 排序后逐行哈希（行数相同、成分变化也能识别）。"""
+    digest = hashlib.sha256()
+    if frame.is_empty():
+        return digest.hexdigest()
+    for row in frame.sort('ts_code').iter_rows(named=False):
+        digest.update(repr(row).encode('utf-8'))
+        digest.update(b'\n')
     return digest.hexdigest()
 
 
@@ -286,7 +335,32 @@ def _export_basic(
     if not local_path.is_file():
         raise FileNotFoundError(f'缺少本地正式文件，拒绝无基导出: {local_path}')
 
+    manifest_path = root / spec.manifest_path
+    existing = _read_manifest(manifest_path)
+    now = datetime.now().isoformat(timespec='seconds')
     local = pl.read_parquet(local_path)
+    snapshot = _remote_snapshot(db_manager, db_model)
+
+    # 轻量门：库侧行数与最大 updated_at 都没变时，不拉全量、不写正式表，
+    # 只把「最后检查日期」推进到本次（mtime 保持不动）。
+    if write and existing.get('remote_snapshot') == snapshot:
+        manifest = {
+            **existing,
+            'last_checked_at': now,
+            'last_check': {
+                'checked_at': now, 'changed': False,
+                'mode': 'remote_snapshot_unchanged', **snapshot,
+            },
+        }
+        write_text_atomic(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', manifest_path)
+        return {
+            'kind': spec.kind, 'changed': False, 'skipped_write': True,
+            'mode': 'remote_snapshot_unchanged',
+            'local_rows': local.height, 'merged_rows': local.height,
+            'mysql_rows': snapshot['rows'], 'diff_rows': 0,
+        }
+
     db = _load_from_model(db_manager, db_model)
     merged, diffs, counters = merge_basic(local, db, spec=spec)
 
@@ -302,11 +376,44 @@ def _export_basic(
     if not set(local['ts_code'].to_list()) <= set(merged['ts_code'].to_list()):
         raise AssertionError('合并后丢失了本地既有的 ts_code')
 
+    # 内容指纹比对：不只看行数，行数相同但成分变化同样判为变更。
+    changed = content_digest(merged) != content_digest(local)
+
+    result: dict[str, Any] = {
+        'kind': spec.kind, 'changed': changed, 'skipped_write': not changed,
+        'mode': 'full_merge',
+        'local_rows': local.height, 'mysql_rows': db.height,
+        'merged_rows': merged.height, 'counters': counters,
+        'diff_rows': len(diffs),
+        'null_counts_before': before, 'null_counts_after': after,
+    }
+    if not write:
+        return result
+
+    if not changed:
+        # 远端快照变了但合并结果与本地一致：不写正式表，只记检查日期与快照。
+        manifest = {
+            **existing,
+            'path': f'data/local_store/{spec.relative_path.as_posix()}',
+            'last_checked_at': now,
+            'remote_snapshot': snapshot,
+            'last_check': {
+                'checked_at': now, 'changed': False,
+                'mode': 'full_merge_no_diff', 'mysql_rows': db.height,
+                'diff_rows': len(diffs), **counters,
+            },
+        }
+        write_text_atomic(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', manifest_path)
+        result['sha256'] = existing.get('sha256') or _sha256(local_path)
+        logger.info(f'{spec.kind} 检查完成：无变更，未落盘（检查日期 {now}）')
+        return result
+
     stage = staging_dir('local_first', with_date=True)
     csv_path = _write_diff(
         diffs, stage,
         {
-            'generated_at': datetime.now().isoformat(timespec='seconds'),
+            'generated_at': now,
             'kind': spec.kind,
             'local_path': str(local_path),
             'local_rows': local.height, 'mysql_rows': db.height,
@@ -314,43 +421,36 @@ def _export_basic(
         },
         kind=spec.kind,
     )
-
-    result: dict[str, Any] = {
-        'kind': spec.kind,
-        'local_rows': local.height, 'mysql_rows': db.height,
-        'merged_rows': merged.height, 'counters': counters,
-        'diff_rows': len(diffs),
-        'diff_csv': str(csv_path),
-        'null_counts_before': before, 'null_counts_after': after,
-    }
-    if not write:
-        return result
+    result['diff_csv'] = str(csv_path)
 
     write_parquet_atomic(merged, local_path)
     sha = _sha256(local_path)
 
-    manifest_path = root / spec.manifest_path
-    existing: dict[str, Any] = {}
-    if manifest_path.is_file():
-        try:
-            existing = json.loads(manifest_path.read_text(encoding='utf-8'))
-        except json.JSONDecodeError:
-            logger.warning(f'现有 manifest 无法解析，将被覆盖: {manifest_path}')
+    try:
+        staging_rel = str(stage.relative_to(PROJECT_ROOT))
+    except ValueError:
+        staging_rel = str(stage)
     manifest = {
         **existing,
         'path': f'data/local_store/{spec.relative_path.as_posix()}',
         'rows': merged.height,
         'codes': int(merged['ts_code'].n_unique()),
         'sha256': sha,
-        'built_at': datetime.now().isoformat(timespec='seconds'),
+        'built_at': now,
         'produced_by': f'src.data.services.local_first_basic.export_{spec.kind}',
         'merge_policy': (
             '以本地 parquet 为基：仅当本地为空时用库值补齐；两边冲突保留本地并登记差异；'
             '禁止整表覆盖与无兜底 coalesce'),
+        'last_checked_at': now,
+        'remote_snapshot': snapshot,
+        'last_check': {
+            'checked_at': now, 'changed': True, 'mode': 'full_merge_written',
+            'mysql_rows': db.height, 'diff_rows': len(diffs), **counters,
+        },
         'last_export': {
             'mysql_rows': db.height,
             **counters,
-            'staging': str(stage.relative_to(PROJECT_ROOT)),
+            'staging': staging_rel,
         },
     }
     from src.data.manifest_semantics import apply_semantics  # noqa: PLC0415
