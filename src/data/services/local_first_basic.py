@@ -291,7 +291,9 @@ def _export_basic(
     merged, diffs, counters = merge_basic(local, db, spec=spec)
 
     before = null_counts(local)
-    after = null_counts(merged)
+    # 空值断言只覆盖本地既有 ts_code：追加行天然带空字段（在市基金的 delist_date、
+    # 名称无本地来源的 name 等），不参与“本地非空值不得被写成 null”的判定。
+    after = null_counts(merged.filter(pl.col('ts_code').is_in(local['ts_code'].to_list())))
     assert_no_null_increase(before, after)
     if merged.height != local.height + counters['append_row']:
         raise AssertionError(

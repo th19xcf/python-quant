@@ -133,6 +133,37 @@ def test_append_missing_db_row_preserves_row_count_rule():
     assert any(d['action'] == 'append_row' for d in diffs)
 
 
+def test_appended_row_nulls_do_not_break_null_guard():
+    """追加行允许带空字段；空值断言只比对本地既有 ts_code（反例自测）。"""
+    local = _frame([{
+        'id': 4, 'ts_code': '510500.SH', 'symbol': '510500', 'name': '中证500ETF',
+        'fund_type': 'ETF', 'market': 'SH', 'list_date': date(2013, 2, 6),
+        'delist_date': None, 'status': 'L', 'created_at': None, 'updated_at': None,
+        'is_tradable': True, 'tradable_reason': 'ok', 'source': 'local',
+    }])
+    db = pl.DataFrame([
+        {
+            'id': 4, 'ts_code': '510500.SH', 'symbol': '510500', 'name': '中证500ETF',
+            'fund_type': 'ETF', 'market': 'SH', 'list_date': date(2013, 2, 6),
+            'delist_date': None, 'status': '1',
+        },
+        {
+            'id': 5, 'ts_code': '588000.SH', 'symbol': '588000', 'name': '科创50ETF',
+            'fund_type': 'ETF', 'market': 'SH', 'list_date': date(2020, 9, 22),
+            'delist_date': None, 'status': '1',
+        },
+    ])
+    merged, _diffs, counters = merge_fund_basic(local, db)
+    assert counters['append_row'] == 1
+
+    before = null_counts(local)
+    after = null_counts(merged.filter(pl.col('ts_code').is_in(local['ts_code'].to_list())))
+    assert_no_null_increase(before, after)
+    # 反例：把追加行也算进来时，delist_date 空值由 1 涨到 2，断言必须失败
+    with pytest.raises(AssertionError, match='delist_date'):
+        assert_no_null_increase(before, null_counts(merged))
+
+
 def test_null_increase_assertion_fails_on_n_inflation():
     before = {'name': 0, 'list_date': 2}
     after_ok = {'name': 0, 'list_date': 0}
