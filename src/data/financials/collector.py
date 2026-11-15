@@ -140,7 +140,7 @@ class FinancialsCollector:
     """财务事实表采集器（幂等、可断点续跑）。"""
 
     def __init__(self, store_root: Path | str | None = None, *,
-                 workers: int = 6, retry: RetryPolicy | None = None,
+                 workers: int = 3, retry: RetryPolicy | None = None,
                  valuation_interval: float = 0.15,
                  request_interval: float = 0.25) -> None:
         self.store_root = Path(store_root) if store_root is not None else store.DEFAULT_STORE_ROOT

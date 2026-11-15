@@ -40,7 +40,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='断点续采并合并日频估值')
     parser.add_argument('--commit', action='store_true',
                         help='真正采集并合并（默认只报告）')
-    parser.add_argument('--workers', type=int, default=6)
+    parser.add_argument('--workers', type=int, default=3,
+                        help='并发数（默认 3；外部源单连接串行 + 节流，勿调高）')
     return parser.parse_args(argv)
 
 

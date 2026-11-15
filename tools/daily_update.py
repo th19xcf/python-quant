@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
 
-"""日更 / 补数单入口：一条命令跑完，一行状态收尾。
+"""日更 / 补数单入口：一条命令跑完当日全部数据维护，一行汇总收尾。
 
-链路复用（采集与限流实现原样复用，本入口只做起编排与校验）::
+步骤顺序（与 ``STEP_PLAN`` 一致，dry-run 会原样打印）::
 
-    1. 采集 + 写行情 parquet        src.data.tencent.daily_fill.fill_daily_gap(workers=1)
-    2. 回填 daily_index + manifest  LocalQuoteStore.flush_meta()（采集写盘后立即回填）
-    3. 通达信增量构建 + 换手派生 + 异常清单  python -m src.data.local_store build build
-       市场宽度增量补齐（行情末根未前进时不落盘） src.data.services.breadth_service.refresh
-    3b. 全市场日频估值增量（本地末日次日起补到目标日） tools/collect_financials.py --only valuation
-    4. ST 区间表按交易日刷新        src.data.risk_flags refresh + src.data.st_history build
-    5. 名录每日检查（每天检查一次，有变更才落盘；体检按最后检查日期判） src.main --update-fund / --update-index
-    6. 候选池周更（超过 N 天未重建才跑） tools/build_multi_asset_etf_pool.py --apply
-    7. 登记回写                     src.data.manifest_refresh.refresh_manifest_files
-    8. 校验                         逐件 rows/bytes/sha256 与 manifest 一致、
-                                    同级 manifest 汇总字段对账、
-                                    mtime 晚于开工标记的文件与预期清单求差为 0
-    9. 保鲜体检                      src.data.quality.freshness_check --summary（一行状态）
-   10. 数据版本台账                  记录基础表版本、给本次重建的派生表打标记
-                                    src.data.data_version（失败只告警，不改数据）
+     1. 证券码表        tools/build_names_json.py → tools/build_name_history.py → tools/build_stock_basic.py
+     2. 行业快照        python -m src.data.industry refresh
+     3. 行情采集入库    src.data.tencent.daily_fill.fill_daily_gap(workers=1) + LocalQuoteStore.flush_meta()
+     4. 本地行情构建    python -m src.data.local_store build build（增量 + 换手派生 + 异常清单）
+     5. ST 快照与区间表  src.data.risk_flags refresh + src.data.st_history build
+     6. 名录每日检查    src.main --update-fund / --update-index（有变更才落盘）
+     7. 估值增量        tools/collect_financials.py --only valuation --since auto
+     8. 市场宽度增量    src.data.services.breadth_service.refresh
+     9. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
+    10. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
+    11. 洁净集快照      python -m src.data.quality.clean_set build
+    12. 保鲜体检        src.data.quality.freshness_check --summary
+    13. 版本记录        src.data.data_version（失败只告警，不改数据）
+    14. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
+    15. 门禁            tools/daily_data_gate.py（必须在备份之后）
 
 口径与边界::
 
+    - 每步独立记录成败，某步失败只记录并继续后续步骤；最后一行汇总给出
+      「N 步 ok / 失败 M（致命 K）」与总耗时，失败步逐条列出明细。
+    - 致命步（行情采集、本地构建、回写校验、备份、门禁）任一失败，退出码为 1；
+      其余步骤失败只记录，不影响退出码。备份/门禁的先后顺序是硬约束。
     - 采集固定 ``workers=1``（单连接串行），限流参数沿用 TencentClient 默认
       ``min_interval=0.05`` / ``max_retries=3``，本入口不暴露也不修改。
     - 补数先按代码清单把缺口落到 ``_staging/<批次>/``（``gaps.parquet`` +
@@ -31,19 +35,19 @@
     - ``quotes/manifest.json`` 是人工维护的全市场总账（仓库内无产者，含
       futures 口径），本入口只做只读对账（universe 分市场求和 == universe
       合计），不代写数值；该件与磁盘的偏差按 WARN 打印实测差额。
-    - 第 3 步的市场宽度增量、第 3b 步的估值增量与第 4/5/6/9 步是旁路：任一步失败
-      只告警，不改日更原有退出码，也不改主表校验口径。候选池是筛选结果（视图层），
-      不承担数据完整性；被排除标的的行情/分红由保鲜体检的全集判据负责。
+    - 候选池是筛选结果（视图层），不承担数据完整性；被排除标的的行情/分红
+      由保鲜体检的全集判据负责。
+    - 默认不打印各步过程日志，失败时才回显该步末尾输出；``--verbose`` 打开
+      INFO/DEBUG 与子进程原样输出。
 
 用法::
 
-    # dry-run（默认，不联网、不落盘）
-    python tools/daily_update.py --start 2026-11-12 --end 2026-11-13
-    # 日更 apply（采集 + 本地构建 + 校验）
-    python tools/daily_update.py --start 2026-11-12 --end 2026-11-13 --apply --allow-remote
+    # dry-run（默认，不联网、不落盘；打印完整步骤清单与顺序）
+    python tools/daily_update.py
+    # 日更 apply（一条命令跑完全部步骤，目标交易日自动探测）
+    python tools/daily_update.py --apply --allow-remote
     # 日更 apply 后顺带出 v3 目标持仓清单（只出清单与台账，不下单）
-    python tools/daily_update.py --start 2026-11-12 --end 2026-11-13 --apply --allow-remote \
-        --target-holdings --capital 1000000000
+    python tools/daily_update.py --apply --allow-remote --target-holdings --capital 1000000000
     # 补数（按代码清单；缺口先落 _staging/<批次>/ 再一次 apply）
     python tools/daily_update.py --codes 600000.SH,000001.SZ --end 2026-11-13 \
         --batch gap_20261113 --apply --allow-remote
@@ -57,10 +61,11 @@ import json
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -88,10 +93,12 @@ SIDE_OUTPUTS = (
     'factors/manifest.json',
     'factors/meta.json',
     'factors/covered_codes.txt',
+    # 目录级登记：本次写盘的 meta 件按磁盘实测回填（见 _refresh）
+    'meta/manifest.json',
 )
 #: 构建收尾会整目录重写的台账（内容随行情变动，逐件白名单不现实）。
 SIDE_PREFIXES = ('meta/anomalies/', 'factors/rebuild/',
-                 'meta/financials/parts/valuation/')
+                 'meta/financials/parts/valuation/', 'meta/industry/')
 #: ST 区间表日更（risk_flags refresh + st_history build）会写的件。
 AUX_ST_OUTPUTS = (
     'meta/st/st_intervals.parquet',
@@ -105,6 +112,15 @@ AUX_ST_OUTPUTS = (
 AUX_VALUATION_OUTPUTS = (
     'meta/financials/valuation_daily.parquet',
     'meta/financials/parts/progress.json',
+)
+#: 证券码表日更会写的件（通达信当日码表 → 名称历史 → 名录）。
+AUX_CODE_TABLE_OUTPUTS = (
+    'meta/names.json',
+    'meta/name_history.parquet',
+    'meta/name_history.manifest.json',
+    'meta/name_history_coverage.json',
+    'meta/stock_basic.parquet',
+    'meta/stock_basic.manifest.json',
 )
 #: 名录周更会写的件（首件用于判断距上次刷新是否超过阈值）。
 AUX_BASIC_OUTPUTS = {
@@ -132,6 +148,26 @@ AUX_BREADTH_OUTPUTS = (
 #: 增量清点跳过 ``backtest_runs``：回测运行记录是结果归档（json/csv/log 与索引），
 #: 不是数据表，日更既不产出也不消费它，计入会让「本次新增文件」混入非数据资产。
 SKIP_DIRS = {'_backup', '__pycache__', 'backtest_runs'}
+
+#: 单入口步骤顺序（dry-run 与 apply 共用）：(键, 名称, 是否致命)。
+#: 硬约束：备份在所有写 ``data/`` 的步骤之后，门禁在备份之后。
+STEP_PLAN: tuple[tuple[str, str, bool], ...] = (
+    ('code_table', '证券码表（names.json / name_history / stock_basic）', False),
+    ('industry', '行业快照', False),
+    ('fill', '行情采集入库', True),
+    ('build', '本地行情构建', True),
+    ('st', 'ST 快照与区间表', False),
+    ('basic', '名录每日检查（fund / index）', False),
+    ('valuation', '全市场估值增量', False),
+    ('breadth', '市场宽度增量', False),
+    ('pool', '候选池周更', False),
+    ('manifest', 'manifest 回写与校验', True),
+    ('clean_set', '洁净集快照', False),
+    ('freshness', '保鲜体检', False),
+    ('version', '数据版本记录', False),
+    ('backup', '不可重建资产备份', True),
+    ('gate', '每日数据门禁', True),
+)
 
 
 # ----------------------------------------------------------------------
@@ -322,14 +358,23 @@ def _run_fill(config: Any, store: LocalQuoteStore, latest: date, *,
         max_gap_days=max_gap_days)
 
 
-def _run_module(cmd: list[str], label: str) -> int:
-    """跑一个独立子进程，输出透传到 stderr，返回退出码。"""
+def _run_module(cmd: list[str], label: str, *, verbose: bool = False) -> int:
+    """跑一个独立子进程，返回退出码。
+
+    默认吞掉过程输出（单入口只留一行汇总），仅在该步失败时回显末尾几行；
+    ``verbose`` 打开后原样透传到 stderr。
+    """
     logger.info('[daily] {}：{}', label, ' '.join(cmd[1:]))
     proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
                           encoding='utf-8', errors='replace')
-    for stream in (proc.stdout, proc.stderr):
-        if stream:
-            sys.stderr.write(stream if stream.endswith('\n') else stream + '\n')
+    if verbose:
+        for stream in (proc.stdout, proc.stderr):
+            if stream:
+                sys.stderr.write(stream if stream.endswith('\n') else stream + '\n')
+    elif proc.returncode != 0:
+        tail = '\n'.join((proc.stderr or proc.stdout or '').strip().splitlines()[-5:])
+        if tail:
+            sys.stderr.write(f'[daily] {label} 失败输出（末尾 5 行）：\n{tail}\n')
     return proc.returncode
 
 
@@ -467,38 +512,28 @@ def _valuation_last_date(root: Path) -> date | None:
     return value if isinstance(value, date) else None
 
 
-def _run_valuation(plan: _Plan, args: argparse.Namespace) -> str:
-    """全市场日频估值增量：从本地末日次日起补到目标交易日；失败只告警。
+def _run_valuation(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    """全市场日频估值增量：起点由脚本从本地估值末日 + 1 自动推算，终点取最近交易日。
 
-    区间桶为 ``[本地末日+1, 目标日]``，源端当日未更新时本次落 0 行、末日不动，
-    次日 ``until`` 变化即换新桶重试，不会把未采到的日期永久标记完成。
+    失败只记录、不影响后续步骤；源端当日未更新时本次落 0 行、末日不动，
+    次日起点不变、终点前移，不会把未采到的日期永久标记完成。
     """
     if args.skip_valuation:
-        logger.info('[daily] 已跳过估值刷新（--skip-valuation）')
-        return ''
+        return True, '已跳过（--skip-valuation）'
     if not args.allow_remote:
-        logger.warning('[daily] 未加 --allow-remote：跳过估值增量，只跑本地步骤')
-        return '[估值] 未允许联网，跳过（只告警，不影响日更结果）'
+        return True, '未允许联网，跳过（只告警）'
     last = _valuation_last_date(plan.root)
     if last is None:
-        logger.warning('[daily] 估值表缺失，无法确定增量起点，本轮不采集')
-        return '[估值] 表缺失，未采集（只告警，不影响日更结果）'
-    since = last + timedelta(days=1)
-    if since > plan.latest:
-        return f'[估值] 末日 {last} 已覆盖目标日 {plan.latest}，无需采集'
+        return False, '估值表缺失，无法推算起点'
     code = _run_module(
         [sys.executable, str(ROOT / 'tools' / 'collect_financials.py'),
-         '--only', 'valuation', '--since', since.isoformat(),
-         '--until', plan.latest.isoformat()], '全市场估值增量')
+         '--only', 'valuation', '--since', 'auto'], '全市场估值增量')
     after = _valuation_last_date(plan.root)
-    if code != 0 or after is None or after < plan.latest:
-        logger.warning('[daily] 估值增量未完成（返回 {}，末日 {}），只告警', code, after)
-        return ('[估值] 增量未完成（只告警，不影响日更结果）'
-                f' | 末日 {after or "-"}')
-    return f'[估值] 末日 {after} | 覆盖 {last}→{after}'
+    ok = code == 0 and after is not None and after >= plan.latest
+    return ok, f'末日 {last}→{after or "-"} | rc={code}'
 
 
-def _run_breadth(plan: _Plan) -> str:
+def _run_breadth(plan: _Plan) -> tuple[bool, str]:
     """市场宽度日更：增量补齐快照，行情末根未前进时不动盘；失败只告警。"""
     path = plan.root / AUX_BREADTH_OUTPUTS[0]
     try:
@@ -509,73 +544,72 @@ def _run_breadth(plan: _Plan) -> str:
         from src.data.services.breadth_service import refresh  # noqa: PLC0415
         frame = refresh(plan.root)
     except Exception as exc:  # noqa: BLE001 - 派生表失败不能反噬日更
-        logger.warning('[daily] 市场宽度刷新失败（只告警）：{}', exc)
-        return '[宽度] 刷新未完成（只告警，不影响日更结果）'
+        return False, f'刷新异常：{type(exc).__name__}: {exc}'
     if frame.is_empty() or 'trade_date' not in frame.columns:
-        return '[宽度] 无行情可算，未落盘'
+        return True, '无行情可算，未落盘'
     last = str(frame['trade_date'].max())[:10]
     try:
         after = path.stat().st_mtime_ns
     except OSError:
         after = 0
     state = '已补齐' if after != before else '无新增未落盘'
-    return f'[宽度] 末日 {last} | {frame.height:,} 行 | {state}'
+    return True, f'末日 {last} | {frame.height:,} 行 | {state}'
 
 
-def _run_aux_refresh(plan: _Plan, args: argparse.Namespace) -> dict[str, Any]:
-    """ST 区间表日更 + 名录周更；任何失败只告警，不改日更结果。"""
-    root = plan.root
-    store_args = ['--store-root', str(root)]
-    result: dict[str, Any] = {}
-    if not args.skip_st_refresh:
-        snapshot = _run_module(
-            [sys.executable, '-m', 'src.data.risk_flags', 'refresh',
-             '--as-of', plan.latest.isoformat(), *store_args], 'ST 快照刷新')
-        build = None
-        if snapshot == 0:
-            build = _run_module(
-                [sys.executable, '-m', 'src.data.st_history', *store_args, 'build'],
-                'ST 区间表重建')
-        if snapshot != 0 or build not in (0, None):
-            logger.warning('[daily] ST 区间表日更未完成（快照 {} / 重建 {}），只告警',
-                           snapshot, build)
-        result['st'] = {'snapshot_rc': snapshot, 'build_rc': build}
-    if not args.skip_basic_refresh:
-        for key, rels in _basic_due(root, args.basic_refresh_days).items():
-            flag = '--update-fund' if key == 'fund' else '--update-index'
-            code = _run_module([sys.executable, '-m', 'src.main', flag],
-                               f'{key}_basic 名录检查')
-            record = _basic_check_record(root, rels)
-            checked_today = (str(record.get('last_checked_at') or '')[:10]
-                             == date.today().isoformat())
-            changed = bool(record.get('changed'))
-            if code != 0 or not checked_today:
-                logger.warning('[daily] {} 名录检查未完成（返回 {}，检查日期未推进），只告警',
-                               key, code)
-            else:
-                logger.info('[daily] {} 名录检查完成：{}', key,
-                            '有变更已落盘' if changed else '无变更未落盘')
-            result[key] = {'rc': code, 'checked': checked_today, 'changed': changed}
-    else:
-        logger.info('[daily] 已跳过名录检查（逐表按 {} 天阈值触发）', args.basic_refresh_days)
-    return result
+def _step_st(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    """ST 快照 + 区间表日更；失败只记录，不改日更结果。"""
+    if args.skip_st_refresh:
+        return True, '已跳过（--skip-st-refresh）'
+    store_args = ['--store-root', str(plan.root)]
+    snapshot = _run_module(
+        [sys.executable, '-m', 'src.data.risk_flags', 'refresh',
+         '--as-of', plan.latest.isoformat(), *store_args], 'ST 快照刷新')
+    build = None
+    if snapshot == 0:
+        build = _run_module(
+            [sys.executable, '-m', 'src.data.st_history', *store_args, 'build'],
+            'ST 区间表重建')
+    ok = snapshot == 0 and build in (0, None)
+    return ok, f'快照 rc={snapshot} / 重建 rc={build}'
 
 
-def _run_freshness(root: Path) -> str:
-    """日更收尾跑一次保鲜体检，返回单行状态（失败只告警）。"""
+def _step_basic(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    """fund_basic / index_basic 名录每日检查（有变更才落盘）。"""
+    if args.skip_basic_refresh:
+        return True, '已跳过（--skip-basic-refresh）'
+    due = _basic_due(plan.root, args.basic_refresh_days)
+    if not due:
+        return True, '未到检查周期'
+    problems: list[str] = []
+    done: list[str] = []
+    for key, rels in due.items():
+        flag = '--update-fund' if key == 'fund' else '--update-index'
+        code = _run_module([sys.executable, '-m', 'src.main', flag],
+                           f'{key}_basic 名录检查')
+        record = _basic_check_record(plan.root, rels)
+        checked_today = (str(record.get('last_checked_at') or '')[:10]
+                         == date.today().isoformat())
+        changed = bool(record.get('changed'))
+        if code != 0 or not checked_today:
+            problems.append(f'{key} rc={code}（检查日期未推进）')
+        else:
+            done.append(f'{key}={"有变更" if changed else "无变更"}')
+    return not problems, ' | '.join(done + problems) or '无到期名录'
+
+
+def _run_freshness(root: Path) -> tuple[bool, str]:
+    """日更收尾跑一次保鲜体检，返回（是否无 error/warning，单行状态）。"""
     cmd = [sys.executable, '-m', 'src.data.quality.freshness_check', '--summary',
            '--store-root', str(root)]
     proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
                           encoding='utf-8', errors='replace')
     if proc.returncode not in (0, 1):
-        logger.warning('[daily] 保鲜体检异常（返回 {}）：{}', proc.returncode,
-                       (proc.stderr or '').strip()[:300])
-        return '[保鲜] 体检未完成（只告警，不影响日更结果）'
+        return False, f'体检异常（rc={proc.returncode}）：{(proc.stderr or "").strip()[:200]}'
     line = (proc.stdout or '').strip().splitlines()
-    return line[-1] if line else '[保鲜] 无输出'
+    return proc.returncode == 0, (line[-1] if line else '无输出')
 
 
-def _run_version(root: Path, changed) -> str:
+def _run_version(root: Path, changed) -> tuple[bool, str]:
     """记录数据版本，并给本次重建的派生表打「基于哪版数据」标记。
 
     只写 ``meta/data_version.json`` 与 ``meta/derived_versions.json``，不改数据、
@@ -590,10 +624,9 @@ def _run_version(root: Path, changed) -> str:
         )
         record_version(root)
         stamped = stamp_rebuilt(root, changed)
-        return f'{format_audit_line(audit_derived(root))} | 本次标记派生 {len(stamped)} 张'
+        return True, f'{format_audit_line(audit_derived(root))} | 本次标记派生 {len(stamped)} 张'
     except Exception as exc:  # noqa: BLE001 - 标记失败不能反噬日更
-        logger.warning('[daily] 数据版本记录失败（只告警）：{}', exc)
-        return '[版本] 记录未完成（只告警，不影响日更结果）'
+        return False, f'{type(exc).__name__}: {exc}'
 
 
 def _run_build(*, since: date | None, end: date | None,
@@ -702,7 +735,7 @@ def _find_entry(root: Path, rel: str) -> dict[str, Any] | None:
 
 
 def _refresh(root: Path, changed: dict[str, int]) -> int:
-    """把本次改动件按磁盘实测回写进各自的 manifest（sidecar 优先）。"""
+    """把本次改动件按磁盘实测回写进各自的 manifest（sidecar 优先，其次目录级）。"""
     grouped: dict[str, list[str]] = {}
     for rel in sorted(changed):
         if not rel.startswith('quotes/') or not rel.endswith('.parquet'):
@@ -710,6 +743,12 @@ def _refresh(root: Path, changed: dict[str, int]) -> int:
         side_rel = Path(rel).with_suffix('.manifest.json').as_posix()
         if (root / side_rel).is_file():
             grouped.setdefault(side_rel, []).append(rel)
+    for rel in sorted(changed):
+        if not rel.startswith('meta/') or not rel.endswith('.parquet'):
+            continue
+        parent_rel = (Path(rel).parent / 'manifest.json').as_posix()
+        if (root / parent_rel).is_file():
+            grouped.setdefault(parent_rel, []).append(rel)
     anomalies = [rel for rel in changed if rel.startswith('meta/anomalies/')
                  and rel.endswith(('.csv', '.tsv'))]
     if anomalies and (root / 'meta' / 'anomalies' / 'manifest.json').is_file():
@@ -799,12 +838,30 @@ def _verify(root: Path, changed: dict[str, int], expected: set[str],
 # ----------------------------------------------------------------------
 # 主流程
 # ----------------------------------------------------------------------
-def _format(range_label: str, changed: int, planned: int, added: int,
-            deleted: int, diffs: int, digest: str, apply: bool) -> str:
-    head = '[日更]' if apply else '[日更 dry-run]'
-    count = f'变更 {changed} 件' if apply else f'变更 0 件（计划 {planned} 件）'
-    return (f'{head} {range_label} | {count} | +{added:,}/-{deleted:,} 行 | '
-            f'差异 {diffs} | 汇总哈希 {digest}')
+@dataclass(frozen=True)
+class _StepOutcome:
+    key: str
+    name: str
+    critical: bool
+    ok: bool
+    detail: str
+    seconds: float
+
+
+def _run_steps(steps: Sequence[tuple[str, str, bool, Callable[[], tuple[bool, str]]]]
+               ) -> list[_StepOutcome]:
+    """按顺序执行步骤：单步失败或异常只记录，继续跑后续步骤。"""
+    outcomes: list[_StepOutcome] = []
+    for key, name, critical, func in steps:
+        started = time.perf_counter()
+        try:
+            ok, detail = func()
+        except Exception as exc:  # noqa: BLE001 - 单步异常不得中断后续步骤
+            ok, detail = False, f'{type(exc).__name__}: {exc}'
+        outcomes.append(_StepOutcome(key, name, critical, ok, detail,
+                                     time.perf_counter() - started))
+        logger.info('[daily] 步骤 {} {}：{}', key, 'ok' if ok else '失败', detail)
+    return outcomes
 
 
 @dataclass(frozen=True)
@@ -861,6 +918,7 @@ def _build_plan(args: argparse.Namespace) -> _Plan:
         expected.add(Path(rel).with_suffix('.manifest.json').as_posix())
     expected.update(SIDE_OUTPUTS)
     expected.update(AUX_VALUATION_OUTPUTS)
+    expected.update(AUX_CODE_TABLE_OUTPUTS)
     expected |= _aux_expected(root, args.basic_refresh_days, args.pool_refresh_days)
     tdx_root = getattr(config.data, 'tdx_data_path', None)
     tdx_stale = _tdx_stale(root, Path(tdx_root) if tdx_root else None, coverage, codes)
@@ -903,79 +961,202 @@ def _run_target_holdings(trade_day: date, capital: float) -> int:
     return proc.returncode
 
 
-def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
+def _step_code_table(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    """证券码表：通达信当日码表 → PIT 名称历史 → 股票名录。"""
     root = plan.root
-    batch = args.batch or f'daily_{plan.latest.strftime("%Y%m%d")}'
-    batch_dir = ROOT / '_staging' / batch
-    _write_staging(batch_dir, plan.gaps, plan.inputs)
-
-    fill_stats: dict[str, Any] = {}
+    notes: list[str] = []
+    names = _run_module([sys.executable, str(ROOT / 'tools' / 'build_names_json.py'),
+                         '--store-root', str(root)], '证券码表 names.json')
+    notes.append(f'names.json rc={names}')
+    history = 0
     if args.allow_remote:
-        fill_stats = _run_fill(plan.config, plan.store, plan.latest, codes=plan.codes,
-                               data_types=plan.data_types, start=args.start,
-                               max_gap_days=args.max_gap_days)
-        if fill_stats.get('rows_added'):
-            plan.store.flush_meta()  # 采集写盘后立即回填 daily_index 与其 manifest
-        if fill_stats.get('aborted'):
-            logger.error('[daily] 采集被前台闸门拦下：{}', fill_stats.get('aborted'))
-        if fill_stats.get('failed_symbols'):
-            logger.error('[daily] 采集失败标的 {} 个：{}',
-                         fill_stats['failed_symbols'], fill_stats.get('failed_codes'))
+        history = _run_module([sys.executable, str(ROOT / 'tools' / 'build_name_history.py'),
+                               '--apply'], '名称历史 name_history')
+        notes.append(f'name_history rc={history}')
     else:
-        logger.warning('[daily] 未加 --allow-remote：跳过联网采集，只跑本地构建与校验')
+        notes.append('name_history 跳过（未允许联网）')
+    basic = _run_module([sys.executable, str(ROOT / 'tools' / 'build_stock_basic.py'),
+                         '--store-root', str(root), '--promote'], '股票名录 stock_basic')
+    notes.append(f'stock_basic rc={basic}')
+    return names == 0 and history == 0 and basic == 0, ' | '.join(notes)
 
+
+def _step_industry(plan: _Plan) -> tuple[bool, str]:
+    code = _run_module(
+        [sys.executable, '-m', 'src.data.industry', 'refresh',
+         '--as-of', plan.latest.isoformat(), '--store-root', str(plan.root)], '行业快照')
+    return code == 0, f'as_of {plan.latest} | rc={code}'
+
+
+def _step_fill(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    if not args.allow_remote:
+        return True, '未允许联网，跳过采集'
+    stats = _run_fill(plan.config, plan.store, plan.latest, codes=plan.codes,
+                      data_types=plan.data_types, start=args.start,
+                      max_gap_days=args.max_gap_days)
+    if stats.get('rows_added'):
+        plan.store.flush_meta()  # 采集写盘后立即回填 daily_index 与其 manifest
+    failed = int(stats.get('failed_symbols') or 0)
+    aborted = stats.get('aborted')
+    detail = f"新增 {int(stats.get('rows_added') or 0):,} 行 | 失败 {failed} 个"
+    failed_codes = stats.get('failed_codes') or []
+    if failed_codes:
+        detail += f"（{', '.join(str(code) for code in failed_codes[:5])}）"
+    if aborted:
+        return False, f'{detail} | 闸门拦下：{aborted}'
+    return failed == 0, detail
+
+
+def _step_build(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     code = _run_build(since=args.start, end=plan.latest, codes=plan.codes)
-    if code != 0:
-        logger.error('[daily] 本地构建返回非零：{}', code)
+    return code == 0, f'rc={code}'
 
-    # 全市场日频估值增量（行情入库后补到目标日）；失败只告警
-    valuation_line = _run_valuation(plan, args)
-    # 新增旁路：市场宽度增量补齐；失败只告警
-    breadth_line = _run_breadth(plan)
-    # 新增旁路：ST 区间表按交易日刷新、名录按周更阈值刷新；失败只告警
-    _run_aux_refresh(plan, args)
-    # 候选池按周重建（派生视图，不承担数据完整性）；失败只告警
-    pool_line = _run_pool_refresh(plan, args)
 
+def _step_pool(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    line = _run_pool_refresh(plan, args)
+    return '未完成' not in line, (line or '未到期/已跳过')
+
+
+def _step_manifest(plan: _Plan, args: argparse.Namespace,
+                   state: dict[str, Any]) -> tuple[bool, str]:
+    """回写本次改动件的 manifest，并做逐件对账与预期差集检查（致命步）。"""
+    root = plan.root
     changed = _walk(root, plan.marker_ts)
-    logger.info('[daily] 改动 {} 件，回写 manifest 登记 {} 条',
-                len(changed), _refresh(root, changed))
-
+    refreshed = _refresh(root, changed)
     report = _verify(root, changed, plan.expected, plan.coverage, _coverage(root))
     digest = _sha256_text(f'{rel}:{file_facts(root / rel)["sha256"]}'
                           for rel in sorted(changed)
                           if (root / rel).is_file())
-    for item in report['problems']:
-        logger.error('[daily] 差异：{}', item)
     for rel in report['unregistered']:
         logger.warning('[daily] 未登记（manifest 无该件条目）：{}', rel)
-
     remaining, _ = _plan_gaps(_coverage(root), plan.latest, plan.data_types,
                               plan.codes, args.max_gap_days)
     if remaining:
-        # 采集侧 no_new（源端确实无新增）与失败不同：只告警，不判本次失败，也不复跑。
-        logger.warning('[daily] 仍有缺口 {} 个（采集侧无新增/未服务，按 DG-35 不再复跑，需补请另开批次）',
-                       len(remaining))
+        logger.warning('[daily] 仍有缺口 {} 个（采集侧无新增/未服务，按 DG-35 不再复跑，'
+                       '需补请另开批次）', len(remaining))
+    state.update(changed=changed, report=report, digest=digest)
+    detail = (f'变更 {len(changed)} 件 | manifest 回写 {refreshed} 条 | '
+              f"+{report['added']:,}/-{report['deleted']:,} 行 | 差异 {len(report['problems'])}")
+    if report['problems']:
+        detail += ' | ' + '；'.join(report['problems'][:3])
+    return not report['problems'], detail
 
+
+def _step_clean_set(plan: _Plan) -> tuple[bool, str]:
+    code = _run_module(
+        [sys.executable, '-m', 'src.data.quality.clean_set', 'build',
+         '--as-of', plan.latest.isoformat(), '--root', str(plan.root)], '洁净集快照')
+    return code == 0, f'as_of {plan.latest} | rc={code}'
+
+
+def _step_backup() -> tuple[bool, str]:
+    code = _run_module([sys.executable, str(ROOT / 'tools' / 'backup_critical_assets.py')],
+                       '不可重建资产备份')
+    return code == 0, f'rc={code}'
+
+
+def _step_gate(plan: _Plan) -> tuple[bool, str]:
+    code = _run_module([sys.executable, str(ROOT / 'tools' / 'daily_data_gate.py'),
+                        '--store-root', str(plan.root)], '每日数据门禁')
+    return code == 0, f'rc={code}'
+
+
+def _step_list(plan: _Plan, args: argparse.Namespace,
+               state: dict[str, Any]) -> list[tuple[str, str, bool,
+                                                    Callable[[], tuple[bool, str]]]]:
+    """按 STEP_PLAN 组装可执行步骤（顺序与 dry-run 展示一致）。"""
+    return [
+        ('code_table', STEP_PLAN[0][1], False, lambda: _step_code_table(plan, args)),
+        ('industry', STEP_PLAN[1][1], False, lambda: _step_industry(plan)),
+        ('fill', STEP_PLAN[2][1], True, lambda: _step_fill(plan, args)),
+        ('build', STEP_PLAN[3][1], True, lambda: _step_build(plan, args)),
+        ('st', STEP_PLAN[4][1], False, lambda: _step_st(plan, args)),
+        ('basic', STEP_PLAN[5][1], False, lambda: _step_basic(plan, args)),
+        ('valuation', STEP_PLAN[6][1], False, lambda: _run_valuation(plan, args)),
+        ('breadth', STEP_PLAN[7][1], False, lambda: _run_breadth(plan)),
+        ('pool', STEP_PLAN[8][1], False, lambda: _step_pool(plan, args)),
+        ('manifest', STEP_PLAN[9][1], True,
+         lambda: _step_manifest(plan, args, state)),
+        ('clean_set', STEP_PLAN[10][1], False, lambda: _step_clean_set(plan)),
+        ('freshness', STEP_PLAN[11][1], False, lambda: _run_freshness(plan.root)),
+        ('version', STEP_PLAN[12][1], False,
+         lambda: _run_version(plan.root, state.get('changed') or {})),
+        ('backup', STEP_PLAN[13][1], True, _step_backup),
+        ('gate', STEP_PLAN[14][1], True, lambda: _step_gate(plan)),
+    ]
+
+
+def _summary_line(plan: _Plan, outcomes: Sequence[_StepOutcome],
+                  state: dict[str, Any], seconds: float) -> str:
+    failed = [item for item in outcomes if not item.ok]
+    fatal = [item for item in failed if item.critical]
+    report = state.get('report') or {}
+    changed = len(state.get('changed') or ())
+    return (f'[日更] {plan.range_label} | {len(outcomes)} 步 '
+            f'ok {len(outcomes) - len(failed)} / 失败 {len(failed)}（致命 {len(fatal)}）'
+            f' | 变更 {changed} 件 +{report.get("added", 0):,}/-{report.get("deleted", 0):,} 行'
+            f' | 总耗时 {seconds:.1f}s')
+
+
+def _print_run_summary(plan: _Plan, outcomes: Sequence[_StepOutcome],
+                       state: dict[str, Any], seconds: float) -> int:
+    print(_summary_line(plan, outcomes, state, seconds))
+    for item in outcomes:
+        if not item.ok:
+            mark = '致命' if item.critical else '只记录'
+            print(f'[失败] {item.name}（{mark}）| {item.detail}')
+    return 1 if any(item.critical and not item.ok for item in outcomes) else 0
+
+
+def _skip_note(key: str, plan: _Plan, args: argparse.Namespace) -> str:
+    if key == 'fill' and not args.allow_remote:
+        return '  ← 本轮跳过（未加 --allow-remote）'
+    if key == 'valuation' and (args.skip_valuation or not args.allow_remote):
+        return '  ← 本轮跳过'
+    if key == 'st' and args.skip_st_refresh:
+        return '  ← 本轮跳过'
+    if key == 'basic' and (args.skip_basic_refresh
+                           or not _basic_due(plan.root, args.basic_refresh_days)):
+        return '  ← 本轮跳过（未到期/已关闭）'
+    if key == 'pool' and (args.skip_pool_refresh
+                          or not _pool_due(plan.root, args.pool_refresh_days)):
+        return '  ← 本轮跳过（未到期/已关闭）'
+    return ''
+
+
+def _print_dry_plan(plan: _Plan, args: argparse.Namespace) -> None:
+    print(f'[日更 dry-run] {plan.range_label} | 覆盖 {len(plan.coverage)} 个标的 | '
+          f'待补 {len(plan.gaps)} 个 | 计划写 {len(plan.plan_quote)} 件 | '
+          f'输入集合哈希 {plan.inputs["input_hash"][:12]}')
+    for index, (key, name, critical) in enumerate(STEP_PLAN, 1):
+        mark = '（致命）' if critical else ''
+        print(f'  {index:>2}. {name}{mark}{_skip_note(key, plan, args)}')
+    print('  顺序约束：备份（第 14 步）在所有写 data/ 的步骤之后，'
+          '门禁（第 15 步）在备份之后；任一步失败只记录并继续，致命步失败返回 1。')
+
+
+def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
+    batch = args.batch or f'daily_{plan.latest.strftime("%Y%m%d")}'
+    batch_dir = ROOT / '_staging' / batch
+    _write_staging(batch_dir, plan.gaps, plan.inputs)
+
+    state: dict[str, Any] = {}
+    started = time.perf_counter()
+    outcomes = _run_steps(_step_list(plan, args, state))
+    seconds = time.perf_counter() - started
+
+    report = state.get('report') or {}
     _mark_applied(batch_dir, {
-        'changed_files': len(changed), 'rows_added': report['added'],
-        'rows_deleted': report['deleted'], 'diffs': len(report['problems']),
-        'agg_sha256': digest,
+        'changed_files': len(state.get('changed') or ()),
+        'rows_added': report.get('added', 0),
+        'rows_deleted': report.get('deleted', 0),
+        'diffs': len(report.get('problems') or ()),
+        'agg_sha256': state.get('digest'),
     })
-    print(_format(plan.range_label, len(changed), len(plan.plan_quote), report['added'],
-                  report['deleted'], len(report['problems']), digest[:12], apply=True))
-    if pool_line:
-        print(pool_line)
-    if breadth_line:
-        print(breadth_line)
-    if valuation_line:
-        print(valuation_line)
-    print(_run_freshness(root))
-    print(_run_version(root, changed))
+    code = _print_run_summary(plan, outcomes, state, seconds)
     if args.target_holdings:
         _run_target_holdings(plan.latest, args.capital)
-    failed = int(fill_stats.get('failed_symbols') or 0)
-    return 0 if (code == 0 and not report['problems'] and not failed) else 1
+    return code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1025,16 +1206,8 @@ def main(argv: list[str] | None = None) -> int:
                 plan.inputs['input_hash'])
 
     if not args.apply:
-        # dry-run：只盘点，不联网、不落盘（含 _staging）
-        if plan.gaps:
-            logger.warning('[daily] 待补 {} 个，前 5：{}', len(plan.gaps),
-                           ', '.join(f'{item["ts_code"]}({item["gap_days"]}d)'
-                                     for item in plan.gaps[:5]))
-        logger.debug('{}', json.dumps({'target_date': str(plan.latest),
-                                       'input_hash': plan.inputs['input_hash'],
-                                       'planned_files': len(plan.plan_quote),
-                                       'gaps': plan.gaps}, ensure_ascii=False))
-        print(_format(plan.range_label, 0, len(plan.plan_quote), 0, 0, 0, '-', apply=False))
+        # dry-run：只盘点，不联网、不落盘（含 _staging）；打印完整步骤清单与顺序
+        _print_dry_plan(plan, args)
         return 0
 
     return _run_apply(plan, args)
