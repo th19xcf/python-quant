@@ -74,6 +74,11 @@ DERIVED_TABLES: tuple[tuple[str, str, str], ...] = (
     ('factors/stock_turnover.parquet', '个股换手率',
      'tools/fetch_stock_shares.py'),
     ('meta/st/st_intervals.parquet', 'ST 区间', 'src/data/st_history.py'),
+    ('meta/universe/layers/l5_pool.parquet', '股票池分层 L5（池化）',
+     'tools/build_universe_layers.py'),
+    ('meta/state/state_vector_daily.parquet', '市场状态向量', 'tools/build_state_vector.py'),
+    ('meta/research_inputs/analysis_monthly.parquet', '研究面板',
+     'tools/research/build_analysis_monthly.py'),
 )
 
 

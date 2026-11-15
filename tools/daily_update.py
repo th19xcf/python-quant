@@ -7,6 +7,7 @@
     1. 采集 + 写行情 parquet        src.data.tencent.daily_fill.fill_daily_gap(workers=1)
     2. 回填 daily_index + manifest  LocalQuoteStore.flush_meta()（采集写盘后立即回填）
     3. 通达信增量构建 + 换手派生 + 异常清单  python -m src.data.local_store build build
+       市场宽度增量补齐（行情末根未前进时不落盘） src.data.services.breadth_service.refresh
     4. ST 区间表按交易日刷新        src.data.risk_flags refresh + src.data.st_history build
     5. 名录每日检查（每天检查一次，有变更才落盘；体检按最后检查日期判） src.main --update-fund / --update-index
     6. 候选池周更（超过 N 天未重建才跑） tools/build_multi_asset_etf_pool.py --apply
@@ -29,9 +30,9 @@
     - ``quotes/manifest.json`` 是人工维护的全市场总账（仓库内无产者，含
       futures 口径），本入口只做只读对账（universe 分市场求和 == universe
       合计），不代写数值；该件与磁盘的偏差按 WARN 打印实测差额。
-    - 第 4/5/6/9 步是新增旁路：任一步失败只告警，不改日更原有退出码，
-      也不改主表校验口径。候选池是筛选结果（视图层），不承担数据完整性；
-      被排除标的的行情/分红由保鲜体检的全集判据负责。
+    - 第 3 步的市场宽度增量与第 4/5/6/9 步是旁路：任一步失败只告警，不改日更
+      原有退出码，也不改主表校验口径。候选池是筛选结果（视图层），不承担
+      数据完整性；被排除标的的行情/分红由保鲜体检的全集判据负责。
 
 用法::
 
@@ -116,6 +117,11 @@ AUX_POOL_OUTPUTS = (
 )
 #: 候选池默认重建周期（自然日）
 DEFAULT_POOL_REFRESH_DAYS = 7
+#: 市场宽度日更会写的件（增量补齐，行情末根未前进时不落盘）。
+AUX_BREADTH_OUTPUTS = (
+    'meta/breadth/breadth_daily.parquet',
+    'meta/breadth/coverage.json',
+)
 #: 增量清点跳过 ``backtest_runs``：回测运行记录是结果归档（json/csv/log 与索引），
 #: 不是数据表，日更既不产出也不消费它，计入会让「本次新增文件」混入非数据资产。
 SKIP_DIRS = {'_backup', '__pycache__', 'backtest_runs'}
@@ -373,6 +379,7 @@ def _aux_expected(root: Path, refresh_days: int,
                   pool_refresh_days: int = DEFAULT_POOL_REFRESH_DAYS) -> set[str]:
     """新增旁路会写的件，并入日更预期清单（只作白名单，不强制必须出现）。"""
     expected = set(AUX_ST_OUTPUTS)
+    expected.update(AUX_BREADTH_OUTPUTS)
     for key, rels in _basic_due(root, refresh_days).items():
         expected.update(rels)
     if _pool_due(root, pool_refresh_days):
@@ -439,6 +446,30 @@ def _run_pool_refresh(plan: _Plan, args: argparse.Namespace) -> str:
     return (f'[候选池] as_of {as_of} | 池内 {len(after)} 只 | 新入池 {entered} / 出池 {exited} | '
             f'按规则排除 {excluded} 只（{with_reason} 条带原因与评估日期，见 '
             'etf_pool_excluded.json）')
+
+
+def _run_breadth(plan: _Plan) -> str:
+    """市场宽度日更：增量补齐快照，行情末根未前进时不动盘；失败只告警。"""
+    path = plan.root / AUX_BREADTH_OUTPUTS[0]
+    try:
+        before = path.stat().st_mtime_ns
+    except OSError:
+        before = 0
+    try:
+        from src.data.services.breadth_service import refresh  # noqa: PLC0415
+        frame = refresh(plan.root)
+    except Exception as exc:  # noqa: BLE001 - 派生表失败不能反噬日更
+        logger.warning('[daily] 市场宽度刷新失败（只告警）：{}', exc)
+        return '[宽度] 刷新未完成（只告警，不影响日更结果）'
+    if frame.is_empty() or 'trade_date' not in frame.columns:
+        return '[宽度] 无行情可算，未落盘'
+    last = str(frame['trade_date'].max())[:10]
+    try:
+        after = path.stat().st_mtime_ns
+    except OSError:
+        after = 0
+    state = '已补齐' if after != before else '无新增未落盘'
+    return f'[宽度] 末日 {last} | {frame.height:,} 行 | {state}'
 
 
 def _run_aux_refresh(plan: _Plan, args: argparse.Namespace) -> dict[str, Any]:
@@ -846,6 +877,8 @@ def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
     if code != 0:
         logger.error('[daily] 本地构建返回非零：{}', code)
 
+    # 新增旁路：市场宽度增量补齐；失败只告警
+    breadth_line = _run_breadth(plan)
     # 新增旁路：ST 区间表按交易日刷新、名录按周更阈值刷新；失败只告警
     _run_aux_refresh(plan, args)
     # 候选池按周重建（派生视图，不承担数据完整性）；失败只告警
@@ -880,6 +913,8 @@ def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
                   report['deleted'], len(report['problems']), digest[:12], apply=True))
     if pool_line:
         print(pool_line)
+    if breadth_line:
+        print(breadth_line)
     print(_run_freshness(root))
     print(_run_version(root, changed))
     if args.target_holdings:
