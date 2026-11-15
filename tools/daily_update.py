@@ -8,7 +8,7 @@
     2. 回填 daily_index + manifest  LocalQuoteStore.flush_meta()（采集写盘后立即回填）
     3. 通达信增量构建 + 换手派生 + 异常清单  python -m src.data.local_store build build
     4. ST 区间表按交易日刷新        src.data.risk_flags refresh + src.data.st_history build
-    5. 名录周更（超过 N 天未刷新才跑） src.main --update-fund / --update-index
+    5. 名录周更（超过 N 自然日未刷新才跑；体检按 5 交易日 + 2 缓冲对齐） src.main --update-fund / --update-index
     6. 候选池周更（超过 N 天未重建才跑） tools/build_multi_asset_etf_pool.py --apply
     7. 登记回写                     src.data.manifest_refresh.refresh_manifest_files
     8. 校验                         逐件 rows/bytes/sha256 与 manifest 一致、
@@ -101,7 +101,7 @@ AUX_BASIC_OUTPUTS = {
     'fund': ('meta/fund_basic.parquet', 'meta/fund_basic.manifest.json'),
     'index': ('meta/index_basic.parquet', 'meta/index_basic.manifest.json'),
 }
-#: 名录默认刷新周期（自然日）
+#: 名录默认刷新周期（自然日，约 5 个交易日；体检告警线 7 交易日、两周转红）
 DEFAULT_BASIC_REFRESH_DAYS = 7
 #: 候选池周更会写的件（首件用于判断距上次重建是否超过阈值）。
 AUX_POOL_OUTPUTS = (
@@ -857,7 +857,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--skip-basic-refresh', action='store_true',
                         help='跳过 fund_basic / index_basic 名录周更')
     parser.add_argument('--basic-refresh-days', type=int, default=DEFAULT_BASIC_REFRESH_DAYS,
-                        help='名录距上次刷新超过该天数才刷新（默认 7）')
+                        help='名录距上次刷新超过该自然日数才刷新（默认 7，约 5 个交易日）')
     parser.add_argument('--skip-pool-refresh', action='store_true',
                         help='跳过多资产 ETF 候选池周更')
     parser.add_argument('--pool-refresh-days', type=int, default=DEFAULT_POOL_REFRESH_DAYS,

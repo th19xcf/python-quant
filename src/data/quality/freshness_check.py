@@ -84,8 +84,13 @@ LAG_OK_MAX = 1
 LAG_WARN_MAX = 5
 #: 基础信息表允许的新增标的数 / 估值缺失条数上限（超过报 error）
 BASE_INFO_WARN_MAX = 5
-#: 名录周更：刷新日期距行情末日超过该交易日数报 warning / error
-BASE_INFO_LAG_WARN = 5
+#: 名录周更周期（自然日），与 ``daily_update --basic-refresh-days`` 默认值一致
+BASE_INFO_REFRESH_DAYS = 7
+#: 7 个自然日 ≈ 5 个交易日；告警线 = 周更周期换算后的交易日 + 2 个交易日缓冲
+BASE_INFO_SCHEDULE_DAYS = 5
+BASE_INFO_BUFFER_DAYS = 2
+#: 名录刷新日期滞后：≤7 交易日正常，8~10 交易日 warning，>10（两周）error
+BASE_INFO_LAG_WARN = BASE_INFO_SCHEDULE_DAYS + BASE_INFO_BUFFER_DAYS
 BASE_INFO_LAG_ERROR = 10
 #: 公告事件按自然日：超过 30 天 warning、90 天 error
 EVENT_LAG_WARN_DAYS = 30
@@ -219,7 +224,12 @@ def classify_calendar_lag(days: int) -> str:
 
 
 def classify_base_info_lag(lag: int) -> str:
-    """按名录刷新日期滞后分档（周更，5/10 个交易日）。"""
+    """按名录刷新日期滞后分档（交易日）。
+
+    周更周期 7 自然日 ≈ 5 个交易日，告警线再加 2 个交易日缓冲 = 7：
+    ≤7 正常、8~10 ``warning``、>10（两周）``error``。名录停更属静默漏票，
+    新上市股票/新发指数进不来不会触发任何校验，所以两周以上直接判红。
+    """
     if lag <= BASE_INFO_LAG_WARN:
         return 'ok'
     if lag <= BASE_INFO_LAG_ERROR:
@@ -706,6 +716,12 @@ def format_summary(report: FreshnessReport) -> str:
         '[保鲜]',
         f'行情末日 {_fmt(report.quotes_end)}',
         f'全集 {report.universe_total:,} 只',
+    ]
+    base_rows = [row for row in report.rows if row.kind == KIND_BASE_INFO]
+    if base_rows:
+        base_lag = max(row.lag or 0 for row in base_rows)
+        parts.append(f'名录 {len(base_rows)} 张最大滞后 {base_lag} 天')
+    parts += [
         f'表 {len(report.rows)}',
         f'最大滞后 {report.max_lag} 天',
         f'error {len(report.errors)} / warning {len(report.warnings)}',

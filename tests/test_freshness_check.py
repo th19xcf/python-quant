@@ -204,19 +204,53 @@ def test_base_info_uses_new_code_count_not_date_threshold(tmp_path):
     assert '506000.SH' in row.detail
 
 
-def test_base_info_stale_refresh_date_reports_warning(tmp_path):
+def test_base_info_weekly_refresh_is_not_a_warning(tmp_path):
+    """正常周更（7 自然日 ≈ 5 交易日）不误报。"""
     calendar = _biz_days(12)
     store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
                                    coverage_end=calendar[-1], event_end=calendar[-1])
-    _touch(store / 'meta' / 'index_basic.parquet', calendar[-8])
+    _touch(store / 'meta' / 'index_basic.parquet', calendar[-6])
 
     report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
 
     row = _row(report, 'meta/index_basic.parquet')
-    assert row.data_end == calendar[-8]
-    assert row.lag == 7
+    assert row.data_end == calendar[-6]
+    assert row.lag == 5
+    assert row.verdict == 'ok'
+    assert '刷新日期' in row.detail
+    assert '滞后 5 个交易日' in row.detail
+
+
+def test_base_info_beyond_buffer_reports_warning(tmp_path):
+    """超过 5+2 缓冲但仍在两周内：转黄。"""
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    _touch(store / 'meta' / 'index_basic.parquet', calendar[-9])
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'meta/index_basic.parquet')
+    assert row.data_end == calendar[-9]
+    assert row.lag == 8
     assert row.verdict == 'warning'
     assert '刷新日期' in row.detail
+
+
+def test_base_info_over_two_weeks_reports_error(tmp_path):
+    """超过两周年（10 交易日）直接判红：名录停更是静默漏票。"""
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    _touch(store / 'meta' / 'index_basic.parquet', calendar[-12])
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'meta/index_basic.parquet')
+    assert row.data_end == calendar[-12]
+    assert row.lag == 11
+    assert row.verdict == 'error'
+    assert report.ok is False
 
 
 def test_valuation_missing_active_code_reports_warning(tmp_path):
@@ -402,6 +436,7 @@ def test_summary_is_single_line_when_normal(tmp_path):
     assert '\n' not in summary
     assert summary.startswith('[保鲜]')
     assert '全集 3 只' in summary
+    assert '名录 3 张最大滞后 0 天' in summary
     assert '全部正常' in summary
 
 
