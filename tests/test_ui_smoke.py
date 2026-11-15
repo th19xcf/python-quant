@@ -29,6 +29,7 @@ EXPECTED_MIXIN_ORDER = (
     'MainWindowIndicatorWindowMixin',
     'MainWindowDividendMixin',
     'MainWindowAdviceMixin',
+    'MainWindowMarketTrendMixin',
     'MainWindowUiMixin',
     'MainWindowEventMixin',
     'MainWindowDrawingMixin',
@@ -36,7 +37,7 @@ EXPECTED_MIXIN_ORDER = (
 
 
 def test_main_window_bases_order_is_pinned():
-    """V-09：9 个 mixin 的相对顺序不得静默变化"""
+    """V-09：10 个 mixin 的相对顺序不得静默变化"""
     from src.ui.main_window import MainWindow
 
     bases = [base.__name__ for base in MainWindow.__bases__]
@@ -111,8 +112,9 @@ def test_main_window_constructs_with_empty_market_table(qapp, tmp_path):
 
     window = MainWindow(config, data_manager)
     try:
-        assert window.tab_widget.count() == 4
+        assert window.tab_widget.count() == 5
         assert window.advice_page is not None
+        assert window.market_trend_page is not None
         assert window.stock_table.columnCount() == 13
         # 示例假数据已移除，启动时行情表应为空
         assert window.stock_table.rowCount() == 0

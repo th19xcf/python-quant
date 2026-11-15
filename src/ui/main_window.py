@@ -30,6 +30,7 @@ from src.ui.main_window_drawing_mixin import MainWindowDrawingMixin
 from src.ui.main_window_event_mixin import MainWindowEventMixin
 from src.ui.main_window_indicator_bar_mixin import IMPLEMENTED_INDICATORS
 from src.ui.main_window_indicator_window_mixin import MainWindowIndicatorWindowMixin
+from src.ui.main_window_market_trend_mixin import MainWindowMarketTrendMixin
 from src.ui.main_window_navigation_mixin import MainWindowNavigationMixin
 
 # Import Mixins
@@ -43,6 +44,7 @@ from src.utils.logger import logger
 class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
                  MainWindowCandlestickMixin, MainWindowIndicatorWindowMixin,
                  MainWindowDividendMixin, MainWindowAdviceMixin,
+                 MainWindowMarketTrendMixin,
                  MainWindowUiMixin,
                  MainWindowEventMixin,
                  MainWindowDrawingMixin, QMainWindow):
@@ -55,7 +57,7 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
        mixin 的相对顺序会静默改变 ``super()`` 链上的实际执行体，且不会被 mypy
        或任何测试发现。
     2. 顺序固定为：``Navigation → ChartInteraction → Candlestick →
-       IndicatorWindow → Dividend → Advice → Ui → Event → Drawing``；
+       IndicatorWindow → Dividend → Advice → MarketTrend → Ui → Event → Drawing``；
        该顺序由 ``tests/test_ui_smoke.py`` 的棘轮用例守护，调整时必须同步改用例
        并说明理由。
     3. ``QMainWindow`` **必须放在最后**：它是真正的 Qt 基类，所有 mixin 都只在

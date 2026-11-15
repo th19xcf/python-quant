@@ -225,6 +225,11 @@ class MainWindowLayoutMixin:
         self.tab_widget.addTab(self.advice_tab, "每日推荐")
         self.create_advice_tab()
 
+        # 添加市场趋势标签页（继续追加在末尾，不改变既有页 index）
+        self.market_trend_tab = QWidget()
+        self.tab_widget.addTab(self.market_trend_tab, "市场趋势")
+        self.create_market_trend_tab()
+
         parent.addWidget(center_widget)
 
     def create_market_tab(self):
