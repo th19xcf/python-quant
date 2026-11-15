@@ -105,6 +105,15 @@ _VALUATION_MAPPING: dict[str, str] = {
 }
 
 
+def fetch_valuation_frame(ts_code: str) -> Any:
+    """单票日频估值的唯一取数入口（全市场采集与单票补数共用）。
+
+    akshare 1.20.x 的 ``stock_value_em`` 只有 ``symbol`` 一个入参，且要 6 位
+    纯数字代码，不接受 ``ts_code``；带交易所后缀的代码必须先剥后缀再传。
+    """
+    return ak.stock_value_em(symbol=ts_code.split('.')[0])
+
+
 @dataclass(frozen=True)
 class RetryPolicy:
     """重试策略（默认值与 ``config.data`` 的出厂设置一致）。"""
@@ -587,10 +596,11 @@ class FinancialsCollector:
         batch_no = existing_batches
 
         def _one(code: str) -> tuple[str, pl.DataFrame | None, str | None]:
-            symbol = code.split('.')[0]
             self._valuation_limiter.wait()
+            # 取数参数只有位置参数 code；ts_code 是 _safe_call 的失败记账字段，
+            # 不会被转发给 akshare（stock_value_em 只接受 symbol）
             df, error, retries = self._safe_call(
-                'valuation', ak.stock_value_em, ts_code=code, symbol=symbol)
+                'valuation', fetch_valuation_frame, code, ts_code=code)
             if df is None:
                 return code, None, error
             try:

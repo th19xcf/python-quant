@@ -91,6 +91,25 @@ def _fetchers(**overrides):
     return base
 
 
+def test_default_valuation_fetcher_delegates_to_shared_entry(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """单票补数不再自带一份 stock_value_em 实现，统一走 collector 的唯一入口。"""
+    from src.data.financials import collector as fin_collector
+
+    seen: list[str] = []
+
+    def fake(ts_code: str) -> pd.DataFrame:
+        seen.append(ts_code)
+        return _valuation_frame()
+
+    monkeypatch.setattr(fin_collector, 'fetch_valuation_frame', fake)
+    fetchers = fs._default_fetchers()  # noqa: SLF001
+    out = fetchers['valuation']('600519.SH')
+
+    assert seen == ['600519.SH']
+    assert list(out.columns) == list(_valuation_frame().columns)
+
+
 def test_normal_snapshot_contains_report_metrics_valuation_and_news(tmp_path):
     snapshot = fs.fetch_finance_snapshot(
         '600519.SH', '贵州茅台', store_root=tmp_path,

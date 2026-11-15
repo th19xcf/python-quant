@@ -276,11 +276,27 @@ def _fake_value_frame(dates: list[date]) -> pd.DataFrame:
 
 def _patch_value_em(monkeypatch: pytest.MonkeyPatch, dates: list[date],
                     calls: list[str]) -> None:
-    def fake(symbol: str = '', **_: object) -> pd.DataFrame:
+    def fake(symbol: str) -> pd.DataFrame:
         calls.append(symbol)
         return _fake_value_frame(dates)
 
     monkeypatch.setattr(collector.ak, 'stock_value_em', fake)
+
+
+def test_fetch_valuation_frame_passes_plain_symbol_only(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """akshare 1.20.x 的 stock_value_em 只接受 symbol；多传关键字即 TypeError。"""
+    seen: list[str] = []
+
+    def fake(symbol: str) -> pd.DataFrame:
+        seen.append(symbol)
+        return _fake_value_frame([date(2026, 11, 13)])
+
+    monkeypatch.setattr(collector.ak, 'stock_value_em', fake)
+    frame = collector.fetch_valuation_frame('600519.SH')
+
+    assert seen == ['600519']
+    assert len(frame) == 1
 
 
 def test_collect_valuation_since_only_writes_rows_in_range(

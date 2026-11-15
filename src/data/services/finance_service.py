@@ -372,9 +372,11 @@ def _default_fetchers() -> dict[str, Callable[[str], Any]]:
             symbol=_plain_symbol(ts_code), indicator='按报告期')
 
     def valuation(ts_code: str) -> Any:
-        import akshare as ak  # noqa: PLC0415
+        from src.data.financials.collector import (  # noqa: PLC0415
+            fetch_valuation_frame,
+        )
 
-        return ak.stock_value_em(symbol=_plain_symbol(ts_code))
+        return fetch_valuation_frame(ts_code)
 
     def news(ts_code: str) -> Any:
         import akshare as ak  # noqa: PLC0415
