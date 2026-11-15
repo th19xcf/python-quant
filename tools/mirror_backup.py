@@ -16,6 +16,9 @@
 git-clean 之类的外部清理命令。备份侧独有文件意味着「源侧已删、备份侧还在」，
 必须由人工核对是否为唯一副本后另行裁定，工具不得替代该判断。
 
+备份仓根目录不写死盘符，一律经 :func:`tools.backup_root.resolve_backup_root` 解析并
+校验（``QUANT_BACKUP_ROOT`` → ``.trae/backup.local.json`` → 报错）。
+
 用法::
 
     python tools/mirror_backup.py --dry-run
@@ -32,7 +35,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DST = Path(r'G:\git\python-quant')
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.backup_root import BackupRootError, resolve_backup_root  # noqa: E402
+
 DEFAULT_SUBDIRS = ('data/local_store', 'reports')
 EXCLUDED_DIR = '__pycache__'
 EXCLUDED_SUFFIXES = ('.pyc', '.pyo')
@@ -128,9 +135,11 @@ def mirror_subdir(
 
 
 def run(
-    *, src_base: Path = ROOT, dst_base: Path = DEFAULT_DST,
+    *, src_base: Path = ROOT, dst_base: Path | None = None,
     subdirs: tuple[str, ...] = DEFAULT_SUBDIRS, dry_run: bool = False,
 ) -> list[MirrorResult]:
+    if dst_base is None:
+        dst_base = resolve_backup_root()
     results = []
     for subdir in subdirs:
         result = mirror_subdir(subdir, src_base=src_base, dst_base=dst_base, dry_run=dry_run)
@@ -150,17 +159,23 @@ def run(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='备份镜像（只增不删）')
     parser.add_argument('--src', type=Path, default=ROOT, help='源仓库根')
-    parser.add_argument('--dst', type=Path, default=DEFAULT_DST, help='备份仓库根')
+    parser.add_argument(
+        '--dst', type=Path, default=None,
+        help='备份仓库根（缺省经 QUANT_BACKUP_ROOT / .trae/backup.local.json 解析并校验）')
     parser.add_argument('--sub', action='append', dest='subdirs', help='待镜像子目录，可重复')
     parser.add_argument('--dry-run', action='store_true', help='只输出计划，不复制')
     args = parser.parse_args(argv)
 
-    results = run(
-        src_base=args.src,
-        dst_base=args.dst,
-        subdirs=tuple(args.subdirs) if args.subdirs else DEFAULT_SUBDIRS,
-        dry_run=args.dry_run,
-    )
+    try:
+        results = run(
+            src_base=args.src,
+            dst_base=args.dst,
+            subdirs=tuple(args.subdirs) if args.subdirs else DEFAULT_SUBDIRS,
+            dry_run=args.dry_run,
+        )
+    except BackupRootError as exc:
+        print(f'备份仓解析失败：{exc}', file=sys.stderr)
+        return 2
     return 0 if all(r.ok for r in results) else 1
 
 

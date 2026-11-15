@@ -4,7 +4,8 @@
 三条硬校验（任一不满足即退出码 1）：
 
 1. **末行完整**：文件必须以 ``\\n`` 结尾，且末行的列数与表头一致（可解析）。
-2. **只增不减**：与基线（默认 ``G:\\git\\python-quant\\logs\\data_changelog.csv``）
+2. **只增不减**：与基线（缺省为 ``<备份仓根>/logs/data_changelog.csv``，备份仓根经
+   ``tools.backup_root.resolve_backup_root()`` 解析，不写死盘符）
    比对，当前行数不得少于基线，且基线内容必须是当前文件的**字节前缀**。
 3. **三项比对**：输出当前与基线的 SHA256、字节数、行数；行数相同而 SHA256/字节
    不同，说明历史行被重写（同样判失败）。
@@ -30,9 +31,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.backup_root import BackupRootError, resolve_backup_root  # noqa: E402
+
 DEFAULT_LEDGER = ROOT / 'logs' / 'data_changelog.csv'
-DEFAULT_BASELINE = Path(r'G:\git\python-quant\logs\data_changelog.csv')
 DEFAULT_FAILURES = ROOT / 'logs' / 'data_changelog_failures.csv'
+_AUTO_BASELINE = object()
 EXPECTED_FIELDS = [
     'run_id', 'timestamp', 'task', 'action', 'path',
     'bytes', 'sha256', 'prev_sha256', 'operator', 'reason',
@@ -172,14 +178,27 @@ def inspect_failures(path: Path) -> list[str]:
     return [','.join(row) for row in rows[1:] if any(cell.strip() for cell in row)]
 
 
+def default_baseline() -> Path:
+    """缺省基线：解析出的备份仓根下 ``logs/data_changelog.csv``；解析失败即抛错。"""
+    return resolve_backup_root() / 'logs' / 'data_changelog.csv'
+
+
 def check_ledger(
     ledger_path: Path = DEFAULT_LEDGER,
-    baseline_path: Path | None = DEFAULT_BASELINE,
+    baseline_path: Path | None | object = _AUTO_BASELINE,
     failures_path: Path | None = None,
 ) -> CheckResult:
-    """执行三条硬校验 + 记账失败清单校验，返回结构化结果（不打印、不退出）。"""
+    """执行三条硬校验 + 记账失败清单校验，返回结构化结果（不打印、不退出）。
+
+    ``baseline_path`` 省略时取 :func:`default_baseline`；显式传 ``None`` 表示跳过基线校验。
+    """
+    if baseline_path is _AUTO_BASELINE:
+        baseline_path = default_baseline()
     ledger = inspect_ledger(ledger_path)
-    baseline = compare_baseline(ledger, baseline_path) if baseline_path else None
+    baseline = (
+        compare_baseline(ledger, baseline_path)
+        if isinstance(baseline_path, Path) else None
+    )
     failures: list[str] = []
 
     if ledger.has_bom:
@@ -253,17 +272,21 @@ def render(result: CheckResult) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description='台账收口校验（只增不减/末行完整/G: 比对）')
+    parser = argparse.ArgumentParser(description='台账收口校验（只增不减/末行完整/备份镜像比对）')
     parser.add_argument('--file', type=Path, default=DEFAULT_LEDGER, help='待校验台账')
-    parser.add_argument('--baseline', type=Path, default=DEFAULT_BASELINE,
-                        help='基线文件（默认 G: 镜像）')
+    parser.add_argument('--baseline', type=Path, default=None,
+                        help='基线文件（缺省取解析出的备份仓根 logs/data_changelog.csv）')
     parser.add_argument('--no-baseline', action='store_true', help='跳过基线与只增不减校验')
     parser.add_argument('--failures', type=Path, default=DEFAULT_FAILURES,
                         help='记账失败清单；非空即判失败')
     parser.add_argument('--no-failures', action='store_true', help='跳过记账失败清单校验')
     args = parser.parse_args(argv)
 
-    baseline = None if args.no_baseline else args.baseline
+    try:
+        baseline = None if args.no_baseline else (args.baseline or default_baseline())
+    except BackupRootError as exc:
+        print(f'备份仓解析失败：{exc}', file=sys.stderr)
+        return 1
     failures_path = None if args.no_failures else args.failures
     result = check_ledger(args.file, baseline, failures_path)
     print(render(result))
