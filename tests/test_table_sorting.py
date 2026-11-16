@@ -49,16 +49,18 @@ def _column_texts(table: QTableWidget, column: int) -> list[str]:
 
 @pytest.mark.parametrize(('name', 'page_cls', 'table_name', 'numeric_column', '_label'),
                          PAGES, ids=IDS)
-def test_numeric_sort_click_cycle_and_empty_sink(
+def test_numeric_sort_three_state_cycle(
         qapp, name, page_cls, table_name, numeric_column, _label):
-    """点击数值列：升序 → 降序循环，-0.783 排在 0.843 之前，空值始终沉底。"""
+    """点击数值列：升序 → 降序 → 取消排序（回到初始行序），空值始终沉底。"""
     page = _open_page(qapp, page_cls)
     try:
         table = getattr(page, table_name)
         header = table.horizontalHeader()
-        _fill_column(table, numeric_column, ['-0.783', '0.843', '—'])
+        initial = ['-0.783', '0.843', '—']
+        _fill_column(table, numeric_column, initial)
+        page._finalize_table(table)
         assert not header.isSortIndicatorShown(), f'{name} 初始不应显示排序箭头'
-        assert _column_texts(table, numeric_column) == ['-0.783', '0.843', '—'], \
+        assert _column_texts(table, numeric_column) == initial, \
             f'{name} 默认顺序被改动'
 
         header.sectionClicked.emit(numeric_column)
@@ -76,8 +78,15 @@ def test_numeric_sort_click_cycle_and_empty_sink(
 
         header.sectionClicked.emit(numeric_column)
         qapp.processEvents()
+        assert _column_texts(table, numeric_column) == initial, \
+            f'{name} 第三态未恢复初始行序'
+        assert not header.isSortIndicatorShown(), f'{name} 取消排序后箭头未清除'
+
+        header.sectionClicked.emit(numeric_column)
+        qapp.processEvents()
         assert header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder, \
-            f'{name} 第三次点击未回到升序'
+            f'{name} 取消后再次点击未回到升序'
+        assert _column_texts(table, numeric_column) == ['-0.783', '0.843', '—']
 
         item = table.item(1, numeric_column)
         assert (item.textAlignment() & Qt.AlignmentFlag.AlignRight), \
@@ -88,12 +97,56 @@ def test_numeric_sort_click_cycle_and_empty_sink(
         page.close()
 
 
+def test_column_switch_starts_ascending_and_counts_independently(qapp):
+    """换列第一击为升序；原列的点数保留，回点原列继续走它自己的三态。"""
+    page = _open_page(qapp, IndustryHeatPage)
+    try:
+        table = page.heat_table
+        header = table.horizontalHeader()
+        heat_labels = ['冷清', '中性', '过热']
+        _fill_column(table, 1, [' 0.2', '0.9', '0.5'])
+        for row, label in enumerate(heat_labels):
+            table.setItem(row, 2, QTableWidgetItem(label))
+        page._finalize_table(table)
+        initial_rows = [
+            [table.item(row, index).text() for index in range(table.columnCount())]
+            for row in range(table.rowCount())
+        ]
+
+        header.sectionClicked.emit(1)
+        qapp.processEvents()
+        assert header.sortIndicatorSection() == 1
+        assert header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
+        header.sectionClicked.emit(1)
+        qapp.processEvents()
+        assert header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
+
+        header.sectionClicked.emit(2)
+        qapp.processEvents()
+        assert header.sortIndicatorSection() == 2, '换列后排序指示未切换'
+        assert header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder, \
+            '换列后第一击不是升序'
+        assert _column_texts(table, 2) == ['过热', '中性', '冷清']
+
+        header.sectionClicked.emit(1)
+        qapp.processEvents()
+        assert not header.isSortIndicatorShown(), '原列第三态未取消排序'
+        current_rows = [
+            [table.item(row, index).text() for index in range(table.columnCount())]
+            for row in range(table.rowCount())
+        ]
+        assert current_rows == initial_rows, '取消排序后未回到初始行序'
+    finally:
+        page.close()
+
+
 def test_heat_label_sort_is_semantic(qapp):
     """行业热度「档位」按 过热→偏热→中性→偏冷→冷清 排序，不按汉字编码。"""
     page = _open_page(qapp, IndustryHeatPage)
     try:
         table = page.heat_table
         _fill_column(table, 2, ['冷清', '中性', '过热', '偏冷', '偏热'])
+        page._finalize_table(table)
         table.horizontalHeader().sectionClicked.emit(2)
         qapp.processEvents()
         assert _column_texts(table, 2) == ['过热', '偏热', '中性', '偏冷', '冷清']
@@ -107,6 +160,7 @@ def test_style_label_sort_is_semantic(qapp):
     try:
         table = page.dimension_table
         _fill_column(table, 2, ['大盘占优', '均衡', '小盘占优'])
+        page._finalize_table(table)
         table.horizontalHeader().sectionClicked.emit(2)
         qapp.processEvents()
         assert _column_texts(table, 2) == ['小盘占优', '均衡', '大盘占优']

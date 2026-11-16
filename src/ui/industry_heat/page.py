@@ -153,6 +153,10 @@ class IndustryHeatPage(QWidget):
         self._host = host
         self.theme = 'dark' if is_dark_palette() else 'light'
         self._pal = palette_for(self.theme)
+        #: 各表默认行序快照，供「取消排序」按原样还原
+        self._row_orders: dict[QTableWidget, list[tuple[str, ...]]] = {}
+        #: 表头点击计数（按列独立）：0 升序、1 降序、2 取消排序
+        self._sort_clicks: dict[QTableWidget, dict[int, int]] = {}
         self._token = 0
         self._busy = False
         self._task_id: str | None = None
@@ -264,8 +268,12 @@ class IndustryHeatPage(QWidget):
         self._enable_header_sorting(table)
         return table
 
-    def _finalize_table(self, table: QTableWidget) -> None:
-        """先定列宽再算行高，并把表体留白与表头统一到同一底色。"""
+    def _finalize_table(self, table: QTableWidget,
+                        remember_order: bool = True) -> None:
+        """先定列宽再算行高并统一底色；填充后顺带缓存默认行序快照。"""
+        if remember_order:
+            self._remember_row_order(table)
+            self._sort_clicks.pop(table, None)
         self._unify_table_surface(table)
         apply_content_widths(table)
         table.resizeRowsToContents()
@@ -290,18 +298,59 @@ class IndustryHeatPage(QWidget):
             lambda column: self._on_header_clicked(table, column))
 
     def _on_header_clicked(self, table: QTableWidget, column: int) -> None:
-        """首次点击升序，再点同列切降序并循环，排序后重跑列宽/行高/底色收尾。"""
+        """同一列三态循环：升序 → 降序 → 取消排序（还原默认行序）。"""
         header = table.horizontalHeader()
-        if header.isSortIndicatorShown() and header.sortIndicatorSection() == column:
-            ascending = header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
-            order = (Qt.SortOrder.DescendingOrder if ascending
-                     else Qt.SortOrder.AscendingOrder)
-        else:
-            order = Qt.SortOrder.AscendingOrder
+        clicks = self._sort_clicks.setdefault(table, {})
+        stage = clicks.get(column, 0) % 3
+        clicks[column] = stage + 1
+        if stage == 2:
+            self._restore_row_order(table)
+            header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
+            header.setSortIndicatorShown(False)
+            self._finalize_table(table, remember_order=False)
+            return
+        self._restore_row_order(table)
+        order = (Qt.SortOrder.AscendingOrder if stage == 0
+                 else Qt.SortOrder.DescendingOrder)
         self._sort_table_rows(table, column, order)
         header.setSortIndicator(column, order)
         header.setSortIndicatorShown(True)
-        self._finalize_table(table)
+        self._finalize_table(table, remember_order=False)
+
+    def _remember_row_order(self, table: QTableWidget) -> None:
+        """缓存默认行序快照，供取消排序时按原样还原。"""
+        self._row_orders[table] = [
+            self._row_signature(table, row) for row in range(table.rowCount())]
+
+    def _row_signature(self, table: QTableWidget, row: int) -> tuple[str, ...]:
+        """一行的文本指纹，用来在重排后重新定位同一行。"""
+        return tuple(
+            table.item(row, index).text() if table.item(row, index) else ''
+            for index in range(table.columnCount()))
+
+    def _restore_row_order(self, table: QTableWidget) -> None:
+        """按默认行序快照还原；快照之后才出现的行保持在后。"""
+        snapshot = self._row_orders.get(table)
+        if not snapshot:
+            return
+        current = [self._row_signature(table, row) for row in range(table.rowCount())]
+        order: list[int] = []
+        used: set[int] = set()
+        for signature in snapshot:
+            for index, row_signature in enumerate(current):
+                if index not in used and row_signature == signature:
+                    used.add(index)
+                    order.append(index)
+                    break
+        order.extend(index for index in range(len(current)) if index not in used)
+        if order == list(range(len(order))):
+            return
+        cells = [[table.takeItem(row, index) for index in range(table.columnCount())]
+                 for row in range(table.rowCount())]
+        for row, source in enumerate(order):
+            for index, cell in enumerate(cells[source]):
+                if cell is not None:
+                    table.setItem(row, index, cell)
 
     def _sort_table_rows(self, table: QTableWidget, column: int,
                          order: Qt.SortOrder) -> None:
