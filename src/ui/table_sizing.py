@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
@@ -61,6 +61,13 @@ def _longest_texts(header_texts: list[str], rows) -> list[str]:
     return longest
 
 
+def _header_metrics(header) -> QFontMetrics:
+    """表头按 QSS 的半粗字重度量：``header.fontMetrics()`` 是常规字重，会偏窄。"""
+    font = header.font()
+    font.setWeight(QFont.Weight.DemiBold)
+    return QFontMetrics(font)
+
+
 def _estimate_widths(header_texts: list[str], content_texts: list[str],
                      header_metrics, cell_metrics) -> list[int]:
     """每列一次字体度量：max(表头宽, 最长内容宽)，不设下限、不做压缩。"""
@@ -83,10 +90,17 @@ def _table_row_texts(table: QTableWidget, row: int) -> list[str]:
 
 
 def measure_natural_widths(table: QTableWidget) -> list[int]:
-    """按每列「最长内容」做一次字体度量，返回单行完整显示所需宽度。"""
+    """按每列「最长内容」做一次字体度量，返回单行完整显示所需宽度。
+
+    先 ``ensurePolished()``：页面 QSS 的 font-size 要到 polish 后才生效，
+    否则会用默认字号度量出偏窄的宽度（短列会被截断）。
+    """
     columns = table.columnCount()
     if columns == 0:
         return []
+    table.ensurePolished()
+    header = table.horizontalHeader()
+    header.ensurePolished()
     header_texts: list[str] = []
     for index in range(columns):
         item = table.horizontalHeaderItem(index)
@@ -95,8 +109,7 @@ def measure_natural_widths(table: QTableWidget) -> list[int]:
         header_texts,
         (_table_row_texts(table, row) for row in range(table.rowCount())))
     return _estimate_widths(header_texts, longest,
-                            table.horizontalHeader().fontMetrics(),
-                            table.fontMetrics())
+                            _header_metrics(header), table.fontMetrics())
 
 
 def apply_content_widths(table: QTableWidget) -> bool:
@@ -132,7 +145,9 @@ def apply_estimated_column_widths(table: QTableWidget, rows,
     columns = table.columnCount()
     if columns == 0:
         return
+    table.ensurePolished()
     header = table.horizontalHeader()
+    header.ensurePolished()
     header.setStretchLastSection(False)
     header_texts: list[str] = []
     for index in range(columns):
@@ -140,7 +155,7 @@ def apply_estimated_column_widths(table: QTableWidget, rows,
         header_texts.append(item.text() if item is not None else '')
     longest = _longest_texts(header_texts, rows)
     widths = _estimate_widths(header_texts, longest,
-                              header.fontMetrics(), table.fontMetrics())
+                              _header_metrics(header), table.fontMetrics())
     for index, width in enumerate(widths):
         table.setColumnWidth(index, min(max_width, width))
         header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)

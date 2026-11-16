@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPalette
+from PySide6.QtGui import QFont, QFontMetrics, QPalette
 from PySide6.QtWidgets import QHeaderView, QTableWidget, QTableWidgetItem
 
 from src.ui.attribution.page import AttributionPage
@@ -23,6 +23,7 @@ from src.ui.portfolio_risk.page import PortfolioRiskPage
 from src.ui.style_rotation.page import StyleRotationPage
 from src.ui.table_interaction_manager import TableInteractionManager
 from src.ui.table_sizing import (
+    CELL_PADDING_H,
     FIXED_ROW_HEIGHT,
     HEADER_PADDING_H,
     MAX_COLUMN_WIDTH,
@@ -444,6 +445,40 @@ def test_estimated_column_widths_respect_long_header(qapp):
 
     header_width = header_metrics.horizontalAdvance('涨跌幅百分比') + HEADER_PADDING_H
     assert table.columnWidth(0) >= header_width - 1, '表头比内容长时列宽按表头计算'
+
+
+def test_content_widths_measured_with_polished_stylesheet_font(qapp):
+    """QSS 字号在 polish 后才生效：填充后立即估宽也必须按最终字号，不能偏窄。"""
+    table = QTableWidget(1, 1)
+    table.setHorizontalHeaderLabels(['数值'])
+    table.setItem(0, 0, QTableWidgetItem('1,234.56'))
+    table.setStyleSheet('QTableWidget { font-size: 20px; }')
+
+    apply_content_widths(table)
+
+    table.resize(400, 200)
+    table.show()
+    qapp.processEvents()
+    needed = table.fontMetrics().horizontalAdvance('1,234.56') + CELL_PADDING_H
+    assert table.columnWidth(0) >= needed, '按 polish 前的默认字号估宽，短列被截断'
+    table.close()
+
+
+def test_header_width_uses_semibold_metrics(qapp):
+    """表头 QSS 是 600 字重：列宽要按半粗度量，不能按常规字重偏窄。"""
+    table = QTableWidget(1, 1)
+    table.setHorizontalHeaderLabels(['涨跌幅百分比'])
+    table.setItem(0, 0, QTableWidgetItem('1'))
+    table.setStyleSheet('QHeaderView::section { font-weight: 600; }')
+
+    apply_content_widths(table)
+
+    header = table.horizontalHeader()
+    bold = QFont(header.font())
+    bold.setWeight(QFont.Weight.DemiBold)
+    needed = QFontMetrics(bold).horizontalAdvance('涨跌幅百分比') + HEADER_PADDING_H
+    assert table.columnWidth(0) >= needed, '表头按常规字重度量为偏窄'
+    table.close()
 
 
 def test_estimated_column_widths_cap_long_text(qapp):
