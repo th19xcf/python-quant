@@ -112,18 +112,20 @@ def test_main_window_constructs_with_empty_market_table(qapp, tmp_path):
 
     window = MainWindow(config, data_manager)
     try:
-        assert window.tab_widget.count() == 9
+        assert window.tab_widget.count() == 10
         assert window.advice_page is not None
         assert window.market_trend_page is not None
         assert window.industry_heat_page is not None
         assert window.style_rotation_page is not None
         assert window.portfolio_risk_page is not None
+        assert window.action_list_page is not None
         assert window.attribution_page is not None
         texts = [
             window.tab_widget.tabText(index)
             for index in range(window.tab_widget.count())
         ]
-        assert texts[-5:] == ['市场趋势', '风格轮动', '行业热度', '仓位与风控', '收益归因']
+        assert texts[-6:] == ['市场趋势', '风格轮动', '行业热度', '仓位与风控', '收益归因',
+                              '模型操作清单']
         assert window.stock_table.columnCount() == 13
         # 示例假数据已移除，启动时行情表应为空
         assert window.stock_table.rowCount() == 0

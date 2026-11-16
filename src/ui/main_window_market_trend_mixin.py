@@ -194,3 +194,37 @@ class MainWindowMarketTrendMixin:
             return
         self._attribution_loaded = True
         self.attribution_page.load_async()
+
+    def create_action_list_tab(self):
+        """创建模型操作清单标签页（由 create_center_area 在收益归因之后追加）。"""
+        layout = QVBoxLayout(self.action_list_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        from src.ui.action_list import ActionListPage
+        self.action_list_page = ActionListPage(host=self)
+
+        self.action_list_scroll_area = QScrollArea()
+        self.action_list_scroll_area.setWidgetResizable(True)
+        self.action_list_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.action_list_scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded)
+        self.action_list_scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded)
+        self.action_list_scroll_area.setWidget(self.action_list_page)
+        layout.addWidget(self.action_list_scroll_area)
+
+        self._action_list_loaded = False
+        self.tab_widget.currentChanged.connect(self._on_action_list_tab_changed)
+
+    def _on_action_list_tab_changed(self, index: int):
+        """首次切到模型操作清单页时才计算，避免拖慢启动。"""
+        if not hasattr(self, 'action_list_tab'):
+            return
+        if not hasattr(self, 'action_list_page'):
+            return
+        if self.tab_widget.widget(index) is not self.action_list_tab:
+            return
+        if getattr(self, '_action_list_loaded', False):
+            return
+        self._action_list_loaded = True
+        self.action_list_page.load_async()

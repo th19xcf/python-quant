@@ -250,6 +250,11 @@ class MainWindowLayoutMixin:
         self.tab_widget.addTab(self.attribution_tab, "收益归因")
         self.create_attribution_tab()
 
+        # 添加模型操作清单标签页（紧随收益归因之后）
+        self.action_list_tab = QWidget()
+        self.tab_widget.addTab(self.action_list_tab, "模型操作清单")
+        self.create_action_list_tab()
+
         parent.addWidget(center_widget)
 
     def create_market_tab(self):
