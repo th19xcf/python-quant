@@ -95,9 +95,9 @@ CRITICAL_FILES: tuple[str, ...] = (
     'reports/advice/state/mid.json',
     'reports/advice/state/short.json',
     # 通达信码表缓存（2026-11-12 补）：`meta/names.json` 的唯一重建来源
-    # （tools/build_names_json.py:3-12）。`.tnf` 无法从网络重下，且
-    # `EXTERNAL_ASSET_KEYS` 指向的 D:/zxzq 在本机不可达，项目内 `external/`
-    # 这一份就是唯一现存副本，必须进不可重建清单。
+    # （tools/build_names_json.py:3-12）。`.tnf` 无法从网络重下，项目内
+    # `external/` 保留 2026-11-07 的静态副本；`EXTERNAL_ASSET_KEYS` 另按本机
+    # 通达信安装目录收录当日码表，两者同键时以安装目录为准。
     'external/tdx_hq_cache/shs.tnf',
     'external/tdx_hq_cache/szs.tnf',
     'external/tdx_hq_cache/bjs.tnf',
@@ -143,22 +143,42 @@ CRITICAL_DIRS: tuple[str, ...] = (
 )
 
 #: 项目外的不可重建源数据：(相对通达信安装目录, 备份目录内相对键)。
-#: ``names.json`` 只能由这三份 .tnf 码表（tools/build_names_json.py）重建，
-#: 此前 D/E/F 三处均无副本，主机层面重建链不完整。用 QUANT_TDX_ROOT 覆盖
-#: 默认安装目录；备份键统一放 external/ 前缀，避免与项目内相对路径混淆。
-_TDX_ROOT = Path(os.environ.get('QUANT_TDX_ROOT', 'D:/zxzq'))
+#: ``names.json`` 只能由这三份 .tnf 码表（tools/build_names_json.py）重建。
+#: 安装目录按 ``QUANT_TDX_ROOT`` → 项目配置 ``data.tdx_data_path``（vipdoc 的
+#: 父目录）解析，不再写死盘符；两者都没有时才回退历史默认值。
+#: 备份键统一放 external/ 前缀，避免与项目内相对路径混淆。
 EXTERNAL_ASSET_KEYS: tuple[tuple[str, str], ...] = (
     ('T0002/hq_cache/shs.tnf', 'external/tdx_hq_cache/shs.tnf'),
     ('T0002/hq_cache/szs.tnf', 'external/tdx_hq_cache/szs.tnf'),
     ('T0002/hq_cache/bjs.tnf', 'external/tdx_hq_cache/bjs.tnf'),
 )
 
+
+def _resolve_tdx_root() -> Path:
+    """通达信安装目录：环境变量优先，其次取配置 ``tdx_data_path`` 的父目录。"""
+    override = os.environ.get('QUANT_TDX_ROOT')
+    if override:
+        return Path(override)
+    try:
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+        from src.utils.config import get_config  # noqa: PLC0415
+
+        raw = str(getattr(get_config().data, 'tdx_data_path', '') or '')
+    except Exception:  # noqa: BLE001 - 配置不可读时退回历史默认，不阻断备份
+        raw = ''
+    if raw:
+        path = Path(raw)
+        return path.parent if path.name.lower() == 'vipdoc' else path
+    return Path('D:/zxzq')
+
 MANIFEST_NAME = 'manifest.json'
 
 
 def external_assets() -> list[tuple[Path, str]]:
     """展开项目外源数据清单，返回 (源绝对路径, 备份键)。"""
-    return [(_TDX_ROOT / source, key) for source, key in EXTERNAL_ASSET_KEYS]
+    root = _resolve_tdx_root()
+    return [(root / source, key) for source, key in EXTERNAL_ASSET_KEYS]
 
 
 def _sha256(path: Path) -> str:

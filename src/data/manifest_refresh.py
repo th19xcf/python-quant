@@ -196,6 +196,17 @@ def _apply(node: dict[str, Any], path: Path, facts: dict[str, Any]) -> list[str]
             if bounds is not None and list(node['date_range']) != bounds:
                 node['date_range'] = bounds
                 changed.append('date_range')
+    if 'min_trade_date' in node or 'max_trade_date' in node:
+        column = node.get('date_column')
+        if not isinstance(column, str) or column not in columns:
+            column = next((name for name in DATE_COLUMNS if name in columns), None)
+        bounds = _date_bounds(path, column) if column is not None else None
+        if bounds is not None:
+            low, high = bounds
+            for key, value in (('min_trade_date', low), ('max_trade_date', high)):
+                if key in node and node[key] != value:
+                    node[key] = value
+                    changed.append(key)
     return changed
 
 
