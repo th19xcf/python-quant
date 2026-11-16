@@ -62,6 +62,10 @@ class ActionListState:
     rows: tuple[ActionRow, ...] = field(default_factory=tuple)
     notes: tuple[str, ...] = field(default_factory=tuple)
     missing: tuple[str, ...] = field(default_factory=tuple)
+    #: 执行状态：pending（执行日未到）/ expired（T+1 开盘已过，不得按可买可卖使用）
+    exec_status: str = 'expired'
+    #: 下一次再平衡的信号日（月末收盘出信号）
+    next_signal: str | None = None
 
     def direction_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}

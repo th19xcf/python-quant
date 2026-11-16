@@ -72,26 +72,38 @@ def latest_trade_day(rows: list[dict[str, str]]) -> str | None:
     return max(days) if days else None
 
 
-def next_rebalance_date(trade_day: date, base: Path) -> str | None:
-    """下一次再平衡执行日：下一个月末交易日的下一交易日。"""
-    year, month = (trade_day.year + 1, 1) if trade_day.month == 12 \
-        else (trade_day.year, trade_day.month + 1)
+def next_rebalance_dates(signal_day: date, base: Path,
+                         ) -> tuple[str | None, str | None]:
+    """下一次再平衡的（信号日, 执行日）。
+
+    月频信号在月末收盘产生，故下一次信号是 signal_day 所在月份之后那个月的
+    月末交易日；执行日是它的下一交易日（沿用 T 日收盘信号 → T+1 开盘执行）。
+    """
+    year, month = (signal_day.year + 1, 1) if signal_day.month == 12 \
+        else (signal_day.year, signal_day.month + 1)
     last = calendar.monthrange(year, month)[1]
     month_days = trading_dates(date(year, month, 1), date(year, month, last), root=base)
     anchor = month_days[-1] if month_days else date(year, month, last)
     nxt = next_trading_day(anchor, root=base)
-    return nxt.isoformat() if nxt else None
+    return anchor.isoformat(), (nxt.isoformat() if nxt else None)
 
 
-def _condition(direction: str, exec_day: str, next_reb: str | None) -> str:
-    rebalance = next_reb or '下一个月末'
+def _condition(direction: str, exec_day: str, next_signal: str | None,
+               next_rebalance: str | None, expired: bool) -> str:
+    """触发/失效条件：执行窗口已过时明确标注不可追单，只保留下一次再平衡时点。"""
+    next_window = (f'{next_signal} 收盘信号 → {next_rebalance} 开盘'
+                   if next_signal and next_rebalance else '下一次月末再平衡')
+    if expired:
+        if direction == '持有':
+            return f'已持有；下一次 {next_window} 再平衡重核'
+        return f'已于 {exec_day} 开盘执行，执行窗口已过，当前不追单；下一次 {next_window} 重核'
     if direction in ('买入', '加仓'):
-        return (f'{exec_day} 开盘执行；涨停或停牌则顺延；趋势降档或 {rebalance} 再平衡时重核')
+        return (f'{exec_day} 开盘执行；涨停或停牌则顺延；趋势降档或 {next_window} 重核')
     if direction == '减持':
         return f'{exec_day} 开盘执行；跌停或停牌则顺延；趋势升档则暂停减持'
     if direction == '清仓':
         return f'{exec_day} 开盘执行；跌停或停牌则顺延至下一可成交日'
-    return f'持有至 {rebalance} 再平衡或信号翻档'
+    return f'持有至 {next_window} 再平衡或信号翻档'
 
 
 def build_action_list(root: Path | str | None = None,
@@ -115,9 +127,14 @@ def build_action_list(root: Path | str | None = None,
     scale = cap / ledger_capital if ledger_capital > 0 else 1.0
     signal_day = str(day_rows[0].get('信号日') or '') if day_rows else ''
     trade_date = date.fromisoformat(trade_day)
-    exec_day = next_trading_day(trade_date, root=base)
+    signal_date = date.fromisoformat(signal_day) if signal_day else trade_date
+    exec_day = next_trading_day(signal_date, root=base)
     exec_text = exec_day.isoformat() if exec_day else '下一交易日'
-    next_reb = next_rebalance_date(trade_date, base)
+    next_signal, next_reb = next_rebalance_dates(signal_date, base)
+    # 台账是「上一月末信号」在交易日之前已开盘执行后的目标持仓：执行窗口已过，
+    # 与 advice 侧 resolve_exec_status 的 expired 口径一致（T+1 开盘已过不得按可买使用）
+    expired = exec_day is not None and exec_day <= trade_date
+    exec_status = 'expired' if expired else 'pending'
 
     trend = evaluate_market_trend(load_trend_panel(base), asof=trade_date)
     style = evaluate_style_rotation(load_style_panel(base), asof=trade_date)
@@ -151,7 +168,7 @@ def build_action_list(root: Path | str | None = None,
             price=price,
             target_weight=_to_float(row.get('目标权重')),
             exec_date=exec_text,
-            condition=_condition(direction, exec_text, next_reb),
+            condition=_condition(direction, exec_text, next_signal, next_reb, expired),
             rationale=rationale,
         ))
 
@@ -159,12 +176,15 @@ def build_action_list(root: Path | str | None = None,
         BOUNDARY_NOTE,
         EXECUTION_NOTE,
         f'资金规模 {cap:.0f} 元，按台账基准 {ledger_capital:.0f} 元等比缩放后取整手。',
-        f'信号日 {signal_day}，交易日 {trade_day}，执行时点 {exec_text}。',
+        f'信号日 {signal_day} 收盘 → 执行日 {exec_text} 开盘（执行状态 {exec_status}）；'
+        f'台账交易日 {trade_day}，当天参考价用其收盘价。',
+        f'下一次再平衡：{next_signal} 收盘信号 → {next_reb} 开盘。',
     )
     return ActionListState(
         trade_day=trade_day, signal_day=signal_day, exec_date=exec_text,
         next_rebalance=next_reb, capital=cap, trend_label=trend.label,
         style_direction=style.direction, rows=tuple(actions), notes=notes,
+        exec_status=exec_status, next_signal=next_signal,
     )
 
 
@@ -173,7 +193,9 @@ def format_state(state: ActionListState, top: int = 5) -> str:
     counts = state.direction_counts()
     lines = [
         f'交易日 {state.trade_day or "—"} 信号日 {state.signal_day or "—"} '
-        f'执行 {state.exec_date or "—"} 资金 {state.capital:.0f}',
+        f'执行 {state.exec_date or "—"}（{state.exec_status}）资金 {state.capital:.0f}',
+        f'下一次再平衡 信号日 {state.next_signal or "—"} → 执行日 '
+        f'{state.next_rebalance or "—"}',
         f'标的数 {len(state.rows)} 方向分布 {counts}',
         f'趋势 {state.trend_label or "—"} 风格 {state.style_direction or "—"}',
     ]

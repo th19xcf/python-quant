@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from src.quant.analysis.action_list_local import next_rebalance_date
+from src.quant.analysis.action_list_local import next_rebalance_dates
 from src.quant.analysis.action_list_state import (
     ActionListState,
     ActionRow,
@@ -40,12 +40,35 @@ def test_direction_counts() -> None:
     assert state.direction_counts() == {'买入': 2, '清仓': 1}
 
 
-def test_next_rebalance_date_after_trade_day() -> None:
+def test_next_rebalance_dates_follow_signal_month() -> None:
+    """再平衡时点按信号日所在月份推导，执行日是其次一交易日。"""
     from src.quant.analysis.action_list_local import _default_root
 
-    nxt = next_rebalance_date(date(2026, 11, 13), _default_root())
-    assert nxt is not None
-    assert nxt > '2026-11-13'
+    signal, exec_day = next_rebalance_dates(date(2026, 10, 30), _default_root())
+    assert signal == '2026-11-30'
+    assert exec_day == '2026-12-01'
+
+
+def test_change_types_come_from_previous_ledger_day() -> None:
+    """方向判定在 tools/target_holdings.py：有前一日台账时产出加仓/减仓/清仓/不变。"""
+    from tools.target_holdings import classify, previous_targets
+
+    assert classify(0.2, 0.1) == '加仓'
+    assert classify(0.1, 0.2) == '减仓'
+    assert classify(0.0, 0.1) == '清仓'
+    assert classify(0.1, 0.0) == '新建'
+    assert classify(0.1, 0.1) == '不变'
+
+    ledger = [
+        {'交易日': '2026-11-02', '代码': '000001.SZ', '目标权重': '0.1000000000',
+         '目标金额': '100000.00', '名称': 'A'},
+        {'交易日': '2026-11-13', '代码': '000001.SZ', '目标权重': '0.2000000000',
+         '目标金额': '200000.00', '名称': 'A'},
+    ]
+    prev_day, prev = previous_targets(ledger, '2026-11-13')
+    assert prev_day == '2026-11-02'
+    assert prev['000001.SZ'][0] == 0.1
+    assert classify(0.2, prev['000001.SZ'][0]) == '加仓'
 
 
 def _sample_state() -> ActionListState:

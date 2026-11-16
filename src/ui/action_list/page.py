@@ -80,7 +80,9 @@ def _fetch_state(token: int, capital: float = 1e9, task_id: str | None = None,
     result = analysis_cache.cached(
         'action_list', 'state', asof=None, dv=dv,
         fingerprint={'ledger': analysis_cache.file_stamp(LEDGER_PATH),
-                     'capital': round(float(capital), 2)},
+                     'capital': round(float(capital), 2),
+                     # 口径版本：执行日改为按信号日推导后必须让旧缓存失效
+                     'logic': 'action_list/v2'},
         compute=compute, refresh=refresh,
     )
     return {'token': token, 'state': result.value, 'cache': result.meta}
@@ -232,8 +234,8 @@ class ActionListPage(QWidget):
         layout.addWidget(self.dist_label)
         layout.addWidget(self.regime_label)
         hint = QLabel(
-            '执行口径：T 日收盘信号 → T+1 开盘成交，涨停/跌停不可成交、停牌阻断；'
-            '方向按台账变动类型映射，股数按给定资金折算整手。')
+            '执行口径：信号日 T 收盘 → T+1 开盘成交（执行日由信号日推导，不用台账交易日）；'
+            '涨停/跌停不可成交、停牌阻断；方向按台账变动类型映射，股数按给定资金折算整手。')
         hint.setObjectName('actionSubtitle')
         hint.setWordWrap(True)
         hint.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -330,14 +332,18 @@ class ActionListPage(QWidget):
         self._sort_col = None
         self._sort_stage = 0
         self.status_label.setText(f'计算完成（{state.trade_day or "—"}）')
+        exec_state = '已过执行窗口' if state.exec_status == 'expired' else '待执行'
         self.period_label.setText(
             f'交易日 {state.trade_day or "—"} ｜ 信号日 {state.signal_day or "—"} ｜ '
-            f'执行时点 {state.exec_date or "—"} ｜ 资金 {state.capital / 1e8:.2f} 亿')
+            f'执行时点 {state.exec_date or "—"}（{exec_state}） ｜ '
+            f'资金 {state.capital / 1e8:.2f} 亿')
         counts = state.direction_counts()
         dist = ' ｜ '.join(f'{key} {value}' for key, value in counts.items())
         self.dist_label.setText(f'标的数 {len(state.rows)} ｜ 方向分布 {dist or "—"}')
         self.regime_label.setText(
-            f'趋势 {state.trend_label or "—"} ｜ 风格 {state.style_direction or "—"}')
+            f'趋势 {state.trend_label or "—"} ｜ 风格 {state.style_direction or "—"} ｜ '
+            f'下一次再平衡 {state.next_signal or "—"} 收盘 → '
+            f'{state.next_rebalance or "—"} 开盘')
         self.notes_label.setText('　'.join(state.notes))
         self._apply_state()
 
