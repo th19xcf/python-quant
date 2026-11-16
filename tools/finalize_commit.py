@@ -17,7 +17,8 @@
    **另起进程**（不带 ``GIT_INDEX_FILE``）执行 ``git read-tree HEAD`` 回填共享索引；
 4. 备份同步：经 :func:`tools.backup_root.resolve_backup_root` 解析备份仓，
    ``copy2`` 变更文件、对位删除源端已删文件，逐文件 SHA256 校验，并核对
-   「改动清单条数 == 已处理条数」；
+   「改动清单条数 == 已处理条数」；入库范围 = 本次提交清单 ∪ 备份仓自身
+   ``git status`` 里且在源仓存在的文件，此前只复制未入库的漏带不会永久挂 ``M``；
 5. 自证：``git diff-tree --no-commit-id --name-status -r HEAD`` 与预期清单逐条比对，
    多出或少掉即非零退出；
 6. 输出：正常十行以内。
@@ -361,6 +362,28 @@ def sync_backup(backup_root: Path, changes: list[Change]) -> tuple[int, int, int
     return processed, copied, deleted
 
 
+def backup_dirty_changes(backup_root: Path, *, source_root: Path = ROOT) -> list[Change]:
+    """备份仓自身工作区里、且在源仓有更新内容的路径，用于追平「只复制未入库」的漏带。
+
+    判定只认「源仓存在同名文件」且「备份侧缺失或 SHA256 与源不同」：备份仓独有的
+    历史文件、源仓已删文件一律不纳入；删除仍只由本次提交清单里的 ``D`` 驱动。
+    """
+    items = _nul_items(
+        _git(['status', '--porcelain=v1', '-z', '--no-renames'], cwd=backup_root).stdout
+    )
+    changes: list[Change] = []
+    for item in items:
+        path = item[3:]
+        source = source_root / path
+        target = backup_root / path
+        if not source.is_file():
+            continue
+        if target.is_file() and _sha256(source) == _sha256(target):
+            continue
+        changes.append(Change('M', path))
+    return sorted(changes, key=lambda change: change.path)
+
+
 def _port_open(host: str, port: int) -> bool:
     try:
         with socket.create_connection((host, port), timeout=1.0):
@@ -407,7 +430,7 @@ def commit_backup(
     today = date.today()
     message = (
         f'chore(backup): {today.year}-{today.month}-{today.day}，'
-        f'同步 {len(paths)} 个文件（{source_head[:7]}）'
+        f'同步 {len(pending)} 个文件（{source_head[:7]}）'
     )
     with tempfile.TemporaryDirectory(prefix='finalize-backup-msg-') as tmp:
         message_path = Path(tmp) / 'COMMIT_MSG'
@@ -457,9 +480,19 @@ def main(argv: list[str] | None = None) -> int:
         short = _git(['rev-parse', '--short', 'HEAD']).stdout.strip()
         print(f'提交 {short}｜{len(actual)} 个文件')
         print(f'自证：diff-tree {len(actual)} 项 == 预期 {len(expected)} 项（一致）')
-        processed, copied, deleted = sync_backup(backup_root, actual)
-        print(f'备份同步：{processed}/{len(actual)}（复制 {copied}，对位删除 {deleted}）')
-        backup_short, push_state = commit_backup(backup_root, actual, head)
+        committed = {change.path for change in actual}
+        sweep = [
+            change
+            for change in backup_dirty_changes(backup_root)
+            if change.path not in committed
+        ]
+        merged = sorted([*actual, *sweep], key=lambda change: change.path)
+        processed, copied, deleted = sync_backup(backup_root, merged)
+        print(f'备份同步：{processed}/{len(merged)}（复制 {copied}，对位删除 {deleted}）')
+        if sweep:
+            paths = _format_paths([change.path for change in sweep])
+            print(f'备份仓追平历史漏带 {len(sweep)} 项：{paths}')
+        backup_short, push_state = commit_backup(backup_root, merged, head)
         print(f'备份仓 {backup_short}｜{push_state}')
         print(f'工作区未纳入：{len(changes) - len(chosen)} 项（保持原样）')
         return 0
