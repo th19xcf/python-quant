@@ -7,25 +7,29 @@
      1. 证券码表        tools/build_names_json.py → tools/build_name_history.py → tools/build_stock_basic.py
      2. 行业快照        python -m src.data.industry refresh
      3. 行情采集入库    src.data.tencent.daily_fill.fill_daily_gap(workers=1) + LocalQuoteStore.flush_meta()
-     4. 本地行情构建    python -m src.data.local_store build build（增量 + 换手派生 + 异常清单）
-     5. ST 快照与区间表  src.data.risk_flags refresh + src.data.st_history build
-     6. 名录每日检查    src.main --update-fund / --update-index（有变更才落盘）
-     7. 估值增量        tools/collect_financials.py --only valuation --since auto
-     8. 市场宽度增量    src.data.services.breadth_service.refresh
-     9. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
-    10. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
-    11. 洁净集快照      python -m src.data.quality.clean_set build
-    12. 保鲜体检        src.data.quality.freshness_check --summary
-    13. 版本记录        src.data.data_version（失败只告警，不改数据）
-    14. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
-    15. 门禁            tools/daily_data_gate.py（必须在备份之后）
+     4. 本地行情构建    python -m src.data.local_store build（增量 + 换手派生 + 异常清单）
+                       收尾断言：meta/daily_index 末日 == 交易日历最近已完成交易日，不等即判失败
+     5. 基金行情刷新    python -m src.data.local_store build --data-type fund（增量，末日已最新则跳过）
+     6. 复权因子刷新    factor_rebuild / fund_factors 仅重算「行情末日 > 因子末日」的标的（已最新则跳过）
+     7. ST 快照与区间表  src.data.risk_flags refresh + src.data.st_history build
+     8. 名录每日检查    src.main --update-fund / --update-index（有变更才落盘）
+     9. 估值增量        tools/collect_financials.py --only valuation --since auto
+    10. 市场宽度增量    src.data.services.breadth_service.refresh
+    11. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
+    12. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
+    13. 洁净集快照      python -m src.data.quality.clean_set build
+    14. 保鲜体检        src.data.quality.freshness_check --summary
+    15. 版本记录        src.data.data_version（失败只告警，不改数据）
+    16. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
+    17. 门禁            tools/daily_data_gate.py（必须在备份之后）
 
 口径与边界::
 
     - 每步独立记录成败，某步失败只记录并继续后续步骤；最后一行汇总给出
       「N 步 ok / 失败 M（致命 K）」与总耗时，失败步逐条列出明细。
-    - 致命步（行情采集、本地构建、回写校验、备份、门禁）任一失败，退出码为 1；
-      其余步骤失败只记录，不影响退出码。备份/门禁的先后顺序是硬约束。
+    - 致命步（行情采集、本地构建、基金行情刷新、复权因子刷新、回写校验、
+      备份、门禁）任一失败，退出码为 1；其余步骤失败只记录，不影响退出码。
+      备份/门禁的先后顺序是硬约束，新增步骤只能插在它们之前。
     - 采集固定 ``workers=1``（单连接串行），限流参数沿用 TencentClient 默认
       ``min_interval=0.05`` / ``max_retries=3``，本入口不暴露也不修改。
     - 补数先按代码清单把缺口落到 ``_staging/<批次>/``（``gaps.parquet`` +
@@ -64,6 +68,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
+from datetime import time as dtime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
@@ -75,12 +80,15 @@ import polars as pl  # noqa: E402
 from loguru import logger  # noqa: E402
 
 from src.data.local_store.paths import default_store_root  # noqa: E402
-from src.data.local_store.store import LocalQuoteStore  # noqa: E402
+from src.data.local_store.store import LocalFactorStore, LocalQuoteStore  # noqa: E402
 from src.data.manifest_refresh import file_facts, refresh_manifest_files  # noqa: E402
 
 DATA_SUFFIXES = ('.parquet', '.csv', '.tsv', '.txt')
 STAT_KEYS = ('rows', 'bytes', 'sha256')
 STORE_PREFIX = 'data/local_store'
+#: 日线收盘判定口径（与 ``src.data.tencent.daily_fill`` 一致）：15:05 前当日 K
+#: 线未完成，最近「已完成」交易日取前一交易日。
+CLOSE_CUTOFF = dtime(15, 5)
 #: 末根距目标交易日超过该天数视为长期停更/退市，不进待补清单（与 fill_daily_gap 默认同口径）。
 DEFAULT_MAX_GAP_DAYS = 90
 #: 采集写盘后由两条既有链路产出的非行情件（构建收尾 / 派生 / 台账）。
@@ -112,6 +120,15 @@ AUX_ST_OUTPUTS = (
 AUX_VALUATION_OUTPUTS = (
     'meta/financials/valuation_daily.parquet',
     'meta/financials/parts/progress.json',
+)
+#: 复权因子刷新会写的件（个股 + 基金快照、sidecar 与目录级 manifest；
+#: 分块按 ``factors/rebuild/`` 前缀计入）。行情副本由同一步一并重写。
+AUX_FACTOR_OUTPUTS = (
+    'factors/stock_adj_factor.parquet',
+    'factors/fund_adj_factor.parquet',
+    'factors/fund_covered_codes.txt',
+    'factors/fund_meta.json',
+    'factors/rebuild/manifest.json',
 )
 #: 证券码表日更会写的件（通达信当日码表 → 名称历史 → 名录）。
 AUX_CODE_TABLE_OUTPUTS = (
@@ -155,7 +172,9 @@ STEP_PLAN: tuple[tuple[str, str, bool], ...] = (
     ('code_table', '证券码表（names.json / name_history / stock_basic）', False),
     ('industry', '行业快照', False),
     ('fill', '行情采集入库', True),
-    ('build', '本地行情构建', True),
+    ('build', '本地行情构建 + 末日断言', True),
+    ('fund_quote', '基金行情刷新（通达信本地增量）', True),
+    ('factor', '复权因子刷新（个股 + 基金）', True),
     ('st', 'ST 快照与区间表', False),
     ('basic', '名录每日检查（fund / index）', False),
     ('valuation', '全市场估值增量', False),
@@ -199,6 +218,107 @@ def _coverage(root: Path) -> dict[tuple[str, str], dict[str, Any]]:
         return {}
     frame = pl.read_parquet(path, columns=['ts_code', 'data_type', 'rows', 'start', 'end'])
     return {(row['data_type'], row['ts_code']): row for row in frame.to_dicts()}
+
+
+def _to_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return None
+
+
+def _daily_index_end(root: Path, kinds: Sequence[str] | None = None) -> date | None:
+    """``meta/daily_index.parquet`` 的末日（可按 data_type 过滤）；只读。"""
+    path = root / 'meta' / 'daily_index.parquet'
+    if not path.is_file():
+        return None
+    try:
+        frame = pl.read_parquet(path, columns=['data_type', 'end'])
+    except (OSError, pl.exceptions.PolarsError):
+        return None
+    if kinds is not None:
+        frame = frame.filter(pl.col('data_type').is_in(list(kinds)))
+    if frame.is_empty():
+        return None
+    return _to_date(frame['end'].max())
+
+
+def _check_daily_index_end(root: Path, expected: date) -> tuple[bool, str]:
+    """断言行情末日 == 最近交易日；返回 (是否通过, 说明)。
+
+    只读 ``meta/daily_index.parquet``，不做任何写入，负向用例可直接构造
+    一份末日不符的 daily_index 证明它会红。
+    """
+    actual = _daily_index_end(root)
+    if actual is None:
+        return False, 'meta/daily_index.parquet 缺失或无 end'
+    if actual != expected:
+        return False, f'daily_index 末日 {actual} != 最近交易日 {expected}'
+    return True, f'daily_index 末日 {actual} = 最近交易日 {expected}'
+
+
+def _recent_completed_trade_day(root: Path, now: datetime | None = None) -> date:
+    """交易日历里最近一个「已完成」交易日（15:05 前当日 K 线未完成，取前一交易日）。"""
+    from src.data.trading_calendar import get_calendar  # noqa: PLC0415
+
+    moment = now or datetime.now()
+    calendar = get_calendar(root, as_of=moment.date())
+    day = moment.date()
+    if calendar.is_trading_day(day) and moment.time() < CLOSE_CUTOFF:
+        previous = calendar.previous(day, inclusive=False)
+    else:
+        previous = calendar.previous(day, inclusive=True)
+    if previous is None:
+        raise RuntimeError(f'交易日历在 {day} 之前没有可用交易日')
+    return previous
+
+
+def _quote_end_by_code(root: Path, kind: str) -> dict[str, date]:
+    ends: dict[str, date] = {}
+    for (data_type, code), row in _coverage(root).items():
+        if data_type != kind:
+            continue
+        value = _to_date(row.get('end'))
+        if value is not None:
+            ends[code] = value
+    return ends
+
+
+def _factor_end_by_code(path: Path) -> dict[str, date]:
+    if not path.is_file():
+        return {}
+    try:
+        frame = (pl.scan_parquet(str(path)).select('ts_code', 'trade_date')
+                 .group_by('ts_code').agg(pl.col('trade_date').max()).collect())
+    except (OSError, pl.exceptions.PolarsError):
+        return {}
+    ends: dict[str, date] = {}
+    for row in frame.iter_rows(named=True):
+        value = _to_date(row['trade_date'])
+        if value is not None:
+            ends[str(row['ts_code'])] = value
+    return ends
+
+
+def _stale_factor_codes(root: Path, kind: str) -> list[str]:
+    """因子末日落后于该标的行情末日的代码（= 本次需增量重算的集合）。"""
+    quote_ends = _quote_end_by_code(root, kind)
+    if not quote_ends:
+        return []
+    name = 'stock_adj_factor.parquet' if kind == 'stock' else 'fund_adj_factor.parquet'
+    factor_ends = _factor_end_by_code(root / 'factors' / name)
+    return sorted(code for code, quote_end in quote_ends.items()
+                  if factor_ends.get(code) is None or factor_ends[code] < quote_end)
+
+
+def _register_quote_paths(plan: _Plan, kind: str, codes: Iterable[str]) -> None:
+    """把本步会重写的行情件登记进 manifest 校验白名单。"""
+    for code in codes:
+        rel = plan.store.quote_path(kind, code).relative_to(plan.root).as_posix()
+        plan.expected.add(rel)
+        plan.expected.add(Path(rel).with_suffix('.manifest.json').as_posix())
+        plan.plan_quote.add(rel)
 
 
 def _load_codes(args: argparse.Namespace) -> set[str] | None:
@@ -869,6 +989,7 @@ class _Plan:
     root: Path
     config: Any
     store: LocalQuoteStore
+    factor_store: LocalFactorStore
     data_types: list[str]
     codes: set[str] | None
     latest: date
@@ -893,6 +1014,7 @@ def _build_plan(args: argparse.Namespace) -> _Plan:
 
     config = Config()
     store = LocalQuoteStore(root)
+    factor_store = LocalFactorStore(root, enabled=True)
     marker_ts = datetime.now().timestamp()
 
     coverage = _coverage(root)
@@ -936,8 +1058,9 @@ def _build_plan(args: argparse.Namespace) -> _Plan:
                 expected.add(Path(rel).with_suffix('.manifest.json').as_posix())
                 plan_quote.add(rel)
 
-    return _Plan(root=root, config=config, store=store, data_types=data_types,
-                 codes=codes, latest=latest, coverage=coverage, gaps=gaps,
+    return _Plan(root=root, config=config, store=store, factor_store=factor_store,
+                 data_types=data_types, codes=codes, latest=latest,
+                 coverage=coverage, gaps=gaps,
                  skipped=skipped, inputs=inputs, expected=expected,
                  plan_quote=plan_quote,
                  range_label=f'{(args.start or "全部")}~{latest}', marker_ts=marker_ts)
@@ -1009,7 +1132,82 @@ def _step_fill(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
 
 def _step_build(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     code = _run_build(since=args.start, end=plan.latest, codes=plan.codes)
-    return code == 0, f'rc={code}'
+    if code != 0:
+        return False, f'rc={code}'
+    expected = _recent_completed_trade_day(plan.root)
+    if args.end is not None and args.end < expected:
+        return True, (f'rc=0 | 回补模式（--end {args.end} 早于最近交易日 {expected}），'
+                      '跳过末日断言')
+    ok, note = _check_daily_index_end(plan.root, expected)
+    return ok, f'rc=0 | {note}'
+
+
+def _step_fund_quotes(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    """基金行情刷新：通达信本地 lday 增量；末日已到目标则跳过不重算（致命步）。"""
+    if args.skip_fund_refresh:
+        return True, '已跳过（--skip-fund-refresh）'
+    target = plan.latest
+    before = _daily_index_end(plan.root, kinds=('fund',))
+    if before is not None and before >= target:
+        return True, f'末日 {before} 已到 {target}，跳过不重算'
+    if before is None:
+        return False, '基金行情在 meta/daily_index 中缺失（无 fund 覆盖）'
+    behind = sorted(code for code, end in _quote_end_by_code(plan.root, 'fund').items()
+                    if end < target)
+    _register_quote_paths(plan, 'fund', behind)
+    code = _run_module([
+        sys.executable, '-m', 'src.data.local_store', 'build',
+        '--data-type', 'fund', '--incremental', '--max-date', target.isoformat(),
+        '--skip-derive-turnover', '--skip-anomaly-lists', '--skip-factor-verify',
+    ], '基金行情刷新')
+    after = _daily_index_end(plan.root, kinds=('fund',))
+    ok = code == 0 and after is not None and after >= target
+    return ok, f'末日 {before}→{after or "-"} | 落后 {len(behind)} 只 | rc={code}'
+
+
+def _read_optional_frame(path: Path) -> pl.DataFrame:
+    if not path.is_file():
+        return pl.DataFrame()
+    try:
+        return pl.read_parquet(path)
+    except (OSError, pl.exceptions.PolarsError):
+        return pl.DataFrame()
+
+
+def _step_factors(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    """复权因子刷新：只重算「行情末日 > 因子末日」的标的；已最新则跳过（致命步）。"""
+    if args.skip_factor_refresh:
+        return True, '已跳过（--skip-factor-refresh）'
+    stock_codes = _stale_factor_codes(plan.root, 'stock')
+    fund_codes = _stale_factor_codes(plan.root, 'fund')
+    if not stock_codes and not fund_codes:
+        return True, f'个股/基金因子末日均对齐行情（{_daily_index_end(plan.root)}），跳过不重算'
+    _register_quote_paths(plan, 'stock', stock_codes)
+    _register_quote_paths(plan, 'fund', fund_codes)
+    plan.expected.update(AUX_FACTOR_OUTPUTS)
+    notes: list[str] = []
+    if stock_codes:
+        from src.data.local_store.factor_rebuild import (  # noqa: PLC0415
+            rebuild_factors_from_local,
+        )
+
+        stats = rebuild_factors_from_local(
+            plan.store, plan.factor_store, codes=stock_codes, include_existing=True)
+        notes.append(f'个股 {len(stock_codes)} 只 → 新 {int(stats.get("codes_added") or 0)} 只'
+                     f' / {int(stats.get("rows_added") or 0):,} 行')
+    if fund_codes:
+        from src.data.local_store.fund_factors import rebuild_fund_factors  # noqa: PLC0415
+
+        dividends = _read_optional_frame(plan.root / 'factors' / 'fund_dividend.parquet')
+        splits = _read_optional_frame(plan.root / 'factors' / 'fund_share_change.parquet')
+        stats = rebuild_fund_factors(plan.root, dividends, splits, codes=fund_codes)
+        notes.append(f'基金 {len(fund_codes)} 只 / {int(stats.get("factor_rows") or 0):,} 行')
+    remaining_stock = _stale_factor_codes(plan.root, 'stock')
+    remaining_fund = _stale_factor_codes(plan.root, 'fund')
+    if remaining_stock or remaining_fund:
+        notes.append(f'仍落后 个股 {len(remaining_stock)} 只 / 基金 {len(remaining_fund)} 只')
+        return False, ' | '.join(notes)
+    return True, ' | '.join(notes)
 
 
 def _step_pool(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
@@ -1065,25 +1263,27 @@ def _step_list(plan: _Plan, args: argparse.Namespace,
                state: dict[str, Any]) -> list[tuple[str, str, bool,
                                                     Callable[[], tuple[bool, str]]]]:
     """按 STEP_PLAN 组装可执行步骤（顺序与 dry-run 展示一致）。"""
-    return [
-        ('code_table', STEP_PLAN[0][1], False, lambda: _step_code_table(plan, args)),
-        ('industry', STEP_PLAN[1][1], False, lambda: _step_industry(plan)),
-        ('fill', STEP_PLAN[2][1], True, lambda: _step_fill(plan, args)),
-        ('build', STEP_PLAN[3][1], True, lambda: _step_build(plan, args)),
-        ('st', STEP_PLAN[4][1], False, lambda: _step_st(plan, args)),
-        ('basic', STEP_PLAN[5][1], False, lambda: _step_basic(plan, args)),
-        ('valuation', STEP_PLAN[6][1], False, lambda: _run_valuation(plan, args)),
-        ('breadth', STEP_PLAN[7][1], False, lambda: _run_breadth(plan)),
-        ('pool', STEP_PLAN[8][1], False, lambda: _step_pool(plan, args)),
-        ('manifest', STEP_PLAN[9][1], True,
-         lambda: _step_manifest(plan, args, state)),
-        ('clean_set', STEP_PLAN[10][1], False, lambda: _step_clean_set(plan)),
-        ('freshness', STEP_PLAN[11][1], False, lambda: _run_freshness(plan.root)),
-        ('version', STEP_PLAN[12][1], False,
-         lambda: _run_version(plan.root, state.get('changed') or {})),
-        ('backup', STEP_PLAN[13][1], True, _step_backup),
-        ('gate', STEP_PLAN[14][1], True, lambda: _step_gate(plan)),
-    ]
+    runners: dict[str, Callable[[], tuple[bool, str]]] = {
+        'code_table': lambda: _step_code_table(plan, args),
+        'industry': lambda: _step_industry(plan),
+        'fill': lambda: _step_fill(plan, args),
+        'build': lambda: _step_build(plan, args),
+        'fund_quote': lambda: _step_fund_quotes(plan, args),
+        'factor': lambda: _step_factors(plan, args),
+        'st': lambda: _step_st(plan, args),
+        'basic': lambda: _step_basic(plan, args),
+        'valuation': lambda: _run_valuation(plan, args),
+        'breadth': lambda: _run_breadth(plan),
+        'pool': lambda: _step_pool(plan, args),
+        'manifest': lambda: _step_manifest(plan, args, state),
+        'clean_set': lambda: _step_clean_set(plan),
+        'freshness': lambda: _run_freshness(plan.root),
+        'version': lambda: _run_version(plan.root, state.get('changed') or {}),
+        'backup': _step_backup,
+        'gate': lambda: _step_gate(plan),
+    }
+    return [(key, name, critical, runners[key])
+            for key, name, critical in STEP_PLAN]
 
 
 def _summary_line(plan: _Plan, outcomes: Sequence[_StepOutcome],
@@ -1111,6 +1311,25 @@ def _print_run_summary(plan: _Plan, outcomes: Sequence[_StepOutcome],
 def _skip_note(key: str, plan: _Plan, args: argparse.Namespace) -> str:
     if key == 'fill' and not args.allow_remote:
         return '  ← 本轮跳过（未加 --allow-remote）'
+    if key == 'fund_quote':
+        if args.skip_fund_refresh:
+            return '  ← 本轮跳过（--skip-fund-refresh）'
+        end = _daily_index_end(plan.root, kinds=('fund',))
+        if end is None:
+            return '  ← 无 fund 覆盖，执行时会判失败'
+        if end >= plan.latest:
+            return f'  ← 末日 {end} 已最新，跳过'
+        behind = sum(1 for value in _quote_end_by_code(plan.root, 'fund').values()
+                     if value < plan.latest)
+        return f'  ← 末日 {end} → {plan.latest}，落后 {behind} 只'
+    if key == 'factor':
+        if args.skip_factor_refresh:
+            return '  ← 本轮跳过（--skip-factor-refresh）'
+        stock_stale = len(_stale_factor_codes(plan.root, 'stock'))
+        fund_stale = len(_stale_factor_codes(plan.root, 'fund'))
+        if stock_stale + fund_stale == 0:
+            return '  ← 因子末日均已对齐行情，跳过'
+        return f'  ← 个股 {stock_stale} 只 / 基金 {fund_stale} 只待增量重算'
     if key == 'valuation' and (args.skip_valuation or not args.allow_remote):
         return '  ← 本轮跳过'
     if key == 'st' and args.skip_st_refresh:
@@ -1131,8 +1350,9 @@ def _print_dry_plan(plan: _Plan, args: argparse.Namespace) -> None:
     for index, (key, name, critical) in enumerate(STEP_PLAN, 1):
         mark = '（致命）' if critical else ''
         print(f'  {index:>2}. {name}{mark}{_skip_note(key, plan, args)}')
-    print('  顺序约束：备份（第 14 步）在所有写 data/ 的步骤之后，'
-          '门禁（第 15 步）在备份之后；任一步失败只记录并继续，致命步失败返回 1。')
+    print(f'  顺序约束：备份（第 {len(STEP_PLAN) - 1} 步）在所有写 data/ 的步骤之后，'
+          f'门禁（第 {len(STEP_PLAN)} 步）在备份之后；任一步失败只记录并继续，'
+          '致命步失败返回 1。')
 
 
 def _run_apply(plan: _Plan, args: argparse.Namespace) -> int:
@@ -1185,6 +1405,10 @@ def main(argv: list[str] | None = None) -> int:
                         help='目标持仓清单的资金规模（元，仅 --target-holdings 生效）')
     parser.add_argument('--skip-st-refresh', action='store_true',
                         help='跳过 ST 区间表日更（risk_flags refresh + st_history build）')
+    parser.add_argument('--skip-fund-refresh', action='store_true',
+                        help='跳过基金行情刷新（通达信本地增量）')
+    parser.add_argument('--skip-factor-refresh', action='store_true',
+                        help='跳过复权因子刷新（个股 + 基金增量重算）')
     parser.add_argument('--skip-valuation', action='store_true',
                         help='跳过全市场日频估值增量（collect_financials.py --only valuation）')
     parser.add_argument('--skip-basic-refresh', action='store_true',
