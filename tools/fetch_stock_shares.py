@@ -44,6 +44,13 @@ from src.data.local_store.store import (  # noqa: E402
     resolve_store_root,
 )
 from src.data.sources import baostock_schema  # noqa: E402
+from src.data.universe_source import (  # noqa: E402
+    STOCK_BASIC_MANIFEST,
+    freshness_lag_days,
+    latest_trading_day,
+    load_local_codes_with_list_date,
+    names_latest_trade_date,
+)
 from src.database.db_manager import DatabaseManager  # noqa: E402
 from src.utils.code_converter import to_baostock_code  # noqa: E402
 from src.utils.config import get_config  # noqa: E402
@@ -58,24 +65,40 @@ def _float(value: Any) -> float:
 
 
 def load_universe() -> tuple[list[str], dict[str, date], str]:
-    """从 stock_basic 取 list_date 非空的标的（5899→5811 口径），DB 不可用则退本地行情。"""
+    """取本地 stock_basic 中 list_date 非空的标的（日常唯一权威来源）。
+
+    名录落后时只告警不失败：本工具是手工补数，失败会挡住后续报告；但必须把
+    「落后多少天」打在终端，避免静默使用旧名录。MySQL 读取只在
+    ``DATA__REMOTE_DATABASE_FALLBACK=true`` 时保留为旧路径。
+    """
     cfg = get_config()
-    try:
-        dbm = DatabaseManager(cfg)
-        dbm.connect()
-        session = dbm.get_session()
-        rows = session.execute(text(
-            "SELECT ts_code, list_date FROM stock_basic "
-            'WHERE list_date IS NOT NULL ORDER BY ts_code')).all()
-        if rows:
-            return ([row[0] for row in rows],
-                    {row[0]: row[1] for row in rows if row[1] is not None},
-                    'stock_basic(list_date 非空)')
-    except Exception as exc:  # noqa: BLE001 - 只读库偶发连不上，退回本地标的
-        print(f'[warn] 读取 stock_basic 失败，改用本地行情标的: {exc}')
-    store = get_local_quote_store(cfg)
-    codes = store.codes('stock')
-    return codes, {}, 'local_quotes(回退)'
+    if bool(getattr(cfg.data, 'remote_database_fallback', False)):
+        try:
+            dbm = DatabaseManager(cfg)
+            dbm.connect()
+            session = dbm.get_session()
+            rows = session.execute(text(
+                "SELECT ts_code, list_date FROM stock_basic "
+                'WHERE list_date IS NOT NULL ORDER BY ts_code')).all()
+            if rows:
+                return ([row[0] for row in rows],
+                        {row[0]: row[1] for row in rows if row[1] is not None},
+                        'stock_basic(list_date 非空)')
+        except Exception as exc:  # noqa: BLE001 - 只读库偶发连不上时继续走本地
+            print(f'[warn] 读取 stock_basic 失败，改用本地名录: {exc}')
+    root = resolve_store_root(cfg)
+    lag = freshness_lag_days(root)
+    if lag is None:
+        print(f'[warn] 无法确认本地名录新鲜度（缺 {STOCK_BASIC_MANIFEST}）：{root}')
+    elif lag > 0:
+        print(f'[warn] 本地名录落后 {lag} 天：名录末日 {names_latest_trade_date(root)}'
+              f' < 最近交易日 {latest_trading_day(root)}，继续使用但需补跑 code_table')
+    codes, dates, label = load_local_codes_with_list_date(root)
+    if not codes:
+        print('[warn] 本地名录无 list_date 可用标的，退回本地行情文件清单')
+        store = get_local_quote_store(cfg)
+        return store.codes('stock'), {}, 'local_quotes(回退)'
+    return codes, dates, label
 
 
 def _print_table(rows: list[dict[str, object]]) -> None:

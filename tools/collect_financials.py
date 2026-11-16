@@ -47,6 +47,14 @@ from src.data.financials.store import (  # noqa: E402
     merge_parts,
 )
 from src.data.trading_calendar import previous_trading_day  # noqa: E402
+from src.data.universe_source import (  # noqa: E402
+    STOCK_BASIC_MANIFEST,
+    freshness_lag_days,
+    latest_trading_day,
+    load_local_universe,
+    names_latest_trade_date,
+    resolve_root,
+)
 from src.database.db_manager import DatabaseManager  # noqa: E402
 from src.database.models.stock import StockBasic  # noqa: E402
 from src.utils.config import Config  # noqa: E402
@@ -83,8 +91,11 @@ def auto_range(store_root: Path, today: date) -> tuple[date, date]:
     return since, until
 
 
-def load_universe() -> tuple[dict[str, str], list[str]]:
-    """从 MySQL 读取 ``symbol -> ts_code`` 与在市标的清单（只读）。"""
+def _load_universe_mysql() -> tuple[dict[str, str], list[str]]:
+    """旧路径：从 MySQL 读取 ``symbol -> ts_code`` 与在市清单（只读）。
+
+    仅在 ``DATA__REMOTE_DATABASE_FALLBACK=true`` 时启用，日常链路不走。
+    """
     config = Config()
     db_manager = DatabaseManager(config)
     db_manager.connect()
@@ -102,6 +113,31 @@ def load_universe() -> tuple[dict[str, str], list[str]]:
         if status == 'L':
             listed.append(str(ts_code))
     return symbols, sorted(listed)
+
+
+def load_universe(store_root: Path | None = None, as_of: date | None = None,
+                  ) -> tuple[dict[str, str], list[str]]:
+    """采集域：本地 ``meta/stock_basic.parquet`` 的 ``status == 'L'``。
+
+    名录落后采集终点（``as_of``，缺省为最近交易日）时判失败而不是告警继续：
+    旧名录会静默漏采新上市股（688827.SH 就是这样被跳过的），而估值步在日更里
+    非致命，失败会出现在日更汇总中，修法是补跑 code_table/fill 或重建名录。
+    """
+    config = Config()
+    root = Path(store_root) if store_root is not None else resolve_root(config)
+    if bool(getattr(config.data, 'remote_database_fallback', False)):
+        return _load_universe_mysql()
+    lag = freshness_lag_days(root, as_of=as_of)
+    if lag is None:
+        raise SystemExit(
+            f'无法确认本地股票名录新鲜度（缺 {STOCK_BASIC_MANIFEST}）：{root}')
+    if lag > 0:
+        raise SystemExit(
+            f'本地股票名录落后 {lag} 天：名录末日 {names_latest_trade_date(root)}'
+            f' < 采集终点 {as_of or latest_trading_day(root)}；'
+            '先补跑 code_table/fill 或 build_stock_basic.py --promote，'
+            '禁止用旧名录采集')
+    return load_local_universe(root)
 
 
 def parse_args() -> argparse.Namespace:
@@ -174,7 +210,8 @@ def main() -> int:
     periods = periods_between(start, end)
     print(f'报告期 {len(periods)} 个: {periods[0]} ~ {periods[-1]}')
 
-    symbols, listed = load_universe()
+    gate_date = until if args.only in {'all', 'bj', 'valuation'} else None
+    symbols, listed = load_universe(store_root, gate_date)
     print(f'股票清单: symbol 映射 {len(symbols)}，在市 {len(listed)}')
 
     bj_codes = [code for code in listed if code.endswith('.BJ')]

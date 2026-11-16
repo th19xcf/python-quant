@@ -488,3 +488,120 @@ def export_index_basic(
     return _export_basic(
         INDEX_SPEC, IndexBasic, config, db_manager,
         store_root=store_root, write=write)
+
+
+def check_fund_basic_local(
+    config: Any = None, *,
+    store_root: Path | str | None = None, write: bool = True,
+) -> dict[str, Any]:
+    """日常基金名录检查：只读本地 stock_basic，不回写 MySQL。
+
+    本地 ``stock_basic`` 若混入基金代码（正常为 0 行），按 ``_is_fund_ts_code``
+    与 ``_classify_local_fund_symbol`` 判定后整行并入本地 ``fund_basic``；
+    无新增时只推进 manifest 的 ``last_checked_at``，不写正式表。
+    回灌 MySQL 属一次性独立任务，不在此处发生。
+    """
+    import shutil
+
+    from src.data.services.sync_common import _is_fund_ts_code
+    from src.data.services.sync_fund import _classify_local_fund_symbol
+
+    root = Path(store_root) if store_root else resolve_store_root(config)
+    local_path = root / FUND_PATH
+    stock_path = root / 'meta' / 'stock_basic.parquet'
+    if not local_path.is_file():
+        raise SystemExit(f'本地基金名录缺失，拒绝检查：{local_path}')
+    if not stock_path.is_file():
+        raise SystemExit(f'本地股票名录缺失，拒绝检查：{stock_path}')
+
+    local = pl.read_parquet(local_path)
+    stock = pl.read_parquet(
+        stock_path,
+        columns=['ts_code', 'name', 'market', 'list_date', 'delist_date', 'status'])
+    existing = set(local['ts_code'].to_list())
+    now = datetime.now().isoformat(timespec='seconds')
+    stamped = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    appended: list[dict[str, Any]] = []
+    next_id = (int(local['id'].max()) if local.height else 0) + 1
+    for ts_code, name, market, list_date, delist_date, status in stock.iter_rows():
+        if not ts_code or ts_code in existing:
+            continue
+        if not _is_fund_ts_code(ts_code, name, market):
+            continue
+        classified = _classify_local_fund_symbol(str(ts_code)[:6], name)
+        if classified is None:
+            continue
+        fund_type, _target = classified
+        appended.append({
+            'id': next_id,
+            'ts_code': ts_code,
+            'symbol': str(ts_code)[:6],
+            'name': name,
+            'fund_type': fund_type,
+            'market': market,
+            'list_date': list_date,
+            'delist_date': delist_date,
+            'status': status,
+            'created_at': datetime.now(),
+            'updated_at': datetime.now(),
+            'is_tradable': status == 'L',
+            'tradable_reason': 'migrated_from_local_stock_basic',
+            'source': f'migrated_from_stock_basic@{stamped}',
+        })
+        next_id += 1
+
+    manifest_path = root / FUND_MANIFEST
+    manifest = _read_manifest(manifest_path)
+    result: dict[str, Any] = {
+        'kind': 'fund_basic', 'changed': bool(appended),
+        'appended': len(appended), 'local_rows': local.height,
+        'checked_at': now,
+    }
+    if not appended:
+        if write:
+            write_text_atomic(
+                json.dumps({
+                    **manifest,
+                    'last_checked_at': now,
+                    'last_check': {
+                        'checked_at': now, 'changed': False,
+                        'mode': 'local_only_no_diff', 'rows': local.height,
+                    },
+                }, ensure_ascii=False, indent=2) + '\n',
+                manifest_path)
+        logger.info(f'fund_basic 本地检查：无新增基金行（{local.height} 行）')
+        return result
+
+    backup = root / '_backup' / f'fund_basic_local_migrate_{stamped}'
+    backup.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(local_path, backup / local_path.name)
+    merged = pl.concat([local, pl.DataFrame(appended, schema=local.schema)])
+    if write:
+        write_parquet_atomic(merged, local_path)
+        manifest = {
+            **manifest,
+            'path': f'data/local_store/{FUND_PATH.as_posix()}',
+            'rows': merged.height,
+            'codes': int(merged['ts_code'].n_unique()),
+            'sha256': _sha256(local_path),
+            'built_at': now,
+            'produced_by': 'src.data.services.local_first_basic.check_fund_basic_local',
+            'last_checked_at': now,
+            'last_check': {
+                'checked_at': now, 'changed': True,
+                'mode': 'local_only_appended', 'rows': merged.height,
+                'appended': len(appended),
+            },
+            'last_local_migration': {
+                'backup_path': str(backup.relative_to(root.parent.parent))
+                if backup.is_relative_to(root.parent.parent) else str(backup),
+                'appended': len(appended),
+            },
+        }
+        write_text_atomic(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', manifest_path)
+        result['rows_after'] = merged.height
+        result['backup'] = str(backup)
+    logger.info(f'fund_basic 本地检查：并入 {len(appended)} 只基金代码')
+    return result

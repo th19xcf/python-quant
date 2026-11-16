@@ -30,7 +30,6 @@ from src.data.data_manager import DataManager
 from src.data.services.sync_service import (
     backfill_fund_basic_from_local_tdx,
     repair_stock_basic,
-    sync_stock_fund_to_fund_basic,
     sync_tdx_index_to_database,
     sync_tdx_stock_to_database,
 )
@@ -421,28 +420,17 @@ def _handle_update_index_arg(config):
 
 
 def _handle_update_fund_arg(config):
-    """处理基金迁移参数。"""
-    logger.info("检测到 --update-fund 参数，将执行基金迁移和补全")
+    """处理 --update-fund：只读本地名录做基金检查，不回写 MySQL。"""
+    logger.info("检测到 --update-fund 参数，执行本地基金名录检查（不写库）")
 
-    db_manager = None
+    from src.data.services.local_first_basic import check_fund_basic_local
+
     try:
-        db_manager = DatabaseManager(config)
-        db_manager.connect()
-        logger.info("数据库连接成功")
-
-        try:
-            db_manager.create_tables()
-            logger.info("数据库表创建/更新成功")
-        except _STARTUP_ERRORS as table_e:
-            logger.warning(f"创建数据库表时发生错误: {table_e}")
-
-        sync_stock_fund_to_fund_basic(config, db_manager)
-        db_manager.cleanup()
-        logger.info("数据库资源已清理")
+        result = check_fund_basic_local(config)
+        logger.info(f"本地基金名录检查完成: {result}")
         return True
-
-    except _STARTUP_ERRORS as db_e:
-        logger.error(f"数据库连接失败，无法执行基金迁移: {db_e}")
+    except (OSError, ValueError) as local_e:
+        logger.error(f"本地基金名录检查失败: {local_e}")
         return True
 
 
