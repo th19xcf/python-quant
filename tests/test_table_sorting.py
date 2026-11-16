@@ -238,11 +238,29 @@ def test_seq_renumbers_to_display_order_after_sort(qapp):
         page.close()
 
 
+def test_manual_column_width_survives_sort(qapp):
+    """手动拖动过的列宽在本次会话内保留：排序不重算列宽。"""
+    page = _open_page(qapp, StyleRotationPage)
+    try:
+        table = page.portfolio_table
+        _fill_column(table, 1, ['1.2%', '0.8%', '—'])
+        page._finalize_table(table)
+        table.setColumnWidth(2, 222)
+        table.horizontalHeader().sectionClicked.emit(1)
+        qapp.processEvents()
+        assert table.columnWidth(2) == 222, '排序后手动列宽被覆盖'
+    finally:
+        page.close()
+
+
 def test_large_table_uses_fixed_row_height(qapp):
     """超过 200 行的大表改用固定行高，排序后序号仍按显示顺序重编。"""
     page = _open_page(qapp, AttributionPage)
     try:
         table = page.brinson_table
+        # 与生产一致：brinson 卡先显示再灌数据，表格此时已有真实可视宽度
+        page.brinson_card.setVisible(True)
+        qapp.processEvents()
         table.setRowCount(250)
         for row in range(250):
             table.setItem(row, 0, QTableWidgetItem('2023-01-01 ~ 2023-01-28'))

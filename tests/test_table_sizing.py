@@ -16,7 +16,12 @@ from src.ui.market_trend.page import (
 )
 from src.ui.portfolio_risk.page import PortfolioRiskPage
 from src.ui.style_rotation.page import StyleRotationPage
-from src.ui.table_sizing import MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH, apply_content_widths
+from src.ui.table_sizing import (
+    MIN_COLUMN_WIDTH,
+    apply_content_widths,
+    apply_wrapped_row_heights,
+    measure_natural_widths,
+)
 
 PAGES = (
     ('market_trend', MarketTrendPage, ('layer_table', 'indicator_table')),
@@ -175,15 +180,71 @@ def test_all_tables_surfaces_share_one_color(qapp, name, page_cls, table_names):
         page.close()
 
 
-def test_apply_content_widths_autosizes_and_keeps_interactive(qapp):
-    table = QTableWidget(1, 3)
-    table.setHorizontalHeaderLabels(['短列', '中等文本列', '长文本列'])
-    table.setItem(0, 2, QTableWidgetItem('很长很长的说明文字' * 20))
-    apply_content_widths(table)
+def _shown_table(headers: list[str]) -> QTableWidget:
+    """建一张已显示的窄表，保证 viewport 宽度可用。"""
+    table = QTableWidget(0, len(headers))
+    table.setHorizontalHeaderLabels(headers)
+    table.resize(640, 240)
+    table.show()
+    return table
+
+
+def test_apply_content_widths_uses_natural_width_when_it_fits(qapp):
+    """自然宽度装得下时直接用自然宽度：不压缩、不折行。"""
+    table = _shown_table(['短列', '中等文本列', '说明'])
+    qapp.processEvents()
+    table.setRowCount(1)
+    for column, text in enumerate(('短', '中等文本内容', '说明文字')):
+        table.setItem(0, column, QTableWidgetItem(text))
+    natural = measure_natural_widths(table)
+    assert sum(natural) < table.viewport().width()
+
+    wrapped = apply_content_widths(table)
     header = table.horizontalHeader()
+    assert not wrapped, '自然宽度装得下时不应标记为折行'
     for index in range(3):
         assert header.sectionResizeMode(index) == QHeaderView.ResizeMode.Interactive
-        assert table.columnWidth(index) > 0
+        assert table.columnWidth(index) == natural[index], \
+            f'第 {index} 列未使用自然宽度 {natural[index]}'
     assert table.columnWidth(0) >= MIN_COLUMN_WIDTH
-    assert table.columnWidth(2) <= MAX_COLUMN_WIDTH
+    qapp.processEvents()
+
+
+def test_apply_content_widths_compresses_only_long_text_columns(qapp):
+    """自然宽度装不下时先压缩长文本列，短列与数值列保持自然宽度。"""
+    table = _shown_table(['短列', '数值', '长文本'])
+    qapp.processEvents()
+    table.setRowCount(1)
+    table.setItem(0, 0, QTableWidgetItem('短'))
+    table.setItem(0, 1, QTableWidgetItem('+1.23%'))
+    table.setItem(0, 2, QTableWidgetItem('很长的说明文字' * 40))
+    natural = measure_natural_widths(table)
+    assert sum(natural) > table.viewport().width()
+
+    wrapped = apply_content_widths(table)
+    assert wrapped, '长文本列被压短后应标记为折行'
+    assert table.columnWidth(0) == natural[0], '短列被压缩'
+    assert table.columnWidth(1) == natural[1], '数值列被压缩'
+    assert table.columnWidth(2) < natural[2], '长文本列未被压缩'
     assert table.columnWidth(2) > table.columnWidth(0)
+    assert (sum(table.columnWidth(index) for index in range(3))
+            <= table.viewport().width()), '压缩后仍然撑出横向滚动'
+    qapp.processEvents()
+
+
+def test_apply_wrapped_row_heights_follows_content(qapp):
+    """折行表按内容实测行高：长文本行更高，且不突破上限。"""
+    table = _shown_table(['列', '说明'])
+    table.setColumnWidth(1, 200)
+    table.setRowCount(2)
+    table.setItem(0, 0, QTableWidgetItem('a'))
+    table.setItem(0, 1, QTableWidgetItem('短'))
+    table.setItem(1, 0, QTableWidgetItem('b'))
+    table.setItem(1, 1, QTableWidgetItem('很长的说明文字' * 20))
+
+    apply_wrapped_row_heights(table, MIN_ROW_HEIGHT, 120)
+    assert (table.verticalHeader().sectionResizeMode(0)
+            == QHeaderView.ResizeMode.Fixed), '折行大表应改用固定行高模式'
+    assert table.rowHeight(0) == MIN_ROW_HEIGHT
+    assert MIN_ROW_HEIGHT < table.rowHeight(1) <= 120
+    qapp.processEvents()

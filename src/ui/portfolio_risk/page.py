@@ -22,7 +22,12 @@ from PySide6.QtWidgets import (
 
 from src.quant.analysis.portfolio_risk_state import PortfolioRiskState
 from src.ui.advice.tokens import TOKENS, palette_for
-from src.ui.table_sizing import apply_content_widths, use_interactive_columns
+from src.ui.table_sizing import (
+    apply_content_widths,
+    apply_wrapped_row_heights,
+    reorder_table_rows,
+    use_interactive_columns,
+)
 from src.ui.theme_manager import is_dark_palette
 
 #: 数据行高下限：保证空行/单行不被压扁
@@ -64,11 +69,27 @@ def _sort_key(text: str) -> tuple[str, float | str] | None:
 
 
 def _fetch_state(token: int, asof: str | None = None,
-                 task_id: str | None = None, signals: Any = None) -> dict[str, Any]:
-    """后台任务：只读本地数据计算仓位、风险预算与约束校验。"""
-    from src.quant.analysis.portfolio_risk_local import build_state
+                 task_id: str | None = None, refresh: bool = False,
+                 signals: Any = None) -> dict[str, Any]:
+    """后台任务：只读本地数据计算仓位、风险预算与约束校验（带版本落盘缓存）。"""
+    from src.quant.analysis import analysis_cache
+    from src.quant.analysis.portfolio_risk_local import (
+        HOLDINGS_DIR,
+        LEDGER_NAME,
+        build_state,
+    )
 
-    return {'token': token, 'state': build_state(asof=asof)}
+    ledger = analysis_cache.ROOT / HOLDINGS_DIR / LEDGER_NAME
+
+    def compute() -> Any:
+        return build_state(asof=asof)
+
+    result = analysis_cache.cached(
+        'portfolio_risk', 'state', asof=asof,
+        fingerprint={'ledger': analysis_cache.file_stamp(ledger)},
+        compute=compute, refresh=refresh,
+    )
+    return {'token': token, 'state': result.value, 'cache': result.meta}
 
 
 def _qss(theme: str) -> str:
@@ -205,7 +226,7 @@ class PortfolioRiskPage(QWidget):
 
         self.refresh_button = QPushButton('重新计算')
         self.refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.refresh_button.clicked.connect(self.load_async)
+        self.refresh_button.clicked.connect(lambda: self.load_async(refresh=True))
         header.addWidget(self.refresh_button)
         return header
 
@@ -319,10 +340,10 @@ class PortfolioRiskPage(QWidget):
             self._sort_clicks.pop(table, None)
             table.horizontalHeader().setSortIndicatorShown(False)
         self._unify_table_surface(table)
+        wrapped = apply_content_widths(table) if remeasure else False
+        self._apply_row_height_mode(table, remeasure=remeasure, wrapped=wrapped)
         if remeasure:
-            apply_content_widths(table)
-        self._apply_row_height_mode(table, remeasure=remeasure)
-        table.setColumnWidth(0, SEQ_COLUMN_WIDTH)
+            table.setColumnWidth(0, SEQ_COLUMN_WIDTH)
         self._renumber_rows(table, remeasure=remeasure)
 
     def _ensure_seq_column(self, table: QTableWidget) -> None:
@@ -340,18 +361,23 @@ class PortfolioRiskPage(QWidget):
             table.removeColumn(0)
 
     def _apply_row_height_mode(self, table: QTableWidget,
-                               remeasure: bool = True) -> None:
-        """大表用固定行高，避免排序时逐行测量换行文本；小表保留自适应。"""
+                               remeasure: bool = True,
+                               wrapped: bool = False) -> None:
+        """未折行用统一行高；折行时按内容测高，大表一次性测完、排序时不重算。"""
+        if not remeasure:
+            return
         vertical = table.verticalHeader()
-        if table.rowCount() > FIXED_ROW_HEIGHT_THRESHOLD:
+        if not wrapped:
             vertical.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
             vertical.setDefaultSectionSize(FIXED_ROW_HEIGHT)
             for row in range(table.rowCount()):
                 table.setRowHeight(row, FIXED_ROW_HEIGHT)
             return
+        if table.rowCount() > FIXED_ROW_HEIGHT_THRESHOLD:
+            apply_wrapped_row_heights(table, MIN_ROW_HEIGHT, MAX_ROW_HEIGHT)
+            return
         vertical.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        if remeasure:
-            table.resizeRowsToContents()
+        table.resizeRowsToContents()
 
     def _renumber_rows(self, table: QTableWidget,
                        remeasure: bool = True) -> None:
@@ -420,9 +446,11 @@ class PortfolioRiskPage(QWidget):
 
     def _row_signature(self, table: QTableWidget, row: int) -> tuple[str, ...]:
         """一行的文本指纹（跳过序号列），用来在重排后重新定位同一行。"""
-        return tuple(
-            table.item(row, index).text() if table.item(row, index) else ''
-            for index in range(1, table.columnCount()))
+        values: list[str] = []
+        for index in range(1, table.columnCount()):
+            item = table.item(row, index)
+            values.append(item.text() if item is not None else '')
+        return tuple(values)
 
     def _restore_row_order(self, table: QTableWidget) -> None:
         """按默认行序快照还原；快照之后才出现的行保持在后。"""
@@ -441,35 +469,23 @@ class PortfolioRiskPage(QWidget):
         order.extend(index for index in range(len(current)) if index not in used)
         if order == list(range(len(order))):
             return
-        cells = [[table.takeItem(row, index) for index in range(table.columnCount())]
-                 for row in range(table.rowCount())]
-        for row, source in enumerate(order):
-            for index, cell in enumerate(cells[source]):
-                if cell is not None:
-                    table.setItem(row, index, cell)
+        reorder_table_rows(table, order)
 
     def _sort_table_rows(self, table: QTableWidget, column: int,
                          order: Qt.SortOrder) -> None:
-        """按解析后的键重排行，空值沉底；文本、对齐、颜色与提示原样保留。"""
-        cells = [[table.takeItem(row, index) for index in range(table.columnCount())]
-                 for row in range(table.rowCount())]
-        if not cells:
-            return
-        keyed: list[tuple[tuple[str, float | str], list[QTableWidgetItem | None]]] = []
-        empty: list[list[QTableWidgetItem | None]] = []
-        for row_cells in cells:
-            cell = row_cells[column]
+        """按解析后的键重排行，空值沉底；文本、对齐、颜色、提示与行高原样保留。"""
+        keyed: list[tuple[tuple[str, float | str], int]] = []
+        empty: list[int] = []
+        for row in range(table.rowCount()):
+            cell = table.item(row, column)
             key = _sort_key(cell.text()) if cell is not None else None
             if key is None:
-                empty.append(row_cells)
+                empty.append(row)
             else:
-                keyed.append((key, row_cells))
+                keyed.append((key, row))
         keyed.sort(key=lambda pair: pair[0],
                    reverse=order == Qt.SortOrder.DescendingOrder)
-        for row, row_cells in enumerate([pair[1] for pair in keyed] + empty):
-            for index, cell in enumerate(row_cells):
-                if cell is not None:
-                    table.setItem(row, index, cell)
+        reorder_table_rows(table, [row for _, row in keyed] + empty)
 
     # -------------------------------------------------------------- loading
     def _connect_task_signals(self) -> None:
@@ -479,8 +495,8 @@ class PortfolioRiskPage(QWidget):
         global_task_manager.task_completed.connect(self._on_task_completed)
         global_task_manager.task_error.connect(self._on_task_error)
 
-    def load_async(self) -> None:
-        """首次打开或点击重新计算时触发后台计算。"""
+    def load_async(self, refresh: bool = False) -> None:
+        """首次打开或点击重新计算时触发后台计算；``refresh`` 强制绕过缓存。"""
         if self._busy:
             return
         self._busy = True
@@ -491,7 +507,7 @@ class PortfolioRiskPage(QWidget):
         self._task_id = self._task_manager.create_task(
             f'仓位风控#{self._token}',
             _fetch_state,
-            kwargs={'token': self._token},
+            kwargs={'token': self._token, 'refresh': refresh},
             timeout_seconds=180,
         )
 
@@ -504,6 +520,10 @@ class PortfolioRiskPage(QWidget):
             self.status_label.setText('未返回结果')
             return
         self.render_state(state)
+        from src.quant.analysis.analysis_cache import describe
+
+        self.status_label.setText(
+            self.status_label.text() + describe(result.get('cache')))
 
     def _on_task_error(self, task_id: str, error_message: str) -> None:
         if task_id != self._task_id:

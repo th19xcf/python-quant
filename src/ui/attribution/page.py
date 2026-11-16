@@ -23,7 +23,12 @@ from PySide6.QtWidgets import (
 
 from src.quant.analysis.attribution_state import AttributionState
 from src.ui.advice.tokens import TOKENS, palette_for
-from src.ui.table_sizing import apply_content_widths, use_interactive_columns
+from src.ui.table_sizing import (
+    apply_content_widths,
+    apply_wrapped_row_heights,
+    reorder_table_rows,
+    use_interactive_columns,
+)
 from src.ui.theme_manager import is_dark_palette
 
 #: 数据行高下限：保证空行/单行不被压扁
@@ -65,11 +70,37 @@ def _sort_key(text: str) -> tuple[str, float | str] | None:
 
 
 def _fetch_state(token: int, asof: str | None = None, benchmark: str = 'equal_all',
-                 task_id: str | None = None, signals: Any = None) -> dict[str, Any]:
-    """后台任务：只读已有回测 run 与持仓做归因（有持仓表走完整 Brinson）。"""
-    from src.quant.analysis.attribution_local import build_attribution
+                 task_id: str | None = None, refresh: bool = False,
+                 signals: Any = None) -> dict[str, Any]:
+    """后台任务：只读已有回测 run 与持仓做归因（状态级 + 单档 Brinson 双层缓存）。"""
+    from src.quant.analysis import analysis_cache
+    from src.quant.analysis.attribution_local import (
+        build_attribution,
+        latest_run_inputs,
+    )
 
-    return {'token': token, 'state': build_attribution(asof=asof, benchmark=benchmark)}
+    dv = analysis_cache.data_version()
+    run_id, files = latest_run_inputs()
+    base_fingerprint = {'run': run_id or '', 'files': files}
+
+    def brinson_loader(name: str, compute: Any) -> Any:
+        cached = analysis_cache.cached(
+            'attribution', 'brinson', asof=asof, dv=dv,
+            fingerprint={**base_fingerprint, 'benchmark': name},
+            compute=compute, refresh=refresh,
+        )
+        return cached.value
+
+    def compute() -> Any:
+        return build_attribution(asof=asof, benchmark=benchmark,
+                                 brinson_loader=brinson_loader)
+
+    result = analysis_cache.cached(
+        'attribution', 'state', asof=asof, dv=dv,
+        fingerprint={**base_fingerprint, 'benchmark': benchmark},
+        compute=compute, refresh=refresh,
+    )
+    return {'token': token, 'state': result.value, 'cache': result.meta}
 
 
 def _qss(theme: str) -> str:
@@ -215,7 +246,7 @@ class AttributionPage(QWidget):
 
         self.refresh_button = QPushButton('重新计算')
         self.refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.refresh_button.clicked.connect(self.load_async)
+        self.refresh_button.clicked.connect(lambda: self.load_async(refresh=True))
         header.addWidget(self.refresh_button)
         return header
 
@@ -357,10 +388,10 @@ class AttributionPage(QWidget):
             self._sort_clicks.pop(table, None)
             table.horizontalHeader().setSortIndicatorShown(False)
         self._unify_table_surface(table)
+        wrapped = apply_content_widths(table) if remeasure else False
+        self._apply_row_height_mode(table, remeasure=remeasure, wrapped=wrapped)
         if remeasure:
-            apply_content_widths(table)
-        self._apply_row_height_mode(table, remeasure=remeasure)
-        table.setColumnWidth(0, SEQ_COLUMN_WIDTH)
+            table.setColumnWidth(0, SEQ_COLUMN_WIDTH)
         self._renumber_rows(table, remeasure=remeasure)
 
     def _ensure_seq_column(self, table: QTableWidget) -> None:
@@ -378,18 +409,23 @@ class AttributionPage(QWidget):
             table.removeColumn(0)
 
     def _apply_row_height_mode(self, table: QTableWidget,
-                               remeasure: bool = True) -> None:
-        """大表用固定行高，避免排序时逐行测量换行文本；小表保留自适应。"""
+                               remeasure: bool = True,
+                               wrapped: bool = False) -> None:
+        """未折行用统一行高；折行时按内容测高，大表一次性测完、排序时不重算。"""
+        if not remeasure:
+            return
         vertical = table.verticalHeader()
-        if table.rowCount() > FIXED_ROW_HEIGHT_THRESHOLD:
+        if not wrapped:
             vertical.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
             vertical.setDefaultSectionSize(FIXED_ROW_HEIGHT)
             for row in range(table.rowCount()):
                 table.setRowHeight(row, FIXED_ROW_HEIGHT)
             return
+        if table.rowCount() > FIXED_ROW_HEIGHT_THRESHOLD:
+            apply_wrapped_row_heights(table, MIN_ROW_HEIGHT, MAX_ROW_HEIGHT)
+            return
         vertical.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        if remeasure:
-            table.resizeRowsToContents()
+        table.resizeRowsToContents()
 
     def _renumber_rows(self, table: QTableWidget,
                        remeasure: bool = True) -> None:
@@ -481,36 +517,23 @@ class AttributionPage(QWidget):
         order.extend(index for index in range(len(current)) if index not in used)
         if order == list(range(len(order))):
             return
-        cells = [[table.takeItem(row, index) for index in range(table.columnCount())]
-                 for row in range(table.rowCount())]
-        for row, source in enumerate(order):
-            for index, cell in enumerate(cells[source]):
-                if cell is not None:
-                    table.setItem(row, index, cell)
+        reorder_table_rows(table, order)
 
     def _sort_table_rows(self, table: QTableWidget, column: int,
                          order: Qt.SortOrder) -> None:
-        """按解析后的键重排行，空值沉底；文本、对齐、颜色与提示原样保留。"""
-        cells: list[list[QTableWidgetItem | None]] = [
-            [table.takeItem(row, index) for index in range(table.columnCount())]
-            for row in range(table.rowCount())]
-        if not cells:
-            return
-        keyed: list[tuple[tuple[str, float | str], list[QTableWidgetItem | None]]] = []
-        empty: list[list[QTableWidgetItem | None]] = []
-        for row_cells in cells:
-            cell = row_cells[column]
+        """按解析后的键重排行，空值沉底；文本、对齐、颜色、提示与行高原样保留。"""
+        keyed: list[tuple[tuple[str, float | str], int]] = []
+        empty: list[int] = []
+        for row in range(table.rowCount()):
+            cell = table.item(row, column)
             key = _sort_key(cell.text()) if cell is not None else None
             if key is None:
-                empty.append(row_cells)
+                empty.append(row)
             else:
-                keyed.append((key, row_cells))
+                keyed.append((key, row))
         keyed.sort(key=lambda pair: pair[0],
                    reverse=order == Qt.SortOrder.DescendingOrder)
-        for row, row_cells in enumerate([pair[1] for pair in keyed] + empty):
-            for index, cell in enumerate(row_cells):
-                if cell is not None:
-                    table.setItem(row, index, cell)
+        reorder_table_rows(table, [row for _, row in keyed] + empty)
 
     # -------------------------------------------------------------- loading
     def _connect_task_signals(self) -> None:
@@ -520,8 +543,8 @@ class AttributionPage(QWidget):
         global_task_manager.task_completed.connect(self._on_task_completed)
         global_task_manager.task_error.connect(self._on_task_error)
 
-    def load_async(self) -> None:
-        """首次打开或点击重新计算时触发后台归因。"""
+    def load_async(self, refresh: bool = False) -> None:
+        """首次打开或点击重新计算时触发后台归因；``refresh`` 强制绕过缓存。"""
         if self._busy:
             return
         self._busy = True
@@ -532,7 +555,8 @@ class AttributionPage(QWidget):
         self._task_id = self._task_manager.create_task(
             f'收益归因#{self._token}',
             _fetch_state,
-            kwargs={'token': self._token, 'benchmark': self._benchmark_mode()},
+            kwargs={'token': self._token, 'benchmark': self._benchmark_mode(),
+                    'refresh': refresh},
             timeout_seconds=600,
         )
 
@@ -554,6 +578,10 @@ class AttributionPage(QWidget):
             self.status_label.setText('未返回结果')
             return
         self.render_state(state)
+        from src.quant.analysis.analysis_cache import describe
+
+        self.status_label.setText(
+            self.status_label.text() + describe(result.get('cache')))
 
     def _on_task_error(self, task_id: str, error_message: str) -> None:
         if task_id != self._task_id:
