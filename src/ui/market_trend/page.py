@@ -94,7 +94,7 @@ QTableWidget {{
     alternate-background-color: {palette.zebra};
     border: 1px solid {palette.border};
     border-radius: {tokens.radius_sm}px;
-    gridline-color: transparent;
+    gridline-color: {palette.faint};
     selection-background-color: {palette.selection};
 }}
 QHeaderView::section {{
@@ -102,11 +102,12 @@ QHeaderView::section {{
     color: {palette.muted};
     border: none;
     border-bottom: 1px solid {palette.border};
+    border-right: 1px solid {palette.border};
     padding: 6px 8px;
     font-weight: 600;
 }}
 QTableWidget::item {{
-    padding: 3px 6px;
+    padding: 6px 8px;
 }}
 """
 
@@ -227,6 +228,9 @@ class MarketTrendPage(QWidget):
         self.layer_table.setColumnWidth(1, 70)
         self.layer_table.setColumnWidth(2, 70)
         self.layer_table.setColumnWidth(3, 60)
+        for column in (1, 2, 3):
+            self.layer_table.horizontalHeader().setSectionResizeMode(
+                column, QHeaderView.ResizeMode.Fixed)
         self.layer_table.horizontalHeader().setSectionResizeMode(
             4, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.layer_table)
@@ -249,6 +253,9 @@ class MarketTrendPage(QWidget):
         self.indicator_table.setColumnWidth(2, 110)
         self.indicator_table.setColumnWidth(3, 90)
         self.indicator_table.setColumnWidth(4, 64)
+        for column in (2, 3, 4):
+            self.indicator_table.horizontalHeader().setSectionResizeMode(
+                column, QHeaderView.ResizeMode.Fixed)
         self.indicator_table.horizontalHeader().setSectionResizeMode(
             5, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.indicator_table)
@@ -258,8 +265,9 @@ class MarketTrendPage(QWidget):
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().setVisible(False)
+        table.verticalHeader().setMinimumSectionSize(30)
         table.setAlternatingRowColors(True)
-        table.setShowGrid(False)
+        table.setShowGrid(True)
         table.setWordWrap(True)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -343,8 +351,15 @@ class MarketTrendPage(QWidget):
                 f'{layer.weight:.2f}',
                 layer.description,
             ]
+            alignments = (
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            )
             for column, text in enumerate(values):
-                item = self._item(text)
+                item = self._item(text, alignments[column])
                 if column in (1, 2) and layer.score is not None:
                     item.setForeground(self._brush(self._score_color(layer.score)))
                 table.setItem(row, column, item)
@@ -374,8 +389,16 @@ class MarketTrendPage(QWidget):
                 score_text,
                 indicator.judgment,
             ]
+            alignments = (
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            )
             for column, text in enumerate(values):
-                item = self._item(text)
+                item = self._item(text, alignments[column])
                 if column == 2:
                     item.setToolTip(f'{indicator.formula}\n数据截至 {indicator.asof}')
                 if column == 3:
@@ -392,9 +415,13 @@ class MarketTrendPage(QWidget):
         return header + rows + 8
 
     @staticmethod
-    def _item(text: str) -> QTableWidgetItem:
+    def _item(
+        text: str,
+        alignment: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+    ) -> QTableWidgetItem:
         item = QTableWidgetItem(text)
         item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        item.setTextAlignment(alignment)
         return item
 
     def _brush(self, color: str):

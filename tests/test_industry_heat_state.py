@@ -156,6 +156,7 @@ def test_headless_page_renders_table(qapp):
         page.render_state(state)
         assert page.heat_table.rowCount() == len(state.industries)
         assert page.heat_table.columnCount() == 4
+        assert page.heat_table.showGrid()
         assert '最热' in page.hottest_label.text()
         assert '最冷' in page.coldest_label.text()
         assert '判定完成' in page.status_label.text()

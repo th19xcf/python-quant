@@ -91,7 +91,7 @@ QTableWidget {{
     alternate-background-color: {palette.zebra};
     border: 1px solid {palette.border};
     border-radius: {tokens.radius_sm}px;
-    gridline-color: transparent;
+    gridline-color: {palette.faint};
     selection-background-color: {palette.selection};
 }}
 QHeaderView::section {{
@@ -99,11 +99,12 @@ QHeaderView::section {{
     color: {palette.muted};
     border: none;
     border-bottom: 1px solid {palette.border};
+    border-right: 1px solid {palette.border};
     padding: 6px 8px;
     font-weight: 600;
 }}
 QTableWidget::item {{
-    padding: 3px 6px;
+    padding: 6px 8px;
 }}
 """
 
@@ -206,6 +207,9 @@ class StyleRotationPage(QWidget):
         self.dimension_table.setColumnWidth(0, 120)
         self.dimension_table.setColumnWidth(1, 80)
         self.dimension_table.setColumnWidth(2, 90)
+        for column in (1, 2):
+            self.dimension_table.horizontalHeader().setSectionResizeMode(
+                column, QHeaderView.ResizeMode.Fixed)
         self.dimension_table.horizontalHeader().setSectionResizeMode(
             3, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.dimension_table)
@@ -226,6 +230,9 @@ class StyleRotationPage(QWidget):
         self.portfolio_table.setColumnWidth(0, 120)
         self.portfolio_table.setColumnWidth(1, 100)
         self.portfolio_table.setColumnWidth(2, 100)
+        for column in (1, 2):
+            self.portfolio_table.horizontalHeader().setSectionResizeMode(
+                column, QHeaderView.ResizeMode.Fixed)
         self.portfolio_table.horizontalHeader().setSectionResizeMode(
             3, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.portfolio_table)
@@ -235,8 +242,9 @@ class StyleRotationPage(QWidget):
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().setVisible(False)
+        table.verticalHeader().setMinimumSectionSize(30)
         table.setAlternatingRowColors(True)
-        table.setShowGrid(False)
+        table.setShowGrid(True)
         table.setWordWrap(True)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -334,8 +342,14 @@ class StyleRotationPage(QWidget):
                 dimension.label,
                 '｜'.join(basis) if basis else '—',
             ]
+            alignments = (
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            )
             for column, text in enumerate(values):
-                item = self._item(text)
+                item = self._item(text, alignments[column])
                 if column == 1:
                     item.setForeground(self._brush(self._score_color(dimension.score)))
                 if column == 2:
@@ -353,8 +367,14 @@ class StyleRotationPage(QWidget):
                 self._pct(portfolio.ret60),
                 self._pct(portfolio.rel20),
             ]
+            alignments = (
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            )
             for column, text in enumerate(values):
-                item = self._item(text)
+                item = self._item(text, alignments[column])
                 if column in (1, 2, 3):
                     value = (portfolio.ret20, portfolio.ret60, portfolio.rel20)[column - 1]
                     if value is not None:
@@ -367,9 +387,13 @@ class StyleRotationPage(QWidget):
         return '—' if value is None else f'{value * 100:+.2f}%'
 
     @staticmethod
-    def _item(text: str) -> QTableWidgetItem:
+    def _item(
+        text: str,
+        alignment: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+    ) -> QTableWidgetItem:
         item = QTableWidgetItem(text)
         item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        item.setTextAlignment(alignment)
         return item
 
     def _brush(self, color: str):

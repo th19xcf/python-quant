@@ -91,7 +91,7 @@ QTableWidget {{
     alternate-background-color: {palette.zebra};
     border: 1px solid {palette.border};
     border-radius: {tokens.radius_sm}px;
-    gridline-color: transparent;
+    gridline-color: {palette.faint};
     selection-background-color: {palette.selection};
 }}
 QHeaderView::section {{
@@ -99,11 +99,12 @@ QHeaderView::section {{
     color: {palette.muted};
     border: none;
     border-bottom: 1px solid {palette.border};
+    border-right: 1px solid {palette.border};
     padding: 6px 8px;
     font-weight: 600;
 }}
 QTableWidget::item {{
-    padding: 3px 6px;
+    padding: 6px 8px;
 }}
 """
 
@@ -202,7 +203,11 @@ class IndustryHeatPage(QWidget):
         self.heat_table = self._make_table(['行业', '热度分', '档位', '主要依据'])
         self.heat_table.setColumnWidth(0, 150)
         self.heat_table.setColumnWidth(1, 80)
-        self.heat_table.setColumnWidth(2, 70)
+        self.heat_table.setColumnWidth(2, 80)
+        self.heat_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Fixed)
+        self.heat_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Fixed)
         self.heat_table.horizontalHeader().setSectionResizeMode(
             3, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.heat_table)
@@ -212,8 +217,9 @@ class IndustryHeatPage(QWidget):
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().setVisible(False)
+        table.verticalHeader().setMinimumSectionSize(30)
         table.setAlternatingRowColors(True)
-        table.setShowGrid(False)
+        table.setShowGrid(True)
         table.setWordWrap(True)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -300,8 +306,14 @@ class IndustryHeatPage(QWidget):
             if heat.overheat:
                 drivers = f'{drivers}（过热预警：{"；".join(heat.overheat_reasons)}）'
             values = [heat.name, f'{heat.total_score:+.3f}', heat.label, drivers]
+            alignments = (
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            )
             for column, text in enumerate(values):
-                item = self._item(text)
+                item = self._item(text, alignments[column])
                 if column == 1:
                     item.setForeground(self._brush(self._score_color(heat.total_score)))
                 if column == 2:
@@ -312,9 +324,13 @@ class IndustryHeatPage(QWidget):
         table.resizeRowsToContents()
 
     @staticmethod
-    def _item(text: str) -> QTableWidgetItem:
+    def _item(
+        text: str,
+        alignment: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+    ) -> QTableWidgetItem:
         item = QTableWidgetItem(text)
         item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        item.setTextAlignment(alignment)
         return item
 
     def _brush(self, color: str):

@@ -60,7 +60,7 @@ class MainWindowMarketTrendMixin:
         self.market_trend_page.load_async()
 
     def create_industry_heat_tab(self):
-        """创建行业热度标签页（由 create_center_area 在市场趋势之后追加）。"""
+        """创建行业热度标签页（由 create_center_area 在风格轮动之后追加）。"""
         layout = QVBoxLayout(self.industry_heat_tab)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -94,7 +94,7 @@ class MainWindowMarketTrendMixin:
         self.industry_heat_page.load_async()
 
     def create_style_rotation_tab(self):
-        """创建风格轮动标签页（由 create_center_area 在行业热度之后追加）。"""
+        """创建风格轮动标签页（由 create_center_area 在市场趋势之后追加）。"""
         layout = QVBoxLayout(self.style_rotation_tab)
         layout.setContentsMargins(0, 0, 0, 0)
 

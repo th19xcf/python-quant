@@ -117,7 +117,11 @@ def test_main_window_constructs_with_empty_market_table(qapp, tmp_path):
         assert window.market_trend_page is not None
         assert window.industry_heat_page is not None
         assert window.style_rotation_page is not None
-        assert window.tab_widget.tabText(window.tab_widget.count() - 1) == '风格轮动'
+        texts = [
+            window.tab_widget.tabText(index)
+            for index in range(window.tab_widget.count())
+        ]
+        assert texts[-3:] == ['市场趋势', '风格轮动', '行业热度']
         assert window.stock_table.columnCount() == 13
         # 示例假数据已移除，启动时行情表应为空
         assert window.stock_table.rowCount() == 0
@@ -222,6 +226,59 @@ def test_vol_tdx_button_removed_from_indicator_bar(qapp, tmp_path):
     window = MainWindow(config, data_manager)
     try:
         assert 'VOL-TDX' not in window.indicator_buttons
+    finally:
+        window.hide()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_analysis_tabs_tables_show_grid_and_columns(qapp, tmp_path):
+    """三页分析表格开启网格线、列数固定；市场趋势页渲染后行列可读。"""
+    from datetime import date as _date
+
+    from PySide6.QtWidgets import QTableWidget
+
+    from src.quant.analysis.market_trend_state import (
+        IndicatorResult,
+        LayerResult,
+        TrendState,
+    )
+    from src.ui.main_window import MainWindow
+
+    config = SimpleNamespace(data=SimpleNamespace(tdx_data_path=str(tmp_path)))
+    data_manager = SimpleNamespace(db_manager=None)
+
+    window = MainWindow(config, data_manager)
+    try:
+        pages = (
+            window.market_trend_page,
+            window.style_rotation_page,
+            window.industry_heat_page,
+        )
+        for page in pages:
+            tables = page.findChildren(QTableWidget)
+            assert tables, page.objectName()
+            for table in tables:
+                assert table.showGrid()
+                assert table.columnCount() > 0
+
+        indicator = IndicatorResult(
+            key='ma20', name='20 日均线', layer='trend', raw=0.01, raw_kind='pct',
+            mode='quantile', percentile=62.0, score=0.24, asof=_date(2026, 11, 13),
+            formula='close / ma20 - 1', judgment='分位越高越强', weight=0.5,
+        )
+        layer = LayerResult(
+            key='trend', name='趋势', weight=1.0, score=0.24, contribution=0.24,
+            indicators=(indicator,), description='趋势层',
+        )
+        window.market_trend_page.render_state(TrendState(
+            asof=_date(2026, 11, 13), label='弱上行', total_score=0.24,
+            layers=(layer,), notes=('测试',),
+        ))
+        assert window.market_trend_page.layer_table.rowCount() == 1
+        assert window.market_trend_page.layer_table.columnCount() == 5
+        assert window.market_trend_page.indicator_table.rowCount() == 1
+        assert window.market_trend_page.indicator_table.columnCount() == 6
     finally:
         window.hide()
         window.deleteLater()
