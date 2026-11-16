@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
     QSizePolicy,
@@ -22,6 +23,13 @@ from src.quant.analysis.portfolio_risk_state import PortfolioRiskState
 from src.ui.advice.tokens import TOKENS, palette_for
 from src.ui.table_sizing import apply_content_widths, use_interactive_columns
 from src.ui.theme_manager import is_dark_palette
+
+#: 数据行高下限：保证空行/单行不被压扁
+MIN_ROW_HEIGHT = 30
+#: 数据行高上限：超长文本换行后封顶，避免单行撑到半屏
+MAX_ROW_HEIGHT = 120
+#: 表头固定行高：不随数据行自适应
+HEADER_ROW_HEIGHT = 34
 
 
 def _fetch_state(token: int, asof: str | None = None,
@@ -244,18 +252,29 @@ class PortfolioRiskPage(QWidget):
     def _make_table(self, headers: list[str]) -> QTableWidget:
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
-        table.verticalHeader().setVisible(False)
-        table.verticalHeader().setMinimumSectionSize(30)
+        vertical = table.verticalHeader()
+        vertical.setVisible(False)
+        vertical.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        vertical.setMinimumSectionSize(MIN_ROW_HEIGHT)
+        vertical.setMaximumSectionSize(MAX_ROW_HEIGHT)
         table.setAlternatingRowColors(True)
         table.setShowGrid(True)
         table.setWordWrap(True)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        table.horizontalHeader().setHighlightSections(False)
+        header = table.horizontalHeader()
+        header.setHighlightSections(False)
+        header.setFixedHeight(HEADER_ROW_HEIGHT)
         table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         use_interactive_columns(table)
         return table
+
+    @staticmethod
+    def _finalize_table(table: QTableWidget) -> None:
+        """先定列宽再算行高：行高必须按最终列宽的换行结果计算。"""
+        apply_content_widths(table)
+        table.resizeRowsToContents()
 
     # -------------------------------------------------------------- loading
     def _connect_task_signals(self) -> None:
@@ -337,8 +356,7 @@ class PortfolioRiskPage(QWidget):
             )
             for column, text in enumerate(values):
                 table.setItem(row, column, self._item(text, alignments[column]))
-        table.resizeRowsToContents()
-        apply_content_widths(table)
+        self._finalize_table(table)
 
     def _fill_budget(self, state: PortfolioRiskState) -> None:
         budget = state.budget
@@ -362,8 +380,7 @@ class PortfolioRiskPage(QWidget):
             )
             for column, text in enumerate(values):
                 table.setItem(row, column, self._item(text, alignments[column]))
-        table.resizeRowsToContents()
-        apply_content_widths(table)
+        self._finalize_table(table)
 
     def _fill_constraints(self, state: PortfolioRiskState) -> None:
         report = state.constraints
@@ -387,8 +404,7 @@ class PortfolioRiskPage(QWidget):
                 if column == 3 and not item.passed:
                     cell.setForeground(self._brush(self._pal.sell))
                 table.setItem(row, column, cell)
-        table.resizeRowsToContents()
-        apply_content_widths(table)
+        self._finalize_table(table)
 
     @staticmethod
     def _pct(value: float | None, sign: bool = True) -> str:
