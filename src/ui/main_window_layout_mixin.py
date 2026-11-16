@@ -240,6 +240,16 @@ class MainWindowLayoutMixin:
         self.tab_widget.addTab(self.industry_heat_tab, "行业热度")
         self.create_industry_heat_tab()
 
+        # 添加仓位与风控标签页（紧随行业热度之后）
+        self.portfolio_risk_tab = QWidget()
+        self.tab_widget.addTab(self.portfolio_risk_tab, "仓位与风控")
+        self.create_portfolio_risk_tab()
+
+        # 添加收益归因标签页（紧随仓位与风控之后）
+        self.attribution_tab = QWidget()
+        self.tab_widget.addTab(self.attribution_tab, "收益归因")
+        self.create_attribution_tab()
+
         parent.addWidget(center_widget)
 
     def create_market_tab(self):

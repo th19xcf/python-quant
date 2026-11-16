@@ -36,6 +36,54 @@ INDEX_SCHEMA = 'backtest_run_index/v1'
 #: 历史 run 的人工绑定写独立侧车（不改写既有 metrics.json）。
 RUN_BASIS_FILE = 'data_basis.json'
 RUN_BASIS_SCHEMA = 'run_data_basis/v1'
+#: 逐期持仓表（归因用）：成交日收盘快照，老 run 没有该文件时归因自动降级
+POSITIONS_FILE = 'positions.parquet'
+POSITIONS_SCHEMA = 'backtest_positions/v1'
+
+
+def _write_positions(run_dir: Path,
+                     snapshots: Any) -> Dict[str, Any]:
+    """把成交日收盘持仓快照落成 positions.parquet，并返回登记元数据。"""
+    import polars as pl
+
+    rows: list[Dict[str, Any]] = []
+    dates: list[str] = []
+    for snap in snapshots or ():
+        day = str(snap.get('date'))
+        dates.append(day)
+        equity = float(snap.get('equity') or 0.0)
+        prices = snap.get('prices') or {}
+        for code, qty in (snap.get('positions') or {}).items():
+            price = prices.get(code)
+            weight = None
+            if price is not None and equity > 0:
+                weight = float(qty) * float(price) / equity
+            rows.append({
+                'date': day,
+                'code': str(code),
+                'weight': weight,
+                'shares': int(qty),
+                'close_raw': None if price is None else float(price),
+            })
+    if not rows:
+        return {'schema': POSITIONS_SCHEMA, 'file': None, 'rows': 0, 'snapshots': 0}
+    frame = pl.DataFrame(rows, schema={
+        'date': pl.Utf8,
+        'code': pl.Utf8,
+        'weight': pl.Float64,
+        'shares': pl.Int64,
+        'close_raw': pl.Float64,
+    })
+    path = run_dir / POSITIONS_FILE
+    frame.write_parquet(path)
+    return {
+        'schema': POSITIONS_SCHEMA,
+        'file': POSITIONS_FILE,
+        'rows': frame.height,
+        'snapshots': len(dates),
+        'first_date': dates[0],
+        'last_date': dates[-1],
+    }
 
 
 def sha256_bytes(payload: bytes) -> str:
@@ -171,7 +219,8 @@ def _ledger_lookup(version: str, store_root: Path | None = None
     payload = _read_json_file(root / 'meta' / 'data_version.json')
     if payload is None:
         return 'ledger_missing', None, None
-    current = payload.get('current') if isinstance(payload.get('current'), dict) else {}
+    raw_current = payload.get('current')
+    current: dict = raw_current if isinstance(raw_current, dict) else {}
     if current.get('version') == version:
         return 'current', current.get('digest'), current.get('as_of')
     for item in payload.get('versions') or []:
@@ -280,6 +329,8 @@ def write_run(run_dir: Path, spec_bytes: bytes, result: Dict[str, Any],
         'contract_violations': result['contract_violations'],
         'nav_rows': len(result['nav']),
     }
+    payload['positions'] = _write_positions(
+        run_dir, result.get('position_snapshots'))
     (run_dir / 'metrics.json').write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + '\n',
         encoding='utf-8', newline='\n')

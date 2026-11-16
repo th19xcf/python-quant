@@ -668,6 +668,9 @@ class RunContext:
     scaled_buy_orders: int
     #: 上述买单缩放比例之和（avg_buy_scale = 本值 / scaled_buy_orders）
     buy_scale_sum: float
+    #: 记录层钩子：成交日的收盘持仓快照（供归因落 positions.parquet，
+    #: 不参与任何撮合/成本计算）。每项含 date / equity / positions / prices。
+    position_snapshots: List[Dict[str, Any]]
 
 
 class EventBacktestRunner:
@@ -1005,6 +1008,7 @@ class EventBacktestRunner:
             blocked_by={},
             scaled_buy_orders=0,
             buy_scale_sum=0.0,
+            position_snapshots=[],
         )
         if ctx.corporate_actions is not None:
             events_by_code = (
@@ -1604,6 +1608,8 @@ class EventBacktestRunner:
         for day_index, trade_day in enumerate(sorted_dates):
             codes_today = day_codes[day_index]
             positions_today = day_positions[day_index]
+            # 记录层钩子：仅统计当日是否有成交，用于收盘持仓快照
+            trades_before_day = len(ctx.trades)
             # A11：日期解析从每 bar 一次降到每日一次；无区间表时完全跳过
             st_day = to_trade_date(trade_day) if has_st_intervals else None
             # 除权除息必须在当日撮合之前记账：除权日开盘价已扣权，且送转新增
@@ -1726,7 +1732,23 @@ class EventBacktestRunner:
                     signal_columns=signal_columns)
 
             # A10：total_equity 改为增量维护，O(1)
-            ctx.equity_curve.append({OUT_DATE: trade_day, 'equity': ctx.book.total_equity()})
+            equity = ctx.book.total_equity()
+            ctx.equity_curve.append({OUT_DATE: trade_day, 'equity': equity})
+            # 记录层钩子：成交日冻结一次收盘持仓快照（供归因落 positions.parquet），
+            # 只读取账本状态，不参与撮合、成本与净值计算
+            if len(ctx.trades) != trades_before_day:
+                ctx.position_snapshots.append({
+                    'date': trade_day,
+                    'equity': equity,
+                    'positions': {
+                        code: qty for code, qty in ctx.book.positions.items() if qty > 0
+                    },
+                    'prices': {
+                        code: ctx.book.last_prices[code]
+                        for code, qty in ctx.book.positions.items()
+                        if qty > 0 and code in ctx.book.last_prices
+                    },
+                })
 
         return st_unknown_seen, ctx.st_unknown_bars
 
@@ -1815,6 +1837,8 @@ class EventBacktestRunner:
             'total_return': total_return,
             'trades': ctx.trades,
             'equity_curve': equity_curve,
+            # 记录层：成交日收盘持仓快照（归因落 positions.parquet 用）
+            'position_snapshots': ctx.position_snapshots,
             'performance': performance,
             'risk_summary': risk_summary,
             'risk_gate': risk_gate,

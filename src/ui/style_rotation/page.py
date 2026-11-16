@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QPushButton,
     QSizePolicy,
@@ -21,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from src.quant.analysis.style_rotation_state import StyleRotationState
 from src.ui.advice.tokens import TOKENS, palette_for
+from src.ui.table_sizing import apply_content_widths, use_interactive_columns
 from src.ui.theme_manager import is_dark_palette
 
 
@@ -207,11 +207,6 @@ class StyleRotationPage(QWidget):
         self.dimension_table.setColumnWidth(0, 120)
         self.dimension_table.setColumnWidth(1, 80)
         self.dimension_table.setColumnWidth(2, 90)
-        for column in (1, 2):
-            self.dimension_table.horizontalHeader().setSectionResizeMode(
-                column, QHeaderView.ResizeMode.Fixed)
-        self.dimension_table.horizontalHeader().setSectionResizeMode(
-            3, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.dimension_table)
         return card
 
@@ -230,11 +225,6 @@ class StyleRotationPage(QWidget):
         self.portfolio_table.setColumnWidth(0, 120)
         self.portfolio_table.setColumnWidth(1, 100)
         self.portfolio_table.setColumnWidth(2, 100)
-        for column in (1, 2):
-            self.portfolio_table.horizontalHeader().setSectionResizeMode(
-                column, QHeaderView.ResizeMode.Fixed)
-        self.portfolio_table.horizontalHeader().setSectionResizeMode(
-            3, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.portfolio_table)
         return card
 
@@ -251,6 +241,7 @@ class StyleRotationPage(QWidget):
         table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         table.horizontalHeader().setHighlightSections(False)
         table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        use_interactive_columns(table)
         return table
 
     # -------------------------------------------------------------- loading
@@ -356,6 +347,7 @@ class StyleRotationPage(QWidget):
                     item.setToolTip(f'实际权重 {dimension.weight:.0%}｜{dimension.description}')
                 table.setItem(row, column, item)
         table.resizeRowsToContents()
+        apply_content_widths(table)
 
     def _fill_portfolios(self, state: StyleRotationState) -> None:
         table = self.portfolio_table
@@ -381,6 +373,7 @@ class StyleRotationPage(QWidget):
                         item.setForeground(self._brush(self._score_color(value)))
                 table.setItem(row, column, item)
         table.resizeRowsToContents()
+        apply_content_widths(table)
 
     @staticmethod
     def _pct(value: float | None) -> str:

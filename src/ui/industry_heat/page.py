@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QPushButton,
     QSizePolicy,
@@ -21,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from src.quant.analysis.industry_heat_state import IndustryHeatState
 from src.ui.advice.tokens import TOKENS, palette_for
+from src.ui.table_sizing import apply_content_widths, use_interactive_columns
 from src.ui.theme_manager import is_dark_palette
 
 
@@ -204,12 +204,6 @@ class IndustryHeatPage(QWidget):
         self.heat_table.setColumnWidth(0, 150)
         self.heat_table.setColumnWidth(1, 80)
         self.heat_table.setColumnWidth(2, 80)
-        self.heat_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Fixed)
-        self.heat_table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.Fixed)
-        self.heat_table.horizontalHeader().setSectionResizeMode(
-            3, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.heat_table)
         return card
 
@@ -226,6 +220,7 @@ class IndustryHeatPage(QWidget):
         table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         table.horizontalHeader().setHighlightSections(False)
         table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        use_interactive_columns(table)
         return table
 
     # -------------------------------------------------------------- loading
@@ -322,6 +317,7 @@ class IndustryHeatPage(QWidget):
                     item.setToolTip(f'行业代码 {heat.code}｜数据截至 {heat.asof}')
                 table.setItem(row, column, item)
         table.resizeRowsToContents()
+        apply_content_widths(table)
 
     @staticmethod
     def _item(

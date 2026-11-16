@@ -126,3 +126,71 @@ class MainWindowMarketTrendMixin:
             return
         self._style_rotation_loaded = True
         self.style_rotation_page.load_async()
+
+    def create_portfolio_risk_tab(self):
+        """创建仓位与风控标签页（由 create_center_area 在行业热度之后追加）。"""
+        layout = QVBoxLayout(self.portfolio_risk_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        from src.ui.portfolio_risk import PortfolioRiskPage
+        self.portfolio_risk_page = PortfolioRiskPage(host=self)
+
+        self.portfolio_risk_scroll_area = QScrollArea()
+        self.portfolio_risk_scroll_area.setWidgetResizable(True)
+        self.portfolio_risk_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.portfolio_risk_scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded)
+        self.portfolio_risk_scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded)
+        self.portfolio_risk_scroll_area.setWidget(self.portfolio_risk_page)
+        layout.addWidget(self.portfolio_risk_scroll_area)
+
+        self._portfolio_risk_loaded = False
+        self.tab_widget.currentChanged.connect(self._on_portfolio_risk_tab_changed)
+
+    def _on_portfolio_risk_tab_changed(self, index: int):
+        """首次切到仓位与风控页时才计算，避免拖慢启动。"""
+        if not hasattr(self, 'portfolio_risk_tab'):
+            return
+        if not hasattr(self, 'portfolio_risk_page'):
+            return
+        if self.tab_widget.widget(index) is not self.portfolio_risk_tab:
+            return
+        if getattr(self, '_portfolio_risk_loaded', False):
+            return
+        self._portfolio_risk_loaded = True
+        self.portfolio_risk_page.load_async()
+
+    def create_attribution_tab(self):
+        """创建收益归因标签页（由 create_center_area 在仓位与风控之后追加）。"""
+        layout = QVBoxLayout(self.attribution_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        from src.ui.attribution import AttributionPage
+        self.attribution_page = AttributionPage(host=self)
+
+        self.attribution_scroll_area = QScrollArea()
+        self.attribution_scroll_area.setWidgetResizable(True)
+        self.attribution_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.attribution_scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded)
+        self.attribution_scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded)
+        self.attribution_scroll_area.setWidget(self.attribution_page)
+        layout.addWidget(self.attribution_scroll_area)
+
+        self._attribution_loaded = False
+        self.tab_widget.currentChanged.connect(self._on_attribution_tab_changed)
+
+    def _on_attribution_tab_changed(self, index: int):
+        """首次切到收益归因页时才计算，避免拖慢启动。"""
+        if not hasattr(self, 'attribution_tab'):
+            return
+        if not hasattr(self, 'attribution_page'):
+            return
+        if self.tab_widget.widget(index) is not self.attribution_tab:
+            return
+        if getattr(self, '_attribution_loaded', False):
+            return
+        self._attribution_loaded = True
+        self.attribution_page.load_async()

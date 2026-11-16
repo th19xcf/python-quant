@@ -94,7 +94,7 @@ def build_path(ctx: compute.Context, spec: Dict[str, Any]
     resolved = spec['_resolved']
     exclusions = resolved['exclusions']
     factor = resolved['factor']
-    skip = Counter()
+    skip: Counter[str] = Counter()
     path: Dict[date, List[str]] = {}
 
     for day in ctx.days:
@@ -180,8 +180,9 @@ def run_engine(data: Dict[str, pl.DataFrame],
                spec: Dict[str, Any], dividends: Any, st_status: Any
                ) -> Tuple[Dict[str, Any], int, float]:
     used = {code: data[code] for code in schedules if code in data}
-    strategies = {code: MonthlyTargetWeightStrategy(sig)
-                  for code, sig in schedules.items() if code in used and sig}
+    strategies: Dict[str, BaseStrategy] = {
+        code: MonthlyTargetWeightStrategy(sig)
+        for code, sig in schedules.items() if code in used and sig}
     used = {code: df for code, df in used.items() if code in strategies}
     portfolio = spec['_resolved']['portfolio']
     engine = PortfolioBacktestEngine(used)
@@ -316,7 +317,7 @@ def execute(spec: Dict[str, Any], reporter: Any = None) -> Dict[str, Any]:
     if resolved['universe']['mode'] == 'explicit':
         allowed = set(resolved['universe']['codes'])
     ctx = compute.Context(data=data, days=days, quoted=quoted,
-                          st_status=st_status, allowed=allowed)
+                          st_status=st_status or {}, allowed=allowed)
     path, skipped = build_path(ctx, spec)
     if not path:
         raise RuntimeError(f'成分路径为空；跳过统计：{skipped}')
@@ -345,6 +346,8 @@ def execute(spec: Dict[str, Any], reporter: Any = None) -> Dict[str, Any]:
         'metrics': metrics,
         'timing': timing,
         'nav': curve,
+        # 记录层：成交日收盘持仓快照，供 records 落 positions.parquet
+        'position_snapshots': result.get('position_snapshots') or [],
         'skipped': skipped,
         'contract_violations': violations,
         'factor': resolved['factor'],

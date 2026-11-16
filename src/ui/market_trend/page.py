@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QPushButton,
     QSizePolicy,
@@ -24,6 +23,7 @@ from src.quant.analysis.market_trend_state import (
     format_raw_value,
 )
 from src.ui.advice.tokens import TOKENS, palette_for
+from src.ui.table_sizing import apply_content_widths, use_interactive_columns
 from src.ui.theme_manager import is_dark_palette
 
 
@@ -228,11 +228,6 @@ class MarketTrendPage(QWidget):
         self.layer_table.setColumnWidth(1, 70)
         self.layer_table.setColumnWidth(2, 70)
         self.layer_table.setColumnWidth(3, 60)
-        for column in (1, 2, 3):
-            self.layer_table.horizontalHeader().setSectionResizeMode(
-                column, QHeaderView.ResizeMode.Fixed)
-        self.layer_table.horizontalHeader().setSectionResizeMode(
-            4, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.layer_table)
         return card
 
@@ -253,11 +248,6 @@ class MarketTrendPage(QWidget):
         self.indicator_table.setColumnWidth(2, 110)
         self.indicator_table.setColumnWidth(3, 90)
         self.indicator_table.setColumnWidth(4, 64)
-        for column in (2, 3, 4):
-            self.indicator_table.horizontalHeader().setSectionResizeMode(
-                column, QHeaderView.ResizeMode.Fixed)
-        self.indicator_table.horizontalHeader().setSectionResizeMode(
-            5, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.indicator_table)
         return card
 
@@ -274,6 +264,7 @@ class MarketTrendPage(QWidget):
         table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         table.horizontalHeader().setHighlightSections(False)
         table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        use_interactive_columns(table)
         return table
 
     # -------------------------------------------------------------- loading
@@ -364,6 +355,7 @@ class MarketTrendPage(QWidget):
                     item.setForeground(self._brush(self._score_color(layer.score)))
                 table.setItem(row, column, item)
         table.resizeRowsToContents()
+        apply_content_widths(table)
         table.setFixedHeight(self._table_height(table))
 
     def _fill_indicators(self, state: TrendState) -> None:
@@ -407,6 +399,7 @@ class MarketTrendPage(QWidget):
                     item.setForeground(self._brush(self._score_color(indicator.score)))
                 table.setItem(row, column, item)
         table.resizeRowsToContents()
+        apply_content_widths(table)
         table.setFixedHeight(self._table_height(table))
 
     def _table_height(self, table: QTableWidget) -> int:
