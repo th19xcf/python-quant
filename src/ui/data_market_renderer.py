@@ -23,6 +23,8 @@ class MarketTableRenderer:
         self.window.stock_table.setSortingEnabled(False)
         self.window.stock_table.clearContents()
         self.window.stock_table.setRowCount(0)
+        if hasattr(self.window, 'table_interaction_manager'):
+            self.window.table_interaction_manager.capture_default_order()
 
     @staticmethod
     def _price_color(text_value, base_value):
@@ -114,8 +116,9 @@ class MarketTableRenderer:
 
             self._append_market_rows_to_table(self.window.stock_table, table_data)
 
-            # 仅在当前页面已有有效排序时恢复排序
+            # 仅在当前页面已有有效排序时恢复排序；无排序时默认行序即当前行序
             if hasattr(self.window, 'table_interaction_manager'):
+                self.window.table_interaction_manager.capture_default_order()
                 self.window.table_interaction_manager.restore_sort_state()
 
             stock_type = result.get("stock_type")

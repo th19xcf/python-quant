@@ -233,7 +233,8 @@ class AdvicePage(QWidget):
         table.setItemDelegate(self.delegate)
         table.setSortingEnabled(True)
         table.setShowGrid(False)
-        table.setAlternatingRowColors(True)
+        # 与「市场趋势」等页面统一：关闭交替行色，分隔线由单元格下边框提供
+        table.setAlternatingRowColors(False)
         table.setMouseTracking(True)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)

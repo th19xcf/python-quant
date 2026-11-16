@@ -23,9 +23,9 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QTableWidget,
@@ -39,6 +39,9 @@ from src.data.services.finance_service import (
     fetch_finance_snapshot,
     normalize_security_code,
 )
+from src.ui.advice.tokens import TOKENS, palette_for
+from src.ui.table_sizing import SizedTableMixin
+from src.ui.theme_manager import is_dark_palette
 from src.utils.code_converter import is_index_code
 
 # 指标分组：与 finance_service.METRIC_DEFS 的 key 对齐
@@ -66,8 +69,11 @@ def _fetch_finance_task(code: str, name: str, token: int, refresh: bool = False,
     return {'token': token, 'code': code, 'snapshot': snapshot, 'error': ''}
 
 
-class FinancePage(QWidget):
+class FinancePage(QWidget, SizedTableMixin):
     """财务分析主页面。"""
+
+    #: 两张表都在可拉伸的 QSplitter 里，高度交给外层布局，不钉死到内容高度
+    TABLE_FIXED_HEIGHT = False
 
     def __init__(self, host: Any = None, task_manager: Any = None,
                  parent: QWidget | None = None) -> None:
@@ -75,6 +81,8 @@ class FinancePage(QWidget):
         self.setObjectName('financePage')
         self.host = host
         self._task_manager = task_manager
+        self.theme = 'dark' if is_dark_palette() else 'light'
+        self._pal = palette_for(self.theme)
         self._target_code = ''
         self._target_name = ''
         self._loaded_code = ''
@@ -124,30 +132,39 @@ class FinancePage(QWidget):
         self.stack.addWidget(self.state_label)
         root.addWidget(self.stack, 1)
 
-        self.setStyleSheet("""
-            QWidget#financePage { background-color: #0b0f14; color: #c8d3e0;
-                font-family: "Microsoft YaHei"; font-size: 12px; }
-            QLabel#financeTitle { color: #e6edf5; font-size: 17px; font-weight: bold; }
-            QLabel#financeMeta { color: #7f8fa6; font-size: 11px; }
-            QLabel#financeState { color: #8fa3b8; font-size: 13px; padding: 28px; }
-            QFrame#financeCard { background-color: #111823; border: 1px solid #223042;
-                border-radius: 6px; }
-            QLabel#cardTitle { color: #e6edf5; font-size: 13px; font-weight: bold;
-                padding-bottom: 4px; }
-            QLabel#metricName { color: #7f8fa6; font-size: 11px; }
-            QLabel#metricValue { color: #e6edf5; font-size: 15px; font-weight: bold; }
-            QLabel#sectionTitle { color: #e6edf5; font-size: 13px; font-weight: bold; }
-            QLabel#emptyHint { color: #6f8299; font-size: 12px; padding: 12px; }
-            QPushButton#financeRefresh { background-color: #17222f; color: #c8d3e0;
-                border: 1px solid #2a3a4d; border-radius: 4px; padding: 4px 12px; }
-            QPushButton#financeRefresh:hover { background-color: #1e2c3d; }
-            QPushButton#financeRefresh:disabled { color: #56677a; }
-            QTableWidget { background-color: #0f1620; color: #c8d3e0;
-                gridline-color: #1e2a37; font-size: 12px; }
-            QHeaderView::section { background-color: #17222f; color: #9fb2c5;
-                border: 1px solid #223042; padding: 4px; }
-            QTableWidget::item:selected { background-color: #1f3b57; color: #ffffff; }
-        """)
+        self.setStyleSheet(self._qss())
+
+    def _qss(self) -> str:
+        """页面样式：与「市场趋势」等新页面共用同一套色板与表格底色口径。"""
+        pal = self._pal
+        tokens = TOKENS
+        return f"""
+            QWidget#financePage {{ background-color: {pal.bg}; color: {pal.text};
+                font-family: {tokens.font_family}; font-size: {tokens.font_body}px; }}
+            QLabel#financeTitle {{ color: {pal.text}; font-size: 17px; font-weight: bold; }}
+            QLabel#financeMeta {{ color: {pal.muted}; font-size: {tokens.font_small}px; }}
+            QLabel#financeState {{ color: {pal.muted}; font-size: 13px; padding: 28px; }}
+            QFrame#financeCard {{ background-color: {pal.card}; border: 1px solid {pal.border};
+                border-radius: {tokens.radius_sm}px; }}
+            QLabel#cardTitle {{ color: {pal.text}; font-size: 13px; font-weight: bold;
+                padding-bottom: 4px; }}
+            QLabel#metricName {{ color: {pal.muted}; font-size: {tokens.font_small}px; }}
+            QLabel#metricValue {{ color: {pal.text}; font-size: 15px; font-weight: bold; }}
+            QLabel#sectionTitle {{ color: {pal.text}; font-size: 13px; font-weight: bold; }}
+            QLabel#emptyHint {{ color: {pal.faint}; font-size: {tokens.font_body}px; padding: 12px; }}
+            QPushButton#financeRefresh {{ background-color: {pal.elevated}; color: {pal.text};
+                border: 1px solid {pal.border}; border-radius: {tokens.radius_sm}px; padding: 4px 12px; }}
+            QPushButton#financeRefresh:hover {{ background-color: {pal.accent_soft}; color: {pal.accent}; }}
+            QPushButton#financeRefresh:disabled {{ color: {pal.faint}; }}
+            QTableWidget {{ background-color: {pal.card}; color: {pal.text};
+                gridline-color: {pal.faint}; font-size: {tokens.font_body}px;
+                border: 1px solid {pal.border}; border-radius: {tokens.radius_sm}px; }}
+            QHeaderView::section {{ background-color: {pal.card}; color: {pal.muted};
+                border: none; border-bottom: 1px solid {pal.border};
+                border-right: 1px solid {pal.border}; padding: 6px 8px; font-weight: 600; }}
+            QTableWidget::item {{ background-color: {pal.card}; padding: 6px 8px; }}
+            QTableWidget::item:selected {{ background-color: {pal.selection}; color: {pal.text}; }}
+        """
 
     def _build_content(self) -> QWidget:
         content = QWidget()
@@ -221,11 +238,6 @@ class FinancePage(QWidget):
         layout.addWidget(title)
 
         self.news_table = self._make_table(['时间', '类型', '标题', '来源'])
-        header = self.news_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.news_table.cellClicked.connect(self._on_news_clicked)
         self.news_table.cellDoubleClicked.connect(self._on_news_double_clicked)
         layout.addWidget(self.news_table, 1)
@@ -241,15 +253,15 @@ class FinancePage(QWidget):
         layout.addWidget(self.news_detail)
         return panel
 
-    @staticmethod
-    def _make_table(headers: list[str]) -> QTableWidget:
+    def _make_table(self, headers: list[str]) -> QTableWidget:
+        """按新页面表格规范建表：可选中整行（资讯行可点击跳转）。"""
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        table.verticalHeader().setVisible(False)
-        table.setAlternatingRowColors(False)
+        table.setSizePolicy(QSizePolicy.Policy.Expanding,
+                            QSizePolicy.Policy.Expanding)
+        self._configure_sized_table(table, selectable=True)
         return table
 
     # -------------------------------------------------------------- 生命周期
@@ -606,42 +618,64 @@ class FinancePage(QWidget):
 
         self.history_empty.setVisible(False)
         self.history_table.setVisible(True)
-        self.history_table.setColumnCount(1 + len(periods))
-        self.history_table.setHorizontalHeaderLabels(['指标'] + periods)
-        self.history_table.setRowCount(len(rows))
+        table = self.history_table
+        self._prepare_table(table)
+        table.setColumnCount(1 + len(periods))
+        table.setHorizontalHeaderLabels(['指标'] + periods)
+        table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             label = str(row.get('label') or row.get('key') or '')
-            self.history_table.setItem(row_index, 0, QTableWidgetItem(label))
+            table.setItem(row_index, 0, self._cell(
+                label, Qt.AlignmentFlag.AlignLeft))
             values = row.get('values')
             values = values if isinstance(values, list) else []
             for col_index in range(len(periods)):
                 value = values[col_index] if col_index < len(values) else '—'
-                self.history_table.setItem(
-                    row_index, col_index + 1, QTableWidgetItem(str(value)))
-        self.history_table.resizeRowsToContents()
+                table.setItem(row_index, col_index + 1, self._cell(
+                    str(value), Qt.AlignmentFlag.AlignRight))
+        self._finalize_table(table)
+
+    @staticmethod
+    def _cell(text: str, align: Qt.AlignmentFlag) -> QTableWidgetItem:
+        cell = QTableWidgetItem(text)
+        cell.setTextAlignment(align | Qt.AlignmentFlag.AlignVCenter)
+        return cell
 
     def _render_news(self, news: Any) -> None:
         items = []
         if isinstance(news, list):
             items = [item for item in news if isinstance(item, dict)]
         self._news_items = items
-        self.news_table.setRowCount(len(items))
+        table = self.news_table
+        self._prepare_table(table)
+        table.setRowCount(len(items))
         for row, item in enumerate(items):
-            self.news_table.setItem(row, 0, QTableWidgetItem(str(item.get('time') or '')))
-            self.news_table.setItem(row, 1, QTableWidgetItem(str(item.get('type') or '')))
-            self.news_table.setItem(row, 2, QTableWidgetItem(str(item.get('title') or '')))
-            self.news_table.setItem(row, 3, QTableWidgetItem(str(item.get('source') or '')))
-        self.news_table.setVisible(bool(items))
+            for column, key in enumerate(('time', 'type', 'title', 'source')):
+                cell = self._cell(str(item.get(key) or ''),
+                                  Qt.AlignmentFlag.AlignLeft)
+                # 排序后行序会变，点击时按这个原始下标回查，不依赖行号
+                cell.setData(Qt.ItemDataRole.UserRole, row)
+                table.setItem(row, column, cell)
+        if items:
+            self._finalize_table(table)
+        table.setVisible(bool(items))
         self.news_empty.setVisible(not items)
         if items:
             self.news_detail.setText('单击条目查看摘要，双击有原文链接的新闻可直接打开。')
         else:
             self.news_detail.setText('未获取到公告、新闻、业绩预告、分红或风险提示。')
 
+    def _news_index_at(self, row: int) -> int | None:
+        """取该行对应 `_news_items` 的原始下标；序号列已占第 0 列。"""
+        cell = self.news_table.item(row, 1)
+        index = cell.data(Qt.ItemDataRole.UserRole) if cell is not None else None
+        return index if isinstance(index, int) else None
+
     def _on_news_clicked(self, row: int, column: int) -> None:
-        if not 0 <= row < len(self._news_items):
+        index = self._news_index_at(row)
+        if index is None or not 0 <= index < len(self._news_items):
             return
-        item = self._news_items[row]
+        item = self._news_items[index]
         title = str(item.get('title') or '')
         summary = str(item.get('summary') or '').strip()
         source = str(item.get('source') or '')
@@ -651,9 +685,10 @@ class FinancePage(QWidget):
         self.news_detail.setText(text)
 
     def _on_news_double_clicked(self, row: int, column: int) -> None:
-        if not 0 <= row < len(self._news_items):
+        index = self._news_index_at(row)
+        if index is None or not 0 <= index < len(self._news_items):
             return
-        item = self._news_items[row]
+        item = self._news_items[index]
         url = str(item.get('url') or '').strip()
         if not url:
             self.news_detail.setText('该条资讯没有原文链接，已展示摘要。')

@@ -8,6 +8,7 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor, QKeyEvent
 from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
 
+from src.ui.data_market_renderer import MarketTableRenderer
 from src.ui.main_window_navigation_mixin import MainWindowNavigationMixin
 from src.ui.table_interaction_manager import TableInteractionManager
 
@@ -613,42 +614,61 @@ def test_get_current_index_list_empty_table():
 # ---------------------------------------------------------------------------
 
 
+SORT_ROWS = [
+    ['2024', 'sh600519', '贵州茅台', '+10.50', '10.5', '+1.0', '9.0', '3.0',
+     '10.0', '10.0', '10.0', '9.5', '0'],
+    ['2024', 'sz000001', '平安银行', '+9.80', '8.0', '-1.0', '9.0', '1.0',
+     '8.0', '8.0', '8.0', '10.0', '0'],
+    ['2024', 'sz399001', '深证成指', '0.00', '9.0', '0.00', '9.0', '0.0',
+     '9.0', '9.0', '9.0', '9.0', '0'],
+]
+
+
 def test_header_click_cycles_sort_states(qapp):
-    table = _make_table()
+    """三态：升序 → 降序 → 取消；Qt 文本排序保持关闭，由管理器按解析值重排。"""
+    table = _make_table(row_count=3, values=SORT_ROWS)
     manager, window = _make_manager(table)
+    names = lambda: [table.item(row, 2).text()  # noqa: E731
+                     for row in range(table.rowCount())]
 
-    manager.on_header_clicked(0)
-    assert table.isSortingEnabled() is True
-    assert table.horizontalHeader().sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
-    assert window.current_sorted_column == 0
-
-    manager.on_header_clicked(0)
-    assert table.horizontalHeader().sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
-    assert window.current_sorted_column == 0
-
-    manager.on_header_clicked(0)
+    manager.on_header_clicked(3)
     assert table.isSortingEnabled() is False
+    assert names() == ['深证成指', '平安银行', '贵州茅台']
+    assert table.horizontalHeader().sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
+    assert window.current_sorted_column == 3
+
+    manager.on_header_clicked(3)
+    assert names() == ['贵州茅台', '平安银行', '深证成指']
+    assert table.horizontalHeader().sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
+    assert window.current_sorted_column == 3
+
+    manager.on_header_clicked(3)
+    assert table.isSortingEnabled() is False
+    assert names() == ['贵州茅台', '平安银行', '深证成指']  # 默认行序
     assert window.current_sorted_column == -1
     assert table.rowCount() == 3
 
 
 def test_reset_sort_and_restore_rows_keeps_colors(qapp):
-    table = _make_table(values=[['2024', 'sh600519', '贵州茅台', '+3.5', '10.0', '+2.0',
-                                 '9.0', '3.0', '10.0', '10.0', '10.0', '9.0', '0'],
-                                 ['2024', 'sz000001', '平安银行', '-2.0', '8.0', '-1.0',
-                                  '9.0', '1.0', '8.0', '8.0', '8.0', '10.0', '0'],
-                                 ['2024', 'sz399001', '深证成指', '0.00', '9.0', '0.00',
-                                  '9.0', '0.0', '9.0', '9.0', '9.0', '9.0', '0']])
+    """取消排序按默认行序还原，涨跌配色随单元格一起搬移，不靠重绘重建。"""
+    table = _make_table(row_count=3, values=SORT_ROWS)
     manager, window = _make_manager(table)
+    colors = (QColor(255, 0, 0), QColor(0, 255, 0), QColor(204, 204, 204))
+    for row, color in enumerate(colors):
+        table.item(row, 3).setForeground(color)
+    manager.capture_default_order()
+
+    manager.on_header_clicked(3)
+    assert table.item(0, 2).text() == '深证成指'
 
     manager._reset_sort_and_restore_rows(window)
 
     assert table.isSortingEnabled() is False
     assert table.rowCount() == 3
     assert window.current_sorted_column == -1
-    assert table.item(0, 3).foreground().color() == QColor(255, 0, 0)
-    assert table.item(1, 3).foreground().color() == QColor(0, 255, 0)
-    assert table.item(2, 3).foreground().color() == QColor(204, 204, 204)
+    assert [table.item(row, 2).text() for row in range(3)] == [
+        '贵州茅台', '平安银行', '深证成指']
+    assert [table.item(row, 3).foreground().color() for row in range(3)] == list(colors)
 
 
 def test_reset_sort_state_clears_state(qapp):
@@ -669,14 +689,15 @@ def test_reset_sort_state_clears_state(qapp):
     assert table.horizontalHeader().isSortIndicatorShown() is False
 
 
-@pytest.mark.parametrize(('column', 'states', 'sorting'), [
+@pytest.mark.parametrize(('column', 'states', 'sorted_active'), [
     (-1, {}, False),
     (0, {0: 1}, True),
     (0, {0: 2}, True),
     (0, {0: 0}, False),
     (5, {}, False),
 ])
-def test_restore_sort_state(qapp, column, states, sorting):
+def test_restore_sort_state(qapp, column, states, sorted_active):
+    """恢复排序只重排并给箭头，不重新打开 Qt 文本排序（会破坏数值序）。"""
     table = _make_table()
     window = SimpleNamespace(
         stock_table=table,
@@ -684,17 +705,20 @@ def test_restore_sort_state(qapp, column, states, sorting):
         current_sorted_column=column,
     )
     manager = TableInteractionManager(window)
+    manager.capture_default_order()
 
     manager.restore_sort_state()
 
-    assert table.isSortingEnabled() is sorting
-    if sorting:
+    assert table.isSortingEnabled() is False
+    if sorted_active:
         expected = (
             Qt.SortOrder.AscendingOrder if states[column] == 1
             else Qt.SortOrder.DescendingOrder
         )
         assert table.horizontalHeader().sortIndicatorSection() == column
         assert table.horizontalHeader().sortIndicatorOrder() == expected
+    else:
+        assert table.horizontalHeader().isSortIndicatorShown() is False
 
 
 # ---------------------------------------------------------------------------
@@ -711,30 +735,27 @@ def test_restore_sort_state(qapp, column, states, sorting):
     (4, '8.0', '9.0', QColor(0, 255, 0)),
     (8, '9.0', '9.0', QColor(204, 204, 204)),
 ])
-def test_apply_restored_cell_style(column, value, preclose, expected):
+def test_market_cell_price_color(column, value, preclose, expected):
+    """涨跌配色由建单元格时一次设定，排序/还原搬移单元格即可保留。"""
     row_data = [''] * COLUMNS
     row_data[11] = preclose
-    item = QTableWidgetItem(value)
 
-    TableInteractionManager._apply_restored_cell_style(item, row_data, column, value)
+    item = MarketTableRenderer(None)._build_market_cell(column, value, row_data)
 
     assert item.foreground().color() == expected
 
 
-def test_apply_restored_cell_style_short_row_uses_zero():
-    item = QTableWidgetItem('-1.0')
+def test_market_cell_short_row_uses_zero():
     row_data = [''] * COLUMNS
     row_data[11] = '-'
 
-    TableInteractionManager._apply_restored_cell_style(item, row_data, 4, '-1.0')
+    item = MarketTableRenderer(None)._build_market_cell(4, '-1.0', row_data)
 
     assert item.foreground().color() == QColor(0, 255, 0)
 
 
-def test_apply_restored_cell_style_aligns_numeric_columns():
-    item = QTableWidgetItem('1.0')
-
-    TableInteractionManager._apply_restored_cell_style(item, [''] * COLUMNS, 7, '1.0')
+def test_market_cell_aligns_numeric_columns():
+    item = MarketTableRenderer(None)._build_market_cell(7, '1.0', [''] * COLUMNS)
 
     assert item.textAlignment() == int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 

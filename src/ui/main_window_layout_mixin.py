@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.ui.advice.tokens import TOKENS, palette_for
+from src.ui.table_sizing import FIXED_ROW_HEIGHT, SEQ_COLUMN_WIDTH
 from src.ui.theme_manager import SidebarItemDelegate, is_dark_palette, sidebar_qss
 from src.utils.logger import logger
 
@@ -298,29 +300,45 @@ class MainWindowLayoutMixin:
         # 初始状态禁用默认排序
         self.stock_table.setSortingEnabled(False)
 
-        # 设置通达信风格的表格样式
-        self.stock_table.setStyleSheet("""
-            QTableWidget {
-                background-color: #000000;
-                color: #C0C0C0;
-                gridline-color: #333333;
-                font-family: "Microsoft YaHei";
-                font-size: 12px;
-            }
-            QTableWidget::item {
-                padding: 2px;
-            }
-            QHeaderView::section {
-                background-color: #222222;
-                color: #C0C0C0;
-                border: 1px solid #333333;
-                font-weight: bold;
-                padding: 5px;
-            }
-            QTableWidget::item:selected {
-                background-color: #0066CC;
-                color: #FFFFFF;
-            }
+        # 表头作为序号列：宽 50、居中、按显示行序自动重编；大表固定行高 32px
+        vertical = self.stock_table.verticalHeader()
+        vertical.setVisible(True)
+        vertical.setFixedWidth(SEQ_COLUMN_WIDTH)
+        vertical.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        vertical.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        vertical.setDefaultSectionSize(FIXED_ROW_HEIGHT)
+        self.stock_table.setCornerButtonEnabled(False)
+        self.stock_table.setWordWrap(False)
+        self.stock_table.setAlternatingRowColors(False)
+        self.stock_table.setShowGrid(True)
+
+        # 底色与表头同色，与「市场趋势」等新页面的表格口径一致
+        pal = palette_for('dark' if is_dark_palette() else 'light')
+        self.stock_table.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {pal.card};
+                color: {pal.text};
+                gridline-color: {pal.faint};
+                font-family: {TOKENS.font_family};
+                font-size: {TOKENS.font_body}px;
+            }}
+            QTableWidget::item {{
+                padding: 4px 6px;
+                background-color: {pal.card};
+            }}
+            QHeaderView::section {{
+                background-color: {pal.card};
+                color: {pal.muted};
+                border: none;
+                border-bottom: 1px solid {pal.border};
+                border-right: 1px solid {pal.border};
+                font-weight: 600;
+                padding: 6px 8px;
+            }}
+            QTableWidget::item:selected {{
+                background-color: {pal.selection};
+                color: {pal.text};
+            }}
         """)
 
 

@@ -209,7 +209,6 @@ QComboBox#sortCombo QAbstractItemView {{
 }}
 QTableView#adviceTable {{
     background: {p.card};
-    alternate-background-color: {p.zebra};
     color: {p.text};
     border: none;
     gridline-color: transparent;
@@ -224,7 +223,7 @@ QTableView#adviceTable::item {{
 }}
 QTableView#adviceTable::item:hover {{ background: {p.hover}; }}
 QHeaderView#adviceHeader::section {{
-    background: {p.surface};
+    background: {p.card};
     color: {p.muted};
     border: none;
     border-bottom: 1px solid {p.border};

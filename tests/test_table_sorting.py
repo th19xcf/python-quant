@@ -281,16 +281,16 @@ def test_large_table_uses_fixed_row_height(qapp):
         page.close()
 
 
-@pytest.mark.parametrize('module', [
-    'src.ui.market_trend.page',
-    'src.ui.industry_heat.page',
-    'src.ui.style_rotation.page',
-    'src.ui.portfolio_risk.page',
-    'src.ui.attribution.page',
+@pytest.mark.parametrize(('module', 'name'), [
+    ('src.ui.table_sizing', 'sort_key'),
+    ('src.ui.industry_heat.page', '_sort_key'),
+    ('src.ui.style_rotation.page', '_sort_key'),
+    ('src.ui.portfolio_risk.page', '_sort_key'),
+    ('src.ui.attribution.page', '_sort_key'),
 ])
-def test_sort_key_parses_numbers_units_and_empty(module):
+def test_sort_key_parses_numbers_units_and_empty(module, name):
     """百分号、正负号、乘数、单位与空值文本都转成正确的排序键。"""
-    sort_key = __import__(module, fromlist=['_sort_key'])._sort_key
+    sort_key = __import__(module, fromlist=[name]).__dict__[name]
     assert sort_key('-3.35%') == ('n', -3.35)
     assert sort_key('+1.92%') == ('n', 1.92)
     assert sort_key('×0.85') == ('n', 0.85)

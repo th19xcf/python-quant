@@ -4,6 +4,13 @@
 表格交互管理器
 """
 
+from PySide6.QtCore import Qt
+
+from src.ui.table_sizing import (
+    restore_row_order,
+    snapshot_row_order,
+    sort_rows_by_column,
+)
 from src.ui.utils.ui_feedback import (
     show_data_read_error,
     show_indicator_calculate_error,
@@ -16,20 +23,28 @@ class TableInteractionManager:
 
     def __init__(self, window):
         self.window = window
+        #: 当前渲染的默认行序快照，取消排序时按它还原
+        self._default_order: list[tuple[str, ...]] = []
+
+    def capture_default_order(self):
+        """行情表重绘后记下默认行序，供「取消排序」还原。"""
+        try:
+            self._default_order = snapshot_row_order(
+                self.window.stock_table, start_column=0)
+        except (OSError, RuntimeError) as e:
+            logger.exception(f"记录行情默认行序失败: {e}")
 
     def reset_sort_state(self):
         """重置表格排序状态，避免页面之间继承排序设置"""
         window = self.window
         try:
-            from PySide6.QtCore import Qt
-
             window.stock_table.setSortingEnabled(False)
             window.column_sort_states = {}
             window.current_sorted_column = -1
 
             header = window.stock_table.horizontalHeader()
             header.setSortIndicatorShown(False)
-            header.setSortIndicator(-1, Qt.AscendingOrder)
+            header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
         except (OSError, RuntimeError) as e:
             logger.exception(f"重置表格排序状态失败: {e}")
 
@@ -37,8 +52,6 @@ class TableInteractionManager:
         """按当前页面的排序状态恢复排序；若无有效排序则保持关闭。"""
         window = self.window
         try:
-            from PySide6.QtCore import Qt
-
             column = window.current_sorted_column
             if column is None or column < 0:
                 self.reset_sort_state()
@@ -46,18 +59,14 @@ class TableInteractionManager:
 
             sort_state = window.column_sort_states.get(column, 0)
             if sort_state == 1:
-                order = Qt.AscendingOrder
+                order = Qt.SortOrder.AscendingOrder
             elif sort_state == 2:
-                order = Qt.DescendingOrder
+                order = Qt.SortOrder.DescendingOrder
             else:
                 self.reset_sort_state()
                 return
 
-            header = window.stock_table.horizontalHeader()
-            header.setSortIndicatorShown(True)
-            header.setSortIndicator(column, order)
-            window.stock_table.setSortingEnabled(True)
-            window.stock_table.sortItems(column, order)
+            self._apply_sort(window, column, order)
         except (OSError, RuntimeError) as e:
             logger.exception(f"恢复表格排序状态失败: {e}")
 
@@ -70,78 +79,34 @@ class TableInteractionManager:
             next_state = (current_state + 1) % 3
             window.column_sort_states[logical_index] = next_state
 
-            from PySide6.QtCore import Qt
-
             if next_state == 1:
-                self._apply_sort(window, logical_index, Qt.AscendingOrder)
+                self._apply_sort(window, logical_index, Qt.SortOrder.AscendingOrder)
             elif next_state == 2:
-                self._apply_sort(window, logical_index, Qt.DescendingOrder)
+                self._apply_sort(window, logical_index, Qt.SortOrder.DescendingOrder)
             else:
                 self._reset_sort_and_restore_rows(window)
         except (OSError, RuntimeError) as e:
             logger.exception(f"处理表头点击事件失败: {e}")
 
     def _apply_sort(self, window, logical_index, order):
-        """按指定方向启用排序并记录当前排序列。"""
-        window.stock_table.horizontalHeader().setSortIndicatorShown(True)
-        window.stock_table.horizontalHeader().setSortIndicator(logical_index, order)
-        window.stock_table.setSortingEnabled(True)
-        window.stock_table.sortItems(logical_index, order)
+        """按解析值重排行（数值列不再按文本字典序），并记录当前排序列。"""
+        table = window.stock_table
+        table.setSortingEnabled(False)
+        table.horizontalHeader().setSortIndicatorShown(True)
+        table.horizontalHeader().setSortIndicator(logical_index, order)
+        sort_rows_by_column(
+            table, logical_index,
+            order == Qt.SortOrder.DescendingOrder, start_column=0)
         window.current_sorted_column = logical_index
 
     def _reset_sort_and_restore_rows(self, window):
-        """取消排序并按当前顺序重绘所有行（保留涨跌配色）。"""
-        from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import QTableWidgetItem
-
-        window.stock_table.setSortingEnabled(False)
-        window.stock_table.horizontalHeader().setSortIndicatorShown(False)
-        window.stock_table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
-
-        current_data = []
-        row_count = window.stock_table.rowCount()
-        for row in range(row_count):
-            row_data = []
-            for col in range(window.stock_table.columnCount()):
-                item = window.stock_table.item(row, col)
-                row_data.append(item.text() if item else "")
-            current_data.append(row_data)
-
-        window.stock_table.setRowCount(0)
-
-        for row_data in current_data:
-            row_pos = window.stock_table.rowCount()
-            window.stock_table.insertRow(row_pos)
-            for col, value in enumerate(row_data):
-                item = QTableWidgetItem(value)
-                self._apply_restored_cell_style(item, row_data, col, value)
-                window.stock_table.setItem(row_pos, col, item)
+        """取消排序：按默认行序快照还原（涨跌配色随单元格一起搬移）。"""
+        table = window.stock_table
+        table.setSortingEnabled(False)
+        table.horizontalHeader().setSortIndicatorShown(False)
+        table.horizontalHeader().setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
+        restore_row_order(table, self._default_order, start_column=0)
         window.current_sorted_column = -1
-
-    @staticmethod
-    def _apply_restored_cell_style(item, row_data, col, value):
-        """按列恢复单元格对齐与涨跌配色。"""
-        from PySide6.QtCore import Qt
-        from PySide6.QtGui import QColor
-
-        if col in [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
-            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        if col == 3 or col == 5:
-            if value.startswith("+") or (value.replace(".", "").isdigit() and float(value) > 0):
-                item.setForeground(QColor(255, 0, 0))
-            elif value.startswith("-"):
-                item.setForeground(QColor(0, 255, 0))
-            else:
-                item.setForeground(QColor(204, 204, 204))
-        elif col in (4, 8, 9, 10):
-            preclose = float(row_data[11]) if len(row_data) > 11 and row_data[11] != "-" else 0.0
-            price = float(value) if value != "-" else 0.0
-            if price > preclose:
-                item.setForeground(QColor(255, 0, 0))
-            elif price < preclose:
-                item.setForeground(QColor(0, 255, 0))
-            else:
-                item.setForeground(QColor(204, 204, 204))
 
     def on_stock_double_clicked(self, row, column):
         """处理股票双击事件"""

@@ -1,12 +1,17 @@
-"""五个分析页面表格口径：列宽可拖动、行高按内容自适应并夹在 [MIN, MAX]。"""
+"""分析页面表格口径：列宽可拖动、行高夹在 [MIN, MAX]、底色统一、三态排序。
+
+覆盖「市场趋势」等五个新页面与「财务分析」页、行情表的共享实现。
+"""
 
 from __future__ import annotations
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QHeaderView, QTableWidget, QTableWidgetItem
 
 from src.ui.attribution.page import AttributionPage
+from src.ui.finance.page import FinancePage
 from src.ui.industry_heat.page import IndustryHeatPage
 from src.ui.market_trend.page import (
     HEADER_ROW_HEIGHT,
@@ -16,8 +21,11 @@ from src.ui.market_trend.page import (
 )
 from src.ui.portfolio_risk.page import PortfolioRiskPage
 from src.ui.style_rotation.page import StyleRotationPage
+from src.ui.table_interaction_manager import TableInteractionManager
 from src.ui.table_sizing import (
+    FIXED_ROW_HEIGHT,
     MIN_COLUMN_WIDTH,
+    SEQ_COLUMN_WIDTH,
     apply_content_widths,
     apply_wrapped_row_heights,
     measure_natural_widths,
@@ -248,3 +256,160 @@ def test_apply_wrapped_row_heights_follows_content(qapp):
     assert table.rowHeight(0) == MIN_ROW_HEIGHT
     assert MIN_ROW_HEIGHT < table.rowHeight(1) <= 120
     qapp.processEvents()
+
+
+# --------------------------------------------------------------- 财务分析页
+HISTORY_ROWS = [
+    {'label': 'C', 'values': ['5.00%', '4.80%']},
+    {'label': 'A', 'values': ['10.50%', '9.80%']},
+    {'label': 'B', 'values': ['2.00%', '—']},
+    {'label': 'D', 'values': ['—', '—']},
+]
+
+NEWS_ITEMS = [
+    {'time': '2026-02-01 09:00', 'type': '新闻', 'title': '后一条',
+     'source': '来源乙', 'summary': '摘要乙'},
+    {'time': '2026-01-01 09:00', 'type': '公告', 'title': '前一条',
+     'source': '来源甲', 'summary': '摘要甲'},
+]
+
+
+def _finance_page(qapp) -> FinancePage:
+    page = FinancePage(task_manager=object())
+    page.resize(1280, 900)
+    page.show()
+    qapp.processEvents()
+    return page
+
+
+def _render_finance(page: FinancePage, history=None, news=None) -> None:
+    page._render_history(history or {'periods': ['2026-06-30', '2026-09-30'],
+                                     'rows': HISTORY_ROWS})
+    page._render_news(NEWS_ITEMS if news is None else news)
+    page.update()
+
+
+def test_finance_tables_follow_shared_table_spec(qapp):
+    """序号列在最左、宽 50、居中，关交替行色、开分隔线、列宽可拖动。"""
+    page = _finance_page(qapp)
+    try:
+        _render_finance(page)
+        qapp.processEvents()
+        for table in (page.history_table, page.news_table):
+            assert not table.alternatingRowColors(), '财务页仍在用交替行色'
+            assert table.showGrid(), '财务页分隔线不可见'
+            assert table.horizontalHeaderItem(0).text() == '序号'
+            assert table.columnWidth(0) == SEQ_COLUMN_WIDTH
+            seq = table.item(0, 0)
+            assert seq.text() == '1'
+            assert seq.textAlignment() & Qt.AlignmentFlag.AlignHCenter
+            header = table.horizontalHeader()
+            assert not header.stretchLastSection()
+            for index in range(table.columnCount()):
+                assert (header.sectionResizeMode(index)
+                        == QHeaderView.ResizeMode.Interactive)
+        _show_ancestors(page.history_table)
+        page.history_table.setMinimumHeight(200)
+        page._finalize_table(page.history_table)
+        qapp.processEvents()
+        expected = page.history_table.palette().color(
+            QPalette.ColorRole.Base).name()
+        assert set(_surface_pixel_colors(page.history_table).values()) == {expected}
+    finally:
+        page.close()
+
+
+def test_finance_history_three_state_sort_uses_parsed_values(qapp):
+    """升序 → 降序 → 取消，数值按解析值比较、空值沉底、取消还原默认行序。"""
+    page = _finance_page(qapp)
+    try:
+        _render_finance(page)
+        qapp.processEvents()
+        table = page.history_table
+        labels = lambda: [table.item(row, 1).text()  # noqa: E731
+                          for row in range(table.rowCount())]
+        assert labels() == ['C', 'A', 'B', 'D']
+
+        page._on_header_clicked(table, 2)              # 升序
+        assert labels() == ['B', 'C', 'A', 'D']
+        assert [table.item(row, 0).text()
+                for row in range(table.rowCount())] == ['1', '2', '3', '4']
+
+        page._on_header_clicked(table, 2)              # 降序
+        assert labels() == ['A', 'C', 'B', 'D']
+
+        page._on_header_clicked(table, 2)              # 取消
+        assert labels() == ['C', 'A', 'B', 'D']
+        assert not table.horizontalHeader().isSortIndicatorShown()
+
+        page._on_header_clicked(table, 0)              # 序号列不参与排序
+        assert labels() == ['C', 'A', 'B', 'D']
+    finally:
+        page.close()
+
+
+def test_finance_news_click_maps_to_row_after_sort(qapp):
+    """排序后单击按单元格里的原始下标回查，不会读错条目。"""
+    page = _finance_page(qapp)
+    try:
+        _render_finance(page)
+        qapp.processEvents()
+        page._on_header_clicked(page.news_table, 1)     # 时间升序
+        assert page.news_table.item(0, 3).text() == '前一条'
+        page._on_news_clicked(0, 3)
+        assert '前一条' in page.news_detail.text()
+    finally:
+        page.close()
+
+
+def test_finance_large_table_uses_fixed_rows_and_tooltips(qapp):
+    """行数 >200 且文本折行时固定行高 32px，并给长文本补 tooltip。"""
+    page = _finance_page(qapp)
+    try:
+        rows = [{'label': f'长文本指标名称用于验证固定行高与提示{index:03d}',
+                 'values': ['12.34%']} for index in range(201)]
+        page._render_history({'periods': ['2026-09-30'], 'rows': rows})
+        qapp.processEvents()
+        table = page.history_table
+        assert table.rowCount() == 201
+        assert table.rowHeight(0) == FIXED_ROW_HEIGHT
+        assert table.item(0, 1).toolTip(), '大表长文本没有 tooltip'
+    finally:
+        page.close()
+
+
+# ------------------------------------------------------------------- 行情表
+class _FakeMarketWindow:
+    """只提供 TableInteractionManager 需要的字段。"""
+
+    def __init__(self, table: QTableWidget) -> None:
+        self.stock_table = table
+        self.column_sort_states: dict[int, int] = {}
+        self.current_sorted_column = -1
+
+
+def test_market_table_three_state_sort_is_numeric(qapp):
+    """行情表按解析值排序：+10.50 不能排在 +9.80 前面；取消还原默认行序。"""
+    table = _shown_table(['日期', '代码', '名称', '涨跌幅%'])
+    fill = [('2026-11-14', '000001.SZ', '乙', '+9.80'),
+            ('2026-11-14', '600000.SH', '甲', '+10.50'),
+            ('2026-11-13', '000002.SZ', '丙', '-1.00')]
+    table.setRowCount(len(fill))
+    for row, values in enumerate(fill):
+        for column, value in enumerate(values):
+            table.setItem(row, column, QTableWidgetItem(value))
+    qapp.processEvents()
+
+    manager = TableInteractionManager(_FakeMarketWindow(table))
+    manager.capture_default_order()
+    names = lambda: [table.item(row, 2).text()  # noqa: E731
+                     for row in range(table.rowCount())]
+
+    manager.on_header_clicked(3)
+    assert names() == ['丙', '乙', '甲']
+    manager.on_header_clicked(3)
+    assert names() == ['甲', '乙', '丙']
+    manager.on_header_clicked(3)
+    assert names() == ['乙', '甲', '丙'], '取消排序未还原默认行序'
+    assert table.item(0, 3).text() == '+9.80'
+
