@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
 from src.ui.data_market_renderer import MarketTableRenderer
 from src.ui.main_window_navigation_mixin import MainWindowNavigationMixin
 from src.ui.table_interaction_manager import TableInteractionManager
+from src.ui.table_sizing import CELL_PADDING_H
 
 COLUMNS = 13
 
@@ -758,6 +759,32 @@ def test_market_cell_aligns_numeric_columns():
     item = MarketTableRenderer(None)._build_market_cell(7, '1.0', [''] * COLUMNS)
 
     assert item.textAlignment() == int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+
+MARKET_HEADERS = ['日期', '代码', '名称', '涨跌幅%', '现价', '涨跌', '总量', '成交额',
+                  '今开', '最高', '最低', '昨收', '振幅%']
+
+
+def test_market_table_fits_code_and_name_columns(qapp):
+    """渲染后按最长内容估宽：带市场后缀的代码、长名称都不再截断。"""
+    rows = [
+        ['2026-11-14', '600519.SH', '中国石油天然气', '+10.50', '1680.0', '+1.0',
+         '120000', '201.6亿', '1520.0', '1700.0', '1510.0', '1520.2', '12.5'],
+        ['2026-11-14', '000001.SZ', '平安银行', '+9.80', '11.20', '+1.00',
+         '980000', '10.9亿', '10.30', '11.50', '10.20', '10.20', '12.7'],
+    ]
+    table = _make_table(row_count=len(rows), values=rows)
+    table.setHorizontalHeaderLabels(MARKET_HEADERS)
+    renderer = MarketTableRenderer(SimpleNamespace(stock_table=table))
+
+    renderer._append_market_rows_to_table(table, rows)
+
+    metrics = table.fontMetrics()
+    assert (table.columnWidth(1)
+            >= metrics.horizontalAdvance('600519.SH') + CELL_PADDING_H - 1), '代码列仍被截断'
+    assert (table.columnWidth(2)
+            >= metrics.horizontalAdvance('中国石油天然气') + CELL_PADDING_H - 1), '名称列仍被截断'
+    assert table.columnWidth(1) > 80, '旧的固定 80px 装不下 9 位代码'
 
 
 @pytest.mark.parametrize(('code', 'market', 'tdx_code'), [

@@ -282,8 +282,8 @@ class MainWindowLayoutMixin:
             "日期", "代码", "名称", "涨跌幅%", "现价", "涨跌", "总量", "成交额", "今开", "最高", "最低", "昨收", "振幅%"
         ])
 
-        # 设置列宽
-        column_widths = [100, 80, 100, 80, 80, 80, 100, 120, 80, 80, 80, 80, 80]  # 调整为适合通达信数据的列宽
+        # 首次渲染前的占位列宽；有数据后按每列最长内容重新估算（见 data_market_renderer）
+        column_widths = [93, 87, 74, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70]
         for i, width in enumerate(column_widths):
             self.stock_table.setColumnWidth(i, width)
 

@@ -24,9 +24,11 @@ from src.ui.style_rotation.page import StyleRotationPage
 from src.ui.table_interaction_manager import TableInteractionManager
 from src.ui.table_sizing import (
     FIXED_ROW_HEIGHT,
+    MAX_COLUMN_WIDTH,
     MIN_COLUMN_WIDTH,
     SEQ_COLUMN_WIDTH,
     apply_content_widths,
+    apply_estimated_column_widths,
     apply_wrapped_row_heights,
     measure_natural_widths,
 )
@@ -412,4 +414,35 @@ def test_market_table_three_state_sort_is_numeric(qapp):
     manager.on_header_clicked(3)
     assert names() == ['乙', '甲', '丙'], '取消排序未还原默认行序'
     assert table.item(0, 3).text() == '+9.80'
+
+
+def test_estimated_column_widths_use_longest_text_once(qapp):
+    """按每列最长文本估宽：装得下最长内容、夹在 [MIN, 上限] 之间。"""
+    table = _shown_table(['代码', '名称'])
+    rows = [['600519.SH', '贵州茅台'], ['000001.SZ', '中国石油天然气']]
+    table.setRowCount(len(rows))
+    for row, values in enumerate(rows):
+        for column, value in enumerate(values):
+            table.setItem(row, column, QTableWidgetItem(value))
+    qapp.processEvents()
+    metrics = table.fontMetrics()
+
+    apply_estimated_column_widths(table, rows)
+
+    assert table.columnWidth(0) >= metrics.horizontalAdvance('600519.SH')
+    assert table.columnWidth(0) >= MIN_COLUMN_WIDTH
+    assert table.columnWidth(1) >= metrics.horizontalAdvance('中国石油天然气')
+
+
+def test_estimated_column_widths_cap_long_text(qapp):
+    """超长文本按上限截断列宽（配合 tooltip），不把整行撑爆。"""
+    table = _shown_table(['备注'])
+    long_text = '很长的说明文字' * 12
+    table.setRowCount(1)
+    table.setItem(0, 0, QTableWidgetItem(long_text))
+    qapp.processEvents()
+
+    apply_estimated_column_widths(table, [[long_text]])
+
+    assert table.columnWidth(0) == MAX_COLUMN_WIDTH
 

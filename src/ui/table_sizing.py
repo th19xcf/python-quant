@@ -46,6 +46,8 @@ SEQ_COLUMN_WIDTH = 50
 MIN_LAYOUT_VIEWPORT = 200
 #: 竖向滚动条预留宽度：压缩到正好贴合时避免横竖滚动条互相触发
 SCROLLBAR_RESERVE = 18
+#: 大表按最长内容估算列宽时的宽度上限（防止个别超长文本吃掉整行）
+MAX_COLUMN_WIDTH = 360
 
 
 def use_interactive_columns(table: QTableWidget) -> None:
@@ -150,6 +152,37 @@ def apply_content_widths(table: QTableWidget) -> bool:
     if seq_index is not None:
         table.setColumnWidth(seq_index, SEQ_COLUMN_WIDTH)
     return any(natural[index] > applied[index] for index in data_indexes)
+
+
+def apply_estimated_column_widths(table: QTableWidget, rows,
+                                  max_width: int = MAX_COLUMN_WIDTH) -> None:
+    """按每列最长文本做一次字体度量估算列宽，供 5000+ 行的大表刷新使用。
+
+    只在原始行数据上取「字符数最长」的那条文本（不做逐格测量），每列仅调用
+    一次 ``horizontalAdvance``，因此额外的耗时与行数近似线性且常数极小。
+    """
+    columns = table.columnCount()
+    if columns == 0:
+        return
+    header = table.horizontalHeader()
+    header.setStretchLastSection(False)
+    header_metrics = header.fontMetrics()
+    cell_metrics = table.fontMetrics()
+    longest = ['' for _ in range(columns)]
+    for index in range(columns):
+        item = table.horizontalHeaderItem(index)
+        longest[index] = item.text() if item is not None else ''
+    for row in rows:
+        for index, value in enumerate(row[:columns]):
+            text = '' if value is None else str(value)
+            if len(text) > len(longest[index]):
+                longest[index] = text
+    for index in range(columns):
+        text = longest[index]
+        width = cell_metrics.horizontalAdvance(text) + CELL_PADDING_H
+        width = max(width, header_metrics.horizontalAdvance(text) + HEADER_PADDING_H)
+        table.setColumnWidth(index, max(MIN_COLUMN_WIDTH, min(max_width, width)))
+        header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
 
 
 def apply_wrapped_row_heights(table: QTableWidget, min_height: int,

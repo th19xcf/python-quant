@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QAbstractItemView, QTableWidgetItem
 
+from src.ui.table_sizing import apply_estimated_column_widths
 from src.utils.logger import logger
 
 
@@ -89,6 +90,9 @@ class MarketTableRenderer:
             # 设置数据
             for col, value in enumerate(data_row):
                 table.setItem(row_pos, col, self._build_market_cell(col, value, data_row))
+
+        # 按每列最长内容一次性估算列宽：带市场后缀的代码、名称等不再被截断
+        apply_estimated_column_widths(table, rows)
 
     def _render_market_result(self, result):
         """在 GUI 线程把行情结果写入表格，并更新日志与状态栏。"""
