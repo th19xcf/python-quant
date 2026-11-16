@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -31,6 +32,27 @@ MIN_ROW_HEIGHT = 30
 MAX_ROW_HEIGHT = 120
 #: 表头固定行高：不随数据行自适应
 HEADER_ROW_HEIGHT = 34
+#: 档位列语义排序权重（本页无档位列，保留空表供排序键复用）
+LABEL_SORT_RANK: dict[str, int] = {}
+#: 空值文本：排序时统一沉底
+_EMPTY_TEXTS = frozenset({'', '—', '-', '--', 'nan', 'none'})
+
+
+def _sort_key(text: str) -> tuple[str, float | str] | None:
+    """显示文本 → 排序键：空值 None、档位按语义、数字按数值、其余按文本。"""
+    value = str(text).strip()
+    if value.lower() in _EMPTY_TEXTS:
+        return None
+    if value in LABEL_SORT_RANK:
+        return ('n', float(LABEL_SORT_RANK[value]))
+    raw = (value.replace('−', '-').replace('＋', '+').replace(',', '')
+           .replace(' ', ''))
+    if raw[:1] in ('×', 'x', 'X'):
+        raw = raw[1:]
+    try:
+        return ('n', float(raw.rstrip('%％倍亿万手股')))
+    except ValueError:
+        return ('s', value)
 
 
 def _fetch_state(token: int, asof: str | None = None, benchmark: str = 'equal_all',
@@ -92,14 +114,16 @@ QPushButton:disabled {{
 }}
 QTableWidget {{
     background: {palette.card};
-    alternate-background-color: {palette.zebra};
     border: 1px solid {palette.border};
     border-radius: {tokens.radius_sm}px;
     gridline-color: {palette.faint};
     selection-background-color: {palette.selection};
 }}
+QHeaderView {{
+    background: {palette.card};
+}}
 QHeaderView::section {{
-    background: {palette.elevated};
+    background: {palette.card};
     color: {palette.muted};
     border: none;
     border-bottom: 1px solid {palette.border};
@@ -108,6 +132,7 @@ QHeaderView::section {{
     font-weight: 600;
 }}
 QTableWidget::item {{
+    background-color: {palette.card};
     padding: 6px 8px;
 }}
 """
@@ -152,10 +177,10 @@ class AttributionPage(QWidget):
         header = QHBoxLayout()
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
-        title = QLabel('收益归因（口径降级）')
+        title = QLabel('收益归因')
         title.setObjectName('attrTitle')
         subtitle = QLabel(
-            '复用已有回测 run：run 级超额 + 单期行业暴露 + 单期风格暴露')
+            '复用已有回测 run：Brinson 两段分解 / run 级超额与暴露；测试 run 自动排除')
         subtitle.setObjectName('attrSubtitle')
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
@@ -169,7 +194,7 @@ class AttributionPage(QWidget):
         self.benchmark_box = QComboBox()
         self.benchmark_box.addItem('全市场等权', 'equal_all')
         self.benchmark_box.addItem('行业等权', 'equal_industry')
-        self.benchmark_box.addItem('沪深 300（无成分权重）', 'csi300')
+        self.benchmark_box.addItem('沪深 300（月末成分权重）', 'csi300')
         self.benchmark_box.setToolTip('完整 Brinson 的基准权重口径；切换后自动重算')
         self.benchmark_box.currentIndexChanged.connect(self._on_benchmark_changed)
         header.addWidget(self.benchmark_box)
@@ -288,7 +313,7 @@ class AttributionPage(QWidget):
         vertical.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         vertical.setMinimumSectionSize(MIN_ROW_HEIGHT)
         vertical.setMaximumSectionSize(MAX_ROW_HEIGHT)
-        table.setAlternatingRowColors(True)
+        table.setAlternatingRowColors(False)
         table.setShowGrid(True)
         table.setWordWrap(True)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -299,13 +324,70 @@ class AttributionPage(QWidget):
         header.setFixedHeight(HEADER_ROW_HEIGHT)
         table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         use_interactive_columns(table)
+        self._enable_header_sorting(table)
         return table
 
-    @staticmethod
-    def _finalize_table(table: QTableWidget) -> None:
-        """先定列宽再算行高：行高必须按最终列宽的换行结果计算。"""
+    def _finalize_table(self, table: QTableWidget) -> None:
+        """先定列宽再算行高，并把表体留白与表头统一到同一底色。"""
+        self._unify_table_surface(table)
         apply_content_widths(table)
         table.resizeRowsToContents()
+
+    def _unify_table_surface(self, table: QTableWidget) -> None:
+        """单元格、末列右侧留白与表头空白区同色，避免出现拼接色块。"""
+        color = QColor(self._pal.card)
+        for widget in (table.viewport(), table.horizontalHeader()):
+            palette = widget.palette()
+            for role in (QPalette.ColorRole.Base, QPalette.ColorRole.Window,
+                         QPalette.ColorRole.Button):
+                palette.setColor(role, color)
+            widget.setPalette(palette)
+            widget.setAutoFillBackground(True)
+
+    def _enable_header_sorting(self, table: QTableWidget) -> None:
+        """表头可点击排序；初始不显示箭头，保持各页默认语义顺序。"""
+        header = table.horizontalHeader()
+        header.setSortIndicatorShown(False)
+        header.setSectionsClickable(True)
+        header.sectionClicked.connect(
+            lambda column: self._on_header_clicked(table, column))
+
+    def _on_header_clicked(self, table: QTableWidget, column: int) -> None:
+        """首次点击升序，再点同列切降序并循环，排序后重跑列宽/行高/底色收尾。"""
+        header = table.horizontalHeader()
+        if header.isSortIndicatorShown() and header.sortIndicatorSection() == column:
+            ascending = header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
+            order = (Qt.SortOrder.DescendingOrder if ascending
+                     else Qt.SortOrder.AscendingOrder)
+        else:
+            order = Qt.SortOrder.AscendingOrder
+        self._sort_table_rows(table, column, order)
+        header.setSortIndicator(column, order)
+        header.setSortIndicatorShown(True)
+        self._finalize_table(table)
+
+    def _sort_table_rows(self, table: QTableWidget, column: int,
+                         order: Qt.SortOrder) -> None:
+        """按解析后的键重排行，空值沉底；文本、对齐、颜色与提示原样保留。"""
+        cells = [[table.takeItem(row, index) for index in range(table.columnCount())]
+                 for row in range(table.rowCount())]
+        if not cells:
+            return
+        keyed: list[tuple[tuple[str, float | str], list[QTableWidgetItem | None]]] = []
+        empty: list[list[QTableWidgetItem | None]] = []
+        for row_cells in cells:
+            cell = row_cells[column]
+            key = _sort_key(cell.text()) if cell is not None else None
+            if key is None:
+                empty.append(row_cells)
+            else:
+                keyed.append((key, row_cells))
+        keyed.sort(key=lambda pair: pair[0],
+                   reverse=order == Qt.SortOrder.DescendingOrder)
+        for row, row_cells in enumerate([pair[1] for pair in keyed] + empty):
+            for index, cell in enumerate(row_cells):
+                if cell is not None:
+                    table.setItem(row, index, cell)
 
     # -------------------------------------------------------------- loading
     def _connect_task_signals(self) -> None:
@@ -367,7 +449,25 @@ class AttributionPage(QWidget):
         self._state = state
         run_name = state.run.name if state.run else '无 run'
         self.status_label.setText(f'归因完成（{run_name}）')
-        if state.degraded:
+        from src.quant.analysis.attribution_local import is_test_run
+
+        if state.run is not None and is_test_run(state.run.name):
+            # 跳转前自检：测试/冒烟 run 不静默出数
+            self.status_label.setText('归因失败：选中 run 属测试/冒烟 run')
+            self.banner_label.setText(
+                f'错误：run {state.run.name} 属测试/冒烟样本，禁止进入归因。')
+            self.missing_label.setText('缺失：—')
+            self.brinson_card.setVisible(False)
+            self.brinson_table.setRowCount(0)
+            self._fill_excess(state)
+            self._fill_industries(state)
+            self._fill_styles(state)
+            self.notes_label.setText('\n'.join(state.notes))
+            return
+        if state.run is None:
+            self.status_label.setText('暂无可用正式回测')
+            self.banner_label.setText('暂无可用正式回测，请先跑一次正式 spec。')
+        elif state.degraded:
             self.banner_label.setText(
                 '口径降级：该 run 无持仓明细（positions.parquet），'
                 'Brinson 两段分解不可做，当前为 run 级超额 + 单期行业/风格暴露。')

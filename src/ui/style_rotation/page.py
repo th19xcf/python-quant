@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.quant.analysis.style_rotation_state import StyleRotationState
+from src.quant.analysis.style_rotation_state import DIMENSIONS, StyleRotationState
 from src.ui.advice.tokens import TOKENS, palette_for
 from src.ui.table_sizing import apply_content_widths, use_interactive_columns
 from src.ui.theme_manager import is_dark_palette
@@ -30,6 +31,31 @@ MIN_ROW_HEIGHT = 30
 MAX_ROW_HEIGHT = 120
 #: 表头固定行高：不随数据行自适应
 HEADER_ROW_HEIGHT = 34
+#: 档位列按业务语义排序：正向占优 → 均衡 → 反向占优
+LABEL_SORT_RANK: dict[str, int] = {
+    '均衡': 1,
+    **{spec.positive_label: 0 for spec in DIMENSIONS},
+    **{spec.negative_label: 2 for spec in DIMENSIONS},
+}
+#: 空值文本：排序时统一沉底
+_EMPTY_TEXTS = frozenset({'', '—', '-', '--', 'nan', 'none'})
+
+
+def _sort_key(text: str) -> tuple[str, float | str] | None:
+    """显示文本 → 排序键：空值 None、档位按语义、数字按数值、其余按文本。"""
+    value = str(text).strip()
+    if value.lower() in _EMPTY_TEXTS:
+        return None
+    if value in LABEL_SORT_RANK:
+        return ('n', float(LABEL_SORT_RANK[value]))
+    raw = (value.replace('−', '-').replace('＋', '+').replace(',', '')
+           .replace(' ', ''))
+    if raw[:1] in ('×', 'x', 'X'):
+        raw = raw[1:]
+    try:
+        return ('n', float(raw.rstrip('%％倍亿万手股')))
+    except ValueError:
+        return ('s', value)
 
 
 def _fetch_state(token: int, asof: str | None = None,
@@ -96,14 +122,16 @@ QPushButton:disabled {{
 }}
 QTableWidget {{
     background: {palette.card};
-    alternate-background-color: {palette.zebra};
     border: 1px solid {palette.border};
     border-radius: {tokens.radius_sm}px;
     gridline-color: {palette.faint};
     selection-background-color: {palette.selection};
 }}
+QHeaderView {{
+    background: {palette.card};
+}}
 QHeaderView::section {{
-    background: {palette.elevated};
+    background: {palette.card};
     color: {palette.muted};
     border: none;
     border-bottom: 1px solid {palette.border};
@@ -112,6 +140,7 @@ QHeaderView::section {{
     font-weight: 600;
 }}
 QTableWidget::item {{
+    background-color: {palette.card};
     padding: 6px 8px;
 }}
 """
@@ -244,7 +273,7 @@ class StyleRotationPage(QWidget):
         vertical.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         vertical.setMinimumSectionSize(MIN_ROW_HEIGHT)
         vertical.setMaximumSectionSize(MAX_ROW_HEIGHT)
-        table.setAlternatingRowColors(True)
+        table.setAlternatingRowColors(False)
         table.setShowGrid(True)
         table.setWordWrap(True)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -255,13 +284,70 @@ class StyleRotationPage(QWidget):
         header.setFixedHeight(HEADER_ROW_HEIGHT)
         table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         use_interactive_columns(table)
+        self._enable_header_sorting(table)
         return table
 
-    @staticmethod
-    def _finalize_table(table: QTableWidget) -> None:
-        """先定列宽再算行高：行高必须按最终列宽的换行结果计算。"""
+    def _finalize_table(self, table: QTableWidget) -> None:
+        """先定列宽再算行高，并把表体留白与表头统一到同一底色。"""
+        self._unify_table_surface(table)
         apply_content_widths(table)
         table.resizeRowsToContents()
+
+    def _unify_table_surface(self, table: QTableWidget) -> None:
+        """单元格、末列右侧留白与表头空白区同色，避免出现拼接色块。"""
+        color = QColor(self._pal.card)
+        for widget in (table.viewport(), table.horizontalHeader()):
+            palette = widget.palette()
+            for role in (QPalette.ColorRole.Base, QPalette.ColorRole.Window,
+                         QPalette.ColorRole.Button):
+                palette.setColor(role, color)
+            widget.setPalette(palette)
+            widget.setAutoFillBackground(True)
+
+    def _enable_header_sorting(self, table: QTableWidget) -> None:
+        """表头可点击排序；初始不显示箭头，保持各页默认语义顺序。"""
+        header = table.horizontalHeader()
+        header.setSortIndicatorShown(False)
+        header.setSectionsClickable(True)
+        header.sectionClicked.connect(
+            lambda column: self._on_header_clicked(table, column))
+
+    def _on_header_clicked(self, table: QTableWidget, column: int) -> None:
+        """首次点击升序，再点同列切降序并循环，排序后重跑列宽/行高/底色收尾。"""
+        header = table.horizontalHeader()
+        if header.isSortIndicatorShown() and header.sortIndicatorSection() == column:
+            ascending = header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
+            order = (Qt.SortOrder.DescendingOrder if ascending
+                     else Qt.SortOrder.AscendingOrder)
+        else:
+            order = Qt.SortOrder.AscendingOrder
+        self._sort_table_rows(table, column, order)
+        header.setSortIndicator(column, order)
+        header.setSortIndicatorShown(True)
+        self._finalize_table(table)
+
+    def _sort_table_rows(self, table: QTableWidget, column: int,
+                         order: Qt.SortOrder) -> None:
+        """按解析后的键重排行，空值沉底；文本、对齐、颜色与提示原样保留。"""
+        cells = [[table.takeItem(row, index) for index in range(table.columnCount())]
+                 for row in range(table.rowCount())]
+        if not cells:
+            return
+        keyed: list[tuple[tuple[str, float | str], list[QTableWidgetItem | None]]] = []
+        empty: list[list[QTableWidgetItem | None]] = []
+        for row_cells in cells:
+            cell = row_cells[column]
+            key = _sort_key(cell.text()) if cell is not None else None
+            if key is None:
+                empty.append(row_cells)
+            else:
+                keyed.append((key, row_cells))
+        keyed.sort(key=lambda pair: pair[0],
+                   reverse=order == Qt.SortOrder.DescendingOrder)
+        for row, row_cells in enumerate([pair[1] for pair in keyed] + empty):
+            for index, cell in enumerate(row_cells):
+                if cell is not None:
+                    table.setItem(row, index, cell)
 
     # -------------------------------------------------------------- loading
     def _connect_task_signals(self) -> None:
