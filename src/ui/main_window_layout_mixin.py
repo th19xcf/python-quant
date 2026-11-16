@@ -235,6 +235,11 @@ class MainWindowLayoutMixin:
         self.tab_widget.addTab(self.industry_heat_tab, "行业热度")
         self.create_industry_heat_tab()
 
+        # 添加风格轮动标签页（紧随行业热度之后）
+        self.style_rotation_tab = QWidget()
+        self.tab_widget.addTab(self.style_rotation_tab, "风格轮动")
+        self.create_style_rotation_tab()
+
         parent.addWidget(center_widget)
 
     def create_market_tab(self):

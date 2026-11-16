@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QFrame, QScrollArea, QVBoxLayout, QWidget
 
 
 class MainWindowMarketTrendMixin:
-    """中央标签页的「市场趋势」「行业热度」入口。"""
+    """中央标签页的「市场趋势」「行业热度」「风格轮动」入口。"""
 
     #: 由 MainWindow 提供的中央标签容器
     tab_widget: Any
@@ -21,6 +21,8 @@ class MainWindowMarketTrendMixin:
     market_trend_page: Any
     industry_heat_tab: QWidget
     industry_heat_page: Any
+    style_rotation_tab: QWidget
+    style_rotation_page: Any
 
     def create_market_trend_tab(self):
         """创建市场趋势标签页（由 create_center_area 在每日推荐之后追加）。"""
@@ -90,3 +92,37 @@ class MainWindowMarketTrendMixin:
             return
         self._industry_heat_loaded = True
         self.industry_heat_page.load_async()
+
+    def create_style_rotation_tab(self):
+        """创建风格轮动标签页（由 create_center_area 在行业热度之后追加）。"""
+        layout = QVBoxLayout(self.style_rotation_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        from src.ui.style_rotation import StyleRotationPage
+        self.style_rotation_page = StyleRotationPage(host=self)
+
+        self.style_rotation_scroll_area = QScrollArea()
+        self.style_rotation_scroll_area.setWidgetResizable(True)
+        self.style_rotation_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.style_rotation_scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded)
+        self.style_rotation_scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded)
+        self.style_rotation_scroll_area.setWidget(self.style_rotation_page)
+        layout.addWidget(self.style_rotation_scroll_area)
+
+        self._style_rotation_loaded = False
+        self.tab_widget.currentChanged.connect(self._on_style_rotation_tab_changed)
+
+    def _on_style_rotation_tab_changed(self, index: int):
+        """首次切到风格轮动页时才计算，避免拖慢启动。"""
+        if not hasattr(self, 'style_rotation_tab'):
+            return
+        if not hasattr(self, 'style_rotation_page'):
+            return
+        if self.tab_widget.widget(index) is not self.style_rotation_tab:
+            return
+        if getattr(self, '_style_rotation_loaded', False):
+            return
+        self._style_rotation_loaded = True
+        self.style_rotation_page.load_async()
