@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 from bisect import bisect_right
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import date, datetime
 from pathlib import Path
 
@@ -479,10 +479,34 @@ def _holdings(base: Path) -> dict[str, object]:
     }
 
 
+def latest_run_inputs(
+    root: Path | str | None = None,
+) -> tuple[str | None, dict[str, str]]:
+    """归因输入的稳定指纹：选中 run 的 id 与 metrics / positions 的 mtime+size。"""
+    from src.quant.analysis.analysis_cache import file_stamp
+
+    base = Path(root) if root is not None else _default_root()
+    run_dir, metrics, _ = _latest_run(base)
+    if run_dir is None:
+        return None, {}
+    run_id = str(metrics.get('run_id') or run_dir.name)
+    files = {name: file_stamp(run_dir / name)
+             for name in ('metrics.json', POSITIONS_FILE)}
+    return run_id, files
+
+
 def build_attribution(root: Path | str | None = None,
                       asof: str | None = None,
-                      benchmark: str = 'equal_all') -> AttributionState:
-    """装配 run、基准与持仓：有 positions.parquet 走完整 Brinson，否则降级。"""
+                      benchmark: str = 'equal_all', *,
+                      brinson_loader: Callable[
+                          [str, Callable[[], BrinsonResult | None]],
+                          BrinsonResult | None,
+                      ] | None = None) -> AttributionState:
+    """装配 run、基准与持仓：有 positions.parquet 走完整 Brinson，否则降级。
+
+    ``brinson_loader(name, compute)`` 可选：按档取缓存，命中即返回、未命中才现算，
+    使换基准只补算缺的那一档。
+    """
     base = Path(root) if root is not None else _default_root()
     run_dir, metrics, skipped = _latest_run(base)
     nav, _ = _read_nav(run_dir) if run_dir is not None else ([], [])
@@ -512,11 +536,18 @@ def build_attribution(root: Path | str | None = None,
     dual: tuple[BrinsonResult, ...] = ()
     brinson: BrinsonResult | None = None
     if positions is not None:
+        def obtain(name: str) -> BrinsonResult | None:
+            def compute() -> BrinsonResult | None:
+                return build_brinson_from_positions(base, positions, name)
+
+            if brinson_loader is None:
+                return compute()
+            return brinson_loader(name, compute)
+
         # 双主基准：全市场等权 + 中证全指（中证全指仅收益基准，三效应留空）
-        computed = {name: build_brinson_from_positions(base, positions, name)
-                    for name in ('equal_all', 'csi_all')}
+        computed = {name: obtain(name) for name in ('equal_all', 'csi_all')}
         dual = tuple(item for item in computed.values() if item is not None)
-        brinson = computed.get(mode) or build_brinson_from_positions(base, positions, mode)
+        brinson = computed[mode] if mode in computed else obtain(mode)
 
     holdings = _holdings(base)
     holdings_asof = holdings['asof'] if isinstance(holdings['asof'], str) else None
