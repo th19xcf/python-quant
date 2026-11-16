@@ -1,15 +1,14 @@
 """分析页面表格列宽口径：先按单行内容加宽，宽度不够才压缩与折行。
 
-五个页面（市场趋势 / 风格轮动 / 行业热度 / 仓位与风控 / 收益归因）统一：
+所有页面的表格统一（行情表、财务分析、市场趋势、风格轮动、行业热度、
+仓位与风控、收益归因、模型操作清单）：
 
 1. 所有列（含最后一列）的 resize mode 都是 ``Interactive``，表头分隔线可
    左右拖动，双击分隔线自适应内容；
-2. 填充数据后按「表头 + 内容单行完整显示」测自然宽度（不按折行测量），
-   下限 MIN_COLUMN_WIDTH；
-3. 自然宽度之和不超过表格可视宽度时直接用自然宽度，不折行、不出横向滚动；
-4. 超出时才压缩：优先压缩内容比表头宽的长文本列（二分出一个统一上限，
-   越长的列压得越多），数值列与档位列的宽度不小于表头宽度；
-5. 压缩后仍装不下、或长文本列被压到短于单行内容才折行，行高按内容实测，不截断。
+2. 列宽 = max(表头所需宽度, 该列最长内容单行所需宽度)，每列只做一次字体
+   度量（先按字符数挑最长文本），不逐格测量，上限 MAX_COLUMN_WIDTH；
+3. 不再压缩列宽换总宽：总宽超出可视区时出横向滚动条；
+4. 只有超过 MAX_COLUMN_WIDTH 的内容才折行，行高按内容实测，不截断。
 """
 
 from __future__ import annotations
@@ -23,8 +22,6 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
 )
 
-#: 列宽下限：保证表头文字与短数据不被截断
-MIN_COLUMN_WIDTH = 70
 #: 大表改用固定行高的行数阈值
 FIXED_ROW_HEIGHT_THRESHOLD = 200
 #: 大表固定行高：与自适应下限的观感一致
@@ -42,11 +39,7 @@ CELL_PADDING_V = 14
 #: 序号列固定宽度与会话内不参与压缩
 SEQ_COLUMN_TITLE = '序号'
 SEQ_COLUMN_WIDTH = 50
-#: 可视宽度小于该值视为尚未完成布局，按自然宽度处理不做压缩
-MIN_LAYOUT_VIEWPORT = 200
-#: 竖向滚动条预留宽度：压缩到正好贴合时避免横竖滚动条互相触发
-SCROLLBAR_RESERVE = 18
-#: 大表按最长内容估算列宽时的宽度上限（防止个别超长文本吃掉整行）
+#: 列宽上限：超过该宽度的内容才允许折行（不再压缩列宽换总宽）
 MAX_COLUMN_WIDTH = 360
 
 
@@ -57,101 +50,76 @@ def use_interactive_columns(table: QTableWidget) -> None:
     header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 
 
+def _longest_texts(header_texts: list[str], rows) -> list[str]:
+    """每列取「字符数最长」的文本：只比较长度，不做字体度量。"""
+    longest = [text or '' for text in header_texts]
+    for row in rows:
+        for index, value in enumerate(row[:len(longest)]):
+            text = '' if value is None else str(value)
+            if len(text) > len(longest[index]):
+                longest[index] = text
+    return longest
+
+
+def _estimate_widths(header_texts: list[str], content_texts: list[str],
+                     header_metrics, cell_metrics) -> list[int]:
+    """每列一次字体度量：max(表头宽, 最长内容宽)，不设下限、不做压缩。"""
+    widths: list[int] = []
+    for index, header_text in enumerate(header_texts):
+        widths.append(max(
+            header_metrics.horizontalAdvance(header_text) + HEADER_PADDING_H,
+            cell_metrics.horizontalAdvance(content_texts[index]) + CELL_PADDING_H,
+        ))
+    return widths
+
+
+def _table_row_texts(table: QTableWidget, row: int) -> list[str]:
+    """取整行文本（缺失单元格按空串处理），供按列挑最长内容使用。"""
+    texts: list[str] = []
+    for index in range(table.columnCount()):
+        item = table.item(row, index)
+        texts.append(item.text() if item is not None else '')
+    return texts
+
+
 def measure_natural_widths(table: QTableWidget) -> list[int]:
-    """按表头与单元格内容的「单行完整显示」测量每列自然宽度（不折行）。"""
+    """按每列「最长内容」做一次字体度量，返回单行完整显示所需宽度。"""
     columns = table.columnCount()
     if columns == 0:
         return []
-    header = table.horizontalHeader()
-    header_metrics = header.fontMetrics()
-    cell_metrics = table.fontMetrics()
-    widths = [0] * columns
+    header_texts: list[str] = []
     for index in range(columns):
         item = table.horizontalHeaderItem(index)
-        text = item.text() if item is not None else ''
-        widths[index] = header_metrics.horizontalAdvance(text) + HEADER_PADDING_H
-    for row in range(table.rowCount()):
-        for index in range(columns):
-            item = table.item(row, index)
-            if item is None:
-                continue
-            advance = cell_metrics.horizontalAdvance(item.text()) + CELL_PADDING_H
-            if advance > widths[index]:
-                widths[index] = advance
-    return [max(MIN_COLUMN_WIDTH, width) for width in widths]
-
-
-def _header_floors(table: QTableWidget) -> list[int]:
-    """每列的压缩下限：表头必须完整可见，且不低于 MIN_COLUMN_WIDTH。"""
-    header = table.horizontalHeader()
-    metrics = header.fontMetrics()
-    floors: list[int] = []
-    for index in range(table.columnCount()):
-        item = table.horizontalHeaderItem(index)
-        text = item.text() if item is not None else ''
-        floors.append(max(MIN_COLUMN_WIDTH,
-                          metrics.horizontalAdvance(text) + HEADER_PADDING_H))
-    return floors
-
-
-def _capped_total(natural: list[int], floors: list[int],
-                  indexes: list[int], level: int) -> int:
-    """给定压缩上限 level 时这些列的总宽度（每列不低于自身下限）。"""
-    return sum(max(floors[index], min(natural[index], level)) for index in indexes)
+        header_texts.append(item.text() if item is not None else '')
+    longest = _longest_texts(
+        header_texts,
+        (_table_row_texts(table, row) for row in range(table.rowCount())))
+    return _estimate_widths(header_texts, longest,
+                            table.horizontalHeader().fontMetrics(),
+                            table.fontMetrics())
 
 
 def apply_content_widths(table: QTableWidget) -> bool:
-    """填充数据后调用：自然宽度优先，装不下再压缩，仍装不下才允许折行。
+    """填充后调用：列宽 = max(表头宽, 最长内容宽)，超过上限才折行。
 
-    返回 True 表示至少一列被压到小于单行内容宽度（内容会折行）。
+    不再压缩列宽换总宽：总宽超出可视区时由横向滚动条承接。
+    返回 True 表示至少一列内容超过 MAX_COLUMN_WIDTH（该列截断到上限并折行）。
     """
     if table.columnCount() == 0:
         return False
     header = table.horizontalHeader()
     header.setStretchLastSection(False)
     natural = measure_natural_widths(table)
-    floors = [min(floor, width)
-              for floor, width in zip(_header_floors(table), natural, strict=False)]
     first_header = table.horizontalHeaderItem(0)
     seq_index = 0 if first_header is not None \
         and first_header.text() == SEQ_COLUMN_TITLE else None
-    data_indexes = [index for index in range(table.columnCount()) if index != seq_index]
-    seq_width = SEQ_COLUMN_WIDTH if seq_index is not None else 0
-
-    viewport = table.viewport().width()
-    if viewport < MIN_LAYOUT_VIEWPORT:
-        viewport = table.width()
-    fit_available = max(0, viewport - seq_width)
-    budget = max(0, fit_available - SCROLLBAR_RESERVE)
-
-    applied = list(natural)
-    if sum(natural[index] for index in data_indexes) > fit_available \
-            and viewport >= MIN_LAYOUT_VIEWPORT:
-        shrinkable = [index for index in data_indexes
-                      if natural[index] > floors[index]]
-        if shrinkable:
-            fixed_total = sum(natural[index] for index in data_indexes
-                              if index not in shrinkable)
-            low = min(floors[index] for index in shrinkable)
-            high = max(natural[index] for index in shrinkable)
-            if fixed_total + _capped_total(natural, floors, shrinkable, low) <= budget:
-                # 二分出能装下的最大统一上限：越长的列被压得越多，短列保持自然宽度
-                while low < high:
-                    mid = (low + high + 1) // 2
-                    if fixed_total + _capped_total(
-                            natural, floors, shrinkable, mid) <= budget:
-                        low = mid
-                    else:
-                        high = mid - 1
-            for index in shrinkable:
-                applied[index] = max(floors[index], min(natural[index], low))
-
-    for index, width in enumerate(applied):
-        table.setColumnWidth(index, width)
+    for index, width in enumerate(natural):
+        table.setColumnWidth(index, min(MAX_COLUMN_WIDTH, width))
         header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
     if seq_index is not None:
         table.setColumnWidth(seq_index, SEQ_COLUMN_WIDTH)
-    return any(natural[index] > applied[index] for index in data_indexes)
+    return any(width > MAX_COLUMN_WIDTH for index, width in enumerate(natural)
+               if index != seq_index)
 
 
 def apply_estimated_column_widths(table: QTableWidget, rows,
@@ -166,22 +134,15 @@ def apply_estimated_column_widths(table: QTableWidget, rows,
         return
     header = table.horizontalHeader()
     header.setStretchLastSection(False)
-    header_metrics = header.fontMetrics()
-    cell_metrics = table.fontMetrics()
-    longest = ['' for _ in range(columns)]
+    header_texts: list[str] = []
     for index in range(columns):
         item = table.horizontalHeaderItem(index)
-        longest[index] = item.text() if item is not None else ''
-    for row in rows:
-        for index, value in enumerate(row[:columns]):
-            text = '' if value is None else str(value)
-            if len(text) > len(longest[index]):
-                longest[index] = text
-    for index in range(columns):
-        text = longest[index]
-        width = cell_metrics.horizontalAdvance(text) + CELL_PADDING_H
-        width = max(width, header_metrics.horizontalAdvance(text) + HEADER_PADDING_H)
-        table.setColumnWidth(index, max(MIN_COLUMN_WIDTH, min(max_width, width)))
+        header_texts.append(item.text() if item is not None else '')
+    longest = _longest_texts(header_texts, rows)
+    widths = _estimate_widths(header_texts, longest,
+                              header.fontMetrics(), table.fontMetrics())
+    for index, width in enumerate(widths):
+        table.setColumnWidth(index, min(max_width, width))
         header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
 
 

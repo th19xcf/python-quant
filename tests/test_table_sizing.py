@@ -24,8 +24,8 @@ from src.ui.style_rotation.page import StyleRotationPage
 from src.ui.table_interaction_manager import TableInteractionManager
 from src.ui.table_sizing import (
     FIXED_ROW_HEIGHT,
+    HEADER_PADDING_H,
     MAX_COLUMN_WIDTH,
-    MIN_COLUMN_WIDTH,
     SEQ_COLUMN_WIDTH,
     apply_content_widths,
     apply_estimated_column_widths,
@@ -216,12 +216,11 @@ def test_apply_content_widths_uses_natural_width_when_it_fits(qapp):
         assert header.sectionResizeMode(index) == QHeaderView.ResizeMode.Interactive
         assert table.columnWidth(index) == natural[index], \
             f'第 {index} 列未使用自然宽度 {natural[index]}'
-    assert table.columnWidth(0) >= MIN_COLUMN_WIDTH
     qapp.processEvents()
 
 
-def test_apply_content_widths_compresses_only_long_text_columns(qapp):
-    """自然宽度装不下时先压缩长文本列，短列与数值列保持自然宽度。"""
+def test_apply_content_widths_keeps_short_columns_and_caps_long_text(qapp):
+    """不再压缩列宽换总宽：短列保持自然宽度，超长文本按上限截断并标记折行。"""
     table = _shown_table(['短列', '数值', '长文本'])
     qapp.processEvents()
     table.setRowCount(1)
@@ -229,16 +228,13 @@ def test_apply_content_widths_compresses_only_long_text_columns(qapp):
     table.setItem(0, 1, QTableWidgetItem('+1.23%'))
     table.setItem(0, 2, QTableWidgetItem('很长的说明文字' * 40))
     natural = measure_natural_widths(table)
-    assert sum(natural) > table.viewport().width()
+    assert natural[2] > MAX_COLUMN_WIDTH
 
     wrapped = apply_content_widths(table)
-    assert wrapped, '长文本列被压短后应标记为折行'
-    assert table.columnWidth(0) == natural[0], '短列被压缩'
-    assert table.columnWidth(1) == natural[1], '数值列被压缩'
-    assert table.columnWidth(2) < natural[2], '长文本列未被压缩'
-    assert table.columnWidth(2) > table.columnWidth(0)
-    assert (sum(table.columnWidth(index) for index in range(3))
-            <= table.viewport().width()), '压缩后仍然撑出横向滚动'
+    assert wrapped, '超过上限的长文本应标记为折行'
+    assert table.columnWidth(0) == natural[0], '短列不应被压缩'
+    assert table.columnWidth(1) == natural[1], '数值列不应被压缩'
+    assert table.columnWidth(2) == MAX_COLUMN_WIDTH, '长文本列应截断到上限'
     qapp.processEvents()
 
 
@@ -417,7 +413,7 @@ def test_market_table_three_state_sort_is_numeric(qapp):
 
 
 def test_estimated_column_widths_use_longest_text_once(qapp):
-    """按每列最长文本估宽：装得下最长内容、夹在 [MIN, 上限] 之间。"""
+    """按每列最长文本估宽：装得下最长内容，短列不再被 70px 下限撑宽。"""
     table = _shown_table(['代码', '名称'])
     rows = [['600519.SH', '贵州茅台'], ['000001.SZ', '中国石油天然气']]
     table.setRowCount(len(rows))
@@ -430,8 +426,24 @@ def test_estimated_column_widths_use_longest_text_once(qapp):
     apply_estimated_column_widths(table, rows)
 
     assert table.columnWidth(0) >= metrics.horizontalAdvance('600519.SH')
-    assert table.columnWidth(0) >= MIN_COLUMN_WIDTH
     assert table.columnWidth(1) >= metrics.horizontalAdvance('中国石油天然气')
+    assert table.columnWidth(1) < 70 + 100, '短列不应被旧的 70px 下限撑宽'
+
+
+def test_estimated_column_widths_respect_long_header(qapp):
+    """表头比内容长时按表头宽度估宽，表头不被截断。"""
+    table = _shown_table(['涨跌幅百分比'])
+    rows = [['+1.0'], ['-2.5']]
+    table.setRowCount(len(rows))
+    for row, values in enumerate(rows):
+        table.setItem(row, 0, QTableWidgetItem(values[0]))
+    qapp.processEvents()
+    header_metrics = table.horizontalHeader().fontMetrics()
+
+    apply_estimated_column_widths(table, rows)
+
+    header_width = header_metrics.horizontalAdvance('涨跌幅百分比') + HEADER_PADDING_H
+    assert table.columnWidth(0) >= header_width - 1, '表头比内容长时列宽按表头计算'
 
 
 def test_estimated_column_widths_cap_long_text(qapp):
