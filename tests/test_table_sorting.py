@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import QHeaderView, QTableWidget, QTableWidgetItem
 
-from src.ui.attribution.page import AttributionPage
+from src.ui.attribution.page import FIXED_ROW_HEIGHT, AttributionPage
 from src.ui.industry_heat.page import IndustryHeatPage
 from src.ui.market_trend.page import MarketTrendPage
 from src.ui.portfolio_risk.page import PortfolioRiskPage
@@ -59,36 +59,37 @@ def test_numeric_sort_three_state_cycle(
         initial = ['-0.783', '0.843', '—']
         _fill_column(table, numeric_column, initial)
         page._finalize_table(table)
+        column = numeric_column + 1  # 第 0 列是最左侧「序号」列
         assert not header.isSortIndicatorShown(), f'{name} 初始不应显示排序箭头'
-        assert _column_texts(table, numeric_column) == initial, \
+        assert _column_texts(table, column) == initial, \
             f'{name} 默认顺序被改动'
 
-        header.sectionClicked.emit(numeric_column)
+        header.sectionClicked.emit(column)
         qapp.processEvents()
-        assert _column_texts(table, numeric_column) == ['-0.783', '0.843', '—'], \
+        assert _column_texts(table, column) == ['-0.783', '0.843', '—'], \
             f'{name} 升序未按数值排序或空值未沉底'
         assert header.isSortIndicatorShown()
         assert header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
 
-        header.sectionClicked.emit(numeric_column)
+        header.sectionClicked.emit(column)
         qapp.processEvents()
-        assert _column_texts(table, numeric_column) == ['0.843', '-0.783', '—'], \
+        assert _column_texts(table, column) == ['0.843', '-0.783', '—'], \
             f'{name} 降序未按数值排序或空值未沉底'
         assert header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
 
-        header.sectionClicked.emit(numeric_column)
+        header.sectionClicked.emit(column)
         qapp.processEvents()
-        assert _column_texts(table, numeric_column) == initial, \
+        assert _column_texts(table, column) == initial, \
             f'{name} 第三态未恢复初始行序'
         assert not header.isSortIndicatorShown(), f'{name} 取消排序后箭头未清除'
 
-        header.sectionClicked.emit(numeric_column)
+        header.sectionClicked.emit(column)
         qapp.processEvents()
         assert header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder, \
             f'{name} 取消后再次点击未回到升序'
-        assert _column_texts(table, numeric_column) == ['-0.783', '0.843', '—']
+        assert _column_texts(table, column) == ['-0.783', '0.843', '—']
 
-        item = table.item(1, numeric_column)
+        item = table.item(1, column)
         assert (item.textAlignment() & Qt.AlignmentFlag.AlignRight), \
             f'{name} 排序后数值列右对齐丢失'
         heights = [table.rowHeight(row) for row in range(table.rowCount())]
@@ -112,23 +113,25 @@ def test_column_switch_starts_ascending_and_counts_independently(qapp):
             [table.item(row, index).text() for index in range(table.columnCount())]
             for row in range(table.rowCount())
         ]
+        numeric_column = 2  # 第 0 列是「序号」，数据列整体右移一位
+        label_column = 3
 
-        header.sectionClicked.emit(1)
+        header.sectionClicked.emit(numeric_column)
         qapp.processEvents()
-        assert header.sortIndicatorSection() == 1
+        assert header.sortIndicatorSection() == numeric_column
         assert header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
-        header.sectionClicked.emit(1)
+        header.sectionClicked.emit(numeric_column)
         qapp.processEvents()
         assert header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
 
-        header.sectionClicked.emit(2)
+        header.sectionClicked.emit(label_column)
         qapp.processEvents()
-        assert header.sortIndicatorSection() == 2, '换列后排序指示未切换'
+        assert header.sortIndicatorSection() == label_column, '换列后排序指示未切换'
         assert header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder, \
             '换列后第一击不是升序'
-        assert _column_texts(table, 2) == ['过热', '中性', '冷清']
+        assert _column_texts(table, label_column) == ['过热', '中性', '冷清']
 
-        header.sectionClicked.emit(1)
+        header.sectionClicked.emit(numeric_column)
         qapp.processEvents()
         assert not header.isSortIndicatorShown(), '原列第三态未取消排序'
         current_rows = [
@@ -147,9 +150,9 @@ def test_heat_label_sort_is_semantic(qapp):
         table = page.heat_table
         _fill_column(table, 2, ['冷清', '中性', '过热', '偏冷', '偏热'])
         page._finalize_table(table)
-        table.horizontalHeader().sectionClicked.emit(2)
+        table.horizontalHeader().sectionClicked.emit(3)
         qapp.processEvents()
-        assert _column_texts(table, 2) == ['过热', '偏热', '中性', '偏冷', '冷清']
+        assert _column_texts(table, 3) == ['过热', '偏热', '中性', '偏冷', '冷清']
     finally:
         page.close()
 
@@ -161,9 +164,101 @@ def test_style_label_sort_is_semantic(qapp):
         table = page.dimension_table
         _fill_column(table, 2, ['大盘占优', '均衡', '小盘占优'])
         page._finalize_table(table)
+        table.horizontalHeader().sectionClicked.emit(3)
+        qapp.processEvents()
+        assert _column_texts(table, 3) == ['小盘占优', '均衡', '大盘占优']
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize(('name', 'page_cls', 'table_name', 'numeric_column', '_label'),
+                         PAGES, ids=IDS)
+def test_seq_column_is_leftmost_centered_and_renumbered(
+        qapp, name, page_cls, table_name, numeric_column, _label):
+    """每页第 0 列固定为「序号」：宽 40~60px、居中、按显示行序从 1 编号。"""
+    page = _open_page(qapp, page_cls)
+    try:
+        table = getattr(page, table_name)
+        _fill_column(table, numeric_column, ['3', '1', '2'])
+        page._finalize_table(table)
+        header = table.horizontalHeader()
+        assert table.horizontalHeaderItem(0).text() == '序号', \
+            f'{name} 第 0 列表头不是「序号」'
+        assert 40 <= table.columnWidth(0) <= 60, \
+            f'{name} 序号列宽 {table.columnWidth(0)}px 不在 40~60px'
+        assert (header.sectionResizeMode(0)
+                == QHeaderView.ResizeMode.Interactive), f'{name} 序号列不可拖动'
+        assert _column_texts(table, 0) == ['1', '2', '3'], f'{name} 序号未从 1 连续编号'
+        for row in range(table.rowCount()):
+            assert (table.item(row, 0).textAlignment()
+                    & Qt.AlignmentFlag.AlignCenter), f'{name} 第 {row} 行序号未居中'
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize(('name', 'page_cls', 'table_name', 'numeric_column', '_label'),
+                         PAGES, ids=IDS)
+def test_seq_column_header_click_does_nothing(
+        qapp, name, page_cls, table_name, numeric_column, _label):
+    """点击序号表头不改变行序、不出现箭头，也不计入三态计数。"""
+    page = _open_page(qapp, page_cls)
+    try:
+        table = getattr(page, table_name)
+        _fill_column(table, numeric_column, ['3', '1', '2'])
+        page._finalize_table(table)
+        header = table.horizontalHeader()
+        before = [[table.item(row, index).text()
+                   for index in range(table.columnCount())]
+                  for row in range(table.rowCount())]
+        header.sectionClicked.emit(0)
+        qapp.processEvents()
+        after = [[table.item(row, index).text()
+                  for index in range(table.columnCount())]
+                 for row in range(table.rowCount())]
+        assert after == before, f'{name} 点击序号表头后行序被改动'
+        assert not header.isSortIndicatorShown(), f'{name} 序号表头出现了排序箭头'
+        assert 0 not in page._sort_clicks.get(table, {}), \
+            f'{name} 序号列被计入三态排序计数'
+    finally:
+        page.close()
+
+
+def test_seq_renumbers_to_display_order_after_sort(qapp):
+    """排序后序号按当前显示顺序重编，不保留原始编号。"""
+    page = _open_page(qapp, AttributionPage)
+    try:
+        table = page.industry_table
+        _fill_column(table, 1, ['0.2', '-0.9', '0.5'])
+        page._finalize_table(table)
         table.horizontalHeader().sectionClicked.emit(2)
         qapp.processEvents()
-        assert _column_texts(table, 2) == ['小盘占优', '均衡', '大盘占优']
+        assert _column_texts(table, 2) == ['-0.9', '0.2', '0.5']
+        assert _column_texts(table, 0) == ['1', '2', '3']
+    finally:
+        page.close()
+
+
+def test_large_table_uses_fixed_row_height(qapp):
+    """超过 200 行的大表改用固定行高，排序后序号仍按显示顺序重编。"""
+    page = _open_page(qapp, AttributionPage)
+    try:
+        table = page.brinson_table
+        table.setRowCount(250)
+        for row in range(250):
+            table.setItem(row, 0, QTableWidgetItem('2023-01-01 ~ 2023-01-28'))
+            for column in range(1, table.columnCount()):
+                table.setItem(row, column,
+                              QTableWidgetItem(f'{(row - column) * 0.01:+.2f}%'))
+        page._finalize_table(table)
+        vertical = table.verticalHeader()
+        assert (vertical.sectionResizeMode(0)
+                == QHeaderView.ResizeMode.Fixed), '大表未切换固定行高'
+        heights = {table.rowHeight(row) for row in range(table.rowCount())}
+        assert heights == {FIXED_ROW_HEIGHT}, f'大表行高不统一：{heights}'
+
+        table.horizontalHeader().sectionClicked.emit(1)
+        qapp.processEvents()
+        assert _column_texts(table, 0) == [str(i + 1) for i in range(250)]
     finally:
         page.close()
 

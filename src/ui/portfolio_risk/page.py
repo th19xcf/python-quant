@@ -33,6 +33,15 @@ MAX_ROW_HEIGHT = 120
 HEADER_ROW_HEIGHT = 34
 #: 环节列按业务语义排序：档位 → 波动率 → 回撤
 LABEL_SORT_RANK: dict[str, int] = {'档位': 0, '波动率': 1, '回撤': 2}
+#: 最左侧「序号」列：宽 50px、居中、不参与排序
+SEQ_COLUMN_TITLE = '序号'
+SEQ_COLUMN_WIDTH = 50
+#: 行数超过该阈值改用固定行高，避免大表排序时逐行测量换行文本
+FIXED_ROW_HEIGHT_THRESHOLD = 200
+#: 大表固定行高：与自适应下限 30px 的观感一致
+FIXED_ROW_HEIGHT = 32
+#: 超过该字数的单元格补 tooltip，固定行高裁切后仍可查看全文
+TOOLTIP_TEXT_MIN_LEN = 16
 #: 空值文本：排序时统一沉底
 _EMPTY_TEXTS = frozenset({'', '—', '-', '--', 'nan', 'none'})
 
@@ -301,14 +310,67 @@ class PortfolioRiskPage(QWidget):
         return table
 
     def _finalize_table(self, table: QTableWidget,
-                        remember_order: bool = True) -> None:
-        """先定列宽再算行高并统一底色；填充后顺带缓存默认行序快照。"""
+                        remember_order: bool = True,
+                        remeasure: bool = True) -> None:
+        """补序号列并统一底色；填充时量列宽行高，排序后只重编序号。"""
+        self._ensure_seq_column(table)
         if remember_order:
             self._remember_row_order(table)
             self._sort_clicks.pop(table, None)
+            table.horizontalHeader().setSortIndicatorShown(False)
         self._unify_table_surface(table)
-        apply_content_widths(table)
-        table.resizeRowsToContents()
+        if remeasure:
+            apply_content_widths(table)
+        self._apply_row_height_mode(table, remeasure=remeasure)
+        table.setColumnWidth(0, SEQ_COLUMN_WIDTH)
+        self._renumber_rows(table, remeasure=remeasure)
+
+    def _ensure_seq_column(self, table: QTableWidget) -> None:
+        """最左侧补「序号」列：只在首次收尾时插入，后续排序沿用。"""
+        header_item = table.horizontalHeaderItem(0)
+        if header_item is not None and header_item.text() == SEQ_COLUMN_TITLE:
+            return
+        table.insertColumn(0)
+        table.setHorizontalHeaderItem(0, QTableWidgetItem(SEQ_COLUMN_TITLE))
+
+    def _prepare_table(self, table: QTableWidget) -> None:
+        """填数前移除旧序号列，保证数据列下标仍从 0 开始。"""
+        header_item = table.horizontalHeaderItem(0)
+        if header_item is not None and header_item.text() == SEQ_COLUMN_TITLE:
+            table.removeColumn(0)
+
+    def _apply_row_height_mode(self, table: QTableWidget,
+                               remeasure: bool = True) -> None:
+        """大表用固定行高，避免排序时逐行测量换行文本；小表保留自适应。"""
+        vertical = table.verticalHeader()
+        if table.rowCount() > FIXED_ROW_HEIGHT_THRESHOLD:
+            vertical.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+            vertical.setDefaultSectionSize(FIXED_ROW_HEIGHT)
+            for row in range(table.rowCount()):
+                table.setRowHeight(row, FIXED_ROW_HEIGHT)
+            return
+        vertical.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        if remeasure:
+            table.resizeRowsToContents()
+
+    def _renumber_rows(self, table: QTableWidget,
+                       remeasure: bool = True) -> None:
+        """按当前显示行序重编 1..N；大表首次填充顺带补长文本 tooltip。"""
+        tooltips = remeasure and table.rowCount() > FIXED_ROW_HEIGHT_THRESHOLD
+        for row in range(table.rowCount()):
+            cell = table.item(row, 0)
+            if cell is None:
+                cell = QTableWidgetItem('')
+                cell.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                table.setItem(row, 0, cell)
+            cell.setText(str(row + 1))
+            cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if not tooltips:
+                continue
+            for column in range(1, table.columnCount()):
+                item = table.item(row, column)
+                if item is not None and len(item.text()) >= TOOLTIP_TEXT_MIN_LEN:
+                    item.setToolTip(item.text())
 
     def _unify_table_surface(self, table: QTableWidget) -> None:
         """单元格、末列右侧留白与表头空白区同色，避免出现拼接色块。"""
@@ -331,6 +393,8 @@ class PortfolioRiskPage(QWidget):
 
     def _on_header_clicked(self, table: QTableWidget, column: int) -> None:
         """同一列三态循环：升序 → 降序 → 取消排序（还原默认行序）。"""
+        if column == 0:
+            return  # 「序号」列不参与排序，也不计入三态
         header = table.horizontalHeader()
         clicks = self._sort_clicks.setdefault(table, {})
         stage = clicks.get(column, 0) % 3
@@ -339,7 +403,7 @@ class PortfolioRiskPage(QWidget):
             self._restore_row_order(table)
             header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
             header.setSortIndicatorShown(False)
-            self._finalize_table(table, remember_order=False)
+            self._finalize_table(table, remember_order=False, remeasure=False)
             return
         self._restore_row_order(table)
         order = (Qt.SortOrder.AscendingOrder if stage == 0
@@ -347,7 +411,7 @@ class PortfolioRiskPage(QWidget):
         self._sort_table_rows(table, column, order)
         header.setSortIndicator(column, order)
         header.setSortIndicatorShown(True)
-        self._finalize_table(table, remember_order=False)
+        self._finalize_table(table, remember_order=False, remeasure=False)
 
     def _remember_row_order(self, table: QTableWidget) -> None:
         """缓存默认行序快照，供取消排序时按原样还原。"""
@@ -355,10 +419,10 @@ class PortfolioRiskPage(QWidget):
             self._row_signature(table, row) for row in range(table.rowCount())]
 
     def _row_signature(self, table: QTableWidget, row: int) -> tuple[str, ...]:
-        """一行的文本指纹，用来在重排后重新定位同一行。"""
+        """一行的文本指纹（跳过序号列），用来在重排后重新定位同一行。"""
         return tuple(
             table.item(row, index).text() if table.item(row, index) else ''
-            for index in range(table.columnCount()))
+            for index in range(1, table.columnCount()))
 
     def _restore_row_order(self, table: QTableWidget) -> None:
         """按默认行序快照还原；快照之后才出现的行保持在后。"""
@@ -477,6 +541,7 @@ class PortfolioRiskPage(QWidget):
              decision.steps[2] if len(decision.steps) > 2 else '—'),
         ]
         table = self.steps_table
+        self._prepare_table(table)
         table.setRowCount(len(rows))
         for row, (name, adjust, basis) in enumerate(rows):
             values = [name, adjust, basis]
@@ -501,6 +566,7 @@ class PortfolioRiskPage(QWidget):
              '建议仓位 × 已实现波动率'),
         ]
         table = self.budget_table
+        self._prepare_table(table)
         table.setRowCount(len(rows))
         for row, (name, value, note) in enumerate(rows):
             values = [name, value, note]
@@ -516,6 +582,7 @@ class PortfolioRiskPage(QWidget):
     def _fill_constraints(self, state: PortfolioRiskState) -> None:
         report = state.constraints
         table = self.constraint_table
+        self._prepare_table(table)
         table.setRowCount(len(report.items))
         for row, item in enumerate(report.items):
             values = [

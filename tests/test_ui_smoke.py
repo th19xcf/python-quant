@@ -280,9 +280,11 @@ def test_analysis_tabs_tables_show_grid_and_columns(qapp, tmp_path):
             layers=(layer,), notes=('测试',),
         ))
         assert window.market_trend_page.layer_table.rowCount() == 1
-        assert window.market_trend_page.layer_table.columnCount() == 5
+        assert window.market_trend_page.layer_table.columnCount() == 6
+        assert (window.market_trend_page.layer_table.horizontalHeaderItem(0).text()
+                == '序号')
         assert window.market_trend_page.indicator_table.rowCount() == 1
-        assert window.market_trend_page.indicator_table.columnCount() == 6
+        assert window.market_trend_page.indicator_table.columnCount() == 7
     finally:
         window.hide()
         window.deleteLater()
