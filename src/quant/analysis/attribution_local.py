@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import argparse
 import json
+from bisect import bisect_right
 from collections.abc import Mapping
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 
 import polars as pl
@@ -60,15 +61,16 @@ MIN_NAV_ROWS = 250
 #: 逐期持仓表（records.POSITIONS_FILE），老 run 没有它即走降级口径
 POSITIONS_FILE = 'positions.parquet'
 #: 可切基准
-BENCHMARK_CHOICES = ('equal_all', 'equal_industry', 'csi300')
+BENCHMARK_CHOICES = ('equal_all', 'csi_all', 'equal_industry', 'csi300')
 #: 测试/冒烟 run 名称关键字：命中的 run 不进入归因候选（避免拿冒烟样本出结论）
 TEST_RUN_KEYWORDS = ('app_ui_click', 'migrate_smoke', 'ui_click', 'smoke', 'fixture')
-#: 计算区间收益时向前多读的日历天数（覆盖前一交易日）
-RETURN_LOOKBACK_DAYS = 20
 #: 沪深 300 月末成分权重（trade_date 为 YYYYMMDD 字符串）
 INDEX_WEIGHTS_SUBDIR = Path('meta') / 'index_members'
 INDEX_WEIGHTS_FILE = 'index_weight_monthly.parquet'
 CSI300_CODE = '000300.SH'
+#: 中证全指（仅指数行情，无成分权重；2011-08-02 起）
+CSI_ALL_CODE = '000985.SH'
+CSI_ALL_START = '2011-08-02'
 
 
 def _default_root() -> Path:
@@ -81,13 +83,14 @@ def is_test_run(name: str) -> bool:
     return any(keyword in lowered for keyword in TEST_RUN_KEYWORDS)
 
 
-def _regularity(payload: dict, run_dir: Path) -> tuple[int, int, int, str]:
-    """候选排序键：含持仓 > 区间达标 > 净值行数 > created_at。"""
+def _regularity(payload: dict, run_dir: Path) -> tuple[int, int, int, int, str]:
+    """候选排序键：非实验 > 含持仓 > 区间达标 > 净值行数 > created_at。"""
     meta = payload.get('positions') or {}
     position_rows = int(meta.get('rows') or 0) if isinstance(meta, dict) else 0
     has_positions = int(position_rows > 0 and (run_dir / POSITIONS_FILE).is_file())
     rows = int(payload.get('nav_rows') or 0)
-    return (has_positions, int(rows >= MIN_NAV_ROWS), rows,
+    return (int(not payload.get('experimental')), has_positions,
+            int(rows >= MIN_NAV_ROWS), rows,
             str(payload.get('created_at') or ''))
 
 
@@ -101,7 +104,7 @@ def _latest_run(base: Path) -> tuple[Path | None, dict, int]:
     if not runs_dir.is_dir():
         return None, {}, 0
     skipped = 0
-    candidates: list[tuple[tuple[int, int, int, str], Path, dict]] = []
+    candidates: list[tuple[tuple[int, int, int, int, str], Path, dict]] = []
     for metrics_path in runs_dir.glob('*/metrics.json'):
         try:
             payload = json.loads(metrics_path.read_text(encoding='utf-8'))
@@ -130,6 +133,29 @@ def _read_nav(run_dir: Path) -> tuple[list[float], list[str]]:
     values = [float(item) for item in frame['equity'].to_list() if item not in ('', None)]
     dates = [str(item) for item in frame['date'].to_list()] if 'date' in frame.columns else []
     return values, dates
+
+
+def _nav_interval_returns(
+    run_dir: Path,
+    pairs: list[tuple[str, str]],
+) -> dict[tuple[str, str], float]:
+    """run 净值在快照区间的收益（含成本）：``equity(end) / equity(start) - 1``。
+
+    取「不晚于快照日」的最后一个净值点，避免快照日无净值时整段缺失。
+    """
+    values, dates = _read_nav(run_dir)
+    if not values or len(values) != len(dates):
+        return {}
+    order = sorted(range(len(dates)), key=lambda index: dates[index])
+    nav_dates = [dates[index] for index in order]
+    nav_values = [values[index] for index in order]
+    result: dict[tuple[str, str], float] = {}
+    for start, end in pairs:
+        i = bisect_right(nav_dates, start) - 1
+        j = bisect_right(nav_dates, end) - 1
+        if i >= 0 and j >= 0 and nav_values[i] > 0:
+            result[(start, end)] = nav_values[j] / nav_values[i] - 1.0
+    return result
 
 
 def _bench_closes(base: Path, start: str | None, end: str | None) -> list[float]:
@@ -183,32 +209,41 @@ def _industry_asof(pit: pl.DataFrame | None, day: date) -> dict[str, str]:
                     frame['industry_l1_name'].to_list(), strict=False))
 
 
-def _returns_on_dates(base: Path, dates: list[str]) -> dict[str, dict[str, float]]:
-    """各快照日期的个股收益（后复权，前一交易日为基准）。"""
-    if not dates:
+def _period_returns(
+    base: Path,
+    pairs: list[tuple[str, str]],
+) -> dict[tuple[str, str], dict[str, float]]:
+    """相邻快照之间的区间累计收益（后复权）：``adj(end) / adj(start) - 1``。
+
+    必须用两个快照日的价格直接相除：若先在全交易日上 ``shift(1)`` 再筛快照日，
+    拿到的是快照日当天的单日收益，跨月长区间会被压缩成一天（口径错误）。
+    """
+    if not pairs:
         return {}
-    first = datetime.strptime(dates[0], '%Y-%m-%d').date() - timedelta(
-        days=RETURN_LOOKBACK_DAYS)
-    last = datetime.strptime(dates[-1], '%Y-%m-%d').date()
+    wanted = sorted({day for pair in pairs for day in pair})
+    wanted_days = [datetime.strptime(item, '%Y-%m-%d').date() for item in wanted]
     frame = (
         pl.scan_parquet(str(base / 'quotes' / 'stock' / '**' / '*.parquet'))
         .select(['date', 'ts_code', 'close', 'hfq_factor'])
-        .filter(pl.col('date') >= pl.lit(first))
-        .filter(pl.col('date') <= pl.lit(last))
+        .filter(pl.col('date').is_in(wanted_days))
         .collect()
-        .sort(['ts_code', 'date'])
         .with_columns((pl.col('close') * pl.col('hfq_factor')).alias('adj'))
-        .with_columns(pl.col('adj').shift(1).over('ts_code').alias('prev'))
-        .with_columns((pl.col('adj') / pl.col('prev') - 1).alias('ret'))
-        .filter(pl.col('ret').is_not_null())
+        .filter(pl.col('adj').is_not_null() & (pl.col('adj') > 0))
     )
-    wanted = [datetime.strptime(item, '%Y-%m-%d').date() for item in dates]
-    frame = frame.filter(pl.col('date').is_in(wanted))
-    result: dict[str, dict[str, float]] = {}
+    adj_by_date: dict[str, dict[str, float]] = {}
     for day, group in frame.group_by('date'):
         key = str(day[0]) if isinstance(day, tuple) else str(day)
-        result[key] = dict(zip(group['ts_code'].to_list(),
-                               group['ret'].to_list(), strict=False))
+        adj_by_date[key] = dict(zip(group['ts_code'].to_list(),
+                                    group['adj'].to_list(), strict=False))
+    result: dict[tuple[str, str], dict[str, float]] = {}
+    for start, end in pairs:
+        begin = adj_by_date.get(start, {})
+        finish = adj_by_date.get(end, {})
+        result[(start, end)] = {
+            code: finish[code] / value - 1.0
+            for code, value in begin.items()
+            if code in finish
+        }
     return result
 
 
@@ -261,9 +296,10 @@ def _bench_weights(
     return {code: 1.0 / len(codes) for code in codes}
 
 
-def _index_return(base: Path, start: str, end: str) -> float:
-    """基准指数在 [start, end] 区间的收益（沪深 300 无成分权重时用）。"""
-    files = list((base / 'quotes' / 'index').glob(f'**/{BENCHMARK_CODE}.parquet'))
+def _index_return(base: Path, start: str, end: str,
+                  code: str = BENCHMARK_CODE) -> float:
+    """基准指数在 [start, end] 区间的收益（无成分权重时用）。"""
+    files = list((base / 'quotes' / 'index').glob(f'**/{code}.parquet'))
     if not files:
         return 0.0
     frame = pl.read_parquet(files[0], columns=['date', 'close']).drop_nulls('close').sort('date')
@@ -296,15 +332,35 @@ def build_brinson_from_positions(
     dates = snapshot_dates(positions)
     if len(dates) < 2:
         return None
-    returns_by_date = _returns_on_dates(base, dates[1:])
+    pairs = list(zip(dates, dates[1:], strict=False))
+    returns_by_pair = _period_returns(base, pairs)
     pit = _pit_frame(base)
+    if benchmark == 'csi_all':
+        # 中证全指：只有指数行情（2011-08-02 起），无成分权重，三效应留空
+        csi_periods: list[BrinsonPeriod] = []
+        for start, end in pairs:
+            if start < CSI_ALL_START:
+                continue
+            rows = positions.filter(pl.col('date') == start)
+            returns = returns_by_pair.get((start, end), {})
+            portfolio = sum(float(weight) * returns.get(code, 0.0)
+                            for code, weight in zip(rows['code'].to_list(),
+                                                    rows['weight'].to_list(), strict=False))
+            csi_periods.append(BrinsonPeriod(
+                start, end, None, None, None, portfolio,
+                _index_return(base, start, end, CSI_ALL_CODE)))
+        if not csi_periods:
+            return None
+        span = [csi_periods[0].start] + [item.end for item in csi_periods]
+        return build_brinson(csi_periods, BENCHMARK_LABELS['csi_all'],
+                             _periods_per_year(span))
     index_weights = _index_weights_frame(base, CSI300_CODE) if benchmark == 'csi300' else None
     periods: list[BrinsonPeriod] = []
-    for start, end in zip(dates, dates[1:], strict=False):
+    for start, end in pairs:
         rows = positions.filter(pl.col('date') == start)
         weights_p = dict(zip(rows['code'].to_list(),
                              rows['weight'].to_list(), strict=False))
-        returns = returns_by_date.get(end, {})
+        returns = returns_by_pair.get((start, end), {})
         start_day = datetime.strptime(start, '%Y-%m-%d').date()
         industry_of = _industry_asof(pit, start_day)
         weights_b = (_index_weights_asof(index_weights, start_day)
@@ -441,6 +497,7 @@ def build_attribution(root: Path | str | None = None,
             name=str(metrics.get('name') or ''),
             start=str(start or ''),
             end=str(end or ''),
+            experimental=bool(metrics.get('experimental')),
         )
     # 跳转前自检：选中 run 若命中测试关键字，显式报错而不是静默出数
     if run is not None and is_test_run(run.name):
@@ -451,7 +508,15 @@ def build_attribution(root: Path | str | None = None,
     mode = benchmark if benchmark in BENCHMARK_CHOICES else 'equal_all'
 
     positions = load_positions(run_dir) if run_dir is not None else None
-    brinson = build_brinson_from_positions(base, positions, mode) if positions is not None else None
+    computed: dict[str, BrinsonResult | None] = {}
+    dual: tuple[BrinsonResult, ...] = ()
+    brinson: BrinsonResult | None = None
+    if positions is not None:
+        # 双主基准：全市场等权 + 中证全指（中证全指仅收益基准，三效应留空）
+        computed = {name: build_brinson_from_positions(base, positions, name)
+                    for name in ('equal_all', 'csi_all')}
+        dual = tuple(item for item in computed.values() if item is not None)
+        brinson = computed.get(mode) or build_brinson_from_positions(base, positions, mode)
 
     holdings = _holdings(base)
     holdings_asof = holdings['asof'] if isinstance(holdings['asof'], str) else None
@@ -474,6 +539,13 @@ def build_attribution(root: Path | str | None = None,
         'created_at」排序取第一条。',
     ]
     missing: tuple[str, ...] = ()
+    if run is not None and run.experimental:
+        notes.append(
+            f'零成本实验 run：{metrics.get("cost_note") or "不得用于正式结论"}。')
+    if computed.get('csi_all') is not None:
+        notes.append(
+            '中证全指（000985.SH）自 2011-08-02 起，早于该日的区间已截断；'
+            '本地无成分权重，行业配置/选择/交叉三效应不计算。')
     if run is None:
         degraded = True
         notes.append('未选中任何非测试 run，页面不展示测试数据的分解结果。')
@@ -499,7 +571,100 @@ def build_attribution(root: Path | str | None = None,
         notes=notes,
         brinson=brinson,
         benchmark=BENCHMARK_LABELS.get(mode, mode),
+        benchmarks=dual,
     )
+
+
+def build_excess_decomposition(
+    root: Path | str | None,
+    run_dir: Path | str,
+    zero_run_dir: Path | str,
+    out_path: Path | str | None = None,
+) -> dict[str, float | int | str]:
+    """把「组合相对全市场等权」的累计超额拆成 成本 / 剔除标的 / 残差 三块。
+
+    - 成本拖累：同一 spec 零成本 run 与正式 run 的净值区间收益差（含费用、滑点）；
+    - 剔除标的效应：实盘持仓集合等权 − 全市场可交易等权（equal_all 口径，含被剔标的）；
+    - 残差：倒推项，含选股权重、整手取整、现金缓冲、月末信号与执行日错位等。
+
+    三项之和与正式 run 的 equal_all 累计超额恒等（闭合差额写入返回值）。
+    """
+    base = Path(root) if root is not None else _default_root()
+    full_dir = Path(run_dir)
+    zero_dir = Path(zero_run_dir)
+    positions = load_positions(full_dir)
+    positions_zero = load_positions(zero_dir)
+    if positions is None or positions_zero is None:
+        raise ValueError('两次 run 都必须有 positions.parquet')
+    full = build_brinson_from_positions(base, positions, 'equal_all')
+    zero = build_brinson_from_positions(base, positions_zero, 'equal_all')
+    if full is None or zero is None:
+        raise ValueError('run 的持仓快照不足两期，无法拆解')
+    full_map = {item.start: item for item in full.periods}
+    zero_map = {item.start: item for item in zero.periods}
+    common = sorted(set(full_map) & set(zero_map))
+    if not common:
+        raise ValueError('两次 run 没有共同区间，无法拆解')
+    pairs = [(start, full_map[start].end) for start in common]
+    returns_by_pair = _period_returns(base, pairs)
+    full_nav = _nav_interval_returns(full_dir, pairs)
+    zero_nav = _nav_interval_returns(zero_dir, pairs)
+    rows: list[dict[str, object]] = []
+    total = cost = universe = 0.0
+    for start in common:
+        item = full_map[start]
+        zero_item = zero_map[start]
+        frame = positions.filter(pl.col('date') == start)
+        returns = returns_by_pair.get((start, item.end), {})
+        codes = [code for code in frame['code'].to_list() if code in returns]
+        ew_holdings = (sum(returns[code] for code in codes) / len(codes)
+                       if codes else 0.0)
+        ew_all = sum(returns.values()) / len(returns) if returns else 0.0
+        period_total = item.portfolio_return - item.benchmark_return
+        period_cost = (full_nav.get((start, item.end), 0.0)
+                       - zero_nav.get((start, item.end), 0.0))
+        period_universe = ew_holdings - ew_all
+        total += period_total
+        cost += period_cost
+        universe += period_universe
+        rows.append({
+            'period_start': start,
+            'period_end': item.end,
+            'portfolio_return': item.portfolio_return,
+            'portfolio_return_cost0': zero_item.portfolio_return,
+            'nav_return': full_nav.get((start, item.end), 0.0),
+            'nav_return_cost0': zero_nav.get((start, item.end), 0.0),
+            'ew_holdings': ew_holdings,
+            'ew_all': ew_all,
+            'excess': period_total,
+            'cost': period_cost,
+            'universe': period_universe,
+            'residual': period_total - period_cost - period_universe,
+        })
+    residual = total - cost - universe
+    closure = (cost + universe + residual) - total
+    target = (Path(out_path) if out_path is not None
+              else full_dir / 'attribution_cost_decomposition.csv')
+    frame = pl.DataFrame(rows, schema={
+        'period_start': pl.Utf8, 'period_end': pl.Utf8,
+        'portfolio_return': pl.Float64, 'portfolio_return_cost0': pl.Float64,
+        'nav_return': pl.Float64, 'nav_return_cost0': pl.Float64,
+        'ew_holdings': pl.Float64, 'ew_all': pl.Float64,
+        'excess': pl.Float64, 'cost': pl.Float64, 'universe': pl.Float64,
+        'residual': pl.Float64,
+    })
+    target.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_csv(target)
+    return {
+        'periods': len(common),
+        'total_excess': total,
+        'cost_drag': cost,
+        'universe_effect': universe,
+        'residual': residual,
+        'closure_diff': closure,
+        'zero_run': zero_dir.name,
+        'detail_csv': str(target),
+    }
 
 
 def run_cli(asof: str | None = None, panel_root: str | None = None,
@@ -550,8 +715,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--asof', help='持仓快照截止日，格式 YYYY-MM-DD')
     parser.add_argument('--panel-root', help='本地列存根目录，默认按配置解析')
     parser.add_argument('--benchmark', choices=BENCHMARK_CHOICES, default='equal_all',
-                        help='基准：全市场等权 / 行业等权 / 沪深 300')
+                        help='基准：全市场等权 / 中证全指 / 行业等权 / 沪深 300')
+    parser.add_argument('--decompose-run', help='正式 run 目录（超额三块拆解主对象）')
+    parser.add_argument('--decompose-zero-run', help='零成本实验 run 目录')
+    parser.add_argument('--decompose-out', help='逐期拆解 CSV 输出路径')
     args = parser.parse_args(argv)
+    if args.decompose_run and args.decompose_zero_run:
+        result = build_excess_decomposition(
+            args.panel_root, args.decompose_run, args.decompose_zero_run,
+            args.decompose_out)
+        for key, value in result.items():
+            logger.info('{}: {}', key, value)
+        return 0
     run_cli(asof=args.asof, panel_root=args.panel_root, benchmark=args.benchmark)
     return 0
 

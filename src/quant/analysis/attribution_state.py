@@ -34,6 +34,7 @@ class RunSummary:
     name: str
     start: str
     end: str
+    experimental: bool = False
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,8 @@ class AttributionState:
     notes: tuple[str, ...]
     brinson: BrinsonResult | None = None
     benchmark: str = ''
+    #: 双主基准并排结果（全市场等权 + 中证全指），与 brinson 的当前选择无关
+    benchmarks: tuple[BrinsonResult, ...] = ()
 
 
 def annualized_return(values: Sequence[float]) -> float | None:
@@ -233,11 +236,12 @@ def _weighted_percentile(weights: Mapping[str, float], percentiles: Mapping[str,
     return sum(weight * pct for weight, pct in covered) / total
 
 
-#: 可切基准：全市场等权 / 行业等权 / 沪深 300（月末成分权重）
+#: 可切基准：全市场等权 / 中证全指 / 行业等权 / 沪深 300（月末成分权重）
 BENCHMARK_LABELS = {
     'equal_all': '全市场等权',
+    'csi_all': '中证全指',
     'equal_industry': '行业等权',
-    'csi300': '沪深 300',
+    'csi300': '沪深 300（仅作参考，含大盘风格偏差）',
 }
 
 
@@ -350,6 +354,7 @@ def build_state(
     notes: Sequence[str] = (),
     brinson: BrinsonResult | None = None,
     benchmark: str = '',
+    benchmarks: Sequence[BrinsonResult] = (),
 ) -> AttributionState:
     """汇总归因结果（装配层只负责取数，判定口径在本模块）。"""
     return AttributionState(
@@ -363,4 +368,5 @@ def build_state(
         notes=tuple(notes),
         brinson=brinson,
         benchmark=benchmark,
+        benchmarks=tuple(benchmarks),
     )

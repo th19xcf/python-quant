@@ -129,6 +129,7 @@ def parse_recipe(text: str) -> Dict[str, Any]:
         'rebalance': state['调仓'],
         'portfolio': state['资金'],
         'cost': state['成本'],
+        'experimental': state['成本'].get('stamp_tax_basis') == 'fixed_0.0%',
         'random_seed': state.get('随机种子'),
     }
     return validate_spec(raw)
@@ -405,6 +406,10 @@ def _parse_cost(rest: str, lineno: int) -> Dict[str, Any]:
             continue
         if re.fullmatch(r'印花税\s*(?:固定)?\s*(?:千1|0\.1%)', clause):
             out['stamp_tax_basis'] = 'fixed_0.1%'
+            continue
+        if re.fullmatch(r'印花税\s*(?:固定)?\s*(?:千0|0(?:\.0+)?%)', clause):
+            # 零成本实验专用：spec 校验要求 experimental=true 才放行
+            out['stamp_tax_basis'] = 'fixed_0.0%'
             continue
         match = re.fullmatch(r'佣金\s*(?:万|万分之)\s*(\d+(?:\.\d+)?)', clause)
         if match:

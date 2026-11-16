@@ -15,7 +15,8 @@ from src.ui.attribution.page import AttributionPage
 
 
 def _write_run(base: Path, run_id: str, *, name: str, created: str,
-               nav_rows: int, positions: int = 0) -> Path:
+               nav_rows: int, positions: int = 0,
+               experimental: bool = False) -> Path:
     run_dir = base / 'backtest_runs' / run_id
     run_dir.mkdir(parents=True)
     payload = {
@@ -23,6 +24,7 @@ def _write_run(base: Path, run_id: str, *, name: str, created: str,
         'name': name,
         'created_at': created,
         'nav_rows': nav_rows,
+        'experimental': experimental,
         'period': {'start': '2020-01-02', 'end': '2023-12-29'},
         'positions': {'file': 'positions.parquet' if positions else None,
                       'rows': positions},
@@ -53,6 +55,19 @@ def test_latest_run_skips_test_names(tmp_path):
                         created='2026-01-01T09:00:00', nav_rows=900)
     run_dir, metrics, skipped = mod._latest_run(tmp_path)
     assert skipped == 1
+    assert run_dir == formal
+    assert metrics['name'] == 'v3_monthly'
+
+
+def test_latest_run_prefers_non_experimental(tmp_path):
+    """零成本实验 run 更晚也必须让位给正式 run。"""
+    formal = _write_run(tmp_path, '20260101-090000_v3_monthly', name='v3_monthly',
+                        created='2026-01-01T09:00:00', nav_rows=900, positions=5)
+    _write_run(tmp_path, '20261116-160000_v3_monthly_cost0',
+               name='v3_monthly_cost0', created='2026-11-16T16:00:00',
+               nav_rows=900, positions=5, experimental=True)
+    run_dir, metrics, skipped = mod._latest_run(tmp_path)
+    assert skipped == 0
     assert run_dir == formal
     assert metrics['name'] == 'v3_monthly'
 

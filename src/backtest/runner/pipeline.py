@@ -43,6 +43,9 @@ class SpecCostModel(CostModel):
         }
         if cost['stamp_tax_basis'] == 'fixed_0.1%':
             params['stamp_tax_rate'] = 0.001
+        elif cost['stamp_tax_basis'] == 'fixed_0.0%':
+            # 零成本实验：卖出印花税固定 0（spec 校验已强制 experimental=true）
+            params['stamp_tax_rate'] = 0.0
         super().__init__(params)
         self.stamp_tax_basis = cost['stamp_tax_basis']
 

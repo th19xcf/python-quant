@@ -32,7 +32,7 @@ def validate_spec(raw: Any) -> Dict[str, Any]:
         raise SpecError('规格顶层必须是 JSON 对象')
     _reject_unknown(raw, {'spec_version', 'name', 'description', 'period', 'universe',
                           'factor', 'exclusions', 'rebalance', 'portfolio', 'cost',
-                          'random_seed'}, '规格')
+                          'experimental', 'random_seed'}, '规格')
     if raw.get('spec_version') != SPEC_VERSION:
         raise SpecError(f"spec_version 必须是 '{SPEC_VERSION}'，收到 {raw.get('spec_version')!r}")
 
@@ -51,7 +51,13 @@ def validate_spec(raw: Any) -> Dict[str, Any]:
     exclusions = _exclusions(raw.get('exclusions'))
     rebalance = _rebalance(raw.get('rebalance'), period['warmup_start'])
     portfolio = _portfolio(raw.get('portfolio'))
+    experimental = raw.get('experimental', False)
+    if not isinstance(experimental, bool):
+        raise SpecError(f'experimental 必须是布尔值，收到 {experimental!r}')
     cost = _cost(raw.get('cost'))
+    if cost['stamp_tax_basis'] == 'fixed_0.0%' and not experimental:
+        raise SpecError('印花税固定千0 只允许用于零成本实验（experimental=true）；'
+                        '正式 spec 或 formal run 不得使用 0 税率')
     seed = raw.get('random_seed')
     if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
         raise SpecError(f'random_seed 必须是整数或 null，收到 {seed!r}')
@@ -67,6 +73,7 @@ def validate_spec(raw: Any) -> Dict[str, Any]:
         'rebalance': rebalance,
         'portfolio': portfolio,
         'cost': cost,
+        'experimental': experimental,
         'random_seed': seed,
     }
     spec['_resolved'] = {
@@ -168,6 +175,8 @@ def _factor(obj: Any) -> Dict[str, Any] | None:
         raise SpecError('factor 必须是对象或 null')
     _reject_unknown(obj, {'name', 'params', 'quantile'}, 'factor')
     name = obj.get('name')
+    if not isinstance(name, str):
+        raise SpecError('factor.name 必须是字符串')
     params = FACTORS.resolve(name, obj.get('params') or {})
     q = obj.get('quantile')
     if not isinstance(q, dict):
@@ -277,9 +286,10 @@ def _cost(obj: Any) -> Dict[str, Any]:
     if isinstance(slip, bool) or not isinstance(slip, (int, float)) or slip < 0:
         raise SpecError(f'cost.slippage_bps 必须是非负数，收到 {slip!r}')
     basis = obj['stamp_tax_basis']
-    if basis not in ('fixed_0.1%', 'historical'):
+    if basis not in ('fixed_0.1%', 'fixed_0.0%', 'historical'):
         raise SpecError(
-            f"cost.stamp_tax_basis 必须是 'fixed_0.1%' 或 'historical'，收到 {basis!r}")
+            "cost.stamp_tax_basis 必须是 'fixed_0.1%'、'fixed_0.0%' 或 "
+            f"'historical'，收到 {basis!r}")
     impact = obj.get('impact_coef', 0.015)
     if isinstance(impact, bool) or not isinstance(impact, (int, float)) or impact < 0:
         raise SpecError(f'cost.impact_coef 必须是非负数，收到 {impact!r}')
