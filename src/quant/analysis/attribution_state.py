@@ -233,11 +233,11 @@ def _weighted_percentile(weights: Mapping[str, float], percentiles: Mapping[str,
     return sum(weight * pct for weight, pct in covered) / total
 
 
-#: 可切基准：全市场等权 / 行业等权 / 沪深 300（无成分权重，只能做聚合）
+#: 可切基准：全市场等权 / 行业等权 / 沪深 300（月末成分权重）
 BENCHMARK_LABELS = {
     'equal_all': '全市场等权',
     'equal_industry': '行业等权',
-    'csi300': '沪深 300（无成分权重）',
+    'csi300': '沪深 300',
 }
 
 

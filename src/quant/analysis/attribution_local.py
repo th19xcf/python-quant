@@ -29,6 +29,7 @@ from src.quant.analysis.attribution_state import (
     BENCHMARK_LABELS,
     AttributionState,
     BrinsonPeriod,
+    BrinsonResult,
     RunSummary,
     brinson_period,
     build_brinson,
@@ -60,46 +61,63 @@ MIN_NAV_ROWS = 250
 POSITIONS_FILE = 'positions.parquet'
 #: 可切基准
 BENCHMARK_CHOICES = ('equal_all', 'equal_industry', 'csi300')
+#: 测试/冒烟 run 名称关键字：命中的 run 不进入归因候选（避免拿冒烟样本出结论）
+TEST_RUN_KEYWORDS = ('app_ui_click', 'migrate_smoke', 'ui_click', 'smoke', 'fixture')
 #: 计算区间收益时向前多读的日历天数（覆盖前一交易日）
 RETURN_LOOKBACK_DAYS = 20
+#: 沪深 300 月末成分权重（trade_date 为 YYYYMMDD 字符串）
+INDEX_WEIGHTS_SUBDIR = Path('meta') / 'index_members'
+INDEX_WEIGHTS_FILE = 'index_weight_monthly.parquet'
+CSI300_CODE = '000300.SH'
 
 
 def _default_root() -> Path:
     return resolve_store_root(get_config())
 
 
-def _latest_run(base: Path) -> tuple[Path | None, dict]:
-    """按三级优先取 run：落有 positions.parquet 的最新 run → nav_rows 达标的最新
-    run → 最新 run。第一档可做完整 Brinson，后两档只能降级。"""
+def is_test_run(name: str) -> bool:
+    """run 名称是否属测试/冒烟（含关键字即排除）。"""
+    lowered = name.lower()
+    return any(keyword in lowered for keyword in TEST_RUN_KEYWORDS)
+
+
+def _regularity(payload: dict, run_dir: Path) -> tuple[int, int, int, str]:
+    """候选排序键：含持仓 > 区间达标 > 净值行数 > created_at。"""
+    meta = payload.get('positions') or {}
+    position_rows = int(meta.get('rows') or 0) if isinstance(meta, dict) else 0
+    has_positions = int(position_rows > 0 and (run_dir / POSITIONS_FILE).is_file())
+    rows = int(payload.get('nav_rows') or 0)
+    return (has_positions, int(rows >= MIN_NAV_ROWS), rows,
+            str(payload.get('created_at') or ''))
+
+
+def _latest_run(base: Path) -> tuple[Path | None, dict, int]:
+    """选归因 run：先剔除测试/冒烟名称，再按「含持仓 → 区间达标 → 行数 →
+    created_at」排序取第一条；没有任何非测试 run 时返回 None，不退回测试数据。
+
+    返回 (run 目录, metrics, 被跳过的测试 run 条数)。
+    """
     runs_dir = base / RUNS_SUBDIR
     if not runs_dir.is_dir():
-        return None, {}
-    with_positions: tuple[str, Path, dict] | None = None
-    best: tuple[str, Path, dict] | None = None
-    fallback: tuple[str, Path, dict] | None = None
+        return None, {}, 0
+    skipped = 0
+    candidates: list[tuple[tuple[int, int, int, str], Path, dict]] = []
     for metrics_path in runs_dir.glob('*/metrics.json'):
         try:
             payload = json.loads(metrics_path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             continue
-        created = str(payload.get('created_at') or '')
-        if fallback is None or created > fallback[0]:
-            fallback = (created, metrics_path.parent, payload)
-        meta = payload.get('positions') or {}
-        position_rows = int(meta.get('rows') or 0) if isinstance(meta, dict) else 0
-        if position_rows > 0 and (metrics_path.parent / POSITIONS_FILE).is_file():
-            if with_positions is None or created > with_positions[0]:
-                with_positions = (created, metrics_path.parent, payload)
+        name = str(payload.get('name') or '')
+        if is_test_run(name):
+            skipped += 1
             continue
-        rows = int(payload.get('nav_rows') or 0)
-        if rows < MIN_NAV_ROWS:
-            continue
-        if best is None or created > best[0]:
-            best = (created, metrics_path.parent, payload)
-    chosen = with_positions or best or fallback
-    if chosen is None:
-        return None, {}
-    return chosen[1], chosen[2]
+        candidates.append(
+            (_regularity(payload, metrics_path.parent), metrics_path.parent, payload))
+    if not candidates:
+        return None, {}, skipped
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    _, run_dir, payload = candidates[0]
+    return run_dir, payload, skipped
 
 
 def _read_nav(run_dir: Path) -> tuple[list[float], list[str]]:
@@ -194,6 +212,36 @@ def _returns_on_dates(base: Path, dates: list[str]) -> dict[str, dict[str, float
     return result
 
 
+def _index_weights_frame(base: Path, index_code: str) -> pl.DataFrame | None:
+    """读取指数月末成分权重（缺失时返回 None，调用侧退回指数收益口径）。"""
+    path = base / INDEX_WEIGHTS_SUBDIR / INDEX_WEIGHTS_FILE
+    if not path.is_file():
+        return None
+    return (
+        pl.read_parquet(path, columns=['index_code', 'ts_code', 'trade_date', 'weight'])
+        .filter(pl.col('index_code') == index_code)
+        .drop_nulls(['weight'])
+        .filter(pl.col('weight') > 0)
+    )
+
+
+def _index_weights_asof(frame: pl.DataFrame | None, day: date) -> dict[str, float]:
+    """取 day 之前最近一期（月末）成分权重并归一化到合计 1。"""
+    if frame is None or frame.is_empty():
+        return {}
+    key = day.strftime('%Y%m%d')
+    eligible = frame.filter(pl.col('trade_date') <= key)
+    if eligible.is_empty():
+        return {}
+    latest = eligible['trade_date'].max()
+    snap = eligible.filter(pl.col('trade_date') == latest)
+    total = float(snap['weight'].sum())
+    if total <= 0:
+        return {}
+    return {code: float(weight) / total for code, weight in
+            zip(snap['ts_code'].to_list(), snap['weight'].to_list(), strict=False)}
+
+
 def _bench_weights(
     returns: Mapping[str, float],
     industry_of: Mapping[str, str],
@@ -250,6 +298,7 @@ def build_brinson_from_positions(
         return None
     returns_by_date = _returns_on_dates(base, dates[1:])
     pit = _pit_frame(base)
+    index_weights = _index_weights_frame(base, CSI300_CODE) if benchmark == 'csi300' else None
     periods: list[BrinsonPeriod] = []
     for start, end in zip(dates, dates[1:], strict=False):
         rows = positions.filter(pl.col('date') == start)
@@ -258,20 +307,52 @@ def build_brinson_from_positions(
         returns = returns_by_date.get(end, {})
         start_day = datetime.strptime(start, '%Y-%m-%d').date()
         industry_of = _industry_asof(pit, start_day)
-        if benchmark == 'csi300':
+        weights_b = (_index_weights_asof(index_weights, start_day)
+                     if benchmark == 'csi300'
+                     else _bench_weights(returns, industry_of, benchmark))
+        if benchmark == 'csi300' and not weights_b:
+            # 无成分权重时才退回指数收益口径，逐期分解留空
             portfolio = sum(weight * returns.get(code, 0.0)
                             for code, weight in weights_p.items())
             periods.append(BrinsonPeriod(
                 start, end, None, None, None,
                 portfolio, _index_return(base, start, end)))
             continue
-        weights_b = _bench_weights(returns, industry_of, benchmark)
         allocation, selection, interaction, portfolio, baseline = brinson_period(
             weights_p, weights_b, returns, industry_of)
         periods.append(BrinsonPeriod(
             start, end, allocation, selection, interaction, portfolio, baseline))
     return build_brinson(
         periods, BENCHMARK_LABELS.get(benchmark, benchmark), _periods_per_year(dates))
+
+
+def export_brinson_detail(brinson: BrinsonResult, path: Path) -> Path:
+    """逐期分解写入 run 目录 CSV（只落盘，不回读上下文）。"""
+    rows: list[dict[str, object]] = []
+    for item in brinson.periods:
+        if item.allocation is None or item.selection is None or item.interaction is None:
+            excess = None
+        else:
+            excess = item.allocation + item.selection + item.interaction
+        rows.append({
+            'period_start': item.start,
+            'period_end': item.end,
+            'allocation': item.allocation,
+            'selection': item.selection,
+            'interaction': item.interaction,
+            'portfolio_return': item.portfolio_return,
+            'benchmark_return': item.benchmark_return,
+            'excess': excess,
+        })
+    frame = pl.DataFrame(rows, schema={
+        'period_start': pl.Utf8, 'period_end': pl.Utf8,
+        'allocation': pl.Float64, 'selection': pl.Float64,
+        'interaction': pl.Float64, 'portfolio_return': pl.Float64,
+        'benchmark_return': pl.Float64, 'excess': pl.Float64,
+    })
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_csv(path)
+    return path
 
 
 def _industry_share(base: Path, asof: str | None) -> dict[str, float]:
@@ -347,7 +428,7 @@ def build_attribution(root: Path | str | None = None,
                       benchmark: str = 'equal_all') -> AttributionState:
     """装配 run、基准与持仓：有 positions.parquet 走完整 Brinson，否则降级。"""
     base = Path(root) if root is not None else _default_root()
-    run_dir, metrics = _latest_run(base)
+    run_dir, metrics, skipped = _latest_run(base)
     nav, _ = _read_nav(run_dir) if run_dir is not None else ([], [])
     period = metrics.get('period') or {}
     start = period.get('start') if isinstance(period, dict) else None
@@ -361,6 +442,10 @@ def build_attribution(root: Path | str | None = None,
             start=str(start or ''),
             end=str(end or ''),
         )
+    # 跳转前自检：选中 run 若命中测试关键字，显式报错而不是静默出数
+    if run is not None and is_test_run(run.name):
+        raise ValueError(
+            f'该 run 属测试/冒烟 run，禁止进入归因：{run.name}（{run.run_id}）')
     bench = _bench_closes(base, start, end) if run else []
     excess = excess_stats(nav, bench) if nav and bench else None
     mode = benchmark if benchmark in BENCHMARK_CHOICES else 'equal_all'
@@ -380,16 +465,20 @@ def build_attribution(root: Path | str | None = None,
     styles = style_exposure(weights, mv_map, pb_map) if weights and (mv_map or pb_map) else ()
 
     notes = [
-        f'归因对象：{run.name or "无 run"}（{run.run_id}，{run.start}~{run.end}）'
-        if run else '未找到可归因的回测 run。',
+        f'归因对象：{run.name}（{run.run_id}，{run.start}~{run.end}）'
+        if run else '暂无可用正式回测，请先跑一次正式 spec。',
         f'基准：{BENCHMARK_CODE}；持仓快照：{holdings_asof or "未生成"}'
         f'（{holdings["source"]}）。',
-        f'run 选择：优先 created_at 最新且落有 positions.parquet 的 run，'
-        f'其次 nav_rows ≥ {MIN_NAV_ROWS}（跳过冒烟 run）。',
+        f'已跳过 {skipped} 条测试/冒烟 run（关键字：{"、".join(TEST_RUN_KEYWORDS)}）。',
+        'run 选择：剔除测试/冒烟名称后，按「含持仓 → 区间达标 → 净值行数 → '
+        'created_at」排序取第一条。',
     ]
-    if brinson is not None:
+    missing: tuple[str, ...] = ()
+    if run is None:
+        degraded = True
+        notes.append('未选中任何非测试 run，页面不展示测试数据的分解结果。')
+    elif brinson is not None:
         degraded = False
-        missing: tuple[str, ...] = ()
         notes.append(
             f'完整 Brinson：基准 {brinson.benchmark}，{len(brinson.periods)} 个调仓区间；'
             '逐期用区间期初权重与区间收益分解，行业用申万 PIT。')

@@ -369,8 +369,9 @@ class AttributionPage(QWidget):
     def _sort_table_rows(self, table: QTableWidget, column: int,
                          order: Qt.SortOrder) -> None:
         """按解析后的键重排行，空值沉底；文本、对齐、颜色与提示原样保留。"""
-        cells = [[table.takeItem(row, index) for index in range(table.columnCount())]
-                 for row in range(table.rowCount())]
+        cells: list[list[QTableWidgetItem | None]] = [
+            [table.takeItem(row, index) for index in range(table.columnCount())]
+            for row in range(table.rowCount())]
         if not cells:
             return
         keyed: list[tuple[tuple[str, float | str], list[QTableWidgetItem | None]]] = []
