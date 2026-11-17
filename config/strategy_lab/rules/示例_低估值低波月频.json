@@ -1,0 +1,52 @@
+{
+  "benchmark": "000300.SH",
+  "conditions": [
+    {
+      "field": "vol_60",
+      "op": "<=",
+      "operand": {
+        "q": 0.5,
+        "type": "quantile"
+      }
+    },
+    {
+      "field": "ep",
+      "op": ">=",
+      "operand": {
+        "q": 0.7,
+        "type": "quantile"
+      }
+    }
+  ],
+  "cost": {
+    "commission_rate": 0.00025,
+    "impact_coef": 0.015,
+    "min_commission": 5.0,
+    "slippage_bps": 10.0,
+    "stamp_tax_basis": "fixed_0.1%"
+  },
+  "description": "60日波动率最低50% 且 EP 前30%，按 EP 降序取前 50，月频等权",
+  "name": "示例_低估值低波月频",
+  "period": {
+    "end": "2026-11-13",
+    "start": "2019-01-04"
+  },
+  "portfolio": {
+    "cash_buffer": 0.01,
+    "initial_capital": 1000000000.0,
+    "lot_size": 100,
+    "pooled_cash": true
+  },
+  "rebalance": {
+    "frequency": "monthly"
+  },
+  "rule_version": "strategy_lab/v1",
+  "sort": {
+    "direction": "desc",
+    "field": "ep"
+  },
+  "top_n": 50,
+  "universe": {
+    "mode": "all_market"
+  }
+}

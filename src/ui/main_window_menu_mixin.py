@@ -81,6 +81,7 @@ class MainWindowMenuMixin:
         quant_menu = menu_bar.addMenu("量化分析")
         self.add_menu_actions(quant_menu, [
             ("回测工作台", self.open_quant_workbench),
+            ("策略试算", self.open_strategy_lab),
             ("策略回测", self.action_manager.on_strategy_backtest),
             ("股票推荐", self.action_manager.on_stock_recommendation),
             ("因子分析", self.action_manager.on_factor_analysis),
@@ -141,6 +142,7 @@ class MainWindowMenuMixin:
 
             # 量化分析菜单图标
             "回测工作台": "🧪",
+            "策略试算": "🎛",
             "策略回测": "📊",
             "股票推荐": "⭐",
             "因子分析": "🔍",
@@ -195,6 +197,22 @@ class MainWindowMenuMixin:
             self.tab_widget.addTab(tab, '回测工作台')
         self.tab_widget.setCurrentWidget(tab)
         self.statusBar().showMessage('回测工作台：新建回测 / 运行队列 / 结果看板 / 运行清单', 3000)
+
+    def open_strategy_lab(self):
+        """打开「策略试算」标签页：结构化条件 → 复用既有引擎 → 净值与指标。
+
+        页面为原生 Qt 控件（非内嵌网页），字段与运算符只能从白名单下拉中选择；
+        重复点击只切回已存在的标签页，不会新起第二个。
+        """
+        tab = getattr(self, 'strategy_lab_tab', None)
+        if tab is None:
+            from src.ui.strategy_lab.tab import create_strategy_lab_tab
+
+            tab = create_strategy_lab_tab(self.tab_widget)
+            self.strategy_lab_tab = tab
+            self.tab_widget.addTab(tab, '策略试算')
+        self.tab_widget.setCurrentWidget(tab)
+        self.statusBar().showMessage('策略试算：条件选股 + 月频回测 + 基准对比', 3000)
 
     def create_tool_bar(self):
         """
