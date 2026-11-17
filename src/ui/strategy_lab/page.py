@@ -39,6 +39,7 @@ from src.quant.strategy_lab.rules import (
     load_rule,
     summarize,
 )
+from src.quant.strategy_lab.save import save_run
 from src.ui.advice.tokens import TOKENS, palette_for
 from src.ui.table_sizing import (
     FIXED_ROW_HEIGHT,
@@ -183,6 +184,7 @@ class StrategyLabPage(QWidget):
         self._pal = palette_for(self.theme)
         self._worker: _RunWorker | None = None
         self._rule: Dict[str, Any] | None = None
+        self._last_payload: Dict[str, Any] | None = None
         self._nav_dates: List[str] = []
         self._build_ui()
         self.setStyleSheet(_qss(self.theme))
@@ -216,6 +218,12 @@ class StrategyLabPage(QWidget):
         self.run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.run_btn.clicked.connect(self._on_run)
         header.addWidget(self.run_btn)
+
+        self.save_btn = QPushButton('保存结果')
+        self.save_btn.setEnabled(False)
+        self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.save_btn.clicked.connect(self._on_save)
+        header.addWidget(self.save_btn)
         root.addLayout(header)
 
         splitter = QSplitter(Qt.Vertical)
@@ -383,6 +391,8 @@ class StrategyLabPage(QWidget):
             self.status_label.setText('已有一次试算在运行，请等待完成')
             return
         self.run_btn.setEnabled(False)
+        self.save_btn.setEnabled(False)
+        self._last_payload = None
         self.status_label.setText(f'试算中：{RULE_TYPES[rule["rule_type"]]}规则，'
                                   '加载本地行情与 PIT 字段面板…')
         self._worker = _RunWorker(rule, self)
@@ -392,17 +402,35 @@ class StrategyLabPage(QWidget):
         self._worker.start()
 
     def _on_failed(self, message: str) -> None:
+        self._last_payload = None
+        self.save_btn.setEnabled(False)
         self.status_label.setText(f'试算失败：{message}')
+
+    def _on_save(self) -> None:
+        """把最近一次成功试算落盘；同一结果可多次保存，各自独立成目录。"""
+        if not self._last_payload:
+            return
+        try:
+            info = save_run(self._last_payload, self._rule or {})
+        except Exception as exc:  # noqa: BLE001 - 保存失败只提示，不影响已有结果
+            logger.exception('策略试算结果保存失败')
+            self.status_label.setText(f'保存失败：{exc}')
+            return
+        self.status_label.setText(f'已保存：{info["run_id"]}')
 
     # -- 展示 --------------------------------------------------------------
     def _on_result(self, payload: Dict[str, Any]) -> None:
         if payload.get('status') != 'ok':
+            self._last_payload = None
+            self.save_btn.setEnabled(False)
             self.status_label.setText(f'空结果：{payload.get("reason", "无可用结果")}')
             self._fill_metrics({'rebalances': 0})
             self._plot_curves([], [])
             self._plot_drawdown([])
             self._plot_markers([])
             return
+        self._last_payload = payload
+        self.save_btn.setEnabled(True)
         self._fill_metrics(payload['metrics'],
                            (payload.get('dividend_coverage') or {}).get('message') or '')
         self._plot_curves(payload.get('nav') or [], payload.get('benchmark_curve') or [])
