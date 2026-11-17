@@ -63,6 +63,9 @@ LIST_COLUMNS = ['代码', '名称', '目标权重', '目标金额', '参考价',
 LEDGER_COLUMNS = ['交易日', '信号日', '资金规模', '代码', '名称', '目标权重',
                   '目标金额', '参考价', '目标股数', '变动类型', '变动金额']
 CHANGE_ORDER = {'清仓': 0, '减仓': 1, '新建': 2, '加仓': 3, '不变': 4}
+# 台账权重存储 10 位小数，全精度权重写回该精度后舍入差 ≤5e-11；等权组合增减
+# 一只标的的权重变化约 1e-8，取 1e-9 作方向判定容差，只吞掉纯存储舍入。
+WEIGHT_TOL = 1e-9
 
 
 def month_end_signal(calendar: List[date], day: date) -> date:
@@ -157,7 +160,7 @@ def classify(weight: float, old_weight: float) -> str:
         return '新建' if weight > 0 else '不变'
     if weight == 0.0:
         return '清仓'
-    if abs(weight - old_weight) <= 1e-12 * max(1.0, abs(old_weight)):
+    if abs(weight - old_weight) <= WEIGHT_TOL:
         return '不变'
     return '加仓' if weight > old_weight else '减仓'
 

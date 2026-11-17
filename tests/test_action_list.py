@@ -71,6 +71,22 @@ def test_change_types_come_from_previous_ledger_day() -> None:
     assert classify(0.2, prev['000001.SZ'][0]) == '加仓'
 
 
+def test_weight_rounding_noise_is_unchanged() -> None:
+    """全精度权重对 1e-10 精度台账值只差存储舍入，应判「不变」而非加仓/减仓。
+
+    实测 4284 只等权：0.99/4284 写回 10 位小数后差值约 3.8e-12，旧容差 1e-12
+    会把全部标的判成「加仓」。真实增减一只成分的权重变化约 5e-8，仍须判出方向。
+    """
+    from tools.target_holdings import WEIGHT_TOL, classify
+
+    weight = 0.99 / 4284
+    ledger_weight = float(f'{weight:.10f}')
+    assert 0 < abs(weight - ledger_weight) <= WEIGHT_TOL
+    assert classify(weight, ledger_weight) == '不变'
+    assert classify(0.99 / 4283, ledger_weight) == '加仓'
+    assert classify(0.99 / 4285, ledger_weight) == '减仓'
+
+
 def _sample_state() -> ActionListState:
     rows = (
         ActionRow('000001.SZ', '平安银行', '买入', 1000, 10.0, 0.10, '2026-11-16',
