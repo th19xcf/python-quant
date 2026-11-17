@@ -26,8 +26,13 @@ from src.ui.theme_manager import is_dark_palette
 
 
 def _fetch_state(token: int, asof: str | None = None,
-                 capital: float = 1_000_000.0, refresh: bool = False) -> dict[str, Any]:
-    """后台任务：只读本地数据计算仓位档位与 ETF 分配。"""
+                 capital: float = 1_000_000.0, refresh: bool = False,
+                 task_id: str | None = None, signals: Any = None) -> dict[str, Any]:
+    """后台任务：只读本地数据计算仓位档位与 ETF 分配。
+
+    ``task_id`` / ``signals`` 由 ``task_manager.TaskRunner`` 无条件注入，
+    即使当前未使用也必须显式接收，否则线程里调用会抛 TypeError。
+    """
     from datetime import datetime
 
     from src.quant.analysis.etf_timing_local import compute_state

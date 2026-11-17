@@ -188,6 +188,27 @@ def _clipped_row_count(table) -> int:
     return clipped
 
 
+def test_fetch_state_accepts_task_manager_injected_kwargs() -> None:
+    """task_manager 无条件注入 task_id/signals，页面任务函数必须能接收。
+
+    旧签名（只有 token/asof/capital/refresh）在这里抛 TypeError 变红，
+    对应线上报错 ``_fetch_state() got an unexpected keyword argument 'task_id'``。
+    """
+    import inspect
+
+    from src.ui.etf_timing.page import _fetch_state
+
+    kwargs = {
+        'token': 3,
+        'capital': 1_000_000.0,
+        'refresh': False,
+        'task_id': 'b6a1c0de',
+        'signals': object(),
+    }
+    bound = inspect.signature(_fetch_state).bind(**kwargs)
+    assert set(bound.arguments) == set(kwargs)
+
+
 def test_page_renders_without_truncation(qapp) -> None:
     """无头渲染：四只 ETF + 现金行，列宽与行高均不裁切（截断 0 条）。"""
     from src.ui.etf_timing import EtfTimingPage
