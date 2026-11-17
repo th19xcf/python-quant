@@ -309,7 +309,7 @@ class StrategyLabPage(QWidget):
             import pyqtgraph as pg
 
             plot = pg.PlotWidget()
-            plot.setBackground(None)
+            plot.setBackground(self._pal.card)
             plot.showGrid(x=True, y=True, alpha=0.2)
             plot.setMinimumHeight(120)
             self._style_plot(plot)
