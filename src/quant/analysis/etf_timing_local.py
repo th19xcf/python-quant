@@ -210,7 +210,7 @@ def compute_state(
         'etf_timing', 'state',
         asof=asof.isoformat() if asof else None,
         fingerprint={'panel_end': analysis_cache.panel_end(), 'capital': capital,
-                     'schema': 3},
+                     'schema': 4},
         compute=lambda: _build_state(*daily_total_scores(), asof=asof,
                                      capital=capital, refresh=refresh),
         refresh=refresh,
