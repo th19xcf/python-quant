@@ -213,7 +213,10 @@ class StrategyLabPage(QWidget):
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
         header.addLayout(title_box)
-        header.addStretch(1)
+        # 原来这里用 addStretch(1)，与状态标签自身的 stretch 1 平分剩余宽度，
+        # 页头中部空出一大片、规则说明被压到每行只有 300 多像素；改成固定间距后，
+        # 剩余宽度全部给状态标签，说明块行更长、折行更少。标题栏与按钮不动。
+        header.addSpacing(24)
 
         self.status_label = QLabel('选择规则后点击「运行试算」')
         self.status_label.setObjectName('slStatus')
