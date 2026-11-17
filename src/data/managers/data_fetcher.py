@@ -630,9 +630,10 @@ class DataFetcher:
         因为两者价格缩放不同（基金 ÷1000），且基金代码不属于 ``stock_basic``
         的合法前缀。
 
-        复权口径：本地因子/分红快照目前没有基金记录，``qfq_factor`` /
-        ``hfq_factor`` 全为 1.0；请求复权时会由 ``_apply_adjustment``
-        输出显式告警，而不是静默伪造成非 1 因子。
+        复权口径：本地基金因子快照已算出（``factors/fund_adj_factor.parquet``，
+        覆盖有行情的场内基金，含多档 qfq/hfq 因子）；请求复权时由
+        ``_apply_adjustment`` 按因子列正常乘用，因子缺失才输出显式告警，
+        不会静默伪造成 1 因子。
         """
         cache_params = {
             'frequency': frequency,
