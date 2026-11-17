@@ -419,7 +419,11 @@ def rebuild_fund_factors(
     codes: Sequence[str] | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """按事件重算全部基金复权因子并原子替换快照文件。"""
+    """按事件重算基金复权因子并原子替换快照文件。
+
+    传入 ``codes`` 时为增量语义：只重算并替换这些标的的行，快照里其余标的的
+    历史行原样保留（只读旧快照 + 纵向拼接，不再整表覆盖）。
+    """
     root = Path(store_root)
     quote_store = LocalQuoteStore(root, enabled=True)
     fund_codes = quote_store.codes('fund')
@@ -470,8 +474,26 @@ def rebuild_fund_factors(
     if not frames:
         raise RuntimeError('基金因子重建失败：没有可写入的标的')
 
-    merged = pl.concat(frames, how='vertical_relaxed').sort(['ts_code', 'trade_date'])
+    recomputed = pl.concat(frames, how='vertical_relaxed')
+    recomputed_codes = sorted(
+        {str(code) for code in recomputed['ts_code'].unique().to_list()})
     target = root / 'factors' / FUND_FACTOR_FILENAME
+    # 增量语义：只替换本次传入标的的行，未传入标的的历史行原样保留。
+    # 旧实现把本次结果整表覆盖快照，日更按「行情末日 > 因子末日」传 2,616 只
+    # 子集调用时，把 7 只 5010xx.SH 的历史因子行一起删了（2026-11-17 门禁报
+    # fund 1 只 / 1,691 行不一致，只能全量 2,623 只重算才恢复）。
+    existing = pl.DataFrame()
+    if target.exists():
+        existing = pl.read_parquet(target).filter(
+            ~pl.col('ts_code').is_in(recomputed_codes))
+    elif codes is not None:
+        # 子集调用又没有可保留的旧快照：写下去等于静默缩表，入口处直接拒绝。
+        raise RuntimeError(
+            f'基金因子快照不存在（{target}），拒绝按子集 {len(recomputed_codes)} 只写入；'
+            '请先执行一次全量重建')
+    merged = (pl.concat([existing, recomputed], how='vertical_relaxed')
+              if not existing.is_empty() else recomputed)
+    merged = merged.select(FACTOR_COLUMNS).sort(['ts_code', 'trade_date'])
     write_parquet_atomic(
         merged, target, compression='zstd', compression_level=3,
         statistics=True, row_group_size=100_000)
@@ -486,7 +508,7 @@ def rebuild_fund_factors(
     try:
         quote_refresh = refresh_quote_factor_columns(
             quote_store, LocalFactorStore(root, enabled=True),
-            codes=covered, kind='fund')
+            codes=recomputed_codes, kind='fund')
     except (OSError, ValueError, RuntimeError) as exc:
         logger.warning(f'[fund] 行情因子副本同步失败，需手工重跑: {exc}')
 

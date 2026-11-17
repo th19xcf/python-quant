@@ -9,8 +9,10 @@
      3. 行情采集入库    src.data.tencent.daily_fill.fill_daily_gap(workers=1) + LocalQuoteStore.flush_meta()
      4. 本地行情构建    python -m src.data.local_store build（增量 + 换手派生 + 异常清单）
                        收尾断言：meta/daily_index 末日 == 交易日历最近已完成交易日，不等即判失败
+                       本步带 --skip-factor-verify：因子副本一致性断言依赖第 6 步结果，见下
      5. 基金行情刷新    python -m src.data.local_store build --data-type fund（增量，末日已最新则跳过）
      6. 复权因子刷新    factor_rebuild / fund_factors 仅重算「行情末日 > 因子末日」的标的（已最新则跳过）
+                       刷新后复验行情内嵌因子副本与快照逐行一致（个股/指数/基金）
      7. ST 快照与区间表  src.data.risk_flags refresh + src.data.st_history build
      8. 名录每日检查    src.main --update-fund / --update-index（有变更才落盘）
      9. 估值增量        tools/collect_financials.py --only valuation --since auto
@@ -25,6 +27,12 @@
 
 口径与边界::
 
+    - 步骤顺序不是随意的：第 4 步 build 的收尾门禁「行情内嵌因子副本 == 因子
+      快照」需要基金行情与基金因子都已刷新到目标日，而这两件事分别在第 5、6
+      步。放在第 4 步等于让断言依赖后面步骤的结果——基金滞后时第 4 步必然失败，
+      修复窗口（第 6 步）却排在其后，形成死锁（2026-11-17 两次补跑均卡在此处）。
+      因此第 4 步只做「本地构建 + 末日断言」，因子副本一致性断言统一挪到第 6 步
+      末尾：刷新完成后再校验，覆盖本次运行刷新的全部标的，也仍能拦住真正的滞后。
     - 每步独立记录成败，某步失败只记录并继续后续步骤；最后一行汇总给出
       「N 步 ok / 失败 M（致命 K）」与总耗时，失败步逐条列出明细。
     - 致命步（行情采集、本地构建、基金行情刷新、复权因子刷新、回写校验、
@@ -80,7 +88,11 @@ import polars as pl  # noqa: E402
 from loguru import logger  # noqa: E402
 
 from src.data.local_store.paths import default_store_root  # noqa: E402
-from src.data.local_store.store import LocalFactorStore, LocalQuoteStore  # noqa: E402
+from src.data.local_store.store import (  # noqa: E402
+    LocalFactorStore,
+    LocalQuoteStore,
+    verify_quote_factor_consistency,
+)
 from src.data.manifest_refresh import file_facts, refresh_manifest_files  # noqa: E402
 
 DATA_SUFFIXES = ('.parquet', '.csv', '.tsv', '.txt')
@@ -168,6 +180,10 @@ SKIP_DIRS = {'_backup', '__pycache__', 'backtest_runs'}
 
 #: 单入口步骤顺序（dry-run 与 apply 共用）：(键, 名称, 是否致命)。
 #: 硬约束：备份在所有写 ``data/`` 的步骤之后，门禁在备份之后。
+#: 顺序理由：``build``（第 4 步）跑的是 ``--skip-factor-verify``，因为它自带的
+#: 「行情内嵌因子副本 == 因子快照」断言依赖第 5 步（基金行情刷新）与第 6 步
+#: （复权因子刷新）。断言若留在第 4 步，基金滞后时第 4 步必红、而能修复它的
+#: 第 6 步排在后面，形成死锁；故断言收窄到第 6 步刷新完成后执行。
 STEP_PLAN: tuple[tuple[str, str, bool], ...] = (
     ('code_table', '证券码表（names.json / name_history / stock_basic）', False),
     ('industry', '行业快照', False),
@@ -750,7 +766,7 @@ def _run_version(root: Path, changed) -> tuple[bool, str]:
 
 
 def _run_build(*, since: date | None, end: date | None,
-               codes: set[str] | None) -> int:
+               codes: set[str] | None, skip_factor_verify: bool = False) -> int:
     cmd = [sys.executable, '-m', 'src.data.local_store', 'build']
     if codes:
         cmd += ['--codes', ','.join(sorted(codes))]
@@ -760,6 +776,8 @@ def _run_build(*, since: date | None, end: date | None,
         cmd += ['--incremental']
     if end is not None:
         cmd += ['--max-date', end.isoformat()]
+    if skip_factor_verify:
+        cmd.append('--skip-factor-verify')
     return _run_module(cmd, '本地构建')
 
 
@@ -1131,7 +1149,11 @@ def _step_fill(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
 
 
 def _step_build(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
-    code = _run_build(since=args.start, end=plan.latest, codes=plan.codes)
+    # 只做构建 + 末日断言，不带 build 自带的因子副本一致性门禁：那条断言要求
+    # 基金行情（第 5 步）与基金因子（第 6 步）都已是目标日，放在这里会先于
+    # 修复步骤失败并形成死锁。一致性断言统一在第 6 步刷新完成后执行。
+    code = _run_build(since=args.start, end=plan.latest, codes=plan.codes,
+                      skip_factor_verify=True)
     if code != 0:
         return False, f'rc={code}'
     expected = _recent_completed_trade_day(plan.root)
@@ -1174,40 +1196,68 @@ def _read_optional_frame(path: Path) -> pl.DataFrame:
         return pl.DataFrame()
 
 
+def _factor_copy_mismatch(plan: _Plan) -> dict[str, int]:
+    """刷新后复验行情内嵌因子副本 vs 因子快照；返回各类型不一致标的数。"""
+    quote_store = plan.store or LocalQuoteStore(plan.root, enabled=True)
+    factor_store = plan.factor_store or LocalFactorStore(plan.root, enabled=True)
+    result = verify_quote_factor_consistency(quote_store, factor_store)
+    if 'error' in result:
+        raise RuntimeError(str(result['error']))
+    return {kind: int(info.get('mismatch_codes') or 0)
+            for kind, info in result.items()}
+
+
 def _step_factors(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
-    """复权因子刷新：只重算「行情末日 > 因子末日」的标的；已最新则跳过（致命步）。"""
-    if args.skip_factor_refresh:
-        return True, '已跳过（--skip-factor-refresh）'
-    stock_codes = _stale_factor_codes(plan.root, 'stock')
-    fund_codes = _stale_factor_codes(plan.root, 'fund')
-    if not stock_codes and not fund_codes:
-        return True, f'个股/基金因子末日均对齐行情（{_daily_index_end(plan.root)}），跳过不重算'
-    _register_quote_paths(plan, 'stock', stock_codes)
-    _register_quote_paths(plan, 'fund', fund_codes)
-    plan.expected.update(AUX_FACTOR_OUTPUTS)
+    """复权因子刷新 → 收尾复验行情内嵌副本（致命步）。
+
+    第 4 步 build 已改带 ``--skip-factor-verify``：它自带的副本一致性断言依赖
+    本步结果。断言在这里执行——个股/指数/基金刷新完之后再校验，覆盖本次运行
+    刷新的范围；真正的滞后（重算没推进末日或副本仍不一致）照样判红。
+    """
     notes: list[str] = []
-    if stock_codes:
-        from src.data.local_store.factor_rebuild import (  # noqa: PLC0415
-            rebuild_factors_from_local,
-        )
+    remaining_stock: list[str] = []
+    remaining_fund: list[str] = []
+    if args.skip_factor_refresh:
+        notes.append('已跳过刷新（--skip-factor-refresh）')
+    else:
+        stock_codes = _stale_factor_codes(plan.root, 'stock')
+        fund_codes = _stale_factor_codes(plan.root, 'fund')
+        if not stock_codes and not fund_codes:
+            notes.append(
+                f'个股/基金因子末日均对齐行情（{_daily_index_end(plan.root)}），跳过不重算')
+        else:
+            _register_quote_paths(plan, 'stock', stock_codes)
+            _register_quote_paths(plan, 'fund', fund_codes)
+            plan.expected.update(AUX_FACTOR_OUTPUTS)
+            if stock_codes:
+                from src.data.local_store.factor_rebuild import (  # noqa: PLC0415
+                    rebuild_factors_from_local,
+                )
 
-        stats = rebuild_factors_from_local(
-            plan.store, plan.factor_store, codes=stock_codes, include_existing=True)
-        notes.append(f'个股 {len(stock_codes)} 只 → 新 {int(stats.get("codes_added") or 0)} 只'
-                     f' / {int(stats.get("rows_added") or 0):,} 行')
-    if fund_codes:
-        from src.data.local_store.fund_factors import rebuild_fund_factors  # noqa: PLC0415
+                stats = rebuild_factors_from_local(
+                    plan.store, plan.factor_store, codes=stock_codes, include_existing=True)
+                notes.append(f'个股 {len(stock_codes)} 只 → 新 {int(stats.get("codes_added") or 0)} 只'
+                             f' / {int(stats.get("rows_added") or 0):,} 行')
+            if fund_codes:
+                from src.data.local_store.fund_factors import (  # noqa: PLC0415
+                    rebuild_fund_factors,
+                )
 
-        dividends = _read_optional_frame(plan.root / 'factors' / 'fund_dividend.parquet')
-        splits = _read_optional_frame(plan.root / 'factors' / 'fund_share_change.parquet')
-        stats = rebuild_fund_factors(plan.root, dividends, splits, codes=fund_codes)
-        notes.append(f'基金 {len(fund_codes)} 只 / {int(stats.get("factor_rows") or 0):,} 行')
-    remaining_stock = _stale_factor_codes(plan.root, 'stock')
-    remaining_fund = _stale_factor_codes(plan.root, 'fund')
-    if remaining_stock or remaining_fund:
-        notes.append(f'仍落后 个股 {len(remaining_stock)} 只 / 基金 {len(remaining_fund)} 只')
+                dividends = _read_optional_frame(plan.root / 'factors' / 'fund_dividend.parquet')
+                splits = _read_optional_frame(plan.root / 'factors' / 'fund_share_change.parquet')
+                stats = rebuild_fund_factors(plan.root, dividends, splits, codes=fund_codes)
+                notes.append(f'基金 {len(fund_codes)} 只 / {int(stats.get("factor_rows") or 0):,} 行')
+            remaining_stock = _stale_factor_codes(plan.root, 'stock')
+            remaining_fund = _stale_factor_codes(plan.root, 'fund')
+            if remaining_stock or remaining_fund:
+                notes.append(f'仍落后 个股 {len(remaining_stock)} 只 / 基金 {len(remaining_fund)} 只')
+    mismatch = _factor_copy_mismatch(plan)
+    if any(mismatch.values()):
+        notes.append('行情内嵌因子副本与快照不一致：个股 {} 只 / 指数 {} 只 / 基金 {} 只'.format(
+            mismatch.get('stock', 0), mismatch.get('index', 0), mismatch.get('fund', 0)))
         return False, ' | '.join(notes)
-    return True, ' | '.join(notes)
+    notes.append('副本一致（个股/指数/基金 0/0/0）')
+    return not (remaining_stock or remaining_fund), ' | '.join(notes)
 
 
 def _step_pool(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:

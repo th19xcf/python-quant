@@ -465,6 +465,50 @@ def test_rebuild_fund_factors_quote_refresh_error_is_non_fatal(tmp_path, monkeyp
     assert (root / 'factors' / FUND_FACTOR_FILENAME).exists()
 
 
+def test_rebuild_fund_factors_subset_preserves_unpassed_history(tmp_path, monkeypatch):
+    """增量调用只替换传入标的，未传入标的的行数与末日必须原样保留。
+
+    回归 2026-11-17：日更按「行情末日 > 因子末日」只传 2,616 只，旧实现把本次
+    结果整表覆盖快照，7 只 5010xx.SH 的历史因子行被删（门禁报 fund 1 只 /
+    1,691 行不一致）。
+    """
+    root = tmp_path / 'store'
+    codes = ['501017.SH', '510880.SH', '159915.SZ']
+    _write_quotes(root, codes)
+    path = root / 'factors' / FUND_FACTOR_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({
+        'ts_code': codes * len(_DATES),
+        'trade_date': [day for _ in codes for day in _DATES],
+        'qfq_factor': [1.0] * (len(codes) * len(_DATES)),
+        'hfq_factor': [1.0] * (len(codes) * len(_DATES)),
+    }).write_parquet(path)
+    before = pl.read_parquet(path).filter(pl.col('ts_code') == '501017.SH')
+
+    monkeypatch.setattr(
+        fund_module, 'refresh_quote_factor_columns', lambda *_a, **_k: {})
+    rebuild_fund_factors(root, pl.DataFrame(), pl.DataFrame(),
+                         codes=['510880.SH', '159915.SZ'])
+
+    after = pl.read_parquet(path)
+    kept = after.filter(pl.col('ts_code') == '501017.SH')
+    assert kept.height == before.height
+    assert kept['trade_date'].max() == before['trade_date'].max()
+    assert set(after['ts_code'].unique().to_list()) == set(codes)
+    sidecar = (root / 'factors' / fund_module.FUND_COVERED_SIDECAR).read_text(
+        encoding='utf-8')
+    assert '501017.SH' in sidecar.split()
+
+
+def test_rebuild_fund_factors_subset_without_snapshot_is_rejected(tmp_path):
+    """没有可保留的旧快照时按子集写入等于静默缩表，入口处直接报错。"""
+    root = tmp_path / 'store'
+    _write_quotes(root, ['510880.SH'])
+    with pytest.raises(RuntimeError, match='拒绝按子集'):
+        rebuild_fund_factors(root, pl.DataFrame(), pl.DataFrame(),
+                             codes=['510880.SH'])
+
+
 def test_backup_to_csv(tmp_path):
     log_dir = tmp_path / 'logs'
     missing = tmp_path / 'nope.parquet'
