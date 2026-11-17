@@ -39,9 +39,21 @@ FIELDS = [
     'turns', 'tool_calls', 'duration_min', 'note',
 ]
 PHASES = ('dispatch', 'done')
-#: 阈值口径：单任务超过任一值即发起 token 审计（判定仍按 00-core.md「长任务必审」）。
-AUDIT_TOOL_CALLS = 60
-AUDIT_MINUTES = 20.0
+#: 单会话闸门阈值：达到 60 次写交接停手，100 次为绝对上限（阈值改动须同轮改单测）。
+HARD_STOP_TOOL_CALLS = 60
+ABSOLUTE_MAX_TOOL_CALLS = 100
+GATE_CONTINUE = 'continue'
+GATE_HANDOFF = 'handoff'
+GATE_STOP = 'stop'
+
+
+def session_gate(tool_calls: int) -> str:
+    """单会话闸门：``<60`` 继续、``60~99`` 停手写交接、``>=100`` 绝对停止。"""
+    if tool_calls >= ABSOLUTE_MAX_TOOL_CALLS:
+        return GATE_STOP
+    if tool_calls >= HARD_STOP_TOOL_CALLS:
+        return GATE_HANDOFF
+    return GATE_CONTINUE
 
 
 def _now() -> str:
@@ -149,6 +161,50 @@ def cmd_add(args: argparse.Namespace) -> int:
         writer.writerow(row)
     print(f'已追加 {args.phase}：{args.title}（{args.session_id}）')
     return 0
+
+
+def append_finalize_row(
+    ledger: Path,
+    *,
+    commit: str,
+    task_id: str | None = None,
+    tool_calls: int | None = None,
+    duration_min: float | None = None,
+    when: str | None = None,
+) -> str:
+    """收口自动记账：追加一行 done；同一提交已记过则返回 ``duplicate`` 不重复写。
+
+    映射到既有 8 列：``dispatched_at`` 记时间、``session_id`` / ``title`` 记任务标识
+    （缺省用提交短哈希）、``tool_calls`` 记调用数（未知写 ``unknown``）、
+    ``duration_min`` 记耗时（未知留空）、``note`` 记 ``commit <短哈希>`` 供去重。
+    """
+    short = commit[:7]
+    marker = f'commit {short}'
+    try:
+        rows = _read_rows(ledger)
+    except SystemExit as exc:
+        raise RuntimeError(str(exc)) from None
+    if any(marker in str(row.get('note') or '') for row in rows):
+        return 'duplicate'
+    ident = (task_id or '').strip() or short
+    row = {
+        'dispatched_at': when or _now(),
+        'session_id': ident,
+        'title': ident,
+        'phase': 'done',
+        'turns': '',
+        'tool_calls': 'unknown' if tool_calls is None else str(tool_calls),
+        'duration_min': '' if duration_min is None else str(duration_min),
+        'note': marker,
+    }
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    new_file = not ledger.is_file()
+    with ledger.open('a', encoding='utf-8', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        if new_file:
+            writer.writeheader()
+        writer.writerow(row)
+    return 'written'
 
 
 def _fold(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

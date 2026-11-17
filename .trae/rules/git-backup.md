@@ -26,7 +26,7 @@ description: 备份镜像四类范围与集合差口径、备份仓提交与推�
   - 「HEAD 在提交前发生变动」或「git commit 未产生新提交」→ 前者重跑即可（脚本每次重新取 HEAD），后者查 pre-commit hook 拦截与工作区是否已无改动；确属并发收尾先确认对方已收口。
   - 「备份同步失败」（源文件不存在 / SHA256 不一致 / 条数核对不等）或「备份仓推送失败」→ 检查备份仓同名路径是否存在可写、源文件是否在位；推送失败先看提示里的代理端口是否在监听，修好后重跑本命令，禁止降级为跳过备份或手工 `--force` 推送。
   - 「备份仓解析失败」→ 查 `QUANT_BACKUP_ROOT` 与 `.trae/backup.local.json`，不得改走写死盘符或跳过备份。
-- **收口必记账**：每次收尾执行一次 `.venv\Scripts\python.exe tools/task_ledger.py add --session-id <会话> --title <标题> --phase done --apply`（派单时先 `--phase dispatch`），否则 `logs/task_ledger.csv` 永远为空、调用数与耗时无账可查，token 优化无从验证。
+- **收口必记账**：走 `tools/finalize_commit.py --apply` 收口时脚本自动向 `logs/task_ledger.csv` 追加 done 行（时间 / 任务标识 / 调用数 / 耗时 / 提交短哈希，调用数取不到写 `unknown` 并告警），同一提交重复收口不重复写；只有未走该脚本的收口才手工 `.venv\Scripts\python.exe tools/task_ledger.py add --session-id <会话> --title <标题> --phase done --apply` 补记。派单时仍先 `--phase dispatch` 记一行。
 - **改入口 / 接口签名 / 目录结构必须同轮更新代码地图**：凡新增或删除入口（CLI 子命令、`main`、对外调用点）、改函数签名、移动或改名文件的提交，须在同一轮就地改对 `docs/代码地图.md` 受影响的那几行，不得整表重写、不得「先改代码、地图下次补」；同轮跑 `tests/test_code_map_freshness.py`，否则该次提交视为未完成（用例会在符号被删/改名、文件路径失效时直接失败）。
 
 ## 二、备份仓库提交规范

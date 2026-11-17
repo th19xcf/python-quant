@@ -21,7 +21,10 @@
    ``git status`` 里且在源仓存在的文件，此前只复制未入库的漏带不会永久挂 ``M``；
 5. 自证：``git diff-tree --no-commit-id --name-status -r HEAD`` 与预期清单逐条比对，
    多出或少掉即非零退出；
-6. 输出：正常十行以内。
+6. 记账：向 ``logs/task_ledger.csv`` 追加一行 done（时间 / 任务标识 / 调用数 /
+   耗时 / 提交短哈希），同一提交重复收口不重复写；调用数取不到写 ``unknown``
+   并告警，不阻断收口；
+7. 输出：正常十行以内。
 
 安全边界：不改任何业务逻辑与数据。共享暂存区若已有本次范围外的已暂存条目，
 ``--apply`` 直接停止——回填 ``read-tree HEAD`` 会清掉它们的暂存状态。
@@ -37,6 +40,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import os
 import shutil
@@ -53,6 +57,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.backup_root import BackupRootError, resolve_backup_root  # noqa: E402
+from tools.task_ledger import DEFAULT_LEDGER, append_finalize_row  # noqa: E402
 
 FAMILY_ORDER = (
     '.trae/rules',
@@ -443,6 +448,32 @@ def commit_backup(
     return short, _push_backup(backup_root)
 
 
+def record_ledger(head: str, args: argparse.Namespace) -> None:
+    """收口自动记账：向任务账本追加一行；任何失败只告警，不回滚已完成的提交。"""
+    task_id = (args.task_id or os.environ.get('QUANT_TASK_ID', '')).strip() or None
+    calls = args.tool_calls
+    if calls is None:
+        raw = os.environ.get('QUANT_TOOL_CALLS', '').strip()
+        calls = int(raw) if raw.isdigit() else None
+    if calls is None:
+        print('warning：调用数取不到，账本写 unknown', file=sys.stderr)
+    try:
+        state = append_finalize_row(
+            DEFAULT_LEDGER,
+            commit=head,
+            task_id=task_id,
+            tool_calls=calls,
+            duration_min=args.duration_min,
+        )
+    except (OSError, RuntimeError, csv.Error) as exc:  # 账本异常不阻断已完成的提交与备份
+        print(f'warning：账本写入失败（不阻断收口）：{exc}', file=sys.stderr)
+        return
+    if state == 'duplicate':
+        print(f'账本：{head[:7]} 已有收口行，未重复写')
+    else:
+        print(f'账本：已追加 {head[:7]}（calls={"unknown" if calls is None else calls}）')
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='提交收尾一条命令（默认 dry-run）')
     parser.add_argument(
@@ -450,6 +481,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument('--message', required=True, help='中文提交信息（不得有空行/BOM）')
     parser.add_argument('--apply', action='store_true', help='真正提交并同步备份（缺省只打印计划）')
+    parser.add_argument('--task-id', default='',
+                        help='任务标识（会话 id / 任务名）；缺省取 QUANT_TASK_ID，再缺省用提交哈希')
+    parser.add_argument('--tool-calls', type=int,
+                        help='本任务工具调用数；缺省取 QUANT_TOOL_CALLS，取不到写 unknown')
+    parser.add_argument('--duration-min', type=float, help='本任务耗时（分钟），未知留空')
     args = parser.parse_args(argv)
 
     try:
@@ -495,6 +531,7 @@ def main(argv: list[str] | None = None) -> int:
         backup_short, push_state = commit_backup(backup_root, merged, head)
         print(f'备份仓 {backup_short}｜{push_state}')
         print(f'工作区未纳入：{len(changes) - len(chosen)} 项（保持原样）')
+        record_ledger(head, args)
         return 0
     except BackupRootError as exc:
         print(f'备份仓解析失败：{exc}', file=sys.stderr)
