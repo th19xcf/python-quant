@@ -3,7 +3,11 @@
 界面只做三件事：从 ``config/strategy_lab/rules/*.json`` 选规则、调用
 :mod:`src.quant.strategy_lab` 的解析与回测适配层、展示结果。不执行用户输入
 的任何代码，参数由规则 JSON 决定；新增或修改规则请直接编辑规则文件。
-表格列宽统一走 ``src.ui.table_sizing``，不在页面内写死宽度。
+
+视觉与「市场趋势」「行业热度」两个分析页同源：底色、卡片、边框、网格线与
+选中行全部取自 :mod:`src.ui.advice.tokens` 的 ``palette``，字号取自 ``TOKENS``
+与 :mod:`src.ui.table_sizing`，页面内不写死色值与字号；表格列宽统一走
+``apply_content_widths``。
 """
 from __future__ import annotations
 
@@ -11,11 +15,11 @@ from typing import Any, Dict, List
 
 from loguru import logger
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
-    QGroupBox,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -35,12 +39,16 @@ from src.quant.strategy_lab.rules import (
     load_rule,
     summarize,
 )
-from src.ui.table_sizing import apply_content_widths, use_interactive_columns
+from src.ui.advice.tokens import TOKENS, palette_for
+from src.ui.table_sizing import (
+    FIXED_ROW_HEIGHT,
+    HEADER_ROW_HEIGHT,
+    TABLE_FONT_SIZE_PX,
+    apply_content_widths,
+    use_interactive_columns,
+)
+from src.ui.theme_manager import is_dark_palette
 
-COLOR_EQUITY = '#2f7ed8'
-COLOR_BENCH = '#c0504d'
-COLOR_DRAWDOWN = '#c0504d'
-COLOR_MARKER = '#e3b341'
 PLOT_LEGEND_EQUITY = '策略净值'
 PLOT_LEGEND_BENCH = '基准净值'
 
@@ -61,6 +69,90 @@ _METRIC_ROWS = (
     ('members_min', '成分最少', 'int'),
     ('members_max', '成分最多', 'int'),
 )
+
+
+def _qss(theme: str) -> str:
+    """页面 QSS：与市场趋势 / 行业热度页同源，只从 palette 与 TOKENS 取值。"""
+    palette = palette_for(theme)
+    tokens = TOKENS
+    return f"""
+QWidget#strategyLabPage {{
+    background: {palette.bg};
+    color: {palette.text};
+    font-family: {tokens.font_family};
+    font-size: {TABLE_FONT_SIZE_PX}px;
+}}
+QLabel#slTitle {{
+    font-size: {tokens.font_title}px;
+    font-weight: 700;
+    color: {palette.text};
+}}
+QLabel#slSubtitle, QLabel#slStatus, QLabel#slNotes {{
+    font-size: {tokens.font_small}px;
+    color: {palette.muted};
+}}
+QLabel#slSectionTitle {{
+    font-size: {tokens.font_section}px;
+    font-weight: 700;
+    color: {palette.text};
+}}
+QFrame#slCard {{
+    background: {palette.card};
+    border: 1px solid {palette.border};
+    border-radius: {tokens.radius}px;
+}}
+QPushButton {{
+    background: {palette.accent_soft};
+    color: {palette.accent};
+    border: 1px solid {palette.accent};
+    border-radius: {tokens.radius_sm}px;
+    padding: 5px 16px;
+}}
+QPushButton:disabled {{
+    color: {palette.faint};
+    border-color: {palette.border};
+    background: {palette.elevated};
+}}
+QComboBox {{
+    background: {palette.surface};
+    color: {palette.text};
+    border: 1px solid {palette.border};
+    border-radius: {tokens.radius_sm}px;
+    padding: 5px 12px;
+}}
+QComboBox:disabled {{
+    color: {palette.faint};
+}}
+QComboBox QAbstractItemView {{
+    background: {palette.card};
+    color: {palette.text};
+    selection-background-color: {palette.selection};
+    selection-color: {palette.text};
+}}
+QTableWidget {{
+    background: {palette.card};
+    border: 1px solid {palette.border};
+    border-radius: {tokens.radius_sm}px;
+    gridline-color: {palette.faint};
+    selection-background-color: {palette.selection};
+}}
+QHeaderView {{
+    background: {palette.card};
+}}
+QHeaderView::section {{
+    background: {palette.card};
+    color: {palette.muted};
+    border: none;
+    border-bottom: 1px solid {palette.border};
+    border-right: 1px solid {palette.border};
+    padding: 6px 8px;
+    font-weight: 600;
+}}
+QTableWidget::item {{
+    background-color: {palette.card};
+    padding: 6px 8px;
+}}
+"""
 
 
 class _RunWorker(QThread):
@@ -86,66 +178,110 @@ class StrategyLabPage(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName('strategyLabPage')
+        self.theme = 'dark' if is_dark_palette() else 'light'
+        self._pal = palette_for(self.theme)
         self._worker: _RunWorker | None = None
         self._rule: Dict[str, Any] | None = None
         self._nav_dates: List[str] = []
         self._build_ui()
+        self.setStyleSheet(_qss(self.theme))
         self._refresh_rule_list()
 
     # -- 布局 --------------------------------------------------------------
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(12)
+
+        header = QHBoxLayout()
+        title_box = QVBoxLayout()
+        title_box.setSpacing(2)
+        title = QLabel('策略试算')
+        title.setObjectName('slTitle')
+        subtitle = QLabel('规则文件驱动的 ETF 回测：选股 / 择时 / 切换三类规则，只读本地行情')
+        subtitle.setObjectName('slSubtitle')
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+        header.addLayout(title_box)
+        header.addStretch(1)
+
+        self.status_label = QLabel('选择规则后点击「运行试算」')
+        self.status_label.setObjectName('slStatus')
+        self.status_label.setWordWrap(True)
+        header.addWidget(self.status_label, 1)
+
+        self.run_btn = QPushButton('运行试算')
+        self.run_btn.setDefault(True)
+        self.run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.run_btn.clicked.connect(self._on_run)
+        header.addWidget(self.run_btn)
+        root.addLayout(header)
+
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(self._build_editor())
         splitter.addWidget(self._build_result())
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
-        root.addWidget(splitter)
+        root.addWidget(splitter, 1)
 
     def _build_editor(self) -> QWidget:
-        box = QGroupBox('规则选择')
-        outer = QVBoxLayout(box)
+        card = QFrame()
+        card.setObjectName('slCard')
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(14, 12, 14, 12)
+        outer.setSpacing(8)
 
         head = QHBoxLayout()
-        head.addWidget(QLabel('规则文件'))
+        caption = QLabel('规则文件')
+        caption.setObjectName('slSubtitle')
+        head.addWidget(caption)
         self.rule_combo = QComboBox()
         self.rule_combo.setMinimumWidth(260)
         self.rule_combo.currentIndexChanged.connect(lambda *_: self._on_select())
-        head.addWidget(self.rule_combo, 2)
+        head.addWidget(self.rule_combo, 1)
         self.refresh_btn = QPushButton('刷新列表')
+        self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_btn.clicked.connect(self._refresh_rule_list)
         head.addWidget(self.refresh_btn)
-        self.run_btn = QPushButton('运行试算')
-        self.run_btn.setDefault(True)
-        self.run_btn.clicked.connect(self._on_run)
-        head.addWidget(self.run_btn)
         outer.addLayout(head)
 
         self.rule_text_label = QLabel('规则目录为空：请在 config/strategy_lab/rules/ 下放置规则 JSON')
+        self.rule_text_label.setObjectName('slNotes')
         self.rule_text_label.setWordWrap(True)
-        self.rule_text_label.setStyleSheet('color: palette(mid);')
         outer.addWidget(self.rule_text_label)
-        return box
+        return card
 
     def _build_result(self) -> QWidget:
-        box = QGroupBox('回测结果')
-        layout = QVBoxLayout(box)
+        card = QFrame()
+        card.setObjectName('slCard')
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        section = QLabel('回测结果')
+        section.setObjectName('slSectionTitle')
+        layout.addWidget(section)
+
         split = QSplitter(Qt.Horizontal)
 
         self.metrics_table = QTableWidget(0, 2)
         self.metrics_table.setHorizontalHeaderLabels(['指标', '数值'])
         self.metrics_table.verticalHeader().setVisible(False)
+        self.metrics_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Fixed)
+        self.metrics_table.verticalHeader().setDefaultSectionSize(FIXED_ROW_HEIGHT)
+        self.metrics_table.horizontalHeader().setFixedHeight(HEADER_ROW_HEIGHT)
         self.metrics_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.metrics_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.metrics_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.metrics_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         use_interactive_columns(self.metrics_table)
-        self.metrics_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeToContents)
         split.addWidget(self.metrics_table)
 
         charts = QWidget()
         charts_layout = QVBoxLayout(charts)
         charts_layout.setContentsMargins(0, 0, 0, 0)
+        charts_layout.setSpacing(8)
         self.nav_plot = self._add_plot(charts_layout, '净值对比（起点=1）', '净值')
         self.drawdown_plot = self._add_plot(charts_layout, '回撤', '回撤')
         self.marker_plot = self._add_plot(charts_layout, '调仓 / 持仓', '仓位或成分数')
@@ -153,31 +289,44 @@ class StrategyLabPage(QWidget):
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 3)
         layout.addWidget(split, 1)
+        return card
 
-        self.status_label = QLabel('选择规则后点击「运行试算」')
-        self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
-        return box
-
-    @staticmethod
-    def _add_plot(layout: QVBoxLayout, title: str, ylabel: str):
-        """三张图共用一套样式：无背景、浅网格、左侧单位标签。"""
-        layout.addWidget(_SectionLabel(title))
+    def _add_plot(self, layout: QVBoxLayout, title: str, ylabel: str):
+        """三张图共用一套样式：卡片底、palette 网格、TOKENS 坐标轴与图例字号。"""
+        section = QLabel(title)
+        section.setObjectName('slSectionTitle')
+        layout.addWidget(section)
         try:
             import pyqtgraph as pg
 
             plot = pg.PlotWidget()
             plot.setBackground(None)
             plot.showGrid(x=True, y=True, alpha=0.2)
-            plot.addLegend()
-            plot.setLabel('left', ylabel)
             plot.setMinimumHeight(120)
+            self._style_plot(plot)
+            plot.setLabel('left', ylabel, color=self._pal.muted)
         except Exception:  # noqa: BLE001 - 缺少 pyqtgraph 时降级为提示标签
             logger.warning('pyqtgraph 不可用，{} 改为文本提示', title)
             plot = QLabel('当前环境缺少 pyqtgraph，仅展示指标')
+            plot.setObjectName('slNotes')
             plot.setWordWrap(True)
         layout.addWidget(plot, 1)
         return plot
+
+    def _style_plot(self, plot) -> None:
+        """坐标轴字号与颜色、图例字号统一从 TOKENS 与 palette 取。"""
+        import pyqtgraph as pg
+
+        font = QFont()
+        font.setPixelSize(TOKENS.font_small)
+        for name in ('left', 'bottom'):
+            axis = plot.getAxis(name)
+            axis.setPen(pg.mkPen(self._pal.faint))
+            axis.setTextPen(pg.mkPen(self._pal.muted))
+            axis.setStyle(tickFont=font)
+        legend = plot.addLegend()
+        legend.setLabelTextSize(f'{TOKENS.font_small}px')
+        legend.setLabelTextColor(self._pal.muted)
 
     # -- 规则 --------------------------------------------------------------
     def _refresh_rule_list(self) -> None:
@@ -204,19 +353,19 @@ class StrategyLabPage(QWidget):
             self._rule = None
             self.rule_text_label.setText(
                 '规则目录为空：请在 config/strategy_lab/rules/ 下放置规则 JSON')
-            self.rule_text_label.setStyleSheet('color: palette(mid);')
+            self.rule_text_label.setStyleSheet('')
             return
         try:
             rule = load_rule(path)
         except RuleError as exc:
             self._rule = None
             self.rule_text_label.setText(f'规则不可用：{exc}')
-            self.rule_text_label.setStyleSheet(f'color: {COLOR_BENCH};')
+            self.rule_text_label.setStyleSheet(f'color: {self._pal.sell};')
             return
         self._rule = rule
         summary = summarize(rule)
         self.rule_text_label.setText(f'[{summary.type_label}] {summary.text}')
-        self.rule_text_label.setStyleSheet('color: palette(mid);')
+        self.rule_text_label.setStyleSheet('')
 
     def _on_run(self) -> None:
         path = self.rule_combo.currentData()
@@ -302,14 +451,16 @@ class StrategyLabPage(QWidget):
             base = float(nav[0][1]) or 1.0
             self.nav_plot.plot(list(range(len(nav))),
                                [float(v) / base for _, v in nav],
-                               pen=QColor(COLOR_EQUITY), name=PLOT_LEGEND_EQUITY)
+                               pen=QColor(self._pal.accent),
+                               name=PLOT_LEGEND_EQUITY)
             self.nav_plot.setLabel(
-                'bottom', f'{nav[0][0]} ~ {nav[-1][0]}（交易日序号）')
+                'bottom', f'{nav[0][0]} ~ {nav[-1][0]}（交易日序号）',
+                color=self._pal.muted)
         if bench:
             base = float(bench[0][1]) or 1.0
             self.nav_plot.plot(list(range(len(bench))),
                                [float(v) / base for _, v in bench],
-                               pen=QColor(COLOR_BENCH), name=PLOT_LEGEND_BENCH,
+                               pen=QColor(self._pal.muted), name=PLOT_LEGEND_BENCH,
                                style=Qt.DashLine)
 
     def _plot_drawdown(self, drawdown: List[List[Any]]) -> None:
@@ -320,9 +471,12 @@ class StrategyLabPage(QWidget):
             return
         xs = list(range(len(drawdown)))
         ys = [float(v) * 100.0 for _, v in drawdown]
-        self.drawdown_plot.plot(xs, ys, pen=QColor(COLOR_DRAWDOWN),
-                                fillLevel=0, brush=QColor(192, 80, 77, 60))
-        self.drawdown_plot.setLabel('bottom', f'{drawdown[0][0]} ~ {drawdown[-1][0]}')
+        fill = QColor(self._pal.sell)
+        fill.setAlpha(60)
+        self.drawdown_plot.plot(xs, ys, pen=QColor(self._pal.sell),
+                                fillLevel=0, brush=fill)
+        self.drawdown_plot.setLabel('bottom', f'{drawdown[0][0]} ~ {drawdown[-1][0]}',
+                                    color=self._pal.muted)
 
     def _plot_markers(self, markers: List[Dict[str, Any]]) -> None:
         """调仓标记：横轴对齐净值日期序号，纵轴为仓位（择时/切换）或成分数（选股）。"""
@@ -347,17 +501,10 @@ class StrategyLabPage(QWidget):
         if not xs:
             return
         self.marker_plot.plot(xs, ys, pen=None, symbol='o', symbolSize=6,
-                              symbolBrush=QColor(COLOR_MARKER),
-                              symbolPen=QColor(COLOR_MARKER))
+                              symbolBrush=QColor(self._pal.hold),
+                              symbolPen=QColor(self._pal.hold))
+        guide = QColor(self._pal.hold)
+        guide.setAlpha(90)
         for x in xs:
-            line = self.marker_plot.addLine(x=x, pen=QColor(227, 179, 65, 90),
-                                            movable=False)
+            line = self.marker_plot.addLine(x=x, pen=guide, movable=False)
             line.setZValue(-10)
-
-
-class _SectionLabel(QLabel):
-    """图标题：小号、次要色，与指标表同一字体族。"""
-
-    def __init__(self, text: str, parent=None):
-        super().__init__(text, parent)
-        self.setStyleSheet('color: palette(mid); font-size: 12px;')
