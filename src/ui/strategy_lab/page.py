@@ -102,6 +102,9 @@ QFrame#slCard {{
     border: 1px solid {palette.border};
     border-radius: {tokens.radius}px;
 }}
+QSplitter::handle {{
+    background: transparent;
+}}
 QPushButton {{
     background: {palette.accent_soft};
     color: {palette.accent};
@@ -180,6 +183,10 @@ class StrategyLabPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('strategyLabPage')
+        # 本页是直接入 QTabWidget 的 QWidget 子类（其他分析页都套了 QScrollArea），
+        # QSS 的 background 只有置位 WA_StyledBackground 才会绘制；否则页面区域透明，
+        # 透出 QTabWidget 面板底色（暗色下为 #434343），表现为页头带比别页更亮。
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.theme = 'dark' if is_dark_palette() else 'light'
         self._pal = palette_for(self.theme)
         self._worker: _RunWorker | None = None
