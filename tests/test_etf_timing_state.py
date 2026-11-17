@@ -19,6 +19,25 @@ from src.quant.analysis.etf_timing_state import (
 )
 
 
+def test_fund_names_have_single_source_in_fund_basic():
+    """名称唯一口径：fund_basic.name；不得再留第二份硬编码简称表。"""
+    import src.quant.analysis.etf_timing_state as timing_state
+    from src.data.local_store.fund_basic import (
+        load_fund_basic_frame,
+        load_fund_name_map,
+    )
+
+    assert not hasattr(timing_state, 'ETF_NAMES')
+
+    frame = load_fund_basic_frame()
+    expected = dict(frame.select(['ts_code', 'name']).iter_rows())
+    names = load_fund_name_map()
+    codes = {CORE_ETF, *timing_state.SIZE_ETFS.values(),
+             *timing_state.VALUE_ETFS.values(), *timing_state.VOL_ETFS.values()}
+    for code in sorted(codes):
+        assert names[code] == expected[code]
+
+
 @pytest.mark.parametrize(
     ('score', 'expected'),
     [

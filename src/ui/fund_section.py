@@ -20,7 +20,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QTableWidgetItem
 
-from src.data.local_store.paths import resolve_store_root
+from src.data.local_store.fund_basic import load_fund_basic_frame
 from src.ui.table_sizing import apply_estimated_column_widths
 from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
@@ -66,11 +66,7 @@ def is_closed_fund_ts_code(ts_code: str) -> bool:
 
 def load_local_fund_basic(config=None) -> pl.DataFrame:
     """读取本地基金名录；只读 ``meta/fund_basic.parquet``，不访问数据库。"""
-    path = resolve_store_root(config) / 'meta' / 'fund_basic.parquet'
-    if not path.exists():
-        logger.warning(f'本地基金名录不存在: {path}')
-        return pl.DataFrame()
-    return pl.read_parquet(path)
+    return load_fund_basic_frame(config)
 
 
 def split_by_fund_type(frame: pl.DataFrame) -> tuple[dict[str, pl.DataFrame], dict[str, int]]:

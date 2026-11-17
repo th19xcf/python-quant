@@ -618,10 +618,9 @@ def test_estimated_column_widths_caps_when_no_spare(qapp):
 
 # ----------------------------------------------- 列宽口径守门：页面不得自定列宽
 UI_ROOT = Path(__file__).resolve().parents[1] / 'src' / 'ui'
-#: 共享度量实现本身定义常量；ETF/LOF/分级三表由另一会话迁移，暂列豁免
+#: 共享度量实现本身定义常量；页面一律不得写死列宽
 GUARD_EXEMPT = frozenset({
     'table_sizing.py',
-    'etf_timing/page.py',
 })
 #: 写死像素宽（含数字字面量）、模块级/局部宽度表，都视为绕过统一口径
 HARDCODED_WIDTH_PATTERNS = (

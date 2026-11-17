@@ -16,10 +16,10 @@ from pathlib import Path
 
 import numpy as np
 
+from src.data.local_store.fund_basic import load_fund_name_map
 from src.data.trading_calendar import next_trading_day
 from src.quant.analysis import analysis_cache
 from src.quant.analysis.etf_timing_state import (
-    ETF_NAMES,
     allocation_rows,
     level_label,
     level_position,
@@ -160,12 +160,13 @@ def _build_state(
     allocation = sleeve_allocation(slots)
 
     holdings: list[EtfTimingHolding] = []
+    fund_names = load_fund_name_map()
     for code, role, tag in allocation_rows(slots):
         sleeve_weight = allocation.get(code, 0.0)
         position_weight = position * sleeve_weight
         holdings.append(EtfTimingHolding(
             code=code,
-            name=ETF_NAMES.get(code, code),
+            name=fund_names.get(code, code),
             role=f'{role}·{tag}',
             sleeve_weight=sleeve_weight,
             position_weight=position_weight,
@@ -209,7 +210,7 @@ def compute_state(
         'etf_timing', 'state',
         asof=asof.isoformat() if asof else None,
         fingerprint={'panel_end': analysis_cache.panel_end(), 'capital': capital,
-                     'schema': 2},
+                     'schema': 3},
         compute=lambda: _build_state(*daily_total_scores(), asof=asof,
                                      capital=capital, refresh=refresh),
         refresh=refresh,

@@ -33,16 +33,6 @@ SIZE_ETFS: dict[str, str] = {'小盘': '512100.SH', '大盘': '510050.SH', '均�
 VALUE_ETFS: dict[str, str] = {'价值': '510880.SH', '成长': '159915.SZ', '均衡': CORE_ETF}
 VOL_ETFS: dict[str, str] = {'低波': '512890.SH', '高波': '588000.SH', '均衡': CORE_ETF}
 
-ETF_NAMES: dict[str, str] = {
-    '510300.SH': '沪深300ETF',
-    '510050.SH': '上证50ETF',
-    '512100.SH': '中证1000ETF',
-    '510880.SH': '红利ETF',
-    '159915.SZ': '创业板ETF',
-    '512890.SH': '红利低波ETF',
-    '588000.SH': '科创50ETF',
-}
-
 
 def raw_level(score: float) -> int:
     """不含滞回的原始档位。边界取「上沿含、下沿不含」。"""

@@ -219,11 +219,6 @@ class EtfTimingPage(QWidget, SizedTableMixin):
         layout.addWidget(section)
         self.holdings_table = self._make_table(
             ['代码', '名称', '角色', '权益内权重', '占本金', '金额'])
-        self.holdings_table.setColumnWidth(0, 96)
-        self.holdings_table.setColumnWidth(1, 130)
-        self.holdings_table.setColumnWidth(2, 110)
-        self.holdings_table.setColumnWidth(3, 100)
-        self.holdings_table.setColumnWidth(4, 90)
         layout.addWidget(self.holdings_table)
         return card
 
