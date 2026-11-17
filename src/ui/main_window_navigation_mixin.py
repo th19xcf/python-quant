@@ -554,8 +554,10 @@ class MainWindowNavigationMixin:
                     if code_item and name_item:
                         code = code_item.text()
                         symbol = ts_code.split('.')[0]
-                        # 匹配各种格式：纯数字、sh/sz/bj前缀
-                        if code == symbol or code == f"sh{symbol}" or code == f"sz{symbol}" or code == f"bj{symbol}":
+                        # 匹配各种格式：带后缀标准代码、纯数字、sh/sz/bj前缀
+                        if (code.upper() == ts_code.upper() or code == symbol
+                                or code == f"sh{symbol}" or code == f"sz{symbol}"
+                                or code == f"bj{symbol}"):
                             return name_item.text()
 
             # 从数据库查询

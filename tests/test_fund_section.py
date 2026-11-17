@@ -86,7 +86,7 @@ def test_get_real_fund_data_from_tdx(tmp_path):
     data = section.get_real_fund_data("510300", "沪深300ETF", "510300.SH")
 
     assert data is not None
-    assert data["code"] == "510300"
+    assert data["code"] == "510300.SH"
     assert data["price"] == "4.20"
     assert data["preclose"] == "4.00"
     assert data["change"] == "+0.20"
@@ -142,3 +142,40 @@ def test_fund_source_is_local_and_works_without_database():
 
     etf = section._get_fund_source('ETF')
     assert '510300.SH' in etf['ts_code'].to_list()
+
+
+def test_load_funds_task_keeps_market_suffix_in_code():
+    """代码列必须是带市场后缀的标准代码，不能截成纯数字。"""
+    section = FundSection(SimpleNamespace(data_manager=None))
+    section._get_fund_source = lambda kind: pl.DataFrame(
+        {'ts_code': ['510300.SH', '159915.SZ'], 'name': ['沪深300ETF', '创业板ETF']})
+    section.get_real_fund_data = lambda code, name, ts_code=None: None
+
+    result = section._load_funds_task('ETF', 'ETF基金', 'ETF_funds')
+
+    assert [row['code'] for row in result['ETF_funds']] == ['510300.SH', '159915.SZ']
+
+
+def test_fill_fund_table_measures_all_column_widths(qapp, monkeypatch):
+    """根因回归：基金表必须按内容实测列宽，不能沿用上一视图的占位宽度。"""
+    from PySide6.QtWidgets import QTableWidget
+
+    import src.ui.fund_section as fund_section
+
+    captured = {}
+    monkeypatch.setattr(
+        fund_section, 'apply_estimated_column_widths',
+        lambda table, rows: captured.update(rows=rows))
+
+    table = QTableWidget(0, 13)
+    table.setHorizontalHeaderLabels([''] * 13)
+    section = FundSection(SimpleNamespace(stock_table=table, data_manager=None))
+    fund = dict(zip(fund_section._FUND_COLUMNS, [
+        '2026-11-16', '510300.SH', '沪深300ETF华泰柏瑞', '-0.14%', '4.05', '-0.01',
+        '123,456', '0.52亿', '4.06', '4.07', '4.04', '4.06', '0.74%',
+    ], strict=True))
+
+    section._fill_fund_table([fund])
+
+    assert captured['rows'] == [[fund[key] for key in fund_section._FUND_COLUMNS]]
+    assert table.item(0, 1).text() == '510300.SH'

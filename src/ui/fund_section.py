@@ -21,11 +21,18 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QTableWidgetItem
 
 from src.data.local_store.paths import resolve_store_root
+from src.ui.table_sizing import apply_estimated_column_widths
 from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
 
 #: 菜单分类：与 ``meta/fund_basic.parquet`` 的 ``fund_type`` 取值一一对应
 FUND_TYPE_MENUS: tuple[str, ...] = ('ETF', 'LOF', '分级')
+
+#: 表格列顺序（与主窗口行情表的 13 列一一对应），代码列显示带市场后缀的标准代码
+_FUND_COLUMNS = (
+    'date', 'code', 'name', 'change_pct', 'price', 'change',
+    'volume', 'amount', 'open', 'high', 'low', 'preclose', 'amplitude',
+)
 
 # 表格数值列（右对齐）
 _NUMERIC_COLUMNS = tuple(range(3, 13))
@@ -241,22 +248,22 @@ class FundSection:
                     name = row.get('name', '')
                     code = ts_code.split('.')[0]
                     if not name:
-                        name = code
+                        name = ts_code
                     fund_codes.append((code, name, ts_code))
 
                 # 为每只基金获取真实交易数据
                 added_codes = set()
                 total = len(fund_codes)
                 for i, (code, name, ts_code) in enumerate(fund_codes):
-                    if code in added_codes:
+                    if ts_code in added_codes:
                         continue
                     real_data = self.get_real_fund_data(code, name, ts_code)
                     if real_data:
                         funds.append(real_data)
                     else:
-                        logger.info(f"获取{title} {name}({code}) 真实数据失败，使用默认数据")
-                        funds.append(_default_fund_data(code, name))
-                    added_codes.add(code)
+                        logger.info(f"获取{title} {name}({ts_code}) 真实数据失败，使用默认数据")
+                        funds.append(_default_fund_data(ts_code, name))
+                    added_codes.add(ts_code)
                     if signals and total > 0:
                         signals.progress.emit(task_id, int((i + 1) / total * 100), 100)
 
@@ -293,10 +300,7 @@ class FundSection:
         for row, fund in enumerate(funds):
             preclose_text = fund.get('preclose', '0')
 
-            for col, key in enumerate((
-                'date', 'code', 'name', 'change_pct', 'price', 'change',
-                'volume', 'amount', 'open', 'high', 'low', 'preclose', 'amplitude',
-            )):
+            for col, key in enumerate(_FUND_COLUMNS):
                 item = QTableWidgetItem(fund.get(key, ''))
                 if col in _NUMERIC_COLUMNS:
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -311,6 +315,10 @@ class FundSection:
                         item.setForeground(color)
 
                 table.setItem(row, col, item)
+
+        # 与行情表同一口径：按每列最长内容实测列宽（代码带后缀、名称不再被截断）
+        apply_estimated_column_widths(
+            table, [[fund.get(key, '') for key in _FUND_COLUMNS] for fund in funds])
 
     @staticmethod
     def _price_color(price_text: str, preclose_text: str):
@@ -359,7 +367,7 @@ class FundSection:
 
             return {
                 "date": quote.date,
-                "code": code,
+                "code": ts_code or code,
                 "name": name,
                 "change_pct": change_pct_str,
                 "price": f"{quote.close:.2f}",
