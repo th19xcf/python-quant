@@ -134,6 +134,12 @@ QTableWidget::item {{
 class MarketTrendPage(QWidget, SizedTableMixin):
     """市场趋势状态页：结论卡 + 分层表 + 指标表。"""
 
+    #: 本页 QSS 下单元格文本左右内缩实测 26px（QSS ``padding: 6px 8px`` 之外
+    #: 样式还会再内缩），按 18px 估宽会系统性偏窄、短列被省略号截断。
+    CELL_PADDING_H = 26
+    #: 文本宽度上限 360 + 内缩 26：超长说明列按文本宽度封顶后仍留足内缩
+    MAX_COLUMN_WIDTH = 360 + CELL_PADDING_H
+
     def __init__(self, host: Any = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName('marketTrendPage')
