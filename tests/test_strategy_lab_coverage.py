@@ -149,7 +149,6 @@ def _run_switch(tmp_path, monkeypatch, factors):
         paths[code] = path
     monkeypatch.setattr(switch_timing, '_quote_path', lambda code: paths[code])
     monkeypatch.setattr(backtest, '_load_st_status', lambda *a, **k: {})
-    monkeypatch.setattr(backtest, '_engine_dividends', lambda codes: {})
     monkeypatch.setattr(backtest, 'load_benchmark_close', lambda code: {})
     monkeypatch.setattr(coverage, 'DEFAULT_FACTOR_DIR', factors)
     return backtest.run_rule(_rule(days))

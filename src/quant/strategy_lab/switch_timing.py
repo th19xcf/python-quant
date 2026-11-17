@@ -59,16 +59,28 @@ def _quote_path(code: str) -> Path:
         f'根目录 {QUOTE_ROOT}）')
 
 
-def _normalize(frame: pl.DataFrame, prefer_qfq: bool = False) -> pl.DataFrame:
-    """复权价 + 原始价成对输出，口径与 ``src/advice/data.py`` 一致。
+def _normalize(frame: pl.DataFrame) -> pl.DataFrame:
+    """前复权价 + 原始价：四类规则统一按前复权价回测（唯一路径）。
 
-    ``prefer_qfq=True`` 时优先用 ``qfq_factor``（前复权）：基金行情只落了
-    ``qfq_factor``，没有 ``hfq_factor``；直接按原始价回测会把 ETF 分红与份额
-    折算整段漏掉（510500.SH 在 2022-08-29 有一次未复权的价格跳空）。
+    复权口径（唯一实现，不另造第二套换算）：
+
+    - 换算：``复权价 = 原始价 × qfq_factor``，与 ``src/advice/data.py`` 的
+      「原始价 × 因子」取数约定一致，从本地行情 parquet 的 ``qfq_factor`` 列取
+      因子；该列缺失时才退回 ``hfq_factor``，两者都没有则整列按 1.0 处理；
+      因子为空值同样按 1.0（不插值、不猜）。
+    - 基准日：前复权因子按「行 t 的因子 = ∏{f_e | 除权日 e > t}」定义
+      （见 ``src/data/adj_factor_calculator.py``），即最新交易日的因子为 1.0、
+      价格不缩放，历史价按其后发生的分红与送转等比下调。因此基准日就是行情里
+      的最后一个交易日，复权序列随数据更新会整体平移，回测内部始终自洽。
+    - 执行口径：只输出前复权价，不再附带 ``raw_open`` / ``raw_close``。撮合与
+      盯市因此落在前复权价空间，除权账本保持关闭（分红/送转已内含在价格里，
+      再记一遍即重复计入）；四类规则共用这一条路径，没有旧分支。
+    - 已知限制：本地约 65.6% 的基金复权因子恒为 1（无分红/折算记录），这类标的
+      走前复权等于没复权，收益仍可能低估；这条限制没有修复，只做如实标注。
     """
     frame = frame.with_columns(pl.col('date').cast(pl.Date, strict=False))
     factor: str | None = None
-    for column in ('hfq_factor',) + (('qfq_factor',) if prefer_qfq else ()):
+    for column in ('qfq_factor', 'hfq_factor'):
         if column in frame.columns:
             factor = column
             break
@@ -85,8 +97,6 @@ def _normalize(frame: pl.DataFrame, prefer_qfq: bool = False) -> pl.DataFrame:
         (pl.col('low') * pl.col('adj_factor')).alias('low'),
         (pl.col('close') * pl.col('adj_factor')).alias('close'),
         pl.col('volume').cast(pl.Float64, strict=False).alias('volume'),
-        pl.col('open').cast(pl.Float64, strict=False).alias('raw_open'),
-        pl.col('close').cast(pl.Float64, strict=False).alias('raw_close'),
     ]
     if 'amount' in frame.columns:
         columns.append(pl.col('amount').cast(pl.Float64, strict=False).alias('amount'))
@@ -95,14 +105,13 @@ def _normalize(frame: pl.DataFrame, prefer_qfq: bool = False) -> pl.DataFrame:
             .sort('date').unique('date', keep='last'))
 
 
-def load_leg(code: str, start: date, end: date,
-             prefer_qfq: bool = False) -> pl.DataFrame:
+def load_leg(code: str, start: date, end: date) -> pl.DataFrame:
     path = _quote_path(code)
     raw = pl.read_parquet(path)
     missing = sorted({'date', 'open', 'high', 'low', 'close', 'volume'} - set(raw.columns))
     if missing:
         raise PlanError(f'标的 {code} 行情缺必需列 {missing}（{path}）')
-    frame = _normalize(raw, prefer_qfq=prefer_qfq).filter(
+    frame = _normalize(raw).filter(
         (pl.col('date') >= start) & (pl.col('date') <= end))
     if frame.height < 2:
         raise PlanError(
@@ -110,10 +119,8 @@ def load_leg(code: str, start: date, end: date,
     return frame
 
 
-def load_legs(codes: Iterable[str], start: date, end: date,
-              prefer_qfq: bool = False) -> Dict[str, pl.DataFrame]:
-    data = {code: load_leg(code, start, end, prefer_qfq=prefer_qfq)
-            for code in dict.fromkeys(codes)}
+def load_legs(codes: Iterable[str], start: date, end: date) -> Dict[str, pl.DataFrame]:
+    data = {code: load_leg(code, start, end) for code in dict.fromkeys(codes)}
     dates = [set(df['date'].to_list()) for df in data.values()]
     common = sorted(set.intersection(*dates))
     if len(common) < 2:
@@ -404,7 +411,7 @@ def build_dca_plan(rule: Dict[str, Any]) -> Plan:
     warmup = start - timedelta(days=WARMUP_DAYS)
     target = rule['target']
     code = target['code']
-    data = load_legs([code], warmup, end, prefer_qfq=True)
+    data = load_legs([code], warmup, end)
     frame = data[code]
     days = frame['date'].to_list()
     closes = [float(c) for c in frame['close'].to_list()]

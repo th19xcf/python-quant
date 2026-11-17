@@ -49,9 +49,13 @@ def local_stock_codes() -> List[str]:
     return sorted({Path(p).stem for p in files})
 
 
-def load_universe(period: Dict[str, str], universe: Dict[str, Any]
-                  ) -> Dict[str, pl.DataFrame]:
-    """按规格读取后复权行情；``explicit`` 模式只读指定清单。"""
+def load_universe(period: Dict[str, str], universe: Dict[str, Any],
+                  adjustment: str = 'hfq') -> Dict[str, pl.DataFrame]:
+    """按规格读取复权行情；``explicit`` 模式只读指定清单。
+
+    ``adjustment`` 缺省保持 ``'hfq'``（生产口径：后复权 + 原始价对 + 除权账本）；
+    策略试算传 ``'qfq'`` 走统一前复权口径（无 raw_* 对、不记除权账本）。
+    """
     available = set(local_stock_codes())
     mode = universe['mode']
     if mode == 'explicit':
@@ -63,10 +67,11 @@ def load_universe(period: Dict[str, str], universe: Dict[str, Any]
                 f'（清单共 {len(codes)} 只，本地 {len(available)} 只）')
     else:
         codes = sorted(available)
-    logger.info('读取行情：{} 只 / {}~{}（后复权，data_start={}）', len(codes),
-                period['start'], period['end'], period['warmup_start'])
+    basis = '前复权' if adjustment == 'qfq' else '后复权'
+    logger.info('读取行情：{} 只 / {}~{}（{}，data_start={}）', len(codes),
+                period['start'], period['end'], basis, period['warmup_start'])
     batch = DataFetcher(Config(), db_manager=None).get_stock_batch(
-        codes, period['warmup_start'], period['end'], '1d', 'hfq')
+        codes, period['warmup_start'], period['end'], '1d', adjustment)
     data = {c: df for c, df in batch.items() if df is not None and not df.is_empty()}
     empty = sorted(set(codes) - set(data))
     if mode == 'explicit' and empty:

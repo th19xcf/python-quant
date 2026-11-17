@@ -21,7 +21,7 @@ from loguru import logger
 from src.backtest.performance.benchmark_eval import information_ratio
 from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.backtest.runner import compute, pipeline
-from src.core.usecases.run_backtest import _load_local_dividends, _load_st_status
+from src.core.usecases.run_backtest import _load_st_status
 
 from .coverage import dividend_coverage
 from .panels import FieldPanels
@@ -362,7 +362,7 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'warmup_start': (date.fromisoformat(rule['period']['start'])
                          - timedelta(days=WARMUP_DAYS)).isoformat(),
     }
-    data = compute.load_universe(period, rule['universe'])
+    data = compute.load_universe(period, rule['universe'], adjustment='qfq')
     data, violations = compute.drop_contract_violations(data)
     if not data:
         return _empty('行情为空：契约预筛后没有可用标的', rule)
@@ -386,7 +386,9 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
 
     schedules = pipeline.build_schedules(path, prev_day,
                                          rule['portfolio']['cash_buffer'])
-    dividends = _load_local_dividends(list(data), None, None)
+    # 统一前复权口径（见 switch_timing._normalize）：行情已是前复权价，分红与送转
+    # 已内含在价格里，再记一遍除权事件等于重复计入，故四类规则一律不传分红账本。
+    dividends = None
     engine_spec = {'_resolved': {'portfolio': rule['portfolio'], 'cost': rule['cost']}}
     result, used, engine_seconds = pipeline.run_engine(
         data, schedules, engine_spec, dividends, st_status)
@@ -416,24 +418,6 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
     return payload
 
 
-def _engine_dividends(codes: List[str]) -> Dict[str, Any]:
-    """本地分红快照 → 引擎事件；基金分红的表结构不同，缺复权修正列时跳过。
-
-    ``fund_dividend.parquet`` 只有现金分红、没有 ``cash_div_fix`` /
-    ``share_div_fix`` / ``no_ex_rights`` 三列修正；ETF 分红是否纳入复权在
-    ``clean_set`` 里仍是 ``pending_fund_dividend`` 未结论。这里不补任何默认值，
-    缺列即跳过并告警，避免把未修正的基金分红当成个股送转记账。
-    """
-    required = {'cash_div_fix', 'share_div_fix', 'no_ex_rights'}
-    frames = _load_local_dividends(codes, None, None)
-    usable = {code: frame for code, frame in frames.items()
-              if required <= set(frame.columns)}
-    skipped = sorted(set(frames) - set(usable))
-    if skipped:
-        logger.warning('分红快照缺复权修正列，本次不记账除权事件：{}', skipped)
-    return usable
-
-
 def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
     try:
         plan = build_plan(rule)
@@ -446,23 +430,11 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
               - timedelta(days=WARMUP_DAYS)).isoformat()
     st_status = _load_st_status(None, plan.data, None, warmup,
                                 rule['period']['end'], None, None)
-    dividends = _engine_dividends(list(plan.data))
+    # 统一前复权口径：行情只有前复权价（见 switch_timing._normalize），撮合与盯市
+    # 都在前复权价空间；分红/送转已内含在价格里，不再单独记账除权事件。
+    dividends = None
     engine_spec = {'_resolved': {'portfolio': rule['portfolio'], 'cost': rule['cost']}}
-    # 基金行情里有的腿复权因子恒为 1.0，复权价与原始价逐值相同；成对传进引擎会被
-    # 契约判成「拿未复权价冒充复权价」。这类腿直接去掉 raw_* 对，让 auto 按原始价
-    # 处理（价格本身没有信息损失，也不补任何复权因子）。
-    engine_data: Dict[str, Any] = {}
-    for code, frame in plan.data.items():
-        pair = {'open', 'raw_open', 'close', 'raw_close'}
-        same_as_raw = pair <= set(frame.columns) and \
-            bool((frame['open'] == frame['raw_open']).all()) and \
-            bool((frame['close'] == frame['raw_close']).all())
-        if same_as_raw or rule['rule_type'] == 'dca_grid':
-            # 定投口径整体在复权价空间内成交与盯市：基金行情只有 qfq_factor，
-            # 把原始价交给引擎会让份额折算日（如 510500.SH 2022-08-29）的
-            # 盯市出现跳空，且基金不走 corporate_actions 补偿。
-            frame = frame.drop(['raw_open', 'raw_close'])
-        engine_data[code] = frame
+    engine_data = plan.data
     result, used, engine_seconds = pipeline.run_engine(
         engine_data, plan.schedules, engine_spec, dividends, st_status)
 

@@ -30,8 +30,8 @@ def _weekdays(count: int) -> list[date]:
 
 
 def _frame(days: list[date], opens: list[float]) -> pl.DataFrame:
-    """hfq_factor=2.0：复权价与原始价不同，引擎契约才接受；
-    引擎成交用 raw_open，因此断言可直接对原始开盘价。"""
+    """hfq_factor=2.0：复权价与原始价不同，验证"成交与盯市都在前复权价空间"；
+    成交价 = 原始开盘价 × 因子（本地无 qfq_factor 时退回 hfq_factor）。"""
     return pl.DataFrame({
         'date': days,
         'open': opens,
@@ -81,17 +81,17 @@ def test_switch_trades_next_open(tmp_path, monkeypatch):
     trades = [{**trade, 'date': pipeline.to_date(trade['date'])}
               for trade in result['trades']]
 
-    # 初始建仓：成交日 = 信号日下一交易日，成交价 = 当日原始开盘价
+    # 初始建仓：成交日 = 信号日下一交易日，成交价 = 当日前复权开盘价（原始价 × 因子）
     first_buy = next(t for t in trades
                      if t['signal'] == 'buy' and t['date'] == days[3])
-    assert first_buy['price'] == pytest.approx(den_open[3])
+    assert first_buy['price'] == pytest.approx(2.0 * den_open[3])
 
-    # 切换建仓：同样落在信号日下一交易日，按当日开盘价成交
+    # 切换建仓：同样落在信号日下一交易日，按当日前复权开盘价成交
     switch_marker = next(m for m in plan.markers if m.get('from') == 'denominator')
     exec_day = date.fromisoformat(switch_marker['date'])
     index = days.index(exec_day)
     switch_buy = next(t for t in trades
                       if t['signal'] == 'buy' and t['date'] == exec_day)
-    assert switch_buy['price'] == pytest.approx(num_open[index])
+    assert switch_buy['price'] == pytest.approx(2.0 * num_open[index])
     # 同日卖出旧腿，证明换仓是 D+1 开盘同时完成
     assert any(t['signal'] == 'sell' and t['date'] == exec_day for t in trades)
