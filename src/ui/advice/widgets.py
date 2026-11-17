@@ -57,6 +57,19 @@ DIRECTION_COLORS = {
 _NAME_SOURCE_LABELS = {'local_names_json': '本地名称表', 'code': '代码回退'}
 _INDUSTRY_SOURCE_LABELS = {'code_prefix_board': '板块近似', 'table': '行业表'}
 
+#: 单元格左右留白（paint 时 rect 左右各 9px）+ 4px 取整余量
+CELL_PAD_H = 22
+#: 方向 pill 文本左右内边距（与 _draw_pill 一致）
+PILL_PAD_H = 18
+#: 因子文字右侧 3 根 mini bar 的占位宽度
+FACTOR_BARS_W = 52
+#: 风险摘要右侧持有期 chip 宽度 + 间距
+RISK_CHIP_W = 52
+#: 表头左右 padding 8px + 边框/取整余量
+HEADER_PAD_H = 22
+#: 列宽上限：超过后由横向滚动条承接，委托对超限文本仍做省略
+MAX_COLUMN_WIDTH = 720
+
 
 def _qcolor(value: str, alpha: int = 255) -> QColor:
     color = QColor(value)
@@ -80,6 +93,64 @@ class AdviceItemDelegate(QStyledItemDelegate):
 
     def set_palette(self, palette: Palette) -> None:
         self._pal = palette
+
+    def _metrics(self, family: str, size: float,
+                 bold: bool = False) -> QFontMetrics:
+        """按 paint 使用的字体缓存度量器，避免逐行重复建字体。"""
+        key = (family, size, bold)
+        cache = getattr(self, '_metrics_cache', None)
+        if cache is None:
+            cache = self._metrics_cache = {}
+        metrics = cache.get(key)
+        if metrics is None:
+            font = QFont(family)
+            font.setPointSizeF(size)
+            font.setBold(bold)
+            metrics = cache[key] = QFontMetrics(font)
+        return metrics
+
+    def content_width(self, dto: DailyRecommendationDTO, column: int) -> int:
+        """单元格单行完整显示所需列宽，字体与留白与 paint 同源。"""
+        if column == COL_CODE:
+            return (self._metrics(self.tokens.mono_family, 9)
+                    .horizontalAdvance(dto.ts_code) + CELL_PAD_H)
+        if column == COL_NAME:
+            return (self._metrics(self.tokens.font_family, 10, True)
+                    .horizontalAdvance(dto.name) + CELL_PAD_H)
+        if column == COL_DIRECTION:
+            advance = self._metrics(self.tokens.font_family, 8.5, True) \
+                .horizontalAdvance(display_value(dto, COL_DIRECTION))
+            return advance + PILL_PAD_H + CELL_PAD_H
+        if column == COL_CONFIDENCE:
+            advance = self._metrics(self.tokens.mono_family, 9) \
+                .horizontalAdvance(f'{dto.confidence:.2f}')
+            return max(98, advance + 42 + CELL_PAD_H)
+        if column == COL_FACTORS:
+            advance = self._metrics(self.tokens.font_family, 8.5) \
+                .horizontalAdvance(dto.top_factors or '—')
+            return advance + FACTOR_BARS_W + CELL_PAD_H
+        if column == COL_RISK:
+            first = (dto.risk_notes or '').split('；')[0]
+            advance = self._metrics(self.tokens.font_family, 8.5) \
+                .horizontalAdvance(first)
+            return advance + RISK_CHIP_W + CELL_PAD_H
+        if column == COL_WEIGHT:
+            text = f'{dto.target_weight_pct:.1f}%'
+        elif column == COL_SHARES:
+            text = f'{dto.shares:,}'
+        elif column == COL_PRICE:
+            text = f'{dto.ref_price:.2f}'
+        else:
+            return 0
+        return (self._metrics(self.tokens.mono_family, 9.5)
+                .horizontalAdvance(text) + CELL_PAD_H)
+
+    def header_width(self, title: str) -> int:
+        """表头所需宽度：QSS 为 11px / 600 字重，按实际字重度。"""
+        font = QFont(self.tokens.font_family)
+        font.setPixelSize(self.tokens.font_small)
+        font.setWeight(QFont.Weight.DemiBold)
+        return QFontMetrics(font).horizontalAdvance(title) + HEADER_PAD_H
 
     def sizeHint(self, option: QStyleOptionViewItem, index) -> QSize:  # noqa: N802
         return QSize(option.rect.width(), self.tokens.row_height)

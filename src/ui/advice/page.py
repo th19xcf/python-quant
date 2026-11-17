@@ -47,6 +47,7 @@ from src.ui.advice.table_model import (
     AdviceTableModel,
 )
 from src.ui.advice.tokens import TOKENS, palette_for
+from src.ui.advice.widgets import MAX_COLUMN_WIDTH as ADVICE_MAX_COLUMN_WIDTH
 from src.ui.advice.widgets import (
     AdviceItemDelegate,
     DetailPanel,
@@ -250,8 +251,9 @@ class AdvicePage(QWidget):
         header.setHighlightSections(False)
         for index, column in enumerate(COLUMNS):
             table.setColumnWidth(index, column.width)
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
-        header.setStretchLastSection(True)
+        # 列宽按内容实测后落在 [设计宽度, 上限] 区间；不压缩、不撑满，超宽出横向滚动条
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(False)
 
         table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         table.customContextMenuRequested.connect(self._show_context_menu)
@@ -438,9 +440,18 @@ class AdvicePage(QWidget):
         self.fresh_label.style().unpolish(self.fresh_label)
         self.fresh_label.style().polish(self.fresh_label)
 
+    def _fit_column_widths(self, items: list) -> None:
+        """按当前档位真实内容实测列宽，避免代码/名称/因子/风险列被省略截断。"""
+        for index, column in enumerate(COLUMNS):
+            width = max(column.width, self.delegate.header_width(column.title))
+            for item in items:
+                width = max(width, self.delegate.content_width(item, index))
+            self.table.setColumnWidth(index, min(ADVICE_MAX_COLUMN_WIDTH, width))
+
     def _refresh_table(self) -> None:
         items = self._tier_items()
         self.model.set_items(items)
+        self._fit_column_widths(items)
         self._update_kpis(items)
         actionable = sum(1 for item in items if item.actionable)
         deferred = sum(1 for item in items if item.disposition == 'deferred')

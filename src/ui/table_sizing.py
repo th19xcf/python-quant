@@ -5,19 +5,20 @@
 
 1. 所有列（含最后一列）的 resize mode 都是 ``Interactive``，表头分隔线可
    左右拖动，双击分隔线自适应内容；
-2. 列宽 = max(表头所需宽度, 该列最长内容单行所需宽度)，每列只做一次字体
-   度量（先按字符数挑最长文本），不逐格测量，上限 MAX_COLUMN_WIDTH；
+2. 列宽 = max(表头所需宽度, 该列所有内容单行所需宽度)，逐格按实际字体像
+   素宽度取最大值（相同文本缓存结果），上限 MAX_COLUMN_WIDTH；
 3. 不再压缩列宽换总宽：总宽超出可视区时出横向滚动条；
 4. 只有超过 MAX_COLUMN_WIDTH 的内容才折行，行高按内容实测，不截断。
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, Qt
+from PySide6.QtCore import QRect, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
 )
@@ -50,15 +51,53 @@ def use_interactive_columns(table: QTableWidget) -> None:
     header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 
 
-def _longest_texts(header_texts: list[str], rows) -> list[str]:
-    """每列取「字符数最长」的文本：只比较长度，不做字体度量。"""
-    longest = [text or '' for text in header_texts]
+class WrappedRowDelegate(QStyledItemDelegate):
+    """按实际折行高度给出行高。
+
+    Qt 默认 ``sizeHint`` 不含 QSS 单元格内边距，中文长文本被上限列宽折行后
+    ``resizeRowsToContents()`` 会算少 9~15px，最后一行被纵向裁切；这里用与
+    ``apply_wrapped_row_heights`` 相同的 ``boundingRect`` 口径补齐。
+    """
+
+    def sizeHint(self, option, index) -> QSize:  # noqa: N802
+        size = super().sizeHint(option, index)
+        widget = option.widget
+        text = index.data(Qt.ItemDataRole.DisplayRole)
+        if widget is None or text in (None, ''):
+            return size
+        width = widget.columnWidth(index.column()) - CELL_PADDING_H
+        if width <= 0:
+            return size
+        bounds = option.fontMetrics.boundingRect(
+            QRect(0, 0, width, 10000),
+            int(Qt.TextFlag.TextWordWrap), str(text))
+        return QSize(size.width(),
+                     max(size.height(), bounds.height() + CELL_PADDING_V))
+
+
+def _column_widths(header_texts: list[str], rows, header_metrics,
+                   cell_metrics) -> list[int]:
+    """逐格实测文本像素宽度，返回每列最宽值（含表头）。
+
+    只比较字符数会在「等长但字形更宽」时漏判：``+0.173`` 比 ``-0.990`` 宽
+    4px，``ST合力泰`` 比四字中文名宽，列宽会被低估而截断。这里对每个不同
+    文本调用一次 ``horizontalAdvance``（相同文本走缓存），按像素取最大值。
+    """
+    widths = [header_metrics.horizontalAdvance(text) + HEADER_PADDING_H
+              for text in header_texts]
+    cache: dict[str, int] = {}
     for row in rows:
-        for index, value in enumerate(row[:len(longest)]):
+        for index, value in enumerate(row[:len(widths)]):
             text = '' if value is None else str(value)
-            if len(text) > len(longest[index]):
-                longest[index] = text
-    return longest
+            if not text:
+                continue
+            advance = cache.get(text)
+            if advance is None:
+                advance = cache[text] = cell_metrics.horizontalAdvance(text)
+            width = advance + CELL_PADDING_H
+            if width > widths[index]:
+                widths[index] = width
+    return widths
 
 
 def _header_metrics(header) -> QFontMetrics:
@@ -66,18 +105,6 @@ def _header_metrics(header) -> QFontMetrics:
     font = header.font()
     font.setWeight(QFont.Weight.DemiBold)
     return QFontMetrics(font)
-
-
-def _estimate_widths(header_texts: list[str], content_texts: list[str],
-                     header_metrics, cell_metrics) -> list[int]:
-    """每列一次字体度量：max(表头宽, 最长内容宽)，不设下限、不做压缩。"""
-    widths: list[int] = []
-    for index, header_text in enumerate(header_texts):
-        widths.append(max(
-            header_metrics.horizontalAdvance(header_text) + HEADER_PADDING_H,
-            cell_metrics.horizontalAdvance(content_texts[index]) + CELL_PADDING_H,
-        ))
-    return widths
 
 
 def _table_row_texts(table: QTableWidget, row: int) -> list[str]:
@@ -90,7 +117,7 @@ def _table_row_texts(table: QTableWidget, row: int) -> list[str]:
 
 
 def measure_natural_widths(table: QTableWidget) -> list[int]:
-    """按每列「最长内容」做一次字体度量，返回单行完整显示所需宽度。
+    """逐格按字体实测，返回每列单行完整显示所需宽度。
 
     先 ``ensurePolished()``：页面 QSS 的 font-size 要到 polish 后才生效，
     否则会用默认字号度量出偏窄的宽度（短列会被截断）。
@@ -105,11 +132,10 @@ def measure_natural_widths(table: QTableWidget) -> list[int]:
     for index in range(columns):
         item = table.horizontalHeaderItem(index)
         header_texts.append(item.text() if item is not None else '')
-    longest = _longest_texts(
+    return _column_widths(
         header_texts,
-        (_table_row_texts(table, row) for row in range(table.rowCount())))
-    return _estimate_widths(header_texts, longest,
-                            _header_metrics(header), table.fontMetrics())
+        (_table_row_texts(table, row) for row in range(table.rowCount())),
+        _header_metrics(header), table.fontMetrics())
 
 
 def apply_content_widths(table: QTableWidget) -> bool:
@@ -137,10 +163,10 @@ def apply_content_widths(table: QTableWidget) -> bool:
 
 def apply_estimated_column_widths(table: QTableWidget, rows,
                                   max_width: int = MAX_COLUMN_WIDTH) -> None:
-    """按每列最长文本做一次字体度量估算列宽，供 5000+ 行的大表刷新使用。
+    """按原始行数据逐格实测列宽，供 5000+ 行的大表刷新使用。
 
-    只在原始行数据上取「字符数最长」的那条文本（不做逐格测量），每列仅调用
-    一次 ``horizontalAdvance``，因此额外的耗时与行数近似线性且常数极小。
+    相同文本只度量一次（行情表大量重复的代码/名称/数字），不做字符数近似，
+    因此「等长但更宽」的文本不会被漏判。
     """
     columns = table.columnCount()
     if columns == 0:
@@ -153,9 +179,8 @@ def apply_estimated_column_widths(table: QTableWidget, rows,
     for index in range(columns):
         item = table.horizontalHeaderItem(index)
         header_texts.append(item.text() if item is not None else '')
-    longest = _longest_texts(header_texts, rows)
-    widths = _estimate_widths(header_texts, longest,
-                              _header_metrics(header), table.fontMetrics())
+    widths = _column_widths(header_texts, rows,
+                            _header_metrics(header), table.fontMetrics())
     for index, width in enumerate(widths):
         table.setColumnWidth(index, min(max_width, width))
         header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
@@ -304,6 +329,7 @@ class SizedTableMixin:
         table.setAlternatingRowColors(False)
         table.setShowGrid(True)
         table.setWordWrap(True)
+        table.setItemDelegate(WrappedRowDelegate(table))
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         if not selectable:
             table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)

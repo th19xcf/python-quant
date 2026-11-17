@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from src.quant.analysis.attribution_state import AttributionState
 from src.ui.advice.tokens import TOKENS, palette_for
 from src.ui.table_sizing import (
+    WrappedRowDelegate,
     apply_content_widths,
     apply_wrapped_row_heights,
     reorder_table_rows,
@@ -367,6 +368,7 @@ class AttributionPage(QWidget):
         table.setAlternatingRowColors(False)
         table.setShowGrid(True)
         table.setWordWrap(True)
+        table.setItemDelegate(WrappedRowDelegate(table))
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         table.setFocusPolicy(Qt.FocusPolicy.NoFocus)

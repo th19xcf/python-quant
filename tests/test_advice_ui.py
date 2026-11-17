@@ -155,6 +155,24 @@ def test_page_bundle_populates_table_and_kpi(qapp):
     assert page.detail.direction_label.text() == 'BUY'
 
 
+def test_page_columns_fit_full_cell_text(qapp):
+    """列宽按真实内容实测：代码/名称/方向/股数/价格/因子/风险不应被省略截断。"""
+    from src.ui.advice.page import AdvicePage
+    from src.ui.advice.table_model import COL_CODE, COL_DIRECTION, COL_NAME
+    from src.ui.advice.widgets import MAX_COLUMN_WIDTH
+    dto = _dto(ts_code='600887.SH', name='伊利股份', ref_price=125.26,
+               shares=1_234_500,
+               top_factors='下行波动(gtja010) -0.25 | 5日动量(gtja024) -0.22 | 100日动量阈值 -0.22',
+               risk_notes='剔除原因：软筛选不通过：均线非多头，趋势强度不足；其他')
+    page = AdvicePage(host=None, theme='dark')
+    page.set_bundle(_bundle([dto]))
+    for column in (COL_CODE, COL_NAME, COL_DIRECTION, COL_SHARES,
+                   COL_PRICE, COL_CONFIDENCE, COL_FACTORS, COL_RISK):
+        needed = page.delegate.content_width(dto, column)
+        assert page.table.columnWidth(column) >= min(MAX_COLUMN_WIDTH, needed), \
+            f'第 {column} 列宽 {page.table.columnWidth(column)}px < 内容所需 {needed}px'
+
+
 def test_filter_without_result_shows_empty_without_action(qapp):
     from src.ui.advice.page import AdvicePage
     page = AdvicePage(host=None)

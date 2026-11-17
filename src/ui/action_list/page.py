@@ -27,6 +27,7 @@ from src.quant.analysis.action_list_state import (
 )
 from src.ui.advice.tokens import TOKENS, palette_for
 from src.ui.table_sizing import (
+    WrappedRowDelegate,
     apply_content_widths,
     apply_wrapped_row_heights,
     use_interactive_columns,
@@ -260,6 +261,7 @@ class ActionListPage(QWidget):
         self.table.setAlternatingRowColors(False)
         self.table.setShowGrid(True)
         self.table.setWordWrap(True)
+        self.table.setItemDelegate(WrappedRowDelegate(self.table))
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)

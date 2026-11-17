@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QFont, QFontMetrics, QPalette
 from PySide6.QtWidgets import QHeaderView, QTableWidget, QTableWidgetItem
 
@@ -24,10 +24,13 @@ from src.ui.style_rotation.page import StyleRotationPage
 from src.ui.table_interaction_manager import TableInteractionManager
 from src.ui.table_sizing import (
     CELL_PADDING_H,
+    CELL_PADDING_V,
     FIXED_ROW_HEIGHT,
     HEADER_PADDING_H,
     MAX_COLUMN_WIDTH,
     SEQ_COLUMN_WIDTH,
+    WrappedRowDelegate,
+    _column_widths,
     apply_content_widths,
     apply_estimated_column_widths,
     apply_wrapped_row_heights,
@@ -236,6 +239,45 @@ def test_apply_content_widths_keeps_short_columns_and_caps_long_text(qapp):
     assert table.columnWidth(0) == natural[0], '短列不应被压缩'
     assert table.columnWidth(1) == natural[1], '数值列不应被压缩'
     assert table.columnWidth(2) == MAX_COLUMN_WIDTH, '长文本列应截断到上限'
+    qapp.processEvents()
+
+
+def test_equal_length_text_uses_pixel_width_not_char_count():
+    """等长文本字形宽度不同：'-0.990' 与 '+0.173' 字符数相同，列宽必须按像素取宽。
+
+    离屏平台的字体是等宽回退（所有字形同宽），无法用真实 QFontMetrics 复现
+    4px 差异，这里用可注入的度量器直接验证取最大像素宽的实现。
+    """
+    class _Metrics:
+        def __init__(self, widths: dict[str, int]):
+            self.widths = widths
+
+        def horizontalAdvance(self, text: str) -> int:  # noqa: N802
+            return self.widths[text]
+
+    header = _Metrics({'得分': 10})
+    cell = _Metrics({'-0.990': 20, '+0.173': 24})
+    widths = _column_widths(['得分'], [['-0.990'], ['+0.173']], header, cell)
+    assert widths[0] == 24 + CELL_PADDING_H, '等长文本应按像素取最宽的 +0.173'
+    assert len('-0.990') == len('+0.173')
+
+
+def test_wrapped_delegate_height_includes_cell_padding(qapp):
+    """折行行高由委托按实测文本高度给出（含内边距），最后一行不被纵向裁切。"""
+    table = _shown_table(['说明'])
+    table.setColumnWidth(0, 160)
+    table.setRowCount(1)
+    text = '折行行高需要覆盖 QSS 内边距否则末行会被裁切' * 3
+    table.setItem(0, 0, QTableWidgetItem(text))
+    table.setItemDelegate(WrappedRowDelegate(table))
+    table.resizeRowsToContents()
+    qapp.processEvents()
+
+    needed = table.fontMetrics().boundingRect(
+        QRect(0, 0, 160 - CELL_PADDING_H, 10000),
+        int(Qt.TextFlag.TextWordWrap), text).height() + CELL_PADDING_V
+    assert table.rowHeight(0) >= needed, \
+        f'行高 {table.rowHeight(0)}px 小于折行所需 {needed}px'
     qapp.processEvents()
 
 
