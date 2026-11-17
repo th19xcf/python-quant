@@ -36,10 +36,10 @@ class PlanError(ValueError):
 
 @dataclass
 class Plan:
-    """一次切换/择时运行的完整输入：引擎行情、调度表、图线数据。"""
+    """一次切换/择时/定投运行的完整输入：引擎行情、调度表、图线数据。"""
 
     data: Dict[str, pl.DataFrame]
-    schedules: Dict[str, Dict[date, Tuple[str, float]]]
+    schedules: Dict[str, Dict[date, Any]]
     markers: List[Dict[str, Any]]
     leg_curves: List[Dict[str, Any]]
     note: str
@@ -59,19 +59,31 @@ def _quote_path(code: str) -> Path:
         f'根目录 {QUOTE_ROOT}）')
 
 
-def _normalize(frame: pl.DataFrame) -> pl.DataFrame:
-    """复权价 + 原始价成对输出，口径与 ``src/advice/data.py`` 一致。"""
+def _normalize(frame: pl.DataFrame, prefer_qfq: bool = False) -> pl.DataFrame:
+    """复权价 + 原始价成对输出，口径与 ``src/advice/data.py`` 一致。
+
+    ``prefer_qfq=True`` 时优先用 ``qfq_factor``（前复权）：基金行情只落了
+    ``qfq_factor``，没有 ``hfq_factor``；直接按原始价回测会把 ETF 分红与份额
+    折算整段漏掉（510500.SH 在 2022-08-29 有一次未复权的价格跳空）。
+    """
     frame = frame.with_columns(pl.col('date').cast(pl.Date, strict=False))
-    if 'hfq_factor' not in frame.columns:
-        frame = frame.with_columns(pl.lit(1.0).alias('hfq_factor'))
-    frame = frame.with_columns(
-        pl.col('hfq_factor').cast(pl.Float64, strict=False).fill_null(1.0))
+    factor: str | None = None
+    for column in ('hfq_factor',) + (('qfq_factor',) if prefer_qfq else ()):
+        if column in frame.columns:
+            factor = column
+            break
+    if factor is None:
+        frame = frame.with_columns(pl.lit(1.0).alias('adj_factor'))
+    else:
+        frame = frame.with_columns(
+            (pl.col(factor).cast(pl.Float64, strict=False).fill_null(1.0))
+            .alias('adj_factor'))
     columns = [
         pl.col('date'),
-        (pl.col('open') * pl.col('hfq_factor')).alias('open'),
-        (pl.col('high') * pl.col('hfq_factor')).alias('high'),
-        (pl.col('low') * pl.col('hfq_factor')).alias('low'),
-        (pl.col('close') * pl.col('hfq_factor')).alias('close'),
+        (pl.col('open') * pl.col('adj_factor')).alias('open'),
+        (pl.col('high') * pl.col('adj_factor')).alias('high'),
+        (pl.col('low') * pl.col('adj_factor')).alias('low'),
+        (pl.col('close') * pl.col('adj_factor')).alias('close'),
         pl.col('volume').cast(pl.Float64, strict=False).alias('volume'),
         pl.col('open').cast(pl.Float64, strict=False).alias('raw_open'),
         pl.col('close').cast(pl.Float64, strict=False).alias('raw_close'),
@@ -83,13 +95,14 @@ def _normalize(frame: pl.DataFrame) -> pl.DataFrame:
             .sort('date').unique('date', keep='last'))
 
 
-def load_leg(code: str, start: date, end: date) -> pl.DataFrame:
+def load_leg(code: str, start: date, end: date,
+             prefer_qfq: bool = False) -> pl.DataFrame:
     path = _quote_path(code)
     raw = pl.read_parquet(path)
     missing = sorted({'date', 'open', 'high', 'low', 'close', 'volume'} - set(raw.columns))
     if missing:
         raise PlanError(f'标的 {code} 行情缺必需列 {missing}（{path}）')
-    frame = _normalize(raw).filter(
+    frame = _normalize(raw, prefer_qfq=prefer_qfq).filter(
         (pl.col('date') >= start) & (pl.col('date') <= end))
     if frame.height < 2:
         raise PlanError(
@@ -97,8 +110,10 @@ def load_leg(code: str, start: date, end: date) -> pl.DataFrame:
     return frame
 
 
-def load_legs(codes: Iterable[str], start: date, end: date) -> Dict[str, pl.DataFrame]:
-    data = {code: load_leg(code, start, end) for code in dict.fromkeys(codes)}
+def load_legs(codes: Iterable[str], start: date, end: date,
+              prefer_qfq: bool = False) -> Dict[str, pl.DataFrame]:
+    data = {code: load_leg(code, start, end, prefer_qfq=prefer_qfq)
+            for code in dict.fromkeys(codes)}
     dates = [set(df['date'].to_list()) for df in data.values()]
     common = sorted(set.intersection(*dates))
     if len(common) < 2:
@@ -367,8 +382,123 @@ def build_timing_plan(rule: Dict[str, Any]) -> Plan:
                 leg_curves=leg_curves, note=note)
 
 
+# ---------------------------------------------------------------------------
+# dca_grid
+# ---------------------------------------------------------------------------
+
+def build_dca_plan(rule: Dict[str, Any]) -> Plan:
+    """定投补仓 + 止盈回撤清仓的调度表（逐日状态机，不撮合、不算净值）。
+
+    口径：
+    - 资金等分 ``tranches`` 份，每份 = 「当时剩余现金 ÷ 剩余份数」，
+      因而首次建仓与清仓重启时各占当期资金的 1/N；
+    - 参考价取最近一次买入的成交价（信号日次一交易日开盘），
+      收盘较参考价再跌 ``add_drop_pct`` 补 1 份，直到满仓；
+    - 持仓收益率 = 收盘 / 平均成本 - 1，平均成本按各份等额买入价加权
+      （即买入价的调和平均）；
+    - 收益率超过 ``take_profit_pct`` 进入观察期并记录此后收盘最高点，
+      自最高点回撤 ``trail_drop_pct`` 一次性清仓，次日起从 1 份重启。
+    """
+    start = date.fromisoformat(rule['period']['start'])
+    end = date.fromisoformat(rule['period']['end'])
+    warmup = start - timedelta(days=WARMUP_DAYS)
+    target = rule['target']
+    code = target['code']
+    data = load_legs([code], warmup, end, prefer_qfq=True)
+    frame = data[code]
+    days = frame['date'].to_list()
+    closes = [float(c) for c in frame['close'].to_list()]
+    opens = [float(o) if o is not None and float(o) > 0 else close
+             for o, close in zip(frame['open'].to_list(), closes, strict=True)]
+
+    plan_cfg = rule['plan']
+    tranches = int(plan_cfg['tranches'])
+    add_drop = float(plan_cfg['add_drop_pct'])
+    take_profit = float(plan_cfg['take_profit_pct'])
+    trail = float(plan_cfg['trail_drop_pct'])
+
+    schedules: Dict[str, Dict[date, Any]] = {}
+    markers: List[Dict[str, Any]] = []
+    held = 0
+    fills: List[float] = []
+    ref: float | None = None
+    observing = False
+    peak = 0.0
+    restart = False
+    adds = 0
+    exits = 0
+
+    def _buy(index: int, reason: str) -> None:
+        """写一条买入调度：fraction = 1/剩余份数，成交价按次日开盘预估。"""
+        nonlocal held, ref
+        schedules.setdefault(code, {})[days[index]] = {
+            'action': 'buy', 'fraction': 1.0 / (tranches - held)}
+        fill = opens[index + 1]
+        held += 1
+        fills.append(fill)
+        ref = fill
+        markers.append({
+            'date': str(days[index + 1]), 'signal_date': str(days[index]),
+            'reason': reason, 'tranches': held,
+            'position': round(held / tranches, 6), 'price': round(fill, 4),
+        })
+
+    for i, day in enumerate(days):
+        if day < start or i + 1 >= len(days):
+            continue
+        close = closes[i]
+        if restart:
+            _buy(i, 'restart')
+            restart = False
+            continue
+        if held == 0:
+            _buy(i, 'initial')
+            continue
+        avg_cost = len(fills) / sum(1.0 / price for price in fills)
+        ret = close / avg_cost - 1.0
+        if not observing:
+            if ret >= take_profit:
+                observing = True
+                peak = close
+        else:
+            peak = max(peak, close)
+            if close <= peak * (1.0 - trail):
+                schedules.setdefault(code, {})[day] = {
+                    'action': 'sell', 'fraction': 1.0}
+                markers.append({
+                    'date': str(days[i + 1]), 'signal_date': str(day),
+                    'reason': 'take_profit', 'tranches': held,
+                    'position': round(held / tranches, 6),
+                    'price': round(opens[i + 1], 4),
+                    'peak': round(peak, 4), 'return': round(ret, 6),
+                    'drawdown_from_peak': round(close / peak - 1.0, 6),
+                })
+                exits += 1
+                held, fills, ref = 0, [], None
+                observing, peak = False, 0.0
+                restart = True
+                continue
+        if held < tranches and ref is not None and close <= ref * (1.0 - add_drop):
+            _buy(i, 'add')
+            adds += 1
+
+    if not markers:
+        raise PlanError(
+            f'区间 {start}~{end} 内没有产生任何定投信号；请检查区间与行情覆盖')
+    if held == tranches:
+        logger.info('定投补仓：区间内已满仓 {} 份', tranches)
+
+    leg_curves = [{'code': code, 'label': target['label'],
+                   'points': _curve_points(frame, start, end)}]
+    note = (f'交易日 {len(days)} 天，{tranches} 份制；补仓 {adds} 次，'
+            f'止盈清仓 {exits} 次，期末持有 {held} 份')
+    return Plan(data=data, schedules=schedules, markers=markers,
+                leg_curves=leg_curves, note=note)
+
+
 def build_plan(rule: Dict[str, Any]) -> Plan:
-    builders = {'asset_switch': build_switch_plan, 'timing': build_timing_plan}
+    builders = {'asset_switch': build_switch_plan, 'timing': build_timing_plan,
+                'dca_grid': build_dca_plan}
     try:
         return builders[rule['rule_type']](rule)
     except KeyError as exc:

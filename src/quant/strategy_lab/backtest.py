@@ -251,6 +251,77 @@ def _scheduled_metrics(result: Dict[str, Any], rule: Dict[str, Any],
     return metrics
 
 
+def _dca_metrics(result: Dict[str, Any], rule: Dict[str, Any], plan: Any,
+                 curve: List[Tuple[date, float]]) -> Dict[str, Any]:
+    """定投补仓专属指标：累计投入、平均成本、资金闲置比例与触发次数。"""
+    code = rule['target']['code']
+    frame = plan.data[code]
+    close = {d: float(c) for d, c in
+             zip(frame['date'].to_list(), frame['close'].to_list(), strict=True)}
+    rows: List[Tuple[date, Dict[str, Any]]] = []
+    for trade in (result.get('trades') or []):
+        trade_day = pipeline.to_date(trade.get('date'))
+        if trade_day is not None:
+            rows.append((trade_day, trade))
+    rows.sort(key=lambda item: item[0])
+    buys = [trade for _, trade in rows if trade.get('signal') == 'buy']
+    sells = [trade for _, trade in rows if trade.get('signal') == 'sell']
+    invested = sum(float(t['price']) * float(t['shares']) for t in buys)
+    sold = sum(float(t['price']) * float(t['shares']) for t in sells)
+    buy_shares = sum(float(t['shares']) for t in buys)
+
+    idle: List[float] = []
+    index = 0
+    shares = 0.0
+    for day, equity in curve:
+        while index < len(rows) and rows[index][0] <= day:
+            row = rows[index][1]
+            sign = 1.0 if row.get('signal') == 'buy' else -1.0
+            shares += sign * float(row['shares'])
+            index += 1
+        price = close.get(day)
+        if price is None or equity <= 0:
+            continue
+        idle.append(max(0.0, min(1.0, 1.0 - max(shares, 0.0) * price / equity)))
+
+    reasons = [m.get('reason') for m in plan.markers]
+    return {
+        'invested_total': round(invested, 2),
+        'sold_total': round(sold, 2),
+        'avg_cost': round(invested / buy_shares, 4) if buy_shares else None,
+        'adds': reasons.count('add'),
+        'take_profits': reasons.count('take_profit'),
+        'entries': reasons.count('initial') + reasons.count('restart'),
+        'max_tranches': max((m['tranches'] for m in plan.markers
+                             if m.get('reason') != 'take_profit'), default=0),
+        'idle_ratio': round(sum(idle) / len(idle), 4) if idle else None,
+        'cycle_returns': [m.get('return') for m in plan.markers
+                          if m.get('reason') == 'take_profit'],
+    }
+
+
+def _buy_and_hold(rule: Dict[str, Any], data: Dict[str, Any], dividends: Any,
+                  st_status: Any) -> Dict[str, Any]:
+    """同区间、同成本口径的买入持有对照：区间首日信号，次日开盘全仓买入后不动。"""
+    code = rule['target']['code']
+    start = date.fromisoformat(rule['period']['start'])
+    days = [d for d in data[code]['date'].to_list() if d >= start]
+    if len(days) < 2:
+        return {'metrics': {}, 'curve': []}
+    schedules = {code: {days[0]: {'action': 'buy', 'fraction': 1.0}}}
+    spec = {'_resolved': {'portfolio': rule['portfolio'], 'cost': rule['cost']}}
+    result, _, _ = pipeline.run_engine(data, schedules, spec, dividends, st_status)
+    curve, trades = _period_series(result, rule)
+    metrics = _core_metrics(curve, trades, rule, load_benchmark_close(rule['benchmark']))
+    keep = {key: metrics[key] for key in
+            ('start', 'end', 'years', 'final_equity', 'annual', 'max_drawdown',
+             'sharpe', 'volatility', 'cost_total', 'trades')}
+    keep['invested_total'] = round(sum(float(t['price']) * float(t['shares'])
+                                       for t in trades if t.get('signal') == 'buy'), 2)
+    return {'metrics': keep,
+            'curve': [[d.isoformat(), round(e, 2)] for d, e in curve]}
+
+
 def _drawdown(curve: List[Tuple[date, float]]) -> List[List[Any]]:
     peak = 0.0
     out: List[List[Any]] = []
@@ -383,9 +454,13 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
     engine_data: Dict[str, Any] = {}
     for code, frame in plan.data.items():
         pair = {'open', 'raw_open', 'close', 'raw_close'}
-        if pair <= set(frame.columns) and \
-                bool((frame['open'] == frame['raw_open']).all()) and \
-                bool((frame['close'] == frame['raw_close']).all()):
+        same_as_raw = pair <= set(frame.columns) and \
+            bool((frame['open'] == frame['raw_open']).all()) and \
+            bool((frame['close'] == frame['raw_close']).all())
+        if same_as_raw or rule['rule_type'] == 'dca_grid':
+            # 定投口径整体在复权价空间内成交与盯市：基金行情只有 qfq_factor，
+            # 把原始价交给引擎会让份额折算日（如 510500.SH 2022-08-29）的
+            # 盯市出现跳空，且基金不走 corporate_actions 补偿。
             frame = frame.drop(['raw_open', 'raw_close'])
         engine_data[code] = frame
     result, used, engine_seconds = pipeline.run_engine(
@@ -409,6 +484,11 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'positions': _final_positions(result),
         'plan_note': plan.note,
     }
+    if rule['rule_type'] == 'dca_grid':
+        metrics.update(_dca_metrics(result, rule, plan, curve))
+        hold = _buy_and_hold(rule, engine_data, dividends, st_status)
+        metrics['buy_hold'] = hold['metrics']
+        payload['buy_hold_curve'] = hold['curve']
     payload.update(_curve_payload(curve, bench, rule))
     return payload
 
@@ -419,13 +499,14 @@ def run_rule(rule: Dict[str, Any], *, with_nav: bool = True) -> Dict[str, Any]:
     rule_type = rule['rule_type']
     if rule_type == 'stock_select':
         payload = _run_stock_select(rule, t0)
-    elif rule_type in ('asset_switch', 'timing'):
+    elif rule_type in ('asset_switch', 'timing', 'dca_grid'):
         payload = _run_scheduled(rule, t0)
     else:
         raise ValueError(f'未知 rule_type {rule_type!r}；可选值：'
-                         "['stock_select', 'asset_switch', 'timing']")
+                         "['stock_select', 'asset_switch', 'timing', 'dca_grid']")
     if not with_nav:
-        for key in ('nav', 'benchmark_curve', 'drawdown', 'leg_curves'):
+        for key in ('nav', 'benchmark_curve', 'buy_hold_curve', 'drawdown',
+                    'leg_curves'):
             payload.pop(key, None)
     return payload
 

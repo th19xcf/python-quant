@@ -1,0 +1,39 @@
+{
+  "benchmark": "000300.SH",
+  "cost": {
+    "commission_rate": 0.00025,
+    "impact_coef": 0.015,
+    "min_commission": 5.0,
+    "slippage_bps": 10.0,
+    "stamp_tax_basis": "fixed_0.1%"
+  },
+  "data_policy": "区间 2012-05-28~2026-11-13（510300.SH 本地行情全区间）。区间内若标的无本地行情直接报「数据不足」，不补占位值、不降级为指数替代。ETF 免印花税，固定千 1 口径对 ETF 实际不扣；佣金与滑点照扣。",
+  "description": "沪深300ETF(510300.SH) 4% 定投补仓：1 万元分 10 份，首次建仓 1 份，收盘较最近一次买入价再跌 4% 补 1 份；持仓收益率超过 15% 进入观察期，自最高点回撤 4% 一次性清仓，次日起从 1 份重启。T 日收盘出信号、T+1 开盘成交。",
+  "execution": {
+    "delay_days": 1,
+    "price": "next_open"
+  },
+  "name": "示例_4%定投补仓_15%止盈",
+  "period": {
+    "end": "2026-11-13",
+    "start": "2012-05-28"
+  },
+  "plan": {
+    "add_drop_pct": 0.04,
+    "take_profit_pct": 0.15,
+    "tranches": 10,
+    "trail_drop_pct": 0.04
+  },
+  "portfolio": {
+    "cash_buffer": 0.0,
+    "initial_capital": 10000.0,
+    "lot_size": 100,
+    "pooled_cash": true
+  },
+  "rule_type": "dca_grid",
+  "rule_version": "strategy_lab/v1",
+  "target": {
+    "code": "510300.SH",
+    "label": "沪深300ETF"
+  }
+}

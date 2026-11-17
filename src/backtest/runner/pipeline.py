@@ -63,9 +63,14 @@ class SpecCostModel(CostModel):
 
 
 class MonthlyTargetWeightStrategy(BaseStrategy):
-    """「信号日 → (动作, 组合级目标权重)」调度表策略，无逐 bar 状态。"""
+    """「信号日 → (动作, 仓位口径)」调度表策略，无逐 bar 状态。
 
-    def __init__(self, signals: Dict[date, tuple[str, float]], date_col: str = 'date'):
+    调度值支持两种形态：``(action, target_weight)`` 二元组，或直接给出信号
+    字典（``{'action': 'buy', 'fraction': 0.1}``），后者用于「按剩余现金比例
+    买入」这类无法用目标权重表达的定投补仓。
+    """
+
+    def __init__(self, signals: Dict[date, Any], date_col: str = 'date'):
         super().__init__('spec_monthly_target')
         self.signals = signals
         self.date_col = date_col
@@ -79,11 +84,15 @@ class MonthlyTargetWeightStrategy(BaseStrategy):
     def generate_signals_vectorized(self, df: pl.DataFrame) -> pl.Series:
         if self.date_col not in df.columns:
             return pl.Series('signal', [None] * df.height, dtype=pl.Object)
-        out = []
+        out: List[Any] = []
         for value in df[self.date_col].to_list():
             item = self.signals.get(value)
-            out.append(None if item is None
-                       else {'action': item[0], 'target_weight': item[1]})
+            if item is None:
+                out.append(None)
+            elif isinstance(item, dict):
+                out.append(item)
+            else:
+                out.append({'action': item[0], 'target_weight': item[1]})
         return pl.Series('signal', out, dtype=pl.Object)
 
 
@@ -179,7 +188,7 @@ def build_schedules(path: Dict[date, List[str]], prev_day: Dict[date, date],
 # ---------------------------------------------------------------------------
 
 def run_engine(data: Dict[str, pl.DataFrame],
-               schedules: Dict[str, Dict[date, Tuple[str, float]]],
+               schedules: Dict[str, Dict[date, Any]],
                spec: Dict[str, Any], dividends: Any, st_status: Any
                ) -> Tuple[Dict[str, Any], int, float]:
     used = {code: data[code] for code in schedules if code in data}

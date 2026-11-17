@@ -3,11 +3,13 @@
 规则只允许由预定义字段与运算符组合，不做任何代码求值（不接 ``eval`` /
 ``exec``），也不接受用户自带字段名或表达式。
 
-``rule_type`` 三类：
+``rule_type`` 四类：
 
 - ``stock_select``：条件链 → 排序 → 取前 N（选股）；
 - ``asset_switch``：多标的强弱比切换（比值中枢、切换阈值、最短持有期）；
-- ``timing``：单标的或组合的仓位择时（信号 → 档位 + 滞回 + 单日最多调一档）。
+- ``timing``：单标的或组合的仓位择时（信号 → 档位 + 滞回 + 单日最多调一档）；
+- ``dca_grid``：单标的定投补仓 + 止盈回撤清仓（份数、补仓跌幅、止盈阈值、
+  止盈回撤幅度）。
 
 未知类型、缺必填字段、类型不匹配的参数一律抛 :class:`RuleError` 并给出
 人能看懂的错误，不静默兜底、不忽略多余键。
@@ -30,6 +32,7 @@ RULE_TYPES: Dict[str, str] = {
     'stock_select': '选股',
     'asset_switch': '强弱比切换',
     'timing': '仓位择时',
+    'dca_grid': '定投补仓',
 }
 
 #: 与既有配方一致的默认成本口径（详见 docs/策略试算使用说明.md）
@@ -66,6 +69,7 @@ _TYPE_KEYS: Dict[str, set] = {
     'asset_switch': _COMMON_KEYS | {'legs', 'switch', 'positions', 'execution'},
     'timing': _COMMON_KEYS | {'target', 'signal', 'levels', 'hysteresis',
                               'max_step_per_day', 'execution'},
+    'dca_grid': _COMMON_KEYS | {'target', 'plan', 'execution'},
 }
 
 
@@ -468,6 +472,50 @@ def _validate_timing(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# dca_grid（定投补仓 + 止盈回撤清仓）
+# ---------------------------------------------------------------------------
+
+def _validate_dca_target(raw: Any) -> Dict[str, str]:
+    if not isinstance(raw, dict):
+        raise RuleError('target 必须是对象（单标的）')
+    _reject_unknown(raw, {'code', 'label'}, 'target')
+    code = _code(_require(raw, 'code', 'target'), 'target.code')
+    label = raw.get('label', code)
+    if not isinstance(label, str) or not label.strip() or len(label) > 20:
+        raise RuleError(f'target.label 必须是 1~20 字字符串，收到 {label!r}')
+    return {'code': code, 'label': label.strip()}
+
+
+def _validate_dca_plan(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise RuleError('plan 必须是对象（份数与阈值）')
+    _reject_unknown(raw, {'tranches', 'add_drop_pct', 'take_profit_pct',
+                          'trail_drop_pct'}, 'plan')
+    tranches = _int(_require(raw, 'tranches', 'plan'), 'plan.tranches', 2, 50)
+    add_drop = _number(_require(raw, 'add_drop_pct', 'plan'), 'plan.add_drop_pct')
+    if not (0 < add_drop < 0.5):
+        raise RuleError(f'plan.add_drop_pct 必须在 (0, 0.5) 内，收到 {add_drop}')
+    take_profit = _number(_require(raw, 'take_profit_pct', 'plan'),
+                          'plan.take_profit_pct')
+    if not (0 < take_profit <= 2):
+        raise RuleError(f'plan.take_profit_pct 必须在 (0, 2] 内，收到 {take_profit}')
+    trail = _number(_require(raw, 'trail_drop_pct', 'plan'), 'plan.trail_drop_pct')
+    if not (0 < trail < take_profit):
+        raise RuleError(f'plan.trail_drop_pct 必须在 (0, plan.take_profit_pct) 内，'
+                        f'收到 {trail}（止盈阈值 {take_profit}）')
+    return {'tranches': tranches, 'add_drop_pct': add_drop,
+            'take_profit_pct': take_profit, 'trail_drop_pct': trail}
+
+
+def _validate_dca_grid(raw: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        'target': _validate_dca_target(_require(raw, 'target', '规则')),
+        'plan': _validate_dca_plan(_require(raw, 'plan', '规则')),
+        'execution': _validate_execution(_require(raw, 'execution', '规则')),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
 
@@ -501,9 +549,11 @@ def validate_rule(raw: Any) -> Dict[str, Any]:
     if benchmark not in BENCHMARKS:
         raise RuleError(f'benchmark 必须是 {list(BENCHMARKS)} 之一，收到 {benchmark!r}')
 
-    parsed = {'stock_select': _validate_stock_select,
-              'asset_switch': _validate_asset_switch,
-              'timing': _validate_timing}[rule_type](raw)
+    parsed: Dict[str, Any] = {
+        'stock_select': _validate_stock_select,
+        'asset_switch': _validate_asset_switch,
+        'timing': _validate_timing,
+        'dca_grid': _validate_dca_grid}[rule_type](raw)
     return {
         'rule_version': RULE_VERSION,
         'rule_type': rule_type,
@@ -617,6 +667,20 @@ def _timing_text(rule: Dict[str, Any]) -> str:
     ] + _common_text(rule))
 
 
+def _dca_text(rule: Dict[str, Any]) -> str:
+    plan = rule['plan']
+    target = rule['target']
+    per_tranche = rule['portfolio']['initial_capital'] / plan['tranches']
+    return '；'.join([
+        f'规则「{rule["name"]}」（定投补仓）：标的={target["label"]}({target["code"]})',
+        f'资金分 {plan["tranches"]} 份，每份约 {per_tranche:,.0f} 元，首次建仓 1 份',
+        f'补仓=收盘较最近一次买入价再跌 {plan["add_drop_pct"]:.1%} 加 1 份，最多满仓',
+        f'止盈=持仓收益率超过 {plan["take_profit_pct"]:.1%} 进入观察期，'
+        f'自最高点回撤 {plan["trail_drop_pct"]:.1%} 一次性清仓并从 1 份重启',
+        '执行=信号日收盘生成，下一交易日开盘成交',
+    ] + _common_text(rule))
+
+
 def _common_text(rule: Dict[str, Any]) -> List[str]:
     cost = rule['cost']
     return [
@@ -631,7 +695,8 @@ def rule_text(rule: Dict[str, Any]) -> str:
     """把规则渲染成可读中文，界面与命令行共用。"""
     return {'stock_select': _stock_text,
             'asset_switch': _switch_text,
-            'timing': _timing_text}[rule['rule_type']](rule) + '。'
+            'timing': _timing_text,
+            'dca_grid': _dca_text}[rule['rule_type']](rule) + '。'
 
 
 @dataclass(frozen=True)
