@@ -223,8 +223,8 @@ def test_apply_content_widths_uses_natural_width_when_it_fits(qapp):
     qapp.processEvents()
 
 
-def test_apply_content_widths_keeps_short_columns_and_caps_long_text(qapp):
-    """不再压缩列宽换总宽：短列保持自然宽度，超长文本按上限截断并标记折行。"""
+def test_apply_content_widths_keeps_short_columns_and_feeds_long_text(qapp):
+    """余量不足时：短列保持自然宽度，长文本列吃满可视区余量后仍标记折行。"""
     table = _shown_table(['短列', '数值', '长文本'])
     qapp.processEvents()
     table.setRowCount(1)
@@ -235,11 +235,32 @@ def test_apply_content_widths_keeps_short_columns_and_caps_long_text(qapp):
     assert natural[2] > MAX_COLUMN_WIDTH
 
     wrapped = apply_content_widths(table)
-    assert wrapped, '超过上限的长文本应标记为折行'
+    assert wrapped, '余量不足时长文本应标记为折行'
     assert table.columnWidth(0) == natural[0], '短列不应被压缩'
     assert table.columnWidth(1) == natural[1], '数值列不应被压缩'
-    assert table.columnWidth(2) == MAX_COLUMN_WIDTH + CELL_PADDING_H, \
-        '长文本列应截断到「文本上限 + 单元格内缩」'
+    assert table.columnWidth(2) > MAX_COLUMN_WIDTH + CELL_PADDING_H, \
+        '可视区余量应补给长文本列，不能停在上限'
+    assert sum(table.columnWidth(i) for i in range(3)) <= table.viewport().width(), \
+        '列宽总和不应超过可视宽度'
+    qapp.processEvents()
+
+
+def test_apply_content_widths_uses_spare_to_avoid_wrapping(qapp):
+    """余量充足时：长文本列加宽到单行完整，不再折行。"""
+    table = _shown_table(['短列', '说明'])
+    table.resize(1400, 240)
+    qapp.processEvents()
+    table.setRowCount(1)
+    table.setItem(0, 0, QTableWidgetItem('短'))
+    table.setItem(0, 1, QTableWidgetItem('很长的说明文字' * 15))
+    natural = measure_natural_widths(table)
+    assert natural[1] > MAX_COLUMN_WIDTH + CELL_PADDING_H, '样本应触发上限截断'
+    assert natural[0] + natural[1] < table.viewport().width(), '样本应留有余量'
+
+    wrapped = apply_content_widths(table)
+    assert not wrapped, '余量足够时长文本不应再折行'
+    assert table.columnWidth(1) == natural[1], \
+        f'折行列应加宽到自然宽度 {natural[1]}，实际 {table.columnWidth(1)}'
     qapp.processEvents()
 
 
@@ -577,9 +598,10 @@ def test_rendered_page_columns_fit_longest_text_plus_padding(qapp):
         page.close()
 
 
-def test_estimated_column_widths_cap_long_text(qapp):
-    """超长文本按上限截断列宽（配合 tooltip），不把整行撑爆。"""
+def test_estimated_column_widths_caps_when_no_spare(qapp):
+    """可视区没有余量时，超长文本仍按上限截断列宽，由横向滚动条承接。"""
     table = _shown_table(['备注'])
+    table.resize(300, 240)
     long_text = '很长的说明文字' * 12
     table.setRowCount(1)
     table.setItem(0, 0, QTableWidgetItem(long_text))
@@ -588,4 +610,5 @@ def test_estimated_column_widths_cap_long_text(qapp):
     apply_estimated_column_widths(table, [[long_text]])
 
     assert table.columnWidth(0) == MAX_COLUMN_WIDTH + CELL_PADDING_H
+    assert table.columnWidth(0) > table.viewport().width()
 

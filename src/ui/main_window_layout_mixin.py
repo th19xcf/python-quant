@@ -331,6 +331,9 @@ class MainWindowLayoutMixin:
                 padding: 4px 6px;
                 background-color: {pal.card};
             }}
+            QHeaderView {{
+                background-color: {pal.card};
+            }}
             QHeaderView::section {{
                 background-color: {pal.card};
                 color: {pal.muted};
@@ -339,6 +342,10 @@ class MainWindowLayoutMixin:
                 border-right: 1px solid {pal.border};
                 font-weight: 600;
                 padding: 6px 8px;
+            }}
+            QTableCornerButton::section {{
+                background-color: {pal.card};
+                border: none;
             }}
             QTableWidget::item:selected {{
                 background-color: {pal.selection};

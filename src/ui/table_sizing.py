@@ -6,9 +6,11 @@
 1. 所有列（含最后一列）的 resize mode 都是 ``Interactive``，表头分隔线可
    左右拖动，双击分隔线自适应内容；
 2. 列宽 = max(表头所需宽度, 该列所有内容单行所需宽度)，逐格按实际字体像
-   素宽度取最大值（相同文本缓存结果），上限 MAX_COLUMN_WIDTH；
-3. 不再压缩列宽换总宽：总宽超出可视区时出横向滚动条；
-4. 只有超过 MAX_COLUMN_WIDTH 的内容才折行，行高按内容实测，不截断。
+   素宽度取最大值（相同文本缓存结果），超过 MAX_COLUMN_WIDTH 的列先截到上限；
+3. 截断后的总宽仍小于可视区时，把余量优先补给仍在折行的列（按缺口均摊），
+   直到该列单行完整或余量用尽，不在右侧留下大片空白；
+4. 余量用尽后仍超出 MAX_COLUMN_WIDTH 的内容才折行，行高按内容实测，不截断；
+5. 总宽超出可视区时出横向滚动条，末列不参与撑满（``stretchLastSection`` 关闭）。
 """
 
 from __future__ import annotations
@@ -172,15 +174,38 @@ def measure_natural_widths(table: QTableWidget,
         _header_metrics(header), table.fontMetrics(), cell_padding)
 
 
+def _expand_capped_columns(widths: list[int], natural: list[int],
+                           available: int) -> None:
+    """把可视区余量补给仍被上限截断的列，直到单行完整或余量用尽。
+
+    只在 ``sum(widths) < available`` 时生效：按缺口均摊、逐轮加宽被截断的
+    列；已经单行完整的列不再变宽，因此余量不会全部落到末列（建表时已关闭
+    ``stretchLastSection``）。
+    """
+    capped = [index for index, (width, need) in enumerate(
+        zip(widths, natural, strict=False)) if need > width]
+    spare = available - sum(widths)
+    while spare > 0 and capped:
+        share = max(1, spare // len(capped))
+        remaining: list[int] = []
+        for index in capped:
+            grow = min(natural[index] - widths[index], share, spare)
+            widths[index] += grow
+            spare -= grow
+            if natural[index] > widths[index]:
+                remaining.append(index)
+        capped = remaining
+
+
 def apply_content_widths(table: QTableWidget,
                          cell_padding: int = CELL_PADDING_H,
                          text_max: int = MAX_COLUMN_WIDTH) -> bool:
-    """填充后调用：列宽 = max(表头宽, 最长内容宽)，超过上限才折行。
+    """填充后调用：先按内容定宽，再用可视区余量解除折行。
 
-    不再压缩列宽换总宽：总宽超出可视区时由横向滚动条承接。
-    ``text_max`` 是文本宽度上限，列宽上限 = ``text_max + cell_padding``，
-    因此刚好卡在上限的列也不会因内缩而少一条边。
-    返回 True 表示至少一列内容超过上限（该列截断到上限并折行）。
+    第一段列宽 = min(max(表头宽, 最长内容宽), 上限)；第二段若总宽仍小于
+    可视宽度，把余量补给被上限截断的列，让长文本尽量单行显示。
+    ``text_max`` 是文本宽度上限，列宽上限 = ``text_max + cell_padding``。
+    返回 True 表示余量用尽后仍有列放不下单行内容（该列折行）。
     """
     if table.columnCount() == 0:
         return False
@@ -188,15 +213,17 @@ def apply_content_widths(table: QTableWidget,
     header.setStretchLastSection(False)
     natural = measure_natural_widths(table, cell_padding)
     limit = text_max + cell_padding
+    widths = [min(limit, width) for width in natural]
     first_header = table.horizontalHeaderItem(0)
     seq_index = 0 if first_header is not None \
         and first_header.text() == SEQ_COLUMN_TITLE else None
-    for index, width in enumerate(natural):
-        table.setColumnWidth(index, min(limit, width))
-        header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
     if seq_index is not None:
-        table.setColumnWidth(seq_index, seq_column_width(table))
-    return any(width > limit for index, width in enumerate(natural)
+        widths[seq_index] = seq_column_width(table)
+    _expand_capped_columns(widths, natural, table.viewport().width())
+    for index, width in enumerate(widths):
+        table.setColumnWidth(index, width)
+        header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
+    return any(natural[index] > widths[index] for index in range(len(widths))
                if index != seq_index)
 
 
@@ -218,11 +245,13 @@ def apply_estimated_column_widths(table: QTableWidget, rows,
     for index in range(columns):
         item = table.horizontalHeaderItem(index)
         header_texts.append(item.text() if item is not None else '')
-    widths = _column_widths(header_texts, rows,
-                            _header_metrics(header), table.fontMetrics())
+    natural = _column_widths(header_texts, rows,
+                             _header_metrics(header), table.fontMetrics())
     limit = text_max + CELL_PADDING_H
+    widths = [min(limit, width) for width in natural]
+    _expand_capped_columns(widths, natural, table.viewport().width())
     for index, width in enumerate(widths):
-        table.setColumnWidth(index, min(limit, width))
+        table.setColumnWidth(index, width)
         header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
 
 
