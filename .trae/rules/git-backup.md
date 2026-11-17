@@ -12,8 +12,8 @@ description: 备份镜像四类范围与集合差口径、备份仓提交与推�
   - ③ 的统计行必须取 `git diff --stat HEAD~1 HEAD`（双提交形式，等价 `HEAD^ HEAD`）第一行；单参数 `git diff HEAD~1` 比的是「上个提交 ↔ 工作区」，不得使用。
   - ② 只用一个 ```text 代码块原样贴 `git log -1 --format="%B"` 的输出，不加任何标签、不改缩进；严禁把整个 5 块模板再包进外层代码块。
   - 所有数值、哈希、文件状态必须来自 `git` 真实输出，禁止伪造。
-- **隔离索引五步（种子化 + 基准必须是提交那一刻的父提交）**：① `before = git rev-parse HEAD`；② `git read-tree $before`（新索引首次 `update-index` 前必须种子化，否则未列入路径记为删除；两步同一轮完成）；③ `update-index` 加入本路文件；④ `git diff --cached --stat $before` 核对变更文件数须与预期清单一致，明显多于预期即停，不得先提交再看；⑤ 复取 `after`，`before != after` 即**整体重做、不提交**。禁止脚本开头取一次 HEAD 留着用，也禁止只重新 `read-tree <新 HEAD>` 接着提交——只有整体重做（丢弃临时索引、重走五步）才算关窗；打印成功前须自证 HEAD 与 `before` 不等（`git commit` 没报错不等于新提交存在）。提交后清单自证见上条，多出文件前向修复，不得 amend 或 reset。见判例 §2.2、§2.3。
-- **提交前清点共享暂存、提交后复核清单**：提交前必须看一眼 `git diff --cached --name-only`，与本次预期清单逐一比对；出现清单外的条目，先对这些路径执行 `git reset -- <path>` 取消暂存（不动工作区），再提交。多会话并行期间禁止 `git add -A` / `git add .` 等不带路径限定的隐式暂存，也不得在提交前保留他人暂存——否则一个普通 `git commit` 就会把别人的删除一并带进去，规则文件凭空消失。提交后立即用 `git show --stat HEAD` 或 `git diff-tree --no-commit-id --name-only -r HEAD` 复核 HEAD 清单，与预期逐一比对，多出即前向修复，不得 amend 或 reset。
+- **隔离索引五步（种子化 + 基准必须是提交那一刻的父提交）**：① `before = git rev-parse HEAD`；② `git read-tree $before`（新索引首次 `update-index` 前必须种子化，否则未列入路径记为删除；两步同一轮完成）；③ `update-index` 加入本路文件；④ `git diff --cached --stat $before` 核对变更文件数须与预期清单一致，明显多于预期即停，不得先提交再看；⑤ 复取 `after`，`before != after` 即**整体重做、不提交**。禁止脚本开头取一次 HEAD 留着用，也禁止只重新 `read-tree <新 HEAD>` 接着提交——只有整体重做（丢弃临时索引、重走五步）才算关窗；打印成功前须自证 HEAD 与 `before` 不等（`git commit` 没报错不等于新提交存在）。提交后清单自证见上条，多出文件前向修复，不得 amend 或 reset（未推送的 amend 见 `00-core.md`「Git 历史只增不重写」）。见判例 §2.2、§2.3。
+- **提交前清点共享暂存、提交后复核清单**：提交前必须看一眼 `git diff --cached --name-only`，与本次预期清单逐一比对；出现清单外的条目，先对这些路径执行 `git reset -- <path>` 取消暂存（不动工作区），再提交。多会话并行期间禁止 `git add -A` / `git add .` 等不带路径限定的隐式暂存，也不得在提交前保留他人暂存——否则一个普通 `git commit` 就会把别人的删除一并带进去，规则文件凭空消失。提交后立即用 `git show --stat HEAD` 或 `git diff-tree --no-commit-id --name-only -r HEAD` 复核 HEAD 清单，与预期逐一比对，多出即前向修复，不得 amend 或 reset（未推送的 amend 见 `00-core.md`「Git 历史只增不重写」）。
 - **备份仓路径解析用唯一入口，禁止写死盘符**：一律调用 `tools/backup_root.py` 的 `resolve_backup_root()`（只查看解析详情时跑 `python tools/backup_root.py`）。解析顺序：环境变量 `QUANT_BACKUP_ROOT` → 仓库内本机配置 `.trae/backup.local.json` → 报错停止；不按候选盘符探测，解析失败不新建空目录。解析后必须校验目录存在、含 `.git`、`git remote get-url origin` 指向 `th19xcf/python-quant`，任一不满足即抛错停止，不得降级为「跳过备份」。各机器路径只写进各自的本机配置文件（已被 `.gitignore` 排除）。
 - **备份方式**：只同步本次 commit 变更的文件到 `resolve_backup_root()` 解析出的备份目录（保持相对路径结构），源端已删的从备份侧对位删除；**不删目录、不碰 .git**。同步脚本见判例 §1.2。
 - **核心原则：增量同步，其他不动**：只拷贝本次变更文件 + 对位删除；备份目录里的 `.git`、untracked 文件、手工添加内容全部保留，禁止 `shutil.rmtree`（理由见判例 §1.3）。
@@ -36,7 +36,7 @@ description: 备份镜像四类范围与集合差口径、备份仓提交与推�
 - **Commit message 文件必须无 BOM**：写法同 `00-core.md`「提交纪律」的无 BOM 条，提交前自检首 3 字节不为 `EF BB BF`。
 - **职责归属**：备份仓库（路径由 `tools/backup_root.py` 解析）的维护、提交与推送由助手负责；每次备份同步完成后直接提交并推送，不需要用户再提醒。
 - **仓库形态与推送约定**：源仓库 `e:\code\python\quant` 仅本地、未配置任何远端，只做本地提交，不 fetch、不 push、不加远端；备份仓库（解析并校验 origin 指向 `th19xcf/python-quant`）是唯一关联 GitHub 的仓库，提交推送至其自己的 `main`。两仓独立管理、互不约束，不做跨库对齐或快进。
-- **红线继承**：备份仓库只做增量 `copy2` 与「源端已删文件」的对位删除；禁止 `rmtree`、禁止碰其 `.git`、禁止 force push（`--force` / `--force-with-lease`）与任何改写历史的操作。
+- **红线继承**：备份仓库只做增量 `copy2` 与「源端已删文件」的对位删除；禁止 `rmtree`、禁止碰其 `.git`、禁止 force push（`--force` / `--force-with-lease`）与任何改写历史的操作（未推送的 amend 按 `00-core.md`「Git 历史只增不重写」申报）。
 - **推送失败先判别代理与直连（先测后决策）**：起作用的始终是 `.gitconfig` 里的 `http.proxy`，与环境变量无关。① 各测一次 `Test-NetConnection 127.0.0.1 -Port 10808 -InformationLevel Quiet` 与 `Test-NetConnection github.com -Port 443 -InformationLevel Quiet`；② 10808=True 且 443=False → 保持默认代理配置重试，不清空代理；③ 10808=False → 才临时 `git -c http.proxy= -c https.proxy= push origin main`；④ 两个都通或都不通 → 按真实网络故障处理，查代理软件与出口网络，不得反复重试。禁止改全局配置或删那条代理配置；不 force push。实测见判例 §3.1。
 
 ## 三、备份同步规则

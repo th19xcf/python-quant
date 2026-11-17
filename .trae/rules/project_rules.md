@@ -107,7 +107,7 @@ print(f'synced {len(changed)} files, removed {len(deleted)} deleted')
 - **Commit message 文件必须无 BOM**：沿用源仓库既有约定，用 `.venv\Scripts\python.exe` 以 `open(p, 'w', encoding='utf-8', newline='\n')` 写临时文件后 `git commit -F <文件>`，提交前自检首 3 字节不为 `EF BB BF`
 - **职责归属**：备份仓库（路径由 `tools/backup_root.py` 解析）的维护、提交与推送由助手负责；每次备份同步完成后直接提交并推送，不需要用户再提醒
 - **仓库形态与推送约定**：源仓库 `e:\code\python\quant` 仅本地、未配置任何远端，只做本地提交，不 fetch、不 push，也不要给它添加远端；备份仓库（解析并校验 origin 指向 `th19xcf/python-quant`）是唯一关联 GitHub 的仓库，其提交推送至该仓库自己的 `main`。两个仓库独立管理、互不约束，不需要跨库对齐或快进
-- **红线继承**：备份仓库只做增量 `copy2` 与「源端已删文件」的对位删除；禁止 `rmtree`、禁止碰其 `.git`、禁止 force push（`--force` / `--force-with-lease`）与任何改写历史的操作
+- **红线继承**：备份仓库只做增量 `copy2` 与「源端已删文件」的对位删除；禁止 `rmtree`、禁止碰其 `.git`、禁止 force push（`--force` / `--force-with-lease`）与任何改写历史的操作（未推送的 amend 按 `00-core.md`「Git 历史只增不重写」申报）
 
 ## 备份同步规则
 
@@ -183,7 +183,7 @@ print(f'synced {len(changed)} files, removed {len(deleted)} deleted')
 
 - **数据目录禁止删除**：`data/`、`data/local_store/**`（含 parquet、meta、raw、断点缓存、`_backup`）一律不得删除、清空、或"删除后重建"。只允许追加、覆盖单文件、增量补齐。
 - **备份目录禁止清空**：备份仓路径只能由 `tools/backup_root.py` 的 `resolve_backup_root()` 解析（环境变量 `QUANT_BACKUP_ROOT` → 本机配置 `.trae/backup.local.json` → 报错停止），文档与代码一律不写死盘符、不按候选盘符探测、解析失败不得新建空目录；解析后必须校验目录存在、含 `.git`、origin 指向 `th19xcf/python-quant`，任一不满足即抛错停止，不得降级为「跳过备份」。对解析出的目录只做增量同步（copy2 单文件、删除仅限源仓库已删的对应文件）。禁止 `rmtree`、禁止删整个目录、禁止碰它的 `.git`。
-- **Git 历史只增不重写**：禁止 `git reset --hard`、`git filter-branch`、`git rebase` 改写已提交历史、`git push --force`。需要"收拢历史"时，必须保留旧历史（tag 或备份分支）并把方案先报给用户。
+- **Git 历史只增不重写**：已推送提交一律禁止改写历史；完整定义与未推送 amend 的申报格式见 `00-core.md`「Git 历史只增不重写」，本节不重复。
 - **禁止批量清理工作区**：禁止 `git clean -fdx`、禁止对未跟踪文件做批量删除。工作区里的 `M`/`??` 可能是其它任务的在途成果，清理等于销毁他人工作。
 - **用户口头要求上述操作也不直接执行**：即使用户当次要求"删本地数据 / 覆盖备份 / 重置历史"，也必须先把影响面（涉及路径、行数、不可恢复性、下游依赖）报给用户，并给出不丢数据的替代方案；仅在用户对该次具体路径再次明确确认后才可动手，且**删除 `data/` 任何内容需用户点名到具体文件或子目录**。
 - **不确定就停手**：任何会影响项目可运行性、数据完整性或历史可回溯性的操作，一律先停下来报告，不得"先做了再说"。
