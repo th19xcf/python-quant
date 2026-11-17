@@ -23,6 +23,8 @@ class MainWindowMarketTrendMixin:
     industry_heat_page: Any
     style_rotation_tab: QWidget
     style_rotation_page: Any
+    etf_timing_tab: QWidget
+    etf_timing_page: Any
 
     def create_market_trend_tab(self):
         """创建市场趋势标签页（由 create_center_area 在每日推荐之后追加）。"""
@@ -228,3 +230,37 @@ class MainWindowMarketTrendMixin:
             return
         self._action_list_loaded = True
         self.action_list_page.load_async()
+
+    def create_etf_timing_tab(self):
+        """创建 ETF 仓位择时标签页（由 create_center_area 在模型操作清单之后追加）。"""
+        layout = QVBoxLayout(self.etf_timing_tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        from src.ui.etf_timing import EtfTimingPage
+        self.etf_timing_page = EtfTimingPage(host=self)
+
+        self.etf_timing_scroll_area = QScrollArea()
+        self.etf_timing_scroll_area.setWidgetResizable(True)
+        self.etf_timing_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.etf_timing_scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded)
+        self.etf_timing_scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded)
+        self.etf_timing_scroll_area.setWidget(self.etf_timing_page)
+        layout.addWidget(self.etf_timing_scroll_area)
+
+        self._etf_timing_loaded = False
+        self.tab_widget.currentChanged.connect(self._on_etf_timing_tab_changed)
+
+    def _on_etf_timing_tab_changed(self, index: int):
+        """首次切到 ETF 仓位择时页时才计算，避免拖慢启动。"""
+        if not hasattr(self, 'etf_timing_tab'):
+            return
+        if not hasattr(self, 'etf_timing_page'):
+            return
+        if self.tab_widget.widget(index) is not self.etf_timing_tab:
+            return
+        if getattr(self, '_etf_timing_loaded', False):
+            return
+        self._etf_timing_loaded = True
+        self.etf_timing_page.load_async()

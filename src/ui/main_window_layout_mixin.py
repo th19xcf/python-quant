@@ -257,6 +257,11 @@ class MainWindowLayoutMixin:
         self.tab_widget.addTab(self.action_list_tab, "模型操作清单")
         self.create_action_list_tab()
 
+        # 添加 ETF 仓位择时标签页（紧随模型操作清单之后）
+        self.etf_timing_tab = QWidget()
+        self.tab_widget.addTab(self.etf_timing_tab, "ETF仓位择时")
+        self.create_etf_timing_tab()
+
         parent.addWidget(center_widget)
 
     def create_market_tab(self):
