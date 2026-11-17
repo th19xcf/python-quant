@@ -22,15 +22,14 @@ from src.quant.analysis.market_trend_state import (
     format_raw_value,
 )
 from src.ui.advice.tokens import TOKENS, palette_for
-from src.ui.table_sizing import SizedTableMixin
+from src.ui.table_sizing import (
+    HEADER_ROW_HEIGHT,
+    MAX_ROW_HEIGHT,
+    MIN_ROW_HEIGHT,
+    TABLE_FONT_SIZE_PX,
+    SizedTableMixin,
+)
 from src.ui.theme_manager import is_dark_palette
-
-#: 数据行高下限：保证空行/单行不被压扁
-MIN_ROW_HEIGHT = SizedTableMixin.MIN_ROW_HEIGHT
-#: 数据行高上限：超长文本换行后封顶，避免单行撑到半屏
-MAX_ROW_HEIGHT = SizedTableMixin.MAX_ROW_HEIGHT
-#: 表头固定行高：不随数据行自适应
-HEADER_ROW_HEIGHT = SizedTableMixin.HEADER_ROW_HEIGHT
 
 
 def _fetch_state(token: int, asof: str | None = None,
@@ -64,7 +63,7 @@ QWidget#marketTrendPage {{
     background: {palette.bg};
     color: {palette.text};
     font-family: {tokens.font_family};
-    font-size: {tokens.font_body}px;
+    font-size: {TABLE_FONT_SIZE_PX}px;
 }}
 QLabel#trendTitle {{
     font-size: {tokens.font_title}px;
@@ -133,12 +132,6 @@ QTableWidget::item {{
 
 class MarketTrendPage(QWidget, SizedTableMixin):
     """市场趋势状态页：结论卡 + 分层表 + 指标表。"""
-
-    #: 本页 QSS 下单元格文本左右内缩实测 26px（QSS ``padding: 6px 8px`` 之外
-    #: 样式还会再内缩），按 18px 估宽会系统性偏窄、短列被省略号截断。
-    CELL_PADDING_H = 26
-    #: 文本宽度上限 360 + 内缩 26：超长说明列按文本宽度封顶后仍留足内缩
-    MAX_COLUMN_WIDTH = 360 + CELL_PADDING_H
 
     def __init__(self, host: Any = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)

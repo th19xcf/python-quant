@@ -23,6 +23,36 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
 )
 
+from src.ui.advice.tokens import TOKENS
+
+# ---------------------------------------------------------------- 度量口径
+# 下表是全项目表格唯一的度量口径定义处：内缩、字号、表头字重、列宽上下限、
+# 折行阈值都只在这里出现，页面只允许引用，不得再写第二份数字。
+
+#: 单元格左右文本内缩之和（实测）：QSS ``padding: 6px 8px`` 之外样式还会再
+#: 内缩，真实绘制可用文本宽 = 列宽 - 26；按 18 估宽会系统性偏窄、短列被省略
+CELL_PADDING_H = 26
+#: 表头左右内边距 + 加粗字宽余量（表头不允许被截断）
+HEADER_PADDING_H = 26
+#: 单元格上下内边距（QSS 6px 8px）
+CELL_PADDING_V = 14
+#: 表格正文字号（与页面 QSS 的 ``font-size`` 同一来源）
+TABLE_FONT_SIZE_PX = TOKENS.font_body
+#: 表头字重：QSS ``font-weight: 600``，度量必须用同一字重
+HEADER_FONT_WEIGHT = QFont.Weight.DemiBold
+#: 列宽上限，同时是折行阈值：文本宽度超过它的列才截断到上限并折行
+MAX_COLUMN_WIDTH = 360
+#: 序号列标题与最小宽度（实际宽度取 max(本值, 表头半粗字宽 + HEADER_PADDING_H)）
+SEQ_COLUMN_TITLE = '序号'
+SEQ_COLUMN_WIDTH = 50
+
+# ---------------------------------------------------------------- 行高与提示
+#: 数据行高下限：保证空行/单行不被压扁
+MIN_ROW_HEIGHT = 30
+#: 数据行高上限：超长文本换行后封顶，避免单行撑到半屏
+MAX_ROW_HEIGHT = 120
+#: 表头固定行高：不随数据行自适应
+HEADER_ROW_HEIGHT = 34
 #: 大表改用固定行高的行数阈值
 FIXED_ROW_HEIGHT_THRESHOLD = 200
 #: 大表固定行高：与自适应下限的观感一致
@@ -31,17 +61,6 @@ FIXED_ROW_HEIGHT = 32
 TOOLTIP_TEXT_MIN_LEN = 16
 #: 空值文本：排序时统一沉底
 EMPTY_TEXTS = frozenset({'', '—', '-', '--', 'nan', 'none'})
-#: 单元格左右内边距（QSS 6px 8px）+ 网格线余量
-CELL_PADDING_H = 18
-#: 表头左右内边距 + 加粗字宽余量（表头不允许被截断）
-HEADER_PADDING_H = 26
-#: 单元格上下内边距（QSS 6px 8px）
-CELL_PADDING_V = 14
-#: 序号列固定宽度与会话内不参与压缩
-SEQ_COLUMN_TITLE = '序号'
-SEQ_COLUMN_WIDTH = 50
-#: 列宽上限：超过该宽度的内容才允许折行（不再压缩列宽换总宽）
-MAX_COLUMN_WIDTH = 360
 
 
 def use_interactive_columns(table: QTableWidget) -> None:
@@ -108,8 +127,17 @@ def _column_widths(header_texts: list[str], rows, header_metrics,
 def _header_metrics(header) -> QFontMetrics:
     """表头按 QSS 的半粗字重度量：``header.fontMetrics()`` 是常规字重，会偏窄。"""
     font = header.font()
-    font.setWeight(QFont.Weight.DemiBold)
+    font.setWeight(HEADER_FONT_WEIGHT)
     return QFontMetrics(font)
+
+
+def seq_column_width(table: QTableWidget) -> int:
+    """序号列宽度：兼顾固定最小宽度与表头半粗字宽（各页字号不同，取实测）。"""
+    header = table.horizontalHeader()
+    header.ensurePolished()
+    metrics = _header_metrics(header)
+    return max(SEQ_COLUMN_WIDTH,
+               metrics.horizontalAdvance(SEQ_COLUMN_TITLE) + HEADER_PADDING_H)
 
 
 def _table_row_texts(table: QTableWidget, row: int) -> list[str]:
@@ -146,12 +174,12 @@ def measure_natural_widths(table: QTableWidget,
 
 def apply_content_widths(table: QTableWidget,
                          cell_padding: int = CELL_PADDING_H,
-                         max_width: int = MAX_COLUMN_WIDTH) -> bool:
+                         text_max: int = MAX_COLUMN_WIDTH) -> bool:
     """填充后调用：列宽 = max(表头宽, 最长内容宽)，超过上限才折行。
 
     不再压缩列宽换总宽：总宽超出可视区时由横向滚动条承接。
-    ``max_width`` 含单元格内边距；调用方传入「文本上限 + cell_padding」即
-    按文本宽度设上限。
+    ``text_max`` 是文本宽度上限，列宽上限 = ``text_max + cell_padding``，
+    因此刚好卡在上限的列也不会因内缩而少一条边。
     返回 True 表示至少一列内容超过上限（该列截断到上限并折行）。
     """
     if table.columnCount() == 0:
@@ -159,20 +187,21 @@ def apply_content_widths(table: QTableWidget,
     header = table.horizontalHeader()
     header.setStretchLastSection(False)
     natural = measure_natural_widths(table, cell_padding)
+    limit = text_max + cell_padding
     first_header = table.horizontalHeaderItem(0)
     seq_index = 0 if first_header is not None \
         and first_header.text() == SEQ_COLUMN_TITLE else None
     for index, width in enumerate(natural):
-        table.setColumnWidth(index, min(max_width, width))
+        table.setColumnWidth(index, min(limit, width))
         header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
     if seq_index is not None:
-        table.setColumnWidth(seq_index, SEQ_COLUMN_WIDTH)
-    return any(width > max_width for index, width in enumerate(natural)
+        table.setColumnWidth(seq_index, seq_column_width(table))
+    return any(width > limit for index, width in enumerate(natural)
                if index != seq_index)
 
 
 def apply_estimated_column_widths(table: QTableWidget, rows,
-                                  max_width: int = MAX_COLUMN_WIDTH) -> None:
+                                  text_max: int = MAX_COLUMN_WIDTH) -> None:
     """按原始行数据逐格实测列宽，供 5000+ 行的大表刷新使用。
 
     相同文本只度量一次（行情表大量重复的代码/名称/数字），不做字符数近似，
@@ -191,8 +220,9 @@ def apply_estimated_column_widths(table: QTableWidget, rows,
         header_texts.append(item.text() if item is not None else '')
     widths = _column_widths(header_texts, rows,
                             _header_metrics(header), table.fontMetrics())
+    limit = text_max + CELL_PADDING_H
     for index, width in enumerate(widths):
-        table.setColumnWidth(index, min(max_width, width))
+        table.setColumnWidth(index, min(limit, width))
         header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
 
 
@@ -317,19 +347,17 @@ class SizedTableMixin:
     """
 
     #: 数据行高下限：保证空行/单行不被压扁
-    MIN_ROW_HEIGHT = 30
+    MIN_ROW_HEIGHT = MIN_ROW_HEIGHT
     #: 数据行高上限：超长文本换行后封顶，避免单行撑到半屏
-    MAX_ROW_HEIGHT = 120
+    MAX_ROW_HEIGHT = MAX_ROW_HEIGHT
     #: 表头固定行高：不随数据行自适应
-    HEADER_ROW_HEIGHT = 34
+    HEADER_ROW_HEIGHT = HEADER_ROW_HEIGHT
     #: 收尾时是否把表钉到内容高度（False 交给外层布局拉伸）
     TABLE_FIXED_HEIGHT = True
     #: 档位列语义排序权重，无档位列的页面留空
     LABEL_SORT_RANK: dict[str, int] = {}
-    #: 单元格左右文本内缩之和；页面 QSS 内缩更大时子类按实测值覆盖
+    #: 单元格左右文本内缩之和；与 ``apply_content_widths`` 的默认值一致
     CELL_PADDING_H = CELL_PADDING_H
-    #: 列宽上限（含 ``CELL_PADDING_H``）；按文本宽度设限时传「文本上限 + 内缩」
-    MAX_COLUMN_WIDTH = MAX_COLUMN_WIDTH
 
     # ------------------------------------------------------------------ 建表
     def _configure_sized_table(self, table: QTableWidget,
@@ -364,12 +392,9 @@ class SizedTableMixin:
             self._table_sort_clicks().pop(table, None)
             table.horizontalHeader().setSortIndicatorShown(False)
         self._unify_table_surface(table)
-        wrapped = apply_content_widths(
-            table, self.CELL_PADDING_H, self.MAX_COLUMN_WIDTH) \
+        wrapped = apply_content_widths(table, self.CELL_PADDING_H) \
             if remeasure else False
         self._apply_row_height_mode(table, remeasure=remeasure, wrapped=wrapped)
-        if remeasure:
-            table.setColumnWidth(0, SEQ_COLUMN_WIDTH)
         self._renumber_rows(table, remeasure=remeasure)
         if self.TABLE_FIXED_HEIGHT:
             table.setFixedHeight(self._table_height(table))

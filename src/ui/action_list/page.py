@@ -27,6 +27,14 @@ from src.quant.analysis.action_list_state import (
 )
 from src.ui.advice.tokens import TOKENS, palette_for
 from src.ui.table_sizing import (
+    FIXED_ROW_HEIGHT,
+    FIXED_ROW_HEIGHT_THRESHOLD,
+    HEADER_ROW_HEIGHT,
+    MAX_ROW_HEIGHT,
+    MIN_ROW_HEIGHT,
+    SEQ_COLUMN_TITLE,
+    TABLE_FONT_SIZE_PX,
+    TOOLTIP_TEXT_MIN_LEN,
     WrappedRowDelegate,
     apply_content_widths,
     apply_wrapped_row_heights,
@@ -35,19 +43,8 @@ from src.ui.table_sizing import (
 from src.ui.theme_manager import is_dark_palette
 
 #: 表头（第 0 列为序号）
-COLUMNS = ['序号', '代码', '名称', '方向', '建议股数', '参考价', '目标权重',
-           '执行时点', '触发/失效条件', '依据摘要']
-#: 数据行高下限与固定行高
-MIN_ROW_HEIGHT = 30
-MAX_ROW_HEIGHT = 120
-HEADER_ROW_HEIGHT = 34
-FIXED_ROW_HEIGHT_THRESHOLD = 200
-FIXED_ROW_HEIGHT = 32
-#: 补 tooltip 的文本长度门槛
-TOOLTIP_TEXT_MIN_LEN = 16
-#: 序号列
-SEQ_COLUMN_TITLE = '序号'
-SEQ_COLUMN_WIDTH = 50
+COLUMNS = [SEQ_COLUMN_TITLE, '代码', '名称', '方向', '建议股数', '参考价',
+           '目标权重', '执行时点', '触发/失效条件', '依据摘要']
 
 
 def _sort_value(row: ActionRow, column: int) -> tuple[int, float | str]:
@@ -97,7 +94,7 @@ QWidget#actionListPage {{
     background: {palette.bg};
     color: {palette.text};
     font-family: {tokens.font_family};
-    font-size: {tokens.font_body}px;
+    font-size: {TABLE_FONT_SIZE_PX}px;
 }}
 QLabel#actionTitle {{
     font-size: {tokens.font_title}px;
@@ -398,7 +395,6 @@ class ActionListPage(QWidget):
                 table.setItem(index, column, item)
         self._unify_table_surface(table)
         wrapped = apply_content_widths(table)
-        table.setColumnWidth(0, SEQ_COLUMN_WIDTH)
         self._apply_row_height(len(rows), wrapped)
         table.setUpdatesEnabled(True)
 

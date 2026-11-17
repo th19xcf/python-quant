@@ -23,6 +23,14 @@ from PySide6.QtWidgets import (
 from src.quant.analysis.style_rotation_state import DIMENSIONS, StyleRotationState
 from src.ui.advice.tokens import TOKENS, palette_for
 from src.ui.table_sizing import (
+    FIXED_ROW_HEIGHT,
+    FIXED_ROW_HEIGHT_THRESHOLD,
+    HEADER_ROW_HEIGHT,
+    MAX_ROW_HEIGHT,
+    MIN_ROW_HEIGHT,
+    SEQ_COLUMN_TITLE,
+    TABLE_FONT_SIZE_PX,
+    TOOLTIP_TEXT_MIN_LEN,
     WrappedRowDelegate,
     apply_content_widths,
     apply_wrapped_row_heights,
@@ -31,27 +39,12 @@ from src.ui.table_sizing import (
 )
 from src.ui.theme_manager import is_dark_palette
 
-#: 数据行高下限：保证空行/单行不被压扁
-MIN_ROW_HEIGHT = 30
-#: 数据行高上限：超长文本换行后封顶，避免单行撑到半屏
-MAX_ROW_HEIGHT = 120
-#: 表头固定行高：不随数据行自适应
-HEADER_ROW_HEIGHT = 34
 #: 档位列按业务语义排序：正向占优 → 均衡 → 反向占优
 LABEL_SORT_RANK: dict[str, int] = {
     '均衡': 1,
     **{spec.positive_label: 0 for spec in DIMENSIONS},
     **{spec.negative_label: 2 for spec in DIMENSIONS},
 }
-#: 最左侧「序号」列：宽 50px、居中、不参与排序
-SEQ_COLUMN_TITLE = '序号'
-SEQ_COLUMN_WIDTH = 50
-#: 行数超过该阈值改用固定行高，避免大表排序时逐行测量换行文本
-FIXED_ROW_HEIGHT_THRESHOLD = 200
-#: 大表固定行高：与自适应下限 30px 的观感一致
-FIXED_ROW_HEIGHT = 32
-#: 超过该字数的单元格补 tooltip，固定行高裁切后仍可查看全文
-TOOLTIP_TEXT_MIN_LEN = 16
 #: 空值文本：排序时统一沉底
 _EMPTY_TEXTS = frozenset({'', '—', '-', '--', 'nan', 'none'})
 
@@ -104,7 +97,7 @@ QWidget#styleRotationPage {{
     background: {palette.bg};
     color: {palette.text};
     font-family: {tokens.font_family};
-    font-size: {tokens.font_body}px;
+    font-size: {TABLE_FONT_SIZE_PX}px;
 }}
 QLabel#styleTitle {{
     font-size: {tokens.font_title}px;
@@ -329,8 +322,6 @@ class StyleRotationPage(QWidget):
         self._unify_table_surface(table)
         wrapped = apply_content_widths(table) if remeasure else False
         self._apply_row_height_mode(table, remeasure=remeasure, wrapped=wrapped)
-        if remeasure:
-            table.setColumnWidth(0, SEQ_COLUMN_WIDTH)
         self._renumber_rows(table, remeasure=remeasure)
 
     def _ensure_seq_column(self, table: QTableWidget) -> None:

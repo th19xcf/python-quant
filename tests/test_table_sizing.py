@@ -238,7 +238,8 @@ def test_apply_content_widths_keeps_short_columns_and_caps_long_text(qapp):
     assert wrapped, '超过上限的长文本应标记为折行'
     assert table.columnWidth(0) == natural[0], '短列不应被压缩'
     assert table.columnWidth(1) == natural[1], '数值列不应被压缩'
-    assert table.columnWidth(2) == MAX_COLUMN_WIDTH, '长文本列应截断到上限'
+    assert table.columnWidth(2) == MAX_COLUMN_WIDTH + CELL_PADDING_H, \
+        '长文本列应截断到「文本上限 + 单元格内缩」'
     qapp.processEvents()
 
 
@@ -523,6 +524,59 @@ def test_header_width_uses_semibold_metrics(qapp):
     table.close()
 
 
+#: 真实渲染实测的单元格左右内缩之和（独立于实现常量，实现改小即断言变红）
+MEASURED_CELL_PADDING_H = 26
+
+
+def test_rendered_page_columns_fit_longest_text_plus_padding(qapp):
+    """真实页面渲染后逐列断言：列宽 ≥ 最长文本 advance + 实测内缩。
+
+    样本同时包含「等长异宽」的 -0.990 / +0.990 与各列最宽的真实行；表头按
+    QSS 的半粗字重单独度量，序号列按表头半粗字宽度量。
+    """
+    page = MarketTrendPage()
+    page.resize(1280, 900)
+    page.show()
+    qapp.processEvents()
+    try:
+        table = page.layer_table
+        page._prepare_table(table)
+        rows = [
+            ('量价同步', '-0.990', '+0.990', '12.5%', '价涨量增'),
+            ('估值修复', '+0.990', '-0.990', '8.0%', '分位偏低'),
+        ]
+        table.setRowCount(len(rows))
+        for row, values in enumerate(rows):
+            for column, text in enumerate(values):
+                table.setItem(row, column, QTableWidgetItem(text))
+        page._finalize_table(table)
+        table.repaint()
+        qapp.processEvents()
+
+        header = table.horizontalHeader()
+        header_font = QFont(header.font())
+        header_font.setWeight(QFont.Weight.DemiBold)
+        header_metrics = QFontMetrics(header_font)
+        cell_metrics = table.fontMetrics()
+        for column in range(table.columnCount()):
+            header_text = table.horizontalHeaderItem(column).text()
+            header_needed = (header_metrics.horizontalAdvance(header_text)
+                             + HEADER_PADDING_H)
+            if column == 0:
+                needed = max(SEQ_COLUMN_WIDTH, header_needed)
+            else:
+                cell_needed = max(
+                    cell_metrics.horizontalAdvance(
+                        table.item(row, column).text())
+                    for row in range(table.rowCount())) + MEASURED_CELL_PADDING_H
+                needed = max(header_needed, cell_needed)
+            assert table.columnWidth(column) >= needed, (
+                f'第 {column} 列「{header_text}」宽 {table.columnWidth(column)}px'
+                f' < 所需 {needed}px（最长文本 + 两侧内缩）')
+    finally:
+        page.close()
+
+
 def test_estimated_column_widths_cap_long_text(qapp):
     """超长文本按上限截断列宽（配合 tooltip），不把整行撑爆。"""
     table = _shown_table(['备注'])
@@ -533,5 +587,5 @@ def test_estimated_column_widths_cap_long_text(qapp):
 
     apply_estimated_column_widths(table, [[long_text]])
 
-    assert table.columnWidth(0) == MAX_COLUMN_WIDTH
+    assert table.columnWidth(0) == MAX_COLUMN_WIDTH + CELL_PADDING_H
 
