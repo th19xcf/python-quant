@@ -293,6 +293,7 @@ class StrategyLabPage(QWidget):
         self.nav_plot = self._add_plot(charts_layout, '净值对比（起点=1）', '净值')
         self.drawdown_plot = self._add_plot(charts_layout, '回撤', '回撤')
         self.marker_plot = self._add_plot(charts_layout, '调仓 / 持仓', '仓位或成分数')
+        self._link_x_axes()
         split.addWidget(charts)
         split.setStretchFactor(0, 1)
         split.setStretchFactor(1, 3)
@@ -320,6 +321,14 @@ class StrategyLabPage(QWidget):
             plot.setWordWrap(True)
         layout.addWidget(plot, 1)
         return plot
+
+    def _link_x_axes(self) -> None:
+        """三图共用净值时间轴：X 轴联动缩放/平移，Y 轴仍各自独立。"""
+        plots = (self.nav_plot, self.drawdown_plot, self.marker_plot)
+        if not all(hasattr(plot, 'setXLink') for plot in plots):
+            return
+        self.drawdown_plot.setXLink(self.nav_plot.plotItem)
+        self.marker_plot.setXLink(self.nav_plot.plotItem)
 
     def _style_plot(self, plot) -> None:
         """坐标轴字号与颜色、图例字号统一从 TOKENS 与 palette 取。"""
