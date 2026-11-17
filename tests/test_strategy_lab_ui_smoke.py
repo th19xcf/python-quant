@@ -34,6 +34,15 @@ def test_page_renders_headless(app):
     assert page.metrics_table.rowCount() == len(_METRIC_ROWS)
     assert page.metrics_table.columnWidth(0) > 0
 
+    # 分红覆盖不足时指标表补一行提示；覆盖完整时不出现
+    hint = '1 只标的分红覆盖不足，收益可能低估'
+    page._fill_metrics(metrics, hint)
+    assert page.metrics_table.rowCount() == len(_METRIC_ROWS) + 1
+    assert page.metrics_table.item(len(_METRIC_ROWS), 0).text() == '分红覆盖'
+    assert page.metrics_table.item(len(_METRIC_ROWS), 1).text() == hint
+    page._fill_metrics(metrics)
+    assert page.metrics_table.rowCount() == len(_METRIC_ROWS)
+
     nav = [['2024-01-31', 1.0e9], ['2024-02-29', 1.05e9], ['2024-03-29', 1.02e9]]
     bench = [['2024-01-31', 1.0e9], ['2024-02-29', 1.01e9], ['2024-03-29', 0.99e9]]
     page._plot_curves(nav, bench)

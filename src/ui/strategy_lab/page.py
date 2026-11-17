@@ -254,17 +254,23 @@ class StrategyLabPage(QWidget):
             self._plot_drawdown([])
             self._plot_markers([])
             return
-        self._fill_metrics(payload['metrics'])
+        self._fill_metrics(payload['metrics'],
+                           (payload.get('dividend_coverage') or {}).get('message') or '')
         self._plot_curves(payload.get('nav') or [], payload.get('benchmark_curve') or [])
         self._plot_drawdown(payload.get('drawdown') or [])
         self._plot_markers(payload.get('markers') or [])
+        hint = (payload.get('dividend_coverage') or {}).get('message') or ''
         self.status_label.setText(
             f'{payload["rule_text"]}  用时 {payload["elapsed_seconds"]}s '
-            f'（引擎 {payload["engine_seconds"]}s，参与标的 {payload["used_codes"]} 只）')
+            f'（引擎 {payload["engine_seconds"]}s，参与标的 {payload["used_codes"]} 只）'
+            + (f'  {hint}' if hint else ''))
 
-    def _fill_metrics(self, metrics: Dict[str, Any]) -> None:
+    def _fill_metrics(self, metrics: Dict[str, Any],
+                      coverage_hint: str = '') -> None:
         rows = [(label, self._format(kind, metrics.get(key)))
                 for key, label, kind in _METRIC_ROWS]
+        if coverage_hint:
+            rows.append(('分红覆盖', coverage_hint))
         self.metrics_table.setRowCount(len(rows))
         for i, (label, value) in enumerate(rows):
             self.metrics_table.setItem(i, 0, QTableWidgetItem(label))

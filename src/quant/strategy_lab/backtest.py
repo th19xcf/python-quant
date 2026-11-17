@@ -23,6 +23,7 @@ from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.backtest.runner import compute, pipeline
 from src.core.usecases.run_backtest import _load_local_dividends, _load_st_status
 
+from .coverage import dividend_coverage
 from .panels import FieldPanels
 from .rules import rule_text
 from .switch_timing import WARMUP_DAYS, PlanError, build_plan
@@ -328,6 +329,8 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'skipped': skipped,
         'contract_violations': len(violations),
         'used_codes': used,
+        # 缺分红会让收益静默低估：结果里显式标注覆盖不足的标的
+        'dividend_coverage': dividend_coverage(list(data)),
         'engine_seconds': round(engine_seconds, 1),
         'elapsed_seconds': round(time.perf_counter() - t0, 1),
         'rule_text': rule_text(rule),
@@ -397,6 +400,7 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'skipped': {},
         'contract_violations': 0,
         'used_codes': used,
+        'dividend_coverage': dividend_coverage(list(plan.data)),
         'engine_seconds': round(engine_seconds, 1),
         'elapsed_seconds': round(time.perf_counter() - t0, 1),
         'rule_text': rule_text(rule),
