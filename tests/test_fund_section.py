@@ -3,11 +3,16 @@
 import struct
 from types import SimpleNamespace
 
+import polars as pl
+
 from src.ui.fund_section import (
+    FUND_TYPE_MENUS,
     FundSection,
     _default_fund_data,
     is_closed_fund_ts_code,
     is_etf_fund_ts_code,
+    load_local_fund_basic,
+    split_by_fund_type,
 )
 
 
@@ -102,3 +107,38 @@ def test_get_real_fund_data_without_data_manager():
 
     section = FundSection(SimpleNamespace(data_manager=None))
     assert section.get_real_fund_data("510300", "沪深300ETF") is None
+
+
+# ---------------------------------------------------------------------------
+# 菜单分类：按 fund_type 读本地名录取数（不依赖数据库）
+# ---------------------------------------------------------------------------
+
+
+def test_split_by_fund_type_keeps_unknown_out_of_menus():
+    frame = pl.DataFrame({
+        'ts_code': ['510300.SH', '160105.SZ', '150001.SZ', '999999.SH', '888888.SH'],
+        'fund_type': ['ETF', 'LOF', '分级', None, '其它'],
+    })
+
+    menus, unknown = split_by_fund_type(frame)
+
+    assert list(menus) == list(FUND_TYPE_MENUS)
+    assert menus['ETF']['ts_code'].to_list() == ['510300.SH']
+    assert unknown == {'空值': 1, '其它': 1}
+
+
+def test_fund_source_is_local_and_works_without_database():
+    """无 data_manager（离线/无库）时名录仍非空，且三类条数与名录一致。"""
+    frame = load_local_fund_basic(None)
+    assert not frame.is_empty()
+
+    section = FundSection(SimpleNamespace(data_manager=None))
+    for kind in FUND_TYPE_MENUS:
+        source = section._get_fund_source(kind)
+        expected = frame.filter(pl.col('fund_type') == kind).height
+        assert source.height == expected
+        assert source.height > 0
+        assert source.columns == ['ts_code', 'name']
+
+    etf = section._get_fund_source('ETF')
+    assert '510300.SH' in etf['ts_code'].to_list()

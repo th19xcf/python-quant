@@ -210,8 +210,9 @@ def test_nav_item_click_dispatches_to_data_view(text, method, expected_args):
 
 
 @pytest.mark.parametrize(('text', 'method'), [
-    ('开放式基金', 'show_etf_funds'),
-    ('封闭式基金', 'show_closed_funds'),
+    ('ETF基金', 'show_etf_funds'),
+    ('LOF', 'show_lof_funds'),
+    ('分级', 'show_graded_funds'),
 ])
 def test_nav_item_click_dispatches_to_fund_section(text, method):
     host = _make_host()

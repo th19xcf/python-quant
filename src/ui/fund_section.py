@@ -1,21 +1,31 @@
 #!/usr/bin/env python3
 
 """
-基金板块（ETF / 封闭式基金）
+基金板块（ETF / LOF / 分级）
+
+菜单按本地名录 ``meta/fund_basic.parquet`` 的 ``fund_type`` 分类，不再用
+SH/SZ 代码段推断类别；名录只读本地列存，不连数据库，数据库不可用时
+也能正常展示。代码段谓词 ``is_etf_fund_ts_code`` / ``is_closed_fund_ts_code``
+仅作场内识别辅助，不决定菜单归属。
 
 原先 ETF 与封闭式基金在主窗口事件 Mixin 中各有一份约 300 行的
-重复实现，此处合并为参数化流程：数据源、代码谓词、结果键与文案
-按基金种类配置，表格填充与任务编排只保留一份。
+重复实现，此处合并为参数化流程：数据源、结果键与文案按基金种类配置，
+表格填充与任务编排只保留一份。
 """
 
 import datetime
 
+import polars as pl
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QTableWidgetItem
 
+from src.data.local_store.paths import resolve_store_root
 from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
+
+#: 菜单分类：与 ``meta/fund_basic.parquet`` 的 ``fund_type`` 取值一一对应
+FUND_TYPE_MENUS: tuple[str, ...] = ('ETF', 'LOF', '分级')
 
 # 表格数值列（右对齐）
 _NUMERIC_COLUMNS = tuple(range(3, 13))
@@ -47,6 +57,33 @@ def is_closed_fund_ts_code(ts_code: str) -> bool:
     return market == 'SH' and symbol.startswith('50') and not symbol.startswith(('51', '52', '56', '58'))
 
 
+def load_local_fund_basic(config=None) -> pl.DataFrame:
+    """读取本地基金名录；只读 ``meta/fund_basic.parquet``，不访问数据库。"""
+    path = resolve_store_root(config) / 'meta' / 'fund_basic.parquet'
+    if not path.exists():
+        logger.warning(f'本地基金名录不存在: {path}')
+        return pl.DataFrame()
+    return pl.read_parquet(path)
+
+
+def split_by_fund_type(frame: pl.DataFrame) -> tuple[dict[str, pl.DataFrame], dict[str, int]]:
+    """按 ``fund_type`` 拆成三类菜单，并单独统计未归类计数。
+
+    ``fund_type`` 为空或不在 :data:`FUND_TYPE_MENUS` 内的行不并入任何一类，
+    更不会默认塞进 ETF；计数由调用方记录，便于发现名录脏值。
+    """
+    if frame.is_empty() or 'fund_type' not in frame.columns:
+        return {}, {}
+    menus = {kind: frame.filter(pl.col('fund_type') == kind) for kind in FUND_TYPE_MENUS}
+    unknown = frame.filter(~pl.col('fund_type').is_in(FUND_TYPE_MENUS).fill_null(False))
+    counts: dict[str, int] = {}
+    if not unknown.is_empty():
+        for row in unknown.group_by('fund_type').len().iter_rows(named=True):
+            key = '空值' if row['fund_type'] is None else str(row['fund_type'])
+            counts[key] = int(row['len'])
+    return menus, counts
+
+
 def _default_fund_data(code: str, name: str) -> dict:
     """真实行情不可用时的占位数据。"""
     return {
@@ -76,7 +113,7 @@ def _change_color(text: str) -> QColor:
 
 
 class FundSection:
-    """基金板块控制器：负责 ETF / 封闭式基金的加载与展示。"""
+    """基金板块控制器：负责 ETF / LOF / 分级基金的加载与展示。"""
 
     def __init__(self, window):
         self._w = window
@@ -87,35 +124,37 @@ class FundSection:
 
     def show_etf_funds(self):
         """显示 ETF 基金数据。"""
-        self._show_funds('etf')
+        self._show_funds('ETF')
 
-    def show_closed_funds(self):
-        """显示封闭式基金数据。"""
-        self._show_funds('closed')
+    def show_lof_funds(self):
+        """显示 LOF 基金数据。"""
+        self._show_funds('LOF')
+
+    def show_graded_funds(self):
+        """显示分级基金数据。"""
+        self._show_funds('分级')
 
     # ------------------------------------------------------------------
     # 参数化主流程
     # ------------------------------------------------------------------
 
     def _get_fund_source(self, kind: str):
-        """按基金种类获取基础数据表。"""
+        """按 ``fund_type`` 从本地名录取出一类基金；不访问数据库。"""
         data_manager = getattr(self._w, 'data_manager', None)
-        if not data_manager:
-            return None
+        config = getattr(data_manager, 'config', None)
+        menus, unknown = split_by_fund_type(load_local_fund_basic(config))
+        if unknown:
+            logger.info(f"基金名录存在未归类 fund_type: {unknown}")
 
-        if kind == 'etf':
-            return data_manager.get_fund_basic()
-
-        # 封闭式基金优先读 closed_fund_basic，空表时回退 fund_basic 按代码规则筛选
-        source = data_manager.get_closed_fund_basic()
+        source = menus.get(kind, pl.DataFrame())
         if source.is_empty():
-            source = data_manager.get_fund_basic()
-        return source
+            return source
+        keep = [name for name in ('ts_code', 'name') if name in source.columns]
+        return source.select(keep)
 
     def _show_funds(self, kind: str):
-        title = 'ETF基金' if kind == 'etf' else '封闭式基金'
+        title = f'{kind}基金'
         result_key = f'{kind}_funds'
-        is_fund_code = is_etf_fund_ts_code if kind == 'etf' else is_closed_fund_ts_code
 
         logger.info(f"显示{title}数据")
         window = self._w
@@ -126,7 +165,7 @@ class FundSection:
             current_task_id = global_task_manager.create_task(
                 f"加载{title}数据",
                 self._load_funds_task,
-                (kind, title, result_key, is_fund_code)
+                (kind, title, result_key)
             )
 
             def on_task_completed(task_id, result):
@@ -167,7 +206,7 @@ class FundSection:
             logger.exception(f"显示{title}数据失败: {e}")
             window.statusBar().showMessage(f"显示{title}数据失败: {str(e)}", 3000)
 
-            if kind == 'etf' and hasattr(window, 'table_interaction_manager'):
+            if kind == 'ETF' and hasattr(window, 'table_interaction_manager'):
                 window.table_interaction_manager.restore_sort_state()
 
     def _prepare_fund_display(self, window, title):
@@ -183,7 +222,7 @@ class FundSection:
         window.market_progress_bar.setValue(0)
         QApplication.processEvents()
 
-    def _load_funds_task(self, kind, title, result_key, is_fund_code, task_id=None, signals=None):
+    def _load_funds_task(self, kind, title, result_key, task_id=None, signals=None):
         """后台加载基金数据"""
         try:
             if signals:
@@ -196,7 +235,7 @@ class FundSection:
                 fund_codes = []
                 for row in source.iter_rows(named=True):
                     ts_code = str(row.get('ts_code', '') or '').strip().upper()
-                    if not ts_code or not is_fund_code(ts_code):
+                    if not ts_code:
                         continue
 
                     name = row.get('name', '')

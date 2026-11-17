@@ -90,7 +90,7 @@ class MainWindowNavigationMixin:
         market_view_items = {
             "沪深京指数", "沪市指数", "深市指数", "京市指数", "创业板指", "科创板指",
             "沪深京个股", "沪深京A股", "全部A股", "上证A股", "深证A股",
-            "京市个股", "创业板", "科创板", "开放式基金", "封闭式基金"
+            "京市个股", "创业板", "科创板", "ETF基金", "LOF", "分级"
         }
 
         if text in market_view_items:
@@ -133,13 +133,13 @@ class MainWindowNavigationMixin:
             elif text in ["全部A股", "上证A股", "深证A股", "京市个股", "创业板", "科创板"]:
                 if hasattr(self, 'data_view_manager'):
                     self.data_view_manager.show_stock_data_by_type(text)
-            # Handle fund items
-            elif text == "开放式基金":
-                # 显示ETF基金数据
+            # Handle fund items（按本地名录 fund_type 分类）
+            elif text == "ETF基金":
                 self.fund_section.show_etf_funds()
-            elif text == "封闭式基金":
-                # 显示封闭式基金数据
-                self.fund_section.show_closed_funds()
+            elif text == "LOF":
+                self.fund_section.show_lof_funds()
+            elif text == "分级":
+                self.fund_section.show_graded_funds()
         except (OSError, RuntimeError, ValueError) as e:
             logger.exception(f"Failed to handle nav item click: {e}")
 
