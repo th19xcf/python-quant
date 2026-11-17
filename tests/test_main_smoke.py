@@ -159,7 +159,9 @@ def test_main_launches_window_and_cleans_up(monkeypatch, qapp, tmp_path, windows
     assert len(windows) == 1
     window = windows[0]
     assert window.maximized is True
-    assert window.tab_widget.count() == 11
+    # 不写死标签总数：新增页时只需确认新页已挂载且位于末尾
+    assert window.etf_timing_page is not None
+    assert window.tab_widget.tabText(window.tab_widget.count() - 1) == 'ETF仓位择时'
     assert window.advice_page is not None
 
     app = records.apps[0]
