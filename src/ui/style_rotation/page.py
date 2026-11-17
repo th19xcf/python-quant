@@ -263,9 +263,6 @@ class StyleRotationPage(QWidget):
         layout.addWidget(section)
 
         self.dimension_table = self._make_table(['维度', '得分', '档位', '主要依据'])
-        self.dimension_table.setColumnWidth(0, 120)
-        self.dimension_table.setColumnWidth(1, 80)
-        self.dimension_table.setColumnWidth(2, 90)
         layout.addWidget(self.dimension_table)
         return card
 
@@ -281,9 +278,6 @@ class StyleRotationPage(QWidget):
 
         self.portfolio_table = self._make_table(
             ['组合', '20 日', '60 日', '相对全市场(20 日)'])
-        self.portfolio_table.setColumnWidth(0, 120)
-        self.portfolio_table.setColumnWidth(1, 100)
-        self.portfolio_table.setColumnWidth(2, 100)
         layout.addWidget(self.portfolio_table)
         return card
 

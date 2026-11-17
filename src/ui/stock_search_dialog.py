@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -21,6 +20,8 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
 )
+
+from src.ui.table_sizing import apply_content_widths, use_interactive_columns
 
 
 class StockSearchDialog(QDialog):
@@ -91,13 +92,7 @@ class StockSearchDialog(QDialog):
         self.result_table = QTableWidget()
         self.result_table.setColumnCount(5)
         self.result_table.setHorizontalHeaderLabels(["代码", "名称", "拼音首字母", "市场", "行业"])
-        self.result_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.result_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
-        self.result_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
-        self.result_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
-        self.result_table.setColumnWidth(0, 100)
-        self.result_table.setColumnWidth(1, 120)
-        self.result_table.setColumnWidth(2, 100)
+        use_interactive_columns(self.result_table)
         self.result_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.result_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.result_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -231,6 +226,9 @@ class StockSearchDialog(QDialog):
             # 行业
             industry_item = QTableWidgetItem(stock['industry'])
             self.result_table.setItem(i, 4, industry_item)
+
+        # 列宽按当前结果实测，与其它页面共用 table_sizing 的统一口径
+        apply_content_widths(self.result_table)
 
         # 更新提示
         if stocks:

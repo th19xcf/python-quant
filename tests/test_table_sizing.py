@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QFont, QFontMetrics, QPalette
@@ -611,4 +614,36 @@ def test_estimated_column_widths_caps_when_no_spare(qapp):
 
     assert table.columnWidth(0) == MAX_COLUMN_WIDTH + CELL_PADDING_H
     assert table.columnWidth(0) > table.viewport().width()
+
+
+# ----------------------------------------------- 列宽口径守门：页面不得自定列宽
+UI_ROOT = Path(__file__).resolve().parents[1] / 'src' / 'ui'
+#: 共享度量实现本身定义常量；ETF/LOF/分级三表由另一会话迁移，暂列豁免
+GUARD_EXEMPT = frozenset({
+    'table_sizing.py',
+    'etf_timing/page.py',
+})
+#: 写死像素宽（含数字字面量）、模块级/局部宽度表，都视为绕过统一口径
+HARDCODED_WIDTH_PATTERNS = (
+    re.compile(r'setColumnWidth\s*\(\s*[^,\n]+,\s*\d+\s*\)'),
+    re.compile(r'^\s*[A-Za-z_][A-Za-z0-9_]*widths?\s*=\s*[\[\{]',
+               re.IGNORECASE | re.MULTILINE),
+)
+
+
+def test_no_page_hardcodes_column_widths():
+    """任何页面写死列宽（数字或宽度表）都必须变红，统一走 table_sizing 接口。"""
+    offenders: list[str] = []
+    for path in sorted(UI_ROOT.rglob('*.py')):
+        relative = path.relative_to(UI_ROOT).as_posix()
+        if relative in GUARD_EXEMPT:
+            continue
+        text = path.read_text(encoding='utf-8')
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if any(pattern.search(line) for pattern in HARDCODED_WIDTH_PATTERNS):
+                offenders.append(f'{relative}:{lineno}: {line.strip()}')
+    assert not offenders, (
+        '以下页面仍在写死列宽，必须改用 src/ui/table_sizing.py 的统一接口：\n'
+        + '\n'.join(offenders))
+
 

@@ -264,8 +264,6 @@ class PortfolioRiskPage(QWidget):
         layout.addWidget(section)
 
         self.steps_table = self._make_table(['环节', '调整', '触发依据'])
-        self.steps_table.setColumnWidth(0, 110)
-        self.steps_table.setColumnWidth(1, 300)
         layout.addWidget(self.steps_table)
         return card
 
@@ -280,8 +278,6 @@ class PortfolioRiskPage(QWidget):
         layout.addWidget(section)
 
         self.budget_table = self._make_table(['指标', '读数', '说明'])
-        self.budget_table.setColumnWidth(0, 180)
-        self.budget_table.setColumnWidth(1, 120)
         layout.addWidget(self.budget_table)
         return card
 
@@ -296,9 +292,6 @@ class PortfolioRiskPage(QWidget):
         layout.addWidget(section)
 
         self.constraint_table = self._make_table(['约束', '上限', '实际', '判定 / 明细'])
-        self.constraint_table.setColumnWidth(0, 130)
-        self.constraint_table.setColumnWidth(1, 90)
-        self.constraint_table.setColumnWidth(2, 110)
         layout.addWidget(self.constraint_table)
         return card
 

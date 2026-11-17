@@ -290,9 +290,6 @@ class AttributionPage(QWidget):
 
         self.brinson_table = self._make_table(
             ['区间', '行业配置', '个股选择', '交叉项', '组合收益', '基准收益'])
-        self.brinson_table.setColumnWidth(0, 200)
-        for column in (1, 2, 3, 4, 5):
-            self.brinson_table.setColumnWidth(column, 110)
         layout.addWidget(self.brinson_table)
         self.brinson_card = card
         card.setVisible(False)
@@ -309,8 +306,6 @@ class AttributionPage(QWidget):
         layout.addWidget(section)
 
         self.excess_table = self._make_table(['指标', '数值', '说明'])
-        self.excess_table.setColumnWidth(0, 180)
-        self.excess_table.setColumnWidth(1, 120)
         layout.addWidget(self.excess_table)
         return card
 
@@ -325,10 +320,6 @@ class AttributionPage(QWidget):
         layout.addWidget(section)
 
         self.industry_table = self._make_table(['行业', '组合权重', '基准占比', '偏离'])
-        self.industry_table.setColumnWidth(0, 160)
-        self.industry_table.setColumnWidth(1, 110)
-        self.industry_table.setColumnWidth(2, 110)
-        self.industry_table.setColumnWidth(3, 110)
         layout.addWidget(self.industry_table)
         return card
 
@@ -343,10 +334,6 @@ class AttributionPage(QWidget):
         layout.addWidget(section)
 
         self.style_table = self._make_table(['维度', '组合分位', '基准', '偏离', '说明'])
-        self.style_table.setColumnWidth(0, 130)
-        self.style_table.setColumnWidth(1, 100)
-        self.style_table.setColumnWidth(2, 90)
-        self.style_table.setColumnWidth(3, 90)
         layout.addWidget(self.style_table)
         return card
 

@@ -258,9 +258,6 @@ class IndustryHeatPage(QWidget):
         layout.addWidget(section)
 
         self.heat_table = self._make_table(['行业', '热度分', '档位', '主要依据'])
-        self.heat_table.setColumnWidth(0, 150)
-        self.heat_table.setColumnWidth(1, 80)
-        self.heat_table.setColumnWidth(2, 80)
         layout.addWidget(self.heat_table)
         return card
 

@@ -56,6 +56,7 @@ from src.ui.advice.widgets import (
     SegmentedControl,
     SkeletonWidget,
 )
+from src.ui.table_sizing import apply_measured_column_widths
 
 #: 历史快照仍含 short，映射保留以兼容旧数据；UI 分段控件已隐藏该档
 TIER_OF_SEGMENT = {'short': 'short', 'mid': 'mid', 'long': 'long'}
@@ -249,9 +250,7 @@ class AdvicePage(QWidget):
         header.setObjectName('adviceHeader')
         header.setFixedHeight(TOKENS.header_height)
         header.setHighlightSections(False)
-        for index, column in enumerate(COLUMNS):
-            table.setColumnWidth(index, column.width)
-        # 列宽按内容实测后落在 [设计宽度, 上限] 区间；不压缩、不撑满，超宽出横向滚动条
+        # 列宽按内容实测后由 table_sizing 统一分配，超宽出横向滚动条
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(False)
 
@@ -441,12 +440,18 @@ class AdvicePage(QWidget):
         self.fresh_label.style().polish(self.fresh_label)
 
     def _fit_column_widths(self, items: list) -> None:
-        """按当前档位真实内容实测列宽，避免代码/名称/因子/风险列被省略截断。"""
+        """按当前档位真实内容实测单行列宽，再交给共享口径做上限与余量分配。"""
+        natural: list[int] = []
+        minimums: list[int] = []
         for index, column in enumerate(COLUMNS):
-            width = max(column.width, self.delegate.header_width(column.title))
+            design = max(column.width, self.delegate.header_width(column.title))
+            minimums.append(design)
+            width = design
             for item in items:
                 width = max(width, self.delegate.content_width(item, index))
-            self.table.setColumnWidth(index, min(ADVICE_MAX_COLUMN_WIDTH, width))
+            natural.append(width)
+        apply_measured_column_widths(self.table, natural, minimums,
+                                     ADVICE_MAX_COLUMN_WIDTH)
 
     def _refresh_table(self) -> None:
         items = self._tier_items()

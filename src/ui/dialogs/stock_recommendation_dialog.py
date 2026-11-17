@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.core.usecases import screen_stocks
+from src.ui.table_sizing import apply_content_widths
 from src.ui.task_manager import global_task_manager
 from src.utils.logger import logger
 
@@ -139,11 +140,6 @@ class StockRecommendationDialog(QDialog):
         # core 只返回 score，没有收益预测字段；不再用 score*100 冒充「预期收益」
         self.result_table.setColumnCount(5)
         self.result_table.setHorizontalHeaderLabels(["排名", "股票代码", "股票名称", "综合评分", "风险评级"])
-        self.result_table.setColumnWidth(0, 60)
-        self.result_table.setColumnWidth(1, 100)
-        self.result_table.setColumnWidth(2, 120)
-        self.result_table.setColumnWidth(3, 100)
-        self.result_table.setColumnWidth(4, 100)
         self.result_table.setStyleSheet("""
             QTableWidget {
                 background-color: #000000; color: #C0C0C0;
@@ -303,6 +299,7 @@ class StockRecommendationDialog(QDialog):
         self.result_table.setRowCount(1)
         self.result_table.setItem(0, 0, QTableWidgetItem(title))
         self.result_table.setItem(0, 1, QTableWidgetItem(detail))
+        apply_content_widths(self.result_table)
 
     def display_result(self, recommendations):
         for row in range(self.result_table.rowCount()):
@@ -335,6 +332,7 @@ class StockRecommendationDialog(QDialog):
             else:
                 risk_item.setForeground(QColor(255, 0, 0))
             self.result_table.setItem(i, 4, risk_item)
+        apply_content_widths(self.result_table)
 
     def export_report(self):
         if not self._recommendations:

@@ -246,10 +246,6 @@ class MarketTrendPage(QWidget, SizedTableMixin):
         layout.addWidget(section)
 
         self.layer_table = self._make_table(['层级', '得分', '贡献', '权重', '说明'])
-        self.layer_table.setColumnWidth(0, 70)
-        self.layer_table.setColumnWidth(1, 70)
-        self.layer_table.setColumnWidth(2, 70)
-        self.layer_table.setColumnWidth(3, 60)
         layout.addWidget(self.layer_table)
         return card
 
@@ -265,11 +261,6 @@ class MarketTrendPage(QWidget, SizedTableMixin):
 
         self.indicator_table = self._make_table(
             ['层级', '指标', '读数', '滚动分位', '得分', '判据说明'])
-        self.indicator_table.setColumnWidth(0, 66)
-        self.indicator_table.setColumnWidth(1, 160)
-        self.indicator_table.setColumnWidth(2, 110)
-        self.indicator_table.setColumnWidth(3, 90)
-        self.indicator_table.setColumnWidth(4, 64)
         layout.addWidget(self.indicator_table)
         return card
 

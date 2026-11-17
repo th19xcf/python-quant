@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
     QStyledItemDelegate,
+    QTableView,
     QTableWidget,
     QTableWidgetItem,
 )
@@ -225,6 +226,33 @@ def apply_content_widths(table: QTableWidget,
         header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
     return any(natural[index] > widths[index] for index in range(len(widths))
                if index != seq_index)
+
+
+def apply_measured_column_widths(table: QTableView,
+                                 natural: list[int],
+                                 minimums: list[int] | None = None,
+                                 width_max: int = MAX_COLUMN_WIDTH + CELL_PADDING_H,
+                                 ) -> bool:
+    """用调用方实测的单行列宽分配列宽（自绘单元格的页面走这里）。
+
+    ``natural`` 是每列单行完整显示所需列宽（已含单元格内边距），``minimums``
+    是设计下限（可空）；本函数统一做上限截断、把可视区余量补给被截断列、
+    写入 Interactive 模式，与 ``apply_content_widths`` 同一套分配口径。
+    返回 True 表示余量用尽后仍有列放不下单行内容（该列折行）。
+    """
+    if not natural:
+        return False
+    header = table.horizontalHeader()
+    header.setStretchLastSection(False)
+    widths = []
+    for index, need in enumerate(natural):
+        floor = minimums[index] if minimums and index < len(minimums) else 0
+        widths.append(min(width_max, max(need, floor)))
+    _expand_capped_columns(widths, natural, table.viewport().width())
+    for index, width in enumerate(widths):
+        table.setColumnWidth(index, width)
+        header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
+    return any(natural[index] > widths[index] for index in range(len(widths)))
 
 
 def apply_estimated_column_widths(table: QTableWidget, rows,
