@@ -16,6 +16,7 @@ from src.quant.strategy_lab.rules import (
 
 BASE = {
     'rule_version': 'strategy_lab/v1',
+    'rule_type': 'stock_select',
     'name': '测试规则',
     'universe': {'mode': 'all_market'},
     'conditions': [

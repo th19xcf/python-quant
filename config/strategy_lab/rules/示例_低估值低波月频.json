@@ -40,6 +40,7 @@
   "rebalance": {
     "frequency": "monthly"
   },
+  "rule_type": "stock_select",
   "rule_version": "strategy_lab/v1",
   "sort": {
     "direction": "desc",

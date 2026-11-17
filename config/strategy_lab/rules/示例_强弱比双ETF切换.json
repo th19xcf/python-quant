@@ -1,0 +1,51 @@
+{
+  "benchmark": "000300.SH",
+  "cost": {
+    "commission_rate": 0.0005,
+    "impact_coef": 0.0,
+    "min_commission": 5.0,
+    "slippage_bps": 10.0,
+    "stamp_tax_basis": "fixed_0.0%"
+  },
+  "data_policy": "区间 2021-01-04~2026-11-13。588000.SH（科创50ETF）2020-11-16 上市，30 日比值中枢至少需要 31 个共同交易日，因此起点定在上市满 30 个共同交易日之后。若某腿在区间内无本地行情，或两腿共同交易日少于 31 天，试算直接报「数据不足」并停止：不缩短窗口、不补占位值、不回退到单腿。",
+  "description": "沪深300ETF(510300.SH) 与科创50ETF(588000.SH) 按 30 日收盘比价中枢切换：比值高于中枢 3% 持有沪深300ETF，低于中枢 3% 持有科创50ETF，最短持有 5 个交易日，T+1 开盘成交，单边成本 0.15%。",
+  "execution": {
+    "delay_days": 1,
+    "price": "next_open"
+  },
+  "legs": [
+    {
+      "code": "510300.SH",
+      "label": "沪深300ETF"
+    },
+    {
+      "code": "588000.SH",
+      "label": "科创50ETF"
+    }
+  ],
+  "name": "示例_强弱比双ETF切换",
+  "period": {
+    "end": "2026-11-13",
+    "start": "2021-01-04"
+  },
+  "portfolio": {
+    "cash_buffer": 0.01,
+    "initial_capital": 1000000000.0,
+    "lot_size": 100,
+    "pooled_cash": true
+  },
+  "positions": {
+    "mode": "all_in"
+  },
+  "rule_type": "asset_switch",
+  "rule_version": "strategy_lab/v1",
+  "switch": {
+    "denominator": "588000.SH",
+    "entry": 0.03,
+    "exit": 0.03,
+    "initial": "numerator",
+    "min_hold_days": 5,
+    "numerator": "510300.SH",
+    "window": 30
+  }
+}

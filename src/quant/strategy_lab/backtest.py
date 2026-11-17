@@ -25,11 +25,10 @@ from src.core.usecases.run_backtest import _load_local_dividends, _load_st_statu
 
 from .panels import FieldPanels
 from .rules import rule_text
+from .switch_timing import WARMUP_DAYS, PlanError, build_plan
 
 ROOT = Path(__file__).resolve().parents[3]
 INDEX_QUOTES = ROOT / 'data/local_store/quotes/index'
-#: 预热：最长滚动窗口 60 个交易日 + 财报滞后，400 个自然日足够覆盖
-WARMUP_DAYS = 400
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +180,8 @@ def _excess_metrics(nav: List[Tuple[date, float]], bench: Dict[str, float],
     }
 
 
-def compute_metrics(result: Dict[str, Any], rule: Dict[str, Any],
-                    path: Dict[date, List[str]], bench: Dict[str, float]) -> Dict[str, Any]:
+def _period_series(result: Dict[str, Any], rule: Dict[str, Any]
+                   ) -> Tuple[List[Tuple[date, float]], List[Dict[str, Any]]]:
     start = date.fromisoformat(rule['period']['start'])
     end = date.fromisoformat(rule['period']['end'])
     curve = [(d, float(e)) for d, e in
@@ -190,10 +189,14 @@ def compute_metrics(result: Dict[str, Any], rule: Dict[str, Any],
              if d is not None and start <= d <= end]
     if len(curve) < 2:
         raise RuntimeError(f'净值曲线在 {start}~{end} 内不足两个点')
-
-    equity_curve = [{'date': d, 'equity': e} for d, e in curve]
     trades = [t for t in (result.get('trades') or [])
               if (d := pipeline.to_date(t.get('date'))) is not None and start <= d <= end]
+    return curve, trades
+
+
+def _core_metrics(curve: List[Tuple[date, float]], trades: List[Dict[str, Any]],
+                  rule: Dict[str, Any], bench: Dict[str, float]) -> Dict[str, Any]:
+    equity_curve = [{'date': d, 'equity': e} for d, e in curve]
     analyzer = PerformanceAnalyzer()
     perf = analyzer.analyze(equity_curve, trades, frequency='daily')
 
@@ -205,8 +208,6 @@ def compute_metrics(result: Dict[str, Any], rule: Dict[str, Any],
     total_cost = sum(float(t.get('cost') or 0.0) for t in trades)
     turnover = analyzer.annual_turnover(buy_notional, avg_eq, years)
     cost_pct = analyzer.annual_cost_ratio(total_cost, avg_eq, years)
-    sizes = sorted(len(v) for v in path.values())
-
     metrics = {
         'start': first_day.isoformat(),
         'end': last_day.isoformat(),
@@ -221,22 +222,68 @@ def compute_metrics(result: Dict[str, Any], rule: Dict[str, Any],
         'annual_cost_pct': round(float(cost_pct), 4),
         'cost_total': round(total_cost, 2),
         'trades': len(trades),
+    }
+    metrics.update(_excess_metrics(curve, bench, rule['benchmark']))
+    return metrics
+
+
+def compute_metrics(result: Dict[str, Any], rule: Dict[str, Any],
+                    path: Dict[date, List[str]], bench: Dict[str, float]) -> Dict[str, Any]:
+    curve, trades = _period_series(result, rule)
+    metrics = _core_metrics(curve, trades, rule, bench)
+    sizes = sorted(len(v) for v in path.values())
+    metrics.update({
         'rebalances': len(path),
         'members_median': sizes[len(sizes) // 2] if sizes else 0,
         'members_min': sizes[0] if sizes else 0,
         'members_max': sizes[-1] if sizes else 0,
-    }
-    metrics.update(_excess_metrics(curve, bench, rule['benchmark']))
+    })
     return metrics
+
+
+def _scheduled_metrics(result: Dict[str, Any], rule: Dict[str, Any],
+                       bench: Dict[str, float], rebalances: int) -> Dict[str, Any]:
+    curve, trades = _period_series(result, rule)
+    metrics = _core_metrics(curve, trades, rule, bench)
+    metrics.update({'rebalances': rebalances, 'members_median': None,
+                    'members_min': None, 'members_max': None})
+    return metrics
+
+
+def _drawdown(curve: List[Tuple[date, float]]) -> List[List[Any]]:
+    peak = 0.0
+    out: List[List[Any]] = []
+    for day, equity in curve:
+        peak = max(peak, equity)
+        out.append([day.isoformat(), round(equity / peak - 1.0, 6) if peak > 0 else 0.0])
+    return out
+
+
+def _final_positions(result: Dict[str, Any]) -> Dict[str, float]:
+    return {code: float(qty) for code, qty in (result.get('positions') or {}).items()
+            if float(qty) > 0}
+
+
+def _curve_payload(nav: List[Tuple[date, float]], bench: Dict[str, float],
+                   rule: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        'nav': [[d.isoformat(), round(e, 2)] for d, e in nav],
+        'benchmark_curve': _benchmark_curve(nav, bench),
+        'drawdown': _drawdown(nav),
+    }
 
 
 # ---------------------------------------------------------------------------
 # 编排
 # ---------------------------------------------------------------------------
 
-def run_rule(rule: Dict[str, Any], *, with_nav: bool = True) -> Dict[str, Any]:
-    """执行一条已校验规则；空结果以 ``status='empty'`` 返回而非抛错。"""
-    t0 = time.perf_counter()
+def _empty(reason: str, rule: Dict[str, Any], **extra: Any) -> Dict[str, Any]:
+    payload = {'status': 'empty', 'reason': reason, 'rule_text': rule_text(rule)}
+    payload.update(extra)
+    return payload
+
+
+def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
     period = {
         'start': rule['period']['start'],
         'end': rule['period']['end'],
@@ -246,15 +293,13 @@ def run_rule(rule: Dict[str, Any], *, with_nav: bool = True) -> Dict[str, Any]:
     data = compute.load_universe(period, rule['universe'])
     data, violations = compute.drop_contract_violations(data)
     if not data:
-        return {'status': 'empty', 'reason': '行情为空：契约预筛后没有可用标的',
-                'rule_text': rule_text(rule)}
+        return _empty('行情为空：契约预筛后没有可用标的', rule)
 
     _, month_ends, prev_day = compute.build_calendar(data)
     days = compute.rebalance_days(month_ends, 'monthly',
                                   date.fromisoformat(rule['period']['start']))
     if not days:
-        return {'status': 'empty', 'reason': '调仓日为空：检查区间与本地行情覆盖',
-                'rule_text': rule_text(rule)}
+        return _empty('调仓日为空：检查区间与本地行情覆盖', rule)
 
     quoted = compute.quoted_sets(data, days)
     st_status = _load_st_status(None, data, None, period['warmup_start'],
@@ -264,9 +309,8 @@ def run_rule(rule: Dict[str, Any], *, with_nav: bool = True) -> Dict[str, Any]:
     panels = FieldPanels(ctx)
     path, skipped = select_members(ctx, panels, rule, days)
     if not path:
-        return {'status': 'empty',
-                'reason': f'条件筛选后没有任何调仓日有成分；跳过统计：{skipped}',
-                'skipped': skipped, 'rule_text': rule_text(rule)}
+        return _empty(f'条件筛选后没有任何调仓日有成分；跳过统计：{skipped}', rule,
+                      skipped=skipped)
 
     schedules = pipeline.build_schedules(path, prev_day,
                                          rule['portfolio']['cash_buffer'])
@@ -277,7 +321,7 @@ def run_rule(rule: Dict[str, Any], *, with_nav: bool = True) -> Dict[str, Any]:
 
     bench = load_benchmark_close(rule['benchmark'])
     metrics = compute_metrics(result, rule, path, bench)
-    nav = [(pipeline.to_date(r['date']), float(r['equity'])) for r in result['equity_curve']]
+    curve, _ = _period_series(result, rule)
     payload = {
         'status': 'ok',
         'metrics': metrics,
@@ -287,10 +331,98 @@ def run_rule(rule: Dict[str, Any], *, with_nav: bool = True) -> Dict[str, Any]:
         'engine_seconds': round(engine_seconds, 1),
         'elapsed_seconds': round(time.perf_counter() - t0, 1),
         'rule_text': rule_text(rule),
+        'markers': [{'date': d.isoformat(), 'members': len(codes)}
+                    for d, codes in sorted(path.items())],
+        'leg_curves': [],
+        'positions': _final_positions(result),
+        'plan_note': f'月频调仓 {len(path)} 次，成分中位 '
+                     f'{metrics["members_median"]} 只',
     }
-    if with_nav:
-        payload['nav'] = [[d.isoformat(), round(e, 2)] for d, e in nav if d is not None]
-        payload['benchmark_curve'] = _benchmark_curve(nav, bench)
+    payload.update(_curve_payload(curve, bench, rule))
+    return payload
+
+
+def _engine_dividends(codes: List[str]) -> Dict[str, Any]:
+    """本地分红快照 → 引擎事件；基金分红的表结构不同，缺复权修正列时跳过。
+
+    ``fund_dividend.parquet`` 只有现金分红、没有 ``cash_div_fix`` /
+    ``share_div_fix`` / ``no_ex_rights`` 三列修正；ETF 分红是否纳入复权在
+    ``clean_set`` 里仍是 ``pending_fund_dividend`` 未结论。这里不补任何默认值，
+    缺列即跳过并告警，避免把未修正的基金分红当成个股送转记账。
+    """
+    required = {'cash_div_fix', 'share_div_fix', 'no_ex_rights'}
+    frames = _load_local_dividends(codes, None, None)
+    usable = {code: frame for code, frame in frames.items()
+              if required <= set(frame.columns)}
+    skipped = sorted(set(frames) - set(usable))
+    if skipped:
+        logger.warning('分红快照缺复权修正列，本次不记账除权事件：{}', skipped)
+    return usable
+
+
+def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
+    try:
+        plan = build_plan(rule)
+    except PlanError as exc:
+        return _empty(str(exc), rule)
+    if not plan.schedules:
+        return _empty('没有产生任何调仓信号：检查区间、窗口与阈值', rule)
+
+    warmup = (date.fromisoformat(rule['period']['start'])
+              - timedelta(days=WARMUP_DAYS)).isoformat()
+    st_status = _load_st_status(None, plan.data, None, warmup,
+                                rule['period']['end'], None, None)
+    dividends = _engine_dividends(list(plan.data))
+    engine_spec = {'_resolved': {'portfolio': rule['portfolio'], 'cost': rule['cost']}}
+    # 基金行情里有的腿复权因子恒为 1.0，复权价与原始价逐值相同；成对传进引擎会被
+    # 契约判成「拿未复权价冒充复权价」。这类腿直接去掉 raw_* 对，让 auto 按原始价
+    # 处理（价格本身没有信息损失，也不补任何复权因子）。
+    engine_data: Dict[str, Any] = {}
+    for code, frame in plan.data.items():
+        pair = {'open', 'raw_open', 'close', 'raw_close'}
+        if pair <= set(frame.columns) and \
+                bool((frame['open'] == frame['raw_open']).all()) and \
+                bool((frame['close'] == frame['raw_close']).all()):
+            frame = frame.drop(['raw_open', 'raw_close'])
+        engine_data[code] = frame
+    result, used, engine_seconds = pipeline.run_engine(
+        engine_data, plan.schedules, engine_spec, dividends, st_status)
+
+    bench = load_benchmark_close(rule['benchmark'])
+    metrics = _scheduled_metrics(result, rule, bench, len(plan.markers))
+    curve, _ = _period_series(result, rule)
+    payload = {
+        'status': 'ok',
+        'metrics': metrics,
+        'skipped': {},
+        'contract_violations': 0,
+        'used_codes': used,
+        'engine_seconds': round(engine_seconds, 1),
+        'elapsed_seconds': round(time.perf_counter() - t0, 1),
+        'rule_text': rule_text(rule),
+        'markers': plan.markers,
+        'leg_curves': plan.leg_curves,
+        'positions': _final_positions(result),
+        'plan_note': plan.note,
+    }
+    payload.update(_curve_payload(curve, bench, rule))
+    return payload
+
+
+def run_rule(rule: Dict[str, Any], *, with_nav: bool = True) -> Dict[str, Any]:
+    """按 ``rule_type`` 分派；空结果以 ``status='empty'`` 返回而非抛错。"""
+    t0 = time.perf_counter()
+    rule_type = rule['rule_type']
+    if rule_type == 'stock_select':
+        payload = _run_stock_select(rule, t0)
+    elif rule_type in ('asset_switch', 'timing'):
+        payload = _run_scheduled(rule, t0)
+    else:
+        raise ValueError(f'未知 rule_type {rule_type!r}；可选值：'
+                         "['stock_select', 'asset_switch', 'timing']")
+    if not with_nav:
+        for key in ('nav', 'benchmark_curve', 'drawdown', 'leg_curves'):
+            payload.pop(key, None)
     return payload
 
 

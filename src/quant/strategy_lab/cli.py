@@ -48,6 +48,7 @@ def _err(text: str) -> None:
 
 SAMPLE_RULE = {
     'rule_version': 'strategy_lab/v1',
+    'rule_type': 'stock_select',
     'name': '示例_低估值低波月频',
     'description': '60日波动率最低50% 且 EP 前30%，按 EP 降序取前 50，月频等权',
     'universe': {'mode': 'all_market'},
@@ -117,7 +118,10 @@ def main(argv=None) -> int:
         nav_path = _write_nav(rule['name'], result['nav'])
     summary = {
         'status': 'ok',
+        'rule_type': rule['rule_type'],
         'metrics': result['metrics'],
+        'markers': len(result.get('markers') or []),
+        'plan_note': result.get('plan_note'),
         'used_codes': result['used_codes'],
         'engine_seconds': result['engine_seconds'],
         'elapsed_seconds': result['elapsed_seconds'],
