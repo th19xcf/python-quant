@@ -2,7 +2,8 @@
 
 对未确认清单里的基金逐只串行取证：每只 2 次请求（间隔 ≥2s），
 结果写 progress.csv / failed.csv，可中断续跑；有记录的原始行落到 rows.csv。
-只做取证，不写任何正式表。
+只做取证，不写任何正式表。``--all-funds`` 用于月度全量：重探清单内全部基金
+（含 confirmed_no_dividend），工作目录按月度隔离以保证进度文件不复用。
 """
 from __future__ import annotations
 
@@ -48,6 +49,8 @@ def main() -> int:  # noqa: C901 - 单文件探针脚本，分支集中在此
     ap.add_argument('--interval', type=float, default=2.0)
     ap.add_argument('--throttle', type=float, default=0.5)
     ap.add_argument('--limit', type=int, default=0, help='本轮最多处理只数（0=不限）')
+    ap.add_argument('--all-funds', action='store_true',
+                    help='重探清单内全部基金（含 confirmed_no_dividend），用于月度全量')
     args = ap.parse_args()
 
     work = Path(args.work_dir)
@@ -56,8 +59,9 @@ def main() -> int:  # noqa: C901 - 单文件探针脚本，分支集中在此
     rows_csv = work / 'rows.csv'
 
     ledger = pl.read_parquet(LEDGER)
-    pool = ledger.filter((pl.col('status') == 'unconfirmed_coverage')
-                         & pl.col('kind').is_in(['ETF', 'LOF', '分级', '未知']))
+    fund_kinds = pl.col('kind').is_in(['ETF', 'LOF', '分级', '未知'])
+    pool = ledger.filter(fund_kinds) if args.all_funds else ledger.filter(
+        (pl.col('status') == 'unconfirmed_coverage') & fund_kinds)
     targets = pool.select('ts_code', 'name', 'kind').sort('ts_code').to_dicts()
     done = load_done(progress)
     todo = [t for t in targets if t['ts_code'] not in done]
@@ -74,7 +78,6 @@ def main() -> int:  # noqa: C901 - 单文件探针脚本，分支集中在此
         seq: list[str] = []
         max_rows = 0
         elapsed = 0.0
-        error = ''
         for attempt in range(2):
             if attempt:
                 time.sleep(args.interval)
