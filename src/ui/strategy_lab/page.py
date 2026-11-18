@@ -15,7 +15,7 @@ from html import escape
 from typing import Any, Dict, List
 
 from loguru import logger
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QEvent, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -267,6 +267,10 @@ class StrategyLabPage(QWidget):
         head.addWidget(caption)
         self.rule_combo = QComboBox()
         self.rule_combo.setMinimumWidth(260)
+        # QSS 的 padding 5px + border 1px 上下共 12px 不计入 QComboBox 的 sizeHint，
+        # 默认 20px 高只剩 8px 内容区，12px 文字上下各被裁约 2px；按字体行高 +
+        # 内边距 + 上下各 2px 余量给最小高度。
+        self.rule_combo.setMinimumHeight(self.rule_combo.fontMetrics().height() + 16)
         self.rule_combo.currentIndexChanged.connect(lambda *_: self._on_select())
         head.addWidget(self.rule_combo, 1)
         self.refresh_btn = QPushButton('刷新列表')
@@ -278,8 +282,42 @@ class StrategyLabPage(QWidget):
         self.rule_text_label = QLabel('规则目录为空：请在 config/strategy_lab/rules/ 下放置规则 JSON')
         self.rule_text_label.setObjectName('slNotes')
         self.rule_text_label.setWordWrap(True)
+        # 与本页 slStatus 同一个成因：QLabel 高度只按 ascent+descent 算、QSS 无内边距，
+        # 首行字头顶在控件上边缘、末行字底贴下边缘，看上去像被裁；上下各补留白。
+        self.rule_text_label.setContentsMargins(0, 3, 0, 2)
         outer.addWidget(self.rule_text_label)
+        self._editor_card = card
+        card.installEventFilter(self)
+        self._sync_editor_min_height()
         return card
+
+    def _sync_editor_min_height(self) -> None:
+        """编辑卡片的最小高按说明块实际折行算。
+
+        QSplitter 分给这张卡片的只有布局最小高，而最小高既不含下拉框的 QSS
+        内边距也不含说明块的折行高度，实测会把控件间距从 8px 压到 2px、把说明块
+        压成一行高：结果下拉框文字下半截、说明块首行上半截同时被裁。按「上下边距
+        + 控件行高 + 行距 + 说明块折行高度 + 说明块上下留白」显式给最小高。
+        """
+        layout = self._editor_card.layout()
+        margins = layout.contentsMargins()
+        note_margins = self.rule_text_label.contentsMargins()
+        row_height = max(self.rule_combo.minimumHeight(),
+                         self.refresh_btn.sizeHint().height())
+        # 折行高度必须按卡片宽度算：说明块自身的 width 在布局过程中是旧值，
+        # 用它会把最小高算成 4~5 行（实测 84px），反把卡片撑高。
+        width = max(self._editor_card.width() - margins.left() - margins.right(), 120)
+        text_height = self.rule_text_label.heightForWidth(width)
+        needed = (margins.top() + margins.bottom() + row_height + layout.spacing()
+                  + text_height + note_margins.top() + note_margins.bottom())
+        if self._editor_card.minimumHeight() != needed:
+            self._editor_card.setMinimumHeight(needed)
+
+    def eventFilter(self, obj, event) -> bool:
+        # 卡片宽度变化后折行行数会变，最小高跟着重算；值不变时不重设，避免布局往复。
+        if obj is getattr(self, '_editor_card', None) and event.type() == QEvent.Type.Resize:
+            self._sync_editor_min_height()
+        return super().eventFilter(obj, event)
 
     def _build_result(self) -> QWidget:
         card = QFrame()
