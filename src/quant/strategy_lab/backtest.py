@@ -24,6 +24,7 @@ from src.backtest.runner import compute, pipeline
 from src.core.usecases.run_backtest import _load_st_status
 
 from .coverage import dividend_coverage
+from .markers import sides_from_weights
 from .panels import FieldPanels
 from .rules import rule_text
 from .switch_timing import WARMUP_DAYS, PlanError, build_plan
@@ -396,6 +397,15 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
     bench = load_benchmark_close(rule['benchmark'])
     metrics = compute_metrics(result, rule, path, bench)
     curve, _ = _period_series(result, rule)
+    markers: List[Dict[str, Any]] = []
+    prev_weights: Dict[str, float] = {}
+    for day, codes in sorted(path.items()):
+        weight = (1.0 - rule['portfolio']['cash_buffer']) / len(codes)
+        cur = dict.fromkeys(codes, weight)
+        for side in sides_from_weights(prev_weights, cur):
+            markers.append({'date': day.isoformat(), 'members': len(codes),
+                            'direction': side})
+        prev_weights = cur
     payload = {
         'status': 'ok',
         'metrics': metrics,
@@ -407,8 +417,7 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'engine_seconds': round(engine_seconds, 1),
         'elapsed_seconds': round(time.perf_counter() - t0, 1),
         'rule_text': rule_text(rule),
-        'markers': [{'date': d.isoformat(), 'members': len(codes)}
-                    for d, codes in sorted(path.items())],
+        'markers': markers,
         'leg_curves': [],
         'positions': _final_positions(result),
         'plan_note': f'月频调仓 {len(path)} 次，成分中位 '

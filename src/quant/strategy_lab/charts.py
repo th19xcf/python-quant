@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.ticker import FuncFormatter  # noqa: E402
 
 from .backtest import run_rule  # noqa: E402
-from .markers import marker_side  # noqa: E402
+from .markers import layout_markers  # noqa: E402
 from .rules import load_rule, rule_text  # noqa: E402
 
 #: 与试算页同一套深色主题色板（src/ui/advice/tokens.py::DARK）
@@ -61,21 +61,11 @@ def _normalized(curve: List[List[Any]]) -> List[float]:
 
 
 def _marker_groups(markers: List[Dict[str, Any]],
-                   nav_index: Dict[str, int]) -> Dict[str, tuple[List[int], List[float]]]:
-    """按共用方向判定（``markers.marker_side``）分组，纵轴取仓位或成分数。"""
-    groups: Dict[str, tuple[List[int], List[float]]] = {
+                   nav_index: Dict[str, int]) -> Dict[str, tuple[List[float], List[float]]]:
+    """按共用方向判定（``markers.layout_markers``）分组，纵轴取仓位或成分数。"""
+    groups: Dict[str, tuple[List[float], List[float]]] = {
         'buy': ([], []), 'sell': ([], []), 'neutral': ([], [])}
-    prev_position = 0.0
-    for marker in sorted(markers,
-                         key=lambda m: nav_index.get(str(m.get('date')), -1)):
-        x = nav_index.get(str(marker.get('date')))
-        if x is None:
-            continue
-        side, prev_position = marker_side(marker, prev_position)
-        if marker.get('members') is not None:
-            y = float(marker['members'])
-        else:
-            y = float(marker.get('position') or 1.0)
+    for x, side, y in layout_markers(markers, nav_index):
         kind = side or 'neutral'
         groups[kind][0].append(x)
         groups[kind][1].append(y)

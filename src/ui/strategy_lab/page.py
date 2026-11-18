@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.quant.strategy_lab.markers import marker_side
+from src.quant.strategy_lab.markers import layout_markers
 from src.quant.strategy_lab.rules import (
     RULE_TYPES,
     RuleError,
@@ -701,32 +701,22 @@ class StrategyLabPage(QWidget):
                 badge.setVisible(False)
             return
         index = {day: i for i, day in enumerate(self._nav_dates)}
-        buy_x: List[int] = []
+        buy_x: List[float] = []
         buy_y: List[float] = []
-        sell_x: List[int] = []
+        sell_x: List[float] = []
         sell_y: List[float] = []
-        other_x: List[int] = []
+        other_x: List[float] = []
         other_y: List[float] = []
-        prev_position = 0.0
-        for marker in sorted(markers, key=lambda m: index.get(str(m.get('date')), -1)):
-            x = index.get(str(marker.get('date')))
-            if x is None:
-                continue
-            position = marker.get('position')
-            if marker.get('members') is not None:
-                y = float(marker['members'])
-            else:
-                y = float(position or 1.0)
-            # 方向判定与离线出图共用 markers.marker_side，不在这里各写一份
-            kind, prev_position = marker_side(marker, prev_position)
-            if kind == 'buy':
+        # 方向判定与点位整理与离线出图共用 markers.layout_markers，不在这里各写一份
+        for x, side, y in layout_markers(markers, index):
+            if side == 'buy':
                 buy_x.append(x)
                 buy_y.append(y)
-            elif kind == 'sell':
+            elif side == 'sell':
                 sell_x.append(x)
                 sell_y.append(y)
             else:
-                # 选股调仓没有买卖方向，沿用中性圆点
+                # 无买卖方向（例如权重没变化的中性标记），沿用中性圆点
                 other_x.append(x)
                 other_y.append(y)
         xs = buy_x + sell_x + other_x

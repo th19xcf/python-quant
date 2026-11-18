@@ -23,6 +23,8 @@ from typing import Any, Dict, Iterable, List, Tuple
 import polars as pl
 from loguru import logger
 
+from .markers import sides_from_weights
+
 ROOT = Path(__file__).resolve().parents[3]
 QUOTE_ROOT = ROOT / 'data/local_store/quotes'
 QUOTE_DOMAINS = ('fund', 'index')
@@ -247,11 +249,16 @@ def build_switch_plan(rule: Dict[str, Any]) -> Plan:
         new_weights = _scaled(_switch_weights(rule, target), cash)
         _apply_rebalance(schedules, day, old_weights, new_weights)
         exec_day = _next_day(common, day) or day
-        markers.append({
-            'signal_date': str(day), 'date': str(exec_day),
-            'state': target, 'from': state, 'position': 1.0,
-            'weights': new_weights, 'ratio': round(ratio / center - 1.0, 6),
-        })
+        # 换腿方向按目标权重的净变化：卖出旧腿记卖、买入新腿记买，两侧各一条
+        for side in sides_from_weights(old_weights, new_weights) or [None]:
+            marker = {
+                'signal_date': str(day), 'date': str(exec_day),
+                'state': target, 'from': state, 'position': 1.0,
+                'weights': new_weights, 'ratio': round(ratio / center - 1.0, 6),
+            }
+            if side is not None:
+                marker['direction'] = side
+            markers.append(marker)
         state = target
         last_change_idx = i
 
@@ -263,8 +270,11 @@ def build_switch_plan(rule: Dict[str, Any]) -> Plan:
     leg_curves = [{'code': code, 'label': labels[code],
                    'points': _curve_points(data[code], start, end)}
                   for code in codes]
+    # 一次换腿会拆买卖两条标记，切换次数按信号日去重
+    switches = len({m['signal_date'] for m in markers
+                    if m.get('reason') != 'initial'})
     note = (f'共同交易日 {len(common)} 天，窗口 {window} 日；'
-            f'切换 {len([m for m in markers if m.get("reason") != "initial"])} 次')
+            f'切换 {switches} 次')
     return Plan(data=data, schedules=schedules, markers=markers,
                 leg_curves=leg_curves, note=note)
 
