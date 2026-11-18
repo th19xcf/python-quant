@@ -19,6 +19,8 @@ from pathlib import Path
 
 import polars as pl
 
+from src.data.atomic_write import write_parquet_atomic
+
 ROOT = Path(__file__).resolve().parents[1]
 STORE = ROOT / 'data' / 'local_store'
 OUT_DIR = STORE / 'meta' / 'dividend_status'
@@ -29,7 +31,9 @@ COLUMNS = ['ts_code', 'name', 'kind', 'status', 'judgement_basis',
            'probe_attempts', 'probe_result_seq', 'rule_version']
 RULE_VERSION = 'probe-2req-stable-v1'
 FUND_PROBE_SOURCE = 'akshare:fund_open_fund_info_em(分红送配详情)'
-STOCK_PROBE_SOURCE = 'akshare:stock_fhps_detail_em'
+#: 个股两源：东财详情（akshare 同源，``result=None`` 空结果已修正）+ 巨潮历史分红
+STOCK_PROBE_SOURCE = ('em:RPT_SHAREBONUS_DET(akshare:stock_fhps_detail_em 同源，'
+                      '空结果修正)+akshare:stock_dividend_cninfo')
 
 
 def load_evidence(csv_path: str) -> dict[str, dict]:
@@ -40,14 +44,19 @@ def load_evidence(csv_path: str) -> dict[str, dict]:
         # 兼容两种表头：outputs 中文明细 与 work/ 断点 progress.csv（英文）
         seq_txt = rec.get('各次结果') or rec.get('result_seq') or ''
         seq = [s for s in str(seq_txt).split('/') if s]
+        if not seq and (rec.get('em_seq') or rec.get('cninfo_seq')):
+            # 个股探针分源记录：东财在前、巨潮在后，逐次带来源前缀
+            for source_key, label in (('em_seq', 'em'), ('cninfo_seq', 'cninfo')):
+                seq.extend(f'{label}:{s}' for s in
+                           str(rec.get(source_key) or '').split('/') if s)
         code = rec.get('ts_code') or rec.get('代码') or ''
         out[code] = {
-            'source': FUND_PROBE_SOURCE,
+            'source': rec.get('source') or '',
             'date': str(rec.get('探测时刻') or rec.get('probed_at') or '')[:10],
             'attempts': int(rec.get('尝试次数') or rec.get('attempts') or len(seq)),
             'seq': seq,
             'verdict': rec.get('判定') or rec.get('verdict') or '',
-            'error': rec.get('错误信息') or '',
+            'error': rec.get('错误信息') or rec.get('error') or '',
             'rows': int(rec.get('最大返回条数') or rec.get('max_rows') or 0),
         }
     return out
@@ -93,9 +102,12 @@ def probe_stock(symbol: str) -> tuple[str, int | None, str]:
 
 
 def build(probe_codes: list[str], delay: float,  # noqa: C901
-          evidence: dict[str, dict] | None = None) -> pl.DataFrame:
+          evidence: dict[str, dict] | None = None,
+          preserve_non_stock: bool = False,
+          window_rejected: dict[str, dict] | None = None) -> pl.DataFrame:
     fund_basic = pl.read_parquet(STORE / 'meta' / 'fund_basic.parquet',
                                  columns=['ts_code', 'name', 'fund_type'])
+    window_rejected = window_rejected or {}
     stock_basic = pl.read_parquet(STORE / 'meta' / 'stock_basic.parquet',
                                   columns=['ts_code', 'name'])
     fund_names = dict(zip(fund_basic['ts_code'].to_list(), fund_basic['name'].to_list()))
@@ -103,6 +115,12 @@ def build(probe_codes: list[str], delay: float,  # noqa: C901
                           fund_basic['fund_type'].to_list()))
     stock_names = dict(zip(stock_basic['ts_code'].to_list(),
                            stock_basic['name'].to_list()))
+    stock_status = {
+        rec['ts_code']: (rec['status'], rec['delist_date'])
+        for rec in pl.read_parquet(
+            STORE / 'meta' / 'stock_basic.parquet',
+            columns=['ts_code', 'status', 'delist_date']).to_dicts()
+    }
 
     fund_one = all_one_codes(STORE / 'factors' / 'fund_adj_factor.parquet')
     stock_one = all_one_codes(STORE / 'factors' / 'stock_adj_factor.parquet')
@@ -199,20 +217,52 @@ def build(probe_codes: list[str], delay: float,  # noqa: C901
             continue
         ev = evidence.get(code)
         result, probed_rows = _probe_status(ev) if ev else ('', None)
-        if result == 'empty':
+        src = (ev.get('source') if ev else '') or STOCK_PROBE_SOURCE
+        list_status, delist_date = stock_status.get(code, ('', None))
+        win = window_rejected.get(code)
+        if win is not None:
+            # 源端记录全部早于本代码本地行情起点（上市前/前身代码，北交所代码换段）：
+            # 本代码行情区间内无分红事件，因子全 1.0 正确；外部历史记录不写入本表
             status = 'confirmed_no_dividend'
-            basis = (f'{ev["source"]} 连续两次正常返回 0 行（代码存在、无分红事件）；'
+            basis = (f'{src} 返回 {win["records"]} 条记录，但除息日 '
+                     f'{win["first_ex_date"]}~{win["last_ex_date"]} 全部早于本代码'
+                     f'本地行情起点（{win["reason"].split("起点")[-1].strip()}），'
+                     f'本代码行情区间内无分红事件，因子 {factor_rows} 行全 1.0 正确；'
+                     '上市前/前身代码（含北交所代码换段）的历史记录不写入本地分红表')
+            source, ev_date = src, ev['date']
+        elif result == 'empty' and (not list_status or list_status != 'L'):
+            # 退市股/名录未收录：两源空返不能区分「无分红」与「源端未覆盖」
+            status = 'unconfirmed_coverage'
+            guard = (f'该代码已于 {delist_date} 退市，源端对退市标的不覆盖'
+                     if list_status else '本地 stock_basic 未收录该代码，无法核验在市状态')
+            basis = (f'{src} 逐只各 2 次均正常空返（{"→".join(ev["seq"])}），'
+                     f'但{guard}，空返不能区分「确实无分红」与「源端未覆盖」')
+            source, ev_date = src, ev['date']
+        elif result == 'empty':
+            status = 'confirmed_no_dividend'
+            basis = (f'{src} 两源各连续 2 次正常返回 0 行'
+                     f'（{"→".join(ev["seq"])}，代码在市、无分红事件）；'
                      f'本地因子 {factor_rows} 行全 1.0')
-            source, ev_date = ev['source'], ev['date']
+            source, ev_date = src, ev['date']
         elif result == 'rows':
             status = 'local_dividend_missing'
-            basis = (f'{ev["source"]} 对该代码返回 {probed_rows} 条分红记录，'
-                     f'本地 stock_dividend 0 条、因子 {factor_rows} 行全 1.0')
-            source, ev_date = ev['source'], ev['date']
+            stable = '' if ev.get('verdict') == 'rows' else '（一次有记录一次空，源端不稳定）'
+            basis = (f'{src} 对该代码返回 {probed_rows} 条分红记录{stable}'
+                     f'（{"→".join(ev["seq"])}），'
+                     f'本地 stock_dividend 0 条、因子 {factor_rows} 行全 1.0，'
+                     '属本地分红/因子缺失，需补采重建')
+            source, ev_date = src, ev['date']
         else:
             status = 'unconfirmed_coverage'
-            basis = '本地分红表无记录；接口未取得稳定逐只证据，不能确认无分红'
-            source, ev_date = 'factors/stock_dividend.parquet', None
+            if ev:
+                basis = (f'{src} 逐只取证 {ev["attempts"]} 次未取得稳定结果'
+                         f'（{"→".join(ev["seq"])}；{ev.get("error", "")[:120]}），'
+                         '不能确认无分红')
+                source, ev_date = src, ev['date']
+            else:
+                status = 'unconfirmed_coverage'
+                basis = '本地分红表无记录；未取得逐只证据，不能确认无分红'
+                source, ev_date = 'factors/stock_dividend.parquet', None
         rows.append({
             'ts_code': code, 'name': stock_names.get(code) or '未知', 'kind': '个股',
             'status': status, 'judgement_basis': basis,
@@ -229,8 +279,14 @@ def build(probe_codes: list[str], delay: float,  # noqa: C901
         'probe_attempts': pl.Int64, 'probe_result_seq': pl.Utf8,
         'rule_version': pl.Utf8,
     }).sort(['status', 'kind', 'ts_code'])
+    if preserve_non_stock and OUT_PATH.exists():
+        # 只重建个股部分：基金侧（ETF/LOF/分级/未知）记录原样保留，不重写
+        old = pl.read_parquet(OUT_PATH)
+        frame = pl.concat([old.filter(pl.col('kind') != '个股'),
+                           frame.filter(pl.col('kind') == '个股')],
+                          how='vertical_relaxed').sort(['status', 'kind', 'ts_code'])
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    frame.write_parquet(OUT_PATH)
+    write_parquet_atomic(frame, OUT_PATH, compression='zstd', statistics=True)
     if probed_evidence:
         probe_log = OUT_DIR / f'probe_evidence_{decided}.json'
         existing = {}
@@ -252,10 +308,21 @@ def main() -> None:
     parser.add_argument('--delay', type=float, default=0.6, help='逐只取证间隔秒数')
     parser.add_argument('--evidence', default='',
                         help='全量取证明细 CSV（outputs/基金分红全量取证_*.csv）')
+    parser.add_argument('--preserve-non-stock', action='store_true',
+                        help='只重建个股部分，基金侧记录原样保留')
+    parser.add_argument('--window-rejected', default='',
+                        help='补数时被判为「事件早于本地行情起点」的汇总 CSV（ts_code/records/...）')
     args = parser.parse_args()
     codes = [c.strip() for c in args.probe.split(',') if c.strip()]
     evidence = load_evidence(args.evidence) if args.evidence else None
-    frame = build(codes, args.delay, evidence=evidence)
+    window_rejected = {}
+    if args.window_rejected:
+        window_rejected = {
+            rec['ts_code']: rec
+            for rec in pl.read_csv(args.window_rejected, infer_schema_length=0).to_dicts()}
+    frame = build(codes, args.delay, evidence=evidence,
+                  preserve_non_stock=args.preserve_non_stock,
+                  window_rejected=window_rejected)
     summary = frame.group_by(['status', 'kind']).agg(pl.len().alias('n')).sort(
         ['status', 'kind'])
     print(frame.height, 'rows ->', OUT_PATH)
