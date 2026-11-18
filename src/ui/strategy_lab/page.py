@@ -434,7 +434,7 @@ class StrategyLabPage(QWidget):
         self.title_label = title
         self.subtitle_label = subtitle
         top_row.addWidget(title_block)
-        # 说明块紧跟标题块右侧 24px 起排、右侧吃满到按钮列左缘前 8px；
+        # 说明块紧跟标题块右侧 24px 起排、右侧停在按钮列左缘前 16px；
         # 宽度由 _sync_status_max_width 按标题块 sizeHint 与按钮列左缘实测算出。
         top_row.addSpacing(24)
         # 说明块放页头右侧空白区：右对齐、贴顶部，宽度按可用区域自适应并折行。
@@ -514,13 +514,12 @@ class StrategyLabPage(QWidget):
         return card
 
     def _sync_status_max_width(self) -> None:
-        """说明块宽度：左贴标题块右缘 +24px，右停在按钮列左缘前 8px。
+        """说明块宽度：左贴标题块右缘 +24px，右停在按钮列左缘前 16px。
 
         标题块按 sizeHint（Maximum 策略）取宽，不能用它的实际 width——实测被布局
         拉宽到 1023px 时，算出的上限会退化成兜底值、说明块反被推到最右侧。
-        宽度依赖页面当前宽、固定宽又参与页面最小宽计算，实测无余量时每轮 +6px
-        无限增长（页面被撑到 1174px）；这里右侧再留 8px 余量，保证
-        「页边距 + 标题 + 24 + 说明块 + 页边距」恒小于页面宽，不会形成反馈。
+        宽度依赖页面当前宽、固定宽又参与页面最小宽计算：两端各留 8px 余量，
+        保证「页边距 + 标题 + 24 + 说明块 + 页边距」恒小于页面宽，不形成反馈。
         """
         if not hasattr(self, 'refresh_btn') or not hasattr(self, 'title_label'):
             return
@@ -531,9 +530,9 @@ class StrategyLabPage(QWidget):
         block_right = block_left + block_width + 24
         page_right = self.width() - 16
         width = min(button_left - 8, page_right) - block_right - 8
-        # 窄窗下按钮列左缘已贴到标题块右侧（实测 916px 页宽只剩 69px），按按钮列
-        # 收会把说明块挤成 240px / 8 行；改为按页面右缘收，仍留 8px 不形成反馈。
-        if width < 320:
+        # 按按钮列收会只剩一条窄缝时（实测 916px 页宽仅 61px、要折 8 行），退回按
+        # 页面右缘收；阈值取 240px：1120px 页宽实测可用 265px，仍走按钮列口径。
+        if width < 240:
             width = page_right - block_right - 8
         width = max(width, 240)
         if self.status_label.width() != width:
