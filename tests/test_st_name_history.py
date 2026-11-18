@@ -153,3 +153,42 @@ def test_event_date_prefers_title_deadline():
                                     date(2019, 7, 15)) == date(2019, 7, 16)
     assert N.st_history._event_date('实施其他风险警示', date(2019, 7, 15)) == \
         date(2019, 7, 15) + timedelta(days=1)
+
+
+def _name_history(rows):
+    return pl.DataFrame(rows, schema={
+        'ts_code': pl.Utf8, 'name': pl.Utf8, 'start_date': pl.Date,
+        'end_date': pl.Date})
+
+
+def test_name_history_fallback_builds_interval_and_clean_coverage():
+    """EM 无记录时用名称变更逐段兜底：ST 段转区间，全程无 ST 则作负证据。"""
+    nh = _name_history([
+        {'ts_code': '600683.SH', 'name': '宁波华联', 'start_date': date(1993, 10, 25),
+         'end_date': date(2000, 4, 12)},
+        {'ts_code': '600683.SH', 'name': 'ST甬华联', 'start_date': date(2000, 4, 13),
+         'end_date': date(2001, 4, 16)},
+        {'ts_code': '600683.SH', 'name': '京投银泰', 'start_date': date(2001, 4, 17),
+         'end_date': None},
+        {'ts_code': '600001.SH', 'name': '邯郸钢铁', 'start_date': date(1998, 1, 22),
+         'end_date': None},
+    ])
+    windows = {'600683.SH': (date(1993, 10, 25), date(2026, 11, 17)),
+               '600001.SH': (date(1998, 1, 22), date(2009, 12, 29))}
+    plan = N.plan_supplement(
+        _em([]), _coverage([]), ['600683.SH', '600001.SH'], windows, {},
+        today=date(2026, 11, 17), name_history=nh,
+        name_stamp=datetime(2026, 11, 17))
+    assert plan.name_history == 2
+    assert plan.unresolved == []
+    rows = {row['ts_code']: row for row in plan.intervals}
+    assert list(rows) == ['600683.SH']
+    assert rows['600683.SH']['start_date'] == date(2000, 4, 13)
+    assert rows['600683.SH']['end_date'] == date(2001, 4, 16)
+    assert rows['600683.SH']['flag'] == N.FLAG_ST
+    assert rows['600683.SH']['source'] == N.SOURCE_TUSHARE_NAME
+    covers = {row['ts_code']: row for row in plan.coverage}
+    assert covers['600683.SH']['coverage_start'] == date(1993, 10, 25)
+    assert covers['600001.SH']['coverage_end'] == date(2009, 12, 29)
+    assert covers['600001.SH']['source'] == N.SOURCE_TUSHARE_NAME
+

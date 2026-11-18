@@ -10,7 +10,12 @@
 - 名称历史（含当前简称）里**从未出现** ``ST`` / ``*ST`` / ``PT`` 前缀
   → 该标的自上市至行情末日都不是风险警示股，写 ``non_st`` 覆盖窗口；
 - 曾用名里出现 ST 前缀但本地没有区间 → 按个股公告（巨潮）逐年窗口补抓，
-  只认能定到生效日的事件；定不到日期的一律继续 ``unknown``，绝不猜。
+  只认能定到生效日的事件；定不到日期的一律继续 ``unknown``，绝不猜；
+- 登记册缺记录或公告定不到日期时，回退 ``meta/name_history.parquet``
+  （tushare 名称变更，逐段带起止日）：名称从上市日起完整登记、ST 段可直接
+  转区间、全程无 ST token 则可作负证据；仍未命中的保持 ``unknown``。
+- 覆盖池 = 有行情的标的 ∪ ``meta/stock_basic.parquet`` 名录标的，避免「无本地
+  行情的老退市股」永远不进入覆盖统计（2026-11-18 起）。
 
 硬约束：
 
@@ -79,8 +84,11 @@ EM_RETRY = 4
 
 SOURCE_EM_CLEAN = 'em_name_history_clean'
 SOURCE_CNINFO_DATED = 'cninfo_notice_dated'
+#: 兜底来源：``meta/name_history.parquet``（tushare 名称变更，逐段带起止日）
+SOURCE_TUSHARE_NAME = 'tushare_namechange'
 #: 本模块自己写入的覆盖来源；重建时不能拿它当「已覆盖」基准。
-SUPPLEMENT_SOURCES: frozenset[str] = frozenset({SOURCE_EM_CLEAN, SOURCE_CNINFO_DATED})
+SUPPLEMENT_SOURCES: frozenset[str] = frozenset(
+    {SOURCE_EM_CLEAN, SOURCE_CNINFO_DATED, SOURCE_TUSHARE_NAME})
 
 FLAG_ST = st_history.FLAG_ST
 FLAG_STAR = st_history.FLAG_STAR
@@ -135,6 +143,11 @@ def supplement_intervals_path(store_root: Path | str) -> Path:
 
 def supplement_coverage_path(store_root: Path | str) -> Path:
     return supplement_dir(store_root) / 'supplement_coverage.parquet'
+
+
+def name_history_path(store_root: Path | str) -> Path:
+    """兜底证据：``meta/name_history.parquet``（tushare 名称变更）。"""
+    return Path(store_root) / 'meta' / 'name_history.parquet'
 
 
 def manifest_path(store_root: Path | str) -> Path:
@@ -358,7 +371,10 @@ def _segments_from_events(rows: Iterable[dict[str, Any]]) -> list[tuple[date, st
 
 def _intervals_from_segments(ts_code: str, segments: list[tuple[date, str]],
                              coverage_end: date, *, fetched_at: datetime,
-                             quote_last: date | None = None) -> list[dict[str, Any]]:
+                             quote_last: date | None = None,
+                             source: str = SOURCE_CNINFO_DATED,
+                             precision: str = st_history.PRECISION_ANNOUNCEMENT
+                             ) -> list[dict[str, Any]]:
     """事件段 → 区间行。
 
     ``quote_last`` 是本轮行情末日（默认等于 ``coverage_end`` 的上界）：退市标的
@@ -378,7 +394,7 @@ def _intervals_from_segments(ts_code: str, segments: list[tuple[date, str]],
             end = coverage_end
         rows.append({
             'ts_code': ts_code, 'start_date': start, 'end_date': end, 'flag': flag,
-            'source': SOURCE_CNINFO_DATED, 'precision': st_history.PRECISION_ANNOUNCEMENT,
+            'source': source, 'precision': precision,
             'fetched_at': fetched_at,
         })
     return rows
@@ -619,6 +635,56 @@ class SupplementPlan:
     clean: int = 0
     dated: int = 0
     skipped: int = 0
+    name_history: int = 0
+    registry_extra: int = 0
+
+
+def _plan_from_name_history(code: str, frame: pl.DataFrame | None,
+                            coverage_start: date, coverage_end: date, *,
+                            fetched_at: datetime,
+                            quote_last: date | None
+                            ) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """用 ``meta/name_history.parquet`` 逐段重建区间与覆盖窗口。
+
+    只在名称登记从覆盖起点（上市日/行情首日）之前开始时才采信，否则返回
+    ``None``：起点之前没有证据，不凭空补。ST 段直接转区间，全程无 ST token
+    则整段作为非 ST 负证据；相邻同 flag 段合并，段界仍取名称变更日。
+    """
+    if frame is None:
+        return None
+    rows = frame.filter(pl.col('ts_code') == code).sort('start_date')
+    if rows.height == 0:
+        return None
+    first = rows['start_date'].min()
+    if first is None or first > coverage_end:
+        return None
+    coverage_start = min(coverage_start, first)
+    merged: list[tuple[date, date | None, str]] = []
+    for row in rows.to_dicts():
+        start = _as_date(row.get('start_date'))
+        flag = st_history.flag_from_name(row.get('name'))
+        if start is None or start > coverage_end \
+                or flag not in (FLAG_ST, FLAG_STAR):
+            continue
+        end = _as_date(row.get('end_date'))
+        if merged and merged[-1][2] == flag and merged[-1][1] is not None \
+                and merged[-1][1] + timedelta(days=1) == start:
+            merged[-1] = (merged[-1][0], end, flag)
+        else:
+            merged.append((start, end, flag))
+    segments: list[tuple[date, str]] = []
+    for start, end, flag in merged:
+        segments.append((start, flag))
+        if end is not None:
+            segments.append((end + timedelta(days=1), FLAG_NONE))
+    intervals = _intervals_from_segments(
+        code, segments, coverage_end, fetched_at=fetched_at,
+        quote_last=quote_last, source=SOURCE_TUSHARE_NAME,
+        precision=st_history.PRECISION_EXACT)
+    coverage = {'ts_code': code, 'coverage_start': coverage_start,
+                'coverage_end': coverage_end, 'source': SOURCE_TUSHARE_NAME,
+                'fetched_at': fetched_at}
+    return intervals, coverage
 
 
 def plan_supplement(em: pl.DataFrame, coverage: pl.DataFrame,
@@ -628,7 +694,9 @@ def plan_supplement(em: pl.DataFrame, coverage: pl.DataFrame,
                     snapshot_st: set[str] | None = None,
                     em_stamp: datetime | None = None,
                     notice_stamps: dict[str, datetime] | None = None,
-                    quote_last: date | None = None) -> SupplementPlan:
+                    quote_last: date | None = None,
+                    name_history: pl.DataFrame | None = None,
+                    name_stamp: datetime | None = None) -> SupplementPlan:
     """按证据生成补充覆盖；无证据一律不写（保持 unknown）。
 
     ``em_stamp`` / ``notice_stamps`` 是**证据文件时刻**，写进 ``fetched_at``；缺省时退到
@@ -641,6 +709,21 @@ def plan_supplement(em: pl.DataFrame, coverage: pl.DataFrame,
     registry_stamp = em_stamp or fallback_stamp
     covered = set(coverage['ts_code'].to_list())
     plan = SupplementPlan()
+    nh_stamp = name_stamp or registry_stamp
+
+    def _name_history_fallback(code_: str, start_: date, end_: date) -> bool:
+        """EM 登记册/公告定日都补不出时，用名称变更逐段兜底。"""
+        built = _plan_from_name_history(
+            code_, name_history, start_, end_,
+            fetched_at=nh_stamp, quote_last=quote_last)
+        if built is None:
+            return False
+        intervals, cov = built
+        plan.intervals.extend(intervals)
+        plan.coverage.append(cov)
+        plan.name_history += 1
+        return True
+
     for code in pool:
         if code in covered:
             continue
@@ -652,6 +735,8 @@ def plan_supplement(em: pl.DataFrame, coverage: pl.DataFrame,
         start, end = max(window[0], date(1990, 1, 1)), min(window[1], today)
         row = em.filter(pl.col('secucode') == code)
         if row.height == 0:
+            if _name_history_fallback(code, start, end):
+                continue
             plan.unresolved.append({'ts_code': code, 'reason': 'not_in_name_registry',
                                     'former_names': '', 'evidence': ''})
             continue
@@ -669,6 +754,8 @@ def plan_supplement(em: pl.DataFrame, coverage: pl.DataFrame,
             continue
         segments = _segments_from_events(notices.get(code, []))
         if not segments:
+            if _name_history_fallback(code, start, end):
+                continue
             plan.unresolved.append({
                 'ts_code': code, 'reason': 'st_name_without_dated_event',
                 'former_names': former, 'evidence': name})
@@ -715,11 +802,36 @@ def build_supplement(store_root: Path | str, *,
         raise RuntimeError('行情池为空，无法确定覆盖窗口')
     quote_last = max(end for _, end in quote_windows.values())
     cutoff = today or quote_last
+    # 名录兜底：无本地行情的老退市股也要进入覆盖统计，窗口取「上市日 ~ 退市日/行情末」，
+    # 否则这批标的永远不进 plan，任何重建都会重新丢回 unknown。
+    registry_extra = 0
+    basic_file = root / 'meta' / 'stock_basic.parquet'
+    if basic_file.is_file():
+        basic = pl.read_parquet(basic_file)
+        if {'ts_code', 'list_date'} <= set(basic.columns):
+            cols = [c for c in ('ts_code', 'list_date', 'delist_date')
+                    if c in basic.columns]
+            for row in basic.select(cols).to_dicts():
+                code = row['ts_code']
+                if code in quote_windows or row['list_date'] is None:
+                    continue
+                end = row.get('delist_date') or cutoff
+                end = min(end, cutoff)
+                if end < row['list_date']:
+                    continue
+                quote_windows[code] = (row['list_date'], end)
+                registry_extra += 1
+            pool = list(dict.fromkeys([*pool, *quote_windows]))
+    name_history = pl.read_parquet(name_history_path(root)) \
+        if name_history_path(root).is_file() else None
+    if name_history is None:
+        raise RuntimeError('缺少 meta/name_history.parquet，无法兜底补覆盖')
     notice_files = {path.stem: path
                     for path in candidate_notice_dir(root).glob('*.parquet')}
     notices = {code: pl.read_parquet(path).to_dicts()
                for code, path in notice_files.items()}
     em_stamp = _file_stamp(em_raw_path(root))
+    name_stamp = _file_stamp(name_history_path(root))
     notice_stamps = {code: _file_stamp(path) for code, path in notice_files.items()}
     snapshot, _ = st_history._latest_snapshot(root)
     snapshot_st = set(snapshot.filter(pl.col('status') == st_history.STATUS_ST)['code']
@@ -727,7 +839,9 @@ def build_supplement(store_root: Path | str, *,
     plan = plan_supplement(em, coverage, pool, quote_windows, notices,
                            today=cutoff, snapshot_st=snapshot_st,
                            em_stamp=em_stamp, notice_stamps=notice_stamps,
-                           quote_last=quote_last)
+                           quote_last=quote_last,
+                           name_history=name_history, name_stamp=name_stamp)
+    plan.registry_extra = registry_extra
 
     interval_frame = pl.DataFrame(plan.intervals, schema=_INTERVAL_SCHEMA) \
         if plan.intervals else pl.DataFrame(schema=_INTERVAL_SCHEMA)
@@ -747,7 +861,7 @@ def build_supplement(store_root: Path | str, *,
     _write_atomic(coverage_frame, supplement_coverage_path(root))
     _write_csv(unresolved, unresolved_path(root))
 
-    run_at = max([em_stamp, *notice_stamps.values()])
+    run_at = max([em_stamp, name_stamp, *notice_stamps.values()])
     summary = {
         'built_at': run_at.isoformat(timespec='seconds'),
         'built_at_basis': '上游证据文件 mtime 最大值（确定性，非运行时刻）',
@@ -759,6 +873,10 @@ def build_supplement(store_root: Path | str, *,
         'uncovered_before': len([c for c in pool if c not in set(coverage['ts_code'])]),
         'clean_negative_coverage': plan.clean,
         'dated_candidate_coverage': plan.dated,
+        'name_history_coverage': plan.name_history,
+        'name_history_interval_rows': sum(
+            1 for row in plan.intervals if row['source'] == SOURCE_TUSHARE_NAME),
+        'registry_extra_codes': plan.registry_extra,
         'unresolved': len(plan.unresolved),
         'unresolved_by_reason': _count_reason(plan.unresolved),
         'supplement_interval_rows': interval_frame.height,
