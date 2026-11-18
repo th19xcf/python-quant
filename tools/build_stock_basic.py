@@ -654,10 +654,31 @@ def merge_with_existing(
     return merged, diffs, counters
 
 
+def _lost_values(existing: pl.DataFrame, merged: pl.DataFrame) -> dict[str, int]:
+    """现有代码中「原非空、合并后为空」的行数（按列）；新增代码不计。"""
+    lost: dict[str, int] = {}
+    for name in existing.columns:
+        if name == 'ts_code' or name not in merged.columns:
+            continue
+        pairs = existing.select(['ts_code', name]).join(
+            merged.select(['ts_code', name]), on='ts_code', how='inner',
+            suffix='_merged')
+        count = int(pairs.filter(
+            pl.col(name).is_not_null() & pl.col(f'{name}_merged').is_null()).height)
+        if count:
+            lost[name] = count
+    return lost
+
+
 def _merge_into_existing(
     candidate: pl.DataFrame, target: Path, *, guards: bool = True,
 ) -> tuple[pl.DataFrame, list[dict[str, str]], dict[str, int]]:
-    """把候选与现有正式表做兜底合并，并断言行数、代码集与空值数都不退化。"""
+    """把候选与现有正式表做兜底合并，并断言行数、代码集与既有值都不退化。
+
+    空值判定只针对「现有表已收录的代码」逐码逐列核对：新上市标的没有摘牌日
+    （``delist_date`` 为空）属正常业务，属新增行而不是既有证据退化；只有现有
+    代码从有值变成空（重建抹掉既有日期或名称）才判失败。
+    """
     if not target.is_file():
         return candidate, [], {}
     existing = pl.read_parquet(target)
@@ -665,17 +686,25 @@ def _merge_into_existing(
         return candidate, [], {}
 
     _print_one('候选 vs 现有 meta/stock_basic.parquet', compare(candidate, existing))
-    before_nulls = {name: int(existing[name].null_count()) for name in existing.columns}
     merged, diffs, counters = merge_with_existing(candidate, existing, guards=guards)
-    after_nulls = {name: int(merged[name].null_count()) for name in existing.columns}
-    for name, old in before_nulls.items():
-        if after_nulls.get(name, 0) > old:
-            raise RuntimeError(
-                f'合并现有表后 {name} 空值增加: {old} -> {after_nulls[name]}')
     if merged.height < existing.height:
         raise RuntimeError(f'合并后行数减少: 现有 {existing.height} -> {merged.height}')
     if not set(existing['ts_code']) <= set(merged['ts_code']):
         raise RuntimeError('合并后丢失现有 ts_code')
+    new_codes = sorted(set(candidate['ts_code']) - set(existing['ts_code']))
+    if new_codes:
+        counters['new_codes'] = len(new_codes)
+        null_fields = sorted({
+            name for name in existing.columns if name != 'ts_code'
+            and int(merged.filter(pl.col('ts_code').is_in(new_codes))[name].null_count())
+        })
+        counters['new_codes_null_fields'] = len(null_fields)
+        print(f'新增代码 {len(new_codes)} 只（新上市/新入表，日期链空值不计退化）: '
+              f'{_sample(new_codes)}；空值列 {null_fields or "-"}')
+    lost = _lost_values(existing, merged)
+    if lost:
+        detail = ', '.join(f'{name} {count} 行' for name, count in sorted(lost.items()))
+        raise RuntimeError(f'合并后现有代码的值退化（有值→空）: {detail}')
     print('现有表兜底合并: ' + str(counters))
     return merged, diffs, counters
 

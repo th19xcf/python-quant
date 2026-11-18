@@ -806,6 +806,12 @@ def coverage_gaps(results: list[ManifestResult], root: Path) -> dict[str, dict[s
     ``backtest_runs/`` 整段跳过：回测运行记录（spec 快照、metrics、净值 CSV、日志、
     索引）是结果归档而非数据表，按定义没有 manifest，计入只会长期刷
     ``no_manifest_nonparquet`` 噪声。
+
+    ``_backup/`` 整段跳过：回滚快照是正式文件的副本，不是独立数据集；本文件
+    已在 record 收集处（``collect_records`` 的 ``'_backup/' in text`` 分支）按
+    同一口径排除，覆盖率统计必须与之同口径，否则同一工具两处判定互相矛盾
+    （2026-11-18 实测：7 个 ``_backup/**`` 快照 parquet 把全库 check 从 PASS 顶成
+    FAIL）。快照的正确性由备份/恢复链负责，不由数据集核对负责。
     """
     covered = covered_paths(results, root)
     manifest_dirs = {path.parent.resolve() for path in discover(root)}
@@ -815,7 +821,7 @@ def coverage_gaps(results: list[ManifestResult], root: Path) -> dict[str, dict[s
         if not path.is_file() or path.name.endswith('manifest.json'):
             continue
         rel = path.relative_to(root).as_posix()
-        if rel.startswith('backtest_runs/'):
+        if rel.startswith('backtest_runs/') or rel.startswith('_backup/'):
             continue
         if str(path.resolve()).lower() in covered:
             continue

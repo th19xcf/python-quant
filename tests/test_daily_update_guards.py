@@ -7,14 +7,37 @@
 4. 新增两步位于构建之后、洁净集之前，备份与门禁仍是末尾两步。
 """
 
+import struct
 import types
 from datetime import date
 
 import polars as pl
 
 import src.data.local_store.fund_factors as fund_module
+from src.data.local_store.build import build_frame
 from tools import daily_update as du
 from tools.daily_update import LocalFactorStore, LocalQuoteStore
+
+
+def _write_day(tdx, market: str, code: str, records) -> None:
+    """合成通达信 ``.day``：day/open/high/low/close/volume/amount，价格 ×100。"""
+    path = tdx / market / 'lday' / f'{market}{code}.day'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'wb') as f:
+        for day, open_, high, low, close, volume, amount in records:
+            f.write(struct.pack(
+                '<IIIIIfII', int(day), int(open_ * 100), int(high * 100),
+                int(low * 100), int(close * 100), float(amount), int(volume * 100), 0))
+
+
+def _records(count: int, start: date = date(2024, 1, 2), amount: float = 1000.0):
+    rows = []
+    for i in range(count):
+        day = start.replace(day=start.day + i)
+        close = 10.0 + i * 0.5
+        rows.append((day.strftime('%Y%m%d'), close, close + 0.5,
+                     close - 0.5, close, 100.0 + i, amount))
+    return rows
 
 
 def _write_daily_index(root, rows: list[tuple[str, str, date]]) -> None:
@@ -51,7 +74,8 @@ def test_daily_index_end_mismatch_fails_build_step(tmp_path, monkeypatch):
     """负向用例：daily_index 停在 11-13、最近交易日 11-16 → 必红且退出码 1。"""
     _write_daily_index(tmp_path, [('600000.SH', 'stock', date(2026, 11, 13))])
     plan = types.SimpleNamespace(root=tmp_path, latest=date(2026, 11, 16),
-                                 codes=None, range_label='2026-11-13~2026-11-16')
+                                 codes=None, range_label='2026-11-13~2026-11-16',
+                                 expected=set(), plan_quote=set())
     args = _build_args()
     monkeypatch.setattr(du, '_run_build', lambda **kwargs: 0)
     monkeypatch.setattr(du, '_recent_completed_trade_day', lambda root: date(2026, 11, 16))
@@ -69,13 +93,43 @@ def test_daily_index_end_mismatch_fails_build_step(tmp_path, monkeypatch):
 def test_daily_index_end_match_passes_build_step(tmp_path, monkeypatch):
     _write_daily_index(tmp_path, [('600000.SH', 'stock', date(2026, 11, 16))])
     plan = types.SimpleNamespace(root=tmp_path, latest=date(2026, 11, 16),
-                                 codes=None, range_label='2026-11-16~2026-11-16')
+                                 codes=None, range_label='2026-11-16~2026-11-16',
+                                 expected=set(), plan_quote=set())
     monkeypatch.setattr(du, '_run_build', lambda **kwargs: 0)
     monkeypatch.setattr(du, '_recent_completed_trade_day', lambda root: date(2026, 11, 16))
 
     ok, detail = du._step_build(plan, _build_args())
     assert ok is True
     assert '=' in detail
+
+
+def test_build_targets_registers_expected_and_keeps_plan_frozen(tmp_path):
+    """预期集合取构建同一判定：同日末行修订要登记，且冻结计划上可原地更新。"""
+    tdx = tmp_path / 'tdx'
+    _write_day(tdx, 'sh', '600000', _records(3))
+    root = tmp_path / 'data' / 'local_store'
+    store = du.LocalQuoteStore(root)
+    factor_store = du.LocalFactorStore(root)
+    store.write_daily('stock', '600000.SH',
+                      build_frame('stock', '600000.SH', tdx / 'sh' / 'lday' / 'sh600000.day',
+                                  factor_store), full=True)
+    store.flush_meta()
+    plan = du._Plan(
+        root=root, config=types.SimpleNamespace(
+            data=types.SimpleNamespace(tdx_data_path=str(tdx))),
+        store=store, factor_store=factor_store, data_types=['stock'], codes=None,
+        latest=date(2024, 1, 4), coverage={}, gaps=[], skipped=[], inputs={},
+        expected=set(), plan_quote=set(), range_label='', marker_ts=0.0)
+
+    assert du._build_targets(plan) == set()
+
+    _write_day(tdx, 'sh', '600000', _records(3, amount=9999.0))
+    got = du._build_targets(plan)
+    assert got == {'quotes/stock/sh/600000.SH.parquet',
+                   'quotes/stock/sh/600000.SH.manifest.json'}
+    plan.expected.update(got)
+    plan.plan_quote.update(got)
+    assert got <= plan.expected and got <= plan.plan_quote
 
 
 def test_fund_quote_step_skips_when_up_to_date(tmp_path, monkeypatch):
@@ -122,7 +176,7 @@ def test_factor_step_skips_when_aligned(tmp_path):
 
 def test_step_plan_keeps_hard_order_and_new_steps():
     keys = [key for key, _, _ in du.STEP_PLAN]
-    assert len(keys) == 17
+    assert len(keys) == 18
     assert keys[-2:] == ['backup', 'gate']
     assert keys.index('build') < keys.index('fund_quote') < keys.index('factor')
     assert keys.index('factor') < keys.index('clean_set')

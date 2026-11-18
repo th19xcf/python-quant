@@ -19,7 +19,8 @@ from pathlib import Path
 
 import polars as pl
 
-from src.data.atomic_write import write_parquet_atomic
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
+from src.data.manifest_refresh import file_facts
 
 ROOT = Path(__file__).resolve().parents[1]
 STORE = ROOT / 'data' / 'local_store'
@@ -99,6 +100,31 @@ def probe_stock(symbol: str) -> tuple[str, int | None, str]:
     except Exception as exc:  # noqa: BLE001
         return 'error', None, f'{type(exc).__name__}: {exc}'
     return ('empty' if len(frame) == 0 else 'rows'), len(frame), ''
+
+
+def write_ledger_manifest() -> None:
+    """按磁盘实测写侧车 manifest（台账重建后必须刷新，否则全库 check 报未定位）。"""
+    facts = file_facts(OUT_PATH)
+    payload = {
+        'path': 'meta/dividend_status/no_dividend_ledger.parquet',
+        'dataset': ('「已确认无分红 / 未确认覆盖」判定清单：一行 = 一只标的在某一判定状态下'
+                    '的一条判定记录，字段说明见同目录 README.md。'),
+        'source': ('由 tools/build_no_dividend_ledger.py 生成：confirmed_no_dividend 只认'
+                   '独立探针取证（接口明确返回空记录），其余归 unconfirmed_coverage；'
+                   '本侧车只记录该表的磁盘实测统计（rows/bytes/sha256）。'),
+        'authority': ('tools/build_no_dividend_ledger.py 是该清单的唯一产者，'
+                      'src/data/managers/data_fetcher.py 只读消费；本侧车是分片记账，不自立权威。'),
+        'semantics': ('一行 = 一条判定记录；status 只有 confirmed_no_dividend / '
+                      'unconfirmed_coverage 两值，「因子全 1」或「年度分红表无该代码」都不构成'
+                      '确认无分红，不得据此改写 status。'),
+        'rows': facts['rows'],
+        'bytes': facts['bytes'],
+        'sha256': facts['sha256'],
+        'columns': facts['columns'],
+        'generated_at': datetime.now().isoformat(timespec='seconds'),
+    }
+    write_text_atomic(json.dumps(payload, ensure_ascii=False, indent=2) + '\n',
+                      OUT_PATH.with_suffix('.manifest.json'))
 
 
 def build(probe_codes: list[str], delay: float,  # noqa: C901
@@ -287,6 +313,7 @@ def build(probe_codes: list[str], delay: float,  # noqa: C901
                           how='vertical_relaxed').sort(['status', 'kind', 'ts_code'])
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     write_parquet_atomic(frame, OUT_PATH, compression='zstd', statistics=True)
+    write_ledger_manifest()
     if probed_evidence:
         probe_log = OUT_DIR / f'probe_evidence_{decided}.json'
         existing = {}

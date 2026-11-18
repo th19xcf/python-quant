@@ -49,6 +49,7 @@ from src.data.local_store.build import (
     discover_local_files,
     main,
     refresh_factors,
+    stale_targets,
     verify_incremental_target,
 )
 from src.data.local_store.session_guard import filter_nontrading_rows
@@ -306,6 +307,20 @@ def test_target_is_stale_detects_changed_last_row(tmp_path):
     path, store, _ = _prepare_local(tmp_path)
     _write_day(tmp_path / 'tdx', 'sh', '600000', _records(3, amount=9999.0))
     assert _target_is_stale(store, 'stock', '600000.SH', path) is True
+
+
+def test_stale_targets_mirrors_build_predicate(tmp_path):
+    """预期集合与构建同判定：同日末行修订、日期前进、已最新三类都要一致。"""
+    _path, store, _ = _prepare_local(tmp_path)
+    tdx = tmp_path / 'tdx'
+    assert stale_targets(tdx, store) == []
+
+    _write_day(tdx, 'sh', '600000', _records(3, amount=9999.0))
+    assert [t[1] for t in stale_targets(tdx, store)] == ['600000.SH']
+
+    _write_day(tdx, 'sh', '600000', _records(4))
+    assert [t[1] for t in stale_targets(tdx, store)] == ['600000.SH']
+    assert stale_targets(tdx, store, codes=['600001.SH']) == []
 
 
 def test_incremental_plan_counts_stale_rows(tmp_path):

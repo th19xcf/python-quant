@@ -105,3 +105,21 @@ def test_manifest_files_are_not_counted_as_orphans(tmp_path: Path) -> None:
 
     assert _total(gaps, 'no_manifest_nonparquet') == 1
     assert gaps['no_manifest_nonparquet']['meta/mixed'] == ['meta/mixed/data.csv']
+
+
+def test_backup_snapshot_parquet_is_not_counted(tmp_path: Path) -> None:
+    """``_backup/`` 是回滚快照（正式件副本），与 collect_records 同口径排除。
+
+    同时放入一个同名正式路径，证明排除范围只限 ``_backup/`` 子树，
+    没有把 parquet 一类整体豁免（DG-31：判定不得恒真）。
+    """
+    _touch(tmp_path / '_backup' / 'valuation_daily_fix_20261115' / 'valuation_daily.parquet')
+    _touch(tmp_path / 'meta' / 'valuation' / 'valuation_daily.parquet')
+
+    gaps = coverage_gaps([], tmp_path)
+
+    assert _total(gaps, 'no_manifest') == 1
+    assert gaps['no_manifest']['meta/valuation'] == [
+        'meta/valuation/valuation_daily.parquet']
+    assert _total(gaps, 'no_manifest_nonparquet') == 0
+    assert render([], gaps, 8, None) == 1

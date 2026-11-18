@@ -315,6 +315,34 @@ def _incremental_plan(
     return stale_count, planned_rows
 
 
+def stale_targets(
+    tdx_path: Path, quote_store: LocalQuoteStore, *,
+    data_type: str = 'all', codes: Iterable[str] | None = None,
+    max_date: date | None = None,
+) -> list[tuple[str, str, Path]]:
+    """列出增量构建真正会重写的目标（与 ``_target_is_stale`` 同一判定）。
+
+    日更的「预期变更集合」必须与构建写盘口径一致：源 ``.day`` 被重新同步后，
+    即使末根日期没前进，只要末行内容（OHLC/量额）变了，构建也会重写该件。
+    只按末根日期推导预期会把这类正常刷新误报成「预期外改动」。这里只读探测，
+    不落盘。
+    """
+    wanted = {code.strip().upper() for code in (codes or ()) if code.strip()}
+    targets: list[tuple[str, str, Path]] = []
+    for kind, ts_code, path in discover_local_files(tdx_path, data_type):
+        if wanted and ts_code.upper() not in wanted:
+            continue
+        try:
+            stale = _target_is_stale(
+                quote_store, kind, ts_code, path, max_date=max_date)
+        # 兜底理由：单个源文件读失败按「不重写」处理，与构建循环里的跳过一致
+        except (OSError, ValueError, RuntimeError):
+            continue
+        if stale:
+            targets.append((kind, ts_code, path))
+    return targets
+
+
 def _merge_source_with_existing(
     quote_store: LocalQuoteStore, kind: str, ts_code: str,
     fresh: pl.DataFrame, since: date | None,

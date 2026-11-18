@@ -13,10 +13,13 @@ from datetime import date
 from typing import Any
 
 import polars as pl
+import pytest
 
 from tools.build_stock_basic import (
     COLUMNS,
     SCHEMA,
+    _lost_values,
+    _merge_into_existing,
     clean_name,
     merge_with_existing,
     name_guard_reason,
@@ -141,3 +144,53 @@ def test_guard_does_not_pin_quoted_delist() -> None:
 
     assert merged['delist_date'][0] == date(2020, 1, 2)
     assert counters['guard_keep_existing'] == 0
+
+
+def test_lost_values_flags_only_existing_codes() -> None:
+    """既有代码有值→空要报；新增代码的空值不属退化。"""
+    existing = _frame([
+        {'ts_code': '600680.SH', 'name': '上海普天', 'delist_date': date(2019, 5, 23)},
+    ])
+    kept = _frame([
+        {'ts_code': '600680.SH', 'name': '上海普天', 'delist_date': date(2019, 5, 23)},
+        {'ts_code': '920309.BJ', 'name': '新股甲'},
+    ])
+    degraded = _frame([
+        {'ts_code': '600680.SH', 'name': '上海普天'},
+        {'ts_code': '920309.BJ', 'name': '新股甲'},
+    ])
+
+    assert _lost_values(existing, kept) == {}
+    assert _lost_values(existing, degraded) == {'delist_date': 1}
+
+
+def test_merge_allows_null_from_new_listing(tmp_path) -> None:
+    """新上市标的没有摘牌日 → 空值增加属正常业务，放行并记新增代码数。"""
+    target = tmp_path / 'stock_basic.parquet'
+    _frame([{'ts_code': '600000.SH', 'name': '浦发银行'}]).write_parquet(target)
+    candidate = _frame([
+        {'ts_code': '600000.SH', 'name': '浦发银行'},
+        {'ts_code': '920309.BJ', 'name': '新股甲', 'list_date': date(2026, 11, 18)},
+    ])
+
+    merged, _, counters = _merge_into_existing(candidate, target)
+
+    assert merged.height == 2
+    assert counters['new_codes'] == 1
+    assert merged.filter(pl.col('ts_code') == '920309.BJ')['delist_date'][0] is None
+
+
+def test_merge_rejects_value_loss_of_existing_code(tmp_path, monkeypatch) -> None:
+    """既有代码的摘牌日被合并抹成空 → 仍须报错（守卫不是「不比」）。"""
+    target = tmp_path / 'stock_basic.parquet'
+    _frame([{
+        'ts_code': '600680.SH', 'name': '上海普天',
+        'delist_date': date(2019, 5, 23),
+    }]).write_parquet(target)
+    candidate = _frame([{'ts_code': '600680.SH', 'name': '上海普天'}])
+    monkeypatch.setattr(
+        'tools.build_stock_basic.merge_with_existing',
+        lambda c, e, guards=True: (c, [], {}))
+
+    with pytest.raises(RuntimeError, match='值退化'):
+        _merge_into_existing(candidate, target)

@@ -811,35 +811,28 @@ def _run_build(*, since: date | None, end: date | None,
     return _run_module(cmd, '本地构建')
 
 
-def _tdx_stale(root: Path, tdx_path: Path | None,
-               coverage: dict[tuple[str, str], dict[str, Any]],
-               codes: set[str] | None) -> set[str]:
-    """按通达信源末行日期算本次构建会写的行情件（只读探测，不落盘）。"""
-    if tdx_path is None or not tdx_path.is_dir():
+def _build_targets(plan: _Plan) -> set[str]:
+    """本轮 build 会重写的行情件（与 ``build._target_is_stale`` 同一判定）。
+
+    预期集合必须与构建写盘口径一致：源 ``.day`` 被重新同步后，即使末根日期
+    没前进，只要末行内容变了，构建也会重写该件；只按日期推导会把这些正常
+    刷新误报成「预期外改动」。在构建前一刻取当前覆盖度，避免计划时点与构建
+    时点之间的采集写入造成口径差。
+    """
+    tdx_root = getattr(getattr(getattr(plan, 'config', None), 'data', None),
+                       'tdx_data_path', None)
+    if not tdx_root or not Path(tdx_root).is_dir():
         return set()
-    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+    from src.data.local_store.build import stale_targets  # noqa: PLC0415
 
-    from src.data.local_store.build import discover_local_files  # noqa: PLC0415
-    from src.data.tdx_day_parser import read_first_last_trade_date  # noqa: PLC0415
-
-    store = LocalQuoteStore(root)
-
-    def probe(item: tuple[str, str, Path]) -> str | None:
-        kind, ts_code, path = item
-        if codes is not None and ts_code not in codes:
-            return None
-        try:
-            _first, last = read_first_last_trade_date(path)
-        except (OSError, ValueError):
-            return None
-        row = coverage.get((kind, ts_code))
-        local_end = None if row is None else row.get('end')
-        if last is None or (local_end is not None and last <= local_end):
-            return None
-        return store.quote_path(kind, ts_code).relative_to(root).as_posix()
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        return {rel for rel in pool.map(probe, discover_local_files(tdx_path)) if rel}
+    rels: set[str] = set()
+    for kind, ts_code, _path in stale_targets(
+            Path(tdx_root), plan.store, data_type='all',
+            codes=plan.codes, max_date=plan.latest):
+        rel = plan.store.quote_path(kind, ts_code).relative_to(plan.root).as_posix()
+        rels.add(rel)
+        rels.add(Path(rel).with_suffix('.manifest.json').as_posix())
+    return rels
 
 
 # ----------------------------------------------------------------------
@@ -1091,10 +1084,6 @@ def _build_plan(args: argparse.Namespace) -> _Plan:
     expected.update(AUX_DIVIDEND_OUTPUTS)
     expected.update(AUX_CODE_TABLE_OUTPUTS)
     expected |= _aux_expected(root, args.basic_refresh_days, args.pool_refresh_days)
-    tdx_root = getattr(config.data, 'tdx_data_path', None)
-    tdx_stale = _tdx_stale(root, Path(tdx_root) if tdx_root else None, coverage, codes)
-    expected |= tdx_stale
-    plan_quote |= tdx_stale
     if codes:
         # --codes 模式下 build 会无条件重写这些标的，属显式声明的写目标。
         known: dict[str, set[str]] = {}
@@ -1183,6 +1172,10 @@ def _step_build(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     # 只做构建 + 末日断言，不带 build 自带的因子副本一致性门禁：那条断言要求
     # 基金行情（第 5 步）与基金因子（第 6 步）都已是目标日，放在这里会先于
     # 修复步骤失败并形成死锁。一致性断言统一在第 6 步刷新完成后执行。
+    # 预期写目标与构建同判定、取构建前一刻的覆盖度，源文件同日刷新才不会误报。
+    rewritten = _build_targets(plan)
+    plan.expected.update(rewritten)
+    plan.plan_quote.update(rewritten)
     code = _run_build(since=args.start, end=plan.latest, codes=plan.codes,
                       skip_factor_verify=True)
     if code != 0:
