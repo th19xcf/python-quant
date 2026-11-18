@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+from html import escape
 from typing import Any, Dict, List
 
 from loguru import logger
@@ -236,6 +237,10 @@ class StrategyLabPage(QWidget):
         self.status_label.setObjectName('slStatus')
         self.status_label.setWordWrap(True)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        # QLabel 高度按字体的 ascent+descent 算，QSS 又没有内边距，首行字头正好
+        # 贴在 label 上边缘（离屏实测首墨迹行=0），中文小字看上去像被裁掉一截。
+        # 只补 3px 上留白，不动宽度策略与两行结构。
+        self.status_label.setContentsMargins(0, 3, 0, 0)
         header.addWidget(self.status_label)
         root.addLayout(header)
 
@@ -467,10 +472,29 @@ class StrategyLabPage(QWidget):
         self._plot_drawdown(payload.get('drawdown') or [])
         self._plot_markers(payload.get('markers') or [])
         hint = (payload.get('dividend_coverage') or {}).get('message') or ''
-        self.status_label.setText(
+        self._set_status_result(
             f'{payload["rule_text"]}  用时 {payload["elapsed_seconds"]}s '
             f'（引擎 {payload["engine_seconds"]}s，参与标的 {payload["used_codes"]} 只）'
             + (f'  {hint}' if hint else ''))
+
+    def _set_status_result(self, text: str) -> None:
+        """结果说明用富文本：只把规则名加粗上色，其余文字仍是正文样式与折行。
+
+        规则名带「」且固定出现在 rule_text 开头，按首次出现替换成带样式
+        片段；正文与名称的字号都显式写出，不依赖 QLabel 的 QSS 继承。
+        """
+        name = (self._rule or {}).get('name') or ''
+        body = escape(text)
+        marker = escape(f'「{name}」') if name else ''
+        if marker and marker in body:
+            body = body.replace(
+                marker,
+                f'<span style="font-size:{TOKENS.font_small + 1}px;'
+                f'font-weight:600;color:{self._pal.accent};">{marker}</span>',
+                1)
+        self.status_label.setText(
+            f'<span style="font-size:{TOKENS.font_small}px;'
+            f'color:{self._pal.muted};">{body}</span>')
 
     def _fill_metrics(self, metrics: Dict[str, Any],
                       coverage_hint: str = '') -> None:
