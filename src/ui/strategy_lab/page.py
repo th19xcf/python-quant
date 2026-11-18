@@ -53,6 +53,8 @@ from src.ui.theme_manager import is_dark_palette
 
 PLOT_LEGEND_EQUITY = '策略净值'
 PLOT_LEGEND_BENCH = '基准净值'
+PLOT_LEGEND_BUY = '买入 / 补仓'
+PLOT_LEGEND_SELL = '止盈清仓'
 
 _METRIC_ROWS = (
     ('annual', '年化收益', 'pct'),
@@ -287,9 +289,16 @@ class StrategyLabPage(QWidget):
 
         section = QLabel('回测结果')
         section.setObjectName('slSectionTitle')
-        layout.addWidget(section)
 
         split = QSplitter(Qt.Horizontal)
+
+        # 「回测结果」标题放进左列，与表格同列：右列图表容器的顶边因此与标题
+        # 顶部齐平（原先标题独占整行，图表容器整体低 21px）。
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+        left_layout.addWidget(section)
 
         self.metrics_table = QTableWidget(0, 2)
         self.metrics_table.setHorizontalHeaderLabels(['指标', '数值'])
@@ -302,15 +311,24 @@ class StrategyLabPage(QWidget):
         self.metrics_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.metrics_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         use_interactive_columns(self.metrics_table)
-        split.addWidget(self.metrics_table)
+        left_layout.addWidget(self.metrics_table, 1)
+        split.addWidget(left)
 
         charts = QWidget()
         charts_layout = QVBoxLayout(charts)
         charts_layout.setContentsMargins(0, 0, 0, 0)
         charts_layout.setSpacing(8)
-        self.nav_plot = self._add_plot(charts_layout, '净值对比（起点=1）', '净值', legend=True)
+        self.nav_plot = self._add_plot(
+            charts_layout, '净值对比（起点=1）', '净值',
+            legend=[(PLOT_LEGEND_EQUITY, self._pal.accent, 'solid'),
+                    (PLOT_LEGEND_BENCH, self._pal.muted, 'dash')])
         self.drawdown_plot = self._add_plot(charts_layout, '回撤', '回撤')
-        self.marker_plot = self._add_plot(charts_layout, '调仓 / 持仓', '仓位或成分数')
+        # 买卖标记图例：只有真的出现买/卖标记时才显示，避免空条目
+        self.marker_plot = self._add_plot(
+            charts_layout, '调仓 / 持仓', '仓位或成分数',
+            legend=[(PLOT_LEGEND_BUY, self._pal.buy, 'up'),
+                    (PLOT_LEGEND_SELL, self._pal.sell, 'down')],
+            legend_visible=False)
         self._link_x_axes()
         split.addWidget(charts)
         split.setStretchFactor(0, 1)
@@ -318,19 +336,23 @@ class StrategyLabPage(QWidget):
         layout.addWidget(split, 1)
         return card
 
-    def _add_plot(self, layout: QVBoxLayout, title: str, ylabel: str, *, legend: bool = False):
+    def _add_plot(self, layout: QVBoxLayout, title: str, ylabel: str, *,
+                  legend: List[tuple] | None = None, legend_visible: bool = True):
         """三张图共用一套样式：卡片底、palette 网格、TOKENS 坐标轴；图例按需建在标题行。"""
         section = QLabel(title)
         section.setObjectName('slSectionTitle')
+        badge = None
         if legend:
             # 图例放在标题行右侧：与标题同高、右对齐，完全不进入绘图区，
             # 任何数据形态都不会被图例遮住。
+            badge = self._legend_badge(legend)
+            badge.setVisible(legend_visible)
             title_row = QHBoxLayout()
             title_row.setContentsMargins(0, 0, 0, 0)
             title_row.setSpacing(8)
             title_row.addWidget(section)
             title_row.addStretch(1)
-            title_row.addWidget(self._legend_badge())
+            title_row.addWidget(badge)
             layout.addLayout(title_row)
         else:
             layout.addWidget(section)
@@ -348,11 +370,12 @@ class StrategyLabPage(QWidget):
             plot = QLabel('当前环境缺少 pyqtgraph，仅展示指标')
             plot.setObjectName('slNotes')
             plot.setWordWrap(True)
+        plot.legend_badge = badge
         layout.addWidget(plot, 1)
         return plot
 
-    def _legend_badge(self) -> QWidget:
-        """标题行图例：两条条目与曲线同色（策略实线、基准虚线），底半透明。"""
+    def _legend_badge(self, entries: List[tuple]) -> QWidget:
+        """标题行图例：条目 = (名称, 颜色, 线型/标记)，底色半透明。"""
         badge = QWidget()
         badge.setObjectName('slLegend')
         badge.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -366,12 +389,11 @@ class StrategyLabPage(QWidget):
         box = QHBoxLayout(badge)
         box.setContentsMargins(8, 2, 10, 2)
         box.setSpacing(14)
-        for text, color, dashed in ((PLOT_LEGEND_EQUITY, self._pal.accent, False),
-                                    (PLOT_LEGEND_BENCH, self._pal.muted, True)):
+        for text, color, kind in entries:
             entry = QHBoxLayout()
             entry.setSpacing(5)
             swatch = QLabel()
-            swatch.setPixmap(self._legend_swatch(color, dashed))
+            swatch.setPixmap(self._legend_swatch(color, kind))
             swatch.setFixedSize(16, 8)
             name = QLabel(text)
             entry.addWidget(swatch, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -380,18 +402,35 @@ class StrategyLabPage(QWidget):
         return badge
 
     @staticmethod
-    def _legend_swatch(color: str, dashed: bool) -> Any:
-        """图例色条：实线对应策略曲线，虚线对应基准曲线，与绘图 pen 同一套颜色。"""
-        from PySide6.QtGui import QPainter, QPen, QPixmap
+    def _legend_swatch(color: str, kind: str) -> Any:
+        """图例色条：solid/dash 画线段，up/down 画买卖三角，与绘图标记同一套规格。"""
+        from PySide6.QtGui import QPainter, QPainterPath, QPen, QPixmap
 
         pixmap = QPixmap(16, 8)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
-        pen = QPen(QColor(color))
-        pen.setWidth(2)
-        pen.setStyle(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine)
-        painter.setPen(pen)
-        painter.drawLine(0, 4, 15, 4)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if kind in ('up', 'down'):
+            path = QPainterPath()
+            if kind == 'up':
+                path.moveTo(8, 0)
+                path.lineTo(14, 7)
+                path.lineTo(2, 7)
+            else:
+                path.moveTo(2, 0)
+                path.lineTo(14, 0)
+                path.lineTo(8, 7)
+            path.closeSubpath()
+            painter.setPen(QPen(QColor(color), 1))
+            painter.setBrush(QColor(color))
+            painter.drawPath(path)
+        else:
+            pen = QPen(QColor(color))
+            pen.setWidth(2)
+            pen.setStyle(Qt.PenStyle.DashLine if kind == 'dash'
+                         else Qt.PenStyle.SolidLine)
+            painter.setPen(pen)
+            painter.drawLine(0, 4, 15, 4)
         painter.end()
         return pixmap
 
@@ -616,26 +655,72 @@ class StrategyLabPage(QWidget):
         if not hasattr(self.marker_plot, 'plot'):
             return
         self.marker_plot.clear()
+        badge = getattr(self.marker_plot, 'legend_badge', None)
         if not markers:
+            if badge is not None:
+                badge.setVisible(False)
             return
         index = {day: i for i, day in enumerate(self._nav_dates)}
-        xs: List[int] = []
-        ys: List[float] = []
-        for marker in markers:
+        buy_x: List[int] = []
+        buy_y: List[float] = []
+        sell_x: List[int] = []
+        sell_y: List[float] = []
+        other_x: List[int] = []
+        other_y: List[float] = []
+        prev_position = 0.0
+        for marker in sorted(markers, key=lambda m: index.get(str(m.get('date')), -1)):
             x = index.get(str(marker.get('date')))
             if x is None:
                 continue
+            position = marker.get('position')
             if marker.get('members') is not None:
                 y = float(marker['members'])
             else:
-                y = float(marker.get('position') or 1.0)
-            xs.append(x)
-            ys.append(y)
+                y = float(position or 1.0)
+            reason = marker.get('reason')
+            if reason == 'take_profit':
+                kind = 'sell'
+            elif reason in ('initial', 'add'):
+                kind = 'buy'
+            elif position is not None:
+                # 择时 / 切换规则没有 reason，只给仓位：按与上一笔的仓位变化定方向，
+                # 上升算加仓、下降算减仓或清仓
+                delta = float(position) - prev_position
+                kind = 'buy' if delta > 0 else ('sell' if delta < 0 else None)
+            else:
+                kind = None
+            if position is not None:
+                prev_position = float(position)
+            if kind == 'buy':
+                buy_x.append(x)
+                buy_y.append(y)
+            elif kind == 'sell':
+                sell_x.append(x)
+                sell_y.append(y)
+            else:
+                # 选股调仓没有买卖方向，沿用中性圆点
+                other_x.append(x)
+                other_y.append(y)
+        xs = buy_x + sell_x + other_x
         if not xs:
             return
-        self.marker_plot.plot(xs, ys, pen=None, symbol='o', symbolSize=6,
-                              symbolBrush=QColor(self._pal.hold),
-                              symbolPen=QColor(self._pal.hold))
+        if other_x:
+            self.marker_plot.plot(other_x, other_y, pen=None, symbol='o', symbolSize=6,
+                                  symbolBrush=QColor(self._pal.hold),
+                                  symbolPen=QColor(self._pal.hold))
+        # 买入用红色上三角、卖出用绿色下三角，颜色取页内涨跌 token；描边用卡片底
+        # 色隔开重叠标记。同一交易日同向多笔共用一个 x，标记完全叠放（不做偏移）。
+        if buy_x:
+            self.marker_plot.plot(buy_x, buy_y, pen=None, symbol='t', symbolSize=9,
+                                  symbolBrush=QColor(self._pal.buy),
+                                  symbolPen=QColor(self._pal.card))
+        if sell_x:
+            self.marker_plot.plot(sell_x, sell_y, pen=None, symbol='t1', symbolSize=9,
+                                  symbolBrush=QColor(self._pal.sell),
+                                  symbolPen=QColor(self._pal.card))
+        badge = getattr(self.marker_plot, 'legend_badge', None)
+        if badge is not None:
+            badge.setVisible(bool(buy_x or sell_x))
         guide = QColor(self._pal.hold)
         guide.setAlpha(90)
         for x in xs:

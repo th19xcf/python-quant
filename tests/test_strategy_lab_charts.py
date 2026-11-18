@@ -68,8 +68,12 @@ def test_marker_points_survive_linked_full_range() -> None:
     QApplication.processEvents()
     _assert_x(page.marker_plot, 0, len(nav) - 1)
 
-    item = page.marker_plot.listDataItems()[0]
-    xs, _ = item.getData()
+    # 买卖标记按方向拆成多条曲线，这里汇总所有数据项，条数口径不变
+    xs: list[float] = []
+    for item in page.marker_plot.listDataItems():
+        part, _ = item.getData()
+        if part is not None:
+            xs.extend(float(v) for v in part)
     assert len(xs) == len(markers)
     assert min(xs) >= 0 and max(xs) <= len(nav) - 1
     page.deleteLater()
