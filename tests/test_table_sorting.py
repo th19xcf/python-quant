@@ -281,6 +281,55 @@ def test_large_table_uses_fixed_row_height(qapp):
         page.close()
 
 
+def _brinson_result():
+    """构造一份逐期结果：区间本身是 ISO 日期字符串，字典序与时间序一致。"""
+    from src.quant.analysis.attribution_state import BrinsonPeriod, BrinsonResult
+
+    periods = tuple(
+        BrinsonPeriod(start=start, end=end, allocation=0.01, selection=0.02,
+                      interaction=0.0, portfolio_return=0.03,
+                      benchmark_return=0.02)
+        for start, end in (
+            ('2026-10-08', '2026-10-30'),
+            ('2026-10-30', '2026-11-02'),
+            ('2026-11-02', '2026-11-03'),
+            ('2026-11-03', '2026-11-13'),
+        ))
+    return BrinsonResult(
+        benchmark='全市场等权', periods=periods, allocation=0.01, selection=0.02,
+        interaction=0.0, portfolio_return=0.03, benchmark_return=0.02,
+        excess=0.01, information_ratio=0.5, alpha=0.01, alpha_t=1.0)
+
+
+def test_brinson_initial_interval_descending_without_indicator(qapp):
+    """逐期明细初始按区间倒序，且基准/区间两张表初始都不显示排序箭头。"""
+    from types import SimpleNamespace
+
+    page = _open_page(qapp, AttributionPage)
+    try:
+        page.brinson_card.setVisible(True)
+        qapp.processEvents()
+        result = _brinson_result()
+        page._fill_brinson(SimpleNamespace(brinson=result, benchmarks=(result,)))
+        qapp.processEvents()
+        table = page.brinson_table
+        header = table.horizontalHeader()
+        assert _column_texts(table, 1) == [
+            '2026-11-03 ~ 2026-11-13', '2026-11-02 ~ 2026-11-03',
+            '2026-10-30 ~ 2026-11-02', '2026-10-08 ~ 2026-10-30']
+        assert not header.isSortIndicatorShown(), '初始表头不应显示排序箭头'
+        assert not page.benchmark_table.horizontalHeader().isSortIndicatorShown()
+
+        header.sectionClicked.emit(1)
+        qapp.processEvents()
+        assert header.isSortIndicatorShown(), '点击区间表头后应出现箭头'
+        assert header.sortIndicatorSection() == 1
+        assert header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
+        assert _column_texts(table, 1)[0] == '2026-10-08 ~ 2026-10-30'
+    finally:
+        page.close()
+
+
 @pytest.mark.parametrize(('module', 'name'), [
     ('src.ui.table_sizing', 'sort_key'),
     ('src.ui.industry_heat.page', '_sort_key'),

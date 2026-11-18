@@ -285,6 +285,10 @@ class AttributionPage(QWidget):
 
         self.brinson_summary = QLabel('该 run 无 positions.parquet，未做分解')
         self.brinson_summary.setObjectName('attrSubtitle')
+        # 摘要行是单一纯文本标签：所有「键 值」共用 ``attrSubtitle`` 一套字号/字重/颜色，
+        # 无独立键样式；显式声明 PlainText，避免基准名或分隔符被 Qt 识别成富文本后
+        # 让首个键（基准）单独换字体。
+        self.brinson_summary.setTextFormat(Qt.TextFormat.PlainText)
         self.brinson_summary.setWordWrap(True)
         layout.addWidget(self.brinson_summary)
 
@@ -689,6 +693,11 @@ class AttributionPage(QWidget):
             )
             for column, text in enumerate(values):
                 table.setItem(row, column, self._item(text, alignments[column]))
+        # 初始行序按区间倒序（最新一期在最上面）：区间已由 ``f'{start} ~ {end}'``
+        # 拼成 ``YYYY-MM-DD ~ YYYY-MM-DD`` 字符串，ISO 形态下字典序与时间序一致，
+        # 直接按文本降序即可。排序在收尾前完成，默认行序快照即为倒序，表头保持
+        # 无指示器；用户点击后才出现箭头。
+        self._sort_table_rows(table, 0, Qt.SortOrder.DescendingOrder)
         self._finalize_table(table)
 
     def _fill_excess(self, state: AttributionState) -> None:
