@@ -203,7 +203,9 @@ class StrategyLabPage(QWidget):
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(12)
 
-        header = QHBoxLayout()
+        header = QVBoxLayout()
+        header.setSpacing(6)
+        top_row = QHBoxLayout()
         title_box = QVBoxLayout()
         title_box.setSpacing(2)
         title = QLabel('策略试算')
@@ -212,28 +214,29 @@ class StrategyLabPage(QWidget):
         subtitle.setObjectName('slSubtitle')
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
-        header.addLayout(title_box)
-        # 原来这里用 addStretch(1)，与状态标签自身的 stretch 1 平分剩余宽度，
-        # 页头中部空出一大片、规则说明被压到每行只有 300 多像素；改成固定间距后，
-        # 剩余宽度全部给状态标签，说明块行更长、折行更少。标题栏与按钮不动。
-        header.addSpacing(24)
-
-        self.status_label = QLabel('选择规则后点击「运行试算」')
-        self.status_label.setObjectName('slStatus')
-        self.status_label.setWordWrap(True)
-        header.addWidget(self.status_label, 1)
+        top_row.addLayout(title_box)
+        top_row.addStretch(1)
 
         self.run_btn = QPushButton('运行试算')
         self.run_btn.setDefault(True)
         self.run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.run_btn.clicked.connect(self._on_run)
-        header.addWidget(self.run_btn)
+        top_row.addWidget(self.run_btn)
 
         self.save_btn = QPushButton('保存结果')
         self.save_btn.setEnabled(False)
         self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.save_btn.clicked.connect(self._on_save)
-        header.addWidget(self.save_btn)
+        top_row.addWidget(self.save_btn)
+        header.addLayout(top_row)
+
+        # 说明文字放到左上角：另起一行、左对齐、占满可用宽度再折行，
+        # 不再与标题挤在同一行、也不再被按钮占掉宽度。
+        self.status_label = QLabel('选择规则后点击「运行试算」')
+        self.status_label.setObjectName('slStatus')
+        self.status_label.setWordWrap(True)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        header.addWidget(self.status_label)
         root.addLayout(header)
 
         splitter = QSplitter(Qt.Vertical)
