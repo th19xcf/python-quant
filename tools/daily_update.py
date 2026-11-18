@@ -13,17 +13,19 @@
      5. 基金行情刷新    python -m src.data.local_store build --data-type fund（增量，末日已最新则跳过）
      6. 复权因子刷新    factor_rebuild / fund_factors 仅重算「行情末日 > 因子末日」的标的（已最新则跳过）
                        刷新后复验行情内嵌因子副本与快照逐行一致（个股/指数/基金）
-     7. ST 快照与区间表  src.data.risk_flags refresh + src.data.st_history build
-     8. 名录每日检查    src.main --update-fund / --update-index（有变更才落盘）
-     9. 估值增量        tools/collect_financials.py --only valuation --since auto
-    10. 市场宽度增量    src.data.services.breadth_service.refresh
-    11. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
-    12. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
-    13. 洁净集快照      python -m src.data.quality.clean_set build
-    14. 保鲜体检        src.data.quality.freshness_check --summary
-    15. 版本记录        src.data.data_version（失败只告警，不改数据）
-    16. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
-    17. 门禁            tools/daily_data_gate.py（必须在备份之后）
+     7. 分红日频增量    tools/refresh_dividend_daily.py（基金年度批量 + 个股近两报告期，
+                       只追加/补缺并重建受影响标的因子；非致命，失败只告警）
+     8. ST 快照与区间表  src.data.risk_flags refresh + src.data.st_history build
+     9. 名录每日检查    src.main --update-fund / --update-index（有变更才落盘）
+    10. 估值增量        tools/collect_financials.py --only valuation --since auto
+    11. 市场宽度增量    src.data.services.breadth_service.refresh
+    12. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
+    13. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
+    14. 洁净集快照      python -m src.data.quality.clean_set build
+    15. 保鲜体检        src.data.quality.freshness_check --summary
+    16. 版本记录        src.data.data_version（失败只告警，不改数据）
+    17. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
+    18. 门禁            tools/daily_data_gate.py（必须在备份之后）
 
 口径与边界::
 
@@ -148,6 +150,13 @@ AUX_FACTOR_OUTPUTS = (
     'factors/fund_meta.json',
     'factors/rebuild/manifest.json',
 )
+#: 分红日频增量会写的件（两张事件表 + 状态台账；受影响标的的复权因子与
+#: 行情副本由同一步重建，按 ``AUX_FACTOR_OUTPUTS`` 与行情路径另行登记）。
+AUX_DIVIDEND_OUTPUTS = (
+    'factors/stock_dividend.parquet',
+    'factors/fund_dividend.parquet',
+    'meta/dividend_status/daily_refresh_state.json',
+)
 #: 证券码表日更会写的件（通达信当日码表 → 名称历史 → 名录）。
 AUX_CODE_TABLE_OUTPUTS = (
     'meta/names.json',
@@ -197,6 +206,7 @@ STEP_PLAN: tuple[tuple[str, str, bool], ...] = (
     ('build', '本地行情构建 + 末日断言', True),
     ('fund_quote', '基金行情刷新（通达信本地增量）', True),
     ('factor', '复权因子刷新（个股 + 基金）', True),
+    ('dividend', '分红日频增量（基金年度批量 + 个股近两报告期）', False),
     ('st', 'ST 快照与区间表', False),
     ('basic', '名录每日检查（fund / index）', False),
     ('valuation', '全市场估值增量', False),
@@ -721,7 +731,7 @@ def _step_st(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
         # supplement 写盘是「区间 → 覆盖 → csv → manifest」的事务，失败可能停在
         # 中间态；此时不重建规范表，避免把半套 supplement 并进正式表。次日重跑即可。
         logger.warning('[daily] ST 补充覆盖重建失败（rc={}），本轮跳过规范表重建；'
-                       'supplement 可能停留在上一版或中间态，需重跑第 7 步', supplement)
+                       'supplement 可能停留在上一版或中间态，需重跑第 8 步', supplement)
         return False, f'快照 rc=0 / supplement rc={supplement} / 规范表未重建'
     build = _run_module(
         [sys.executable, '-m', 'src.data.st_history', *store_args, 'build'],
@@ -1078,6 +1088,7 @@ def _build_plan(args: argparse.Namespace) -> _Plan:
         expected.add(Path(rel).with_suffix('.manifest.json').as_posix())
     expected.update(SIDE_OUTPUTS)
     expected.update(AUX_VALUATION_OUTPUTS)
+    expected.update(AUX_DIVIDEND_OUTPUTS)
     expected.update(AUX_CODE_TABLE_OUTPUTS)
     expected |= _aux_expected(root, args.basic_refresh_days, args.pool_refresh_days)
     tdx_root = getattr(config.data, 'tdx_data_path', None)
@@ -1280,6 +1291,46 @@ def _step_factors(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     return not (remaining_stock or remaining_fund), ' | '.join(notes)
 
 
+def _step_dividend(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    """分红日频增量（非致命）：基金年度批量 + 个股近两报告期，只追加/补缺。
+
+    脚本内按源隔离失败：失败源不写盘、不删行，另一源照常；受影响标的的复权
+    因子与行情内嵌副本在同一步重建。这里只把会写的件登记进 manifest 白名单，
+    并从状态台账取受影响标的登记行情路径。
+    """
+    if args.skip_dividend_refresh:
+        return True, '已跳过（--skip-dividend-refresh）'
+    if not args.allow_remote:
+        return True, '未允许联网，跳过（只告警）'
+    plan.expected.update(AUX_DIVIDEND_OUTPUTS)
+    code = _run_module(
+        [sys.executable, str(ROOT / 'tools' / 'refresh_dividend_daily.py'),
+         '--store-root', str(plan.root), '--date', plan.latest.isoformat(),
+         '--bootstrap-days', str(args.dividend_bootstrap_days)], '分红日频增量')
+    state_path = plan.root / 'meta' / 'dividend_status' / 'daily_refresh_state.json'
+    try:
+        state = json.loads(state_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        state = {}
+    last = state.get('last_result') or {}
+    sources = (last.get('sources') if last.get('target') == plan.latest.isoformat() else None) or {
+        kind: state.get(kind) or {} for kind in ('fund', 'stock')}
+    notes: list[str] = []
+    for kind in ('fund', 'stock'):
+        item = sources.get(kind) or {}
+        codes = [str(value) for value in (item.get('affected_codes') or [])]
+        if codes:
+            _register_quote_paths(plan, kind, codes)
+            plan.expected.update(AUX_FACTOR_OUTPUTS)
+        if item.get('ok') and not item.get('skipped'):
+            rows = item.get('added_rows', item.get('appended_rows', 0))
+            notes.append(f'{kind} 新增 {int(rows or 0)} 行 / 影响 {len(codes)} 只')
+        elif not item.get('ok'):
+            notes.append(f'{kind} 失败：{str(item.get("error") or "-")[:60]}')
+    detail = ' | '.join(notes) or '无增量'
+    return code == 0, f'{detail} | rc={code}'
+
+
 def _step_pool(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     line = _run_pool_refresh(plan, args)
     return '未完成' not in line, (line or '未到期/已跳过')
@@ -1340,6 +1391,7 @@ def _step_list(plan: _Plan, args: argparse.Namespace,
         'build': lambda: _step_build(plan, args),
         'fund_quote': lambda: _step_fund_quotes(plan, args),
         'factor': lambda: _step_factors(plan, args),
+        'dividend': lambda: _step_dividend(plan, args),
         'st': lambda: _step_st(plan, args),
         'basic': lambda: _step_basic(plan, args),
         'valuation': lambda: _run_valuation(plan, args),
@@ -1378,6 +1430,14 @@ def _print_run_summary(plan: _Plan, outcomes: Sequence[_StepOutcome],
     return 1 if any(item.critical and not item.ok for item in outcomes) else 0
 
 
+def _dividend_skip_note(args: argparse.Namespace) -> str:
+    if args.skip_dividend_refresh:
+        return '  ← 本轮跳过（--skip-dividend-refresh）'
+    if not args.allow_remote:
+        return '  ← 本轮跳过（未加 --allow-remote）'
+    return f'  ← 基金年度批量 + 个股近两报告期，增量窗口 {args.dividend_bootstrap_days} 天兜底'
+
+
 def _skip_note(key: str, plan: _Plan, args: argparse.Namespace) -> str:
     if key == 'fill' and not args.allow_remote:
         return '  ← 本轮跳过（未加 --allow-remote）'
@@ -1400,6 +1460,8 @@ def _skip_note(key: str, plan: _Plan, args: argparse.Namespace) -> str:
         if stock_stale + fund_stale == 0:
             return '  ← 因子末日均已对齐行情，跳过'
         return f'  ← 个股 {stock_stale} 只 / 基金 {fund_stale} 只待增量重算'
+    if key == 'dividend':
+        return _dividend_skip_note(args)
     if key == 'valuation' and (args.skip_valuation or not args.allow_remote):
         return '  ← 本轮跳过'
     if key == 'st' and args.skip_st_refresh:
@@ -1479,6 +1541,10 @@ def main(argv: list[str] | None = None) -> int:
                         help='跳过基金行情刷新（通达信本地增量）')
     parser.add_argument('--skip-factor-refresh', action='store_true',
                         help='跳过复权因子刷新（个股 + 基金增量重算）')
+    parser.add_argument('--skip-dividend-refresh', action='store_true',
+                        help='跳过分红日频增量（基金年度批量 + 个股近两报告期）')
+    parser.add_argument('--dividend-bootstrap-days', type=int, default=30,
+                        help='分红增量首次运行或断档时的回溯天数（默认 30，仅作窗口兜底）')
     parser.add_argument('--skip-valuation', action='store_true',
                         help='跳过全市场日频估值增量（collect_financials.py --only valuation）')
     parser.add_argument('--skip-basic-refresh', action='store_true',

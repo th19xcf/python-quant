@@ -124,6 +124,9 @@ CRITICAL_DIRS: tuple[str, ...] = (
     'data/local_store/meta/index_members',
     'data/local_store/meta/industry_pit',
     'data/local_store/meta/st',
+    # 分红台账（no_dividend_ledger + 中文 README + 逐只取证 JSON）与日频增量
+    # 状态台账：取证 JSON 来自外部逐只探测，重跑需 90 分钟且源端会变，不可重建。
+    'data/local_store/meta/dividend_status',
     'data/local_store/factors/rebuild',
     # 2026-11-07 数据审计资产：手写对拍脚本、历史契约巡检快照、基线、
     # 交付清单与核验报告、导入前事件表回滚副本。重跑只能得到当前状态，

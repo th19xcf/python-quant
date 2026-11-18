@@ -222,6 +222,27 @@ def fetch_dividend_events(
         pl.concat(frames, how='diagonal_relaxed'), fetched_at)
 
 
+def fetch_dividend_year(year: int) -> tuple[pl.DataFrame | None, str]:
+    """抓取单年度全市场基金分红（不做本地缓存），供日频增量使用。
+
+    返回 ``(标准化事件表, '')``；抓取失败返回 ``(None, 错误)``，以便调用方区分
+    「源端空返」与「链路失败」——空返不得判「无分红」。
+    """
+    import akshare as ak  # noqa: PLC0415 - 延迟导入，避免测试与离线场景加载远程库
+
+    raw = _call_with_retry(
+        lambda: ak.fund_fh_em(year=str(year)),
+        label=f'fund_fh_em({year})')
+    if raw is None:
+        return None, 'fetch_failed'
+    if len(raw) == 0:
+        return pl.DataFrame(schema={
+            'ts_code': pl.Utf8, 'ex_date': pl.Date, 'record_date': pl.Date,
+            'cash_amount': pl.Float64, 'source': pl.Utf8, 'fetched_at': pl.Datetime,
+        }), ''
+    return _normalize_dividends(pl.from_pandas(raw), datetime.now()), ''
+
+
 def _fetch_one_share_change(symbol: str) -> tuple[str, Any, float]:
     import akshare as ak  # noqa: PLC0415
 
