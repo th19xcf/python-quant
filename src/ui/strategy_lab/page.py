@@ -354,9 +354,15 @@ class StrategyLabPage(QWidget):
             axis.setPen(pg.mkPen(self._pal.faint))
             axis.setTextPen(pg.mkPen(self._pal.muted))
             axis.setStyle(tickFont=font)
-        legend = plot.addLegend()
+        # addLegend() 默认 offset=(30, 30)，在有标题栏与坐标轴的迷你图上等于把图例
+        # 推进坐标区中部、压在净值曲线上；这里改成 8 px 内缩，三张图统一贴 ViewBox 左上角。
+        legend = plot.addLegend(offset=(8, 8))
         legend.setLabelTextSize(f'{TOKENS.font_small}px')
         legend.setLabelTextColor(self._pal.muted)
+        # 图例底半透明：沿用卡片底色留 200 alpha，贴左上角时也不挡曲线
+        legend_bg = QColor(self._pal.card)
+        legend_bg.setAlpha(200)
+        legend.setBrush(legend_bg)
 
     # -- 规则 --------------------------------------------------------------
     def _refresh_rule_list(self) -> None:
