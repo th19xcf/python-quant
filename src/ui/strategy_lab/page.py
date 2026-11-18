@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.quant.strategy_lab.markers import marker_side
 from src.quant.strategy_lab.rules import (
     RULE_TYPES,
     RuleError,
@@ -677,20 +678,8 @@ class StrategyLabPage(QWidget):
                 y = float(marker['members'])
             else:
                 y = float(position or 1.0)
-            reason = marker.get('reason')
-            if reason == 'take_profit':
-                kind = 'sell'
-            elif reason in ('initial', 'add'):
-                kind = 'buy'
-            elif position is not None:
-                # 择时 / 切换规则没有 reason，只给仓位：按与上一笔的仓位变化定方向，
-                # 上升算加仓、下降算减仓或清仓
-                delta = float(position) - prev_position
-                kind = 'buy' if delta > 0 else ('sell' if delta < 0 else None)
-            else:
-                kind = None
-            if position is not None:
-                prev_position = float(position)
+            # 方向判定与离线出图共用 markers.marker_side，不在这里各写一份
+            kind, prev_position = marker_side(marker, prev_position)
             if kind == 'buy':
                 buy_x.append(x)
                 buy_y.append(y)
