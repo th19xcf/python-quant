@@ -12,20 +12,23 @@
 from __future__ import annotations
 
 from html import escape
+from pathlib import Path
 from typing import Any, Dict, List
 
 from loguru import logger
-from PySide6.QtCore import QEvent, Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QPoint, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -45,9 +48,13 @@ from src.quant.strategy_lab.save import save_run
 from src.ui.advice.tokens import TOKENS, palette_for
 from src.ui.table_sizing import (
     FIXED_ROW_HEIGHT,
+    FIXED_ROW_HEIGHT_THRESHOLD,
     HEADER_ROW_HEIGHT,
     TABLE_FONT_SIZE_PX,
+    TOOLTIP_TEXT_MIN_LEN,
+    WrappedRowDelegate,
     apply_content_widths,
+    sort_rows_by_column,
     use_interactive_columns,
 )
 from src.ui.theme_manager import is_dark_palette
@@ -163,6 +170,207 @@ QTableWidget::item {{
 """
 
 
+def _security_names() -> Dict[str, str]:
+    """读本地名录（``data/local_store/meta/names.json``）给流水弹窗补名称列。"""
+    try:
+        from src.data.name_consistency import load_names_json
+
+        root = Path(__file__).resolve().parents[3] / 'data' / 'local_store'
+        return {str(k): str(v) for k, v in (load_names_json(root) or {}).items()}
+    except Exception:  # noqa: BLE001 - 名录缺失只影响名称列，不该挡住流水
+        logger.warning('读取证券名称表失败，交易流水名称列留空')
+        return {}
+
+
+class _TradeDialog(QDialog):
+    """逐笔成交明细弹窗：日期正序、表头可排序、末行合计、空数据给中文提示。"""
+
+    COLUMNS = ('日期', '代码', '名称', '方向', '成交价', '数量', '金额', '费用',
+               '已实现盈亏', '收益率')
+    _NUMERIC = (4, 5, 6, 7, 8, 9)
+
+    def __init__(self, payload: Dict[str, Any], parent=None):
+        super().__init__(parent)
+        self.theme = 'dark' if is_dark_palette() else 'light'
+        self._pal = palette_for(self.theme)
+        self.setWindowTitle('交易流水')
+        self.setStyleSheet(_qss(self.theme))
+        self._sort_column = 0
+        self._sort_desc = False
+        rows = self._rows(payload)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(8)
+        if rows:
+            caption = QLabel(f'共 {len(rows)} 笔成交（按日期正序；点击表头可排序）')
+            caption.setObjectName('slNotes')
+            root.addWidget(caption)
+            self.table = self._build_table(rows)
+            root.addWidget(self.table, 1)
+        else:
+            empty = QLabel('该规则在统计区间内没有成交记录')
+            empty.setObjectName('slNotes')
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            root.addWidget(empty, 1)
+
+        close = QPushButton('关闭')
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.clicked.connect(self.accept)
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        bottom.addWidget(close)
+        root.addLayout(bottom)
+        self.resize(1180, 620)
+
+    @staticmethod
+    def _rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """把逐笔成交按时间顺序推进持仓成本，卖出时算该笔已实现盈亏与收益率。
+
+        口径：同一标的的卖出，按「卖出价 − 该标的持仓单位成本（买入费用已摊入）
+        × 数量 − 本笔卖出费用」计算已实现盈亏；收益率 = 该笔已实现盈亏 ÷ 该笔
+        对应持仓成本（单位成本 × 数量，含买入费用）。买入行两项留空。
+        """
+        records = payload.get('trades') or []
+        if not records:
+            return []
+        names = _security_names()
+        book: Dict[str, tuple[float, float]] = {}
+        rows: List[Dict[str, Any]] = []
+        for record in sorted(records, key=lambda r: (r['date'], r['side'] == 'sell')):
+            code = str(record.get('code') or '')
+            shares = float(record.get('shares') or 0.0)
+            price = float(record.get('price') or 0.0)
+            fee = float(record.get('cost') or 0.0)
+            held, held_cost = book.get(code, (0.0, 0.0))
+            realized = None
+            basis = None
+            if record.get('side') == 'buy':
+                book[code] = (held + shares, held_cost + shares * price + fee)
+            else:
+                unit_cost = held_cost / held if held > 0 else 0.0
+                basis = unit_cost * shares
+                realized = (price - unit_cost) * shares - fee
+                book[code] = (held - shares, max(held_cost - basis, 0.0))
+            rows.append({'date': record['date'], 'code': code,
+                         'name': names.get(code, ''), 'side': record.get('side'),
+                         'price': price, 'shares': shares,
+                         'amount': price * shares, 'fee': fee,
+                         'realized': realized, 'basis': basis})
+        # 日期正序；同一日期内买入在前，保持与成本推进顺序一致
+        rows.sort(key=lambda row: row['side'] == 'sell')
+        rows.sort(key=lambda row: row['date'])
+        return rows
+
+    @staticmethod
+    def _totals(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """合计行口径：金额分买入/卖出小计，收益率为总已实现 ÷ 总买入成本。"""
+        buy_amount = sum(row['amount'] for row in rows if row['side'] == 'buy')
+        sell_amount = sum(row['amount'] for row in rows if row['side'] == 'sell')
+        buy_cost = sum(row['amount'] + row['fee'] for row in rows
+                       if row['side'] == 'buy')
+        realized = sum(row['realized'] for row in rows
+                       if row['realized'] is not None)
+        return {'buy_amount': buy_amount, 'sell_amount': sell_amount,
+                'realized': realized,
+                'yield': realized / buy_cost if buy_cost > 0 else None}
+
+    def _build_table(self, rows: List[Dict[str, Any]]) -> QTableWidget:
+        table = QTableWidget(len(rows), len(self.COLUMNS))
+        table.setHorizontalHeaderLabels(list(self.COLUMNS))
+        table.setWordWrap(True)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setHighlightSections(False)
+        table.horizontalHeader().setFixedHeight(HEADER_ROW_HEIGHT)
+        table.setItemDelegate(WrappedRowDelegate(table))
+
+        for r, row in enumerate(rows):
+            realized = row['realized']
+            yield_pct = (row['realized'] / row['basis']
+                         if row['basis'] else None)
+            cells = (
+                row['date'], row['code'], row['name'],
+                '买入' if row['side'] == 'buy' else '卖出',
+                f'{row["price"]:.3f}', f'{row["shares"]:.0f}',
+                f'{row["amount"]:,.2f}', f'{row["fee"]:,.2f}',
+                '' if realized is None else f'{realized:+,.2f}',
+                '' if yield_pct is None else f'{yield_pct * 100:+.2f}%',
+            )
+            numeric = (row['price'], row['shares'], row['amount'], row['fee'],
+                       realized, yield_pct)
+            for c, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if c in self._NUMERIC:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight
+                                          | Qt.AlignmentFlag.AlignVCenter)
+                    if numeric[c - 4] is not None:
+                        item.setData(Qt.ItemDataRole.UserRole, numeric[c - 4])
+                table.setItem(r, c, item)
+
+        self.table = table
+        self._totals_data = self._totals(rows)
+        self._append_total_row()
+        apply_content_widths(table)
+        if table.rowCount() > FIXED_ROW_HEIGHT_THRESHOLD:
+            table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+            table.verticalHeader().setDefaultSectionSize(FIXED_ROW_HEIGHT)
+            for r in range(table.rowCount()):
+                table.setRowHeight(r, FIXED_ROW_HEIGHT)
+                for c in range(table.columnCount()):
+                    item = table.item(r, c)
+                    if item is not None and len(item.text()) >= TOOLTIP_TEXT_MIN_LEN:
+                        item.setToolTip(item.text())
+        else:
+            table.resizeRowsToContents()
+        use_interactive_columns(table)
+        table.horizontalHeader().sectionClicked.connect(self._on_sort)
+        return table
+
+    def _append_total_row(self) -> None:
+        """末行合计：加粗 + 底色区分，固定在最底部，不参与排序。"""
+        table = self.table
+        totals = self._totals_data
+        yield_total = totals['yield']
+        realized = totals['realized']
+        cells = ('合计', '', '', '', '', '',
+                 f'买 {totals["buy_amount"]:,.2f} / 卖 {totals["sell_amount"]:,.2f}',
+                 '', f'{realized:+,.2f}',
+                 '' if yield_total is None else f'{yield_total * 100:+.2f}%')
+        row = table.rowCount()
+        table.insertRow(row)
+        bold = QFont(table.font())
+        bold.setBold(True)
+        background = QColor(self._pal.elevated)
+        for c, text in enumerate(cells):
+            item = QTableWidgetItem(text)
+            item.setFont(bold)
+            item.setBackground(background)
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            if c in self._NUMERIC:
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight
+                                      | Qt.AlignmentFlag.AlignVCenter)
+            elif c == 0:
+                item.setTextAlignment(Qt.AlignmentFlag.AlignLeft
+                                      | Qt.AlignmentFlag.AlignVCenter)
+            table.setItem(row, c, item)
+        table.setRowHeight(row, FIXED_ROW_HEIGHT)
+
+    def _on_sort(self, column: int) -> None:
+        if getattr(self, 'table', None) is None:
+            return
+        if column == self._sort_column:
+            self._sort_desc = not self._sort_desc
+        else:
+            self._sort_column = column
+            self._sort_desc = False
+        # 合计行固定在最底部：排序前摘掉、排完再补回
+        self.table.setRowCount(self.table.rowCount() - 1)
+        sort_rows_by_column(self.table, column, descending=self._sort_desc)
+        self._append_total_row()
+
+
 class _RunWorker(QThread):
     ok = Signal(dict)
     failed = Signal(str)
@@ -210,7 +418,12 @@ class StrategyLabPage(QWidget):
         header = QVBoxLayout()
         header.setSpacing(6)
         top_row = QHBoxLayout()
-        title_box = QVBoxLayout()
+        # 标题块用 Maximum 策略包成独立控件：否则它会吃掉整行剩余宽度，
+        # 说明块的左边界会被推到最右侧（实测副标题被拉到 1023px 宽）。
+        title_block = QWidget()
+        title_block.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+        title_box = QVBoxLayout(title_block)
+        title_box.setContentsMargins(0, 0, 0, 0)
         title_box.setSpacing(2)
         title = QLabel('策略试算')
         title.setObjectName('slTitle')
@@ -218,21 +431,23 @@ class StrategyLabPage(QWidget):
         subtitle.setObjectName('slSubtitle')
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
-        top_row.addLayout(title_box)
-        top_row.addStretch(1)
-        header.addLayout(top_row)
-
-        # 说明文字放到左上角：另起一行、左对齐、占满可用宽度再折行，
-        # 不再与标题挤在同一行、也不再被按钮占掉宽度。
+        self.title_label = title
+        self.subtitle_label = subtitle
+        top_row.addWidget(title_block)
+        # 说明块紧跟标题块右侧 24px 起排、右侧吃满到按钮列左缘前 8px；
+        # 宽度由 _sync_status_max_width 按标题块 sizeHint 与按钮列左缘实测算出。
+        top_row.addSpacing(24)
+        # 说明块放页头右侧空白区：右对齐、贴顶部，宽度按可用区域自适应并折行。
         self.status_label = QLabel('选择规则后点击「运行试算」')
         self.status_label.setObjectName('slStatus')
         self.status_label.setWordWrap(True)
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
         # QLabel 高度按字体的 ascent+descent 算，QSS 又没有内边距，首行字头正好
         # 贴在 label 上边缘（离屏实测首墨迹行=0），中文小字看上去像被裁掉一截。
-        # 只补 3px 上留白，不动宽度策略与两行结构。
         self.status_label.setContentsMargins(0, 3, 0, 0)
-        header.addWidget(self.status_label)
+        top_row.addWidget(self.status_label)
+        top_row.addStretch(1)
+        header.addLayout(top_row)
         root.addLayout(header)
 
         splitter = QSplitter(Qt.Vertical)
@@ -278,6 +493,12 @@ class StrategyLabPage(QWidget):
         self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.save_btn.clicked.connect(self._on_save)
         head.addWidget(self.save_btn)
+
+        self.trade_btn = QPushButton('查看流水')
+        self.trade_btn.setEnabled(False)
+        self.trade_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.trade_btn.clicked.connect(self._on_trades)
+        head.addWidget(self.trade_btn)
         outer.addLayout(head)
 
         self.rule_text_label = QLabel('规则目录为空：请在 config/strategy_lab/rules/ 下放置规则 JSON')
@@ -291,6 +512,36 @@ class StrategyLabPage(QWidget):
         card.installEventFilter(self)
         self._sync_editor_min_height()
         return card
+
+    def _sync_status_max_width(self) -> None:
+        """说明块宽度：左贴标题块右缘 +24px，右停在按钮列左缘前 8px。
+
+        标题块按 sizeHint（Maximum 策略）取宽，不能用它的实际 width——实测被布局
+        拉宽到 1023px 时，算出的上限会退化成兜底值、说明块反被推到最右侧。
+        宽度依赖页面当前宽、固定宽又参与页面最小宽计算，实测无余量时每轮 +6px
+        无限增长（页面被撑到 1174px）；这里右侧再留 8px 余量，保证
+        「页边距 + 标题 + 24 + 说明块 + 页边距」恒小于页面宽，不会形成反馈。
+        """
+        if not hasattr(self, 'refresh_btn') or not hasattr(self, 'title_label'):
+            return
+        block_width = max(self.title_label.sizeHint().width(),
+                          self.subtitle_label.sizeHint().width())
+        block_left = self.title_label.mapTo(self, QPoint(0, 0)).x()
+        button_left = self.refresh_btn.mapTo(self, QPoint(0, 0)).x()
+        block_right = block_left + block_width + 24
+        page_right = self.width() - 16
+        width = min(button_left - 8, page_right) - block_right - 8
+        # 窄窗下按钮列左缘已贴到标题块右侧（实测 916px 页宽只剩 69px），按按钮列
+        # 收会把说明块挤成 240px / 8 行；改为按页面右缘收，仍留 8px 不形成反馈。
+        if width < 320:
+            width = page_right - block_right - 8
+        width = max(width, 240)
+        if self.status_label.width() != width:
+            self.status_label.setFixedWidth(width)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._sync_status_max_width()
 
     def _sync_editor_min_height(self) -> None:
         """编辑卡片的最小高按说明块实际折行算。
@@ -315,9 +566,11 @@ class StrategyLabPage(QWidget):
             self._editor_card.setMinimumHeight(needed)
 
     def eventFilter(self, obj, event) -> bool:
-        # 卡片宽度变化后折行行数会变，最小高跟着重算；值不变时不重设，避免布局往复。
+        # 卡片几何变化后：说明块折行行数会变（重算最小高），按钮列左缘也会变
+        # （重算页头说明块宽度）；两处都按值比较，值不变时不重设，避免布局往复。
         if obj is getattr(self, '_editor_card', None) and event.type() == QEvent.Type.Resize:
             self._sync_editor_min_height()
+            self._sync_status_max_width()
         return super().eventFilter(obj, event)
 
     def _build_result(self) -> QWidget:
@@ -576,11 +829,19 @@ class StrategyLabPage(QWidget):
             return
         self.status_label.setText(f'已保存：{info["run_id"]}')
 
+    def _on_trades(self) -> None:
+        """弹出最近一次试算的逐笔成交明细（含按持仓成本算的该笔已实现盈亏）。"""
+        if not self._last_payload:
+            return
+        dialog = _TradeDialog(self._last_payload, self)
+        dialog.exec()
+
     # -- 展示 --------------------------------------------------------------
     def _on_result(self, payload: Dict[str, Any]) -> None:
         if payload.get('status') != 'ok':
             self._last_payload = None
             self.save_btn.setEnabled(False)
+            self.trade_btn.setEnabled(False)
             self.status_label.setText(f'空结果：{payload.get("reason", "无可用结果")}')
             self._fill_metrics({'rebalances': 0})
             self._plot_curves([], [])
@@ -589,6 +850,7 @@ class StrategyLabPage(QWidget):
             return
         self._last_payload = payload
         self.save_btn.setEnabled(True)
+        self.trade_btn.setEnabled(True)
         self._fill_metrics(payload['metrics'],
                            (payload.get('dividend_coverage') or {}).get('message') or '')
         self._plot_curves(payload.get('nav') or [], payload.get('benchmark_curve') or [])
@@ -637,8 +899,11 @@ class StrategyLabPage(QWidget):
         # 最小宽撑到刚好放下全部列：既不留空白，也不出横向滚动条。
         table = self.metrics_table
         columns = sum(table.columnWidth(i) for i in range(table.columnCount()))
+        # 竖直滚动条出现时视口会窄掉一条滚动条宽，列宽合计刚好等于视口，最后一条
+        # 右侧网格线会落在视口最后一列上被描边吃掉（实测含「分红覆盖」长提示时
+        # 合计 496 = 视口 496）。按「合计 + 边框 + 滚动条 + 4px 右侧留白」定最小宽。
         table.setMinimumWidth(columns + 2 * table.frameWidth()
-                              + table.verticalScrollBar().sizeHint().width())
+                              + table.verticalScrollBar().sizeHint().width() + 4)
 
     @staticmethod
     def _format(kind: str, value: Any) -> str:

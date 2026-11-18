@@ -351,9 +351,35 @@ def _curve_payload(nav: List[Tuple[date, float]], bench: Dict[str, float],
 # ---------------------------------------------------------------------------
 
 def _empty(reason: str, rule: Dict[str, Any], **extra: Any) -> Dict[str, Any]:
-    payload = {'status': 'empty', 'reason': reason, 'rule_text': rule_text(rule)}
+    payload = {'status': 'empty', 'reason': reason, 'rule_text': rule_text(rule),
+               'trades': []}
     payload.update(extra)
     return payload
+
+
+def _trade_records(result: Dict[str, Any], rule: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """逐笔成交输出：只把引擎已记录的 trades 归一化，不参与任何净值或指标计算。
+
+    引擎 ``result['trades']`` 每条含 date / stock_code / signal / price / shares /
+    cost，这里只裁剪到统计区间并统一字段名，供「查看流水」弹窗消费。
+    """
+    start = date.fromisoformat(rule['period']['start'])
+    end = date.fromisoformat(rule['period']['end'])
+    rows: List[Dict[str, Any]] = []
+    for trade in (result.get('trades') or []):
+        trade_day = pipeline.to_date(trade.get('date'))
+        if trade_day is None or not start <= trade_day <= end:
+            continue
+        rows.append({
+            'date': trade_day.isoformat(),
+            'code': str(trade.get('stock_code') or ''),
+            'side': 'buy' if trade.get('signal') == 'buy' else 'sell',
+            'price': float(trade.get('price') or 0.0),
+            'shares': float(trade.get('shares') or 0.0),
+            'cost': float(trade.get('cost') or 0.0),
+        })
+    rows.sort(key=lambda row: (row['date'], row['code'], row['side']))
+    return rows
 
 
 def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
@@ -418,6 +444,7 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'elapsed_seconds': round(time.perf_counter() - t0, 1),
         'rule_text': rule_text(rule),
         'markers': markers,
+        'trades': _trade_records(result, rule),
         'leg_curves': [],
         'positions': _final_positions(result),
         'plan_note': f'月频调仓 {len(path)} 次，成分中位 '
@@ -461,6 +488,7 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'elapsed_seconds': round(time.perf_counter() - t0, 1),
         'rule_text': rule_text(rule),
         'markers': plan.markers,
+        'trades': _trade_records(result, rule),
         'leg_curves': plan.leg_curves,
         'positions': _final_positions(result),
         'plan_note': plan.note,
