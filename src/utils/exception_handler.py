@@ -16,6 +16,9 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from src.utils.exceptions import QuantException, get_error_severity, is_retryable_error
 
+# Ctrl+C（SIGINT）约定的退出码：128 + 2，与 shell 惯例一致
+INTERRUPT_EXIT_CODE = 130
+
 
 class GlobalExceptionHandler:
     """
@@ -66,6 +69,12 @@ class GlobalExceptionHandler:
             exc_value: 异常值
             exc_traceback: 异常回溯
         """
+        # 用户主动中断（Ctrl+C / SIGINT）不是程序缺陷：按正常退出处理，
+        # 不记 ERROR、不计入错误统计、不弹错误框、不触发告警。
+        if exc_type is not None and issubclass(exc_type, KeyboardInterrupt):
+            logger.info("收到用户中断（Ctrl+C），按正常退出处理")
+            return
+
         # 生成错误详情
         error_details = self._generate_error_details(exc_type, exc_value, exc_traceback)
 

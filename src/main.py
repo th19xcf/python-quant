@@ -9,6 +9,7 @@
 # 标准库导入
 import argparse
 import os
+import signal
 import sys
 from datetime import date
 from pathlib import Path
@@ -16,6 +17,7 @@ from pathlib import Path
 # 第三方库导入
 from alembic.util.exc import CommandError
 from loguru import logger
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -41,7 +43,10 @@ from src.ui.theme_manager import ThemeManager
 # 内部模块导入
 from src.utils.config import config_manager, get_config, remote_sources_enabled
 from src.utils.event_bus import EventType, publish, shutdown_event_bus
-from src.utils.exception_handler import setup_global_exception_handler
+from src.utils.exception_handler import (
+    INTERRUPT_EXIT_CODE,
+    setup_global_exception_handler,
+)
 from src.utils.exceptions import DataSourceException
 from src.utils.logger import setup_logger
 from src.utils.memory_manager import global_memory_manager
@@ -51,6 +56,29 @@ from src.utils.monitoring import log_cache_stats
 # 形式出现，必须显式纳入捕获范围，否则离线模式降级分支永远走不到。
 # alembic 迁移失败抛出的 CommandError 同样属于可预期的数据库不可用场景。
 _STARTUP_ERRORS = (SQLAlchemyError, CommandError, OSError, RuntimeError)
+
+# SIGINT 空转定时器：必须持有引用，否则定时器被回收后信号又无法及时被 Python 处理
+_sigint_heartbeat: QTimer | None = None
+
+
+def _install_sigint_handler(app: QApplication) -> None:
+    """安装 SIGINT 处理，让 Ctrl+C 走干净退出而不是打断 Qt 事件分发。
+
+    Qt 事件循环把控制权长期留在 C++ 侧，解释器没有机会检查信号，
+    SIGINT 会在某个 Qt 回调（如事件过滤器）里以 KeyboardInterrupt 抛出。
+    这里用 Python 级处理器接管 SIGINT，并用一个 200ms 空转定时器周期性
+    把控制权交回解释器，保证信号能被及时处理。
+    """
+    global _sigint_heartbeat
+
+    def _handle_sigint(signum: int, _frame: object) -> None:
+        logger.info(f"收到中断信号（signal={signum}），按正常退出处理")
+        app.exit(INTERRUPT_EXIT_CODE)
+
+    signal.signal(signal.SIGINT, _handle_sigint)
+    _sigint_heartbeat = QTimer()
+    _sigint_heartbeat.setInterval(200)
+    _sigint_heartbeat.start()
 
 
 def parse_args():
@@ -559,6 +587,43 @@ def _cleanup_system(plugin_manager, db_manager):
     logger.info("系统已关闭")
 
 
+def _launch_gui(config, data_manager, plugin_manager):
+    """创建桌面主窗口并运行 Qt 事件循环，返回 (app, 退出码)。"""
+    # QtWebEngine 必须先于 QApplication 就绪（共享 GL 上下文），否则内嵌工作台标签页
+    # 会在创建时被 Chromium 拒绝；缺 QtWebEngine 时只降级该标签页，不影响主界面。
+    from PySide6.QtCore import QCoreApplication, Qt
+
+    QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
+    try:
+        import PySide6.QtWebEngineWidgets  # noqa: F401
+    except Exception as webengine_error:  # noqa: BLE001
+        logger.warning(f"QtWebEngine 不可用，回测工作台标签页将不可用: {webengine_error}")
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("中国股市量化分析系统")
+    # 测试里 QApplication 被打桩成假对象，只有真实 GUI 进程才装信号处理器
+    if isinstance(app, _REAL_QAPPLICATION):
+        _install_sigint_handler(app)
+
+    ThemeManager.set_dark_theme(app)
+
+    main_window = MainWindow(config, data_manager, plugin_manager)
+    main_window.showMaximized()
+
+    publish(EventType.SYSTEM_INIT, app=app, config=config, data_manager=data_manager)
+    logger.info("中国股市量化分析系统启动成功")
+
+    global_memory_manager.start_monitoring()
+    logger.info("内存监控已启动")
+
+    memory_usage = global_memory_manager.get_memory_usage()
+    logger.info(f"初始内存使用: {memory_usage['process_rss_mb']:.2f} MB ({memory_usage['process_percent']:.1f}%)")
+
+    log_cache_stats()
+
+    return app, app.exec()
+
+
 def main():
     """主函数"""
     args = parse_args()
@@ -567,6 +632,7 @@ def main():
     db_manager = None
     # GUI 事件循环退出码；None 表示走命令行分支（不需要强制终止进程）
     app_exit_code = None
+    app = None
 
     try:
         config = get_config()
@@ -620,38 +686,12 @@ def main():
             return
 
         data_manager = _initialize_data_manager(config, plugin_manager)
+        app, app_exit_code = _launch_gui(config, data_manager, plugin_manager)
 
-        # QtWebEngine 必须先于 QApplication 就绪（共享 GL 上下文），否则内嵌工作台标签页
-        # 会在创建时被 Chromium 拒绝；缺 QtWebEngine 时只降级该标签页，不影响主界面。
-        from PySide6.QtCore import QCoreApplication, Qt
-
-        QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
-        try:
-            import PySide6.QtWebEngineWidgets  # noqa: F401
-        except Exception as webengine_error:  # noqa: BLE001
-            logger.warning(f"QtWebEngine 不可用，回测工作台标签页将不可用: {webengine_error}")
-
-        app = QApplication(sys.argv)
-        app.setApplicationName("中国股市量化分析系统")
-
-        ThemeManager.set_dark_theme(app)
-
-        main_window = MainWindow(config, data_manager, plugin_manager)
-        main_window.showMaximized()
-
-        publish(EventType.SYSTEM_INIT, app=app, config=config, data_manager=data_manager)
-        logger.info("中国股市量化分析系统启动成功")
-
-        global_memory_manager.start_monitoring()
-        logger.info("内存监控已启动")
-
-        memory_usage = global_memory_manager.get_memory_usage()
-        logger.info(f"初始内存使用: {memory_usage['process_rss_mb']:.2f} MB ({memory_usage['process_percent']:.1f}%)")
-
-        log_cache_stats()
-
-        app_exit_code = app.exec()
-
+    except KeyboardInterrupt:
+        # 用户主动中断（Ctrl+C）：按正常退出处理，不走「未捕获异常」路径
+        logger.info("收到用户中断（Ctrl+C），清理后退出")
+        sys.exit(INTERRUPT_EXIT_CODE)
     except _STARTUP_ERRORS as e:
         logger.exception(f"系统启动失败: {e}")
         sys.exit(1)
@@ -670,4 +710,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # 兜底：中断若已越过 main()（例如发生在清理阶段），同样按正常退出处理，
+        # 不交给 sys.excepthook 打印 traceback
+        logger.info("收到用户中断（Ctrl+C），按正常退出处理")
+        sys.exit(INTERRUPT_EXIT_CODE)

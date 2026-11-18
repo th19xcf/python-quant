@@ -13,6 +13,7 @@ from loguru import logger
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils.exception_handler import (
+    GlobalExceptionHandler,
     handle_error_gracefully,
     handle_exception_with_retry,
     setup_global_exception_handler,
@@ -121,6 +122,41 @@ def test_exception_context():
         logger.info(f"捕获到带上下文的异常: {e}")
         logger.info(f"异常原因: {e.cause}")
         logger.info(f"异常上下文: {e.details}")
+
+
+def test_keyboard_interrupt_is_normal_exit():
+    """Ctrl+C 按正常退出处理：不记 ERROR、不计入统计、不弹窗"""
+    handler = GlobalExceptionHandler()
+    records = []
+    sink_id = logger.add(lambda message: records.append(message.record), level="DEBUG")
+    try:
+        try:
+            raise KeyboardInterrupt()
+        except KeyboardInterrupt:
+            handler.handle_exception(*sys.exc_info())
+
+        assert handler.get_error_stats()["total_errors"] == 0
+        assert not [r for r in records if r["level"].name in ("ERROR", "CRITICAL")]
+        assert any("中断" in r["message"] for r in records)
+    finally:
+        logger.remove(sink_id)
+        handler.restore()
+
+
+def test_real_exception_still_logs_error(monkeypatch):
+    """真异常口径不变：仍记 ERROR 并计入统计"""
+    handler = GlobalExceptionHandler()
+    monkeypatch.setattr(handler, "_show_error_dialog", lambda details: None)
+    records = []
+    sink_id = logger.add(lambda message: records.append(message.record), level="DEBUG")
+    try:
+        handler.handle_exception(ValueError, ValueError("测试错误"), None)
+
+        assert any(r["level"].name == "ERROR" for r in records)
+        assert handler.get_error_stats()["total_errors"] == 1
+    finally:
+        logger.remove(sink_id)
+        handler.restore()
 
 
 if __name__ == "__main__":

@@ -230,3 +230,42 @@ def test_display_plugins_logs_each_plugin():
     assert plugin_manager.get_all_plugin_info() == [
         {'name': 'demo', 'version': '1.0', 'description': '示例插件'},
     ]
+
+
+def test_main_exits_with_130_on_keyboard_interrupt(monkeypatch, tmp_path):
+    """启动期 Ctrl+C：清理后以 130 退出，不当作启动失败"""
+    records, _config, _plugin_manager, _data_manager = _patch_launch_dependencies(
+        monkeypatch, tmp_path
+    )
+
+    def _interrupted(cfg):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(main_module, '_initialize_system', _interrupted)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main()
+
+    assert exc_info.value.code == main_module.INTERRUPT_EXIT_CODE == 130
+    assert records.cleanup == [(None, None)]
+
+
+def test_sigint_handler_exits_with_130(qapp, monkeypatch):
+    """SIGINT 处理器接管 Ctrl+C：直接以 130 退出，不抛 KeyboardInterrupt。"""
+    captured = {}
+    monkeypatch.setattr(
+        main_module.signal,
+        'signal',
+        lambda signum, handler: captured.__setitem__(signum, handler),
+    )
+    fake_app = SimpleNamespace(exit=_Recorder())
+
+    main_module._install_sigint_handler(fake_app)
+    try:
+        assert main_module.signal.SIGINT in captured
+        captured[main_module.signal.SIGINT](2, None)
+        assert fake_app.exit.calls == [((main_module.INTERRUPT_EXIT_CODE,), {})]
+        assert main_module.INTERRUPT_EXIT_CODE == 130
+    finally:
+        if main_module._sigint_heartbeat is not None:
+            main_module._sigint_heartbeat.stop()
