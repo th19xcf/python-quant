@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStatusBar,
     QTableWidget,
-    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -28,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.ui.advice.tokens import TOKENS, palette_for
+from src.ui.tabbed_page_container import TabbedPageContainer
 from src.ui.table_sizing import FIXED_ROW_HEIGHT, SEQ_COLUMN_WIDTH
 from src.ui.theme_manager import SidebarItemDelegate, is_dark_palette, sidebar_qss
 from src.utils.logger import logger
@@ -204,8 +204,9 @@ class MainWindowLayoutMixin:
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
 
-        # 创建标签页
-        self.tab_widget = QTabWidget()
+        # 页面容器只放页面内容；标签栏已由 create_tool_bar 放进工具栏行，
+        # 这里不再保留 QTabWidget 顶部标签条，页面区因此多出约一条标签栏高度。
+        self.tab_widget = TabbedPageContainer(self.tab_bar)
         center_layout.addWidget(self.tab_widget)
 
         # 添加行情标签页

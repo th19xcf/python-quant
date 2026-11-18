@@ -1,0 +1,265 @@
+"""构建「已确认无分红 / 未确认覆盖」判定清单（只读原始因子与分红表，不覆盖记录）。
+
+判定门槛（严格）：
+* ``confirmed_no_dividend``：只认独立证据——分红接口对该代码返回明确空记录
+  （代码在本地名录中存在、接口正常返回 0 行）。由 ``--probe`` 逐只串行取证。
+* ``unconfirmed_coverage``：其余无分红记录的标的。因子全 1 或全市场年度分红表
+  无该代码都不算「确认无分红」，只能是「源端未覆盖/无法区分」。
+
+输出：``data/local_store/meta/dividend_status/no_dividend_ledger.parquet``
+（字段说明见同目录 ``README.md``）。
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import time
+from datetime import date, datetime
+from pathlib import Path
+
+import polars as pl
+
+ROOT = Path(__file__).resolve().parents[1]
+STORE = ROOT / 'data' / 'local_store'
+OUT_DIR = STORE / 'meta' / 'dividend_status'
+OUT_PATH = OUT_DIR / 'no_dividend_ledger.parquet'
+
+COLUMNS = ['ts_code', 'name', 'kind', 'status', 'judgement_basis',
+           'evidence_source', 'evidence_date', 'decided_at',
+           'probe_attempts', 'probe_result_seq', 'rule_version']
+RULE_VERSION = 'probe-2req-stable-v1'
+FUND_PROBE_SOURCE = 'akshare:fund_open_fund_info_em(分红送配详情)'
+STOCK_PROBE_SOURCE = 'akshare:stock_fhps_detail_em'
+
+
+def load_evidence(csv_path: str) -> dict[str, dict]:
+    """读全量取证明细（ts_code/尝试次数/各次结果/判定/错误信息/探测时刻）。"""
+    frame = pl.read_csv(csv_path, infer_schema_length=0)
+    out: dict[str, dict] = {}
+    for rec in frame.to_dicts():
+        seq = [s for s in str(rec['各次结果']).split('/') if s]
+        verdict = rec['判定']
+        out[rec['ts_code']] = {
+            'source': FUND_PROBE_SOURCE,
+            'date': str(rec['探测时刻'])[:10],
+            'attempts': int(rec['尝试次数'] or len(seq)),
+            'seq': seq,
+            'verdict': verdict,
+            'error': rec.get('错误信息') or '',
+            'rows': int(rec['最大返回条数'] or 0),
+        }
+    return out
+
+
+def all_one_codes(path: Path, factor_col: str = 'qfq_factor') -> dict[str, int]:
+    """因子全为 1.0 的代码与行数。"""
+    frame = pl.read_parquet(path, columns=['ts_code', factor_col])
+    grouped = frame.group_by('ts_code').agg(
+        pl.len().alias('rows'),
+        pl.col(factor_col).min().alias('lo'),
+        pl.col(factor_col).max().alias('hi'),
+        pl.col(factor_col).null_count().alias('nulls'),
+    )
+    hit = grouped.filter(
+        (pl.col('lo') == 1.0) & (pl.col('hi') == 1.0) & (pl.col('nulls') == 0))
+    return dict(zip(hit['ts_code'].to_list(), hit['rows'].to_list()))
+
+
+def dividend_counts(path: Path) -> dict[str, int]:
+    frame = pl.read_parquet(path, columns=['ts_code'])
+    grouped = frame.group_by('ts_code').len()
+    return dict(zip(grouped['ts_code'].to_list(), grouped['len'].to_list()))
+
+
+def probe_fund(symbol: str) -> tuple[str, int | None, str]:
+    """单只基金分红接口取证；返回 (状态, 行数, 错误)。"""
+    import akshare as ak
+    try:
+        frame = ak.fund_open_fund_info_em(symbol=symbol, indicator='分红送配详情')
+    except Exception as exc:  # noqa: BLE001 - 东财接口异常类型不稳定
+        return 'error', None, f'{type(exc).__name__}: {exc}'
+    return ('empty' if len(frame) == 0 else 'rows'), len(frame), ''
+
+
+def probe_stock(symbol: str) -> tuple[str, int | None, str]:
+    import akshare as ak
+    try:
+        frame = ak.stock_fhps_detail_em(symbol=symbol)
+    except Exception as exc:  # noqa: BLE001
+        return 'error', None, f'{type(exc).__name__}: {exc}'
+    return ('empty' if len(frame) == 0 else 'rows'), len(frame), ''
+
+
+def build(probe_codes: list[str], delay: float,  # noqa: C901
+          evidence: dict[str, dict] | None = None) -> pl.DataFrame:
+    fund_basic = pl.read_parquet(STORE / 'meta' / 'fund_basic.parquet',
+                                 columns=['ts_code', 'name', 'fund_type'])
+    stock_basic = pl.read_parquet(STORE / 'meta' / 'stock_basic.parquet',
+                                  columns=['ts_code', 'name'])
+    fund_names = dict(zip(fund_basic['ts_code'].to_list(), fund_basic['name'].to_list()))
+    fund_types = dict(zip(fund_basic['ts_code'].to_list(),
+                          fund_basic['fund_type'].to_list()))
+    stock_names = dict(zip(stock_basic['ts_code'].to_list(),
+                           stock_basic['name'].to_list()))
+
+    fund_one = all_one_codes(STORE / 'factors' / 'fund_adj_factor.parquet')
+    stock_one = all_one_codes(STORE / 'factors' / 'stock_adj_factor.parquet')
+    fund_div = dividend_counts(STORE / 'factors' / 'fund_dividend.parquet')
+    stock_div = dividend_counts(STORE / 'factors' / 'stock_dividend.parquet')
+
+    decided = date.today().isoformat()
+    probed_evidence: dict[str, dict] = {}
+    if evidence is None:
+        evidence = {}
+        for code in probe_codes:
+            symbol = code.split('.')[0]
+            is_fund = code in fund_types
+            probe = probe_fund if is_fund else probe_stock
+            source = FUND_PROBE_SOURCE if is_fund else STOCK_PROBE_SOURCE
+            # 同一代码连查两次：单次空返回可能是接口瞬时空，两次都空才算确认无分红
+            results = [probe(symbol) for _ in range(2)]
+            time.sleep(delay)
+            seq = [r[0] for r in results]
+            counts = [r[1] for r in results if r[0] == 'rows' and r[1]]
+            if counts:
+                verdict = 'rows' if seq.count('rows') == 2 else 'unstable_source'
+            elif 'error' in seq:
+                verdict = 'error'
+            else:
+                verdict = 'stable_empty'
+            evidence[code] = {
+                'source': source, 'date': decided, 'attempts': len(results),
+                'seq': seq, 'verdict': verdict,
+                'error': next((r[2] for r in results if r[2]), ''),
+                'rows': max(counts) if counts else 0,
+            }
+            probed_evidence[code] = {
+                'results': [{'result': r[0], 'rows': r[1], 'error': r[2]}
+                            for r in results],
+                'source': source, 'date': decided,
+            }
+
+    def _probe_status(ev: dict) -> tuple[str, int | None]:
+        """取证明细 → (状态键, 有记录条数)。"""
+        verdict = ev.get('verdict') or ''
+        if verdict == 'stable_empty':
+            return 'empty', 0
+        if verdict in ('rows', 'unstable_source'):
+            return 'rows', ev.get('rows') or 0
+        if verdict == 'error':
+            return 'error', None
+        return '', None
+
+    rows: list[dict] = []
+    for code, factor_rows in fund_one.items():
+        if fund_div.get(code, 0) > 0:
+            continue
+        ev = evidence.get(code)
+        result, probed_rows = _probe_status(ev) if ev else ('', None)
+        if result == 'empty':
+            status = 'confirmed_no_dividend'
+            basis = (f'{ev["source"]} 连续 {ev["attempts"]} 次正常返回 0 行'
+                     f'（各次 {"→".join(ev["seq"])}，代码存在、无分红事件）；'
+                     f'本地因子 {factor_rows} 行全 1.0')
+            source, ev_date = ev['source'], ev['date']
+        elif result == 'rows':
+            status = 'local_dividend_missing'
+            stable = '' if ev.get('verdict') == 'rows' else '（一次有记录一次空，源端不稳定）'
+            basis = (f'{ev["source"]} 对该代码返回 {probed_rows} 条分红记录{stable}'
+                     f'（各次 {"→".join(ev["seq"])}），'
+                     f'本地 fund_dividend 0 条、因子 {factor_rows} 行全 1.0，'
+                     '属本地分红/因子缺失，需补采重建')
+            source, ev_date = ev['source'], ev['date']
+        else:  # 无取证或取证失败/不一致：一律未确认
+            status = 'unconfirmed_coverage'
+            if ev:
+                basis = (f'{ev["source"]} 逐只取证 {ev["attempts"]} 次仍报错'
+                         f'（{ev.get("error", "")[:120]}），'
+                         '不能区分「确实未分红」与「源端未覆盖」')
+                source, ev_date = ev['source'], ev['date']
+            else:
+                basis = ('本地分红表无记录；未取得逐只证据（全市场年度分红表 '
+                         'akshare:fund_fh_em 无该代码不能区分「确实未分红」与「源端未覆盖」）')
+                source, ev_date = ('factors/fund_dividend.parquet (akshare:fund_fh_em)',
+                                   None)
+        rows.append({
+            'ts_code': code, 'name': fund_names.get(code) or '未知',
+            'kind': fund_types.get(code) or '未知',
+            'status': status, 'judgement_basis': basis,
+            'evidence_source': source, 'evidence_date': ev_date, 'decided_at': decided,
+            'probe_attempts': ev.get('attempts') if ev else None,
+            'probe_result_seq': ('/'.join(ev.get('seq') or []) if ev else None),
+            'rule_version': RULE_VERSION if ev else None,
+        })
+
+    for code, factor_rows in stock_one.items():
+        if stock_div.get(code, 0) > 0:
+            continue
+        ev = evidence.get(code)
+        result, probed_rows = _probe_status(ev) if ev else ('', None)
+        if result == 'empty':
+            status = 'confirmed_no_dividend'
+            basis = (f'{ev["source"]} 连续两次正常返回 0 行（代码存在、无分红事件）；'
+                     f'本地因子 {factor_rows} 行全 1.0')
+            source, ev_date = ev['source'], ev['date']
+        elif result == 'rows':
+            status = 'local_dividend_missing'
+            basis = (f'{ev["source"]} 对该代码返回 {probed_rows} 条分红记录，'
+                     f'本地 stock_dividend 0 条、因子 {factor_rows} 行全 1.0')
+            source, ev_date = ev['source'], ev['date']
+        else:
+            status = 'unconfirmed_coverage'
+            basis = '本地分红表无记录；接口未取得稳定逐只证据，不能确认无分红'
+            source, ev_date = 'factors/stock_dividend.parquet', None
+        rows.append({
+            'ts_code': code, 'name': stock_names.get(code) or '未知', 'kind': '个股',
+            'status': status, 'judgement_basis': basis,
+            'evidence_source': source, 'evidence_date': ev_date, 'decided_at': decided,
+            'probe_attempts': ev.get('attempts') if ev else None,
+            'probe_result_seq': ('/'.join(ev.get('seq') or []) if ev else None),
+            'rule_version': RULE_VERSION if ev else None,
+        })
+
+    frame = pl.DataFrame(rows, schema={
+        'ts_code': pl.Utf8, 'name': pl.Utf8, 'kind': pl.Utf8, 'status': pl.Utf8,
+        'judgement_basis': pl.Utf8, 'evidence_source': pl.Utf8,
+        'evidence_date': pl.Utf8, 'decided_at': pl.Utf8,
+        'probe_attempts': pl.Int64, 'probe_result_seq': pl.Utf8,
+        'rule_version': pl.Utf8,
+    }).sort(['status', 'kind', 'ts_code'])
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    frame.write_parquet(OUT_PATH)
+    if probed_evidence:
+        probe_log = OUT_DIR / f'probe_evidence_{decided}.json'
+        existing = {}
+        if probe_log.exists():
+            try:
+                existing = json.loads(probe_log.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                existing = {}
+        existing.update({k: {**v, 'probed_at': datetime.now().isoformat(timespec='seconds')}
+                         for k, v in probed_evidence.items()})
+        probe_log.write_text(json.dumps(existing, ensure_ascii=False, indent=2),
+                             encoding='utf-8')
+    return frame
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description='构建无分红判定清单')
+    parser.add_argument('--probe', default='', help='逐只取证的代码，逗号分隔')
+    parser.add_argument('--delay', type=float, default=0.6, help='逐只取证间隔秒数')
+    parser.add_argument('--evidence', default='',
+                        help='全量取证明细 CSV（outputs/基金分红全量取证_*.csv）')
+    args = parser.parse_args()
+    codes = [c.strip() for c in args.probe.split(',') if c.strip()]
+    evidence = load_evidence(args.evidence) if args.evidence else None
+    frame = build(codes, args.delay, evidence=evidence)
+    summary = frame.group_by(['status', 'kind']).agg(pl.len().alias('n')).sort(
+        ['status', 'kind'])
+    print(frame.height, 'rows ->', OUT_PATH)
+    print(summary)
+    print(frame.group_by('status').agg(pl.len().alias('n')).sort('status'))
+
+
+if __name__ == '__main__':
+    main()

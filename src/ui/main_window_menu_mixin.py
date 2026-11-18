@@ -4,9 +4,14 @@
 主窗口菜单与工具栏 Mixin：菜单栏、菜单动作与工具栏创建。
 """
 
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QPushButton
+from PySide6.QtWidgets import (
+    QPushButton,
+    QSizePolicy,
+    QTabBar,
+    QWidget,
+)
 
 from src.utils.logger import logger
 
@@ -255,3 +260,20 @@ class MainWindowMenuMixin:
         settings_btn.setEnabled(False)
         settings_btn.setToolTip(self.UNIMPLEMENTED_TOOLTIP)
         tool_bar.addWidget(settings_btn)
+
+        # 标签栏放在工具栏同一行右侧：弹性占位把标签栏推到最右，窗口变窄时
+        # 标签栏先收缩（超宽由 QTabBar 自己的滚动按钮处理），不挤压左侧按钮。
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        tool_bar.addWidget(spacer)
+
+        self.tab_bar = QTabBar()
+        self.tab_bar.setObjectName("mainTabBar")
+        # 与改前 QTabWidget 内部标签栏一致：不撑满、不画基线、不省略文字；
+        # 放不下时由 Qt 默认滚动按钮处理，不会挤压左侧工具栏控件。
+        self.tab_bar.setExpanding(True)
+        self.tab_bar.setDrawBase(False)
+        self.tab_bar.setElideMode(Qt.TextElideMode.ElideNone)
+        self.tab_bar.setUsesScrollButtons(True)
+        self.tab_bar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        tool_bar.addWidget(self.tab_bar)
