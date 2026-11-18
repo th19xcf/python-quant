@@ -485,6 +485,13 @@ class StrategyLabPage(QWidget):
             item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.metrics_table.setItem(i, 1, item)
         apply_content_widths(self.metrics_table)
+        # 表格在 QSplitter 里按 sizeHint 只分到约 150 px，列宽按实测给足后会被横向
+        # 滚动条挤出视口（数值列看不到、像被截断）。用同一次实测的列宽合计把表格
+        # 最小宽撑到刚好放下全部列：既不留空白，也不出横向滚动条。
+        table = self.metrics_table
+        columns = sum(table.columnWidth(i) for i in range(table.columnCount()))
+        table.setMinimumWidth(columns + 2 * table.frameWidth()
+                              + table.verticalScrollBar().sizeHint().width())
 
     @staticmethod
     def _format(kind: str, value: Any) -> str:
