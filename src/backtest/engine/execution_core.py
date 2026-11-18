@@ -747,7 +747,9 @@ class EventBacktestRunner:
         st_status 为 (标的名 → ST 三态) 映射：True=ST、False=明确非 ST、
         未出现在映射中=状态未知。未知标的涨跌停按板块默认幅度判定（与
         False 相同），只把结果的 st_unknown 置 True、fill_confidence 降为
-        low，并逐条记入 st_unknown_bars。
+        low，并逐条记入 st_unknown_bars。场内基金（ETF / LOF / 分级）没有
+        ST 概念，不受此影响：显式按非 ST 处理，不置 st_unknown、不降级
+        fill_confidence，涨跌停按基金自身规则（10% / 科创板·创业板 ETF 20%）。
 
         universe 价格口径（双价格列契约）：
             - open/high/low/close 为指标与收益计算用价（DataFetcher hfq 出口
@@ -1119,10 +1121,16 @@ class EventBacktestRunner:
         True=ST、False=明确非 ST、None=未知；区间列表表示按日期查询。
         未知不代表 ST：涨跌停按板块规则（与 False 相同）判定，只以
         st_unknown=True / fill_confidence=low 标记数据质量。
+
+        场内基金（ETF / LOF / 分级）没有 ST 概念，一律显式记为「非 ST」：
+        既不进入未知统计，也不会把该标的的成交置信度降为 low。
         """
         st_status = dict(st_status or {})
         unknown_st_codes = []
         for code in codes:
+            if ExecutionRules.is_fund(code):
+                st_status[code] = False
+                continue
             value = st_status.get(code)
             if value is None or (isinstance(value, list) and not value):
                 unknown_st_codes.append(code)

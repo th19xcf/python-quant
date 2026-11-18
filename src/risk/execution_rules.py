@@ -70,6 +70,27 @@ class ExecutionRules:
     #: 无法从证券代码推导时的兜底涨跌停幅度（主板默认）
     DEFAULT_LIMIT_PCT = 0.10
 
+    #: 场内基金（ETF / LOF / 分级）代码段：沪市 5 开头，深市 15/16/18 开头。
+    #: 基金份额没有 ST 概念，涨跌停按基金自身规则判定（常规 10%），
+    #: 不套用个股板块与 ST 收窄逻辑。
+    FUND_PREFIXES = ('5', '15', '16', '18')
+
+    #: 20% 幅度的基金：上交所科创板 ETF（588 / 589 段），与科创板股票同为 20%。
+    FUND_20_PCT_PREFIXES = ('588', '589')
+
+    #: 跟踪创业板 / 双创指数的深市 ETF：深市 ETF 共用 159/158 号段，无法按
+    #: 代码段区分跟踪指数，故显式列举（来源：``fund_basic.parquet`` 中名称含
+    #: 「创业板 / 双创」且已进入 ETF 池的代码，2026-11-18 按本地行情核对；
+    #: 新增同类 ETF 需同步追加，未列入的深市基金按常规 10% 处理）。
+    FUND_20_PCT_CODES = frozenset({
+        '159107.SZ', '159205.SZ', '159242.SZ', '159246.SZ', '159256.SZ',
+        '159279.SZ', '159363.SZ', '159368.SZ', '159369.SZ', '159381.SZ',
+        '159382.SZ', '159387.SZ', '159388.SZ', '159597.SZ', '159681.SZ',
+        '159682.SZ', '159782.SZ', '159908.SZ', '159915.SZ', '159948.SZ',
+        '159949.SZ', '159952.SZ', '159955.SZ', '159957.SZ', '159967.SZ',
+        '159971.SZ', '159977.SZ',
+    })
+
     #: 创业板注册制改革正式实施日：此前创业板涨跌停幅度为 10%，当日起放宽为 20%。
     #: 历史回测必须按交易日落到改革前后分别取阈值，否则改革前固定用 20% 会把
     #: 实际已封板（>+10%）的开盘价误判为可成交，系统性虚增收益。
@@ -94,19 +115,38 @@ class ExecutionRules:
         self.lot_size = lot_size
 
     @staticmethod
+    def is_fund(ts_code: str = '') -> bool:
+        """是否场内基金（ETF / LOF / 分级）：沪市 5 开头、深市 15/16/18 开头。
+
+        基金份额没有 ST 概念，涨跌停按基金自身规则判定（常规 10%；
+        科创板 / 创业板 ETF 20%），不套用个股板块与 ST 收窄逻辑。
+        """
+        code = (ts_code or '').strip().upper().split('.')[0]
+        return code.startswith(ExecutionRules.FUND_PREFIXES)
+
+    @staticmethod
     def _resolve_board_limit_pct(ts_code: str, trade_date: date | None) -> float:
         """按证券代码与交易日推导该板块常规（非 ST）涨跌停幅度。
 
         统一以 ts_code 为唯一标识符（A22：不再同时接收 code 与 ts_code），
         代码段由 ts_code 内部派生。
 
-        判定顺序固定：北交所 → 创业板（含注册制改革日切换）→ BOARD_RULES
-        显式号段（科创板 / B 股）→ 主板兜底。
+        判定顺序固定：场内基金 → 北交所 → 创业板（含注册制改革日切换）→
+        BOARD_RULES 显式号段（科创板 / B 股）→ 主板兜底。基金不走个股板块
+        规则：科创板 ETF（588/589）与跟踪创业板/双创指数的深市 ETF 为 20%，
+        其余 ETF/LOF/分级为常规 10%。
         """
         ts_code = (ts_code or '').strip().upper()
         code = ts_code.split('.')[0]
         if not code:
             return ExecutionRules.DEFAULT_LIMIT_PCT
+
+        # 场内基金：无 ST 概念，按基金自身规则判定
+        if ExecutionRules.is_fund(ts_code):
+            if (code.startswith(ExecutionRules.FUND_20_PCT_PREFIXES)
+                    or ts_code in ExecutionRules.FUND_20_PCT_CODES):
+                return 0.20
+            return 0.10
 
         # 北交所：交易所后缀最可靠（代码段会新增），无后缀时用显式号段兜底
         if ts_code.endswith('.BJ'):
@@ -141,6 +181,9 @@ class ExecutionRules:
           创业板）的 ST 股票才收窄到 5%；常规幅度为 20%/30% 的板块（改革后
           创业板、科创板、北交所）其风险警示股票涨跌幅与正常股票一致，不另
           设 5%——这与 A 股现行风险警示规则一致；
+        - 场内基金（ETF / LOF / 分级）不走个股板块规则：科创板 ETF（588/589）
+          与跟踪创业板/双创指数的深市 ETF 为 20%，其余基金为常规 10%，
+          且没有 ST 概念、不参与 5% 收窄；
         - ``is_st=None``（数据层未提供 ST 标识）按板块常规幅度判定，未知状态
           只体现为结果里的 st_unknown=True / fill_confidence=low，不改变成交
           判定本身。
@@ -156,8 +199,10 @@ class ExecutionRules:
         regular = ExecutionRules._resolve_board_limit_pct(ts_code, trade_date)
 
         # 仅常规幅度为 10% 的板块，ST 才收窄到 5%；
-        # 20%/30% 板块（改革后创业板、科创板、北交所）的 ST 股票与普通股同幅度
-        if is_st and regular == 0.10:
+        # 20%/30% 板块（改革后创业板、科创板、北交所）的 ST 股票与普通股同幅度；
+        # 场内基金无 ST 概念，不参与收窄。
+        if (is_st and regular == 0.10
+                and not ExecutionRules.is_fund(ts_code)):
             return ExecutionRules.ST_LIMIT_PCT
         return regular
 
@@ -171,6 +216,8 @@ class ExecutionRules:
         ``PriceLimitTradable.DEFAULT_LIMITS[sector] == resolve_limit_pct(...)``。
         只有常规幅度为 10% 的板块（主板 / B 股 / 改革前创业板）的 ST 股票
         才映射为 'ST'（5%），20%/30% 板块的 ST 与普通股同档，沿用板块标签。
+        场内基金没有 ST 概念：20% 的科创板/创业板 ETF 映射为 '科创板' /
+        '创业板'，其余基金按 '主板'（10%）审查。
 
         无法识别的代码统一按主板（10%）——与 resolve_limit_pct 的兜底一致。
         """
@@ -180,8 +227,19 @@ class ExecutionRules:
             return '主板'
 
         regular = ExecutionRules._resolve_board_limit_pct(ts_code, trade_date)
-        if is_st and regular == ExecutionRules.DEFAULT_LIMIT_PCT:
+        is_fund = ExecutionRules.is_fund(ts_code)
+        if (is_st and regular == ExecutionRules.DEFAULT_LIMIT_PCT
+                and not is_fund):
             return 'ST'
+
+        # 场内基金没有 ST 概念：20% 的科创板/创业板 ETF 映射到同幅度板块标签，
+        # 其余基金按主板 10% 档位审查
+        if is_fund:
+            if regular == 0.20:
+                return ('科创板'
+                        if code.startswith(ExecutionRules.FUND_20_PCT_PREFIXES)
+                        else '创业板')
+            return '主板'
 
         if ts_code.endswith('.BJ') or code.startswith(ExecutionRules.BJ_PREFIXES):
             return '北交所'

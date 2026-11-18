@@ -99,6 +99,35 @@ def test_engine_uses_interval_cover_to_clear_st_unknown():
     assert partial['st_unknown'] is True
 
 
+def test_fund_codes_are_explicitly_non_st():
+    """ETF / LOF / 分级没有 ST 概念：显式记 False，不计入未知统计"""
+    st_map, unknown = EventBacktestRunner._resolve_st_status(
+        ['510300.SH', '159915.SZ', '161725.SZ', '150018.SZ', '600000.SH'], {})
+    for code in ('510300.SH', '159915.SZ', '161725.SZ', '150018.SZ'):
+        assert st_map[code] is False
+    # 个股仍然按未知处理，未知标记只由个股触发
+    assert st_map.get('600000.SH') is None
+    assert unknown is True
+
+    # 纯基金标的：没有任何未知状态
+    _st_map, unknown = EventBacktestRunner._resolve_st_status(
+        ['510300.SH', '159915.SZ'], None)
+    assert unknown is False
+
+
+def test_etf_backtest_has_no_st_unknown_and_high_confidence():
+    """510300 ETF 回测：不置 st_unknown，逐笔置信度保持 high"""
+    df = _make_df([10.0, 10.2, 10.4])
+    engine = BacktestEngine(df)
+    engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    result = engine.run_backtest(ts_code='510300.SH')
+    assert result['st_unknown'] is False
+    assert result['st_unknown_bars'] == []
+    assert result['fill_confidence'] == 'high'
+    assert result['trades']
+    assert all(t['fill_confidence'] == 'high' for t in result['trades'])
+
+
 def test_normalize_ts_code_variants():
     assert normalize_ts_code('600000') == '600000.SH'
     assert normalize_ts_code('000001') == '000001.SZ'

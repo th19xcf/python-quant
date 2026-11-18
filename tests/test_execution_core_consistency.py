@@ -158,6 +158,24 @@ def test_t_plus_one_open_price_and_lot_size():
     assert buy['shares'] % 100 == 0
 
 
+def test_etf_limit_uses_fund_rule_not_stock_board():
+    """基金按自身涨跌停规则：科创板 ETF +15% 开盘可成交，10% ETF 仍拒单。"""
+    up_df = _make_df(opens=[100.0, 115.0, 115.0], closes=[100.0, 115.0, 115.0])
+
+    kc_engine = BacktestEngine(up_df)
+    kc_engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    kc = kc_engine.run_backtest(initial_capital=1_000_000.0, ts_code='588000.SH')
+    assert [t['signal'] for t in kc['trades']] == ['buy']
+    assert kc['expired_orders'] == []
+    assert kc['fill_confidence'] == 'high'
+
+    hs_engine = BacktestEngine(up_df)
+    hs_engine.set_strategy(_IndexSignalStrategy({0: 'buy'}))
+    hs = hs_engine.run_backtest(initial_capital=1_000_000.0, ts_code='510300.SH')
+    assert hs['trades'] == []
+    assert [o['reason'] for o in hs['expired_orders']] == ['not_tradable']
+
+
 def test_limit_up_blocks_buy_and_limit_down_blocks_sell():
     """开盘触及涨停不可买；触及跌停卖不出时保留 intent，次日继续卖。"""
     # 涨停：第 2 根 K 线开盘价相对前收 +10%，t 日买入信号无法成交（买单不保留）
