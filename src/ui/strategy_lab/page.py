@@ -220,18 +220,6 @@ class StrategyLabPage(QWidget):
         title_box.addWidget(subtitle)
         top_row.addLayout(title_box)
         top_row.addStretch(1)
-
-        self.run_btn = QPushButton('运行试算')
-        self.run_btn.setDefault(True)
-        self.run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.run_btn.clicked.connect(self._on_run)
-        top_row.addWidget(self.run_btn)
-
-        self.save_btn = QPushButton('保存结果')
-        self.save_btn.setEnabled(False)
-        self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.save_btn.clicked.connect(self._on_save)
-        top_row.addWidget(self.save_btn)
         header.addLayout(top_row)
 
         # 说明文字放到左上角：另起一行、左对齐、占满可用宽度再折行，
@@ -277,6 +265,19 @@ class StrategyLabPage(QWidget):
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_btn.clicked.connect(self._refresh_rule_list)
         head.addWidget(self.refresh_btn)
+
+        # 三个按钮同组并排放在规则行右端：与标题区解耦，窄窗口下也不会压到说明块。
+        self.run_btn = QPushButton('运行试算')
+        self.run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.run_btn.setDefault(True)
+        self.run_btn.clicked.connect(self._on_run)
+        head.addWidget(self.run_btn)
+
+        self.save_btn = QPushButton('保存结果')
+        self.save_btn.setEnabled(False)
+        self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.save_btn.clicked.connect(self._on_save)
+        head.addWidget(self.save_btn)
         outer.addLayout(head)
 
         self.rule_text_label = QLabel('规则目录为空：请在 config/strategy_lab/rules/ 下放置规则 JSON')
