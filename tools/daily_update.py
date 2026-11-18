@@ -119,12 +119,18 @@ SIDE_OUTPUTS = (
 #: 构建收尾会整目录重写的台账（内容随行情变动，逐件白名单不现实）。
 SIDE_PREFIXES = ('meta/anomalies/', 'factors/rebuild/',
                  'meta/financials/parts/valuation/', 'meta/industry/')
-#: ST 区间表日更（risk_flags refresh + st_history build）会写的件。
+#: ST 区间表日更（risk_flags refresh + st_name_history build + st_history build）会写的件。
+#: supplement 由 ``st_name_history build`` 重建，覆盖窗口随行情末日推进；不重建会
+#: 让沪市/北交所 2,324 只的 ``coverage_end`` 停在最后一次手工构建日。
 AUX_ST_OUTPUTS = (
     'meta/st/st_intervals.parquet',
     'meta/st/st_coverage.parquet',
     'meta/st/coverage.json',
     'meta/st/manifest.json',
+    'meta/st/supplement/supplement_intervals.parquet',
+    'meta/st/supplement/supplement_coverage.parquet',
+    'meta/st/supplement/unresolved.csv',
+    'meta/st/supplement/manifest.json',
     'meta/st_status/st_status_history.parquet',
     'meta/st_status/manifest.json',
 )
@@ -693,20 +699,34 @@ def _run_breadth(plan: _Plan) -> tuple[bool, str]:
 
 
 def _step_st(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
-    """ST 快照 + 区间表日更；失败只记录，不改日更结果。"""
+    """ST 快照 + supplement 重建 + 区间表日更；失败只记录，不改日更结果。
+
+    顺序固定为「快照 → supplement → 规范表」：``st_history build`` 只负责把
+    supplement 并入规范表，若先合并再重建 supplement，规范表的覆盖窗口仍停在
+    上次构建日。这里用 ``build`` 而不是 ``apply``：``apply`` = build + 再次
+    ``st_history build``，与紧随其后的规范表重建重复，还会多打一份快照。
+    """
     if args.skip_st_refresh:
         return True, '已跳过（--skip-st-refresh）'
     store_args = ['--store-root', str(plan.root)]
     snapshot = _run_module(
         [sys.executable, '-m', 'src.data.risk_flags', 'refresh',
          '--as-of', plan.latest.isoformat(), *store_args], 'ST 快照刷新')
-    build = None
-    if snapshot == 0:
-        build = _run_module(
-            [sys.executable, '-m', 'src.data.st_history', *store_args, 'build'],
-            'ST 区间表重建')
-    ok = snapshot == 0 and build in (0, None)
-    return ok, f'快照 rc={snapshot} / 重建 rc={build}'
+    if snapshot != 0:
+        return False, f'快照 rc={snapshot} / supplement 与规范表未重建'
+    supplement = _run_module(
+        [sys.executable, '-m', 'src.data.st_name_history', *store_args, 'build'],
+        'ST 补充覆盖重建')
+    if supplement != 0:
+        # supplement 写盘是「区间 → 覆盖 → csv → manifest」的事务，失败可能停在
+        # 中间态；此时不重建规范表，避免把半套 supplement 并进正式表。次日重跑即可。
+        logger.warning('[daily] ST 补充覆盖重建失败（rc={}），本轮跳过规范表重建；'
+                       'supplement 可能停留在上一版或中间态，需重跑第 7 步', supplement)
+        return False, f'快照 rc=0 / supplement rc={supplement} / 规范表未重建'
+    build = _run_module(
+        [sys.executable, '-m', 'src.data.st_history', *store_args, 'build'],
+        'ST 区间表重建')
+    return build == 0, f'快照 rc=0 / supplement rc=0 / 重建 rc={build}'
 
 
 def _step_basic(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
