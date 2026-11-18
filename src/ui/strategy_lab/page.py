@@ -303,7 +303,7 @@ class StrategyLabPage(QWidget):
         charts_layout = QVBoxLayout(charts)
         charts_layout.setContentsMargins(0, 0, 0, 0)
         charts_layout.setSpacing(8)
-        self.nav_plot = self._add_plot(charts_layout, '净值对比（起点=1）', '净值')
+        self.nav_plot = self._add_plot(charts_layout, '净值对比（起点=1）', '净值', legend=True)
         self.drawdown_plot = self._add_plot(charts_layout, '回撤', '回撤')
         self.marker_plot = self._add_plot(charts_layout, '调仓 / 持仓', '仓位或成分数')
         self._link_x_axes()
@@ -313,8 +313,8 @@ class StrategyLabPage(QWidget):
         layout.addWidget(split, 1)
         return card
 
-    def _add_plot(self, layout: QVBoxLayout, title: str, ylabel: str):
-        """三张图共用一套样式：卡片底、palette 网格、TOKENS 坐标轴与图例字号。"""
+    def _add_plot(self, layout: QVBoxLayout, title: str, ylabel: str, *, legend: bool = False):
+        """三张图共用一套样式：卡片底、palette 网格、TOKENS 坐标轴；图例按需创建。"""
         section = QLabel(title)
         section.setObjectName('slSectionTitle')
         layout.addWidget(section)
@@ -325,7 +325,7 @@ class StrategyLabPage(QWidget):
             plot.setBackground(self._pal.card)
             plot.showGrid(x=True, y=True, alpha=0.2)
             plot.setMinimumHeight(120)
-            self._style_plot(plot)
+            self._style_plot(plot, with_legend=legend)
             plot.setLabel('left', ylabel, color=self._pal.muted)
         except Exception:  # noqa: BLE001 - 缺少 pyqtgraph 时降级为提示标签
             logger.warning('pyqtgraph 不可用，{} 改为文本提示', title)
@@ -343,8 +343,8 @@ class StrategyLabPage(QWidget):
         self.drawdown_plot.setXLink(self.nav_plot.plotItem)
         self.marker_plot.setXLink(self.nav_plot.plotItem)
 
-    def _style_plot(self, plot) -> None:
-        """坐标轴字号与颜色、图例字号统一从 TOKENS 与 palette 取。"""
+    def _style_plot(self, plot, *, with_legend: bool = False) -> None:
+        """坐标轴字号与颜色统一从 TOKENS 与 palette 取；只有需要图例的图才建图例。"""
         import pyqtgraph as pg
 
         font = QFont()
@@ -354,8 +354,10 @@ class StrategyLabPage(QWidget):
             axis.setPen(pg.mkPen(self._pal.faint))
             axis.setTextPen(pg.mkPen(self._pal.muted))
             axis.setStyle(tickFont=font)
+        if not with_legend:
+            return
         # addLegend() 默认 offset=(30, 30)，在有标题栏与坐标轴的迷你图上等于把图例
-        # 推进坐标区中部、压在净值曲线上；这里改成 8 px 内缩，三张图统一贴 ViewBox 左上角。
+        # 推进坐标区中部、压在净值曲线上；这里改成 8 px 内缩，贴 ViewBox 左上角。
         legend = plot.addLegend(offset=(8, 8))
         legend.setLabelTextSize(f'{TOKENS.font_small}px')
         legend.setLabelTextColor(self._pal.muted)
