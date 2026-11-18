@@ -23,7 +23,7 @@ alwaysApply: true
 
 ## 三、提交纪律
 
-- **提交流程与报告格式**：提交前必读 `git-backup.md`（免确认、5 块报告、备份、备份仓）。
+- **提交流程与报告格式**：提交前必读 `git-backup.md`（免确认、默认回一行 / 点名才出 5 块、备份、备份仓）。
 - **Commit message 必须中文**：标题与正文统一中文，仅类型前缀（feat/fix/refactor/perf/chore 等）与 scope 为英文，格式 `type(scope): 中文描述`；标题与正文之间、正文各条目之间不得有空行，条目紧接标题下一行连续书写，禁止 `git commit -m "标题\n\n正文"`。
 - **Commit message 文件必须无 BOM**：禁用 PowerShell 5.1 `Set-Content -Encoding utf8`（带 BOM，`git commit -F` / `stripspace` 不清理）；用 `.venv\Scripts\python.exe` 以 `open(p,'w',encoding='utf-8',newline='\n')` 写临时文件后 `git commit -F`，无 Python 时用 `UTF8Encoding($false)`；提交前自检首 3 字节不为 `EF BB BF`。
 - **提交范围必须自证**：多出文件立即回退重做，不得事后补「混入了」了事；同文件并行编辑按 `task-scheduling.md` 三条。
