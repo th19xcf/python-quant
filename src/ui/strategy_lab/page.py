@@ -438,11 +438,11 @@ class StrategyLabPage(QWidget):
         # 说明块紧跟标题块右侧 24px 起排、右侧停在按钮列左缘前 16px；
         # 宽度由 _sync_status_max_width 按标题块 sizeHint 与按钮列左缘实测算出。
         top_row.addSpacing(24)
-        # 说明块放页头右侧空白区：右对齐、贴顶部，宽度按可用区域自适应并折行。
+        # 说明块放页头右侧空白区：文字左对齐、贴顶部，宽度按可用区域自适应并折行。
         self.status_label = QLabel('选择规则后点击「运行试算」')
         self.status_label.setObjectName('slStatus')
         self.status_label.setWordWrap(True)
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         # 横向 Ignored + 只设最大宽：说明块铺满标题行剩余宽度，但不参与页面最小宽
         # 计算。若用固定宽，页面最小宽会被顶到接近当前宽，窗口宽度来回抖动且在
         # 窄档退不下去（离屏实测 1553 档最小宽 1535、1176 档回不去）。
