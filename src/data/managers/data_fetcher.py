@@ -12,6 +12,7 @@ import multiprocessing
 import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -91,6 +92,279 @@ class StaleNotice:
             'source_last_trade_date': self.source_last.isoformat() if self.source_last else None,
             'lag_days': self.lag_days,
         }
+
+
+# ---------------------------------------------------------------------------
+# 复权降级（因子全为 1.0）的归类、批量汇总与明细落盘
+# ---------------------------------------------------------------------------
+# 背景：基金长尾（ETF 中多数无分红）与个股长尾都会出现「请求复权但因子全 1.0」。
+# 逐只打 WARNING 会在一次批量里刷出上百条同格式日志，且无法区分「正常无分红」
+# 与「分红覆盖不足」。这里改为：单只调用打一条带代码与判定依据的日志；批量调用
+# 只打一条汇总，逐只明细落 logs/qfq_degradation_<日期>.csv。
+
+_STORE_ROOT = Path(__file__).resolve().parents[3] / 'data' / 'local_store'
+# 「该类型多数有分红」的门槛：有分红记录的标的占同类型 ≥ 该比例即视为多数
+_QFQ_MAJORITY_THRESHOLD = 0.5
+_QFQ_DETAIL_COLUMNS = ('time', 'ts_code', 'kind', 'rows', 'dividend_rows',
+                       'type_total', 'type_with_dividend', 'coverage', 'verdict')
+_QFQ_FACT_CACHE: dict[str, tuple[float, Any]] = {}
+_QFQ_FACT_CACHE_LOCK = threading.Lock()
+_QFQ_DEGRADE_STATE = threading.local()
+
+
+def _cached_parquet_fact(key: str, path: Path, loader: Any) -> Any:
+    """按文件 mtime 缓存事实表读取结果（进程内，线程安全）。"""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return loader()
+    with _QFQ_FACT_CACHE_LOCK:
+        hit = _QFQ_FACT_CACHE.get(key)
+        if hit is not None and hit[0] == mtime:
+            return hit[1]
+    value = loader()
+    with _QFQ_FACT_CACHE_LOCK:
+        _QFQ_FACT_CACHE[key] = (mtime, value)
+    return value
+
+
+def _load_dividend_counts(table: str) -> dict[str, int]:
+    """分红事件表 → {ts_code: 记录数}；文件缺失时返回空表（不阻断取数）。"""
+    path = _STORE_ROOT / 'factors' / f'{table}_dividend.parquet'
+
+    def _load() -> dict[str, int]:
+        try:
+            frame = pl.read_parquet(path, columns=['ts_code'])
+        except (OSError, pl.exceptions.PolarsError):
+            return {}
+        grouped = frame.group_by('ts_code').len()
+        return dict(zip(grouped['ts_code'].to_list(), grouped['len'].to_list()))
+
+    return _cached_parquet_fact(f'{table}_dividend_counts', path, _load)
+
+
+def _load_fund_type_map() -> dict[str, str]:
+    """fund_basic → {ts_code: fund_type}（ETF / LOF / 分级）。"""
+    path = _STORE_ROOT / 'meta' / 'fund_basic.parquet'
+
+    def _load() -> dict[str, str]:
+        try:
+            frame = pl.read_parquet(path, columns=['ts_code', 'fund_type'])
+        except (OSError, pl.exceptions.PolarsError):
+            return {}
+        return dict(zip(frame['ts_code'].to_list(), frame['fund_type'].to_list()))
+
+    return _cached_parquet_fact('fund_type_map', path, _load)
+
+
+def _load_stock_codes() -> set[str]:
+    """stock_basic 全量代码（含退市），作为个股分红覆盖的分母。"""
+    path = _STORE_ROOT / 'meta' / 'stock_basic.parquet'
+
+    def _load() -> set[str]:
+        try:
+            frame = pl.read_parquet(path, columns=['ts_code'])
+        except (OSError, pl.exceptions.PolarsError):
+            return set()
+        return set(frame['ts_code'].to_list())
+
+    return _cached_parquet_fact('stock_codes', path, _load)
+
+
+def _load_stock_status_map() -> dict[str, str]:
+    """stock_basic → {ts_code: status}；'L' 在市，'D' 退市。"""
+    path = _STORE_ROOT / 'meta' / 'stock_basic.parquet'
+
+    def _load() -> dict[str, str]:
+        try:
+            frame = pl.read_parquet(path, columns=['ts_code', 'status'])
+        except (OSError, pl.exceptions.PolarsError):
+            return {}
+        return dict(zip(frame['ts_code'].to_list(), frame['status'].to_list()))
+
+    return _cached_parquet_fact('stock_status_map', path, _load)
+
+
+def _stock_status(code: str) -> str | None:
+    """标的在市状态；名录缺失时返回 None（按在市处理，不误判退市）。"""
+    return _load_stock_status_map().get(code)
+
+
+def _delisted_codes(codes: List[str]) -> List[str]:
+    """按本地名录筛出退市标的（status != 'L'），名录外的代码不在此列。"""
+    status = _load_stock_status_map()
+    return [c for c in codes if status.get(c) not in (None, 'L')]
+
+
+def _load_dividend_ledger() -> dict[str, dict[str, str]]:
+    """无分红判定清单 → {ts_code: {status, evidence_source, evidence_date}}。
+
+    清单由 ``tools/build_no_dividend_ledger.py`` 生成，是「确实无分红」的唯一判定出处；
+    不覆盖原始分红表与因子表。
+    """
+    path = _STORE_ROOT / 'meta' / 'dividend_status' / 'no_dividend_ledger.parquet'
+
+    def _load() -> dict[str, dict[str, str]]:
+        try:
+            frame = pl.read_parquet(path, columns=[
+                'ts_code', 'status', 'evidence_source', 'evidence_date'])
+        except (OSError, pl.exceptions.PolarsError):
+            return {}
+        return {
+            row['ts_code']: {
+                'status': row['status'],
+                'evidence_source': row['evidence_source'] or '',
+                'evidence_date': row['evidence_date'] or '',
+            }
+            for row in frame.to_dicts()
+        }
+
+    return _cached_parquet_fact('dividend_ledger', path, _load)
+
+
+def _qfq_degradation_facts(code: str) -> dict[str, Any]:
+    """标的的分红事实与同类型覆盖参照，供复权降级归类使用。"""
+    fund_types = _load_fund_type_map()
+    fund_type = fund_types.get(code)
+    if fund_type:
+        kind = fund_type
+        dividend_counts = _load_dividend_counts('fund')
+        denominator = {c for c, t in fund_types.items() if t == fund_type}
+    else:
+        kind = '个股'
+        dividend_counts = _load_dividend_counts('stock')
+        denominator = _load_stock_codes()
+    return {
+        'kind': kind,
+        'dividend_rows': dividend_counts.get(code, 0),
+        'type_total': len(denominator),
+        'type_with_dividend': len(denominator & set(dividend_counts)),
+    }
+
+
+def _classify_qfq_degradation(code: str, rows: int, factor_col: str) -> dict[str, Any]:
+    """把「因子全 1.0」按判定清单与分红事实归类，并给出级别与可读依据。
+
+    判定清单（``no_dividend_ledger.parquet``）优先：
+    * ``confirmed_no_dividend`` → INFO，计入「正常无分红」；
+    * ``unconfirmed_coverage`` → WARNING，汇总里单列为「未确认覆盖」；
+    * ``local_dividend_missing`` → WARNING，本地分红表缺失但接口有记录。
+    清单外的标的按同类型分红覆盖率统计口径兜底。
+    """
+    facts = _qfq_degradation_facts(code)
+    total = facts['type_total']
+    with_div = facts['type_with_dividend']
+    coverage = (with_div / total) if total else 0.0
+    ledger = _load_dividend_ledger().get(code)
+    if ledger and ledger['status'] == 'confirmed_no_dividend':
+        verdict, level = 'normal', 'INFO'
+        reason = (f"清单 confirmed_no_dividend（{ledger['evidence_source']} 明确返回空记录，"
+                  f"{ledger['evidence_date']}），属正常无分红")
+    elif ledger and ledger['status'] == 'unconfirmed_coverage':
+        verdict, level = 'unconfirmed_coverage', 'WARNING'
+        reason = ("清单 unconfirmed_coverage：本地分红表无记录且未取得逐只证据，"
+                  "无法区分「确实未分红」与「源端未覆盖」")
+    elif ledger and ledger['status'] == 'local_dividend_missing':
+        verdict, level = 'local_dividend_missing', 'WARNING'
+        reason = (f"清单 local_dividend_missing：{ledger['evidence_source']} 有分红记录"
+                  f"（{ledger['evidence_date']}），本地分红表与因子均缺失，需补采重建")
+    elif facts['dividend_rows'] > 0:
+        verdict, level = 'dividend_no_factor', 'WARNING'
+        reason = (f"分红表有 {facts['dividend_rows']} 条记录但 {factor_col} 未回填，"
+                  "属因子回填缺口，请检查因子重建")
+    elif coverage >= _QFQ_MAJORITY_THRESHOLD:
+        verdict, level = 'coverage_gap', 'WARNING'
+        reason = (f"{facts['kind']} 类型 {total} 只中 {with_div} 只有分红记录"
+                  f"（{coverage:.1%}），本只无记录，属分红覆盖不足")
+    else:
+        verdict, level = 'normal', 'INFO'
+        reason = (f"{facts['kind']} 类型 {total} 只中仅 {with_div} 只有分红记录"
+                  f"（{coverage:.1%}），该类型普遍无分红，属正常")
+    message = (f"[复权降级] {code} {facts['kind']} {factor_col} 全为 1.0（{rows} 行），"
+               f"分红表 {facts['dividend_rows']} 条；{reason}；已按未复权价返回")
+    return {**facts, 'ts_code': code, 'rows': rows, 'coverage': coverage,
+            'verdict': verdict, 'level': level, 'message': message}
+
+
+class _QfqDegradationCollector:
+    """批量场景的降级收集器：一条汇总日志 + 逐只明细落盘。"""
+
+    def __init__(self, log_dir: Path | None = None):
+        self.records: list[dict[str, Any]] = []
+        self.log_dir = Path(log_dir) if log_dir is not None else None
+
+    def add(self, info: dict[str, Any]) -> None:
+        self.records.append(info)
+
+    def flush(self) -> Path | None:
+        if not self.records:
+            return None
+        path = self._write_detail()
+        counts = {'normal': 0, 'unconfirmed_coverage': 0, 'coverage_gap': 0,
+                  'local_dividend_missing': 0, 'dividend_no_factor': 0}
+        kinds: dict[str, int] = {}
+        for rec in self.records:
+            counts[rec['verdict']] = counts.get(rec['verdict'], 0) + 1
+            kinds[rec['kind']] = kinds.get(rec['kind'], 0) + 1
+        kind_text = ' / '.join(f'{k} {v}' for k, v in sorted(kinds.items()))
+        summary = (f"[复权降级汇总] 本批命中 {len(self.records)} 只"
+                   f"（正常无分红 {counts['normal']} / 未确认覆盖 "
+                   f"{counts['unconfirmed_coverage']} / 覆盖不足 {counts['coverage_gap']} / "
+                   f"本地分红缺失 {counts['local_dividend_missing']} / "
+                   f"有分红未回填 {counts['dividend_no_factor']}），按类型：{kind_text}；"
+                   f"明细：{path}")
+        if any(counts[k] for k in ('unconfirmed_coverage', 'coverage_gap',
+                                   'local_dividend_missing', 'dividend_no_factor')):
+            logger.warning(summary)
+        else:
+            logger.info(summary)
+        return path
+
+    def _write_detail(self) -> Path:
+        import csv
+
+        if self.log_dir is None:
+            try:
+                from src.utils.config import get_config
+                log_dir = Path(get_config().log.file_path).parent
+            except Exception:  # 配置不可用时退回工作目录下的 logs/
+                log_dir = Path('logs')
+        else:
+            log_dir = self.log_dir
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / f"qfq_degradation_{datetime.now():%Y-%m-%d}.csv"
+        is_new = not path.exists()
+        with _QFQ_FACT_CACHE_LOCK, path.open('a', encoding='utf-8', newline='') as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(_QFQ_DETAIL_COLUMNS))
+            if is_new:
+                writer.writeheader()
+            stamp = datetime.now().isoformat(timespec='seconds')
+            for rec in self.records:
+                writer.writerow({
+                    'time': stamp,
+                    'ts_code': rec['ts_code'],
+                    'kind': rec['kind'],
+                    'rows': rec['rows'],
+                    'dividend_rows': rec['dividend_rows'],
+                    'type_total': rec['type_total'],
+                    'type_with_dividend': rec['type_with_dividend'],
+                    'coverage': f"{rec['coverage']:.4f}",
+                    'verdict': rec['verdict'],
+                })
+        return path
+
+
+@contextmanager
+def _qfq_degrade_collection(log_dir: Path | None = None):
+    """批量取数期间收集复权降级记录，退出时汇总成一条日志并落明细。"""
+    collector = _QfqDegradationCollector(log_dir)
+    previous = getattr(_QFQ_DEGRADE_STATE, 'collector', None)
+    _QFQ_DEGRADE_STATE.collector = collector
+    try:
+        yield collector
+    finally:
+        _QFQ_DEGRADE_STATE.collector = previous
+        collector.flush()
 
 
 class DataFetcher:
@@ -432,7 +706,8 @@ class DataFetcher:
                                            local_declined=local_declined)
 
         if not data.is_empty():
-            data = self._apply_adjustment(data, adjustment_type, as_of=None)
+            data = self._apply_adjustment(data, adjustment_type, as_of=None,
+                                          code=stock_code)
             # 数据源路径的复权按 as_of=None 计算，缓存键也必须是 None，避免错标
             source_cache_params = dict(cache_params)
             source_cache_params['as_of'] = None
@@ -449,7 +724,8 @@ class DataFetcher:
                                  elapsed_ms=(time.perf_counter() - started) * 1000)
             if not db_data.is_empty() and not self._db_result_is_partial(
                     'stock', stock_code, start_date, end_date, db_data):
-                db_data = self._apply_adjustment(db_data, adjustment_type, as_of)
+                db_data = self._apply_adjustment(db_data, adjustment_type, as_of,
+                                                 code=stock_code)
                 global_data_cache.set(db_data, 'stock', stock_code, start_date, end_date,
                                     **cache_params)
                 return db_data
@@ -464,13 +740,33 @@ class DataFetcher:
         与 ``get_stock_data`` 保持同一路由优先级与同一出口复权：
         缓存 → 本地列存批量 → 逐票兜底（TDX → 远程）。
         返回只包含有数据的标的；缺失标的不会出现在 dict 中。
+
+        跳过信息通过日志告知调用方（返回结构保持 ``dict[code, DataFrame]`` 不变）：
+        退市标的按 ``meta/stock_basic.parquet`` 的 ``status != 'L'`` 在取数前剔除，
+        打一条 INFO 汇总；在市标的取数失败仍逐条 WARNING。
+        复权降级（因子全 1.0）在批量场景只汇总成一条日志，逐只明细落
+        ``logs/qfq_degradation_<日期>.csv``。
         """
+        with _qfq_degrade_collection():
+            return self._get_stock_batch_impl(
+                stock_codes, start_date, end_date, frequency, adjustment_type, as_of)
+
+    def _get_stock_batch_impl(self, stock_codes: List[str], start_date: str,
+                              end_date: str, frequency: str,
+                              adjustment_type: str, as_of: date | None
+                              ) -> dict[str, pl.DataFrame]:
         result: dict[str, pl.DataFrame] = {}
         cache_params = {
             'frequency': frequency,
             'adjustment_type': adjustment_type,
             'as_of': str(as_of) if as_of else None,
         }
+        delisted = _delisted_codes(stock_codes)
+        if delisted:
+            logger.info(f"[batch] 跳过 {len(delisted)} 只退市标的"
+                        f"（stock_basic.status != 'L'）：{delisted[:10]}")
+            skip = set(delisted)
+            stock_codes = [c for c in stock_codes if c not in skip]
         pending: List[str] = []
         for code in stock_codes:
             if is_index_code(code):
@@ -514,7 +810,12 @@ class DataFetcher:
                                             adjustment_type, as_of)
             # 兜底理由：单票无数据（退市/本地无文件）不应中断整批
             except (DataSourceException, OSError, ValueError) as exc:
-                logger.warning(f"[batch] {code} 取数失败，跳过: {exc}")
+                status = _stock_status(code)
+                if status == 'D':
+                    logger.info(f"[batch] {code} 已退市（stock_basic.status=D），"
+                                f"跳过取数: {exc}")
+                else:
+                    logger.warning(f"[batch] {code} 取数失败，跳过: {exc}")
                 continue
             if not frame.is_empty():
                 result[code] = frame
@@ -676,7 +977,8 @@ class DataFetcher:
             'fund', fund_code, start_date, end_date, frequency, adjustment_type,
             local_declined=local_declined)
         if not data.is_empty():
-            data = self._apply_adjustment(data, adjustment_type, as_of=None)
+            data = self._apply_adjustment(data, adjustment_type, as_of=None,
+                                          code=fund_code)
             source_cache_params = dict(cache_params)
             source_cache_params['as_of'] = None
             global_data_cache.set(data, 'fund', fund_code, start_date, end_date,
@@ -758,11 +1060,12 @@ class DataFetcher:
         if (as_of is not None and adjustment_type == 'qfq' and code is not None
                 and 'qfq_factor' in df.columns):
             df = self._rollback_qfq_factor(df, code, as_of)
-        return self._apply_adjustment(df, adjustment_type)
+        return self._apply_adjustment(df, adjustment_type, code=code)
 
     @staticmethod
     def _apply_adjustment(df: pl.DataFrame, adjustment_type: str,
-                          as_of: date | None = None) -> pl.DataFrame:
+                          as_of: date | None = None,
+                          code: str | None = None) -> pl.DataFrame:
         """
         在数据出口应用复权价，使 open/high/low/close 即为请求的复权类型。
 
@@ -777,6 +1080,8 @@ class DataFetcher:
                    除权事件，保证 [start, as_of] 段的前复权价与"今天"
                    观察到的同段价格一致（PIT 安全校验）。
                    hfq 本身 PIT 安全，不需要 as_of。
+            code: 标的代码；提供时降级日志带代码与「无分红 / 覆盖不足」判定依据，
+                   批量场景下由收集器聚合成一条汇总。
         """
         prefix = {'qfq': 'qfq_', 'hfq': 'hfq_'}.get(adjustment_type)
         if prefix is None:
@@ -792,13 +1097,24 @@ class DataFetcher:
             return df
 
         # 因子全为 1.0 表示没有可用的除权事件：乘以 1.0 后仍是原始价，
-        # 若静默通过，上游会把未复权价当成复权结果用于回测/指标，必须显式告警
+        # 若静默通过，上游会把未复权价当成复权结果用于回测/指标，必须显式可见。
+        # 判定分级：该类型普遍无分红 → INFO；该类型多数有分红却无记录 → WARNING。
         non_null = df[factor_col].drop_nulls()
         if df.height > 0 and non_null.len() == df.height and bool((non_null == 1.0).all()):
-            logger.warning(
-                f"[复权降级] 请求 {adjustment_type} 复权，但 {factor_col} 全为 1.0"
-                f"（{df.height} 行），无可用除权事件，已按未复权价返回；"
-                "请检查分红数据与因子回填")
+            if code is None:
+                logger.warning(
+                    f"[复权降级] 请求 {adjustment_type} 复权，但 {factor_col} 全为 1.0"
+                    f"（{df.height} 行），无可用除权事件，已按未复权价返回；"
+                    "调用方未提供标的代码，无法判定是否属该类型常态")
+            else:
+                info = _classify_qfq_degradation(code, df.height, factor_col)
+                collector = getattr(_QFQ_DEGRADE_STATE, 'collector', None)
+                if collector is not None:
+                    collector.add(info)
+                elif info['level'] == 'WARNING':
+                    logger.warning(info['message'])
+                else:
+                    logger.info(info['message'])
 
         # === 用因子列实时算复权价 ===
         factor_expr = pl.col(factor_col)

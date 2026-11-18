@@ -523,6 +523,183 @@ def test_unregistered_source_does_not_raise_keyerror(monkeypatch):
     assert fetcher._source_capabilities == {}, '不得为缺键源偷偷补登记'
 
 
+def _qfq_frame(rows: int = 3) -> pl.DataFrame:
+    return pl.DataFrame({
+        'date': [f'2026-11-{10 + i:02d}' for i in range(rows)],
+        'open': [10.0 + i for i in range(rows)],
+        'high': [10.5 + i for i in range(rows)],
+        'low': [9.5 + i for i in range(rows)],
+        'close': [10.2 + i for i in range(rows)],
+        'qfq_factor': [1.0] * rows,
+    })
+
+
+def test_qfq_all_one_normal_type_logs_info_with_code(monkeypatch):
+    """ETF 长尾无分红：返回未复权价、INFO、日志带代码与「分红表 0 条」依据。
+
+    改前是统一 WARNING 且不带代码，本用例会红。
+    """
+    monkeypatch.setattr(
+        data_fetcher_module, '_qfq_degradation_facts',
+        lambda code: {'kind': 'ETF', 'dividend_rows': 0,
+                      'type_total': 1735, 'type_with_dividend': 148})
+    monkeypatch.setattr(data_fetcher_module, '_load_dividend_ledger', lambda: {})
+    records: list = []
+    handler_id = logger.add(lambda m: records.append(m.record), level='DEBUG')
+    try:
+        out = DataFetcher._apply_adjustment(_qfq_frame(), 'qfq', code='516130.SH')
+    finally:
+        logger.remove(handler_id)
+
+    assert out['close'].to_list() == [10.2, 11.2, 12.2], '复权数值行为不得改变'
+    hits = [r for r in records if '复权降级]' in r['message']]
+    assert len(hits) == 1, [r['message'] for r in hits]
+    assert hits[0]['level'].name == 'INFO'
+    assert '516130.SH' in hits[0]['message']
+    assert '分红表 0 条' in hits[0]['message']
+    assert '普遍无分红' in hits[0]['message']
+
+
+def test_qfq_all_one_majority_dividend_logs_warning(monkeypatch):
+    """个股多数有分红却无记录 → 保留 WARNING 并点明覆盖不足。"""
+    monkeypatch.setattr(
+        data_fetcher_module, '_qfq_degradation_facts',
+        lambda code: {'kind': '个股', 'dividend_rows': 0,
+                      'type_total': 5916, 'type_with_dividend': 5681})
+    monkeypatch.setattr(data_fetcher_module, '_load_dividend_ledger', lambda: {})
+    records: list = []
+    handler_id = logger.add(lambda m: records.append(m.record), level='DEBUG')
+    try:
+        DataFetcher._apply_adjustment(_qfq_frame(), 'qfq', code='600000.SH')
+    finally:
+        logger.remove(handler_id)
+
+    hits = [r for r in records if '复权降级]' in r['message']]
+    assert len(hits) == 1
+    assert hits[0]['level'].name == 'WARNING'
+    assert '600000.SH' in hits[0]['message'] and '覆盖不足' in hits[0]['message']
+
+
+def test_qfq_batch_aggregates_one_summary_and_detail_rows(monkeypatch, tmp_path):
+    """批量 3 只命中：只 1 条汇总、明细 3 行、两类计数正确。"""
+    facts = {
+        '516130.SH': {'kind': 'ETF', 'dividend_rows': 0,
+                      'type_total': 1735, 'type_with_dividend': 148},
+        '159932.SZ': {'kind': 'ETF', 'dividend_rows': 0,
+                      'type_total': 1735, 'type_with_dividend': 148},
+        '600000.SH': {'kind': '个股', 'dividend_rows': 0,
+                      'type_total': 5916, 'type_with_dividend': 5681},
+    }
+    monkeypatch.setattr(data_fetcher_module, '_qfq_degradation_facts',
+                        lambda code: facts[code])
+    monkeypatch.setattr(data_fetcher_module, '_load_dividend_ledger', lambda: {})
+    records: list = []
+    handler_id = logger.add(lambda m: records.append(m.record), level='DEBUG')
+    try:
+        with data_fetcher_module._qfq_degrade_collection(tmp_path):
+            for code in facts:
+                DataFetcher._apply_adjustment(_qfq_frame(), 'qfq', code=code)
+    finally:
+        logger.remove(handler_id)
+
+    assert not [r for r in records if '复权降级]' in r['message']], '批量不得逐只打日志'
+    summary = [r for r in records if '[复权降级汇总]' in r['message']]
+    assert len(summary) == 1, [r['message'] for r in records]
+    assert summary[0]['level'].name == 'WARNING'
+    msg = summary[0]['message']
+    assert '命中 3 只' in msg and '正常无分红 2' in msg and '覆盖不足 1' in msg
+    detail = list(tmp_path.glob('qfq_degradation_*.csv'))
+    assert len(detail) == 1, detail
+    rows = detail[0].read_text(encoding='utf-8').strip().splitlines()
+    assert len(rows) - 1 == 3, rows
+
+
+def test_batch_skips_delisted_before_request(monkeypatch):
+    """退市标的在取数前被剔除：不发起取数、INFO 说明跳过几只。
+
+    改前会调用 get_stock_data（抛断言），本用例会红。
+    """
+    fetcher = make_fetcher()
+    monkeypatch.setattr(
+        fetcher, '_batch_from_local_store',
+        lambda codes, sd, ed, freq, adj, as_of, cp: ({}, list(codes)))
+
+    def _must_not_call(*args, **kwargs):
+        raise AssertionError('退市标的不得发起取数')
+
+    monkeypatch.setattr(fetcher, 'get_stock_data', _must_not_call)
+    records: list = []
+    handler_id = logger.add(lambda m: records.append(m.record), level='DEBUG')
+    try:
+        out = fetcher.get_stock_batch(['600656.SH'], '20240101', '20241231',
+                                      '1d', 'qfq')
+    finally:
+        logger.remove(handler_id)
+
+    assert out == {}
+    info = [r for r in records if '[batch]' in r['message']]
+    assert any(r['level'].name == 'INFO' and '跳过 1 只退市标的' in r['message']
+               and '600656.SH' in r['message'] for r in info), info
+    assert not [r for r in records if r['level'].name == 'WARNING']
+
+
+def test_batch_in_market_failure_stays_warning(monkeypatch):
+    """在市标的取数失败仍逐条 WARNING，不得被退市分级吞掉。"""
+    from src.utils.exceptions import DataSourceException
+
+    fetcher = make_fetcher()
+    monkeypatch.setattr(
+        fetcher, '_batch_from_local_store',
+        lambda codes, sd, ed, freq, adj, as_of, cp: ({}, list(codes)))
+
+    def _boom(*args, **kwargs):
+        raise DataSourceException('TdxHandler', '本地无此文件且远程已禁用')
+
+    monkeypatch.setattr(fetcher, 'get_stock_data', _boom)
+    records: list = []
+    handler_id = logger.add(lambda m: records.append(m.record), level='DEBUG')
+    try:
+        out = fetcher.get_stock_batch(['600000.SH'], '20240101', '20241231',
+                                      '1d', 'qfq')
+    finally:
+        logger.remove(handler_id)
+
+    assert out == {}
+    warns = [r for r in records if r['level'].name == 'WARNING']
+    assert any('600000.SH' in r['message'] and '取数失败' in r['message']
+               for r in warns), [r['message'] for r in records]
+
+
+def test_qfq_ledger_status_overrides_statistics(monkeypatch):
+    """清单是唯一判定出处：confirmed → INFO，unconfirmed → WARNING 单列。"""
+    ledger = {
+        '516130.SH': {'status': 'confirmed_no_dividend',
+                      'evidence_source': 'akshare:fund_open_fund_info_em',
+                      'evidence_date': '2026-11-18'},
+        '512000.SH': {'status': 'unconfirmed_coverage',
+                      'evidence_source': 'factors/fund_dividend.parquet',
+                      'evidence_date': ''},
+    }
+    monkeypatch.setattr(data_fetcher_module, '_load_dividend_ledger', lambda: ledger)
+    monkeypatch.setattr(
+        data_fetcher_module, '_qfq_degradation_facts',
+        lambda code: {'kind': 'ETF', 'dividend_rows': 0,
+                      'type_total': 1735, 'type_with_dividend': 148})
+    records: list = []
+    handler_id = logger.add(lambda m: records.append(m.record), level='DEBUG')
+    try:
+        DataFetcher._apply_adjustment(_qfq_frame(), 'qfq', code='516130.SH')
+        DataFetcher._apply_adjustment(_qfq_frame(), 'qfq', code='512000.SH')
+    finally:
+        logger.remove(handler_id)
+
+    hits = {r['message'].split()[1]: r for r in records if '复权降级]' in r['message']}
+    assert hits['516130.SH']['level'].name == 'INFO'
+    assert 'confirmed_no_dividend' in hits['516130.SH']['message']
+    assert hits['512000.SH']['level'].name == 'WARNING'
+    assert 'unconfirmed_coverage' in hits['512000.SH']['message']
+
+
 if __name__ == "__main__":
     logger.info("== data_fetcher 优化烟测 ==")
     test_local_priority_returns_immediately()

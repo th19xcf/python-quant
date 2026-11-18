@@ -37,16 +37,18 @@ def load_evidence(csv_path: str) -> dict[str, dict]:
     frame = pl.read_csv(csv_path, infer_schema_length=0)
     out: dict[str, dict] = {}
     for rec in frame.to_dicts():
-        seq = [s for s in str(rec['各次结果']).split('/') if s]
-        verdict = rec['判定']
-        out[rec['ts_code']] = {
+        # 兼容两种表头：outputs 中文明细 与 work/ 断点 progress.csv（英文）
+        seq_txt = rec.get('各次结果') or rec.get('result_seq') or ''
+        seq = [s for s in str(seq_txt).split('/') if s]
+        code = rec.get('ts_code') or rec.get('代码') or ''
+        out[code] = {
             'source': FUND_PROBE_SOURCE,
-            'date': str(rec['探测时刻'])[:10],
-            'attempts': int(rec['尝试次数'] or len(seq)),
+            'date': str(rec.get('探测时刻') or rec.get('probed_at') or '')[:10],
+            'attempts': int(rec.get('尝试次数') or rec.get('attempts') or len(seq)),
             'seq': seq,
-            'verdict': verdict,
+            'verdict': rec.get('判定') or rec.get('verdict') or '',
             'error': rec.get('错误信息') or '',
-            'rows': int(rec['最大返回条数'] or 0),
+            'rows': int(rec.get('最大返回条数') or rec.get('max_rows') or 0),
         }
     return out
 

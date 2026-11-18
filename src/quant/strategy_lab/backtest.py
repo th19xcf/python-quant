@@ -382,6 +382,28 @@ def _trade_records(result: Dict[str, Any], rule: Dict[str, Any]) -> List[Dict[st
     return rows
 
 
+def _period_effective(rule: Dict[str, Any], metrics: Dict[str, Any],
+                      calendar: List[date]) -> Dict[str, Any]:
+    """实际生效区间：起点只影响净值/指标/三图起算日，预热仍取起点前完整历史。
+
+    ``metrics['start']`` 是净值首日：起点早于可用行情首日时它等于实际最早日，
+    与 ``requested_start`` 不同即说明被前移过。``prior_trading_days`` 是起点之前
+    可加载的交易日数，滚动 250 日分位与 120 日动量不足时点会给出提示。
+    """
+    requested = rule['period']['start']
+    effective = metrics.get('start') or requested
+    return {
+        'requested_start': requested,
+        'start': effective,
+        'end': metrics.get('end') or rule['period']['end'],
+        'warmup_start': (date.fromisoformat(requested)
+                         - timedelta(days=WARMUP_DAYS)).isoformat(),
+        'data_first_day': calendar[0].isoformat() if calendar else None,
+        'prior_trading_days': sum(1 for d in calendar
+                                  if d < date.fromisoformat(effective)),
+    }
+
+
 def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
     period = {
         'start': rule['period']['start'],
@@ -394,7 +416,7 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
     if not data:
         return _empty('行情为空：契约预筛后没有可用标的', rule)
 
-    _, month_ends, prev_day = compute.build_calendar(data)
+    calendar, month_ends, prev_day = compute.build_calendar(data)
     days = compute.rebalance_days(month_ends, 'monthly',
                                   date.fromisoformat(rule['period']['start']))
     if not days:
@@ -449,6 +471,7 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'positions': _final_positions(result),
         'plan_note': f'月频调仓 {len(path)} 次，成分中位 '
                      f'{metrics["members_median"]} 只',
+        'period_effective': _period_effective(rule, metrics, calendar),
     }
     payload.update(_curve_payload(curve, bench, rule))
     return payload
@@ -477,6 +500,7 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
     bench = load_benchmark_close(rule['benchmark'])
     metrics = _scheduled_metrics(result, rule, bench, len(plan.markers))
     curve, _ = _period_series(result, rule)
+    calendar = compute.build_calendar(plan.data)[0]
     payload = {
         'status': 'ok',
         'metrics': metrics,
@@ -492,6 +516,7 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'leg_curves': plan.leg_curves,
         'positions': _final_positions(result),
         'plan_note': plan.note,
+        'period_effective': _period_effective(rule, metrics, calendar),
     }
     if rule['rule_type'] == 'dca_grid':
         metrics.update(_dca_metrics(result, rule, plan, curve))

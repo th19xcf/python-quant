@@ -16,11 +16,12 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from loguru import logger
-from PySide6.QtCore import QEvent, QPoint, Qt, QThread, Signal
+from PySide6.QtCore import QDate, QEvent, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QDateEdit,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -442,11 +443,15 @@ class StrategyLabPage(QWidget):
         self.status_label.setObjectName('slStatus')
         self.status_label.setWordWrap(True)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        # 横向 Ignored + 只设最大宽：说明块铺满标题行剩余宽度，但不参与页面最小宽
+        # 计算。若用固定宽，页面最小宽会被顶到接近当前宽，窗口宽度来回抖动且在
+        # 窄档退不下去（离屏实测 1553 档最小宽 1535、1176 档回不去）。
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.status_label.setMinimumWidth(240)
         # QLabel 高度按字体的 ascent+descent 算，QSS 又没有内边距，首行字头正好
         # 贴在 label 上边缘（离屏实测首墨迹行=0），中文小字看上去像被裁掉一截。
         self.status_label.setContentsMargins(0, 3, 0, 0)
-        top_row.addWidget(self.status_label)
-        top_row.addStretch(1)
+        top_row.addWidget(self.status_label, 1)
         header.addLayout(top_row)
         root.addLayout(header)
 
@@ -476,6 +481,19 @@ class StrategyLabPage(QWidget):
         self.rule_combo.setMinimumHeight(self.rule_combo.fontMetrics().height() + 16)
         self.rule_combo.currentIndexChanged.connect(lambda *_: self._on_select())
         head.addWidget(self.rule_combo, 1)
+        # 试算起点：默认取规则文件 period.start，可覆盖；只改净值/指标/三图起算日，
+        # 预热（滚动分位、动量、财报 as-of）仍用起点前的完整历史，不裁剪。
+        head.addWidget(QLabel('试算起点'))
+        self.start_date = QDateEdit()
+        self.start_date.setObjectName('slStartDate')
+        self.start_date.setCalendarPopup(True)
+        self.start_date.setDisplayFormat('yyyy-MM-dd')
+        self.start_date.setMinimumWidth(120)
+        self.start_date.setMinimumHeight(self.rule_combo.minimumHeight())
+        self.start_date.setToolTip('默认取规则文件的 period.start；'
+                                   '只影响净值、指标与三张图的起算日，'
+                                   '预热仍使用起点之前的完整历史')
+        head.addWidget(self.start_date)
         self.refresh_btn = QPushButton('刷新列表')
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_btn.clicked.connect(self._refresh_rule_list)
@@ -508,35 +526,39 @@ class StrategyLabPage(QWidget):
         # 首行字头顶在控件上边缘、末行字底贴下边缘，看上去像被裁；上下各补留白。
         self.rule_text_label.setContentsMargins(0, 3, 0, 2)
         outer.addWidget(self.rule_text_label)
+
+        self.period_hint = QLabel(
+            '试算起点只影响净值、指标与三张图的起算日；滚动分位、动量与财报 as-of '
+            '等预热仍使用起点之前的完整历史。')
+        self.period_hint.setObjectName('slNotes')
+        self.period_hint.setWordWrap(True)
+        self.period_hint.setContentsMargins(0, 0, 0, 2)
+        outer.addWidget(self.period_hint)
         self._editor_card = card
         card.installEventFilter(self)
         self._sync_editor_min_height()
         return card
 
     def _sync_status_max_width(self) -> None:
-        """说明块宽度：左贴标题块右缘 +24px，右停在按钮列左缘前 16px。
+        """说明块宽度：左贴标题块右缘 +24px，右缘与同列控件（卡片/按钮行）右缘对齐。
 
         标题块按 sizeHint（Maximum 策略）取宽，不能用它的实际 width——实测被布局
         拉宽到 1023px 时，算出的上限会退化成兜底值、说明块反被推到最右侧。
-        宽度依赖页面当前宽、固定宽又参与页面最小宽计算：两端各留 8px 余量，
-        保证「页边距 + 标题 + 24 + 说明块 + 页边距」恒小于页面宽，不形成反馈。
+        取「页面右缘」而不是「按钮列左缘」：按钮在下一行的卡片里，两者不同行，
+        按按钮列收会让说明块右侧空出一大片（实测 125% 缩放下空 484px）。
+        左边锚点取根布局左边距而不是 title_label.mapTo：布局未稳定时 mapTo 会拿到
+        中间态 x（实测 104/43/23 逐轮收敛到 16），算出的最大宽偏小、右缘差 28px。
         """
         if not hasattr(self, 'refresh_btn') or not hasattr(self, 'title_label'):
             return
         block_width = max(self.title_label.sizeHint().width(),
                           self.subtitle_label.sizeHint().width())
-        block_left = self.title_label.mapTo(self, QPoint(0, 0)).x()
-        button_left = self.refresh_btn.mapTo(self, QPoint(0, 0)).x()
+        block_left = self.layout().contentsMargins().left()
         block_right = block_left + block_width + 24
-        page_right = self.width() - 16
-        width = min(button_left - 8, page_right) - block_right - 8
-        # 按按钮列收会只剩一条窄缝时（实测 916px 页宽仅 61px、要折 8 行），退回按
-        # 页面右缘收；阈值取 240px：1120px 页宽实测可用 265px，仍走按钮列口径。
-        if width < 240:
-            width = page_right - block_right - 8
-        width = max(width, 240)
-        if self.status_label.width() != width:
-            self.status_label.setFixedWidth(width)
+        page_right = self.width() - self.layout().contentsMargins().right()
+        width = max(page_right - block_right, 240)
+        if self.status_label.maximumWidth() != width:
+            self.status_label.setMaximumWidth(width)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -559,8 +581,10 @@ class StrategyLabPage(QWidget):
         # 用它会把最小高算成 4~5 行（实测 84px），反把卡片撑高。
         width = max(self._editor_card.width() - margins.left() - margins.right(), 120)
         text_height = self.rule_text_label.heightForWidth(width)
+        hint_height = self.period_hint.heightForWidth(width)
         needed = (margins.top() + margins.bottom() + row_height + layout.spacing()
-                  + text_height + note_margins.top() + note_margins.bottom())
+                  + text_height + note_margins.top() + note_margins.bottom()
+                  + hint_height + layout.spacing())
         if self._editor_card.minimumHeight() != needed:
             self._editor_card.setMinimumHeight(needed)
 
@@ -781,6 +805,9 @@ class StrategyLabPage(QWidget):
             self.rule_text_label.setStyleSheet(f'color: {self._pal.sell};')
             return
         self._rule = rule
+        self.start_date.setDate(QDate.fromString(rule['period']['start'], 'yyyy-MM-dd'))
+        self.start_date.setMaximumDate(
+            QDate.fromString(rule['period']['end'], 'yyyy-MM-dd'))
         summary = summarize(rule)
         self.rule_text_label.setText(f'[{summary.type_label}] {summary.text}')
         self.rule_text_label.setStyleSheet('')
@@ -797,6 +824,15 @@ class StrategyLabPage(QWidget):
             QMessageBox.warning(self, '规则不可用', str(exc))
             return
         self._rule = rule
+        # 起点覆盖规则里的 period.start：预热仍按新起点往前取 WARMUP_DAYS，
+        # 因此只改变净值/指标/三图的起算日，不裁剪任何历史信号。
+        start_text = self.start_date.date().toString('yyyy-MM-dd')
+        if start_text >= rule['period']['end']:
+            QMessageBox.warning(
+                self, '试算起点无效',
+                f'试算起点 {start_text} 必须早于规则终点 {rule["period"]["end"]}。')
+            return
+        rule['period']['start'] = start_text
         if self._worker is not None and self._worker.isRunning():
             self.status_label.setText('已有一次试算在运行，请等待完成')
             return
@@ -821,7 +857,16 @@ class StrategyLabPage(QWidget):
         if not self._last_payload:
             return
         try:
-            info = save_run(self._last_payload, self._rule or {})
+            rule = dict(self._rule or {})
+            period = (self._last_payload or {}).get('period_effective') or {}
+            if period:
+                merged = dict(rule.get('period') or {})
+                merged['start'] = period.get('start') or merged.get('start')
+                merged['warmup_start'] = (period.get('warmup_start')
+                                         or merged.get('warmup_start'))
+                rule['period'] = merged
+                rule['effective_period'] = period
+            info = save_run(self._last_payload, rule)
         except Exception as exc:  # noqa: BLE001 - 保存失败只提示，不影响已有结果
             logger.exception('策略试算结果保存失败')
             self.status_label.setText(f'保存失败：{exc}')
@@ -859,7 +904,20 @@ class StrategyLabPage(QWidget):
         self._set_status_result(
             f'{payload["rule_text"]}  用时 {payload["elapsed_seconds"]}s '
             f'（引擎 {payload["engine_seconds"]}s，参与标的 {payload["used_codes"]} 只）'
-            + (f'  {hint}' if hint else ''))
+            + (f'  {hint}' if hint else '')
+            + self._period_hint_text(payload))
+
+    def _period_hint_text(self, payload: Dict[str, Any]) -> str:
+        """起点相关的两条提示：被前移到实际最早日、预热交易日不足。"""
+        period = payload.get('period_effective') or {}
+        start, requested = period.get('start'), period.get('requested_start')
+        parts: List[str] = []
+        if start and requested and start > requested:
+            parts.append(f'起点 {requested} 早于可用行情首日，已按实际最早日 {start} 起算')
+        prior = period.get('prior_trading_days')
+        if prior is not None and prior < 250:
+            parts.append(f'起点之前仅 {prior} 个交易日，滚动分位等信号可能不完整')
+        return ''.join(f'  {text}' for text in parts)
 
     def _set_status_result(self, text: str) -> None:
         """结果说明用富文本：只把规则名加粗上色，其余文字仍是正文样式与折行。
