@@ -62,7 +62,11 @@ def is_dark_palette(app: QApplication | None = None) -> bool:
 
 
 def sidebar_qss(dark: bool = True) -> str:
-    """左侧导航面板样式：底色、无边框树、紧凑滚动条，深浅两套同构。"""
+    """左侧导航面板样式：底色与无边框树，深浅两套同构。
+
+    滚动条不在这里定义：统一由 :func:`scrollbar_qss` 提升到应用作用域，
+    保证导航栏与其它页面用的是同一份样式。
+    """
     c = _colors(dark)
     return f"""
     QWidget#navPanel {{
@@ -80,6 +84,20 @@ def sidebar_qss(dark: bool = True) -> str:
     QTreeView#navTree::item {{
         border: none;
     }}
+    """
+
+
+def scrollbar_qss(dark: bool = True) -> str:
+    """全局滚动条样式（唯一一处定义）：8px 细条 + 圆角 handle + 无页脚按钮。
+
+    原样式只写在左侧导航面板上，其它页面各自回落 Fusion 默认外观；
+    这里提升到 QApplication 作用域，竖向/横向、handle 悬停与 add/sub-line
+    一并覆盖，深浅两套同构，仅换 handle 的 rgba。
+    """
+    c = _colors(dark)
+    handle = _rgba(c['scroll_handle'])
+    handle_hover = _rgba(c['scroll_handle_hover'])
+    return f"""
     QScrollBar:vertical {{
         background: transparent;
         width: 8px;
@@ -87,19 +105,45 @@ def sidebar_qss(dark: bool = True) -> str:
         border: none;
     }}
     QScrollBar::handle:vertical {{
-        background-color: {_rgba(c['scroll_handle'])};
+        background-color: {handle};
         min-height: 28px;
+        border: none;
         border-radius: 4px;
     }}
     QScrollBar::handle:vertical:hover {{
-        background-color: {_rgba(c['scroll_handle_hover'])};
+        background-color: {handle_hover};
     }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
         height: 0px;
+        width: 0px;
         background: none;
         border: none;
     }}
     QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+        background: none;
+    }}
+    QScrollBar:horizontal {{
+        background: transparent;
+        height: 8px;
+        margin: 0px 2px 0px 2px;
+        border: none;
+    }}
+    QScrollBar::handle:horizontal {{
+        background-color: {handle};
+        min-width: 28px;
+        border: none;
+        border-radius: 4px;
+    }}
+    QScrollBar::handle:horizontal:hover {{
+        background-color: {handle_hover};
+    }}
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+        height: 0px;
+        width: 0px;
+        background: none;
+        border: none;
+    }}
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
         background: none;
     }}
     """
@@ -211,6 +255,8 @@ class ThemeManager:
 
         app.setPalette(palette)
         app.setStyle("Fusion")
+        # 全局滚动条：深浅主题各一份，所有滚动区域（含左侧导航）共用这一处定义
+        app.setStyleSheet(scrollbar_qss(False))
 
     @staticmethod
     def set_dark_theme(app: QApplication):
@@ -244,6 +290,8 @@ class ThemeManager:
 
         app.setPalette(palette)
         app.setStyle("Fusion")
+        # 全局滚动条：与浅色主题同一套几何，只换 handle 的 rgba
+        app.setStyleSheet(scrollbar_qss(True))
 
     @staticmethod
     def toggle_theme(app: QApplication, is_dark: bool):

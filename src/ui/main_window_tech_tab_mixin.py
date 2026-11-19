@@ -39,32 +39,11 @@ class MainWindowTechTabMixin:
     _MAIN_PLOT_MIN_HEIGHT = 110
     _SUB_PLOT_MIN_HEIGHT = 84
 
-    # 深色主题滚动条：与页面 #222222 / #333333 配色一致，不出现系统亮色条
+    # 图表滚动容器只负责透明底；滚动条外观统一由 theme_manager.scrollbar_qss
+    # 在应用作用域定义（原先这里另写了一份深色 10px 滚动条，会把全局样式顶掉）
     _CHART_SCROLLBAR_STYLE = """
     QScrollArea { background-color: transparent; border: none; }
     QScrollArea > QWidget > QWidget { background-color: transparent; }
-    QScrollBar:vertical {
-        background-color: #222222;
-        width: 10px;
-        margin: 0px;
-        border: none;
-    }
-    QScrollBar::handle:vertical {
-        background-color: #555555;
-        min-height: 24px;
-        border-radius: 5px;
-    }
-    QScrollBar::handle:vertical:hover {
-        background-color: #777777;
-    }
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-        height: 0px;
-        background: none;
-        border: none;
-    }
-    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-        background: none;
-    }
     """
 
     def create_tech_tab(self):

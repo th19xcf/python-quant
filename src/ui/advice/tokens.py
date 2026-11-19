@@ -231,20 +231,6 @@ QHeaderView#adviceHeader::section {{
     font-size: {t.font_small}px;
     font-weight: 600;
 }}
-QScrollBar:vertical {{
-    background: transparent;
-    width: 9px;
-    margin: 4px 2px;
-}}
-QScrollBar::handle:vertical {{
-    background: {p.border};
-    min-height: 24px;
-    border-radius: 4px;
-}}
-QScrollBar::handle:vertical:hover {{ background: {p.faint}; }}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-QScrollBar:horizontal {{ height: 9px; background: transparent; }}
-QScrollBar::handle:horizontal {{ background: {p.border}; border-radius: 4px; }}
 QLabel#detailName {{
     font-size: 17px;
     font-weight: 700;

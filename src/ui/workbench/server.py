@@ -58,6 +58,15 @@ except Exception:  # pragma: no cover - 极端情况下退回最小样式
     CSS_TEXT = ':root{--bg:#f5f7fa;--panel:#fff;--ink:#15202f;--muted:#657184}'
 
 APP_CSS = r"""
+  /* 滚动条与桌面端左侧导航一致：8px 细条、圆角拇指、透明轨道。
+     内嵌页由 Chromium 自绘滚动条，Qt QSS 作用不到，只能在这里给 CSS。 */
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:rgba(0,0,0,.15);border-radius:4px}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(0,0,0,.26)}
+  ::-webkit-scrollbar-corner{background:transparent}
+  html[data-theme="dark"] ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.165)}
+  html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.30)}
   html,body{height:100%;overflow:hidden}
   .app{display:flex;height:100vh}
   aside.side{
@@ -649,6 +658,27 @@ _list_cache = {'key': None, 'html': None}
 _dash_cache = {}
 _cache_lock = threading.Lock()
 
+#: 内嵌 iframe 页（配方 / 看板 / 清单）也要同一套滚动条：Chromium 滚动条只认 CSS
+_IFRAME_SCROLLBAR_CSS = (
+    b'<style>'
+    b'::-webkit-scrollbar{width:8px;height:8px}'
+    b'::-webkit-scrollbar-track{background:transparent}'
+    b'::-webkit-scrollbar-thumb{background:rgba(0,0,0,.15);border-radius:4px}'
+    b'::-webkit-scrollbar-thumb:hover{background:rgba(0,0,0,.26)}'
+    b'::-webkit-scrollbar-corner{background:transparent}'
+    b'html[data-theme="dark"] ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.165)}'
+    b'html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.30)}'
+    b'</style>'
+)
+
+
+def _with_scrollbar_css(html: bytes) -> bytes:
+    """给内嵌页注入滚动条样式；没有 ``</head>`` 的片段原样返回。"""
+    marker = b'</head>'
+    if marker not in html:
+        return html
+    return html.replace(marker, _IFRAME_SCROLLBAR_CSS + marker, 1)
+
 
 def recipe_page_html() -> bytes:
     candidates = sorted((ROOT / 'docs').glob('配方生成_*.html'))
@@ -748,12 +778,12 @@ class Handler(BaseHTTPRequestHandler):
                                         f'<html lang="zh-CN" data-theme="{theme}">')
                 self._send(page.encode('utf-8'))
             elif path == '/recipe':
-                self._send(recipe_page_html())
+                self._send(_with_scrollbar_css(recipe_page_html()))
             elif path == '/list':
-                self._send(list_page_html())
+                self._send(_with_scrollbar_css(list_page_html()))
             elif path.startswith('/run/') and path.endswith('/dashboard'):
                 rid = path[len('/run/'):-len('/dashboard')]
-                self._send(dashboard_page_html(rid))
+                self._send(_with_scrollbar_css(dashboard_page_html(rid)))
             elif path == '/api/queue':
                 self._json(STATE.snapshot())
             elif path == '/api/runs':
