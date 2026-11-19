@@ -187,8 +187,8 @@ class _TradeDialog(QDialog):
     """逐笔成交明细弹窗：日期正序、表头可排序、末行合计、空数据给中文提示。"""
 
     COLUMNS = ('日期', '代码', '名称', '方向', '成交价', '数量', '金额', '费用',
-               '已实现盈亏', '收益率', '持有盈亏', '持有收益率')
-    _NUMERIC = (4, 5, 6, 7, 8, 9, 10, 11)
+               '已实现盈亏', '收益率', '持有数量', '持有盈亏', '持有收益率')
+    _NUMERIC = (4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
 
     def __init__(self, payload: Dict[str, Any], parent=None):
         super().__init__(parent)
@@ -276,7 +276,7 @@ class _TradeDialog(QDialog):
                    'name': names.get(code, ''), 'side': record.get('side'),
                    'price': price, 'shares': shares,
                    'amount': price * shares, 'fee': fee,
-                   'realized': realized, 'basis': basis,
+                   'realized': realized, 'basis': basis, 'holding_qty': None,
                    'holding_pnl': None, 'holding_cost': None,
                    'holding_yield': None}
             rows.append(row)
@@ -319,6 +319,7 @@ class _TradeDialog(QDialog):
                     pnl = round(float(price) * lot['remaining']
                                 - remainder_cost, 2)
                     allocated = round(allocated + pnl, 2)
+                lot['row']['holding_qty'] = qty
                 lot['row']['holding_pnl'] = pnl
                 lot['row']['holding_cost'] = remainder_cost
                 lot['row']['holding_yield'] = (pnl / remainder_cost
@@ -365,6 +366,7 @@ class _TradeDialog(QDialog):
                          if row['basis'] else None)
             holding = row['holding_pnl']
             holding_yield = row['holding_yield']
+            holding_qty = row['holding_qty']
             cells = (
                 row['date'], row['code'], row['name'],
                 '买入' if row['side'] == 'buy' else '卖出',
@@ -372,11 +374,12 @@ class _TradeDialog(QDialog):
                 f'{row["amount"]:,.2f}', f'{row["fee"]:,.2f}',
                 '' if realized is None else f'{realized:+,.2f}',
                 '' if yield_pct is None else f'{yield_pct * 100:+.2f}%',
+                '' if holding_qty is None else f'{holding_qty:,.0f}',
                 '' if holding is None else f'{holding:+,.2f}',
                 '' if holding_yield is None else f'{holding_yield * 100:+.2f}%',
             )
             numeric = (row['price'], row['shares'], row['amount'], row['fee'],
-                       realized, yield_pct, holding, holding_yield)
+                       realized, yield_pct, holding_qty, holding, holding_yield)
             for c, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 if c in self._NUMERIC:
@@ -417,6 +420,7 @@ class _TradeDialog(QDialog):
                  f'买 {totals["buy_amount"]:,.2f} / 卖 {totals["sell_amount"]:,.2f}',
                  '', f'{realized:+,.2f}',
                  '' if yield_total is None else f'{yield_total * 100:+.2f}%',
+                 '',
                  '' if not totals['holding_count'] else f'{holding_pnl:+,.2f}',
                  '' if holding_yield is None else f'{holding_yield * 100:+.2f}%')
         row = table.rowCount()
