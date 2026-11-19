@@ -1038,11 +1038,16 @@ class StrategyLabPage(QWidget):
         self._plot_curves(payload.get('nav') or [], payload.get('benchmark_curve') or [])
         self._plot_drawdown(payload.get('drawdown') or [])
         self._plot_markers(payload.get('markers') or [])
-        # 试算成功不再往页头状态标签写规则摘要：规则全文已由页头下方的
-        # rule_text_label 展示（同一份 rule_text），页头重复一遍还会挤压说明块。
-        # 状态标签只在运行中 / 出错 / 保存提示时显示文字，成功时清空；标签定高
-        # 40px，清空只留空白，不参与布局伸缩，页头与画图区高度不受影响。
-        self.status_label.clear()
+        # 页头状态标签只写运行反馈：用时 / 引擎耗时 / 参与标的数与起点前移提示；
+        # 规则摘要（标的、阈值、区间、成本等）由页头下方的 rule_text_label 展示，
+        # 这里不再重复。标签定高 40px，反馈一行或清空都不影响页头与画图区高度。
+        parts = [f'用时 {payload["elapsed_seconds"]}s（引擎 {payload["engine_seconds"]}s，'
+                 f'参与标的 {payload["used_codes"]} 只）']
+        period = payload.get('period_effective') or {}
+        start, requested = period.get('start'), period.get('requested_start')
+        if start and requested and start > requested:
+            parts.append(f'起点 {requested} 早于可用行情首日，已按实际最早日 {start} 起算')
+        self.status_label.setText('  '.join(parts))
 
     def _fill_metrics(self, metrics: Dict[str, Any],
                       coverage_hint: str = '') -> None:
