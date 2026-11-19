@@ -270,6 +270,11 @@ class _TradeDialog(QDialog):
             if record.get('side') == 'buy':
                 book[code] = (held + shares, held_cost + shares * price + fee)
             else:
+                if shares > held:
+                    logger.warning(
+                        '交易流水持仓异常：{code} 在 {d} 卖出 {s:,.0f} 股，'
+                        '超过当时持仓 {h:,.0f} 股',
+                        code=code, d=record['date'], s=shares, h=held)
                 unit_cost = held_cost / held if held > 0 else 0.0
                 basis = unit_cost * shares
                 realized = (price - unit_cost) * shares - fee
@@ -287,6 +292,8 @@ class _TradeDialog(QDialog):
                    'realized': realized, 'basis': basis, 'holding_qty': None,
                    'holding_pnl': None, 'holding_cost': None,
                    'holding_yield': None}
+            # 持有数量=该笔成交后该代码的滚动持仓（买入累加、卖出扣减、清仓归零）
+            row['holding_qty'] = book[code][0]
             rows.append(row)
             if row['side'] == 'buy' and shares > 0:
                 lots.setdefault(code, []).append(
@@ -327,7 +334,6 @@ class _TradeDialog(QDialog):
                     pnl = round(float(price) * lot['remaining']
                                 - remainder_cost, 2)
                     allocated = round(allocated + pnl, 2)
-                lot['row']['holding_qty'] = qty
                 lot['row']['holding_pnl'] = pnl
                 lot['row']['holding_cost'] = remainder_cost
                 lot['row']['holding_yield'] = (pnl / remainder_cost
