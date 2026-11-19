@@ -203,6 +203,10 @@ class MainWindowLayoutMixin:
         """
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
+        # 上下外边距归零：页面容器与左侧导航面板同顶同底，
+        # 左右保留原边距，不动横向版式。
+        margins = center_layout.contentsMargins()
+        center_layout.setContentsMargins(margins.left(), 0, margins.right(), 0)
 
         # 页面容器只放页面内容；标签栏已由 create_tool_bar 放进工具栏行，
         # 这里不再保留 QTabWidget 顶部标签条，页面区因此多出约一条标签栏高度。
@@ -271,6 +275,9 @@ class MainWindowLayoutMixin:
         创建行情标签页
         """
         market_layout = QVBoxLayout(self.market_tab)
+        # 与左侧导航面板同顶同底：上下外边距归零，左右保留原边距
+        margins = market_layout.contentsMargins()
+        market_layout.setContentsMargins(margins.left(), 0, margins.right(), 0)
 
         # 创建进度条
         self.market_progress_bar = QProgressBar()
