@@ -513,8 +513,10 @@ class StrategyLabPage(QWidget):
     # -- 布局 --------------------------------------------------------------
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        # 页头行高按 40px 状态块给，splitter 仍要停在 58px（14 上边距 + 40 行高 + 4 间距），
+        # 上边距 7px：标题文字到页顶的留白与标题文字到下方卡片的留白对齐（实测各 18px，
+        # 原上边距 14px 时上 25px、下 18px 不对称）。
+        root.setContentsMargins(16, 7, 16, 14)
+        # 页头行高按 40px 状态块给，splitter 停在 51px（7 上边距 + 40 行高 + 4 间距），
         # 故根布局间距从 12 收到 4，页头以下所有控件位置不变。
         root.setSpacing(4)
 
