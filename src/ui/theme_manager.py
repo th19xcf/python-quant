@@ -24,6 +24,7 @@ _SIDEBAR_COLORS = {
         "text_secondary": QColor("#9BA1A8"),
         "hover_bg": QColor(255, 255, 255, 14),
         "selected_bg": QColor(0, 191, 255, 34),
+        "tab_selected_bg": QColor(0, 191, 255, 60),
         "accent": QColor("#00BFFF"),
         "accent_hover": QColor(0, 191, 255, 110),
         "scroll_handle": QColor(255, 255, 255, 42),
@@ -36,6 +37,7 @@ _SIDEBAR_COLORS = {
         "text_secondary": QColor("#6B7280"),
         "hover_bg": QColor(0, 0, 0, 12),
         "selected_bg": QColor(0, 102, 204, 30),
+        "tab_selected_bg": QColor(0, 102, 204, 48),
         "accent": QColor("#0066CC"),
         "accent_hover": QColor(0, 102, 204, 90),
         "scroll_handle": QColor(0, 0, 0, 38),
@@ -149,6 +151,41 @@ def scrollbar_qss(dark: bool = True) -> str:
     """
 
 
+def tabbar_qss(dark: bool = True) -> str:
+    """顶部标签栏选中态（唯一一处定义）：底色、文字色、上圆角拉开选中/未选中差距。
+
+    只改颜色与圆角，不设 padding / margin / border / font-weight：
+    这些属性会参与 QTabBar 的 sizeHint 计算，导致选中时标签宽度或行高跳变、
+    甚至把标签文字挤到滚动按钮里。选中态与内容区之间不加下边框，
+    用强调色底块收口，避免出现悬空感。
+    """
+    c = _colors(dark)
+    return f"""
+    QTabBar#mainTabBar {{
+        background: transparent;
+    }}
+    QTabBar#mainTabBar::tab {{
+        background: transparent;
+        color: {c['text_secondary'].name()};
+        border-top-left-radius: 4px;
+        border-top-right-radius: 4px;
+    }}
+    QTabBar#mainTabBar::tab:hover {{
+        background-color: {_rgba(c['hover_bg'])};
+        color: {c['text_primary'].name()};
+    }}
+    QTabBar#mainTabBar::tab:selected {{
+        background-color: {_rgba(c['tab_selected_bg'])};
+        color: {c['accent'].name()};
+    }}
+    """
+
+
+def app_qss(dark: bool = True) -> str:
+    """应用级样式总入口：滚动条 + 顶部标签栏，供 set_*_theme 一次挂载。"""
+    return scrollbar_qss(dark) + tabbar_qss(dark)
+
+
 class SidebarItemDelegate(QStyledItemDelegate):
     """导航树条目绘制：圆角高亮块 + 左侧强调条 + 两级文字层级。
 
@@ -255,8 +292,8 @@ class ThemeManager:
 
         app.setPalette(palette)
         app.setStyle("Fusion")
-        # 全局滚动条：深浅主题各一份，所有滚动区域（含左侧导航）共用这一处定义
-        app.setStyleSheet(scrollbar_qss(False))
+        # 全局样式：滚动条 + 顶部标签栏，深浅主题各一份
+        app.setStyleSheet(app_qss(False))
 
     @staticmethod
     def set_dark_theme(app: QApplication):
@@ -290,8 +327,8 @@ class ThemeManager:
 
         app.setPalette(palette)
         app.setStyle("Fusion")
-        # 全局滚动条：与浅色主题同一套几何，只换 handle 的 rgba
-        app.setStyleSheet(scrollbar_qss(True))
+        # 全局样式：滚动条 + 顶部标签栏，深浅主题各一份
+        app.setStyleSheet(app_qss(True))
 
     @staticmethod
     def toggle_theme(app: QApplication, is_dark: bool):
