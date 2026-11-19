@@ -104,6 +104,14 @@ QLabel#slSubtitle, QLabel#slStatus, QLabel#slNotes {{
     font-size: {tokens.font_small}px;
     color: {palette.muted};
 }}
+QLabel#slStatus[state="running"] {{
+    font-size: {tokens.font_small + 2}px;
+    font-weight: 700;
+    color: {palette.hold};
+    background: {palette.hold_soft};
+    border-radius: {tokens.radius_sm}px;
+    padding: 1px 8px;
+}}
 QLabel#slSectionTitle {{
     font-size: {tokens.font_section}px;
     font-weight: 700;
@@ -623,6 +631,13 @@ class StrategyLabPage(QWidget):
         self._sync_editor_min_height()
         return card
 
+    def _set_status_state(self, running: bool) -> None:
+        """切换状态提示的高亮态；跑完必须复位，避免残留底色。"""
+        self.status_label.setProperty('state', 'running' if running else '')
+        self.status_label.style().unpolish(self.status_label)
+        self.status_label.style().polish(self.status_label)
+        self.status_label.update()
+
     def _sync_status_max_width(self) -> None:
         """说明块宽度：左贴标题块右缘 +24px，右缘与同列控件（卡片/按钮行）右缘对齐。
 
@@ -919,17 +934,24 @@ class StrategyLabPage(QWidget):
         rule['period']['start'] = start_text
         if self._worker is not None and self._worker.isRunning():
             self.status_label.setText('已有一次试算在运行，请等待完成')
+            self._set_status_state(True)
             return
         self.run_btn.setEnabled(False)
         self.save_btn.setEnabled(False)
         self._last_payload = None
         self.status_label.setText(f'试算中：{RULE_TYPES[rule["rule_type"]]}规则，'
                                   '加载本地行情与 PIT 字段面板…')
+        self._set_status_state(True)
         self._worker = _RunWorker(rule, self)
         self._worker.ok.connect(self._on_result)
         self._worker.failed.connect(self._on_failed)
-        self._worker.finished.connect(lambda: self.run_btn.setEnabled(True))
+        self._worker.finished.connect(self._on_worker_finished)
         self._worker.start()
+
+    def _on_worker_finished(self) -> None:
+        """试算结束（成功或失败）恢复常态样式，并放开运行按钮。"""
+        self._set_status_state(False)
+        self.run_btn.setEnabled(True)
 
     def _on_failed(self, message: str) -> None:
         self._last_payload = None
