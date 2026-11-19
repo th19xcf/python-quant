@@ -16,6 +16,8 @@ class TabbedPageContainer(QStackedWidget):
 
     def __init__(self, tab_bar: QTabBar, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        # 页面底色由主题 QSS 的 ``QStackedWidget#pageStack`` 统一定义
+        self.setObjectName('pageStack')
         self._tab_bar = tab_bar
         self._tab_bar.currentChanged.connect(self._on_tab_bar_changed)
         self.currentChanged.connect(self._on_stack_changed)

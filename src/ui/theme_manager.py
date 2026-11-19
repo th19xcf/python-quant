@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QTabBar,
 )
 
+from src.ui.advice.tokens import palette_for
+
 # 左侧导航栏两套主题的取色表：两端同时维护，避免只改深色导致浅色不一致
 _SIDEBAR_COLORS = {
     "dark": {
@@ -162,14 +164,36 @@ def tabbar_qss(dark: bool = True) -> str:
     return ""
 
 
+def page_surface_qss(dark: bool = True) -> str:
+    """主界面页面底色：全项目唯一一处「标签页页面背景」定义。
+
+    主窗口页面容器是 ``QStackedWidget``（``#pageStack``）。各页面都是
+    ``QWidget`` 子类，未置位 ``WA_StyledBackground`` 时 QSS 里写的
+    ``QWidget#xxxPage { background }`` 不会绘制，页面区域透明，透出的是
+    Fusion 窗口色（深色 #353535），比「策略试算」页的 #12151A 更亮；页面
+    外套的 ``QScrollArea`` 视口同样会填窗底色。这里给容器一个主题底色并将
+    容器内滚动区设为透明，各标签页（含没有页面 QSS 的行情 / 技术分析）因此
+    统一透出同一底色，不再每页各写一份色值。
+    """
+    bg = palette_for("dark" if dark else "light").bg
+    return f"""
+    QStackedWidget#pageStack {{
+        background-color: {bg};
+    }}
+    QStackedWidget#pageStack QScrollArea {{
+        background: transparent;
+    }}
+    """
+
+
 def app_qss(dark: bool = True) -> str:
-    """应用级样式总入口：只挂滚动条。
+    """应用级样式总入口：滚动条 + 主界面页面底色。
 
     标签栏不使用 QSS：只要给 ``QTabBar::tab`` 写一行样式，Qt 就改用样式表
     度量（padding/margin 归零），标签会缩窄贴在一起。选中态改由
     :class:`HighlightTabBar` 叠加绘制，尺寸与间距全部沿用原生。
     """
-    return scrollbar_qss(dark)
+    return scrollbar_qss(dark) + page_surface_qss(dark)
 
 
 class HighlightTabBar(QTabBar):
