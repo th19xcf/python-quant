@@ -528,20 +528,18 @@ class StrategyLabPage(QWidget):
         header.setSpacing(6)
         top_row = QHBoxLayout()
         # 标题块用 Maximum 策略包成独立控件：否则它会吃掉整行剩余宽度，
-        # 说明块的左边界会被推到最右侧（实测副标题被拉到 1023px 宽）。
+        # 说明块的左边界会被推到最右侧（实测会贴着页面右缘排）。
         title_block = QWidget()
         title_block.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         title_box = QVBoxLayout(title_block)
         title_box.setContentsMargins(0, 0, 0, 0)
-        title_box.setSpacing(2)
+        # 原副标题占的第二行已删除；标题下补一个弹簧，让标题仍贴在 40px 行高顶部，
+        # 保持删除前的垂直位置（否则单控件会被拉满整行、文字整体下移约 10px）。
         title = QLabel('策略试算')
         title.setObjectName('slTitle')
-        subtitle = QLabel('规则文件驱动的 ETF 回测：选股 / 择时 / 切换三类规则，只读本地行情')
-        subtitle.setObjectName('slSubtitle')
         title_box.addWidget(title)
-        title_box.addWidget(subtitle)
+        title_box.addStretch(1)
         self.title_label = title
-        self.subtitle_label = subtitle
         top_row.addWidget(title_block)
         # 说明块紧跟标题块右侧 24px 起排、右侧停在按钮列左缘前 16px；
         # 宽度由 _sync_status_max_width 按标题块 sizeHint 与按钮列左缘实测算出。
@@ -682,8 +680,7 @@ class StrategyLabPage(QWidget):
         """
         if not hasattr(self, 'refresh_btn') or not hasattr(self, 'title_label'):
             return
-        block_width = max(self.title_label.sizeHint().width(),
-                          self.subtitle_label.sizeHint().width())
+        block_width = self.title_label.sizeHint().width()
         block_left = self.layout().contentsMargins().left()
         block_right = block_left + block_width + 24
         page_right = self.width() - self.layout().contentsMargins().right()
