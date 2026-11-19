@@ -41,6 +41,7 @@ from src.ui.table_sizing import (
     use_interactive_columns,
 )
 from src.ui.theme_manager import is_dark_palette
+from src.utils.code_converter import to_ts_code
 
 #: 表头（第 0 列为序号）
 COLUMNS = [SEQ_COLUMN_TITLE, '代码', '名称', '方向', '建议股数', '参考价',
@@ -267,6 +268,7 @@ class ActionListPage(QWidget):
         header.setFixedHeight(HEADER_ROW_HEIGHT)
         header.setSectionsClickable(True)
         header.sectionClicked.connect(self._on_header_clicked)
+        self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding,
                                  QSizePolicy.Policy.Expanding)
         use_interactive_columns(self.table)
@@ -345,6 +347,32 @@ class ActionListPage(QWidget):
             f'{state.next_rebalance or "—"} 开盘')
         self.notes_label.setText('　'.join(state.notes))
         self._apply_state()
+
+    def _on_cell_double_clicked(self, row: int, column: int) -> None:
+        """双击「代码」列时打开该标的的技术分析页；其余列不响应。"""
+        code_column = COLUMNS.index('代码')
+        if column != code_column:
+            return
+        code_item = self.table.item(row, code_column)
+        if code_item is None:
+            return
+        name_item = self.table.item(row, COLUMNS.index('名称'))
+        self._open_technical_analysis(
+            code_item.text(), name_item.text() if name_item else '')
+
+    def _open_technical_analysis(self, code: str, name: str) -> None:
+        """归一代码后复用主窗口既有的按代码加载入口，成功后由该入口切到技术分析页。"""
+        host = self._host
+        action_manager = getattr(host, 'action_manager', None)
+        if action_manager is None:
+            self.status_label.setText('无法打开技术分析：主窗口动作管理器未就绪')
+            return
+        try:
+            ts_code = to_ts_code(code)
+        except (TypeError, ValueError):
+            self.status_label.setText(f'无法打开技术分析：代码格式无效 {code!r}')
+            return
+        action_manager._load_stock_chart(ts_code, name or ts_code)
 
     def _on_header_clicked(self, column: int) -> None:
         if column == 0:
