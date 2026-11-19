@@ -24,6 +24,17 @@ from src.ui.table_sizing import (
 )
 from src.ui.theme_manager import is_dark_palette
 
+#: ETF 分配表按列类型的对齐口径，数据行与 CASH 行共用：
+#: 代码/名称/角色左对齐，权重与金额右对齐。
+_HOLDINGS_ALIGNMENTS: tuple[Qt.AlignmentFlag, ...] = (
+    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+)
+
 
 def _fetch_state(token: int, asof: str | None = None,
                  capital: float = 1_000_000.0, refresh: bool = False,
@@ -320,16 +331,8 @@ class EtfTimingPage(QWidget, SizedTableMixin):
                 f'{holding.position_weight:.2%}',
                 f'{holding.amount:,.0f}',
             ]
-            alignments = (
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-            )
             for column, text in enumerate(values):
-                item = self._item(text, alignments[column])
+                item = self._item(text, _HOLDINGS_ALIGNMENTS[column])
                 if column == 5:
                     item.setForeground(self._brush(self._pal.buy))
                 table.setItem(row, column, item)
@@ -340,7 +343,7 @@ class EtfTimingPage(QWidget, SizedTableMixin):
             f'{state.cash_weight * self._capital:,.0f}',
         ]
         for column, text in enumerate(cash_values):
-            item = self._item(text, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            item = self._item(text, _HOLDINGS_ALIGNMENTS[column])
             if column == 5:
                 item.setForeground(self._brush(self._pal.muted))
             table.setItem(cash_row, column, item)
