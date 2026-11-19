@@ -835,11 +835,27 @@ def _promote(staging: Path, target: Path, store_root: Path, manifest: dict[str, 
     old_sha = _sha256(backup)
     new_sha = _sha256(staging / 'stock_basic.parquet')
     if old_sha == new_sha:
-        # 日常收口会反复调用，无变化时保持幂等：不替换、不留备份副本
+        # 日常收口会反复调用，无变化时保持幂等：不替换、不留备份副本。
+        # 但 manifest 的覆盖末日（latest_trade_date）仍要刷新：collect_financials
+        # 的「名录落后」闸门读的就是它，不刷新会让名录末日永久停在首次落盘日，
+        # 使每个安静的交易日都拒绝估值采集。
         shutil.rmtree(staging)
         backup.unlink(missing_ok=True)
         backup_dir.rmdir()
-        print('候选与原文件字节相同，无需替换（幂等返回）')
+        manifest_path = store_root / 'meta' / 'stock_basic.manifest.json'
+        try:
+            previous = json.loads(manifest_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            previous = {}
+        for key in ('promoted_at', 'target_sha256', 'previous_sha256',
+                    'previous_backup'):
+            if previous.get(key):
+                manifest = {**manifest, key: previous[key]}
+        manifest = {**manifest,
+                    'refreshed_at': datetime.now().isoformat(timespec='seconds')}
+        write_text_atomic(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', manifest_path)
+        print('候选与原文件字节相同，无需替换（幂等返回；manifest 覆盖末日已刷新）')
         return
     manifest = {**manifest, 'promoted_at': datetime.now().isoformat(timespec='seconds'),
                 'target_sha256': new_sha, 'previous_sha256': old_sha,

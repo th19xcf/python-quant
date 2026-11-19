@@ -188,6 +188,7 @@ DEFAULT_POOL_REFRESH_DAYS = 7
 AUX_BREADTH_OUTPUTS = (
     'meta/breadth/breadth_daily.parquet',
     'meta/breadth/coverage.json',
+    'meta/breadth/manifest.json',
 )
 #: 增量清点跳过 ``backtest_runs``：回测运行记录是结果归档（json/csv/log 与索引），
 #: 不是数据表，日更既不产出也不消费它，计入会让「本次新增文件」混入非数据资产。
