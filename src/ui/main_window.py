@@ -205,6 +205,12 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
                     except (RuntimeError, TypeError):
                         return False
 
+                    # 焦点在日期/数字类输入控件（QDateEdit/QDateTimeEdit/QSpinBox
+                    # 及其内部编辑器、日历弹层）时，数字键、方向键、退格、分隔符
+                    # 全部交给控件自身，既不弹代码搜索，也不抢技术分析页快捷键。
+                    if self._focus_in_value_editor():
+                        return False
+
                     # 技术分析页方向键：QScrollArea/QGraphicsView 会消费方向键，
                     # 必须在目标控件处理前拦截，否则左/右箭头改柱体数失效。
                     arrow_handler = getattr(self.main_window, '_handle_tech_tab_arrow_key', None)
@@ -269,6 +275,38 @@ class MainWindow(MainWindowNavigationMixin, MainWindowChartInteractionMixin,
                     # 拦截事件，不传递给其他控件
                     return True
 
+                return False
+
+            def _focus_in_value_editor(self):
+                """当前焦点是否落在日期/数字类输入控件（含其内部编辑框与日历弹层）。
+
+                QAbstractSpinBox 会把内部 QLineEdit 的焦点策略设为 NoFocus、由
+                spinbox 本体收键，因此只看 focusWidget 是否为 QLineEdit 不够；
+                这里按控件类型判定，并对焦点控件向上找父链（内部编辑器是子控件），
+                不依赖页面白名单，新增同类控件自动生效。
+                """
+                from PySide6.QtWidgets import (
+                    QAbstractSpinBox,
+                    QApplication,
+                    QCalendarWidget,
+                )
+
+                try:
+                    widget = QApplication.focusWidget()
+                    if widget is None:
+                        widget = self.main_window.focusWidget()
+                except RuntimeError:
+                    return False
+
+                for _ in range(3):
+                    if widget is None:
+                        return False
+                    if isinstance(widget, (QAbstractSpinBox, QCalendarWidget)):
+                        return True
+                    try:
+                        widget = widget.parentWidget()
+                    except RuntimeError:
+                        return False
                 return False
 
         # 创建并安装事件过滤器
