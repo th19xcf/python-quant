@@ -209,7 +209,7 @@ class _TradeDialog(QDialog):
             if valuation_date and any(row['holding_pnl'] is not None
                                       for row in rows):
                 caption_text += (f'；持有盈亏按 {valuation_date} 收盘价估值，'
-                                 f'只标在各标的最后一笔成交行')
+                                 f'按各笔买入成本占比分摊到仍持有的买入行')
             caption = QLabel(caption_text)
             caption.setObjectName('slNotes')
             root.addWidget(caption)
@@ -238,16 +238,18 @@ class _TradeDialog(QDialog):
         × 数量 − 本笔卖出费用」计算已实现盈亏；收益率 = 该笔已实现盈亏 ÷ 该笔
         对应持仓成本（单位成本 × 数量，含买入费用）。买入行两项留空。
 
-        持有盈亏只给回测结束时仍持仓的标的，挂在该标的最后一笔成交行：
-        未实现部分按「估值日收盘价 − 剩余持仓单位成本」× 剩余股数，收益率
-        分母为剩余持仓成本（剩余股数 × 单位成本），不重复计入已实现盈亏；
-        已清仓的标的两列保持空。
+        持有盈亏只给回测结束时仍持仓的标的，按各笔仍持有买入的成本占比把整只
+        未实现盈亏分摊到这些买入行上：整只浮亏按「估值日收盘价 − 剩余持仓单位
+        成本」× 剩余股数算出，再按各笔买入成本（金额 + 买入费用）占比拆到行，
+        末笔吸收分币残差使各行之和精确等于整只浮亏；收益率 = 该笔分摊盈亏 ÷
+        该笔买入成本，不重复计入已实现盈亏。已清仓的标的两列保持空。
         """
         records = payload.get('trades') or []
         if not records:
             return []
         names = _security_names()
         book: Dict[str, tuple[float, float]] = {}
+        lots: Dict[str, List[Dict[str, Any]]] = {}
         rows: List[Dict[str, Any]] = []
         for record in sorted(records, key=lambda r: (r['date'], r['side'] == 'sell')):
             code = str(record.get('code') or '')
@@ -264,14 +266,21 @@ class _TradeDialog(QDialog):
                 basis = unit_cost * shares
                 realized = (price - unit_cost) * shares - fee
                 book[code] = (held - shares, max(held_cost - basis, 0.0))
-            rows.append({'date': record['date'], 'code': code,
-                         'name': names.get(code, ''), 'side': record.get('side'),
-                         'price': price, 'shares': shares,
-                         'amount': price * shares, 'fee': fee,
-                         'realized': realized, 'basis': basis,
-                         'holding_pnl': None, 'holding_cost': None,
-                         'holding_yield': None})
-        _TradeDialog._attach_holdings(rows, book, payload)
+                if book[code][0] <= 0:
+                    # 清仓后之前的买入不再持有，重启买入另起一批成本占比
+                    lots[code] = []
+            row = {'date': record['date'], 'code': code,
+                   'name': names.get(code, ''), 'side': record.get('side'),
+                   'price': price, 'shares': shares,
+                   'amount': price * shares, 'fee': fee,
+                   'realized': realized, 'basis': basis,
+                   'holding_pnl': None, 'holding_cost': None,
+                   'holding_yield': None}
+            rows.append(row)
+            if row['side'] == 'buy':
+                lots.setdefault(code, []).append(
+                    {'row': row, 'cost': row['amount'] + fee})
+        _TradeDialog._attach_holdings(rows, book, payload, lots)
         # 日期正序；同一日期内买入在前，保持与成本推进顺序一致
         rows.sort(key=lambda row: row['side'] == 'sell')
         rows.sort(key=lambda row: row['date'])
@@ -280,29 +289,35 @@ class _TradeDialog(QDialog):
     @staticmethod
     def _attach_holdings(rows: List[Dict[str, Any]],
                          book: Dict[str, tuple[float, float]],
-                         payload: Dict[str, Any]) -> None:
-        """把未实现盈亏写进各仍持仓标的的最后一行成交（此时 rows 仍按时间正序）。"""
+                         payload: Dict[str, Any],
+                         lots: Dict[str, List[Dict[str, Any]]]) -> None:
+        """把整只未实现盈亏按成本占比分摊到各笔仍持有的买入行。"""
         held = {str(code): float(qty or 0.0)
                 for code, qty in (payload.get('positions') or {}).items()
                 if float(qty or 0.0) > 0}
         if not held:
             return
         close = ((payload.get('valuation') or {}).get('close') or {})
-        last_row: Dict[str, Dict[str, Any]] = {}
-        for row in rows:
-            if row['code'] in held:
-                last_row[row['code']] = row
         for code, qty in held.items():
             shares, cost = book.get(code, (0.0, 0.0))
             price = close.get(code)
-            row = last_row.get(code)
-            if row is None or shares <= 0 or price is None:
+            code_lots = lots.get(code) or []
+            total_cost = sum(lot['cost'] for lot in code_lots)
+            if shares <= 0 or price is None or not code_lots or total_cost <= 0:
                 continue
-            unit_cost = cost / shares
-            row['holding_cost'] = unit_cost * qty
-            row['holding_pnl'] = (float(price) - unit_cost) * qty
-            row['holding_yield'] = (row['holding_pnl'] / row['holding_cost']
-                                    if row['holding_cost'] > 0 else None)
+            total_pnl = (float(price) - cost / shares) * qty
+            # 逐笔按成本占比分摊，末笔吸收分币残差，行和精确等于整只浮亏
+            allocated = 0.0
+            for index, lot in enumerate(code_lots):
+                if index == len(code_lots) - 1:
+                    pnl = round(round(total_pnl, 2) - allocated, 2)
+                else:
+                    pnl = round(total_pnl * lot['cost'] / total_cost, 2)
+                    allocated = round(allocated + pnl, 2)
+                lot['row']['holding_pnl'] = pnl
+                lot['row']['holding_cost'] = lot['cost']
+                lot['row']['holding_yield'] = (pnl / lot['cost']
+                                               if lot['cost'] > 0 else None)
 
     @staticmethod
     def _totals(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
