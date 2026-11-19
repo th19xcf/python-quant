@@ -18,7 +18,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Dict, List, Tuple
 
-CATEGORY_ORDER: Tuple[str, ...] = ('行情', '估值', '财务', '流动性')
+CATEGORY_ORDER: Tuple[str, ...] = ('行情', '估值', '综合', '财务', '流动性', '分类')
+
+#: 只用于分组的非数值字段：不能出现在条件与排序里
+NON_NUMERIC_FIELDS: frozenset = frozenset({'industry'})
 
 #: 运算符 → 界面中文名；``between`` 需要上下限两个数
 OPERATORS: Dict[str, str] = {
@@ -86,6 +89,27 @@ FIELDS: Dict[str, FieldSpec] = {
                     'asof_trade_date', '1/倍', '仅 PE>0 的标的入截面'),
     'bp': FieldSpec('bp', 'BP（1/PB）', '估值', 'meta/financials/valuation_daily.parquet',
                     'asof_trade_date', '1/倍', '仅 PB>0 的标的入截面'),
+    # ---- 综合（因子面板合成，申万一级行业内分位）----
+    'ff_bp': FieldSpec('ff_bp', 'BP（因子面板）', '估值',
+                       '_staging/factor_candidates_20261111/base_rebal.parquet',
+                       'asof_trade_date', '1/倍',
+                       '周频因子面板 ff_value_bp；2018 年前用 valuation_pre2018_patch 覆盖'),
+    'ff_ep': FieldSpec('ff_ep', 'EP（因子面板）', '估值',
+                       '_staging/factor_candidates_20261111/base_rebal.parquet',
+                       'asof_trade_date', '1/倍', '周频因子面板 v_ep'),
+    'ff_dy': FieldSpec('ff_dy', '股息率（因子面板）', '估值',
+                       '_staging/factor_candidates_20261111/base_rebal.parquet',
+                       'asof_trade_date', '%',
+                       '周频因子面板 ff_div_yield；2018 年前用 patch.dp 覆盖，统一换算为百分数'),
+    'vq_value': FieldSpec('vq_value', '价值综合分（行业内分位）', '综合',
+                          '因子面板 + 申万一级行业 PIT', 'asof_trade_date', '分位',
+                          'BP/EP/股息率三者申万一级行业内分位的均值，0~1，越高越低估'),
+    'vq_quality': FieldSpec('vq_quality', '质量综合分（行业内分位）', '综合',
+                            '因子面板 + 申万一级行业 PIT', 'asof_trade_date', '分位',
+                            'ROE(TTM)、−应计利润、毛利率三者行业内分位的均值，0~1'),
+    'vq_score': FieldSpec('vq_score', '价值质量合成分', '综合',
+                          '因子面板 + 申万一级行业 PIT', 'asof_trade_date', '分位',
+                          '0.5×价值综合分 + 0.5×质量综合分；任一缺失即无值'),
     # ---- 财务（按公告日 as-of）----
     'revenue_yoy': FieldSpec('revenue_yoy', '营收同比', '财务', 'meta/financials/income.parquet',
                              'asof_ann_date', '%', '按公告日取最近一期，禁止按报告期对齐'),
@@ -109,9 +133,22 @@ FIELDS: Dict[str, FieldSpec] = {
     'roe': FieldSpec('roe', 'ROE（归母净利/权益）', '财务',
                      'income.parquet + balance.parquet', 'asof_ann_date', '%',
                      '两表各自按公告日取最近一期后相除，仅权益>0 时给值'),
+    'ff_roe_ttm': FieldSpec('ff_roe_ttm', 'ROE(TTM)', '财务',
+                            '_staging/factor_candidates_20261111/base_rebal.parquet',
+                            'asof_trade_date', '%', '周频因子面板 q_roe_ttm'),
+    'ff_accruals': FieldSpec('ff_accruals', '应计利润', '财务',
+                             '_staging/factor_candidates_20261111/base_rebal.parquet',
+                             'asof_trade_date', '小数', '周频因子面板 q_accruals，越低越好'),
+    'ff_gross_margin': FieldSpec('ff_gross_margin', '毛利率', '财务',
+                                 '_staging/factor_candidates_20261111/base_rebal.parquet',
+                                 'asof_trade_date', '%', '周频因子面板 q_gross_margin'),
     # ---- 流动性 ----
     'avg_amount_20': FieldSpec('avg_amount_20', '20日平均成交额', '流动性', 'quotes/stock/**',
                                'bar', '元', '信号日为止最近 20 个交易日成交额均值，窗口须满'),
+    # ---- 分类 ----
+    'industry': FieldSpec('industry', '申万一级行业', '分类',
+                          'meta/industry_pit/industry_pit_sw.parquet', 'asof_trade_date', '—',
+                          '按 in_date/out_date 有效区间取行业；仅用于分组，不能作为条件或排序字段'),
 }
 
 

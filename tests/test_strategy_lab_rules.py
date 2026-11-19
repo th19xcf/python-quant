@@ -69,6 +69,62 @@ def test_non_monthly_rebalance_rejected():
         validate_rule({**BASE, 'rebalance': {'frequency': 'weekly'}})
 
 
+def test_semi_rebalance_accepted():
+    rule = validate_rule({**BASE, 'rebalance': {'frequency': 'semi'}})
+    assert rule['rebalance'] == {'frequency': 'semi'}
+    assert '半年频' in rule_text(rule)
+
+
+def test_quantile_group_industry_accepted():
+    raw = {**BASE, 'conditions': [{'field': 'vq_value', 'op': '>=',
+                                   'operand': {'type': 'quantile', 'q': 0.7,
+                                               'group': 'industry'}}]}
+    rule = validate_rule(raw)
+    assert rule['conditions'][0]['operand'] == {'type': 'quantile', 'q': 0.7,
+                                                'group': 'industry'}
+    assert '行业内' in rule_text(rule)
+
+
+def test_quantile_group_only_industry():
+    raw = {**BASE, 'conditions': [{'field': 'vq_value', 'op': '>=',
+                                   'operand': {'type': 'quantile', 'q': 0.7,
+                                               'group': 'market'}}]}
+    with pytest.raises(RuleError, match='只支持 .industry.'):
+        validate_rule(raw)
+
+
+def test_industry_field_cannot_be_condition_or_sort():
+    cond = {**BASE, 'conditions': [{'field': 'industry', 'op': '==',
+                                    'operand': {'type': 'value', 'value': 1}}]}
+    with pytest.raises(RuleError, match='只用于分组'):
+        validate_rule(cond)
+    with pytest.raises(RuleError, match='只用于分组'):
+        validate_rule({**BASE, 'sort': {'field': 'industry', 'direction': 'asc'}})
+
+
+def test_sort_normalized_to_stages():
+    single = validate_rule(BASE)['sort']
+    assert single == [{'field': 'ep', 'direction': 'desc'}]
+    raw = {**BASE, 'sort': [
+        {'field': 'vq_value', 'direction': 'desc', 'keep_pct': 0.3},
+        {'field': 'vq_score', 'direction': 'desc'},
+    ]}
+    rule = validate_rule(raw)
+    assert rule['sort'][0]['keep_pct'] == 0.3
+    assert rule['sort'][1] == {'field': 'vq_score', 'direction': 'desc'}
+    assert '保留前 30%' in rule_text(rule)
+
+
+def test_keep_pct_rejected_on_last_stage_and_bounds():
+    with pytest.raises(RuleError, match='非末段'):
+        validate_rule({**BASE, 'sort': [{'field': 'ep', 'direction': 'desc',
+                                         'keep_pct': 0.3}]})
+    with pytest.raises(RuleError, match=r'keep_pct'):
+        validate_rule({**BASE, 'sort': [
+            {'field': 'ep', 'direction': 'desc', 'keep_pct': 1.5},
+            {'field': 'pb', 'direction': 'asc'}]})
+
+
 def test_top_n_bounds():
     with pytest.raises(RuleError, match='top_n'):
         validate_rule({**BASE, 'top_n': 0})

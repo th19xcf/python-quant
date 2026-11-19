@@ -43,6 +43,24 @@ FINANCIAL_COLUMNS: Dict[str, str] = {
 VALUATION_COLUMNS = ('pe', 'pb', 'ps', 'dv_ratio', 'total_mv', 'circ_mv')
 BAR_COLUMNS = ('close', 'pct_chg', 'volume', 'amount')
 
+#: 周频因子面板（研究侧已冻结的 base_rebal）与 2018 年前估值补丁
+SF_BASE = ROOT / '_staging/factor_candidates_20261111/base_rebal.parquet'
+SF_PATCH = ROOT / 'data/local_store/meta/financials/valuation_pre2018_patch.parquet'
+INDUSTRY_PIT = ROOT / 'data/local_store/meta/industry_pit/industry_pit_sw.parquet'
+#: 字段 key → base_rebal 列名
+SF_COLUMNS: Dict[str, str] = {
+    'ff_bp': 'ff_value_bp',
+    'ff_ep': 'v_ep',
+    'ff_dy': 'ff_div_yield',
+    'ff_roe_ttm': 'q_roe_ttm',
+    'ff_accruals': 'q_accruals',
+    'ff_gross_margin': 'q_gross_margin',
+}
+#: 合成分：价值三项与质量三项（质量里应计利润取负向 = 1 − 分位）
+VALUE_FACTORS = ('ff_bp', 'ff_ep', 'ff_dy')
+QUALITY_FACTORS = ('ff_roe_ttm', 'ff_accruals', 'ff_gross_margin')
+QUALITY_FLIP = frozenset({'ff_accruals'})
+
 
 # ---------------------------------------------------------------------------
 # as-of 工具（单测直接覆盖这两处，保证 PIT 口径不靠端到端碰运气）
@@ -85,6 +103,25 @@ def asof_lookup(pair: tuple[np.ndarray, np.ndarray] | None, day: date) -> float 
     return value if math.isfinite(value) else None
 
 
+def pct_rank(values: Dict[str, float]) -> Dict[str, float]:
+    """组内升序分位（等价 pandas ``rank(pct=True)``，同值取平均秩）。"""
+    if not values:
+        return {}
+    items = sorted(values.items(), key=lambda kv: kv[1])
+    n = len(items)
+    out: Dict[str, float] = {}
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and items[j + 1][1] == items[i][1]:
+            j += 1
+        rank = (i + j) / 2.0 + 1.0
+        for k in range(i, j + 1):
+            out[items[k][0]] = rank / n
+        i = j + 1
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 面板
 # ---------------------------------------------------------------------------
@@ -94,13 +131,16 @@ class FieldPanels:
 
     def __init__(self, ctx: Context):
         self.ctx = ctx
-        self._cache: Dict[str, Dict[date, Dict[str, float]]] = {}
+        self._cache: Dict[str, Dict[date, Dict[str, Any]]] = {}
         self._valuation: Dict[str, Dict[str, tuple[np.ndarray, np.ndarray]]] | None = None
         self._financial: Dict[str, Dict[str, tuple[np.ndarray, np.ndarray]]] = {}
+        self._base: Dict[str, Dict[str, tuple[np.ndarray, np.ndarray]]] | None = None
+        self._industry: Dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None
+        self._composite: Dict[str, Dict[date, Dict[str, float]]] | None = None
 
     # -- 对外 --------------------------------------------------------------
     def values(self, key: str, days: List[date] | None = None
-               ) -> Dict[date, Dict[str, float]]:
+               ) -> Dict[date, Dict[str, Any]]:
         if key not in self._cache:
             self._cache[key] = self._build(key)
         if days is None:
@@ -108,7 +148,7 @@ class FieldPanels:
         return {d: self._cache[key].get(d, {}) for d in days}
 
     # -- 构造 --------------------------------------------------------------
-    def _build(self, key: str) -> Dict[date, Dict[str, float]]:
+    def _build(self, key: str) -> Dict[date, Dict[str, Any]]:
         if key in BAR_COLUMNS:
             return self._bar_panel(key)
         if key.startswith('vol_'):
@@ -125,6 +165,12 @@ class FieldPanels:
             return self._financial_panel(key)
         if key == 'roe':
             return self._roe_panel()
+        if key == 'industry':
+            return self._industry_panel()
+        if key in SF_COLUMNS:
+            return self._base_factor_panel(key)
+        if key in ('vq_value', 'vq_quality', 'vq_score'):
+            return self._composite_panel(key)
         raise ValueError(f'字段 {key} 没有面板实现（fields.py 与 panels.py 不同步）')
 
     def _empty(self) -> Dict[date, Dict[str, float]]:
@@ -298,9 +344,119 @@ class FieldPanels:
                 panel[day][code] = float(p / e * 100.0)
         return panel
 
+    # -- 周频因子面板 / 行业 PIT / 合成分位 --------------------------------
+    def _ensure_base(self) -> Dict[str, Dict[str, tuple[np.ndarray, np.ndarray]]]:
+        """base_rebal 周频面板 + 2018 年前估值补丁（只读，一次运行只读一次）。"""
+        if self._base is None:
+            factor_cols = list(SF_COLUMNS.values())
+            base = pl.read_parquet(SF_BASE).select(
+                [pl.col('date').cast(pl.Date), pl.col('ts_code'),
+                 *[pl.col(c).cast(pl.Float64) for c in factor_cols]])
+            patch = pl.read_parquet(SF_PATCH, columns=['ts_code', 'trade_date', 'bp', 'dp']).select([
+                pl.col('trade_date').cast(pl.Date).alias('date'), pl.col('ts_code'),
+                pl.col('bp').cast(pl.Float64).alias('_patch_bp'),
+                pl.col('dp').cast(pl.Float64).alias('_patch_dp')])
+            base = base.join(patch, on=['ts_code', 'date'], how='left')
+            old = pl.col('date') < pl.lit(date(2018, 1, 1))
+            base = base.with_columns([
+                pl.when(old).then(pl.col('_patch_bp'))
+                .otherwise(pl.col('ff_value_bp')).alias('ff_value_bp'),
+                pl.when(old).then(pl.col('_patch_dp') / 100.0)
+                .otherwise(pl.col('ff_div_yield')).alias('ff_div_yield'),
+            ])
+            self._base = {col: build_asof_frame(base.select(['ts_code', 'date', col]), col,
+                                                date_col='date')
+                          for col in factor_cols}
+            logger.info('因子面板：{} 行 / {} 只', base.height, base['ts_code'].n_unique())
+        return self._base
+
+    def _base_factor_panel(self, key: str) -> Dict[date, Dict[str, float]]:
+        series = self._ensure_base()[SF_COLUMNS[key]]
+        scale = 100.0 if key == 'ff_dy' else 1.0
+        panel = self._empty()
+        for day in self.ctx.days:
+            for code in self.ctx.quoted[day]:
+                value = asof_lookup(series.get(code), day)
+                if value is not None:
+                    panel[day][code] = value * scale
+        logger.info('面板 {}：{} 个调仓日', key, len(panel))
+        return panel
+
+    def _ensure_industry(self) -> Dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """申万一级 PIT：按代码存 (in_date, out_date, 行业名)，同代码取 in_date 最晚的有效段。"""
+        if self._industry is None:
+            ip = pl.read_parquet(INDUSTRY_PIT, columns=[
+                'ts_code', 'industry_l1', 'in_date', 'out_date']).sort(['ts_code', 'in_date'])
+            codes = ip['ts_code'].to_numpy()
+            in_dates = ip['in_date'].to_numpy().astype('datetime64[D]')
+            out_dates = ip['out_date'].to_numpy().astype('datetime64[D]')
+            names = ip['industry_l1'].to_numpy()
+            starts = np.flatnonzero(np.r_[True, codes[1:] != codes[:-1]])
+            ends = np.r_[starts[1:], len(codes)]
+            self._industry = {str(codes[a]): (in_dates[a:b], out_dates[a:b], names[a:b])
+                              for a, b in zip(starts, ends, strict=True)}
+            logger.info('行业 PIT：{} 只 / {} 行', ip['ts_code'].n_unique(), ip.height)
+        return self._industry
+
+    def _industry_panel(self) -> Dict[date, Dict[str, str]]:
+        series = self._ensure_industry()
+        panel: Dict[date, Dict[str, str]] = {d: {} for d in self.ctx.days}
+        for day in self.ctx.days:
+            me = np.datetime64(day)
+            for code in self.ctx.quoted[day]:
+                pair = series.get(code)
+                if pair is None:
+                    continue
+                in_dates, out_dates, names = pair
+                k = bisect_right(in_dates, me) - 1
+                if k < 0:
+                    continue
+                out = out_dates[k]
+                if not np.isnat(out) and out < me:
+                    continue
+                panel[day][code] = str(names[k])
+        return panel
+
+    def _composite_panel(self, key: str) -> Dict[date, Dict[str, float]]:
+        if self._composite is None:
+            value = self._cross_panel(VALUE_FACTORS, frozenset())
+            quality = self._cross_panel(QUALITY_FACTORS, QUALITY_FLIP)
+            score: Dict[date, Dict[str, float]] = {}
+            for day, vals in value.items():
+                q = quality.get(day, {})
+                score[day] = {c: 0.5 * (v + q[c]) for c, v in vals.items() if c in q}
+            self._composite = {'vq_value': value, 'vq_quality': quality, 'vq_score': score}
+        return self._composite[key]
+
+    def _cross_panel(self, fields: tuple, flip: frozenset) -> Dict[date, Dict[str, float]]:
+        """多个因子各自按行业内分位后取均值（skipna）；行业缺失的代码不参与。"""
+        industry = self._industry_panel()
+        factor_panels = [self.values(f) for f in fields]
+        out = self._empty()
+        for day in self.ctx.days:
+            groups: Dict[str, List[str]] = {}
+            for code, ind in industry.get(day, {}).items():
+                groups.setdefault(ind, []).append(code)
+            per_field: List[Dict[str, float]] = []
+            for key, panel in zip(fields, factor_panels, strict=True):
+                values = panel.get(day, {})
+                ranked: Dict[str, float] = {}
+                for codes in groups.values():
+                    sub = {c: values[c] for c in codes if c in values}
+                    for code, pct in pct_rank(sub).items():
+                        ranked[code] = 1.0 - pct if key in flip else pct
+                per_field.append(ranked)
+            for code in set().union(*[set(x) for x in per_field]):
+                nums = [x[code] for x in per_field if code in x]
+                out[day][code] = float(np.mean(nums))
+        return out
+
 
 def required_columns(rule: Dict[str, Any]) -> Set[str]:
     """规则实际用到的字段集合，供测试与文档核对（不参与运行）。"""
     fields = {c['field'] for c in rule['conditions']}
-    fields.add(rule['sort']['field'])
+    stages = rule['sort'] if isinstance(rule['sort'], list) else [rule['sort']]
+    fields.update(st['field'] for st in stages)
+    if any(c['operand'].get('group') == 'industry' for c in rule['conditions']):
+        fields.add('industry')
     return fields

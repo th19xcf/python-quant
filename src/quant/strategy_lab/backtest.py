@@ -65,12 +65,60 @@ def _passes(value: float | None, op: str, operand: Dict[str, Any],
     return False
 
 
+def _quantile_keep(keep: Set[str], values: Dict[str, float], op: str,
+                   operand: Dict[str, Any], day_industry: Dict[str, str]) -> Set[str] | None:
+    """按分位阈值保留；``group='industry'`` 时逐行业取阈值。无任何可用值返回 ``None``。"""
+    q = operand['q']
+    if operand.get('group') == 'industry':
+        buckets: Dict[str, List[float]] = {}
+        for code in keep:
+            industry = day_industry.get(code)
+            value = values.get(code)
+            if industry is None or value is None or not math.isfinite(value):
+                continue
+            buckets.setdefault(industry, []).append(value)
+        if not buckets:
+            return None
+        thresholds = {ind: float(np.quantile(np.asarray(vs, dtype=float), q))
+                      for ind, vs in buckets.items()}
+        return {code for code in keep
+                if _passes(values.get(code), op, operand,
+                           thresholds.get(day_industry.get(code, '')))}
+    pool = [values[c] for c in keep if c in values and math.isfinite(values[c])]
+    if not pool:
+        return None
+    threshold = float(np.quantile(np.asarray(pool, dtype=float), q))
+    return {code for code in keep if _passes(values.get(code), op, operand, threshold)}
+
+
+def _apply_stage(codes: List[str], values: Dict[str, float], stage: Dict[str, Any],
+                 is_last: bool, top_n: int) -> List[str] | None:
+    """执行一段排序：非末段按 ``keep_pct`` 截断，末段取前 ``top_n``；无可用值返回 ``None``。"""
+    items = [(code, values[code]) for code in codes
+             if code in values and math.isfinite(values[code])]
+    if not items:
+        return None
+    # 同值按代码升序打破平局，保证跨进程结果一致
+    if stage['direction'] == 'desc':
+        items.sort(key=lambda kv: (-kv[1], kv[0]))
+    else:
+        items.sort(key=lambda kv: (kv[1], kv[0]))
+    if is_last:
+        return [code for code, _ in items[:top_n]]
+    keep_pct = stage.get('keep_pct')
+    if keep_pct is not None:
+        items = items[:max(1, int(math.ceil(len(items) * keep_pct)))]
+    return [code for code, _ in items]
+
+
 def select_members(ctx: compute.Context, panels: FieldPanels, rule: Dict[str, Any],
                    days: List[date]) -> Tuple[Dict[date, List[str]], Dict[str, int]]:
-    """按「条件链 → 排序 → 取前 N」产出每个调仓日的成分。"""
+    """按「条件链 → 排序段（可带 keep_pct）→ 取前 N」产出每个调仓日的成分。"""
     cond_panels = [(c, panels.values(c['field'], days)) for c in rule['conditions']]
-    sort_panel = panels.values(rule['sort']['field'], days)
-    descending = rule['sort']['direction'] == 'desc'
+    grouped = any(c['operand'].get('group') == 'industry' for c in rule['conditions'])
+    industry_panel = panels.values('industry', days) if grouped else {}
+    stages = rule['sort'] if isinstance(rule['sort'], list) else [rule['sort']]
+    stage_panels = [panels.values(stage['field'], days) for stage in stages]
     top_n = int(rule['top_n'])
     skip: Counter[str] = Counter()
     path: Dict[date, List[str]] = {}
@@ -87,18 +135,18 @@ def select_members(ctx: compute.Context, panels: FieldPanels, rule: Dict[str, An
         for cond, panel in cond_panels:
             values = panel.get(day, {})
             operand = cond['operand']
-            threshold = None
             if operand['type'] == 'quantile':
-                pool = [values[c] for c in keep
-                        if c in values and math.isfinite(values[c])]
-                if not pool:
+                result = _quantile_keep(keep, values, cond['op'], operand,
+                                        industry_panel.get(day, {}) if grouped else {})
+                if result is None:
                     skip[f'{cond["field"]}:no_value'] += 1
                     keep = set()
                     break
-                threshold = float(np.quantile(np.asarray(pool, dtype=float), operand['q']))
+                dropped_missing += len(keep) - len(result)
+                keep = result
+                continue
             before = len(keep)
-            keep = {c for c in keep
-                    if _passes(values.get(c), cond['op'], operand, threshold)}
+            keep = {c for c in keep if _passes(values.get(c), cond['op'], operand)}
             dropped_missing += before - len(keep)
         if not keep:
             skip['empty_after_conditions'] += 1
@@ -106,18 +154,15 @@ def select_members(ctx: compute.Context, panels: FieldPanels, rule: Dict[str, An
         if dropped_missing:
             skip['missing_value'] += dropped_missing
 
-        sort_values = sort_panel.get(day, {})
-        ranked = [(c, sort_values[c]) for c in keep
-                  if c in sort_values and math.isfinite(sort_values[c])]
-        if not ranked:
-            skip['sort_field_missing'] += 1
-            continue
-        # 同值按代码升序打破平局，保证跨进程结果一致
-        if descending:
-            ranked.sort(key=lambda kv: (-kv[1], kv[0]))
-        else:
-            ranked.sort(key=lambda kv: (kv[1], kv[0]))
-        path[day] = [code for code, _ in ranked[:top_n]]
+        codes = list(keep)
+        for i, stage in enumerate(stages):
+            codes = _apply_stage(codes, stage_panels[i].get(day, {}), stage,
+                                 i == len(stages) - 1, top_n)
+            if codes is None:
+                skip['sort_field_missing'] += 1
+                break
+        if codes:
+            path[day] = codes
 
     sizes = sorted(len(v) for v in path.values())
     if sizes:
@@ -441,7 +486,8 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         return _empty('行情为空：契约预筛后没有可用标的', rule)
 
     calendar, month_ends, prev_day = compute.build_calendar(data)
-    days = compute.rebalance_days(month_ends, 'monthly',
+    frequency = rule['rebalance']['frequency']
+    days = compute.rebalance_days(month_ends, frequency,
                                   date.fromisoformat(rule['period']['start']))
     if not days:
         return _empty('调仓日为空：检查区间与本地行情覆盖', rule)
@@ -495,8 +541,8 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'leg_curves': [],
         'positions': positions,
         'valuation': _valuation(curve, data, positions),
-        'plan_note': f'月频调仓 {len(path)} 次，成分中位 '
-                     f'{metrics["members_median"]} 只',
+        'plan_note': f'{"月频" if frequency == "monthly" else "半年频"}调仓 {len(path)} 次，'
+                     f'成分中位 {metrics["members_median"]} 只',
         'period_effective': _period_effective(rule, metrics, calendar),
     }
     payload.update(_curve_payload(curve, bench, rule))

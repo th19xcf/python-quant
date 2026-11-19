@@ -23,7 +23,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .fields import FIELDS, OPERATORS, QUANTILE_OPERATORS, FieldSpec
+from .fields import FIELDS, NON_NUMERIC_FIELDS, OPERATORS, QUANTILE_OPERATORS, FieldSpec
 
 RULE_VERSION = 'strategy_lab/v1'
 RULES_DIR = Path(__file__).resolve().parents[3] / 'config' / 'strategy_lab' / 'rules'
@@ -51,8 +51,8 @@ DEFAULT_PORTFOLIO: Dict[str, Any] = {
 }
 #: 既有可选基准（本地指数行情齐全的宽基）
 BENCHMARKS: Dict[str, str] = {'000300.SH': '沪深300'}
-#: 最小版只开放月频；结构与既有 spec 对齐，后续扩展不改字段名
-REBALANCE_FREQUENCIES = ('monthly',)
+#: 月频与半年频（6/12 月最后一个交易日）
+REBALANCE_FREQUENCIES = ('monthly', 'semi')
 #: 最小版执行口径：信号日收盘生成，下一交易日开盘成交
 EXECUTION_SPEC = {'price': 'next_open', 'delay_days': 1}
 SIGNAL_KINDS = {'ma_ratio': '收盘价/均线', 'momentum': 'N日动量', 'drawdown': 'N日回撤'}
@@ -146,6 +146,8 @@ def _condition(item: Any, index: int) -> Dict[str, Any]:
         raise RuleError(f'{where} 必须是对象')
     _reject_unknown(item, {'field', 'op', 'operand'}, where)
     spec = _field(item.get('field'), f'{where}.field')
+    if spec.key in NON_NUMERIC_FIELDS:
+        raise RuleError(f'{where}.field 字段 {spec.key!r} 只用于分组，不能作为条件字段')
     op = item.get('op')
     if op not in OPERATORS:
         raise RuleError(f"{where}.op 必须是 {list(OPERATORS)} 之一，收到 {op!r}")
@@ -166,7 +168,7 @@ def _condition(item: Any, index: int) -> Dict[str, Any]:
             out = {'type': 'value',
                    'value': _number(operand.get('value'), f'{where}.operand.value')}
     elif kind == 'quantile':
-        _reject_unknown(operand, {'type', 'q'}, f'{where}.operand')
+        _reject_unknown(operand, {'type', 'q', 'group'}, f'{where}.operand')
         if op not in QUANTILE_OPERATORS:
             raise RuleError(
                 f'{where} 运算符 {op!r} 不能与分位组合；分位只允许 {list(QUANTILE_OPERATORS)}')
@@ -174,28 +176,57 @@ def _condition(item: Any, index: int) -> Dict[str, Any]:
         if not (0.0 < q < 1.0):
             raise RuleError(f'{where} 分位 q={q} 越界，必须在 (0, 1) 内')
         out = {'type': 'quantile', 'q': q}
+        if 'group' in operand:
+            group = operand['group']
+            if group != 'industry':
+                raise RuleError(f"{where}.operand.group 只支持 'industry'，收到 {group!r}")
+            out['group'] = group
     else:
         raise RuleError(f"{where}.operand.type 必须是 'value' 或 'quantile'，收到 {kind!r}")
     return {'field': spec.key, 'op': op, 'operand': out}
 
 
-def _validate_sort(raw: Any) -> Dict[str, str]:
-    if not isinstance(raw, dict):
-        raise RuleError('sort 必须是对象（排序字段与方向）')
-    _reject_unknown(raw, {'field', 'direction'}, 'sort')
-    spec = _field(_require(raw, 'field', 'sort'), 'sort.field')
-    direction = _require(raw, 'direction', 'sort')
-    if direction not in ('asc', 'desc'):
-        raise RuleError(f"sort.direction 必须是 'asc' 或 'desc'，收到 {direction!r}")
-    return {'field': spec.key, 'direction': direction}
+def _validate_sort(raw: Any) -> List[Dict[str, Any]]:
+    """排序段：兼容单对象（等价一段）与 1~2 段数组，统一规范化为数组。
+
+    非末段可带 ``keep_pct``（在当前保留池内按该字段保留前 x%），末段按该字段
+    排序后取 ``top_n``；非数值字段（如 ``industry``）不能用于排序。
+    """
+    items = raw if isinstance(raw, list) else [raw]
+    if not items or len(items) > 2:
+        raise RuleError(f'sort 必须是排序对象或 1~2 段数组，收到 {raw!r}')
+    stages: List[Dict[str, Any]] = []
+    for i, item in enumerate(items):
+        where = f'sort[{i}]' if isinstance(raw, list) else 'sort'
+        if not isinstance(item, dict):
+            raise RuleError(f'{where} 必须是对象（排序字段与方向）')
+        _reject_unknown(item, {'field', 'direction', 'keep_pct'}, where)
+        spec = _field(_require(item, 'field', where), f'{where}.field')
+        if spec.key in NON_NUMERIC_FIELDS:
+            raise RuleError(f'{where}.field 字段 {spec.key!r} 只用于分组，不能用于排序')
+        direction = _require(item, 'direction', where)
+        if direction not in ('asc', 'desc'):
+            raise RuleError(f"{where}.direction 必须是 'asc' 或 'desc'，收到 {direction!r}")
+        stage: Dict[str, Any] = {'field': spec.key, 'direction': direction}
+        if 'keep_pct' in item:
+            if i == len(items) - 1:
+                raise RuleError(f'{where}.keep_pct 只能用于非末段（末段按排序取前 N）')
+            keep = _number(item['keep_pct'], f'{where}.keep_pct')
+            if not (0.0 < keep <= 1.0):
+                raise RuleError(f'{where}.keep_pct 必须在 (0, 1] 内，收到 {keep}')
+            stage['keep_pct'] = keep
+        stages.append(stage)
+    return stages
 
 
-def _validate_rebalance(raw: Any) -> None:
+def _validate_rebalance(raw: Any) -> Dict[str, str]:
     if not isinstance(raw, dict):
         raise RuleError('rebalance 必须是对象')
     _reject_unknown(raw, {'frequency'}, 'rebalance')
-    if raw.get('frequency') not in REBALANCE_FREQUENCIES:
-        raise RuleError(f'最小版只支持月频（{list(REBALANCE_FREQUENCIES)}）')
+    freq = raw.get('frequency')
+    if freq not in REBALANCE_FREQUENCIES:
+        raise RuleError(f'只支持月频与半年频（{list(REBALANCE_FREQUENCIES)}），收到 {freq!r}')
+    return {'frequency': freq}
 
 
 def _validate_period(raw: Any) -> Dict[str, str]:
@@ -274,7 +305,6 @@ def _validate_stock_select(raw: Dict[str, Any]) -> Dict[str, Any]:
     _reject_unknown(universe, {'mode'}, 'universe')
     if universe.get('mode') != 'all_market':
         raise RuleError("最小版股票池只支持 {'mode': 'all_market'}（全市场洁净集）")
-    _validate_rebalance(raw.get('rebalance', {'frequency': 'monthly'}))
     top_n = raw.get('top_n')
     if isinstance(top_n, bool) or not isinstance(top_n, int) or not (1 <= top_n <= _MAX_TOP_N):
         raise RuleError(f'top_n 必须是 1~{_MAX_TOP_N} 的整数，收到 {top_n!r}')
@@ -283,7 +313,7 @@ def _validate_stock_select(raw: Dict[str, Any]) -> Dict[str, Any]:
         'conditions': _validate_conditions(raw.get('conditions', [])),
         'sort': _validate_sort(_require(raw, 'sort', '规则')),
         'top_n': top_n,
-        'rebalance': {'frequency': 'monthly'},
+        'rebalance': _validate_rebalance(raw.get('rebalance', {'frequency': 'monthly'})),
     }
 
 
@@ -622,15 +652,24 @@ def _stock_text(rule: Dict[str, Any]) -> str:
             if operand['type'] == 'quantile':
                 side = (f'后 {operand["q"]:.0%} 分位' if c['op'] in ('<', '<=')
                         else f'前 {operand["q"]:.0%} 分位')
-                conds.append(f'{label} {OPERATORS[c["op"]]}{side}')
+                scope = '行业内' if operand.get('group') == 'industry' else ''
+                conds.append(f'{label} {scope}{OPERATORS[c["op"]]}{side}')
             else:
                 conds.append(f'{label} {OPERATORS[c["op"]]} {_operand_text(operand)}')
         parts.append('条件=' + ' 且 '.join(conds))
     else:
         parts.append('条件=无（全市场按排序取前 N）')
-    direction = '降序' if rule['sort']['direction'] == 'desc' else '升序'
-    parts.append(f'排序={FIELDS[rule["sort"]["field"]].label} {direction}，取前 {rule["top_n"]} 只')
-    parts.append('调仓=月频')
+    stages = rule['sort'] if isinstance(rule['sort'], list) else [rule['sort']]
+    segments = []
+    for stage in stages:
+        direction = '降序' if stage['direction'] == 'desc' else '升序'
+        segment = f'{FIELDS[stage["field"]].label} {direction}'
+        if 'keep_pct' in stage:
+            segment += f'保留前 {stage["keep_pct"]:.0%}'
+        segments.append(segment)
+    parts.append(f'排序={" → ".join(segments)}，取前 {rule["top_n"]} 只')
+    freq = rule.get('rebalance', {}).get('frequency', 'monthly')
+    parts.append('调仓=月频' if freq == 'monthly' else '调仓=半年频（6、12 月最后交易日）')
     return '；'.join(parts + _common_text(rule))
 
 

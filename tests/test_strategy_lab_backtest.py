@@ -88,3 +88,28 @@ def test_passes_between_inclusive():
     assert _passes(3.0, 'between', operand)
     assert not _passes(3.1, 'between', operand)
     assert not _passes(None, 'between', operand)
+
+
+def test_quantile_by_industry_uses_group_thresholds():
+    panels = FakePanels({
+        'industry': {DAY: {'A.SZ': '银行', 'B.SZ': '银行', 'C.SZ': '医药', 'D.SZ': '医药'}},
+        'vol_60': {DAY: {'A.SZ': 0.1, 'B.SZ': 0.2, 'C.SZ': 0.9, 'D.SZ': 0.8}},
+        'ep': {DAY: {'A.SZ': 1.0, 'B.SZ': 4.0, 'C.SZ': 3.0, 'D.SZ': 2.0}},
+    })
+    rule = _rule(conditions=[{'field': 'vol_60', 'op': '<=',
+                              'operand': {'type': 'quantile', 'q': 0.5,
+                                          'group': 'industry'}}], top_n=10)
+    path, _ = select_members(_ctx(), panels, rule, DAYS)
+    # 银行组阈值 0.15 只留 A；医药组阈值 0.85 只留 D
+    assert set(path[DAY]) == {'A.SZ', 'D.SZ'}
+
+
+def test_two_stage_sort_with_keep_pct():
+    panels = FakePanels({
+        'vq_value': {DAY: {'A.SZ': 0.9, 'B.SZ': 0.8, 'C.SZ': 0.7, 'D.SZ': 0.6}},
+        'ep': {DAY: {'A.SZ': 1.0, 'B.SZ': 5.0, 'C.SZ': 9.0, 'D.SZ': 0.0}},
+    })
+    rule = _rule(sort=[{'field': 'vq_value', 'direction': 'desc', 'keep_pct': 0.5},
+                       {'field': 'ep', 'direction': 'desc'}], top_n=10)
+    path, _ = select_members(_ctx(), panels, rule, DAYS)
+    assert path[DAY] == ['B.SZ', 'A.SZ']
