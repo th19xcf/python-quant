@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QTabBar,
 )
 
 # 左侧导航栏两套主题的取色表：两端同时维护，避免只改深色导致浅色不一致
@@ -152,38 +153,70 @@ def scrollbar_qss(dark: bool = True) -> str:
 
 
 def tabbar_qss(dark: bool = True) -> str:
-    """顶部标签栏选中态（唯一一处定义）：底色、文字色、上圆角拉开选中/未选中差距。
+    """已停用：改用 :class:`TabHighlightStyle` 只接管绘制。
 
-    只改颜色与圆角，不设 padding / margin / border / font-weight：
-    这些属性会参与 QTabBar 的 sizeHint 计算，导致选中时标签宽度或行高跳变、
-    甚至把标签文字挤到滚动按钮里。选中态与内容区之间不加下边框，
-    用强调色底块收口，避免出现悬空感。
+    保留空实现是为了不打断既有导入；返回空串，确保不向 QTabBar::tab
+    写任何 QSS（一行也会让 QTabBar 改用样式表度量、padding 归零，
+    导致标签互相贴住）。
     """
-    c = _colors(dark)
-    return f"""
-    QTabBar#mainTabBar {{
-        background: transparent;
-    }}
-    QTabBar#mainTabBar::tab {{
-        background: transparent;
-        color: {c['text_secondary'].name()};
-        border-top-left-radius: 4px;
-        border-top-right-radius: 4px;
-    }}
-    QTabBar#mainTabBar::tab:hover {{
-        background-color: {_rgba(c['hover_bg'])};
-        color: {c['text_primary'].name()};
-    }}
-    QTabBar#mainTabBar::tab:selected {{
-        background-color: {_rgba(c['tab_selected_bg'])};
-        color: {c['accent'].name()};
-    }}
-    """
+    return ""
 
 
 def app_qss(dark: bool = True) -> str:
-    """应用级样式总入口：滚动条 + 顶部标签栏，供 set_*_theme 一次挂载。"""
-    return scrollbar_qss(dark) + tabbar_qss(dark)
+    """应用级样式总入口：只挂滚动条。
+
+    标签栏不使用 QSS：只要给 ``QTabBar::tab`` 写一行样式，Qt 就改用样式表
+    度量（padding/margin 归零），标签会缩窄贴在一起。选中态改由
+    :class:`HighlightTabBar` 叠加绘制，尺寸与间距全部沿用原生。
+    """
+    return scrollbar_qss(dark)
+
+
+class HighlightTabBar(QTabBar):
+    """顶部标签栏：在原生外观之上只给选中标签加强调色下划线，不改几何。
+
+    不写 QSS、不改 sizeHint、不改 elide / expanding 设置，tabRect 宽度、
+    间距与文字位置与改动前完全一致；切换选中时只刷新每页文字色。
+    """
+
+    def __init__(self, parent=None, dark: bool = True):
+        super().__init__(parent)
+        self._colors = _colors(dark)
+        self.currentChanged.connect(self._refresh_colors)
+        self._refresh_colors(self.currentIndex())
+
+    def set_dark(self, dark: bool) -> None:
+        """主题切换后同步取色（深/浅两套强调色）。"""
+        self._colors = _colors(dark)
+        self._refresh_colors(self.currentIndex())
+        self.update()
+
+    def tabInserted(self, index: int) -> None:
+        """标签是建窗后才逐个加入的，插入后立刻按当前页刷新文字色。"""
+        super().tabInserted(index)
+        self._refresh_colors(self.currentIndex())
+
+    def _refresh_colors(self, index: int) -> None:
+        accent = self._colors['accent']
+        for i in range(self.count()):
+            self.setTabTextColor(i, accent if i == index else QColor())
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        index = self.currentIndex()
+        if index < 0:
+            return
+        rect = self.tabRect(index)
+        if rect.isNull():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._colors['accent'])
+        bar_w = max(8.0, rect.width() - 8.0)
+        painter.drawRoundedRect(QRectF(rect.left() + (rect.width() - bar_w) / 2,
+                                       rect.bottom() - 2.0, bar_w, 2.5), 1.25, 1.25)
+        painter.end()
 
 
 class SidebarItemDelegate(QStyledItemDelegate):

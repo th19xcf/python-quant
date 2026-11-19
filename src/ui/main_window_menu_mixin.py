@@ -9,10 +9,10 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
-    QTabBar,
     QWidget,
 )
 
+from src.ui.theme_manager import HighlightTabBar, is_dark_palette
 from src.utils.logger import logger
 
 
@@ -267,7 +267,7 @@ class MainWindowMenuMixin:
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tool_bar.addWidget(spacer)
 
-        self.tab_bar = QTabBar()
+        self.tab_bar = HighlightTabBar(dark=is_dark_palette())
         self.tab_bar.setObjectName("mainTabBar")
         # 与改前 QTabWidget 内部标签栏一致：不撑满、不画基线、不省略文字；
         # 放不下时由 Qt 默认滚动按钮处理，不会挤压左侧工具栏控件。
