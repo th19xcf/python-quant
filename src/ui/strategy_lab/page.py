@@ -19,7 +19,6 @@ from PySide6.QtCore import QDate, QEvent, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QApplication,
     QComboBox,
     QDateEdit,
     QDialog,
@@ -105,20 +104,15 @@ QLabel#slSubtitle, QLabel#slStatus, QLabel#slNotes {{
     color: {palette.muted};
 }}
 QLabel#slStatus {{
-    /* 中文小字首墨迹贴顶看起来像被裁，留 3px 上内边距（原用 setContentsMargins，
-       但显式 contentsMargins 会让 QSS padding 整体失效，这里统一改用 QSS）。 */
-    padding: 3px 0 0 0;
+    /* 无底色、无边框：三态只差文字与颜色。左右各留 14px，文字不贴块边缘；
+       竖向不留 padding，由 AlignVCenter 在 40px 块内居中，文字视觉中心与
+       左侧标题文字中心落在同一条水平中心线上。 */
+    padding: 0 14px;
+    background: transparent;
+    border: none;
 }}
 QLabel#slStatus[state="running"] {{
-    font-size: {tokens.font_small + 2}px;
-    font-weight: 700;
     color: {palette.hold};
-    background: {palette.hold_soft};
-    border-radius: {tokens.radius_sm}px;
-    /* 左右留出 14px 空隙，文字不再贴圆角块边缘。竖向墨迹到上下边缘的距离由块高
-       决定（块被页头行高 32px 撑满，文字居中时 =(块高-行高)/2，与 padding 无关，
-       页头 58px 又不能长高），故竖向只取 4px 保留余量，避免行高较大时把文字挤压裁切。 */
-    padding: 4px 14px;
 }}
 QLabel#slSectionTitle {{
     font-size: {tokens.font_section}px;
@@ -533,32 +527,32 @@ class StrategyLabPage(QWidget):
         title_block.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
         title_box = QVBoxLayout(title_block)
         title_box.setContentsMargins(0, 0, 0, 0)
-        # 原副标题占的第二行已删除；标题下补一个弹簧，让标题仍贴在 40px 行高顶部，
-        # 保持删除前的垂直位置（否则单控件会被拉满整行、文字整体下移约 10px）。
+        # 标题标签占满 40px 页头行，由 QLabel 自身垂直居中文字：与右侧状态块
+        # （同样占满 40px、AlignVCenter）的文字中心落在同一条水平中心线上。
         title = QLabel('策略试算')
         title.setObjectName('slTitle')
         title_box.addWidget(title)
-        title_box.addStretch(1)
         self.title_label = title
         top_row.addWidget(title_block)
         # 说明块紧跟标题块右侧 24px 起排、右侧停在按钮列左缘前 16px；
         # 宽度由 _sync_status_max_width 按标题块 sizeHint 与按钮列左缘实测算出。
         top_row.addSpacing(24)
-        # 说明块放页头右侧空白区：文字左对齐、贴顶部，宽度按可用区域自适应并折行。
+        # 说明块放页头右侧空白区：文字左对齐、垂直居中，宽度按可用区域自适应并折行。
         self.status_label = QLabel('选择规则后点击「运行试算」')
         self.status_label.setObjectName('slStatus')
         self.status_label.setWordWrap(True)
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self.status_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         # 横向 Ignored + 只设最大宽：说明块铺满标题行剩余宽度，但不参与页面最小宽
         # 计算。若用固定宽，页面最小宽会被顶到接近当前宽，窗口宽度来回抖动且在
         # 窄档退不下去（离屏实测 1553 档最小宽 1535、1176 档回不去）。
         self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.status_label.setMinimumWidth(240)
-        # 状态块自身定高 40px（页头行高随之 40），文字在块内垂直居中后上下各约 13px 留白；
-        # 页头总高仍由 splitter 位置锁在 58px，标题块保持贴顶，位置不变。
+        # 状态块自身定高 40px（页头行高随之 40），文字在其中垂直居中，与左侧标题
+        # 文字共用同一条水平中心线；页头总高仍由 splitter 位置锁在 58px。
         self.status_label.setFixedHeight(40)
-        # 上边距改由 QSS 的 padding-top 提供：显式 setContentsMargins 会让 QSS padding
-        # 整体失效（实测 padding 设 14px 后文字仍贴左边缘），故此处不再设 contentsMargins。
+        # 左右内边距由 QSS 的 padding 提供：显式 setContentsMargins 会让 QSS padding
+        # 整体失效（实测 padding 设 14px 后文字仍贴左边缘），故此处不设 contentsMargins。
         top_row.addWidget(self.status_label, 1)
         header.addLayout(top_row)
         root.addLayout(header)
@@ -648,24 +642,15 @@ class StrategyLabPage(QWidget):
         return card
 
     def _set_status_state(self, running: bool) -> None:
-        """切换状态提示的高亮态；跑完必须复位，避免残留底色。
+        """切换状态提示的颜色态；跑完必须复位，避免残留高亮色。
 
-        running 态标签会被拉满页头行高（行高由左侧标题块决定，比小字文本高），
-        此时改用 AlignVCenter 让文字在整块底色内垂直居中；平时文字贴顶。内边距全部
-        交给 QSS 的 padding，这里不设 contentsMargins（显式 margins 会让 padding 失效）。
+        三态只改文字颜色：不加底色、不加边框，字号与字重一致，文字恒为
+        AlignVCenter 并与左侧标题文字共用同一条水平中心线。padding 各态相同，
+        切换后无需重算 contentsMargins。
         """
         self.status_label.setProperty('state', 'running' if running else '')
-        if running:
-            self.status_label.setAlignment(
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        else:
-            self.status_label.setAlignment(
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
-        # 只做 unpolish/polish 不会重算 QSS padding 映射出的 contentsMargins（实测 state
-        # 切换后仍为旧值 0,3），补发一次 StyleChange 事件才会按新 state 重新取 padding。
-        QApplication.sendEvent(self.status_label, QEvent(QEvent.Type.StyleChange))
         self.status_label.update()
 
     def _sync_status_max_width(self) -> None:
