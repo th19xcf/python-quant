@@ -15,6 +15,8 @@
     python tools/build_sw_industry_index.py --stage-only   # 只构建候选并对拍
     python tools/build_sw_industry_index.py --promote      # 对拍通过后原子替换 + 回填 meta
     python tools/build_sw_industry_index.py --re-pull      # 源端补齐后追加新日期
+    python tools/build_sw_industry_index.py --re-pull --store-root ... \
+        --stage-dir <仓库 _staging 下> --summary-json ...   # 日更第 8 步调用
 """
 
 from __future__ import annotations
@@ -73,12 +75,13 @@ def _get(url: str, params: dict, tries: int = 3) -> dict:
     last = None
     for i in range(tries):
         try:
-            r = requests.get(url, params=params, headers=HEADERS, verify=False, timeout=60)
+            r = requests.get(url, params=params, headers=HEADERS, verify=False,  # noqa: S501
+                             timeout=60)
             if r.status_code != 200:
                 last = f'HTTP {r.status_code}'
             else:
                 return r.json()
-        except Exception as exc:  # 传输层失败（非 JSON / 超时）一律当故障
+        except Exception as exc:  # noqa: BLE001  传输层失败（非 JSON / 超时）一律当故障
             last = f'{type(exc).__name__}: {exc}'
         time.sleep(1.5 * (i + 1))
     raise RuntimeError(f'{url} {params} 三次失败，最后一次 {last}')
@@ -146,6 +149,20 @@ def fetch_analysis(day: str) -> dict[str, dict]:
 def local_calendar() -> list[date]:
     cal = pl.read_parquet(QUOTES_INDEX / '000001.SH.parquet', columns=['date'])
     return sorted(cal['date'].to_list())
+
+
+def tail_gap_for(last_date: date, cal: list[date]) -> dict:
+    """单只指数的尾部缺口（本地交易日历里晚于其末根的日期，不伪造 OHLC）。"""
+    dates = [d.isoformat() for d in cal if d > last_date]
+    return {
+        'start': dates[0] if dates else None,
+        'end': dates[-1] if dates else None,
+        'rows': len(dates),
+        'dates': dates,
+        'reason': '源端 trend 接口 OHLC 只更新到此为止；analysis 端点虽有收盘但无 open/high/low，'
+                  '不伪造缺失 OHLC',
+        're_pull': 'python tools/build_sw_industry_index.py --re-pull',
+    }
 
 
 def verify(frames: dict[str, pl.DataFrame], raw: dict[str, list[dict]],
@@ -330,22 +347,36 @@ def update_index_basic(frames: dict[str, pl.DataFrame], stage: Path) -> dict:
 
 
 def main(argv=None) -> int:
+    global STORE, QUOTES_INDEX, META
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--stage-only', action='store_true', help='只构建候选并对拍，不写正式库')
     ap.add_argument('--promote', action='store_true', help='对拍通过后原子替换并回填 meta')
     ap.add_argument('--re-pull', action='store_true', help='幂等续跑：只追加库内没有的新日期')
     ap.add_argument('--pause', type=float, default=0.3, help='请求间隔秒（单连接串行）')
+    ap.add_argument('--store-root', default=None,
+                    help='local_store 根（缺省 data/local_store；日更入口显式传入）')
+    ap.add_argument('--stage-dir', default=None,
+                    help='候选与报告目录（缺省 <store>/_staging/sw_index_<日期>；'
+                         '日更入口改放仓库 _staging/，避免被 manifest 增量清点计入）')
+    ap.add_argument('--summary-json', default=None,
+                    help='apply 汇总落盘路径（供日更入口解析新增行数与 tail_gap）')
     args = ap.parse_args(argv)
     if not (args.stage_only or args.promote or args.re_pull):
         ap.error('至少指定 --stage-only / --promote / --re-pull 之一')
 
+    if args.store_root:
+        STORE = Path(args.store_root).resolve()
+        QUOTES_INDEX = STORE / 'quotes' / 'index' / 'sh'
+        META = STORE / 'meta'
+
     stamp = datetime.now().strftime('%Y%m%d')
-    stage = STORE / '_staging' / f'sw_index_{stamp}'
+    stage = (Path(args.stage_dir).resolve() if args.stage_dir
+             else STORE / '_staging' / f'sw_index_{stamp}')
     stage.mkdir(parents=True, exist_ok=True)
 
     raw = {c: fetch_trend(c, args.pause) for c in ROSTER}
     frames = {c: to_frame(c, raw[c]) for c in ROSTER}
-    missing_roster = [c for c in ROSTER if frames[c].is_empty()]
+    missing_roster = [f'{c} {ROSTER[c]}' for c in ROSTER if frames[c].is_empty()]
     if missing_roster:
         raise SystemExit(f'以下代码无数据（按失败处理）：{missing_roster}')
 
@@ -358,20 +389,9 @@ def main(argv=None) -> int:
     last_cal = cal[-1]
     rep = verify(frames, raw, cal)
 
-    # 尾部缺口（源端 OHLC 落后本地日历）
-    tail_dates = []
-    for c, df in frames.items():
-        d1 = df['date'][-1]
-        tail_dates = [d.isoformat() for d in cal if d > d1]
-    tail_gap = {
-        'start': tail_dates[0] if tail_dates else None,
-        'end': tail_dates[-1] if tail_dates else None,
-        'rows': len(tail_dates),
-        'dates': tail_dates,
-        'reason': '源端 trend 接口 OHLC 只更新到此为止；analysis 端点虽有收盘但无 open/high/low，'
-                  '不伪造缺失 OHLC',
-        're_pull': 'python tools/build_sw_industry_index.py --re-pull',
-    }
+    # 尾部缺口（源端 OHLC 落后本地日历）；汇总取各只中最早末根 → 最大缺口
+    source_last = min(df['date'][-1] for df in frames.values())
+    tail_gap = tail_gap_for(source_last, cal)
     rep['tail_gap'] = tail_gap
     rep['local_calendar_last'] = last_cal.isoformat()
     rep['stage'] = str(stage)
@@ -400,31 +420,59 @@ def main(argv=None) -> int:
     from src.data.local_store.store import LocalQuoteStore
     store = LocalQuoteStore(STORE)
     written = {}
+    added_rows = {}
+    final_rows = {}
+    local_last = None
     for c, df in frames.items():
         ts_code = f'{c}.SH'
         path = QUOTES_INDEX / f'{ts_code}.parquet'
+        final = df
+        added = df.height
         if args.re_pull and path.is_file():
             old = pl.read_parquet(path)
-            last_old = old['date'][-1]
-            add = df.filter(pl.col('date') > last_old)
-            if add.height == 0:
+            add = df.filter(pl.col('date') > old['date'][-1])
+            added = add.height
+            if added == 0:
+                # 只刷新侧车（tail_gap 随本地日历推进），正式 parquet 一字不动
+                write_sidecar(path, ts_code, old, tail_gap_for(old['date'][-1], cal))
                 written[ts_code] = 0
+                added_rows[ts_code] = 0
+                final_rows[ts_code] = old.height
+                local_last = max(local_last or old['date'][-1], old['date'][-1])
                 continue
-            merged = pl.concat([old, add.select(COLS)]).sort('date')
-            merged = merged.with_columns(
-                (pl.col('close') - pl.col('pre_close')).round(2).alias('change'))
-            merged = merged.with_columns(
-                pl.when(pl.col('pre_close') == 0).then(0.0)
-                .otherwise(pl.col('change') / pl.col('pre_close') * 100).alias('pct_chg'))
-            df = merged
-        rows = store.write_daily('index', ts_code, df)
-        write_sidecar(QUOTES_INDEX / f'{ts_code}.parquet', ts_code, df, tail_gap)
+            final = pl.concat([old, add.select(COLS)]).sort('date')
+            assert_quote_schema('index', final)
+        rows = store.write_daily('index', ts_code, final)
+        write_sidecar(path, ts_code, final, tail_gap_for(final['date'][-1], cal))
         written[ts_code] = rows
-    store.flush_meta()
-    ib = update_index_basic(frames, stage)
+        added_rows[ts_code] = added
+        final_rows[ts_code] = final.height
+        local_last = max(local_last or final['date'][-1], final['date'][-1])
+    if any(added_rows.values()):
+        store.flush_meta()
+    if not args.re_pull:
+        ib = update_index_basic(frames, stage)
+        print(f"index_basic {ib['rows_before']}->{ib['rows_after']}")
+
+    summary = {
+        'mode': 're-pull' if args.re_pull else 'promote',
+        'codes': len(ROSTER),
+        'added_rows': sum(added_rows.values()),
+        'codes_added': sum(1 for value in added_rows.values() if value),
+        'local_last': (local_last or source_last).isoformat(),
+        'source_last': source_last.isoformat(),
+        'tail_gap': tail_gap,
+        'rows_after': sum(final_rows.values()),
+        'generated_at': datetime.now().isoformat(timespec='seconds'),
+    }
+    if args.summary_json:
+        target = Path(args.summary_json)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(summary, ensure_ascii=False, indent=1),
+                          encoding='utf-8')
     print(f"promoted={sum(1 for v in written.values() if v)} "
           f"skipped={sum(1 for v in written.values() if not v)} "
-          f"index_basic {ib['rows_before']}->{ib['rows_after']}")
+          f"added_rows={summary['added_rows']} codes_added={summary['codes_added']}")
     return 0
 
 

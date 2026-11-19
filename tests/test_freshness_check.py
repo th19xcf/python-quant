@@ -378,6 +378,53 @@ def test_registered_stale_is_not_a_break(tmp_path):
     assert '已知停更 1 只' in row.detail
 
 
+def test_index_declared_source_lag_is_not_a_break(tmp_path):
+    """指数侧车声明的连续尾部缺口（源端只更新到此）属已知源端滞后，不计断裂。"""
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    _write_quotes_dir(store, 'index', ['801010.SH'])
+    _write_daily_index(store, [('600000.SH', 'stock', calendar[-1]),
+                               ('510300.SH', 'fund', calendar[-1]),
+                               ('000001.SH', 'index', calendar[-1]),
+                               ('801010.SH', 'index', calendar[-10])])
+    sidecar = store / 'quotes' / 'index' / 'sh' / '801010.SH.manifest.json'
+    sidecar.write_text(json.dumps(
+        {'tail_gap': {'start': calendar[-9].isoformat(),
+                      'end': calendar[-1].isoformat(), 'rows': 9}},
+        ensure_ascii=False), encoding='utf-8')
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'quotes/{stock,fund,index}')
+    assert row.verdict == 'ok'
+    assert row.gap == 0
+    assert '源端滞后 1 只' in row.detail
+
+
+def test_index_internal_hole_still_reported_as_break(tmp_path):
+    """tail_gap 起点不是本地末根的下一交易日（分片内部缺日）仍按断裂处理。"""
+    calendar = _biz_days(12)
+    store, calendar = _build_store(tmp_path, daily_end=calendar[-1],
+                                   coverage_end=calendar[-1], event_end=calendar[-1])
+    _write_quotes_dir(store, 'index', ['801010.SH'])
+    _write_daily_index(store, [('600000.SH', 'stock', calendar[-1]),
+                               ('510300.SH', 'fund', calendar[-1]),
+                               ('000001.SH', 'index', calendar[-1]),
+                               ('801010.SH', 'index', calendar[-10])])
+    sidecar = store / 'quotes' / 'index' / 'sh' / '801010.SH.manifest.json'
+    sidecar.write_text(json.dumps(
+        {'tail_gap': {'start': calendar[-8].isoformat(),
+                      'end': calendar[-1].isoformat(), 'rows': 8}},
+        ensure_ascii=False), encoding='utf-8')
+
+    report = fc.run_check(store, calendar=calendar, doc_path=_write_doc(tmp_path))
+
+    row = _row(report, 'quotes/{stock,fund,index}')
+    assert row.gap == 1
+    assert '未登记断裂 1 只' in row.detail
+
+
 def test_pool_stale_coverage_reports_warning(tmp_path):
     calendar = _biz_days(12)
     store, calendar = _build_store(tmp_path, daily_end=calendar[-1],

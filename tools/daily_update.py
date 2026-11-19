@@ -15,17 +15,20 @@
                        刷新后复验行情内嵌因子副本与快照逐行一致（个股/指数/基金）
      7. 分红日频增量    tools/refresh_dividend_daily.py（基金年度批量 + 个股近两报告期，
                        只追加/补缺并重建受影响标的因子；非致命，失败只告警）
-     8. ST 快照与区间表  src.data.risk_flags refresh + src.data.st_history build
-     9. 名录每日检查    src.main --update-fund / --update-index（有变更才落盘）
-    10. 估值增量        tools/collect_financials.py --only valuation --since auto
-    11. 市场宽度增量    src.data.services.breadth_service.refresh
-    12. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
-    13. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
-    14. 洁净集快照      python -m src.data.quality.clean_set build
-    15. 保鲜体检        src.data.quality.freshness_check --summary
-    16. 版本记录        src.data.data_version（失败只告警，不改数据）
-    17. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
-    18. 门禁            tools/daily_data_gate.py（必须在备份之后）
+     8. 申万行业指数    tools/build_sw_industry_index.py --re-pull（801xxx 段 31 只，幂等只追加；
+                       源端 OHLC 只到 2026-11-09，不追 T 日、不伪造，尾缺口记侧车 tail_gap；
+                       非致命，失败只告警）
+     9. ST 快照与区间表  src.data.risk_flags refresh + src.data.st_history build
+    10. 名录每日检查    src.main --update-fund / --update-index（有变更才落盘）
+    11. 估值增量        tools/collect_financials.py --only valuation --since auto
+    12. 市场宽度增量    src.data.services.breadth_service.refresh
+    13. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
+    14. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
+    15. 洁净集快照      python -m src.data.quality.clean_set build
+    16. 保鲜体检        src.data.quality.freshness_check --summary
+    17. 版本记录        src.data.data_version（失败只告警，不改数据）
+    18. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
+    19. 门禁            tools/daily_data_gate.py（必须在备份之后）
 
 口径与边界::
 
@@ -51,6 +54,9 @@
       合计），不代写数值；该件与磁盘的偏差按 WARN 打印实测差额。
     - 候选池是筛选结果（视图层），不承担数据完整性；被排除标的的行情/分红
       由保鲜体检的全集判据负责。
+    - 申万 801xxx 是「源端只更新到此为止」的已知滞后家族：本步只追加、不追
+      T 日；侧车 ``tail_gap`` 每次刷新（无新增也刷新），保鲜体检凭它判「已知
+      源端滞后」而不计断裂，源端补齐后自动恢复为正常判据。
     - 默认不打印各步过程日志，失败时才回显该步末尾输出；``--verbose`` 打开
       INFO/DEBUG 与子进程原样输出。
 
@@ -208,6 +214,7 @@ STEP_PLAN: tuple[tuple[str, str, bool], ...] = (
     ('fund_quote', '基金行情刷新（通达信本地增量）', True),
     ('factor', '复权因子刷新（个股 + 基金）', True),
     ('dividend', '分红日频增量（基金年度批量 + 个股近两报告期）', False),
+    ('sw_index', '申万行业指数增量（801xxx 只追加）', False),
     ('st', 'ST 快照与区间表', False),
     ('basic', '名录每日检查（fund / index）', False),
     ('valuation', '全市场估值增量', False),
@@ -1325,6 +1332,56 @@ def _step_dividend(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     return code == 0, f'{detail} | rc={code}'
 
 
+def _sw_index_paths(root: Path) -> set[str]:
+    """801xxx 分片的正式件与侧车（白名单用；只登记已存在的文件）。"""
+    out: set[str] = set()
+    for path in (root / 'quotes' / 'index' / 'sh').glob('801*.parquet'):
+        rel = path.relative_to(root).as_posix()
+        out.add(rel)
+        out.add(Path(rel).with_suffix('.manifest.json').as_posix())
+    return out
+
+
+def _step_sw_index(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    """申万一级行业指数增量（非致命）：只追加源端已有的新日期。
+
+    源端 trend 接口返回全历史，无区间参数；本步仍按「本地末根之后」筛选，
+    重复执行不产生重复行。口径不追 T 日：源端 OHLC 落后时记侧车 ``tail_gap``，
+    由保鲜体检按「已知源端滞后」放行，不判数据断裂。
+    """
+    if args.skip_sw_index:
+        return True, '已跳过（--skip-sw-index）'
+    if not args.allow_remote:
+        return True, '未允许联网，跳过（只告警）'
+    plan.expected.update(_sw_index_paths(plan.root))
+    stage = ROOT / '_staging' / f'sw_index_{plan.latest:%Y%m%d}'
+    summary_path = stage / 'summary.json'
+    try:
+        summary_path.unlink()
+    except OSError:
+        pass
+    code = _run_module(
+        [sys.executable, str(ROOT / 'tools' / 'build_sw_industry_index.py'),
+         '--re-pull', '--store-root', str(plan.root), '--stage-dir', str(stage),
+         '--summary-json', str(summary_path)], '申万行业指数增量')
+    if code != 0:
+        return False, f'rc={code}（非致命：只记录，不阻断后续步骤）'
+    try:
+        summary = json.loads(summary_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as exc:
+        return False, f'rc=0 但汇总不可读：{type(exc).__name__}'
+    gap = summary.get('tail_gap') or {}
+    added = int(summary.get('added_rows') or 0)
+    detail = (f'新增 {added:,} 行 / {int(summary.get("codes_added") or 0)} 只'
+              f' | 本地末日 {summary.get("local_last")}'
+              f' | tail_gap {gap.get("start") or "-"}~{gap.get("end") or "-"}'
+              f'（{int(gap.get("rows") or 0)} 个交易日）')
+    if added == 0:
+        detail = f'无新增（源端停在 {summary.get("source_last")}）| ' + detail
+    print(f'[日更] 申万行业指数增量 | {detail}')
+    return True, detail
+
+
 def _step_pool(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     line = _run_pool_refresh(plan, args)
     return '未完成' not in line, (line or '未到期/已跳过')
@@ -1386,6 +1443,7 @@ def _step_list(plan: _Plan, args: argparse.Namespace,
         'fund_quote': lambda: _step_fund_quotes(plan, args),
         'factor': lambda: _step_factors(plan, args),
         'dividend': lambda: _step_dividend(plan, args),
+        'sw_index': lambda: _step_sw_index(plan, args),
         'st': lambda: _step_st(plan, args),
         'basic': lambda: _step_basic(plan, args),
         'valuation': lambda: _run_valuation(plan, args),
@@ -1432,6 +1490,14 @@ def _dividend_skip_note(args: argparse.Namespace) -> str:
     return f'  ← 基金年度批量 + 个股近两报告期，增量窗口 {args.dividend_bootstrap_days} 天兜底'
 
 
+def _sw_index_skip_note(args: argparse.Namespace) -> str:
+    if args.skip_sw_index:
+        return '  ← 本轮跳过（--skip-sw-index）'
+    if not args.allow_remote:
+        return '  ← 本轮跳过（未加 --allow-remote）'
+    return '  ← 801xxx 只追加本地末根之后的日期，不追 T 日'
+
+
 def _skip_note(key: str, plan: _Plan, args: argparse.Namespace) -> str:
     if key == 'fill' and not args.allow_remote:
         return '  ← 本轮跳过（未加 --allow-remote）'
@@ -1456,6 +1522,8 @@ def _skip_note(key: str, plan: _Plan, args: argparse.Namespace) -> str:
         return f'  ← 个股 {stock_stale} 只 / 基金 {fund_stale} 只待增量重算'
     if key == 'dividend':
         return _dividend_skip_note(args)
+    if key == 'sw_index':
+        return _sw_index_skip_note(args)
     if key == 'valuation' and (args.skip_valuation or not args.allow_remote):
         return '  ← 本轮跳过'
     if key == 'st' and args.skip_st_refresh:
@@ -1539,6 +1607,8 @@ def main(argv: list[str] | None = None) -> int:
                         help='跳过分红日频增量（基金年度批量 + 个股近两报告期）')
     parser.add_argument('--dividend-bootstrap-days', type=int, default=30,
                         help='分红增量首次运行或断档时的回溯天数（默认 30，仅作窗口兜底）')
+    parser.add_argument('--skip-sw-index', action='store_true',
+                        help='跳过申万行业指数增量（801xxx 段，只追加不追 T 日）')
     parser.add_argument('--skip-valuation', action='store_true',
                         help='跳过全市场日频估值增量（collect_financials.py --only valuation）')
     parser.add_argument('--skip-basic-refresh', action='store_true',

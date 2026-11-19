@@ -10,8 +10,9 @@
 ========
 - **数据层（全集）**：``universe`` 口径对 ``quotes/{stock,fund,index}`` 里**每只
   有行情的标的**生效，不按候选池过滤；行情文件未进入 ``meta/daily_index.parquet``
-  或末根断裂且未登记 ``meta/universe/stale_status.parquet`` 都算缺口。被候选池
-  流动性规则排除的标的同样要有行情、估值、分红不中断的结论。
+  或末根断裂且未登记 ``meta/universe/stale_status.parquet`` 都算缺口。指数分片
+  侧车 ``tail_gap`` 声明的连续尾部缺口（源端 OHLC 只更新到该日）属已知源端滞后，
+  不计缺口。被候选池流动性规则排除的标的同样要有行情、估值、分红不中断的结论。
 - **表级**：``daily`` / ``event`` / ``coverage`` / ``base_info`` / ``valuation`` /
   ``st_watermark`` 逐表判，基准一律是全集行情末日。
 - **视图层**：``pool`` 只判候选池这个视图是否新鲜（覆盖末日滞后、池内标的是否
@@ -501,6 +502,34 @@ def universe_files(store_root: Path) -> dict[str, set[str]]:
     return out
 
 
+def _declared_source_lag(store_root: Path, kind: str, code: str, end: date,
+                         calendar: list[date]) -> bool:
+    """指数分片侧车声明「源端只更新到此」的尾部缺口 → 已知源端滞后，不计断裂。
+
+    仅对 ``index`` 生效，且要求 ``tail_gap.start`` 恰为本地末根的下一交易日：
+    这样只放行「连续尾部缺口」，分片内部缺日仍按断裂处理。源端补齐后
+    ``tail_gap`` 消失或起点前移，断裂判定自动恢复，无需人工注销。
+    """
+    if kind != 'index':
+        return False
+    sidecars = list((store_root / 'quotes' / kind).glob(f'*/{code}.manifest.json'))
+    if not sidecars:
+        return False
+    try:
+        payload = json.loads(sidecars[0].read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return False
+    gap = payload.get('tail_gap') if isinstance(payload, dict) else None
+    if not isinstance(gap, dict):
+        return False
+    try:
+        start = date.fromisoformat(str(gap.get('start'))[:10])
+    except (TypeError, ValueError):
+        return False
+    pos = bisect_right(calendar, end)
+    return pos < len(calendar) and calendar[pos] == start
+
+
 def _universe_row(store_root: Path, quotes_end_date: date,
                   calendar: list[date], files: dict[str, set[str]] | None = None
                   ) -> FreshnessRow:
@@ -510,7 +539,8 @@ def _universe_row(store_root: Path, quotes_end_date: date,
     - 行情文件未登记 ``meta/daily_index.parquet`` → 日更缺口计划看不到它，算缺口；
     - 末根落后超过 ``LAG_WARN_MAX`` 个交易日且未登记停更台账 → 数据断裂算缺口。
     已登记 ``meta/universe/stale_status.parquet`` 的停更（数据源无新增/退市）属已知
-    合法状态，只报数量、不计缺口。
+    合法状态，只报数量、不计缺口；指数分片侧车在 ``tail_gap`` 里声明的连续尾部
+    缺口（源端 OHLC 只更新到该日）同属已知源端滞后，也不计缺口。
     """
     counts: dict[str, int] = {}
     file_map = files if files is not None else universe_files(store_root)
@@ -540,11 +570,16 @@ def _universe_row(store_root: Path, quotes_end_date: date,
                        for row in stale.iter_rows(named=True) if row['is_stale']}
 
     breaks: list[tuple[str, str, date, int]] = []
+    source_lag: list[tuple[str, str, date, int]] = []
     for (kind, code), end in ends.items():
         if kind not in UNIVERSE_KINDS:
             continue
         lag = count_lag(calendar, end, quotes_end_date)
-        if lag is not None and lag > LAG_WARN_MAX and (kind, code) not in known_stale:
+        if lag is None or lag <= LAG_WARN_MAX or (kind, code) in known_stale:
+            continue
+        if _declared_source_lag(store_root, kind, code, end, calendar):
+            source_lag.append((kind, code, end, lag))
+        else:
             breaks.append((kind, code, end, lag))
     breaks.sort(key=lambda item: item[3], reverse=True)
 
@@ -553,6 +588,9 @@ def _universe_row(store_root: Path, quotes_end_date: date,
     detail = (f'全集 {total:,} 只（股票 {counts["stock"]:,} / 基金 {counts["fund"]:,} / '
               f'指数 {counts["index"]:,}）；已知停更 {len(known_stale):,} 只'
               f'（stale_status 登记，不计缺口）；未登记断裂 {len(breaks)} 只')
+    if source_lag:
+        detail += (f'；源端滞后 {len(source_lag)} 只（manifest tail_gap 声明，'
+                   f'不计缺口）')
     if not registered:
         detail += '；daily_index 不可读，跳过登记校验'
     if unregistered:
