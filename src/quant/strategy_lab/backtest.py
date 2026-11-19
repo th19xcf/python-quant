@@ -337,6 +337,30 @@ def _final_positions(result: Dict[str, Any]) -> Dict[str, float]:
             if float(qty) > 0}
 
 
+def _valuation(curve: List[Tuple[date, float]], data: Dict[str, Any],
+               positions: Dict[str, float]) -> Dict[str, Any]:
+    """估值日与收盘价：供「查看流水」弹窗算当前持仓的持有盈亏。
+
+    估值日取回测净值曲线最后一根 bar，收盘价取同一天的前复权收盘价（引擎
+    盯市用的同一列），只收录仍有持仓的标的；未持有的不输出，避免弹窗拿错价。
+    """
+    if not curve:
+        return {'date': None, 'close': {}}
+    last_day = curve[-1][0]
+    close: Dict[str, float] = {}
+    for code in positions:
+        frame = data.get(code)
+        if frame is None:
+            continue
+        prices = {d: float(c) for d, c in
+                  zip(frame['date'].to_list(), frame['close'].to_list(),
+                      strict=True)}
+        price = prices.get(last_day)
+        if price is not None and price > 0:
+            close[code] = price
+    return {'date': last_day.isoformat(), 'close': close}
+
+
 def _curve_payload(nav: List[Tuple[date, float]], bench: Dict[str, float],
                    rule: Dict[str, Any]) -> Dict[str, Any]:
     return {
@@ -445,6 +469,7 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
     bench = load_benchmark_close(rule['benchmark'])
     metrics = compute_metrics(result, rule, path, bench)
     curve, _ = _period_series(result, rule)
+    positions = _final_positions(result)
     markers: List[Dict[str, Any]] = []
     prev_weights: Dict[str, float] = {}
     for day, codes in sorted(path.items()):
@@ -468,7 +493,8 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'markers': markers,
         'trades': _trade_records(result, rule),
         'leg_curves': [],
-        'positions': _final_positions(result),
+        'positions': positions,
+        'valuation': _valuation(curve, data, positions),
         'plan_note': f'月频调仓 {len(path)} 次，成分中位 '
                      f'{metrics["members_median"]} 只',
         'period_effective': _period_effective(rule, metrics, calendar),
@@ -501,6 +527,7 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
     metrics = _scheduled_metrics(result, rule, bench, len(plan.markers))
     curve, _ = _period_series(result, rule)
     calendar = compute.build_calendar(plan.data)[0]
+    positions = _final_positions(result)
     payload = {
         'status': 'ok',
         'metrics': metrics,
@@ -514,7 +541,8 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'markers': plan.markers,
         'trades': _trade_records(result, rule),
         'leg_curves': plan.leg_curves,
-        'positions': _final_positions(result),
+        'positions': positions,
+        'valuation': _valuation(curve, engine_data, positions),
         'plan_note': plan.note,
         'period_effective': _period_effective(rule, metrics, calendar),
     }
