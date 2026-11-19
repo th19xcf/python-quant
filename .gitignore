@@ -205,6 +205,10 @@ research/events/data/**/*.parquet
 2026-11-12/
 2026-11-13/
 
+# 运行期工作目录（断点 progress/state、一次性实测脚本与日志、交接文件）：整体不入库，
+# 脚本入口在 tools/，历史产物归档在 _backup/work_archive_<日期>/
+/work/
+
 # 外部输入白名单镜像目录（只存在于备份仓库，存放 E:\www\tmp 被引用的子集，仅靠镜像保障）
 _external_inputs/
 
@@ -231,6 +235,3 @@ _external_inputs/
 /scripts/smoke_risk_filters.py
 /scripts/verify_advice_backtest.py
 /scripts/correct_stock_basic.py
-
-# 收尾提交消息临时文件（提交流程落在仓库根，不入库）
-/.commit_msg_tmp.txt
