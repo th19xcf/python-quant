@@ -727,7 +727,10 @@ class StrategyLabPage(QWidget):
         # 顶部齐平（原先标题独占整行，图表容器整体低 21px）。
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        # 右侧 14px 与卡片左内边距同宽：表格左框线到卡片左缘原本就有 14px
+        # （卡片布局左边距），而表格右框线此前直接顶在左列右缘（实测 0px），
+        # 两侧留白不对称。这里只补表格列的右侧留白，滚动条仍在表格框线内。
+        left_layout.setContentsMargins(0, 0, 14, 0)
         left_layout.setSpacing(8)
         left_layout.addWidget(section)
 
