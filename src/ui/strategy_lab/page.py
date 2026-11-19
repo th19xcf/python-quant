@@ -11,7 +11,6 @@
 """
 from __future__ import annotations
 
-from html import escape
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -20,6 +19,7 @@ from PySide6.QtCore import QDate, QEvent, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QDateEdit,
     QDialog,
@@ -104,13 +104,21 @@ QLabel#slSubtitle, QLabel#slStatus, QLabel#slNotes {{
     font-size: {tokens.font_small}px;
     color: {palette.muted};
 }}
+QLabel#slStatus {{
+    /* 中文小字首墨迹贴顶看起来像被裁，留 3px 上内边距（原用 setContentsMargins，
+       但显式 contentsMargins 会让 QSS padding 整体失效，这里统一改用 QSS）。 */
+    padding: 3px 0 0 0;
+}}
 QLabel#slStatus[state="running"] {{
     font-size: {tokens.font_small + 2}px;
     font-weight: 700;
     color: {palette.hold};
     background: {palette.hold_soft};
     border-radius: {tokens.radius_sm}px;
-    padding: 1px 8px;
+    /* 左右留出 14px 空隙，文字不再贴圆角块边缘。竖向墨迹到上下边缘的距离由块高
+       决定（块被页头行高 32px 撑满，文字居中时 =(块高-行高)/2，与 padding 无关，
+       页头 58px 又不能长高），故竖向只取 4px 保留余量，避免行高较大时把文字挤压裁切。 */
+    padding: 4px 14px;
 }}
 QLabel#slSectionTitle {{
     font-size: {tokens.font_section}px;
@@ -512,7 +520,9 @@ class StrategyLabPage(QWidget):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(12)
+        # 页头行高按 40px 状态块给，splitter 仍要停在 58px（14 上边距 + 40 行高 + 4 间距），
+        # 故根布局间距从 12 收到 4，页头以下所有控件位置不变。
+        root.setSpacing(4)
 
         header = QVBoxLayout()
         header.setSpacing(6)
@@ -546,9 +556,11 @@ class StrategyLabPage(QWidget):
         # 窄档退不下去（离屏实测 1553 档最小宽 1535、1176 档回不去）。
         self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.status_label.setMinimumWidth(240)
-        # QLabel 高度按字体的 ascent+descent 算，QSS 又没有内边距，首行字头正好
-        # 贴在 label 上边缘（离屏实测首墨迹行=0），中文小字看上去像被裁掉一截。
-        self.status_label.setContentsMargins(0, 3, 0, 0)
+        # 状态块自身定高 40px（页头行高随之 40），文字在块内垂直居中后上下各约 13px 留白；
+        # 页头总高仍由 splitter 位置锁在 58px，标题块保持贴顶，位置不变。
+        self.status_label.setFixedHeight(40)
+        # 上边距改由 QSS 的 padding-top 提供：显式 setContentsMargins 会让 QSS padding
+        # 整体失效（实测 padding 设 14px 后文字仍贴左边缘），故此处不再设 contentsMargins。
         top_row.addWidget(self.status_label, 1)
         header.addLayout(top_row)
         root.addLayout(header)
@@ -638,10 +650,24 @@ class StrategyLabPage(QWidget):
         return card
 
     def _set_status_state(self, running: bool) -> None:
-        """切换状态提示的高亮态；跑完必须复位，避免残留底色。"""
+        """切换状态提示的高亮态；跑完必须复位，避免残留底色。
+
+        running 态标签会被拉满页头行高（行高由左侧标题块决定，比小字文本高），
+        此时改用 AlignVCenter 让文字在整块底色内垂直居中；平时文字贴顶。内边距全部
+        交给 QSS 的 padding，这里不设 contentsMargins（显式 margins 会让 padding 失效）。
+        """
         self.status_label.setProperty('state', 'running' if running else '')
+        if running:
+            self.status_label.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        else:
+            self.status_label.setAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
+        # 只做 unpolish/polish 不会重算 QSS padding 映射出的 contentsMargins（实测 state
+        # 切换后仍为旧值 0,3），补发一次 StyleChange 事件才会按新 state 重新取 padding。
+        QApplication.sendEvent(self.status_label, QEvent(QEvent.Type.StyleChange))
         self.status_label.update()
 
     def _sync_status_max_width(self) -> None:
@@ -1012,43 +1038,11 @@ class StrategyLabPage(QWidget):
         self._plot_curves(payload.get('nav') or [], payload.get('benchmark_curve') or [])
         self._plot_drawdown(payload.get('drawdown') or [])
         self._plot_markers(payload.get('markers') or [])
-        hint = (payload.get('dividend_coverage') or {}).get('message') or ''
-        self._set_status_result(
-            f'{payload["rule_text"]}  用时 {payload["elapsed_seconds"]}s '
-            f'（引擎 {payload["engine_seconds"]}s，参与标的 {payload["used_codes"]} 只）'
-            + (f'  {hint}' if hint else '')
-            + self._period_hint_text(payload))
-
-    def _period_hint_text(self, payload: Dict[str, Any]) -> str:
-        """起点相关的两条提示：被前移到实际最早日、预热交易日不足。"""
-        period = payload.get('period_effective') or {}
-        start, requested = period.get('start'), period.get('requested_start')
-        parts: List[str] = []
-        if start and requested and start > requested:
-            parts.append(f'起点 {requested} 早于可用行情首日，已按实际最早日 {start} 起算')
-        prior = period.get('prior_trading_days')
-        if prior is not None and prior < 250:
-            parts.append(f'起点之前仅 {prior} 个交易日，滚动分位等信号可能不完整')
-        return ''.join(f'  {text}' for text in parts)
-
-    def _set_status_result(self, text: str) -> None:
-        """结果说明用富文本：只把规则名加粗上色，其余文字仍是正文样式与折行。
-
-        规则名带「」且固定出现在 rule_text 开头，按首次出现替换成带样式
-        片段；正文与名称的字号都显式写出，不依赖 QLabel 的 QSS 继承。
-        """
-        name = (self._rule or {}).get('name') or ''
-        body = escape(text)
-        marker = escape(f'「{name}」') if name else ''
-        if marker and marker in body:
-            body = body.replace(
-                marker,
-                f'<span style="font-size:{TOKENS.font_small + 1}px;'
-                f'font-weight:600;color:{self._pal.accent};">{marker}</span>',
-                1)
-        self.status_label.setText(
-            f'<span style="font-size:{TOKENS.font_small}px;'
-            f'color:{self._pal.muted};">{body}</span>')
+        # 试算成功不再往页头状态标签写规则摘要：规则全文已由页头下方的
+        # rule_text_label 展示（同一份 rule_text），页头重复一遍还会挤压说明块。
+        # 状态标签只在运行中 / 出错 / 保存提示时显示文字，成功时清空；标签定高
+        # 40px，清空只留空白，不参与布局伸缩，页头与画图区高度不受影响。
+        self.status_label.clear()
 
     def _fill_metrics(self, metrics: Dict[str, Any],
                       coverage_hint: str = '') -> None:
