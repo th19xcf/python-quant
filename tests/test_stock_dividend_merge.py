@@ -130,6 +130,92 @@ def test_duplicate_source_rows_deduped():
     assert stats['duplicate_source_rows'] == 1
 
 
+def _cninfo(cache_dir: Path, code: str, rows: list[tuple[date, float, float]]) -> None:
+    (cache_dir / 'cninfo').mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({
+        'ex_date': [r[0] for r in rows],
+        'cash_div': [r[1] for r in rows],
+        'share_div': [r[2] for r in rows],
+        'pay_date': [str(r[0]) for r in rows],
+        'notice_date': [r[0] for r in rows],
+    }).write_parquet(cache_dir / 'cninfo' / f'{code.split(".")[0]}.parquet')
+
+
+def test_special_dividend_total_keeps_announced_local(tmp_path, monkeypatch):
+    """巨潮同日 0.46 + 特别股息 2.51：合计 2.97 与本地公告口径一致，不降级。"""
+    code = '601088.SH'
+    ex = date(2017, 7, 10)
+    cache_dir = tmp_path / 'cache'
+    _cninfo(cache_dir, code, [(ex, 0.46, 0.0), (ex, 2.51, 0.0)])
+    monkeypatch.setattr(csd, '_QUOTE_ROOT', tmp_path / 'quotes')
+
+    frame = _frame([_row(code, ex, 2.97, 0.0, source='cash=交易所公告:test.pdf')])
+    conflicts = [{'ts_code': code, 'ex_date': ex, 'local_cash': 2.97,
+                  'local_share': 0.0, 'src_cash': 0.46, 'src_share': 0.0,
+                  'local_rights': 0.0, 'src_rights': 0.0,
+                  'local_source': 'cash=交易所公告:test.pdf'}]
+    out, stats = reconcile_conflicts(frame, conflicts, cache_dir)
+    assert stats['kept_local'] == 1
+    assert stats['special_cash_merged'] == 1
+    assert stats['corrected_to_source'] == 0
+    assert out['cash_div'].to_list() == [pytest.approx(2.97)]
+
+
+def test_special_dividend_total_fills_partial_local(tmp_path, monkeypatch):
+    """本地只记了年度股息 0.46：按巨潮同日合计 2.97 补齐。"""
+    code = '601088.SH'
+    ex = date(2017, 7, 10)
+    cache_dir = tmp_path / 'cache'
+    _cninfo(cache_dir, code, [(ex, 0.46, 0.0), (ex, 2.51, 0.0)])
+    monkeypatch.setattr(csd, '_QUOTE_ROOT', tmp_path / 'quotes')
+
+    frame = _frame([_row(code, ex, 0.46, 0.0)])
+    conflicts = [{'ts_code': code, 'ex_date': ex, 'local_cash': 0.46,
+                  'local_share': 0.0, 'src_cash': 0.46, 'src_share': 0.0,
+                  'local_rights': 0.0, 'src_rights': 0.0, 'local_source': 'em_fhps_bulk'}]
+    out, stats = reconcile_conflicts(frame, conflicts, cache_dir)
+    assert stats['special_cash_merged'] == 1
+    assert stats['corrected_to_source'] == 1
+    assert out['cash_div'].to_list() == [pytest.approx(2.97)]
+
+
+def test_announced_row_merged_with_special_dividend(tmp_path, monkeypatch):
+    """公告行只记常规股息 0.46：巨潮同日 0.46 + 2.51 合计 2.97 应补齐。"""
+    code = '601088.SH'
+    ex = date(2017, 7, 10)
+    cache_dir = tmp_path / 'cache'
+    _cninfo(cache_dir, code, [(ex, 0.46, 0.0), (ex, 2.51, 0.0)])
+    monkeypatch.setattr(csd, '_QUOTE_ROOT', tmp_path / 'quotes')
+
+    frame = _frame([_row(code, ex, 0.46, 0.0, source='cash=交易所公告:test.pdf')])
+    conflicts = [{'ts_code': code, 'ex_date': ex, 'local_cash': 0.46,
+                  'local_share': 0.0, 'src_cash': 0.46, 'src_share': 0.0,
+                  'local_rights': 0.0, 'src_rights': 0.0,
+                  'local_source': 'cash=交易所公告:test.pdf'}]
+    out, stats = reconcile_conflicts(frame, conflicts, cache_dir)
+    assert stats['special_cash_merged'] == 1
+    assert stats['corrected_to_source'] == 1
+    assert out['cash_div'].to_list() == [pytest.approx(2.97)]
+
+
+def test_announced_row_not_downgraded_by_cninfo_single_row(tmp_path, monkeypatch):
+    """公告修正行遇到巨潮单行低值：保留公告口径，不覆盖。"""
+    code = '600600.SH'
+    ex = date(2024, 7, 16)
+    cache_dir = tmp_path / 'cache'
+    _cninfo(cache_dir, code, [(ex, 1.30, 0.0)])
+    monkeypatch.setattr(csd, '_QUOTE_ROOT', tmp_path / 'quotes')
+
+    frame = _frame([_row(code, ex, 1.80, 0.0, source='cash=交易所公告:test.pdf')])
+    conflicts = [{'ts_code': code, 'ex_date': ex, 'local_cash': 1.80,
+                  'local_share': 0.0, 'src_cash': 1.30, 'src_share': 0.0,
+                  'local_rights': 0.0, 'src_rights': 0.0,
+                  'local_source': 'cash=交易所公告:test.pdf'}]
+    out, stats = reconcile_conflicts(frame, conflicts, cache_dir)
+    assert stats['kept_announcement'] == 1
+    assert out['cash_div'].to_list() == [pytest.approx(1.80)]
+
+
 def test_extra_columns_preserved_through_merge():
     """存量里的非 FINAL_SCHEMA 列（*_fix / no_ex_rights 等）必须原样带出。
 

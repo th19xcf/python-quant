@@ -313,6 +313,7 @@ class _Merger:
                 else:
                     used.add(hit)
                     self._attach(hit, src, 'ex')
+                    self._audit_announced(code, ex, hit, src)
             # 存量已有该除权日事件时不再补录：原先 capacity = len(srcs) - len(cands)
             # 在“源端同日 2 行、存量 1 行”时会算出 1，把同一笔分红被 em 按第二个
             # 报告期重复披露的行追加成新事件（300760 2025-05-29 的 0.56 即由此补录
@@ -331,6 +332,33 @@ class _Merger:
                     allowed_types.discard(_event_type(src))
                 else:
                     self._conflict(code, ex, cands, src)
+
+    def _audit_announced(
+        self,
+        code: str,
+        ex: date,
+        idx: int,
+        src: dict[str, Any],
+    ) -> None:
+        """公告修正行也交巨潮同日合计复核。
+
+        东财 ``fhps`` 对同一除权日只披露其中一笔现金（601088.SH 2016 年报仅
+        4.6，特别股息 25.1 未计入），金额与本地公告行一致时不会产生冲突，
+        若只在冲突时查巨潮，公告行就永远停在单笔口径。此处把匹配到的公告行
+        一并登记，交由 :func:`reconcile_conflicts` 按同日合计复核。
+        """
+        row = self.rows[idx]
+        if not str(row.get('source') or '').startswith('cash='):
+            return
+        local_amt = _amount_key(row)
+        amt = _amount_key(src)
+        self.conflicts.append({'ts_code': code, 'ex_date': ex,
+                               'local_cash': local_amt[0], 'local_share': local_amt[1],
+                               'src_cash': amt[0], 'src_share': amt[1],
+                               'local_rights': float(
+                                   row.get('rights_issue_ratio') or 0.0),
+                               'src_rights': float(src.get('rights_issue_ratio') or 0.0),
+                               'local_source': str(row.get('source') or '')})
 
     def _conflict(
         self,
@@ -353,7 +381,8 @@ class _Merger:
                                'src_cash': amt[0], 'src_share': amt[1],
                                'local_rights': float(
                                    local_row.get('rights_issue_ratio') or 0.0),
-                               'src_rights': float(src.get('rights_issue_ratio') or 0.0)})
+                               'src_rights': float(src.get('rights_issue_ratio') or 0.0),
+                               'local_source': str(local_row.get('source') or '')})
 
     def _dedup_source_rows(
         self, rows: list[dict[str, Any]],
@@ -522,14 +551,26 @@ def reconcile_conflicts(
 ) -> tuple[pl.DataFrame, dict[str, Any]]:
     """用巨潮仲裁同日金额冲突：本地对则保留，源端对则修正，双方都不对则留证。
 
+    巨潮同一天可能有多笔纯现金分红（年度末期股息 + 特别股息，如 601088.SH
+    2017-07-10 的 0.46 + 2.51）。这类记录在东财 ``fhps`` 里只披露其中一笔，
+    采集若按单行比对，会把公告合计口径的 ``cash_div`` 降级成单笔金额。
+    因此仲裁一律先按**同日合计**（现金、送转分别求和）比对：合计与本地一致
+    即保留本地；本地只记了其中一笔时按合计补齐；只有合计也对不上才退回
+    逐行比对。
+
     采纳源端数值（``corrected_to_source``）之前，再用交易所除权参考价
     （行情 ``pre_close``，见 :func:`quote_implied_cash`）复核：反推的现金分红与
     源端候选差超过 ``QUOTE_CASH_TOL`` 时判定源端不可信，记 ``unresolved`` 并
     保留本地值。只有送转、只有配股的冲突不参与参考价校验。
+
+    ``source`` 以 ``cash=`` 开头的行是已按交易所公告核实过的修正行：巨潮单行
+    金额低于它时不覆盖（记 ``kept_announcement``）；但巨潮同日有多笔、本地
+    只等于其中一笔时，仍按同日合计补齐（公告行也可能只记了常规股息）。
     """
     stats: dict[str, Any] = {'checked': 0, 'kept_local': 0, 'corrected_to_source': 0,
                              'unresolved': 0, 'quote_checked': 0,
-                             'quote_mismatch': 0, 'unresolved_rows': []}
+                             'quote_mismatch': 0, 'kept_announcement': 0,
+                             'special_cash_merged': 0, 'unresolved_rows': []}
     if not conflicts:
         return frame, stats
     tables = {c['ts_code']: cninfo_table(c['ts_code'], cache_dir)
@@ -543,25 +584,45 @@ def reconcile_conflicts(
         cn_amts = [_amount_key(r) for r in same.to_dicts()]
         local = (item['local_cash'], item['local_share'])
         source = (item['src_cash'], item['src_share'])
-        if any(_amount_match(local, a, tol=1e-3) for a in cn_amts):
+        total = ((sum(a[0] for a in cn_amts), sum(a[1] for a in cn_amts))
+                 if cn_amts else None)
+        local_is_announced = str(item.get('local_source') or '').startswith('cash=')
+        candidate: dict[str, Any] | None = None
+        if total is not None and _amount_match(local, total, tol=1e-3):
+            # 同日多笔现金的合计与本地一致：特别股息已在本地 cash_div 内
+            if len(cn_amts) > 1:
+                stats['special_cash_merged'] += 1
             stats['kept_local'] += 1
+        elif (len(cn_amts) > 1
+              and any(_amount_match(local, a, tol=1e-3) for a in cn_amts)):
+            # 本地只记了同日其中一笔：按同日合计补齐（特别股息并入 cash_div）
+            # 公告行同样适用：公告核实的是单笔常规股息时也会漏特别股息
+            stats['special_cash_merged'] += 1
+            candidate = {**item, 'src_cash': total[0], 'src_share': total[1],
+                         'src_rights': 0.0}
+        elif local_is_announced:
+            # 公告修正行不被巨潮/东财单笔金额降级
+            stats['kept_announcement'] += 1
         elif any(_amount_match(source, a, tol=1e-3) for a in cn_amts):
-            implied = quote_implied_cash(
-                item['ts_code'], item['ex_date'],
-                item.get('src_share', 0.0), item.get('src_rights', 0.0), quotes)
-            if implied is not None:
-                stats['quote_checked'] += 1
-                if abs(implied - item['src_cash']) > QUOTE_CASH_TOL:
-                    stats['quote_mismatch'] += 1
-                    stats['unresolved'] += 1
-                    stats['unresolved_rows'].append(
-                        {**item, 'reason': 'quote_mismatch', 'quote_cash': implied})
-                    continue
-            stats['corrected_to_source'] += 1
-            replacements.append(item)
+            candidate = item
         else:
             stats['unresolved'] += 1
             stats['unresolved_rows'].append(item)
+            continue
+        if candidate is not None:
+            implied = quote_implied_cash(
+                candidate['ts_code'], candidate['ex_date'],
+                candidate.get('src_share', 0.0), candidate.get('src_rights', 0.0), quotes)
+            if implied is not None:
+                stats['quote_checked'] += 1
+                if abs(implied - candidate['src_cash']) > QUOTE_CASH_TOL:
+                    stats['quote_mismatch'] += 1
+                    stats['unresolved'] += 1
+                    stats['unresolved_rows'].append(
+                        {**candidate, 'reason': 'quote_mismatch', 'quote_cash': implied})
+                    continue
+            stats['corrected_to_source'] += 1
+            replacements.append(candidate)
     if replacements:
         cash_expr: pl.Expr = pl.col('cash_div')
         share_expr: pl.Expr = pl.col('share_div')
