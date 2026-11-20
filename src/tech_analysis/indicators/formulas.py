@@ -18,8 +18,11 @@
       再做 Wilder 平滑
     - KDJ：RSV 含当日高低点，K/D 为通达信 SMA(X, M1, 1) 递推（α = 1/M1），
       即 K(t) = (RSV(t) + (M1 - 1) * K(t-1)) / M1，首值取 RSV
+    - Supertrend：以 ATR 计上下轨并逐行单向收紧，收盘破轨翻转趋势；
+      轨道带路径依赖，故它是本模块唯一以 DataFrame 进出、内部逐行递推的函数
 """
 
+import numpy as np
 import polars as pl
 
 
@@ -196,6 +199,99 @@ def kdj_exprs(
     return {'rsv': rsv, 'k': k, 'd': d, 'j': 3.0 * k - 2.0 * d}
 
 
+def supertrend(
+    df: pl.DataFrame,
+    high_col: str = 'high',
+    low_col: str = 'low',
+    close_col: str = 'close',
+    period: int = 10,
+    multiplier: float = 3.0,
+) -> pl.DataFrame:
+    """
+    Supertrend 趋势指标（TradingView ``ta.supertrend`` 口径）。
+
+    与模块内其它工厂函数不同，这里以 DataFrame 进出：轨道带是路径依赖的
+    （每行需要上一行的轨道与方向），无法用无状态 Expr 表达。
+    ATR 仍调用 :func:`atr_expr`（Wilder 平滑），与全项目 ATR 同源。
+
+    递推式（与原版 Pine 逐行等价，``up`` 为下轨支撑、``dn`` 为上轨压力）：
+
+    .. code-block:: text
+
+        hl2      = (high + low) / 2
+        up0(t)   = hl2 - multiplier * ATR(t)
+        dn0(t)   = hl2 + multiplier * ATR(t)
+        up(t)    = max(up0(t), up(t-1))  if close(t-1) >  up(t-1) else up0(t)
+        dn(t)    = min(dn0(t), dn(t-1))  if close(t-1) <  dn(t-1) else dn0(t)
+        dir(t)   = +1 if close(t) > dn(t)
+                   -1 if close(t) < up(t)
+                   dir(t-1) 其余
+        supertrend(t) = up(t) if dir(t) == +1 else dn(t)
+
+    ATR 种子行之前（索引 < period-1）整段输出为空。
+
+    Args:
+        df: 含 high / low / close 的行情表，按时间升序
+        high_col: 最高价列名
+        low_col: 最低价列名
+        close_col: 收盘价列名
+        period: ATR 周期（TradingView 默认 10）
+        multiplier: ATR 倍数（TradingView 默认 3.0）
+
+    Returns:
+        pl.DataFrame: 原表追加 4 列
+            - ``supertrend``：趋势线（多头取下轨、空头取上轨）
+            - ``st_lower``：下轨支撑
+            - ``st_upper``：上轨压力
+            - ``st_dir``：1 多头 / -1 空头 / 0 未初始化
+    """
+    atr = df.select(atr_expr(high_col, low_col, close_col, period).alias('_atr'))['_atr'].to_numpy()
+    high = df[high_col].to_numpy()
+    low = df[low_col].to_numpy()
+    close = df[close_col].to_numpy()
+
+    n = len(df)
+    st = np.full(n, np.nan)
+    st_upper = np.full(n, np.nan)
+    st_lower = np.full(n, np.nan)
+    st_dir = np.zeros(n, dtype=np.int8)
+
+    up_prev = None
+    dn_prev = None
+    dir_prev = 1
+    for i in range(n):
+        if np.isnan(atr[i]):
+            continue
+        hl2 = (high[i] + low[i]) / 2.0
+        up_raw = hl2 - multiplier * atr[i]
+        dn_raw = hl2 + multiplier * atr[i]
+
+        if up_prev is None:
+            up, dn, direction = up_raw, dn_raw, 1
+        else:
+            up = max(up_raw, up_prev) if close[i - 1] > up_prev else up_raw
+            dn = min(dn_raw, dn_prev) if close[i - 1] < dn_prev else dn_raw
+            if close[i] > dn:
+                direction = 1
+            elif close[i] < up:
+                direction = -1
+            else:
+                direction = dir_prev
+
+        up_prev, dn_prev, dir_prev = up, dn, direction
+        st_lower[i] = up
+        st_upper[i] = dn
+        st_dir[i] = direction
+        st[i] = up if direction == 1 else dn
+
+    return df.with_columns([
+        pl.Series('supertrend', st, nan_to_null=True),
+        pl.Series('st_lower', st_lower, nan_to_null=True),
+        pl.Series('st_upper', st_upper, nan_to_null=True),
+        pl.Series('st_dir', st_dir),
+    ])
+
+
 __all__ = [
     'ema_expr',
     'wilder_expr',
@@ -203,4 +299,5 @@ __all__ = [
     'macd_exprs',
     'atr_expr',
     'kdj_exprs',
+    'supertrend',
 ]
