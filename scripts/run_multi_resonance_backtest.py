@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from collections import Counter
@@ -32,6 +33,9 @@ from src.backtest.performance.performance_analyzer import PerformanceAnalyzer  #
 from src.backtest.strategies.multi_resonance_timing import (  # noqa: E402
     MultiResonanceTimingStrategy,
 )
+from src.backtest.strategies.multi_resonance_timing_v2 import (  # noqa: E402
+    MultiResonanceTimingV2Strategy,
+)
 
 DATA = ROOT / 'data' / 'local_store'
 OUT_DIR = ROOT / '2026-11-20' / '策略可行性评估'
@@ -44,6 +48,14 @@ OOS_START = date(2022, 1, 1)
 END = date(2099, 1, 1)
 INITIAL_CAPITAL = 1_000_000.0
 ANALYZER = PerformanceAnalyzer()
+VARIANTS = {
+    'v1': MultiResonanceTimingStrategy,
+    'v2': MultiResonanceTimingV2Strategy,
+}
+
+
+def make_strategy(variant: str, **kwargs: Any) -> Any:
+    return VARIANTS[variant](**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +116,14 @@ def run_symbol(df: pl.DataFrame, code: str, strategy: MultiResonanceTimingStrate
 
 def run_all(frames: Dict[str, pl.DataFrame], strategy: MultiResonanceTimingStrategy) -> Dict[str, Dict[str, Any]]:
     return {code: run_symbol(df, code, strategy) for code, df in frames.items()}
+
+
+def variant_run(frames: Dict[str, pl.DataFrame], variant: str,
+                **kwargs: Any) -> Any:
+    """按变体构造策略 → 逐标的回测 → 等权合成，返回 (策略, 结果, 面板)。"""
+    strategy = make_strategy(variant, **kwargs)
+    results = run_all(frames, strategy)
+    return strategy, results, build_panel(results, frames)
 
 
 # ---------------------------------------------------------------------------
@@ -232,27 +252,102 @@ def merged_trades(results: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# 动作可达性 / 维度独立性
+# ---------------------------------------------------------------------------
+
+def action_counts(frames: Dict[str, pl.DataFrame], strategy: Any) -> Dict[str, int]:
+    """五行动作逐个统计触发次数（全样本、全部标的合计）。"""
+    total = Counter()
+    for df in frames.values():
+        total.update(strategy.build_signal_frame(df)['trigger_type'].to_list())
+    total.pop('无', None)
+    return {name: int(total.get(name, 0)) for name in
+            ['买入共振', '卖出共振', '震荡低吸', '震荡高抛', '趋势持股']}
+
+
+def _ratio(a: int, b: int) -> Any:
+    return round(a / b, 4) if b else None
+
+
+def dimension_stats(frames: Dict[str, pl.DataFrame], strategy: Any) -> Dict[str, Any]:
+    """D1/D2/D3 两两同真比例（仅 v2 有诊断列；v1 返回空）。"""
+    cols = ['d1_buy', 'd2_low', 'd3_buy', 'd1_sell', 'd2_high', 'd3_sell']
+    totals = dict.fromkeys(cols, 0)
+    pairs = dict.fromkeys(['d1_d2', 'd1_d3', 'd2_d3', 'd1_d2_d3',
+                           's1_s2', 's1_s3', 's2_s3', 's1_s2_s3'], 0)
+    found = False
+    for df in frames.values():
+        frame = strategy.build_signal_frame(df)
+        if 'd1_buy' not in frame.columns:
+            return {}
+        found = True
+        b = {c: frame[c].to_list() for c in cols}
+        totals['d1_buy'] += sum(b['d1_buy'])
+        totals['d2_low'] += sum(b['d2_low'])
+        totals['d3_buy'] += sum(b['d3_buy'])
+        totals['d1_sell'] += sum(b['d1_sell'])
+        totals['d2_high'] += sum(b['d2_high'])
+        totals['d3_sell'] += sum(b['d3_sell'])
+        for i in range(frame.height):
+            p1, p2, p3 = b['d1_buy'][i], b['d2_low'][i], b['d3_buy'][i]
+            s1, s2, s3 = b['d1_sell'][i], b['d2_high'][i], b['d3_sell'][i]
+            pairs['d1_d2'] += int(p1 and p2)
+            pairs['d1_d3'] += int(p1 and p3)
+            pairs['d2_d3'] += int(p2 and p3)
+            pairs['d1_d2_d3'] += int(p1 and p2 and p3)
+            pairs['s1_s2'] += int(s1 and s2)
+            pairs['s1_s3'] += int(s1 and s3)
+            pairs['s2_s3'] += int(s2 and s3)
+            pairs['s1_s2_s3'] += int(s1 and s2 and s3)
+    if not found:
+        return {}
+    return {
+        'buy_counts': {k: totals[k] for k in ['d1_buy', 'd2_low', 'd3_buy']},
+        'buy_pairs': {k: pairs[k] for k in ['d1_d2', 'd1_d3', 'd2_d3', 'd1_d2_d3']},
+        'buy_conditional': {
+            'P(D2|D1)': _ratio(pairs['d1_d2'], totals['d1_buy']),
+            'P(D1|D2)': _ratio(pairs['d1_d2'], totals['d2_low']),
+            'P(D3|D1)': _ratio(pairs['d1_d3'], totals['d1_buy']),
+            'P(D1|D3)': _ratio(pairs['d1_d3'], totals['d3_buy']),
+            'P(D3|D2)': _ratio(pairs['d2_d3'], totals['d2_low']),
+            'P(D2|D3)': _ratio(pairs['d2_d3'], totals['d3_buy']),
+            'P(D3|D1&D2)': _ratio(pairs['d1_d2_d3'], pairs['d1_d2']),
+            'P(D2|D1&D3)': _ratio(pairs['d1_d2_d3'], pairs['d1_d3']),
+        },
+        'sell_counts': {k: totals[k] for k in ['d1_sell', 'd2_high', 'd3_sell']},
+        'sell_conditional': {
+            'P(D2|D1)': _ratio(pairs['s1_s2'], totals['d1_sell']),
+            'P(D3|D1)': _ratio(pairs['s1_s3'], totals['d1_sell']),
+            'P(D1|D3)': _ratio(pairs['s1_s3'], totals['d3_sell']),
+            'P(D3|D1&D2)': _ratio(pairs['s1_s2_s3'], pairs['s1_s2']),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
 
-results_frames: Dict[str, pl.DataFrame] = {}
-
-
 def main() -> None:
+    global OUT_DIR
+    parser = argparse.ArgumentParser(description='多指标共振择时回测（--variant v1/v2）')
+    parser.add_argument('--variant', choices=['v1', 'v2'], default='v2')
+    args = parser.parse_args()
+    variant = args.variant
+    prefix = 'v2' if variant == 'v2' else ''
+    OUT_DIR = ROOT / '2026-11-20' / '策略可行性评估' / ('' if variant == 'v1' else 'v2')
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+
     codes = select_universe()
     universe = [INDEX_CODE] + codes
-    for code in universe:
-        results_frames[code] = load_frame(code)
+    frames = {code: load_frame(code) for code in universe}
 
-    # 基线
-    base_strategy = MultiResonanceTimingStrategy()
-    base_results = run_all(results_frames, base_strategy)
+    # 本变体基线
+    strategy, base_results, panel = variant_run(frames, variant)
     base_trades = merged_trades(base_results)
-    panel = build_panel(base_results, results_frames)
-    bench = benchmark_nav(results_frames)
+    bench = benchmark_nav(frames)
 
-    # 净值曲线落盘
+    # 净值曲线
     nav_out = panel['nav'].join(bench.rename({'nav': 'bench'}), on='date', how='left')
     nav_out.select(
         pl.col('date').cast(pl.Utf8),
@@ -260,17 +355,17 @@ def main() -> None:
         pl.col('weight').round(4).alias('仓位'),
         pl.col('holdings').alias('持仓标的'),
         pl.col('bench').round(6).alias('基准净值'),
-    ).write_csv(OUT_DIR / '净值曲线_2026-11-20.csv')
+    ).write_csv(OUT_DIR / f'{prefix}净值曲线_2026-11-20.csv')
 
-    # 交易明细落盘（触发信号类型取成交前一交易日的 trigger_type）
+    # 交易明细（触发信号类型取成交前一交易日）
     rows = []
     triggers = {}
-    for code, df in results_frames.items():
-        frame = base_strategy.build_signal_frame(df)
+    for code, df in frames.items():
+        frame = strategy.build_signal_frame(df)
         triggers[code] = dict(zip(
             frame['date'].to_list(), frame['trigger_type'].to_list(), strict=False))
     for res_code, res in base_results.items():
-        dates = results_frames[res_code]['date'].to_list()
+        dates = frames[res_code]['date'].to_list()
         for t in res['trades']:
             idx = dates.index(t['date']) if t['date'] in dates else 0
             prev = dates[idx - 1] if idx > 0 else None
@@ -288,7 +383,7 @@ def main() -> None:
         '成交日': pl.Date, '标的': pl.Utf8, '方向': pl.Utf8, '成交价': pl.Float64,
         '数量': pl.Int64, '成交额': pl.Float64, '费用': pl.Float64,
         '触发信号类型': pl.Utf8,
-    }).sort(['成交日', '标的']).write_csv(OUT_DIR / '交易明细_2026-11-20.csv')
+    }).sort(['成交日', '标的']).write_csv(OUT_DIR / f'{prefix}交易明细_2026-11-20.csv')
 
     # 分窗口绩效
     windows = {
@@ -298,15 +393,15 @@ def main() -> None:
     }
     summary = {}
     for label, (start, end) in windows.items():
-        strat = window_metrics(panel['nav'], base_trades, start, end, universe)
-        bench_m = window_metrics(bench, [], start, end, universe)
-        summary[label] = {'策略': strat, '基准': bench_m}
+        summary[label] = {
+            '策略': window_metrics(panel['nav'], base_trades, start, end, universe),
+            '基准': window_metrics(bench, [], start, end, universe),
+        }
 
-    # 无未来函数对照：信号再延迟 1 根 bar
-    lag_results = run_all(results_frames, MultiResonanceTimingStrategy(signal_lag=1))
-    lag_trades = merged_trades(lag_results)
-    lag_panel = build_panel(lag_results, results_frames)
-    lag_full = window_metrics(lag_panel['nav'], lag_trades, SAMPLE_START, END, universe)
+    # 无未来函数对照：信号整体再延迟 1 根 bar
+    _, lag_results, lag_panel = variant_run(frames, variant, signal_lag=1)
+    lag_full = window_metrics(
+        lag_panel['nav'], merged_trades(lag_results), SAMPLE_START, END, universe)
 
     # 参数敏感性（9 组）
     param_sets = [
@@ -322,58 +417,72 @@ def main() -> None:
     ]
     sens_rows = []
     for label, kwargs in param_sets:
-        strategy = MultiResonanceTimingStrategy(**kwargs)
-        res = run_all(results_frames, strategy)
-        panel_i = build_panel(res, results_frames)
-        metrics = window_metrics(panel_i['nav'], merged_trades(res),
+        s_i, r_i, p_i = variant_run(frames, variant, **kwargs)
+        metrics = window_metrics(p_i['nav'], merged_trades(r_i),
                                  SAMPLE_START, END, universe)
-        p = strategy.params
+        p = s_i.params
         sens_rows.append({
             '参数组': label,
             'RSI低位': p['rsi_low_center'], 'RSI中位': p['rsi_mid_center'],
             'RSI高位': p['rsi_high_center'], '新高低窗口': p['high_low_window'],
             **{k: round(v, 4) if isinstance(v, float) else v for k, v in metrics.items()},
         })
-    pl.DataFrame(sens_rows).write_csv(OUT_DIR / '参数敏感性_2026-11-20.csv')
+    pl.DataFrame(sens_rows).write_csv(OUT_DIR / f'{prefix}参数敏感性_2026-11-20.csv')
 
-    # 逐标的绩效（全样本）供报告核对
+    # 逐标的绩效（全样本）
     per_symbol = {}
     for code, res in base_results.items():
         nav_df = pl.DataFrame({
             'date': [c['date'] for c in res['equity_curve']],
             'nav': [c['equity'] / res['equity_curve'][0]['equity'] for c in res['equity_curve']],
         })
-        per_symbol[code] = window_metrics(
-            nav_df, res['trades'], SAMPLE_START, END, [code])
+        per_symbol[code] = window_metrics(nav_df, res['trades'], SAMPLE_START, END, [code])
 
-    # 触发信号计数
-    trigger_counts = {}
-    for code, frame in triggers.items():
-        trigger_counts[code] = dict(Counter(frame.values()))
+    # v1 vs v2 对照（两个变体都跑一遍）
+    other = 'v1' if variant == 'v2' else 'v2'
+    other_strategy, other_results, other_panel = variant_run(frames, other)
+    comparison = {}
+    for label, strat, res, pan in (
+            (variant, strategy, base_results, panel),
+            (other, other_strategy, other_results, other_panel)):
+        comparison[label] = {
+            'full': window_metrics(pan['nav'], merged_trades(res),
+                                   SAMPLE_START, END, universe),
+            'avg_position': round(float(pan['nav'].filter(
+                pl.col('date') >= SAMPLE_START)['weight'].mean()), 4),
+            'actions': action_counts(frames, strat),
+            'dimension_stats': dimension_stats(frames, strat),
+        }
 
     payload = {
+        'variant': variant,
         'universe': universe,
-        'signal_counts_total': sum(
-            sum(v for k, v in cnt.items() if k != '无') for cnt in trigger_counts.values()),
+        'signal_counts_total': sum(action_counts(frames, strategy).values()),
+        'actions': action_counts(frames, strategy),
+        'dimension_stats': dimension_stats(frames, strategy),
+        'avg_position': comparison[variant]['avg_position'],
         'summary': summary,
         'lag1_full': lag_full,
         'per_symbol': per_symbol,
         'trades': len(base_trades),
         'sensitivity': sens_rows,
+        'comparison': comparison,
     }
     (OUT_DIR / 'work').mkdir(exist_ok=True)
-    (OUT_DIR / 'work' / 'baseline_metrics.json').write_text(
+    metrics_name = 'v2_metrics.json' if variant == 'v2' else 'baseline_metrics.json'
+    (OUT_DIR / 'work' / metrics_name).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
+    zero = [k for k, v in payload['actions'].items() if v == 0]
     print(json.dumps({  # noqa: T201 —— 跑批脚本按契约只回一行标量
+        'variant': variant,
         'n_symbols': len(universe),
         'full_ann': round(summary['全样本']['策略']['annual_return'], 2),
         'full_mdd': round(summary['全样本']['策略']['max_drawdown'], 2),
-        'bench_ann': round(summary['全样本']['基准']['annual_return'], 2),
         'is_ann': round(summary['样本内']['策略']['annual_return'], 2),
         'oos_ann': round(summary['样本外']['策略']['annual_return'], 2),
         'lag1_ann': round(lag_full['annual_return'], 2),
         'trades': len(base_trades),
-        'signals': payload['signal_counts_total'],
+        'zero_actions': zero,
     }, ensure_ascii=False))
 
 
