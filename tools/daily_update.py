@@ -13,22 +13,24 @@
      5. 基金行情刷新    python -m src.data.local_store build --data-type fund（增量，末日已最新则跳过）
      6. 复权因子刷新    factor_rebuild / fund_factors 仅重算「行情末日 > 因子末日」的标的（已最新则跳过）
                        刷新后复验行情内嵌因子副本与快照逐行一致（个股/指数/基金）
-     7. 分红日频增量    tools/refresh_dividend_daily.py（基金年度批量 + 个股近两报告期，
+     7. 月度分红全量    tools/refresh_dividend_monthly.py（季度/半年度除权除息 + 月度分红全量 +
+                       因子重建，5 阶段串行；非致命，失败只告警）
+     8. 分红日频增量    tools/refresh_dividend_daily.py（基金年度批量 + 个股近两报告期，
                        只追加/补缺并重建受影响标的因子；非致命，失败只告警）
-     8. 申万行业指数    tools/build_sw_industry_index.py --re-pull（801xxx 段 31 只，幂等只追加；
+     9. 申万行业指数    tools/build_sw_industry_index.py --re-pull（801xxx 段 31 只，幂等只追加；
                        源端 OHLC 只到 2026-11-09，不追 T 日、不伪造，尾缺口记侧车 tail_gap；
                        非致命，失败只告警）
-     9. ST 快照与区间表  src.data.risk_flags refresh + src.data.st_history build
-    10. 名录每日检查    src.main --update-fund / --update-index（有变更才落盘）
-    11. 估值增量        tools/collect_financials.py --only valuation --since auto
-    12. 市场宽度增量    src.data.services.breadth_service.refresh
-    13. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
-    14. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
-    15. 洁净集快照      python -m src.data.quality.clean_set build
-    16. 保鲜体检        src.data.quality.freshness_check --summary
-    17. 版本记录        src.data.data_version（失败只告警，不改数据）
-    18. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
-    19. 门禁            tools/daily_data_gate.py（必须在备份之后）
+    10. ST 快照与区间表  src.data.risk_flags refresh + src.data.st_history build
+    11. 名录每日检查    src.main --update-fund / --update-index（有变更才落盘）
+    12. 估值增量        tools/collect_financials.py --only valuation --since auto
+    13. 市场宽度增量    src.data.services.breadth_service.refresh
+    14. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
+    15. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
+    16. 洁净集快照      python -m src.data.quality.clean_set build
+    17. 保鲜体检        src.data.quality.freshness_check --summary
+    18. 版本记录        src.data.data_version（失败只告警，不改数据）
+    19. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
+    20. 门禁            tools/daily_data_gate.py（必须在备份之后）
 
 口径与边界::
 
@@ -213,6 +215,7 @@ STEP_PLAN: tuple[tuple[str, str, bool], ...] = (
     ('build', '本地行情构建 + 末日断言', True),
     ('fund_quote', '基金行情刷新（通达信本地增量）', True),
     ('factor', '复权因子刷新（个股 + 基金）', True),
+    ('dividend_monthly', '月度分红全量（季度/半年度除权除息 + 月度分红 + 因子重建）', False),
     ('dividend', '分红日频增量（基金年度批量 + 个股近两报告期）', False),
     ('sw_index', '申万行业指数增量（801xxx 只追加）', False),
     ('st', 'ST 快照与区间表', False),
@@ -1292,6 +1295,25 @@ def _step_factors(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     return not (remaining_stock or remaining_fund), ' | '.join(notes)
 
 
+def _step_dividend_monthly(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    """月度分红全量（非致命）：季度/半年度除权除息 + 月度分红全量 + 因子重建。
+
+    调用 ``tools/refresh_dividend_monthly.py``（5 阶段串行 + 断点续跑），
+    失败只告警、不阻断后续步骤。脚本内部自行重建受影响标的的复权因子。
+    """
+    if args.skip_dividend_monthly:
+        return True, '已跳过（--skip-dividend-monthly）'
+    if not args.allow_remote:
+        return True, '未允许联网，跳过（只告警）'
+    plan.expected.update(AUX_DIVIDEND_OUTPUTS)
+    plan.expected.update(AUX_FACTOR_OUTPUTS)
+    code = _run_module(
+        [sys.executable, str(ROOT / 'tools' / 'refresh_dividend_monthly.py'),
+         '--apply', '--date', plan.latest.isoformat()],
+        '月度分红全量')
+    return code == 0, f'rc={code}'
+
+
 def _step_dividend(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     """分红日频增量（非致命）：基金年度批量 + 个股近两报告期，只追加/补缺。
 
@@ -1442,6 +1464,7 @@ def _step_list(plan: _Plan, args: argparse.Namespace,
         'build': lambda: _step_build(plan, args),
         'fund_quote': lambda: _step_fund_quotes(plan, args),
         'factor': lambda: _step_factors(plan, args),
+        'dividend_monthly': lambda: _step_dividend_monthly(plan, args),
         'dividend': lambda: _step_dividend(plan, args),
         'sw_index': lambda: _step_sw_index(plan, args),
         'st': lambda: _step_st(plan, args),
@@ -1498,6 +1521,24 @@ def _sw_index_skip_note(args: argparse.Namespace) -> str:
     return '  ← 801xxx 只追加本地末根之后的日期，不追 T 日'
 
 
+def _dividend_monthly_skip_note(args: argparse.Namespace) -> str:
+    if args.skip_dividend_monthly:
+        return '  ← 本轮跳过（--skip-dividend-monthly）'
+    if not args.allow_remote:
+        return '  ← 本轮跳过（未加 --allow-remote）'
+    return '  ← 5 阶段串行：季度/半年度除权除息 → 月度分红 → 因子重建'
+
+
+def _factor_skip_note(plan: _Plan, args: argparse.Namespace) -> str:
+    if args.skip_factor_refresh:
+        return '  ← 本轮跳过（--skip-factor-refresh）'
+    stock_stale = len(_stale_factor_codes(plan.root, 'stock'))
+    fund_stale = len(_stale_factor_codes(plan.root, 'fund'))
+    if stock_stale + fund_stale == 0:
+        return '  ← 因子末日均已对齐行情，跳过'
+    return f'  ← 个股 {stock_stale} 只 / 基金 {fund_stale} 只待增量重算'
+
+
 def _skip_note(key: str, plan: _Plan, args: argparse.Namespace) -> str:
     if key == 'fill' and not args.allow_remote:
         return '  ← 本轮跳过（未加 --allow-remote）'
@@ -1513,14 +1554,10 @@ def _skip_note(key: str, plan: _Plan, args: argparse.Namespace) -> str:
                      if value < plan.latest)
         return f'  ← 末日 {end} → {plan.latest}，落后 {behind} 只'
     if key == 'factor':
-        if args.skip_factor_refresh:
-            return '  ← 本轮跳过（--skip-factor-refresh）'
-        stock_stale = len(_stale_factor_codes(plan.root, 'stock'))
-        fund_stale = len(_stale_factor_codes(plan.root, 'fund'))
-        if stock_stale + fund_stale == 0:
-            return '  ← 因子末日均已对齐行情，跳过'
-        return f'  ← 个股 {stock_stale} 只 / 基金 {fund_stale} 只待增量重算'
-    if key == 'dividend':
+        return _factor_skip_note(plan, args)
+    if key in ('dividend_monthly', 'dividend'):
+        if key == 'dividend_monthly':
+            return _dividend_monthly_skip_note(args)
         return _dividend_skip_note(args)
     if key == 'sw_index':
         return _sw_index_skip_note(args)
@@ -1605,6 +1642,8 @@ def main(argv: list[str] | None = None) -> int:
                         help='跳过复权因子刷新（个股 + 基金增量重算）')
     parser.add_argument('--skip-dividend-refresh', action='store_true',
                         help='跳过分红日频增量（基金年度批量 + 个股近两报告期）')
+    parser.add_argument('--skip-dividend-monthly', action='store_true',
+                        help='跳过月度分红全量（季度/半年度除权除息 + 月度分红 + 因子重建）')
     parser.add_argument('--dividend-bootstrap-days', type=int, default=30,
                         help='分红增量首次运行或断档时的回溯天数（默认 30，仅作窗口兜底）')
     parser.add_argument('--skip-sw-index', action='store_true',
