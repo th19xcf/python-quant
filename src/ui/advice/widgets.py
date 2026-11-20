@@ -43,6 +43,7 @@ from src.ui.advice.table_model import (
     COL_SHARES,
     COL_WEIGHT,
     DTO_ROLE,
+    direction_label,
     display_value,
 )
 from src.ui.advice.tokens import TOKENS, DesignTokens, Palette
@@ -718,6 +719,8 @@ class DetailPanel(QFrame):
         self.direction_label = QLabel('—')
         self.direction_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.direction_label.setFixedSize(58, 24)
+        #: 保存英文枚举，供主题切换时重新取色（显示文本已中文化）
+        self._direction = ''
         header.addLayout(name_box, 1)
         header.addWidget(self.direction_label, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(header)
@@ -784,7 +787,7 @@ class DetailPanel(QFrame):
         self._pal = palette
         self.factor_bars.set_palette(palette)
         self.weight_bars.set_palette(palette)
-        self._style_direction(self.direction_label.text())
+        self._style_direction(self._direction)
 
     def _style_direction(self, direction: str) -> None:
         fg, bg = _direction_colors(self._pal, direction)
@@ -809,6 +812,7 @@ class DetailPanel(QFrame):
         if dto is None:
             self.name_label.setText('选择一行查看详情')
             self.code_label.setText('—')
+            self._direction = ''
             self.direction_label.setText('—')
             self.direction_label.setStyleSheet(
                 f'color: {self._pal.faint}; border: 1px solid '
@@ -825,7 +829,8 @@ class DetailPanel(QFrame):
 
         self.name_label.setText(dto.name)
         self.code_label.setText(f'{dto.ts_code} · {dto.industry}')
-        self.direction_label.setText(dto.direction)
+        self._direction = dto.direction
+        self.direction_label.setText(direction_label(dto.direction))
         self._style_direction(dto.direction)
         self.confidence_label.setText(
             f'置信度 {dto.confidence:.2f} · 综合分 {dto.score:+.2f} · '

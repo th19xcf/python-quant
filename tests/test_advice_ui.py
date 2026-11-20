@@ -152,7 +152,7 @@ def test_page_bundle_populates_table_and_kpi(qapp):
     assert page._kpi['turnover'].value_label.text() == '8.4%'
     assert page.current_dto().ts_code == '600000.SH'
     assert page.detail.name_label.text() == '浦发银行'
-    assert page.detail.direction_label.text() == 'BUY'
+    assert page.detail.direction_label.text() == '买入'
 
 
 def test_page_columns_fit_full_cell_text(qapp):

@@ -58,6 +58,14 @@ COL_RISK = 8
 DIRECTION_FILTERS = ('全部', 'BUY', 'SELL', 'HOLD', 'AVOID')
 ASSET_FILTERS = ('全部', '股票', 'ETF', '基金')
 
+#: 展示层中英映射：底层枚举仍是 BUY/SELL/HOLD/AVOID，只在界面上呈现中文
+DIRECTION_LABELS = {'BUY': '买入', 'SELL': '卖出', 'HOLD': '持有', 'AVOID': '回避'}
+
+
+def direction_label(direction: str) -> str:
+    """方向枚举转界面文案；未知值原样返回，便于暴露新增枚举。"""
+    return DIRECTION_LABELS.get(direction, direction)
+
 
 def _format_shares(value: int) -> str:
     return f'{int(value):,}'
@@ -70,11 +78,12 @@ def display_value(dto: DailyRecommendationDTO, column: int) -> str:
         return dto.name
     if column == COL_DIRECTION:
         # 延后/过期必须显式区分，否则用户会把「本次未成交」当可下单
+        label = direction_label(dto.direction)
         if dto.disposition == 'deferred':
-            return f'{dto.direction}(延后)'
+            return f'{label}(延后)'
         if dto.exec_status == 'expired':
-            return f'{dto.direction}(已过期)'
-        return dto.direction
+            return f'{label}(已过期)'
+        return label
     if column == COL_WEIGHT:
         return f'{dto.target_weight_pct:.1f}%'
     if column == COL_SHARES:

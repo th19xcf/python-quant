@@ -263,7 +263,7 @@ def test_deferred_item_not_actionable_in_snapshot_dto_table_detail():
     assert dto.disposition == 'deferred'
     assert dto.actionable is False
     assert '延后' in dto.action
-    assert display_value(dto, COL_DIRECTION) == 'BUY(延后)'
+    assert display_value(dto, COL_DIRECTION) == '买入(延后)'
     assert '不可下单' in DetailPanel._state_text(dto)
 
     payload = build_latest_payload(_sample_result(),

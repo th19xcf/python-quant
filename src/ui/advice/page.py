@@ -477,7 +477,7 @@ class AdvicePage(QWidget):
         actionable = sum(1 for item in items if item.actionable)
         buy, sell = counts.get('BUY', 0), counts.get('SELL', 0)
         self._kpi['count'].set_value(str(actionable))
-        self._kpi['count'].set_caption('可下单数量（BUY/SELL）')
+        self._kpi['count'].set_caption('可下单数量（买入/卖出）')
         self._kpi['flow'].set_value(f'{buy} / {sell}')
         summary: dict[str, Any] = {}
         if self._bundle is not None:
