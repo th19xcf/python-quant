@@ -114,6 +114,49 @@ def test_page_renders_headless(app):
     page.detail_toggle.setChecked(False)
     assert page.detail_panel.isHidden()
 
+    # 当前信号块：定投展示当日状态、份数、收益率与三个触发价，并替代目标块
+    dca_signal = {'date': '2024-02-29', 'close': 3.9, 'state': 'hold',
+                  'tranches': 2, 'tranches_total': 10, 'position': 0.2,
+                  'avg_cost': 3.82, 'return': 0.020942, 'observing': False,
+                  'next_add_price': 3.632, 'observe_trigger_price': 4.0532,
+                  'trail_trigger_price': None}
+    page._fill_signal({'daily_signal': dca_signal,
+                       'current': {'weights': {'512890.SH': 0.3},
+                                   'positions': {'512890.SH': 3000}}},
+                      {'rule_type': 'dca_grid'})
+    assert not page.signal_block.isHidden()
+    assert page.current_block.isHidden()
+    assert page.target_block.isHidden()
+    assert page.signal_table.rowCount() == 9
+    assert page.signal_table.item(0, 1).text() == '持有（无操作）'
+    assert page.signal_table.item(1, 1).text() == '512890.SH 30.00%（3,000 份）'
+    assert page.signal_table.item(2, 1).text() == '2 / 10 份（20.0%）'
+    assert page.signal_table.item(5, 1).text() == '+2.09%'
+    assert '现价再跌 6.87%' in page.signal_table.item(6, 1).text()
+    assert '现价再涨 3.93%' in page.signal_table.item(7, 1).text()
+    assert page.signal_table.item(8, 1).text().startswith('—（未进入观察期）')
+    assert page.signal_note.isHidden()
+    assert '当前信号与持仓' in page.detail_toggle.text()
+
+    # 切换类：当前腿与权重、最近一次信号日与执行日
+    page._fill_signal({'current': {'weights': {'510300.SH': 0.49}},
+                       'markers': [{'signal_date': '2024-01-31',
+                                    'date': '2024-02-01',
+                                    'state': 'numerator'}]},
+                      {'rule_type': 'asset_switch',
+                       'legs': [{'code': '510300.SH', 'label': '沪深300ETF'}]})
+    assert '沪深300ETF' in page.signal_table.item(0, 1).text()
+    assert '49.00%' in page.signal_table.item(0, 1).text()
+    assert page.signal_table.item(1, 1).text() == '2024-01-31'
+    assert page.signal_table.item(2, 1).text() == '2024-02-01'
+
+    # 选股规则反过来隐藏信号块、保留持仓与目标两块
+    page._fill_signal({}, {'rule_type': 'stock_select'})
+    assert page.signal_block.isHidden()
+    assert not page.current_block.isHidden()
+    assert not page.target_block.isHidden()
+    assert '持仓与调仓目标' in page.detail_toggle.text()
+
     nav = [['2024-01-31', 1.0e9], ['2024-02-29', 1.05e9], ['2024-03-29', 1.02e9]]
     bench = [['2024-01-31', 1.0e9], ['2024-02-29', 1.01e9], ['2024-03-29', 0.99e9]]
     page._plot_curves(nav, bench)

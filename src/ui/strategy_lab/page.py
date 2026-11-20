@@ -73,6 +73,17 @@ _CURRENT_COLUMNS = ('代码', '权重', '数量')
 _TARGET_COLUMNS = ('代码', '权重')
 #: 两块表格的可见行数：固定高度、超出部分在表内滚动，避免挤占指标表与右侧图表
 _BLOCK_VISIBLE_ROWS = 4
+#: 「当前信号 / 后续操作」块：两列「项目 / 数值」，行数按内容动态定高
+_SIGNAL_COLUMNS = ('项目', '数值')
+#: 定投规则当日信号的中文状态（只陈述规则状态，不写成操作建议）
+_DCA_STATE_TEXT = {
+    'initial': '建仓（次日开盘买入 1 份）',
+    'restart': '重启建仓（次日开盘买入 1 份）',
+    'add': '补仓（次日开盘买入 1 份）',
+    'observe': '进入止盈观察期',
+    'take_profit': '止盈清仓（次日开盘卖出全部）',
+    'hold': '持有（无操作）',
+}
 
 _METRIC_ROWS = (
     ('annual', '年化收益', 'pct'),
@@ -156,6 +167,117 @@ def _next_rebalance_note(rule: Dict[str, Any] | None, after: str | None,
         return f'下次调仓日：{upcoming[0].isoformat()}'
     year, month = _next_frequency_month(last_month, months)
     return f'下次调仓日：{year} 年 {month:02d} 月末最后一个交易日（日历未覆盖）'
+
+
+def _terminal_note(payload: Dict[str, Any], rule: Dict[str, Any] | None) -> str:
+    """结果终点早于本地最新交易日时的提示：区分「规则终点写死」与「数据滞后」。
+
+    终点晚于或等于本地最新交易日（勾选「到最近交易日」）时不提示；``freshness``
+    有告警才按数据滞后表述，否则明确写清是规则终点，避免被误读成数据没更新。
+    """
+    end = ((payload.get('period_effective') or {}).get('end')
+           or (payload.get('valuation') or {}).get('date'))
+    if not end or not rule or not rule.get('benchmark'):
+        return ''
+    try:
+        from src.quant.strategy_lab.backtest import load_benchmark_close
+
+        latest = max(load_benchmark_close(rule['benchmark']))
+    except Exception:  # noqa: BLE001 - 日历缺失只影响这一行提示
+        return ''
+    if str(end) >= str(latest):
+        return ''
+    warnings = (payload.get('freshness') or {}).get('warnings') or []
+    if warnings:
+        return (f'当前按 {end} 数据计算，本地数据滞后到 {latest}'
+                f'（{len(warnings)} 条告警）；勾选「到最近交易日」可更新')
+    return (f'当前按 {end} 数据计算；终点由规则写死，不是数据滞后。'
+            f'勾选「到最近交易日」可更新到 {latest}')
+
+
+def _holding_text(current: Dict[str, Any]) -> str:
+    """当前实际持仓一行文本：代码 + 权重 + 数量（信号块已替代持仓小表）。"""
+    weights = (current or {}).get('weights') or {}
+    positions = (current or {}).get('positions') or {}
+    parts = []
+    for code, weight in sorted(weights.items(), key=lambda kv: (-kv[1], kv[0])):
+        qty = positions.get(code)
+        text = f'{code} {float(weight) * 100:.2f}%'
+        if qty is not None:
+            text += f'（{float(qty):,.0f} 份）'
+        parts.append(text)
+    return '；'.join(parts) if parts else '空仓'
+
+
+def _dca_rows(signal: Dict[str, Any],
+              current: Dict[str, Any] | None = None) -> List[tuple]:
+    """定投规则当日信号 → 「项目 / 数值」行：状态、份数、均价、收益率与三个触发价。"""
+    close = float(signal.get('close') or 0.0)
+    held = int(signal.get('tranches') or 0)
+    total = int(signal.get('tranches_total') or 1)
+    avg = signal.get('avg_cost')
+    ret = signal.get('return')
+    next_add = signal.get('next_add_price')
+    observe = signal.get('observe_trigger_price')
+    trail = signal.get('trail_trigger_price')
+    peak = signal.get('peak')
+    if next_add is not None and close > 0:
+        next_text = f'{next_add:.4f}（现价再跌 {(1 - next_add / close) * 100:.2f}%）'
+    elif held >= total:
+        next_text = '—（已满仓）'
+    else:
+        next_text = '—'
+    if observe is not None and close > 0:
+        observe_text = f'{observe:.4f}（现价再涨 {(observe / close - 1) * 100:.2f}%）'
+    elif signal.get('observing'):
+        observe_text = '—（已进入观察期）'
+    else:
+        observe_text = '—'
+    if trail is not None and peak is not None:
+        trail_text = f'{trail:.4f}（自高点 {peak:.4f} 回撤）'
+    else:
+        trail_text = '—（未进入观察期）'
+    return [
+        ('状态', _DCA_STATE_TEXT.get(str(signal.get('state')),
+                                     str(signal.get('state') or '—'))),
+        ('当前持仓', _holding_text(current or {})),
+        ('持仓份数', f'{held} / {total} 份'
+                     f'（{float(signal.get("position") or 0) * 100:.1f}%）'),
+        ('均价', f'{avg:.4f}' if avg is not None else '—'),
+        ('现价', f'{close:.4f}（{signal.get("date") or "—"}）'),
+        ('当前收益率', f'{ret * 100:+.2f}%' if ret is not None else '—'),
+        ('下次补仓价', next_text),
+        ('进入观察期价', observe_text),
+        ('回撤止盈触发价', trail_text),
+    ]
+
+
+def _leg_text(payload: Dict[str, Any], rule: Dict[str, Any] | None) -> str:
+    """当前实际持仓的腿与权重（切换/择时用），腿名取规则 legs 的 label。"""
+    weights = (payload.get('current') or {}).get('weights') or {}
+    labels = {str(leg.get('code')): str(leg.get('label') or leg.get('code'))
+              for leg in (rule or {}).get('legs') or []}
+    parts = []
+    for code, weight in sorted(weights.items(), key=lambda kv: (-kv[1], kv[0])):
+        label = labels.get(code)
+        name = f'{code} {label}' if label and label != code else code
+        parts.append(f'{name} {float(weight) * 100:.2f}%')
+    return '；'.join(parts) if parts else '空仓'
+
+
+def _switch_rows(payload: Dict[str, Any], rule: Dict[str, Any] | None) -> List[tuple]:
+    """切换/择时的当前腿、最近一次信号日与执行日（信号日与成交日可能差一天）。"""
+    marks = [m for m in (payload.get('markers') or []) if m.get('signal_date')]
+    latest = (max(marks, key=lambda m: (str(m.get('signal_date')),
+                                        str(m.get('date'))))
+              if marks else {})
+    rows = [('当前持仓', _leg_text(payload, rule)),
+            ('最近信号日', str(latest.get('signal_date') or '—')),
+            ('执行日', str(latest.get('date') or '—'))]
+    if 'level' in latest:
+        rows.append(('当前档位', f'{latest["level"]}（仓位 '
+                                f'{float(latest.get("position") or 0) * 100:.0f}%）'))
+    return rows
 
 
 def _qss(theme: str) -> str:
@@ -822,7 +944,8 @@ class StrategyLabPage(QWidget):
         self.detail_toggle.setCheckable(True)
         self.detail_toggle.setChecked(False)
         self.detail_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.detail_toggle.setText('▸ 持仓与调仓目标')
+        self._detail_label = '持仓与调仓目标'
+        self.detail_toggle.setText(f'▸ {self._detail_label}')
         self.detail_toggle.toggled.connect(self._on_detail_toggled)
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
@@ -857,24 +980,51 @@ class StrategyLabPage(QWidget):
         use_interactive_columns(self.metrics_table)
         left_layout.addWidget(self.metrics_table, 1)
 
-        # 指标表下方补两块已算好、此前未展示的结果：当期实际持仓与最近一次
-        # 调仓目标。两块放进可折叠容器（默认收起）：隐藏时不参与最小尺寸，
-        # 指标表可见行数与右侧图表宽度与改造前一致；展开时按原形态显示。
+        # 指标表下方补三块已算好、此前未展示的结果：当前信号（仅信号触发类
+        # 规则）、当期实际持仓、最近一次调仓目标。全部放进可折叠容器（默认
+        # 收起）：隐藏时不参与最小尺寸，指标表可见行数与右侧图表宽度与改造前
+        # 一致；展开时按原形态显示。
         self.detail_panel = QWidget()
         detail_layout = QVBoxLayout(self.detail_panel)
         detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(8)
 
+        # 定投 / 择时 / 切换没有固定调仓日，用「当前信号 / 后续操作」替代目标名单
+        self.signal_block = QWidget()
+        signal_layout = QVBoxLayout(self.signal_block)
+        signal_layout.setContentsMargins(0, 0, 0, 0)
+        signal_layout.setSpacing(8)
+        self.signal_title = QLabel('当前信号 / 后续操作')
+        self.signal_title.setObjectName('slSectionTitle')
+        self.signal_note = QLabel('')
+        self.signal_note.setObjectName('slNotes')
+        self.signal_note.setWordWrap(True)
+        self.signal_table = self._build_block_table(_SIGNAL_COLUMNS, visible_rows=3)
+        signal_layout.addWidget(self.signal_title)
+        signal_layout.addWidget(self.signal_note)
+        signal_layout.addWidget(self.signal_table)
+        self.signal_block.setVisible(False)
+        detail_layout.addWidget(self.signal_block)
+
+        self.current_block = QWidget()
+        current_layout = QVBoxLayout(self.current_block)
+        current_layout.setContentsMargins(0, 0, 0, 0)
+        current_layout.setSpacing(8)
         self.current_title = QLabel('当前持仓')
         self.current_title.setObjectName('slSectionTitle')
         self.current_note = QLabel('运行试算后显示')
         self.current_note.setObjectName('slNotes')
         self.current_note.setWordWrap(True)
         self.current_table = self._build_block_table(_CURRENT_COLUMNS)
-        detail_layout.addWidget(self.current_title)
-        detail_layout.addWidget(self.current_note)
-        detail_layout.addWidget(self.current_table)
+        current_layout.addWidget(self.current_title)
+        current_layout.addWidget(self.current_note)
+        current_layout.addWidget(self.current_table)
+        detail_layout.addWidget(self.current_block)
 
+        self.target_block = QWidget()
+        target_layout = QVBoxLayout(self.target_block)
+        target_layout.setContentsMargins(0, 0, 0, 0)
+        target_layout.setSpacing(8)
         self.target_title = QLabel('最近一次调仓目标')
         self.target_title.setObjectName('slSectionTitle')
         self.target_next = QLabel('下次调仓日：运行试算后显示')
@@ -884,10 +1034,11 @@ class StrategyLabPage(QWidget):
         self.target_note.setObjectName('slNotes')
         self.target_note.setWordWrap(True)
         self.target_table = self._build_block_table(_TARGET_COLUMNS)
-        detail_layout.addWidget(self.target_title)
-        detail_layout.addWidget(self.target_next)
-        detail_layout.addWidget(self.target_note)
-        detail_layout.addWidget(self.target_table)
+        target_layout.addWidget(self.target_title)
+        target_layout.addWidget(self.target_next)
+        target_layout.addWidget(self.target_note)
+        target_layout.addWidget(self.target_table)
+        detail_layout.addWidget(self.target_block)
         self.detail_panel.setVisible(False)
         left_layout.addWidget(self.detail_panel)
         split.addWidget(left)
@@ -917,10 +1068,17 @@ class StrategyLabPage(QWidget):
     def _on_detail_toggled(self, checked: bool) -> None:
         """展开 / 收起持仓与调仓目标：收起时完全释放它们占用的布局尺寸。"""
         self.detail_panel.setVisible(checked)
-        self.detail_toggle.setText('▾ 持仓与调仓目标' if checked else '▸ 持仓与调仓目标')
+        self._set_detail_label(self._detail_label)
 
-    def _build_block_table(self, columns: tuple) -> QTableWidget:
-        """持仓 / 目标小表：表头、行高与列交互口径同指标表，固定高 4 行。
+    def _set_detail_label(self, label: str) -> None:
+        """折叠开关文案随规则类型变化（信号规则没有目标名单）。"""
+        self._detail_label = label
+        arrow = '▾' if self.detail_toggle.isChecked() else '▸'
+        self.detail_toggle.setText(f'{arrow} {label}')
+
+    def _build_block_table(self, columns: tuple,
+                           visible_rows: int = _BLOCK_VISIBLE_ROWS) -> QTableWidget:
+        """持仓 / 目标小表：表头、行高与列交互口径同指标表，固定高 N 行。
 
         钉死高度而不是随行数长高：行数超出时在表内滚动，左列高度因此可预期，
         指标表与右侧图表都不会被行数不同的规则顶变形。
@@ -934,7 +1092,7 @@ class StrategyLabPage(QWidget):
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setSelectionMode(QAbstractItemView.NoSelection)
         table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        table.setFixedHeight(HEADER_ROW_HEIGHT + _BLOCK_VISIBLE_ROWS * FIXED_ROW_HEIGHT
+        table.setFixedHeight(HEADER_ROW_HEIGHT + visible_rows * FIXED_ROW_HEIGHT
                             + 2 * table.frameWidth())
         use_interactive_columns(table)
         return table
@@ -1223,6 +1381,7 @@ class StrategyLabPage(QWidget):
             self._fill_metrics({'rebalances': 0})
             self._fill_current({})
             self._fill_targets([], None, self._rule)
+            self._fill_signal({}, self._rule)
             self._plot_curves([], [])
             self._plot_drawdown([])
             self._plot_markers([])
@@ -1239,6 +1398,7 @@ class StrategyLabPage(QWidget):
         latest_day = ((payload.get('valuation') or {}).get('date')
                       or (payload.get('period_effective') or {}).get('end'))
         self._fill_targets(payload.get('targets') or [], latest_day, self._rule)
+        self._fill_signal(payload, self._rule)
         self._plot_curves(payload.get('nav') or [], payload.get('benchmark_curve') or [])
         self._plot_drawdown(payload.get('drawdown') or [])
         self._plot_markers(payload.get('markers') or [])
@@ -1279,6 +1439,47 @@ class StrategyLabPage(QWidget):
         # 合计 496 = 视口 496）。按「合计 + 边框 + 滚动条 + 4px 右侧留白」定最小宽。
         table.setMinimumWidth(columns + 2 * table.frameWidth()
                               + table.verticalScrollBar().sizeHint().width() + 4)
+
+    def _fill_signal(self, payload: Dict[str, Any],
+                     rule: Dict[str, Any] | None = None) -> None:
+        """「当前信号 / 后续操作」：只服务按信号触发的规则（定投 / 择时 / 切换）。
+
+        这些规则没有固定调仓日，「最近一次调仓目标」对它们不可操作，因此
+        目标块整块隐藏，改为展示 payload 已算好的当日信号与触发价位；不在此
+        重算任何信号。选股规则反过来隐藏本块、保留持仓与目标两块。
+        """
+        rule = rule if rule is not None else self._rule
+        kind = (rule or {}).get('rule_type')
+        signal = payload.get('daily_signal') or {}
+        current = payload.get('current') or {}
+        if kind == 'dca_grid' and signal:
+            self.signal_title.setText(
+                f'当前信号 / 后续操作（{signal.get("date") or "—"}）')
+            rows = _dca_rows(signal, current)
+        elif kind in ('asset_switch', 'timing'):
+            self.signal_title.setText('当前信号 / 后续操作')
+            rows = _switch_rows(payload, rule)
+        else:
+            self.signal_block.setVisible(False)
+            self.current_block.setVisible(True)
+            self.target_block.setVisible(True)
+            self._set_detail_label('持仓与调仓目标')
+            return
+        self.signal_block.setVisible(True)
+        # 信号块已含当前持仓（腿 + 权重 + 数量），持仓小表整块让位，避免重复
+        # 占高把指标表压到 0 行
+        self.current_block.setVisible(False)
+        self.target_block.setVisible(False)
+        self._set_detail_label('当前信号与持仓')
+        note = _terminal_note(payload, rule)
+        self.signal_note.setText(note)
+        self.signal_note.setVisible(bool(note))
+        self._fill_block_table(
+            self.signal_table,
+            [((name, False), (value, False)) for name, value in rows])
+        self.signal_table.setFixedHeight(
+            HEADER_ROW_HEIGHT + len(rows) * FIXED_ROW_HEIGHT
+            + 2 * self.signal_table.frameWidth())
 
     def _fill_current(self, current: Dict[str, Any]) -> None:
         """当前持仓：数量取引擎最终持仓，权重取估值日收盘价折算，按权重降序。
