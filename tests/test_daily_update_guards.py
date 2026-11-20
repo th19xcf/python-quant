@@ -176,11 +176,13 @@ def test_factor_step_skips_when_aligned(tmp_path):
 
 def test_step_plan_keeps_hard_order_and_new_steps():
     keys = [key for key, _, _ in du.STEP_PLAN]
-    assert len(keys) == 19
+    assert len(keys) == 22
     assert keys[-2:] == ['backup', 'gate']
     assert keys.index('build') < keys.index('fund_quote') < keys.index('factor')
     assert keys.index('dividend') < keys.index('sw_index') < keys.index('clean_set')
+    assert keys.index('factor_panel') < keys.index('b_topn_picks') < keys.index('manifest')
     assert not {key: critical for key, _, critical in du.STEP_PLAN}['sw_index']
+    assert not {key: critical for key, _, critical in du.STEP_PLAN}['b_topn_picks']
     assert all(critical for key, _, critical in du.STEP_PLAN
                if key in {'fund_quote', 'factor'})
 

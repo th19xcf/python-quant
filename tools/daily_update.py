@@ -25,14 +25,16 @@
     12. 估值增量        tools/collect_financials.py --only valuation --since auto
     13. 因子面板增量    tools/factor_panel.py --apply --mode incremental --date <目标日>
                        （只算当日截面，按 signal_date 分区 upsert；非致命，失败只告警）
-    14. 市场宽度增量    src.data.services.breadth_service.refresh
-    15. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
-    16. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
-    17. 洁净集快照      python -m src.data.quality.clean_set build
-    18. 保鲜体检        src.data.quality.freshness_check --summary
-    19. 版本记录        src.data.data_version（失败只告警，不改数据）
-    20. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
-    21. 门禁            tools/daily_data_gate.py（必须在备份之后）
+    14. B 候选名单      tools/b_topn_picks.py --date <目标日>（仅目标日为月末调仓日
+                       时产出：申万一级行业内前 2 → 合并前 50 等权；只写 reports/）
+    15. 市场宽度增量    src.data.services.breadth_service.refresh
+    16. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
+    17. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
+    18. 洁净集快照      python -m src.data.quality.clean_set build
+    19. 保鲜体检        src.data.quality.freshness_check --summary
+    20. 版本记录        src.data.data_version（失败只告警，不改数据）
+    21. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
+    22. 门禁            tools/daily_data_gate.py（必须在备份之后）
 
 口径与边界::
 
@@ -232,6 +234,7 @@ STEP_PLAN: tuple[tuple[str, str, bool], ...] = (
     ('basic', '名录每日检查（fund / index）', False),
     ('valuation', '全市场估值增量', False),
     ('factor_panel', '因子面板增量（当日截面按 signal_date 分区 upsert）', False),
+    ('b_topn_picks', 'B 股东盈余比候选名单（月末调仓日：行业内前 2 → 前 50 等权）', False),
     ('breadth', '市场宽度增量', False),
     ('pool', '候选池周更', False),
     ('manifest', 'manifest 回写与校验', True),
@@ -721,6 +724,31 @@ def _step_factor_panel(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str
          '--apply', '--mode', 'incremental', '--date', plan.latest.isoformat(),
          '--store-root', str(plan.root)], '因子面板增量')
     return code == 0, f'{plan.latest} 当日截面 | rc={code}'
+
+
+def _is_month_end_signal(root: Path, day: date) -> bool:
+    """``day`` 是否为当月最后一个交易日（下一交易日落到下个月）。"""
+    from src.data.trading_calendar import next_trading_day  # noqa: PLC0415
+
+    nxt = next_trading_day(day, root)
+    return nxt is None or (nxt.year, nxt.month) != (day.year, day.month)
+
+
+def _step_b_topn_picks(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    """B 股东盈余比候选名单（非致命）：只在信号日为月末调仓日时产出。
+
+    名单 = 申万一级行业内 B 前 2 只 → 合并取前 50 只等权，只写 ``reports/``，
+    不碰 ``data/``、不产生任何交易指令。非调仓日直接跳过，不落盘。
+    """
+    if args.skip_b_topn_picks:
+        return True, '已跳过（--skip-b-topn-picks）'
+    if not _is_month_end_signal(plan.root, plan.latest):
+        return True, f'{plan.latest} 非月末调仓日，跳过'
+    code = _run_module(
+        [sys.executable, str(ROOT / 'tools' / 'b_topn_picks.py'),
+         '--date', plan.latest.isoformat(),
+         '--store-root', str(plan.root)], 'B 候选名单')
+    return code == 0, f'{plan.latest} 月末调仓日 | rc={code}'
 
 
 def _run_breadth(plan: _Plan) -> tuple[bool, str]:
@@ -1498,6 +1526,7 @@ def _step_list(plan: _Plan, args: argparse.Namespace,
         'basic': lambda: _step_basic(plan, args),
         'valuation': lambda: _run_valuation(plan, args),
         'factor_panel': lambda: _step_factor_panel(plan, args),
+        'b_topn_picks': lambda: _step_b_topn_picks(plan, args),
         'breadth': lambda: _run_breadth(plan),
         'pool': lambda: _step_pool(plan, args),
         'manifest': lambda: _step_manifest(plan, args, state),
@@ -1563,6 +1592,14 @@ def _factor_panel_skip_note(args: argparse.Namespace) -> str:
     return '  ← 只算目标日截面，按 signal_date 分区 upsert'
 
 
+def _b_topn_skip_note(plan: _Plan, args: argparse.Namespace) -> str:
+    if args.skip_b_topn_picks:
+        return '  ← 本轮跳过（--skip-b-topn-picks）'
+    if not _is_month_end_signal(plan.root, plan.latest):
+        return f'  ← {plan.latest} 非月末调仓日，跳过'
+    return '  ← 月末调仓日，产出行业内前 2 → 合并前 50 等权'
+
+
 def _factor_skip_note(plan: _Plan, args: argparse.Namespace) -> str:
     if args.skip_factor_refresh:
         return '  ← 本轮跳过（--skip-factor-refresh）'
@@ -1573,7 +1610,8 @@ def _factor_skip_note(plan: _Plan, args: argparse.Namespace) -> str:
     return f'  ← 个股 {stock_stale} 只 / 基金 {fund_stale} 只待增量重算'
 
 
-def _skip_note(key: str, plan: _Plan, args: argparse.Namespace) -> str:
+def _skip_note(key: str, plan: _Plan, args: argparse.Namespace) -> str:  # noqa: C901
+    """dry-run 每步的跳过/口径提示（按步骤键逐条分支，拆函数反而更难对读）。"""
     if key == 'fill' and not args.allow_remote:
         return '  ← 本轮跳过（未加 --allow-remote）'
     if key == 'fund_quote':
@@ -1599,6 +1637,8 @@ def _skip_note(key: str, plan: _Plan, args: argparse.Namespace) -> str:
         return '  ← 本轮跳过'
     if key == 'factor_panel':
         return _factor_panel_skip_note(args)
+    if key == 'b_topn_picks':
+        return _b_topn_skip_note(plan, args)
     if key == 'st' and args.skip_st_refresh:
         return '  ← 本轮跳过'
     if key == 'basic' and (args.skip_basic_refresh
@@ -1688,6 +1728,8 @@ def main(argv: list[str] | None = None) -> int:
                         help='跳过全市场日频估值增量（collect_financials.py --only valuation）')
     parser.add_argument('--skip-factor-panel', action='store_true',
                         help='跳过因子面板增量（tools/factor_panel.py --mode incremental）')
+    parser.add_argument('--skip-b-topn-picks', action='store_true',
+                        help='跳过 B 股东盈余比候选名单（仅月末调仓日产出，只写 reports/）')
     parser.add_argument('--skip-basic-refresh', action='store_true',
                         help='跳过 fund_basic / index_basic 名录每日检查')
     parser.add_argument('--basic-refresh-days', type=int, default=DEFAULT_BASIC_REFRESH_DAYS,
