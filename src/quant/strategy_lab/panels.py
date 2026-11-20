@@ -43,18 +43,18 @@ FINANCIAL_COLUMNS: Dict[str, str] = {
 VALUATION_COLUMNS = ('pe', 'pb', 'ps', 'dv_ratio', 'total_mv', 'circ_mv')
 BAR_COLUMNS = ('close', 'pct_chg', 'volume', 'amount')
 
-#: 周频因子面板（研究侧已冻结的 base_rebal）与 2018 年前估值补丁
-SF_BASE = ROOT / '_staging/factor_candidates_20261111/base_rebal.parquet'
-SF_PATCH = ROOT / 'data/local_store/meta/financials/valuation_pre2018_patch.parquet'
+#: 正式日频因子面板（1990-12-19 ~ 2026-11-19）
+FACTOR_PANEL = ROOT / 'data/local_store/factors/factor_panel.parquet'
 INDUSTRY_PIT = ROOT / 'data/local_store/meta/industry_pit/industry_pit_sw.parquet'
-#: 字段 key → base_rebal 列名
+#: 字段 key → factor_panel 列名
 SF_COLUMNS: Dict[str, str] = {
-    'ff_bp': 'ff_value_bp',
-    'ff_ep': 'v_ep',
-    'ff_dy': 'ff_div_yield',
-    'ff_roe_ttm': 'q_roe_ttm',
-    'ff_accruals': 'q_accruals',
-    'ff_gross_margin': 'q_gross_margin',
+    'ff_bp': 'bp',
+    'ff_ep': 'ep',
+    'ff_dy': 'dy',
+    'ff_roe_ttm': 'roe_ttm',
+    'ff_accruals': 'accruals',
+    'ff_gross_margin': 'gross_margin',
+    'cfp_ttm': 'b_ocf_ttm',
 }
 #: 合成分：价值三项与质量三项（质量里应计利润取负向 = 1 − 分位）
 VALUE_FACTORS = ('ff_bp', 'ff_ep', 'ff_dy')
@@ -344,26 +344,14 @@ class FieldPanels:
                 panel[day][code] = float(p / e * 100.0)
         return panel
 
-    # -- 周频因子面板 / 行业 PIT / 合成分位 --------------------------------
+    # -- 正式日频因子面板 / 行业 PIT / 合成分位 --------------------------------
     def _ensure_base(self) -> Dict[str, Dict[str, tuple[np.ndarray, np.ndarray]]]:
-        """base_rebal 周频面板 + 2018 年前估值补丁（只读，一次运行只读一次）。"""
+        """正式日频因子面板（只读，一次运行只读一次）。"""
         if self._base is None:
             factor_cols = list(SF_COLUMNS.values())
-            base = pl.read_parquet(SF_BASE).select(
-                [pl.col('date').cast(pl.Date), pl.col('ts_code'),
-                 *[pl.col(c).cast(pl.Float64) for c in factor_cols]])
-            patch = pl.read_parquet(SF_PATCH, columns=['ts_code', 'trade_date', 'bp', 'dp']).select([
-                pl.col('trade_date').cast(pl.Date).alias('date'), pl.col('ts_code'),
-                pl.col('bp').cast(pl.Float64).alias('_patch_bp'),
-                pl.col('dp').cast(pl.Float64).alias('_patch_dp')])
-            base = base.join(patch, on=['ts_code', 'date'], how='left')
-            old = pl.col('date') < pl.lit(date(2018, 1, 1))
-            base = base.with_columns([
-                pl.when(old).then(pl.col('_patch_bp'))
-                .otherwise(pl.col('ff_value_bp')).alias('ff_value_bp'),
-                pl.when(old).then(pl.col('_patch_dp') / 100.0)
-                .otherwise(pl.col('ff_div_yield')).alias('ff_div_yield'),
-            ])
+            base = pl.scan_parquet(FACTOR_PANEL).select(
+                [pl.col('signal_date').cast(pl.Date).alias('date'), pl.col('ts_code'),
+                 *[pl.col(c).cast(pl.Float64) for c in factor_cols]]).collect()
             self._base = {col: build_asof_frame(base.select(['ts_code', 'date', col]), col,
                                                 date_col='date')
                           for col in factor_cols}
@@ -372,13 +360,12 @@ class FieldPanels:
 
     def _base_factor_panel(self, key: str) -> Dict[date, Dict[str, float]]:
         series = self._ensure_base()[SF_COLUMNS[key]]
-        scale = 100.0 if key == 'ff_dy' else 1.0
         panel = self._empty()
         for day in self.ctx.days:
             for code in self.ctx.quoted[day]:
                 value = asof_lookup(series.get(code), day)
                 if value is not None:
-                    panel[day][code] = value * scale
+                    panel[day][code] = value
         logger.info('面板 {}：{} 个调仓日', key, len(panel))
         return panel
 
