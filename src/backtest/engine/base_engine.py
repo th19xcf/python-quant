@@ -36,7 +36,12 @@ from src.backtest.performance.performance_analyzer import PerformanceAnalyzer
 from src.backtest.strategies.base_strategy import BaseStrategy
 from src.backtest.visualization.backtest_visualizer import BacktestVisualizer
 from src.risk import RiskEngine, single_asset_risk_engine
-from src.tech_analysis.indicators.formulas import atr_expr, macd_exprs, rsi_expr
+from src.tech_analysis.indicators.formulas import (
+    atr_expr,
+    macd_exprs,
+    rsi_expr,
+    supertrend,
+)
 
 DataFrameType = Union[pl.DataFrame, pl.LazyFrame, pd.DataFrame, Any]
 
@@ -200,16 +205,21 @@ class BaseBacktestEngine:
             macd, macd_signal, macd_hist            多因子 / MACD 策略
             rsi, rsi_{period}                       均值回归 / 多因子
             atr                                     多因子
+            supertrend, st_lower, st_upper, st_dir  Supertrend（路径依赖，逐行递推）
 
         算完立即自检必需因子列；缺失即抛 ``BacktestInputContractError``，
         避免策略读到 None 后恒返回 hold、回测静默空跑。
         """
         close_col = self.input_contract.column(ROLE_CLOSE)
+        high_col = self.input_contract.column(ROLE_HIGH)
+        low_col = self.input_contract.column(ROLE_LOW)
         close = pl.col(close_col)
 
         short_w = int(strategy.params.get('short_window', 10))
         long_w = int(strategy.params.get('long_window', 20))
         rsi_w = int(strategy.params.get('rsi_period', 14))
+        st_period = int(strategy.params.get('st_period', 10))
+        st_multiplier = float(strategy.params.get('st_multiplier', 3.0))
 
         exprs = []
 
@@ -235,12 +245,20 @@ class BaseBacktestEngine:
 
         # ATR（多因子可能用到）：统一走共享公式层
         exprs.append(atr_expr(
-            self.input_contract.column(ROLE_HIGH),
-            self.input_contract.column(ROLE_LOW),
+            high_col,
+            low_col,
             close_col, 14,
         ).alias(FACTOR_CONTRACT.column(ROLE_ATR)))
 
         result = df.with_columns(exprs)
+
+        # Supertrend：轨道带路径依赖（每行需要上一行的轨道与方向），
+        # 无法用无状态 Expr 表达，故单独调用 supertrend() 一次性追加四列
+        result = supertrend(
+            result, high_col, low_col, close_col,
+            period=st_period, multiplier=st_multiplier,
+        )
+
         validate_factor_frame(
             result,
             ma_columns=(ma_column(short_w), ma_column(long_w)),

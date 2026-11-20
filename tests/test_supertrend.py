@@ -11,6 +11,8 @@ Supertrend 指标测试
 全部使用构造数据，不依赖数据库与网络。
 """
 
+import datetime
+
 import numpy as np
 import polars as pl
 
@@ -112,3 +114,69 @@ def test_multiplier_zero_bounds_pinned_to_hl2():
 
     assert (out['st_lower'][9:].to_numpy() >= hl2 - 1e-9).all()
     assert (out['st_upper'][9:].to_numpy() <= hl2 + 1e-9).all()
+
+
+# ---------------------------------------------------------------------------
+# 回测引擎接线层：_precompute_indicators 与 SupertrendStrategy 信号逻辑
+# ---------------------------------------------------------------------------
+
+
+def _make_bar_frame(close: np.ndarray) -> pl.DataFrame:
+    """构造满足 BAR_CONTRACT 的最小 OHLCV + date 帧（用于引擎预计算测试）"""
+    close = np.asarray(close, dtype=float)
+    high = close * 1.01
+    low = close * 0.99
+    volume = np.full_like(close, 1000.0)
+    n = len(close)
+    start = datetime.date(2025, 1, 1)
+    end = start + datetime.timedelta(days=n - 1)
+    dates = pl.date_range(start, end, eager=True)
+    return pl.DataFrame({
+        'date': dates,
+        'open': close * 0.998,
+        'high': high,
+        'low': low,
+        'close': close,
+        'volume': volume,
+    })
+
+
+def test_engine_precompute_adds_supertrend_columns():
+    """BaseBacktestEngine._precompute_indicators 必须追加 Supertrend 四列，
+    且 ATR 种子期前 period-1 行 st_dir 为 0"""
+    from src.backtest.engine.base_engine import BaseBacktestEngine
+    from src.backtest.strategies.supertrend_strategy import SupertrendStrategy
+
+    rng = np.random.default_rng(42)
+    df = _make_bar_frame(100.0 + np.cumsum(rng.normal(0, 2.0, 60)))
+    strat = SupertrendStrategy()
+    st_period = strat.params['st_period']
+    engine = object.__new__(BaseBacktestEngine)
+    result = BaseBacktestEngine._precompute_indicators(engine, df, strat)
+
+    for col in ('supertrend', 'st_lower', 'st_upper', 'st_dir'):
+        assert col in result.columns, f'缺列 {col}'
+    st_dir = result['st_dir'].to_numpy()
+    assert (st_dir[:st_period - 1] == 0).all(), \
+        f'ATR 种子期前 {st_period - 1} 行应为 0，实得 {st_dir[:st_period - 1]}'
+    # 种子期末行（period-1）已触发第一次方向判定
+    assert st_dir[st_period - 1] != 0, '种子期末行应已完成首次方向判定'
+    # 种子期后方向必须有变化（随机游走必然穿越轨道）
+    assert np.any(st_dir[st_period - 1:] != 0), 'st_dir 全程为 0，Supertrend 未触发'
+
+
+def test_supertrend_strategy_signal_flips():
+    """向量化信号：st_dir 翻 +1 发 buy，翻 -1 发 sell"""
+    from src.backtest.strategies.supertrend_strategy import SupertrendStrategy
+
+    df = pl.DataFrame({'st_dir': [0] * 5 + [-1] * 5 + [1] * 5 + [1] * 5 + [-1] * 5 + [-1] * 5})
+    strat = SupertrendStrategy()
+    # warmup 强制关（st_period=0 避免任何行被 warmup 吞掉）
+    strat.params['st_period'] = 0
+    sig = strat.generate_signals_vectorized(df).to_list()
+
+    buy_idx = [i for i, s in enumerate(sig) if s == 'buy']
+    sell_idx = [i for i, s in enumerate(sig) if s == 'sell']
+    # 翻 +1 在 index=10（-1→1）、翻 -1 在 index=20（1→-1）
+    assert buy_idx == [10]
+    assert sell_idx == [20]

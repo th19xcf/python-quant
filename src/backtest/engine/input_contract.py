@@ -51,6 +51,10 @@ ROLE_MACD_SIGNAL = 'macd_signal'
 ROLE_MACD_HIST = 'macd_hist'
 ROLE_RSI = 'rsi'
 ROLE_ATR = 'atr'
+ROLE_SUPER_TREND = 'supertrend'
+ROLE_ST_LOWER = 'st_lower'
+ROLE_ST_UPPER = 'st_upper'
+ROLE_ST_DIR = 'st_dir'
 
 # ---------------------------------------------------------------------------
 # 财务/估值层语义角色
@@ -206,6 +210,11 @@ FACTOR_CONTRACT = FrameContract('factor', (
     ColumnSpec(ROLE_MACD_HIST, 'macd_hist', True, 'MACD 柱'),
     ColumnSpec(ROLE_RSI, 'rsi', True, 'RSI（默认周期 14）'),
     ColumnSpec(ROLE_ATR, 'atr', True, 'ATR（默认周期 14）'),
+    ColumnSpec(ROLE_SUPER_TREND, 'supertrend', False,
+               'Supertrend 趋势线（多头取下轨、空头取上轨，路径依赖，用 supertrend() 逐行递推）'),
+    ColumnSpec(ROLE_ST_LOWER, 'st_lower', False, 'Supertrend 下轨支撑'),
+    ColumnSpec(ROLE_ST_UPPER, 'st_upper', False, 'Supertrend 上轨压力'),
+    ColumnSpec(ROLE_ST_DIR, 'st_dir', False, 'Supertrend 方向：1 多头 / -1 空头 / 0 未初始化'),
 ))
 
 #: 财务/估值层契约：四张源表各自独立，列以
