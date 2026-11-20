@@ -729,6 +729,9 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'plan_note': plan.note,
         'period_effective': _period_effective(rule, metrics, calendar),
     }
+    # 定投补仓：最后一根 bar 的当日信号（是否补仓/止盈、下次触发价）
+    if plan.daily:
+        payload['daily_signal'] = plan.daily
     if rule['rule_type'] == 'dca_grid':
         metrics.update(_dca_metrics(result, rule, plan, curve))
         hold = _buy_and_hold(rule, engine_data, dividends, st_status)

@@ -128,6 +128,7 @@ def main(argv=None) -> int:
         'skipped': result['skipped'],
         'dividend_coverage': result.get('dividend_coverage'),
         'freshness': result.get('freshness'),
+        'daily_signal': result.get('daily_signal'),
         'targets': len(result.get('targets') or []),
         'current_date': (result.get('current') or {}).get('date'),
         'current_holdings': len((result.get('current') or {}).get('positions') or {}),

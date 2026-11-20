@@ -45,6 +45,8 @@ class Plan:
     markers: List[Dict[str, Any]]
     leg_curves: List[Dict[str, Any]]
     note: str
+    #: 定投补仓的当日信号（最后一根 bar 收盘判定，不写调度）；其它规则为 None
+    daily: Dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +405,87 @@ def build_timing_plan(rule: Dict[str, Any]) -> Plan:
 # dca_grid
 # ---------------------------------------------------------------------------
 
+def _dca_decision(close: float, *, held: int, fills: List[float],
+                  ref: float | None, observing: bool, peak: float,
+                  restart: bool, tranches: int, add_drop: float,
+                  take_profit: float, trail: float) -> Dict[str, Any]:
+    """按当日收盘价判定动作与观察期迁移（纯函数：不写调度、不改持仓）。
+
+    ``signal`` 取 ``initial`` / ``restart`` / ``add`` / ``take_profit`` /
+    ``observe`` / ``hold``：前两者待次日开盘建仓，``add`` 待次日开盘补 1 份，
+    ``take_profit`` 待次日开盘清仓，``observe`` 表示当日收盘首次越过止盈阈值、
+    进入观察期（不减仓），``hold`` 为无动作。判定顺序与逐日状态机一致：
+    先判止盈回撤（触发即清仓），再看补仓，最后才落到观察期进入。
+    """
+    if restart:
+        return {'signal': 'restart', 'observing': False, 'peak': 0.0,
+                'avg_cost': None, 'return': None}
+    if held == 0:
+        return {'signal': 'initial', 'observing': False, 'peak': 0.0,
+                'avg_cost': None, 'return': None}
+    avg_cost = len(fills) / sum(1.0 / price for price in fills)
+    ret = close / avg_cost - 1.0
+    entered = False
+    if not observing:
+        if ret >= take_profit:
+            observing, peak, entered = True, close, True
+    else:
+        peak = max(peak, close)
+        if close <= peak * (1.0 - trail):
+            return {'signal': 'take_profit', 'observing': True, 'peak': peak,
+                    'avg_cost': avg_cost, 'return': ret}
+    if held < tranches and ref is not None and close <= ref * (1.0 - add_drop):
+        signal = 'add'
+    elif entered:
+        signal = 'observe'
+    else:
+        signal = 'hold'
+    return {'signal': signal, 'observing': observing, 'peak': peak,
+            'avg_cost': avg_cost, 'return': ret}
+
+
+def _dca_daily_payload(day: date, close: float, decision: Dict[str, Any], *,
+                       held: int, ref: float | None, tranches: int,
+                       add_drop: float, take_profit: float,
+                       trail: float) -> Dict[str, Any]:
+    """把最后一根 bar 的判定结果整理成「当日信号」：状态 + 下次触发价位。
+
+    价位全部由现有规则参数推导，不引入新参数：下一次补仓价
+    ``ref × (1 - add_drop_pct)``，观察期回撤触发价 ``peak × (1 - trail_drop_pct)``，
+    进入观察期价 ``avg_cost × (1 + take_profit_pct)``。
+    """
+    signal = decision['signal']
+    observing = bool(decision['observing'])
+    avg_cost = decision['avg_cost']
+    action = {'initial': 'buy', 'restart': 'buy', 'add': 'buy',
+              'take_profit': 'sell'}.get(signal)
+    if signal in ('initial', 'restart', 'take_profit'):
+        next_add = None
+    elif held < tranches and ref is not None:
+        next_add = ref * (1.0 - add_drop)
+    else:
+        next_add = None
+    observe_trigger = (avg_cost * (1.0 + take_profit)
+                       if avg_cost is not None and not observing else None)
+    trail_trigger = decision['peak'] * (1.0 - trail) if observing else None
+    ret = decision['return']
+    return {
+        'date': str(day), 'close': round(close, 4),
+        'state': signal, 'action': action,
+        'tranches': held, 'tranches_total': tranches,
+        'position': round(held / tranches, 6),
+        'avg_cost': round(avg_cost, 4) if avg_cost is not None else None,
+        'return': round(ret, 6) if ret is not None else None,
+        'observing': observing,
+        'peak': round(decision['peak'], 4) if observing else None,
+        'next_add_price': round(next_add, 4) if next_add is not None else None,
+        'observe_trigger_price': (round(observe_trigger, 4)
+                                  if observe_trigger is not None else None),
+        'trail_trigger_price': (round(trail_trigger, 4)
+                                if trail_trigger is not None else None),
+    }
+
+
 def build_dca_plan(rule: Dict[str, Any]) -> Plan:
     """定投补仓 + 止盈回撤清仓的调度表（逐日状态机，不撮合、不算净值）。
 
@@ -415,6 +498,10 @@ def build_dca_plan(rule: Dict[str, Any]) -> Plan:
       （即买入价的调和平均）；
     - 收益率超过 ``take_profit_pct`` 进入观察期并记录此后收盘最高点，
       自最高点回撤 ``trail_drop_pct`` 一次性清仓，次日起从 1 份重启。
+
+    最后一根 bar 没有「次日开盘」可成交，因此不写调度、不产生成交，只用同一
+    套判定算出当日信号（是否可补仓 / 是否进入观察期 / 是否触发止盈）与下次
+    触发价位，供 ``daily_signal`` 直接回答「今天该做什么」。
     """
     start = date.fromisoformat(rule['period']['start'])
     end = date.fromisoformat(rule['period']['end'])
@@ -464,40 +551,49 @@ def build_dca_plan(rule: Dict[str, Any]) -> Plan:
         if day < start or i + 1 >= len(days):
             continue
         close = closes[i]
-        if restart:
+        decision = _dca_decision(
+            close, held=held, fills=fills, ref=ref, observing=observing,
+            peak=peak, restart=restart, tranches=tranches, add_drop=add_drop,
+            take_profit=take_profit, trail=trail)
+        signal = decision['signal']
+        if signal == 'restart':
             _buy(i, 'restart')
             restart = False
             continue
-        if held == 0:
+        if signal == 'initial':
             _buy(i, 'initial')
             continue
-        avg_cost = len(fills) / sum(1.0 / price for price in fills)
-        ret = close / avg_cost - 1.0
-        if not observing:
-            if ret >= take_profit:
-                observing = True
-                peak = close
-        else:
-            peak = max(peak, close)
-            if close <= peak * (1.0 - trail):
-                schedules.setdefault(code, {})[day] = {
-                    'action': 'sell', 'fraction': 1.0}
-                markers.append({
-                    'date': str(days[i + 1]), 'signal_date': str(day),
-                    'reason': 'take_profit', 'tranches': held,
-                    'position': round(held / tranches, 6),
-                    'price': round(opens[i + 1], 4),
-                    'peak': round(peak, 4), 'return': round(ret, 6),
-                    'drawdown_from_peak': round(close / peak - 1.0, 6),
-                })
-                exits += 1
-                held, fills, ref = 0, [], None
-                observing, peak = False, 0.0
-                restart = True
-                continue
-        if held < tranches and ref is not None and close <= ref * (1.0 - add_drop):
+        observing, peak = decision['observing'], decision['peak']
+        if signal == 'take_profit':
+            schedules.setdefault(code, {})[day] = {
+                'action': 'sell', 'fraction': 1.0}
+            markers.append({
+                'date': str(days[i + 1]), 'signal_date': str(day),
+                'reason': 'take_profit', 'tranches': held,
+                'position': round(held / tranches, 6),
+                'price': round(opens[i + 1], 4),
+                'peak': round(peak, 4), 'return': round(decision['return'], 6),
+                'drawdown_from_peak': round(close / peak - 1.0, 6),
+            })
+            exits += 1
+            held, fills, ref = 0, [], None
+            observing, peak = False, 0.0
+            restart = True
+            continue
+        if signal == 'add':
             _buy(i, 'add')
             adds += 1
+
+    daily: Dict[str, Any] | None = None
+    if days and days[-1] >= start:
+        close = closes[-1]
+        decision = _dca_decision(
+            close, held=held, fills=fills, ref=ref, observing=observing,
+            peak=peak, restart=restart, tranches=tranches, add_drop=add_drop,
+            take_profit=take_profit, trail=trail)
+        daily = _dca_daily_payload(
+            days[-1], close, decision, held=held, ref=ref, tranches=tranches,
+            add_drop=add_drop, take_profit=take_profit, trail=trail)
 
     if not markers:
         raise PlanError(
@@ -510,7 +606,7 @@ def build_dca_plan(rule: Dict[str, Any]) -> Plan:
     note = (f'交易日 {len(days)} 天，{tranches} 份制；补仓 {adds} 次，'
             f'止盈清仓 {exits} 次，期末持有 {held} 份')
     return Plan(data=data, schedules=schedules, markers=markers,
-                leg_curves=leg_curves, note=note)
+                leg_curves=leg_curves, note=note, daily=daily)
 
 
 def build_plan(rule: Dict[str, Any]) -> Plan:
