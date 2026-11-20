@@ -23,14 +23,16 @@
     10. ST 快照与区间表  src.data.risk_flags refresh + src.data.st_history build
     11. 名录每日检查    src.main --update-fund / --update-index（有变更才落盘）
     12. 估值增量        tools/collect_financials.py --only valuation --since auto
-    13. 市场宽度增量    src.data.services.breadth_service.refresh
-    14. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
-    15. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
-    16. 洁净集快照      python -m src.data.quality.clean_set build
-    17. 保鲜体检        src.data.quality.freshness_check --summary
-    18. 版本记录        src.data.data_version（失败只告警，不改数据）
-    19. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
-    20. 门禁            tools/daily_data_gate.py（必须在备份之后）
+    13. 因子面板增量    tools/factor_panel.py --apply --mode incremental --date <目标日>
+                       （只算当日截面，按 signal_date 分区 upsert；非致命，失败只告警）
+    14. 市场宽度增量    src.data.services.breadth_service.refresh
+    15. 候选池周更      tools/build_multi_asset_etf_pool.py --apply（未到期不跑）
+    16. 回写与校验      manifest 回写 → 逐件 rows/bytes/sha256 对账 → 预期差集为 0
+    17. 洁净集快照      python -m src.data.quality.clean_set build
+    18. 保鲜体检        src.data.quality.freshness_check --summary
+    19. 版本记录        src.data.data_version（失败只告警，不改数据）
+    20. 备份            tools/backup_critical_assets.py（必须在所有写 data/ 的步骤之后）
+    21. 门禁            tools/daily_data_gate.py（必须在备份之后）
 
 口径与边界::
 
@@ -59,6 +61,9 @@
     - 申万 801xxx 是「源端只更新到此为止」的已知滞后家族：本步只追加、不追
       T 日；侧车 ``tail_gap`` 每次刷新（无新增也刷新），保鲜体检凭它判「已知
       源端滞后」而不计断裂，源端补齐后自动恢复为正常判据。
+    - 因子面板增量排在估值增量之后：面板以 ``valuation_daily`` 为驱动表，估值
+      当日未落盘时算不出当日截面；放前面会让面板长期落后一个交易日。该步只算
+      目标日截面并按 ``signal_date`` 分区 upsert，失败只告警、不阻断后续步骤。
     - 默认不打印各步过程日志，失败时才回显该步末尾输出；``--verbose`` 打开
       INFO/DEBUG 与子进程原样输出。
 
@@ -149,6 +154,11 @@ AUX_VALUATION_OUTPUTS = (
     'meta/financials/valuation_daily.parquet',
     'meta/financials/parts/progress.json',
 )
+#: 因子面板增量会写的件（当日截面按 signal_date 分区 upsert）。
+AUX_FACTOR_PANEL_OUTPUTS = (
+    'factors/factor_panel.parquet',
+    'factors/factor_panel.manifest.json',
+)
 #: 复权因子刷新会写的件（个股 + 基金快照、sidecar 与目录级 manifest；
 #: 分块按 ``factors/rebuild/`` 前缀计入）。行情副本由同一步一并重写。
 AUX_FACTOR_OUTPUTS = (
@@ -221,6 +231,7 @@ STEP_PLAN: tuple[tuple[str, str, bool], ...] = (
     ('st', 'ST 快照与区间表', False),
     ('basic', '名录每日检查（fund / index）', False),
     ('valuation', '全市场估值增量', False),
+    ('factor_panel', '因子面板增量（当日截面按 signal_date 分区 upsert）', False),
     ('breadth', '市场宽度增量', False),
     ('pool', '候选池周更', False),
     ('manifest', 'manifest 回写与校验', True),
@@ -694,6 +705,22 @@ def _run_valuation(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     after = _valuation_last_date(plan.root)
     ok = code == 0 and after is not None and after >= plan.latest
     return ok, f'末日 {last}→{after or "-"} | rc={code}'
+
+
+def _step_factor_panel(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    """因子面板增量（非致命）：只算目标交易日截面，按 signal_date 分区 upsert。
+
+    面板以 ``valuation_daily`` 为驱动表，故排在本步之前的估值增量之后；该日
+    无估值快照（非交易日/估值未更新）时脚本自己跳过并返回 0，不写空分区。
+    """
+    if args.skip_factor_panel:
+        return True, '已跳过（--skip-factor-panel）'
+    plan.expected.update(AUX_FACTOR_PANEL_OUTPUTS)
+    code = _run_module(
+        [sys.executable, str(ROOT / 'tools' / 'factor_panel.py'),
+         '--apply', '--mode', 'incremental', '--date', plan.latest.isoformat(),
+         '--store-root', str(plan.root)], '因子面板增量')
+    return code == 0, f'{plan.latest} 当日截面 | rc={code}'
 
 
 def _run_breadth(plan: _Plan) -> tuple[bool, str]:
@@ -1470,6 +1497,7 @@ def _step_list(plan: _Plan, args: argparse.Namespace,
         'st': lambda: _step_st(plan, args),
         'basic': lambda: _step_basic(plan, args),
         'valuation': lambda: _run_valuation(plan, args),
+        'factor_panel': lambda: _step_factor_panel(plan, args),
         'breadth': lambda: _run_breadth(plan),
         'pool': lambda: _step_pool(plan, args),
         'manifest': lambda: _step_manifest(plan, args, state),
@@ -1529,6 +1557,12 @@ def _dividend_monthly_skip_note(args: argparse.Namespace) -> str:
     return '  ← 5 阶段串行：季度/半年度除权除息 → 月度分红 → 因子重建'
 
 
+def _factor_panel_skip_note(args: argparse.Namespace) -> str:
+    if args.skip_factor_panel:
+        return '  ← 本轮跳过（--skip-factor-panel）'
+    return '  ← 只算目标日截面，按 signal_date 分区 upsert'
+
+
 def _factor_skip_note(plan: _Plan, args: argparse.Namespace) -> str:
     if args.skip_factor_refresh:
         return '  ← 本轮跳过（--skip-factor-refresh）'
@@ -1563,6 +1597,8 @@ def _skip_note(key: str, plan: _Plan, args: argparse.Namespace) -> str:
         return _sw_index_skip_note(args)
     if key == 'valuation' and (args.skip_valuation or not args.allow_remote):
         return '  ← 本轮跳过'
+    if key == 'factor_panel':
+        return _factor_panel_skip_note(args)
     if key == 'st' and args.skip_st_refresh:
         return '  ← 本轮跳过'
     if key == 'basic' and (args.skip_basic_refresh
@@ -1650,6 +1686,8 @@ def main(argv: list[str] | None = None) -> int:
                         help='跳过申万行业指数增量（801xxx 段，只追加不追 T 日）')
     parser.add_argument('--skip-valuation', action='store_true',
                         help='跳过全市场日频估值增量（collect_financials.py --only valuation）')
+    parser.add_argument('--skip-factor-panel', action='store_true',
+                        help='跳过因子面板增量（tools/factor_panel.py --mode incremental）')
     parser.add_argument('--skip-basic-refresh', action='store_true',
                         help='跳过 fund_basic / index_basic 名录每日检查')
     parser.add_argument('--basic-refresh-days', type=int, default=DEFAULT_BASIC_REFRESH_DAYS,

@@ -6,8 +6,13 @@ stock_shares / industry_pit_sw）合成为一张长面板，写入
 
 CLI：
     python tools/factor_panel.py --dry-run           # 只打印行数/因子覆盖
-    python tools/factor_panel.py --apply --date 2026-11-19   # 单日信号日
-    python tools/factor_panel.py --apply             # 全量（valuation_daily 驱动）
+    python tools/factor_panel.py --dry-run --mode incremental --date 2026-11-19  # 只打印当日行数
+    python tools/factor_panel.py --apply --mode incremental --date 2026-11-19    # 当日截面 upsert
+    python tools/factor_panel.py --apply             # 全量（valuation_daily 驱动，历史回补）
+
+增量模式（``--mode incremental``）只计算目标交易日的当日截面，按 ``signal_date``
+分区 upsert：该日期已有分区则覆盖、无则按日期顺序插入，其余分区流式原样搬运，
+不重算历史。写盘一律「临时文件 → ``os.replace``」，失败不破坏原 parquet。
 
 输出 schema：
     ts_code / signal_date / ep / bp / dy / b_ocf_ttm / roe_ttm / accruals
@@ -19,23 +24,30 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import polars as pl
 from loguru import logger
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# ---- 正式表路径（全量本地权威，无 staging 依赖） ----
-VALUATION = ROOT / 'data/local_store/meta/financials/valuation_daily.parquet'
-INCOME = ROOT / 'data/local_store/meta/financials/income.parquet'
-BALANCE = ROOT / 'data/local_store/meta/financials/balance.parquet'
-CASHFLOW = ROOT / 'data/local_store/meta/financials/cashflow.parquet'
-INDUSTRY_PIT = ROOT / 'data/local_store/meta/industry_pit/industry_pit_sw.parquet'
+#: 默认正式表根（全量本地权威，无 staging 依赖）；``--store-root`` 可覆盖。
+DATA_ROOT = ROOT / 'data/local_store'
 
-OUT_PATH = ROOT / 'data/local_store/factors/factor_panel.parquet'
+
+def _paths(base: Path) -> dict[str, Path]:
+    fin = base / 'meta' / 'financials'
+    return {
+        'valuation': fin / 'valuation_daily.parquet',
+        'income': fin / 'income.parquet',
+        'balance': fin / 'balance.parquet',
+        'cashflow': fin / 'cashflow.parquet',
+        'industry': base / 'meta' / 'industry_pit' / 'industry_pit_sw.parquet',
+        'out': base / 'factors' / 'factor_panel.parquet',
+    }
+
 
 # ---- 因子字段注册 ----
 # (输出列名, 计算公式描述, 来源表列表)
@@ -134,13 +146,16 @@ def asof_merge(panel: pl.DataFrame, factor: pl.DataFrame,
 # 主构建流程
 # ---------------------------------------------------------------------------
 
-def build_panel(signal_dates: Optional[list[date]] = None) -> pl.DataFrame:
+def build_panel(signal_dates: list[date] | None = None,
+                root: Path | None = None) -> pl.DataFrame:
     """读正式表 → 合因子 → 输出长面板。
 
     signal_dates: 给定则只保留这些日期；None 则全量（valuation_daily 覆盖）。
+    root: local_store 根，缺省 ``DATA_ROOT``。
     """
+    paths = _paths(root or DATA_ROOT)
     logger.info('读估值驱动表 valuation_daily ...')
-    val = pl.scan_parquet(VALUATION).select([
+    val = pl.scan_parquet(paths['valuation']).select([
         pl.col('ts_code'),
         pl.col('trade_date').cast(pl.Date).alias('signal_date'),
         pl.col('pe').cast(pl.Float64),
@@ -166,7 +181,7 @@ def build_panel(signal_dates: Optional[list[date]] = None) -> pl.DataFrame:
     # ---- 2. TTM 财务表预计算 ----
     # income
     logger.info('预计算 income 单季/TTM ...')
-    inc_raw = pl.read_parquet(INCOME, columns=[
+    inc_raw = pl.read_parquet(paths['income'], columns=[
         'ts_code', 'end_date', 'ann_date',
         'parent_net_profit', 'net_profit', 'revenue', 'gross_profit',
     ]).filter(pl.col('ann_date').is_not_null())
@@ -188,7 +203,7 @@ def build_panel(signal_dates: Optional[list[date]] = None) -> pl.DataFrame:
 
     # cashflow
     logger.info('预计算 cashflow 单季/TTM ...')
-    cf_raw = pl.read_parquet(CASHFLOW, columns=['ts_code', 'end_date', 'ann_date', 'operating_cf'])
+    cf_raw = pl.read_parquet(paths['cashflow'], columns=['ts_code', 'end_date', 'ann_date', 'operating_cf'])
     cf_q = _cum_to_quarterly(cf_raw, 'operating_cf')
     cf_q = cf_q.join(cf_raw.select(['ts_code', 'end_date', 'ann_date']),
                      on=['ts_code', 'end_date'], how='left')
@@ -196,7 +211,7 @@ def build_panel(signal_dates: Optional[list[date]] = None) -> pl.DataFrame:
 
     # balance（直接 asof 取，无需差分）
     logger.info('读 balance ...')
-    bal = pl.read_parquet(BALANCE, columns=['ts_code', 'end_date', 'ann_date', 'total_assets', 'total_equity'])
+    bal = pl.read_parquet(paths['balance'], columns=['ts_code', 'end_date', 'ann_date', 'total_assets', 'total_equity'])
 
     # ---- 3. as-of 合并到面板 ----
     logger.info('asof 合并 income TTM ...')
@@ -241,7 +256,7 @@ def build_panel(signal_dates: Optional[list[date]] = None) -> pl.DataFrame:
 
     # ---- 6. 行业 PIT ----
     logger.info('asof 合并行业 PIT ...')
-    ind = pl.read_parquet(INDUSTRY_PIT, columns=[
+    ind = pl.read_parquet(paths['industry'], columns=[
         'ts_code', 'industry_l1', 'in_date', 'out_date'])
     # 把行业区间展开为每日映射（in_date ≤ signal_date < out_date）
     # 用 conditional asof_join：取 in_date <= signal_date 的最近一条，再校验 out_date
@@ -279,20 +294,173 @@ def build_panel(signal_dates: Optional[list[date]] = None) -> pl.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# 落盘（原子写：临时文件 → os.replace）
+# ---------------------------------------------------------------------------
+
+MANIFEST_SOURCES = [
+    'meta/financials/valuation_daily.parquet',
+    'meta/financials/income.parquet',
+    'meta/financials/balance.parquet',
+    'meta/financials/cashflow.parquet',
+    'meta/industry_pit/industry_pit_sw.parquet',
+]
+
+
+def _write_manifest(path: Path, rows: int, cols: list[str],
+                    day: date | None = None,
+                    day_rows: int | None = None) -> Path:
+    """增量更新 manifest（保留既有字段），同样走临时文件 + 原子替换。"""
+    mf = path.with_suffix('.manifest.json')
+    try:
+        manifest = json.loads(mf.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        manifest = {}
+    now = datetime.now().isoformat()
+    manifest.update({
+        'table': 'factor_panel',
+        'rows': rows,
+        'cols': cols,
+        'updated_at': now,
+        'sources': MANIFEST_SOURCES,
+        'note': '日频因子面板；财报按 ann_date PIT，估值按 trade_date asof',
+    })
+    manifest.setdefault('created_at', now)
+    if day is not None:
+        manifest['last_incremental_date'] = day.isoformat()
+        manifest['last_incremental_rows'] = int(day_rows or 0)
+    tmp = mf.with_name(mf.name + '.tmp')
+    tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n',
+                   encoding='utf-8')
+    os.replace(tmp, mf)
+    return mf
+
+
+def _write_full(panel: pl.DataFrame, path: Path) -> None:
+    """全量重建落盘：先写同目录临时件，成功后原子替换正式件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + '.tmp')
+    try:
+        panel.write_parquet(tmp, compression='zstd')
+        os.replace(tmp, path)
+    except BaseException:
+        # 只清理本函数自建的临时件，不触碰任何正式数据
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _upsert_day(panel: pl.DataFrame, day: date, path: Path) -> tuple[int, int]:
+    """按 ``signal_date`` 分区 upsert：覆盖该日分区，其余行流式搬运。
+
+    返回 (落盘后总行数, 被覆盖的旧分区行数)。不重算历史，也不把整表读进内存：
+    旧表按 ``< day`` / ``> day`` 两段 lazy 扫描与新截面顺序拼接后 ``sink_parquet``，
+    保持原有 (signal_date, ts_code) 升序。
+    """
+    tmp = path.with_name(path.name + '.tmp')
+    replaced = 0
+    if path.is_file():
+        stats = pl.scan_parquet(path).select(
+            pl.len().alias('rows'),
+            (pl.col('signal_date') == day).sum().alias('day_rows'),
+        ).collect()
+        before_rows = int(stats['rows'][0])
+        replaced = int(stats['day_rows'][0] or 0)
+        old = pl.scan_parquet(path)
+        schema = old.collect_schema()
+        new = panel.select([pl.col(name).cast(dtype) for name, dtype in schema.items()])
+        key = pl.col('signal_date')
+        combined = pl.concat([
+            old.filter(key < day),
+            new.lazy(),
+            old.filter(key > day),
+        ], how='vertical')
+        total = before_rows - replaced + new.height
+    else:
+        combined = panel.lazy()
+        total = panel.height
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        combined.sink_parquet(tmp, compression='zstd')
+        os.replace(tmp, path)
+    except BaseException:
+        # 只清理本函数自建的临时件，原 parquet 未被触碰
+        tmp.unlink(missing_ok=True)
+        raise
+    return total, replaced
+
+
+def _log_coverage(panel: pl.DataFrame) -> None:
+    logger.info('行数={} 代码={} 日期={}',
+                panel.height,
+                panel['ts_code'].n_unique(),
+                panel['signal_date'].n_unique())
+    logger.info('列：{}', panel.columns)
+    total = panel.height
+    for col in panel.columns:
+        if col in ('ts_code', 'signal_date', 'industry_l1'):
+            continue
+        n_null = panel[col].null_count()
+        n_non = total - n_null
+        pct = n_non / total * 100 if total else 0
+        logger.info('  {}: {} / {} ({:.1f}%)', col, n_non, total, pct)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
-def main():
+def _run_incremental(root: Path, day: date, apply: bool) -> int:
+    """增量：只算目标交易日的当日截面，按 signal_date 分区 upsert 进正式表。"""
+    out = _paths(root)['out']
+    logger.info('增量模式：信号日 {}', day)
+    t0 = datetime.now()
+    panel = build_panel([day], root=root)
+    elapsed = (datetime.now() - t0).total_seconds()
+    logger.info('当日截面：{} 行 / {} 只（{:.1f}s）',
+                panel.height, panel['ts_code'].n_unique(), elapsed)
+    if panel.is_empty():
+        logger.warning('该日无估值快照（非交易日或估值未更新），不写盘')
+        return 0
+    _log_coverage(panel)
+    if not apply:
+        logger.info('dry-run：未写盘（加 --apply 生效）')
+        return 0
+    total, replaced = _upsert_day(panel, day, out)
+    mf = _write_manifest(out, total, panel.columns, day=day, day_rows=panel.height)
+    check = pl.scan_parquet(out).select(
+        pl.len().alias('rows'),
+        (pl.col('signal_date') == day).sum().alias('day_rows'),
+    ).collect()
+    rows, day_rows = int(check['rows'][0]), int(check['day_rows'][0] or 0)
+    if rows != total or day_rows != panel.height:
+        raise RuntimeError(f'落盘校验不一致：期望 {total} 行 / 当日 {panel.height} 行，'
+                           f'实测 {rows} 行 / 当日 {day_rows} 行')
+    logger.info('已 upsert：总 {} 行（覆盖旧分区 {} 行 → 新 {} 行）；manifest {}',
+                rows, replaced, day_rows, mf)
+    return 0
+
+
+def main() -> int:
     ap = argparse.ArgumentParser(description='正式因子面板构建')
     ap.add_argument('--apply', action='store_true', help='写入 parquet（默认 dry-run）')
     ap.add_argument('--dry-run', action='store_true', help='只打印 stats（不改盘）')
+    ap.add_argument('--mode', choices=('full', 'incremental'), default='full',
+                    help='full=全表重建（默认，历史回补）；incremental=按 signal_date 分区 upsert')
     ap.add_argument('--date', type=str, default=None, help='单日信号日 YYYY-MM-DD')
     ap.add_argument('--start', type=str, default=None, help='起始信号日 YYYY-MM-DD')
     ap.add_argument('--end', type=str, default=None, help='结束信号日 YYYY-MM-DD')
+    ap.add_argument('--store-root', default=None,
+                    help='local_store 根（默认 data/local_store）')
     args = ap.parse_args()
 
-    signal_dates: Optional[list[date]] = None
+    root = Path(args.store_root) if args.store_root else DATA_ROOT
+    if args.mode == 'incremental':
+        if not args.date:
+            raise SystemExit('incremental 模式必须给 --date（单日信号日 YYYY-MM-DD）')
+        return _run_incremental(root, date.fromisoformat(args.date), apply=args.apply)
+
+    signal_dates: list[date] | None = None
     if args.date:
+        logger.warning('全量模式加 --date 会用单日截面覆盖整表；历史回补请用 --start/--end')
         signal_dates = [date.fromisoformat(args.date)]
     elif args.start and args.end:
         lo = date.fromisoformat(args.start)
@@ -305,51 +473,22 @@ def main():
                 len(signal_dates) if signal_dates else '全量')
 
     t0 = datetime.now()
-    panel = build_panel(signal_dates)
+    panel = build_panel(signal_dates, root=root)
     dt = (datetime.now() - t0).total_seconds()
 
     logger.info('=== 构建完成（{:.1f}s）===', dt)
-    logger.info('行数={} 代码={} 日期={}',
-                panel.height,
-                panel['ts_code'].n_unique(),
-                panel['signal_date'].n_unique())
-    logger.info('列：{}', panel.columns)
-
-    # 各因子覆盖率（非空占比）
-    total = panel.height
-    for col in panel.columns:
-        if col in ('ts_code', 'signal_date', 'industry_l1'):
-            continue
-        n_null = panel[col].null_count()
-        n_non = total - n_null
-        pct = n_non / total * 100 if total else 0
-        logger.info('  {}: {} / {} ({:.1f}%)', col, n_non, total, pct)
+    _log_coverage(panel)
 
     if args.apply:
-        OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        panel.write_parquet(OUT_PATH, compression='zstd')
-        logger.info('已写入：{}', OUT_PATH)
-        # 写 manifest
-        manifest = {
-            'table': 'factor_panel',
-            'rows': panel.height,
-            'cols': panel.columns,
-            'created_at': datetime.now().isoformat(),
-            'sources': [
-                'meta/financials/valuation_daily.parquet',
-                'meta/financials/income.parquet',
-                'meta/financials/balance.parquet',
-                'meta/financials/cashflow.parquet',
-                'meta/industry_pit/industry_pit_sw.parquet',
-            ],
-            'note': '日频因子面板；财报按 ann_date PIT，估值按 trade_date asof',
-        }
-        mf = OUT_PATH.with_suffix('.manifest.json')
-        mf.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+        out = _paths(root)['out']
+        _write_full(panel, out)
+        logger.info('已写入：{}', out)
+        mf = _write_manifest(out, panel.height, panel.columns)
         logger.info('manifest：{}', mf)
     else:
         logger.info('dry-run：未写盘（加 --apply 生效）')
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())
