@@ -107,11 +107,14 @@ def main() -> int:
     write_parquet_atomic(merged, candidate, compression='zstd', statistics=True)
 
     # 逐值对拍：候选回读的新增行 == 解析结果，旧行逐列不变
+    # 按 (ts_code, ex_date) 键差集区分新旧：既有表可能已含同来源标签的历史行（前几轮入库），
+    # 用来源标签筛选会把旧行误算成新增，从第二轮起必然误报。
     back = pl.read_parquet(candidate)
-    back_new = back.filter(pl.col('source') == SOURCE_TAG).sort(['ts_code', 'ex_date'])
-    back_old = back.filter(pl.col('source') != SOURCE_TAG).sort(['ts_code', 'ex_date'])
-    assert back_new.equals(new.sort(['ts_code', 'ex_date'])), '新增行逐值对拍不一致'
-    assert back_old.equals(old.sort(['ts_code', 'ex_date'])), '既有行被改动'
+    key = ['ts_code', 'ex_date']
+    back_new = back.join(old.select(key), on=key, how='anti').sort(key)
+    back_old = back.join(new.select(key), on=key, how='anti').sort(key)
+    assert back_new.equals(new.sort(key)), '新增行逐值对拍不一致'
+    assert back_old.equals(old.sort(key)), '既有行被改动'
     assert back.height == old.height + new.height, '行数守恒不成立'
 
     stats = {
