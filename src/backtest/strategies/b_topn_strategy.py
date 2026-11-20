@@ -15,12 +15,11 @@
    其余日期一律 ``hold``。
 
 依赖输入列（由数据层注入或引擎默认占位）：
-    - cfp_ttm （ROLE_CFP_TTM）：TTM 口径经营现金流
-    - total_mv（BAR_CONTRACT 可选列）：总市值
+    - cfp_ttm （ROLE_CFP_TTM）：已映射正式面板 b_ocf_ttm（经营现金流TTM/总市值比率）
     - industry_map（run_backtest 参数）：{ts_code: 申万一级行业}
 
-B 值（股东盈余比）= cfp_ttm / total_mv；缺失或 total_mv <= 0 的标的当天
-视为不可用，不参与排名。
+B 值（股东盈余比）直接取 cfp_ttm 列（已是比率，不再除以 total_mv）；
+cfp_ttm 缺失或 <= 0 的标的当天视为不可用，不参与排名。
 """
 
 from __future__ import annotations
@@ -104,13 +103,13 @@ class BTopNStrategy(BaseStrategy):
             per_code_dates[code] = dates
             all_dates_set.update(dates)
 
-            # B = cfp_ttm / total_mv（total_mv <= 0 或 cfp_ttm null 视为不可用）
-            if 'cfp_ttm' in df.columns and 'total_mv' in df.columns:
+            # B 值直接取正式面板注入的 cfp_ttm 列（该列已映射到 b_ocf_ttm，
+            # 本身就是经营现金流TTM / 总市值比率，禁止再次除以 total_mv）
+            if 'cfp_ttm' in df.columns:
                 b_vals = {
-                    d: float(cfp / mv)
-                    for d, cfp, mv in zip(dates, df['cfp_ttm'].to_list(),
-                                          df['total_mv'].to_list(), strict=True)
-                    if cfp is not None and mv is not None and mv > 0
+                    d: float(cfp)
+                    for d, cfp in zip(dates, df['cfp_ttm'].to_list(), strict=True)
+                    if cfp is not None and cfp > 0
                 }
             else:
                 b_vals = {}
