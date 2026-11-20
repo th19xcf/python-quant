@@ -55,6 +55,9 @@ BENCHMARKS: Dict[str, str] = {'000300.SH': '沪深300'}
 REBALANCE_FREQUENCIES = ('monthly', 'semi')
 #: 最小版执行口径：信号日收盘生成，下一交易日开盘成交
 EXECUTION_SPEC = {'price': 'next_open', 'delay_days': 1}
+#: ``period.end`` 取该值时表示「到最近交易日」：运行前解析为本地基准指数末根 bar，
+#: 解析后的日期会回填进规则副本，所有指标与落盘仍按 ISO 日期计算。
+LATEST_END = 'latest'
 SIGNAL_KINDS = {'ma_ratio': '收盘价/均线', 'momentum': 'N日动量', 'drawdown': 'N日回撤'}
 
 _MAX_CONDITIONS = 10
@@ -234,7 +237,10 @@ def _validate_period(raw: Any) -> Dict[str, str]:
         raise RuleError('period 必须是对象')
     _reject_unknown(raw, {'start', 'end'}, 'period')
     start = _iso(_require(raw, 'start', 'period'), 'period.start')
-    end = _iso(_require(raw, 'end', 'period'), 'period.end')
+    end_raw = _require(raw, 'end', 'period')
+    if end_raw == LATEST_END:
+        return {'start': start, 'end': LATEST_END}
+    end = _iso(end_raw, 'period.end')
     if start > end:
         raise RuleError(f'period 起始 {start} 晚于结束 {end}')
     return {'start': start, 'end': end}
@@ -723,7 +729,8 @@ def _dca_text(rule: Dict[str, Any]) -> str:
 def _common_text(rule: Dict[str, Any]) -> List[str]:
     cost = rule['cost']
     return [
-        f'区间 {rule["period"]["start"]} ~ {rule["period"]["end"]}',
+        f'区间 {rule["period"]["start"]} ~ '
+        f'{"最近交易日" if rule["period"]["end"] == LATEST_END else rule["period"]["end"]}',
         f'基准={BENCHMARKS[rule["benchmark"]]}({rule["benchmark"]})',
         f'成本=滑点 {cost["slippage_bps"]:g}bp / 印花税 {cost["stamp_tax_basis"]} / '
         f'佣金 {cost["commission_rate"]:.4%} / 最低 {cost["min_commission"]:g} 元',

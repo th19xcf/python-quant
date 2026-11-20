@@ -36,6 +36,15 @@ def _payload() -> dict:
         'benchmark_curve': [['2024-01-02', 1.0e9], ['2024-01-03', 1.0e9]],
         'drawdown': [['2024-01-02', 0.0], ['2024-01-03', -0.01]],
         'markers': [{'date': '2024-01-03', 'position': 1.0}],
+        'targets': [{'date': '2024-01-03', 'members': 2,
+                     'weights': {'510300.SH': 0.5, '588000.SH': 0.5}}],
+        'current': {'date': '2024-01-03', 'equity': 1.01e9,
+                    'positions': {'510300.SH': 1.0e6},
+                    'weights': {'510300.SH': 0.5}},
+        'trades': [{'date': '2024-01-03', 'code': '510300.SH', 'side': 'buy',
+                    'qty': 1.0e6, 'price': 4.0}],
+        'freshness': {'target_end': '2024-01-03', 'quotes_end': '2024-01-03',
+                      'panel_end': None, 'panel_lag_days': 0, 'warnings': []},
         'dividend_coverage': {
             'ok': False, 'checked': 1,
             'issues': [{'code': '510300.SH', 'reason': '无分红记录'}],
@@ -70,6 +79,9 @@ def test_save_roundtrip_fields(tmp_path: Path) -> None:
     assert doc['dividend_coverage']['issues'][0]['code'] == '510300.SH'
     assert doc['code_head']['status'] in ('recorded', 'unknown')
     assert 'full' in doc['code_head']
+    assert doc['rows']['targets'] == 1
+    assert doc['rows']['trades'] == 1
+    assert doc['rows']['positions'] == 1
 
     nav = (run_dir / 'daily_nav.csv').read_text(encoding='utf-8').splitlines()
     assert nav == ['date,equity', '2024-01-02,1000000000.00',
@@ -78,11 +90,19 @@ def test_save_roundtrip_fields(tmp_path: Path) -> None:
     assert dd[0] == 'date,drawdown' and len(dd) == 3
     assert json.loads((run_dir / 'markers.json').read_text(
         encoding='utf-8')) == _payload()['markers']
+    # 目标名单、当期持仓、逐笔成交与 markers 一并落盘，供事后复核
+    assert json.loads((run_dir / 'targets.json').read_text(
+        encoding='utf-8')) == _payload()['targets']
+    assert json.loads((run_dir / 'positions.json').read_text(
+        encoding='utf-8')) == _payload()['current']
+    assert json.loads((run_dir / 'trades.json').read_text(
+        encoding='utf-8')) == _payload()['trades']
 
     manifest = json.loads((run_dir / 'manifest.json').read_text(encoding='utf-8'))
     names = {item['name'] for item in manifest['files']}
     assert names == {'spec.json', 'metrics.json', 'daily_nav.csv',
-                     'benchmark_nav.csv', 'drawdown.csv', 'markers.json'}
+                     'benchmark_nav.csv', 'drawdown.csv', 'markers.json',
+                     'targets.json', 'positions.json', 'trades.json'}
     assert manifest['index']['updated'] is False
     assert info['index_updated'] is False
     # 不碰工作台根索引

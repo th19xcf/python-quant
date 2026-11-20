@@ -26,8 +26,12 @@ from src.core.usecases.run_backtest import _load_st_status
 from .coverage import dividend_coverage
 from .markers import sides_from_weights
 from .panels import FieldPanels
-from .rules import rule_text
+from .rules import LATEST_END, rule_text
 from .switch_timing import WARMUP_DAYS, PlanError, build_plan
+
+#: 依赖周频因子面板（``_staging`` 研究产物）的字段：末日落后时必须在结果里告警
+FACTOR_FIELDS = frozenset({'ff_bp', 'ff_ep', 'ff_dy', 'ff_roe_ttm', 'ff_accruals',
+                           'ff_gross_margin', 'vq_value', 'vq_quality', 'vq_score'})
 
 ROOT = Path(__file__).resolve().parents[3]
 INDEX_QUOTES = ROOT / 'data/local_store/quotes/index'
@@ -185,6 +189,126 @@ def load_benchmark_close(code: str) -> Dict[str, float]:
     return {str(d)[:10]: float(c) for d, c in
             zip(df['date'].to_list(), df['close'].to_list(), strict=True)
             if c is not None}
+
+
+# ---------------------------------------------------------------------------
+# 当期清单、目标名单与数据新鲜度
+# ---------------------------------------------------------------------------
+
+def _resolve_period(rule: Dict[str, Any]) -> Dict[str, Any]:
+    """把 ``period.end == 'latest'`` 解析为本地基准指数末根 bar 的日期。
+
+    解析只发生在运行前的规则副本上，返回的规则里 ``period.end`` 一定是 ISO 日期，
+    下游（指标、交易裁剪、落盘）不再感知 ``latest``；原始表达记在 ``requested_end``。
+    """
+    if rule['period']['end'] != LATEST_END:
+        return rule
+    latest = max(load_benchmark_close(rule['benchmark']))
+    resolved = dict(rule)
+    resolved['period'] = {**rule['period'], 'end': latest}
+    resolved['requested_end'] = LATEST_END
+    return resolved
+
+
+def _current_snapshot(positions: Dict[str, float], valuation: Dict[str, Any],
+                      curve: List[Tuple[date, float]]) -> Dict[str, Any]:
+    """当期实际持仓：数量 + 按估值日收盘价折算的权重（来自引擎实际成交，不是目标）。"""
+    equity = float(curve[-1][1]) if curve else 0.0
+    close = (valuation or {}).get('close') or {}
+    weights = {code: round(float(qty) * float(close.get(code, 0.0)) / equity, 6)
+               for code, qty in positions.items()
+               if equity > 0 and float(qty) > 0} if equity > 0 else {}
+    return {'date': (valuation or {}).get('date'), 'equity': round(equity, 2),
+            'positions': dict(positions), 'weights': weights}
+
+
+def _targets_from_path(path: Dict[date, List[str]],
+                       cash_buffer: float) -> List[Dict[str, Any]]:
+    """选股规则的调仓目标名单：每个调仓日的代码与等权目标权重。"""
+    out: List[Dict[str, Any]] = []
+    for day in sorted(path):
+        codes = path[day]
+        if not codes:
+            continue
+        weight = round((1.0 - cash_buffer) / len(codes), 6)
+        out.append({'date': day.isoformat(), 'members': len(codes),
+                    'weights': dict.fromkeys(codes, weight)})
+    return out
+
+
+def _targets_from_markers(markers: List[Dict[str, Any]],
+                          code: str | None) -> List[Dict[str, Any]]:
+    """切换/择时/定投的调仓目标：取 markers 里的目标权重（定投为份数占比）。"""
+    out: List[Dict[str, Any]] = []
+    seen: Set[tuple] = set()
+    for marker in markers:
+        weights = marker.get('weights')
+        if weights is None:
+            position = marker.get('position')
+            if position is None or not code:
+                continue
+            weights = {code: float(position)}
+        weights = {str(k): round(float(v), 6) for k, v in weights.items()}
+        key = (marker.get('date'), tuple(sorted(weights.items())))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({'date': marker.get('date'), 'signal_date': marker.get('signal_date'),
+                    'weights': weights})
+    out.sort(key=lambda item: item['date'] or '')
+    return out
+
+
+def _used_fields(rule: Dict[str, Any]) -> Set[str]:
+    """规则实际引用的字段（仅选股规则有条件与排序字段）。"""
+    if rule['rule_type'] != 'stock_select':
+        return set()
+    from .panels import required_columns
+    return required_columns(rule)
+
+
+def _factor_panel_end() -> str | None:
+    """周频因子面板末日（只读 date 列）；面板缺失时返回 ``None``。"""
+    from .panels import SF_BASE
+    if not SF_BASE.is_file():
+        return None
+    value = pl.read_parquet(SF_BASE, columns=['date'])['date'].max()
+    return str(value)[:10] if value is not None else None
+
+
+def _freshness(rule: Dict[str, Any], calendar: List[date]) -> Dict[str, Any]:
+    """行情与所用面板的末日核对：落后目标日时写告警，不阻断运行。"""
+    target = date.fromisoformat(rule['period']['end'])
+    quotes_end = calendar[-1] if calendar else None
+    warnings: List[str] = []
+    payload: Dict[str, Any] = {
+        'target_end': target.isoformat(),
+        'quotes_end': quotes_end.isoformat() if quotes_end else None,
+        'panel_end': None, 'panel_fields': [],
+        'panel_lag_days': 0, 'quotes_gap_days': 0, 'warnings': warnings,
+    }
+    if quotes_end is None:
+        warnings.append('行情为空，无法判断数据新鲜度')
+        return payload
+    used = _used_fields(rule) & FACTOR_FIELDS
+    if used:
+        payload['panel_fields'] = sorted(used)
+        panel_end = _factor_panel_end()
+        payload['panel_end'] = panel_end
+        if panel_end:
+            lag = sum(1 for day in calendar if date.fromisoformat(panel_end) < day <= target)
+            payload['panel_lag_days'] = lag
+            if lag:
+                warnings.append(
+                    f'因子面板末日 {panel_end} 落后目标日 {target.isoformat()} '
+                    f'{lag} 个交易日，本次信号按旧因子计算')
+    if quotes_end < target:
+        warnings.append(f'行情末日 {quotes_end.isoformat()} 早于目标日 '
+                        f'{target.isoformat()}，目标日尚未被行情覆盖')
+    else:
+        payload['quotes_gap_days'] = sum(1 for day in calendar if target < day <= quotes_end)
+    return payload
+
 
 
 def _monthly_last(series: List[Tuple[date, float]]) -> List[Tuple[str, float]]:
@@ -465,6 +589,8 @@ def _period_effective(rule: Dict[str, Any], metrics: Dict[str, Any],
         'requested_start': requested,
         'start': effective,
         'end': metrics.get('end') or rule['period']['end'],
+        # end 写成 latest 时，requested_end 保留原始表达，end 是解析后的 ISO 日期
+        'requested_end': rule.get('requested_end') or rule['period']['end'],
         'warmup_start': (date.fromisoformat(requested)
                          - timedelta(days=WARMUP_DAYS)).isoformat(),
         'data_first_day': calendar[0].isoformat() if calendar else None,
@@ -516,6 +642,7 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
     metrics = compute_metrics(result, rule, path, bench)
     curve, _ = _period_series(result, rule)
     positions = _final_positions(result)
+    valuation = _valuation(curve, data, positions)
     markers: List[Dict[str, Any]] = []
     prev_weights: Dict[str, float] = {}
     for day, codes in sorted(path.items()):
@@ -540,7 +667,11 @@ def _run_stock_select(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'trades': _trade_records(result, rule),
         'leg_curves': [],
         'positions': positions,
-        'valuation': _valuation(curve, data, positions),
+        'valuation': valuation,
+        # 调仓目标名单（调仓日 → 代码 + 等权目标权重），不再只留在内部 path
+        'targets': _targets_from_path(path, rule['portfolio']['cash_buffer']),
+        'current': _current_snapshot(positions, valuation, curve),
+        'freshness': _freshness(rule, calendar),
         'plan_note': f'{"月频" if frequency == "monthly" else "半年频"}调仓 {len(path)} 次，'
                      f'成分中位 {metrics["members_median"]} 只',
         'period_effective': _period_effective(rule, metrics, calendar),
@@ -574,6 +705,7 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
     curve, _ = _period_series(result, rule)
     calendar = compute.build_calendar(plan.data)[0]
     positions = _final_positions(result)
+    valuation = _valuation(curve, engine_data, positions)
     payload = {
         'status': 'ok',
         'metrics': metrics,
@@ -588,7 +720,12 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
         'trades': _trade_records(result, rule),
         'leg_curves': plan.leg_curves,
         'positions': positions,
-        'valuation': _valuation(curve, engine_data, positions),
+        'valuation': valuation,
+        # 切换/择时的目标权重直接来自 markers；定投为份数占比
+        'targets': _targets_from_markers(plan.markers,
+                                         (rule.get('target') or {}).get('code')),
+        'current': _current_snapshot(positions, valuation, curve),
+        'freshness': _freshness(rule, calendar),
         'plan_note': plan.note,
         'period_effective': _period_effective(rule, metrics, calendar),
     }
@@ -604,6 +741,7 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
 def run_rule(rule: Dict[str, Any], *, with_nav: bool = True) -> Dict[str, Any]:
     """按 ``rule_type`` 分派；空结果以 ``status='empty'`` 返回而非抛错。"""
     t0 = time.perf_counter()
+    rule = _resolve_period(rule)
     rule_type = rule['rule_type']
     if rule_type == 'stock_select':
         payload = _run_stock_select(rule, t0)

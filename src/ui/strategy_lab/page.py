@@ -19,6 +19,7 @@ from PySide6.QtCore import QDate, QEvent, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDateEdit,
     QDialog,
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from src.quant.strategy_lab.markers import layout_markers
 from src.quant.strategy_lab.rules import (
+    LATEST_END,
     RULE_TYPES,
     RuleError,
     list_rules,
@@ -598,6 +600,13 @@ class StrategyLabPage(QWidget):
                                    '只影响净值、指标与三张图的起算日，'
                                    '预热仍使用起点之前的完整历史')
         head.addWidget(self.start_date)
+        # 终点覆盖：勾选后 period.end 视为「最近交易日」，运行时解析为本地行情末根 bar
+        self.latest_check = QCheckBox('到最近交易日')
+        self.latest_check.setMinimumHeight(self.rule_combo.minimumHeight())
+        self.latest_check.setToolTip('勾选后终点取本地行情的最近交易日（period.end = "latest"），'
+                                     '用于查看当下应持有的目标；不勾选时完全按规则文件原样运行')
+        self.latest_check.toggled.connect(lambda *_: self._on_select())
+        head.addWidget(self.latest_check)
         self.refresh_btn = QPushButton('刷新列表')
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_btn.clicked.connect(self._refresh_rule_list)
@@ -923,9 +932,18 @@ class StrategyLabPage(QWidget):
             self.rule_text_label.setStyleSheet(f'color: {self._pal.sell};')
             return
         self._rule = rule
+        # 勾选框只在切换规则时按文件初始化一次，之后以用户勾选为准（覆盖文件终点）
+        if getattr(self, '_check_rule_path', None) != path:
+            self._check_rule_path = path
+            self.latest_check.blockSignals(True)
+            self.latest_check.setChecked(rule['period']['end'] == LATEST_END)
+            self.latest_check.blockSignals(False)
         self.start_date.setDate(QDate.fromString(rule['period']['start'], 'yyyy-MM-dd'))
-        self.start_date.setMaximumDate(
-            QDate.fromString(rule['period']['end'], 'yyyy-MM-dd'))
+        file_end = rule['period']['end']
+        end_text = (QDate.currentDate().toString('yyyy-MM-dd')
+                    if self.latest_check.isChecked() or file_end == LATEST_END
+                    else file_end)
+        self.start_date.setMaximumDate(QDate.fromString(end_text, 'yyyy-MM-dd'))
         summary = summarize(rule)
         self.rule_text_label.setText(f'[{summary.type_label}] {summary.text}')
         self.rule_text_label.setStyleSheet('')
@@ -942,13 +960,18 @@ class StrategyLabPage(QWidget):
             QMessageBox.warning(self, '规则不可用', str(exc))
             return
         self._rule = rule
+        # 终点覆盖：勾选则写回 latest（运行时解析为最近交易日），不勾选保持文件原样
+        if self.latest_check.isChecked():
+            rule['period']['end'] = LATEST_END
         # 起点覆盖规则里的 period.start：预热仍按新起点往前取 WARMUP_DAYS，
         # 因此只改变净值/指标/三图的起算日，不裁剪任何历史信号。
         start_text = self.start_date.date().toString('yyyy-MM-dd')
-        if start_text >= rule['period']['end']:
+        end_text = (QDate.currentDate().toString('yyyy-MM-dd')
+                    if rule['period']['end'] == LATEST_END else rule['period']['end'])
+        if start_text >= end_text:
             QMessageBox.warning(
                 self, '试算起点无效',
-                f'试算起点 {start_text} 必须早于规则终点 {rule["period"]["end"]}。')
+                f'试算起点 {start_text} 必须早于规则终点 {end_text}。')
             return
         rule['period']['start'] = start_text
         if self._worker is not None and self._worker.isRunning():
@@ -987,9 +1010,13 @@ class StrategyLabPage(QWidget):
             if period:
                 merged = dict(rule.get('period') or {})
                 merged['start'] = period.get('start') or merged.get('start')
+                # latest 已解析成 ISO 日期：spec 里记实际终点，原始表达留在 effective_period
+                merged['end'] = period.get('end') or merged.get('end')
                 merged['warmup_start'] = (period.get('warmup_start')
                                          or merged.get('warmup_start'))
                 rule['period'] = merged
+                if period.get('requested_end') == LATEST_END:
+                    rule['requested_end'] = LATEST_END
                 rule['effective_period'] = period
             info = save_run(self._last_payload, rule)
         except Exception as exc:  # noqa: BLE001 - 保存失败只提示，不影响已有结果
@@ -1021,7 +1048,8 @@ class StrategyLabPage(QWidget):
         self.save_btn.setEnabled(True)
         self.trade_btn.setEnabled(True)
         self._fill_metrics(payload['metrics'],
-                           (payload.get('dividend_coverage') or {}).get('message') or '')
+                           (payload.get('dividend_coverage') or {}).get('message') or '',
+                           (payload.get('freshness') or {}).get('warnings') or [])
         self._plot_curves(payload.get('nav') or [], payload.get('benchmark_curve') or [])
         self._plot_drawdown(payload.get('drawdown') or [])
         self._plot_markers(payload.get('markers') or [])
@@ -1037,11 +1065,14 @@ class StrategyLabPage(QWidget):
         self.status_label.setText('  '.join(parts))
 
     def _fill_metrics(self, metrics: Dict[str, Any],
-                      coverage_hint: str = '') -> None:
+                      coverage_hint: str = '',
+                      warnings: List[str] | None = None) -> None:
         rows = [(label, self._format(kind, metrics.get(key)))
                 for key, label, kind in _METRIC_ROWS]
         if coverage_hint:
             rows.append(('分红覆盖', coverage_hint))
+        # 数据新鲜度告警：面板/行情末日落后目标日时逐条列出，不阻断试算
+        rows.extend(('数据新鲜度', text) for text in (warnings or []))
         self.metrics_table.setRowCount(len(rows))
         for i, (label, value) in enumerate(rows):
             self.metrics_table.setItem(i, 0, QTableWidgetItem(label))

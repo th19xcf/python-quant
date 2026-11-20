@@ -5,7 +5,14 @@ from __future__ import annotations
 from datetime import date
 from types import SimpleNamespace
 
-from src.quant.strategy_lab.backtest import _passes, select_members
+from src.quant.strategy_lab.backtest import (
+    _current_snapshot,
+    _freshness,
+    _passes,
+    _targets_from_markers,
+    _targets_from_path,
+    select_members,
+)
 
 DAY = date(2024, 1, 31)
 DAYS = [DAY]
@@ -33,6 +40,70 @@ def _rule(**overrides):
     }
     rule.update(overrides)
     return rule
+
+
+def test_targets_from_path_uses_equal_weight():
+    path = {date(2024, 1, 31): ['A.SZ', 'B.SZ'], date(2024, 2, 29): ['C.SZ']}
+    targets = _targets_from_path(path, cash_buffer=0.02)
+    assert targets[0]['date'] == '2024-01-31'
+    assert targets[0]['members'] == 2
+    assert targets[0]['weights'] == {'A.SZ': 0.49, 'B.SZ': 0.49}
+    assert targets[1]['weights'] == {'C.SZ': 0.98}
+
+
+def test_targets_from_markers_dedupes_same_weights():
+    markers = [
+        {'date': '2024-01-31', 'signal_date': '2024-01-30',
+         'weights': {'510300.SH': 1.0}, 'direction': 'sell'},
+        {'date': '2024-01-31', 'signal_date': '2024-01-30',
+         'weights': {'510300.SH': 1.0}, 'direction': 'buy'},
+        {'date': '2024-02-29', 'signal_date': '2024-02-28',
+         'weights': {'588000.SH': 1.0}, 'direction': 'buy'},
+    ]
+    targets = _targets_from_markers(markers, code=None)
+    assert [t['date'] for t in targets] == ['2024-01-31', '2024-02-29']
+    # 定投没有 weights 时用份数占比回落
+    dca = _targets_from_markers([{'date': '2024-03-01', 'position': 0.6}],
+                                code='510300.SH')
+    assert dca == [{'date': '2024-03-01', 'signal_date': None,
+                    'weights': {'510300.SH': 0.6}}]
+
+
+def test_current_snapshot_weights_from_valuation_close():
+    snapshot = _current_snapshot(
+        {'A.SZ': 1000.0, 'B.SZ': 0.0},
+        {'date': '2024-01-31', 'close': {'A.SZ': 10.0, 'B.SZ': 5.0}},
+        [(date(2024, 1, 31), 20000.0)])
+    assert snapshot['date'] == '2024-01-31'
+    assert snapshot['weights'] == {'A.SZ': 0.5}
+    assert snapshot['positions'] == {'A.SZ': 1000.0, 'B.SZ': 0.0}
+
+
+def test_freshness_flags_lagging_factor_panel(monkeypatch):
+    import src.quant.strategy_lab.backtest as backtest
+
+    monkeypatch.setattr(backtest, '_used_fields', lambda rule: {'vq_value'})
+    monkeypatch.setattr(backtest, '_factor_panel_end', lambda: '2024-01-10')
+    rule = {'rule_type': 'stock_select', 'period': {'start': '2024-01-02',
+                                                   'end': '2024-01-31'}}
+    calendar = [date(2024, 1, 10), date(2024, 1, 11), date(2024, 1, 12),
+                date(2024, 1, 31)]
+    fresh = _freshness(rule, calendar)
+    assert fresh['panel_end'] == '2024-01-10'
+    assert fresh['panel_lag_days'] == 3
+    assert fresh['panel_fields'] == ['vq_value']
+    assert '落后目标日' in fresh['warnings'][0]
+
+
+def test_freshness_no_warning_when_panel_covers_target(monkeypatch):
+    import src.quant.strategy_lab.backtest as backtest
+
+    monkeypatch.setattr(backtest, '_used_fields', lambda rule: {'vol_60'})
+    rule = {'rule_type': 'stock_select', 'period': {'start': '2024-01-02',
+                                                   'end': '2024-01-31'}}
+    fresh = _freshness(rule, [date(2024, 1, 31)])
+    assert fresh['panel_fields'] == [] and fresh['warnings'] == []
+    assert fresh['quotes_gap_days'] == 0
 
 
 def test_sort_desc_and_top_n():

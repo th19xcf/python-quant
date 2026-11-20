@@ -33,6 +33,20 @@ def test_unknown_rule_type_rejected():
         validate_rule({**SWITCH_BASE, 'rule_type': 'rotation'})
 
 
+def test_period_end_latest_accepted():
+    rule = validate_rule({**SWITCH_BASE, 'period': {'start': '2021-01-04',
+                                                   'end': rules_module.LATEST_END}})
+    assert rule['period']['end'] == 'latest'
+    # 原始表达要出现在规则摘要里，界面与 CLI 才看得懂
+    assert '最近交易日' in rules_module.rule_text(rule)
+
+
+def test_period_end_invalid_string_rejected():
+    with pytest.raises(RuleError, match='period.end'):
+        validate_rule({**SWITCH_BASE, 'period': {'start': '2021-01-04',
+                                                 'end': 'tomorrow'}})
+
+
 def test_missing_rule_type_rejected():
     raw = dict(SWITCH_BASE)
     raw.pop('rule_type')

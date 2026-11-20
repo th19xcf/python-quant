@@ -43,6 +43,20 @@ def test_page_renders_headless(app):
     page._fill_metrics(metrics)
     assert page.metrics_table.rowCount() == len(_METRIC_ROWS)
 
+    # 数据新鲜度告警逐条补行，不阻断结果展示
+    warn = '因子面板末日 2026-10-29 落后目标日 2026-11-19 15 个交易日'
+    page._fill_metrics(metrics, '', [warn])
+    assert page.metrics_table.rowCount() == len(_METRIC_ROWS) + 1
+    assert page.metrics_table.item(len(_METRIC_ROWS), 0).text() == '数据新鲜度'
+    page._fill_metrics(metrics)
+
+    # 「到最近交易日」勾选后终点上限放宽到今天
+    from PySide6.QtCore import QDate
+    assert page.latest_check is not None and not page.latest_check.isChecked()
+    page.latest_check.setChecked(True)
+    assert page.start_date.maximumDate() == QDate.currentDate()
+    page.latest_check.setChecked(False)
+
     nav = [['2024-01-31', 1.0e9], ['2024-02-29', 1.05e9], ['2024-03-29', 1.02e9]]
     bench = [['2024-01-31', 1.0e9], ['2024-02-29', 1.01e9], ['2024-03-29', 0.99e9]]
     page._plot_curves(nav, bench)

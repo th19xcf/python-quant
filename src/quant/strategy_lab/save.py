@@ -133,6 +133,10 @@ def save_run(payload: Dict[str, Any], rule: Dict[str, Any], *,
     bench = list(payload.get('benchmark_curve') or [])
     drawdown = list(payload.get('drawdown') or [])
     markers = list(payload.get('markers') or [])
+    targets = list(payload.get('targets') or [])
+    positions = dict(payload.get('current') or {})
+    trades = list(payload.get('trades') or [])
+    freshness = dict(payload.get('freshness') or {})
     head = _git_head()
     basis = _data_version(store_root)
 
@@ -148,8 +152,13 @@ def save_run(payload: Dict[str, Any], rule: Dict[str, Any], *,
                     ('rule_text', 'elapsed_seconds', 'engine_seconds', 'used_codes')},
         'metrics': payload.get('metrics') or {},
         'dividend_coverage': payload.get('dividend_coverage') or {},
+        'period_effective': payload.get('period_effective') or {},
+        # 数据新鲜度：行情/因子面板末日落后目标日时的告警原文，不阻断试算
+        'freshness': freshness,
         'rows': {'nav': len(nav), 'benchmark': len(bench),
-                 'drawdown': len(drawdown), 'markers': len(markers)},
+                 'drawdown': len(drawdown), 'markers': len(markers),
+                 'targets': len(targets), 'positions': len(positions.get('positions') or {}),
+                 'trades': len(trades)},
     }
 
     write_text_atomic(_json_text(rule), run_dir / 'spec.json')
@@ -160,6 +169,9 @@ def save_run(payload: Dict[str, Any], rule: Dict[str, Any], *,
     write_text_atomic(_csv('date,drawdown', drawdown, '.8f'),
                       run_dir / 'drawdown.csv')
     write_text_atomic(_json_text(markers), run_dir / 'markers.json')
+    write_text_atomic(_json_text(targets), run_dir / 'targets.json')
+    write_text_atomic(_json_text(positions), run_dir / 'positions.json')
+    write_text_atomic(_json_text(trades), run_dir / 'trades.json')
     write_text_atomic(_json_text(metrics_doc), run_dir / 'metrics.json')
 
     manifest = {
@@ -175,7 +187,8 @@ def save_run(payload: Dict[str, Any], rule: Dict[str, Any], *,
                      'final_equity', 'trades', 'rebalances')},
         'files': _inventory(run_dir, ['spec.json', 'metrics.json', 'daily_nav.csv',
                                       'benchmark_nav.csv', 'drawdown.csv',
-                                      'markers.json']),
+                                      'markers.json', 'targets.json',
+                                      'positions.json', 'trades.json']),
         'index': {
             'updated': False,
             'reason': '工作台 index.json 条目要求 spec/script/period 等跑批字段，'

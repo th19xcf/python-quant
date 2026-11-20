@@ -127,6 +127,10 @@ def main(argv=None) -> int:
         'elapsed_seconds': result['elapsed_seconds'],
         'skipped': result['skipped'],
         'dividend_coverage': result.get('dividend_coverage'),
+        'freshness': result.get('freshness'),
+        'targets': len(result.get('targets') or []),
+        'current_date': (result.get('current') or {}).get('date'),
+        'current_holdings': len((result.get('current') or {}).get('positions') or {}),
         'nav_path': str(nav_path) if nav_path else None,
     }
     _out(json.dumps(summary, ensure_ascii=False, indent=2))
