@@ -36,6 +36,9 @@ from src.backtest.strategies.multi_resonance_timing import (  # noqa: E402
 from src.backtest.strategies.multi_resonance_timing_v2 import (  # noqa: E402
     MultiResonanceTimingV2Strategy,
 )
+from src.backtest.strategies.multi_resonance_timing_v3 import (  # noqa: E402
+    MultiResonanceTimingV3Strategy,
+)
 
 DATA = ROOT / 'data' / 'local_store'
 OUT_DIR = ROOT / '2026-11-20' / '策略可行性评估'
@@ -51,7 +54,22 @@ ANALYZER = PerformanceAnalyzer()
 VARIANTS = {
     'v1': MultiResonanceTimingStrategy,
     'v2': MultiResonanceTimingV2Strategy,
+    'v3': MultiResonanceTimingV3Strategy,
 }
+
+# 各变体的产物前缀与 metrics 文件名（v1 沿用无前缀的历史命名）
+OUT_CFG = {
+    'v1': ('', '', 'baseline_metrics.json'),
+    'v2': ('v2/', 'v2', 'v2_metrics.json'),
+    'v3': ('v3/', 'v3', 'v3_metrics.json'),
+}
+
+# v3：RSI 低吸阈值 20/25/30 × 确认窗口 3/5/10 交叉，共 9 组
+V3_SENSITIVITY = [
+    (f'低吸{low}/确认{win}', {'rsi_low_threshold': low, 'confirm_window': win})
+    for low in (20, 25, 30)
+    for win in (3, 5, 10)
+]
 
 
 def make_strategy(variant: str, **kwargs: Any) -> Any:
@@ -265,6 +283,22 @@ def action_counts(frames: Dict[str, pl.DataFrame], strategy: Any) -> Dict[str, i
             ['买入共振', '卖出共振', '震荡低吸', '震荡高抛', '趋势持股']}
 
 
+def anchor_stats(frames: Dict[str, pl.DataFrame], strategy: Any) -> Dict[str, Any]:
+    """v3 锚点→确认转化率（无 diagnose 的变体返回空）。"""
+    if not hasattr(strategy, 'diagnose'):
+        return {}
+    out = {}
+    for df in frames.values():
+        diag = strategy.diagnose(df)
+        for key, value in diag.items():
+            out[key] = out.get(key, 0) + int(value)
+    for side in ('buy', 'sell'):
+        anchors = out.get(f'{side}_anchors', 0)
+        confirms = out.get(f'{side}_confirms', 0)
+        out[f'{side}_conversion'] = _ratio(confirms, anchors)
+    return out
+
+
 def _ratio(a: int, b: int) -> Any:
     return round(a / b, 4) if b else None
 
@@ -330,12 +364,13 @@ def dimension_stats(frames: Dict[str, pl.DataFrame], strategy: Any) -> Dict[str,
 
 def main() -> None:
     global OUT_DIR
-    parser = argparse.ArgumentParser(description='多指标共振择时回测（--variant v1/v2）')
-    parser.add_argument('--variant', choices=['v1', 'v2'], default='v2')
+    parser = argparse.ArgumentParser(description='多指标共振择时回测（--variant v1/v2/v3）')
+    parser.add_argument('--variant', choices=['v1', 'v2', 'v3'], default='v2')
     args = parser.parse_args()
     variant = args.variant
-    prefix = 'v2' if variant == 'v2' else ''
-    OUT_DIR = ROOT / '2026-11-20' / '策略可行性评估' / ('' if variant == 'v1' else 'v2')
+    sub_dir, prefix, metrics_name = OUT_CFG[variant]
+    OUT_DIR = ROOT / '2026-11-20' / '策略可行性评估' / sub_dir if sub_dir else (
+        ROOT / '2026-11-20' / '策略可行性评估')
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     codes = select_universe()
@@ -403,30 +438,41 @@ def main() -> None:
     lag_full = window_metrics(
         lag_panel['nav'], merged_trades(lag_results), SAMPLE_START, END, universe)
 
-    # 参数敏感性（9 组）
-    param_sets = [
-        ('基线(20/50/80/60)', {}),
-        ('RSI低位15', {'rsi_low_center': 15}),
-        ('RSI低位25', {'rsi_low_center': 25}),
-        ('RSI中位45', {'rsi_mid_center': 45}),
-        ('RSI中位55', {'rsi_mid_center': 55}),
-        ('RSI高位75', {'rsi_high_center': 75}),
-        ('RSI高位85', {'rsi_high_center': 85}),
-        ('新高低窗口48', {'high_low_window': 48}),
-        ('新高低窗口72', {'high_low_window': 72}),
-    ]
+    # 参数敏感性（9 组；v3 为低吸阈值 × 确认窗口交叉，其余变体沿用 v1/v2 口径）
+    if variant == 'v3':
+        param_sets = [('基线(25/确认5)', {})] + V3_SENSITIVITY
+    else:
+        param_sets = [
+            ('基线(20/50/80/60)', {}),
+            ('RSI低位15', {'rsi_low_center': 15}),
+            ('RSI低位25', {'rsi_low_center': 25}),
+            ('RSI中位45', {'rsi_mid_center': 45}),
+            ('RSI中位55', {'rsi_mid_center': 55}),
+            ('RSI高位75', {'rsi_high_center': 75}),
+            ('RSI高位85', {'rsi_high_center': 85}),
+            ('新高低窗口48', {'high_low_window': 48}),
+            ('新高低窗口72', {'high_low_window': 72}),
+        ]
     sens_rows = []
     for label, kwargs in param_sets:
         s_i, r_i, p_i = variant_run(frames, variant, **kwargs)
         metrics = window_metrics(p_i['nav'], merged_trades(r_i),
                                  SAMPLE_START, END, universe)
         p = s_i.params
-        sens_rows.append({
-            '参数组': label,
-            'RSI低位': p['rsi_low_center'], 'RSI中位': p['rsi_mid_center'],
-            'RSI高位': p['rsi_high_center'], '新高低窗口': p['high_low_window'],
-            **{k: round(v, 4) if isinstance(v, float) else v for k, v in metrics.items()},
-        })
+        row = {'参数组': label, **{k: round(v, 4) if isinstance(v, float) else v
+                                   for k, v in metrics.items()}}
+        if variant == 'v3':
+            row.update({'RSI低吸阈值': p['rsi_low_threshold'],
+                        '确认窗口': p['confirm_window'],
+                        '震荡窗口': p['osc_window'],
+                        '新高新低窗口': p['high_low_window']})
+            row.update(action_counts(frames, s_i))
+            row.update(anchor_stats(frames, s_i))
+        else:
+            row.update({'RSI低位': p['rsi_low_center'], 'RSI中位': p['rsi_mid_center'],
+                        'RSI高位': p['rsi_high_center'],
+                        '新高低窗口': p['high_low_window']})
+        sens_rows.append(row)
     pl.DataFrame(sens_rows).write_csv(OUT_DIR / f'{prefix}参数敏感性_2026-11-20.csv')
 
     # 逐标的绩效（全样本）
@@ -438,20 +484,27 @@ def main() -> None:
         })
         per_symbol[code] = window_metrics(nav_df, res['trades'], SAMPLE_START, END, [code])
 
-    # v1 vs v2 对照（两个变体都跑一遍）
-    other = 'v1' if variant == 'v2' else 'v2'
-    other_strategy, other_results, other_panel = variant_run(frames, other)
-    comparison = {}
-    for label, strat, res, pan in (
-            (variant, strategy, base_results, panel),
-            (other, other_strategy, other_results, other_panel)):
-        comparison[label] = {
-            'full': window_metrics(pan['nav'], merged_trades(res),
+    # 三版对照：v3 同时对比 v1 / v2；v1 / v2 保持原两版对照口径
+    others = ['v1', 'v2'] if variant == 'v3' else (['v1'] if variant == 'v2' else ['v2'])
+    comparison = {variant: {
+        'full': window_metrics(panel['nav'], merged_trades(base_results),
+                               SAMPLE_START, END, universe),
+        'avg_position': round(float(panel['nav'].filter(
+            pl.col('date') >= SAMPLE_START)['weight'].mean()), 4),
+        'actions': action_counts(frames, strategy),
+        'anchor_stats': anchor_stats(frames, strategy),
+        'dimension_stats': dimension_stats(frames, strategy),
+    }}
+    for other in others:
+        other_strategy, other_results, other_panel = variant_run(frames, other)
+        comparison[other] = {
+            'full': window_metrics(other_panel['nav'], merged_trades(other_results),
                                    SAMPLE_START, END, universe),
-            'avg_position': round(float(pan['nav'].filter(
+            'avg_position': round(float(other_panel['nav'].filter(
                 pl.col('date') >= SAMPLE_START)['weight'].mean()), 4),
-            'actions': action_counts(frames, strat),
-            'dimension_stats': dimension_stats(frames, strat),
+            'actions': action_counts(frames, other_strategy),
+            'anchor_stats': anchor_stats(frames, other_strategy),
+            'dimension_stats': dimension_stats(frames, other_strategy),
         }
 
     payload = {
@@ -459,6 +512,7 @@ def main() -> None:
         'universe': universe,
         'signal_counts_total': sum(action_counts(frames, strategy).values()),
         'actions': action_counts(frames, strategy),
+        'anchor_stats': anchor_stats(frames, strategy),
         'dimension_stats': dimension_stats(frames, strategy),
         'avg_position': comparison[variant]['avg_position'],
         'summary': summary,
@@ -469,7 +523,6 @@ def main() -> None:
         'comparison': comparison,
     }
     (OUT_DIR / 'work').mkdir(exist_ok=True)
-    metrics_name = 'v2_metrics.json' if variant == 'v2' else 'baseline_metrics.json'
     (OUT_DIR / 'work' / metrics_name).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
     zero = [k for k, v in payload['actions'].items() if v == 0]
