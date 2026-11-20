@@ -17,6 +17,7 @@ from .indicators import (
     calculate_volatility_indicators,
     calculate_volume_indicators,
 )
+from .indicators.formulas import supertrend as _supertrend_raw
 from .utils import (
     cleanup_temp_columns,
     collect_indicator_windows,
@@ -642,6 +643,27 @@ def calculate_sar_polars(df, af_step=0.02, max_af=0.2):
     return calculate_multiple_indicators_polars(df, ['sar'],
                                                sar_af_step=af_step,
                                                sar_max_af=max_af)
+
+
+def calculate_supertrend_polars(df, period=10, multiplier=3.0):
+    """
+    Supertrend 趋势指标（TradingView ta.supertrend 口径）。
+
+    与 SAR 同为路径依赖的递推型趋势指标，不跟其它指标共享窗口列，
+    故直接委托给 ``indicators.formulas.supertrend``，不复用
+    ``calculate_multiple_indicators_polars``。
+
+    Args:
+        df: Polars DataFrame 或 LazyFrame（需含 high/low/close）
+        period: ATR 周期，TradingView 默认 10
+        multiplier: ATR 倍数，TradingView 默认 3.0
+
+    Returns:
+        原表追加 4 列：supertrend / st_lower / st_upper / st_dir
+        （ATR 种子前 period-1 行为空，st_dir=0）
+    """
+    result = _supertrend_raw(df, period=period, multiplier=multiplier)
+    return result.collect() if isinstance(df, pl.LazyFrame) else result
 
 
 def calculate_cr_polars(df, windows=None):

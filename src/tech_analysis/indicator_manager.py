@@ -35,6 +35,7 @@ from src.tech_analysis.indicator_calculator import (
     calculate_roc_polars,
     calculate_rsi_polars,
     calculate_sar_polars,
+    calculate_supertrend_polars,
     calculate_trix_polars,
     calculate_vol_ma_polars,
     calculate_vr_polars,
@@ -280,6 +281,13 @@ _BUILTIN_INDICATORS: tuple[Dict[str, Any], ...] = (
         "calculate_func": calculate_sar_polars,
         "params": {"af_step": 0.02, "max_af": 0.2},
         "description": "抛物线转向指标",
+        "category": "趋势指标",
+    },
+    {
+        "name": "supertrend",
+        "calculate_func": calculate_supertrend_polars,
+        "params": {"period": 10, "multiplier": 3.0},
+        "description": "Supertrend 趋势指标（TradingView ta.supertrend 口径，输出 supertrend/st_lower/st_upper/st_dir 四列）",
         "category": "趋势指标",
     },
     {
