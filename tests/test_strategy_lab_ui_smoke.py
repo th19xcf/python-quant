@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import date
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
@@ -12,7 +13,11 @@ pytest.importorskip('PySide6.QtWidgets')
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from src.ui.strategy_lab.page import _METRIC_ROWS, StrategyLabPage  # noqa: E402
+from src.ui.strategy_lab.page import (  # noqa: E402
+    _METRIC_ROWS,
+    StrategyLabPage,
+    _next_rebalance_note,
+)
 
 
 @pytest.fixture(scope='module')
@@ -69,19 +74,45 @@ def test_page_renders_headless(app):
     assert '2 只' in page.current_title.text()
     assert page.current_note.text() == '估值日 2024-03-29'
 
-    # 调仓目标：目标日等于最新交易日按「调仓日」；早于时显式写明无新目标
+    # 调仓目标：标题带最近一次生成的日期，并单列按频率推算的下次调仓日；
+    # 名单明确标注「非下次预测」，不提前算下次名单。
     targets = [{'date': '2024-01-31', 'weights': {'600000.SH': 0.5, '000001.SZ': 0.5}},
                {'date': '2024-02-29', 'weights': {'600519.SH': 1.0}}]
-    page._fill_targets(targets, '2024-02-29')
+    signal_rule = {'rebalance': {}}
+    page._fill_targets(targets, '2024-02-29', signal_rule)
     assert page.target_table.rowCount() == 1
     assert page.target_table.item(0, 0).text() == '600519.SH'
     assert page.target_table.item(0, 1).text() == '100.00%'
-    assert page.target_note.text().startswith('调仓日 2024-02-29')
-    page._fill_targets(targets, '2024-03-29')
-    assert '本次无新目标，最近一次为 2024-02-29' in page.target_note.text()
-    page._fill_targets([], '2024-03-29')
+    assert page.target_title.text() == '最近一次调仓目标（2024-02-29）· 1 只'
+    assert page.target_note.text() == '该名单为最近一次生成，不是下次预测'
+    assert page.target_next.text() == '该规则按信号触发，无固定调仓日'
+    page._fill_targets([], '2024-03-29', signal_rule)
     assert page.target_table.rowCount() == 0
+    assert page.target_title.text() == '最近一次调仓目标'
     assert '没有产生调仓目标' in page.target_note.text()
+
+    # 下次调仓日：口径复用 compute.FREQUENCY_MONTHS，日历覆盖时给精确日期，
+    # 最新交易日所在月未走完时只报月份、不猜日期。
+    calendar = ([date(2024, 1, 31), date(2024, 2, 29)]
+                + [date(2024, m, 28) for m in range(3, 13)]
+                + [date(2025, 1, 27)])
+    semi = {'rebalance': {'frequency': 'semi'}}
+    monthly = {'rebalance': {'frequency': 'monthly'}}
+    assert _next_rebalance_note(semi, '2024-06-28', calendar) == '下次调仓日：2024-12-28'
+    assert _next_rebalance_note(semi, '2024-12-28', calendar) == (
+        '下次调仓日：2025 年 06 月末最后一个交易日（日历未覆盖）')
+    assert _next_rebalance_note(monthly, '2024-12-28', calendar) == '下次调仓日：2025-01-27'
+    assert _next_rebalance_note(monthly, '2025-01-27', calendar) == (
+        '下次调仓日：2025 年 01 月末最后一个交易日（日历未覆盖）')
+
+    # 折叠区默认收起，展开后两块可见
+    assert page.detail_panel.isHidden()
+    assert page.detail_toggle.text().startswith('▸')
+    page.detail_toggle.setChecked(True)
+    assert not page.detail_panel.isHidden()
+    assert page.detail_toggle.text().startswith('▾')
+    page.detail_toggle.setChecked(False)
+    assert page.detail_panel.isHidden()
 
     nav = [['2024-01-31', 1.0e9], ['2024-02-29', 1.05e9], ['2024-03-29', 1.02e9]]
     bench = [['2024-01-31', 1.0e9], ['2024-02-29', 1.01e9], ['2024-03-29', 0.99e9]]

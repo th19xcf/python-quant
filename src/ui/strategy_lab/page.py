@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -91,6 +93,71 @@ _METRIC_ROWS = (
 )
 
 
+def _next_frequency_month(month: tuple[int, int],
+                          months: tuple[int, ...]) -> tuple[int, int]:
+    """频率月集合里紧跟在 ``month`` 之后的那一个月（跨年进 1 月）。"""
+    year, value = month
+    for _ in range(24):
+        value += 1
+        if value > 12:
+            year, value = year + 1, 1
+        if value in months:
+            return year, value
+    return year, value
+
+
+def _next_rebalance_note(rule: Dict[str, Any] | None, after: str | None,
+                         calendar: List[date] | None = None) -> str:
+    """按规则频率推算下一次调仓日，调仓日口径复用 ``compute.rebalance_days``。
+
+    调仓日 = 频率月（``compute.FREQUENCY_MONTHS``：月频每月、季频 3/6/9/12、
+    半年频 6/12）里该月最后一个交易日。``after`` 为本地行情最新交易日，它所在
+    月份尚未走完，该月月末日不可知，只写「YYYY 年 MM 月末最后一个交易日
+    （日历未覆盖）」，不猜具体日期。非选股规则没有固定频率，按信号触发。
+    """
+    try:
+        from src.backtest.runner.compute import FREQUENCY_MONTHS, rebalance_days
+    except Exception:  # noqa: BLE001 - 口径模块不可用时只影响一行提示
+        logger.warning('读取调仓频率口径失败，下次调仓日留空')
+        return '下次调仓日：无法推算'
+    frequency = ((rule or {}).get('rebalance') or {}).get('frequency')
+    if frequency not in FREQUENCY_MONTHS:
+        return '该规则按信号触发，无固定调仓日'
+    months = FREQUENCY_MONTHS[frequency]
+    if calendar is None:
+        try:
+            from src.quant.strategy_lab.backtest import load_benchmark_close
+
+            days = sorted(date.fromisoformat(day) for day in
+                          load_benchmark_close(rule['benchmark']))
+        except Exception as exc:  # noqa: BLE001 - 行情缺失只影响这一行提示
+            logger.warning('读取基准指数日历失败，无法推算下次调仓日：{}', exc)
+            return '下次调仓日：基准指数行情缺失，无法推算'
+    else:
+        days = sorted(calendar)
+    if not days:
+        return '下次调仓日：无法推算'
+    after_day = days[-1]
+    if after:
+        after_day = min(date.fromisoformat(str(after)[:10]), days[-1])
+    month_ends: Dict[tuple[int, int], date] = {}
+    for day in days:
+        month_ends[(day.year, day.month)] = day
+    last_month = (days[-1].year, days[-1].month)
+    if (after_day.year, after_day.month) == last_month:
+        # 最新交易日落在日历最后一个月：该月月末日不可知，只报月份
+        year, month = last_month
+        if month not in months:
+            year, month = _next_frequency_month(last_month, months)
+        return f'下次调仓日：{year} 年 {month:02d} 月末最后一个交易日（日历未覆盖）'
+    upcoming = rebalance_days(sorted(month_ends.values()), frequency,
+                              after_day + timedelta(days=1))
+    if upcoming:
+        return f'下次调仓日：{upcoming[0].isoformat()}'
+    year, month = _next_frequency_month(last_month, months)
+    return f'下次调仓日：{year} 年 {month:02d} 月末最后一个交易日（日历未覆盖）'
+
+
 def _qss(theme: str) -> str:
     """页面 QSS：与市场趋势 / 行业热度页同源，只从 palette 与 TOKENS 取值。"""
     palette = palette_for(theme)
@@ -125,6 +192,19 @@ QLabel#slStatus[state="running"] {{
 QLabel#slSectionTitle {{
     font-size: {tokens.font_section}px;
     font-weight: 700;
+    color: {palette.text};
+}}
+QToolButton#slDisclosure {{
+    /* 折叠开关挤在「回测结果」标题行右侧：无边框、无内边距，行高由标题决定，
+       收起时不额外占竖直空间，指标表可见行数与图表宽度不被压缩。 */
+    background: transparent;
+    border: none;
+    padding: 0;
+    color: {palette.muted};
+    font-size: {tokens.font_small}px;
+    text-align: left;
+}}
+QToolButton#slDisclosure:hover {{
     color: {palette.text};
 }}
 QFrame#slCard {{
@@ -735,6 +815,21 @@ class StrategyLabPage(QWidget):
 
         section = QLabel('回测结果')
         section.setObjectName('slSectionTitle')
+        # 折叠开关放在「回测结果」标题同行右侧：不新增行高，收起时指标表可见
+        # 行数与右侧图表宽度都保持原样（隐藏的容器不参与布局最小尺寸）。
+        self.detail_toggle = QToolButton()
+        self.detail_toggle.setObjectName('slDisclosure')
+        self.detail_toggle.setCheckable(True)
+        self.detail_toggle.setChecked(False)
+        self.detail_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.detail_toggle.setText('▸ 持仓与调仓目标')
+        self.detail_toggle.toggled.connect(self._on_detail_toggled)
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+        title_row.addWidget(section)
+        title_row.addStretch(1)
+        title_row.addWidget(self.detail_toggle)
 
         split = QSplitter(Qt.Horizontal)
 
@@ -747,7 +842,7 @@ class StrategyLabPage(QWidget):
         # 两侧留白不对称。这里只补表格列的右侧留白，滚动条仍在表格框线内。
         left_layout.setContentsMargins(0, 0, 14, 0)
         left_layout.setSpacing(8)
-        left_layout.addWidget(section)
+        left_layout.addLayout(title_row)
 
         self.metrics_table = QTableWidget(0, 2)
         self.metrics_table.setHorizontalHeaderLabels(['指标', '数值'])
@@ -763,26 +858,38 @@ class StrategyLabPage(QWidget):
         left_layout.addWidget(self.metrics_table, 1)
 
         # 指标表下方补两块已算好、此前未展示的结果：当期实际持仓与最近一次
-        # 调仓目标。两块只占左列，不新增窗口、不动页头，右侧图表区高度不变。
+        # 调仓目标。两块放进可折叠容器（默认收起）：隐藏时不参与最小尺寸，
+        # 指标表可见行数与右侧图表宽度与改造前一致；展开时按原形态显示。
+        self.detail_panel = QWidget()
+        detail_layout = QVBoxLayout(self.detail_panel)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(8)
+
         self.current_title = QLabel('当前持仓')
         self.current_title.setObjectName('slSectionTitle')
         self.current_note = QLabel('运行试算后显示')
         self.current_note.setObjectName('slNotes')
         self.current_note.setWordWrap(True)
         self.current_table = self._build_block_table(_CURRENT_COLUMNS)
-        left_layout.addWidget(self.current_title)
-        left_layout.addWidget(self.current_note)
-        left_layout.addWidget(self.current_table)
+        detail_layout.addWidget(self.current_title)
+        detail_layout.addWidget(self.current_note)
+        detail_layout.addWidget(self.current_table)
 
-        self.target_title = QLabel('下次调仓目标')
+        self.target_title = QLabel('最近一次调仓目标')
         self.target_title.setObjectName('slSectionTitle')
+        self.target_next = QLabel('下次调仓日：运行试算后显示')
+        self.target_next.setObjectName('slNotes')
+        self.target_next.setWordWrap(True)
         self.target_note = QLabel('运行试算后显示')
         self.target_note.setObjectName('slNotes')
         self.target_note.setWordWrap(True)
         self.target_table = self._build_block_table(_TARGET_COLUMNS)
-        left_layout.addWidget(self.target_title)
-        left_layout.addWidget(self.target_note)
-        left_layout.addWidget(self.target_table)
+        detail_layout.addWidget(self.target_title)
+        detail_layout.addWidget(self.target_next)
+        detail_layout.addWidget(self.target_note)
+        detail_layout.addWidget(self.target_table)
+        self.detail_panel.setVisible(False)
+        left_layout.addWidget(self.detail_panel)
         split.addWidget(left)
 
         charts = QWidget()
@@ -806,6 +913,11 @@ class StrategyLabPage(QWidget):
         split.setStretchFactor(1, 3)
         layout.addWidget(split, 1)
         return card
+
+    def _on_detail_toggled(self, checked: bool) -> None:
+        """展开 / 收起持仓与调仓目标：收起时完全释放它们占用的布局尺寸。"""
+        self.detail_panel.setVisible(checked)
+        self.detail_toggle.setText('▾ 持仓与调仓目标' if checked else '▸ 持仓与调仓目标')
 
     def _build_block_table(self, columns: tuple) -> QTableWidget:
         """持仓 / 目标小表：表头、行高与列交互口径同指标表，固定高 4 行。
@@ -1110,7 +1222,7 @@ class StrategyLabPage(QWidget):
             self.status_label.setText(f'空结果：{payload.get("reason", "无可用结果")}')
             self._fill_metrics({'rebalances': 0})
             self._fill_current({})
-            self._fill_targets([], None)
+            self._fill_targets([], None, self._rule)
             self._plot_curves([], [])
             self._plot_drawdown([])
             self._plot_markers([])
@@ -1126,7 +1238,7 @@ class StrategyLabPage(QWidget):
         self._fill_current(payload.get('current') or {})
         latest_day = ((payload.get('valuation') or {}).get('date')
                       or (payload.get('period_effective') or {}).get('end'))
-        self._fill_targets(payload.get('targets') or [], latest_day)
+        self._fill_targets(payload.get('targets') or [], latest_day, self._rule)
         self._plot_curves(payload.get('nav') or [], payload.get('benchmark_curve') or [])
         self._plot_drawdown(payload.get('drawdown') or [])
         self._plot_markers(payload.get('markers') or [])
@@ -1193,16 +1305,19 @@ class StrategyLabPage(QWidget):
             for code, weight, qty in rows])
 
     def _fill_targets(self, targets: List[Dict[str, Any]],
-                      latest_day: str | None) -> None:
-        """下一次调仓目标：取最近一条目标及其权重，与最新交易日不一致时写明。
+                      latest_day: str | None,
+                      rule: Dict[str, Any] | None = None) -> None:
+        """最近一次调仓目标：取最近一条目标名单，并单列按规则频率推算的下次调仓日。
 
-        ``targets`` 是区间内全部调仓日；界面只展示最近一次（即当下应持有的
-        名单）。目标日早于最新交易日说明本交易日没有产生新名单，必须显式写
-        「本次无新目标，最近一次为某日」，不留空让人猜。
+        ``targets`` 是区间内全部调仓日，这里只展示最近一次生成的名单，标题带
+        该日期，并明确标注「非下次预测」；下次调仓日只按频率与交易日历推算
+        日期，不提前计算名单（当天下数据不足时算出的名单会误导）。
         """
+        self.target_next.setText(
+            _next_rebalance_note(rule if rule is not None else self._rule, latest_day))
         entries = [item for item in (targets or []) if (item or {}).get('weights')]
         if not entries:
-            self.target_title.setText('下次调仓目标')
+            self.target_title.setText('最近一次调仓目标')
             self.target_note.setText('区间内没有产生调仓目标')
             self._fill_block_table(self.target_table, [])
             return
@@ -1211,11 +1326,8 @@ class StrategyLabPage(QWidget):
         weights = {str(code): float(value or 0.0)
                    for code, value in (latest.get('weights') or {}).items()}
         rows = sorted(weights.items(), key=lambda pair: (-pair[1], pair[0]))
-        self.target_title.setText(f'下次调仓目标 · {len(rows)} 只')
-        if latest_day and day < str(latest_day):
-            self.target_note.setText(f'本次无新目标，最近一次为 {day}')
-        else:
-            self.target_note.setText(f'调仓日 {day}')
+        self.target_title.setText(f'最近一次调仓目标（{day}）· {len(rows)} 只')
+        self.target_note.setText('该名单为最近一次生成，不是下次预测')
         self._fill_block_table(self.target_table, [
             ((code, False), (f'{weight * 100:.2f}%', True))
             for code, weight in rows])
