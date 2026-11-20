@@ -66,6 +66,10 @@ PILL_PAD_H = 18
 FACTOR_BARS_W = 52
 #: 风险摘要右侧持有期 chip 宽度 + 间距
 RISK_CHIP_W = 52
+#: 详情面板因子横条：名称列最小/左侧留白，以及条形区最小宽度
+FACTOR_LABEL_MIN_W = 84
+FACTOR_LABEL_PAD = 6
+FACTOR_BAR_MIN_W = 70
 #: 表头左右 padding 8px + 边框/取整余量
 HEADER_PAD_H = 22
 #: 列宽上限：超过后由横向滚动条承接，委托对超限文本仍做省略
@@ -466,25 +470,46 @@ class FactorBarsWidget(QWidget):
             return
         peak = max([abs(float(item.get('value', 0.0))) for item in self._items]
                    + [1e-6])
-        label_width = 84
+        font = QFont(TOKENS.font_family)
+        font.setPointSizeF(8.5)
+        metrics = QFontMetrics(font)
+        labels = [str(item.get('label', '')) for item in self._items]
+        # 名称列按最长因子名实测加宽；单行放不下时在该列宽内换行，
+        # 同时给条形区留足最小宽度，数值列宽度不变
+        widest = max([metrics.horizontalAdvance(label) for label in labels] + [0])
         value_width = 40
+        usable = self.width() - value_width - 8
+        label_cap = max(FACTOR_LABEL_MIN_W,
+                        min(usable - FACTOR_BAR_MIN_W, int(usable * 0.6)))
+        label_width = max(FACTOR_LABEL_MIN_W, min(widest + FACTOR_LABEL_PAD, label_cap))
         bar_left = self.rect().left() + label_width
-        bar_width = self.width() - label_width - value_width - 8
+        bar_width = max(FACTOR_BAR_MIN_W, usable - label_width)
         zero = bar_left + bar_width / 2
 
         for index, item in enumerate(self._items):
             value = float(item.get('value', 0.0))
             label = str(item.get('label', ''))
             y = self.rect().top() + index * 34
-            font = QFont(TOKENS.font_family)
-            font.setPointSizeF(8.5)
             painter.setFont(font)
             painter.setPen(QPen(_qcolor(self._pal.muted)))
-            metrics = QFontMetrics(font)
-            painter.drawText(
-                QRectF(self.rect().left(), y, label_width - 6, 26),
-                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
-                metrics.elidedText(label, Qt.TextElideMode.ElideRight, label_width - 6))
+            text_rect = QRectF(self.rect().left(), y, label_width, 30)
+            if metrics.horizontalAdvance(label) <= label_width:
+                painter.drawText(
+                    text_rect,
+                    int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                    label)
+            elif metrics.boundingRect(text_rect.toRect(),
+                                      int(Qt.TextFlag.TextWordWrap), label).height() <= 32:
+                painter.drawText(
+                    text_rect,
+                    int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                        | Qt.TextFlag.TextWordWrap),
+                    label)
+            else:
+                painter.drawText(
+                    text_rect,
+                    int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                    metrics.elidedText(label, Qt.TextElideMode.ElideRight, label_width))
 
             painter.setPen(QPen(_qcolor(self._pal.border), 1))
             painter.drawLine(int(bar_left), y + 13, int(bar_left + bar_width),
@@ -712,8 +737,10 @@ class DetailPanel(QFrame):
         name_box.setSpacing(2)
         self.name_label = QLabel('选择一行查看详情')
         self.name_label.setObjectName('detailName')
+        self.name_label.setWordWrap(True)
         self.code_label = QLabel('—')
         self.code_label.setObjectName('detailCode')
+        self.code_label.setWordWrap(True)
         name_box.addWidget(self.name_label)
         name_box.addWidget(self.code_label)
         self.direction_label = QLabel('—')
@@ -727,6 +754,7 @@ class DetailPanel(QFrame):
 
         self.confidence_label = QLabel('置信度 —')
         self.confidence_label.setObjectName('mutedLabel')
+        self.confidence_label.setWordWrap(True)
         layout.addWidget(self.confidence_label)
 
         #: 执行状态：可下单 / 延后未成交 / 已过期，与表格 pill 同源判定
