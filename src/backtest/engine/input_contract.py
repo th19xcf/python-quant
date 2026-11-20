@@ -76,6 +76,8 @@ ROLE_REVENUE = 'revenue'
 ROLE_PARENT_NET_PROFIT = 'parent_net_profit'
 ROLE_TOTAL_ASSETS = 'total_assets'
 ROLE_TOTAL_EQUITY = 'total_equity'
+#: TTM 口径经营现金流（数据层管线合成，引擎只认结果列）
+ROLE_CFP_TTM = 'cfp_ttm'
 
 # ---------------------------------------------------------------------------
 # 输出侧记录键名
@@ -215,6 +217,8 @@ FACTOR_CONTRACT = FrameContract('factor', (
     ColumnSpec(ROLE_ST_LOWER, 'st_lower', False, 'Supertrend 下轨支撑'),
     ColumnSpec(ROLE_ST_UPPER, 'st_upper', False, 'Supertrend 上轨压力'),
     ColumnSpec(ROLE_ST_DIR, 'st_dir', False, 'Supertrend 方向：1 多头 / -1 空头 / 0 未初始化'),
+    ColumnSpec(ROLE_CFP_TTM, 'cfp_ttm', False,
+               'TTM 口径经营现金流（数据层管线合成，引擎只认结果列；缺列时策略读到 null 即跳过）'),
 ))
 
 #: 财务/估值层契约：四张源表各自独立，列以

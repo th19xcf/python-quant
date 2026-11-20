@@ -150,6 +150,10 @@ FIELDS: Dict[str, FieldSpec] = {
     'ff_gross_margin': FieldSpec('ff_gross_margin', '毛利率', '财务',
                                  '_staging/factor_candidates_20261111/base_rebal.parquet',
                                  'asof_trade_date', '%', '周频因子面板 q_gross_margin'),
+    'cfp_ttm': FieldSpec('cfp_ttm', '经营现金流TTM', '财务',
+                         '_staging/factor_candidates_20261111/base_rebal.parquet',
+                         'asof_trade_date', '元',
+                         'TTM口径经营活动现金流（累计→TTM合成由数据层管线负责，引擎只认结果列）'),
     # ---- 流动性 ----
     'avg_amount_20': FieldSpec('avg_amount_20', '20日平均成交额', '流动性', 'quotes/stock/**',
                                'bar', '元', '信号日为止最近 20 个交易日成交额均值，窗口须满'),

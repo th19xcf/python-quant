@@ -19,6 +19,7 @@ from src.backtest.engine.input_contract import (
     BAR_CONTRACT,
     FACTOR_CONTRACT,
     ROLE_ATR,
+    ROLE_CFP_TTM,
     ROLE_CLOSE,
     ROLE_DATE,
     ROLE_HIGH,
@@ -251,6 +252,13 @@ class BaseBacktestEngine:
         ).alias(FACTOR_CONTRACT.column(ROLE_ATR)))
 
         result = df.with_columns(exprs)
+
+        # cfp_ttm 是数据层管线合成的可选列（TTM 口径经营现金流），
+        # 引擎不硬算，只做"有则跳过、无则 NaN 占位"。
+        # 策略侧读到 null 应自行跳过（cfp_ttm / total_mv 的 B 比值算不出来就 hold）。
+        cfp_col = FACTOR_CONTRACT.column(ROLE_CFP_TTM)
+        if cfp_col not in result.columns:
+            result = result.with_columns(pl.lit(None, dtype=pl.Float64).alias(cfp_col))
 
         # Supertrend：轨道带路径依赖（每行需要上一行的轨道与方向），
         # 无法用无状态 Expr 表达，故单独调用 supertrend() 一次性追加四列
