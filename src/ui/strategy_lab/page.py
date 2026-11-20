@@ -1183,8 +1183,9 @@ class StrategyLabPage(QWidget):
                 if qty > 0]
         rows.sort(key=lambda row: (-(row[1] or 0.0), row[0]))
         day = current.get('date') or '—'
-        state = f'共 {len(rows)} 只' if rows else '空仓'
-        self.current_note.setText(f'估值日 {day} · {state}')
+        self.current_title.setText(f'当前持仓 · {len(rows)} 只' if rows else '当前持仓')
+        self.current_note.setText(
+            f'估值日 {day}' if rows else f'空仓 · 估值日 {day}')
         self._fill_block_table(self.current_table, [
             ((code, False),
              ('—' if weight is None else f'{weight * 100:.2f}%', True),
@@ -1201,7 +1202,8 @@ class StrategyLabPage(QWidget):
         """
         entries = [item for item in (targets or []) if (item or {}).get('weights')]
         if not entries:
-            self.target_note.setText('规则在统计区间内没有产生调仓目标')
+            self.target_title.setText('下次调仓目标')
+            self.target_note.setText('区间内没有产生调仓目标')
             self._fill_block_table(self.target_table, [])
             return
         latest = max(entries, key=lambda item: str(item.get('date') or ''))
@@ -1209,11 +1211,11 @@ class StrategyLabPage(QWidget):
         weights = {str(code): float(value or 0.0)
                    for code, value in (latest.get('weights') or {}).items()}
         rows = sorted(weights.items(), key=lambda pair: (-pair[1], pair[0]))
+        self.target_title.setText(f'下次调仓目标 · {len(rows)} 只')
         if latest_day and day < str(latest_day):
-            state = f'本次无新目标，最近一次为 {day}'
+            self.target_note.setText(f'本次无新目标，最近一次为 {day}')
         else:
-            state = f'调仓日 {day}'
-        self.target_note.setText(f'{state} · 共 {len(rows)} 只')
+            self.target_note.setText(f'调仓日 {day}')
         self._fill_block_table(self.target_table, [
             ((code, False), (f'{weight * 100:.2f}%', True))
             for code, weight in rows])

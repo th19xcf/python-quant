@@ -66,7 +66,8 @@ def test_page_renders_headless(app):
     assert page.current_table.item(0, 1).text() == '3.12%'
     assert page.current_table.item(0, 2).text() == '10,792,600'
     assert page.current_table.item(1, 1).text() == '—'
-    assert '共 2 只' in page.current_note.text()
+    assert '2 只' in page.current_title.text()
+    assert page.current_note.text() == '估值日 2024-03-29'
 
     # 调仓目标：目标日等于最新交易日按「调仓日」；早于时显式写明无新目标
     targets = [{'date': '2024-01-31', 'weights': {'600000.SH': 0.5, '000001.SZ': 0.5}},
