@@ -57,6 +57,31 @@ def test_page_renders_headless(app):
     assert page.start_date.maximumDate() == QDate.currentDate()
     page.latest_check.setChecked(False)
 
+    # 当前持仓：数量与权重逐只逐列展示，按权重降序；权重缺失不写成 0.00%
+    page._fill_current({'date': '2024-03-29',
+                        'positions': {'600000.SH': 10792600.0, '000001.SZ': 500.0},
+                        'weights': {'600000.SH': 0.0312}})
+    assert page.current_table.rowCount() == 2
+    assert page.current_table.item(0, 0).text() == '600000.SH'
+    assert page.current_table.item(0, 1).text() == '3.12%'
+    assert page.current_table.item(0, 2).text() == '10,792,600'
+    assert page.current_table.item(1, 1).text() == '—'
+    assert '共 2 只' in page.current_note.text()
+
+    # 调仓目标：目标日等于最新交易日按「调仓日」；早于时显式写明无新目标
+    targets = [{'date': '2024-01-31', 'weights': {'600000.SH': 0.5, '000001.SZ': 0.5}},
+               {'date': '2024-02-29', 'weights': {'600519.SH': 1.0}}]
+    page._fill_targets(targets, '2024-02-29')
+    assert page.target_table.rowCount() == 1
+    assert page.target_table.item(0, 0).text() == '600519.SH'
+    assert page.target_table.item(0, 1).text() == '100.00%'
+    assert page.target_note.text().startswith('调仓日 2024-02-29')
+    page._fill_targets(targets, '2024-03-29')
+    assert '本次无新目标，最近一次为 2024-02-29' in page.target_note.text()
+    page._fill_targets([], '2024-03-29')
+    assert page.target_table.rowCount() == 0
+    assert '没有产生调仓目标' in page.target_note.text()
+
     nav = [['2024-01-31', 1.0e9], ['2024-02-29', 1.05e9], ['2024-03-29', 1.02e9]]
     bench = [['2024-01-31', 1.0e9], ['2024-02-29', 1.01e9], ['2024-03-29', 0.99e9]]
     page._plot_curves(nav, bench)

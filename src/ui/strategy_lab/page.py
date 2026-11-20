@@ -66,6 +66,12 @@ PLOT_LEGEND_BENCH = '基准净值'
 PLOT_LEGEND_BUY = '买入 / 补仓'
 PLOT_LEGEND_SELL = '止盈清仓'
 
+#: 结果区两块补充信息的列定义：持仓要数量，调仓目标只要代码与权重
+_CURRENT_COLUMNS = ('代码', '权重', '数量')
+_TARGET_COLUMNS = ('代码', '权重')
+#: 两块表格的可见行数：固定高度、超出部分在表内滚动，避免挤占指标表与右侧图表
+_BLOCK_VISIBLE_ROWS = 4
+
 _METRIC_ROWS = (
     ('annual', '年化收益', 'pct'),
     ('max_drawdown', '最大回撤', 'pct'),
@@ -755,6 +761,28 @@ class StrategyLabPage(QWidget):
         self.metrics_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         use_interactive_columns(self.metrics_table)
         left_layout.addWidget(self.metrics_table, 1)
+
+        # 指标表下方补两块已算好、此前未展示的结果：当期实际持仓与最近一次
+        # 调仓目标。两块只占左列，不新增窗口、不动页头，右侧图表区高度不变。
+        self.current_title = QLabel('当前持仓')
+        self.current_title.setObjectName('slSectionTitle')
+        self.current_note = QLabel('运行试算后显示')
+        self.current_note.setObjectName('slNotes')
+        self.current_note.setWordWrap(True)
+        self.current_table = self._build_block_table(_CURRENT_COLUMNS)
+        left_layout.addWidget(self.current_title)
+        left_layout.addWidget(self.current_note)
+        left_layout.addWidget(self.current_table)
+
+        self.target_title = QLabel('下次调仓目标')
+        self.target_title.setObjectName('slSectionTitle')
+        self.target_note = QLabel('运行试算后显示')
+        self.target_note.setObjectName('slNotes')
+        self.target_note.setWordWrap(True)
+        self.target_table = self._build_block_table(_TARGET_COLUMNS)
+        left_layout.addWidget(self.target_title)
+        left_layout.addWidget(self.target_note)
+        left_layout.addWidget(self.target_table)
         split.addWidget(left)
 
         charts = QWidget()
@@ -778,6 +806,47 @@ class StrategyLabPage(QWidget):
         split.setStretchFactor(1, 3)
         layout.addWidget(split, 1)
         return card
+
+    def _build_block_table(self, columns: tuple) -> QTableWidget:
+        """持仓 / 目标小表：表头、行高与列交互口径同指标表，固定高 4 行。
+
+        钉死高度而不是随行数长高：行数超出时在表内滚动，左列高度因此可预期，
+        指标表与右侧图表都不会被行数不同的规则顶变形。
+        """
+        table = QTableWidget(0, len(columns))
+        table.setHorizontalHeaderLabels(list(columns))
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        table.verticalHeader().setDefaultSectionSize(FIXED_ROW_HEIGHT)
+        table.horizontalHeader().setFixedHeight(HEADER_ROW_HEIGHT)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setSelectionMode(QAbstractItemView.NoSelection)
+        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        table.setFixedHeight(HEADER_ROW_HEIGHT + _BLOCK_VISIBLE_ROWS * FIXED_ROW_HEIGHT
+                            + 2 * table.frameWidth())
+        use_interactive_columns(table)
+        return table
+
+    @staticmethod
+    def _fill_block_table(table: QTableWidget,
+                          rows: List[tuple]) -> None:
+        """填小表：代码列左对齐、数值列右对齐，列宽按内容实测后撑最小宽。
+
+        最小宽与指标表同一口径（实测列宽合计 + 边框 + 竖直滚动条 + 4px 留白）：
+        左列按最小宽外扩，列不会被左侧压出横向滚动条、数量列不被截断。
+        """
+        table.setRowCount(len(rows))
+        for r, cells in enumerate(rows):
+            for c, (text, numeric) in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if numeric:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight
+                                          | Qt.AlignmentFlag.AlignVCenter)
+                table.setItem(r, c, item)
+        apply_content_widths(table)
+        columns = sum(table.columnWidth(i) for i in range(table.columnCount()))
+        table.setMinimumWidth(columns + 2 * table.frameWidth()
+                              + table.verticalScrollBar().sizeHint().width() + 4)
 
     def _add_plot(self, layout: QVBoxLayout, title: str, ylabel: str, *,
                   legend: List[tuple] | None = None, legend_visible: bool = True):
@@ -1040,6 +1109,8 @@ class StrategyLabPage(QWidget):
             self.trade_btn.setEnabled(False)
             self.status_label.setText(f'空结果：{payload.get("reason", "无可用结果")}')
             self._fill_metrics({'rebalances': 0})
+            self._fill_current({})
+            self._fill_targets([], None)
             self._plot_curves([], [])
             self._plot_drawdown([])
             self._plot_markers([])
@@ -1050,6 +1121,12 @@ class StrategyLabPage(QWidget):
         self._fill_metrics(payload['metrics'],
                            (payload.get('dividend_coverage') or {}).get('message') or '',
                            (payload.get('freshness') or {}).get('warnings') or [])
+        # 持仓与调仓目标：与指标表同区展示，取回测自带的 current / targets，
+        # 不需要重算；最新交易日取估值日（同净值曲线末根 bar）。
+        self._fill_current(payload.get('current') or {})
+        latest_day = ((payload.get('valuation') or {}).get('date')
+                      or (payload.get('period_effective') or {}).get('end'))
+        self._fill_targets(payload.get('targets') or [], latest_day)
         self._plot_curves(payload.get('nav') or [], payload.get('benchmark_curve') or [])
         self._plot_drawdown(payload.get('drawdown') or [])
         self._plot_markers(payload.get('markers') or [])
@@ -1090,6 +1167,56 @@ class StrategyLabPage(QWidget):
         # 合计 496 = 视口 496）。按「合计 + 边框 + 滚动条 + 4px 右侧留白」定最小宽。
         table.setMinimumWidth(columns + 2 * table.frameWidth()
                               + table.verticalScrollBar().sizeHint().width() + 4)
+
+    def _fill_current(self, current: Dict[str, Any]) -> None:
+        """当前持仓：数量取引擎最终持仓，权重取估值日收盘价折算，按权重降序。
+
+        与引擎实际成交一致（不是目标名单）；权重缺失时显示 — 而非 0.00%，
+        避免把「取不到收盘价」写成「零权重」。
+        """
+        current = current or {}
+        positions = {str(code): float(qty or 0.0)
+                     for code, qty in (current.get('positions') or {}).items()}
+        weights = {str(code): float(value or 0.0)
+                   for code, value in (current.get('weights') or {}).items()}
+        rows = [(code, weights.get(code), qty) for code, qty in positions.items()
+                if qty > 0]
+        rows.sort(key=lambda row: (-(row[1] or 0.0), row[0]))
+        day = current.get('date') or '—'
+        state = f'共 {len(rows)} 只' if rows else '空仓'
+        self.current_note.setText(f'估值日 {day} · {state}')
+        self._fill_block_table(self.current_table, [
+            ((code, False),
+             ('—' if weight is None else f'{weight * 100:.2f}%', True),
+             (f'{qty:,.0f}', True))
+            for code, weight, qty in rows])
+
+    def _fill_targets(self, targets: List[Dict[str, Any]],
+                      latest_day: str | None) -> None:
+        """下一次调仓目标：取最近一条目标及其权重，与最新交易日不一致时写明。
+
+        ``targets`` 是区间内全部调仓日；界面只展示最近一次（即当下应持有的
+        名单）。目标日早于最新交易日说明本交易日没有产生新名单，必须显式写
+        「本次无新目标，最近一次为某日」，不留空让人猜。
+        """
+        entries = [item for item in (targets or []) if (item or {}).get('weights')]
+        if not entries:
+            self.target_note.setText('规则在统计区间内没有产生调仓目标')
+            self._fill_block_table(self.target_table, [])
+            return
+        latest = max(entries, key=lambda item: str(item.get('date') or ''))
+        day = str(latest.get('date') or '—')
+        weights = {str(code): float(value or 0.0)
+                   for code, value in (latest.get('weights') or {}).items()}
+        rows = sorted(weights.items(), key=lambda pair: (-pair[1], pair[0]))
+        if latest_day and day < str(latest_day):
+            state = f'本次无新目标，最近一次为 {day}'
+        else:
+            state = f'调仓日 {day}'
+        self.target_note.setText(f'{state} · 共 {len(rows)} 只')
+        self._fill_block_table(self.target_table, [
+            ((code, False), (f'{weight * 100:.2f}%', True))
+            for code, weight in rows])
 
     @staticmethod
     def _format(kind: str, value: Any) -> str:
