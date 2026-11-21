@@ -22,6 +22,7 @@ import polars as pl
 from loguru import logger
 
 from src.backtest.runner.compute import Context
+from src.tech_analysis.indicators.formulas import supertrend as supertrend_frame
 
 ROOT = Path(__file__).resolve().parents[3]
 VALUATION = ROOT / 'data/local_store/meta/financials/valuation_daily.parquet'
@@ -42,6 +43,8 @@ FINANCIAL_COLUMNS: Dict[str, str] = {
 }
 VALUATION_COLUMNS = ('pe', 'pb', 'ps', 'dv_ratio', 'total_mv', 'circ_mv')
 BAR_COLUMNS = ('close', 'pct_chg', 'volume', 'amount')
+#: Supertrend 四列：路径依赖递推，统一由 ``formulas.supertrend`` 一次算出
+ST_COLUMNS = ('supertrend', 'st_lower', 'st_upper', 'st_dir')
 
 #: 正式日频因子面板（1990-12-19 ~ 2026-11-19）
 FACTOR_PANEL = ROOT / 'data/local_store/factors/factor_panel.parquet'
@@ -137,6 +140,7 @@ class FieldPanels:
         self._base: Dict[str, Dict[str, tuple[np.ndarray, np.ndarray]]] | None = None
         self._industry: Dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] | None = None
         self._composite: Dict[str, Dict[date, Dict[str, float]]] | None = None
+        self._supertrend: Dict[str, tuple[np.ndarray, Dict[str, np.ndarray]]] | None = None
 
     # -- 对外 --------------------------------------------------------------
     def values(self, key: str, days: List[date] | None = None
@@ -151,6 +155,8 @@ class FieldPanels:
     def _build(self, key: str) -> Dict[date, Dict[str, Any]]:
         if key in BAR_COLUMNS:
             return self._bar_panel(key)
+        if key in ST_COLUMNS:
+            return self._supertrend_panel(key)
         if key.startswith('vol_'):
             return self._vol_panel(int(key.split('_')[1]))
         if key.startswith('mom_'):
@@ -184,6 +190,37 @@ class FieldPanels:
                 continue
             dates = df['date'].to_numpy().astype('datetime64[D]')
             values = df[column].to_numpy().astype('float64')
+            pos = np.searchsorted(dates, me)
+            idx = np.minimum(pos, max(dates.size - 1, 0))
+            hit = np.nonzero((pos < dates.size) & (dates[idx] == me))[0]
+            for j in hit:
+                value = float(values[idx[j]])
+                if math.isfinite(value):
+                    panel[self.ctx.days[j]][code] = value
+        logger.info('面板 {}：{} 个调仓日', column, len(panel))
+        return panel
+
+    def _ensure_supertrend(self) -> Dict[str, tuple[np.ndarray, Dict[str, np.ndarray]]]:
+        """按代码一次算完 Supertrend 四列（ATR 10 / 倍数 3，与引擎预计算同源）。"""
+        if self._supertrend is None:
+            cache: Dict[str, tuple[np.ndarray, Dict[str, np.ndarray]]] = {}
+            for code, df in self.ctx.data.items():
+                if not {'date', 'high', 'low', 'close'}.issubset(df.columns):
+                    continue
+                out = supertrend_frame(df.select(['date', 'high', 'low', 'close']))
+                dates = out['date'].to_numpy().astype('datetime64[D]')
+                cache[code] = (dates, {c: out[c].to_numpy().astype('float64')
+                                       for c in ST_COLUMNS})
+            self._supertrend = cache
+            logger.info('Supertrend：{} 只（ATR 10 / 倍数 3）', len(cache))
+        return self._supertrend
+
+    def _supertrend_panel(self, column: str) -> Dict[date, Dict[str, float]]:
+        data = self._ensure_supertrend()
+        panel = self._empty()
+        me = np.array(self.ctx.days, dtype='datetime64[D]')
+        for code, (dates, columns) in data.items():
+            values = columns[column]
             pos = np.searchsorted(dates, me)
             idx = np.minimum(pos, max(dates.size - 1, 0))
             hit = np.nonzero((pos < dates.size) & (dates[idx] == me))[0]
