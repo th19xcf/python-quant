@@ -907,6 +907,45 @@ def test_open_value_missing_vs_column_missing_distinction():
     assert any(o['reason'] == 'price_missing' for o in result2['expired_orders'])
 
 
+def test_sell_without_position_is_filtered_and_recorded():
+    """空仓卖出不得凭空成交：在信号层即被 no_position 过滤并逐条留痕。
+
+    与 A13 的 already_holding 对称：没有持仓时的卖单不能进入挂单队列，
+    必须在 filtered_signals 留下原因，避免「未发信号」与「被前置过滤」混淆。
+    """
+    data = _make_df(opens=[10.0] * 3, closes=[10.0] * 3)
+    engine = BacktestEngine(data)
+    engine.set_strategy(_MappingSignalStrategy({
+        0: {'action': 'sell', 'fraction': 1.0},
+    }))
+    result = engine.run_backtest(initial_capital=1_000_000.0, ts_code='600000.SH',
+                                 is_st=False)
+
+    assert result['trades'] == []
+    assert [f['reason'] for f in result['filtered_signals']] == ['no_position']
+
+
+def test_sell_fraction_below_one_lot_expires_as_zero_order():
+    """按比例减仓整手取整为 0 时必须显式作废（zero_order），不得静默丢单。
+
+    持仓 200 股、fraction=0.25 → 50 股不足一手 → 0 股，应记零股作废，
+    且原持仓保持不变。
+    """
+    data = _make_df(opens=[10.0] * 4, closes=[10.0] * 4)
+    engine = BacktestEngine(data)
+    engine.set_strategy(_MappingSignalStrategy({
+        0: {'action': 'buy', 'fraction': 1.0},
+        2: {'action': 'sell', 'fraction': 0.25},
+    }))
+    result = engine.run_backtest(initial_capital=2_100.0, ts_code='600000.SH',
+                                 is_st=False)
+
+    assert [t['signal'] for t in result['trades']] == ['buy']
+    assert result['trades'][0]['shares'] == 200
+    assert [o['reason'] for o in result['expired_orders']] == ['zero_order']
+    assert result['positions']['600000.SH'] == 200
+
+
 def test_slow_path_strategies_marked_in_result():
     """未实现 generate_signals_vectorized 的策略必须留痕：打 warning 并把
     (标的名, 策略名) 写进结果的 slow_path_strategies，避免调用方对

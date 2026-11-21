@@ -85,3 +85,44 @@ def test_unknown_code_falls_back_to_main_board_limit():
     assert ExecutionRules.resolve_sector('') == '主板'
     assert (ExecutionRules.resolve_limit_pct('')
             == PriceLimitTradable.DEFAULT_LIMITS['主板'])
+
+
+def test_block_reason_without_prev_close_does_not_fake_limit_breach():
+    """昨收缺失（None / 0 / 负数）时不做涨跌停判定，只保留停牌拦截。
+
+    涨跌停价以昨收为基准；昨收缺失属数据缺口，不能凭开盘价反推「已封板」，
+    否则缺一列数据就会把整段行情误判成不可交易。
+    """
+    rules = ExecutionRules()
+    for prev_close in (None, 0.0, -1.0):
+        assert rules.block_reason(
+            'buy', prev_close=prev_close, open_price=999.0, high=999.0,
+            low=999.0, close=999.0, volume=1_000_000.0,
+            ts_code='600000.SH') is None
+        assert rules.is_tradable(
+            'buy', prev_close=prev_close, open_price=999.0, high=999.0,
+            low=999.0, close=999.0, volume=1_000_000.0,
+            ts_code='600000.SH') is True
+
+
+def test_unknown_side_never_counts_as_limit_breach():
+    """未知买卖方向不得被判成封板（封板只对 buy 触涨停 / sell 触跌停成立）。"""
+    rules = ExecutionRules()
+    assert rules._limit_breached(
+        'hold', price=999.0, prev_close=100.0, limit=0.10) is False
+
+
+def test_one_line_board_requires_high_low_and_close():
+    """无开盘价时，high / low / close 任一缺失都不做一字板判定（视为可交易）。
+
+    缺值只能是数据缺口，不能静默解读成「一字板封死」而拒单。
+    """
+    rules = ExecutionRules()
+    for high, low, close in (
+        (None, 99.0, 100.0),
+        (101.0, None, 100.0),
+        (101.0, 99.0, None),
+    ):
+        assert rules.block_reason(
+            'buy', prev_close=100.0, open_price=None, high=high, low=low,
+            close=close, volume=1_000_000.0, ts_code='600000.SH') is None
