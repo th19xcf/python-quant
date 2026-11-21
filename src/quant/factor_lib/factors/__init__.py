@@ -10,6 +10,7 @@ from src.quant.factor_lib.factors import (
     famafrench,
     gtja191,
     technical,
+    technical_v2,
 )
 
 
@@ -29,4 +30,5 @@ __all__ = [
     'gtja191',
     'load_all',
     'technical',
+    'technical_v2',
 ]

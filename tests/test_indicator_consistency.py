@@ -167,12 +167,16 @@ def test_multi_factor_requires_two_factor_resonance():
 
 
 def test_rsi_seed_and_value_range():
-    """RSI 前 13 行为 null，种子在索引 13；值域 0~100"""
+    """RSI 采用通达信 SMA 口径：首行为 null，第 2 根 K 线起即有值，值域 0~100。
+
+    旧断言「前 13 行为 null」基于已移除的 Wilder 种子；现行语义见
+    ``src/tech_analysis/indicators/formulas.py`` 的 ``rsi_expr`` 文档。
+    """
     df = _make_ohlcv()
     rsi = df.select(rsi_expr('close', 14).alias('rsi'))['rsi']
 
-    assert rsi[:13].is_null().all(), 'RSI 前 13 行应为 null'
-    assert rsi[13:].is_not_null().all(), 'RSI 从索引 13 起应非 null'
+    assert rsi[:1].is_null().all(), 'RSI 首行应为 null'
+    assert rsi[1:].is_not_null().all(), 'RSI 从索引 1 起应非 null'
 
     values = rsi.drop_nulls().to_numpy()
     assert values.min() >= 0.0 and values.max() <= 100.0, 'RSI 值域应为 0~100'
@@ -408,27 +412,23 @@ def test_dmi_flat_window_is_zero_not_inf():
         assert np.allclose(values, 0.0), f'{col} 无波动时应为 0'
 
 
-def test_hsl_falls_back_to_estimated_without_turn():
-    """无真实换手率时 HSL 回退旧估算口径，并标注 hsl_source=estimated。
+def test_hsl_missing_without_turn():
+    """无真实换手率时 HSL 留空，并标注 hsl_source=missing。
 
-    旧口径：``volume / MA60(volume) × 5``（0~100 百分比语义不变）。
+    旧的 ``volume / MA60(volume) × 5`` 估算口径（伪换手率）已从实现中移除，
+    见 ``src/tech_analysis/indicators/volume.py`` 的 ``calculate_hsl`` 文档。
     """
     from src.tech_analysis.indicators.volume import calculate_hsl
 
     df = _make_ohlcv(80)
     result = calculate_hsl(df.lazy()).collect()
 
-    assert result['hsl_source'].unique().to_list() == ['estimated']
-    expected = df.select(
-        (pl.col('volume') / pl.col('volume').rolling_mean(60, min_samples=1) * 5)
-        .alias('hsl')
-    )['hsl'].to_numpy()
-    np.testing.assert_allclose(
-        result['hsl'].to_numpy(), expected, rtol=1e-4, atol=1e-3)
+    assert result['hsl_source'].unique().to_list() == ['missing']
+    assert result['hsl'].is_null().all(), '缺失真实换手率时不应再用伪估算值填充'
 
 
-def test_hsl_prefers_real_turnover_and_falls_back_per_row():
-    """有真实 turn 的日期用真实值（百分数原样），缺失日期逐行回退估算。"""
+def test_hsl_prefers_real_turnover_and_leaves_missing_per_row():
+    """有真实 turn 的日期用真实值（百分数原样），缺失日期逐行留空。"""
     from datetime import date, timedelta
 
     from src.tech_analysis.indicators.volume import calculate_hsl
@@ -447,8 +447,9 @@ def test_hsl_prefers_real_turnover_and_falls_back_per_row():
     recent = result.filter(pl.col('date') >= dates[-20])
     assert set(recent['hsl_source'].to_list()) == {'turn'}
     np.testing.assert_allclose(recent['hsl'].to_numpy(), 2.0, rtol=1e-5, atol=1e-5)
-    assert set(result.filter(pl.col('date') < dates[-20])['hsl_source'].to_list()) == {
-        'estimated'}
+    early = result.filter(pl.col('date') < dates[-20])
+    assert set(early['hsl_source'].to_list()) == {'missing'}
+    assert early['hsl'].is_null().all()
 
 
 # ---------------------------------------------------------------------------
