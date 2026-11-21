@@ -345,10 +345,10 @@ cp .env.example .env
 - 提交路径：项目目录 `e:\code\python\quant` 为 Git 仓库；每次提交前先同步备份目录 `G:\git\python-quant`（保持相同相对路径）
 - 数据库迁移：Alembic（`.\.venv\Scripts\python.exe -m alembic upgrade head`；改表必须先 `alembic revision --autogenerate -m "..."` 生成脚本，禁止手写 DDL，`create_tables()` 内部已走 `alembic upgrade head`）
 - 测试：pytest 全量回归（`.\.venv\Scripts\python.exe -m pytest tests -q`）
-- 质量门禁（本地与 CI 一致）：
+- 质量门禁（目前只在本地命令执行，仓库未接入 CI）：
   - `ruff check src tests`（pyflakes / bugbear / bandit / isort / mccabe C901 等全量规则）
   - `mypy src`（覆盖 src 下全部业务模块，配置见 `pyproject.toml [tool.mypy]`）
-  - `pytest --cov=src`（覆盖率门禁 `[tool.coverage.report] fail_under = 63`，当前约 64%）
+  - `pytest --cov=src`（覆盖率门禁 `[tool.coverage.report] fail_under = 71`，2026-11-21 实测 71.04% = 43,526/61,268；模块阶梯 `src/backtest` 85 / `src/backtest/engine` 89 / `src/risk` 85 / `src/data/quality` 76。该闸门目前只在本地命令执行，仓库未接入 CI）
 
 ---
 

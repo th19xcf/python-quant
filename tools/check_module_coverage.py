@@ -6,11 +6,12 @@
 模块门槛逐个判定，任一不达标即退出 1。
 
 门槛口径：
-- 全局门槛保持原样：本地 ``pyproject.toml`` 的 ``fail_under = 63``、
-  CI ``.github/workflows/ci.yml`` 的 ``--cov-fail-under=66`` 都不动；
-- 关键模块另设 ≥85% 的独立门槛，数值锚定实测值、只允许上调。
+- 全局门槛：本地 ``pyproject.toml`` 的 ``fail_under = 71``（目前只在本地命令执行，
+  仓库未接入 CI）；
+- 关键模块另设独立门槛（``src/backtest`` 85 / ``src/backtest/engine`` 89 /
+  ``src/risk`` 85 / ``src/data/quality`` 76），数值按实测值登记、只允许上调。
 
-用法（CI 与本地同一条命令）::
+用法（本地执行）::
 
     python -m pytest --cov=src --cov-report=json:coverage.json --cov-fail-under=0
     python tools/check_module_coverage.py --coverage-json coverage.json
