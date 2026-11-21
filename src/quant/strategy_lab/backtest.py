@@ -770,6 +770,9 @@ def _run_scheduled(rule: Dict[str, Any], t0: float) -> Dict[str, Any]:
     # 定投补仓：最后一根 bar 的当日信号（是否补仓/止盈、下次触发价）
     if plan.daily:
         payload['daily_signal'] = plan.daily
+    # 估值分位择时：最后一期分位与所取估值数据日期，供界面只读展示
+    if plan.signal_tail:
+        payload['signal_tail'] = plan.signal_tail
     if rule['rule_type'] == 'dca_grid':
         metrics.update(_dca_metrics(result, rule, plan, curve))
         hold = _buy_and_hold(rule, engine_data, dividends, st_status)

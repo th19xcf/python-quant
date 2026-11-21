@@ -277,6 +277,15 @@ def _switch_rows(payload: Dict[str, Any], rule: Dict[str, Any] | None) -> List[t
     if 'level' in latest:
         rows.append(('当前档位', f'{latest["level"]}（仓位 '
                                 f'{float(latest.get("position") or 0) * 100:.0f}%）'))
+    # 估值分位择时：最后一期分位与所用估值数据日期（仅此类规则带 signal_tail）
+    tail = payload.get('signal_tail') or {}
+    if tail.get('pct') is not None:
+        threshold = float(tail.get('threshold') or 0.0)
+        rows.append(('当前分位', f'{float(tail["pct"]) * 100:.0f}%'
+                                 f'（阈值 {threshold * 100:.0f}%）'))
+        if tail.get('date'):
+            lag = (date.today() - date.fromisoformat(str(tail['date']))).days
+            rows.append(('估值日期', f'{tail["date"]}（滞后 {lag} 个自然日）'))
     if (rule or {}).get('rule_type') == 'timing' and (rule or {}).get('signal'):
         sig = rule['signal']
         if sig.get('kind') == 'index_pe_pct':

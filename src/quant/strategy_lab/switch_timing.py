@@ -49,6 +49,8 @@ class Plan:
     note: str
     #: 定投补仓的当日信号（最后一根 bar 收盘判定，不写调度）；其它规则为 None
     daily: Dict[str, Any] | None = None
+    #: 估值分位择时最后一期信号（日期为所用估值数据的实际日期），供界面只读展示
+    signal_tail: Dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -326,11 +328,13 @@ def _step_level(index: int, signal: float, levels: List[Dict[str, float]],
     return index
 
 
-def _index_pct_series(rule: Dict[str, Any], days: List[date]) -> List[float | None]:
+def _index_pct_series(rule: Dict[str, Any], days: List[date],
+                      *, with_dates: bool = False):
     """指数估值分位：月末序列滚动 ``window_months`` 期，非月末日取最近一期。
 
     分位 = 窗口内 ``<= 当前值`` 的期数占比（与 ``tools/dividend_official_probe.py`` 同口径）；
     有效样本少于 ``min_months`` 时返回 ``None``，不降级、不外推。
+    ``with_dates=True`` 时一并返回每个交易日实际取用的估值日期。
     """
     spec = rule['signal']
     if not VALUATION_PATH.is_file():
@@ -346,15 +350,18 @@ def _index_pct_series(rule: Dict[str, Any], days: List[date]) -> List[float | No
     window = int(spec['window_months'])
     min_n = int(spec['min_months'])
     out: List[float | None] = []
+    used: List[date | None] = []
     for day in days:
         i = bisect.bisect_right(dates, day) - 1
         if i < 0 or values[i] is None:
             out.append(None)
+            used.append(None)
             continue
         hist = [v for v in values[max(0, i - window + 1):i + 1] if v is not None]
         out.append(sum(1 for v in hist if v <= values[i]) / len(hist)
                    if len(hist) >= min_n else None)
-    return out
+        used.append(dates[i])
+    return (out, used) if with_dates else out
 
 
 def build_timing_plan(rule: Dict[str, Any]) -> Plan:
@@ -379,8 +386,9 @@ def build_timing_plan(rule: Dict[str, Any]) -> Plan:
         prices = [sum(lookup[code][d] / base[code] for code in codes) / len(codes)
                   for d in common]
 
+    used_dates: List[date | None] | None = None
     if rule['signal']['kind'] == 'index_pe_pct':
-        signals = _index_pct_series(rule, common)
+        signals, used_dates = _index_pct_series(rule, common, with_dates=True)
         window = int(rule['signal']['window_months'])
         window_text = f'估值分位窗口 {window} 个月'
     else:
@@ -396,6 +404,16 @@ def build_timing_plan(rule: Dict[str, Any]) -> Plan:
     hysteresis = float(rule['hysteresis'])
     cash = rule['portfolio']['cash_buffer']
     per_code = {code: (1.0 if len(codes) == 1 else 1.0 / len(codes)) for code in codes}
+
+    # 最后一期仍有效的估值分位：界面只读展示「当前分位」与估值数据实际日期
+    signal_tail: Dict[str, Any] | None = None
+    if used_dates is not None:
+        last_i = next((i for i in range(len(signals) - 1, -1, -1)
+                       if signals[i] is not None), None)
+        if last_i is not None:
+            signal_tail = {'date': str(used_dates[last_i]),
+                           'pct': round(float(signals[last_i]), 6),
+                           'threshold': float(levels[-1]['threshold'])}
 
     schedules: Dict[str, Dict[date, Tuple[str, float]]] = {}
     markers: List[Dict[str, Any]] = []
@@ -437,7 +455,7 @@ def build_timing_plan(rule: Dict[str, Any]) -> Plan:
     note = (f'共同交易日 {len(common)} 天，{window_text}；'
             f'调仓 {len(markers)} 次，期末档位 {level}')
     return Plan(data=data, schedules=schedules, markers=markers,
-                leg_curves=leg_curves, note=note)
+                leg_curves=leg_curves, note=note, signal_tail=signal_tail)
 
 
 # ---------------------------------------------------------------------------
