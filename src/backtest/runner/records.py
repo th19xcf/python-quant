@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from src.data.atomic_write import write_text_atomic
+from src.data.atomic_write import write_parquet_atomic, write_text_atomic
 from src.data.local_store.paths import backtest_runs_dir
 
 from .errors import SpecError
@@ -75,7 +75,7 @@ def _write_positions(run_dir: Path,
         'close_raw': pl.Float64,
     })
     path = run_dir / POSITIONS_FILE
-    frame.write_parquet(path)
+    write_parquet_atomic(frame, path)
     return {
         'schema': POSITIONS_SCHEMA,
         'file': POSITIONS_FILE,

@@ -25,6 +25,7 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -35,6 +36,11 @@ import polars as pl
 from loguru import logger
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.data.atomic_write import write_parquet_atomic  # noqa: E402
+
 STORE = ROOT / 'data/local_store'
 OUT_DIR = STORE / 'meta/index_valuation'
 TABLE = OUT_DIR / 'index_valuation.parquet'
@@ -121,7 +127,7 @@ def fetch_weights(pro: Any, code: str, start_year: int, end_year: int) -> pl.Dat
                               pl.col('trade_date').alias('trade_date'),
                               pl.col('weight').cast(pl.Float64)]))
             path.parent.mkdir(parents=True, exist_ok=True)
-            frame.write_parquet(path)
+            write_parquet_atomic(frame, path)
         frames.append(frame)
     if not frames:
         return pl.DataFrame(schema={'index_code': pl.Utf8, 'con_code': pl.Utf8,
@@ -152,7 +158,7 @@ def fetch_daily(pro: Any, days: List[date]) -> pl.DataFrame:
                  .with_columns(pl.col('trade_date').str.strptime(pl.Date, '%Y%m%d'))
                  .select(['ts_code', 'trade_date', 'pe', 'pe_ttm', 'pb', 'dv_ratio']))
         path.parent.mkdir(parents=True, exist_ok=True)
-        frame.write_parquet(path)
+        write_parquet_atomic(frame, path)
         frames.append(frame)
         if i % 20 == 0:
             logger.info('daily_basic 抓取进度 {}/{}', i, len(days))

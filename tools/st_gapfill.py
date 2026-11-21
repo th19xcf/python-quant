@@ -14,10 +14,11 @@
 """
 from __future__ import annotations
 
-import glob
 import calendar
+import glob
 import json
 import shutil
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -26,6 +27,11 @@ import numpy as np
 import polars as pl
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.data.atomic_write import write_parquet_atomic  # noqa: E402
+
 ST_DIR = ROOT / 'data/local_store/meta/st'
 LOCAL = ST_DIR / 'st_intervals.parquet'
 BACKUP = ST_DIR / 'st_intervals_backup_20261121.parquet'
@@ -44,7 +50,7 @@ def quote_files() -> Dict[str, Path]:
 
 
 def price_stats(code: str, s: date, e: date, files: Dict[str, Path],
-                pad: int = 0) -> Dict[str, Optional[float]]:
+                pad: int = 0) -> Dict[str, float | None]:
     p = files.get(code)
     if p is None:
         return {}
@@ -128,7 +134,7 @@ def months_in(s: date, e: date) -> set:
 def to_rows(df: pl.DataFrame) -> Dict[str, List[Tuple[date, date]]]:
     out: Dict[str, List[Tuple[date, date]]] = {}
     for c, s, e in zip(df['ts_code'].to_list(), df['start_date'].to_list(),
-                       df['end_date'].to_list()):
+                       df['end_date'].to_list(), strict=False):
         out.setdefault(c, []).append((s, e or OPEN_END))
     return out
 
@@ -155,8 +161,8 @@ def traded_months(code: str, files: Dict[str, Path]) -> set:
 def audit_segments(code_rows: Dict[str, List[Tuple[date, date]]], files: Dict[str, Path],
                    kinds: Tuple[str, ...]):
     rows: List[dict] = []
-    cm = {k: 0 for k in kinds}
-    mend = {k: 0 for k in kinds}
+    cm = dict.fromkeys(kinds, 0)
+    mend = dict.fromkeys(kinds, 0)
     no_data_cm = 0
     for code, segs in code_rows.items():
         traded = traded_months(code, files)
@@ -227,7 +233,7 @@ def main() -> int:
 
     before_rows, before_codes = local.height, local['ts_code'].n_unique()
     merged = pl.concat([local, adds], how='vertical_relaxed').sort(['ts_code', 'start_date'])
-    merged.write_parquet(LOCAL)
+    write_parquet_atomic(merged, LOCAL)
 
     summary = {
         'backup': str(BACKUP.relative_to(ROOT)),

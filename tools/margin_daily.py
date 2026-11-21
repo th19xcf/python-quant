@@ -214,7 +214,7 @@ def collect_sse(parts: Path, expected: dict[int, list[date]],
             print(f'margin_sse_{year} FAIL {type(exc).__name__}: {exc}')
             time.sleep(sleep * 2)
             continue
-        frame.write_parquet(part)
+        write_parquet_atomic(frame, part)
         missing_after = [d for d in expected[year]
                          if d not in set(frame['date'].to_list())]
         span = f'{str(frame["date"].min())}..{str(frame["date"].max())}'
@@ -244,7 +244,7 @@ def collect_sz_macro(parts: Path, fetch: Callable[[], pl.DataFrame] = fetch_sz_m
         print(f'margin_szse_macro FAIL {type(exc).__name__}: {exc}')
         return 0
     parts.mkdir(parents=True, exist_ok=True)
-    frame.write_parquet(part)
+    write_parquet_atomic(frame, part)
     if progress:
         progress.ok('margin_szse_macro', len(frame), frame['date'].min(), frame['date'].max(),
                     'unit=yuan src=eastmoney macro')
@@ -599,7 +599,7 @@ def main(argv: list[str] | None = None) -> int:
         cover = coverage_report(margin)
         work.mkdir(parents=True, exist_ok=True)
         cand_path = work / 'cand_market_margin.parquet'
-        margin.write_parquet(cand_path)
+        write_parquet_atomic(margin, cand_path)
         (work / 'build_verify.json').write_text(
             json.dumps({'meta': meta, 'patches': patch, 'coverage': cover},
                        ensure_ascii=False, indent=2),
