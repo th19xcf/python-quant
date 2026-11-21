@@ -386,9 +386,70 @@ def month_grid() -> List[date]:
     return out
 
 
+def reab() -> None:
+    """用补后的权威 ST 表重跑三组：EP+质量 / 仅估值 / 全市场等权基准。"""
+    data, _ = aac.load_universe_with_delisted()
+    _, month_ends, prev_day = f.build_calendar(data)
+    months = [m for m in month_ends if css.SIGNAL_START <= m <= date.fromisoformat(css.END)]
+    quoted = v.quoted_sets(data, months)
+    mom, bars = css.load_momentum(data, months)
+    panel = css.load_panel_factors(months)
+    quality = css.load_quality(months)
+    st_new = css.load_st_sets(months)   # 已由 st_gapfill 补过的权威表
+    univ = {m: [c for c in quoted[m]
+                if bars[m].get(c, 0) >= css.MIN_BARS and c not in st_new[m]]
+            for m in months}
+    logger.info('补后 ST 表：{} 个月末，剔 ST 后股票数 {}/{}', len(months),
+                sum(len(univ[m]) for m in months), sum(len(quoted[m]) for m in months))
+    signals = {m: css.month_scores(m, univ[m], panel, quality, mom) for m in months}
+    dividends = aac._load_local_dividends(list(data), None, None)
+    st_status = aac._load_st_status(None, data, None, css.WARMUP_START, css.END, None, None)
+    run_dir = RUN_DIR.parent / 'st_reab_20261121'
+
+    rows: List[Dict[str, Any]] = []
+    brow = evaluate_run('bench_reab', {m: sorted(univ[m]) for m in months},
+                        data, dividends, st_status, prev_day, None, run_dir)
+    rows.append(brow)
+    bd = pl.read_parquet(run_dir / 'bench_reab' / 'equity.parquet')
+    bench_curve = list(zip(bd['date'].to_list(), bd['equity'].to_list()))
+
+    for name, dims in (('combo_vq_n30_reab', ['value', 'quality']),
+                       ('value_n30_reab', ['value'])):
+        path = css.build_paths(months, signals, dims, 30)
+        rows.append(evaluate_run(name, path, data, dividends, st_status, prev_day,
+                                 bench_curve, run_dir))
+    aac._rows_to_csv(rows, OUT / 'reab.csv')
+
+    old = pl.read_csv(aac.ROOT / 'work' / 'alpha真实性核查_2026-11-21' / 'compare_final.csv',
+                      infer_schema_length=None)
+    omap = {r['run']: r for r in old.to_dicts()}
+    nmap = {r['run']: r for r in rows}
+    comp = []
+    for new, old_name, label in (('combo_vq_n30_reab', 'combo_vq_n30_sup', 'EP+质量'),
+                                 ('value_n30_reab', 'value_n30_sup', '仅估值'),
+                                 ('bench_reab', 'bench_sup_ew', '基准等权')):
+        o, n = omap[old_name], nmap[new]
+        comp.append({
+            'group': label,
+            'annual_old': o['annual'], 'annual_new': n['annual'],
+            'd_annual_pp': round((n['annual'] - o['annual']) * 100, 3),
+            'mdd_old': o['max_drawdown'], 'mdd_new': n['max_drawdown'],
+            'd_mdd_pp': round((n['max_drawdown'] - o['max_drawdown']) * 100, 3),
+            'sharpe_old': o['sharpe'], 'sharpe_new': n['sharpe'],
+            'd_sharpe': round(n['sharpe'] - o['sharpe'], 4),
+            'excess_old_pp': round((o.get('excess_vs_bench_monthly') or 0) * 100, 3),
+            'excess_new_pp': round((n.get('excess_monthly') or 0) * 100, 3),
+            'seg1_new': n['seg1_annual'], 'seg2_new': n['seg2_annual'],
+            'seg3_new': n['seg3_annual'],
+        })
+    aac._rows_to_csv(comp, OUT / 'reab_compare.csv')
+    for c in comp:
+        print(c)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--phase', default='st', choices=['st', 'diag', 'ab'])
+    ap.add_argument('--phase', default='st', choices=['st', 'diag', 'ab', 'reab'])
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
     logger.remove()
@@ -404,6 +465,8 @@ def main() -> int:
         print(json.dumps(stats, ensure_ascii=False, indent=2))
     elif args.phase == 'diag':
         diag(['value_n30_sup', 'combo_vq_n30_sup', 'bench_sup_ew'])
+    elif args.phase == 'reab':
+        reab()
     else:
         ab()
     return 0
