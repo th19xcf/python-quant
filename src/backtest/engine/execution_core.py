@@ -331,6 +331,29 @@ class AccountBook:
         """O(1)：现金总额随 buy/sell/除权记账增量维护。"""
         return self._cash_total
 
+    def accrue_cash(self, daily_rate: float) -> float:
+        """按日对现金余额计息并计入权益，返回本次利息。
+
+        池模式直接作用于共享现金池；分桶模式按各桶余额等比例计提。
+        计息口径由调用方决定（本内核只接收「每日收益率」）。
+        """
+        if daily_rate <= 0.0 or self._cash_total <= 0.0:
+            return 0.0
+        accrued = 0.0
+        if self.pooled_cash:
+            accrued = self._cash_total * daily_rate
+            self.cash['*'] = self._cash_total + accrued
+        else:
+            for code, balance in self.cash.items():
+                if balance > 0.0:
+                    gain = balance * daily_rate
+                    self.cash[code] = balance + gain
+                    accrued += gain
+        if accrued:
+            self._cash_total += accrued
+            self._equity += accrued
+        return accrued
+
     def position(self, code: str) -> int:
         """读取某标的当前持仓（0 表示空仓），替代直接访问原始 positions 字典。"""
         return self.positions.get(code, 0)
@@ -671,6 +694,8 @@ class RunContext:
     #: 记录层钩子：成交日的收盘持仓快照（供归因落 positions.parquet，
     #: 不参与任何撮合/成本计算）。每项含 date / equity / positions / prices。
     position_snapshots: List[Dict[str, Any]]
+    #: 现金年化收益率（0 = 不计息，与既有行为逐位一致）
+    cash_annual_rate: float = 0.0
 
 
 class EventBacktestRunner:
@@ -719,7 +744,8 @@ class EventBacktestRunner:
             corporate_actions: CorporateActionSchedule | None = None,
             dividend_tax_rate: float = 0.0,
             rights_policy: str = 'partial',
-            pooled_cash: bool = False) -> Dict[str, Any]:
+            pooled_cash: bool = False,
+            cash_annual_rate: float = 0.0) -> Dict[str, Any]:
         """
         执行回测并返回结果字典。
 
@@ -743,6 +769,8 @@ class EventBacktestRunner:
                 True 时初始资金一次性入池，卖出回款/分红/配股回到池中，
                 目标权重相对组合总权益计算，用于「全市场单账户等权、
                 月度再平衡」这类需要跨标的划转资金的组合策略。
+            cash_annual_rate: 现金年化收益率（默认 0，不改变既有结果）。
+                每个交易日按 ``cash_annual_rate/365`` 对现金余额计息。
 
         st_status 为 (标的名 → ST 三态) 映射：True=ST、False=明确非 ST、
         未出现在映射中=状态未知。未知标的涨跌停按板块默认幅度判定（与
@@ -839,6 +867,7 @@ class EventBacktestRunner:
         ctx = self._init_run_context(codes, rules, book, gate, lot_size,
                                      pending_ttl_days, corporate_actions,
                                      dividend_tax_rate, rights_policy,
+                                     cash_annual_rate=cash_annual_rate,
                                      code_days=code_days)
 
         loop = self._run_trading_loop(
@@ -975,6 +1004,7 @@ class EventBacktestRunner:
                           corporate_actions: CorporateActionSchedule | None = None,
                           dividend_tax_rate: float = 0.0,
                           rights_policy: str = 'partial',
+                          cash_annual_rate: float = 0.0,
                           code_days: Dict[str, List[int]] | None = None) -> RunContext:
         """初始化挂单、前收盘、成交与权益曲线等可变状态。
 
@@ -1011,6 +1041,7 @@ class EventBacktestRunner:
             scaled_buy_orders=0,
             buy_scale_sum=0.0,
             position_snapshots=[],
+            cash_annual_rate=cash_annual_rate,
         )
         if ctx.corporate_actions is not None:
             events_by_code = (
@@ -1618,6 +1649,9 @@ class EventBacktestRunner:
             positions_today = day_positions[day_index]
             # 记录层钩子：仅统计当日是否有成交，用于收盘持仓快照
             trades_before_day = len(ctx.trades)
+            # 现金计息：按上一交易日收盘现金余额计提当日利息（年化/365）
+            if ctx.cash_annual_rate:
+                ctx.book.accrue_cash(ctx.cash_annual_rate / 365.0)
             # A11：日期解析从每 bar 一次降到每日一次；无区间表时完全跳过
             st_day = to_trade_date(trade_day) if has_st_intervals else None
             # 除权除息必须在当日撮合之前记账：除权日开盘价已扣权，且送转新增

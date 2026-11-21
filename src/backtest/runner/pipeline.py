@@ -212,6 +212,7 @@ def run_engine(data: Dict[str, pl.DataFrame],
         st_status=st_status,
         dividends=dividends,
         pooled_cash=portfolio['pooled_cash'],
+        cash_annual_rate=portfolio['cash_annual_rate'],
     )
     elapsed = time.perf_counter() - t0
     logger.info('回测完成：{} 只 / {:.1f}s', len(used), elapsed)

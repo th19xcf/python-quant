@@ -47,6 +47,7 @@ DEFAULT_PORTFOLIO: Dict[str, Any] = {
     'initial_capital': 1e9,
     'lot_size': 100,
     'cash_buffer': 0.01,
+    'cash_annual_rate': 0.0,
     'pooled_cash': True,
 }
 #: 既有可选基准（本地指数行情齐全的宽基）
@@ -58,7 +59,8 @@ EXECUTION_SPEC = {'price': 'next_open', 'delay_days': 1}
 #: ``period.end`` 取该值时表示「到最近交易日」：运行前解析为本地基准指数末根 bar，
 #: 解析后的日期会回填进规则副本，所有指标与落盘仍按 ISO 日期计算。
 LATEST_END = 'latest'
-SIGNAL_KINDS = {'ma_ratio': '收盘价/均线', 'momentum': 'N日动量', 'drawdown': 'N日回撤'}
+SIGNAL_KINDS = {'ma_ratio': '收盘价/均线', 'momentum': 'N日动量', 'drawdown': 'N日回撤',
+                'index_pe_pct': '指数估值分位'}
 
 _MAX_CONDITIONS = 10
 _MAX_TOP_N = 500
@@ -282,8 +284,15 @@ def _validate_portfolio(raw: Any) -> Dict[str, Any]:
     pooled = raw.get('pooled_cash', DEFAULT_PORTFOLIO['pooled_cash'])
     if not isinstance(pooled, bool):
         raise RuleError(f'portfolio.pooled_cash 必须是布尔值，收到 {pooled!r}')
+    cash_rate = _number(raw.get('cash_annual_rate',
+                                DEFAULT_PORTFOLIO['cash_annual_rate']),
+                        'portfolio.cash_annual_rate')
+    if not (-0.05 <= cash_rate <= 0.2):
+        raise RuleError(f'portfolio.cash_annual_rate 必须在 [-0.05, 0.2] 内，'
+                        f'收到 {cash_rate}')
     return {'initial_capital': capital, 'lot_size': lot,
-            'cash_buffer': buffer, 'pooled_cash': pooled}
+            'cash_buffer': buffer, 'pooled_cash': pooled,
+            'cash_annual_rate': cash_rate}
 
 
 def _validate_execution(raw: Any) -> Dict[str, Any]:
@@ -459,15 +468,32 @@ def _validate_target(raw: Any) -> Dict[str, Any]:
 def _validate_signal(raw: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise RuleError('signal 必须是对象')
-    _reject_unknown(raw, {'kind', 'window'}, 'signal')
     kind = _require(raw, 'kind', 'signal')
     if kind not in SIGNAL_KINDS:
         raise RuleError(f'signal.kind 必须是 {list(SIGNAL_KINDS)} 之一，收到 {kind!r}')
+    if kind == 'index_pe_pct':
+        _reject_unknown(raw, {'kind', 'index_code', 'metric', 'window_months',
+                              'min_months'}, 'signal')
+        index_code = _require(raw, 'index_code', 'signal.index_code')
+        if not isinstance(index_code, str) or not re.fullmatch(r'\d{6}\.(SH|SZ|CSI)',
+                                                              index_code):
+            raise RuleError(f'signal.index_code 必须是 6 位代码加 .SH/.SZ/.CSI，'
+                            f'收到 {index_code!r}')
+        metric = raw.get('metric', 'pe_ttm')
+        if metric not in ('pe', 'pe_ttm', 'pb'):
+            raise RuleError(f'signal.metric 必须是 pe / pe_ttm / pb，收到 {metric!r}')
+        window_months = _int(raw.get('window_months', 60),
+                             'signal.window_months', 12, 240)
+        min_months = _int(raw.get('min_months', min(36, window_months)),
+                          'signal.min_months', 12, window_months)
+        return {'kind': kind, 'index_code': index_code, 'metric': metric,
+                'window_months': window_months, 'min_months': min_months}
+    _reject_unknown(raw, {'kind', 'window'}, 'signal')
     return {'kind': kind, 'window': _window(_require(raw, 'window', 'signal'),
                                             'signal.window')}
 
 
-def _validate_levels(raw: Any) -> List[Dict[str, float]]:
+def _validate_levels(raw: Any, descending_ok: bool = False) -> List[Dict[str, float]]:
     if not isinstance(raw, list) or len(raw) < 2:
         raise RuleError('levels 必须是至少 2 档的数组')
     parsed = []
@@ -484,7 +510,7 @@ def _validate_levels(raw: Any) -> List[Dict[str, float]]:
         if last_threshold is not None and threshold <= last_threshold:
             raise RuleError(f'{where}.threshold 必须严格递增（上一档 {last_threshold}，'
                             f'当前 {threshold}）')
-        if parsed and position < parsed[-1]['position']:
+        if parsed and position < parsed[-1]['position'] and not descending_ok:
             raise RuleError(f'{where}.position 必须随阈值升高不降（上一档 '
                             f'{parsed[-1]["position"]:.0%}，当前 {position:.0%}）')
         last_threshold = threshold
@@ -497,10 +523,13 @@ def _validate_timing(raw: Dict[str, Any]) -> Dict[str, Any]:
     if not (0 <= hysteresis < 0.5):
         raise RuleError(f'hysteresis 必须在 [0, 0.5) 内，收到 {hysteresis}')
     step = _int(raw.get('max_step_per_day', 1), 'max_step_per_day', 1, 1)
+    signal = _validate_signal(_require(raw, 'signal', '规则'))
     return {
         'target': _validate_target(_require(raw, 'target', '规则')),
-        'signal': _validate_signal(_require(raw, 'signal', '规则')),
-        'levels': _validate_levels(_require(raw, 'levels', '规则')),
+        'signal': signal,
+        # 估值分位越低越便宜，仓位允许随分位升高而下降（如 0.5 以下满仓、以上半仓）
+        'levels': _validate_levels(_require(raw, 'levels', '规则'),
+                                   descending_ok=signal['kind'] == 'index_pe_pct'),
         'hysteresis': hysteresis,
         'max_step_per_day': step,
         'execution': _validate_execution(_require(raw, 'execution', '规则')),
@@ -704,9 +733,15 @@ def _timing_text(rule: Dict[str, Any]) -> str:
     target = ('单标的 ' + rule['target']['codes'][0] if rule['target']['mode'] == 'single'
               else '组合 ' + '、'.join(rule['target']['codes']))
     levels = '，'.join(f'{lv["threshold"]:g}→{lv["position"]:.0%}' for lv in rule['levels'])
+    if sig['kind'] == 'index_pe_pct':
+        metric = {'pe': '静态PE', 'pe_ttm': 'PE(TTM)', 'pb': 'PB'}[sig['metric']]
+        signal_text = (f'信号=指数估值分位（{sig["index_code"]}，{metric}，'
+                       f'滚动 {sig["window_months"]} 个月，最少 {sig["min_months"]} 期）')
+    else:
+        signal_text = f'信号={SIGNAL_KINDS[sig["kind"]]}（{sig["window"]} 日）'
     return '；'.join([
         f'规则「{rule["name"]}」（仓位择时）：标的={target}',
-        f'信号={SIGNAL_KINDS[sig["kind"]]}（{sig["window"]} 日）',
+        signal_text,
         f'档位={levels}，滞回={rule["hysteresis"]:g}，单日最多调一档',
         '执行=信号日收盘生成，下一交易日开盘成交',
     ] + _common_text(rule))

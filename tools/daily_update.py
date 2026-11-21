@@ -210,6 +210,11 @@ AUX_BREADTH_OUTPUTS = (
     'meta/breadth/coverage.json',
     'meta/breadth/manifest.json',
 )
+#: 指数月末估值会写的件（红利择时信号 ``index_pe_pct`` 的唯一数据源）。
+AUX_INDEX_VALUATION_OUTPUTS = (
+    'meta/index_valuation/index_valuation.parquet',
+    'meta/index_valuation/manifest.json',
+)
 #: 增量清点跳过 ``backtest_runs``：回测运行记录是结果归档（json/csv/log 与索引），
 #: 不是数据表，日更既不产出也不消费它，计入会让「本次新增文件」混入非数据资产。
 SKIP_DIRS = {'_backup', '__pycache__', 'backtest_runs'}
@@ -233,6 +238,7 @@ STEP_PLAN: tuple[tuple[str, str, bool], ...] = (
     ('st', 'ST 快照与区间表', False),
     ('basic', '名录每日检查（fund / index）', False),
     ('valuation', '全市场估值增量', False),
+    ('index_valuation', '指数月末估值（红利择时信号，月末执行）', False),
     ('factor_panel', '因子面板增量（当日截面按 signal_date 分区 upsert）', False),
     ('b_topn_picks', 'B 股东盈余比候选名单（月末调仓日：行业内前 2 → 前 50 等权）', False),
     ('breadth', '市场宽度增量', False),
@@ -609,6 +615,7 @@ def _aux_expected(root: Path, refresh_days: int,
     """新增旁路会写的件，并入日更预期清单（只作白名单，不强制必须出现）。"""
     expected = set(AUX_ST_OUTPUTS)
     expected.update(AUX_BREADTH_OUTPUTS)
+    expected.update(AUX_INDEX_VALUATION_OUTPUTS)
     for key, rels in _basic_due(root, refresh_days).items():
         expected.update(rels)
     if _pool_due(root, pool_refresh_days):
@@ -708,6 +715,25 @@ def _run_valuation(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
     after = _valuation_last_date(plan.root)
     ok = code == 0 and after is not None and after >= plan.latest
     return ok, f'末日 {last}→{after or "-"} | rc={code}'
+
+
+def _run_index_valuation(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
+    """指数月末估值（非致命）：只在当月最后一个交易日执行一次。
+
+    数据源 ``index_weight × daily_basic``，由脚本自行断点续跑；非月末直接跳过，
+    不产生任何网络请求。失败只记录，不影响后续步骤与门禁。
+    """
+    if args.skip_index_valuation:
+        return True, '已跳过（--skip-index-valuation）'
+    if not args.allow_remote:
+        return True, '未允许联网，跳过（只告警）'
+    if not _is_month_end_signal(plan.root, plan.latest):
+        return True, f'{plan.latest} 非月末，跳过'
+    plan.expected.update(AUX_INDEX_VALUATION_OUTPUTS)
+    code = _run_module(
+        [sys.executable, str(ROOT / 'tools' / 'collect_index_valuation.py'),
+         '--apply'], '指数月末估值')
+    return code == 0, f'{plan.latest} 月末快照 | rc={code}'
 
 
 def _step_factor_panel(plan: _Plan, args: argparse.Namespace) -> tuple[bool, str]:
@@ -1525,6 +1551,7 @@ def _step_list(plan: _Plan, args: argparse.Namespace,
         'st': lambda: _step_st(plan, args),
         'basic': lambda: _step_basic(plan, args),
         'valuation': lambda: _run_valuation(plan, args),
+        'index_valuation': lambda: _run_index_valuation(plan, args),
         'factor_panel': lambda: _step_factor_panel(plan, args),
         'b_topn_picks': lambda: _step_b_topn_picks(plan, args),
         'breadth': lambda: _run_breadth(plan),
@@ -1635,6 +1662,9 @@ def _skip_note(key: str, plan: _Plan, args: argparse.Namespace) -> str:  # noqa:
         return _sw_index_skip_note(args)
     if key == 'valuation' and (args.skip_valuation or not args.allow_remote):
         return '  ← 本轮跳过'
+    if key == 'index_valuation' and (args.skip_index_valuation or not args.allow_remote
+                                     or not _is_month_end_signal(plan.root, plan.latest)):
+        return '  ← 本轮跳过'
     if key == 'factor_panel':
         return _factor_panel_skip_note(args)
     if key == 'b_topn_picks':
@@ -1726,6 +1756,8 @@ def main(argv: list[str] | None = None) -> int:
                         help='跳过申万行业指数增量（801xxx 段，只追加不追 T 日）')
     parser.add_argument('--skip-valuation', action='store_true',
                         help='跳过全市场日频估值增量（collect_financials.py --only valuation）')
+    parser.add_argument('--skip-index-valuation', action='store_true',
+                        help='跳过指数月末估值增量（tools/collect_index_valuation.py --apply）')
     parser.add_argument('--skip-factor-panel', action='store_true',
                         help='跳过因子面板增量（tools/factor_panel.py --mode incremental）')
     parser.add_argument('--skip-b-topn-picks', action='store_true',

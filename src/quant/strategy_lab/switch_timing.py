@@ -14,6 +14,7 @@ D+1 开盘成交」执行，因此换仓时点天然等于下一交易日开盘�
 """
 from __future__ import annotations
 
+import bisect
 import math
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -27,6 +28,7 @@ from .markers import sides_from_weights
 
 ROOT = Path(__file__).resolve().parents[3]
 QUOTE_ROOT = ROOT / 'data/local_store/quotes'
+VALUATION_PATH = ROOT / 'data/local_store/meta/index_valuation/index_valuation.parquet'
 QUOTE_DOMAINS = ('fund', 'index')
 #: 预热：覆盖最长 250 日窗口 + 节假日冗余
 WARMUP_DAYS = 400
@@ -324,6 +326,37 @@ def _step_level(index: int, signal: float, levels: List[Dict[str, float]],
     return index
 
 
+def _index_pct_series(rule: Dict[str, Any], days: List[date]) -> List[float | None]:
+    """指数估值分位：月末序列滚动 ``window_months`` 期，非月末日取最近一期。
+
+    分位 = 窗口内 ``<= 当前值`` 的期数占比（与 ``tools/dividend_official_probe.py`` 同口径）；
+    有效样本少于 ``min_months`` 时返回 ``None``，不降级、不外推。
+    """
+    spec = rule['signal']
+    if not VALUATION_PATH.is_file():
+        raise PlanError(f'指数估值表缺失：{VALUATION_PATH}；先运行 '
+                        'tools/collect_index_valuation.py --apply')
+    frame = pl.read_parquet(VALUATION_PATH,
+                            columns=['index_code', 'trade_date', spec['metric']])
+    series = frame.filter(pl.col('index_code') == spec['index_code']).sort('trade_date')
+    if series.height == 0:
+        raise PlanError(f'指数估值表没有 {spec["index_code"]} 的记录')
+    dates = series['trade_date'].to_list()
+    values = [None if v is None else float(v) for v in series[spec['metric']].to_list()]
+    window = int(spec['window_months'])
+    min_n = int(spec['min_months'])
+    out: List[float | None] = []
+    for day in days:
+        i = bisect.bisect_right(dates, day) - 1
+        if i < 0 or values[i] is None:
+            out.append(None)
+            continue
+        hist = [v for v in values[max(0, i - window + 1):i + 1] if v is not None]
+        out.append(sum(1 for v in hist if v <= values[i]) / len(hist)
+                   if len(hist) >= min_n else None)
+    return out
+
+
 def build_timing_plan(rule: Dict[str, Any]) -> Plan:
     start = date.fromisoformat(rule['period']['start'])
     end = date.fromisoformat(rule['period']['end'])
@@ -331,12 +364,6 @@ def build_timing_plan(rule: Dict[str, Any]) -> Plan:
     codes = list(rule['target']['codes'])
     data = load_legs(codes, warmup, end)
     common = sorted(set.intersection(*[set(df['date'].to_list()) for df in data.values()]))
-
-    window = int(rule['signal']['window'])
-    if len(common) < window + 1:
-        raise PlanError(
-            f'{rule["signal"]["kind"]} 信号需要至少 {window + 1} 个共同交易日，'
-            f'区间内只有 {len(common)} 个；请把回测起点后移或缩短窗口')
 
     if len(codes) == 1:
         series = {d: float(c) for d, c in
@@ -352,7 +379,19 @@ def build_timing_plan(rule: Dict[str, Any]) -> Plan:
         prices = [sum(lookup[code][d] / base[code] for code in codes) / len(codes)
                   for d in common]
 
-    signals = _signal_series(rule, prices)
+    if rule['signal']['kind'] == 'index_pe_pct':
+        signals = _index_pct_series(rule, common)
+        window = int(rule['signal']['window_months'])
+        window_text = f'估值分位窗口 {window} 个月'
+    else:
+        window = int(rule['signal']['window'])
+        if len(common) < window + 1:
+            raise PlanError(
+                f'{rule["signal"]["kind"]} 信号需要至少 {window + 1} 个共同交易日，'
+                f'区间内只有 {len(common)} 个；请把回测起点后移或缩短窗口')
+        signals = _signal_series(rule, prices)
+        window_text = f'信号窗口 {window} 日'
+
     levels = rule['levels']
     hysteresis = float(rule['hysteresis'])
     cash = rule['portfolio']['cash_buffer']
@@ -395,7 +434,7 @@ def build_timing_plan(rule: Dict[str, Any]) -> Plan:
     leg_curves = [{'code': code, 'label': labels[code],
                    'points': _curve_points(data[code], start, end)}
                   for code in codes]
-    note = (f'共同交易日 {len(common)} 天，信号窗口 {window} 日；'
+    note = (f'共同交易日 {len(common)} 天，{window_text}；'
             f'调仓 {len(markers)} 次，期末档位 {level}')
     return Plan(data=data, schedules=schedules, markers=markers,
                 leg_curves=leg_curves, note=note)

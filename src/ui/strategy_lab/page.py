@@ -277,7 +277,68 @@ def _switch_rows(payload: Dict[str, Any], rule: Dict[str, Any] | None) -> List[t
     if 'level' in latest:
         rows.append(('当前档位', f'{latest["level"]}（仓位 '
                                 f'{float(latest.get("position") or 0) * 100:.0f}%）'))
+    if (rule or {}).get('rule_type') == 'timing' and (rule or {}).get('signal'):
+        sig = rule['signal']
+        if sig.get('kind') == 'index_pe_pct':
+            metric = {'pb': 'PB', 'pe': 'PE', 'pe_ttm': 'PE(TTM)'}.get(
+                str(sig.get('metric')), str(sig.get('metric') or '—'))
+            rows.append(('估值口径', f'{sig.get("index_code")} {metric}，'
+                                     '成分权重调和均值（月末 PIT）'))
+            rows.append(('分位窗口', f'滚动 {sig.get("window_months")} 个月'
+                                     f'（最少 {sig.get("min_months")} 期）'))
+            rows.append(('标的类型', _target_kind(rule)))
+        avg = _average_position(payload, rule)
+        if avg is not None:
+            rows.append(('区间平均仓位', f'{avg * 100:.1f}%'))
     return rows
+
+
+def _target_kind(rule: Dict[str, Any]) -> str:
+    """标的用指数还是 ETF：按 target 代码段判定，只陈述规则事实。"""
+    codes = list(((rule.get('target') or {}).get('codes')) or [])
+    kinds = []
+    for code in codes:
+        head = str(code).split('.')[0]
+        if head.startswith(('51', '56', '58', '15', '16', '50')):
+            kinds.append(f'{code}（场内 ETF）')
+        else:
+            kinds.append(f'{code}（指数）')
+    return '；'.join(kinds) if kinds else '—'
+
+
+def _average_position(payload: Dict[str, Any], rule: Dict[str, Any]) -> float | None:
+    """区间平均仓位：按 markers 的档位序列做时间加权（逐日）均值。
+
+    每个 marker 的仓位在其信号日到下一个信号日之间保持不变，最后一段延续到
+    统计终点（metrics.end，缺失时退化为区间最后一个 marker 日）。
+    """
+    marks = sorted(
+        ((str(m['date'])[:10], float(m['position']))
+         for m in (payload.get('markers') or [])
+         if m.get('position') is not None and m.get('date')),
+        key=lambda item: item[0])
+    if not marks:
+        return None
+    end_text = str((payload.get('metrics') or {}).get('end')
+                   or (rule.get('period') or {}).get('end') or marks[-1][0])[:10]
+    try:
+        from datetime import date as _date  # noqa: PLC0415
+
+        end = _date.fromisoformat(end_text)
+        total_days = 0
+        weighted = 0.0
+        for i, (day_text, pos) in enumerate(marks):
+            start = _date.fromisoformat(day_text)
+            stop = (_date.fromisoformat(marks[i + 1][0])
+                    if i + 1 < len(marks) else end)
+            span = (stop - start).days
+            if span <= 0:
+                continue
+            weighted += pos * span
+            total_days += span
+    except ValueError:
+        return None
+    return weighted / total_days if total_days else None
 
 
 def _qss(theme: str) -> str:

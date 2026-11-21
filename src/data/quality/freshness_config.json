@@ -547,6 +547,34 @@
       "note": "由本地行情派生，应与行情同一天；落后一天即提示重算。"
     },
     {
+      "key": "index_valuation",
+      "label": "指数月末估值",
+      "category": "衍生指标",
+      "freshness_field": "trade_date",
+      "source": {
+        "kind": "parquet_max",
+        "path": "meta/index_valuation/index_valuation.parquet",
+        "column": "trade_date"
+      },
+      "cadence": {
+        "unit": "calendar_day",
+        "expected_interval": 30,
+        "warn_multiple": 1,
+        "critical_multiple": 2,
+        "label": "每月末"
+      },
+      "coverage": {
+        "count": {
+          "kind": "parquet_distinct",
+          "path": "meta/index_valuation/index_valuation.parquet",
+          "column": "index_code"
+        },
+        "gate": false,
+        "why": "固定 3 只指数（000015.SH / 000922.CSI / 000300.SH），是已知清单而非开放宇宙，占比门禁无意义"
+      },
+      "note": "月末 PIT 快照，红利择时 index_pe_pct 的唯一数据源；tools/collect_index_valuation.py 在月末日更时重建，过期 30 天告警。"
+    },
+    {
       "key": "st_status",
       "label": "ST 状态快照",
       "category": "状态快照",

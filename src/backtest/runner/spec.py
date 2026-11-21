@@ -256,7 +256,8 @@ def _rebalance(obj: Any, warmup_start: str) -> Dict[str, str]:
 def _portfolio(obj: Any) -> Dict[str, Any]:
     if not isinstance(obj, dict):
         raise SpecError('portfolio 必须是对象')
-    _reject_unknown(obj, {'initial_capital', 'lot_size', 'cash_buffer', 'pooled_cash'},
+    _reject_unknown(obj, {'initial_capital', 'lot_size', 'cash_buffer', 'pooled_cash',
+                          'cash_annual_rate'},
                     'portfolio')
     capital = obj.get('initial_capital')
     if isinstance(capital, bool) or not isinstance(capital, (int, float)) or capital <= 0:
@@ -270,8 +271,12 @@ def _portfolio(obj: Any) -> Dict[str, Any]:
     pooled = obj.get('pooled_cash', True)
     if not isinstance(pooled, bool):
         raise SpecError(f'portfolio.pooled_cash 必须是布尔值，收到 {pooled!r}')
+    cash_rate = obj.get('cash_annual_rate', 0.0)
+    if isinstance(cash_rate, bool) or not isinstance(cash_rate, (int, float)):
+        raise SpecError(f'portfolio.cash_annual_rate 必须是数字，收到 {cash_rate!r}')
     return {'initial_capital': float(capital), 'lot_size': lot,
-            'cash_buffer': float(buffer), 'pooled_cash': pooled}
+            'cash_buffer': float(buffer), 'pooled_cash': pooled,
+            'cash_annual_rate': float(cash_rate)}
 
 
 def _cost(obj: Any) -> Dict[str, Any]:

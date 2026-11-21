@@ -1,0 +1,53 @@
+{
+  "benchmark": "000300.SH",
+  "cost": {
+    "commission_rate": 0.00015,
+    "impact_coef": 0.0,
+    "min_commission": 5.0,
+    "slippage_bps": 0.0,
+    "stamp_tax_basis": "fixed_0.1%"
+  },
+  "data_policy": "估值口径=000015.SH 月末 PIT 成分权重 × 个股 PB 的权重调和均值，分位窗口=滚动 60 个月、最少 36 期；标的=510880.SH（上证红利ETF），信号在月末收盘生成、下一交易日开盘成交。估值表缺失或该指数历史不足 36 期时直接报错，不外推、不改用其它指数。",
+  "description": "红利择时：每月末看 000015.SH 的 PB 五年分位，分位不高于 50% 满仓 510880.SH，高于 50% 降到半仓；空余现金按年化 1.5% 计息（引擎参数 cash_annual_rate）。成本按研究口径：买入 1.5bp、卖出 11.5bp（含 10bp 印花税），无冲击成本。",
+  "execution": {
+    "delay_days": 1,
+    "price": "next_open"
+  },
+  "hysteresis": 0.0,
+  "levels": [
+    {
+      "position": 1.0,
+      "threshold": 0.0
+    },
+    {
+      "position": 0.5,
+      "threshold": 0.5
+    }
+  ],
+  "max_step_per_day": 1,
+  "name": "红利择时_上证红利PB五年分位",
+  "period": {
+    "end": "latest",
+    "start": "2015-01-01"
+  },
+  "portfolio": {
+    "cash_buffer": 0.01,
+    "cash_annual_rate": 0.015,
+    "initial_capital": 1000000000.0,
+    "lot_size": 100,
+    "pooled_cash": true
+  },
+  "rule_type": "timing",
+  "rule_version": "strategy_lab/v1",
+  "signal": {
+    "index_code": "000015.SH",
+    "kind": "index_pe_pct",
+    "metric": "pb",
+    "min_months": 36,
+    "window_months": 60
+  },
+  "target": {
+    "code": "510880.SH",
+    "mode": "single"
+  }
+}
