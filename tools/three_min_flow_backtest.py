@@ -30,6 +30,7 @@ from datetime import date
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import polars as pl
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -175,7 +176,8 @@ def load_quotes(codes: list[str], paths: dict[str, Path],
             continue
         try:
             df = pl.read_parquet(p, columns=[
-                'date', 'open', 'high', 'low', 'close', 'pre_close', 'volume'])
+                'date', 'open', 'high', 'low', 'close', 'pre_close', 'volume',
+                'hfq_factor'])
         except Exception:  # noqa: BLE001
             continue
         df = df.filter(pl.col('date') >= since).sort('date')
@@ -209,25 +211,110 @@ def add_flow_indicators(frames: dict[str, pl.DataFrame],
     return out
 
 
+# ---------------------------------------------------------------- 减仓信号
+# 口径与 tools/signal_sweep.py 完全一致（后复权价、通达信 SMA 平滑），
+# 变体名对应 work/指标信号普查_2026-11-21/leaderboard.csv 中通过三段样本外的 7 个卖信号。
+SELL_SIGNAL_NAMES = ('bias12_gt10', 'bias6_gt6', 'ret5_gt10', 'rsi_gt70',
+                     'wr10_lt10', 'mfi_gt80', 'kdj_j_gt100')
+
+
+def _ema_tdx(s: pd.Series, n: float) -> pd.Series:
+    """通达信 EMA(X,N)：alpha = 2/(N+1)。"""
+    return s.ewm(alpha=2.0 / (n + 1.0), adjust=False).mean()
+
+
+def _sma_tdx(s: pd.Series, n: float, m: float = 1.0) -> pd.Series:
+    """通达信 SMA(X,N,M)：alpha = M/N（RSI / KDJ 用）。"""
+    return s.ewm(alpha=m / n, adjust=False).mean()
+
+
+def add_sell_signals(frames: dict[str, pl.DataFrame]) -> dict[str, int]:
+    """为每只股票标记 7 个卖信号（任一命中即 derisk=True），返回各信号命中次数。
+
+    7 个变体：BIAS12>+10%、BIAS6>+6%、5 日涨幅>10%、RSI14>70、WR10<10、
+    MFI14>80、KDJ J>100。只用当日及之前数据，无未来函数。
+    """
+    counts = dict.fromkeys(SELL_SIGNAL_NAMES, 0)
+    for code, df in frames.items():
+        p = df.to_pandas()
+        hf = (p['hfq_factor'].fillna(1.0).to_numpy(float)
+              if 'hfq_factor' in p.columns else np.ones(len(p)))
+        qc = pd.Series(p['close'].to_numpy(float) * hf)
+        qh = pd.Series(p['high'].to_numpy(float) * hf)
+        ql = pd.Series(p['low'].to_numpy(float) * hf)
+        vol = pd.Series(p['volume'].to_numpy(float))
+
+        ma6, ma12 = qc.rolling(6).mean(), qc.rolling(12).mean()
+        bias6 = (qc - ma6) / ma6 * 100
+        bias12 = (qc - ma12) / ma12 * 100
+
+        delta = qc.diff()
+        au = _sma_tdx(delta.clip(lower=0), 14)
+        ad = _sma_tdx(-delta.clip(upper=0), 14)
+        rsi = 100 * au / (au + ad)
+
+        hhv10, llv10 = qh.rolling(10).max(), ql.rolling(10).min()
+        wr10 = (hhv10 - qc) / (hhv10 - llv10).replace(0, np.nan) * 100
+
+        llv9, hhv9 = ql.rolling(9).min(), qh.rolling(9).max()
+        rsv = (qc - llv9) / (hhv9 - llv9).replace(0, np.nan) * 100
+        k = _sma_tdx(rsv, 3)
+        j = 3 * k - 2 * _sma_tdx(k, 3)
+
+        tp = (qh + ql + qc) / 3
+        mf = tp * vol
+        mfp_s = pd.Series(np.where(tp > tp.shift(1), mf, 0.0)).rolling(14).sum()
+        mfn_s = pd.Series(np.where(tp < tp.shift(1), mf, 0.0)).rolling(14).sum()
+        mfi = (100 - 100 / (1 + mfp_s / mfn_s.replace(0, np.nan))).where(
+            mfn_s != 0, 100.0)
+        mfi = mfi.where(mfp_s.notna(), np.nan)
+
+        sig = {
+            'bias12_gt10': bias12 > 10,
+            'bias6_gt6': bias6 > 6,
+            'ret5_gt10': (qc / qc.shift(5) - 1) > 0.10,
+            'rsi_gt70': rsi > 70,
+            'wr10_lt10': wr10 < 10,
+            'mfi_gt80': mfi > 80,
+            'kdj_j_gt100': j > 100,
+        }
+        mask = np.zeros(len(p), dtype=bool)
+        for name, values in sig.items():
+            hit = values.fillna(False).to_numpy(dtype=bool)
+            counts[name] += int(hit.sum())
+            mask |= hit
+        frames[code] = df.with_columns(pl.Series('derisk', mask))
+    return counts
+
+
 # ---------------------------------------------------------------- 组合模拟
 def simulate(picks: dict[date, list[str]], frames: dict[str, pl.DataFrame],
              calendar: list[date], rebalance_days: dict[date, date],
-             top_n: int, take_profit: float, stop_loss: float) -> dict:
+             top_n: int, take_profit: float, stop_loss: float,
+             derisk: str = 'none') -> dict:
+    """组合模拟。``derisk``：none=基准；half=卖信号次日开盘减半；full=卖信号次日开盘清仓。
+
+    减仓后不自动回补，仓位留现金直到下次调仓；同一持仓同一段只触发一次。
+    """
     rules = ExecutionRules()
     cost_model = CostModel()
     rows_by_date: dict[str, dict[date, dict]] = {}
     for code, df in frames.items():
-        rows_by_date[code] = {r['date']: r for r in df.select(
-            'date', 'open', 'close', 'pre_close', 'volume').iter_rows(named=True)}
+        cols = ['date', 'open', 'close', 'pre_close', 'volume']
+        if 'derisk' in df.columns:
+            cols.append('derisk')
+        rows_by_date[code] = {r['date']: r for r in df.select(cols).iter_rows(named=True)}
     cal = [d for d in calendar if d >= min(rebalance_days.values())]
 
     cash = INITIAL
     positions: dict[str, dict] = {}
     pending: dict[str, str] = {}
+    pending_cut: dict[str, str] = {}
+    derisked: set[str] = set()
     trades: list[dict] = []
     curve: list[dict] = []
-    pending_sell_cost = 0.0
     total_buy = 0.0
+    total_sell = 0.0
     total_cost = 0.0
     last_close: dict[str, float] = {}
 
@@ -255,7 +342,7 @@ def simulate(picks: dict[date, list[str]], frames: dict[str, pl.DataFrame],
         return eq
 
     def sell(code: str, day: date, reason: str) -> bool:
-        nonlocal cash, total_cost
+        nonlocal cash, total_cost, total_sell
         ok, row = can_trade(code, day, 'sell')
         if not ok:
             return False
@@ -265,6 +352,7 @@ def simulate(picks: dict[date, list[str]], frames: dict[str, pl.DataFrame],
         fee = cost_model.calculate_sell_cost(
             pos['shares'], price, trade_date=day, ts_code=code)
         cash += proceeds - fee
+        total_sell += proceeds
         total_cost += fee
         pnl = proceeds - fee - pos['cost_basis']
         trades.append({
@@ -277,10 +365,45 @@ def simulate(picks: dict[date, list[str]], frames: dict[str, pl.DataFrame],
         del positions[code]
         return True
 
+    def sell_partial(code: str, day: date, fraction: float, reason: str) -> bool:
+        """按比例减仓（100 股整数倍）；剩余仓位继续持有。"""
+        nonlocal cash, total_cost, total_sell
+        ok, row = can_trade(code, day, 'sell')
+        if not ok:
+            return False
+        pos = positions[code]
+        shares = int(pos['shares'] * fraction / 100) * 100
+        if shares <= 0 or shares >= pos['shares']:
+            return False
+        price = float(row['open'])
+        proceeds = shares * price
+        fee = cost_model.calculate_sell_cost(shares, price, trade_date=day, ts_code=code)
+        cash += proceeds - fee
+        total_sell += proceeds
+        total_cost += fee
+        cost_part = pos['cost_basis'] * shares / pos['shares']
+        trades.append({
+            'ts_code': code, 'entry_date': pos['entry_date'], 'exit_date': day,
+            'exit_reason': reason, 'entry_price': pos['entry_price'],
+            'exit_price': price, 'shares': shares,
+            'ret': (proceeds - fee - cost_part) / max(cost_part, 1e-9),
+            'pnl': proceeds - fee - cost_part, 'held_days': pos['held_days'],
+            'partial': True,
+        })
+        pos['shares'] -= shares
+        pos['cost_basis'] -= cost_part
+        return True
+
     for day in cal:
         for code, reason in list(pending.items()):
             if code not in positions or sell(code, day, reason):
                 pending.pop(code, None)
+                derisked.discard(code)
+        for code, reason in list(pending_cut.items()):
+            if code not in positions:
+                pending_cut.pop(code, None)
+            elif sell_partial(code, day, 0.5, reason):
+                pending_cut.pop(code, None)
         target = None
         if day in rebalance_days.values():
             sig = next(s for s, d in rebalance_days.items() if d == day)
@@ -314,6 +437,8 @@ def simulate(picks: dict[date, list[str]], frames: dict[str, pl.DataFrame],
                     'shares': shares, 'entry_price': price, 'entry_date': day,
                     'cost_basis': cost_basis, 'held_days': 0,
                 }
+                derisked.discard(code)
+                pending_cut.pop(code, None)
                 last_close[code] = price
         for code, pos in positions.items():
             row = rows_by_date.get(code, {}).get(day)
@@ -321,6 +446,12 @@ def simulate(picks: dict[date, list[str]], frames: dict[str, pl.DataFrame],
                 last_close[code] = float(row['close'])
                 pos['held_days'] += 1
                 ret = row['close'] / pos['entry_price'] - 1.0
+                if derisk != 'none' and row.get('derisk') and code not in derisked:
+                    derisked.add(code)
+                    if derisk == 'full':
+                        pending[code] = 'derisk'
+                    else:
+                        pending_cut[code] = 'derisk'
                 if ret >= take_profit:
                     pending[code] = 'take_profit'
                 elif ret <= -stop_loss:
@@ -339,10 +470,13 @@ def simulate(picks: dict[date, list[str]], frames: dict[str, pl.DataFrame],
         'avg_positions': float(curve_df['positions'].mean()) if curve_df.height else 0.0,
         'avg_held_days': float(np.mean([t['held_days'] for t in trades])) if trades else 0.0,
         'annual_turnover': total_buy / avg_eq / years if avg_eq > 0 else 0.0,
+        'annual_sell_turnover': total_sell / avg_eq / years if avg_eq > 0 else 0.0,
+        'avg_exposure': (float((1.0 - curve_df['cash'] / curve_df['equity']).mean())
+                         if curve_df.height else 0.0),
         'total_buy_notional': total_buy,
         'total_cost': total_cost,
         'exits': {k: sum(1 for t in trades if t['exit_reason'] == k)
-                  for k in ('take_profit', 'stop_loss', 'rebalance')},
+                  for k in ('take_profit', 'stop_loss', 'rebalance', 'derisk')},
     })
     return {'curve': curve_df, 'trades': trades, 'stats': stats}
 
@@ -372,6 +506,10 @@ def main(argv=None) -> int:
     ap.add_argument('--eval-depth', type=int, default=60)
     ap.add_argument('--take-profit', type=float, default=0.12)
     ap.add_argument('--stop-loss', type=float, default=0.05)
+    ap.add_argument('--derisk', choices=['none', 'half', 'full', 'compare'],
+                    default='none',
+                    help='卖信号减仓覆盖层：half=次日开盘减半，full=次日开盘清仓，'
+                         'compare=基准+half+full 一次跑完')
     ap.add_argument('--start', type=date.fromisoformat, default=date(2015, 1, 1))
     ap.add_argument('--end', type=date.fromisoformat, default=date(2026, 10, 31))
     ap.add_argument('--out', type=Path, default=DEFAULT_OUT)
@@ -397,6 +535,7 @@ def main(argv=None) -> int:
     codes = ranked['ts_code'].unique().to_list()
     paths = stock_quote_map()
     frames = load_quotes(codes, paths, date(2014, 12, 1))
+    sell_counts = add_sell_signals(frames) if args.derisk != 'none' else {}
     flow = add_flow_indicators(frames, set(signal_dates))
 
     def pick_rows(use_flow: bool) -> dict[date, list[str]]:
@@ -428,13 +567,27 @@ def main(argv=None) -> int:
     keep = {c for v in picks_a.values() for c in v} | {
         c for v in picks_b.values() for c in v}
     sim_frames = {c: frames[c] for c in keep if c in frames}
-    res_a = simulate(picks_a, sim_frames, cal_all, rebalance_days,
-                     args.top_n, args.take_profit, args.stop_loss)
-    res_b = simulate(picks_b, sim_frames, cal_all, rebalance_days,
-                     args.top_n, args.take_profit, args.stop_loss)
-    delta = {k: res_b['stats'][k] - res_a['stats'][k]
-             for k in ('annualized', 'max_drawdown', 'sharpe', 'calmar',
-                       'trade_win_rate', 'annual_turnover')}
+
+    variants = (['none'] if args.derisk == 'none'
+                else ['none', 'half', 'full'] if args.derisk == 'compare'
+                else ['none', args.derisk])
+    log(f'模拟变体：{variants}')
+    runs: dict[str, dict] = {}
+    for v in variants:
+        name = 'A' if v == 'none' else f'A_{v}'
+        runs[name] = simulate(picks_a, sim_frames, cal_all, rebalance_days,
+                              args.top_n, args.take_profit, args.stop_loss,
+                              derisk=v)
+        log(f'  {name} 完成：年化 {runs[name]["stats"]["annualized"]:.2%} '
+            f'最大回撤 {runs[name]["stats"]["max_drawdown"]:.2%}')
+    res_a = runs['A']
+    res_b = (simulate(picks_b, sim_frames, cal_all, rebalance_days,
+                      args.top_n, args.take_profit, args.stop_loss)
+             if args.derisk == 'none' else None)
+    metric_keys = ('annualized', 'max_drawdown', 'sharpe', 'calmar',
+                   'annual_turnover', 'avg_exposure')
+    delta = ({k: res_b['stats'][k] - res_a['stats'][k] for k in metric_keys}
+             if res_b else {})
     summary = {
         'generated_at': time.strftime('%Y-%m-%dT%H:%M:%S'),
         'period': [str(signal_dates[0]), str(signal_dates[-1])],
@@ -444,13 +597,24 @@ def main(argv=None) -> int:
                    'amount_floor': 5e7, 'turnover_range': [0.03, 0.15],
                    'net_profit_yoy_floor': 8.0, 'debt_ratio_cap': 60.0,
                    'industry_top': 10, 'pb_cap_x_industry_mean': 1.2,
-                   'flow_filter': 'OBV20>0 且 量比>=1'},
-        'A': res_a['stats'], 'B': res_b['stats'], 'B_minus_A': delta,
+                   'flow_filter': 'OBV20>0 且 量比>=1',
+                   'derisk': args.derisk,
+                   'derisk_signals': list(SELL_SIGNAL_NAMES)},
+        'sell_signal_counts': sell_counts,
+        'A': res_a['stats'], 'B': res_b['stats'] if res_b else None,
+        'B_minus_A': delta,
         'elapsed_s': round(time.time() - t0, 1),
     }
+    for name, res in runs.items():
+        if name == 'A':
+            continue
+        summary[name] = res['stats']
+        summary[f'{name}_minus_A'] = {
+            k: res['stats'][k] - res_a['stats'][k] for k in metric_keys}
     run_dir = args.out / f'three_min_ab_{time.strftime("%Y%m%d")}'
     run_dir.mkdir(parents=True, exist_ok=True)
-    for name, res in (('A', res_a), ('B', res_b)):
+    write_items = list(runs.items()) + ([('B', res_b)] if res_b else [])
+    for name, res in write_items:
         d = run_dir / name
         d.mkdir(exist_ok=True)
         res['curve'].write_csv(d / 'equity.csv')
