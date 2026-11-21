@@ -751,6 +751,105 @@ def calculate_arms_polars(df, period=10, *, db_manager=None, market_breadth=None
     return df if result is None else result
 
 
+def calculate_ema_polars(df, windows=None):
+    """
+    使用Polars计算EMA（通达信 ``EMA(X,N)`` 与 ``EXPMA`` 同式，此处提供独立注册名）
+
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: 周期列表，默认 [12, 50]
+
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 含 ``ema{N}`` 与默认列 ``ema``
+    """
+    if windows is None:
+        windows = [12, 50]
+    result = calculate_multiple_indicators_polars(df, ['expma'], expma_windows=windows)
+    if result is None:
+        return df
+    existing = set(result.columns)
+    rename_map = {f'expma{w}': f'ema{w}' for w in windows}
+    rename_map['expma'] = 'ema'
+    return result.rename({k: v for k, v in rename_map.items() if k in existing})
+
+
+def calculate_skdj_polars(df, n=9, m=3, k_period=3, d_period=3):
+    """
+    使用Polars计算SKDJ（慢速KD，公开标准公式，DLL 未取证）
+
+    Args:
+        df: Polars DataFrame或LazyFrame
+        n: RSV 窗口，默认 9
+        m: RSV 的 EMA 平滑周期，默认 3
+        k_period: K 的 SMA 周期，默认 3
+        d_period: D 的 SMA 周期，默认 3
+
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 含 skdj_k / skdj_d / skdj_j
+    """
+    return calculate_multiple_indicators_polars(
+        df, ['skdj'], skdj_n=n, skdj_m=m, skdj_k=k_period, skdj_d=d_period)
+
+
+def calculate_vwap_dev_polars(df, windows=None):
+    """
+    使用Polars计算VWAP偏离（需行情表带 amount 字段）
+
+    Args:
+        df: Polars DataFrame或LazyFrame
+        windows: 窗口列表，默认 [20]
+
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 含 ``vwap_dev{N}`` 与默认列 ``vwap_dev``
+    """
+    if windows is None:
+        windows = [20]
+    return calculate_multiple_indicators_polars(df, ['vwap_dev'], vwap_dev_windows=windows)
+
+
+def _load_benchmark_frame(df, ts_code: str):
+    """读取本地基准指数日线（只读），失败返回 None 并记录错误。"""
+    from loguru import logger
+
+    try:
+        from pathlib import Path
+
+        from src.data.local_store.store import LocalQuoteStore
+
+        store_root = Path(__file__).resolve().parents[2] / 'data' / 'local_store'
+        dates = df.select('date').collect() if isinstance(df, pl.LazyFrame) else df.select('date')
+        start, end = dates['date'].min(), dates['date'].max()
+        frame = LocalQuoteStore(store_root).read_daily('index', ts_code, start, end)
+        if frame is None or frame.is_empty():
+            logger.error(f"基准指数 {ts_code} 本地无数据，跳过大盘同步")
+            return None
+        return frame
+    except Exception as exc:  # noqa: BLE001 - 数据缺失不应中断指标计算
+        logger.error(f"基准指数 {ts_code} 读取失败，跳过大盘同步：{exc}")
+        return None
+
+
+def calculate_market_sync_polars(df, windows=None, benchmark='000300.SH'):
+    """
+    使用Polars计算大盘同步度（自定义口径：同向占比 + 相对收益差）
+
+    Args:
+        df: Polars DataFrame或LazyFrame（需 date/close）
+        windows: 统计窗口列表，默认 [60]
+        benchmark: 基准指数代码，默认 000300.SH
+
+    Returns:
+        pl.DataFrame或pl.LazyFrame: 含 ``mkt_sync{N}`` / ``mkt_rs{N}``；基准缺失时原表返回
+    """
+    if windows is None:
+        windows = [60]
+    benchmark_frame = _load_benchmark_frame(df, benchmark)
+    if benchmark_frame is None:
+        return df
+    return calculate_multiple_indicators_polars(
+        df, ['mkt_sync'], benchmark_frame=benchmark_frame, mkt_sync_windows=windows)
+
+
 def _add_shared_window_columns(lazy_df, indicator_types, indicator_params):
     """为 kdj/wr/boll 预计算共享的最高价/最低价窗口列。"""
     need_high_low = any(indicator in indicator_types for indicator in ['kdj', 'wr', 'boll'])

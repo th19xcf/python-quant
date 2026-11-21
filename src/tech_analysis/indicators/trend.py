@@ -390,6 +390,56 @@ def calculate_bbi(lazy_df: pl.LazyFrame) -> pl.LazyFrame:
     return lazy_df.with_columns(bbi)
 
 
+def calculate_market_sync(lazy_df: pl.LazyFrame, benchmark_frame: pl.DataFrame,
+                          windows: list | None = None) -> pl.LazyFrame:
+    """
+    计算大盘同步度（**自定义口径**，``TCalc.dll`` 无对应原文，非通达信原式）
+
+        mkt_sync{N}：N 日内个股与基准指数日收益同向的天数占比(%)
+        mkt_rs{N}  ：个股 N 日收益 - 基准 N 日收益（百分点）
+
+    基准序列来自本地 ``data/local_store/quotes/index/**/<code>.parquet``（默认 000300.SH），
+    由调用方加载后传入；缺失时不生成任何列。
+
+    Args:
+        lazy_df: 含 date/close 的个股行情 LazyFrame
+        benchmark_frame: 含 date/close 的基准指数 DataFrame
+        windows: 统计窗口列表，默认 [60]
+
+    Returns:
+        pl.LazyFrame: 含 ``mkt_sync{N}`` / ``mkt_rs{N}``
+    """
+    if windows is None:
+        windows = [60]
+
+    bench = benchmark_frame.select(
+        pl.col('date'),
+        pl.col('close').cast(pl.Float64).alias('bench_close'),
+    )
+    # maintain_order='left' 保证不因 join 打乱调用方的行序（指标列必须与原表逐行对齐）
+    lf = lazy_df.join(bench.lazy(), on='date', how='left', maintain_order='left')
+
+    stock_ret = pl.col('close').cast(pl.Float64).pct_change()
+    bench_ret = pl.col('bench_close').pct_change()
+    same_direction = (
+        pl.when(stock_ret.is_not_null() & bench_ret.is_not_null())
+        .then(((stock_ret > 0) == (bench_ret > 0)).cast(pl.Float64))
+        .otherwise(None)
+    )
+
+    for window in windows:
+        sync = same_direction.rolling_mean(window_size=window, min_samples=window) * 100.0
+        stock_n = pl.col('close').cast(pl.Float64) / pl.col('close').cast(pl.Float64).shift(window)
+        bench_n = pl.col('bench_close') / pl.col('bench_close').shift(window)
+        rel_strength = (stock_n - bench_n) * 100.0
+        lf = lf.with_columns([
+            to_float32(sync).alias(f'mkt_sync{window}'),
+            to_float32(rel_strength).alias(f'mkt_rs{window}'),
+        ])
+
+    return lf
+
+
 def calculate_trend_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **params) -> pl.LazyFrame:
     """
     计算所有趋势类指标
@@ -450,5 +500,15 @@ def calculate_trend_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **p
     # 计算BBI指标
     if 'bbi' in indicator_types:
         lazy_df = calculate_bbi(lazy_df)
+
+    # 计算大盘同步（需传入基准指数序列，缺失则跳过）
+    if 'mkt_sync' in indicator_types:
+        benchmark_frame = params.get('benchmark_frame')
+        if benchmark_frame is None:
+            from loguru import logger
+            logger.error("大盘同步缺少基准指数序列（benchmark_frame），跳过")
+        else:
+            windows = params.get('mkt_sync_windows', [60])
+            lazy_df = calculate_market_sync(lazy_df, benchmark_frame, windows)
 
     return lazy_df

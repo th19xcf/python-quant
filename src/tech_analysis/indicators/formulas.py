@@ -72,6 +72,28 @@ def wilder_expr(expr: pl.Expr, period: int) -> pl.Expr:
     return seeded.ewm_mean(alpha=1.0 / period, adjust=False, min_samples=1)
 
 
+def sma_smooth(expr: pl.Expr, period: int, weight: int = 1) -> pl.Expr:
+    """通达信 ``SMA(X,N,M)`` 平滑：``Y = (X*M + Y'*(N-M)) / N``。
+
+    等价于 ``alpha = M/N``、``adjust=False`` 的指数平滑，首值取 X；
+    已对 ``H:\\zxzq\\TCalc.dll`` 的函数说明取证。
+
+    Args:
+        expr: 待平滑表达式
+        period: N
+        weight: M，默认 1
+
+    Returns:
+        pl.Expr: 平滑后的表达式
+    """
+    return expr.ewm_mean(alpha=weight / period, adjust=False, min_samples=1)
+
+
+def sma_expr(column: str, period: int, weight: int = 1) -> pl.Expr:
+    """按列名调用 :func:`sma_smooth` 的便捷入口。"""
+    return sma_smooth(pl.col(column), period, weight)
+
+
 def rsi_expr(close_col: str = 'close', period: int = 14) -> pl.Expr:
     """
     RSI 表达式（通达信 SMA 口径，已对拍 ``H:\\zxzq\\TCalc.dll`` 公式原文）。
@@ -95,9 +117,8 @@ def rsi_expr(close_col: str = 'close', period: int = 14) -> pl.Expr:
     gain = pl.when(delta > 0).then(delta).otherwise(0.0)
     abs_delta = delta.abs()
 
-    alpha = 1.0 / period
-    avg_gain = gain.ewm_mean(alpha=alpha, adjust=False, min_samples=1)
-    avg_abs = abs_delta.ewm_mean(alpha=alpha, adjust=False, min_samples=1)
+    avg_gain = sma_smooth(gain, period, 1)
+    avg_abs = sma_smooth(abs_delta, period, 1)
 
     return (
         pl.when(avg_abs == 0)

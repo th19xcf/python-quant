@@ -167,6 +167,49 @@ def calculate_bias(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     return add_default_columns(lazy_df, 'bias', windows)
 
 
+def calculate_skdj(lazy_df: pl.LazyFrame, n: int = 9, m: int = 3,
+                   k_period: int = 3, d_period: int = 3) -> pl.LazyFrame:
+    """
+    计算SKDJ指标（慢速KD）
+
+    公式来源：**公开标准公式**（``H:\\zxzq\\TCalc.dll`` 中无非 SKDJ 原文，未取证）：
+        RSV = (CLOSE - LLV(LOW,N)) / (HHV(HIGH,N) - LLV(LOW,N)) * 100
+        K = SMA(EMA(RSV, M), K_PERIOD, 1)
+        D = SMA(K, D_PERIOD, 1)
+        J = 3K - 2D
+
+    与项目 KDJ 的区别：SKDJ 先对 RSV 做 M 日 EMA 平滑，再用 SMA(X,N,1) 二次平滑，
+    因此更钝、假信号更少。
+
+    Args:
+        lazy_df: Polars LazyFrame
+        n: RSV 窗口，默认 9
+        m: RSV 的 EMA 平滑周期，默认 3
+        k_period: K 的 SMA 周期，默认 3
+        d_period: D 的 SMA 周期，默认 3
+
+    Returns:
+        pl.LazyFrame: 含 ``skdj_k`` / ``skdj_d`` / ``skdj_j``
+    """
+    from src.tech_analysis.indicators.formulas import sma_smooth
+
+    low_n = pl.col('low').rolling_min(window_size=n, min_samples=n)
+    high_n = pl.col('high').rolling_max(window_size=n, min_samples=n)
+    rsv = (pl.col('close') - low_n) / (high_n - low_n) * 100.0
+
+    # RSV 先做 EMA 平滑（通达信 EMA 口径 alpha=2/(M+1)）
+    rsv_smooth = rsv.ewm_mean(alpha=2.0 / (m + 1), adjust=False, min_samples=1)
+    k_line = sma_smooth(rsv_smooth, k_period, 1)
+    d_line = sma_smooth(k_line, d_period, 1)
+    j_line = 3.0 * k_line - 2.0 * d_line
+
+    return lazy_df.with_columns([
+        to_float32(k_line).alias('skdj_k'),
+        to_float32(d_line).alias('skdj_d'),
+        to_float32(j_line).alias('skdj_j'),
+    ])
+
+
 def calculate_oscillator_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **params) -> pl.LazyFrame:
     """
     计算所有震荡类指标
@@ -208,5 +251,15 @@ def calculate_oscillator_indicators(lazy_df: pl.LazyFrame, indicator_types: list
     if 'bias' in indicator_types:
         windows = params.get('bias_windows', [6, 12, 24])
         lazy_df = calculate_bias(lazy_df, windows)
+
+    # 计算SKDJ指标（慢速KD）
+    if 'skdj' in indicator_types:
+        lazy_df = calculate_skdj(
+            lazy_df,
+            n=params.get('skdj_n', 9),
+            m=params.get('skdj_m', 3),
+            k_period=params.get('skdj_k', 3),
+            d_period=params.get('skdj_d', 3),
+        )
 
     return lazy_df

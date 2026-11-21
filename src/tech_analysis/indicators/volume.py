@@ -256,6 +256,42 @@ def calculate_lb(lazy_df: pl.LazyFrame, period: int = 5) -> pl.LazyFrame:
     return lazy_df.with_columns(lb)
 
 
+def calculate_vwap_dev(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
+    """
+    计算VWAP偏离（成交量加权均价偏离，公开标准公式，``TCalc.dll`` 未取证）
+
+        VWAP_N = SUM(AMOUNT, N) / SUM(VOL, N) / 100   （AMOUNT 元、VOL 手 → 每股均价）
+        DEV    = (CLOSE - VWAP_N) / VWAP_N * 100
+
+    行情表必须有 ``amount`` 字段；缺失时记录错误并原样返回，**不做 close×vol 近似**
+    （该近似退化为 close，偏离恒为 0，属伪数据）。
+
+    Args:
+        lazy_df: Polars LazyFrame（需 close/volume/amount）
+        windows: 偏离计算窗口列表，默认 [20]
+
+    Returns:
+        pl.LazyFrame: 含 ``vwap_dev{N}`` 与默认列 ``vwap_dev``
+    """
+    columns = set(lazy_df.collect_schema().names())
+    if 'amount' not in columns:
+        from loguru import logger
+        logger.error("VWAP 偏离缺少 amount 字段，跳过（不做 close×vol 伪近似）")
+        return lazy_df
+
+    amount = pl.col('amount').cast(pl.Float64)
+    volume_shares = pl.col('volume').cast(pl.Float64) * 100.0
+
+    for window in windows:
+        amount_sum = amount.rolling_sum(window_size=window, min_samples=window)
+        volume_sum = volume_shares.rolling_sum(window_size=window, min_samples=window)
+        vwap = pl.when(volume_sum > 0).then(amount_sum / volume_sum).otherwise(None)
+        dev = (pl.col('close').cast(pl.Float64) - vwap) / vwap * 100.0
+        lazy_df = lazy_df.with_columns(to_float32(dev).alias(f'vwap_dev{window}'))
+
+    return add_default_columns(lazy_df, 'vwap_dev', windows)
+
+
 def calculate_mfi(lazy_df: pl.LazyFrame, windows: list) -> pl.LazyFrame:
     """
     计算MFI指标（资金流量指标，Money Flow Index）
@@ -399,5 +435,10 @@ def calculate_volume_indicators(lazy_df: pl.LazyFrame, indicator_types: list, **
     if 'cmf' in indicator_types:
         windows = params.get('cmf_windows', [20])
         lazy_df = calculate_cmf(lazy_df, windows)
+
+    # 计算VWAP偏离
+    if 'vwap_dev' in indicator_types:
+        windows = params.get('vwap_dev_windows', [20])
+        lazy_df = calculate_vwap_dev(lazy_df, windows)
 
     return lazy_df
