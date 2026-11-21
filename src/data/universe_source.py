@@ -24,6 +24,10 @@ import polars as pl
 
 from src.data.local_store.paths import resolve_store_root
 from src.data.trading_calendar import previous_trading_day
+from src.data.universe_filter import (
+    UNIVERSE_SCOPE_BACKTEST,
+    UNIVERSE_SCOPE_SELECTION,
+)
 
 STOCK_BASIC = Path('meta') / 'stock_basic.parquet'
 STOCK_BASIC_MANIFEST = Path('meta') / 'stock_basic.manifest.json'
@@ -69,8 +73,17 @@ def read_stock_basic(store_root: Path) -> pl.DataFrame:
                                          'delist_date', 'status', 'market'])
 
 
-def load_local_universe(store_root: Path) -> tuple[dict[str, str], list[str]]:
-    """返回 ``(symbol -> ts_code, 在市 ts_code 清单)``，与旧 MySQL 口径一致。"""
+def load_local_universe(store_root: Path, *,
+                        scope: str = UNIVERSE_SCOPE_SELECTION
+                        ) -> tuple[dict[str, str], list[str]]:
+    """返回 ``(symbol -> ts_code, ts_code 清单)``，清单口径由 ``scope`` 决定。
+
+    - ``selection``（默认，选股/交易）：只取 ``status == 'L'`` 的在市标的；
+    - ``backtest``（回测）：返回名录全部标的（含 ``status == 'D'``），由调用方
+      按 ``delist_date <= as_of`` 截断，避免幸存者偏差。
+
+    两种口径共用同一个 ``status`` 读取，不留第二套隐式规则。
+    """
     frame = read_stock_basic(store_root)
     symbols: dict[str, str] = {}
     listed: list[str] = []
@@ -78,7 +91,7 @@ def load_local_universe(store_root: Path) -> tuple[dict[str, str], list[str]]:
         if not ts_code:
             continue
         symbols[str(ts_code).split('.')[0]] = str(ts_code)
-        if status == 'L':
+        if scope == UNIVERSE_SCOPE_BACKTEST or status == 'L':
             listed.append(str(ts_code))
     return symbols, sorted(listed)
 

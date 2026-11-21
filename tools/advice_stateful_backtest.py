@@ -63,11 +63,11 @@ from src.advice.turnover import (  # noqa: E402
     entry_allowed,
     update_holding,
 )
-from src.advice.universe import list_local_stock_codes  # noqa: E402
+from src.advice.universe import list_backtest_stock_codes  # noqa: E402
 from src.backtest.costs.cost_model import COST_DEFAULTS  # noqa: E402
 from src.data.local_store.store import LocalQuoteStore, resolve_store_root  # noqa: E402
 from src.data.trading_calendar import get_calendar  # noqa: E402
-from src.data.universe_filter import filter_universe  # noqa: E402
+from src.data.universe_filter import filter_backtest_universe  # noqa: E402
 from src.risk.execution_rules import ExecutionRules  # noqa: E402
 from src.utils.config import get_config  # noqa: E402
 
@@ -2573,8 +2573,8 @@ def _run_single(args: argparse.Namespace, started: datetime, app_config: Any,
     """单窗口（旧行为）：一次加载整段面板，不做分片。"""
     start, end, window_dates, window_note = _resolve_window(args, store_root)
 
-    codes = list_local_stock_codes(app_config)
-    universe = filter_universe(start, codes, store_root=store_root)
+    codes = list_backtest_stock_codes(app_config)
+    universe = filter_backtest_universe(start, codes, store_root=store_root)
     _log(f'选池完成：{universe.kept_count}/{universe.input_count}', started)
 
     loader = LocalPanelLoader(app_config, min_rows=config.min_history_rows)
@@ -3238,7 +3238,7 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
     out_dir = ROOT / args.out_root / (
         f"{start:%Y%m%d}_{end:%Y%m%d}{getattr(args, 'out_suffix', '')}")
     out_dir.mkdir(parents=True, exist_ok=True)
-    codes = list_local_stock_codes(app_config)
+    codes = list_backtest_stock_codes(app_config)
     index_of = {day: i for i, day in enumerate(global_dates)}
     allocs = _resolve_allocs(args)
     a_signals = load_a_signals(hold_days=args.hold_days) if 'a' in allocs else None
@@ -3270,7 +3270,7 @@ def _run_chunked(args: argparse.Namespace, started: datetime, app_config: Any,
             baseline_states = dict.fromkeys(allocs)
 
         chunk_started = datetime.now()
-        universe = filter_universe(chunk_dates[0], codes, store_root=store_root)
+        universe = filter_backtest_universe(chunk_dates[0], codes, store_root=store_root)
         loader = LocalPanelLoader(app_config, min_rows=config.min_history_rows)
         panel_start = loader.default_start(
             chunk_dates[0], tier.lookback_days + 120)

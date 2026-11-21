@@ -78,6 +78,18 @@ def list_local_stock_codes(config: Any, markets: Iterable[str] = ('sh', 'sz', 'b
     return sorted(set(codes))
 
 
+def list_selection_stock_codes(config: Any,
+                               markets: Iterable[str] = ('sh', 'sz', 'bj')) -> list[str]:
+    """选股/交易口径：剔停更/退市标的，供每日推荐与实盘链路使用。"""
+    return list_local_stock_codes(config, markets, exclude_stale=True)
+
+
+def list_backtest_stock_codes(config: Any,
+                              markets: Iterable[str] = ('sh', 'sz', 'bj')) -> list[str]:
+    """回测口径：保留停更/退市标的，避免幸存者偏差（见 ``delist_date`` 截断）。"""
+    return list_local_stock_codes(config, markets, exclude_stale=False)
+
+
 def load_name_map(path: str | Path | None) -> dict[str, str]:
     """读取本地名称映射（JSON: ``{"600000.SH": "浦发银行"}``）。
 

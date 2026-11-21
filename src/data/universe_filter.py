@@ -32,11 +32,25 @@ T+1 开盘价判定能否成交。涨跌停拒单见
   ``audit_opinion`` 一类列），**无数据支撑，未实现**；净资产为负与连续两年
   亏损已按公告日实现，但默认关闭。
 
+两条口径（退市类规则只由 ``scope`` 决定）
+--------------------------------------
+- ``selection``（默认；选股/交易入口 :func:`filter_selection_universe`）：按
+  ``stock_basic.status == 'D'`` 剔除退市股，并剔除退市整理期；
+- ``backtest``（回测入口 :func:`filter_backtest_universe`）：**纳入退市股**，
+  不按 ``status == 'D'`` 剔除，只按 ``delist_date <= as_of`` 截断——退市日之后
+  不再出现。
+
+两条路径不再由 ``exclude_delisted`` 布尔默认值隐式决定；该属性只作为 ``scope``
+的派生只读值保留，供输出字段与旧调用读取。
+
 读侧用法::
 
-    from src.data.universe_filter import filter_universe
+    from src.data.universe_filter import (
+        filter_selection_universe,   # 选股 / 交易
+        filter_backtest_universe,    # 回测
+    )
 
-    result = filter_universe('2026-11-09', codes)
+    result = filter_selection_universe('2026-11-09', codes)
     result.kept              # 保留代码
     result.rule_counts       # 逐类剔除计数（按 RULE_ORDER）
     result.counts_text()     # 一行可读摘要
@@ -51,7 +65,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -125,6 +139,10 @@ RULE_LABELS: dict[str, str] = {
     RULE_FINANCIAL_RISK: '财务类风险（默认关闭）',
 }
 
+#: 具名口径：唯一决定退市类规则的开关（见模块 docstring）
+UNIVERSE_SCOPE_SELECTION = 'selection'
+UNIVERSE_SCOPE_BACKTEST = 'backtest'
+
 BOARD_MAIN = 'main'
 BOARD_BSE = 'bse'
 BOARD_STAR = 'star'
@@ -165,8 +183,10 @@ class UniverseFilterConfig:
     min_price: float = 1.5
     # --- 板块 ---
     exclude_b_share: bool = True
+    #: 具名口径：selection=选股/交易（排除 status='D'）；backtest=回测（纳入退市股，
+    #: 仅按 delist_date ≤ as_of 截断）。退市类规则只由它决定，不再靠布尔默认值。
+    scope: str = UNIVERSE_SCOPE_SELECTION
     exclude_delisting_period: bool = True
-    exclude_delisted: bool = True
     #: 退市整理期判定窗口：距 delist_date 剩余不超过 N 个交易日
     delisting_window_trading_days: int = 30
     #: 退市整理期第二路：按 as_of 取 PIT 历史简称，含标记字即判整理期
@@ -184,6 +204,17 @@ class UniverseFilterConfig:
     # --- 财务类风险（默认关闭） ---
     enable_financial_risk: bool = False
     max_annual_loss_years: int = 2
+
+    def __post_init__(self) -> None:
+        if self.scope not in (UNIVERSE_SCOPE_SELECTION, UNIVERSE_SCOPE_BACKTEST):
+            raise ValueError(
+                f'未知口径 {self.scope!r}；只能是 '
+                f'{UNIVERSE_SCOPE_SELECTION!r} 或 {UNIVERSE_SCOPE_BACKTEST!r}')
+
+    @property
+    def exclude_delisted(self) -> bool:
+        """选股口径按 ``status='D'`` 剔除；回测口径不剔除，只按 delist_date 截断。"""
+        return self.scope == UNIVERSE_SCOPE_SELECTION
 
 
 @dataclass
@@ -246,6 +277,7 @@ class UniverseFilterResult:
                 'include_bse': self.config.include_bse,
                 'include_star': self.config.include_star,
                 'include_chinext': self.config.include_chinext,
+                'scope': self.config.scope,
                 'exclude_delisted': self.config.exclude_delisted,
                 'exclude_delisting_period': self.config.exclude_delisting_period,
                 'delisting_window_trading_days':
@@ -503,6 +535,37 @@ def _circ_mv_codes(codes: list[str], as_of: date, root: Path,
 
 
 # ----------------------------------------------------------------------
+# 具名口径入口（选股/交易 vs 回测）
+# ----------------------------------------------------------------------
+def _scoped_config(scope: str,
+                   config: UniverseFilterConfig | None) -> UniverseFilterConfig:
+    """把调用方配置收敛到指定口径，其余阈值原样保留。"""
+    if config is None:
+        return UniverseFilterConfig(scope=scope)
+    return replace(config, scope=scope)
+
+
+def filter_selection_universe(as_of: Any, codes: Iterable[str], *,
+                              config: UniverseFilterConfig | None = None,
+                              store_root: Path | str | None = None,
+                              ) -> UniverseFilterResult:
+    """选股/交易口径：排除 ``status == 'D'`` 的退市股与退市整理期。"""
+    return filter_universe(as_of, codes,
+                           config=_scoped_config(UNIVERSE_SCOPE_SELECTION, config),
+                           store_root=store_root)
+
+
+def filter_backtest_universe(as_of: Any, codes: Iterable[str], *,
+                             config: UniverseFilterConfig | None = None,
+                             store_root: Path | str | None = None,
+                             ) -> UniverseFilterResult:
+    """回测口径：纳入退市股，仅按 ``delist_date <= as_of`` 截断。"""
+    return filter_universe(as_of, codes,
+                           config=_scoped_config(UNIVERSE_SCOPE_BACKTEST, config),
+                           store_root=store_root)
+
+
+# ----------------------------------------------------------------------
 # 主过滤
 # ----------------------------------------------------------------------
 def filter_universe(as_of: Any, codes: Iterable[str], *,
@@ -620,20 +683,28 @@ def _delisting_reason(code: str, cfg: UniverseFilterConfig, day: date,
       → 判整理期。用于 ``status`` 仍是 ``L``、``delist_date`` 未回填的标的
       （如 ``002731.SZ``），只取当日已生效的段，无前视。
     """
-    if not (cfg.exclude_delisted or cfg.exclude_delisting_period):
+    if not (cfg.exclude_delisted or cfg.exclude_delisting_period
+            or cfg.scope == UNIVERSE_SCOPE_BACKTEST):
         return None
     info = basic.get(code)
     if info is None:
         unknowns['delist'] += 1
+        status, delist_day = None, None
     else:
         status, delist_day = info
-        if (cfg.exclude_delisted and status == 'D'
-                and (delist_day is None or delist_day <= day)):
-            return RULE_DELISTED
-        if cfg.exclude_delisting_period and delist_day is not None and delist_day > day:
-            window = cfg.delisting_window_trading_days
-            if window <= 0 or calendar.count(day, delist_day) <= window:
-                return RULE_DELISTING
+    # 两种口径一致：delist_date 之后不再出现（回测口径同样按此截断）
+    if delist_day is not None and delist_day <= day:
+        return RULE_DELISTED
+    if cfg.scope == UNIVERSE_SCOPE_BACKTEST:
+        # 回测口径：不按 status='D' 剔除，也不剔整理期（仍在交易），
+        # 避免幸存者偏差；退市截断已由上面的 delist_date 判定完成。
+        return None
+    if cfg.exclude_delisted and status == 'D':
+        return RULE_DELISTED
+    if cfg.exclude_delisting_period and delist_day is not None and delist_day > day:
+        window = cfg.delisting_window_trading_days
+        if window <= 0 or calendar.count(day, delist_day) <= window:
+            return RULE_DELISTING
     if (cfg.exclude_delisting_period and cfg.enable_name_based_delisting
             and _pit_name_has_marker(code, day, history, cfg, unknowns)):
         return RULE_DELISTING

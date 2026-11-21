@@ -522,12 +522,12 @@ def resolve_signal_date(store_root: Path, reference: date) -> date:
 def build_universe(config: Any, store_root: Path,
                    reference: date) -> tuple[date, Any]:
     """复用既有股票池入口 + 通用选池过滤，返回 (信号日, 过滤结果)。"""
-    from src.advice.universe import list_local_stock_codes  # noqa: PLC0415
-    from src.data.universe_filter import filter_universe  # noqa: PLC0415
+    from src.advice.universe import list_selection_stock_codes  # noqa: PLC0415
+    from src.data.universe_filter import filter_selection_universe  # noqa: PLC0415
 
     day = resolve_signal_date(store_root, reference)
-    codes = list_local_stock_codes(config, ('sh', 'sz', 'bj'), exclude_stale=True)
-    return day, filter_universe(day, codes, store_root=store_root)
+    codes = list_selection_stock_codes(config, ('sh', 'sz', 'bj'))
+    return day, filter_selection_universe(day, codes, store_root=store_root)
 
 
 def _build_parser() -> argparse.ArgumentParser:

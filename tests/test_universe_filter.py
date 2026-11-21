@@ -28,6 +28,8 @@ from src.data.universe_filter import (
     RULE_SUSPENSION_COUNT,
     RULES_VERSION,
     UniverseFilterConfig,
+    filter_backtest_universe,
+    filter_selection_universe,
     filter_universe,
 )
 
@@ -350,3 +352,63 @@ def test_result_carries_version_and_doc_path(tmp_path: Path) -> None:
     assert payload['doc_path'] == DOC_PATH
     assert list(payload['rule_counts']) == list(RULE_ORDER)
     assert result.kept_count == 1
+
+
+def test_two_scopes_differ_on_same_as_of(tmp_path: Path) -> None:
+    """同一时点：选股口径剔 D 段，回测口径纳入（delist_date 缺失时也不剔）。"""
+    codes = ['600990.SH', '600991.SH']
+    _setup(tmp_path, codes)
+    _write_stock_basic(tmp_path, [
+        ('600990.SH', 'L', None),
+        ('600991.SH', 'D', None),
+    ])
+    selection = filter_selection_universe(AS_OF, codes, store_root=tmp_path)
+    backtest = filter_backtest_universe(AS_OF, codes, store_root=tmp_path)
+    assert selection.kept == ['600990.SH']
+    assert selection.dropped[RULE_DELISTED] == ['600991.SH']
+    assert backtest.kept == codes
+    assert selection.kept_count < backtest.kept_count
+
+
+def test_backtest_scope_truncates_at_delist_date(tmp_path: Path) -> None:
+    """回测口径：delist_date 之前纳入，之后不再出现。"""
+    code = '600992.SH'
+    _setup(tmp_path, [code])
+    delist_day = date(2026, 6, 30)
+    _write_stock_basic(tmp_path, [(code, 'D', delist_day)])
+    before = filter_backtest_universe(date(2026, 6, 1), [code], store_root=tmp_path)
+    after = filter_backtest_universe(date(2026, 7, 1), [code], store_root=tmp_path)
+    assert before.kept == [code]
+    assert after.kept == []
+    assert after.dropped[RULE_DELISTED] == [code]
+
+
+def test_selection_scope_has_no_d_segment(tmp_path: Path) -> None:
+    """选股口径对 D 段一律剔除，即使 delist_date 缺失。"""
+    codes = ['600993.SH']
+    _setup(tmp_path, codes)
+    _write_stock_basic(tmp_path, [('600993.SH', 'D', None)])
+    result = filter_selection_universe(AS_OF, codes, store_root=tmp_path)
+    assert result.kept == []
+    assert result.dropped[RULE_DELISTED] == codes
+    assert result.as_dict()['config']['scope'] == 'selection'
+
+
+def test_universe_source_scope_split(tmp_path: Path) -> None:
+    """名录读取：选股口径只保留 L，回测口径含 D。"""
+    from src.data.universe_filter import UNIVERSE_SCOPE_BACKTEST
+    from src.data.universe_source import load_local_universe
+
+    (tmp_path / 'meta').mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({
+        'ts_code': ['600994.SH', '600995.SH'],
+        'name': ['A', 'B'],
+        'list_date': [date(2024, 1, 2), date(2024, 1, 2)],
+        'delist_date': [None, date(2026, 6, 30)],
+        'status': ['L', 'D'],
+        'market': ['主板', '主板'],
+    }).write_parquet(tmp_path / 'meta' / 'stock_basic.parquet')
+    _, selection = load_local_universe(tmp_path)
+    _, backtest = load_local_universe(tmp_path, scope=UNIVERSE_SCOPE_BACKTEST)
+    assert selection == ['600994.SH']
+    assert backtest == ['600994.SH', '600995.SH']
